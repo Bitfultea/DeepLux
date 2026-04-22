@@ -6,6 +6,7 @@
 #include "manager/PluginManager.h"
 #include "model/Project.h"
 #include "config/SystemConfig.h"
+#include "platform/Platform.h"
 
 #include <QLocalServer>
 #include <QLocalSocket>
@@ -25,6 +26,78 @@ AgentBridge::AgentBridge(QObject* parent)
     // 心跳定时器 - 10 秒发送一次
     m_heartbeatTimer->setInterval(10000);
     connect(m_heartbeatTimer, &QTimer::timeout, this, &AgentBridge::onHeartbeatTimeout);
+
+    // 注册默认查询处理器
+    registerDefaultQueryHandlers();
+}
+
+void AgentBridge::registerDefaultQueryHandlers()
+{
+    // project query
+    registerQueryHandler("project", [this](const QJsonObject& params) {
+        Q_UNUSED(params);
+        Project* proj = ProjectManager::instance().currentProject();
+        if (proj) {
+            return QJsonObject{
+                {"name", proj->name()},
+                {"path", proj->filePath()},
+                {"moduleCount", proj->modules().size()}
+            };
+        }
+        return QJsonObject{{"error", "No project opened"}};
+    });
+
+    // run_state query
+    registerQueryHandler("run_state", [this](const QJsonObject& params) {
+        Q_UNUSED(params);
+        RunEngine& engine = RunEngine::instance();
+        RunState state = engine.state();
+        QString stateStr;
+        switch (state) {
+        case RunState::Idle: stateStr = "idle"; break;
+        case RunState::Running: stateStr = "running"; break;
+        case RunState::Paused: stateStr = "paused"; break;
+        case RunState::Stopped: stateStr = "stopped"; break;
+        default: stateStr = "unknown"; break;
+        }
+        QJsonObject result;
+        result["state"] = stateStr;
+        result["isRunning"] = engine.isRunning();
+        return result;
+    });
+
+    // plugins query - 返回可用的插件模块
+    registerQueryHandler("plugins", [this](const QJsonObject& params) {
+        Q_UNUSED(params);
+        QStringList modules = PluginManager::instance().availableModules();
+        return QJsonObject{{"modules", QJsonArray::fromStringList(modules)}};
+    });
+
+    // system query
+    registerQueryHandler("system", [this](const QJsonObject& params) {
+        Q_UNUSED(params);
+        QJsonObject result;
+        result["platform"] = DEEPLUX_PLATFORM_NAME;
+        result["version"] = DEEPLUX_VERSION_STRING;
+        return result;
+    });
+
+    // modules query
+    registerQueryHandler("modules", [this](const QJsonObject& params) {
+        Q_UNUSED(params);
+        Project* proj = ProjectManager::instance().currentProject();
+        if (!proj) {
+            return QJsonObject{{"error", "No project opened"}};
+        }
+        QJsonArray moduleList;
+        // proj->modules() 返回 QList<ModuleInstance>
+        for (const ModuleInstance& inst : proj->modules()) {
+            moduleList.append(inst.id);
+        }
+        QJsonObject result;
+        result["modules"] = moduleList;
+        return result;
+    });
 }
 
 AgentBridge::~AgentBridge()
@@ -143,6 +216,11 @@ void AgentBridge::onClientMessage(const QString& clientId, const QJsonObject& ms
         result = handleQuery(reqId, payload);
     } else if (type == "ping") {
         result = handlePing(reqId);
+    } else if (type == "subscribe") {
+        // 处理事件订阅
+        QString event = payload.value("event").toString();
+        registerEventSubscription(clientId, event);
+        result = QJsonObject{{"status", "subscribed"}, {"event", event}};
     } else {
         // 未知消息类型
         sendError(clientId, reqId, "Unknown message type: " + type);
@@ -167,8 +245,20 @@ void AgentBridge::onClientDisconnected(const QString& clientId)
     }
 
     m_missedHeartbeats.remove(clientId);
+    m_eventSubscriptions.remove(clientId);  // 清理事件订阅
     emit agentDisconnected(clientId);
     qDebug() << "Agent disconnected:" << clientId;
+}
+
+void AgentBridge::registerEventSubscription(const QString& clientId, const QString& event)
+{
+    if (!m_eventSubscriptions.contains(clientId)) {
+        m_eventSubscriptions[clientId] = QStringList();
+    }
+    if (!m_eventSubscriptions[clientId].contains(event)) {
+        m_eventSubscriptions[clientId].append(event);
+        qDebug() << "Agent" << clientId << "subscribed to event:" << event;
+    }
 }
 
 void AgentBridge::onHeartbeatTimeout()
@@ -296,9 +386,19 @@ void AgentBridge::broadcastEvent(const QString& event, const QJsonObject& payloa
     msg["event"] = event;
     msg["payload"] = payload;
 
-    for (AgentConnection* conn : m_connections) {
-        if (conn->isConnected()) {
-            conn->send(msg);
+    // 只发送给订阅了该事件的客户端
+    for (auto it = m_eventSubscriptions.begin(); it != m_eventSubscriptions.end(); ++it) {
+        const QString& clientId = it.key();
+        const QStringList& events = it.value();
+
+        if (events.contains(event) || events.contains("*")) {
+            // 找到对应的连接
+            for (AgentConnection* conn : m_connections) {
+                if (conn->clientId() == clientId && conn->isConnected()) {
+                    conn->send(msg);
+                    break;
+                }
+            }
         }
     }
 }

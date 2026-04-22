@@ -37,3 +37,13 @@ endif()
 install(TARGETS DeepLux
     RUNTIME DESTINATION bin
 )
+
+# Install CLI wrapper (Linux only)
+if(LINUX)
+    install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/deeplux
+            DESTINATION bin
+            RENAME deeplux)
+    install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/deeplux.sh
+            DESTINATION bin
+            RENAME deeplux.sh)
+endif()

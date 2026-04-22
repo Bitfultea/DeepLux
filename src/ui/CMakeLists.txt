@@ -35,9 +35,11 @@ set(UI_SOURCES
     resources/icons.qrc
 )
 
-# Linux-specific PTY implementation
+# Platform-specific PTY implementation
 if(LINUX)
     list(APPEND UI_SOURCES process/LinuxPtyImpl.cpp)
+elseif(WIN32)
+    list(APPEND UI_SOURCES process/WindowsPtyImpl.cpp)
 endif()
 
 set(UI_HEADERS

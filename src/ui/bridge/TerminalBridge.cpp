@@ -8,10 +8,12 @@
 #include "core/manager/PluginManager.h"
 #include "core/model/Project.h"
 #include "core/common/CLIHandler.h"
+#include "core/agent/AgentBridge.h"
 
 #include <QTimer>
 #include <QCoreApplication>
 #include <QDebug>
+#include <QJsonObject>
 
 namespace DeepLux {
 
@@ -94,6 +96,10 @@ void TerminalBridge::initialize(TerminalWidget* terminal)
     if (currentProject) {
         terminal->printInfo(QString("当前项目: %1").arg(currentProject->name()));
     }
+
+    // 启动 AgentBridge
+    AgentBridge::instance().start();
+    terminal->printInfo("Agent bridge started on /run/deeplux/agent.sock");
 }
 
 void TerminalBridge::shutdown()
@@ -271,6 +277,7 @@ void TerminalBridge::onRunStarted()
 {
     if (!m_terminal) return;
     m_terminal->printInfo("========== 流程开始执行 ==========");
+    AgentBridge::instance().sendEvent("run_started", QJsonObject());
 }
 
 void TerminalBridge::onRunFinished(const RunResult& result)
@@ -279,9 +286,11 @@ void TerminalBridge::onRunFinished(const RunResult& result)
     if (result.success) {
         m_terminal->printSuccess(QString("========== 流程执行完成 (耗时: %1 ms) ==========")
                                       .arg(result.elapsedMs));
+        AgentBridge::instance().sendEvent("run_finished", QJsonObject{{"success", true}, {"elapsedMs", result.elapsedMs}});
     } else {
         m_terminal->printError(QString("========== 流程执行失败: %1 ==========")
                                     .arg(result.errorMessage));
+        AgentBridge::instance().sendEvent("run_finished", QJsonObject{{"success", false}, {"error", result.errorMessage}});
     }
 }
 

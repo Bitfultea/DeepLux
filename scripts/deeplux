@@ -1,0 +1,53 @@
+#!/bin/bash
+#
+# DeepLux CLI launcher
+# Provides bash-level access to DeepLux commands
+#
+# Usage:
+#   deeplux                 # Launch GUI (if no args and not in terminal)
+#   deeplux create-project <name>  # Create a new project
+#   deeplux open <path>     # Open a project
+#   deeplux run             # Run the current project
+#   deeplux help            # Show help
+#
+
+# Detect if running in terminal
+is_terminal() {
+    [ -t 0 ] || [ -t 1 ]
+}
+
+# Parse arguments
+case "${1:-}" in
+    create-project|cp)
+        shift
+        exec "$(dirname "$0")/DeepLux" create-project "$@"
+        ;;
+    open|o)
+        shift
+        exec "$(dirname "$0")/DeepLux" open "$@"
+        ;;
+    save|save-project|s)
+        exec "$(dirname "$0")/DeepLux" save-project "$@"
+        ;;
+    run|r)
+        exec "$(dirname "$0")/DeepLux" run "$@"
+        ;;
+    stop)
+        exec "$(dirname "$0")/DeepLux" stop "$@"
+        ;;
+    help|-h|--help)
+        exec "$(dirname "$0")/DeepLux" --help "$@"
+        ;;
+    version|-v|--version)
+        exec "$(dirname "$0")/DeepLux" --version "$@"
+        ;;
+    *)
+        if is_terminal; then
+            # In terminal, launch interactive shell
+            exec "$(dirname "$0")/DeepLux" --cli "$@"
+        else
+            # Not in terminal, launch GUI
+            exec "$(dirname "$0")/DeepLux" --gui "$@"
+        fi
+        ;;
+esac

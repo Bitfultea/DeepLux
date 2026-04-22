@@ -11,6 +11,7 @@ class TerminalWidget;
 class ICommand;
 class LogEntry;
 class Project;
+class AgentBridge;
 struct RunResult;
 
 /**

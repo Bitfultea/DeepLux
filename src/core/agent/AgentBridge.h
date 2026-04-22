@@ -50,8 +50,8 @@ public:
     // 事件订阅发送
     void sendEvent(const QString& event, const QJsonObject& payload);
 
-    // 连接状态
-    int connectedAgents() const { return m_connections.size(); }
+    // 注册事件订阅
+    void registerEventSubscription(const QString& clientId, const QString& event);
 
 signals:
     void agentConnected(const QString& clientId);
@@ -69,6 +69,8 @@ private:
     AgentBridge(QObject* parent = nullptr);
     ~AgentBridge() override;
 
+    void registerDefaultQueryHandlers();
+
     bool m_running = false;
     QLocalServer* m_server = nullptr;
     QString m_socketPath;
@@ -81,6 +83,9 @@ private:
 
     // 查询处理器（注册式，支持扩展）
     QMap<QString, QueryHandler> m_queryHandlers;
+
+    // 事件订阅: clientId -> 订阅的事件列表
+    QMap<QString, QStringList> m_eventSubscriptions;
 
     // 协议版本
     static constexpr const char* PROTOCOL_VERSION = "1.0";

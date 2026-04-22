@@ -8,11 +8,14 @@
 #include <QDebug>
 #include <iostream>
 
-// Linux 实现头文件
-#if defined(Q_OS_LINUX)
+// Linux 实现
+#if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD)
 #include "LinuxPtyImpl.cpp"
-#elif defined(Q_OS_FREEBSD)
-#include "LinuxPtyImpl.cpp"
+#endif
+
+// Windows 实现
+#if defined(Q_OS_WINDOWS)
+#include "WindowsPtyImpl.cpp"
 #endif
 
 namespace DeepLux {
