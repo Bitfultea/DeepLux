@@ -9,13 +9,17 @@
 #include <QCompleter>
 #include <QStringListModel>
 #include <QLabel>
+#include <QString>
 
 namespace DeepLux {
 
+class BashProcess;
+
 /**
- * @brief 终端组件 - 嵌入 MainWindow 的命令行终端
+ * @brief 终端组件 - 嵌入 MainWindow 的 bash 终端
  *
  * 功能特性:
+ * - 基于真实 PTY 的 bash 终端
  * - 命令历史支持（上下键导航）
  * - ANSI 颜色代码解析和显示
  * - 命令自动补全
@@ -49,6 +53,9 @@ public:
     // 可用命令列表（用于自动补全）
     void setAvailableCommands(const QStringList& commands);
 
+    // 连接到 BashProcess
+    void connectToBashProcess(BashProcess* bashProcess);
+
 signals:
     void commandEntered(const QString& command);      // 用户输入了命令
 
@@ -57,6 +64,8 @@ public slots:
     void onCommandExecuted(const QString& command, int exitCode);
     void onModuleStarted(const QString& moduleName);
     void onModuleFinished(const QString& moduleName, bool success);
+    void onBashOutput(const QString& text);
+    void onBashError(const QString& text);
 
 private slots:
     void onReturnPressed();
@@ -70,6 +79,7 @@ private:
     void executeCommand(const QString& command);
     void addToHistory(const QString& command);
     QString escapeHtml(const QString& text) const;
+    QString ansiToHtml(const QString& text) const;
     void scrollToBottom();
     bool eventFilter(QObject* watched, QEvent* event) override;
 

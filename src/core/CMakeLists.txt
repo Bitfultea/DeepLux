@@ -29,6 +29,8 @@ set(CORE_SOURCES
     communication/CommunicationManager.cpp
     config/SystemConfig.cpp
     display/DisplayData.cpp
+    agent/AgentBridge.cpp
+    agent/AgentConnection.cpp
 )
 
 set(CORE_HEADERS
@@ -60,6 +62,8 @@ set(CORE_HEADERS
     config/SystemConfig.h
     display/DisplayData.h
     display/IDisplayPort.h
+    agent/AgentBridge.h
+    agent/AgentConnection.h
 )
 
 add_library(deeplux_core SHARED ${CORE_SOURCES} ${CORE_HEADERS})

@@ -11,6 +11,7 @@ set(UI_SOURCES
     widgets/ToolBox.cpp
     widgets/ViewportWidget.cpp
     bridge/TerminalBridge.cpp
+    process/BashProcess.cpp
     display/DisplayManager.cpp
     display/IViewportContent.cpp
     display/Viewport2DContent.cpp
@@ -34,6 +35,11 @@ set(UI_SOURCES
     resources/icons.qrc
 )
 
+# Linux-specific PTY implementation
+if(LINUX)
+    list(APPEND UI_SOURCES process/LinuxPtyImpl.cpp)
+endif()
+
 set(UI_HEADERS
     views/MainWindow.h
     views/SplashScreen.h
@@ -45,6 +51,8 @@ set(UI_HEADERS
     widgets/ToolBox.h
     widgets/ViewportWidget.h
     bridge/TerminalBridge.h
+    process/BashProcess.h
+    process/PtyImpl.h
     display/DisplayManager.h
     display/IViewportContent.h
     display/Viewport2DContent.h

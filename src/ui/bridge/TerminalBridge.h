@@ -81,6 +81,9 @@ private slots:
     // 命令执行结果处理
     void onCommandFinished(int exitCode);
 
+    // 用户在 TerminalWidget 输入了命令
+    void onCommandEntered(const QString& command);
+
 private:
     TerminalBridge(QObject* parent = nullptr);
     ~TerminalBridge() override;

@@ -1,5 +1,7 @@
 #include "TerminalWidget.h"
 
+#include "process/BashProcess.h"
+
 #include <QApplication>
 #include <QScrollBar>
 #include <QTimer>
@@ -8,6 +10,7 @@
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QDebug>
+#include <QRegularExpression>
 
 namespace DeepLux {
 
@@ -26,13 +29,12 @@ void TerminalWidget::setupUI()
     mainLayout->setContentsMargins(5, 5, 5, 5);
     mainLayout->setSpacing(0);
 
-    // 输出区域
+    // 输出区域 - 使用 QTextEdit 以支持富文本
     m_outputArea = new QTextEdit(this);
     m_outputArea->setObjectName("TerminalOutputArea");
     m_outputArea->setReadOnly(true);
     m_outputArea->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
     m_outputArea->setBackgroundRole(QPalette::Window);
-    m_outputArea->setMaximumHeight(250);
     mainLayout->addWidget(m_outputArea);
 
     // 输入区域
@@ -107,6 +109,23 @@ void TerminalWidget::setupStyle()
     setStyleSheet(styleSheet);
 }
 
+void TerminalWidget::connectToBashProcess(BashProcess* bashProcess)
+{
+    if (!bashProcess) return;
+
+    // 连接 BashProcess 信号到 TerminalWidget 槽
+    connect(bashProcess, &BashProcess::outputReady,
+            this, &TerminalWidget::onBashOutput,
+            Qt::QueuedConnection);
+
+    connect(bashProcess, &BashProcess::errorReady,
+            this, &TerminalWidget::onBashError,
+            Qt::QueuedConnection);
+
+    // 当用户输入命令时，通过 emit commandEntered 信号
+    // TerminalBridge 会将命令写入 BashProcess
+}
+
 void TerminalWidget::printCommand(const QString& cmd)
 {
     QString timestamp = QTime::currentTime().toString("hh:mm:ss");
@@ -126,7 +145,7 @@ void TerminalWidget::printOutput(const QString& text)
     QString timestamp = QTime::currentTime().toString("hh:mm:ss");
     QString line = QString("[<span style='color: #808080;'>%1</span>] <span style='color: #d4d4d4;'>%2</span>")
                        .arg(timestamp)
-                       .arg(escapeHtml(text));
+                       .arg(ansiToHtml(text));
     m_outputArea->append(line);
     scrollToBottom();
 }
@@ -173,7 +192,7 @@ void TerminalWidget::printWarning(const QString& text)
 
 void TerminalWidget::printRaw(const QString& text)
 {
-    m_outputArea->append(text);
+    m_outputArea->append(ansiToHtml(text));
     scrollToBottom();
 }
 
@@ -247,6 +266,16 @@ void TerminalWidget::onTextSelected()
     // 当用户选中文本时，可以复制
 }
 
+void TerminalWidget::onBashOutput(const QString& text)
+{
+    printRaw(text);
+}
+
+void TerminalWidget::onBashError(const QString& text)
+{
+    printError(text);
+}
+
 void TerminalWidget::onLogMessage(const QString& message, int level)
 {
     switch (level) {
@@ -304,6 +333,34 @@ QString TerminalWidget::escapeHtml(const QString& text) const
     result.replace(">", "&gt;");
     result.replace("\"", "&quot;");
     result.replace("'", "&#39;");
+    return result;
+}
+
+QString TerminalWidget::ansiToHtml(const QString& text) const
+{
+    QString result = escapeHtml(text);
+
+    // 简单的 ANSI 颜色替换
+    result = result.replace("\x1b[31m", "<span style='color: #e94560;'>");
+    result = result.replace("\x1b[32m", "<span style='color: #27ae60;'>");
+    result = result.replace("\x1b[33m", "<span style='color: #f39c12;'>");
+    result = result.replace("\x1b[34m", "<span style='color: #3498db;'>");
+    result = result.replace("\x1b[35m", "<span style='color: #9b59b6;'>");
+    result = result.replace("\x1b[36m", "<span style='color: #1abc9c;'>");
+    result = result.replace("\x1b[37m", "<span style='color: #ffffff;'>");
+    result = result.replace("\x1b[90m", "<span style='color: #808080;'>");
+    result = result.replace("\x1b[91m", "<span style='color: #e94560;'>");
+    result = result.replace("\x1b[92m", "<span style='color: #27ae60;'>");
+    result = result.replace("\x1b[93m", "<span style='color: #f1c40f;'>");
+    result = result.replace("\x1b[94m", "<span style='color: #3498db;'>");
+    result = result.replace("\x1b[95m", "<span style='color: #9b59b6;'>");
+    result = result.replace("\x1b[96m", "<span style='color: #1abc9c;'>");
+    result = result.replace("\x1b[97m", "<span style='color: #ffffff;'>");
+    result = result.replace("\x1b[1m", "<span style='font-weight: bold;'>");
+    result = result.replace("\x1b[0m", "</span>");
+    result = result.replace("\x1b[m", "</span>");
+    result = result.replace("\x1b[K", "");  // 清除到行尾
+
     return result;
 }
 

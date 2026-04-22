@@ -1,6 +1,7 @@
 #include "TerminalBridge.h"
 
 #include "widgets/TerminalWidget.h"
+#include "process/BashProcess.h"
 #include "core/common/Logger.h"
 #include "core/engine/RunEngine.h"
 #include "core/manager/ProjectManager.h"
@@ -56,8 +57,20 @@ void TerminalBridge::initialize(TerminalWidget* terminal)
     connect(&PluginManager::instance(), &PluginManager::pluginLoaded, this, &TerminalBridge::onPluginLoaded);
     connect(&PluginManager::instance(), &PluginManager::pluginUnloaded, this, &TerminalBridge::onPluginUnloaded);
 
-    // 连接 TerminalWidget 命令信号
-    connect(terminal, &TerminalWidget::commandEntered, this, &TerminalBridge::executeCommand);
+    // 连接 TerminalWidget 命令信号 -> 写入 BashProcess
+    connect(terminal, &TerminalWidget::commandEntered, this, &TerminalBridge::onCommandEntered);
+
+    // 连接 BashProcess 输出到 TerminalWidget
+    BashProcess& bash = BashProcess::instance();
+    terminal->connectToBashProcess(&bash);
+
+    connect(&bash, &BashProcess::outputReady, this, [terminal](const QString& text) {
+        terminal->printRaw(text);
+    }, Qt::QueuedConnection);
+
+    connect(&bash, &BashProcess::errorReady, this, [terminal](const QString& text) {
+        terminal->printError(text);
+    }, Qt::QueuedConnection);
 
     // 设置可用命令列表
     QStringList commands = {
@@ -325,6 +338,12 @@ void TerminalBridge::onCommandFinished(int exitCode)
     } else {
         m_terminal->printError(QString("命令执行失败 (退出码: %1)").arg(exitCode));
     }
+}
+
+void TerminalBridge::onCommandEntered(const QString& command)
+{
+    // 将用户输入的命令写入 BashProcess
+    BashProcess::instance().writeCommand(command);
 }
 
 QString TerminalBridge::formatTimestamp() const
