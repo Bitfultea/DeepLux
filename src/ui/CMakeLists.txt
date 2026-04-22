@@ -7,8 +7,10 @@ set(UI_SOURCES
     widgets/HImageWidget.cpp
     widgets/FlowCanvas.cpp
     widgets/PropertyPanel.cpp
+    widgets/TerminalWidget.cpp
     widgets/ToolBox.cpp
     widgets/ViewportWidget.cpp
+    bridge/TerminalBridge.cpp
     display/DisplayManager.cpp
     display/IViewportContent.cpp
     display/Viewport2DContent.cpp
@@ -39,8 +41,10 @@ set(UI_HEADERS
     widgets/HImageWidget.h
     widgets/FlowCanvas.h
     widgets/PropertyPanel.h
+    widgets/TerminalWidget.h
     widgets/ToolBox.h
     widgets/ViewportWidget.h
+    bridge/TerminalBridge.h
     display/DisplayManager.h
     display/IViewportContent.h
     display/Viewport2DContent.h

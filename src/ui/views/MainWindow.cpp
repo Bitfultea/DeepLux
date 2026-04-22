@@ -4,6 +4,8 @@
 #include "../display/DisplayManager.h"
 #include "../widgets/FlowCanvas.h"
 #include "../widgets/PropertyPanel.h"
+#include "../widgets/TerminalWidget.h"
+#include "../bridge/TerminalBridge.h"
 #include "CameraSetView.h"
 #include "CommunicationSetView.h"
 #include "GlobalVarView.h"
@@ -717,6 +719,13 @@ void MainWindow::setupMainLayout() {
     m_logDock->setObjectName("LogDock");
     m_logDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
 
+    // 创建 Tab 容器（日志 + 终端）
+    m_logTerminalTabs = new QTabWidget();
+    m_logTerminalTabs->setObjectName("LogTerminalTabs");
+    m_logTerminalTabs->setMovable(false);
+    m_logTerminalTabs->setDocumentMode(true);
+
+    // ===== Tab 1: 日志面板 =====
     QWidget* logWidget = new QWidget();
     QVBoxLayout* logLayout = new QVBoxLayout(logWidget);
     logLayout->setContentsMargins(0, 0, 0, 0);
@@ -770,7 +779,14 @@ void MainWindow::setupMainLayout() {
 
     // 连接日志信号到表格
     connect(&Logger::instance(), &Logger::logAdded, this, &MainWindow::onLogAdded);
-    m_logDock->setWidget(logWidget);
+    m_logTerminalTabs->addTab(logWidget, tr("📄 日志"));
+
+    // ===== Tab 2: 终端 =====
+    m_terminalWidget = new TerminalWidget();
+    TerminalBridge::instance().initialize(m_terminalWidget);
+    m_logTerminalTabs->addTab(m_terminalWidget, tr("🖥️ 终端"));
+
+    m_logDock->setWidget(m_logTerminalTabs);
     m_logDock->setMinimumHeight(250);
 
     rightSplitter->addWidget(m_logDock);
@@ -1449,8 +1465,10 @@ void MainWindow::displayImage(const ImageData& image, const QString& label) {
 void MainWindow::onNewSolution() {
     qDebug() << "onNewSolution called";
     Logger::instance().info(tr("新建方案"), "System");
+    TerminalBridge::instance().onGuiAction("create-project", "new_solution");
     Project* proj = ProjectManager::instance().newProject();
     if (proj) {
+        TerminalBridge::instance().onGuiAction("create-project-done", proj->name());
         if (m_projectLabel) {
             m_projectLabel->setText(tr("当前工程：%1").arg(proj->name()));
         }
@@ -1481,6 +1499,7 @@ void MainWindow::onSolutionList() {
 void MainWindow::onOpenProject() {
     QString filePath = QFileDialog::getOpenFileName(this, tr("打开工程"), QString(), tr("工程文件 (*.dproj)"));
     if (!filePath.isEmpty()) {
+        TerminalBridge::instance().onGuiAction("open-project", filePath);
         if (ProjectManager::instance().openProject(filePath)) {
             if (m_projectLabel) {
                 m_projectLabel->setText(tr("当前工程：%1").arg(QFileInfo(filePath).fileName()));
@@ -1494,9 +1513,14 @@ void MainWindow::onSaveProject() {
         // 如果没有项目，弹出另存为对话框
         QString filePath = QFileDialog::getSaveFileName(this, tr("保存工程"), QString(), tr("工程文件 (*.dproj)"));
         if (!filePath.isEmpty()) {
+            TerminalBridge::instance().onGuiAction("save-project", filePath);
             ProjectManager::instance().saveAsProject(filePath);
         }
     } else {
+        Project* proj = ProjectManager::instance().currentProject();
+        if (proj) {
+            TerminalBridge::instance().onGuiAction("save-project", proj->filePath());
+        }
         ProjectManager::instance().saveProject();
     }
 }

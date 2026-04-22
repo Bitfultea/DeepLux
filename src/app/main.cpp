@@ -3,7 +3,7 @@
 #include <QMessageBox>
 #include <QDebug>
 
-#include "CLIHandler.h"
+#include "core/common/CLIHandler.h"
 #include "ui/views/MainWindow.h"
 #include "core/platform/Platform.h"
 #include "core/platform/PathUtils.h"

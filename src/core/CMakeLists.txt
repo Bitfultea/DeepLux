@@ -23,6 +23,7 @@ set(CORE_SOURCES
     common/VarModel.cpp
     common/ExpressionEngine.cpp
     common/CancellationToken.cpp
+    common/CLIHandler.cpp
     engine/RunEngine.cpp
     device/CameraManager.cpp
     communication/CommunicationManager.cpp
@@ -46,6 +47,7 @@ set(CORE_HEADERS
     common/VarModel.h
     common/ExpressionEngine.h
     common/CancellationToken.h
+    common/CLIHandler.h
     model/Project.h
     manager/ProjectManager.h
     manager/ConfigManager.h

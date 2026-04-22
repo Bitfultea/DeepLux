@@ -2,8 +2,6 @@
 
 set(APP_SOURCES
     main.cpp
-    CLIHandler.h
-    CLIHandler.cpp
 )
 
 add_executable(DeepLux ${APP_SOURCES})

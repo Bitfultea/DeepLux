@@ -17,6 +17,7 @@
 #include <QSet>
 #include <QToolButton>
 #include <QComboBox>
+#include <QTabWidget>
 
 #include "core/common/Logger.h"
 #include "core/model/ImageData.h"
@@ -25,6 +26,7 @@ namespace DeepLux {
 class PropertyPanel;
 class FlowCanvas;
 class DisplayManager;
+class TerminalWidget;
 
 class IModule;
 
@@ -146,6 +148,10 @@ protected:
     QTableWidget* m_logTable = nullptr;
     QComboBox* m_logFilterCombo = nullptr;
     int m_logFilterLevel = 0;  // 0=全部, 1=Debug, 2=Info, 3=Warning, 4=Error
+
+    // 终端面板（Tab 方案）
+    QTabWidget* m_logTerminalTabs = nullptr;
+    TerminalWidget* m_terminalWidget = nullptr;
 
     // 状态栏
     QLabel* m_userLabel = nullptr;
