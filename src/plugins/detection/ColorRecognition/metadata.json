@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.colorrecognition",
+    "name": "ColorRecognition",
+    "category": "detection",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "识别图像中的指定颜色区域"
+}

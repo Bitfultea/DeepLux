@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.tableoutput",
+    "name": "TableOutPut",
+    "category": "system",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "以表格形式输出数据"
+}

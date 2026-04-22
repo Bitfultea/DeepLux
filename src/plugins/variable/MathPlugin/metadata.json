@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.math",
+    "name": "数学运算",
+    "category": "variable",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "基本数学运算"
+}

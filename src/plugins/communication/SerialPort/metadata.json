@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.serialport",
+    "name": "串口通信",
+    "category": "communication",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "串口数据读写通信"
+}

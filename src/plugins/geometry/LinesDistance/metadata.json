@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.linesdistance",
+    "name": "LinesDistance",
+    "category": "geometry",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "计算两条直线之间的距离"
+}

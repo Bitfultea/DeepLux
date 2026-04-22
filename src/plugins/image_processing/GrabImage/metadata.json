@@ -1,0 +1,12 @@
+{
+    "id": "com.deeplux.plugin.grabimage",
+    "name": "GrabImage",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "Grab image from camera or file",
+    "category": "image_processing",
+    "icon": "grabimage.png",
+    "depends": [],
+    "platforms": ["windows", "linux"],
+    "keywords": ["camera", "grab", "image", "acquire"]
+}

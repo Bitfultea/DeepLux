@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.queueout",
+    "name": "队列输出",
+    "category": "logic",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "从队列取出数据"
+}

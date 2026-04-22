@@ -1,0 +1,12 @@
+{
+    "id": "com.deeplux.plugin.saveimage",
+    "name": "SaveImage",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "Save image to file",
+    "category": "image_processing",
+    "icon": "saveimage.png",
+    "depends": [],
+    "platforms": ["windows", "linux"],
+    "keywords": ["save", "image", "file", "export"]
+}

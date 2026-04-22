@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.condition",
+    "name": "条件判断",
+    "category": "logic",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "根据条件判断执行分支"
+}

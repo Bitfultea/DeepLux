@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.jigsawsolver",
+    "name": "JigsawPuzzle",
+    "category": "image_processing",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "将碎片图像拼接成完整图像"
+}

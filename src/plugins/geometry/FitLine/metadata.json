@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.fitline",
+    "name": "FitLine",
+    "category": "geometry",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "对输入点集进行直线拟合"
+}

@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.datacheck",
+    "name": "DataCheck",
+    "category": "system",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "校验数据格式和范围"
+}

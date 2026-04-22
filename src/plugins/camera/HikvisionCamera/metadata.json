@@ -1,0 +1,23 @@
+{
+    "id": "com.deeplux.camera.hikvision",
+    "name": "Hikvision Camera",
+    "description": "Hikvision GigE/USB3 camera support using MVS SDK",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "category": "camera",
+    "platform": "linux",
+    "interfaces": [
+        "ICameraPlugin",
+        "ICamera"
+    ],
+    "dependencies": {},
+    "capabilities": {
+        "softwareTrigger": true,
+        "hardwareTrigger": true,
+        "continuousMode": true,
+        "exposureControl": true,
+        "gainControl": true,
+        "frameRateControl": true,
+        "roiControl": true
+    }
+}

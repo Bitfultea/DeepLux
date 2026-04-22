@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.findcircle",
+    "name": "FindCircle",
+    "category": "detection",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "使用Hough变换检测图像中的圆"
+}

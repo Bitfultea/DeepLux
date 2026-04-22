@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.savedata",
+    "name": "SaveData",
+    "category": "system",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "将数据保存到文件"
+}

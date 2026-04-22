@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.distancepl",
+    "name": "DistancePL",
+    "category": "geometry",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "计算点到直线的距离"
+}

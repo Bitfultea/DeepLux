@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeepLux Vision - AI + CLI 赋能机器视觉</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: #ffffff;
+            color: #1f2937;
+            width: 960px;
+            height: 720px;
+            overflow: hidden;
+        }
+
+        .page {
+            display: grid;
+            grid-template-columns: 200px 1fr 200px;
+            grid-template-rows: 80px 1fr 60px;
+            height: 100%;
+            padding: 20px 24px 16px;
+            gap: 0;
+        }
+
+        /* === Header === */
+        .header {
+            grid-column: 1 / -1;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .logo {
+            width: 44px;
+            height: 44px;
+            background: linear-gradient(135deg, #00d4aa, #0ea5e9);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            color: white;
+            font-size: 1.125rem;
+        }
+
+        .header-text h1 {
+            font-size: 1.375rem;
+            font-weight: 700;
+            color: #111827;
+            letter-spacing: -0.01em;
+        }
+
+        .header-text p {
+            font-size: 0.8125rem;
+            color: #9ca3af;
+        }
+
+        /* === Left Column: Pain Points === */
+        .left-col {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding-right: 16px;
+            border-right: 1px solid #e5e7eb;
+        }
+
+        .col-label {
+            font-size: 0.6875rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #9ca3af;
+            margin-bottom: 4px;
+        }
+
+        .pain-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            background: #fef2f2;
+            border-radius: 8px;
+            font-size: 0.8125rem;
+            color: #dc2626;
+            font-weight: 500;
+            border-left: 3px solid #fca5a5;
+        }
+
+        .pain-item::before { content: '×'; font-weight: 700; flex-shrink: 0; }
+
+        /* === Center: Core Flow === */
+        .center {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 0 24px;
+        }
+
+        .value-prop {
+            text-align: center;
+            margin-bottom: 16px;
+        }
+
+        .value-prop .highlight {
+            font-size: 1rem;
+            color: #111827;
+            font-weight: 600;
+        }
+
+        .value-prop .sub {
+            font-size: 0.75rem;
+            color: #9ca3af;
+            margin-top: 2px;
+        }
+
+        /* Main Flow Diagram */
+        .flow-diagram {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 16px 20px;
+            background: linear-gradient(135deg, #f8fafc, #f1f5f9);
+            border-radius: 16px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .flow-node {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            padding: 10px 14px;
+            background: white;
+            border-radius: 10px;
+            border: 1px solid #e2e8f0;
+            min-width: 72px;
+            transition: all 0.2s;
+        }
+
+        .flow-node:hover {
+            border-color: #00d4aa;
+            box-shadow: 0 2px 8px rgba(0,212,170,0.15);
+        }
+
+        .flow-node.ai {
+            background: linear-gradient(135deg, #f5f3ff, #ede9fe);
+            border-color: #c4b5fd;
+        }
+
+        .flow-node-icon {
+            font-size: 1.375rem;
+        }
+
+        .flow-node-title {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #374151;
+        }
+
+        .flow-node-desc {
+            font-size: 0.625rem;
+            color: #9ca3af;
+        }
+
+        .flow-arrow {
+            font-size: 1rem;
+            color: #cbd5e1;
+        }
+
+        /* === Right Column: Solution === */
+        .right-col {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding-left: 16px;
+            border-left: 1px solid #e5e7eb;
+        }
+
+        .solution-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            background: #f0fdf4;
+            border-radius: 8px;
+            font-size: 0.8125rem;
+            color: #16a34a;
+            font-weight: 500;
+            border-left: 3px solid #86efac;
+        }
+
+        .solution-item::before { content: '✓'; font-weight: 700; flex-shrink: 0; }
+
+        /* === Bottom: CLI Demo === */
+        .bottom {
+            grid-column: 1 / -1;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding-top: 12px;
+            border-top: 1px solid #f1f5f9;
+        }
+
+        .cli-label {
+            font-size: 0.6875rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #9ca3af;
+            flex-shrink: 0;
+        }
+
+        .cli-demo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .cli-cmd {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.75rem;
+            color: #4b5563;
+            padding: 4px 10px;
+            background: #f3f4f6;
+            border-radius: 4px;
+        }
+
+        .cli-cmd .kw { color: #7c3aed; font-weight: 600; }
+        .cli-cmd .str { color: #d97706; }
+        .cli-cmd .arg { color: #0891b2; }
+
+        .cli-arrow { color: #d1d5db; }
+
+        .cli-result {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: linear-gradient(135deg, #00d4aa, #0ea5e9);
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: white;
+        }
+
+        /* === Center Stats === */
+        .stats {
+            display: flex;
+            justify-content: center;
+            gap: 32px;
+            margin-top: 16px;
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #00d4aa, #0ea5e9);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .stat-label {
+            font-size: 0.6875rem;
+            color: #9ca3af;
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <!-- Header -->
+        <div class="header">
+            <div class="logo">DL</div>
+            <div class="header-text">
+                <h1>AI + CLI 赋能机器视觉开发</h1>
+                <p>用自然语言驱动视觉算法开发</p>
+            </div>
+        </div>
+
+        <!-- Left: Pain Points -->
+        <div class="left-col">
+            <div class="col-label">行业痛点</div>
+            <div class="pain-item">GUI 操作繁琐</div>
+            <div class="pain-item">学习成本高</div>
+            <div class="pain-item">协作困难</div>
+            <div class="pain-item">自动化受限</div>
+        </div>
+
+        <!-- Center: Core Flow + Stats -->
+        <div class="center">
+            <div class="value-prop">
+                <div class="highlight">一句话 = 一个可运行的检测系统</div>
+                <div class="sub">自然语言 → AI 规划 → CLI 执行 → 运行验证</div>
+            </div>
+
+            <div class="flow-diagram">
+                <div class="flow-node">
+                    <div class="flow-node-icon">💬</div>
+                    <div class="flow-node-title">描述需求</div>
+                    <div class="flow-node-desc">自然语言</div>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-node ai">
+                    <div class="flow-node-icon">🤖</div>
+                    <div class="flow-node-title">AI 规划</div>
+                    <div class="flow-node-desc">自动流程</div>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-node">
+                    <div class="flow-node-icon">⚡</div>
+                    <div class="flow-node-title">CLI 生成</div>
+                    <div class="flow-node-desc">一键创建</div>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-node">
+                    <div class="flow-node-icon">🎯</div>
+                    <div class="flow-node-title">运行验证</div>
+                    <div class="flow-node-desc">快速迭代</div>
+                </div>
+            </div>
+
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-value">80%</div>
+                    <div class="stat-label">效率提升</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">5x</div>
+                    <div class="stat-label">周期缩短</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">31+</div>
+                    <div class="stat-label">算法模块</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right: Solutions -->
+        <div class="right-col">
+            <div class="col-label">AI + CLI</div>
+            <div class="solution-item">自然语言输入</div>
+            <div class="solution-item">AI 自动规划</div>
+            <div class="solution-item">CLI 一键生成</div>
+            <div class="solution-item">一键运行验证</div>
+        </div>
+
+        <!-- Bottom: CLI Demo -->
+        <div class="bottom">
+            <div class="cli-label">CLI 示例</div>
+            <div class="cli-demo">
+                <span class="cli-cmd"><span class="kw">create-project</span> CircleDetect</span>
+                <span class="cli-arrow">→</span>
+                <span class="cli-cmd"><span class="kw">add-module</span> <span class="str">GrabImage</span> <span class="arg">--name</span> <span class="str">"采集"</span></span>
+                <span class="cli-arrow">→</span>
+                <span class="cli-cmd"><span class="kw">add-module</span> <span class="str">FindCircle</span></span>
+                <span class="cli-arrow">→</span>
+                <span class="cli-cmd"><span class="kw">run</span></span>
+            </div>
+            <div class="cli-result">
+                <span>效率提升 10x</span>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

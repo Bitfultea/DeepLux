@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.plcwrite",
+    "name": "PLC写入",
+    "category": "communication",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "通过Modbus TCP写入PLC保持寄存器"
+}

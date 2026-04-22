@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.jierhandefectsdet",
+    "name": "JiErHanDefectsDet",
+    "category": "detection",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "剑二韩焊接缺陷检测"
+}

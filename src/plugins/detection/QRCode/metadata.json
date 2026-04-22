@@ -1,0 +1,1 @@
+{"id": "com.deeplux.plugin.qrcode", "name": "QRCode", "version": "1.0.0", "author": "DeepLux Team", "description": "Detect QR codes and barcodes", "category": "detection", "platforms": ["windows", "linux"]}

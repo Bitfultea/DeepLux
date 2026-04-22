@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.showimage",
+    "name": "ShowImage",
+    "category": "image_processing",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "在窗口显示输入图像"
+}

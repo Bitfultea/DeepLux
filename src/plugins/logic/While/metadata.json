@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.while",
+    "name": "条件循环",
+    "category": "logic",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "当条件满足时循环执行"
+}

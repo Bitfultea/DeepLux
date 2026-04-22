@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.loop",
+    "name": "循环",
+    "category": "logic",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "循环执行指定次数"
+}

@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.pointsurfacedistance",
+    "name": "PointSurfaceDistance",
+    "category": "geometry",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "计算点到平面的距离"
+}

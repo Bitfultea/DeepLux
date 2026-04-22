@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.plcread",
+    "name": "PLC读取",
+    "category": "communication",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "通过Modbus TCP读取PLC保持寄存器"
+}

@@ -1,0 +1,6 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/icons">
+        <!-- 预留未来使用外部图标文件 -->
+    </qresource>
+</RCC>

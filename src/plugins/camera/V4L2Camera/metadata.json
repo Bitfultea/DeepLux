@@ -1,0 +1,22 @@
+{
+    "id": "com.deeplux.camera.v4l2",
+    "name": "Video4Linux2 Camera",
+    "description": "Linux V4L2 camera support for standard video devices",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "category": "camera",
+    "platform": "linux",
+    "interfaces": [
+        "ICameraPlugin",
+        "ICamera"
+    ],
+    "dependencies": {},
+    "capabilities": {
+        "softwareTrigger": true,
+        "continuousMode": true,
+        "exposureControl": true,
+        "gainControl": true,
+        "frameRateControl": true,
+        "roiControl": true
+    }
+}

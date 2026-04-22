@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.splitstring",
+    "name": "分割字符串",
+    "category": "variable",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "按分隔符分割字符串为多个部分"
+}

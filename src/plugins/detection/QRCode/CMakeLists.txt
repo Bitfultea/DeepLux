@@ -1,0 +1,13 @@
+set(PLUGIN_SOURCES QRCodePlugin.cpp)
+set(PLUGIN_HEADERS QRCodePlugin.h)
+if(Qt6_FOUND)
+    qt6_add_plugin(QRCodePlugin SHARED SOURCES ${PLUGIN_SOURCES} ${PLUGIN_HEADERS})
+else()
+    add_library(QRCodePlugin SHARED ${PLUGIN_SOURCES} ${PLUGIN_HEADERS})
+endif()
+target_link_libraries(QRCodePlugin PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui Qt${QT_VERSION_MAJOR}::Widgets)
+
+if(OpenCV_FOUND)
+    target_link_libraries(QRCodePlugin PRIVATE ${OpenCV_LIBS})
+    target_include_directories(QRCodePlugin PRIVATE ${OpenCV_INCLUDE_DIRS})
+endif()

@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.varset",
+    "name": "变量赋值",
+    "category": "variable",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "设置已存在变量的值，支持表达式或引用其他变量"
+}

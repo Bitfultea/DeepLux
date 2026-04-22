@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.displaydata",
+    "name": "DisplayData",
+    "category": "image_processing",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "在图像上显示数据信息"
+}

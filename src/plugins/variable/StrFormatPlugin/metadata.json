@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.strformat",
+    "name": "字符串格式化",
+    "category": "variable",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "格式化字符串并输出到变量"
+}

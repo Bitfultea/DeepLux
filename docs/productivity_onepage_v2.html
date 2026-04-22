@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeepLux Vision - AI + CLI 赋能机器视觉开发</title>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #0a1628;
+            color: #e8f4f8;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Top accent line */
+        .top-line {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #00d4aa, #0ea5e9, #8b5cf6, #00d4aa);
+            background-size: 200% 100%;
+            animation: gradientMove 3s linear infinite;
+        }
+
+        @keyframes gradientMove {
+            0% { background-position: 0% 50%; }
+            100% { background-position: 200% 50%; }
+        }
+
+        /* Container */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 60px 60px;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            padding: 60px 0 50px;
+            position: relative;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(135deg, #00d4aa, #0ea5e9);
+            border-radius: 50%;
+            opacity: 0.2;
+            filter: blur(30px);
+        }
+
+        .logo {
+            display: inline-flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 20px;
+        }
+
+        .logo-icon {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, #00d4aa, #0ea5e9);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+            font-weight: 800;
+            color: #0a1628;
+        }
+
+        .logo-text {
+            font-size: 14px;
+            font-weight: 600;
+            letter-spacing: 2px;
+            color: #00d4aa;
+        }
+
+        h1 {
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 16px;
+            background: linear-gradient(135deg, #ffffff 0%, #94a3b8 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            font-size: 1.25rem;
+            color: #64748b;
+            font-weight: 300;
+        }
+
+        /* Pain Points Section */
+        .section {
+            margin-bottom: 60px;
+        }
+
+        .section-title {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 30px;
+        }
+
+        .section-title::before {
+            content: '';
+            width: 4px;
+            height: 28px;
+            background: linear-gradient(180deg, #00d4aa, #0ea5e9);
+            border-radius: 2px;
+        }
+
+        .section-title h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: #ffffff;
+        }
+
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 16px;
+            padding: 28px 24px;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s;
+        }
+
+        .card:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(0, 212, 170, 0.3);
+            transform: translateY(-4px);
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, #00d4aa, transparent);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .card:hover::before {
+            opacity: 1;
+        }
+
+        .card-icon {
+            font-size: 2rem;
+            margin-bottom: 16px;
+        }
+
+        .card h3 {
+            font-size: 1.125rem;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #ffffff;
+        }
+
+        .card p {
+            font-size: 0.875rem;
+            color: #64748b;
+            line-height: 1.6;
+        }
+
+        .card.highlight {
+            background: linear-gradient(135deg, rgba(0, 212, 170, 0.1), rgba(14, 165, 233, 0.05));
+            border-color: rgba(0, 212, 170, 0.2);
+        }
+
+        .card.highlight .card-icon {
+            color: #00d4aa;
+        }
+
+        /* Solution Section */
+        .solution-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 24px;
+            margin-top: 30px;
+        }
+
+        .solution-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 16px;
+            padding: 32px;
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+            transition: all 0.3s;
+        }
+
+        .solution-card:hover {
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(0, 212, 170, 0.2);
+        }
+
+        .solution-icon {
+            width: 56px;
+            height: 56px;
+            background: linear-gradient(135deg, rgba(0, 212, 170, 0.2), rgba(14, 165, 233, 0.1));
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.75rem;
+            flex-shrink: 0;
+        }
+
+        .solution-content h3 {
+            font-size: 1.125rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #ffffff;
+        }
+
+        .solution-content h3 span {
+            color: #00d4aa;
+        }
+
+        .solution-content p {
+            font-size: 0.875rem;
+            color: #94a3b8;
+            line-height: 1.7;
+        }
+
+        /* Metrics */
+        .metrics-section {
+            background: linear-gradient(135deg, rgba(0, 212, 170, 0.05), rgba(14, 165, 233, 0.05));
+            border: 1px solid rgba(0, 212, 170, 0.15);
+            border-radius: 20px;
+            padding: 40px;
+            margin-bottom: 60px;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 30px;
+            text-align: center;
+        }
+
+        .metric {
+            position: relative;
+        }
+
+        .metric::after {
+            content: '';
+            position: absolute;
+            right: -15px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 1px;
+            height: 50px;
+            background: linear-gradient(180deg, transparent, rgba(0, 212, 170, 0.3), transparent);
+        }
+
+        .metric:last-child::after {
+            display: none;
+        }
+
+        .metric-value {
+            font-size: 3rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #00d4aa, #0ea5e9);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 8px;
+        }
+
+        .metric-label {
+            font-size: 0.9375rem;
+            color: #94a3b8;
+        }
+
+        .metric-note {
+            font-size: 0.75rem;
+            color: #475569;
+            margin-top: 4px;
+        }
+
+        /* Workflow */
+        .workflow-section {
+            text-align: center;
+            margin-bottom: 60px;
+        }
+
+        .workflow-title {
+            font-size: 1.25rem;
+            color: #64748b;
+            margin-bottom: 30px;
+        }
+
+        .workflow-steps {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .workflow-step {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            padding: 16px 24px;
+            min-width: 140px;
+        }
+
+        .workflow-step.ai {
+            background: linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(0, 212, 170, 0.1));
+            border-color: rgba(139, 92, 246, 0.3);
+        }
+
+        .step-icon {
+            font-size: 1.5rem;
+            margin-bottom: 6px;
+        }
+
+        .step-label {
+            font-weight: 600;
+            font-size: 0.9375rem;
+            margin-bottom: 4px;
+        }
+
+        .step-desc {
+            font-size: 0.75rem;
+            color: #64748b;
+        }
+
+        .workflow-arrow {
+            font-size: 1.5rem;
+            color: #00d4aa;
+        }
+
+        /* CLI Demo */
+        .cli-demo {
+            background: #0d1117;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            overflow: hidden;
+            margin-bottom: 60px;
+        }
+
+        .cli-header {
+            background: rgba(255, 255, 255, 0.03);
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .cli-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .cli-dot.red { background: #ff5f57; }
+        .cli-dot.yellow { background: #ffbd2e; }
+        .cli-dot.green { background: #27c93f; }
+
+        .cli-body {
+            padding: 24px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 0.875rem;
+            line-height: 1.8;
+        }
+
+        .cli-line {
+            display: flex;
+            margin-bottom: 4px;
+        }
+
+        .cli-prompt {
+            color: #00d4aa;
+            margin-right: 10px;
+            user-select: none;
+        }
+
+        .cli-cmd {
+            color: #e8f4f8;
+        }
+
+        .cli-out {
+            color: #64748b;
+            padding-left: 24px;
+        }
+
+        .cli-out.success {
+            color: #00d4aa;
+        }
+
+        .cli-out.info {
+            color: #0ea5e9;
+        }
+
+        .cli-highlight {
+            color: #8b5cf6;
+        }
+
+        /* CTA */
+        .cta-section {
+            text-align: center;
+            padding: 40px;
+            background: linear-gradient(135deg, rgba(0, 212, 170, 0.08), rgba(14, 165, 233, 0.05));
+            border: 1px solid rgba(0, 212, 170, 0.15);
+            border-radius: 16px;
+        }
+
+        .cta-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .cta-subtitle {
+            color: #64748b;
+            margin-bottom: 24px;
+        }
+
+        .cta-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            background: linear-gradient(135deg, #00d4aa, #0ea5e9);
+            color: #0a1628;
+            font-weight: 600;
+            padding: 14px 32px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-size: 1rem;
+            transition: all 0.3s;
+            box-shadow: 0 4px 20px rgba(0, 212, 170, 0.3);
+        }
+
+        .cta-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 30px rgba(0, 212, 170, 0.4);
+        }
+
+        .cta-cmd {
+            margin-top: 20px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.875rem;
+            color: #475569;
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding-top: 40px;
+            margin-top: 40px;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            color: #475569;
+            font-size: 0.8125rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .card-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .metrics-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .metric::after {
+                display: none;
+            }
+        }
+
+        @media (max-width: 640px) {
+            .container {
+                padding: 30px 24px;
+            }
+            h1 {
+                font-size: 2rem;
+            }
+            .card-grid {
+                grid-template-columns: 1fr;
+            }
+            .solution-grid {
+                grid-template-columns: 1fr;
+            }
+            .workflow-steps {
+                flex-direction: column;
+            }
+            .workflow-arrow {
+                transform: rotate(90deg);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="top-line"></div>
+
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div class="logo">
+                <div class="logo-icon">DL</div>
+                <span class="logo-text">DEEPLUX VISION</span>
+            </div>
+            <h1>AI + CLI 赋能机器视觉开发</h1>
+            <p class="subtitle">用自然语言驱动视觉算法开发，让创意快速落地</p>
+        </div>
+
+        <!-- Pain Points -->
+        <section class="section">
+            <div class="section-title">
+                <h2>行业痛点</h2>
+            </div>
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-icon">⏱️</div>
+                    <h3>效率瓶颈</h3>
+                    <p>传统 GUI 操作繁琐，流程搭建耗时长，重复配置工作量大</p>
+                </div>
+                <div class="card">
+                    <div class="card-icon">🔧</div>
+                    <h3>学习成本高</h3>
+                    <p>界面操作复杂，需要专业培训，人员培养周期长</p>
+                </div>
+                <div class="card">
+                    <div class="card-icon">🤝</div>
+                    <h3>协作困难</h3>
+                    <p>流程配置难以版本化管理，团队协作缺乏有效手段</p>
+                </div>
+                <div class="card highlight">
+                    <div class="card-icon">🚀</div>
+                    <h3>自动化受限</h3>
+                    <p>无法与 CI/CD 集成，智能化升级改造困难</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Core Capabilities -->
+        <section class="section">
+            <div class="section-title">
+                <h2>核心能力</h2>
+            </div>
+            <div class="solution-grid">
+                <div class="solution-card">
+                    <div class="solution-icon">💬</div>
+                    <div class="solution-content">
+                        <h3><span>自然语言</span> 驱动开发</h3>
+                        <p>通过自然语言描述需求，AI 自动理解并生成对应的视觉处理流程。告别繁琐的界面操作，用对话方式完成复杂任务。</p>
+                    </div>
+                </div>
+                <div class="solution-card">
+                    <div class="solution-icon">⚡</div>
+                    <div class="solution-content">
+                        <h3><span>CLI 接口</span> 赋能自动化</h3>
+                        <p>完整的命令行工具链，支持工程创建、模块管理、流程配置。轻松集成到 CI/CD 流水线，实现无人值守运行。</p>
+                    </div>
+                </div>
+                <div class="solution-card">
+                    <div class="solution-icon">📦</div>
+                    <div class="solution-content">
+                        <h3><span>31+ 算法</span> 即插即用</h3>
+                        <p>丰富的视觉算法插件库，包括目标检测、缺陷识别、几何测量等。模块化设计，按需组合，灵活扩展。</p>
+                    </div>
+                </div>
+                <div class="solution-card">
+                    <div class="solution-icon">🔄</div>
+                    <div class="solution-content">
+                        <h3><span>版本管理</span> 高效协作</h3>
+                        <p>基于 JSON 的工程文件格式，可纳入 Git 版本控制。团队成员可轻松分享、审查和协作开发视觉流程。</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Metrics -->
+        <section class="metrics-section">
+            <div class="metrics-grid">
+                <div class="metric">
+                    <div class="metric-value">80%</div>
+                    <div class="metric-label">操作效率提升</div>
+                    <div class="metric-note">CLI + AI 自动生成</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value">5x</div>
+                    <div class="metric-label">开发周期缩短</div>
+                    <div class="metric-note">从小时级到分钟级</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value">24/7</div>
+                    <div class="metric-label">自动化运行</div>
+                    <div class="metric-note">CI/CD 无缝集成</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value">0</div>
+                    <div class="metric-label">外部依赖</div>
+                    <div class="metric-note">纯原生开发</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Workflow -->
+        <section class="workflow-section">
+            <div class="workflow-title">一句话 = 一个可运行的视觉检测系统</div>
+            <div class="workflow-steps">
+                <div class="workflow-step">
+                    <div class="step-icon">💬</div>
+                    <div class="step-label">描述需求</div>
+                    <div class="step-desc">"检测圆的直径"</div>
+                </div>
+                <div class="workflow-arrow">→</div>
+                <div class="workflow-step ai">
+                    <div class="step-icon">🤖</div>
+                    <div class="step-label">AI 规划流程</div>
+                    <div class="step-desc">Grab → Find → Output</div>
+                </div>
+                <div class="workflow-arrow">→</div>
+                <div class="workflow-step">
+                    <div class="step-icon">⚡</div>
+                    <div class="step-label">CLI 执行</div>
+                    <div class="step-desc">一条命令创建工程</div>
+                </div>
+                <div class="workflow-arrow">→</div>
+                <div class="workflow-step">
+                    <div class="step-icon">🎯</div>
+                    <div class="step-label">一键运行</div>
+                    <div class="step-desc">验证结果</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- CLI Demo -->
+        <div class="cli-demo">
+            <div class="cli-header">
+                <div class="cli-dot red"></div>
+                <div class="cli-dot yellow"></div>
+                <div class="cli-dot green"></div>
+            </div>
+            <div class="cli-body">
+                <div class="cli-line">
+                    <span class="cli-prompt">$</span>
+                    <span class="cli-cmd">./DeepLux create-project CircleDetect</span>
+                </div>
+                <div class="cli-out success">Created: CircleDetect.dproj</div>
+                <br>
+                <div class="cli-line">
+                    <span class="cli-prompt">$</span>
+                    <span class="cli-cmd">./DeepLux add-module CircleDetect.dproj <span class="cli-highlight">GrabImage</span> --name "采集" --pos 50,100</span>
+                </div>
+                <div class="cli-out success">Module ID: 60b1d307...</div>
+                <br>
+                <div class="cli-line">
+                    <span class="cli-prompt">$</span>
+                    <span class="cli-cmd">./DeepLux add-module CircleDetect.dproj <span class="cli-highlight">FindCircle</span> --name "检测" --pos 250,100</span>
+                </div>
+                <div class="cli-line">
+                    <span class="cli-prompt">$</span>
+                    <span class="cli-cmd">./DeepLux add-module CircleDetect.dproj <span class="cli-highlight">ShowImage</span> --name "显示" --pos 450,100</span>
+                </div>
+                <br>
+                <div class="cli-line">
+                    <span class="cli-prompt">$</span>
+                    <span class="cli-cmd">./DeepLux connect CircleDetect.dproj &lt;id1&gt; &lt;id2&gt;</span>
+                </div>
+                <div class="cli-line">
+                    <span class="cli-prompt">$</span>
+                    <span class="cli-cmd">./DeepLux connect CircleDetect.dproj &lt;id2&gt; &lt;id3&gt;</span>
+                </div>
+                <br>
+                <div class="cli-line">
+                    <span class="cli-prompt">$</span>
+                    <span class="cli-cmd">./DeepLux list-modules CircleDetect.dproj</span>
+                </div>
+                <div class="cli-out info">=== Modules (3) ===</div>
+                <div class="cli-out">[采集] GrabImage → [检测] FindCircle → [显示] ShowImage</div>
+                <br>
+                <div class="cli-line">
+                    <span class="cli-prompt">$</span>
+                    <span class="cli-cmd">./DeepLux run CircleDetect.dproj</span>
+                </div>
+                <div class="cli-out success">✓ 流程执行完成</div>
+            </div>
+        </div>
+
+        <!-- CTA -->
+        <div class="cta-section">
+            <div class="cta-title">立即开始你的 10x 效率之旅</div>
+            <div class="cta-subtitle">支持 AI 协作的 CLI 接口，让机器视觉开发如虎添翼</div>
+            <a href="#" class="cta-btn">
+                <span>🚀</span>
+                立即体验
+            </a>
+            <div class="cta-cmd">./DeepLux --cli info</div>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            DeepLux Vision CLI | 31+ 视觉算法模块 | AI Native Design
+        </div>
+    </div>
+</body>
+</html>

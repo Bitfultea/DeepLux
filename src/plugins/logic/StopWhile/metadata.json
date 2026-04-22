@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.stopwhile",
+    "name": "停止循环",
+    "category": "logic",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "放在循环内用于提前退出"
+}

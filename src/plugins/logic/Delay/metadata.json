@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.delay",
+    "name": "延时",
+    "category": "logic",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "延时指定时间"
+}

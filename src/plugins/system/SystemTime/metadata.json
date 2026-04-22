@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.systemtime",
+    "name": "SystemTime",
+    "category": "system",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "获取系统当前时间"
+}

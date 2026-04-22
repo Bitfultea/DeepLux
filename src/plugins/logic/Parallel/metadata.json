@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.parallel",
+    "name": "并行执行",
+    "category": "logic",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "并行执行多个分支"
+}

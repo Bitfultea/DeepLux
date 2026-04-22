@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.matching",
+    "name": "Matching",
+    "category": "detection",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "在图像中查找与模板匹配的区域"
+}

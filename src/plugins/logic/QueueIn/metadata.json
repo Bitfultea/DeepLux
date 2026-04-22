@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.queuein",
+    "name": "队列输入",
+    "category": "logic",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "将数据加入队列"
+}

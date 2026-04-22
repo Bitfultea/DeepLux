@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.freeformsurface",
+    "name": "FreeformSurface",
+    "category": "geometry",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "处理和分析自由曲面点云数据"
+}

@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeepLux Vision - AI + CLI 赋能机器视觉</title>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Noto Sans SC', sans-serif;
+            background: linear-gradient(135deg, #030712 0%, #0f172a 50%, #0a1628 100%);
+            color: #f8fafc;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Hero Section */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 60px 40px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle at 30% 40%, rgba(0, 212, 170, 0.08) 0%, transparent 40%),
+                        radial-gradient(circle at 70% 60%, rgba(14, 165, 233, 0.06) 0%, transparent 40%);
+            animation: pulse 8s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.5; transform: scale(1); }
+            50% { opacity: 1; transform: scale(1.05); }
+        }
+
+        .hero-content {
+            position: relative;
+            z-index: 1;
+            max-width: 900px;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(0, 212, 170, 0.1);
+            border: 1px solid rgba(0, 212, 170, 0.3);
+            border-radius: 50px;
+            padding: 8px 20px;
+            font-size: 0.875rem;
+            color: #00d4aa;
+            margin-bottom: 32px;
+        }
+
+        .badge-icon {
+            font-size: 1rem;
+        }
+
+        h1 {
+            font-size: 4.5rem;
+            font-weight: 800;
+            line-height: 1.1;
+            margin-bottom: 24px;
+            background: linear-gradient(135deg, #ffffff 0%, #00d4aa 50%, #0ea5e9 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero-subtitle {
+            font-size: 1.5rem;
+            color: #94a3b8;
+            font-weight: 300;
+            margin-bottom: 48px;
+            line-height: 1.6;
+        }
+
+        /* Key Visual - Central Diagram */
+        .central-diagram {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 24px;
+            margin: 60px 0;
+            flex-wrap: wrap;
+        }
+
+        .diagram-box {
+            background: rgba(255, 255, 255, 0.03);
+            border: 2px solid rgba(0, 212, 170, 0.2);
+            border-radius: 20px;
+            padding: 32px 40px;
+            text-align: center;
+            min-width: 180px;
+            transition: all 0.3s;
+        }
+
+        .diagram-box:hover {
+            border-color: #00d4aa;
+            background: rgba(0, 212, 170, 0.05);
+            transform: translateY(-8px);
+        }
+
+        .diagram-box.user {
+            border-color: rgba(139, 92, 246, 0.4);
+            background: rgba(139, 92, 246, 0.08);
+        }
+
+        .diagram-box.user:hover {
+            border-color: #8b5cf6;
+            background: rgba(139, 92, 246, 0.12);
+        }
+
+        .diagram-icon {
+            font-size: 3rem;
+            margin-bottom: 12px;
+        }
+
+        .diagram-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .diagram-desc {
+            font-size: 0.875rem;
+            color: #64748b;
+        }
+
+        .diagram-arrow {
+            font-size: 2.5rem;
+            color: #00d4aa;
+        }
+
+        /* Stats Banner */
+        .stats-banner {
+            display: flex;
+            justify-content: center;
+            gap: 60px;
+            padding: 40px;
+            background: linear-gradient(90deg, rgba(0, 212, 170, 0.05), rgba(14, 165, 233, 0.05), rgba(139, 92, 246, 0.05));
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-number {
+            font-size: 3.5rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #00d4aa, #0ea5e9);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .stat-label {
+            font-size: 1rem;
+            color: #94a3b8;
+            margin-top: 4px;
+        }
+
+        /* Pain Points - Visual Icons */
+        .pain-section {
+            padding: 100px 60px;
+            background: rgba(0, 0, 0, 0.3);
+        }
+
+        .section-header {
+            text-align: center;
+            margin-bottom: 60px;
+        }
+
+        .section-tag {
+            display: inline-block;
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #f87171;
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 0.875rem;
+            margin-bottom: 16px;
+        }
+
+        .section-title {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+
+        .section-subtitle {
+            font-size: 1.125rem;
+            color: #64748b;
+        }
+
+        .pain-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 24px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .pain-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 20px;
+            padding: 36px 28px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .pain-card::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #ef4444, #f97316);
+        }
+
+        .pain-icon {
+            font-size: 3.5rem;
+            margin-bottom: 20px;
+        }
+
+        .pain-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+
+        .pain-desc {
+            font-size: 0.9375rem;
+            color: #64748b;
+            line-height: 1.6;
+        }
+
+        /* Solution - Before/After */
+        .solution-section {
+            padding: 100px 60px;
+        }
+
+        .solution-grid {
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
+            gap: 40px;
+            max-width: 1100px;
+            margin: 0 auto;
+            align-items: center;
+        }
+
+        .solution-box {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 24px;
+            padding: 40px;
+        }
+
+        .solution-box.before {
+            border-color: rgba(239, 68, 68, 0.3);
+        }
+
+        .solution-box.after {
+            border-color: rgba(0, 212, 170, 0.3);
+            background: linear-gradient(135deg, rgba(0, 212, 170, 0.05), rgba(14, 165, 233, 0.03));
+        }
+
+        .solution-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 28px;
+        }
+
+        .solution-badge {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+        }
+
+        .before .solution-badge {
+            background: rgba(239, 68, 68, 0.2);
+        }
+
+        .after .solution-badge {
+            background: rgba(0, 212, 170, 0.2);
+        }
+
+        .solution-label {
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        .solution-list {
+            list-style: none;
+        }
+
+        .solution-list li {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 0;
+            font-size: 1rem;
+            color: #94a3b8;
+        }
+
+        .solution-list li::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .before .solution-list li::before {
+            background: #ef4444;
+        }
+
+        .after .solution-list li::before {
+            background: #00d4aa;
+        }
+
+        .vs-divider {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .vs-circle {
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(135deg, #00d4aa, #0ea5e9);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            font-weight: 800;
+            box-shadow: 0 0 40px rgba(0, 212, 170, 0.4);
+        }
+
+        .vs-text {
+            font-size: 0.875rem;
+            color: #64748b;
+        }
+
+        /* Workflow - Step by Step */
+        .workflow-section {
+            padding: 100px 60px;
+            background: rgba(0, 0, 0, 0.3);
+        }
+
+        .workflow-flow {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+            flex-wrap: wrap;
+        }
+
+        .flow-step {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            padding: 28px 32px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 2px solid rgba(255, 255, 255, 0.08);
+            border-radius: 20px;
+            min-width: 160px;
+            text-align: center;
+            position: relative;
+        }
+
+        .flow-step.ai-step {
+            border-color: rgba(139, 92, 246, 0.4);
+            background: linear-gradient(135deg, rgba(139, 92, 246, 0.08), rgba(0, 212, 170, 0.05));
+        }
+
+        .flow-step-number {
+            position: absolute;
+            top: -15px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 30px;
+            height: 30px;
+            background: linear-gradient(135deg, #00d4aa, #0ea5e9);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.875rem;
+            font-weight: 700;
+            color: #0a1628;
+        }
+
+        .ai-step .flow-step-number {
+            background: linear-gradient(135deg, #8b5cf6, #a78bfa);
+        }
+
+        .flow-icon {
+            font-size: 2.5rem;
+        }
+
+        .flow-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+        }
+
+        .flow-desc {
+            font-size: 0.8125rem;
+            color: #64748b;
+        }
+
+        .flow-arrow {
+            font-size: 2rem;
+            color: #00d4aa;
+        }
+
+        /* CLI Demo */
+        .cli-section {
+            padding: 100px 60px;
+        }
+
+        .cli-container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .cli-window {
+            background: #0d1117;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        }
+
+        .cli-titlebar {
+            background: rgba(255, 255, 255, 0.03);
+            padding: 14px 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .cli-dots {
+            display: flex;
+            gap: 6px;
+        }
+
+        .cli-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .cli-dot:nth-child(1) { background: #ff5f57; }
+        .cli-dot:nth-child(2) { background: #ffbd2e; }
+        .cli-dot:nth-child(3) { background: #27ca40; }
+
+        .cli-tab {
+            margin-left: 16px;
+            padding: 4px 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 4px;
+            font-size: 0.75rem;
+            color: #64748b;
+        }
+
+        .cli-content {
+            padding: 28px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 0.9375rem;
+            line-height: 2;
+        }
+
+        .cli-line {
+            display: flex;
+        }
+
+        .cli-prompt {
+            color: #00d4aa;
+            margin-right: 12px;
+            user-select: none;
+        }
+
+        .cli-cmd { color: #f8fafc; }
+        .cli-cmd .kw { color: #8b5cf6; }
+        .cli-cmd .str { color: #fbbf24; }
+        .cli-cmd .arg { color: #0ea5e9; }
+
+        .cli-output {
+            color: #6b7280;
+            padding-left: 24px;
+        }
+
+        .cli-output.ok { color: #00d4aa; }
+        .cli-output.info { color: #0ea5e9; }
+
+        /* CTA */
+        .cta-section {
+            padding: 100px 60px;
+            text-align: center;
+        }
+
+        .cta-box {
+            max-width: 700px;
+            margin: 0 auto;
+            padding: 60px;
+            background: linear-gradient(135deg, rgba(0, 212, 170, 0.1), rgba(14, 165, 233, 0.08));
+            border: 2px solid rgba(0, 212, 170, 0.2);
+            border-radius: 32px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .cta-box::before {
+            content: '';
+            position: absolute;
+            top: -100%;
+            left: -100%;
+            width: 300%;
+            height: 300%;
+            background: radial-gradient(circle, rgba(0, 212, 170, 0.1) 0%, transparent 50%);
+            animation: rotate 10s linear infinite;
+        }
+
+        @keyframes rotate {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .cta-title {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 16px;
+            position: relative;
+        }
+
+        .cta-subtitle {
+            font-size: 1.125rem;
+            color: #94a3b8;
+            margin-bottom: 32px;
+            position: relative;
+        }
+
+        .cta-cmd {
+            display: inline-block;
+            padding: 16px 32px;
+            background: linear-gradient(135deg, #00d4aa, #0ea5e9);
+            border-radius: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1rem;
+            color: #0a1628;
+            font-weight: 600;
+            box-shadow: 0 8px 30px rgba(0, 212, 170, 0.4);
+            position: relative;
+        }
+
+        /* Footer */
+        .footer {
+            padding: 40px 60px;
+            text-align: center;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            color: #475569;
+            font-size: 0.875rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .pain-grid { grid-template-columns: repeat(2, 1fr); }
+            .solution-grid { grid-template-columns: 1fr; }
+            .vs-divider { transform: rotate(90deg); margin: 20px 0; }
+        }
+
+        @media (max-width: 640px) {
+            h1 { font-size: 2.5rem; }
+            .pain-grid { grid-template-columns: 1fr; }
+            .central-diagram { flex-direction: column; }
+            .diagram-arrow { transform: rotate(90deg); }
+            .stats-banner { flex-wrap: wrap; gap: 30px; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Hero -->
+    <section class="hero">
+        <div class="hero-content">
+            <div class="badge">
+                <span class="badge-icon">🚀</span>
+                <span>AI Native Design</span>
+            </div>
+            <h1>AI + CLI<br>赋能机器视觉开发</h1>
+            <p class="hero-subtitle">用自然语言驱动视觉算法开发<br>让创意快速落地，让效率提升 10 倍</p>
+
+            <!-- Central Diagram -->
+            <div class="central-diagram">
+                <div class="diagram-box user">
+                    <div class="diagram-icon">👤</div>
+                    <div class="diagram-title">自然语言</div>
+                    <div class="diagram-desc">描述你的需求</div>
+                </div>
+                <div class="diagram-arrow">→</div>
+                <div class="diagram-box">
+                    <div class="diagram-icon">🤖</div>
+                    <div class="diagram-title">AI 理解</div>
+                    <div class="diagram-desc">规划处理流程</div>
+                </div>
+                <div class="diagram-arrow">→</div>
+                <div class="diagram-box">
+                    <div class="diagram-icon">⚡</div>
+                    <div class="diagram-title">CLI 执行</div>
+                    <div class="diagram-desc">一键生成工程</div>
+                </div>
+                <div class="diagram-arrow">→</div>
+                <div class="diagram-box">
+                    <div class="diagram-icon">🎯</div>
+                    <div class="diagram-title">运行验证</div>
+                    <div class="diagram-desc">快速看到结果</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Stats Banner -->
+    <div class="stats-banner">
+        <div class="stat-item">
+            <div class="stat-number">80%</div>
+            <div class="stat-label">操作效率提升</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-number">5x</div>
+            <div class="stat-label">开发周期缩短</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-number">24/7</div>
+            <div class="stat-label">自动化运行</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-number">31+</div>
+            <div class="stat-label">算法模块</div>
+        </div>
+    </div>
+
+    <!-- Pain Points -->
+    <section class="pain-section">
+        <div class="section-header">
+            <div class="section-tag">⚠️ 行业痛点</div>
+            <h2 class="section-title">传统方式面临的挑战</h2>
+            <p class="section-subtitle">GUI 操作繁琐、效率低、难以自动化</p>
+        </div>
+
+        <div class="pain-grid">
+            <div class="pain-card">
+                <div class="pain-icon">⏱️</div>
+                <div class="pain-title">效率瓶颈</div>
+                <div class="pain-desc">GUI 界面操作繁琐<br>流程搭建耗时长<br>重复配置工作量大</div>
+            </div>
+            <div class="pain-card">
+                <div class="pain-icon">📚</div>
+                <div class="pain-title">学习成本高</div>
+                <div class="pain-desc">界面操作复杂<br>需要专业培训<br>人员培养周期长</div>
+            </div>
+            <div class="pain-card">
+                <div class="pain-icon">🔀</div>
+                <div class="pain-title">协作困难</div>
+                <div class="pain-desc">配置难以版本化<br>团队协作效率低<br>流程分享不方便</div>
+            </div>
+            <div class="pain-card">
+                <div class="pain-icon">🤖</div>
+                <div class="pain-title">自动化受限</div>
+                <div class="pain-desc">无法集成 CI/CD<br>智能化升级困难<br>难以批量处理</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Solution - Before/After -->
+    <section class="solution-section">
+        <div class="section-header">
+            <div class="section-tag">💡 解决方案</div>
+            <h2 class="section-title">传统方式 VS AI + CLI</h2>
+        </div>
+
+        <div class="solution-grid">
+            <div class="solution-box before">
+                <div class="solution-header">
+                    <div class="solution-badge">😓</div>
+                    <div class="solution-label">传统 GUI 方式</div>
+                </div>
+                <ul class="solution-list">
+                    <li>手动点击配置每个模块</li>
+                    <li>逐个设置模块参数</li>
+                    <li>在画布上拖拽连接</li>
+                    <li>重复繁琐的界面操作</li>
+                    <li>人工测试和调试</li>
+                    <li>每次修改都需要手动</li>
+                </ul>
+            </div>
+
+            <div class="vs-divider">
+                <div class="vs-circle">VS</div>
+                <div class="vs-text">效率飞跃</div>
+            </div>
+
+            <div class="solution-box after">
+                <div class="solution-header">
+                    <div class="solution-badge">🚀</div>
+                    <div class="solution-label">AI + CLI 方式</div>
+                </div>
+                <ul class="solution-list">
+                    <li>自然语言描述需求</li>
+                    <li>AI 自动规划流程</li>
+                    <li>CLI 一键生成工程</li>
+                    <li>自动连接模块</li>
+                    <li>一键运行验证</li>
+                    <li>迭代优化只需一句话</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <!-- Workflow -->
+    <section class="workflow-section">
+        <div class="section-header">
+            <div class="section-tag">⚙️ 工作流程</div>
+            <h2 class="section-title">一句话 = 一个可运行的检测系统</h2>
+        </div>
+
+        <div class="workflow-flow">
+            <div class="flow-step">
+                <div class="flow-step-number">1</div>
+                <div class="flow-icon">💬</div>
+                <div class="flow-title">描述需求</div>
+                <div class="flow-desc">"检测圆的直径"</div>
+            </div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step ai-step">
+                <div class="flow-step-number">2</div>
+                <div class="flow-icon">🤖</div>
+                <div class="flow-title">AI 规划</div>
+                <div class="flow-desc">Grab → Find → Output</div>
+            </div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step">
+                <div class="flow-step-number">3</div>
+                <div class="flow-icon">⚡</div>
+                <div class="flow-title">CLI 执行</div>
+                <div class="flow-desc">./DeepLux create...</div>
+            </div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step">
+                <div class="flow-step-number">4</div>
+                <div class="flow-icon">🎯</div>
+                <div class="flow-title">运行验证</div>
+                <div class="flow-desc">./DeepLux run</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CLI Demo -->
+    <section class="cli-section">
+        <div class="section-header">
+            <div class="section-tag">⌨️ CLI 接口</div>
+            <h2 class="section-title">简单命令，强大功能</h2>
+        </div>
+
+        <div class="cli-container">
+            <div class="cli-window">
+                <div class="cli-titlebar">
+                    <div class="cli-dots">
+                        <div class="cli-dot"></div>
+                        <div class="cli-dot"></div>
+                        <div class="cli-dot"></div>
+                    </div>
+                    <div class="cli-tab">deep lux --cli</div>
+                </div>
+                <div class="cli-content">
+                    <div class="cli-line">
+                        <span class="cli-prompt">$</span>
+                        <span class="cli-cmd">./DeepLux <span class="kw">create-project</span> CircleDetect</span>
+                    </div>
+                    <div class="cli-output ok">✓ Created: CircleDetect.dproj</div>
+                    <br>
+                    <div class="cli-line">
+                        <span class="cli-prompt">$</span>
+                        <span class="cli-cmd">./DeepLux <span class="kw">add-module</span> CircleDetect.dproj <span class="kw">GrabImage</span> <span class="arg">--name</span> <span class="str">"采集"</span></span>
+                    </div>
+                    <div class="cli-line">
+                        <span class="cli-prompt">$</span>
+                        <span class="cli-cmd">./DeepLux <span class="kw">add-module</span> CircleDetect.dproj <span class="kw">FindCircle</span> <span class="arg">--name</span> <span class="str">"检测"</span></span>
+                    </div>
+                    <div class="cli-line">
+                        <span class="cli-prompt">$</span>
+                        <span class="cli-cmd">./DeepLux <span class="kw">add-module</span> CircleDetect.dproj <span class="kw">ShowImage</span> <span class="arg">--name</span> <span class="str">"显示"</span></span>
+                    </div>
+                    <div class="cli-output ok">✓ Module added: GrabImage, FindCircle, ShowImage</div>
+                    <br>
+                    <div class="cli-line">
+                        <span class="cli-prompt">$</span>
+                        <span class="cli-cmd">./DeepLux <span class="kw">connect</span> CircleDetect.dproj &lt;id1&gt; &lt;id2&gt;</span>
+                    </div>
+                    <div class="cli-line">
+                        <span class="cli-prompt">$</span>
+                        <span class="cli-cmd">./DeepLux <span class="kw">connect</span> CircleDetect.dproj &lt;id2&gt; &lt;id3&gt;</span>
+                    </div>
+                    <div class="cli-output ok">✓ Connected: 采集 → 检测 → 显示</div>
+                    <br>
+                    <div class="cli-line">
+                        <span class="cli-prompt">$</span>
+                        <span class="cli-cmd">./DeepLux <span class="kw">run</span> CircleDetect.dproj</span>
+                    </div>
+                    <div class="cli-output info">▶ Running flow...</div>
+                    <div class="cli-output ok">✓ 执行完成，检测到 3 个圆</div>
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-top: 40px; text-align: center;">
+            <div class="section-tag">📸 实际测试用例</div>
+            <h3 style="margin-top: 16px; font-size: 1.5rem;">相机采集 + 图像保存流程</h3>
+        </div>
+
+        <div class="cli-container" style="margin-top: 32px;">
+            <div class="cli-window">
+                <div class="cli-titlebar">
+                    <div class="cli-dots">
+                        <div class="cli-dot"></div>
+                        <div class="cli-dot"></div>
+                        <div class="cli-dot"></div>
+                    </div>
+                    <div class="cli-tab">deep lux --cli camera capture</div>
+                </div>
+                <div class="cli-content">
+                    <div class="cli-line">
+                        <span class="cli-prompt">$</span>
+                        <span class="cli-cmd">./DeepLux <span class="kw">create-project</span> CameraCapture <span class="arg">--path</span> /tmp</span>
+                    </div>
+                    <div class="cli-output ok">✓ Created: /tmp/CameraCapture.dproj</div>
+                    <br>
+                    <div class="cli-line">
+                        <span class="cli-prompt">$</span>
+                        <span class="cli-cmd">./DeepLux <span class="kw">add-module</span> /tmp/CameraCapture.dproj <span class="kw">GrabImage</span> <span class="arg">--name</span> <span class="str">"采集图像"</span> <span class="arg">--pos</span> 100,100</span>
+                    </div>
+                    <div class="cli-output ok">✓ Module ID: ba9bee3d-85f0-4ad4-b9e9-12060c4391da</div>
+                    <br>
+                    <div class="cli-line">
+                        <span class="cli-prompt">$</span>
+                        <span class="cli-cmd">./DeepLux <span class="kw">add-module</span> /tmp/CameraCapture.dproj <span class="kw">SaveImage</span> <span class="arg">--name</span> <span class="str">"保存图像"</span> <span class="arg">--pos</span> 300,100</span>
+                    </div>
+                    <div class="cli-output ok">✓ Module ID: fd5c4d28-bc7e-4e87-9def-12e1ad5c4109</div>
+                    <br>
+                    <div class="cli-line">
+                        <span class="cli-prompt">$</span>
+                        <span class="cli-cmd">./DeepLux <span class="kw">connect</span> /tmp/CameraCapture.dproj ba9bee3d-... fd5c4d28-...</span>
+                    </div>
+                    <div class="cli-output ok">✓ Connected 采集图像 → 保存图像</div>
+                    <br>
+                    <div class="cli-line">
+                        <span class="cli-prompt">$</span>
+                        <span class="cli-cmd">./DeepLux <span class="kw">list-modules</span> /tmp/CameraCapture.dproj</span>
+                    </div>
+                    <div class="cli-output info">=== Modules in CameraCapture (2) ===</div>
+                    <div class="cli-output info">[ba9...] 采集图像 (GrabImage) at (100, 100)</div>
+                    <div class="cli-output info">[fd5...] 保存图像 (SaveImage) at (300, 100)</div>
+                    <div class="cli-output info">=== Connections (1) ===</div>
+                    <div class="cli-output info">ba9... → fd5...</div>
+                    <br>
+                    <div class="cli-line">
+                        <span class="cli-prompt">$</span>
+                        <span class="cli-cmd">./DeepLux <span class="kw">connect-camera</span> GigE0</span>
+                    </div>
+                    <div class="cli-output ok">✓ Camera connected: GigE0</div>
+                    <br>
+                    <div class="cli-line">
+                        <span class="cli-prompt">$</span>
+                        <span class="cli-cmd">./DeepLux <span class="kw">run</span> /tmp/CameraCapture.dproj</span>
+                    </div>
+                    <div class="cli-output info">▶ Opened project: CameraCapture</div>
+                    <div class="cli-output ok">✓ 图像已采集并保存</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="cta-section">
+        <div class="cta-box">
+            <div class="cta-title">立即开始你的 10x 效率之旅</div>
+            <div class="cta-subtitle">支持 AI 协作的 CLI 接口，让机器视觉开发如虎添翼</div>
+            <div class="cta-cmd">./DeepLux --cli info</div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <div class="footer">
+        DeepLux Vision | 31+ 视觉算法模块 | AI Native Design
+    </div>
+</body>
+</html>

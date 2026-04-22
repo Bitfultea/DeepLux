@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.tcpserver",
+    "name": "TCP服务器",
+    "category": "communication",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "TCP服务器数据收发通信"
+}

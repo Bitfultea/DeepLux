@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.plccommunicate",
+    "name": "PLC通信测试",
+    "category": "communication",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "测试PLC Modbus TCP连接是否正常"
+}

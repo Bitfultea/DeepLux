@@ -1,0 +1,22 @@
+{
+    "id": "com.deeplux.camera.directshow",
+    "name": "DirectShow Camera",
+    "description": "Windows DirectShow camera support",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "category": "camera",
+    "platform": "windows",
+    "interfaces": [
+        "ICameraPlugin",
+        "ICamera"
+    ],
+    "dependencies": {},
+    "capabilities": {
+        "softwareTrigger": true,
+        "continuousMode": true,
+        "exposureControl": true,
+        "gainControl": true,
+        "frameRateControl": true,
+        "roiControl": true
+    }
+}
