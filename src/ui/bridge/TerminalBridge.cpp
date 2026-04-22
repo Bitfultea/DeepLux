@@ -62,17 +62,9 @@ void TerminalBridge::initialize(TerminalWidget* terminal)
     // 连接 TerminalWidget 命令信号 -> 写入 BashProcess
     connect(terminal, &TerminalWidget::commandEntered, this, &TerminalBridge::onCommandEntered);
 
-    // 连接 BashProcess 输出到 TerminalWidget
+    // TerminalWidget::connectToBashProcess 已处理信号连接
     BashProcess& bash = BashProcess::instance();
     terminal->connectToBashProcess(&bash);
-
-    connect(&bash, &BashProcess::outputReady, this, [terminal](const QString& text) {
-        terminal->printRaw(text);
-    }, Qt::QueuedConnection);
-
-    connect(&bash, &BashProcess::errorReady, this, [terminal](const QString& text) {
-        terminal->printError(text);
-    }, Qt::QueuedConnection);
 
     // 设置可用命令列表
     QStringList commands = {
