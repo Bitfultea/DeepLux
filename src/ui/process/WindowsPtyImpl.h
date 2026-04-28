@@ -7,7 +7,6 @@
 
 #include <QString>
 #include <QTimer>
-#include <QSocketNotifier>
 
 // Windows API
 #ifndef WIN32_LEAN_AND_MEAN
@@ -20,10 +19,15 @@ namespace DeepLux {
 /**
  * @brief Windows ConPTY 实现 (Win10 1809+)
  *
- * 使用 Windows Pseudo Console API
+ * 使用 Windows Pseudo Console API 提供真实的终端体验：
+ * - CreatePseudoConsole / ResizePseudoConsole / ClosePseudoConsole
+ * - 通过命名管道读写数据
+ * - 使用 PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE 启动 shell 进程
  */
 class WindowsConPtyImpl : public PtyImpl
 {
+    Q_OBJECT
+
 public:
     WindowsConPtyImpl();
     ~WindowsConPtyImpl() override;
@@ -37,20 +41,18 @@ public:
 
 private slots:
     void onReadyRead();
-    void onProcessFinished();
 
 private:
-    bool createConPTY(const QString& shell, const QStringList& args);
-    void setupPipeHandles();
+    bool setupConPty(const QString& shell, const QStringList& args);
+    void cleanup();
 
-    HANDLE m_masterHandle = INVALID_HANDLE_VALUE;
-    HANDLE m_slaveHandle = INVALID_HANDLE_VALUE;
+    HPCON m_hPC = INVALID_HANDLE_VALUE;
+    HANDLE m_hPipeInWrite = INVALID_HANDLE_VALUE;   // 写入 ConPTY 输入
+    HANDLE m_hPipeOutRead = INVALID_HANDLE_VALUE;   // 读取 ConPTY 输出
     HANDLE m_processHandle = INVALID_HANDLE_VALUE;
     DWORD m_processId = 0;
 
-    QSocketNotifier* m_notifier = nullptr;
     QTimer* m_readTimer = nullptr;
-
     bool m_isRunning = false;
 };
 

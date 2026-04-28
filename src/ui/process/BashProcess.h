@@ -81,10 +81,20 @@ public:
      */
     static bool isShellAvailable(const QString& shellPath);
 
+    /**
+     * @brief CLI wrapper 脚本路径（用于在 bash 中注入 deeplux 命令）
+     */
+    static QString cliWrapperPath();
+
+    /**
+     * @brief 创建 CLI wrapper 脚本
+     */
+    static bool createCliWrapper();
+
 signals:
     void stateChanged(State state) const;
-    void outputReady(const QString& data) const;
-    void errorReady(const QString& data) const;
+    void outputReady(const QByteArray& data) const;
+    void errorReady(const QByteArray& data) const;
     void commandFinished(int exitCode) const;
     void errorOccurred(Error error, const QString& details) const;
 
@@ -104,7 +114,7 @@ private:
 
     // 输出节流
     QTimer* m_outputThrottle = nullptr;
-    QString m_pendingOutput;
+    QByteArray m_pendingOutput;
 };
 
 } // namespace DeepLux

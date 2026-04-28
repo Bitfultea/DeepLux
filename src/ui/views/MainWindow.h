@@ -27,6 +27,8 @@ class PropertyPanel;
 class FlowCanvas;
 class DisplayManager;
 class TerminalWidget;
+class AgentActionLogWidget;
+class AgentChatPanel;
 
 class IModule;
 
@@ -70,6 +72,7 @@ private slots:
     void onSchemeManagement();
     void onLogAdded(const LogEntry& entry);
     void onLogFilterChanged(int index);
+    void showLogLevelMenu();
     void onBarcodeEntered();
     void onImportImage();
     void onToggleToolPanel(bool checked);
@@ -152,6 +155,8 @@ protected:
     // 终端面板（Tab 方案）
     QTabWidget* m_logTerminalTabs = nullptr;
     TerminalWidget* m_terminalWidget = nullptr;
+    AgentActionLogWidget* m_agentActionLogWidget = nullptr;
+    AgentChatPanel* m_agentChatPanel = nullptr;
 
     // 状态栏
     QLabel* m_userLabel = nullptr;
@@ -183,12 +188,17 @@ protected:
     QAction* m_viewToolPanelAction = nullptr;
     QAction* m_viewProcessPanelAction = nullptr;
 
+    // Agent 菜单动作
+    QAction* m_agentPermissionAction = nullptr;
+
     // 启动画面
     class SplashScreen* m_splashScreen = nullptr;
     QStringList m_failedPlugins;
     void showSplashScreen();
     void hideSplashScreen();
     void loadPluginsWithProgress();
+    void loadAgentSettings();
+    void updateAgentPermissionDisplay();
 
     // 显示管理
     DisplayManager* m_displayManager = nullptr;

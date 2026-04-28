@@ -116,8 +116,10 @@ bool AgentBridge::start()
     if (m_running) return true;
 
 #if defined(Q_OS_LINUX)
-    m_socketPath = "/run/deeplux/agent.sock";
-    QDir().mkpath(QFileInfo(m_socketPath).dir().path());
+    // 使用用户可写的 socket 路径
+    QString socketDir = QDir::homePath() + "/.deeplux";
+    QDir().mkpath(socketDir);
+    m_socketPath = socketDir + "/agent.sock";
 #elif defined(Q_OS_WINDOWS)
     m_socketPath = "\\\\.\\pipe\\deeplux_agent";
 #endif
@@ -178,6 +180,11 @@ void AgentBridge::registerQueryHandler(const QString& target, QueryHandler handl
     m_queryHandlers[target] = handler;
 }
 
+void AgentBridge::setToolCallCallback(ToolCallCallback callback)
+{
+    m_toolCallCallback = callback;
+}
+
 void AgentBridge::sendEvent(const QString& event, const QJsonObject& payload)
 {
     broadcastEvent(event, payload);
@@ -211,7 +218,11 @@ void AgentBridge::onClientMessage(const QString& clientId, const QJsonObject& ms
     QJsonObject result;
 
     if (type == "execute") {
-        result = handleExecute(reqId, payload);
+        // execute 类型已废弃：Agent 不再能执行任意 bash 命令
+        sendError(clientId, reqId, "Message type 'execute' is deprecated. Use 'tool_call' instead.");
+        return;
+    } else if (type == "tool_call") {
+        result = handleToolCall(reqId, payload);
     } else if (type == "query") {
         result = handleQuery(reqId, payload);
     } else if (type == "ping") {
@@ -312,18 +323,22 @@ void AgentBridge::attemptReconnect(const QString& clientId)
     // 重连逻辑 - 在此简单实现，实际可能需要更复杂的重连策略
 }
 
-QJsonObject AgentBridge::handleExecute(const QString& reqId, const QJsonObject& payload)
+QJsonObject AgentBridge::handleToolCall(const QString& reqId, const QJsonObject& payload)
 {
     Q_UNUSED(reqId);
 
-    QString command = payload.value("command").toString();
-    Q_UNUSED(command);
+    QString toolName = payload.value("tool").toString();
+    QJsonObject params = payload.value("params").toObject();
 
-    // TODO: 通过信号触发命令执行
-    return QJsonObject{
-        {"exitCode", 0},
-        {"message", "Command queued"}
-    };
+    if (toolName.isEmpty()) {
+        return QJsonObject{{"error", "Missing 'tool' field in tool_call"}};
+    }
+
+    if (m_toolCallCallback) {
+        return m_toolCallCallback(toolName, params);
+    }
+
+    return QJsonObject{{"error", "Tool call callback not set"}};
 }
 
 QJsonObject AgentBridge::handleQuery(const QString& reqId, const QJsonObject& payload)
@@ -341,6 +356,7 @@ QJsonObject AgentBridge::handleQuery(const QString& reqId, const QJsonObject& pa
 
 QJsonObject AgentBridge::handlePing(const QString& reqId)
 {
+    Q_UNUSED(reqId);
     QJsonObject result;
     result["type"] = "pong";
     return result;

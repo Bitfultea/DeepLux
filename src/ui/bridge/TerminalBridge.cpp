@@ -35,6 +35,8 @@ void TerminalBridge::initialize(TerminalWidget* terminal)
     if (m_initialized) return;
     m_terminal = terminal;
 
+    qDebug() << "TerminalBridge::initialize called";
+
     // 连接 TerminalWidget 命令输入
     connect(this, &TerminalBridge::commandOutput, terminal, &TerminalWidget::printOutput);
     connect(this, &TerminalBridge::commandError, terminal, &TerminalWidget::printError);
@@ -66,7 +68,7 @@ void TerminalBridge::initialize(TerminalWidget* terminal)
     BashProcess& bash = BashProcess::instance();
     terminal->connectToBashProcess(&bash);
 
-    // 设置可用命令列表
+    qDebug() << "BashProcess state:" << bash.state();
     QStringList commands = {
         "help", "version", "info", "list-plugins", "list-commands",
         "run", "create-project", "add-module", "connect",
@@ -89,9 +91,9 @@ void TerminalBridge::initialize(TerminalWidget* terminal)
         terminal->printInfo(QString("当前项目: %1").arg(currentProject->name()));
     }
 
-    // 启动 AgentBridge
+    // 启动 AgentBridge（IPC 通道，不再转发 execute 到 bash）
     AgentBridge::instance().start();
-    terminal->printInfo("Agent bridge started on /run/deeplux/agent.sock");
+    terminal->printInfo("Agent bridge started on ~/.deeplux/agent.sock");
 }
 
 void TerminalBridge::shutdown()
@@ -343,7 +345,20 @@ void TerminalBridge::onCommandFinished(int exitCode)
 
 void TerminalBridge::onCommandEntered(const QString& command)
 {
-    // 将用户输入的命令写入 BashProcess
+    qDebug() << "TerminalBridge::onCommandEntered:" << command;
+
+    // 检查是否为 CLI 内置命令
+    QStringList parts = command.trimmed().split(' ', Qt::SkipEmptyParts);
+    if (!parts.isEmpty()) {
+        CLIHandler& cli = CLIHandler::instance();
+        if (cli.findCommand(parts.first())) {
+            // 是 CLI 命令，使用 executeCommand 处理
+            executeCommand(command);
+            return;
+        }
+    }
+
+    // 否则发送到 BashProcess 执行（支持真正的 bash 命令）
     BashProcess::instance().writeCommand(command);
 }
 

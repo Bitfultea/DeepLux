@@ -8,7 +8,12 @@ set(UI_SOURCES
     widgets/FlowCanvas.cpp
     widgets/PropertyPanel.cpp
     widgets/TerminalWidget.cpp
+    widgets/AgentActionLogWidget.cpp
+    widgets/AgentChatPanel.cpp
+    widgets/AgentMessageBubble.cpp
+    widgets/AgentToolPreviewCard.cpp
     widgets/ToolBox.cpp
+    dialogs/AgentSettingsDialog.cpp
     widgets/ViewportWidget.cpp
     bridge/TerminalBridge.cpp
     process/BashProcess.cpp
@@ -42,6 +47,9 @@ elseif(WIN32)
     list(APPEND UI_SOURCES process/WindowsPtyImpl.cpp)
 endif()
 
+# Terminal components (ANSI parser, renderer)
+add_subdirectory(terminal)
+
 set(UI_HEADERS
     views/MainWindow.h
     views/SplashScreen.h
@@ -50,7 +58,12 @@ set(UI_HEADERS
     widgets/FlowCanvas.h
     widgets/PropertyPanel.h
     widgets/TerminalWidget.h
+    widgets/AgentActionLogWidget.h
+    widgets/AgentChatPanel.h
+    widgets/AgentMessageBubble.h
+    widgets/AgentToolPreviewCard.h
     widgets/ToolBox.h
+    dialogs/AgentSettingsDialog.h
     widgets/ViewportWidget.h
     bridge/TerminalBridge.h
     process/BashProcess.h
@@ -89,6 +102,7 @@ target_include_directories(deeplux_ui
 target_link_libraries(deeplux_ui
     PUBLIC
         deeplux_core
+        deeplux_terminal
 )
 
 if(OpenCV_FOUND)

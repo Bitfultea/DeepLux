@@ -18,6 +18,13 @@ set(TEST_SOURCES
     test_distancepl.cpp
     test_distancepp.cpp
     test_linesdistance.cpp
+    test_terminalscreen.cpp
+    test_ansiparser.cpp
+    test_toolschema.cpp
+    test_agentobserver.cpp
+    test_agentactor.cpp
+    test_agentpermissions.cpp
+    test_agentundo.cpp
 )
 
 foreach(TEST_FILE ${TEST_SOURCES})

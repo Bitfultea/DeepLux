@@ -72,25 +72,26 @@ bool BashProcess::initialize()
     // 创建 PTY 实现
 #if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD)
     m_impl = new LinuxPtyImpl();
+#elif defined(Q_OS_WINDOWS)
+    m_impl = new WindowsConPtyImpl();
 #else
-    // Windows 实现暂时使用 QProcess 作为降级方案
     m_lastError = ShellNotFound;
     m_state = Failed;
     emit errorOccurred(ShellNotFound, "Platform not supported");
     return false;
 #endif
 
-    // 连接信号
+    // 连接信号 — 直接传递原始字节，不做 UTF-8 转换
+    // （UTF-8 解码由 AnsiParser 在 TerminalWidget 中统一处理）
     connect(m_impl, &PtyImpl::outputReady, this, [this](const QByteArray& data) {
-        QString text = QString::fromUtf8(data);
-        m_pendingOutput += text;
+        m_pendingOutput.append(data);
         if (!m_outputThrottle->isActive()) {
             m_outputThrottle->start(50);
         }
     });
 
     connect(m_impl, &PtyImpl::errorReady, this, [this](const QByteArray& data) {
-        emit errorReady(QString::fromUtf8(data));
+        emit errorReady(data);
     });
 
     connect(m_impl, &PtyImpl::finished, this, [this](int exitCode) {
@@ -179,6 +180,58 @@ QString BashProcess::findAvailableShell()
 bool BashProcess::isShellAvailable(const QString& shellPath)
 {
     return QFileInfo(shellPath).exists() && QFileInfo(shellPath).isExecutable();
+}
+
+QString BashProcess::cliWrapperPath()
+{
+    return QDir::homePath() + "/.deeplux/bash_rc";
+}
+
+bool BashProcess::createCliWrapper()
+{
+    QString wrapperPath = cliWrapperPath();
+    QDir dir(QFileInfo(wrapperPath).dir());
+    if (!dir.exists()) {
+        dir.mkpath(".");
+    }
+
+    QString content = R"(# DeepLux CLI wrapper - auto-generated
+# Do not edit manually, it will be overwritten on next DeepLux startup
+
+# Source system bashrc
+[[ -f /etc/bash.bashrc ]] && source /etc/bash.bashrc
+
+# Source user config files (if not already sourced)
+[[ -f ~/.bashrc ]] && source ~/.bashrc
+[[ -f ~/.bash_profile ]] && source ~/.bash_profile
+[[ -f ~/.profile ]] && source ~/.profile
+
+# DeepLux CLI command wrapper
+# Usage: deeplux <command> [args...]
+# Examples:
+#   deeplux run
+#   deeplux create-project MyProject
+#   deeplux help
+#   deeplux list-plugins
+#
+# Note: CLI commands are forwarded to DeepLux's internal CLIHandler.
+deeplux() {
+    local cmd="$*"
+    # Send command via OSC 888 escape sequence
+    printf '\e]888;deeplux;%s\a' "$cmd"
+}
+
+# Optional alias for convenience
+alias dl='deeplux'
+)";
+
+    QFile file(wrapperPath);
+    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        file.write(content.toUtf8());
+        file.close();
+        return true;
+    }
+    return false;
 }
 
 } // namespace DeepLux

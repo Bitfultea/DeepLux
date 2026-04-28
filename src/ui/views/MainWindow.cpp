@@ -5,7 +5,12 @@
 #include "../widgets/FlowCanvas.h"
 #include "../widgets/PropertyPanel.h"
 #include "../widgets/TerminalWidget.h"
+#include "../widgets/AgentActionLogWidget.h"
+#include "../widgets/AgentChatPanel.h"
+#include "../dialogs/AgentSettingsDialog.h"
 #include "../bridge/TerminalBridge.h"
+#include "core/agent/AgentController.h"
+#include "core/agent/OpenAILLMClient.h"
 #include "CameraSetView.h"
 #include "CommunicationSetView.h"
 #include "GlobalVarView.h"
@@ -13,6 +18,7 @@
 #include "SystemParamView.h"
 #include "core/common/ConfigWidgetHelper.h"
 #include "core/common/Logger.h"
+#include "core/manager/ConfigManager.h"
 #include "core/display/DisplayData.h"
 #include "core/display/IDisplayPort.h"
 #include "core/interface/IModule.h"
@@ -95,6 +101,14 @@ MainWindow::MainWindow(QWidget* parent)
 
     setupUi();
     applyTheme();
+
+    // Initialize AgentController (Phase 1)
+    AgentController::instance().initialize();
+
+    // Load Agent settings from ConfigManager (Phase 3)
+    loadAgentSettings();
+
+    // Connect Agent action log to UI (will be set after m_agentActionLogWidget is created)
 }
 
 MainWindow::~MainWindow() {
@@ -240,6 +254,24 @@ void MainWindow::setupMenuBar() {
     toolMenu->addAction(createCommIcon(), tr("通讯设置"), this, &MainWindow::onCommSettings);
     toolMenu->addAction(createHardwareIcon(), tr("硬件配置"), this, &MainWindow::onHardwareConfig);
     toolMenu->addAction(createReportIcon(), tr("报表查询"), this, &MainWindow::onReportQuery);
+    toolMenu->addSeparator();
+    toolMenu->addAction(tr("Agent 设置"), this, [this]() {
+        AgentSettingsDialog dlg(this);
+        if (dlg.exec() == QDialog::Accepted) {
+            AgentController& ctrl = AgentController::instance();
+            ctrl.setPermissionLevel(dlg.permissionLevel());
+            OpenAILLMClient* client = qobject_cast<OpenAILLMClient*>(ctrl.llmClient());
+            if (!client) {
+                client = new OpenAILLMClient(&ctrl);
+                ctrl.setLLMClient(client);
+            }
+            client->setEndpoint(dlg.endpoint());
+            client->setApiKey(dlg.apiKey());
+            client->setModel(dlg.model());
+            client->setTemperature(dlg.temperature());
+            client->setMaxTokens(dlg.maxTokens());
+        }
+    });
 
     // 帮助菜单
     QMenu* helpMenu = menuBar()->addMenu(tr("帮助 (&H)"));
@@ -725,52 +757,23 @@ void MainWindow::setupMainLayout() {
     m_logTerminalTabs->setMovable(false);
     m_logTerminalTabs->setDocumentMode(true);
 
+    // 隐藏 dock 标题栏，节省空间
+    m_logDock->setTitleBarWidget(new QWidget());
+
     // ===== Tab 1: 日志面板 =====
     QWidget* logWidget = new QWidget();
     QVBoxLayout* logLayout = new QVBoxLayout(logWidget);
     logLayout->setContentsMargins(0, 0, 0, 0);
     logLayout->setSpacing(0);
 
-    // 日志标题栏
-    QWidget* logTitleWidget = new QWidget();
-    QHBoxLayout* logTitleLayout = new QHBoxLayout(logTitleWidget);
-    logTitleLayout->setContentsMargins(10, 5, 5, 5);
-    logTitleLayout->setSpacing(5);
-
-    // 标题为超链接，点击打开日志文件
-    QString linkColor = m_isDarkTheme ? "#3498db" : "#0066cc";
-    QLabel* logTitleLink = new QLabel(QString("<a href=\"opener\" style=\"color: %1; text-decoration: none; font-size: "
-                                              "14px; font-weight: bold;\">📄 日志</a>")
-                                          .arg(linkColor));
-    logTitleLink->setObjectName("LogTitleLink");
-    logTitleLink->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
-    connect(logTitleLink, &QLabel::linkActivated, this, [this](const QString&) {
-        QString logPath = Logger::instance().logFilePath();
-        QDesktopServices::openUrl(QUrl::fromLocalFile(logPath));
-    });
-    logTitleLayout->addWidget(logTitleLink);
-
-    // 日志级别过滤器
-    m_logFilterCombo = new QComboBox();
-    m_logFilterCombo->addItems(QStringList()
-                               << tr("全部") << tr("Debug") << tr("Info") << tr("Warning") << tr("Error"));
-    m_logFilterCombo->setCurrentIndex(2); // 默认显示 Info 及以上
-    m_logFilterCombo->setMaximumWidth(80);
-    m_logFilterCombo->setObjectName("LogFilterCombo");
-    connect(m_logFilterCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-            &MainWindow::onLogFilterChanged);
-    logTitleLayout->addWidget(m_logFilterCombo);
-
-    logTitleLayout->addStretch();
-    logTitleWidget->setMinimumHeight(36);
-    logTitleWidget->setObjectName("LogTitleWidget");
-    m_logDock->setTitleBarWidget(logTitleWidget);
-
     m_logTable = new QTableWidget();
     m_logTable->setColumnCount(3);
-    m_logTable->setHorizontalHeaderLabels(QStringList() << tr("时间") << tr("级别") << tr("消息"));
+    m_logTable->setHorizontalHeaderLabels(QStringList() << tr("时间") << tr("级别 ▼") << tr("消息"));
     m_logTable->horizontalHeader()->setStretchLastSection(true);
-    m_logTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_logTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
+    m_logTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
+    m_logTable->setColumnWidth(0, 90);
+    m_logTable->setColumnWidth(1, 70);
     m_logTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_logTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_logTable->setObjectName("LogTable");
@@ -779,12 +782,72 @@ void MainWindow::setupMainLayout() {
 
     // 连接日志信号到表格
     connect(&Logger::instance(), &Logger::logAdded, this, &MainWindow::onLogAdded);
-    m_logTerminalTabs->addTab(logWidget, tr("📄 日志"));
+
+    // 点击表头"级别"列弹出筛选菜单
+    connect(m_logTable->horizontalHeader(), &QHeaderView::sectionClicked, this, [this](int logicalIndex) {
+        if (logicalIndex == 1) showLogLevelMenu();
+    });
+
+    int logTabIndex = m_logTerminalTabs->addTab(logWidget, tr("📄 日志"));
+
+    // Tab "📄 日志" 再次点击时打开日志文件（第一次点击切换，第二次点击打开）
+    connect(m_logTerminalTabs, &QTabWidget::tabBarClicked, this, [this, logTabIndex](int index) {
+        if (index == logTabIndex && m_logTerminalTabs->currentIndex() == logTabIndex) {
+            QString logPath = Logger::instance().logFilePath();
+            QDesktopServices::openUrl(QUrl::fromLocalFile(logPath));
+        }
+    });
 
     // ===== Tab 2: 终端 =====
     m_terminalWidget = new TerminalWidget();
     TerminalBridge::instance().initialize(m_terminalWidget);
     m_logTerminalTabs->addTab(m_terminalWidget, tr("🖥️ 终端"));
+
+    // ===== Tab 3: Agent Chat =====
+    m_agentChatPanel = new AgentChatPanel();
+    m_logTerminalTabs->addTab(m_agentChatPanel, tr("🤖 Agent Chat"));
+    connect(m_agentChatPanel, &AgentChatPanel::userMessageSent,
+            &AgentController::instance(), &AgentController::sendUserMessage);
+    connect(m_agentChatPanel, &AgentChatPanel::userMessageWithImagesSent,
+            &AgentController::instance(), &AgentController::sendUserMessageWithImages);
+    connect(&AgentController::instance(), &AgentController::llmResponseReceived,
+            this, [this](const QString& content, const QJsonArray& toolCalls) {
+                Q_UNUSED(toolCalls);
+                m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Agent, content);
+            });
+    connect(&AgentController::instance(), &AgentController::llmErrorOccurred,
+            this, [this](const QString& error) {
+                m_agentChatPanel->addMessage(AgentMessageBubble::Sender::System,
+                                             QString("Error: %1").arg(error));
+            });
+    connect(&AgentController::instance(), &AgentController::toolsPendingConfirmation,
+            this, [this](const QJsonArray& toolCalls) {
+                QList<AgentToolPreviewCard::ToolItem> items;
+                for (const QJsonValue& v : toolCalls) {
+                    QJsonObject tc = v.toObject();
+                    AgentToolPreviewCard::ToolItem item;
+                    item.name = tc["name"].toString();
+                    if (item.name.isEmpty()) {
+                        item.name = tc["function"].toObject()["name"].toString();
+                        item.params = QJsonDocument::fromJson(
+                            tc["function"].toObject()["arguments"].toString().toUtf8()).object();
+                    } else {
+                        item.params = tc["arguments"].toObject();
+                    }
+                    items.append(item);
+                }
+                m_agentChatPanel->showToolPreview(items);
+            });
+    connect(m_agentChatPanel, &AgentChatPanel::toolPreviewConfirmed,
+            &AgentController::instance(), &AgentController::confirmPendingTools);
+    connect(m_agentChatPanel, &AgentChatPanel::toolPreviewCancelled,
+            &AgentController::instance(), &AgentController::rejectPendingTools);
+
+    // ===== Tab 4: Agent Action Log =====
+    m_agentActionLogWidget = new AgentActionLogWidget();
+    m_logTerminalTabs->addTab(m_agentActionLogWidget, tr("📋 Agent Log"));
+    connect(&AgentController::instance(), &AgentController::actionLogEntryAdded,
+            m_agentActionLogWidget, &AgentActionLogWidget::addEntry);
 
     m_logDock->setWidget(m_logTerminalTabs);
     m_logDock->setMinimumHeight(250);
@@ -930,7 +993,12 @@ void MainWindow::applyTheme() {
             "QSplitter::handle { background-color: transparent; }"
             "QLabel { color: #ffffff; }"
             "QScrollArea { background-color: #252525; }"
-            "QFrame { background-color: #444444; }");
+            "QFrame { background-color: #444444; }"
+            "QTabWidget::pane { border: none; background-color: #252525; }"
+            "QTabBar { background-color: #252525; }"
+            "QTabBar::tab { background-color: #333333; color: #ffffff; padding: 5px 12px; border: none; }"
+            "QTabBar::tab:selected { background-color: #444444; }"
+            "QTabBar::tab:hover:!selected { background-color: #3a3a3a; }");
     } else {
         // 白色主题 - 适合亮光环境
         setStyleSheet(
@@ -983,7 +1051,12 @@ void MainWindow::applyTheme() {
             "QSplitter::handle { background-color: transparent; }"
             "QLabel { color: #212121; }"
             "QScrollArea { background-color: #ffffff; }"
-            "QFrame { background-color: #dddddd; }");
+            "QFrame { background-color: #dddddd; }"
+            "QTabWidget::pane { border: none; background-color: #ffffff; }"
+            "QTabBar { background-color: #ffffff; }"
+            "QTabBar::tab { background-color: #e8e8e8; color: #212121; padding: 5px 12px; border: none; }"
+            "QTabBar::tab:selected { background-color: #f5f5f5; }"
+            "QTabBar::tab:hover:!selected { background-color: #d0d0d0; }");
     }
 
     // 更新自定义标题栏样式
@@ -1169,6 +1242,36 @@ void MainWindow::applyTheme() {
     // 更新 DisplayManager 中的 Viewport 样式
     if (m_displayManager) {
         m_displayManager->applyTheme(m_isDarkTheme);
+    }
+
+    // 更新 Terminal 主题颜色
+    if (m_terminalWidget) {
+        QColor termFg = m_isDarkTheme ? QColor("#d4d4d4") : QColor("#212121");
+        QColor termBg = m_isDarkTheme ? QColor("#1e1e1e") : QColor("#ffffff");
+        QColor termSel = m_isDarkTheme ? QColor("#264f78") : QColor("#b4d7ff");
+        m_terminalWidget->setThemeColors(termFg, termBg, termSel);
+    }
+
+    // 更新 Agent Chat 面板主题
+    if (m_agentChatPanel) {
+        m_agentChatPanel->applyTheme(m_isDarkTheme);
+    }
+
+    // 更新 Agent Action Log 主题
+    if (m_agentActionLogWidget) {
+        QString logBg = m_isDarkTheme ? "#252525" : "#ffffff";
+        QString logText = m_isDarkTheme ? "#ffffff" : "#212121";
+        m_agentActionLogWidget->setStyleSheet(QString(
+            "AgentActionLogWidget { background-color: %1; }"
+            "AgentActionLogWidget QTableWidget { background-color: %1; color: %2; border: none; }"
+            "AgentActionLogWidget QTableWidget::item { border-bottom: 1px solid %3; }"
+            "AgentActionLogWidget QTableWidget::item:selected { background-color: #0078d7; }"
+            "AgentActionLogWidget QHeaderView::section { background-color: %4; color: %2; padding: 5px; border: none; }"
+            "AgentActionLogWidget QPushButton { background-color: #0078d7; color: white; padding: 4px 10px; border: none; }"
+            "AgentActionLogWidget QPushButton:hover { background-color: #1e8ad6; }")
+            .arg(logBg, logText,
+                 m_isDarkTheme ? "#333333" : "#eeeeee",
+                 m_isDarkTheme ? "#333333" : "#f0f0f0"));
     }
 }
 
@@ -1843,7 +1946,7 @@ void MainWindow::onLogAdded(const LogEntry& entry) {
         return;
 
     // 根据过滤器检查是否应该显示
-    int filterLevel = m_logFilterCombo ? m_logFilterCombo->currentIndex() : 0;
+    int filterLevel = m_logFilterLevel;
     if (filterLevel > 0) {
         // filterLevel: 1=Debug, 2=Info, 3=Warning, 4=Error
         // 只显示 >= filterLevel 的日志
@@ -1901,6 +2004,11 @@ void MainWindow::onLogFilterChanged(int index) {
     if (!m_logTable)
         return;
 
+    m_logFilterLevel = index;
+
+    // 表头文字保持不变（避免固定宽度下文字被遮挡）
+    Q_UNUSED(index)
+
     // 遍历所有行，根据过滤器显示/隐藏
     for (int row = 0; row < m_logTable->rowCount(); ++row) {
         QTableWidgetItem* levelItem = m_logTable->item(row, 1);
@@ -1927,6 +2035,27 @@ void MainWindow::onLogFilterChanged(int index) {
             m_logTable->hideRow(row);
         }
     }
+}
+
+void MainWindow::showLogLevelMenu()
+{
+    QMenu menu(this);
+    QStringList items = QStringList() << tr("全部") << tr("Debug") << tr("Info") << tr("Warning") << tr("Error");
+    for (int i = 0; i < items.size(); ++i) {
+        QAction* action = menu.addAction(items[i]);
+        action->setCheckable(true);
+        action->setChecked(m_logFilterLevel == i);
+        connect(action, &QAction::triggered, this, [this, i]() { onLogFilterChanged(i); });
+    }
+
+    // 在表头"级别"列下方弹出
+    QHeaderView* header = m_logTable->horizontalHeader();
+    QRect sectionRect = header->sectionViewportPosition(1) >= 0
+                            ? QRect(header->sectionViewportPosition(1), header->height(),
+                                    header->sectionSize(1), 0)
+                            : QRect();
+    QPoint pos = m_logTable->mapToGlobal(QPoint(sectionRect.x(), sectionRect.y()));
+    menu.exec(pos);
 }
 
 void MainWindow::onBarcodeEntered() {
@@ -2361,6 +2490,59 @@ QIcon MainWindow::createToggleThemeIcon() {
     }
 
     return QIcon(pixmap);
+}
+
+void MainWindow::loadAgentSettings()
+{
+    ConfigManager& cfg = ConfigManager::instance();
+    if (!cfg.isInitialized()) return;
+
+    AgentController& ctrl = AgentController::instance();
+
+    // Load permission level
+    int permLevel = cfg.groupInt("agent", "permissionLevel", 1);
+    ctrl.setPermissionLevel(static_cast<AgentController::PermissionLevel>(permLevel));
+
+    // Load and configure LLM client if API key is present
+    QString apiKey = cfg.groupString("agent", "apiKey", "");
+    if (!apiKey.isEmpty()) {
+        OpenAILLMClient* client = new OpenAILLMClient(&ctrl);
+        client->setEndpoint(cfg.groupString("agent", "endpoint", "https://api.openai.com/v1/chat/completions"));
+        client->setApiKey(apiKey);
+        client->setModel(cfg.groupString("agent", "model", "gpt-4o"));
+        client->setTemperature(cfg.groupDouble("agent", "temperature", 0.3));
+        client->setMaxTokens(cfg.groupInt("agent", "maxTokens", 4096));
+        ctrl.setLLMClient(client);
+    }
+
+    updateAgentPermissionDisplay();
+
+    // Connect permission change to update display
+    connect(&ctrl, &AgentController::permissionLevelChanged,
+            this, &MainWindow::updateAgentPermissionDisplay);
+}
+
+void MainWindow::updateAgentPermissionDisplay()
+{
+    AgentController::PermissionLevel level = AgentController::instance().permissionLevel();
+    QString text;
+    QString color;
+    switch (level) {
+    case AgentController::PermissionLevel::Observer:
+        text = "Agent: Observer";
+        color = "#3498db";
+        break;
+    case AgentController::PermissionLevel::Advisor:
+        text = "Agent: Advisor";
+        color = "#f39c12";
+        break;
+    case AgentController::PermissionLevel::Autopilot:
+        text = "Agent: Autopilot";
+        color = "#e74c3c";
+        break;
+    }
+
+    qDebug() << "Agent permission display:" << text;
 }
 
 } // namespace DeepLux

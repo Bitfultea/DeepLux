@@ -12,7 +12,7 @@ AgentConnection::AgentConnection(QLocalSocket* socket, const QString& clientId, 
 {
     connect(m_socket, &QLocalSocket::readyRead, this, &AgentConnection::onReadyRead);
     connect(m_socket, &QLocalSocket::disconnected, this, &AgentConnection::onDisconnected);
-    connect(m_socket, QOverload<QLocalSocket::LocalSocketError>::of(&QLocalSocket::error),
+    connect(m_socket, &QLocalSocket::errorOccurred,
             this, &AgentConnection::onError);
 }
 

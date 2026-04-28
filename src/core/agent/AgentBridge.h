@@ -9,6 +9,7 @@
 #include <QList>
 #include <QTimer>
 #include <QLocalServer>
+#include <functional>
 
 namespace DeepLux {
 
@@ -24,10 +25,11 @@ class AgentConnection;
  * 通信协议: JSON v1.0
  *
  * 消息类型:
- * - execute: 执行 bash 命令
+ * - tool_call: 调用 Agent 白名单工具（受控执行）
  * - query: 查询系统状态
  * - ping: 心跳保活
  * - result: 命令/查询结果
+ * - error: 错误响应
  * - event: 主动事件推送
  * - pong: 心跳响应
  */
@@ -46,6 +48,10 @@ public:
     // 查询接口（注册式）
     using QueryHandler = std::function<QJsonObject(const QJsonObject& params)>;
     void registerQueryHandler(const QString& target, QueryHandler handler);
+
+    // 工具调用回调（路由到 AgentActor，取代原来的 bash 执行通道）
+    using ToolCallCallback = std::function<QJsonObject(const QString& toolName, const QJsonObject& params)>;
+    void setToolCallCallback(ToolCallCallback callback);
 
     // 事件订阅发送
     void sendEvent(const QString& event, const QJsonObject& payload);
@@ -84,13 +90,16 @@ private:
     // 查询处理器（注册式，支持扩展）
     QMap<QString, QueryHandler> m_queryHandlers;
 
+    // 工具调用回调
+    ToolCallCallback m_toolCallCallback;
+
     // 事件订阅: clientId -> 订阅的事件列表
     QMap<QString, QStringList> m_eventSubscriptions;
 
     // 协议版本
     static constexpr const char* PROTOCOL_VERSION = "1.0";
 
-    QJsonObject handleExecute(const QString& reqId, const QJsonObject& payload);
+    QJsonObject handleToolCall(const QString& reqId, const QJsonObject& payload);
     QJsonObject handleQuery(const QString& reqId, const QJsonObject& payload);
     QJsonObject handlePing(const QString& reqId);
     void sendResponse(const QString& clientId, const QString& reqId, const QJsonObject& payload);

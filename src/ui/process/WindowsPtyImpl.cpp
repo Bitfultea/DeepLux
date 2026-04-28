@@ -4,24 +4,18 @@
 
 #include "BashProcess.h"
 
-#include <QCoreApplication>
-#include <QDebug>
-#include <qt_windows.h>
-#include <QThread>
 #include <QTimer>
-
-#include <conio.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <QDebug>
+#include <QFile>
 
 namespace DeepLux {
 
 WindowsConPtyImpl::WindowsConPtyImpl()
-    : m_masterHandle(INVALID_HANDLE_VALUE)
-    , m_slaveHandle(INVALID_HANDLE_VALUE)
+    : m_hPC(INVALID_HANDLE_VALUE)
+    , m_hPipeInWrite(INVALID_HANDLE_VALUE)
+    , m_hPipeOutRead(INVALID_HANDLE_VALUE)
     , m_processHandle(INVALID_HANDLE_VALUE)
     , m_processId(0)
-    , m_notifier(nullptr)
     , m_readTimer(nullptr)
     , m_isRunning(false)
 {
@@ -34,109 +28,214 @@ WindowsConPtyImpl::~WindowsConPtyImpl()
 
 bool WindowsConPtyImpl::start(const QString& shell, const QStringList& args)
 {
-    Q_UNUSED(args);
-
-    // Windows ConPTY requires Win10 1809+
-    OSVERSIONINFOW osvi;
-    osvi.dwOSVersionInfoSize = sizeof(osvi);
-    GetVersionExW(&osvi);
-
-    if (osvi.dwMajorVersion < 10 || (osvi.dwMajorVersion == 10 && osvi.dwBuildNumber < 17763)) {
-        emit errorOccurred("Windows ConPTY requires Windows 10 1809 or later");
-        return false;
+    if (m_isRunning) {
+        kill();
     }
 
-    if (!createConPTY(shell, args)) {
+    BashProcess::instance().createCliWrapper();
+
+    if (!setupConPty(shell, args)) {
         return false;
     }
 
     m_isRunning = true;
-    return true;
-}
-
-bool WindowsConPtyImpl::createConPTY(const QString& shell, const QStringList& args)
-{
-    // Create Pseudo Console
-    HPCON hPty = INVALID_HANDLE_VALUE;
-    SIZE_T size = 0;
-
-    // Create the ConPTY
-    if (!CreatePseudoConsole(CENTER, 80, 24, &hPty)) {
-        emit errorOccurred("Failed to create Pseudo Console: " + QString::number(GetLastError()));
-        return false;
-    }
-
-    // For Windows, we use a simplified QProcess approach as ConPTY requires complex setup
-    // This is a fallback implementation using QProcess + pipes
-
-    QProcess* process = new QProcess();
-    process->setProgram(shell);
-    if (!args.isEmpty()) {
-        process->setArguments(args.mid(1));
-    }
-    process->setEnvironment(QProcess::systemEnvironment());
-    process->start();
-
-    if (!process->waitForStarted()) {
-        emit errorOccurred("Failed to start shell: " + process->errorString());
-        delete process;
-        ClosePseudoConsole(hPty);
-        return false;
-    }
-
-    m_processHandle = process->pid()->hProcess;
-    m_processId = process->pid()->dwProcessId;
-
-    // 连接输出信号
-    connect(process, &QProcess::readyReadStandardOutput, this, [this, process]() {
-        QByteArray data = process->readAllStandardOutput();
-        if (!data.isEmpty()) {
-            emit outputReady(data);
-        }
-    });
-
-    connect(process, &QProcess::readyReadStandardError, this, [this, process]() {
-        QByteArray data = process->readAllStandardError();
-        if (!data.isEmpty()) {
-            emit errorReady(data);
-        }
-    });
-
-    connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, &WindowsConPtyImpl::onProcessFinished);
 
     m_readTimer = new QTimer(this);
-    m_readTimer->setInterval(50);
+    m_readTimer->setInterval(10);
     connect(m_readTimer, &QTimer::timeout, this, &WindowsConPtyImpl::onReadyRead);
     m_readTimer->start();
 
     return true;
 }
 
+bool WindowsConPtyImpl::setupConPty(const QString& shell, const QStringList& args)
+{
+    SECURITY_ATTRIBUTES sa;
+    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = nullptr;
+
+    HANDLE hPipeInRead = INVALID_HANDLE_VALUE;
+    HANDLE hPipeInWrite = INVALID_HANDLE_VALUE;
+    HANDLE hPipeOutRead = INVALID_HANDLE_VALUE;
+    HANDLE hPipeOutWrite = INVALID_HANDLE_VALUE;
+
+    if (!CreatePipe(&hPipeInRead, &hPipeInWrite, &sa, 0)) {
+        emit errorOccurred("Failed to create input pipe: " + QString::number(GetLastError()));
+        return false;
+    }
+
+    if (!CreatePipe(&hPipeOutRead, &hPipeOutWrite, &sa, 0)) {
+        CloseHandle(hPipeInRead);
+        CloseHandle(hPipeInWrite);
+        emit errorOccurred("Failed to create output pipe: " + QString::number(GetLastError()));
+        return false;
+    }
+
+    COORD size;
+    size.X = 80;
+    size.Y = 24;
+
+    HPCON hPC = INVALID_HANDLE_VALUE;
+    HRESULT hr = CreatePseudoConsole(size, hPipeInRead, hPipeOutWrite, 0, &hPC);
+
+    if (FAILED(hr)) {
+        CloseHandle(hPipeInRead);
+        CloseHandle(hPipeInWrite);
+        CloseHandle(hPipeOutRead);
+        CloseHandle(hPipeOutWrite);
+        emit errorOccurred("Failed to create Pseudo Console: " + QString::number(hr, 16));
+        return false;
+    }
+
+    STARTUPINFOEX si;
+    ZeroMemory(&si, sizeof(si));
+    si.StartupInfo.cb = sizeof(STARTUPINFOEX);
+
+    SIZE_T attrSize = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attrSize);
+
+    si.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
+        HeapAlloc(GetProcessHeap(), 0, attrSize));
+
+    if (!si.lpAttributeList) {
+        ClosePseudoConsole(hPC);
+        CloseHandle(hPipeInRead);
+        CloseHandle(hPipeInWrite);
+        CloseHandle(hPipeOutRead);
+        CloseHandle(hPipeOutWrite);
+        emit errorOccurred("Failed to allocate process attribute list");
+        return false;
+    }
+
+    if (!InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &attrSize)) {
+        HeapFree(GetProcessHeap(), 0, si.lpAttributeList);
+        ClosePseudoConsole(hPC);
+        CloseHandle(hPipeInRead);
+        CloseHandle(hPipeInWrite);
+        CloseHandle(hPipeOutRead);
+        CloseHandle(hPipeOutWrite);
+        emit errorOccurred("Failed to initialize process attribute list");
+        return false;
+    }
+
+    if (!UpdateProcThreadAttribute(si.lpAttributeList, 0,
+                                   PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                                   hPC, sizeof(HPCON), nullptr, nullptr)) {
+        DeleteProcThreadAttributeList(si.lpAttributeList);
+        HeapFree(GetProcessHeap(), 0, si.lpAttributeList);
+        ClosePseudoConsole(hPC);
+        CloseHandle(hPipeInRead);
+        CloseHandle(hPipeInWrite);
+        CloseHandle(hPipeOutRead);
+        CloseHandle(hPipeOutWrite);
+        emit errorOccurred("Failed to set Pseudo Console attribute");
+        return false;
+    }
+
+    QString cmdLine = QString("\"%1\"").arg(shell);
+    if (!args.isEmpty()) {
+        for (const QString& arg : args) {
+            cmdLine += " " + arg;
+        }
+    }
+
+    QString wrapperPath = BashProcess::instance().cliWrapperPath();
+    if (shell.contains("bash", Qt::CaseInsensitive) && QFile::exists(wrapperPath)) {
+        cmdLine += QString(" --rcfile \"%1\" -i").arg(wrapperPath);
+    }
+
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&pi, sizeof(pi));
+
+    std::wstring wideCmdLine = cmdLine.toStdWString();
+
+    BOOL success = CreateProcessW(
+        nullptr,
+        wideCmdLine.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        EXTENDED_STARTUPINFO_PRESENT,
+        nullptr,
+        nullptr,
+        &si.StartupInfo,
+        &pi
+    );
+
+    DeleteProcThreadAttributeList(si.lpAttributeList);
+    HeapFree(GetProcessHeap(), 0, si.lpAttributeList);
+
+    CloseHandle(hPipeInRead);
+    CloseHandle(hPipeOutWrite);
+
+    if (!success) {
+        ClosePseudoConsole(hPC);
+        CloseHandle(hPipeInWrite);
+        CloseHandle(hPipeOutRead);
+        emit errorOccurred("Failed to start shell process: " + QString::number(GetLastError()));
+        return false;
+    }
+
+    CloseHandle(pi.hThread);
+
+    m_hPC = hPC;
+    m_hPipeInWrite = hPipeInWrite;
+    m_hPipeOutRead = hPipeOutRead;
+    m_processHandle = pi.hProcess;
+    m_processId = pi.dwProcessId;
+
+    return true;
+}
+
 void WindowsConPtyImpl::write(const QByteArray& data)
 {
-    if (!m_isRunning) return;
-    // 对于 QProcess 实现，直接使用 write
-    // 注意：这需要特殊处理
-    emit errorOccurred("Windows ConPTY write not fully implemented - use bash wrapper");
+    if (!m_isRunning || m_hPipeInWrite == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    DWORD written = 0;
+    WriteFile(m_hPipeInWrite, data.constData(), static_cast<DWORD>(data.size()), &written, nullptr);
 }
 
 QByteArray WindowsConPtyImpl::read()
 {
     QByteArray buffer;
-    // Windows 实现返回空，使用信号式读取
+    if (!m_isRunning || m_hPipeOutRead == INVALID_HANDLE_VALUE) {
+        return buffer;
+    }
+
+    DWORD available = 0;
+    if (!PeekNamedPipe(m_hPipeOutRead, nullptr, 0, nullptr, &available, nullptr)) {
+        return buffer;
+    }
+
+    if (available == 0) {
+        return buffer;
+    }
+
+    buffer.resize(static_cast<int>(available));
+    DWORD bytesRead = 0;
+
+    if (ReadFile(m_hPipeOutRead, buffer.data(), available, &bytesRead, nullptr)) {
+        buffer.resize(static_cast<int>(bytesRead));
+    } else {
+        buffer.clear();
+    }
+
     return buffer;
 }
 
 void WindowsConPtyImpl::resize(int cols, int rows)
 {
-    if (!m_isRunning) return;
+    if (!m_isRunning || m_hPC == INVALID_HANDLE_VALUE) {
+        return;
+    }
 
-    // ConPTY resize
-    // SetConsoleScreenBufferSize doesn't directly resize the ConPTY
-    // This would require recreating the ConPTY or using a different API
-    Q_UNUSED(cols);
-    Q_UNUSED(rows);
+    COORD size;
+    size.X = static_cast<SHORT>(cols);
+    size.Y = static_cast<SHORT>(rows);
+    ResizePseudoConsole(m_hPC, size);
 }
 
 void WindowsConPtyImpl::kill()
@@ -145,46 +244,57 @@ void WindowsConPtyImpl::kill()
 
     if (m_readTimer) {
         m_readTimer->stop();
-        m_readTimer->deleteLater();
+        delete m_readTimer;
         m_readTimer = nullptr;
-    }
-
-    if (m_notifier) {
-        m_notifier->deleteLater();
-        m_notifier = nullptr;
     }
 
     if (m_processHandle != INVALID_HANDLE_VALUE) {
         TerminateProcess(m_processHandle, 0);
+        WaitForSingleObject(m_processHandle, 5000);
         CloseHandle(m_processHandle);
         m_processHandle = INVALID_HANDLE_VALUE;
     }
 
-    if (m_masterHandle != INVALID_HANDLE_VALUE) {
-        CloseHandle(m_masterHandle);
-        m_masterHandle = INVALID_HANDLE_VALUE;
+    if (m_hPipeInWrite != INVALID_HANDLE_VALUE) {
+        CloseHandle(m_hPipeInWrite);
+        m_hPipeInWrite = INVALID_HANDLE_VALUE;
     }
 
-    if (m_slaveHandle != INVALID_HANDLE_VALUE) {
-        CloseHandle(m_slaveHandle);
-        m_slaveHandle = INVALID_HANDLE_VALUE;
+    if (m_hPipeOutRead != INVALID_HANDLE_VALUE) {
+        CloseHandle(m_hPipeOutRead);
+        m_hPipeOutRead = INVALID_HANDLE_VALUE;
     }
+
+    if (m_hPC != INVALID_HANDLE_VALUE) {
+        ClosePseudoConsole(m_hPC);
+        m_hPC = INVALID_HANDLE_VALUE;
+    }
+
+    m_processId = 0;
 }
 
 bool WindowsConPtyImpl::isRunning() const
 {
-    return m_isRunning && m_processHandle != INVALID_HANDLE_VALUE;
+    if (!m_isRunning || m_processHandle == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    return WaitForSingleObject(m_processHandle, 0) == WAIT_TIMEOUT;
 }
 
 void WindowsConPtyImpl::onReadyRead()
 {
-    // 使用 QTimer 轮询读取
-}
+    QByteArray data = read();
+    if (!data.isEmpty()) {
+        emit outputReady(data);
+    }
 
-void WindowsConPtyImpl::onProcessFinished()
-{
-    m_isRunning = false;
-    emit finished(0);
+    if (!isRunning()) {
+        m_isRunning = false;
+        if (m_readTimer) {
+            m_readTimer->stop();
+        }
+        emit finished(0);
+    }
 }
 
 } // namespace DeepLux

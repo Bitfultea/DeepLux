@@ -7,6 +7,7 @@
 #include "ui/views/MainWindow.h"
 #include "core/platform/Platform.h"
 #include "core/platform/PathUtils.h"
+#include "core/manager/ConfigManager.h"
 #include "core/manager/PluginManager.h"
 #include "core/manager/ProjectManager.h"
 
@@ -194,6 +195,7 @@ int main(int argc, char* argv[])
     initAppDirectories();
 
     // 初始化管理器
+    DeepLux::ConfigManager::instance().initialize();
     DeepLux::ProjectManager::instance();
 
     if (!checkOpenCV()) {
@@ -208,6 +210,7 @@ int main(int argc, char* argv[])
     MainWindow mainWindow;
     mainWindow.setWindowTitle("DeepLux Vision");
     mainWindow.resize(1600, 900);
+    mainWindow.show();
 
     return app.exec();
 }

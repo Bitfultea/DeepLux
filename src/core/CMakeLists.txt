@@ -31,6 +31,13 @@ set(CORE_SOURCES
     display/DisplayData.cpp
     agent/AgentBridge.cpp
     agent/AgentConnection.cpp
+    agent/AgentController.cpp
+    agent/AgentObserver.cpp
+    agent/AgentActor.cpp
+    agent/ToolSchema.cpp
+    agent/ILLMClient.cpp
+    agent/OpenAILLMClient.cpp
+    agent/GuiEvent.cpp
 )
 
 set(CORE_HEADERS
@@ -64,6 +71,13 @@ set(CORE_HEADERS
     display/IDisplayPort.h
     agent/AgentBridge.h
     agent/AgentConnection.h
+    agent/AgentController.h
+    agent/AgentObserver.h
+    agent/AgentActor.h
+    agent/ToolSchema.h
+    agent/ILLMClient.h
+    agent/OpenAILLMClient.h
+    agent/GuiEvent.h
 )
 
 add_library(deeplux_core SHARED ${CORE_SOURCES} ${CORE_HEADERS})

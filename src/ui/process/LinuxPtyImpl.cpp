@@ -40,7 +40,11 @@ public:
     bool start(const QString& shell, const QStringList& args) override
     {
         Q_UNUSED(args);
-
+        
+        // 确保 CLI wrapper 文件存在
+        BashProcess::instance().createCliWrapper();
+        QString wrapperPath = BashProcess::instance().cliWrapperPath();
+        
         // 打开 PTY master
         m_masterFd = ::open("/dev/ptmx", O_RDWR | O_NOCTTY);
         if (m_masterFd < 0) {
@@ -66,10 +70,13 @@ public:
         }
 
         if (pid == 0) {
-            // 子进程
+            // 子进程 - 注意：m_masterFd 在 fork 后是有效的
+            // 但我们需要在关闭 master 之前获取 slave 路径
+            const char* slaveName = ptsname(m_masterFd);
+
             ::close(m_masterFd);
 
-            int slaveFd = ::open(ptsname(m_masterFd), O_RDWR);
+            int slaveFd = ::open(slaveName, O_RDWR);
             if (slaveFd < 0) {
                 _exit(1);
             }
@@ -89,8 +96,19 @@ public:
                 ::close(slaveFd);
             }
 
-            // 执行 shell
-            execl(shell.toUtf8(), "bash", "--login", "-i", nullptr);
+            // 设置 TERM，确保 readline / curses 等能正确处理键盘输入
+            ::setenv("TERM", "xterm-256color", 1);
+
+            // 关闭所有继承的文件描述符（保留 stdin/stdout/stderr）
+            int maxFd = sysconf(_SC_OPEN_MAX);
+            for (int fd = 3; fd < maxFd; ++fd) {
+                ::close(fd);
+            }
+
+            // 执行 shell with CLI wrapper
+            QByteArray shellUtf8 = shell.toUtf8();
+            QByteArray wrapperUtf8 = wrapperPath.toUtf8();
+            execl(shellUtf8.constData(), "bash", "--rcfile", wrapperUtf8.constData(), "-i", nullptr);
             _exit(1);
         }
 
