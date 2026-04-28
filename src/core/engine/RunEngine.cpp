@@ -121,8 +121,10 @@ void RunEngine::addModule(ModuleBase* module)
 {
     if (module && !m_modules.contains(module)) {
         m_modules.append(module);
-        m_moduleMap[module->name()] = module;
-        Logger::instance().debug(QString("Module added to engine: %1").arg(module->name()), "Run");
+        // Use instanceName as key when set (for multi-instance support), fallback to name()
+        QString key = module->instanceName().isEmpty() ? module->name() : module->instanceName();
+        m_moduleMap[key] = module;
+        Logger::instance().debug(QString("Module added to engine: %1").arg(key), "Run");
     }
 }
 
@@ -277,8 +279,9 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
 
     emit moduleStarted(moduleName);
 
-    // 处理循环索引
-    if (isLoopStart(moduleName)) {
+    // 处理循环索引（基于 flowControlType，不再基于名称）
+    ControlFlowType flowType = module->flowControlType();
+    if (flowType == ControlFlowType::Loop || flowType == ControlFlowType::While) {
         if (!m_loopIndices.contains(moduleName)) {
             m_loopIndices[moduleName] = 0;
         } else {
@@ -293,6 +296,7 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     // 如果执行成功，将当前输出传递为下一个模块的输入
     if (success) {
         pipelineData = output;
+        m_lastOutput = output;
     }
 
     m_lastExecuteResult = success;
@@ -306,47 +310,72 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
 
 QString RunEngine::getNextModule(const QString& currentModule, bool lastResult)
 {
-    // 逻辑模块处理
-    if (currentModule.startsWith("如果") || currentModule.startsWith("条件分支")) {
+    ModuleBase* current = getModule(currentModule);
+    if (!current) return QString();
+
+    ControlFlowType flowType = current->flowControlType();
+
+    switch (flowType) {
+    case ControlFlowType::Conditional:
+        // 条件为 false 时跳过整个分支（找 ConditionalElse 或 ConditionalEnd）
         if (!lastResult) {
-            // 条件为false，跳转到下一个 否则如果/否则/结束
-            return findSiblingModule(currentModule, "否则如果");
+            return findSiblingByFlowType(currentModule, ControlFlowType::ConditionalElse);
         }
-    }
-    else if (currentModule.startsWith("否则如果")) {
+        break;
+
+    case ControlFlowType::ConditionalElse:
         if (!lastResult) {
-            return findSiblingModule(currentModule, "否则如果");
+            // 继续找下一个 ConditionalElse 或 ConditionalEnd
+            return findSiblingByFlowType(currentModule, ControlFlowType::ConditionalElse);
         }
-    }
-    else if (currentModule.startsWith("否则")) {
-        // 执行完否则后，跳转到结束
-        return findSiblingModule(currentModule, "结束");
-    }
-    else if (currentModule.startsWith("结束") || currentModule.startsWith("条件分支结束")) {
+        break;
+
+    case ControlFlowType::ConditionalEnd:
         // 条件分支结束，返回父级流程
         if (m_nodeStack.isEmpty()) {
             return getNextSequentialModule(currentModule);
         }
-    }
-    else if (isLoopStart(currentModule)) {
-        ModuleBase* module = getModule(currentModule);
-        int loopCount = module ? module->currentParams().value("loopCount").toInt(10) : 10;
-        if (module && m_loopIndices[currentModule] < loopCount) {
+        break;
+
+    case ControlFlowType::Loop: {
+        int loopCount = current->currentParams().value("loopCount").toInt(10);
+        if (m_loopIndices[currentModule] < loopCount) {
             if (lastResult) {
-                return findSiblingModule(currentModule, "循环结束");
+                // 查找对应的 LoopEnd
+                return findSiblingByFlowType(currentModule, ControlFlowType::LoopEnd);
             }
         }
         m_loopIndices.remove(currentModule);
+        break;
     }
-    else if (isLoopEnd(currentModule)) {
-        // 循环结束，跳回循环开始
-        return findSiblingModule(currentModule, "循环开始");
-    }
-    else if (currentModule.startsWith("停止循环")) {
+
+    case ControlFlowType::LoopEnd:
+        // 循环结束，跳回对应的 Loop 入口
+        return findPreviousByFlowType(currentModule, ControlFlowType::Loop);
+
+    case ControlFlowType::StopLoop:
         if (lastResult) {
-            // 跳转到循环结束
-            return findSiblingModule(currentModule, "循环结束");
+            return findSiblingByFlowType(currentModule, ControlFlowType::LoopEnd);
         }
+        break;
+
+    case ControlFlowType::While: {
+        int maxIter = current->currentParams().value("maxIterations").toInt(100);
+        if (lastResult && m_loopIndices[currentModule] < maxIter) {
+            // 查找对应的 WhileEnd
+            return findSiblingByFlowType(currentModule, ControlFlowType::WhileEnd);
+        }
+        m_loopIndices.remove(currentModule);
+        break;
+    }
+
+    case ControlFlowType::WhileEnd:
+        // While 循环结束，跳回对应的 While 入口
+        return findPreviousByFlowType(currentModule, ControlFlowType::While);
+
+    case ControlFlowType::Sequential:
+    default:
+        break;
     }
 
     return getNextSequentialModule(currentModule);
@@ -361,56 +390,30 @@ QString RunEngine::getNextSequentialModule(const QString& currentModule)
     return QString();
 }
 
-QString RunEngine::findSiblingModule(const QString& currentModule, const QString& suffix)
+QString RunEngine::findSiblingByFlowType(const QString& currentModule, ControlFlowType targetType)
 {
     int currentIndex = getModuleIndex(currentModule);
     if (currentIndex < 0) return QString();
 
     for (int i = currentIndex + 1; i < m_modules.size(); ++i) {
-        QString name = m_modules[i]->name();
-        if (name.startsWith(suffix)) {
-            return name;
+        if (m_modules[i]->flowControlType() == targetType) {
+            return m_modules[i]->name();
         }
     }
     return QString();
 }
 
-bool RunEngine::isLogicModule(const QString& moduleName) const
+QString RunEngine::findPreviousByFlowType(const QString& currentModule, ControlFlowType targetType)
 {
-    return moduleName.startsWith("如果") ||
-           moduleName.startsWith("否则") ||
-           moduleName.startsWith("条件分支") ||
-           moduleName.startsWith("结束");
-}
+    int currentIndex = getModuleIndex(currentModule);
+    if (currentIndex < 0) return QString();
 
-bool RunEngine::isLoopStart(const QString& moduleName) const
-{
-    return moduleName.startsWith("循环开始");
-}
-
-bool RunEngine::isLoopEnd(const QString& moduleName) const
-{
-    return moduleName.startsWith("循环结束");
-}
-
-bool RunEngine::isIfBranch(const QString& moduleName) const
-{
-    return moduleName.startsWith("如果");
-}
-
-bool RunEngine::isIfEnd(const QString& moduleName) const
-{
-    return moduleName.startsWith("结束") || moduleName.startsWith("条件分支结束");
-}
-
-bool RunEngine::isElseIf(const QString& moduleName) const
-{
-    return moduleName.startsWith("否则如果");
-}
-
-bool RunEngine::isElse(const QString& moduleName) const
-{
-    return moduleName.startsWith("否则");
+    for (int i = currentIndex - 1; i >= 0; --i) {
+        if (m_modules[i]->flowControlType() == targetType) {
+            return m_modules[i]->name();
+        }
+    }
+    return QString();
 }
 
 void RunEngine::buildModuleTree()
@@ -423,8 +426,12 @@ void RunEngine::buildModuleTree()
         ModuleTreeNode* node = new ModuleTreeNode(name);
         m_moduleTreeNodes[name] = node;
 
-        // 处理嵌套逻辑
-        if (isLoopStart(name) || isIfBranch(name)) {
+        ControlFlowType flowType = module->flowControlType();
+
+        // 流程入口类型：压栈
+        if (flowType == ControlFlowType::Loop ||
+            flowType == ControlFlowType::While ||
+            flowType == ControlFlowType::Conditional) {
             if (!m_nodeStack.isEmpty()) {
                 node->parent = m_nodeStack.top();
                 m_nodeStack.top()->children.append(node);
@@ -434,7 +441,10 @@ void RunEngine::buildModuleTree()
             }
             m_nodeStack.push(node);
         }
-        else if (isLoopEnd(name) || isIfEnd(name)) {
+        // 流程出口类型：出栈
+        else if (flowType == ControlFlowType::LoopEnd ||
+                 flowType == ControlFlowType::WhileEnd ||
+                 flowType == ControlFlowType::ConditionalEnd) {
             if (!m_nodeStack.isEmpty()) {
                 m_nodeStack.pop();
             }

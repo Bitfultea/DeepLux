@@ -22,6 +22,7 @@ public:
     QString version() const override { return "1.0.0"; }
     QString author() const override { return "DeepLux Team"; }
     QString description() const override { return tr("当条件满足时循环执行"); }
+    ControlFlowType flowControlType() const override { return ControlFlowType::While; }
 
     bool initialize() override;
     QWidget* createConfigWidget() override;
@@ -60,6 +61,7 @@ public:
     QString version() const override { return "1.0.0"; }
     QString author() const override { return "DeepLux Team"; }
     QString description() const override { return tr("条件循环结束"); }
+    ControlFlowType flowControlType() const override { return ControlFlowType::WhileEnd; }
 
 protected:
     bool process(const ImageData& input, ImageData& output) override;

@@ -20,6 +20,7 @@ public:
     QString version() const override { return "1.0.0"; }
     QString author() const override { return "DeepLux Team"; }
     QString description() const override { return tr("循环执行指定次数"); }
+    ControlFlowType flowControlType() const override { return ControlFlowType::Loop; }
 
     bool initialize() override;
     QWidget* createConfigWidget() override;

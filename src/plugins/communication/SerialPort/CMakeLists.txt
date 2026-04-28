@@ -1,5 +1,10 @@
 # SerialPort Plugin
 
+if(NOT Qt${QT_VERSION_MAJOR}SerialPort_FOUND)
+    message(STATUS "SerialPortPlugin: Skipped (Qt SerialPort not found)")
+    return()
+endif()
+
 set(PLUGIN_SOURCES
     SerialPortPlugin.cpp
 )

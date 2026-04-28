@@ -6,6 +6,8 @@
 #include <QIcon>
 #include <QWidget>
 
+#include "core/deeplux/ControlFlowType.h"
+
 namespace DeepLux {
 
 class ImageData;
@@ -58,6 +60,9 @@ public:
 
     // Create a new instance of this module
     virtual IModule* clone() const = 0;
+
+    // 控制流类型 — 模块根据自身语义声明，RunEngine 据此决定执行顺序
+    virtual ControlFlowType flowControlType() const { return ControlFlowType::Sequential; }
 
 signals:
     void progressChanged(int percent);

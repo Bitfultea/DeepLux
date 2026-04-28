@@ -44,6 +44,13 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # ========== 查找 Qt ==========
 option(USE_QT6 "Use Qt6 instead of Qt5" ON)
 
+# 允许显式指定 Qt 安装路径（用于自定义 Qt 或 CI/CD）
+set(DEEPLUX_QT_PATH "" CACHE PATH "Path to Qt installation (e.g. /opt/Qt/6.5.0/gcc_64). Leave empty to use system Qt.")
+if(DEEPLUX_QT_PATH)
+    list(APPEND CMAKE_PREFIX_PATH ${DEEPLUX_QT_PATH})
+    message(STATUS "Using custom Qt path: ${DEEPLUX_QT_PATH}")
+endif()
+
 set(QT_CORE_COMPONENTS Core Gui Widgets Network Sql Test)
 
 if(USE_QT6)
@@ -58,6 +65,54 @@ if(NOT Qt6_FOUND)
     set(QT_VERSION_MAJOR 5)
 else()
     set(QT_VERSION_MAJOR 6)
+endif()
+
+# ========== Qt SSL 兼容性检查 ==========
+# Qt 5.15.2 及以下不支持 OpenSSL 3.x。
+# 如果系统 OpenSSL >= 3.0 且 Qt < 5.15.3，在配置阶段就给出明确错误。
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(OPENSSL QUIET openssl>=3.0)
+endif()
+
+if(QT_VERSION_MAJOR EQUAL 5 AND OPENSSL_FOUND)
+    if(Qt5_VERSION VERSION_LESS "5.15.3")
+        message(FATAL_ERROR
+            "Qt ${Qt5_VERSION} does not support OpenSSL 3.x (found ${OPENSSL_VERSION}).\n"
+            "Please use one of the following options:\n"
+            "  1. Use system Qt 5.15.3+ (unset DEEPLUX_QT_PATH)\n"
+            "  2. Install a custom Qt 5.15.11+ or Qt 6.2+ and set DEEPLUX_QT_PATH\n"
+            "  3. Downgrade system OpenSSL to 1.1.1 (not recommended)")
+    endif()
+endif()
+
+# 运行期 SSL 可用性检查（编译小测试程序验证）
+if(QT_VERSION_MAJOR EQUAL 5)
+    set(_qt_network_lib Qt5::Network)
+else()
+    set(_qt_network_lib Qt6::Network)
+endif()
+
+set(CMAKE_REQUIRED_INCLUDES ${Qt${QT_VERSION_MAJOR}Network_INCLUDE_DIRS})
+set(CMAKE_REQUIRED_LIBRARIES ${_qt_network_lib})
+include(CheckCXXSourceRuns)
+check_cxx_source_runs("
+#include <QSslSocket>
+#include <QCoreApplication>
+int main(int argc, char** argv) {
+    QCoreApplication app(argc, argv);
+    return QSslSocket::supportsSsl() ? 0 : 1;
+}
+" QT_SSL_WORKS)
+
+if(NOT QT_SSL_WORKS)
+    message(WARNING
+        "Qt SSL backend is not available at runtime.\n"
+        "HTTPS requests (Agent Chat, etc.) will fail with 'SSL handshake failed'.\n"
+        "Common causes:\n"
+        "  - Qt was built against a different OpenSSL version than the one installed\n"
+        "  - LD_LIBRARY_PATH points to an incompatible Qt installation\n"
+        "  - Missing libssl/libcrypto development packages\n")
 endif()
 
 # 可选组件: SerialPort

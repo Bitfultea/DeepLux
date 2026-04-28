@@ -59,10 +59,4 @@ enum class CommunicationType {
     ModbusRTU
 };
 
-/**
- * @brief 日志级别
- */
-// LogLevel is now defined in Logger.h
-// This is to avoid multiple definition issues
-
 } // namespace DeepLux

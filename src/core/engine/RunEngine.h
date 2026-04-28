@@ -10,6 +10,7 @@
 #include <QWaitCondition>
 #include <QSet>
 
+#include "deeplux/ControlFlowType.h"
 #include "model/ImageData.h"
 
 namespace DeepLux {
@@ -105,6 +106,9 @@ public:
     bool hasOutput(const QString& moduleName, const QString& varName) const;
     void clearOutputs();
 
+    // 流水线输出（供 UI 在 moduleFinished 后查询显示数据）
+    const ImageData& lastOutput() const { return m_lastOutput; }
+
     // 运行统计
     int totalRuns() const { return m_totalRuns; }
     int successRuns() const { return m_successRuns; }
@@ -153,14 +157,8 @@ private:
     void clearModuleTree();
     QString getNextModule(const QString& currentModule, bool lastResult);
     QString getNextSequentialModule(const QString& currentModule);
-    QString findSiblingModule(const QString& currentModule, const QString& suffix);
-    bool isLogicModule(const QString& moduleName) const;
-    bool isLoopStart(const QString& moduleName) const;
-    bool isLoopEnd(const QString& moduleName) const;
-    bool isIfBranch(const QString& moduleName) const;
-    bool isIfEnd(const QString& moduleName) const;
-    bool isElseIf(const QString& moduleName) const;
-    bool isElse(const QString& moduleName) const;
+    QString findSiblingByFlowType(const QString& currentModule, ControlFlowType targetType);
+    QString findPreviousByFlowType(const QString& currentModule, ControlFlowType targetType);
 
     RunState m_state = RunState::Idle;
     RunMode m_runMode = RunMode::None;
@@ -195,6 +193,7 @@ private:
 
     QString m_currentModuleName;
     bool m_lastExecuteResult = true;
+    ImageData m_lastOutput;   // 最后一个模块的输出，供 UI 显示
 
     CancellationToken* m_cancellationToken = nullptr;
 };

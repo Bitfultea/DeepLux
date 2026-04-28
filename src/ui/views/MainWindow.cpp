@@ -22,9 +22,11 @@
 #include "core/display/DisplayData.h"
 #include "core/display/IDisplayPort.h"
 #include "core/interface/IModule.h"
+#include "core/base/ModuleBase.h"
 #include "core/manager/PluginManager.h"
 #include "core/manager/ProjectManager.h"
 #include "core/model/ImageData.h"
+#include "core/engine/RunEngine.h"
 #include "core/model/Project.h"
 
 #include <QAction>
@@ -95,12 +97,64 @@ class PropertyPanel;
 class FlowCanvas;
 
 MainWindow::MainWindow(QWidget* parent)
-    : QMainWindow(parent), m_displayManager(new DisplayManager(this)), m_delayResumeTimer(new QTimer(this)) {
-    m_delayResumeTimer->setSingleShot(true);
-    connect(m_delayResumeTimer, &QTimer::timeout, this, &MainWindow::onDelayResumeTimeout);
+    : QMainWindow(parent), m_displayManager(new DisplayManager(this)) {
 
     setupUi();
     applyTheme();
+
+    // RunEngine 信号连接 — 统一执行入口，MainWindow 只做 UI 高亮/状态更新
+    connect(&RunEngine::instance(), &RunEngine::moduleStarted, this, [this](const QString& moduleName) {
+        Q_UNUSED(moduleName)
+        // 高亮当前流程树 item（基于 instanceName 或 display name 匹配）
+        for (int i = 0; i < m_processTree->topLevelItemCount(); ++i) {
+            QTreeWidgetItem* item = m_processTree->topLevelItem(i);
+            QString in = item->data(0, Qt::UserRole + 1).toString();
+            if (!in.isEmpty() && m_flowModules.contains(in)) {
+                IModule* mod = m_flowModules[in];
+                // Match by display name (name()) since RunEngine keys by it
+                if (mod && mod->name() == moduleName) {
+                    m_currentExecutingItem = item;
+                    m_currentExecutingIndex = i;
+                    item->setBackground(0, QBrush(QColor("#0078d7")));
+                    item->setForeground(0, QBrush(Qt::white));
+                    item->setBackground(1, QBrush(QColor("#0078d7")));
+                    item->setForeground(1, QBrush(Qt::white));
+                    item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
+                    item->setText(1, tr("执行中..."));
+                    break;
+                }
+            }
+        }
+    });
+
+    connect(&RunEngine::instance(), &RunEngine::moduleFinished, this, [this](const QString& moduleName, bool success) {
+        Q_UNUSED(moduleName)
+        if (m_currentExecutingItem) {
+            m_currentExecutingItem->setBackground(0, QBrush());
+            m_currentExecutingItem->setForeground(0, QBrush());
+            m_currentExecutingItem->setBackground(1, QBrush());
+            m_currentExecutingItem->setForeground(1, QBrush());
+            m_currentExecutingItem->setText(1, success ? tr("OK") : tr("FAIL"));
+            if (!success) {
+                m_currentExecutingItem->setForeground(1, QBrush(Qt::red));
+            }
+        }
+        // Display output if available
+        const ImageData& out = RunEngine::instance().lastOutput();
+        if (out.isValid()) {
+            displayImage(out);
+        }
+    });
+
+    connect(&RunEngine::instance(), &RunEngine::runFinished, this, [this](const RunResult& result) {
+        if (m_processTimeLabel) {
+            m_processTimeLabel->setText(tr("总耗时：%1 ms").arg(result.elapsedMs));
+        }
+        m_currentExecutingItem = nullptr;
+        if (m_isCycleMode && m_isRunning) {
+            QTimer::singleShot(1, this, &MainWindow::executeFlowOnce);
+        }
+    });
 
     // Initialize AgentController (Phase 1)
     AgentController::instance().initialize();
@@ -774,6 +828,10 @@ void MainWindow::setupMainLayout() {
     m_logTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
     m_logTable->setColumnWidth(0, 90);
     m_logTable->setColumnWidth(1, 70);
+
+    // vertical header 固定宽度，替代重复的水平序号列
+    m_logTable->verticalHeader()->setDefaultSectionSize(24);
+    m_logTable->verticalHeader()->setMinimumWidth(40);
     m_logTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_logTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_logTable->setObjectName("LogTable");
@@ -1665,6 +1723,7 @@ void MainWindow::onStop() {
     m_btnStartPause->setIcon(createPlayIcon());
     m_btnStartPause->setToolTip(tr("单次运行"));
     m_btnStop->setEnabled(false);
+    RunEngine::instance().stop();
     Logger::instance().info(tr("停止"), "System");
 }
 
@@ -1695,117 +1754,24 @@ void MainWindow::executeFlowOnce() {
         return;
     }
 
-    // 开始执行第一步
-    executeFlowStep(0);
-}
-
-void MainWindow::executeFlowStep(int stepIndex) {
-    if (stepIndex >= m_processTree->topLevelItemCount()) {
-        // 执行完成
-        m_currentExecutingItem = nullptr;
-        if (m_processTimeLabel) {
-            m_processTimeLabel->setText(tr("总耗时：%1 ms").arg(m_flowTotalTime));
+    // 同步模块到 RunEngine（单一执行入口）
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    for (int i = 0; i < m_processTree->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* item = m_processTree->topLevelItem(i);
+        QString instanceName = item->data(0, Qt::UserRole + 1).toString();
+        if (instanceName.isEmpty() || !m_flowModules.contains(instanceName)) continue;
+        IModule* im = m_flowModules.value(instanceName);
+        if (!im || !im->isInitialized()) continue;
+        ModuleBase* mb = qobject_cast<ModuleBase*>(im);
+        if (mb) {
+            mb->setInstanceName(instanceName);
+            engine.addModule(mb);
         }
-        // 循环运行模式：调度下一次执行
-        if (m_isCycleMode && m_isRunning) {
-            QTimer::singleShot(1, this, &MainWindow::executeFlowOnce);
-        }
-        return;
     }
 
-    QTreeWidgetItem* item = m_processTree->topLevelItem(stepIndex);
-    QString instanceName = item->data(0, Qt::UserRole + 1).toString();
-
-    if (instanceName.isEmpty() || !m_flowModules.contains(instanceName)) {
-        // 跳过无效项，执行下一步
-        executeFlowStep(stepIndex + 1);
-        return;
-    }
-
-    IModule* module = m_flowModules.value(instanceName);
-    if (!module || !module->isInitialized()) {
-        // 跳过未初始化的模块，执行下一步
-        executeFlowStep(stepIndex + 1);
-        return;
-    }
-
-    // 高亮当前执行的项目
-    m_currentExecutingItem = item;
-    m_currentExecutingIndex = stepIndex;
-    item->setBackground(0, QBrush(QColor("#0078d7")));
-    item->setForeground(0, QBrush(Qt::white));
-    item->setBackground(1, QBrush(QColor("#0078d7")));
-    item->setForeground(1, QBrush(Qt::white));
-    item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
-    item->setText(1, tr("执行中..."));
-
-    // 处理事件以更新 UI
-    qApp->processEvents();
-
-    // 记录开始时间
-    QElapsedTimer timer;
-    timer.start();
-
-    // 执行模块
-    ImageData flowOutput;
-    module->execute(m_flowInput, flowOutput);
-
-    // 记录执行时间
-    int elapsedMs = timer.elapsed();
-    m_moduleExecutionTimes[instanceName] = elapsedMs;
-    m_flowTotalTime += elapsedMs;
-
-    // 如果模块实现 IDisplayPort，通过 DisplayManager 显示
-    int displayDelay = 0;
-    if (IDisplayPort* displayPort = getDisplayPort(module)) {
-        if (displayPort->hasDisplayOutput()) {
-            DisplayData data = displayPort->getDisplayData();
-            displayDelay = data.metadata().value("delay").toInt();
-            m_displayManager->displayData(displayPort, displayDelay);
-        }
-    } else if (flowOutput.isValid()) {
-        // Fallback: 直接显示 ImageData
-        displayImage(flowOutput);
-    }
-
-    // 将当前输出作为下一个模块的输入
-    m_flowInput = flowOutput;
-
-    // 如果有显示延迟，等待延迟完成后才更新显示并执行下一步
-    if (displayDelay > 0) {
-        m_flowTotalTime += displayDelay; // 把延迟算入总耗时
-        // 保持高亮，延迟结束后再更新显示
-        m_delayResumeTimer->setInterval(displayDelay);
-        m_delayResumeTimer->start();
-    } else {
-        // 没有延迟，更新 item 显示并清除高亮
-        item->setBackground(0, QBrush());
-        item->setForeground(0, QBrush());
-        item->setBackground(1, QBrush());
-        item->setForeground(1, QBrush());
-        item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
-        item->setText(1, QString("%1 ms").arg(elapsedMs));
-
-        // 立即执行下一步
-        executeFlowStep(stepIndex + 1);
-    }
-}
-
-void MainWindow::onDelayResumeTimeout() {
-    // 延迟结束，更新当前步骤的显示（执行时间+延迟）
-    if (m_currentExecutingItem) {
-        m_currentExecutingItem->setBackground(0, QBrush());
-        m_currentExecutingItem->setForeground(0, QBrush());
-        m_currentExecutingItem->setBackground(1, QBrush());
-        m_currentExecutingItem->setForeground(1, QBrush());
-        m_currentExecutingItem->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
-        QString instanceName = m_currentExecutingItem->data(0, Qt::UserRole + 1).toString();
-        int totalTime = m_moduleExecutionTimes.value(instanceName, 0);
-        m_currentExecutingItem->setText(1, QString("%1 ms").arg(totalTime));
-    }
-
-    // 继续执行下一步
-    executeFlowStep(m_currentExecutingIndex + 1);
+    // 委托给 RunEngine 执行
+    engine.runOnce();
 }
 
 void MainWindow::onUserLogin() {

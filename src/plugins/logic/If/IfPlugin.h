@@ -20,6 +20,7 @@ public:
     QString version() const override { return "1.0.0"; }
     QString author() const override { return "DeepLux Team"; }
     QString description() const override { return tr("根据条件决定是否执行后续模块"); }
+    ControlFlowType flowControlType() const override { return ControlFlowType::Conditional; }
 
     bool initialize() override;
     QWidget* createConfigWidget() override;
@@ -56,6 +57,7 @@ public:
     QString version() const override { return "1.0.0"; }
     QString author() const override { return "DeepLux Team"; }
     QString description() const override { return tr("条件分支结束"); }
+    ControlFlowType flowControlType() const override { return ControlFlowType::ConditionalEnd; }
 
 protected:
     bool process(const ImageData& input, ImageData& output) override;

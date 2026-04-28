@@ -36,6 +36,8 @@ public:
     QString id() const { return m_moduleId; }
     QString moduleId() const override { return m_moduleId; }
     QString name() const override { return m_name; }
+    QString instanceName() const { return m_instanceName; }
+    void setInstanceName(const QString& name) { m_instanceName = name; }
     QString category() const override { return m_category; }
     QString version() const override { return m_version; }
     QString author() const override { return m_author; }
@@ -72,6 +74,7 @@ protected:
 protected:
     QString m_moduleId;
     QString m_name;
+    QString m_instanceName;
     QString m_category;
     QString m_version = "1.0.0";
     QString m_author;

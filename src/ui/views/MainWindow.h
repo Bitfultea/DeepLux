@@ -78,9 +78,6 @@ private slots:
     void onToggleToolPanel(bool checked);
     void onToggleProcessPanel(bool checked);
     void onProcessTreeContextMenu(const QPoint& pos);
-    void onDelayResumeTimeout();
-    void executeFlowStep(int stepIndex);
-
 private:
     void setupUi();
     void setupMenuBar();
@@ -141,8 +138,6 @@ protected:
     QMap<QString, int> m_moduleExecutionTimes;  // 模块实例名 -> 执行时间(ms)
     QTreeWidgetItem* m_currentExecutingItem = nullptr;  // 当前正在执行的项目
     int m_currentExecutingIndex = 0;  // 当前执行索引
-    bool m_executingWithDelay = false;  // 是否在等待延迟显示
-    QTimer* m_delayResumeTimer = nullptr;  // 延迟恢复定时器
     ImageData m_flowInput;  // 流程执行时的输入数据
     int m_flowTotalTime = 0;  // 总耗时
 
