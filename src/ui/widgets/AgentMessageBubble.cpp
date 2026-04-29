@@ -7,7 +7,7 @@
 
 namespace DeepLux {
 
-// ========== ChatTheme 命名工厂 — 每个字段显式命名，消除位置初始化误读 ==========
+// ========== ChatTheme ==========
 
 ChatTheme::ChatTheme(const QColor& windowBg, const QColor& textFg,
                      const QColor& inputBg, const QColor& inputBorder,
@@ -30,26 +30,26 @@ ChatTheme::ChatTheme(const QColor& windowBg, const QColor& textFg,
 ChatTheme ChatTheme::dark()
 {
     return ChatTheme(
-        QColor("#1e1e1e"), QColor("#ffffff"), QColor("#1e1e1e"), QColor("#555555"),
-        QColor("#2b8dda"), QColor("#19c59f"), QColor("#aaaaaa"), QColor("#8b5cf6"),
+        QColor("#1e1e1e"), QColor("#d4d4d4"), QColor("#1e1e1e"), QColor("#444444"),
+        QColor("#569cd6"), QColor("#4ec9b0"), QColor("#888888"), QColor("#c586c0"),
         QColor("#0d0d0d"), QColor("#d4d4d4"),
-        QColor("#2d2d2d"), QColor("#ffffff"),
-        QColor("#58a6ff"), QColor("#888888"), QColor("#888888"), QColor("#e74c3c")
+        QColor("#2d2d2d"), QColor("#d4d4d4"),
+        QColor("#569cd6"), QColor("#888888"), QColor("#666666"), QColor("#f44747")
     );
 }
 
 ChatTheme ChatTheme::light()
 {
     return ChatTheme(
-        QColor("#ffffff"), QColor("#1a1a1a"), QColor("#ffffff"), QColor("#dddddd"),
+        QColor("#ffffff"), QColor("#333333"), QColor("#ffffff"), QColor("#cccccc"),
         QColor("#0078d7"), QColor("#10a37f"), QColor("#888888"), QColor("#7c3aed"),
         QColor("#f4f4f4"), QColor("#333333"),
-        QColor("#f0f0f0"), QColor("#1a1a1a"),
-        QColor("#0078d7"), QColor("#666666"), QColor("#888888"), QColor("#e74c3c")
+        QColor("#f0f0f0"), QColor("#333333"),
+        QColor("#0078d7"), QColor("#888888"), QColor("#aaaaaa"), QColor("#d32f2f")
     );
 }
 
-// ========== AgentMessageBubble ==========
+// ========== AgentMessageBubble — 终端风格：无背景盒，仅左侧色条区分角色 ==========
 
 AgentMessageBubble::AgentMessageBubble(Sender sender, const QString& text, bool isDark, QWidget* parent)
     : QWidget(parent)
@@ -58,28 +58,41 @@ AgentMessageBubble::AgentMessageBubble(Sender sender, const QString& text, bool 
     , m_isDark(isDark)
 {
     setupUi();
-    setText(text);         // 通过 m_rawText → markdownToHtml 渲染
+    setText(text);
 }
 
 void AgentMessageBubble::setupUi()
 {
-    auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(8, 0, 8, 0);
-    layout->setSpacing(0);
+    auto* hLayout = new QHBoxLayout(this);
+    hLayout->setContentsMargins(4, 1, 8, 1);
+    hLayout->setSpacing(6);
 
-    // Header: 独立 widget，不使用不可靠的 float:right
+    // 左侧色条：2px 宽，充满行高
+    m_accentBar = new QWidget(this);
+    m_accentBar->setFixedWidth(3);
+    m_accentBar->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    hLayout->addWidget(m_accentBar);
+
+    // 正文区
+    auto* contentLayout = new QVBoxLayout();
+    contentLayout->setContentsMargins(0, 0, 0, 0);
+    contentLayout->setSpacing(0);
+
+    // 角色名 + 时间戳：内联单行
     m_headerLabel = new QLabel(this);
     m_headerLabel->setTextFormat(Qt::RichText);
-    m_headerLabel->setStyleSheet("font-size:11px;");
-    layout->addWidget(m_headerLabel);
+    m_headerLabel->setStyleSheet("font-size:10px;");
+    contentLayout->addWidget(m_headerLabel);
 
-    // Body
+    // 消息正文
     m_bodyLabel = new QLabel(this);
     m_bodyLabel->setTextFormat(Qt::RichText);
     m_bodyLabel->setWordWrap(true);
     m_bodyLabel->setOpenExternalLinks(true);
     m_bodyLabel->setTextInteractionFlags(Qt::TextBrowserInteraction);
-    layout->addWidget(m_bodyLabel);
+    contentLayout->addWidget(m_bodyLabel);
+
+    hLayout->addLayout(contentLayout, 1);
 
     applyTheme(m_isDark);
 }
@@ -96,7 +109,6 @@ void AgentMessageBubble::setText(const QString& text)
 
 void AgentMessageBubble::appendText(const QString& text)
 {
-    // 始终从 m_rawText 全量重新渲染，不依赖 HTML 字符串拼接
     m_rawText += text;
     if (m_bodyLabel) {
         m_bodyLabel->setText(markdownToHtml(m_rawText, m_isDark));
@@ -112,6 +124,22 @@ void AgentMessageBubble::applyTheme(bool isDark)
 {
     m_isDark = isDark;
     ChatTheme theme = isDark ? ChatTheme::dark() : ChatTheme::light();
+
+    // 透明背景 — 融入面板底色
+    setStyleSheet("background: transparent;");
+
+    // 左侧色条
+    QColor accent;
+    QString roleTag;
+    switch (m_sender) {
+    case Sender::User:   accent = theme.userName;   roleTag = "You";   break;
+    case Sender::Agent:  accent = theme.agentName;  roleTag = "Agent"; break;
+    case Sender::System: accent = theme.systemName; roleTag = "Sys";   break;
+    case Sender::Tool:   accent = theme.toolName;   roleTag = "Tool";  break;
+    }
+    m_accentBar->setStyleSheet(QString("background-color: %1; border-radius: 1px;").arg(accent.name()));
+
+    // 角色标签
     renderHeader(theme);
     if (!m_rawText.isEmpty() && m_bodyLabel) {
         m_bodyLabel->setText(markdownToHtml(m_rawText, isDark));
@@ -131,12 +159,10 @@ void AgentMessageBubble::renderHeader(const ChatTheme& theme)
 
     QString time = m_timestamp.toString("hh:mm:ss");
 
-    // 用 <table> 实现左右对齐，Qt RichText 稳定支持
+    // 紧凑内联 header：角色名 | 时间戳
     QString header = QString(
-        "<table width=\"100%%\"><tr>"
-        "<td align=\"left\"><span style=\"color:%1;font-weight:bold;\">%2</span></td>"
-        "<td align=\"right\"><span style=\"color:%3;\">%4</span></td>"
-        "</tr></table>"
+        "<span style=\"color:%1;font-weight:bold;\">%2</span>"
+        "&nbsp;<span style=\"color:%3;\">%4</span>"
     ).arg(nameColor.name()).arg(name)
      .arg(theme.timestampColor.name()).arg(time);
 
@@ -151,24 +177,22 @@ QString AgentMessageBubble::markdownToHtml(const QString& md, bool isDark)
 {
     ChatTheme theme = isDark ? ChatTheme::dark() : ChatTheme::light();
 
-    // 1. 先提取代码块边界，代码块内部原封不动
+    // 先提取代码块，内部原封不动
     QStringList parts;
     int pos = 0;
 
     static QRegularExpression codeBlockRe(
-        "```(\\w*)\\n?([\\s\\S]*?)\\n?```");  // [\s\S] 跨行匹配
+        "```(\\w*)\\n?([\\s\\S]*?)\\n?```");
 
     QRegularExpressionMatchIterator it = codeBlockRe.globalMatch(md);
     while (it.hasNext()) {
         QRegularExpressionMatch match = it.next();
-        // 代码块前的普通文本
         if (match.capturedStart() > pos) {
             parts.append(renderInlineMarkdown(md.mid(pos, match.capturedStart() - pos), theme));
         }
-        // 代码块：内容 HTML 转义但不做 markdown 处理
         QString code = escapeHtml(match.captured(2));
         parts.append(QString(
-            "<pre style=\"background:%1;color:%2;padding:4px 6px;border-radius:3px;"
+            "<pre style=\"background:%1;color:%2;padding:6px 8px;border-radius:3px;margin:2px 0;"
             "font-family:Consolas,Monaco,'Courier New',monospace;font-size:12px;\">"
             "<code>%3</code></pre>"
         ).arg(theme.codeBlockBg.name())
@@ -180,7 +204,8 @@ QString AgentMessageBubble::markdownToHtml(const QString& md, bool isDark)
         parts.append(renderInlineMarkdown(md.mid(pos), theme));
     }
 
-    return QString("<div style=\"font-size:13px;line-height:1.3;color:%1;\">%2</div>")
+    // 透明背景，融入面板 — 无独立背景色盒
+    return QString("<div style=\"font-size:13px;line-height:1.4;color:%1;\">%2</div>")
            .arg(theme.textFg.name())
            .arg(parts.join(""));
 }
@@ -192,18 +217,15 @@ QString AgentMessageBubble::renderInlineMarkdown(const QString& text, const Chat
     html.replace("<", "&lt;");
     html.replace(">", "&gt;");
 
-    // Bold / italic
     html.replace(QRegularExpression("\\*\\*(.+?)\\*\\*"), "<b>\\1</b>");
     html.replace(QRegularExpression("\\b_(.+?)_\\b"), "<i>\\1</i>");
 
-    // Inline code
     html.replace(QRegularExpression("`([^`]+)`"),
         QString("<code style=\"background:%1;color:%2;padding:1px 3px;border-radius:2px;"
                 "font-family:Consolas,Monaco,'Courier New',monospace;font-size:12px;\">\\1</code>")
         .arg(theme.inlineCodeBg.name())
         .arg(theme.inlineCodeFg.name()));
 
-    // Headings
     html.replace(QRegularExpression("^## (.+)$", QRegularExpression::MultilineOption),
                  "<b style=\"font-size:14px;\">\\1</b>");
     html.replace(QRegularExpression("^### (.+)$", QRegularExpression::MultilineOption),
@@ -227,7 +249,6 @@ QString AgentMessageBubble::renderInlineMarkdown(const QString& text, const Chat
     if (inList) resultLines.append("</ul>");
     html = resultLines.join("\n");
 
-    // Links
     html.replace(QRegularExpression("\\[(.+?)\\]\\((.+?)\\)"),
         QString("<a href=\"\\2\" style=\"color:%1;\">\\1</a>").arg(theme.linkColor.name()));
     html.replace(QRegularExpression("(https?://[^\\s<>]+)"),

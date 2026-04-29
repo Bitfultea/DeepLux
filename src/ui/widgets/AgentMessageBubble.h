@@ -26,7 +26,6 @@ struct ChatTheme {
     QColor timestampColor;
     QColor errorColor;
 
-    // 命名构造函数 — 必须通过 factory 创建，杜绝位置初始化
     ChatTheme(const QColor& windowBg, const QColor& textFg,
               const QColor& inputBg, const QColor& inputBorder,
               const QColor& userName, const QColor& agentName,
@@ -40,6 +39,12 @@ struct ChatTheme {
     static ChatTheme light();
 };
 
+/**
+ * @brief 单条聊天消息 — 终端风格
+ *
+ * 无独立背景盒，透明融入面板底色。
+ * 仅靠左侧 3px 色条区分说话者角色。
+ */
 class AgentMessageBubble : public QWidget
 {
     Q_OBJECT
@@ -63,8 +68,9 @@ private:
     static QString escapeHtml(const QString& text);
 
     Sender m_sender;
-    QLabel* m_headerLabel = nullptr;
-    QLabel* m_bodyLabel = nullptr;
+    QWidget* m_accentBar = nullptr;     // 左侧色条
+    QLabel* m_headerLabel = nullptr;    // 角色名 + 时间
+    QLabel* m_bodyLabel = nullptr;      // 消息正文
     QString m_rawText;
     QDateTime m_timestamp;
     bool m_isDark = false;
