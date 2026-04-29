@@ -9,6 +9,7 @@ class QComboBox;
 class QDoubleSpinBox;
 class QSpinBox;
 class QTextEdit;
+class QCheckBox;
 
 namespace DeepLux {
 
@@ -31,6 +32,7 @@ public:
     int maxTokens() const;
     AgentController::PermissionLevel permissionLevel() const;
     QString systemPrompt() const;
+    bool toolsEnabled() const;
 
 private:
     void setupUi();
@@ -44,6 +46,7 @@ private:
     QSpinBox* m_maxTokensSpin = nullptr;
     QComboBox* m_permissionCombo = nullptr;
     QTextEdit* m_systemPromptEdit = nullptr;
+    QCheckBox* m_toolsCheck = nullptr;
 };
 
 } // namespace DeepLux

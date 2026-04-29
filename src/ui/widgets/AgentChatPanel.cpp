@@ -5,7 +5,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QScrollArea>
-#include <QLineEdit>
+#include <QTextEdit>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QKeyEvent>
@@ -15,7 +15,7 @@
 #include <QClipboard>
 #include <QApplication>
 #include <QLabel>
-#include <QDebug>
+#include <QTimer>
 
 namespace DeepLux {
 
@@ -31,54 +31,100 @@ AgentChatPanel::~AgentChatPanel() = default;
 void AgentChatPanel::setupUi()
 {
     auto* mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(4, 4, 4, 4);
-    mainLayout->setSpacing(4);
+    mainLayout->setContentsMargins(0, 0, 0, 0);
+    mainLayout->setSpacing(0);
 
-    // Scroll area for messages
+    // 消息滚动区
     m_scrollArea = new QScrollArea(this);
     m_scrollArea->setWidgetResizable(true);
     m_scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_scrollArea->setFrameStyle(QFrame::NoFrame);
 
     m_messagesContainer = new QWidget();
     m_messagesLayout = new QVBoxLayout(m_messagesContainer);
     m_messagesLayout->setAlignment(Qt::AlignTop);
-    m_messagesLayout->addStretch();
+    m_messagesLayout->setSpacing(0);
 
     m_scrollArea->setWidget(m_messagesContainer);
     mainLayout->addWidget(m_scrollArea, 1);
 
-    // Image attachment bar
+    // 状态指示器（默认隐藏）
+    m_statusLabel = new QLabel(this);
+    m_statusLabel->setVisible(false);
+    mainLayout->addWidget(m_statusLabel);
+
+    // 附件栏
     m_attachmentBar = new QWidget(this);
     auto* attachLayout = new QHBoxLayout(m_attachmentBar);
-    attachLayout->setContentsMargins(4, 2, 4, 2);
+    attachLayout->setContentsMargins(8, 2, 8, 0);
     attachLayout->addStretch();
     m_attachmentBar->setVisible(false);
     mainLayout->addWidget(m_attachmentBar);
 
-    // Input area
-    auto* inputLayout = new QHBoxLayout();
-    m_inputEdit = new QLineEdit(this);
-    m_inputEdit->setPlaceholderText("Ask Agent to help you... (Ctrl+V to paste image)");
+    // 底部输入区
+    auto* bottomLayout = new QHBoxLayout();
+    bottomLayout->setContentsMargins(8, 4, 8, 4);
+    bottomLayout->setSpacing(6);
+
+    m_inputEdit = new QTextEdit(this);
+    m_inputEdit->setPlaceholderText("Ask the Agent... (Shift+Enter for new line)");
+    m_inputEdit->setMinimumHeight(28);
+    m_inputEdit->setMaximumHeight(120);  // ~5 行，支持真正多行输入
+    m_inputEdit->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_inputEdit->installEventFilter(this);
+
     m_sendButton = new QPushButton("Send", this);
-    inputLayout->addWidget(m_inputEdit, 1);
-    inputLayout->addWidget(m_sendButton);
-    mainLayout->addLayout(inputLayout);
+    m_sendButton->setFixedWidth(50);
+    m_sendButton->setFixedHeight(28);
+
+    bottomLayout->addWidget(m_inputEdit, 1);
+    bottomLayout->addWidget(m_sendButton);
+    mainLayout->addLayout(bottomLayout);
 
     connect(m_sendButton, &QPushButton::clicked, this, &AgentChatPanel::onSendClicked);
-    connect(m_inputEdit, &QLineEdit::returnPressed, this, &AgentChatPanel::onInputReturnPressed);
 
-    // 默认应用浅色主题
+    m_thinkingTimer = new QTimer(this);
+    m_thinkingTimer->setSingleShot(true);
+    connect(m_thinkingTimer, &QTimer::timeout, this, &AgentChatPanel::onThinkingTimeout);
+
     applyTheme(false);
 }
 
 void AgentChatPanel::addMessage(AgentMessageBubble::Sender sender, const QString& text)
 {
-    auto* bubble = new AgentMessageBubble(sender, text, m_messagesContainer);
-    int count = m_messagesLayout->count();
-    m_messagesLayout->insertWidget(count - 1, bubble);
+    auto* bubble = new AgentMessageBubble(sender, text, m_isDark, m_messagesContainer);
 
-    QScrollBar* bar = m_scrollArea->verticalScrollBar();
-    bar->setValue(bar->maximum());
+    // 用 layout item count 找到 stretch 位置，插入到 stretch 之前
+    int stretchIdx = -1;
+    for (int i = 0; i < m_messagesLayout->count(); ++i) {
+        if (m_messagesLayout->itemAt(i)->spacerItem()) {
+            stretchIdx = i;
+            break;
+        }
+    }
+    if (stretchIdx >= 0) {
+        m_messagesLayout->insertWidget(stretchIdx, bubble);
+    } else {
+        m_messagesLayout->addWidget(bubble);
+    }
+
+    // 确保底部有 stretch
+    if (stretchIdx < 0) {
+        m_messagesLayout->addStretch();
+    }
+
+    if (sender == AgentMessageBubble::Sender::Agent) {
+        m_lastAgentBubble = bubble;
+    }
+    scrollToBottom();
+}
+
+void AgentChatPanel::appendToLastMessage(const QString& text)
+{
+    if (m_lastAgentBubble) {
+        m_lastAgentBubble->appendText(text);
+        scrollToBottom();
+    }
 }
 
 void AgentChatPanel::addImageAttachment(const QPixmap& pixmap)
@@ -86,7 +132,7 @@ void AgentChatPanel::addImageAttachment(const QPixmap& pixmap)
     m_imageAttachments.append(pixmap);
 
     QLabel* thumb = new QLabel(m_attachmentBar);
-    thumb->setPixmap(pixmap.scaled(64, 64, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    thumb->setPixmap(pixmap.scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     thumb->setFrameShape(QLabel::Box);
     auto* layout = qobject_cast<QHBoxLayout*>(m_attachmentBar->layout());
     if (layout) {
@@ -114,14 +160,27 @@ void AgentChatPanel::clearImageAttachments()
 void AgentChatPanel::showToolPreview(const QList<AgentToolPreviewCard::ToolItem>& tools)
 {
     clearToolPreview();
-    m_previewCard = new AgentToolPreviewCard(tools, m_messagesContainer);
-    int count = m_messagesLayout->count();
-    m_messagesLayout->insertWidget(count - 1, m_previewCard);
+    m_previewCard = new AgentToolPreviewCard(tools, m_isDark, m_messagesContainer);
+
+    int stretchIdx = -1;
+    for (int i = 0; i < m_messagesLayout->count(); ++i) {
+        if (m_messagesLayout->itemAt(i)->spacerItem()) {
+            stretchIdx = i;
+            break;
+        }
+    }
+    if (stretchIdx >= 0) {
+        m_messagesLayout->insertWidget(stretchIdx, m_previewCard);
+    } else {
+        m_messagesLayout->addWidget(m_previewCard);
+    }
 
     connect(m_previewCard, &AgentToolPreviewCard::confirmed,
             this, &AgentChatPanel::toolPreviewConfirmed);
     connect(m_previewCard, &AgentToolPreviewCard::cancelled,
             this, &AgentChatPanel::toolPreviewCancelled);
+
+    scrollToBottom();
 }
 
 void AgentChatPanel::clearToolPreview()
@@ -132,9 +191,41 @@ void AgentChatPanel::clearToolPreview()
     }
 }
 
+void AgentChatPanel::setThinking(bool thinking)
+{
+    m_isThinkingTimeout = false;
+    m_statusLabel->setVisible(thinking);
+    if (thinking) {
+        ChatTheme theme = m_isDark ? ChatTheme::dark() : ChatTheme::light();
+        m_statusLabel->setStyleSheet(QString(
+            "color: %1; font-size: 11px; padding: 2px 8px;"
+        ).arg(theme.statusColor.name()));
+        m_statusLabel->setText("● Agent is thinking...");
+        m_thinkingTimer->start(60000);
+    } else {
+        m_thinkingTimer->stop();
+    }
+}
+
+void AgentChatPanel::onThinkingTimeout()
+{
+    m_isThinkingTimeout = true;
+    ChatTheme theme = m_isDark ? ChatTheme::dark() : ChatTheme::light();
+    m_statusLabel->setStyleSheet(QString(
+        "color: %1; font-size: 11px; padding: 2px 8px;"
+    ).arg(theme.errorColor.name()));
+    m_statusLabel->setText("⚠️ Request timed out");
+    QTimer::singleShot(5000, this, [this]() {
+        if (m_isThinkingTimeout) {
+            m_statusLabel->setVisible(false);
+            m_isThinkingTimeout = false;
+        }
+    });
+}
+
 void AgentChatPanel::onSendClicked()
 {
-    QString text = m_inputEdit->text().trimmed();
+    QString text = m_inputEdit->toPlainText().trimmed();
     if (text.isEmpty() && m_imageAttachments.isEmpty()) return;
 
     if (!text.isEmpty()) {
@@ -142,7 +233,7 @@ void AgentChatPanel::onSendClicked()
     }
     if (!m_imageAttachments.isEmpty()) {
         addMessage(AgentMessageBubble::Sender::User,
-                   QString("[Image attachment x%1]").arg(m_imageAttachments.size()));
+                   QString("[Image x%1]").arg(m_imageAttachments.size()));
         emit userMessageWithImagesSent(text, m_imageAttachments);
     } else {
         emit userMessageSent(text);
@@ -151,27 +242,37 @@ void AgentChatPanel::onSendClicked()
     clearImageAttachments();
 }
 
-void AgentChatPanel::onInputReturnPressed()
+void AgentChatPanel::scrollToBottom()
 {
-    onSendClicked();
+    QScrollBar* bar = m_scrollArea->verticalScrollBar();
+    bar->setValue(bar->maximum());
 }
 
-void AgentChatPanel::keyPressEvent(QKeyEvent* event)
+bool AgentChatPanel::eventFilter(QObject* obj, QEvent* event)
 {
-    if (event->modifiers() & Qt::ControlModifier) {
-        if (event->key() == Qt::Key_V) {
+    if (obj == m_inputEdit && event->type() == QEvent::KeyPress) {
+        QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
+
+        if (keyEvent->matches(QKeySequence::Paste)) {
             QClipboard* clipboard = QApplication::clipboard();
             const QMimeData* mimeData = clipboard->mimeData();
             if (mimeData->hasImage()) {
                 QPixmap pixmap = qvariant_cast<QPixmap>(mimeData->imageData());
                 if (!pixmap.isNull()) {
                     addImageAttachment(pixmap);
-                    return;
+                    return true;  // 图片粘贴已处理
                 }
             }
+            // 纯文本粘贴：放行给 QTextEdit 自行处理
+        }
+
+        if ((keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter)
+            && !(keyEvent->modifiers() & Qt::ShiftModifier)) {
+            onSendClicked();
+            return true;
         }
     }
-    QWidget::keyPressEvent(event);
+    return QWidget::eventFilter(obj, event);
 }
 
 void AgentChatPanel::dragEnterEvent(QDragEnterEvent* event)
@@ -204,56 +305,73 @@ void AgentChatPanel::dropEvent(QDropEvent* event)
 
 void AgentChatPanel::applyTheme(bool isDark)
 {
-    QColor bg = isDark ? QColor("#252525") : QColor("#ffffff");
-    QColor text = isDark ? QColor("#ffffff") : QColor("#212121");
-    QColor inputBg = isDark ? QColor("#333333") : QColor("#ffffff");
-    QColor inputBorder = isDark ? QColor("#555555") : QColor("#cccccc");
+    m_isDark = isDark;
+    ChatTheme theme = isDark ? ChatTheme::dark() : ChatTheme::light();
 
-    // 主面板背景
-    QPalette mainPal = palette();
-    mainPal.setColor(QPalette::Window, bg);
-    setPalette(mainPal);
+    // 整个面板统一背景
+    QPalette pal = palette();
+    pal.setColor(QPalette::Window, theme.windowBg);
+    setPalette(pal);
     setAutoFillBackground(true);
 
-    // ScrollArea viewport 背景
-    if (m_scrollArea) {
-        m_scrollArea->setAutoFillBackground(true);
-        QPalette saPal = m_scrollArea->palette();
-        saPal.setColor(QPalette::Window, bg);
-        m_scrollArea->setPalette(saPal);
-
-        if (m_scrollArea->viewport()) {
-            m_scrollArea->viewport()->setAutoFillBackground(true);
-            m_scrollArea->viewport()->setPalette(saPal);
-        }
+    if (m_scrollArea && m_scrollArea->viewport()) {
+        QPalette vpPal;
+        vpPal.setColor(QPalette::Window, theme.windowBg);
+        m_scrollArea->viewport()->setPalette(vpPal);
+        m_scrollArea->viewport()->setAutoFillBackground(true);
     }
 
-    // 消息容器背景
     if (m_messagesContainer) {
-        m_messagesContainer->setAutoFillBackground(true);
-        QPalette msgPal = m_messagesContainer->palette();
-        msgPal.setColor(QPalette::Window, bg);
+        QPalette msgPal;
+        msgPal.setColor(QPalette::Window, theme.windowBg);
         m_messagesContainer->setPalette(msgPal);
+        m_messagesContainer->setAutoFillBackground(true);
     }
 
-    // 附件栏背景
-    if (m_attachmentBar) {
-        m_attachmentBar->setAutoFillBackground(true);
-        QPalette attachPal = m_attachmentBar->palette();
-        attachPal.setColor(QPalette::Window, bg);
-        m_attachmentBar->setPalette(attachPal);
+    if (m_statusLabel) {
+        m_statusLabel->setStyleSheet(QString(
+            "color: %1; font-size: 11px; padding: 2px 8px;"
+        ).arg(theme.statusColor.name()));
     }
 
-    // 输入框
     if (m_inputEdit) {
-        m_inputEdit->setStyleSheet(QString("QLineEdit { background-color: %1; color: %2; border: 1px solid %3; padding: 5px; }")
-                                   .arg(inputBg.name(), text.name(), inputBorder.name()));
+        m_inputEdit->setStyleSheet(QString(
+            "QTextEdit {"
+            "  background-color: %1;"
+            "  color: %2;"
+            "  border: 1px solid %3;"
+            "  border-radius: 3px;"
+            "  padding: 4px;"
+            "  font-size: 13px;"
+            "}"
+        ).arg(theme.inputBg.name()).arg(theme.textFg.name()).arg(theme.inputBorder.name()));
     }
 
-    // 发送按钮
     if (m_sendButton) {
-        m_sendButton->setStyleSheet(QString("QPushButton { background-color: #0078d7; color: white; padding: 5px 12px; border: none; }"
-                                            "QPushButton:hover { background-color: #1e8ad6; }"));
+        m_sendButton->setStyleSheet(QString(
+            "QPushButton {"
+            "  background-color: #0078d7;"
+            "  color: white;"
+            "  border-radius: 3px;"
+            "  font-size: 12px;"
+            "  font-weight: bold;"
+            "}"
+            "QPushButton:hover { background-color: #1e8ad6; }"
+            "QPushButton:pressed { background-color: #005a9e; }"
+        ));
+    }
+
+    if (m_messagesLayout) {
+        for (int i = 0; i < m_messagesLayout->count(); ++i) {
+            QLayoutItem* item = m_messagesLayout->itemAt(i);
+            if (!item) continue;
+            if (auto* bubble = qobject_cast<AgentMessageBubble*>(item->widget())) {
+                bubble->applyTheme(isDark);
+            }
+            if (auto* preview = qobject_cast<AgentToolPreviewCard*>(item->widget())) {
+                preview->applyTheme(isDark);
+            }
+        }
     }
 }
 

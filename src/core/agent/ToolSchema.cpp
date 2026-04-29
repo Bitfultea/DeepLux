@@ -5,7 +5,13 @@ namespace DeepLux {
 QJsonObject ToolParam::toJson() const
 {
     QJsonObject obj;
-    obj["type"] = type;
+    // OpenAI/DeepSeek JSON Schema: type must be "string", "number", "boolean", "object", "array", "null".
+    // "enum" is NOT a valid type. If enumValues is present, type should be "string".
+    if (!enumValues.isEmpty()) {
+        obj["type"] = "string";
+    } else {
+        obj["type"] = type;
+    }
     obj["description"] = description;
     if (!defaultValue.isUndefined() && !defaultValue.isNull()) {
         obj["default"] = defaultValue;

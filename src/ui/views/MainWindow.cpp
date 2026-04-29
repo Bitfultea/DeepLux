@@ -314,6 +314,7 @@ void MainWindow::setupMenuBar() {
             client->setModel(dlg.model());
             client->setTemperature(dlg.temperature());
             client->setMaxTokens(dlg.maxTokens());
+            client->setToolsEnabled(dlg.toolsEnabled());
         }
     });
 
@@ -855,21 +856,38 @@ void MainWindow::setupMainLayout() {
     m_agentChatPanel = new AgentChatPanel();
     m_logTerminalTabs->addTab(m_agentChatPanel, tr("🤖 Agent Chat"));
     connect(m_agentChatPanel, &AgentChatPanel::userMessageSent,
-            &AgentController::instance(), &AgentController::sendUserMessage);
+            this, [this](const QString& msg) {
+                m_agentChatPanel->setThinking(true);
+                AgentController::instance().sendUserMessage(msg);
+            });
     connect(m_agentChatPanel, &AgentChatPanel::userMessageWithImagesSent,
-            &AgentController::instance(), &AgentController::sendUserMessageWithImages);
+            this, [this](const QString& msg, const QList<QPixmap>& images) {
+                m_agentChatPanel->setThinking(true);
+                AgentController::instance().sendUserMessageWithImages(msg, images);
+            });
     connect(&AgentController::instance(), &AgentController::llmResponseReceived,
             this, [this](const QString& content, const QJsonArray& toolCalls) {
                 Q_UNUSED(toolCalls);
+                m_agentChatPanel->setThinking(false);
                 m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Agent, content);
             });
     connect(&AgentController::instance(), &AgentController::llmErrorOccurred,
             this, [this](const QString& error) {
+                m_agentChatPanel->setThinking(false);
                 m_agentChatPanel->addMessage(AgentMessageBubble::Sender::System,
                                              QString("Error: %1").arg(error));
+                AgentActionLogEntry entry;
+                entry.timestamp = QDateTime::currentDateTime();
+                entry.actor = "System";
+                entry.action = "LLM Error";
+                entry.params = error;
+                entry.result = "error";
+                entry.undoable = false;
+                m_agentActionLogWidget->addEntry(entry);
             });
     connect(&AgentController::instance(), &AgentController::toolsPendingConfirmation,
             this, [this](const QJsonArray& toolCalls) {
+                m_agentChatPanel->setThinking(false);
                 QList<AgentToolPreviewCard::ToolItem> items;
                 for (const QJsonValue& v : toolCalls) {
                     QJsonObject tc = v.toObject();
@@ -2479,6 +2497,7 @@ void MainWindow::loadAgentSettings()
         client->setModel(cfg.groupString("agent", "model", "gpt-4o"));
         client->setTemperature(cfg.groupDouble("agent", "temperature", 0.3));
         client->setMaxTokens(cfg.groupInt("agent", "maxTokens", 4096));
+        client->setToolsEnabled(cfg.groupBool("agent", "toolsEnabled", true));
         ctrl.setLLMClient(client);
     }
 

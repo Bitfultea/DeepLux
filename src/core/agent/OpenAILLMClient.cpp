@@ -56,6 +56,11 @@ void OpenAILLMClient::setMaxTokens(int tokens)
     m_maxTokens = tokens;
 }
 
+void OpenAILLMClient::setToolsEnabled(bool enabled)
+{
+    m_toolsEnabled = enabled;
+}
+
 void OpenAILLMClient::sendRequest(const AgentConversation& ctx,
                                   const QList<ToolDefinition>& tools)
 {
@@ -65,7 +70,7 @@ void OpenAILLMClient::sendRequest(const AgentConversation& ctx,
     body["max_tokens"] = m_maxTokens;
     body["messages"] = ctx.toOpenAIMessages();
 
-    if (!tools.isEmpty()) {
+    if (m_toolsEnabled && !tools.isEmpty()) {
         QJsonArray toolsArray;
         for (const ToolDefinition& t : tools) {
             toolsArray.append(t.toOpenAIFunction());
@@ -82,7 +87,9 @@ void OpenAILLMClient::sendRequest(const AgentConversation& ctx,
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     request.setRawHeader("Authorization", QString("Bearer %1").arg(m_apiKey).toUtf8());
 
-    qDebug() << "OpenAILLMClient: Sending request to" << m_endpoint;
+    qDebug() << "OpenAILLMClient: Sending request to" << m_endpoint
+             << "model=" << m_model << "msgs=" << ctx.messages.size();
+    // Request body intentionally NOT logged — contains API key in Authorization header
 
     m_currentReply = m_networkManager->post(request, data);
     connect(m_currentReply, &QNetworkReply::finished,
@@ -148,6 +155,11 @@ void OpenAILLMClient::onNetworkError(QNetworkReply::NetworkError error)
     Q_UNUSED(error);
     if (!m_currentReply) return;
     QString msg = m_currentReply->errorString();
+    QByteArray body = m_currentReply->readAll();
+    if (!body.isEmpty()) {
+        msg += " | Response: " + QString::fromUtf8(body);
+    }
+    qDebug() << "OpenAILLMClient: Network error:" << msg;
     m_currentReply->deleteLater();
     m_currentReply = nullptr;
     emit errorOccurred(msg);

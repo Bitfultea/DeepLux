@@ -1,17 +1,18 @@
 #include "AgentToolPreviewCard.h"
+#include "AgentMessageBubble.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QJsonDocument>
-#include <QScrollArea>
 
 namespace DeepLux {
 
-AgentToolPreviewCard::AgentToolPreviewCard(const QList<ToolItem>& tools, QWidget* parent)
+AgentToolPreviewCard::AgentToolPreviewCard(const QList<ToolItem>& tools, bool isDark, QWidget* parent)
     : QWidget(parent)
     , m_tools(tools)
+    , m_isDark(isDark)
 {
     setupUi();
 }
@@ -19,40 +20,51 @@ AgentToolPreviewCard::AgentToolPreviewCard(const QList<ToolItem>& tools, QWidget
 void AgentToolPreviewCard::setupUi()
 {
     auto* mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(12, 12, 12, 12);
-    mainLayout->setSpacing(8);
+    mainLayout->setContentsMargins(8, 4, 8, 4);
+    mainLayout->setSpacing(4);
 
-    QLabel* title = new QLabel("Agent wants to execute:", this);
-    title->setStyleSheet("font-weight: bold; font-size: 14px;");
-    mainLayout->addWidget(title);
+    ChatTheme theme = m_isDark ? ChatTheme::dark() : ChatTheme::light();
+
+    // 标题行（嵌入到布局，不是独立 header）
+    auto* titleLayout = new QHBoxLayout();
+    QLabel* title = new QLabel("🔧 Agent wants to execute:", this);
+    title->setStyleSheet(QString("font-weight: bold; font-size: 11px; color: %1;").arg(theme.textFg.name()));
+    titleLayout->addWidget(title);
+    titleLayout->addStretch();
+    mainLayout->addLayout(titleLayout);
 
     for (int i = 0; i < m_tools.size(); ++i) {
         const ToolItem& t = m_tools[i];
-        QWidget* itemWidget = new QWidget(this);
-        auto* itemLayout = new QHBoxLayout(itemWidget);
-        itemLayout->setContentsMargins(8, 6, 8, 6);
 
         QLabel* nameLabel = new QLabel(QString("%1. %2").arg(i + 1).arg(t.name), this);
-        nameLabel->setStyleSheet("font-weight: bold;");
-        itemLayout->addWidget(nameLabel);
+        nameLabel->setStyleSheet(QString("font-weight: bold; font-size: 12px; color: %1;").arg(theme.textFg.name()));
+        mainLayout->addWidget(nameLabel);
 
-        QString paramsStr = QString(QJsonDocument(t.params).toJson(QJsonDocument::Compact));
+        QString paramsStr = QString(QJsonDocument(t.params).toJson(QJsonDocument::Indented));
         QLabel* paramsLabel = new QLabel(paramsStr, this);
-        paramsLabel->setStyleSheet("color: #666; font-size: 11px;");
+        paramsLabel->setTextFormat(Qt::PlainText);
         paramsLabel->setWordWrap(true);
-        itemLayout->addWidget(paramsLabel, 1);
+        paramsLabel->setStyleSheet(QString(
+            "background-color: %1;"
+            "color: %2;"
+            "padding: 4px 6px;"
+            "border-radius: 3px;"
+            "font-family: Consolas, Monaco, 'Courier New', monospace;"
+            "font-size: 11px;"
+        ).arg(theme.codeBlockBg.name()).arg(theme.codeBlockFg.name()));
 
-        itemWidget->setStyleSheet("background-color: #f5f5f5; border-radius: 4px;");
-        mainLayout->addWidget(itemWidget);
+        m_paramWidgets.append(paramsLabel);
+        mainLayout->addWidget(paramsLabel);
     }
 
     auto* btnLayout = new QHBoxLayout();
+    btnLayout->addStretch();
+
     QPushButton* confirmBtn = new QPushButton("Confirm", this);
     QPushButton* cancelBtn = new QPushButton("Cancel", this);
-    confirmBtn->setStyleSheet("background-color: #27ae60; color: white;");
-    cancelBtn->setStyleSheet("background-color: #e74c3c; color: white;");
+    confirmBtn->setFixedHeight(26);
+    cancelBtn->setFixedHeight(26);
 
-    btnLayout->addStretch();
     btnLayout->addWidget(confirmBtn);
     btnLayout->addWidget(cancelBtn);
     mainLayout->addLayout(btnLayout);
@@ -60,7 +72,31 @@ void AgentToolPreviewCard::setupUi()
     connect(confirmBtn, &QPushButton::clicked, this, &AgentToolPreviewCard::confirmed);
     connect(cancelBtn, &QPushButton::clicked, this, &AgentToolPreviewCard::cancelled);
 
-    setStyleSheet("background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 8px;");
+    applyTheme(m_isDark);
+}
+
+void AgentToolPreviewCard::applyTheme(bool isDark)
+{
+    m_isDark = isDark;
+    ChatTheme theme = isDark ? ChatTheme::dark() : ChatTheme::light();
+
+    // 只保留左边框标识，无独立背景色
+    setStyleSheet(QString(
+        "AgentToolPreviewCard { border-left: 2px solid #f59e0b; }"
+    ));
+
+    for (QWidget* w : m_paramWidgets) {
+        if (auto* lbl = qobject_cast<QLabel*>(w)) {
+            lbl->setStyleSheet(QString(
+                "background-color: %1;"
+                "color: %2;"
+                "padding: 4px 6px;"
+                "border-radius: 3px;"
+                "font-family: Consolas, Monaco, 'Courier New', monospace;"
+                "font-size: 11px;"
+            ).arg(theme.codeBlockBg.name()).arg(theme.codeBlockFg.name()));
+        }
+    }
 }
 
 } // namespace DeepLux

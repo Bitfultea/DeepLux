@@ -13,6 +13,7 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QMessageBox>
+#include <QCheckBox>
 
 namespace DeepLux {
 
@@ -41,7 +42,7 @@ void AgentSettingsDialog::setupUi()
     formLayout->addRow("API Key:", m_apiKeyEdit);
 
     m_modelEdit = new QLineEdit(this);
-    m_modelEdit->setPlaceholderText("gpt-4o");
+    m_modelEdit->setPlaceholderText("e.g. gpt-4o, deepseek-chat, claude-3-5-sonnet");
     formLayout->addRow("Model:", m_modelEdit);
 
     m_tempSpin = new QDoubleSpinBox(this);
@@ -67,6 +68,11 @@ void AgentSettingsDialog::setupUi()
     m_systemPromptEdit->setMaximumHeight(120);
     m_systemPromptEdit->setPlaceholderText("You are an AI assistant for DeepLux Vision...");
     formLayout->addRow("System Prompt:", m_systemPromptEdit);
+
+    m_toolsCheck = new QCheckBox("Enable Function Calling (tools)", this);
+    m_toolsCheck->setChecked(true);
+    m_toolsCheck->setToolTip("Disable if your API provider does not support function calling (e.g. some DeepSeek models)");
+    formLayout->addRow(m_toolsCheck);
 
     mainLayout->addLayout(formLayout);
 
@@ -96,6 +102,7 @@ void AgentSettingsDialog::loadSettings()
     m_endpointEdit->setText(cfg.groupString("agent", "endpoint", "https://api.openai.com/v1/chat/completions"));
     m_apiKeyEdit->setText(cfg.groupString("agent", "apiKey", ""));
     m_modelEdit->setText(cfg.groupString("agent", "model", "gpt-4o"));
+    m_toolsCheck->setChecked(cfg.groupBool("agent", "toolsEnabled", true));
     m_tempSpin->setValue(cfg.groupDouble("agent", "temperature", 0.3));
     m_maxTokensSpin->setValue(cfg.groupInt("agent", "maxTokens", 4096));
     m_permissionCombo->setCurrentIndex(cfg.groupInt("agent", "permissionLevel", 1));
@@ -116,6 +123,7 @@ void AgentSettingsDialog::saveSettings()
     cfg.setGroupValue("agent", "maxTokens", m_maxTokensSpin->value());
     cfg.setGroupValue("agent", "permissionLevel", m_permissionCombo->currentIndex());
     cfg.setGroupValue("agent", "systemPrompt", m_systemPromptEdit->toPlainText());
+    cfg.setGroupValue("agent", "toolsEnabled", m_toolsCheck->isChecked());
     cfg.save();
 }
 
@@ -152,6 +160,11 @@ AgentController::PermissionLevel AgentSettingsDialog::permissionLevel() const
 QString AgentSettingsDialog::systemPrompt() const
 {
     return m_systemPromptEdit->toPlainText();
+}
+
+bool AgentSettingsDialog::toolsEnabled() const
+{
+    return m_toolsCheck->isChecked();
 }
 
 } // namespace DeepLux
