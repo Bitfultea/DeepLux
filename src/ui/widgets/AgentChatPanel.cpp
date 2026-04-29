@@ -5,8 +5,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QScrollArea>
-#include <QTextEdit>
-#include <QPushButton>
+#include <QPlainTextEdit>
 #include <QScrollBar>
 #include <QKeyEvent>
 #include <QDragEnterEvent>
@@ -16,6 +15,8 @@
 #include <QApplication>
 #include <QLabel>
 #include <QTimer>
+#include <QTextBlock>
+#include <QFontMetrics>
 
 namespace DeepLux {
 
@@ -34,7 +35,7 @@ void AgentChatPanel::setupUi()
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(0);
 
-    // 消息滚动区
+    // ── 消息滚动区 ──
     m_scrollArea = new QScrollArea(this);
     m_scrollArea->setWidgetResizable(true);
     m_scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -48,12 +49,12 @@ void AgentChatPanel::setupUi()
     m_scrollArea->setWidget(m_messagesContainer);
     mainLayout->addWidget(m_scrollArea, 1);
 
-    // 状态指示器（默认隐藏）
+    // ── 状态行 ──
     m_statusLabel = new QLabel(this);
     m_statusLabel->setVisible(false);
     mainLayout->addWidget(m_statusLabel);
 
-    // 附件栏
+    // ── 附件栏 ──
     m_attachmentBar = new QWidget(this);
     auto* attachLayout = new QHBoxLayout(m_attachmentBar);
     attachLayout->setContentsMargins(8, 2, 8, 0);
@@ -61,28 +62,26 @@ void AgentChatPanel::setupUi()
     m_attachmentBar->setVisible(false);
     mainLayout->addWidget(m_attachmentBar);
 
-    // 底部输入区
-    auto* bottomLayout = new QHBoxLayout();
-    bottomLayout->setContentsMargins(8, 4, 8, 4);
-    bottomLayout->setSpacing(6);
-
-    m_inputEdit = new QTextEdit(this);
-    m_inputEdit->setPlaceholderText("Ask the Agent... (Shift+Enter for new line)");
-    m_inputEdit->setMinimumHeight(28);
-    m_inputEdit->setMaximumHeight(120);  // ~5 行，支持真正多行输入
-    m_inputEdit->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    // ── 内联输入区（Claude Code 风格：单行自扩展，无独立 Send 按钮）──
+    m_inputEdit = new QPlainTextEdit(this);
+    m_inputEdit->setPlaceholderText("Ask the Agent...  (Enter to send, Shift+Enter for new line)");
     m_inputEdit->installEventFilter(this);
 
-    m_sendButton = new QPushButton("Send", this);
-    m_sendButton->setFixedWidth(50);
-    m_sendButton->setFixedHeight(28);
+    // 初始单行高度
+    QFontMetrics fm(m_inputEdit->font());
+    m_lineHeight = fm.lineSpacing() + 4;  // +4 for padding
+    m_inputEdit->setFixedHeight(m_lineHeight * m_inputMinLines + 8);
 
-    bottomLayout->addWidget(m_inputEdit, 1);
-    bottomLayout->addWidget(m_sendButton);
-    mainLayout->addLayout(bottomLayout);
+    // 禁止滚动条 — 扩展高度直到上限才让内部滚动
+    m_inputEdit->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_inputEdit->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
-    connect(m_sendButton, &QPushButton::clicked, this, &AgentChatPanel::onSendClicked);
+    connect(m_inputEdit, &QPlainTextEdit::textChanged,
+            this, &AgentChatPanel::onInputChanged);
 
+    mainLayout->addWidget(m_inputEdit);
+
+    // ── Thinking 超时 ──
     m_thinkingTimer = new QTimer(this);
     m_thinkingTimer->setSingleShot(true);
     connect(m_thinkingTimer, &QTimer::timeout, this, &AgentChatPanel::onThinkingTimeout);
@@ -90,11 +89,30 @@ void AgentChatPanel::setupUi()
     applyTheme(false);
 }
 
-void AgentChatPanel::addMessage(AgentMessageBubble::Sender sender, const QString& text)
+void AgentChatPanel::onInputChanged()
 {
-    auto* bubble = new AgentMessageBubble(sender, text, m_isDark, m_messagesContainer);
+    updateInputHeight();
+}
 
-    // 用 layout item count 找到 stretch 位置，插入到 stretch 之前
+void AgentChatPanel::updateInputHeight()
+{
+    int docLines = qMax(1, m_inputEdit->document()->lineCount());
+    int lines = qBound(m_inputMinLines, docLines, m_inputMaxLines);
+
+    int newHeight = m_lineHeight * lines + 8;
+
+    if (newHeight != m_inputEdit->height()) {
+        m_inputEdit->setFixedHeight(newHeight);
+
+        // 超出上限时启用内部滚动条
+        bool needScroll = (docLines > m_inputMaxLines);
+        m_inputEdit->setVerticalScrollBarPolicy(
+            needScroll ? Qt::ScrollBarAsNeeded : Qt::ScrollBarAlwaysOff);
+    }
+}
+
+void AgentChatPanel::insertMessage(AgentMessageBubble* bubble)
+{
     int stretchIdx = -1;
     for (int i = 0; i < m_messagesLayout->count(); ++i) {
         if (m_messagesLayout->itemAt(i)->spacerItem()) {
@@ -107,11 +125,15 @@ void AgentChatPanel::addMessage(AgentMessageBubble::Sender sender, const QString
     } else {
         m_messagesLayout->addWidget(bubble);
     }
-
-    // 确保底部有 stretch
     if (stretchIdx < 0) {
         m_messagesLayout->addStretch();
     }
+}
+
+void AgentChatPanel::addMessage(AgentMessageBubble::Sender sender, const QString& text)
+{
+    auto* bubble = new AgentMessageBubble(sender, text, m_isDark, m_messagesContainer);
+    insertMessage(bubble);
 
     if (sender == AgentMessageBubble::Sender::Agent) {
         m_lastAgentBubble = bubble;
@@ -131,7 +153,7 @@ void AgentChatPanel::addImageAttachment(const QPixmap& pixmap)
 {
     m_imageAttachments.append(pixmap);
 
-    QLabel* thumb = new QLabel(m_attachmentBar);
+    auto* thumb = new QLabel(m_attachmentBar);
     thumb->setPixmap(pixmap.scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     thumb->setFrameShape(QLabel::Box);
     auto* layout = qobject_cast<QHBoxLayout*>(m_attachmentBar->layout());
@@ -173,6 +195,7 @@ void AgentChatPanel::showToolPreview(const QList<AgentToolPreviewCard::ToolItem>
         m_messagesLayout->insertWidget(stretchIdx, m_previewCard);
     } else {
         m_messagesLayout->addWidget(m_previewCard);
+        m_messagesLayout->addStretch();
     }
 
     connect(m_previewCard, &AgentToolPreviewCard::confirmed,
@@ -253,6 +276,7 @@ bool AgentChatPanel::eventFilter(QObject* obj, QEvent* event)
     if (obj == m_inputEdit && event->type() == QEvent::KeyPress) {
         QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
 
+        // 图片粘贴检测
         if (keyEvent->matches(QKeySequence::Paste)) {
             QClipboard* clipboard = QApplication::clipboard();
             const QMimeData* mimeData = clipboard->mimeData();
@@ -260,12 +284,13 @@ bool AgentChatPanel::eventFilter(QObject* obj, QEvent* event)
                 QPixmap pixmap = qvariant_cast<QPixmap>(mimeData->imageData());
                 if (!pixmap.isNull()) {
                     addImageAttachment(pixmap);
-                    return true;  // 图片粘贴已处理
+                    return true;
                 }
             }
-            // 纯文本粘贴：放行给 QTextEdit 自行处理
+            // 纯文本粘贴：放行给 QPlainTextEdit
         }
 
+        // Enter 发送，Shift+Enter 换行
         if ((keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter)
             && !(keyEvent->modifiers() & Qt::ShiftModifier)) {
             onSendClicked();
@@ -308,11 +333,13 @@ void AgentChatPanel::applyTheme(bool isDark)
     m_isDark = isDark;
     ChatTheme theme = isDark ? ChatTheme::dark() : ChatTheme::light();
 
-    // 整个面板统一背景
-    QPalette pal = palette();
-    pal.setColor(QPalette::Window, theme.windowBg);
-    setPalette(pal);
-    setAutoFillBackground(true);
+    // 面板整体背景
+    {
+        QPalette pal = palette();
+        pal.setColor(QPalette::Window, theme.windowBg);
+        setPalette(pal);
+        setAutoFillBackground(true);
+    }
 
     if (m_scrollArea && m_scrollArea->viewport()) {
         QPalette vpPal;
@@ -334,31 +361,18 @@ void AgentChatPanel::applyTheme(bool isDark)
         ).arg(theme.statusColor.name()));
     }
 
+    // 输入框：融入面板背景，无独立边框盒，仅顶部细线分隔
     if (m_inputEdit) {
         m_inputEdit->setStyleSheet(QString(
-            "QTextEdit {"
+            "QPlainTextEdit {"
             "  background-color: %1;"
             "  color: %2;"
-            "  border: 1px solid %3;"
-            "  border-radius: 3px;"
-            "  padding: 4px;"
+            "  border: none;"
+            "  border-top: 1px solid %3;"
+            "  padding: 4px 8px;"
             "  font-size: 13px;"
             "}"
-        ).arg(theme.inputBg.name()).arg(theme.textFg.name()).arg(theme.inputBorder.name()));
-    }
-
-    if (m_sendButton) {
-        m_sendButton->setStyleSheet(QString(
-            "QPushButton {"
-            "  background-color: #0078d7;"
-            "  color: white;"
-            "  border-radius: 3px;"
-            "  font-size: 12px;"
-            "  font-weight: bold;"
-            "}"
-            "QPushButton:hover { background-color: #1e8ad6; }"
-            "QPushButton:pressed { background-color: #005a9e; }"
-        ));
+        ).arg(theme.windowBg.name()).arg(theme.textFg.name()).arg(theme.inputBorder.name()));
     }
 
     if (m_messagesLayout) {

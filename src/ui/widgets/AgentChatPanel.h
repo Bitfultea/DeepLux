@@ -5,8 +5,7 @@
 #include <QList>
 #include <QPixmap>
 
-class QTextEdit;
-class QPushButton;
+class QPlainTextEdit;
 class QScrollArea;
 class QVBoxLayout;
 class QLabel;
@@ -18,9 +17,9 @@ class QTimer;
 namespace DeepLux {
 
 /**
- * @brief Agent 聊天主面板 —— Claude Code 风格
+ * @brief Agent 聊天主面板 —— Claude Code 终端风格
  *
- * 全宽流式单列布局 + Markdown 渲染 + 多行输入 + 状态指示
+ * 全宽流式单列布局 + Markdown 渲染 + 内联自适应输入
  */
 class AgentChatPanel : public QWidget
 {
@@ -50,19 +49,21 @@ signals:
 
 private slots:
     void onSendClicked();
+    void onInputChanged();
     void onThinkingTimeout();
 
 private:
     void setupUi();
     void scrollToBottom();
+    void updateInputHeight();
+    void insertMessage(AgentMessageBubble* bubble);
 
     bool eventFilter(QObject* obj, QEvent* event) override;
 
     QScrollArea* m_scrollArea = nullptr;
     QWidget* m_messagesContainer = nullptr;
     QVBoxLayout* m_messagesLayout = nullptr;
-    QTextEdit* m_inputEdit = nullptr;
-    QPushButton* m_sendButton = nullptr;
+    QPlainTextEdit* m_inputEdit = nullptr;
     AgentToolPreviewCard* m_previewCard = nullptr;
     QList<QPixmap> m_imageAttachments;
     QWidget* m_attachmentBar = nullptr;
@@ -71,7 +72,11 @@ private:
 
     AgentMessageBubble* m_lastAgentBubble = nullptr;
     bool m_isDark = false;
-    bool m_isThinkingTimeout = false;  // 超时标志，避免字符串匹配
+    bool m_isThinkingTimeout = false;
+
+    int m_lineHeight = 20;         // 单行像素高度
+    int m_inputMinLines = 1;
+    int m_inputMaxLines = 6;
 
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
