@@ -220,9 +220,10 @@ void AgentChatPanel::setThinking(bool thinking)
     m_statusLabel->setVisible(thinking);
     if (thinking) {
         ChatTheme theme = m_isDark ? ChatTheme::dark() : ChatTheme::light();
+        QString bg = theme.windowBg.name();
         m_statusLabel->setStyleSheet(QString(
-            "color: %1; font-size: 11px; padding: 2px 8px;"
-        ).arg(theme.statusColor.name()));
+            "color: %1; font-size: 11px; padding: 2px 8px; background-color: %2;"
+        ).arg(theme.statusColor.name()).arg(bg));
         m_statusLabel->setText("● Agent is thinking...");
         m_thinkingTimer->start(60000);
     } else {
@@ -234,9 +235,10 @@ void AgentChatPanel::onThinkingTimeout()
 {
     m_isThinkingTimeout = true;
     ChatTheme theme = m_isDark ? ChatTheme::dark() : ChatTheme::light();
+    QString bg = theme.windowBg.name();
     m_statusLabel->setStyleSheet(QString(
-        "color: %1; font-size: 11px; padding: 2px 8px;"
-    ).arg(theme.errorColor.name()));
+        "color: %1; font-size: 11px; padding: 2px 8px; background-color: %2;"
+    ).arg(theme.errorColor.name()).arg(bg));
     m_statusLabel->setText("⚠️ Request timed out");
     QTimer::singleShot(5000, this, [this]() {
         if (m_isThinkingTimeout) {
@@ -333,32 +335,29 @@ void AgentChatPanel::applyTheme(bool isDark)
     m_isDark = isDark;
     ChatTheme theme = isDark ? ChatTheme::dark() : ChatTheme::light();
 
-    // 面板整体背景
-    {
-        QPalette pal = palette();
-        pal.setColor(QPalette::Window, theme.windowBg);
-        setPalette(pal);
-        setAutoFillBackground(true);
-    }
+    // 用 stylesheet 而非 QPalette 设背景 — 避免被父级 QTabWidget stylesheet 覆盖
+    QString bg = theme.windowBg.name();
+    setStyleSheet(QString("background-color: %1;").arg(bg));
 
-    if (m_scrollArea && m_scrollArea->viewport()) {
-        QPalette vpPal;
-        vpPal.setColor(QPalette::Window, theme.windowBg);
-        m_scrollArea->viewport()->setPalette(vpPal);
-        m_scrollArea->viewport()->setAutoFillBackground(true);
+    if (m_scrollArea) {
+        m_scrollArea->setStyleSheet(QString(
+            "QScrollArea { background-color: %1; border: none; }"
+        ).arg(bg));
+        if (m_scrollArea->viewport()) {
+            m_scrollArea->viewport()->setStyleSheet(
+                QString("background-color: %1;").arg(bg));
+        }
     }
 
     if (m_messagesContainer) {
-        QPalette msgPal;
-        msgPal.setColor(QPalette::Window, theme.windowBg);
-        m_messagesContainer->setPalette(msgPal);
-        m_messagesContainer->setAutoFillBackground(true);
+        m_messagesContainer->setStyleSheet(
+            QString("background-color: %1;").arg(bg));
     }
 
     if (m_statusLabel) {
         m_statusLabel->setStyleSheet(QString(
-            "color: %1; font-size: 11px; padding: 2px 8px;"
-        ).arg(theme.statusColor.name()));
+            "color: %1; font-size: 11px; padding: 2px 8px; background-color: %2;"
+        ).arg(theme.statusColor.name()).arg(bg));
     }
 
     // 输入框：融入面板背景，无独立边框盒，仅顶部细线分隔
@@ -372,17 +371,22 @@ void AgentChatPanel::applyTheme(bool isDark)
             "  padding: 4px 8px;"
             "  font-size: 13px;"
             "}"
-        ).arg(theme.windowBg.name()).arg(theme.userFg.name()).arg(theme.inputBorder.name()));
+        ).arg(bg).arg(theme.userFg.name()).arg(theme.inputBorder.name()));
     }
 
+    if (m_attachmentBar) {
+        m_attachmentBar->setStyleSheet(
+            QString("background-color: %1;").arg(bg));
+    }
+
+    // 递归更新所有消息 bubble（加空指针保护防崩溃）
     if (m_messagesLayout) {
         for (int i = 0; i < m_messagesLayout->count(); ++i) {
             QLayoutItem* item = m_messagesLayout->itemAt(i);
-            if (!item) continue;
+            if (!item || !item->widget()) continue;
             if (auto* bubble = qobject_cast<AgentMessageBubble*>(item->widget())) {
                 bubble->applyTheme(isDark);
-            }
-            if (auto* preview = qobject_cast<AgentToolPreviewCard*>(item->widget())) {
+            } else if (auto* preview = qobject_cast<AgentToolPreviewCard*>(item->widget())) {
                 preview->applyTheme(isDark);
             }
         }
