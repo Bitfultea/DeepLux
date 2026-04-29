@@ -28,7 +28,7 @@ void AgentToolPreviewCard::setupUi()
     // 标题行（嵌入到布局，不是独立 header）
     auto* titleLayout = new QHBoxLayout();
     QLabel* title = new QLabel("🔧 Agent wants to execute:", this);
-    title->setStyleSheet(QString("font-weight: bold; font-size: 11px; color: %1;").arg(theme.textFg.name()));
+    title->setStyleSheet(QString("font-weight: bold; font-size: 11px; color: %1;").arg(theme.toolFg.name()));
     titleLayout->addWidget(title);
     titleLayout->addStretch();
     mainLayout->addLayout(titleLayout);
@@ -37,7 +37,7 @@ void AgentToolPreviewCard::setupUi()
         const ToolItem& t = m_tools[i];
 
         QLabel* nameLabel = new QLabel(QString("%1. %2").arg(i + 1).arg(t.name), this);
-        nameLabel->setStyleSheet(QString("font-weight: bold; font-size: 12px; color: %1;").arg(theme.textFg.name()));
+        nameLabel->setStyleSheet(QString("font-weight: bold; font-size: 12px; color: %1;").arg(theme.toolFg.name()));
         mainLayout->addWidget(nameLabel);
 
         QString paramsStr = QString(QJsonDocument(t.params).toJson(QJsonDocument::Indented));

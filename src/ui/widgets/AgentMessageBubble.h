@@ -10,9 +10,12 @@ namespace DeepLux {
 
 struct ChatTheme {
     QColor windowBg;
-    QColor textFg;
     QColor inputBg;
     QColor inputBorder;
+    QColor userFg;          // User 消息正文颜色
+    QColor agentFg;         // Agent 消息正文颜色
+    QColor systemFg;        // System 消息正文颜色
+    QColor toolFg;          // Tool 消息正文颜色
     QColor userName;
     QColor agentName;
     QColor systemName;
@@ -26,8 +29,10 @@ struct ChatTheme {
     QColor timestampColor;
     QColor errorColor;
 
-    ChatTheme(const QColor& windowBg, const QColor& textFg,
+    ChatTheme(const QColor& windowBg,
               const QColor& inputBg, const QColor& inputBorder,
+              const QColor& userFg, const QColor& agentFg,
+              const QColor& systemFg, const QColor& toolFg,
               const QColor& userName, const QColor& agentName,
               const QColor& systemName, const QColor& toolName,
               const QColor& codeBlockBg, const QColor& codeBlockFg,
@@ -60,10 +65,12 @@ public:
     void applyTheme(bool isDark);
 
     static QString markdownToHtml(const QString& md, bool isDark);
+    static QString markdownToHtml(const QString& md, bool isDark, const QColor& textColor);
 
 private:
     void setupUi();
     void renderHeader(const ChatTheme& theme);
+    QColor senderFg(const ChatTheme& theme) const;
     static QString renderInlineMarkdown(const QString& text, const ChatTheme& theme);
     static QString escapeHtml(const QString& text);
 

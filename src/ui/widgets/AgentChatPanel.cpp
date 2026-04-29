@@ -372,7 +372,7 @@ void AgentChatPanel::applyTheme(bool isDark)
             "  padding: 4px 8px;"
             "  font-size: 13px;"
             "}"
-        ).arg(theme.windowBg.name()).arg(theme.textFg.name()).arg(theme.inputBorder.name()));
+        ).arg(theme.windowBg.name()).arg(theme.userFg.name()).arg(theme.inputBorder.name()));
     }
 
     if (m_messagesLayout) {

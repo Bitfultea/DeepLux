@@ -9,16 +9,19 @@ namespace DeepLux {
 
 // ========== ChatTheme ==========
 
-ChatTheme::ChatTheme(const QColor& windowBg, const QColor& textFg,
+ChatTheme::ChatTheme(const QColor& windowBg,
                      const QColor& inputBg, const QColor& inputBorder,
+                     const QColor& userFg, const QColor& agentFg,
+                     const QColor& systemFg, const QColor& toolFg,
                      const QColor& userName, const QColor& agentName,
                      const QColor& systemName, const QColor& toolName,
                      const QColor& codeBlockBg, const QColor& codeBlockFg,
                      const QColor& inlineCodeBg, const QColor& inlineCodeFg,
                      const QColor& linkColor, const QColor& statusColor,
                      const QColor& timestampColor, const QColor& errorColor)
-    : windowBg(windowBg), textFg(textFg)
+    : windowBg(windowBg)
     , inputBg(inputBg), inputBorder(inputBorder)
+    , userFg(userFg), agentFg(agentFg), systemFg(systemFg), toolFg(toolFg)
     , userName(userName), agentName(agentName)
     , systemName(systemName), toolName(toolName)
     , codeBlockBg(codeBlockBg), codeBlockFg(codeBlockFg)
@@ -30,7 +33,8 @@ ChatTheme::ChatTheme(const QColor& windowBg, const QColor& textFg,
 ChatTheme ChatTheme::dark()
 {
     return ChatTheme(
-        QColor("#1e1e1e"), QColor("#d4d4d4"), QColor("#1e1e1e"), QColor("#444444"),
+        QColor("#1e1e1e"), QColor("#1e1e1e"), QColor("#444444"),
+        QColor("#ffffff"), QColor("#b0b0b0"), QColor("#aaaaaa"), QColor("#c586c0"),
         QColor("#569cd6"), QColor("#4ec9b0"), QColor("#888888"), QColor("#c586c0"),
         QColor("#0d0d0d"), QColor("#d4d4d4"),
         QColor("#2d2d2d"), QColor("#d4d4d4"),
@@ -41,7 +45,8 @@ ChatTheme ChatTheme::dark()
 ChatTheme ChatTheme::light()
 {
     return ChatTheme(
-        QColor("#ffffff"), QColor("#333333"), QColor("#ffffff"), QColor("#cccccc"),
+        QColor("#ffffff"), QColor("#ffffff"), QColor("#cccccc"),
+        QColor("#111111"), QColor("#444444"), QColor("#888888"), QColor("#7c3aed"),
         QColor("#0078d7"), QColor("#10a37f"), QColor("#888888"), QColor("#7c3aed"),
         QColor("#f4f4f4"), QColor("#333333"),
         QColor("#f0f0f0"), QColor("#333333"),
@@ -101,17 +106,20 @@ void AgentMessageBubble::setText(const QString& text)
 {
     m_rawText = text;
     ChatTheme theme = m_isDark ? ChatTheme::dark() : ChatTheme::light();
+    QColor bodyFg = senderFg(theme);
     renderHeader(theme);
     if (m_bodyLabel) {
-        m_bodyLabel->setText(markdownToHtml(text, m_isDark));
+        m_bodyLabel->setText(markdownToHtml(text, m_isDark, bodyFg));
     }
 }
 
 void AgentMessageBubble::appendText(const QString& text)
 {
     m_rawText += text;
+    ChatTheme theme = m_isDark ? ChatTheme::dark() : ChatTheme::light();
+    QColor bodyFg = senderFg(theme);
     if (m_bodyLabel) {
-        m_bodyLabel->setText(markdownToHtml(m_rawText, m_isDark));
+        m_bodyLabel->setText(markdownToHtml(m_rawText, m_isDark, bodyFg));
     }
 }
 
@@ -142,7 +150,7 @@ void AgentMessageBubble::applyTheme(bool isDark)
     // 角色标签
     renderHeader(theme);
     if (!m_rawText.isEmpty() && m_bodyLabel) {
-        m_bodyLabel->setText(markdownToHtml(m_rawText, isDark));
+        m_bodyLabel->setText(markdownToHtml(m_rawText, isDark, senderFg(theme)));
     }
 }
 
@@ -176,6 +184,12 @@ void AgentMessageBubble::renderHeader(const ChatTheme& theme)
 QString AgentMessageBubble::markdownToHtml(const QString& md, bool isDark)
 {
     ChatTheme theme = isDark ? ChatTheme::dark() : ChatTheme::light();
+    return markdownToHtml(md, isDark, theme.userFg);
+}
+
+QString AgentMessageBubble::markdownToHtml(const QString& md, bool isDark, const QColor& textColor)
+{
+    ChatTheme theme = isDark ? ChatTheme::dark() : ChatTheme::light();
 
     // 先提取代码块，内部原封不动
     QStringList parts;
@@ -204,10 +218,21 @@ QString AgentMessageBubble::markdownToHtml(const QString& md, bool isDark)
         parts.append(renderInlineMarkdown(md.mid(pos), theme));
     }
 
-    // 透明背景，融入面板 — 无独立背景色盒
+    // 透明背景，融入面板 — 颜色由 sender 决定
     return QString("<div style=\"font-size:13px;line-height:1.4;color:%1;\">%2</div>")
-           .arg(theme.textFg.name())
+           .arg(textColor.name())
            .arg(parts.join(""));
+}
+
+QColor AgentMessageBubble::senderFg(const ChatTheme& theme) const
+{
+    switch (m_sender) {
+    case Sender::User:   return theme.userFg;
+    case Sender::Agent:  return theme.agentFg;
+    case Sender::System: return theme.systemFg;
+    case Sender::Tool:   return theme.toolFg;
+    }
+    return theme.userFg;
 }
 
 QString AgentMessageBubble::renderInlineMarkdown(const QString& text, const ChatTheme& theme)
