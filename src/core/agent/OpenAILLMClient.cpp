@@ -31,6 +31,14 @@ void OpenAILLMClient::setApiKey(const QString& key)
 void OpenAILLMClient::setEndpoint(const QString& url)
 {
     m_endpoint = url;
+    // 自动补全 OpenAI-compatible API 路径
+    QUrl parsed(url);
+    QString path = parsed.path();
+    if (path.isEmpty() || path == "/") {
+        parsed.setPath("/v1/chat/completions");
+        m_endpoint = parsed.toString();
+        qDebug() << "OpenAILLMClient: Auto-completed endpoint to" << m_endpoint;
+    }
 }
 
 void OpenAILLMClient::setModel(const QString& model)

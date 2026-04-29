@@ -220,7 +220,9 @@ void RunEngine::executeRun()
     buildModuleTree();
 
     // 从第一个模块开始执行，维护流水线数据
-    QString currentModule = m_modules.first()->name();
+    QString currentModule = m_modules.first()->instanceName().isEmpty()
+        ? m_modules.first()->name()
+        : m_modules.first()->instanceName();
     m_currentModuleName = currentModule;
     ImageData pipelineData;
 

@@ -140,6 +140,8 @@ protected:
     int m_currentExecutingIndex = 0;  // 当前执行索引
     ImageData m_flowInput;  // 流程执行时的输入数据
     int m_flowTotalTime = 0;  // 总耗时
+    bool m_modulesNeedSync = true;  // 流程树变化后才能重新同步到 RunEngine
+    QMap<QString, QTreeWidgetItem*> m_instanceItemMap;  // instanceName → 流程树 item
 
     // 底部面板
     QDockWidget* m_logDock = nullptr;

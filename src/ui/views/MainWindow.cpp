@@ -103,27 +103,17 @@ MainWindow::MainWindow(QWidget* parent)
     applyTheme();
 
     // RunEngine 信号连接 — 统一执行入口，MainWindow 只做 UI 高亮/状态更新
+    // 使用 instanceName → item 映射实现 O(1) 查找
     connect(&RunEngine::instance(), &RunEngine::moduleStarted, this, [this](const QString& moduleName) {
-        Q_UNUSED(moduleName)
-        // 高亮当前流程树 item（基于 instanceName 或 display name 匹配）
-        for (int i = 0; i < m_processTree->topLevelItemCount(); ++i) {
-            QTreeWidgetItem* item = m_processTree->topLevelItem(i);
-            QString in = item->data(0, Qt::UserRole + 1).toString();
-            if (!in.isEmpty() && m_flowModules.contains(in)) {
-                IModule* mod = m_flowModules[in];
-                // Match by display name (name()) since RunEngine keys by it
-                if (mod && mod->name() == moduleName) {
-                    m_currentExecutingItem = item;
-                    m_currentExecutingIndex = i;
-                    item->setBackground(0, QBrush(QColor("#0078d7")));
-                    item->setForeground(0, QBrush(Qt::white));
-                    item->setBackground(1, QBrush(QColor("#0078d7")));
-                    item->setForeground(1, QBrush(Qt::white));
-                    item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
-                    item->setText(1, tr("执行中..."));
-                    break;
-                }
-            }
+        QTreeWidgetItem* item = m_instanceItemMap.value(moduleName);
+        if (item) {
+            m_currentExecutingItem = item;
+            item->setBackground(0, QBrush(QColor("#0078d7")));
+            item->setForeground(0, QBrush(Qt::white));
+            item->setBackground(1, QBrush(QColor("#0078d7")));
+            item->setForeground(1, QBrush(Qt::white));
+            item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
+            item->setText(1, tr("执行中..."));
         }
     });
 
@@ -978,6 +968,7 @@ void MainWindow::onProcessTreeContextMenu(const QPoint& pos) {
             m_usedPluginNames.remove(instanceName);
         }
         delete item;
+        m_modulesNeedSync = true;
 
         // 如果所有 item 都被删除，重新创建提示标签
         if (m_processTree->topLevelItemCount() == 0 && !m_hintLabel) {
@@ -1409,6 +1400,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                     m_usedPluginNames.remove(instanceName);
                 }
                 delete item;
+                m_modulesNeedSync = true;
                 // 如果所有 item 都被删除，重新创建提示标签
                 if (m_processTree->topLevelItemCount() == 0 && !m_hintLabel) {
                     // 查找 processPanelLayout
@@ -1523,6 +1515,8 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 
                         Logger::instance().info(tr("已添加插件到流程：%1 (%2)").arg(displayName).arg(instanceName),
                                                 "Flow");
+
+                        m_modulesNeedSync = true;
 
                         // 更新项目修改状态
                         if (ProjectManager::instance().currentProject()) {
@@ -1754,20 +1748,27 @@ void MainWindow::executeFlowOnce() {
         return;
     }
 
-    // 同步模块到 RunEngine（单一执行入口）
     RunEngine& engine = RunEngine::instance();
-    engine.clearModules();
-    for (int i = 0; i < m_processTree->topLevelItemCount(); ++i) {
-        QTreeWidgetItem* item = m_processTree->topLevelItem(i);
-        QString instanceName = item->data(0, Qt::UserRole + 1).toString();
-        if (instanceName.isEmpty() || !m_flowModules.contains(instanceName)) continue;
-        IModule* im = m_flowModules.value(instanceName);
-        if (!im || !im->isInitialized()) continue;
-        ModuleBase* mb = qobject_cast<ModuleBase*>(im);
-        if (mb) {
-            mb->setInstanceName(instanceName);
-            engine.addModule(mb);
+
+    // 仅在模块变更后重新同步（避免循环模式下每轮重复 addModule）
+    if (m_modulesNeedSync) {
+        m_instanceItemMap.clear();
+        engine.clearModules();
+        for (int i = 0; i < m_processTree->topLevelItemCount(); ++i) {
+            QTreeWidgetItem* item = m_processTree->topLevelItem(i);
+            QString instanceName = item->data(0, Qt::UserRole + 1).toString();
+            if (instanceName.isEmpty() || !m_flowModules.contains(instanceName)) continue;
+            IModule* im = m_flowModules.value(instanceName);
+            if (!im || !im->isInitialized()) continue;
+            ModuleBase* mb = qobject_cast<ModuleBase*>(im);
+            if (mb) {
+                mb->setInstanceName(instanceName);
+                engine.addModule(mb);
+                // 建立 instanceName → item 映射（用于信号处理 O(1) 查找）
+                m_instanceItemMap[instanceName] = item;
+            }
         }
+        m_modulesNeedSync = false;
     }
 
     // 委托给 RunEngine 执行
