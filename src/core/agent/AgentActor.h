@@ -52,6 +52,11 @@ private:
     QJsonObject getFlowState(const QJsonObject& params);
     QJsonObject getAvailablePlugins(const QJsonObject& params);
     QJsonObject saveProject(const QJsonObject& params);
+    QJsonObject getModuleParamsSchema(const QJsonObject& params);
+    QJsonObject getRunResults(const QJsonObject& params);
+    QJsonObject openProject(const QJsonObject& params);
+    QJsonObject pauseFlow(const QJsonObject& params);
+    QJsonObject resumeFlow(const QJsonObject& params);
 
     QUndoStack* m_undoStack;
 };

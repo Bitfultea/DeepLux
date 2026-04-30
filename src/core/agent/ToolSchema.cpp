@@ -214,6 +214,35 @@ void ToolSchema::registerDefaultTools()
                       {"path", "string", "Optional save path", false}
                   },
                   true}); // dangerous
+
+    // get_module_params_schema
+    registerTool({"get_module_params_schema",
+                  "Get the parameter schema for a specific module instance",
+                  {
+                      {"instanceId", "string", "Module instance ID", true}
+                  }});
+
+    // get_run_results
+    registerTool({"get_run_results",
+                  "Get the run engine statistics and results",
+                  {}});
+
+    // open_project
+    registerTool({"open_project",
+                  "Open an existing project by path",
+                  {
+                      {"path", "string", "Path to the project file (.dproj)", true}
+                  }});
+
+    // pause_flow
+    registerTool({"pause_flow",
+                  "Pause the currently running flow",
+                  {}});
+
+    // resume_flow
+    registerTool({"resume_flow",
+                  "Resume a paused flow",
+                  {}});
 }
 
 } // namespace DeepLux

@@ -7,12 +7,6 @@
 
 namespace DeepLux {
 
-/**
- * @brief OpenAI 兼容 API 客户端
- *
- * 支持 OpenAI / Claude / Kimi / 通义千问（它们都兼容 OpenAI API 格式）
- * QNetworkAccessManager 内部已异步处理网络 I/O，无需额外线程。
- */
 class OpenAILLMClient : public ILLMClient
 {
     Q_OBJECT
@@ -33,9 +27,12 @@ public:
 
 private slots:
     void onReplyFinished();
+    void onReplyReadyRead();
     void onNetworkError(QNetworkReply::NetworkError error);
 
 private:
+    void parseResponse(const QByteArray& data);
+
     QString m_apiKey;
     QString m_endpoint = "https://api.openai.com/v1/chat/completions";
     QString m_model = "gpt-4o";
@@ -45,6 +42,12 @@ private:
 
     QNetworkAccessManager* m_networkManager = nullptr;
     QNetworkReply* m_currentReply = nullptr;
+
+    // SSE streaming state
+    QString m_streamContent;
+    QString m_streamToolCallId;
+    QString m_streamToolName;
+    QString m_streamToolArgs;
 };
 
 } // namespace DeepLux

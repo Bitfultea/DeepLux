@@ -149,6 +149,17 @@ void AgentChatPanel::appendToLastMessage(const QString& text)
     }
 }
 
+void AgentChatPanel::streamAppend(const QString& chunk)
+{
+    if (!m_lastAgentBubble) {
+        // 首个 stream chunk：创建新 bubble
+        addMessage(AgentMessageBubble::Sender::Agent, chunk);
+    } else {
+        m_lastAgentBubble->appendText(chunk);
+        scrollToBottom();
+    }
+}
+
 void AgentChatPanel::addImageAttachment(const QPixmap& pixmap)
 {
     m_imageAttachments.append(pixmap);

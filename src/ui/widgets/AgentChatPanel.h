@@ -31,6 +31,7 @@ public:
 
     void addMessage(AgentMessageBubble::Sender sender, const QString& text);
     void appendToLastMessage(const QString& text);
+    void streamAppend(const QString& chunk);  // 流式追加：首 chunk 创建 bubble，后续追加
     void addImageAttachment(const QPixmap& pixmap);
     void showToolPreview(const QList<AgentToolPreviewCard::ToolItem>& tools);
     void clearToolPreview();

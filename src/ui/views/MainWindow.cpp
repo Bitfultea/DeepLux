@@ -2501,6 +2501,10 @@ void MainWindow::loadAgentSettings()
         client->setMaxTokens(cfg.groupInt("agent", "maxTokens", 4096));
         client->setToolsEnabled(cfg.groupBool("agent", "toolsEnabled", true));
         ctrl.setLLMClient(client);
+
+        // 流式输出：LLM stream chunk → Chat Panel 实时显示
+        connect(client, &ILLMClient::streamChunkReceived,
+                m_agentChatPanel, &AgentChatPanel::streamAppend);
     }
 
     updateAgentPermissionDisplay();

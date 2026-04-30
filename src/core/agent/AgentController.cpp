@@ -139,14 +139,31 @@ QString AgentController::buildContext()
     if (proj) {
         ctx += QString(
             "\n\n## Current State\n"
-            "- Project: %1, Modules: %2, Connections: %3\n"
-            "- RunEngine: %4\n"
-        ).arg(proj->name())
-         .arg(proj->modules().size())
-         .arg(proj->connections().size())
-         .arg(RunEngine::instance().isRunning() ? "Running" : "Idle");
+            "- Project: %1\n"
+            "- Modules (%2): ")
+            .arg(proj->name())
+            .arg(proj->modules().size());
+        QStringList modNames;
+        for (const ModuleInstance& m : proj->modules()) {
+            modNames.append(QString("%1(id=%2)").arg(m.moduleId).arg(m.id));
+        }
+        ctx += modNames.join(", ");
+        ctx += QString("\n- Connections: %1\n- RunEngine: %2\n")
+            .arg(proj->connections().size())
+            .arg(RunEngine::instance().isRunning() ? "Running" : "Idle");
     } else {
         ctx += "\n\n## Current State\n- No project opened.\n";
+    }
+
+    // 最近 GUI 事件（Observer 记录）
+    QList<GuiEvent> recent = m_observer->recentEvents(5);
+    if (!recent.isEmpty()) {
+        ctx += "\n## Recent Events\n";
+        for (const GuiEvent& e : recent) {
+            ctx += QString("[%1] %2\n")
+                .arg(e.timestamp.toString("hh:mm:ss"))
+                .arg(e.typeString());
+        }
     }
 
     return ctx;
