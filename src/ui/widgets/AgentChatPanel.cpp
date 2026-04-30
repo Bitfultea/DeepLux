@@ -66,6 +66,7 @@ void AgentChatPanel::setupUi()
     m_inputEdit = new QPlainTextEdit(this);
     m_inputEdit->setPlaceholderText("Ask the Agent...  (Enter to send, Shift+Enter for new line)");
     m_inputEdit->installEventFilter(this);
+    this->installEventFilter(this);  // 工具预览时 Enter/Esc 快捷键
 
     // 初始单行高度
     QFontMetrics fm(m_inputEdit->font());
@@ -286,6 +287,19 @@ void AgentChatPanel::scrollToBottom()
 
 bool AgentChatPanel::eventFilter(QObject* obj, QEvent* event)
 {
+    // 工具预览卡片键盘处理：Enter 确认 / Esc 取消（Claude Code 风格）
+    if (m_previewCard && event->type() == QEvent::KeyPress) {
+        QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) {
+            emit toolPreviewConfirmed();
+            return true;
+        }
+        if (keyEvent->key() == Qt::Key_Escape) {
+            emit toolPreviewCancelled();
+            return true;
+        }
+    }
+
     if (obj == m_inputEdit && event->type() == QEvent::KeyPress) {
         QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
 

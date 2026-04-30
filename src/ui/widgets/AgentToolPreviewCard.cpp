@@ -4,7 +4,6 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QPushButton>
 #include <QJsonDocument>
 
 namespace DeepLux {
@@ -25,7 +24,7 @@ void AgentToolPreviewCard::setupUi()
 
     ChatTheme theme = m_isDark ? ChatTheme::dark() : ChatTheme::light();
 
-    // 标题行（嵌入到布局，不是独立 header）
+    // 标题行
     auto* titleLayout = new QHBoxLayout();
     QLabel* title = new QLabel("🔧 Agent wants to execute:", this);
     title->setStyleSheet(QString("font-weight: bold; font-size: 11px; color: %1;").arg(theme.toolFg.name()));
@@ -57,20 +56,10 @@ void AgentToolPreviewCard::setupUi()
         mainLayout->addWidget(paramsLabel);
     }
 
-    auto* btnLayout = new QHBoxLayout();
-    btnLayout->addStretch();
-
-    QPushButton* confirmBtn = new QPushButton("Confirm", this);
-    QPushButton* cancelBtn = new QPushButton("Cancel", this);
-    confirmBtn->setFixedHeight(26);
-    cancelBtn->setFixedHeight(26);
-
-    btnLayout->addWidget(confirmBtn);
-    btnLayout->addWidget(cancelBtn);
-    mainLayout->addLayout(btnLayout);
-
-    connect(confirmBtn, &QPushButton::clicked, this, &AgentToolPreviewCard::confirmed);
-    connect(cancelBtn, &QPushButton::clicked, this, &AgentToolPreviewCard::cancelled);
+    // Claude Code 终端风格提示行 — 无按钮，纯键盘交互
+    QLabel* hint = new QLabel("▸ <b>Enter</b> to confirm  ·  <b>Esc</b> to cancel", this);
+    hint->setStyleSheet(QString("font-size: 11px; color: %1; padding-top: 4px;").arg(theme.statusColor.name()));
+    mainLayout->addWidget(hint);
 
     applyTheme(m_isDark);
 }
@@ -80,7 +69,6 @@ void AgentToolPreviewCard::applyTheme(bool isDark)
     m_isDark = isDark;
     ChatTheme theme = isDark ? ChatTheme::dark() : ChatTheme::light();
 
-    // 只保留左边框标识，无独立背景色
     setStyleSheet(QString(
         "AgentToolPreviewCard { border-left: 2px solid #f59e0b; }"
     ));
