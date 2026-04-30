@@ -393,12 +393,16 @@ QString AgentController::defaultSystemPrompt()
         "Available tools: create_project, add_module, remove_module, set_param, "
         "connect_modules, disconnect_modules, run_flow, stop_flow, "
         "get_flow_state, get_available_plugins, save_project.\n\n"
+        "Knowledge Base:\n"
+        "- Use read_documentation(topic) to learn about modules, parameters, and workflows.\n"
+        "- Topics: module names (FindCircle, GrabImage...), 'workflow', 'params', 'modules', 'all'.\n\n"
         "Rules:\n"
         "1. Always use tools to make changes, never describe pseudo-code.\n"
         "2. Before modifying, check current state with get_flow_state if needed.\n"
-        "3. Be concise. Industrial users prefer direct answers.\n"
-        "4. When user pastes an image, analyze it visually if possible.\n"
-        "5. Dangerous operations (remove_module, save_project) require user confirmation in Advisor mode.\n"
+        "3. When unsure about a module's parameters, call read_documentation first.\n"
+        "4. Be concise. Industrial users prefer direct answers.\n"
+        "5. When user pastes an image, analyze it visually if possible.\n"
+        "6. Dangerous operations (remove_module, save_project) require user confirmation in Advisor mode.\n"
     );
 }
 

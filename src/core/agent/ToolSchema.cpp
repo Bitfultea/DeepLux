@@ -243,6 +243,14 @@ void ToolSchema::registerDefaultTools()
     registerTool({"resume_flow",
                   "Resume a paused flow",
                   {}});
+
+    // read_documentation
+    registerTool({"read_documentation",
+                  "Read DeepLux module/usage documentation. Use this to learn about "
+                  "module parameters, workflows, and best practices when you're unsure.",
+                  {
+                      {"topic", "string", "Topic to look up (e.g. 'FindCircle', 'workflow', 'GrabImage params')", true}
+                  }});
 }
 
 } // namespace DeepLux

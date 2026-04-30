@@ -8,6 +8,9 @@
 #include "common/Logger.h"
 
 #include <QUndoCommand>
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
 #include <QDebug>
 
 namespace DeepLux {
@@ -165,6 +168,7 @@ QJsonObject AgentActor::executeTool(const QString& toolName, const QJsonObject& 
     else if (toolName == "open_project")          result = openProject(params);
     else if (toolName == "pause_flow")            result = pauseFlow(params);
     else if (toolName == "resume_flow")           result = resumeFlow(params);
+    else if (toolName == "read_documentation")    result = readDocumentation(params);
     else {
         QString err = QString("Tool not yet implemented: %1").arg(toolName);
         emit toolError(toolName, err);
@@ -399,6 +403,65 @@ QJsonObject AgentActor::resumeFlow(const QJsonObject& params)
     Q_UNUSED(params);
     RunEngine::instance().resume();
     return QJsonObject{{"status", "resumed"}};
+}
+
+QJsonObject AgentActor::readDocumentation(const QJsonObject& params)
+{
+    QString topic = params.value("topic").toString().toLower();
+    if (topic.isEmpty()) {
+        return QJsonObject{{"error", "Missing 'topic' parameter"}};
+    }
+
+    // 知识库路径（与源码同级）
+    QString knowledgePath = QCoreApplication::applicationDirPath()
+        + "/../src/core/agent/knowledge/DEEPLUX.md";
+    // 开发模式 fallback
+    if (!QFile::exists(knowledgePath)) {
+        knowledgePath = QDir::currentPath() + "/src/core/agent/knowledge/DEEPLUX.md";
+    }
+
+    QFile file(knowledgePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        // 内嵌摘要作为 fallback
+        return QJsonObject{
+            {"topic", topic},
+            {"content", "Knowledge base not found. Use get_module_params_schema(instanceId) "
+                        "to discover parameters for specific modules."}
+        };
+    }
+
+    QString content = QString::fromUtf8(file.readAll());
+    file.close();
+
+    // 搜索相关段落：按 ## 分节，匹配 topic 关键词
+    QStringList sections = content.split("\n## ");
+    QStringList relevant;
+
+    for (const QString& sec : sections) {
+        if (sec.toLower().contains(topic) || topic == "all") {
+            // 截断过长段落
+            if (sec.length() > 2000) {
+                relevant.append(sec.left(2000) + "\n... (truncated, use more specific topic)");
+            } else {
+                relevant.append(sec.trimmed());
+            }
+        }
+    }
+
+    if (relevant.isEmpty()) {
+        return QJsonObject{
+            {"topic", topic},
+            {"content", QString("No documentation found for '%1'. "
+                                "Try broader topics like 'workflow', 'modules', 'params', "
+                                "or a module name like 'FindCircle'.").arg(topic)}
+        };
+    }
+
+    return QJsonObject{
+        {"topic", topic},
+        {"sections", relevant.size()},
+        {"content", relevant.join("\n\n")}
+    };
 }
 
 } // namespace DeepLux

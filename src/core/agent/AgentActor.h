@@ -57,6 +57,7 @@ private:
     QJsonObject openProject(const QJsonObject& params);
     QJsonObject pauseFlow(const QJsonObject& params);
     QJsonObject resumeFlow(const QJsonObject& params);
+    QJsonObject readDocumentation(const QJsonObject& params);
 
     QUndoStack* m_undoStack;
 };
