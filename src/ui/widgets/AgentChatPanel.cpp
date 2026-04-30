@@ -66,7 +66,6 @@ void AgentChatPanel::setupUi()
     m_inputEdit = new QPlainTextEdit(this);
     m_inputEdit->setPlaceholderText("Ask the Agent...  (Enter to send, Shift+Enter for new line)");
     m_inputEdit->installEventFilter(this);
-    this->installEventFilter(this);  // 工具预览时 Enter/Esc 快捷键
 
     // 初始单行高度
     QFontMetrics fm(m_inputEdit->font());
@@ -153,11 +152,25 @@ void AgentChatPanel::appendToLastMessage(const QString& text)
 void AgentChatPanel::streamAppend(const QString& chunk)
 {
     if (!m_lastAgentBubble) {
-        // 首个 stream chunk：创建新 bubble
         addMessage(AgentMessageBubble::Sender::Agent, chunk);
     } else {
-        m_lastAgentBubble->appendText(chunk);
-        scrollToBottom();
+        // 累积 chunk，用单次定时器防抖更新（避免高频 setText 导致 UI 卡）
+        m_pendingStreamChunk += chunk;
+        if (!m_streamDebounceTimer) {
+            m_streamDebounceTimer = new QTimer(this);
+            m_streamDebounceTimer->setSingleShot(true);
+            m_streamDebounceTimer->setInterval(30);  // ~30fps 更新频率
+            connect(m_streamDebounceTimer, &QTimer::timeout, this, [this]() {
+                if (m_lastAgentBubble && !m_pendingStreamChunk.isEmpty()) {
+                    m_lastAgentBubble->appendText(m_pendingStreamChunk);
+                    m_pendingStreamChunk.clear();
+                    scrollToBottom();
+                }
+            });
+        }
+        if (!m_streamDebounceTimer->isActive()) {
+            m_streamDebounceTimer->start();
+        }
     }
 }
 
@@ -216,6 +229,7 @@ void AgentChatPanel::showToolPreview(const QList<AgentToolPreviewCard::ToolItem>
             this, &AgentChatPanel::toolPreviewCancelled);
 
     scrollToBottom();
+    m_inputEdit->setFocus();  // 确保键盘事件能通过 eventFilter
 }
 
 void AgentChatPanel::clearToolPreview()

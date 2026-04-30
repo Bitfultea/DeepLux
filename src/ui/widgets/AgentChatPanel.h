@@ -75,6 +75,9 @@ private:
     bool m_isDark = false;
     bool m_isThinkingTimeout = false;
 
+    QString m_pendingStreamChunk;       // 流式输出累积缓冲
+    QTimer* m_streamDebounceTimer = nullptr;  // 流式防抖
+
     int m_lineHeight = 20;         // 单行像素高度
     int m_inputMinLines = 1;
     int m_inputMaxLines = 6;
