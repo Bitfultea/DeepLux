@@ -15,6 +15,7 @@
 #include <QJsonArray>
 #include <QPixmap>
 #include <QBuffer>
+#include <QTimer>
 
 #include <QDebug>
 
@@ -191,7 +192,12 @@ void AgentController::sendUserMessage(const QString& message)
     ctx.messages = m_conversationHistory;
     ctx.systemPrompt = buildContext();
 
-    m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
+    // 延迟到下一轮事件循环发送，避免卡 UI
+    QTimer::singleShot(0, this, [this, ctx]() {
+        if (m_llmClient) {
+            m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
+        }
+    });
 }
 
 void AgentController::sendUserMessageWithImages(const QString& message, const QList<QPixmap>& images)
@@ -227,7 +233,11 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
     ctx.messages = m_conversationHistory;
     ctx.systemPrompt = buildContext();
 
-    m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
+    QTimer::singleShot(0, this, [this, ctx]() {
+        if (m_llmClient) {
+            m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
+        }
+    });
 }
 
 void AgentController::onLLMResponse(const AgentResponse& resp)
@@ -311,16 +321,19 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls)
         QString("[AgentLoop] Executed %1 tool(s), continuing...").arg(resultsArray.size()),
         LogLevel::Debug, "Agent");
 
-    // 🔁 闭环：通知 UI 保持 thinking，再次请求 LLM
+    // 🔁 闭环：用 QTimer::singleShot 将 LLM 请求推迟到下一轮事件循环
+    // 避免在信号处理链中同步发送请求导致 UI 冻结
     emit agentLoopIterating();
-    if (!m_llmClient) {
-        emit llmErrorOccurred("LLM client disconnected during agent loop");
-        return;
-    }
-    AgentConversation ctx;
-    ctx.messages = m_conversationHistory;
-    ctx.systemPrompt = buildContext();
-    m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
+    QTimer::singleShot(0, this, [this]() {
+        if (!m_llmClient) {
+            emit llmErrorOccurred("LLM client disconnected during agent loop");
+            return;
+        }
+        AgentConversation ctx;
+        ctx.messages = m_conversationHistory;
+        ctx.systemPrompt = buildContext();
+        m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
+    });
 }
 
 void AgentController::confirmPendingTools()
