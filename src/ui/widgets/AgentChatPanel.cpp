@@ -287,14 +287,16 @@ void AgentChatPanel::scrollToBottom()
 
 bool AgentChatPanel::eventFilter(QObject* obj, QEvent* event)
 {
-    // 工具预览卡片键盘处理：Enter 确认 / Esc 取消（Claude Code 风格）
+    // 工具预览卡片键盘处理：Enter 确认 / Esc 取消
     if (m_previewCard && event->type() == QEvent::KeyPress) {
         QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) {
-            emit toolPreviewConfirmed();
+            clearToolPreview();
+            emit toolPreviewConfirmed();  // 触发 Agent 执行，可能再次进入 loop
             return true;
         }
         if (keyEvent->key() == Qt::Key_Escape) {
+            clearToolPreview();
             emit toolPreviewCancelled();
             return true;
         }

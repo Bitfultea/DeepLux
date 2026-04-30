@@ -90,6 +90,8 @@ void OpenAILLMClient::sendRequest(const AgentConversation& ctx,
 void OpenAILLMClient::onReplyReadyRead()
 {
     if (!m_currentReply) return;
+    // 防止 finished 已触发后的延迟 readyRead
+    if (m_currentReply->property("_finished").toBool()) return;
 
     QByteArray chunk = m_currentReply->readAll();
     QString text = QString::fromUtf8(chunk);
@@ -138,13 +140,14 @@ void OpenAILLMClient::onReplyFinished()
 {
     if (!m_currentReply) return;
 
-    // 流式模式下数据已在 onReplyReadyRead 中处理，这里构建最终响应
-    m_currentReply->deleteLater();
-    m_currentReply = nullptr;
+    // 标记 finished，防止延迟的 readyRead 再处理
+    m_currentReply->setProperty("_finished", true);
 
-    // 非流式 fallback
+    // 非流式 fallback：如果 stream accums 为空，用完整响应
     if (m_streamContent.isEmpty() && m_streamToolName.isEmpty()) {
-        QByteArray data = m_currentReply ? m_currentReply->readAll() : QByteArray();
+        QByteArray data = m_currentReply->readAll();
+        m_currentReply->deleteLater();
+        m_currentReply = nullptr;
         if (!data.isEmpty()) {
             parseResponse(data);
         } else {
@@ -152,6 +155,9 @@ void OpenAILLMClient::onReplyFinished()
         }
         return;
     }
+
+    m_currentReply->deleteLater();
+    m_currentReply = nullptr;
 
     // 从 stream accumulators 构建响应
     AgentResponse resp;
