@@ -313,6 +313,10 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls)
 
     // 🔁 闭环：通知 UI 保持 thinking，再次请求 LLM
     emit agentLoopIterating();
+    if (!m_llmClient) {
+        emit llmErrorOccurred("LLM client disconnected during agent loop");
+        return;
+    }
     AgentConversation ctx;
     ctx.messages = m_conversationHistory;
     ctx.systemPrompt = buildContext();

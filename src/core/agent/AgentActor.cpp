@@ -114,7 +114,8 @@ class AgentConnectCmd : public QUndoCommand
 {
 public:
     AgentConnectCmd(const QString& fromId, const QString& toId, QUndoCommand* parent = nullptr)
-        : QUndoCommand(parent), m_fromId(fromId), m_toId(toId) {}
+        : QUndoCommand(parent), m_fromId(fromId), m_toId(toId)
+    { setText(QString("Connect %1 → %2").arg(fromId, toId)); }
 
     void undo() override {
         Project* proj = ProjectManager::instance().currentProject();
@@ -127,6 +128,31 @@ public:
         conn.fromModuleId = m_fromId;
         conn.toModuleId = m_toId;
         proj->addConnection(conn);
+    }
+private:
+    QString m_fromId, m_toId;
+};
+
+class AgentDisconnectCmd : public QUndoCommand
+{
+public:
+    AgentDisconnectCmd(const QString& fromId, const QString& toId, QUndoCommand* parent = nullptr)
+        : QUndoCommand(parent), m_fromId(fromId), m_toId(toId)
+    { setText(QString("Disconnect %1 → %2").arg(fromId, toId)); }
+
+    void undo() override {
+        // undo of disconnect = reconnect
+        Project* proj = ProjectManager::instance().currentProject();
+        if (!proj) return;
+        ModuleConnection conn;
+        conn.fromModuleId = m_fromId;
+        conn.toModuleId = m_toId;
+        proj->addConnection(conn);
+    }
+    void redo() override {
+        // redo of disconnect = disconnect again
+        Project* proj = ProjectManager::instance().currentProject();
+        if (proj) proj->removeConnection(m_fromId, m_toId);
     }
 private:
     QString m_fromId, m_toId;
@@ -270,8 +296,7 @@ QJsonObject AgentActor::disconnectModules(const QJsonObject& params)
     if (!proj) return QJsonObject{{"error", "No project opened"}};
 
     proj->removeConnection(fromId, toId);
-    // 撤销就是重新连接
-    m_undoStack->push(new AgentConnectCmd(fromId, toId));
+    m_undoStack->push(new AgentDisconnectCmd(fromId, toId));
 
     return QJsonObject{{"status", "disconnected"}, {"from", fromId}, {"to", toId}};
 }
