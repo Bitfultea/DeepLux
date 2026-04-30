@@ -13,19 +13,17 @@ class AgentActor;
 class ILLMClient;
 struct GuiEvent;
 struct AgentActionLogEntry;
+struct AgentMessage;
 
 /**
- * @brief Agent 核心协调器 —— 进程内单例
+ * @brief Agent 核心协调器 —— Agentic Loop 引擎
  *
- * 职责：
- * - 持有 AgentObserver、AgentActor、ILLMClient
- * - 接收 GUI 事件流，转发给 LLM Client
- * - 接收外部 tool_call（通过 AgentBridge），路由给 AgentActor
- * - 管理权限级别
+ * 维护对话记忆 + GUI 状态感知 + 工具调用闭环：
  *
- * 设计约束：
- * - 只能操作本软件，不能执行 bash/系统命令
- * - 所有 Agent 操作必须通过日志可观察
+ *   User msg → buildContext → LLM
+ *     → tool_calls → execute → results
+ *     → 🔁 history + LLM  (loop until no more tool_calls)
+ *     → llmResponseReceived  (terminal)
  */
 class AgentController : public QObject
 {
@@ -50,25 +48,20 @@ public:
     void onGuiEvent(const GuiEvent& event);
     QJsonObject handleToolCall(const QString& toolName, const QJsonObject& params);
 
-    // LLM Client 管理
     void setLLMClient(ILLMClient* client);
     ILLMClient* llmClient() const { return m_llmClient; }
 
-    // 发送用户消息到 LLM（由 ChatPanel 调用）
     void sendUserMessage(const QString& message);
     void sendUserMessageWithImages(const QString& message, const QList<QPixmap>& images);
+    void clearConversation();
 
     void logAction(const AgentActionLogEntry& entry);
     AgentActor* actor() const { return m_actor; }
 
-    // Advisor mode: pending tool confirmation
     bool hasPendingTools() const { return !m_pendingToolCalls.isEmpty(); }
     QJsonArray pendingToolCalls() const { return m_pendingToolCalls; }
     void confirmPendingTools();
     void rejectPendingTools();
-
-private:
-    void executePendingTools(const QJsonArray& toolCalls);
 
 signals:
     void actionLogEntryAdded(const AgentActionLogEntry& entry);
@@ -78,6 +71,7 @@ signals:
     void llmResponseReceived(const QString& content, const QJsonArray& toolCalls);
     void llmErrorOccurred(const QString& error);
     void toolsPendingConfirmation(const QJsonArray& toolCalls);
+    void agentLoopIterating();  // Agent 闭环继续推理中，UI 应保持 thinking 状态
 
 private slots:
     void onLLMResponse(const struct AgentResponse& resp);
@@ -87,6 +81,11 @@ private:
     explicit AgentController(QObject* parent = nullptr);
     ~AgentController() override;
 
+    // Agentic loop
+    QString buildContext();
+    void extendAgentLoop(const QJsonArray& toolCalls);
+    void trimHistory();
+
     bool m_initialized = false;
     PermissionLevel m_permissionLevel = PermissionLevel::Advisor;
 
@@ -95,8 +94,12 @@ private:
     ILLMClient* m_llmClient = nullptr;
 
     QString m_systemPrompt;
-    QList<struct AgentMessage> m_conversationHistory;
+    QList<AgentMessage> m_conversationHistory;
     QJsonArray m_pendingToolCalls;
+
+    int m_agentTurnCount = 0;
+    static constexpr int MAX_AGENT_TURNS = 5;
+    static constexpr int MAX_HISTORY_SIZE = 15;
 
     static QString defaultSystemPrompt();
 };

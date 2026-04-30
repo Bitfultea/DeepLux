@@ -914,6 +914,8 @@ void MainWindow::setupMainLayout() {
     m_logTerminalTabs->addTab(m_agentActionLogWidget, tr("📋 Agent Log"));
     connect(&AgentController::instance(), &AgentController::actionLogEntryAdded,
             m_agentActionLogWidget, &AgentActionLogWidget::addEntry);
+    connect(&AgentController::instance(), &AgentController::agentLoopIterating,
+            this, [this]() { m_agentChatPanel->setThinking(true); });
 
     m_logDock->setWidget(m_logTerminalTabs);
     m_logDock->setMinimumHeight(250);

@@ -234,9 +234,13 @@ QJsonObject AgentActor::disconnectModules(const QJsonObject& params)
 
 QJsonObject AgentActor::runFlow(const QJsonObject& params)
 {
-    Q_UNUSED(params);
-    RunEngine::instance().runOnce();
-    return QJsonObject{{"status", "started"}};
+    QString mode = params.value("mode").toString("once");
+    if (mode == "cycle") {
+        RunEngine::instance().start();
+    } else {
+        RunEngine::instance().runOnce();
+    }
+    return QJsonObject{{"status", "started"}, {"mode", mode}};
 }
 
 QJsonObject AgentActor::stopFlow(const QJsonObject& params)

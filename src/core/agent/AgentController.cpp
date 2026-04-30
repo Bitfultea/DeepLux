@@ -7,8 +7,12 @@
 #include "ILLMClient.h"
 #include "common/Logger.h"
 #include "manager/ConfigManager.h"
+#include "manager/ProjectManager.h"
+#include "engine/RunEngine.h"
+#include "model/Project.h"
 
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QPixmap>
 #include <QBuffer>
 
@@ -61,7 +65,6 @@ bool AgentController::initialize()
                 emit agentActionCompleted(tool, r);
             });
 
-    // Load system prompt from config or use default
     ConfigManager& cfg = ConfigManager::instance();
     m_systemPrompt = cfg.groupString("agent", "systemPrompt", defaultSystemPrompt());
 
@@ -118,42 +121,35 @@ void AgentController::logAction(const AgentActionLogEntry& entry)
     emit actionLogEntryAdded(entry);
 }
 
-void AgentController::onGuiEvent(const GuiEvent& event)
+void AgentController::clearConversation()
 {
-    Logger::instance().addLog(
-        QString("[AgentObserver] %1 from %2").arg(event.typeString()).arg(event.source),
-        LogLevel::Debug, "Agent");
+    m_conversationHistory.clear();
+    m_pendingToolCalls = QJsonArray();
+    m_agentTurnCount = 0;
 }
 
-QJsonObject AgentController::handleToolCall(const QString& toolName, const QJsonObject& params)
+// ========== Agentic Loop ==========
+
+QString AgentController::buildContext()
 {
-    Logger::instance().addLog(
-        QString("[ToolCall] %1 (permission=%2)").arg(toolName).arg(static_cast<int>(m_permissionLevel)),
-        LogLevel::Info, "Agent");
+    QString ctx = m_systemPrompt;
 
-    emit agentActionReceived(toolName, params);
-
-    if (m_permissionLevel == PermissionLevel::Observer) {
-        return QJsonObject{{"error", "Permission denied: current level is Observer (read-only)"}};
+    // 实时 GUI 状态摘要 — 不存对话历史，每次请求前即时查询
+    Project* proj = ProjectManager::instance().currentProject();
+    if (proj) {
+        ctx += QString(
+            "\n\n## Current State\n"
+            "- Project: %1, Modules: %2, Connections: %3\n"
+            "- RunEngine: %4\n"
+        ).arg(proj->name())
+         .arg(proj->modules().size())
+         .arg(proj->connections().size())
+         .arg(RunEngine::instance().isRunning() ? "Running" : "Idle");
+    } else {
+        ctx += "\n\n## Current State\n- No project opened.\n";
     }
 
-    if (m_permissionLevel == PermissionLevel::Advisor) {
-        Logger::instance().addLog(
-            QString("[Advisor] Executing %1 with user confirmation").arg(toolName),
-            LogLevel::Warning, "Agent");
-    }
-
-    QJsonObject result = m_actor->executeTool(toolName, params);
-
-    AgentActionLogEntry entry;
-    entry.timestamp = QDateTime::currentDateTime();
-    entry.actor = "Agent";
-    entry.action = toolName;
-    entry.params = QString(QJsonDocument(params).toJson(QJsonDocument::Compact));
-    entry.result = result.contains("error") ? "error" : "success";
-    emit actionLogEntryAdded(entry);
-
-    return result;
+    return ctx;
 }
 
 void AgentController::sendUserMessage(const QString& message)
@@ -163,9 +159,20 @@ void AgentController::sendUserMessage(const QString& message)
         return;
     }
 
+    // 追加用户消息到对话历史
+    AgentMessage userMsg;
+    userMsg.role = "user";
+    userMsg.content = message;
+    m_conversationHistory.append(userMsg);
+    trimHistory();
+
+    // 重置轮数计数
+    m_agentTurnCount = 0;
+
+    // 构建完整上下文（system prompt + 实时状态）
     AgentConversation ctx;
-    ctx.messages.append({"user", message, QJsonObject(), QString()});
-    ctx.systemPrompt = m_systemPrompt;
+    ctx.messages = m_conversationHistory;
+    ctx.systemPrompt = buildContext();
 
     m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
 }
@@ -195,38 +202,61 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
         msg.images.append(attach);
     }
 
+    m_conversationHistory.append(msg);
+    trimHistory();
+    m_agentTurnCount = 0;
+
     AgentConversation ctx;
-    ctx.messages.append(msg);
-    ctx.systemPrompt = m_systemPrompt;
+    ctx.messages = m_conversationHistory;
+    ctx.systemPrompt = buildContext();
 
     m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
 }
 
 void AgentController::onLLMResponse(const AgentResponse& resp)
 {
+    // 追加 assistant 回应到对话历史
+    AgentMessage assistantMsg;
+    assistantMsg.role = "assistant";
+    assistantMsg.content = resp.content;
+    if (!resp.toolCalls.isEmpty()) {
+        assistantMsg.toolCalls = QJsonObject{{"tool_calls", resp.toolCalls}};
+    }
+    m_conversationHistory.append(assistantMsg);
+    trimHistory();
+
+    // 有工具调用 → 执行 + 闭环
     if (!resp.toolCalls.isEmpty()) {
         if (m_permissionLevel == PermissionLevel::Observer) {
-            emit llmResponseReceived("Permission denied: Observer mode cannot execute tools.", QJsonArray());
+            emit llmResponseReceived(resp.content, resp.toolCalls);
             return;
         }
-
         if (m_permissionLevel == PermissionLevel::Advisor) {
             m_pendingToolCalls = resp.toolCalls;
             emit toolsPendingConfirmation(resp.toolCalls);
-            // Don't emit llmResponseReceived yet; wait for user confirmation
+            // 先展示 LLM 的文本内容和工具预览
+            emit llmResponseReceived(resp.content, resp.toolCalls);
             return;
         }
-
-        // Autopilot: execute directly
-        executePendingTools(resp.toolCalls);
+        // Autopilot: 直接执行 + 闭环
+        extendAgentLoop(resp.toolCalls);
         return;
     }
 
-    emit llmResponseReceived(resp.content, resp.toolCalls);
+    // 纯文本回复 — 终态
+    emit llmResponseReceived(resp.content, QJsonArray());
 }
 
-void AgentController::executePendingTools(const QJsonArray& toolCalls)
+void AgentController::extendAgentLoop(const QJsonArray& toolCalls)
 {
+    if (m_agentTurnCount++ >= MAX_AGENT_TURNS) {
+        emit llmResponseReceived(
+            QString("Agent reached maximum reasoning turns (%1).").arg(MAX_AGENT_TURNS),
+            QJsonArray());
+        return;
+    }
+
+    // 解析 tool_calls
     QList<QPair<QString, QJsonObject>> tools;
     for (const QJsonValue& v : toolCalls) {
         QJsonObject tc = v.toObject();
@@ -234,23 +264,49 @@ void AgentController::executePendingTools(const QJsonArray& toolCalls)
         QJsonObject params = tc["arguments"].toObject();
         if (name.isEmpty()) {
             name = tc["function"].toObject()["name"].toString();
-            params = QJsonDocument::fromJson(
-                tc["function"].toObject()["arguments"].toString().toUtf8()).object();
+            QString argsStr = tc["function"].toObject()["arguments"].toString();
+            params = QJsonDocument::fromJson(argsStr.toUtf8()).object();
         }
-        tools.append(qMakePair(name, params));
+        if (!name.isEmpty()) {
+            tools.append({name, params});
+        }
     }
 
-    if (!tools.isEmpty()) {
-        QJsonObject result = m_actor->executeTools(tools, "Agent batch execution");
-        emit llmResponseReceived("Tools executed successfully.", QJsonArray());
+    if (tools.isEmpty()) {
+        emit llmErrorOccurred("No valid tool calls to execute");
+        return;
     }
+
+    // 执行
+    QJsonObject result = m_actor->executeTools(tools,
+        QString("Agent turn %1").arg(m_agentTurnCount));
+
+    // tool 结果追加到 conversation history
+    AgentMessage toolMsg;
+    toolMsg.role = "tool";
+    toolMsg.content = QString(QJsonDocument(result).toJson(QJsonDocument::Compact));
+    m_conversationHistory.append(toolMsg);
+    trimHistory();
+
+    // 记录中间结果（不 emit llmResponseReceived，LLM 下一轮推理会给出最终回复）
+    QJsonArray resultsArray = result["results"].toArray();
+    Logger::instance().addLog(
+        QString("[AgentLoop] Executed %1 tool(s), continuing...").arg(resultsArray.size()),
+        LogLevel::Debug, "Agent");
+
+    // 🔁 闭环：通知 UI 保持 thinking，再次请求 LLM
+    emit agentLoopIterating();
+    AgentConversation ctx;
+    ctx.messages = m_conversationHistory;
+    ctx.systemPrompt = buildContext();
+    m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
 }
 
 void AgentController::confirmPendingTools()
 {
     if (m_pendingToolCalls.isEmpty()) return;
 
-    executePendingTools(m_pendingToolCalls);
+    extendAgentLoop(m_pendingToolCalls);
     m_pendingToolCalls = QJsonArray();
 }
 
@@ -258,6 +314,47 @@ void AgentController::rejectPendingTools()
 {
     m_pendingToolCalls = QJsonArray();
     emit llmResponseReceived("Tool execution cancelled by user.", QJsonArray());
+}
+
+void AgentController::trimHistory()
+{
+    while (m_conversationHistory.size() > MAX_HISTORY_SIZE) {
+        m_conversationHistory.removeFirst();
+    }
+}
+
+// ========== AgentBridge / Observer ==========
+
+void AgentController::onGuiEvent(const GuiEvent& event)
+{
+    Logger::instance().addLog(
+        QString("[AgentObserver] %1 from %2").arg(event.typeString()).arg(event.source),
+        LogLevel::Debug, "Agent");
+}
+
+QJsonObject AgentController::handleToolCall(const QString& toolName, const QJsonObject& params)
+{
+    Logger::instance().addLog(
+        QString("[ToolCall] %1 (permission=%2)").arg(toolName).arg(static_cast<int>(m_permissionLevel)),
+        LogLevel::Info, "Agent");
+
+    emit agentActionReceived(toolName, params);
+
+    if (m_permissionLevel == PermissionLevel::Observer) {
+        return QJsonObject{{"error", "Permission denied: current level is Observer (read-only)"}};
+    }
+
+    QJsonObject result = m_actor->executeTool(toolName, params);
+
+    AgentActionLogEntry entry;
+    entry.timestamp = QDateTime::currentDateTime();
+    entry.actor = "Agent";
+    entry.action = toolName;
+    entry.params = QString(QJsonDocument(params).toJson(QJsonDocument::Compact));
+    entry.result = result.contains("error") ? "error" : "success";
+    emit actionLogEntryAdded(entry);
+
+    return result;
 }
 
 void AgentController::onLLMError(const QString& error)
