@@ -869,7 +869,13 @@ void MainWindow::setupMainLayout() {
             this, [this](const QString& content, const QJsonArray& toolCalls) {
                 Q_UNUSED(toolCalls);
                 m_agentChatPanel->setThinking(false);
-                m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Agent, content);
+                if (m_agentChatPanel->isStreaming()) {
+                    // 流式模式：flush 剩余内容并结束，不再创建新 bubble
+                    m_agentChatPanel->streamEnd();
+                } else {
+                    // 非流式模式：直接显示完整内容
+                    m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Agent, content);
+                }
             });
     connect(&AgentController::instance(), &AgentController::llmErrorOccurred,
             this, [this](const QString& error) {

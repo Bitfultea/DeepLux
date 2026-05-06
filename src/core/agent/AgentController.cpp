@@ -246,9 +246,7 @@ void AgentController::onLLMResponse(const AgentResponse& resp)
     AgentMessage assistantMsg;
     assistantMsg.role = "assistant";
     assistantMsg.content = resp.content;
-    if (!resp.toolCalls.isEmpty()) {
-        assistantMsg.toolCalls = QJsonObject{{"tool_calls", resp.toolCalls}};
-    }
+    assistantMsg.toolCalls = resp.toolCalls;  // QJsonArray, direct OpenAI format
     m_conversationHistory.append(assistantMsg);
     trimHistory();
 
@@ -283,10 +281,12 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls)
         return;
     }
 
-    // 解析 tool_calls
+    // 解析 tool_calls，保留 id 用于结果回传
     QList<QPair<QString, QJsonObject>> tools;
+    QList<QString> toolCallIds;
     for (const QJsonValue& v : toolCalls) {
         QJsonObject tc = v.toObject();
+        QString toolCallId = tc["id"].toString();
         QString name = tc["name"].toString();
         QJsonObject params = tc["arguments"].toObject();
         if (name.isEmpty()) {
@@ -296,6 +296,7 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls)
         }
         if (!name.isEmpty()) {
             tools.append({name, params});
+            toolCallIds.append(toolCallId);
         }
     }
 
@@ -304,19 +305,25 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls)
         return;
     }
 
-    // 执行
-    QJsonObject result = m_actor->executeTools(tools,
+    // 批量执行（macro undo）
+    QJsonObject batchResult = m_actor->executeTools(tools,
         QString("Agent turn %1").arg(m_agentTurnCount));
 
-    // tool 结果追加到 conversation history
-    AgentMessage toolMsg;
-    toolMsg.role = "tool";
-    toolMsg.content = QString(QJsonDocument(result).toJson(QJsonDocument::Compact));
-    m_conversationHistory.append(toolMsg);
+    // 拆分 tool 结果，每条 tool call 对应一条独立的 tool role message（OpenAI 要求）
+    QJsonArray resultsArray = batchResult["results"].toArray();
+    for (int i = 0; i < resultsArray.size() && i < toolCallIds.size(); ++i) {
+        QJsonObject entry = resultsArray[i].toObject();
+        QJsonObject singleResult = entry["result"].toObject();
+
+        AgentMessage toolMsg;
+        toolMsg.role = "tool";
+        toolMsg.toolCallId = toolCallIds[i];
+        toolMsg.content = QString(QJsonDocument(singleResult).toJson(QJsonDocument::Compact));
+        m_conversationHistory.append(toolMsg);
+    }
     trimHistory();
 
     // 记录中间结果（不 emit llmResponseReceived，LLM 下一轮推理会给出最终回复）
-    QJsonArray resultsArray = result["results"].toArray();
     Logger::instance().addLog(
         QString("[AgentLoop] Executed %1 tool(s), continuing...").arg(resultsArray.size()),
         LogLevel::Debug, "Agent");
@@ -340,8 +347,13 @@ void AgentController::confirmPendingTools()
 {
     if (m_pendingToolCalls.isEmpty()) return;
 
-    extendAgentLoop(m_pendingToolCalls);
+    QJsonArray calls = m_pendingToolCalls;
     m_pendingToolCalls = QJsonArray();
+
+    // 延迟到下一轮事件循环执行，避免阻塞 Confirm 按钮的信号链
+    QTimer::singleShot(0, this, [this, calls]() {
+        extendAgentLoop(calls);
+    });
 }
 
 void AgentController::rejectPendingTools()

@@ -74,9 +74,8 @@ void OpenAILLMClient::sendRequest(const AgentConversation& ctx,
 
     // 重置流式状态
     m_streamContent.clear();
-    m_streamToolCallId.clear();
-    m_streamToolName.clear();
-    m_streamToolArgs.clear();
+    m_sseBuffer.clear();
+    m_streamToolCalls.clear();
 
     m_currentReply = m_networkManager->post(request, data);
     connect(m_currentReply, &QNetworkReply::readyRead,
@@ -94,10 +93,14 @@ void OpenAILLMClient::onReplyReadyRead()
     if (m_currentReply->property("_finished").toBool()) return;
 
     QByteArray chunk = m_currentReply->readAll();
-    QString text = QString::fromUtf8(chunk);
-    QStringList lines = text.split('\n', Qt::SkipEmptyParts);
+    m_sseBuffer += QString::fromUtf8(chunk);
 
-    for (const QString& line : lines) {
+    // 按行分割，保留不完整的最后一行在缓冲中
+    int pos;
+    while ((pos = m_sseBuffer.indexOf('\n')) >= 0) {
+        QString line = m_sseBuffer.left(pos).trimmed();
+        m_sseBuffer.remove(0, pos + 1);
+
         if (!line.startsWith("data: ")) continue;
         QString jsonStr = line.mid(6).trimmed();
         if (jsonStr == "[DONE]") continue;
@@ -118,20 +121,20 @@ void OpenAILLMClient::onReplyReadyRead()
             emit streamChunkReceived(contentDelta);
         }
 
-        // 工具调用 delta
+        // 工具调用 delta（支持多工具并行流式累积）
         QJsonArray toolDeltas = delta["tool_calls"].toArray();
         for (const QJsonValue& v : toolDeltas) {
             QJsonObject tc = v.toObject();
             int idx = tc["index"].toInt(-1);
-            if (idx != 0) continue;  // 单工具调用场景
+            if (idx < 0) continue;
 
             QJsonObject func = tc["function"].toObject();
             QString nameDelta = func["name"].toString();
             QString argsDelta = func["arguments"].toString();
 
-            if (!nameDelta.isEmpty()) m_streamToolName += nameDelta;
-            if (!argsDelta.isEmpty()) m_streamToolArgs += argsDelta;
-            if (!tc["id"].toString().isEmpty()) m_streamToolCallId = tc["id"].toString();
+            if (!tc["id"].toString().isEmpty()) m_streamToolCalls[idx].id = tc["id"].toString();
+            if (!nameDelta.isEmpty()) m_streamToolCalls[idx].name += nameDelta;
+            if (!argsDelta.isEmpty()) m_streamToolCalls[idx].args += argsDelta;
         }
     }
 }
@@ -144,7 +147,7 @@ void OpenAILLMClient::onReplyFinished()
     m_currentReply->setProperty("_finished", true);
 
     // 非流式 fallback：如果 stream accums 为空，用完整响应
-    if (m_streamContent.isEmpty() && m_streamToolName.isEmpty()) {
+    if (m_streamContent.isEmpty() && m_streamToolCalls.isEmpty()) {
         QByteArray data = m_currentReply->readAll();
         m_currentReply->deleteLater();
         m_currentReply = nullptr;
@@ -164,12 +167,17 @@ void OpenAILLMClient::onReplyFinished()
     resp.success = true;
     resp.content = m_streamContent;
 
-    if (!m_streamToolName.isEmpty()) {
+    // 支持多工具调用：按 index 排序输出
+    QList<int> sortedIndices = m_streamToolCalls.keys();
+    std::sort(sortedIndices.begin(), sortedIndices.end());
+    for (int idx : sortedIndices) {
+        const StreamToolCall& stc = m_streamToolCalls[idx];
+        if (stc.name.isEmpty()) continue;
         QJsonObject toolCall;
-        toolCall["id"] = m_streamToolCallId;
+        toolCall["id"] = stc.id;
         toolCall["type"] = "function";
-        toolCall["name"] = m_streamToolName;
-        toolCall["arguments"] = QJsonDocument::fromJson(m_streamToolArgs.toUtf8()).object();
+        toolCall["name"] = stc.name;
+        toolCall["arguments"] = QJsonDocument::fromJson(stc.args.toUtf8()).object();
         resp.toolCalls.append(toolCall);
     }
 

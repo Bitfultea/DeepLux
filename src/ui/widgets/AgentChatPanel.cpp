@@ -151,27 +151,44 @@ void AgentChatPanel::appendToLastMessage(const QString& text)
 
 void AgentChatPanel::streamAppend(const QString& chunk)
 {
-    if (!m_lastAgentBubble) {
+    if (!m_isStreaming) {
+        // 开始新的流式响应：创建新 bubble 并显示首 chunk
+        m_isStreaming = true;
         addMessage(AgentMessageBubble::Sender::Agent, chunk);
-    } else {
-        // 累积 chunk，用单次定时器防抖更新（避免高频 setText 导致 UI 卡）
-        m_pendingStreamChunk += chunk;
-        if (!m_streamDebounceTimer) {
-            m_streamDebounceTimer = new QTimer(this);
-            m_streamDebounceTimer->setSingleShot(true);
-            m_streamDebounceTimer->setInterval(30);  // ~30fps 更新频率
-            connect(m_streamDebounceTimer, &QTimer::timeout, this, [this]() {
-                if (m_lastAgentBubble && !m_pendingStreamChunk.isEmpty()) {
-                    m_lastAgentBubble->appendText(m_pendingStreamChunk);
-                    m_pendingStreamChunk.clear();
-                    scrollToBottom();
-                }
-            });
-        }
-        if (!m_streamDebounceTimer->isActive()) {
-            m_streamDebounceTimer->start();
-        }
+        return;
     }
+
+    // 累积 chunk，用单次定时器防抖更新（避免高频 setText 导致 UI 卡）
+    m_pendingStreamChunk += chunk;
+    if (!m_streamDebounceTimer) {
+        m_streamDebounceTimer = new QTimer(this);
+        m_streamDebounceTimer->setSingleShot(true);
+        m_streamDebounceTimer->setInterval(30);  // ~30fps 更新频率
+        connect(m_streamDebounceTimer, &QTimer::timeout, this, [this]() {
+            if (m_lastAgentBubble && !m_pendingStreamChunk.isEmpty()) {
+                m_lastAgentBubble->appendText(m_pendingStreamChunk);
+                m_pendingStreamChunk.clear();
+                scrollToBottom();
+            }
+        });
+    }
+    if (!m_streamDebounceTimer->isActive()) {
+        m_streamDebounceTimer->start();
+    }
+}
+
+void AgentChatPanel::streamEnd()
+{
+    // 立即 flush 剩余内容
+    if (m_streamDebounceTimer) {
+        m_streamDebounceTimer->stop();
+    }
+    if (m_lastAgentBubble && !m_pendingStreamChunk.isEmpty()) {
+        m_lastAgentBubble->appendText(m_pendingStreamChunk);
+        m_pendingStreamChunk.clear();
+        scrollToBottom();
+    }
+    m_isStreaming = false;
 }
 
 void AgentChatPanel::addImageAttachment(const QPixmap& pixmap)

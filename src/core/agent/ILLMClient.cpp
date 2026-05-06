@@ -41,7 +41,7 @@ QJsonArray AgentConversation::toOpenAIMessages() const
         }
 
         if (msg.role == "assistant" && !msg.toolCalls.isEmpty()) {
-            obj["tool_calls"] = msg.toolCalls;
+            obj["tool_calls"] = msg.toolCalls;  // QJsonArray, direct OpenAI format
         }
         if (msg.role == "tool") {
             obj["tool_call_id"] = msg.toolCallId;

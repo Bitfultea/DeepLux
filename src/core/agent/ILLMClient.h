@@ -27,7 +27,7 @@ struct AgentMessage
 {
     QString role;       // "system", "user", "assistant", "tool"
     QString content;
-    QJsonObject toolCalls;   // for assistant messages with tool_calls
+    QJsonArray toolCalls;    // for assistant messages with tool_calls (OpenAI array format)
     QString toolCallId;      // for tool role messages
     QList<AgentImageAttachment> images; // for multimodal user messages
 };

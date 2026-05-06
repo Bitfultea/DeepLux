@@ -31,7 +31,9 @@ public:
 
     void addMessage(AgentMessageBubble::Sender sender, const QString& text);
     void appendToLastMessage(const QString& text);
-    void streamAppend(const QString& chunk);  // 流式追加：首 chunk 创建 bubble，后续追加
+    void streamAppend(const QString& chunk);  // 流式追加
+    void streamEnd();                         // 流式结束，flush 剩余内容
+    bool isStreaming() const { return m_isStreaming; }
     void addImageAttachment(const QPixmap& pixmap);
     void showToolPreview(const QList<AgentToolPreviewCard::ToolItem>& tools);
     void clearToolPreview();
@@ -74,6 +76,7 @@ private:
     AgentMessageBubble* m_lastAgentBubble = nullptr;
     bool m_isDark = false;
     bool m_isThinkingTimeout = false;
+    bool m_isStreaming = false;         // 是否正在流式输出中
 
     QString m_pendingStreamChunk;       // 流式输出累积缓冲
     QTimer* m_streamDebounceTimer = nullptr;  // 流式防抖

@@ -25,14 +25,15 @@ void AgentToolPreviewCard::setupUi()
 
     ChatTheme theme = m_isDark ? ChatTheme::dark() : ChatTheme::light();
 
-    QLabel* title = new QLabel("🔧 Agent wants to execute:", this);
-    title->setStyleSheet(QString("font-weight: bold; font-size: 11px; color: %1;").arg(theme.toolFg.name()));
-    mainLayout->addWidget(title);
+    m_titleLabel = new QLabel("🔧 Agent wants to execute:", this);
+    m_titleLabel->setStyleSheet(QString("font-weight: bold; font-size: 11px; color: %1;").arg(theme.toolFg.name()));
+    mainLayout->addWidget(m_titleLabel);
 
     for (int i = 0; i < m_tools.size(); ++i) {
         const ToolItem& t = m_tools[i];
         QLabel* nameLabel = new QLabel(QString("%1. %2").arg(i + 1).arg(t.name), this);
         nameLabel->setStyleSheet(QString("font-weight: bold; font-size: 12px; color: %1;").arg(theme.toolFg.name()));
+        m_nameLabels.append(nameLabel);
         mainLayout->addWidget(nameLabel);
 
         QString paramsStr = QString(QJsonDocument(t.params).toJson(QJsonDocument::Indented));
@@ -52,29 +53,29 @@ void AgentToolPreviewCard::setupUi()
     btnLayout->setSpacing(4);
     btnLayout->addStretch();
 
-    QPushButton* cancelBtn = new QPushButton("Cancel", this);
-    cancelBtn->setFixedHeight(24);
-    cancelBtn->setStyleSheet(QString(
+    m_cancelBtn = new QPushButton("Cancel", this);
+    m_cancelBtn->setFixedHeight(24);
+    m_cancelBtn->setStyleSheet(QString(
         "QPushButton { background: transparent; color: %1; border: 1px solid %2; "
         "border-radius: 3px; padding: 0 8px; font-size: 11px; }"
         "QPushButton:hover { background: %3; }"
     ).arg(theme.errorColor.name()).arg(theme.errorColor.name())
      .arg(theme.inputBorder.name()));
 
-    QPushButton* confirmBtn = new QPushButton("Confirm", this);
-    confirmBtn->setFixedHeight(24);
-    confirmBtn->setStyleSheet(QString(
+    m_confirmBtn = new QPushButton("Confirm", this);
+    m_confirmBtn->setFixedHeight(24);
+    m_confirmBtn->setStyleSheet(QString(
         "QPushButton { background: transparent; color: %1; border: 1px solid %1; "
         "border-radius: 3px; padding: 0 8px; font-size: 11px; }"
         "QPushButton:hover { background: %2; }"
     ).arg(theme.agentName.name()).arg(theme.inputBorder.name()));
 
-    btnLayout->addWidget(cancelBtn);
-    btnLayout->addWidget(confirmBtn);
+    btnLayout->addWidget(m_cancelBtn);
+    btnLayout->addWidget(m_confirmBtn);
     mainLayout->addLayout(btnLayout);
 
-    connect(confirmBtn, &QPushButton::clicked, this, &AgentToolPreviewCard::confirmed);
-    connect(cancelBtn, &QPushButton::clicked, this, &AgentToolPreviewCard::cancelled);
+    connect(m_confirmBtn, &QPushButton::clicked, this, &AgentToolPreviewCard::confirmed);
+    connect(m_cancelBtn, &QPushButton::clicked, this, &AgentToolPreviewCard::cancelled);
 
     applyTheme(m_isDark);
 }
@@ -88,6 +89,12 @@ void AgentToolPreviewCard::applyTheme(bool isDark)
         "AgentToolPreviewCard { border-left: 2px solid #f59e0b; }"
     ));
 
+    if (m_titleLabel) {
+        m_titleLabel->setStyleSheet(QString("font-weight: bold; font-size: 11px; color: %1;").arg(theme.toolFg.name()));
+    }
+    for (QLabel* lbl : m_nameLabels) {
+        if (lbl) lbl->setStyleSheet(QString("font-weight: bold; font-size: 12px; color: %1;").arg(theme.toolFg.name()));
+    }
     for (QWidget* w : m_paramWidgets) {
         if (auto* lbl = qobject_cast<QLabel*>(w)) {
             lbl->setStyleSheet(QString(
@@ -95,6 +102,21 @@ void AgentToolPreviewCard::applyTheme(bool isDark)
                 "font-family: Consolas, Monaco, 'Courier New', monospace; font-size: 11px;"
             ).arg(theme.codeBlockBg.name()).arg(theme.codeBlockFg.name()));
         }
+    }
+    if (m_cancelBtn) {
+        m_cancelBtn->setStyleSheet(QString(
+            "QPushButton { background: transparent; color: %1; border: 1px solid %2; "
+            "border-radius: 3px; padding: 0 8px; font-size: 11px; }"
+            "QPushButton:hover { background: %3; }"
+        ).arg(theme.errorColor.name()).arg(theme.errorColor.name())
+         .arg(theme.inputBorder.name()));
+    }
+    if (m_confirmBtn) {
+        m_confirmBtn->setStyleSheet(QString(
+            "QPushButton { background: transparent; color: %1; border: 1px solid %1; "
+            "border-radius: 3px; padding: 0 8px; font-size: 11px; }"
+            "QPushButton:hover { background: %2; }"
+        ).arg(theme.agentName.name()).arg(theme.inputBorder.name()));
     }
 }
 

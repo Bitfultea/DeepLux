@@ -4,6 +4,8 @@
 #include <QWidget>
 #include <QJsonObject>
 #include <QList>
+#include <QLabel>
+#include <QPushButton>
 
 namespace DeepLux {
 
@@ -38,6 +40,10 @@ private:
     QList<ToolItem> m_tools;
     bool m_isDark = false;
     QList<QWidget*> m_paramWidgets;
+    QLabel* m_titleLabel = nullptr;
+    QList<QLabel*> m_nameLabels;
+    QPushButton* m_cancelBtn = nullptr;
+    QPushButton* m_confirmBtn = nullptr;
 };
 
 } // namespace DeepLux

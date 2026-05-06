@@ -42,15 +42,16 @@ public:
 
     void undo() override {
         Project* proj = ProjectManager::instance().currentProject();
-        if (proj) proj->removeModule(m_instanceName);
+        if (proj) proj->removeModule(m_actualInstanceId);
     }
     void redo() override {
         Project* proj = ProjectManager::instance().currentProject();
         if (!proj) return;
         ModuleInstance inst;
-        inst.id = m_instanceName.isEmpty()
+        m_actualInstanceId = m_instanceName.isEmpty()
             ? QString("%1_%2").arg(m_moduleId).arg(QDateTime::currentDateTime().toMSecsSinceEpoch())
             : m_instanceName;
+        inst.id = m_actualInstanceId;
         inst.moduleId = m_moduleId;
         inst.name = m_instanceName.isEmpty() ? inst.id : m_instanceName;
         proj->addModule(inst);
@@ -58,6 +59,7 @@ public:
 private:
     QString m_moduleId;
     QString m_instanceName;
+    QString m_actualInstanceId;  // 记录实际创建的 instance id（含自动生成的时间戳）
 };
 
 class AgentRemoveModuleCmd : public QUndoCommand
