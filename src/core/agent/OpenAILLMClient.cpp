@@ -45,12 +45,20 @@ void OpenAILLMClient::setToolsEnabled(bool enabled)         { m_toolsEnabled = e
 void OpenAILLMClient::sendRequest(const AgentConversation& ctx,
                                   const QList<ToolDefinition>& tools)
 {
+    // 中止上一个请求，防止信号串联（Agent 闭环中连续发请求时）
+    if (m_currentReply) {
+        disconnect(m_currentReply, nullptr, this, nullptr);
+        m_currentReply->abort();
+        m_currentReply->deleteLater();
+        m_currentReply = nullptr;
+    }
+
     QJsonObject body;
     body["model"] = m_model;
     body["temperature"] = m_temperature;
     body["max_tokens"] = m_maxTokens;
     body["messages"] = ctx.toOpenAIMessages();
-    body["stream"] = true;  // SSE streaming
+    // 暂不使用 stream（DeepSeek 兼容性；流式回调已保留以备未来启用）
 
     if (m_toolsEnabled && !tools.isEmpty()) {
         QJsonArray toolsArray;
@@ -72,116 +80,27 @@ void OpenAILLMClient::sendRequest(const AgentConversation& ctx,
     qDebug() << "OpenAILLMClient: Sending request to" << m_endpoint
              << "model=" << m_model << "msgs=" << ctx.messages.size();
 
-    // 重置流式状态
-    m_streamContent.clear();
-    m_sseBuffer.clear();
-    m_streamToolCalls.clear();
-
     m_currentReply = m_networkManager->post(request, data);
-    connect(m_currentReply, &QNetworkReply::readyRead,
-            this, &OpenAILLMClient::onReplyReadyRead);
     connect(m_currentReply, &QNetworkReply::finished,
             this, &OpenAILLMClient::onReplyFinished);
     connect(m_currentReply, &QNetworkReply::errorOccurred,
             this, &OpenAILLMClient::onNetworkError);
 }
 
-void OpenAILLMClient::onReplyReadyRead()
-{
-    if (!m_currentReply) return;
-    // 防止 finished 已触发后的延迟 readyRead
-    if (m_currentReply->property("_finished").toBool()) return;
-
-    QByteArray chunk = m_currentReply->readAll();
-    m_sseBuffer += QString::fromUtf8(chunk);
-
-    // 按行分割，保留不完整的最后一行在缓冲中
-    int pos;
-    while ((pos = m_sseBuffer.indexOf('\n')) >= 0) {
-        QString line = m_sseBuffer.left(pos).trimmed();
-        m_sseBuffer.remove(0, pos + 1);
-
-        if (!line.startsWith("data: ")) continue;
-        QString jsonStr = line.mid(6).trimmed();
-        if (jsonStr == "[DONE]") continue;
-
-        QJsonDocument chunkDoc = QJsonDocument::fromJson(jsonStr.toUtf8());
-        if (!chunkDoc.isObject()) continue;
-
-        QJsonObject chunkObj = chunkDoc.object();
-        QJsonArray choices = chunkObj["choices"].toArray();
-        if (choices.isEmpty()) continue;
-
-        QJsonObject delta = choices[0].toObject()["delta"].toObject();
-
-        // 文本 delta
-        QString contentDelta = delta["content"].toString();
-        if (!contentDelta.isEmpty()) {
-            m_streamContent += contentDelta;
-            emit streamChunkReceived(contentDelta);
-        }
-
-        // 工具调用 delta（支持多工具并行流式累积）
-        QJsonArray toolDeltas = delta["tool_calls"].toArray();
-        for (const QJsonValue& v : toolDeltas) {
-            QJsonObject tc = v.toObject();
-            int idx = tc["index"].toInt(-1);
-            if (idx < 0) continue;
-
-            QJsonObject func = tc["function"].toObject();
-            QString nameDelta = func["name"].toString();
-            QString argsDelta = func["arguments"].toString();
-
-            if (!tc["id"].toString().isEmpty()) m_streamToolCalls[idx].id = tc["id"].toString();
-            if (!nameDelta.isEmpty()) m_streamToolCalls[idx].name += nameDelta;
-            if (!argsDelta.isEmpty()) m_streamToolCalls[idx].args += argsDelta;
-        }
-    }
-}
-
 void OpenAILLMClient::onReplyFinished()
 {
     if (!m_currentReply) return;
 
-    // 标记 finished，防止延迟的 readyRead 再处理
-    m_currentReply->setProperty("_finished", true);
-
-    // 非流式 fallback：如果 stream accums 为空，用完整响应
-    if (m_streamContent.isEmpty() && m_streamToolCalls.isEmpty()) {
-        QByteArray data = m_currentReply->readAll();
-        m_currentReply->deleteLater();
-        m_currentReply = nullptr;
-        if (!data.isEmpty()) {
-            parseResponse(data);
-        } else {
-            emit errorOccurred("Empty response from LLM");
-        }
-        return;
-    }
-
+    QByteArray data = m_currentReply->readAll();
     m_currentReply->deleteLater();
     m_currentReply = nullptr;
 
-    // 从 stream accumulators 构建响应
-    AgentResponse resp;
-    resp.success = true;
-    resp.content = m_streamContent;
-
-    // 支持多工具调用：按 index 排序输出
-    QList<int> sortedIndices = m_streamToolCalls.keys();
-    std::sort(sortedIndices.begin(), sortedIndices.end());
-    for (int idx : sortedIndices) {
-        const StreamToolCall& stc = m_streamToolCalls[idx];
-        if (stc.name.isEmpty()) continue;
-        QJsonObject toolCall;
-        toolCall["id"] = stc.id;
-        toolCall["type"] = "function";
-        toolCall["name"] = stc.name;
-        toolCall["arguments"] = QJsonDocument::fromJson(stc.args.toUtf8()).object();
-        resp.toolCalls.append(toolCall);
+    if (data.isEmpty()) {
+        emit errorOccurred("Empty response from LLM");
+        return;
     }
 
-    emit responseReceived(resp);
+    parseResponse(data);
 }
 
 void OpenAILLMClient::parseResponse(const QByteArray& data)

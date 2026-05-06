@@ -27,7 +27,6 @@ public:
 
 private slots:
     void onReplyFinished();
-    void onReplyReadyRead();
     void onNetworkError(QNetworkReply::NetworkError error);
 
 private:
