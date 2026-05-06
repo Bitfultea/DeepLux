@@ -30,6 +30,9 @@ public:
     PermissionLevel permissionLevel() const { return m_permissionLevel; }
     void setPermissionLevel(PermissionLevel level);
 
+    enum class AgentState { Idle, Thinking, Confirming, Executing };
+    AgentState state() const { return m_state; }
+
     void onGuiEvent(const GuiEvent& event);
     QJsonObject handleToolCall(const QString& toolName, const QJsonObject& params);
 
@@ -47,6 +50,9 @@ public:
     QJsonArray pendingToolCalls() const { return m_pendingToolCalls; }
     void confirmPendingTools();
     void rejectPendingTools();
+
+    // 测试/调试支持：只读访问对话历史大小
+    int conversationHistorySize() const { return m_conversationHistory.size(); }
 
 signals:
     void actionLogEntryAdded(const AgentActionLogEntry& entry);
@@ -83,11 +89,13 @@ private:
     QJsonArray m_pendingToolCalls;
 
     int m_agentTurnCount = 0;
-    bool m_agentBusy = false;  // 防止并发 loop
+    AgentState m_state = AgentState::Idle;
 
     static constexpr int MAX_AGENT_TURNS = 5;
     static constexpr int MAX_HISTORY_SIZE = 15;
 
+    void transitionTo(AgentState newState);
+    static QString stateName(AgentState state);
     static QString defaultSystemPrompt();
 };
 

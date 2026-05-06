@@ -25,6 +25,7 @@ set(TEST_SOURCES
     test_agentactor.cpp
     test_agentpermissions.cpp
     test_agentundo.cpp
+    test_agentcontroller.cpp
 )
 
 foreach(TEST_FILE ${TEST_SOURCES})

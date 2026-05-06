@@ -84,7 +84,8 @@ void AgentObserver::connectProjectSignals(Project* proj)
 void AgentObserver::shutdown()
 {
     if (!m_initialized) return;
-    disconnect(this, nullptr, nullptr, nullptr);
+    disconnect(this, nullptr, nullptr, nullptr);     // 断开作为 sender 的连接
+    disconnect(nullptr, nullptr, this, nullptr);     // 断开作为 receiver 的连接
     m_initialized = false;
 }
 
@@ -262,6 +263,10 @@ void AgentObserver::setFlowCanvas(QObject* canvas)
 
 void AgentObserver::onLogAdded(const LogEntry& entry)
 {
+    // 防止递归反馈循环：AgentController::onGuiEvent 记录日志到 Logger，
+    // Logger 的 logAdded 又被 AgentObserver 监听，如果不切断会形成无限递归。
+    if (entry.category == "Agent") return;
+
     QJsonObject det;
     det["level"] = static_cast<int>(entry.level);
     det["message"] = entry.message;

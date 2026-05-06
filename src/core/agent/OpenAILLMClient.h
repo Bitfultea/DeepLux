@@ -41,18 +41,6 @@ private:
 
     QNetworkAccessManager* m_networkManager = nullptr;
     QNetworkReply* m_currentReply = nullptr;
-
-    // SSE streaming state
-    QString m_streamContent;
-    QString m_sseBuffer;  // 行缓冲，处理 TCP 拆包导致的不完整 SSE 行
-
-    // 多工具调用支持: index -> {id, name, args}
-    struct StreamToolCall {
-        QString id;
-        QString name;
-        QString args;
-    };
-    QMap<int, StreamToolCall> m_streamToolCalls;
 };
 
 } // namespace DeepLux

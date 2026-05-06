@@ -76,10 +76,30 @@ void AgentController::setLLMClient(ILLMClient* client) {
 }
 
 void AgentController::logAction(const AgentActionLogEntry& entry) { emit actionLogEntryAdded(entry); }
+
 void AgentController::clearConversation() {
     m_conversationHistory.clear();
     m_pendingToolCalls = QJsonArray();
     m_agentTurnCount = 0;
+    transitionTo(AgentState::Idle);
+}
+
+// ========== State Machine ==========
+
+void AgentController::transitionTo(AgentState newState) {
+    if (m_state == newState) return;
+    qDebug() << "[AgentState]" << stateName(m_state) << "->" << stateName(newState);
+    m_state = newState;
+}
+
+QString AgentController::stateName(AgentState state) {
+    switch (state) {
+    case AgentState::Idle:       return "Idle";
+    case AgentState::Thinking:   return "Thinking";
+    case AgentState::Confirming: return "Confirming";
+    case AgentState::Executing:  return "Executing";
+    }
+    return "Unknown";
 }
 
 // ========== Context ==========
@@ -113,11 +133,11 @@ QString AgentController::buildContext() {
 
 void AgentController::sendUserMessage(const QString& message) {
     if (!m_llmClient) { emit llmErrorOccurred("LLM client not configured"); return; }
-    if (m_agentBusy) {
+    if (m_state != AgentState::Idle) {
         emit llmResponseReceived("Agent is busy processing a previous request. Please wait.", {});
         return;
     }
-    m_agentBusy = true;
+    transitionTo(AgentState::Thinking);
     AgentMessage m; m.role = "user"; m.content = message;
     m_conversationHistory.append(m); trimHistory(); m_agentTurnCount = 0;
     AgentConversation ctx;
@@ -128,11 +148,11 @@ void AgentController::sendUserMessage(const QString& message) {
 
 void AgentController::sendUserMessageWithImages(const QString& message, const QList<QPixmap>& images) {
     if (!m_llmClient) { emit llmErrorOccurred("LLM client not configured"); return; }
-    if (m_agentBusy) {
+    if (m_state != AgentState::Idle) {
         emit llmResponseReceived("Agent is busy processing a previous request. Please wait.", {});
         return;
     }
-    m_agentBusy = true;
+    transitionTo(AgentState::Thinking);
     AgentMessage msg; msg.role = "user"; msg.content = message;
     for (const QPixmap& pm : images) {
         QByteArray d; QBuffer b(&d); b.open(QIODevice::WriteOnly); pm.save(&b, "PNG"); b.close();
@@ -148,48 +168,75 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
 // ========== LLM Response ==========
 
 void AgentController::onLLMResponse(const AgentResponse& resp) {
+    if (m_state != AgentState::Thinking) {
+        qWarning() << "[AgentController] Unexpected onLLMResponse in state" << stateName(m_state);
+        return;
+    }
+
     AgentMessage am; am.role = "assistant"; am.content = resp.content;
     am.toolCalls = resp.toolCalls;
     m_conversationHistory.append(am); trimHistory();
 
     if (!resp.toolCalls.isEmpty()) {
         if (m_permissionLevel == PermissionLevel::Observer) {
-            m_agentBusy = false;
+            transitionTo(AgentState::Idle);
             emit llmResponseReceived(resp.content, resp.toolCalls);
             return;
         }
         if (m_permissionLevel == PermissionLevel::Advisor) {
             m_pendingToolCalls = resp.toolCalls;
+            transitionTo(AgentState::Confirming);
             emit llmResponseReceived(resp.content, resp.toolCalls);
             emit toolsPendingConfirmation(resp.toolCalls);
-            return;  // 等用户确认，m_agentBusy 保持 true
+            return;
         }
-        extendAgentLoop(resp.toolCalls);  // Autopilot
+        // Autopilot: 直接执行 + 闭环
+        transitionTo(AgentState::Executing);
+        extendAgentLoop(resp.toolCalls);
         return;
     }
-    m_agentBusy = false;  // 终态：无更多工具调用
+
+    // 纯文本回复 — 终态
+    transitionTo(AgentState::Idle);
     emit llmResponseReceived(resp.content, {});
 }
 
-// ========== Tool Confirm (通过 QueuedConnection 入队，避免阻塞) ==========
+// ========== Tool Confirm (通过 QueuedConnection 入队，避免阻塞按钮信号链) ==========
 
 void AgentController::confirmPendingTools() {
-    if (m_pendingToolCalls.isEmpty()) return;
-    // ⚠️ 拷贝数据后入队，防止执行时数据被修改
+    if (m_state != AgentState::Confirming) {
+        qWarning() << "[AgentController] confirmPendingTools called in state" << stateName(m_state);
+        return;
+    }
+    if (m_pendingToolCalls.isEmpty()) {
+        transitionTo(AgentState::Idle);
+        return;
+    }
+    // 拷贝数据后入队，确保脱离按钮的同步信号处理栈
     QMetaObject::invokeMethod(this, [this, calls = m_pendingToolCalls]() {
+        m_pendingToolCalls = QJsonArray();
         doConfirmPendingTools(calls);
     }, Qt::QueuedConnection);
-    m_pendingToolCalls = QJsonArray();
 }
 
 void AgentController::doConfirmPendingTools(QJsonArray calls) {
+    if (m_state != AgentState::Confirming) {
+        qWarning() << "[AgentController] doConfirmPendingTools: state changed to" << stateName(m_state);
+        return;
+    }
+    transitionTo(AgentState::Executing);
     extendAgentLoop(calls);
 }
 
 void AgentController::rejectPendingTools() {
+    if (m_state != AgentState::Confirming) {
+        qWarning() << "[AgentController] rejectPendingTools called in state" << stateName(m_state);
+        return;
+    }
     QMetaObject::invokeMethod(this, [this]() {
-        m_agentBusy = false;
+        if (m_state != AgentState::Confirming) return;  // 防止 Confirm 已先执行
         m_pendingToolCalls = QJsonArray();
+        transitionTo(AgentState::Idle);
         emit llmResponseReceived("Tool execution cancelled by user.", {});
     }, Qt::QueuedConnection);
 }
@@ -197,8 +244,13 @@ void AgentController::rejectPendingTools() {
 // ========== Agent Loop Core ==========
 
 void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
+    if (m_state != AgentState::Executing) {
+        qWarning() << "[AgentController] Unexpected extendAgentLoop in state" << stateName(m_state);
+        return;
+    }
+
     if (m_agentTurnCount++ >= MAX_AGENT_TURNS) {
-        m_agentBusy = false;
+        transitionTo(AgentState::Idle);
         emit llmResponseReceived(
             QString("Agent reached maximum reasoning turns (%1).").arg(MAX_AGENT_TURNS), {});
         return;
@@ -217,13 +269,17 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
         }
         if (!name.isEmpty()) { tools.append({name, params}); ids.append(tid); }
     }
-    if (tools.isEmpty()) { emit llmErrorOccurred("No valid tool calls"); return; }
+    if (tools.isEmpty()) {
+        transitionTo(AgentState::Idle);
+        emit llmErrorOccurred("No valid tool calls to execute");
+        return;
+    }
 
     // 批量执行
     QJsonObject batchResult = m_actor->executeTools(tools,
         QString("Agent turn %1").arg(m_agentTurnCount));
 
-    // 拆分每个 tool 结果
+    // 拆分每个 tool 结果，每条 tool call 对应一条独立的 tool role message（OpenAI 要求）
     QJsonArray resultsArray = batchResult["results"].toArray();
     for (int i = 0; i < resultsArray.size() && i < ids.size(); ++i) {
         AgentMessage tm; tm.role = "tool"; tm.toolCallId = ids[i];
@@ -238,7 +294,12 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
 
     // 🔁 继续 LLM 请求
     emit agentLoopIterating();
-    if (!m_llmClient) { emit llmErrorOccurred("LLM disconnected"); return; }
+    if (!m_llmClient) {
+        transitionTo(AgentState::Idle);
+        emit llmErrorOccurred("LLM disconnected during agent loop");
+        return;
+    }
+    transitionTo(AgentState::Thinking);
     AgentConversation ctx;
     ctx.messages = m_conversationHistory;
     ctx.systemPrompt = buildContext();
@@ -248,8 +309,26 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
 // ========== Helpers ==========
 
 void AgentController::trimHistory() {
-    while (m_conversationHistory.size() > MAX_HISTORY_SIZE)
-        m_conversationHistory.removeFirst();
+    while (m_conversationHistory.size() > MAX_HISTORY_SIZE) {
+        int userCount = 0, secondUserIndex = -1;
+        for (int i = 0; i < m_conversationHistory.size(); ++i) {
+            if (m_conversationHistory[i].role == "user") {
+                if (++userCount == 2) { secondUserIndex = i; break; }
+            }
+        }
+        if (secondUserIndex > 0) {
+            m_conversationHistory = m_conversationHistory.mid(secondUserIndex);
+        } else {
+            // 长 loop 单轮: 从第一个 assistant 后截断，保留 user + 最近 N 条
+            constexpr int keepRecent = 10;
+            if (m_conversationHistory.size() > keepRecent) {
+                m_conversationHistory = m_conversationHistory.mid(
+                    m_conversationHistory.size() - keepRecent);
+            } else {
+                break;
+            }
+        }
+    }
 }
 
 void AgentController::onGuiEvent(const GuiEvent& event) {
@@ -262,6 +341,8 @@ QJsonObject AgentController::handleToolCall(const QString& toolName, const QJson
     Logger::instance().addLog(
         QString("[ToolCall] %1").arg(toolName), LogLevel::Info, "Agent");
     emit agentActionReceived(toolName, params);
+    if (m_state != AgentState::Idle)
+        return {{"error", "Agent is busy processing another request"}};
     if (m_permissionLevel == PermissionLevel::Observer)
         return {{"error", "Permission denied: Observer mode"}};
     QJsonObject result = m_actor->executeTool(toolName, params);
@@ -272,7 +353,8 @@ QJsonObject AgentController::handleToolCall(const QString& toolName, const QJson
 }
 
 void AgentController::onLLMError(const QString& error) {
-    m_agentBusy = false;
+    m_pendingToolCalls = QJsonArray();
+    transitionTo(AgentState::Idle);
     emit llmErrorOccurred(error);
 }
 

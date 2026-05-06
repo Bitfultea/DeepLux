@@ -869,13 +869,7 @@ void MainWindow::setupMainLayout() {
             this, [this](const QString& content, const QJsonArray& toolCalls) {
                 Q_UNUSED(toolCalls);
                 m_agentChatPanel->setThinking(false);
-                if (m_agentChatPanel->isStreaming()) {
-                    // 流式模式：flush 剩余内容并结束，不再创建新 bubble
-                    m_agentChatPanel->streamEnd();
-                } else {
-                    // 非流式模式：直接显示完整内容
-                    m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Agent, content);
-                }
+                m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Agent, content);
             });
     connect(&AgentController::instance(), &AgentController::llmErrorOccurred,
             this, [this](const QString& error) {
@@ -2514,9 +2508,7 @@ void MainWindow::loadAgentSettings()
         client->setToolsEnabled(cfg.groupBool("agent", "toolsEnabled", true));
         ctrl.setLLMClient(client);
 
-        // 流式输出：LLM stream chunk → Chat Panel 实时显示
-        connect(client, &ILLMClient::streamChunkReceived,
-                m_agentChatPanel, &AgentChatPanel::streamAppend);
+
     }
 
     updateAgentPermissionDisplay();

@@ -86,7 +86,6 @@ public:
 signals:
     void responseReceived(const AgentResponse& resp);
     void errorOccurred(const QString& error);
-    void streamChunkReceived(const QString& chunk);
 };
 
 } // namespace DeepLux
