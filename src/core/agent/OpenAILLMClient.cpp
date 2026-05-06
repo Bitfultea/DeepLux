@@ -130,8 +130,14 @@ void OpenAILLMClient::parseResponse(const QByteArray& data)
         parsed["type"] = tc["type"];
         QJsonObject func = tc["function"].toObject();
         parsed["name"] = func["name"];
-        parsed["arguments"] = QJsonDocument::fromJson(
-            func["arguments"].toString().toUtf8()).object();
+        // 兼容两种 arguments 格式：JSON 字符串 (OpenAI) 或 JSON 对象 (DeepSeek)
+        QJsonValue argsVal = func["arguments"];
+        if (argsVal.isString()) {
+            parsed["arguments"] = QJsonDocument::fromJson(
+                argsVal.toString().toUtf8()).object();
+        } else if (argsVal.isObject()) {
+            parsed["arguments"] = argsVal.toObject();
+        }
         resp.toolCalls.append(parsed);
     }
 

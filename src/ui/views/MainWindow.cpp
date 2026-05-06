@@ -900,9 +900,15 @@ void MainWindow::setupMainLayout() {
                     AgentToolPreviewCard::ToolItem item;
                     item.name = tc["name"].toString();
                     if (item.name.isEmpty()) {
-                        item.name = tc["function"].toObject()["name"].toString();
-                        item.params = QJsonDocument::fromJson(
-                            tc["function"].toObject()["arguments"].toString().toUtf8()).object();
+                        QJsonObject func = tc["function"].toObject();
+                        item.name = func["name"].toString();
+                        QJsonValue argsVal = func["arguments"];
+                        if (argsVal.isString()) {
+                            item.params = QJsonDocument::fromJson(
+                                argsVal.toString().toUtf8()).object();
+                        } else if (argsVal.isObject()) {
+                            item.params = argsVal.toObject();
+                        }
                     } else {
                         item.params = tc["arguments"].toObject();
                     }

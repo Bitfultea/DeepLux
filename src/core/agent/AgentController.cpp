@@ -290,9 +290,15 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls)
         QString name = tc["name"].toString();
         QJsonObject params = tc["arguments"].toObject();
         if (name.isEmpty()) {
-            name = tc["function"].toObject()["name"].toString();
-            QString argsStr = tc["function"].toObject()["arguments"].toString();
-            params = QJsonDocument::fromJson(argsStr.toUtf8()).object();
+            QJsonObject func = tc["function"].toObject();
+            name = func["name"].toString();
+            // 兼容两种 arguments 格式
+            QJsonValue argsVal = func["arguments"];
+            if (argsVal.isString()) {
+                params = QJsonDocument::fromJson(argsVal.toString().toUtf8()).object();
+            } else if (argsVal.isObject()) {
+                params = argsVal.toObject();
+            }
         }
         if (!name.isEmpty()) {
             tools.append({name, params});
