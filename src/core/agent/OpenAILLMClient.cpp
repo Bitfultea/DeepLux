@@ -76,6 +76,8 @@ void OpenAILLMClient::sendRequest(const AgentConversation& ctx,
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     request.setRawHeader("Authorization", QString("Bearer %1").arg(m_apiKey).toUtf8());
+    request.setRawHeader("Connection", "keep-alive");
+    request.setTransferTimeout(30000);  // 30s 超时，防止无限等待
 
     qDebug() << "OpenAILLMClient: Sending request to" << m_endpoint
              << "model=" << m_model << "msgs=" << ctx.messages.size();

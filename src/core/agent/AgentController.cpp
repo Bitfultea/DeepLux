@@ -320,7 +320,6 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls)
         LogLevel::Debug, "Agent");
 
     emit agentLoopIterating();
-    QCoreApplication::processEvents();
 
     if (!m_llmClient) {
         emit llmErrorOccurred("LLM client disconnected during agent loop");
@@ -340,7 +339,6 @@ void AgentController::confirmPendingTools()
     m_pendingToolCalls = QJsonArray();
 
     extendAgentLoop(calls);
-    QCoreApplication::processEvents();
 }
 
 void AgentController::rejectPendingTools()

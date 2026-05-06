@@ -240,17 +240,16 @@ void AgentChatPanel::showToolPreview(const QList<AgentToolPreviewCard::ToolItem>
         m_messagesLayout->addStretch();
     }
 
-    // Qt::QueuedConnection: 脱离按钮 clicked() 信号链, 由事件循环处理
     connect(m_previewCard, &AgentToolPreviewCard::confirmed,
             this, [this]() {
                 clearToolPreview();
                 emit toolPreviewConfirmed();
-            }, Qt::QueuedConnection);
+            });
     connect(m_previewCard, &AgentToolPreviewCard::cancelled,
             this, [this]() {
                 clearToolPreview();
                 emit toolPreviewCancelled();
-            }, Qt::QueuedConnection);
+            });
 
     scrollToBottom();
 }
