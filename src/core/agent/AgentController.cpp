@@ -15,7 +15,7 @@
 #include <QJsonArray>
 #include <QPixmap>
 #include <QBuffer>
-#include <QTimer>
+#include <QCoreApplication>
 
 #include <QDebug>
 
@@ -177,27 +177,17 @@ void AgentController::sendUserMessage(const QString& message)
         return;
     }
 
-    // 追加用户消息到对话历史
     AgentMessage userMsg;
     userMsg.role = "user";
     userMsg.content = message;
     m_conversationHistory.append(userMsg);
     trimHistory();
-
-    // 重置轮数计数
     m_agentTurnCount = 0;
 
-    // 构建完整上下文（system prompt + 实时状态）
     AgentConversation ctx;
     ctx.messages = m_conversationHistory;
     ctx.systemPrompt = buildContext();
-
-    // 延迟到下一轮事件循环发送，避免卡 UI
-    QTimer::singleShot(0, this, [this, ctx]() {
-        if (m_llmClient) {
-            m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
-        }
-    });
+    m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
 }
 
 void AgentController::sendUserMessageWithImages(const QString& message, const QList<QPixmap>& images)
@@ -232,12 +222,7 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
     AgentConversation ctx;
     ctx.messages = m_conversationHistory;
     ctx.systemPrompt = buildContext();
-
-    QTimer::singleShot(0, this, [this, ctx]() {
-        if (m_llmClient) {
-            m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
-        }
-    });
+    m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
 }
 
 void AgentController::onLLMResponse(const AgentResponse& resp)
@@ -334,19 +319,17 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls)
         QString("[AgentLoop] Executed %1 tool(s), continuing...").arg(resultsArray.size()),
         LogLevel::Debug, "Agent");
 
-    // 🔁 闭环：用 QTimer::singleShot 将 LLM 请求推迟到下一轮事件循环
-    // 避免在信号处理链中同步发送请求导致 UI 冻结
     emit agentLoopIterating();
-    QTimer::singleShot(0, this, [this]() {
-        if (!m_llmClient) {
-            emit llmErrorOccurred("LLM client disconnected during agent loop");
-            return;
-        }
-        AgentConversation ctx;
-        ctx.messages = m_conversationHistory;
-        ctx.systemPrompt = buildContext();
-        m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
-    });
+    QCoreApplication::processEvents();
+
+    if (!m_llmClient) {
+        emit llmErrorOccurred("LLM client disconnected during agent loop");
+        return;
+    }
+    AgentConversation ctx;
+    ctx.messages = m_conversationHistory;
+    ctx.systemPrompt = buildContext();
+    m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
 }
 
 void AgentController::confirmPendingTools()
@@ -356,10 +339,8 @@ void AgentController::confirmPendingTools()
     QJsonArray calls = m_pendingToolCalls;
     m_pendingToolCalls = QJsonArray();
 
-    // 延迟到下一轮事件循环执行，避免阻塞 Confirm 按钮的信号链
-    QTimer::singleShot(0, this, [this, calls]() {
-        extendAgentLoop(calls);
-    });
+    extendAgentLoop(calls);
+    QCoreApplication::processEvents();
 }
 
 void AgentController::rejectPendingTools()
