@@ -15,16 +15,6 @@ struct GuiEvent;
 struct AgentActionLogEntry;
 struct AgentMessage;
 
-/**
- * @brief Agent 核心协调器 —— Agentic Loop 引擎
- *
- * 维护对话记忆 + GUI 状态感知 + 工具调用闭环：
- *
- *   User msg → buildContext → LLM
- *     → tool_calls → execute → results
- *     → 🔁 history + LLM  (loop until no more tool_calls)
- *     → llmResponseReceived  (terminal)
- */
 class AgentController : public QObject
 {
     Q_OBJECT
@@ -36,12 +26,7 @@ public:
     void shutdown();
     bool isInitialized() const { return m_initialized; }
 
-    enum class PermissionLevel
-    {
-        Observer,
-        Advisor,
-        Autopilot
-    };
+    enum class PermissionLevel { Observer, Advisor, Autopilot };
     PermissionLevel permissionLevel() const { return m_permissionLevel; }
     void setPermissionLevel(PermissionLevel level);
 
@@ -71,19 +56,19 @@ signals:
     void llmResponseReceived(const QString& content, const QJsonArray& toolCalls);
     void llmErrorOccurred(const QString& error);
     void toolsPendingConfirmation(const QJsonArray& toolCalls);
-    void agentLoopIterating();  // Agent 闭环继续推理中，UI 应保持 thinking 状态
+    void agentLoopIterating();
 
 private slots:
     void onLLMResponse(const struct AgentResponse& resp);
     void onLLMError(const QString& error);
+    void doConfirmPendingTools(QJsonArray calls);
 
 private:
     explicit AgentController(QObject* parent = nullptr);
     ~AgentController() override;
 
-    // Agentic loop
     QString buildContext();
-    void extendAgentLoop(const QJsonArray& toolCalls);
+    void extendAgentLoop(const QJsonArray& toolCalls);  // 内部实现
     void trimHistory();
 
     bool m_initialized = false;
@@ -98,6 +83,8 @@ private:
     QJsonArray m_pendingToolCalls;
 
     int m_agentTurnCount = 0;
+    bool m_agentBusy = false;  // 防止并发 loop
+
     static constexpr int MAX_AGENT_TURNS = 5;
     static constexpr int MAX_HISTORY_SIZE = 15;
 
