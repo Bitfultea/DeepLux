@@ -39,9 +39,7 @@ private:
 
     QList<ToolItem> m_tools;
     bool m_isDark = false;
-    QList<QWidget*> m_paramWidgets;
-    QLabel* m_titleLabel = nullptr;
-    QList<QLabel*> m_nameLabels;
+    QLabel* m_contentLabel = nullptr;
     QPushButton* m_cancelBtn = nullptr;
     QPushButton* m_confirmBtn = nullptr;
 };
