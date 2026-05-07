@@ -89,6 +89,7 @@ private:
     QJsonArray m_pendingToolCalls;
 
     int m_agentTurnCount = 0;
+    static constexpr int MAX_AGENT_TURNS = 5;
     AgentState m_state = AgentState::Idle;
 
     void transitionTo(AgentState newState);

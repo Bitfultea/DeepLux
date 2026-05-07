@@ -152,6 +152,11 @@ MainWindow::MainWindow(QWidget* parent)
     // Load Agent settings from ConfigManager (Phase 3)
     loadAgentSettings();
 
+    // Connect ProjectManager signals to sync process tree with Project model
+    connect(&ProjectManager::instance(), &ProjectManager::projectCreated, this, &MainWindow::onProjectOpened);
+    connect(&ProjectManager::instance(), &ProjectManager::projectOpened, this, &MainWindow::onProjectOpened);
+    connect(&ProjectManager::instance(), &ProjectManager::projectClosed, this, &MainWindow::onProjectClosed);
+
     // Connect Agent action log to UI (will be set after m_agentActionLogWidget is created)
 }
 
@@ -1014,6 +1019,161 @@ void MainWindow::onProcessTreeContextMenu(const QPoint& pos) {
             }
         }
     }
+}
+
+void MainWindow::onProjectOpened(Project* project)
+{
+    if (!project) return;
+
+    // 清空现有流程树
+    clearProcessTree();
+
+    // 加载项目中已有的模块
+    for (const ModuleInstance& inst : project->modules()) {
+        addModuleToProcessTree(inst);
+    }
+
+    // 连接 Project 信号
+    connect(project, &Project::moduleAdded, this, &MainWindow::onModuleAdded);
+    connect(project, &Project::moduleRemoved, this, &MainWindow::onModuleRemoved);
+}
+
+void MainWindow::onProjectClosed()
+{
+    clearProcessTree();
+}
+
+void MainWindow::onModuleAdded(const ModuleInstance& module)
+{
+    addModuleToProcessTree(module);
+}
+
+void MainWindow::onModuleRemoved(const QString& instanceId)
+{
+    removeModuleFromProcessTree(instanceId);
+}
+
+void MainWindow::addModuleToProcessTree(const ModuleInstance& inst)
+{
+    auto diagLog = [](const QString& msg) {
+        QFile f("/tmp/deeplux_agent_diag.log");
+        f.open(QIODevice::WriteOnly | QIODevice::Append);
+        f.write(QString("[DIAG-UI] %1\n").arg(msg).toUtf8());
+        f.close();
+        qDebug() << "[DIAG-UI]" << msg;
+    };
+
+    diagLog(QString("addModuleToProcessTree start: %1").arg(inst.moduleId));
+
+    // 隐藏提示标签
+    if (m_hintLabel) {
+        m_hintLabel->setVisible(false);
+        m_hintLabel->deleteLater();
+        m_hintLabel = nullptr;
+    }
+
+    // 创建树节点
+    QString displayName = inst.name.isEmpty() ? inst.moduleId : inst.name;
+    QTreeWidgetItem* newItem = new QTreeWidgetItem();
+    newItem->setText(0, displayName);
+    diagLog("addModuleToProcessTree: adding item to tree");
+    m_processTree->addTopLevelItem(newItem);
+    diagLog("addModuleToProcessTree: item added");
+
+    // 更新 used names
+    m_usedPluginNames.insert(inst.id);
+
+    // 创建插件运行时实例（clone 可能返回 null — 取决于插件是否实现了 cloneImpl）
+    DeepLux::PluginManager& pm = DeepLux::PluginManager::instance();
+    IModule* module = pm.createModule(inst.moduleId);
+    if (module) {
+        diagLog(QString("addModuleToProcessTree: module created, initializing %1").arg(inst.moduleId));
+        if (module->initialize()) {
+            m_flowModules.insert(inst.id, module);
+        } else {
+            delete module;
+            module = nullptr;
+            Logger::instance().warning(tr("模块初始化失败：%1").arg(inst.moduleId), "Flow");
+        }
+    } else {
+        Logger::instance().warning(tr("模块不支持克隆，无法创建运行时实例：%1").arg(inst.moduleId), "Flow");
+    }
+
+    // 更新 item 数据
+    newItem->setData(0, Qt::UserRole, "flow_item");
+    newItem->setData(0, Qt::UserRole + 1, inst.id);
+    newItem->setData(0, Qt::UserRole + 2, inst.moduleId);
+
+    m_instanceItemMap.insert(inst.id, newItem);
+    m_modulesNeedSync = true;
+}
+
+void MainWindow::removeModuleFromProcessTree(const QString& instanceId)
+{
+    QTreeWidgetItem* item = m_instanceItemMap.value(instanceId);
+    if (item) {
+        int idx = m_processTree->indexOfTopLevelItem(item);
+        if (idx >= 0) {
+            m_processTree->takeTopLevelItem(idx);
+        }
+        delete item;
+        m_instanceItemMap.remove(instanceId);
+    }
+
+    if (m_flowModules.contains(instanceId)) {
+        IModule* module = m_flowModules.value(instanceId);
+        module->shutdown();
+        delete module;
+        m_flowModules.remove(instanceId);
+    }
+
+    m_usedPluginNames.remove(instanceId);
+    m_modulesNeedSync = true;
+
+    // 如果所有 item 都被删除，重新创建提示标签
+    if (m_processTree->topLevelItemCount() == 0 && !m_hintLabel) {
+        QWidget* parentWidget = m_processTree->parentWidget();
+        if (parentWidget) {
+            QVBoxLayout* layout = qobject_cast<QVBoxLayout*>(parentWidget->layout());
+            if (layout) {
+                m_hintLabel = new QLabel(tr("← 从左侧拖拽工具"));
+                m_hintLabel->setAlignment(Qt::AlignCenter);
+                m_hintLabel->setStyleSheet("color: #808080; padding: 10px;");
+                m_hintLabel->setObjectName("ProcessTreeHintLabel");
+                int index = layout->indexOf(m_processTree);
+                layout->insertWidget(index, m_hintLabel);
+            }
+        }
+    }
+}
+
+void MainWindow::clearProcessTree()
+{
+    // 清理所有模块实例
+    for (auto it = m_flowModules.begin(); it != m_flowModules.end(); ++it) {
+        it.value()->shutdown();
+        delete it.value();
+    }
+    m_flowModules.clear();
+    m_usedPluginNames.clear();
+    m_instanceItemMap.clear();
+    m_processTree->clear();
+
+    if (!m_hintLabel) {
+        QWidget* parentWidget = m_processTree->parentWidget();
+        if (parentWidget) {
+            QVBoxLayout* layout = qobject_cast<QVBoxLayout*>(parentWidget->layout());
+            if (layout) {
+                m_hintLabel = new QLabel(tr("← 从左侧拖拽工具"));
+                m_hintLabel->setAlignment(Qt::AlignCenter);
+                m_hintLabel->setStyleSheet("color: #808080; padding: 10px;");
+                m_hintLabel->setObjectName("ProcessTreeHintLabel");
+                int index = layout->indexOf(m_processTree);
+                layout->insertWidget(index, m_hintLabel);
+            }
+        }
+    }
+    m_modulesNeedSync = true;
 }
 
 void MainWindow::applyTheme() {

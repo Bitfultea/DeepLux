@@ -407,22 +407,33 @@ QJsonObject AgentActor::getModuleParamsSchema(const QJsonObject& params)
     // 静态缓存：相同 moduleId 的 schema 只生成一次，避免重复 createModule 加载动态库
     static QMap<QString, QJsonObject> schemaCache;
     if (schemaCache.contains(inst->moduleId)) {
+        qDebug() << "[DIAG] getModuleParamsSchema: cache hit" << inst->moduleId;
         return schemaCache[inst->moduleId];
     }
 
+    qDebug() << "[DIAG] getModuleParamsSchema: cache miss, creating module" << inst->moduleId;
     // Create a temporary module instance to get default params
     IModule* mod = pm.createModule(inst->moduleId);
-    if (!mod) return QJsonObject{{"error", QString("Cannot create module: %1").arg(inst->moduleId)}};
+    if (!mod) {
+        qDebug() << "[DIAG] getModuleParamsSchema: createModule failed" << inst->moduleId;
+        return QJsonObject{{"error", QString("Cannot create module: %1").arg(inst->moduleId)}};
+    }
+    qDebug() << "[DIAG] getModuleParamsSchema: createModule succeeded" << inst->moduleId;
 
     QJsonObject schema;
     schema["moduleId"] = inst->moduleId;
+    qDebug() << "[DIAG] getModuleParamsSchema: calling mod->name()";
     schema["name"] = mod->name();
+    qDebug() << "[DIAG] getModuleParamsSchema: calling mod->description()";
     schema["description"] = mod->description();
+    qDebug() << "[DIAG] getModuleParamsSchema: calling mod->defaultParams()";
     schema["defaultParams"] = mod->defaultParams();
     schema["currentParams"] = inst->params;
 
     schemaCache[inst->moduleId] = schema;
+    qDebug() << "[DIAG] getModuleParamsSchema: deleting mod";
     delete mod;  // 临时实例用完即删
+    qDebug() << "[DIAG] getModuleParamsSchema: returning schema";
     return schema;
 }
 

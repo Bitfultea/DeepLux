@@ -259,6 +259,12 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
     }
     m_agentTurnCount++;
 
+    if (m_agentTurnCount > MAX_AGENT_TURNS) {
+        transitionTo(AgentState::Idle);
+        emit llmResponseReceived(QString("Agent reached maximum reasoning turns (%1).").arg(MAX_AGENT_TURNS), {});
+        return;
+    }
+
     // 解析 tool_calls
     QList<QPair<QString, QJsonObject>> tools; QList<QString> ids;
     for (const QJsonValue& v : toolCalls) {
@@ -402,11 +408,13 @@ QString AgentController::defaultSystemPrompt() {
         "- Connect modules into execution flows, run flows, interpret results\n\n"
         "Knowledge Base: Use read_documentation(topic) to learn about modules and workflows.\n"
         "Topics: module names, 'workflow', 'params', 'all'.\n\n"
-        "Rules:\n"
-        "1. Always use tools, never pseudo-code.\n"
-        "2. Check state with get_flow_state before modifying.\n"
-        "3. Use read_documentation when unsure about parameters.\n"
-        "4. Be concise. Industrial users prefer direct answers.\n"
+        "Critical rules:\n"
+        "1. If get_flow_state returns \"No project opened\", you MUST call create_project first.\n"
+        "   Never call get_flow_state again without creating a project — it will keep returning the same error.\n"
+        "2. Always use tools, never describe pseudo-code.\n"
+        "3. When you have completed all the user's requests, respond in plain text (no more tool calls).\n"
+        "4. Use read_documentation when unsure about module parameters.\n"
+        "5. Be concise. Industrial users prefer direct answers.\n"
     );
 }
 

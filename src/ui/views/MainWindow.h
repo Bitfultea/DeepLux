@@ -21,6 +21,7 @@
 
 #include "core/common/Logger.h"
 #include "core/model/ImageData.h"
+#include "core/model/Project.h"
 
 namespace DeepLux {
 class PropertyPanel;
@@ -78,6 +79,10 @@ private slots:
     void onToggleToolPanel(bool checked);
     void onToggleProcessPanel(bool checked);
     void onProcessTreeContextMenu(const QPoint& pos);
+    void onProjectOpened(Project* project);
+    void onProjectClosed();
+    void onModuleAdded(const ModuleInstance& module);
+    void onModuleRemoved(const QString& instanceId);
 private:
     void setupUi();
     void setupMenuBar();
@@ -173,6 +178,9 @@ protected:
     void displayImage(const ImageData& image, const QString& label = QString());
     bool importImageFile(const QString& filePath);
     void clearCentralDisplay();
+    void addModuleToProcessTree(const ModuleInstance& inst);
+    void removeModuleFromProcessTree(const QString& instanceId);
+    void clearProcessTree();
 
     // 流程中的插件实例
     QMap<QString, IModule*> m_flowModules;
