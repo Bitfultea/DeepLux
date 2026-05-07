@@ -16,6 +16,7 @@
 #include <QPixmap>
 #include <QBuffer>
 
+#include <QFile>
 #include <QDebug>
 
 namespace DeepLux {
@@ -139,7 +140,7 @@ void AgentController::sendUserMessage(const QString& message) {
     }
     transitionTo(AgentState::Thinking);
     AgentMessage m; m.role = "user"; m.content = message;
-    m_conversationHistory.append(m); trimHistory(); m_agentTurnCount = 0;
+    m_conversationHistory.append(m); trimHistoryIfNeeded(); m_agentTurnCount = 0;
     AgentConversation ctx;
     ctx.messages = m_conversationHistory;
     ctx.systemPrompt = buildContext();
@@ -158,7 +159,7 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
         QByteArray d; QBuffer b(&d); b.open(QIODevice::WriteOnly); pm.save(&b, "PNG"); b.close();
         msg.images.append({d, "image/png", "User image"});
     }
-    m_conversationHistory.append(msg); trimHistory(); m_agentTurnCount = 0;
+    m_conversationHistory.append(msg); trimHistoryIfNeeded(); m_agentTurnCount = 0;
     AgentConversation ctx;
     ctx.messages = m_conversationHistory;
     ctx.systemPrompt = buildContext();
@@ -175,7 +176,8 @@ void AgentController::onLLMResponse(const AgentResponse& resp) {
 
     AgentMessage am; am.role = "assistant"; am.content = resp.content;
     am.toolCalls = resp.toolCalls;
-    m_conversationHistory.append(am); trimHistory();
+    am.reasoningContent = resp.reasoningContent;
+    m_conversationHistory.append(am); trimHistoryIfNeeded();
 
     if (!resp.toolCalls.isEmpty()) {
         if (m_permissionLevel == PermissionLevel::Observer) {
@@ -204,6 +206,11 @@ void AgentController::onLLMResponse(const AgentResponse& resp) {
 // ========== Tool Confirm (通过 QueuedConnection 入队，避免阻塞按钮信号链) ==========
 
 void AgentController::confirmPendingTools() {
+    QFile logFile("/tmp/deeplux_agent_diag.log");
+    logFile.open(QIODevice::WriteOnly | QIODevice::Append);
+    logFile.write(QString("[DIAG] confirmPendingTools called, state=%1\n").arg(stateName(m_state)).toUtf8());
+    logFile.close();
+    qDebug() << "[DIAG] confirmPendingTools called, state=" << stateName(m_state);
     if (m_state != AgentState::Confirming) {
         qWarning() << "[AgentController] confirmPendingTools called in state" << stateName(m_state);
         return;
@@ -212,14 +219,18 @@ void AgentController::confirmPendingTools() {
         transitionTo(AgentState::Idle);
         return;
     }
-    // 拷贝数据后入队，确保脱离按钮的同步信号处理栈
-    QMetaObject::invokeMethod(this, [this, calls = m_pendingToolCalls]() {
-        m_pendingToolCalls = QJsonArray();
-        doConfirmPendingTools(calls);
-    }, Qt::QueuedConnection);
+    // 直接同步执行，避免 QueuedConnection 入队延迟导致 UI 无响应
+    QJsonArray calls = m_pendingToolCalls;
+    m_pendingToolCalls = QJsonArray();
+    doConfirmPendingTools(calls);
 }
 
 void AgentController::doConfirmPendingTools(QJsonArray calls) {
+    QFile logFile("/tmp/deeplux_agent_diag.log");
+    logFile.open(QIODevice::WriteOnly | QIODevice::Append);
+    logFile.write(QString("[DIAG] doConfirmPendingTools called, state=%1 calls=%2\n").arg(stateName(m_state)).arg(calls.size()).toUtf8());
+    logFile.close();
+    qDebug() << "[DIAG] doConfirmPendingTools called, state=" << stateName(m_state) << "calls=" << calls.size();
     if (m_state != AgentState::Confirming) {
         qWarning() << "[AgentController] doConfirmPendingTools: state changed to" << stateName(m_state);
         return;
@@ -233,12 +244,10 @@ void AgentController::rejectPendingTools() {
         qWarning() << "[AgentController] rejectPendingTools called in state" << stateName(m_state);
         return;
     }
-    QMetaObject::invokeMethod(this, [this]() {
-        if (m_state != AgentState::Confirming) return;  // 防止 Confirm 已先执行
-        m_pendingToolCalls = QJsonArray();
-        transitionTo(AgentState::Idle);
-        emit llmResponseReceived("Tool execution cancelled by user.", {});
-    }, Qt::QueuedConnection);
+    // 直接同步执行，避免 QueuedConnection 入队延迟
+    m_pendingToolCalls = QJsonArray();
+    transitionTo(AgentState::Idle);
+    emit llmResponseReceived("Tool execution cancelled by user.", {});
 }
 
 // ========== Agent Loop Core ==========
@@ -248,13 +257,7 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
         qWarning() << "[AgentController] Unexpected extendAgentLoop in state" << stateName(m_state);
         return;
     }
-
-    if (m_agentTurnCount++ >= MAX_AGENT_TURNS) {
-        transitionTo(AgentState::Idle);
-        emit llmResponseReceived(
-            QString("Agent reached maximum reasoning turns (%1).").arg(MAX_AGENT_TURNS), {});
-        return;
-    }
+    m_agentTurnCount++;
 
     // 解析 tool_calls
     QList<QPair<QString, QJsonObject>> tools; QList<QString> ids;
@@ -276,8 +279,22 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
     }
 
     // 批量执行
+    qDebug() << "[DIAG] extendAgentLoop: executing" << tools.size() << "tool(s)";
+    {
+        QFile logFile("/tmp/deeplux_agent_diag.log");
+        logFile.open(QIODevice::WriteOnly | QIODevice::Append);
+        logFile.write(QString("[DIAG] extendAgentLoop: executing %1 tool(s)\n").arg(tools.size()).toUtf8());
+        logFile.close();
+    }
     QJsonObject batchResult = m_actor->executeTools(tools,
         QString("Agent turn %1").arg(m_agentTurnCount));
+    qDebug() << "[DIAG] extendAgentLoop: executeTools returned" << batchResult;
+    {
+        QFile logFile("/tmp/deeplux_agent_diag.log");
+        logFile.open(QIODevice::WriteOnly | QIODevice::Append);
+        logFile.write(QString("[DIAG] extendAgentLoop: executeTools returned\n").toUtf8());
+        logFile.close();
+    }
 
     // 拆分每个 tool 结果，每条 tool call 对应一条独立的 tool role message（OpenAI 要求）
     QJsonArray resultsArray = batchResult["results"].toArray();
@@ -287,12 +304,19 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
             .toJson(QJsonDocument::Compact));
         m_conversationHistory.append(tm);
     }
-    trimHistory();
+    trimHistoryIfNeeded();
 
     Logger::instance().addLog(
         QString("[AgentLoop] Executed %1 tool(s)").arg(resultsArray.size()), LogLevel::Debug, "Agent");
 
     // 🔁 继续 LLM 请求
+    qDebug() << "[DIAG] extendAgentLoop: sending LLM request";
+    {
+        QFile logFile("/tmp/deeplux_agent_diag.log");
+        logFile.open(QIODevice::WriteOnly | QIODevice::Append);
+        logFile.write(QString("[DIAG] extendAgentLoop: sending LLM request\n").toUtf8());
+        logFile.close();
+    }
     emit agentLoopIterating();
     if (!m_llmClient) {
         transitionTo(AgentState::Idle);
@@ -308,25 +332,35 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
 
 // ========== Helpers ==========
 
-void AgentController::trimHistory() {
-    while (m_conversationHistory.size() > MAX_HISTORY_SIZE) {
-        int userCount = 0, secondUserIndex = -1;
+void AgentController::trimHistoryIfNeeded() {
+    // 粗略估计: 每字符 ≈ 0.3 token (中英文混合)，每消息 overhead ≈ 20 tokens
+    // 目标: 不超过模型 context window 的 80% (128K * 0.8 ≈ 100K)
+    constexpr int maxEstTokens = 100000;
+    int estimated = 0;
+    for (const auto& m : m_conversationHistory) {
+        estimated += m.content.length() * 0.3 + 20;
+        if (!m.reasoningContent.isEmpty()) estimated += m.reasoningContent.length() * 0.3;
+    }
+    // 加上 system prompt
+    estimated += m_systemPrompt.length() * 0.3;
+
+    // 以完整轮次为单位从头部裁剪
+    while (estimated > maxEstTokens) {
+        int secondUserIdx = -1;
+        int userCount = 0;
         for (int i = 0; i < m_conversationHistory.size(); ++i) {
-            if (m_conversationHistory[i].role == "user") {
-                if (++userCount == 2) { secondUserIndex = i; break; }
+            if (m_conversationHistory[i].role == "user" && ++userCount == 2) {
+                secondUserIdx = i; break;
             }
         }
-        if (secondUserIndex > 0) {
-            m_conversationHistory = m_conversationHistory.mid(secondUserIndex);
+        if (secondUserIdx > 1) {
+            int removed = 0;
+            for (int i = 0; i < secondUserIdx; ++i)
+                removed += m_conversationHistory[i].content.length() * 0.3 + 20;
+            m_conversationHistory = m_conversationHistory.mid(secondUserIdx);
+            estimated -= removed;
         } else {
-            // 长 loop 单轮: 从第一个 assistant 后截断，保留 user + 最近 N 条
-            constexpr int keepRecent = 10;
-            if (m_conversationHistory.size() > keepRecent) {
-                m_conversationHistory = m_conversationHistory.mid(
-                    m_conversationHistory.size() - keepRecent);
-            } else {
-                break;
-            }
+            break;  // 仅剩一轮, 无法裁剪
         }
     }
 }
@@ -338,13 +372,13 @@ void AgentController::onGuiEvent(const GuiEvent& event) {
 }
 
 QJsonObject AgentController::handleToolCall(const QString& toolName, const QJsonObject& params) {
-    Logger::instance().addLog(
-        QString("[ToolCall] %1").arg(toolName), LogLevel::Info, "Agent");
-    emit agentActionReceived(toolName, params);
     if (m_state != AgentState::Idle)
         return {{"error", "Agent is busy processing another request"}};
     if (m_permissionLevel == PermissionLevel::Observer)
         return {{"error", "Permission denied: Observer mode"}};
+    Logger::instance().addLog(
+        QString("[ToolCall] %1").arg(toolName), LogLevel::Info, "Agent");
+    emit agentActionReceived(toolName, params);
     QJsonObject result = m_actor->executeTool(toolName, params);
     AgentActionLogEntry e; e.timestamp = QDateTime::currentDateTime(); e.actor = "Agent";
     e.action = toolName; e.result = result.contains("error") ? "error" : "success";

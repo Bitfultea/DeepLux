@@ -12,6 +12,7 @@
 #include <QDir>
 #include <QFile>
 #include <QDebug>
+#include <QJsonDocument>
 
 namespace DeepLux {
 
@@ -209,13 +210,34 @@ QJsonObject AgentActor::executeTool(const QString& toolName, const QJsonObject& 
 
 QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& tools, const QString& macroName)
 {
+    {
+        QFile logFile("/tmp/deeplux_agent_diag.log");
+        logFile.open(QIODevice::WriteOnly | QIODevice::Append);
+        logFile.write(QString("[DIAG] executeTools called, tools=%1 macro=%2\n").arg(tools.size()).arg(macroName).toUtf8());
+        logFile.close();
+    }
+    qDebug() << "[DIAG] executeTools called, tools=" << tools.size() << "macro=" << macroName;
     if (tools.isEmpty()) return QJsonObject{{"error", "No tools to execute"}};
 
     m_undoStack->beginMacro(macroName);
 
     QJsonArray results;
     for (const auto& pair : tools) {
+        qDebug() << "[DIAG] executeTools: executing" << pair.first;
+        {
+            QFile logFile("/tmp/deeplux_agent_diag.log");
+            logFile.open(QIODevice::WriteOnly | QIODevice::Append);
+            logFile.write(QString("[DIAG] executeTools: executing %1\n").arg(pair.first).toUtf8());
+            logFile.close();
+        }
         QJsonObject result = executeTool(pair.first, pair.second);
+        qDebug() << "[DIAG] executeTools:" << pair.first << "result=" << result;
+        {
+            QFile logFile("/tmp/deeplux_agent_diag.log");
+            logFile.open(QIODevice::WriteOnly | QIODevice::Append);
+            logFile.write(QString("[DIAG] executeTools: %1 result=%2\n").arg(pair.first).arg(QString(QJsonDocument(result).toJson(QJsonDocument::Compact))).toUtf8());
+            logFile.close();
+        }
         QJsonObject entry;
         entry["tool"] = pair.first;
         entry["result"] = result;
@@ -223,6 +245,13 @@ QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& t
     }
 
     m_undoStack->endMacro();
+    qDebug() << "[DIAG] executeTools finished";
+    {
+        QFile logFile("/tmp/deeplux_agent_diag.log");
+        logFile.open(QIODevice::WriteOnly | QIODevice::Append);
+        logFile.write(QString("[DIAG] executeTools finished\n").toUtf8());
+        logFile.close();
+    }
 
     return QJsonObject{{"status", "completed"}, {"results", results}};
 }
@@ -375,6 +404,12 @@ QJsonObject AgentActor::getModuleParamsSchema(const QJsonObject& params)
     ModuleInstance* inst = proj->findModule(instanceId);
     if (!inst) return QJsonObject{{"error", QString("Module not found: %1").arg(instanceId)}};
 
+    // 静态缓存：相同 moduleId 的 schema 只生成一次，避免重复 createModule 加载动态库
+    static QMap<QString, QJsonObject> schemaCache;
+    if (schemaCache.contains(inst->moduleId)) {
+        return schemaCache[inst->moduleId];
+    }
+
     // Create a temporary module instance to get default params
     IModule* mod = pm.createModule(inst->moduleId);
     if (!mod) return QJsonObject{{"error", QString("Cannot create module: %1").arg(inst->moduleId)}};
@@ -386,6 +421,7 @@ QJsonObject AgentActor::getModuleParamsSchema(const QJsonObject& params)
     schema["defaultParams"] = mod->defaultParams();
     schema["currentParams"] = inst->params;
 
+    schemaCache[inst->moduleId] = schema;
     delete mod;  // 临时实例用完即删
     return schema;
 }

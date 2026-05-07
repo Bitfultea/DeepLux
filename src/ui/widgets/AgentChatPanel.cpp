@@ -215,7 +215,7 @@ void AgentChatPanel::showToolPreview(const QList<AgentToolPreviewCard::ToolItem>
 void AgentChatPanel::clearToolPreview()
 {
     if (m_previewCard) {
-        m_previewCard->deleteLater();
+        delete m_previewCard;
         m_previewCard = nullptr;
     }
 }

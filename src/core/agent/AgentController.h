@@ -74,8 +74,8 @@ private:
     ~AgentController() override;
 
     QString buildContext();
-    void extendAgentLoop(const QJsonArray& toolCalls);  // 内部实现
-    void trimHistory();
+    void extendAgentLoop(const QJsonArray& toolCalls);
+    void trimHistoryIfNeeded();
 
     bool m_initialized = false;
     PermissionLevel m_permissionLevel = PermissionLevel::Advisor;
@@ -90,9 +90,6 @@ private:
 
     int m_agentTurnCount = 0;
     AgentState m_state = AgentState::Idle;
-
-    static constexpr int MAX_AGENT_TURNS = 5;
-    static constexpr int MAX_HISTORY_SIZE = 15;
 
     void transitionTo(AgentState newState);
     static QString stateName(AgentState state);

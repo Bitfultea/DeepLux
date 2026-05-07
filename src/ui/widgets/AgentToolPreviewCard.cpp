@@ -80,8 +80,16 @@ void AgentToolPreviewCard::setupUi()
     btnLayout->addWidget(m_confirmBtn);
     mainLayout->addLayout(btnLayout);
 
-    connect(m_confirmBtn, &QPushButton::clicked, this, &AgentToolPreviewCard::confirmed);
-    connect(m_cancelBtn, &QPushButton::clicked, this, &AgentToolPreviewCard::cancelled);
+    connect(m_confirmBtn, &QPushButton::clicked, this, [this]() {
+        m_confirmBtn->setEnabled(false);
+        m_cancelBtn->setEnabled(false);
+        emit confirmed();
+    });
+    connect(m_cancelBtn, &QPushButton::clicked, this, [this]() {
+        m_confirmBtn->setEnabled(false);
+        m_cancelBtn->setEnabled(false);
+        emit cancelled();
+    });
 
     applyTheme(m_isDark);
 }

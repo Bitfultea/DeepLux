@@ -869,11 +869,13 @@ void MainWindow::setupMainLayout() {
             this, [this](const QString& content, const QJsonArray& toolCalls) {
                 Q_UNUSED(toolCalls);
                 m_agentChatPanel->setThinking(false);
+                m_agentChatPanel->clearToolPreview();
                 m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Agent, content);
             });
     connect(&AgentController::instance(), &AgentController::llmErrorOccurred,
             this, [this](const QString& error) {
                 m_agentChatPanel->setThinking(false);
+                m_agentChatPanel->clearToolPreview();
                 m_agentChatPanel->addMessage(AgentMessageBubble::Sender::System,
                                              QString("Error: %1").arg(error));
                 AgentActionLogEntry entry;
@@ -2506,6 +2508,8 @@ void MainWindow::loadAgentSettings()
         client->setTemperature(cfg.groupDouble("agent", "temperature", 0.3));
         client->setMaxTokens(cfg.groupInt("agent", "maxTokens", 4096));
         client->setToolsEnabled(cfg.groupBool("agent", "toolsEnabled", true));
+        client->setReasoningEffort(cfg.groupString("agent", "reasoningEffort", ""));
+        client->setThinkingEnabled(cfg.groupBool("agent", "thinkingEnabled", true));
         ctrl.setLLMClient(client);
 
 

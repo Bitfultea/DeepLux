@@ -41,6 +41,8 @@ void OpenAILLMClient::setModel(const QString& model)       { m_model = model; }
 void OpenAILLMClient::setTemperature(double temp)          { m_temperature = temp; }
 void OpenAILLMClient::setMaxTokens(int tokens)              { m_maxTokens = tokens; }
 void OpenAILLMClient::setToolsEnabled(bool enabled)         { m_toolsEnabled = enabled; }
+void OpenAILLMClient::setReasoningEffort(const QString& effort) { m_reasoningEffort = effort; }
+void OpenAILLMClient::setThinkingEnabled(bool enabled)      { m_thinkingEnabled = enabled; }
 
 void OpenAILLMClient::sendRequest(const AgentConversation& ctx,
                                   const QList<ToolDefinition>& tools)
@@ -67,6 +69,14 @@ void OpenAILLMClient::sendRequest(const AgentConversation& ctx,
         }
         body["tools"] = toolsArray;
         body["tool_choice"] = "auto";
+    }
+
+    // DeepSeek thinking mode
+    if (!m_reasoningEffort.isEmpty()) {
+        body["reasoning_effort"] = m_reasoningEffort;
+    }
+    if (m_thinkingEnabled) {
+        body["thinking"] = QJsonObject{{"type", "enabled"}};
     }
 
     QJsonDocument doc(body);
@@ -123,24 +133,21 @@ void OpenAILLMClient::parseResponse(const QByteArray& data)
     AgentResponse resp;
     resp.success = true;
     resp.content = message["content"].toString();
+    resp.reasoningContent = message["reasoning_content"].toString();
 
     QJsonArray toolCalls = message["tool_calls"].toArray();
     for (const QJsonValue& v : toolCalls) {
         QJsonObject tc = v.toObject();
-        QJsonObject parsed;
-        parsed["id"] = tc["id"];
-        parsed["type"] = tc["type"];
+        // 保留 OpenAI 标准格式：{id, type, function: {name, arguments}}
+        // 确保 arguments 始终是 JSON 字符串（OpenAI API 要求）
         QJsonObject func = tc["function"].toObject();
-        parsed["name"] = func["name"];
-        // 兼容两种 arguments 格式：JSON 字符串 (OpenAI) 或 JSON 对象 (DeepSeek)
         QJsonValue argsVal = func["arguments"];
-        if (argsVal.isString()) {
-            parsed["arguments"] = QJsonDocument::fromJson(
-                argsVal.toString().toUtf8()).object();
-        } else if (argsVal.isObject()) {
-            parsed["arguments"] = argsVal.toObject();
+        if (argsVal.isObject()) {
+            func["arguments"] = QString(QJsonDocument(argsVal.toObject())
+                .toJson(QJsonDocument::Compact));
+            tc["function"] = func;
         }
-        resp.toolCalls.append(parsed);
+        resp.toolCalls.append(tc);
     }
 
     QJsonObject usage = obj["usage"].toObject();

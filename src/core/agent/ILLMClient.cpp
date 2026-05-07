@@ -43,6 +43,10 @@ QJsonArray AgentConversation::toOpenAIMessages() const
         if (msg.role == "assistant" && !msg.toolCalls.isEmpty()) {
             obj["tool_calls"] = msg.toolCalls;  // QJsonArray, direct OpenAI format
         }
+        // DeepSeek thinking mode: reasoning_content 必须原样传回
+        if (msg.role == "assistant" && !msg.reasoningContent.isNull()) {
+            obj["reasoning_content"] = msg.reasoningContent;
+        }
         if (msg.role == "tool") {
             obj["tool_call_id"] = msg.toolCallId;
         }

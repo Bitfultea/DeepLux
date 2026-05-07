@@ -30,6 +30,7 @@ struct AgentMessage
     QJsonArray toolCalls;    // for assistant messages with tool_calls (OpenAI array format)
     QString toolCallId;      // for tool role messages
     QList<AgentImageAttachment> images; // for multimodal user messages
+    QString reasoningContent; // DeepSeek thinking mode: 必须原样传回
 };
 
 /**
@@ -52,6 +53,7 @@ struct AgentResponse
     QString errorMessage;
     QString content;            // 文本回复
     QJsonArray toolCalls;       // tool_call 列表
+    QString reasoningContent;   // DeepSeek thinking mode 推理内容
     int promptTokens = 0;
     int completionTokens = 0;
 };
