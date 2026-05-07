@@ -335,7 +335,7 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
 void AgentController::trimHistoryIfNeeded() {
     // 粗略估计: 每字符 ≈ 0.3 token (中英文混合)，每消息 overhead ≈ 20 tokens
     // 目标: 不超过模型 context window 的 80% (128K * 0.8 ≈ 100K)
-    constexpr int maxEstTokens = 100000;
+    constexpr int maxEstTokens = 256000;
     int estimated = 0;
     for (const auto& m : m_conversationHistory) {
         estimated += m.content.length() * 0.3 + 20;
