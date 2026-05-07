@@ -534,14 +534,11 @@ IModule* PluginManager::createModule(const QString& name)
         diag(QString("createModule: templateModule cached for %1").arg(name));
     }
 
-    diag(QString("createModule: calling clone for %1").arg(name));
-    IModule* newInstance = templateModule->clone();
-    diag(QString("createModule: clone returned %1 for %2").arg(reinterpret_cast<quintptr>(newInstance)).arg(name));
-    if (newInstance) return newInstance;
-
-    // clone 返回 null（插件未实现 cloneImpl）→ 用 createFreshModule 回退
-    diag(QString("createModule: clone failed, falling back to createFreshModule for %1").arg(name));
-    return createFreshModule(name);
+    // 不调用 clone() — 多数插件未实现 cloneImpl，触发纯虚函数调用 crash
+    // 直接用 createFreshModule 从 QPluginLoader::instance() 获取实例
+    IModule* newInstance = createFreshModule(name);
+    diag(QString("createModule: createFreshModule returned %1 for %2").arg(reinterpret_cast<quintptr>(newInstance)).arg(name));
+    return newInstance;
 }
 
 IModule* PluginManager::createFreshModule(const QString& name)
