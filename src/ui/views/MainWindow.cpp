@@ -1662,63 +1662,44 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                             }
                         }
 
-                        // 手动添加 item 到树中
+                        // 先添加树节点（即时视觉反馈），再异步创建模块实例
                         QString displayName = sourceItem->text(0);
                         QTreeWidgetItem* newItem = new QTreeWidgetItem();
                         newItem->setText(0, displayName);
                         m_processTree->insertTopLevelItem(insertRow, newItem);
 
-                        // 生成唯一的实例名称
                         QString instanceName = pluginName;
                         int counter = 1;
                         while (m_usedPluginNames.contains(instanceName)) {
                             instanceName = QString("%1_%2").arg(pluginName).arg(counter++);
                         }
                         m_usedPluginNames.insert(instanceName);
-
-                        // 创建插件实例
-                        qDebug() << "[DIAG-UI] Drop: creating module" << pluginName;
-                        DeepLux::PluginManager& pm = DeepLux::PluginManager::instance();
-                        IModule* module = pm.createModule(pluginName);
-                        qDebug() << "[DIAG-UI] Drop: createModule returned" << module;
-
-                        if (!module) {
-                            Logger::instance().error(tr("无法创建插件：%1").arg(pluginName), "Flow");
-                            delete newItem;
-                            m_usedPluginNames.remove(instanceName);
-                            dropEvent->acceptProposedAction();
-                            return true;
-                        }
-
-                        qDebug() << "[DIAG-UI] Drop: initializing module" << pluginName;
-                        bool initOk = module->initialize();
-                        qDebug() << "[DIAG-UI] Drop: initialize returned" << initOk;
-                        if (!initOk) {
-                            Logger::instance().error(tr("插件初始化失败：%1").arg(pluginName), "Flow");
-                            // createModule 目前返回共享实例，不能 delete
-                            delete newItem;
-                            m_usedPluginNames.remove(instanceName);
-                            dropEvent->acceptProposedAction();
-                            return true;
-                        }
-
-                        // 存储模块实例
-                        m_flowModules.insert(instanceName, module);
-
-                        // 更新 item 的数据
                         newItem->setData(0, Qt::UserRole, "flow_item");
                         newItem->setData(0, Qt::UserRole + 1, instanceName);
                         newItem->setData(0, Qt::UserRole + 2, pluginName);
 
-                        Logger::instance().info(tr("已添加插件到流程：%1 (%2)").arg(displayName).arg(instanceName),
-                                                "Flow");
-
-                        m_modulesNeedSync = true;
-
-                        // 更新项目修改状态
-                        if (ProjectManager::instance().currentProject()) {
-                            ProjectManager::instance().currentProject()->setModified(true);
-                        }
+                        // 推迟模块创建到事件循环 — 避免在拖放嵌套循环中阻塞
+                        QTimer::singleShot(0, this, [this, pluginName, instanceName, displayName]() {
+                            DeepLux::PluginManager& pm = DeepLux::PluginManager::instance();
+                            IModule* module = pm.createModule(pluginName);
+                            if (!module) {
+                                Logger::instance().error(tr("无法创建插件：%1").arg(pluginName), "Flow");
+                                removeModuleFromProcessTree(instanceName);
+                                return;
+                            }
+                            if (!module->initialize()) {
+                                Logger::instance().error(tr("插件初始化失败：%1").arg(pluginName), "Flow");
+                                removeModuleFromProcessTree(instanceName);
+                                return;
+                            }
+                            m_flowModules.insert(instanceName, module);
+                            m_modulesNeedSync = true;
+                            Logger::instance().info(
+                                tr("已添加插件到流程：%1 (%2)").arg(displayName).arg(instanceName), "Flow");
+                            if (ProjectManager::instance().currentProject()) {
+                                ProjectManager::instance().currentProject()->setModified(true);
+                            }
+                        });
 
                         dropEvent->acceptProposedAction();
                         return true;
