@@ -90,7 +90,7 @@ private:
     QString m_logFilePath;
     QFile* m_logFile = nullptr;
     QTextStream* m_logStream = nullptr;
-    QMutex m_mutex;
+    QMutex m_mutex{QMutex::Recursive};  // 持锁 emit logAdded 时信号链可能回调用 addLog
     bool m_logToFile = true;
     LogLevel m_minLevel = LogLevel::Debug;
     qint64 m_maxLogFileSize = 10 * 1024 * 1024; // 10MB
