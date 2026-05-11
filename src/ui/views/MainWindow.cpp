@@ -994,9 +994,6 @@ void MainWindow::onProcessTreeContextMenu(const QPoint& pos) {
     if (selectedAction == deleteAction) {
         QString instanceName = item->data(0, Qt::UserRole + 1).toString();
         if (!instanceName.isEmpty() && m_flowModules.contains(instanceName)) {
-            IModule* module = m_flowModules.value(instanceName);
-            module->shutdown();
-            // createModule 目前返回共享实例，不能 delete
             m_flowModules.remove(instanceName);
             m_usedPluginNames.remove(instanceName);
         }
@@ -1121,9 +1118,7 @@ void MainWindow::removeModuleFromProcessTree(const QString& instanceId)
     }
 
     if (m_flowModules.contains(instanceId)) {
-        IModule* module = m_flowModules.value(instanceId);
-        module->shutdown();
-        // createModule 目前返回共享实例，不能 delete
+        // 共享实例不能 shutdown — 会关闭其他同名模块的实例
         m_flowModules.remove(instanceId);
     }
 
@@ -1149,11 +1144,6 @@ void MainWindow::removeModuleFromProcessTree(const QString& instanceId)
 
 void MainWindow::clearProcessTree()
 {
-    // 清理所有模块实例
-    for (auto it = m_flowModules.begin(); it != m_flowModules.end(); ++it) {
-        it.value()->shutdown();
-        // createModule 目前返回共享实例，不能 delete
-    }
     m_flowModules.clear();
     m_usedPluginNames.clear();
     m_instanceItemMap.clear();
@@ -1549,8 +1539,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                     dialog.setWindowTitle(tr("配置 - %1").arg(item->text(0)));
                     dialog.setMinimumSize(400, 300);
                     QVBoxLayout* layout = new QVBoxLayout(&dialog);
-                    // configWidget 的父对象已经是 module，不需要重新设置 parent
-                    // 使用 layout->addWidget 会自动转移所有权到 dialog
+                    configWidget->setParent(nullptr);  // 共享实例可能已有 parent
                     layout->addWidget(configWidget);
                     QHBoxLayout* btnLayout = new QHBoxLayout();
                     QPushButton* okBtn = new QPushButton(tr("确定"));
@@ -1584,15 +1573,11 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 QTreeWidgetItem* item = selected.first();
                 QString instanceName = item->data(0, Qt::UserRole + 1).toString();
                 if (!instanceName.isEmpty() && m_flowModules.contains(instanceName)) {
-                    IModule* module = m_flowModules.value(instanceName);
-                    module->shutdown();
-                    // createModule 目前返回共享实例，不能 delete
                     m_flowModules.remove(instanceName);
                     m_usedPluginNames.remove(instanceName);
                 }
                 delete item;
                 m_modulesNeedSync = true;
-                // 如果所有 item 都被删除，重新创建提示标签
                 if (m_processTree->topLevelItemCount() == 0 && !m_hintLabel) {
                     // 查找 processPanelLayout
                     QWidget* parentWidget = m_processTree->parentWidget();
