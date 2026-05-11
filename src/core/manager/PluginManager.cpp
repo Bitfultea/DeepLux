@@ -492,53 +492,15 @@ bool PluginManager::isPluginLoaded(const QString& name) const
 
 IModule* PluginManager::createModule(const QString& name)
 {
-    auto diag = [](const QString& msg) {
-        QFile f("/tmp/deeplux_agent_diag.log");
-        f.open(QIODevice::WriteOnly | QIODevice::Append);
-        f.write(QString("[DIAG-PM] %1\n").arg(msg).toUtf8());
-        f.close();
-        qDebug() << "[DIAG-PM]" << msg;
-    };
-
-    diag(QString("createModule start: %1").arg(name));
-
-    if (!isPluginLoaded(name)) {
-        diag(QString("createModule: %1 not loaded, skipping (loadAllPluginsAsync already attempted)").arg(name));
-        qWarning() << "Plugin not loaded and will not be reloaded:" << name;
-        return nullptr;
-    }
-    diag(QString("createModule: %1 already loaded").arg(name));
-
-    diag(QString("createModule: acquiring mutex for %1").arg(name));
     QMutexLocker locker(&m_mutex);
-    diag(QString("createModule: mutex acquired for %1").arg(name));
+    if (!m_loadedPlugins.contains(name))
+        return nullptr;
 
-    IModule* templateModule = m_moduleTemplates.value(name);
-    if (!templateModule) {
-        diag(QString("createModule: templateModule not cached, looking in m_loadedPlugins").arg(name));
-        QObject* plugin = m_loadedPlugins.value(name);
-        if (!plugin) {
-            diag(QString("createModule: plugin not found in m_loadedPlugins for %1").arg(name));
-            return nullptr;
-        }
-        diag(QString("createModule: qobject_cast for %1").arg(name));
-        templateModule = qobject_cast<IModule*>(plugin);
-        if (!templateModule) {
-            qWarning() << "Plugin is not a valid module:" << name;
-            diag(QString("createModule: qobject_cast failed for %1").arg(name));
-            return nullptr;
-        }
-        m_moduleTemplates[name] = templateModule;
-        diag(QString("createModule: templateModule cached for %1").arg(name));
-    } else {
-        diag(QString("createModule: templateModule cached for %1").arg(name));
-    }
-
-    // 不调用 clone() — 多数插件未实现 cloneImpl，触发纯虚函数调用 crash
-    // 直接用 createFreshModule 从 QPluginLoader::instance() 获取实例
-    IModule* newInstance = createFreshModule(name);
-    diag(QString("createModule: createFreshModule returned %1 for %2").arg(reinterpret_cast<quintptr>(newInstance)).arg(name));
-    return newInstance;
+    // 从 QPluginLoader::instance() 获取共享实例
+    // 不调用 clone() — 跨 DLL 边界触发纯虚函数调用 crash (见 commit 62a7bf8)
+    QObject* plugin = m_loadedPlugins.value(name);
+    if (!plugin) return nullptr;
+    return qobject_cast<IModule*>(plugin);
 }
 
 IModule* PluginManager::createFreshModule(const QString& name)

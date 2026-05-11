@@ -6,6 +6,8 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QDebug>
+#include <QFile>
+#include <QIODevice>
 
 namespace DeepLux {
 
@@ -44,17 +46,27 @@ void OpenAILLMClient::setToolsEnabled(bool enabled)         { m_toolsEnabled = e
 void OpenAILLMClient::setReasoningEffort(const QString& effort) { m_reasoningEffort = effort; }
 void OpenAILLMClient::setThinkingEnabled(bool enabled)      { m_thinkingEnabled = enabled; }
 
+static void diagLLM(const QString& msg) {
+    QFile f("/tmp/deeplux_agent_diag.log");
+    f.open(QIODevice::WriteOnly | QIODevice::Append);
+    f.write(QString("[DIAG-LLM] %1\n").arg(msg).toUtf8());
+    f.close();
+    qDebug() << "[DIAG-LLM]" << msg;
+}
+
 void OpenAILLMClient::sendRequest(const AgentConversation& ctx,
                                   const QList<ToolDefinition>& tools)
 {
     // 中止上一个请求，防止信号串联（Agent 闭环中连续发请求时）
     if (m_currentReply) {
+        diagLLM("sendRequest: aborting previous reply");
         disconnect(m_currentReply, nullptr, this, nullptr);
         m_currentReply->abort();
         m_currentReply->deleteLater();
         m_currentReply = nullptr;
     }
 
+    diagLLM(QString("sendRequest: endpoint=%1 model=%2 msgs=%3").arg(m_endpoint).arg(m_model).arg(ctx.messages.size()));
     QJsonObject body;
     body["model"] = m_model;
     body["temperature"] = m_temperature;
@@ -93,6 +105,7 @@ void OpenAILLMClient::sendRequest(const AgentConversation& ctx,
              << "model=" << m_model << "msgs=" << ctx.messages.size();
 
     m_currentReply = m_networkManager->post(request, data);
+    diagLLM("sendRequest: post() called, connecting signals");
     connect(m_currentReply, &QNetworkReply::finished,
             this, &OpenAILLMClient::onReplyFinished);
     connect(m_currentReply, &QNetworkReply::errorOccurred,
@@ -101,45 +114,65 @@ void OpenAILLMClient::sendRequest(const AgentConversation& ctx,
 
 void OpenAILLMClient::onReplyFinished()
 {
-    if (!m_currentReply) return;
+    diagLLM("onReplyFinished: called");
+    if (!m_currentReply) {
+        diagLLM("onReplyFinished: m_currentReply is null, returning");
+        return;
+    }
 
     QByteArray data = m_currentReply->readAll();
+    diagLLM(QString("onReplyFinished: read %1 bytes").arg(data.size()));
     m_currentReply->deleteLater();
     m_currentReply = nullptr;
 
     if (data.isEmpty()) {
+        diagLLM("onReplyFinished: empty data, emitting error");
         emit errorOccurred("Empty response from LLM");
         return;
     }
 
+    diagLLM("onReplyFinished: calling parseResponse");
     parseResponse(data);
 }
 
 void OpenAILLMClient::parseResponse(const QByteArray& data)
 {
+    diagLLM("parseResponse: start");
     QJsonDocument doc = QJsonDocument::fromJson(data);
-    if (!doc.isObject()) { emit errorOccurred("Invalid JSON response"); return; }
+    if (!doc.isObject()) {
+        diagLLM("parseResponse: invalid JSON");
+        emit errorOccurred("Invalid JSON response");
+        return;
+    }
 
     QJsonObject obj = doc.object();
     if (obj.contains("error")) {
-        emit errorOccurred(obj["error"].toObject()["message"].toString("Unknown error"));
+        QString errMsg = obj["error"].toObject()["message"].toString("Unknown error");
+        diagLLM(QString("parseResponse: LLM error: %1").arg(errMsg));
+        emit errorOccurred(errMsg);
         return;
     }
 
     QJsonArray choices = obj["choices"].toArray();
-    if (choices.isEmpty()) { emit errorOccurred("No choices in LLM response"); return; }
+    if (choices.isEmpty()) {
+        diagLLM("parseResponse: no choices");
+        emit errorOccurred("No choices in LLM response");
+        return;
+    }
+    diagLLM(QString("parseResponse: choices=%1").arg(choices.size()));
 
     QJsonObject message = choices[0].toObject()["message"].toObject();
     AgentResponse resp;
     resp.success = true;
     resp.content = message["content"].toString();
     resp.reasoningContent = message["reasoning_content"].toString();
+    diagLLM(QString("parseResponse: content len=%1 reasoning len=%2")
+              .arg(resp.content.length()).arg(resp.reasoningContent.length()));
 
     QJsonArray toolCalls = message["tool_calls"].toArray();
+    diagLLM(QString("parseResponse: toolCalls=%1").arg(toolCalls.size()));
     for (const QJsonValue& v : toolCalls) {
         QJsonObject tc = v.toObject();
-        // 保留 OpenAI 标准格式：{id, type, function: {name, arguments}}
-        // 确保 arguments 始终是 JSON 字符串（OpenAI API 要求）
         QJsonObject func = tc["function"].toObject();
         QJsonValue argsVal = func["arguments"];
         if (argsVal.isObject()) {
@@ -154,19 +187,24 @@ void OpenAILLMClient::parseResponse(const QByteArray& data)
     resp.promptTokens = usage["prompt_tokens"].toInt();
     resp.completionTokens = usage["completion_tokens"].toInt();
 
+    diagLLM("parseResponse: emitting responseReceived");
     emit responseReceived(resp);
 }
 
 void OpenAILLMClient::onNetworkError(QNetworkReply::NetworkError error)
 {
     Q_UNUSED(error);
-    if (!m_currentReply) return;
+    diagLLM(QString("onNetworkError: error=%1").arg(static_cast<int>(error)));
+    if (!m_currentReply) {
+        diagLLM("onNetworkError: m_currentReply is null, returning");
+        return;
+    }
     QString msg = m_currentReply->errorString();
     QByteArray body = m_currentReply->readAll();
     if (!body.isEmpty()) {
         msg += " | Response: " + QString::fromUtf8(body);
     }
-    qDebug() << "OpenAILLMClient: Network error:" << msg;
+    diagLLM(QString("onNetworkError: %1").arg(msg));
     m_currentReply->deleteLater();
     m_currentReply = nullptr;
     emit errorOccurred(msg);

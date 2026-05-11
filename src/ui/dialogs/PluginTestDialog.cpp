@@ -208,7 +208,7 @@ void PluginTestDialog::onPluginSelected(int index)
     if (!m_currentModule->initialize()) {
         m_resultEdit->setTextColor(Qt::red);
         m_resultEdit->append(QString("[%1] 插件初始化失败: %2\n").arg(QDateTime::currentDateTime().toString("hh:mm:ss"), pluginName));
-        delete m_currentModule;
+        // createModule 目前返回共享实例，不能 delete
         m_currentModule = nullptr;
         return;
     }

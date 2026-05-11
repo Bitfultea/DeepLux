@@ -413,8 +413,9 @@ QString AgentController::defaultSystemPrompt() {
         "   Never call get_flow_state again without creating a project — it will keep returning the same error.\n"
         "2. Always use tools, never describe pseudo-code.\n"
         "3. When you have completed all the user's requests, respond in plain text (no more tool calls).\n"
-        "4. Use read_documentation when unsure about module parameters.\n"
-        "5. Be concise. Industrial users prefer direct answers.\n"
+        "4. If the user only asked a question or gave a simple instruction that is already fulfilled, do NOT call additional tools just to verify — respond directly.\n"
+        "5. Use read_documentation when unsure about module parameters.\n"
+        "6. Be concise. Industrial users prefer direct answers.\n"
     );
 }
 

@@ -242,6 +242,8 @@ QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& t
         entry["tool"] = pair.first;
         entry["result"] = result;
         results.append(entry);
+        // 允许 UI 更新，但排除用户输入事件避免重入
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
     }
 
     m_undoStack->endMacro();
@@ -411,29 +413,39 @@ QJsonObject AgentActor::getModuleParamsSchema(const QJsonObject& params)
         return schemaCache[inst->moduleId];
     }
 
-    qDebug() << "[DIAG] getModuleParamsSchema: cache miss, creating module" << inst->moduleId;
+    auto diag = [](const QString& msg) {
+        QFile f("/tmp/deeplux_agent_diag.log");
+        f.open(QIODevice::WriteOnly | QIODevice::Append);
+        f.write(QString("[DIAG-AA] %1\n").arg(msg).toUtf8());
+        f.close();
+        qDebug() << "[DIAG-AA]" << msg;
+    };
+    diag(QString("getModuleParamsSchema: cache miss, creating module %1").arg(inst->moduleId));
     // Create a temporary module instance to get default params
     IModule* mod = pm.createModule(inst->moduleId);
     if (!mod) {
-        qDebug() << "[DIAG] getModuleParamsSchema: createModule failed" << inst->moduleId;
+        diag(QString("getModuleParamsSchema: createModule failed %1").arg(inst->moduleId));
         return QJsonObject{{"error", QString("Cannot create module: %1").arg(inst->moduleId)}};
     }
-    qDebug() << "[DIAG] getModuleParamsSchema: createModule succeeded" << inst->moduleId;
+    diag(QString("getModuleParamsSchema: createModule succeeded, ptr=%1").arg(reinterpret_cast<quintptr>(mod)));
 
     QJsonObject schema;
     schema["moduleId"] = inst->moduleId;
-    qDebug() << "[DIAG] getModuleParamsSchema: calling mod->name()";
+    diag("getModuleParamsSchema: about to call mod->name()");
     schema["name"] = mod->name();
-    qDebug() << "[DIAG] getModuleParamsSchema: calling mod->description()";
+    diag(QString("getModuleParamsSchema: name=%1").arg(schema["name"].toString()));
+    diag("getModuleParamsSchema: about to call mod->description()");
     schema["description"] = mod->description();
-    qDebug() << "[DIAG] getModuleParamsSchema: calling mod->defaultParams()";
+    diag("getModuleParamsSchema: about to call mod->defaultParams()");
     schema["defaultParams"] = mod->defaultParams();
+    diag("getModuleParamsSchema: defaultParams done");
     schema["currentParams"] = inst->params;
 
     schemaCache[inst->moduleId] = schema;
-    qDebug() << "[DIAG] getModuleParamsSchema: deleting mod";
-    delete mod;  // 临时实例用完即删
-    qDebug() << "[DIAG] getModuleParamsSchema: returning schema";
+    diag("getModuleParamsSchema: schema cached");
+    // NOTE: createFreshModule 返回的是 PluginManager 缓存的共享实例，
+    // 生命周期由 QPluginLoader 管理，调用方不得 delete。
+    diag("getModuleParamsSchema: returning schema");
     return schema;
 }
 

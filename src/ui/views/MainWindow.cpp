@@ -996,7 +996,7 @@ void MainWindow::onProcessTreeContextMenu(const QPoint& pos) {
         if (!instanceName.isEmpty() && m_flowModules.contains(instanceName)) {
             IModule* module = m_flowModules.value(instanceName);
             module->shutdown();
-            delete module;
+            // createModule 目前返回共享实例，不能 delete
             m_flowModules.remove(instanceName);
             m_usedPluginNames.remove(instanceName);
         }
@@ -1091,7 +1091,7 @@ void MainWindow::addModuleToProcessTree(const ModuleInstance& inst)
         if (module->initialize()) {
             m_flowModules.insert(inst.id, module);
         } else {
-            delete module;
+            // createModule 目前返回共享实例（createFreshModule），不能 delete
             module = nullptr;
             Logger::instance().warning(tr("模块初始化失败：%1").arg(inst.moduleId), "Flow");
         }
@@ -1123,7 +1123,7 @@ void MainWindow::removeModuleFromProcessTree(const QString& instanceId)
     if (m_flowModules.contains(instanceId)) {
         IModule* module = m_flowModules.value(instanceId);
         module->shutdown();
-        delete module;
+        // createModule 目前返回共享实例，不能 delete
         m_flowModules.remove(instanceId);
     }
 
@@ -1152,7 +1152,7 @@ void MainWindow::clearProcessTree()
     // 清理所有模块实例
     for (auto it = m_flowModules.begin(); it != m_flowModules.end(); ++it) {
         it.value()->shutdown();
-        delete it.value();
+        // createModule 目前返回共享实例，不能 delete
     }
     m_flowModules.clear();
     m_usedPluginNames.clear();
@@ -1537,9 +1537,12 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 
         if (item && item->data(0, Qt::UserRole).toString() == "flow_item") {
             QString instanceName = item->data(0, Qt::UserRole + 1).toString();
+            qDebug() << "[DIAG-UI] Double-click module:" << instanceName;
             if (!instanceName.isEmpty() && m_flowModules.contains(instanceName)) {
                 IModule* module = m_flowModules.value(instanceName);
+                qDebug() << "[DIAG-UI] Creating config widget for" << instanceName << "moduleId=" << module->moduleId();
                 QWidget* configWidget = module->createConfigWidget();
+                qDebug() << "[DIAG-UI] createConfigWidget returned" << configWidget;
                 if (configWidget) {
                     // 创建对话框来显示配置控件
                     QDialog dialog(this);
@@ -1583,7 +1586,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 if (!instanceName.isEmpty() && m_flowModules.contains(instanceName)) {
                     IModule* module = m_flowModules.value(instanceName);
                     module->shutdown();
-                    delete module;
+                    // createModule 目前返回共享实例，不能 delete
                     m_flowModules.remove(instanceName);
                     m_usedPluginNames.remove(instanceName);
                 }
@@ -1674,8 +1677,10 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                         m_usedPluginNames.insert(instanceName);
 
                         // 创建插件实例
+                        qDebug() << "[DIAG-UI] Drop: creating module" << pluginName;
                         DeepLux::PluginManager& pm = DeepLux::PluginManager::instance();
                         IModule* module = pm.createModule(pluginName);
+                        qDebug() << "[DIAG-UI] Drop: createModule returned" << module;
 
                         if (!module) {
                             Logger::instance().error(tr("无法创建插件：%1").arg(pluginName), "Flow");
@@ -1685,10 +1690,14 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                             return true;
                         }
 
-                        if (!module->initialize()) {
+                        qDebug() << "[DIAG-UI] Drop: initializing module" << pluginName;
+                        bool initOk = module->initialize();
+                        qDebug() << "[DIAG-UI] Drop: initialize returned" << initOk;
+                        if (!initOk) {
                             Logger::instance().error(tr("插件初始化失败：%1").arg(pluginName), "Flow");
-                            delete module;
+                            // createModule 目前返回共享实例，不能 delete
                             delete newItem;
+                            m_usedPluginNames.remove(instanceName);
                             dropEvent->acceptProposedAction();
                             return true;
                         }
