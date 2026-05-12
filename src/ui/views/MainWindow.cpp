@@ -1534,13 +1534,12 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 QWidget* configWidget = module->createConfigWidget();
                 qDebug() << "[DIAG-UI] createConfigWidget returned" << configWidget;
                 if (configWidget) {
-                    // 创建对话框来显示配置控件
-                    QDialog dialog(this);
-                    dialog.setWindowTitle(tr("配置 - %1").arg(item->text(0)));
-                    dialog.setMinimumSize(400, 300);
-                    QVBoxLayout* layout = new QVBoxLayout(&dialog);
-                    configWidget->setParent(nullptr);  // 共享实例可能已有 parent
-                    layout->addWidget(configWidget);
+                    QDialog* dialog = new QDialog(this);
+                    dialog->setWindowTitle(tr("配置 - %1").arg(item->text(0)));
+                    dialog->setMinimumSize(400, 300);
+                    dialog->setAttribute(Qt::WA_DeleteOnClose);
+                    QVBoxLayout* layout = new QVBoxLayout(dialog);
+                    layout->addWidget(configWidget);  // addWidget 会 reparent 到 dialog
                     QHBoxLayout* btnLayout = new QHBoxLayout();
                     QPushButton* okBtn = new QPushButton(tr("确定"));
                     QPushButton* cancelBtn = new QPushButton(tr("取消"));
@@ -1549,10 +1548,16 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                     btnLayout->addWidget(cancelBtn);
                     layout->addLayout(btnLayout);
 
-                    connect(okBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
-                    connect(cancelBtn, &QPushButton::clicked, &dialog, &QDialog::reject);
+                    // dialog 关闭时把 configWidget 从 dialog 分离，防止被 WA_DeleteOnClose 销毁
+                    // 插件可能缓存了 configWidget 指针，销毁会导致下次 createConfigWidget crash
+                    connect(dialog, &QDialog::finished, configWidget, [configWidget]() {
+                        configWidget->setParent(nullptr);
+                    });
 
-                    if (dialog.exec() == QDialog::Accepted) {
+                    connect(okBtn, &QPushButton::clicked, dialog, &QDialog::accept);
+                    connect(cancelBtn, &QPushButton::clicked, dialog, &QDialog::reject);
+
+                    if (dialog->exec() == QDialog::Accepted) {
                         Logger::instance().info(tr("模块参数已更新：%1").arg(item->text(0)), "Config");
                     }
                 } else {
