@@ -154,11 +154,16 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
         return;
     }
     transitionTo(AgentState::Thinking);
-    AgentMessage msg; msg.role = "user"; msg.content = message;
-    for (const QPixmap& pm : images) {
-        QByteArray d; QBuffer b(&d); b.open(QIODevice::WriteOnly); pm.save(&b, "PNG"); b.close();
-        msg.images.append({d, "image/png", "User image"});
-    }
+
+    // DeepSeek 不支持 vision API (image_url 格式), 图片转为文本描述
+    QString actualMessage = message;
+    if (!message.isEmpty()) actualMessage += "\n\n";
+    actualMessage += QString("[User attached %1 image(s). Describe what you see or ask the user to describe them. "
+                              "If you need vision capabilities, switch to a multimodal model like gpt-4o or claude.]")
+                              .arg(images.size());
+
+    AgentMessage msg; msg.role = "user"; msg.content = actualMessage;
+    // 不填充 msg.images — DeepSeek 不支持 image_url
     m_conversationHistory.append(msg); trimHistoryIfNeeded(); m_agentTurnCount = 0;
     AgentConversation ctx;
     ctx.messages = m_conversationHistory;
