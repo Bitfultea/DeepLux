@@ -97,8 +97,8 @@ void DisplayManager::displayData(const DisplayData& data, int delayMs)
     }
 
     // Display the data (with optional delay)
-    if (const ImageData* img = data.imageData()) {
-        QImage image = img->toQImage();
+    if (data.imageData()) {
+        QImage image = data.imageData()->toQImage();
         if (delayMs > 0) {
             QTimer::singleShot(delayMs, target, [target, image]() {
                 target->displayImage(image);
@@ -106,6 +106,10 @@ void DisplayManager::displayData(const DisplayData& data, int delayMs)
         } else {
             target->displayImage(image);
         }
+        emit dataDisplayed(target->viewportId());
+    } else if (data.pointCloudData() || data.isValid()) {
+        // 3D 或其他数据 — 委托给 ViewportWidget，它根据类型自动切换 2D/3D
+        target->displayData(data);
         emit dataDisplayed(target->viewportId());
     }
 }
