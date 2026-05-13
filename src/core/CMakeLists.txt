@@ -29,6 +29,8 @@ set(CORE_SOURCES
     communication/CommunicationManager.cpp
     config/SystemConfig.cpp
     display/DisplayData.cpp
+    io/PlyLoader.cpp
+    io/TiffLoader.cpp
     agent/AgentBridge.cpp
     agent/AgentConnection.cpp
     agent/AgentController.cpp
@@ -78,6 +80,8 @@ set(CORE_HEADERS
     agent/ILLMClient.h
     agent/OpenAILLMClient.h
     agent/GuiEvent.h
+    io/PlyLoader.h
+    io/TiffLoader.h
 )
 
 add_library(deeplux_core SHARED ${CORE_SOURCES} ${CORE_HEADERS})

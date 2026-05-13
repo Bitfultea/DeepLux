@@ -262,14 +262,6 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
         qWarning() << "[AgentController] Unexpected extendAgentLoop in state" << stateName(m_state);
         return;
     }
-    m_agentTurnCount++;
-
-    if (m_agentTurnCount > MAX_AGENT_TURNS) {
-        transitionTo(AgentState::Idle);
-        emit llmResponseReceived(QString("Agent reached maximum reasoning turns (%1).").arg(MAX_AGENT_TURNS), {});
-        return;
-    }
-
     // 解析 tool_calls
     QList<QPair<QString, QJsonObject>> tools; QList<QString> ids;
     for (const QJsonValue& v : toolCalls) {
@@ -391,8 +383,12 @@ QJsonObject AgentController::handleToolCall(const QString& toolName, const QJson
         QString("[ToolCall] %1").arg(toolName), LogLevel::Info, "Agent");
     emit agentActionReceived(toolName, params);
     QJsonObject result = m_actor->executeTool(toolName, params);
-    AgentActionLogEntry e; e.timestamp = QDateTime::currentDateTime(); e.actor = "Agent";
-    e.action = toolName; e.result = result.contains("error") ? "error" : "success";
+    AgentActionLogEntry e;
+    e.timestamp = QDateTime::currentDateTime();
+    e.actor = "Agent";
+    e.action = toolName;
+    e.params = QString(QJsonDocument(params).toJson(QJsonDocument::Compact));
+    e.result = result.contains("error") ? "error" : "success";
     emit actionLogEntryAdded(e);
     return result;
 }

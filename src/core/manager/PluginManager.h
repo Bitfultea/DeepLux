@@ -32,6 +32,7 @@ struct PluginInfo {
     QString path;           // 路径
     QString description;    // 描述
     QString author;         // 作者
+    QString icon;           // 图标文件名
     bool loaded = false;    // 是否已加载
     QString error;          // 错误信息
 };

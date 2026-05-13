@@ -145,6 +145,7 @@ bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info)
     info.category = json["category"].toString();
     info.description = json["description"].toString();
     info.author = json["author"].toString();
+    info.icon = json["icon"].toString();
     info.path = path;
     info.loaded = false;
 
@@ -222,8 +223,19 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs)
         qDebug() << "Plugin loaded:" << name;
         emit pluginLoaded(name);
 
-        // 如果是相机插件，注册到 CameraManager
+        // 设置模块图标
         QObject* plugin = loader->instance();
+        if (!info.icon.isEmpty()) {
+            QString iconPath = dir.filePath(info.icon);
+            if (QFile::exists(iconPath)) {
+                DeepLux::IModule* module = qobject_cast<DeepLux::IModule*>(plugin);
+                if (module) {
+                    module->setIcon(QIcon(iconPath));
+                }
+            }
+        }
+
+        // 如果是相机插件，注册到 CameraManager
         ICameraPlugin* cameraPlugin = qobject_cast<ICameraPlugin*>(plugin);
         if (cameraPlugin) {
             CameraManager::instance().registerCameraPlugin(cameraPlugin);

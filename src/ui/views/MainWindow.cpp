@@ -1087,6 +1087,9 @@ void MainWindow::addModuleToProcessTree(const ModuleInstance& inst)
         diagLog(QString("addModuleToProcessTree: module created, initializing %1").arg(inst.moduleId));
         if (module->initialize()) {
             m_flowModules.insert(inst.id, module);
+            if (!module->icon().isNull()) {
+                newItem->setIcon(0, module->icon());
+            }
         } else {
             // createModule 目前返回共享实例（createFreshModule），不能 delete
             module = nullptr;
@@ -1669,7 +1672,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                         newItem->setData(0, Qt::UserRole + 2, pluginName);
 
                         // 推迟模块创建到事件循环 — 避免在拖放嵌套循环中阻塞
-                        QTimer::singleShot(0, this, [this, pluginName, instanceName, displayName]() {
+                        QTimer::singleShot(0, this, [this, pluginName, instanceName, displayName, newItem]() {
                             DeepLux::PluginManager& pm = DeepLux::PluginManager::instance();
                             IModule* module = pm.createModule(pluginName);
                             if (!module) {
@@ -1683,6 +1686,9 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                                 return;
                             }
                             m_flowModules.insert(instanceName, module);
+                            if (!module->icon().isNull()) {
+                                newItem->setIcon(0, module->icon());
+                            }
                             m_modulesNeedSync = true;
                             Logger::instance().info(
                                 tr("已添加插件到流程：%1 (%2)").arg(displayName).arg(instanceName), "Flow");

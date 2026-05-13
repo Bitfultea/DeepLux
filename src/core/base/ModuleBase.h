@@ -43,6 +43,7 @@ public:
     QString author() const override { return m_author; }
     QString description() const override { return m_description; }
     QIcon icon() const override { return m_icon; }
+    void setIcon(const QIcon& icon) override { m_icon = icon; }
 
     bool initialize() override;
     void shutdown() override;

@@ -54,7 +54,11 @@ public:
             : m_instanceName;
         inst.id = m_actualInstanceId;
         inst.moduleId = m_moduleId;
-        inst.name = m_instanceName.isEmpty() ? inst.id : m_instanceName;
+        // 获取模块的中文显示名（createModule 返回共享实例，不 delete）
+        DeepLux::PluginManager& pm = DeepLux::PluginManager::instance();
+        DeepLux::IModule* module = pm.createModule(m_moduleId);
+        QString moduleDisplayName = module ? module->name() : m_moduleId;
+        inst.name = m_instanceName.isEmpty() ? moduleDisplayName : m_instanceName;
         proj->addModule(inst);
     }
 private:

@@ -40,6 +40,7 @@ public:
     virtual QString author() const = 0;
     virtual QString description() const = 0;
     virtual QIcon icon() const { return QIcon(); }
+    virtual void setIcon(const QIcon& icon) { Q_UNUSED(icon) }
 
     virtual bool initialize() = 0;
     virtual void shutdown() = 0;
