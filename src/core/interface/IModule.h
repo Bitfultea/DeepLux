@@ -13,6 +13,13 @@ namespace DeepLux {
 class ImageData;
 
 /**
+ * @brief 模块接口版本号
+ * 当 IModule 接口发生变化（新增/修改/删除虚函数）时，必须递增此版本号，
+ * 并重新编译所有插件，否则旧插件的虚表将与主程序不匹配，导致调用错位。
+ */
+constexpr int DEEPLUX_MODULE_INTERFACE_VERSION = 1;
+
+/**
  * @brief 模块状态枚举
  */
 enum class ModuleState {
@@ -64,6 +71,12 @@ public:
 
     // 控制流类型 — 模块根据自身语义声明，RunEngine 据此决定执行顺序
     virtual ControlFlowType flowControlType() const { return ControlFlowType::Sequential; }
+
+    /**
+     * @brief 返回插件编译时使用的 IModule 接口版本号
+     * PluginManager 加载插件后会校验此值，若不匹配则拒绝加载并给出明确警告。
+     */
+    virtual int interfaceVersion() const = 0;
 
 signals:
     void progressChanged(int percent);

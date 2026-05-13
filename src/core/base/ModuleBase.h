@@ -49,6 +49,8 @@ public:
     void shutdown() override;
     bool isInitialized() const override { return m_initialized; }
 
+    int interfaceVersion() const override { return DEEPLUX_MODULE_INTERFACE_VERSION; }
+
     bool execute(const ImageData& input, ImageData& output) override;
 
     QJsonObject defaultParams() const override;

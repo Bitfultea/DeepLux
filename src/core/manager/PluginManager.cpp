@@ -221,10 +221,30 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs)
         }
 
         qDebug() << "Plugin loaded:" << name;
+
+        // 校验模块接口版本，防止旧插件虚表不匹配导致调用错位
+        QObject* plugin = loader->instance();
+        DeepLux::IModule* module = qobject_cast<DeepLux::IModule*>(plugin);
+        if (module) {
+            int pluginVersion = module->interfaceVersion();
+            if (pluginVersion != DEEPLUX_MODULE_INTERFACE_VERSION) {
+                QString err = QString("Interface version mismatch: plugin=%1, expected=%2, actual=%3. "
+                                      "Please rebuild the plugin.")
+                                  .arg(name)
+                                  .arg(DEEPLUX_MODULE_INTERFACE_VERSION)
+                                  .arg(pluginVersion);
+                qCritical() << err;
+                fprintf(stderr, "DEBUG: %s\n", qPrintable(err));
+                loader->unload();
+                delete loader;
+                emit pluginLoadFailed(name, err);
+                return false;
+            }
+        }
+
         emit pluginLoaded(name);
 
         // 设置模块图标
-        QObject* plugin = loader->instance();
         if (!info.icon.isEmpty()) {
             QString iconPath = dir.filePath(info.icon);
             if (QFile::exists(iconPath)) {

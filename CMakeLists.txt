@@ -181,5 +181,15 @@ if(BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
+# ========== 插件同步 ==========
+# 将构建目录中新编译的插件 .so 自动同步到 ~/.deeplux/plugins/
+# 解决因插件库与主程序不同步导致的跨 DLL 虚表不匹配问题。
+add_custom_target(sync-plugins
+    COMMAND ${CMAKE_COMMAND} -E echo "[SYNC] Syncing plugins to ~/.deeplux/plugins/ ..."
+    COMMAND ${CMAKE_SOURCE_DIR}/scripts/sync-plugins.sh ${CMAKE_BINARY_DIR}
+    COMMENT "Synchronizing built plugins to ~/.deeplux/plugins/"
+    VERBATIM
+)
+
 # ========== 安装 ==========
 install(DIRECTORY resources/ DESTINATION .)

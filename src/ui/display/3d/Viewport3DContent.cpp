@@ -25,15 +25,15 @@ Viewport3DContent::~Viewport3DContent() {
 }
 
 void Viewport3DContent::initializeGL() {
-    // 初始化渲染器
-    m_renderer = std::make_unique<PointCloudRendererOpenGL>();
+    // 渲染器可能已在 displayData 中创建, 只初始化 GL 资源, 不替换
+    if (!m_renderer) {
+        m_renderer = std::make_unique<PointCloudRendererOpenGL>();
+        m_renderer->setPointSize(3.0f);
+        m_renderer->setUniformColor(Qt::white);
+    }
     m_renderer->initializeGL();
-    m_renderer->setPointSize(3.0f);
-    m_renderer->setUniformColor(Qt::white);
 
-    // 初始化相机
     m_camera.reset();
-
     updateMatrices();
 }
 
