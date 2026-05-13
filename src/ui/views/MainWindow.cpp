@@ -28,6 +28,8 @@
 #include "core/model/ImageData.h"
 #include "core/engine/RunEngine.h"
 #include "core/model/Project.h"
+#include "core/io/PlyLoader.h"
+#include "core/io/TiffLoader.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -1745,9 +1747,7 @@ void MainWindow::dropEvent(QDropEvent* event) {
 }
 
 bool MainWindow::importImageFile(const QString& filePath) {
-    if (filePath.isEmpty()) {
-        return false;
-    }
+    if (filePath.isEmpty()) return false;
 
     QFileInfo fileInfo(filePath);
     if (!fileInfo.exists()) {
@@ -1755,12 +1755,41 @@ bool MainWindow::importImageFile(const QString& filePath) {
         return false;
     }
 
+    QString ext = fileInfo.suffix().toLower();
     m_lastImportedImagePath = filePath;
+
+    // 3D 文件 → 点云渲染
+    if (ext == "ply" || ext == "tif" || ext == "tiff") {
+        PointCloudData pc;
+        QString error;
+        bool ok = false;
+
+        if (ext == "ply") {
+            ok = PlyLoader::load(filePath, pc, error);
+        } else {
+            TiffLoader::Config cfg;
+            cfg.step = (fileInfo.size() > 100 * 1024 * 1024) ? 4 : 2;  // 大文件跳采样
+            ok = TiffLoader::load(filePath, pc, error, cfg);
+        }
+
+        if (!ok) {
+            Logger::instance().error(tr("3D 文件加载失败：%1").arg(error.isEmpty() ? filePath : error), "System");
+            return false;
+        }
+
+        DisplayData data;
+        data.variant() = std::move(pc);
+        data.setTimestamp(QDateTime::currentMSecsSinceEpoch());
+        if (m_displayManager) {
+            m_displayManager->displayData(data);
+        }
+        Logger::instance().info(tr("导入 3D 点云：%1 (%2 点)").arg(fileInfo.fileName()).arg(pc.size()), "System");
+        return true;
+    }
+
+    // 2D 图像 → 配置 GrabImage
     Logger::instance().info(tr("导入图像：%1").arg(filePath), "System");
-
-    // 自动配置流程中第一个 GrabImage 模块的图像路径
     autoConfigureGrabImage(filePath);
-
     return true;
 }
 
