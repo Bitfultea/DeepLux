@@ -1738,15 +1738,21 @@ void MainWindow::dropEvent(QDropEvent* event) {
         QList<QUrl> urls = mimeData->urls();
         if (!urls.isEmpty()) {
             QString filePath = urls.first().toLocalFile();
-            if (importImageFile(filePath)) {
-                Logger::instance().info(tr("拖放导入图像：%1").arg(QFileInfo(filePath).fileName()), "System");
+            if (importFile(filePath)) {
+                Logger::instance().info(tr("拖放导入文件：%1").arg(QFileInfo(filePath).fileName()), "System");
             }
         }
     }
     event->acceptProposedAction();
 }
 
-bool MainWindow::importImageFile(const QString& filePath) {
+// TIFF 大文件阈值与跳采样步长（避免 UI 卡顿）
+static constexpr qint64 LARGE_TIFF_THRESHOLD = 100 * 1024 * 1024;  // 100MB
+static constexpr int TIFF_STEP_LARGE = 4;
+static constexpr int TIFF_STEP_NORMAL = 2;
+
+bool MainWindow::importFile(const QString& filePath)
+{
     if (filePath.isEmpty()) return false;
 
     QFileInfo fileInfo(filePath);
@@ -1755,39 +1761,52 @@ bool MainWindow::importImageFile(const QString& filePath) {
         return false;
     }
 
-    QString ext = fileInfo.suffix().toLower();
     m_lastImportedImagePath = filePath;
+    QString ext = fileInfo.suffix().toLower();
 
-    // 3D 文件 → 点云渲染
     if (ext == "ply" || ext == "tif" || ext == "tiff") {
-        PointCloudData pc;
-        QString error;
-        bool ok = false;
+        return importPointCloudFile(filePath);
+    }
+    return importImageFile(filePath);
+}
 
-        if (ext == "ply") {
-            ok = PlyLoader::load(filePath, pc, error);
-        } else {
-            TiffLoader::Config cfg;
-            cfg.step = (fileInfo.size() > 100 * 1024 * 1024) ? 4 : 2;  // 大文件跳采样
-            ok = TiffLoader::load(filePath, pc, error, cfg);
-        }
+bool MainWindow::importPointCloudFile(const QString& filePath)
+{
+    QFileInfo fileInfo(filePath);
+    QString ext = fileInfo.suffix().toLower();
+    PointCloudData pc;
+    QString error;
+    bool ok = false;
 
-        if (!ok) {
-            Logger::instance().error(tr("3D 文件加载失败：%1").arg(error.isEmpty() ? filePath : error), "System");
-            return false;
-        }
-
-        DisplayData data;
-        data.variant() = std::move(pc);
-        data.setTimestamp(QDateTime::currentMSecsSinceEpoch());
-        if (m_displayManager) {
-            m_displayManager->displayData(data);
-        }
-        Logger::instance().info(tr("导入 3D 点云：%1 (%2 点)").arg(fileInfo.fileName()).arg(pc.size()), "System");
-        return true;
+    if (ext == "ply") {
+        ok = PlyLoader::load(filePath, pc, error);
+    } else if (ext == "tif" || ext == "tiff") {
+        TiffLoader::Config cfg;
+        cfg.step = (fileInfo.size() > LARGE_TIFF_THRESHOLD) ? TIFF_STEP_LARGE : TIFF_STEP_NORMAL;
+        ok = TiffLoader::load(filePath, pc, error, cfg);
+    } else {
+        Logger::instance().error(tr("不支持的点云格式：%1").arg(ext), "System");
+        return false;
     }
 
-    // 2D 图像 → 配置 GrabImage
+    if (!ok) {
+        QString reason = error.isEmpty() ? tr("未知错误") : error;
+        Logger::instance().error(tr("3D 文件加载失败：%1 (%2)").arg(fileInfo.fileName()).arg(reason), "System");
+        return false;
+    }
+
+    DisplayData data;
+    data.variant() = std::move(pc);
+    data.setTimestamp(QDateTime::currentMSecsSinceEpoch());
+    if (m_displayManager) {
+        m_displayManager->displayData(data);
+    }
+    Logger::instance().info(tr("导入 3D 点云：%1 (%2 点)").arg(fileInfo.fileName()).arg(pc.size()), "System");
+    return true;
+}
+
+bool MainWindow::importImageFile(const QString& filePath)
+{
     Logger::instance().info(tr("导入图像：%1").arg(filePath), "System");
     autoConfigureGrabImage(filePath);
     return true;
@@ -2240,8 +2259,8 @@ void MainWindow::onImportImage() {
     QString filePath = QFileDialog::getOpenFileName(this, tr("导入图像"), QString(),
                                                     tr("图像文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"));
     if (!filePath.isEmpty()) {
-        if (importImageFile(filePath)) {
-            Logger::instance().info(tr("导入图像：%1").arg(QFileInfo(filePath).fileName()), "System");
+        if (importFile(filePath)) {
+            Logger::instance().info(tr("导入文件：%1").arg(QFileInfo(filePath).fileName()), "System");
         }
     }
 }

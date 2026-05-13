@@ -176,7 +176,9 @@ protected:
     void applyTheme();
     void syncModulesToRunEngine();
     void displayImage(const ImageData& image, const QString& label = QString());
+    bool importFile(const QString& filePath);
     bool importImageFile(const QString& filePath);
+    bool importPointCloudFile(const QString& filePath);
     void clearCentralDisplay();
     void addModuleToProcessTree(const ModuleInstance& inst);
     void removeModuleFromProcessTree(const QString& instanceId);

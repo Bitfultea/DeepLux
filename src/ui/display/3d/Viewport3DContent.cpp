@@ -70,11 +70,17 @@ void Viewport3DContent::displayData(const DisplayData& data) {
         return;
     }
 
+    // initializeGL 可能尚未运行（QOpenGLWidget 首次 show 时触发）
+    if (!m_renderer) {
+        m_renderer = std::make_unique<PointCloudRendererOpenGL>();
+    }
+
     // 转换为 GPU 缓冲区
     m_gpuBuffer.fromPointCloudData(*pcData);
-    m_renderer->setPointCloud(m_gpuBuffer, m_lodEnabled);
-    m_renderer->setLODEnabled(m_lodEnabled);
-    m_renderer->scheduleRedraw();
+    if (m_renderer) {
+        m_renderer->setPointCloud(m_gpuBuffer, m_lodEnabled);
+        m_renderer->setLODEnabled(m_lodEnabled);
+    }
 
     m_needsUpdate = true;
     update();
