@@ -108,9 +108,12 @@ void DisplayManager::displayData(const DisplayData& data, int delayMs)
         }
         emit dataDisplayed(target->viewportId());
     } else if (data.pointCloudData()) {
-        // 3D 点云数据 — 委托给 ViewportWidget，它根据类型自动切换 2D/3D
+        qDebug() << "[DisplayManager] Routing PointCloudData to ViewportWidget, points="
+                 << data.pointCloudData()->size();
         target->displayData(data);
         emit dataDisplayed(target->viewportId());
+    } else {
+        qWarning() << "[DisplayManager] Unknown data type, ignored";
     }
 }
 

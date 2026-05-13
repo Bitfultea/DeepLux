@@ -1763,10 +1763,13 @@ bool MainWindow::importFile(const QString& filePath)
 
     m_lastImportedImagePath = filePath;
     QString ext = fileInfo.suffix().toLower();
+    qDebug() << "[importFile]" << filePath << "ext=" << ext;
 
     if (ext == "ply" || ext == "tif" || ext == "tiff") {
+        qDebug() << "[importFile] routing to importPointCloudFile";
         return importPointCloudFile(filePath);
     }
+    qDebug() << "[importFile] routing to importImageFile";
     return importImageFile(filePath);
 }
 
