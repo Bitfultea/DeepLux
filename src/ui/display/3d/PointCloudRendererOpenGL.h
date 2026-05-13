@@ -80,7 +80,7 @@ private:
     bool m_initialized = false;
 };
 
-// 简单顶点着色器源码
+// 顶点着色器（Blinn-Phong 光照）
 const char* const POINT_CLOUD_VERTEX_SHADER = R"(
     #version 130
     attribute vec3 aPosition;
@@ -93,24 +93,54 @@ const char* const POINT_CLOUD_VERTEX_SHADER = R"(
 
     varying vec3 vColor;
     varying vec3 vNormal;
+    varying vec3 vWorldPos;
 
     void main() {
-        gl_Position = uProjectionMatrix * uViewMatrix * vec4(aPosition, 1.0);
+        vec4 worldPos = uViewMatrix * vec4(aPosition, 1.0);
+        gl_Position = uProjectionMatrix * worldPos;
         gl_PointSize = uPointSize;
         vColor = aColor;
-        vNormal = aNormal;
+        vNormal = mat3(uViewMatrix) * aNormal;
+        vWorldPos = worldPos.xyz;
     }
 )";
 
-// 简单片段着色器源码
+// 片段着色器（Blinn-Phong 光照）
 const char* const POINT_CLOUD_FRAGMENT_SHADER = R"(
     #version 130
     varying vec3 vColor;
     varying vec3 vNormal;
+    varying vec3 vWorldPos;
+
+    uniform vec3 uLightPos;
+    uniform vec3 uLightColor;
+    uniform vec3 uViewPos;
+    uniform float uAmbient;
+    uniform float uDiffuse;
+    uniform float uSpecular;
+    uniform float uShininess;
 
     void main() {
-        // 简单的点渲染，无深度缓冲（透明点云效果）
-        gl_FragColor = vec4(vColor, 1.0);
+        vec3 normal = normalize(vNormal);
+        if (length(vNormal) < 0.01) { gl_FragColor = vec4(vColor, 1.0); return; }
+
+        vec3 lightDir = normalize(uLightPos - vWorldPos);
+        vec3 viewDir = normalize(uViewPos - vWorldPos);
+
+        // Ambient
+        vec3 ambient = uAmbient * uLightColor;
+
+        // Diffuse (Lambert)
+        float diff = max(dot(normal, lightDir), 0.0);
+        vec3 diffuse = uDiffuse * diff * uLightColor;
+
+        // Specular (Blinn-Phong)
+        vec3 halfwayDir = normalize(lightDir + viewDir);
+        float spec = pow(max(dot(normal, halfwayDir), 0.0), uShininess);
+        vec3 specular = uSpecular * spec * uLightColor;
+
+        vec3 result = (ambient + diffuse + specular) * vColor;
+        gl_FragColor = vec4(result, 1.0);
     }
 )";
 

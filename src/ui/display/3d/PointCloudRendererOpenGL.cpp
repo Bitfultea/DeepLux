@@ -175,6 +175,16 @@ void PointCloudRendererOpenGL::render(const QMatrix4x4& viewMatrix, const QMatri
     program->setUniformValue("uProjectionMatrix", projectionMatrix);
     program->setUniformValue("uPointSize", m_pointSize);
 
+    // Blinn-Phong 光照参数
+    QVector3D eyePos = viewMatrix.inverted().map(QVector3D(0, 0, 0));  // 从 view matrix 提取相机位置
+    program->setUniformValue("uLightPos", eyePos + QVector3D(0, 0, 10));  // 相机前方
+    program->setUniformValue("uLightColor", QVector3D(1.0f, 1.0f, 1.0f));
+    program->setUniformValue("uViewPos", eyePos);
+    program->setUniformValue("uAmbient", 0.25f);    // 环境光
+    program->setUniformValue("uDiffuse", 0.60f);    // 漫反射
+    program->setUniformValue("uSpecular", 0.30f);   // 镜面反射
+    program->setUniformValue("uShininess", 32.0f);  // 高光锐度
+
     // 绑定 VBO 并绘制
     if (m_vboPositions) {
         program->enableAttributeArray("aPosition");
@@ -204,7 +214,7 @@ void PointCloudRendererOpenGL::render(const QMatrix4x4& viewMatrix, const QMatri
         program->setAttributeBuffer("aNormal", GL_FLOAT, 0, 3, 0);
         f->glBindBuffer(GL_ARRAY_BUFFER, 0);
     } else {
-        program->setAttributeValue("aNormal", QVector3D(0, 1, 0));
+        program->setAttributeValue("aNormal", QVector3D(0, 0, 1));
     }
 
     // 绘制点云
