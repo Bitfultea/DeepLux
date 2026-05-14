@@ -793,6 +793,8 @@ void MainWindow::setupMainLayout() {
     imageDisplayWidget->setObjectName("ImageDisplayWidget");
     imageDisplayWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     imageDisplayWidget->setMinimumSize(0, 0);
+    imageDisplayWidget->setAcceptDrops(true);  // 接收文件拖放
+    imageDisplayWidget->installEventFilter(this);  // route drops to eventFilter
 
     // 添加到右上方水平 Splitter
     rightTopSplitter->addWidget(m_processDock);
@@ -1574,6 +1576,37 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 }
             }
             return true;
+        }
+    }
+
+    // 图像显示区域的拖放处理
+    QWidget* imgWidget = m_displayManager ? m_displayManager->centralDisplay() : nullptr;
+    if (imgWidget && watched == imgWidget) {
+        if (event->type() == QEvent::DragEnter) {
+            QDragEnterEvent* de = static_cast<QDragEnterEvent*>(event);
+            if (de->mimeData()->hasUrls()) {
+                QList<QUrl> urls = de->mimeData()->urls();
+                if (!urls.isEmpty()) {
+                    QString ext = QFileInfo(urls.first().toLocalFile()).suffix().toLower();
+                    QStringList supported = {"png", "jpg", "jpeg", "bmp", "tif", "tiff", "ply"};
+                    if (supported.contains(ext)) {
+                        de->acceptProposedAction();
+                        return true;
+                    }
+                }
+            }
+        }
+        if (event->type() == QEvent::Drop) {
+            QDropEvent* de = static_cast<QDropEvent*>(event);
+            if (de->mimeData()->hasUrls()) {
+                QList<QUrl> urls = de->mimeData()->urls();
+                if (!urls.isEmpty()) {
+                    QString filePath = urls.first().toLocalFile();
+                    importFile(filePath);
+                    de->acceptProposedAction();
+                    return true;
+                }
+            }
         }
     }
 
