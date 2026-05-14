@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QSurfaceFormat>
 #include <QFile>
 #include <QMessageBox>
 #include <QDebug>
@@ -183,6 +184,13 @@ int main(int argc, char* argv[])
     }
 
     // 否则启动 GUI 模式
+    // OpenGL surface format 必须在 QApplication 创建前设置
+    QSurfaceFormat glFormat;
+    glFormat.setVersion(2, 1);               // OpenGL 2.1 兼容性最好
+    glFormat.setProfile(QSurfaceFormat::NoProfile);
+    glFormat.setDepthBufferSize(24);
+    QSurfaceFormat::setDefaultFormat(glFormat);
+
     QApplication app(argc, argv);
 
     app.setApplicationName("DeepLux");
