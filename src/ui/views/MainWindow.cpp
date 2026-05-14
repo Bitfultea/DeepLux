@@ -1767,13 +1767,13 @@ bool MainWindow::importFile(const QString& filePath)
 
     m_lastImportedImagePath = filePath;
     QString ext = fileInfo.suffix().toLower();
-    qDebug() << "[importFile]" << filePath << "ext=" << ext;
+    Logger::instance().info(QString("[importFile] %1 ext=%2").arg(fileInfo.fileName()).arg(ext), "3D");
 
     if (ext == "ply" || ext == "tif" || ext == "tiff") {
-        qDebug() << "[importFile] routing to importPointCloudFile";
+        Logger::instance().info("[importFile] → importPointCloudFile", "3D");
         return importPointCloudFile(filePath);
     }
-    qDebug() << "[importFile] routing to importImageFile";
+    Logger::instance().info("[importFile] → importImageFile", "3D");
     return importImageFile(filePath);
 }
 
@@ -1781,6 +1781,7 @@ bool MainWindow::importPointCloudFile(const QString& filePath)
 {
     QFileInfo fileInfo(filePath);
     QString ext = fileInfo.suffix().toLower();
+    Logger::instance().info(QString("[imp3D] file=%1 size=%2 ext=%3").arg(fileInfo.fileName()).arg(fileInfo.size()).arg(ext), "3D");
     PointCloudData pc;
     QString error;
     bool ok = false;
@@ -1798,10 +1799,11 @@ bool MainWindow::importPointCloudFile(const QString& filePath)
 
     if (!ok) {
         QString reason = error.isEmpty() ? tr("未知错误") : error;
-        Logger::instance().error(tr("3D 文件加载失败：%1 (%2)").arg(fileInfo.fileName()).arg(reason), "System");
+        Logger::instance().error(tr("3D 文件加载失败：%1 (%2)").arg(fileInfo.fileName()).arg(reason), "3D");
         return false;
     }
 
+    Logger::instance().info(QString("[imp3D] loaded %1 points, sending to DisplayManager").arg(pc.size()), "3D");
     DisplayData data;
     data.variant() = std::move(pc);
     data.setTimestamp(QDateTime::currentMSecsSinceEpoch());
