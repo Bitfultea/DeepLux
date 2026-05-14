@@ -226,8 +226,8 @@ void ViewportWidget::ensure3DContent()
 {
     if (m_3dContent) return;
 
-    // Create 3D content widget
-    m_3dContent = new Viewport3DContent();
+    // Create 3D content widget — 必须指定 parent 否则 QOpenGLWidget 无法创建 context
+    m_3dContent = new Viewport3DContent(this);
 
     // Replace in layout
     QVBoxLayout* layout = qobject_cast<QVBoxLayout*>(this->layout());

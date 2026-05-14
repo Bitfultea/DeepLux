@@ -13,7 +13,12 @@ Viewport3DContent::Viewport3DContent(QWidget* parent)
     , m_mouseDown(false)
     , m_lodEnabled(true)
 {
-    // 允许接受焦点以便接收键盘事件
+    // 显式设置 format — 有些系统需要 widget-level format
+    QSurfaceFormat fmt;
+    fmt.setDepthBufferSize(24);
+    fmt.setStencilBufferSize(8);
+    setFormat(fmt);
+
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
 }
