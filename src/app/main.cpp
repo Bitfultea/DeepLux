@@ -184,9 +184,13 @@ int main(int argc, char* argv[])
     }
 
     // 否则启动 GUI 模式
-    // OpenGL surface format 必须在 QApplication 创建前设置
+    // NVIDIA GLX 驱动有 Bug (X_GLXCreateContext BadValue), 强制用 Mesa 软件渲染
+    if (qEnvironmentVariableIsEmpty("__GLX_VENDOR_LIBRARY_NAME")) {
+        qputenv("__GLX_VENDOR_LIBRARY_NAME", "mesa");
+    }
+
     QSurfaceFormat glFormat;
-    glFormat.setVersion(2, 1);               // OpenGL 2.1 兼容性最好
+    glFormat.setVersion(2, 1);
     glFormat.setProfile(QSurfaceFormat::NoProfile);
     glFormat.setDepthBufferSize(24);
     QSurfaceFormat::setDefaultFormat(glFormat);
