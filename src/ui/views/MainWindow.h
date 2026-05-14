@@ -68,6 +68,7 @@ private slots:
     void onSaveLayout();
     void onLoadLayout();
     void onLicenseManager();
+    void onTest3DRender();
     void onHelp();
     void onAbout();
     void onSchemeManagement();

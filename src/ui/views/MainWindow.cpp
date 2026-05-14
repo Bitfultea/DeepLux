@@ -325,6 +325,10 @@ void MainWindow::setupMenuBar() {
         }
     });
 
+    // Debug 菜单
+    QMenu* debugMenu = menuBar()->addMenu(tr("Debug"));
+    debugMenu->addAction(tr("Test 3D Render"), this, &MainWindow::onTest3DRender);
+
     // 帮助菜单
     QMenu* helpMenu = menuBar()->addMenu(tr("帮助 (&H)"));
     helpMenu->addAction(tr("关于"), this, &MainWindow::onAbout);
@@ -2120,6 +2124,31 @@ void MainWindow::onLicenseManager() {
 
 void MainWindow::onHelp() {
     Logger::instance().info(tr("帮助"), "System");
+}
+
+void MainWindow::onTest3DRender() {
+    // Create a synthetic point cloud (sphere + cube)
+    PointCloudData pc;
+    const int N = 50;
+    for (int i = 0; i < N; ++i) {
+        for (int j = 0; j < N; ++j) {
+            double theta = i * 2.0 * M_PI / N;
+            double phi = j * M_PI / N;
+            double r = 2.0;
+            pc.points.push_back(Eigen::Vector3d(r * sin(phi) * cos(theta), r * sin(phi) * sin(theta), r * cos(phi)));
+            pc.colors.push_back(Eigen::Vector3d(sin(theta), cos(phi), 0.5));
+            pc.normals.push_back(Eigen::Vector3d(sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi)));
+        }
+    }
+
+    Logger::instance().info(tr("Test 3D: %1 points").arg(pc.size()), "Debug");
+
+    DisplayData data;
+    data.variant() = std::move(pc);
+    data.setTimestamp(QDateTime::currentMSecsSinceEpoch());
+    if (m_displayManager) {
+        m_displayManager->displayData(data);
+    }
 }
 
 void MainWindow::onAbout() {
