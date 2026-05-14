@@ -88,13 +88,14 @@ QVector<ViewportWidget*> DisplayManager::allViewports() const
 void DisplayManager::displayData(const DisplayData& data, int delayMs)
 {
     QString targetId = data.viewportId();
+    qDebug() << "[DM::displayData] targetId=" << targetId << "viewports=" << m_viewports.size();
 
-    // Find appropriate viewport
     ViewportWidget* target = findAvailableViewport(targetId);
     if (!target) {
         qWarning() << "DisplayManager: No available viewport for display data";
         return;
     }
+    qDebug() << "[DM::displayData] found viewport:" << target->viewportId();
 
     // Display the data (with optional delay)
     if (const ImageData* img = data.imageData()) {

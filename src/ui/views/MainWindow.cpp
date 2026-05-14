@@ -2142,12 +2142,22 @@ void MainWindow::onTest3DRender() {
     }
 
     Logger::instance().info(tr("Test 3D: %1 points").arg(pc.size()), "Debug");
+    qDebug() << "[Test3D] Creating DisplayData with" << pc.size() << "points";
 
     DisplayData data;
     data.variant() = std::move(pc);
     data.setTimestamp(QDateTime::currentMSecsSinceEpoch());
+
+    qDebug() << "[Test3D] pointCloudData ptr:" << data.pointCloudData()
+             << "isValid:" << data.isValid();
+
     if (m_displayManager) {
+        qDebug() << "[Test3D] Calling displayManager->displayData, viewports="
+                 << m_displayManager->viewportCount();
         m_displayManager->displayData(data);
+        qDebug() << "[Test3D] displayData returned";
+    } else {
+        qDebug() << "[Test3D] m_displayManager is NULL!";
     }
 }
 
