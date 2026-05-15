@@ -1695,9 +1695,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                         }
 
                         // 先添加树节点（即时视觉反馈），再异步创建模块实例
-                        QString displayName = sourceItem->text(0);
                         QTreeWidgetItem* newItem = new QTreeWidgetItem();
-                        newItem->setText(0, displayName);
                         m_processTree->insertTopLevelItem(insertRow, newItem);
 
                         QString instanceName = pluginName;
@@ -1711,7 +1709,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                         newItem->setData(0, Qt::UserRole + 2, pluginName);
 
                         // 推迟模块创建到事件循环 — 避免在拖放嵌套循环中阻塞
-                        QTimer::singleShot(0, this, [this, pluginName, instanceName, displayName, newItem]() {
+                        QTimer::singleShot(0, this, [this, pluginName, instanceName, newItem]() {
                             DeepLux::PluginManager& pm = DeepLux::PluginManager::instance();
                             IModule* module = pm.createModule(pluginName);
                             if (!module) {
@@ -1725,12 +1723,12 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                                 return;
                             }
                             m_flowModules.insert(instanceName, module);
-                            if (!module->icon().isNull()) {
-                                newItem->setIcon(0, module->icon());
-                            }
+                            // 统一使用模块的 name() 和 icon()，和 Agent 路径一致
+                            newItem->setText(0, module->name());
+                            newItem->setIcon(0, module->icon());
                             m_modulesNeedSync = true;
                             Logger::instance().info(
-                                tr("已添加插件到流程：%1 (%2)").arg(displayName).arg(instanceName), "Flow");
+                                tr("已添加插件到流程：%1 (%2)").arg(module->name()).arg(instanceName), "Flow");
                             if (ProjectManager::instance().currentProject()) {
                                 ProjectManager::instance().currentProject()->setModified(true);
                             }
