@@ -13,6 +13,7 @@
 #include <QTimer>
 #include <QThread>
 #include <QCoreApplication>
+#include <QPixmap>
 
 namespace DeepLux {
 
@@ -534,13 +535,14 @@ IModule* PluginManager::createModule(const QString& name)
     if (!mod) return nullptr;
 
     // 异步加载可能跳过了 setIcon，在这里补偿
-    if (mod->icon().isNull() && m_modules.contains(name)) {
+    if (m_modules.contains(name)) {
         PluginInfo info = m_modules[name];
-        if (!info.icon.isEmpty()) {
+        if (!info.icon.isEmpty() && mod->icon().isNull()) {
             QDir dir(QFileInfo(info.path).absoluteDir());
             QString iconPath = dir.filePath(info.icon);
-            if (QFile::exists(iconPath)) {
-                mod->setIcon(QIcon(iconPath));
+            QPixmap pm(iconPath);
+            if (!pm.isNull()) {
+                mod->setIcon(QIcon(pm));
             }
         }
     }
