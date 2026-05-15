@@ -17,7 +17,9 @@ set(CORE_SOURCES
     manager/PluginManager.cpp
     manager/GlobalVarManager.cpp
     model/ImageData.cpp
+    model/DataSource.cpp
     common/Logger.cpp
+    common/ModuleIconProvider.cpp
     common/UserManager.cpp
     common/ShortcutManager.cpp
     common/VarModel.cpp
@@ -53,6 +55,7 @@ set(CORE_HEADERS
     common/Types.h
     common/Enums.h
     common/Logger.h
+    common/ModuleIconProvider.h
     common/UserManager.h
     common/ShortcutManager.h
     common/VarModel.h
@@ -65,6 +68,7 @@ set(CORE_HEADERS
     manager/PluginManager.h
     manager/GlobalVarManager.h
     model/ImageData.h
+    model/DataSource.h
     engine/RunEngine.h
     device/CameraManager.h
     communication/CommunicationManager.h

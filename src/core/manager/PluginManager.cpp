@@ -4,6 +4,7 @@
 #include "../interface/ICameraPlugin.h"
 #include "../device/CameraManager.h"
 #include "../platform/PathUtils.h"
+#include "../common/ModuleIconProvider.h"
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -534,16 +535,18 @@ IModule* PluginManager::createModule(const QString& name)
     IModule* mod = qobject_cast<IModule*>(plugin);
     if (!mod) return nullptr;
 
-    // 异步加载可能跳过了 setIcon，在这里补偿
-    if (m_modules.contains(name)) {
+    // 图标优先级: PNG文件 > 自动生成 > 空
+    if (mod->icon().isNull() && m_modules.contains(name)) {
         PluginInfo info = m_modules[name];
-        if (!info.icon.isEmpty() && mod->icon().isNull()) {
+        // 先尝试加载 PNG 文件
+        if (!info.icon.isEmpty()) {
             QDir dir(QFileInfo(info.path).absoluteDir());
-            QString iconPath = dir.filePath(info.icon);
-            QPixmap pm(iconPath);
-            if (!pm.isNull()) {
-                mod->setIcon(QIcon(pm));
-            }
+            QPixmap pm(dir.filePath(info.icon));
+            if (!pm.isNull()) { mod->setIcon(QIcon(pm)); }
+        }
+        // PNG 不存在或加载失败 → 运行时生成彩色缩写图标
+        if (mod->icon().isNull()) {
+            mod->setIcon(ModuleIconProvider::instance().iconFor(info.name, info.category));
         }
     }
 
