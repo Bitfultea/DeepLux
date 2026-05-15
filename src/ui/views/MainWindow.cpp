@@ -1092,7 +1092,7 @@ void MainWindow::addModuleToProcessTree(const ModuleInstance& inst)
     DeepLux::PluginManager& pm = DeepLux::PluginManager::instance();
     IModule* module = pm.createModule(inst.moduleId);
     if (module) {
-        diagLog(QString("addModuleToProcessTree: module created, initializing %1").arg(inst.moduleId));
+        newItem->setIcon(0, module->icon());
         if (module->initialize()) {
             m_flowModules.insert(inst.id, module);
             if (!module->icon().isNull()) {

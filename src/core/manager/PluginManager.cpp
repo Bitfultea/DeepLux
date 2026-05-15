@@ -528,11 +528,24 @@ IModule* PluginManager::createModule(const QString& name)
     if (!m_loadedPlugins.contains(name))
         return nullptr;
 
-    // 从 QPluginLoader::instance() 获取共享实例
-    // 不调用 clone() — 跨 DLL 边界触发纯虚函数调用 crash (见 commit 62a7bf8)
     QObject* plugin = m_loadedPlugins.value(name);
     if (!plugin) return nullptr;
-    return qobject_cast<IModule*>(plugin);
+    IModule* mod = qobject_cast<IModule*>(plugin);
+    if (!mod) return nullptr;
+
+    // 异步加载可能跳过了 setIcon，在这里补偿
+    if (mod->icon().isNull() && m_modules.contains(name)) {
+        PluginInfo info = m_modules[name];
+        if (!info.icon.isEmpty()) {
+            QDir dir(QFileInfo(info.path).absoluteDir());
+            QString iconPath = dir.filePath(info.icon);
+            if (QFile::exists(iconPath)) {
+                mod->setIcon(QIcon(iconPath));
+            }
+        }
+    }
+
+    return mod;
 }
 
 IModule* PluginManager::createFreshModule(const QString& name)
