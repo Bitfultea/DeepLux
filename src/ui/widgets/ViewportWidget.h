@@ -65,6 +65,10 @@ public:
     // Apply theme
     void applyTheme(bool isDark);
 
+    // 3D 渲染模式
+    void setRenderMode(int mode);
+    int renderMode() const;
+
 signals:
     void viewportClosed(const QString& viewportId);
     void titleChanged(const QString& viewportId, const QString& title);
@@ -76,7 +80,6 @@ private slots:
     void onZoomOut();
     void onFitWindow();
     void onActualSize();
-    void onResetCamera3D();
 
 private:
     void setupUi();
@@ -99,7 +102,6 @@ private:
     QAction* m_zoomInAction;
     QAction* m_zoomOutAction;
     QAction* m_closeAction;
-    QAction* m_resetCameraAction;  // 3D reset camera
 
     DisplayMode m_displayMode = DisplayMode::Auto2D;
 };

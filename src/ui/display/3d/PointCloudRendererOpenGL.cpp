@@ -12,7 +12,7 @@ PointCloudRendererOpenGL::PointCloudRendererOpenGL()
     , m_vboNormals(0)
     , m_pointCount(0)
     , m_pointSize(2.0f)
-    , m_colorMode(0)
+    , m_colorMode(ColorMode::Uniform)
     , m_buffersDirty(true)
     , m_initialized(false)
 {
@@ -70,7 +70,7 @@ void PointCloudRendererOpenGL::setPointSize(float size) {
     m_pointSize = size;
 }
 
-void PointCloudRendererOpenGL::setColorMode(int mode) {
+void PointCloudRendererOpenGL::setColorMode(ColorMode mode) {
     m_colorMode = mode;
 }
 
@@ -175,39 +175,67 @@ void PointCloudRendererOpenGL::render(const QMatrix4x4& viewMatrix, const QMatri
     program->setUniformValue("uProjectionMatrix", projectionMatrix);
     program->setUniformValue("uPointSize", m_pointSize);
 
+    // 颜色模式 + 颜色
+    program->setUniformValue("uColorMode", static_cast<int>(m_colorMode));
+    program->setUniformValue("uUniformColor",
+        QVector3D(m_uniformColor.redF(), m_uniformColor.greenF(), m_uniformColor.blueF()));
+
+    // 高度着色范围
+    if (m_colorMode == ColorMode::Height && m_buffer && !m_buffer->positions.empty()) {
+        float zMin = m_buffer->positions[2];
+        float zMax = zMin;
+        for (size_t i = 3; i < m_buffer->positions.size(); i += 3) {
+            float z = m_buffer->positions[i];
+            if (z < zMin) zMin = z;
+            if (z > zMax) zMax = z;
+        }
+        program->setUniformValue("uZMin", zMin);
+        program->setUniformValue("uZMax", zMax);
+    } else {
+        program->setUniformValue("uZMin", 0.0f);
+        program->setUniformValue("uZMax", 1.0f);
+    }
+
     // Blinn-Phong 光照参数
-    QVector3D eyePos = viewMatrix.inverted().map(QVector3D(0, 0, 0));  // 从 view matrix 提取相机位置
-    program->setUniformValue("uLightPos", eyePos + QVector3D(0, 0, 10));  // 相机前方
+    QVector3D eyePos = viewMatrix.inverted().map(QVector3D(0, 0, 0));
+    program->setUniformValue("uLightPos", eyePos + QVector3D(0, 0, 10));
     program->setUniformValue("uLightColor", QVector3D(1.0f, 1.0f, 1.0f));
     program->setUniformValue("uViewPos", eyePos);
-    program->setUniformValue("uAmbient", 0.25f);    // 环境光
-    program->setUniformValue("uDiffuse", 0.60f);    // 漫反射
-    program->setUniformValue("uSpecular", 0.30f);   // 镜面反射
-    program->setUniformValue("uShininess", 32.0f);  // 高光锐度
+    program->setUniformValue("uAmbient", 0.25f);
+    program->setUniformValue("uDiffuse", 0.60f);
+    program->setUniformValue("uSpecular", 0.30f);
+    program->setUniformValue("uShininess", 32.0f);
 
     // 绑定 VBO 并绘制
     if (m_vboPositions) {
-        program->enableAttributeArray("aPosition");
-        program->setAttributeBuffer("aPosition", GL_FLOAT, 0, 3, 0);
-
         f->glBindBuffer(GL_ARRAY_BUFFER, m_vboPositions);
+        program->enableAttributeArray("aPosition");
         program->setAttributeBuffer("aPosition", GL_FLOAT, 0, 3, 0);
         f->glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 
-    // 颜色
-    if (m_colorMode == 1 && m_vboColors) {
+    // 颜色 VBO
+    if (m_vboColors) {
         program->enableAttributeArray("aColor");
         f->glBindBuffer(GL_ARRAY_BUFFER, m_vboColors);
         program->setAttributeBuffer("aColor", GL_FLOAT, 0, 3, 0);
         f->glBindBuffer(GL_ARRAY_BUFFER, 0);
     } else {
-        // 使用统一颜色
         program->setAttributeValue("aColor",
             QVector3D(m_uniformColor.redF(), m_uniformColor.greenF(), m_uniformColor.blueF()));
     }
 
-    // 法向量（如果可用）
+    // 强度 VBO
+    if (m_colorMode == ColorMode::Intensity && m_vboIntensities) {
+        program->enableAttributeArray("aIntensity");
+        f->glBindBuffer(GL_ARRAY_BUFFER, m_vboIntensities);
+        program->setAttributeBuffer("aIntensity", GL_FLOAT, 0, 1, 0);
+        f->glBindBuffer(GL_ARRAY_BUFFER, 0);
+    } else {
+        program->setAttributeValue("aIntensity", 0.5f);
+    }
+
+    // 法向量
     if (m_vboNormals) {
         program->enableAttributeArray("aNormal");
         f->glBindBuffer(GL_ARRAY_BUFFER, m_vboNormals);
@@ -242,7 +270,7 @@ void PointCloudRendererOpenGL::uploadBuffers() {
     }
 
     // 创建颜色 VBO
-    if (m_colorMode == 1 && !m_buffer->colors.empty()) {
+    if (m_colorMode == ColorMode::RGB && !m_buffer->colors.empty()) {
         f->glGenBuffers(1, &m_vboColors);
         f->glBindBuffer(GL_ARRAY_BUFFER, m_vboColors);
         f->glBufferData(GL_ARRAY_BUFFER,
@@ -259,6 +287,17 @@ void PointCloudRendererOpenGL::uploadBuffers() {
         f->glBufferData(GL_ARRAY_BUFFER,
                         m_buffer->normals.size() * sizeof(float),
                         m_buffer->normals.data(),
+                        GL_STATIC_DRAW);
+        f->glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+
+    // 创建强度 VBO（仅 Intensity 模式需要）
+    if (m_colorMode == ColorMode::Intensity && !m_buffer->intensities.empty()) {
+        f->glGenBuffers(1, &m_vboIntensities);
+        f->glBindBuffer(GL_ARRAY_BUFFER, m_vboIntensities);
+        f->glBufferData(GL_ARRAY_BUFFER,
+                        m_buffer->intensities.size() * sizeof(float),
+                        m_buffer->intensities.data(),
                         GL_STATIC_DRAW);
         f->glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
@@ -282,6 +321,10 @@ void PointCloudRendererOpenGL::cleanupBuffers() {
     if (m_vboNormals) {
         f->glDeleteBuffers(1, &m_vboNormals);
         m_vboNormals = 0;
+    }
+    if (m_vboIntensities) {
+        f->glDeleteBuffers(1, &m_vboIntensities);
+        m_vboIntensities = 0;
     }
 }
 

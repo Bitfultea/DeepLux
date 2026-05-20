@@ -11,12 +11,6 @@
 #include <opencv2/opencv.hpp>
 #endif
 
-// Forward declaration for 3D content
-namespace DeepLux {
-class Viewport3DContent;
-class DisplayData;
-}
-
 #include "core/display/DisplayData.h"
 #include "ui/display/3d/Viewport3DContent.h"
 
@@ -168,11 +162,6 @@ void ViewportWidget::setupUi()
     m_3dToolbar->setIconSize(QSize(16, 16));
     m_3dToolbar->setVisible(false);
 
-    m_resetCameraAction = new QAction(tr("重置相机"), this);
-    m_resetCameraAction->setToolTip(tr("重置3D相机"));
-    m_3dToolbar->addAction(m_resetCameraAction);
-    connect(m_resetCameraAction, &QAction::triggered, this, &ViewportWidget::onResetCamera3D);
-
     mainLayout->addWidget(m_3dToolbar);
 }
 
@@ -194,16 +183,25 @@ void ViewportWidget::displayData(const DisplayData& data)
 {
     // Route based on data type
     if (data.pointCloudData() && !data.pointCloudData()->isEmpty()) {
-        // 3D point cloud data
         switchTo3D();
         if (m_3dContent) {
             m_3dContent->displayData(data);
+        }
+        // 如果有数据源名称，更新视口标题
+        QString dsName = data.metadata().value("dataSourceName").toString();
+        if (!dsName.isEmpty()) {
+            setTitle(dsName);
         }
     } else if (data.imageData()) {
         // 2D image data
         switchTo2D();
         m_imageWidget->setImage(data.imageData()->toQImage());
         emit imageDisplayed();
+        // 如果有数据源名称，更新视口标题
+        QString dsName = data.metadata().value("dataSourceName").toString();
+        if (!dsName.isEmpty()) {
+            setTitle(dsName);
+        }
     }
 }
 
@@ -280,7 +278,6 @@ void ViewportWidget::switchTo3D()
 
     // Switch toolbar
     m_toolbar->setVisible(false);
-    m_3dToolbar->setVisible(true);
 }
 
 void ViewportWidget::zoomIn()
@@ -334,11 +331,16 @@ void ViewportWidget::onActualSize()
     actualSize();
 }
 
-void ViewportWidget::onResetCamera3D()
+void ViewportWidget::setRenderMode(int mode)
 {
     if (m_3dContent) {
-        m_3dContent->resetCamera();
+        m_3dContent->setRenderMode(static_cast<ColorMode>(mode));
     }
+}
+
+int ViewportWidget::renderMode() const
+{
+    return m_3dContent ? static_cast<int>(m_3dContent->renderMode()) : 5;
 }
 
 void ViewportWidget::applyTheme(bool isDark)

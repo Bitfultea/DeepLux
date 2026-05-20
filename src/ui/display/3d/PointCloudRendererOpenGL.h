@@ -27,7 +27,8 @@ public:
     void setBackgroundColor(const QColor& color) override;
     void scheduleRedraw() override;
     void setPointSize(float size) override;
-    void setColorMode(int mode) override;
+    void setColorMode(ColorMode mode) override;
+    ColorMode colorMode() const override { return m_colorMode; }
     void setUniformColor(const QColor& color) override;
     void render(const QMatrix4x4& viewMatrix, const QMatrix4x4& projectionMatrix) override;
     bool isValid() const override;
@@ -58,10 +59,13 @@ private:
     unsigned int m_vboPositions = 0;
     unsigned int m_vboColors = 0;
     unsigned int m_vboNormals = 0;
+    unsigned int m_vboIntensities = 0;
 
     // 当前数据
     const PointCloudGPUBuffer* m_buffer = nullptr;
     size_t m_pointCount = 0;
+    float m_zMin = 0;
+    float m_zMax = 1;
 
     // LOD 支持
     PointCloudLODBuffer m_lodBuffer;
@@ -71,7 +75,7 @@ private:
 
     // 渲染参数
     float m_pointSize = 2.0f;
-    int m_colorMode = 0;  // 0=uniform, 1=rgb, 2=labels
+    ColorMode m_colorMode = ColorMode::Uniform;
     QColor m_uniformColor = Qt::white;
     QColor m_backgroundColor = Qt::darkGray;
 
@@ -86,32 +90,61 @@ const char* const POINT_CLOUD_VERTEX_SHADER = R"(
     attribute vec3 aPosition;
     attribute vec3 aColor;
     attribute vec3 aNormal;
+    attribute float aIntensity;
 
     uniform mat4 uViewMatrix;
     uniform mat4 uProjectionMatrix;
     uniform float uPointSize;
+    uniform int uColorMode;
+    uniform vec3 uUniformColor;
+    uniform float uZMin;
+    uniform float uZMax;
 
     varying vec3 vColor;
     varying vec3 vNormal;
     varying vec3 vWorldPos;
 
+    vec3 heightColor(float z) {
+        float t = clamp((z - uZMin) / (uZMax - uZMin + 0.0001), 0.0, 1.0);
+        return vec3(
+            smoothstep(0.5, 1.0, t),
+            sin(t * 3.14159),
+            1.0 - t
+        );
+    }
+
     void main() {
         vec4 worldPos = uViewMatrix * vec4(aPosition, 1.0);
         gl_Position = uProjectionMatrix * worldPos;
         gl_PointSize = uPointSize;
-        vColor = aColor;
         vNormal = mat3(uViewMatrix) * aNormal;
         vWorldPos = worldPos.xyz;
+
+        if (uColorMode == 0) {
+            vColor = uUniformColor;
+        } else if (uColorMode == 1) {
+            vColor = aColor;
+        } else if (uColorMode == 2) {
+            vColor = heightColor(worldPos.z);
+        } else if (uColorMode == 3) {
+            float t = clamp(aIntensity, 0.0, 1.0);
+            vColor = vec3(t);
+        } else if (uColorMode == 4) {
+            vec3 n = normalize(vNormal);
+            vColor = n * 0.5 + 0.5;
+        } else {
+            vColor = aColor;
+        }
     }
 )";
 
-// 片段着色器（Blinn-Phong 光照）
 const char* const POINT_CLOUD_FRAGMENT_SHADER = R"(
     #version 130
     varying vec3 vColor;
     varying vec3 vNormal;
     varying vec3 vWorldPos;
 
+    uniform int uColorMode;
     uniform vec3 uLightPos;
     uniform vec3 uLightColor;
     uniform vec3 uViewPos;
@@ -121,20 +154,22 @@ const char* const POINT_CLOUD_FRAGMENT_SHADER = R"(
     uniform float uShininess;
 
     void main() {
+        if (uColorMode != 5) {
+            gl_FragColor = vec4(vColor, 1.0);
+            return;
+        }
+
         vec3 normal = normalize(vNormal);
         if (length(vNormal) < 0.01) { gl_FragColor = vec4(vColor, 1.0); return; }
 
         vec3 lightDir = normalize(uLightPos - vWorldPos);
         vec3 viewDir = normalize(uViewPos - vWorldPos);
 
-        // Ambient
         vec3 ambient = uAmbient * uLightColor;
 
-        // Diffuse (Lambert)
         float diff = max(dot(normal, lightDir), 0.0);
         vec3 diffuse = uDiffuse * diff * uLightColor;
 
-        // Specular (Blinn-Phong)
         vec3 halfwayDir = normalize(lightDir + viewDir);
         float spec = pow(max(dot(normal, halfwayDir), 0.0), uShininess);
         vec3 specular = uSpecular * spec * uLightColor;

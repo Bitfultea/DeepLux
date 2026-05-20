@@ -6,14 +6,15 @@
 
 namespace DeepLux {
 
-/**
- * @brief 点云渲染器接口
- *
- * 定义点云渲染器的统一接口，支持：
- * - GPU 缓冲区渲染
- * - 可配置的渲染参数
- * - 颜色模式选择
- */
+enum class ColorMode {
+    Uniform = 0,
+    RGB = 1,
+    Height = 2,
+    Intensity = 3,
+    Normal = 4,
+    BlinnPhong = 5
+};
+
 class IPointCloudRenderer {
 public:
     virtual ~IPointCloudRenderer() = default;
@@ -56,7 +57,8 @@ public:
      * @brief 设置颜色模式
      * @param mode 0=统一颜色, 1=RGB颜色, 2=标签颜色
      */
-    virtual void setColorMode(int mode) = 0;
+    virtual void setColorMode(ColorMode mode) = 0;
+    virtual ColorMode colorMode() const = 0;
 
     /**
      * @brief 设置统一颜色
@@ -98,13 +100,6 @@ public:
      * @brief 获取当前 LOD 级别
      */
     virtual int currentLODLevel() const = 0;
-};
-
-// 颜色模式枚举
-enum class PointCloudColorMode {
-    Uniform = 0,   // 统一颜色
-    RGB = 1,        // RGB 颜色
-    Labels = 2      // 标签颜色
 };
 
 } // namespace DeepLux

@@ -131,6 +131,7 @@ void Project::updateModule(const QString& instanceId, const ModuleInstance& modu
         if (m_modules[i].id == instanceId) {
             m_modules[i] = module;
             touch();
+            emit moduleUpdated(module);
             return;
         }
     }
@@ -183,7 +184,7 @@ void Project::removeCamera(const QString& cameraId)
     }
 }
 
-CameraConfig* Project::findCamera(const QString& cameraId)
+const CameraConfig* Project::findCamera(const QString& cameraId) const
 {
     for (int i = 0; i < m_cameras.size(); i++) {
         if (m_cameras[i].id == cameraId) {
@@ -191,6 +192,40 @@ CameraConfig* Project::findCamera(const QString& cameraId)
         }
     }
     return nullptr;
+}
+
+void Project::addDataSource(const DataSource& ds)
+{
+    for (const auto& existing : m_dataSources) {
+        if (existing.filePath == ds.filePath) {
+            return;
+        }
+    }
+    m_dataSources.append(ds);
+    touch();
+    emit dataSourceAdded(ds);
+}
+
+void Project::removeDataSource(const QString& id)
+{
+    for (int i = 0; i < m_dataSources.size(); i++) {
+        if (m_dataSources[i].id == id) {
+            m_dataSources.removeAt(i);
+            touch();
+            emit dataSourceRemoved(id);
+            return;
+        }
+    }
+}
+
+std::optional<DataSource> Project::findDataSource(const QString& id) const
+{
+    for (int i = 0; i < m_dataSources.size(); i++) {
+        if (m_dataSources[i].id == id) {
+            return m_dataSources[i];
+        }
+    }
+    return std::nullopt;
 }
 
 QJsonObject Project::toJson() const
@@ -222,7 +257,14 @@ QJsonObject Project::toJson() const
         camerasArray.append(camera.toJson());
     }
     json["cameras"] = camerasArray;
-    
+
+    // 数据源
+    QJsonArray dataSourcesArray;
+    for (const auto& ds : m_dataSources) {
+        dataSourcesArray.append(ds.toJson());
+    }
+    json["dataSources"] = dataSourcesArray;
+
     return json;
 }
 
@@ -250,7 +292,13 @@ bool Project::fromJson(const QJsonObject& json)
     for (const auto& val : camerasArray) {
         m_cameras.append(CameraConfig::fromJson(val.toObject()));
     }
-    
+
+    m_dataSources.clear();
+    QJsonArray dataSourcesArray = json["dataSources"].toArray();
+    for (const auto& val : dataSourcesArray) {
+        m_dataSources.append(DataSource::fromJson(val.toObject()));
+    }
+
     m_hasUnsavedChanges = false;
     return true;
 }

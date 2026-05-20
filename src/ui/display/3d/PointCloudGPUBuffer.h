@@ -19,6 +19,7 @@ struct PointCloudGPUBuffer {
     std::vector<float> positions;  // x,y,z 交错，float 精度
     std::vector<float> colors;     // r,g,b 交错 (可选)
     std::vector<float> normals;     // nx,ny,nz 交错 (可选)
+    std::vector<float> intensities; // 强度值 (可选)
     std::vector<int> labels;       // 标签 (可选，用于分类显示)
 
     bool dirty = true;             // 标记是否需要重新上传 VBO
@@ -58,6 +59,7 @@ struct PointCloudGPUBuffer {
         positions.clear();
         colors.clear();
         normals.clear();
+        intensities.clear();
         labels.clear();
         dirty = true;
     }
@@ -76,6 +78,8 @@ struct PointCloudGPUBuffer {
      * @brief 是否包含标签
      */
     bool hasLabels() const { return !labels.empty(); }
+
+    bool hasIntensities() const { return intensities.size() == pointCount(); }
 };
 
 } // namespace DeepLux

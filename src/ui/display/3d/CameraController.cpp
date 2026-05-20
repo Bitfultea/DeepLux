@@ -13,6 +13,9 @@ CameraController::CameraController()
     , m_azimuth(0.0f)
     , m_elevation(0.0f)
     , m_distance(5.0f)
+    , m_framedCenter(0, 0, 0)
+    , m_framedDistance(5.0f)
+    , m_framedFar(1000.0f)
 {
 }
 
@@ -42,15 +45,16 @@ void CameraController::pan(float deltaX, float deltaY) {
 
 void CameraController::zoom(float delta) {
     m_distance *= (1.0f - delta * 0.1f);
-    m_distance = std::max(0.1f, std::min(1000.0f, m_distance));
+    m_distance = std::max(0.01f, std::min(m_framedFar * 2.0f, m_distance));
     updateEyeFromAngles();
 }
 
 void CameraController::reset() {
     m_azimuth = 0.0f;
     m_elevation = 0.0f;
-    m_distance = 5.0f;
-    m_center = QVector3D(0, 0, 0);
+    m_distance = m_framedDistance;
+    m_center = m_framedCenter;
+    m_far = m_framedFar;
     updateEyeFromAngles();
 }
 
@@ -61,6 +65,42 @@ void CameraController::setTarget(const QVector3D& center) {
 
 float CameraController::distance() const {
     return m_distance;
+}
+
+void CameraController::frameData(const QVector3D& bboxMin, const QVector3D& bboxMax)
+{
+    QVector3D size = bboxMax - bboxMin;
+    if (size.length() < 0.0001f) {
+        m_center = QVector3D(0, 0, 0);
+        m_distance = 5.0f;
+        m_far = 1000.0f;
+        m_near = 0.1f;
+        m_framedCenter = QVector3D(0, 0, 0);
+        m_framedDistance = 5.0f;
+        m_framedFar = 1000.0f;
+        m_azimuth = 0.0f;
+        m_elevation = 0.0f;
+        updateEyeFromAngles();
+        return;
+    }
+    float diagonal = size.length();
+    m_center = (bboxMin + bboxMax) * 0.5f;
+    float fovRad = m_fov * static_cast<float>(M_PI) / 180.0f;
+    m_distance = (diagonal * 0.5f) / std::tan(fovRad * 0.5f) * 0.7f;
+    if (m_distance < 0.5f) m_distance = 0.5f;
+    if (m_distance > 5000.0f) m_distance = 5000.0f;
+    m_far = diagonal * 4.0f;
+    if (m_far < 10.0f) m_far = 10.0f;
+    if (m_far > 50000.0f) m_far = 50000.0f;
+    m_near = diagonal * 0.0005f;
+    if (m_near < 0.001f) m_near = 0.001f;
+    if (m_near > 10.0f) m_near = 10.0f;
+    m_framedCenter = m_center;
+    m_framedDistance = m_distance;
+    m_framedFar = m_far;
+    m_azimuth = 0.0f;
+    m_elevation = 0.0f;
+    updateEyeFromAngles();
 }
 
 QMatrix4x4 CameraController::viewMatrix() const {

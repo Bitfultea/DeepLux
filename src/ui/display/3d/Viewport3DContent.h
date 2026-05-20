@@ -3,6 +3,7 @@
 #include "../IViewportContent.h"
 #include "PointCloudRendererOpenGL.h"
 #include "CameraController.h"
+#include "IPointCloudRenderer.h"
 #include <QOpenGLWidget>
 #include <QMatrix4x4>
 
@@ -26,6 +27,10 @@ public:
     void clearDisplay() override;
     QWidget* toolbarExtension() override { return nullptr; }
     QWidget* widget() override { return this; }
+
+    // 渲染模式
+    ColorMode renderMode() const { return m_renderMode; }
+    void setRenderMode(ColorMode mode);
 
 public slots:
     void resetCamera();
@@ -54,14 +59,18 @@ private:
     std::unique_ptr<PointCloudRendererOpenGL> m_renderer;
     PointCloudGPUBuffer m_gpuBuffer;
     CameraController m_camera;
+    ColorMode m_renderMode = ColorMode::BlinnPhong;
 
     QMatrix4x4 m_projectionMatrix;
     QMatrix4x4 m_viewMatrix;
 
     bool m_needsUpdate = true;
     QPoint m_lastMousePos;
-    bool m_mouseDown = false;
     bool m_lodEnabled = true;
+
+    QVector3D m_bboxMin;
+    QVector3D m_bboxMax;
+    bool m_hasBbox = false;
 };
 
 } // namespace DeepLux

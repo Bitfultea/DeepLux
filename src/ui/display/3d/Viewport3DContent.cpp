@@ -10,7 +10,6 @@ Viewport3DContent::Viewport3DContent(QWidget* parent)
     : QOpenGLWidget(parent)
     , m_renderer(nullptr)
     , m_needsUpdate(true)
-    , m_mouseDown(false)
     , m_lodEnabled(true)
 {
     // 显式设置 format — 有些系统需要 widget-level format
@@ -21,6 +20,7 @@ Viewport3DContent::Viewport3DContent(QWidget* parent)
 
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
+    setContextMenuPolicy(Qt::NoContextMenu);
 }
 
 Viewport3DContent::~Viewport3DContent() {
@@ -30,15 +30,18 @@ Viewport3DContent::~Viewport3DContent() {
 }
 
 void Viewport3DContent::initializeGL() {
-    // 渲染器可能已在 displayData 中创建, 只初始化 GL 资源, 不替换
     if (!m_renderer) {
         m_renderer = std::make_unique<PointCloudRendererOpenGL>();
-        m_renderer->setPointSize(3.0f);
-        m_renderer->setUniformColor(Qt::white);
     }
+    m_renderer->setPointSize(5.0f);
+    m_renderer->setUniformColor(Qt::white);
     m_renderer->initializeGL();
 
-    m_camera.reset();
+    if (m_hasBbox) {
+        m_camera.frameData(m_bboxMin, m_bboxMax);
+    } else {
+        m_camera.reset();
+    }
     updateMatrices();
 }
 
@@ -82,13 +85,41 @@ void Viewport3DContent::displayData(const DisplayData& data) {
 
     // 转换为 GPU 缓冲区
     m_gpuBuffer.fromPointCloudData(*pcData);
+
+    if (!pcData->points.empty()) {
+        auto& pts = pcData->points;
+        Eigen::Vector3d mn = pts[0], mx = pts[0];
+        for (size_t i = 1; i < pts.size(); ++i) {
+            mn = mn.cwiseMin(pts[i]);
+            mx = mx.cwiseMax(pts[i]);
+        }
+        m_bboxMin = QVector3D(static_cast<float>(mn.x()), static_cast<float>(mn.y()), static_cast<float>(mn.z()));
+        m_bboxMax = QVector3D(static_cast<float>(mx.x()), static_cast<float>(mx.y()), static_cast<float>(mx.z()));
+        m_hasBbox = true;
+        m_camera.frameData(m_bboxMin, m_bboxMax);
+    } else {
+        m_hasBbox = false;
+    }
+
     if (m_renderer) {
         m_renderer->setPointCloud(m_gpuBuffer, m_lodEnabled);
         m_renderer->setLODEnabled(m_lodEnabled);
+        m_renderer->setColorMode(m_renderMode);
     }
 
     m_needsUpdate = true;
     update();
+}
+
+void Viewport3DContent::setRenderMode(ColorMode mode) {
+    if (m_renderMode != mode) {
+        m_renderMode = mode;
+        if (m_renderer) {
+            m_renderer->setColorMode(mode);
+            m_needsUpdate = true;
+            update();
+        }
+    }
 }
 
 void Viewport3DContent::clearDisplay() {
@@ -101,7 +132,11 @@ void Viewport3DContent::clearDisplay() {
 }
 
 void Viewport3DContent::resetCamera() {
-    m_camera.reset();
+    if (m_hasBbox) {
+        m_camera.frameData(m_bboxMin, m_bboxMax);
+    } else {
+        m_camera.reset();
+    }
     updateMatrices();
     m_needsUpdate = true;
     update();
@@ -129,33 +164,25 @@ void Viewport3DContent::updateMatrices() {
 }
 
 void Viewport3DContent::mousePressEvent(QMouseEvent* event) {
-    if (event->button() == Qt::LeftButton ||
-        event->button() == Qt::MiddleButton ||
-        event->button() == Qt::RightButton) {
-        m_lastMousePos = event->pos();
-        m_mouseDown = true;
-    }
+    m_lastMousePos = event->pos();
 }
 
 void Viewport3DContent::mouseMoveEvent(QMouseEvent* event) {
-    if (!m_mouseDown) return;
-
     QPoint delta = event->pos() - m_lastMousePos;
-    float sensitivity = 0.005f;
+    float orbitSens = 0.005f;
+    float d = std::max(m_camera.distance(), 1.0f);
+    float moveScale = d * 0.002f;
 
     if (event->buttons() & Qt::LeftButton) {
-        // 左键旋转
-        m_camera.orbit(delta.x() * sensitivity, -delta.y() * sensitivity);
-        m_needsUpdate = true;
-        update();
-    } else if (event->buttons() & Qt::MiddleButton) {
-        // 中键平移
-        m_camera.pan(-delta.x() * 0.01f, delta.y() * 0.01f);
+        m_camera.orbit(delta.x() * orbitSens, -delta.y() * orbitSens);
         m_needsUpdate = true;
         update();
     } else if (event->buttons() & Qt::RightButton) {
-        // 右键缩放
-        m_camera.zoom(delta.y() * 0.01f);
+        m_camera.pan(-delta.x() * moveScale, delta.y() * moveScale);
+        m_needsUpdate = true;
+        update();
+    } else if (event->buttons() & Qt::MiddleButton) {
+        m_camera.zoom(delta.y() * moveScale);
         m_needsUpdate = true;
         update();
     }
@@ -165,7 +192,7 @@ void Viewport3DContent::mouseMoveEvent(QMouseEvent* event) {
 
 void Viewport3DContent::wheelEvent(QWheelEvent* event) {
     float delta = event->angleDelta().y() * 0.001f;
-    m_camera.zoom(delta);
+    m_camera.zoom(delta * std::max(m_camera.distance(), 1.0f) * 0.5f);
     m_needsUpdate = true;
     update();
 }

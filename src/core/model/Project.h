@@ -6,6 +6,9 @@
 #include <QDateTime>
 #include <QList>
 #include <memory>
+#include <optional>
+
+#include "DataSource.h"
 
 namespace DeepLux {
 
@@ -77,6 +80,7 @@ public:
     void addModule(const ModuleInstance& module);
     void removeModule(const QString& instanceId);
     void updateModule(const QString& instanceId, const ModuleInstance& module);
+    /// 返回指向 QList 内部元素的指针——调用方不得跨 addModule/removeModule 持有此指针
     ModuleInstance* findModule(const QString& instanceId);
 
     // 连接管理
@@ -88,7 +92,14 @@ public:
     QList<CameraConfig> cameras() const { return m_cameras; }
     void addCamera(const CameraConfig& camera);
     void removeCamera(const QString& cameraId);
-    CameraConfig* findCamera(const QString& cameraId);
+    const CameraConfig* findCamera(const QString& cameraId) const;
+
+    // 数据源管理
+    QList<DataSource> dataSources() const { return m_dataSources; }
+    void addDataSource(const DataSource& ds);
+    void removeDataSource(const QString& id);
+    /// 按值返回拷贝以避免悬垂指针——DataSource 是轻量结构体，拷贝开销可忽略
+    std::optional<DataSource> findDataSource(const QString& id) const;
 
     // 序列化
     QJsonObject toJson() const;
@@ -104,9 +115,12 @@ public:
 signals:
     void nameChanged(const QString& name);
     void moduleAdded(const ModuleInstance& module);
+    void moduleUpdated(const ModuleInstance& module);
     void moduleRemoved(const QString& instanceId);
     void connectionAdded(const ModuleConnection& conn);
     void connectionRemoved(const QString& fromId, const QString& toId);
+    void dataSourceAdded(const DataSource& ds);
+    void dataSourceRemoved(const QString& id);
     void modifiedChanged(bool modified);
 
 private:
@@ -122,6 +136,7 @@ private:
     QList<ModuleInstance> m_modules;
     QList<ModuleConnection> m_connections;
     QList<CameraConfig> m_cameras;
+    QList<DataSource> m_dataSources;
 };
 
 } // namespace DeepLux

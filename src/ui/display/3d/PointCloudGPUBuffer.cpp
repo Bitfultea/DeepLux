@@ -44,6 +44,11 @@ void PointCloudGPUBuffer::fromPointCloudData(const PointCloudData& data) {
         labels = data.labels;
     }
 
+    // 复制强度值
+    if (!data.intensities.empty() && data.intensities.size() == data.points.size()) {
+        intensities = data.intensities;
+    }
+
     dirty = true;
 }
 
@@ -95,6 +100,15 @@ void PointCloudGPUBuffer::fromPointCloudDataWithIndices(const PointCloudData& da
         for (size_t idx : indices) {
             if (idx >= data.labels.size()) continue;
             labels.push_back(data.labels[idx]);
+        }
+    }
+
+    // 复制强度值
+    if (!data.intensities.empty() && data.intensities.size() == data.points.size()) {
+        intensities.reserve(indices.size());
+        for (size_t idx : indices) {
+            if (idx >= data.intensities.size()) continue;
+            intensities.push_back(data.intensities[idx]);
         }
     }
 

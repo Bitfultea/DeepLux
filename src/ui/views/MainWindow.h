@@ -17,6 +17,7 @@
 #include <QSet>
 #include <QToolButton>
 #include <QComboBox>
+#include <QComboBox>
 #include <QTabWidget>
 
 #include "core/common/Logger.h"
@@ -32,6 +33,7 @@ class AgentActionLogWidget;
 class AgentChatPanel;
 
 class IModule;
+struct PointCloudData;
 
 class MainWindow : public QMainWindow
 {
@@ -83,6 +85,12 @@ private slots:
     void onProjectOpened(Project* project);
     void onProjectClosed();
     void onModuleAdded(const ModuleInstance& module);
+    void onDataSourceAdded(const DataSource& ds);
+    void onDataSourceRemoved(const QString& id);
+    void onDisplayDataSource(const QString& dataSourceId);
+    void onRemoveDataSource(const QString& dataSourceId);
+    void onShowDataSourceInFolder(const QString& dataSourceId);
+    void onCopyDataSourcePath(const QString& dataSourceId);
     void onModuleRemoved(const QString& instanceId);
 private:
     void setupUi();
@@ -121,7 +129,6 @@ protected:
 
     // 左侧面板
     QDockWidget* m_toolBoxDock = nullptr;
-    QDockWidget* m_processDock = nullptr;
     QDockWidget* m_propertyDock = nullptr;
     PropertyPanel* m_propertyPanel = nullptr;
 
@@ -164,6 +171,7 @@ protected:
     // 状态栏
     QLabel* m_userLabel = nullptr;
     QLabel* m_projectLabel = nullptr;
+    QWidget* m_processTabContent = nullptr;
     QLabel* m_timeLabel = nullptr;
     QLineEdit* m_barcodeInput = nullptr;
 
@@ -208,8 +216,17 @@ protected:
     void loadAgentSettings();
     void updateAgentPermissionDisplay();
 
+    class DataSourcePanel* m_dataSourcePanel = nullptr;
+    QTabWidget* m_processTabWidget = nullptr;
+
     // 显示管理
     DisplayManager* m_displayManager = nullptr;
+
+    // 3D 渲染模式（视图菜单内）
+    QAction* m_renderActions[6] = {};
+    void updateRenderModeCombo();
+    void updateRenderModeComboForData(const PointCloudData& pc);
+    void onRenderModeChanged(int index);
 };
 
 } // namespace DeepLux

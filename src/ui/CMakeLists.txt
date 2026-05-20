@@ -15,6 +15,7 @@ set(UI_SOURCES
     widgets/ToolBox.cpp
     dialogs/AgentSettingsDialog.cpp
     widgets/ViewportWidget.cpp
+    panels/DataSourcePanel.cpp
     bridge/TerminalBridge.cpp
     process/BashProcess.cpp
     display/DisplayManager.cpp
@@ -85,6 +86,7 @@ set(UI_HEADERS
     dialogs/LoginDialog.h
     dialogs/AboutDialog.h
     dialogs/PluginTestDialog.h
+    panels/DataSourcePanel.h
     views/CameraSetView.h
     views/CommunicationSetView.h
     views/GlobalVarView.h

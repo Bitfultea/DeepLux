@@ -7,8 +7,10 @@
 #include "../widgets/TerminalWidget.h"
 #include "../widgets/AgentActionLogWidget.h"
 #include "../widgets/AgentChatPanel.h"
+#include "../widgets/ViewportWidget.h"
 #include "../dialogs/AgentSettingsDialog.h"
 #include "../bridge/TerminalBridge.h"
+#include "../panels/DataSourcePanel.h"
 #include "core/agent/AgentController.h"
 #include "core/agent/OpenAILLMClient.h"
 #include "CameraSetView.h"
@@ -28,8 +30,11 @@
 #include "core/model/ImageData.h"
 #include "core/engine/RunEngine.h"
 #include "core/model/Project.h"
+#include "core/model/DataSource.h"
 #include "core/io/PlyLoader.h"
 #include "core/io/TiffLoader.h"
+
+#include <QUuid>
 
 #include <QAction>
 #include <QActionGroup>
@@ -89,7 +94,9 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+#include <QStandardItemModel>
 #include <QUrl>
+#include <QWidgetAction>
 #include <QVBoxLayout>
 
 namespace DeepLux {
@@ -298,6 +305,27 @@ void MainWindow::setupMenuBar() {
     viewMenu->addAction(createQuickModeIcon(), tr("快捷模式"), this, &MainWindow::onQuickMode);
     viewMenu->addSeparator();
     viewMenu->addAction(createToggleThemeIcon(), tr("切换主题"), this, &MainWindow::onToggleTheme);
+
+    // 3D 渲染模式（菜单项 + 横线分隔）
+    viewMenu->addSeparator();
+    QActionGroup* renderGroup = new QActionGroup(this);
+    renderGroup->setExclusive(true);
+
+    m_renderActions[0] = viewMenu->addAction(tr("统一色"));
+    m_renderActions[1] = viewMenu->addAction(tr("RGB"));
+    m_renderActions[2] = viewMenu->addAction(tr("高度"));
+    m_renderActions[3] = viewMenu->addAction(tr("强度"));
+    m_renderActions[4] = viewMenu->addAction(tr("法向"));
+    m_renderActions[5] = viewMenu->addAction(tr("BlinnPhong"));
+    for (int i = 0; i < 6; ++i) {
+        m_renderActions[i]->setCheckable(true);
+        m_renderActions[i]->setData(i);
+        renderGroup->addAction(m_renderActions[i]);
+    }
+    m_renderActions[5]->setChecked(true);
+    connect(renderGroup, &QActionGroup::triggered, this, [this](QAction* action) {
+        onRenderModeChanged(action->data().toInt());
+    });
 
     // 工具菜单
     QMenu* toolMenu = menuBar()->addMenu(tr("工具 (&T)"));
@@ -665,12 +693,23 @@ void MainWindow::setupMainLayout() {
     rightTopSplitter->setObjectName("RightTopSplitter");
     rightTopSplitter->setHandleWidth(1);
 
-    // 流程面板
+    // ========== 流程面板（QTabWidget：流程 + 数据源）==========
     QWidget* processPanelWidget = new QWidget();
     processPanelWidget->setObjectName("ProcessPanelWidget");
     QVBoxLayout* processPanelLayout = new QVBoxLayout(processPanelWidget);
     processPanelLayout->setContentsMargins(0, 0, 0, 0);
     processPanelLayout->setSpacing(0);
+
+    m_processTabWidget = new QTabWidget(this);
+    m_processTabWidget->setObjectName("ProcessTabWidget");
+    m_processTabWidget->setDocumentMode(true);
+
+    // ---- Tab 1: 流程 ----
+    m_processTabContent = new QWidget();
+    m_processTabContent->setObjectName("ProcessTabContent");
+    QVBoxLayout* flowLayout = new QVBoxLayout(m_processTabContent);
+    flowLayout->setContentsMargins(0, 0, 0, 0);
+    flowLayout->setSpacing(0);
 
     // 流程面板工具栏
     QWidget* processToolBar = new QWidget();
@@ -717,7 +756,7 @@ void MainWindow::setupMainLayout() {
     processToolBarLayout->addWidget(m_btnStartPause);
     processToolBarLayout->addWidget(m_btnStop);
     processToolBarLayout->addWidget(runCycleBtn);
-    processPanelLayout->addWidget(processToolBar);
+    flowLayout->addWidget(processToolBar);
 
     // 模块树
     m_processTree = new QTreeWidget();
@@ -730,26 +769,24 @@ void MainWindow::setupMainLayout() {
     m_processTree->setDefaultDropAction(Qt::MoveAction);
     m_processTree->setDropIndicatorShown(true);
     m_processTree->setObjectName("ProcessTree");
-    // 配置两列布局：模块名 + 耗时
     m_processTree->setColumnCount(2);
     m_processTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_processTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_processTree->header()->setMinimumSectionSize(60);
     m_processTree->header()->setHidden(true);
-    // 安装事件过滤器以处理拖拽放置和右键菜单
     m_processTree->viewport()->installEventFilter(this);
     m_processTree->installEventFilter(this);
     connect(m_processTree, &QTreeWidget::customContextMenuRequested, this, &MainWindow::onProcessTreeContextMenu);
 
-    // 提示标签（单独创建，不放在树中）
+    // 提示标签
     m_hintLabel = new QLabel(tr("← 从左侧拖拽工具"));
     m_hintLabel->setAlignment(Qt::AlignCenter);
     m_hintLabel->setStyleSheet("color: #808080; padding: 10px;");
     m_hintLabel->setObjectName("ProcessTreeHintLabel");
-    processPanelLayout->addWidget(m_hintLabel);
+    flowLayout->addWidget(m_hintLabel);
 
-    processPanelLayout->addWidget(m_processTree);
-    processPanelLayout->setStretchFactor(m_processTree, 1);
+    flowLayout->addWidget(m_processTree);
+    flowLayout->setStretchFactor(m_processTree, 1);
 
     // 流程状态栏
     m_processStatusWidget = new QWidget();
@@ -758,35 +795,26 @@ void MainWindow::setupMainLayout() {
     m_processTimeLabel = new QLabel(tr("总耗时：0 ms"));
     processStatusLayout->addWidget(m_processTimeLabel);
     processStatusLayout->addStretch();
-    processPanelLayout->addWidget(m_processStatusWidget);
-    processPanelLayout->setStretchFactor(m_processStatusWidget, 0);
+    flowLayout->addWidget(m_processStatusWidget);
+    flowLayout->setStretchFactor(m_processStatusWidget, 0);
 
-    // 流程 DockWidget
-    m_processDock = new QDockWidget(this);
-    m_processDock->setObjectName("ProcessPanelDock");
-    m_processDock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable);
-    m_processDock->setWidget(processPanelWidget);
-    m_processDock->setMinimumWidth(320);
-    m_processDock->setMaximumWidth(500);
-    // 自定义标题栏
-    QWidget* processTitleWidget = new QWidget();
-    QHBoxLayout* processTitleLayout = new QHBoxLayout(processTitleWidget);
-    processTitleLayout->setContentsMargins(10, 0, 5, 0);
-    processTitleLayout->setSpacing(5);
-    QLabel* processTitleLabel = new QLabel(tr("流程"));
-    processTitleLabel->setObjectName("ProcessTitleLabel");
-    processTitleLayout->addWidget(processTitleLabel);
-    processTitleLayout->addStretch();
-    QToolButton* processCloseBtn = new QToolButton();
-    processCloseBtn->setText("×");
-    processCloseBtn->setToolTip(tr("关闭"));
-    processCloseBtn->setFixedSize(20, 20);
-    processCloseBtn->setObjectName("ProcessCloseBtn");
-    processTitleLayout->addWidget(processCloseBtn);
-    processTitleWidget->setMinimumHeight(36);
-    processTitleWidget->setObjectName("ProcessTitleWidget");
-    m_processDock->setTitleBarWidget(processTitleWidget);
-    connect(processCloseBtn, &QToolButton::clicked, m_processDock, &QDockWidget::close);
+    m_processTabWidget->addTab(m_processTabContent, tr("流程"));
+
+    // ---- Tab 2: 数据源 ----
+    m_dataSourcePanel = new DataSourcePanel(this);
+    m_processTabWidget->addTab(m_dataSourcePanel, tr("数据源"));
+
+    // 连接 DataSourcePanel 信号
+    connect(m_dataSourcePanel, &DataSourcePanel::requestDisplay,
+            this, &MainWindow::onDisplayDataSource);
+    connect(m_dataSourcePanel, &DataSourcePanel::requestRemove,
+            this, &MainWindow::onRemoveDataSource);
+    connect(m_dataSourcePanel, &DataSourcePanel::requestShowInFolder,
+            this, &MainWindow::onShowDataSourceInFolder);
+    connect(m_dataSourcePanel, &DataSourcePanel::requestCopyPath,
+            this, &MainWindow::onCopyDataSourcePath);
+
+    processPanelLayout->addWidget(m_processTabWidget);
 
     // 图像显示区域 - 使用 DisplayManager 的中央视口
     QWidget* imageDisplayWidget = m_displayManager->centralDisplay();
@@ -796,8 +824,11 @@ void MainWindow::setupMainLayout() {
     imageDisplayWidget->setAcceptDrops(true);  // 接收文件拖放
     imageDisplayWidget->installEventFilter(this);  // route drops to eventFilter
 
-    // 添加到右上方水平 Splitter
-    rightTopSplitter->addWidget(m_processDock);
+    rightTopSplitter->addWidget(processPanelWidget);
+
+    processPanelWidget->setMinimumWidth(280);
+    processPanelWidget->setMaximumWidth(500);
+
     rightTopSplitter->addWidget(imageDisplayWidget);
     rightTopSplitter->setStretchFactor(0, 1);
     rightTopSplitter->setStretchFactor(1, 10);
@@ -956,8 +987,6 @@ void MainWindow::setupMainLayout() {
     // 连接 DockWidget 关闭信号以同步菜单勾选状态
     connect(m_toolBoxDock, &QDockWidget::topLevelChanged, this,
             [this](bool) { m_viewToolPanelAction->setChecked(!m_toolBoxDock->isHidden()); });
-    connect(m_processDock, &QDockWidget::topLevelChanged, this,
-            [this](bool) { m_viewProcessPanelAction->setChecked(!m_processDock->isHidden()); });
 
     // 连接按钮信号
     connect(m_btnStartPause, &QToolButton::clicked, this, [this]() {
@@ -983,8 +1012,8 @@ void MainWindow::onToggleToolPanel(bool checked) {
 }
 
 void MainWindow::onToggleProcessPanel(bool checked) {
-    if (m_processDock) {
-        m_processDock->setVisible(checked);
+    if (m_processTabWidget) {
+        m_processTabWidget->setVisible(checked);
     }
 }
 
@@ -1038,14 +1067,24 @@ void MainWindow::onProjectOpened(Project* project)
         addModuleToProcessTree(inst);
     }
 
+    // 刷新数据源面板
+    if (m_dataSourcePanel) {
+        m_dataSourcePanel->refreshFromProject(project);
+    }
+
     // 连接 Project 信号
     connect(project, &Project::moduleAdded, this, &MainWindow::onModuleAdded);
     connect(project, &Project::moduleRemoved, this, &MainWindow::onModuleRemoved);
+    connect(project, &Project::dataSourceAdded, this, &MainWindow::onDataSourceAdded);
+    connect(project, &Project::dataSourceRemoved, this, &MainWindow::onDataSourceRemoved);
 }
 
 void MainWindow::onProjectClosed()
 {
     clearProcessTree();
+    if (m_dataSourcePanel) {
+        m_dataSourcePanel->refreshFromProject(nullptr);
+    }
 }
 
 void MainWindow::onModuleAdded(const ModuleInstance& module)
@@ -1056,6 +1095,77 @@ void MainWindow::onModuleAdded(const ModuleInstance& module)
 void MainWindow::onModuleRemoved(const QString& instanceId)
 {
     removeModuleFromProcessTree(instanceId);
+}
+
+void MainWindow::onDataSourceAdded(const DataSource& ds)
+{
+    if (m_dataSourcePanel) {
+        m_dataSourcePanel->addDataSource(ds);
+    }
+}
+
+void MainWindow::onDataSourceRemoved(const QString& id)
+{
+    if (m_dataSourcePanel) {
+        m_dataSourcePanel->removeDataSource(id);
+    }
+}
+
+void MainWindow::onDisplayDataSource(const QString& dataSourceId)
+{
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project) return;
+
+    auto ds = project->findDataSource(dataSourceId);
+    if (!ds || !ds->isValid()) return;
+
+    QFileInfo fileInfo(ds->filePath);
+    if (!fileInfo.exists()) {
+        Logger::instance().warning(tr("数据源文件已丢失：%1").arg(ds->filePath), "System");
+        return;
+    }
+
+    if (ds->isPointCloud()) {
+        importPointCloudFile(ds->filePath);
+    } else if (ds->isImage()) {
+        importImageFile(ds->filePath);
+        // 图像导入后需要实际显示到视口
+        QImage image(ds->filePath);
+        if (!image.isNull() && m_displayManager) {
+            DisplayData data;
+            data.variant() = ImageData(image);
+            data.setMetadata(QVariantMap{
+                {"dataSourceId", ds->id},
+                {"dataSourceName", ds->name}
+            });
+            m_displayManager->displayData(data);
+        }
+    }
+}
+
+void MainWindow::onRemoveDataSource(const QString& dataSourceId)
+{
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project) return;
+    project->removeDataSource(dataSourceId);
+}
+
+void MainWindow::onShowDataSourceInFolder(const QString& dataSourceId)
+{
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project) return;
+    auto ds = project->findDataSource(dataSourceId);
+    if (!ds || ds->filePath.isEmpty()) return;
+    QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(ds->filePath).absolutePath()));
+}
+
+void MainWindow::onCopyDataSourcePath(const QString& dataSourceId)
+{
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project) return;
+    auto ds = project->findDataSource(dataSourceId);
+    if (!ds || ds->filePath.isEmpty()) return;
+    QGuiApplication::clipboard()->setText(ds->filePath);
 }
 
 void MainWindow::addModuleToProcessTree(const ModuleInstance& inst)
@@ -1321,19 +1431,6 @@ void MainWindow::applyTheme() {
                         "QToolButton:hover { background-color: #e74c3c; }")
                     .arg(btnColor));
     }
-    if (m_processDock && m_processDock->titleBarWidget()) {
-        m_processDock->titleBarWidget()->setStyleSheet(
-            QString("background-color: %1; border: none; border-bottom: 1px solid %2;").arg(bgColor, borderColor));
-        QLabel* label = m_processDock->titleBarWidget()->findChild<QLabel*>();
-        if (label)
-            label->setStyleSheet(QString("QLabel { color: %1; font-weight: bold; font-size: 14px; }").arg(textColor));
-        QToolButton* btn = m_processDock->titleBarWidget()->findChild<QToolButton*>();
-        if (btn)
-            btn->setStyleSheet(
-                QString("QToolButton { background-color: transparent; color: %1; font-size: 18px; border: none; }"
-                        "QToolButton:hover { background-color: #e74c3c; }")
-                    .arg(btnColor));
-    }
     if (m_logDock && m_logDock->titleBarWidget()) {
         m_logDock->titleBarWidget()->setStyleSheet(
             QString("background-color: %1; border: none; border-bottom: 1px solid %2;").arg(bgColor, borderColor));
@@ -1475,6 +1572,18 @@ void MainWindow::applyTheme() {
     QWidget* processPanelWidget = findChild<QWidget*>("ProcessPanelWidget");
     if (processPanelWidget) {
         processPanelWidget->setStyleSheet(QString("background-color: %1;").arg(scrollBgColor));
+    }
+
+    if (m_processTabWidget) {
+        m_processTabWidget->setStyleSheet(QString(
+            "QTabWidget::pane { border: none; border-top: 2px solid %1; background-color: %2; }"
+            "QTabBar::tab { background-color: transparent; color: %3; padding: 6px 16px;"
+            "  border: none; border-bottom: 2px solid transparent; margin-right: 2px; }"
+            "QTabBar::tab:selected { color: #0078d7; border-bottom: 2px solid #0078d7; }"
+            "QTabBar::tab:hover:!selected { color: %3; background-color: %1; }")
+            .arg(m_isDarkTheme ? "#3a3a3a" : "#e0e0e0",
+                 m_isDarkTheme ? "#252525" : "#ffffff",
+                 m_isDarkTheme ? "#a0a0a0" : "#666666"));
     }
 
     // 更新 DisplayManager 中的 Viewport 样式
@@ -1783,8 +1892,8 @@ void MainWindow::dropEvent(QDropEvent* event) {
 
 // TIFF 大文件阈值与跳采样步长（避免 UI 卡顿）
 static constexpr qint64 LARGE_TIFF_THRESHOLD = 100 * 1024 * 1024;  // 100MB
-static constexpr int TIFF_STEP_LARGE = 4;
-static constexpr int TIFF_STEP_NORMAL = 2;
+static constexpr int TIFF_STEP_LARGE = 2;
+static constexpr int TIFF_STEP_NORMAL = 1;
 
 bool MainWindow::importFile(const QString& filePath)
 {
@@ -1794,6 +1903,11 @@ bool MainWindow::importFile(const QString& filePath)
     if (!fileInfo.exists()) {
         Logger::instance().error(tr("文件不存在：%1").arg(filePath), "System");
         return false;
+    }
+
+    if (!ProjectManager::instance().hasProject()) {
+        ProjectManager::instance().newProject();
+        Logger::instance().info(tr("自动创建项目"), "System");
     }
 
     m_lastImportedImagePath = filePath;
@@ -1834,22 +1948,101 @@ bool MainWindow::importPointCloudFile(const QString& filePath)
         return false;
     }
 
+    // 创建 DataSource 并注册到 Project
+    DataSource ds;
+    ds.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    ds.name = fileInfo.fileName();
+    ds.filePath = fileInfo.absoluteFilePath();
+    ds.type = "pointcloud";
+    ds.metadata["pointCount"] = static_cast<qint64>(pc.size());
+    ds.metadata["fileSize"] = fileInfo.size();
+    ds.importTime = QDateTime::currentMSecsSinceEpoch();
+
+    Project* project = ProjectManager::instance().currentProject();
+    if (project) {
+        project->addDataSource(ds);
+    }
+
     Logger::instance().info(QString("[imp3D] loaded %1 points, sending to DisplayManager").arg(pc.size()), "3D");
+
+    size_t pointCount = pc.size();
+    updateRenderModeComboForData(pc);
+
     DisplayData data;
     data.variant() = std::move(pc);
     data.setTimestamp(QDateTime::currentMSecsSinceEpoch());
+    data.setMetadata(QVariantMap{
+        {"dataSourceId", ds.id},
+        {"dataSourceName", ds.name}
+    });
     if (m_displayManager) {
         m_displayManager->displayData(data);
     }
-    Logger::instance().info(tr("导入 3D 点云：%1 (%2 点)").arg(fileInfo.fileName()).arg(pc.size()), "System");
+    Logger::instance().info(tr("导入 3D 点云：%1 (%2 点)").arg(fileInfo.fileName()).arg(pointCount), "System");
+
+    if (m_processTabWidget && m_dataSourcePanel) {
+        m_processTabWidget->setCurrentWidget(m_dataSourcePanel);
+    }
+
     return true;
 }
 
 bool MainWindow::importImageFile(const QString& filePath)
 {
     Logger::instance().info(tr("导入图像：%1").arg(filePath), "System");
+
+    QFileInfo fileInfo(filePath);
+    DataSource ds;
+    ds.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    ds.name = fileInfo.fileName();
+    ds.filePath = fileInfo.absoluteFilePath();
+    ds.type = "image";
+    ds.metadata["fileSize"] = fileInfo.size();
+    ds.importTime = QDateTime::currentMSecsSinceEpoch();
+
+    Project* project = ProjectManager::instance().currentProject();
+    if (project) {
+        project->addDataSource(ds);
+    }
+
     autoConfigureGrabImage(filePath);
+
+    QImage image(filePath);
+    if (!image.isNull() && m_displayManager) {
+        DisplayData data;
+        data.variant() = ImageData(image);
+        data.setMetadata(QVariantMap{
+            {"dataSourceId", ds.id},
+            {"dataSourceName", ds.name}
+        });
+        m_displayManager->displayData(data);
+    }
+
+    if (m_processTabWidget && m_dataSourcePanel) {
+        m_processTabWidget->setCurrentWidget(m_dataSourcePanel);
+    }
+
     return true;
+}
+
+void MainWindow::onRenderModeChanged(int index)
+{
+    auto viewports = m_displayManager->allViewports();
+    for (auto* vp : viewports) {
+        if (vp) vp->setRenderMode(index);
+    }
+}
+
+void MainWindow::updateRenderModeCombo()
+{
+    // 菜单项不需要预填充（已在 setupMenuBar 中创建）
+}
+
+void MainWindow::updateRenderModeComboForData(const PointCloudData& pc)
+{
+    m_renderActions[1]->setEnabled(pc.hasColors());
+    m_renderActions[3]->setEnabled(!pc.intensities.empty() && pc.intensities.size() == pc.points.size());
+    m_renderActions[4]->setEnabled(pc.hasNormals());
 }
 
 void MainWindow::autoConfigureGrabImage(const QString& filePath) {

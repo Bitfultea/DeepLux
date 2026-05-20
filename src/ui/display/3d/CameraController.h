@@ -99,6 +99,13 @@ public:
      */
     void setFarPlane(float far) { m_far = far; }
 
+    /**
+     * @brief 根据数据包围盒自动取景
+     * @param bboxMin 最小角
+     * @param bboxMax 最大角
+     */
+    void frameData(const QVector3D& bboxMin, const QVector3D& bboxMax);
+
 private:
     void updateEyeFromAngles();
 
@@ -112,7 +119,11 @@ private:
 
     float m_azimuth = 0.0f;          // 水平角度（弧度）
     float m_elevation = 0.0f;        // 垂直角度（弧度）
-    float m_distance = 5.0f;          // 到目标距离
+    float m_distance = 5.0f;         // 到目标距离
+
+    QVector3D m_framedCenter{0, 0, 0};
+    float m_framedDistance = 5.0f;
+    float m_framedFar = 1000.0f;
 };
 
 } // namespace DeepLux

@@ -62,6 +62,25 @@ bool TiffLoader::load(const QString& filePath, PointCloudData& outData, QString&
     }
 
     qDebug() << "TiffLoader: loaded" << outData.points.size() << "points from" << filePath;
+
+    // Z 轴归一化缩放：使地形深度与 XY 范围成比例
+    if (!outData.points.empty() && outData.points.size() > 1) {
+        double zMin = outData.points[0].z(), zMax = zMin;
+        for (auto& p : outData.points) {
+            if (p.z() < zMin) zMin = p.z();
+            if (p.z() > zMax) zMax = p.z();
+        }
+        double zRange = zMax - zMin;
+        double xySpan = std::min(img.cols * config.scaleX, img.rows * config.scaleY);
+        if (zRange > 0 && xySpan > 0) {
+            double targetScale = xySpan * 0.3 / zRange;
+            double scaleZ = targetScale * config.scaleZ;
+            for (auto& p : outData.points) {
+                p.z() *= scaleZ;
+            }
+        }
+    }
+
     return !outData.points.empty();
 #else
     Q_UNUSED(filePath); Q_UNUSED(outData); Q_UNUSED(config);
