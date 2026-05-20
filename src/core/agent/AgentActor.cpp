@@ -214,50 +214,20 @@ QJsonObject AgentActor::executeTool(const QString& toolName, const QJsonObject& 
 
 QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& tools, const QString& macroName)
 {
-    {
-        QFile logFile("/tmp/deeplux_agent_diag.log");
-        logFile.open(QIODevice::WriteOnly | QIODevice::Append);
-        logFile.write(QString("[DIAG] executeTools called, tools=%1 macro=%2\n").arg(tools.size()).arg(macroName).toUtf8());
-        logFile.close();
-    }
-    qDebug() << "[DIAG] executeTools called, tools=" << tools.size() << "macro=" << macroName;
     if (tools.isEmpty()) return QJsonObject{{"error", "No tools to execute"}};
 
     m_undoStack->beginMacro(macroName);
 
     QJsonArray results;
     for (const auto& pair : tools) {
-        qDebug() << "[DIAG] executeTools: executing" << pair.first;
-        {
-            QFile logFile("/tmp/deeplux_agent_diag.log");
-            logFile.open(QIODevice::WriteOnly | QIODevice::Append);
-            logFile.write(QString("[DIAG] executeTools: executing %1\n").arg(pair.first).toUtf8());
-            logFile.close();
-        }
         QJsonObject result = executeTool(pair.first, pair.second);
-        qDebug() << "[DIAG] executeTools:" << pair.first << "result=" << result;
-        {
-            QFile logFile("/tmp/deeplux_agent_diag.log");
-            logFile.open(QIODevice::WriteOnly | QIODevice::Append);
-            logFile.write(QString("[DIAG] executeTools: %1 result=%2\n").arg(pair.first).arg(QString(QJsonDocument(result).toJson(QJsonDocument::Compact))).toUtf8());
-            logFile.close();
-        }
         QJsonObject entry;
         entry["tool"] = pair.first;
         entry["result"] = result;
         results.append(entry);
-        // 允许 UI 更新，但排除用户输入事件避免重入
-        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
     }
 
     m_undoStack->endMacro();
-    qDebug() << "[DIAG] executeTools finished";
-    {
-        QFile logFile("/tmp/deeplux_agent_diag.log");
-        logFile.open(QIODevice::WriteOnly | QIODevice::Append);
-        logFile.write(QString("[DIAG] executeTools finished\n").toUtf8());
-        logFile.close();
-    }
 
     return QJsonObject{{"status", "completed"}, {"results", results}};
 }
@@ -417,39 +387,21 @@ QJsonObject AgentActor::getModuleParamsSchema(const QJsonObject& params)
         return schemaCache[inst->moduleId];
     }
 
-    auto diag = [](const QString& msg) {
-        QFile f("/tmp/deeplux_agent_diag.log");
-        f.open(QIODevice::WriteOnly | QIODevice::Append);
-        f.write(QString("[DIAG-AA] %1\n").arg(msg).toUtf8());
-        f.close();
-        qDebug() << "[DIAG-AA]" << msg;
-    };
-    diag(QString("getModuleParamsSchema: cache miss, creating module %1").arg(inst->moduleId));
     // Create a temporary module instance to get default params
+    // NOTE: createModule returns a shared instance managed by QPluginLoader, do not delete
     IModule* mod = pm.createModule(inst->moduleId);
     if (!mod) {
-        diag(QString("getModuleParamsSchema: createModule failed %1").arg(inst->moduleId));
         return QJsonObject{{"error", QString("Cannot create module: %1").arg(inst->moduleId)}};
     }
-    diag(QString("getModuleParamsSchema: createModule succeeded, ptr=%1").arg(reinterpret_cast<quintptr>(mod)));
 
     QJsonObject schema;
     schema["moduleId"] = inst->moduleId;
-    diag("getModuleParamsSchema: about to call mod->name()");
     schema["name"] = mod->name();
-    diag(QString("getModuleParamsSchema: name=%1").arg(schema["name"].toString()));
-    diag("getModuleParamsSchema: about to call mod->description()");
     schema["description"] = mod->description();
-    diag("getModuleParamsSchema: about to call mod->defaultParams()");
     schema["defaultParams"] = mod->defaultParams();
-    diag("getModuleParamsSchema: defaultParams done");
     schema["currentParams"] = inst->params;
 
     schemaCache[inst->moduleId] = schema;
-    diag("getModuleParamsSchema: schema cached");
-    // NOTE: createFreshModule 返回的是 PluginManager 缓存的共享实例，
-    // 生命周期由 QPluginLoader 管理，调用方不得 delete。
-    diag("getModuleParamsSchema: returning schema");
     return schema;
 }
 

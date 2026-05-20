@@ -16,7 +16,6 @@
 #include <QPixmap>
 #include <QBuffer>
 
-#include <QFile>
 #include <QDebug>
 
 namespace DeepLux {
@@ -211,11 +210,6 @@ void AgentController::onLLMResponse(const AgentResponse& resp) {
 // ========== Tool Confirm (通过 QueuedConnection 入队，避免阻塞按钮信号链) ==========
 
 void AgentController::confirmPendingTools() {
-    QFile logFile("/tmp/deeplux_agent_diag.log");
-    logFile.open(QIODevice::WriteOnly | QIODevice::Append);
-    logFile.write(QString("[DIAG] confirmPendingTools called, state=%1\n").arg(stateName(m_state)).toUtf8());
-    logFile.close();
-    qDebug() << "[DIAG] confirmPendingTools called, state=" << stateName(m_state);
     if (m_state != AgentState::Confirming) {
         qWarning() << "[AgentController] confirmPendingTools called in state" << stateName(m_state);
         return;
@@ -231,11 +225,6 @@ void AgentController::confirmPendingTools() {
 }
 
 void AgentController::doConfirmPendingTools(QJsonArray calls) {
-    QFile logFile("/tmp/deeplux_agent_diag.log");
-    logFile.open(QIODevice::WriteOnly | QIODevice::Append);
-    logFile.write(QString("[DIAG] doConfirmPendingTools called, state=%1 calls=%2\n").arg(stateName(m_state)).arg(calls.size()).toUtf8());
-    logFile.close();
-    qDebug() << "[DIAG] doConfirmPendingTools called, state=" << stateName(m_state) << "calls=" << calls.size();
     if (m_state != AgentState::Confirming) {
         qWarning() << "[AgentController] doConfirmPendingTools: state changed to" << stateName(m_state);
         return;
@@ -282,22 +271,8 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
     }
 
     // 批量执行
-    qDebug() << "[DIAG] extendAgentLoop: executing" << tools.size() << "tool(s)";
-    {
-        QFile logFile("/tmp/deeplux_agent_diag.log");
-        logFile.open(QIODevice::WriteOnly | QIODevice::Append);
-        logFile.write(QString("[DIAG] extendAgentLoop: executing %1 tool(s)\n").arg(tools.size()).toUtf8());
-        logFile.close();
-    }
     QJsonObject batchResult = m_actor->executeTools(tools,
         QString("Agent turn %1").arg(m_agentTurnCount));
-    qDebug() << "[DIAG] extendAgentLoop: executeTools returned" << batchResult;
-    {
-        QFile logFile("/tmp/deeplux_agent_diag.log");
-        logFile.open(QIODevice::WriteOnly | QIODevice::Append);
-        logFile.write(QString("[DIAG] extendAgentLoop: executeTools returned\n").toUtf8());
-        logFile.close();
-    }
 
     // 拆分每个 tool 结果，每条 tool call 对应一条独立的 tool role message（OpenAI 要求）
     QJsonArray resultsArray = batchResult["results"].toArray();
@@ -313,13 +288,6 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
         QString("[AgentLoop] Executed %1 tool(s)").arg(resultsArray.size()), LogLevel::Debug, "Agent");
 
     // 🔁 继续 LLM 请求
-    qDebug() << "[DIAG] extendAgentLoop: sending LLM request";
-    {
-        QFile logFile("/tmp/deeplux_agent_diag.log");
-        logFile.open(QIODevice::WriteOnly | QIODevice::Append);
-        logFile.write(QString("[DIAG] extendAgentLoop: sending LLM request\n").toUtf8());
-        logFile.close();
-    }
     emit agentLoopIterating();
     if (!m_llmClient) {
         transitionTo(AgentState::Idle);
