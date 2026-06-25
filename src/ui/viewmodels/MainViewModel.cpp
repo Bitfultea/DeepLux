@@ -1,22 +1,21 @@
 #include "MainViewModel.h"
+
+#include "../core/engine/RunEngine.h"
 #include "../core/manager/ProjectManager.h"
 #include "../core/model/Project.h"
-#include <QTimer>
+
 #include <QDateTime>
 #include <QFileInfo>
+#include <QTimer>
 
 namespace DeepLux {
 
-MainViewModel& MainViewModel::instance()
-{
+MainViewModel& MainViewModel::instance() {
     static MainViewModel instance;
     return instance;
 }
 
-MainViewModel::MainViewModel()
-    : QObject(nullptr)
-    , m_timer(new QTimer(this))
-{
+MainViewModel::MainViewModel() : QObject(nullptr), m_timer(new QTimer(this)) {
     m_currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
 
     connect(m_timer, &QTimer::timeout, this, &MainViewModel::updateCurrentTime);
@@ -48,17 +47,13 @@ MainViewModel::MainViewModel()
     });
 }
 
-MainViewModel::~MainViewModel()
-{
-}
+MainViewModel::~MainViewModel() {}
 
-QString MainViewModel::currentTime() const
-{
+QString MainViewModel::currentTime() const {
     return m_currentTime;
 }
 
-QString MainViewModel::projectName() const
-{
+QString MainViewModel::projectName() const {
     if (!m_projectName.isEmpty()) {
         return m_projectName;
     }
@@ -69,8 +64,7 @@ QString MainViewModel::projectName() const
     return QString();
 }
 
-bool MainViewModel::isModified() const
-{
+bool MainViewModel::isModified() const {
     ProjectManager& pm = ProjectManager::instance();
     if (pm.currentProject()) {
         return pm.currentProject()->isModified();
@@ -78,8 +72,7 @@ bool MainViewModel::isModified() const
     return m_modified;
 }
 
-void MainViewModel::newProject()
-{
+void MainViewModel::newProject() {
     ProjectManager& pm = ProjectManager::instance();
     Project* project = pm.newProject();
     if (project) {
@@ -91,8 +84,7 @@ void MainViewModel::newProject()
     }
 }
 
-bool MainViewModel::openProject(const QString& path)
-{
+bool MainViewModel::openProject(const QString& path) {
     if (path.isEmpty()) {
         emit errorOccurred("Invalid path");
         return false;
@@ -112,9 +104,13 @@ bool MainViewModel::openProject(const QString& path)
     }
 }
 
-bool MainViewModel::saveProject(const QString& path)
-{
+bool MainViewModel::saveProject(const QString& path) {
     ProjectManager& pm = ProjectManager::instance();
+
+    if (!pm.hasProject()) {
+        emit errorOccurred("No project to save");
+        return false;
+    }
 
     QString savePath = path.isEmpty() ? m_projectPath : path;
     if (savePath.isEmpty()) {
@@ -122,13 +118,7 @@ bool MainViewModel::saveProject(const QString& path)
         return false;
     }
 
-    bool success;
-    if (pm.hasProject()) {
-        success = pm.saveProject(savePath);
-    } else {
-        success = pm.saveAsProject(savePath);
-    }
-
+    bool success = pm.saveProject(savePath);
     if (success) {
         m_projectPath = savePath;
         emit projectSaved();
@@ -138,18 +128,27 @@ bool MainViewModel::saveProject(const QString& path)
     return success;
 }
 
-void MainViewModel::runProject()
-{
-    emit errorOccurred("Run function not yet implemented");
+void MainViewModel::runProject() {
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project) {
+        emit errorOccurred("No project to run");
+        return;
+    }
+
+    RunEngine& engine = RunEngine::instance();
+    if (!engine.loadProject(project)) {
+        emit errorOccurred(tr("Failed to load project into run engine"));
+        return;
+    }
+
+    engine.runOnce();
 }
 
-void MainViewModel::stopProject()
-{
-    emit errorOccurred("Stop function not yet implemented");
+void MainViewModel::stopProject() {
+    RunEngine::instance().stop();
 }
 
-void MainViewModel::updateCurrentTime()
-{
+void MainViewModel::updateCurrentTime() {
     m_currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
     emit currentTimeChanged();
 }

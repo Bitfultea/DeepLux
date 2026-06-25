@@ -29,7 +29,7 @@ public:
     explicit PropertyPanel(QWidget* parent = nullptr);
     ~PropertyPanel() override;
 
-    void setModule(IModule* module);
+    void setModule(IModule* module, const QString& instanceId = QString());
     void clear();
     
     QString currentModuleId() const { return m_currentModuleId; }

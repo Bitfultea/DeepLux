@@ -1,30 +1,27 @@
 #include "AgentController.h"
-#include "AgentObserver.h"
+
 #include "AgentActor.h"
-#include "GuiEvent.h"
 #include "AgentBridge.h"
-#include "ToolSchema.h"
+#include "AgentObserver.h"
+#include "GuiEvent.h"
 #include "ILLMClient.h"
+#include "ToolSchema.h"
 #include "common/Logger.h"
+#include "engine/RunEngine.h"
 #include "manager/ConfigManager.h"
 #include "manager/ProjectManager.h"
-#include "engine/RunEngine.h"
 #include "model/Project.h"
 
-#include <QJsonDocument>
-#include <QJsonArray>
-#include <QPixmap>
 #include <QBuffer>
-
 #include <QDebug>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QPixmap>
 
 namespace DeepLux {
 
 AgentController::AgentController(QObject* parent)
-    : QObject(parent)
-    , m_observer(new AgentObserver(this))
-    , m_actor(new AgentActor(this))
-{}
+    : QObject(parent), m_observer(new AgentObserver(this)), m_actor(new AgentActor(this)) {}
 
 AgentController::~AgentController() = default;
 
@@ -34,7 +31,8 @@ AgentController& AgentController::instance() {
 }
 
 bool AgentController::initialize() {
-    if (m_initialized) return true;
+    if (m_initialized)
+        return true;
     ToolSchema::instance().registerDefaultTools();
     if (!m_observer->initialize()) {
         qWarning() << "AgentController: Failed to initialize AgentObserver";
@@ -43,31 +41,37 @@ bool AgentController::initialize() {
     connect(m_observer, &AgentObserver::guiEventOccurred, this, &AgentController::onGuiEvent);
     AgentBridge::instance().setToolCallCallback(
         [this](const QString& n, const QJsonObject& p) { return handleToolCall(n, p); });
-    connect(m_actor, &AgentActor::toolExecuted, this, [this](const QString& t, const QJsonObject& r) {
-        emit agentActionCompleted(t, r); });
+    connect(m_actor, &AgentActor::toolExecuted, this,
+            [this](const QString& t, const QJsonObject& r) { emit agentActionCompleted(t, r); });
     connect(m_actor, &AgentActor::toolError, this, [this](const QString& t, const QString& e) {
-        emit agentActionCompleted(t, {{"error", e}}); });
+        emit agentActionCompleted(t, {{"error", e}});
+    });
     m_systemPrompt = ConfigManager::instance().groupString("agent", "systemPrompt", defaultSystemPrompt());
     m_initialized = true;
     return true;
 }
 
 void AgentController::shutdown() {
-    if (!m_initialized) return;
+    if (!m_initialized)
+        return;
     AgentBridge::instance().setToolCallCallback(nullptr);
-    if (m_observer) m_observer->shutdown();
-    if (m_llmClient) disconnect(m_llmClient, nullptr, this, nullptr);
+    if (m_observer)
+        m_observer->shutdown();
+    if (m_llmClient)
+        disconnect(m_llmClient, nullptr, this, nullptr);
     m_initialized = false;
 }
 
 void AgentController::setPermissionLevel(PermissionLevel level) {
-    if (m_permissionLevel == level) return;
+    if (m_permissionLevel == level)
+        return;
     m_permissionLevel = level;
     emit permissionLevelChanged(level);
 }
 
 void AgentController::setLLMClient(ILLMClient* client) {
-    if (m_llmClient) disconnect(m_llmClient, nullptr, this, nullptr);
+    if (m_llmClient)
+        disconnect(m_llmClient, nullptr, this, nullptr);
     m_llmClient = client;
     if (m_llmClient) {
         connect(m_llmClient, &ILLMClient::responseReceived, this, &AgentController::onLLMResponse);
@@ -75,7 +79,9 @@ void AgentController::setLLMClient(ILLMClient* client) {
     }
 }
 
-void AgentController::logAction(const AgentActionLogEntry& entry) { emit actionLogEntryAdded(entry); }
+void AgentController::logAction(const AgentActionLogEntry& entry) {
+    emit actionLogEntryAdded(entry);
+}
 
 void AgentController::clearConversation() {
     m_conversationHistory.clear();
@@ -87,17 +93,22 @@ void AgentController::clearConversation() {
 // ========== State Machine ==========
 
 void AgentController::transitionTo(AgentState newState) {
-    if (m_state == newState) return;
+    if (m_state == newState)
+        return;
     qDebug() << "[AgentState]" << stateName(m_state) << "->" << stateName(newState);
     m_state = newState;
 }
 
 QString AgentController::stateName(AgentState state) {
     switch (state) {
-    case AgentState::Idle:       return "Idle";
-    case AgentState::Thinking:   return "Thinking";
-    case AgentState::Confirming: return "Confirming";
-    case AgentState::Executing:  return "Executing";
+    case AgentState::Idle:
+        return "Idle";
+    case AgentState::Thinking:
+        return "Thinking";
+    case AgentState::Confirming:
+        return "Confirming";
+    case AgentState::Executing:
+        return "Executing";
     }
     return "Unknown";
 }
@@ -109,14 +120,15 @@ QString AgentController::buildContext() {
     Project* proj = ProjectManager::instance().currentProject();
     if (proj) {
         ctx += QString("\n\n## Current State\n- Project: %1\n- Modules (%2): ")
-            .arg(proj->name()).arg(proj->modules().size());
+                   .arg(proj->name())
+                   .arg(proj->modules().size());
         QStringList modNames;
         for (const ModuleInstance& m : proj->modules())
             modNames.append(QString("%1(id=%2)").arg(m.moduleId).arg(m.id));
         ctx += modNames.join(", ");
         ctx += QString("\n- Connections: %1\n- RunEngine: %2\n")
-            .arg(proj->connections().size())
-            .arg(RunEngine::instance().isRunning() ? "Running" : "Idle");
+                   .arg(proj->connections().size())
+                   .arg(RunEngine::instance().isRunning() ? "Running" : "Idle");
     } else {
         ctx += "\n\n## Current State\n- No project opened.\n";
     }
@@ -132,14 +144,21 @@ QString AgentController::buildContext() {
 // ========== User Input ==========
 
 void AgentController::sendUserMessage(const QString& message) {
-    if (!m_llmClient) { emit llmErrorOccurred("LLM client not configured"); return; }
+    if (!m_llmClient) {
+        emit llmErrorOccurred("LLM client not configured");
+        return;
+    }
     if (m_state != AgentState::Idle) {
         emit llmResponseReceived("Agent is busy processing a previous request. Please wait.", {});
         return;
     }
     transitionTo(AgentState::Thinking);
-    AgentMessage m; m.role = "user"; m.content = message;
-    m_conversationHistory.append(m); trimHistoryIfNeeded(); m_agentTurnCount = 0;
+    AgentMessage m;
+    m.role = "user";
+    m.content = message;
+    m_conversationHistory.append(m);
+    trimHistoryIfNeeded();
+    m_agentTurnCount = 0;
     AgentConversation ctx;
     ctx.messages = m_conversationHistory;
     ctx.systemPrompt = buildContext();
@@ -147,7 +166,10 @@ void AgentController::sendUserMessage(const QString& message) {
 }
 
 void AgentController::sendUserMessageWithImages(const QString& message, const QList<QPixmap>& images) {
-    if (!m_llmClient) { emit llmErrorOccurred("LLM client not configured"); return; }
+    if (!m_llmClient) {
+        emit llmErrorOccurred("LLM client not configured");
+        return;
+    }
     if (m_state != AgentState::Idle) {
         emit llmResponseReceived("Agent is busy processing a previous request. Please wait.", {});
         return;
@@ -156,14 +178,19 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
 
     // DeepSeek 不支持 vision API (image_url 格式), 图片转为文本描述
     QString actualMessage = message;
-    if (!message.isEmpty()) actualMessage += "\n\n";
+    if (!message.isEmpty())
+        actualMessage += "\n\n";
     actualMessage += QString("[User attached %1 image(s). Describe what you see or ask the user to describe them. "
-                              "If you need vision capabilities, switch to a multimodal model like gpt-4o or claude.]")
-                              .arg(images.size());
+                             "If you need vision capabilities, switch to a multimodal model like gpt-4o or claude.]")
+                         .arg(images.size());
 
-    AgentMessage msg; msg.role = "user"; msg.content = actualMessage;
+    AgentMessage msg;
+    msg.role = "user";
+    msg.content = actualMessage;
     // 不填充 msg.images — DeepSeek 不支持 image_url
-    m_conversationHistory.append(msg); trimHistoryIfNeeded(); m_agentTurnCount = 0;
+    m_conversationHistory.append(msg);
+    trimHistoryIfNeeded();
+    m_agentTurnCount = 0;
     AgentConversation ctx;
     ctx.messages = m_conversationHistory;
     ctx.systemPrompt = buildContext();
@@ -178,10 +205,13 @@ void AgentController::onLLMResponse(const AgentResponse& resp) {
         return;
     }
 
-    AgentMessage am; am.role = "assistant"; am.content = resp.content;
+    AgentMessage am;
+    am.role = "assistant";
+    am.content = resp.content;
     am.toolCalls = resp.toolCalls;
     am.reasoningContent = resp.reasoningContent;
-    m_conversationHistory.append(am); trimHistoryIfNeeded();
+    m_conversationHistory.append(am);
+    trimHistoryIfNeeded();
 
     if (!resp.toolCalls.isEmpty()) {
         if (m_permissionLevel == PermissionLevel::Observer) {
@@ -252,17 +282,26 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
         return;
     }
     // 解析 tool_calls
-    QList<QPair<QString, QJsonObject>> tools; QList<QString> ids;
+    QList<QPair<QString, QJsonObject>> tools;
+    QList<QString> ids;
     for (const QJsonValue& v : toolCalls) {
-        QJsonObject tc = v.toObject(); QString tid = tc["id"].toString();
-        QString name = tc["name"].toString(); QJsonObject params = tc["arguments"].toObject();
+        QJsonObject tc = v.toObject();
+        QString tid = tc["id"].toString();
+        QString name = tc["name"].toString();
+        QJsonObject params = tc["arguments"].toObject();
         if (name.isEmpty()) {
-            QJsonObject func = tc["function"].toObject(); name = func["name"].toString();
+            QJsonObject func = tc["function"].toObject();
+            name = func["name"].toString();
             QJsonValue av = func["arguments"];
-            if (av.isString()) params = QJsonDocument::fromJson(av.toString().toUtf8()).object();
-            else if (av.isObject()) params = av.toObject();
+            if (av.isString())
+                params = QJsonDocument::fromJson(av.toString().toUtf8()).object();
+            else if (av.isObject())
+                params = av.toObject();
         }
-        if (!name.isEmpty()) { tools.append({name, params}); ids.append(tid); }
+        if (!name.isEmpty()) {
+            tools.append({name, params});
+            ids.append(tid);
+        }
     }
     if (tools.isEmpty()) {
         transitionTo(AgentState::Idle);
@@ -271,21 +310,22 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
     }
 
     // 批量执行
-    QJsonObject batchResult = m_actor->executeTools(tools,
-        QString("Agent turn %1").arg(m_agentTurnCount));
+    QJsonObject batchResult = m_actor->executeTools(tools, QString("Agent turn %1").arg(m_agentTurnCount));
 
     // 拆分每个 tool 结果，每条 tool call 对应一条独立的 tool role message（OpenAI 要求）
     QJsonArray resultsArray = batchResult["results"].toArray();
     for (int i = 0; i < resultsArray.size() && i < ids.size(); ++i) {
-        AgentMessage tm; tm.role = "tool"; tm.toolCallId = ids[i];
-        tm.content = QString(QJsonDocument(resultsArray[i].toObject()["result"].toObject())
-            .toJson(QJsonDocument::Compact));
+        AgentMessage tm;
+        tm.role = "tool";
+        tm.toolCallId = ids[i];
+        tm.content =
+            QString(QJsonDocument(resultsArray[i].toObject()["result"].toObject()).toJson(QJsonDocument::Compact));
         m_conversationHistory.append(tm);
     }
     trimHistoryIfNeeded();
 
-    Logger::instance().addLog(
-        QString("[AgentLoop] Executed %1 tool(s)").arg(resultsArray.size()), LogLevel::Debug, "Agent");
+    Logger::instance().addLog(QString("[AgentLoop] Executed %1 tool(s)").arg(resultsArray.size()), LogLevel::Debug,
+                              "Agent");
 
     // 🔁 继续 LLM 请求
     emit agentLoopIterating();
@@ -306,40 +346,56 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
 void AgentController::trimHistoryIfNeeded() {
     // 粗略估计: 每字符 ≈ 0.3 token (中英文混合)，每消息 overhead ≈ 20 tokens
     // 目标: 不超过模型 context window 的 80% (128K * 0.8 ≈ 100K)
+    constexpr int maxHistoryMessages = 15;
     constexpr int maxEstTokens = 256000;
-    int estimated = 0;
-    for (const auto& m : m_conversationHistory) {
-        estimated += m.content.length() * 0.3 + 20;
-        if (!m.reasoningContent.isEmpty()) estimated += m.reasoningContent.length() * 0.3;
-    }
-    // 加上 system prompt
-    estimated += m_systemPrompt.length() * 0.3;
 
-    // 以完整轮次为单位从头部裁剪
-    while (estimated > maxEstTokens) {
-        int secondUserIdx = -1;
+    auto estimateHistoryTokens = [this]() {
+        int estimated = 0;
+        for (const auto& m : m_conversationHistory) {
+            estimated += m.content.length() * 0.3 + 20;
+            if (!m.reasoningContent.isEmpty())
+                estimated += m.reasoningContent.length() * 0.3;
+        }
+        // 加上 system prompt
+        estimated += m_systemPrompt.length() * 0.3;
+        return estimated;
+    };
+
+    auto secondUserIndex = [this]() {
         int userCount = 0;
         for (int i = 0; i < m_conversationHistory.size(); ++i) {
             if (m_conversationHistory[i].role == "user" && ++userCount == 2) {
-                secondUserIdx = i; break;
+                return i;
             }
         }
+        return -1;
+    };
+
+    auto trimLeadingPartialTurn = [this]() {
+        while (!m_conversationHistory.isEmpty() && m_conversationHistory.first().role != "user") {
+            m_conversationHistory.removeFirst();
+        }
+    };
+
+    trimLeadingPartialTurn();
+    int estimated = estimateHistoryTokens();
+
+    // 以完整轮次为单位从头部裁剪
+    while (m_conversationHistory.size() > maxHistoryMessages || estimated > maxEstTokens) {
+        const int secondUserIdx = secondUserIndex();
         if (secondUserIdx > 1) {
-            int removed = 0;
-            for (int i = 0; i < secondUserIdx; ++i)
-                removed += m_conversationHistory[i].content.length() * 0.3 + 20;
             m_conversationHistory = m_conversationHistory.mid(secondUserIdx);
-            estimated -= removed;
+            trimLeadingPartialTurn();
+            estimated = estimateHistoryTokens();
         } else {
-            break;  // 仅剩一轮, 无法裁剪
+            break; // 仅剩一轮, 无法裁剪
         }
     }
 }
 
 void AgentController::onGuiEvent(const GuiEvent& event) {
-    Logger::instance().addLog(
-        QString("[AgentObserver] %1 from %2").arg(event.typeString()).arg(event.source),
-        LogLevel::Debug, "Agent");
+    Logger::instance().addLog(QString("[AgentObserver] %1 from %2").arg(event.typeString()).arg(event.source),
+                              LogLevel::Debug, "Agent");
 }
 
 QJsonObject AgentController::handleToolCall(const QString& toolName, const QJsonObject& params) {
@@ -347,8 +403,7 @@ QJsonObject AgentController::handleToolCall(const QString& toolName, const QJson
         return {{"error", "Agent is busy processing another request"}};
     if (m_permissionLevel == PermissionLevel::Observer)
         return {{"error", "Permission denied: Observer mode"}};
-    Logger::instance().addLog(
-        QString("[ToolCall] %1").arg(toolName), LogLevel::Info, "Agent");
+    Logger::instance().addLog(QString("[ToolCall] %1").arg(toolName), LogLevel::Info, "Agent");
     emit agentActionReceived(toolName, params);
     QJsonObject result = m_actor->executeTool(toolName, params);
     AgentActionLogEntry e;
@@ -382,10 +437,10 @@ QString AgentController::defaultSystemPrompt() {
         "   Never call get_flow_state again without creating a project — it will keep returning the same error.\n"
         "2. Always use tools, never describe pseudo-code.\n"
         "3. When you have completed all the user's requests, respond in plain text (no more tool calls).\n"
-        "4. If the user only asked a question or gave a simple instruction that is already fulfilled, do NOT call additional tools just to verify — respond directly.\n"
+        "4. If the user only asked a question or gave a simple instruction that is already fulfilled, do NOT call "
+        "additional tools just to verify — respond directly.\n"
         "5. Use read_documentation when unsure about module parameters.\n"
-        "6. Be concise. Industrial users prefer direct answers.\n"
-    );
+        "6. Be concise. Industrial users prefer direct answers.\n");
 }
 
 } // namespace DeepLux

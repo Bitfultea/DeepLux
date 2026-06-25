@@ -50,7 +50,7 @@ logs/
 
 # DeepLux binary
 DeepLux
-test_*
+/test_*
 
 # Settings (local only)
 .claude/settings.local.json

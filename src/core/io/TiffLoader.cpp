@@ -1,7 +1,8 @@
 #include "TiffLoader.h"
 
-#include <QString>
 #include <QDebug>
+#include <QString>
+#include <algorithm>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -9,8 +10,7 @@
 
 namespace DeepLux {
 
-bool TiffLoader::load(const QString& filePath, PointCloudData& outData, QString& errorMsg,
-                       const Config& config) {
+bool TiffLoader::load(const QString& filePath, PointCloudData& outData, QString& errorMsg, const Config& config) {
 #ifdef DEEPLUX_HAS_OPENCV
     cv::Mat img = cv::imread(filePath.toStdString(), cv::IMREAD_UNCHANGED);
     if (img.empty()) {
@@ -37,23 +37,67 @@ bool TiffLoader::load(const QString& filePath, PointCloudData& outData, QString&
 
             if (channels == 1) {
                 switch (depth) {
-                case CV_8U:  z = img.at<uchar>(y, x); break;
-                case CV_16U: z = img.at<ushort>(y, x); break;
-                case CV_32F: z = img.at<float>(y, x); break;
-                default:     z = 0;
+                case CV_8U:
+                    z = img.at<uchar>(y, x);
+                    break;
+                case CV_16U:
+                    z = img.at<ushort>(y, x);
+                    break;
+                case CV_32F:
+                    z = img.at<float>(y, x);
+                    break;
+                default:
+                    z = 0;
                 }
             } else if (channels >= 3) {
-                cv::Vec3b bgr = img.at<cv::Vec3b>(y, x);
+                const int offset = x * channels;
+                double b = 0;
+                double g = 0;
+                double r = 0;
+                double colorMax = 1.0;
+
+                switch (depth) {
+                case CV_8U: {
+                    const uchar* row = img.ptr<uchar>(y);
+                    b = row[offset];
+                    g = row[offset + 1];
+                    r = row[offset + 2];
+                    colorMax = 255.0;
+                    break;
+                }
+                case CV_16U: {
+                    const ushort* row = img.ptr<ushort>(y);
+                    b = row[offset];
+                    g = row[offset + 1];
+                    r = row[offset + 2];
+                    colorMax = 65535.0;
+                    break;
+                }
+                case CV_32F: {
+                    const float* row = img.ptr<float>(y);
+                    b = row[offset];
+                    g = row[offset + 1];
+                    r = row[offset + 2];
+                    break;
+                }
+                case CV_64F: {
+                    const double* row = img.ptr<double>(y);
+                    b = row[offset];
+                    g = row[offset + 1];
+                    r = row[offset + 2];
+                    break;
+                }
+                default:
+                    break;
+                }
+
                 // Greyscale approximation from RGB
-                z = 0.299 * bgr[2] + 0.587 * bgr[1] + 0.114 * bgr[0];
-                color = Eigen::Vector3d(bgr[2] / 255.0, bgr[1] / 255.0, bgr[0] / 255.0);
+                z = 0.299 * r + 0.587 * g + 0.114 * b;
+                color = Eigen::Vector3d(std::clamp(r / colorMax, 0.0, 1.0), std::clamp(g / colorMax, 0.0, 1.0),
+                                        std::clamp(b / colorMax, 0.0, 1.0));
             }
 
-            outData.points.push_back(Eigen::Vector3d(
-                x * config.scaleX,
-                y * config.scaleY,
-                z * config.scaleZ
-            ));
+            outData.points.push_back(Eigen::Vector3d(x * config.scaleX, y * config.scaleY, z * config.scaleZ));
 
             if (channels >= 3) {
                 outData.colors.push_back(color);
@@ -67,8 +111,10 @@ bool TiffLoader::load(const QString& filePath, PointCloudData& outData, QString&
     if (!outData.points.empty() && outData.points.size() > 1) {
         double zMin = outData.points[0].z(), zMax = zMin;
         for (auto& p : outData.points) {
-            if (p.z() < zMin) zMin = p.z();
-            if (p.z() > zMax) zMax = p.z();
+            if (p.z() < zMin)
+                zMin = p.z();
+            if (p.z() > zMax)
+                zMax = p.z();
         }
         double zRange = zMax - zMin;
         double xySpan = std::min(img.cols * config.scaleX, img.rows * config.scaleY);
@@ -83,7 +129,9 @@ bool TiffLoader::load(const QString& filePath, PointCloudData& outData, QString&
 
     return !outData.points.empty();
 #else
-    Q_UNUSED(filePath); Q_UNUSED(outData); Q_UNUSED(config);
+    Q_UNUSED(filePath);
+    Q_UNUSED(outData);
+    Q_UNUSED(config);
     errorMsg = "OpenCV not available (DEEPLUX_HAS_OPENCV not defined)";
     return false;
 #endif

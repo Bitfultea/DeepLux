@@ -1,17 +1,18 @@
 #pragma once
 
-#include <QObject>
-#include <QTimer>
-#include <QList>
-#include <QDateTime>
-#include <QMap>
-#include <QStack>
-#include <QMutex>
-#include <QWaitCondition>
-#include <QSet>
-
 #include "deeplux/ControlFlowType.h"
 #include "model/ImageData.h"
+
+#include <QDateTime>
+#include <QList>
+#include <QMap>
+#include <QMutex>
+#include <QObject>
+#include <QSet>
+#include <QStack>
+#include <QTimer>
+#include <QWaitCondition>
+#include <functional>
 
 namespace DeepLux {
 class CancellationToken;
@@ -20,15 +21,17 @@ class CancellationToken;
 namespace DeepLux {
 
 class ModuleBase;
+class Project;
+struct ModuleInstance;
 
 /**
  * @brief 运行状态
  */
 enum class RunState {
-    Idle,       // 空闲
-    Running,    // 运行中
-    Paused,     // 已暂停
-    Stopped     // 已停止
+    Idle,    // 空闲
+    Running, // 运行中
+    Paused,  // 已暂停
+    Stopped  // 已停止
 };
 
 /**
@@ -36,8 +39,8 @@ enum class RunState {
  */
 enum class RunMode {
     None,
-    RunOnce,    // 单次运行
-    RunCycle    // 连续运行
+    RunOnce, // 单次运行
+    RunCycle // 连续运行
 };
 
 /**
@@ -54,8 +57,7 @@ struct RunResult {
 /**
  * @brief 模块树节点 - 用于流程控制
  */
-class ModuleTreeNode
-{
+class ModuleTreeNode {
 public:
     QString moduleName;
     ModuleTreeNode* parent = nullptr;
@@ -67,22 +69,35 @@ public:
 /**
  * @brief 流程运行引擎
  */
-class RunEngine : public QObject
-{
+class RunEngine : public QObject {
     Q_OBJECT
 
 public:
     static RunEngine& instance();
 
+    using ModuleFactory = std::function<ModuleBase*(const ModuleInstance&)>;
+
     // 运行状态
-    RunState state() const { return m_state; }
-    bool isRunning() const { return m_state == RunState::Running; }
-    bool isPaused() const { return m_state == RunState::Paused; }
-    bool isStopped() const { return m_state == RunState::Stopped; }
+    RunState state() const {
+        return m_state;
+    }
+    bool isRunning() const {
+        return m_state == RunState::Running;
+    }
+    bool isPaused() const {
+        return m_state == RunState::Paused;
+    }
+    bool isStopped() const {
+        return m_state == RunState::Stopped;
+    }
 
     // 运行模式
-    RunMode runMode() const { return m_runMode; }
-    bool isCycleMode() const { return m_runMode == RunMode::RunCycle; }
+    RunMode runMode() const {
+        return m_runMode;
+    }
+    bool isCycleMode() const {
+        return m_runMode == RunMode::RunCycle;
+    }
     void setCycleMode(bool enabled);
 
     // 运行控制
@@ -94,9 +109,12 @@ public:
 
     // 模块管理
     void addModule(ModuleBase* module);
+    bool loadProject(Project* project, ModuleFactory factory = ModuleFactory());
     void removeModule(const QString& moduleId);
     void clearModules();
-    QList<ModuleBase*> modules() const { return m_modules; }
+    QList<ModuleBase*> modules() const {
+        return m_modules;
+    }
     ModuleBase* getModule(const QString& moduleName) const;
     int getModuleIndex(const QString& moduleName) const;
 
@@ -107,24 +125,44 @@ public:
     void clearOutputs();
 
     // 流水线输出（供 UI 在 moduleFinished 后查询显示数据）
-    const ImageData& lastOutput() const { return m_lastOutput; }
+    const ImageData& lastOutput() const {
+        return m_lastOutput;
+    }
 
     // 运行统计
-    int totalRuns() const { return m_totalRuns; }
-    int successRuns() const { return m_successRuns; }
-    int failedRuns() const { return m_failedRuns; }
-    int lastElapsedMs() const { return m_lastElapsedMs; }
+    int totalRuns() const {
+        return m_totalRuns;
+    }
+    int successRuns() const {
+        return m_successRuns;
+    }
+    int failedRuns() const {
+        return m_failedRuns;
+    }
+    int lastElapsedMs() const {
+        return m_lastElapsedMs;
+    }
 
     // 断点控制
     void setBreakpoint(const QString& moduleName, bool enabled);
     bool hasBreakpoint(const QString& moduleName) const;
-    void setContinueFlag(bool flag) { m_continueFlag = flag; }
-    void setBreakpointFlag(bool flag) { m_breakpointFlag = flag; }
-    QWaitCondition& breakpointCondition() { return m_breakpointCondition; }
-    QMutex& breakpointMutex() { return m_breakpointMutex; }
+    void setContinueFlag(bool flag) {
+        m_continueFlag = flag;
+    }
+    void setBreakpointFlag(bool flag) {
+        m_breakpointFlag = flag;
+    }
+    QWaitCondition& breakpointCondition() {
+        return m_breakpointCondition;
+    }
+    QMutex& breakpointMutex() {
+        return m_breakpointMutex;
+    }
 
     // 取消令牌
-    CancellationToken* cancellationToken() { return m_cancellationToken; }
+    CancellationToken* cancellationToken() {
+        return m_cancellationToken;
+    }
     void requestCancellation();
 
 signals:
@@ -159,12 +197,15 @@ private:
     QString getNextSequentialModule(const QString& currentModule);
     QString findSiblingByFlowType(const QString& currentModule, ControlFlowType targetType);
     QString findPreviousByFlowType(const QString& currentModule, ControlFlowType targetType);
+    bool buildExecutionOrder(const Project* project, QString& error);
 
     RunState m_state = RunState::Idle;
     RunMode m_runMode = RunMode::None;
     QTimer* m_cycleTimer = nullptr;
     QList<ModuleBase*> m_modules;
+    QList<ModuleBase*> m_ownedModules;
     QMap<QString, ModuleBase*> m_moduleMap;
+    QStringList m_executionOrder;
 
     // 模块树结构
     QMap<QString, ModuleTreeNode*> m_moduleTreeNodes;
@@ -193,7 +234,7 @@ private:
 
     QString m_currentModuleName;
     bool m_lastExecuteResult = true;
-    ImageData m_lastOutput;   // 最后一个模块的输出，供 UI 显示
+    ImageData m_lastOutput; // 最后一个模块的输出，供 UI 显示
 
     CancellationToken* m_cancellationToken = nullptr;
 };

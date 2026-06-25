@@ -54,10 +54,11 @@ public:
             : m_instanceName;
         inst.id = m_actualInstanceId;
         inst.moduleId = m_moduleId;
-        // 获取模块的中文显示名（createModule 返回共享实例，不 delete）
+        // 获取模块的中文显示名
         DeepLux::PluginManager& pm = DeepLux::PluginManager::instance();
         DeepLux::IModule* module = pm.createModule(m_moduleId);
         QString moduleDisplayName = module ? module->name() : m_moduleId;
+        delete module;
         inst.name = m_instanceName.isEmpty() ? moduleDisplayName : m_instanceName;
         proj->addModule(inst);
     }
@@ -388,7 +389,6 @@ QJsonObject AgentActor::getModuleParamsSchema(const QJsonObject& params)
     }
 
     // Create a temporary module instance to get default params
-    // NOTE: createModule returns a shared instance managed by QPluginLoader, do not delete
     IModule* mod = pm.createModule(inst->moduleId);
     if (!mod) {
         return QJsonObject{{"error", QString("Cannot create module: %1").arg(inst->moduleId)}};
@@ -400,6 +400,7 @@ QJsonObject AgentActor::getModuleParamsSchema(const QJsonObject& params)
     schema["description"] = mod->description();
     schema["defaultParams"] = mod->defaultParams();
     schema["currentParams"] = inst->params;
+    delete mod;
 
     schemaCache[inst->moduleId] = schema;
     return schema;

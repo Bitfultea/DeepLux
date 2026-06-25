@@ -1,19 +1,20 @@
 #include "FlowCanvas.h"
+
+#include "core/manager/ProjectManager.h"
+#include "core/model/Project.h"
+
+#include <QDebug>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QGraphicsSceneMouseEvent>
 #include <QMimeData>
 #include <QPainter>
-#include <QGraphicsSceneMouseEvent>
-#include <QDebug>
 
 namespace DeepLux {
 
 // ========== FlowCanvas ==========
 
-FlowCanvas::FlowCanvas(QWidget* parent)
-    : QGraphicsView(parent)
-    , m_scene(new QGraphicsScene(this))
-{
+FlowCanvas::FlowCanvas(QWidget* parent) : QGraphicsView(parent), m_scene(new QGraphicsScene(this)) {
     setScene(m_scene);
     setRenderHint(QPainter::Antialiasing);
     setDragMode(QGraphicsView::RubberBandDrag);
@@ -24,26 +25,41 @@ FlowCanvas::FlowCanvas(QWidget* parent)
     setBackgroundBrush(QColor(45, 45, 45));
 }
 
-FlowCanvas::~FlowCanvas()
-{
+FlowCanvas::~FlowCanvas() {
     clearConnections();
     clearNodes();
 }
 
-void FlowCanvas::addNode(const QString& moduleId, const QString& name, const QPointF& pos)
-{
-    QString nodeId = QString("node_%1").arg(++m_nodeCounter);
+QString FlowCanvas::addNode(const QString& moduleId, const QString& name, const QPointF& pos,
+                            const QString& instanceId) {
+    QString nodeId = instanceId.isEmpty() ? QString("node_%1").arg(++m_nodeCounter) : instanceId;
+    if (m_nodes.contains(nodeId)) {
+        return nodeId;
+    }
 
     FlowNodeItem* item = new FlowNodeItem(nodeId, name, moduleId);
-    item->setPos(pos);
     m_scene->addItem(item);
+    item->setPos(pos);
     m_nodes[nodeId] = item;
 
+    if (!m_loadingProject) {
+        Project* project = ProjectManager::instance().currentProject();
+        if (project && !project->findModule(nodeId)) {
+            ModuleInstance inst;
+            inst.id = nodeId;
+            inst.moduleId = moduleId;
+            inst.name = name;
+            inst.posX = static_cast<int>(pos.x());
+            inst.posY = static_cast<int>(pos.y());
+            project->addModule(inst);
+        }
+    }
+
     emit nodeAdded(nodeId);
+    return nodeId;
 }
 
-void FlowCanvas::removeNode(const QString& nodeId)
-{
+void FlowCanvas::removeNode(const QString& nodeId) {
     if (!m_nodes.contains(nodeId)) {
         return;
     }
@@ -55,23 +71,38 @@ void FlowCanvas::removeNode(const QString& nodeId)
 
     m_scene->removeItem(item);
     delete item;
+
+    if (!m_loadingProject) {
+        Project* project = ProjectManager::instance().currentProject();
+        if (project) {
+            project->removeModule(nodeId);
+        }
+    }
+
     emit nodeRemoved(nodeId);
 }
 
-void FlowCanvas::removeConnectionsForNode(const QString& nodeId)
-{
+void FlowCanvas::removeConnectionsForNode(const QString& nodeId) {
     for (int i = m_connections.size() - 1; i >= 0; i--) {
         FlowConnectionItem* conn = m_connections[i];
         if (conn->fromNodeId() == nodeId || conn->toNodeId() == nodeId) {
+            const QString fromId = conn->fromNodeId();
+            const QString toId = conn->toNodeId();
             m_scene->removeItem(conn);
             delete conn;
             m_connections.removeAt(i);
+            if (!m_loadingProject) {
+                Project* project = ProjectManager::instance().currentProject();
+                if (project) {
+                    project->removeConnection(fromId, toId);
+                }
+                emit connectionRemoved(fromId, toId);
+            }
         }
     }
 }
 
-void FlowCanvas::clearNodes()
-{
+void FlowCanvas::clearNodes() {
     // 先清除所有连接
     clearConnections();
 
@@ -82,11 +113,15 @@ void FlowCanvas::clearNodes()
     m_nodes.clear();
 }
 
-void FlowCanvas::addConnection(const QString& fromNodeId, int fromPort,
-                                const QString& toNodeId, int toPort)
-{
+void FlowCanvas::addConnection(const QString& fromNodeId, int fromPort, const QString& toNodeId, int toPort) {
     if (!m_nodes.contains(fromNodeId) || !m_nodes.contains(toNodeId)) {
         return;
+    }
+
+    for (FlowConnectionItem* existing : m_connections) {
+        if (existing && existing->fromNodeId() == fromNodeId && existing->toNodeId() == toNodeId) {
+            return;
+        }
     }
 
     FlowNodeItem* fromItem = m_nodes[fromNodeId];
@@ -96,26 +131,67 @@ void FlowCanvas::addConnection(const QString& fromNodeId, int fromPort,
     m_scene->addItem(conn);
     m_connections.append(conn);
 
+    if (!m_loadingProject) {
+        Project* project = ProjectManager::instance().currentProject();
+        if (project) {
+            bool exists = false;
+            for (const ModuleConnection& existing : project->connections()) {
+                if (existing.fromModuleId == fromNodeId && existing.toModuleId == toNodeId) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                ModuleConnection projectConn;
+                projectConn.fromModuleId = fromNodeId;
+                projectConn.toModuleId = toNodeId;
+                projectConn.fromOutput = fromPort;
+                projectConn.toInput = toPort;
+                project->addConnection(projectConn);
+            }
+        }
+    }
+
     emit connectionCreated(fromNodeId, toNodeId);
 }
 
-void FlowCanvas::removeConnection(const QString& fromNodeId, const QString& toNodeId)
-{
+void FlowCanvas::removeConnection(const QString& fromNodeId, const QString& toNodeId) {
     for (int i = m_connections.size() - 1; i >= 0; i--) {
-        if (m_connections[i]->fromNodeId() == fromNodeId &&
-            m_connections[i]->toNodeId() == toNodeId) {
+        if (m_connections[i]->fromNodeId() == fromNodeId && m_connections[i]->toNodeId() == toNodeId) {
             FlowConnectionItem* conn = m_connections[i];
             m_scene->removeItem(conn);
             m_connections.removeAt(i);
             delete conn;
+            if (!m_loadingProject) {
+                Project* project = ProjectManager::instance().currentProject();
+                if (project) {
+                    project->removeConnection(fromNodeId, toNodeId);
+                }
+            }
             emit connectionRemoved(fromNodeId, toNodeId);
             return;
         }
     }
 }
 
-void FlowCanvas::clearConnections()
-{
+void FlowCanvas::loadFromProject(Project* project) {
+    m_loadingProject = true;
+    clearConnections();
+    clearNodes();
+
+    if (project) {
+        for (const ModuleInstance& inst : project->modules()) {
+            addNode(inst.moduleId, inst.name, QPointF(inst.posX, inst.posY), inst.id);
+        }
+        for (const ModuleConnection& conn : project->connections()) {
+            addConnection(conn.fromModuleId, conn.fromOutput, conn.toModuleId, conn.toInput);
+        }
+    }
+
+    m_loadingProject = false;
+}
+
+void FlowCanvas::clearConnections() {
     for (auto* conn : m_connections) {
         if (conn) {
             m_scene->removeItem(conn);
@@ -125,18 +201,15 @@ void FlowCanvas::clearConnections()
     m_connections.clear();
 }
 
-QStringList FlowCanvas::nodeIds() const
-{
+QStringList FlowCanvas::nodeIds() const {
     return m_nodes.keys();
 }
 
-FlowNodeItem* FlowCanvas::nodeItem(const QString& nodeId) const
-{
+FlowNodeItem* FlowCanvas::nodeItem(const QString& nodeId) const {
     return m_nodes.value(nodeId, nullptr);
 }
 
-QList<FlowNodeItem*> FlowCanvas::getOrderedModules() const
-{
+QList<FlowNodeItem*> FlowCanvas::getOrderedModules() const {
     if (m_nodes.isEmpty()) {
         return {};
     }
@@ -197,8 +270,7 @@ QList<FlowNodeItem*> FlowCanvas::getOrderedModules() const
     return ordered;
 }
 
-void FlowCanvas::updateConnectionsForNode(const QString& nodeId)
-{
+void FlowCanvas::updateConnectionsForNode(const QString& nodeId) {
     for (FlowConnectionItem* conn : m_connections) {
         if (conn && (conn->fromNodeId() == nodeId || conn->toNodeId() == nodeId)) {
             conn->updatePath();
@@ -206,20 +278,17 @@ void FlowCanvas::updateConnectionsForNode(const QString& nodeId)
     }
 }
 
-void FlowCanvas::dragEnterEvent(QDragEnterEvent* event)
-{
+void FlowCanvas::dragEnterEvent(QDragEnterEvent* event) {
     if (event->mimeData()->hasText()) {
         event->acceptProposedAction();
     }
 }
 
-void FlowCanvas::dragMoveEvent(QDragMoveEvent* event)
-{
+void FlowCanvas::dragMoveEvent(QDragMoveEvent* event) {
     event->accept();
 }
 
-void FlowCanvas::dropEvent(QDropEvent* event)
-{
+void FlowCanvas::dropEvent(QDropEvent* event) {
     QString moduleData = event->mimeData()->text();
     // 格式: moduleId|name
     QStringList parts = moduleData.split("|");
@@ -232,33 +301,24 @@ void FlowCanvas::dropEvent(QDropEvent* event)
 
 // ========== FlowNodeItem ==========
 
-FlowNodeItem::FlowNodeItem(const QString& nodeId, const QString& name,
-                           const QString& moduleId, QGraphicsItem* parent)
-    : QGraphicsItem(parent)
-    , m_nodeId(nodeId)
-    , m_moduleId(moduleId)
-    , m_name(name)
-{
+FlowNodeItem::FlowNodeItem(const QString& nodeId, const QString& name, const QString& moduleId, QGraphicsItem* parent)
+    : QGraphicsItem(parent), m_nodeId(nodeId), m_moduleId(moduleId), m_name(name) {
     setFlag(QGraphicsItem::ItemIsMovable);
     setFlag(QGraphicsItem::ItemIsSelectable);
     setFlag(QGraphicsItem::ItemSendsGeometryChanges);
     setZValue(1);
 }
 
-void FlowNodeItem::setName(const QString& name)
-{
+void FlowNodeItem::setName(const QString& name) {
     m_name = name;
     update();
 }
 
-QRectF FlowNodeItem::boundingRect() const
-{
+QRectF FlowNodeItem::boundingRect() const {
     return QRectF(0, 0, m_width, m_height);
 }
 
-void FlowNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option,
-                         QWidget* widget)
-{
+void FlowNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) {
     Q_UNUSED(option)
     Q_UNUSED(widget)
 
@@ -294,23 +354,21 @@ void FlowNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* opti
     }
 }
 
-QPointF FlowNodeItem::inputPortPos(int index) const
-{
+QPointF FlowNodeItem::inputPortPos(int index) const {
     qreal y = 40 + index * 20;
     return QPointF(0, y);
 }
 
-QPointF FlowNodeItem::outputPortPos(int index) const
-{
+QPointF FlowNodeItem::outputPortPos(int index) const {
     qreal y = 40 + index * 20;
     return QPointF(m_width, y);
 }
 
-QVariant FlowNodeItem::itemChange(GraphicsItemChange change, const QVariant& value)
-{
+QVariant FlowNodeItem::itemChange(GraphicsItemChange change, const QVariant& value) {
     if (change == ItemPositionHasChanged) {
         // 通过 FlowCanvas 更新相关连接
-        FlowCanvas* canvas = qobject_cast<FlowCanvas*>(scene()->parent());
+        QGraphicsScene* currentScene = scene();
+        FlowCanvas* canvas = currentScene ? qobject_cast<FlowCanvas*>(currentScene->parent()) : nullptr;
         if (canvas) {
             canvas->updateConnectionsForNode(m_nodeId);
         }
@@ -318,8 +376,7 @@ QVariant FlowNodeItem::itemChange(GraphicsItemChange change, const QVariant& val
     return QGraphicsItem::itemChange(change, value);
 }
 
-void FlowNodeItem::mousePressEvent(QGraphicsSceneMouseEvent* event)
-{
+void FlowNodeItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {
     QGraphicsItem::mousePressEvent(event);
     scene()->clearSelection();
     setSelected(true);
@@ -327,50 +384,35 @@ void FlowNodeItem::mousePressEvent(QGraphicsSceneMouseEvent* event)
 
 // ========== FlowConnectionItem ==========
 
-FlowConnectionItem::FlowConnectionItem(FlowNodeItem* fromNode, int fromPort,
-                                       FlowNodeItem* toNode, int toPort,
+FlowConnectionItem::FlowConnectionItem(FlowNodeItem* fromNode, int fromPort, FlowNodeItem* toNode, int toPort,
                                        QGraphicsItem* parent)
-    : QGraphicsItem(parent)
-    , m_fromNode(fromNode)
-    , m_toNode(toNode)
-    , m_fromPort(fromPort)
-    , m_toPort(toPort)
-{
+    : QGraphicsItem(parent), m_fromNode(fromNode), m_toNode(toNode), m_fromPort(fromPort), m_toPort(toPort) {
     setZValue(0);
     updatePath();
 }
 
-FlowConnectionItem::~FlowConnectionItem()
-{
+FlowConnectionItem::~FlowConnectionItem() {
     // 不需要清理节点中的引用，因为我们现在通过 nodeId 来查找
 }
 
-QString FlowConnectionItem::fromNodeId() const
-{
+QString FlowConnectionItem::fromNodeId() const {
     return m_fromNode ? m_fromNode->nodeId() : QString();
 }
 
-QString FlowConnectionItem::toNodeId() const
-{
+QString FlowConnectionItem::toNodeId() const {
     return m_toNode ? m_toNode->nodeId() : QString();
 }
 
-bool FlowConnectionItem::isValid() const
-{
+bool FlowConnectionItem::isValid() const {
     // 检查节点是否仍然有效（在场景中且未被删除）
-    return m_fromNode && m_toNode &&
-           m_fromNode->scene() == scene() &&
-           m_toNode->scene() == scene();
+    return m_fromNode && m_toNode && m_fromNode->scene() == scene() && m_toNode->scene() == scene();
 }
 
-QRectF FlowConnectionItem::boundingRect() const
-{
+QRectF FlowConnectionItem::boundingRect() const {
     return m_path.boundingRect();
 }
 
-void FlowConnectionItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option,
-                                QWidget* widget)
-{
+void FlowConnectionItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) {
     Q_UNUSED(option)
     Q_UNUSED(widget)
 
@@ -379,8 +421,7 @@ void FlowConnectionItem::paint(QPainter* painter, const QStyleOptionGraphicsItem
     painter->drawPath(m_path);
 }
 
-void FlowConnectionItem::updatePath()
-{
+void FlowConnectionItem::updatePath() {
     // 检查节点是否有效
     if (!m_fromNode || !m_toNode) {
         m_path = QPainterPath();
@@ -399,9 +440,7 @@ void FlowConnectionItem::updatePath()
     qreal dx = qAbs(end.x() - start.x()) / 2;
 
     m_path = QPainterPath(start);
-    m_path.cubicTo(start.x() + dx, start.y(),
-                   end.x() - dx, end.y(),
-                   end.x(), end.y());
+    m_path.cubicTo(start.x() + dx, start.y(), end.x() - dx, end.y(), end.x(), end.y());
 
     update();
 }

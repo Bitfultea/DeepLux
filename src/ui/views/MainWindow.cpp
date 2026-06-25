@@ -66,6 +66,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
@@ -170,6 +171,7 @@ MainWindow::MainWindow(QWidget* parent)
 }
 
 MainWindow::~MainWindow() {
+    TerminalBridge::instance().shutdown();
     if (m_splashScreen) {
         m_splashScreen->deleteLater();
     }
@@ -800,9 +802,50 @@ void MainWindow::setupMainLayout() {
 
     m_processTabWidget->addTab(m_processTabContent, tr("流程"));
 
-    // ---- Tab 2: 数据源 ----
+    // ---- Tab 2: 画布 ----
+    m_flowCanvas = new FlowCanvas(this);
+    m_flowCanvas->setObjectName("FlowCanvas");
+    m_processTabWidget->addTab(m_flowCanvas, tr("画布"));
+
+    // ---- Tab 3: 数据源 ----
+    m_propertyPanel = new PropertyPanel(this);
+    m_propertyPanel->setObjectName("PropertyPanel");
+    m_processTabWidget->addTab(m_propertyPanel, tr("属性"));
+
     m_dataSourcePanel = new DataSourcePanel(this);
     m_processTabWidget->addTab(m_dataSourcePanel, tr("数据源"));
+
+    connect(m_processTree, &QTreeWidget::itemSelectionChanged, this, [this]() {
+        if (!m_propertyPanel) return;
+
+        const QList<QTreeWidgetItem*> selectedItems = m_processTree->selectedItems();
+        if (selectedItems.isEmpty()) {
+            m_propertyPanel->clear();
+            return;
+        }
+
+        QTreeWidgetItem* item = selectedItems.first();
+        if (!item || item->data(0, Qt::UserRole).toString() != "flow_item") {
+            m_propertyPanel->clear();
+            return;
+        }
+
+        const QString instanceId = item->data(0, Qt::UserRole + 1).toString();
+        m_propertyPanel->setModule(m_flowModules.value(instanceId, nullptr), instanceId);
+    });
+
+    connect(m_propertyPanel, &PropertyPanel::paramsChanged, this,
+            [](const QString& moduleId, const QString& key, const QVariant& value) {
+        Project* project = ProjectManager::instance().currentProject();
+        if (!project) return;
+
+        ModuleInstance* currentModule = project->findModule(moduleId);
+        if (!currentModule) return;
+
+        ModuleInstance updatedModule = *currentModule;
+        updatedModule.params[key] = QJsonValue::fromVariant(value);
+        project->updateModule(moduleId, updatedModule);
+    });
 
     // 连接 DataSourcePanel 信号
     connect(m_dataSourcePanel, &DataSourcePanel::requestDisplay,
@@ -1031,7 +1074,11 @@ void MainWindow::onProcessTreeContextMenu(const QPoint& pos) {
     if (selectedAction == deleteAction) {
         QString instanceName = item->data(0, Qt::UserRole + 1).toString();
         if (!instanceName.isEmpty() && m_flowModules.contains(instanceName)) {
-            m_flowModules.remove(instanceName);
+            IModule* module = m_flowModules.take(instanceName);
+            if (module) {
+                module->shutdown();
+                delete module;
+            }
             m_usedPluginNames.remove(instanceName);
         }
         delete item;
@@ -1061,20 +1108,40 @@ void MainWindow::onProjectOpened(Project* project)
 
     // 清空现有流程树
     clearProcessTree();
+    if (m_flowCanvas) {
+        m_flowCanvas->loadFromProject(nullptr);
+    }
 
     // 加载项目中已有的模块
     for (const ModuleInstance& inst : project->modules()) {
         addModuleToProcessTree(inst);
+    }
+    if (m_flowCanvas) {
+        m_flowCanvas->loadFromProject(project);
     }
 
     // 刷新数据源面板
     if (m_dataSourcePanel) {
         m_dataSourcePanel->refreshFromProject(project);
     }
+    if (m_projectLabel) {
+        m_projectLabel->setText(tr("当前工程：%1").arg(project->name()));
+    }
 
     // 连接 Project 信号
+    disconnect(project, nullptr, this, nullptr);
     connect(project, &Project::moduleAdded, this, &MainWindow::onModuleAdded);
     connect(project, &Project::moduleRemoved, this, &MainWindow::onModuleRemoved);
+    connect(project, &Project::connectionAdded, this, [this](const ModuleConnection& conn) {
+        if (m_flowCanvas && m_flowCanvas->nodeItem(conn.fromModuleId) && m_flowCanvas->nodeItem(conn.toModuleId)) {
+            m_flowCanvas->addConnection(conn.fromModuleId, conn.fromOutput, conn.toModuleId, conn.toInput);
+        }
+    });
+    connect(project, &Project::connectionRemoved, this, [this](const QString& fromId, const QString& toId) {
+        if (m_flowCanvas) {
+            m_flowCanvas->removeConnection(fromId, toId);
+        }
+    });
     connect(project, &Project::dataSourceAdded, this, &MainWindow::onDataSourceAdded);
     connect(project, &Project::dataSourceRemoved, this, &MainWindow::onDataSourceRemoved);
 }
@@ -1082,19 +1149,31 @@ void MainWindow::onProjectOpened(Project* project)
 void MainWindow::onProjectClosed()
 {
     clearProcessTree();
+    if (m_flowCanvas) {
+        m_flowCanvas->loadFromProject(nullptr);
+    }
     if (m_dataSourcePanel) {
         m_dataSourcePanel->refreshFromProject(nullptr);
+    }
+    if (m_projectLabel) {
+        m_projectLabel->setText(tr("当前工程：无"));
     }
 }
 
 void MainWindow::onModuleAdded(const ModuleInstance& module)
 {
     addModuleToProcessTree(module);
+    if (m_flowCanvas && !m_flowCanvas->nodeItem(module.id)) {
+        m_flowCanvas->addNode(module.moduleId, module.name, QPointF(module.posX, module.posY), module.id);
+    }
 }
 
 void MainWindow::onModuleRemoved(const QString& instanceId)
 {
     removeModuleFromProcessTree(instanceId);
+    if (m_flowCanvas && m_flowCanvas->nodeItem(instanceId)) {
+        m_flowCanvas->removeNode(instanceId);
+    }
 }
 
 void MainWindow::onDataSourceAdded(const DataSource& ds)
@@ -1203,13 +1282,16 @@ void MainWindow::addModuleToProcessTree(const ModuleInstance& inst)
     IModule* module = pm.createModule(inst.moduleId);
     if (module) {
         newItem->setIcon(0, module->icon());
+        if (!inst.params.isEmpty()) {
+            module->setParams(inst.params);
+        }
         if (module->initialize()) {
             m_flowModules.insert(inst.id, module);
             if (!module->icon().isNull()) {
                 newItem->setIcon(0, module->icon());
             }
         } else {
-            // createModule 目前返回共享实例（createFreshModule），不能 delete
+            delete module;
             module = nullptr;
             Logger::instance().warning(tr("模块初始化失败：%1").arg(inst.moduleId), "Flow");
         }
@@ -1239,8 +1321,11 @@ void MainWindow::removeModuleFromProcessTree(const QString& instanceId)
     }
 
     if (m_flowModules.contains(instanceId)) {
-        // 共享实例不能 shutdown — 会关闭其他同名模块的实例
-        m_flowModules.remove(instanceId);
+        IModule* module = m_flowModules.take(instanceId);
+        if (module) {
+            module->shutdown();
+            delete module;
+        }
     }
 
     m_usedPluginNames.remove(instanceId);
@@ -1265,6 +1350,12 @@ void MainWindow::removeModuleFromProcessTree(const QString& instanceId)
 
 void MainWindow::clearProcessTree()
 {
+    for (IModule* module : m_flowModules) {
+        if (module) {
+            module->shutdown();
+            delete module;
+        }
+    }
     m_flowModules.clear();
     m_usedPluginNames.clear();
     m_instanceItemMap.clear();
@@ -1729,7 +1820,11 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 QTreeWidgetItem* item = selected.first();
                 QString instanceName = item->data(0, Qt::UserRole + 1).toString();
                 if (!instanceName.isEmpty() && m_flowModules.contains(instanceName)) {
-                    m_flowModules.remove(instanceName);
+                    IModule* module = m_flowModules.take(instanceName);
+                    if (module) {
+                        module->shutdown();
+                        delete module;
+                    }
                     m_usedPluginNames.remove(instanceName);
                 }
                 delete item;
@@ -1828,6 +1923,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                             }
                             if (!module->initialize()) {
                                 Logger::instance().error(tr("插件初始化失败：%1").arg(pluginName), "Flow");
+                                delete module;
                                 removeModuleFromProcessTree(instanceName);
                                 return;
                             }
@@ -2120,17 +2216,25 @@ void MainWindow::onOpenProject() {
 
 void MainWindow::onSaveProject() {
     if (!ProjectManager::instance().hasProject()) {
-        // 如果没有项目，弹出另存为对话框
-        QString filePath = QFileDialog::getSaveFileName(this, tr("保存工程"), QString(), tr("工程文件 (*.dproj)"));
-        if (!filePath.isEmpty()) {
-            TerminalBridge::instance().onGuiAction("save-project", filePath);
-            ProjectManager::instance().saveAsProject(filePath);
+        QMessageBox::warning(this, tr("保存工程"), tr("没有打开的工程"));
+        return;
+    }
+
+    Project* proj = ProjectManager::instance().currentProject();
+    if (!proj) {
+        return;
+    }
+
+    QString filePath = proj->filePath();
+    if (filePath.isEmpty()) {
+        filePath = QFileDialog::getSaveFileName(this, tr("保存工程"), QString(), tr("工程文件 (*.dproj)"));
+        if (filePath.isEmpty()) {
+            return;
         }
+        TerminalBridge::instance().onGuiAction("save-project", filePath);
+        ProjectManager::instance().saveAsProject(filePath);
     } else {
-        Project* proj = ProjectManager::instance().currentProject();
-        if (proj) {
-            TerminalBridge::instance().onGuiAction("save-project", proj->filePath());
-        }
+        TerminalBridge::instance().onGuiAction("save-project", filePath);
         ProjectManager::instance().saveProject();
     }
 }
@@ -2283,8 +2387,9 @@ void MainWindow::onHome() {
 void MainWindow::onUIDesign() {
     // 显示/激活 FlowCanvas（图形化节点编辑器）
     if (m_flowCanvas) {
-        m_flowCanvas->show();
-        m_flowCanvas->activateWindow();
+        if (m_processTabWidget) {
+            m_processTabWidget->setCurrentWidget(m_flowCanvas);
+        }
         Logger::instance().info(tr("界面设计"), "System");
     } else {
         QMessageBox::information(this, tr("UI 设计"), tr("流程编辑器开发中"));

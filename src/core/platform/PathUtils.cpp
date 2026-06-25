@@ -1,12 +1,20 @@
 #include "PathUtils.h"
-#include <QStandardPaths>
-#include <QDir>
+
+#include <QByteArray>
 #include <QCoreApplication>
+#include <QDir>
+#include <QStandardPaths>
 
 namespace DeepLux {
 
-QString PathUtils::appDataPath()
-{
+QString PathUtils::appDataPath() {
+    const QByteArray overridePath = qgetenv("DEEPLUX_APP_DATA_DIR");
+    if (!overridePath.isEmpty()) {
+        const QString path = QString::fromLocal8Bit(overridePath);
+        ensureDirExists(path);
+        return path;
+    }
+
 #ifdef DEEPLUX_PLATFORM_WINDOWS
     QString path = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
 #else
@@ -17,46 +25,39 @@ QString PathUtils::appDataPath()
     return path;
 }
 
-QString PathUtils::pluginPath()
-{
+QString PathUtils::pluginPath() {
     QString path = appDataPath() + "/plugins";
     ensureDirExists(path);
     return path;
 }
 
-QString PathUtils::configPath()
-{
+QString PathUtils::configPath() {
     QString path = appDataPath() + "/config";
     ensureDirExists(path);
     return path;
 }
 
-QString PathUtils::logPath()
-{
+QString PathUtils::logPath() {
     QString path = appDataPath() + "/logs";
     ensureDirExists(path);
     return path;
 }
 
-QString PathUtils::projectPath()
-{
+QString PathUtils::projectPath() {
     QString path = appDataPath() + "/projects";
     ensureDirExists(path);
     return path;
 }
 
-QString PathUtils::normalize(const QString& path)
-{
+QString PathUtils::normalize(const QString& path) {
     return QDir::cleanPath(path);
 }
 
-QString PathUtils::join(const QString& base, const QString& sub)
-{
+QString PathUtils::join(const QString& base, const QString& sub) {
     return QDir(base).filePath(sub);
 }
 
-bool PathUtils::ensureDirExists(const QString& path)
-{
+bool PathUtils::ensureDirExists(const QString& path) {
     QDir dir(path);
     if (!dir.exists()) {
         return dir.mkpath(".");
@@ -64,8 +65,7 @@ bool PathUtils::ensureDirExists(const QString& path)
     return true;
 }
 
-QString PathUtils::applicationDirPath()
-{
+QString PathUtils::applicationDirPath() {
     return QCoreApplication::applicationDirPath();
 }
 

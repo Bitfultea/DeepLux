@@ -4,6 +4,7 @@ set(TEST_SOURCES
     test_pathtutils.cpp
     test_modulebase.cpp
     test_mainviewmodel.cpp
+    test_mainwindow.cpp
     test_project.cpp
     test_configmanager.cpp
     test_pluginmanager.cpp
@@ -20,6 +21,12 @@ set(TEST_SOURCES
     test_linesdistance.cpp
     test_terminalscreen.cpp
     test_ansiparser.cpp
+    test_clihandler.cpp
+    test_cameramanager.cpp
+    test_plyloader.cpp
+    test_tiffloader.cpp
+    test_flowcanvas.cpp
+    test_propertypanel.cpp
     test_toolschema.cpp
     test_agentobserver.cpp
     test_agentactor.cpp
@@ -66,6 +73,13 @@ foreach(TEST_FILE ${TEST_SOURCES})
     target_link_libraries(${TEST_NAME} PRIVATE DistancePPPlugin)
     # Link LinesDistancePlugin for geometry tests
     target_link_libraries(${TEST_NAME} PRIVATE LinesDistancePlugin)
+    if(TEST_NAME STREQUAL "test_clihandler")
+        target_link_libraries(${TEST_NAME} PRIVATE SystemTimePlugin)
+    endif()
 
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+    set_tests_properties(${TEST_NAME} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    if(TEST_NAME STREQUAL "test_cameramanager")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 2)
+    endif()
 endforeach()

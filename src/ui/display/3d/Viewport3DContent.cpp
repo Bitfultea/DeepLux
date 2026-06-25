@@ -191,8 +191,8 @@ void Viewport3DContent::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void Viewport3DContent::wheelEvent(QWheelEvent* event) {
-    float delta = event->angleDelta().y() * 0.001f;
-    m_camera.zoom(delta * std::max(m_camera.distance(), 1.0f) * 0.5f);
+    float steps = event->angleDelta().y() / 120.0f;
+    m_camera.zoom(steps * 0.15f);
     m_needsUpdate = true;
     update();
 }

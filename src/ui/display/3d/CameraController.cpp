@@ -44,8 +44,8 @@ void CameraController::pan(float deltaX, float deltaY) {
 }
 
 void CameraController::zoom(float delta) {
-    m_distance *= (1.0f - delta * 0.1f);
-    m_distance = std::max(0.01f, std::min(m_framedFar * 2.0f, m_distance));
+    m_distance *= std::exp(-delta * 0.1f);
+    m_distance = std::max(0.1f, std::min(m_framedFar * 2.0f, m_distance));
     updateEyeFromAngles();
 }
 

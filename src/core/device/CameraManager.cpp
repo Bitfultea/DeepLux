@@ -1,31 +1,29 @@
 #include "CameraManager.h"
-#include "core/interface/ICameraPlugin.h"
-#include "core/interface/ICamera.h"
+
 #include "core/common/Logger.h"
+#include "core/interface/ICamera.h"
+#include "core/interface/ICameraPlugin.h"
 
 #include <QCoreApplication>
 
 namespace DeepLux {
 
-CameraManager& CameraManager::instance()
-{
+CameraManager& CameraManager::instance() {
     static CameraManager instance;
     return instance;
 }
 
-CameraManager::CameraManager()
-{
+CameraManager::CameraManager() {
     Logger::instance().info("Camera manager initialized", "Camera");
 }
 
-CameraManager::~CameraManager()
-{
+CameraManager::~CameraManager() {
     disconnectAll();
 }
 
-void CameraManager::registerCameraPlugin(ICameraPlugin* plugin)
-{
-    if (!plugin) return;
+void CameraManager::registerCameraPlugin(ICameraPlugin* plugin) {
+    if (!plugin)
+        return;
 
     QMutexLocker locker(&m_mutex);
 
@@ -36,9 +34,8 @@ void CameraManager::registerCameraPlugin(ICameraPlugin* plugin)
     }
 
     m_plugins.insert(pluginId, plugin);
-    Logger::instance().info(QString("Camera plugin registered: %1 (%2)")
-        .arg(plugin->pluginName())
-        .arg(plugin->manufacturer()), "Camera");
+    Logger::instance().info(
+        QString("Camera plugin registered: %1 (%2)").arg(plugin->pluginName()).arg(plugin->manufacturer()), "Camera");
 
     // 如果插件可用，立即发现相机
     if (plugin->isAvailable()) {
@@ -52,8 +49,7 @@ void CameraManager::registerCameraPlugin(ICameraPlugin* plugin)
 
             emit cameraDiscovered(info.deviceId, info.name);
             Logger::instance().info(
-                QString("Camera discovered: %1 (%2) - %3")
-                    .arg(info.name).arg(info.deviceId).arg(plugin->pluginName()),
+                QString("Camera discovered: %1 (%2) - %3").arg(info.name).arg(info.deviceId).arg(plugin->pluginName()),
                 "Camera");
         }
     }
@@ -61,8 +57,7 @@ void CameraManager::registerCameraPlugin(ICameraPlugin* plugin)
     emit pluginRegistered(pluginId);
 }
 
-void CameraManager::unregisterCameraPlugin(const QString& pluginId)
-{
+void CameraManager::unregisterCameraPlugin(const QString& pluginId) {
     QMutexLocker locker(&m_mutex);
 
     if (!m_plugins.contains(pluginId)) {
@@ -70,7 +65,7 @@ void CameraManager::unregisterCameraPlugin(const QString& pluginId)
     }
 
     // 断开该插件的所有相机
-    for (auto it = m_cameras.begin(); it != m_cameras.end(); ) {
+    for (auto it = m_cameras.begin(); it != m_cameras.end();) {
         ICamera* camera = it.value();
         if (camera) {
             camera->disconnect();
@@ -84,18 +79,15 @@ void CameraManager::unregisterCameraPlugin(const QString& pluginId)
     emit pluginUnregistered(pluginId);
 }
 
-QList<ICameraPlugin*> CameraManager::plugins() const
-{
+QList<ICameraPlugin*> CameraManager::plugins() const {
     return m_plugins.values();
 }
 
-ICameraPlugin* CameraManager::findPlugin(const QString& pluginId) const
-{
+ICameraPlugin* CameraManager::findPlugin(const QString& pluginId) const {
     return m_plugins.value(pluginId);
 }
 
-QList<CameraStatus> CameraManager::discoverCameras()
-{
+QList<CameraStatus> CameraManager::discoverCameras() {
     QMutexLocker locker(&m_mutex);
 
     QList<CameraStatus> discovered;
@@ -103,9 +95,7 @@ QList<CameraStatus> CameraManager::discoverCameras()
     for (ICameraPlugin* plugin : m_plugins) {
         if (!plugin->isAvailable()) {
             Logger::instance().debug(
-                QString("Plugin not available: %1 - %2")
-                    .arg(plugin->pluginName())
-                    .arg(plugin->availabilityMessage()),
+                QString("Plugin not available: %1 - %2").arg(plugin->pluginName()).arg(plugin->availabilityMessage()),
                 "Camera");
             continue;
         }
@@ -132,16 +122,17 @@ QList<CameraStatus> CameraManager::discoverCameras()
     return discovered;
 }
 
-void CameraManager::refreshCameras()
-{
-    // 清除旧的未连接相机状态
-    QMutexLocker locker(&m_mutex);
+void CameraManager::refreshCameras() {
+    {
+        // 清除旧的未连接相机状态
+        QMutexLocker locker(&m_mutex);
 
-    for (auto it = m_cameraStatuses.begin(); it != m_cameraStatuses.end(); ) {
-        if (it.value().state == CameraState::Disconnected) {
-            it = m_cameraStatuses.erase(it);
-        } else {
-            ++it;
+        for (auto it = m_cameraStatuses.begin(); it != m_cameraStatuses.end();) {
+            if (it.value().state == CameraState::Disconnected) {
+                it = m_cameraStatuses.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
 
@@ -149,8 +140,7 @@ void CameraManager::refreshCameras()
     discoverCameras();
 }
 
-bool CameraManager::connectCamera(const QString& deviceId)
-{
+bool CameraManager::connectCamera(const QString& deviceId) {
     QMutexLocker locker(&m_mutex);
 
     // 如果已连接，直接返回
@@ -165,13 +155,15 @@ bool CameraManager::connectCamera(const QString& deviceId)
     ICameraPlugin* targetPlugin = nullptr;
     CameraInfo targetInfo;
 
-    Logger::instance().debug(QString("Connecting camera: %1, registered plugins: %2").arg(deviceId).arg(m_plugins.size()), "Camera");
+    Logger::instance().debug(
+        QString("Connecting camera: %1, registered plugins: %2").arg(deviceId).arg(m_plugins.size()), "Camera");
 
     for (ICameraPlugin* plugin : m_plugins) {
         QString pluginId = plugin->pluginId();
         bool available = plugin->isAvailable();
         QString availMsg = plugin->availabilityMessage();
-        Logger::instance().debug(QString("Checking plugin: %1, available=%2, msg=%3").arg(pluginId).arg(available).arg(availMsg), "Camera");
+        Logger::instance().debug(
+            QString("Checking plugin: %1, available=%2, msg=%3").arg(pluginId).arg(available).arg(availMsg), "Camera");
 
         if (!available) {
             Logger::instance().warning(QString("Plugin %1 not available: %2").arg(pluginId).arg(availMsg), "Camera");
@@ -179,7 +171,8 @@ bool CameraManager::connectCamera(const QString& deviceId)
         }
 
         QList<CameraInfo> cameras = plugin->discoverCameras();
-        Logger::instance().debug(QString("Plugin %1 discovered %2 camera(s)").arg(pluginId).arg(cameras.size()), "Camera");
+        Logger::instance().debug(QString("Plugin %1 discovered %2 camera(s)").arg(pluginId).arg(cameras.size()),
+                                 "Camera");
 
         for (const CameraInfo& info : cameras) {
             Logger::instance().debug(QString("  - %1 (%2)").arg(info.name).arg(info.deviceId), "Camera");
@@ -189,11 +182,15 @@ bool CameraManager::connectCamera(const QString& deviceId)
                 break;
             }
         }
-        if (targetPlugin) break;
+        if (targetPlugin)
+            break;
     }
 
     if (!targetPlugin) {
-        QString error = QString("Camera not found: %1. Ensure the camera plugin is loaded and the device is powered/on the network.").arg(deviceId);
+        QString error =
+            QString(
+                "Camera not found: %1. Ensure the camera plugin is loaded and the device is powered/on the network.")
+                .arg(deviceId);
         Logger::instance().error(error, "Camera");
         if (m_cameraStatuses.contains(deviceId)) {
             m_cameraStatuses[deviceId].lastError = error;
@@ -250,8 +247,7 @@ bool CameraManager::connectCamera(const QString& deviceId)
     return true;
 }
 
-void CameraManager::disconnectCamera(const QString& deviceId)
-{
+void CameraManager::disconnectCamera(const QString& deviceId) {
     QMutexLocker locker(&m_mutex);
 
     ICamera* camera = m_cameras.value(deviceId);
@@ -273,8 +269,7 @@ void CameraManager::disconnectCamera(const QString& deviceId)
     emit cameraStateChanged(deviceId, CameraState::Disconnected);
 }
 
-void CameraManager::disconnectAll()
-{
+void CameraManager::disconnectAll() {
     QMutexLocker locker(&m_mutex);
 
     for (ICamera* camera : m_cameras.values()) {
@@ -288,28 +283,26 @@ void CameraManager::disconnectAll()
     Logger::instance().info("All cameras disconnected", "Camera");
 }
 
-ICamera* CameraManager::getCamera(const QString& deviceId) const
-{
+ICamera* CameraManager::getCamera(const QString& deviceId) const {
     return m_cameras.value(deviceId);
 }
 
-QList<ICamera*> CameraManager::allCameras() const
-{
+QList<ICamera*> CameraManager::allCameras() const {
     return m_cameras.values();
 }
 
-bool CameraManager::isConnected(const QString& deviceId) const
-{
+bool CameraManager::isConnected(const QString& deviceId) const {
     ICamera* camera = m_cameras.value(deviceId);
     return camera && camera->isConnected();
 }
 
-CameraState CameraManager::cameraState(const QString& deviceId) const
-{
+CameraState CameraManager::cameraState(const QString& deviceId) const {
     if (m_cameras.contains(deviceId)) {
         ICamera* camera = m_cameras.value(deviceId);
-        if (camera->isAcquiring()) return CameraState::Grabbing;
-        if (camera->isConnected()) return CameraState::Connected;
+        if (camera->isAcquiring())
+            return CameraState::Grabbing;
+        if (camera->isConnected())
+            return CameraState::Connected;
     }
 
     if (m_cameraStatuses.contains(deviceId)) {
@@ -319,8 +312,7 @@ CameraState CameraManager::cameraState(const QString& deviceId) const
     return CameraState::Disconnected;
 }
 
-QString CameraManager::lastError(const QString& deviceId) const
-{
+QString CameraManager::lastError(const QString& deviceId) const {
     if (m_cameraStatuses.contains(deviceId)) {
         return m_cameraStatuses.value(deviceId).lastError;
     }

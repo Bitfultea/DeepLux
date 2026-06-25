@@ -100,6 +100,8 @@ void TerminalBridge::shutdown()
 {
     if (!m_initialized) return;
 
+    AgentBridge::instance().stop();
+
     // 断开所有连接
     disconnect(&Logger::instance(), nullptr, this, nullptr);
     disconnect(&RunEngine::instance(), nullptr, this, nullptr);

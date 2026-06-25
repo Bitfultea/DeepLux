@@ -1,37 +1,45 @@
 #include "RunEngine.h"
+
 #include "base/ModuleBase.h"
-#include "common/Logger.h"
 #include "common/CancellationToken.h"
+#include "common/Logger.h"
+#include "interface/IModule.h"
+#include "manager/PluginManager.h"
+#include "model/Project.h"
+
 #include <QDebug>
 #include <QMutexLocker>
 
 namespace DeepLux {
 
-RunEngine& RunEngine::instance()
-{
+namespace {
+QString runtimeModuleName(ModuleBase* module) {
+    if (!module) {
+        return QString();
+    }
+    return module->instanceName().isEmpty() ? module->name() : module->instanceName();
+}
+} // namespace
+
+RunEngine& RunEngine::instance() {
     static RunEngine instance;
     return instance;
 }
 
 RunEngine::RunEngine()
-    : QObject(nullptr)
-    , m_cycleTimer(new QTimer(this))
-    , m_cancellationToken(new CancellationToken(this))
-{
+    : QObject(nullptr), m_cycleTimer(new QTimer(this)), m_cancellationToken(new CancellationToken(this)) {
     m_cycleTimer->setInterval(100);
     connect(m_cycleTimer, &QTimer::timeout, this, &RunEngine::onTimerTick);
     Logger::instance().info("Run engine initialized", "Run");
 }
 
-RunEngine::~RunEngine()
-{
+RunEngine::~RunEngine() {
     stop();
     clearModuleTree();
     clearModules();
 }
 
-void RunEngine::setCycleMode(bool enabled)
-{
+void RunEngine::setCycleMode(bool enabled) {
     if (enabled) {
         m_runMode = RunMode::RunCycle;
     } else {
@@ -39,8 +47,7 @@ void RunEngine::setCycleMode(bool enabled)
     }
 }
 
-void RunEngine::runOnce()
-{
+void RunEngine::runOnce() {
     if (m_state == RunState::Running) {
         return;
     }
@@ -50,8 +57,7 @@ void RunEngine::runOnce()
     executeRun();
 }
 
-void RunEngine::start()
-{
+void RunEngine::start() {
     if (m_state == RunState::Running) {
         return;
     }
@@ -65,8 +71,7 @@ void RunEngine::start()
     m_cycleTimer->start();
 }
 
-void RunEngine::pause()
-{
+void RunEngine::pause() {
     if (m_state != RunState::Running) {
         return;
     }
@@ -78,8 +83,7 @@ void RunEngine::pause()
     Logger::instance().info(tr("Run paused"), "Run");
 }
 
-void RunEngine::resume()
-{
+void RunEngine::resume() {
     if (m_state != RunState::Paused) {
         return;
     }
@@ -91,8 +95,7 @@ void RunEngine::resume()
     Logger::instance().info(tr("Run resumed"), "Run");
 }
 
-void RunEngine::stop()
-{
+void RunEngine::stop() {
     m_cycleTimer->stop();
     m_state = RunState::Stopped;
     m_runMode = RunMode::None;
@@ -109,91 +112,142 @@ void RunEngine::stop()
     Logger::instance().info(tr("Run stopped"), "Run");
 }
 
-void RunEngine::requestCancellation()
-{
+void RunEngine::requestCancellation() {
     if (m_cancellationToken) {
         m_cancellationToken->cancel();
     }
     stop();
 }
 
-void RunEngine::addModule(ModuleBase* module)
-{
+void RunEngine::addModule(ModuleBase* module) {
     if (module && !m_modules.contains(module)) {
         m_modules.append(module);
-        // Use instanceName as key when set (for multi-instance support), fallback to name()
-        QString key = module->instanceName().isEmpty() ? module->name() : module->instanceName();
+        QString key = runtimeModuleName(module);
         m_moduleMap[key] = module;
         Logger::instance().debug(QString("Module added to engine: %1").arg(key), "Run");
     }
 }
 
-void RunEngine::removeModule(const QString& moduleId)
-{
+bool RunEngine::loadProject(Project* project, ModuleFactory factory) {
+    stop();
+    clearModules();
+
+    if (!project) {
+        emit errorOccurred(tr("No project to load"));
+        return false;
+    }
+
+    if (!factory) {
+        factory = [](const ModuleInstance& inst) -> ModuleBase* {
+            PluginManager& pluginManager = PluginManager::instance();
+            if (!pluginManager.isPluginLoaded(inst.moduleId) && !pluginManager.loadPlugin(inst.moduleId, 5000)) {
+                return nullptr;
+            }
+
+            IModule* module = pluginManager.createModule(inst.moduleId);
+            ModuleBase* moduleBase = qobject_cast<ModuleBase*>(module);
+            if (!moduleBase) {
+                delete module;
+                return nullptr;
+            }
+            return moduleBase;
+        };
+    }
+
+    for (const ModuleInstance& inst : project->modules()) {
+        ModuleBase* module = factory(inst);
+        if (!module) {
+            clearModules();
+            emit errorOccurred(tr("Cannot create module: %1").arg(inst.moduleId));
+            return false;
+        }
+
+        module->setInstanceName(inst.id);
+        module->setParams(inst.params);
+        if (!module->initialize()) {
+            delete module;
+            clearModules();
+            emit errorOccurred(tr("Cannot initialize module: %1").arg(inst.moduleId));
+            return false;
+        }
+
+        m_ownedModules.append(module);
+        addModule(module);
+    }
+
+    QString orderError;
+    if (!buildExecutionOrder(project, orderError)) {
+        clearModules();
+        emit errorOccurred(orderError);
+        return false;
+    }
+
+    return true;
+}
+
+void RunEngine::removeModule(const QString& moduleId) {
     for (int i = 0; i < m_modules.size(); ++i) {
-        if (m_modules[i]->id() == moduleId) {
-            m_moduleMap.remove(m_modules[i]->name());
+        ModuleBase* module = m_modules[i];
+        if (module->id() == moduleId || runtimeModuleName(module) == moduleId) {
+            m_moduleMap.remove(runtimeModuleName(module));
             m_modules.removeAt(i);
+            if (m_ownedModules.removeOne(module)) {
+                delete module;
+            }
             break;
         }
     }
 }
 
-void RunEngine::clearModules()
-{
+void RunEngine::clearModules() {
+    qDeleteAll(m_ownedModules);
+    m_ownedModules.clear();
     m_modules.clear();
     m_moduleMap.clear();
+    m_executionOrder.clear();
     clearOutputs();
 }
 
-ModuleBase* RunEngine::getModule(const QString& moduleName) const
-{
+ModuleBase* RunEngine::getModule(const QString& moduleName) const {
     return m_moduleMap.value(moduleName, nullptr);
 }
 
-int RunEngine::getModuleIndex(const QString& moduleName) const
-{
+int RunEngine::getModuleIndex(const QString& moduleName) const {
     for (int i = 0; i < m_modules.size(); ++i) {
-        if (m_modules[i]->name() == moduleName) {
+        if (runtimeModuleName(m_modules[i]) == moduleName) {
             return i;
         }
     }
     return -1;
 }
 
-void RunEngine::setOutput(const QString& moduleName, const QString& varName, const QVariant& value)
-{
+void RunEngine::setOutput(const QString& moduleName, const QString& varName, const QVariant& value) {
     m_outputMap[moduleName][varName] = value;
     emit outputChanged(moduleName, varName, value);
 }
 
-QVariant RunEngine::getOutput(const QString& moduleName, const QString& varName) const
-{
+QVariant RunEngine::getOutput(const QString& moduleName, const QString& varName) const {
     if (m_outputMap.contains(moduleName) && m_outputMap[moduleName].contains(varName)) {
         return m_outputMap[moduleName][varName];
     }
     return QVariant();
 }
 
-bool RunEngine::hasOutput(const QString& moduleName, const QString& varName) const
-{
+bool RunEngine::hasOutput(const QString& moduleName, const QString& varName) const {
     return m_outputMap.contains(moduleName) && m_outputMap[moduleName].contains(varName);
 }
 
-void RunEngine::clearOutputs()
-{
+void RunEngine::clearOutputs() {
     m_outputMap.clear();
 }
 
-void RunEngine::onTimerTick()
-{
+void RunEngine::onTimerTick() {
     if (m_state == RunState::Running && m_runMode == RunMode::RunCycle) {
         executeRun();
     }
 }
 
-void RunEngine::executeRun()
-{
+void RunEngine::executeRun() {
     if (m_modules.isEmpty()) {
         RunResult result;
         result.success = false;
@@ -220,9 +274,8 @@ void RunEngine::executeRun()
     buildModuleTree();
 
     // 从第一个模块开始执行，维护流水线数据
-    QString currentModule = m_modules.first()->instanceName().isEmpty()
-        ? m_modules.first()->name()
-        : m_modules.first()->instanceName();
+    QString currentModule =
+        m_executionOrder.isEmpty() ? runtimeModuleName(m_modules.first()) : m_executionOrder.first();
     m_currentModuleName = currentModule;
     ImageData pipelineData;
 
@@ -270,8 +323,7 @@ void RunEngine::executeRun()
     }
 }
 
-void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData)
-{
+void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData) {
     ModuleBase* module = getModule(moduleName);
     if (!module) {
         Logger::instance().error(QString("Module not found: %1").arg(moduleName), "Run");
@@ -310,10 +362,10 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     }
 }
 
-QString RunEngine::getNextModule(const QString& currentModule, bool lastResult)
-{
+QString RunEngine::getNextModule(const QString& currentModule, bool lastResult) {
     ModuleBase* current = getModule(currentModule);
-    if (!current) return QString();
+    if (!current)
+        return QString();
 
     ControlFlowType flowType = current->flowControlType();
 
@@ -383,56 +435,123 @@ QString RunEngine::getNextModule(const QString& currentModule, bool lastResult)
     return getNextSequentialModule(currentModule);
 }
 
-QString RunEngine::getNextSequentialModule(const QString& currentModule)
-{
+QString RunEngine::getNextSequentialModule(const QString& currentModule) {
+    if (!m_executionOrder.isEmpty()) {
+        int index = m_executionOrder.indexOf(currentModule);
+        if (index >= 0 && index < m_executionOrder.size() - 1) {
+            return m_executionOrder[index + 1];
+        }
+        return QString();
+    }
+
     int index = getModuleIndex(currentModule);
     if (index >= 0 && index < m_modules.size() - 1) {
-        return m_modules[index + 1]->name();
+        return runtimeModuleName(m_modules[index + 1]);
     }
     return QString();
 }
 
-QString RunEngine::findSiblingByFlowType(const QString& currentModule, ControlFlowType targetType)
-{
+bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
+    m_executionOrder.clear();
+    if (!project || project->connections().isEmpty()) {
+        return true;
+    }
+
+    QStringList moduleIds;
+    QSet<QString> moduleIdSet;
+    for (ModuleBase* module : m_modules) {
+        QString id = runtimeModuleName(module);
+        moduleIds.append(id);
+        moduleIdSet.insert(id);
+    }
+
+    QMap<QString, QStringList> adjacency;
+    QMap<QString, int> indegree;
+    for (const QString& id : moduleIds) {
+        indegree[id] = 0;
+    }
+
+    for (const ModuleConnection& conn : project->connections()) {
+        if (!moduleIdSet.contains(conn.fromModuleId)) {
+            error = tr("Connection references missing source module: %1").arg(conn.fromModuleId);
+            return false;
+        }
+        if (!moduleIdSet.contains(conn.toModuleId)) {
+            error = tr("Connection references missing target module: %1").arg(conn.toModuleId);
+            return false;
+        }
+        if (!adjacency[conn.fromModuleId].contains(conn.toModuleId)) {
+            adjacency[conn.fromModuleId].append(conn.toModuleId);
+            indegree[conn.toModuleId]++;
+        }
+    }
+
+    QStringList ready;
+    for (const QString& id : moduleIds) {
+        if (indegree.value(id) == 0) {
+            ready.append(id);
+        }
+    }
+
+    while (!ready.isEmpty()) {
+        const QString id = ready.takeFirst();
+        m_executionOrder.append(id);
+        for (const QString& next : adjacency.value(id)) {
+            indegree[next]--;
+            if (indegree[next] == 0) {
+                ready.append(next);
+            }
+        }
+    }
+
+    if (m_executionOrder.size() != moduleIds.size()) {
+        m_executionOrder.clear();
+        error = tr("Project module connections contain a cycle");
+        return false;
+    }
+
+    return true;
+}
+
+QString RunEngine::findSiblingByFlowType(const QString& currentModule, ControlFlowType targetType) {
     int currentIndex = getModuleIndex(currentModule);
-    if (currentIndex < 0) return QString();
+    if (currentIndex < 0)
+        return QString();
 
     for (int i = currentIndex + 1; i < m_modules.size(); ++i) {
         if (m_modules[i]->flowControlType() == targetType) {
-            return m_modules[i]->name();
+            return runtimeModuleName(m_modules[i]);
         }
     }
     return QString();
 }
 
-QString RunEngine::findPreviousByFlowType(const QString& currentModule, ControlFlowType targetType)
-{
+QString RunEngine::findPreviousByFlowType(const QString& currentModule, ControlFlowType targetType) {
     int currentIndex = getModuleIndex(currentModule);
-    if (currentIndex < 0) return QString();
+    if (currentIndex < 0)
+        return QString();
 
     for (int i = currentIndex - 1; i >= 0; --i) {
         if (m_modules[i]->flowControlType() == targetType) {
-            return m_modules[i]->name();
+            return runtimeModuleName(m_modules[i]);
         }
     }
     return QString();
 }
 
-void RunEngine::buildModuleTree()
-{
+void RunEngine::buildModuleTree() {
     clearModuleTree();
     m_rootNode = new ModuleTreeNode("Root");
 
     for (ModuleBase* module : m_modules) {
-        QString name = module->name();
+        QString name = runtimeModuleName(module);
         ModuleTreeNode* node = new ModuleTreeNode(name);
         m_moduleTreeNodes[name] = node;
 
         ControlFlowType flowType = module->flowControlType();
 
         // 流程入口类型：压栈
-        if (flowType == ControlFlowType::Loop ||
-            flowType == ControlFlowType::While ||
+        if (flowType == ControlFlowType::Loop || flowType == ControlFlowType::While ||
             flowType == ControlFlowType::Conditional) {
             if (!m_nodeStack.isEmpty()) {
                 node->parent = m_nodeStack.top();
@@ -444,8 +563,7 @@ void RunEngine::buildModuleTree()
             m_nodeStack.push(node);
         }
         // 流程出口类型：出栈
-        else if (flowType == ControlFlowType::LoopEnd ||
-                 flowType == ControlFlowType::WhileEnd ||
+        else if (flowType == ControlFlowType::LoopEnd || flowType == ControlFlowType::WhileEnd ||
                  flowType == ControlFlowType::ConditionalEnd) {
             if (!m_nodeStack.isEmpty()) {
                 m_nodeStack.pop();
@@ -457,8 +575,7 @@ void RunEngine::buildModuleTree()
                 node->parent = m_rootNode;
                 m_rootNode->children.append(node);
             }
-        }
-        else {
+        } else {
             if (!m_nodeStack.isEmpty()) {
                 node->parent = m_nodeStack.top();
                 m_nodeStack.top()->children.append(node);
@@ -470,8 +587,7 @@ void RunEngine::buildModuleTree()
     }
 }
 
-void RunEngine::clearModuleTree()
-{
+void RunEngine::clearModuleTree() {
     qDeleteAll(m_moduleTreeNodes);
     m_moduleTreeNodes.clear();
     delete m_rootNode;
@@ -480,8 +596,7 @@ void RunEngine::clearModuleTree()
     m_loopIndices.clear();
 }
 
-void RunEngine::setBreakpoint(const QString& moduleName, bool enabled)
-{
+void RunEngine::setBreakpoint(const QString& moduleName, bool enabled) {
     if (enabled) {
         m_breakpoints.insert(moduleName);
     } else {
@@ -489,20 +604,17 @@ void RunEngine::setBreakpoint(const QString& moduleName, bool enabled)
     }
 }
 
-bool RunEngine::hasBreakpoint(const QString& moduleName) const
-{
+bool RunEngine::hasBreakpoint(const QString& moduleName) const {
     return m_breakpoints.contains(moduleName);
 }
 
-void RunEngine::onBreakpointHit()
-{
+void RunEngine::onBreakpointHit() {
     QMutexLocker locker(&m_breakpointMutex);
     m_breakpointFlag = true;
     m_breakpointCondition.wakeOne();
 }
 
-void RunEngine::updateStatistics(bool success, int elapsedMs)
-{
+void RunEngine::updateStatistics(bool success, int elapsedMs) {
     m_totalRuns++;
     m_lastElapsedMs = elapsedMs;
 
@@ -513,8 +625,7 @@ void RunEngine::updateStatistics(bool success, int elapsedMs)
     }
 }
 
-void RunEngine::reset()
-{
+void RunEngine::reset() {
     m_totalRuns = 0;
     m_successRuns = 0;
     m_failedRuns = 0;

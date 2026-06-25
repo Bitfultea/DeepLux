@@ -1,8 +1,8 @@
 #include "PlyLoader.h"
 
+#include <QDebug>
 #include <QFile>
 #include <QTextStream>
-#include <QDebug>
 
 namespace DeepLux {
 
@@ -46,12 +46,13 @@ bool PlyLoader::load(const QString& filePath, PointCloudData& outData, QString& 
     }
 }
 
-bool PlyLoader::parseHeader(QTextStream& stream, int& vertexCount,
-                             QList<Property>& props, bool& isBinary, QString& errorMsg) {
+bool PlyLoader::parseHeader(QTextStream& stream, int& vertexCount, QList<Property>& props, bool& isBinary,
+                            QString& errorMsg) {
     bool inVertex = false;
     while (!stream.atEnd()) {
         QString line = stream.readLine().trimmed();
-        if (line == "end_header") break;
+        if (line == "end_header")
+            break;
         if (line.startsWith("format ")) {
             isBinary = line.contains("binary_little_endian");
             continue;
@@ -87,11 +88,11 @@ bool PlyLoader::parseHeader(QTextStream& stream, int& vertexCount,
     return vertexCount > 0;
 }
 
-bool PlyLoader::parseAscii(QTextStream& stream, int vertexCount,
-                            const QList<Property>& props, PointCloudData& out) {
+bool PlyLoader::parseAscii(QTextStream& stream, int vertexCount, const QList<Property>& props, PointCloudData& out) {
     for (int i = 0; i < vertexCount && !stream.atEnd(); ++i) {
         QString line = stream.readLine().trimmed();
-        if (line.isEmpty()) continue;
+        if (line.isEmpty())
+            continue;
 
         QStringList tokens = line.split(' ', Qt::SkipEmptyParts);
         Eigen::Vector3d pt(0, 0, 0);
@@ -103,27 +104,46 @@ bool PlyLoader::parseAscii(QTextStream& stream, int vertexCount,
             double val = tokens[j].toDouble();
             const QString& name = props[j].name.toLower();
 
-            if (name == "x") pt.x() = val;
-            else if (name == "y") pt.y() = val;
-            else if (name == "z") pt.z() = val;
-            else if (name == "nx") { normal.x() = val; hasNormal = true; }
-            else if (name == "ny") { normal.y() = val; hasNormal = true; }
-            else if (name == "nz") { normal.z() = val; hasNormal = true; }
-            else if (name == "red" || name == "r")   color.x() = props[j].isFloat ? val : val / 255.0;
-            else if (name == "green" || name == "g") color.y() = props[j].isFloat ? val : val / 255.0;
-            else if (name == "blue" || name == "b")  color.z() = props[j].isFloat ? val : val / 255.0;
+            if (name == "x")
+                pt.x() = val;
+            else if (name == "y")
+                pt.y() = val;
+            else if (name == "z")
+                pt.z() = val;
+            else if (name == "nx") {
+                normal.x() = val;
+                hasNormal = true;
+            } else if (name == "ny") {
+                normal.y() = val;
+                hasNormal = true;
+            } else if (name == "nz") {
+                normal.z() = val;
+                hasNormal = true;
+            } else if (name == "red" || name == "r") {
+                color.x() = props[j].isFloat ? val : val / 255.0;
+                hasColor = true;
+            } else if (name == "green" || name == "g") {
+                color.y() = props[j].isFloat ? val : val / 255.0;
+                hasColor = true;
+            } else if (name == "blue" || name == "b") {
+                color.z() = props[j].isFloat ? val : val / 255.0;
+                hasColor = true;
+            }
         }
 
         out.points.push_back(pt);
-        if (hasNormal) out.normals.push_back(normal);
-        if (hasColor) out.colors.push_back(color);
+        if (hasNormal)
+            out.normals.push_back(normal);
+        if (hasColor)
+            out.colors.push_back(color);
     }
     return !out.points.empty();
 }
 
-bool PlyLoader::parseBinary(QFile& file, qint64 dataStart, int vertexCount,
-                             const QList<Property>& props, PointCloudData& out) {
-    if (!file.open(QIODevice::ReadOnly)) return false;
+bool PlyLoader::parseBinary(QFile& file, qint64 dataStart, int vertexCount, const QList<Property>& props,
+                            PointCloudData& out) {
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
     file.seek(dataStart);
 
     QDataStream ds(&file);
@@ -147,20 +167,38 @@ bool PlyLoader::parseBinary(QFile& file, qint64 dataStart, int vertexCount,
             double val = p.isFloat ? static_cast<double>(fval) : static_cast<double>(uval);
             const QString& name = p.name.toLower();
 
-            if (name == "x") pt.x() = val;
-            else if (name == "y") pt.y() = val;
-            else if (name == "z") pt.z() = val;
-            else if (name == "nx") { normal.x() = val; hasNormal = true; }
-            else if (name == "ny") { normal.y() = val; hasNormal = true; }
-            else if (name == "nz") { normal.z() = val; hasNormal = true; }
-            else if (name == "red" || name == "r")   color.x() = p.isFloat ? val : val / 255.0;
-            else if (name == "green" || name == "g") color.y() = p.isFloat ? val : val / 255.0;
-            else if (name == "blue" || name == "b")  color.z() = p.isFloat ? val : val / 255.0;
+            if (name == "x")
+                pt.x() = val;
+            else if (name == "y")
+                pt.y() = val;
+            else if (name == "z")
+                pt.z() = val;
+            else if (name == "nx") {
+                normal.x() = val;
+                hasNormal = true;
+            } else if (name == "ny") {
+                normal.y() = val;
+                hasNormal = true;
+            } else if (name == "nz") {
+                normal.z() = val;
+                hasNormal = true;
+            } else if (name == "red" || name == "r") {
+                color.x() = p.isFloat ? val : val / 255.0;
+                hasColor = true;
+            } else if (name == "green" || name == "g") {
+                color.y() = p.isFloat ? val : val / 255.0;
+                hasColor = true;
+            } else if (name == "blue" || name == "b") {
+                color.z() = p.isFloat ? val : val / 255.0;
+                hasColor = true;
+            }
         }
 
         out.points.push_back(pt);
-        if (hasNormal) out.normals.push_back(normal);
-        if (hasColor) out.colors.push_back(color);
+        if (hasNormal)
+            out.normals.push_back(normal);
+        if (hasColor)
+            out.colors.push_back(color);
     }
     return !out.points.empty();
 }

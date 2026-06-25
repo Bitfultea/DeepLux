@@ -54,7 +54,7 @@ void PropertyPanel::setupUi()
     m_contentLayout->insertWidget(0, m_noSelectionLabel);
 }
 
-void PropertyPanel::setModule(IModule* module)
+void PropertyPanel::setModule(IModule* module, const QString& instanceId)
 {
     clear();
     
@@ -65,7 +65,7 @@ void PropertyPanel::setModule(IModule* module)
     }
     
     m_currentModule = module;
-    m_currentModuleId = module->moduleId();
+    m_currentModuleId = instanceId.isEmpty() ? module->moduleId() : instanceId;
     
     m_titleLabel->setText(tr("属性 - %1").arg(module->name()));
     m_noSelectionLabel->setVisible(false);
@@ -77,12 +77,24 @@ void PropertyPanel::clear()
 {
     m_currentModule = nullptr;
     m_currentModuleId.clear();
-    
-    // 删除所有参数控件
-    for (auto* widget : m_paramWidgets) {
-        delete widget;
+
+    while (QLayoutItem* item = m_contentLayout->takeAt(0)) {
+        QWidget* widget = item->widget();
+        if (widget && widget != m_noSelectionLabel) {
+            delete widget;
+        }
+        delete item;
     }
     m_paramWidgets.clear();
+
+    if (m_titleLabel) {
+        m_titleLabel->setText(tr("属性"));
+    }
+    if (m_noSelectionLabel) {
+        m_noSelectionLabel->setVisible(true);
+        m_contentLayout->addWidget(m_noSelectionLabel);
+    }
+    m_contentLayout->addStretch();
 }
 
 void PropertyPanel::loadParams()
@@ -144,6 +156,9 @@ QWidget* PropertyPanel::createTextWidget(const QString& key, const QJsonObject& 
     }
     
     connect(edit, &QLineEdit::textChanged, this, [this, key](const QString& text) {
+        if (m_currentModule) {
+            m_currentModule->setParam(key, text);
+        }
         emit paramsChanged(m_currentModuleId, key, text);
     });
     
@@ -165,6 +180,9 @@ QWidget* PropertyPanel::createNumberWidget(const QString& key, const QJsonObject
     
     connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), 
             this, [this, key](double value) {
+        if (m_currentModule) {
+            m_currentModule->setParam(key, value);
+        }
         emit paramsChanged(m_currentModuleId, key, value);
     });
     
@@ -183,6 +201,9 @@ QWidget* PropertyPanel::createBoolWidget(const QString& key, const QJsonObject& 
     }
     
     connect(check, &QCheckBox::toggled, this, [this, key](bool checked) {
+        if (m_currentModule) {
+            m_currentModule->setParam(key, checked);
+        }
         emit paramsChanged(m_currentModuleId, key, checked);
     });
     

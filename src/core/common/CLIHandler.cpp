@@ -12,6 +12,7 @@
 #include "core/model/Project.h"
 #include "core/platform/Platform.h"
 #include "core/common/Logger.h"
+#include "core/engine/RunEngine.h"
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -204,13 +205,46 @@ public:
             }
         }
 
-        // TODO: 执行流程
         if (!flowName.isEmpty()) {
-            printf("Running flow: %s (not implemented yet)\n", qPrintable(flowName));
-        } else {
-            printf("Running all flows in project...\n");
-            // RunEngine would be used here
+            ctx.setError(QString("当前工程模型不支持命名流程: %1").arg(flowName));
+            return 1;
         }
+
+        RunEngine& engine = RunEngine::instance();
+        QString loadError;
+        QMetaObject::Connection errorConn = QObject::connect(
+            &engine, &RunEngine::errorOccurred, &engine, [&loadError](const QString& error) { loadError = error; });
+
+        if (!engine.loadProject(project)) {
+            QObject::disconnect(errorConn);
+            ctx.setError(loadError.isEmpty() ? QString("无法加载工程到运行引擎") : loadError);
+            return 1;
+        }
+        QObject::disconnect(errorConn);
+
+        RunResult runResult;
+        bool hasRunResult = false;
+        QMetaObject::Connection finishedConn =
+            QObject::connect(&engine, &RunEngine::runFinished, &engine, [&runResult, &hasRunResult](const RunResult& result) {
+                runResult = result;
+                hasRunResult = true;
+            });
+
+        printf("Running project: %s\n", qPrintable(project->name()));
+        engine.runOnce();
+        QObject::disconnect(finishedConn);
+
+        if (!hasRunResult) {
+            ctx.setError("运行引擎未返回执行结果");
+            return 1;
+        }
+
+        if (!runResult.success) {
+            ctx.setError(runResult.errorMessage.isEmpty() ? QString("工程执行失败") : runResult.errorMessage);
+            return 1;
+        }
+
+        printf("Run completed: %d ms\n", runResult.elapsedMs);
 
         return 0;
     }
