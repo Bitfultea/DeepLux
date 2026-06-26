@@ -142,6 +142,13 @@ void Viewport3DContent::resetCamera() {
     update();
 }
 
+void Viewport3DContent::applyTheme(bool isDark) {
+    if (m_renderer) {
+        m_renderer->setBackgroundColor(isDark ? QColor("#1a1a1a") : QColor("#f0f0f0"));
+    }
+    update();
+}
+
 void Viewport3DContent::setLODEnabled(bool enabled) {
     if (m_lodEnabled != enabled) {
         m_lodEnabled = enabled;

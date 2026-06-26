@@ -26,17 +26,10 @@ ViewportWidget::ViewportWidget(const QString& id, QWidget* parent)
     , m_3dToolbar(nullptr)
     , m_displayMode(DisplayMode::Auto2D)
 {
-    // Disable QFrame's own frame drawing to avoid conflict with stylesheet
     setFrameStyle(QFrame::NoFrame);
-    setStyleSheet(R"(
-        ViewportWidget {
-            background-color: #2b2b2b;
-            border: 1px solid #3a3a3a;
-        }
-    )");
-
     setupUi();
     createActions();
+    applyTheme(false);  // 默认浅色主题，MainWindow 会在后续调 applyTheme(m_isDarkTheme)
 }
 
 ViewportWidget::~ViewportWidget()
@@ -425,6 +418,9 @@ void ViewportWidget::applyTheme(bool isDark)
     )";
     m_toolbar->setStyleSheet(toolbarStyle);
     m_3dToolbar->setStyleSheet(toolbarStyle);
+    if (m_3dContent) {
+        m_3dContent->applyTheme(isDark);
+    }
 }
 
 } // namespace DeepLux

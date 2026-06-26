@@ -30,6 +30,7 @@ public:
     ~PropertyPanel() override;
 
     void setModule(IModule* module, const QString& instanceId = QString());
+    void applyTheme(bool isDark);
     void clear();
     
     QString currentModuleId() const { return m_currentModuleId; }

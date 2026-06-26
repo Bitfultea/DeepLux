@@ -284,4 +284,22 @@ QWidget* PropertyPanel::createChoiceWidget(const QString& key, const QJsonObject
     return combo;
 }
 
+void PropertyPanel::applyTheme(bool isDark) {
+    QString bg = isDark ? "#252525" : "#ffffff";
+    QString fg = isDark ? "#ffffff" : "#212121";
+    setStyleSheet(QString("background-color: %1; color: %2;").arg(bg).arg(fg));
+    if (m_contentWidget) {
+        m_contentWidget->setStyleSheet(QString("background-color: %1;").arg(bg));
+    }
+    if (m_scrollArea) {
+        m_scrollArea->setStyleSheet(QString("background-color: %1; border: none;").arg(bg));
+    }
+    if (m_titleLabel) {
+        m_titleLabel->setStyleSheet(QString("color: %1; font-weight: bold; font-size: 14px; padding: 8px;").arg(fg));
+    }
+    if (m_noSelectionLabel) {
+        m_noSelectionLabel->setStyleSheet(QString("color: %1; padding: 20px;").arg(isDark ? "#888" : "#666"));
+    }
+}
+
 } // namespace DeepLux

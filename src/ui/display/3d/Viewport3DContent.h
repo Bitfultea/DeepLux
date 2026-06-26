@@ -38,6 +38,7 @@ public slots:
     // LOD 控制
     void setLODEnabled(bool enabled);
     bool isLODEnabled() const;
+    void applyTheme(bool isDark);
 
 signals:
     void pointClicked(int index, const QVector3D& point);
