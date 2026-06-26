@@ -92,13 +92,13 @@ void ViewportWidget::setupUi()
     m_toolbar->setIconSize(QSize(16, 16));
 
     // Fit window action
-    m_fitWindowAction = new QAction(tr("自适应"), this);
+    m_fitWindowAction = new QAction(tr("适应"), this);
     m_fitWindowAction->setToolTip(tr("适应窗口"));
     m_toolbar->addAction(m_fitWindowAction);
     connect(m_fitWindowAction, &QAction::triggered, this, &ViewportWidget::onFitWindow);
 
     // Actual size action
-    m_actualSizeAction = new QAction(tr("实际大小"), this);
+    m_actualSizeAction = new QAction(tr("1:1"), this);
     m_actualSizeAction->setToolTip(tr("实际像素大小"));
     m_toolbar->addAction(m_actualSizeAction);
     connect(m_actualSizeAction, &QAction::triggered, this, &ViewportWidget::onActualSize);

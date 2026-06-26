@@ -122,6 +122,7 @@ void HImageWidget::paintEvent(QPaintEvent* event)
     Q_UNUSED(event)
     QPainter painter(this);
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.setRenderHint(QPainter::TextAntialiasing);
 
     if (m_hasImage) {
         // 绘制图像
@@ -143,14 +144,42 @@ void HImageWidget::paintEvent(QPaintEvent* event)
             QPointF p2 = imageToWidget(m_drawEnd);
             painter.drawRect(QRectF(p1, p2).normalized());
         }
-    }
-    
-    // 绘制信息
-    painter.setPen(Qt::white);
-    painter.drawText(10, 20, QString("Zoom: %1%").arg(m_zoom * 100, 0, 'f', 1));
-    if (m_hasImage) {
+
+        // 绘制信息
+        painter.setPen(QColor(0, 0, 0, 160));
+        painter.drawText(11, 21, QString("Zoom: %1%").arg(m_zoom * 100, 0, 'f', 1));
+        painter.drawText(11, 41, QString("Size: %1 x %2").arg(m_imageWidth).arg(m_imageHeight));
+        painter.setPen(Qt::white);
+        painter.drawText(10, 20, QString("Zoom: %1%").arg(m_zoom * 100, 0, 'f', 1));
         painter.drawText(10, 40, QString("Size: %1 x %2").arg(m_imageWidth).arg(m_imageHeight));
+        return;
     }
+
+    const QColor background = palette().color(QPalette::Window);
+    const bool isLight = background.lightness() > 128;
+    const QColor primary = isLight ? QColor("#4b5563") : QColor("#d1d5db");
+    const QColor secondary = isLight ? QColor("#6b7280") : QColor("#9ca3af");
+
+    QFont titleFont = painter.font();
+    titleFont.setPointSize(rect().width() < 360 ? qMax(9, titleFont.pointSize()) : qMax(10, titleFont.pointSize() + 1));
+    titleFont.setBold(true);
+
+    QRect titleRect = rect().adjusted(24, 0, -24, 0);
+    titleRect.setHeight(rect().width() < 360 ? 56 : 34);
+    titleRect.moveCenter(QPoint(rect().center().x(), rect().center().y() - 14));
+
+    painter.setPen(primary);
+    painter.setFont(titleFont);
+    painter.drawText(titleRect, Qt::AlignCenter | Qt::TextWordWrap, tr("拖入图像或点云，或运行流程后显示结果"));
+
+    QFont hintFont = painter.font();
+    hintFont.setBold(false);
+    hintFont.setPointSize(qMax(9, hintFont.pointSize() - 1));
+    painter.setFont(hintFont);
+    painter.setPen(secondary);
+    QRect hintRect = titleRect.translated(0, rect().width() < 360 ? 54 : 30);
+    hintRect.setHeight(48);
+    painter.drawText(hintRect, Qt::AlignCenter | Qt::TextWordWrap, tr("支持图片、PLY/TIFF 点云和流程模块输出"));
 }
 
 void HImageWidget::resizeEvent(QResizeEvent* event)

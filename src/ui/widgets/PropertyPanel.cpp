@@ -2,8 +2,31 @@
 #include "core/interface/IModule.h"
 #include <QDebug>
 #include <QFormLayout>
+#include <QJsonArray>
 
 namespace DeepLux {
+
+namespace {
+
+bool isChoiceInfoKey(const QString& key)
+{
+    return key.endsWith("_options");
+}
+
+QJsonObject choiceInfoFromValue(const QJsonValue& value)
+{
+    if (value.isObject()) {
+        return value.toObject();
+    }
+
+    QJsonObject info;
+    if (value.isArray()) {
+        info["options"] = value.toArray();
+    }
+    return info;
+}
+
+} // namespace
 
 PropertyPanel::PropertyPanel(QWidget* parent)
     : QWidget(parent)
@@ -120,11 +143,18 @@ void PropertyPanel::loadParams()
         
         for (auto it = params.begin(); it != params.end(); ++it) {
             QString key = it.key();
+            if (isChoiceInfoKey(key)) {
+                continue;
+            }
+
             QJsonValue value = it.value();
             
             QWidget* widget = nullptr;
             
-            if (value.isString()) {
+            const QJsonValue choiceInfo = params.value(key + "_options");
+            if (value.isString() && (choiceInfo.isArray() || choiceInfo.isObject())) {
+                widget = createChoiceWidget(key, choiceInfoFromValue(choiceInfo));
+            } else if (value.isString()) {
                 widget = createTextWidget(key, QJsonObject());
             } else if (value.isDouble()) {
                 widget = createNumberWidget(key, QJsonObject());
@@ -212,11 +242,45 @@ QWidget* PropertyPanel::createBoolWidget(const QString& key, const QJsonObject& 
 
 QWidget* PropertyPanel::createChoiceWidget(const QString& key, const QJsonObject& info)
 {
-    Q_UNUSED(key)
-    Q_UNUSED(info)
-    
     QComboBox* combo = new QComboBox();
-    // TODO: 从 info 中加载选项
+    const QJsonArray options = info["options"].toArray();
+
+    for (const QJsonValue& optionValue : options) {
+        if (optionValue.isObject()) {
+            QJsonObject option = optionValue.toObject();
+            const QString value = option["value"].toString();
+            const QString label = option["label"].toString(value);
+            if (!value.isEmpty()) {
+                combo->addItem(label, value);
+            }
+        } else {
+            const QString value = optionValue.toString();
+            if (!value.isEmpty()) {
+                combo->addItem(value, value);
+            }
+        }
+    }
+
+    if (m_currentModule) {
+        QJsonObject params = m_currentModule->currentParams();
+        const QString currentValue = params[key].toString();
+        int index = combo->findData(currentValue);
+        if (index >= 0) {
+            combo->setCurrentIndex(index);
+        }
+    }
+
+    connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, key, combo](int index) {
+        if (index < 0) {
+            return;
+        }
+        const QString value = combo->itemData(index).toString();
+        if (m_currentModule) {
+            m_currentModule->setParam(key, value);
+        }
+        emit paramsChanged(m_currentModuleId, key, value);
+    });
+
     return combo;
 }
 

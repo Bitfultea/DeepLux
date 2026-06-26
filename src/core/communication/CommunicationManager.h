@@ -66,6 +66,9 @@ public:
     // 通讯配置列表
     QList<CommunicationConfig> configs() const { return m_configs; }
     CommunicationConfig* findConfig(const QString& configId);
+    bool addOrUpdateConfig(const CommunicationConfig& config);
+    bool removeConfig(const QString& configId);
+    void clearConfigs();
 
     // 连接管理
     bool connect(const QString& configId);

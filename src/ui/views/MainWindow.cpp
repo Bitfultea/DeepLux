@@ -366,6 +366,7 @@ void MainWindow::setupMenuBar() {
 
 void MainWindow::setupToolBar() {
     QToolBar* mainToolbar = addToolBar(tr("主工具栏"));
+    mainToolbar->setObjectName("MainToolBar");
     mainToolbar->setMovable(false);
     mainToolbar->setIconSize(QSize(24, 24));
     mainToolbar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
@@ -377,34 +378,14 @@ void MainWindow::setupToolBar() {
     mainToolbar->addAction(createSaveIcon(), tr("保存"), this, &MainWindow::onSaveProject);
     mainToolbar->addSeparator();
 
-    // 运行模式
-    mainToolbar->addAction(createQuickModeIcon(), tr("快捷模式"), this, &MainWindow::onQuickMode);
-    mainToolbar->addSeparator();
-
     // 运行控制
     mainToolbar->addAction(createPlayIcon(), tr("单次运行"), this, &MainWindow::onRunOnce);
     mainToolbar->addAction(createCycleIcon(), tr("循环运行"), this, &MainWindow::onRunCycle);
     mainToolbar->addAction(createStopIcon(), tr("停止"), this, &MainWindow::onStop);
     mainToolbar->addSeparator();
 
-    // 其他功能
-    mainToolbar->addAction(createUserIcon(), tr("用户登录"), this, &MainWindow::onUserLogin);
-    mainToolbar->addAction(createVariableIcon(), tr("全局变量"), this, &MainWindow::onGlobalVar);
-    mainToolbar->addAction(createCameraIcon(), tr("相机设置"), this, &MainWindow::onCameraSettings);
-    mainToolbar->addAction(createCommIcon(), tr("通讯设置"), this, &MainWindow::onCommSettings);
-    mainToolbar->addAction(createHardwareIcon(), tr("硬件配置"), this, &MainWindow::onHardwareConfig);
-    mainToolbar->addAction(createReportIcon(), tr("报表查询"), this, &MainWindow::onReportQuery);
-    mainToolbar->addSeparator();
-
     // 主题切换按钮
     mainToolbar->addAction(createToggleThemeIcon(), tr("切换主题"), this, &MainWindow::onToggleTheme);
-    mainToolbar->addSeparator();
-
-    // 右侧功能
-    mainToolbar->addAction(createHomeIcon(), tr("主页"), this, &MainWindow::onHome);
-    mainToolbar->addAction(createUiDesignIcon(), tr("UI 设计"), this, &MainWindow::onUIDesign);
-    mainToolbar->addAction(createLaserIcon(), tr("激光设置"), this, &MainWindow::onLaserSet);
-    mainToolbar->addSeparator();
 
     // 扫码框只保留在状态栏，工具栏不再重复添加
 }
@@ -513,7 +494,7 @@ void MainWindow::setupMainLayout() {
     QTreeWidgetItem* processRoot = new QTreeWidgetItem(processTree, QStringList(tr("流程 1")));
     processRoot->setExpanded(true);
     processTree->addTopLevelItem(processRoot);
-    processTree->setMaximumHeight(250);
+    processTree->setMaximumHeight(190);
     toolPanelLayout->addWidget(processTree);
     toolPanelLayout->setStretchFactor(processTree, 0);
 
@@ -660,8 +641,8 @@ void MainWindow::setupMainLayout() {
     m_toolBoxDock->setObjectName("ToolPanelDock");
     m_toolBoxDock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable);
     m_toolBoxDock->setWidget(toolPanelWidget);
-    m_toolBoxDock->setMinimumWidth(320);
-    m_toolBoxDock->setMaximumWidth(500);
+    m_toolBoxDock->setMinimumWidth(240);
+    m_toolBoxDock->setMaximumWidth(340);
     // 自定义标题栏
     QWidget* toolTitleWidget = new QWidget();
     QHBoxLayout* toolTitleLayout = new QHBoxLayout(toolTitleWidget);
@@ -695,7 +676,7 @@ void MainWindow::setupMainLayout() {
     rightTopSplitter->setObjectName("RightTopSplitter");
     rightTopSplitter->setHandleWidth(1);
 
-    // ========== 流程面板（QTabWidget：流程 + 数据源）==========
+    // ========== 流程面板（QTabWidget：流程 + 画布）==========
     QWidget* processPanelWidget = new QWidget();
     processPanelWidget->setObjectName("ProcessPanelWidget");
     QVBoxLayout* processPanelLayout = new QVBoxLayout(processPanelWidget);
@@ -807,13 +788,26 @@ void MainWindow::setupMainLayout() {
     m_flowCanvas->setObjectName("FlowCanvas");
     m_processTabWidget->addTab(m_flowCanvas, tr("画布"));
 
-    // ---- Tab 3: 数据源 ----
+    // ---- 右侧 Inspector：属性 + 数据源 ----
+    QTabWidget* inspectorTabs = new QTabWidget(this);
+    inspectorTabs->setObjectName("InspectorTabs");
+    inspectorTabs->setDocumentMode(true);
+
     m_propertyPanel = new PropertyPanel(this);
     m_propertyPanel->setObjectName("PropertyPanel");
-    m_processTabWidget->addTab(m_propertyPanel, tr("属性"));
+    inspectorTabs->addTab(m_propertyPanel, tr("属性"));
 
     m_dataSourcePanel = new DataSourcePanel(this);
-    m_processTabWidget->addTab(m_dataSourcePanel, tr("数据源"));
+    m_dataSourcePanel->setObjectName("DataSourcePanel");
+    inspectorTabs->addTab(m_dataSourcePanel, tr("数据源"));
+
+    m_propertyDock = new QDockWidget(this);
+    m_propertyDock->setObjectName("PropertyDock");
+    m_propertyDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
+    m_propertyDock->setTitleBarWidget(new QWidget());
+    m_propertyDock->setWidget(inspectorTabs);
+    m_propertyDock->setMinimumWidth(220);
+    m_propertyDock->setMaximumWidth(320);
 
     connect(m_processTree, &QTreeWidget::itemSelectionChanged, this, [this]() {
         if (!m_propertyPanel) return;
@@ -869,12 +863,14 @@ void MainWindow::setupMainLayout() {
 
     rightTopSplitter->addWidget(processPanelWidget);
 
-    processPanelWidget->setMinimumWidth(280);
-    processPanelWidget->setMaximumWidth(500);
+    processPanelWidget->setMinimumWidth(220);
+    processPanelWidget->setMaximumWidth(320);
 
     rightTopSplitter->addWidget(imageDisplayWidget);
+    rightTopSplitter->addWidget(m_propertyDock);
     rightTopSplitter->setStretchFactor(0, 1);
-    rightTopSplitter->setStretchFactor(1, 10);
+    rightTopSplitter->setStretchFactor(1, 8);
+    rightTopSplitter->setStretchFactor(2, 2);
 
     rightSplitter->addWidget(rightTopSplitter);
 
@@ -908,7 +904,8 @@ void MainWindow::setupMainLayout() {
     m_logTable->setColumnWidth(1, 70);
 
     // vertical header 固定宽度，替代重复的水平序号列
-    m_logTable->verticalHeader()->setDefaultSectionSize(24);
+    m_logTable->horizontalHeader()->setFixedHeight(24);
+    m_logTable->verticalHeader()->setDefaultSectionSize(20);
     m_logTable->verticalHeader()->setMinimumWidth(40);
     m_logTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_logTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -924,9 +921,9 @@ void MainWindow::setupMainLayout() {
         if (logicalIndex == 1) showLogLevelMenu();
     });
 
-    int logTabIndex = m_logTerminalTabs->addTab(logWidget, tr("📄 日志"));
+    int logTabIndex = m_logTerminalTabs->addTab(logWidget, tr("日志"));
 
-    // Tab "📄 日志" 再次点击时打开日志文件（第一次点击切换，第二次点击打开）
+    // Tab "日志" 再次点击时打开日志文件（第一次点击切换，第二次点击打开）
     connect(m_logTerminalTabs, &QTabWidget::tabBarClicked, this, [this, logTabIndex](int index) {
         if (index == logTabIndex && m_logTerminalTabs->currentIndex() == logTabIndex) {
             QString logPath = Logger::instance().logFilePath();
@@ -937,11 +934,11 @@ void MainWindow::setupMainLayout() {
     // ===== Tab 2: 终端 =====
     m_terminalWidget = new TerminalWidget();
     TerminalBridge::instance().initialize(m_terminalWidget);
-    m_logTerminalTabs->addTab(m_terminalWidget, tr("🖥️ 终端"));
+    m_logTerminalTabs->addTab(m_terminalWidget, tr("终端"));
 
     // ===== Tab 3: Agent Chat =====
     m_agentChatPanel = new AgentChatPanel();
-    m_logTerminalTabs->addTab(m_agentChatPanel, tr("🤖 Agent Chat"));
+    m_logTerminalTabs->addTab(m_agentChatPanel, tr("Agent 对话"));
     connect(m_agentChatPanel, &AgentChatPanel::userMessageSent,
             this, [this](const QString& msg) {
                 m_agentChatPanel->setThinking(true);
@@ -1006,18 +1003,18 @@ void MainWindow::setupMainLayout() {
 
     // ===== Tab 4: Agent Action Log =====
     m_agentActionLogWidget = new AgentActionLogWidget();
-    m_logTerminalTabs->addTab(m_agentActionLogWidget, tr("📋 Agent Log"));
+    m_logTerminalTabs->addTab(m_agentActionLogWidget, tr("Agent 日志"));
     connect(&AgentController::instance(), &AgentController::actionLogEntryAdded,
             m_agentActionLogWidget, &AgentActionLogWidget::addEntry);
     connect(&AgentController::instance(), &AgentController::agentLoopIterating,
             this, [this]() { m_agentChatPanel->setThinking(true); });
 
     m_logDock->setWidget(m_logTerminalTabs);
-    m_logDock->setMinimumHeight(250);
+    m_logDock->setMinimumHeight(140);
 
     rightSplitter->addWidget(m_logDock);
     rightSplitter->setStretchFactor(0, 10);
-    rightSplitter->setStretchFactor(1, 5);
+    rightSplitter->setStretchFactor(1, 2);
 
     // 将右侧 Splitter 添加到主 Splitter
     mainSplitter->addWidget(rightSplitter);
@@ -2183,23 +2180,43 @@ void MainWindow::onNewSolution() {
 }
 
 void MainWindow::onSolutionList() {
-    // TODO: 打开最近工程列表对话框
     QStringList recent = ProjectManager::instance().recentProjects();
     if (recent.isEmpty()) {
         QMessageBox::information(this, tr("方案列表"), tr("没有最近的工程"));
-    } else {
-        QStringList items;
-        for (const QString& path : recent) {
-            items.append(QFileInfo(path).fileName() + " - " + path);
-        }
-        bool ok;
-        QString selected = QInputDialog::getItem(this, tr("方案列表"), tr("选择工程:"), items, 0, false, &ok);
-        if (ok && !selected.isEmpty()) {
-            // 从路径中提取实际路径
-            QString path = selected.mid(selected.lastIndexOf(" - ") + 3);
-            ProjectManager::instance().openProject(path);
-        }
+        return;
     }
+
+    QStringList items;
+    for (const QString& path : recent) {
+        items.append(QFileInfo(path).fileName() + " - " + path);
+    }
+
+    bool ok = false;
+    const QString selected = QInputDialog::getItem(this, tr("方案列表"), tr("选择工程:"), items, 0, false, &ok);
+    if (!ok || selected.isEmpty()) {
+        return;
+    }
+
+    const int selectedIndex = items.indexOf(selected);
+    if (selectedIndex < 0 || selectedIndex >= recent.size()) {
+        return;
+    }
+
+    const QString path = recent.at(selectedIndex);
+    TerminalBridge::instance().onGuiAction("open-project", path);
+    Project* project = ProjectManager::instance().openProject(path);
+    if (!project) {
+        QMessageBox::warning(this, tr("方案列表"), tr("无法打开工程：%1").arg(path));
+        Logger::instance().error(tr("无法打开最近工程：%1").arg(path), "System");
+        return;
+    }
+
+    TerminalBridge::instance().onGuiAction("open-project-done", path);
+    if (m_projectLabel) {
+        const QString projectName = project->name().isEmpty() ? QFileInfo(path).fileName() : project->name();
+        m_projectLabel->setText(tr("当前工程：%1").arg(projectName));
+    }
+    Logger::instance().info(tr("打开最近工程：%1").arg(path), "System");
 }
 
 void MainWindow::onOpenProject() {
@@ -2380,7 +2397,16 @@ void MainWindow::onReportQuery() {
 }
 
 void MainWindow::onHome() {
-    // TODO: 主页功能 - 可以显示欢迎界面或隐藏侧边面板
+    clearCentralDisplay();
+    if (m_processTabWidget && m_flowCanvas) {
+        m_processTabWidget->setCurrentWidget(m_flowCanvas);
+    }
+    if (m_processTree) {
+        m_processTree->clearSelection();
+    }
+    if (m_processTimeLabel) {
+        m_processTimeLabel->setText(tr("总耗时：0 ms"));
+    }
     Logger::instance().info(tr("主页"), "System");
 }
 

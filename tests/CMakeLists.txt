@@ -7,6 +7,7 @@ set(TEST_SOURCES
     test_mainwindow.cpp
     test_project.cpp
     test_configmanager.cpp
+    test_communicationmanager.cpp
     test_pluginmanager.cpp
     test_plugincontracts.cpp
     test_logger.cpp
@@ -26,6 +27,7 @@ set(TEST_SOURCES
     test_cameramanager.cpp
     test_plyloader.cpp
     test_tiffloader.cpp
+    test_himagewidget.cpp
     test_flowcanvas.cpp
     test_propertypanel.cpp
     test_toolschema.cpp
@@ -107,3 +109,19 @@ foreach(TEST_FILE ${TEST_SOURCES})
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 2)
     endif()
 endforeach()
+
+add_executable(ui_capture_mainwindow ui_capture_mainwindow.cpp)
+target_link_libraries(ui_capture_mainwindow
+    PRIVATE
+        deeplux_core
+        deeplux_ui
+)
+if(Qt6_FOUND)
+    target_link_libraries(ui_capture_mainwindow PRIVATE Qt6::Core Qt6::Widgets)
+else()
+    target_link_libraries(ui_capture_mainwindow PRIVATE Qt5::Core Qt5::Widgets)
+endif()
+if(OpenCV_FOUND)
+    target_link_libraries(ui_capture_mainwindow PRIVATE ${OpenCV_LIBS})
+    target_include_directories(ui_capture_mainwindow PRIVATE ${OpenCV_INCLUDE_DIRS})
+endif()

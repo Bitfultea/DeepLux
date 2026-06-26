@@ -107,6 +107,7 @@ void CommunicationSetView::setupUI()
     QVBoxLayout* listLayout = new QVBoxLayout(listGroup);
 
     m_commTable = new QTableWidget(this);
+    m_commTable->setObjectName("CommunicationTable");
     m_commTable->setColumnCount(5);
     m_commTable->setHorizontalHeaderLabels({tr("Name"), tr("Type"), tr("Address"), tr("Port"), tr("Status")});
     m_commTable->horizontalHeader()->setStretchLastSection(true);
@@ -142,38 +143,46 @@ void CommunicationSetView::setupUI()
     settingsLayout->setSpacing(10);
 
     m_nameEdit = new QLineEdit(this);
+    m_nameEdit->setObjectName("CommunicationNameEdit");
     m_nameEdit->setPlaceholderText("MyDevice");
     settingsLayout->addRow(tr("Name:"), m_nameEdit);
 
     m_typeCombo = new QComboBox(this);
+    m_typeCombo->setObjectName("CommunicationTypeCombo");
     m_typeCombo->addItem("TCP Client", (int)CommunicationType::TCP_Client);
     m_typeCombo->addItem("TCP Server", (int)CommunicationType::TCP_Server);
     m_typeCombo->addItem("Serial Port", (int)CommunicationType::SerialPort);
+    m_typeCombo->addItem("PLC (Modbus TCP)", (int)CommunicationType::PLC);
     settingsLayout->addRow(tr("Type:"), m_typeCombo);
 
     // TCP Settings
     m_ipEdit = new QLineEdit(this);
+    m_ipEdit->setObjectName("CommunicationIpEdit");
     m_ipEdit->setPlaceholderText("192.168.1.100");
     settingsLayout->addRow(tr("IP Address:"), m_ipEdit);
 
     m_portSpin = new QSpinBox(this);
+    m_portSpin->setObjectName("CommunicationPortSpin");
     m_portSpin->setRange(1, 65535);
     m_portSpin->setValue(5000);
     settingsLayout->addRow(tr("Port:"), m_portSpin);
 
     // Serial Settings
     m_portNameCombo = new QComboBox(this);
+    m_portNameCombo->setObjectName("CommunicationPortNameCombo");
     foreach (const QSerialPortInfo &info, QSerialPortInfo::availablePorts()) {
         m_portNameCombo->addItem(info.portName());
     }
     settingsLayout->addRow(tr("Port Name:"), m_portNameCombo);
 
     m_baudRateSpin = new QSpinBox(this);
+    m_baudRateSpin->setObjectName("CommunicationBaudRateSpin");
     m_baudRateSpin->setRange(9600, 115200);
     m_baudRateSpin->setValue(115200);
     settingsLayout->addRow(tr("Baud Rate:"), m_baudRateSpin);
 
     m_parityCombo = new QComboBox(this);
+    m_parityCombo->setObjectName("CommunicationParityCombo");
     m_parityCombo->addItem("None", 0);
     m_parityCombo->addItem("Even", 1);
     m_parityCombo->addItem("Odd", 2);
@@ -204,6 +213,8 @@ void CommunicationSetView::setupUI()
     connect(m_closeBtn, &QPushButton::clicked, this, &QDialog::accept);
     connect(m_commTable, &QTableWidget::itemSelectionChanged, this, &CommunicationSetView::onCommSelectionChanged);
     connect(m_typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &CommunicationSetView::onTypeChanged);
+
+    onTypeChanged(m_typeCombo->currentIndex());
 }
 
 void CommunicationSetView::loadCommunications()
@@ -216,7 +227,9 @@ void CommunicationSetView::loadCommunications()
         int row = m_commTable->rowCount();
         m_commTable->insertRow(row);
 
-        m_commTable->setItem(row, 0, new QTableWidgetItem(config.name));
+        QTableWidgetItem* nameItem = new QTableWidgetItem(config.name);
+        nameItem->setData(Qt::UserRole, config.id);
+        m_commTable->setItem(row, 0, nameItem);
 
         QString typeStr;
         switch (config.type) {
@@ -259,16 +272,11 @@ void CommunicationSetView::updateButtons()
 
 void CommunicationSetView::onAddClicked()
 {
-    int row = m_commTable->rowCount();
-    m_commTable->insertRow(row);
-
-    m_commTable->setItem(row, 0, new QTableWidgetItem(tr("New Connection")));
-    m_commTable->setItem(row, 1, new QTableWidgetItem("TCP"));
-    m_commTable->setItem(row, 2, new QTableWidgetItem("192.168.1.100"));
-    m_commTable->setItem(row, 3, new QTableWidgetItem("5000"));
-    m_commTable->setItem(row, 4, new QTableWidgetItem(tr("Disconnected")));
-
-    m_commTable->selectRow(row);
+    m_commTable->clearSelection();
+    m_nameEdit->setText(tr("New Connection"));
+    m_typeCombo->setCurrentIndex(m_typeCombo->findData(static_cast<int>(CommunicationType::TCP_Client)));
+    m_ipEdit->setText("192.168.1.100");
+    m_portSpin->setValue(5000);
     updateButtons();
 }
 
@@ -277,7 +285,9 @@ void CommunicationSetView::onDeleteClicked()
     int row = m_commTable->currentRow();
     if (row < 0) return;
 
-    m_commTable->removeRow(row);
+    const QString configId = m_commTable->item(row, 0)->data(Qt::UserRole).toString();
+    CommunicationManager::instance().removeConfig(configId);
+    loadCommunications();
     updateButtons();
 }
 
@@ -286,7 +296,7 @@ void CommunicationSetView::onConnectClicked()
     int row = m_commTable->currentRow();
     if (row < 0) return;
 
-    QString configId = m_commTable->item(row, 0)->text();
+    QString configId = m_commTable->item(row, 0)->data(Qt::UserRole).toString();
     CommunicationManager::instance().connect(configId);
 
     loadCommunications();
@@ -297,7 +307,7 @@ void CommunicationSetView::onDisconnectClicked()
     int row = m_commTable->currentRow();
     if (row < 0) return;
 
-    QString configId = m_commTable->item(row, 0)->text();
+    QString configId = m_commTable->item(row, 0)->data(Qt::UserRole).toString();
     CommunicationManager::instance().disconnect(configId);
 
     loadCommunications();
@@ -305,12 +315,38 @@ void CommunicationSetView::onDisconnectClicked()
 
 void CommunicationSetView::onApplyClicked()
 {
-    // Apply communication settings
-    QString name = m_nameEdit->text();
-    QString ip = m_ipEdit->text();
-    int port = m_portSpin->value();
+    CommunicationConfig config;
+    int row = m_commTable->currentRow();
+    if (row >= 0 && m_commTable->item(row, 0)) {
+        config.id = m_commTable->item(row, 0)->data(Qt::UserRole).toString();
+    }
 
-    Logger::instance().info(QString("Communication settings applied: %1 - %2:%3").arg(name).arg(ip).arg(port), "Comm");
+    config.name = m_nameEdit->text().trimmed();
+    if (config.name.isEmpty()) {
+        config.name = tr("New Connection");
+    }
+    if (config.id.isEmpty()) {
+        config.id = config.name;
+    }
+
+    config.type = static_cast<CommunicationType>(m_typeCombo->currentData().toInt());
+    config.ipAddress = m_ipEdit->text().trimmed();
+    config.port = m_portSpin->value();
+    config.portName = m_portNameCombo->currentText();
+    config.baudRate = m_baudRateSpin->value();
+    config.parity = m_parityCombo->currentText();
+
+    if (!CommunicationManager::instance().addOrUpdateConfig(config)) {
+        Logger::instance().error(QString("Communication settings rejected: %1").arg(config.name), "Comm");
+        return;
+    }
+
+    Logger::instance().info(QString("Communication settings applied: %1 - %2:%3")
+                                .arg(config.name)
+                                .arg(config.ipAddress)
+                                .arg(config.port),
+                            "Comm");
+    loadCommunications();
     accept();
 }
 
@@ -321,13 +357,59 @@ void CommunicationSetView::onCloseClicked()
 
 void CommunicationSetView::onCommSelectionChanged()
 {
+    int row = m_commTable->currentRow();
+    if (row >= 0 && m_commTable->item(row, 0)) {
+        const QString configId = m_commTable->item(row, 0)->data(Qt::UserRole).toString();
+        if (CommunicationConfig* config = CommunicationManager::instance().findConfig(configId)) {
+            m_nameEdit->setText(config->name);
+            int typeIndex = m_typeCombo->findData(static_cast<int>(config->type));
+            if (typeIndex >= 0) {
+                m_typeCombo->setCurrentIndex(typeIndex);
+            }
+            m_ipEdit->setText(config->ipAddress);
+            if (config->port > 0) {
+                m_portSpin->setValue(config->port);
+            }
+            int portNameIndex = m_portNameCombo->findText(config->portName);
+            if (portNameIndex >= 0) {
+                m_portNameCombo->setCurrentIndex(portNameIndex);
+            }
+            m_baudRateSpin->setValue(config->baudRate);
+            int parityIndex = m_parityCombo->findText(config->parity);
+            if (parityIndex >= 0) {
+                m_parityCombo->setCurrentIndex(parityIndex);
+            }
+        }
+    }
     updateButtons();
 }
 
 void CommunicationSetView::onTypeChanged(int index)
 {
-    Q_UNUSED(index);
-    // Could show/hide TCP vs Serial settings here
+    if (index < 0) {
+        return;
+    }
+
+    const CommunicationType type = static_cast<CommunicationType>(m_typeCombo->itemData(index).toInt());
+    const bool isSerial = (type == CommunicationType::SerialPort);
+    const bool isNetwork =
+        (type == CommunicationType::TCP_Client || type == CommunicationType::TCP_Server || type == CommunicationType::PLC);
+
+    if (m_ipEdit) {
+        m_ipEdit->setEnabled(isNetwork);
+    }
+    if (m_portSpin) {
+        m_portSpin->setEnabled(isNetwork);
+    }
+    if (m_portNameCombo) {
+        m_portNameCombo->setEnabled(isSerial);
+    }
+    if (m_baudRateSpin) {
+        m_baudRateSpin->setEnabled(isSerial);
+    }
+    if (m_parityCombo) {
+        m_parityCombo->setEnabled(isSerial);
+    }
 }
 
 } // namespace DeepLux

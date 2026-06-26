@@ -57,9 +57,6 @@ void DefectDetectionPlugin::shutdown()
 
 bool DefectDetectionPlugin::process(const ImageData& input, ImageData& output)
 {
-    Q_UNUSED(input);
-    Q_UNUSED(output);
-
 #ifdef DEEPLUX_HAS_HYMSON3D
     // 获取参数
     float longNormalDegree = m_params["longNormalDegree"].toDouble();
@@ -72,24 +69,31 @@ bool DefectDetectionPlugin::process(const ImageData& input, ImageData& output)
     size_t minDefectsSize = m_params["minDefectsSize"].toInteger();
     m_debugMode = m_params["debugMode"].toBool();
 
-    // TODO: 从输入获取点云数据
-    // 当前Demo: 创建演示用的点云数据
-    PointCloudData inputCloud;
+    Q_UNUSED(rcornerNormalDegree);
+    Q_UNUSED(rcornerCurvatureThreshold);
+    Q_UNUSED(minPoints);
 
-    // 生成一些测试点 (平面上的点)
-    for (int i = 0; i < 1000; ++i) {
-        double x = static_cast<double>(i % 50) * 0.01;
-        double y = static_cast<double>(i / 50) * 0.01;
-        double z = 0.0;
-        inputCloud.points.emplace_back(x, y, z);
+    PointCloudData inputCloud;
+    const QVariant pointCloudValue =
+        input.hasData("point_cloud") ? input.data("point_cloud") : input.data("pointCloud");
+    if (pointCloudValue.canConvert<PointCloudData>()) {
+        inputCloud = pointCloudValue.value<PointCloudData>();
+    } else {
+        const QVariant displayValue = input.data("display_data");
+        if (displayValue.canConvert<DisplayData>()) {
+            const DisplayData displayData = displayValue.value<DisplayData>();
+            if (const PointCloudData* cloud = displayData.pointCloudData()) {
+                inputCloud = *cloud;
+            }
+        }
     }
 
-    // 添加一些"缺陷"点 (高度变化)
-    for (int i = 0; i < 100; ++i) {
-        double x = static_cast<double>(i % 20) * 0.01 + 0.25;
-        double y = static_cast<double>(i / 20) * 0.01 + 0.25;
-        double z = 0.05;  // 凸起缺陷
-        inputCloud.points.emplace_back(x, y, z);
+    if (inputCloud.isEmpty()) {
+        Logger::instance().error("输入中未找到有效点云数据", "DefectDetection");
+        output = input;
+        output.setData("has_defects", false);
+        output.setData("defect_count", 0);
+        return false;
     }
 
     // 转换为 HymsonVision3D 点云
@@ -117,15 +121,19 @@ bool DefectDetectionPlugin::process(const ImageData& input, ImageData& output)
     for (const auto& defectCloud : defectClouds) {
         auto data = PointCloudConverter::fromHymsonCloud(defectCloud);
         m_defectData.points.insert(m_defectData.points.end(), data.points.begin(), data.points.end());
-        m_defectData.labels.insert(m_defectData.labels.end(), data.labels.begin(), data.labels.end());
+        m_defectData.normals.insert(m_defectData.normals.end(), data.normals.begin(), data.normals.end());
+        m_defectData.colors.insert(m_defectData.colors.end(), data.colors.begin(), data.colors.end());
+        m_defectData.intensities.insert(m_defectData.intensities.end(), data.intensities.begin(), data.intensities.end());
     }
 
     // 为缺陷点添加标签
-    for (size_t i = 0; i < m_defectData.points.size(); ++i) {
-        m_defectData.labels.push_back(1);  // 1 = 缺陷
-    }
+    m_defectData.labels.assign(m_defectData.points.size(), 1);  // 1 = 缺陷
 
     m_hasDefects = !m_defectData.isEmpty();
+    output = input;
+    output.setData("defect_point_cloud", QVariant::fromValue(m_defectData));
+    output.setData("has_defects", m_hasDefects);
+    output.setData("defect_count", static_cast<int>(m_defectData.size()));
 
     if (m_hasDefects) {
         Logger::instance().info(QString("检测到 %1 个缺陷点").arg(m_defectData.size()), "DefectDetection");
@@ -135,6 +143,8 @@ bool DefectDetectionPlugin::process(const ImageData& input, ImageData& output)
 
     return true;
 #else
+    Q_UNUSED(input);
+    Q_UNUSED(output);
     Logger::instance().warning("HymsonVision3D 未启用，缺陷检测不可用", "DefectDetection");
     return false;
 #endif

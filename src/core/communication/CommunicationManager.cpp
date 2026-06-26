@@ -30,6 +30,74 @@ CommunicationConfig* CommunicationManager::findConfig(const QString& configId)
     return nullptr;
 }
 
+bool CommunicationManager::addOrUpdateConfig(const CommunicationConfig& config)
+{
+    CommunicationConfig normalized = config;
+    normalized.id = normalized.id.trimmed();
+    normalized.name = normalized.name.trimmed();
+
+    if (normalized.id.isEmpty()) {
+        Logger::instance().error("Communication config id is empty", "Comm");
+        return false;
+    }
+    if (normalized.name.isEmpty()) {
+        normalized.name = normalized.id;
+    }
+
+    if ((normalized.type == CommunicationType::TCP_Client || normalized.type == CommunicationType::PLC)
+        && normalized.ipAddress.trimmed().isEmpty()) {
+        Logger::instance().error(QString("Communication config %1 missing IP address").arg(normalized.id), "Comm");
+        return false;
+    }
+
+    if ((normalized.type == CommunicationType::TCP_Client || normalized.type == CommunicationType::TCP_Server
+         || normalized.type == CommunicationType::PLC)
+        && (normalized.port <= 0 || normalized.port > 65535)) {
+        Logger::instance().error(QString("Communication config %1 has invalid port").arg(normalized.id), "Comm");
+        return false;
+    }
+
+    if (normalized.type == CommunicationType::SerialPort && normalized.portName.trimmed().isEmpty()) {
+        Logger::instance().error(QString("Communication config %1 missing serial port name").arg(normalized.id), "Comm");
+        return false;
+    }
+
+    for (CommunicationConfig& existing : m_configs) {
+        if (existing.id == normalized.id) {
+            if (isConnected(normalized.id)) {
+                disconnect(normalized.id);
+            }
+            existing = normalized;
+            m_states[normalized.id] = CommunicationState::Disconnected;
+            return true;
+        }
+    }
+
+    m_configs.append(normalized);
+    m_states[normalized.id] = CommunicationState::Disconnected;
+    return true;
+}
+
+bool CommunicationManager::removeConfig(const QString& configId)
+{
+    for (int i = 0; i < m_configs.size(); ++i) {
+        if (m_configs[i].id == configId) {
+            disconnect(configId);
+            m_configs.removeAt(i);
+            m_states.remove(configId);
+            return true;
+        }
+    }
+    return false;
+}
+
+void CommunicationManager::clearConfigs()
+{
+    disconnectAll();
+    m_configs.clear();
+    m_states.clear();
+}
+
 bool CommunicationManager::connect(const QString& configId)
 {
     CommunicationConfig* config = findConfig(configId);
@@ -46,18 +114,30 @@ bool CommunicationManager::connect(const QString& configId)
     Logger::instance().info(QString("Connecting: %1 (%2)").arg(config->name).arg(configId), "Comm");
 
     switch (config->type) {
-        case CommunicationType::TCP_Client: {
+        case CommunicationType::TCP_Client:
+        case CommunicationType::PLC: {
             QTcpSocket* socket = new QTcpSocket(this);
             m_tcpSockets[configId] = socket;
 
             QObject::connect(socket, &QTcpSocket::connected, this, [this, configId, config]() {
                 m_states[configId] = CommunicationState::Connected;
                 emit connectionStateChanged(configId, CommunicationState::Connected);
-                Logger::instance().success(QString("Connected to TCP server: %1:%2").arg(config->ipAddress).arg(config->port), "Comm");
+                const QString transport = (config->type == CommunicationType::PLC) ? "PLC Modbus TCP" : "TCP server";
+                Logger::instance().success(QString("Connected to %1: %2:%3")
+                                               .arg(transport)
+                                               .arg(config->ipAddress)
+                                               .arg(config->port),
+                                           "Comm");
             });
 
             QObject::connect(socket, &QTcpSocket::readyRead, this, &CommunicationManager::onReadyRead);
             QObject::connect(socket, &QTcpSocket::disconnected, this, &CommunicationManager::onDisconnected);
+            QObject::connect(socket, &QTcpSocket::errorOccurred,
+                             this, [this, configId, socket](QAbstractSocket::SocketError) {
+                                 m_states[configId] = CommunicationState::Error;
+                                 emit connectionStateChanged(configId, CommunicationState::Error);
+                                 emit errorOccurred(configId, socket->errorString());
+                             });
 
             socket->connectToHost(config->ipAddress, config->port);
             break;
@@ -109,11 +189,6 @@ bool CommunicationManager::connect(const QString& configId)
             }
             break;
         }
-
-        case CommunicationType::PLC:
-            // PLC通讯需要专门的实现
-            Logger::instance().warning("PLC communication not implemented", "Comm");
-            break;
     }
 
     return true;
