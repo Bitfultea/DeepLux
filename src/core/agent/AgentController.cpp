@@ -344,51 +344,38 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
 // ========== Helpers ==========
 
 void AgentController::trimHistoryIfNeeded() {
-    // 粗略估计: 每字符 ≈ 0.3 token (中英文混合)，每消息 overhead ≈ 20 tokens
-    // 目标: 不超过模型 context window 的 80% (128K * 0.8 ≈ 100K)
-    constexpr int maxHistoryMessages = 15;
+    // 仅靠 token 估计裁剪，不设硬消息数上限
+    // 每字符 ≈ 0.3 token，每消息 overhead ≈ 20 tokens
     constexpr int maxEstTokens = 256000;
 
     auto estimateHistoryTokens = [this]() {
-        int estimated = 0;
+        int estimated = m_systemPrompt.length() * 0.3;
         for (const auto& m : m_conversationHistory) {
             estimated += m.content.length() * 0.3 + 20;
             if (!m.reasoningContent.isEmpty())
                 estimated += m.reasoningContent.length() * 0.3;
         }
-        // 加上 system prompt
-        estimated += m_systemPrompt.length() * 0.3;
         return estimated;
     };
 
-    auto secondUserIndex = [this]() {
-        int userCount = 0;
-        for (int i = 0; i < m_conversationHistory.size(); ++i) {
-            if (m_conversationHistory[i].role == "user" && ++userCount == 2) {
-                return i;
-            }
-        }
-        return -1;
-    };
-
     auto trimLeadingPartialTurn = [this]() {
-        while (!m_conversationHistory.isEmpty() && m_conversationHistory.first().role != "user") {
+        while (!m_conversationHistory.isEmpty() && m_conversationHistory.first().role != "user")
             m_conversationHistory.removeFirst();
-        }
     };
 
     trimLeadingPartialTurn();
     int estimated = estimateHistoryTokens();
 
-    // 以完整轮次为单位从头部裁剪
-    while (m_conversationHistory.size() > maxHistoryMessages || estimated > maxEstTokens) {
-        const int secondUserIdx = secondUserIndex();
+    while (estimated > maxEstTokens) {
+        int secondUserIdx = -1, userCount = 0;
+        for (int i = 0; i < m_conversationHistory.size(); ++i)
+            if (m_conversationHistory[i].role == "user" && ++userCount == 2) { secondUserIdx = i; break; }
         if (secondUserIdx > 1) {
             m_conversationHistory = m_conversationHistory.mid(secondUserIdx);
             trimLeadingPartialTurn();
             estimated = estimateHistoryTokens();
         } else {
-            break; // 仅剩一轮, 无法裁剪
+            break;
         }
     }
 }
