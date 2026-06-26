@@ -58,7 +58,6 @@ private slots:
     void onCameraSettings();
     void onCommSettings();
     void onHardwareConfig();
-    void onReportQuery();
     void onHome();
     void onUIDesign();
     void onLaserSet();
@@ -77,7 +76,6 @@ private slots:
     void onLogAdded(const LogEntry& entry);
     void onLogFilterChanged(int index);
     void showLogLevelMenu();
-    void onBarcodeEntered();
     void onImportImage();
     void onToggleToolPanel(bool checked);
     void onToggleProcessPanel(bool checked);
@@ -173,8 +171,6 @@ protected:
     QLabel* m_projectLabel = nullptr;
     QWidget* m_processTabContent = nullptr;
     QLabel* m_timeLabel = nullptr;
-    QLineEdit* m_barcodeInput = nullptr;
-
     // 最后导入的图像路径
     QString m_lastImportedImagePath;
     // 自动配置流程中第一个GrabImage模块的图像路径

@@ -334,8 +334,6 @@ void MainWindow::setupMenuBar() {
     toolMenu->addAction(createCameraIcon(), tr("相机设置"), this, &MainWindow::onCameraSettings);
     toolMenu->addAction(createCommIcon(), tr("通讯设置"), this, &MainWindow::onCommSettings);
     toolMenu->addAction(createHardwareIcon(), tr("硬件配置"), this, &MainWindow::onHardwareConfig);
-    toolMenu->addAction(createReportIcon(), tr("报表查询"), this, &MainWindow::onReportQuery);
-    toolMenu->addSeparator();
     toolMenu->addAction(tr("Agent 设置"), this, [this]() {
         AgentSettingsDialog dlg(this);
         if (dlg.exec() == QDialog::Accepted) {
@@ -411,12 +409,6 @@ void MainWindow::setupStatusBar() {
     connect(timer, &QTimer::timeout, this,
             [this]() { m_timeLabel->setText(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss")); });
     timer->start(1000);
-
-    m_barcodeInput = new QLineEdit();
-    m_barcodeInput->setPlaceholderText(tr("扫码枪输入"));
-    m_barcodeInput->setMaximumWidth(200);
-    status->addPermanentWidget(m_barcodeInput);
-    connect(m_barcodeInput, &QLineEdit::returnPressed, this, &MainWindow::onBarcodeEntered);
 }
 
 void MainWindow::setupMainLayout() {
@@ -486,17 +478,6 @@ void MainWindow::setupMainLayout() {
     toolToolBarLayout->addWidget(toolSettingsBtn);
     toolPanelLayout->addWidget(toolToolBar);
     toolPanelLayout->setStretchFactor(toolToolBar, 0);
-
-    // 流程树（上方区域）
-    QTreeWidget* processTree = new QTreeWidget();
-    processTree->setHeaderHidden(true);
-    processTree->setObjectName("ToolProcessTree");
-    QTreeWidgetItem* processRoot = new QTreeWidgetItem(processTree, QStringList(tr("流程 1")));
-    processRoot->setExpanded(true);
-    processTree->addTopLevelItem(processRoot);
-    processTree->setMaximumHeight(190);
-    toolPanelLayout->addWidget(processTree);
-    toolPanelLayout->setStretchFactor(processTree, 0);
 
     // 分割线
     QFrame* toolPanelSeparator = new QFrame();
@@ -755,7 +736,7 @@ void MainWindow::setupMainLayout() {
     m_processTree->setColumnCount(2);
     m_processTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_processTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_processTree->header()->setMinimumSectionSize(60);
+    m_processTree->setColumnHidden(1, true);   // 耗时列默认隐藏，运行后显示
     m_processTree->header()->setHidden(true);
     m_processTree->viewport()->installEventFilter(this);
     m_processTree->installEventFilter(this);
@@ -2391,11 +2372,6 @@ void MainWindow::onHardwareConfig() {
     Logger::instance().info(tr("硬件配置"), "System");
 }
 
-void MainWindow::onReportQuery() {
-    QMessageBox::information(this, tr("报表查询"), tr("报表查询功能开发中"));
-    Logger::instance().info(tr("报表查询"), "System");
-}
-
 void MainWindow::onHome() {
     clearCentralDisplay();
     if (m_processTabWidget && m_flowCanvas) {
@@ -2644,14 +2620,6 @@ void MainWindow::showLogLevelMenu()
                             : QRect();
     QPoint pos = m_logTable->mapToGlobal(QPoint(sectionRect.x(), sectionRect.y()));
     menu.exec(pos);
-}
-
-void MainWindow::onBarcodeEntered() {
-    QString barcode = m_barcodeInput->text();
-    if (!barcode.isEmpty()) {
-        Logger::instance().info(tr("扫码输入：%1").arg(barcode), "System");
-        m_barcodeInput->clear();
-    }
 }
 
 void MainWindow::onImportImage() {
