@@ -769,24 +769,20 @@ void MainWindow::setupMainLayout() {
     m_flowCanvas->setObjectName("FlowCanvas");
     m_processTabWidget->addTab(m_flowCanvas, tr("画布"));
 
-    // ---- 右侧 Inspector：属性 + 数据源 ----
-    QTabWidget* inspectorTabs = new QTabWidget(this);
-    inspectorTabs->setObjectName("InspectorTabs");
-    inspectorTabs->setDocumentMode(true);
-
-    m_propertyPanel = new PropertyPanel(this);
-    m_propertyPanel->setObjectName("PropertyPanel");
-    inspectorTabs->addTab(m_propertyPanel, tr("属性"));
-
+    // ---- Tab 3: 数据源 ----
     m_dataSourcePanel = new DataSourcePanel(this);
     m_dataSourcePanel->setObjectName("DataSourcePanel");
-    inspectorTabs->addTab(m_dataSourcePanel, tr("数据源"));
+    m_processTabWidget->addTab(m_dataSourcePanel, tr("数据源"));
+
+    // ---- 右侧属性面板 ----
+    m_propertyPanel = new PropertyPanel(this);
+    m_propertyPanel->setObjectName("PropertyPanel");
 
     m_propertyDock = new QDockWidget(this);
     m_propertyDock->setObjectName("PropertyDock");
     m_propertyDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
     m_propertyDock->setTitleBarWidget(new QWidget());
-    m_propertyDock->setWidget(inspectorTabs);
+    m_propertyDock->setWidget(m_propertyPanel);
     m_propertyDock->setMinimumWidth(220);
     m_propertyDock->setMaximumWidth(320);
 
@@ -1227,6 +1223,8 @@ void MainWindow::onCopyDataSourcePath(const QString& dataSourceId)
 
 void MainWindow::addModuleToProcessTree(const ModuleInstance& inst)
 {
+    if (m_instanceItemMap.contains(inst.id)) return;  // 已存在，防止重复
+
     auto diagLog = [](const QString& msg) {
         QFile f("/tmp/deeplux_agent_diag.log");
         f.open(QIODevice::WriteOnly | QIODevice::Append);
@@ -1889,6 +1887,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                         newItem->setData(0, Qt::UserRole, "flow_item");
                         newItem->setData(0, Qt::UserRole + 1, instanceName);
                         newItem->setData(0, Qt::UserRole + 2, pluginName);
+                        m_instanceItemMap.insert(instanceName, newItem);  // 防 Project 信号重复创建
 
                         // 推迟模块创建到事件循环 — 避免在拖放嵌套循环中阻塞
                         QTimer::singleShot(0, this, [this, pluginName, instanceName, newItem]() {
@@ -1905,16 +1904,21 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                                 removeModuleFromProcessTree(instanceName);
                                 return;
                             }
-                            m_flowModules.insert(instanceName, module);
-                            // 统一使用模块的 name() 和 icon()，和 Agent 路径一致
+                            // 通过 Project 模型添加 — moduleAdded 信号同步 processTree + FlowCanvas
                             newItem->setText(0, module->name());
                             newItem->setIcon(0, module->icon());
+                            m_flowModules.insert(instanceName, module);
                             m_modulesNeedSync = true;
+                            ModuleInstance inst;
+                            inst.id = instanceName;
+                            inst.moduleId = pluginName;
+                            inst.name = module->name();
+                            Project* proj = ProjectManager::instance().currentProject();
+                            if (proj) {
+                                proj->addModule(inst);
+                            }
                             Logger::instance().info(
                                 tr("已添加插件到流程：%1 (%2)").arg(module->name()).arg(instanceName), "Flow");
-                            if (ProjectManager::instance().currentProject()) {
-                                ProjectManager::instance().currentProject()->setModified(true);
-                            }
                         });
 
                         dropEvent->acceptProposedAction();
