@@ -116,10 +116,15 @@ QJsonObject ModuleBase::currentParams() const
 
 void ModuleBase::setParams(const QJsonObject& params)
 {
+    QJsonObject merged = m_defaultParams;
+    for (auto it = params.begin(); it != params.end(); ++it) {
+        merged[it.key()] = it.value();
+    }
+
     QString error;
-    if (validateParams(params, error)) {
+    if (validateParams(merged, error)) {
         QMutexLocker locker(&m_paramsMutex);
-        m_params = params;
+        m_params = merged;
     } else {
         qWarning() << "Invalid params:" << error;
     }
@@ -160,7 +165,7 @@ bool ModuleBase::fromJson(const QJsonObject& json)
     m_name = json["name"].toString();
     m_category = json["category"].toString();
     m_version = json["version"].toString("1.0.0");
-    m_params = json["params"].toObject();
+    setParams(json["params"].toObject());
     return true;
 }
 

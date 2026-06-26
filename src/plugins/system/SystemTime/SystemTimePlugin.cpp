@@ -60,8 +60,13 @@ bool SystemTimePlugin::process(const ImageData& input, ImageData& output)
 
 bool SystemTimePlugin::doValidateParams(const QJsonObject& params, QString& error) const
 {
-    Q_UNUSED(params);
     error.clear();
+
+    if (params["timeFormat"].toString().trimmed().isEmpty()) {
+        error = tr("时间格式不能为空");
+        return false;
+    }
+
     return true;
 }
 
@@ -87,6 +92,7 @@ QWidget* SystemTimePlugin::createConfigWidget()
 IModule* SystemTimePlugin::cloneImpl() const
 {
     SystemTimePlugin* clone = new SystemTimePlugin();
+    clone->setParams(currentParams());
     return clone;
 }
 

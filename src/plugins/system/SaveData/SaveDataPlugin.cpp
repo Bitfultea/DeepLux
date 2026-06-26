@@ -99,7 +99,6 @@ bool SaveDataPlugin::process(const ImageData& input, ImageData& output)
 bool SaveDataPlugin::saveToJson(const QString& filePath, const QVariantMap& data)
 {
     QFile file(filePath);
-    QIODevice::OpenMode mode = QIODevice::WriteOnly;
 
     // 检查是否追加模式
     QJsonObject jsonObj;
@@ -162,11 +161,13 @@ bool SaveDataPlugin::saveToCsv(const QString& filePath, const QVariantMap& data)
 
 bool SaveDataPlugin::doValidateParams(const QJsonObject& params, QString& error) const
 {
-    QString filePath = params["filePath"].toString();
-    if (filePath.isEmpty()) {
-        error = tr("文件路径不能为空");
+    const QString fileFormat = params["fileFormat"].toString("json");
+    if (fileFormat != "json" && fileFormat != "csv" && fileFormat != "text") {
+        error = tr("文件格式无效");
         return false;
     }
+
+    error.clear();
     return true;
 }
 
@@ -205,6 +206,7 @@ QWidget* SaveDataPlugin::createConfigWidget()
 IModule* SaveDataPlugin::cloneImpl() const
 {
     SaveDataPlugin* clone = new SaveDataPlugin();
+    clone->setParams(currentParams());
     return clone;
 }
 

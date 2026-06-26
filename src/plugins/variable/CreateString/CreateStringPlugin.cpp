@@ -60,10 +60,18 @@ bool CreateStringPlugin::process(const ImageData& input, ImageData& output)
 
 bool CreateStringPlugin::doValidateParams(const QJsonObject& params, QString& error) const
 {
-    if (params["outputVarName"].toString().isEmpty()) {
+    const QString stringSource = params["stringSource"].toString("Fixed");
+    if (stringSource != "Fixed" && stringSource != "Input") {
+        error = QString("String source is unsupported");
+        return false;
+    }
+
+    if (params["outputVarName"].toString().trimmed().isEmpty()) {
         error = QString("Output variable name cannot be empty");
         return false;
     }
+
+    error.clear();
     return true;
 }
 
@@ -104,6 +112,13 @@ QWidget* CreateStringPlugin::createConfigWidget()
     });
 
     return widget;
+}
+
+IModule* CreateStringPlugin::cloneImpl() const
+{
+    CreateStringPlugin* clone = new CreateStringPlugin();
+    clone->setParams(currentParams());
+    return clone;
 }
 
 } // namespace DeepLux

@@ -137,6 +137,7 @@ QWidget* FolderPlugin::createConfigWidget()
 IModule* FolderPlugin::cloneImpl() const
 {
     FolderPlugin* clone = new FolderPlugin();
+    clone->setParams(currentParams());
     return clone;
 }
 

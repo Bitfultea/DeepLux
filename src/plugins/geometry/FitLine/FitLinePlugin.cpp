@@ -176,8 +176,24 @@ bool FitLinePlugin::fitLineRANSAC(const QVector<QPointF>& points,
 
 bool FitLinePlugin::doValidateParams(const QJsonObject& params, QString& error) const
 {
-    Q_UNUSED(params);
     error.clear();
+
+    const QString fitMethod = params["fitMethod"].toString("RANSAC");
+    if (fitMethod != "RANSAC" && fitMethod != "LS" && fitMethod != "FTH") {
+        error = tr("拟合方法无效");
+        return false;
+    }
+
+    if (params["threshold"].toDouble() <= 0.0) {
+        error = tr("阈值必须大于0");
+        return false;
+    }
+
+    if (params["iterations"].toInt() <= 0) {
+        error = tr("迭代次数必须大于0");
+        return false;
+    }
+
     return true;
 }
 
@@ -233,6 +249,7 @@ QWidget* FitLinePlugin::createConfigWidget()
 IModule* FitLinePlugin::cloneImpl() const
 {
     FitLinePlugin* clone = new FitLinePlugin();
+    clone->setParams(currentParams());
     return clone;
 }
 

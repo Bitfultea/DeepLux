@@ -6,6 +6,7 @@
 #include <QCheckBox>
 #include <QSpinBox>
 #include <QFormLayout>
+#include <QRegExp>
 
 namespace DeepLux {
 
@@ -55,15 +56,15 @@ bool SplitStringPlugin::process(const ImageData& input, ImageData& output)
 
     QStringList parts;
     if (useRegex) {
-        parts = inputString.split(QRegExp(separator), QString::SkipEmptyParts);
+        parts = inputString.split(QRegExp(separator), Qt::SkipEmptyParts);
     } else {
         if (maxSplits > 0) {
-            parts = inputString.split(separator, QString::SkipEmptyParts, Qt::CaseSensitive);
+            parts = inputString.split(separator, Qt::SkipEmptyParts, Qt::CaseSensitive);
             while (parts.size() > maxSplits) {
                 parts.removeLast();
             }
         } else {
-            parts = inputString.split(separator, QString::SkipEmptyParts, Qt::CaseSensitive);
+            parts = inputString.split(separator, Qt::SkipEmptyParts, Qt::CaseSensitive);
         }
     }
 
@@ -84,8 +85,32 @@ bool SplitStringPlugin::process(const ImageData& input, ImageData& output)
 
 bool SplitStringPlugin::doValidateParams(const QJsonObject& params, QString& error) const
 {
-    Q_UNUSED(params);
     error.clear();
+
+    const QString separator = params["separator"].toString(",");
+    if (separator.isEmpty()) {
+        error = tr("分隔符不能为空");
+        return false;
+    }
+
+    if (params["outputPrefix"].toString("part").trimmed().isEmpty()) {
+        error = tr("输出前缀不能为空");
+        return false;
+    }
+
+    if (params["maxSplits"].toInt(0) < 0) {
+        error = tr("最大分割数不能小于0");
+        return false;
+    }
+
+    if (params["useRegex"].toBool(false)) {
+        QRegExp regex(separator);
+        if (!regex.isValid()) {
+            error = tr("正则表达式无效");
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -136,6 +161,13 @@ QWidget* SplitStringPlugin::createConfigWidget()
     });
 
     return widget;
+}
+
+IModule* SplitStringPlugin::cloneImpl() const
+{
+    SplitStringPlugin* clone = new SplitStringPlugin();
+    clone->setParams(currentParams());
+    return clone;
 }
 
 } // namespace DeepLux

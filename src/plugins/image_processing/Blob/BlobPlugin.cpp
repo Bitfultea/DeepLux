@@ -122,6 +122,7 @@ bool BlobPlugin::process(const ImageData& input, ImageData& output)
 
 std::vector<BlobPlugin::BlobResult> BlobPlugin::detectBlobs(const cv::Mat& gray, const cv::Mat& mask)
 {
+    Q_UNUSED(gray);
     std::vector<BlobResult> results;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -291,6 +292,7 @@ QWidget* BlobPlugin::createConfigWidget()
 IModule* BlobPlugin::cloneImpl() const
 {
     BlobPlugin* clone = new BlobPlugin();
+    clone->setParams(currentParams());
     return clone;
 }
 

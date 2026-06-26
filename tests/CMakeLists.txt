@@ -8,6 +8,7 @@ set(TEST_SOURCES
     test_project.cpp
     test_configmanager.cpp
     test_pluginmanager.cpp
+    test_plugincontracts.cpp
     test_logger.cpp
     test_imagedata.cpp
     test_runengine.cpp
@@ -33,6 +34,7 @@ set(TEST_SOURCES
     test_agentpermissions.cpp
     test_agentundo.cpp
     test_agentcontroller.cpp
+    test_variable_system_plugins.cpp
 )
 
 foreach(TEST_FILE ${TEST_SOURCES})
@@ -73,8 +75,30 @@ foreach(TEST_FILE ${TEST_SOURCES})
     target_link_libraries(${TEST_NAME} PRIVATE DistancePPPlugin)
     # Link LinesDistancePlugin for geometry tests
     target_link_libraries(${TEST_NAME} PRIVATE LinesDistancePlugin)
-    if(TEST_NAME STREQUAL "test_clihandler")
+    if(TEST_NAME STREQUAL "test_clihandler" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE SystemTimePlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_plugincontracts")
+        target_link_libraries(${TEST_NAME}
+            PRIVATE
+                BlobPlugin
+                PerProcessingPlugin
+                MatchingPlugin
+                FolderPlugin
+                SaveDataPlugin
+                CreateStringPlugin
+                SplitStringPlugin
+                MathPlugin
+        )
+    endif()
+    if(TEST_NAME STREQUAL "test_variable_system_plugins")
+        target_link_libraries(${TEST_NAME}
+            PRIVATE
+                CreateStringPlugin
+                SplitStringPlugin
+                MathPlugin
+                SystemTimePlugin
+        )
     endif()
 
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})

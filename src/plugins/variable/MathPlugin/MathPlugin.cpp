@@ -4,8 +4,29 @@
 #include <QFormLayout>
 #include <QLineEdit>
 #include <QComboBox>
+#include <QStringList>
+#include <cmath>
 
 namespace DeepLux {
+
+namespace {
+
+bool isSupportedOperation(const QString& operation)
+{
+    static const QStringList supported = {
+        "Add", "Subtract", "Multiply", "Divide", "Modulo", "Power", "Min", "Max"
+    };
+    return supported.contains(operation);
+}
+
+bool toFiniteDouble(const QVariant& value, double& number)
+{
+    bool ok = false;
+    number = value.toDouble(&ok);
+    return ok && std::isfinite(number);
+}
+
+} // namespace
 
 MathPlugin::MathPlugin(QObject* parent)
     : ModuleBase(parent)
@@ -33,9 +54,9 @@ double MathPlugin::calculate(const QString& op, double a, double b)
     if (op == "Add") return a + b;
     if (op == "Subtract") return a - b;
     if (op == "Multiply") return a * b;
-    if (op == "Divide") return (b != 0) ? (a / b) : 0;
-    if (op == "Modulo") return fmod(a, b);
-    if (op == "Power") return pow(a, b);
+    if (op == "Divide") return a / b;
+    if (op == "Modulo") return std::fmod(a, b);
+    if (op == "Power") return std::pow(a, b);
     if (op == "Min") return qMin(a, b);
     if (op == "Max") return qMax(a, b);
     return 0;
@@ -53,18 +74,44 @@ bool MathPlugin::process(const ImageData& input, ImageData& output)
     double a = 0, b = 0;
 
     if (!m_operandA.isEmpty()) {
-        bool ok;
-        a = input.data(m_operandA).toDouble(&ok);
-        if (!ok) a = m_operandA.toDouble(&ok);
+        if (input.hasData(m_operandA)) {
+            if (!toFiniteDouble(input.data(m_operandA), a)) {
+                emit errorOccurred(tr("操作数A不是有效数字"));
+                return false;
+            }
+        } else {
+            if (!toFiniteDouble(m_operandA, a)) {
+                emit errorOccurred(tr("操作数A不是有效数字"));
+                return false;
+            }
+        }
     }
 
     if (!m_operandB.isEmpty()) {
-        bool ok;
-        b = input.data(m_operandB).toDouble(&ok);
-        if (!ok) b = m_operandB.toDouble(&ok);
+        if (input.hasData(m_operandB)) {
+            if (!toFiniteDouble(input.data(m_operandB), b)) {
+                emit errorOccurred(tr("操作数B不是有效数字"));
+                return false;
+            }
+        } else {
+            if (!toFiniteDouble(m_operandB, b)) {
+                emit errorOccurred(tr("操作数B不是有效数字"));
+                return false;
+            }
+        }
+    }
+
+    if ((m_operation == "Divide" || m_operation == "Modulo") && b == 0.0) {
+        emit errorOccurred(tr("除数不能为0"));
+        return false;
     }
 
     double result = calculate(m_operation, a, b);
+    if (!std::isfinite(result)) {
+        emit errorOccurred(tr("计算结果不是有效数字"));
+        return false;
+    }
+
     output.setData(m_outputVar, result);
     output.setData(m_outputVar + "_string", QString::number(result));
 
@@ -76,10 +123,18 @@ bool MathPlugin::process(const ImageData& input, ImageData& output)
 
 bool MathPlugin::doValidateParams(const QJsonObject& params, QString& error) const
 {
-    if (params["outputVar"].toString().isEmpty()) {
+    const QString operation = params["operation"].toString("Add");
+    if (!isSupportedOperation(operation)) {
+        error = QString("Math operation is unsupported");
+        return false;
+    }
+
+    if (params["outputVar"].toString().trimmed().isEmpty()) {
         error = QString("Output variable name cannot be empty");
         return false;
     }
+
+    error.clear();
     return true;
 }
 
@@ -131,6 +186,13 @@ QWidget* MathPlugin::createConfigWidget()
     });
 
     return widget;
+}
+
+IModule* MathPlugin::cloneImpl() const
+{
+    MathPlugin* clone = new MathPlugin();
+    clone->setParams(currentParams());
+    return clone;
 }
 
 } // namespace DeepLux

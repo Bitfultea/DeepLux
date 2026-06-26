@@ -230,6 +230,7 @@ QWidget* MatchingPlugin::createConfigWidget()
 IModule* MatchingPlugin::cloneImpl() const
 {
     MatchingPlugin* clone = new MatchingPlugin();
+    clone->setParams(currentParams());
     return clone;
 }
 

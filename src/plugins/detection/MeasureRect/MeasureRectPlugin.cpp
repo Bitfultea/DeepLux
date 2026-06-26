@@ -231,6 +231,7 @@ QWidget* MeasureRectPlugin::createConfigWidget()
 IModule* MeasureRectPlugin::cloneImpl() const
 {
     MeasureRectPlugin* clone = new MeasureRectPlugin();
+    clone->setParams(currentParams());
     return clone;
 }
 

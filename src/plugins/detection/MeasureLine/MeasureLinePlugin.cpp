@@ -164,8 +164,16 @@ bool MeasureLinePlugin::detectLines(const cv::Mat& gray, std::vector<cv::Vec4i>&
 
 bool MeasureLinePlugin::doValidateParams(const QJsonObject& params, QString& error) const
 {
+    const double threshold = params["threshold"].toDouble();
     double minLength = params["minLength"].toDouble();
     double maxLength = params["maxLength"].toDouble();
+    const double minAngle = params["minAngle"].toDouble();
+    const double maxAngle = params["maxAngle"].toDouble();
+
+    if (threshold <= 0) {
+        error = tr("阈值必须大于0");
+        return false;
+    }
 
     if (minLength <= 0) {
         error = tr("最小长度必须大于0");
@@ -174,6 +182,16 @@ bool MeasureLinePlugin::doValidateParams(const QJsonObject& params, QString& err
 
     if (maxLength <= minLength) {
         error = tr("最大长度必须大于最小长度");
+        return false;
+    }
+
+    if (minAngle < 0.0 || maxAngle > 180.0) {
+        error = tr("角度范围必须在0到180度之间");
+        return false;
+    }
+
+    if (maxAngle < minAngle) {
+        error = tr("最大角度必须大于或等于最小角度");
         return false;
     }
 
@@ -223,6 +241,7 @@ QWidget* MeasureLinePlugin::createConfigWidget()
 IModule* MeasureLinePlugin::cloneImpl() const
 {
     MeasureLinePlugin* clone = new MeasureLinePlugin();
+    clone->setParams(currentParams());
     return clone;
 }
 

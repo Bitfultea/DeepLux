@@ -211,9 +211,7 @@ QWidget* PerProcessingPlugin::createConfigWidget()
 IModule* PerProcessingPlugin::cloneImpl() const
 {
     PerProcessingPlugin* clone = new PerProcessingPlugin();
-    clone->m_kernelSize = this->m_kernelSize;
-    clone->m_sigmaX = this->m_sigmaX;
-    clone->m_iterations = this->m_iterations;
+    clone->setParams(currentParams());
     return clone;
 }
 

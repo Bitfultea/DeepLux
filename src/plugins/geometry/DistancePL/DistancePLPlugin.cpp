@@ -2,8 +2,68 @@
 #include "common/Logger.h"
 #include <QVBoxLayout>
 #include <QLabel>
+#include <cmath>
 
 namespace DeepLux {
+
+namespace {
+
+bool toFiniteDouble(const QVariant& value, double& number)
+{
+    bool ok = false;
+    number = value.toDouble(&ok);
+    return ok && std::isfinite(number);
+}
+
+bool parsePoint(const QVariant& value, QPointF& point)
+{
+    if (value.canConvert<QPointF>()) {
+        point = value.toPointF();
+        return std::isfinite(point.x()) && std::isfinite(point.y());
+    }
+
+    QList<QVariant> pointList = value.toList();
+    if (pointList.size() < 2) {
+        return false;
+    }
+
+    double x = 0.0;
+    double y = 0.0;
+    if (!toFiniteDouble(pointList[0], x) || !toFiniteDouble(pointList[1], y)) {
+        return false;
+    }
+
+    point = QPointF(x, y);
+    return true;
+}
+
+bool parseLineCoordinates(const QVariant& value, double& x1, double& y1, double& x2, double& y2)
+{
+    if (value.canConvert<QVector<QPointF>>()) {
+        QVector<QPointF> linePoints = value.value<QVector<QPointF>>();
+        if (linePoints.size() < 2) {
+            return false;
+        }
+
+        x1 = linePoints[0].x();
+        y1 = linePoints[0].y();
+        x2 = linePoints[1].x();
+        y2 = linePoints[1].y();
+        return std::isfinite(x1) && std::isfinite(y1) && std::isfinite(x2) && std::isfinite(y2);
+    }
+
+    QList<QVariant> lineList = value.toList();
+    if (lineList.size() < 4) {
+        return false;
+    }
+
+    return toFiniteDouble(lineList[0], x1)
+        && toFiniteDouble(lineList[1], y1)
+        && toFiniteDouble(lineList[2], x2)
+        && toFiniteDouble(lineList[3], y2);
+}
+
+} // namespace
 
 DistancePLPlugin::DistancePLPlugin(QObject* parent)
     : ModuleBase(parent)
@@ -49,43 +109,16 @@ bool DistancePLPlugin::process(const ImageData& input, ImageData& output)
         return false;
     }
 
-    // 解析点 (x, y)
     QPointF point;
-    if (pointVar.canConvert<QPointF>()) {
-        point = pointVar.toPointF();
-    } else {
-        QList<QVariant> pointList = pointVar.toList();
-        if (pointList.size() >= 2) {
-            point = QPointF(pointList[0].toDouble(), pointList[1].toDouble());
-        } else {
-            emit errorOccurred(tr("点数据格式无效"));
-            return false;
-        }
+    if (!parsePoint(pointVar, point)) {
+        emit errorOccurred(tr("点数据格式无效"));
+        return false;
     }
 
-    // 解析直线 (x1, y1, x2, y2)
     double lineX1, lineY1, lineX2, lineY2;
-    if (lineVar.canConvert<QVector<QPointF>>()) {
-        QVector<QPointF> linePoints = lineVar.value<QVector<QPointF>>();
-        if (linePoints.size() < 2) {
-            emit errorOccurred(tr("直线需要至少2个点"));
-            return false;
-        }
-        lineX1 = linePoints[0].x();
-        lineY1 = linePoints[0].y();
-        lineX2 = linePoints[1].x();
-        lineY2 = linePoints[1].y();
-    } else {
-        QList<QVariant> lineList = lineVar.toList();
-        if (lineList.size() >= 4) {
-            lineX1 = lineList[0].toDouble();
-            lineY1 = lineList[1].toDouble();
-            lineX2 = lineList[2].toDouble();
-            lineY2 = lineList[3].toDouble();
-        } else {
-            emit errorOccurred(tr("直线数据格式无效"));
-            return false;
-        }
+    if (!parseLineCoordinates(lineVar, lineX1, lineY1, lineX2, lineY2)) {
+        emit errorOccurred(tr("直线数据格式无效"));
+        return false;
     }
 
     // 计算点到直线的距离

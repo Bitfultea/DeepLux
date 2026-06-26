@@ -151,8 +151,30 @@ bool FitCirclePlugin::fitCircleRANSAC(const QVector<QPointF>& points,
 
 bool FitCirclePlugin::doValidateParams(const QJsonObject& params, QString& error) const
 {
-    Q_UNUSED(params);
     error.clear();
+
+    if (params["threshold"].toDouble() <= 0.0) {
+        error = tr("阈值必须大于0");
+        return false;
+    }
+
+    if (params["iterations"].toInt() <= 0) {
+        error = tr("迭代次数必须大于0");
+        return false;
+    }
+
+    const double minRadius = params["minRadius"].toDouble();
+    const double maxRadius = params["maxRadius"].toDouble();
+    if (minRadius <= 0.0) {
+        error = tr("最小半径必须大于0");
+        return false;
+    }
+
+    if (maxRadius <= minRadius) {
+        error = tr("最大半径必须大于最小半径");
+        return false;
+    }
+
     return true;
 }
 
@@ -199,6 +221,7 @@ QWidget* FitCirclePlugin::createConfigWidget()
 IModule* FitCirclePlugin::cloneImpl() const
 {
     FitCirclePlugin* clone = new FitCirclePlugin();
+    clone->setParams(currentParams());
     return clone;
 }
 
