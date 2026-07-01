@@ -231,18 +231,6 @@ void AgentObserver::onConnectionRemoved(const QString& fromId, const QString& to
     pushEvent(GuiEvent(GuiEventType::ConnectionRemoved, "Project", det));
 }
 
-void AgentObserver::setPropertyPanel(QObject* panel)
-{
-    if (m_propertyPanel) {
-        disconnect(m_propertyPanel, nullptr, this, nullptr);
-    }
-    m_propertyPanel = panel;
-    if (m_propertyPanel) {
-        connect(m_propertyPanel, SIGNAL(paramsChanged(QString,QString,QVariant)),
-                this, SLOT(onPropertyChanged(QString,QString,QVariant)));
-    }
-}
-
 void AgentObserver::setFlowCanvas(QObject* canvas)
 {
     if (m_flowCanvas) {

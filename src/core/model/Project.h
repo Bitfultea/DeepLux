@@ -1,14 +1,14 @@
 #pragma once
 
+#include "DataSource.h"
+
+#include <QDateTime>
+#include <QJsonObject>
+#include <QList>
 #include <QObject>
 #include <QString>
-#include <QJsonObject>
-#include <QDateTime>
-#include <QList>
 #include <memory>
 #include <optional>
-
-#include "DataSource.h"
 
 namespace DeepLux {
 
@@ -56,8 +56,7 @@ struct CameraConfig {
 /**
  * @brief 项目类
  */
-class Project : public QObject
-{
+class Project : public QObject {
     Q_OBJECT
 
 public:
@@ -65,37 +64,56 @@ public:
     ~Project() override;
 
     // 基本信息
-    QString id() const { return m_id; }
-    QString name() const { return m_name; }
+    QString id() const {
+        return m_id;
+    }
+    QString name() const {
+        return m_name;
+    }
     void setName(const QString& name);
-    
-    QString filePath() const { return m_filePath; }
+
+    QString filePath() const {
+        return m_filePath;
+    }
     void setFilePath(const QString& path);
-    
-    QDateTime created() const { return m_created; }
-    QDateTime modifiedTime() const { return m_modifiedTime; }
+
+    QDateTime created() const {
+        return m_created;
+    }
+    QDateTime modifiedTime() const {
+        return m_modifiedTime;
+    }
 
     // 模块管理
-    QList<ModuleInstance> modules() const { return m_modules; }
+    QList<ModuleInstance> modules() const {
+        return m_modules;
+    }
     void addModule(const ModuleInstance& module);
     void removeModule(const QString& instanceId);
     void updateModule(const QString& instanceId, const ModuleInstance& module);
+    bool moveModule(const QString& instanceId, int newIndex);
     /// 返回指向 QList 内部元素的指针——调用方不得跨 addModule/removeModule 持有此指针
     ModuleInstance* findModule(const QString& instanceId);
 
     // 连接管理
-    QList<ModuleConnection> connections() const { return m_connections; }
+    QList<ModuleConnection> connections() const {
+        return m_connections;
+    }
     void addConnection(const ModuleConnection& conn);
     void removeConnection(const QString& fromId, const QString& toId);
 
     // 相机配置
-    QList<CameraConfig> cameras() const { return m_cameras; }
+    QList<CameraConfig> cameras() const {
+        return m_cameras;
+    }
     void addCamera(const CameraConfig& camera);
     void removeCamera(const QString& cameraId);
     const CameraConfig* findCamera(const QString& cameraId) const;
 
     // 数据源管理
-    QList<DataSource> dataSources() const { return m_dataSources; }
+    QList<DataSource> dataSources() const {
+        return m_dataSources;
+    }
     void addDataSource(const DataSource& ds);
     void removeDataSource(const QString& id);
     /// 按值返回拷贝以避免悬垂指针——DataSource 是轻量结构体，拷贝开销可忽略
@@ -108,8 +126,10 @@ public:
     // 文件操作
     bool save(const QString& path = QString());
     bool load(const QString& path);
-    
-    bool isModified() const { return m_hasUnsavedChanges; }
+
+    bool isModified() const {
+        return m_hasUnsavedChanges;
+    }
     void setModified(bool modified);
 
 signals:
@@ -124,7 +144,7 @@ signals:
     void modifiedChanged(bool modified);
 
 private:
-    void touch();  // 更新修改时间
+    void touch(); // 更新修改时间
 
     QString m_id;
     QString m_name;
@@ -132,7 +152,7 @@ private:
     QDateTime m_created;
     QDateTime m_modifiedTime;
     bool m_hasUnsavedChanges = false;
-    
+
     QList<ModuleInstance> m_modules;
     QList<ModuleConnection> m_connections;
     QList<CameraConfig> m_cameras;

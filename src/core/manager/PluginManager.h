@@ -1,19 +1,19 @@
 #pragma once
 
-#include <QObject>
-#include <QStringList>
-#include <QMap>
-#include <QJsonObject>
-#include <QMutex>
-#include <QWaitCondition>
-#include <QSet>
-#include <QPluginLoader>
-#include <QTimer>
-#include <QThread>
-#include <QEvent>
 #include <QCoreApplication>
-#include <QThreadPool>
+#include <QEvent>
+#include <QJsonObject>
+#include <QMap>
+#include <QMutex>
+#include <QObject>
+#include <QPluginLoader>
 #include <QRunnable>
+#include <QSet>
+#include <QStringList>
+#include <QThread>
+#include <QThreadPool>
+#include <QTimer>
+#include <QWaitCondition>
 #include <memory>
 
 namespace DeepLux {
@@ -21,20 +21,19 @@ namespace DeepLux {
 class IModule;
 class ICamera;
 
-
 /**
  * @brief 插件信息
  */
 struct PluginInfo {
-    QString name;           // 插件名称
-    QString version;        // 版本
-    QString category;       // 分类
-    QString path;           // 路径
-    QString description;    // 描述
-    QString author;         // 作者
-    QString icon;           // 图标文件名
-    bool loaded = false;    // 是否已加载
-    QString error;          // 错误信息
+    QString name;        // 插件名称
+    QString version;     // 版本
+    QString category;    // 分类
+    QString path;        // 路径
+    QString description; // 描述
+    QString author;      // 作者
+    QString icon;        // 图标文件名
+    bool loaded = false; // 是否已加载
+    QString error;       // 错误信息
 };
 
 /**
@@ -42,8 +41,7 @@ struct PluginInfo {
  *
  * 负责扫描、加载、管理插件
  */
-class PluginManager : public QObject
-{
+class PluginManager : public QObject {
     Q_OBJECT
 
 public:
@@ -52,7 +50,9 @@ public:
     // 初始化
     bool initialize();
     void shutdown();
-    bool isInitialized() const { return m_initialized; }
+    bool isInitialized() const {
+        return m_initialized;
+    }
 
     // 插件路径管理
     void addPluginPath(const QString& path);
@@ -65,7 +65,7 @@ public:
     bool loadPlugin(const QString& name, int timeoutMs = 10000);
     void unloadPlugin(const QString& name);
     void loadAllPlugins();
-    void loadAllPluginsAsync();  // 异步加载所有插件，不阻塞主线程
+    void loadAllPluginsAsync(); // 异步加载所有插件，不阻塞主线程
     void unloadAllPlugins();
 
     // 查询
@@ -74,6 +74,7 @@ public:
     QList<PluginInfo> moduleInfos() const;
     QList<PluginInfo> cameraInfos() const;
     PluginInfo pluginInfo(const QString& name) const;
+    QString moduleDisplayName(const QString& name) const;
     bool isPluginLoaded(const QString& name) const;
 
     // 创建实例
@@ -84,9 +85,9 @@ signals:
     void pluginLoaded(const QString& name);
     void pluginUnloaded(const QString& name);
     void scanCompleted();
-    void allPluginsLoaded();  // 所有插件异步加载完成
-    void pluginLoadProgress(int current, int total, const QString& name);  // 加载进度
-    void pluginLoadFailed(const QString& name, const QString& error);  // 加载失败
+    void allPluginsLoaded();                                              // 所有插件异步加载完成
+    void pluginLoadProgress(int current, int total, const QString& name); // 加载进度
+    void pluginLoadFailed(const QString& name, const QString& error);     // 加载失败
     void errorOccurred(const QString& error);
 
 private slots:
@@ -116,6 +117,7 @@ private:
     public:
         PluginLoadRunnable(const QString& name, const QString& path);
         void run() override;
+
     private:
         QString m_name;
         QString m_path;

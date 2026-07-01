@@ -6,6 +6,7 @@
 #include <QToolButton>
 #include <QCloseEvent>
 #include <QApplication>
+#include <QPalette>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -126,10 +127,8 @@ void ViewportWidget::setupUi()
     // HImageWidget for image display (2D mode)
     m_imageWidget = new HImageWidget();
     m_imageWidget->setStyleSheet(R"(
-        HImageWidget {
-            background-color: #1a1a1a;
-            border: none;
-        }
+        background-color: #1a1a1a;
+        border: none;
     )");
     mainLayout->addWidget(m_imageWidget);
 
@@ -338,6 +337,10 @@ int ViewportWidget::renderMode() const
 
 void ViewportWidget::applyTheme(bool isDark)
 {
+    QPalette imagePalette = m_imageWidget->palette();
+    imagePalette.setColor(QPalette::Window, isDark ? QColor("#1a1a1a") : QColor("#ffffff"));
+    m_imageWidget->setPalette(imagePalette);
+
     if (isDark) {
         setStyleSheet(R"(
             ViewportWidget {
@@ -354,10 +357,8 @@ void ViewportWidget::applyTheme(bool isDark)
             }
         )");
         m_imageWidget->setStyleSheet(R"(
-            HImageWidget {
-                background-color: #1a1a1a;
-                border: none;
-            }
+            background-color: #1a1a1a;
+            border: none;
         )");
     } else {
         setStyleSheet(R"(
@@ -375,10 +376,8 @@ void ViewportWidget::applyTheme(bool isDark)
             }
         )");
         m_imageWidget->setStyleSheet(R"(
-            HImageWidget {
-                background-color: #ffffff;
-                border: none;
-            }
+            background-color: #ffffff;
+            border: none;
         )");
     }
 
@@ -393,10 +392,14 @@ void ViewportWidget::applyTheme(bool isDark)
             background-color: transparent;
             border: none;
             padding: 2px;
-            color: #a0a0a0;
+            color: #f3f4f6;
         }
         QToolButton:hover {
-            background-color: #3a3a3a;
+            background-color: #4b5563;
+            border-radius: 2px;
+        }
+        QToolButton:pressed {
+            background-color: #6b7280;
             border-radius: 2px;
         }
     )" : R"(

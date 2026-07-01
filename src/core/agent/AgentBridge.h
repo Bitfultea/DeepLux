@@ -44,6 +44,7 @@ public:
     bool start();
     void stop();
     bool isRunning() const { return m_running; }
+    QString serverName() const { return m_socketPath; }
 
     // 查询接口（注册式）
     using QueryHandler = std::function<QJsonObject(const QJsonObject& params)>;
@@ -72,10 +73,18 @@ private slots:
     void attemptReconnect(const QString& clientId);
 
 private:
+    struct ProtocolResponse {
+        QString reqId;
+        bool error = false;
+        QString errorMessage;
+        QJsonObject payload;
+    };
+
     AgentBridge(QObject* parent = nullptr);
     ~AgentBridge() override;
 
     void registerDefaultQueryHandlers();
+    ProtocolResponse processMessage(const QString& clientId, const QJsonObject& msg);
 
     bool m_running = false;
     QLocalServer* m_server = nullptr;

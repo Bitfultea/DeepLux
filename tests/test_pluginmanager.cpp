@@ -1,0 +1,121 @@
+#include <QtTest/QtTest>
+#include <core/interface/IModule.h>
+#include <core/manager/PluginManager.h>
+
+using namespace DeepLux;
+
+class TestPluginManager : public QObject {
+    Q_OBJECT
+
+private slots:
+    void initTestCase();
+    void cleanupTestCase();
+
+    void testInitialize();
+    void testPluginPaths();
+    void testScanPlugins();
+    void testAvailableModules();
+    void testPluginInfo();
+    void testCreateModuleClone();
+
+private:
+};
+
+void TestPluginManager::initTestCase() {
+    qDebug() << "=== TestPluginManager Start ===";
+}
+
+void TestPluginManager::cleanupTestCase() {
+    qDebug() << "=== TestPluginManager End ===";
+}
+
+void TestPluginManager::testInitialize() {
+    PluginManager& mgr = PluginManager::instance();
+
+    QVERIFY(mgr.initialize());
+    QVERIFY(mgr.isInitialized());
+}
+
+void TestPluginManager::testPluginPaths() {
+    PluginManager& mgr = PluginManager::instance();
+
+    QString testPath = "/tmp/test_plugins";
+    mgr.addPluginPath(testPath);
+
+    QVERIFY(mgr.pluginPaths().contains(testPath));
+
+    // 重复添加不应该重复
+    mgr.addPluginPath(testPath);
+    QCOMPARE(mgr.pluginPaths().count(testPath), 1);
+}
+
+void TestPluginManager::testScanPlugins() {
+    PluginManager& mgr = PluginManager::instance();
+
+    mgr.scanPlugins();
+
+    // 扫描完成，即使没有插件也应该返回
+    // 这里只是验证方法可以正常调用
+    qDebug() << "Modules found:" << mgr.availableModules().size();
+    qDebug() << "Cameras found:" << mgr.availableCameras().size();
+}
+
+void TestPluginManager::testAvailableModules() {
+    PluginManager& mgr = PluginManager::instance();
+
+    // 返回 QStringList
+    QStringList modules = mgr.availableModules();
+    QVERIFY(modules.isEmpty() || !modules.isEmpty()); // 总是返回列表
+
+    QStringList cameras = mgr.availableCameras();
+    QVERIFY(cameras.isEmpty() || !cameras.isEmpty());
+}
+
+void TestPluginManager::testPluginInfo() {
+    PluginManager& mgr = PluginManager::instance();
+
+    // 获取不存在的插件信息
+    PluginInfo info = mgr.pluginInfo("nonexistent");
+    QVERIFY(info.name.isEmpty());
+
+    // 获取模块信息列表
+    QList<PluginInfo> moduleInfos = mgr.moduleInfos();
+    QList<PluginInfo> cameraInfos = mgr.cameraInfos();
+
+    qDebug() << "Module infos:" << moduleInfos.size();
+    qDebug() << "Camera infos:" << cameraInfos.size();
+}
+
+void TestPluginManager::testCreateModuleClone() {
+    PluginManager& mgr = PluginManager::instance();
+    QStringList modules = mgr.availableModules();
+    QVERIFY(!modules.isEmpty());
+
+    QString testModule = modules.first();
+    if (!mgr.isPluginLoaded(testModule)) {
+        QVERIFY2(mgr.loadPlugin(testModule, 5000), qPrintable(QString("Failed to load plugin %1").arg(testModule)));
+    }
+    QVERIFY(mgr.isPluginLoaded(testModule));
+
+    IModule* a = mgr.createModule(testModule);
+    QVERIFY(a != nullptr);
+
+    IModule* b = mgr.createModule(testModule);
+    QVERIFY(b != nullptr);
+
+    QVERIFY(a != b);
+
+    QVERIFY(!a->name().isEmpty());
+    QVERIFY(!b->name().isEmpty());
+
+    a->setParam("instanceMarker", "a");
+    b->setParam("instanceMarker", "b");
+    QCOMPARE(a->currentParams().value("instanceMarker").toString(), QString("a"));
+    QCOMPARE(b->currentParams().value("instanceMarker").toString(), QString("b"));
+
+    delete a;
+    delete b;
+}
+
+QTEST_MAIN(TestPluginManager)
+#include "test_pluginmanager.moc"

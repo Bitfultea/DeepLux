@@ -1,6 +1,6 @@
 # 单元测试报告
 
-更新时间: 2026-06-26
+更新时间: 2026-06-29
 
 ## 测试环境
 
@@ -22,7 +22,7 @@ ctest --test-dir build --output-on-failure
 
 ```
 100% tests passed, 0 tests failed out of 36
-Total Test time (real) = 0.77 sec
+Total Test time (real) = 0.73 sec
 ```
 
 ## 测试目标
@@ -74,7 +74,7 @@ Total Test time (real) = 0.77 sec
 - `test_cameramanager`: 覆盖无插件时刷新相机不能死锁，CTest 超时为 2 秒。
 - `test_plyloader`: 覆盖 ASCII PLY RGB 属性必须写入点云颜色数组。
 - `test_tiffloader`: 覆盖 16-bit 彩色 TIFF 必须按真实像素深度读取颜色。
-- `test_himagewidget`: 覆盖空显示区必须绘制居中的可读空态提示。
+- `test_himagewidget`: 覆盖空显示区必须绘制居中的可读空态提示，并覆盖暗色主题空画布背景使用深色调色板绘制。
 - `test_flowcanvas`: 覆盖画布节点/连接同步 Project，以及从 Project 重建稳定节点和连接。
 - `test_modulebase`: 覆盖部分参数加载和反序列化时必须保留插件默认参数。
 - `test_plugincontracts`: 覆盖代表性算法、图像处理、检测、系统、变量插件的临时部署、动态加载、独立实例、参数校验、配置控件和 clone 参数保留契约。
@@ -84,5 +84,12 @@ Total Test time (real) = 0.77 sec
 - `test_clihandler`: 覆盖 CLI `run` 的工程路径校验、缺失文件、空工程失败和可加载插件工程执行。
 - `test_runengine`: 覆盖按 Project 连接拓扑执行、缺失连接端点拒绝加载和连接环路拒绝加载。
 - `test_propertypanel`: 覆盖编辑文本/数值/布尔参数会更新模块并发出信号，实例 ID 覆盖插件 ID，重复选择模块不会残留旧参数分组；覆盖字符串参数声明 `_options` 后使用下拉选择并回写。
-- `test_mainwindow`: 覆盖打开工程后流程树和 FlowCanvas 同步重建，关闭工程后同步清空；覆盖主页入口切回 FlowCanvas；覆盖属性面板变更写回 Project、项目参数加载到运行时模块后在属性面板显示，以及主窗口工具栏/Inspector/日志区布局约束。
-- `test_agentcontroller`: 覆盖 Agent 历史裁剪后仍保留 user 起点和 tool-call 配对关系。
+- `test_mainwindow`: 覆盖打开工程后流程树和 FlowCanvas 同步重建，关闭工程后同步清空；覆盖主页入口切回 FlowCanvas；覆盖属性面板变更写回 Project、项目参数加载到运行时模块后在属性面板显示；覆盖已确认的左侧 `流程 / 画布 / 数据源` 三标签布局、1024 宽度下不出现标签滚动箭头、暗色主题工具栏可读性、Agent 输入/动作按钮中文化、Agent 确认卡中文按钮、底部日志页签/表头/行高不裁切文字，以及日志区紧凑布局约束。
+- `test_agentactor`: 覆盖 Agent 工具必填/枚举参数校验、连接只添加一次、批量执行遇错停止并返回 partial failure。
+- `test_agentpermissions`: 覆盖 Observer/Advisor/Autopilot 的统一工具权限：只读工具直通、写工具确认、危险工具确认。
+- `test_agentundo`: 覆盖 Controller 层撤销最近一次 Agent 动作并回退 Project 状态。
+- `test_agentcontroller`: 覆盖 token 预算触发的 Agent 历史裁剪后仍保留 user 起点和 tool-call 配对关系；覆盖 Autopilot 工具轮数上限和单轮工具数量上限。
+
+## UI 截图复核
+
+- `scripts/capture-ui-screenshots.sh build /tmp/deeplux-ui-font-clip-fix` 已生成启动态、流程画布、数据源、终端、Agent 对话、Agent 动作日志、暗色主题、工具面板关闭态，以及 1440/1024 总览截图，用于复核下方区域文字裁切修复。

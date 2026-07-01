@@ -7,6 +7,7 @@
 #include "model/Project.h"
 #include "config/SystemConfig.h"
 #include "platform/Platform.h"
+#include "platform/PathUtils.h"
 
 #include <QLocalServer>
 #include <QLocalSocket>
@@ -117,9 +118,10 @@ bool AgentBridge::start()
 
 #if defined(Q_OS_LINUX)
     // 使用用户可写的 socket 路径
-    QString socketDir = QDir::homePath() + "/.deeplux";
+    QString socketDir = PathUtils::appDataPath();
     QDir().mkpath(socketDir);
-    m_socketPath = socketDir + "/agent.sock";
+    QString preferredSocketPath = socketDir + "/agent.sock";
+    QString fallbackSocketName = QString("deeplux_agent_%1").arg(QString::number(qHash(socketDir), 16));
 #elif defined(Q_OS_WINDOWS)
     m_socketPath = "\\\\.\\pipe\\deeplux_agent";
 #endif
@@ -131,15 +133,34 @@ bool AgentBridge::start()
 
     // 尝试删除旧的 socket 文件（Linux）
 #if defined(Q_OS_LINUX)
-    if (QFileInfo::exists(m_socketPath)) {
-        QFile::remove(m_socketPath);
-    }
+    QLocalServer::removeServer(preferredSocketPath);
+    QLocalServer::removeServer(fallbackSocketName);
 #endif
 
+#if defined(Q_OS_LINUX)
+    if (m_server->listen(preferredSocketPath)) {
+        m_socketPath = preferredSocketPath;
+    } else {
+        qWarning() << "Failed to start AgentBridge server:" << preferredSocketPath << m_server->serverError()
+                   << m_server->errorString() << "falling back to" << fallbackSocketName;
+        if (!m_server->listen(fallbackSocketName)) {
+            qWarning() << "Failed to start AgentBridge fallback server:" << fallbackSocketName << m_server->serverError()
+                       << m_server->errorString();
+            delete m_server;
+            m_server = nullptr;
+            return false;
+        }
+        m_socketPath = fallbackSocketName;
+    }
+#else
     if (!m_server->listen(m_socketPath)) {
-        qWarning() << "Failed to start AgentBridge server:" << m_server->errorString();
+        qWarning() << "Failed to start AgentBridge server:" << m_socketPath << m_server->serverError()
+                   << m_server->errorString();
+        delete m_server;
+        m_server = nullptr;
         return false;
     }
+#endif
 
     m_running = true;
     m_heartbeatTimer->start();
@@ -167,9 +188,7 @@ void AgentBridge::stop()
     }
 
 #if defined(Q_OS_LINUX)
-    if (QFileInfo::exists(m_socketPath)) {
-        QFile::remove(m_socketPath);
-    }
+    QLocalServer::removeServer(m_socketPath);
 #endif
 
     qDebug() << "AgentBridge stopped";
@@ -211,37 +230,46 @@ void AgentBridge::onNewConnection()
 
 void AgentBridge::onClientMessage(const QString& clientId, const QJsonObject& msg)
 {
-    QString type = msg.value("type").toString();
-    QString reqId = msg.value("id").toString();
-    QJsonObject payload = msg.value("payload").toObject();
-
-    QJsonObject result;
-
-    if (type == "execute") {
-        // execute 类型已废弃：Agent 不再能执行任意 bash 命令
-        sendError(clientId, reqId, "Message type 'execute' is deprecated. Use 'tool_call' instead.");
-        return;
-    } else if (type == "tool_call") {
-        result = handleToolCall(reqId, payload);
-    } else if (type == "query") {
-        result = handleQuery(reqId, payload);
-    } else if (type == "ping") {
-        result = handlePing(reqId);
-    } else if (type == "subscribe") {
-        // 处理事件订阅
-        QString event = payload.value("event").toString();
-        registerEventSubscription(clientId, event);
-        result = QJsonObject{{"status", "subscribed"}, {"event", event}};
-    } else {
-        // 未知消息类型
-        sendError(clientId, reqId, "Unknown message type: " + type);
+    ProtocolResponse response = processMessage(clientId, msg);
+    if (response.error) {
+        sendError(clientId, response.reqId, response.errorMessage);
         return;
     }
 
     // 重置心跳计数
     m_missedHeartbeats[clientId] = 0;
+    sendResponse(clientId, response.reqId, response.payload);
+}
 
-    sendResponse(clientId, reqId, result);
+AgentBridge::ProtocolResponse AgentBridge::processMessage(const QString& clientId, const QJsonObject& msg)
+{
+    QString type = msg.value("type").toString();
+    QString reqId = msg.value("id").toString();
+    QJsonObject payload = msg.value("payload").toObject();
+
+    ProtocolResponse response;
+    response.reqId = reqId;
+    if (type == "execute") {
+        // execute 类型已废弃：Agent 不再能执行任意 bash 命令
+        response.error = true;
+        response.errorMessage = "Message type 'execute' is deprecated. Use 'tool_call' instead.";
+    } else if (type == "tool_call") {
+        response.payload = handleToolCall(reqId, payload);
+    } else if (type == "query") {
+        response.payload = handleQuery(reqId, payload);
+    } else if (type == "ping") {
+        response.payload = handlePing(reqId);
+    } else if (type == "subscribe") {
+        // 处理事件订阅
+        QString event = payload.value("event").toString();
+        registerEventSubscription(clientId, event);
+        response.payload = QJsonObject{{"status", "subscribed"}, {"event", event}};
+    } else {
+        // 未知消息类型
+        response.error = true;
+        response.errorMessage = "Unknown message type: " + type;
+    }
+    return response;
 }
 
 void AgentBridge::onClientDisconnected(const QString& clientId)

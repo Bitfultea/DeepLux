@@ -3,6 +3,7 @@
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QDoubleSpinBox>
+#include <cmath>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -61,6 +62,12 @@ bool FindCirclePlugin::process(const ImageData& input, ImageData& output)
         return false;
     }
 
+    QJsonObject params = currentParams();
+    m_minRadius = params.value("minRadius").toDouble(m_minRadius);
+    m_maxRadius = params.value("maxRadius").toDouble(m_maxRadius);
+    m_param1 = params.value("param1").toDouble(m_param1);
+    m_param2 = params.value("param2").toDouble(m_param2);
+
     // 转换为灰度图
     if (mat.channels() == 3) {
         cvtColor(mat, m_gray, cv::COLOR_BGR2GRAY);
@@ -85,6 +92,16 @@ bool FindCirclePlugin::process(const ImageData& input, ImageData& output)
     m_resultScore = 1.0; // Hough变换返回的是最佳圆的得分
 
     // 设置输出数据
+    cv::Mat resultMat;
+    if (mat.channels() == 1) {
+        cv::cvtColor(mat, resultMat, cv::COLOR_GRAY2BGR);
+    } else {
+        resultMat = mat.clone();
+    }
+    cv::Point center(static_cast<int>(std::round(m_resultCenterX)), static_cast<int>(std::round(m_resultCenterY)));
+    cv::circle(resultMat, center, static_cast<int>(std::round(m_resultRadius)), cv::Scalar(0, 0, 255), 3);
+    cv::drawMarker(resultMat, center, cv::Scalar(0, 255, 255), cv::MARKER_CROSS, 32, 3);
+    output.setMat(resultMat);
     output.setData("circle_center_x", m_resultCenterX);
     output.setData("circle_center_y", m_resultCenterY);
     output.setData("circle_radius", m_resultRadius);

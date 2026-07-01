@@ -8,6 +8,7 @@
 #include "model/Project.h"
 
 #include <QDebug>
+#include <QElapsedTimer>
 #include <QMutexLocker>
 
 namespace DeepLux {
@@ -345,7 +346,15 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
 
     // 执行模块，将上一个模块的输出作为当前模块的输入
     ImageData output;
+    QElapsedTimer moduleTimer;
+    moduleTimer.start();
     bool success = module->execute(pipelineData, output);
+    const qint64 elapsedMs = moduleTimer.elapsed();
+    Logger::instance().info(QString("Module finished: %1 success=%2 elapsed=%3 ms")
+                                .arg(moduleName)
+                                .arg(success ? "true" : "false")
+                                .arg(elapsedMs),
+                            "Run");
 
     // 如果执行成功，将当前输出传递为下一个模块的输入
     if (success) {

@@ -1,31 +1,29 @@
 #pragma once
 
-#include <QMainWindow>
-#include <QDockWidget>
-#include <QTreeWidget>
-#include <QTableWidget>
-#include <QLabel>
-#include <QStatusBar>
-#include <QToolBar>
-#include <QSplitter>
-#include <QLineEdit>
-#include <QVector>
-#include <QPushButton>
-#include <QTimer>
-#include <QElapsedTimer>
-#include <QMap>
-#include <QSet>
-#include <QToolButton>
-#include <QComboBox>
-#include <QComboBox>
-#include <QTabWidget>
-
 #include "core/common/Logger.h"
 #include "core/model/ImageData.h"
 #include "core/model/Project.h"
 
+#include <QComboBox>
+#include <QDockWidget>
+#include <QElapsedTimer>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMainWindow>
+#include <QMap>
+#include <QPushButton>
+#include <QSet>
+#include <QSplitter>
+#include <QStatusBar>
+#include <QTabWidget>
+#include <QTableWidget>
+#include <QTimer>
+#include <QToolBar>
+#include <QToolButton>
+#include <QTreeWidget>
+#include <QVector>
+
 namespace DeepLux {
-class PropertyPanel;
 class FlowCanvas;
 class DisplayManager;
 class TerminalWidget;
@@ -35,8 +33,7 @@ class AgentChatPanel;
 class IModule;
 struct PointCloudData;
 
-class MainWindow : public QMainWindow
-{
+class MainWindow : public QMainWindow {
     Q_OBJECT
 
 public:
@@ -90,6 +87,7 @@ private slots:
     void onShowDataSourceInFolder(const QString& dataSourceId);
     void onCopyDataSourcePath(const QString& dataSourceId);
     void onModuleRemoved(const QString& instanceId);
+
 private:
     void setupUi();
     void setupMenuBar();
@@ -97,6 +95,8 @@ private:
     void setupStatusBar();
     void setupMainLayout();
     void addToolBoxItem(QTreeWidgetItem* parent, const QString& displayName, const QString& pluginName);
+    QString toolDisplayName(const QString& pluginName, const QString& fallback = QString()) const;
+    void updateToolBoxPluginItem(const QString& pluginName);
 
     // 创建工具栏图标
     QIcon createIcon(const QString& name);
@@ -127,16 +127,14 @@ protected:
 
     // 左侧面板
     QDockWidget* m_toolBoxDock = nullptr;
-    QDockWidget* m_propertyDock = nullptr;
-    PropertyPanel* m_propertyPanel = nullptr;
-
     // 工具箱控件
     QTreeWidget* m_toolBoxTree = nullptr;
-    QTreeWidgetItem* m_currentToolBoxItem = nullptr;  // 当前选中的工具箱项
+    QTreeWidgetItem* m_currentToolBoxItem = nullptr; // 当前选中的工具箱项
+    QMap<QString, QString> m_toolDisplayNames;
 
     // 流程栏控件
     QTreeWidget* m_processTree = nullptr;
-    QLabel* m_hintLabel = nullptr;  // 流程栏提示标签
+    QLabel* m_hintLabel = nullptr; // 流程栏提示标签
     QLabel* m_processTimeLabel = nullptr;
     QWidget* m_processStatusWidget = nullptr;
     QToolButton* m_btnStartPause = nullptr;
@@ -146,25 +144,26 @@ protected:
     QTimer* m_cycleTimer = nullptr;
 
     // 流程执行时间和高亮
-    QMap<QString, int> m_moduleExecutionTimes;  // 模块实例名 -> 执行时间(ms)
-    QTreeWidgetItem* m_currentExecutingItem = nullptr;  // 当前正在执行的项目
-    int m_currentExecutingIndex = 0;  // 当前执行索引
-    ImageData m_flowInput;  // 流程执行时的输入数据
-    int m_flowTotalTime = 0;  // 总耗时
-    bool m_modulesNeedSync = true;  // 流程树变化后才能重新同步到 RunEngine
-    QMap<QString, QTreeWidgetItem*> m_instanceItemMap;  // instanceName → 流程树 item
+    QMap<QString, int> m_moduleExecutionTimes;         // 模块实例名 -> 执行时间(ms)
+    QTreeWidgetItem* m_currentExecutingItem = nullptr; // 当前正在执行的项目
+    int m_currentExecutingIndex = 0;                   // 当前执行索引
+    ImageData m_flowInput;                             // 流程执行时的输入数据
+    int m_flowTotalTime = 0;                           // 总耗时
+    bool m_modulesNeedSync = true;                     // 流程树变化后才能重新同步到 RunEngine
+    QMap<QString, QTreeWidgetItem*> m_instanceItemMap; // instanceName → 流程树 item
 
     // 底部面板
     QDockWidget* m_logDock = nullptr;
     QTableWidget* m_logTable = nullptr;
     QComboBox* m_logFilterCombo = nullptr;
-    int m_logFilterLevel = 0;  // 0=全部, 1=Debug, 2=Info, 3=Warning, 4=Error
+    int m_logFilterLevel = 0; // 0=全部, 1=Debug, 2=Info, 3=Warning, 4=Error
 
     // 终端面板（Tab 方案）
     QTabWidget* m_logTerminalTabs = nullptr;
     TerminalWidget* m_terminalWidget = nullptr;
     AgentActionLogWidget* m_agentActionLogWidget = nullptr;
     AgentChatPanel* m_agentChatPanel = nullptr;
+    int m_agentChatTabIndex = -1;
 
     // 状态栏
     QLabel* m_userLabel = nullptr;

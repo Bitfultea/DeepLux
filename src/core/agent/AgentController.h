@@ -42,6 +42,7 @@ public:
     void sendUserMessage(const QString& message);
     void sendUserMessageWithImages(const QString& message, const QList<QPixmap>& images);
     void clearConversation();
+    bool undoLastAgentAction();
 
     void logAction(const AgentActionLogEntry& entry);
     AgentActor* actor() const { return m_actor; }
@@ -87,6 +88,7 @@ private:
     QString m_systemPrompt;
     QList<AgentMessage> m_conversationHistory;
     QJsonArray m_pendingToolCalls;
+    bool m_continueAfterPendingTools = true;
 
     int m_agentTurnCount = 0;
     AgentState m_state = AgentState::Idle;

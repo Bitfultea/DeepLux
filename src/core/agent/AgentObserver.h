@@ -33,8 +33,7 @@ public:
     bool initialize();
     void shutdown();
 
-    // 可选：连接 PropertyPanel 和 FlowCanvas 信号（当它们可用时）
-    void setPropertyPanel(QObject* panel);
+    // 可选：连接 FlowCanvas 信号（当它们可用时）
     void setFlowCanvas(QObject* canvas);
 
     // 获取最近 N 个事件（供 LLM 上下文使用）
@@ -85,7 +84,6 @@ private:
     void pushEvent(const GuiEvent& event);
     void connectProjectSignals(Project* proj);
 
-    QObject* m_propertyPanel = nullptr;
     QObject* m_flowCanvas = nullptr;
 
     bool m_initialized = false;

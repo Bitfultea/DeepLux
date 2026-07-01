@@ -1,16 +1,16 @@
 #include "Project.h"
-#include <QUuid>
-#include <QFile>
-#include <QJsonDocument>
-#include <QJsonArray>
+
 #include <QDebug>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QUuid>
 
 namespace DeepLux {
 
 // ========== ModuleConnection ==========
 
-QJsonObject ModuleConnection::toJson() const
-{
+QJsonObject ModuleConnection::toJson() const {
     QJsonObject json;
     json["fromModuleId"] = fromModuleId;
     json["toModuleId"] = toModuleId;
@@ -19,8 +19,7 @@ QJsonObject ModuleConnection::toJson() const
     return json;
 }
 
-ModuleConnection ModuleConnection::fromJson(const QJsonObject& json)
-{
+ModuleConnection ModuleConnection::fromJson(const QJsonObject& json) {
     ModuleConnection conn;
     conn.fromModuleId = json["fromModuleId"].toString();
     conn.toModuleId = json["toModuleId"].toString();
@@ -31,8 +30,7 @@ ModuleConnection ModuleConnection::fromJson(const QJsonObject& json)
 
 // ========== ModuleInstance ==========
 
-QJsonObject ModuleInstance::toJson() const
-{
+QJsonObject ModuleInstance::toJson() const {
     QJsonObject json;
     json["id"] = id;
     json["moduleId"] = moduleId;
@@ -43,8 +41,7 @@ QJsonObject ModuleInstance::toJson() const
     return json;
 }
 
-ModuleInstance ModuleInstance::fromJson(const QJsonObject& json)
-{
+ModuleInstance ModuleInstance::fromJson(const QJsonObject& json) {
     ModuleInstance inst;
     inst.id = json["id"].toString();
     inst.moduleId = json["moduleId"].toString();
@@ -57,8 +54,7 @@ ModuleInstance ModuleInstance::fromJson(const QJsonObject& json)
 
 // ========== CameraConfig ==========
 
-QJsonObject CameraConfig::toJson() const
-{
+QJsonObject CameraConfig::toJson() const {
     QJsonObject json;
     json["id"] = id;
     json["type"] = type;
@@ -67,8 +63,7 @@ QJsonObject CameraConfig::toJson() const
     return json;
 }
 
-CameraConfig CameraConfig::fromJson(const QJsonObject& json)
-{
+CameraConfig CameraConfig::fromJson(const QJsonObject& json) {
     CameraConfig cfg;
     cfg.id = json["id"].toString();
     cfg.type = json["type"].toString();
@@ -80,20 +75,12 @@ CameraConfig CameraConfig::fromJson(const QJsonObject& json)
 // ========== Project ==========
 
 Project::Project(QObject* parent)
-    : QObject(parent)
-    , m_id(QUuid::createUuid().toString(QUuid::WithoutBraces))
-    , m_name(tr("未命名项目"))
-    , m_created(QDateTime::currentDateTime())
-    , m_modifiedTime(QDateTime::currentDateTime())
-{
-}
+    : QObject(parent), m_id(QUuid::createUuid().toString(QUuid::WithoutBraces)), m_name(tr("未命名项目")),
+      m_created(QDateTime::currentDateTime()), m_modifiedTime(QDateTime::currentDateTime()) {}
 
-Project::~Project()
-{
-}
+Project::~Project() {}
 
-void Project::setName(const QString& name)
-{
+void Project::setName(const QString& name) {
     if (m_name != name) {
         m_name = name;
         touch();
@@ -101,20 +88,17 @@ void Project::setName(const QString& name)
     }
 }
 
-void Project::setFilePath(const QString& path)
-{
+void Project::setFilePath(const QString& path) {
     m_filePath = path;
 }
 
-void Project::addModule(const ModuleInstance& module)
-{
+void Project::addModule(const ModuleInstance& module) {
     m_modules.append(module);
     touch();
     emit moduleAdded(module);
 }
 
-void Project::removeModule(const QString& instanceId)
-{
+void Project::removeModule(const QString& instanceId) {
     for (int i = 0; i < m_modules.size(); i++) {
         if (m_modules[i].id == instanceId) {
             m_modules.removeAt(i);
@@ -125,8 +109,7 @@ void Project::removeModule(const QString& instanceId)
     }
 }
 
-void Project::updateModule(const QString& instanceId, const ModuleInstance& module)
-{
+void Project::updateModule(const QString& instanceId, const ModuleInstance& module) {
     for (int i = 0; i < m_modules.size(); i++) {
         if (m_modules[i].id == instanceId) {
             m_modules[i] = module;
@@ -137,8 +120,33 @@ void Project::updateModule(const QString& instanceId, const ModuleInstance& modu
     }
 }
 
-ModuleInstance* Project::findModule(const QString& instanceId)
-{
+bool Project::moveModule(const QString& instanceId, int newIndex) {
+    if (m_modules.isEmpty()) {
+        return false;
+    }
+
+    int oldIndex = -1;
+    for (int i = 0; i < m_modules.size(); i++) {
+        if (m_modules[i].id == instanceId) {
+            oldIndex = i;
+            break;
+        }
+    }
+    if (oldIndex < 0) {
+        return false;
+    }
+
+    newIndex = qMax(0, qMin(newIndex, m_modules.size() - 1));
+    if (oldIndex == newIndex) {
+        return true;
+    }
+
+    m_modules.move(oldIndex, newIndex);
+    touch();
+    return true;
+}
+
+ModuleInstance* Project::findModule(const QString& instanceId) {
     for (int i = 0; i < m_modules.size(); i++) {
         if (m_modules[i].id == instanceId) {
             return &m_modules[i];
@@ -147,18 +155,15 @@ ModuleInstance* Project::findModule(const QString& instanceId)
     return nullptr;
 }
 
-void Project::addConnection(const ModuleConnection& conn)
-{
+void Project::addConnection(const ModuleConnection& conn) {
     m_connections.append(conn);
     touch();
     emit connectionAdded(conn);
 }
 
-void Project::removeConnection(const QString& fromId, const QString& toId)
-{
+void Project::removeConnection(const QString& fromId, const QString& toId) {
     for (int i = 0; i < m_connections.size(); i++) {
-        if (m_connections[i].fromModuleId == fromId && 
-            m_connections[i].toModuleId == toId) {
+        if (m_connections[i].fromModuleId == fromId && m_connections[i].toModuleId == toId) {
             m_connections.removeAt(i);
             touch();
             emit connectionRemoved(fromId, toId);
@@ -167,14 +172,12 @@ void Project::removeConnection(const QString& fromId, const QString& toId)
     }
 }
 
-void Project::addCamera(const CameraConfig& camera)
-{
+void Project::addCamera(const CameraConfig& camera) {
     m_cameras.append(camera);
     touch();
 }
 
-void Project::removeCamera(const QString& cameraId)
-{
+void Project::removeCamera(const QString& cameraId) {
     for (int i = 0; i < m_cameras.size(); i++) {
         if (m_cameras[i].id == cameraId) {
             m_cameras.removeAt(i);
@@ -184,8 +187,7 @@ void Project::removeCamera(const QString& cameraId)
     }
 }
 
-const CameraConfig* Project::findCamera(const QString& cameraId) const
-{
+const CameraConfig* Project::findCamera(const QString& cameraId) const {
     for (int i = 0; i < m_cameras.size(); i++) {
         if (m_cameras[i].id == cameraId) {
             return &m_cameras[i];
@@ -194,8 +196,7 @@ const CameraConfig* Project::findCamera(const QString& cameraId) const
     return nullptr;
 }
 
-void Project::addDataSource(const DataSource& ds)
-{
+void Project::addDataSource(const DataSource& ds) {
     for (const auto& existing : m_dataSources) {
         if (existing.filePath == ds.filePath) {
             return;
@@ -206,8 +207,7 @@ void Project::addDataSource(const DataSource& ds)
     emit dataSourceAdded(ds);
 }
 
-void Project::removeDataSource(const QString& id)
-{
+void Project::removeDataSource(const QString& id) {
     for (int i = 0; i < m_dataSources.size(); i++) {
         if (m_dataSources[i].id == id) {
             m_dataSources.removeAt(i);
@@ -218,8 +218,7 @@ void Project::removeDataSource(const QString& id)
     }
 }
 
-std::optional<DataSource> Project::findDataSource(const QString& id) const
-{
+std::optional<DataSource> Project::findDataSource(const QString& id) const {
     for (int i = 0; i < m_dataSources.size(); i++) {
         if (m_dataSources[i].id == id) {
             return m_dataSources[i];
@@ -228,29 +227,28 @@ std::optional<DataSource> Project::findDataSource(const QString& id) const
     return std::nullopt;
 }
 
-QJsonObject Project::toJson() const
-{
+QJsonObject Project::toJson() const {
     QJsonObject json;
     json["version"] = "2.0";
     json["id"] = m_id;
     json["name"] = m_name;
     json["created"] = m_created.toString(Qt::ISODate);
     json["modified"] = m_modifiedTime.toString(Qt::ISODate);
-    
+
     // 模块
     QJsonArray modulesArray;
     for (const auto& module : m_modules) {
         modulesArray.append(module.toJson());
     }
     json["modules"] = modulesArray;
-    
+
     // 连接
     QJsonArray connectionsArray;
     for (const auto& conn : m_connections) {
         connectionsArray.append(conn.toJson());
     }
     json["connections"] = connectionsArray;
-    
+
     // 相机
     QJsonArray camerasArray;
     for (const auto& camera : m_cameras) {
@@ -268,25 +266,24 @@ QJsonObject Project::toJson() const
     return json;
 }
 
-bool Project::fromJson(const QJsonObject& json)
-{
+bool Project::fromJson(const QJsonObject& json) {
     m_id = json["id"].toString();
     m_name = json["name"].toString();
     m_created = QDateTime::fromString(json["created"].toString(), Qt::ISODate);
     m_modifiedTime = QDateTime::fromString(json["modified"].toString(), Qt::ISODate);
-    
+
     m_modules.clear();
     QJsonArray modulesArray = json["modules"].toArray();
     for (const auto& val : modulesArray) {
         m_modules.append(ModuleInstance::fromJson(val.toObject()));
     }
-    
+
     m_connections.clear();
     QJsonArray connectionsArray = json["connections"].toArray();
     for (const auto& val : connectionsArray) {
         m_connections.append(ModuleConnection::fromJson(val.toObject()));
     }
-    
+
     m_cameras.clear();
     QJsonArray camerasArray = json["cameras"].toArray();
     for (const auto& val : camerasArray) {
@@ -303,63 +300,60 @@ bool Project::fromJson(const QJsonObject& json)
     return true;
 }
 
-bool Project::save(const QString& path)
-{
+bool Project::save(const QString& path) {
     QString savePath = path.isEmpty() ? m_filePath : path;
     if (savePath.isEmpty()) {
         qWarning() << "No file path specified";
         return false;
     }
-    
+
     QFile file(savePath);
     if (!file.open(QIODevice::WriteOnly)) {
         qWarning() << "Cannot open file for writing:" << savePath;
         return false;
     }
-    
+
     QJsonDocument doc(toJson());
     file.write(doc.toJson(QJsonDocument::Indented));
     file.close();
-    
+
     m_filePath = savePath;
     m_hasUnsavedChanges = false;
     emit modifiedChanged(false);
-    
+
     qDebug() << "Project saved to:" << savePath;
     return true;
 }
 
-bool Project::load(const QString& path)
-{
+bool Project::load(const QString& path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         qWarning() << "Cannot open file for reading:" << path;
         return false;
     }
-    
+
     QByteArray data = file.readAll();
     file.close();
-    
+
     QJsonParseError error;
     QJsonDocument doc = QJsonDocument::fromJson(data, &error);
     if (error.error != QJsonParseError::NoError) {
         qWarning() << "JSON parse error:" << error.errorString();
         return false;
     }
-    
+
     if (!fromJson(doc.object())) {
         return false;
     }
-    
+
     m_filePath = path;
     m_hasUnsavedChanges = false;
-    
+
     qDebug() << "Project loaded from:" << path;
     return true;
 }
 
-void Project::setModified(bool modified)
-{
+void Project::setModified(bool modified) {
     if (m_hasUnsavedChanges != modified) {
         m_hasUnsavedChanges = modified;
         if (modified) {
@@ -369,8 +363,7 @@ void Project::setModified(bool modified)
     }
 }
 
-void Project::touch()
-{
+void Project::touch() {
     m_modifiedTime = QDateTime::currentDateTime();
     m_hasUnsavedChanges = true;
 }

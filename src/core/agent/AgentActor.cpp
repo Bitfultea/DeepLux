@@ -16,6 +16,28 @@
 
 namespace DeepLux {
 
+namespace {
+QString validationError(const QString& toolName, const QJsonObject& params)
+{
+    ToolDefinition def = ToolSchema::instance().findTool(toolName);
+    if (def.name.isEmpty())
+        return QString("Unknown tool: %1").arg(toolName);
+
+    for (const ToolParam& param : def.params) {
+        const QJsonValue value = params.value(param.name);
+        if (param.required &&
+            (value.isUndefined() || value.isNull() || (value.isString() && value.toString().trimmed().isEmpty()))) {
+            return QString("Missing required parameter: %1").arg(param.name);
+        }
+        if (!param.enumValues.isEmpty() && !value.isUndefined() && !value.isNull() &&
+            !param.enumValues.contains(value.toString())) {
+            return QString("Invalid value for %1: %2").arg(param.name, value.toString());
+        }
+    }
+    return QString();
+}
+} // namespace
+
 // --- Undo Commands ---
 
 class AgentCreateProjectCmd : public QUndoCommand
@@ -185,6 +207,12 @@ QJsonObject AgentActor::executeTool(const QString& toolName, const QJsonObject& 
         return QJsonObject{{"error", err}};
     }
 
+    QString invalid = validationError(toolName, params);
+    if (!invalid.isEmpty()) {
+        emit toolError(toolName, invalid);
+        return QJsonObject{{"error", invalid}};
+    }
+
     QJsonObject result;
     if (toolName == "create_project")           result = createProject(params);
     else if (toolName == "add_module")           result = addModule(params);
@@ -217,20 +245,45 @@ QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& t
 {
     if (tools.isEmpty()) return QJsonObject{{"error", "No tools to execute"}};
 
+    for (const auto& pair : tools) {
+        QString invalid = validationError(pair.first, pair.second);
+        if (!invalid.isEmpty()) {
+            return QJsonObject{{"status", "partial_failed"}, {"executed", 0}, {"failedTool", pair.first}, {"error", invalid}};
+        }
+    }
+
     m_undoStack->beginMacro(macroName);
 
     QJsonArray results;
+    int executed = 0;
+    bool failed = false;
+    QString failedTool;
+    QString error;
     for (const auto& pair : tools) {
         QJsonObject result = executeTool(pair.first, pair.second);
         QJsonObject entry;
         entry["tool"] = pair.first;
         entry["result"] = result;
         results.append(entry);
+        if (result.contains("error")) {
+            failed = true;
+            failedTool = pair.first;
+            error = result["error"].toString();
+            break;
+        }
+        ++executed;
     }
 
     m_undoStack->endMacro();
 
-    return QJsonObject{{"status", "completed"}, {"results", results}};
+    if (failed) {
+        return QJsonObject{{"status", "partial_failed"},
+                           {"results", results},
+                           {"executed", executed},
+                           {"failedTool", failedTool},
+                           {"error", error}};
+    }
+    return QJsonObject{{"status", "completed"}, {"results", results}, {"executed", executed}};
 }
 
 // --- Tool Handlers ---
@@ -247,6 +300,7 @@ QJsonObject AgentActor::addModule(const QJsonObject& params)
     QString plugin = params.value("plugin").toString();
     QString instanceName = params.value("instanceName").toString();
     if (plugin.isEmpty()) return QJsonObject{{"error", "Missing 'plugin' parameter"}};
+    if (!ProjectManager::instance().currentProject()) return QJsonObject{{"error", "No project opened"}};
     m_undoStack->push(new AgentAddModuleCmd(plugin, instanceName));
     return QJsonObject{{"status", "added"}, {"plugin", plugin}};
 }
@@ -272,7 +326,6 @@ QJsonObject AgentActor::setParam(const QJsonObject& params)
     if (!inst) return QJsonObject{{"error", QString("Module not found: %1").arg(instanceId)}};
 
     QJsonValue oldVal = inst->params.value(key);
-    inst->params[key] = value;
     m_undoStack->push(new AgentSetParamCmd(instanceId, key, oldVal, value));
 
     return QJsonObject{{"status", "param_set"}, {"instanceId", instanceId}, {"key", key}};
@@ -285,11 +338,9 @@ QJsonObject AgentActor::connectModules(const QJsonObject& params)
 
     Project* proj = ProjectManager::instance().currentProject();
     if (!proj) return QJsonObject{{"error", "No project opened"}};
+    if (!proj->findModule(fromId)) return QJsonObject{{"error", QString("Module not found: %1").arg(fromId)}};
+    if (!proj->findModule(toId)) return QJsonObject{{"error", QString("Module not found: %1").arg(toId)}};
 
-    ModuleConnection conn;
-    conn.fromModuleId = fromId;
-    conn.toModuleId = toId;
-    proj->addConnection(conn);
     m_undoStack->push(new AgentConnectCmd(fromId, toId));
 
     return QJsonObject{{"status", "connected"}, {"from", fromId}, {"to", toId}};
@@ -303,7 +354,6 @@ QJsonObject AgentActor::disconnectModules(const QJsonObject& params)
     Project* proj = ProjectManager::instance().currentProject();
     if (!proj) return QJsonObject{{"error", "No project opened"}};
 
-    proj->removeConnection(fromId, toId);
     m_undoStack->push(new AgentDisconnectCmd(fromId, toId));
 
     return QJsonObject{{"status", "disconnected"}, {"from", fromId}, {"to", toId}};
@@ -312,8 +362,20 @@ QJsonObject AgentActor::disconnectModules(const QJsonObject& params)
 QJsonObject AgentActor::runFlow(const QJsonObject& params)
 {
     QString mode = params.value("mode").toString("once");
-    if (mode == "cycle") RunEngine::instance().start();
-    else RunEngine::instance().runOnce();
+    RunEngine& engine = RunEngine::instance();
+    Project* project = ProjectManager::instance().currentProject();
+    if (project && !engine.isRunning()) {
+        QString loadError;
+        QMetaObject::Connection errorConn = QObject::connect(
+            &engine, &RunEngine::errorOccurred, &engine, [&loadError](const QString& error) { loadError = error; });
+        bool loaded = engine.loadProject(project);
+        QObject::disconnect(errorConn);
+        if (!loaded) {
+            return QJsonObject{{"error", loadError.isEmpty() ? QString("Failed to load project") : loadError}};
+        }
+    }
+    if (mode == "cycle") engine.start();
+    else engine.runOnce();
     return QJsonObject{{"status", "started"}, {"mode", mode}};
 }
 

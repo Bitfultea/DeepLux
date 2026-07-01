@@ -20,6 +20,54 @@
 
 namespace DeepLux {
 
+namespace {
+constexpr int kMaxAgentToolTurns = 20;
+constexpr int kMaxToolCallsPerTurn = 10;
+
+bool isReadOnlyToolName(const QString& toolName) {
+    static const QStringList readOnlyTools = {
+        "get_flow_state",
+        "get_available_plugins",
+        "get_module_params_schema",
+        "get_run_results",
+        "read_documentation",
+    };
+    return readOnlyTools.contains(toolName);
+}
+
+QString toolCallName(const QJsonObject& tc) {
+    QString name = tc["name"].toString();
+    if (name.isEmpty())
+        name = tc["function"].toObject()["name"].toString();
+    return name;
+}
+
+QJsonObject toolCallParams(const QJsonObject& tc) {
+    QJsonObject params = tc["arguments"].toObject();
+    if (params.isEmpty()) {
+        QJsonValue av = tc["function"].toObject()["arguments"];
+        if (av.isString())
+            params = QJsonDocument::fromJson(av.toString().toUtf8()).object();
+        else if (av.isObject())
+            params = av.toObject();
+    }
+    return params;
+}
+
+bool isDangerousToolName(const QString& toolName) {
+    return ToolSchema::instance().findTool(toolName).dangerous;
+}
+
+QJsonObject makeToolCall(const QString& toolName, const QJsonObject& params) {
+    return QJsonObject{
+        {"id", QString("manual_%1").arg(toolName)},
+        {"type", "function"},
+        {"name", toolName},
+        {"arguments", params},
+    };
+}
+} // namespace
+
 AgentController::AgentController(QObject* parent)
     : QObject(parent), m_observer(new AgentObserver(this)), m_actor(new AgentActor(this)) {}
 
@@ -86,8 +134,23 @@ void AgentController::logAction(const AgentActionLogEntry& entry) {
 void AgentController::clearConversation() {
     m_conversationHistory.clear();
     m_pendingToolCalls = QJsonArray();
+    m_continueAfterPendingTools = true;
     m_agentTurnCount = 0;
     transitionTo(AgentState::Idle);
+}
+
+bool AgentController::undoLastAgentAction() {
+    if (!m_actor || !m_actor->undoStack() || !m_actor->undoStack()->canUndo())
+        return false;
+    m_actor->undoStack()->undo();
+    AgentActionLogEntry e;
+    e.timestamp = QDateTime::currentDateTime();
+    e.actor = "User";
+    e.action = "undo";
+    e.result = "success";
+    e.undoable = false;
+    emit actionLogEntryAdded(e);
+    return true;
 }
 
 // ========== State Machine ==========
@@ -219,8 +282,19 @@ void AgentController::onLLMResponse(const AgentResponse& resp) {
             emit llmResponseReceived(resp.content, resp.toolCalls);
             return;
         }
-        if (m_permissionLevel == PermissionLevel::Advisor) {
+
+        bool requiresConfirmation = false;
+        for (const QJsonValue& v : resp.toolCalls) {
+            const QString name = toolCallName(v.toObject());
+            if ((m_permissionLevel == PermissionLevel::Advisor && !isReadOnlyToolName(name)) ||
+                (m_permissionLevel == PermissionLevel::Autopilot && isDangerousToolName(name))) {
+                requiresConfirmation = true;
+                break;
+            }
+        }
+        if (requiresConfirmation) {
             m_pendingToolCalls = resp.toolCalls;
+            m_continueAfterPendingTools = true;
             transitionTo(AgentState::Confirming);
             emit llmResponseReceived(resp.content, resp.toolCalls);
             emit toolsPendingConfirmation(resp.toolCalls);
@@ -252,6 +326,7 @@ void AgentController::confirmPendingTools() {
     QJsonArray calls = m_pendingToolCalls;
     m_pendingToolCalls = QJsonArray();
     doConfirmPendingTools(calls);
+    m_continueAfterPendingTools = true;
 }
 
 void AgentController::doConfirmPendingTools(QJsonArray calls) {
@@ -260,7 +335,32 @@ void AgentController::doConfirmPendingTools(QJsonArray calls) {
         return;
     }
     transitionTo(AgentState::Executing);
-    extendAgentLoop(calls);
+    if (m_continueAfterPendingTools) {
+        extendAgentLoop(calls);
+        return;
+    }
+
+    QList<QPair<QString, QJsonObject>> tools;
+    for (const QJsonValue& v : calls) {
+        QJsonObject tc = v.toObject();
+        const QString name = toolCallName(tc);
+        if (!name.isEmpty())
+            tools.append({name, toolCallParams(tc)});
+    }
+    QJsonObject batchResult = m_actor->executeTools(tools, QString("Confirmed Agent tools"));
+    QJsonArray resultsArray = batchResult["results"].toArray();
+    for (int i = 0; i < resultsArray.size() && i < tools.size(); ++i) {
+        QJsonObject result = resultsArray[i].toObject()["result"].toObject();
+        AgentActionLogEntry e;
+        e.timestamp = QDateTime::currentDateTime();
+        e.actor = "Agent";
+        e.action = tools[i].first;
+        e.params = QString(QJsonDocument(tools[i].second).toJson(QJsonDocument::Compact));
+        e.result = result.contains("error") ? "error" : "success";
+        e.undoable = !isReadOnlyToolName(tools[i].first);
+        emit actionLogEntryAdded(e);
+    }
+    transitionTo(AgentState::Idle);
 }
 
 void AgentController::rejectPendingTools() {
@@ -270,6 +370,7 @@ void AgentController::rejectPendingTools() {
     }
     // 直接同步执行，避免 QueuedConnection 入队延迟
     m_pendingToolCalls = QJsonArray();
+    m_continueAfterPendingTools = true;
     transitionTo(AgentState::Idle);
     emit llmResponseReceived("Tool execution cancelled by user.", {});
 }
@@ -281,23 +382,26 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
         qWarning() << "[AgentController] Unexpected extendAgentLoop in state" << stateName(m_state);
         return;
     }
+    if (toolCalls.size() > kMaxToolCallsPerTurn) {
+        transitionTo(AgentState::Idle);
+        emit llmErrorOccurred("已达到单轮工具数量上限");
+        return;
+    }
+    if (m_agentTurnCount >= kMaxAgentToolTurns) {
+        transitionTo(AgentState::Idle);
+        emit llmErrorOccurred("已达到自动执行轮数上限");
+        return;
+    }
+    ++m_agentTurnCount;
+
     // 解析 tool_calls
     QList<QPair<QString, QJsonObject>> tools;
     QList<QString> ids;
     for (const QJsonValue& v : toolCalls) {
         QJsonObject tc = v.toObject();
         QString tid = tc["id"].toString();
-        QString name = tc["name"].toString();
-        QJsonObject params = tc["arguments"].toObject();
-        if (name.isEmpty()) {
-            QJsonObject func = tc["function"].toObject();
-            name = func["name"].toString();
-            QJsonValue av = func["arguments"];
-            if (av.isString())
-                params = QJsonDocument::fromJson(av.toString().toUtf8()).object();
-            else if (av.isObject())
-                params = av.toObject();
-        }
+        QString name = toolCallName(tc);
+        QJsonObject params = toolCallParams(tc);
         if (!name.isEmpty()) {
             tools.append({name, params});
             ids.append(tid);
@@ -315,14 +419,29 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
     // 拆分每个 tool 结果，每条 tool call 对应一条独立的 tool role message（OpenAI 要求）
     QJsonArray resultsArray = batchResult["results"].toArray();
     for (int i = 0; i < resultsArray.size() && i < ids.size(); ++i) {
+        QJsonObject result = resultsArray[i].toObject()["result"].toObject();
+        AgentActionLogEntry e;
+        e.timestamp = QDateTime::currentDateTime();
+        e.actor = "Agent";
+        e.action = tools[i].first;
+        e.params = QString(QJsonDocument(tools[i].second).toJson(QJsonDocument::Compact));
+        e.result = result.contains("error") ? "error" : "success";
+        e.undoable = !isReadOnlyToolName(tools[i].first);
+        emit actionLogEntryAdded(e);
+
         AgentMessage tm;
         tm.role = "tool";
         tm.toolCallId = ids[i];
-        tm.content =
-            QString(QJsonDocument(resultsArray[i].toObject()["result"].toObject()).toJson(QJsonDocument::Compact));
+        tm.content = QString(QJsonDocument(result).toJson(QJsonDocument::Compact));
         m_conversationHistory.append(tm);
     }
     trimHistoryIfNeeded();
+
+    if (batchResult["status"].toString() == "partial_failed") {
+        transitionTo(AgentState::Idle);
+        emit llmErrorOccurred(batchResult["error"].toString("Agent tool execution failed"));
+        return;
+    }
 
     Logger::instance().addLog(QString("[AgentLoop] Executed %1 tool(s)").arg(resultsArray.size()), LogLevel::Debug,
                               "Agent");
@@ -388,8 +507,24 @@ void AgentController::onGuiEvent(const GuiEvent& event) {
 QJsonObject AgentController::handleToolCall(const QString& toolName, const QJsonObject& params) {
     if (m_state != AgentState::Idle)
         return {{"error", "Agent is busy processing another request"}};
-    if (m_permissionLevel == PermissionLevel::Observer)
+    if (!ToolSchema::instance().hasTool(toolName))
+        return m_actor->executeTool(toolName, params);
+
+    const bool readOnly = isReadOnlyToolName(toolName);
+    const bool dangerous = isDangerousToolName(toolName);
+    if (m_permissionLevel == PermissionLevel::Observer && !readOnly)
         return {{"error", "Permission denied: Observer mode"}};
+    if ((m_permissionLevel == PermissionLevel::Advisor && !readOnly) ||
+        (m_permissionLevel == PermissionLevel::Autopilot && dangerous)) {
+        QJsonArray calls;
+        calls.append(makeToolCall(toolName, params));
+        m_pendingToolCalls = calls;
+        m_continueAfterPendingTools = false;
+        transitionTo(AgentState::Confirming);
+        emit toolsPendingConfirmation(calls);
+        return QJsonObject{{"status", "pending_confirmation"}, {"tools", calls}};
+    }
+
     Logger::instance().addLog(QString("[ToolCall] %1").arg(toolName), LogLevel::Info, "Agent");
     emit agentActionReceived(toolName, params);
     QJsonObject result = m_actor->executeTool(toolName, params);
@@ -399,6 +534,7 @@ QJsonObject AgentController::handleToolCall(const QString& toolName, const QJson
     e.action = toolName;
     e.params = QString(QJsonDocument(params).toJson(QJsonDocument::Compact));
     e.result = result.contains("error") ? "error" : "success";
+    e.undoable = !readOnly && !result.contains("error");
     emit actionLogEntryAdded(e);
     return result;
 }

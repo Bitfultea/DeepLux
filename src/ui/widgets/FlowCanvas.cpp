@@ -22,7 +22,7 @@ FlowCanvas::FlowCanvas(QWidget* parent) : QGraphicsView(parent), m_scene(new QGr
     setSceneRect(-5000, -5000, 10000, 10000);
 
     // 背景
-    setBackgroundBrush(QColor(45, 45, 45));
+    setBackgroundBrush(Qt::black);
 }
 
 FlowCanvas::~FlowCanvas() {

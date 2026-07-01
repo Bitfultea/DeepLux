@@ -3,6 +3,8 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QDebug>
+#include <QStyle>
+#include <QStyleOption>
 
 namespace DeepLux {
 
@@ -13,6 +15,7 @@ HImageWidget::HImageWidget(QWidget* parent)
     setFocusPolicy(Qt::StrongFocus);
     // Auto-fill background so stylesheet color is applied before paintEvent
     setAutoFillBackground(true);
+    setAttribute(Qt::WA_StyledBackground, true);
 }
 
 HImageWidget::~HImageWidget()
@@ -23,7 +26,7 @@ void HImageWidget::setImage(const QImage& image)
 {
     m_image = image;
     m_hasImage = !image.isNull();
-    
+
     if (m_hasImage) {
         m_imageWidth = image.width();
         m_imageHeight = image.height();
@@ -33,7 +36,7 @@ void HImageWidget::setImage(const QImage& image)
         m_imageWidth = 0;
         m_imageHeight = 0;
     }
-    
+
     update();
 }
 
@@ -63,16 +66,16 @@ void HImageWidget::setZoom(double factor)
 void HImageWidget::fitToWindow()
 {
     if (!m_hasImage) return;
-    
+
     double scaleX = (double)width() / m_imageWidth;
     double scaleY = (double)height() / m_imageHeight;
     m_zoom = qMin(scaleX, scaleY) * 0.95;
-    
+
     // 居中
     double imgW = m_imageWidth * m_zoom;
     double imgH = m_imageHeight * m_zoom;
     m_offset = QPointF((width() - imgW) / 2.0, (height() - imgH) / 2.0);
-    
+
     updateTransform();
     update();
     emit zoomChanged(m_zoom);
@@ -124,11 +127,17 @@ void HImageWidget::paintEvent(QPaintEvent* event)
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
     painter.setRenderHint(QPainter::TextAntialiasing);
 
+    painter.fillRect(rect(), palette().color(QPalette::Window));
+
+    QStyleOption option;
+    option.initFrom(this);
+    style()->drawPrimitive(QStyle::PE_Widget, &option, &painter, this);
+
     if (m_hasImage) {
         // 绘制图像
         QRectF targetRect = QRectF(m_offset, QSizeF(m_imageWidth * m_zoom, m_imageHeight * m_zoom));
         painter.drawImage(targetRect, m_image, QRectF(0, 0, m_imageWidth, m_imageHeight));
-        
+
         // 绘制 ROI
         painter.setPen(QPen(Qt::green, 1));
         for (const RoiData& roi : m_rois) {
@@ -136,7 +145,7 @@ void HImageWidget::paintEvent(QPaintEvent* event)
             QPointF p2 = imageToWidget(QPointF(roi.x2, roi.y2));
             painter.drawRect(QRectF(p1, p2).normalized());
         }
-        
+
         // 绘制中的 ROI
         if (m_isDrawing) {
             painter.setPen(QPen(Qt::yellow, 2, Qt::DashLine));
@@ -209,7 +218,7 @@ void HImageWidget::mouseMoveEvent(QMouseEvent* event)
         QPointF imgPos = widgetToImage(event->pos());
         emit mouseMoved(imgPos);
     }
-    
+
     if (m_isDrawing) {
         m_drawEnd = widgetToImage(event->pos());
         update();
@@ -226,14 +235,14 @@ void HImageWidget::mouseReleaseEvent(QMouseEvent* event)
 {
     if (event->button() == Qt::LeftButton && m_isDrawing) {
         m_isDrawing = false;
-        
+
         RoiData roi;
         roi.type = m_roiMode;
         roi.x1 = m_drawStart.x();
         roi.y1 = m_drawStart.y();
         roi.x2 = m_drawEnd.x();
         roi.y2 = m_drawEnd.y();
-        
+
         m_rois.append(roi);
         emit roiCreated(roi);
         update();
@@ -246,15 +255,15 @@ void HImageWidget::mouseReleaseEvent(QMouseEvent* event)
 void HImageWidget::wheelEvent(QWheelEvent* event)
 {
     if (!m_hasImage) return;
-    
+
     double delta = event->angleDelta().y() / 120.0;
     double factor = 1.0 + delta * 0.1;
-    
+
     QPointF mousePos = event->position();
     QPointF imgPos = widgetToImage(mousePos);
-    
+
     setZoom(m_zoom * factor);
-    
+
     // 保持鼠标位置不变
     QPointF newWidgetPos = imageToWidget(imgPos);
     m_offset += mousePos - newWidgetPos;

@@ -36,20 +36,21 @@ set(TEST_SOURCES
     test_agentpermissions.cpp
     test_agentundo.cpp
     test_agentcontroller.cpp
+    test_agentbridge.cpp
     test_variable_system_plugins.cpp
 )
 
 foreach(TEST_FILE ${TEST_SOURCES})
     get_filename_component(TEST_NAME ${TEST_FILE} NAME_WE)
-    
+
     add_executable(${TEST_NAME} ${TEST_FILE})
-    
+
     target_link_libraries(${TEST_NAME}
         PRIVATE
             deeplux_core
             deeplux_ui
     )
-    
+
     if(Qt6_FOUND)
         target_link_libraries(${TEST_NAME} PRIVATE Qt6::Core Qt6::Test)
     else()
@@ -117,9 +118,9 @@ target_link_libraries(ui_capture_mainwindow
         deeplux_ui
 )
 if(Qt6_FOUND)
-    target_link_libraries(ui_capture_mainwindow PRIVATE Qt6::Core Qt6::Widgets)
+    target_link_libraries(ui_capture_mainwindow PRIVATE Qt6::Core Qt6::Widgets Qt6::Test)
 else()
-    target_link_libraries(ui_capture_mainwindow PRIVATE Qt5::Core Qt5::Widgets)
+    target_link_libraries(ui_capture_mainwindow PRIVATE Qt5::Core Qt5::Widgets Qt5::Test)
 endif()
 if(OpenCV_FOUND)
     target_link_libraries(ui_capture_mainwindow PRIVATE ${OpenCV_LIBS})

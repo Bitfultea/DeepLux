@@ -27,6 +27,7 @@ public:
 
     void addEntry(const AgentActionLogEntry& entry);
     void updateEntryResult(int row, const QString& result);
+    void applyTheme(bool isDark);
 
     QList<AgentActionLogEntry> entries() const { return m_entries; }
 

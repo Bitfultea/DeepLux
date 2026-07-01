@@ -1,339 +1,231 @@
-# DeepLux Bash 终端 + LLM Agent 集成设计方案
+# DeepLux 终端与 LLM Agent 集成设计
 
 ## Context
 
-用户最初需求是让 GUI 和 CLI 双向同步操作，支持 LLM Agent 辅助操作。
+DeepLux 需要同时支持三类交互：
 
-**之前错误的设计**：当前实现的 TerminalWidget 只调用 CLIHandler 中注册的应用级命令，不能执行真正的 bash 命令，无法满足 LLM Agent 需求。
+- 人类用户在 GUI 中使用真实终端。
+- GUI 操作、CLI 命令和运行日志相互可见。
+- LLM Agent 辅助操作软件，但必须可审计、可确认、可撤销。
 
-**正确设计**：使用真正的 bash 终端 (跨平台 PTY)，支持任意 shell 命令，并通过 AgentBridge 与 LLM Agent 通信。
+旧设计把 AgentBridge 的 `execute` 作为任意 shell 命令入口。这个方向不再采用。LLM Agent 不应拥有任意 shell 执行权；当前更安全的设计是：终端服务人类用户，Agent 只通过白名单 `tool_call` 调用 DeepLux 内部工具。
 
-**设计原则**：
-- Linux 和 Windows 平台逻辑高度抽象分离
-- 每层组件职责单一，通过接口通信
-- 信号槽跨线程安全，显式指定连接类型
-- 分阶段交付，每阶段可独立验证
+## 设计原则
+
+- 真实终端和 Agent 执行面分离。
+- Agent 操作必须结构化、权限受控、可审计。
+- 写操作优先通过 `AgentActor` 和 `QUndoStack`，而不是 shell 命令。
+- GUI 主入口保持在底部 `Agent 对话` tab，审计入口保持在 `Agent 日志` tab。
+- 分阶段交付，每阶段可由 Qt Test 或截图验证。
 
 ## 需求总结
 
-| 需求 | 解决方案 |
+| 需求 | 当前方案 |
 |------|---------|
-| 真 bash 终端（跨平台） | BashProcess: Linux POSIX PTY, Windows ConPTY/winpty |
-| GUI → 终端同步 | TerminalBridge 监听 GUI 信号，格式化后显示 |
-| 终端 → GUI 反馈 | BashProcess 执行结果通过信号通知 GUI |
-| LLM Agent 操作软件 | AgentBridge (Unix Domain Socket / Named Pipe) 接收 Agent 命令并转发到 bash |
-| Agent 读取状态 | AgentBridge 提供 query 接口查询系统状态 |
-| Agent 保活 | 心跳机制 (10s 间隔, 30s 超时断开 + 自动重连) |
+| 真 bash 终端（跨平台） | `BashProcess`: Linux POSIX PTY, Windows ConPTY |
+| GUI -> 终端同步 | `TerminalBridge` 监听 GUI/日志/运行信号并格式化输出 |
+| 终端 -> GUI 反馈 | CLI wrapper 将 `deeplux ...` 命令回传到 `CLIHandler` |
+| LLM Agent 读取状态 | `AgentBridge` 提供注册式 `query` |
+| LLM Agent 操作软件 | `AgentBridge` 只接受白名单 `tool_call`，路由到 `AgentController`/`AgentActor` |
+| Agent 保活 | server 发送 `ping`，超时发出 `agentConnectionLost`；外部 Agent 客户端负责重新连接 |
+| GUI Agent 入口 | 底部 `Agent 对话` tab |
+| Agent 审计/撤销 | 底部 `Agent 日志` tab + `AgentActor` undo stack |
 
-## 架构设计
+## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         MainWindow                               │
-│  ┌──────────────────────────────────────────────────────────┐     │
-│  │  QTabWidget: [📄 日志] [🖥️ 终端]                      │     │
-│  └──────────────────────────────────────────────────────────┘     │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     TerminalWidget (QWidget)                     │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  QTextEdit - ANSI 彩色输出显示                           │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  QLineEdit - 命令输入                                    │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                       BashProcess (单例)                        │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  PtyImpl 抽象层 (平台差异封装)                           │   │
-│  │  ├── LinuxPtyImpl (POSIX PTY)                          │   │
-│  │  └── WindowsPtyImpl (ConPTY)                            │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│  - 命令历史管理 (QReadWriteLock)                               │
-│  - 输出节流 (50ms QTimer)                                     │
-│  - bash 可用性检测                                             │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    AgentBridge (单例)                           │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  AgentConnection (Unix socket / Named Pipe 封装)         │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│  - JSON 协议 v1.0 + 心跳机制                                 │
-│  - 注册式 query handler (支持扩展)                            │
-│  - 断开重连流程                                               │
-└─────────────────────────────────────────────────────────────────┘
+```text
+MainWindow
+  bottom tabs:
+    - 日志
+    - 终端            -> TerminalWidget -> BashProcess -> PTY shell
+    - Agent 对话      -> AgentChatPanel -> AgentController -> LLM client
+    - Agent 日志      -> AgentActionLogWidget -> AgentController undo
+
+TerminalBridge
+  - mirrors GUI/log/run events into TerminalWidget
+  - starts AgentBridge IPC server
+  - keeps terminal/CLI integration separate from Agent tool execution
+
+AgentBridge
+  - QLocalServer IPC: Unix domain socket on Linux, named pipe on Windows
+  - JSON protocol v1.0
+  - accepts: tool_call, query, subscribe, ping
+  - rejects: execute
+
+AgentController
+  - manages conversation, permission level, pending confirmations and loop limits
+  - Observer: read-only tools only
+  - Advisor: write tools require confirmation
+  - Autopilot: safe write tools execute directly, dangerous tools require confirmation
+
+AgentActor
+  - executes schema-defined DeepLux tools
+  - validates required/enum params
+  - wraps write operations in undo commands
 ```
 
-## 核心组件
+## Core Components
 
-### 1. BashProcess (新增，跨平台)
+### BashProcess
 
-**文件**: `src/ui/process/BashProcess.h`, `.cpp`
+`BashProcess` owns the real terminal process. It provides:
 
-**平台抽象设计**：
-```cpp
-// 内部实现类，屏蔽平台差异
-class PtyImpl {
-public:
-    virtual ~PtyImpl() = default;
-    virtual bool start(const QString& shell, const QStringList& args) = 0;
-    virtual void write(const QByteArray& data) = 0;
-    virtual QByteArray read() = 0;
-    virtual void resize(int cols, int rows) = 0;
-    virtual void kill() = 0;
-    virtual bool isRunning() const = 0;
-signals:
-    void outputReady(const QByteArray& data);
-    void errorReady(const QByteArray& data);
-    void finished(int exitCode);
-    void errorOccurred(const QString& error);
-};
+- platform-specific PTY implementation through `PtyImpl`;
+- shell detection;
+- command history protected by `QReadWriteLock`;
+- 50 ms output throttling;
+- raw byte output to `TerminalWidget`, where ANSI parsing happens.
 
-class BashProcess : public QObject {
-    Q_OBJECT
-public:
-    static BashProcess& instance();
+It is for human terminal use and CLI wrapper integration, not for Agent arbitrary execution.
 
-    enum State { NotStarted, Starting, Running, Failed };
-    enum Error { None, ShellNotFound, PtyOpenFailed, ForkFailed, ShellCrashed, Timeout };
+### TerminalWidget
 
-    State state() const { return m_state; }
-    Error lastError() const { return m_lastError; }
+`TerminalWidget` renders a character-grid terminal backed by `TerminalScreen`, `TerminalRenderer`, and `AnsiParser`.
 
-    Q_INVOKABLE void writeCommand(const QString& command);
-    Q_INVOKABLE void writeRaw(const QString& data);
+Key behavior:
 
-    QStringList history() const;
-    void addToHistory(const QString& cmd);
-    void clearHistory();
+- receives `BashProcess::outputReady` and `errorReady` via `Qt::QueuedConnection`;
+- sends keyboard input directly to PTY;
+- supports terminal copy/paste conventions;
+- receives formatted GUI event output from `TerminalBridge`.
 
-    void resize(int cols, int rows);
+### TerminalBridge
 
-    static QString findAvailableShell();
-    static bool isShellAvailable(const QString& shellPath);
+`TerminalBridge` bridges GUI state to terminal output and routes internal CLI commands. It also starts/stops `AgentBridge`.
 
-signals:
-    void stateChanged(State state) const;
-    void outputReady(const QString& data) const;   // 已解码
-    void errorReady(const QString& data) const;
-    void commandFinished(int exitCode) const;
-    void errorOccurred(Error error, const QString& details) const;
+Responsibilities:
 
-private:
-    BashProcess(QObject* parent = nullptr);
-    ~BashProcess() override;
+- print project/run/plugin/log events to the terminal;
+- run known CLI commands through `CLIHandler`;
+- forward unknown terminal input to bash;
+- send selected GUI events to AgentBridge subscribers.
 
-    PtyImpl* m_impl = nullptr;
-    State m_state = NotStarted;
-    Error m_lastError = None;
-    QString m_shellPath;
-    QStringList m_commandHistory;
-    QReadWriteLock m_historyLock;
+It must not route Agent requests to bash.
 
-    QTimer* m_outputThrottle = nullptr;
-    QString m_pendingOutput;
-};
-```
+### AgentBridge
 
-**关键实现细节**：
+`AgentBridge` is the IPC server for external or embedded Agent integrations.
 
-1. **Linux POSIX PTY**:
-```cpp
-bool LinuxPtyImpl::start(const QString& shell, const QStringList& args) {
-    m_masterFd = ::open("/dev/ptmx", O_RDWR | O_NOCTTY);
-    grantpt(m_masterFd);
-    unlockpt(m_masterFd);
-
-    pid_t pid = fork();
-    if (pid == 0) {
-        int slaveFd = ::open(ptsname(m_masterFd), O_RDWR);
-        setsid();
-        ioctl(slaveFd, TIOCSCTTY, 0);
-        ::dup2(slaveFd, STDIN_FILENO);
-        ::dup2(slaveFd, STDOUT_FILENO);
-        ::dup2(slaveFd, STDERR_FILENO);
-        execl(shell.toUtf8(), "bash", "--login", "-i", nullptr);
-        _exit(1);
-    }
-    m_notifier = new QSocketNotifier(m_masterFd, QSocketNotifier::Read, this);
-    return true;
-}
-```
-
-2. **Windows ConPTY** (Win10 1809+):
-```cpp
-bool WindowsConPtyImpl::start(const QString& shell, const QStringList& args) {
-    HRESULT hr = CreatePseudoConsole(..., &hPty);
-
-    STARTUPINFOEX siex = {};
-    siex.StartupInfo.cb = sizeof(STARTUPINFOEX);
-    InitializeProcThreadAttributeList(nullptr, 1, 0, &pBuffer);
-    UpdateProcThreadAttribute(&pBuffer, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                              hPty, sizeof(hPty), nullptr, nullptr);
-
-    CreateProcessW(shellPath, ..., &siex.StartupInfo, ...);
-}
-```
-
-3. **bash 可用性检测**:
-```cpp
-QString BashProcess::detectShell() {
-#if defined(_WIN32)
-    QStringList candidates = {"bash", "cmd.exe", "powershell.exe"};
-#else
-    QStringList candidates = {"/bin/bash", "/usr/bin/bash", "/bin/sh"};
-#endif
-    for (const QString& shell : candidates) {
-        if (QFileInfo(shell).exists() && QFileInfo(shell).isExecutable()) {
-            return shell;
-        }
-    }
-    return QString();
-}
-```
-
-### 2. TerminalWidget (重写)
-
-**文件**: `src/ui/widgets/TerminalWidget.h`, `.cpp`
-
-**关键功能**：
-- 接收 BashProcess 信号 (`Qt::QueuedConnection`)
-- ANSI X3.64 → HTML 着色
-- 命令历史（上下键）
-- Tab 补全
-- 输出节流 (50ms)
-
-### 3. TerminalBridge (增强)
-
-**文件**: `src/ui/bridge/TerminalBridge.h`, `.cpp`
-
-**GUI Action 命令映射**：
-
-| GUI 操作 | bash 命令 |
-|---------|----------|
-| 新建方案 | `deeplux create-project %1` |
-| 打开工程 | `deeplux open %1` |
-| 保存工程 | `deeplux save` |
-| 运行流程 | `deeplux run` |
-| 停止流程 | `deeplux stop` |
-
-### 4. AgentBridge (新增)
-
-**文件**: `src/core/agent/AgentBridge.h`, `.cpp`
-
-**平台抽象**：`QLocalServer` 自动适配 Unix Domain Socket (Linux) / Named Pipe (Windows)
-
-**通信协议** (JSON v1.0):
+Accepted protocol messages:
 
 ```json
-// 通用头部
-{"version": "1.0", "type": "...", "id": "req-001"}
-
-// Agent → DeepLux: 执行命令
-{"type": "execute", "id": "req-001", "payload": {"command": "ls -la", "timeout": 30000}}
-
-// Agent → DeepLux: 查询
-{"type": "query", "id": "req-002", "payload": {"target": "project"}}
-
-// Agent → DeepLux: 心跳
-{"type": "ping"}
-
-// DeepLux → Agent: 结果
-{"type": "result", "id": "req-001", "payload": {"exitCode": 0, "stdout": "..."}}
-
-// DeepLux → Agent: 主动事件
-{"type": "event", "event": "run_started", "payload": {...}}
-
-// DeepLux → Agent: 心跳响应
-{"type": "pong"}
+{"version": "1.0", "type": "tool_call", "id": "req-001", "payload": {"tool": "add_module", "params": {"plugin": "GrabImage"}}}
+{"version": "1.0", "type": "query", "id": "req-002", "payload": {"target": "project"}}
+{"version": "1.0", "type": "subscribe", "id": "req-003", "payload": {"event": "run_finished"}}
+{"version": "1.0", "type": "ping", "id": "req-004"}
 ```
 
-**心跳机制**：
-- 10 秒发送一次 `{"type": "ping"}`
-- 30 秒无响应 (3次 missed) 自动断开
-- 断开后 5 秒自动尝试重连
-- GUI 发出 `agentConnectionLost` 信号
+Rejected message:
 
-**query 接口**（注册式）：
-```cpp
-AgentBridge::instance().registerQueryHandler("project", [](const QJsonObject& params) {
-    Project* proj = ProjectManager::instance().currentProject();
-    return QJsonObject{{"name", proj->name()}};
-});
+```json
+{"version": "1.0", "type": "execute", "id": "req-005", "payload": {"command": "rm -rf /tmp/x"}}
 ```
 
-## 文件结构
+`execute` remains rejected with a deprecation error. This is intentional: unrestricted shell access is not an Agent capability.
 
-```
-src/
-├── ui/
-│   ├── process/                    (新增)
-│   │   ├── BashProcess.h/cpp
-│   │   ├── PtyImpl.h              (抽象基类)
-│   │   ├── LinuxPtyImpl.cpp       (Linux 实现)
-│   │   └── WindowsPtyImpl.cpp     (Windows 实现)
-│   ├── widgets/
-│   │   └── TerminalWidget.h/cpp   (重写)
-│   ├── bridge/
-│   │   └── TerminalBridge.h/cpp   (增强)
-│   └── CMakeLists.txt
-└── core/
-    ├── agent/                      (新增)
-    │   ├── AgentBridge.h/cpp
-    │   └── AgentConnection.cpp
-    └── CMakeLists.txt
+Responses:
+
+```json
+{"version": "1.0", "type": "result", "id": "req-001", "payload": {"status": "ok"}}
+{"version": "1.0", "type": "error", "id": "req-005", "payload": {"message": "Message type 'execute' is deprecated. Use 'tool_call' instead."}}
+{"version": "1.0", "type": "event", "event": "run_finished", "payload": {"success": true}}
 ```
 
-## 实现步骤
+Heartbeat behavior:
 
-### Phase 1: BashProcess + TerminalWidget + TerminalBridge (核心终端 + GUI同步)
+- server sends `ping` every 10 seconds to connected clients;
+- after 3 missed heartbeats, server emits `agentConnectionLost`;
+- client is responsible for reconnecting to the server socket/pipe.
 
-1. **BashProcess** - PtyImpl 抽象 + Linux/Windows 实现
-2. **TerminalWidget** - ANSI 着色 + 命令历史 + Tab 补全
-3. **TerminalBridge** - GUI 同步 + deeplux wrapper
+### AgentController and AgentActor
 
-### Phase 2: AgentBridge (基础版)
+The Agent execution surface is intentionally narrow:
 
-1. AgentConnection 连接类
-2. Unix socket / Named Pipe server
-3. JSON 协议解析 + 心跳
+- tools are declared in `ToolSchema`;
+- `AgentActor` validates inputs before execution;
+- write actions go through undoable commands where practical;
+- `AgentController` owns permission policy, confirmation state and LLM loop limits.
 
-### Phase 3: AgentBridge (完整版)
+Current safety defaults:
 
-1. 注册式 query handler
-2. 事件订阅 + 主动推送
-3. 断开重连流程
+- `Observer`: read-only only;
+- `Advisor`: any write tool requires user confirmation;
+- `Autopilot`: dangerous tools require confirmation;
+- max 20 automatic tool turns;
+- max 10 tool calls per turn.
 
-### Phase 4: deeplux CLI 工具
+## GUI Entry Points
 
-1. 命令行入口
-2. CLI 命令处理
-3. wrapper 安装
+The GUI entry point remains the bottom `Agent 对话` tab. This is deliberate:
 
-## 设计改进（基于审查）
+- it keeps Agent interaction near logs and terminal output;
+- it does not steal space from the main vision workflow canvas;
+- confirmation cards stay close to the conversation that triggered them.
 
-### 高优先级
-1. **跨平台 PTY 抽象**: PtyImpl 基类 + Linux/Windows 实现分离
-2. **Windows ConPTY 细化**: 明确 API 调用，降级处理
-3. **Socket/Pipe 抽象**: AgentConnection 封装差异
-4. **线程安全**: Qt::QueuedConnection + 50ms 节流
+The bottom `Agent 日志` tab is the audit surface. Its undo behavior is stack-based: it reverts the most recent undoable Agent action, not an arbitrary selected historical row.
 
-### 中优先级
-5. **Phase 1+2 合并**: 避免 TerminalWidget 重写两次
-6. **bash 检测**: detectShell() + 明确错误提示
-7. **心跳恢复**: 断开 → 5s 重连 → agentConnectionLost 信号
+## Current Status
 
-### 平台差异
+Implemented:
 
-| 功能 | Linux | Windows |
-|------|-------|---------|
-| PTY 打开 | `open("/dev/ptmx")` | `CreatePseudoConsole()` |
-| 进程创建 | `fork()` + `setsid()` | `CreateProcessW()` + `EXTENDED_STARTUPINFO_PRESENT` |
-| Socket/Pipe | `QLocalServer` (Unix socket) | `QLocalServer` (Named Pipe) |
+- real PTY terminal;
+- terminal event mirroring;
+- AgentBridge `tool_call`, `query`, `subscribe`, `ping`;
+- deprecated `execute`;
+- Agent permission levels;
+- pending confirmation card;
+- dangerous tool marking;
+- undo stack for Agent writes;
+- Agent loop turn/tool-count limits;
+- Agent chat/status/log tabs.
+
+Known gaps:
+
+- AgentBridge protocol branches need fuller IPC-level tests;
+- tab status/highlight for “thinking / waiting confirmation / error” is still minimal;
+- `Agent 日志` undo button wording should say “撤销最近操作”;
+- Tool Preview is displayed as a card, but not yet also recorded as a `Tool` message in the chat flow;
+- failed Agent messages do not have a retry action.
+
+## Implementation Plan
+
+### Phase 1: Documentation Sync
+
+1. Keep this document as the source of truth for terminal/Agent boundaries.
+2. Keep `execute` documented as deprecated and intentionally rejected.
+3. Document bottom `Agent 对话` as the primary GUI entry.
+4. Document client-owned reconnection.
+
+### Phase 2: Small UI Polish
+
+1. Rename Agent log undo button to “撤销最近操作”.
+2. Highlight or switch to `Agent 对话` when a pending confirmation appears.
+3. Add tab tooltip/status for thinking, waiting confirmation and error.
+4. Add a short `Tool` message when showing a Tool Preview card.
+
+### Phase 3: Protocol Coverage
+
+1. Add AgentBridge tests for rejected `execute`.
+2. Add AgentBridge tests for `tool_call`, `query`, `subscribe`, and `ping`.
+3. Keep bash terminal tests separate from AgentBridge tests.
+
+### Phase 4: Optional Chat UX
+
+1. Add retry for failed user messages.
+2. Revisit asynchronous tool execution only if real tools become slow enough to block UI.
+
+## Verification
+
+For documentation consistency:
+
+```bash
+rg -n "转发到 bash|execute.*bash|自动尝试重连" docs/Terminal_Agent_Design.md | rg -v "rg -n"
+```
+
+Expected: no statement claims that Agent requests are forwarded to bash or that DeepLux actively reconnects clients.
+
+For related behavior:
+
+```bash
+ctest --test-dir build -R "test_(agent|terminal|mainwindow)" --output-on-failure
+```

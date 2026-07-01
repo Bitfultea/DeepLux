@@ -1,5 +1,6 @@
 #include "AgentToolPreviewCard.h"
 #include "AgentMessageBubble.h"
+#include "core/agent/ToolSchema.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -32,10 +33,12 @@ void AgentToolPreviewCard::setupUi()
 
     for (int i = 0; i < m_tools.size(); ++i) {
         const ToolItem& t = m_tools[i];
-        QString line = QString("<span style=\"color:%1;\">  %2. %3</span>")
+        const bool dangerous = ToolSchema::instance().findTool(t.name).dangerous;
+        const QString riskLabel = dangerous ? tr(" [高风险]") : QString();
+        QString line = QString("<span style=\"color:%1;\">  %2. %3%4</span>")
             .arg(theme.toolFg.name())
             .arg(i + 1)
-            .arg(t.name);
+            .arg(t.name, riskLabel);
 
         // 内联参数: key: "value" 格式, 紧凑单行
         if (!t.params.isEmpty()) {
@@ -51,11 +54,11 @@ void AgentToolPreviewCard::setupUi()
             line = QString("<span style=\"color:%1;\">  %2. %3(</span>"
                            "<span style=\"color:%4;\">%5</span>"
                            "<span style=\"color:%1;\">)</span>")
-                .arg(theme.toolFg.name())
-                .arg(i + 1)
-                .arg(t.name)
-                .arg(theme.codeBlockFg.name())
-                .arg(paramParts.join(", "));
+	                .arg(theme.toolFg.name())
+	                .arg(i + 1)
+	                .arg(t.name)
+	                .arg(theme.codeBlockFg.name())
+	                .arg(paramParts.join(", ") + riskLabel);
         }
         lines.append(line);
     }
@@ -71,10 +74,11 @@ void AgentToolPreviewCard::setupUi()
     btnLayout->setSpacing(4);
     btnLayout->addStretch();
 
-    m_cancelBtn = new QPushButton("Cancel", this);
-    m_cancelBtn->setFixedHeight(22);
-    m_confirmBtn = new QPushButton("Confirm", this);
-    m_confirmBtn->setFixedHeight(22);
+    m_cancelBtn = new QPushButton(tr("取消"), this);
+    m_confirmBtn = new QPushButton(tr("确认执行"), this);
+    const int buttonHeight = qMax(28, m_confirmBtn->fontMetrics().height() + 8);
+    m_cancelBtn->setMinimumHeight(buttonHeight);
+    m_confirmBtn->setMinimumHeight(buttonHeight);
 
     btnLayout->addWidget(m_cancelBtn);
     btnLayout->addWidget(m_confirmBtn);

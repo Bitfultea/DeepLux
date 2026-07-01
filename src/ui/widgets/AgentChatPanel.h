@@ -1,9 +1,9 @@
 #ifndef DEEPLUX_AGENT_CHAT_PANEL_H
 #define DEEPLUX_AGENT_CHAT_PANEL_H
 
-#include <QWidget>
 #include <QList>
 #include <QPixmap>
+#include <QWidget>
 
 class QPlainTextEdit;
 class QScrollArea;
@@ -21,8 +21,7 @@ namespace DeepLux {
  *
  * 全宽流式单列布局 + Markdown 渲染 + 内联自适应输入
  */
-class AgentChatPanel : public QWidget
-{
+class AgentChatPanel : public QWidget {
     Q_OBJECT
 
 public:
@@ -36,7 +35,9 @@ public:
     void showToolPreview(const QList<AgentToolPreviewCard::ToolItem>& tools);
     void clearToolPreview();
     void clearImageAttachments();
-    QList<QPixmap> imageAttachments() const { return m_imageAttachments; }
+    QList<QPixmap> imageAttachments() const {
+        return m_imageAttachments;
+    }
 
     void setThinking(bool thinking);
 
@@ -57,10 +58,12 @@ private:
     void setupUi();
     void scrollToBottom();
     void updateInputHeight();
+    void updateStatusStrip();
     void insertMessage(AgentMessageBubble* bubble);
 
     bool eventFilter(QObject* obj, QEvent* event) override;
 
+    QWidget* m_statusStrip = nullptr;
     QScrollArea* m_scrollArea = nullptr;
     QWidget* m_messagesContainer = nullptr;
     QVBoxLayout* m_messagesLayout = nullptr;
@@ -69,13 +72,19 @@ private:
     QList<QPixmap> m_imageAttachments;
     QWidget* m_attachmentBar = nullptr;
     QLabel* m_statusLabel = nullptr;
+    QLabel* m_messageCountLabel = nullptr;
+    QLabel* m_toolCountLabel = nullptr;
+    QLabel* m_attachmentCountLabel = nullptr;
     QTimer* m_thinkingTimer = nullptr;
 
     AgentMessageBubble* m_lastAgentBubble = nullptr;
     bool m_isDark = false;
     bool m_isThinkingTimeout = false;
+    bool m_isThinking = false;
+    int m_messageCount = 0;
+    int m_pendingToolCount = 0;
 
-    int m_lineHeight = 20;         // 单行像素高度
+    int m_lineHeight = 20; // 单行像素高度
     int m_inputMinLines = 1;
     int m_inputMaxLines = 6;
 

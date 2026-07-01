@@ -1,40 +1,39 @@
 #include "MainWindow.h"
 
+#include "../bridge/TerminalBridge.h"
+#include "../dialogs/AgentSettingsDialog.h"
 #include "../dialogs/LoginDialog.h"
 #include "../display/DisplayManager.h"
-#include "../widgets/FlowCanvas.h"
-#include "../widgets/PropertyPanel.h"
-#include "../widgets/TerminalWidget.h"
+#include "../panels/DataSourcePanel.h"
 #include "../widgets/AgentActionLogWidget.h"
 #include "../widgets/AgentChatPanel.h"
+#include "../widgets/FlowCanvas.h"
+#include "../widgets/TerminalWidget.h"
 #include "../widgets/ViewportWidget.h"
-#include "../dialogs/AgentSettingsDialog.h"
-#include "../bridge/TerminalBridge.h"
-#include "../panels/DataSourcePanel.h"
-#include "core/agent/AgentController.h"
-#include "core/agent/OpenAILLMClient.h"
 #include "CameraSetView.h"
 #include "CommunicationSetView.h"
 #include "GlobalVarView.h"
 #include "SplashScreen.h"
 #include "SystemParamView.h"
+#include "core/agent/AgentController.h"
+#include "core/agent/OpenAILLMClient.h"
+#include "core/agent/ToolSchema.h"
+#include "core/base/ModuleBase.h"
 #include "core/common/ConfigWidgetHelper.h"
 #include "core/common/Logger.h"
-#include "core/manager/ConfigManager.h"
+#include "core/common/ModuleIconProvider.h"
 #include "core/display/DisplayData.h"
 #include "core/display/IDisplayPort.h"
-#include "core/interface/IModule.h"
-#include "core/base/ModuleBase.h"
-#include "core/manager/PluginManager.h"
-#include "core/manager/ProjectManager.h"
-#include "core/model/ImageData.h"
 #include "core/engine/RunEngine.h"
-#include "core/model/Project.h"
-#include "core/model/DataSource.h"
+#include "core/interface/IModule.h"
 #include "core/io/PlyLoader.h"
 #include "core/io/TiffLoader.h"
-
-#include <QUuid>
+#include "core/manager/ConfigManager.h"
+#include "core/manager/PluginManager.h"
+#include "core/manager/ProjectManager.h"
+#include "core/model/DataSource.h"
+#include "core/model/ImageData.h"
+#include "core/model/Project.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -84,9 +83,11 @@
 #include <QShortcut>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QSystemTrayIcon>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextStream>
@@ -95,19 +96,29 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
-#include <QStandardItemModel>
+#include <QTreeWidgetItemIterator>
 #include <QUrl>
-#include <QWidgetAction>
+#include <QUuid>
 #include <QVBoxLayout>
+#include <QWidgetAction>
 
 namespace DeepLux {
 
 // 前向声明
-class PropertyPanel;
 class FlowCanvas;
 
-MainWindow::MainWindow(QWidget* parent)
-    : QMainWindow(parent), m_displayManager(new DisplayManager(this)) {
+namespace {
+QString cleanToolDisplayName(const QString& displayName) {
+    const QString text = displayName.trimmed();
+    const int firstSpace = text.indexOf(' ');
+    if (firstSpace > 0 && !text.at(0).isLetterOrNumber()) {
+        return text.mid(firstSpace + 1).trimmed();
+    }
+    return text;
+}
+} // namespace
+
+MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(new DisplayManager(this)) {
 
     setupUi();
     applyTheme();
@@ -325,9 +336,8 @@ void MainWindow::setupMenuBar() {
         renderGroup->addAction(m_renderActions[i]);
     }
     m_renderActions[5]->setChecked(true);
-    connect(renderGroup, &QActionGroup::triggered, this, [this](QAction* action) {
-        onRenderModeChanged(action->data().toInt());
-    });
+    connect(renderGroup, &QActionGroup::triggered, this,
+            [this](QAction* action) { onRenderModeChanged(action->data().toInt()); });
 
     // 工具菜单
     QMenu* toolMenu = menuBar()->addMenu(tr("工具 (&T)"));
@@ -612,6 +622,8 @@ void MainWindow::setupMainLayout() {
     addToolBoxItem(commItem, tr("🌐 TCP 服务器"), "TCPServer");
     addToolBoxItem(commItem, tr("🔌 串口通信"), "SerialPort");
 
+    connect(&PluginManager::instance(), &PluginManager::pluginLoaded, this, &MainWindow::updateToolBoxPluginItem);
+
     toolCategoryLayout->addWidget(m_toolBoxTree);
     toolCategoryScroll->setWidget(toolCategoryWidget);
     toolPanelLayout->addWidget(toolCategoryScroll);
@@ -667,6 +679,9 @@ void MainWindow::setupMainLayout() {
     m_processTabWidget = new QTabWidget(this);
     m_processTabWidget->setObjectName("ProcessTabWidget");
     m_processTabWidget->setDocumentMode(true);
+    m_processTabWidget->tabBar()->setUsesScrollButtons(false);
+    m_processTabWidget->tabBar()->setExpanding(false);
+    m_processTabWidget->tabBar()->setElideMode(Qt::ElideNone);
 
     // ---- Tab 1: 流程 ----
     m_processTabContent = new QWidget();
@@ -726,17 +741,19 @@ void MainWindow::setupMainLayout() {
     m_processTree = new QTreeWidget();
     m_processTree->setHeaderHidden(true);
     m_processTree->setAcceptDrops(true);
-    m_processTree->setDragDropMode(QAbstractItemView::DropOnly);
+    m_processTree->setDragEnabled(true);
+    m_processTree->setDragDropMode(QAbstractItemView::DragDrop);
     m_processTree->setAnimated(true);
     m_processTree->setSelectionMode(QAbstractItemView::SingleSelection);
     m_processTree->setContextMenuPolicy(Qt::CustomContextMenu);
-    m_processTree->setDefaultDropAction(Qt::MoveAction);
+    m_processTree->setDefaultDropAction(Qt::CopyAction);
+    m_processTree->setDragDropOverwriteMode(false);
     m_processTree->setDropIndicatorShown(true);
     m_processTree->setObjectName("ProcessTree");
     m_processTree->setColumnCount(2);
     m_processTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_processTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_processTree->setColumnHidden(1, true);   // 耗时列默认隐藏，运行后显示
+    m_processTree->setColumnHidden(1, true); // 耗时列默认隐藏，运行后显示
     m_processTree->header()->setHidden(true);
     m_processTree->viewport()->installEventFilter(this);
     m_processTree->installEventFilter(this);
@@ -767,6 +784,7 @@ void MainWindow::setupMainLayout() {
     // ---- Tab 2: 画布 ----
     m_flowCanvas = new FlowCanvas(this);
     m_flowCanvas->setObjectName("FlowCanvas");
+    m_flowCanvas->setStyleSheet("background-color: #000000;");
     m_processTabWidget->addTab(m_flowCanvas, tr("画布"));
 
     // ---- Tab 3: 数据源 ----
@@ -774,59 +792,11 @@ void MainWindow::setupMainLayout() {
     m_dataSourcePanel->setObjectName("DataSourcePanel");
     m_processTabWidget->addTab(m_dataSourcePanel, tr("数据源"));
 
-    // ---- 右侧属性面板 ----
-    m_propertyPanel = new PropertyPanel(this);
-    m_propertyPanel->setObjectName("PropertyPanel");
-
-    m_propertyDock = new QDockWidget(this);
-    m_propertyDock->setObjectName("PropertyDock");
-    m_propertyDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
-    m_propertyDock->setTitleBarWidget(new QWidget());
-    m_propertyDock->setWidget(m_propertyPanel);
-    m_propertyDock->setMinimumWidth(220);
-    m_propertyDock->setMaximumWidth(320);
-
-    connect(m_processTree, &QTreeWidget::itemSelectionChanged, this, [this]() {
-        if (!m_propertyPanel) return;
-
-        const QList<QTreeWidgetItem*> selectedItems = m_processTree->selectedItems();
-        if (selectedItems.isEmpty()) {
-            m_propertyPanel->clear();
-            return;
-        }
-
-        QTreeWidgetItem* item = selectedItems.first();
-        if (!item || item->data(0, Qt::UserRole).toString() != "flow_item") {
-            m_propertyPanel->clear();
-            return;
-        }
-
-        const QString instanceId = item->data(0, Qt::UserRole + 1).toString();
-        m_propertyPanel->setModule(m_flowModules.value(instanceId, nullptr), instanceId);
-    });
-
-    connect(m_propertyPanel, &PropertyPanel::paramsChanged, this,
-            [](const QString& moduleId, const QString& key, const QVariant& value) {
-        Project* project = ProjectManager::instance().currentProject();
-        if (!project) return;
-
-        ModuleInstance* currentModule = project->findModule(moduleId);
-        if (!currentModule) return;
-
-        ModuleInstance updatedModule = *currentModule;
-        updatedModule.params[key] = QJsonValue::fromVariant(value);
-        project->updateModule(moduleId, updatedModule);
-    });
-
     // 连接 DataSourcePanel 信号
-    connect(m_dataSourcePanel, &DataSourcePanel::requestDisplay,
-            this, &MainWindow::onDisplayDataSource);
-    connect(m_dataSourcePanel, &DataSourcePanel::requestRemove,
-            this, &MainWindow::onRemoveDataSource);
-    connect(m_dataSourcePanel, &DataSourcePanel::requestShowInFolder,
-            this, &MainWindow::onShowDataSourceInFolder);
-    connect(m_dataSourcePanel, &DataSourcePanel::requestCopyPath,
-            this, &MainWindow::onCopyDataSourcePath);
+    connect(m_dataSourcePanel, &DataSourcePanel::requestDisplay, this, &MainWindow::onDisplayDataSource);
+    connect(m_dataSourcePanel, &DataSourcePanel::requestRemove, this, &MainWindow::onRemoveDataSource);
+    connect(m_dataSourcePanel, &DataSourcePanel::requestShowInFolder, this, &MainWindow::onShowDataSourceInFolder);
+    connect(m_dataSourcePanel, &DataSourcePanel::requestCopyPath, this, &MainWindow::onCopyDataSourcePath);
 
     processPanelLayout->addWidget(m_processTabWidget);
 
@@ -835,8 +805,8 @@ void MainWindow::setupMainLayout() {
     imageDisplayWidget->setObjectName("ImageDisplayWidget");
     imageDisplayWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     imageDisplayWidget->setMinimumSize(0, 0);
-    imageDisplayWidget->setAcceptDrops(true);  // 接收文件拖放
-    imageDisplayWidget->installEventFilter(this);  // route drops to eventFilter
+    imageDisplayWidget->setAcceptDrops(true);     // 接收文件拖放
+    imageDisplayWidget->installEventFilter(this); // route drops to eventFilter
 
     rightTopSplitter->addWidget(processPanelWidget);
 
@@ -844,10 +814,8 @@ void MainWindow::setupMainLayout() {
     processPanelWidget->setMaximumWidth(320);
 
     rightTopSplitter->addWidget(imageDisplayWidget);
-    rightTopSplitter->addWidget(m_propertyDock);
     rightTopSplitter->setStretchFactor(0, 1);
     rightTopSplitter->setStretchFactor(1, 8);
-    rightTopSplitter->setStretchFactor(2, 2);
 
     rightSplitter->addWidget(rightTopSplitter);
 
@@ -861,6 +829,7 @@ void MainWindow::setupMainLayout() {
     m_logTerminalTabs->setObjectName("LogTerminalTabs");
     m_logTerminalTabs->setMovable(false);
     m_logTerminalTabs->setDocumentMode(true);
+    m_logTerminalTabs->tabBar()->setMinimumHeight(qMax(30, m_logTerminalTabs->tabBar()->fontMetrics().height() + 10));
 
     // 隐藏 dock 标题栏，节省空间
     m_logDock->setTitleBarWidget(new QWidget());
@@ -881,8 +850,9 @@ void MainWindow::setupMainLayout() {
     m_logTable->setColumnWidth(1, 70);
 
     // vertical header 固定宽度，替代重复的水平序号列
-    m_logTable->horizontalHeader()->setFixedHeight(24);
-    m_logTable->verticalHeader()->setDefaultSectionSize(20);
+    const int logTextHeight = m_logTable->fontMetrics().height();
+    m_logTable->horizontalHeader()->setFixedHeight(qMax(30, logTextHeight + 10));
+    m_logTable->verticalHeader()->setDefaultSectionSize(qMax(26, logTextHeight + 6));
     m_logTable->verticalHeader()->setMinimumWidth(40);
     m_logTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_logTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -895,7 +865,8 @@ void MainWindow::setupMainLayout() {
 
     // 点击表头"级别"列弹出筛选菜单
     connect(m_logTable->horizontalHeader(), &QHeaderView::sectionClicked, this, [this](int logicalIndex) {
-        if (logicalIndex == 1) showLogLevelMenu();
+        if (logicalIndex == 1)
+            showLogLevelMenu();
     });
 
     int logTabIndex = m_logTerminalTabs->addTab(logWidget, tr("日志"));
@@ -915,30 +886,41 @@ void MainWindow::setupMainLayout() {
 
     // ===== Tab 3: Agent Chat =====
     m_agentChatPanel = new AgentChatPanel();
-    m_logTerminalTabs->addTab(m_agentChatPanel, tr("Agent 对话"));
-    connect(m_agentChatPanel, &AgentChatPanel::userMessageSent,
-            this, [this](const QString& msg) {
-                m_agentChatPanel->setThinking(true);
-                AgentController::instance().sendUserMessage(msg);
-            });
-    connect(m_agentChatPanel, &AgentChatPanel::userMessageWithImagesSent,
-            this, [this](const QString& msg, const QList<QPixmap>& images) {
+    m_agentChatTabIndex = m_logTerminalTabs->addTab(m_agentChatPanel, tr("Agent 对话"));
+    m_logTerminalTabs->setTabToolTip(m_agentChatTabIndex, tr("Agent 对话"));
+    auto setAgentTabStatus = [this](const QString& tooltip, bool focus) {
+        if (!m_logTerminalTabs || m_agentChatTabIndex < 0)
+            return;
+        m_logTerminalTabs->setTabToolTip(m_agentChatTabIndex, tooltip);
+        if (focus) {
+            m_logTerminalTabs->setCurrentIndex(m_agentChatTabIndex);
+        }
+    };
+    connect(m_agentChatPanel, &AgentChatPanel::userMessageSent, this, [this, setAgentTabStatus](const QString& msg) {
+        setAgentTabStatus(tr("Agent 正在思考"), false);
+        m_agentChatPanel->setThinking(true);
+        AgentController::instance().sendUserMessage(msg);
+    });
+    connect(m_agentChatPanel, &AgentChatPanel::userMessageWithImagesSent, this,
+            [this, setAgentTabStatus](const QString& msg, const QList<QPixmap>& images) {
+                setAgentTabStatus(tr("Agent 正在思考"), false);
                 m_agentChatPanel->setThinking(true);
                 AgentController::instance().sendUserMessageWithImages(msg, images);
             });
-    connect(&AgentController::instance(), &AgentController::llmResponseReceived,
-            this, [this](const QString& content, const QJsonArray& toolCalls) {
+    connect(&AgentController::instance(), &AgentController::llmResponseReceived, this,
+            [this, setAgentTabStatus](const QString& content, const QJsonArray& toolCalls) {
                 Q_UNUSED(toolCalls);
+                setAgentTabStatus(tr("Agent 对话"), false);
                 m_agentChatPanel->setThinking(false);
                 m_agentChatPanel->clearToolPreview();
                 m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Agent, content);
             });
-    connect(&AgentController::instance(), &AgentController::llmErrorOccurred,
-            this, [this](const QString& error) {
+    connect(&AgentController::instance(), &AgentController::llmErrorOccurred, this,
+            [this, setAgentTabStatus](const QString& error) {
+                setAgentTabStatus(tr("Agent 出错"), false);
                 m_agentChatPanel->setThinking(false);
                 m_agentChatPanel->clearToolPreview();
-                m_agentChatPanel->addMessage(AgentMessageBubble::Sender::System,
-                                             QString("Error: %1").arg(error));
+                m_agentChatPanel->addMessage(AgentMessageBubble::Sender::System, QString("Error: %1").arg(error));
                 AgentActionLogEntry entry;
                 entry.timestamp = QDateTime::currentDateTime();
                 entry.actor = "System";
@@ -948,10 +930,12 @@ void MainWindow::setupMainLayout() {
                 entry.undoable = false;
                 m_agentActionLogWidget->addEntry(entry);
             });
-    connect(&AgentController::instance(), &AgentController::toolsPendingConfirmation,
-            this, [this](const QJsonArray& toolCalls) {
+    connect(&AgentController::instance(), &AgentController::toolsPendingConfirmation, this,
+            [this, setAgentTabStatus](const QJsonArray& toolCalls) {
+                setAgentTabStatus(tr("等待确认"), true);
                 m_agentChatPanel->setThinking(false);
                 QList<AgentToolPreviewCard::ToolItem> items;
+                QStringList toolSummary;
                 for (const QJsonValue& v : toolCalls) {
                     QJsonObject tc = v.toObject();
                     AgentToolPreviewCard::ToolItem item;
@@ -961,37 +945,47 @@ void MainWindow::setupMainLayout() {
                         item.name = func["name"].toString();
                         QJsonValue argsVal = func["arguments"];
                         if (argsVal.isString()) {
-                            item.params = QJsonDocument::fromJson(
-                                argsVal.toString().toUtf8()).object();
+                            item.params = QJsonDocument::fromJson(argsVal.toString().toUtf8()).object();
                         } else if (argsVal.isObject()) {
                             item.params = argsVal.toObject();
                         }
                     } else {
                         item.params = tc["arguments"].toObject();
                     }
+                    const bool dangerous = ToolSchema::instance().findTool(item.name).dangerous;
+                    toolSummary.append(QString("%1%2").arg(item.name, dangerous ? tr(" [高风险]") : QString()));
                     items.append(item);
+                }
+                if (!toolSummary.isEmpty()) {
+                    m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Tool,
+                                                 tr("待确认工具：%1").arg(toolSummary.join(", ")));
                 }
                 m_agentChatPanel->showToolPreview(items);
             });
-    connect(m_agentChatPanel, &AgentChatPanel::toolPreviewConfirmed,
-            &AgentController::instance(), &AgentController::confirmPendingTools);
-    connect(m_agentChatPanel, &AgentChatPanel::toolPreviewCancelled,
-            &AgentController::instance(), &AgentController::rejectPendingTools);
+    connect(m_agentChatPanel, &AgentChatPanel::toolPreviewConfirmed, &AgentController::instance(),
+            &AgentController::confirmPendingTools);
+    connect(m_agentChatPanel, &AgentChatPanel::toolPreviewCancelled, &AgentController::instance(),
+            &AgentController::rejectPendingTools);
 
     // ===== Tab 4: Agent Action Log =====
     m_agentActionLogWidget = new AgentActionLogWidget();
     m_logTerminalTabs->addTab(m_agentActionLogWidget, tr("Agent 日志"));
-    connect(&AgentController::instance(), &AgentController::actionLogEntryAdded,
-            m_agentActionLogWidget, &AgentActionLogWidget::addEntry);
-    connect(&AgentController::instance(), &AgentController::agentLoopIterating,
-            this, [this]() { m_agentChatPanel->setThinking(true); });
+    connect(&AgentController::instance(), &AgentController::actionLogEntryAdded, m_agentActionLogWidget,
+            &AgentActionLogWidget::addEntry);
+    connect(m_agentActionLogWidget, &AgentActionLogWidget::undoRequested, this,
+            [](int) { AgentController::instance().undoLastAgentAction(); });
+    connect(&AgentController::instance(), &AgentController::agentLoopIterating, this, [this, setAgentTabStatus]() {
+        setAgentTabStatus(tr("Agent 正在思考"), false);
+        m_agentChatPanel->setThinking(true);
+    });
 
     m_logDock->setWidget(m_logTerminalTabs);
-    m_logDock->setMinimumHeight(140);
+    m_logDock->setMinimumHeight(220);
 
     rightSplitter->addWidget(m_logDock);
-    rightSplitter->setStretchFactor(0, 10);
-    rightSplitter->setStretchFactor(1, 2);
+    rightSplitter->setStretchFactor(0, 7);
+    rightSplitter->setStretchFactor(1, 3);
+    rightSplitter->setSizes(QList<int>() << 620 << 260);
 
     // 将右侧 Splitter 添加到主 Splitter
     mainSplitter->addWidget(rightSplitter);
@@ -1017,9 +1011,48 @@ void MainWindow::setupMainLayout() {
 }
 
 void MainWindow::addToolBoxItem(QTreeWidgetItem* parent, const QString& displayName, const QString& pluginName) {
-    QTreeWidgetItem* item = new QTreeWidgetItem(parent, QStringList(displayName));
+    const QString text = cleanToolDisplayName(displayName);
+    const PluginInfo info = PluginManager::instance().pluginInfo(pluginName);
+    QTreeWidgetItem* item = new QTreeWidgetItem(parent, QStringList(text));
+    item->setIcon(0, ModuleIconProvider::instance().iconFor(pluginName, info.category));
+    item->setToolTip(0, pluginName);
     item->setData(0, Qt::UserRole, "plugin");
     item->setData(0, Qt::UserRole + 1, pluginName);
+    m_toolDisplayNames.insert(pluginName, text);
+}
+
+QString MainWindow::toolDisplayName(const QString& pluginName, const QString& fallback) const {
+    const QString cached = m_toolDisplayNames.value(pluginName).trimmed();
+    if (!cached.isEmpty()) {
+        return cached;
+    }
+
+    const QString managerName = PluginManager::instance().moduleDisplayName(pluginName).trimmed();
+    if (!managerName.isEmpty()) {
+        return managerName;
+    }
+    return fallback.isEmpty() ? pluginName : fallback;
+}
+
+void MainWindow::updateToolBoxPluginItem(const QString& pluginName) {
+    if (!m_toolBoxTree) {
+        return;
+    }
+
+    const QString displayName = PluginManager::instance().moduleDisplayName(pluginName);
+    const PluginInfo info = PluginManager::instance().pluginInfo(pluginName);
+    const QIcon icon = ModuleIconProvider::instance().iconFor(pluginName, info.category);
+
+    for (QTreeWidgetItemIterator it(m_toolBoxTree); *it; ++it) {
+        QTreeWidgetItem* item = *it;
+        if (item->data(0, Qt::UserRole).toString() == "plugin" &&
+            item->data(0, Qt::UserRole + 1).toString() == pluginName) {
+            item->setText(0, displayName);
+            item->setIcon(0, icon);
+            m_toolDisplayNames.insert(pluginName, displayName);
+            return;
+        }
+    }
 }
 
 void MainWindow::onToggleToolPanel(bool checked) {
@@ -1076,9 +1109,9 @@ void MainWindow::onProcessTreeContextMenu(const QPoint& pos) {
     }
 }
 
-void MainWindow::onProjectOpened(Project* project)
-{
-    if (!project) return;
+void MainWindow::onProjectOpened(Project* project) {
+    if (!project)
+        return;
 
     // 清空现有流程树
     clearProcessTree();
@@ -1120,8 +1153,7 @@ void MainWindow::onProjectOpened(Project* project)
     connect(project, &Project::dataSourceRemoved, this, &MainWindow::onDataSourceRemoved);
 }
 
-void MainWindow::onProjectClosed()
-{
+void MainWindow::onProjectClosed() {
     clearProcessTree();
     if (m_flowCanvas) {
         m_flowCanvas->loadFromProject(nullptr);
@@ -1134,43 +1166,41 @@ void MainWindow::onProjectClosed()
     }
 }
 
-void MainWindow::onModuleAdded(const ModuleInstance& module)
-{
+void MainWindow::onModuleAdded(const ModuleInstance& module) {
     addModuleToProcessTree(module);
     if (m_flowCanvas && !m_flowCanvas->nodeItem(module.id)) {
-        m_flowCanvas->addNode(module.moduleId, module.name, QPointF(module.posX, module.posY), module.id);
+        m_flowCanvas->addNode(module.moduleId, toolDisplayName(module.moduleId, module.name),
+                              QPointF(module.posX, module.posY), module.id);
     }
 }
 
-void MainWindow::onModuleRemoved(const QString& instanceId)
-{
+void MainWindow::onModuleRemoved(const QString& instanceId) {
     removeModuleFromProcessTree(instanceId);
     if (m_flowCanvas && m_flowCanvas->nodeItem(instanceId)) {
         m_flowCanvas->removeNode(instanceId);
     }
 }
 
-void MainWindow::onDataSourceAdded(const DataSource& ds)
-{
+void MainWindow::onDataSourceAdded(const DataSource& ds) {
     if (m_dataSourcePanel) {
         m_dataSourcePanel->addDataSource(ds);
     }
 }
 
-void MainWindow::onDataSourceRemoved(const QString& id)
-{
+void MainWindow::onDataSourceRemoved(const QString& id) {
     if (m_dataSourcePanel) {
         m_dataSourcePanel->removeDataSource(id);
     }
 }
 
-void MainWindow::onDisplayDataSource(const QString& dataSourceId)
-{
+void MainWindow::onDisplayDataSource(const QString& dataSourceId) {
     Project* project = ProjectManager::instance().currentProject();
-    if (!project) return;
+    if (!project)
+        return;
 
     auto ds = project->findDataSource(dataSourceId);
-    if (!ds || !ds->isValid()) return;
+    if (!ds || !ds->isValid())
+        return;
 
     QFileInfo fileInfo(ds->filePath);
     if (!fileInfo.exists()) {
@@ -1187,43 +1217,42 @@ void MainWindow::onDisplayDataSource(const QString& dataSourceId)
         if (!image.isNull() && m_displayManager) {
             DisplayData data;
             data.variant() = ImageData(image);
-            data.setMetadata(QVariantMap{
-                {"dataSourceId", ds->id},
-                {"dataSourceName", ds->name}
-            });
+            data.setMetadata(QVariantMap{{"dataSourceId", ds->id}, {"dataSourceName", ds->name}});
             m_displayManager->displayData(data);
         }
     }
 }
 
-void MainWindow::onRemoveDataSource(const QString& dataSourceId)
-{
+void MainWindow::onRemoveDataSource(const QString& dataSourceId) {
     Project* project = ProjectManager::instance().currentProject();
-    if (!project) return;
+    if (!project)
+        return;
     project->removeDataSource(dataSourceId);
 }
 
-void MainWindow::onShowDataSourceInFolder(const QString& dataSourceId)
-{
+void MainWindow::onShowDataSourceInFolder(const QString& dataSourceId) {
     Project* project = ProjectManager::instance().currentProject();
-    if (!project) return;
+    if (!project)
+        return;
     auto ds = project->findDataSource(dataSourceId);
-    if (!ds || ds->filePath.isEmpty()) return;
+    if (!ds || ds->filePath.isEmpty())
+        return;
     QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(ds->filePath).absolutePath()));
 }
 
-void MainWindow::onCopyDataSourcePath(const QString& dataSourceId)
-{
+void MainWindow::onCopyDataSourcePath(const QString& dataSourceId) {
     Project* project = ProjectManager::instance().currentProject();
-    if (!project) return;
+    if (!project)
+        return;
     auto ds = project->findDataSource(dataSourceId);
-    if (!ds || ds->filePath.isEmpty()) return;
+    if (!ds || ds->filePath.isEmpty())
+        return;
     QGuiApplication::clipboard()->setText(ds->filePath);
 }
 
-void MainWindow::addModuleToProcessTree(const ModuleInstance& inst)
-{
-    if (m_instanceItemMap.contains(inst.id)) return;  // 已存在，防止重复
+void MainWindow::addModuleToProcessTree(const ModuleInstance& inst) {
+    if (m_instanceItemMap.contains(inst.id))
+        return; // 已存在，防止重复
 
     auto diagLog = [](const QString& msg) {
         QFile f("/tmp/deeplux_agent_diag.log");
@@ -1243,8 +1272,9 @@ void MainWindow::addModuleToProcessTree(const ModuleInstance& inst)
     }
 
     // 创建树节点
-    QString displayName = inst.name.isEmpty() ? inst.moduleId : inst.name;
+    QString displayName = toolDisplayName(inst.moduleId, inst.name);
     QTreeWidgetItem* newItem = new QTreeWidgetItem();
+    newItem->setFlags((newItem->flags() | Qt::ItemIsDragEnabled) & ~Qt::ItemIsDropEnabled);
     newItem->setText(0, displayName);
     diagLog("addModuleToProcessTree: adding item to tree");
     m_processTree->addTopLevelItem(newItem);
@@ -1284,8 +1314,7 @@ void MainWindow::addModuleToProcessTree(const ModuleInstance& inst)
     m_modulesNeedSync = true;
 }
 
-void MainWindow::removeModuleFromProcessTree(const QString& instanceId)
-{
+void MainWindow::removeModuleFromProcessTree(const QString& instanceId) {
     QTreeWidgetItem* item = m_instanceItemMap.value(instanceId);
     if (item) {
         int idx = m_processTree->indexOfTopLevelItem(item);
@@ -1324,8 +1353,7 @@ void MainWindow::removeModuleFromProcessTree(const QString& instanceId)
     }
 }
 
-void MainWindow::clearProcessTree()
-{
+void MainWindow::clearProcessTree() {
     for (IModule* module : m_flowModules) {
         if (module) {
             module->shutdown();
@@ -1392,8 +1420,10 @@ void MainWindow::applyTheme() {
             "QScrollBar::handle:horizontal:hover { background-color: #666666; }"
             "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }"
             "QToolBar { background-color: #252525; border: 1px solid #444444; spacing: 5px; padding: 2px; }"
-            "QToolBar QToolButton { background-color: transparent; padding: 5px; border: 1px solid transparent; }"
+            "QToolBar QToolButton { background-color: transparent; color: #ffffff; padding: 5px; border: 1px solid "
+            "transparent; }"
             "QToolBar QToolButton:hover { background-color: #3a3a3a; border: 1px solid #555555; }"
+            "QToolBar QToolButton:pressed { background-color: #444444; border: 1px solid #6b7280; }"
             "QMenuBar { background-color: #252525; color: #ffffff; }"
             "QMenuBar::item:selected { background-color: #3a3a3a; }"
             "QMenu { background-color: #252525; color: #ffffff; border: 1px solid #333; }"
@@ -1642,15 +1672,14 @@ void MainWindow::applyTheme() {
     }
 
     if (m_processTabWidget) {
-        m_processTabWidget->setStyleSheet(QString(
-            "QTabWidget::pane { border: none; border-top: 2px solid %1; background-color: %2; }"
-            "QTabBar::tab { background-color: transparent; color: %3; padding: 6px 16px;"
-            "  border: none; border-bottom: 2px solid transparent; margin-right: 2px; }"
-            "QTabBar::tab:selected { color: #0078d7; border-bottom: 2px solid #0078d7; }"
-            "QTabBar::tab:hover:!selected { color: %3; background-color: %1; }")
-            .arg(m_isDarkTheme ? "#3a3a3a" : "#e0e0e0",
-                 m_isDarkTheme ? "#252525" : "#ffffff",
-                 m_isDarkTheme ? "#a0a0a0" : "#666666"));
+        m_processTabWidget->setStyleSheet(
+            QString("QTabWidget::pane { border: none; border-top: 2px solid %1; background-color: %2; }"
+                    "QTabBar::tab { background-color: transparent; color: %3; padding: 5px 9px;"
+                    "  border: none; border-bottom: 2px solid transparent; margin-right: 2px; }"
+                    "QTabBar::tab:selected { color: #0078d7; border-bottom: 2px solid #0078d7; }"
+                    "QTabBar::tab:hover:!selected { color: %3; background-color: %1; }")
+                .arg(m_isDarkTheme ? "#3a3a3a" : "#e0e0e0", m_isDarkTheme ? "#252525" : "#ffffff",
+                     m_isDarkTheme ? "#a0a0a0" : "#666666"));
     }
 
     // 更新 DisplayManager 中的 Viewport 样式
@@ -1673,19 +1702,7 @@ void MainWindow::applyTheme() {
 
     // 更新 Agent Action Log 主题
     if (m_agentActionLogWidget) {
-        QString logBg = m_isDarkTheme ? "#252525" : "#ffffff";
-        QString logText = m_isDarkTheme ? "#ffffff" : "#212121";
-        m_agentActionLogWidget->setStyleSheet(QString(
-            "AgentActionLogWidget { background-color: %1; }"
-            "AgentActionLogWidget QTableWidget { background-color: %1; color: %2; border: none; }"
-            "AgentActionLogWidget QTableWidget::item { border-bottom: 1px solid %3; }"
-            "AgentActionLogWidget QTableWidget::item:selected { background-color: #0078d7; }"
-            "AgentActionLogWidget QHeaderView::section { background-color: %4; color: %2; padding: 5px; border: none; }"
-            "AgentActionLogWidget QPushButton { background-color: #0078d7; color: white; padding: 4px 10px; border: none; }"
-            "AgentActionLogWidget QPushButton:hover { background-color: #1e8ad6; }")
-            .arg(logBg, logText,
-                 m_isDarkTheme ? "#333333" : "#eeeeee",
-                 m_isDarkTheme ? "#333333" : "#f0f0f0"));
+        m_agentActionLogWidget->applyTheme(m_isDarkTheme);
     }
 }
 
@@ -1726,7 +1743,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                     dialog->setMinimumSize(400, 300);
                     dialog->setAttribute(Qt::WA_DeleteOnClose);
                     QVBoxLayout* layout = new QVBoxLayout(dialog);
-                    layout->addWidget(configWidget);  // addWidget 会 reparent 到 dialog
+                    layout->addWidget(configWidget); // addWidget 会 reparent 到 dialog
                     QHBoxLayout* btnLayout = new QHBoxLayout();
                     QPushButton* okBtn = new QPushButton(tr("确定"));
                     QPushButton* cancelBtn = new QPushButton(tr("取消"));
@@ -1737,9 +1754,8 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 
                     // dialog 关闭时把 configWidget 从 dialog 分离，防止被 WA_DeleteOnClose 销毁
                     // 插件可能缓存了 configWidget 指针，销毁会导致下次 createConfigWidget crash
-                    connect(dialog, &QDialog::finished, configWidget, [configWidget]() {
-                        configWidget->setParent(nullptr);
-                    });
+                    connect(dialog, &QDialog::finished, configWidget,
+                            [configWidget]() { configWidget->setParent(nullptr); });
 
                     connect(okBtn, &QPushButton::clicked, dialog, &QDialog::accept);
                     connect(cancelBtn, &QPushButton::clicked, dialog, &QDialog::reject);
@@ -1828,7 +1844,9 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     // 处理拖放到流程树
     if (m_processTree) {
         QWidget* processViewport = m_processTree->viewport();
-        if (processViewport && watched == processViewport && event->type() == QEvent::Drop) {
+        if (processViewport && watched == processViewport &&
+            (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove ||
+             event->type() == QEvent::Drop)) {
             QDropEvent* dropEvent = static_cast<QDropEvent*>(event);
 
             // 获取拖放的数据
@@ -1837,8 +1855,73 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 return QMainWindow::eventFilter(watched, event);
             }
 
+            auto insertRowForDrop = [this, dropEvent]() {
+                QTreeWidgetItem* hoverItem = m_processTree->itemAt(dropEvent->pos());
+                if (!hoverItem) {
+                    return m_processTree->topLevelItemCount();
+                }
+
+                const QRect itemRect = m_processTree->visualItemRect(hoverItem);
+                const int itemMiddle = itemRect.top() + itemRect.height() / 2;
+                const int hoverRow = m_processTree->indexOfTopLevelItem(hoverItem);
+                return dropEvent->pos().y() < itemMiddle ? hoverRow : hoverRow + 1;
+            };
+
+            const bool isToolBoxDrop =
+                dropEvent->source() == m_toolBoxTree || dropEvent->source() == m_toolBoxTree->viewport();
+            const bool isProcessTreeDrop =
+                dropEvent->source() == m_processTree || dropEvent->source() == m_processTree->viewport();
+            if (!isToolBoxDrop && !isProcessTreeDrop) {
+                dropEvent->ignore();
+                return true;
+            }
+
+            if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
+                if (mimeData->hasFormat("application/x-qabstractitemmodeldatalist")) {
+                    dropEvent->setDropAction(isProcessTreeDrop ? Qt::MoveAction : Qt::CopyAction);
+                    dropEvent->accept();
+                    return true;
+                }
+                dropEvent->ignore();
+                return true;
+            }
+
+            if (isProcessTreeDrop && mimeData->hasFormat("application/x-qabstractitemmodeldatalist")) {
+                QTreeWidgetItem* sourceItem = m_processTree->currentItem();
+                if (!sourceItem || sourceItem->data(0, Qt::UserRole).toString() != "flow_item") {
+                    dropEvent->ignore();
+                    return true;
+                }
+
+                const int sourceRow = m_processTree->indexOfTopLevelItem(sourceItem);
+                int insertRow = insertRowForDrop();
+                if (sourceRow < 0 || insertRow == sourceRow || insertRow == sourceRow + 1) {
+                    dropEvent->setDropAction(Qt::MoveAction);
+                    dropEvent->accept();
+                    return true;
+                }
+
+                QTreeWidgetItem* movedItem = m_processTree->takeTopLevelItem(sourceRow);
+                if (insertRow > sourceRow) {
+                    --insertRow;
+                }
+                insertRow = qMax(0, qMin(insertRow, m_processTree->topLevelItemCount()));
+                m_processTree->insertTopLevelItem(insertRow, movedItem);
+                m_processTree->setCurrentItem(movedItem);
+
+                const QString instanceId = movedItem->data(0, Qt::UserRole + 1).toString();
+                if (Project* project = ProjectManager::instance().currentProject()) {
+                    project->moveModule(instanceId, insertRow);
+                }
+                m_modulesNeedSync = true;
+
+                dropEvent->setDropAction(Qt::MoveAction);
+                dropEvent->accept();
+                return true;
+            }
+
             // 检查是否有来自工具箱的拖放
-            if (mimeData->hasFormat("application/x-qabstractitemmodeldatalist")) {
+            if (isToolBoxDrop && mimeData->hasFormat("application/x-qabstractitemmodeldatalist")) {
                 // 优先使用已记录的选中项，否则尝试获取当前项
                 QTreeWidgetItem* sourceItem = m_currentToolBoxItem;
                 if (!sourceItem) {
@@ -1855,27 +1938,11 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                             m_hintLabel = nullptr;
                         }
 
-                        // 获取放置位置 - 根据鼠标在 item 内的高度判断插入上方还是下方
-                        QTreeWidgetItem* hoverItem = m_processTree->itemAt(dropEvent->pos());
-                        int insertRow;
-                        if (!hoverItem) {
-                            // 悬停在空白处，添加到末尾
-                            insertRow = m_processTree->topLevelItemCount();
-                        } else {
-                            // 获取 item 的几何区域，判断鼠标在上方还是下方
-                            QRect itemRect = m_processTree->visualItemRect(hoverItem);
-                            int itemMiddle = itemRect.top() + itemRect.height() / 2;
-                            if (dropEvent->pos().y() < itemMiddle) {
-                                // 鼠标在上半部分，插入到此 item 之前
-                                insertRow = m_processTree->indexOfTopLevelItem(hoverItem);
-                            } else {
-                                // 鼠标在下半部分，插入到此 item 之后
-                                insertRow = m_processTree->indexOfTopLevelItem(hoverItem) + 1;
-                            }
-                        }
+                        const int insertRow = insertRowForDrop();
 
                         // 先添加树节点（即时视觉反馈），再异步创建模块实例
                         QTreeWidgetItem* newItem = new QTreeWidgetItem();
+                        newItem->setFlags((newItem->flags() | Qt::ItemIsDragEnabled) & ~Qt::ItemIsDropEnabled);
                         m_processTree->insertTopLevelItem(insertRow, newItem);
 
                         QString instanceName = pluginName;
@@ -1887,7 +1954,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                         newItem->setData(0, Qt::UserRole, "flow_item");
                         newItem->setData(0, Qt::UserRole + 1, instanceName);
                         newItem->setData(0, Qt::UserRole + 2, pluginName);
-                        m_instanceItemMap.insert(instanceName, newItem);  // 防 Project 信号重复创建
+                        m_instanceItemMap.insert(instanceName, newItem); // 防 Project 信号重复创建
 
                         // 推迟模块创建到事件循环 — 避免在拖放嵌套循环中阻塞
                         QTimer::singleShot(0, this, [this, pluginName, instanceName, newItem]() {
@@ -1905,23 +1972,26 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                                 return;
                             }
                             // 通过 Project 模型添加 — moduleAdded 信号同步 processTree + FlowCanvas
-                            newItem->setText(0, module->name());
+                            const QString displayName = toolDisplayName(pluginName, module->name());
+                            newItem->setText(0, displayName);
                             newItem->setIcon(0, module->icon());
                             m_flowModules.insert(instanceName, module);
                             m_modulesNeedSync = true;
                             ModuleInstance inst;
                             inst.id = instanceName;
                             inst.moduleId = pluginName;
-                            inst.name = module->name();
+                            inst.name = displayName;
                             Project* proj = ProjectManager::instance().currentProject();
                             if (proj) {
                                 proj->addModule(inst);
+                                proj->moveModule(instanceName, m_processTree->indexOfTopLevelItem(newItem));
                             }
-                            Logger::instance().info(
-                                tr("已添加插件到流程：%1 (%2)").arg(module->name()).arg(instanceName), "Flow");
+                            Logger::instance().info(tr("已添加插件到流程：%1 (%2)").arg(displayName).arg(instanceName),
+                                                    "Flow");
                         });
 
-                        dropEvent->acceptProposedAction();
+                        dropEvent->setDropAction(Qt::CopyAction);
+                        dropEvent->accept();
                         return true;
                     }
                 }
@@ -1969,13 +2039,13 @@ void MainWindow::dropEvent(QDropEvent* event) {
 }
 
 // TIFF 大文件阈值与跳采样步长（避免 UI 卡顿）
-static constexpr qint64 LARGE_TIFF_THRESHOLD = 100 * 1024 * 1024;  // 100MB
+static constexpr qint64 LARGE_TIFF_THRESHOLD = 100 * 1024 * 1024; // 100MB
 static constexpr int TIFF_STEP_LARGE = 2;
 static constexpr int TIFF_STEP_NORMAL = 1;
 
-bool MainWindow::importFile(const QString& filePath)
-{
-    if (filePath.isEmpty()) return false;
+bool MainWindow::importFile(const QString& filePath) {
+    if (filePath.isEmpty())
+        return false;
 
     QFileInfo fileInfo(filePath);
     if (!fileInfo.exists()) {
@@ -2000,11 +2070,11 @@ bool MainWindow::importFile(const QString& filePath)
     return importImageFile(filePath);
 }
 
-bool MainWindow::importPointCloudFile(const QString& filePath)
-{
+bool MainWindow::importPointCloudFile(const QString& filePath) {
     QFileInfo fileInfo(filePath);
     QString ext = fileInfo.suffix().toLower();
-    Logger::instance().info(QString("[imp3D] file=%1 size=%2 ext=%3").arg(fileInfo.fileName()).arg(fileInfo.size()).arg(ext), "3D");
+    Logger::instance().info(
+        QString("[imp3D] file=%1 size=%2 ext=%3").arg(fileInfo.fileName()).arg(fileInfo.size()).arg(ext), "3D");
     PointCloudData pc;
     QString error;
     bool ok = false;
@@ -2049,10 +2119,7 @@ bool MainWindow::importPointCloudFile(const QString& filePath)
     DisplayData data;
     data.variant() = std::move(pc);
     data.setTimestamp(QDateTime::currentMSecsSinceEpoch());
-    data.setMetadata(QVariantMap{
-        {"dataSourceId", ds.id},
-        {"dataSourceName", ds.name}
-    });
+    data.setMetadata(QVariantMap{{"dataSourceId", ds.id}, {"dataSourceName", ds.name}});
     if (m_displayManager) {
         m_displayManager->displayData(data);
     }
@@ -2065,8 +2132,7 @@ bool MainWindow::importPointCloudFile(const QString& filePath)
     return true;
 }
 
-bool MainWindow::importImageFile(const QString& filePath)
-{
+bool MainWindow::importImageFile(const QString& filePath) {
     Logger::instance().info(tr("导入图像：%1").arg(filePath), "System");
 
     QFileInfo fileInfo(filePath);
@@ -2089,10 +2155,7 @@ bool MainWindow::importImageFile(const QString& filePath)
     if (!image.isNull() && m_displayManager) {
         DisplayData data;
         data.variant() = ImageData(image);
-        data.setMetadata(QVariantMap{
-            {"dataSourceId", ds.id},
-            {"dataSourceName", ds.name}
-        });
+        data.setMetadata(QVariantMap{{"dataSourceId", ds.id}, {"dataSourceName", ds.name}});
         m_displayManager->displayData(data);
     }
 
@@ -2103,21 +2166,19 @@ bool MainWindow::importImageFile(const QString& filePath)
     return true;
 }
 
-void MainWindow::onRenderModeChanged(int index)
-{
+void MainWindow::onRenderModeChanged(int index) {
     auto viewports = m_displayManager->allViewports();
     for (auto* vp : viewports) {
-        if (vp) vp->setRenderMode(index);
+        if (vp)
+            vp->setRenderMode(index);
     }
 }
 
-void MainWindow::updateRenderModeCombo()
-{
+void MainWindow::updateRenderModeCombo() {
     // 菜单项不需要预填充（已在 setupMenuBar 中创建）
 }
 
-void MainWindow::updateRenderModeComboForData(const PointCloudData& pc)
-{
+void MainWindow::updateRenderModeComboForData(const PointCloudData& pc) {
     m_renderActions[1]->setEnabled(pc.hasColors());
     m_renderActions[3]->setEnabled(!pc.intensities.empty() && pc.intensities.size() == pc.points.size());
     m_renderActions[4]->setEnabled(pc.hasNormals());
@@ -2318,9 +2379,11 @@ void MainWindow::executeFlowOnce() {
         for (int i = 0; i < m_processTree->topLevelItemCount(); ++i) {
             QTreeWidgetItem* item = m_processTree->topLevelItem(i);
             QString instanceName = item->data(0, Qt::UserRole + 1).toString();
-            if (instanceName.isEmpty() || !m_flowModules.contains(instanceName)) continue;
+            if (instanceName.isEmpty() || !m_flowModules.contains(instanceName))
+                continue;
             IModule* im = m_flowModules.value(instanceName);
-            if (!im || !im->isInitialized()) continue;
+            if (!im || !im->isInitialized())
+                continue;
             ModuleBase* mb = qobject_cast<ModuleBase*>(im);
             if (mb) {
                 mb->setInstanceName(instanceName);
@@ -2485,12 +2548,10 @@ void MainWindow::onTest3DRender() {
     data.variant() = std::move(pc);
     data.setTimestamp(QDateTime::currentMSecsSinceEpoch());
 
-    qDebug() << "[Test3D] pointCloudData ptr:" << data.pointCloudData()
-             << "isValid:" << data.isValid();
+    qDebug() << "[Test3D] pointCloudData ptr:" << data.pointCloudData() << "isValid:" << data.isValid();
 
     if (m_displayManager) {
-        qDebug() << "[Test3D] Calling displayManager->displayData, viewports="
-                 << m_displayManager->viewportCount();
+        qDebug() << "[Test3D] Calling displayManager->displayData, viewports=" << m_displayManager->viewportCount();
         m_displayManager->displayData(data);
         qDebug() << "[Test3D] displayData returned";
     } else {
@@ -2605,8 +2666,7 @@ void MainWindow::onLogFilterChanged(int index) {
     }
 }
 
-void MainWindow::showLogLevelMenu()
-{
+void MainWindow::showLogLevelMenu() {
     QMenu menu(this);
     QStringList items = QStringList() << tr("全部") << tr("Debug") << tr("Info") << tr("Warning") << tr("Error");
     for (int i = 0; i < items.size(); ++i) {
@@ -2619,8 +2679,7 @@ void MainWindow::showLogLevelMenu()
     // 在表头"级别"列下方弹出
     QHeaderView* header = m_logTable->horizontalHeader();
     QRect sectionRect = header->sectionViewportPosition(1) >= 0
-                            ? QRect(header->sectionViewportPosition(1), header->height(),
-                                    header->sectionSize(1), 0)
+                            ? QRect(header->sectionViewportPosition(1), header->height(), header->sectionSize(1), 0)
                             : QRect();
     QPoint pos = m_logTable->mapToGlobal(QPoint(sectionRect.x(), sectionRect.y()));
     menu.exec(pos);
@@ -3052,10 +3111,10 @@ QIcon MainWindow::createToggleThemeIcon() {
     return QIcon(pixmap);
 }
 
-void MainWindow::loadAgentSettings()
-{
+void MainWindow::loadAgentSettings() {
     ConfigManager& cfg = ConfigManager::instance();
-    if (!cfg.isInitialized()) return;
+    if (!cfg.isInitialized())
+        return;
 
     AgentController& ctrl = AgentController::instance();
 
@@ -3076,19 +3135,15 @@ void MainWindow::loadAgentSettings()
         client->setReasoningEffort(cfg.groupString("agent", "reasoningEffort", ""));
         client->setThinkingEnabled(cfg.groupBool("agent", "thinkingEnabled", true));
         ctrl.setLLMClient(client);
-
-
     }
 
     updateAgentPermissionDisplay();
 
     // Connect permission change to update display
-    connect(&ctrl, &AgentController::permissionLevelChanged,
-            this, &MainWindow::updateAgentPermissionDisplay);
+    connect(&ctrl, &AgentController::permissionLevelChanged, this, &MainWindow::updateAgentPermissionDisplay);
 }
 
-void MainWindow::updateAgentPermissionDisplay()
-{
+void MainWindow::updateAgentPermissionDisplay() {
     AgentController::PermissionLevel level = AgentController::instance().permissionLevel();
     QString text;
     QString color;

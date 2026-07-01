@@ -92,8 +92,11 @@ void TerminalBridge::initialize(TerminalWidget* terminal)
     }
 
     // 启动 AgentBridge（IPC 通道，不再转发 execute 到 bash）
-    AgentBridge::instance().start();
-    terminal->printInfo("Agent bridge started on ~/.deeplux/agent.sock");
+    if (AgentBridge::instance().start()) {
+        terminal->printInfo(QString("Agent bridge started: %1").arg(AgentBridge::instance().serverName()));
+    } else {
+        terminal->printWarning("Agent bridge unavailable: IPC server could not start");
+    }
 }
 
 void TerminalBridge::shutdown()

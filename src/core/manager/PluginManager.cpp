@@ -1,61 +1,64 @@
 #include "PluginManager.h"
-#include "../interface/IModule.h"
+
+#include "../common/ModuleIconProvider.h"
+#include "../device/CameraManager.h"
 #include "../interface/ICamera.h"
 #include "../interface/ICameraPlugin.h"
-#include "../device/CameraManager.h"
+#include "../interface/IModule.h"
 #include "../platform/PathUtils.h"
-#include "../common/ModuleIconProvider.h"
+
+#include <QCoreApplication>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QJsonDocument>
-#include <QPluginLoader>
-#include <QDebug>
-#include <QTimer>
-#include <QThread>
-#include <QCoreApplication>
 #include <QPixmap>
+#include <QPluginLoader>
+#include <QThread>
+#include <QTimer>
 
 namespace DeepLux {
 
-PluginManager& PluginManager::instance()
-{
+namespace {
+bool hasGuiApplication() {
+    return qobject_cast<QGuiApplication*>(QCoreApplication::instance()) != nullptr;
+}
+} // namespace
+
+PluginManager& PluginManager::instance() {
     static PluginManager instance;
     return instance;
 }
 
-PluginManager::PluginManager()
-{
+PluginManager::PluginManager() {
     m_loadTimer = new QTimer(this);
     m_loadTimer->setSingleShot(false);
     m_loadTimer->setInterval(10);
     connect(m_loadTimer, &QTimer::timeout, this, &PluginManager::onLoadTimer);
 }
 
-PluginManager::~PluginManager()
-{
+PluginManager::~PluginManager() {
     if (m_loadTimer) {
         m_loadTimer->stop();
     }
     unloadAllPlugins();
 }
 
-void PluginManager::addPluginPath(const QString& path)
-{
+void PluginManager::addPluginPath(const QString& path) {
     QMutexLocker locker(&m_mutex);
     if (!m_pluginPaths.contains(path)) {
         m_pluginPaths.append(path);
     }
 }
 
-QStringList PluginManager::pluginPaths() const
-{
+QStringList PluginManager::pluginPaths() const {
     QMutexLocker locker(&m_mutex);
     return m_pluginPaths;
 }
 
-bool PluginManager::initialize()
-{
+bool PluginManager::initialize() {
     if (m_initialized) {
         return true;
     }
@@ -71,14 +74,12 @@ bool PluginManager::initialize()
     return true;
 }
 
-void PluginManager::shutdown()
-{
+void PluginManager::shutdown() {
     unloadAllPlugins();
     m_initialized = false;
 }
 
-void PluginManager::scanPlugins()
-{
+void PluginManager::scanPlugins() {
     QMutexLocker locker(&m_mutex);
 
     QStringList searchPaths = m_pluginPaths;
@@ -124,8 +125,7 @@ void PluginManager::scanPlugins()
     qDebug() << "Cameras found:" << m_cameras.size();
 }
 
-bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info)
-{
+bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         return false;
@@ -154,8 +154,7 @@ bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info)
     return !info.name.isEmpty();
 }
 
-bool PluginManager::loadPlugin(const QString& name, int timeoutMs)
-{
+bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
     Q_UNUSED(timeoutMs);
     fprintf(stderr, "DEBUG: loadPlugin called for: %s\n", qPrintable(name));
 
@@ -201,7 +200,7 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs)
     }
     QString libPath = dir.filePath(libs.first());
 
-        QPluginLoader* loader = new QPluginLoader(libPath);
+    QPluginLoader* loader = new QPluginLoader(libPath);
     fprintf(stderr, "DEBUG: Loading plugin from: %s\n", qPrintable(libPath));
     bool loaded = loader->load();
     fprintf(stderr, "DEBUG: load() returned: %d\n", loaded);
@@ -247,7 +246,7 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs)
         emit pluginLoaded(name);
 
         // 设置模块图标
-        if (!info.icon.isEmpty()) {
+        if (hasGuiApplication() && !info.icon.isEmpty()) {
             QString iconPath = dir.filePath(info.icon);
             if (QFile::exists(iconPath)) {
                 DeepLux::IModule* module = qobject_cast<DeepLux::IModule*>(plugin);
@@ -274,8 +273,7 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs)
     }
 }
 
-void PluginManager::unloadPlugin(const QString& name)
-{
+void PluginManager::unloadPlugin(const QString& name) {
     QMutexLocker locker(&m_mutex);
 
     if (!m_loadedPlugins.contains(name)) {
@@ -293,8 +291,7 @@ void PluginManager::unloadPlugin(const QString& name)
     emit pluginUnloaded(name);
 }
 
-void PluginManager::loadAllPlugins()
-{
+void PluginManager::loadAllPlugins() {
     qDebug() << "Loading all plugins synchronously...";
 
     QStringList moduleNames;
@@ -316,8 +313,7 @@ void PluginManager::loadAllPlugins()
     qDebug() << "All plugins loaded";
 }
 
-void PluginManager::loadAllPluginsAsync()
-{
+void PluginManager::loadAllPluginsAsync() {
     QStringList moduleNames;
     QStringList cameraNames;
     {
@@ -414,23 +410,18 @@ void PluginManager::loadAllPluginsAsync()
 
 // PluginLoadRunnable implementation
 PluginManager::PluginLoadRunnable::PluginLoadRunnable(const QString& name, const QString& path)
-    : m_name(name), m_path(path)
-{
-}
+    : m_name(name), m_path(path) {}
 
-void PluginManager::PluginLoadRunnable::run()
-{
+void PluginManager::PluginLoadRunnable::run() {
     QPluginLoader* loader = new QPluginLoader(m_path);
     bool success = loader->load();
     QString error = success ? QString() : loader->errorString();
 
     // 通过事件通知主线程
-    QCoreApplication::postEvent(&PluginManager::instance(),
-                                new PluginLoadEvent(m_name, success, error, loader));
+    QCoreApplication::postEvent(&PluginManager::instance(), new PluginLoadEvent(m_name, success, error, loader));
 }
 
-bool PluginManager::event(QEvent* event)
-{
+bool PluginManager::event(QEvent* event) {
     if (event->type() == QEvent::User) {
         auto* loadEvent = static_cast<PluginLoadEvent*>(event);
         m_loadingCurrent++;
@@ -463,13 +454,11 @@ bool PluginManager::event(QEvent* event)
     return QObject::event(event);
 }
 
-void PluginManager::onLoadTimer()
-{
+void PluginManager::onLoadTimer() {
     // 空实现，保持接口兼容
 }
 
-void PluginManager::unloadAllPlugins()
-{
+void PluginManager::unloadAllPlugins() {
     QStringList names;
     {
         QMutexLocker locker(&m_mutex);
@@ -481,32 +470,27 @@ void PluginManager::unloadAllPlugins()
     }
 }
 
-QStringList PluginManager::availableModules() const
-{
+QStringList PluginManager::availableModules() const {
     QMutexLocker locker(&m_mutex);
     return m_modules.keys();
 }
 
-QStringList PluginManager::availableCameras() const
-{
+QStringList PluginManager::availableCameras() const {
     QMutexLocker locker(&m_mutex);
     return m_cameras.keys();
 }
 
-QList<PluginInfo> PluginManager::moduleInfos() const
-{
+QList<PluginInfo> PluginManager::moduleInfos() const {
     QMutexLocker locker(&m_mutex);
     return m_modules.values();
 }
 
-QList<PluginInfo> PluginManager::cameraInfos() const
-{
+QList<PluginInfo> PluginManager::cameraInfos() const {
     QMutexLocker locker(&m_mutex);
     return m_cameras.values();
 }
 
-PluginInfo PluginManager::pluginInfo(const QString& name) const
-{
+PluginInfo PluginManager::pluginInfo(const QString& name) const {
     QMutexLocker locker(&m_mutex);
 
     if (m_modules.contains(name)) {
@@ -518,31 +502,50 @@ PluginInfo PluginManager::pluginInfo(const QString& name) const
     return PluginInfo();
 }
 
-bool PluginManager::isPluginLoaded(const QString& name) const
-{
+QString PluginManager::moduleDisplayName(const QString& name) const {
+    QMutexLocker locker(&m_mutex);
+
+    if (QObject* plugin = m_loadedPlugins.value(name, nullptr)) {
+        if (IModule* module = qobject_cast<IModule*>(plugin)) {
+            QString displayName = module->name().trimmed();
+            if (!displayName.isEmpty()) {
+                return displayName;
+            }
+        }
+    }
+    if (m_modules.contains(name) && !m_modules[name].name.trimmed().isEmpty()) {
+        return m_modules[name].name.trimmed();
+    }
+    return name;
+}
+
+bool PluginManager::isPluginLoaded(const QString& name) const {
     QMutexLocker locker(&m_mutex);
     return m_loadedPlugins.contains(name);
 }
 
-IModule* PluginManager::createModule(const QString& name)
-{
+IModule* PluginManager::createModule(const QString& name) {
     QMutexLocker locker(&m_mutex);
     if (!m_loadedPlugins.contains(name))
         return nullptr;
 
     QObject* plugin = m_loadedPlugins.value(name);
-    if (!plugin) return nullptr;
+    if (!plugin)
+        return nullptr;
     IModule* mod = qobject_cast<IModule*>(plugin);
-    if (!mod) return nullptr;
+    if (!mod)
+        return nullptr;
 
     // 图标优先级: PNG文件 > 自动生成 > 空
-    if (mod->icon().isNull() && m_modules.contains(name)) {
+    if (hasGuiApplication() && mod->icon().isNull() && m_modules.contains(name)) {
         PluginInfo info = m_modules[name];
         // 先尝试加载 PNG 文件
         if (!info.icon.isEmpty()) {
             QDir dir(QFileInfo(info.path).absoluteDir());
             QPixmap pm(dir.filePath(info.icon));
-            if (!pm.isNull()) { mod->setIcon(QIcon(pm)); }
+            if (!pm.isNull()) {
+                mod->setIcon(QIcon(pm));
+            }
         }
         // PNG 不存在或加载失败 → 运行时生成彩色缩写图标
         if (mod->icon().isNull()) {
@@ -559,8 +562,7 @@ IModule* PluginManager::createModule(const QString& name)
     return mod;
 }
 
-IModule* PluginManager::createFreshModule(const QString& name)
-{
+IModule* PluginManager::createFreshModule(const QString& name) {
     QObject* plugin = m_loadedPlugins.value(name);
     if (!plugin) {
         return nullptr;
@@ -568,8 +570,7 @@ IModule* PluginManager::createFreshModule(const QString& name)
     return qobject_cast<IModule*>(plugin);
 }
 
-ICamera* PluginManager::createCamera(const QString& name)
-{
+ICamera* PluginManager::createCamera(const QString& name) {
     if (!isPluginLoaded(name)) {
         if (!loadPlugin(name, 5000)) {
             return nullptr;
