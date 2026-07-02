@@ -14,6 +14,7 @@ private slots:
     void testCreate();
     void testName();
     void testModules();
+    void testSetModuleParam();
     void testMoveModule();
     void testConnections();
     void testCameras();
@@ -70,6 +71,30 @@ void TestProject::testModules() {
 
     project.removeModule("test-module-1");
     QCOMPARE(project.modules().size(), 0);
+}
+
+void TestProject::testSetModuleParam() {
+    Project project;
+
+    ModuleInstance module;
+    module.id = "test-module-1";
+    module.moduleId = "com.deeplux.test";
+    module.name = "Test Module";
+    project.addModule(module);
+    project.setModified(false);
+
+    QSignalSpy updatedSpy(&project, &Project::moduleUpdated);
+    QVERIFY(project.setModuleParam("test-module-1", "threshold", 42));
+
+    ModuleInstance* found = project.findModule("test-module-1");
+    QVERIFY(found != nullptr);
+    QCOMPARE(found->params.value("threshold").toInt(), 42);
+    QVERIFY(project.isModified());
+    QCOMPARE(updatedSpy.count(), 1);
+
+    project.setModified(false);
+    QVERIFY(!project.setModuleParam("missing-module", "threshold", 7));
+    QVERIFY(!project.isModified());
 }
 
 void TestProject::testMoveModule() {

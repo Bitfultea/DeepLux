@@ -66,7 +66,7 @@ void AgentChatPanel::setupUi() {
     m_messagesContainer = new QWidget();
     m_messagesLayout = new QVBoxLayout(m_messagesContainer);
     m_messagesLayout->setAlignment(Qt::AlignTop);
-    m_messagesLayout->setContentsMargins(6, 4, 6, 4);
+    m_messagesLayout->setContentsMargins(8, 6, 8, 6);
     m_messagesLayout->setSpacing(2);
 
     m_scrollArea->setWidget(m_messagesContainer);

@@ -1,9 +1,9 @@
 #include "ModuleIconProvider.h"
 
-#include <QPainter>
-#include <QPixmap>
 #include <QFont>
 #include <QLinearGradient>
+#include <QPainter>
+#include <QPixmap>
 
 namespace DeepLux {
 
@@ -13,49 +13,89 @@ ModuleIconProvider& ModuleIconProvider::instance() {
 }
 
 QColor ModuleIconProvider::colorForCategory(const QString& category) const {
-    if (category.contains("image"))    return QColor("#4A90D9");  // 蓝
-    if (category.contains("detect"))   return QColor("#E67E22");  // 橙
-    if (category.contains("geometry")) return QColor("#27AE60");  // 绿
-    if (category.contains("logic"))    return QColor("#8E44AD");  // 紫
-    if (category.contains("system"))   return QColor("#7F8C8D");  // 灰
-    if (category.contains("variable")) return QColor("#2C3E50");  // 深蓝灰
-    if (category.contains("commun"))   return QColor("#D35400");  // 深橙
-    if (category.contains("calibr"))   return QColor("#16A085");  // 青
-    if (category.contains("camera"))   return QColor("#C0392B");  // 红
-    return QColor("#95A5A6");  // 默认灰
+    if (category.contains("image"))
+        return QColor("#4A90D9"); // 蓝
+    if (category.contains("detect"))
+        return QColor("#E67E22"); // 橙
+    if (category.contains("geometry"))
+        return QColor("#27AE60"); // 绿
+    if (category.contains("logic"))
+        return QColor("#8E44AD"); // 紫
+    if (category.contains("system"))
+        return QColor("#7F8C8D"); // 灰
+    if (category.contains("variable"))
+        return QColor("#2C3E50"); // 深蓝灰
+    if (category.contains("commun"))
+        return QColor("#D35400"); // 深橙
+    if (category.contains("calibr"))
+        return QColor("#16A085"); // 青
+    if (category.contains("camera"))
+        return QColor("#C0392B"); // 红
+    return QColor("#95A5A6");     // 默认灰
 }
 
 QString ModuleIconProvider::abbreviationFor(const QString& id) const {
     // 常见模块的缩写映射
-    static const QMap<QString, QString> abbrMap = {
-        {"GrabImage", "GI"}, {"SaveImage", "SI"}, {"ShowImage", "SI"},
-        {"PerProcessing", "PP"}, {"ColorRecognition", "CR"}, {"Blob", "BL"},
-        {"Matching", "MA"}, {"QRCode", "QR"},
-        {"FindCircle", "FC"}, {"FitCircle", "FtC"}, {"FitLine", "FL"},
-        {"DistancePP", "Dp"}, {"DistancePL", "Dl"}, {"LinesDistance", "LD"},
-        {"MeasureRect", "MR"}, {"MeasureLine", "ML"}, {"MeasureGap", "MG"},
-        {"NPointCalibration", "NC"}, {"FreeformSurface", "FS"},
-        {"PointSurfaceDistance", "PS"},
-        {"If", "IF"}, {"Loop", "LP"}, {"While", "WH"},
-        {"Delay", "DY"}, {"StopWhile", "SW"}, {"Condition", "CD"},
-        {"Parallel", "PL"}, {"QueueIn", "QI"}, {"QueueOut", "QO"},
-        {"DataCheck", "DC"}, {"SystemTime", "ST"}, {"Folder", "FD"},
-        {"SaveData", "SD"}, {"ShowPoint", "SP"}, {"TableOutPut", "TO"},
-        {"WriteText", "WT"}, {"TimeSlice", "TS"},
-        {"Math", "MA"}, {"VarDefine", "VD"}, {"VarSet", "VS"},
-        {"SplitString", "SS"}, {"CreateString", "CS"},
-        {"JiErHanDefectsDet", "JD"},
-        {"PLCCommunicate", "PC"}, {"PLCRead", "PR"}, {"PLCWrite", "PW"},
-        {"TCPClient", "TC"}, {"TCPServer", "TSv"}, {"SerialPort", "SPo"},
-        {"ImageScript", "IS"}, {"JigsawPuzzle", "JP"},
-        {"DisplayData", "DD"}, {"StrFormat", "SF"}
-    };
+    static const QMap<QString, QString> abbrMap = {{"GrabImage", "GI"},
+                                                   {"SaveImage", "SvI"},
+                                                   {"ShowImage", "ShI"},
+                                                   {"PerProcessing", "PP"},
+                                                   {"ColorRecognition", "CR"},
+                                                   {"Blob", "BL"},
+                                                   {"Matching", "MA"},
+                                                   {"QRCode", "QR"},
+                                                   {"FindCircle", "FC"},
+                                                   {"FitCircle", "FtC"},
+                                                   {"FitLine", "FL"},
+                                                   {"DistancePP", "Dp"},
+                                                   {"DistancePL", "Dl"},
+                                                   {"LinesDistance", "LD"},
+                                                   {"MeasureRect", "MR"},
+                                                   {"MeasureLine", "ML"},
+                                                   {"MeasureGap", "MG"},
+                                                   {"NPointCalibration", "NC"},
+                                                   {"FreeformSurface", "FS"},
+                                                   {"PointSurfaceDistance", "PS"},
+                                                   {"If", "IF"},
+                                                   {"Loop", "LP"},
+                                                   {"While", "WH"},
+                                                   {"Delay", "DY"},
+                                                   {"StopWhile", "SW"},
+                                                   {"Condition", "CD"},
+                                                   {"Parallel", "PL"},
+                                                   {"QueueIn", "QI"},
+                                                   {"QueueOut", "QO"},
+                                                   {"DataCheck", "DC"},
+                                                   {"SystemTime", "ST"},
+                                                   {"Folder", "FD"},
+                                                   {"SaveData", "SvD"},
+                                                   {"ShowPoint", "Pt"},
+                                                   {"TableOutPut", "TO"},
+                                                   {"WriteText", "WT"},
+                                                   {"TimeSlice", "TS"},
+                                                   {"Math", "MX"},
+                                                   {"VarDefine", "VD"},
+                                                   {"VarSet", "VS"},
+                                                   {"SplitString", "SS"},
+                                                   {"CreateString", "CS"},
+                                                   {"JiErHanDefectsDet", "JD"},
+                                                   {"PLCCommunicate", "PC"},
+                                                   {"PLCRead", "PR"},
+                                                   {"PLCWrite", "PW"},
+                                                   {"TCPClient", "TC"},
+                                                   {"TCPServer", "TSv"},
+                                                   {"SerialPort", "SPo"},
+                                                   {"ImageScript", "IS"},
+                                                   {"JigsawPuzzle", "JP"},
+                                                   {"DisplayData", "DD"},
+                                                   {"StrFormat", "SF"}};
     return abbrMap.value(id, id.left(2).toUpper());
 }
 
 QIcon ModuleIconProvider::iconFor(const QString& moduleId, const QString& category) {
     QString key = moduleId + "/" + category;
-    if (m_cache.contains(key)) return m_cache[key];
+    if (m_cache.contains(key))
+        return m_cache[key];
 
     const int sz = 32;
     QPixmap pm(sz, sz);
@@ -90,7 +130,8 @@ QIcon ModuleIconProvider::iconFor(const QString& moduleId, const QString& catego
 
 QIcon ModuleIconProvider::fromPngFile(const QString& filePath) {
     QPixmap pm(filePath);
-    if (!pm.isNull()) return QIcon(pm);
+    if (!pm.isNull())
+        return QIcon(pm);
     return QIcon();
 }
 

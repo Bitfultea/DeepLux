@@ -51,7 +51,7 @@ if(DEEPLUX_QT_PATH)
     message(STATUS "Using custom Qt path: ${DEEPLUX_QT_PATH}")
 endif()
 
-set(QT_CORE_COMPONENTS Core Gui Widgets Network Sql Test)
+set(QT_CORE_COMPONENTS Core Gui Widgets Network Sql Test SerialPort)
 
 if(USE_QT6)
     find_package(Qt6 QUIET COMPONENTS ${QT_CORE_COMPONENTS} Concurrent)
@@ -113,14 +113,6 @@ if(NOT QT_SSL_WORKS)
         "  - Qt was built against a different OpenSSL version than the one installed\n"
         "  - LD_LIBRARY_PATH points to an incompatible Qt installation\n"
         "  - Missing libssl/libcrypto development packages\n")
-endif()
-
-# 可选组件: SerialPort
-find_package(Qt${QT_VERSION_MAJOR} QUIET COMPONENTS SerialPort)
-if(Qt${QT_VERSION_MAJOR}SerialPort_FOUND)
-    message(STATUS "Qt SerialPort: Found")
-else()
-    message(STATUS "Qt SerialPort: Not found (optional)")
 endif()
 
 # ========== 查找 OpenCV ==========

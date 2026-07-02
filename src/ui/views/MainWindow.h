@@ -178,6 +178,7 @@ protected:
     // 主题
     bool m_isDarkTheme = false;
     void applyTheme();
+    void setUiRunningState(bool running, bool cycleMode);
     void syncModulesToRunEngine();
     void displayImage(const ImageData& image, const QString& label = QString());
     bool importFile(const QString& filePath);
@@ -185,6 +186,7 @@ protected:
     bool importPointCloudFile(const QString& filePath);
     void clearCentralDisplay();
     void addModuleToProcessTree(const ModuleInstance& inst);
+    void removeFlowModuleByInstanceId(const QString& instanceId);
     void removeModuleFromProcessTree(const QString& instanceId);
     void clearProcessTree();
 

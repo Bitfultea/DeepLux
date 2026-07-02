@@ -4,13 +4,17 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHeaderView>
+#include <QLabel>
+#include <QLayout>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSplitter>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
 #include <QtTest/QtTest>
@@ -375,9 +379,75 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY2(logDock->minimumHeight() <= 240,
              qPrintable(QString("Log panel minimum height is too large: %1").arg(logDock->minimumHeight())));
 
+    QSplitter* mainSplitter = window.findChild<QSplitter*>("MainSplitter");
+    QSplitter* rightSplitter = window.findChild<QSplitter*>("RightSplitter");
+    QSplitter* rightTopSplitter = window.findChild<QSplitter*>("RightTopSplitter");
+    QVERIFY(mainSplitter != nullptr);
+    QVERIFY(rightSplitter != nullptr);
+    QVERIFY(rightTopSplitter != nullptr);
+    QVERIFY2(mainSplitter->handleWidth() >= 6, "Main splitter handle should be easy to see and drag");
+    QVERIFY2(rightSplitter->handleWidth() >= 6, "Bottom panel splitter handle should be easy to see and drag");
+    QVERIFY2(rightTopSplitter->handleWidth() >= 6, "Process/display splitter handle should be easy to see and drag");
+    QVERIFY2(!mainSplitter->childrenCollapsible(), "Primary panels should not collapse accidentally while dragging");
+    QVERIFY2(!rightSplitter->childrenCollapsible(), "Top and bottom panels should not collapse accidentally while dragging");
+    QVERIFY2(!rightTopSplitter->childrenCollapsible(),
+             "Process and display panels should not collapse accidentally while dragging");
+    const QString mainStyle = window.styleSheet();
+    QVERIFY2(mainStyle.contains(QStringLiteral("QSplitter#MainSplitter::handle")),
+             "Main splitter needs an explicit visual boundary style");
+    QVERIFY2(mainStyle.contains(QStringLiteral("QWidget#ProcessPanelWidget")),
+             "Process panel needs an explicit boundary style");
+    QVERIFY2(mainStyle.contains(QStringLiteral("QWidget#ImageDisplayWidget")),
+             "Display panel needs an explicit boundary style");
+    QVERIFY2(mainStyle.contains(QStringLiteral("font-size: 13px")),
+             "Main panels should pin a consistent base font size");
+
+    QWidget* toolToolBar = window.findChild<QWidget*>("ToolToolBar");
+    QWidget* processToolBar = window.findChild<QWidget*>("ProcessToolBar");
+    QVERIFY(toolToolBar != nullptr);
+    QVERIFY(processToolBar != nullptr);
+    QVERIFY(toolToolBar->layout() != nullptr);
+    QVERIFY(processToolBar->layout() != nullptr);
+    const QMargins toolToolbarMargins = toolToolBar->layout()->contentsMargins();
+    const QMargins processToolbarMargins = processToolBar->layout()->contentsMargins();
+    QCOMPARE(toolToolbarMargins, processToolbarMargins);
+    QVERIFY2(toolToolbarMargins.top() <= 8, "Panel toolbars should not have excessive top padding");
+
+    QWidget* toolCategoryWidget = window.findChild<QWidget*>("ToolCategoryWidget");
+    QVERIFY(toolCategoryWidget != nullptr);
+    QVERIFY(toolCategoryWidget->layout() != nullptr);
+    QCOMPARE(toolCategoryWidget->layout()->contentsMargins().left(), 6);
+    QCOMPARE(toolCategoryWidget->layout()->contentsMargins().right(), 6);
+
+    QWidget* processTabContent = window.findChild<QWidget*>("ProcessTabContent");
+    QVERIFY(processTabContent != nullptr);
+    QVERIFY(processTabContent->layout() != nullptr);
+    QCOMPARE(processTabContent->layout()->contentsMargins().left(), 6);
+    QCOMPARE(processTabContent->layout()->contentsMargins().right(), 6);
+
+    QWidget* dataSourcePanelForMargins = window.findChild<QWidget*>("DataSourcePanel");
+    QVERIFY(dataSourcePanelForMargins != nullptr);
+    QVERIFY(dataSourcePanelForMargins->layout() != nullptr);
+    QCOMPARE(dataSourcePanelForMargins->layout()->contentsMargins().left(), 6);
+    QCOMPARE(dataSourcePanelForMargins->layout()->contentsMargins().right(), 6);
+
+    QToolButton* processStartButton = window.findChild<QToolButton*>("ProcessStartPauseBtn");
+    QVERIFY(processStartButton != nullptr);
+    QVERIFY2(processStartButton->styleSheet().contains(QStringLiteral("QToolButton")),
+             "Process toolbar buttons should use the same styled tool-button rules as the tool panel");
+
+    QLabel* viewportTitle = window.findChild<QLabel*>("ViewportTitle");
+    QVERIFY(viewportTitle != nullptr);
+    QVERIFY2(viewportTitle->styleSheet().contains(QStringLiteral("font-size: 13px")),
+             "Viewport title should use the same panel title font size");
+
     QTabWidget* logTabs = window.findChild<QTabWidget*>("LogTerminalTabs");
     QVERIFY(logTabs != nullptr);
     QVERIFY(logTabs->tabBar() != nullptr);
+    QVERIFY2(processTabs->styleSheet().contains(QStringLiteral("font-size: 13px")),
+             "Process tabs should use the shared panel tab font size");
+    QVERIFY2(logTabs->styleSheet().contains(QStringLiteral("font-size: 13px")),
+             "Bottom tabs should use the shared panel tab font size");
     const int logTabTextHeight = logTabs->tabBar()->fontMetrics().height();
     QVERIFY2(logTabs->tabBar()->tabRect(0).height() >= logTabTextHeight + 10,
              qPrintable(QString("Bottom tab height %1 clips text height %2")
@@ -412,6 +482,10 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
 
     QTableWidget* logTable = window.findChild<QTableWidget*>("LogTable");
     QVERIFY(logTable != nullptr);
+    QVERIFY(logTable->parentWidget() != nullptr);
+    QVERIFY(logTable->parentWidget()->layout() != nullptr);
+    QCOMPARE(logTable->parentWidget()->layout()->contentsMargins().left(), 6);
+    QCOMPARE(logTable->parentWidget()->layout()->contentsMargins().right(), 6);
     QVERIFY(logTable->horizontalHeader() != nullptr);
     QVERIFY(logTable->verticalHeader() != nullptr);
     const int logTableTextHeight = logTable->fontMetrics().height();
@@ -423,6 +497,13 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
              qPrintable(QString("Log row height %1 clips text height %2")
                             .arg(logTable->verticalHeader()->defaultSectionSize())
                             .arg(logTableTextHeight)));
+
+    QTableWidget* agentLogTable = window.findChild<QTableWidget*>("AgentActionLogTable");
+    QVERIFY(agentLogTable != nullptr);
+    QVERIFY(agentLogTable->parentWidget() != nullptr);
+    QVERIFY(agentLogTable->parentWidget()->layout() != nullptr);
+    QCOMPARE(agentLogTable->parentWidget()->layout()->contentsMargins().left(), 6);
+    QCOMPARE(agentLogTable->parentWidget()->layout()->contentsMargins().right(), 6);
 
     QList<AgentToolPreviewCard::ToolItem> previewTools;
     AgentToolPreviewCard::ToolItem dangerousTool;

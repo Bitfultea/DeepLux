@@ -98,6 +98,8 @@ private:
     ~PluginManager();
 
     bool loadPluginMetadata(const QString& path, PluginInfo& info);
+    bool validateLoadedPlugin(const QString& name, QPluginLoader* loader, QString* error) const;
+    void markPluginLoaded(const QString& name, QPluginLoader* loader);
     void loadNextPluginAsync();
 
     // 自定义事件，用于线程安全地传递插件加载结果

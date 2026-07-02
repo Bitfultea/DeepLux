@@ -62,22 +62,30 @@ foreach(TEST_FILE ${TEST_SOURCES})
         target_include_directories(${TEST_NAME} PRIVATE ${OpenCV_INCLUDE_DIRS})
     endif()
 
-    # Link FitLinePlugin for geometry tests
-    target_link_libraries(${TEST_NAME} PRIVATE FitLinePlugin)
-    # Link FindCirclePlugin for detection tests
-    target_link_libraries(${TEST_NAME} PRIVATE FindCirclePlugin)
-    # Link MeasureLinePlugin for detection tests
-    target_link_libraries(${TEST_NAME} PRIVATE MeasureLinePlugin)
-    # Link FitCirclePlugin for geometry tests
-    target_link_libraries(${TEST_NAME} PRIVATE FitCirclePlugin)
-    # Link MeasureRectPlugin for detection tests
-    target_link_libraries(${TEST_NAME} PRIVATE MeasureRectPlugin)
-    # Link DistancePLPlugin for geometry tests
-    target_link_libraries(${TEST_NAME} PRIVATE DistancePLPlugin)
-    # Link DistancePPPlugin for geometry tests
-    target_link_libraries(${TEST_NAME} PRIVATE DistancePPPlugin)
-    # Link LinesDistancePlugin for geometry tests
-    target_link_libraries(${TEST_NAME} PRIVATE LinesDistancePlugin)
+    if(TEST_NAME STREQUAL "test_fitline" OR TEST_NAME STREQUAL "test_plugincontracts")
+        target_link_libraries(${TEST_NAME} PRIVATE FitLinePlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_findcircle" OR TEST_NAME STREQUAL "test_plugincontracts")
+        target_link_libraries(${TEST_NAME} PRIVATE FindCirclePlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_measureline" OR TEST_NAME STREQUAL "test_plugincontracts")
+        target_link_libraries(${TEST_NAME} PRIVATE MeasureLinePlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_fitcircle" OR TEST_NAME STREQUAL "test_plugincontracts")
+        target_link_libraries(${TEST_NAME} PRIVATE FitCirclePlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_measurerect" OR TEST_NAME STREQUAL "test_plugincontracts")
+        target_link_libraries(${TEST_NAME} PRIVATE MeasureRectPlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_distancepl" OR TEST_NAME STREQUAL "test_plugincontracts")
+        target_link_libraries(${TEST_NAME} PRIVATE DistancePLPlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_distancepp" OR TEST_NAME STREQUAL "test_plugincontracts")
+        target_link_libraries(${TEST_NAME} PRIVATE DistancePPPlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_linesdistance" OR TEST_NAME STREQUAL "test_plugincontracts")
+        target_link_libraries(${TEST_NAME} PRIVATE LinesDistancePlugin)
+    endif()
     if(TEST_NAME STREQUAL "test_clihandler" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE SystemTimePlugin)
     endif()

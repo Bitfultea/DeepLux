@@ -154,9 +154,58 @@ bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info) {
     return !info.name.isEmpty();
 }
 
+bool PluginManager::validateLoadedPlugin(const QString& name, QPluginLoader* loader, QString* error) const {
+    if (!loader) {
+        if (error) {
+            *error = QString("Plugin loader is null: %1").arg(name);
+        }
+        return false;
+    }
+
+    QObject* plugin = loader->instance();
+    if (!plugin) {
+        if (error) {
+            *error = loader->errorString().isEmpty() ? QString("Plugin instance is null: %1").arg(name)
+                                                     : loader->errorString();
+        }
+        return false;
+    }
+
+    IModule* module = qobject_cast<IModule*>(plugin);
+    if (module && module->interfaceVersion() != DEEPLUX_MODULE_INTERFACE_VERSION) {
+        if (error) {
+            *error =
+                QString("Interface version mismatch: plugin=%1, expected=%2, actual=%3. Please rebuild the plugin.")
+                    .arg(name)
+                    .arg(DEEPLUX_MODULE_INTERFACE_VERSION)
+                    .arg(module->interfaceVersion());
+        }
+        return false;
+    }
+
+    return true;
+}
+
+void PluginManager::markPluginLoaded(const QString& name, QPluginLoader* loader) {
+    QMutexLocker locker(&m_mutex);
+    m_loadedPlugins[name] = loader->instance();
+    m_pluginLoaders[name] = loader;
+
+    if (m_modules.contains(name)) {
+        PluginInfo info = m_modules.value(name);
+        info.loaded = true;
+        info.error.clear();
+        m_modules[name] = info;
+    } else if (m_cameras.contains(name)) {
+        PluginInfo info = m_cameras.value(name);
+        info.loaded = true;
+        info.error.clear();
+        m_cameras[name] = info;
+    }
+}
+
 bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
     Q_UNUSED(timeoutMs);
-    fprintf(stderr, "DEBUG: loadPlugin called for: %s\n", qPrintable(name));
 
     {
         QMutexLocker locker(&m_mutex);
@@ -181,7 +230,7 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
     }
 
     if (info.path.isEmpty()) {
-        fprintf(stderr, "DEBUG: info.path is empty for %s, returning false\n", qPrintable(name));
+        emit pluginLoadFailed(name, "Plugin metadata path is empty");
         return false;
     }
 
@@ -195,53 +244,26 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
 #endif
     QStringList libs = dir.entryList(filters, QDir::Files);
     if (libs.isEmpty()) {
-        fprintf(stderr, "DEBUG: No .so files found in %s for %s\n", qPrintable(info.path), qPrintable(name));
+        emit pluginLoadFailed(name, "No library file found");
         return false;
     }
     QString libPath = dir.filePath(libs.first());
 
     QPluginLoader* loader = new QPluginLoader(libPath);
-    fprintf(stderr, "DEBUG: Loading plugin from: %s\n", qPrintable(libPath));
     bool loaded = loader->load();
-    fprintf(stderr, "DEBUG: load() returned: %d\n", loaded);
     if (loaded) {
-        QMutexLocker locker(&m_mutex);
-        m_loadedPlugins[name] = loader->instance();
-        m_pluginLoaders[name] = loader;
-
-        // 更新 info.loaded 并写回字典
-        info.loaded = true;
-        if (m_modules.contains(name)) {
-            m_modules[name] = info;
-            fprintf(stderr, "DEBUG: Updated m_modules[%s] with loaded=true\n", qPrintable(name));
-        } else if (m_cameras.contains(name)) {
-            m_cameras[name] = info;
-            fprintf(stderr, "DEBUG: Updated m_cameras[%s] with loaded=true\n", qPrintable(name));
-        } else {
-            fprintf(stderr, "DEBUG: WARNING: Plugin %s not found in m_modules or m_cameras!\n", qPrintable(name));
+        QString validationError;
+        if (!validateLoadedPlugin(name, loader, &validationError)) {
+            qCritical() << validationError;
+            loader->unload();
+            delete loader;
+            emit pluginLoadFailed(name, validationError);
+            return false;
         }
 
-        qDebug() << "Plugin loaded:" << name;
-
-        // 校验模块接口版本，防止旧插件虚表不匹配导致调用错位
         QObject* plugin = loader->instance();
-        DeepLux::IModule* module = qobject_cast<DeepLux::IModule*>(plugin);
-        if (module) {
-            int pluginVersion = module->interfaceVersion();
-            if (pluginVersion != DEEPLUX_MODULE_INTERFACE_VERSION) {
-                QString err = QString("Interface version mismatch: plugin=%1, expected=%2, actual=%3. "
-                                      "Please rebuild the plugin.")
-                                  .arg(name)
-                                  .arg(DEEPLUX_MODULE_INTERFACE_VERSION)
-                                  .arg(pluginVersion);
-                qCritical() << err;
-                fprintf(stderr, "DEBUG: %s\n", qPrintable(err));
-                loader->unload();
-                delete loader;
-                emit pluginLoadFailed(name, err);
-                return false;
-            }
-        }
+        markPluginLoaded(name, loader);
+        qDebug() << "Plugin loaded:" << name;
 
         emit pluginLoaded(name);
 
@@ -266,9 +288,9 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
         return true;
     } else {
         QString error = loader->errorString();
-        fprintf(stderr, "DEBUG: Plugin load failed: %s - %s\n", qPrintable(name), qPrintable(error));
         qWarning() << "Plugin load failed:" << name << error;
         delete loader;
+        emit pluginLoadFailed(name, error);
         return false;
     }
 }
@@ -344,65 +366,10 @@ void PluginManager::loadAllPluginsAsync() {
 
     // 串行加载每个插件，每加载一个后立即处理事件以更新UI
     for (const QString& name : m_pendingPlugins) {
-        QString pluginDir;
-        {
-            QMutexLocker locker(&m_mutex);
-            if (m_modules.contains(name)) {
-                // info.path 是 metadata.json 的路径，需要提取目录
-                pluginDir = QFileInfo(m_modules[name].path).absolutePath();
-            } else if (m_cameras.contains(name)) {
-                pluginDir = QFileInfo(m_cameras[name].path).absolutePath();
-            }
-        }
-
-        if (!pluginDir.isEmpty()) {
-            QDir dir(pluginDir);
-            QStringList filters;
-#ifdef Q_OS_WIN
-            filters << "*.dll";
-#else
-            filters << "*.so";
-#endif
-            QStringList libs = dir.entryList(filters, QDir::Files);
-            if (!libs.isEmpty()) {
-                QString fullPath = dir.filePath(libs.first());
-                QPluginLoader* loader = new QPluginLoader(fullPath);
-                bool success = loader->load();
-                QString error = success ? QString() : loader->errorString();
-
-                m_loadingCurrent++;
-                if (success) {
-                    QMutexLocker locker(&m_mutex);
-                    m_loadedPlugins[name] = loader->instance();
-                    m_pluginLoaders[name] = loader;
-                    emit pluginLoaded(name);
-
-                    // 如果是相机插件，注册到 CameraManager
-                    ICameraPlugin* cameraPlugin = qobject_cast<ICameraPlugin*>(loader->instance());
-                    if (cameraPlugin) {
-                        CameraManager::instance().registerCameraPlugin(cameraPlugin);
-                        qDebug() << "Camera plugin registered:" << name;
-                    }
-                } else {
-                    emit pluginLoadFailed(name, error);
-                    delete loader;
-                }
-                emit pluginLoadProgress(m_loadingCurrent, m_loadingTotal, name);
-
-                // 立即处理事件以更新UI
-                QCoreApplication::processEvents();
-            } else {
-                m_loadingCurrent++;
-                emit pluginLoadFailed(name, "No library file found");
-                emit pluginLoadProgress(m_loadingCurrent, m_loadingTotal, name);
-                QCoreApplication::processEvents();
-            }
-        } else {
-            m_loadingCurrent++;
-            emit pluginLoadFailed(name, "Plugin path not found");
-            emit pluginLoadProgress(m_loadingCurrent, m_loadingTotal, name);
-            QCoreApplication::processEvents();
-        }
+        loadPlugin(name, 5000);
+        m_loadingCurrent++;
+        emit pluginLoadProgress(m_loadingCurrent, m_loadingTotal, name);
+        QCoreApplication::processEvents();
     }
 
     emit allPluginsLoaded();
@@ -426,10 +393,9 @@ bool PluginManager::event(QEvent* event) {
         auto* loadEvent = static_cast<PluginLoadEvent*>(event);
         m_loadingCurrent++;
 
-        if (loadEvent->success) {
-            QMutexLocker locker(&m_mutex);
-            m_loadedPlugins[loadEvent->name] = loadEvent->loader->instance();
-            m_pluginLoaders[loadEvent->name] = loadEvent->loader;
+        QString validationError;
+        if (loadEvent->success && validateLoadedPlugin(loadEvent->name, loadEvent->loader, &validationError)) {
+            markPluginLoaded(loadEvent->name, loadEvent->loader);
             emit pluginLoaded(loadEvent->name);
 
             // 如果是相机插件，注册到 CameraManager
@@ -439,7 +405,11 @@ bool PluginManager::event(QEvent* event) {
                 qDebug() << "Camera plugin registered:" << loadEvent->name;
             }
         } else {
-            emit pluginLoadFailed(loadEvent->name, loadEvent->error);
+            QString error = validationError.isEmpty() ? loadEvent->error : validationError;
+            emit pluginLoadFailed(loadEvent->name, error);
+            if (loadEvent->loader) {
+                loadEvent->loader->unload();
+            }
             delete loadEvent->loader;
         }
 

@@ -164,6 +164,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
         m_currentExecutingItem = nullptr;
         if (m_isCycleMode && m_isRunning) {
             QTimer::singleShot(1, this, &MainWindow::executeFlowOnce);
+        } else {
+            setUiRunningState(false, false);
         }
     });
 
@@ -425,7 +427,9 @@ void MainWindow::setupMainLayout() {
     // 创建主 Splitter - 水平分割左右
     QSplitter* mainSplitter = new QSplitter(Qt::Horizontal);
     mainSplitter->setObjectName("MainSplitter");
-    mainSplitter->setHandleWidth(1);
+    mainSplitter->setHandleWidth(7);
+    mainSplitter->setChildrenCollapsible(false);
+    mainSplitter->setOpaqueResize(true);
 
     // ========== 左侧：工具面板（贯穿整个高度）==========
     QWidget* toolPanelWidget = new QWidget();
@@ -437,10 +441,10 @@ void MainWindow::setupMainLayout() {
     // 工具面板顶部工具栏
     QWidget* toolToolBar = new QWidget();
     QHBoxLayout* toolToolBarLayout = new QHBoxLayout(toolToolBar);
-    toolToolBarLayout->setContentsMargins(5, 16, 5, 5);
-    toolToolBarLayout->setSpacing(2);
+    toolToolBarLayout->setContentsMargins(6, 6, 6, 6);
+    toolToolBarLayout->setSpacing(4);
     toolToolBar->setObjectName("ToolToolBar");
-    toolToolBar->setMinimumHeight(50);
+    toolToolBar->setMinimumHeight(48);
 
     QToolButton* createProcessBtn = new QToolButton();
     createProcessBtn->setToolTip(tr("新建流程"));
@@ -503,7 +507,7 @@ void MainWindow::setupMainLayout() {
 
     QWidget* toolCategoryWidget = new QWidget();
     QVBoxLayout* toolCategoryLayout = new QVBoxLayout(toolCategoryWidget);
-    toolCategoryLayout->setContentsMargins(0, 0, 0, 0);
+    toolCategoryLayout->setContentsMargins(6, 6, 6, 6);
     toolCategoryLayout->setSpacing(0);
     toolCategoryLayout->setSizeConstraint(QLayout::SetMinAndMaxSize);
     toolCategoryWidget->setObjectName("ToolCategoryWidget");
@@ -639,7 +643,7 @@ void MainWindow::setupMainLayout() {
     // 自定义标题栏
     QWidget* toolTitleWidget = new QWidget();
     QHBoxLayout* toolTitleLayout = new QHBoxLayout(toolTitleWidget);
-    toolTitleLayout->setContentsMargins(10, 0, 5, 0);
+    toolTitleLayout->setContentsMargins(10, 0, 6, 0);
     toolTitleLayout->setSpacing(5);
     QLabel* toolTitleLabel = new QLabel(tr("工具"));
     toolTitleLabel->setObjectName("ToolTitleLabel");
@@ -662,12 +666,16 @@ void MainWindow::setupMainLayout() {
     // ========== 右侧：垂直 Splitter（上方：流程 + 显示区域，下方：日志栏）==========
     QSplitter* rightSplitter = new QSplitter(Qt::Vertical);
     rightSplitter->setObjectName("RightSplitter");
-    rightSplitter->setHandleWidth(1);
+    rightSplitter->setHandleWidth(7);
+    rightSplitter->setChildrenCollapsible(false);
+    rightSplitter->setOpaqueResize(true);
 
     // 右上方区域：水平 Splitter（流程面板 + 显示区域）
     QSplitter* rightTopSplitter = new QSplitter(Qt::Horizontal);
     rightTopSplitter->setObjectName("RightTopSplitter");
-    rightTopSplitter->setHandleWidth(1);
+    rightTopSplitter->setHandleWidth(7);
+    rightTopSplitter->setChildrenCollapsible(false);
+    rightTopSplitter->setOpaqueResize(true);
 
     // ========== 流程面板（QTabWidget：流程 + 画布）==========
     QWidget* processPanelWidget = new QWidget();
@@ -687,16 +695,16 @@ void MainWindow::setupMainLayout() {
     m_processTabContent = new QWidget();
     m_processTabContent->setObjectName("ProcessTabContent");
     QVBoxLayout* flowLayout = new QVBoxLayout(m_processTabContent);
-    flowLayout->setContentsMargins(0, 0, 0, 0);
-    flowLayout->setSpacing(0);
+    flowLayout->setContentsMargins(6, 6, 6, 6);
+    flowLayout->setSpacing(6);
 
     // 流程面板工具栏
     QWidget* processToolBar = new QWidget();
     QHBoxLayout* processToolBarLayout = new QHBoxLayout(processToolBar);
-    processToolBarLayout->setContentsMargins(5, 16, 5, 5);
-    processToolBarLayout->setSpacing(2);
+    processToolBarLayout->setContentsMargins(6, 6, 6, 6);
+    processToolBarLayout->setSpacing(4);
     processToolBar->setObjectName("ProcessToolBar");
-    processToolBar->setMinimumHeight(50);
+    processToolBar->setMinimumHeight(48);
 
     m_btnStartPause = new QToolButton();
     m_btnStartPause->setToolTip(tr("单次运行"));
@@ -837,7 +845,7 @@ void MainWindow::setupMainLayout() {
     // ===== Tab 1: 日志面板 =====
     QWidget* logWidget = new QWidget();
     QVBoxLayout* logLayout = new QVBoxLayout(logWidget);
-    logLayout->setContentsMargins(0, 0, 0, 0);
+    logLayout->setContentsMargins(6, 6, 6, 6);
     logLayout->setSpacing(0);
 
     m_logTable = new QTableWidget();
@@ -1080,32 +1088,7 @@ void MainWindow::onProcessTreeContextMenu(const QPoint& pos) {
     QAction* selectedAction = menu.exec(m_processTree->mapToGlobal(pos));
     if (selectedAction == deleteAction) {
         QString instanceName = item->data(0, Qt::UserRole + 1).toString();
-        if (!instanceName.isEmpty() && m_flowModules.contains(instanceName)) {
-            IModule* module = m_flowModules.take(instanceName);
-            if (module) {
-                module->shutdown();
-                delete module;
-            }
-            m_usedPluginNames.remove(instanceName);
-        }
-        delete item;
-        m_modulesNeedSync = true;
-
-        // 如果所有 item 都被删除，重新创建提示标签
-        if (m_processTree->topLevelItemCount() == 0 && !m_hintLabel) {
-            QWidget* parentWidget = m_processTree->parentWidget();
-            if (parentWidget) {
-                QVBoxLayout* layout = qobject_cast<QVBoxLayout*>(parentWidget->layout());
-                if (layout) {
-                    m_hintLabel = new QLabel(tr("← 从左侧拖拽工具"));
-                    m_hintLabel->setAlignment(Qt::AlignCenter);
-                    m_hintLabel->setStyleSheet("color: #808080; padding: 10px;");
-                    m_hintLabel->setObjectName("ProcessTreeHintLabel");
-                    int index = layout->indexOf(m_processTree);
-                    layout->insertWidget(index, m_hintLabel);
-                }
-            }
-        }
+        removeFlowModuleByInstanceId(instanceName);
     }
 }
 
@@ -1254,16 +1237,6 @@ void MainWindow::addModuleToProcessTree(const ModuleInstance& inst) {
     if (m_instanceItemMap.contains(inst.id))
         return; // 已存在，防止重复
 
-    auto diagLog = [](const QString& msg) {
-        QFile f("/tmp/deeplux_agent_diag.log");
-        f.open(QIODevice::WriteOnly | QIODevice::Append);
-        f.write(QString("[DIAG-UI] %1\n").arg(msg).toUtf8());
-        f.close();
-        qDebug() << "[DIAG-UI]" << msg;
-    };
-
-    diagLog(QString("addModuleToProcessTree start: %1").arg(inst.moduleId));
-
     // 隐藏提示标签
     if (m_hintLabel) {
         m_hintLabel->setVisible(false);
@@ -1276,9 +1249,7 @@ void MainWindow::addModuleToProcessTree(const ModuleInstance& inst) {
     QTreeWidgetItem* newItem = new QTreeWidgetItem();
     newItem->setFlags((newItem->flags() | Qt::ItemIsDragEnabled) & ~Qt::ItemIsDropEnabled);
     newItem->setText(0, displayName);
-    diagLog("addModuleToProcessTree: adding item to tree");
     m_processTree->addTopLevelItem(newItem);
-    diagLog("addModuleToProcessTree: item added");
 
     // 更新 used names
     m_usedPluginNames.insert(inst.id);
@@ -1312,6 +1283,20 @@ void MainWindow::addModuleToProcessTree(const ModuleInstance& inst) {
 
     m_instanceItemMap.insert(inst.id, newItem);
     m_modulesNeedSync = true;
+}
+
+void MainWindow::removeFlowModuleByInstanceId(const QString& instanceId) {
+    if (instanceId.isEmpty()) {
+        return;
+    }
+
+    Project* project = ProjectManager::instance().currentProject();
+    if (project && project->findModule(instanceId)) {
+        project->removeModule(instanceId);
+        return;
+    }
+
+    removeModuleFromProcessTree(instanceId);
 }
 
 void MainWindow::removeModuleFromProcessTree(const QString& instanceId) {
@@ -1402,14 +1387,14 @@ void MainWindow::applyTheme() {
             "    padding: 8px 10px; "
             "    border-bottom: 1px solid #444444; }"
             "QDockWidget::title:hover { background-color: #333333; }"
-            "QTreeWidget { background-color: #252525; color: #ffffff; border: none; }"
-            "QTreeWidget::item { height: 28px; }"
+            "QTreeWidget { background-color: #252525; color: #ffffff; border: none; font-size: 13px; }"
+            "QTreeWidget::item { height: 28px; padding-left: 2px; padding-right: 2px; }"
             "QTreeWidget::item:hover { background-color: #3a3a3a; }"
             "QTreeWidget::item:selected { background-color: #0078d7; }"
-            "QTableWidget { background-color: #252525; color: #ffffff; border: none; }"
+            "QTableWidget { background-color: #252525; color: #ffffff; border: none; font-size: 13px; }"
             "QTableWidget::item { border-bottom: 1px solid #333; }"
             "QTableWidget::item:selected { background-color: #0078d7; }"
-            "QHeaderView::section { background-color: #333333; padding: 5px; border: none; }"
+            "QHeaderView::section { background-color: #333333; padding: 5px; border: none; font-size: 13px; }"
             "QTableCornerButton::section { background-color: #333333; border: none; }"
             "QScrollBar:vertical { background-color: #252525; width: 12px; border: none; }"
             "QScrollBar::handle:vertical { background-color: #555555; min-height: 20px; border-radius: 6px; }"
@@ -1428,20 +1413,30 @@ void MainWindow::applyTheme() {
             "QMenuBar::item:selected { background-color: #3a3a3a; }"
             "QMenu { background-color: #252525; color: #ffffff; border: 1px solid #333; }"
             "QMenu::item:selected { background-color: #0078d7; }"
-            "QStatusBar { background-color: #252525; color: #ffffff; }"
+            "QStatusBar { background-color: #252525; color: #ffffff; font-size: 13px; }"
+            "QStatusBar QLabel { padding: 0 8px; }"
             "QPushButton { background-color: #0078d7; color: white; padding: 5px 15px; border: none; }"
             "QPushButton:hover { background-color: #1e8ad6; }"
             "QPushButton:disabled { background-color: #555555; }"
             "QLineEdit { background-color: #333333; color: white; border: 1px solid #555; padding: 5px; }"
             "QComboBox { background-color: #333333; color: white; border: 1px solid #555; padding: 5px; }"
             "QSpinBox { background-color: #333333; color: white; border: 1px solid #555; padding: 5px; }"
-            "QSplitter::handle { background-color: transparent; }"
+            "QSplitter#MainSplitter::handle, QSplitter#RightTopSplitter::handle:horizontal { "
+            "    background-color: #30363d; border-left: 1px solid #3f4750; border-right: 1px solid #252b31; }"
+            "QSplitter#RightSplitter::handle:vertical { "
+            "    background-color: #30363d; border-top: 1px solid #3f4750; border-bottom: 1px solid #252b31; }"
+            "QWidget#ProcessPanelWidget { background-color: #252525; border-right: 1px solid #3b4148; }"
+            "QWidget#ImageDisplayWidget { background-color: #1e1e1e; border-left: 1px solid #3b4148; "
+            "border-bottom: 1px solid #3b4148; }"
+            "QDockWidget#ToolPanelDock { border-right: 1px solid #3b4148; }"
+            "QDockWidget#LogDock { border-top: 1px solid #3b4148; }"
             "QLabel { color: #ffffff; }"
             "QScrollArea { background-color: #252525; }"
             "QFrame { background-color: #444444; }"
             "QTabWidget::pane { border: none; background-color: #252525; }"
             "QTabBar { background-color: #252525; }"
-            "QTabBar::tab { background-color: #333333; color: #ffffff; padding: 5px 12px; border: none; }"
+            "QTabBar::tab { background-color: #333333; color: #ffffff; font-size: 13px; font-weight: 500; "
+            "min-height: 26px; padding: 3px 10px; border: none; }"
             "QTabBar::tab:selected { background-color: #444444; }"
             "QTabBar::tab:hover:!selected { background-color: #3a3a3a; }");
     } else {
@@ -1457,15 +1452,15 @@ void MainWindow::applyTheme() {
             "    padding: 8px 10px; "
             "    border-bottom: 1px solid #cccccc; }"
             "QDockWidget::title:hover { background-color: #d0d0d0; }"
-            "QTreeWidget { background-color: #ffffff; color: #212121; border: 1px solid #dddddd; }"
-            "QTreeWidget::item { height: 28px; }"
+            "QTreeWidget { background-color: #ffffff; color: #212121; border: 1px solid #dddddd; font-size: 13px; }"
+            "QTreeWidget::item { height: 28px; padding-left: 2px; padding-right: 2px; }"
             "QTreeWidget::item:hover { background-color: #e5f3ff; }"
             "QTreeWidget::item:selected { background-color: #0078d7; color: #ffffff; }"
-            "QTableWidget { background-color: #ffffff; color: #212121; border: 1px solid #dddddd; }"
+            "QTableWidget { background-color: #ffffff; color: #212121; border: 1px solid #dddddd; font-size: 13px; }"
             "QTableWidget::item { border-bottom: 1px solid #eeeeee; }"
             "QTableWidget::item:selected { background-color: #0078d7; color: #ffffff; }"
             "QHeaderView::section { background-color: #f0f0f0; color: #212121; padding: 5px; border: 1px solid "
-            "#dddddd; }"
+            "#dddddd; font-size: 13px; }"
             "QTableCornerButton::section { background-color: #f0f0f0; border: none; }"
             "QScrollBar:vertical { background-color: #f0f0f0; width: 12px; border: none; }"
             "QScrollBar::handle:vertical { background-color: #c0c0c0; min-height: 20px; border-radius: 6px; }"
@@ -1483,7 +1478,8 @@ void MainWindow::applyTheme() {
             "QMenuBar::item:selected { background-color: #e5f3ff; }"
             "QMenu { background-color: #ffffff; color: #212121; border: 1px solid #cccccc; }"
             "QMenu::item:selected { background-color: #0078d7; color: #ffffff; }"
-            "QStatusBar { background-color: #f8f8f8; color: #212121; }"
+            "QStatusBar { background-color: #f8f8f8; color: #212121; font-size: 13px; }"
+            "QStatusBar QLabel { padding: 0 8px; }"
             "QPushButton { background-color: #0078d7; color: white; padding: 5px 15px; border: 1px solid #005a9e; }"
             "QPushButton:hover { background-color: #1e8ad6; }"
             "QPushButton:disabled { background-color: #cccccc; color: #999999; }"
@@ -1493,13 +1489,22 @@ void MainWindow::applyTheme() {
             "QComboBox:focus { border: 1px solid #0078d7; }"
             "QSpinBox { background-color: #ffffff; color: #212121; border: 1px solid #cccccc; padding: 5px; }"
             "QSpinBox:focus { border: 1px solid #0078d7; }"
-            "QSplitter::handle { background-color: transparent; }"
+            "QSplitter#MainSplitter::handle, QSplitter#RightTopSplitter::handle:horizontal { "
+            "    background-color: #e4e8ed; border-left: 1px solid #d2d8e0; border-right: 1px solid #f7f8fa; }"
+            "QSplitter#RightSplitter::handle:vertical { "
+            "    background-color: #e4e8ed; border-top: 1px solid #d2d8e0; border-bottom: 1px solid #f7f8fa; }"
+            "QWidget#ProcessPanelWidget { background-color: #ffffff; border-right: 1px solid #dce2e8; }"
+            "QWidget#ImageDisplayWidget { background-color: #ffffff; border-left: 1px solid #dce2e8; "
+            "border-bottom: 1px solid #dce2e8; }"
+            "QDockWidget#ToolPanelDock { border-right: 1px solid #dce2e8; }"
+            "QDockWidget#LogDock { border-top: 1px solid #dce2e8; }"
             "QLabel { color: #212121; }"
             "QScrollArea { background-color: #ffffff; }"
             "QFrame { background-color: #dddddd; }"
             "QTabWidget::pane { border: none; background-color: #ffffff; }"
             "QTabBar { background-color: #ffffff; }"
-            "QTabBar::tab { background-color: #e8e8e8; color: #212121; padding: 5px 12px; border: none; }"
+            "QTabBar::tab { background-color: #e8e8e8; color: #212121; font-size: 13px; font-weight: 500; "
+            "min-height: 26px; padding: 3px 10px; border: none; }"
             "QTabBar::tab:selected { background-color: #f5f5f5; }"
             "QTabBar::tab:hover:!selected { background-color: #d0d0d0; }");
     }
@@ -1514,13 +1519,14 @@ void MainWindow::applyTheme() {
     QString treeHoverColor = m_isDarkTheme ? "#3a3a3a" : "#e5f3ff";
     QString scrollBgColor = m_isDarkTheme ? "#252525" : "#ffffff";
     QString sepColor = m_isDarkTheme ? "#444444" : "#dddddd";
+    QString panelBorderColor = m_isDarkTheme ? "#3b4148" : "#dce2e8";
 
     if (m_toolBoxDock && m_toolBoxDock->titleBarWidget()) {
         m_toolBoxDock->titleBarWidget()->setStyleSheet(
             QString("background-color: %1; border: none; border-bottom: 1px solid %2;").arg(bgColor, borderColor));
         QLabel* label = m_toolBoxDock->titleBarWidget()->findChild<QLabel*>();
         if (label)
-            label->setStyleSheet(QString("QLabel { color: %1; font-weight: bold; font-size: 14px; }").arg(textColor));
+            label->setStyleSheet(QString("QLabel { color: %1; font-weight: 600; font-size: 13px; }").arg(textColor));
         QToolButton* btn = m_toolBoxDock->titleBarWidget()->findChild<QToolButton*>();
         if (btn)
             btn->setStyleSheet(
@@ -1533,22 +1539,22 @@ void MainWindow::applyTheme() {
             QString("background-color: %1; border: none; border-bottom: 1px solid %2;").arg(bgColor, borderColor));
         QLabel* label = m_logDock->titleBarWidget()->findChild<QLabel*>();
         if (label)
-            label->setStyleSheet(QString("QLabel { color: %1; font-weight: bold; font-size: 14px; }").arg(textColor));
+            label->setStyleSheet(QString("QLabel { color: %1; font-weight: 600; font-size: 13px; }").arg(textColor));
     }
 
     // 更新 TreeWidget 样式
     if (m_toolBoxTree) {
         m_toolBoxTree->setStyleSheet(
-            QString("QTreeWidget { background-color: %1; color: %2; border: none; }"
-                    "QTreeWidget::item { height: 28px; }"
+            QString("QTreeWidget { background-color: %1; color: %2; border: none; font-size: 13px; }"
+                    "QTreeWidget::item { height: 28px; padding-left: 2px; padding-right: 2px; }"
                     "QTreeWidget::item:hover { background-color: %3; }"
                     "QTreeWidget::item:selected { background-color: #0078d7; color: #ffffff; }")
                 .arg(treeBgColor, treeTextColor, treeHoverColor));
     }
     if (m_processTree) {
         m_processTree->setStyleSheet(
-            QString("QTreeWidget { background-color: %1; color: %2; border: none; }"
-                    "QTreeWidget::item { height: 28px; }"
+            QString("QTreeWidget { background-color: %1; color: %2; border: none; font-size: 13px; }"
+                    "QTreeWidget::item { height: 28px; padding-left: 2px; padding-right: 2px; }"
                     "QTreeWidget::item:hover { background-color: %3; }"
                     "QTreeWidget::item:selected { background-color: #0078d7; color: #ffffff; }")
                 .arg(treeBgColor, treeTextColor, treeHoverColor));
@@ -1626,27 +1632,23 @@ void MainWindow::applyTheme() {
     QString btnBgColor = m_isDarkTheme ? "#3a3a3a" : "#e0e0e0";
     QString btnTextColor = m_isDarkTheme ? "#ffffff" : "#212121";
     QString btnHoverColor = m_isDarkTheme ? "#4a4a4a" : "#d0d0d0";
-    QPushButton* startPauseBtn = findChild<QPushButton*>("ProcessStartPauseBtn");
+    const QString processToolButtonStyle =
+        QString("QToolButton { background-color: %1; color: %2; border: 1px solid %3; border-radius: 3px; "
+                "padding: 4px 6px; }"
+                "QToolButton:hover { background-color: %4; }"
+                "QToolButton:disabled { background-color: %1; color: #999999; }")
+            .arg(btnBgColor, btnTextColor, toolBtnBorderColor, btnHoverColor);
+    QToolButton* startPauseBtn = findChild<QToolButton*>("ProcessStartPauseBtn");
     if (startPauseBtn) {
-        startPauseBtn->setStyleSheet(QString("QPushButton { background-color: %1; color: %2; border: 1px solid "
-                                             "#005a9e; border-radius: 3px; padding: 5px 10px; }"
-                                             "QPushButton:hover { background-color: %3; }"
-                                             "QPushButton:disabled { background-color: #cccccc; color: #999999; }")
-                                         .arg(btnBgColor, btnTextColor, btnHoverColor));
+        startPauseBtn->setStyleSheet(processToolButtonStyle);
     }
-    QPushButton* stopBtn = findChild<QPushButton*>("ProcessStopBtn");
+    QToolButton* stopBtn = findChild<QToolButton*>("ProcessStopBtn");
     if (stopBtn) {
-        stopBtn->setStyleSheet(QString("QPushButton { background-color: #dc3545; color: white; border: 1px solid "
-                                       "#c82333; border-radius: 3px; padding: 5px 10px; }"
-                                       "QPushButton:hover { background-color: #e04242; }"
-                                       "QPushButton:disabled { background-color: #cccccc; color: #999999; }"));
+        stopBtn->setStyleSheet(processToolButtonStyle);
     }
-    QPushButton* cycleBtn = findChild<QPushButton*>("ProcessCycleBtn");
+    QToolButton* cycleBtn = findChild<QToolButton*>("ProcessCycleBtn");
     if (cycleBtn) {
-        cycleBtn->setStyleSheet(QString("QPushButton { background-color: %1; color: %2; border: 1px solid #005a9e; "
-                                        "border-radius: 3px; padding: 5px 10px; }"
-                                        "QPushButton:hover { background-color: %3; }")
-                                    .arg(btnBgColor, btnTextColor, btnHoverColor));
+        cycleBtn->setStyleSheet(processToolButtonStyle);
     }
 
     // 更新流程工具栏背景
@@ -1664,22 +1666,45 @@ void MainWindow::applyTheme() {
     // 更新面板容器背景
     QWidget* toolPanelWidget = findChild<QWidget*>("ToolPanelWidget");
     if (toolPanelWidget) {
-        toolPanelWidget->setStyleSheet(QString("background-color: %1;").arg(scrollBgColor));
+        toolPanelWidget->setStyleSheet(
+            QString("background-color: %1; border-right: 1px solid %2;").arg(scrollBgColor, panelBorderColor));
     }
     QWidget* processPanelWidget = findChild<QWidget*>("ProcessPanelWidget");
     if (processPanelWidget) {
-        processPanelWidget->setStyleSheet(QString("background-color: %1;").arg(scrollBgColor));
+        processPanelWidget->setStyleSheet(
+            QString("background-color: %1; border-right: 1px solid %2;").arg(scrollBgColor, panelBorderColor));
+    }
+    QWidget* imageDisplayWidget = findChild<QWidget*>("ImageDisplayWidget");
+    if (imageDisplayWidget) {
+        imageDisplayWidget->setStyleSheet(QString("background-color: %1; border-left: 1px solid %2; "
+                                                  "border-bottom: 1px solid %2;")
+                                              .arg(m_isDarkTheme ? "#1e1e1e" : "#ffffff", panelBorderColor));
+    }
+    if (m_logDock) {
+        m_logDock->setStyleSheet(QString("QDockWidget#LogDock { border-top: 1px solid %1; }").arg(panelBorderColor));
     }
 
     if (m_processTabWidget) {
         m_processTabWidget->setStyleSheet(
             QString("QTabWidget::pane { border: none; border-top: 2px solid %1; background-color: %2; }"
-                    "QTabBar::tab { background-color: transparent; color: %3; padding: 5px 9px;"
-                    "  border: none; border-bottom: 2px solid transparent; margin-right: 2px; }"
+                    "QTabBar::tab { background-color: transparent; color: %3; font-size: 13px; font-weight: 500;"
+                    "  min-height: 26px; padding: 3px 10px; border: none; border-bottom: 2px solid transparent;"
+                    "  margin-right: 2px; }"
                     "QTabBar::tab:selected { color: #0078d7; border-bottom: 2px solid #0078d7; }"
                     "QTabBar::tab:hover:!selected { color: %3; background-color: %1; }")
                 .arg(m_isDarkTheme ? "#3a3a3a" : "#e0e0e0", m_isDarkTheme ? "#252525" : "#ffffff",
                      m_isDarkTheme ? "#a0a0a0" : "#666666"));
+    }
+    if (m_logTerminalTabs) {
+        m_logTerminalTabs->setStyleSheet(
+            QString("QTabWidget::pane { border: none; background-color: %1; }"
+                    "QTabBar::tab { background-color: %2; color: %3; font-size: 13px; font-weight: 500;"
+                    "  min-height: 26px; padding: 3px 10px; border: none; margin-right: 1px; }"
+                    "QTabBar::tab:selected { background-color: %1; color: %4; }"
+                    "QTabBar::tab:hover:!selected { background-color: %5; }")
+                .arg(m_isDarkTheme ? "#252525" : "#ffffff", m_isDarkTheme ? "#333333" : "#e8e8e8",
+                     m_isDarkTheme ? "#d1d5db" : "#4b5563", m_isDarkTheme ? "#ffffff" : "#212121",
+                     m_isDarkTheme ? "#3a3a3a" : "#dce2e8"));
     }
 
     // 更新 DisplayManager 中的 Viewport 样式
@@ -1811,31 +1836,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
             if (!selected.isEmpty()) {
                 QTreeWidgetItem* item = selected.first();
                 QString instanceName = item->data(0, Qt::UserRole + 1).toString();
-                if (!instanceName.isEmpty() && m_flowModules.contains(instanceName)) {
-                    IModule* module = m_flowModules.take(instanceName);
-                    if (module) {
-                        module->shutdown();
-                        delete module;
-                    }
-                    m_usedPluginNames.remove(instanceName);
-                }
-                delete item;
-                m_modulesNeedSync = true;
-                if (m_processTree->topLevelItemCount() == 0 && !m_hintLabel) {
-                    // 查找 processPanelLayout
-                    QWidget* parentWidget = m_processTree->parentWidget();
-                    if (parentWidget) {
-                        QVBoxLayout* layout = qobject_cast<QVBoxLayout*>(parentWidget->layout());
-                        if (layout) {
-                            m_hintLabel = new QLabel(tr("← 从左侧拖拽工具"));
-                            m_hintLabel->setAlignment(Qt::AlignCenter);
-                            m_hintLabel->setStyleSheet("color: #808080; padding: 10px;");
-                            m_hintLabel->setObjectName("ProcessTreeHintLabel");
-                            int index = layout->indexOf(m_processTree);
-                            layout->insertWidget(index, m_hintLabel);
-                        }
-                    }
-                }
+                removeFlowModuleByInstanceId(instanceName);
             }
             return true;
         }
@@ -2307,12 +2308,29 @@ void MainWindow::onQuickMode() {
     executeFlowOnce();
 }
 
+void MainWindow::setUiRunningState(bool running, bool cycleMode) {
+    m_isRunning = running;
+    m_isCycleMode = running && cycleMode;
+
+    if (m_btnStartPause) {
+        m_btnStartPause->setIcon(running ? createPauseIcon() : createPlayIcon());
+        m_btnStartPause->setToolTip(running ? tr("暂停") : tr("单次运行"));
+    }
+    if (m_btnStop) {
+        m_btnStop->setEnabled(running);
+    }
+}
+
 void MainWindow::onRunOnce() {
     if (!m_isRunning) {
-        m_isRunning = true;
-        m_btnStartPause->setIcon(createPauseIcon());
-        m_btnStartPause->setToolTip(tr("暂停"));
-        m_btnStop->setEnabled(true);
+        if (m_processTree->topLevelItemCount() == 0) {
+            if (m_processTimeLabel) {
+                m_processTimeLabel->setText(tr("总耗时：0 ms"));
+            }
+            Logger::instance().warning(tr("流程为空，无法运行"), "System");
+            return;
+        }
+        setUiRunningState(true, false);
         Logger::instance().info(tr("运行一次"), "System");
         executeFlowOnce();
     } else {
@@ -2322,11 +2340,14 @@ void MainWindow::onRunOnce() {
 
 void MainWindow::onRunCycle() {
     if (!m_isRunning) {
-        m_isRunning = true;
-        m_isCycleMode = true;
-        m_btnStartPause->setIcon(createPauseIcon());
-        m_btnStartPause->setToolTip(tr("暂停"));
-        m_btnStop->setEnabled(true);
+        if (m_processTree->topLevelItemCount() == 0) {
+            if (m_processTimeLabel) {
+                m_processTimeLabel->setText(tr("总耗时：0 ms"));
+            }
+            Logger::instance().warning(tr("流程为空，无法循环运行"), "System");
+            return;
+        }
+        setUiRunningState(true, true);
         Logger::instance().info(tr("循环运行"), "System");
         executeFlowOnce();
     }
@@ -2334,11 +2355,7 @@ void MainWindow::onRunCycle() {
 }
 
 void MainWindow::onStop() {
-    m_isRunning = false;
-    m_isCycleMode = false;
-    m_btnStartPause->setIcon(createPlayIcon());
-    m_btnStartPause->setToolTip(tr("单次运行"));
-    m_btnStop->setEnabled(false);
+    setUiRunningState(false, false);
     RunEngine::instance().stop();
     Logger::instance().info(tr("停止"), "System");
 }

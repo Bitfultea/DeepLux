@@ -46,15 +46,15 @@ void ViewportWidget::setupUi()
 
     // Title bar
     QHBoxLayout* titleLayout = new QHBoxLayout();
-    titleLayout->setContentsMargins(8, 4, 8, 4);
+    titleLayout->setContentsMargins(8, 3, 8, 3);
     titleLayout->setSpacing(4);
 
     m_titleBar = new QLabel(m_title);
     m_titleBar->setStyleSheet(R"(
         QLabel {
             color: #e0e0e0;
-            font-size: 12px;
-            font-weight: bold;
+            font-size: 13px;
+            font-weight: 600;
             background-color: transparent;
         }
     )");
@@ -77,6 +77,7 @@ void ViewportWidget::setupUi()
             border: none;
             padding: 2px;
             color: #a0a0a0;
+            font-size: 13px;
         }
         QToolButton:hover {
             background-color: #3a3a3a;
@@ -145,6 +146,7 @@ void ViewportWidget::setupUi()
             border: none;
             padding: 2px;
             color: #a0a0a0;
+            font-size: 13px;
         }
         QToolButton:hover {
             background-color: #3a3a3a;
@@ -351,8 +353,8 @@ void ViewportWidget::applyTheme(bool isDark)
         m_titleBar->setStyleSheet(R"(
             QLabel {
                 color: #e0e0e0;
-                font-size: 12px;
-                font-weight: bold;
+                font-size: 13px;
+                font-weight: 600;
                 background-color: transparent;
             }
         )");
@@ -370,8 +372,8 @@ void ViewportWidget::applyTheme(bool isDark)
         m_titleBar->setStyleSheet(R"(
             QLabel {
                 color: #212121;
-                font-size: 12px;
-                font-weight: bold;
+                font-size: 13px;
+                font-weight: 600;
                 background-color: transparent;
             }
         )");
@@ -393,6 +395,7 @@ void ViewportWidget::applyTheme(bool isDark)
             border: none;
             padding: 2px;
             color: #f3f4f6;
+            font-size: 13px;
         }
         QToolButton:hover {
             background-color: #4b5563;
@@ -413,6 +416,7 @@ void ViewportWidget::applyTheme(bool isDark)
             border: none;
             padding: 2px;
             color: #606060;
+            font-size: 13px;
         }
         QToolButton:hover {
             background-color: #e0e0e0;

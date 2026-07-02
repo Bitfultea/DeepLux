@@ -21,7 +21,7 @@ AgentActionLogWidget::~AgentActionLogWidget() = default;
 void AgentActionLogWidget::setupUi()
 {
     auto* mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(4, 4, 4, 4);
+    mainLayout->setContentsMargins(6, 6, 6, 6);
     mainLayout->setSpacing(4);
 
     m_table = new QTableWidget(this);
@@ -113,7 +113,7 @@ void AgentActionLogWidget::applyTheme(bool isDark)
         " gridline-color: %4; }"
         "QTableWidget::item { color: %3; border-bottom: 1px solid %4; }"
         "QTableWidget::item:selected { background-color: #0078d7; color: #ffffff; }"
-        "QHeaderView::section { background-color: %5; color: %3; padding: 5px; border: none; }"
+        "QHeaderView::section { background-color: %5; color: %3; padding: 5px; border: none; font-size: 13px; }"
         "QTableCornerButton::section { background-color: %5; border: none; }")
         .arg(bg, altBg, fg, border, headerBg));
 

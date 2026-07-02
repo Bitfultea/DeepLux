@@ -42,6 +42,7 @@ set(CORE_SOURCES
     agent/ILLMClient.cpp
     agent/OpenAILLMClient.cpp
     agent/GuiEvent.cpp
+    agent/agent_resources.qrc
 )
 
 set(CORE_HEADERS
@@ -101,7 +102,6 @@ if(Qt6_FOUND)
 else()
     find_package(Qt5Widgets REQUIRED)
     find_package(Qt5Network REQUIRED)
-    find_package(Qt5SerialPort REQUIRED)
     target_link_libraries(deeplux_core PUBLIC Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Network Qt5::SerialPort)
 endif()
 

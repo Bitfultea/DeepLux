@@ -120,6 +120,18 @@ void Project::updateModule(const QString& instanceId, const ModuleInstance& modu
     }
 }
 
+bool Project::setModuleParam(const QString& instanceId, const QString& key, const QJsonValue& value) {
+    for (int i = 0; i < m_modules.size(); i++) {
+        if (m_modules[i].id == instanceId) {
+            m_modules[i].params[key] = value;
+            touch();
+            emit moduleUpdated(m_modules[i]);
+            return true;
+        }
+    }
+    return false;
+}
+
 bool Project::moveModule(const QString& instanceId, int newIndex) {
     if (m_modules.isEmpty()) {
         return false;
