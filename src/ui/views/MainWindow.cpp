@@ -142,6 +142,54 @@ QString measurementSummary(const ImageData& output) {
 
     return parts.isEmpty() ? QString() : QString::fromUtf8("📏 ") + parts.join(QString::fromUtf8(", "));
 }
+
+QJsonArray pointArray2D(const QPointF& point) {
+    QJsonArray arr;
+    arr.append(point.x());
+    arr.append(point.y());
+    return arr;
+}
+
+QJsonArray pointArray3D(double x, double y, double z) {
+    QJsonArray arr;
+    arr.append(x);
+    arr.append(y);
+    arr.append(z);
+    return arr;
+}
+
+QString pointText2D(const QPointF& point) {
+    return QString("%1,%2").arg(point.x(), 0, 'f', 2).arg(point.y(), 0, 'f', 2);
+}
+
+QString pointText3D(const QVector3D& point) {
+    return QString("%1,%2,%3").arg(point.x(), 0, 'f', 3).arg(point.y(), 0, 'f', 3).arg(point.z(), 0, 'f', 3);
+}
+
+QJsonArray updatedLineArray(const QJsonArray& existing, const QPointF& point, bool firstPoint) {
+    QJsonArray line = existing;
+    while (line.size() < 4) {
+        line.append(0.0);
+    }
+
+    const int offset = firstPoint ? 0 : 2;
+    line[offset] = point.x();
+    line[offset + 1] = point.y();
+    return line;
+}
+
+QJsonArray updatedPlaneArray(const QJsonArray& existing, const QJsonArray& point, int planePointIndex) {
+    QJsonArray plane = existing;
+    while (plane.size() < 9) {
+        plane.append(0.0);
+    }
+
+    const int offset = qBound(0, planePointIndex, 2) * 3;
+    for (int i = 0; i < 3; ++i) {
+        plane[offset + i] = point[i];
+    }
+    return plane;
+}
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(new DisplayManager(this)) {
@@ -1153,7 +1201,8 @@ void MainWindow::onModuleRemoved(const QString& instanceId) {
 
 void MainWindow::onViewportCreated(const QString& viewportId, ViewportWidget* viewport) {
     Q_UNUSED(viewportId)
-    if (!viewport) return;
+    if (!viewport)
+        return;
     connect(viewport, &ViewportWidget::point2DClicked, this, &MainWindow::onPoint2DPicked);
     connect(viewport, &ViewportWidget::point3DClicked, this, &MainWindow::onPoint3DPicked);
 }
@@ -1161,84 +1210,202 @@ void MainWindow::onViewportCreated(const QString& viewportId, ViewportWidget* vi
 void MainWindow::onPoint2DPicked(const QPointF& point) {
     QTreeWidgetItem* item = m_processTree->currentItem();
     if (!item || item->data(0, Qt::UserRole).toString() != "flow_item") {
+        QGuiApplication::clipboard()->setText(pointText2D(point));
         Logger::instance().info(QString("2D pick: (%1, %2) — no MeasurementInput selected")
                                     .arg(point.x(), 0, 'f', 2)
-                                    .arg(point.y(), 0, 'f', 2), "Picking");
+                                    .arg(point.y(), 0, 'f', 2),
+                                "Picking");
         return;
     }
 
     QString instanceId = item->data(0, Qt::UserRole + 1).toString();
     IModule* mod = m_flowModules.value(instanceId, nullptr);
-    if (!mod) return;
-
-    if (mod->moduleId() != "com.deeplux.plugin.measurementinput") {
-        Logger::instance().info(QString("2D pick: (%1, %2) — selected module is not MeasurementInput")
-                                    .arg(point.x(), 0, 'f', 2)
-                                    .arg(point.y(), 0, 'f', 2), "Picking");
+    if (!mod) {
+        QGuiApplication::clipboard()->setText(pointText2D(point));
         return;
     }
 
-    // Determine which point field to update — first empty field wins
-    QJsonObject params = mod->currentParams();
-    QJsonArray point1Arr = params["point1"].toArray();
-    QJsonArray point2Arr = params["point2"].toArray();
-    bool point1Zero = (point1Arr.size() >= 2 && point1Arr[0].toDouble() == 0.0 && point1Arr[1].toDouble() == 0.0);
-
-    QJsonArray newPoint;
-    newPoint.append(point.x());
-    newPoint.append(point.y());
-
-    if (point1Zero) {
-        mod->setParam("point1", QVariant::fromValue(newPoint));
-        Project* project = ProjectManager::instance().currentProject();
-        if (project) project->setModuleParam(instanceId, "point1", newPoint);
-        Logger::instance().info(QString("2D pick: point1 set to (%1, %2)")
+    if (mod->moduleId() != "com.deeplux.plugin.measurementinput") {
+        QGuiApplication::clipboard()->setText(pointText2D(point));
+        Logger::instance().info(QString("2D pick: (%1, %2) — selected module is not MeasurementInput")
                                     .arg(point.x(), 0, 'f', 2)
-                                    .arg(point.y(), 0, 'f', 2), "Picking");
-    } else {
-        mod->setParam("point2", QVariant::fromValue(newPoint));
-        Project* project = ProjectManager::instance().currentProject();
-        if (project) project->setModuleParam(instanceId, "point2", newPoint);
-        Logger::instance().info(QString("2D pick: point2 set to (%1, %2)")
-                                    .arg(point.x(), 0, 'f', 2)
-                                    .arg(point.y(), 0, 'f', 2), "Picking");
+                                    .arg(point.y(), 0, 'f', 2),
+                                "Picking");
+        return;
     }
+
+    QJsonObject params = mod->currentParams();
+    const QString mode = params["mode"].toString("point_pair");
+    const int cursor = m_measurementPickCursor.value(instanceId, 0);
+    Project* project = ProjectManager::instance().currentProject();
+
+    const QJsonArray newPoint2D = pointArray2D(point);
+    const QJsonArray newPoint3D = pointArray3D(point.x(), point.y(), 0.0);
+
+    if (mode == "point_line") {
+        const int step = cursor % 3;
+        if (step == 0) {
+            mod->setParam("point", newPoint3D);
+            if (project)
+                project->setModuleParam(instanceId, "point", newPoint3D);
+            Logger::instance().info(
+                QString("2D pick: point set to (%1, %2, 0)").arg(point.x(), 0, 'f', 2).arg(point.y(), 0, 'f', 2),
+                "Picking");
+        } else {
+            QJsonArray line = updatedLineArray(params["line"].toArray(), point, step == 1);
+            mod->setParam("line", line);
+            if (project)
+                project->setModuleParam(instanceId, "line", line);
+            Logger::instance().info(QString("2D pick: line p%1 set to (%2, %3)")
+                                        .arg(step)
+                                        .arg(point.x(), 0, 'f', 2)
+                                        .arg(point.y(), 0, 'f', 2),
+                                    "Picking");
+        }
+        m_measurementPickCursor[instanceId] = (step + 1) % 3;
+        return;
+    }
+
+    if (mode == "point_plane") {
+        const int step = cursor % 4;
+        if (step == 0) {
+            mod->setParam("point", newPoint3D);
+            if (project)
+                project->setModuleParam(instanceId, "point", newPoint3D);
+            Logger::instance().info(
+                QString("2D pick: point set to (%1, %2, 0)").arg(point.x(), 0, 'f', 2).arg(point.y(), 0, 'f', 2),
+                "Picking");
+        } else {
+            QJsonArray plane = updatedPlaneArray(params["plane"].toArray(), newPoint3D, step - 1);
+            mod->setParam("plane", plane);
+            if (project)
+                project->setModuleParam(instanceId, "plane", plane);
+            Logger::instance().info(QString("2D pick: plane p%1 set to (%2, %3, 0)")
+                                        .arg(step)
+                                        .arg(point.x(), 0, 'f', 2)
+                                        .arg(point.y(), 0, 'f', 2),
+                                    "Picking");
+        }
+        m_measurementPickCursor[instanceId] = (step + 1) % 4;
+        return;
+    }
+
+    const bool setFirst = (cursor % 2) == 0;
+    if (setFirst) {
+        mod->setParam("point1", newPoint2D);
+        if (project)
+            project->setModuleParam(instanceId, "point1", newPoint2D);
+        Logger::instance().info(
+            QString("2D pick: point1 set to (%1, %2)").arg(point.x(), 0, 'f', 2).arg(point.y(), 0, 'f', 2), "Picking");
+    } else {
+        mod->setParam("point2", newPoint2D);
+        if (project)
+            project->setModuleParam(instanceId, "point2", newPoint2D);
+        Logger::instance().info(
+            QString("2D pick: point2 set to (%1, %2)").arg(point.x(), 0, 'f', 2).arg(point.y(), 0, 'f', 2), "Picking");
+    }
+    m_measurementPickCursor[instanceId] = (cursor + 1) % 2;
 }
 
 void MainWindow::onPoint3DPicked(const QVector3D& point) {
     QTreeWidgetItem* item = m_processTree->currentItem();
     if (!item || item->data(0, Qt::UserRole).toString() != "flow_item") {
+        QGuiApplication::clipboard()->setText(pointText3D(point));
         Logger::instance().info(QString("3D pick: (%1, %2, %3) — no MeasurementInput selected")
                                     .arg(point.x(), 0, 'f', 3)
                                     .arg(point.y(), 0, 'f', 3)
-                                    .arg(point.z(), 0, 'f', 3), "Picking");
+                                    .arg(point.z(), 0, 'f', 3),
+                                "Picking");
         return;
     }
 
     QString instanceId = item->data(0, Qt::UserRole + 1).toString();
     IModule* mod = m_flowModules.value(instanceId, nullptr);
-    if (!mod) return;
-
-    if (mod->moduleId() != "com.deeplux.plugin.measurementinput") {
-        Logger::instance().info(QString("3D pick: (%1, %2, %3) — selected module is not MeasurementInput")
-                                    .arg(point.x(), 0, 'f', 3)
-                                    .arg(point.y(), 0, 'f', 3)
-                                    .arg(point.z(), 0, 'f', 3), "Picking");
+    if (!mod) {
+        QGuiApplication::clipboard()->setText(pointText3D(point));
         return;
     }
 
-    QJsonArray newPoint;
-    newPoint.append(static_cast<double>(point.x()));
-    newPoint.append(static_cast<double>(point.y()));
-    newPoint.append(static_cast<double>(point.z()));
+    if (mod->moduleId() != "com.deeplux.plugin.measurementinput") {
+        QGuiApplication::clipboard()->setText(pointText3D(point));
+        Logger::instance().info(QString("3D pick: (%1, %2, %3) — selected module is not MeasurementInput")
+                                    .arg(point.x(), 0, 'f', 3)
+                                    .arg(point.y(), 0, 'f', 3)
+                                    .arg(point.z(), 0, 'f', 3),
+                                "Picking");
+        return;
+    }
 
-    mod->setParam("point", QVariant::fromValue(newPoint));
+    QJsonObject params = mod->currentParams();
+    const QString mode = params["mode"].toString("point_pair");
+    const int cursor = m_measurementPickCursor.value(instanceId, 0);
     Project* project = ProjectManager::instance().currentProject();
-    if (project) project->setModuleParam(instanceId, "point", newPoint);
-    Logger::instance().info(QString("3D pick: point set to (%1, %2, %3)")
-                                .arg(point.x(), 0, 'f', 3)
-                                .arg(point.y(), 0, 'f', 3)
-                                .arg(point.z(), 0, 'f', 3), "Picking");
+    const QJsonArray newPoint = pointArray3D(point.x(), point.y(), point.z());
+
+    if (mode == "point_plane") {
+        const int step = cursor % 4;
+        if (step == 0) {
+            mod->setParam("point", newPoint);
+            if (project)
+                project->setModuleParam(instanceId, "point", newPoint);
+            Logger::instance().info(QString("3D pick: point set to (%1, %2, %3)")
+                                        .arg(point.x(), 0, 'f', 3)
+                                        .arg(point.y(), 0, 'f', 3)
+                                        .arg(point.z(), 0, 'f', 3),
+                                    "Picking");
+        } else {
+            QJsonArray plane = updatedPlaneArray(params["plane"].toArray(), newPoint, step - 1);
+            mod->setParam("plane", plane);
+            if (project)
+                project->setModuleParam(instanceId, "plane", plane);
+            Logger::instance().info(QString("3D pick: plane p%1 set to (%2, %3, %4)")
+                                        .arg(step)
+                                        .arg(point.x(), 0, 'f', 3)
+                                        .arg(point.y(), 0, 'f', 3)
+                                        .arg(point.z(), 0, 'f', 3),
+                                    "Picking");
+        }
+        m_measurementPickCursor[instanceId] = (step + 1) % 4;
+        return;
+    }
+
+    if (mode == "point_line") {
+        const int step = cursor % 3;
+        if (step == 0) {
+            mod->setParam("point", newPoint);
+            if (project)
+                project->setModuleParam(instanceId, "point", newPoint);
+        } else {
+            QJsonArray line = updatedLineArray(params["line"].toArray(), QPointF(point.x(), point.y()), step == 1);
+            mod->setParam("line", line);
+            if (project)
+                project->setModuleParam(instanceId, "line", line);
+        }
+        m_measurementPickCursor[instanceId] = (step + 1) % 3;
+        return;
+    }
+
+    const bool setFirst = (cursor % 2) == 0;
+    if (setFirst) {
+        mod->setParam("point1", newPoint);
+        if (project)
+            project->setModuleParam(instanceId, "point1", newPoint);
+        Logger::instance().info(QString("3D pick: point1 set to (%1, %2, %3)")
+                                    .arg(point.x(), 0, 'f', 3)
+                                    .arg(point.y(), 0, 'f', 3)
+                                    .arg(point.z(), 0, 'f', 3),
+                                "Picking");
+    } else {
+        mod->setParam("point2", newPoint);
+        if (project)
+            project->setModuleParam(instanceId, "point2", newPoint);
+        Logger::instance().info(QString("3D pick: point2 set to (%1, %2, %3)")
+                                    .arg(point.x(), 0, 'f', 3)
+                                    .arg(point.y(), 0, 'f', 3)
+                                    .arg(point.z(), 0, 'f', 3),
+                                "Picking");
+    }
+    m_measurementPickCursor[instanceId] = (cursor + 1) % 2;
 }
 
 void MainWindow::onDataSourceAdded(const DataSource& ds) {
@@ -1396,6 +1563,7 @@ void MainWindow::removeModuleFromProcessTree(const QString& instanceId) {
     }
 
     m_usedPluginNames.remove(instanceId);
+    m_measurementPickCursor.remove(instanceId);
     m_modulesNeedSync = true;
 
     // 如果所有 item 都被删除，重新创建提示标签

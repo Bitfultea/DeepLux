@@ -1,3 +1,4 @@
+#include <QClipboard>
 #include <QCoreApplication>
 #include <QDir>
 #include <QDockWidget>
@@ -17,6 +18,7 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
+#include <QVector3D>
 #include <QtTest/QtTest>
 #include <core/agent/AgentController.h>
 #include <core/manager/PluginManager.h>
@@ -43,9 +45,11 @@ private slots:
     void testAgentThinkingStatusStaysCompactAndSafe();
     void testAgentInputErrorPathDoesNotCrashOrStayThinking();
     void testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTheme();
+    void testMeasurementPickingUpdatesInputAndClipboard();
 
 private:
     bool installFitLinePlugin(const QString& pluginRoot) const;
+    bool installRuntimePlugin(const QString& pluginRoot, const QString& pluginName) const;
 };
 
 void TestMainWindow::init() {
@@ -61,25 +65,31 @@ void TestMainWindow::cleanup() {
 }
 
 bool TestMainWindow::installFitLinePlugin(const QString& pluginRoot) const {
+    return installRuntimePlugin(pluginRoot, QStringLiteral("FitLine"));
+}
+
+bool TestMainWindow::installRuntimePlugin(const QString& pluginRoot, const QString& pluginName) const {
     QDir root(pluginRoot);
-    if (!root.mkpath("FitLine")) {
+    if (!root.mkpath(pluginName)) {
         return false;
     }
 
-    QDir pluginDir(root.filePath("FitLine"));
+    QDir pluginDir(root.filePath(pluginName));
     const QString metadataSrc =
-        QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../src/plugins/geometry/FitLine/metadata.json");
-    const QString libSrc = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../lib/libFitLinePlugin.so");
+        QDir::cleanPath(QCoreApplication::applicationDirPath() +
+                        QString("/../../src/plugins/geometry/%1/metadata.json").arg(pluginName));
+    const QString libSrc =
+        QDir::cleanPath(QCoreApplication::applicationDirPath() + QString("/../lib/lib%1Plugin.so").arg(pluginName));
 
     if (!QFileInfo::exists(metadataSrc) || !QFileInfo::exists(libSrc)) {
         return false;
     }
 
     QFile::remove(pluginDir.filePath("metadata.json"));
-    QFile::remove(pluginDir.filePath("libFitLinePlugin.so"));
+    QFile::remove(pluginDir.filePath(QString("lib%1Plugin.so").arg(pluginName)));
 
     return QFile::copy(metadataSrc, pluginDir.filePath("metadata.json")) &&
-           QFile::copy(libSrc, pluginDir.filePath("libFitLinePlugin.so"));
+           QFile::copy(libSrc, pluginDir.filePath(QString("lib%1Plugin.so").arg(pluginName)));
 }
 
 void TestMainWindow::testOpenProjectSyncsProcessTreeAndFlowCanvas() {
@@ -394,7 +404,8 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY(rightTopSplitter != nullptr);
     QVERIFY2(mainSplitter->handleWidth() >= 6, "Main splitter handle should be easy to see and drag");
     QWidget* mainContentWidget = window.findChild<QWidget*>("MainContentWidget");
-    QVERIFY2(mainContentWidget != nullptr, "Central content should wrap the splitter so the left edge can have a gutter");
+    QVERIFY2(mainContentWidget != nullptr,
+             "Central content should wrap the splitter so the left edge can have a gutter");
     QVERIFY(mainContentWidget->layout() != nullptr);
     const QMargins mainContentMargins = mainContentWidget->layout()->contentsMargins();
     QCOMPARE(mainContentMargins.left(), mainSplitter->handleWidth());
@@ -404,7 +415,8 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY2(rightSplitter->handleWidth() >= 6, "Bottom panel splitter handle should be easy to see and drag");
     QVERIFY2(rightTopSplitter->handleWidth() >= 6, "Process/display splitter handle should be easy to see and drag");
     QVERIFY2(!mainSplitter->childrenCollapsible(), "Primary panels should not collapse accidentally while dragging");
-    QVERIFY2(!rightSplitter->childrenCollapsible(), "Top and bottom panels should not collapse accidentally while dragging");
+    QVERIFY2(!rightSplitter->childrenCollapsible(),
+             "Top and bottom panels should not collapse accidentally while dragging");
     QVERIFY2(!rightTopSplitter->childrenCollapsible(),
              "Process and display panels should not collapse accidentally while dragging");
     const QString mainStyle = window.styleSheet();
@@ -549,6 +561,80 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY(previewButtonTexts.contains(QStringLiteral("确认执行")));
     QVERIFY(!previewButtonTexts.contains(QStringLiteral("Cancel")));
     QVERIFY(!previewButtonTexts.contains(QStringLiteral("Confirm")));
+}
+
+void TestMainWindow::testMeasurementPickingUpdatesInputAndClipboard() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY2(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")),
+             "MeasurementInput plugin should be available to MainWindow during the picking test");
+
+    MainWindow window;
+    QCoreApplication::processEvents();
+
+    QClipboard* clipboard = QGuiApplication::clipboard();
+    QVERIFY(clipboard != nullptr);
+    clipboard->clear();
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(12.5, 34.5))));
+    QCOMPARE(clipboard->text(), QStringLiteral("12.50,34.50"));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance lineInput;
+    lineInput.id = QStringLiteral("measure_line_input");
+    lineInput.moduleId = QStringLiteral("MeasurementInput");
+    lineInput.name = QStringLiteral("测量输入");
+    lineInput.params["mode"] = QStringLiteral("point_line");
+    project->addModule(lineInput);
+    QCoreApplication::processEvents();
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>("ProcessTree");
+    QVERIFY(processTree != nullptr);
+    QVERIFY(processTree->topLevelItemCount() > 0);
+    processTree->setCurrentItem(processTree->topLevelItem(processTree->topLevelItemCount() - 1));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(10.0, 20.0))));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(30.0, 40.0))));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(50.0, 60.0))));
+
+    ModuleInstance* lineModule = project->findModule(QStringLiteral("measure_line_input"));
+    QVERIFY(lineModule != nullptr);
+    QCOMPARE(lineModule->params["point"].toArray().at(0).toDouble(), 10.0);
+    QCOMPARE(lineModule->params["point"].toArray().at(1).toDouble(), 20.0);
+    QCOMPARE(lineModule->params["point"].toArray().at(2).toDouble(), 0.0);
+    QCOMPARE(lineModule->params["line"].toArray().at(0).toDouble(), 30.0);
+    QCOMPARE(lineModule->params["line"].toArray().at(3).toDouble(), 60.0);
+
+    ModuleInstance planeInput;
+    planeInput.id = QStringLiteral("measure_plane_input");
+    planeInput.moduleId = QStringLiteral("MeasurementInput");
+    planeInput.name = QStringLiteral("测量输入");
+    planeInput.params["mode"] = QStringLiteral("point_plane");
+    project->addModule(planeInput);
+    QCoreApplication::processEvents();
+    processTree->setCurrentItem(processTree->topLevelItem(processTree->topLevelItemCount() - 1));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint3DPicked", Qt::DirectConnection,
+                                      Q_ARG(QVector3D, QVector3D(1.0f, 2.0f, 3.0f))));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint3DPicked", Qt::DirectConnection,
+                                      Q_ARG(QVector3D, QVector3D(0.0f, 0.0f, 0.0f))));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint3DPicked", Qt::DirectConnection,
+                                      Q_ARG(QVector3D, QVector3D(1.0f, 0.0f, 0.0f))));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint3DPicked", Qt::DirectConnection,
+                                      Q_ARG(QVector3D, QVector3D(0.0f, 1.0f, 0.0f))));
+
+    ModuleInstance* planeModule = project->findModule(QStringLiteral("measure_plane_input"));
+    QVERIFY(planeModule != nullptr);
+    QCOMPARE(planeModule->params["point"].toArray().at(2).toDouble(), 3.0);
+    QCOMPARE(planeModule->params["plane"].toArray().size(), 9);
+    QCOMPARE(planeModule->params["plane"].toArray().at(3).toDouble(), 1.0);
+    QCOMPARE(planeModule->params["plane"].toArray().at(7).toDouble(), 1.0);
 }
 
 QTEST_MAIN(TestMainWindow)

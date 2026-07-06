@@ -1,6 +1,6 @@
 # DeepLux 2D/3D Measurement Data Flow Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Make geometry measurement work predictably across image, depth-map, and point-cloud data sources.
 
@@ -66,7 +66,7 @@ Modify:
 - Modify: `src/core/CMakeLists.txt`
 - Test: `tests/test_measurementdata.cpp`
 
-- [ ] **Step 1: Write parser tests**
+- [x] **Step 1: Write parser tests**
 
 Create `tests/test_measurementdata.cpp` with these cases:
 
@@ -136,7 +136,7 @@ QTEST_MAIN(TestMeasurementData)
 #include "test_measurementdata.moc"
 ```
 
-- [ ] **Step 2: Add the shared contract**
+- [x] **Step 2: Add the shared contract**
 
 Create `src/core/geometry/MeasurementData.h` with these public names:
 
@@ -209,7 +209,7 @@ Implement `MeasurementData.cpp` with strict parsing:
 - Plane parser rejects collinear points using normal length `< 1e-10`.
 - Point cloud parser accepts `QVariant::fromValue(PointCloudData)` under `point_cloud`.
 
-- [ ] **Step 3: Wire core build**
+- [x] **Step 3: Wire core build**
 
 Modify `src/core/CMakeLists.txt`:
 
@@ -225,7 +225,7 @@ set(CORE_HEADERS
 )
 ```
 
-- [ ] **Step 4: Wire test build**
+- [x] **Step 4: Wire test build**
 
 Modify `tests/CMakeLists.txt`:
 
@@ -236,7 +236,7 @@ set(TEST_SOURCES
 )
 ```
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run:
 
@@ -270,7 +270,7 @@ git commit -m "feat: add measurement data contract"
 - Create: `tests/test_pointsurfacedistance.cpp`
 - Create: `tests/test_freeformsurface.cpp`
 
-- [ ] **Step 1: Add 3D gap tests**
+- [x] **Step 1: Add 3D gap tests**
 
 Create `tests/test_measuregap.cpp`:
 
@@ -317,7 +317,7 @@ QTEST_MAIN(TestMeasureGap)
 #include "test_measuregap.moc"
 ```
 
-- [ ] **Step 2: Add point-surface tests**
+- [x] **Step 2: Add point-surface tests**
 
 Create `tests/test_pointsurfacedistance.cpp` with:
 - point `[0,0,5]`
@@ -326,7 +326,7 @@ Create `tests/test_pointsurfacedistance.cpp` with:
 - expected foot z `0`
 - degenerate plane `[0,0,0, 1,1,1, 2,2,2]` returns false
 
-- [ ] **Step 3: Add freeform surface point-cloud test**
+- [x] **Step 3: Add freeform surface point-cloud test**
 
 Create `tests/test_freeformsurface.cpp`:
 - Build a `PointCloudData` with at least four points.
@@ -334,7 +334,7 @@ Create `tests/test_freeformsurface.cpp`:
 - Execute `FreeformSurfacePlugin`.
 - Assert `point_count == 4` and `surface_roughness` is valid.
 
-- [ ] **Step 4: Replace duplicated parsing**
+- [x] **Step 4: Replace duplicated parsing**
 
 Use `MeasurementData` in the six plugin files:
 - `DistancePP`: `parsePoint2D(input.data("point1"))`, `parsePoint2D(input.data("point2"))`.
@@ -346,7 +346,7 @@ Use `MeasurementData` in the six plugin files:
 
 Keep existing output keys. Add `measurement_dimension` only where the plugin can run in both 2D and 3D mode.
 
-- [ ] **Step 5: Wire tests and plugin links**
+- [x] **Step 5: Wire tests and plugin links**
 
 Modify `tests/CMakeLists.txt`:
 
@@ -369,7 +369,7 @@ if(TEST_NAME STREQUAL "test_freeformsurface" OR TEST_NAME STREQUAL "test_pluginc
 endif()
 ```
 
-- [ ] **Step 6: Verify**
+- [x] **Step 6: Verify**
 
 Run:
 
@@ -407,14 +407,14 @@ git commit -m "fix: normalize geometry measurement inputs"
 - Create: `tests/test_measurementinput.cpp`
 - Modify: `tests/CMakeLists.txt`
 
-- [ ] **Step 1: Write adapter tests**
+- [x] **Step 1: Write adapter tests**
 
 Create `tests/test_measurementinput.cpp`:
 - `mode="point_pair"` writes `point1` and `point2`.
 - `mode="point_plane"` writes `point` and `plane`.
 - Invalid point values make `execute()` return false.
 
-- [ ] **Step 2: Implement plugin parameters**
+- [x] **Step 2: Implement plugin parameters**
 
 `MeasurementInputPlugin` default params:
 
@@ -435,14 +435,14 @@ m_defaultParams = QJsonObject{
 - Write canonical keys into `output`.
 - Write `measurement_input_mode`.
 
-- [ ] **Step 3: Add config widget**
+- [x] **Step 3: Add config widget**
 
 Use existing Qt widgets only:
 - `QComboBox` for mode.
 - `QLineEdit` for comma-separated point/line/plane values.
 - No custom editor library.
 
-- [ ] **Step 4: Add plugin to build and UI**
+- [x] **Step 4: Add plugin to build and UI**
 
 Modify `src/plugins/geometry/CMakeLists.txt`:
 
@@ -462,7 +462,7 @@ Modify `ModuleIconProvider.cpp`:
 {"MeasurementInput", "MI"},
 ```
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run:
 
@@ -494,7 +494,7 @@ git commit -m "feat: add measurement input adapter"
 - Create: `tests/test_loadpointcloud.cpp`
 - Modify: `tests/CMakeLists.txt`
 
-- [ ] **Step 1: Write loader plugin test**
+- [x] **Step 1: Write loader plugin test**
 
 Use a temporary ASCII PLY file in `QTemporaryDir`.
 
@@ -503,7 +503,7 @@ Expected output:
 - `point_count == 2`.
 - `point_cloud_path` equals input file path.
 
-- [ ] **Step 2: Implement plugin**
+- [x] **Step 2: Implement plugin**
 
 Default params:
 
@@ -524,7 +524,7 @@ m_defaultParams = QJsonObject{
 - Store cloud with `MeasurementData::setPointCloud(output, cloud)`.
 - Store `point_count` and `point_cloud_path`.
 
-- [ ] **Step 3: Add to 3D tool category**
+- [x] **Step 3: Add to 3D tool category**
 
 Modify `src/ui/views/MainWindow.cpp` under `11 - 3D 工具`:
 
@@ -532,7 +532,7 @@ Modify `src/ui/views/MainWindow.cpp` under `11 - 3D 工具`:
 addToolBoxItem(tool3DItem, tr("☁️ 加载点云"), "LoadPointCloud");
 ```
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run:
 
@@ -574,7 +574,7 @@ git commit -m "feat: add point cloud source plugin"
 - Modify: `src/ui/views/MainWindow.cpp`
 - Test: existing UI tests plus manual screenshots.
 
-- [ ] **Step 1: Add 2D image click signal**
+- [x] **Step 1: Add 2D image click signal**
 
 Add signal to `HImageWidget`:
 
@@ -584,7 +584,7 @@ void imageClicked(const QPointF& imagePoint);
 
 Emit it on left-button release when movement is below drag threshold.
 
-- [ ] **Step 2: Implement 3D nearest-point picking**
+- [x] **Step 2: Implement 3D nearest-point picking**
 
 In `Viewport3DContent`:
 - Store the last displayed point positions in a lightweight `std::vector<QVector3D>`.
@@ -598,7 +598,7 @@ Add this comment above the scan:
 // ponytail: O(n) picking is enough for interactive setup; replace with spatial index if point clouds exceed UI latency budget.
 ```
 
-- [ ] **Step 3: Forward picked points through ViewportWidget**
+- [x] **Step 3: Forward picked points through ViewportWidget**
 
 Add signals:
 
@@ -609,7 +609,7 @@ void point3DClicked(const QVector3D& point);
 
 Connect `HImageWidget::imageClicked` and `Viewport3DContent::pointClicked`.
 
-- [ ] **Step 4: Connect picked points to MeasurementInput**
+- [x] **Step 4: Connect picked points to MeasurementInput**
 
 In `MainWindow`, when a point is picked:
 - If selected flow node is `MeasurementInput`, update its next empty point field.
@@ -617,7 +617,7 @@ In `MainWindow`, when a point is picked:
 
 No global selection model is needed in this phase.
 
-- [ ] **Step 5: Verify manually**
+- [x] **Step 5: Verify manually**
 
 Run:
 
@@ -651,11 +651,11 @@ git commit -m "feat: wire viewport picking to measurement input"
 - Modify: existing log/result panel code only if a reusable result renderer already exists.
 - Test: `tests/test_mainwindow.cpp`
 
-- [ ] **Step 1: Decide the smallest UI surface**
+- [x] **Step 1: Decide the smallest UI surface**
 
 Use the existing bottom log/agent area and append compact measurement summaries. Do not add a new dock panel in this phase.
 
-- [ ] **Step 2: Add result formatting helper**
+- [x] **Step 2: Add result formatting helper**
 
 Add a local helper in `MainWindow.cpp`:
 - Reads known keys from `ImageData::allData()`.
@@ -667,11 +667,11 @@ Add a local helper in `MainWindow.cpp`:
   - `surface_roughness`
   - `point_count`
 
-- [ ] **Step 3: Wire after module completion**
+- [x] **Step 3: Wire after module completion**
 
 Use the existing run completion path. Append only non-empty measurement summaries.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run:
 
@@ -700,7 +700,7 @@ git commit -m "feat: show measurement result summaries"
 - Modify: `docs/cli.md`
 - Modify: `src/core/agent/knowledge/DEEPLUX.md`
 
-- [ ] **Step 1: Add plugin list entries**
+- [x] **Step 1: Add plugin list entries**
 
 Document:
 - `MeasurementInput`
@@ -709,7 +709,7 @@ Document:
 - `PointSurfaceDistance`
 - `FreeformSurface`
 
-- [ ] **Step 2: Add example flows**
+- [x] **Step 2: Add example flows**
 
 Add these examples:
 
@@ -727,7 +727,7 @@ Point-to-plane:
 MeasurementInput(point=[0,0,5], plane=[0,0,0, 1,0,0, 0,1,0]) -> PointSurfaceDistance
 ```
 
-- [ ] **Step 3: Verify docs do not contradict UI names**
+- [x] **Step 3: Verify docs do not contradict UI names**
 
 Run:
 
@@ -749,7 +749,7 @@ git commit -m "docs: document 2d and 3d measurement flows"
 **Files:**
 - No planned source changes unless a verification failure identifies a root cause.
 
-- [ ] **Step 1: Run focused test set**
+- [x] **Step 1: Run focused test set**
 
 ```bash
 ./build/tests/test_measurementdata -v2
@@ -762,13 +762,13 @@ git commit -m "docs: document 2d and 3d measurement flows"
 ./build/tests/test_mainwindow -v2
 ```
 
-- [ ] **Step 2: Run all tests if focused tests pass**
+- [x] **Step 2: Run all tests if focused tests pass**
 
 ```bash
 ctest --test-dir build --output-on-failure
 ```
 
-- [ ] **Step 3: Manual GUI scenario**
+- [x] **Step 3: Manual GUI scenario**
 
 Run:
 
@@ -785,7 +785,7 @@ Check:
 - Result summaries visible in bottom area.
 - Tool categories show no duplicate or mismatched plugin names.
 
-- [ ] **Step 4: Screenshot audit**
+- [x] **Step 4: Screenshot audit**
 
 Capture:
 - Main window with geometry tools open.
@@ -793,7 +793,7 @@ Capture:
 - 3D point-picking example.
 - Bottom result summary after a flow run.
 
-- [ ] **Step 5: Commit fixes from verification**
+- [x] **Step 5: Commit fixes from verification**
 
 Use one small commit per root cause, for example:
 
@@ -829,3 +829,9 @@ git commit -m "fix: correct 3d point picking result display"
   - `MeasurementInput -> MeasureGap`
   - `LoadPointCloud -> FreeformSurface`
 - Agent and docs describe the same plugin names shown in the UI.
+
+## Verification Evidence
+
+- Focused tests: `ctest --test-dir build -R "test_(measurementinput|mainwindow|measuregap|pointsurfacedistance|freeformsurface|loadpointcloud|plugincontracts)$" --output-on-failure`
+- GUI screenshots: `docs/reports/measurement_ui_review_20260706_plugins/`
+- Plugin scan evidence: screenshot run used `DEEPLUX_APP_DATA_DIR=/tmp/deeplux_measurement_ui_appdata` and loaded `MeasurementInput` plus `LoadPointCloud`.

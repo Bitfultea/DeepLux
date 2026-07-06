@@ -196,6 +196,7 @@ protected:
 
     // 流程中的插件实例
     QMap<QString, IModule*> m_flowModules;
+    QMap<QString, int> m_measurementPickCursor;
     QSet<QString> m_usedPluginNames;
 
     // 流程画布（图形化节点编辑器）

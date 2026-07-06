@@ -1,17 +1,15 @@
 #include "Viewport3DContent.h"
+
 #include "PointCloudGPUBuffer.h"
+
+#include <QDebug>
 #include <QMouseEvent>
 #include <QOpenGLContext>
-#include <QDebug>
 
 namespace DeepLux {
 
 Viewport3DContent::Viewport3DContent(QWidget* parent)
-    : QOpenGLWidget(parent)
-    , m_renderer(nullptr)
-    , m_needsUpdate(true)
-    , m_lodEnabled(true)
-{
+    : QOpenGLWidget(parent), m_renderer(nullptr), m_needsUpdate(true), m_lodEnabled(true) {
     // 显式设置 format — 有些系统需要 widget-level format
     QSurfaceFormat fmt;
     fmt.setDepthBufferSize(24);
@@ -25,7 +23,7 @@ Viewport3DContent::Viewport3DContent(QWidget* parent)
 
 Viewport3DContent::~Viewport3DContent() {
     makeCurrent();
-    m_renderer.reset();  // 清理渲染器资源
+    m_renderer.reset(); // 清理渲染器资源
     doneCurrent();
 }
 
@@ -46,14 +44,16 @@ void Viewport3DContent::initializeGL() {
 }
 
 void Viewport3DContent::resizeGL(int w, int h) {
-    if (h == 0) h = 1;
+    if (h == 0)
+        h = 1;
     glViewport(0, 0, w, h);
     updateMatrices();
     m_needsUpdate = true;
 }
 
 void Viewport3DContent::paintGL() {
-    if (!m_renderer) return;
+    if (!m_renderer)
+        return;
 
     // 更新矩阵
     if (m_needsUpdate) {
@@ -96,11 +96,8 @@ void Viewport3DContent::displayData(const DisplayData& data) {
                 mn = mn.cwiseMin(pts[i]);
                 mx = mx.cwiseMax(pts[i]);
             }
-            m_lastPoints.push_back(QVector3D(
-                static_cast<float>(pts[i].x()),
-                static_cast<float>(pts[i].y()),
-                static_cast<float>(pts[i].z())
-            ));
+            m_lastPoints.push_back(QVector3D(static_cast<float>(pts[i].x()), static_cast<float>(pts[i].y()),
+                                             static_cast<float>(pts[i].z())));
         }
         m_bboxMin = QVector3D(static_cast<float>(mn.x()), static_cast<float>(mn.y()), static_cast<float>(mn.z()));
         m_bboxMax = QVector3D(static_cast<float>(mx.x()), static_cast<float>(mx.y()), static_cast<float>(mx.z()));
@@ -174,7 +171,8 @@ bool Viewport3DContent::isLODEnabled() const {
 
 void Viewport3DContent::updateMatrices() {
     float aspect = static_cast<float>(width()) / static_cast<float>(height());
-    if (height() == 0) aspect = 1.0f;
+    if (height() == 0)
+        aspect = 1.0f;
 
     m_projectionMatrix = m_camera.projectionMatrix(aspect);
     m_viewMatrix = m_camera.viewMatrix();
@@ -209,7 +207,8 @@ void Viewport3DContent::mouseMoveEvent(QMouseEvent* event) {
 
 void Viewport3DContent::mouseReleaseEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton && event->modifiers() == Qt::ControlModifier) {
-        if (m_lastPoints.empty()) return;
+        if (m_lastPoints.empty())
+            return;
 
         // Update matrices for current viewport dimensions
         updateMatrices();
@@ -217,10 +216,10 @@ void Viewport3DContent::mouseReleaseEvent(QMouseEvent* event) {
         QRect viewport(0, 0, width(), height());
         QPointF clickPos = event->pos();
 
-        float bestDist = 144.0f;  // 12px squared
+        float bestDist = 144.0f; // 12px squared
         int bestIdx = -1;
 
-        // O(n) picking — sufficient for interactive setup
+        // ponytail: O(n) picking is enough for interactive setup; replace with a spatial index if latency shows up.
         for (size_t i = 0; i < m_lastPoints.size(); ++i) {
             QVector3D projected = m_lastPoints[i].project(m_viewMatrix, m_projectionMatrix, viewport);
             float dx = static_cast<float>(projected.x() - clickPos.x());

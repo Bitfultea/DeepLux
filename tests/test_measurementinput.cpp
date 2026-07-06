@@ -1,12 +1,15 @@
-#include <QtTest/QtTest>
-#include <QJsonArray>
 #include "core/geometry/MeasurementData.h"
 #include "plugins/geometry/MeasurementInput/MeasurementInputPlugin.h"
 
+#include <QComboBox>
+#include <QJsonArray>
+#include <QLineEdit>
+#include <QtTest/QtTest>
+#include <memory>
+
 using namespace DeepLux;
 
-static QJsonArray arr(std::initializer_list<double> vals)
-{
+static QJsonArray arr(std::initializer_list<double> vals) {
     QJsonArray a;
     for (double v : vals) {
         a.append(v);
@@ -22,6 +25,7 @@ private slots:
     void writesPointPlane();
     void writesCustomMode();
     void invalidPointValuesFail();
+    void configWidgetEditsParams();
 };
 
 void TestMeasurementInput::writesPointPair() {
@@ -122,6 +126,30 @@ void TestMeasurementInput::invalidPointValuesFail() {
     plugin.setParam("point2", arr({0.0, 0.0}));
     ImageData input, output;
     QVERIFY(!plugin.execute(input, output));
+}
+
+void TestMeasurementInput::configWidgetEditsParams() {
+    MeasurementInputPlugin plugin;
+    plugin.initialize();
+    std::unique_ptr<QWidget> widget(plugin.createConfigWidget());
+    QVERIFY(widget != nullptr);
+
+    QComboBox* mode = widget->findChild<QComboBox*>("MeasurementInputModeCombo");
+    QLineEdit* point = widget->findChild<QLineEdit*>("MeasurementInputPointEdit");
+    QLineEdit* plane = widget->findChild<QLineEdit*>("MeasurementInputPlaneEdit");
+    QVERIFY(mode != nullptr);
+    QVERIFY(point != nullptr);
+    QVERIFY(plane != nullptr);
+
+    mode->setCurrentText(QStringLiteral("point_plane"));
+    point->setText(QStringLiteral("1,2,3"));
+    plane->setText(QStringLiteral("0,0,0,1,0,0,0,1,0"));
+    QCoreApplication::processEvents();
+
+    QJsonObject params = plugin.currentParams();
+    QCOMPARE(params["mode"].toString(), QStringLiteral("point_plane"));
+    QCOMPARE(params["point"].toArray().at(2).toDouble(), 3.0);
+    QCOMPARE(params["plane"].toArray().size(), 9);
 }
 
 QTEST_MAIN(TestMeasurementInput)
