@@ -1,43 +1,11 @@
 #include "DistancePPPlugin.h"
 #include "common/Logger.h"
+#include "core/geometry/MeasurementData.h"
 #include <QVBoxLayout>
 #include <QLabel>
 #include <cmath>
 
 namespace DeepLux {
-
-namespace {
-
-bool toFiniteDouble(const QVariant& value, double& number)
-{
-    bool ok = false;
-    number = value.toDouble(&ok);
-    return ok && std::isfinite(number);
-}
-
-bool parsePoint(const QVariant& value, QPointF& point)
-{
-    if (value.canConvert<QPointF>()) {
-        point = value.toPointF();
-        return std::isfinite(point.x()) && std::isfinite(point.y());
-    }
-
-    QList<QVariant> pointList = value.toList();
-    if (pointList.size() < 2) {
-        return false;
-    }
-
-    double x = 0.0;
-    double y = 0.0;
-    if (!toFiniteDouble(pointList[0], x) || !toFiniteDouble(pointList[1], y)) {
-        return false;
-    }
-
-    point = QPointF(x, y);
-    return true;
-}
-
-} // namespace
 
 DistancePPPlugin::DistancePPPlugin(QObject* parent)
     : ModuleBase(parent)
@@ -83,22 +51,23 @@ bool DistancePPPlugin::process(const ImageData& input, ImageData& output)
         return false;
     }
 
-    QPointF point1;
-    if (!parsePoint(point1Var, point1)) {
-        emit errorOccurred(tr("点1数据格式无效"));
+    QString parseError;
+    auto pt1 = MeasurementData::parsePoint2D(point1Var, &parseError);
+    if (!pt1) {
+        emit errorOccurred(tr("点1数据格式无效: %1").arg(parseError));
         return false;
     }
 
-    QPointF point2;
-    if (!parsePoint(point2Var, point2)) {
-        emit errorOccurred(tr("点2数据格式无效"));
+    auto pt2 = MeasurementData::parsePoint2D(point2Var, &parseError);
+    if (!pt2) {
+        emit errorOccurred(tr("点2数据格式无效: %1").arg(parseError));
         return false;
     }
 
     // 计算距离
-    m_resultDistance = calculateDistance(point1.x(), point1.y(), point2.x(), point2.y());
-    m_resultDeltaX = point2.x() - point1.x();
-    m_resultDeltaY = point2.y() - point1.y();
+    m_resultDistance = calculateDistance(pt1->x, pt1->y, pt2->x, pt2->y);
+    m_resultDeltaX = pt2->x - pt1->x;
+    m_resultDeltaY = pt2->y - pt1->y;
 
     // 设置输出数据
     output.setData("distance", m_resultDistance);

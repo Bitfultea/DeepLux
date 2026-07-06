@@ -1,5 +1,6 @@
 #include "MeasureGapPlugin.h"
 #include "common/Logger.h"
+#include "core/geometry/MeasurementData.h"
 #include <QVBoxLayout>
 #include <QLabel>
 
@@ -53,61 +54,37 @@ bool MeasureGapPlugin::process(const ImageData& input, ImageData& output)
         return false;
     }
 
-    // 解析点1 (支持 x,y,z 或 x,y 格式)
-    double x1 = 0, y1 = 0, z1 = 0;
-    if (point1Var.canConvert<QVector<QPointF>>()) {
-        QVector<QPointF> pts = point1Var.value<QVector<QPointF>>();
-        if (pts.size() >= 2) {
-            x1 = pts[0].x();
-            y1 = pts[0].y();
-            z1 = pts.size() > 2 ? pts[2].x() : 0;
-        }
-    } else if (point1Var.canConvert<QPointF>()) {
-        QPointF p = point1Var.toPointF();
-        x1 = p.x();
-        y1 = p.y();
-    } else {
-        QList<QVariant> list = point1Var.toList();
-        if (list.size() >= 2) {
-            x1 = list[0].toDouble();
-            y1 = list[1].toDouble();
-            z1 = list.size() > 2 ? list[2].toDouble() : 0;
-        }
+    // 解析点1 (支持 [x,y] 或 [x,y,z] 格式)
+    QString parseError;
+    auto pt1 = MeasurementData::parsePoint3D(point1Var, &parseError);
+    if (!pt1) {
+        emit errorOccurred(tr("点1数据格式无效: %1").arg(parseError));
+        return false;
     }
 
     // 解析点2
-    double x2 = 0, y2 = 0, z2 = 0;
-    if (point2Var.canConvert<QVector<QPointF>>()) {
-        QVector<QPointF> pts = point2Var.value<QVector<QPointF>>();
-        if (pts.size() >= 2) {
-            x2 = pts[0].x();
-            y2 = pts[0].y();
-            z2 = pts.size() > 2 ? pts[2].x() : 0;
-        }
-    } else if (point2Var.canConvert<QPointF>()) {
-        QPointF p = point2Var.toPointF();
-        x2 = p.x();
-        y2 = p.y();
-    } else {
-        QList<QVariant> list = point2Var.toList();
-        if (list.size() >= 2) {
-            x2 = list[0].toDouble();
-            y2 = list[1].toDouble();
-            z2 = list.size() > 2 ? list[2].toDouble() : 0;
-        }
+    auto pt2 = MeasurementData::parsePoint3D(point2Var, &parseError);
+    if (!pt2) {
+        emit errorOccurred(tr("点2数据格式无效: %1").arg(parseError));
+        return false;
     }
 
+    // 确定测量维度
+    bool is3d = (pt1->z != 0.0 || pt2->z != 0.0);
+    QString dimension = is3d ? QStringLiteral("3d") : QStringLiteral("2d");
+
     // 计算间隙距离
-    m_resultGap = calculateGapDistance(x1, y1, z1, x2, y2, z2);
-    m_resultDeltaX = x2 - x1;
-    m_resultDeltaY = y2 - y1;
-    m_resultDeltaZ = z2 - z1;
+    m_resultGap = calculateGapDistance(pt1->x, pt1->y, pt1->z, pt2->x, pt2->y, pt2->z);
+    m_resultDeltaX = pt2->x - pt1->x;
+    m_resultDeltaY = pt2->y - pt1->y;
+    m_resultDeltaZ = pt2->z - pt1->z;
 
     // 设置输出数据
     output.setData("gap_distance", m_resultGap);
     output.setData("gap_delta_x", m_resultDeltaX);
     output.setData("gap_delta_y", m_resultDeltaY);
     output.setData("gap_delta_z", m_resultDeltaZ);
+    output.setData("measurement_dimension", dimension);
 
     QString result = QString("间隙: %1, ΔX: %2, ΔY: %3, ΔZ: %4")
                         .arg(m_resultGap, 0, 'f', 3)

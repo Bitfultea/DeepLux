@@ -115,6 +115,17 @@ std::optional<MeasurementLine2D> MeasurementData::parseLine2D(const QVariant& va
         }
     }
 
+    // Accept QVector<QPointF> with exactly 2 points
+    if (value.canConvert<QVector<QPointF>>()) {
+        QVector<QPointF> pts = value.value<QVector<QPointF>>();
+        if (pts.size() >= 2) {
+            return MeasurementLine2D{
+                {pts[0].x(), pts[0].y()},
+                {pts[1].x(), pts[1].y()}
+            };
+        }
+    }
+
     // Accept QVector<QPointF> or list-of-points with exactly 2 points
     if (value.canConvert<QVariantList>()) {
         QVariantList list = value.toList();

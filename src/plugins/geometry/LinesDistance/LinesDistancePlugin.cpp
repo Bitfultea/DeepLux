@@ -1,5 +1,6 @@
 #include "LinesDistancePlugin.h"
 #include "common/Logger.h"
+#include "core/geometry/MeasurementData.h"
 #include <QVBoxLayout>
 #include <QLabel>
 
@@ -53,59 +54,24 @@ bool LinesDistancePlugin::process(const ImageData& input, ImageData& output)
         return false;
     }
 
-    // 解析直线1 (x1, y1, x2, y2)
-    double line1X1, line1Y1, line1X2, line1Y2;
-    if (line1Var.canConvert<QVector<QPointF>>()) {
-        QVector<QPointF> linePoints = line1Var.value<QVector<QPointF>>();
-        if (linePoints.size() < 2) {
-            emit errorOccurred(tr("直线1需要至少2个点"));
-            return false;
-        }
-        line1X1 = linePoints[0].x();
-        line1Y1 = linePoints[0].y();
-        line1X2 = linePoints[1].x();
-        line1Y2 = linePoints[1].y();
-    } else {
-        QList<QVariant> lineList = line1Var.toList();
-        if (lineList.size() >= 4) {
-            line1X1 = lineList[0].toDouble();
-            line1Y1 = lineList[1].toDouble();
-            line1X2 = lineList[2].toDouble();
-            line1Y2 = lineList[3].toDouble();
-        } else {
-            emit errorOccurred(tr("直线1数据格式无效"));
-            return false;
-        }
+    // 解析直线1
+    QString parseError;
+    auto line1 = MeasurementData::parseLine2D(line1Var, &parseError);
+    if (!line1) {
+        emit errorOccurred(tr("直线1数据格式无效: %1").arg(parseError));
+        return false;
     }
 
-    // 解析直线2 (x1, y1, x2, y2)
-    double line2X1, line2Y1, line2X2, line2Y2;
-    if (line2Var.canConvert<QVector<QPointF>>()) {
-        QVector<QPointF> linePoints = line2Var.value<QVector<QPointF>>();
-        if (linePoints.size() < 2) {
-            emit errorOccurred(tr("直线2需要至少2个点"));
-            return false;
-        }
-        line2X1 = linePoints[0].x();
-        line2Y1 = linePoints[0].y();
-        line2X2 = linePoints[1].x();
-        line2Y2 = linePoints[1].y();
-    } else {
-        QList<QVariant> lineList = line2Var.toList();
-        if (lineList.size() >= 4) {
-            line2X1 = lineList[0].toDouble();
-            line2Y1 = lineList[1].toDouble();
-            line2X2 = lineList[2].toDouble();
-            line2Y2 = lineList[3].toDouble();
-        } else {
-            emit errorOccurred(tr("直线2数据格式无效"));
-            return false;
-        }
+    // 解析直线2
+    auto line2 = MeasurementData::parseLine2D(line2Var, &parseError);
+    if (!line2) {
+        emit errorOccurred(tr("直线2数据格式无效: %1").arg(parseError));
+        return false;
     }
 
     // 计算两直线间的距离
-    m_resultDistance = calculateLinesDistance(line1X1, line1Y1, line1X2, line1Y2,
-                                              line2X1, line2Y1, line2X2, line2Y2);
+    m_resultDistance = calculateLinesDistance(line1->p1.x, line1->p1.y, line1->p2.x, line1->p2.y,
+                                              line2->p1.x, line2->p1.y, line2->p2.x, line2->p2.y);
 
     // 设置输出数据
     output.setData("distance", m_resultDistance);

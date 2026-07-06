@@ -325,6 +325,13 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY(dataSourcePanel != nullptr);
     QCOMPARE(processTabs->indexOf(dataSourcePanel), tabTexts.indexOf(QStringLiteral("数据源")));
 
+    QVERIFY2(window.styleSheet().contains(QStringLiteral("QWidget#MainContentWidget { background-color: #f5f5f5; }")),
+             "Main content gutter should match the light MainWindow background instead of showing a dark default fill");
+    QVERIFY2(window.styleSheet().contains(QStringLiteral("QSplitter#MainSplitter { background-color: #f5f5f5; }")),
+             "Main splitter gutter should match the light left outer gutter color");
+    QVERIFY2(window.styleSheet().contains(
+                 QStringLiteral("QSplitter#MainSplitter::handle { background-color: #f5f5f5; border: none; }")),
+             "Main splitter handle should use the same light gutter fill as the left outer margin");
     QVERIFY(QMetaObject::invokeMethod(&window, "onToggleTheme", Qt::DirectConnection));
     QVERIFY2(window.styleSheet().contains(
                  QStringLiteral("QToolBar QToolButton { background-color: transparent; color: #ffffff;")),
@@ -386,6 +393,14 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY(rightSplitter != nullptr);
     QVERIFY(rightTopSplitter != nullptr);
     QVERIFY2(mainSplitter->handleWidth() >= 6, "Main splitter handle should be easy to see and drag");
+    QWidget* mainContentWidget = window.findChild<QWidget*>("MainContentWidget");
+    QVERIFY2(mainContentWidget != nullptr, "Central content should wrap the splitter so the left edge can have a gutter");
+    QVERIFY(mainContentWidget->layout() != nullptr);
+    const QMargins mainContentMargins = mainContentWidget->layout()->contentsMargins();
+    QCOMPARE(mainContentMargins.left(), mainSplitter->handleWidth());
+    QCOMPARE(mainContentMargins.top(), 0);
+    QCOMPARE(mainContentMargins.right(), 0);
+    QCOMPARE(mainContentMargins.bottom(), 0);
     QVERIFY2(rightSplitter->handleWidth() >= 6, "Bottom panel splitter handle should be easy to see and drag");
     QVERIFY2(rightTopSplitter->handleWidth() >= 6, "Process/display splitter handle should be easy to see and drag");
     QVERIFY2(!mainSplitter->childrenCollapsible(), "Primary panels should not collapse accidentally while dragging");
@@ -393,8 +408,13 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY2(!rightTopSplitter->childrenCollapsible(),
              "Process and display panels should not collapse accidentally while dragging");
     const QString mainStyle = window.styleSheet();
-    QVERIFY2(mainStyle.contains(QStringLiteral("QSplitter#MainSplitter::handle")),
-             "Main splitter needs an explicit visual boundary style");
+    QVERIFY2(mainStyle.contains(QStringLiteral("QWidget#MainContentWidget { background-color: #1e1e1e; }")),
+             "Main content gutter should match the dark MainWindow background instead of showing a black default fill");
+    QVERIFY2(mainStyle.contains(QStringLiteral("QSplitter#MainSplitter { background-color: #1e1e1e; }")),
+             "Main splitter gutter should match the dark left outer gutter color");
+    QVERIFY2(mainStyle.contains(
+                 QStringLiteral("QSplitter#MainSplitter::handle { background-color: #1e1e1e; border: none; }")),
+             "Main splitter handle should use the same dark gutter fill as the left outer margin");
     QVERIFY2(mainStyle.contains(QStringLiteral("QWidget#ProcessPanelWidget")),
              "Process panel needs an explicit boundary style");
     QVERIFY2(mainStyle.contains(QStringLiteral("QWidget#ImageDisplayWidget")),
@@ -402,22 +422,27 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY2(mainStyle.contains(QStringLiteral("font-size: 13px")),
              "Main panels should pin a consistent base font size");
 
-    QWidget* toolToolBar = window.findChild<QWidget*>("ToolToolBar");
     QWidget* processToolBar = window.findChild<QWidget*>("ProcessToolBar");
-    QVERIFY(toolToolBar != nullptr);
     QVERIFY(processToolBar != nullptr);
-    QVERIFY(toolToolBar->layout() != nullptr);
     QVERIFY(processToolBar->layout() != nullptr);
-    const QMargins toolToolbarMargins = toolToolBar->layout()->contentsMargins();
     const QMargins processToolbarMargins = processToolBar->layout()->contentsMargins();
-    QCOMPARE(toolToolbarMargins, processToolbarMargins);
-    QVERIFY2(toolToolbarMargins.top() <= 8, "Panel toolbars should not have excessive top padding");
+    QVERIFY2(window.findChild<QWidget*>("ToolToolBar") == nullptr,
+             "Tool panel should not contain dead shortcut buttons above the plugin list");
+    QVERIFY2(window.findChild<QToolButton*>("ToolCreateProcessBtn") == nullptr,
+             "Removed tool-panel shortcut buttons should not remain clickable but inert");
+    QVERIFY2(processToolbarMargins.top() <= 8, "Panel toolbars should not have excessive top padding");
 
     QWidget* toolCategoryWidget = window.findChild<QWidget*>("ToolCategoryWidget");
     QVERIFY(toolCategoryWidget != nullptr);
     QVERIFY(toolCategoryWidget->layout() != nullptr);
     QCOMPARE(toolCategoryWidget->layout()->contentsMargins().left(), 6);
     QCOMPARE(toolCategoryWidget->layout()->contentsMargins().right(), 6);
+    QWidget* toolPanelWidget = window.findChild<QWidget*>("ToolPanelWidget");
+    QVERIFY(toolPanelWidget != nullptr);
+    QVERIFY2(!toolPanelWidget->styleSheet().contains(QStringLiteral("border-right")),
+             "Tool panel content should not draw an extra right border inside the splitter boundary");
+    QVERIFY2(!mainStyle.contains(QStringLiteral("QDockWidget#ToolPanelDock { border-right")),
+             "Tool dock should not add a second right border next to the splitter");
 
     QWidget* processTabContent = window.findChild<QWidget*>("ProcessTabContent");
     QVERIFY(processTabContent != nullptr);
@@ -482,6 +507,9 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
 
     QTableWidget* logTable = window.findChild<QTableWidget*>("LogTable");
     QVERIFY(logTable != nullptr);
+    QCOMPARE(logTable->frameShape(), QFrame::NoFrame);
+    QVERIFY2(logTable->styleSheet().contains(QStringLiteral("QTableWidget#LogTable")),
+             "Log table should remove the dark default outer frame explicitly");
     QVERIFY(logTable->parentWidget() != nullptr);
     QVERIFY(logTable->parentWidget()->layout() != nullptr);
     QCOMPARE(logTable->parentWidget()->layout()->contentsMargins().left(), 6);

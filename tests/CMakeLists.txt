@@ -39,6 +39,9 @@ set(TEST_SOURCES
     test_agentbridge.cpp
     test_variable_system_plugins.cpp
     test_measurementdata.cpp
+    test_measuregap.cpp
+    test_pointsurfacedistance.cpp
+    test_freeformsurface.cpp
 )
 
 foreach(TEST_FILE ${TEST_SOURCES})
@@ -86,6 +89,15 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
     if(TEST_NAME STREQUAL "test_linesdistance" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE LinesDistancePlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_measuregap" OR TEST_NAME STREQUAL "test_plugincontracts")
+        target_link_libraries(${TEST_NAME} PRIVATE MeasureGapPlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_pointsurfacedistance" OR TEST_NAME STREQUAL "test_plugincontracts")
+        target_link_libraries(${TEST_NAME} PRIVATE PointSurfaceDistancePlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_freeformsurface" OR TEST_NAME STREQUAL "test_plugincontracts")
+        target_link_libraries(${TEST_NAME} PRIVATE FreeformSurfacePlugin)
     endif()
     if(TEST_NAME STREQUAL "test_clihandler" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE SystemTimePlugin)

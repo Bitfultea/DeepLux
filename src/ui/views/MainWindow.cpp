@@ -431,74 +431,18 @@ void MainWindow::setupMainLayout() {
     mainSplitter->setChildrenCollapsible(false);
     mainSplitter->setOpaqueResize(true);
 
+    QWidget* mainContentWidget = new QWidget();
+    mainContentWidget->setObjectName("MainContentWidget");
+    QVBoxLayout* mainContentLayout = new QVBoxLayout(mainContentWidget);
+    mainContentLayout->setContentsMargins(mainSplitter->handleWidth(), 0, 0, 0);
+    mainContentLayout->setSpacing(0);
+
     // ========== 左侧：工具面板（贯穿整个高度）==========
     QWidget* toolPanelWidget = new QWidget();
     toolPanelWidget->setObjectName("ToolPanelWidget");
     QVBoxLayout* toolPanelLayout = new QVBoxLayout(toolPanelWidget);
     toolPanelLayout->setContentsMargins(0, 0, 0, 0);
     toolPanelLayout->setSpacing(0);
-
-    // 工具面板顶部工具栏
-    QWidget* toolToolBar = new QWidget();
-    QHBoxLayout* toolToolBarLayout = new QHBoxLayout(toolToolBar);
-    toolToolBarLayout->setContentsMargins(6, 6, 6, 6);
-    toolToolBarLayout->setSpacing(4);
-    toolToolBar->setObjectName("ToolToolBar");
-    toolToolBar->setMinimumHeight(48);
-
-    QToolButton* createProcessBtn = new QToolButton();
-    createProcessBtn->setToolTip(tr("新建流程"));
-    createProcessBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    createProcessBtn->setMinimumHeight(36);
-    createProcessBtn->setMaximumHeight(36);
-    createProcessBtn->setIcon(createNewIcon());
-    createProcessBtn->setIconSize(QSize(24, 24));
-    createProcessBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    createProcessBtn->setObjectName("ToolCreateProcessBtn");
-
-    QToolButton* deleteProcessBtn = new QToolButton();
-    deleteProcessBtn->setToolTip(tr("删除流程"));
-    deleteProcessBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    deleteProcessBtn->setMinimumHeight(36);
-    deleteProcessBtn->setMaximumHeight(36);
-    deleteProcessBtn->setIcon(createStopIcon());
-    deleteProcessBtn->setIconSize(QSize(24, 24));
-    deleteProcessBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    deleteProcessBtn->setObjectName("ToolDeleteProcessBtn");
-
-    QToolButton* createMethodBtn = new QToolButton();
-    createMethodBtn->setToolTip(tr("新建方法"));
-    createMethodBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    createMethodBtn->setMinimumHeight(36);
-    createMethodBtn->setMaximumHeight(36);
-    createMethodBtn->setIcon(createListIcon());
-    createMethodBtn->setIconSize(QSize(24, 24));
-    createMethodBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    createMethodBtn->setObjectName("ToolCreateMethodBtn");
-
-    QToolButton* toolSettingsBtn = new QToolButton();
-    toolSettingsBtn->setToolTip(tr("设置"));
-    toolSettingsBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    toolSettingsBtn->setMinimumHeight(36);
-    toolSettingsBtn->setMaximumHeight(36);
-    toolSettingsBtn->setIcon(createHardwareIcon());
-    toolSettingsBtn->setIconSize(QSize(24, 24));
-    toolSettingsBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    toolSettingsBtn->setObjectName("ToolSettingsBtn");
-
-    toolToolBarLayout->addWidget(createProcessBtn);
-    toolToolBarLayout->addWidget(deleteProcessBtn);
-    toolToolBarLayout->addWidget(createMethodBtn);
-    toolToolBarLayout->addWidget(toolSettingsBtn);
-    toolPanelLayout->addWidget(toolToolBar);
-    toolPanelLayout->setStretchFactor(toolToolBar, 0);
-
-    // 分割线
-    QFrame* toolPanelSeparator = new QFrame();
-    toolPanelSeparator->setFrameShape(QFrame::HLine);
-    toolPanelSeparator->setMaximumHeight(4);
-    toolPanelSeparator->setObjectName("ToolPanelSeparator");
-    toolPanelLayout->addWidget(toolPanelSeparator);
 
     // 工具分类区域（带滚动）
     QScrollArea* toolCategoryScroll = new QScrollArea();
@@ -865,6 +809,7 @@ void MainWindow::setupMainLayout() {
     m_logTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_logTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_logTable->setObjectName("LogTable");
+    m_logTable->setFrameShape(QFrame::NoFrame);
 
     logLayout->addWidget(m_logTable);
 
@@ -1001,7 +946,8 @@ void MainWindow::setupMainLayout() {
     mainSplitter->setStretchFactor(1, 4);
 
     // 设置中央 widget
-    setCentralWidget(mainSplitter);
+    mainContentLayout->addWidget(mainSplitter);
+    setCentralWidget(mainContentWidget);
 
     // 连接 DockWidget 关闭信号以同步菜单勾选状态
     connect(m_toolBoxDock, &QDockWidget::topLevelChanged, this,
@@ -1378,6 +1324,8 @@ void MainWindow::applyTheme() {
         // 深色主题
         setStyleSheet(
             "QMainWindow { background-color: #1e1e1e; color: #ffffff; }"
+            "QWidget#MainContentWidget { background-color: #1e1e1e; }"
+            "QSplitter#MainSplitter { background-color: #1e1e1e; }"
             "QDockWidget { background-color: #252525; color: #ffffff; border: none; }"
             "QDockWidget::title { "
             "    background-color: #2d2d2d; "
@@ -1421,14 +1369,14 @@ void MainWindow::applyTheme() {
             "QLineEdit { background-color: #333333; color: white; border: 1px solid #555; padding: 5px; }"
             "QComboBox { background-color: #333333; color: white; border: 1px solid #555; padding: 5px; }"
             "QSpinBox { background-color: #333333; color: white; border: 1px solid #555; padding: 5px; }"
-            "QSplitter#MainSplitter::handle, QSplitter#RightTopSplitter::handle:horizontal { "
+            "QSplitter#MainSplitter::handle { background-color: #1e1e1e; border: none; }"
+            "QSplitter#RightTopSplitter::handle:horizontal { "
             "    background-color: #30363d; border-left: 1px solid #3f4750; border-right: 1px solid #252b31; }"
             "QSplitter#RightSplitter::handle:vertical { "
             "    background-color: #30363d; border-top: 1px solid #3f4750; border-bottom: 1px solid #252b31; }"
             "QWidget#ProcessPanelWidget { background-color: #252525; border-right: 1px solid #3b4148; }"
             "QWidget#ImageDisplayWidget { background-color: #1e1e1e; border-left: 1px solid #3b4148; "
             "border-bottom: 1px solid #3b4148; }"
-            "QDockWidget#ToolPanelDock { border-right: 1px solid #3b4148; }"
             "QDockWidget#LogDock { border-top: 1px solid #3b4148; }"
             "QLabel { color: #ffffff; }"
             "QScrollArea { background-color: #252525; }"
@@ -1443,6 +1391,8 @@ void MainWindow::applyTheme() {
         // 白色主题 - 适合亮光环境
         setStyleSheet(
             "QMainWindow { background-color: #f5f5f5; color: #212121; }"
+            "QWidget#MainContentWidget { background-color: #f5f5f5; }"
+            "QSplitter#MainSplitter { background-color: #f5f5f5; }"
             "QDockWidget { background-color: #ffffff; color: #212121; border: none; }"
             "QDockWidget::title { "
             "    background-color: #e8e8e8; "
@@ -1489,14 +1439,14 @@ void MainWindow::applyTheme() {
             "QComboBox:focus { border: 1px solid #0078d7; }"
             "QSpinBox { background-color: #ffffff; color: #212121; border: 1px solid #cccccc; padding: 5px; }"
             "QSpinBox:focus { border: 1px solid #0078d7; }"
-            "QSplitter#MainSplitter::handle, QSplitter#RightTopSplitter::handle:horizontal { "
+            "QSplitter#MainSplitter::handle { background-color: #f5f5f5; border: none; }"
+            "QSplitter#RightTopSplitter::handle:horizontal { "
             "    background-color: #e4e8ed; border-left: 1px solid #d2d8e0; border-right: 1px solid #f7f8fa; }"
             "QSplitter#RightSplitter::handle:vertical { "
             "    background-color: #e4e8ed; border-top: 1px solid #d2d8e0; border-bottom: 1px solid #f7f8fa; }"
             "QWidget#ProcessPanelWidget { background-color: #ffffff; border-right: 1px solid #dce2e8; }"
             "QWidget#ImageDisplayWidget { background-color: #ffffff; border-left: 1px solid #dce2e8; "
             "border-bottom: 1px solid #dce2e8; }"
-            "QDockWidget#ToolPanelDock { border-right: 1px solid #dce2e8; }"
             "QDockWidget#LogDock { border-top: 1px solid #dce2e8; }"
             "QLabel { color: #212121; }"
             "QScrollArea { background-color: #ffffff; }"
@@ -1518,7 +1468,6 @@ void MainWindow::applyTheme() {
     QString treeTextColor = m_isDarkTheme ? "#ffffff" : "#212121";
     QString treeHoverColor = m_isDarkTheme ? "#3a3a3a" : "#e5f3ff";
     QString scrollBgColor = m_isDarkTheme ? "#252525" : "#ffffff";
-    QString sepColor = m_isDarkTheme ? "#444444" : "#dddddd";
     QString panelBorderColor = m_isDarkTheme ? "#3b4148" : "#dce2e8";
 
     if (m_toolBoxDock && m_toolBoxDock->titleBarWidget()) {
@@ -1568,12 +1517,6 @@ void MainWindow::applyTheme() {
                                               .arg(scrollBgColor));
     }
 
-    // 更新分割线样式
-    QFrame* toolPanelSeparator = findChild<QFrame*>("ToolPanelSeparator");
-    if (toolPanelSeparator) {
-        toolPanelSeparator->setStyleSheet(QString("background-color: %1;").arg(sepColor));
-    }
-
     // 更新流程状态栏样式
     if (m_processStatusWidget) {
         m_processStatusWidget->setStyleSheet(QString("background-color: %1;").arg(bgColor));
@@ -1582,56 +1525,11 @@ void MainWindow::applyTheme() {
         }
     }
 
-    // 更新工具栏按钮区域样式
-    QWidget* toolToolBar = findChild<QWidget*>("ToolToolBar");
-    if (toolToolBar) {
-        toolToolBar->setStyleSheet(QString("background-color: %1;").arg(scrollBgColor));
-    }
-
-    // 更新工具栏按钮样式
-    QString toolBtnBgColor = m_isDarkTheme ? "#3a3a3a" : "#e0e0e0";
-    QString toolBtnHoverColor = m_isDarkTheme ? "#4a4a4a" : "#d0d0d0";
-    QString toolBtnTextColor = m_isDarkTheme ? "#ffffff" : "#212121";
-    QString toolBtnBorderColor = m_isDarkTheme ? "#555555" : "#cccccc";
-    QToolButton* createProcessBtn = findChild<QToolButton*>("ToolCreateProcessBtn");
-    if (createProcessBtn) {
-        createProcessBtn->setStyleSheet(
-            QString("QToolButton { background-color: %1; color: %2; border: 1px solid %3; border-radius: 3px; padding: "
-                    "4px 6px; }"
-                    "QToolButton:hover { background-color: %4; }")
-                .arg(toolBtnBgColor, toolBtnTextColor, toolBtnBorderColor, toolBtnHoverColor));
-    }
-    QToolButton* deleteProcessBtn = findChild<QToolButton*>("ToolDeleteProcessBtn");
-    if (deleteProcessBtn) {
-        deleteProcessBtn->setStyleSheet(
-            QString("QToolButton { background-color: %1; color: %2; border: 1px solid %3; border-radius: 3px; padding: "
-                    "4px 6px; }"
-                    "QToolButton:hover { background-color: %4; }")
-                .arg(toolBtnBgColor, toolBtnTextColor, toolBtnBorderColor, toolBtnHoverColor));
-    }
-    QToolButton* createMethodBtn = findChild<QToolButton*>("ToolCreateMethodBtn");
-    if (createMethodBtn) {
-        createMethodBtn->setStyleSheet(
-            QString("QToolButton { background-color: %1; color: %2; border: 1px solid %3; border-radius: 3px; padding: "
-                    "4px 6px; }"
-                    "QToolButton:hover { background-color: %4; }")
-                .arg(toolBtnBgColor, toolBtnTextColor, toolBtnBorderColor, toolBtnHoverColor));
-    }
-    QToolButton* toolSettingsBtn = findChild<QToolButton*>("ToolSettingsBtn");
-    if (toolSettingsBtn) {
-        toolSettingsBtn->setStyleSheet(
-            QString("QToolButton { background-color: %1; color: %2; border: 1px solid %3; border-radius: 3px; padding: "
-                    "4px 6px; }"
-                    "QToolButton:hover { background-color: %4; }")
-                .arg(toolBtnBgColor, toolBtnTextColor, toolBtnBorderColor, toolBtnHoverColor));
-    }
-
-    // 更新视图切换按钮样式（已移除）
-
     // 更新流程工具栏按钮样式
     QString btnBgColor = m_isDarkTheme ? "#3a3a3a" : "#e0e0e0";
     QString btnTextColor = m_isDarkTheme ? "#ffffff" : "#212121";
     QString btnHoverColor = m_isDarkTheme ? "#4a4a4a" : "#d0d0d0";
+    QString toolBtnBorderColor = m_isDarkTheme ? "#555555" : "#cccccc";
     const QString processToolButtonStyle =
         QString("QToolButton { background-color: %1; color: %2; border: 1px solid %3; border-radius: 3px; "
                 "padding: 4px 6px; }"
@@ -1666,8 +1564,7 @@ void MainWindow::applyTheme() {
     // 更新面板容器背景
     QWidget* toolPanelWidget = findChild<QWidget*>("ToolPanelWidget");
     if (toolPanelWidget) {
-        toolPanelWidget->setStyleSheet(
-            QString("background-color: %1; border-right: 1px solid %2;").arg(scrollBgColor, panelBorderColor));
+        toolPanelWidget->setStyleSheet(QString("background-color: %1;").arg(scrollBgColor));
     }
     QWidget* processPanelWidget = findChild<QWidget*>("ProcessPanelWidget");
     if (processPanelWidget) {
@@ -1682,6 +1579,22 @@ void MainWindow::applyTheme() {
     }
     if (m_logDock) {
         m_logDock->setStyleSheet(QString("QDockWidget#LogDock { border-top: 1px solid %1; }").arg(panelBorderColor));
+    }
+    if (m_logTable) {
+        const QString logTableBg = m_isDarkTheme ? "#252525" : "#ffffff";
+        const QString logHeaderBg = m_isDarkTheme ? "#333333" : "#f0f0f0";
+        const QString logTextColor = m_isDarkTheme ? "#ffffff" : "#212121";
+        const QString logLineColor = m_isDarkTheme ? "#3b4148" : "#dce2e8";
+        m_logTable->setFrameShape(QFrame::NoFrame);
+        m_logTable->setStyleSheet(
+            QString("QTableWidget#LogTable { background-color: %1; color: %2; border: none; outline: none; "
+                    "gridline-color: %3; font-size: 13px; }"
+                    "QTableWidget#LogTable::item { border-bottom: 1px solid %3; }"
+                    "QTableWidget#LogTable::item:selected { background-color: #0078d7; color: #ffffff; }"
+                    "QHeaderView::section { background-color: %4; color: %2; padding: 5px; border: none; "
+                    "border-bottom: 1px solid %3; font-size: 13px; }"
+                    "QTableCornerButton::section { background-color: %4; border: none; }")
+                .arg(logTableBg, logTextColor, logLineColor, logHeaderBg));
     }
 
     if (m_processTabWidget) {

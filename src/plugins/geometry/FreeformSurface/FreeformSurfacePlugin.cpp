@@ -1,5 +1,6 @@
 #include "FreeformSurfacePlugin.h"
 #include "common/Logger.h"
+#include "core/geometry/MeasurementData.h"
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QDoubleSpinBox>
@@ -47,17 +48,28 @@ bool FreeformSurfacePlugin::process(const ImageData& input, ImageData& output)
 #ifdef DEEPLUX_HAS_OPENCV
     m_samplingInterval = m_params["samplingInterval"].toDouble();
 
-    // 获取点云数据
-    QVariant pointsVar = input.data("point_cloud");
+    // 获取点云数据 - 优先使用 MeasurementData (PointCloudData)
     std::vector<cv::Point3f> points;
 
-    if (pointsVar.isValid()) {
-        // 从QVariant解析点云
-        QList<QVariant> pointsList = pointsVar.toList();
-        for (const QVariant& v : pointsList) {
-            QList<QVariant> pt = v.toList();
-            if (pt.size() >= 3) {
-                points.push_back(cv::Point3f(pt[0].toFloat(), pt[1].toFloat(), pt[2].toFloat()));
+    QString cloudError;
+    auto cloudData = MeasurementData::pointCloud(input, &cloudError);
+    if (cloudData) {
+        // 从 PointCloudData (Eigen::Vector3d) 转换为 cv::Point3f
+        for (const auto& pt : cloudData->points) {
+            points.push_back(cv::Point3f(static_cast<float>(pt.x()),
+                                         static_cast<float>(pt.y()),
+                                         static_cast<float>(pt.z())));
+        }
+    } else {
+        // 回退：从 QVariant 列表解析点云（兼容旧格式）
+        QVariant pointsVar = input.data("point_cloud");
+        if (pointsVar.isValid()) {
+            QList<QVariant> pointsList = pointsVar.toList();
+            for (const QVariant& v : pointsList) {
+                QList<QVariant> pt = v.toList();
+                if (pt.size() >= 3) {
+                    points.push_back(cv::Point3f(pt[0].toFloat(), pt[1].toFloat(), pt[2].toFloat()));
+                }
             }
         }
     }

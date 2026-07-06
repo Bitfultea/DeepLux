@@ -1,69 +1,11 @@
 #include "DistancePLPlugin.h"
 #include "common/Logger.h"
+#include "core/geometry/MeasurementData.h"
 #include <QVBoxLayout>
 #include <QLabel>
 #include <cmath>
 
 namespace DeepLux {
-
-namespace {
-
-bool toFiniteDouble(const QVariant& value, double& number)
-{
-    bool ok = false;
-    number = value.toDouble(&ok);
-    return ok && std::isfinite(number);
-}
-
-bool parsePoint(const QVariant& value, QPointF& point)
-{
-    if (value.canConvert<QPointF>()) {
-        point = value.toPointF();
-        return std::isfinite(point.x()) && std::isfinite(point.y());
-    }
-
-    QList<QVariant> pointList = value.toList();
-    if (pointList.size() < 2) {
-        return false;
-    }
-
-    double x = 0.0;
-    double y = 0.0;
-    if (!toFiniteDouble(pointList[0], x) || !toFiniteDouble(pointList[1], y)) {
-        return false;
-    }
-
-    point = QPointF(x, y);
-    return true;
-}
-
-bool parseLineCoordinates(const QVariant& value, double& x1, double& y1, double& x2, double& y2)
-{
-    if (value.canConvert<QVector<QPointF>>()) {
-        QVector<QPointF> linePoints = value.value<QVector<QPointF>>();
-        if (linePoints.size() < 2) {
-            return false;
-        }
-
-        x1 = linePoints[0].x();
-        y1 = linePoints[0].y();
-        x2 = linePoints[1].x();
-        y2 = linePoints[1].y();
-        return std::isfinite(x1) && std::isfinite(y1) && std::isfinite(x2) && std::isfinite(y2);
-    }
-
-    QList<QVariant> lineList = value.toList();
-    if (lineList.size() < 4) {
-        return false;
-    }
-
-    return toFiniteDouble(lineList[0], x1)
-        && toFiniteDouble(lineList[1], y1)
-        && toFiniteDouble(lineList[2], x2)
-        && toFiniteDouble(lineList[3], y2);
-}
-
-} // namespace
 
 DistancePLPlugin::DistancePLPlugin(QObject* parent)
     : ModuleBase(parent)
@@ -109,34 +51,36 @@ bool DistancePLPlugin::process(const ImageData& input, ImageData& output)
         return false;
     }
 
-    QPointF point;
-    if (!parsePoint(pointVar, point)) {
-        emit errorOccurred(tr("点数据格式无效"));
+    QString parseError;
+    auto point = MeasurementData::parsePoint2D(pointVar, &parseError);
+    if (!point) {
+        emit errorOccurred(tr("点数据格式无效: %1").arg(parseError));
         return false;
     }
 
-    double lineX1, lineY1, lineX2, lineY2;
-    if (!parseLineCoordinates(lineVar, lineX1, lineY1, lineX2, lineY2)) {
-        emit errorOccurred(tr("直线数据格式无效"));
+    auto line = MeasurementData::parseLine2D(lineVar, &parseError);
+    if (!line) {
+        emit errorOccurred(tr("直线数据格式无效: %1").arg(parseError));
         return false;
     }
 
     // 计算点到直线的距离
-    m_resultDistance = calculateDistancePointToLine(point.x(), point.y(),
-                                                    lineX1, lineY1, lineX2, lineY2);
+    m_resultDistance = calculateDistancePointToLine(point->x, point->y,
+                                                    line->p1.x, line->p1.y,
+                                                    line->p2.x, line->p2.y);
 
     // 计算垂足点
-    double dx = lineX2 - lineX1;
-    double dy = lineY2 - lineY1;
+    double dx = line->p2.x - line->p1.x;
+    double dy = line->p2.y - line->p1.y;
     double lineLengthSq = dx * dx + dy * dy;
 
     if (lineLengthSq > 1e-10) {
-        double t = ((point.x() - lineX1) * dx + (point.y() - lineY1) * dy) / lineLengthSq;
-        m_resultFootX = lineX1 + t * dx;
-        m_resultFootY = lineY1 + t * dy;
+        double t = ((point->x - line->p1.x) * dx + (point->y - line->p1.y) * dy) / lineLengthSq;
+        m_resultFootX = line->p1.x + t * dx;
+        m_resultFootY = line->p1.y + t * dy;
     } else {
-        m_resultFootX = lineX1;
-        m_resultFootY = lineY1;
+        m_resultFootX = line->p1.x;
+        m_resultFootY = line->p1.y;
     }
 
     // 设置输出数据

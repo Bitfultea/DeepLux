@@ -1,5 +1,6 @@
 #include "PointSurfaceDistancePlugin.h"
 #include "common/Logger.h"
+#include "core/geometry/MeasurementData.h"
 #include <QVBoxLayout>
 #include <QLabel>
 
@@ -53,44 +54,45 @@ bool PointSurfaceDistancePlugin::process(const ImageData& input, ImageData& outp
         return false;
     }
 
-    // 解析点 (x, y, z)
-    double px = 0, py = 0, pz = 0;
-    QList<QVariant> pointList = pointVar.toList();
-    if (pointList.size() >= 3) {
-        px = pointList[0].toDouble();
-        py = pointList[1].toDouble();
-        pz = pointList[2].toDouble();
-    } else if (pointList.size() >= 2) {
-        px = pointList[0].toDouble();
-        py = pointList[1].toDouble();
+    // 解析点 (支持 [x,y] 或 [x,y,z])
+    QString parseError;
+    auto point = MeasurementData::parsePoint3D(pointVar, &parseError);
+    if (!point) {
+        emit errorOccurred(tr("点数据格式无效: %1").arg(parseError));
+        return false;
     }
 
     // 解析平面 (9个值: x1,y1,z1,x2,y2,z2,x3,y3,z3)
-    double x1=0, y1=0, z1=0, x2=0, y2=0, z2=0, x3=0, y3=0, z3=0;
-    QList<QVariant> planeList = planeVar.toList();
-    if (planeList.size() >= 9) {
-        x1 = planeList[0].toDouble(); y1 = planeList[1].toDouble(); z1 = planeList[2].toDouble();
-        x2 = planeList[3].toDouble(); y2 = planeList[4].toDouble(); z2 = planeList[5].toDouble();
-        x3 = planeList[6].toDouble(); y3 = planeList[7].toDouble(); z3 = planeList[8].toDouble();
+    auto plane = MeasurementData::parsePlane3D(planeVar, &parseError);
+    if (!plane) {
+        emit errorOccurred(tr("平面数据格式无效: %1").arg(parseError));
+        return false;
     }
 
     // 计算点到平面的距离
-    m_resultDistance = calculatePointToPlaneDistance(px, py, pz, x1, y1, z1, x2, y2, z2, x3, y3, z3);
+    m_resultDistance = calculatePointToPlaneDistance(point->x, point->y, point->z,
+                                                     plane->p1.x, plane->p1.y, plane->p1.z,
+                                                     plane->p2.x, plane->p2.y, plane->p2.z,
+                                                     plane->p3.x, plane->p3.y, plane->p3.z);
 
-    // 计算垂足（简化计算）
+    // 计算垂足
     // 平面法向量
-    double nx = (y2-y1)*(z3-z1) - (z2-z1)*(y3-y1);
-    double ny = (z2-z1)*(x3-x1) - (x2-x1)*(z3-z1);
-    double nz = (x2-x1)*(y3-y1) - (y2-y1)*(x3-x1);
-    double norm = sqrt(nx*nx + ny*ny + nz*nz);
+    double nx = (plane->p2.y - plane->p1.y) * (plane->p3.z - plane->p1.z)
+              - (plane->p2.z - plane->p1.z) * (plane->p3.y - plane->p1.y);
+    double ny = (plane->p2.z - plane->p1.z) * (plane->p3.x - plane->p1.x)
+              - (plane->p2.x - plane->p1.x) * (plane->p3.z - plane->p1.z);
+    double nz = (plane->p2.x - plane->p1.x) * (plane->p3.y - plane->p1.y)
+              - (plane->p2.y - plane->p1.y) * (plane->p3.x - plane->p1.x);
+    double norm = sqrt(nx * nx + ny * ny + nz * nz);
 
     if (norm > 1e-10) {
-        // 平面方程: nx*(x-x1) + ny*(y-y1) + nz*(z-z1) = 0
+        // 平面方程: nx*(x-p1.x) + ny*(y-p1.y) + nz*(z-p1.z) = 0
         // 计算垂足
-        double t = (nx*(x1-px) + ny*(y1-py) + nz*(z1-pz)) / (norm*norm);
-        m_resultFootX = px + t * nx;
-        m_resultFootY = py + t * ny;
-        m_resultFootZ = pz + t * nz;
+        double t = (nx * (plane->p1.x - point->x) + ny * (plane->p1.y - point->y)
+                    + nz * (plane->p1.z - point->z)) / (norm * norm);
+        m_resultFootX = point->x + t * nx;
+        m_resultFootY = point->y + t * ny;
+        m_resultFootZ = point->z + t * nz;
     }
 
     // 设置输出数据
