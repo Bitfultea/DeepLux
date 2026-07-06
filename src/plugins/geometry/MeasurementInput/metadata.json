@@ -1,0 +1,8 @@
+{
+    "id": "com.deeplux.plugin.measurementinput",
+    "name": "MeasurementInput",
+    "category": "geometry",
+    "version": "1.0.0",
+    "author": "DeepLux",
+    "description": "测量输入适配器"
+}

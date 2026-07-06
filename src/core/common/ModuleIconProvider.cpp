@@ -88,7 +88,8 @@ QString ModuleIconProvider::abbreviationFor(const QString& id) const {
                                                    {"ImageScript", "IS"},
                                                    {"JigsawPuzzle", "JP"},
                                                    {"DisplayData", "DD"},
-                                                   {"StrFormat", "SF"}};
+                                                   {"StrFormat", "SF"},
+                                                   {"MeasurementInput", "MI"}};
     return abbrMap.value(id, id.left(2).toUpper());
 }
 

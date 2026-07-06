@@ -28,3 +28,6 @@ add_subdirectory(PointSurfaceDistance)
 
 # FreeformSurface Plugin
 add_subdirectory(FreeformSurface)
+
+# MeasurementInput Plugin
+add_subdirectory(MeasurementInput)

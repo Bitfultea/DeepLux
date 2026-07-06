@@ -508,6 +508,7 @@ void MainWindow::setupMainLayout() {
     addToolBoxItem(geometryItem, tr("📐 测量矩形"), "MeasureRect");
     addToolBoxItem(geometryItem, tr("📐 测量直线"), "MeasureLine");
     addToolBoxItem(geometryItem, tr("📐 测量间隙"), "MeasureGap");
+    addToolBoxItem(geometryItem, tr("📍 测量输入"), "MeasurementInput");
 
     QTreeWidgetItem* geoRelationItem = createCategoryItem(m_toolBoxTree, tr("04 - 几何关系"));
     geoRelationItem->setExpanded(false);
