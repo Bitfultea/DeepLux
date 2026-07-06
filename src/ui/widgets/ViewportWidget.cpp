@@ -133,6 +133,9 @@ void ViewportWidget::setupUi()
     )");
     mainLayout->addWidget(m_imageWidget);
 
+    // Forward 2D image clicks for coordinate picking
+    connect(m_imageWidget, &HImageWidget::imageClicked, this, &ViewportWidget::point2DClicked);
+
     // 3D toolbar (hidden by default)
     m_3dToolbar = new QToolBar();
     m_3dToolbar->setStyleSheet(R"(
@@ -222,6 +225,9 @@ void ViewportWidget::ensure3DContent()
     m_3dContent = new Viewport3DContent(this);
     m_3dContent->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_3dContent->setMinimumSize(100, 100);
+
+    // Forward 3D point pick for coordinate picking
+    connect(m_3dContent, &Viewport3DContent::point3DClicked, this, &ViewportWidget::point3DClicked);
 
     // Replace in layout
     QVBoxLayout* layout = qobject_cast<QVBoxLayout*>(this->layout());

@@ -3,6 +3,7 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QDebug>
+#include <cmath>
 #include <QStyle>
 #include <QStyleOption>
 
@@ -201,6 +202,11 @@ void HImageWidget::resizeEvent(QResizeEvent* event)
 
 void HImageWidget::mousePressEvent(QMouseEvent* event)
 {
+    if (event->button() == Qt::LeftButton) {
+        m_clickPressPos = event->pos();
+        m_clickIsLeftButton = true;
+    }
+
     if (event->button() == Qt::LeftButton && m_roiMode != RoiType::None && m_hasImage) {
         m_isDrawing = true;
         m_drawStart = widgetToImage(event->pos());
@@ -233,6 +239,18 @@ void HImageWidget::mouseMoveEvent(QMouseEvent* event)
 
 void HImageWidget::mouseReleaseEvent(QMouseEvent* event)
 {
+    if (event->button() == Qt::LeftButton) {
+        if (m_clickIsLeftButton) {
+            QPointF delta = event->pos() - m_clickPressPos;
+            double dist = std::sqrt(delta.x() * delta.x() + delta.y() * delta.y());
+            if (dist < 5.0 && m_hasImage && m_roiMode == RoiType::None) {
+                QPointF imgPos = widgetToImage(event->pos());
+                emit imageClicked(imgPos);
+            }
+        }
+        m_clickIsLeftButton = false;
+    }
+
     if (event->button() == Qt::LeftButton && m_isDrawing) {
         m_isDrawing = false;
 

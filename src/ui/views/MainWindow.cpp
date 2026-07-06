@@ -180,6 +180,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
     connect(&ProjectManager::instance(), &ProjectManager::projectOpened, this, &MainWindow::onProjectOpened);
     connect(&ProjectManager::instance(), &ProjectManager::projectClosed, this, &MainWindow::onProjectClosed);
 
+    // Connect viewport creating to forward picking signals
+    connect(m_displayManager, &DisplayManager::viewportCreated, this, &MainWindow::onViewportCreated);
+
     // Connect Agent action log to UI (will be set after m_agentActionLogWidget is created)
 }
 
@@ -1110,6 +1113,96 @@ void MainWindow::onModuleRemoved(const QString& instanceId) {
     if (m_flowCanvas && m_flowCanvas->nodeItem(instanceId)) {
         m_flowCanvas->removeNode(instanceId);
     }
+}
+
+void MainWindow::onViewportCreated(const QString& viewportId, ViewportWidget* viewport) {
+    Q_UNUSED(viewportId)
+    if (!viewport) return;
+    connect(viewport, &ViewportWidget::point2DClicked, this, &MainWindow::onPoint2DPicked);
+    connect(viewport, &ViewportWidget::point3DClicked, this, &MainWindow::onPoint3DPicked);
+}
+
+void MainWindow::onPoint2DPicked(const QPointF& point) {
+    QTreeWidgetItem* item = m_processTree->currentItem();
+    if (!item || item->data(0, Qt::UserRole).toString() != "flow_item") {
+        Logger::instance().info(QString("2D pick: (%1, %2) — no MeasurementInput selected")
+                                    .arg(point.x(), 0, 'f', 2)
+                                    .arg(point.y(), 0, 'f', 2), "Picking");
+        return;
+    }
+
+    QString instanceId = item->data(0, Qt::UserRole + 1).toString();
+    IModule* mod = m_flowModules.value(instanceId, nullptr);
+    if (!mod) return;
+
+    if (mod->moduleId() != "com.deeplux.plugin.measurementinput") {
+        Logger::instance().info(QString("2D pick: (%1, %2) — selected module is not MeasurementInput")
+                                    .arg(point.x(), 0, 'f', 2)
+                                    .arg(point.y(), 0, 'f', 2), "Picking");
+        return;
+    }
+
+    // Determine which point field to update — first empty field wins
+    QJsonObject params = mod->currentParams();
+    QJsonArray point1Arr = params["point1"].toArray();
+    QJsonArray point2Arr = params["point2"].toArray();
+    bool point1Zero = (point1Arr.size() >= 2 && point1Arr[0].toDouble() == 0.0 && point1Arr[1].toDouble() == 0.0);
+
+    QJsonArray newPoint;
+    newPoint.append(point.x());
+    newPoint.append(point.y());
+
+    if (point1Zero) {
+        mod->setParam("point1", QVariant::fromValue(newPoint));
+        Project* project = ProjectManager::instance().currentProject();
+        if (project) project->setModuleParam(instanceId, "point1", newPoint);
+        Logger::instance().info(QString("2D pick: point1 set to (%1, %2)")
+                                    .arg(point.x(), 0, 'f', 2)
+                                    .arg(point.y(), 0, 'f', 2), "Picking");
+    } else {
+        mod->setParam("point2", QVariant::fromValue(newPoint));
+        Project* project = ProjectManager::instance().currentProject();
+        if (project) project->setModuleParam(instanceId, "point2", newPoint);
+        Logger::instance().info(QString("2D pick: point2 set to (%1, %2)")
+                                    .arg(point.x(), 0, 'f', 2)
+                                    .arg(point.y(), 0, 'f', 2), "Picking");
+    }
+}
+
+void MainWindow::onPoint3DPicked(const QVector3D& point) {
+    QTreeWidgetItem* item = m_processTree->currentItem();
+    if (!item || item->data(0, Qt::UserRole).toString() != "flow_item") {
+        Logger::instance().info(QString("3D pick: (%1, %2, %3) — no MeasurementInput selected")
+                                    .arg(point.x(), 0, 'f', 3)
+                                    .arg(point.y(), 0, 'f', 3)
+                                    .arg(point.z(), 0, 'f', 3), "Picking");
+        return;
+    }
+
+    QString instanceId = item->data(0, Qt::UserRole + 1).toString();
+    IModule* mod = m_flowModules.value(instanceId, nullptr);
+    if (!mod) return;
+
+    if (mod->moduleId() != "com.deeplux.plugin.measurementinput") {
+        Logger::instance().info(QString("3D pick: (%1, %2, %3) — selected module is not MeasurementInput")
+                                    .arg(point.x(), 0, 'f', 3)
+                                    .arg(point.y(), 0, 'f', 3)
+                                    .arg(point.z(), 0, 'f', 3), "Picking");
+        return;
+    }
+
+    QJsonArray newPoint;
+    newPoint.append(static_cast<double>(point.x()));
+    newPoint.append(static_cast<double>(point.y()));
+    newPoint.append(static_cast<double>(point.z()));
+
+    mod->setParam("point", QVariant::fromValue(newPoint));
+    Project* project = ProjectManager::instance().currentProject();
+    if (project) project->setModuleParam(instanceId, "point", newPoint);
+    Logger::instance().info(QString("3D pick: point set to (%1, %2, %3)")
+                                .arg(point.x(), 0, 'f', 3)
+                                .arg(point.y(), 0, 'f', 3)
+                                .arg(point.z(), 0, 'f', 3), "Picking");
 }
 
 void MainWindow::onDataSourceAdded(const DataSource& ds) {

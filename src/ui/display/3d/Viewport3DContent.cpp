@@ -89,9 +89,18 @@ void Viewport3DContent::displayData(const DisplayData& data) {
     if (!pcData->points.empty()) {
         auto& pts = pcData->points;
         Eigen::Vector3d mn = pts[0], mx = pts[0];
-        for (size_t i = 1; i < pts.size(); ++i) {
-            mn = mn.cwiseMin(pts[i]);
-            mx = mx.cwiseMax(pts[i]);
+        m_lastPoints.clear();
+        m_lastPoints.reserve(pts.size());
+        for (size_t i = 0; i < pts.size(); ++i) {
+            if (i > 0) {
+                mn = mn.cwiseMin(pts[i]);
+                mx = mx.cwiseMax(pts[i]);
+            }
+            m_lastPoints.push_back(QVector3D(
+                static_cast<float>(pts[i].x()),
+                static_cast<float>(pts[i].y()),
+                static_cast<float>(pts[i].z())
+            ));
         }
         m_bboxMin = QVector3D(static_cast<float>(mn.x()), static_cast<float>(mn.y()), static_cast<float>(mn.z()));
         m_bboxMax = QVector3D(static_cast<float>(mx.x()), static_cast<float>(mx.y()), static_cast<float>(mx.z()));
@@ -99,6 +108,7 @@ void Viewport3DContent::displayData(const DisplayData& data) {
         m_camera.frameData(m_bboxMin, m_bboxMax);
     } else {
         m_hasBbox = false;
+        m_lastPoints.clear();
     }
 
     if (m_renderer) {
@@ -195,6 +205,37 @@ void Viewport3DContent::mouseMoveEvent(QMouseEvent* event) {
     }
 
     m_lastMousePos = event->pos();
+}
+
+void Viewport3DContent::mouseReleaseEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton && event->modifiers() == Qt::ControlModifier) {
+        if (m_lastPoints.empty()) return;
+
+        // Update matrices for current viewport dimensions
+        updateMatrices();
+
+        QRect viewport(0, 0, width(), height());
+        QPointF clickPos = event->pos();
+
+        float bestDist = 144.0f;  // 12px squared
+        int bestIdx = -1;
+
+        // O(n) picking — sufficient for interactive setup
+        for (size_t i = 0; i < m_lastPoints.size(); ++i) {
+            QVector3D projected = m_lastPoints[i].project(m_viewMatrix, m_projectionMatrix, viewport);
+            float dx = static_cast<float>(projected.x() - clickPos.x());
+            float dy = static_cast<float>(projected.y() - clickPos.y());
+            float dist = dx * dx + dy * dy;
+            if (dist < bestDist) {
+                bestDist = dist;
+                bestIdx = static_cast<int>(i);
+            }
+        }
+
+        if (bestIdx >= 0) {
+            emit point3DClicked(m_lastPoints[bestIdx]);
+        }
+    }
 }
 
 void Viewport3DContent::wheelEvent(QWheelEvent* event) {

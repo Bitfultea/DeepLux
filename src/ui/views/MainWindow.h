@@ -26,6 +26,7 @@
 namespace DeepLux {
 class FlowCanvas;
 class DisplayManager;
+class ViewportWidget;
 class TerminalWidget;
 class AgentActionLogWidget;
 class AgentChatPanel;
@@ -87,6 +88,9 @@ private slots:
     void onShowDataSourceInFolder(const QString& dataSourceId);
     void onCopyDataSourcePath(const QString& dataSourceId);
     void onModuleRemoved(const QString& instanceId);
+    void onViewportCreated(const QString& viewportId, ViewportWidget* viewport);
+    void onPoint2DPicked(const QPointF& point);
+    void onPoint3DPicked(const QVector3D& point);
 
 private:
     void setupUi();

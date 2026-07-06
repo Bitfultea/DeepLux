@@ -55,6 +55,7 @@ signals:
     void zoomChanged(double factor);
     void roiCreated(const RoiData& roi);
     void mouseMoved(const QPointF& imagePoint);
+    void imageClicked(const QPointF& imagePoint);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -86,6 +87,10 @@ private:
     
     bool m_isPanning = false;
     QPointF m_panStart;
+
+    // Click detection for coordinate picking
+    QPointF m_clickPressPos;
+    bool m_clickIsLeftButton = false;
 };
 
 } // namespace DeepLux

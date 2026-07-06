@@ -4,6 +4,7 @@
 #include "PointCloudRendererOpenGL.h"
 #include "CameraController.h"
 #include "IPointCloudRenderer.h"
+#include <vector>
 #include <QOpenGLWidget>
 #include <QMatrix4x4>
 
@@ -42,6 +43,7 @@ public slots:
 
 signals:
     void pointClicked(int index, const QVector3D& point);
+    void point3DClicked(const QVector3D& worldPos);
 
 protected:
     // QOpenGLWidget
@@ -52,6 +54,7 @@ protected:
     // 鼠标事件
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
 
 private:
@@ -72,6 +75,9 @@ private:
     QVector3D m_bboxMin;
     QVector3D m_bboxMax;
     bool m_hasBbox = false;
+
+    // 最近显示的3D点（用于 Ctrl+Click 坐标拾取）
+    std::vector<QVector3D> m_lastPoints;
 };
 
 } // namespace DeepLux

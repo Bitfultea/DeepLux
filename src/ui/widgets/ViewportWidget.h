@@ -6,6 +6,7 @@
 #include <QToolBar>
 #include <QAction>
 #include <QPointer>
+#include <QVector3D>
 
 namespace DeepLux {
 
@@ -73,6 +74,8 @@ signals:
     void viewportClosed(const QString& viewportId);
     void titleChanged(const QString& viewportId, const QString& title);
     void imageDisplayed();
+    void point2DClicked(const QPointF& point);
+    void point3DClicked(const QVector3D& point);
 
 private slots:
     void onCloseClicked();
