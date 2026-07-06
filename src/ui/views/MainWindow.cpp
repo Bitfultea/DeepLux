@@ -116,6 +116,32 @@ QString cleanToolDisplayName(const QString& displayName) {
     }
     return text;
 }
+
+QString measurementSummary(const ImageData& output) {
+    QStringList parts;
+    const QMap<QString, QVariant> all = output.allData();
+
+    auto add = [&](const QString& key, const QString& label) {
+        if (all.contains(key)) {
+            double v = all[key].toDouble();
+            parts.append(QString("%1=%2").arg(label).arg(v, 0, 'f', 3));
+        }
+    };
+
+    add("distance", QString::fromUtf8("距离"));
+    add("gap_distance", QString::fromUtf8("间隙距离"));
+    add("gap_delta_z", QString::fromUtf8("ΔZ"));
+    add("line_length", QString::fromUtf8("线段长度"));
+    add("rect_width", QString::fromUtf8("宽度"));
+    add("rect_height", QString::fromUtf8("高度"));
+    add("surface_roughness", QString::fromUtf8("粗糙度"));
+
+    if (all.contains("point_count")) {
+        parts.append(QString::fromUtf8("点数=%1").arg(all["point_count"].toInt()));
+    }
+
+    return parts.isEmpty() ? QString() : QString::fromUtf8("📏 ") + parts.join(QString::fromUtf8(", "));
+}
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(new DisplayManager(this)) {
@@ -162,6 +188,16 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
             m_processTimeLabel->setText(tr("总耗时：%1 ms").arg(result.elapsedMs));
         }
         m_currentExecutingItem = nullptr;
+
+        // 追加测量结果摘要到日志
+        const ImageData& lastOut = RunEngine::instance().lastOutput();
+        if (lastOut.isValid()) {
+            QString summary = measurementSummary(lastOut);
+            if (!summary.isEmpty()) {
+                Logger::instance().info(summary, "Measurement");
+            }
+        }
+
         if (m_isCycleMode && m_isRunning) {
             QTimer::singleShot(1, this, &MainWindow::executeFlowOnce);
         } else {
