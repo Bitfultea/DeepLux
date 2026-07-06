@@ -33,6 +33,7 @@ set(CORE_SOURCES
     display/DisplayData.cpp
     io/PlyLoader.cpp
     io/TiffLoader.cpp
+    geometry/MeasurementData.cpp
     agent/AgentBridge.cpp
     agent/AgentConnection.cpp
     agent/AgentController.cpp
@@ -87,6 +88,7 @@ set(CORE_HEADERS
     agent/GuiEvent.h
     io/PlyLoader.h
     io/TiffLoader.h
+    geometry/MeasurementData.h
 )
 
 add_library(deeplux_core SHARED ${CORE_SOURCES} ${CORE_HEADERS})

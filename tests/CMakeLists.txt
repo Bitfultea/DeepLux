@@ -38,6 +38,7 @@ set(TEST_SOURCES
     test_agentcontroller.cpp
     test_agentbridge.cpp
     test_variable_system_plugins.cpp
+    test_measurementdata.cpp
 )
 
 foreach(TEST_FILE ${TEST_SOURCES})
