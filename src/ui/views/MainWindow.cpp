@@ -552,6 +552,7 @@ void MainWindow::setupMainLayout() {
 
     QTreeWidgetItem* tool3DItem = createCategoryItem(m_toolBoxTree, tr("11 - 3D 工具"));
     tool3DItem->setExpanded(false);
+    addToolBoxItem(tool3DItem, tr("☁️ 加载点云"), "LoadPointCloud");
 
     QTreeWidgetItem* dlItem = createCategoryItem(m_toolBoxTree, tr("12 - 深度学习"));
     dlItem->setExpanded(false);

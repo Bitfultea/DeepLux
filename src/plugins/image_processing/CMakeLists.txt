@@ -28,3 +28,6 @@ add_subdirectory(JigsawPuzzle)
 
 # ImageScript Plugin
 add_subdirectory(ImageScript)
+
+# LoadPointCloud Plugin
+add_subdirectory(LoadPointCloud)

@@ -1,0 +1,12 @@
+{
+    "id": "com.deeplux.plugin.loadpointcloud",
+    "name": "LoadPointCloud",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "Load PLY or TIFF point cloud file into the pipeline",
+    "category": "image_processing",
+    "icon": "loadpointcloud.png",
+    "depends": [],
+    "platforms": ["windows", "linux"],
+    "keywords": ["point", "cloud", "ply", "tiff", "3d", "load"]
+}
