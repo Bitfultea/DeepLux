@@ -382,6 +382,32 @@ DeepLux 工程文件（.dproj）为 JSON 格式，包含以下结构：
 
 > **注意**：`params` 中的 `__displayName` 字段用于 GUI 显示名称的持久化，CLI 用户通常不需要手动设置此字段。
 
+### 2D/3D 测量流程示例
+
+**2D 点距离测量：**
+```
+MeasurementInput(point1=[10,20], point2=[40,60]) → DistancePP
+```
+输出: `distance=50.000`
+
+**3D 间隙测量：**
+```
+MeasurementInput(point1=[10,20,1.2], point2=[40,60,4.2]) → MeasureGap
+```
+输出: `gap_distance=50.090`, `gap_delta_z=3.000`, `measurement_dimension=3d`
+
+**点云粗糙度：**
+```
+LoadPointCloud(filePath=/path/to/cloud.ply) → FreeformSurface
+```
+输出: `point_count=N`, `surface_roughness=X.XXX`
+
+**点到平面距离：**
+```
+MeasurementInput(point=[0,0,5], plane=[0,0,0, 1,0,0, 0,1,0]) → PointSurfaceDistance
+```
+输出: `distance=5.000`, `foot_point=[0,0,0]`
+
 ## 插件模块类型参考
 
 ### 图像采集
@@ -414,11 +440,18 @@ DeepLux 工程文件（.dproj）为 JSON 格式，包含以下结构：
 | `FitCircle` | 拟合圆 |
 | `MeasureLine` | 测量线 |
 | `MeasureRect` | 测量矩形 |
-| `MeasureGap` | 测量间隙 |
-| `FreeformSurface` | 自由曲面 |
+| `MeasureGap` | 测量间隙 (2D/3D) |
+| `PointSurfaceDistance` | 点到平面距离 (3D) |
+| `FreeformSurface` | 自由曲面粗糙度 |
 | `DistancePL` | 点到线距离 |
 | `DistancePP` | 点到点距离 |
 | `LinesDistance` | 线到线距离 |
+| `MeasurementInput` | 测量输入适配器 (注入坐标) |
+
+### 3D 工具
+| 模块类型 | 说明 |
+|----------|------|
+| `LoadPointCloud` | 加载 PLY/TIFF 点云文件 |
 
 ### 数据操作
 | 模块类型 | 说明 |

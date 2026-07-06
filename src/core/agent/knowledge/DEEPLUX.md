@@ -68,7 +68,10 @@ DeepLux is an industrial machine vision software. You create inspection **projec
 | LinesDistance | `LinesDistance` | Distance between two lines | `line1/2 A/B/C` (float) |
 | MeasureRect | `MeasureRect` | Rectangle measurement | `x/y/width/height` (int) |
 | MeasureLine | `MeasureLine` | Line measurement | `startX/Y` (int), `endX/Y` (int) |
-| MeasureGap | `MeasureGap` | Gap measurement | `edgeThreshold` (int) |
+| MeasureGap | `MeasureGap` | 2D/3D gap measurement between two points | takes `point1` [x,y] or [x,y,z] and `point2` [x,y] or [x,y,z] via pipeline metadata |
+| PointSurfaceDistance | `PointSurfaceDistance` | Point-to-plane distance | takes `point` [x,y,z] and `plane` [x1,y1,z1,x2,y2,z2,x3,y3,z3] via pipeline metadata |
+| FreeformSurface | `FreeformSurface` | Surface roughness from point cloud | accepts `PointCloudData` via `point_cloud` key |
+| MeasurementInput | `MeasurementInput` | Adapter: writes measurement coordinates into pipeline | `mode` (point_pair/point_line/point_plane/custom), `point1`, `point2`, `point`, `line`, `plane` as coordinate arrays |
 
 ### Calibration
 | Module | Plugin ID | Purpose | Key Parameters |
@@ -83,6 +86,11 @@ DeepLux is an industrial machine vision software. You create inspection **projec
 | While | `com.deeplux.plugin.while` | Conditional loop | `condition` (string), `maxIterations` (int) |
 | Delay | `Delay` | Wait/delay | `delayMs` (int) |
 | StopWhile | `com.deeplux.plugin.stopwhile` | Break from while loop | — |
+
+### 3D / Point Cloud
+| Module | Plugin ID | Purpose | Key Parameters |
+|--------|-----------|---------|----------------|
+| LoadPointCloud | `LoadPointCloud` | Load PLY/TIFF file as point cloud data | `filePath` (string), `tiffStep` (int), `scaleX/Y/Z` (float) |
 
 ### System
 | Module | Plugin ID | Purpose | Key Parameters |
@@ -131,6 +139,27 @@ GrabImage → FitLine → FitCircle → DistancePP → ShowImage
 ### QC with PLC
 ```
 GrabImage → Matching → DistancePP → DataCheck → PLCWrite
+```
+
+### 2D Point Distance Measurement
+```
+MeasurementInput(point1=[10,20], point2=[40,60]) → DistancePP
+```
+
+### 2.5D / 3D Gap Measurement
+```
+MeasurementInput(point1=[10,20,1.2], point2=[40,60,4.2]) → MeasureGap
+```
+MeasureGap auto-detects 2D vs 3D: if any point has z≠0, it runs in 3D mode.
+
+### Point Cloud Surface Roughness
+```
+LoadPointCloud(filePath=/path/to/cloud.ply) → FreeformSurface
+```
+
+### Point-to-Plane Distance
+```
+MeasurementInput(point=[0,0,5], plane=[0,0,0, 1,0,0, 0,1,0]) → PointSurfaceDistance
 ```
 
 ---
