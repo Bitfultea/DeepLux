@@ -412,17 +412,17 @@ void MainWindow::setupUi() {
 void MainWindow::setupMenuBar() {
     // 文件菜单
     QMenu* fileMenu = menuBar()->addMenu(tr("文件 (&F)"));
-    fileMenu->addAction(createNewIcon(), tr("新建方案"), this, &MainWindow::onNewSolution);
-    fileMenu->addAction(createListIcon(), tr("方案列表"), this, &MainWindow::onSolutionList);
-    fileMenu->addAction(createOpenIcon(), tr("打开"), this, &MainWindow::onOpenProject);
-    fileMenu->addAction(createSaveIcon(), tr("保存"), this, &MainWindow::onSaveProject);
+    fileMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::NewFile, 24, QColor("#2563EB")), tr("新建方案"), this, &MainWindow::onNewSolution);
+    fileMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::List, 24, QColor("#2563EB")), tr("方案列表"), this, &MainWindow::onSolutionList);
+    fileMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::OpenFolder, 24, QColor("#D97706")), tr("打开"), this, &MainWindow::onOpenProject);
+    fileMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Save, 24, QColor("#2563EB")), tr("保存"), this, &MainWindow::onSaveProject);
     fileMenu->addSeparator();
     fileMenu->addAction(tr("退出"), qApp, &QApplication::quit);
 
     // 参数菜单
     QMenu* paramMenu = menuBar()->addMenu(tr("参数 (&P)"));
-    paramMenu->addAction(createVariableIcon(), tr("全局变量"), this, &MainWindow::onGlobalVar);
-    paramMenu->addAction(createUserIcon(), tr("用户登录"), this, &MainWindow::onUserLogin);
+    paramMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Variable, 20, QColor("#7C3AED")), tr("全局变量"), this, &MainWindow::onGlobalVar);
+    paramMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::User, 20, QColor("#2563EB")), tr("用户登录"), this, &MainWindow::onUserLogin);
 
     // 视图菜单
     QMenu* viewMenu = menuBar()->addMenu(tr("视图 (&V)"));
@@ -439,9 +439,9 @@ void MainWindow::setupMenuBar() {
     viewMenu->addAction(m_viewProcessPanelAction);
 
     viewMenu->addSeparator();
-    viewMenu->addAction(createQuickModeIcon(), tr("快捷模式"), this, &MainWindow::onQuickMode);
+    viewMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::QuickMode, 20, QColor("#D97706")), tr("快捷模式"), this, &MainWindow::onQuickMode);
     viewMenu->addSeparator();
-    viewMenu->addAction(createToggleThemeIcon(), tr("切换主题"), this, &MainWindow::onToggleTheme);
+    viewMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Theme, 20, QColor("#F59E0B")), tr("切换主题"), this, &MainWindow::onToggleTheme);
 
     // 3D 渲染模式（菜单项 + 横线分隔）
     viewMenu->addSeparator();
@@ -465,9 +465,9 @@ void MainWindow::setupMenuBar() {
 
     // 工具菜单
     QMenu* toolMenu = menuBar()->addMenu(tr("工具 (&T)"));
-    toolMenu->addAction(createCameraIcon(), tr("相机设置"), this, &MainWindow::onCameraSettings);
-    toolMenu->addAction(createCommIcon(), tr("通讯设置"), this, &MainWindow::onCommSettings);
-    toolMenu->addAction(createHardwareIcon(), tr("硬件配置"), this, &MainWindow::onHardwareConfig);
+    toolMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Camera, 20, QColor("#374151")), tr("相机设置"), this, &MainWindow::onCameraSettings);
+    toolMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Communication, 20, QColor("#0891B2")), tr("通讯设置"), this, &MainWindow::onCommSettings);
+    toolMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Hardware, 24, QColor("#4B5563")), tr("硬件配置"), this, &MainWindow::onHardwareConfig);
     toolMenu->addAction(tr("Agent 设置"), this, [this]() {
         AgentSettingsDialog dlg(this);
         if (dlg.exec() == QDialog::Accepted) {
@@ -504,20 +504,20 @@ void MainWindow::setupToolBar() {
     mainToolbar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
 
     // 文件操作
-    mainToolbar->addAction(createNewIcon(), tr("新建方案"), this, &MainWindow::onNewSolution);
-    mainToolbar->addAction(createListIcon(), tr("方案列表"), this, &MainWindow::onSolutionList);
-    mainToolbar->addAction(createOpenIcon(), tr("打开"), this, &MainWindow::onOpenProject);
-    mainToolbar->addAction(createSaveIcon(), tr("保存"), this, &MainWindow::onSaveProject);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::NewFile, 24, QColor("#2563EB")), tr("新建方案"), this, &MainWindow::onNewSolution);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::List, 24, QColor("#2563EB")), tr("方案列表"), this, &MainWindow::onSolutionList);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::OpenFolder, 24, QColor("#D97706")), tr("打开"), this, &MainWindow::onOpenProject);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Save, 24, QColor("#2563EB")), tr("保存"), this, &MainWindow::onSaveProject);
     mainToolbar->addSeparator();
 
     // 运行控制
-    mainToolbar->addAction(createPlayIcon(), tr("单次运行"), this, &MainWindow::onRunOnce);
-    mainToolbar->addAction(createCycleIcon(), tr("循环运行"), this, &MainWindow::onRunCycle);
-    mainToolbar->addAction(createStopIcon(), tr("停止"), this, &MainWindow::onStop);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#16A34A")), tr("单次运行"), this, &MainWindow::onRunOnce);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Cycle, 24, QColor("#2563EB")), tr("循环运行"), this, &MainWindow::onRunCycle);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Stop, 24, QColor("#DC2626")), tr("停止"), this, &MainWindow::onStop);
     mainToolbar->addSeparator();
 
     // 主题切换按钮
-    mainToolbar->addAction(createToggleThemeIcon(), tr("切换主题"), this, &MainWindow::onToggleTheme);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Theme, 20, QColor("#F59E0B")), tr("切换主题"), this, &MainWindow::onToggleTheme);
 
     // 扫码框只保留在状态栏，工具栏不再重复添加
 }
@@ -780,7 +780,7 @@ void MainWindow::setupMainLayout() {
     m_btnStartPause->setMinimumHeight(36);
     m_btnStartPause->setMaximumHeight(36);
     m_btnStartPause->setAutoRaise(true);
-    m_btnStartPause->setIcon(createPlayIcon());
+    m_btnStartPause->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#16A34A")));
     m_btnStartPause->setIconSize(QSize(24, 24));
     m_btnStartPause->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_btnStartPause->setObjectName("ProcessStartPauseBtn");
@@ -791,7 +791,7 @@ void MainWindow::setupMainLayout() {
     m_btnStop->setMinimumHeight(36);
     m_btnStop->setMaximumHeight(36);
     m_btnStop->setAutoRaise(true);
-    m_btnStop->setIcon(createStopIcon());
+    m_btnStop->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Stop, 24, QColor("#DC2626")));
     m_btnStop->setIconSize(QSize(24, 24));
     m_btnStop->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_btnStop->setObjectName("ProcessStopBtn");
@@ -803,7 +803,7 @@ void MainWindow::setupMainLayout() {
     runCycleBtn->setMinimumHeight(36);
     runCycleBtn->setMaximumHeight(36);
     runCycleBtn->setAutoRaise(true);
-    runCycleBtn->setIcon(createCycleIcon());
+    runCycleBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Cycle, 24, QColor("#2563EB")));
     runCycleBtn->setIconSize(QSize(24, 24));
     runCycleBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     runCycleBtn->setObjectName("ProcessCycleBtn");
@@ -2706,7 +2706,7 @@ void MainWindow::setUiRunningState(bool running, bool cycleMode) {
     m_isCycleMode = running && cycleMode;
 
     if (m_btnStartPause) {
-        m_btnStartPause->setIcon(running ? createPauseIcon() : createPlayIcon());
+        m_btnStartPause->setIcon(running ? AppIconProvider::icon(AppIconProvider::Icon::Pause, 24, QColor("#D97706")) : AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#16A34A")));
         m_btnStartPause->setToolTip(running ? tr("暂停") : tr("单次运行"));
     }
     if (m_btnStop) {
@@ -3116,83 +3116,6 @@ QIcon MainWindow::createIcon(const QString& name) {
         return AppIconProvider::icon(AppIconProvider::Icon::Delete, 24, QColor("#DC2626"));
     }
     return AppIconProvider::icon(AppIconProvider::Icon::Settings, 24, QColor("#374151"));
-}
-
-QIcon MainWindow::createNewIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::NewFile, 24, QColor("#2563EB"));
-}
-
-QIcon MainWindow::createOpenIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::OpenFolder, 24, QColor("#D97706"));
-}
-
-QIcon MainWindow::createSaveIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::Save, 24, QColor("#2563EB"));
-}
-
-QIcon MainWindow::createListIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::List, 24, QColor("#2563EB"));
-}
-
-QIcon MainWindow::createPlayIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#16A34A"));
-}
-
-QIcon MainWindow::createPauseIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::Pause, 24, QColor("#D97706"));
-}
-
-QIcon MainWindow::createStopIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::Stop, 24, QColor("#DC2626"));
-}
-
-QIcon MainWindow::createCycleIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::Cycle, 24, QColor("#2563EB"));
-}
-
-QIcon MainWindow::createQuickModeIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::QuickMode, 20, QColor("#D97706"));
-}
-
-QIcon MainWindow::createUserIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::User, 20, QColor("#2563EB"));
-}
-
-QIcon MainWindow::createVariableIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::Variable, 20, QColor("#7C3AED"));
-}
-
-QIcon MainWindow::createCameraIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::Camera, 20, QColor("#374151"));
-}
-
-QIcon MainWindow::createCommIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::Communication, 20, QColor("#0891B2"));
-}
-
-QIcon MainWindow::createHardwareIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::Hardware, 24, QColor("#4B5563"));
-}
-
-QIcon MainWindow::createReportIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::Report, 20,
-                                 m_isDarkTheme ? QColor("#E5E7EB") : QColor("#374151"));
-}
-
-QIcon MainWindow::createHomeIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::Home, 20, QColor("#2563EB"));
-}
-
-QIcon MainWindow::createUiDesignIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::Design, 20, QColor("#7C3AED"));
-}
-
-QIcon MainWindow::createLaserIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::Laser, 20, QColor("#DC2626"));
-}
-
-QIcon MainWindow::createToggleThemeIcon() {
-    return AppIconProvider::icon(AppIconProvider::Icon::Theme, 20, QColor("#F59E0B"));
 }
 
 void MainWindow::loadAgentSettings() {

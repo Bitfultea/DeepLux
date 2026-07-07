@@ -4,6 +4,7 @@
 #include <QPainterPath>
 #include <QPixmap>
 #include <QPolygonF>
+#include <QStringList>
 
 namespace DeepLux {
 namespace {
@@ -15,26 +16,44 @@ enum class Glyph {
     Display,
     Preprocess,
     Blob,
+    Color,
     Target,
     QrCode,
     Circle,
+    FitCircle,
     Line,
+    PointPairDistance,
+    PointLineDistance,
+    LinePairDistance,
+    Gap,
+    MeasurementInput,
     Ruler,
     Rect,
     Calibration,
     Branch,
     Loop,
     Stop,
+    Delay,
+    Parallel,
+    QueueIn,
+    QueueOut,
     Clock,
     Folder,
     Database,
     Table,
     Text,
     Variable,
+    VariableDefine,
+    VariableSet,
     Math,
     DataCheck,
     PointCloud,
     Communication,
+    Read,
+    Write,
+    TcpClient,
+    TcpServer,
+    Serial,
     Script,
     Default
 };
@@ -78,12 +97,49 @@ void drawCircularArrow(QPainter& painter) {
     chevron(painter, 21, 9, 23, 9, 22, 11.5);
 }
 
+bool containsAny(const QString& text, const QStringList& needles) {
+    for (const QString& needle : needles) {
+        if (text.contains(needle)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+QString normalizedDomainFor(const QString& moduleId, const QString& category) {
+    const QString module = moduleId.toLower();
+    const QString raw = moduleId;
+
+    if (containsAny(module, {"loadpointcloud", "pointcloud", "freeformsurface", "pointsurfacedistance", "showpoint"}) ||
+        raw.contains(QStringLiteral("点云"))) {
+        return QStringLiteral("3d");
+    }
+    if (containsAny(module, {"grabimage", "saveimage", "showimage", "perprocessing", "preprocess", "colorrecognition",
+                             "blob", "imagescript", "jigsawpuzzle"}) ||
+        raw.contains(QStringLiteral("图像")) || raw.contains(QStringLiteral("颜色"))) {
+        return QStringLiteral("image_processing");
+    }
+    if (containsAny(module, {"distance", "measure", "gap", "circle", "line", "surface"}) ||
+        raw.contains(QStringLiteral("测量")) || raw.contains(QStringLiteral("圆")) ||
+        raw.contains(QStringLiteral("线"))) {
+        return QStringLiteral("geometry");
+    }
+    if (containsAny(module, {"displaydata", "datacheck", "vardefine", "varset", "math", "splitstring", "createstring",
+                             "strformat"}) ||
+        raw.contains(QStringLiteral("变量")) || raw.contains(QStringLiteral("字符串")) ||
+        raw.contains(QStringLiteral("数学"))) {
+        return QStringLiteral("variable");
+    }
+    return category;
+}
+
 Glyph glyphFor(const QString& moduleId, const QString& category) {
     const QString module = moduleId.toLower();
     const QString cat = category.toLower();
+    const QString raw = moduleId;
 
     if (module.contains("pointcloud") || module.contains("surface") || module.contains("showpoint") ||
-        cat.contains("3d")) {
+        cat.contains("3d") || raw.contains(QStringLiteral("点云"))) {
         return Glyph::PointCloud;
     }
     if (module.contains("grabimage")) {
@@ -101,6 +157,9 @@ Glyph glyphFor(const QString& moduleId, const QString& category) {
     if (module.contains("blob")) {
         return Glyph::Blob;
     }
+    if (module.contains("colorrecognition") || raw.contains(QStringLiteral("颜色"))) {
+        return Glyph::Color;
+    }
     if (module.contains("matching") || module.contains("defect")) {
         return Glyph::Target;
     }
@@ -108,10 +167,28 @@ Glyph glyphFor(const QString& moduleId, const QString& category) {
         return Glyph::QrCode;
     }
     if (module.contains("circle")) {
+        if (module.contains("fit")) {
+            return Glyph::FitCircle;
+        }
         return Glyph::Circle;
     }
     if (module.contains("rect")) {
         return Glyph::Rect;
+    }
+    if (module.contains("distancepp")) {
+        return Glyph::PointPairDistance;
+    }
+    if (module.contains("distancepl") || module.contains("pointsurfacedistance")) {
+        return Glyph::PointLineDistance;
+    }
+    if (module.contains("linesdistance")) {
+        return Glyph::LinePairDistance;
+    }
+    if (module.contains("measuregap")) {
+        return Glyph::Gap;
+    }
+    if (module.contains("measurementinput")) {
+        return Glyph::MeasurementInput;
     }
     if (module.contains("line") && !module.contains("distance")) {
         return Glyph::Line;
@@ -122,13 +199,26 @@ Glyph glyphFor(const QString& moduleId, const QString& category) {
     if (module.contains("calibration")) {
         return Glyph::Calibration;
     }
-    if (module.contains("stopwhile")) {
+    if (module.contains("stopwhile") || raw.contains(QStringLiteral("停止"))) {
         return Glyph::Stop;
     }
-    if (module == "if" || module.contains("condition")) {
+    if (module.contains("queuein") || raw.contains(QStringLiteral("队列输入"))) {
+        return Glyph::QueueIn;
+    }
+    if (module.contains("queueout") || raw.contains(QStringLiteral("队列输出"))) {
+        return Glyph::QueueOut;
+    }
+    if (module.contains("parallel") || raw.contains(QStringLiteral("并行"))) {
+        return Glyph::Parallel;
+    }
+    if (module.contains("delay") || raw.contains(QStringLiteral("延时"))) {
+        return Glyph::Delay;
+    }
+    if (module == "if" || module.contains("condition") ||
+        (raw.contains(QStringLiteral("条件")) && !raw.contains(QStringLiteral("循环")))) {
         return Glyph::Branch;
     }
-    if (module.contains("loop") || module.contains("while")) {
+    if (module.contains("loop") || module.contains("while") || raw.contains(QStringLiteral("循环"))) {
         return Glyph::Loop;
     }
     if (module.contains("systemtime") || module.contains("timeslice") || module.contains("delay")) {
@@ -143,17 +233,39 @@ Glyph glyphFor(const QString& moduleId, const QString& category) {
     if (module.contains("table") || module.contains("displaydata")) {
         return Glyph::Table;
     }
-    if (module.contains("text") || module.contains("string") || module.contains("strformat")) {
+    if (module.contains("text") || module.contains("string") || module.contains("strformat") ||
+        raw.contains(QStringLiteral("字符串"))) {
         return Glyph::Text;
     }
-    if (module.contains("math")) {
+    if (module.contains("math") || raw.contains(QStringLiteral("数学"))) {
         return Glyph::Math;
     }
-    if (module.contains("var")) {
+    if (module.contains("vardefine") || raw.contains(QStringLiteral("变量定义"))) {
+        return Glyph::VariableDefine;
+    }
+    if (module.contains("varset") || raw.contains(QStringLiteral("变量赋值"))) {
+        return Glyph::VariableSet;
+    }
+    if (module.contains("var") || raw.contains(QStringLiteral("变量"))) {
         return Glyph::Variable;
     }
     if (module.contains("datacheck")) {
         return Glyph::DataCheck;
+    }
+    if (module.contains("plcread") || raw.contains(QStringLiteral("读取"))) {
+        return Glyph::Read;
+    }
+    if (module.contains("plcwrite") || raw.contains(QStringLiteral("写入"))) {
+        return Glyph::Write;
+    }
+    if (module.contains("tcpclient") || raw.contains(QStringLiteral("客户端"))) {
+        return Glyph::TcpClient;
+    }
+    if (module.contains("tcpserver") || raw.contains(QStringLiteral("服务器"))) {
+        return Glyph::TcpServer;
+    }
+    if (module.contains("serial") || raw.contains(QStringLiteral("串口"))) {
+        return Glyph::Serial;
     }
     if (module.contains("plc") || module.contains("tcp") || module.contains("serial") || cat.contains("commun")) {
         return Glyph::Communication;
@@ -226,6 +338,13 @@ void drawGlyph(QPainter& painter, Glyph glyph) {
         drawDot(painter, 13, 19, 2.6);
         drawDot(painter, 21, 21, 1.5);
         break;
+    case Glyph::Color:
+        painter.drawEllipse(rect(8, 8, 13, 13));
+        drawDot(painter, 12, 12, 1.3);
+        drawDot(painter, 17, 13, 1.3);
+        drawDot(painter, 14, 18, 1.3);
+        line(painter, 19, 19, 24, 24);
+        break;
     case Glyph::Target:
         painter.drawEllipse(rect(8, 8, 16, 16));
         painter.drawEllipse(rect(12, 12, 8, 8));
@@ -253,10 +372,51 @@ void drawGlyph(QPainter& painter, Glyph glyph) {
         line(painter, 6, 16, 10, 16);
         line(painter, 22, 16, 26, 16);
         break;
+    case Glyph::FitCircle:
+        painter.drawEllipse(rect(8, 8, 16, 16));
+        drawDot(painter, 11, 12, 1.3);
+        drawDot(painter, 19, 10, 1.3);
+        drawDot(painter, 22, 18, 1.3);
+        drawDot(painter, 14, 23, 1.3);
+        break;
     case Glyph::Line:
         line(painter, 8, 22, 24, 10);
         drawDot(painter, 8, 22, 2);
         drawDot(painter, 24, 10, 2);
+        break;
+    case Glyph::PointPairDistance:
+        drawDot(painter, 9, 21, 2);
+        drawDot(painter, 23, 11, 2);
+        line(painter, 9, 21, 23, 11);
+        chevron(painter, 13, 19, 9, 21, 11, 17);
+        chevron(painter, 19, 13, 23, 11, 21, 15);
+        break;
+    case Glyph::PointLineDistance:
+        line(painter, 9, 22, 24, 10);
+        drawDot(painter, 11, 10, 2);
+        line(painter, 11, 10, 17, 16);
+        line(painter, 15.5, 14.5, 18.5, 17.5);
+        break;
+    case Glyph::LinePairDistance:
+        line(painter, 9, 12, 24, 12);
+        line(painter, 8, 21, 23, 21);
+        line(painter, 16, 13, 16, 20);
+        chevron(painter, 14, 16, 16, 13, 18, 16);
+        chevron(painter, 14, 18, 16, 21, 18, 18);
+        break;
+    case Glyph::Gap:
+        roundedRect(painter, 8, 9, 5, 14, 1.5);
+        roundedRect(painter, 20, 9, 5, 14, 1.5);
+        line(painter, 14, 16, 19, 16);
+        chevron(painter, 16, 14, 14, 16, 16, 18);
+        chevron(painter, 17, 14, 19, 16, 17, 18);
+        break;
+    case Glyph::MeasurementInput:
+        painter.drawEllipse(rect(9, 9, 14, 14));
+        line(painter, 16, 8, 16, 24);
+        line(painter, 8, 16, 24, 16);
+        line(painter, 22, 22, 26, 22);
+        line(painter, 24, 20, 24, 24);
         break;
     case Glyph::Ruler:
         line(painter, 8, 23, 24, 9);
@@ -289,6 +449,31 @@ void drawGlyph(QPainter& painter, Glyph glyph) {
         break;
     case Glyph::Stop:
         roundedRect(painter, 10, 10, 12, 12, 2);
+        break;
+    case Glyph::Delay:
+        painter.drawEllipse(rect(8, 8, 16, 16));
+        line(painter, 16, 16, 16, 11);
+        line(painter, 16, 16, 20, 16);
+        drawDot(painter, 11, 25, 0.9);
+        drawDot(painter, 16, 25, 0.9);
+        drawDot(painter, 21, 25, 0.9);
+        break;
+    case Glyph::Parallel:
+        drawDot(painter, 9, 16, 2);
+        drawDot(painter, 23, 10, 2);
+        drawDot(painter, 23, 22, 2);
+        line(painter, 11, 16, 21, 10);
+        line(painter, 11, 16, 21, 22);
+        break;
+    case Glyph::QueueIn:
+        roundedRect(painter, 9, 10, 14, 12, 2);
+        line(painter, 5, 16, 15, 16);
+        chevron(painter, 12, 13, 15, 16, 12, 19);
+        break;
+    case Glyph::QueueOut:
+        roundedRect(painter, 9, 10, 14, 12, 2);
+        line(painter, 17, 16, 27, 16);
+        chevron(painter, 24, 13, 27, 16, 24, 19);
         break;
     case Glyph::Clock:
         painter.drawEllipse(rect(8, 8, 16, 16));
@@ -330,6 +515,18 @@ void drawGlyph(QPainter& painter, Glyph glyph) {
         line(painter, 9, 10, 23, 22);
         line(painter, 23, 10, 9, 22);
         break;
+    case Glyph::VariableDefine:
+        line(painter, 9, 10, 20, 21);
+        line(painter, 20, 10, 9, 21);
+        line(painter, 22, 20, 26, 20);
+        line(painter, 24, 18, 24, 22);
+        break;
+    case Glyph::VariableSet:
+        line(painter, 8, 11, 18, 21);
+        line(painter, 18, 11, 8, 21);
+        line(painter, 20, 16, 26, 16);
+        chevron(painter, 23, 13, 26, 16, 23, 19);
+        break;
     case Glyph::Math:
         line(painter, 8, 12, 16, 12);
         line(painter, 12, 8, 12, 16);
@@ -356,6 +553,35 @@ void drawGlyph(QPainter& painter, Glyph glyph) {
         line(painter, 12, 11, 20, 11);
         line(painter, 11, 13, 15, 20);
         line(painter, 21, 13, 17, 20);
+        break;
+    case Glyph::Read:
+        roundedRect(painter, 8, 9, 16, 14, 2);
+        line(painter, 22, 16, 12, 16);
+        chevron(painter, 15, 13, 12, 16, 15, 19);
+        break;
+    case Glyph::Write:
+        roundedRect(painter, 8, 9, 16, 14, 2);
+        line(painter, 10, 16, 20, 16);
+        chevron(painter, 17, 13, 20, 16, 17, 19);
+        break;
+    case Glyph::TcpClient:
+        roundedRect(painter, 7, 10, 10, 10, 2);
+        roundedRect(painter, 18, 12, 7, 6, 1.5);
+        line(painter, 17, 15, 18, 15);
+        break;
+    case Glyph::TcpServer:
+        roundedRect(painter, 8, 7, 16, 6, 1.5);
+        roundedRect(painter, 8, 18, 16, 6, 1.5);
+        line(painter, 12, 13, 12, 18);
+        line(painter, 20, 13, 20, 18);
+        break;
+    case Glyph::Serial:
+        roundedRect(painter, 8, 10, 16, 12, 2);
+        line(painter, 11, 10, 11, 7);
+        line(painter, 16, 10, 16, 7);
+        line(painter, 21, 10, 21, 7);
+        line(painter, 12, 22, 12, 25);
+        line(painter, 20, 22, 20, 25);
         break;
     case Glyph::Script:
         chevron(painter, 13, 11, 9, 16, 13, 21);
@@ -392,6 +618,8 @@ QColor ModuleIconProvider::colorForCategory(const QString& category) const {
         return QColor("#475569");
     if (cat.contains("commun"))
         return QColor("#0891B2");
+    if (cat.contains("3d"))
+        return QColor("#0891B2");
     if (cat.contains("calibr"))
         return QColor("#0D9488");
     if (cat.contains("camera"))
@@ -413,7 +641,8 @@ QIcon ModuleIconProvider::iconFor(const QString& moduleId, const QString& catego
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
 
-    const QColor bg = colorForCategory(category);
+    const QString domain = normalizedDomainFor(moduleId, category);
+    const QColor bg = colorForCategory(domain);
     p.setBrush(bg);
     p.setPen(QPen(bg.darker(112), 1.0));
     p.drawRoundedRect(QRectF(1.5, 1.5, sz - 3, sz - 3), 7, 7);

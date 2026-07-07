@@ -107,25 +107,6 @@ private:
 
     // 创建工具栏图标
     QIcon createIcon(const QString& name);
-    QIcon createNewIcon();
-    QIcon createOpenIcon();
-    QIcon createSaveIcon();
-    QIcon createListIcon();
-    QIcon createPlayIcon();
-    QIcon createPauseIcon();
-    QIcon createStopIcon();
-    QIcon createCycleIcon();
-    QIcon createUserIcon();
-    QIcon createVariableIcon();
-    QIcon createCameraIcon();
-    QIcon createCommIcon();
-    QIcon createHardwareIcon();
-    QIcon createReportIcon();
-    QIcon createHomeIcon();
-    QIcon createUiDesignIcon();
-    QIcon createLaserIcon();
-    QIcon createQuickModeIcon();
-    QIcon createToggleThemeIcon();
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
