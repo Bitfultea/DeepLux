@@ -151,4 +151,9 @@ QWidget* PointSurfaceDistancePlugin::createConfigWidget()
     return widget;
 }
 
+IModule* PointSurfaceDistancePlugin::cloneImpl() const
+{
+    return new PointSurfaceDistancePlugin();
+}
+
 } // namespace DeepLux

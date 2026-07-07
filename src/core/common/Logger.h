@@ -52,20 +52,20 @@ public:
     void success(const QString& message, const QString& category = QString());
 
     // 日志查询
-    QList<LogEntry> logs() const { return m_logs; }
+    QList<LogEntry> logs() const;
     QList<LogEntry> logs(LogLevel level) const;
     QList<LogEntry> logs(const QString& category) const;
     void clearLogs();
 
     // 日志文件
-    QString logFilePath() const { return m_logFilePath; }
-    bool isLogToFileEnabled() const { return m_logToFile; }
+    QString logFilePath() const;
+    bool isLogToFileEnabled() const;
     void setLogToFile(bool enabled);
     void setMaxLogFileSize(qint64 maxBytes);
 
     // 日志级别过滤
     void setMinLevel(LogLevel level);
-    LogLevel minLevel() const { return m_minLevel; }
+    LogLevel minLevel() const;
 
 signals:
     void logAdded(const LogEntry& entry);
@@ -90,7 +90,7 @@ private:
     QString m_logFilePath;
     QFile* m_logFile = nullptr;
     QTextStream* m_logStream = nullptr;
-    QMutex m_mutex{QMutex::Recursive};  // 持锁 emit logAdded 时信号链可能回调用 addLog
+    mutable QMutex m_mutex{QMutex::Recursive};
     bool m_logToFile = true;
     LogLevel m_minLevel = LogLevel::Debug;
     qint64 m_maxLogFileSize = 10 * 1024 * 1024; // 10MB

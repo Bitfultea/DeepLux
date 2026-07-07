@@ -391,4 +391,9 @@ QWidget* PLCWritePlugin::createConfigWidget()
     return widget;
 }
 
+IModule* PLCWritePlugin::cloneImpl() const
+{
+    return new PLCWritePlugin();
+}
+
 } // namespace DeepLux

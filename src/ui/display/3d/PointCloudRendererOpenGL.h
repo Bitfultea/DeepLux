@@ -5,6 +5,7 @@
 #include "PointCloudLODBuffer.h"
 #include "LODController.h"
 #include <QOpenGLFunctions>
+#include <QOpenGLShaderProgram>
 #include <QMatrix4x4>
 #include <memory>
 
@@ -60,6 +61,7 @@ private:
     unsigned int m_vboColors = 0;
     unsigned int m_vboNormals = 0;
     unsigned int m_vboIntensities = 0;
+    std::unique_ptr<QOpenGLShaderProgram> m_program;
 
     // 当前数据
     const PointCloudGPUBuffer* m_buffer = nullptr;

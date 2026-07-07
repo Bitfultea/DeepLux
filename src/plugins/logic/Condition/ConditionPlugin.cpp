@@ -134,4 +134,9 @@ QWidget* ConditionPlugin::createConfigWidget()
     return widget;
 }
 
+IModule* ConditionPlugin::cloneImpl() const
+{
+    return new ConditionPlugin();
+}
+
 } // namespace DeepLux

@@ -83,4 +83,9 @@ QWidget* LoopPlugin::createConfigWidget()
     return widget;
 }
 
+IModule* LoopPlugin::cloneImpl() const
+{
+    return new LoopPlugin();
+}
+
 } // namespace DeepLux

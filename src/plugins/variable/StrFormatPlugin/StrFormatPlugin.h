@@ -27,6 +27,7 @@ public:
 protected:
     bool process(const ImageData& input, ImageData& output) override;
     bool doValidateParams(const QJsonObject& params, QString& error) const override;
+    IModule* cloneImpl() const override;
 
 private:
     QString performFormat(const QString& format, const QStringList& values) const;

@@ -70,4 +70,9 @@ QWidget* StopWhilePlugin::createConfigWidget()
     return widget;
 }
 
+IModule* StopWhilePlugin::cloneImpl() const
+{
+    return new StopWhilePlugin();
+}
+
 } // namespace DeepLux

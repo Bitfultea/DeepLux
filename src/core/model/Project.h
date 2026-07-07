@@ -95,6 +95,8 @@ public:
     bool moveModule(const QString& instanceId, int newIndex);
     /// 返回指向 QList 内部元素的指针——调用方不得跨 addModule/removeModule 持有此指针
     ModuleInstance* findModule(const QString& instanceId);
+    /// 按值返回模块实例，适合跨 undo/redo、add/remove 等模型变更边界使用
+    std::optional<ModuleInstance> moduleById(const QString& instanceId) const;
 
     // 连接管理
     QList<ModuleConnection> connections() const {

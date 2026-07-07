@@ -176,10 +176,16 @@ void AgentBridge::stop()
     m_running = false;
 
     // 断开所有连接
-    for (AgentConnection* conn : m_connections) {
-        conn->deleteLater();
+    {
+        QMutexLocker locker(&m_connectionMutex);
+        for (AgentConnection* conn : m_connections) {
+            conn->deleteLater();
+        }
+        m_connections.clear();
+        m_missedHeartbeats.clear();
+        m_eventSubscriptions.clear();
+        m_clientSocketToId.clear();
     }
-    m_connections.clear();
 
     if (m_server) {
         m_server->close();
@@ -217,9 +223,12 @@ void AgentBridge::onNewConnection()
     QString clientId = QString("agent-%1").arg(reinterpret_cast<quintptr>(socket), 8, 16, QChar('0'));
 
     AgentConnection* conn = new AgentConnection(socket, clientId, this);
-    m_connections.append(conn);
-    m_clientSocketToId[socket] = clientId;
-    m_missedHeartbeats[clientId] = 0;
+    {
+        QMutexLocker locker(&m_connectionMutex);
+        m_connections.append(conn);
+        m_clientSocketToId[socket] = clientId;
+        m_missedHeartbeats[clientId] = 0;
+    }
 
     connect(conn, &AgentConnection::messageReceived, this, &AgentBridge::onClientMessage);
     connect(conn, &AgentConnection::disconnected, this, &AgentBridge::onClientDisconnected);
@@ -237,7 +246,10 @@ void AgentBridge::onClientMessage(const QString& clientId, const QJsonObject& ms
     }
 
     // 重置心跳计数
-    m_missedHeartbeats[clientId] = 0;
+    {
+        QMutexLocker locker(&m_connectionMutex);
+        m_missedHeartbeats[clientId] = 0;
+    }
     sendResponse(clientId, response.reqId, response.payload);
 }
 
@@ -274,23 +286,25 @@ AgentBridge::ProtocolResponse AgentBridge::processMessage(const QString& clientI
 
 void AgentBridge::onClientDisconnected(const QString& clientId)
 {
-    // 找到并移除连接
-    for (int i = 0; i < m_connections.size(); ++i) {
-        if (m_connections[i]->clientId() == clientId) {
-            m_connections[i]->deleteLater();
-            m_connections.removeAt(i);
-            break;
+    {
+        QMutexLocker locker(&m_connectionMutex);
+        for (int i = 0; i < m_connections.size(); ++i) {
+            if (m_connections[i]->clientId() == clientId) {
+                m_connections[i]->deleteLater();
+                m_connections.removeAt(i);
+                break;
+            }
         }
+        m_missedHeartbeats.remove(clientId);
+        m_eventSubscriptions.remove(clientId);
     }
-
-    m_missedHeartbeats.remove(clientId);
-    m_eventSubscriptions.remove(clientId);  // 清理事件订阅
     emit agentDisconnected(clientId);
     qDebug() << "Agent disconnected:" << clientId;
 }
 
 void AgentBridge::registerEventSubscription(const QString& clientId, const QString& event)
 {
+    QMutexLocker locker(&m_connectionMutex);
     if (!m_eventSubscriptions.contains(clientId)) {
         m_eventSubscriptions[clientId] = QStringList();
     }
@@ -302,46 +316,48 @@ void AgentBridge::registerEventSubscription(const QString& clientId, const QStri
 
 void AgentBridge::onHeartbeatTimeout()
 {
-    // 发送 ping 到所有连接
     QJsonObject pingMsg;
     pingMsg["version"] = PROTOCOL_VERSION;
     pingMsg["type"] = "ping";
 
-    for (AgentConnection* conn : m_connections) {
-        if (conn->isConnected()) {
-            conn->send(pingMsg);
-        }
-    }
-
-    // 检查超时
     QStringList timedOutClients;
-    for (auto it = m_missedHeartbeats.begin(); it != m_missedHeartbeats.end(); ++it) {
-        it.value()++;
-        if (it.value() >= 3) {  // 30 秒无响应
-            timedOutClients.append(it.key());
+    QList<AgentConnection*> toRemove;
+
+    {
+        QMutexLocker locker(&m_connectionMutex);
+        for (AgentConnection* conn : m_connections) {
+            if (conn->isConnected()) {
+                conn->send(pingMsg);
+            }
+        }
+        for (auto it = m_missedHeartbeats.begin(); it != m_missedHeartbeats.end(); ++it) {
+            it.value()++;
+            if (it.value() >= 3) {
+                timedOutClients.append(it.key());
+            }
+        }
+        for (const QString& clientId : timedOutClients) {
+            for (int i = 0; i < m_connections.size(); ++i) {
+                if (m_connections[i]->clientId() == clientId) {
+                    toRemove.append(m_connections[i]);
+                    m_connections.removeAt(i);
+                    break;
+                }
+            }
+            m_missedHeartbeats.remove(clientId);
         }
     }
 
-    // 断开超时的客户端
+    // 在锁外执行 deleteLater 和信号发射
+    for (AgentConnection* conn : toRemove) {
+        conn->deleteLater();
+    }
     for (const QString& clientId : timedOutClients) {
         qDebug() << "Agent heartbeat timeout:" << clientId;
         emit agentConnectionLost(clientId);
-
-        // 5 秒后尝试重连
         QTimer::singleShot(5000, this, [this, clientId]() {
             attemptReconnect(clientId);
         });
-
-        // 移除连接
-        for (int i = 0; i < m_connections.size(); ++i) {
-            if (m_connections[i]->clientId() == clientId) {
-                m_connections[i]->deleteLater();
-                m_connections.removeAt(i);
-                break;
-            }
-        }
-
-        m_missedHeartbeats.remove(clientId);
     }
 }
 
@@ -392,13 +408,15 @@ QJsonObject AgentBridge::handlePing(const QString& reqId)
 
 void AgentBridge::sendResponse(const QString& clientId, const QString& reqId, const QJsonObject& payload)
 {
+    QJsonObject msg;
+    msg["version"] = PROTOCOL_VERSION;
+    msg["type"] = "result";
+    msg["id"] = reqId;
+    msg["payload"] = payload;
+
+    QMutexLocker locker(&m_connectionMutex);
     for (AgentConnection* conn : m_connections) {
         if (conn->clientId() == clientId) {
-            QJsonObject msg;
-            msg["version"] = PROTOCOL_VERSION;
-            msg["type"] = "result";
-            msg["id"] = reqId;
-            msg["payload"] = payload;
             conn->send(msg);
             break;
         }
@@ -407,15 +425,17 @@ void AgentBridge::sendResponse(const QString& clientId, const QString& reqId, co
 
 void AgentBridge::sendError(const QString& clientId, const QString& reqId, const QString& errorMsg)
 {
+    QJsonObject msg;
+    msg["version"] = PROTOCOL_VERSION;
+    msg["type"] = "error";
+    msg["id"] = reqId;
+    QJsonObject errPayload;
+    errPayload["message"] = errorMsg;
+    msg["payload"] = errPayload;
+
+    QMutexLocker locker(&m_connectionMutex);
     for (AgentConnection* conn : m_connections) {
         if (conn->clientId() == clientId) {
-            QJsonObject msg;
-            msg["version"] = PROTOCOL_VERSION;
-            msg["type"] = "error";
-            msg["id"] = reqId;
-            QJsonObject errPayload;
-            errPayload["message"] = errorMsg;
-            msg["payload"] = errPayload;
             conn->send(msg);
             break;
         }
@@ -430,13 +450,12 @@ void AgentBridge::broadcastEvent(const QString& event, const QJsonObject& payloa
     msg["event"] = event;
     msg["payload"] = payload;
 
-    // 只发送给订阅了该事件的客户端
+    QMutexLocker locker(&m_connectionMutex);
     for (auto it = m_eventSubscriptions.begin(); it != m_eventSubscriptions.end(); ++it) {
         const QString& clientId = it.key();
         const QStringList& events = it.value();
 
         if (events.contains(event) || events.contains("*")) {
-            // 找到对应的连接
             for (AgentConnection* conn : m_connections) {
                 if (conn->clientId() == clientId && conn->isConnected()) {
                     conn->send(msg);

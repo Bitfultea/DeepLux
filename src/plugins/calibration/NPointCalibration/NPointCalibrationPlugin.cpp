@@ -299,4 +299,9 @@ QWidget* NPointCalibrationPlugin::createConfigWidget()
     return widget;
 }
 
+IModule* NPointCalibrationPlugin::cloneImpl() const
+{
+    return new NPointCalibrationPlugin();
+}
+
 } // namespace DeepLux

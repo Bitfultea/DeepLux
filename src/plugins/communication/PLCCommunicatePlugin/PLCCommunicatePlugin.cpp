@@ -270,4 +270,9 @@ QWidget* PLCCommunicatePlugin::createConfigWidget()
     return widget;
 }
 
+IModule* PLCCommunicatePlugin::cloneImpl() const
+{
+    return new PLCCommunicatePlugin();
+}
+
 } // namespace DeepLux

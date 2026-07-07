@@ -8,10 +8,12 @@
 #include <QMap>
 #include <QMutex>
 #include <QObject>
+#include <QReadWriteLock>
 #include <QSet>
 #include <QStack>
 #include <QTimer>
 #include <QWaitCondition>
+#include <atomic>
 #include <functional>
 
 namespace DeepLux {
@@ -79,24 +81,24 @@ public:
 
     // 运行状态
     RunState state() const {
-        return m_state;
+        return static_cast<RunState>(m_state.load(std::memory_order_acquire));
     }
     bool isRunning() const {
-        return m_state == RunState::Running;
+        return state() == RunState::Running;
     }
     bool isPaused() const {
-        return m_state == RunState::Paused;
+        return state() == RunState::Paused;
     }
     bool isStopped() const {
-        return m_state == RunState::Stopped;
+        return state() == RunState::Stopped;
     }
 
     // 运行模式
     RunMode runMode() const {
-        return m_runMode;
+        return static_cast<RunMode>(m_runMode.load(std::memory_order_acquire));
     }
     bool isCycleMode() const {
-        return m_runMode == RunMode::RunCycle;
+        return runMode() == RunMode::RunCycle;
     }
     void setCycleMode(bool enabled);
 
@@ -112,9 +114,7 @@ public:
     bool loadProject(Project* project, ModuleFactory factory = ModuleFactory());
     void removeModule(const QString& moduleId);
     void clearModules();
-    QList<ModuleBase*> modules() const {
-        return m_modules;
-    }
+    QList<ModuleBase*> modules() const;
     ModuleBase* getModule(const QString& moduleName) const;
     int getModuleIndex(const QString& moduleName) const;
 
@@ -125,32 +125,30 @@ public:
     void clearOutputs();
 
     // 流水线输出（供 UI 在 moduleFinished 后查询显示数据）
-    const ImageData& lastOutput() const {
-        return m_lastOutput;
-    }
+    ImageData lastOutput() const;
 
     // 运行统计
-    int totalRuns() const {
-        return m_totalRuns;
-    }
-    int successRuns() const {
-        return m_successRuns;
-    }
-    int failedRuns() const {
-        return m_failedRuns;
-    }
-    int lastElapsedMs() const {
-        return m_lastElapsedMs;
-    }
+    int totalRuns() const;
+    int successRuns() const;
+    int failedRuns() const;
+    int lastElapsedMs() const;
 
     // 断点控制
     void setBreakpoint(const QString& moduleName, bool enabled);
     bool hasBreakpoint(const QString& moduleName) const;
     void setContinueFlag(bool flag) {
+        QMutexLocker locker(&m_breakpointMutex);
         m_continueFlag = flag;
+        if (flag) {
+            m_breakpointCondition.wakeOne();
+        }
     }
     void setBreakpointFlag(bool flag) {
+        QMutexLocker locker(&m_breakpointMutex);
         m_breakpointFlag = flag;
+        if (!flag) {
+            m_breakpointCondition.wakeOne();
+        }
     }
     QWaitCondition& breakpointCondition() {
         return m_breakpointCondition;
@@ -199,13 +197,14 @@ private:
     QString findPreviousByFlowType(const QString& currentModule, ControlFlowType targetType);
     bool buildExecutionOrder(const Project* project, QString& error);
 
-    RunState m_state = RunState::Idle;
-    RunMode m_runMode = RunMode::None;
+    std::atomic<int> m_state{static_cast<int>(RunState::Idle)};
+    std::atomic<int> m_runMode{static_cast<int>(RunMode::None)};
     QTimer* m_cycleTimer = nullptr;
     QList<ModuleBase*> m_modules;
     QList<ModuleBase*> m_ownedModules;
     QMap<QString, ModuleBase*> m_moduleMap;
     QStringList m_executionOrder;
+    mutable QReadWriteLock m_moduleLock;
 
     // 模块树结构
     QMap<QString, ModuleTreeNode*> m_moduleTreeNodes;
@@ -217,12 +216,13 @@ private:
 
     // 输出映射
     QMap<QString, QMap<QString, QVariant>> m_outputMap;
+    mutable QMutex m_outputMutex;
 
     // 断点控制
     QSet<QString> m_breakpoints;
     bool m_breakpointFlag = false;
     bool m_continueFlag = false;
-    QMutex m_breakpointMutex;
+    mutable QMutex m_breakpointMutex;
     QWaitCondition m_breakpointCondition;
 
     // 统计
@@ -230,11 +230,13 @@ private:
     int m_successRuns = 0;
     int m_failedRuns = 0;
     int m_lastElapsedMs = 0;
+    mutable QMutex m_statsMutex;
     QDateTime m_runStartTime;
 
     QString m_currentModuleName;
     bool m_lastExecuteResult = true;
-    ImageData m_lastOutput; // 最后一个模块的输出，供 UI 显示
+    ImageData m_lastOutput;
+    mutable QMutex m_lastOutputMutex;
 
     CancellationToken* m_cancellationToken = nullptr;
 };

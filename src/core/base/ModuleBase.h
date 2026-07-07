@@ -62,12 +62,13 @@ public:
     QJsonObject toJson() const override;
     bool fromJson(const QJsonObject& json) override;
 
-    // Clone this module instance - each derived class must implement cloneImpl()
+    // Clone this module instance. cloneImpl() creates the derived object;
+    // ModuleBase::clone() copies the common metadata and parameter state.
     IModule* clone() const override;
 
 protected:
-    // Derived classes should override this to provide proper cloning
-    // Default implementation returns nullptr (plugin doesn't support multiple instances)
+    // Derived classes should override this to provide proper cloning.
+    // Default implementation returns nullptr (plugin doesn't support multiple instances).
     virtual IModule* cloneImpl() const;
 
 

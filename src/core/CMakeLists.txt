@@ -100,11 +100,11 @@ target_include_directories(deeplux_core
 )
 
 if(Qt6_FOUND)
-    target_link_libraries(deeplux_core PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::SerialPort)
+    target_link_libraries(deeplux_core PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::SerialPort Qt6::Concurrent)
 else()
     find_package(Qt5Widgets REQUIRED)
     find_package(Qt5Network REQUIRED)
-    target_link_libraries(deeplux_core PUBLIC Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Network Qt5::SerialPort)
+    target_link_libraries(deeplux_core PUBLIC Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Network Qt5::SerialPort Qt5::Concurrent)
 endif()
 
 if(OpenCV_FOUND)

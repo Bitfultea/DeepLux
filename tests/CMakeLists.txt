@@ -116,6 +116,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
                 BlobPlugin
                 PerProcessingPlugin
                 MatchingPlugin
+                LoopPlugin
                 FolderPlugin
                 SaveDataPlugin
                 CreateStringPlugin
@@ -130,6 +131,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
                 SplitStringPlugin
                 MathPlugin
                 SystemTimePlugin
+                SaveDataPlugin
         )
     endif()
 

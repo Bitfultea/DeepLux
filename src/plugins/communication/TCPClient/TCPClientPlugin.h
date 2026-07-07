@@ -33,6 +33,7 @@ public:
 protected:
     bool process(const ImageData& input, ImageData& output) override;
     bool doValidateParams(const QJsonObject& params, QString& error) const override;
+    IModule* cloneImpl() const override;
 
 private slots:
     void onConnected();

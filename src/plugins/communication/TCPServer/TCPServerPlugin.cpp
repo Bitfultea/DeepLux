@@ -259,4 +259,9 @@ QWidget* TCPServerPlugin::createConfigWidget()
     return widget;
 }
 
+IModule* TCPServerPlugin::cloneImpl() const
+{
+    return new TCPServerPlugin();
+}
+
 } // namespace DeepLux

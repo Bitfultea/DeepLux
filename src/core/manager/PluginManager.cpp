@@ -528,8 +528,9 @@ IModule* PluginManager::createModule(const QString& name) {
         clone->setIcon(mod->icon());
         return clone;
     }
-    // clone 不可用（插件未实现 cloneImpl）→ 回退到共享实例
-    return mod;
+
+    qWarning() << "Plugin does not provide a cloneable module instance:" << name;
+    return nullptr;
 }
 
 IModule* PluginManager::createFreshModule(const QString& name) {

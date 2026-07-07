@@ -140,12 +140,38 @@ QWidget* WhilePlugin::createConfigWidget()
     return widget;
 }
 
+IModule* WhilePlugin::cloneImpl() const
+{
+    return new WhilePlugin();
+}
+
+WhileEndPlugin::WhileEndPlugin(QObject* parent)
+    : ModuleBase(parent)
+{
+    m_name = "条件循环结束";
+    m_moduleId = "WhileEndPlugin";
+    m_category = "logic";
+    m_description = "条件循环结束";
+}
+
+bool WhileEndPlugin::process(const ImageData& input, ImageData& output)
+{
+    output = input;
+    Logger::instance().debug("WhileEndPlugin: while branch ended", "Logic");
+    return true;
+}
+
 QWidget* WhileEndPlugin::createConfigWidget()
 {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
     layout->addWidget(new QLabel(tr("(循环结束，无需配置)")));
     return widget;
+}
+
+IModule* WhileEndPlugin::cloneImpl() const
+{
+    return new WhileEndPlugin();
 }
 
 } // namespace DeepLux

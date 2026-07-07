@@ -353,7 +353,7 @@ void MainWindow::loadPluginsWithProgress() {
         [this](const QString& name) {
             m_splashScreen->appendLog(QString("<span style='color: #3498db;'>✓</span> %1").arg(name));
         },
-        Qt::DirectConnection);
+        Qt::QueuedConnection);
 
     connect(
         &PluginManager::instance(), &PluginManager::pluginLoadFailed, this,
@@ -362,15 +362,16 @@ void MainWindow::loadPluginsWithProgress() {
             m_failedPlugins.append(name);
             m_splashScreen->appendLog(QString("<span style='color: #e94560;'>✗</span> %1").arg(name));
         },
-        Qt::DirectConnection);
+        Qt::QueuedConnection);
 
     connect(
         &PluginManager::instance(), &PluginManager::pluginLoadProgress, this,
         [this, totalPlugins](int current, int total, const QString& name) {
-            int progress = 30 + (current * 65) / total;
+            const int progressTotal = qMax(1, total);
+            int progress = 30 + (current * 65) / progressTotal;
             m_splashScreen->setProgress(progress, tr("加载: %1 (%2/%3)").arg(name).arg(current).arg(total));
         },
-        Qt::DirectConnection);
+        Qt::QueuedConnection);
 
     connect(
         &PluginManager::instance(), &PluginManager::allPluginsLoaded, this,
@@ -386,7 +387,7 @@ void MainWindow::loadPluginsWithProgress() {
                 QTimer::singleShot(3000, this, [this]() { hideSplashScreen(); });
             }
         },
-        Qt::DirectConnection);
+        Qt::QueuedConnection);
 
     m_splashScreen->appendLog(tr("开始加载 %1 个插件...").arg(totalPlugins));
     m_splashScreen->setProgress(30, tr("正在加载插件..."));

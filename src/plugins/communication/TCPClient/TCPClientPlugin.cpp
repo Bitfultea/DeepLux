@@ -329,4 +329,9 @@ QWidget* TCPClientPlugin::createConfigWidget()
     return widget;
 }
 
+IModule* TCPClientPlugin::cloneImpl() const
+{
+    return new TCPClientPlugin();
+}
+
 } // namespace DeepLux

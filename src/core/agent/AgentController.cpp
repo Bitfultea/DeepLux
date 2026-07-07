@@ -81,6 +81,8 @@ AgentController& AgentController::instance() {
 bool AgentController::initialize() {
     if (m_initialized)
         return true;
+    qRegisterMetaType<AgentResponse>("AgentResponse");
+    qRegisterMetaType<AgentResponse>("DeepLux::AgentResponse");
     ToolSchema::instance().registerDefaultTools();
     if (!m_observer->initialize()) {
         qWarning() << "AgentController: Failed to initialize AgentObserver";
@@ -122,8 +124,9 @@ void AgentController::setLLMClient(ILLMClient* client) {
         disconnect(m_llmClient, nullptr, this, nullptr);
     m_llmClient = client;
     if (m_llmClient) {
-        connect(m_llmClient, &ILLMClient::responseReceived, this, &AgentController::onLLMResponse);
-        connect(m_llmClient, &ILLMClient::errorOccurred, this, &AgentController::onLLMError);
+        connect(m_llmClient, &ILLMClient::responseReceived, this, &AgentController::onLLMResponse,
+                Qt::QueuedConnection);
+        connect(m_llmClient, &ILLMClient::errorOccurred, this, &AgentController::onLLMError, Qt::QueuedConnection);
     }
 }
 
@@ -156,10 +159,22 @@ bool AgentController::undoLastAgentAction() {
 // ========== State Machine ==========
 
 void AgentController::transitionTo(AgentState newState) {
+    QMutexLocker locker(&m_stateMutex);
     if (m_state == newState)
         return;
     qDebug() << "[AgentState]" << stateName(m_state) << "->" << stateName(newState);
     m_state = newState;
+}
+
+bool AgentController::tryTransitionTo(AgentState expected, AgentState newState) {
+    QMutexLocker locker(&m_stateMutex);
+    if (m_state != expected)
+        return false;
+    if (m_state == newState)
+        return true;
+    qDebug() << "[AgentState]" << stateName(m_state) << "->" << stateName(newState);
+    m_state = newState;
+    return true;
 }
 
 QString AgentController::stateName(AgentState state) {
@@ -211,11 +226,10 @@ void AgentController::sendUserMessage(const QString& message) {
         emit llmErrorOccurred("LLM client not configured");
         return;
     }
-    if (m_state != AgentState::Idle) {
+    if (!tryTransitionTo(AgentState::Idle, AgentState::Thinking)) {
         emit llmResponseReceived("Agent is busy processing a previous request. Please wait.", {});
         return;
     }
-    transitionTo(AgentState::Thinking);
     AgentMessage m;
     m.role = "user";
     m.content = message;
@@ -233,11 +247,10 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
         emit llmErrorOccurred("LLM client not configured");
         return;
     }
-    if (m_state != AgentState::Idle) {
+    if (!tryTransitionTo(AgentState::Idle, AgentState::Thinking)) {
         emit llmResponseReceived("Agent is busy processing a previous request. Please wait.", {});
         return;
     }
-    transitionTo(AgentState::Thinking);
 
     // DeepSeek 不支持 vision API (image_url 格式), 图片转为文本描述
     QString actualMessage = message;

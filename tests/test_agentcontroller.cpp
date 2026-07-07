@@ -40,10 +40,12 @@ public:
 
     void emitResponse(const AgentResponse& resp) {
         emit responseReceived(resp);
+        QCoreApplication::processEvents();
     }
 
     void emitError(const QString& error) {
         emit errorOccurred(error);
+        QCoreApplication::processEvents();
     }
 };
 

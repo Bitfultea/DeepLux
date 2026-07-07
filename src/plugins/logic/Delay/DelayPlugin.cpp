@@ -76,4 +76,9 @@ QWidget* DelayPlugin::createConfigWidget()
     return widget;
 }
 
+IModule* DelayPlugin::cloneImpl() const
+{
+    return new DelayPlugin();
+}
+
 } // namespace DeepLux

@@ -171,9 +171,40 @@ bool ModuleBase::fromJson(const QJsonObject& json)
 
 IModule* ModuleBase::clone() const
 {
-    // Delegate to the derived class's cloneImpl()
-    // If cloneImpl() returns nullptr, we cannot create multiple instances
-    return cloneImpl();
+    IModule* clonedModule = cloneImpl();
+    if (!clonedModule) {
+        return nullptr;
+    }
+
+    if (clonedModule == this) {
+        qWarning() << "Module cloneImpl returned the shared source instance:" << m_moduleId;
+        return nullptr;
+    }
+
+    ModuleBase* clonedBase = qobject_cast<ModuleBase*>(clonedModule);
+    if (!clonedBase) {
+        return clonedModule;
+    }
+
+    clonedBase->m_moduleId = m_moduleId;
+    clonedBase->m_name = m_name;
+    clonedBase->m_instanceName = m_instanceName;
+    clonedBase->m_category = m_category;
+    clonedBase->m_version = m_version;
+    clonedBase->m_author = m_author;
+    clonedBase->m_description = m_description;
+    clonedBase->m_icon = m_icon;
+
+    {
+        QMutexLocker sourceLocker(&m_paramsMutex);
+        QMutexLocker cloneLocker(&clonedBase->m_paramsMutex);
+        clonedBase->m_params = m_params;
+        clonedBase->m_defaultParams = m_defaultParams;
+    }
+
+    clonedBase->m_initialized = false;
+    clonedBase->m_state = ModuleState::Idle;
+    return clonedModule;
 }
 
 IModule* ModuleBase::cloneImpl() const

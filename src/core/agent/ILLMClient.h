@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QList>
+#include <QMetaType>
 
 namespace DeepLux {
 
@@ -91,5 +92,7 @@ signals:
 };
 
 } // namespace DeepLux
+
+Q_DECLARE_METATYPE(DeepLux::AgentResponse)
 
 #endif // DEEPLUX_ILLM_CLIENT_H

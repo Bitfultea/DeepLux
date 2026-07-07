@@ -1,6 +1,8 @@
 #include <QtTest/QtTest>
+#include <QTemporaryDir>
 
 #include "core/model/ImageData.h"
+#include "plugins/system/SaveData/SaveDataPlugin.h"
 #include "plugins/system/SystemTime/SystemTimePlugin.h"
 #include "plugins/variable/CreateString/CreateStringPlugin.h"
 #include "plugins/variable/MathPlugin/MathPlugin.h"
@@ -17,6 +19,7 @@ private slots:
     void testSplitStringOutputAndValidation();
     void testMathOutputAndValidation();
     void testMathRejectsUnsafeRuntimeInputs();
+    void testSaveDataReturnsFalseWhenWriteFails();
     void testSystemTimeOutputAndValidation();
 };
 
@@ -158,6 +161,26 @@ void TestVariableSystemPlugins::testMathRejectsUnsafeRuntimeInputs()
     output = ImageData();
     QVERIFY2(!add.execute(ImageData(), output), "Should reject unresolved non-numeric operand");
     QVERIFY(!output.data("sum").isValid());
+}
+
+void TestVariableSystemPlugins::testSaveDataReturnsFalseWhenWriteFails()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    SaveDataPlugin plugin;
+    QVERIFY(plugin.initialize());
+    plugin.setParams(QJsonObject{
+        {"filePath", dir.filePath("missing/output.json")},
+        {"fileFormat", "json"},
+        {"appendMode", false},
+    });
+
+    ImageData input;
+    input.setData("value", 42);
+    ImageData output;
+    QVERIFY2(!plugin.execute(input, output), "SaveData should fail the module when the file cannot be written");
+    QCOMPARE(output.data("save_result").toBool(), false);
 }
 
 void TestVariableSystemPlugins::testSystemTimeOutputAndValidation()

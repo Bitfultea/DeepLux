@@ -327,4 +327,9 @@ QWidget* SerialPortPlugin::createConfigWidget()
     return widget;
 }
 
+IModule* SerialPortPlugin::cloneImpl() const
+{
+    return new SerialPortPlugin();
+}
+
 } // namespace DeepLux

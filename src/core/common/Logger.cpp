@@ -59,29 +59,31 @@ QString Logger::defaultLogFilePath()
 
 void Logger::addLog(const QString& message, LogLevel level, const QString& category)
 {
-    if (level < m_minLevel) {
-        return;
-    }
-
-    QMutexLocker locker(&m_mutex);
-
     LogEntry entry;
-    entry.timestamp = QDateTime::currentDateTime();
-    entry.level = level;
-    entry.message = message;
-    entry.category = category;
 
-    m_logs.append(entry);
+    {
+        QMutexLocker locker(&m_mutex);
 
-    // 限制内存中的日志数量
-    while (m_logs.size() > m_maxLogsInMemory) {
-        m_logs.removeFirst();
+        if (level < m_minLevel) {
+            return;
+        }
+
+        entry.timestamp = QDateTime::currentDateTime();
+        entry.level = level;
+        entry.message = message;
+        entry.category = category;
+
+        m_logs.append(entry);
+
+        // 限制内存中的日志数量
+        while (m_logs.size() > m_maxLogsInMemory) {
+            m_logs.removeFirst();
+        }
+
+        // 写入文件
+        writeToFile(entry);
     }
 
-    // 写入文件
-    writeToFile(entry);
-
-    // 发送信号
     emit logAdded(entry);
 }
 
@@ -112,6 +114,7 @@ void Logger::success(const QString& message, const QString& category)
 
 QList<LogEntry> Logger::logs(LogLevel level) const
 {
+    QMutexLocker locker(&m_mutex);
     QList<LogEntry> result;
     for (const auto& log : m_logs) {
         if (log.level == level) {
@@ -123,6 +126,7 @@ QList<LogEntry> Logger::logs(LogLevel level) const
 
 QList<LogEntry> Logger::logs(const QString& category) const
 {
+    QMutexLocker locker(&m_mutex);
     QList<LogEntry> result;
     for (const auto& log : m_logs) {
         if (log.category == category) {
@@ -134,8 +138,10 @@ QList<LogEntry> Logger::logs(const QString& category) const
 
 void Logger::clearLogs()
 {
-    QMutexLocker locker(&m_mutex);
-    m_logs.clear();
+    {
+        QMutexLocker locker(&m_mutex);
+        m_logs.clear();
+    }
     emit logsCleared();
 }
 
@@ -153,7 +159,32 @@ void Logger::setMaxLogFileSize(qint64 maxBytes)
 
 void Logger::setMinLevel(LogLevel level)
 {
+    QMutexLocker locker(&m_mutex);
     m_minLevel = level;
+}
+
+QList<LogEntry> Logger::logs() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_logs;
+}
+
+QString Logger::logFilePath() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_logFilePath;
+}
+
+bool Logger::isLogToFileEnabled() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_logToFile;
+}
+
+LogLevel Logger::minLevel() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_minLevel;
 }
 
 void Logger::writeToFile(const LogEntry& entry)

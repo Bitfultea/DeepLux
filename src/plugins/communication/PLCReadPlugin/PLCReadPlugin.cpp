@@ -350,4 +350,9 @@ QWidget* PLCReadPlugin::createConfigWidget()
     return widget;
 }
 
+IModule* PLCReadPlugin::cloneImpl() const
+{
+    return new PLCReadPlugin();
+}
+
 } // namespace DeepLux

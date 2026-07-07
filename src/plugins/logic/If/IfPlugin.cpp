@@ -159,10 +159,16 @@ QWidget* IfPlugin::createConfigWidget()
         m_params["boolInversion"] = checked;
     });
 
-    boolLinkEdit->setEnabled(m_params["conditionType"].toString("BoolLink") == "BoolLink");
-    exprEdit->setEnabled(m_params["conditionType"].toString("BoolLink") == "Expression");
+    const QString conditionType = m_params["conditionType"].toString("BoolLink");
+    boolLinkEdit->setEnabled(conditionType == "BoolLink");
+    exprEdit->setEnabled(conditionType == "Expression");
 
     return widget;
+}
+
+IModule* IfPlugin::cloneImpl() const
+{
+    return new IfPlugin();
 }
 
 // IfEndPlugin
@@ -190,6 +196,11 @@ QWidget* IfEndPlugin::createConfigWidget()
     QLabel* label = new QLabel(tr("(条件结束，无需配置)"));
     layout->addWidget(label);
     return widget;
+}
+
+IModule* IfEndPlugin::cloneImpl() const
+{
+    return new IfEndPlugin();
 }
 
 } // namespace DeepLux

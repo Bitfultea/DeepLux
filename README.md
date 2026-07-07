@@ -1,6 +1,6 @@
 # DeepLux Vision
 
-跨平台机器视觉软件，基于 C++17、Qt 和 Halcon Runtime 开发。
+跨平台机器视觉软件，基于 C++17 和 Qt 开发，支持通过插件扩展工业视觉能力。
 
 ## 功能特性
 
@@ -16,12 +16,12 @@
 
 ### 必需组件
 
-- **Halcon Runtime 21.11+**（免费，从 MVTec 官网下载）
 - **Qt 5.15.3+ 或 Qt 6.6+**，需包含 Core、Gui、Widgets、Network、Sql、Test、Concurrent、SerialPort
 
 ### 可选组件
 
 - OpenCV
+- Halcon Runtime 21.11+（当前默认构建未链接 Halcon；仅在接入 Halcon 插件/SDK 功能时需要）
 - Basler Pylon SDK（跨平台相机支持）
 - 海康威视 MVS SDK
 - 其他相机 SDK

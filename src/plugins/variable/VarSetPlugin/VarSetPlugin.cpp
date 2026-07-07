@@ -185,4 +185,9 @@ QWidget* VarSetPlugin::createConfigWidget()
     return widget;
 }
 
+IModule* VarSetPlugin::cloneImpl() const
+{
+    return new VarSetPlugin();
+}
+
 } // namespace DeepLux

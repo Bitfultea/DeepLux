@@ -1,14 +1,15 @@
 #ifndef DEEPLUX_AGENT_BRIDGE_H
 #define DEEPLUX_AGENT_BRIDGE_H
 
+#include <QJsonObject>
+#include <QList>
+#include <QLocalServer>
+#include <QMap>
+#include <QMutex>
 #include <QObject>
 #include <QString>
 #include <QStringList>
-#include <QJsonObject>
-#include <QMap>
-#include <QList>
 #include <QTimer>
-#include <QLocalServer>
 #include <functional>
 
 namespace DeepLux {
@@ -90,19 +91,16 @@ private:
     QLocalServer* m_server = nullptr;
     QString m_socketPath;
     QList<AgentConnection*> m_connections;
-    QMap<QLocalSocket*, QString> m_clientSocketToId;  // socket -> clientId
+    QMap<QLocalSocket*, QString> m_clientSocketToId;
+    mutable QMutex m_connectionMutex;
 
-    // 心跳
     QTimer* m_heartbeatTimer = nullptr;
-    QMap<QString, int> m_missedHeartbeats;  // clientId -> missed count
+    QMap<QString, int> m_missedHeartbeats;
 
-    // 查询处理器（注册式，支持扩展）
     QMap<QString, QueryHandler> m_queryHandlers;
 
-    // 工具调用回调
     ToolCallCallback m_toolCallCallback;
 
-    // 事件订阅: clientId -> 订阅的事件列表
     QMap<QString, QStringList> m_eventSubscriptions;
 
     // 协议版本

@@ -80,6 +80,11 @@ QWidget* ParallelPlugin::createConfigWidget()
     return widget;
 }
 
+IModule* ParallelPlugin::cloneImpl() const
+{
+    return new ParallelPlugin();
+}
+
 bool ParallelEndPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
@@ -88,12 +93,26 @@ bool ParallelEndPlugin::process(const ImageData& input, ImageData& output)
     return true;
 }
 
+ParallelEndPlugin::ParallelEndPlugin(QObject* parent)
+    : ModuleBase(parent)
+{
+    m_name = "并行结束";
+    m_moduleId = "ParallelEndPlugin";
+    m_category = "logic";
+    m_description = "并行结束，汇总结果";
+}
+
 QWidget* ParallelEndPlugin::createConfigWidget()
 {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
     layout->addWidget(new QLabel(tr("(并行结束，无需配置)")));
     return widget;
+}
+
+IModule* ParallelEndPlugin::cloneImpl() const
+{
+    return new ParallelEndPlugin();
 }
 
 } // namespace DeepLux

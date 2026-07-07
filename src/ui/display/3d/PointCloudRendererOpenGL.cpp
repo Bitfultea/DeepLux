@@ -1,7 +1,6 @@
 #include "PointCloudRendererOpenGL.h"
 #include "PointCloudGPUBuffer.h"
 #include <QOpenGLContext>
-#include <QOpenGLShaderProgram>
 #include <QDebug>
 
 namespace DeepLux {
@@ -20,13 +19,41 @@ PointCloudRendererOpenGL::PointCloudRendererOpenGL()
 
 PointCloudRendererOpenGL::~PointCloudRendererOpenGL() {
     cleanupBuffers();
+    if (QOpenGLContext::currentContext()) {
+        m_program.reset();
+    } else {
+        m_program.release();
+    }
 }
 
 void PointCloudRendererOpenGL::initializeGL() {
     if (m_initialized) return;
 
-    QOpenGLFunctions* f = QOpenGLContext::currentContext()->functions();
+    QOpenGLContext* context = QOpenGLContext::currentContext();
+    if (!context) {
+        qWarning() << "PointCloudRendererOpenGL: initializeGL called without current context";
+        return;
+    }
+
+    QOpenGLFunctions* f = context->functions();
     f->initializeOpenGLFunctions();
+
+    m_program = std::make_unique<QOpenGLShaderProgram>();
+    if (!m_program->addShaderFromSourceCode(QOpenGLShader::Vertex, POINT_CLOUD_VERTEX_SHADER)) {
+        qWarning() << "PointCloudRendererOpenGL: vertex shader compile failed:" << m_program->log();
+        m_program.reset();
+        return;
+    }
+    if (!m_program->addShaderFromSourceCode(QOpenGLShader::Fragment, POINT_CLOUD_FRAGMENT_SHADER)) {
+        qWarning() << "PointCloudRendererOpenGL: fragment shader compile failed:" << m_program->log();
+        m_program.reset();
+        return;
+    }
+    if (!m_program->link()) {
+        qWarning() << "PointCloudRendererOpenGL: shader link failed:" << m_program->log();
+        m_program.reset();
+        return;
+    }
 
     m_initialized = true;
 }
@@ -130,12 +157,19 @@ void PointCloudRendererOpenGL::render(const QMatrix4x4& viewMatrix, const QMatri
     if (!m_initialized) {
         initializeGL();
     }
+    if (!m_initialized || !m_program) {
+        return;
+    }
 
     if (!isValid()) {
         return;
     }
 
-    QOpenGLFunctions* f = QOpenGLContext::currentContext()->functions();
+    QOpenGLContext* context = QOpenGLContext::currentContext();
+    if (!context) {
+        return;
+    }
+    QOpenGLFunctions* f = context->functions();
 
     // 上传缓冲区
     if (m_buffersDirty) {
@@ -159,25 +193,16 @@ void PointCloudRendererOpenGL::render(const QMatrix4x4& viewMatrix, const QMatri
     // 启用点渲染
     f->glEnable(GL_VERTEX_PROGRAM_POINT_SIZE);
 
-    // 使用简单着色器
-    static QOpenGLShaderProgram* program = nullptr;
-    if (!program) {
-        program = new QOpenGLShaderProgram;
-        program->addShaderFromSourceCode(QOpenGLShader::Vertex, POINT_CLOUD_VERTEX_SHADER);
-        program->addShaderFromSourceCode(QOpenGLShader::Fragment, POINT_CLOUD_FRAGMENT_SHADER);
-        program->link();
-    }
-
-    program->bind();
+    m_program->bind();
 
     // 设置 uniform
-    program->setUniformValue("uViewMatrix", viewMatrix);
-    program->setUniformValue("uProjectionMatrix", projectionMatrix);
-    program->setUniformValue("uPointSize", m_pointSize);
+    m_program->setUniformValue("uViewMatrix", viewMatrix);
+    m_program->setUniformValue("uProjectionMatrix", projectionMatrix);
+    m_program->setUniformValue("uPointSize", m_pointSize);
 
     // 颜色模式 + 颜色
-    program->setUniformValue("uColorMode", static_cast<int>(m_colorMode));
-    program->setUniformValue("uUniformColor",
+    m_program->setUniformValue("uColorMode", static_cast<int>(m_colorMode));
+    m_program->setUniformValue("uUniformColor",
         QVector3D(m_uniformColor.redF(), m_uniformColor.greenF(), m_uniformColor.blueF()));
 
     // 高度着色范围
@@ -189,72 +214,76 @@ void PointCloudRendererOpenGL::render(const QMatrix4x4& viewMatrix, const QMatri
             if (z < zMin) zMin = z;
             if (z > zMax) zMax = z;
         }
-        program->setUniformValue("uZMin", zMin);
-        program->setUniformValue("uZMax", zMax);
+        m_program->setUniformValue("uZMin", zMin);
+        m_program->setUniformValue("uZMax", zMax);
     } else {
-        program->setUniformValue("uZMin", 0.0f);
-        program->setUniformValue("uZMax", 1.0f);
+        m_program->setUniformValue("uZMin", 0.0f);
+        m_program->setUniformValue("uZMax", 1.0f);
     }
 
     // Blinn-Phong 光照参数
     QVector3D eyePos = viewMatrix.inverted().map(QVector3D(0, 0, 0));
-    program->setUniformValue("uLightPos", eyePos + QVector3D(0, 0, 10));
-    program->setUniformValue("uLightColor", QVector3D(1.0f, 1.0f, 1.0f));
-    program->setUniformValue("uViewPos", eyePos);
-    program->setUniformValue("uAmbient", 0.25f);
-    program->setUniformValue("uDiffuse", 0.60f);
-    program->setUniformValue("uSpecular", 0.30f);
-    program->setUniformValue("uShininess", 32.0f);
+    m_program->setUniformValue("uLightPos", eyePos + QVector3D(0, 0, 10));
+    m_program->setUniformValue("uLightColor", QVector3D(1.0f, 1.0f, 1.0f));
+    m_program->setUniformValue("uViewPos", eyePos);
+    m_program->setUniformValue("uAmbient", 0.25f);
+    m_program->setUniformValue("uDiffuse", 0.60f);
+    m_program->setUniformValue("uSpecular", 0.30f);
+    m_program->setUniformValue("uShininess", 32.0f);
 
     // 绑定 VBO 并绘制
     if (m_vboPositions) {
         f->glBindBuffer(GL_ARRAY_BUFFER, m_vboPositions);
-        program->enableAttributeArray("aPosition");
-        program->setAttributeBuffer("aPosition", GL_FLOAT, 0, 3, 0);
+        m_program->enableAttributeArray("aPosition");
+        m_program->setAttributeBuffer("aPosition", GL_FLOAT, 0, 3, 0);
         f->glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 
     // 颜色 VBO
     if (m_vboColors) {
-        program->enableAttributeArray("aColor");
+        m_program->enableAttributeArray("aColor");
         f->glBindBuffer(GL_ARRAY_BUFFER, m_vboColors);
-        program->setAttributeBuffer("aColor", GL_FLOAT, 0, 3, 0);
+        m_program->setAttributeBuffer("aColor", GL_FLOAT, 0, 3, 0);
         f->glBindBuffer(GL_ARRAY_BUFFER, 0);
     } else {
-        program->setAttributeValue("aColor",
+        m_program->setAttributeValue("aColor",
             QVector3D(m_uniformColor.redF(), m_uniformColor.greenF(), m_uniformColor.blueF()));
     }
 
     // 强度 VBO
     if (m_colorMode == ColorMode::Intensity && m_vboIntensities) {
-        program->enableAttributeArray("aIntensity");
+        m_program->enableAttributeArray("aIntensity");
         f->glBindBuffer(GL_ARRAY_BUFFER, m_vboIntensities);
-        program->setAttributeBuffer("aIntensity", GL_FLOAT, 0, 1, 0);
+        m_program->setAttributeBuffer("aIntensity", GL_FLOAT, 0, 1, 0);
         f->glBindBuffer(GL_ARRAY_BUFFER, 0);
     } else {
-        program->setAttributeValue("aIntensity", 0.5f);
+        m_program->setAttributeValue("aIntensity", 0.5f);
     }
 
     // 法向量
     if (m_vboNormals) {
-        program->enableAttributeArray("aNormal");
+        m_program->enableAttributeArray("aNormal");
         f->glBindBuffer(GL_ARRAY_BUFFER, m_vboNormals);
-        program->setAttributeBuffer("aNormal", GL_FLOAT, 0, 3, 0);
+        m_program->setAttributeBuffer("aNormal", GL_FLOAT, 0, 3, 0);
         f->glBindBuffer(GL_ARRAY_BUFFER, 0);
     } else {
-        program->setAttributeValue("aNormal", QVector3D(0, 0, 1));
+        m_program->setAttributeValue("aNormal", QVector3D(0, 0, 1));
     }
 
     // 绘制点云
     f->glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(m_pointCount));
 
-    program->release();
+    m_program->release();
 }
 
 void PointCloudRendererOpenGL::uploadBuffers() {
     if (!m_buffer || !m_initialized) return;
 
-    QOpenGLFunctions* f = QOpenGLContext::currentContext()->functions();
+    QOpenGLContext* context = QOpenGLContext::currentContext();
+    if (!context) {
+        return;
+    }
+    QOpenGLFunctions* f = context->functions();
 
     cleanupBuffers();
 
@@ -308,7 +337,11 @@ void PointCloudRendererOpenGL::uploadBuffers() {
 void PointCloudRendererOpenGL::cleanupBuffers() {
     if (!m_initialized) return;
 
-    QOpenGLFunctions* f = QOpenGLContext::currentContext()->functions();
+    QOpenGLContext* context = QOpenGLContext::currentContext();
+    if (!context) {
+        return;
+    }
+    QOpenGLFunctions* f = context->functions();
 
     if (m_vboPositions) {
         f->glDeleteBuffers(1, &m_vboPositions);

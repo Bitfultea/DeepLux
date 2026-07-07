@@ -41,31 +41,27 @@ RunEngine::~RunEngine() {
 }
 
 void RunEngine::setCycleMode(bool enabled) {
-    if (enabled) {
-        m_runMode = RunMode::RunCycle;
-    } else {
-        m_runMode = RunMode::None;
-    }
+    m_runMode.store(static_cast<int>(enabled ? RunMode::RunCycle : RunMode::None), std::memory_order_release);
 }
 
 void RunEngine::runOnce() {
-    if (m_state == RunState::Running) {
+    if (state() == RunState::Running) {
         return;
     }
 
-    m_runMode = RunMode::RunOnce;
+    m_runMode.store(static_cast<int>(RunMode::RunOnce), std::memory_order_release);
     Logger::instance().info(tr("Starting single run"), "Run");
     executeRun();
 }
 
 void RunEngine::start() {
-    if (m_state == RunState::Running) {
+    if (state() == RunState::Running) {
         return;
     }
 
-    m_runMode = RunMode::RunCycle;
-    m_state = RunState::Running;
-    emit stateChanged(m_state);
+    m_runMode.store(static_cast<int>(RunMode::RunCycle), std::memory_order_release);
+    m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
+    emit stateChanged(state());
     emit cycleStarted();
 
     Logger::instance().info(tr("Starting continuous run"), "Run");
@@ -73,41 +69,48 @@ void RunEngine::start() {
 }
 
 void RunEngine::pause() {
-    if (m_state != RunState::Running) {
+    if (state() != RunState::Running) {
         return;
     }
 
-    m_state = RunState::Paused;
+    m_state.store(static_cast<int>(RunState::Paused), std::memory_order_release);
     m_cycleTimer->stop();
-    emit stateChanged(m_state);
+    emit stateChanged(state());
 
     Logger::instance().info(tr("Run paused"), "Run");
 }
 
 void RunEngine::resume() {
-    if (m_state != RunState::Paused) {
+    if (state() != RunState::Paused) {
         return;
     }
 
-    m_state = RunState::Running;
+    m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
     m_cycleTimer->start();
-    emit stateChanged(m_state);
+    emit stateChanged(state());
 
     Logger::instance().info(tr("Run resumed"), "Run");
 }
 
 void RunEngine::stop() {
+    if (state() == RunState::Stopped) {
+        return;
+    }
+
     m_cycleTimer->stop();
-    m_state = RunState::Stopped;
-    m_runMode = RunMode::None;
-    m_breakpointFlag = false;
-    m_continueFlag = false;
-    m_breakpointCondition.wakeOne();
+    m_state.store(static_cast<int>(RunState::Stopped), std::memory_order_release);
+    m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
+    {
+        QMutexLocker locker(&m_breakpointMutex);
+        m_breakpointFlag = false;
+        m_continueFlag = false;
+        m_breakpointCondition.wakeAll();
+    }
     if (m_cancellationToken) {
         m_cancellationToken->cancel();
     }
 
-    emit stateChanged(m_state);
+    emit stateChanged(state());
     emit cycleStopped();
 
     Logger::instance().info(tr("Run stopped"), "Run");
@@ -121,6 +124,7 @@ void RunEngine::requestCancellation() {
 }
 
 void RunEngine::addModule(ModuleBase* module) {
+    QWriteLocker locker(&m_moduleLock);
     if (module && !m_modules.contains(module)) {
         m_modules.append(module);
         QString key = runtimeModuleName(module);
@@ -187,6 +191,7 @@ bool RunEngine::loadProject(Project* project, ModuleFactory factory) {
 }
 
 void RunEngine::removeModule(const QString& moduleId) {
+    QWriteLocker locker(&m_moduleLock);
     for (int i = 0; i < m_modules.size(); ++i) {
         ModuleBase* module = m_modules[i];
         if (module->id() == moduleId || runtimeModuleName(module) == moduleId) {
@@ -201,19 +206,28 @@ void RunEngine::removeModule(const QString& moduleId) {
 }
 
 void RunEngine::clearModules() {
+    QWriteLocker locker(&m_moduleLock);
     qDeleteAll(m_ownedModules);
     m_ownedModules.clear();
     m_modules.clear();
     m_moduleMap.clear();
     m_executionOrder.clear();
+    locker.unlock();
     clearOutputs();
 }
 
+QList<ModuleBase*> RunEngine::modules() const {
+    QReadLocker locker(&m_moduleLock);
+    return m_modules;
+}
+
 ModuleBase* RunEngine::getModule(const QString& moduleName) const {
+    QReadLocker locker(&m_moduleLock);
     return m_moduleMap.value(moduleName, nullptr);
 }
 
 int RunEngine::getModuleIndex(const QString& moduleName) const {
+    QReadLocker locker(&m_moduleLock);
     for (int i = 0; i < m_modules.size(); ++i) {
         if (runtimeModuleName(m_modules[i]) == moduleName) {
             return i;
@@ -223,11 +237,15 @@ int RunEngine::getModuleIndex(const QString& moduleName) const {
 }
 
 void RunEngine::setOutput(const QString& moduleName, const QString& varName, const QVariant& value) {
-    m_outputMap[moduleName][varName] = value;
+    {
+        QMutexLocker locker(&m_outputMutex);
+        m_outputMap[moduleName][varName] = value;
+    }
     emit outputChanged(moduleName, varName, value);
 }
 
 QVariant RunEngine::getOutput(const QString& moduleName, const QString& varName) const {
+    QMutexLocker locker(&m_outputMutex);
     if (m_outputMap.contains(moduleName) && m_outputMap[moduleName].contains(varName)) {
         return m_outputMap[moduleName][varName];
     }
@@ -235,77 +253,103 @@ QVariant RunEngine::getOutput(const QString& moduleName, const QString& varName)
 }
 
 bool RunEngine::hasOutput(const QString& moduleName, const QString& varName) const {
+    QMutexLocker locker(&m_outputMutex);
     return m_outputMap.contains(moduleName) && m_outputMap[moduleName].contains(varName);
 }
 
 void RunEngine::clearOutputs() {
+    QMutexLocker locker(&m_outputMutex);
     m_outputMap.clear();
 }
 
+ImageData RunEngine::lastOutput() const {
+    QMutexLocker locker(&m_lastOutputMutex);
+    return m_lastOutput;
+}
+
+int RunEngine::totalRuns() const {
+    QMutexLocker locker(&m_statsMutex);
+    return m_totalRuns;
+}
+
+int RunEngine::successRuns() const {
+    QMutexLocker locker(&m_statsMutex);
+    return m_successRuns;
+}
+
+int RunEngine::failedRuns() const {
+    QMutexLocker locker(&m_statsMutex);
+    return m_failedRuns;
+}
+
+int RunEngine::lastElapsedMs() const {
+    QMutexLocker locker(&m_statsMutex);
+    return m_lastElapsedMs;
+}
+
 void RunEngine::onTimerTick() {
-    if (m_state == RunState::Running && m_runMode == RunMode::RunCycle) {
+    if (state() == RunState::Running && runMode() == RunMode::RunCycle) {
         executeRun();
     }
 }
 
 void RunEngine::executeRun() {
-    if (m_modules.isEmpty()) {
-        RunResult result;
-        result.success = false;
-        result.errorCode = -1;
-        result.errorMessage = tr("No modules to run");
-        result.elapsedMs = 0;
-        result.finishedTime = QDateTime::currentDateTime();
-        emit runFinished(result);
-        return;
+    {
+        QReadLocker locker(&m_moduleLock);
+        if (m_modules.isEmpty()) {
+            RunResult result;
+            result.success = false;
+            result.errorCode = -1;
+            result.errorMessage = tr("No modules to run");
+            result.elapsedMs = 0;
+            result.finishedTime = QDateTime::currentDateTime();
+            emit runFinished(result);
+            return;
+        }
     }
 
-    m_state = RunState::Running;
-    emit stateChanged(m_state);
+    m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
+    emit stateChanged(state());
     emit runStarted();
 
     m_runStartTime = QDateTime::currentDateTime();
 
-    // Reset cancellation token for this run cycle
     if (m_cancellationToken) {
         m_cancellationToken->reset();
     }
 
-    // 构建模块树
     buildModuleTree();
 
-    // 从第一个模块开始执行，维护流水线数据
-    QString currentModule =
-        m_executionOrder.isEmpty() ? runtimeModuleName(m_modules.first()) : m_executionOrder.first();
+    QString currentModule;
+    {
+        QReadLocker locker(&m_moduleLock);
+        currentModule = m_executionOrder.isEmpty() ? runtimeModuleName(m_modules.first()) : m_executionOrder.first();
+    }
     m_currentModuleName = currentModule;
     ImageData pipelineData;
 
-    while (!currentModule.isEmpty() && m_state == RunState::Running) {
-        // 检查是否已请求取消
+    while (!currentModule.isEmpty() && state() == RunState::Running) {
         if (m_cancellationToken && m_cancellationToken->isCancelledFast()) {
             stop();
             break;
         }
 
-        // 检查是否需要暂停
         {
             QMutexLocker locker(&m_breakpointMutex);
-            if (m_breakpointFlag && !m_continueFlag) {
-                locker.unlock();
+            while (m_breakpointFlag && !m_continueFlag && state() == RunState::Running) {
                 m_breakpointCondition.wait(&m_breakpointMutex);
             }
+            m_continueFlag = false;
         }
 
-        // 执行当前模块，传递流水线数据
         executeModule(currentModule, pipelineData);
 
-        // 获取下一个模块
         currentModule = getNextModule(currentModule, m_lastExecuteResult);
         m_currentModuleName = currentModule;
     }
 
     int elapsedMs = m_runStartTime.msecsTo(QDateTime::currentDateTime());
-    bool allSuccess = (m_state != RunState::Stopped);
+    bool allSuccess = (state() != RunState::Stopped);
     updateStatistics(allSuccess, elapsedMs);
 
     RunResult result;
@@ -317,10 +361,9 @@ void RunEngine::executeRun() {
 
     emit runFinished(result);
 
-    // 单次运行后重置状态
-    if (m_runMode == RunMode::RunOnce) {
-        m_state = RunState::Idle;
-        emit stateChanged(m_state);
+    if (runMode() == RunMode::RunOnce) {
+        m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
+        emit stateChanged(state());
     }
 }
 
@@ -359,7 +402,10 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     // 如果执行成功，将当前输出传递为下一个模块的输入
     if (success) {
         pipelineData = output;
-        m_lastOutput = output;
+        {
+            QMutexLocker locker(&m_lastOutputMutex);
+            m_lastOutput = output;
+        }
     }
 
     m_lastExecuteResult = success;
@@ -606,6 +652,7 @@ void RunEngine::clearModuleTree() {
 }
 
 void RunEngine::setBreakpoint(const QString& moduleName, bool enabled) {
+    QMutexLocker locker(&m_breakpointMutex);
     if (enabled) {
         m_breakpoints.insert(moduleName);
     } else {
@@ -614,6 +661,7 @@ void RunEngine::setBreakpoint(const QString& moduleName, bool enabled) {
 }
 
 bool RunEngine::hasBreakpoint(const QString& moduleName) const {
+    QMutexLocker locker(&m_breakpointMutex);
     return m_breakpoints.contains(moduleName);
 }
 
@@ -624,6 +672,7 @@ void RunEngine::onBreakpointHit() {
 }
 
 void RunEngine::updateStatistics(bool success, int elapsedMs) {
+    QMutexLocker locker(&m_statsMutex);
     m_totalRuns++;
     m_lastElapsedMs = elapsedMs;
 
@@ -635,11 +684,14 @@ void RunEngine::updateStatistics(bool success, int elapsedMs) {
 }
 
 void RunEngine::reset() {
-    m_totalRuns = 0;
-    m_successRuns = 0;
-    m_failedRuns = 0;
-    m_lastElapsedMs = 0;
-    m_state = RunState::Idle;
+    {
+        QMutexLocker locker(&m_statsMutex);
+        m_totalRuns = 0;
+        m_successRuns = 0;
+        m_failedRuns = 0;
+        m_lastElapsedMs = 0;
+    }
+    m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
     clearOutputs();
     m_loopIndices.clear();
 }

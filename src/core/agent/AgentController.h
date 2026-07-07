@@ -1,9 +1,10 @@
 #ifndef DEEPLUX_AGENT_CONTROLLER_H
 #define DEEPLUX_AGENT_CONTROLLER_H
 
-#include <QObject>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QMutex>
+#include <QObject>
 #include <memory>
 
 namespace DeepLux {
@@ -31,7 +32,10 @@ public:
     void setPermissionLevel(PermissionLevel level);
 
     enum class AgentState { Idle, Thinking, Confirming, Executing };
-    AgentState state() const { return m_state; }
+    AgentState state() const {
+        QMutexLocker locker(&m_stateMutex);
+        return m_state;
+    }
 
     void onGuiEvent(const GuiEvent& event);
     QJsonObject handleToolCall(const QString& toolName, const QJsonObject& params);
@@ -92,8 +96,10 @@ private:
 
     int m_agentTurnCount = 0;
     AgentState m_state = AgentState::Idle;
+    mutable QMutex m_stateMutex;
 
     void transitionTo(AgentState newState);
+    bool tryTransitionTo(AgentState expected, AgentState newState);
     static QString stateName(AgentState state);
     static QString defaultSystemPrompt();
 };

@@ -152,4 +152,9 @@ QWidget* StrFormatPlugin::createConfigWidget()
     return widget;
 }
 
+IModule* StrFormatPlugin::cloneImpl() const
+{
+    return new StrFormatPlugin();
+}
+
 } // namespace DeepLux

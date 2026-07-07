@@ -161,4 +161,9 @@ QWidget* VarDefinePlugin::createConfigWidget()
     return widget;
 }
 
+IModule* VarDefinePlugin::cloneImpl() const
+{
+    return new VarDefinePlugin();
+}
+
 } // namespace DeepLux

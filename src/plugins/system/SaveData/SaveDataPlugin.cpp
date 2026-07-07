@@ -57,6 +57,7 @@ bool SaveDataPlugin::process(const ImageData& input, ImageData& output)
 
     QString format = m_params["fileFormat"].toString();
     bool appendMode = m_params["appendMode"].toBool();
+    m_saveResult = false;
 
     // 收集数据
     QVariantMap dataMap;
@@ -93,7 +94,7 @@ bool SaveDataPlugin::process(const ImageData& input, ImageData& output)
 
     Logger::instance().debug(QString("保存数据: %1, 结果: %2").arg(filePath).arg(m_saveResult ? "成功" : "失败"), "SaveData");
 
-    return true;
+    return m_saveResult;
 }
 
 bool SaveDataPlugin::saveToJson(const QString& filePath, const QVariantMap& data)

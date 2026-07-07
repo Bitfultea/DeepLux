@@ -168,4 +168,9 @@ QWidget* DisplayDataPlugin::createConfigWidget()
     return widget;
 }
 
+IModule* DisplayDataPlugin::cloneImpl() const
+{
+    return new DisplayDataPlugin();
+}
+
 } // namespace DeepLux

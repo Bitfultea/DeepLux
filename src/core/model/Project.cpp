@@ -167,6 +167,15 @@ ModuleInstance* Project::findModule(const QString& instanceId) {
     return nullptr;
 }
 
+std::optional<ModuleInstance> Project::moduleById(const QString& instanceId) const {
+    for (const ModuleInstance& module : m_modules) {
+        if (module.id == instanceId) {
+            return module;
+        }
+    }
+    return std::nullopt;
+}
+
 void Project::addConnection(const ModuleConnection& conn) {
     m_connections.append(conn);
     touch();

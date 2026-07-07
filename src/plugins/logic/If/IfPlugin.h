@@ -28,6 +28,7 @@ public:
 protected:
     bool process(const ImageData& input, ImageData& output) override;
     bool doValidateParams(const QJsonObject& params, QString& error) const override;
+    IModule* cloneImpl() const override;
 
 private:
     bool evaluateCondition();
@@ -62,6 +63,7 @@ public:
 protected:
     bool process(const ImageData& input, ImageData& output) override;
     QWidget* createConfigWidget() override;
+    IModule* cloneImpl() const override;
 };
 
 } // namespace DeepLux

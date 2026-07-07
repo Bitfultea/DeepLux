@@ -99,7 +99,7 @@ public:
         : QUndoCommand(parent), m_instanceId(instanceId) {
         Project* proj = ProjectManager::instance().currentProject();
         if (proj) {
-            ModuleInstance* inst = proj->findModule(instanceId);
+            const std::optional<ModuleInstance> inst = proj->moduleById(instanceId);
             if (inst)
                 m_backup = *inst;
         }
@@ -345,7 +345,7 @@ QJsonObject AgentActor::setParam(const QJsonObject& params) {
     if (!proj)
         return QJsonObject{{"error", "No project opened"}};
 
-    ModuleInstance* inst = proj->findModule(instanceId);
+    const std::optional<ModuleInstance> inst = proj->moduleById(instanceId);
     if (!inst)
         return QJsonObject{{"error", QString("Module not found: %1").arg(instanceId)}};
 
@@ -465,7 +465,7 @@ QJsonObject AgentActor::getModuleParamsSchema(const QJsonObject& params) {
     if (!proj)
         return QJsonObject{{"error", "No project opened"}};
 
-    ModuleInstance* inst = proj->findModule(instanceId);
+    const std::optional<ModuleInstance> inst = proj->moduleById(instanceId);
     if (!inst)
         return QJsonObject{{"error", QString("Module not found: %1").arg(instanceId)}};
 

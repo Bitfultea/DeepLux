@@ -97,4 +97,9 @@ QWidget* QueueInPlugin::createConfigWidget()
     return widget;
 }
 
+IModule* QueueInPlugin::cloneImpl() const
+{
+    return new QueueInPlugin();
+}
+
 } // namespace DeepLux

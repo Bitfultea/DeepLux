@@ -22,9 +22,16 @@ Viewport3DContent::Viewport3DContent(QWidget* parent)
 }
 
 Viewport3DContent::~Viewport3DContent() {
-    makeCurrent();
-    m_renderer.reset(); // 清理渲染器资源
-    doneCurrent();
+    if (context() && context()->isValid()) {
+        makeCurrent();
+        if (QOpenGLContext::currentContext()) {
+            m_renderer.reset(); // 清理渲染器资源
+            doneCurrent();
+            return;
+        }
+        doneCurrent();
+    }
+    m_renderer.reset();
 }
 
 void Viewport3DContent::initializeGL() {

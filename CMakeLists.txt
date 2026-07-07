@@ -51,17 +51,15 @@ if(DEEPLUX_QT_PATH)
     message(STATUS "Using custom Qt path: ${DEEPLUX_QT_PATH}")
 endif()
 
-set(QT_CORE_COMPONENTS Core Gui Widgets Network Sql Test SerialPort)
+set(QT_CORE_COMPONENTS Core Gui Widgets Network Sql Test SerialPort Concurrent)
 
 if(USE_QT6)
-    find_package(Qt6 QUIET COMPONENTS ${QT_CORE_COMPONENTS} Concurrent)
+    find_package(Qt6 QUIET COMPONENTS ${QT_CORE_COMPONENTS})
 endif()
 
 if(NOT Qt6_FOUND)
     message(STATUS "Qt6 not found, trying Qt5...")
     find_package(Qt5 REQUIRED COMPONENTS ${QT_CORE_COMPONENTS})
-    # Qt5 Concurrent is part of Core, no separate find_package needed
-    set(Qt5Concurrent_FOUND TRUE)
     set(QT_VERSION_MAJOR 5)
 else()
     set(QT_VERSION_MAJOR 6)
