@@ -1,16 +1,17 @@
 #include "LoginDialog.h"
-#include "core/common/UserManager.h"
+
+#include "../widgets/AppIconProvider.h"
 #include "common/Logger.h"
-#include <QVBoxLayout>
+#include "core/common/UserManager.h"
+
+#include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QLabel>
-#include <QDialogButtonBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-LoginDialog::LoginDialog(QWidget* parent)
-    : QDialog(parent)
-{
+LoginDialog::LoginDialog(QWidget* parent) : QDialog(parent) {
     setWindowTitle(tr("Login"));
     setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
     setFixedSize(360, 220);
@@ -68,8 +69,7 @@ LoginDialog::LoginDialog(QWidget* parent)
     setupUI();
 }
 
-void LoginDialog::setupUI()
-{
+void LoginDialog::setupUI() {
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(20);
     mainLayout->setContentsMargins(30, 30, 30, 20);
@@ -95,10 +95,10 @@ void LoginDialog::setupUI()
     formLayout->addRow(tr("Password:"), m_passWordEdit);
 
     m_userTypeCombo = new QComboBox(this);
-    m_userTypeCombo->addItem(tr("Operator"), QVariant::fromValue((int)UserType::Operator));
-    m_userTypeCombo->addItem(tr("Administrator"), QVariant::fromValue((int)UserType::Administrator));
-    m_userTypeCombo->addItem(tr("Developer"), QVariant::fromValue((int)UserType::Developer));
-    m_userTypeCombo->addItem(tr("Guest"), QVariant::fromValue((int)UserType::Guest));
+    m_userTypeCombo->addItem(tr("Operator"), QVariant::fromValue((int) UserType::Operator));
+    m_userTypeCombo->addItem(tr("Administrator"), QVariant::fromValue((int) UserType::Administrator));
+    m_userTypeCombo->addItem(tr("Developer"), QVariant::fromValue((int) UserType::Developer));
+    m_userTypeCombo->addItem(tr("Guest"), QVariant::fromValue((int) UserType::Guest));
     formLayout->addRow(tr("User Type:"), m_userTypeCombo);
 
     mainLayout->addLayout(formLayout);
@@ -108,8 +108,10 @@ void LoginDialog::setupUI()
     buttonBox->setStyleSheet("QDialogButtonBox { spacing: 10px; }");
 
     m_loginBtn = new QPushButton(tr("Login"), this);
+    m_loginBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
     m_loginBtn->setProperty("default", true);
     m_cancelBtn = new QPushButton(tr("Cancel"), this);
+    m_cancelBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Cancel, 16, QColor("#DC2626")));
     m_cancelBtn->setProperty("default", false);
 
     buttonBox->addButton(m_loginBtn, QDialogButtonBox::AcceptRole);
@@ -125,8 +127,7 @@ void LoginDialog::setupUI()
     m_userNameEdit->setFocus();
 }
 
-void LoginDialog::onLoginClicked()
-{
+void LoginDialog::onLoginClicked() {
     m_userName = m_userNameEdit->text().trimmed();
     m_passWord = m_passWordEdit->text();
 
@@ -145,8 +146,7 @@ void LoginDialog::onLoginClicked()
     accept();
 }
 
-void LoginDialog::onCancelClicked()
-{
+void LoginDialog::onCancelClicked() {
     reject();
 }
 

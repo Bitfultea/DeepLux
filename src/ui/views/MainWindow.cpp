@@ -7,6 +7,7 @@
 #include "../panels/DataSourcePanel.h"
 #include "../widgets/AgentActionLogWidget.h"
 #include "../widgets/AgentChatPanel.h"
+#include "../widgets/AppIconProvider.h"
 #include "../widgets/FlowCanvas.h"
 #include "../widgets/TerminalWidget.h"
 #include "../widgets/ViewportWidget.h"
@@ -173,7 +174,7 @@ QString measurementSummary(const ImageData& output) {
         parts.append(QString::fromUtf8("点数=%1").arg(all["point_count"].toInt()));
     }
 
-    return parts.isEmpty() ? QString() : QString::fromUtf8("📏 ") + parts.join(QString::fromUtf8(", "));
+    return parts.isEmpty() ? QString() : QString::fromUtf8("测量: ") + parts.join(QString::fromUtf8(", "));
 }
 
 QJsonArray pointArray2D(const QPointF& point) {
@@ -608,90 +609,90 @@ void MainWindow::setupMainLayout() {
 
     QTreeWidgetItem* imgProcItem = createCategoryItem(m_toolBoxTree, tr("01 - 图像处理"));
     imgProcItem->setExpanded(false);
-    addToolBoxItem(imgProcItem, tr("📷 图像采集"), "GrabImage");
-    addToolBoxItem(imgProcItem, tr("💾 保存图像"), "SaveImage");
-    addToolBoxItem(imgProcItem, tr("🖼️ 显示图像"), "ShowImage");
-    addToolBoxItem(imgProcItem, tr("🔄 图像预处理"), "PerProcessing");
-    addToolBoxItem(imgProcItem, tr("🎨 颜色识别"), "ColorRecognition");
-    addToolBoxItem(imgProcItem, tr("🔍 斑点分析"), "Blob");
+    addToolBoxItem(imgProcItem, tr("图像采集"), "GrabImage");
+    addToolBoxItem(imgProcItem, tr("保存图像"), "SaveImage");
+    addToolBoxItem(imgProcItem, tr("显示图像"), "ShowImage");
+    addToolBoxItem(imgProcItem, tr("图像预处理"), "PerProcessing");
+    addToolBoxItem(imgProcItem, tr("颜色识别"), "ColorRecognition");
+    addToolBoxItem(imgProcItem, tr("斑点分析"), "Blob");
 
     QTreeWidgetItem* detectItem = createCategoryItem(m_toolBoxTree, tr("02 - 检测识别"));
     detectItem->setExpanded(false);
-    addToolBoxItem(detectItem, tr("🔍 模板匹配"), "Matching");
-    addToolBoxItem(detectItem, tr("🔍 二维码识别"), "QRCode");
+    addToolBoxItem(detectItem, tr("模板匹配"), "Matching");
+    addToolBoxItem(detectItem, tr("二维码识别"), "QRCode");
 
     QTreeWidgetItem* geometryItem = createCategoryItem(m_toolBoxTree, tr("03 - 几何测量"));
     geometryItem->setExpanded(false);
     geometryItem->setData(0, Qt::UserRole, "category");
-    addToolBoxItem(geometryItem, tr("📏 距离测量 (点到点)"), "DistancePP");
-    addToolBoxItem(geometryItem, tr("📏 距离测量 (点到线)"), "DistancePL");
-    addToolBoxItem(geometryItem, tr("📏 线段距离"), "LinesDistance");
-    addToolBoxItem(geometryItem, tr("📐 测量矩形"), "MeasureRect");
-    addToolBoxItem(geometryItem, tr("📐 测量直线"), "MeasureLine");
-    addToolBoxItem(geometryItem, tr("📐 测量间隙"), "MeasureGap");
-    addToolBoxItem(geometryItem, tr("📍 测量输入"), "MeasurementInput");
+    addToolBoxItem(geometryItem, tr("距离测量 (点到点)"), "DistancePP");
+    addToolBoxItem(geometryItem, tr("距离测量 (点到线)"), "DistancePL");
+    addToolBoxItem(geometryItem, tr("线段距离"), "LinesDistance");
+    addToolBoxItem(geometryItem, tr("测量矩形"), "MeasureRect");
+    addToolBoxItem(geometryItem, tr("测量直线"), "MeasureLine");
+    addToolBoxItem(geometryItem, tr("测量间隙"), "MeasureGap");
+    addToolBoxItem(geometryItem, tr("测量输入"), "MeasurementInput");
 
     QTreeWidgetItem* geoRelationItem = createCategoryItem(m_toolBoxTree, tr("04 - 几何关系"));
     geoRelationItem->setExpanded(false);
-    addToolBoxItem(geoRelationItem, tr("🔵 找圆"), "FindCircle");
-    addToolBoxItem(geoRelationItem, tr("⭕ 圆拟合"), "FitCircle");
-    addToolBoxItem(geoRelationItem, tr("📐 直线拟合"), "FitLine");
+    addToolBoxItem(geoRelationItem, tr("找圆"), "FindCircle");
+    addToolBoxItem(geoRelationItem, tr("圆拟合"), "FitCircle");
+    addToolBoxItem(geoRelationItem, tr("直线拟合"), "FitLine");
 
     QTreeWidgetItem* calibItem = createCategoryItem(m_toolBoxTree, tr("05 - 坐标标定"));
     calibItem->setExpanded(false);
-    addToolBoxItem(calibItem, tr("📐 N 点标定"), "NPointCalibration");
+    addToolBoxItem(calibItem, tr("N 点标定"), "NPointCalibration");
 
     QTreeWidgetItem* alignItem = createCategoryItem(m_toolBoxTree, tr("06 - 对位工具"));
     alignItem->setExpanded(false);
 
     QTreeWidgetItem* logicItem = createCategoryItem(m_toolBoxTree, tr("07 - 逻辑工具"));
     logicItem->setExpanded(false);
-    addToolBoxItem(logicItem, tr("▶️ 如果"), "If");
-    addToolBoxItem(logicItem, tr("🔁 循环"), "Loop");
-    addToolBoxItem(logicItem, tr("🔁 While 循环"), "While");
-    addToolBoxItem(logicItem, tr("⏹ 停止循环"), "StopWhile");
-    addToolBoxItem(logicItem, tr("🔀 条件判断"), "Condition");
+    addToolBoxItem(logicItem, tr("如果"), "If");
+    addToolBoxItem(logicItem, tr("循环"), "Loop");
+    addToolBoxItem(logicItem, tr("While 循环"), "While");
+    addToolBoxItem(logicItem, tr("停止循环"), "StopWhile");
+    addToolBoxItem(logicItem, tr("条件判断"), "Condition");
 
     QTreeWidgetItem* systemItem = createCategoryItem(m_toolBoxTree, tr("08 - 系统工具"));
     systemItem->setExpanded(false);
-    addToolBoxItem(systemItem, tr("🕐 系统时间"), "SystemTime");
-    addToolBoxItem(systemItem, tr("📁 文件夹操作"), "Folder");
+    addToolBoxItem(systemItem, tr("系统时间"), "SystemTime");
+    addToolBoxItem(systemItem, tr("文件夹操作"), "Folder");
 
     QTreeWidgetItem* varItem = createCategoryItem(m_toolBoxTree, tr("09 - 变量工具"));
     varItem->setExpanded(false);
-    addToolBoxItem(varItem, tr("🔢 变量定义"), "VarDefine");
-    addToolBoxItem(varItem, tr("🔢 变量设置"), "VarSet");
-    addToolBoxItem(varItem, tr("🔢 数学运算"), "Math");
-    addToolBoxItem(varItem, tr("📊 数据检查"), "DataCheck");
-    addToolBoxItem(varItem, tr("🔢 显示数据"), "DisplayData");
+    addToolBoxItem(varItem, tr("变量定义"), "VarDefine");
+    addToolBoxItem(varItem, tr("变量设置"), "VarSet");
+    addToolBoxItem(varItem, tr("数学运算"), "Math");
+    addToolBoxItem(varItem, tr("数据检查"), "DataCheck");
+    addToolBoxItem(varItem, tr("显示数据"), "DisplayData");
 
     QTreeWidgetItem* fileCommItem = createCategoryItem(m_toolBoxTree, tr("10 - 文件通讯"));
     fileCommItem->setExpanded(false);
-    addToolBoxItem(fileCommItem, tr("💾 保存数据"), "SaveData");
-    addToolBoxItem(fileCommItem, tr("📊 表格输出"), "TableOutPut");
-    addToolBoxItem(fileCommItem, tr("📝 写入文本"), "WriteText");
+    addToolBoxItem(fileCommItem, tr("保存数据"), "SaveData");
+    addToolBoxItem(fileCommItem, tr("表格输出"), "TableOutPut");
+    addToolBoxItem(fileCommItem, tr("写入文本"), "WriteText");
 
     QTreeWidgetItem* tool3DItem = createCategoryItem(m_toolBoxTree, tr("11 - 3D 工具"));
     tool3DItem->setExpanded(false);
-    addToolBoxItem(tool3DItem, tr("☁️ 加载点云"), "LoadPointCloud");
+    addToolBoxItem(tool3DItem, tr("加载点云"), "LoadPointCloud");
 
     QTreeWidgetItem* dlItem = createCategoryItem(m_toolBoxTree, tr("12 - 深度学习"));
     dlItem->setExpanded(false);
 
     QTreeWidgetItem* strItem = createCategoryItem(m_toolBoxTree, tr("13 - 字符串处理"));
     strItem->setExpanded(false);
-    addToolBoxItem(strItem, tr("✂️ 分割字符串"), "SplitString");
-    addToolBoxItem(strItem, tr("📝 字符串格式化"), "StrFormat");
-    addToolBoxItem(strItem, tr("➕ 创建字符串"), "CreateString");
+    addToolBoxItem(strItem, tr("分割字符串"), "SplitString");
+    addToolBoxItem(strItem, tr("字符串格式化"), "StrFormat");
+    addToolBoxItem(strItem, tr("创建字符串"), "CreateString");
 
     QTreeWidgetItem* commItem = createCategoryItem(m_toolBoxTree, tr("14 - 通信"));
     commItem->setExpanded(false);
-    addToolBoxItem(commItem, tr("🔌 PLC 通信"), "PLCCommunicate");
-    addToolBoxItem(commItem, tr("📡 PLC 读取"), "PLCRead");
-    addToolBoxItem(commItem, tr("📡 PLC 写入"), "PLCWrite");
-    addToolBoxItem(commItem, tr("🌐 TCP 客户端"), "TCPClient");
-    addToolBoxItem(commItem, tr("🌐 TCP 服务器"), "TCPServer");
-    addToolBoxItem(commItem, tr("🔌 串口通信"), "SerialPort");
+    addToolBoxItem(commItem, tr("PLC 通信"), "PLCCommunicate");
+    addToolBoxItem(commItem, tr("PLC 读取"), "PLCRead");
+    addToolBoxItem(commItem, tr("PLC 写入"), "PLCWrite");
+    addToolBoxItem(commItem, tr("TCP 客户端"), "TCPClient");
+    addToolBoxItem(commItem, tr("TCP 服务器"), "TCPServer");
+    addToolBoxItem(commItem, tr("串口通信"), "SerialPort");
 
     connect(&PluginManager::instance(), &PluginManager::pluginLoaded, this, &MainWindow::updateToolBoxPluginItem);
 
@@ -1152,7 +1153,7 @@ void MainWindow::onProcessTreeContextMenu(const QPoint& pos) {
 
     QMenu menu(this);
     QAction* deleteAction = menu.addAction(tr("删除"));
-    deleteAction->setIcon(QIcon(":/icons/delete.png"));
+    deleteAction->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Delete, 18, QColor("#DC2626")));
 
     QAction* selectedAction = menu.exec(m_processTree->mapToGlobal(pos));
     if (selectedAction == deleteAction) {
@@ -1683,6 +1684,7 @@ void MainWindow::addMeasurementConfigAction(QVBoxLayout* layout, const QString& 
     groupLayout->addWidget(label);
 
     QPushButton* button = new QPushButton(tr("添加测量输入并开始拾取"), group);
+    button->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Add, 16, QColor("#2563EB")));
     button->setObjectName("MeasurementInputSetupButton");
     button->setProperty("measurementInputMode", mode);
     button->setMinimumHeight(qMax(30, button->fontMetrics().height() + 10));
@@ -2160,7 +2162,9 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                     layout->addWidget(configWidget); // addWidget 会 reparent 到 dialog
                     QHBoxLayout* btnLayout = new QHBoxLayout();
                     QPushButton* okBtn = new QPushButton(tr("确定"));
+                    okBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
                     QPushButton* cancelBtn = new QPushButton(tr("取消"));
+                    cancelBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Cancel, 16, QColor("#DC2626")));
                     btnLayout->addStretch();
                     btnLayout->addWidget(okBtn);
                     btnLayout->addWidget(cancelBtn);
@@ -3108,413 +3112,87 @@ void MainWindow::syncModulesToRunEngine() {
 // ========== 图标创建辅助方法 ==========
 
 QIcon MainWindow::createIcon(const QString& name) {
-    Q_UNUSED(name);
-    return QIcon();
+    if (name == QStringLiteral("delete")) {
+        return AppIconProvider::icon(AppIconProvider::Icon::Delete, 24, QColor("#DC2626"));
+    }
+    return AppIconProvider::icon(AppIconProvider::Icon::Settings, 24, QColor("#374151"));
 }
 
 QIcon MainWindow::createNewIcon() {
-    QPixmap pixmap(24, 24);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    // 蓝色文档图标表示新建
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(66, 133, 244));
-
-    // 文档形状
-    QPainterPath docPath;
-    docPath.moveTo(7, 3);
-    docPath.lineTo(14, 3);
-    docPath.lineTo(17, 6);
-    docPath.lineTo(17, 19);
-    docPath.lineTo(7, 19);
-    docPath.closeSubpath();
-    painter.drawPath(docPath);
-
-    // 白色加号
-    painter.setBrush(QColor(255, 255, 255));
-    painter.drawRect(10, 10, 4, 1);
-    painter.drawRect(11, 9, 1, 4);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::NewFile, 24, QColor("#2563EB"));
 }
 
 QIcon MainWindow::createOpenIcon() {
-    QPixmap pixmap(24, 24);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    // 黄色文件夹图标
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(255, 179, 71));
-
-    QPolygon folder;
-    folder << QPoint(5, 7) << QPoint(10, 7) << QPoint(12, 9) << QPoint(18, 9) << QPoint(18, 18) << QPoint(5, 18);
-    painter.drawPolygon(folder);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::OpenFolder, 24, QColor("#D97706"));
 }
 
 QIcon MainWindow::createSaveIcon() {
-    QPixmap pixmap(24, 24);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    // 蓝色软盘图标
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(66, 133, 244));
-    painter.drawRect(4, 4, 16, 16);
-
-    // 白色标签区域
-    painter.setBrush(QColor(255, 255, 255));
-    painter.drawRect(6, 6, 12, 7);
-
-    // 金属滑盖
-    painter.setBrush(QColor(180, 180, 180));
-    painter.drawRect(6, 14, 12, 4);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::Save, 24, QColor("#2563EB"));
 }
 
 QIcon MainWindow::createListIcon() {
-    QPixmap pixmap(24, 24);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    // 蓝色列表图标
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(66, 133, 244));
-
-    // 列表项
-    for (int i = 0; i < 4; i++) {
-        painter.drawRect(5, 5 + i * 4, 14, 2);
-    }
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::List, 24, QColor("#2563EB"));
 }
 
 QIcon MainWindow::createPlayIcon() {
-    QPixmap pixmap(24, 24);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    // 绿色播放三角形
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(52, 168, 83));
-
-    QPolygon triangle;
-    triangle << QPoint(8, 6) << QPoint(8, 18) << QPoint(17, 12);
-    painter.drawPolygon(triangle);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#16A34A"));
 }
 
 QIcon MainWindow::createPauseIcon() {
-    QPixmap pixmap(24, 24);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(251, 188, 5));
-
-    painter.drawRect(6, 5, 5, 14);
-    painter.drawRect(13, 5, 5, 14);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::Pause, 24, QColor("#D97706"));
 }
 
 QIcon MainWindow::createStopIcon() {
-    QPixmap pixmap(24, 24);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    // 红色八角形停止标志
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(234, 67, 53));
-
-    // 八角形
-    QPainterPath stopPath;
-    stopPath.moveTo(7, 4);
-    stopPath.lineTo(17, 4);
-    stopPath.lineTo(20, 7);
-    stopPath.lineTo(20, 17);
-    stopPath.lineTo(17, 20);
-    stopPath.lineTo(7, 20);
-    stopPath.lineTo(4, 17);
-    stopPath.lineTo(4, 7);
-    stopPath.closeSubpath();
-    painter.drawPath(stopPath);
-
-    // 白色横杠
-    painter.setBrush(QColor(255, 255, 255));
-    QPainterPath barPath;
-    barPath.addRoundedRect(7, 10, 10, 4, 1, 1);
-    painter.drawPath(barPath);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::Stop, 24, QColor("#DC2626"));
 }
 
 QIcon MainWindow::createCycleIcon() {
-    QPixmap pixmap(24, 24);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    painter.setPen(QPen(QColor(26, 115, 232), 2));
-    painter.setBrush(Qt::NoBrush);
-
-    // 循环箭头
-    painter.drawArc(4, 4, 16, 16, 0 * 16, 270 * 16);
-
-    // 箭头头部
-    painter.drawLine(20, 4, 20, 8);
-    painter.drawLine(20, 4, 16, 4);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::Cycle, 24, QColor("#2563EB"));
 }
 
 QIcon MainWindow::createQuickModeIcon() {
-    QPixmap pixmap(20, 20);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    // 闪电图标
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(255, 200, 0));
-
-    QPolygon lightning;
-    lightning << QPoint(10, 3) << QPoint(6, 10) << QPoint(9, 10) << QPoint(7, 17) << QPoint(14, 8) << QPoint(10, 8);
-    painter.drawPolygon(lightning);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::QuickMode, 20, QColor("#D97706"));
 }
 
 QIcon MainWindow::createUserIcon() {
-    QPixmap pixmap(20, 20);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(60, 120, 200));
-
-    // 头部
-    painter.drawEllipse(7, 3, 6, 6);
-
-    // 身体
-    painter.drawEllipse(4, 10, 12, 7);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::User, 20, QColor("#2563EB"));
 }
 
 QIcon MainWindow::createVariableIcon() {
-    QPixmap pixmap(20, 20);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    painter.setPen(QPen(QColor(180, 100, 50), 2));
-    painter.setBrush(QColor(220, 150, 80));
-
-    // x 符号
-    painter.drawLine(4, 4, 16, 16);
-    painter.drawLine(16, 4, 4, 16);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::Variable, 20, QColor("#7C3AED"));
 }
 
 QIcon MainWindow::createCameraIcon() {
-    QPixmap pixmap(20, 20);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(80, 80, 80));
-
-    // 相机主体
-    painter.drawRoundedRect(3, 6, 14, 10, 2, 2);
-
-    // 镜头
-    painter.setBrush(QColor(40, 40, 40));
-    painter.drawEllipse(7, 8, 6, 6);
-
-    // 闪光灯
-    painter.setBrush(QColor(100, 100, 100));
-    painter.drawRect(14, 7, 2, 3);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::Camera, 20, QColor("#374151"));
 }
 
 QIcon MainWindow::createCommIcon() {
-    QPixmap pixmap(20, 20);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(50, 150, 50));
-
-    // 信号波形
-    painter.drawEllipse(6, 6, 8, 8);
-    painter.drawEllipse(8, 8, 4, 4);
-    painter.setBrush(QColor(255, 255, 255));
-    painter.drawEllipse(10, 10, 2, 2);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::Communication, 20, QColor("#0891B2"));
 }
 
 QIcon MainWindow::createHardwareIcon() {
-    QPixmap pixmap(24, 24);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    // 灰色芯片主体
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(154, 160, 166));
-
-    // 芯片主体圆角矩形
-    QPainterPath chipPath;
-    chipPath.addRoundedRect(7, 7, 10, 10, 2, 2);
-    painter.drawPath(chipPath);
-
-    // 引脚 - 左侧
-    painter.setBrush(QColor(189, 195, 199));
-    painter.drawRect(4, 8, 3, 2);
-    painter.drawRect(4, 11, 3, 2);
-    painter.drawRect(4, 14, 3, 2);
-
-    // 引脚 - 右侧
-    painter.drawRect(17, 8, 3, 2);
-    painter.drawRect(17, 11, 3, 2);
-    painter.drawRect(17, 14, 3, 2);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::Hardware, 24, QColor("#4B5563"));
 }
 
 QIcon MainWindow::createReportIcon() {
-    QPixmap pixmap(20, 20);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(m_isDarkTheme ? QColor(200, 200, 200) : QColor(255, 255, 255));
-    painter.drawRect(4, 3, 12, 14);
-
-    QColor borderColor = m_isDarkTheme ? QColor(200, 200, 200) : QColor(40, 40, 40);
-    painter.setPen(borderColor);
-    painter.drawRect(4, 3, 12, 14);
-
-    // 表格线
-    painter.drawLine(6, 7, 14, 7);
-    painter.drawLine(6, 11, 14, 11);
-    painter.drawLine(9, 7, 9, 11);
-    painter.drawLine(12, 7, 12, 11);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::Report, 20,
+                                 m_isDarkTheme ? QColor("#E5E7EB") : QColor("#374151"));
 }
 
 QIcon MainWindow::createHomeIcon() {
-    QPixmap pixmap(20, 20);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(100, 150, 100));
-
-    // 房子形状
-    QPolygon house;
-    house << QPoint(10, 3) << QPoint(17, 8) << QPoint(17, 16) << QPoint(13, 16) << QPoint(13, 11) << QPoint(7, 11)
-          << QPoint(7, 16) << QPoint(3, 16) << QPoint(3, 8);
-    painter.drawPolygon(house);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::Home, 20, QColor("#2563EB"));
 }
 
 QIcon MainWindow::createUiDesignIcon() {
-    QPixmap pixmap(20, 20);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(150, 100, 200));
-
-    // 调色板形状
-    painter.drawEllipse(4, 4, 12, 10);
-
-    // 颜色孔
-    painter.setBrush(QColor(255, 100, 100));
-    painter.drawEllipse(7, 6, 2, 2);
-    painter.setBrush(QColor(100, 255, 100));
-    painter.drawEllipse(11, 6, 2, 2);
-    painter.setBrush(QColor(100, 100, 255));
-    painter.drawEllipse(9, 10, 2, 2);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::Design, 20, QColor("#7C3AED"));
 }
 
 QIcon MainWindow::createLaserIcon() {
-    QPixmap pixmap(20, 20);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(255, 0, 0));
-
-    // 激光束
-    painter.drawLine(3, 10, 17, 10);
-
-    // 激光源
-    painter.setBrush(QColor(100, 100, 100));
-    painter.drawRect(2, 7, 3, 6);
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::Laser, 20, QColor("#DC2626"));
 }
 
 QIcon MainWindow::createToggleThemeIcon() {
-    QPixmap pixmap(20, 20);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    // 一半太阳（浅色）一半月亮（深色）
-    if (m_isDarkTheme) {
-        // 深色主题时显示太阳图标
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(255, 200, 0));
-        painter.drawEllipse(5, 5, 10, 10);
-
-        // 太阳光芒
-        painter.setBrush(QColor(255, 180, 0));
-        for (int i = 0; i < 8; i++) {
-            double angle = i * 45 * 3.14159 / 180.0;
-            int x = static_cast<int>(10 + 14 * cos(angle));
-            int y = static_cast<int>(10 + 14 * sin(angle));
-            painter.drawRect(x - 1, y - 1, 2, 2);
-        }
-    } else {
-        // 浅色主题时显示月亮图标
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(100, 100, 150));
-        painter.drawEllipse(6, 6, 10, 10);
-        painter.setBrush(QColor(240, 240, 240));
-        painter.drawEllipse(8, 8, 7, 7);
-    }
-
-    return QIcon(pixmap);
+    return AppIconProvider::icon(AppIconProvider::Icon::Theme, 20, QColor("#F59E0B"));
 }
 
 void MainWindow::loadAgentSettings() {

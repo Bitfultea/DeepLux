@@ -1,31 +1,30 @@
 #include "AgentSettingsDialog.h"
-#include "core/manager/ConfigManager.h"
-#include "core/agent/AgentController.h"
 
-#include <QFormLayout>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QLineEdit>
+#include "../widgets/AppIconProvider.h"
+#include "core/agent/AgentController.h"
+#include "core/manager/ConfigManager.h"
+
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QFormLayout>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QSpinBox>
 #include <QTextEdit>
-#include <QPushButton>
-#include <QLabel>
-#include <QMessageBox>
-#include <QCheckBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-AgentSettingsDialog::AgentSettingsDialog(QWidget* parent)
-    : QDialog(parent)
-{
+AgentSettingsDialog::AgentSettingsDialog(QWidget* parent) : QDialog(parent) {
     setupUi();
     loadSettings();
 }
 
-void AgentSettingsDialog::setupUi()
-{
+void AgentSettingsDialog::setupUi() {
     setWindowTitle("Agent Settings");
     setMinimumWidth(500);
 
@@ -59,8 +58,10 @@ void AgentSettingsDialog::setupUi()
 
     m_permissionCombo = new QComboBox(this);
     m_permissionCombo->addItem("Observer (read-only)", static_cast<int>(AgentController::PermissionLevel::Observer));
-    m_permissionCombo->addItem("Advisor (confirm required)", static_cast<int>(AgentController::PermissionLevel::Advisor));
-    m_permissionCombo->addItem("Autopilot (auto-execute)", static_cast<int>(AgentController::PermissionLevel::Autopilot));
+    m_permissionCombo->addItem("Advisor (confirm required)",
+                               static_cast<int>(AgentController::PermissionLevel::Advisor));
+    m_permissionCombo->addItem("Autopilot (auto-execute)",
+                               static_cast<int>(AgentController::PermissionLevel::Autopilot));
     m_permissionCombo->setCurrentIndex(1);
     formLayout->addRow("Permission Level:", m_permissionCombo);
 
@@ -71,7 +72,8 @@ void AgentSettingsDialog::setupUi()
 
     m_toolsCheck = new QCheckBox("Enable Function Calling (tools)", this);
     m_toolsCheck->setChecked(true);
-    m_toolsCheck->setToolTip("Disable if your API provider does not support function calling (e.g. some DeepSeek models)");
+    m_toolsCheck->setToolTip(
+        "Disable if your API provider does not support function calling (e.g. some DeepSeek models)");
     formLayout->addRow(m_toolsCheck);
 
     mainLayout->addLayout(formLayout);
@@ -80,6 +82,9 @@ void AgentSettingsDialog::setupUi()
     QPushButton* okBtn = new QPushButton("OK", this);
     QPushButton* cancelBtn = new QPushButton("Cancel", this);
     QPushButton* testBtn = new QPushButton("Test Connection", this);
+    okBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
+    cancelBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Cancel, 16, QColor("#DC2626")));
+    testBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::TestConnection, 16, QColor("#2563EB")));
     btnLayout->addWidget(testBtn);
     btnLayout->addStretch();
     btnLayout->addWidget(okBtn);
@@ -91,13 +96,11 @@ void AgentSettingsDialog::setupUi()
         accept();
     });
     connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
-    connect(testBtn, &QPushButton::clicked, this, [this]() {
-        QMessageBox::information(this, "Test", "Connection test not yet implemented.");
-    });
+    connect(testBtn, &QPushButton::clicked, this,
+            [this]() { QMessageBox::information(this, "Test", "Connection test not yet implemented."); });
 }
 
-void AgentSettingsDialog::loadSettings()
-{
+void AgentSettingsDialog::loadSettings() {
     ConfigManager& cfg = ConfigManager::instance();
     m_endpointEdit->setText(cfg.groupString("agent", "endpoint", "https://api.openai.com/v1/chat/completions"));
     m_apiKeyEdit->setText(cfg.groupString("agent", "apiKey", ""));
@@ -106,15 +109,15 @@ void AgentSettingsDialog::loadSettings()
     m_tempSpin->setValue(cfg.groupDouble("agent", "temperature", 0.3));
     m_maxTokensSpin->setValue(cfg.groupInt("agent", "maxTokens", 4096));
     m_permissionCombo->setCurrentIndex(cfg.groupInt("agent", "permissionLevel", 1));
-    m_systemPromptEdit->setPlainText(cfg.groupString("agent", "systemPrompt",
-        "You are an AI assistant for DeepLux Vision, an industrial vision software. "
-        "You can help users create and manage vision inspection workflows. "
-        "You have access to tools for project management, module configuration, and flow execution. "
-        "Always be concise and professional."));
+    m_systemPromptEdit->setPlainText(
+        cfg.groupString("agent", "systemPrompt",
+                        "You are an AI assistant for DeepLux Vision, an industrial vision software. "
+                        "You can help users create and manage vision inspection workflows. "
+                        "You have access to tools for project management, module configuration, and flow execution. "
+                        "Always be concise and professional."));
 }
 
-void AgentSettingsDialog::saveSettings()
-{
+void AgentSettingsDialog::saveSettings() {
     ConfigManager& cfg = ConfigManager::instance();
     cfg.setGroupValue("agent", "endpoint", m_endpointEdit->text());
     cfg.setGroupValue("agent", "apiKey", m_apiKeyEdit->text());
@@ -127,43 +130,35 @@ void AgentSettingsDialog::saveSettings()
     cfg.save();
 }
 
-QString AgentSettingsDialog::endpoint() const
-{
+QString AgentSettingsDialog::endpoint() const {
     return m_endpointEdit->text();
 }
 
-QString AgentSettingsDialog::apiKey() const
-{
+QString AgentSettingsDialog::apiKey() const {
     return m_apiKeyEdit->text();
 }
 
-QString AgentSettingsDialog::model() const
-{
+QString AgentSettingsDialog::model() const {
     return m_modelEdit->text();
 }
 
-double AgentSettingsDialog::temperature() const
-{
+double AgentSettingsDialog::temperature() const {
     return m_tempSpin->value();
 }
 
-int AgentSettingsDialog::maxTokens() const
-{
+int AgentSettingsDialog::maxTokens() const {
     return m_maxTokensSpin->value();
 }
 
-AgentController::PermissionLevel AgentSettingsDialog::permissionLevel() const
-{
+AgentController::PermissionLevel AgentSettingsDialog::permissionLevel() const {
     return static_cast<AgentController::PermissionLevel>(m_permissionCombo->currentData().toInt());
 }
 
-QString AgentSettingsDialog::systemPrompt() const
-{
+QString AgentSettingsDialog::systemPrompt() const {
     return m_systemPromptEdit->toPlainText();
 }
 
-bool AgentSettingsDialog::toolsEnabled() const
-{
+bool AgentSettingsDialog::toolsEnabled() const {
     return m_toolsCheck->isChecked();
 }
 

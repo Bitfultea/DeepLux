@@ -1,18 +1,19 @@
 #include "SystemParamView.h"
-#include "core/config/SystemConfig.h"
+
+#include "../widgets/AppIconProvider.h"
 #include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QHBoxLayout>
+#include "core/config/SystemConfig.h"
+
 #include <QFormLayout>
+#include <QGroupBox>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
-#include <QGroupBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-SystemParamView::SystemParamView(QWidget* parent)
-    : QDialog(parent)
-{
+SystemParamView::SystemParamView(QWidget* parent) : QDialog(parent) {
     setWindowTitle(tr("System Parameters"));
     setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
     setMinimumSize(600, 550);
@@ -90,8 +91,7 @@ SystemParamView::SystemParamView(QWidget* parent)
     loadSettings();
 }
 
-void SystemParamView::setupUI()
-{
+void SystemParamView::setupUI() {
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(15);
     mainLayout->setContentsMargins(20, 20, 20, 20);
@@ -189,10 +189,14 @@ void SystemParamView::setupUI()
     btnLayout->setSpacing(10);
 
     m_applyBtn = new QPushButton(tr("Apply"), this);
+    m_applyBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
     m_applyBtn->setProperty("default", true);
     m_resetBtn = new QPushButton(tr("Reset"), this);
+    m_resetBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Undo, 16, QColor("#D97706")));
     m_saveBtn = new QPushButton(tr("Save"), this);
+    m_saveBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Save, 16, QColor("#2563EB")));
     m_closeBtn = new QPushButton(tr("Close"), this);
+    m_closeBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Close, 16, QColor("#4B5563")));
 
     btnLayout->addWidget(m_applyBtn);
     btnLayout->addWidget(m_resetBtn);
@@ -209,8 +213,7 @@ void SystemParamView::setupUI()
     connect(m_closeBtn, &QPushButton::clicked, this, &SystemParamView::onCloseClicked);
 }
 
-void SystemParamView::loadSettings()
-{
+void SystemParamView::loadSettings() {
     SystemConfig& config = SystemConfig::instance();
 
     m_autoLoadCheck->setChecked(config.autoLoadSolution());
@@ -218,18 +221,19 @@ void SystemParamView::loadSettings()
     m_autoSaveIntervalSpin->setValue(config.autoSaveInterval());
 
     int langIndex = m_languageCombo->findData(config.language());
-    if (langIndex >= 0) m_languageCombo->setCurrentIndex(langIndex);
+    if (langIndex >= 0)
+        m_languageCombo->setCurrentIndex(langIndex);
 
     int themeIndex = mThemeCombo->findData(config.theme());
-    if (themeIndex >= 0) mThemeCombo->setCurrentIndex(themeIndex);
+    if (themeIndex >= 0)
+        mThemeCombo->setCurrentIndex(themeIndex);
 
     m_cycleIntervalSpin->setValue(config.cycleInterval());
     m_logLevelCombo->setValue(config.logLevel());
     m_enableFileLogCheck->setChecked(config.enableFileLog());
 }
 
-void SystemParamView::saveSettings()
-{
+void SystemParamView::saveSettings() {
     SystemConfig& config = SystemConfig::instance();
 
     config.setAutoLoadSolution(m_autoLoadCheck->isChecked());
@@ -246,27 +250,23 @@ void SystemParamView::saveSettings()
     config.save();
 }
 
-void SystemParamView::onApplyClicked()
-{
+void SystemParamView::onApplyClicked() {
     saveSettings();
     Logger::instance().info("System parameters applied", "Config");
 }
 
-void SystemParamView::onResetClicked()
-{
+void SystemParamView::onResetClicked() {
     SystemConfig::instance().reset();
     loadSettings();
     Logger::instance().info("System parameters reset to defaults", "Config");
 }
 
-void SystemParamView::onSaveClicked()
-{
+void SystemParamView::onSaveClicked() {
     saveSettings();
     Logger::instance().info("System parameters saved", "Config");
 }
 
-void SystemParamView::onCloseClicked()
-{
+void SystemParamView::onCloseClicked() {
     accept();
 }
 

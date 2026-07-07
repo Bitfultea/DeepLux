@@ -99,6 +99,9 @@ target_include_directories(deeplux_core
         ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
+# Platform define propagated to all downstream targets
+target_compile_definitions(deeplux_core PUBLIC ${DEEPLUX_PLATFORM_DEFINE})
+
 if(Qt6_FOUND)
     target_link_libraries(deeplux_core PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::SerialPort Qt6::Concurrent)
 else()
@@ -108,12 +111,21 @@ else()
 endif()
 
 if(OpenCV_FOUND)
-    target_include_directories(deeplux_core PUBLIC ${OpenCV_INCLUDE_DIRS})
-    target_link_libraries(deeplux_core PUBLIC ${OpenCV_LIBS})
+    target_compile_definitions(deeplux_core PUBLIC DEEPLUX_HAS_OPENCV)
+    if(TARGET OpenCV::OpenCV)
+        target_link_libraries(deeplux_core PUBLIC OpenCV::OpenCV)
+    else()
+        target_include_directories(deeplux_core PUBLIC ${OpenCV_INCLUDE_DIRS})
+        target_link_libraries(deeplux_core PUBLIC ${OpenCV_LIBS})
+    endif()
 endif()
 
 if(Eigen3_FOUND)
-    target_include_directories(deeplux_core PUBLIC ${EIGEN3_INCLUDE_DIRS})
+    if(TARGET Eigen3::Eigen)
+        target_link_libraries(deeplux_core PUBLIC Eigen3::Eigen)
+    else()
+        target_include_directories(deeplux_core PUBLIC ${EIGEN3_INCLUDE_DIRS})
+    endif()
 endif()
 
 set_target_properties(deeplux_core PROPERTIES
@@ -123,11 +135,11 @@ set_target_properties(deeplux_core PROPERTIES
 )
 
 install(TARGETS deeplux_core
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib
-    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
 install(FILES ${CORE_HEADERS}
-    DESTINATION include/deeplux/core
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/deeplux/core
 )

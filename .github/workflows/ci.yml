@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ubuntu-qt5:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt5 dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qtbase5-dev qt5-qmake qttools5-dev \
+            libqt5serialport5-dev libeigen3-dev libopencv-dev \
+            libssl-dev pkg-config cmake build-essential
+
+      - name: Configure
+        run: cmake -S . -B build -DBUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Sync plugins
+        run: cmake --build build --target sync-plugins || true
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 30
+
+  ubuntu-qt6:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt6 dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-base-dev qt6-tools-dev \
+            libqt6serialport6-dev libeigen3-dev libopencv-dev \
+            libssl-dev pkg-config cmake build-essential
+
+      - name: Configure
+        run: cmake -S . -B build -DBUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 30

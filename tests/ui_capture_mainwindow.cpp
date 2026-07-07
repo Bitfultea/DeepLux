@@ -7,6 +7,7 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
+#include <QTreeWidget>
 #include <QWidget>
 #include <QtTest/QTest>
 #include <ui/views/MainWindow.h>
@@ -85,6 +86,14 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
 
     bool ok = true;
     ok = saveShot(window, dir, QStringLiteral("01-initial-1024.png")) && ok;
+
+    if (QTreeWidget* toolTree = window.findChild<QTreeWidget*>(QStringLiteral("ToolBoxTree"))) {
+        for (int i = 0; i < toolTree->topLevelItemCount(); ++i) {
+            toolTree->topLevelItem(i)->setExpanded(i == 1 || i == 3 || i == 4 || i == 7);
+        }
+        QCoreApplication::processEvents();
+        ok = saveShot(window, dir, QStringLiteral("09-tool-plugin-icons.png")) && ok;
+    }
 
     QTabWidget* processTabs = tabsByName(window, "ProcessTabWidget");
     clickTab(processTabs, tabIndex(processTabs, QStringLiteral("画布")));

@@ -1,19 +1,20 @@
 #include "GlobalVarView.h"
-#include "core/manager/GlobalVarManager.h"
-#include "core/common/VarModel.h"
+
+#include "../widgets/AppIconProvider.h"
 #include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QHBoxLayout>
+#include "core/common/VarModel.h"
+#include "core/manager/GlobalVarManager.h"
+
 #include <QFormLayout>
-#include <QHeaderView>
 #include <QGroupBox>
+#include <QHBoxLayout>
+#include <QHeaderView>
 #include <QLabel>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-GlobalVarView::GlobalVarView(QWidget* parent)
-    : QDialog(parent)
-{
+GlobalVarView::GlobalVarView(QWidget* parent) : QDialog(parent) {
     setWindowTitle(tr("Global Variables"));
     setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
     setMinimumSize(700, 500);
@@ -103,8 +104,7 @@ GlobalVarView::GlobalVarView(QWidget* parent)
     loadVariables();
 }
 
-void GlobalVarView::setupUI()
-{
+void GlobalVarView::setupUI() {
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(15);
     mainLayout->setContentsMargins(20, 20, 20, 20);
@@ -127,12 +127,17 @@ void GlobalVarView::setupUI()
     QHBoxLayout* btnLayout = new QHBoxLayout();
     btnLayout->setSpacing(10);
 
-    m_addBtn = new QPushButton(tr("➕ Add"), this);
-    m_deleteBtn = new QPushButton(tr("🗑 Delete"), this);
+    m_addBtn = new QPushButton(tr("Add"), this);
+    m_addBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Add, 16, QColor("#2563EB")));
+    m_deleteBtn = new QPushButton(tr("Delete"), this);
+    m_deleteBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Delete, 16, QColor("#DC2626")));
     m_deleteBtn->setEnabled(false);
-    m_moveUpBtn = new QPushButton(tr("⬆ Up"), this);
-    m_moveDownBtn = new QPushButton(tr("⬇ Down"), this);
-    m_executeBtn = new QPushButton(tr("▶ Execute"), this);
+    m_moveUpBtn = new QPushButton(tr("Up"), this);
+    m_moveUpBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::MoveUp, 16, QColor("#4B5563")));
+    m_moveDownBtn = new QPushButton(tr("Down"), this);
+    m_moveDownBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::MoveDown, 16, QColor("#4B5563")));
+    m_executeBtn = new QPushButton(tr("Execute"), this);
+    m_executeBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Execute, 16, QColor("#16A34A")));
     m_executeBtn->setEnabled(false);
 
     btnLayout->addWidget(m_addBtn);
@@ -152,19 +157,23 @@ void GlobalVarView::setupUI()
     QHBoxLayout* addLayout = new QHBoxLayout(addGroup);
 
     m_addTypeCombo = new QComboBox(this);
-    m_addTypeCombo->addItem("int", QVariant::fromValue((int)VarDataType::Int));
-    m_addTypeCombo->addItem("double", QVariant::fromValue((int)VarDataType::Double));
-    m_addTypeCombo->addItem("string", QVariant::fromValue((int)VarDataType::String));
-    m_addTypeCombo->addItem("bool", QVariant::fromValue((int)VarDataType::Bool));
-    m_addTypeCombo->addItem("int[]", QVariant::fromValue((int)VarDataType::IntArray));
-    m_addTypeCombo->addItem("double[]", QVariant::fromValue((int)VarDataType::DoubleArray));
-    m_addTypeCombo->addItem("string[]", QVariant::fromValue((int)VarDataType::StringArray));
-    m_addTypeCombo->addItem("bool[]", QVariant::fromValue((int)VarDataType::BoolArray));
+    m_addTypeCombo->addItem("int", QVariant::fromValue((int) VarDataType::Int));
+    m_addTypeCombo->addItem("double", QVariant::fromValue((int) VarDataType::Double));
+    m_addTypeCombo->addItem("string", QVariant::fromValue((int) VarDataType::String));
+    m_addTypeCombo->addItem("bool", QVariant::fromValue((int) VarDataType::Bool));
+    m_addTypeCombo->addItem("int[]", QVariant::fromValue((int) VarDataType::IntArray));
+    m_addTypeCombo->addItem("double[]", QVariant::fromValue((int) VarDataType::DoubleArray));
+    m_addTypeCombo->addItem("string[]", QVariant::fromValue((int) VarDataType::StringArray));
+    m_addTypeCombo->addItem("bool[]", QVariant::fromValue((int) VarDataType::BoolArray));
 
     QPushButton* addIntBtn = new QPushButton(tr("Add Int"), this);
+    addIntBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Add, 16, QColor("#2563EB")));
     QPushButton* addDoubleBtn = new QPushButton(tr("Add Double"), this);
+    addDoubleBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Add, 16, QColor("#2563EB")));
     QPushButton* addStringBtn = new QPushButton(tr("Add String"), this);
+    addStringBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Add, 16, QColor("#2563EB")));
     QPushButton* addBoolBtn = new QPushButton(tr("Add Bool"), this);
+    addBoolBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Add, 16, QColor("#2563EB")));
 
     addLayout->addWidget(new QLabel(tr("Type:"), this));
     addLayout->addWidget(m_addTypeCombo);
@@ -181,8 +190,10 @@ void GlobalVarView::setupUI()
     bottomLayout->setSpacing(10);
 
     m_applyBtn = new QPushButton(tr("Apply"), this);
+    m_applyBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
     m_applyBtn->setProperty("default", true);
     m_closeBtn = new QPushButton(tr("Close"), this);
+    m_closeBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Close, 16, QColor("#4B5563")));
 
     bottomLayout->addStretch();
     bottomLayout->addWidget(m_applyBtn);
@@ -204,8 +215,7 @@ void GlobalVarView::setupUI()
     connect(m_varTable, &QTableWidget::itemSelectionChanged, this, &GlobalVarView::onSelectionChanged);
 }
 
-void GlobalVarView::loadVariables()
-{
+void GlobalVarView::loadVariables() {
     m_varTable->setRowCount(0);
 
     QList<VarModel*> vars = GlobalVarManager::instance().getAllVariables();
@@ -224,8 +234,7 @@ void GlobalVarView::loadVariables()
     updateButtons();
 }
 
-void GlobalVarView::updateButtons()
-{
+void GlobalVarView::updateButtons() {
     bool hasSelection = m_varTable->currentRow() >= 0;
     m_deleteBtn->setEnabled(hasSelection);
     m_executeBtn->setEnabled(hasSelection);
@@ -233,10 +242,9 @@ void GlobalVarView::updateButtons()
     m_moveDownBtn->setEnabled(hasSelection && m_varTable->currentRow() < m_varTable->rowCount() - 1);
 }
 
-void GlobalVarView::onAddClicked()
-{
+void GlobalVarView::onAddClicked() {
     int typeIndex = m_addTypeCombo->currentData().toInt();
-    VarDataType type = (VarDataType)typeIndex;
+    VarDataType type = (VarDataType) typeIndex;
 
     VarModel* var = new VarModel();
     var->setName(QString("newVar%1").arg(GlobalVarManager::instance().count() + 1));
@@ -249,10 +257,10 @@ void GlobalVarView::onAddClicked()
     Logger::instance().info(QString("Variable added: %1").arg(var->name()), "Var");
 }
 
-void GlobalVarView::onDeleteClicked()
-{
+void GlobalVarView::onDeleteClicked() {
     int row = m_varTable->currentRow();
-    if (row < 0) return;
+    if (row < 0)
+        return;
 
     QString name = m_varTable->item(row, 1)->text();
     GlobalVarManager::instance().removeVariable(name);
@@ -261,10 +269,10 @@ void GlobalVarView::onDeleteClicked()
     Logger::instance().info(QString("Variable deleted: %1").arg(name), "Var");
 }
 
-void GlobalVarView::onMoveUpClicked()
-{
+void GlobalVarView::onMoveUpClicked() {
     int row = m_varTable->currentRow();
-    if (row <= 0) return;
+    if (row <= 0)
+        return;
 
     // Swap rows
     for (int col = 0; col < m_varTable->columnCount(); ++col) {
@@ -277,10 +285,10 @@ void GlobalVarView::onMoveUpClicked()
     m_varTable->selectRow(row - 1);
 }
 
-void GlobalVarView::onMoveDownClicked()
-{
+void GlobalVarView::onMoveDownClicked() {
     int row = m_varTable->currentRow();
-    if (row < 0 || row >= m_varTable->rowCount() - 1) return;
+    if (row < 0 || row >= m_varTable->rowCount() - 1)
+        return;
 
     // Swap rows
     for (int col = 0; col < m_varTable->columnCount(); ++col) {
@@ -293,34 +301,30 @@ void GlobalVarView::onMoveDownClicked()
     m_varTable->selectRow(row + 1);
 }
 
-void GlobalVarView::onExecuteClicked()
-{
+void GlobalVarView::onExecuteClicked() {
     int row = m_varTable->currentRow();
-    if (row < 0) return;
+    if (row < 0)
+        return;
 
     QString name = m_varTable->item(row, 1)->text();
     GlobalVarManager::instance().evaluateVariable(name);
     loadVariables();
 }
 
-void GlobalVarView::onApplyClicked()
-{
+void GlobalVarView::onApplyClicked() {
     Logger::instance().info("Global variables applied", "Var");
     accept();
 }
 
-void GlobalVarView::onCloseClicked()
-{
+void GlobalVarView::onCloseClicked() {
     accept();
 }
 
-void GlobalVarView::onSelectionChanged()
-{
+void GlobalVarView::onSelectionChanged() {
     updateButtons();
 }
 
-void GlobalVarView::onAddVarTypeChanged(const QString& type)
-{
+void GlobalVarView::onAddVarTypeChanged(const QString& type) {
     Q_UNUSED(type);
 }
 

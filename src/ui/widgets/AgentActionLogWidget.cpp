@@ -1,25 +1,24 @@
 #include "AgentActionLogWidget.h"
 
+#include "AppIconProvider.h"
+
+#include <QDateTime>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QPushButton>
 #include <QTableWidget>
 #include <QTableWidgetItem>
-#include <QPushButton>
-#include <QHBoxLayout>
 #include <QVBoxLayout>
-#include <QHeaderView>
-#include <QDateTime>
 
 namespace DeepLux {
 
-AgentActionLogWidget::AgentActionLogWidget(QWidget* parent)
-    : QWidget(parent)
-{
+AgentActionLogWidget::AgentActionLogWidget(QWidget* parent) : QWidget(parent) {
     setupUi();
 }
 
 AgentActionLogWidget::~AgentActionLogWidget() = default;
 
-void AgentActionLogWidget::setupUi()
-{
+void AgentActionLogWidget::setupUi() {
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(6, 6, 6, 6);
     mainLayout->setSpacing(4);
@@ -27,8 +26,8 @@ void AgentActionLogWidget::setupUi()
     m_table = new QTableWidget(this);
     m_table->setObjectName("AgentActionLogTable");
     m_table->setColumnCount(5);
-    m_table->setHorizontalHeaderLabels(
-        QStringList() << tr("时间") << tr("主体") << tr("动作") << tr("结果") << tr("参数"));
+    m_table->setHorizontalHeaderLabels(QStringList()
+                                       << tr("时间") << tr("主体") << tr("动作") << tr("结果") << tr("参数"));
     m_table->horizontalHeader()->setStretchLastSection(true);
     m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
@@ -43,7 +42,9 @@ void AgentActionLogWidget::setupUi()
 
     auto* btnLayout = new QHBoxLayout();
     m_undoButton = new QPushButton(tr("撤销最近操作"), this);
+    m_undoButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Undo, 16, QColor("#FFFFFF")));
     m_clearButton = new QPushButton(tr("清空"), this);
+    m_clearButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Clear, 16, QColor("#FFFFFF")));
     const int buttonHeight = qMax(28, m_undoButton->fontMetrics().height() + 8);
     m_undoButton->setMinimumHeight(buttonHeight);
     m_clearButton->setMinimumHeight(buttonHeight);
@@ -60,8 +61,7 @@ void AgentActionLogWidget::setupUi()
     applyTheme(false);
 }
 
-void AgentActionLogWidget::addEntry(const AgentActionLogEntry& entry)
-{
+void AgentActionLogWidget::addEntry(const AgentActionLogEntry& entry) {
     int row = m_table->rowCount();
     m_table->insertRow(row);
     m_entries.append(entry);
@@ -75,32 +75,29 @@ void AgentActionLogWidget::addEntry(const AgentActionLogEntry& entry)
     m_table->scrollToBottom();
 }
 
-void AgentActionLogWidget::updateEntryResult(int row, const QString& result)
-{
-    if (row < 0 || row >= m_table->rowCount()) return;
+void AgentActionLogWidget::updateEntryResult(int row, const QString& result) {
+    if (row < 0 || row >= m_table->rowCount())
+        return;
     m_table->setItem(row, 3, new QTableWidgetItem(result));
     if (row < m_entries.size()) {
         m_entries[row].result = result;
     }
 }
 
-void AgentActionLogWidget::onUndoClicked()
-{
+void AgentActionLogWidget::onUndoClicked() {
     int row = m_table->currentRow();
     if (row >= 0) {
         emit undoRequested(row);
     }
 }
 
-void AgentActionLogWidget::onClearClicked()
-{
+void AgentActionLogWidget::onClearClicked() {
     m_table->setRowCount(0);
     m_entries.clear();
     emit clearRequested();
 }
 
-void AgentActionLogWidget::applyTheme(bool isDark)
-{
+void AgentActionLogWidget::applyTheme(bool isDark) {
     const QString bg = isDark ? "#252525" : "#ffffff";
     const QString altBg = isDark ? "#2d2d2d" : "#f8f8f8";
     const QString headerBg = isDark ? "#333333" : "#f0f0f0";
@@ -108,14 +105,14 @@ void AgentActionLogWidget::applyTheme(bool isDark)
     const QString border = isDark ? "#3a3a3a" : "#dddddd";
 
     setStyleSheet(QString("background-color: %1; color: %2;").arg(bg, fg));
-    m_table->setStyleSheet(QString(
-        "QTableWidget { background-color: %1; alternate-background-color: %2; color: %3; border: none;"
-        " gridline-color: %4; }"
-        "QTableWidget::item { color: %3; border-bottom: 1px solid %4; }"
-        "QTableWidget::item:selected { background-color: #0078d7; color: #ffffff; }"
-        "QHeaderView::section { background-color: %5; color: %3; padding: 5px; border: none; font-size: 13px; }"
-        "QTableCornerButton::section { background-color: %5; border: none; }")
-        .arg(bg, altBg, fg, border, headerBg));
+    m_table->setStyleSheet(
+        QString("QTableWidget { background-color: %1; alternate-background-color: %2; color: %3; border: none;"
+                " gridline-color: %4; }"
+                "QTableWidget::item { color: %3; border-bottom: 1px solid %4; }"
+                "QTableWidget::item:selected { background-color: #0078d7; color: #ffffff; }"
+                "QHeaderView::section { background-color: %5; color: %3; padding: 5px; border: none; font-size: 13px; }"
+                "QTableCornerButton::section { background-color: %5; border: none; }")
+            .arg(bg, altBg, fg, border, headerBg));
 
     const QString buttonStyle =
         QString("QPushButton { background-color: #0078d7; color: white; padding: 4px 12px; border: none; }"

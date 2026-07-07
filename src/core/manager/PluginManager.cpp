@@ -506,7 +506,7 @@ IModule* PluginManager::createModule(const QString& name) {
     if (!mod)
         return nullptr;
 
-    // 图标优先级: PNG文件 > 自动生成 > 空
+    // 图标优先级: PNG 文件 > 统一运行时生成 > 空
     if (hasGuiApplication() && mod->icon().isNull() && m_modules.contains(name)) {
         PluginInfo info = m_modules[name];
         // 先尝试加载 PNG 文件
@@ -517,7 +517,7 @@ IModule* PluginManager::createModule(const QString& name) {
                 mod->setIcon(QIcon(pm));
             }
         }
-        // PNG 不存在或加载失败 → 运行时生成彩色缩写图标
+        // PNG 不存在或加载失败 → 运行时生成统一风格图标
         if (mod->icon().isNull()) {
             mod->setIcon(ModuleIconProvider::instance().iconFor(info.name, info.category));
         }

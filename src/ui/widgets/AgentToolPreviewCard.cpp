@@ -1,25 +1,23 @@
 #include "AgentToolPreviewCard.h"
+
 #include "AgentMessageBubble.h"
+#include "AppIconProvider.h"
 #include "core/agent/ToolSchema.h"
 
-#include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QJsonDocument>
 #include <QLabel>
 #include <QPushButton>
-#include <QJsonDocument>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
 AgentToolPreviewCard::AgentToolPreviewCard(const QList<ToolItem>& tools, bool isDark, QWidget* parent)
-    : QWidget(parent)
-    , m_tools(tools)
-    , m_isDark(isDark)
-{
+    : QWidget(parent), m_tools(tools), m_isDark(isDark) {
     setupUi();
 }
 
-void AgentToolPreviewCard::setupUi()
-{
+void AgentToolPreviewCard::setupUi() {
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(8, 2, 8, 2);
     mainLayout->setSpacing(2);
@@ -28,17 +26,17 @@ void AgentToolPreviewCard::setupUi()
 
     // 标题 + 工具列表（紧凑内联）
     QStringList lines;
-    lines.append(QString("<span style=\"font-weight:bold;color:%1;\">🔧 Agent wants to execute:</span>")
-                 .arg(theme.toolFg.name()));
+    lines.append(
+        QString("<span style=\"font-weight:bold;color:%1;\">Agent wants to execute:</span>").arg(theme.toolFg.name()));
 
     for (int i = 0; i < m_tools.size(); ++i) {
         const ToolItem& t = m_tools[i];
         const bool dangerous = ToolSchema::instance().findTool(t.name).dangerous;
         const QString riskLabel = dangerous ? tr(" [高风险]") : QString();
         QString line = QString("<span style=\"color:%1;\">  %2. %3%4</span>")
-            .arg(theme.toolFg.name())
-            .arg(i + 1)
-            .arg(t.name, riskLabel);
+                           .arg(theme.toolFg.name())
+                           .arg(i + 1)
+                           .arg(t.name, riskLabel);
 
         // 内联参数: key: "value" 格式, 紧凑单行
         if (!t.params.isEmpty()) {
@@ -46,19 +44,22 @@ void AgentToolPreviewCard::setupUi()
             for (auto it = t.params.begin(); it != t.params.end(); ++it) {
                 QJsonValue val = it.value();
                 QString valStr;
-                if (val.isString()) valStr = QString("\"%1\"").arg(val.toString());
-                else valStr = QString(QJsonDocument(QJsonObject{{it.key(), val}})
-                    .toJson(QJsonDocument::Compact)).mid(1 + it.key().length() + 3).chopped(1);
+                if (val.isString())
+                    valStr = QString("\"%1\"").arg(val.toString());
+                else
+                    valStr = QString(QJsonDocument(QJsonObject{{it.key(), val}}).toJson(QJsonDocument::Compact))
+                                 .mid(1 + it.key().length() + 3)
+                                 .chopped(1);
                 paramParts.append(QString("%1: %2").arg(it.key()).arg(valStr));
             }
             line = QString("<span style=\"color:%1;\">  %2. %3(</span>"
                            "<span style=\"color:%4;\">%5</span>"
                            "<span style=\"color:%1;\">)</span>")
-	                .arg(theme.toolFg.name())
-	                .arg(i + 1)
-	                .arg(t.name)
-	                .arg(theme.codeBlockFg.name())
-	                .arg(paramParts.join(", ") + riskLabel);
+                       .arg(theme.toolFg.name())
+                       .arg(i + 1)
+                       .arg(t.name)
+                       .arg(theme.codeBlockFg.name())
+                       .arg(paramParts.join(", ") + riskLabel);
         }
         lines.append(line);
     }
@@ -75,7 +76,9 @@ void AgentToolPreviewCard::setupUi()
     btnLayout->addStretch();
 
     m_cancelBtn = new QPushButton(tr("取消"), this);
+    m_cancelBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Cancel, 14, QColor("#DC2626")));
     m_confirmBtn = new QPushButton(tr("确认执行"), this);
+    m_confirmBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 14, QColor("#16A34A")));
     const int buttonHeight = qMax(28, m_confirmBtn->fontMetrics().height() + 8);
     m_cancelBtn->setMinimumHeight(buttonHeight);
     m_confirmBtn->setMinimumHeight(buttonHeight);
@@ -98,27 +101,26 @@ void AgentToolPreviewCard::setupUi()
     applyTheme(m_isDark);
 }
 
-void AgentToolPreviewCard::applyTheme(bool isDark)
-{
+void AgentToolPreviewCard::applyTheme(bool isDark) {
     m_isDark = isDark;
     ChatTheme theme = isDark ? ChatTheme::dark() : ChatTheme::light();
 
     setStyleSheet(QString("AgentToolPreviewCard { border-left: 2px solid #f59e0b; }"));
 
     if (m_cancelBtn) {
-        m_cancelBtn->setStyleSheet(QString(
-            "QPushButton { background: transparent; color: %1; border: 1px solid %2; "
-            "border-radius: 3px; padding: 0 8px; font-size: 11px; }"
-            "QPushButton:hover { background: %3; }"
-        ).arg(theme.errorColor.name()).arg(theme.errorColor.name())
-         .arg(theme.inputBorder.name()));
+        m_cancelBtn->setStyleSheet(QString("QPushButton { background: transparent; color: %1; border: 1px solid %2; "
+                                           "border-radius: 3px; padding: 0 8px; font-size: 11px; }"
+                                           "QPushButton:hover { background: %3; }")
+                                       .arg(theme.errorColor.name())
+                                       .arg(theme.errorColor.name())
+                                       .arg(theme.inputBorder.name()));
     }
     if (m_confirmBtn) {
-        m_confirmBtn->setStyleSheet(QString(
-            "QPushButton { background: transparent; color: %1; border: 1px solid %1; "
-            "border-radius: 3px; padding: 0 8px; font-size: 11px; }"
-            "QPushButton:hover { background: %2; }"
-        ).arg(theme.agentName.name()).arg(theme.inputBorder.name()));
+        m_confirmBtn->setStyleSheet(QString("QPushButton { background: transparent; color: %1; border: 1px solid %1; "
+                                            "border-radius: 3px; padding: 0 8px; font-size: 11px; }"
+                                            "QPushButton:hover { background: %2; }")
+                                        .arg(theme.agentName.name())
+                                        .arg(theme.inputBorder.name()));
     }
 }
 

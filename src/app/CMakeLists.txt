@@ -19,8 +19,12 @@ else()
 endif()
 
 if(OpenCV_FOUND)
-    target_include_directories(DeepLux PRIVATE ${OpenCV_INCLUDE_DIRS})
-    target_link_libraries(DeepLux PRIVATE ${OpenCV_LIBS})
+    if(TARGET OpenCV::OpenCV)
+        target_link_libraries(DeepLux PRIVATE OpenCV::OpenCV)
+    else()
+        target_include_directories(DeepLux PRIVATE ${OpenCV_INCLUDE_DIRS})
+        target_link_libraries(DeepLux PRIVATE ${OpenCV_LIBS})
+    endif()
 endif()
 
 if(WIN32)
@@ -35,15 +39,15 @@ else()
 endif()
 
 install(TARGETS DeepLux
-    RUNTIME DESTINATION bin
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
 # Install CLI wrapper (Linux only)
 if(LINUX)
     install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/deeplux
-            DESTINATION bin
+            DESTINATION ${CMAKE_INSTALL_BINDIR}
             RENAME deeplux)
     install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/deeplux.sh
-            DESTINATION bin
+            DESTINATION ${CMAKE_INSTALL_BINDIR}
             RENAME deeplux.sh)
 endif()

@@ -12,6 +12,7 @@ set(UI_SOURCES
     widgets/AgentChatPanel.cpp
     widgets/AgentMessageBubble.cpp
     widgets/AgentToolPreviewCard.cpp
+    widgets/AppIconProvider.cpp
     widgets/ToolBox.cpp
     dialogs/AgentSettingsDialog.cpp
     widgets/ViewportWidget.cpp
@@ -63,6 +64,7 @@ set(UI_HEADERS
     widgets/AgentChatPanel.h
     widgets/AgentMessageBubble.h
     widgets/AgentToolPreviewCard.h
+    widgets/AppIconProvider.h
     widgets/ToolBox.h
     dialogs/AgentSettingsDialog.h
     widgets/ViewportWidget.h
@@ -108,15 +110,18 @@ target_link_libraries(deeplux_ui
 )
 
 if(OpenCV_FOUND)
-    target_link_libraries(deeplux_ui PUBLIC ${OpenCV_LIBS})
-    target_include_directories(deeplux_ui PUBLIC ${OpenCV_INCLUDE_DIRS})
+    if(TARGET OpenCV::OpenCV)
+        target_link_libraries(deeplux_ui PUBLIC OpenCV::OpenCV)
+    else()
+        target_link_libraries(deeplux_ui PUBLIC ${OpenCV_LIBS})
+        target_include_directories(deeplux_ui PUBLIC ${OpenCV_INCLUDE_DIRS})
+    endif()
 endif()
 
 if(Qt6_FOUND)
     target_link_libraries(deeplux_ui PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL)
 else()
     target_link_libraries(deeplux_ui PUBLIC Qt5::Core Qt5::Gui Qt5::Widgets)
-    # OpenGL for 3D rendering
     find_package(OpenGL QUIET)
     if(OpenGL_FOUND)
         target_link_libraries(deeplux_ui PUBLIC ${OPENGL_LIBRARIES})
@@ -130,7 +135,7 @@ set_target_properties(deeplux_ui PROPERTIES
 )
 
 install(TARGETS deeplux_ui
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib
-    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )

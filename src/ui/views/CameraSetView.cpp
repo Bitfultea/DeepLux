@@ -1,20 +1,21 @@
 #include "CameraSetView.h"
+
+#include "../widgets/AppIconProvider.h"
+#include "common/Logger.h"
 #include "core/device/CameraManager.h"
 #include "core/manager/PluginManager.h"
-#include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QHBoxLayout>
+
 #include <QFormLayout>
-#include <QHeaderView>
 #include <QGroupBox>
+#include <QHBoxLayout>
+#include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-CameraSetView::CameraSetView(QWidget* parent)
-    : QDialog(parent)
-{
+CameraSetView::CameraSetView(QWidget* parent) : QDialog(parent) {
     setWindowTitle(tr("Camera Settings"));
     setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
     setMinimumSize(700, 500);
@@ -97,8 +98,7 @@ CameraSetView::CameraSetView(QWidget* parent)
     loadCameras();
 }
 
-void CameraSetView::setupUI()
-{
+void CameraSetView::setupUI() {
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(15);
     mainLayout->setContentsMargins(20, 20, 20, 20);
@@ -121,11 +121,15 @@ void CameraSetView::setupUI()
     QHBoxLayout* btnLayout = new QHBoxLayout();
     btnLayout->setSpacing(10);
 
-    m_refreshBtn = new QPushButton(tr("🔄 Refresh"), this);
-    m_connectBtn = new QPushButton(tr("▶ Connect"), this);
-    m_disconnectBtn = new QPushButton(tr("■ Disconnect"), this);
+    m_refreshBtn = new QPushButton(tr("Refresh"), this);
+    m_refreshBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Refresh, 16, QColor("#2563EB")));
+    m_connectBtn = new QPushButton(tr("Connect"), this);
+    m_connectBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Connect, 16, QColor("#16A34A")));
+    m_disconnectBtn = new QPushButton(tr("Disconnect"), this);
+    m_disconnectBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Disconnect, 16, QColor("#DC2626")));
     m_disconnectBtn->setEnabled(false);
-    m_deleteBtn = new QPushButton(tr("🗑 Delete"), this);
+    m_deleteBtn = new QPushButton(tr("Delete"), this);
+    m_deleteBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Delete, 16, QColor("#DC2626")));
     m_deleteBtn->setEnabled(false);
 
     btnLayout->addWidget(m_refreshBtn);
@@ -164,8 +168,10 @@ void CameraSetView::setupUI()
     bottomLayout->setSpacing(10);
 
     m_applyBtn = new QPushButton(tr("Apply"), this);
+    m_applyBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
     m_applyBtn->setProperty("default", true);
     m_closeBtn = new QPushButton(tr("Close"), this);
+    m_closeBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Close, 16, QColor("#4B5563")));
 
     bottomLayout->addStretch();
     bottomLayout->addWidget(m_applyBtn);
@@ -183,15 +189,17 @@ void CameraSetView::setupUI()
     connect(m_cameraTable, &QTableWidget::itemSelectionChanged, this, &CameraSetView::onCameraSelectionChanged);
 }
 
-void CameraSetView::loadCameras()
-{
+void CameraSetView::loadCameras() {
     m_cameraTable->setRowCount(0);
 
     // 等待插件加载完成后再发现相机
-    connect(&PluginManager::instance(), &PluginManager::allPluginsLoaded, this, [this]() {
-        disconnect(&PluginManager::instance(), &PluginManager::allPluginsLoaded, this, nullptr);
-        loadCamerasInternal();
-    }, Qt::UniqueConnection);
+    connect(
+        &PluginManager::instance(), &PluginManager::allPluginsLoaded, this,
+        [this]() {
+            disconnect(&PluginManager::instance(), &PluginManager::allPluginsLoaded, this, nullptr);
+            loadCamerasInternal();
+        },
+        Qt::UniqueConnection);
 
     // 如果插件已经加载完成，立即加载
     if (PluginManager::instance().isInitialized()) {
@@ -200,8 +208,7 @@ void CameraSetView::loadCameras()
     }
 }
 
-void CameraSetView::loadCamerasInternal()
-{
+void CameraSetView::loadCamerasInternal() {
     QList<CameraStatus> cameras = CameraManager::instance().discoverCameras();
 
     for (const CameraStatus& cam : cameras) {
@@ -210,16 +217,16 @@ void CameraSetView::loadCamerasInternal()
 
         m_cameraTable->setItem(row, 0, new QTableWidgetItem(cam.name));
         m_cameraTable->setItem(row, 1, new QTableWidgetItem(cam.deviceId));
-        m_cameraTable->setItem(row, 2, new QTableWidgetItem(QString()));  // IP not available in status
-        m_cameraTable->setItem(row, 3, new QTableWidgetItem(cam.state == CameraState::Connected ? tr("Connected") : tr("Disconnected")));
-        m_cameraTable->setItem(row, 4, new QTableWidgetItem(QString()));  // Serial not available in status
+        m_cameraTable->setItem(row, 2, new QTableWidgetItem(QString())); // IP not available in status
+        m_cameraTable->setItem(
+            row, 3, new QTableWidgetItem(cam.state == CameraState::Connected ? tr("Connected") : tr("Disconnected")));
+        m_cameraTable->setItem(row, 4, new QTableWidgetItem(QString())); // Serial not available in status
     }
 
     updateButtons();
 }
 
-void CameraSetView::updateButtons()
-{
+void CameraSetView::updateButtons() {
     bool hasSelection = m_cameraTable->currentRow() >= 0;
     m_deleteBtn->setEnabled(hasSelection);
 
@@ -235,18 +242,17 @@ void CameraSetView::updateButtons()
     }
 }
 
-void CameraSetView::onRefreshClicked()
-{
+void CameraSetView::onRefreshClicked() {
     loadCameras();
     Logger::instance().info("Camera list refreshed", "Camera");
 }
 
-void CameraSetView::onConnectClicked()
-{
+void CameraSetView::onConnectClicked() {
     int row = m_cameraTable->currentRow();
-    if (row < 0) return;
+    if (row < 0)
+        return;
 
-    QString cameraId = m_cameraTable->item(row, 1)->text();  // deviceId is in column 1
+    QString cameraId = m_cameraTable->item(row, 1)->text(); // deviceId is in column 1
     bool ok = CameraManager::instance().connectCamera(cameraId);
 
     if (!ok) {
@@ -264,12 +270,12 @@ void CameraSetView::onConnectClicked()
     updateButtons();
 }
 
-void CameraSetView::onDisconnectClicked()
-{
+void CameraSetView::onDisconnectClicked() {
     int row = m_cameraTable->currentRow();
-    if (row < 0) return;
+    if (row < 0)
+        return;
 
-    QString cameraId = m_cameraTable->item(row, 1)->text();  // deviceId is in column 1
+    QString cameraId = m_cameraTable->item(row, 1)->text(); // deviceId is in column 1
     CameraManager::instance().disconnectCamera(cameraId);
 
     // 直接更新当前行状态，避免重新枚举导致 SDK 崩溃
@@ -277,17 +283,16 @@ void CameraSetView::onDisconnectClicked()
     updateButtons();
 }
 
-void CameraSetView::onDeleteClicked()
-{
+void CameraSetView::onDeleteClicked() {
     int row = m_cameraTable->currentRow();
-    if (row < 0) return;
+    if (row < 0)
+        return;
 
     m_cameraTable->removeRow(row);
     updateButtons();
 }
 
-void CameraSetView::onApplyClicked()
-{
+void CameraSetView::onApplyClicked() {
     // Apply camera settings
     QString ip = m_ipEdit->text();
     int port = m_portSpin->value();
@@ -296,13 +301,11 @@ void CameraSetView::onApplyClicked()
     accept();
 }
 
-void CameraSetView::onCloseClicked()
-{
+void CameraSetView::onCloseClicked() {
     accept();
 }
 
-void CameraSetView::onCameraSelectionChanged()
-{
+void CameraSetView::onCameraSelectionChanged() {
     updateButtons();
 
     int row = m_cameraTable->currentRow();

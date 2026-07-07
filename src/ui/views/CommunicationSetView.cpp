@@ -1,19 +1,20 @@
 #include "CommunicationSetView.h"
-#include "core/communication/CommunicationManager.h"
+
+#include "../widgets/AppIconProvider.h"
 #include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QHBoxLayout>
+#include "core/communication/CommunicationManager.h"
+
 #include <QFormLayout>
-#include <QHeaderView>
 #include <QGroupBox>
+#include <QHBoxLayout>
+#include <QHeaderView>
 #include <QLabel>
 #include <QSerialPortInfo>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-CommunicationSetView::CommunicationSetView(QWidget* parent)
-    : QDialog(parent)
-{
+CommunicationSetView::CommunicationSetView(QWidget* parent) : QDialog(parent) {
     setWindowTitle(tr("Communication Settings"));
     setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
     setMinimumSize(750, 550);
@@ -96,8 +97,7 @@ CommunicationSetView::CommunicationSetView(QWidget* parent)
     loadCommunications();
 }
 
-void CommunicationSetView::setupUI()
-{
+void CommunicationSetView::setupUI() {
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(15);
     mainLayout->setContentsMargins(20, 20, 20, 20);
@@ -121,11 +121,15 @@ void CommunicationSetView::setupUI()
     QHBoxLayout* btnLayout = new QHBoxLayout();
     btnLayout->setSpacing(10);
 
-    m_addBtn = new QPushButton(tr("➕ Add"), this);
-    m_deleteBtn = new QPushButton(tr("🗑 Delete"), this);
+    m_addBtn = new QPushButton(tr("Add"), this);
+    m_addBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Add, 16, QColor("#2563EB")));
+    m_deleteBtn = new QPushButton(tr("Delete"), this);
+    m_deleteBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Delete, 16, QColor("#DC2626")));
     m_deleteBtn->setEnabled(false);
-    m_connectBtn = new QPushButton(tr("▶ Connect"), this);
-    m_disconnectBtn = new QPushButton(tr("■ Disconnect"), this);
+    m_connectBtn = new QPushButton(tr("Connect"), this);
+    m_connectBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Connect, 16, QColor("#16A34A")));
+    m_disconnectBtn = new QPushButton(tr("Disconnect"), this);
+    m_disconnectBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Disconnect, 16, QColor("#DC2626")));
     m_disconnectBtn->setEnabled(false);
 
     btnLayout->addWidget(m_addBtn);
@@ -149,10 +153,10 @@ void CommunicationSetView::setupUI()
 
     m_typeCombo = new QComboBox(this);
     m_typeCombo->setObjectName("CommunicationTypeCombo");
-    m_typeCombo->addItem("TCP Client", (int)CommunicationType::TCP_Client);
-    m_typeCombo->addItem("TCP Server", (int)CommunicationType::TCP_Server);
-    m_typeCombo->addItem("Serial Port", (int)CommunicationType::SerialPort);
-    m_typeCombo->addItem("PLC (Modbus TCP)", (int)CommunicationType::PLC);
+    m_typeCombo->addItem("TCP Client", (int) CommunicationType::TCP_Client);
+    m_typeCombo->addItem("TCP Server", (int) CommunicationType::TCP_Server);
+    m_typeCombo->addItem("Serial Port", (int) CommunicationType::SerialPort);
+    m_typeCombo->addItem("PLC (Modbus TCP)", (int) CommunicationType::PLC);
     settingsLayout->addRow(tr("Type:"), m_typeCombo);
 
     // TCP Settings
@@ -170,7 +174,7 @@ void CommunicationSetView::setupUI()
     // Serial Settings
     m_portNameCombo = new QComboBox(this);
     m_portNameCombo->setObjectName("CommunicationPortNameCombo");
-    foreach (const QSerialPortInfo &info, QSerialPortInfo::availablePorts()) {
+    foreach (const QSerialPortInfo& info, QSerialPortInfo::availablePorts()) {
         m_portNameCombo->addItem(info.portName());
     }
     settingsLayout->addRow(tr("Port Name:"), m_portNameCombo);
@@ -195,8 +199,10 @@ void CommunicationSetView::setupUI()
     bottomLayout->setSpacing(10);
 
     m_applyBtn = new QPushButton(tr("Apply"), this);
+    m_applyBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
     m_applyBtn->setProperty("default", true);
     m_closeBtn = new QPushButton(tr("Close"), this);
+    m_closeBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Close, 16, QColor("#4B5563")));
 
     bottomLayout->addStretch();
     bottomLayout->addWidget(m_applyBtn);
@@ -212,13 +218,13 @@ void CommunicationSetView::setupUI()
     connect(m_applyBtn, &QPushButton::clicked, this, &CommunicationSetView::onApplyClicked);
     connect(m_closeBtn, &QPushButton::clicked, this, &QDialog::accept);
     connect(m_commTable, &QTableWidget::itemSelectionChanged, this, &CommunicationSetView::onCommSelectionChanged);
-    connect(m_typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &CommunicationSetView::onTypeChanged);
+    connect(m_typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &CommunicationSetView::onTypeChanged);
 
     onTypeChanged(m_typeCombo->currentIndex());
 }
 
-void CommunicationSetView::loadCommunications()
-{
+void CommunicationSetView::loadCommunications() {
     m_commTable->setRowCount(0);
 
     const QList<CommunicationConfig>& configs = CommunicationManager::instance().configs();
@@ -233,11 +239,20 @@ void CommunicationSetView::loadCommunications()
 
         QString typeStr;
         switch (config.type) {
-            case CommunicationType::TCP_Client: typeStr = "TCP Client"; break;
-            case CommunicationType::TCP_Server: typeStr = "TCP Server"; break;
-            case CommunicationType::SerialPort: typeStr = "Serial"; break;
-            case CommunicationType::PLC: typeStr = "PLC"; break;
-            default: typeStr = "Unknown";
+        case CommunicationType::TCP_Client:
+            typeStr = "TCP Client";
+            break;
+        case CommunicationType::TCP_Server:
+            typeStr = "TCP Server";
+            break;
+        case CommunicationType::SerialPort:
+            typeStr = "Serial";
+            break;
+        case CommunicationType::PLC:
+            typeStr = "PLC";
+            break;
+        default:
+            typeStr = "Unknown";
         }
         m_commTable->setItem(row, 1, new QTableWidgetItem(typeStr));
 
@@ -245,16 +260,16 @@ void CommunicationSetView::loadCommunications()
         m_commTable->setItem(row, 3, new QTableWidgetItem(QString::number(config.port)));
 
         CommunicationState state = CommunicationManager::instance().state(config.id);
-        QString stateStr = (state == CommunicationState::Connected) ? tr("Connected") :
-                          (state == CommunicationState::Listening) ? tr("Listening") : tr("Disconnected");
+        QString stateStr = (state == CommunicationState::Connected)   ? tr("Connected")
+                           : (state == CommunicationState::Listening) ? tr("Listening")
+                                                                      : tr("Disconnected");
         m_commTable->setItem(row, 4, new QTableWidgetItem(stateStr));
     }
 
     updateButtons();
 }
 
-void CommunicationSetView::updateButtons()
-{
+void CommunicationSetView::updateButtons() {
     bool hasSelection = m_commTable->currentRow() >= 0;
     m_deleteBtn->setEnabled(hasSelection);
 
@@ -270,8 +285,7 @@ void CommunicationSetView::updateButtons()
     }
 }
 
-void CommunicationSetView::onAddClicked()
-{
+void CommunicationSetView::onAddClicked() {
     m_commTable->clearSelection();
     m_nameEdit->setText(tr("New Connection"));
     m_typeCombo->setCurrentIndex(m_typeCombo->findData(static_cast<int>(CommunicationType::TCP_Client)));
@@ -280,10 +294,10 @@ void CommunicationSetView::onAddClicked()
     updateButtons();
 }
 
-void CommunicationSetView::onDeleteClicked()
-{
+void CommunicationSetView::onDeleteClicked() {
     int row = m_commTable->currentRow();
-    if (row < 0) return;
+    if (row < 0)
+        return;
 
     const QString configId = m_commTable->item(row, 0)->data(Qt::UserRole).toString();
     CommunicationManager::instance().removeConfig(configId);
@@ -291,10 +305,10 @@ void CommunicationSetView::onDeleteClicked()
     updateButtons();
 }
 
-void CommunicationSetView::onConnectClicked()
-{
+void CommunicationSetView::onConnectClicked() {
     int row = m_commTable->currentRow();
-    if (row < 0) return;
+    if (row < 0)
+        return;
 
     QString configId = m_commTable->item(row, 0)->data(Qt::UserRole).toString();
     CommunicationManager::instance().connect(configId);
@@ -302,10 +316,10 @@ void CommunicationSetView::onConnectClicked()
     loadCommunications();
 }
 
-void CommunicationSetView::onDisconnectClicked()
-{
+void CommunicationSetView::onDisconnectClicked() {
     int row = m_commTable->currentRow();
-    if (row < 0) return;
+    if (row < 0)
+        return;
 
     QString configId = m_commTable->item(row, 0)->data(Qt::UserRole).toString();
     CommunicationManager::instance().disconnect(configId);
@@ -313,8 +327,7 @@ void CommunicationSetView::onDisconnectClicked()
     loadCommunications();
 }
 
-void CommunicationSetView::onApplyClicked()
-{
+void CommunicationSetView::onApplyClicked() {
     CommunicationConfig config;
     int row = m_commTable->currentRow();
     if (row >= 0 && m_commTable->item(row, 0)) {
@@ -341,22 +354,18 @@ void CommunicationSetView::onApplyClicked()
         return;
     }
 
-    Logger::instance().info(QString("Communication settings applied: %1 - %2:%3")
-                                .arg(config.name)
-                                .arg(config.ipAddress)
-                                .arg(config.port),
-                            "Comm");
+    Logger::instance().info(
+        QString("Communication settings applied: %1 - %2:%3").arg(config.name).arg(config.ipAddress).arg(config.port),
+        "Comm");
     loadCommunications();
     accept();
 }
 
-void CommunicationSetView::onCloseClicked()
-{
+void CommunicationSetView::onCloseClicked() {
     accept();
 }
 
-void CommunicationSetView::onCommSelectionChanged()
-{
+void CommunicationSetView::onCommSelectionChanged() {
     int row = m_commTable->currentRow();
     if (row >= 0 && m_commTable->item(row, 0)) {
         const QString configId = m_commTable->item(row, 0)->data(Qt::UserRole).toString();
@@ -384,16 +393,15 @@ void CommunicationSetView::onCommSelectionChanged()
     updateButtons();
 }
 
-void CommunicationSetView::onTypeChanged(int index)
-{
+void CommunicationSetView::onTypeChanged(int index) {
     if (index < 0) {
         return;
     }
 
     const CommunicationType type = static_cast<CommunicationType>(m_typeCombo->itemData(index).toInt());
     const bool isSerial = (type == CommunicationType::SerialPort);
-    const bool isNetwork =
-        (type == CommunicationType::TCP_Client || type == CommunicationType::TCP_Server || type == CommunicationType::PLC);
+    const bool isNetwork = (type == CommunicationType::TCP_Client || type == CommunicationType::TCP_Server ||
+                            type == CommunicationType::PLC);
 
     if (m_ipEdit) {
         m_ipEdit->setEnabled(isNetwork);

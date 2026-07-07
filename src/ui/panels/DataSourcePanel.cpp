@@ -1,30 +1,29 @@
 #include "DataSourcePanel.h"
-#include "core/model/Project.h"
-#include "core/model/DataSource.h"
-#include "core/common/Logger.h"
 
-#include <QVBoxLayout>
-#include <QHeaderView>
-#include <QMenu>
+#include "core/common/Logger.h"
+#include "core/model/DataSource.h"
+#include "core/model/Project.h"
+#include "ui/widgets/AppIconProvider.h"
+
+#include <QClipboard>
 #include <QDateTime>
 #include <QDesktopServices>
-#include <QClipboard>
-#include <QGuiApplication>
 #include <QFileInfo>
+#include <QGuiApplication>
+#include <QHeaderView>
+#include <QMenu>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-DataSourcePanel::DataSourcePanel(QWidget* parent)
-    : QWidget(parent)
-{
+DataSourcePanel::DataSourcePanel(QWidget* parent) : QWidget(parent) {
     setupUi();
     createActions();
 }
 
 DataSourcePanel::~DataSourcePanel() = default;
 
-void DataSourcePanel::setupUi()
-{
+void DataSourcePanel::setupUi() {
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(6, 6, 6, 6);
     layout->setSpacing(4);
@@ -34,18 +33,15 @@ void DataSourcePanel::setupUi()
     m_treeWidget->setDragEnabled(true);
     m_treeWidget->setSelectionMode(QAbstractItemView::SingleSelection);
     m_treeWidget->setContextMenuPolicy(Qt::CustomContextMenu);
-    m_treeWidget->setIndentation(0);  // 扁平列表，无缩进
+    m_treeWidget->setIndentation(0); // 扁平列表，无缩进
 
     layout->addWidget(m_treeWidget);
 
-    connect(m_treeWidget, &QTreeWidget::itemDoubleClicked,
-            this, &DataSourcePanel::onItemDoubleClicked);
-    connect(m_treeWidget, &QTreeWidget::customContextMenuRequested,
-            this, &DataSourcePanel::onContextMenu);
+    connect(m_treeWidget, &QTreeWidget::itemDoubleClicked, this, &DataSourcePanel::onItemDoubleClicked);
+    connect(m_treeWidget, &QTreeWidget::customContextMenuRequested, this, &DataSourcePanel::onContextMenu);
 }
 
-void DataSourcePanel::createActions()
-{
+void DataSourcePanel::createActions() {
     m_deleteAction = new QAction(tr("删除"), this);
     connect(m_deleteAction, &QAction::triggered, this, &DataSourcePanel::onDeleteAction);
 
@@ -56,17 +52,16 @@ void DataSourcePanel::createActions()
     connect(m_copyPathAction, &QAction::triggered, this, &DataSourcePanel::onCopyPathAction);
 }
 
-void DataSourcePanel::refreshFromProject(Project* project)
-{
+void DataSourcePanel::refreshFromProject(Project* project) {
     m_treeWidget->clear();
-    if (!project) return;
+    if (!project)
+        return;
     for (const DataSource& ds : project->dataSources()) {
         addDataSource(ds);
     }
 }
 
-void DataSourcePanel::addDataSource(const DataSource& ds)
-{
+void DataSourcePanel::addDataSource(const DataSource& ds) {
     QStringList columns;
     columns << ds.name;
 
@@ -80,9 +75,8 @@ void DataSourcePanel::addDataSource(const DataSource& ds)
     }
     if (ds.metadata.contains("fileSize")) {
         qint64 size = ds.metadata["fileSize"].toLongLong();
-        QString sizeStr = size > 1024 * 1024
-                              ? QString("%1 MB").arg(size / (1024.0 * 1024.0), 0, 'f', 1)
-                              : QString("%1 KB").arg(size / 1024.0, 0, 'f', 1);
+        QString sizeStr = size > 1024 * 1024 ? QString("%1 MB").arg(size / (1024.0 * 1024.0), 0, 'f', 1)
+                                             : QString("%1 KB").arg(size / 1024.0, 0, 'f', 1);
         tooltip += QString("\n大小: %1").arg(sizeStr);
     }
 
@@ -93,22 +87,20 @@ void DataSourcePanel::addDataSource(const DataSource& ds)
 
     // 用不同图标区分类型
     if (ds.isImage()) {
-        item->setIcon(0, QIcon::fromTheme("image-x-generic"));
+        item->setIcon(0, AppIconProvider::icon(AppIconProvider::Icon::Image, 18, QColor("#2563EB")));
     } else if (ds.isPointCloud()) {
-        item->setIcon(0, QIcon::fromTheme("applications-graphics"));
+        item->setIcon(0, AppIconProvider::icon(AppIconProvider::Icon::PointCloud, 18, QColor("#0891B2")));
     }
 }
 
-void DataSourcePanel::removeDataSource(const QString& id)
-{
+void DataSourcePanel::removeDataSource(const QString& id) {
     QTreeWidgetItem* item = findItem(id);
     if (item) {
         delete item;
     }
 }
 
-QTreeWidgetItem* DataSourcePanel::findItem(const QString& dataSourceId) const
-{
+QTreeWidgetItem* DataSourcePanel::findItem(const QString& dataSourceId) const {
     for (int i = 0; i < m_treeWidget->topLevelItemCount(); ++i) {
         QTreeWidgetItem* item = m_treeWidget->topLevelItem(i);
         if (item->data(0, Qt::UserRole).toString() == dataSourceId) {
@@ -118,8 +110,7 @@ QTreeWidgetItem* DataSourcePanel::findItem(const QString& dataSourceId) const
     return nullptr;
 }
 
-QString DataSourcePanel::selectedDataSourceId() const
-{
+QString DataSourcePanel::selectedDataSourceId() const {
     QTreeWidgetItem* item = m_treeWidget->currentItem();
     if (!item) {
         return QString();
@@ -127,19 +118,19 @@ QString DataSourcePanel::selectedDataSourceId() const
     return item->data(0, Qt::UserRole).toString();
 }
 
-void DataSourcePanel::onItemDoubleClicked(QTreeWidgetItem* item, int /*column*/)
-{
-    if (!item) return;
+void DataSourcePanel::onItemDoubleClicked(QTreeWidgetItem* item, int /*column*/) {
+    if (!item)
+        return;
     QString id = item->data(0, Qt::UserRole).toString();
     if (!id.isEmpty()) {
         emit requestDisplay(id);
     }
 }
 
-void DataSourcePanel::onContextMenu(const QPoint& pos)
-{
+void DataSourcePanel::onContextMenu(const QPoint& pos) {
     QTreeWidgetItem* item = m_treeWidget->itemAt(pos);
-    if (!item) return;
+    if (!item)
+        return;
 
     m_treeWidget->setCurrentItem(item);
 
@@ -151,24 +142,21 @@ void DataSourcePanel::onContextMenu(const QPoint& pos)
     menu.exec(m_treeWidget->mapToGlobal(pos));
 }
 
-void DataSourcePanel::onDeleteAction()
-{
+void DataSourcePanel::onDeleteAction() {
     QString id = selectedDataSourceId();
     if (!id.isEmpty()) {
         emit requestRemove(id);
     }
 }
 
-void DataSourcePanel::onShowInFolderAction()
-{
+void DataSourcePanel::onShowInFolderAction() {
     QString id = selectedDataSourceId();
     if (!id.isEmpty()) {
         emit requestShowInFolder(id);
     }
 }
 
-void DataSourcePanel::onCopyPathAction()
-{
+void DataSourcePanel::onCopyPathAction() {
     QString id = selectedDataSourceId();
     if (!id.isEmpty()) {
         emit requestCopyPath(id);

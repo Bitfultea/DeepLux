@@ -11,18 +11,21 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
+# ========== 安装目录 ==========
+include(GNUInstallDirs)
+
 # ========== 平台判断 ==========
 if(WIN32)
     set(DEEPLUX_PLATFORM "windows")
-    add_definitions(-DDEEPLUX_PLATFORM_WINDOWS)
+    set(DEEPLUX_PLATFORM_DEFINE DEEPLUX_PLATFORM_WINDOWS)
     message(STATUS "Platform: Windows")
 elseif(UNIX AND NOT APPLE)
     set(DEEPLUX_PLATFORM "linux")
-    add_definitions(-DDEEPLUX_PLATFORM_LINUX)
+    set(DEEPLUX_PLATFORM_DEFINE DEEPLUX_PLATFORM_LINUX)
     message(STATUS "Platform: Linux")
 elseif(APPLE)
     set(DEEPLUX_PLATFORM "macos")
-    add_definitions(-DDEEPLUX_PLATFORM_MACOS)
+    set(DEEPLUX_PLATFORM_DEFINE DEEPLUX_PLATFORM_MACOS)
     message(STATUS "Platform: macOS")
 else()
     message(FATAL_ERROR "Unsupported platform")
@@ -128,12 +131,7 @@ message(STATUS "Qt version: ${Qt${QT_VERSION_MAJOR}_VERSION}")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
 # ========== 全局定义 ==========
-if(OpenCV_FOUND)
-    add_definitions(-DDEEPLUX_HAS_OPENCV)
-endif()
-
-# ========== 全局包含目录 ==========
-include_directories(${CMAKE_SOURCE_DIR}/src)
+# Platform and OpenCV defines are set on deeplux_core target (see src/core/CMakeLists.txt)
 
 # ========== 子目录 ==========
 add_subdirectory(src/core)
@@ -182,4 +180,4 @@ add_custom_target(sync-plugins
 )
 
 # ========== 安装 ==========
-install(DIRECTORY resources/ DESTINATION .)
+install(DIRECTORY resources/ DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/deeplux)

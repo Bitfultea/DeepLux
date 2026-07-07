@@ -1,12 +1,14 @@
 #include "ViewportWidget.h"
+
+#include "AppIconProvider.h"
 #include "HImageWidget.h"
 
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QToolButton>
-#include <QCloseEvent>
 #include <QApplication>
+#include <QCloseEvent>
+#include <QHBoxLayout>
 #include <QPalette>
+#include <QToolButton>
+#include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -18,27 +20,17 @@
 namespace DeepLux {
 
 ViewportWidget::ViewportWidget(const QString& id, QWidget* parent)
-    : QFrame(parent)
-    , m_viewportId(id)
-    , m_title(tr("Viewport"))
-    , m_imageWidget(nullptr)
-    , m_3dContent(nullptr)
-    , m_toolbar(nullptr)
-    , m_3dToolbar(nullptr)
-    , m_displayMode(DisplayMode::Auto2D)
-{
+    : QFrame(parent), m_viewportId(id), m_title(tr("Viewport")), m_imageWidget(nullptr), m_3dContent(nullptr),
+      m_toolbar(nullptr), m_3dToolbar(nullptr), m_displayMode(DisplayMode::Auto2D) {
     setFrameStyle(QFrame::NoFrame);
     setupUi();
     createActions();
-    applyTheme(false);  // 默认浅色主题，MainWindow 会在后续调 applyTheme(m_isDarkTheme)
+    applyTheme(false); // 默认浅色主题，MainWindow 会在后续调 applyTheme(m_isDarkTheme)
 }
 
-ViewportWidget::~ViewportWidget()
-{
-}
+ViewportWidget::~ViewportWidget() {}
 
-void ViewportWidget::setupUi()
-{
+void ViewportWidget::setupUi() {
     // Main layout
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(0, 0, 0, 0);
@@ -87,13 +79,15 @@ void ViewportWidget::setupUi()
     m_toolbar->setIconSize(QSize(16, 16));
 
     // Fit window action
-    m_fitWindowAction = new QAction(tr("适应"), this);
+    m_fitWindowAction =
+        new QAction(AppIconProvider::icon(AppIconProvider::Icon::FitWindow, 16, QColor("#9CA3AF")), tr("适应"), this);
     m_fitWindowAction->setToolTip(tr("适应窗口"));
     m_toolbar->addAction(m_fitWindowAction);
     connect(m_fitWindowAction, &QAction::triggered, this, &ViewportWidget::onFitWindow);
 
     // Actual size action
-    m_actualSizeAction = new QAction(tr("1:1"), this);
+    m_actualSizeAction =
+        new QAction(AppIconProvider::icon(AppIconProvider::Icon::ActualSize, 16, QColor("#9CA3AF")), tr("1:1"), this);
     m_actualSizeAction->setToolTip(tr("实际像素大小"));
     m_toolbar->addAction(m_actualSizeAction);
     connect(m_actualSizeAction, &QAction::triggered, this, &ViewportWidget::onActualSize);
@@ -101,13 +95,15 @@ void ViewportWidget::setupUi()
     m_toolbar->addSeparator();
 
     // Zoom in action
-    m_zoomInAction = new QAction(tr("+"), this);
+    m_zoomInAction =
+        new QAction(AppIconProvider::icon(AppIconProvider::Icon::ZoomIn, 16, QColor("#9CA3AF")), tr("+"), this);
     m_zoomInAction->setToolTip(tr("放大"));
     m_toolbar->addAction(m_zoomInAction);
     connect(m_zoomInAction, &QAction::triggered, this, &ViewportWidget::onZoomIn);
 
     // Zoom out action
-    m_zoomOutAction = new QAction(tr("-"), this);
+    m_zoomOutAction =
+        new QAction(AppIconProvider::icon(AppIconProvider::Icon::ZoomOut, 16, QColor("#9CA3AF")), tr("-"), this);
     m_zoomOutAction->setToolTip(tr("缩小"));
     m_toolbar->addAction(m_zoomOutAction);
     connect(m_zoomOutAction, &QAction::triggered, this, &ViewportWidget::onZoomOut);
@@ -115,7 +111,8 @@ void ViewportWidget::setupUi()
     m_toolbar->addSeparator();
 
     // Close action
-    m_closeAction = new QAction(tr("×"), this);
+    m_closeAction =
+        new QAction(AppIconProvider::icon(AppIconProvider::Icon::Close, 16, QColor("#D1D5DB")), tr("×"), this);
     m_closeAction->setToolTip(tr("关闭"));
     m_toolbar->addAction(m_closeAction);
     connect(m_closeAction, &QAction::triggered, this, &ViewportWidget::onCloseClicked);
@@ -162,13 +159,11 @@ void ViewportWidget::setupUi()
     mainLayout->addWidget(m_3dToolbar);
 }
 
-void ViewportWidget::createActions()
-{
+void ViewportWidget::createActions() {
     // Actions are created in setupUi() and connections made there
 }
 
-void ViewportWidget::setTitle(const QString& title)
-{
+void ViewportWidget::setTitle(const QString& title) {
     if (m_title != title) {
         m_title = title;
         m_titleBar->setText(title);
@@ -176,8 +171,7 @@ void ViewportWidget::setTitle(const QString& title)
     }
 }
 
-void ViewportWidget::displayData(const DisplayData& data)
-{
+void ViewportWidget::displayData(const DisplayData& data) {
     // Route based on data type
     if (data.pointCloudData() && !data.pointCloudData()->isEmpty()) {
         switchTo3D();
@@ -202,24 +196,22 @@ void ViewportWidget::displayData(const DisplayData& data)
     }
 }
 
-void ViewportWidget::displayImage(const QImage& image)
-{
+void ViewportWidget::displayImage(const QImage& image) {
     switchTo2D();
     m_imageWidget->setImage(image);
     emit imageDisplayed();
 }
 
-void ViewportWidget::clearDisplay()
-{
+void ViewportWidget::clearDisplay() {
     if (m_3dContent) {
         m_3dContent->clearDisplay();
     }
     m_imageWidget->clearImage();
 }
 
-void ViewportWidget::ensure3DContent()
-{
-    if (m_3dContent) return;
+void ViewportWidget::ensure3DContent() {
+    if (m_3dContent)
+        return;
 
     // Create 3D content widget — 必须指定 parent 否则 QOpenGLWidget 无法创建 context
     m_3dContent = new Viewport3DContent(this);
@@ -242,10 +234,9 @@ void ViewportWidget::ensure3DContent()
     }
 }
 
-void ViewportWidget::switchTo2D()
-{
+void ViewportWidget::switchTo2D() {
     if (m_displayMode == DisplayMode::Auto2D && m_imageWidget->isVisible()) {
-        return;  // Already in 2D mode
+        return; // Already in 2D mode
     }
 
     m_displayMode = DisplayMode::Auto2D;
@@ -260,10 +251,9 @@ void ViewportWidget::switchTo2D()
     m_3dToolbar->setVisible(false);
 }
 
-void ViewportWidget::switchTo3D()
-{
+void ViewportWidget::switchTo3D() {
     if (m_displayMode == DisplayMode::Auto3D && m_3dContent && m_3dContent->isVisible()) {
-        return;  // Already in 3D mode
+        return; // Already in 3D mode
     }
 
     ensure3DContent();
@@ -280,71 +270,63 @@ void ViewportWidget::switchTo3D()
     m_toolbar->setVisible(false);
 }
 
-void ViewportWidget::zoomIn()
-{
-    if (m_displayMode == DisplayMode::Auto3D) return;
+void ViewportWidget::zoomIn() {
+    if (m_displayMode == DisplayMode::Auto3D)
+        return;
     double currentZoom = m_imageWidget->zoom();
     m_imageWidget->setZoom(currentZoom * 1.25);
 }
 
-void ViewportWidget::zoomOut()
-{
-    if (m_displayMode == DisplayMode::Auto3D) return;
+void ViewportWidget::zoomOut() {
+    if (m_displayMode == DisplayMode::Auto3D)
+        return;
     double currentZoom = m_imageWidget->zoom();
     m_imageWidget->setZoom(currentZoom / 1.25);
 }
 
-void ViewportWidget::fitToWindow()
-{
-    if (m_displayMode == DisplayMode::Auto3D) return;
+void ViewportWidget::fitToWindow() {
+    if (m_displayMode == DisplayMode::Auto3D)
+        return;
     m_imageWidget->fitToWindow();
 }
 
-void ViewportWidget::actualSize()
-{
-    if (m_displayMode == DisplayMode::Auto3D) return;
+void ViewportWidget::actualSize() {
+    if (m_displayMode == DisplayMode::Auto3D)
+        return;
     m_imageWidget->actualSize();
 }
 
-void ViewportWidget::onCloseClicked()
-{
+void ViewportWidget::onCloseClicked() {
     emit viewportClosed(m_viewportId);
 }
 
-void ViewportWidget::onZoomIn()
-{
+void ViewportWidget::onZoomIn() {
     zoomIn();
 }
 
-void ViewportWidget::onZoomOut()
-{
+void ViewportWidget::onZoomOut() {
     zoomOut();
 }
 
-void ViewportWidget::onFitWindow()
-{
+void ViewportWidget::onFitWindow() {
     fitToWindow();
 }
 
-void ViewportWidget::onActualSize()
-{
+void ViewportWidget::onActualSize() {
     actualSize();
 }
 
-void ViewportWidget::setRenderMode(int mode)
-{
+void ViewportWidget::setRenderMode(int mode) {
     if (m_3dContent) {
         m_3dContent->setRenderMode(static_cast<ColorMode>(mode));
     }
 }
 
-int ViewportWidget::renderMode() const
-{
+int ViewportWidget::renderMode() const {
     return m_3dContent ? static_cast<int>(m_3dContent->renderMode()) : 5;
 }
 
-void ViewportWidget::applyTheme(bool isDark)
-{
+void ViewportWidget::applyTheme(bool isDark) {
     QPalette imagePalette = m_imageWidget->palette();
     imagePalette.setColor(QPalette::Window, isDark ? QColor("#1a1a1a") : QColor("#ffffff"));
     m_imageWidget->setPalette(imagePalette);
@@ -411,7 +393,8 @@ void ViewportWidget::applyTheme(bool isDark)
             background-color: #6b7280;
             border-radius: 2px;
         }
-    )" : R"(
+    )"
+                                  : R"(
         QToolBar {
             background-color: transparent;
             border: none;

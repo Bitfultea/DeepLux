@@ -1,43 +1,42 @@
 #include "PluginTestDialog.h"
+
+#include "../core/interface/IModule.h"
 #include "../core/manager/PluginManager.h"
 #include "../core/model/ImageData.h"
-#include "../core/interface/IModule.h"
+#include "../widgets/AppIconProvider.h"
+
+#include <QCheckBox>
 #include <QComboBox>
-#include <QPushButton>
-#include <QTextEdit>
+#include <QDateTime>
+#include <QDebug>
+#include <QDialogButtonBox>
+#include <QDoubleSpinBox>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
-#include <QSpinBox>
-#include <QDoubleSpinBox>
-#include <QCheckBox>
-#include <QLineEdit>
-#include <QLabel>
-#include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QScrollArea>
-#include <QWidget>
-#include <QFileDialog>
-#include <QMessageBox>
-#include <QJsonObject>
 #include <QJsonArray>
-#include <QDebug>
-#include <QDateTime>
-#include <QDialogButtonBox>
+#include <QJsonObject>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QScrollArea>
+#include <QSpinBox>
+#include <QTextEdit>
+#include <QVBoxLayout>
+#include <QWidget>
 
 namespace DeepLux {
 
-PluginTestDialog::PluginTestDialog(QWidget* parent)
-    : QDialog(parent)
-    , m_currentModule(nullptr)
-{
+PluginTestDialog::PluginTestDialog(QWidget* parent) : QDialog(parent), m_currentModule(nullptr) {
     setWindowTitle(tr("插件测试"));
     setMinimumSize(800, 600);
     setupUi();
     populatePluginList();
 }
 
-PluginTestDialog::~PluginTestDialog()
-{
+PluginTestDialog::~PluginTestDialog() {
     if (m_currentModule) {
         m_currentModule->shutdown();
         delete m_currentModule;
@@ -45,8 +44,7 @@ PluginTestDialog::~PluginTestDialog()
     }
 }
 
-void PluginTestDialog::setupUi()
-{
+void PluginTestDialog::setupUi() {
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
 
     // ===== 插件选择 =====
@@ -55,6 +53,7 @@ void PluginTestDialog::setupUi()
 
     m_pluginCombo = new QComboBox();
     m_refreshBtn = new QPushButton(tr("刷新"));
+    m_refreshBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Refresh, 16, QColor("#2563EB")));
 
     selectLayout->addWidget(new QLabel(tr("插件:")));
     selectLayout->addWidget(m_pluginCombo, 1);
@@ -85,6 +84,7 @@ void PluginTestDialog::setupUi()
     m_imagePathEdit = new QLineEdit();
     m_imagePathEdit->setPlaceholderText(tr("图像路径 (可选)"));
     m_loadImageBtn = new QPushButton(tr("加载图像"));
+    m_loadImageBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::LoadImage, 16, QColor("#374151")));
 
     imageLayout->addWidget(new QLabel(tr("图像:")));
     imageLayout->addWidget(m_imagePathEdit, 1);
@@ -107,6 +107,8 @@ void PluginTestDialog::setupUi()
     QHBoxLayout* expectedBtnLayout = new QHBoxLayout();
     QPushButton* addExpectedBtn = new QPushButton(tr("添加预期"));
     QPushButton* removeExpectedBtn = new QPushButton(tr("移除"));
+    addExpectedBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Add, 16, QColor("#2563EB")));
+    removeExpectedBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Delete, 16, QColor("#DC2626")));
     expectedBtnLayout->addWidget(addExpectedBtn);
     expectedBtnLayout->addStretch();
     expectedBtnLayout->addWidget(removeExpectedBtn);
@@ -126,8 +128,10 @@ void PluginTestDialog::setupUi()
     // ===== 执行按钮 =====
     QHBoxLayout* btnLayout = new QHBoxLayout();
     m_executeBtn = new QPushButton(tr("执行测试"));
+    m_executeBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Execute, 16, QColor("#16A34A")));
     m_executeBtn->setDefault(true);
     m_clearBtn = new QPushButton(tr("清除"));
+    m_clearBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Clear, 16, QColor("#4B5563")));
 
     btnLayout->addStretch();
     btnLayout->addWidget(m_executeBtn);
@@ -149,16 +153,15 @@ void PluginTestDialog::setupUi()
     mainLayout->addWidget(resultGroup);
 
     // ===== 信号连接 =====
-    connect(m_pluginCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &PluginTestDialog::onPluginSelected);
+    connect(m_pluginCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &PluginTestDialog::onPluginSelected);
     connect(m_refreshBtn, &QPushButton::clicked, this, &PluginTestDialog::populatePluginList);
     connect(m_executeBtn, &QPushButton::clicked, this, &PluginTestDialog::onExecuteClicked);
     connect(m_clearBtn, &QPushButton::clicked, this, &PluginTestDialog::onClearClicked);
     connect(m_loadImageBtn, &QPushButton::clicked, this, &PluginTestDialog::onLoadImageClicked);
 }
 
-void PluginTestDialog::populatePluginList()
-{
+void PluginTestDialog::populatePluginList() {
     QString current = m_pluginCombo->currentText();
     m_pluginCombo->clear();
 
@@ -177,8 +180,7 @@ void PluginTestDialog::populatePluginList()
     }
 }
 
-void PluginTestDialog::onPluginSelected(int index)
-{
+void PluginTestDialog::onPluginSelected(int index) {
     // 清除旧参数
     QLayoutItem* item;
     while ((item = m_paramsLayout->takeAt(0)) != nullptr) {
@@ -213,21 +215,23 @@ void PluginTestDialog::onPluginSelected(int index)
 
     if (!m_currentModule->initialize()) {
         m_resultEdit->setTextColor(Qt::red);
-        m_resultEdit->append(QString("[%1] 插件初始化失败: %2\n").arg(QDateTime::currentDateTime().toString("hh:mm:ss"), pluginName));
+        m_resultEdit->append(
+            QString("[%1] 插件初始化失败: %2\n").arg(QDateTime::currentDateTime().toString("hh:mm:ss"), pluginName));
         delete m_currentModule;
         m_currentModule = nullptr;
         return;
     }
 
     m_resultEdit->setTextColor(Qt::blue);
-    m_resultEdit->append(QString("[%1] 已加载: %2\n").arg(QDateTime::currentDateTime().toString("hh:mm:ss"), pluginName));
+    m_resultEdit->append(
+        QString("[%1] 已加载: %2\n").arg(QDateTime::currentDateTime().toString("hh:mm:ss"), pluginName));
 
     loadPluginParams();
 }
 
-void PluginTestDialog::loadPluginParams()
-{
-    if (!m_currentModule) return;
+void PluginTestDialog::loadPluginParams() {
+    if (!m_currentModule)
+        return;
 
     QJsonObject params = m_currentModule->currentParams();
 
@@ -243,8 +247,7 @@ void PluginTestDialog::loadPluginParams()
     }
 }
 
-QWidget* PluginTestDialog::createParamWidget(const QString& key, const QJsonValue& value)
-{
+QWidget* PluginTestDialog::createParamWidget(const QString& key, const QJsonValue& value) {
     if (value.isDouble()) {
         double val = value.toDouble();
         if (val != static_cast<int>(val)) {
@@ -260,8 +263,7 @@ QWidget* PluginTestDialog::createParamWidget(const QString& key, const QJsonValu
     return nullptr;
 }
 
-QWidget* PluginTestDialog::createIntWidget(const QString& key, int value, int min, int max)
-{
+QWidget* PluginTestDialog::createIntWidget(const QString& key, int value, int min, int max) {
     QSpinBox* spin = new QSpinBox();
     spin->setRange(min, max);
     spin->setValue(value);
@@ -269,8 +271,7 @@ QWidget* PluginTestDialog::createIntWidget(const QString& key, int value, int mi
     return spin;
 }
 
-QWidget* PluginTestDialog::createDoubleWidget(const QString& key, double value, double min, double max)
-{
+QWidget* PluginTestDialog::createDoubleWidget(const QString& key, double value, double min, double max) {
     QDoubleSpinBox* spin = new QDoubleSpinBox();
     spin->setRange(min, max);
     spin->setDecimals(6);
@@ -279,47 +280,47 @@ QWidget* PluginTestDialog::createDoubleWidget(const QString& key, double value, 
     return spin;
 }
 
-QWidget* PluginTestDialog::createBoolWidget(const QString& key, bool value)
-{
+QWidget* PluginTestDialog::createBoolWidget(const QString& key, bool value) {
     QCheckBox* check = new QCheckBox();
     check->setChecked(value);
     check->setProperty("paramKey", key);
     return check;
 }
 
-QWidget* PluginTestDialog::createStringWidget(const QString& key, const QString& value)
-{
+QWidget* PluginTestDialog::createStringWidget(const QString& key, const QString& value) {
     QLineEdit* edit = new QLineEdit();
     edit->setText(value);
     edit->setProperty("paramKey", key);
     return edit;
 }
 
-void PluginTestDialog::onLoadImageClicked()
-{
-    QString fileName = QFileDialog::getOpenFileName(this,
-        tr("选择图像"), "", tr("图像文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"));
+void PluginTestDialog::onLoadImageClicked() {
+    QString fileName =
+        QFileDialog::getOpenFileName(this, tr("选择图像"), "", tr("图像文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"));
 
     if (!fileName.isEmpty()) {
         m_imagePathEdit->setText(fileName);
 
         QImage img(fileName);
         if (!img.isNull()) {
-            m_imagePreview->setPixmap(QPixmap::fromImage(img).scaled(
-                m_imagePreview->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            m_imagePreview->setPixmap(
+                QPixmap::fromImage(img).scaled(m_imagePreview->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
             m_resultEdit->setTextColor(Qt::darkGreen);
             m_resultEdit->append(QString("[%1] 已加载图像: %2 (%3x%4)\n")
-                .arg(QDateTime::currentDateTime().toString("hh:mm:ss"))
-                .arg(fileName).arg(img.width()).arg(img.height()));
+                                     .arg(QDateTime::currentDateTime().toString("hh:mm:ss"))
+                                     .arg(fileName)
+                                     .arg(img.width())
+                                     .arg(img.height()));
         } else {
             m_resultEdit->setTextColor(Qt::red);
-            m_resultEdit->append(QString("[%1] 无法加载图像: %2\n").arg(QDateTime::currentDateTime().toString("hh:mm:ss")).arg(fileName));
+            m_resultEdit->append(QString("[%1] 无法加载图像: %2\n")
+                                     .arg(QDateTime::currentDateTime().toString("hh:mm:ss"))
+                                     .arg(fileName));
         }
     }
 }
 
-ImageData PluginTestDialog::createInputData()
-{
+ImageData PluginTestDialog::createInputData() {
     ImageData input;
 
     QString imagePath = m_imagePathEdit->text();
@@ -337,8 +338,7 @@ ImageData PluginTestDialog::createInputData()
     return input;
 }
 
-void PluginTestDialog::onExecuteClicked()
-{
+void PluginTestDialog::onExecuteClicked() {
     if (!m_currentModule) {
         showTestResult(false, "请先选择一个插件");
         return;
@@ -369,7 +369,8 @@ void PluginTestDialog::onExecuteClicked()
 
     // 执行
     m_resultEdit->setTextColor(Qt::blue);
-    m_resultEdit->append(QString("[%1] 开始执行: %2\n").arg(QDateTime::currentDateTime().toString("hh:mm:ss")).arg(m_currentPluginName));
+    m_resultEdit->append(
+        QString("[%1] 开始执行: %2\n").arg(QDateTime::currentDateTime().toString("hh:mm:ss")).arg(m_currentPluginName));
 
     bool success = m_currentModule->execute(input, output);
 
@@ -383,14 +384,13 @@ void PluginTestDialog::onExecuteClicked()
     }
 }
 
-void PluginTestDialog::updateResultDisplay(const ImageData& output)
-{
+void PluginTestDialog::updateResultDisplay(const ImageData& output) {
     m_resultEdit->append("\n--- 输出数据 ---");
 
     // 显示图像信息
     if (output.isValid()) {
-        m_resultEdit->append(QString("图像: %1 x %2, 通道: %3")
-            .arg(output.width()).arg(output.height()).arg(output.channels()));
+        m_resultEdit->append(
+            QString("图像: %1 x %2, 通道: %3").arg(output.width()).arg(output.height()).arg(output.channels()));
     }
 
     // 显示元数据
@@ -450,12 +450,12 @@ void PluginTestDialog::updateResultDisplay(const ImageData& output)
 
                 if (match) {
                     m_resultEdit->setTextColor(Qt::darkGreen);
-                    m_resultEdit->append(QString("✓ %1: 匹配 (实际: %2, 预期: %3)")
-                        .arg(key).arg(actualStr).arg(expectedStr));
+                    m_resultEdit->append(
+                        QString("✓ %1: 匹配 (实际: %2, 预期: %3)").arg(key).arg(actualStr).arg(expectedStr));
                 } else {
                     m_resultEdit->setTextColor(Qt::red);
-                    m_resultEdit->append(QString("✗ %1: 不匹配 (实际: %2, 预期: %3)")
-                        .arg(key).arg(actualStr).arg(expectedStr));
+                    m_resultEdit->append(
+                        QString("✗ %1: 不匹配 (实际: %2, 预期: %3)").arg(key).arg(actualStr).arg(expectedStr));
                     allMatch = false;
                 }
             } else {
@@ -471,8 +471,7 @@ void PluginTestDialog::updateResultDisplay(const ImageData& output)
     }
 }
 
-void PluginTestDialog::showTestResult(bool success, const QString& message)
-{
+void PluginTestDialog::showTestResult(bool success, const QString& message) {
     if (success) {
         m_resultEdit->setTextColor(Qt::darkGreen);
     } else {
@@ -481,8 +480,7 @@ void PluginTestDialog::showTestResult(bool success, const QString& message)
     m_resultEdit->append(QString("[%1] %2\n").arg(QDateTime::currentDateTime().toString("hh:mm:ss")).arg(message));
 }
 
-void PluginTestDialog::onClearClicked()
-{
+void PluginTestDialog::onClearClicked() {
     m_resultEdit->clear();
     m_imagePathEdit->clear();
     m_imagePreview->clear();
@@ -496,8 +494,7 @@ void PluginTestDialog::onClearClicked()
     m_expectedWidgets.clear();
 }
 
-void PluginTestDialog::onAddExpectedClicked()
-{
+void PluginTestDialog::onAddExpectedClicked() {
     QDialog dialog(this);
     dialog.setWindowTitle(tr("添加预期结果"));
     QFormLayout form(&dialog);
@@ -529,8 +526,7 @@ void PluginTestDialog::onAddExpectedClicked()
     }
 }
 
-void PluginTestDialog::onRemoveExpectedClicked()
-{
+void PluginTestDialog::onRemoveExpectedClicked() {
     if (!m_expectedWidgets.isEmpty()) {
         QWidget* last = m_expectedWidgets.lastKey();
         m_expectedWidgets.remove(last);

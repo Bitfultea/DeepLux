@@ -1,15 +1,15 @@
 #pragma once
 
+#include <QColor>
 #include <QIcon>
 #include <QMap>
-#include <QColor>
 
 namespace DeepLux {
 
 /**
  * @brief 模块图标运行时生成器
  *
- * 根据模块 category 和名称生成统一风格的彩色图标。
+ * 根据模块 category 和名称生成统一风格的图标。
  * 替代 metadata.json 中的 emoji 或缺失的 PNG。
  */
 class ModuleIconProvider {
@@ -20,7 +20,7 @@ public:
      * @brief 为指定模块获取或生成图标
      * @param moduleId 模块 ID（如 GrabImage）
      * @param category 模块分类（如 image_processing）
-     * @return 24x24 的彩色图标
+     * @return 32x32 的分类色图标
      */
     QIcon iconFor(const QString& moduleId, const QString& category);
 
@@ -32,7 +32,6 @@ public:
 private:
     ModuleIconProvider() = default;
     QColor colorForCategory(const QString& category) const;
-    QString abbreviationFor(const QString& moduleId) const;
 
     QMap<QString, QIcon> m_cache;
 };

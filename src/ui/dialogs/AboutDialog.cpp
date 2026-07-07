@@ -1,15 +1,16 @@
 #include "AboutDialog.h"
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QPushButton>
+
+#include "../widgets/AppIconProvider.h"
+
 #include <QFrame>
+#include <QHBoxLayout>
 #include <QPainter>
+#include <QPushButton>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-AboutDialog::AboutDialog(QWidget* parent)
-    : QDialog(parent)
-{
+AboutDialog::AboutDialog(QWidget* parent) : QDialog(parent) {
     setWindowTitle(tr("About DeepLux"));
     setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
     setFixedSize(420, 320);
@@ -39,8 +40,7 @@ AboutDialog::AboutDialog(QWidget* parent)
     setupUI();
 }
 
-void AboutDialog::setupUI()
-{
+void AboutDialog::setupUI() {
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(15);
     mainLayout->setContentsMargins(40, 30, 40, 30);
@@ -98,12 +98,10 @@ void AboutDialog::setupUI()
     mainLayout->addWidget(m_versionLabel);
 
     // Description
-    m_descriptionLabel = new QLabel(
-        tr("A powerful machine vision software platform\n")
-        + tr("for industrial automation and quality inspection.\n\n")
-        + tr("Copyright © 2024 DeepLux Team"),
-        this
-    );
+    m_descriptionLabel = new QLabel(tr("A powerful machine vision software platform\n") +
+                                        tr("for industrial automation and quality inspection.\n\n") +
+                                        tr("Copyright © 2024 DeepLux Team"),
+                                    this);
     m_descriptionLabel->setStyleSheet(R"(
         QLabel {
             font-size: 13px;
@@ -119,6 +117,7 @@ void AboutDialog::setupUI()
 
     // Close button
     QPushButton* closeBtn = new QPushButton(tr("Close"), this);
+    closeBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Close, 16, QColor("#4B5563")));
     closeBtn->setFixedWidth(100);
     mainLayout->addWidget(closeBtn, 0, Qt::AlignHCenter);
 
