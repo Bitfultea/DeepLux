@@ -38,8 +38,9 @@ bool TimeSlicePlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    QString mode = m_params["mode"].toString();
-    m_sliceName = m_params["sliceName"].toString();
+    QJsonObject params = currentParams();
+    QString mode = params["mode"].toString();
+    m_sliceName = params["sliceName"].toString();
 
     if (mode == "Start") {
         m_startTime = QDateTime::currentMSecsSinceEpoch();
@@ -96,7 +97,7 @@ QWidget* TimeSlicePlugin::createConfigWidget()
     layout->addStretch();
 
     connect(nameEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
-        m_params["sliceName"] = text;
+        setParam("sliceName", text);
     });
 
     return widget;

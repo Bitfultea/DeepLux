@@ -108,14 +108,15 @@ bool SerialPortPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    m_portName = m_params["portName"].toString();
-    m_baudRate = m_params["baudRate"].toInt(9600);
-    m_timeout = m_params["timeout"].toInt(100);
-    m_writeData = m_params["writeData"].toString();
-    m_readVariable = m_params["readVariable"].toString("serial_data");
+    QJsonObject params = currentParams();
+    m_portName = params["portName"].toString();
+    m_baudRate = params["baudRate"].toInt(9600);
+    m_timeout = params["timeout"].toInt(100);
+    m_writeData = params["writeData"].toString();
+    m_readVariable = params["readVariable"].toString("serial_data");
 
     // Data bits
-    int dataBits = m_params["dataBits"].toInt(8);
+    int dataBits = params["dataBits"].toInt(8);
     switch (dataBits) {
         case 5: m_dataBits = QSerialPort::Data5; break;
         case 6: m_dataBits = QSerialPort::Data6; break;
@@ -124,7 +125,7 @@ bool SerialPortPlugin::process(const ImageData& input, ImageData& output)
     }
 
     // Parity
-    QString parity = m_params["parity"].toString("None");
+    QString parity = params["parity"].toString("None");
     if (parity == "Even") m_parity = QSerialPort::EvenParity;
     else if (parity == "Odd") m_parity = QSerialPort::OddParity;
     else if (parity == "Space") m_parity = QSerialPort::SpaceParity;
@@ -132,18 +133,18 @@ bool SerialPortPlugin::process(const ImageData& input, ImageData& output)
     else m_parity = QSerialPort::NoParity;
 
     // Stop bits
-    QString stopBits = m_params["stopBits"].toString("One");
+    QString stopBits = params["stopBits"].toString("One");
     if (stopBits == "OneAndHalf") m_stopBits = QSerialPort::OneAndHalfStop;
     else if (stopBits == "Two") m_stopBits = QSerialPort::TwoStop;
     else m_stopBits = QSerialPort::OneStop;
 
     // Flow control
-    QString flowControl = m_params["flowControl"].toString("None");
+    QString flowControl = params["flowControl"].toString("None");
     if (flowControl == "Hardware") m_flowControl = QSerialPort::HardwareControl;
     else if (flowControl == "Software") m_flowControl = QSerialPort::SoftwareControl;
     else m_flowControl = QSerialPort::NoFlowControl;
 
-    QString operation = m_params["operation"].toString("WriteRead");
+    QString operation = params["operation"].toString("WriteRead");
 
     if (m_portName.isEmpty()) {
         emit errorOccurred(tr("串口名称不能为空"));
@@ -285,43 +286,43 @@ QWidget* SerialPortPlugin::createConfigWidget()
 
     // Connections
     connect(portCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        m_params["portName"] = portCombo->currentData().toString();
+        setParam("portName", portCombo->currentData().toString());
     });
 
     connect(baudSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["baudRate"] = value;
+        setParam("baudRate", value);
     });
 
     connect(dataBitsCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        m_params["dataBits"] = dataBitsCombo->currentData().toInt();
+        setParam("dataBits", dataBitsCombo->currentData().toInt());
     });
 
     connect(parityCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        m_params["parity"] = parityCombo->currentData().toString();
+        setParam("parity", parityCombo->currentData().toString());
     });
 
     connect(stopBitsCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        m_params["stopBits"] = stopBitsCombo->currentData().toString();
+        setParam("stopBits", stopBitsCombo->currentData().toString());
     });
 
     connect(flowCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        m_params["flowControl"] = flowCombo->currentData().toString();
+        setParam("flowControl", flowCombo->currentData().toString());
     });
 
     connect(operationCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        m_params["operation"] = operationCombo->currentData().toString();
+        setParam("operation", operationCombo->currentData().toString());
     });
 
     connect(writeEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["writeData"] = text;
+        setParam("writeData", text);
     });
 
     connect(readVarEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["readVariable"] = text;
+        setParam("readVariable", text);
     });
 
     connect(timeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["timeout"] = value;
+        setParam("timeout", value);
     });
 
     return widget;

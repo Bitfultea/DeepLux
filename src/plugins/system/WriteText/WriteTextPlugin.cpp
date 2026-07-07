@@ -42,17 +42,18 @@ bool WriteTextPlugin::process(const ImageData& input, ImageData& output)
     Q_UNUSED(output);
     output = input;
 
-    QString filePath = m_params["filePath"].toString();
+    QJsonObject params = currentParams();
+    QString filePath = params["filePath"].toString();
     if (filePath.isEmpty()) {
         filePath = input.data("file_path").toString();
     }
 
-    QString textContent = m_params["textContent"].toString();
+    QString textContent = params["textContent"].toString();
     if (textContent.isEmpty()) {
         textContent = input.data("text_content").toString();
     }
 
-    bool appendMode = m_params["appendMode"].toBool();
+    bool appendMode = params["appendMode"].toBool();
 
     if (filePath.isEmpty()) {
         emit errorOccurred(tr("未提供文件路径"));
@@ -115,11 +116,11 @@ QWidget* WriteTextPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(pathEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
-        m_params["filePath"] = text;
+        setParam("filePath", text);
     });
 
     connect(textEdit, &QTextEdit::textChanged, this, [this, textEdit]() {
-        m_params["textContent"] = textEdit->toPlainText();
+        setParam("textContent", textEdit->toPlainText());
     });
 
     return widget;

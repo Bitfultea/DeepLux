@@ -58,7 +58,8 @@ bool JiErHanDefectsDetPlugin::process(const ImageData& input, ImageData& output)
         return false;
     }
 
-    m_threshold = m_params["threshold"].toDouble();
+    QJsonObject params = currentParams();
+    m_threshold = params["threshold"].toDouble();
 
     // 检测缺陷
     std::vector<DefectResult> defects = detectDefects(image);
@@ -171,7 +172,7 @@ QWidget* JiErHanDefectsDetPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(threshSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-        m_params["threshold"] = value;
+        setParam("threshold", value);
     });
 
     return widget;

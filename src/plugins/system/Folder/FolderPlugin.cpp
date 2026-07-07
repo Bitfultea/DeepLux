@@ -40,8 +40,9 @@ bool FolderPlugin::process(const ImageData& input, ImageData& output)
     Q_UNUSED(input);
     output = input;
 
-    QString folderPath = m_params["folderPath"].toString();
-    QString operation = m_params["operation"].toString();
+    QJsonObject params = currentParams();
+    QString folderPath = params["folderPath"].toString();
+    QString operation = params["operation"].toString();
 
     if (folderPath.isEmpty()) {
         folderPath = input.data("folder_path").toString();
@@ -124,11 +125,11 @@ QWidget* FolderPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(opCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, opCombo](int) {
-        m_params["operation"] = opCombo->currentData().toString();
+        setParam("operation", opCombo->currentData().toString());
     });
 
     connect(pathEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
-        m_params["folderPath"] = text;
+        setParam("folderPath", text);
     });
 
     return widget;

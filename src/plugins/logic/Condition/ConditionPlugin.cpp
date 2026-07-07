@@ -29,8 +29,9 @@ bool ConditionPlugin::initialize()
 
 bool ConditionPlugin::evaluateCondition(const QString& value)
 {
-    QString op = m_params["operator"].toString("NotEmpty");
-    QString compareValue = m_params["compareValue"].toString();
+    QJsonObject params = currentParams();
+    QString op = params["operator"].toString("NotEmpty");
+    QString compareValue = params["compareValue"].toString();
 
     if (op == "NotEmpty") {
         return !value.isEmpty();
@@ -59,7 +60,8 @@ bool ConditionPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    m_variableName = m_params["variableName"].toString();
+    QJsonObject params = currentParams();
+    m_variableName = params["variableName"].toString();
     if (m_variableName.isEmpty()) {
         emit errorOccurred(tr("变量名不能为空"));
         return false;
@@ -73,7 +75,7 @@ bool ConditionPlugin::process(const ImageData& input, ImageData& output)
 
     Logger::instance().info(QString("Condition: '%1' %2 = %3")
         .arg(m_variableName)
-        .arg(m_params["operator"].toString())
+        .arg(params["operator"].toString())
         .arg(result ? "true" : "false"), "Logic");
 
     return true;
@@ -120,15 +122,15 @@ QWidget* ConditionPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(varEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["variableName"] = text;
+        setParam("variableName", text);
     });
 
     connect(opCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        m_params["operator"] = opCombo->currentData().toString();
+        setParam("operator", opCombo->currentData().toString());
     });
 
     connect(compareEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["compareValue"] = text;
+        setParam("compareValue", text);
     });
 
     return widget;

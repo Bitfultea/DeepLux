@@ -33,7 +33,8 @@ bool CreateStringPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    QString stringSource = m_params["stringSource"].toString("Fixed");
+    QJsonObject params = currentParams();
+    QString stringSource = params["stringSource"].toString("Fixed");
     QString resultString;
 
     if (stringSource == "Input") {
@@ -42,13 +43,13 @@ bool CreateStringPlugin::process(const ImageData& input, ImageData& output)
             resultString = input.data("barcode").toString();
         }
         if (resultString.isEmpty()) {
-            resultString = m_params["fixedString"].toString();
+            resultString = params["fixedString"].toString();
         }
     } else {
-        resultString = m_params["fixedString"].toString();
+        resultString = params["fixedString"].toString();
     }
 
-    QString outputVarName = m_params["outputVarName"].toString("newString");
+    QString outputVarName = params["outputVarName"].toString("newString");
     output.setData(outputVarName, resultString);
     output.setData("string_length", resultString.length());
 
@@ -100,15 +101,15 @@ QWidget* CreateStringPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(sourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int idx) {
-        m_params["stringSource"] = sourceCombo->itemData(idx).toString();
+        setParam("stringSource", sourceCombo->itemData(idx).toString());
     });
 
     connect(fixedEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["fixedString"] = text;
+        setParam("fixedString", text);
     });
 
     connect(outputEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["outputVarName"] = text;
+        setParam("outputVarName", text);
     });
 
     return widget;

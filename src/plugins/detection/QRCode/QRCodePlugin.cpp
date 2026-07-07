@@ -44,7 +44,8 @@ bool QRCodePlugin::process(const ImageData& input, ImageData& output)
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
-    QString codeType = m_params["codeType"].toString();
+    QJsonObject params = currentParams();
+    QString codeType = params["codeType"].toString();
 
     if (codeType == "QR_Code") {
         return decodeQRCode(input, output);
@@ -176,11 +177,11 @@ QWidget* QRCodePlugin::createConfigWidget()
 
     connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             [this, typeCombo](int index) {
-        m_params["codeType"] = typeCombo->itemData(index).toString();
+        setParam("codeType", typeCombo->itemData(index).toString());
     });
 
     connect(timeoutEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
-        m_params["timeout"] = text.toInt();
+        setParam("timeout", text.toInt());
     });
 
     return widget;

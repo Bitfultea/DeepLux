@@ -40,9 +40,10 @@ bool StrFormatPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    QString format = m_params["format"].toString("%s");
-    QJsonArray inputArr = m_params["inputVariables"].toArray();
-    QString outputVar = m_params["outputVariable"].toString("formattedString");
+    QJsonObject params = currentParams();
+    QString format = params["format"].toString("%s");
+    QJsonArray inputArr = params["inputVariables"].toArray();
+    QString outputVar = params["outputVariable"].toString("formattedString");
 
     if (outputVar.isEmpty()) {
         Logger::instance().warning("StrFormatPlugin: outputVariable is empty", "Variable");
@@ -142,11 +143,11 @@ QWidget* StrFormatPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(formatEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["format"] = text;
+        setParam("format", text);
     });
 
     connect(outputEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["outputVariable"] = text;
+        setParam("outputVariable", text);
     });
 
     return widget;

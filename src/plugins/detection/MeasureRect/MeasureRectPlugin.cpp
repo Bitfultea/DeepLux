@@ -214,16 +214,16 @@ QWidget* MeasureRectPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(minAreaSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["minArea"] = value; });
+            this, [this](double value) { setParam("minArea", value); });
 
     connect(maxAreaSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["maxArea"] = value; });
+            this, [this](double value) { setParam("maxArea", value); });
 
     connect(thresh1Spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["threshold1"] = value; });
+            this, [this](double value) { setParam("threshold1", value); });
 
     connect(thresh2Spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["threshold2"] = value; });
+            this, [this](double value) { setParam("threshold2", value); });
 
     return widget;
 }

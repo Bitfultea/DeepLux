@@ -193,12 +193,13 @@ bool TCPClientPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    m_host = m_params["host"].toString();
-    m_port = m_params["port"].toInt(8080);
-    m_timeout = m_params["timeout"].toInt(3000);
-    m_writeData = m_params["writeData"].toString();
-    m_readVariable = m_params["readVariable"].toString("tcp_data");
-    QString operation = m_params["operation"].toString("WriteRead");
+    QJsonObject params = currentParams();
+    m_host = params["host"].toString();
+    m_port = params["port"].toInt(8080);
+    m_timeout = params["timeout"].toInt(3000);
+    m_writeData = params["writeData"].toString();
+    m_readVariable = params["readVariable"].toString("tcp_data");
+    QString operation = params["operation"].toString("WriteRead");
 
     if (m_host.isEmpty()) {
         emit errorOccurred(tr("主机地址不能为空"));
@@ -303,27 +304,27 @@ QWidget* TCPClientPlugin::createConfigWidget()
 
     // Connections
     connect(hostEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["host"] = text;
+        setParam("host", text);
     });
 
     connect(portSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["port"] = value;
+        setParam("port", value);
     });
 
     connect(timeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["timeout"] = value;
+        setParam("timeout", value);
     });
 
     connect(operationCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        m_params["operation"] = operationCombo->currentData().toString();
+        setParam("operation", operationCombo->currentData().toString());
     });
 
     connect(writeEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["writeData"] = text;
+        setParam("writeData", text);
     });
 
     connect(readVarEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["readVariable"] = text;
+        setParam("readVariable", text);
     });
 
     return widget;

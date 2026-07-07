@@ -51,8 +51,9 @@ bool WhilePlugin::doValidateParams(const QJsonObject& params, QString& error) co
 bool WhilePlugin::evaluateCondition(const QString& value)
 {
     Q_UNUSED(value);
-    QString op = m_params["comparison"].toString("NotEmpty");
-    QString compareValue = m_params["compareValue"].toString();
+    QJsonObject params = currentParams();
+    QString op = params["comparison"].toString("NotEmpty");
+    QString compareValue = params["compareValue"].toString();
 
     if (op == "NotEmpty") {
         return !value.isEmpty();
@@ -75,7 +76,8 @@ bool WhilePlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    m_conditionVariable = m_params["conditionVariable"].toString();
+    QJsonObject params = currentParams();
+    m_conditionVariable = params["conditionVariable"].toString();
     QString value = input.data(m_conditionVariable).toString();
 
     bool result = evaluateCondition(value);
@@ -83,7 +85,7 @@ bool WhilePlugin::process(const ImageData& input, ImageData& output)
 
     Logger::instance().info(QString("While: condition '%1' %2 = %3")
         .arg(m_conditionVariable)
-        .arg(m_params["comparison"].toString())
+        .arg(params["comparison"].toString())
         .arg(result ? "true" : "false"), "Logic");
 
     return true;
@@ -122,19 +124,19 @@ QWidget* WhilePlugin::createConfigWidget()
     layout->addStretch();
 
     connect(varEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["conditionVariable"] = text;
+        setParam("conditionVariable", text);
     });
 
     connect(opCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        m_params["comparison"] = opCombo->currentData().toString();
+        setParam("comparison", opCombo->currentData().toString());
     });
 
     connect(compareEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["compareValue"] = text;
+        setParam("compareValue", text);
     });
 
     connect(maxIterSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["maxIterations"] = value;
+        setParam("maxIterations", value);
     });
 
     return widget;

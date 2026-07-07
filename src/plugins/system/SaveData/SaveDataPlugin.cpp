@@ -45,7 +45,8 @@ bool SaveDataPlugin::process(const ImageData& input, ImageData& output)
     Q_UNUSED(output);
     output = input;
 
-    QString filePath = m_params["filePath"].toString();
+    QJsonObject params = currentParams();
+    QString filePath = params["filePath"].toString();
     if (filePath.isEmpty()) {
         filePath = input.data("file_path").toString();
     }
@@ -55,8 +56,8 @@ bool SaveDataPlugin::process(const ImageData& input, ImageData& output)
         return false;
     }
 
-    QString format = m_params["fileFormat"].toString();
-    bool appendMode = m_params["appendMode"].toBool();
+    QString format = params["fileFormat"].toString();
+    bool appendMode = params["appendMode"].toBool();
     m_saveResult = false;
 
     // 收集数据
@@ -102,8 +103,9 @@ bool SaveDataPlugin::saveToJson(const QString& filePath, const QVariantMap& data
     QFile file(filePath);
 
     // 检查是否追加模式
+    QJsonObject params = currentParams();
     QJsonObject jsonObj;
-    if (m_params["appendMode"].toBool() && file.exists()) {
+    if (params["appendMode"].toBool() && file.exists()) {
         if (file.open(QIODevice::ReadOnly)) {
             QByteArray content = file.readAll();
             file.close();
@@ -132,7 +134,8 @@ bool SaveDataPlugin::saveToJson(const QString& filePath, const QVariantMap& data
 bool SaveDataPlugin::saveToCsv(const QString& filePath, const QVariantMap& data)
 {
     QFile file(filePath);
-    QIODevice::OpenMode mode = m_params["appendMode"].toBool() ? QIODevice::Append : QIODevice::WriteOnly;
+    QJsonObject params = currentParams();
+    QIODevice::OpenMode mode = params["appendMode"].toBool() ? QIODevice::Append : QIODevice::WriteOnly;
 
     if (file.open(mode | QIODevice::Text)) {
         QTextStream out(&file);
@@ -194,11 +197,11 @@ QWidget* SaveDataPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(pathEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
-        m_params["filePath"] = text;
+        setParam("filePath", text);
     });
 
     connect(formatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, formatCombo](int) {
-        m_params["fileFormat"] = formatCombo->currentData().toString();
+        setParam("fileFormat", formatCombo->currentData().toString());
     });
 
     return widget;

@@ -66,10 +66,11 @@ bool MathPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    m_operation = m_params["operation"].toString("Add");
-    m_operandA = m_params["operandA"].toString();
-    m_operandB = m_params["operandB"].toString();
-    m_outputVar = m_params["outputVar"].toString("math_result");
+    QJsonObject params = currentParams();
+    m_operation = params["operation"].toString("Add");
+    m_operandA = params["operandA"].toString();
+    m_operandB = params["operandB"].toString();
+    m_outputVar = params["outputVar"].toString("math_result");
 
     double a = 0, b = 0;
 
@@ -170,19 +171,19 @@ QWidget* MathPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(opCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        m_params["operation"] = opCombo->currentData().toString();
+        setParam("operation", opCombo->currentData().toString());
     });
 
     connect(operandAEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["operandA"] = text;
+        setParam("operandA", text);
     });
 
     connect(operandBEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["operandB"] = text;
+        setParam("operandB", text);
     });
 
     connect(outputEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["outputVar"] = text;
+        setParam("outputVar", text);
     });
 
     return widget;

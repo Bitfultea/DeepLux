@@ -77,8 +77,9 @@ bool GrabImagePlugin::process(const ImageData& input, ImageData& output)
     Q_UNUSED(input)
 
     // 从 m_params 读取图像源
-    QString sourceStr = m_params["grabSource"].toString();
-    QString filePath = m_params["filePath"].toString();
+    QJsonObject params = currentParams();
+    QString sourceStr = params["grabSource"].toString();
+    QString filePath = params["filePath"].toString();
 
     Logger::instance().debug(QString("GrabImage::process - grabSource: %1, filePath: %2").arg(sourceStr).arg(filePath), "GrabImage");
 
@@ -102,8 +103,9 @@ bool GrabImagePlugin::process(const ImageData& input, ImageData& output)
 
 bool GrabImagePlugin::grabFromCamera(ImageData& output)
 {
-    QString cameraId = m_params["cameraId"].toString();
-    int grabTimeoutMs = m_params["grabTimeout"].toInt(5000);
+    QJsonObject params = currentParams();
+    QString cameraId = params["cameraId"].toString();
+    int grabTimeoutMs = params["grabTimeout"].toInt(5000);
 
     // ========== 方案 A：通过 CameraManager / ICamera 取图 ==========
     CameraManager& cm = CameraManager::instance();
@@ -141,8 +143,8 @@ bool GrabImagePlugin::grabFromCamera(ImageData& output)
 
     if (targetCamera) {
         // 应用曝光和增益参数
-        double exposureTime = m_params["exposureTime"].toDouble(10000.0);
-        double gain = m_params["gain"].toDouble(1.0);
+        double exposureTime = params["exposureTime"].toDouble(10000.0);
+        double gain = params["gain"].toDouble(1.0);
         targetCamera->setExposureTime(exposureTime);
         targetCamera->setGain(gain);
         Logger::instance().debug(QString("GrabImage set camera params: exposure=%1, gain=%2").arg(exposureTime).arg(gain), "GrabImage");
@@ -217,8 +219,8 @@ bool GrabImagePlugin::grabFromCamera(ImageData& output)
     }
 
     // 设置相机参数
-    double exposure = m_params["exposureTime"].toDouble();
-    double gain = m_params["gain"].toDouble();
+    double exposure = params["exposureTime"].toDouble();
+    double gain = params["gain"].toDouble();
     m_capture.set(cv::CAP_PROP_EXPOSURE, exposure / 1000.0); // 转换为秒
     m_capture.set(cv::CAP_PROP_GAIN, gain);
 
@@ -274,7 +276,8 @@ bool GrabImagePlugin::grabFromCamera(ImageData& output)
 bool GrabImagePlugin::grabFromFile(ImageData& output)
 {
 #ifdef DEEPLUX_HAS_OPENCV
-    QString filePath = m_params["filePath"].toString();
+    QJsonObject params = currentParams();
+    QString filePath = params["filePath"].toString();
 
     Logger::instance().debug(QString("GrabImage::grabFromFile - filePath: '%1'").arg(filePath), "GrabImage");
 
@@ -465,7 +468,7 @@ QWidget* GrabImagePlugin::createConfigWidget()
     connect(sourceCombo, QOverload<int>::of(&QComboBox::activated),
             this, [=](int index) {
         QString source = sourceCombo->itemData(index).toString();
-        m_params["grabSource"] = source;
+        setParam("grabSource", source);
     });
 
     connect(browseBtn, &QPushButton::clicked, this, [=]() {
@@ -473,28 +476,28 @@ QWidget* GrabImagePlugin::createConfigWidget()
             QString(), tr("图像文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"));
         if (!path.isEmpty()) {
             filePathEdit->setText(path);
-            m_params["filePath"] = path;
+            setParam("filePath", path);
         }
     });
 
     connect(filePathEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["filePath"] = text;
+        setParam("filePath", text);
     });
 
     connect(cameraCombo, QOverload<int>::of(&QComboBox::activated), this, [=](int index) {
-        m_params["cameraId"] = cameraCombo->itemData(index).toString();
+        setParam("cameraId", cameraCombo->itemData(index).toString());
     });
 
     connect(exposureEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["exposureTime"] = text.toDouble();
+        setParam("exposureTime", text.toDouble());
     });
 
     connect(gainEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["gain"] = text.toDouble();
+        setParam("gain", text.toDouble());
     });
 
     connect(timeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["grabTimeout"] = value;
+        setParam("grabTimeout", value);
     });
 
     return widget;

@@ -41,9 +41,10 @@ bool VarDefinePlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    QString varName = m_params["variableName"].toString();
-    QString varType = m_params["variableType"].toString("double");
-    QVariant initValue = m_params["initialValue"].toVariant();
+    QJsonObject params = currentParams();
+    QString varName = params["variableName"].toString();
+    QString varType = params["variableType"].toString("double");
+    QVariant initValue = params["initialValue"].toVariant();
 
     if (varName.isEmpty()) {
         Logger::instance().warning("VarDefinePlugin: variableName is empty", "Variable");
@@ -138,23 +139,23 @@ QWidget* VarDefinePlugin::createConfigWidget()
     layout->addStretch();
 
     connect(nameEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["variableName"] = text;
+        setParam("variableName", text);
     });
 
     connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int idx) {
-        m_params["variableType"] = typeCombo->itemData(idx).toString();
+        setParam("variableType", typeCombo->itemData(idx).toString());
     });
 
     connect(initEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
         QString varType = m_params["variableType"].toString("double");
         if (varType == "int") {
-            m_params["initialValue"] = text.toInt();
+            setParam("initialValue", text.toInt());
         } else if (varType == "double") {
-            m_params["initialValue"] = text.toDouble();
+            setParam("initialValue", text.toDouble());
         } else if (varType == "bool") {
-            m_params["initialValue"] = (text == "true" || text == "1");
+            setParam("initialValue", (text == "true" || text == "1"));
         } else {
-            m_params["initialValue"] = text;
+            setParam("initialValue", text);
         }
     });
 

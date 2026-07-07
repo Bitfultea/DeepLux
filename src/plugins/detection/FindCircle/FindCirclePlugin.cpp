@@ -208,16 +208,16 @@ QWidget* FindCirclePlugin::createConfigWidget()
     layout->addStretch();
 
     connect(minRadiusSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["minRadius"] = value; });
+            this, [this](double value) { setParam("minRadius", value); });
 
     connect(maxRadiusSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["maxRadius"] = value; });
+            this, [this](double value) { setParam("maxRadius", value); });
 
     connect(param1Spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["param1"] = value; });
+            this, [this](double value) { setParam("param1", value); });
 
     connect(param2Spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["param2"] = value; });
+            this, [this](double value) { setParam("param2", value); });
 
     return widget;
 }

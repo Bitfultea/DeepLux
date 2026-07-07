@@ -83,8 +83,9 @@ bool MatchingPlugin::process(const ImageData& input, ImageData& output)
         m_template = image(cv::Rect(centerX - templateSize/2, centerY - templateSize/2, templateSize, templateSize)).clone();
     }
 
-    m_matchThreshold = m_params["matchThreshold"].toDouble();
-    m_maxMatches = m_params["maxMatches"].toInt();
+    QJsonObject params = currentParams();
+    m_matchThreshold = params["matchThreshold"].toDouble();
+    m_maxMatches = params["maxMatches"].toInt();
 
     // 执行模板匹配
     m_resultMat = image.clone();
@@ -217,11 +218,11 @@ QWidget* MatchingPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(threshSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-        m_params["matchThreshold"] = value;
+        setParam("matchThreshold", value);
     });
 
     connect(maxSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        m_params["maxMatches"] = value;
+        setParam("maxMatches", value);
     });
 
     return widget;

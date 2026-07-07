@@ -64,7 +64,7 @@ QWidget* StopWhilePlugin::createConfigWidget()
     layout->addStretch();
 
     connect(stopCheck, &QCheckBox::toggled, this, [=](bool checked) {
-        m_params["stopAlways"] = checked;
+        setParam("stopAlways", checked);
     });
 
     return widget;

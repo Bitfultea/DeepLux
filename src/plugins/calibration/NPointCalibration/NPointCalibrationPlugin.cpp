@@ -171,26 +171,27 @@ bool NPointCalibrationPlugin::process(const ImageData& input, ImageData& output)
         return false;
     }
 
-    QString calibTypeStr = m_params["calibrationType"].toString("Perspective");
+    QJsonObject params = currentParams();
+    QString calibTypeStr = params["calibrationType"].toString("Perspective");
     if (calibTypeStr == "Affine") {
         m_calibType = CalibrationType::Affine;
     } else {
         m_calibType = CalibrationType::Perspective;
     }
 
-    m_inverseTransform = m_params["inverseTransform"].toBool();
+    m_inverseTransform = params["inverseTransform"].toBool();
 
-    bool clearOnRun = m_params["clearPointsOnRun"].toBool(true);
+    bool clearOnRun = params["clearPointsOnRun"].toBool(true);
     if (clearOnRun) {
         clearPoints();
     }
 
-    int pointCount = m_params["pointCount"].toInt(0);
+    int pointCount = params["pointCount"].toInt(0);
     for (int i = 0; i < pointCount; ++i) {
-        double imgX = m_params[QString("imgX_%1").arg(i)].toDouble();
-        double imgY = m_params[QString("imgY_%1").arg(i)].toDouble();
-        double worldX = m_params[QString("worldX_%1").arg(i)].toDouble();
-        double worldY = m_params[QString("worldY_%1").arg(i)].toDouble();
+        double imgX = params[QString("imgX_%1").arg(i)].toDouble();
+        double imgY = params[QString("imgY_%1").arg(i)].toDouble();
+        double worldX = params[QString("worldX_%1").arg(i)].toDouble();
+        double worldY = params[QString("worldY_%1").arg(i)].toDouble();
         addPoint(imgX, imgY, worldX, worldY);
     }
 
@@ -282,11 +283,11 @@ QWidget* NPointCalibrationPlugin::createConfigWidget()
 
     // 信号连接
     connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int index) {
-        m_params["calibrationType"] = typeCombo->itemData(index).toString();
+        setParam("calibrationType", typeCombo->itemData(index).toString());
     });
 
     connect(inverseCheck, &QCheckBox::toggled, this, [=](bool checked) {
-        m_params["inverseTransform"] = checked;
+        setParam("inverseTransform", checked);
     });
 
     connect(clearBtn, &QPushButton::clicked, this, [=]() {

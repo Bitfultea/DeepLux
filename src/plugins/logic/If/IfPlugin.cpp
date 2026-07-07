@@ -96,15 +96,16 @@ bool IfPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    QString condType = m_params["conditionType"].toString("BoolLink");
+    QJsonObject params = currentParams();
+    QString condType = params["conditionType"].toString("BoolLink");
     if (condType == "Expression") {
         m_conditionType = ConditionType::Expression;
     } else {
         m_conditionType = ConditionType::BoolLink;
     }
-    m_boolLinkText = m_params["boolLinkText"].toString();
-    m_expressionString = m_params["expressionString"].toString("true");
-    m_boolInversion = m_params["boolInversion"].toBool(false);
+    m_boolLinkText = params["boolLinkText"].toString();
+    m_expressionString = params["expressionString"].toString("true");
+    m_boolInversion = params["boolInversion"].toBool(false);
 
     bool result = evaluateCondition();
     output.setData("if_result", result);
@@ -142,21 +143,21 @@ QWidget* IfPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        m_params["conditionType"] = typeCombo->currentData().toString();
+        setParam("conditionType", typeCombo->currentData().toString());
         boolLinkEdit->setEnabled(typeCombo->currentData().toString() == "BoolLink");
         exprEdit->setEnabled(typeCombo->currentData().toString() == "Expression");
     });
 
     connect(boolLinkEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["boolLinkText"] = text;
+        setParam("boolLinkText", text);
     });
 
     connect(exprEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["expressionString"] = text;
+        setParam("expressionString", text);
     });
 
     connect(invertCheck, &QCheckBox::toggled, this, [=](bool checked) {
-        m_params["boolInversion"] = checked;
+        setParam("boolInversion", checked);
     });
 
     const QString conditionType = m_params["conditionType"].toString("BoolLink");

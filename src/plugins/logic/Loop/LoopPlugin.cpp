@@ -29,7 +29,8 @@ bool LoopPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    m_loopCount = m_params["loopCount"].toInt(1);
+    QJsonObject params = currentParams();
+    m_loopCount = params["loopCount"].toInt(1);
 
     if (m_loopCount <= 0) {
         emit errorOccurred(tr("循环次数必须大于0"));
@@ -77,7 +78,7 @@ QWidget* LoopPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(loopCountSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["loopCount"] = value;
+        setParam("loopCount", value);
     });
 
     return widget;

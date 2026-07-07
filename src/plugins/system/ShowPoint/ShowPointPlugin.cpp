@@ -83,10 +83,11 @@ bool ShowPointPlugin::process(const ImageData& input, ImageData& output)
         }
     }
 
-    m_markerSize = m_params["markerSize"].toInt();
-    m_markerColorR = m_params["colorR"].toInt();
-    m_markerColorG = m_params["colorG"].toInt();
-    m_markerColorB = m_params["colorB"].toInt();
+    QJsonObject params = currentParams();
+    m_markerSize = params["markerSize"].toInt();
+    m_markerColorR = params["colorR"].toInt();
+    m_markerColorG = params["colorG"].toInt();
+    m_markerColorB = params["colorB"].toInt();
 
     // 绘制点
     cv::Point2i pt(static_cast<int>(x), static_cast<int>(y));
@@ -154,19 +155,19 @@ QWidget* ShowPointPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(sizeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        m_params["markerSize"] = value;
+        setParam("markerSize", value);
     });
 
     connect(rSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        m_params["colorR"] = value;
+        setParam("colorR", value);
     });
 
     connect(gSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        m_params["colorG"] = value;
+        setParam("colorG", value);
     });
 
     connect(bSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        m_params["colorB"] = value;
+        setParam("colorB", value);
     });
 
     return widget;

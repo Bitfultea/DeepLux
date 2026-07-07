@@ -68,7 +68,8 @@ bool ShowImagePlugin::process(const ImageData& input, ImageData& output)
     m_displayData = DisplayData(input);
 
     // Store delay in metadata for DisplayManager to use
-    int delay = m_params["delay"].toInt();
+    QJsonObject params = currentParams();
+    int delay = params["delay"].toInt();
     if (delay > 0) {
         m_displayData.metadata()["delay"] = delay;
     } else {
@@ -165,27 +166,27 @@ QWidget* ShowImagePlugin::createConfigWidget()
     // 使用 QPointer 避免悬垂指针
     QPointer<ShowImagePlugin> pluginPtr(this);
     connect(titleEdit, &QLineEdit::textChanged, [pluginPtr](const QString& text) {
-        if (pluginPtr) pluginPtr->m_params["windowTitle"] = text;
+        if (pluginPtr) pluginPtr->setParam("windowTitle", text);
     });
 
     QPointer<ShowImagePlugin> pluginPtr2(this);
     connect(widthSpin, QOverload<int>::of(&QSpinBox::valueChanged), [pluginPtr2](int value) {
-        if (pluginPtr2) pluginPtr2->m_params["displayWidth"] = value;
+        if (pluginPtr2) pluginPtr2->setParam("displayWidth", value);
     });
 
     QPointer<ShowImagePlugin> pluginPtr3(this);
     connect(heightSpin, QOverload<int>::of(&QSpinBox::valueChanged), [pluginPtr3](int value) {
-        if (pluginPtr3) pluginPtr3->m_params["displayHeight"] = value;
+        if (pluginPtr3) pluginPtr3->setParam("displayHeight", value);
     });
 
     QPointer<ShowImagePlugin> pluginPtr4(this);
     connect(histogramCheck, &QCheckBox::toggled, [pluginPtr4](bool checked) {
-        if (pluginPtr4) pluginPtr4->m_params["displayHistogram"] = checked;
+        if (pluginPtr4) pluginPtr4->setParam("displayHistogram", checked);
     });
 
     QPointer<ShowImagePlugin> pluginPtr5(this);
     connect(delaySpin, QOverload<int>::of(&QSpinBox::valueChanged), [pluginPtr5](int value) {
-        if (pluginPtr5) pluginPtr5->m_params["delay"] = value;
+        if (pluginPtr5) pluginPtr5->setParam("delay", value);
     });
 
     return widget;

@@ -44,11 +44,12 @@ bool LoadPointCloudPlugin::process(const ImageData& input, ImageData& output)
 {
     Q_UNUSED(input);
 
-    QString filePath = m_params["filePath"].toString();
-    int tiffStep = m_params["tiffStep"].toInt(1);
-    float scaleX = static_cast<float>(m_params["scaleX"].toDouble(1.0));
-    float scaleY = static_cast<float>(m_params["scaleY"].toDouble(1.0));
-    float scaleZ = static_cast<float>(m_params["scaleZ"].toDouble(1.0));
+    QJsonObject params = currentParams();
+    QString filePath = params["filePath"].toString();
+    int tiffStep = params["tiffStep"].toInt(1);
+    float scaleX = static_cast<float>(params["scaleX"].toDouble(1.0));
+    float scaleY = static_cast<float>(params["scaleY"].toDouble(1.0));
+    float scaleZ = static_cast<float>(params["scaleZ"].toDouble(1.0));
 
     if (filePath.isEmpty()) {
         emit errorOccurred(tr("未指定文件路径"));
@@ -194,37 +195,37 @@ QWidget* LoadPointCloudPlugin::createConfigWidget()
             tr("点云文件 (*.ply *.tif *.tiff);;All Files (*)"));
         if (!path.isEmpty()) {
             filePathEdit->setText(path);
-            pluginPtr->m_params["filePath"] = path;
+            pluginPtr->setParam("filePath", path);
         }
     });
 
     QPointer<LoadPointCloudPlugin> pluginPtr2(this);
     connect(filePathEdit, &QLineEdit::textChanged, [pluginPtr2](const QString& text) {
-        if (pluginPtr2) pluginPtr2->m_params["filePath"] = text;
+        if (pluginPtr2) pluginPtr2->setParam("filePath", text);
     });
 
     QPointer<LoadPointCloudPlugin> pluginPtr3(this);
     connect(tiffStepSpin, QOverload<int>::of(&QSpinBox::valueChanged),
             [pluginPtr3](int val) {
-        if (pluginPtr3) pluginPtr3->m_params["tiffStep"] = val;
+        if (pluginPtr3) pluginPtr3->setParam("tiffStep", val);
     });
 
     QPointer<LoadPointCloudPlugin> pluginPtr4(this);
     connect(scaleXSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             [pluginPtr4](double val) {
-        if (pluginPtr4) pluginPtr4->m_params["scaleX"] = val;
+        if (pluginPtr4) pluginPtr4->setParam("scaleX", val);
     });
 
     QPointer<LoadPointCloudPlugin> pluginPtr5(this);
     connect(scaleYSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             [pluginPtr5](double val) {
-        if (pluginPtr5) pluginPtr5->m_params["scaleY"] = val;
+        if (pluginPtr5) pluginPtr5->setParam("scaleY", val);
     });
 
     QPointer<LoadPointCloudPlugin> pluginPtr6(this);
     connect(scaleZSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             [pluginPtr6](double val) {
-        if (pluginPtr6) pluginPtr6->m_params["scaleZ"] = val;
+        if (pluginPtr6) pluginPtr6->setParam("scaleZ", val);
     });
 
     return widget;

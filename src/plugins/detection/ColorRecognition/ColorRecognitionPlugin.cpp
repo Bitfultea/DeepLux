@@ -59,7 +59,8 @@ bool ColorRecognitionPlugin::process(const ImageData& input, ImageData& output)
         return false;
     }
 
-    m_targetColor = m_params["targetColor"].toString();
+    QJsonObject params = currentParams();
+    m_targetColor = params["targetColor"].toString();
 
     // 定义颜色范围
     std::vector<ColorRange> colorRanges = {
@@ -201,7 +202,7 @@ QWidget* ColorRecognitionPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(colorCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, colorCombo](int) {
-        m_params["targetColor"] = colorCombo->currentData().toString();
+        setParam("targetColor", colorCombo->currentData().toString());
     });
 
     return widget;

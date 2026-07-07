@@ -227,13 +227,13 @@ QWidget* MeasureLinePlugin::createConfigWidget()
     layout->addStretch();
 
     connect(minLengthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["minLength"] = value; });
+            this, [this](double value) { setParam("minLength", value); });
 
     connect(maxLengthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["maxLength"] = value; });
+            this, [this](double value) { setParam("maxLength", value); });
 
     connect(thresholdSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["threshold"] = value; });
+            this, [this](double value) { setParam("threshold", value); });
 
     return widget;
 }

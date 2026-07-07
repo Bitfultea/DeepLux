@@ -45,7 +45,8 @@ bool ParallelPlugin::doValidateParams(const QJsonObject& params, QString& error)
 bool ParallelPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
-    m_parallelCount = m_params["parallelCount"].toInt(2);
+    QJsonObject params = currentParams();
+    m_parallelCount = params["parallelCount"].toInt(2);
 
     output.setData("parallel_count", m_parallelCount);
     output.setData("parallel_started", true);
@@ -73,7 +74,7 @@ QWidget* ParallelPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(countSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["parallelCount"] = value;
+        setParam("parallelCount", value);
         m_parallelCount = value;
     });
 

@@ -29,7 +29,8 @@ bool DelayPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    m_delayMs = m_params["delayMs"].toInt(100);
+    QJsonObject params = currentParams();
+    m_delayMs = params["delayMs"].toInt(100);
 
     if (m_delayMs <= 0) {
         emit errorOccurred(tr("延时时间必须大于0"));
@@ -70,7 +71,7 @@ QWidget* DelayPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(delaySpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["delayMs"] = value;
+        setParam("delayMs", value);
     });
 
     return widget;

@@ -146,11 +146,12 @@ bool TCPServerPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    m_port = m_params["port"].toInt(8080);
-    m_timeout = m_params["timeout"].toInt(5000);
-    m_writeData = m_params["writeData"].toString();
-    m_readVariable = m_params["readVariable"].toString("tcp_data");
-    QString operation = m_params["operation"].toString("WriteRead");
+    QJsonObject params = currentParams();
+    m_port = params["port"].toInt(8080);
+    m_timeout = params["timeout"].toInt(5000);
+    m_writeData = params["writeData"].toString();
+    m_readVariable = params["readVariable"].toString("tcp_data");
+    QString operation = params["operation"].toString("WriteRead");
 
     if (!startServer()) {
         return false;
@@ -237,23 +238,23 @@ QWidget* TCPServerPlugin::createConfigWidget()
 
     // Connections
     connect(portSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["port"] = value;
+        setParam("port", value);
     });
 
     connect(timeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["timeout"] = value;
+        setParam("timeout", value);
     });
 
     connect(operationCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        m_params["operation"] = operationCombo->currentData().toString();
+        setParam("operation", operationCombo->currentData().toString());
     });
 
     connect(writeEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["writeData"] = text;
+        setParam("writeData", text);
     });
 
     connect(readVarEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["readVariable"] = text;
+        setParam("readVariable", text);
     });
 
     return widget;

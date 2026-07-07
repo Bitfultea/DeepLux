@@ -38,8 +38,9 @@ bool TableOutPutPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    m_rowCount = m_params["rowCount"].toInt();
-    m_colCount = m_params["colCount"].toInt();
+    QJsonObject params = currentParams();
+    m_rowCount = params["rowCount"].toInt();
+    m_colCount = params["colCount"].toInt();
 
     // 获取表格数据
     QVariant tableDataVar = input.data("table_data");
@@ -118,11 +119,11 @@ QWidget* TableOutPutPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(rowSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        m_params["rowCount"] = value;
+        setParam("rowCount", value);
     });
 
     connect(colSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        m_params["colCount"] = value;
+        setParam("colCount", value);
     });
 
     return widget;

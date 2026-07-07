@@ -33,9 +33,10 @@ bool QueueOutPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    m_queueName = m_params["queueName"].toString("defaultQueue");
-    m_outputVariable = m_params["outputVariable"].toString("queue_item");
-    m_peekOnly = m_params["peekOnly"].toBool(false);
+    QJsonObject params = currentParams();
+    m_queueName = params["queueName"].toString("defaultQueue");
+    m_outputVariable = params["outputVariable"].toString("queue_item");
+    m_peekOnly = params["peekOnly"].toBool(false);
 
     if (m_queueName.isEmpty()) {
         emit errorOccurred(tr("队列名称不能为空"));
@@ -96,15 +97,15 @@ QWidget* QueueOutPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(queueNameEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["queueName"] = text;
+        setParam("queueName", text);
     });
 
     connect(outputVarEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["outputVariable"] = text;
+        setParam("outputVariable", text);
     });
 
     connect(peekCheck, &QCheckBox::toggled, this, [=](bool checked) {
-        m_params["peekOnly"] = checked;
+        setParam("peekOnly", checked);
     });
 
     return widget;

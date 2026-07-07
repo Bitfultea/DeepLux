@@ -51,14 +51,15 @@ bool DataCheckPlugin::process(const ImageData& input, ImageData& output)
     }
 
     // 获取校验类型
-    QString checkTypeStr = m_params["checkType"].toString();
+    QJsonObject params = currentParams();
+    QString checkTypeStr = params["checkType"].toString();
 
     m_checkResult = false;
     m_errorMessage.clear();
 
     if (checkTypeStr == "Range") {
-        double minVal = m_params["minValue"].toDouble();
-        double maxVal = m_params["maxValue"].toDouble();
+        double minVal = params["minValue"].toDouble();
+        double maxVal = params["maxValue"].toDouble();
 
         if (dataVar.canConvert<QVariantList>()) {
             // 检查列表中的所有值
@@ -79,8 +80,8 @@ bool DataCheckPlugin::process(const ImageData& input, ImageData& output)
     }
     else if (checkTypeStr == "Length") {
         QString str = dataVar.toString();
-        int minLen = m_params["minLength"].toInt();
-        int maxLen = m_params["maxLength"].toInt();
+        int minLen = params["minLength"].toInt();
+        int maxLen = params["maxLength"].toInt();
 
         m_checkResult = checkLength(str, minLen, maxLen);
         if (!m_checkResult) {
@@ -163,15 +164,15 @@ QWidget* DataCheckPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, typeCombo](int) {
-        m_params["checkType"] = typeCombo->currentData().toString();
+        setParam("checkType", typeCombo->currentData().toString());
     });
 
     connect(minSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-        m_params["minValue"] = value;
+        setParam("minValue", value);
     });
 
     connect(maxSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-        m_params["maxValue"] = value;
+        setParam("maxValue", value);
     });
 
     return widget;

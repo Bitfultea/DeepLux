@@ -63,10 +63,11 @@ bool PerProcessingPlugin::process(const ImageData& input, ImageData& output)
     }
 
     // 获取参数
-    QString typeStr = m_params["processType"].toString();
-    m_kernelSize = m_params["kernelSize"].toInt();
-    m_sigmaX = m_params["sigmaX"].toDouble();
-    m_iterations = m_params["iterations"].toInt();
+    QJsonObject params = currentParams();
+    QString typeStr = params["processType"].toString();
+    m_kernelSize = params["kernelSize"].toInt();
+    m_sigmaX = params["sigmaX"].toDouble();
+    m_iterations = params["iterations"].toInt();
 
     // 确保kernel size是奇数
     if (m_kernelSize % 2 == 0) m_kernelSize++;
@@ -194,15 +195,15 @@ QWidget* PerProcessingPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, typeCombo](int) {
-        m_params["processType"] = typeCombo->currentData().toString();
+        setParam("processType", typeCombo->currentData().toString());
     });
 
     connect(kernelSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        m_params["kernelSize"] = value;
+        setParam("kernelSize", value);
     });
 
     connect(iterSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        m_params["iterations"] = value;
+        setParam("iterations", value);
     });
 
     return widget;

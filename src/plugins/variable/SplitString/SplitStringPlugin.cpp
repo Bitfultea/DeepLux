@@ -36,7 +36,8 @@ bool SplitStringPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    QString inputString = m_params["inputString"].toString();
+    QJsonObject params = currentParams();
+    QString inputString = params["inputString"].toString();
     if (inputString.isEmpty()) {
         inputString = input.data("input_string").toString();
     }
@@ -44,10 +45,10 @@ bool SplitStringPlugin::process(const ImageData& input, ImageData& output)
         inputString = input.data("barcode").toString();
     }
 
-    QString separator = m_params["separator"].toString(",");
-    bool useRegex = m_params["useRegex"].toBool(false);
-    QString outputPrefix = m_params["outputPrefix"].toString("part");
-    int maxSplits = m_params["maxSplits"].toInt(0);
+    QString separator = params["separator"].toString(",");
+    bool useRegex = params["useRegex"].toBool(false);
+    QString outputPrefix = params["outputPrefix"].toString("part");
+    int maxSplits = params["maxSplits"].toInt(0);
 
     if (inputString.isEmpty()) {
         emit errorOccurred(tr("输入字符串为空"));
@@ -141,23 +142,23 @@ QWidget* SplitStringPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(inputEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["inputString"] = text;
+        setParam("inputString", text);
     });
 
     connect(sepEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["separator"] = text;
+        setParam("separator", text);
     });
 
     connect(regexCheck, &QCheckBox::toggled, this, [=](bool checked) {
-        m_params["useRegex"] = checked;
+        setParam("useRegex", checked);
     });
 
     connect(prefixEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["outputPrefix"] = text;
+        setParam("outputPrefix", text);
     });
 
     connect(maxSplitsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["maxSplits"] = value;
+        setParam("maxSplits", value);
     });
 
     return widget;

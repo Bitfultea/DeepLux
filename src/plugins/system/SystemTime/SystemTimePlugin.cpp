@@ -38,7 +38,8 @@ bool SystemTimePlugin::process(const ImageData& input, ImageData& output)
     Q_UNUSED(input);
     output = input;
 
-    m_timeFormat = m_params["timeFormat"].toString();
+    QJsonObject params = currentParams();
+    m_timeFormat = params["timeFormat"].toString();
 
     QDateTime now = QDateTime::currentDateTime();
     QString timeString = now.toString(m_timeFormat);
@@ -83,7 +84,7 @@ QWidget* SystemTimePlugin::createConfigWidget()
     layout->addStretch();
 
     connect(formatEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
-        m_params["timeFormat"] = text;
+        setParam("timeFormat", text);
     });
 
     return widget;

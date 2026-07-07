@@ -47,9 +47,10 @@ void SaveImagePlugin::shutdown()
 
 bool SaveImagePlugin::process(const ImageData& input, ImageData& output)
 {
-    QString filePath = m_params["filePath"].toString();
-    QString format = m_params["format"].toString();
-    int quality = m_params["quality"].toInt(95);
+    QJsonObject params = currentParams();
+    QString filePath = params["filePath"].toString();
+    QString format = params["format"].toString();
+    int quality = params["quality"].toInt(95);
 
     if (filePath.isEmpty()) {
         emit errorOccurred(tr("未指定保存路径"));
@@ -234,19 +235,19 @@ QWidget* SaveImagePlugin::createConfigWidget()
             pluginPtr->m_params["filePath"].toString(), filter);
         if (!path.isEmpty()) {
             filePathEdit->setText(path);
-            pluginPtr->m_params["filePath"] = path;
+            pluginPtr->setParam("filePath", path);
         }
     });
 
     QPointer<SaveImagePlugin> pluginPtr2(this);
     connect(filePathEdit, &QLineEdit::textChanged, [pluginPtr2](const QString& text) {
-        if (pluginPtr2) pluginPtr2->m_params["filePath"] = text;
+        if (pluginPtr2) pluginPtr2->setParam("filePath", text);
     });
 
     QPointer<SaveImagePlugin> pluginPtr3(this);
     connect(formatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             [pluginPtr3, formatCombo](int index) {
-        if (pluginPtr3) pluginPtr3->m_params["format"] = formatCombo->itemData(index).toString();
+        if (pluginPtr3) pluginPtr3->setParam("format", formatCombo->itemData(index).toString());
     });
 
     return widget;

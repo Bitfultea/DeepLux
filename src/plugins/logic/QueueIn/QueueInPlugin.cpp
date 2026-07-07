@@ -30,8 +30,9 @@ bool QueueInPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    m_queueName = m_params["queueName"].toString("defaultQueue");
-    m_dataVariable = m_params["dataVariable"].toString();
+    QJsonObject params = currentParams();
+    m_queueName = params["queueName"].toString("defaultQueue");
+    m_dataVariable = params["dataVariable"].toString();
 
     if (m_queueName.isEmpty()) {
         emit errorOccurred(tr("队列名称不能为空"));
@@ -87,11 +88,11 @@ QWidget* QueueInPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(queueNameEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["queueName"] = text;
+        setParam("queueName", text);
     });
 
     connect(dataVarEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["dataVariable"] = text;
+        setParam("dataVariable", text);
     });
 
     return widget;

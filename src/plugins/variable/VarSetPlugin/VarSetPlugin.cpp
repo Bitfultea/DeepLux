@@ -38,8 +38,9 @@ bool VarSetPlugin::process(const ImageData& input, ImageData& output)
 {
     output = input;
 
-    QString varName = m_params["variableName"].toString();
-    QString valueStr = m_params["value"].toString();
+    QJsonObject params = currentParams();
+    QString varName = params["variableName"].toString();
+    QString valueStr = params["value"].toString();
 
     if (varName.isEmpty()) {
         Logger::instance().warning("VarSetPlugin: variableName is empty", "Variable");
@@ -175,11 +176,11 @@ QWidget* VarSetPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(nameEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["variableName"] = text;
+        setParam("variableName", text);
     });
 
     connect(valueEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["value"] = text;
+        setParam("value", text);
     });
 
     return widget;

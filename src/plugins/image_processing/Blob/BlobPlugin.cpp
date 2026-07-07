@@ -168,10 +168,11 @@ void BlobPlugin::applyThreshold(const cv::Mat& gray, cv::Mat& mask)
 {
 #ifdef DEEPLUX_HAS_OPENCV
     // 获取阈值参数
-    QString typeStr = m_params["thresholdType"].toString("Otsu");
-    m_fixedThreshold = m_params["fixedThreshold"].toInt(127);
-    m_adaptiveBlockSize = m_params["adaptiveBlockSize"].toInt(11);
-    m_adaptiveC = m_params["adaptiveC"].toInt(2);
+    QJsonObject params = currentParams();
+    QString typeStr = params["thresholdType"].toString("Otsu");
+    m_fixedThreshold = params["fixedThreshold"].toInt(127);
+    m_adaptiveBlockSize = params["adaptiveBlockSize"].toInt(11);
+    m_adaptiveC = params["adaptiveC"].toInt(2);
 
     // 确保block size是奇数
     if (m_adaptiveBlockSize % 2 == 0) m_adaptiveBlockSize++;
@@ -266,25 +267,25 @@ QWidget* BlobPlugin::createConfigWidget()
     layout->addStretch();
 
     connect(threshTypeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, threshTypeCombo](int) { m_params["thresholdType"] = threshTypeCombo->currentData().toString(); });
+            this, [this, threshTypeCombo](int) { setParam("thresholdType", threshTypeCombo->currentData().toString()); });
 
     connect(fixedThreshSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-            this, [this](int value) { m_params["fixedThreshold"] = value; });
+            this, [this](int value) { setParam("fixedThreshold", value); });
 
     connect(blockSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-            this, [this](int value) { m_params["adaptiveBlockSize"] = value; });
+            this, [this](int value) { setParam("adaptiveBlockSize", value); });
 
     connect(adaptiveCSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-            this, [this](int value) { m_params["adaptiveC"] = value; });
+            this, [this](int value) { setParam("adaptiveC", value); });
 
     connect(minAreaSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["minArea"] = value; });
+            this, [this](double value) { setParam("minArea", value); });
 
     connect(maxAreaSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["maxArea"] = value; });
+            this, [this](double value) { setParam("maxArea", value); });
 
     connect(circSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["minCircularity"] = value; });
+            this, [this](double value) { setParam("minCircularity", value); });
 
     return widget;
 }
