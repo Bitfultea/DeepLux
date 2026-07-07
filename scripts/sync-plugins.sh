@@ -18,10 +18,39 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="${1:-$PROJECT_DIR}"
 PLUGINS_HOME="${HOME}/.deeplux/plugins"
 
-if [ ! -d "$PLUGINS_HOME" ]; then
-    echo "[ERROR] Plugin home directory not found: $PLUGINS_HOME"
-    exit 1
-fi
+mkdir -p "$PLUGINS_HOME"
+
+json_field() {
+    local json_path="$1"
+    local field="$2"
+    python3 - "$json_path" "$field" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        value = json.load(f).get(sys.argv[2], "")
+    print(value if isinstance(value, str) else "")
+except Exception:
+    sys.exit(0)
+PY
+}
+
+find_so_match() {
+    local meta_name="$1"
+    local dir_name="$2"
+    local short_dir="${dir_name%Plugin}"
+
+    for candidate in "$meta_name" "$dir_name" "$short_dir"; do
+        [ -n "$candidate" ] || continue
+        if [ -n "${SO_MAP[$candidate]+x}" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
 
 # 收集所有候选 .so 文件（普通插件 + 相机插件）
 declare -A SO_MAP
@@ -45,6 +74,45 @@ echo ""
 copied=0
 skipped=0
 cleaned=0
+prepared=0
+
+# 新增插件首次构建时，~/.deeplux/plugins 下还没有对应目录。
+# 先根据源码 metadata 创建运行时目录，避免只同步已有插件导致 GUI 扫描不到新插件。
+while IFS= read -r -d '' metadata_path; do
+    plugin_src_dir=$(dirname "$metadata_path")
+    dir_name=$(basename "$plugin_src_dir")
+    meta_name=$(json_field "$metadata_path" "name")
+
+    [ -n "$meta_name" ] || continue
+
+    match_name=$(find_so_match "$meta_name" "$dir_name" || true)
+
+    [ -n "$match_name" ] || continue
+
+    target_dir="$PLUGINS_HOME/$dir_name"
+    for existing_meta in "$PLUGINS_HOME"/*/metadata.json; do
+        [ -f "$existing_meta" ] || continue
+        existing_name=$(json_field "$existing_meta" "name")
+        if [ "$existing_name" = "$meta_name" ]; then
+            target_dir=$(dirname "$existing_meta")
+            break
+        fi
+    done
+
+    mkdir -p "$target_dir"
+    if [ ! -f "$target_dir/metadata.json" ] || ! cmp -s "$metadata_path" "$target_dir/metadata.json"; then
+        cp "$metadata_path" "$target_dir/metadata.json"
+        echo "[META]  $(basename "$target_dir"): refreshed metadata.json"
+        ((prepared++)) || true
+    fi
+
+    icon_name=$(json_field "$metadata_path" "icon")
+    if [ -n "$icon_name" ] && [ -f "$plugin_src_dir/$icon_name" ]; then
+        if [ ! -f "$target_dir/$icon_name" ] || ! cmp -s "$plugin_src_dir/$icon_name" "$target_dir/$icon_name"; then
+            cp "$plugin_src_dir/$icon_name" "$target_dir/$icon_name"
+        fi
+    fi
+done < <(find "$PROJECT_DIR/src/plugins" -path '*/metadata.json' -print0)
 
 # 遍历 ~/.deeplux/plugins/ 下的每个插件目录
 for plugin_dir in "$PLUGINS_HOME"/*/; do
@@ -52,25 +120,20 @@ for plugin_dir in "$PLUGINS_HOME"/*/; do
     [ -f "$plugin_dir/metadata.json" ] || continue
 
     # 读取 metadata.json 中的 name 字段
-    meta_name=$(python3 -c "
-import json, sys
-try:
-    with open('$plugin_dir/metadata.json') as f:
-        print(json.load(f).get('name', ''))
-except Exception:
-    sys.exit(0)
-" 2>/dev/null || true)
+    meta_name=$(json_field "$plugin_dir/metadata.json" "name")
 
     [ -n "$meta_name" ] || continue
 
     dir_name=$(basename "$plugin_dir")
 
     # 清理该目录下不匹配的 .so 文件（防止旧脚本错误导致的多余 .so 堆积）
+    short_dir_name="${dir_name%Plugin}"
     for existing_so in "$plugin_dir"/*.so; do
         [ -f "$existing_so" ] || continue
         existing_base=$(basename "$existing_so")
         existing_name=$(echo "$existing_base" | sed 's/^lib//;s/Plugin\.so$//')
-        if [ "$existing_name" != "$meta_name" ] && [ "$existing_name" != "$dir_name" ]; then
+        if [ "$existing_name" != "$meta_name" ] && [ "$existing_name" != "$dir_name" ] &&
+            [ "$existing_name" != "$short_dir_name" ]; then
             rm -f "$existing_so"
             echo "[CLEAN] $dir_name: removed mismatched $existing_base"
             ((cleaned++)) || true
@@ -79,12 +142,7 @@ except Exception:
 
     # 查找匹配的构建产物并复制
     # 优先通过 metadata.json 中的 name 匹配，其次通过目录名匹配
-    match_name=""
-    if [ -n "${SO_MAP[$meta_name]+x}" ]; then
-        match_name="$meta_name"
-    elif [ -n "${SO_MAP[$dir_name]+x}" ]; then
-        match_name="$dir_name"
-    fi
+    match_name=$(find_so_match "$meta_name" "$dir_name" || true)
 
     if [ -n "$match_name" ]; then
         src_so="${SO_MAP[$match_name]}"
@@ -104,4 +162,4 @@ except Exception:
 done
 
 echo ""
-echo "[DONE] copied=$copied skipped=$skipped cleaned=$cleaned"
+echo "[DONE] prepared=$prepared copied=$copied skipped=$skipped cleaned=$cleaned"

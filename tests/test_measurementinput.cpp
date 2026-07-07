@@ -22,6 +22,7 @@ class TestMeasurementInput : public QObject {
 private slots:
     void writesPointPair();
     void writesPointLine();
+    void writesLinePair();
     void writesPointPlane();
     void writesCustomMode();
     void invalidPointValuesFail();
@@ -63,6 +64,23 @@ void TestMeasurementInput::writesPointLine() {
     QCOMPARE(line->p1.x, 0.0);
     QCOMPARE(line->p2.x, 100.0);
     QCOMPARE(output.data("measurement_input_mode").toString(), QString("point_line"));
+}
+
+void TestMeasurementInput::writesLinePair() {
+    MeasurementInputPlugin plugin;
+    plugin.initialize();
+    plugin.setParam("mode", QString("line_pair"));
+    plugin.setParam("line1", arr({0.0, 0.0, 10.0, 0.0}));
+    plugin.setParam("line2", arr({0.0, 5.0, 10.0, 5.0}));
+    ImageData input, output;
+    QVERIFY(plugin.execute(input, output));
+    auto line1 = MeasurementData::parseLine2D(output.data("line1"), nullptr);
+    auto line2 = MeasurementData::parseLine2D(output.data("line2"), nullptr);
+    QVERIFY(line1.has_value());
+    QVERIFY(line2.has_value());
+    QCOMPARE(line1->p2.x, 10.0);
+    QCOMPARE(line2->p1.y, 5.0);
+    QCOMPARE(output.data("measurement_input_mode").toString(), QString("line_pair"));
 }
 
 void TestMeasurementInput::writesPointPlane() {
@@ -136,9 +154,11 @@ void TestMeasurementInput::configWidgetEditsParams() {
 
     QComboBox* mode = widget->findChild<QComboBox*>("MeasurementInputModeCombo");
     QLineEdit* point = widget->findChild<QLineEdit*>("MeasurementInputPointEdit");
+    QLineEdit* line1 = widget->findChild<QLineEdit*>("MeasurementInputLine1Edit");
     QLineEdit* plane = widget->findChild<QLineEdit*>("MeasurementInputPlaneEdit");
     QVERIFY(mode != nullptr);
     QVERIFY(point != nullptr);
+    QVERIFY(line1 != nullptr);
     QVERIFY(plane != nullptr);
 
     mode->setCurrentText(QStringLiteral("point_plane"));

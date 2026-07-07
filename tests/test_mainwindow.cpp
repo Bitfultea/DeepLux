@@ -1,3 +1,4 @@
+#include <QApplication>
 #include <QClipboard>
 #include <QCoreApplication>
 #include <QDir>
@@ -14,6 +15,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -46,6 +48,7 @@ private slots:
     void testAgentInputErrorPathDoesNotCrashOrStayThinking();
     void testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTheme();
     void testMeasurementPickingUpdatesInputAndClipboard();
+    void testMeasurementConfigButtonCreatesInputNode();
 
 private:
     bool installFitLinePlugin(const QString& pluginRoot) const;
@@ -90,6 +93,62 @@ bool TestMainWindow::installRuntimePlugin(const QString& pluginRoot, const QStri
 
     return QFile::copy(metadataSrc, pluginDir.filePath("metadata.json")) &&
            QFile::copy(libSrc, pluginDir.filePath(QString("lib%1Plugin.so").arg(pluginName)));
+}
+
+void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
+
+    MainWindow window;
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance distance;
+    distance.id = QStringLiteral("distance_1");
+    distance.moduleId = QStringLiteral("DistancePP");
+    distance.name = QStringLiteral("点点距离");
+    project->addModule(distance);
+    QCoreApplication::processEvents();
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>("ProcessTree");
+    QVERIFY(processTree != nullptr);
+    QCOMPARE(processTree->topLevelItemCount(), 1);
+    QTreeWidgetItem* distanceItem = processTree->topLevelItem(0);
+    processTree->setCurrentItem(distanceItem);
+
+    bool clickedSetup = false;
+    QTimer::singleShot(20, [&]() {
+        QWidget* modal = QApplication::activeModalWidget();
+        QVERIFY(modal != nullptr);
+        QPushButton* button = modal->findChild<QPushButton*>("MeasurementInputSetupButton");
+        QVERIFY(button != nullptr);
+        clickedSetup = true;
+        button->click();
+    });
+
+    const QRect itemRect = processTree->visualItemRect(distanceItem);
+    QTest::mouseDClick(processTree->viewport(), Qt::LeftButton, Qt::NoModifier, itemRect.center());
+    QCoreApplication::processEvents();
+
+    QVERIFY(clickedSetup);
+    QCOMPARE(processTree->topLevelItemCount(), 2);
+    QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 2).toString(), QStringLiteral("MeasurementInput"));
+    QCOMPARE(processTree->topLevelItem(1)->data(0, Qt::UserRole + 2).toString(), QStringLiteral("DistancePP"));
+    QCOMPARE(processTree->currentItem(), processTree->topLevelItem(0));
+
+    const QString inputId = processTree->topLevelItem(0)->data(0, Qt::UserRole + 1).toString();
+    ModuleInstance* input = project->findModule(inputId);
+    QVERIFY(input != nullptr);
+    QCOMPARE(input->moduleId, QStringLiteral("MeasurementInput"));
+    QCOMPARE(input->params["mode"].toString(), QStringLiteral("point_pair"));
 }
 
 void TestMainWindow::testOpenProjectSyncsProcessTreeAndFlowCanvas() {
@@ -611,6 +670,30 @@ void TestMainWindow::testMeasurementPickingUpdatesInputAndClipboard() {
     QCOMPARE(lineModule->params["line"].toArray().at(0).toDouble(), 30.0);
     QCOMPARE(lineModule->params["line"].toArray().at(3).toDouble(), 60.0);
 
+    Logger::instance().clearLogs();
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint3DPicked", Qt::DirectConnection,
+                                      Q_ARG(QVector3D, QVector3D(1.0f, 2.0f, 9.0f))));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint3DPicked", Qt::DirectConnection,
+                                      Q_ARG(QVector3D, QVector3D(3.0f, 4.0f, 99.0f))));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint3DPicked", Qt::DirectConnection,
+                                      Q_ARG(QVector3D, QVector3D(5.0f, 6.0f, 88.0f))));
+
+    lineModule = project->findModule(QStringLiteral("measure_line_input"));
+    QVERIFY(lineModule != nullptr);
+    QCOMPARE(lineModule->params["point"].toArray().at(2).toDouble(), 9.0);
+    QCOMPARE(lineModule->params["line"].toArray().size(), 4);
+    QCOMPARE(lineModule->params["line"].toArray().at(0).toDouble(), 3.0);
+    QCOMPARE(lineModule->params["line"].toArray().at(3).toDouble(), 6.0);
+
+    bool lineZLogged = false;
+    for (const LogEntry& entry : Logger::instance().logs(QStringLiteral("Picking"))) {
+        if (entry.message.contains(QStringLiteral("z=0")) && entry.message.contains(QStringLiteral("ignored"))) {
+            lineZLogged = true;
+            break;
+        }
+    }
+    QVERIFY2(lineZLogged, "3D point_line picking should log that line endpoints use z=0");
+
     ModuleInstance planeInput;
     planeInput.id = QStringLiteral("measure_plane_input");
     planeInput.moduleId = QStringLiteral("MeasurementInput");
@@ -635,6 +718,31 @@ void TestMainWindow::testMeasurementPickingUpdatesInputAndClipboard() {
     QCOMPARE(planeModule->params["plane"].toArray().size(), 9);
     QCOMPARE(planeModule->params["plane"].toArray().at(3).toDouble(), 1.0);
     QCOMPARE(planeModule->params["plane"].toArray().at(7).toDouble(), 1.0);
+
+    ModuleInstance linePairInput;
+    linePairInput.id = QStringLiteral("measure_line_pair_input");
+    linePairInput.moduleId = QStringLiteral("MeasurementInput");
+    linePairInput.name = QStringLiteral("测量输入");
+    linePairInput.params["mode"] = QStringLiteral("line_pair");
+    project->addModule(linePairInput);
+    QCoreApplication::processEvents();
+    processTree->setCurrentItem(processTree->topLevelItem(processTree->topLevelItemCount() - 1));
+
+    QVERIFY(
+        QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(1.0, 2.0))));
+    QVERIFY(
+        QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(3.0, 4.0))));
+    QVERIFY(
+        QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(5.0, 6.0))));
+    QVERIFY(
+        QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(7.0, 8.0))));
+
+    ModuleInstance* linePairModule = project->findModule(QStringLiteral("measure_line_pair_input"));
+    QVERIFY(linePairModule != nullptr);
+    QCOMPARE(linePairModule->params["line1"].toArray().at(0).toDouble(), 1.0);
+    QCOMPARE(linePairModule->params["line1"].toArray().at(3).toDouble(), 4.0);
+    QCOMPARE(linePairModule->params["line2"].toArray().at(0).toDouble(), 5.0);
+    QCOMPARE(linePairModule->params["line2"].toArray().at(3).toDouble(), 8.0);
 }
 
 QTEST_MAIN(TestMainWindow)

@@ -55,6 +55,8 @@ MeasurementInputPlugin::MeasurementInputPlugin(QObject* parent) : ModuleBase(par
                                   {"point2", makeJsonArray({0.0, 0.0})},
                                   {"point", makeJsonArray({0.0, 0.0, 0.0})},
                                   {"line", makeJsonArray({0.0, 0.0, 100.0, 0.0})},
+                                  {"line1", makeJsonArray({0.0, 0.0, 100.0, 0.0})},
+                                  {"line2", makeJsonArray({0.0, 100.0, 100.0, 100.0})},
                                   {"plane", makeJsonArray({0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0})}};
     m_params = m_defaultParams;
 }
@@ -133,6 +135,28 @@ bool MeasurementInputPlugin::process(const ImageData& input, ImageData& output) 
         output.setData("measurement_input_mode", mode);
 
         Logger::instance().debug(QString("测量输入: point_line mode"), "MeasurementInput");
+    } else if (mode == "line_pair") {
+        QJsonArray line1Arr = params["line1"].toArray();
+        QJsonArray line2Arr = params["line2"].toArray();
+        QVariantList line1List = jsonArrayToVariantList(line1Arr);
+        QVariantList line2List = jsonArrayToVariantList(line2Arr);
+
+        auto line1 = MeasurementData::parseLine2D(line1List, &error);
+        if (!line1) {
+            emit errorOccurred(tr("线1数据格式无效: %1").arg(error));
+            return false;
+        }
+        auto line2 = MeasurementData::parseLine2D(line2List, &error);
+        if (!line2) {
+            emit errorOccurred(tr("线2数据格式无效: %1").arg(error));
+            return false;
+        }
+
+        output.setData("line1", line1List);
+        output.setData("line2", line2List);
+        output.setData("measurement_input_mode", mode);
+
+        Logger::instance().debug(QString("测量输入: line_pair mode"), "MeasurementInput");
     } else if (mode == "point_plane") {
         QJsonArray pointArr = params["point"].toArray();
         QJsonArray planeArr = params["plane"].toArray();
@@ -162,6 +186,8 @@ bool MeasurementInputPlugin::process(const ImageData& input, ImageData& output) 
         bool hasPoint = params.contains("point");
         bool hasLine = params.contains("line");
         bool hasPlane = params.contains("plane");
+        bool hasLine1 = params.contains("line1");
+        bool hasLine2 = params.contains("line2");
 
         if (hasPoint1) {
             QVariantList point1List = jsonArrayToVariantList(params["point1"].toArray());
@@ -203,6 +229,26 @@ bool MeasurementInputPlugin::process(const ImageData& input, ImageData& output) 
             output.setData("line", lineList);
         }
 
+        if (hasLine1) {
+            QVariantList line1List = jsonArrayToVariantList(params["line1"].toArray());
+            auto line1 = MeasurementData::parseLine2D(line1List, &error);
+            if (!line1) {
+                emit errorOccurred(tr("线1数据格式无效: %1").arg(error));
+                return false;
+            }
+            output.setData("line1", line1List);
+        }
+
+        if (hasLine2) {
+            QVariantList line2List = jsonArrayToVariantList(params["line2"].toArray());
+            auto line2 = MeasurementData::parseLine2D(line2List, &error);
+            if (!line2) {
+                emit errorOccurred(tr("线2数据格式无效: %1").arg(error));
+                return false;
+            }
+            output.setData("line2", line2List);
+        }
+
         if (hasPlane) {
             QVariantList planeList = jsonArrayToVariantList(params["plane"].toArray());
             auto plane = MeasurementData::parsePlane3D(planeList, &error);
@@ -230,7 +276,8 @@ bool MeasurementInputPlugin::doValidateParams(const QJsonObject& params, QString
         return false;
     }
 
-    if (mode != "point_pair" && mode != "point_line" && mode != "point_plane" && mode != "custom") {
+    if (mode != "point_pair" && mode != "point_line" && mode != "line_pair" && mode != "point_plane" &&
+        mode != "custom") {
         error = tr("未知的测量输入模式: %1").arg(mode);
         return false;
     }
@@ -251,7 +298,7 @@ QWidget* MeasurementInputPlugin::createConfigWidget() {
 
     QComboBox* modeCombo = new QComboBox(widget);
     modeCombo->setObjectName("MeasurementInputModeCombo");
-    modeCombo->addItems({"point_pair", "point_line", "point_plane", "custom"});
+    modeCombo->addItems({"point_pair", "point_line", "line_pair", "point_plane", "custom"});
     modeCombo->setCurrentText(m_params["mode"].toString("point_pair"));
     form->addRow(tr("模式"), modeCombo);
 
@@ -266,12 +313,16 @@ QWidget* MeasurementInputPlugin::createConfigWidget() {
     QLineEdit* point2Edit = makeEdit("MeasurementInputPoint2Edit", m_params["point2"].toArray());
     QLineEdit* pointEdit = makeEdit("MeasurementInputPointEdit", m_params["point"].toArray());
     QLineEdit* lineEdit = makeEdit("MeasurementInputLineEdit", m_params["line"].toArray());
+    QLineEdit* line1Edit = makeEdit("MeasurementInputLine1Edit", m_params["line1"].toArray());
+    QLineEdit* line2Edit = makeEdit("MeasurementInputLine2Edit", m_params["line2"].toArray());
     QLineEdit* planeEdit = makeEdit("MeasurementInputPlaneEdit", m_params["plane"].toArray());
 
     form->addRow(tr("点 1"), point1Edit);
     form->addRow(tr("点 2"), point2Edit);
     form->addRow(tr("点"), pointEdit);
     form->addRow(tr("线"), lineEdit);
+    form->addRow(tr("线 1"), line1Edit);
+    form->addRow(tr("线 2"), line2Edit);
     form->addRow(tr("平面"), planeEdit);
     layout->addLayout(form);
 
@@ -297,6 +348,8 @@ QWidget* MeasurementInputPlugin::createConfigWidget() {
     bindArrayEdit(point2Edit, "point2");
     bindArrayEdit(pointEdit, "point");
     bindArrayEdit(lineEdit, "line");
+    bindArrayEdit(line1Edit, "line1");
+    bindArrayEdit(line2Edit, "line2");
     bindArrayEdit(planeEdit, "plane");
 
     layout->addStretch();

@@ -117,6 +117,39 @@ QString cleanToolDisplayName(const QString& displayName) {
     return text;
 }
 
+QString measurementInputModeForConsumer(const QString& moduleId) {
+    if (moduleId == QStringLiteral("com.deeplux.plugin.distancepp") ||
+        moduleId == QStringLiteral("com.deeplux.plugin.measuregap")) {
+        return QStringLiteral("point_pair");
+    }
+    if (moduleId == QStringLiteral("com.deeplux.plugin.distancepl")) {
+        return QStringLiteral("point_line");
+    }
+    if (moduleId == QStringLiteral("com.deeplux.plugin.linesdistance")) {
+        return QStringLiteral("line_pair");
+    }
+    if (moduleId == QStringLiteral("com.deeplux.plugin.pointsurfacedistance")) {
+        return QStringLiteral("point_plane");
+    }
+    return QString();
+}
+
+QString measurementInputModeText(const QString& mode) {
+    if (mode == QStringLiteral("point_pair")) {
+        return QStringLiteral("点1、点2");
+    }
+    if (mode == QStringLiteral("point_line")) {
+        return QStringLiteral("点、线段两端点");
+    }
+    if (mode == QStringLiteral("line_pair")) {
+        return QStringLiteral("线1两端点、线2两端点");
+    }
+    if (mode == QStringLiteral("point_plane")) {
+        return QStringLiteral("点、平面三点");
+    }
+    return mode;
+}
+
 QString measurementSummary(const ImageData& output) {
     QStringList parts;
     const QMap<QString, QVariant> all = output.allData();
@@ -1242,6 +1275,24 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
     const QJsonArray newPoint2D = pointArray2D(point);
     const QJsonArray newPoint3D = pointArray3D(point.x(), point.y(), 0.0);
 
+    if (mode == "line_pair") {
+        const int step = cursor % 4;
+        const QString key = step < 2 ? QStringLiteral("line1") : QStringLiteral("line2");
+        const bool firstPoint = (step % 2) == 0;
+        QJsonArray line = updatedLineArray(params[key].toArray(), point, firstPoint);
+        mod->setParam(key, line);
+        if (project)
+            project->setModuleParam(instanceId, key, line);
+        Logger::instance().info(QString("2D pick: %1 p%2 set to (%3, %4)")
+                                    .arg(key)
+                                    .arg(firstPoint ? 1 : 2)
+                                    .arg(point.x(), 0, 'f', 2)
+                                    .arg(point.y(), 0, 'f', 2),
+                                "Picking");
+        m_measurementPickCursor[instanceId] = (step + 1) % 4;
+        return;
+    }
+
     if (mode == "point_line") {
         const int step = cursor % 3;
         if (step == 0) {
@@ -1369,17 +1420,47 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
         return;
     }
 
+    if (mode == "line_pair") {
+        const int step = cursor % 4;
+        const QString key = step < 2 ? QStringLiteral("line1") : QStringLiteral("line2");
+        const bool firstPoint = (step % 2) == 0;
+        QJsonArray line = updatedLineArray(params[key].toArray(), QPointF(point.x(), point.y()), firstPoint);
+        mod->setParam(key, line);
+        if (project)
+            project->setModuleParam(instanceId, key, line);
+        Logger::instance().info(QString("3D pick: %1 p%2 set to (%3, %4, z=0; input z %5 ignored)")
+                                    .arg(key)
+                                    .arg(firstPoint ? 1 : 2)
+                                    .arg(point.x(), 0, 'f', 3)
+                                    .arg(point.y(), 0, 'f', 3)
+                                    .arg(point.z(), 0, 'f', 3),
+                                "Picking");
+        m_measurementPickCursor[instanceId] = (step + 1) % 4;
+        return;
+    }
+
     if (mode == "point_line") {
         const int step = cursor % 3;
         if (step == 0) {
             mod->setParam("point", newPoint);
             if (project)
                 project->setModuleParam(instanceId, "point", newPoint);
+            Logger::instance().info(QString("3D pick: point set to (%1, %2, %3)")
+                                        .arg(point.x(), 0, 'f', 3)
+                                        .arg(point.y(), 0, 'f', 3)
+                                        .arg(point.z(), 0, 'f', 3),
+                                    "Picking");
         } else {
             QJsonArray line = updatedLineArray(params["line"].toArray(), QPointF(point.x(), point.y()), step == 1);
             mod->setParam("line", line);
             if (project)
                 project->setModuleParam(instanceId, "line", line);
+            Logger::instance().info(QString("3D pick: line p%1 set to (%2, %3, z=0; input z %4 ignored)")
+                                        .arg(step)
+                                        .arg(point.x(), 0, 'f', 3)
+                                        .arg(point.y(), 0, 'f', 3)
+                                        .arg(point.z(), 0, 'f', 3),
+                                    "Picking");
         }
         m_measurementPickCursor[instanceId] = (step + 1) % 3;
         return;
@@ -1581,6 +1662,100 @@ void MainWindow::removeModuleFromProcessTree(const QString& instanceId) {
             }
         }
     }
+}
+
+void MainWindow::addMeasurementConfigAction(QVBoxLayout* layout, const QString& consumerModuleId,
+                                            const QString& consumerInstanceId, QDialog* dialog) {
+    const QString mode = measurementInputModeForConsumer(consumerModuleId);
+    if (mode.isEmpty() || !layout || !dialog) {
+        return;
+    }
+
+    QGroupBox* group = new QGroupBox(tr("测量元素"));
+    group->setObjectName("MeasurementInputActionGroup");
+    QVBoxLayout* groupLayout = new QVBoxLayout(group);
+    groupLayout->setContentsMargins(10, 8, 10, 10);
+    groupLayout->setSpacing(8);
+
+    QLabel* label = new QLabel(tr("需要输入：%1").arg(measurementInputModeText(mode)), group);
+    label->setWordWrap(true);
+    groupLayout->addWidget(label);
+
+    QPushButton* button = new QPushButton(tr("添加测量输入并开始拾取"), group);
+    button->setObjectName("MeasurementInputSetupButton");
+    button->setProperty("measurementInputMode", mode);
+    button->setMinimumHeight(qMax(30, button->fontMetrics().height() + 10));
+    groupLayout->addWidget(button);
+
+    connect(button, &QPushButton::clicked, this, [this, mode, consumerInstanceId, dialog]() {
+        const QString inputId = ensureMeasurementInputForMode(mode, consumerInstanceId);
+        if (inputId.isEmpty()) {
+            QMessageBox::warning(this, tr("测量输入不可用"), tr("无法创建测量输入插件，请先同步并重启插件。"));
+            return;
+        }
+        Logger::instance().info(tr("已创建测量输入：%1，开始在视图中拾取元素").arg(inputId), "Config");
+        dialog->accept();
+    });
+
+    layout->addWidget(group);
+}
+
+QString MainWindow::ensureMeasurementInputForMode(const QString& mode, const QString& consumerInstanceId) {
+    if (mode.isEmpty()) {
+        return QString();
+    }
+
+    PluginManager& pm = PluginManager::instance();
+    if (!pm.isPluginLoaded(QStringLiteral("MeasurementInput")) && !pm.loadPlugin(QStringLiteral("MeasurementInput"))) {
+        return QString();
+    }
+
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project) {
+        project = ProjectManager::instance().newProject();
+    }
+    if (!project) {
+        return QString();
+    }
+
+    const QString baseId = consumerInstanceId.isEmpty() ? QStringLiteral("measurement_input")
+                                                        : QStringLiteral("%1_input").arg(consumerInstanceId);
+    QString instanceId = baseId;
+    int counter = 1;
+    while (project->findModule(instanceId) || m_instanceItemMap.contains(instanceId)) {
+        instanceId = QStringLiteral("%1_%2").arg(baseId).arg(counter++);
+    }
+
+    ModuleInstance inst;
+    inst.id = instanceId;
+    inst.moduleId = QStringLiteral("MeasurementInput");
+    inst.name = toolDisplayName(QStringLiteral("MeasurementInput"), tr("测量输入"));
+    inst.params["mode"] = mode;
+
+    int insertRow = m_processTree ? m_processTree->topLevelItemCount() : 0;
+    if (m_processTree && m_instanceItemMap.contains(consumerInstanceId)) {
+        const int consumerRow = m_processTree->indexOfTopLevelItem(m_instanceItemMap.value(consumerInstanceId));
+        if (consumerRow >= 0) {
+            insertRow = consumerRow;
+        }
+    }
+
+    project->addModule(inst);
+    project->moveModule(instanceId, insertRow);
+
+    QTreeWidgetItem* inputItem = m_instanceItemMap.value(instanceId, nullptr);
+    if (inputItem && m_processTree) {
+        const int currentRow = m_processTree->indexOfTopLevelItem(inputItem);
+        if (currentRow >= 0 && currentRow != insertRow) {
+            m_processTree->takeTopLevelItem(currentRow);
+            m_processTree->insertTopLevelItem(insertRow, inputItem);
+        }
+        m_processTree->setCurrentItem(inputItem);
+    }
+
+    m_measurementPickCursor[instanceId] = 0;
+    m_modulesNeedSync = true;
+    return instanceId;
 }
 
 void MainWindow::clearProcessTree() {
@@ -1980,6 +2155,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                     dialog->setMinimumSize(400, 300);
                     dialog->setAttribute(Qt::WA_DeleteOnClose);
                     QVBoxLayout* layout = new QVBoxLayout(dialog);
+                    addMeasurementConfigAction(layout, module->moduleId(), instanceName, dialog);
                     layout->addWidget(configWidget); // addWidget 会 reparent 到 dialog
                     QHBoxLayout* btnLayout = new QHBoxLayout();
                     QPushButton* okBtn = new QPushButton(tr("确定"));

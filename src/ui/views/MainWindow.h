@@ -23,6 +23,9 @@
 #include <QTreeWidget>
 #include <QVector>
 
+class QDialog;
+class QVBoxLayout;
+
 namespace DeepLux {
 class FlowCanvas;
 class DisplayManager;
@@ -193,6 +196,9 @@ protected:
     void removeFlowModuleByInstanceId(const QString& instanceId);
     void removeModuleFromProcessTree(const QString& instanceId);
     void clearProcessTree();
+    void addMeasurementConfigAction(QVBoxLayout* layout, const QString& consumerModuleId,
+                                    const QString& consumerInstanceId, QDialog* dialog);
+    QString ensureMeasurementInputForMode(const QString& mode, const QString& consumerInstanceId);
 
     // 流程中的插件实例
     QMap<QString, IModule*> m_flowModules;
