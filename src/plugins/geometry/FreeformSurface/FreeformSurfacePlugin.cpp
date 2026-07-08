@@ -46,7 +46,8 @@ bool FreeformSurfacePlugin::process(const ImageData& input, ImageData& output)
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
-    m_samplingInterval = m_params["samplingInterval"].toDouble();
+    QJsonObject params = currentParams();
+    m_samplingInterval = params["samplingInterval"].toDouble();
 
     // 获取点云数据 - 优先使用 MeasurementData (PointCloudData)
     std::vector<cv::Point3f> points;
@@ -54,14 +55,12 @@ bool FreeformSurfacePlugin::process(const ImageData& input, ImageData& output)
     QString cloudError;
     auto cloudData = MeasurementData::pointCloud(input, &cloudError);
     if (cloudData) {
-        // 从 PointCloudData (Eigen::Vector3d) 转换为 cv::Point3f
         for (const auto& pt : cloudData->points) {
             points.push_back(cv::Point3f(static_cast<float>(pt.x()),
                                          static_cast<float>(pt.y()),
                                          static_cast<float>(pt.z())));
         }
     } else {
-        // 回退：从 QVariant 列表解析点云（兼容旧格式）
         QVariant pointsVar = input.data("point_cloud");
         if (pointsVar.isValid()) {
             QList<QVariant> pointsList = pointsVar.toList();
@@ -81,41 +80,32 @@ bool FreeformSurfacePlugin::process(const ImageData& input, ImageData& output)
 
     m_pointCount = static_cast<int>(points.size());
 
-    // 计算表面积（简化：使用 bounding box 面积 * 系数）
     if (points.size() >= 3) {
-        float minX = points[0].x, maxX = points[0].x;
-        float minY = points[0].y, maxY = points[0].y;
-        float minZ = points[0].z, maxZ = points[0].z;
-
-        for (const auto& p : points) {
-            minX = qMin(minX, p.x); maxX = qMax(maxX, p.x);
-            minY = qMin(minY, p.y); maxY = qMax(maxY, p.y);
-            minZ = qMin(minZ, p.z); maxZ = qMax(maxZ, p.z);
-        }
-
-        float spanX = maxX - minX;
-        float spanY = maxY - minY;
-        float spanZ = maxZ - minZ;
-
-        // 简化表面积计算
-        m_surfaceArea = spanX * spanY * 1.2;  // 系数用于估算曲面面积
-
-        // 计算粗糙度（点到拟合平面的标准差）
+        // 拟合平面 ax + by + cz + d = 0
         cv::Vec4f planeCoeffs;
         if (fitPlaneToPoints(points, planeCoeffs)) {
+            // 粗糙度：点到拟合平面的距离标准差
             double sumSqDist = 0;
-            for (const auto& p : points) {
-                double dist = fabs(planeCoeffs[0]*p.x + planeCoeffs[1]*p.y +
-                                   planeCoeffs[2]*p.z + planeCoeffs[3]) /
-                              sqrt(planeCoeffs[0]*planeCoeffs[0] + planeCoeffs[1]*planeCoeffs[1] +
-                                   planeCoeffs[2]*planeCoeffs[2]);
-                sumSqDist += dist * dist;
+            float a = planeCoeffs[0], b = planeCoeffs[1], c = planeCoeffs[2], d = planeCoeffs[3];
+            float normLen = sqrt(a*a + b*b + c*c);
+            if (normLen < 1e-10f) {
+                m_surfaceRoughness = 0;
+            } else {
+                for (const auto& p : points) {
+                    double dist = fabs(a*p.x + b*p.y + c*p.z + d) / normLen;
+                    sumSqDist += dist * dist;
+                }
+                m_surfaceRoughness = sqrt(sumSqDist / points.size());
             }
-            m_surfaceRoughness = sqrt(sumSqDist / points.size());
+
+            // 表面积：将点投影到拟合平面，计算凸包面积
+            computeProjectedArea(points, planeCoeffs);
+        } else {
+            m_surfaceArea = 0;
+            m_surfaceRoughness = 0;
         }
     }
 
-    // 设置输出数据
     output.setData("point_count", m_pointCount);
     output.setData("surface_area", m_surfaceArea);
     output.setData("surface_roughness", m_surfaceRoughness);
@@ -139,28 +129,78 @@ bool FreeformSurfacePlugin::fitPlaneToPoints(const std::vector<cv::Point3f>& poi
 #ifdef DEEPLUX_HAS_OPENCV
     if (points.size() < 3) return false;
 
-    // 使用SVD拟合平面 ax + by + cz + d = 0
-    cv::Mat A(points.size(), 3, CV_32FC1);
-    cv::Mat B(points.size(), 1, CV_32FC1);
+    // 正确的 SVD 平面拟合：对中心化后的点做 SVD，最小奇异值对应的右奇异向量即为法向量
+    cv::Point3f centroid(0, 0, 0);
+    for (const auto& p : points) {
+        centroid.x += p.x; centroid.y += p.y; centroid.z += p.z;
+    }
+    float n = static_cast<float>(points.size());
+    centroid.x /= n; centroid.y /= n; centroid.z /= n;
 
+    cv::Mat A(points.size(), 3, CV_32FC1);
     for (size_t i = 0; i < points.size(); ++i) {
-        A.at<float>(i, 0) = points[i].x;
-        A.at<float>(i, 1) = points[i].y;
-        A.at<float>(i, 2) = points[i].z;
-        B.at<float>(i, 0) = -1.0f;  // 假设 z = ax + by + d
+        A.at<float>(i, 0) = points[i].x - centroid.x;
+        A.at<float>(i, 1) = points[i].y - centroid.y;
+        A.at<float>(i, 2) = points[i].z - centroid.z;
     }
 
-    cv::Mat X;
-    cv::solve(A, B, X, cv::DECOMP_SVD);
+    cv::Mat w, u, vt;
+    cv::SVD::compute(A, w, u, vt, cv::SVD::MODIFY_A);
 
-    planeCoeffs[0] = X.at<float>(0, 0);
-    planeCoeffs[1] = X.at<float>(1, 0);
-    planeCoeffs[2] = 1.0f;
-    planeCoeffs[3] = X.at<float>(2, 0);
+    // 最后一行 vt 对应最小奇异值，即平面法向量
+    float a = vt.at<float>(2, 0);
+    float b = vt.at<float>(2, 1);
+    float c = vt.at<float>(2, 2);
+    float normLen = sqrt(a*a + b*b + c*c);
+    if (normLen < 1e-10f) return false;
+
+    planeCoeffs[0] = a / normLen;
+    planeCoeffs[1] = b / normLen;
+    planeCoeffs[2] = c / normLen;
+    planeCoeffs[3] = -(planeCoeffs[0]*centroid.x + planeCoeffs[1]*centroid.y + planeCoeffs[2]*centroid.z);
 
     return true;
 #else
     return false;
+#endif
+}
+
+void FreeformSurfacePlugin::computeProjectedArea(const std::vector<cv::Point3f>& points, const cv::Vec4f& planeCoeffs)
+{
+#ifdef DEEPLUX_HAS_OPENCV
+    // 将点投影到拟合平面，然后在平面局部坐标系中计算 2D 凸包面积
+    float a = planeCoeffs[0], b = planeCoeffs[1], c = planeCoeffs[2], d = planeCoeffs[3];
+    float normLen = sqrt(a*a + b*b + c*c);
+    if (normLen < 1e-10f) { m_surfaceArea = 0; return; }
+
+    cv::Point3f normal(a, b, c);
+    // 选择一个不平行于法向量的参考向量来构造平面局部坐标系
+    cv::Point3f ref = (fabs(normal.x) < 0.9f) ? cv::Point3f(1, 0, 0) : cv::Point3f(0, 1, 0);
+    cv::Point3f uAxis = normal.cross(ref);
+    float uLen = sqrt(uAxis.x*uAxis.x + uAxis.y*uAxis.y + uAxis.z*uAxis.z);
+    if (uLen < 1e-10f) { m_surfaceArea = 0; return; }
+    uAxis.x /= uLen; uAxis.y /= uLen; uAxis.z /= uLen;
+
+    cv::Point3f vAxis = normal.cross(uAxis);
+
+    std::vector<cv::Point2f> projected2D;
+    projected2D.reserve(points.size());
+    for (const auto& p : points) {
+        float dx = p.x, dy = p.y, dz = p.z;
+        float u = dx * uAxis.x + dy * uAxis.y + dz * uAxis.z;
+        float v = dx * vAxis.x + dy * vAxis.y + dz * vAxis.z;
+        projected2D.emplace_back(u, v);
+    }
+
+    std::vector<int> hullIndices;
+    cv::convexHull(projected2D, hullIndices);
+    if (hullIndices.size() >= 3) {
+        m_surfaceArea = static_cast<float>(cv::contourArea(cv::Mat(projected2D)));
+    } else {
+        m_surfaceArea = 0;
+    }
+#else
+    m_surfaceArea = 0;
 #endif
 }
 

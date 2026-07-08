@@ -5,6 +5,9 @@
 #include <QDebug>
 #include <QMouseEvent>
 #include <QOpenGLContext>
+#include <QPainter>
+
+#include <cmath>
 
 namespace DeepLux {
 
@@ -76,6 +79,7 @@ void Viewport3DContent::paintGL() {
 
     // 渲染
     m_renderer->render(m_viewMatrix, m_projectionMatrix);
+    drawMeasurementOverlay();
 }
 
 void Viewport3DContent::displayData(const DisplayData& data) {
@@ -141,7 +145,24 @@ void Viewport3DContent::clearDisplay() {
     if (m_renderer) {
         m_renderer->clear();
     }
+    clearMeasurementOverlay();
     m_needsUpdate = true;
+    update();
+}
+
+void Viewport3DContent::setMeasurementOverlay(const QList<MeasurementOverlayPoint3D>& points,
+                                              const QList<MeasurementOverlayLine3D>& lines) {
+    m_measurementPoints = points;
+    m_measurementLines = lines;
+    update();
+}
+
+void Viewport3DContent::clearMeasurementOverlay() {
+    if (m_measurementPoints.isEmpty() && m_measurementLines.isEmpty()) {
+        return;
+    }
+    m_measurementPoints.clear();
+    m_measurementLines.clear();
     update();
 }
 
@@ -185,6 +206,82 @@ void Viewport3DContent::updateMatrices() {
     m_viewMatrix = m_camera.viewMatrix();
 }
 
+bool Viewport3DContent::projectToScreen(const QVector3D& worldPos, QPointF* screenPos) const {
+    if (!screenPos || width() <= 0 || height() <= 0) {
+        return false;
+    }
+
+    QRect viewport(0, 0, width(), height());
+    const QVector3D projected = worldPos.project(m_viewMatrix, m_projectionMatrix, viewport);
+    if (!std::isfinite(projected.x()) || !std::isfinite(projected.y()) || !std::isfinite(projected.z()) ||
+        projected.z() < 0.0f || projected.z() > 1.0f) {
+        return false;
+    }
+
+    // QVector3D::project 返回 OpenGL 视口坐标，Qt 鼠标/绘制坐标需要翻转 Y。
+    *screenPos = QPointF(projected.x(), height() - projected.y());
+    return true;
+}
+
+void Viewport3DContent::drawMeasurementOverlay() {
+    if (m_measurementPoints.isEmpty() && m_measurementLines.isEmpty()) {
+        return;
+    }
+
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    QPen linePen(QColor("#06B6D4"), 2.0);
+    linePen.setCapStyle(Qt::RoundCap);
+    linePen.setJoinStyle(Qt::RoundJoin);
+    painter.setPen(linePen);
+
+    for (const MeasurementOverlayLine3D& line : m_measurementLines) {
+        QPointF p1;
+        QPointF p2;
+        if (!projectToScreen(line.p1, &p1) || !projectToScreen(line.p2, &p2)) {
+            continue;
+        }
+        painter.drawLine(p1, p2);
+
+        if (!line.label.isEmpty()) {
+            const QPointF mid = (p1 + p2) * 0.5;
+            const QRect textRect = painter.fontMetrics().boundingRect(line.label).adjusted(-4, -2, 4, 2)
+                                       .translated(mid.toPoint() + QPoint(8, -8));
+            painter.fillRect(textRect, QColor(17, 24, 39, 190));
+            painter.setPen(QColor("#F8FAFC"));
+            painter.drawText(textRect, Qt::AlignCenter, line.label);
+            painter.setPen(linePen);
+        }
+    }
+
+    QPen pointPen(QColor("#FFF7ED"), 1.5);
+    QBrush pointBrush(QColor("#F59E0B"));
+    QFont font = painter.font();
+    font.setPointSize(10);
+    font.setBold(true);
+    painter.setFont(font);
+
+    for (const MeasurementOverlayPoint3D& point : m_measurementPoints) {
+        QPointF screen;
+        if (!projectToScreen(point.pos, &screen)) {
+            continue;
+        }
+
+        painter.setPen(pointPen);
+        painter.setBrush(pointBrush);
+        painter.drawEllipse(screen, 5.0, 5.0);
+
+        if (!point.label.isEmpty()) {
+            const QRect textRect = painter.fontMetrics().boundingRect(point.label).adjusted(-4, -2, 4, 2)
+                                       .translated(screen.toPoint() + QPoint(8, -14));
+            painter.fillRect(textRect, QColor(17, 24, 39, 190));
+            painter.setPen(QColor("#F8FAFC"));
+            painter.drawText(textRect, Qt::AlignCenter, point.label);
+        }
+    }
+}
+
 void Viewport3DContent::mousePressEvent(QMouseEvent* event) {
     m_lastMousePos = event->pos();
 }
@@ -220,7 +317,6 @@ void Viewport3DContent::mouseReleaseEvent(QMouseEvent* event) {
         // Update matrices for current viewport dimensions
         updateMatrices();
 
-        QRect viewport(0, 0, width(), height());
         QPointF clickPos = event->pos();
 
         float bestDist = 144.0f; // 12px squared
@@ -228,7 +324,10 @@ void Viewport3DContent::mouseReleaseEvent(QMouseEvent* event) {
 
         // ponytail: O(n) picking is enough for interactive setup; replace with a spatial index if latency shows up.
         for (size_t i = 0; i < m_lastPoints.size(); ++i) {
-            QVector3D projected = m_lastPoints[i].project(m_viewMatrix, m_projectionMatrix, viewport);
+            QPointF projected;
+            if (!projectToScreen(m_lastPoints[i], &projected)) {
+                continue;
+            }
             float dx = static_cast<float>(projected.x() - clickPos.x());
             float dy = static_cast<float>(projected.y() - clickPos.y());
             float dist = dx * dx + dy * dy;

@@ -5,10 +5,24 @@
 #include "CameraController.h"
 #include "IPointCloudRenderer.h"
 #include <vector>
-#include <QOpenGLWidget>
+#include <QList>
 #include <QMatrix4x4>
+#include <QOpenGLWidget>
+#include <QString>
+#include <QVector3D>
 
 namespace DeepLux {
+
+struct MeasurementOverlayPoint3D {
+    QVector3D pos;
+    QString label;
+};
+
+struct MeasurementOverlayLine3D {
+    QVector3D p1;
+    QVector3D p2;
+    QString label;
+};
 
 /**
  * @brief 3D 视口内容 Widget
@@ -32,6 +46,9 @@ public:
     // 渲染模式
     ColorMode renderMode() const { return m_renderMode; }
     void setRenderMode(ColorMode mode);
+    void setMeasurementOverlay(const QList<MeasurementOverlayPoint3D>& points,
+                               const QList<MeasurementOverlayLine3D>& lines);
+    void clearMeasurementOverlay();
 
 public slots:
     void resetCamera();
@@ -59,6 +76,8 @@ protected:
 
 private:
     void updateMatrices();
+    bool projectToScreen(const QVector3D& worldPos, QPointF* screenPos) const;
+    void drawMeasurementOverlay();
 
     std::unique_ptr<PointCloudRendererOpenGL> m_renderer;
     PointCloudGPUBuffer m_gpuBuffer;
@@ -78,6 +97,8 @@ private:
 
     // 最近显示的3D点（用于 Ctrl+Click 坐标拾取）
     std::vector<QVector3D> m_lastPoints;
+    QList<MeasurementOverlayPoint3D> m_measurementPoints;
+    QList<MeasurementOverlayLine3D> m_measurementLines;
 };
 
 } // namespace DeepLux

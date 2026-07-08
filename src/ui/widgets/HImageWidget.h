@@ -2,7 +2,9 @@
 
 #include <QWidget>
 #include <QImage>
+#include <QList>
 #include <QPointF>
+#include <QString>
 #include <QTransform>
 
 namespace DeepLux {
@@ -20,6 +22,17 @@ struct RoiData {
     RoiType type = RoiType::None;
     QString name;
     double x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+};
+
+struct MeasurementOverlayPoint {
+    QPointF pos;
+    QString label;
+};
+
+struct MeasurementOverlayLine {
+    QPointF p1;
+    QPointF p2;
+    QString label;
 };
 
 class HImageWidget : public QWidget
@@ -46,6 +59,9 @@ public:
     RoiType roiMode() const { return m_roiMode; }
     void clearRois();
     QList<RoiData> rois() const { return m_rois; }
+    void setMeasurementOverlay(const QList<MeasurementOverlayPoint>& points,
+                               const QList<MeasurementOverlayLine>& lines);
+    void clearMeasurementOverlay();
 
     QPointF widgetToImage(const QPointF& widgetPoint) const;
     QPointF imageToWidget(const QPointF& imagePoint) const;
@@ -80,6 +96,8 @@ private:
     
     RoiType m_roiMode = RoiType::None;
     QList<RoiData> m_rois;
+    QList<MeasurementOverlayPoint> m_measurementPoints;
+    QList<MeasurementOverlayLine> m_measurementLines;
     
     bool m_isDrawing = false;
     QPointF m_drawStart;

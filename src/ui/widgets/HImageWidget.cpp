@@ -49,6 +49,8 @@ void HImageWidget::clearImage()
     m_imageHeight = 0;
     m_zoom = 1.0;
     m_offset = QPointF();
+    m_measurementPoints.clear();
+    m_measurementLines.clear();
     updateTransform();
     update();
 }
@@ -103,6 +105,21 @@ void HImageWidget::clearRois()
     update();
 }
 
+void HImageWidget::setMeasurementOverlay(const QList<MeasurementOverlayPoint>& points,
+                                         const QList<MeasurementOverlayLine>& lines)
+{
+    m_measurementPoints = points;
+    m_measurementLines = lines;
+    update();
+}
+
+void HImageWidget::clearMeasurementOverlay()
+{
+    m_measurementPoints.clear();
+    m_measurementLines.clear();
+    update();
+}
+
 void HImageWidget::updateTransform()
 {
     m_transform = QTransform();
@@ -153,6 +170,43 @@ void HImageWidget::paintEvent(QPaintEvent* event)
             QPointF p1 = imageToWidget(m_drawStart);
             QPointF p2 = imageToWidget(m_drawEnd);
             painter.drawRect(QRectF(p1, p2).normalized());
+        }
+
+        if (!m_measurementLines.isEmpty() || !m_measurementPoints.isEmpty()) {
+            QPen linePen(QColor("#06B6D4"), 2.0);
+            linePen.setCosmetic(true);
+            painter.setPen(linePen);
+            painter.setBrush(Qt::NoBrush);
+            for (const MeasurementOverlayLine& line : m_measurementLines) {
+                const QPointF p1 = imageToWidget(line.p1);
+                const QPointF p2 = imageToWidget(line.p2);
+                painter.drawLine(p1, p2);
+                if (!line.label.isEmpty()) {
+                    const QPointF mid = (p1 + p2) / 2.0 + QPointF(6, -6);
+                    painter.setPen(QColor(0, 0, 0, 180));
+                    painter.drawText(mid + QPointF(1, 1), line.label);
+                    painter.setPen(QColor("#E0F2FE"));
+                    painter.drawText(mid, line.label);
+                    painter.setPen(linePen);
+                }
+            }
+
+            QFont labelFont = painter.font();
+            labelFont.setBold(true);
+            painter.setFont(labelFont);
+            for (const MeasurementOverlayPoint& point : m_measurementPoints) {
+                const QPointF widgetPoint = imageToWidget(point.pos);
+                painter.setPen(QPen(QColor("#111827"), 2));
+                painter.setBrush(QColor("#F59E0B"));
+                painter.drawEllipse(widgetPoint, 5.5, 5.5);
+                if (!point.label.isEmpty()) {
+                    const QPointF textPos = widgetPoint + QPointF(8, -8);
+                    painter.setPen(QColor(0, 0, 0, 180));
+                    painter.drawText(textPos + QPointF(1, 1), point.label);
+                    painter.setPen(QColor("#FFF7ED"));
+                    painter.drawText(textPos, point.label);
+                }
+            }
         }
 
         // 绘制信息

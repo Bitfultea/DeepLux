@@ -31,6 +31,8 @@
 #include <ui/widgets/AgentMessageBubble.h>
 #include <ui/widgets/AgentToolPreviewCard.h>
 #include <ui/widgets/FlowCanvas.h>
+#include <ui/widgets/HImageWidget.h>
+#include <ui/widgets/ViewportWidget.h>
 
 using namespace DeepLux;
 
@@ -48,7 +50,9 @@ private slots:
     void testAgentInputErrorPathDoesNotCrashOrStayThinking();
     void testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTheme();
     void testMeasurementPickingUpdatesInputAndClipboard();
+    void testMeasurementPickingViaImageViewportClick();
     void testMeasurementConfigButtonCreatesInputNode();
+    void testMeasurementConfigButtonWithInstalledPlugins();
 
 private:
     bool installFitLinePlugin(const QString& pluginRoot) const;
@@ -149,6 +153,62 @@ void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
     QVERIFY(input != nullptr);
     QCOMPARE(input->moduleId, QStringLiteral("MeasurementInput"));
     QCOMPARE(input->params["mode"].toString(), QStringLiteral("point_pair"));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(10.0, 20.0))));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(30.0, 45.0))));
+
+    input = project->findModule(inputId);
+    QVERIFY(input != nullptr);
+    QCOMPARE(input->params["point1"].toArray().at(0).toDouble(), 10.0);
+    QCOMPARE(input->params["point1"].toArray().at(1).toDouble(), 20.0);
+    QCOMPARE(input->params["point2"].toArray().at(0).toDouble(), 30.0);
+    QCOMPARE(input->params["point2"].toArray().at(1).toDouble(), 45.0);
+}
+
+void TestMainWindow::testMeasurementConfigButtonWithInstalledPlugins() {
+    qunsetenv("DEEPLUX_APP_DATA_DIR");
+
+    MainWindow window;
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance distance;
+    distance.id = QStringLiteral("installed_distance_1");
+    distance.moduleId = QStringLiteral("DistancePP");
+    distance.name = QStringLiteral("点点距离");
+    project->addModule(distance);
+    QCoreApplication::processEvents();
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>("ProcessTree");
+    QVERIFY(processTree != nullptr);
+    QCOMPARE(processTree->topLevelItemCount(), 1);
+    QTreeWidgetItem* distanceItem = processTree->topLevelItem(0);
+    processTree->setCurrentItem(distanceItem);
+
+    bool clickedSetup = false;
+    QTimer::singleShot(20, [&]() {
+        QWidget* modal = QApplication::activeModalWidget();
+        QVERIFY(modal != nullptr);
+        QPushButton* button = modal->findChild<QPushButton*>("MeasurementInputSetupButton");
+        QVERIFY(button != nullptr);
+        clickedSetup = true;
+        button->click();
+    });
+
+    const QRect itemRect = processTree->visualItemRect(distanceItem);
+    QTest::mouseDClick(processTree->viewport(), Qt::LeftButton, Qt::NoModifier, itemRect.center());
+    QCoreApplication::processEvents();
+
+    QVERIFY(clickedSetup);
+    QCOMPARE(processTree->topLevelItemCount(), 2);
+    QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 2).toString(), QStringLiteral("MeasurementInput"));
+    QCOMPARE(processTree->currentItem(), processTree->topLevelItem(0));
 }
 
 void TestMainWindow::testOpenProjectSyncsProcessTreeAndFlowCanvas() {
@@ -743,6 +803,96 @@ void TestMainWindow::testMeasurementPickingUpdatesInputAndClipboard() {
     QCOMPARE(linePairModule->params["line1"].toArray().at(3).toDouble(), 4.0);
     QCOMPARE(linePairModule->params["line2"].toArray().at(0).toDouble(), 5.0);
     QCOMPARE(linePairModule->params["line2"].toArray().at(3).toDouble(), 8.0);
+}
+
+void TestMainWindow::testMeasurementPickingViaImageViewportClick() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY2(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")),
+             "MeasurementInput plugin should be available for viewport picking");
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance input;
+    input.id = QStringLiteral("measure_point_pair_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("测量输入");
+    input.params["mode"] = QStringLiteral("point_pair");
+    project->addModule(input);
+    QCoreApplication::processEvents();
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>("ProcessTree");
+    QVERIFY(processTree != nullptr);
+    QVERIFY(processTree->topLevelItemCount() > 0);
+    processTree->setCurrentItem(processTree->topLevelItem(processTree->topLevelItemCount() - 1));
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    QImage image(120, 90, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(imageWidget->hasImage());
+    QTRY_VERIFY(imageWidget->width() > 20);
+    QTRY_VERIFY(imageWidget->height() > 20);
+
+    const QPoint widgetPoint1 = imageWidget->imageToWidget(QPointF(20.0, 25.0)).toPoint();
+    QVERIFY2(imageWidget->rect().contains(widgetPoint1),
+             qPrintable(QString("Mapped first click point %1,%2 is outside image widget")
+                            .arg(widgetPoint1.x())
+                            .arg(widgetPoint1.y())));
+    const QPointF expectedPoint1 = imageWidget->widgetToImage(widgetPoint1);
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, widgetPoint1);
+    QCoreApplication::processEvents();
+
+    const QPoint widgetPoint2 = imageWidget->imageToWidget(QPointF(80.0, 60.0)).toPoint();
+    QVERIFY2(imageWidget->rect().contains(widgetPoint2),
+             qPrintable(QString("Mapped second click point %1,%2 is outside image widget")
+                            .arg(widgetPoint2.x())
+                            .arg(widgetPoint2.y())));
+    const QPointF expectedPoint2 = imageWidget->widgetToImage(widgetPoint2);
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, widgetPoint2);
+    QCoreApplication::processEvents();
+
+    ModuleInstance* module = project->findModule(QStringLiteral("measure_point_pair_input"));
+    QVERIFY(module != nullptr);
+    const QJsonArray point1 = module->params["point1"].toArray();
+    const QJsonArray point2 = module->params["point2"].toArray();
+    QCOMPARE(point1.size(), 2);
+    QCOMPARE(point2.size(), 2);
+    QVERIFY(qAbs(point1.at(0).toDouble() - expectedPoint1.x()) < 0.5);
+    QVERIFY(qAbs(point1.at(1).toDouble() - expectedPoint1.y()) < 0.5);
+    QVERIFY(qAbs(point2.at(0).toDouble() - expectedPoint2.x()) < 0.5);
+    QVERIFY(qAbs(point2.at(1).toDouble() - expectedPoint2.y()) < 0.5);
+
+    const QImage rendered = imageWidget->grab().toImage().convertToFormat(QImage::Format_RGB32);
+    int cyanPixels = 0;
+    int orangePixels = 0;
+    for (int y = 0; y < rendered.height(); ++y) {
+        for (int x = 0; x < rendered.width(); ++x) {
+            const QColor color = rendered.pixelColor(x, y);
+            if (color.red() < 100 && color.green() > 120 && color.blue() > 140) {
+                ++cyanPixels;
+            }
+            if (color.red() > 180 && color.green() > 80 && color.green() < 190 && color.blue() < 100) {
+                ++orangePixels;
+            }
+        }
+    }
+    QVERIFY2(cyanPixels > 20, qPrintable(QString("Expected visible measurement line, cyanPixels=%1").arg(cyanPixels)));
+    QVERIFY2(orangePixels > 20,
+             qPrintable(QString("Expected visible picked points, orangePixels=%1").arg(orangePixels)));
 }
 
 QTEST_MAIN(TestMainWindow)

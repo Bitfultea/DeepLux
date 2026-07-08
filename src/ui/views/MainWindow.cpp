@@ -11,8 +11,10 @@
 #include "../widgets/AgentChatPanel.h"
 #include "../widgets/AppIconProvider.h"
 #include "../widgets/FlowCanvas.h"
+#include "../widgets/HImageWidget.h"
 #include "../widgets/TerminalWidget.h"
 #include "../widgets/ViewportWidget.h"
+#include "ui/display/3d/Viewport3DContent.h"
 #include "CameraSetView.h"
 #include "CommunicationSetView.h"
 #include "GlobalVarView.h"
@@ -202,6 +204,21 @@ QString pointText3D(const QVector3D& point) {
     return QString("%1,%2,%3").arg(point.x(), 0, 'f', 3).arg(point.y(), 0, 'f', 3).arg(point.z(), 0, 'f', 3);
 }
 
+QPointF pointFromArray2D(const QJsonArray& arr, int offset = 0) {
+    return QPointF(arr.at(offset).toDouble(), arr.at(offset + 1).toDouble());
+}
+
+QVector3D pointFromArray3D(const QJsonArray& arr, int offset = 0) {
+    const double z = arr.size() > offset + 2 ? arr.at(offset + 2).toDouble() : 0.0;
+    return QVector3D(static_cast<float>(arr.at(offset).toDouble()), static_cast<float>(arr.at(offset + 1).toDouble()),
+                     static_cast<float>(z));
+}
+
+QVector3D linePointFromArray3D(const QJsonArray& arr, int offset = 0) {
+    return QVector3D(static_cast<float>(arr.at(offset).toDouble()), static_cast<float>(arr.at(offset + 1).toDouble()),
+                     0.0f);
+}
+
 QJsonArray updatedLineArray(const QJsonArray& existing, const QPointF& point, bool firstPoint) {
     QJsonArray line = existing;
     while (line.size() < 4) {
@@ -302,6 +319,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
 
     // Connect viewport creating to forward picking signals
     connect(m_displayManager, &DisplayManager::viewportCreated, this, &MainWindow::onViewportCreated);
+    for (ViewportWidget* viewport : m_displayManager->allViewports()) {
+        onViewportCreated(viewport->viewportId(), viewport);
+    }
 
     // Connect Agent action log to UI (will be set after m_agentActionLogWidget is created)
 }
@@ -1240,8 +1260,8 @@ void MainWindow::onViewportCreated(const QString& viewportId, ViewportWidget* vi
     Q_UNUSED(viewportId)
     if (!viewport)
         return;
-    connect(viewport, &ViewportWidget::point2DClicked, this, &MainWindow::onPoint2DPicked);
-    connect(viewport, &ViewportWidget::point3DClicked, this, &MainWindow::onPoint3DPicked);
+    connect(viewport, &ViewportWidget::point2DClicked, this, &MainWindow::onPoint2DPicked, Qt::UniqueConnection);
+    connect(viewport, &ViewportWidget::point3DClicked, this, &MainWindow::onPoint3DPicked, Qt::UniqueConnection);
 }
 
 void MainWindow::onPoint2DPicked(const QPointF& point) {
@@ -1278,6 +1298,11 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
 
     const QJsonArray newPoint2D = pointArray2D(point);
     const QJsonArray newPoint3D = pointArray3D(point.x(), point.y(), 0.0);
+    auto finishPick = [&]() {
+        const int count = m_measurementPickCount.value(instanceId, 0) + 1;
+        m_measurementPickCount[instanceId] = count;
+        refreshMeasurementOverlay(mod->currentParams(), count);
+    };
 
     if (mode == "line_pair") {
         const int step = cursor % 4;
@@ -1294,6 +1319,7 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
                                     .arg(point.y(), 0, 'f', 2),
                                 "Picking");
         m_measurementPickCursor[instanceId] = (step + 1) % 4;
+        finishPick();
         return;
     }
 
@@ -1318,6 +1344,7 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
                                     "Picking");
         }
         m_measurementPickCursor[instanceId] = (step + 1) % 3;
+        finishPick();
         return;
     }
 
@@ -1342,6 +1369,7 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
                                     "Picking");
         }
         m_measurementPickCursor[instanceId] = (step + 1) % 4;
+        finishPick();
         return;
     }
 
@@ -1360,6 +1388,78 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
             QString("2D pick: point2 set to (%1, %2)").arg(point.x(), 0, 'f', 2).arg(point.y(), 0, 'f', 2), "Picking");
     }
     m_measurementPickCursor[instanceId] = (cursor + 1) % 2;
+    finishPick();
+}
+
+void MainWindow::refreshMeasurementOverlay(const QJsonObject& params, int visibleSteps) {
+    if (!m_displayManager) {
+        return;
+    }
+
+    QList<MeasurementOverlayPoint> points;
+    QList<MeasurementOverlayLine> lines;
+    const QString mode = params["mode"].toString("point_pair");
+
+    auto addPoint = [&](const QJsonArray& arr, const QString& label, int minStep, int offset = 0) {
+        if (visibleSteps < minStep || arr.size() < offset + 2) {
+            return;
+        }
+        points.append(MeasurementOverlayPoint{pointFromArray2D(arr, offset), label});
+    };
+
+    auto addLine = [&](const QJsonArray& arr, const QString& label, int minStep) {
+        if (visibleSteps < minStep || arr.size() < 4) {
+            return;
+        }
+        lines.append(MeasurementOverlayLine{pointFromArray2D(arr, 0), pointFromArray2D(arr, 2), label});
+    };
+
+    if (mode == QStringLiteral("point_line")) {
+        const QJsonArray point = params["point"].toArray();
+        const QJsonArray line = params["line"].toArray();
+        addPoint(point, QStringLiteral("P"), 1);
+        addPoint(line, QStringLiteral("L1"), 2, 0);
+        addPoint(line, QStringLiteral("L2"), 3, 2);
+        addLine(line, QStringLiteral("线段"), 3);
+    } else if (mode == QStringLiteral("line_pair")) {
+        const QJsonArray line1 = params["line1"].toArray();
+        const QJsonArray line2 = params["line2"].toArray();
+        addPoint(line1, QStringLiteral("L1-1"), 1, 0);
+        addPoint(line1, QStringLiteral("L1-2"), 2, 2);
+        addLine(line1, QStringLiteral("线1"), 2);
+        addPoint(line2, QStringLiteral("L2-1"), 3, 0);
+        addPoint(line2, QStringLiteral("L2-2"), 4, 2);
+        addLine(line2, QStringLiteral("线2"), 4);
+    } else if (mode == QStringLiteral("point_plane")) {
+        const QJsonArray point = params["point"].toArray();
+        const QJsonArray plane = params["plane"].toArray();
+        addPoint(point, QStringLiteral("P"), 1);
+        addPoint(plane, QStringLiteral("A"), 2, 0);
+        addPoint(plane, QStringLiteral("B"), 3, 3);
+        addPoint(plane, QStringLiteral("C"), 4, 6);
+        if (visibleSteps >= 4 && plane.size() >= 9) {
+            lines.append(MeasurementOverlayLine{pointFromArray2D(plane, 0), pointFromArray2D(plane, 3),
+                                                QStringLiteral("平面边")});
+            lines.append(MeasurementOverlayLine{pointFromArray2D(plane, 3), pointFromArray2D(plane, 6), QString()});
+            lines.append(MeasurementOverlayLine{pointFromArray2D(plane, 6), pointFromArray2D(plane, 0), QString()});
+        }
+    } else {
+        const QJsonArray point1 = params["point1"].toArray();
+        const QJsonArray point2 = params["point2"].toArray();
+        addPoint(point1, QStringLiteral("P1"), 1);
+        addPoint(point2, QStringLiteral("P2"), 2);
+        if (visibleSteps >= 2 && point1.size() >= 2 && point2.size() >= 2) {
+            lines.append(MeasurementOverlayLine{pointFromArray2D(point1), pointFromArray2D(point2),
+                                                QStringLiteral("P1-P2")});
+        }
+    }
+
+    for (ViewportWidget* viewport : m_displayManager->allViewports()) {
+        HImageWidget* imageWidget = viewport ? viewport->imageWidget() : nullptr;
+        if (imageWidget && imageWidget->hasImage()) {
+            imageWidget->setMeasurementOverlay(points, lines);
+        }
+    }
 }
 
 void MainWindow::onPoint3DPicked(const QVector3D& point) {
@@ -1649,6 +1749,7 @@ void MainWindow::removeModuleFromProcessTree(const QString& instanceId) {
 
     m_usedPluginNames.remove(instanceId);
     m_measurementPickCursor.remove(instanceId);
+    m_measurementPickCount.remove(instanceId);
     m_modulesNeedSync = true;
 
     // 如果所有 item 都被删除，重新创建提示标签
@@ -1717,9 +1818,6 @@ QString MainWindow::ensureMeasurementInputForMode(const QString& mode, const QSt
 
     Project* project = ProjectManager::instance().currentProject();
     if (!project) {
-        project = ProjectManager::instance().newProject();
-    }
-    if (!project) {
         return QString();
     }
 
@@ -1759,6 +1857,7 @@ QString MainWindow::ensureMeasurementInputForMode(const QString& mode, const QSt
     }
 
     m_measurementPickCursor[instanceId] = 0;
+    m_measurementPickCount[instanceId] = 0;
     m_modulesNeedSync = true;
     return instanceId;
 }
@@ -1773,6 +1872,8 @@ void MainWindow::clearProcessTree() {
     m_flowModules.clear();
     m_usedPluginNames.clear();
     m_instanceItemMap.clear();
+    m_measurementPickCursor.clear();
+    m_measurementPickCount.clear();
     m_processTree->clear();
 
     if (!m_hintLabel) {
@@ -2164,6 +2265,12 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 if (sourceItem && sourceItem->data(0, Qt::UserRole).toString() == "plugin") {
                     QString pluginName = sourceItem->data(0, Qt::UserRole + 1).toString();
                     if (!pluginName.isEmpty()) {
+                        if (!ProjectManager::instance().currentProject() && !ProjectManager::instance().newProject()) {
+                            Logger::instance().error(tr("无法创建工程，不能添加插件：%1").arg(pluginName), "Flow");
+                            dropEvent->ignore();
+                            return true;
+                        }
+
                         // 隐藏提示标签
                         if (m_hintLabel) {
                             m_hintLabel->setVisible(false);

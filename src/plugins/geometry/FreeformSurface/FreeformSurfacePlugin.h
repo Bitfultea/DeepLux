@@ -36,6 +36,7 @@ protected:
 
 private:
     bool fitPlaneToPoints(const std::vector<cv::Point3f>& points, cv::Vec4f& planeCoeffs);
+    void computeProjectedArea(const std::vector<cv::Point3f>& points, const cv::Vec4f& planeCoeffs);
 
     double m_samplingInterval = 1.0;
     int m_pointCount = 0;

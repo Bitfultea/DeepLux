@@ -180,10 +180,14 @@ protected:
     void addMeasurementConfigAction(QVBoxLayout* layout, const QString& consumerModuleId,
                                     const QString& consumerInstanceId, QDialog* dialog);
     QString ensureMeasurementInputForMode(const QString& mode, const QString& consumerInstanceId);
+    void refreshMeasurementOverlay(const QJsonObject& params, int visibleSteps);
+    void refreshMeasurementOverlay3D(const QJsonObject& params, int visibleSteps);
+    void clearMeasurementOverlays();
 
     // 流程中的插件实例
     QMap<QString, IModule*> m_flowModules;
     QMap<QString, int> m_measurementPickCursor;
+    QMap<QString, int> m_measurementPickCount;
     QSet<QString> m_usedPluginNames;
 
     // 流程画布（图形化节点编辑器）
