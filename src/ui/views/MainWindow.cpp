@@ -1,10 +1,12 @@
 #include "MainWindow.h"
 
 #include "../ThemeManager.h"
+#include "../controllers/ProcessTreeController.h"
 
 #include "../bridge/TerminalBridge.h"
 #include "../dialogs/AgentSettingsDialog.h"
 #include "../dialogs/LoginDialog.h"
+#include "../display/3d/Viewport3DContent.h"
 #include "../display/DisplayManager.h"
 #include "../panels/DataSourcePanel.h"
 #include "../widgets/AgentActionLogWidget.h"
@@ -14,7 +16,6 @@
 #include "../widgets/HImageWidget.h"
 #include "../widgets/TerminalWidget.h"
 #include "../widgets/ViewportWidget.h"
-#include "ui/display/3d/Viewport3DContent.h"
 #include "CameraSetView.h"
 #include "CommunicationSetView.h"
 #include "GlobalVarView.h"
@@ -253,7 +254,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
     // RunEngine 信号连接 — 统一执行入口，MainWindow 只做 UI 高亮/状态更新
     // 使用 instanceName → item 映射实现 O(1) 查找
     connect(&RunEngine::instance(), &RunEngine::moduleStarted, this, [this](const QString& moduleName) {
-        QTreeWidgetItem* item = m_instanceItemMap.value(moduleName);
+        QTreeWidgetItem* item = m_processTreeController ? m_processTreeController->instanceItem(moduleName) : nullptr;
         if (item) {
             m_currentExecutingItem = item;
             item->setBackground(0, QBrush(QColor("#0078d7")));
@@ -855,17 +856,38 @@ void MainWindow::setupMainLayout() {
     m_processTree->header()->setHidden(true);
     m_processTree->viewport()->installEventFilter(this);
     m_processTree->installEventFilter(this);
-    connect(m_processTree, &QTreeWidget::customContextMenuRequested, this, &MainWindow::onProcessTreeContextMenu);
 
-    // 提示标签
-    m_hintLabel = new QLabel(tr("← 从左侧拖拽工具"));
-    m_hintLabel->setAlignment(Qt::AlignCenter);
-    m_hintLabel->setStyleSheet("color: #808080; padding: 10px;");
-    m_hintLabel->setObjectName("ProcessTreeHintLabel");
-    flowLayout->addWidget(m_hintLabel);
+    // 创建流程树控制器
+    m_processTreeController = new ProcessTreeController(m_processTree, this);
+    m_processTreeController->setFlowModules(&m_flowModules);
+    m_processTreeController->setModulesNeedSyncFlag(&m_modulesNeedSync);
+    m_processTreeController->setMeasurementPickMaps(&m_measurementPickCursor, &m_measurementPickCount);
+    m_processTreeController->setToolDisplayNameCallback(
+        [this](const QString& pluginName, const QString& fallback) {
+            return toolDisplayName(pluginName, fallback);
+        });
+    m_processTreeController->setClearMeasurementOverlaysCallback(
+        [this]() { clearMeasurementOverlays(); });
+    connect(m_processTreeController, &ProcessTreeController::moduleAdded, this,
+            [this](const ModuleInstance& module) {
+                if (m_flowCanvas && !m_flowCanvas->nodeItem(module.id)) {
+                    m_flowCanvas->addNode(module.moduleId,
+                                          toolDisplayName(module.moduleId, module.name),
+                                          QPointF(module.posX, module.posY), module.id);
+                }
+            });
+    connect(m_processTreeController, &ProcessTreeController::moduleRemoved, this,
+            [this](const QString& instanceId) {
+                if (m_flowCanvas && m_flowCanvas->nodeItem(instanceId)) {
+                    m_flowCanvas->removeNode(instanceId);
+                }
+            });
 
     flowLayout->addWidget(m_processTree);
     flowLayout->setStretchFactor(m_processTree, 1);
+
+    // 提示标签（由控制器管理）
+    m_processTreeController->showHintLabel();
 
     // 流程状态栏
     m_processStatusWidget = new QWidget();
@@ -1167,36 +1189,19 @@ void MainWindow::onToggleProcessPanel(bool checked) {
     }
 }
 
-void MainWindow::onProcessTreeContextMenu(const QPoint& pos) {
-    QTreeWidgetItem* item = m_processTree->itemAt(pos);
-    if (!item || item->data(0, Qt::UserRole).toString() != "flow_item") {
-        return;
-    }
-
-    QMenu menu(this);
-    QAction* deleteAction = menu.addAction(tr("删除"));
-    deleteAction->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Delete, 18, QColor("#DC2626")));
-
-    QAction* selectedAction = menu.exec(m_processTree->mapToGlobal(pos));
-    if (selectedAction == deleteAction) {
-        QString instanceName = item->data(0, Qt::UserRole + 1).toString();
-        removeFlowModuleByInstanceId(instanceName);
-    }
-}
-
 void MainWindow::onProjectOpened(Project* project) {
     if (!project)
         return;
 
     // 清空现有流程树
-    clearProcessTree();
+    m_processTreeController->clear();
     if (m_flowCanvas) {
         m_flowCanvas->loadFromProject(nullptr);
     }
 
     // 加载项目中已有的模块
     for (const ModuleInstance& inst : project->modules()) {
-        addModuleToProcessTree(inst);
+        m_processTreeController->addModule(inst);
     }
     if (m_flowCanvas) {
         m_flowCanvas->loadFromProject(project);
@@ -1212,8 +1217,9 @@ void MainWindow::onProjectOpened(Project* project) {
 
     // 连接 Project 信号
     disconnect(project, nullptr, this, nullptr);
-    connect(project, &Project::moduleAdded, this, &MainWindow::onModuleAdded);
-    connect(project, &Project::moduleRemoved, this, &MainWindow::onModuleRemoved);
+    disconnect(project, nullptr, m_processTreeController, nullptr);
+    connect(project, &Project::moduleAdded, m_processTreeController, &ProcessTreeController::onModuleAddedFromProject);
+    connect(project, &Project::moduleRemoved, m_processTreeController, &ProcessTreeController::onModuleRemovedFromProject);
     connect(project, &Project::connectionAdded, this, [this](const ModuleConnection& conn) {
         if (m_flowCanvas && m_flowCanvas->nodeItem(conn.fromModuleId) && m_flowCanvas->nodeItem(conn.toModuleId)) {
             m_flowCanvas->addConnection(conn.fromModuleId, conn.fromOutput, conn.toModuleId, conn.toInput);
@@ -1229,7 +1235,7 @@ void MainWindow::onProjectOpened(Project* project) {
 }
 
 void MainWindow::onProjectClosed() {
-    clearProcessTree();
+    m_processTreeController->clear();
     if (m_flowCanvas) {
         m_flowCanvas->loadFromProject(nullptr);
     }
@@ -1238,21 +1244,6 @@ void MainWindow::onProjectClosed() {
     }
     if (m_projectLabel) {
         m_projectLabel->setText(tr("当前工程：无"));
-    }
-}
-
-void MainWindow::onModuleAdded(const ModuleInstance& module) {
-    addModuleToProcessTree(module);
-    if (m_flowCanvas && !m_flowCanvas->nodeItem(module.id)) {
-        m_flowCanvas->addNode(module.moduleId, toolDisplayName(module.moduleId, module.name),
-                              QPointF(module.posX, module.posY), module.id);
-    }
-}
-
-void MainWindow::onModuleRemoved(const QString& instanceId) {
-    removeModuleFromProcessTree(instanceId);
-    if (m_flowCanvas && m_flowCanvas->nodeItem(instanceId)) {
-        m_flowCanvas->removeNode(instanceId);
     }
 }
 
@@ -1462,6 +1453,107 @@ void MainWindow::refreshMeasurementOverlay(const QJsonObject& params, int visibl
     }
 }
 
+void MainWindow::refreshMeasurementOverlay3D(const QJsonObject& params, int visibleSteps) {
+    if (!m_displayManager) {
+        return;
+    }
+
+    QList<MeasurementOverlayPoint3D> points;
+    QList<MeasurementOverlayLine3D> lines;
+    const QString mode = params["mode"].toString("point_pair");
+
+    auto addPoint3D = [&](const QJsonArray& arr, const QString& label, int minStep, int offset = 0) {
+        if (visibleSteps < minStep || arr.size() < offset + 2) {
+            return;
+        }
+        points.append(MeasurementOverlayPoint3D{pointFromArray3D(arr, offset), label});
+    };
+
+    auto addLine2D = [&](const QJsonArray& arr, const QString& label, int minStep) {
+        if (visibleSteps < minStep || arr.size() < 4) {
+            return;
+        }
+        lines.append(MeasurementOverlayLine3D{linePointFromArray3D(arr, 0), linePointFromArray3D(arr, 2), label});
+    };
+
+    if (mode == QStringLiteral("point_line")) {
+        const QJsonArray point = params["point"].toArray();
+        const QJsonArray line = params["line"].toArray();
+        addPoint3D(point, QStringLiteral("P"), 1);
+        if (visibleSteps >= 2 && line.size() >= 2) {
+            points.append(MeasurementOverlayPoint3D{linePointFromArray3D(line, 0), QStringLiteral("L1")});
+        }
+        if (visibleSteps >= 3 && line.size() >= 4) {
+            points.append(MeasurementOverlayPoint3D{linePointFromArray3D(line, 2), QStringLiteral("L2")});
+        }
+        addLine2D(line, QStringLiteral("线段(z=0)"), 3);
+    } else if (mode == QStringLiteral("line_pair")) {
+        const QJsonArray line1 = params["line1"].toArray();
+        const QJsonArray line2 = params["line2"].toArray();
+        if (visibleSteps >= 1 && line1.size() >= 2) {
+            points.append(MeasurementOverlayPoint3D{linePointFromArray3D(line1, 0), QStringLiteral("L1-1")});
+        }
+        if (visibleSteps >= 2 && line1.size() >= 4) {
+            points.append(MeasurementOverlayPoint3D{linePointFromArray3D(line1, 2), QStringLiteral("L1-2")});
+        }
+        addLine2D(line1, QStringLiteral("线1(z=0)"), 2);
+        if (visibleSteps >= 3 && line2.size() >= 2) {
+            points.append(MeasurementOverlayPoint3D{linePointFromArray3D(line2, 0), QStringLiteral("L2-1")});
+        }
+        if (visibleSteps >= 4 && line2.size() >= 4) {
+            points.append(MeasurementOverlayPoint3D{linePointFromArray3D(line2, 2), QStringLiteral("L2-2")});
+        }
+        addLine2D(line2, QStringLiteral("线2(z=0)"), 4);
+    } else if (mode == QStringLiteral("point_plane")) {
+        const QJsonArray point = params["point"].toArray();
+        const QJsonArray plane = params["plane"].toArray();
+        addPoint3D(point, QStringLiteral("P"), 1);
+        addPoint3D(plane, QStringLiteral("A"), 2, 0);
+        addPoint3D(plane, QStringLiteral("B"), 3, 3);
+        addPoint3D(plane, QStringLiteral("C"), 4, 6);
+        if (visibleSteps >= 4 && plane.size() >= 9) {
+            lines.append(MeasurementOverlayLine3D{pointFromArray3D(plane, 0), pointFromArray3D(plane, 3),
+                                                  QStringLiteral("平面边")});
+            lines.append(MeasurementOverlayLine3D{pointFromArray3D(plane, 3), pointFromArray3D(plane, 6), QString()});
+            lines.append(MeasurementOverlayLine3D{pointFromArray3D(plane, 6), pointFromArray3D(plane, 0), QString()});
+        }
+    } else {
+        const QJsonArray point1 = params["point1"].toArray();
+        const QJsonArray point2 = params["point2"].toArray();
+        addPoint3D(point1, QStringLiteral("P1"), 1);
+        addPoint3D(point2, QStringLiteral("P2"), 2);
+        if (visibleSteps >= 2 && point1.size() >= 2 && point2.size() >= 2) {
+            lines.append(
+                MeasurementOverlayLine3D{pointFromArray3D(point1), pointFromArray3D(point2), QStringLiteral("P1-P2")});
+        }
+    }
+
+    for (ViewportWidget* viewport : m_displayManager->allViewports()) {
+        Viewport3DContent* content = viewport ? viewport->viewport3D() : nullptr;
+        if (content) {
+            content->setMeasurementOverlay(points, lines);
+        }
+    }
+}
+
+void MainWindow::clearMeasurementOverlays() {
+    if (!m_displayManager) {
+        return;
+    }
+
+    for (ViewportWidget* viewport : m_displayManager->allViewports()) {
+        if (!viewport) {
+            continue;
+        }
+        if (HImageWidget* imageWidget = viewport->imageWidget()) {
+            imageWidget->clearMeasurementOverlay();
+        }
+        if (Viewport3DContent* content = viewport->viewport3D()) {
+            content->clearMeasurementOverlay();
+        }
+    }
+}
+
 void MainWindow::onPoint3DPicked(const QVector3D& point) {
     QTreeWidgetItem* item = m_processTree->currentItem();
     if (!item || item->data(0, Qt::UserRole).toString() != "flow_item") {
@@ -1496,6 +1588,11 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
     const int cursor = m_measurementPickCursor.value(instanceId, 0);
     Project* project = ProjectManager::instance().currentProject();
     const QJsonArray newPoint = pointArray3D(point.x(), point.y(), point.z());
+    auto finishPick = [&]() {
+        const int count = m_measurementPickCount.value(instanceId, 0) + 1;
+        m_measurementPickCount[instanceId] = count;
+        refreshMeasurementOverlay3D(mod->currentParams(), count);
+    };
 
     if (mode == "point_plane") {
         const int step = cursor % 4;
@@ -1521,6 +1618,7 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                                     "Picking");
         }
         m_measurementPickCursor[instanceId] = (step + 1) % 4;
+        finishPick();
         return;
     }
 
@@ -1540,6 +1638,7 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                                     .arg(point.z(), 0, 'f', 3),
                                 "Picking");
         m_measurementPickCursor[instanceId] = (step + 1) % 4;
+        finishPick();
         return;
     }
 
@@ -1567,6 +1666,7 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                                     "Picking");
         }
         m_measurementPickCursor[instanceId] = (step + 1) % 3;
+        finishPick();
         return;
     }
 
@@ -1591,6 +1691,7 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                                 "Picking");
     }
     m_measurementPickCursor[instanceId] = (cursor + 1) % 2;
+    finishPick();
 }
 
 void MainWindow::onDataSourceAdded(const DataSource& ds) {
@@ -1662,113 +1763,6 @@ void MainWindow::onCopyDataSourcePath(const QString& dataSourceId) {
     QGuiApplication::clipboard()->setText(ds->filePath);
 }
 
-void MainWindow::addModuleToProcessTree(const ModuleInstance& inst) {
-    if (m_instanceItemMap.contains(inst.id))
-        return; // 已存在，防止重复
-
-    // 隐藏提示标签
-    if (m_hintLabel) {
-        m_hintLabel->setVisible(false);
-        m_hintLabel->deleteLater();
-        m_hintLabel = nullptr;
-    }
-
-    // 创建树节点
-    QString displayName = toolDisplayName(inst.moduleId, inst.name);
-    QTreeWidgetItem* newItem = new QTreeWidgetItem();
-    newItem->setFlags((newItem->flags() | Qt::ItemIsDragEnabled) & ~Qt::ItemIsDropEnabled);
-    newItem->setText(0, displayName);
-    m_processTree->addTopLevelItem(newItem);
-
-    // 更新 used names
-    m_usedPluginNames.insert(inst.id);
-
-    // 创建插件运行时实例（clone 可能返回 null — 取决于插件是否实现了 cloneImpl）
-    DeepLux::PluginManager& pm = DeepLux::PluginManager::instance();
-    IModule* module = pm.createModule(inst.moduleId);
-    if (module) {
-        newItem->setIcon(0, module->icon());
-        if (!inst.params.isEmpty()) {
-            module->setParams(inst.params);
-        }
-        if (module->initialize()) {
-            m_flowModules.insert(inst.id, module);
-            if (!module->icon().isNull()) {
-                newItem->setIcon(0, module->icon());
-            }
-        } else {
-            delete module;
-            module = nullptr;
-            Logger::instance().warning(tr("模块初始化失败：%1").arg(inst.moduleId), "Flow");
-        }
-    } else {
-        Logger::instance().warning(tr("模块不支持克隆，无法创建运行时实例：%1").arg(inst.moduleId), "Flow");
-    }
-
-    // 更新 item 数据
-    newItem->setData(0, Qt::UserRole, "flow_item");
-    newItem->setData(0, Qt::UserRole + 1, inst.id);
-    newItem->setData(0, Qt::UserRole + 2, inst.moduleId);
-
-    m_instanceItemMap.insert(inst.id, newItem);
-    m_modulesNeedSync = true;
-}
-
-void MainWindow::removeFlowModuleByInstanceId(const QString& instanceId) {
-    if (instanceId.isEmpty()) {
-        return;
-    }
-
-    Project* project = ProjectManager::instance().currentProject();
-    if (project && project->findModule(instanceId)) {
-        project->removeModule(instanceId);
-        return;
-    }
-
-    removeModuleFromProcessTree(instanceId);
-}
-
-void MainWindow::removeModuleFromProcessTree(const QString& instanceId) {
-    QTreeWidgetItem* item = m_instanceItemMap.value(instanceId);
-    if (item) {
-        int idx = m_processTree->indexOfTopLevelItem(item);
-        if (idx >= 0) {
-            m_processTree->takeTopLevelItem(idx);
-        }
-        delete item;
-        m_instanceItemMap.remove(instanceId);
-    }
-
-    if (m_flowModules.contains(instanceId)) {
-        IModule* module = m_flowModules.take(instanceId);
-        if (module) {
-            module->shutdown();
-            delete module;
-        }
-    }
-
-    m_usedPluginNames.remove(instanceId);
-    m_measurementPickCursor.remove(instanceId);
-    m_measurementPickCount.remove(instanceId);
-    m_modulesNeedSync = true;
-
-    // 如果所有 item 都被删除，重新创建提示标签
-    if (m_processTree->topLevelItemCount() == 0 && !m_hintLabel) {
-        QWidget* parentWidget = m_processTree->parentWidget();
-        if (parentWidget) {
-            QVBoxLayout* layout = qobject_cast<QVBoxLayout*>(parentWidget->layout());
-            if (layout) {
-                m_hintLabel = new QLabel(tr("← 从左侧拖拽工具"));
-                m_hintLabel->setAlignment(Qt::AlignCenter);
-                m_hintLabel->setStyleSheet("color: #808080; padding: 10px;");
-                m_hintLabel->setObjectName("ProcessTreeHintLabel");
-                int index = layout->indexOf(m_processTree);
-                layout->insertWidget(index, m_hintLabel);
-            }
-        }
-    }
-}
-
 void MainWindow::addMeasurementConfigAction(QVBoxLayout* layout, const QString& consumerModuleId,
                                             const QString& consumerInstanceId, QDialog* dialog) {
     const QString mode = measurementInputModeForConsumer(consumerModuleId);
@@ -1825,7 +1819,7 @@ QString MainWindow::ensureMeasurementInputForMode(const QString& mode, const QSt
                                                         : QStringLiteral("%1_input").arg(consumerInstanceId);
     QString instanceId = baseId;
     int counter = 1;
-    while (project->findModule(instanceId) || m_instanceItemMap.contains(instanceId)) {
+    while (project->findModule(instanceId) || m_processTreeController->containsInstance(instanceId)) {
         instanceId = QStringLiteral("%1_%2").arg(baseId).arg(counter++);
     }
 
@@ -1835,9 +1829,10 @@ QString MainWindow::ensureMeasurementInputForMode(const QString& mode, const QSt
     inst.name = toolDisplayName(QStringLiteral("MeasurementInput"), tr("测量输入"));
     inst.params["mode"] = mode;
 
-    int insertRow = m_processTree ? m_processTree->topLevelItemCount() : 0;
-    if (m_processTree && m_instanceItemMap.contains(consumerInstanceId)) {
-        const int consumerRow = m_processTree->indexOfTopLevelItem(m_instanceItemMap.value(consumerInstanceId));
+    int insertRow = m_processTreeController->topLevelItemCount();
+    if (m_processTreeController->containsInstance(consumerInstanceId)) {
+        const int consumerRow = m_processTreeController->indexOfTopLevelItem(
+            m_processTreeController->instanceItem(consumerInstanceId));
         if (consumerRow >= 0) {
             insertRow = consumerRow;
         }
@@ -1846,51 +1841,20 @@ QString MainWindow::ensureMeasurementInputForMode(const QString& mode, const QSt
     project->addModule(inst);
     project->moveModule(instanceId, insertRow);
 
-    QTreeWidgetItem* inputItem = m_instanceItemMap.value(instanceId, nullptr);
-    if (inputItem && m_processTree) {
-        const int currentRow = m_processTree->indexOfTopLevelItem(inputItem);
+    QTreeWidgetItem* inputItem = m_processTreeController->instanceItem(instanceId);
+    if (inputItem) {
+        const int currentRow = m_processTreeController->indexOfTopLevelItem(inputItem);
         if (currentRow >= 0 && currentRow != insertRow) {
-            m_processTree->takeTopLevelItem(currentRow);
-            m_processTree->insertTopLevelItem(insertRow, inputItem);
+            m_processTreeController->takeTopLevelItem(currentRow);
+            m_processTreeController->insertTopLevelItem(insertRow, inputItem);
         }
-        m_processTree->setCurrentItem(inputItem);
+        m_processTreeController->setCurrentItem(inputItem);
     }
 
     m_measurementPickCursor[instanceId] = 0;
     m_measurementPickCount[instanceId] = 0;
     m_modulesNeedSync = true;
     return instanceId;
-}
-
-void MainWindow::clearProcessTree() {
-    for (IModule* module : m_flowModules) {
-        if (module) {
-            module->shutdown();
-            delete module;
-        }
-    }
-    m_flowModules.clear();
-    m_usedPluginNames.clear();
-    m_instanceItemMap.clear();
-    m_measurementPickCursor.clear();
-    m_measurementPickCount.clear();
-    m_processTree->clear();
-
-    if (!m_hintLabel) {
-        QWidget* parentWidget = m_processTree->parentWidget();
-        if (parentWidget) {
-            QVBoxLayout* layout = qobject_cast<QVBoxLayout*>(parentWidget->layout());
-            if (layout) {
-                m_hintLabel = new QLabel(tr("← 从左侧拖拽工具"));
-                m_hintLabel->setAlignment(Qt::AlignCenter);
-                m_hintLabel->setStyleSheet("color: #808080; padding: 10px;");
-                m_hintLabel->setObjectName("ProcessTreeHintLabel");
-                int index = layout->indexOf(m_processTree);
-                layout->insertWidget(index, m_hintLabel);
-            }
-        }
-    }
-    m_modulesNeedSync = true;
 }
 
 void MainWindow::applyTheme() {
@@ -2161,23 +2125,24 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     }
 
     // 处理流程树的键盘删除
-    if (m_processTree && (watched == m_processTree || watched == m_processTree->viewport()) &&
+    if (m_processTreeController && (watched == m_processTree || watched == m_processTree->viewport()) &&
         event->type() == QEvent::KeyPress) {
         QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Delete) {
-            QList<QTreeWidgetItem*> selected = m_processTree->selectedItems();
+            QList<QTreeWidgetItem*> selected = m_processTreeController->selectedItems();
             if (!selected.isEmpty()) {
                 QTreeWidgetItem* item = selected.first();
                 QString instanceName = item->data(0, Qt::UserRole + 1).toString();
-                removeFlowModuleByInstanceId(instanceName);
+                m_processTreeController->removeFlowModule(instanceName);
             }
             return true;
         }
     }
 
     // 处理拖放到流程树
-    if (m_processTree) {
-        QWidget* processViewport = m_processTree->viewport();
+    if (m_processTreeController) {
+        QTreeWidget* tree = m_processTreeController->tree();
+        QWidget* processViewport = tree->viewport();
         if (processViewport && watched == processViewport &&
             (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove ||
              event->type() == QEvent::Drop)) {
@@ -2189,22 +2154,22 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 return QMainWindow::eventFilter(watched, event);
             }
 
-            auto insertRowForDrop = [this, dropEvent]() {
-                QTreeWidgetItem* hoverItem = m_processTree->itemAt(dropEvent->pos());
+            auto insertRowForDrop = [this, tree, dropEvent]() {
+                QTreeWidgetItem* hoverItem = tree->itemAt(dropEvent->pos());
                 if (!hoverItem) {
-                    return m_processTree->topLevelItemCount();
+                    return tree->topLevelItemCount();
                 }
 
-                const QRect itemRect = m_processTree->visualItemRect(hoverItem);
+                const QRect itemRect = tree->visualItemRect(hoverItem);
                 const int itemMiddle = itemRect.top() + itemRect.height() / 2;
-                const int hoverRow = m_processTree->indexOfTopLevelItem(hoverItem);
+                const int hoverRow = tree->indexOfTopLevelItem(hoverItem);
                 return dropEvent->pos().y() < itemMiddle ? hoverRow : hoverRow + 1;
             };
 
             const bool isToolBoxDrop =
                 dropEvent->source() == m_toolBoxTree || dropEvent->source() == m_toolBoxTree->viewport();
             const bool isProcessTreeDrop =
-                dropEvent->source() == m_processTree || dropEvent->source() == m_processTree->viewport();
+                dropEvent->source() == tree || dropEvent->source() == tree->viewport();
             if (!isToolBoxDrop && !isProcessTreeDrop) {
                 dropEvent->ignore();
                 return true;
@@ -2221,13 +2186,13 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
             }
 
             if (isProcessTreeDrop && mimeData->hasFormat("application/x-qabstractitemmodeldatalist")) {
-                QTreeWidgetItem* sourceItem = m_processTree->currentItem();
+                QTreeWidgetItem* sourceItem = m_processTreeController->currentItem();
                 if (!sourceItem || sourceItem->data(0, Qt::UserRole).toString() != "flow_item") {
                     dropEvent->ignore();
                     return true;
                 }
 
-                const int sourceRow = m_processTree->indexOfTopLevelItem(sourceItem);
+                const int sourceRow = m_processTreeController->indexOfTopLevelItem(sourceItem);
                 int insertRow = insertRowForDrop();
                 if (sourceRow < 0 || insertRow == sourceRow || insertRow == sourceRow + 1) {
                     dropEvent->setDropAction(Qt::MoveAction);
@@ -2235,13 +2200,13 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                     return true;
                 }
 
-                QTreeWidgetItem* movedItem = m_processTree->takeTopLevelItem(sourceRow);
+                QTreeWidgetItem* movedItem = m_processTreeController->takeTopLevelItem(sourceRow);
                 if (insertRow > sourceRow) {
                     --insertRow;
                 }
-                insertRow = qMax(0, qMin(insertRow, m_processTree->topLevelItemCount()));
-                m_processTree->insertTopLevelItem(insertRow, movedItem);
-                m_processTree->setCurrentItem(movedItem);
+                insertRow = qMax(0, qMin(insertRow, m_processTreeController->topLevelItemCount()));
+                m_processTreeController->insertTopLevelItem(insertRow, movedItem);
+                m_processTreeController->setCurrentItem(movedItem);
 
                 const QString instanceId = movedItem->data(0, Qt::UserRole + 1).toString();
                 if (Project* project = ProjectManager::instance().currentProject()) {
@@ -2272,29 +2237,25 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                         }
 
                         // 隐藏提示标签
-                        if (m_hintLabel) {
-                            m_hintLabel->setVisible(false);
-                            m_hintLabel->deleteLater();
-                            m_hintLabel = nullptr;
-                        }
+                        m_processTreeController->hideHintLabel();
 
                         const int insertRow = insertRowForDrop();
 
                         // 先添加树节点（即时视觉反馈），再异步创建模块实例
                         QTreeWidgetItem* newItem = new QTreeWidgetItem();
                         newItem->setFlags((newItem->flags() | Qt::ItemIsDragEnabled) & ~Qt::ItemIsDropEnabled);
-                        m_processTree->insertTopLevelItem(insertRow, newItem);
+                        m_processTreeController->insertTopLevelItem(insertRow, newItem);
 
                         QString instanceName = pluginName;
                         int counter = 1;
-                        while (m_usedPluginNames.contains(instanceName)) {
+                        while (m_processTreeController->isUsedName(instanceName)) {
                             instanceName = QString("%1_%2").arg(pluginName).arg(counter++);
                         }
-                        m_usedPluginNames.insert(instanceName);
+                        m_processTreeController->insertUsedName(instanceName);
                         newItem->setData(0, Qt::UserRole, "flow_item");
                         newItem->setData(0, Qt::UserRole + 1, instanceName);
                         newItem->setData(0, Qt::UserRole + 2, pluginName);
-                        m_instanceItemMap.insert(instanceName, newItem); // 防 Project 信号重复创建
+                        m_processTreeController->insertInstanceItem(instanceName, newItem); // 防 Project 信号重复创建
 
                         // 推迟模块创建到事件循环 — 避免在拖放嵌套循环中阻塞
                         QTimer::singleShot(0, this, [this, pluginName, instanceName, newItem]() {
@@ -2302,13 +2263,13 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                             IModule* module = pm.createModule(pluginName);
                             if (!module) {
                                 Logger::instance().error(tr("无法创建插件：%1").arg(pluginName), "Flow");
-                                removeModuleFromProcessTree(instanceName);
+                                m_processTreeController->removeModule(instanceName);
                                 return;
                             }
                             if (!module->initialize()) {
                                 Logger::instance().error(tr("插件初始化失败：%1").arg(pluginName), "Flow");
                                 delete module;
-                                removeModuleFromProcessTree(instanceName);
+                                m_processTreeController->removeModule(instanceName);
                                 return;
                             }
                             // 通过 Project 模型添加 — moduleAdded 信号同步 processTree + FlowCanvas
@@ -2324,7 +2285,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                             Project* proj = ProjectManager::instance().currentProject();
                             if (proj) {
                                 proj->addModule(inst);
-                                proj->moveModule(instanceName, m_processTree->indexOfTopLevelItem(newItem));
+                                proj->moveModule(instanceName, m_processTreeController->indexOfTopLevelItem(newItem));
                             }
                             Logger::instance().info(tr("已添加插件到流程：%1 (%2)").arg(displayName).arg(instanceName),
                                                     "Flow");
@@ -2707,10 +2668,10 @@ void MainWindow::executeFlowOnce() {
     m_currentExecutingIndex = 0;
 
     // 清除选中状态和所有项目的高亮
-    m_processTree->clearSelection();
-    m_processTree->setCurrentItem(nullptr);
-    for (int i = 0; i < m_processTree->topLevelItemCount(); ++i) {
-        QTreeWidgetItem* item = m_processTree->topLevelItem(i);
+    m_processTreeController->clearSelection();
+    m_processTreeController->setCurrentItem(nullptr);
+    for (int i = 0; i < m_processTreeController->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* item = m_processTreeController->topLevelItem(i);
         item->setBackground(0, QBrush());
         item->setForeground(0, QBrush());
         item->setBackground(1, QBrush());
@@ -2719,7 +2680,7 @@ void MainWindow::executeFlowOnce() {
     m_currentExecutingItem = nullptr;
 
     // 如果没有模块，直接返回
-    if (m_processTree->topLevelItemCount() == 0) {
+    if (m_processTreeController->topLevelItemCount() == 0) {
         if (m_processTimeLabel) {
             m_processTimeLabel->setText(tr("总耗时：0 ms"));
         }
@@ -2730,10 +2691,10 @@ void MainWindow::executeFlowOnce() {
 
     // 仅在模块变更后重新同步（避免循环模式下每轮重复 addModule）
     if (m_modulesNeedSync) {
-        m_instanceItemMap.clear();
+        m_processTreeController->clearInstanceItemMap();
         engine.clearModules();
-        for (int i = 0; i < m_processTree->topLevelItemCount(); ++i) {
-            QTreeWidgetItem* item = m_processTree->topLevelItem(i);
+        for (int i = 0; i < m_processTreeController->topLevelItemCount(); ++i) {
+            QTreeWidgetItem* item = m_processTreeController->topLevelItem(i);
             QString instanceName = item->data(0, Qt::UserRole + 1).toString();
             if (instanceName.isEmpty() || !m_flowModules.contains(instanceName))
                 continue;
@@ -2745,7 +2706,7 @@ void MainWindow::executeFlowOnce() {
                 mb->setInstanceName(instanceName);
                 engine.addModule(mb);
                 // 建立 instanceName → item 映射（用于信号处理 O(1) 查找）
-                m_instanceItemMap[instanceName] = item;
+                m_processTreeController->setInstanceItem(instanceName, item);
             }
         }
         m_modulesNeedSync = false;

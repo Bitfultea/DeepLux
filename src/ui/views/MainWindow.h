@@ -12,7 +12,6 @@
 #include <QMainWindow>
 #include <QMap>
 #include <QPushButton>
-#include <QSet>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTabWidget>
@@ -33,6 +32,7 @@ class ViewportWidget;
 class TerminalWidget;
 class AgentActionLogWidget;
 class AgentChatPanel;
+class ProcessTreeController;
 
 class IModule;
 struct PointCloudData;
@@ -80,17 +80,14 @@ private slots:
     void onImportImage();
     void onToggleToolPanel(bool checked);
     void onToggleProcessPanel(bool checked);
-    void onProcessTreeContextMenu(const QPoint& pos);
     void onProjectOpened(Project* project);
     void onProjectClosed();
-    void onModuleAdded(const ModuleInstance& module);
     void onDataSourceAdded(const DataSource& ds);
     void onDataSourceRemoved(const QString& id);
     void onDisplayDataSource(const QString& dataSourceId);
     void onRemoveDataSource(const QString& dataSourceId);
     void onShowDataSourceInFolder(const QString& dataSourceId);
     void onCopyDataSourcePath(const QString& dataSourceId);
-    void onModuleRemoved(const QString& instanceId);
     void onViewportCreated(const QString& viewportId, ViewportWidget* viewport);
     void onPoint2DPicked(const QPointF& point);
     void onPoint3DPicked(const QVector3D& point);
@@ -122,7 +119,6 @@ protected:
 
     // 流程栏控件
     QTreeWidget* m_processTree = nullptr;
-    QLabel* m_hintLabel = nullptr; // 流程栏提示标签
     QLabel* m_processTimeLabel = nullptr;
     QWidget* m_processStatusWidget = nullptr;
     QToolButton* m_btnStartPause = nullptr;
@@ -138,7 +134,6 @@ protected:
     ImageData m_flowInput;                             // 流程执行时的输入数据
     int m_flowTotalTime = 0;                           // 总耗时
     bool m_modulesNeedSync = true;                     // 流程树变化后才能重新同步到 RunEngine
-    QMap<QString, QTreeWidgetItem*> m_instanceItemMap; // instanceName → 流程树 item
 
     // 底部面板
     QDockWidget* m_logDock = nullptr;
@@ -173,10 +168,6 @@ protected:
     bool importImageFile(const QString& filePath);
     bool importPointCloudFile(const QString& filePath);
     void clearCentralDisplay();
-    void addModuleToProcessTree(const ModuleInstance& inst);
-    void removeFlowModuleByInstanceId(const QString& instanceId);
-    void removeModuleFromProcessTree(const QString& instanceId);
-    void clearProcessTree();
     void addMeasurementConfigAction(QVBoxLayout* layout, const QString& consumerModuleId,
                                     const QString& consumerInstanceId, QDialog* dialog);
     QString ensureMeasurementInputForMode(const QString& mode, const QString& consumerInstanceId);
@@ -188,7 +179,6 @@ protected:
     QMap<QString, IModule*> m_flowModules;
     QMap<QString, int> m_measurementPickCursor;
     QMap<QString, int> m_measurementPickCount;
-    QSet<QString> m_usedPluginNames;
 
     // 流程画布（图形化节点编辑器）
     FlowCanvas* m_flowCanvas = nullptr;
@@ -220,6 +210,9 @@ protected:
     void updateRenderModeCombo();
     void updateRenderModeComboForData(const PointCloudData& pc);
     void onRenderModeChanged(int index);
+
+    // 流程树控制器
+    ProcessTreeController* m_processTreeController = nullptr;
 };
 
 } // namespace DeepLux
