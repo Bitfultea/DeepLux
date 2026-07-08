@@ -1,6 +1,7 @@
 # DeepLux UI Library
 
 set(UI_SOURCES
+    ThemeManager.cpp
     views/MainWindow.cpp
     views/SplashScreen.cpp
     viewmodels/MainViewModel.cpp

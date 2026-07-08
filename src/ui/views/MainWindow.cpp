@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 
+#include "../ThemeManager.h"
+
 #include "../bridge/TerminalBridge.h"
 #include "../dialogs/AgentSettingsDialog.h"
 #include "../dialogs/LoginDialog.h"
@@ -1797,185 +1799,39 @@ void MainWindow::applyTheme() {
     // 更新所有子控件的 ConfigWidgetHelper 样式（包括对话框中的控件）
     ConfigWidgetHelper::updateAllWidgetsStyle(this, m_isDarkTheme);
 
-    if (m_isDarkTheme) {
-        // 深色主题
-        setStyleSheet(
-            "QMainWindow { background-color: #1e1e1e; color: #ffffff; }"
-            "QWidget#MainContentWidget { background-color: #1e1e1e; }"
-            "QSplitter#MainSplitter { background-color: #1e1e1e; }"
-            "QDockWidget { background-color: #252525; color: #ffffff; border: none; }"
-            "QDockWidget::title { "
-            "    background-color: #2d2d2d; "
-            "    color: #ffffff; "
-            "    font-weight: bold; "
-            "    font-size: 13px; "
-            "    padding: 8px 10px; "
-            "    border-bottom: 1px solid #444444; }"
-            "QDockWidget::title:hover { background-color: #333333; }"
-            "QTreeWidget { background-color: #252525; color: #ffffff; border: none; font-size: 13px; }"
-            "QTreeWidget::item { height: 28px; padding-left: 2px; padding-right: 2px; }"
-            "QTreeWidget::item:hover { background-color: #3a3a3a; }"
-            "QTreeWidget::item:selected { background-color: #0078d7; }"
-            "QTableWidget { background-color: #252525; color: #ffffff; border: none; font-size: 13px; }"
-            "QTableWidget::item { border-bottom: 1px solid #333; }"
-            "QTableWidget::item:selected { background-color: #0078d7; }"
-            "QHeaderView::section { background-color: #333333; padding: 5px; border: none; font-size: 13px; }"
-            "QTableCornerButton::section { background-color: #333333; border: none; }"
-            "QScrollBar:vertical { background-color: #252525; width: 12px; border: none; }"
-            "QScrollBar::handle:vertical { background-color: #555555; min-height: 20px; border-radius: 6px; }"
-            "QScrollBar::handle:vertical:hover { background-color: #666666; }"
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
-            "QScrollBar:horizontal { background-color: #252525; height: 12px; border: none; }"
-            "QScrollBar::handle:horizontal { background-color: #555555; min-width: 20px; border-radius: 6px; }"
-            "QScrollBar::handle:horizontal:hover { background-color: #666666; }"
-            "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }"
-            "QToolBar { background-color: #252525; border: 1px solid #444444; spacing: 5px; padding: 2px; }"
-            "QToolBar QToolButton { background-color: transparent; color: #ffffff; padding: 5px; border: 1px solid "
-            "transparent; }"
-            "QToolBar QToolButton:hover { background-color: #3a3a3a; border: 1px solid #555555; }"
-            "QToolBar QToolButton:pressed { background-color: #444444; border: 1px solid #6b7280; }"
-            "QMenuBar { background-color: #252525; color: #ffffff; }"
-            "QMenuBar::item:selected { background-color: #3a3a3a; }"
-            "QMenu { background-color: #252525; color: #ffffff; border: 1px solid #333; }"
-            "QMenu::item:selected { background-color: #0078d7; }"
-            "QStatusBar { background-color: #252525; color: #ffffff; font-size: 13px; }"
-            "QStatusBar QLabel { padding: 0 8px; }"
-            "QPushButton { background-color: #0078d7; color: white; padding: 5px 15px; border: none; }"
-            "QPushButton:hover { background-color: #1e8ad6; }"
-            "QPushButton:disabled { background-color: #555555; }"
-            "QLineEdit { background-color: #333333; color: white; border: 1px solid #555; padding: 5px; }"
-            "QComboBox { background-color: #333333; color: white; border: 1px solid #555; padding: 5px; }"
-            "QSpinBox { background-color: #333333; color: white; border: 1px solid #555; padding: 5px; }"
-            "QSplitter#MainSplitter::handle { background-color: #1e1e1e; border: none; }"
-            "QSplitter#RightTopSplitter::handle:horizontal { "
-            "    background-color: #30363d; border-left: 1px solid #3f4750; border-right: 1px solid #252b31; }"
-            "QSplitter#RightSplitter::handle:vertical { "
-            "    background-color: #30363d; border-top: 1px solid #3f4750; border-bottom: 1px solid #252b31; }"
-            "QWidget#ProcessPanelWidget { background-color: #252525; border-right: 1px solid #3b4148; }"
-            "QWidget#ImageDisplayWidget { background-color: #1e1e1e; border-left: 1px solid #3b4148; "
-            "border-bottom: 1px solid #3b4148; }"
-            "QDockWidget#LogDock { border-top: 1px solid #3b4148; }"
-            "QLabel { color: #ffffff; }"
-            "QScrollArea { background-color: #252525; }"
-            "QFrame { background-color: #444444; }"
-            "QTabWidget::pane { border: none; background-color: #252525; }"
-            "QTabBar { background-color: #252525; }"
-            "QTabBar::tab { background-color: #333333; color: #ffffff; font-size: 13px; font-weight: 500; "
-            "min-height: 26px; padding: 3px 10px; border: none; }"
-            "QTabBar::tab:selected { background-color: #444444; }"
-            "QTabBar::tab:hover:!selected { background-color: #3a3a3a; }");
-    } else {
-        // 白色主题 - 适合亮光环境
-        setStyleSheet(
-            "QMainWindow { background-color: #f5f5f5; color: #212121; }"
-            "QWidget#MainContentWidget { background-color: #f5f5f5; }"
-            "QSplitter#MainSplitter { background-color: #f5f5f5; }"
-            "QDockWidget { background-color: #ffffff; color: #212121; border: none; }"
-            "QDockWidget::title { "
-            "    background-color: #e8e8e8; "
-            "    color: #212121; "
-            "    font-weight: bold; "
-            "    font-size: 13px; "
-            "    padding: 8px 10px; "
-            "    border-bottom: 1px solid #cccccc; }"
-            "QDockWidget::title:hover { background-color: #d0d0d0; }"
-            "QTreeWidget { background-color: #ffffff; color: #212121; border: 1px solid #dddddd; font-size: 13px; }"
-            "QTreeWidget::item { height: 28px; padding-left: 2px; padding-right: 2px; }"
-            "QTreeWidget::item:hover { background-color: #e5f3ff; }"
-            "QTreeWidget::item:selected { background-color: #0078d7; color: #ffffff; }"
-            "QTableWidget { background-color: #ffffff; color: #212121; border: 1px solid #dddddd; font-size: 13px; }"
-            "QTableWidget::item { border-bottom: 1px solid #eeeeee; }"
-            "QTableWidget::item:selected { background-color: #0078d7; color: #ffffff; }"
-            "QHeaderView::section { background-color: #f0f0f0; color: #212121; padding: 5px; border: 1px solid "
-            "#dddddd; font-size: 13px; }"
-            "QTableCornerButton::section { background-color: #f0f0f0; border: none; }"
-            "QScrollBar:vertical { background-color: #f0f0f0; width: 12px; border: none; }"
-            "QScrollBar::handle:vertical { background-color: #c0c0c0; min-height: 20px; border-radius: 6px; }"
-            "QScrollBar::handle:vertical:hover { background-color: #a0a0a0; }"
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
-            "QScrollBar:horizontal { background-color: #f0f0f0; height: 12px; border: none; }"
-            "QScrollBar::handle:horizontal { background-color: #c0c0c0; min-width: 20px; border-radius: 6px; }"
-            "QScrollBar::handle:horizontal:hover { background-color: #a0a0a0; }"
-            "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }"
-            "QToolBar { background-color: #f8f8f8; border: 1px solid #dddddd; spacing: 5px; padding: 2px; }"
-            "QToolBar QToolButton { background-color: transparent; color: #212121; padding: 5px; border: 1px solid "
-            "transparent; }"
-            "QToolBar QToolButton:hover { background-color: #e5f3ff; border: 1px solid #0078d7; }"
-            "QMenuBar { background-color: #f8f8f8; color: #212121; }"
-            "QMenuBar::item:selected { background-color: #e5f3ff; }"
-            "QMenu { background-color: #ffffff; color: #212121; border: 1px solid #cccccc; }"
-            "QMenu::item:selected { background-color: #0078d7; color: #ffffff; }"
-            "QStatusBar { background-color: #f8f8f8; color: #212121; font-size: 13px; }"
-            "QStatusBar QLabel { padding: 0 8px; }"
-            "QPushButton { background-color: #0078d7; color: white; padding: 5px 15px; border: 1px solid #005a9e; }"
-            "QPushButton:hover { background-color: #1e8ad6; }"
-            "QPushButton:disabled { background-color: #cccccc; color: #999999; }"
-            "QLineEdit { background-color: #ffffff; color: #212121; border: 1px solid #cccccc; padding: 5px; }"
-            "QLineEdit:focus { border: 1px solid #0078d7; }"
-            "QComboBox { background-color: #ffffff; color: #212121; border: 1px solid #cccccc; padding: 5px; }"
-            "QComboBox:focus { border: 1px solid #0078d7; }"
-            "QSpinBox { background-color: #ffffff; color: #212121; border: 1px solid #cccccc; padding: 5px; }"
-            "QSpinBox:focus { border: 1px solid #0078d7; }"
-            "QSplitter#MainSplitter::handle { background-color: #f5f5f5; border: none; }"
-            "QSplitter#RightTopSplitter::handle:horizontal { "
-            "    background-color: #e4e8ed; border-left: 1px solid #d2d8e0; border-right: 1px solid #f7f8fa; }"
-            "QSplitter#RightSplitter::handle:vertical { "
-            "    background-color: #e4e8ed; border-top: 1px solid #d2d8e0; border-bottom: 1px solid #f7f8fa; }"
-            "QWidget#ProcessPanelWidget { background-color: #ffffff; border-right: 1px solid #dce2e8; }"
-            "QWidget#ImageDisplayWidget { background-color: #ffffff; border-left: 1px solid #dce2e8; "
-            "border-bottom: 1px solid #dce2e8; }"
-            "QDockWidget#LogDock { border-top: 1px solid #dce2e8; }"
-            "QLabel { color: #212121; }"
-            "QScrollArea { background-color: #ffffff; }"
-            "QFrame { background-color: #dddddd; }"
-            "QTabWidget::pane { border: none; background-color: #ffffff; }"
-            "QTabBar { background-color: #ffffff; }"
-            "QTabBar::tab { background-color: #e8e8e8; color: #212121; font-size: 13px; font-weight: 500; "
-            "min-height: 26px; padding: 3px 10px; border: none; }"
-            "QTabBar::tab:selected { background-color: #f5f5f5; }"
-            "QTabBar::tab:hover:!selected { background-color: #d0d0d0; }");
-    }
+    setStyleSheet(ThemeManager::styleSheet(m_isDarkTheme));
 
     // 更新自定义标题栏样式
-    QString bgColor = m_isDarkTheme ? "#2d2d2d" : "#e8e8e8";
-    QString borderColor = m_isDarkTheme ? "#444444" : "#cccccc";
-    QString textColor = m_isDarkTheme ? "#ffffff" : "#212121";
-    QString btnColor = m_isDarkTheme ? "#ffffff" : "#212121";
-    QString treeBgColor = m_isDarkTheme ? "#252525" : "#ffffff";
-    QString treeTextColor = m_isDarkTheme ? "#ffffff" : "#212121";
-    QString treeHoverColor = m_isDarkTheme ? "#3a3a3a" : "#e5f3ff";
-    QString scrollBgColor = m_isDarkTheme ? "#252525" : "#ffffff";
-    QString panelBorderColor = m_isDarkTheme ? "#3b4148" : "#dce2e8";
+    const ThemePalette pal = ThemeManager::palette(m_isDarkTheme);
 
     if (m_toolBoxDock && m_toolBoxDock->titleBarWidget()) {
         m_toolBoxDock->titleBarWidget()->setStyleSheet(
-            QString("background-color: %1; border: none; border-bottom: 1px solid %2;").arg(bgColor, borderColor));
+            QString("background-color: %1; border: none; border-bottom: 1px solid %2;").arg(pal.bgColor, pal.borderColor));
         QLabel* label = m_toolBoxDock->titleBarWidget()->findChild<QLabel*>();
         if (label)
-            label->setStyleSheet(QString("QLabel { color: %1; font-weight: 600; font-size: 13px; }").arg(textColor));
+            label->setStyleSheet(QString("QLabel { color: %1; font-weight: 600; font-size: 13px; }").arg(pal.textColor));
         QToolButton* btn = m_toolBoxDock->titleBarWidget()->findChild<QToolButton*>();
         if (btn)
             btn->setStyleSheet(
                 QString("QToolButton { background-color: transparent; color: %1; font-size: 18px; border: none; }"
                         "QToolButton:hover { background-color: #e74c3c; }")
-                    .arg(btnColor));
+                    .arg(pal.btnColor));
     }
     if (m_logDock && m_logDock->titleBarWidget()) {
         m_logDock->titleBarWidget()->setStyleSheet(
-            QString("background-color: %1; border: none; border-bottom: 1px solid %2;").arg(bgColor, borderColor));
+            QString("background-color: %1; border: none; border-bottom: 1px solid %2;").arg(pal.bgColor, pal.borderColor));
         QLabel* label = m_logDock->titleBarWidget()->findChild<QLabel*>();
         if (label)
-            label->setStyleSheet(QString("QLabel { color: %1; font-weight: 600; font-size: 13px; }").arg(textColor));
+            label->setStyleSheet(QString("QLabel { color: %1; font-weight: 600; font-size: 13px; }").arg(pal.textColor));
     }
 
-    // 更新 TreeWidget 样式
     if (m_toolBoxTree) {
         m_toolBoxTree->setStyleSheet(
             QString("QTreeWidget { background-color: %1; color: %2; border: none; font-size: 13px; }"
                     "QTreeWidget::item { height: 28px; padding-left: 2px; padding-right: 2px; }"
                     "QTreeWidget::item:hover { background-color: %3; }"
                     "QTreeWidget::item:selected { background-color: #0078d7; color: #ffffff; }")
-                .arg(treeBgColor, treeTextColor, treeHoverColor));
+                .arg(pal.treeBgColor, pal.treeTextColor, pal.treeHoverColor));
     }
     if (m_processTree) {
         m_processTree->setStyleSheet(
@@ -1983,36 +1839,29 @@ void MainWindow::applyTheme() {
                     "QTreeWidget::item { height: 28px; padding-left: 2px; padding-right: 2px; }"
                     "QTreeWidget::item:hover { background-color: %3; }"
                     "QTreeWidget::item:selected { background-color: #0078d7; color: #ffffff; }")
-                .arg(treeBgColor, treeTextColor, treeHoverColor));
+                .arg(pal.treeBgColor, pal.treeTextColor, pal.treeHoverColor));
     }
 
-    // 更新滚动区域样式
     QScrollArea* toolCategoryScroll = findChild<QScrollArea*>("ToolCategoryScroll");
     if (toolCategoryScroll) {
         toolCategoryScroll->setStyleSheet(QString("QScrollArea { background-color: %1; border: none; }"
                                                   "QScrollArea > QWidget > QWidget { background-color: %1; }")
-                                              .arg(scrollBgColor));
+                                              .arg(pal.scrollBgColor));
     }
 
-    // 更新流程状态栏样式
     if (m_processStatusWidget) {
-        m_processStatusWidget->setStyleSheet(QString("background-color: %1;").arg(bgColor));
+        m_processStatusWidget->setStyleSheet(QString("background-color: %1;").arg(pal.bgColor));
         if (m_processTimeLabel) {
-            m_processTimeLabel->setStyleSheet(QString("QLabel { color: %1; }").arg(textColor));
+            m_processTimeLabel->setStyleSheet(QString("QLabel { color: %1; }").arg(pal.textColor));
         }
     }
 
-    // 更新流程工具栏按钮样式
-    QString btnBgColor = m_isDarkTheme ? "#3a3a3a" : "#e0e0e0";
-    QString btnTextColor = m_isDarkTheme ? "#ffffff" : "#212121";
-    QString btnHoverColor = m_isDarkTheme ? "#4a4a4a" : "#d0d0d0";
-    QString toolBtnBorderColor = m_isDarkTheme ? "#555555" : "#cccccc";
     const QString processToolButtonStyle =
         QString("QToolButton { background-color: %1; color: %2; border: 1px solid %3; border-radius: 3px; "
                 "padding: 4px 6px; }"
                 "QToolButton:hover { background-color: %4; }"
                 "QToolButton:disabled { background-color: %1; color: #999999; }")
-            .arg(btnBgColor, btnTextColor, toolBtnBorderColor, btnHoverColor);
+            .arg(pal.btnBgColor, pal.btnTextColor, pal.toolBtnBorderColor, pal.btnHoverColor);
     QToolButton* startPauseBtn = findChild<QToolButton*>("ProcessStartPauseBtn");
     if (startPauseBtn) {
         startPauseBtn->setStyleSheet(processToolButtonStyle);
@@ -2026,42 +1875,35 @@ void MainWindow::applyTheme() {
         cycleBtn->setStyleSheet(processToolButtonStyle);
     }
 
-    // 更新流程工具栏背景
     QWidget* procToolBar = findChild<QWidget*>("ProcessToolBar");
     if (procToolBar) {
-        procToolBar->setStyleSheet(QString("background-color: %1;").arg(scrollBgColor));
+        procToolBar->setStyleSheet(QString("background-color: %1;").arg(pal.scrollBgColor));
     }
 
-    // 更新视图切换按钮容器背景
     QWidget* viewToggleWidget = findChild<QWidget*>("ViewToggleWidget");
     if (viewToggleWidget) {
-        viewToggleWidget->setStyleSheet(QString("background-color: %1;").arg(scrollBgColor));
+        viewToggleWidget->setStyleSheet(QString("background-color: %1;").arg(pal.scrollBgColor));
     }
 
-    // 更新面板容器背景
     QWidget* toolPanelWidget = findChild<QWidget*>("ToolPanelWidget");
     if (toolPanelWidget) {
-        toolPanelWidget->setStyleSheet(QString("background-color: %1;").arg(scrollBgColor));
+        toolPanelWidget->setStyleSheet(QString("background-color: %1;").arg(pal.scrollBgColor));
     }
     QWidget* processPanelWidget = findChild<QWidget*>("ProcessPanelWidget");
     if (processPanelWidget) {
         processPanelWidget->setStyleSheet(
-            QString("background-color: %1; border-right: 1px solid %2;").arg(scrollBgColor, panelBorderColor));
+            QString("background-color: %1; border-right: 1px solid %2;").arg(pal.scrollBgColor, pal.panelBorderColor));
     }
     QWidget* imageDisplayWidget = findChild<QWidget*>("ImageDisplayWidget");
     if (imageDisplayWidget) {
         imageDisplayWidget->setStyleSheet(QString("background-color: %1; border-left: 1px solid %2; "
                                                   "border-bottom: 1px solid %2;")
-                                              .arg(m_isDarkTheme ? "#1e1e1e" : "#ffffff", panelBorderColor));
+                                              .arg(pal.imageDisplayBg, pal.panelBorderColor));
     }
     if (m_logDock) {
-        m_logDock->setStyleSheet(QString("QDockWidget#LogDock { border-top: 1px solid %1; }").arg(panelBorderColor));
+        m_logDock->setStyleSheet(QString("QDockWidget#LogDock { border-top: 1px solid %1; }").arg(pal.panelBorderColor));
     }
     if (m_logTable) {
-        const QString logTableBg = m_isDarkTheme ? "#252525" : "#ffffff";
-        const QString logHeaderBg = m_isDarkTheme ? "#333333" : "#f0f0f0";
-        const QString logTextColor = m_isDarkTheme ? "#ffffff" : "#212121";
-        const QString logLineColor = m_isDarkTheme ? "#3b4148" : "#dce2e8";
         m_logTable->setFrameShape(QFrame::NoFrame);
         m_logTable->setStyleSheet(
             QString("QTableWidget#LogTable { background-color: %1; color: %2; border: none; outline: none; "
@@ -2071,7 +1913,7 @@ void MainWindow::applyTheme() {
                     "QHeaderView::section { background-color: %4; color: %2; padding: 5px; border: none; "
                     "border-bottom: 1px solid %3; font-size: 13px; }"
                     "QTableCornerButton::section { background-color: %4; border: none; }")
-                .arg(logTableBg, logTextColor, logLineColor, logHeaderBg));
+                .arg(pal.logTableBg, pal.logTextColor, pal.logLineColor, pal.logHeaderBg));
     }
 
     if (m_processTabWidget) {
@@ -2082,8 +1924,7 @@ void MainWindow::applyTheme() {
                     "  margin-right: 2px; }"
                     "QTabBar::tab:selected { color: #0078d7; border-bottom: 2px solid #0078d7; }"
                     "QTabBar::tab:hover:!selected { color: %3; background-color: %1; }")
-                .arg(m_isDarkTheme ? "#3a3a3a" : "#e0e0e0", m_isDarkTheme ? "#252525" : "#ffffff",
-                     m_isDarkTheme ? "#a0a0a0" : "#666666"));
+                .arg(pal.processTabBorder, pal.processTabBg, pal.processTabFg));
     }
     if (m_logTerminalTabs) {
         m_logTerminalTabs->setStyleSheet(
@@ -2092,9 +1933,7 @@ void MainWindow::applyTheme() {
                     "  min-height: 26px; padding: 3px 10px; border: none; margin-right: 1px; }"
                     "QTabBar::tab:selected { background-color: %1; color: %4; }"
                     "QTabBar::tab:hover:!selected { background-color: %5; }")
-                .arg(m_isDarkTheme ? "#252525" : "#ffffff", m_isDarkTheme ? "#333333" : "#e8e8e8",
-                     m_isDarkTheme ? "#d1d5db" : "#4b5563", m_isDarkTheme ? "#ffffff" : "#212121",
-                     m_isDarkTheme ? "#3a3a3a" : "#dce2e8"));
+                .arg(pal.logTabPaneBg, pal.logTabBg, pal.logTabFg, pal.logTabSelFg, pal.logTabHoverBg));
     }
 
     // 更新 DisplayManager 中的 Viewport 样式
