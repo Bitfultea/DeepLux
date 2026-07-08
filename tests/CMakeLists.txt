@@ -44,6 +44,8 @@ set(TEST_SOURCES
     test_freeformsurface.cpp
     test_measurementinput.cpp
     test_loadpointcloud.cpp
+    test_logicplugins.cpp
+    test_expressionengine.cpp
 )
 
 foreach(TEST_FILE ${TEST_SOURCES})
@@ -109,6 +111,14 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
     if(TEST_NAME STREQUAL "test_clihandler" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE SystemTimePlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_logicplugins")
+        target_link_libraries(${TEST_NAME}
+            PRIVATE
+                IfPlugin
+                LoopPlugin
+                WhilePlugin
+        )
     endif()
     if(TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME}
