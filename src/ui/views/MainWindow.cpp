@@ -630,6 +630,14 @@ void MainWindow::setupToolBar() {
     mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Stop, 24, QColor("#DC2626")), tr("停止"), this, &MainWindow::onStop);
     mainToolbar->addSeparator();
 
+    // 快速测量（无需加入流程）
+    QAction* quickMeasureAction = mainToolbar->addAction(
+        AppIconProvider::icon(AppIconProvider::Icon::Image, 20, QColor("#0891B2")),
+        tr("快速测量"), this, &MainWindow::onQuickMeasure);
+    quickMeasureAction->setCheckable(true);
+    quickMeasureAction->setShortcut(QKeySequence(Qt::Key_M));
+    mainToolbar->addSeparator();
+
     // 主题切换按钮
     mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Theme, 20, QColor("#F59E0B")), tr("切换主题"), this, &MainWindow::onToggleTheme);
 
@@ -1347,6 +1355,57 @@ void MainWindow::onViewportCreated(const QString& viewportId, ViewportWidget* vi
 }
 
 void MainWindow::onPoint2DPicked(const QPointF& point) {
+    // 快速测量模式：收集点并直接计算距离
+    if (m_quickMeasureActive) {
+        m_quickMeasurePoints.append(point);
+
+        if (m_quickMeasurePoints.size() == 1) {
+            if (m_processTimeLabel) {
+                m_processTimeLabel->setText(tr("快速测量：点击放置第二个点"));
+            }
+            // 显示第一个点
+            QList<MeasurementOverlayPoint> pts = {{point, QStringLiteral("P1")}};
+            for (ViewportWidget* vp : m_displayManager->allViewports()) {
+                if (HImageWidget* iw = vp ? vp->imageWidget() : nullptr) {
+                    if (iw->hasImage()) iw->setMeasurementOverlay(pts, {});
+                }
+            }
+        } else if (m_quickMeasurePoints.size() >= 2) {
+            const QPointF& p1 = m_quickMeasurePoints[0];
+            const QPointF& p2 = m_quickMeasurePoints[1];
+            double dx = p2.x() - p1.x();
+            double dy = p2.y() - p1.y();
+            double dist = sqrt(dx * dx + dy * dy);
+
+            QString label = tr("距离: %1").arg(dist, 0, 'f', 3);
+            Logger::instance().info(tr("快速测量: P1(%1,%2) → P2(%3,%4) 距离=%5")
+                                         .arg(p1.x(), 0, 'f', 2).arg(p1.y(), 0, 'f', 2)
+                                         .arg(p2.x(), 0, 'f', 2).arg(p2.y(), 0, 'f', 2)
+                                         .arg(dist, 0, 'f', 3),
+                                     "Measurement");
+
+            QList<MeasurementOverlayPoint> pts = {
+                {p1, QStringLiteral("P1")},
+                {p2, QStringLiteral("P2")}
+            };
+            QList<MeasurementOverlayLine> lines = {{p1, p2, label}};
+
+            for (ViewportWidget* vp : m_displayManager->allViewports()) {
+                if (HImageWidget* iw = vp ? vp->imageWidget() : nullptr) {
+                    if (iw->hasImage()) iw->setMeasurementOverlay(pts, lines);
+                }
+            }
+
+            if (m_processTimeLabel) {
+                m_processTimeLabel->setText(tr("快速测量：%1 (按 M 重新测量)").arg(label));
+            }
+
+            // 重置点列表，允许连续测量
+            m_quickMeasurePoints.clear();
+        }
+        return;
+    }
+
     QTreeWidgetItem* item = m_processTree->currentItem();
     if (!item || item->data(0, Qt::UserRole).toString() != "flow_item") {
         QGuiApplication::clipboard()->setText(pointText2D(point));
@@ -2857,6 +2916,22 @@ void MainWindow::onSaveProject() {
 void MainWindow::onQuickMode() {
     // 快速模式：直接运行当前流程
     executeFlowOnce();
+}
+
+void MainWindow::onQuickMeasure() {
+    m_quickMeasureActive = !m_quickMeasureActive;
+    m_quickMeasurePoints.clear();
+
+    if (m_quickMeasureActive) {
+        Logger::instance().info(tr("快速测量已开启 — 点击图像放置两个点，自动计算距离"), "Measurement");
+        if (m_processTimeLabel) {
+            m_processTimeLabel->setText(tr("快速测量：点击放置第一个点"));
+        }
+    } else {
+        if (m_processTimeLabel) {
+            m_processTimeLabel->setText(tr("快速测量已关闭"));
+        }
+    }
 }
 
 void MainWindow::setUiRunningState(bool running, bool cycleMode) {

@@ -50,6 +50,7 @@ private slots:
     void onOpenProject();
     void onSaveProject();
     void onQuickMode();
+    void onQuickMeasure();
     void onRunOnce();
     void onRunCycle();
     void onStop();
@@ -180,6 +181,10 @@ protected:
     QMap<QString, IModule*> m_flowModules;
     QMap<QString, int> m_measurementPickCursor;
     QMap<QString, int> m_measurementPickCount;
+
+    // 快速测量（无需流程）
+    bool m_quickMeasureActive = false;
+    QList<QPointF> m_quickMeasurePoints;
 
     // 流程画布（图形化节点编辑器）
     FlowCanvas* m_flowCanvas = nullptr;
