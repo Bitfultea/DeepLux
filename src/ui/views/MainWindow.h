@@ -184,6 +184,7 @@ protected:
 
     // 快速测量（无需流程）
     bool m_quickMeasureActive = false;
+    int m_quickMeasureType = 0;  // 0=两点距离, 1=点到线, 2=两线间距
     QList<QPointF> m_quickMeasurePoints;
 
     // 流程画布（图形化节点编辑器）

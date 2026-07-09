@@ -1355,53 +1355,112 @@ void MainWindow::onViewportCreated(const QString& viewportId, ViewportWidget* vi
 }
 
 void MainWindow::onPoint2DPicked(const QPointF& point) {
-    // 快速测量模式：收集点并直接计算距离
+    // 快速测量模式
     if (m_quickMeasureActive) {
         m_quickMeasurePoints.append(point);
 
-        if (m_quickMeasurePoints.size() == 1) {
-            if (m_processTimeLabel) {
-                m_processTimeLabel->setText(tr("快速测量：点击放置第二个点"));
-            }
-            // 显示第一个点
-            QList<MeasurementOverlayPoint> pts = {{point, QStringLiteral("P1")}};
-            for (ViewportWidget* vp : m_displayManager->allViewports()) {
-                if (HImageWidget* iw = vp ? vp->imageWidget() : nullptr) {
-                    if (iw->hasImage()) iw->setMeasurementOverlay(pts, {});
-                }
-            }
-        } else if (m_quickMeasurePoints.size() >= 2) {
-            const QPointF& p1 = m_quickMeasurePoints[0];
-            const QPointF& p2 = m_quickMeasurePoints[1];
-            double dx = p2.x() - p1.x();
-            double dy = p2.y() - p1.y();
-            double dist = sqrt(dx * dx + dy * dy);
-
-            QString label = tr("距离: %1").arg(dist, 0, 'f', 3);
-            Logger::instance().info(tr("快速测量: P1(%1,%2) → P2(%3,%4) 距离=%5")
-                                         .arg(p1.x(), 0, 'f', 2).arg(p1.y(), 0, 'f', 2)
-                                         .arg(p2.x(), 0, 'f', 2).arg(p2.y(), 0, 'f', 2)
-                                         .arg(dist, 0, 'f', 3),
-                                     "Measurement");
-
-            QList<MeasurementOverlayPoint> pts = {
-                {p1, QStringLiteral("P1")},
-                {p2, QStringLiteral("P2")}
-            };
-            QList<MeasurementOverlayLine> lines = {{p1, p2, label}};
-
+        // 构建当前已放置点的标签
+        auto buildOverlay = [&](const QList<MeasurementOverlayPoint>& pts,
+                                const QList<MeasurementOverlayLine>& lines) {
             for (ViewportWidget* vp : m_displayManager->allViewports()) {
                 if (HImageWidget* iw = vp ? vp->imageWidget() : nullptr) {
                     if (iw->hasImage()) iw->setMeasurementOverlay(pts, lines);
                 }
             }
+        };
 
-            if (m_processTimeLabel) {
-                m_processTimeLabel->setText(tr("快速测量：%1 (按 M 重新测量)").arg(label));
+        auto ptLabel = [](int idx) {
+            return QStringLiteral("P%1").arg(idx + 1);
+        };
+
+        // ---- 两点距离 (2 clicks) ----
+        if (m_quickMeasureType == 0) {
+            if (m_quickMeasurePoints.size() == 1) {
+                buildOverlay({{m_quickMeasurePoints[0], ptLabel(0)}}, {});
+                if (m_processTimeLabel)
+                    m_processTimeLabel->setText(tr("快速测量·两点距离：点击放置第二个点"));
+            } else if (m_quickMeasurePoints.size() >= 2) {
+                const QPointF& a = m_quickMeasurePoints[0];
+                const QPointF& b = m_quickMeasurePoints[1];
+                double dist = QLineF(a, b).length();
+                QString label = tr("距离: %1").arg(dist, 0, 'f', 3);
+                Logger::instance().info(tr("快速测量: %1 → %2 = %3")
+                                             .arg(pointText2D(a)).arg(pointText2D(b)).arg(label), "Measurement");
+                buildOverlay({{a, QStringLiteral("P1")}, {b, QStringLiteral("P2")}},
+                              {{a, b, label}});
+                if (m_processTimeLabel)
+                    m_processTimeLabel->setText(tr("快速测量：%1 (继续点击重新测量)").arg(label));
+                m_quickMeasurePoints.clear();
             }
-
-            // 重置点列表，允许连续测量
-            m_quickMeasurePoints.clear();
+        }
+        // ---- 点到线距离 (3 clicks: point + 2 line endpoints) ----
+        else if (m_quickMeasureType == 1) {
+            int n = m_quickMeasurePoints.size();
+            if (n < 3) {
+                QList<MeasurementOverlayPoint> pts;
+                for (int i = 0; i < n; ++i)
+                    pts.append({m_quickMeasurePoints[i], ptLabel(i)});
+                buildOverlay(pts, {});
+                if (m_processTimeLabel)
+                    m_processTimeLabel->setText(tr("快速测量·点到线：点击放置%1（第 %2/3 步）")
+                        .arg(n == 0 ? tr("点") : tr("线段端点")).arg(n + 1));
+            } else {
+                const QPointF& p = m_quickMeasurePoints[0];
+                const QPointF& a = m_quickMeasurePoints[1];
+                const QPointF& b = m_quickMeasurePoints[2];
+                QPointF ab = b - a;
+                QPointF ap = p - a;
+                qreal t = QPointF::dotProduct(ap, ab) / QPointF::dotProduct(ab, ab);
+                t = qBound(0.0, t, 1.0);
+                QPointF foot = a + t * ab;
+                double dist = QLineF(p, foot).length();
+                QString label = tr("距离: %1").arg(dist, 0, 'f', 3);
+                Logger::instance().info(tr("快速测量: 点到线 = %1").arg(label), "Measurement");
+                buildOverlay({{p, QStringLiteral("P")}, {a, QStringLiteral("L1")}, {b, QStringLiteral("L2")}},
+                              {{a, b, QString()}, {p, foot, label}});
+                if (m_processTimeLabel)
+                    m_processTimeLabel->setText(tr("快速测量：%1 (继续点击重新测量)").arg(label));
+                m_quickMeasurePoints.clear();
+            }
+        }
+        // ---- 两线间距 (4 clicks: line1 endpoints + line2 endpoints) ----
+        else if (m_quickMeasureType == 2) {
+            int n = m_quickMeasurePoints.size();
+            if (n < 4) {
+                QList<MeasurementOverlayPoint> pts;
+                QList<MeasurementOverlayLine> lines;
+                for (int i = 0; i < n; ++i) {
+                    QString lbl = (i < 2) ? QStringLiteral("L1-%1").arg(i + 1) : QStringLiteral("L2-%1").arg(i - 1);
+                    pts.append({m_quickMeasurePoints[i], lbl});
+                }
+                if (n >= 2) lines.append({m_quickMeasurePoints[0], m_quickMeasurePoints[1], QString()});
+                if (n >= 4) lines.append({m_quickMeasurePoints[2], m_quickMeasurePoints[3], QString()});
+                buildOverlay(pts, lines);
+                if (m_processTimeLabel)
+                    m_processTimeLabel->setText(tr("快速测量·两线间距：点击放置%1（第 %2/4 步）")
+                        .arg(n < 2 ? tr("线1端点") : tr("线2端点")).arg(n + 1));
+            } else {
+                QLineF l1(m_quickMeasurePoints[0], m_quickMeasurePoints[1]);
+                QLineF l2(m_quickMeasurePoints[2], m_quickMeasurePoints[3]);
+                double len1 = l1.length();
+                double len2 = l2.length();
+                // 两线间距：取两线中点距离作为近似
+                QPointF m1 = (l1.p1() + l1.p2()) / 2.0;
+                QPointF m2 = (l2.p1() + l2.p2()) / 2.0;
+                double dist = QLineF(m1, m2).length();
+                QString label = tr("间距: %1").arg(dist, 0, 'f', 3);
+                Logger::instance().info(tr("快速测量: 两线间距=%1 (线1长度=%2, 线2长度=%3)")
+                                             .arg(dist, 0, 'f', 3).arg(len1, 0, 'f', 3).arg(len2, 0, 'f', 3), "Measurement");
+                buildOverlay(
+                    {{l1.p1(), QStringLiteral("L1-1")}, {l1.p2(), QStringLiteral("L1-2")},
+                     {l2.p1(), QStringLiteral("L2-1")}, {l2.p2(), QStringLiteral("L2-2")}},
+                    {{l1.p1(), l1.p2(), tr("线1: %1").arg(len1, 0, 'f', 3)},
+                     {l2.p1(), l2.p2(), tr("线2: %1").arg(len2, 0, 'f', 3)},
+                     {m1, m2, label}});
+                if (m_processTimeLabel)
+                    m_processTimeLabel->setText(tr("快速测量：%1 (继续点击重新测量)").arg(label));
+                m_quickMeasurePoints.clear();
+            }
         }
         return;
     }
@@ -2919,18 +2978,61 @@ void MainWindow::onQuickMode() {
 }
 
 void MainWindow::onQuickMeasure() {
-    m_quickMeasureActive = !m_quickMeasureActive;
-    m_quickMeasurePoints.clear();
+    // 弹出测量类型选择菜单
+    QMenu menu(this);
+    menu.addAction(tr("两点距离"))->setData(0);
+    menu.addAction(tr("点到线距离"))->setData(1);
+    menu.addAction(tr("两线间距"))->setData(2);
+    menu.addSeparator();
+    menu.addAction(tr("退出快速测量"))->setData(-1);
 
-    if (m_quickMeasureActive) {
-        Logger::instance().info(tr("快速测量已开启 — 点击图像放置两个点，自动计算距离"), "Measurement");
-        if (m_processTimeLabel) {
-            m_processTimeLabel->setText(tr("快速测量：点击放置第一个点"));
+    QAction* sel = menu.exec(QCursor::pos());
+    if (!sel) return;
+    int type = sel->data().toInt();
+
+    // 退出快速测量
+    if (type < 0 || m_quickMeasureActive) {
+        m_quickMeasureActive = false;
+        m_quickMeasurePoints.clear();
+        // 恢复光标
+        for (ViewportWidget* vp : m_displayManager->allViewports()) {
+            if (vp) vp->unsetCursor();
         }
-    } else {
         if (m_processTimeLabel) {
             m_processTimeLabel->setText(tr("快速测量已关闭"));
         }
+        // 找到触发此菜单的 action 并取消勾选
+        QList<QAction*> actions = findChildren<QAction*>();
+        for (QAction* a : actions) {
+            if (a->text() == tr("快速测量")) a->setChecked(false);
+        }
+        if (type < 0) return;
+    }
+
+    m_quickMeasureActive = true;
+    m_quickMeasureType = type;
+    m_quickMeasurePoints.clear();
+
+    // 设置十字光标
+    for (ViewportWidget* vp : m_displayManager->allViewports()) {
+        if (vp) vp->setCursor(Qt::CrossCursor);
+    }
+
+    // 找到 action 并设为 checked
+    QList<QAction*> actions = findChildren<QAction*>();
+    for (QAction* a : actions) {
+        if (a->text() == tr("快速测量")) a->setChecked(true);
+    }
+
+    QStringList labels = {tr("两点距离"), tr("点到线距离"), tr("两线间距")};
+    QStringList hints = {
+        tr("点击放置第一个点"),
+        tr("点击放置点（第 1/3 步）"),
+        tr("点击放置线1的起点（第 1/4 步）")
+    };
+    Logger::instance().info(tr("快速测量：%1 — %2").arg(labels[type]).arg(hints[type]), "Measurement");
+    if (m_processTimeLabel) {
+        m_processTimeLabel->setText(tr("快速测量·%1：%2").arg(labels[type]).arg(hints[type]));
     }
 }
 
