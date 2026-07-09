@@ -183,17 +183,39 @@ void HImageWidget::paintEvent(QPaintEvent* event)
                 const QPointF p2 = imageToWidget(line.p2);
                 painter.drawLine(p1, p2);
                 if (!line.label.isEmpty()) {
-                    const QPointF mid = (p1 + p2) / 2.0 + QPointF(6, -6);
-                    painter.setPen(QColor(0, 0, 0, 180));
-                    painter.drawText(mid + QPointF(1, 1), line.label);
+                    const QPointF mid = (p1 + p2) / 2.0;
+                    QPointF dir = p2 - p1;
+                    qreal len = sqrt(dir.x() * dir.x() + dir.y() * dir.y());
+                    QPointF normal(-dir.y(), dir.x());
+                    if (len > 1.0) {
+                        normal /= len;
+                    } else {
+                        normal = QPointF(0, -1);
+                    }
+                    const QPointF labelPos = mid + normal * 14;
+
+                    QFont font = painter.font();
+                    font.setBold(true);
+                    font.setPointSize(9);
+                    painter.setFont(font);
+                    const QRectF textRect = painter.boundingRect(QRectF(), Qt::AlignCenter, line.label);
+                    const QRectF bgRect = textRect.translated(labelPos - textRect.center())
+                                                   .adjusted(-5, -3, 5, 3);
+
+                    painter.setBrush(QColor(15, 23, 42, 200));
+                    painter.setPen(QPen(QColor("#06B6D4"), 1));
+                    painter.drawRoundedRect(bgRect, 4, 4);
+
                     painter.setPen(QColor("#E0F2FE"));
-                    painter.drawText(mid, line.label);
+                    painter.drawText(bgRect, Qt::AlignCenter, line.label);
                     painter.setPen(linePen);
+                    painter.setBrush(Qt::NoBrush);
                 }
             }
 
             QFont labelFont = painter.font();
             labelFont.setBold(true);
+            labelFont.setPointSize(9);
             painter.setFont(labelFont);
             for (const MeasurementOverlayPoint& point : m_measurementPoints) {
                 const QPointF widgetPoint = imageToWidget(point.pos);
@@ -202,8 +224,13 @@ void HImageWidget::paintEvent(QPaintEvent* event)
                 painter.drawEllipse(widgetPoint, 5.5, 5.5);
                 if (!point.label.isEmpty()) {
                     const QPointF textPos = widgetPoint + QPointF(8, -8);
-                    painter.setPen(QColor(0, 0, 0, 180));
-                    painter.drawText(textPos + QPointF(1, 1), point.label);
+                    const QRectF textRect = painter.boundingRect(QRectF(textPos, QSizeF(1, 1)), Qt::AlignLeft | Qt::AlignTop, point.label);
+                    const QRectF bgRect = textRect.adjusted(-3, -2, 3, 2);
+
+                    painter.setBrush(QColor(15, 23, 42, 180));
+                    painter.setPen(Qt::NoPen);
+                    painter.drawRoundedRect(bgRect, 3, 3);
+
                     painter.setPen(QColor("#FFF7ED"));
                     painter.drawText(textPos, point.label);
                 }

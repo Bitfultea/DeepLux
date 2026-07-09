@@ -379,13 +379,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
         }
         m_currentExecutingItem = nullptr;
 
-        // 追加测量结果摘要到日志
+        // 追加测量结果摘要到日志并更新叠加层
         const ImageData& lastOut = RunEngine::instance().lastOutput();
         if (lastOut.isValid()) {
             QString summary = measurementSummary(lastOut);
             if (!summary.isEmpty()) {
                 Logger::instance().info(summary, "Measurement");
             }
+            updateMeasurementResultOnOverlay();
         }
 
         if (m_isCycleMode && m_isRunning) {
@@ -1530,6 +1531,114 @@ void MainWindow::refreshMeasurementOverlay(const QJsonObject& params, int visibl
         if (visibleSteps >= 2 && point1.size() >= 2 && point2.size() >= 2) {
             lines.append(MeasurementOverlayLine{pointFromArray2D(point1), pointFromArray2D(point2),
                                                 QStringLiteral("P1-P2")});
+        }
+    }
+
+    for (ViewportWidget* viewport : m_displayManager->allViewports()) {
+        HImageWidget* imageWidget = viewport ? viewport->imageWidget() : nullptr;
+        if (imageWidget && imageWidget->hasImage()) {
+            imageWidget->setMeasurementOverlay(points, lines);
+        }
+    }
+}
+
+void MainWindow::updateMeasurementResultOnOverlay() {
+    if (!m_displayManager) {
+        return;
+    }
+
+    // 查找 MeasurementInput 模块
+    QJsonObject inputParams;
+    for (auto it = m_flowModules.constBegin(); it != m_flowModules.constEnd(); ++it) {
+        IModule* mod = it.value();
+        if (mod && mod->moduleId() == QStringLiteral("com.deeplux.plugin.measurementinput")) {
+            inputParams = mod->currentParams();
+            break;
+        }
+    }
+    if (inputParams.isEmpty()) {
+        return;
+    }
+
+    // 读取测量结果
+    const ImageData lastOut = RunEngine::instance().lastOutput();
+    if (!lastOut.isValid()) {
+        return;
+    }
+    const QMap<QString, QVariant> results = lastOut.allData();
+
+    auto resultLabel = [&](const QStringList& keys) -> QString {
+        for (const QString& key : keys) {
+            if (results.contains(key)) {
+                double v = results[key].toDouble();
+                return QString::fromUtf8("距离: %1").arg(v, 0, 'f', 3);
+            }
+        }
+        return QString();
+    };
+
+    QList<MeasurementOverlayPoint> points;
+    QList<MeasurementOverlayLine> lines;
+    const QString mode = inputParams["mode"].toString("point_pair");
+
+    if (mode == QStringLiteral("point_pair")) {
+        const QJsonArray p1 = inputParams["point1"].toArray();
+        const QJsonArray p2 = inputParams["point2"].toArray();
+        if (p1.size() >= 2) points.append({pointFromArray2D(p1), QStringLiteral("P1")});
+        if (p2.size() >= 2) points.append({pointFromArray2D(p2), QStringLiteral("P2")});
+        if (p1.size() >= 2 && p2.size() >= 2) {
+            QString label = resultLabel({"distance", "gap_distance"});
+            if (!label.isEmpty()) {
+                lines.append({pointFromArray2D(p1), pointFromArray2D(p2), label});
+            }
+        }
+    } else if (mode == QStringLiteral("point_line")) {
+        const QJsonArray pt = inputParams["point"].toArray();
+        const QJsonArray ln = inputParams["line"].toArray();
+        if (pt.size() >= 2) points.append({pointFromArray2D(pt), QStringLiteral("P")});
+        if (ln.size() >= 4) {
+            points.append({pointFromArray2D(ln), QStringLiteral("L1")});
+            points.append({pointFromArray2D(ln, 2), QStringLiteral("L2")});
+            QString label = resultLabel({"distance"});
+            lines.append({pointFromArray2D(ln), pointFromArray2D(ln, 2), label});
+        }
+    } else if (mode == QStringLiteral("line_pair")) {
+        const QJsonArray l1 = inputParams["line1"].toArray();
+        const QJsonArray l2 = inputParams["line2"].toArray();
+        if (l1.size() >= 4) {
+            points.append({pointFromArray2D(l1), QStringLiteral("L1-1")});
+            points.append({pointFromArray2D(l1, 2), QStringLiteral("L1-2")});
+            lines.append({pointFromArray2D(l1), pointFromArray2D(l1, 2), QString()});
+        }
+        if (l2.size() >= 4) {
+            points.append({pointFromArray2D(l2), QStringLiteral("L2-1")});
+            points.append({pointFromArray2D(l2, 2), QStringLiteral("L2-2")});
+            lines.append({pointFromArray2D(l2), pointFromArray2D(l2, 2), QString()});
+        }
+        if (!lines.isEmpty()) {
+            QString label = resultLabel({"distance"});
+            if (!label.isEmpty()) {
+                lines[0].label = label;
+            }
+        }
+    } else if (mode == QStringLiteral("point_plane")) {
+        const QJsonArray pt = inputParams["point"].toArray();
+        const QJsonArray pl = inputParams["plane"].toArray();
+        if (pt.size() >= 2) points.append({pointFromArray2D(pt), QStringLiteral("P")});
+        if (pl.size() >= 9) {
+            points.append({pointFromArray2D(pl), QStringLiteral("A")});
+            points.append({pointFromArray2D(pl, 3), QStringLiteral("B")});
+            points.append({pointFromArray2D(pl, 6), QStringLiteral("C")});
+            lines.append({pointFromArray2D(pl), pointFromArray2D(pl, 3), QString()});
+            lines.append({pointFromArray2D(pl, 3), pointFromArray2D(pl, 6), QString()});
+            lines.append({pointFromArray2D(pl, 6), pointFromArray2D(pl), QString()});
+        }
+        if (pt.size() >= 2 && pl.size() >= 9) {
+            QString label = resultLabel({"distance"});
+            if (!label.isEmpty()) {
+                // 标注在点到平面的投影线上
+                lines.append({pointFromArray2D(pt), pointFromArray2D(pl), label});
+            }
         }
     }
 

@@ -173,6 +173,7 @@ protected:
     QString ensureMeasurementInputForMode(const QString& mode, const QString& consumerInstanceId);
     void refreshMeasurementOverlay(const QJsonObject& params, int visibleSteps);
     void refreshMeasurementOverlay3D(const QJsonObject& params, int visibleSteps);
+    void updateMeasurementResultOnOverlay();
     void clearMeasurementOverlays();
 
     // 流程中的插件实例
