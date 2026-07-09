@@ -223,15 +223,10 @@ void HImageWidget::paintEvent(QPaintEvent* event)
                 painter.setBrush(QColor("#F59E0B"));
                 painter.drawEllipse(widgetPoint, 5.5, 5.5);
                 if (!point.label.isEmpty()) {
-                    const QPointF textPos = widgetPoint + QPointF(8, -8);
-                    const QRectF textRect = painter.boundingRect(QRectF(textPos, QSizeF(1, 1)), Qt::AlignLeft | Qt::AlignTop, point.label);
-                    const QRectF bgRect = textRect.adjusted(-3, -2, 3, 2);
-
-                    painter.setBrush(QColor(15, 23, 42, 180));
-                    painter.setPen(Qt::NoPen);
-                    painter.drawRoundedRect(bgRect, 3, 3);
-
-                    painter.setPen(QColor("#FFF7ED"));
+                    const QPointF textPos = widgetPoint + QPointF(9, -6);
+                    painter.setPen(QColor(0, 0, 0, 200));
+                    painter.drawText(textPos + QPointF(1, 1), point.label);
+                    painter.setPen(QColor("#FEF3C7"));
                     painter.drawText(textPos, point.label);
                 }
             }

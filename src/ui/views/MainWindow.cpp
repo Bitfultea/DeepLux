@@ -1560,21 +1560,21 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         return;
     }
 
-    // 读取测量结果
+    // 优先从下游插件输出读取结果，如果没有则从坐标直接计算
     const ImageData lastOut = RunEngine::instance().lastOutput();
-    if (!lastOut.isValid()) {
-        return;
-    }
-    const QMap<QString, QVariant> results = lastOut.allData();
+    const QMap<QString, QVariant> results = lastOut.isValid() ? lastOut.allData() : QMap<QString, QVariant>();
 
-    auto resultLabel = [&](const QStringList& keys) -> QString {
+    auto resultValue = [&](const QStringList& keys) -> double {
         for (const QString& key : keys) {
             if (results.contains(key)) {
-                double v = results[key].toDouble();
-                return QString::fromUtf8("距离: %1").arg(v, 0, 'f', 3);
+                return results[key].toDouble();
             }
         }
-        return QString();
+        return -1.0;
+    };
+
+    auto fmtDist = [](double v) {
+        return QString::fromUtf8("距离: %1").arg(v, 0, 'f', 3);
     };
 
     QList<MeasurementOverlayPoint> points;
@@ -1587,10 +1587,13 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         if (p1.size() >= 2) points.append({pointFromArray2D(p1), QStringLiteral("P1")});
         if (p2.size() >= 2) points.append({pointFromArray2D(p2), QStringLiteral("P2")});
         if (p1.size() >= 2 && p2.size() >= 2) {
-            QString label = resultLabel({"distance", "gap_distance"});
-            if (!label.isEmpty()) {
-                lines.append({pointFromArray2D(p1), pointFromArray2D(p2), label});
+            double dist = resultValue({"distance", "gap_distance"});
+            if (dist < 0) {
+                double dx = p2[0].toDouble() - p1[0].toDouble();
+                double dy = p2[1].toDouble() - p1[1].toDouble();
+                dist = sqrt(dx * dx + dy * dy);
             }
+            lines.append({pointFromArray2D(p1), pointFromArray2D(p2), fmtDist(dist)});
         }
     } else if (mode == QStringLiteral("point_line")) {
         const QJsonArray pt = inputParams["point"].toArray();
@@ -1599,8 +1602,20 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         if (ln.size() >= 4) {
             points.append({pointFromArray2D(ln), QStringLiteral("L1")});
             points.append({pointFromArray2D(ln, 2), QStringLiteral("L2")});
-            QString label = resultLabel({"distance"});
-            lines.append({pointFromArray2D(ln), pointFromArray2D(ln, 2), label});
+            double dist = resultValue({"distance"});
+            if (dist < 0) {
+                // 点到线段距离
+                QPointF p = pointFromArray2D(pt);
+                QPointF a = pointFromArray2D(ln);
+                QPointF b = pointFromArray2D(ln, 2);
+                QPointF ab = b - a;
+                QPointF ap = p - a;
+                double t = QPointF::dotProduct(ap, ab) / QPointF::dotProduct(ab, ab);
+                t = qBound(0.0, t, 1.0);
+                QPointF foot = a + t * ab;
+                dist = QLineF(p, foot).length();
+            }
+            lines.append({pointFromArray2D(ln), pointFromArray2D(ln, 2), fmtDist(dist)});
         }
     } else if (mode == QStringLiteral("line_pair")) {
         const QJsonArray l1 = inputParams["line1"].toArray();
@@ -1608,17 +1623,23 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         if (l1.size() >= 4) {
             points.append({pointFromArray2D(l1), QStringLiteral("L1-1")});
             points.append({pointFromArray2D(l1, 2), QStringLiteral("L1-2")});
-            lines.append({pointFromArray2D(l1), pointFromArray2D(l1, 2), QString()});
+            double len = QLineF(pointFromArray2D(l1), pointFromArray2D(l1, 2)).length();
+            lines.append({pointFromArray2D(l1), pointFromArray2D(l1, 2),
+                          QString::fromUtf8("线1: %1").arg(len, 0, 'f', 3)});
         }
         if (l2.size() >= 4) {
             points.append({pointFromArray2D(l2), QStringLiteral("L2-1")});
             points.append({pointFromArray2D(l2, 2), QStringLiteral("L2-2")});
-            lines.append({pointFromArray2D(l2), pointFromArray2D(l2, 2), QString()});
+            double len = QLineF(pointFromArray2D(l2), pointFromArray2D(l2, 2)).length();
+            lines.append({pointFromArray2D(l2), pointFromArray2D(l2, 2),
+                          QString::fromUtf8("线2: %1").arg(len, 0, 'f', 3)});
         }
-        if (!lines.isEmpty()) {
-            QString label = resultLabel({"distance"});
-            if (!label.isEmpty()) {
-                lines[0].label = label;
+        if (l1.size() >= 4 && l2.size() >= 4) {
+            double dist = resultValue({"distance"});
+            if (dist >= 0) {
+                lines.append({(pointFromArray2D(l1) + pointFromArray2D(l1, 2)) / 2.0,
+                              (pointFromArray2D(l2) + pointFromArray2D(l2, 2)) / 2.0,
+                              fmtDist(dist)});
             }
         }
     } else if (mode == QStringLiteral("point_plane")) {
@@ -1634,11 +1655,8 @@ void MainWindow::updateMeasurementResultOnOverlay() {
             lines.append({pointFromArray2D(pl, 6), pointFromArray2D(pl), QString()});
         }
         if (pt.size() >= 2 && pl.size() >= 9) {
-            QString label = resultLabel({"distance"});
-            if (!label.isEmpty()) {
-                // 标注在点到平面的投影线上
-                lines.append({pointFromArray2D(pt), pointFromArray2D(pl), label});
-            }
+            double dist = resultValue({"distance"});
+            lines.append({pointFromArray2D(pt), pointFromArray2D(pl), dist >= 0 ? fmtDist(dist) : QString()});
         }
     }
 
