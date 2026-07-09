@@ -386,8 +386,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
             if (!summary.isEmpty()) {
                 Logger::instance().info(summary, "Measurement");
             }
-            updateMeasurementResultOnOverlay();
         }
+
+        // 延迟更新叠加层，确保 displayImage 完成后再设置 overlay
+        QTimer::singleShot(0, this, [this]() { updateMeasurementResultOnOverlay(); });
 
         if (m_isCycleMode && m_isRunning) {
             QTimer::singleShot(1, this, &MainWindow::executeFlowOnce);
@@ -1549,16 +1551,33 @@ void MainWindow::updateMeasurementResultOnOverlay() {
 
     // 查找 MeasurementInput 模块
     QJsonObject inputParams;
+    QString foundInstanceId;
     for (auto it = m_flowModules.constBegin(); it != m_flowModules.constEnd(); ++it) {
         IModule* mod = it.value();
-        if (mod && mod->moduleId() == QStringLiteral("com.deeplux.plugin.measurementinput")) {
+        if (!mod) continue;
+        // 匹配 moduleId 或模块名
+        if (mod->moduleId().compare(QStringLiteral("measurementinput"), Qt::CaseInsensitive) == 0 ||
+            mod->moduleId().compare(QStringLiteral("com.deeplux.plugin.measurementinput"), Qt::CaseInsensitive) == 0 ||
+            mod->name().contains(QStringLiteral("测量输入"), Qt::CaseInsensitive)) {
             inputParams = mod->currentParams();
+            foundInstanceId = it.key();
             break;
         }
     }
+
     if (inputParams.isEmpty()) {
+        Logger::instance().debug(QStringLiteral("updateMeasurementResultOnOverlay: no MeasurementInput found in %1 modules")
+                                     .arg(m_flowModules.size()),
+                                 "Measurement");
         return;
     }
+
+    Logger::instance().debug(
+        QStringLiteral("updateMeasurementResultOnOverlay: found %1, mode=%2, params=%3")
+            .arg(foundInstanceId)
+            .arg(inputParams["mode"].toString())
+            .arg(QString(QJsonDocument(inputParams).toJson(QJsonDocument::Compact))),
+        "Measurement");
 
     // 优先从下游插件输出读取结果，如果没有则从坐标直接计算
     const ImageData lastOut = RunEngine::instance().lastOutput();
