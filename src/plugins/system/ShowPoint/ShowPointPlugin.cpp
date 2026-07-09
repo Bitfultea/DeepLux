@@ -92,14 +92,13 @@ bool ShowPointPlugin::process(const ImageData& input, ImageData& output)
     // 绘制点
     cv::Point2i pt(static_cast<int>(x), static_cast<int>(y));
     cv::circle(m_resultMat, pt, m_markerSize,
-               cv::Scalar(m_markerColorB, m_markerColorG, m_markerColorR), -1);
+               cv::Scalar(m_markerColorB, m_markerColorG, m_markerColorR), -1, cv::LINE_AA);
 
-    // 显示坐标文本
     QString label = QString("(%1, %2)").arg(x, 0, 'f', 1).arg(y, 0, 'f', 1);
     cv::putText(m_resultMat, label.toUtf8().constData(),
                 cv::Point(pt.x + 10, pt.y - 10),
                 cv::FONT_HERSHEY_SIMPLEX, 0.5,
-                cv::Scalar(m_markerColorB, m_markerColorG, m_markerColorR), 2);
+                cv::Scalar(m_markerColorB, m_markerColorG, m_markerColorR), 1, cv::LINE_AA);
 
     output.setMat(m_resultMat);
     output.setData("point_x", x);

@@ -53,6 +53,7 @@ private slots:
     void testMeasurementPickingViaImageViewportClick();
     void testMeasurementConfigButtonCreatesInputNode();
     void testMeasurementConfigButtonWithInstalledPlugins();
+    void testPluginConfigDialogRestylesLegacyDarkPlugin();
 
 private:
     bool installFitLinePlugin(const QString& pluginRoot) const;
@@ -82,13 +83,24 @@ bool TestMainWindow::installRuntimePlugin(const QString& pluginRoot, const QStri
     }
 
     QDir pluginDir(root.filePath(pluginName));
-    const QString metadataSrc =
-        QDir::cleanPath(QCoreApplication::applicationDirPath() +
-                        QString("/../../src/plugins/geometry/%1/metadata.json").arg(pluginName));
+    QString metadataSrc;
+    const QString srcRoot = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../src/plugins");
+    const QStringList pluginDomains = {
+        QStringLiteral("geometry"), QStringLiteral("image_processing"), QStringLiteral("detection"),
+        QStringLiteral("logic"),    QStringLiteral("system"),           QStringLiteral("communication"),
+        QStringLiteral("variable"), QStringLiteral("calibration"),      QStringLiteral("hymson3d"),
+    };
+    for (const QString& domain : pluginDomains) {
+        const QString candidate = QDir(srcRoot).filePath(QString("%1/%2/metadata.json").arg(domain, pluginName));
+        if (QFileInfo::exists(candidate)) {
+            metadataSrc = candidate;
+            break;
+        }
+    }
     const QString libSrc =
         QDir::cleanPath(QCoreApplication::applicationDirPath() + QString("/../lib/lib%1Plugin.so").arg(pluginName));
 
-    if (!QFileInfo::exists(metadataSrc) || !QFileInfo::exists(libSrc)) {
+    if (metadataSrc.isEmpty() || !QFileInfo::exists(libSrc)) {
         return false;
     }
 
@@ -209,6 +221,76 @@ void TestMainWindow::testMeasurementConfigButtonWithInstalledPlugins() {
     QCOMPARE(processTree->topLevelItemCount(), 2);
     QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 2).toString(), QStringLiteral("MeasurementInput"));
     QCOMPARE(processTree->currentItem(), processTree->topLevelItem(0));
+}
+
+void TestMainWindow::testPluginConfigDialogRestylesLegacyDarkPlugin() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("LoadPointCloud")));
+
+    MainWindow window;
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("LoadPointCloud")));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance loader;
+    loader.id = QStringLiteral("pointcloud_1");
+    loader.moduleId = QStringLiteral("LoadPointCloud");
+    loader.name = QStringLiteral("加载点云");
+    project->addModule(loader);
+    QCoreApplication::processEvents();
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>("ProcessTree");
+    QVERIFY(processTree != nullptr);
+    QCOMPARE(processTree->topLevelItemCount(), 1);
+    QTreeWidgetItem* loaderItem = processTree->topLevelItem(0);
+
+    bool checkedDialog = false;
+    QTimer::singleShot(20, [&]() {
+        QWidget* modal = QApplication::activeModalWidget();
+        QVERIFY(modal != nullptr);
+        QCOMPARE(modal->objectName(), QStringLiteral("PluginConfigDialog"));
+
+        QWidget* content = modal->findChild<QWidget*>("PluginConfigContent");
+        QVERIFY(content != nullptr);
+        QVERIFY2(content->styleSheet().contains(QStringLiteral("#ffffff")),
+                 "Light theme config content should be white, not the plugin's legacy dark surface");
+        QVERIFY2(!content->styleSheet().contains(QStringLiteral("#1a2332")),
+                 "Legacy ConfigWidgetHelper dark surface should be overwritten when dialog opens");
+
+        QLineEdit* pathEdit = modal->findChild<QLineEdit*>();
+        QVERIFY(pathEdit != nullptr);
+        QVERIFY2(pathEdit->styleSheet().contains(QStringLiteral("#ffffff")),
+                 "Config inputs should follow the current light theme");
+        QVERIFY2(!pathEdit->styleSheet().contains(QStringLiteral("#1a2332")),
+                 "Config inputs should not keep legacy dark backgrounds");
+
+        QPushButton* browseButton = nullptr;
+        for (QPushButton* button : modal->findChildren<QPushButton*>()) {
+            if (button->text().contains(QStringLiteral("浏览"))) {
+                browseButton = button;
+                break;
+            }
+        }
+        QVERIFY(browseButton != nullptr);
+        QVERIFY2(browseButton->styleSheet().contains(QStringLiteral("#0078d7")),
+                 "Plugin-owned buttons should be restyled by the config dialog");
+        QVERIFY2(!browseButton->styleSheet().contains(QStringLiteral("#2d3748")),
+                 "Plugin-owned buttons should not keep legacy dark button colors");
+
+        checkedDialog = true;
+        modal->close();
+    });
+
+    const QRect itemRect = processTree->visualItemRect(loaderItem);
+    QTest::mouseDClick(processTree->viewport(), Qt::LeftButton, Qt::NoModifier, itemRect.center());
+    QCoreApplication::processEvents();
+
+    QVERIFY(checkedDialog);
 }
 
 void TestMainWindow::testOpenProjectSyncsProcessTreeAndFlowCanvas() {

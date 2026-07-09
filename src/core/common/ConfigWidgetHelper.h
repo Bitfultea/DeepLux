@@ -38,7 +38,8 @@ public:
     static bool globalDarkTheme() { return s_globalDarkTheme; }
 
     // 构造函数：默认使用全局主题状态，也可指定特定主题
-    ConfigWidgetHelper(bool darkTheme = true) : m_darkTheme(darkTheme) {}
+    ConfigWidgetHelper() : m_darkTheme(s_globalDarkTheme) {}
+    explicit ConfigWidgetHelper(bool darkTheme) : m_darkTheme(darkTheme) {}
 
     // 使用全局主题状态初始化
     static ConfigWidgetHelper createWithGlobalTheme() {
@@ -361,8 +362,8 @@ public:
 
 private:
     bool m_darkTheme;
-    static bool s_globalDarkTheme;  // 默认深色主题
+    static bool s_globalDarkTheme;  // 默认跟随主窗口浅色主题
 };
 
 // 静态成员定义
-inline bool ConfigWidgetHelper::s_globalDarkTheme = true;
+inline bool ConfigWidgetHelper::s_globalDarkTheme = false;

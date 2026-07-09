@@ -100,13 +100,12 @@ bool MatchingPlugin::process(const ImageData& input, ImageData& output)
 
     // 绘制匹配结果
     for (size_t i = 0; i < matches.size() && i < static_cast<size_t>(m_maxMatches); ++i) {
-        cv::rectangle(m_resultMat, matches[i], cv::Scalar(0, 255, 0), 2);
+        cv::rectangle(m_resultMat, matches[i], cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
 
-        // 在匹配区域旁边显示序号
         QString label = QString("Match %1").arg(i + 1);
         cv::putText(m_resultMat, label.toUtf8().constData(),
                     cv::Point(matches[i].x, matches[i].y - 5),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 2);
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
     }
 
     output.setMat(m_resultMat);

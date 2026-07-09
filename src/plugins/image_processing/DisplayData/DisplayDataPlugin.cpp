@@ -95,7 +95,7 @@ bool DisplayDataPlugin::process(const ImageData& input, ImageData& output)
         cv::putText(m_displayMat, lines[i].toUtf8().constData(),
                     cv::Point(posX, posY + i * lineHeight),
                     cv::FONT_HERSHEY_SIMPLEX, fontSize / 30.0,
-                    color, thickness);
+                    color, thickness, cv::LINE_AA);
     }
 
     // 设置输出

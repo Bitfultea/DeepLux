@@ -142,6 +142,7 @@ void HImageWidget::paintEvent(QPaintEvent* event)
 {
     Q_UNUSED(event)
     QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
     painter.setRenderHint(QPainter::TextAntialiasing);
 

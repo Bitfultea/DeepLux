@@ -10,6 +10,9 @@
 #include <QTreeWidget>
 #include <QWidget>
 #include <QtTest/QTest>
+#include <core/manager/PluginManager.h>
+#include <core/manager/ProjectManager.h>
+#include <core/model/Project.h>
 #include <ui/views/MainWindow.h>
 #include <ui/widgets/AgentChatPanel.h>
 #include <ui/widgets/AgentMessageBubble.h>
@@ -126,6 +129,50 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
     return ok;
 }
 
+bool capturePluginConfigDialog(DeepLux::MainWindow& window, const QDir& dir) {
+    if (!DeepLux::PluginManager::instance().isPluginLoaded(QStringLiteral("LoadPointCloud"))) {
+        return true;
+    }
+
+    DeepLux::Project* project = DeepLux::ProjectManager::instance().currentProject();
+    if (!project) {
+        project = DeepLux::ProjectManager::instance().newProject();
+    }
+    if (!project) {
+        return false;
+    }
+
+    DeepLux::ModuleInstance loader;
+    loader.id = QStringLiteral("capture_pointcloud_config");
+    loader.moduleId = QStringLiteral("LoadPointCloud");
+    loader.name = QStringLiteral("加载点云");
+    project->addModule(loader);
+    QCoreApplication::processEvents();
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    if (!processTree || processTree->topLevelItemCount() == 0) {
+        return false;
+    }
+
+    QTreeWidgetItem* item = processTree->topLevelItem(processTree->topLevelItemCount() - 1);
+    bool saved = false;
+    QTimer::singleShot(80, [&]() {
+        QWidget* modal = QApplication::activeModalWidget();
+        if (!modal) {
+            return;
+        }
+        modal->resize(560, 430);
+        QCoreApplication::processEvents();
+        saved = modal->grab().save(dir.filePath(QStringLiteral("10-plugin-config-dialog.png")));
+        modal->close();
+    });
+
+    const QRect itemRect = processTree->visualItemRect(item);
+    QTest::mouseDClick(processTree->viewport(), Qt::LeftButton, Qt::NoModifier, itemRect.center());
+    QTest::qWait(180);
+    return saved;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -151,6 +198,7 @@ int main(int argc, char** argv) {
     QTimer::singleShot(800, [&]() {
         ok = captureWindow(window, QSize(1440, 900), dir.filePath("deeplux_mainwindow_1440x900.png"));
         ok = captureWindow(window, QSize(1024, 700), dir.filePath("deeplux_mainwindow_1024x700.png")) && ok;
+        ok = capturePluginConfigDialog(window, dir) && ok;
         ok = captureClickedStates(window, dir) && ok;
         app.quit();
     });

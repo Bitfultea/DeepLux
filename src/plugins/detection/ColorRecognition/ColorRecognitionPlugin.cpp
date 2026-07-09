@@ -124,7 +124,7 @@ bool ColorRecognitionPlugin::process(const ImageData& input, ImageData& output)
 
         if (!maxContour.empty()) {
             cv::Rect boundingRect = cv::boundingRect(maxContour);
-            cv::rectangle(m_resultMat, boundingRect, cv::Scalar(0, 255, 0), 2);
+            cv::rectangle(m_resultMat, boundingRect, cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
 
             // 计算中心点
             cv::Moments moments = cv::moments(maxContour);

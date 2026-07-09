@@ -96,6 +96,7 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTextEdit>
 #include <QTextStream>
 #include <QTimer>
 #include <QToolBar>
@@ -243,6 +244,93 @@ QJsonArray updatedPlaneArray(const QJsonArray& existing, const QJsonArray& point
         plane[offset + i] = point[i];
     }
     return plane;
+}
+
+QString pluginConfigDialogStyle(bool isDark) {
+    const QString bg = isDark ? QStringLiteral("#1e1e1e") : QStringLiteral("#f5f5f5");
+    const QString surface = isDark ? QStringLiteral("#252525") : QStringLiteral("#ffffff");
+    const QString border = isDark ? QStringLiteral("#3b4148") : QStringLiteral("#dce2e8");
+    const QString text = isDark ? QStringLiteral("#ffffff") : QStringLiteral("#212121");
+    const QString secondary = isDark ? QStringLiteral("#3a3a3a") : QStringLiteral("#f3f4f6");
+    const QString secondaryHover = isDark ? QStringLiteral("#4a4a4a") : QStringLiteral("#e5e7eb");
+
+    return QStringLiteral(
+               "QDialog#PluginConfigDialog { background-color: %1; color: %4; }"
+               "QDialog#PluginConfigDialog QScrollArea#PluginConfigScrollArea { background-color: %1; border: none; }"
+               "QDialog#PluginConfigDialog QScrollArea#PluginConfigScrollArea QWidget { background-color: %2; }"
+               "QDialog#PluginConfigDialog QPushButton#PluginConfigOkButton { background-color: #0078d7; color: "
+               "#ffffff; "
+               "border: 1px solid #005a9e; border-radius: 4px; padding: 5px 14px; min-height: 28px; }"
+               "QDialog#PluginConfigDialog QPushButton#PluginConfigOkButton:hover { background-color: #1e8ad6; }"
+               "QDialog#PluginConfigDialog QPushButton#PluginConfigCancelButton { background-color: %5; color: %4; "
+               "border: 1px solid %3; border-radius: 4px; padding: 5px 14px; min-height: 28px; }"
+               "QDialog#PluginConfigDialog QPushButton#PluginConfigCancelButton:hover { background-color: %6; }")
+        .arg(bg, surface, border, text, secondary, secondaryHover);
+}
+
+void applyPluginConfigTheme(QWidget* root, bool isDark) {
+    if (!root) {
+        return;
+    }
+
+    const QString surface = isDark ? QStringLiteral("#252525") : QStringLiteral("#ffffff");
+    const QString input = isDark ? QStringLiteral("#333333") : QStringLiteral("#ffffff");
+    const QString border = isDark ? QStringLiteral("#555555") : QStringLiteral("#cccccc");
+    const QString text = isDark ? QStringLiteral("#ffffff") : QStringLiteral("#212121");
+    const QString accent = QStringLiteral("#0078d7");
+    const QString hover = isDark ? QStringLiteral("#1e8ad6") : QStringLiteral("#1e8ad6");
+    const QString spinButton = isDark ? QStringLiteral("#444444") : QStringLiteral("#e5e7eb");
+    const QString spinHover = isDark ? QStringLiteral("#555555") : QStringLiteral("#d1d5db");
+
+    const QString containerStyle = QStringLiteral("background-color: %1; color: %2;").arg(surface, text);
+    const QString labelStyle = QStringLiteral("color: %1; background-color: transparent; border: none;").arg(text);
+    const QString inputStyle =
+        QStringLiteral("QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit { background-color: %1; color: %2; "
+                       "border: 1px solid %3; border-radius: 4px; padding: 5px 8px; min-height: 26px; }"
+                       "QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QTextEdit:focus { "
+                       "border: 1px solid %4; }"
+                       "QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, "
+                       "QDoubleSpinBox::down-button { background-color: %5; border-radius: 2px; }"
+                       "QSpinBox::up-button:hover, QSpinBox::down-button:hover, QDoubleSpinBox::up-button:hover, "
+                       "QDoubleSpinBox::down-button:hover { background-color: %6; }"
+                       "QComboBox::drop-down { border: none; width: 20px; }"
+                       "QComboBox::down-arrow { image: none; border-left: 5px solid transparent; "
+                       "border-right: 5px solid transparent; border-top: 5px solid %2; }")
+            .arg(input, text, border, accent, spinButton, spinHover);
+    const QString buttonStyle =
+        QStringLiteral("QPushButton { background-color: %1; color: #ffffff; border: 1px solid #005a9e; "
+                       "border-radius: 4px; padding: 5px 14px; min-height: 28px; }"
+                       "QPushButton:hover { background-color: %2; }"
+                       "QPushButton:disabled { background-color: %3; color: %4; border-color: %3; }")
+            .arg(accent, hover, spinButton, isDark ? QStringLiteral("#9ca3af") : QStringLiteral("#777777"));
+    const QString optionStyle =
+        QStringLiteral("QCheckBox { color: %1; background-color: transparent; spacing: 6px; }").arg(text);
+    const QString groupStyle =
+        QStringLiteral("QGroupBox { background-color: %1; color: %2; border: 1px solid %3; border-radius: 6px; "
+                       "font-weight: bold; margin-top: 12px; padding-top: 12px; }"
+                       "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; "
+                       "background-color: %1; }")
+            .arg(surface, text, border);
+
+    QList<QWidget*> widgets{root};
+    widgets.append(root->findChildren<QWidget*>());
+    for (QWidget* widget : widgets) {
+        if (qobject_cast<QLineEdit*>(widget) || qobject_cast<QSpinBox*>(widget) ||
+            qobject_cast<QDoubleSpinBox*>(widget) || qobject_cast<QComboBox*>(widget) ||
+            qobject_cast<QTextEdit*>(widget)) {
+            widget->setStyleSheet(inputStyle);
+        } else if (qobject_cast<QPushButton*>(widget)) {
+            widget->setStyleSheet(buttonStyle);
+        } else if (qobject_cast<QLabel*>(widget)) {
+            widget->setStyleSheet(labelStyle);
+        } else if (qobject_cast<QCheckBox*>(widget)) {
+            widget->setStyleSheet(optionStyle);
+        } else if (qobject_cast<QGroupBox*>(widget)) {
+            widget->setStyleSheet(groupStyle);
+        } else {
+            widget->setStyleSheet(containerStyle);
+        }
+    }
 }
 } // namespace
 
@@ -2058,16 +2146,29 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 qDebug() << "[DIAG-UI] createConfigWidget returned" << configWidget;
                 if (configWidget) {
                     QDialog* dialog = new QDialog(this);
+                    dialog->setObjectName("PluginConfigDialog");
                     dialog->setWindowTitle(tr("配置 - %1").arg(item->text(0)));
-                    dialog->setMinimumSize(400, 300);
+                    dialog->setMinimumSize(460, 340);
+                    dialog->setStyleSheet(pluginConfigDialogStyle(m_isDarkTheme));
                     dialog->setAttribute(Qt::WA_DeleteOnClose);
                     QVBoxLayout* layout = new QVBoxLayout(dialog);
+                    layout->setContentsMargins(14, 12, 14, 12);
+                    layout->setSpacing(10);
                     addMeasurementConfigAction(layout, module->moduleId(), instanceName, dialog);
-                    layout->addWidget(configWidget); // addWidget 会 reparent 到 dialog
+                    configWidget->setObjectName("PluginConfigContent");
+                    applyPluginConfigTheme(configWidget, m_isDarkTheme);
+                    QScrollArea* scrollArea = new QScrollArea(dialog);
+                    scrollArea->setObjectName("PluginConfigScrollArea");
+                    scrollArea->setWidgetResizable(true);
+                    scrollArea->setFrameShape(QFrame::NoFrame);
+                    scrollArea->setWidget(configWidget);
+                    layout->addWidget(scrollArea, 1);
                     QHBoxLayout* btnLayout = new QHBoxLayout();
                     QPushButton* okBtn = new QPushButton(tr("确定"));
+                    okBtn->setObjectName("PluginConfigOkButton");
                     okBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
                     QPushButton* cancelBtn = new QPushButton(tr("取消"));
+                    cancelBtn->setObjectName("PluginConfigCancelButton");
                     cancelBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Cancel, 16, QColor("#DC2626")));
                     btnLayout->addStretch();
                     btnLayout->addWidget(okBtn);
@@ -2076,8 +2177,12 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 
                     // dialog 关闭时把 configWidget 从 dialog 分离，防止被 WA_DeleteOnClose 销毁
                     // 插件可能缓存了 configWidget 指针，销毁会导致下次 createConfigWidget crash
-                    connect(dialog, &QDialog::finished, configWidget,
-                            [configWidget]() { configWidget->setParent(nullptr); });
+                    connect(dialog, &QDialog::finished, dialog, [scrollArea, configWidget]() {
+                        if (scrollArea->widget() == configWidget) {
+                            scrollArea->takeWidget();
+                        }
+                        configWidget->setParent(nullptr);
+                    });
 
                     connect(okBtn, &QPushButton::clicked, dialog, &QDialog::accept);
                     connect(cancelBtn, &QPushButton::clicked, dialog, &QDialog::reject);

@@ -99,8 +99,8 @@ bool FindCirclePlugin::process(const ImageData& input, ImageData& output)
         resultMat = mat.clone();
     }
     cv::Point center(static_cast<int>(std::round(m_resultCenterX)), static_cast<int>(std::round(m_resultCenterY)));
-    cv::circle(resultMat, center, static_cast<int>(std::round(m_resultRadius)), cv::Scalar(0, 0, 255), 3);
-    cv::drawMarker(resultMat, center, cv::Scalar(0, 255, 255), cv::MARKER_CROSS, 32, 3);
+    cv::circle(resultMat, center, static_cast<int>(std::round(m_resultRadius)), cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
+    cv::drawMarker(resultMat, center, cv::Scalar(0, 255, 255), cv::MARKER_CROSS, 32, 1, cv::LINE_AA);
     output.setMat(resultMat);
     output.setData("circle_center_x", m_resultCenterX);
     output.setData("circle_center_y", m_resultCenterY);

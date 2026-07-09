@@ -75,12 +75,12 @@ bool JiErHanDefectsDetPlugin::process(const ImageData& input, ImageData& output)
     m_resultMat = image.clone();
     for (size_t i = 0; i < defects.size(); ++i) {
         const auto& defect = defects[i];
-        cv::rectangle(m_resultMat, defect.boundingBox, cv::Scalar(0, 0, 255), 2);
+        cv::rectangle(m_resultMat, defect.boundingBox, cv::Scalar(0, 0, 255), 1, cv::LINE_AA);
 
         QString label = QString("%1: %2%").arg(defect.type).arg(defect.confidence * 100, 0, 'f', 1);
         cv::putText(m_resultMat, label.toUtf8().constData(),
                     cv::Point(defect.boundingBox.x, defect.boundingBox.y - 5),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 255), 2);
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 255), 1, cv::LINE_AA);
     }
 
     output.setMat(m_resultMat);
