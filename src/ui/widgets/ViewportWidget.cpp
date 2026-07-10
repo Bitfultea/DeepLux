@@ -163,6 +163,10 @@ void ViewportWidget::setupUi() {
         }
     )");
     m_3dToolbar->setIconSize(QSize(16, 16));
+    // 2D/3D 切换按钮也加到 3D 工具栏（switchTo3D 会隐藏主工具栏）
+    if (m_toggleViewAction) {
+        m_3dToolbar->addAction(m_toggleViewAction);
+    }
     m_3dToolbar->setVisible(false);
 
     mainLayout->addWidget(m_3dToolbar);
@@ -325,6 +329,7 @@ void ViewportWidget::switchTo3D() {
 
     // Switch toolbar
     m_toolbar->setVisible(false);
+    m_3dToolbar->setVisible(true);
 }
 
 void ViewportWidget::zoomIn() {
