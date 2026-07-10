@@ -631,11 +631,11 @@ void MainWindow::setupToolBar() {
     mainToolbar->addSeparator();
 
     // 快速测量（无需加入流程）
-    QAction* quickMeasureAction = mainToolbar->addAction(
+    m_quickMeasureAction = mainToolbar->addAction(
         AppIconProvider::icon(AppIconProvider::Icon::Image, 20, QColor("#0891B2")),
         tr("快速测量"), this, &MainWindow::onQuickMeasure);
-    quickMeasureAction->setCheckable(true);
-    quickMeasureAction->setShortcut(QKeySequence(Qt::Key_M));
+    m_quickMeasureAction->setCheckable(true);
+    m_quickMeasureAction->setShortcut(QKeySequence(Qt::Key_M));
     mainToolbar->addSeparator();
 
     // 主题切换按钮
@@ -2964,45 +2964,41 @@ void MainWindow::onQuickMode() {
 }
 
 void MainWindow::onQuickMeasure() {
-    // 弹出测量类型选择菜单
-    QMenu menu(this);
-    menu.addAction(tr("两点距离"))->setData(0);
-    menu.addAction(tr("点到线距离"))->setData(1);
-    menu.addAction(tr("两线间距"))->setData(2);
-    menu.addSeparator();
-    menu.addAction(tr("退出快速测量"))->setData(-1);
-
-    QAction* sel = menu.exec(QCursor::pos());
-    if (!sel) return;
-    int type = sel->data().toInt();
-
-    // 退出快速测量
-    if (type < 0 || m_quickMeasureActive) {
+    // 如果已在测量模式，关闭它
+    if (m_quickMeasureActive) {
         m_quickMeasureActive = false;
         m_quickMeasurePoints.clear();
         for (ViewportWidget* vp : m_displayManager->allViewports()) {
             if (vp) vp->unsetCursor();
         }
-        QList<QAction*> actions = findChildren<QAction*>();
-        for (QAction* a : actions) {
-            if (a->text() == tr("快速测量")) a->setChecked(false);
-        }
-        if (type < 0) return;
+        if (m_quickMeasureAction)
+            m_quickMeasureAction->setChecked(false);
+        return;
     }
 
+    // 弹出测量类型选择菜单
+    QMenu menu(this);
+    menu.addAction(tr("两点距离"))->setData(0);
+    menu.addAction(tr("点到线距离"))->setData(1);
+    menu.addAction(tr("两线间距"))->setData(2);
+
+    QAction* sel = menu.exec(QCursor::pos());
+    if (!sel) {
+        // 用户取消菜单，恢复未选中状态
+        if (m_quickMeasureAction)
+            m_quickMeasureAction->setChecked(false);
+        return;
+    }
+
+    int type = sel->data().toInt();
     m_quickMeasureActive = true;
     m_quickMeasureType = type;
     m_quickMeasurePoints.clear();
+    if (m_quickMeasureAction)
+        m_quickMeasureAction->setChecked(true);
 
-    // 设置十字光标
     for (ViewportWidget* vp : m_displayManager->allViewports()) {
         if (vp) vp->setCursor(Qt::CrossCursor);
-    }
-
-    // 找到 action 并设为 checked
-    QList<QAction*> actions = findChildren<QAction*>();
-    for (QAction* a : actions) {
-        if (a->text() == tr("快速测量")) a->setChecked(true);
     }
 
     QStringList labels = {tr("两点距离"), tr("点到线距离"), tr("两线间距")};
