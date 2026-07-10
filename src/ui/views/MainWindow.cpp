@@ -2786,8 +2786,15 @@ bool MainWindow::importPointCloudFile(const QString& filePath) {
             if (!mat.empty()) {
                 QImage qimg;
                 if (mat.channels() == 1) {
+                    // float32/float64 深度图需归一化到 8-bit 才能用 applyColorMap
+                    cv::Mat mat8u;
+                    if (mat.type() != CV_8U) {
+                        cv::normalize(mat, mat8u, 0, 255, cv::NORM_MINMAX, CV_8U);
+                    } else {
+                        mat8u = mat;
+                    }
                     cv::Mat colored;
-                    cv::applyColorMap(mat, colored, cv::COLORMAP_JET);
+                    cv::applyColorMap(mat8u, colored, cv::COLORMAP_JET);
                     qimg = QImage(colored.data, colored.cols, colored.rows, static_cast<int>(colored.step),
                                   QImage::Format_RGB888).copy();
                 } else {
