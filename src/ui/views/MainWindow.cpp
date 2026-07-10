@@ -2783,10 +2783,15 @@ bool MainWindow::importPointCloudFile(const QString& filePath) {
         if (ext == "tif" || ext == "tiff") {
 #ifdef DEEPLUX_HAS_OPENCV
             cv::Mat mat = cv::imread(filePath.toStdString(), cv::IMREAD_UNCHANGED);
+            Logger::instance().info(
+                QString("[imp3D] cv::imread: empty=%1, type=%2, channels=%3")
+                    .arg(mat.empty() ? "true" : "false")
+                    .arg(mat.type())
+                    .arg(mat.channels()),
+                "3D");
             if (!mat.empty()) {
                 QImage qimg;
                 if (mat.channels() == 1) {
-                    // float32/float64 深度图需归一化到 8-bit 才能用 applyColorMap
                     cv::Mat mat8u;
                     if (mat.type() != CV_8U) {
                         cv::normalize(mat, mat8u, 0, 255, cv::NORM_MINMAX, CV_8U);
@@ -2803,10 +2808,16 @@ bool MainWindow::importPointCloudFile(const QString& filePath) {
                     qimg = QImage(rgb.data, rgb.cols, rgb.rows, static_cast<int>(rgb.step),
                                   QImage::Format_RGB888).copy();
                 }
+                Logger::instance().info(
+                    QString("[imp3D] 2D image generated: %1x%2, calling setDualData on %3 viewports")
+                        .arg(qimg.width()).arg(qimg.height())
+                        .arg(m_displayManager->allViewports().size()),
+                    "3D");
                 for (ViewportWidget* vp : m_displayManager->allViewports()) {
                     if (vp) vp->setDualData(qimg, data);
                 }
             } else {
+                Logger::instance().warning("[imp3D] cv::imread returned empty, falling back to 3D only", "3D");
                 m_displayManager->displayData(data);
             }
 #else
