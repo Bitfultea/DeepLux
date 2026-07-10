@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include "../ThemeManager.h"
+#include "core/geometry/MeasurementData.h"
 #include "../controllers/ProcessTreeController.h"
 
 #include "../bridge/TerminalBridge.h"
@@ -2861,6 +2862,17 @@ void MainWindow::clearCentralDisplay() {
 
 void MainWindow::displayImage(const ImageData& image, const QString& label) {
     Q_UNUSED(label);
+    // 如果 ImageData 元数据中包含 PointCloudData，走 3D 显示路径
+    auto cloud = MeasurementData::pointCloud(image, nullptr);
+    if (cloud && !cloud->isEmpty()) {
+        DisplayData data;
+        data.variant() = std::move(*cloud);
+        data.setTimestamp(QDateTime::currentMSecsSinceEpoch());
+        if (m_displayManager) {
+            m_displayManager->displayData(data);
+        }
+        return;
+    }
     DisplayData data(image);
     if (m_displayManager) {
         m_displayManager->displayData(data);
