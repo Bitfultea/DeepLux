@@ -1,12 +1,14 @@
 #pragma once
 
 #include <QFrame>
+#include <QImage>
 #include <QString>
 #include <QLabel>
 #include <QToolBar>
 #include <QAction>
 #include <QPointer>
 #include <QVector3D>
+#include "core/display/DisplayData.h"
 
 namespace DeepLux {
 
@@ -70,6 +72,9 @@ public:
     void setRenderMode(int mode);
     int renderMode() const;
 
+    // 设置 2D/3D 双数据（用于 TIFF 等 depth-map 数据）
+    void setDualData(const QImage& image, const DisplayData& cloudData);
+
 signals:
     void viewportClosed(const QString& viewportId);
     void titleChanged(const QString& viewportId, const QString& title);
@@ -83,6 +88,7 @@ private slots:
     void onZoomOut();
     void onFitWindow();
     void onActualSize();
+    void onToggleView();
 
 private:
     void setupUi();
@@ -90,23 +96,31 @@ private:
     void ensure3DContent();
     void switchTo2D();
     void switchTo3D();
+    void updateToggleAction();
 
     QString m_viewportId;
     QString m_title;
 
     QLabel* m_titleBar;
-    HImageWidget* m_imageWidget;  // Always created (2D default)
-    Viewport3DContent* m_3dContent;  // Created on first 3D display request
+    HImageWidget* m_imageWidget;
+    Viewport3DContent* m_3dContent;
     QToolBar* m_toolbar;
-    QToolBar* m_3dToolbar;  // 3D-specific toolbar
+    QToolBar* m_3dToolbar;
 
     QAction* m_fitWindowAction;
     QAction* m_actualSizeAction;
     QAction* m_zoomInAction;
     QAction* m_zoomOutAction;
     QAction* m_closeAction;
+    QAction* m_toggleViewAction = nullptr;
 
     DisplayMode m_displayMode = DisplayMode::Auto2D;
+
+    // 2D/3D 双数据缓存（用于切换）
+    QImage m_cachedImage;
+    bool m_hasCachedImage = false;
+    DisplayData m_cachedCloudData;
+    bool m_hasCachedCloud = false;
 };
 
 } // namespace DeepLux

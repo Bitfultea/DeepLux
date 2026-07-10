@@ -2778,7 +2778,36 @@ bool MainWindow::importPointCloudFile(const QString& filePath) {
     data.setTimestamp(QDateTime::currentMSecsSinceEpoch());
     data.setMetadata(QVariantMap{{"dataSourceId", ds.id}, {"dataSourceName", ds.name}});
     if (m_displayManager) {
-        m_displayManager->displayData(data);
+        // 先发送 2D 图像（缓存到视口），再发送 3D 点云（显示并缓存）
+        // 这样视口工具栏出现 2D/3D 切换按钮
+        if (ext == "tif" || ext == "tiff") {
+#ifdef DEEPLUX_HAS_OPENCV
+            cv::Mat mat = cv::imread(filePath.toStdString(), cv::IMREAD_UNCHANGED);
+            if (!mat.empty()) {
+                QImage qimg;
+                if (mat.channels() == 1) {
+                    cv::Mat colored;
+                    cv::applyColorMap(mat, colored, cv::COLORMAP_JET);
+                    qimg = QImage(colored.data, colored.cols, colored.rows, static_cast<int>(colored.step),
+                                  QImage::Format_RGB888).copy();
+                } else {
+                    cv::Mat rgb;
+                    cv::cvtColor(mat, rgb, cv::COLOR_BGR2RGB);
+                    qimg = QImage(rgb.data, rgb.cols, rgb.rows, static_cast<int>(rgb.step),
+                                  QImage::Format_RGB888).copy();
+                }
+                for (ViewportWidget* vp : m_displayManager->allViewports()) {
+                    if (vp) vp->setDualData(qimg, data);
+                }
+            } else {
+                m_displayManager->displayData(data);
+            }
+#else
+            m_displayManager->displayData(data);
+#endif
+        } else {
+            m_displayManager->displayData(data);
+        }
     }
     Logger::instance().info(tr("导入 3D 点云：%1 (%2 点)").arg(fileInfo.fileName()).arg(pointCount), "System");
 

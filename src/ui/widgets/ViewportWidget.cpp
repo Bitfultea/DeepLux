@@ -110,6 +110,15 @@ void ViewportWidget::setupUi() {
 
     m_toolbar->addSeparator();
 
+    // 2D/3D 切换
+    m_toggleViewAction = new QAction(tr("3D"), this);
+    m_toggleViewAction->setToolTip(tr("切换到 3D 视图"));
+    m_toggleViewAction->setVisible(false);
+    m_toolbar->addAction(m_toggleViewAction);
+    connect(m_toggleViewAction, &QAction::triggered, this, &ViewportWidget::onToggleView);
+
+    m_toolbar->addSeparator();
+
     // Close action
     m_closeAction =
         new QAction(AppIconProvider::icon(AppIconProvider::Icon::Close, 16, QColor("#D1D5DB")), tr("×"), this);
@@ -172,34 +181,82 @@ void ViewportWidget::setTitle(const QString& title) {
 }
 
 void ViewportWidget::displayData(const DisplayData& data) {
-    // Route based on data type
     if (data.pointCloudData() && !data.pointCloudData()->isEmpty()) {
+        m_cachedCloudData = data;
+        m_hasCachedCloud = true;
         switchTo3D();
         if (m_3dContent) {
             m_3dContent->displayData(data);
         }
-        // 如果有数据源名称，更新视口标题
         QString dsName = data.metadata().value("dataSourceName").toString();
         if (!dsName.isEmpty()) {
             setTitle(dsName);
         }
     } else if (data.imageData()) {
-        // 2D image data
+        m_cachedImage = data.imageData()->toQImage();
+        m_hasCachedImage = true;
         switchTo2D();
-        m_imageWidget->setImage(data.imageData()->toQImage());
+        m_imageWidget->setImage(m_cachedImage);
         emit imageDisplayed();
-        // 如果有数据源名称，更新视口标题
         QString dsName = data.metadata().value("dataSourceName").toString();
         if (!dsName.isEmpty()) {
             setTitle(dsName);
         }
     }
+    updateToggleAction();
 }
 
 void ViewportWidget::displayImage(const QImage& image) {
+    m_cachedImage = image;
+    m_hasCachedImage = true;
     switchTo2D();
     m_imageWidget->setImage(image);
     emit imageDisplayed();
+    updateToggleAction();
+}
+
+void ViewportWidget::setDualData(const QImage& image, const DisplayData& cloudData) {
+    m_cachedImage = image;
+    m_hasCachedImage = true;
+    m_cachedCloudData = cloudData;
+    m_hasCachedCloud = true;
+    // 默认显示 3D
+    switchTo3D();
+    if (m_3dContent) {
+        m_3dContent->displayData(cloudData);
+    }
+    QString dsName = cloudData.metadata().value("dataSourceName").toString();
+    if (!dsName.isEmpty()) {
+        setTitle(dsName);
+    }
+    updateToggleAction();
+}
+
+void ViewportWidget::onToggleView() {
+    if (m_displayMode == DisplayMode::Auto3D && m_hasCachedImage) {
+        switchTo2D();
+        m_imageWidget->setImage(m_cachedImage);
+        emit imageDisplayed();
+    } else if (m_displayMode == DisplayMode::Auto2D && m_hasCachedCloud) {
+        switchTo3D();
+        if (m_3dContent) {
+            m_3dContent->displayData(m_cachedCloudData);
+        }
+    }
+    updateToggleAction();
+}
+
+void ViewportWidget::updateToggleAction() {
+    if (m_toggleViewAction) {
+        m_toggleViewAction->setVisible(m_hasCachedImage && m_hasCachedCloud);
+        if (m_displayMode == DisplayMode::Auto3D) {
+            m_toggleViewAction->setText(QStringLiteral("2D"));
+            m_toggleViewAction->setToolTip(QStringLiteral("切换到 2D 视图"));
+        } else {
+            m_toggleViewAction->setText(QStringLiteral("3D"));
+            m_toggleViewAction->setToolTip(QStringLiteral("切换到 3D 视图"));
+        }
+    }
 }
 
 void ViewportWidget::clearDisplay() {
