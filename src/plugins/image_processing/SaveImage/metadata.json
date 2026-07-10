@@ -5,8 +5,15 @@
     "author": "DeepLux Team",
     "description": "Save image to file",
     "category": "image_processing",
-    "icon": "saveimage.png",
     "depends": [],
-    "platforms": ["windows", "linux"],
-    "keywords": ["save", "image", "file", "export"]
+    "platforms": [
+        "windows",
+        "linux"
+    ],
+    "keywords": [
+        "save",
+        "image",
+        "file",
+        "export"
+    ]
 }
