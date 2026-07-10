@@ -2976,13 +2976,13 @@ void MainWindow::onQuickMode() {
 }
 
 void MainWindow::onQuickMeasure() {
-    // 如果已在测量模式，关闭它
     if (m_quickMeasureActive) {
         m_quickMeasureActive = false;
         m_quickMeasurePoints.clear();
         for (ViewportWidget* vp : m_displayManager->allViewports()) {
             if (vp) vp->unsetCursor();
         }
+        clearMeasurementOverlays();
         if (m_quickMeasureAction)
             m_quickMeasureAction->setChecked(false);
         return;
