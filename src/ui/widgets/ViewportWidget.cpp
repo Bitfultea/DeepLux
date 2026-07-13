@@ -403,13 +403,13 @@ void ViewportWidget::applyTheme(bool isDark) {
         setStyleSheet(R"(
             ViewportWidget {
                 background-color: #2b2b2b;
-                border: 1px solid #3a3a3a;
+                border: none;
             }
         )");
         m_titleBar->setStyleSheet(R"(
             QLabel {
                 color: #e0e0e0;
-                font-size: 13px;
+                font-size: 14px;
                 font-weight: 600;
                 background-color: transparent;
             }
@@ -422,13 +422,13 @@ void ViewportWidget::applyTheme(bool isDark) {
         setStyleSheet(R"(
             ViewportWidget {
                 background-color: #f5f5f5;
-                border: 1px solid #d0d0d0;
+                border: none;
             }
         )");
         m_titleBar->setStyleSheet(R"(
             QLabel {
                 color: #212121;
-                font-size: 13px;
+                font-size: 14px;
                 font-weight: 600;
                 background-color: transparent;
             }
