@@ -676,8 +676,8 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
 
     QLabel* viewportTitle = window.findChild<QLabel*>("ViewportTitle");
     QVERIFY(viewportTitle != nullptr);
-    QVERIFY2(viewportTitle->styleSheet().contains(QStringLiteral("font-size: 13px")),
-             "Viewport title should use the same panel title font size");
+    QVERIFY2(viewportTitle->styleSheet().contains(QStringLiteral("font-size: 14px")),
+             "Viewport title should use the same readable panel title font size");
 
     QTabWidget* logTabs = window.findChild<QTabWidget*>("LogTerminalTabs");
     QVERIFY(logTabs != nullptr);

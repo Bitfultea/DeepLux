@@ -402,7 +402,7 @@ void ViewportWidget::applyTheme(bool isDark) {
     if (isDark) {
         setStyleSheet(R"(
             ViewportWidget {
-                background-color: #2b2b2b;
+                background-color: #1e1e1e;
                 border: none;
             }
         )");
@@ -421,7 +421,7 @@ void ViewportWidget::applyTheme(bool isDark) {
     } else {
         setStyleSheet(R"(
             ViewportWidget {
-                background-color: #f5f5f5;
+                background-color: #ffffff;
                 border: none;
             }
         )");
