@@ -44,6 +44,7 @@ set(TEST_SOURCES
     test_freeformsurface.cpp
     test_measurementinput.cpp
     test_loadpointcloud.cpp
+    test_3d_interaction.cpp
     test_logicplugins.cpp
     test_expressionengine.cpp
 )

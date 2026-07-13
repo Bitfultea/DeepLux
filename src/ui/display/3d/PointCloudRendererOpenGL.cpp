@@ -1,21 +1,16 @@
 #include "PointCloudRendererOpenGL.h"
+
 #include "PointCloudGPUBuffer.h"
-#include <QOpenGLContext>
+
 #include <QDebug>
+#include <QOpenGLContext>
+#include <algorithm>
 
 namespace DeepLux {
 
 PointCloudRendererOpenGL::PointCloudRendererOpenGL()
-    : m_vboPositions(0)
-    , m_vboColors(0)
-    , m_vboNormals(0)
-    , m_pointCount(0)
-    , m_pointSize(2.0f)
-    , m_colorMode(ColorMode::Uniform)
-    , m_buffersDirty(true)
-    , m_initialized(false)
-{
-}
+    : m_vboPositions(0), m_vboColors(0), m_vboNormals(0), m_pointCount(0), m_pointSize(2.0f),
+      m_colorMode(ColorMode::Uniform), m_buffersDirty(true), m_initialized(false) {}
 
 PointCloudRendererOpenGL::~PointCloudRendererOpenGL() {
     cleanupBuffers();
@@ -27,7 +22,8 @@ PointCloudRendererOpenGL::~PointCloudRendererOpenGL() {
 }
 
 void PointCloudRendererOpenGL::initializeGL() {
-    if (m_initialized) return;
+    if (m_initialized)
+        return;
 
     QOpenGLContext* context = QOpenGLContext::currentContext();
     if (!context) {
@@ -64,18 +60,13 @@ void PointCloudRendererOpenGL::setPointCloud(const PointCloudGPUBuffer& buffer) 
 
 void PointCloudRendererOpenGL::setPointCloud(const PointCloudGPUBuffer& buffer, bool enableLOD) {
     m_lodEnabled = enableLOD;
+    m_interactionActive = false;
+    m_currentDistance = 0.0f;
+    m_cacheInvalid = true;
 
     // 始终将数据存储在 LOD buffer 中，保证指针有效
     m_lodBuffer.setData(buffer);
-
-    if (enableLOD) {
-        const PointCloudGPUBuffer* levelBuffer = m_lodBuffer.getLevel(m_lodBuffer.currentLevel());
-        m_buffer = levelBuffer;
-        m_pointCount = levelBuffer ? levelBuffer->pointCount() : 0;
-    } else {
-        m_buffer = &m_lodBuffer.originalBuffer();
-        m_pointCount = m_lodBuffer.originalPointCount();
-    }
+    selectLODLevel(0);
     m_buffersDirty = true;
 }
 
@@ -108,18 +99,8 @@ void PointCloudRendererOpenGL::setUniformColor(const QColor& color) {
 void PointCloudRendererOpenGL::setLODEnabled(bool enabled) {
     if (m_lodEnabled != enabled) {
         m_lodEnabled = enabled;
-        if (m_buffer) {
-            // 重新设置数据以切换模式
-            if (enabled) {
-                const PointCloudGPUBuffer* levelBuffer = m_lodBuffer.getLevel(m_lodBuffer.currentLevel());
-                m_buffer = levelBuffer;
-                m_pointCount = levelBuffer ? levelBuffer->pointCount() : 0;
-            } else {
-                m_buffer = &m_lodBuffer.originalBuffer();
-                m_pointCount = m_lodBuffer.originalPointCount();
-            }
-            m_buffersDirty = true;
-        }
+        selectLODLevel(enabled ? m_lodBuffer.currentLevel() : 0);
+        m_buffersDirty = true;
     }
 }
 
@@ -128,29 +109,67 @@ void PointCloudRendererOpenGL::updateLODForDistance(float distance) {
         return;
     }
 
-    if (std::abs(m_currentDistance - distance) < 0.01f) {
-        return;  // 距离变化太小，跳过
+    if (std::abs(m_currentDistance - distance) < 0.01f && !m_interactionActive) {
+        return; // 距离变化太小，跳过
     }
 
     m_currentDistance = distance;
 
-    // 计算新的 LOD 级别（使用成员变量以支持用户配置）
-    int newLevel = m_lodController.calculateLODLevel(distance);
-    int currentLevel = m_lodBuffer.currentLevel();
+    if (m_interactionActive) {
+        selectLODLevel(std::min(m_interactionLODLevel, LODController::MAX_LOD_LEVELS - 1));
+        return;
+    }
 
-    if (newLevel != currentLevel) {
-        m_lodBuffer.setCurrentLevel(newLevel);
-        const PointCloudGPUBuffer* levelBuffer = m_lodBuffer.getLevel(newLevel);
-        if (levelBuffer) {
-            m_buffer = levelBuffer;
-            m_pointCount = levelBuffer->pointCount();
-            m_buffersDirty = true;  // 需要重新上传缓冲区
-        }
+    // 计算新的 LOD 级别（使用成员变量以支持用户配置）
+    selectLODLevel(m_lodController.calculateLODLevel(distance));
+}
+
+void PointCloudRendererOpenGL::setInteractionActive(bool active) {
+    if (m_interactionActive == active) {
+        return;
+    }
+
+    m_interactionActive = active;
+    if (!m_lodEnabled || !m_lodBuffer.isValid()) {
+        return;
+    }
+
+    if (active) {
+        selectLODLevel(std::min(m_interactionLODLevel, LODController::MAX_LOD_LEVELS - 1));
+    } else {
+        selectLODLevel(m_lodController.calculateLODLevel(m_currentDistance));
     }
 }
 
 bool PointCloudRendererOpenGL::isValid() const {
     return m_buffer != nullptr && m_buffer->isValid() && m_pointCount > 0;
+}
+
+int PointCloudRendererOpenGL::activeLODLevel() const {
+    return m_lodEnabled ? m_lodBuffer.currentLevel() : 0;
+}
+
+void PointCloudRendererOpenGL::selectLODLevel(int level) {
+    if (!m_lodBuffer.isValid()) {
+        m_buffer = nullptr;
+        m_pointCount = 0;
+        return;
+    }
+
+    level = std::max(0, std::min(level, LODController::MAX_LOD_LEVELS - 1));
+    if (!m_lodEnabled) {
+        level = 0;
+    }
+
+    const int oldLevel = activeLODLevel();
+    const PointCloudGPUBuffer* oldBuffer = m_buffer;
+    m_lodBuffer.setCurrentLevel(level);
+    const PointCloudGPUBuffer* levelBuffer = m_lodEnabled ? m_lodBuffer.getLevel(level) : &m_lodBuffer.originalBuffer();
+    m_buffer = levelBuffer;
+    m_pointCount = levelBuffer ? levelBuffer->pointCount() : 0;
+    if (oldLevel != level || oldBuffer != m_buffer) {
+        m_buffersDirty = true;
+    }
 }
 
 void PointCloudRendererOpenGL::render(const QMatrix4x4& viewMatrix, const QMatrix4x4& projectionMatrix) {
@@ -178,12 +197,7 @@ void PointCloudRendererOpenGL::render(const QMatrix4x4& viewMatrix, const QMatri
     }
 
     // 设置 OpenGL 状态
-    f->glClearColor(
-        m_backgroundColor.redF(),
-        m_backgroundColor.greenF(),
-        m_backgroundColor.blueF(),
-        1.0f
-    );
+    f->glClearColor(m_backgroundColor.redF(), m_backgroundColor.greenF(), m_backgroundColor.blueF(), 1.0f);
     f->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     // 启用深度测试
@@ -203,7 +217,7 @@ void PointCloudRendererOpenGL::render(const QMatrix4x4& viewMatrix, const QMatri
     // 颜色模式 + 颜色
     m_program->setUniformValue("uColorMode", static_cast<int>(m_colorMode));
     m_program->setUniformValue("uUniformColor",
-        QVector3D(m_uniformColor.redF(), m_uniformColor.greenF(), m_uniformColor.blueF()));
+                               QVector3D(m_uniformColor.redF(), m_uniformColor.greenF(), m_uniformColor.blueF()));
 
     // 高度着色范围
     if (m_colorMode == ColorMode::Height && m_buffer && !m_buffer->positions.empty()) {
@@ -211,8 +225,10 @@ void PointCloudRendererOpenGL::render(const QMatrix4x4& viewMatrix, const QMatri
         float zMax = zMin;
         for (size_t i = 3; i < m_buffer->positions.size(); i += 3) {
             float z = m_buffer->positions[i];
-            if (z < zMin) zMin = z;
-            if (z > zMax) zMax = z;
+            if (z < zMin)
+                zMin = z;
+            if (z > zMax)
+                zMax = z;
         }
         m_program->setUniformValue("uZMin", zMin);
         m_program->setUniformValue("uZMax", zMax);
@@ -247,7 +263,7 @@ void PointCloudRendererOpenGL::render(const QMatrix4x4& viewMatrix, const QMatri
         f->glBindBuffer(GL_ARRAY_BUFFER, 0);
     } else {
         m_program->setAttributeValue("aColor",
-            QVector3D(m_uniformColor.redF(), m_uniformColor.greenF(), m_uniformColor.blueF()));
+                                     QVector3D(m_uniformColor.redF(), m_uniformColor.greenF(), m_uniformColor.blueF()));
     }
 
     // 强度 VBO
@@ -277,7 +293,8 @@ void PointCloudRendererOpenGL::render(const QMatrix4x4& viewMatrix, const QMatri
 }
 
 void PointCloudRendererOpenGL::uploadBuffers() {
-    if (!m_buffer || !m_initialized) return;
+    if (!m_buffer || !m_initialized)
+        return;
 
     QOpenGLContext* context = QOpenGLContext::currentContext();
     if (!context) {
@@ -285,80 +302,65 @@ void PointCloudRendererOpenGL::uploadBuffers() {
     }
     QOpenGLFunctions* f = context->functions();
 
-    cleanupBuffers();
-
-    // 创建位置 VBO
-    if (!m_buffer->positions.empty()) {
-        f->glGenBuffers(1, &m_vboPositions);
-        f->glBindBuffer(GL_ARRAY_BUFFER, m_vboPositions);
-        f->glBufferData(GL_ARRAY_BUFFER,
-                        m_buffer->positions.size() * sizeof(float),
-                        m_buffer->positions.data(),
-                        GL_STATIC_DRAW);
-        f->glBindBuffer(GL_ARRAY_BUFFER, 0);
+    if (m_cacheInvalid) {
+        cleanupBuffers();
     }
 
-    // 创建颜色 VBO
-    if (m_colorMode == ColorMode::RGB && !m_buffer->colors.empty()) {
-        f->glGenBuffers(1, &m_vboColors);
-        f->glBindBuffer(GL_ARRAY_BUFFER, m_vboColors);
-        f->glBufferData(GL_ARRAY_BUFFER,
-                        m_buffer->colors.size() * sizeof(float),
-                        m_buffer->colors.data(),
-                        GL_STATIC_DRAW);
-        f->glBindBuffer(GL_ARRAY_BUFFER, 0);
+    const int level = activeLODLevel();
+    VboSet& vbo = m_vboCache[level];
+    if (!vbo.uploaded) {
+        auto upload = [f](unsigned int& id, const std::vector<float>& data) {
+            if (data.empty()) {
+                return;
+            }
+            f->glGenBuffers(1, &id);
+            f->glBindBuffer(GL_ARRAY_BUFFER, id);
+            f->glBufferData(GL_ARRAY_BUFFER, data.size() * sizeof(float), data.data(), GL_STATIC_DRAW);
+            f->glBindBuffer(GL_ARRAY_BUFFER, 0);
+        };
+
+        upload(vbo.positions, m_buffer->positions);
+        upload(vbo.colors, m_buffer->colors);
+        upload(vbo.normals, m_buffer->normals);
+        upload(vbo.intensities, m_buffer->intensities);
+        vbo.uploaded = true;
     }
 
-    // 创建法向量 VBO
-    if (!m_buffer->normals.empty()) {
-        f->glGenBuffers(1, &m_vboNormals);
-        f->glBindBuffer(GL_ARRAY_BUFFER, m_vboNormals);
-        f->glBufferData(GL_ARRAY_BUFFER,
-                        m_buffer->normals.size() * sizeof(float),
-                        m_buffer->normals.data(),
-                        GL_STATIC_DRAW);
-        f->glBindBuffer(GL_ARRAY_BUFFER, 0);
-    }
-
-    // 创建强度 VBO（仅 Intensity 模式需要）
-    if (m_colorMode == ColorMode::Intensity && !m_buffer->intensities.empty()) {
-        f->glGenBuffers(1, &m_vboIntensities);
-        f->glBindBuffer(GL_ARRAY_BUFFER, m_vboIntensities);
-        f->glBufferData(GL_ARRAY_BUFFER,
-                        m_buffer->intensities.size() * sizeof(float),
-                        m_buffer->intensities.data(),
-                        GL_STATIC_DRAW);
-        f->glBindBuffer(GL_ARRAY_BUFFER, 0);
-    }
-
+    m_vboPositions = vbo.positions;
+    m_vboColors = vbo.colors;
+    m_vboNormals = vbo.normals;
+    m_vboIntensities = vbo.intensities;
     m_buffersDirty = false;
 }
 
 void PointCloudRendererOpenGL::cleanupBuffers() {
-    if (!m_initialized) return;
+    if (!m_initialized)
+        return;
 
     QOpenGLContext* context = QOpenGLContext::currentContext();
     if (!context) {
+        m_cacheInvalid = true;
         return;
     }
     QOpenGLFunctions* f = context->functions();
 
-    if (m_vboPositions) {
-        f->glDeleteBuffers(1, &m_vboPositions);
-        m_vboPositions = 0;
+    for (VboSet& vbo : m_vboCache) {
+        if (vbo.positions)
+            f->glDeleteBuffers(1, &vbo.positions);
+        if (vbo.colors)
+            f->glDeleteBuffers(1, &vbo.colors);
+        if (vbo.normals)
+            f->glDeleteBuffers(1, &vbo.normals);
+        if (vbo.intensities)
+            f->glDeleteBuffers(1, &vbo.intensities);
+        vbo = VboSet{};
     }
-    if (m_vboColors) {
-        f->glDeleteBuffers(1, &m_vboColors);
-        m_vboColors = 0;
-    }
-    if (m_vboNormals) {
-        f->glDeleteBuffers(1, &m_vboNormals);
-        m_vboNormals = 0;
-    }
-    if (m_vboIntensities) {
-        f->glDeleteBuffers(1, &m_vboIntensities);
-        m_vboIntensities = 0;
-    }
+
+    m_vboPositions = 0;
+    m_vboColors = 0;
+    m_vboNormals = 0;
+    m_vboIntensities = 0;
+    m_cacheInvalid = false;
 }
 
 } // namespace DeepLux

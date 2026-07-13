@@ -186,6 +186,7 @@ protected:
     bool m_quickMeasureActive = false;
     int m_quickMeasureType = 0;
     QList<QPointF> m_quickMeasurePoints;
+    QList<QVector3D> m_quickMeasurePoints3D;
     QAction* m_quickMeasureAction = nullptr;
 
     // 流程画布（图形化节点编辑器）

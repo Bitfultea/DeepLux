@@ -1,12 +1,14 @@
 #pragma once
 
 #include "IPointCloudRenderer.h"
+#include "LODController.h"
 #include "PointCloudGPUBuffer.h"
 #include "PointCloudLODBuffer.h"
-#include "LODController.h"
+
+#include <QMatrix4x4>
 #include <QOpenGLFunctions>
 #include <QOpenGLShaderProgram>
-#include <QMatrix4x4>
+#include <array>
 #include <memory>
 
 namespace DeepLux {
@@ -29,22 +31,37 @@ public:
     void scheduleRedraw() override;
     void setPointSize(float size) override;
     void setColorMode(ColorMode mode) override;
-    ColorMode colorMode() const override { return m_colorMode; }
+    ColorMode colorMode() const override {
+        return m_colorMode;
+    }
     void setUniformColor(const QColor& color) override;
     void render(const QMatrix4x4& viewMatrix, const QMatrix4x4& projectionMatrix) override;
     bool isValid() const override;
 
     // LOD 支持
     void setLODEnabled(bool enabled) override;
-    bool isLODEnabled() const override { return m_lodEnabled; }
+    bool isLODEnabled() const override {
+        return m_lodEnabled;
+    }
     void updateLODForDistance(float distance) override;
-    int currentLODLevel() const override { return m_lodBuffer.currentLevel(); }
+    int currentLODLevel() const override {
+        return m_lodBuffer.currentLevel();
+    }
+
+    void setInteractionActive(bool active);
+    bool isInteractionActive() const {
+        return m_interactionActive;
+    }
 
     /**
      * @brief 获取 LOD 控制器引用（用于配置距离阈值等）
      */
-    LODController& lodController() { return m_lodController; }
-    const LODController& lodController() const { return m_lodController; }
+    LODController& lodController() {
+        return m_lodController;
+    }
+    const LODController& lodController() const {
+        return m_lodController;
+    }
 
     /**
      * @brief 初始化 OpenGL 资源
@@ -53,8 +70,18 @@ public:
     void initializeGL();
 
 private:
+    struct VboSet {
+        unsigned int positions = 0;
+        unsigned int colors = 0;
+        unsigned int normals = 0;
+        unsigned int intensities = 0;
+        bool uploaded = false;
+    };
+
     void uploadBuffers();
     void cleanupBuffers();
+    void selectLODLevel(int level);
+    int activeLODLevel() const;
 
     // VBO IDs
     unsigned int m_vboPositions = 0;
@@ -71,9 +98,11 @@ private:
 
     // LOD 支持
     PointCloudLODBuffer m_lodBuffer;
-    LODController m_lodController;  // 用户可配置的 LOD 控制器
+    LODController m_lodController; // 用户可配置的 LOD 控制器
     bool m_lodEnabled = true;
     float m_currentDistance = 0.0f;
+    bool m_interactionActive = false;
+    int m_interactionLODLevel = 2;
 
     // 渲染参数
     float m_pointSize = 2.0f;
@@ -81,8 +110,11 @@ private:
     QColor m_uniformColor = Qt::white;
     QColor m_backgroundColor = Qt::darkGray;
 
+    std::array<VboSet, LODController::MAX_LOD_LEVELS> m_vboCache;
+
     // 脏标记
     bool m_buffersDirty = true;
+    bool m_cacheInvalid = false;
     bool m_initialized = false;
 };
 

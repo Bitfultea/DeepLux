@@ -1894,6 +1894,100 @@ void MainWindow::clearMeasurementOverlays() {
 }
 
 void MainWindow::onPoint3DPicked(const QVector3D& point) {
+    // 3D 快速测量模式
+    if (m_quickMeasureActive) {
+        m_quickMeasurePoints3D.append(point);
+
+        auto buildOverlay3D = [&](const QList<MeasurementOverlayPoint3D>& pts,
+                                  const QList<MeasurementOverlayLine3D>& lines) {
+            for (ViewportWidget* vp : m_displayManager->allViewports()) {
+                if (Viewport3DContent* c = vp ? vp->viewport3D() : nullptr) {
+                    c->setMeasurementOverlay(pts, lines);
+                }
+            }
+        };
+
+        auto ptLabel = [](int idx) { return QStringLiteral("P%1").arg(idx + 1); };
+
+        if (m_quickMeasureType == 0) {
+            // 两点距离 (3D)
+            if (m_quickMeasurePoints3D.size() == 1) {
+                buildOverlay3D({{m_quickMeasurePoints3D[0], ptLabel(0)}}, {});
+            } else if (m_quickMeasurePoints3D.size() >= 2) {
+                const QVector3D& a = m_quickMeasurePoints3D[0];
+                const QVector3D& b = m_quickMeasurePoints3D[1];
+                double dist = a.distanceToPoint(b);
+                QString label = tr("距离: %1").arg(dist, 0, 'f', 3);
+                Logger::instance().info(tr("3D 快速测量: %1 → %2 = %3")
+                    .arg(pointText3D(a)).arg(pointText3D(b)).arg(label), "Measurement");
+                buildOverlay3D(
+                    {{a, QStringLiteral("P1")}, {b, QStringLiteral("P2")}},
+                    {{a, b, label}});
+                m_quickMeasurePoints3D.clear();
+            }
+        } else if (m_quickMeasureType == 1) {
+            // 点到线距离 (3D: 3 picks)
+            int n = m_quickMeasurePoints3D.size();
+            if (n < 3) {
+                QList<MeasurementOverlayPoint3D> pts;
+                for (int i = 0; i < n; ++i)
+                    pts.append({m_quickMeasurePoints3D[i], ptLabel(i)});
+                buildOverlay3D(pts, {});
+            } else {
+                const QVector3D& p = m_quickMeasurePoints3D[0];
+                const QVector3D& a = m_quickMeasurePoints3D[1];
+                const QVector3D& b = m_quickMeasurePoints3D[2];
+                QVector3D ab = b - a;
+                QVector3D ap = p - a;
+                float t = QVector3D::dotProduct(ap, ab) / QVector3D::dotProduct(ab, ab);
+                t = qBound(0.0f, t, 1.0f);
+                QVector3D foot = a + t * ab;
+                double dist = p.distanceToPoint(foot);
+                QString label = tr("距离: %1").arg(dist, 0, 'f', 3);
+                Logger::instance().info(tr("3D 快速测量: 点到线 = %1").arg(label), "Measurement");
+                buildOverlay3D(
+                    {{p, QStringLiteral("P")}, {a, QStringLiteral("L1")}, {b, QStringLiteral("L2")}},
+                    {{a, b, QString()}, {p, foot, label}});
+                m_quickMeasurePoints3D.clear();
+            }
+        } else if (m_quickMeasureType == 2) {
+            // 两线间距 (3D: 4 picks)
+            int n = m_quickMeasurePoints3D.size();
+            if (n < 4) {
+                QList<MeasurementOverlayPoint3D> pts;
+                QList<MeasurementOverlayLine3D> lines;
+                for (int i = 0; i < n; ++i) {
+                    QString lbl = (i < 2) ? QStringLiteral("L1-%1").arg(i + 1) : QStringLiteral("L2-%1").arg(i - 1);
+                    pts.append({m_quickMeasurePoints3D[i], lbl});
+                }
+                if (n >= 2) lines.append({m_quickMeasurePoints3D[0], m_quickMeasurePoints3D[1], QString()});
+                if (n >= 4) lines.append({m_quickMeasurePoints3D[2], m_quickMeasurePoints3D[3], QString()});
+                buildOverlay3D(pts, lines);
+            } else {
+                const QVector3D& a1 = m_quickMeasurePoints3D[0];
+                const QVector3D& a2 = m_quickMeasurePoints3D[1];
+                const QVector3D& b1 = m_quickMeasurePoints3D[2];
+                const QVector3D& b2 = m_quickMeasurePoints3D[3];
+                double len1 = a1.distanceToPoint(a2);
+                double len2 = b1.distanceToPoint(b2);
+                QVector3D m1 = (a1 + a2) / 2.0f;
+                QVector3D m2 = (b1 + b2) / 2.0f;
+                double dist = m1.distanceToPoint(m2);
+                QString label = tr("间距: %1").arg(dist, 0, 'f', 3);
+                Logger::instance().info(tr("3D 快速测量: 两线间距=%1 (线1=%2, 线2=%3)")
+                    .arg(dist, 0, 'f', 3).arg(len1, 0, 'f', 3).arg(len2, 0, 'f', 3), "Measurement");
+                buildOverlay3D(
+                    {{a1, QStringLiteral("L1-1")}, {a2, QStringLiteral("L1-2")},
+                     {b1, QStringLiteral("L2-1")}, {b2, QStringLiteral("L2-2")}},
+                    {{a1, a2, tr("线1: %1").arg(len1, 0, 'f', 3)},
+                     {b1, b2, tr("线2: %1").arg(len2, 0, 'f', 3)},
+                     {m1, m2, label}});
+                m_quickMeasurePoints3D.clear();
+            }
+        }
+        return;
+    }
+
     QTreeWidgetItem* item = m_processTree->currentItem();
     if (!item || item->data(0, Qt::UserRole).toString() != "flow_item") {
         QGuiApplication::clipboard()->setText(pointText3D(point));
@@ -3027,7 +3121,10 @@ void MainWindow::onQuickMeasure() {
         m_quickMeasureActive = false;
         m_quickMeasurePoints.clear();
         for (ViewportWidget* vp : m_displayManager->allViewports()) {
-            if (vp) vp->unsetCursor();
+            if (vp) {
+                vp->unsetCursor();
+                vp->setPickMode(false);
+            }
         }
         clearMeasurementOverlays();
         if (m_quickMeasureAction)
@@ -3043,7 +3140,6 @@ void MainWindow::onQuickMeasure() {
 
     QAction* sel = menu.exec(QCursor::pos());
     if (!sel) {
-        // 用户取消菜单，恢复未选中状态
         if (m_quickMeasureAction)
             m_quickMeasureAction->setChecked(false);
         return;
@@ -3053,11 +3149,15 @@ void MainWindow::onQuickMeasure() {
     m_quickMeasureActive = true;
     m_quickMeasureType = type;
     m_quickMeasurePoints.clear();
+    m_quickMeasurePoints3D.clear();
     if (m_quickMeasureAction)
         m_quickMeasureAction->setChecked(true);
 
     for (ViewportWidget* vp : m_displayManager->allViewports()) {
-        if (vp) vp->setCursor(Qt::CrossCursor);
+        if (vp) {
+            vp->setCursor(Qt::CrossCursor);
+            vp->setPickMode(true);
+        }
     }
 
     QStringList labels = {tr("两点距离"), tr("点到线距离"), tr("两线间距")};

@@ -72,6 +72,9 @@ public:
     void setRenderMode(int mode);
     int renderMode() const;
 
+    // 3D 拾取模式（左键直接拾取，不需要 Ctrl）
+    void setPickMode(bool enabled);
+
     // 设置 2D/3D 双数据（用于 TIFF 等 depth-map 数据）
     void setDualData(const QImage& image, const DisplayData& cloudData);
 

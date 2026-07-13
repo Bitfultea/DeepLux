@@ -1,15 +1,17 @@
 #pragma once
 
 #include "../IViewportContent.h"
-#include "PointCloudRendererOpenGL.h"
 #include "CameraController.h"
 #include "IPointCloudRenderer.h"
-#include <vector>
+#include "PointCloudRendererOpenGL.h"
+
 #include <QList>
 #include <QMatrix4x4>
 #include <QOpenGLWidget>
 #include <QString>
+#include <QTimer>
 #include <QVector3D>
+#include <vector>
 
 namespace DeepLux {
 
@@ -40,15 +42,22 @@ public:
     // IViewportContent
     void displayData(const DisplayData& data) override;
     void clearDisplay() override;
-    QWidget* toolbarExtension() override { return nullptr; }
-    QWidget* widget() override { return this; }
+    QWidget* toolbarExtension() override {
+        return nullptr;
+    }
+    QWidget* widget() override {
+        return this;
+    }
 
     // 渲染模式
-    ColorMode renderMode() const { return m_renderMode; }
+    ColorMode renderMode() const {
+        return m_renderMode;
+    }
     void setRenderMode(ColorMode mode);
     void setMeasurementOverlay(const QList<MeasurementOverlayPoint3D>& points,
                                const QList<MeasurementOverlayLine3D>& lines);
     void clearMeasurementOverlay();
+    void setPickMode(bool enabled) { m_pickMode = enabled; }
 
 public slots:
     void resetCamera();
@@ -76,6 +85,9 @@ protected:
 
 private:
     void updateMatrices();
+    void beginInteraction();
+    void endInteraction();
+    void flushPendingInteraction();
     bool projectToScreen(const QVector3D& worldPos, QPointF* screenPos) const;
     void drawMeasurementOverlay();
 
@@ -89,6 +101,10 @@ private:
 
     bool m_needsUpdate = true;
     QPoint m_lastMousePos;
+    QPoint m_pendingMouseDelta;
+    Qt::MouseButtons m_pendingMouseButtons = Qt::NoButton;
+    QTimer m_interactionTimer;
+    bool m_isInteracting = false;
     bool m_lodEnabled = true;
 
     QVector3D m_bboxMin;
@@ -99,6 +115,8 @@ private:
     std::vector<QVector3D> m_lastPoints;
     QList<MeasurementOverlayPoint3D> m_measurementPoints;
     QList<MeasurementOverlayLine3D> m_measurementLines;
+    bool m_pickMode = false;
+    QPoint m_pickPressPos;
 };
 
 } // namespace DeepLux

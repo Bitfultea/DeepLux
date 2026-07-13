@@ -271,10 +271,15 @@ QList<FlowNodeItem*> FlowCanvas::getOrderedModules() const {
 }
 
 void FlowCanvas::updateConnectionsForNode(const QString& nodeId) {
+    bool updated = false;
     for (FlowConnectionItem* conn : m_connections) {
         if (conn && (conn->fromNodeId() == nodeId || conn->toNodeId() == nodeId)) {
             conn->updatePath();
+            updated = true;
         }
+    }
+    if (!updated && m_scene) {
+        m_scene->update();
     }
 }
 
@@ -299,6 +304,52 @@ void FlowCanvas::dropEvent(QDropEvent* event) {
     event->acceptProposedAction();
 }
 
+void FlowCanvas::drawBackground(QPainter* painter, const QRectF& rect) {
+    QGraphicsView::drawBackground(painter, rect);
+    if (!painter || !m_connections.isEmpty() || m_nodes.size() < 2) {
+        return;
+    }
+
+    QList<FlowNodeItem*> ordered;
+    QSet<QString> added;
+    if (Project* project = ProjectManager::instance().currentProject()) {
+        for (const ModuleInstance& inst : project->modules()) {
+            FlowNodeItem* item = m_nodes.value(inst.id, nullptr);
+            if (item) {
+                ordered.append(item);
+                added.insert(inst.id);
+            }
+        }
+    }
+    for (auto it = m_nodes.cbegin(); it != m_nodes.cend(); ++it) {
+        if (!added.contains(it.key())) {
+            ordered.append(it.value());
+        }
+    }
+    if (ordered.size() < 2) {
+        return;
+    }
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    painter->setPen(QPen(QColor(200, 200, 100, 190), 2, Qt::DashLine, Qt::RoundCap, Qt::RoundJoin));
+    painter->setBrush(Qt::NoBrush);
+    for (int i = 0; i < ordered.size() - 1; ++i) {
+        FlowNodeItem* from = ordered[i];
+        FlowNodeItem* to = ordered[i + 1];
+        if (!from || !to) {
+            continue;
+        }
+        const QPointF start = from->scenePos() + from->outputPortPos(0);
+        const QPointF end = to->scenePos() + to->inputPortPos(0);
+        const qreal dx = qAbs(end.x() - start.x()) / 2;
+        QPainterPath path(start);
+        path.cubicTo(start.x() + dx, start.y(), end.x() - dx, end.y(), end.x(), end.y());
+        painter->drawPath(path);
+    }
+    painter->restore();
+}
+
 // ========== FlowNodeItem ==========
 
 FlowNodeItem::FlowNodeItem(const QString& nodeId, const QString& name, const QString& moduleId, QGraphicsItem* parent)
@@ -315,7 +366,7 @@ void FlowNodeItem::setName(const QString& name) {
 }
 
 QRectF FlowNodeItem::boundingRect() const {
-    return QRectF(0, 0, m_width, m_height);
+    return QRectF(-6, -2, m_width + 12, m_height + 4);
 }
 
 void FlowNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) {
@@ -409,7 +460,10 @@ bool FlowConnectionItem::isValid() const {
 }
 
 QRectF FlowConnectionItem::boundingRect() const {
-    return m_path.boundingRect();
+    if (m_path.isEmpty()) {
+        return QRectF();
+    }
+    return m_path.boundingRect().adjusted(-3, -3, 3, 3);
 }
 
 void FlowConnectionItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) {
@@ -422,26 +476,24 @@ void FlowConnectionItem::paint(QPainter* painter, const QStyleOptionGraphicsItem
 }
 
 void FlowConnectionItem::updatePath() {
-    // 检查节点是否有效
-    if (!m_fromNode || !m_toNode) {
-        m_path = QPainterPath();
-        return;
+    QPainterPath newPath;
+
+    if (m_fromNode && m_toNode) {
+        QGraphicsScene* nodeScene = m_fromNode->scene();
+        const bool nodesShareScene = nodeScene && nodeScene == m_toNode->scene();
+        const bool itemSceneMatches = !scene() || scene() == nodeScene;
+        if (nodesShareScene && itemSceneMatches) {
+            QPointF start = m_fromNode->scenePos() + m_fromNode->outputPortPos(m_fromPort);
+            QPointF end = m_toNode->scenePos() + m_toNode->inputPortPos(m_toPort);
+            qreal dx = qAbs(end.x() - start.x()) / 2;
+
+            newPath = QPainterPath(start);
+            newPath.cubicTo(start.x() + dx, start.y(), end.x() - dx, end.y(), end.x(), end.y());
+        }
     }
 
-    // 检查节点是否在场景中
-    if (m_fromNode->scene() != scene() || m_toNode->scene() != scene()) {
-        m_path = QPainterPath();
-        return;
-    }
-
-    QPointF start = m_fromNode->scenePos() + m_fromNode->outputPortPos(m_fromPort);
-    QPointF end = m_toNode->scenePos() + m_toNode->inputPortPos(m_toPort);
-
-    qreal dx = qAbs(end.x() - start.x()) / 2;
-
-    m_path = QPainterPath(start);
-    m_path.cubicTo(start.x() + dx, start.y(), end.x() - dx, end.y(), end.x(), end.y());
-
+    prepareGeometryChange();
+    m_path = newPath;
     update();
 }
 

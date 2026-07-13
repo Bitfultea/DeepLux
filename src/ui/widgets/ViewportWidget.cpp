@@ -388,6 +388,12 @@ int ViewportWidget::renderMode() const {
     return m_3dContent ? static_cast<int>(m_3dContent->renderMode()) : 5;
 }
 
+void ViewportWidget::setPickMode(bool enabled) {
+    if (m_3dContent) {
+        m_3dContent->setPickMode(enabled);
+    }
+}
+
 void ViewportWidget::applyTheme(bool isDark) {
     QPalette imagePalette = m_imageWidget->palette();
     imagePalette.setColor(QPalette::Window, isDark ? QColor("#1a1a1a") : QColor("#ffffff"));
