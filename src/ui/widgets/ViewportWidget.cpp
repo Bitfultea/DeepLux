@@ -123,7 +123,7 @@ void ViewportWidget::setupUi() {
 
     // Add title bar to main layout
     mainLayout->addWidget(titleBarWidget);
-
+    mainLayout->setStretch(0, 0);
     // HImageWidget for image display (2D mode)
     m_imageWidget = new HImageWidget();
     m_imageWidget->setStyleSheet(R"(
@@ -131,6 +131,7 @@ void ViewportWidget::setupUi() {
         border: none;
     )");
     mainLayout->addWidget(m_imageWidget);
+    mainLayout->setStretch(1, 1);
 
     // Forward 2D image clicks for coordinate picking
     connect(m_imageWidget, &HImageWidget::imageClicked, this, &ViewportWidget::point2DClicked);
