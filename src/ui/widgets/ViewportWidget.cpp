@@ -402,26 +402,28 @@ void ViewportWidget::applyTheme(bool isDark) {
     if (isDark) {
         setStyleSheet(R"(
             ViewportWidget {
-                background-color: #1e1e1e;
+                background-color: #2d2d2d;
                 border: none;
             }
         )");
         m_titleBar->setStyleSheet(R"(
             QLabel {
-                color: #e0e0e0;
+                color: #ffffff;
                 font-size: 14px;
                 font-weight: 600;
-                background-color: transparent;
+                background-color: #2d2d2d;
+                border: none;
+                border-bottom: 1px solid #444444;
             }
         )");
         m_imageWidget->setStyleSheet(R"(
-            background-color: #1a1a1a;
+            background-color: #1e1e1e;
             border: none;
         )");
     } else {
         setStyleSheet(R"(
             ViewportWidget {
-                background-color: #ffffff;
+                background-color: #e8e8e8;
                 border: none;
             }
         )");
@@ -430,7 +432,9 @@ void ViewportWidget::applyTheme(bool isDark) {
                 color: #212121;
                 font-size: 14px;
                 font-weight: 600;
-                background-color: transparent;
+                background-color: #e8e8e8;
+                border: none;
+                border-bottom: 1px solid #cccccc;
             }
         )");
         m_imageWidget->setStyleSheet(R"(
