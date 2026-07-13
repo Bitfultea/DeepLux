@@ -660,14 +660,14 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QWidget* processTabContent = window.findChild<QWidget*>("ProcessTabContent");
     QVERIFY(processTabContent != nullptr);
     QVERIFY(processTabContent->layout() != nullptr);
-    QCOMPARE(processTabContent->layout()->contentsMargins().left(), 6);
-    QCOMPARE(processTabContent->layout()->contentsMargins().right(), 6);
+    QCOMPARE(processTabContent->layout()->contentsMargins().left(), 10);
+    QCOMPARE(processTabContent->layout()->contentsMargins().right(), 10);
 
     QWidget* dataSourcePanelForMargins = window.findChild<QWidget*>("DataSourcePanel");
     QVERIFY(dataSourcePanelForMargins != nullptr);
     QVERIFY(dataSourcePanelForMargins->layout() != nullptr);
-    QCOMPARE(dataSourcePanelForMargins->layout()->contentsMargins().left(), 6);
-    QCOMPARE(dataSourcePanelForMargins->layout()->contentsMargins().right(), 6);
+    QCOMPARE(dataSourcePanelForMargins->layout()->contentsMargins().left(), 10);
+    QCOMPARE(dataSourcePanelForMargins->layout()->contentsMargins().right(), 10);
 
     QToolButton* processStartButton = window.findChild<QToolButton*>("ProcessStartPauseBtn");
     QVERIFY(processStartButton != nullptr);
@@ -682,8 +682,15 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QTabWidget* logTabs = window.findChild<QTabWidget*>("LogTerminalTabs");
     QVERIFY(logTabs != nullptr);
     QVERIFY(logTabs->tabBar() != nullptr);
-    QVERIFY2(processTabs->styleSheet().contains(QStringLiteral("font-size: 13px")),
-             "Process tabs should use the shared panel tab font size");
+    QVERIFY2(processTabs->styleSheet().contains(QStringLiteral("font-size: 14px")),
+             "Process tabs should use a more readable workflow tab font size");
+    QVERIFY2(processTabs->styleSheet().contains(QStringLiteral("QTabWidget::tab-bar { left: 8px; }")),
+             "Process tabs should be inset from the left edge");
+    const int processTabTextHeight = processTabs->tabBar()->fontMetrics().height();
+    QVERIFY2(processTabs->tabBar()->tabRect(0).height() >= processTabTextHeight + 14,
+             qPrintable(QString("Process tab height %1 is too tight for text height %2")
+                            .arg(processTabs->tabBar()->tabRect(0).height())
+                            .arg(processTabTextHeight)));
     QVERIFY2(logTabs->styleSheet().contains(QStringLiteral("font-size: 13px")),
              "Bottom tabs should use the shared panel tab font size");
     const int logTabTextHeight = logTabs->tabBar()->fontMetrics().height();

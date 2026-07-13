@@ -881,18 +881,20 @@ void MainWindow::setupMainLayout() {
     m_processTabWidget->tabBar()->setUsesScrollButtons(false);
     m_processTabWidget->tabBar()->setExpanding(false);
     m_processTabWidget->tabBar()->setElideMode(Qt::ElideNone);
+    m_processTabWidget->tabBar()->setMinimumHeight(
+        qMax(34, m_processTabWidget->tabBar()->fontMetrics().height() + 14));
 
     // ---- Tab 1: 流程 ----
     m_processTabContent = new QWidget();
     m_processTabContent->setObjectName("ProcessTabContent");
     QVBoxLayout* flowLayout = new QVBoxLayout(m_processTabContent);
-    flowLayout->setContentsMargins(6, 6, 6, 6);
+    flowLayout->setContentsMargins(10, 8, 10, 8);
     flowLayout->setSpacing(6);
 
     // 流程面板工具栏
     QWidget* processToolBar = new QWidget();
     QHBoxLayout* processToolBarLayout = new QHBoxLayout(processToolBar);
-    processToolBarLayout->setContentsMargins(6, 6, 6, 6);
+    processToolBarLayout->setContentsMargins(8, 6, 8, 6);
     processToolBarLayout->setSpacing(4);
     processToolBar->setObjectName("ProcessToolBar");
     processToolBar->setMinimumHeight(48);
@@ -992,7 +994,7 @@ void MainWindow::setupMainLayout() {
     // 流程状态栏
     m_processStatusWidget = new QWidget();
     QHBoxLayout* processStatusLayout = new QHBoxLayout(m_processStatusWidget);
-    processStatusLayout->setContentsMargins(5, 5, 5, 5);
+    processStatusLayout->setContentsMargins(8, 5, 8, 5);
     m_processTimeLabel = new QLabel(tr("总耗时：0 ms"));
     processStatusLayout->addWidget(m_processTimeLabel);
     processStatusLayout->addStretch();
@@ -1057,7 +1059,7 @@ void MainWindow::setupMainLayout() {
     // ===== Tab 1: 日志面板 =====
     QWidget* logWidget = new QWidget();
     QVBoxLayout* logLayout = new QVBoxLayout(logWidget);
-    logLayout->setContentsMargins(0, 0, 0, 0);
+    logLayout->setContentsMargins(6, 6, 6, 6);
     logLayout->setSpacing(0);
 
     m_logTable = new QTableWidget();
@@ -2307,7 +2309,7 @@ void MainWindow::applyTheme() {
             QString("background-color: %1; border: none; border-bottom: 1px solid %2;").arg(pal.bgColor, pal.borderColor));
         QLabel* label = m_toolBoxDock->titleBarWidget()->findChild<QLabel*>();
         if (label)
-            label->setStyleSheet(QString("QLabel { color: %1; font-weight: 600; font-size: 13px; }").arg(pal.textColor));
+            label->setStyleSheet(QString("QLabel { color: %1; font-weight: 600; font-size: 14px; }").arg(pal.textColor));
         QToolButton* btn = m_toolBoxDock->titleBarWidget()->findChild<QToolButton*>();
         if (btn)
             btn->setStyleSheet(
@@ -2320,7 +2322,7 @@ void MainWindow::applyTheme() {
             QString("background-color: %1; border: none; border-bottom: 1px solid %2;").arg(pal.bgColor, pal.borderColor));
         QLabel* label = m_logDock->titleBarWidget()->findChild<QLabel*>();
         if (label)
-            label->setStyleSheet(QString("QLabel { color: %1; font-weight: 600; font-size: 13px; }").arg(pal.textColor));
+            label->setStyleSheet(QString("QLabel { color: %1; font-weight: 600; font-size: 14px; }").arg(pal.textColor));
     }
 
     if (m_toolBoxTree) {
@@ -2417,9 +2419,10 @@ void MainWindow::applyTheme() {
     if (m_processTabWidget) {
         m_processTabWidget->setStyleSheet(
             QString("QTabWidget::pane { border: none; border-top: 2px solid %1; background-color: %2; }"
-                    "QTabBar::tab { background-color: transparent; color: %3; font-size: 13px; font-weight: 500;"
-                    "  min-height: 26px; padding: 3px 10px; border: none; border-bottom: 2px solid transparent;"
-                    "  margin-right: 2px; }"
+                    "QTabWidget::tab-bar { left: 8px; }"
+                    "QTabBar::tab { background-color: transparent; color: %3; font-size: 14px; font-weight: 600;"
+                    "  min-height: 30px; min-width: 56px; padding: 5px 14px; border: none;"
+                    "  border-bottom: 2px solid transparent; margin-right: 4px; }"
                     "QTabBar::tab:selected { color: #0078d7; border-bottom: 2px solid #0078d7; }"
                     "QTabBar::tab:hover:!selected { color: %3; background-color: %1; }")
                 .arg(pal.processTabBorder, pal.processTabBg, pal.processTabFg));

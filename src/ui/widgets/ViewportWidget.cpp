@@ -45,7 +45,7 @@ void ViewportWidget::setupUi() {
     m_titleBar->setStyleSheet(R"(
         QLabel {
             color: #e0e0e0;
-            font-size: 13px;
+            font-size: 14px;
             font-weight: 600;
             background-color: transparent;
         }

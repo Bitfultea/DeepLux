@@ -25,7 +25,7 @@ DataSourcePanel::~DataSourcePanel() = default;
 
 void DataSourcePanel::setupUi() {
     QVBoxLayout* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(6, 6, 6, 6);
+    layout->setContentsMargins(10, 8, 10, 8);
     layout->setSpacing(4);
 
     m_treeWidget = new QTreeWidget(this);
