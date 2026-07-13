@@ -1057,7 +1057,7 @@ void MainWindow::setupMainLayout() {
     // ===== Tab 1: 日志面板 =====
     QWidget* logWidget = new QWidget();
     QVBoxLayout* logLayout = new QVBoxLayout(logWidget);
-    logLayout->setContentsMargins(6, 6, 6, 6);
+    logLayout->setContentsMargins(0, 0, 0, 0);
     logLayout->setSpacing(0);
 
     m_logTable = new QTableWidget();

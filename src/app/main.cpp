@@ -1,6 +1,7 @@
 #include <QApplication>
 #include <QSurfaceFormat>
 #include <QFile>
+#include <QIcon>
 #include <QMessageBox>
 #include <QDebug>
 
@@ -200,6 +201,8 @@ int main(int argc, char* argv[])
     app.setApplicationName("DeepLux");
     app.setApplicationVersion(DEEPLUX_VERSION_STRING);
     app.setOrganizationName("DeepLux");
+    const QIcon appIcon(QStringLiteral(":/icons/deeplux_app.png"));
+    app.setWindowIcon(appIcon);
 
     qDebug() << "DeepLux Vision" << DEEPLUX_VERSION_STRING;
     qDebug() << "Platform:" << DEEPLUX_PLATFORM_NAME;
@@ -220,6 +223,7 @@ int main(int argc, char* argv[])
     setupStyleSheet(app);
 
     MainWindow mainWindow;
+    mainWindow.setWindowIcon(appIcon);
     mainWindow.setWindowTitle("DeepLux Vision");
     mainWindow.resize(1600, 900);
     mainWindow.show();
