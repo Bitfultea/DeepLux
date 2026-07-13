@@ -36,23 +36,16 @@ void ViewportWidget::setupUi() {
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(0);
 
-    // Title bar
-    QHBoxLayout* titleLayout = new QHBoxLayout();
-    titleLayout->setContentsMargins(8, 3, 8, 3);
+    // Title bar container — 独立 widget 以支持整行背景和底边框
+    QWidget* titleBarWidget = new QWidget();
+    titleBarWidget->setObjectName("ViewportTitleBar");
+    QHBoxLayout* titleLayout = new QHBoxLayout(titleBarWidget);
+    titleLayout->setContentsMargins(10, 4, 6, 4);
     titleLayout->setSpacing(4);
 
     m_titleBar = new QLabel(m_title);
-    m_titleBar->setStyleSheet(R"(
-        QLabel {
-            color: #e0e0e0;
-            font-size: 14px;
-            font-weight: 600;
-            background-color: transparent;
-        }
-    )");
     m_titleBar->setObjectName("ViewportTitle");
 
-    // Spacer
     titleLayout->addWidget(m_titleBar);
     titleLayout->addStretch();
 
@@ -129,7 +122,7 @@ void ViewportWidget::setupUi() {
     titleLayout->addWidget(m_toolbar);
 
     // Add title bar to main layout
-    mainLayout->addLayout(titleLayout);
+    mainLayout->addWidget(titleBarWidget);
 
     // HImageWidget for image display (2D mode)
     m_imageWidget = new HImageWidget();
@@ -402,8 +395,13 @@ void ViewportWidget::applyTheme(bool isDark) {
     if (isDark) {
         setStyleSheet(R"(
             ViewportWidget {
+                background-color: #1e1e1e;
+                border: none;
+            }
+            QWidget#ViewportTitleBar {
                 background-color: #2d2d2d;
                 border: none;
+                border-bottom: 1px solid #444444;
             }
         )");
         m_titleBar->setStyleSheet(R"(
@@ -411,9 +409,7 @@ void ViewportWidget::applyTheme(bool isDark) {
                 color: #ffffff;
                 font-size: 14px;
                 font-weight: 600;
-                background-color: #2d2d2d;
-                border: none;
-                border-bottom: 1px solid #444444;
+                background-color: transparent;
             }
         )");
         m_imageWidget->setStyleSheet(R"(
@@ -423,8 +419,13 @@ void ViewportWidget::applyTheme(bool isDark) {
     } else {
         setStyleSheet(R"(
             ViewportWidget {
+                background-color: #ffffff;
+                border: none;
+            }
+            QWidget#ViewportTitleBar {
                 background-color: #e8e8e8;
                 border: none;
+                border-bottom: 1px solid #cccccc;
             }
         )");
         m_titleBar->setStyleSheet(R"(
@@ -432,9 +433,7 @@ void ViewportWidget::applyTheme(bool isDark) {
                 color: #212121;
                 font-size: 14px;
                 font-weight: 600;
-                background-color: #e8e8e8;
-                border: none;
-                border-bottom: 1px solid #cccccc;
+                background-color: transparent;
             }
         )");
         m_imageWidget->setStyleSheet(R"(
