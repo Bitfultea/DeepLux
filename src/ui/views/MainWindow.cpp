@@ -1,10 +1,8 @@
 #include "MainWindow.h"
 
 #include "../ThemeManager.h"
-#include "core/geometry/MeasurementData.h"
-#include "../controllers/ProcessTreeController.h"
-
 #include "../bridge/TerminalBridge.h"
+#include "../controllers/ProcessTreeController.h"
 #include "../dialogs/AgentSettingsDialog.h"
 #include "../dialogs/LoginDialog.h"
 #include "../display/3d/Viewport3DContent.h"
@@ -32,6 +30,7 @@
 #include "core/display/DisplayData.h"
 #include "core/display/IDisplayPort.h"
 #include "core/engine/RunEngine.h"
+#include "core/geometry/MeasurementData.h"
 #include "core/interface/IModule.h"
 #include "core/io/PlyLoader.h"
 #include "core/io/TiffLoader.h"
@@ -345,34 +344,52 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
     connect(&RunEngine::instance(), &RunEngine::moduleStarted, this, [this](const QString& moduleName) {
         QTreeWidgetItem* item = m_processTreeController ? m_processTreeController->instanceItem(moduleName) : nullptr;
         if (item) {
+            if (m_lastExecutedItem && m_lastExecutedItem != item) {
+                clearExecutionHighlight(m_lastExecutedItem);
+            }
             m_currentExecutingItem = item;
-            item->setBackground(0, QBrush(QColor("#0078d7")));
+            m_processTreeController->setCurrentItem(item);
+            item->setBackground(0, QBrush(QColor("#0078D7")));
             item->setForeground(0, QBrush(Qt::white));
-            item->setBackground(1, QBrush(QColor("#0078d7")));
+            item->setBackground(1, QBrush(QColor("#0078D7")));
             item->setForeground(1, QBrush(Qt::white));
             item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
             item->setText(1, tr("执行中..."));
         }
     });
 
-    connect(&RunEngine::instance(), &RunEngine::moduleFinished, this, [this](const QString& moduleName, bool success) {
-        Q_UNUSED(moduleName)
-        if (m_currentExecutingItem) {
-            m_currentExecutingItem->setBackground(0, QBrush());
-            m_currentExecutingItem->setForeground(0, QBrush());
-            m_currentExecutingItem->setBackground(1, QBrush());
-            m_currentExecutingItem->setForeground(1, QBrush());
-            m_currentExecutingItem->setText(1, success ? tr("OK") : tr("FAIL"));
-            if (!success) {
-                m_currentExecutingItem->setForeground(1, QBrush(Qt::red));
-            }
-        }
-        // Display output if available
-        const ImageData& out = RunEngine::instance().lastOutput();
-        if (out.isValid()) {
-            displayImage(out);
-        }
-    });
+    connect(&RunEngine::instance(), &RunEngine::moduleFinished, this,
+            [this](const QString& moduleName, bool success, int elapsedMs) {
+                QTreeWidgetItem* item =
+                    m_processTreeController ? m_processTreeController->instanceItem(moduleName) : nullptr;
+                if (!item) {
+                    item = m_currentExecutingItem;
+                }
+                if (item) {
+                    if (success) {
+                        clearExecutionHighlight(item);
+                        if (m_processTreeController) {
+                            m_processTreeController->setCurrentItem(item);
+                        }
+                        m_lastExecutedItem = nullptr;
+                    } else {
+                        const QColor bg("#FEE2E2");
+                        const QColor fg("#991B1B");
+                        item->setBackground(0, QBrush(bg));
+                        item->setForeground(0, QBrush(fg));
+                        item->setBackground(1, QBrush(bg));
+                        item->setForeground(1, QBrush(fg));
+                        m_lastExecutedItem = item;
+                    }
+                    m_moduleExecutionTimes[moduleName] = elapsedMs;
+                    item->setText(1, tr("%1 ms").arg(elapsedMs));
+                }
+                // Display this module's output if available.
+                const ImageData out = RunEngine::instance().moduleOutput(moduleName);
+                if (out.isValid()) {
+                    displayImage(out);
+                }
+            });
 
     connect(&RunEngine::instance(), &RunEngine::runFinished, this, [this](const RunResult& result) {
         if (m_processTimeLabel) {
@@ -527,17 +544,23 @@ void MainWindow::setupUi() {
 void MainWindow::setupMenuBar() {
     // 文件菜单
     QMenu* fileMenu = menuBar()->addMenu(tr("文件 (&F)"));
-    fileMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::NewFile, 24, QColor("#2563EB")), tr("新建方案"), this, &MainWindow::onNewSolution);
-    fileMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::List, 24, QColor("#2563EB")), tr("方案列表"), this, &MainWindow::onSolutionList);
-    fileMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::OpenFolder, 24, QColor("#D97706")), tr("打开"), this, &MainWindow::onOpenProject);
-    fileMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Save, 24, QColor("#2563EB")), tr("保存"), this, &MainWindow::onSaveProject);
+    fileMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::NewFile, 24, QColor("#2563EB")), tr("新建方案"),
+                        this, &MainWindow::onNewSolution);
+    fileMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::List, 24, QColor("#2563EB")), tr("方案列表"), this,
+                        &MainWindow::onSolutionList);
+    fileMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::OpenFolder, 24, QColor("#D97706")), tr("打开"),
+                        this, &MainWindow::onOpenProject);
+    fileMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Save, 24, QColor("#2563EB")), tr("保存"), this,
+                        &MainWindow::onSaveProject);
     fileMenu->addSeparator();
     fileMenu->addAction(tr("退出"), qApp, &QApplication::quit);
 
     // 参数菜单
     QMenu* paramMenu = menuBar()->addMenu(tr("参数 (&P)"));
-    paramMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Variable, 20, QColor("#7C3AED")), tr("全局变量"), this, &MainWindow::onGlobalVar);
-    paramMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::User, 20, QColor("#2563EB")), tr("用户登录"), this, &MainWindow::onUserLogin);
+    paramMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Variable, 20, QColor("#7C3AED")), tr("全局变量"),
+                         this, &MainWindow::onGlobalVar);
+    paramMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::User, 20, QColor("#2563EB")), tr("用户登录"),
+                         this, &MainWindow::onUserLogin);
 
     // 视图菜单
     QMenu* viewMenu = menuBar()->addMenu(tr("视图 (&V)"));
@@ -554,9 +577,11 @@ void MainWindow::setupMenuBar() {
     viewMenu->addAction(m_viewProcessPanelAction);
 
     viewMenu->addSeparator();
-    viewMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::QuickMode, 20, QColor("#D97706")), tr("快捷模式"), this, &MainWindow::onQuickMode);
+    viewMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::QuickMode, 20, QColor("#D97706")), tr("快捷模式"),
+                        this, &MainWindow::onQuickMode);
     viewMenu->addSeparator();
-    viewMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Theme, 20, QColor("#F59E0B")), tr("切换主题"), this, &MainWindow::onToggleTheme);
+    viewMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Theme, 20, QColor("#F59E0B")), tr("切换主题"),
+                        this, &MainWindow::onToggleTheme);
 
     // 3D 渲染模式（菜单项 + 横线分隔）
     viewMenu->addSeparator();
@@ -580,9 +605,12 @@ void MainWindow::setupMenuBar() {
 
     // 工具菜单
     QMenu* toolMenu = menuBar()->addMenu(tr("工具 (&T)"));
-    toolMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Camera, 20, QColor("#374151")), tr("相机设置"), this, &MainWindow::onCameraSettings);
-    toolMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Communication, 20, QColor("#0891B2")), tr("通讯设置"), this, &MainWindow::onCommSettings);
-    toolMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Hardware, 24, QColor("#4B5563")), tr("硬件配置"), this, &MainWindow::onHardwareConfig);
+    toolMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Camera, 20, QColor("#374151")), tr("相机设置"),
+                        this, &MainWindow::onCameraSettings);
+    toolMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Communication, 20, QColor("#0891B2")),
+                        tr("通讯设置"), this, &MainWindow::onCommSettings);
+    toolMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Hardware, 24, QColor("#4B5563")), tr("硬件配置"),
+                        this, &MainWindow::onHardwareConfig);
     toolMenu->addAction(tr("Agent 设置"), this, [this]() {
         AgentSettingsDialog dlg(this);
         if (dlg.exec() == QDialog::Accepted) {
@@ -619,28 +647,36 @@ void MainWindow::setupToolBar() {
     mainToolbar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
 
     // 文件操作
-    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::NewFile, 24, QColor("#2563EB")), tr("新建方案"), this, &MainWindow::onNewSolution);
-    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::List, 24, QColor("#2563EB")), tr("方案列表"), this, &MainWindow::onSolutionList);
-    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::OpenFolder, 24, QColor("#D97706")), tr("打开"), this, &MainWindow::onOpenProject);
-    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Save, 24, QColor("#2563EB")), tr("保存"), this, &MainWindow::onSaveProject);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::NewFile, 24, QColor("#2563EB")), tr("新建方案"),
+                           this, &MainWindow::onNewSolution);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::List, 24, QColor("#2563EB")), tr("方案列表"),
+                           this, &MainWindow::onSolutionList);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::OpenFolder, 24, QColor("#D97706")), tr("打开"),
+                           this, &MainWindow::onOpenProject);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Save, 24, QColor("#2563EB")), tr("保存"), this,
+                           &MainWindow::onSaveProject);
     mainToolbar->addSeparator();
 
     // 运行控制
-    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#16A34A")), tr("单次运行"), this, &MainWindow::onRunOnce);
-    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Cycle, 24, QColor("#2563EB")), tr("循环运行"), this, &MainWindow::onRunCycle);
-    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Stop, 24, QColor("#DC2626")), tr("停止"), this, &MainWindow::onStop);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#16A34A")), tr("单次运行"),
+                           this, &MainWindow::onRunOnce);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Cycle, 24, QColor("#2563EB")), tr("循环运行"),
+                           this, &MainWindow::onRunCycle);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Stop, 24, QColor("#DC2626")), tr("停止"), this,
+                           &MainWindow::onStop);
     mainToolbar->addSeparator();
 
     // 快速测量（无需加入流程）
-    m_quickMeasureAction = mainToolbar->addAction(
-        AppIconProvider::icon(AppIconProvider::Icon::Image, 20, QColor("#0891B2")),
-        tr("快速测量"), this, &MainWindow::onQuickMeasure);
+    m_quickMeasureAction =
+        mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Image, 20, QColor("#0891B2")),
+                               tr("快速测量"), this, &MainWindow::onQuickMeasure);
     m_quickMeasureAction->setCheckable(true);
     m_quickMeasureAction->setShortcut(QKeySequence(Qt::Key_M));
     mainToolbar->addSeparator();
 
     // 主题切换按钮
-    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Theme, 20, QColor("#F59E0B")), tr("切换主题"), this, &MainWindow::onToggleTheme);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Theme, 20, QColor("#F59E0B")), tr("切换主题"),
+                           this, &MainWindow::onToggleTheme);
 
     // 扫码框只保留在状态栏，工具栏不再重复添加
 }
@@ -881,8 +917,7 @@ void MainWindow::setupMainLayout() {
     m_processTabWidget->tabBar()->setUsesScrollButtons(false);
     m_processTabWidget->tabBar()->setExpanding(false);
     m_processTabWidget->tabBar()->setElideMode(Qt::ElideNone);
-    m_processTabWidget->tabBar()->setMinimumHeight(
-        qMax(34, m_processTabWidget->tabBar()->fontMetrics().height() + 14));
+    m_processTabWidget->tabBar()->setMinimumHeight(qMax(34, m_processTabWidget->tabBar()->fontMetrics().height() + 14));
 
     // ---- Tab 1: 流程 ----
     m_processTabContent = new QWidget();
@@ -933,9 +968,21 @@ void MainWindow::setupMainLayout() {
     runCycleBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     runCycleBtn->setObjectName("ProcessCycleBtn");
 
+    m_btnStepRun = new QToolButton();
+    m_btnStepRun->setToolTip(tr("单步执行"));
+    m_btnStepRun->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    m_btnStepRun->setMinimumHeight(36);
+    m_btnStepRun->setMaximumHeight(36);
+    m_btnStepRun->setAutoRaise(true);
+    m_btnStepRun->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Step, 24, QColor("#0F766E")));
+    m_btnStepRun->setIconSize(QSize(24, 24));
+    m_btnStepRun->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_btnStepRun->setObjectName("ProcessStepBtn");
+
     processToolBarLayout->addWidget(m_btnStartPause);
     processToolBarLayout->addWidget(m_btnStop);
     processToolBarLayout->addWidget(runCycleBtn);
+    processToolBarLayout->addWidget(m_btnStepRun);
     flowLayout->addWidget(processToolBar);
 
     // 模块树
@@ -954,10 +1001,14 @@ void MainWindow::setupMainLayout() {
     m_processTree->setColumnCount(2);
     m_processTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_processTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_processTree->setColumnHidden(1, true); // 耗时列默认隐藏，运行后显示
+    m_processTree->setColumnHidden(1, false); // 右列显示每个模块的最近执行耗时
     m_processTree->header()->setHidden(true);
     m_processTree->viewport()->installEventFilter(this);
     m_processTree->installEventFilter(this);
+    connect(m_processTree, &QTreeWidget::itemClicked, this,
+            [this](QTreeWidgetItem* item, int) { showProcessModuleOutput(item); });
+    connect(m_processTree, &QTreeWidget::currentItemChanged, this,
+            [this](QTreeWidgetItem* current, QTreeWidgetItem*) { showProcessModuleOutput(current); });
 
     // 创建流程树控制器
     m_processTreeController = new ProcessTreeController(m_processTree, this);
@@ -965,25 +1016,21 @@ void MainWindow::setupMainLayout() {
     m_processTreeController->setModulesNeedSyncFlag(&m_modulesNeedSync);
     m_processTreeController->setMeasurementPickMaps(&m_measurementPickCursor, &m_measurementPickCount);
     m_processTreeController->setToolDisplayNameCallback(
-        [this](const QString& pluginName, const QString& fallback) {
-            return toolDisplayName(pluginName, fallback);
-        });
-    m_processTreeController->setClearMeasurementOverlaysCallback(
-        [this]() { clearMeasurementOverlays(); });
-    connect(m_processTreeController, &ProcessTreeController::moduleAdded, this,
-            [this](const ModuleInstance& module) {
-                if (m_flowCanvas && !m_flowCanvas->nodeItem(module.id)) {
-                    m_flowCanvas->addNode(module.moduleId,
-                                          toolDisplayName(module.moduleId, module.name),
-                                          QPointF(module.posX, module.posY), module.id);
-                }
-            });
-    connect(m_processTreeController, &ProcessTreeController::moduleRemoved, this,
-            [this](const QString& instanceId) {
-                if (m_flowCanvas && m_flowCanvas->nodeItem(instanceId)) {
-                    m_flowCanvas->removeNode(instanceId);
-                }
-            });
+        [this](const QString& pluginName, const QString& fallback) { return toolDisplayName(pluginName, fallback); });
+    m_processTreeController->setClearMeasurementOverlaysCallback([this]() { clearMeasurementOverlays(); });
+    connect(m_processTreeController, &ProcessTreeController::moduleAdded, this, [this](const ModuleInstance& module) {
+        if (m_flowCanvas && !m_flowCanvas->nodeItem(module.id)) {
+            m_flowCanvas->addNode(module.moduleId, toolDisplayName(module.moduleId, module.name),
+                                  QPointF(module.posX, module.posY), module.id);
+        }
+    });
+    connect(m_processTreeController, &ProcessTreeController::moduleRemoved, this, [this](const QString& instanceId) {
+        m_currentExecutingItem = nullptr;
+        m_lastExecutedItem = nullptr;
+        if (m_flowCanvas && m_flowCanvas->nodeItem(instanceId)) {
+            m_flowCanvas->removeNode(instanceId);
+        }
+    });
 
     flowLayout->addWidget(m_processTree);
     flowLayout->setStretchFactor(m_processTree, 1);
@@ -1058,6 +1105,7 @@ void MainWindow::setupMainLayout() {
 
     // ===== Tab 1: 日志面板 =====
     QWidget* logWidget = new QWidget();
+    logWidget->setStyleSheet("background-color: transparent;");
     QVBoxLayout* logLayout = new QVBoxLayout(logWidget);
     logLayout->setContentsMargins(0, 0, 0, 0);
     logLayout->setSpacing(0);
@@ -1232,6 +1280,10 @@ void MainWindow::setupMainLayout() {
         }
     });
     connect(m_btnStop, &QToolButton::clicked, this, &MainWindow::onStop);
+    if (QToolButton* runCycleBtn = findChild<QToolButton*>("ProcessCycleBtn")) {
+        connect(runCycleBtn, &QToolButton::clicked, this, &MainWindow::onRunCycle);
+    }
+    connect(m_btnStepRun, &QToolButton::clicked, this, &MainWindow::onStepRun);
 }
 
 void MainWindow::addToolBoxItem(QTreeWidgetItem* parent, const QString& displayName, const QString& pluginName) {
@@ -1321,7 +1373,8 @@ void MainWindow::onProjectOpened(Project* project) {
     disconnect(project, nullptr, this, nullptr);
     disconnect(project, nullptr, m_processTreeController, nullptr);
     connect(project, &Project::moduleAdded, m_processTreeController, &ProcessTreeController::onModuleAddedFromProject);
-    connect(project, &Project::moduleRemoved, m_processTreeController, &ProcessTreeController::onModuleRemovedFromProject);
+    connect(project, &Project::moduleRemoved, m_processTreeController,
+            &ProcessTreeController::onModuleRemovedFromProject);
     connect(project, &Project::connectionAdded, this, [this](const ModuleConnection& conn) {
         if (m_flowCanvas && m_flowCanvas->nodeItem(conn.fromModuleId) && m_flowCanvas->nodeItem(conn.toModuleId)) {
             m_flowCanvas->addConnection(conn.fromModuleId, conn.fromOutput, conn.toModuleId, conn.toInput);
@@ -1363,18 +1416,16 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
         m_quickMeasurePoints.append(point);
 
         // 构建当前已放置点的标签
-        auto buildOverlay = [&](const QList<MeasurementOverlayPoint>& pts,
-                                const QList<MeasurementOverlayLine>& lines) {
+        auto buildOverlay = [&](const QList<MeasurementOverlayPoint>& pts, const QList<MeasurementOverlayLine>& lines) {
             for (ViewportWidget* vp : m_displayManager->allViewports()) {
                 if (HImageWidget* iw = vp ? vp->imageWidget() : nullptr) {
-                    if (iw->hasImage()) iw->setMeasurementOverlay(pts, lines);
+                    if (iw->hasImage())
+                        iw->setMeasurementOverlay(pts, lines);
                 }
             }
         };
 
-        auto ptLabel = [](int idx) {
-            return QStringLiteral("P%1").arg(idx + 1);
-        };
+        auto ptLabel = [](int idx) { return QStringLiteral("P%1").arg(idx + 1); };
 
         // ---- 两点距离 (2 clicks) ----
         if (m_quickMeasureType == 0) {
@@ -1385,10 +1436,9 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
                 const QPointF& b = m_quickMeasurePoints[1];
                 double dist = QLineF(a, b).length();
                 QString label = tr("距离: %1").arg(dist, 0, 'f', 3);
-                Logger::instance().info(tr("快速测量: %1 → %2 = %3")
-                                             .arg(pointText2D(a)).arg(pointText2D(b)).arg(label), "Measurement");
-                buildOverlay({{a, QStringLiteral("P1")}, {b, QStringLiteral("P2")}},
-                              {{a, b, label}});
+                Logger::instance().info(tr("快速测量: %1 → %2 = %3").arg(pointText2D(a)).arg(pointText2D(b)).arg(label),
+                                        "Measurement");
+                buildOverlay({{a, QStringLiteral("P1")}, {b, QStringLiteral("P2")}}, {{a, b, label}});
                 m_quickMeasurePoints.clear();
             }
         }
@@ -1413,7 +1463,7 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
                 QString label = tr("距离: %1").arg(dist, 0, 'f', 3);
                 Logger::instance().info(tr("快速测量: 点到线 = %1").arg(label), "Measurement");
                 buildOverlay({{p, QStringLiteral("P")}, {a, QStringLiteral("L1")}, {b, QStringLiteral("L2")}},
-                              {{a, b, QString()}, {p, foot, label}});
+                             {{a, b, QString()}, {p, foot, label}});
                 m_quickMeasurePoints.clear();
             }
         }
@@ -1427,8 +1477,10 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
                     QString lbl = (i < 2) ? QStringLiteral("L1-%1").arg(i + 1) : QStringLiteral("L2-%1").arg(i - 1);
                     pts.append({m_quickMeasurePoints[i], lbl});
                 }
-                if (n >= 2) lines.append({m_quickMeasurePoints[0], m_quickMeasurePoints[1], QString()});
-                if (n >= 4) lines.append({m_quickMeasurePoints[2], m_quickMeasurePoints[3], QString()});
+                if (n >= 2)
+                    lines.append({m_quickMeasurePoints[0], m_quickMeasurePoints[1], QString()});
+                if (n >= 4)
+                    lines.append({m_quickMeasurePoints[2], m_quickMeasurePoints[3], QString()});
                 buildOverlay(pts, lines);
             } else {
                 QLineF l1(m_quickMeasurePoints[0], m_quickMeasurePoints[1]);
@@ -1441,13 +1493,17 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
                 double dist = QLineF(m1, m2).length();
                 QString label = tr("间距: %1").arg(dist, 0, 'f', 3);
                 Logger::instance().info(tr("快速测量: 两线间距=%1 (线1长度=%2, 线2长度=%3)")
-                                             .arg(dist, 0, 'f', 3).arg(len1, 0, 'f', 3).arg(len2, 0, 'f', 3), "Measurement");
-                buildOverlay(
-                    {{l1.p1(), QStringLiteral("L1-1")}, {l1.p2(), QStringLiteral("L1-2")},
-                     {l2.p1(), QStringLiteral("L2-1")}, {l2.p2(), QStringLiteral("L2-2")}},
-                    {{l1.p1(), l1.p2(), tr("线1: %1").arg(len1, 0, 'f', 3)},
-                     {l2.p1(), l2.p2(), tr("线2: %1").arg(len2, 0, 'f', 3)},
-                     {m1, m2, label}});
+                                            .arg(dist, 0, 'f', 3)
+                                            .arg(len1, 0, 'f', 3)
+                                            .arg(len2, 0, 'f', 3),
+                                        "Measurement");
+                buildOverlay({{l1.p1(), QStringLiteral("L1-1")},
+                              {l1.p2(), QStringLiteral("L1-2")},
+                              {l2.p1(), QStringLiteral("L2-1")},
+                              {l2.p2(), QStringLiteral("L2-2")}},
+                             {{l1.p1(), l1.p2(), tr("线1: %1").arg(len1, 0, 'f', 3)},
+                              {l2.p1(), l2.p2(), tr("线2: %1").arg(len2, 0, 'f', 3)},
+                              {m1, m2, label}});
                 m_quickMeasurePoints.clear();
             }
         }
@@ -1638,8 +1694,8 @@ void MainWindow::refreshMeasurementOverlay(const QJsonObject& params, int visibl
         addPoint(point1, QStringLiteral("P1"), 1);
         addPoint(point2, QStringLiteral("P2"), 2);
         if (visibleSteps >= 2 && point1.size() >= 2 && point2.size() >= 2) {
-            lines.append(MeasurementOverlayLine{pointFromArray2D(point1), pointFromArray2D(point2),
-                                                QStringLiteral("P1-P2")});
+            lines.append(
+                MeasurementOverlayLine{pointFromArray2D(point1), pointFromArray2D(point2), QStringLiteral("P1-P2")});
         }
     }
 
@@ -1661,7 +1717,8 @@ void MainWindow::updateMeasurementResultOnOverlay() {
     QString foundInstanceId;
     for (auto it = m_flowModules.constBegin(); it != m_flowModules.constEnd(); ++it) {
         IModule* mod = it.value();
-        if (!mod) continue;
+        if (!mod)
+            continue;
         // 匹配 moduleId 或模块名
         if (mod->moduleId().compare(QStringLiteral("measurementinput"), Qt::CaseInsensitive) == 0 ||
             mod->moduleId().compare(QStringLiteral("com.deeplux.plugin.measurementinput"), Qt::CaseInsensitive) == 0 ||
@@ -1673,18 +1730,18 @@ void MainWindow::updateMeasurementResultOnOverlay() {
     }
 
     if (inputParams.isEmpty()) {
-        Logger::instance().debug(QStringLiteral("updateMeasurementResultOnOverlay: no MeasurementInput found in %1 modules")
-                                     .arg(m_flowModules.size()),
-                                 "Measurement");
+        Logger::instance().debug(
+            QStringLiteral("updateMeasurementResultOnOverlay: no MeasurementInput found in %1 modules")
+                .arg(m_flowModules.size()),
+            "Measurement");
         return;
     }
 
-    Logger::instance().debug(
-        QStringLiteral("updateMeasurementResultOnOverlay: found %1, mode=%2, params=%3")
-            .arg(foundInstanceId)
-            .arg(inputParams["mode"].toString())
-            .arg(QString(QJsonDocument(inputParams).toJson(QJsonDocument::Compact))),
-        "Measurement");
+    Logger::instance().debug(QStringLiteral("updateMeasurementResultOnOverlay: found %1, mode=%2, params=%3")
+                                 .arg(foundInstanceId)
+                                 .arg(inputParams["mode"].toString())
+                                 .arg(QString(QJsonDocument(inputParams).toJson(QJsonDocument::Compact))),
+                             "Measurement");
 
     // 优先从下游插件输出读取结果，如果没有则从坐标直接计算
     const ImageData lastOut = RunEngine::instance().lastOutput();
@@ -1699,9 +1756,7 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         return -1.0;
     };
 
-    auto fmtDist = [](double v) {
-        return QString::fromUtf8("距离: %1").arg(v, 0, 'f', 3);
-    };
+    auto fmtDist = [](double v) { return QString::fromUtf8("距离: %1").arg(v, 0, 'f', 3); };
 
     QList<MeasurementOverlayPoint> points;
     QList<MeasurementOverlayLine> lines;
@@ -1710,8 +1765,10 @@ void MainWindow::updateMeasurementResultOnOverlay() {
     if (mode == QStringLiteral("point_pair")) {
         const QJsonArray p1 = inputParams["point1"].toArray();
         const QJsonArray p2 = inputParams["point2"].toArray();
-        if (p1.size() >= 2) points.append({pointFromArray2D(p1), QStringLiteral("P1")});
-        if (p2.size() >= 2) points.append({pointFromArray2D(p2), QStringLiteral("P2")});
+        if (p1.size() >= 2)
+            points.append({pointFromArray2D(p1), QStringLiteral("P1")});
+        if (p2.size() >= 2)
+            points.append({pointFromArray2D(p2), QStringLiteral("P2")});
         if (p1.size() >= 2 && p2.size() >= 2) {
             double dist = resultValue({"distance", "gap_distance"});
             if (dist < 0) {
@@ -1724,7 +1781,8 @@ void MainWindow::updateMeasurementResultOnOverlay() {
     } else if (mode == QStringLiteral("point_line")) {
         const QJsonArray pt = inputParams["point"].toArray();
         const QJsonArray ln = inputParams["line"].toArray();
-        if (pt.size() >= 2) points.append({pointFromArray2D(pt), QStringLiteral("P")});
+        if (pt.size() >= 2)
+            points.append({pointFromArray2D(pt), QStringLiteral("P")});
         if (ln.size() >= 4) {
             points.append({pointFromArray2D(ln), QStringLiteral("L1")});
             points.append({pointFromArray2D(ln, 2), QStringLiteral("L2")});
@@ -1750,28 +1808,28 @@ void MainWindow::updateMeasurementResultOnOverlay() {
             points.append({pointFromArray2D(l1), QStringLiteral("L1-1")});
             points.append({pointFromArray2D(l1, 2), QStringLiteral("L1-2")});
             double len = QLineF(pointFromArray2D(l1), pointFromArray2D(l1, 2)).length();
-            lines.append({pointFromArray2D(l1), pointFromArray2D(l1, 2),
-                          QString::fromUtf8("线1: %1").arg(len, 0, 'f', 3)});
+            lines.append(
+                {pointFromArray2D(l1), pointFromArray2D(l1, 2), QString::fromUtf8("线1: %1").arg(len, 0, 'f', 3)});
         }
         if (l2.size() >= 4) {
             points.append({pointFromArray2D(l2), QStringLiteral("L2-1")});
             points.append({pointFromArray2D(l2, 2), QStringLiteral("L2-2")});
             double len = QLineF(pointFromArray2D(l2), pointFromArray2D(l2, 2)).length();
-            lines.append({pointFromArray2D(l2), pointFromArray2D(l2, 2),
-                          QString::fromUtf8("线2: %1").arg(len, 0, 'f', 3)});
+            lines.append(
+                {pointFromArray2D(l2), pointFromArray2D(l2, 2), QString::fromUtf8("线2: %1").arg(len, 0, 'f', 3)});
         }
         if (l1.size() >= 4 && l2.size() >= 4) {
             double dist = resultValue({"distance"});
             if (dist >= 0) {
                 lines.append({(pointFromArray2D(l1) + pointFromArray2D(l1, 2)) / 2.0,
-                              (pointFromArray2D(l2) + pointFromArray2D(l2, 2)) / 2.0,
-                              fmtDist(dist)});
+                              (pointFromArray2D(l2) + pointFromArray2D(l2, 2)) / 2.0, fmtDist(dist)});
             }
         }
     } else if (mode == QStringLiteral("point_plane")) {
         const QJsonArray pt = inputParams["point"].toArray();
         const QJsonArray pl = inputParams["plane"].toArray();
-        if (pt.size() >= 2) points.append({pointFromArray2D(pt), QStringLiteral("P")});
+        if (pt.size() >= 2)
+            points.append({pointFromArray2D(pt), QStringLiteral("P")});
         if (pl.size() >= 9) {
             points.append({pointFromArray2D(pl), QStringLiteral("A")});
             points.append({pointFromArray2D(pl, 3), QStringLiteral("B")});
@@ -1920,11 +1978,9 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                 const QVector3D& b = m_quickMeasurePoints3D[1];
                 double dist = a.distanceToPoint(b);
                 QString label = tr("距离: %1").arg(dist, 0, 'f', 3);
-                Logger::instance().info(tr("3D 快速测量: %1 → %2 = %3")
-                    .arg(pointText3D(a)).arg(pointText3D(b)).arg(label), "Measurement");
-                buildOverlay3D(
-                    {{a, QStringLiteral("P1")}, {b, QStringLiteral("P2")}},
-                    {{a, b, label}});
+                Logger::instance().info(
+                    tr("3D 快速测量: %1 → %2 = %3").arg(pointText3D(a)).arg(pointText3D(b)).arg(label), "Measurement");
+                buildOverlay3D({{a, QStringLiteral("P1")}, {b, QStringLiteral("P2")}}, {{a, b, label}});
                 m_quickMeasurePoints3D.clear();
             }
         } else if (m_quickMeasureType == 1) {
@@ -1947,9 +2003,8 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                 double dist = p.distanceToPoint(foot);
                 QString label = tr("距离: %1").arg(dist, 0, 'f', 3);
                 Logger::instance().info(tr("3D 快速测量: 点到线 = %1").arg(label), "Measurement");
-                buildOverlay3D(
-                    {{p, QStringLiteral("P")}, {a, QStringLiteral("L1")}, {b, QStringLiteral("L2")}},
-                    {{a, b, QString()}, {p, foot, label}});
+                buildOverlay3D({{p, QStringLiteral("P")}, {a, QStringLiteral("L1")}, {b, QStringLiteral("L2")}},
+                               {{a, b, QString()}, {p, foot, label}});
                 m_quickMeasurePoints3D.clear();
             }
         } else if (m_quickMeasureType == 2) {
@@ -1962,8 +2017,10 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                     QString lbl = (i < 2) ? QStringLiteral("L1-%1").arg(i + 1) : QStringLiteral("L2-%1").arg(i - 1);
                     pts.append({m_quickMeasurePoints3D[i], lbl});
                 }
-                if (n >= 2) lines.append({m_quickMeasurePoints3D[0], m_quickMeasurePoints3D[1], QString()});
-                if (n >= 4) lines.append({m_quickMeasurePoints3D[2], m_quickMeasurePoints3D[3], QString()});
+                if (n >= 2)
+                    lines.append({m_quickMeasurePoints3D[0], m_quickMeasurePoints3D[1], QString()});
+                if (n >= 4)
+                    lines.append({m_quickMeasurePoints3D[2], m_quickMeasurePoints3D[3], QString()});
                 buildOverlay3D(pts, lines);
             } else {
                 const QVector3D& a1 = m_quickMeasurePoints3D[0];
@@ -1977,13 +2034,17 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                 double dist = m1.distanceToPoint(m2);
                 QString label = tr("间距: %1").arg(dist, 0, 'f', 3);
                 Logger::instance().info(tr("3D 快速测量: 两线间距=%1 (线1=%2, 线2=%3)")
-                    .arg(dist, 0, 'f', 3).arg(len1, 0, 'f', 3).arg(len2, 0, 'f', 3), "Measurement");
-                buildOverlay3D(
-                    {{a1, QStringLiteral("L1-1")}, {a2, QStringLiteral("L1-2")},
-                     {b1, QStringLiteral("L2-1")}, {b2, QStringLiteral("L2-2")}},
-                    {{a1, a2, tr("线1: %1").arg(len1, 0, 'f', 3)},
-                     {b1, b2, tr("线2: %1").arg(len2, 0, 'f', 3)},
-                     {m1, m2, label}});
+                                            .arg(dist, 0, 'f', 3)
+                                            .arg(len1, 0, 'f', 3)
+                                            .arg(len2, 0, 'f', 3),
+                                        "Measurement");
+                buildOverlay3D({{a1, QStringLiteral("L1-1")},
+                                {a2, QStringLiteral("L1-2")},
+                                {b1, QStringLiteral("L2-1")},
+                                {b2, QStringLiteral("L2-2")}},
+                               {{a1, a2, tr("线1: %1").arg(len1, 0, 'f', 3)},
+                                {b1, b2, tr("线2: %1").arg(len2, 0, 'f', 3)},
+                                {m1, m2, label}});
                 m_quickMeasurePoints3D.clear();
             }
         }
@@ -2266,8 +2327,8 @@ QString MainWindow::ensureMeasurementInputForMode(const QString& mode, const QSt
 
     int insertRow = m_processTreeController->topLevelItemCount();
     if (m_processTreeController->containsInstance(consumerInstanceId)) {
-        const int consumerRow = m_processTreeController->indexOfTopLevelItem(
-            m_processTreeController->instanceItem(consumerInstanceId));
+        const int consumerRow =
+            m_processTreeController->indexOfTopLevelItem(m_processTreeController->instanceItem(consumerInstanceId));
         if (consumerRow >= 0) {
             insertRow = consumerRow;
         }
@@ -2306,10 +2367,12 @@ void MainWindow::applyTheme() {
 
     if (m_toolBoxDock && m_toolBoxDock->titleBarWidget()) {
         m_toolBoxDock->titleBarWidget()->setStyleSheet(
-            QString("background-color: %1; border: none; border-bottom: 1px solid %2;").arg(pal.bgColor, pal.borderColor));
+            QString("background-color: %1; border: none; border-bottom: 1px solid %2;")
+                .arg(pal.bgColor, pal.borderColor));
         QLabel* label = m_toolBoxDock->titleBarWidget()->findChild<QLabel*>();
         if (label)
-            label->setStyleSheet(QString("QLabel { color: %1; font-weight: 600; font-size: 14px; }").arg(pal.textColor));
+            label->setStyleSheet(
+                QString("QLabel { color: %1; font-weight: 600; font-size: 14px; }").arg(pal.textColor));
         QToolButton* btn = m_toolBoxDock->titleBarWidget()->findChild<QToolButton*>();
         if (btn)
             btn->setStyleSheet(
@@ -2319,10 +2382,12 @@ void MainWindow::applyTheme() {
     }
     if (m_logDock && m_logDock->titleBarWidget()) {
         m_logDock->titleBarWidget()->setStyleSheet(
-            QString("background-color: %1; border: none; border-bottom: 1px solid %2;").arg(pal.bgColor, pal.borderColor));
+            QString("background-color: %1; border: none; border-bottom: 1px solid %2;")
+                .arg(pal.bgColor, pal.borderColor));
         QLabel* label = m_logDock->titleBarWidget()->findChild<QLabel*>();
         if (label)
-            label->setStyleSheet(QString("QLabel { color: %1; font-weight: 600; font-size: 14px; }").arg(pal.textColor));
+            label->setStyleSheet(
+                QString("QLabel { color: %1; font-weight: 600; font-size: 14px; }").arg(pal.textColor));
     }
 
     if (m_toolBoxTree) {
@@ -2374,6 +2439,10 @@ void MainWindow::applyTheme() {
     if (cycleBtn) {
         cycleBtn->setStyleSheet(processToolButtonStyle);
     }
+    QToolButton* stepBtn = findChild<QToolButton*>("ProcessStepBtn");
+    if (stepBtn) {
+        stepBtn->setStyleSheet(processToolButtonStyle);
+    }
 
     QWidget* procToolBar = findChild<QWidget*>("ProcessToolBar");
     if (procToolBar) {
@@ -2401,7 +2470,8 @@ void MainWindow::applyTheme() {
                                               .arg(pal.imageDisplayBg, pal.panelBorderColor));
     }
     if (m_logDock) {
-        m_logDock->setStyleSheet(QString("QDockWidget#LogDock { border-top: 1px solid %1; }").arg(pal.panelBorderColor));
+        m_logDock->setStyleSheet(
+            QString("QDockWidget#LogDock { border-top: 1px solid %1; }").arg(pal.panelBorderColor));
     }
     if (m_logTable) {
         m_logTable->setFrameShape(QFrame::NoFrame);
@@ -2429,7 +2499,7 @@ void MainWindow::applyTheme() {
     }
     if (m_logTerminalTabs) {
         m_logTerminalTabs->setStyleSheet(
-            QString("QTabWidget::pane { border: none; background-color: %1; }"
+            QString("QTabWidget::pane { border: none; background-color: %1; padding: 0px; margin: 0px; }"
                     "QTabBar::tab { background-color: %2; color: %3; font-size: 13px; font-weight: 500;"
                     "  min-height: 26px; padding: 3px 10px; border: none; margin-right: 1px; }"
                     "QTabBar::tab:selected { background-color: %1; color: %4; }"
@@ -2621,8 +2691,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 
             const bool isToolBoxDrop =
                 dropEvent->source() == m_toolBoxTree || dropEvent->source() == m_toolBoxTree->viewport();
-            const bool isProcessTreeDrop =
-                dropEvent->source() == tree || dropEvent->source() == tree->viewport();
+            const bool isProcessTreeDrop = dropEvent->source() == tree || dropEvent->source() == tree->viewport();
             if (!isToolBoxDrop && !isProcessTreeDrop) {
                 dropEvent->ignore();
                 return true;
@@ -2880,12 +2949,11 @@ bool MainWindow::importPointCloudFile(const QString& filePath) {
         if (ext == "tif" || ext == "tiff") {
 #ifdef DEEPLUX_HAS_OPENCV
             cv::Mat mat = cv::imread(filePath.toStdString(), cv::IMREAD_UNCHANGED);
-            Logger::instance().info(
-                QString("[imp3D] cv::imread: empty=%1, type=%2, channels=%3")
-                    .arg(mat.empty() ? "true" : "false")
-                    .arg(mat.type())
-                    .arg(mat.channels()),
-                "3D");
+            Logger::instance().info(QString("[imp3D] cv::imread: empty=%1, type=%2, channels=%3")
+                                        .arg(mat.empty() ? "true" : "false")
+                                        .arg(mat.type())
+                                        .arg(mat.channels()),
+                                    "3D");
             if (!mat.empty()) {
                 QImage qimg;
                 if (mat.channels() == 1) {
@@ -2898,20 +2966,23 @@ bool MainWindow::importPointCloudFile(const QString& filePath) {
                     cv::Mat colored;
                     cv::applyColorMap(mat8u, colored, cv::COLORMAP_JET);
                     qimg = QImage(colored.data, colored.cols, colored.rows, static_cast<int>(colored.step),
-                                  QImage::Format_RGB888).copy();
+                                  QImage::Format_RGB888)
+                               .copy();
                 } else {
                     cv::Mat rgb;
                     cv::cvtColor(mat, rgb, cv::COLOR_BGR2RGB);
-                    qimg = QImage(rgb.data, rgb.cols, rgb.rows, static_cast<int>(rgb.step),
-                                  QImage::Format_RGB888).copy();
+                    qimg =
+                        QImage(rgb.data, rgb.cols, rgb.rows, static_cast<int>(rgb.step), QImage::Format_RGB888).copy();
                 }
                 Logger::instance().info(
                     QString("[imp3D] 2D image generated: %1x%2, calling setDualData on %3 viewports")
-                        .arg(qimg.width()).arg(qimg.height())
+                        .arg(qimg.width())
+                        .arg(qimg.height())
                         .arg(m_displayManager->allViewports().size()),
                     "3D");
                 for (ViewportWidget* vp : m_displayManager->allViewports()) {
-                    if (vp) vp->setDualData(qimg, data);
+                    if (vp)
+                        vp->setDualData(qimg, data);
                 }
             } else {
                 Logger::instance().warning("[imp3D] cv::imread returned empty, falling back to 3D only", "3D");
@@ -3001,6 +3072,33 @@ void MainWindow::autoConfigureGrabImage(const QString& filePath) {
 void MainWindow::clearCentralDisplay() {
     if (m_displayManager) {
         m_displayManager->clearAll();
+    }
+}
+
+void MainWindow::clearExecutionHighlight(QTreeWidgetItem* item) {
+    if (!item) {
+        return;
+    }
+
+    item->setBackground(0, QBrush());
+    item->setForeground(0, QBrush());
+    item->setBackground(1, QBrush());
+    item->setForeground(1, QBrush());
+}
+
+void MainWindow::showProcessModuleOutput(QTreeWidgetItem* item) {
+    if (!item || item->data(0, Qt::UserRole).toString() != QStringLiteral("flow_item")) {
+        return;
+    }
+
+    const QString instanceId = item->data(0, Qt::UserRole + 1).toString();
+    if (instanceId.isEmpty()) {
+        return;
+    }
+
+    const ImageData output = RunEngine::instance().moduleOutput(instanceId);
+    if (output.isValid()) {
+        displayImage(output);
     }
 }
 
@@ -3172,11 +3270,15 @@ void MainWindow::setUiRunningState(bool running, bool cycleMode) {
     m_isCycleMode = running && cycleMode;
 
     if (m_btnStartPause) {
-        m_btnStartPause->setIcon(running ? AppIconProvider::icon(AppIconProvider::Icon::Pause, 24, QColor("#D97706")) : AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#16A34A")));
+        m_btnStartPause->setIcon(running ? AppIconProvider::icon(AppIconProvider::Icon::Pause, 24, QColor("#D97706"))
+                                         : AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#16A34A")));
         m_btnStartPause->setToolTip(running ? tr("暂停") : tr("单次运行"));
     }
     if (m_btnStop) {
         m_btnStop->setEnabled(running);
+    }
+    if (m_btnStepRun) {
+        m_btnStepRun->setEnabled(!running);
     }
 }
 
@@ -3213,6 +3315,29 @@ void MainWindow::onRunCycle() {
     // 已经在运行时，不做操作，保持循环模式
 }
 
+void MainWindow::onStepRun() {
+    if (m_isRunning) {
+        return;
+    }
+    if (m_processTree->topLevelItemCount() == 0) {
+        if (m_processTimeLabel) {
+            m_processTimeLabel->setText(tr("总耗时：0 ms"));
+        }
+        Logger::instance().warning(tr("流程为空，无法单步执行"), "System");
+        return;
+    }
+    if (!syncModulesToRunEngine()) {
+        Logger::instance().warning(tr("流程同步失败，无法单步执行"), "System");
+        return;
+    }
+
+    setUiRunningState(true, false);
+    Logger::instance().info(tr("单步执行"), "System");
+    if (!RunEngine::instance().stepOnce()) {
+        setUiRunningState(false, false);
+    }
+}
+
 void MainWindow::onStop() {
     setUiRunningState(false, false);
     RunEngine::instance().stop();
@@ -3231,12 +3356,11 @@ void MainWindow::executeFlowOnce() {
     m_processTreeController->setCurrentItem(nullptr);
     for (int i = 0; i < m_processTreeController->topLevelItemCount(); ++i) {
         QTreeWidgetItem* item = m_processTreeController->topLevelItem(i);
-        item->setBackground(0, QBrush());
-        item->setForeground(0, QBrush());
-        item->setBackground(1, QBrush());
-        item->setForeground(1, QBrush());
+        clearExecutionHighlight(item);
+        item->setText(1, QString());
     }
     m_currentExecutingItem = nullptr;
+    m_lastExecutedItem = nullptr;
 
     // 如果没有模块，直接返回
     if (m_processTreeController->topLevelItemCount() == 0) {
@@ -3246,33 +3370,12 @@ void MainWindow::executeFlowOnce() {
         return;
     }
 
-    RunEngine& engine = RunEngine::instance();
-
-    // 仅在模块变更后重新同步（避免循环模式下每轮重复 addModule）
-    if (m_modulesNeedSync) {
-        m_processTreeController->clearInstanceItemMap();
-        engine.clearModules();
-        for (int i = 0; i < m_processTreeController->topLevelItemCount(); ++i) {
-            QTreeWidgetItem* item = m_processTreeController->topLevelItem(i);
-            QString instanceName = item->data(0, Qt::UserRole + 1).toString();
-            if (instanceName.isEmpty() || !m_flowModules.contains(instanceName))
-                continue;
-            IModule* im = m_flowModules.value(instanceName);
-            if (!im || !im->isInitialized())
-                continue;
-            ModuleBase* mb = qobject_cast<ModuleBase*>(im);
-            if (mb) {
-                mb->setInstanceName(instanceName);
-                engine.addModule(mb);
-                // 建立 instanceName → item 映射（用于信号处理 O(1) 查找）
-                m_processTreeController->setInstanceItem(instanceName, item);
-            }
-        }
-        m_modulesNeedSync = false;
+    if (!syncModulesToRunEngine()) {
+        return;
     }
 
     // 委托给 RunEngine 执行
-    engine.runOnce();
+    RunEngine::instance().runOnce();
 }
 
 void MainWindow::onUserLogin() {
@@ -3571,8 +3674,43 @@ void MainWindow::onImportImage() {
     }
 }
 
-void MainWindow::syncModulesToRunEngine() {
-    // 同步模块到运行引擎
+bool MainWindow::syncModulesToRunEngine() {
+    if (!m_processTreeController) {
+        return false;
+    }
+
+    if (!m_modulesNeedSync) {
+        return true;
+    }
+
+    RunEngine& engine = RunEngine::instance();
+    m_processTreeController->clearInstanceItemMap();
+    engine.clearModules();
+
+    for (int i = 0; i < m_processTreeController->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* item = m_processTreeController->topLevelItem(i);
+        const QString instanceName = item->data(0, Qt::UserRole + 1).toString();
+        if (instanceName.isEmpty() || !m_flowModules.contains(instanceName)) {
+            continue;
+        }
+
+        IModule* module = m_flowModules.value(instanceName);
+        if (!module || !module->isInitialized()) {
+            continue;
+        }
+
+        ModuleBase* moduleBase = qobject_cast<ModuleBase*>(module);
+        if (!moduleBase) {
+            continue;
+        }
+
+        moduleBase->setInstanceName(instanceName);
+        engine.addModule(moduleBase);
+        m_processTreeController->setInstanceItem(instanceName, item);
+    }
+
+    m_modulesNeedSync = false;
+    return true;
 }
 
 // ========== 图标创建辅助方法 ==========

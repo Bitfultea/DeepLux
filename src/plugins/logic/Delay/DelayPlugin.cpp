@@ -1,9 +1,11 @@
 #include "DelayPlugin.h"
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
+#include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QFormLayout>
 #include <QSpinBox>
 #include <QThread>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
@@ -39,9 +41,21 @@ bool DelayPlugin::process(const ImageData& input, ImageData& output)
 
     Logger::instance().debug(QString("Delay: Waiting %1 ms").arg(m_delayMs), "Logic");
 
-    QThread::msleep(m_delayMs);
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < m_delayMs) {
+        if (isCancellationRequested()) {
+            Logger::instance().info("Delay cancelled", "Logic");
+            return false;
+        }
 
-    return true;
+        const int remainingMs = m_delayMs - static_cast<int>(timer.elapsed());
+        QThread::msleep(qMin(20, qMax(1, remainingMs)));
+        // ponytail: RunEngine still executes on the UI thread; keep Delay stoppable without moving the engine yet.
+        QCoreApplication::processEvents();
+    }
+
+    return !isCancellationRequested();
 }
 
 bool DelayPlugin::doValidateParams(const QJsonObject& params, QString& error) const

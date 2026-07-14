@@ -132,6 +132,13 @@ void drawIcon(QPainter& painter, AppIconProvider::Icon icon, qreal scale) {
         painter.drawPolygon(triangle);
         break;
     }
+    case AppIconProvider::Icon::Step: {
+        QPolygonF triangle;
+        triangle << pt(6.5, 7, scale) << pt(6.5, 17, scale) << pt(15, 12, scale);
+        painter.drawPolygon(triangle);
+        line(painter, scale, 18, 6.5, 18, 17.5);
+        break;
+    }
     case AppIconProvider::Icon::Pause:
         roundedRect(painter, scale, 7, 6, 3, 12, 1);
         roundedRect(painter, scale, 14, 6, 3, 12, 1);

@@ -53,6 +53,7 @@ private slots:
     void onQuickMeasure();
     void onRunOnce();
     void onRunCycle();
+    void onStepRun();
     void onStop();
     void executeFlowOnce();
     void onUserLogin();
@@ -124,6 +125,7 @@ protected:
     QWidget* m_processStatusWidget = nullptr;
     QToolButton* m_btnStartPause = nullptr;
     QToolButton* m_btnStop = nullptr;
+    QToolButton* m_btnStepRun = nullptr;
     bool m_isRunning = false;
     bool m_isCycleMode = false;
     QTimer* m_cycleTimer = nullptr;
@@ -131,6 +133,7 @@ protected:
     // 流程执行时间和高亮
     QMap<QString, int> m_moduleExecutionTimes;         // 模块实例名 -> 执行时间(ms)
     QTreeWidgetItem* m_currentExecutingItem = nullptr; // 当前正在执行的项目
+    QTreeWidgetItem* m_lastExecutedItem = nullptr;     // 最近完成的项目
     int m_currentExecutingIndex = 0;                   // 当前执行索引
     ImageData m_flowInput;                             // 流程执行时的输入数据
     int m_flowTotalTime = 0;                           // 总耗时
@@ -163,7 +166,9 @@ protected:
     bool m_isDarkTheme = false;
     void applyTheme();
     void setUiRunningState(bool running, bool cycleMode);
-    void syncModulesToRunEngine();
+    bool syncModulesToRunEngine();
+    void clearExecutionHighlight(QTreeWidgetItem* item);
+    void showProcessModuleOutput(QTreeWidgetItem* item);
     void displayImage(const ImageData& image, const QString& label = QString());
     bool importFile(const QString& filePath);
     bool importImageFile(const QString& filePath);

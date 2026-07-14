@@ -51,7 +51,8 @@ public:
         Copy,
         Settings,
         Agent,
-        TestConnection
+        TestConnection,
+        Step
     };
 
     static QIcon icon(Icon icon, int size = 24, const QColor& color = QColor("#374151"));

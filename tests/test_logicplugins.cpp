@@ -1,12 +1,17 @@
 #include <QtTest/QtTest>
+#include <QElapsedTimer>
 #include <QJsonObject>
+#include <QThread>
 #include <QVariant>
+#include <thread>
 
 #include "core/model/ImageData.h"
+#include "core/common/CancellationToken.h"
 #include "core/engine/RunEngine.h"
 #include "plugins/logic/If/IfPlugin.h"
 #include "plugins/logic/Loop/LoopPlugin.h"
 #include "plugins/logic/While/WhilePlugin.h"
+#include "plugins/logic/Delay/DelayPlugin.h"
 
 using namespace DeepLux;
 
@@ -55,6 +60,9 @@ private slots:
     void testWhileValidationMaxIterations();
     void testWhileFlowControlType();
     void testWhileEndProcess();
+
+    // DelayPlugin
+    void testDelayCanBeCancelledDuringWait();
 };
 
 void TestLogicPlugins::initTestCase()
@@ -454,6 +462,31 @@ void TestLogicPlugins::testWhileEndProcess()
     ImageData input, output;
     QVERIFY(plugin.execute(input, output));
     QCOMPARE(plugin.flowControlType(), ControlFlowType::WhileEnd);
+}
+
+void TestLogicPlugins::testDelayCanBeCancelledDuringWait()
+{
+    DelayPlugin plugin;
+    QVERIFY(plugin.initialize());
+    plugin.setParam(QStringLiteral("delayMs"), 1000);
+
+    CancellationToken token;
+    plugin.setCancellationToken(&token);
+
+    std::thread canceller([&token]() {
+        QThread::msleep(30);
+        token.cancel();
+    });
+
+    ImageData input;
+    ImageData output;
+    QElapsedTimer timer;
+    timer.start();
+    const bool ok = plugin.execute(input, output);
+    canceller.join();
+
+    QVERIFY(!ok);
+    QVERIFY2(timer.elapsed() < 500, qPrintable(QString("Delay cancellation took %1 ms").arg(timer.elapsed())));
 }
 
 QTEST_MAIN(TestLogicPlugins)

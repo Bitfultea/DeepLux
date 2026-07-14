@@ -1,8 +1,15 @@
 #include "ModuleBase.h"
+#include "../common/CancellationToken.h"
 #include <QDebug>
+#include <QHash>
 #include <QJsonValue>
+#include <QMutexLocker>
 
 namespace DeepLux {
+namespace {
+QHash<const ModuleBase*, CancellationToken*> g_cancellationTokens;
+QMutex g_cancellationTokensMutex;
+}
 
 // ========== ModuleParam ==========
 
@@ -34,6 +41,8 @@ ModuleBase::ModuleBase(QObject* parent)
 
 ModuleBase::~ModuleBase()
 {
+    QMutexLocker locker(&g_cancellationTokensMutex);
+    g_cancellationTokens.remove(this);
 }
 
 bool ModuleBase::initialize()
@@ -76,6 +85,12 @@ bool ModuleBase::execute(const ImageData& input, ImageData& output)
         emit executionCompleted(false);
         return false;
     }
+
+    if (isCancellationRequested()) {
+        emit errorOccurred(tr("Execution cancelled"));
+        emit executionCompleted(false);
+        return false;
+    }
     
     m_state = ModuleState::Running;
     emit stateChanged(m_state);
@@ -90,12 +105,39 @@ bool ModuleBase::execute(const ImageData& input, ImageData& output)
         emit errorOccurred("Unknown exception occurred");
         success = false;
     }
+
+    if (isCancellationRequested()) {
+        emit errorOccurred(tr("Execution cancelled"));
+        success = false;
+    }
     
     m_state = success ? ModuleState::Idle : ModuleState::Error;
     emit stateChanged(m_state);
     emit executionCompleted(success);
     
     return success;
+}
+
+void ModuleBase::setCancellationToken(CancellationToken* token)
+{
+    QMutexLocker locker(&g_cancellationTokensMutex);
+    if (token) {
+        g_cancellationTokens.insert(this, token);
+    } else {
+        g_cancellationTokens.remove(this);
+    }
+}
+
+CancellationToken* ModuleBase::cancellationToken() const
+{
+    QMutexLocker locker(&g_cancellationTokensMutex);
+    return g_cancellationTokens.value(this, nullptr);
+}
+
+bool ModuleBase::isCancellationRequested() const
+{
+    CancellationToken* token = cancellationToken();
+    return token && token->isCancelledFast();
 }
 
 QJsonObject ModuleBase::defaultParams() const

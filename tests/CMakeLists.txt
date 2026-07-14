@@ -119,6 +119,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
                 IfPlugin
                 LoopPlugin
                 WhilePlugin
+                DelayPlugin
         )
     endif()
     if(TEST_NAME STREQUAL "test_plugincontracts")

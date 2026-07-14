@@ -8,6 +8,8 @@
 
 namespace DeepLux {
 
+class CancellationToken;
+
 /**
  * @brief 模块参数基类
  */
@@ -52,6 +54,8 @@ public:
     int interfaceVersion() const override { return DEEPLUX_MODULE_INTERFACE_VERSION; }
 
     bool execute(const ImageData& input, ImageData& output) override;
+    void setCancellationToken(CancellationToken* token);
+    CancellationToken* cancellationToken() const;
 
     QJsonObject defaultParams() const override;
     QJsonObject currentParams() const override;
@@ -67,6 +71,8 @@ public:
     IModule* clone() const override;
 
 protected:
+    bool isCancellationRequested() const;
+
     // Derived classes should override this to provide proper cloning.
     // Default implementation returns nullptr (plugin doesn't support multiple instances).
     virtual IModule* cloneImpl() const;

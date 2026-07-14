@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHeaderView>
+#include <QImage>
 #include <QLabel>
 #include <QLayout>
 #include <QPlainTextEdit>
@@ -23,6 +24,8 @@
 #include <QVector3D>
 #include <QtTest/QtTest>
 #include <core/agent/AgentController.h>
+#include <core/base/ModuleBase.h>
+#include <core/engine/RunEngine.h>
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>
 #include <core/model/Project.h>
@@ -30,11 +33,38 @@
 #include <ui/widgets/AgentChatPanel.h>
 #include <ui/widgets/AgentMessageBubble.h>
 #include <ui/widgets/AgentToolPreviewCard.h>
+#include <ui/widgets/AppIconProvider.h>
 #include <ui/widgets/FlowCanvas.h>
 #include <ui/widgets/HImageWidget.h>
 #include <ui/widgets/ViewportWidget.h>
 
 using namespace DeepLux;
+
+class MainWindowOutputProbeModule : public ModuleBase {
+    Q_OBJECT
+
+public:
+    explicit MainWindowOutputProbeModule(const QString& instanceId) {
+        m_moduleId = QStringLiteral("com.deeplux.test.mainwindowoutputprobe");
+        m_name = QStringLiteral("OutputProbe");
+        m_category = QStringLiteral("test");
+        setInstanceName(instanceId);
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        Q_UNUSED(input)
+        QImage image(16, 12, QImage::Format_RGB32);
+        image.fill(QColor("#22C55E"));
+        output = ImageData(image);
+        output.setData(QStringLiteral("tag"), QStringLiteral("probe"));
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
 
 class TestMainWindow : public QObject {
     Q_OBJECT
@@ -49,6 +79,8 @@ private slots:
     void testAgentThinkingStatusStaysCompactAndSafe();
     void testAgentInputErrorPathDoesNotCrashOrStayThinking();
     void testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTheme();
+    void testClickingProcessModuleDisplaysIntermediateOutput();
+    void testStepRunHighlightMovesBetweenModules();
     void testMeasurementPickingUpdatesInputAndClipboard();
     void testMeasurementPickingViaImageViewportClick();
     void testMeasurementConfigButtonCreatesInputNode();
@@ -63,12 +95,18 @@ private:
 void TestMainWindow::init() {
     ProjectManager::instance().closeProject();
     PluginManager::instance().shutdown();
+    RunEngine::instance().stop();
+    RunEngine::instance().clearModules();
+    RunEngine::instance().clearOutputs();
     qunsetenv("DEEPLUX_APP_DATA_DIR");
 }
 
 void TestMainWindow::cleanup() {
     ProjectManager::instance().closeProject();
     PluginManager::instance().shutdown();
+    RunEngine::instance().stop();
+    RunEngine::instance().clearModules();
+    RunEngine::instance().clearOutputs();
     qunsetenv("DEEPLUX_APP_DATA_DIR");
 }
 
@@ -109,6 +147,99 @@ bool TestMainWindow::installRuntimePlugin(const QString& pluginRoot, const QStri
 
     return QFile::copy(metadataSrc, pluginDir.filePath("metadata.json")) &&
            QFile::copy(libSrc, pluginDir.filePath(QString("lib%1Plugin.so").arg(pluginName)));
+}
+
+void TestMainWindow::testClickingProcessModuleDisplaysIntermediateOutput() {
+    RunEngine& engine = RunEngine::instance();
+    MainWindowOutputProbeModule* module = new MainWindowOutputProbeModule(QStringLiteral("probe_1"));
+    module->initialize();
+    engine.addModule(module);
+    engine.runOnce();
+
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance instance;
+    instance.id = QStringLiteral("probe_1");
+    instance.moduleId = QStringLiteral("OutputProbe");
+    instance.name = QStringLiteral("输出模块");
+    project->addModule(instance);
+    QCoreApplication::processEvents();
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>("ProcessTree");
+    QVERIFY(processTree != nullptr);
+    QCOMPARE(processTree->topLevelItemCount(), 1);
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+    QVERIFY(!imageWidget->hasImage());
+
+    QTreeWidgetItem* item = processTree->topLevelItem(0);
+    processTree->setCurrentItem(item);
+    const QRect itemRect = processTree->visualItemRect(item);
+    QTest::mouseClick(processTree->viewport(), Qt::LeftButton, Qt::NoModifier, itemRect.center());
+    QCoreApplication::processEvents();
+
+    QTRY_VERIFY(imageWidget->hasImage());
+
+    engine.clearModules();
+    delete module;
+}
+
+void TestMainWindow::testStepRunHighlightMovesBetweenModules() {
+    RunEngine& engine = RunEngine::instance();
+
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance firstInstance;
+    firstInstance.id = QStringLiteral("first_1");
+    firstInstance.moduleId = QStringLiteral("OutputProbe");
+    firstInstance.name = QStringLiteral("第一步");
+    project->addModule(firstInstance);
+
+    ModuleInstance secondInstance;
+    secondInstance.id = QStringLiteral("second_1");
+    secondInstance.moduleId = QStringLiteral("OutputProbe");
+    secondInstance.name = QStringLiteral("第二步");
+    project->addModule(secondInstance);
+    QCoreApplication::processEvents();
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>("ProcessTree");
+    QVERIFY(processTree != nullptr);
+    QCOMPARE(processTree->topLevelItemCount(), 2);
+    QTreeWidgetItem* firstItem = processTree->topLevelItem(0);
+    QTreeWidgetItem* secondItem = processTree->topLevelItem(1);
+
+    MainWindowOutputProbeModule* first = new MainWindowOutputProbeModule(QStringLiteral("first_1"));
+    MainWindowOutputProbeModule* second = new MainWindowOutputProbeModule(QStringLiteral("second_1"));
+    first->initialize();
+    second->initialize();
+    engine.addModule(first);
+    engine.addModule(second);
+
+    QVERIFY(engine.stepOnce());
+    QCoreApplication::processEvents();
+    QCOMPARE(processTree->currentItem(), firstItem);
+    QCOMPARE(firstItem->background(0).style(), Qt::NoBrush);
+    QCOMPARE(secondItem->background(0).style(), Qt::NoBrush);
+    QVERIFY(!processTree->isColumnHidden(1));
+    QVERIFY(firstItem->text(1).endsWith(QStringLiteral(" ms")));
+
+    QVERIFY(engine.stepOnce());
+    QCoreApplication::processEvents();
+    QCOMPARE(processTree->currentItem(), secondItem);
+    QCOMPARE(firstItem->background(0).style(), Qt::NoBrush);
+    QCOMPARE(secondItem->background(0).style(), Qt::NoBrush);
+    QVERIFY(secondItem->text(1).endsWith(QStringLiteral(" ms")));
+
+    engine.clearModules();
+    delete first;
+    delete second;
 }
 
 void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
@@ -657,6 +788,12 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY2(!mainStyle.contains(QStringLiteral("QDockWidget#ToolPanelDock { border-right")),
              "Tool dock should not add a second right border next to the splitter");
 
+    QTreeWidget* processTreeForHighlight = window.findChild<QTreeWidget*>("ProcessTree");
+    QVERIFY(processTreeForHighlight != nullptr);
+    QVERIFY2(processTreeForHighlight->styleSheet().contains(
+                 QStringLiteral("QTreeWidget::item:selected { background-color: #0078d7; color: #ffffff; }")),
+             "Process tree mouse selection should use the same deep highlight as run completion");
+
     QWidget* processTabContent = window.findChild<QWidget*>("ProcessTabContent");
     QVERIFY(processTabContent != nullptr);
     QVERIFY(processTabContent->layout() != nullptr);
@@ -673,6 +810,18 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY(processStartButton != nullptr);
     QVERIFY2(processStartButton->styleSheet().contains(QStringLiteral("QToolButton")),
              "Process toolbar buttons should use the same styled tool-button rules as the tool panel");
+
+    QToolButton* processStepButton = window.findChild<QToolButton*>("ProcessStepBtn");
+    QVERIFY(processStepButton != nullptr);
+    QVERIFY2(processStepButton->toolTip().contains(QStringLiteral("单步执行")),
+             "Process toolbar should expose a dedicated one-step execution action");
+    QVERIFY2(processStepButton->styleSheet().contains(QStringLiteral("QToolButton")),
+             "Step execution button should share the process toolbar styling");
+    const QImage playIcon =
+        AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#0F766E")).pixmap(24, 24).toImage();
+    const QImage stepIcon =
+        AppIconProvider::icon(AppIconProvider::Icon::Step, 24, QColor("#0F766E")).pixmap(24, 24).toImage();
+    QVERIFY2(playIcon != stepIcon, "Step execution icon should not reuse the play triangle");
 
     QLabel* viewportTitle = window.findChild<QLabel*>("ViewportTitle");
     QVERIFY(viewportTitle != nullptr);

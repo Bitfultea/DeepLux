@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 #include <core/base/ModuleBase.h>
+#include <core/common/CancellationToken.h>
 #include <core/common/Logger.h>
 #include <core/engine/RunEngine.h>
 #include <core/model/Project.h>
@@ -22,16 +23,50 @@ public:
     bool executeCalled = false;
     bool executeResult = true;
     QStringList* executionLog = nullptr;
+    QString outputTag;
 
 protected:
     bool process(const ImageData& input, ImageData& output) override {
-        Q_UNUSED(input)
-        Q_UNUSED(output)
         executeCalled = true;
         if (executionLog) {
             executionLog->append(instanceName().isEmpty() ? name() : instanceName());
         }
+        if (outputTag.isEmpty()) {
+            output = input;
+        } else {
+            QImage image(8, 8, QImage::Format_RGB32);
+            image.fill(Qt::white);
+            output = ImageData(image);
+            output.setData("tag", outputTag);
+        }
         return executeResult;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
+
+class StopAwareModule : public ModuleBase {
+    Q_OBJECT
+
+public:
+    StopAwareModule() {
+        m_moduleId = "com.deeplux.test.stopaware";
+        m_name = "StopAware";
+        m_category = "test";
+    }
+
+    bool hadCancellationToken = false;
+    bool sawCancellation = false;
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        hadCancellationToken = cancellationToken() != nullptr;
+        RunEngine::instance().stop();
+        sawCancellation = isCancellationRequested();
+        return true;
     }
 
     QWidget* createConfigWidget() override {
@@ -53,10 +88,13 @@ private slots:
     void testCycleMode();
     void testPauseResume();
     void testStop();
+    void testStopPropagatesCancellationToRunningModule();
     void testAddModule();
     void testRemoveModule();
     void testClearModules();
     void testModuleExecution();
+    void testStepOnceExecutesOneModulePerClick();
+    void testStepOnceStoresIntermediateOutputByModule();
     void testLoadProjectUsesInstanceIdsForDuplicateModuleNames();
     void testLoadProjectExecutesInConnectionTopologyOrder();
     void testLoadProjectRejectsConnectionWithMissingModule();
@@ -168,6 +206,23 @@ void TestRunEngine::testStop() {
     delete module;
 }
 
+void TestRunEngine::testStopPropagatesCancellationToRunningModule() {
+    RunEngine& engine = RunEngine::instance();
+
+    StopAwareModule* module = new StopAwareModule();
+    module->initialize();
+    engine.addModule(module);
+
+    engine.runOnce();
+
+    QVERIFY(module->hadCancellationToken);
+    QVERIFY(module->sawCancellation);
+    QVERIFY(engine.cancellationToken()->isCancelled());
+
+    engine.clearModules();
+    delete module;
+}
+
 void TestRunEngine::testAddModule() {
     RunEngine& engine = RunEngine::instance();
 
@@ -230,6 +285,69 @@ void TestRunEngine::testModuleExecution() {
     QVERIFY(module->executeCalled);
 
     delete module;
+}
+
+void TestRunEngine::testStepOnceExecutesOneModulePerClick() {
+    RunEngine& engine = RunEngine::instance();
+    QStringList executionLog;
+
+    TestExecutionModule* first = new TestExecutionModule("First");
+    TestExecutionModule* second = new TestExecutionModule("Second");
+    first->executionLog = &executionLog;
+    second->executionLog = &executionLog;
+    first->initialize();
+    second->initialize();
+    engine.addModule(first);
+    engine.addModule(second);
+
+    QVERIFY(engine.stepOnce());
+    QCOMPARE(executionLog, QStringList({"First"}));
+    QVERIFY(first->executeCalled);
+    QVERIFY(!second->executeCalled);
+
+    first->executeCalled = false;
+    QVERIFY(engine.stepOnce());
+    QCOMPARE(executionLog, QStringList({"First", "Second"}));
+    QVERIFY(!first->executeCalled);
+    QVERIFY(second->executeCalled);
+
+    second->executeCalled = false;
+    QVERIFY(engine.stepOnce());
+    QCOMPARE(executionLog, QStringList({"First", "Second", "First"}));
+    QVERIFY(first->executeCalled);
+    QVERIFY(!second->executeCalled);
+
+    engine.clearModules();
+    delete first;
+    delete second;
+}
+
+void TestRunEngine::testStepOnceStoresIntermediateOutputByModule() {
+    RunEngine& engine = RunEngine::instance();
+
+    TestExecutionModule* first = new TestExecutionModule("First");
+    TestExecutionModule* second = new TestExecutionModule("Second");
+    first->setInstanceName(QStringLiteral("first_1"));
+    second->setInstanceName(QStringLiteral("second_1"));
+    first->outputTag = QStringLiteral("first");
+    second->outputTag = QStringLiteral("second");
+    first->initialize();
+    second->initialize();
+    engine.addModule(first);
+    engine.addModule(second);
+
+    QVERIFY(engine.stepOnce());
+    QCOMPARE(engine.moduleOutput(QStringLiteral("first_1")).data(QStringLiteral("tag")).toString(),
+             QStringLiteral("first"));
+    QVERIFY(!engine.moduleOutput(QStringLiteral("second_1")).isValid());
+
+    QVERIFY(engine.stepOnce());
+    QCOMPARE(engine.moduleOutput(QStringLiteral("second_1")).data(QStringLiteral("tag")).toString(),
+             QStringLiteral("second"));
+
+    engine.clearModules();
+    delete first;
+    delete second;
 }
 
 void TestRunEngine::testLoadProjectUsesInstanceIdsForDuplicateModuleNames() {

@@ -49,9 +49,91 @@ void RunEngine::runOnce() {
         return;
     }
 
+    resetStepState();
     m_runMode.store(static_cast<int>(RunMode::RunOnce), std::memory_order_release);
     Logger::instance().info(tr("Starting single run"), "Run");
     executeRun();
+}
+
+bool RunEngine::stepOnce() {
+    if (state() == RunState::Running) {
+        return false;
+    }
+
+    {
+        QReadLocker locker(&m_moduleLock);
+        if (m_modules.isEmpty()) {
+            RunResult result;
+            result.success = false;
+            result.errorCode = -1;
+            result.errorMessage = tr("No modules to run");
+            result.elapsedMs = 0;
+            result.finishedTime = QDateTime::currentDateTime();
+            emit runFinished(result);
+            return false;
+        }
+    }
+
+    if (m_stepCurrentModuleName.isEmpty()) {
+        clearPipelineOutputs();
+        buildModuleTree();
+        QReadLocker locker(&m_moduleLock);
+        m_stepCurrentModuleName =
+            m_executionOrder.isEmpty() ? runtimeModuleName(m_modules.first()) : m_executionOrder.first();
+        m_stepPipelineData = ImageData();
+    }
+
+    if (m_stepCurrentModuleName.isEmpty()) {
+        resetStepState();
+        return false;
+    }
+
+    m_runMode.store(static_cast<int>(RunMode::RunOnce), std::memory_order_release);
+    m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
+    emit stateChanged(state());
+    emit runStarted();
+
+    m_runStartTime = QDateTime::currentDateTime();
+    if (m_cancellationToken) {
+        m_cancellationToken->reset();
+    }
+
+    const QString moduleToRun = m_stepCurrentModuleName;
+    m_currentModuleName = moduleToRun;
+    executeModule(moduleToRun, m_stepPipelineData);
+
+    const bool success = m_lastExecuteResult;
+    if (success) {
+        m_stepCurrentModuleName = getNextModule(moduleToRun, true);
+        m_currentModuleName = m_stepCurrentModuleName;
+        if (m_stepCurrentModuleName.isEmpty()) {
+            resetStepState();
+        }
+    } else {
+        resetStepState();
+    }
+
+    const int elapsedMs = m_runStartTime.msecsTo(QDateTime::currentDateTime());
+    updateStatistics(success, elapsedMs);
+
+    RunResult result;
+    result.success = success;
+    result.errorCode = success ? 0 : -1;
+    result.errorMessage = success ? QString() : tr("Step execution failed: %1").arg(moduleToRun);
+    result.elapsedMs = elapsedMs;
+    result.finishedTime = QDateTime::currentDateTime();
+    emit runFinished(result);
+
+    m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
+    emit stateChanged(state());
+    return true;
+}
+
+void RunEngine::resetStepState() {
+    m_stepCurrentModuleName.clear();
+    m_stepPipelineData = ImageData();
+    m_currentModuleName.clear();
+    m_loopIndices.clear();
 }
 
 void RunEngine::start() {
@@ -59,6 +141,7 @@ void RunEngine::start() {
         return;
     }
 
+    resetStepState();
     m_runMode.store(static_cast<int>(RunMode::RunCycle), std::memory_order_release);
     m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
     emit stateChanged(state());
@@ -109,6 +192,7 @@ void RunEngine::stop() {
     if (m_cancellationToken) {
         m_cancellationToken->cancel();
     }
+    resetStepState();
 
     emit stateChanged(state());
     emit cycleStopped();
@@ -214,6 +298,7 @@ void RunEngine::clearModules() {
     m_executionOrder.clear();
     locker.unlock();
     clearOutputs();
+    resetStepState();
 }
 
 QList<ModuleBase*> RunEngine::modules() const {
@@ -258,13 +343,27 @@ bool RunEngine::hasOutput(const QString& moduleName, const QString& varName) con
 }
 
 void RunEngine::clearOutputs() {
-    QMutexLocker locker(&m_outputMutex);
-    m_outputMap.clear();
+    {
+        QMutexLocker locker(&m_outputMutex);
+        m_outputMap.clear();
+    }
+    clearPipelineOutputs();
+}
+
+void RunEngine::clearPipelineOutputs() {
+    QMutexLocker locker(&m_lastOutputMutex);
+    m_lastOutput = ImageData();
+    m_moduleOutputs.clear();
 }
 
 ImageData RunEngine::lastOutput() const {
     QMutexLocker locker(&m_lastOutputMutex);
     return m_lastOutput;
+}
+
+ImageData RunEngine::moduleOutput(const QString& moduleName) const {
+    QMutexLocker locker(&m_lastOutputMutex);
+    return m_moduleOutputs.value(moduleName);
 }
 
 int RunEngine::totalRuns() const {
@@ -313,6 +412,7 @@ void RunEngine::executeRun() {
     emit runStarted();
 
     m_runStartTime = QDateTime::currentDateTime();
+    clearPipelineOutputs();
 
     if (m_cancellationToken) {
         m_cancellationToken->reset();
@@ -376,6 +476,7 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     }
 
     emit moduleStarted(moduleName);
+    module->setCancellationToken(m_cancellationToken);
 
     // 处理循环索引（基于 flowControlType，不再基于名称）
     ControlFlowType flowType = module->flowControlType();
@@ -405,12 +506,13 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
         {
             QMutexLocker locker(&m_lastOutputMutex);
             m_lastOutput = output;
+            m_moduleOutputs[moduleName] = output;
         }
     }
 
     m_lastExecuteResult = success;
 
-    emit moduleFinished(moduleName, success);
+    emit moduleFinished(moduleName, success, static_cast<int>(elapsedMs));
 
     if (!success) {
         Logger::instance().error(QString("Module execution failed: %1").arg(moduleName), "Run");
@@ -693,7 +795,7 @@ void RunEngine::reset() {
     }
     m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
     clearOutputs();
-    m_loopIndices.clear();
+    resetStepState();
 }
 
 } // namespace DeepLux

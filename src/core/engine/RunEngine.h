@@ -104,6 +104,8 @@ public:
 
     // 运行控制
     Q_INVOKABLE void runOnce();
+    Q_INVOKABLE bool stepOnce();
+    Q_INVOKABLE void resetStepState();
     Q_INVOKABLE void start();
     Q_INVOKABLE void pause();
     Q_INVOKABLE void resume();
@@ -126,6 +128,7 @@ public:
 
     // 流水线输出（供 UI 在 moduleFinished 后查询显示数据）
     ImageData lastOutput() const;
+    ImageData moduleOutput(const QString& moduleName) const;
 
     // 运行统计
     int totalRuns() const;
@@ -170,7 +173,7 @@ signals:
     void cycleStarted();
     void cycleStopped();
     void moduleStarted(const QString& moduleId);
-    void moduleFinished(const QString& moduleId, bool success);
+    void moduleFinished(const QString& moduleId, bool success, int elapsedMs);
     void errorOccurred(const QString& error);
     void outputChanged(const QString& moduleName, const QString& varName, const QVariant& value);
 
@@ -186,6 +189,7 @@ private:
 
     void executeRun();
     void executeModule(const QString& moduleName, ImageData& pipelineData);
+    void clearPipelineOutputs();
     void updateStatistics(bool success, int elapsedMs);
     void reset();
 
@@ -234,8 +238,11 @@ private:
     QDateTime m_runStartTime;
 
     QString m_currentModuleName;
+    QString m_stepCurrentModuleName;
+    ImageData m_stepPipelineData;
     bool m_lastExecuteResult = true;
     ImageData m_lastOutput;
+    QMap<QString, ImageData> m_moduleOutputs;
     mutable QMutex m_lastOutputMutex;
 
     CancellationToken* m_cancellationToken = nullptr;
