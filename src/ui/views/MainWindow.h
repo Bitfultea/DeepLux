@@ -51,6 +51,7 @@ private slots:
     void onSaveProject();
     void onQuickMode();
     void onQuickMeasure();
+    void onQuickAnnotate();
     void onRunOnce();
     void onRunCycle();
     void onStepRun();

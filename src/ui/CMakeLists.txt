@@ -11,6 +11,7 @@ set(UI_SOURCES
     widgets/PropertyPanel.cpp
     widgets/TerminalWidget.cpp
     widgets/AgentActionLogWidget.cpp
+    widgets/AnnotationOverlayWidget.cpp
     widgets/AgentChatPanel.cpp
     widgets/AgentMessageBubble.cpp
     widgets/AgentToolPreviewCard.cpp
@@ -37,6 +38,7 @@ set(UI_SOURCES
     dialogs/LoginDialog.cpp
     dialogs/AboutDialog.cpp
     dialogs/PluginTestDialog.cpp
+    dialogs/SamAnnotatorDialog.cpp
     views/CameraSetView.cpp
     views/CommunicationSetView.cpp
     views/GlobalVarView.cpp
@@ -91,6 +93,7 @@ set(UI_HEADERS
     dialogs/LoginDialog.h
     dialogs/AboutDialog.h
     dialogs/PluginTestDialog.h
+    dialogs/SamAnnotatorDialog.h
     panels/DataSourcePanel.h
     views/CameraSetView.h
     views/CommunicationSetView.h

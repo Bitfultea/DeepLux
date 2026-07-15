@@ -5,6 +5,7 @@
 #include "../controllers/ProcessTreeController.h"
 #include "../dialogs/AgentSettingsDialog.h"
 #include "../dialogs/LoginDialog.h"
+#include "../dialogs/SamAnnotatorDialog.h"
 #include "../display/3d/Viewport3DContent.h"
 #include "../display/DisplayManager.h"
 #include "../panels/DataSourcePanel.h"
@@ -672,6 +673,11 @@ void MainWindow::setupToolBar() {
                                tr("快速测量"), this, &MainWindow::onQuickMeasure);
     m_quickMeasureAction->setCheckable(true);
     m_quickMeasureAction->setShortcut(QKeySequence(Qt::Key_M));
+    mainToolbar->addSeparator();
+
+    // 快速标注（SAM）
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Image, 20, QColor("#7C3AED")),
+                            tr("快速标注"), this, &MainWindow::onQuickAnnotate);
     mainToolbar->addSeparator();
 
     // 主题切换按钮
@@ -3263,6 +3269,42 @@ void MainWindow::onQuickMeasure() {
 
     QStringList labels = {tr("两点距离"), tr("点到线距离"), tr("两线间距")};
     Logger::instance().info(tr("快速测量：%1").arg(labels[type]), "Measurement");
+}
+
+void MainWindow::onQuickAnnotate() {
+    // 从第一个 ViewportWidget 获取当前图像
+    ViewportWidget* targetVp = nullptr;
+    for (ViewportWidget* vp : m_displayManager->allViewports()) {
+        if (vp && vp->imageWidget() && vp->imageWidget()->hasImage()) {
+            targetVp = vp;
+            break;
+        }
+    }
+
+    QImage snapshot;
+    QString imagePath;
+
+    if (targetVp) {
+        // 从视口获取当前显示图像
+        // ViewportWidget::displayImage 缓存在内部，但无直接 getter，
+        // 因此通过 HImageWidget 的 paintEvent 间接绘制到 QImage 上
+        HImageWidget* iw = targetVp->imageWidget();
+        // 使用 grab 生成快照
+        snapshot = iw->grab().toImage();
+        // 如果有最后导入的图像路径，使用它
+        imagePath = m_lastImportedImagePath;
+    } else {
+        // 没有视口或没有图像，提示用户
+        Logger::instance().warning(tr("没有可用的视口图像，请先导入或采集图像"), "Annotation");
+    }
+
+    // 创建标注对话框
+    SamAnnotatorDialog dlg(this);
+    if (!snapshot.isNull()) {
+        dlg.setImageSnapshot(snapshot, imagePath);
+    }
+    // exec() 模态运行
+    dlg.exec();
 }
 
 void MainWindow::setUiRunningState(bool running, bool cycleMode) {

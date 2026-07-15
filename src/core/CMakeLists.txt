@@ -33,7 +33,10 @@ set(CORE_SOURCES
     display/DisplayData.cpp
     io/PlyLoader.cpp
     io/TiffLoader.cpp
+    io/LabelMeExporter.cpp
     geometry/MeasurementData.cpp
+    model/Annotation.cpp
+    model/AnnotationCoordinateMapping.cpp
     agent/AgentBridge.cpp
     agent/AgentConnection.cpp
     agent/AgentController.cpp
@@ -43,6 +46,7 @@ set(CORE_SOURCES
     agent/ILLMClient.cpp
     agent/OpenAILLMClient.cpp
     agent/GuiEvent.cpp
+    agent/SamBackendClient.cpp
     agent/agent_resources.qrc
 )
 
@@ -86,9 +90,13 @@ set(CORE_HEADERS
     agent/ILLMClient.h
     agent/OpenAILLMClient.h
     agent/GuiEvent.h
+    agent/SamBackendClient.h
     io/PlyLoader.h
     io/TiffLoader.h
+    io/LabelMeExporter.h
     geometry/MeasurementData.h
+    model/Annotation.h
+    model/AnnotationCoordinateMapping.h
 )
 
 add_library(deeplux_core SHARED ${CORE_SOURCES} ${CORE_HEADERS})

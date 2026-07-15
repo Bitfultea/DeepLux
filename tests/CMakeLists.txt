@@ -46,7 +46,13 @@ set(TEST_SOURCES
     test_loadpointcloud.cpp
     test_3d_interaction.cpp
     test_logicplugins.cpp
+    test_annotation_session.cpp
+    test_annotation_coordinate_mapping.cpp
+    test_labelme_exporter.cpp
+    test_annotationoverlaywidget.cpp
     test_expressionengine.cpp
+    test_samannotatordialog.cpp
+    test_sambackendclient.cpp
 )
 
 foreach(TEST_FILE ${TEST_SOURCES})
