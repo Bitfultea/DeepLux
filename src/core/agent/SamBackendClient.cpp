@@ -1,6 +1,10 @@
 #include "SamBackendClient.h"
+
 #include "core/common/Logger.h"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -11,10 +15,7 @@
 
 namespace DeepLux {
 
-SamBackendClient::SamBackendClient(QObject* parent)
-    : QObject(parent)
-    , m_nam(new QNetworkAccessManager(this))
-{
+SamBackendClient::SamBackendClient(QObject* parent) : QObject(parent), m_nam(new QNetworkAccessManager(this)) {
     m_timeoutTimer.setSingleShot(true);
     connect(&m_timeoutTimer, &QTimer::timeout, this, &SamBackendClient::onTimeout);
 }
@@ -24,14 +25,31 @@ SamBackendClient::~SamBackendClient() {
 }
 
 QString SamBackendClient::pyPath() const {
-    // 优先环境变量，回退系统 PATH
     QByteArray env = qgetenv("SAM_SERVER_PYTHON");
-    if (!env.isEmpty()) return QString::fromLocal8Bit(env);
+    if (!env.isEmpty())
+        return QString::fromLocal8Bit(env);
     return QStringLiteral("python3");
 }
 
+QString SamBackendClient::resolvedScriptPath() const {
+    if (!m_scriptPath.isEmpty())
+        return m_scriptPath;
+
+    QByteArray env = qgetenv("DEEPLUX_SAM_SERVER_SCRIPT");
+    if (!env.isEmpty())
+        return QString::fromLocal8Bit(env);
+
+    const QString appRelative = QDir(QCoreApplication::applicationDirPath())
+                                    .absoluteFilePath(QStringLiteral("../tools/sam_server/sam_server.py"));
+    if (QFileInfo::exists(appRelative))
+        return appRelative;
+
+    return QDir::current().absoluteFilePath(QStringLiteral("tools/sam_server/sam_server.py"));
+}
+
 void SamBackendClient::setState(State s) {
-    if (m_state == s) return;
+    if (m_state == s)
+        return;
     m_state = s;
     emit stateChanged(s);
 }
@@ -43,40 +61,62 @@ void SamBackendClient::startTimeout(int ms) {
 }
 
 void SamBackendClient::stopTimeout() {
-    if (m_timeoutTimer.isActive()) m_timeoutTimer.stop();
+    if (m_timeoutTimer.isActive())
+        m_timeoutTimer.stop();
 }
 
 void SamBackendClient::startServerProcess() {
-    if (m_process) return;
-    m_process = new QProcess(this);
-    QString script = m_scriptPath.isEmpty()
-                         ? QStringLiteral("tools/sam_server/sam_server.py")
-                         : m_scriptPath;
+    if (m_process)
+        return;
 
-    connect(m_process, &QProcess::errorOccurred,
-            this, [this](QProcess::ProcessError) {
+    const QString script = resolvedScriptPath();
+    if (script.isEmpty() || !QFileInfo::exists(script)) {
         setState(State::Error);
-        emit errorOccurred(tr("SAM server 进程错误"));
-    });
-
-    setState(State::Starting);
-    m_process->start(pyPath(), QStringList{script});
-    if (!m_process->waitForStarted(5000)) {
-        setState(State::Error);
-        emit errorOccurred(tr("无法启动 SAM server 进程"));
+        emit errorOccurred(tr("SAM server 脚本不存在：%1").arg(script));
         return;
     }
-    // 给 server 一点时间启动
+
+    m_process = new QProcess(this);
+    connect(m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
+        setState(State::Error);
+        emit errorOccurred(tr("SAM server 进程错误：%1").arg(m_process ? m_process->errorString() : QString()));
+    });
+    connect(m_process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+            [this](int code, QProcess::ExitStatus status) {
+                const QString stderrText =
+                    m_process ? QString::fromLocal8Bit(m_process->readAllStandardError()).trimmed() : QString();
+                setState(State::Error);
+                emit errorOccurred(
+                    tr("SAM server 已退出 code=%1 status=%2 %3")
+                        .arg(code)
+                        .arg(status == QProcess::NormalExit ? QStringLiteral("normal") : QStringLiteral("crash"),
+                             stderrText));
+            });
+
+    setState(State::Starting);
+    m_healthPollsRemaining = 60;
+    m_process->start(pyPath(), QStringList{script});
+    if (!m_process->waitForStarted(1000)) {
+        setState(State::Error);
+        emit errorOccurred(tr("无法启动 SAM server 进程：%1").arg(m_process->errorString()));
+        m_process->deleteLater();
+        m_process = nullptr;
+        return;
+    }
+
     setState(State::LoadingModel);
+    QTimer::singleShot(300, this, &SamBackendClient::healthCheck);
 }
 
 void SamBackendClient::stopServerProcess() {
     if (m_process) {
+        disconnect(m_process, nullptr, this, nullptr);
         m_process->kill();
         m_process->waitForFinished(2000);
         delete m_process;
         m_process = nullptr;
     }
+    m_healthPollsRemaining = 0;
     stopTimeout();
 }
 
@@ -87,8 +127,7 @@ void SamBackendClient::healthCheck() {
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     m_pendingHealthReply = m_nam->get(req);
 
-    connect(m_pendingHealthReply, &QNetworkReply::finished,
-            this, &SamBackendClient::onHealthReply);
+    connect(m_pendingHealthReply, &QNetworkReply::finished, this, &SamBackendClient::onHealthReply);
     startTimeout();
 }
 
@@ -106,14 +145,11 @@ void SamBackendClient::setImage(const QString& imagePath) {
     body["image_path"] = imagePath;
     m_pendingSetImageReply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
 
-    connect(m_pendingSetImageReply, &QNetworkReply::finished,
-            this, &SamBackendClient::onSetImageReply);
+    connect(m_pendingSetImageReply, &QNetworkReply::finished, this, &SamBackendClient::onSetImageReply);
     startTimeout();
 }
 
-void SamBackendClient::predict(const QList<QPointF>& positive,
-                                const QList<QPointF>& negative,
-                                const QRectF& box) {
+void SamBackendClient::predict(const QList<QPointF>& positive, const QList<QPointF>& negative, const QRectF& box) {
     if (m_embeddingId.isEmpty()) {
         setState(State::Error);
         emit errorOccurred(tr("尚无 embedding，无法预测"));
@@ -149,13 +185,13 @@ void SamBackendClient::predict(const QList<QPointF>& positive,
     }
 
     m_pendingPredictReply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(m_pendingPredictReply, &QNetworkReply::finished,
-            this, &SamBackendClient::onPredictReply);
+    connect(m_pendingPredictReply, &QNetworkReply::finished, this, &SamBackendClient::onPredictReply);
     startTimeout();
 }
 
 void SamBackendClient::unloadImage() {
-    if (m_embeddingId.isEmpty()) return;
+    if (m_embeddingId.isEmpty())
+        return;
     QUrl url(m_serverUrl + "/unload_image");
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -163,27 +199,29 @@ void SamBackendClient::unloadImage() {
     QJsonObject body;
     body["embedding_id"] = m_embeddingId;
     m_pendingUnloadReply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(m_pendingUnloadReply, &QNetworkReply::finished,
-            this, &SamBackendClient::onUnloadReply);
+    connect(m_pendingUnloadReply, &QNetworkReply::finished, this, &SamBackendClient::onUnloadReply);
     startTimeout();
 }
 
 static QJsonObject parseReply(QNetworkReply* reply, QString* err) {
     QJsonObject result;
     if (!reply) {
-        if (err) *err = QStringLiteral("空回复");
+        if (err)
+            *err = QStringLiteral("空回复");
         return result;
     }
     reply->deleteLater();
     if (reply->error() != QNetworkReply::NoError) {
-        if (err) *err = reply->errorString();
+        if (err)
+            *err = reply->errorString();
         return result;
     }
     QByteArray data = reply->readAll();
     QJsonParseError parseErr;
     QJsonDocument doc = QJsonDocument::fromJson(data, &parseErr);
     if (parseErr.error != QJsonParseError::NoError) {
-        if (err) *err = parseErr.errorString();
+        if (err)
+            *err = parseErr.errorString();
         return result;
     }
     result = doc.object();
@@ -194,13 +232,31 @@ void SamBackendClient::onHealthReply() {
     QString err;
     QJsonObject obj = parseReply(m_pendingHealthReply, &err);
     if (!err.isEmpty()) {
+        if (m_process && m_healthPollsRemaining-- > 0) {
+            stopTimeout();
+            QTimer::singleShot(500, this, &SamBackendClient::healthCheck);
+            return;
+        }
         setState(State::Error);
         emit errorOccurred(tr("健康检查失败：%1").arg(err));
         stopTimeout();
         return;
     }
-    if (obj.value("status").toString() == "ok") {
+
+    const QString status = obj.value("status").toString();
+    const QString model = obj.value("model_name").toString();
+    if (!model.isEmpty())
+        m_modelName = model;
+
+    if (status == "ok" || status == "ready") {
+        m_healthPollsRemaining = 0;
         setState(State::Ready);
+    } else if (status == "error") {
+        setState(State::Error);
+        emit errorOccurred(obj.value("error").toString(tr("SAM server 未就绪")));
+    } else if (m_process && m_healthPollsRemaining-- > 0) {
+        setState(State::LoadingModel);
+        QTimer::singleShot(500, this, &SamBackendClient::healthCheck);
     } else {
         setState(State::LoadingModel);
     }
@@ -217,6 +273,13 @@ void SamBackendClient::onSetImageReply() {
         return;
     }
 
+    if (obj.value("status").toString() == "error") {
+        setState(State::Error);
+        emit errorOccurred(obj.value("error").toString(tr("setImage 失败")));
+        stopTimeout();
+        return;
+    }
+
     QString id = obj.value("embedding_id").toString();
     if (id.isEmpty()) {
         setState(State::Error);
@@ -225,11 +288,19 @@ void SamBackendClient::onSetImageReply() {
         return;
     }
 
+    const bool retryPrediction = m_imageRetryPending;
     m_embeddingId = id;
+    const QString model = obj.value("model_name").toString();
+    if (!model.isEmpty())
+        m_modelName = model;
     m_imageRetryPending = false;
     setState(State::Ready);
     emit embeddingReady(id);
     stopTimeout();
+
+    if (retryPrediction) {
+        predict(m_lastPositive, m_lastNegative, m_lastBox);
+    }
 }
 
 void SamBackendClient::onPredictReply() {
@@ -242,23 +313,24 @@ void SamBackendClient::onPredictReply() {
         return;
     }
 
-    // 检查 invalid_embedding：自动重新 setImage 并重试一次
-    QString status = obj.value("status").toString();
-    if (status == "invalid_embedding" && !m_imageRetryPending) {
+    const QString status = obj.value("status").toString();
+    if (status == "error") {
+        setState(State::Error);
+        emit errorOccurred(obj.value("error").toString(tr("预测失败")));
+        stopTimeout();
+        return;
+    }
+    if (status == "invalid_embedding" && !m_imageRetryPending && !m_lastImagePath.isEmpty()) {
         m_imageRetryPending = true;
         Logger::instance().info(tr("收到 invalid_embedding，自动重新 setImage 并重试"), "SamBackend");
-        // 重设 embedding 后再次预测
         setState(State::LoadingModel);
+        stopTimeout();
         setImage(m_lastImagePath);
-        // setImage 成功后通过 onSetImageReply 触发重试
-        // 注意：setImage 完成时 m_imageRetryPending 为 true，需要再次发起 predict
-        // 这里通过临时连接处理
-        connect(this, &SamBackendClient::embeddingReady, this, [this](const QString&) {
-            if (m_imageRetryPending) {
-                m_imageRetryPending = false;
-                predict(m_lastPositive, m_lastNegative, m_lastBox);
-            }
-        }, Qt::UniqueConnection);
+        return;
+    }
+    if (status == "invalid_embedding") {
+        setState(State::Error);
+        emit errorOccurred(tr("embedding 无效，重试失败"));
         stopTimeout();
         return;
     }
@@ -275,12 +347,15 @@ void SamBackendClient::onPredictReply() {
     QJsonArray bboxArr = obj.value("bbox").toArray();
     QRectF bbox;
     if (bboxArr.size() >= 4) {
-        bbox = QRectF(bboxArr.at(0).toDouble(), bboxArr.at(1).toDouble(),
-                      bboxArr.at(2).toDouble(), bboxArr.at(3).toDouble());
+        bbox = QRectF(bboxArr.at(0).toDouble(), bboxArr.at(1).toDouble(), bboxArr.at(2).toDouble(),
+                      bboxArr.at(3).toDouble());
     }
 
     double score = obj.value("score").toDouble(0.0);
     QString maskRle = obj.value("mask_rle").toString();
+    const QString model = obj.value("model_name").toString();
+    if (!model.isEmpty())
+        m_modelName = model;
 
     setState(State::Ready);
     emit predictionReady(polygon, bbox, score, maskRle);
@@ -300,10 +375,14 @@ void SamBackendClient::onUnloadReply() {
 }
 
 void SamBackendClient::onTimeout() {
-    if (m_pendingHealthReply) m_pendingHealthReply->abort();
-    if (m_pendingSetImageReply) m_pendingSetImageReply->abort();
-    if (m_pendingPredictReply) m_pendingPredictReply->abort();
-    if (m_pendingUnloadReply) m_pendingUnloadReply->abort();
+    if (m_pendingHealthReply)
+        m_pendingHealthReply->abort();
+    if (m_pendingSetImageReply)
+        m_pendingSetImageReply->abort();
+    if (m_pendingPredictReply)
+        m_pendingPredictReply->abort();
+    if (m_pendingUnloadReply)
+        m_pendingUnloadReply->abort();
     setState(State::Error);
     emit errorOccurred(tr("SAM 请求超时（30s）"));
 }

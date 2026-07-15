@@ -2,12 +2,16 @@
 
 #include "../widgets/AnnotationOverlayWidget.h"
 #include "../widgets/HImageWidget.h"
+#include "core/agent/SamBackendClient.h"
+#include "core/common/Logger.h"
 #include "core/io/LabelMeExporter.h"
 #include "core/model/Annotation.h"
-#include "core/common/Logger.h"
 
-#include <QFileDialog>
 #include <QButtonGroup>
+#include <QDir>
+#include <QEvent>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -16,28 +20,87 @@
 #include <QPushButton>
 #include <QShortcut>
 #include <QStackedWidget>
+#include <QTemporaryFile>
 #include <QToolButton>
-#include <QVBoxLayout>
+#include <QUndoCommand>
+#include <QUndoStack>
 #include <QUuid>
+#include <QVBoxLayout>
 #include <QWidget>
+#include <functional>
 
 namespace DeepLux {
 
+class LambdaUndoCommand : public QUndoCommand {
+public:
+    LambdaUndoCommand(const QString& text, std::function<void()> redoFn, std::function<void()> undoFn)
+        : QUndoCommand(text), m_redo(std::move(redoFn)), m_undo(std::move(undoFn)) {}
+
+    void redo() override {
+        if (m_redo)
+            m_redo();
+    }
+    void undo() override {
+        if (m_undo)
+            m_undo();
+    }
+
+private:
+    std::function<void()> m_redo;
+    std::function<void()> m_undo;
+};
+
 SamAnnotatorDialog::SamAnnotatorDialog(QWidget* parent)
-    : QDialog(parent)
-    , m_session(new AnnotationSession())
-{
+    : QDialog(parent), m_session(new AnnotationSession()), m_samClient(new SamBackendClient(this)),
+      m_undoStack(new QUndoStack(this)) {
     setWindowTitle(tr("SAM 快速标注"));
     setMinimumSize(900, 600);
     setupUi();
     setupShortcuts();
     refreshOverlayCoordConverter();
-    // 默认选择模式
+
+    connect(m_samClient, &SamBackendClient::predictionReady, this, &SamAnnotatorDialog::onPredictionReady);
+    connect(m_samClient, &SamBackendClient::embeddingReady, this, [this](const QString&) {
+        setStatusText(tr("SAM 已就绪"));
+        if (!m_positivePoints.isEmpty() || !m_negativePoints.isEmpty() || m_dragBox.isValid()) {
+            requestPrediction();
+        }
+    });
+    connect(m_samClient, &SamBackendClient::errorOccurred, this, [this](const QString& message) {
+        m_hasPrediction = false;
+        if (m_confirmButton)
+            m_confirmButton->setEnabled(false);
+        setStatusText(tr("SAM 错误：%1").arg(message));
+    });
+    connect(m_samClient, &SamBackendClient::stateChanged, this, [this](SamBackendClient::State state) {
+        if (state == SamBackendClient::State::Busy)
+            setStatusText(tr("SAM 预测中..."));
+        else if (state == SamBackendClient::State::LoadingModel)
+            setStatusText(tr("SAM 加载图像..."));
+        else if (state == SamBackendClient::State::Ready)
+            setStatusText(tr("SAM 已就绪"));
+    });
+
     setToolMode(ToolMode::Select);
     syncOverlayMode();
 }
 
-SamAnnotatorDialog::~SamAnnotatorDialog() = default;
+SamAnnotatorDialog::~SamAnnotatorDialog() {
+    delete m_session;
+}
+
+bool SamAnnotatorDialog::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == m_imageWidget && event->type() == QEvent::Resize && m_overlay) {
+        m_overlay->setGeometry(m_imageWidget->rect());
+        m_overlay->raise();
+    }
+    return QDialog::eventFilter(watched, event);
+}
+
+void SamAnnotatorDialog::setStatusText(const QString& text) {
+    if (m_statusLabel)
+        m_statusLabel->setText(text);
+}
 
 void SamAnnotatorDialog::setupUi() {
     // 主体：水平三栏 → 左侧面板 | 中间图像 | 底部工具栏
@@ -92,8 +155,10 @@ void SamAnnotatorDialog::setupUi() {
 
     // AnnotationOverlayWidget 作为透明覆盖层，与 HImageWidget 同尺寸
     m_overlay = new AnnotationOverlayWidget(m_imageWidget);
+    m_overlay->setGeometry(m_imageWidget->rect());
     m_overlay->raise();
     m_overlay->show();
+    m_imageWidget->installEventFilter(this);
 
     hSplit->addWidget(centerContainer, 1);
 
@@ -130,6 +195,15 @@ void SamAnnotatorDialog::setupUi() {
 
     toolbar->addStretch(1);
 
+    m_statusLabel = new QLabel(tr("未加载图像"));
+    m_statusLabel->setStyleSheet("color:#64748B;");
+    toolbar->addWidget(m_statusLabel);
+
+    m_confirmButton = new QPushButton(tr("确认"));
+    m_confirmButton->setEnabled(false);
+    toolbar->addWidget(m_confirmButton);
+    connect(m_confirmButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onConfirm);
+
     auto* hint = new QLabel(tr("Enter=确认  Esc=取消  Delete=删除选中"));
     hint->setStyleSheet("color:#64748B;");
     toolbar->addWidget(hint);
@@ -148,14 +222,12 @@ void SamAnnotatorDialog::setupUi() {
     });
 
     // overlay 事件 → 转换到原图坐标
-    connect(m_overlay, &AnnotationOverlayWidget::widgetClicked,
-            this, &SamAnnotatorDialog::onOverlayClicked);
-    connect(m_overlay, &AnnotationOverlayWidget::dragEnded,
-            this, &SamAnnotatorDialog::onOverlayDragEnded);
+    connect(m_overlay, &AnnotationOverlayWidget::widgetClicked, this, &SamAnnotatorDialog::onOverlayClicked);
+    connect(m_overlay, &AnnotationOverlayWidget::dragEnded, this, &SamAnnotatorDialog::onOverlayDragEnded);
 
     // 对象列表选择
-    connect(m_objectList, &QListWidget::currentItemChanged,
-            this, [this](QListWidgetItem*, QListWidgetItem*) { onObjectSelectionChanged(); });
+    connect(m_objectList, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem*, QListWidgetItem*) { onObjectSelectionChanged(); });
 }
 
 void SamAnnotatorDialog::setupShortcuts() {
@@ -170,6 +242,9 @@ void SamAnnotatorDialog::setupShortcuts() {
 
     m_scDelete = new QShortcut(QKeySequence(Qt::Key_Delete), this);
     connect(m_scDelete, &QShortcut::activated, this, &SamAnnotatorDialog::onDeleteSelected);
+
+    m_scUndo = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Z")), this);
+    connect(m_scUndo, &QShortcut::activated, this, &SamAnnotatorDialog::onUndo);
 }
 
 void SamAnnotatorDialog::setToolMode(ToolMode mode) {
@@ -194,13 +269,22 @@ void SamAnnotatorDialog::setToolMode(ToolMode mode) {
 }
 
 void SamAnnotatorDialog::syncOverlayMode() {
-    if (!m_overlay) return;
+    if (!m_overlay)
+        return;
     AnnotationOverlayWidget::Mode om = AnnotationOverlayWidget::Mode::Select;
     switch (m_toolMode) {
-    case ToolMode::Select: om = AnnotationOverlayWidget::Mode::Select; break;
-    case ToolMode::PositivePoint: om = AnnotationOverlayWidget::Mode::PositivePoint; break;
-    case ToolMode::NegativePoint: om = AnnotationOverlayWidget::Mode::NegativePoint; break;
-    case ToolMode::Box: om = AnnotationOverlayWidget::Mode::Box; break;
+    case ToolMode::Select:
+        om = AnnotationOverlayWidget::Mode::Select;
+        break;
+    case ToolMode::PositivePoint:
+        om = AnnotationOverlayWidget::Mode::PositivePoint;
+        break;
+    case ToolMode::NegativePoint:
+        om = AnnotationOverlayWidget::Mode::NegativePoint;
+        break;
+    case ToolMode::Box:
+        om = AnnotationOverlayWidget::Mode::Box;
+        break;
     }
     m_overlay->setMode(om);
 }
@@ -219,38 +303,53 @@ void SamAnnotatorDialog::onModeButtonToggled() {
 }
 
 void SamAnnotatorDialog::refreshOverlayCoordConverter() {
-    if (!m_imageWidget || !m_overlay) return;
-    // AnnotationOverlayWidget 期望 imageToWidget
+    if (!m_imageWidget || !m_overlay)
+        return;
+    m_overlay->setGeometry(m_imageWidget->rect());
     m_overlay->setCoordConverter(
-        [this](const QPointF& imagePoint) -> QPointF {
-            return m_imageWidget->imageToWidget(imagePoint);
-        });
+        [this](const QPointF& imagePoint) -> QPointF { return m_imageWidget->imageToWidget(imagePoint); });
+    m_overlay->setInverseCoordConverter(
+        [this](const QPointF& widgetPoint) -> QPointF { return m_imageWidget->widgetToImage(widgetPoint); });
 }
 
 void SamAnnotatorDialog::onOverlayClicked(const QPointF& imagePoint, Qt::MouseButton button) {
-    Q_UNUSED(button)
-    // 由 overlay 传入的已经是 widget 坐标，此处需转为 image 坐标
-    // 注：AnnotationOverlayWidget 当前直接 emit widget 坐标，这里由 HImageWidget 转换
-    QPointF imgPt = m_imageWidget->widgetToImage(imagePoint);
-
-    if (m_toolMode == ToolMode::PositivePoint) {
-        m_positivePoints.append(imgPt);
-        m_overlay->setPromptPoints(m_positivePoints, m_negativePoints);
-    } else if (m_toolMode == ToolMode::NegativePoint) {
-        m_negativePoints.append(imgPt);
-        m_overlay->setPromptPoints(m_positivePoints, m_negativePoints);
-    } else if (m_toolMode == ToolMode::Select) {
-        // 选择模式：在对象列表中查找
+    if (m_toolMode == ToolMode::Select) {
         onObjectSelectionChanged();
+        return;
     }
+
+    const bool negative = button == Qt::RightButton || m_toolMode == ToolMode::NegativePoint;
+    m_undoStack->push(new LambdaUndoCommand(
+        tr("添加提示点"),
+        [this, imagePoint, negative]() {
+            if (negative)
+                m_negativePoints.append(imagePoint);
+            else
+                m_positivePoints.append(imagePoint);
+            refreshPromptAfterEdit(true);
+        },
+        [this, negative]() {
+            if (negative && !m_negativePoints.isEmpty())
+                m_negativePoints.removeLast();
+            else if (!negative && !m_positivePoints.isEmpty())
+                m_positivePoints.removeLast();
+            refreshPromptAfterEdit(true);
+        }));
 }
 
 void SamAnnotatorDialog::onOverlayDragEnded(const QPointF& imageStart, const QPointF& imageEnd) {
-    // imageStart/imageEnd 为 widget 坐标 → 转换为原图坐标
-    QPointF p1 = m_imageWidget->widgetToImage(imageStart);
-    QPointF p2 = m_imageWidget->widgetToImage(imageEnd);
-    m_dragBox = QRectF(p1, p2).normalized();
-    m_overlay->setPreviewBox(m_dragBox);
+    const QRectF previousBox = m_dragBox;
+    const QRectF nextBox = QRectF(imageStart, imageEnd).normalized();
+    m_undoStack->push(new LambdaUndoCommand(
+        tr("设置框选"),
+        [this, nextBox]() {
+            m_dragBox = nextBox;
+            refreshPromptAfterEdit(true);
+        },
+        [this, previousBox]() {
+            m_dragBox = previousBox;
+            refreshPromptAfterEdit(true);
+        }));
 }
 
 void SamAnnotatorDialog::onConfirm() {
@@ -258,22 +357,49 @@ void SamAnnotatorDialog::onConfirm() {
 }
 
 void SamAnnotatorDialog::onCancel() {
-    // 清空当前未确认的 prompt
-    m_positivePoints.clear();
-    m_negativePoints.clear();
-    m_dragBox = QRectF();
-    m_overlay->clearPromptPoints();
-    m_overlay->clearPreview();
+    clearCurrentPrompt();
+    if (m_undoStack)
+        m_undoStack->clear();
 }
 
 void SamAnnotatorDialog::onDeleteSelected() {
     auto* item = m_objectList->currentItem();
-    if (!item) return;
-    QString id = item->data(Qt::UserRole).toString();
-    if (id.isEmpty()) return;
-    m_session->removeById(id);
-    refreshObjectList();
-    m_overlay->setAnnotations(m_session->annotations);
+    if (!item)
+        return;
+    const QString id = item->data(Qt::UserRole).toString();
+    if (id.isEmpty())
+        return;
+
+    int index = -1;
+    AnnotationObject object;
+    for (int i = 0; i < m_session->annotations.size(); ++i) {
+        if (m_session->annotations[i].id == id) {
+            index = i;
+            object = m_session->annotations[i];
+            break;
+        }
+    }
+    if (index < 0)
+        return;
+
+    m_undoStack->push(new LambdaUndoCommand(
+        tr("删除标注对象"),
+        [this, id]() {
+            m_session->removeById(id);
+            refreshObjectList();
+            m_overlay->setAnnotations(m_session->annotations);
+        },
+        [this, object, index]() {
+            const int insertAt = qBound(0, index, m_session->annotations.size());
+            m_session->annotations.insert(insertAt, object);
+            refreshObjectList();
+            m_overlay->setAnnotations(m_session->annotations);
+        }));
+}
+
+void SamAnnotatorDialog::onUndo() {
+    if (m_undoStack && m_undoStack->canUndo())
+        m_undoStack->undo();
 }
 
 void SamAnnotatorDialog::onObjectSelectionChanged() {
@@ -303,52 +429,140 @@ void SamAnnotatorDialog::addConfirmedObject(const AnnotationObject& obj) {
 }
 
 void SamAnnotatorDialog::commitCurrentPromptAsObject() {
-    if (m_positivePoints.isEmpty() && m_negativePoints.isEmpty() && !m_dragBox.isValid()) {
+    if (!m_hasPrediction || m_previewPolygon.isEmpty()) {
+        setStatusText(tr("请先完成一次 SAM 预测"));
         return;
     }
 
     AnnotationObject obj;
     obj.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    obj.label = m_categoryEdit->text().trimmed().isEmpty()
-                    ? QStringLiteral("object")
-                    : m_categoryEdit->text().trimmed();
+    obj.label =
+        m_categoryEdit->text().trimmed().isEmpty() ? QStringLiteral("object") : m_categoryEdit->text().trimmed();
     obj.prompts.pointsPos = m_positivePoints;
     obj.prompts.pointsNeg = m_negativePoints;
-    if (m_dragBox.isValid()) {
+    if (m_dragBox.isValid())
         obj.prompts.box = m_dragBox;
-        obj.bbox = m_dragBox;
-    }
-
-    // 第一期：用 prompt 推导占位 polygon（围绕正点或 box 边界向外扩张 5px）
-    QList<QPointF> poly;
-    if (m_dragBox.isValid()) {
-        QRectF b = m_dragBox;
-        poly = {b.topLeft(), QPointF(b.right(), b.top()), b.bottomRight(), QPointF(b.left(), b.bottom())};
-    } else if (!m_positivePoints.isEmpty()) {
-        QPointF c = m_positivePoints.first();
-        poly = {QPointF(c.x() - 5, c.y() - 5), QPointF(c.x() + 5, c.y() - 5),
-                QPointF(c.x() + 5, c.y() + 5), QPointF(c.x() - 5, c.y() + 5)};
-    }
-    obj.polygon = poly;
-    obj.score = 1.0;
-    obj.modelName = m_session->modelName.isEmpty() ? QStringLiteral("stub") : m_session->modelName;
+    obj.polygon = m_previewPolygon;
+    obj.bbox = m_previewBbox;
+    obj.score = m_previewScore;
+    obj.maskRle = m_previewMaskRle;
+    obj.modelName = m_samClient->modelName().isEmpty() ? QStringLiteral("sam") : m_samClient->modelName();
 
     addConfirmedObject(obj);
+    clearCurrentPrompt();
+    if (m_undoStack)
+        m_undoStack->clear();
+}
 
-    // 清空当前 prompt
+void SamAnnotatorDialog::refreshPromptAfterEdit(bool triggerPrediction) {
+    m_hasPrediction = false;
+    if (m_confirmButton)
+        m_confirmButton->setEnabled(false);
+    m_previewPolygon.clear();
+    m_previewBbox = QRectF();
+    m_previewMaskRle.clear();
+    m_previewScore = 0.0;
+    m_overlay->clearPreview();
+    m_overlay->setPromptPoints(m_positivePoints, m_negativePoints);
+    if (m_dragBox.isValid())
+        m_overlay->setPreviewBox(m_dragBox);
+    if (triggerPrediction)
+        requestPrediction();
+}
+
+void SamAnnotatorDialog::clearCurrentPrompt() {
     m_positivePoints.clear();
     m_negativePoints.clear();
     m_dragBox = QRectF();
+    m_previewPolygon.clear();
+    m_previewBbox = QRectF();
+    m_previewMaskRle.clear();
+    m_previewScore = 0.0;
+    m_hasPrediction = false;
+    if (m_confirmButton)
+        m_confirmButton->setEnabled(false);
     m_overlay->clearPromptPoints();
     m_overlay->clearPreview();
 }
 
+void SamAnnotatorDialog::prepareBackendImage() {
+    m_backendImagePath.clear();
+    if (m_currentImage.isNull())
+        return;
+
+    if (!m_imagePath.isEmpty() && QFileInfo::exists(m_imagePath)) {
+        m_backendImagePath = m_imagePath;
+    } else {
+        m_tempImageFile.reset(new QTemporaryFile(QDir::tempPath() + QStringLiteral("/deeplux_sam_XXXXXX.png")));
+        m_tempImageFile->setAutoRemove(true);
+        if (!m_tempImageFile->open()) {
+            setStatusText(tr("无法创建临时标注图像"));
+            return;
+        }
+        m_backendImagePath = m_tempImageFile->fileName();
+        m_tempImageFile->close();
+        if (!m_currentImage.save(m_backendImagePath, "PNG")) {
+            setStatusText(tr("无法写入临时标注图像"));
+            m_backendImagePath.clear();
+            return;
+        }
+    }
+
+    if (m_backendImagePath.isEmpty()) {
+        setStatusText(tr("无可用原图路径，SAM 暂不可用"));
+        return;
+    }
+
+    setStatusText(tr("SAM 加载图像..."));
+    m_samClient->setImage(m_backendImagePath);
+}
+
+void SamAnnotatorDialog::requestPrediction() {
+    if (m_positivePoints.isEmpty() && m_negativePoints.isEmpty() && !m_dragBox.isValid())
+        return;
+    m_hasPrediction = false;
+    if (m_confirmButton)
+        m_confirmButton->setEnabled(false);
+
+    if (m_samClient->currentEmbeddingId().isEmpty()) {
+        setStatusText(tr("SAM 尚未就绪"));
+        return;
+    }
+
+    setStatusText(tr("SAM 预测中..."));
+    m_samClient->predict(m_positivePoints, m_negativePoints, m_dragBox);
+}
+
+void SamAnnotatorDialog::onPredictionReady(const QList<QPointF>& polygon, const QRectF& bbox, double score,
+                                           const QString& maskRle) {
+    if (polygon.isEmpty()) {
+        m_hasPrediction = false;
+        if (m_confirmButton)
+            m_confirmButton->setEnabled(false);
+        setStatusText(tr("SAM 未返回有效轮廓"));
+        return;
+    }
+
+    m_previewPolygon = polygon;
+    m_previewBbox = bbox;
+    m_previewScore = score;
+    m_previewMaskRle = maskRle;
+    m_hasPrediction = true;
+    m_overlay->setPreviewPolygon(m_previewPolygon);
+    if (m_previewBbox.isValid())
+        m_overlay->setPreviewBox(m_previewBbox);
+    if (m_confirmButton)
+        m_confirmButton->setEnabled(true);
+    setStatusText(tr("SAM 预测完成 score=%1").arg(score, 0, 'f', 2));
+}
+
 void SamAnnotatorDialog::updateSessionFromImage() {
-    if (m_currentImage.isNull()) return;
+    if (m_currentImage.isNull())
+        return;
     m_session->imagePath = m_imagePath;
     m_session->imageWidth = m_currentImage.width();
     m_session->imageHeight = m_currentImage.height();
-    m_session->modelName = QStringLiteral("stub-v1");
+    m_session->modelName = m_samClient->modelName().isEmpty() ? QStringLiteral("sam") : m_samClient->modelName();
 }
 
 void SamAnnotatorDialog::openImageFromFile(const QString& suggestedPath) {
@@ -356,10 +570,10 @@ void SamAnnotatorDialog::openImageFromFile(const QString& suggestedPath) {
     if (startDir.isEmpty() && !m_imagePath.isEmpty()) {
         startDir = m_imagePath;
     }
-    QString path = QFileDialog::getOpenFileName(
-        this, tr("选择图片"), startDir,
-        tr("图片文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff);;所有文件 (*.*)"));
-    if (path.isEmpty()) return;
+    QString path = QFileDialog::getOpenFileName(this, tr("选择图片"), startDir,
+                                                tr("图片文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff);;所有文件 (*.*)"));
+    if (path.isEmpty())
+        return;
 
     QImage img(path);
     if (img.isNull()) {
@@ -372,6 +586,7 @@ void SamAnnotatorDialog::openImageFromFile(const QString& suggestedPath) {
     m_imageWidget->fitToWindow();
     refreshOverlayCoordConverter();
     updateSessionFromImage();
+    prepareBackendImage();
     emit imageLoaded(path);
 }
 
@@ -388,6 +603,7 @@ void SamAnnotatorDialog::setImageSnapshot(const QImage& image, const QString& im
     }
     refreshOverlayCoordConverter();
     updateSessionFromImage();
+    prepareBackendImage();
     emit imageLoaded(imagePath);
 }
 
@@ -396,11 +612,14 @@ void SamAnnotatorDialog::onSaveSession() {
         QMessageBox::information(this, tr("保存"), tr("当前没有标注对象，无需保存"));
         return;
     }
-    QString path = QFileDialog::getSaveFileName(
-        this, tr("保存标注会话"),
-        m_imagePath + ".annotation.json",
-        tr("JSON (*.json)"));
-    if (path.isEmpty()) return;
+    const QFileInfo imageInfo(m_imagePath);
+    const QString defaultPath = imageInfo.exists()
+                                    ? imageInfo.absolutePath() + QStringLiteral("/") + imageInfo.completeBaseName() +
+                                          QStringLiteral(".deeplux-anno.json")
+                                    : QStringLiteral("annotations.deeplux-anno.json");
+    QString path = QFileDialog::getSaveFileName(this, tr("保存标注会话"), defaultPath, tr("JSON (*.json)"));
+    if (path.isEmpty())
+        return;
 
     QString err;
     updateSessionFromImage();
@@ -416,11 +635,10 @@ void SamAnnotatorDialog::onExportLabelMe() {
         QMessageBox::information(this, tr("导出"), tr("当前没有标注对象，无需导出"));
         return;
     }
-    QString path = QFileDialog::getSaveFileName(
-        this, tr("导出 LabelMe"),
-        m_imagePath + ".labelme.json",
-        tr("JSON (*.json)"));
-    if (path.isEmpty()) return;
+    QString path =
+        QFileDialog::getSaveFileName(this, tr("导出 LabelMe"), m_imagePath + ".labelme.json", tr("JSON (*.json)"));
+    if (path.isEmpty())
+        return;
 
     QString err;
     updateSessionFromImage();

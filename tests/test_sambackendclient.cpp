@@ -1,16 +1,16 @@
-#include <QtTest/QtTest>
-#include <QTest>
-#include <QSignalSpy>
-#include <QNetworkAccessManager>
-#include <QNetworkRequest>
-#include <QNetworkReply>
-#include <QTimer>
-#include <QJsonObject>
-#include <QJsonDocument>
-#include <QCoreApplication>
-#include <QStandardPaths>
-
 #include "core/agent/SamBackendClient.h"
+
+#include <QCoreApplication>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QSignalSpy>
+#include <QStandardPaths>
+#include <QTest>
+#include <QTimer>
+#include <QtTest/QtTest>
 
 using namespace DeepLux;
 
@@ -25,6 +25,7 @@ private slots:
     void stateTransitionsToErrorOnNetworkFailure();
     void timeoutTransitionsToError();
     void predictWithoutEmbeddingEmitsError();
+    void missingServerScriptTransitionsToError();
 
 private:
     QString m_unusedPortUrl;
@@ -57,8 +58,8 @@ void TestSamBackendClient::stateTransitionsToErrorOnNetworkFailure() {
     QTRY_VERIFY_WITH_TIMEOUT(errSpy.count() >= 1, 5000);
 
     // 最终应该到达 Error
-    QVERIFY2(client.state() == SamBackendClient::State::Error ||
-             stateSpy.count() >= 1, "State should transition on network failure");
+    QVERIFY2(client.state() == SamBackendClient::State::Error || stateSpy.count() >= 1,
+             "State should transition on network failure");
 }
 
 void TestSamBackendClient::timeoutTransitionsToError() {
@@ -81,6 +82,17 @@ void TestSamBackendClient::predictWithoutEmbeddingEmitsError() {
     client.predict({QPointF(5, 5)}, {}, QRectF());
     QTRY_VERIFY_WITH_TIMEOUT(errSpy.count() >= 1, 2000);
     QVERIFY(!errSpy.takeFirst().at(0).toString().isEmpty());
+}
+
+void TestSamBackendClient::missingServerScriptTransitionsToError() {
+    SamBackendClient client;
+    client.setServerScriptPath(QStringLiteral("/tmp/deeplux_missing_sam_server.py"));
+    QSignalSpy errSpy(&client, &SamBackendClient::errorOccurred);
+
+    client.startServerProcess();
+
+    QCOMPARE(client.state(), SamBackendClient::State::Error);
+    QCOMPARE(errSpy.count(), 1);
 }
 
 QTEST_MAIN(TestSamBackendClient)

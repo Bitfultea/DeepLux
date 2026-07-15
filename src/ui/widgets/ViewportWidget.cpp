@@ -204,6 +204,12 @@ void ViewportWidget::displayData(const DisplayData& data) {
     updateToggleAction();
 }
 
+QImage ViewportWidget::currentImage() const {
+    if (m_hasCachedImage)
+        return m_cachedImage;
+    return m_imageWidget ? m_imageWidget->currentImage() : QImage();
+}
+
 void ViewportWidget::displayImage(const QImage& image) {
     m_cachedImage = image;
     m_hasCachedImage = true;

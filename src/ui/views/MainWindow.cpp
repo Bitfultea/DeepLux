@@ -676,8 +676,8 @@ void MainWindow::setupToolBar() {
     mainToolbar->addSeparator();
 
     // 快速标注（SAM）
-    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Image, 20, QColor("#7C3AED")),
-                            tr("快速标注"), this, &MainWindow::onQuickAnnotate);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Image, 20, QColor("#7C3AED")), tr("快速标注"),
+                           this, &MainWindow::onQuickAnnotate);
     mainToolbar->addSeparator();
 
     // 主题切换按钮
@@ -3285,25 +3285,17 @@ void MainWindow::onQuickAnnotate() {
     QString imagePath;
 
     if (targetVp) {
-        // 从视口获取当前显示图像
-        // ViewportWidget::displayImage 缓存在内部，但无直接 getter，
-        // 因此通过 HImageWidget 的 paintEvent 间接绘制到 QImage 上
-        HImageWidget* iw = targetVp->imageWidget();
-        // 使用 grab 生成快照
-        snapshot = iw->grab().toImage();
-        // 如果有最后导入的图像路径，使用它
+        snapshot = targetVp->currentImage();
         imagePath = m_lastImportedImagePath;
-    } else {
-        // 没有视口或没有图像，提示用户
-        Logger::instance().warning(tr("没有可用的视口图像，请先导入或采集图像"), "Annotation");
     }
 
-    // 创建标注对话框
-    SamAnnotatorDialog dlg(this);
-    if (!snapshot.isNull()) {
-        dlg.setImageSnapshot(snapshot, imagePath);
+    if (snapshot.isNull()) {
+        Logger::instance().warning(tr("没有可用的视口图像，请先导入或采集图像"), "Annotation");
+        return;
     }
-    // exec() 模态运行
+
+    SamAnnotatorDialog dlg(this);
+    dlg.setImageSnapshot(snapshot, imagePath);
     dlg.exec();
 }
 

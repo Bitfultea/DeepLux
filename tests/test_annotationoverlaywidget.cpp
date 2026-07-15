@@ -1,7 +1,10 @@
-#include <QtTest/QtTest>
-#include <QTest>
-#include "ui/widgets/AnnotationOverlayWidget.h"
 #include "core/model/Annotation.h"
+#include "ui/widgets/AnnotationOverlayWidget.h"
+
+#include <QTest>
+#include <QtTest/QtTest>
+
+Q_DECLARE_METATYPE(Qt::MouseButton)
 
 using namespace DeepLux;
 
@@ -19,9 +22,12 @@ private slots:
     void modeSwitch();
     void paintWithoutConverterDoesNotCrash();
     void paintWithConverterRenders();
+    void emitsImageCoordinatesWhenInverseConverterIsSet();
 };
 
-void TestAnnotationOverlayWidget::initTestCase() {}
+void TestAnnotationOverlayWidget::initTestCase() {
+    qRegisterMetaType<Qt::MouseButton>("Qt::MouseButton");
+}
 
 void TestAnnotationOverlayWidget::cleanup() {}
 
@@ -116,6 +122,22 @@ void TestAnnotationOverlayWidget::paintWithConverterRenders() {
     // Verify the widget renders without crashing
     QVERIFY(w.isVisible());
     w.hide();
+}
+
+void TestAnnotationOverlayWidget::emitsImageCoordinatesWhenInverseConverterIsSet() {
+    AnnotationOverlayWidget w;
+    w.resize(120, 80);
+    w.setMode(AnnotationOverlayWidget::Mode::PositivePoint);
+    w.setCoordConverter([](const QPointF& p) { return QPointF(p.x() * 2.0, p.y() * 2.0); });
+    w.setInverseCoordConverter([](const QPointF& p) { return QPointF(p.x() / 2.0, p.y() / 2.0); });
+
+    QSignalSpy spy(&w, &AnnotationOverlayWidget::widgetClicked);
+    QTest::mouseClick(&w, Qt::LeftButton, Qt::NoModifier, QPoint(40, 20));
+
+    QCOMPARE(spy.count(), 1);
+    const auto args = spy.takeFirst();
+    QCOMPARE(args.at(0).toPointF(), QPointF(20, 10));
+    QCOMPARE(args.at(1).value<Qt::MouseButton>(), Qt::LeftButton);
 }
 
 QTEST_MAIN(TestAnnotationOverlayWidget)

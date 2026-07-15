@@ -1,9 +1,10 @@
-#include <QtTest/QtTest>
-#include <QSizeF>
+#include "core/model/AnnotationCoordinateMapping.h"
+
+#include <QList>
 #include <QPointF>
 #include <QRectF>
-#include <QList>
-#include "core/model/AnnotationCoordinateMapping.h"
+#include <QSizeF>
+#include <QtTest/QtTest>
 
 using namespace DeepLux;
 
@@ -19,6 +20,7 @@ private slots:
     void polygonRoundTrip();
     void largeImageError();
     void zeroOrigin();
+    void preservesAspectRatioWithPadding();
 };
 
 void TestAnnotationCoordinateMapping::initTestCase() {}
@@ -60,12 +62,7 @@ void TestAnnotationCoordinateMapping::rectRoundTrip() {
 
 void TestAnnotationCoordinateMapping::polygonRoundTrip() {
     AnnotationCoordinateMapping m(QSizeF(18200, 501), QSizeF(1024, 1024));
-    QList<QPointF> original = {
-        QPointF(1000, 100),
-        QPointF(1200, 100),
-        QPointF(1200, 150),
-        QPointF(1000, 150)
-    };
+    QList<QPointF> original = {QPointF(1000, 100), QPointF(1200, 100), QPointF(1200, 150), QPointF(1000, 150)};
     QList<QPointF> model = m.toModel(original);
     QList<QPointF> restored = m.toOriginal(model);
 
@@ -101,6 +98,20 @@ void TestAnnotationCoordinateMapping::zeroOrigin() {
 
     QCOMPARE(restored.x(), 0.0);
     QCOMPARE(restored.y(), 0.0);
+    QCOMPARE(model, QPointF(0, 32));
+}
+
+void TestAnnotationCoordinateMapping::preservesAspectRatioWithPadding() {
+    AnnotationCoordinateMapping m(QSizeF(18200, 501), QSizeF(1024, 1024));
+
+    QPointF topLeft = m.toModel(QPointF(0, 0));
+    QPointF bottomRight = m.toModel(QPointF(18200, 501));
+
+    QVERIFY(qAbs(topLeft.x()) < 0.001);
+    QVERIFY(topLeft.y() > 400.0);
+    QVERIFY(qAbs(bottomRight.x() - 1024.0) < 0.001);
+    QVERIFY(bottomRight.y() < 600.0);
+    QVERIFY(bottomRight.y() > topLeft.y());
 }
 
 QTEST_MAIN(TestAnnotationCoordinateMapping)

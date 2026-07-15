@@ -1,15 +1,13 @@
 #include "AnnotationOverlayWidget.h"
 
-#include <QPainter>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QPainterPath>
 #include <QPainterPathStroker>
 
 namespace DeepLux {
 
-AnnotationOverlayWidget::AnnotationOverlayWidget(QWidget* parent)
-    : QWidget(parent)
-{
+AnnotationOverlayWidget::AnnotationOverlayWidget(QWidget* parent) : QWidget(parent) {
     setAttribute(Qt::WA_TransparentForMouseEvents, false);
     setAutoFillBackground(false);
 }
@@ -17,6 +15,10 @@ AnnotationOverlayWidget::AnnotationOverlayWidget(QWidget* parent)
 void AnnotationOverlayWidget::setCoordConverter(CoordConverter imageToWidget) {
     m_imageToWidget = imageToWidget;
     update();
+}
+
+void AnnotationOverlayWidget::setInverseCoordConverter(CoordConverter widgetToImage) {
+    m_widgetToImage = widgetToImage;
 }
 
 void AnnotationOverlayWidget::setAnnotations(const QList<AnnotationObject>& objects) {
@@ -68,7 +70,8 @@ void AnnotationOverlayWidget::clearDragBox() {
 }
 
 void AnnotationOverlayWidget::paintEvent(QPaintEvent*) {
-    if (!m_imageToWidget) return;
+    if (!m_imageToWidget)
+        return;
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
@@ -117,10 +120,8 @@ void AnnotationOverlayWidget::paintEvent(QPaintEvent*) {
 
     // 绘制预览框
     if (m_previewBox.isValid() && !m_previewBox.isEmpty()) {
-        QRectF widgetRect = QRectF(
-            m_imageToWidget(m_previewBox.topLeft()),
-            m_imageToWidget(m_previewBox.bottomRight())
-        );
+        QRectF widgetRect =
+            QRectF(m_imageToWidget(m_previewBox.topLeft()), m_imageToWidget(m_previewBox.bottomRight()));
         QPen pen(QColor("#F59E0B"), 2, Qt::DashLine);
         pen.setCosmetic(true);
         painter.setPen(pen);
@@ -157,34 +158,21 @@ void AnnotationOverlayWidget::paintEvent(QPaintEvent*) {
 }
 
 void AnnotationOverlayWidget::mousePressEvent(QMouseEvent* event) {
-    if (!m_imageToWidget) return;
+    if (!m_widgetToImage)
+        return;
 
-    // We need the inverse converter; but we only have imageToWidget.
-    // The host should provide widgetToImage. For simplicity, we emit
-    // widget coordinates and let the host convert.
-    // Actually, let's emit in image coordinates by using widgetToImage.
-    // Since we don't have widgetToImage, we emit widget coords and let
-    // the host convert. But the signal says imagePoint...
-
-    // Simplest: emit widget coords, host converts to image coords.
-    // But signal signature says imagePoint. Let's change approach:
-    // emit widget coords and let host handle conversion.
-
-    QPointF widgetPoint = event->pos();
-    // We'll just emit the widget point; the host can convert.
-    // Actually the signal says imagePoint, so we need inverse.
-    // Let's just emit widgetPoint for now and have the host do conversion.
-    // For a clean implementation, we'd need a widgetToImage converter too.
+    const QPointF widgetPoint = event->pos();
+    const QPointF imagePoint = m_widgetToImage(widgetPoint);
 
     if (m_mode == Mode::Box && event->button() == Qt::LeftButton) {
         m_isDragging = true;
         m_dragStart = widgetPoint;
-        emit dragStarted(widgetPoint);
+        emit dragStarted(imagePoint);
     } else if ((m_mode == Mode::PositivePoint || m_mode == Mode::NegativePoint) &&
-               event->button() == Qt::LeftButton) {
-        emit widgetClicked(widgetPoint, Qt::LeftButton);
+               (event->button() == Qt::LeftButton || event->button() == Qt::RightButton)) {
+        emit widgetClicked(imagePoint, event->button());
     } else if (m_mode == Mode::Select && event->button() == Qt::LeftButton) {
-        emit widgetClicked(widgetPoint, Qt::LeftButton);
+        emit widgetClicked(imagePoint, event->button());
     }
 }
 
@@ -192,7 +180,8 @@ void AnnotationOverlayWidget::mouseMoveEvent(QMouseEvent* event) {
     if (m_isDragging) {
         QRectF dragRect(m_dragStart, event->pos());
         m_dragBox = dragRect.normalized();
-        emit dragMoved(event->pos());
+        if (m_widgetToImage)
+            emit dragMoved(m_widgetToImage(event->pos()));
         update();
     }
 }
@@ -200,8 +189,8 @@ void AnnotationOverlayWidget::mouseMoveEvent(QMouseEvent* event) {
 void AnnotationOverlayWidget::mouseReleaseEvent(QMouseEvent* event) {
     if (m_isDragging && event->button() == Qt::LeftButton) {
         m_isDragging = false;
-        QRectF dragRect(m_dragStart, event->pos());
-        emit dragEnded(m_dragStart, event->pos());
+        emit dragEnded(m_widgetToImage ? m_widgetToImage(m_dragStart) : m_dragStart,
+                       m_widgetToImage ? m_widgetToImage(event->pos()) : QPointF(event->pos()));
         m_dragBox = QRectF();
         update();
     }

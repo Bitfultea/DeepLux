@@ -1,14 +1,15 @@
 #pragma once
 
+#include "core/display/DisplayData.h"
+
+#include <QAction>
 #include <QFrame>
 #include <QImage>
-#include <QString>
 #include <QLabel>
-#include <QToolBar>
-#include <QAction>
 #include <QPointer>
+#include <QString>
+#include <QToolBar>
 #include <QVector3D>
-#include "core/display/DisplayData.h"
 
 namespace DeepLux {
 
@@ -29,8 +30,7 @@ class DisplayData;
  * - ImageData → 2D mode (HImageWidget)
  * - PointCloudData → 3D mode (Viewport3DContent)
  */
-class ViewportWidget : public QFrame
-{
+class ViewportWidget : public QFrame {
     Q_OBJECT
 
 public:
@@ -38,13 +38,22 @@ public:
     ~ViewportWidget() override;
 
     // Viewport identity
-    QString viewportId() const { return m_viewportId; }
-    QString title() const { return m_title; }
+    QString viewportId() const {
+        return m_viewportId;
+    }
+    QString title() const {
+        return m_title;
+    }
     void setTitle(const QString& title);
 
     // Access the underlying widgets
-    HImageWidget* imageWidget() const { return m_imageWidget; }
-    Viewport3DContent* viewport3D() const { return m_3dContent; }
+    HImageWidget* imageWidget() const {
+        return m_imageWidget;
+    }
+    Viewport3DContent* viewport3D() const {
+        return m_3dContent;
+    }
+    QImage currentImage() const;
 
     // Display unified data (auto-routes to appropriate renderer)
     void displayData(const DisplayData& data);
@@ -57,7 +66,9 @@ public:
 
     // Current display mode
     enum class DisplayMode { Auto2D, Auto3D };
-    DisplayMode displayMode() const { return m_displayMode; }
+    DisplayMode displayMode() const {
+        return m_displayMode;
+    }
 
     // Zoom controls (2D only)
     void zoomIn();

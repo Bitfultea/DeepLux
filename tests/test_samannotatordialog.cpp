@@ -1,17 +1,17 @@
-#include <QtTest/QtTest>
-#include <QTest>
-#include <QImage>
-#include <QSignalSpy>
-#include <QToolButton>
-#include <QListWidget>
-#include <QLineEdit>
-#include <QShortcut>
-#include <QTemporaryFile>
-
-#include "ui/dialogs/SamAnnotatorDialog.h"
-#include "ui/widgets/HImageWidget.h"
-#include "ui/widgets/AnnotationOverlayWidget.h"
 #include "core/model/Annotation.h"
+#include "ui/dialogs/SamAnnotatorDialog.h"
+#include "ui/widgets/AnnotationOverlayWidget.h"
+#include "ui/widgets/HImageWidget.h"
+
+#include <QImage>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QShortcut>
+#include <QSignalSpy>
+#include <QTemporaryFile>
+#include <QTest>
+#include <QToolButton>
+#include <QtTest/QtTest>
 
 using namespace DeepLux;
 
@@ -29,6 +29,8 @@ private slots:
     void modeSwitchUpdatesOverlay();
     void categoryEditWorks();
     void objectListStartsEmpty();
+    void confirmWithoutPredictionDoesNotCreateObject();
+    void predictionResultCanBeConfirmed();
 
 private:
     QImage makeTestImage();
@@ -60,9 +62,11 @@ void TestSamAnnotatorDialog::shortcutsBound() {
     QVERIFY(dlg.confirmShortcut() != nullptr);
     QVERIFY(dlg.cancelShortcut() != nullptr);
     QVERIFY(dlg.deleteShortcut() != nullptr);
+    QVERIFY(dlg.undoShortcut() != nullptr);
 
     QCOMPARE(dlg.cancelShortcut()->key(), QKeySequence(Qt::Key_Escape));
     QCOMPARE(dlg.deleteShortcut()->key(), QKeySequence(Qt::Key_Delete));
+    QCOMPARE(dlg.undoShortcut()->key(), QKeySequence(QStringLiteral("Ctrl+Z")));
 }
 
 void TestSamAnnotatorDialog::canOpenFromFile() {
@@ -124,6 +128,42 @@ void TestSamAnnotatorDialog::objectListStartsEmpty() {
     SamAnnotatorDialog dlg;
     QVERIFY(dlg.objectList() != nullptr);
     QCOMPARE(dlg.objectList()->count(), 0);
+}
+
+void TestSamAnnotatorDialog::confirmWithoutPredictionDoesNotCreateObject() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    dlg.positivePointButton()->setChecked(true);
+
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(20, 20)),
+                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
+
+    QCOMPARE(dlg.objectList()->count(), 0);
+    QCOMPARE(dlg.session().annotations.size(), 0);
+}
+
+void TestSamAnnotatorDialog::predictionResultCanBeConfirmed() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    dlg.positivePointButton()->setChecked(true);
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(20, 20)),
+                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+
+    QList<QPointF> polygon = {QPointF(1, 2), QPointF(10, 2), QPointF(10, 12), QPointF(1, 12)};
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onPredictionReady", Qt::DirectConnection, Q_ARG(QList<QPointF>, polygon),
+                                      Q_ARG(QRectF, QRectF(1, 2, 9, 10)), Q_ARG(double, 0.91),
+                                      Q_ARG(QString, QStringLiteral("fake_rle"))));
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
+
+    QCOMPARE(dlg.objectList()->count(), 1);
+    AnnotationSession session = dlg.session();
+    QCOMPARE(session.annotations.size(), 1);
+    QCOMPARE(session.annotations.first().polygon.size(), 4);
+    QCOMPARE(session.annotations.first().bbox, QRectF(1, 2, 9, 10));
+    QCOMPARE(session.annotations.first().score, 0.91);
+    QCOMPARE(session.annotations.first().maskRle, QStringLiteral("fake_rle"));
+    QCOMPARE(session.annotations.first().modelName, QStringLiteral("sam"));
 }
 
 QTEST_MAIN(TestSamAnnotatorDialog)

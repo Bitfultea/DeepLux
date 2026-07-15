@@ -1,8 +1,8 @@
 #pragma once
 
+#include <QList>
 #include <QPointF>
 #include <QRectF>
-#include <QList>
 #include <QSizeF>
 
 namespace DeepLux {
@@ -29,16 +29,32 @@ public:
     QList<QPointF> toOriginal(const QList<QPointF>& modelPolygon) const;
 
     // 访问器
-    QSizeF originalSize() const { return m_originalSize; }
-    QSizeF modelInputSize() const { return m_modelInputSize; }
-    double scaleX() const { return m_scaleX; }
-    double scaleY() const { return m_scaleY; }
+    QSizeF originalSize() const {
+        return m_originalSize;
+    }
+    QSizeF modelInputSize() const {
+        return m_modelInputSize;
+    }
+    double scaleX() const {
+        return m_scaleX;
+    }
+    double scaleY() const {
+        return m_scaleY;
+    }
+    double offsetX() const {
+        return m_offsetX;
+    }
+    double offsetY() const {
+        return m_offsetY;
+    }
 
 private:
     QSizeF m_originalSize;
     QSizeF m_modelInputSize;
     double m_scaleX = 1.0;
     double m_scaleY = 1.0;
+    double m_offsetX = 0.0;
+    double m_offsetY = 0.0;
 };
 
 } // namespace DeepLux

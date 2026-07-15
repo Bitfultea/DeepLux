@@ -2,3 +2,7 @@ fastapi
 uvicorn
 numpy
 pillow
+torch
+torchvision
+segment-anything
+opencv-python

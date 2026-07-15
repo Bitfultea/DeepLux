@@ -1,12 +1,13 @@
 #pragma once
 
-#include <QWidget>
+#include "core/model/Annotation.h"
+
 #include <QList>
 #include <QPointF>
 #include <QRectF>
 #include <QString>
+#include <QWidget>
 #include <functional>
-#include "core/model/Annotation.h"
 
 namespace DeepLux {
 
@@ -25,6 +26,7 @@ public:
     explicit AnnotationOverlayWidget(QWidget* parent = nullptr);
 
     void setCoordConverter(CoordConverter imageToWidget);
+    void setInverseCoordConverter(CoordConverter widgetToImage);
 
     // 设置已确认的标注对象列表
     void setAnnotations(const QList<AnnotationObject>& objects);
@@ -40,12 +42,19 @@ public:
 
     // 设置/获取选中对象 ID
     void setSelectedId(const QString& id);
-    QString selectedId() const { return m_selectedId; }
+    QString selectedId() const {
+        return m_selectedId;
+    }
 
     // 交互模式
     enum class Mode { Select, PositivePoint, NegativePoint, Box };
-    void setMode(Mode mode) { m_mode = mode; update(); }
-    Mode mode() const { return m_mode; }
+    void setMode(Mode mode) {
+        m_mode = mode;
+        update();
+    }
+    Mode mode() const {
+        return m_mode;
+    }
 
     // 正在拖拽的框选（屏幕坐标）
     void setDragBox(const QRectF& box);
@@ -65,6 +74,7 @@ protected:
 
 private:
     CoordConverter m_imageToWidget;
+    CoordConverter m_widgetToImage;
     QList<AnnotationObject> m_annotations;
     QList<QPointF> m_previewPolygon;
     QRectF m_previewBox;

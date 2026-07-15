@@ -1,5 +1,4 @@
 #include <QtTest/QtTest>
-
 #include <ui/widgets/HImageWidget.h>
 
 using namespace DeepLux;
@@ -10,10 +9,10 @@ class TestHImageWidget : public QObject {
 private slots:
     void testEmptyStatePaintsReadableCenteredHint();
     void testEmptyStateUsesDarkStyledBackground();
+    void testCurrentImageReturnsOriginalImage();
 };
 
-void TestHImageWidget::testEmptyStatePaintsReadableCenteredHint()
-{
+void TestHImageWidget::testEmptyStatePaintsReadableCenteredHint() {
     HImageWidget widget;
     widget.resize(360, 220);
     widget.setStyleSheet("HImageWidget { background-color: #ffffff; }");
@@ -34,11 +33,11 @@ void TestHImageWidget::testEmptyStatePaintsReadableCenteredHint()
         }
     }
 
-    QVERIFY2(darkPixels > 80, qPrintable(QString("Expected centered empty-state text, dark pixels=%1").arg(darkPixels)));
+    QVERIFY2(darkPixels > 80,
+             qPrintable(QString("Expected centered empty-state text, dark pixels=%1").arg(darkPixels)));
 }
 
-void TestHImageWidget::testEmptyStateUsesDarkStyledBackground()
-{
+void TestHImageWidget::testEmptyStateUsesDarkStyledBackground() {
     HImageWidget widget;
     widget.resize(360, 220);
     QPalette palette = widget.palette();
@@ -53,6 +52,18 @@ void TestHImageWidget::testEmptyStateUsesDarkStyledBackground()
     const QColor background = image.pixelColor(24, 24);
     QVERIFY2(background.lightness() < 80,
              qPrintable(QString("Expected dark empty-state background, got %1").arg(background.name())));
+}
+
+void TestHImageWidget::testCurrentImageReturnsOriginalImage() {
+    HImageWidget widget;
+    QImage source(123, 45, QImage::Format_RGB32);
+    source.fill(QColor("#22c55e"));
+
+    widget.setImage(source);
+
+    QImage current = widget.currentImage();
+    QCOMPARE(current.size(), source.size());
+    QCOMPARE(current.pixelColor(10, 10), QColor("#22c55e"));
 }
 
 QTEST_MAIN(TestHImageWidget)
