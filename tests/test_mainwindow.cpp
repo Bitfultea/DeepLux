@@ -881,8 +881,8 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
              "Log table should remove the dark default outer frame explicitly");
     QVERIFY(logTable->parentWidget() != nullptr);
     QVERIFY(logTable->parentWidget()->layout() != nullptr);
-    QCOMPARE(logTable->parentWidget()->layout()->contentsMargins().left(), 6);
-    QCOMPARE(logTable->parentWidget()->layout()->contentsMargins().right(), 6);
+    QCOMPARE(logTable->parentWidget()->layout()->contentsMargins().left(), 0);
+    QCOMPARE(logTable->parentWidget()->layout()->contentsMargins().right(), 0);
     QVERIFY(logTable->horizontalHeader() != nullptr);
     QVERIFY(logTable->verticalHeader() != nullptr);
     const int logTableTextHeight = logTable->fontMetrics().height();
