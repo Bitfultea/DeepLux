@@ -11,6 +11,7 @@
 #include <QLineEdit>
 #include <QMainWindow>
 #include <QMap>
+#include <QPointer>
 #include <QPushButton>
 #include <QSplitter>
 #include <QStatusBar>
@@ -33,6 +34,7 @@ class TerminalWidget;
 class AgentActionLogWidget;
 class AgentChatPanel;
 class ProcessTreeController;
+class SamAnnotatorDialog;
 
 class IModule;
 struct PointCloudData;
@@ -219,6 +221,7 @@ protected:
 
     // 显示管理
     DisplayManager* m_displayManager = nullptr;
+    QPointer<SamAnnotatorDialog> m_samAnnotatorDialog;
 
     // 3D 渲染模式（视图菜单内）
     QAction* m_renderActions[6] = {};

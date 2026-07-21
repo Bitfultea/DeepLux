@@ -1,9 +1,11 @@
 #include "SamBackendClient.h"
 
 #include "core/common/Logger.h"
+#include "core/platform/PathUtils.h"
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -11,9 +13,25 @@
 #include <QJsonValue>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QProcessEnvironment>
+#include <QStandardPaths>
+#include <QStringList>
 #include <QUrl>
 
 namespace DeepLux {
+
+namespace {
+QString findSamServerScriptFrom(QDir dir) {
+    for (int i = 0; i < 6; ++i) {
+        const QString candidate = dir.absoluteFilePath(QStringLiteral("tools/sam_server/sam_server.py"));
+        if (QFileInfo::exists(candidate))
+            return QFileInfo(candidate).absoluteFilePath();
+        if (!dir.cdUp())
+            break;
+    }
+    return QString();
+}
+} // namespace
 
 SamBackendClient::SamBackendClient(QObject* parent) : QObject(parent), m_nam(new QNetworkAccessManager(this)) {
     m_timeoutTimer.setSingleShot(true);
@@ -22,13 +40,100 @@ SamBackendClient::SamBackendClient(QObject* parent) : QObject(parent), m_nam(new
 
 SamBackendClient::~SamBackendClient() {
     stopServerProcess();
+    finishEnvironmentInitialization(false, QString());
 }
 
-QString SamBackendClient::pyPath() const {
+QString SamBackendClient::inferredModelType() const {
+    const QString fileName = QFileInfo(m_modelPath).fileName().toLower();
+    if (fileName.contains(QStringLiteral("vit_h")))
+        return QStringLiteral("vit_h");
+    if (fileName.contains(QStringLiteral("vit_l")))
+        return QStringLiteral("vit_l");
+    return QStringLiteral("vit_b");
+}
+
+QString SamBackendClient::unsupportedModelReason() const {
+    const QString fileName = QFileInfo(m_modelPath).fileName().toLower();
+    if (fileName.contains(QStringLiteral("sam3")) || fileName.contains(QStringLiteral("sam_3")) ||
+        fileName.contains(QStringLiteral("sam-3"))) {
+        return tr("当前后端使用原版 segment-anything，暂不支持 SAM3 权重，请使用原版 SAM 权重 sam_vit_b/l/h.pth");
+    }
+    if (fileName.contains(QStringLiteral("sam2")) || fileName.contains(QStringLiteral("sam_2")) ||
+        fileName.contains(QStringLiteral("sam-2"))) {
+        return tr("当前后端使用原版 segment-anything，暂不支持 SAM2 权重，请使用原版 SAM 权重 sam_vit_b/l/h.pth");
+    }
+    if (fileName.contains(QStringLiteral("sam_hq")) || fileName.contains(QStringLiteral("sam-hq")) ||
+        fileName.contains(QStringLiteral("hq_sam"))) {
+        return tr("当前后端使用原版 segment-anything，暂不支持 SAM-HQ 权重，请使用原版 SAM 权重 sam_vit_b/l/h.pth");
+    }
+    return QString();
+}
+
+QString SamBackendClient::managedEnvironmentPath() const {
+    return QDir(PathUtils::appDataPath()).filePath(QStringLiteral("sam_env"));
+}
+
+QString SamBackendClient::managedPythonPath() const {
+#ifdef DEEPLUX_PLATFORM_WINDOWS
+    return QDir(managedEnvironmentPath()).filePath(QStringLiteral("Scripts/python.exe"));
+#else
+    return QDir(managedEnvironmentPath()).filePath(QStringLiteral("bin/python"));
+#endif
+}
+
+QString SamBackendClient::managedSitePackagesPath() const {
+#ifdef DEEPLUX_PLATFORM_WINDOWS
+    return QDir(managedEnvironmentPath()).filePath(QStringLiteral("Lib/site-packages"));
+#else
+    QString version = QStringLiteral("3.10");
+    QFile cfg(QDir(managedEnvironmentPath()).filePath(QStringLiteral("pyvenv.cfg")));
+    if (cfg.open(QIODevice::ReadOnly)) {
+        const QStringList lines = QString::fromLocal8Bit(cfg.readAll()).split(QLatin1Char('\n'));
+        for (const QString& line : lines) {
+            if (!line.startsWith(QStringLiteral("version")))
+                continue;
+            const QStringList parts = line.section('=', 1).trimmed().split('.');
+            if (parts.size() >= 2)
+                version = parts.at(0) + QStringLiteral(".") + parts.at(1);
+            break;
+        }
+    }
+    return QDir(managedEnvironmentPath()).filePath(QStringLiteral("lib/python%1/site-packages").arg(version));
+#endif
+}
+
+QStringList SamBackendClient::requiredPythonModules() const {
+    return {QStringLiteral("fastapi"), QStringLiteral("uvicorn"), QStringLiteral("numpy"),
+            QStringLiteral("PIL"),     QStringLiteral("torch"),   QStringLiteral("segment_anything"),
+            QStringLiteral("cv2")};
+}
+
+QString SamBackendClient::requirementsPath() const {
+    return QFileInfo(resolvedScriptPath()).dir().filePath(QStringLiteral("requirements.txt"));
+}
+
+bool SamBackendClient::managedEnvironmentReady() const {
+    if (!QFileInfo::exists(managedPythonPath()))
+        return false;
+    const QDir sitePackages(managedSitePackagesPath());
+    for (const QString& module : requiredPythonModules()) {
+        if (!QFileInfo::exists(sitePackages.filePath(module)))
+            return false;
+    }
+    return true;
+}
+
+QString SamBackendClient::resolvedPythonPath() const {
     QByteArray env = qgetenv("SAM_SERVER_PYTHON");
     if (!env.isEmpty())
         return QString::fromLocal8Bit(env);
+    if (managedEnvironmentReady())
+        return managedPythonPath();
     return QStringLiteral("python3");
+}
+
+QString SamBackendClient::pyPath() const {
+    return resolvedPythonPath();
 }
 
 QString SamBackendClient::resolvedScriptPath() const {
@@ -39,12 +144,16 @@ QString SamBackendClient::resolvedScriptPath() const {
     if (!env.isEmpty())
         return QString::fromLocal8Bit(env);
 
-    const QString appRelative = QDir(QCoreApplication::applicationDirPath())
-                                    .absoluteFilePath(QStringLiteral("../tools/sam_server/sam_server.py"));
-    if (QFileInfo::exists(appRelative))
+    const QString appRelative = findSamServerScriptFrom(QDir(QCoreApplication::applicationDirPath()));
+    if (!appRelative.isEmpty())
         return appRelative;
 
-    return QDir::current().absoluteFilePath(QStringLiteral("tools/sam_server/sam_server.py"));
+    const QString cwdRelative = findSamServerScriptFrom(QDir::current());
+    if (!cwdRelative.isEmpty())
+        return cwdRelative;
+
+    return QDir(QCoreApplication::applicationDirPath())
+        .absoluteFilePath(QStringLiteral("../tools/sam_server/sam_server.py"));
 }
 
 void SamBackendClient::setState(State s) {
@@ -76,6 +185,13 @@ void SamBackendClient::startServerProcess() {
         return;
     }
 
+    const QString modelError = unsupportedModelReason();
+    if (!modelError.isEmpty()) {
+        setState(State::Error);
+        emit errorOccurred(modelError);
+        return;
+    }
+
     m_process = new QProcess(this);
     connect(m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
         setState(State::Error);
@@ -95,6 +211,13 @@ void SamBackendClient::startServerProcess() {
 
     setState(State::Starting);
     m_healthPollsRemaining = 60;
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    if (!m_modelPath.isEmpty()) {
+        env.insert(QStringLiteral("DEEPLUX_SAM_MODEL"), m_modelPath);
+        if (!env.contains(QStringLiteral("DEEPLUX_SAM_MODEL_TYPE")))
+            env.insert(QStringLiteral("DEEPLUX_SAM_MODEL_TYPE"), inferredModelType());
+    }
+    m_process->setProcessEnvironment(env);
     m_process->start(pyPath(), QStringList{script});
     if (!m_process->waitForStarted(1000)) {
         setState(State::Error);
@@ -109,6 +232,19 @@ void SamBackendClient::startServerProcess() {
 }
 
 void SamBackendClient::stopServerProcess() {
+    auto cancelReply = [this](QPointer<QNetworkReply>& reply) {
+        if (!reply)
+            return;
+        disconnect(reply, nullptr, this, nullptr);
+        reply->abort();
+        reply->deleteLater();
+        reply = nullptr;
+    };
+    cancelReply(m_pendingHealthReply);
+    cancelReply(m_pendingSetImageReply);
+    cancelReply(m_pendingPredictReply);
+    cancelReply(m_pendingUnloadReply);
+
     if (m_process) {
         disconnect(m_process, nullptr, this, nullptr);
         m_process->kill();
@@ -116,8 +252,130 @@ void SamBackendClient::stopServerProcess() {
         delete m_process;
         m_process = nullptr;
     }
+    m_embeddingId.clear();
+    m_imageRetryPending = false;
     m_healthPollsRemaining = 0;
     stopTimeout();
+    setState(State::NotStarted);
+}
+
+void SamBackendClient::initializeManagedEnvironment() {
+    if (m_envProcess)
+        return;
+
+    const QString requirements = requirementsPath();
+    if (!QFileInfo::exists(requirements)) {
+        emit environmentInitializationFinished(false, tr("requirements.txt 不存在：%1").arg(requirements));
+        return;
+    }
+
+    if (!PathUtils::ensureDirExists(QFileInfo(managedEnvironmentPath()).absolutePath())) {
+        emit environmentInitializationFinished(false, tr("无法创建 SAM 环境目录"));
+        return;
+    }
+
+    m_envProcess = new QProcess(this);
+    m_envInitStep = 0;
+    m_envLastOutput.clear();
+    connect(m_envProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
+        const QString message = m_envProcess ? m_envProcess->errorString() : QString();
+        finishEnvironmentInitialization(false, tr("初始化环境失败：%1").arg(message));
+    });
+    auto forwardOutput = [this](const QByteArray& data) {
+        QString text = QString::fromLocal8Bit(data).trimmed();
+        if (text.isEmpty())
+            return;
+        const QStringList lines = text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        if (!lines.isEmpty())
+            text = lines.last().trimmed();
+        if (text.size() > 180)
+            text = text.right(180);
+        m_envLastOutput = text;
+        emit environmentInitializationProgress(tr("SAM 环境：%1").arg(text));
+    };
+    connect(m_envProcess, &QProcess::readyReadStandardOutput, this,
+            [this, forwardOutput]() { forwardOutput(m_envProcess->readAllStandardOutput()); });
+    connect(m_envProcess, &QProcess::readyReadStandardError, this,
+            [this, forwardOutput]() { forwardOutput(m_envProcess->readAllStandardError()); });
+    connect(m_envProcess, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+            [this](int code, QProcess::ExitStatus status) {
+                if (!m_envProcess)
+                    return;
+                if (status != QProcess::NormalExit || code != 0) {
+                    QString err = QString::fromLocal8Bit(m_envProcess->readAllStandardError()).trimmed();
+                    if (err.isEmpty())
+                        err = m_envLastOutput;
+                    finishEnvironmentInitialization(false, err.isEmpty() ? tr("初始化环境失败") : err);
+                    return;
+                }
+                if (m_envInitStep == 0) {
+                    m_envInitStep = 1;
+                    startEnvironmentStep();
+                    return;
+                }
+                finishEnvironmentInitialization(true, tr("SAM 环境已就绪"));
+            });
+
+    emit environmentInitializationStarted();
+    startEnvironmentStep();
+}
+
+void SamBackendClient::cancelEnvironmentInitialization() {
+    finishEnvironmentInitialization(false, tr("SAM 环境初始化已取消"));
+}
+
+void SamBackendClient::startEnvironmentStep() {
+    if (!m_envProcess)
+        return;
+    if (m_envInitStep == 0) {
+        if (QFileInfo::exists(managedPythonPath())) {
+            m_envInitStep = 1;
+            startEnvironmentStep();
+            return;
+        }
+        m_envProcess->start(resolvedPythonPath(),
+                            QStringList{QStringLiteral("-m"), QStringLiteral("venv"), QStringLiteral("--without-pip"),
+                                        managedEnvironmentPath()});
+        return;
+    }
+
+#ifdef DEEPLUX_PLATFORM_WINDOWS
+    const QString pipName = QStringLiteral("pip.exe");
+#else
+    const QString pipName = QStringLiteral("pip");
+#endif
+    const QString venvPip = QDir(QFileInfo(managedPythonPath()).absolutePath()).filePath(pipName);
+    if (QFileInfo::exists(venvPip)) {
+        m_envProcess->start(managedPythonPath(),
+                            QStringList{QStringLiteral("-m"), QStringLiteral("pip"), QStringLiteral("install"),
+                                        QStringLiteral("-r"), requirementsPath()});
+        return;
+    }
+
+    const QString pip3 = QStandardPaths::findExecutable(QStringLiteral("pip3"));
+    if (pip3.isEmpty()) {
+        finishEnvironmentInitialization(false, tr("系统缺少 pip3，无法安装 SAM 依赖"));
+        return;
+    }
+    PathUtils::ensureDirExists(managedSitePackagesPath());
+    emit environmentInitializationProgress(tr("SAM 环境：正在安装依赖，首次安装可能需要几分钟"));
+    m_envProcess->start(pip3, QStringList{QStringLiteral("install"), QStringLiteral("--target"),
+                                          managedSitePackagesPath(), QStringLiteral("-r"), requirementsPath()});
+}
+
+void SamBackendClient::finishEnvironmentInitialization(bool ok, const QString& message) {
+    if (m_envProcess) {
+        disconnect(m_envProcess, nullptr, this, nullptr);
+        if (m_envProcess->state() != QProcess::NotRunning) {
+            m_envProcess->kill();
+            m_envProcess->waitForFinished(2000);
+        }
+        m_envProcess->deleteLater();
+        m_envProcess = nullptr;
+    }
+    m_envInitStep = 0;
+    if (!message.isEmpty())
+        emit environmentInitializationFinished(ok, message);
 }
 
 void SamBackendClient::healthCheck() {
@@ -156,6 +414,8 @@ void SamBackendClient::predict(const QList<QPointF>& positive, const QList<QPoin
         return;
     }
 
+    cancelPendingPrediction();
+
     m_lastPositive = positive;
     m_lastNegative = negative;
     m_lastBox = box;
@@ -187,6 +447,17 @@ void SamBackendClient::predict(const QList<QPointF>& positive, const QList<QPoin
     m_pendingPredictReply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
     connect(m_pendingPredictReply, &QNetworkReply::finished, this, &SamBackendClient::onPredictReply);
     startTimeout();
+}
+
+void SamBackendClient::cancelPendingPrediction() {
+    if (!m_pendingPredictReply)
+        return;
+    disconnect(m_pendingPredictReply, nullptr, this, nullptr);
+    m_pendingPredictReply->abort();
+    m_pendingPredictReply->deleteLater();
+    m_pendingPredictReply = nullptr;
+    stopTimeout();
+    setState(m_embeddingId.isEmpty() ? State::NotStarted : State::Ready);
 }
 
 void SamBackendClient::unloadImage() {

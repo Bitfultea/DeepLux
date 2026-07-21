@@ -5,6 +5,7 @@
 #include "core/agent/SamBackendClient.h"
 #include "core/common/Logger.h"
 #include "core/io/LabelMeExporter.h"
+#include "core/manager/ConfigManager.h"
 #include "core/model/Annotation.h"
 
 #include <QButtonGroup>
@@ -12,13 +13,16 @@
 #include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFont>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QPainterPath>
 #include <QPushButton>
 #include <QShortcut>
+#include <QSizePolicy>
 #include <QStackedWidget>
 #include <QTemporaryFile>
 #include <QToolButton>
@@ -30,6 +34,24 @@
 #include <functional>
 
 namespace DeepLux {
+
+namespace {
+
+bool annotationContainsImagePoint(const AnnotationObject& obj, const QPointF& imagePoint) {
+    if (obj.polygon.size() >= 3) {
+        QPainterPath path;
+        path.moveTo(obj.polygon.first());
+        for (int i = 1; i < obj.polygon.size(); ++i)
+            path.lineTo(obj.polygon.at(i));
+        path.closeSubpath();
+        if (path.contains(imagePoint))
+            return true;
+    }
+
+    return obj.bbox.adjusted(-2, -2, 2, 2).contains(imagePoint);
+}
+
+} // namespace
 
 class LambdaUndoCommand : public QUndoCommand {
 public:
@@ -58,6 +80,7 @@ SamAnnotatorDialog::SamAnnotatorDialog(QWidget* parent)
     setupUi();
     setupShortcuts();
     refreshOverlayCoordConverter();
+    loadSavedModelPath();
 
     connect(m_samClient, &SamBackendClient::predictionReady, this, &SamAnnotatorDialog::onPredictionReady);
     connect(m_samClient, &SamBackendClient::embeddingReady, this, [this](const QString&) {
@@ -71,30 +94,76 @@ SamAnnotatorDialog::SamAnnotatorDialog(QWidget* parent)
         if (m_confirmButton)
             m_confirmButton->setEnabled(false);
         setStatusText(tr("SAM 错误：%1").arg(message));
+        refreshSamControlState();
     });
+    connect(m_samClient, &SamBackendClient::environmentInitializationStarted, this, [this]() {
+        refreshSamControlState();
+        setStatusText(tr("正在初始化 SAM 环境..."));
+    });
+    connect(m_samClient, &SamBackendClient::environmentInitializationProgress, this,
+            [this](const QString& message) { setStatusText(message); });
+    connect(m_samClient, &SamBackendClient::environmentInitializationFinished, this,
+            [this](bool ok, const QString& message) {
+                refreshSamControlState();
+                setStatusText(message);
+                if (ok && !m_backendImagePath.isEmpty() && samModelReadyForUse())
+                    prepareBackendImage();
+            });
     connect(m_samClient, &SamBackendClient::stateChanged, this, [this](SamBackendClient::State state) {
-        if (state == SamBackendClient::State::Busy)
+        if (state == SamBackendClient::State::Starting)
+            setStatusText(tr("SAM 启动中..."));
+        else if (state == SamBackendClient::State::Busy)
             setStatusText(tr("SAM 预测中..."));
         else if (state == SamBackendClient::State::LoadingModel)
             setStatusText(tr("SAM 加载图像..."));
-        else if (state == SamBackendClient::State::Ready)
+        else if (state == SamBackendClient::State::Ready) {
             setStatusText(tr("SAM 已就绪"));
+            if (m_samClient->currentEmbeddingId().isEmpty() && !m_backendImagePath.isEmpty()) {
+                m_samClient->setImage(m_backendImagePath);
+            }
+        }
+        refreshSamControlState();
     });
 
-    setToolMode(ToolMode::Select);
+    refreshSamControlState();
+    setToolMode(ToolMode::PositivePoint);
     syncOverlayMode();
 }
 
 SamAnnotatorDialog::~SamAnnotatorDialog() {
+    if (m_externalImageWidget)
+        m_externalImageWidget->removeEventFilter(this);
+    if (m_imageWidget)
+        m_imageWidget->removeEventFilter(this);
+    if (m_overlay) {
+        m_overlay->setParent(nullptr);
+        delete m_overlay;
+    }
     delete m_session;
 }
 
 bool SamAnnotatorDialog::eventFilter(QObject* watched, QEvent* event) {
-    if (watched == m_imageWidget && event->type() == QEvent::Resize && m_overlay) {
-        m_overlay->setGeometry(m_imageWidget->rect());
+    HImageWidget* target = activeImageWidget();
+    if (watched == target && event->type() == QEvent::Resize && m_overlay) {
+        m_overlay->setGeometry(target->rect());
         m_overlay->raise();
     }
     return QDialog::eventFilter(watched, event);
+}
+
+HImageWidget* SamAnnotatorDialog::activeImageWidget() const {
+    return m_externalImageWidget ? m_externalImageWidget : m_imageWidget;
+}
+
+void SamAnnotatorDialog::moveOverlayToImageWidget(HImageWidget* imageWidget) {
+    if (!imageWidget || !m_overlay)
+        return;
+    m_overlay->setParent(imageWidget);
+    m_overlay->setGeometry(imageWidget->rect());
+    m_overlay->raise();
+    m_overlay->show();
+    imageWidget->installEventFilter(this);
+    refreshOverlayCoordConverter();
 }
 
 void SamAnnotatorDialog::setStatusText(const QString& text) {
@@ -102,111 +171,266 @@ void SamAnnotatorDialog::setStatusText(const QString& text) {
         m_statusLabel->setText(text);
 }
 
+void SamAnnotatorDialog::loadSavedModelPath() {
+    ConfigManager::instance().initialize();
+    auto useModelPath = [this](const QString& path) {
+        if (path.isEmpty() || !QFileInfo::exists(path))
+            return false;
+        m_samClient->setModelPath(path);
+        if (!m_samClient->unsupportedModelReason().isEmpty()) {
+            m_samClient->setModelPath(QString());
+            return false;
+        }
+        qputenv("DEEPLUX_SAM_MODEL", path.toLocal8Bit());
+        return true;
+    };
+
+    const QString savedPath = ConfigManager::instance().groupString(QStringLiteral("sam"), QStringLiteral("modelPath"));
+    if (useModelPath(savedPath))
+        return;
+
+    const QString downloadedPath = QDir::home().filePath(QStringLiteral("Downloads/sam_vit_b_01ec64.pth"));
+    if (useModelPath(downloadedPath))
+        saveModelPath(downloadedPath);
+}
+
+void SamAnnotatorDialog::saveModelPath(const QString& path) {
+    ConfigManager::instance().initialize();
+    ConfigManager::instance().setGroupValue(QStringLiteral("sam"), QStringLiteral("modelPath"), path);
+    ConfigManager::instance().save();
+}
+
+bool SamAnnotatorDialog::samEnvironmentReadyForUse() const {
+    return !qgetenv("SAM_SERVER_PYTHON").isEmpty() || m_samClient->managedEnvironmentReady();
+}
+
+bool SamAnnotatorDialog::samModelReadyForUse() const {
+    return !m_samClient->modelPath().isEmpty() || !qgetenv("DEEPLUX_SAM_MODEL").isEmpty();
+}
+
+void SamAnnotatorDialog::refreshSamControlState() {
+    const bool envOverride = !qgetenv("SAM_SERVER_PYTHON").isEmpty();
+    const bool envReady = samEnvironmentReadyForUse();
+    if (m_initEnvironmentButton) {
+        const bool running = m_samClient->isEnvironmentInitializationRunning();
+        m_initEnvironmentButton->setEnabled(!envOverride);
+        m_initEnvironmentButton->setText(running ? tr("停止初始化") : (envReady ? tr("修复环境") : tr("初始化环境")));
+    }
+    if (m_restartServerButton)
+        m_restartServerButton->setEnabled(envReady && samModelReadyForUse());
+}
+
 void SamAnnotatorDialog::setupUi() {
     // 主体：水平三栏 → 左侧面板 | 中间图像 | 底部工具栏
     auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(4, 4, 4, 4);
-    root->setSpacing(4);
+    root->setContentsMargins(8, 8, 8, 8);
+    root->setSpacing(2);
 
-    auto* hSplit = new QHBoxLayout();
-    hSplit->setSpacing(4);
-    root->addLayout(hSplit, 1);
+    // hSplit 已去掉（leftPanel 整合进 controlPanel 后只剩图像容器，直接挂到 root 即可；
+    // 窄窗口 hide+m_maxHeight0 后自身不占空间，不会再留下空白条）
 
-    // ===== 左侧：类别输入 + 对象列表 =====
-    auto* leftPanel = new QWidget();
-    leftPanel->setMinimumWidth(220);
-    auto* leftLayout = new QVBoxLayout(leftPanel);
-    leftLayout->setContentsMargins(0, 0, 0, 0);
+    auto configureCompactButton = [](QPushButton* button) {
+        QFont font = button->font();
+        font.setPointSize(9);
+        button->setFont(font);
+        button->setMinimumHeight(26);
+        button->setMaximumHeight(26);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    };
 
-    auto* lblCategory = new QLabel(tr("类别"));
-    leftLayout->addWidget(lblCategory);
+    auto configureCompactLabel = [](QLabel* label) {
+        label->setMinimumHeight(20);
+        label->setMaximumHeight(20);
+        label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    };
 
-    m_categoryEdit = new QLineEdit();
-    m_categoryEdit->setPlaceholderText(tr("输入类别名，如 defect"));
-    leftLayout->addWidget(m_categoryEdit);
+    auto configureCompactLineEdit = [](QLineEdit* edit) {
+        QFont font = edit->font();
+        font.setPointSize(9);
+        edit->setFont(font);
+        edit->setMinimumHeight(26);
+        edit->setMaximumHeight(26);
+        edit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    };
 
-    auto* lblObjects = new QLabel(tr("对象列表"));
-    leftLayout->addWidget(lblObjects);
-
-    m_objectList = new QListWidget();
-    m_objectList->setSelectionMode(QAbstractItemView::SingleSelection);
-    leftLayout->addWidget(m_objectList, 1);
-
-    auto* saveBtn = new QPushButton(tr("保存会话"));
-    auto* exportBtn = new QPushButton(tr("导出 LabelMe"));
-    auto* btnRow = new QHBoxLayout();
-    btnRow->addWidget(saveBtn);
-    btnRow->addWidget(exportBtn);
-    leftLayout->addLayout(btnRow);
-
-    connect(saveBtn, &QPushButton::clicked, this, &SamAnnotatorDialog::onSaveSession);
-    connect(exportBtn, &QPushButton::clicked, this, &SamAnnotatorDialog::onExportLabelMe);
-
-    hSplit->addWidget(leftPanel);
-
-    // ===== 中间：HImageWidget + 覆盖层 =====
-    auto* centerContainer = new QWidget();
-    centerContainer->setObjectName("AnnotatorCenter");
-    auto* centerLayout = new QVBoxLayout(centerContainer);
+    // ===== 中间：HImageWidget + 覆盖层（独占 hSplit）=====
+    m_centerContainer = new QWidget();
+    m_centerContainer->setObjectName("AnnotatorCenter");
+    auto* centerLayout = new QVBoxLayout(m_centerContainer);
     centerLayout->setContentsMargins(0, 0, 0, 0);
 
-    m_imageWidget = new HImageWidget(centerContainer);
+    m_imageWidget = new HImageWidget(m_centerContainer);
     centerLayout->addWidget(m_imageWidget, 1);
 
     // AnnotationOverlayWidget 作为透明覆盖层，与 HImageWidget 同尺寸
     m_overlay = new AnnotationOverlayWidget(m_imageWidget);
+    connect(m_overlay, &QObject::destroyed, this, [this]() { m_overlay = nullptr; });
     m_overlay->setGeometry(m_imageWidget->rect());
     m_overlay->raise();
     m_overlay->show();
     m_imageWidget->installEventFilter(this);
 
-    hSplit->addWidget(centerContainer, 1);
+    root->addWidget(m_centerContainer);
 
-    // ===== 底部：工具栏（4 个模式按钮 + 打开） =====
-    auto* toolbar = new QHBoxLayout();
-    toolbar->setSpacing(6);
-    root->addLayout(toolbar);
+    // ===== 底部：操作区（整合类别输入 + 对象列表 + 所有操作按钮，全宽，无上方留白）=====
+    auto* controlPanel = new QWidget();
+    controlPanel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    auto* controlLayout = new QVBoxLayout(controlPanel);
+    controlLayout->setContentsMargins(0, 0, 0, 0);
+    controlLayout->setSpacing(2);
+    root->addWidget(controlPanel, 1);
 
-    auto* openBtn = new QPushButton(tr("打开图片"));
-    toolbar->addWidget(openBtn);
-    connect(openBtn, &QPushButton::clicked, this, &SamAnnotatorDialog::onOpenImage);
+    auto* actionCol = new QVBoxLayout();
+    actionCol->setSpacing(2);
+    controlLayout->addLayout(actionCol, 1);
 
-    toolbar->addSpacing(10);
+    // 行1：打开图片（单独全宽）
+    m_openImageRowWidget = new QWidget();
+    m_openImageRowWidget->setObjectName(QStringLiteral("SamOpenImageRowWidget"));
+    auto* openRow = new QHBoxLayout(m_openImageRowWidget);
+    openRow->setContentsMargins(0, 0, 0, 0);
+    openRow->setSpacing(2);
+    actionCol->addWidget(m_openImageRowWidget);
 
-    m_btnSelect = new QToolButton();
-    m_btnSelect->setText(tr("选择"));
-    m_btnSelect->setCheckable(true);
-    toolbar->addWidget(m_btnSelect);
+    m_openImageButton = new QPushButton(tr("打开图片"));
+    m_openImageButton->setObjectName("SamOpenImageButton");
+    configureCompactButton(m_openImageButton);
+    openRow->addWidget(m_openImageButton);
+    connect(m_openImageButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onOpenImage);
 
-    m_btnPositivePoint = new QToolButton();
-    m_btnPositivePoint->setText(tr("正点"));
-    m_btnPositivePoint->setCheckable(true);
-    toolbar->addWidget(m_btnPositivePoint);
+    // 类别
+    auto* lblCategory = new QLabel(tr("类别"));
+    lblCategory->setObjectName(QStringLiteral("SamCategoryLabel"));
+    configureCompactLabel(lblCategory);
+    actionCol->addWidget(lblCategory);
 
-    m_btnNegativePoint = new QToolButton();
-    m_btnNegativePoint->setText(tr("负点"));
-    m_btnNegativePoint->setCheckable(true);
-    toolbar->addWidget(m_btnNegativePoint);
+    // 类别输入（全宽）
+    m_categoryEdit = new QLineEdit();
+    m_categoryEdit->setPlaceholderText(tr("输入类别名，如 defect"));
+    configureCompactLineEdit(m_categoryEdit);
+    actionCol->addWidget(m_categoryEdit);
 
-    m_btnBox = new QToolButton();
-    m_btnBox->setText(tr("框选"));
-    m_btnBox->setCheckable(true);
-    toolbar->addWidget(m_btnBox);
+    // 对象列表
+    auto* lblObjects = new QLabel(tr("对象列表"));
+    lblObjects->setObjectName(QStringLiteral("SamObjectListLabel"));
+    configureCompactLabel(lblObjects);
+    actionCol->addWidget(lblObjects);
 
-    toolbar->addStretch(1);
+    m_objectList = new QListWidget();
+    m_objectList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_objectList->setMinimumHeight(72);
+    m_objectList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    actionCol->addWidget(m_objectList);
+
+    // 行：导入权重 + 初始化环境 + 重启 SAM（3 同宽；窄窗口测试要求三者等宽）
+    auto* samActionRow = new QHBoxLayout();
+    samActionRow->setSpacing(2);
+    actionCol->addLayout(samActionRow);
+
+    m_importModelButton = new QPushButton(tr("导入权重"));
+    configureCompactButton(m_importModelButton);
+    samActionRow->addWidget(m_importModelButton);
+    connect(m_importModelButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onImportModel);
+
+    m_initEnvironmentButton = new QPushButton(tr("初始化环境"));
+    configureCompactButton(m_initEnvironmentButton);
+    samActionRow->addWidget(m_initEnvironmentButton);
+    connect(m_initEnvironmentButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onInitializeEnvironment);
+
+    m_restartServerButton = new QPushButton(tr("重启 SAM"));
+    configureCompactButton(m_restartServerButton);
+    samActionRow->addWidget(m_restartServerButton);
+    connect(m_restartServerButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onRestartSam);
+
+    // 行：保存会话 + 导出 LabelMe（2 同宽）
+    auto* saveExportRow = new QHBoxLayout();
+    saveExportRow->setSpacing(2);
+    actionCol->addLayout(saveExportRow);
+
+    auto* saveBtn = new QPushButton(tr("保存会话"));
+    configureCompactButton(saveBtn);
+    saveExportRow->addWidget(saveBtn);
+    connect(saveBtn, &QPushButton::clicked, this, &SamAnnotatorDialog::onSaveSession);
+
+    auto* exportBtn = new QPushButton(tr("导出 LabelMe"));
+    configureCompactButton(exportBtn);
+    saveExportRow->addWidget(exportBtn);
+    connect(exportBtn, &QPushButton::clicked, this, &SamAnnotatorDialog::onExportLabelMe);
 
     m_statusLabel = new QLabel(tr("未加载图像"));
+    m_statusLabel->setMinimumWidth(0);
+    m_statusLabel->setWordWrap(true);
+    m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     m_statusLabel->setStyleSheet("color:#64748B;");
-    toolbar->addWidget(m_statusLabel);
+    actionCol->addWidget(m_statusLabel);
+
+    auto* commitRow = new QHBoxLayout();
+    commitRow->setSpacing(2);
+    actionCol->addLayout(commitRow);
 
     m_confirmButton = new QPushButton(tr("确认"));
+    configureCompactButton(m_confirmButton);
     m_confirmButton->setEnabled(false);
-    toolbar->addWidget(m_confirmButton);
+    commitRow->addWidget(m_confirmButton);
     connect(m_confirmButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onConfirm);
 
-    auto* hint = new QLabel(tr("Enter=确认  Esc=取消  Delete=删除选中"));
-    hint->setStyleSheet("color:#64748B;");
-    toolbar->addWidget(hint);
+    m_cancelButton = new QPushButton(tr("取消当前"));
+    m_cancelButton->setObjectName(QStringLiteral("SamCancelButton"));
+    configureCompactButton(m_cancelButton);
+    commitRow->addWidget(m_cancelButton);
+    connect(m_cancelButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onCancel);
+
+    auto* modeGrid = new QVBoxLayout();
+    modeGrid->setSpacing(2);
+    controlLayout->addLayout(modeGrid);
+
+    auto* modeRow1 = new QHBoxLayout();
+    auto* modeRow2 = new QHBoxLayout();
+    modeRow1->setSpacing(2);
+    modeRow2->setSpacing(2);
+    modeGrid->addLayout(modeRow1);
+    modeGrid->addLayout(modeRow2);
+
+    auto configureModeButton = [](QToolButton* button, const QString& text) {
+        button->setText(text);
+        button->setCheckable(true);
+        QFont font = button->font();
+        font.setPointSize(9);
+        button->setFont(font);
+        button->setMinimumHeight(26);
+        button->setMaximumHeight(26);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        button->setStyleSheet(
+            QStringLiteral("QToolButton { border: 2px solid #CBD5E1; border-radius: 4px; padding: 2px 6px; "
+                           "background: #F8FAFC; color: #334155; }"
+                           "QToolButton:hover { background: #EEF2F7; }"
+                           "QToolButton:checked { border-color: #0F172A; background: #E2E8F0; color: #0F172A; "
+                           "font-weight: 700; }"));
+    };
+
+    m_btnSelect = new QToolButton();
+    configureModeButton(m_btnSelect, tr("选择"));
+    modeRow1->addWidget(m_btnSelect);
+
+    m_btnPositivePoint = new QToolButton();
+    configureModeButton(m_btnPositivePoint, tr("正点"));
+    modeRow1->addWidget(m_btnPositivePoint);
+
+    m_btnNegativePoint = new QToolButton();
+    configureModeButton(m_btnNegativePoint, tr("负点"));
+    modeRow2->addWidget(m_btnNegativePoint);
+
+    m_btnBox = new QToolButton();
+    configureModeButton(m_btnBox, tr("框选"));
+    modeRow2->addWidget(m_btnBox);
+
+    auto* hint = new QLabel(tr("Enter 确认 / Esc 取消当前 / Del 删除"));
+    hint->setObjectName("SamShortcutHintLabel");
+    hint->setMinimumWidth(0);
+    hint->setWordWrap(true);
+    hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    hint->setStyleSheet("background-color: transparent; color:#64748B; font-size: 10px;");
+    controlLayout->addWidget(hint);
 
     // 模式按钮互斥
     m_modeButtonGroup = new QButtonGroup(this);
@@ -303,18 +527,40 @@ void SamAnnotatorDialog::onModeButtonToggled() {
 }
 
 void SamAnnotatorDialog::refreshOverlayCoordConverter() {
-    if (!m_imageWidget || !m_overlay)
+    HImageWidget* target = activeImageWidget();
+    if (!target || !m_overlay)
         return;
-    m_overlay->setGeometry(m_imageWidget->rect());
+    m_overlay->setGeometry(target->rect());
     m_overlay->setCoordConverter(
-        [this](const QPointF& imagePoint) -> QPointF { return m_imageWidget->imageToWidget(imagePoint); });
+        [target](const QPointF& imagePoint) -> QPointF { return target->imageToWidget(imagePoint); });
     m_overlay->setInverseCoordConverter(
-        [this](const QPointF& widgetPoint) -> QPointF { return m_imageWidget->widgetToImage(widgetPoint); });
+        [target](const QPointF& widgetPoint) -> QPointF { return target->widgetToImage(widgetPoint); });
 }
 
 void SamAnnotatorDialog::onOverlayClicked(const QPointF& imagePoint, Qt::MouseButton button) {
     if (m_toolMode == ToolMode::Select) {
-        onObjectSelectionChanged();
+        QString selectedId;
+        for (int i = m_session->annotations.size() - 1; i >= 0; --i) {
+            const AnnotationObject& obj = m_session->annotations.at(i);
+            if (annotationContainsImagePoint(obj, imagePoint)) {
+                selectedId = obj.id;
+                break;
+            }
+        }
+
+        for (int row = 0; row < m_objectList->count(); ++row) {
+            QListWidgetItem* item = m_objectList->item(row);
+            if (item && item->data(Qt::UserRole).toString() == selectedId) {
+                m_objectList->setCurrentRow(row);
+                m_overlay->setSelectedId(selectedId);
+                setStatusText(tr("已选择标注对象"));
+                return;
+            }
+        }
+
+        m_objectList->setCurrentRow(-1);
+        m_overlay->setSelectedId(QString());
+        setStatusText(tr("未命中标注对象"));
         return;
     }
 
@@ -357,9 +603,11 @@ void SamAnnotatorDialog::onConfirm() {
 }
 
 void SamAnnotatorDialog::onCancel() {
+    m_samClient->cancelPendingPrediction();
     clearCurrentPrompt();
     if (m_undoStack)
         m_undoStack->clear();
+    setStatusText(tr("已取消当前选择"));
 }
 
 void SamAnnotatorDialog::onDeleteSelected() {
@@ -513,8 +761,25 @@ void SamAnnotatorDialog::prepareBackendImage() {
         return;
     }
 
+    if (!samEnvironmentReadyForUse()) {
+        setStatusText(tr("SAM 环境未初始化，请点击初始化环境"));
+        refreshSamControlState();
+        return;
+    }
+    if (!samModelReadyForUse()) {
+        setStatusText(tr("请先导入 SAM 权重"));
+        refreshSamControlState();
+        return;
+    }
+
     setStatusText(tr("SAM 加载图像..."));
-    m_samClient->setImage(m_backendImagePath);
+    if (m_samClient->state() == SamBackendClient::State::Ready) {
+        m_samClient->setImage(m_backendImagePath);
+    } else {
+        if (m_samClient->state() == SamBackendClient::State::Error)
+            m_samClient->stopServerProcess();
+        m_samClient->startServerProcess();
+    }
 }
 
 void SamAnnotatorDialog::requestPrediction() {
@@ -582,12 +847,50 @@ void SamAnnotatorDialog::openImageFromFile(const QString& suggestedPath) {
     }
     m_currentImage = img;
     m_imagePath = path;
-    m_imageWidget->setImage(img);
-    m_imageWidget->fitToWindow();
+    HImageWidget* target = activeImageWidget();
+    if (target) {
+        target->setImage(img);
+        target->fitToWindow();
+    }
     refreshOverlayCoordConverter();
     updateSessionFromImage();
     prepareBackendImage();
     emit imageLoaded(path);
+}
+
+void SamAnnotatorDialog::attachToImageWidget(HImageWidget* imageWidget, const QString& imagePath) {
+    if (!imageWidget || !imageWidget->hasImage()) {
+        setStatusText(tr("主视图没有可标注图像"));
+        return;
+    }
+
+    if (m_externalImageWidget)
+        m_externalImageWidget->removeEventFilter(this);
+    m_externalImageWidget = imageWidget;
+    connect(imageWidget, &QObject::destroyed, this, [this, imageWidget]() {
+        if (m_externalImageWidget == imageWidget)
+            m_externalImageWidget = nullptr;
+    });
+    m_currentImage = imageWidget->currentImage();
+    m_imagePath = imagePath;
+    if (m_centerContainer) {
+        m_centerContainer->setFixedSize(0, 0);
+        m_centerContainer->hide();
+    }
+    if (m_openImageButton)
+        m_openImageButton->hide();
+    if (auto* openRowWidget = findChild<QWidget*>(QStringLiteral("SamOpenImageRowWidget")))
+        openRowWidget->hide();
+    if (m_objectList) {
+        m_objectList->setMinimumHeight(72);
+        // 不设 maximumHeight，让 Expanding 生效，对象列表拉伸填满可用空间
+    }
+    setMinimumSize(220, 420);
+    resize(300, 430);
+    moveOverlayToImageWidget(imageWidget);
+    updateSessionFromImage();
+    prepareBackendImage();
+    emit imageLoaded(imagePath);
 }
 
 void SamAnnotatorDialog::onOpenImage() {
@@ -598,13 +901,66 @@ void SamAnnotatorDialog::setImageSnapshot(const QImage& image, const QString& im
     m_currentImage = image;
     m_imagePath = imagePath;
     if (!image.isNull()) {
-        m_imageWidget->setImage(image);
-        m_imageWidget->fitToWindow();
+        HImageWidget* target = activeImageWidget();
+        if (target) {
+            target->setImage(image);
+            target->fitToWindow();
+        }
     }
     refreshOverlayCoordConverter();
     updateSessionFromImage();
     prepareBackendImage();
     emit imageLoaded(imagePath);
+}
+
+void SamAnnotatorDialog::onImportModel() {
+    const QString path = QFileDialog::getOpenFileName(this, tr("导入 SAM 权重"), QString(),
+                                                      tr("SAM 权重 (*.pth *.pt *.ckpt);;所有文件 (*.*)"));
+    if (path.isEmpty())
+        return;
+
+    m_samClient->setModelPath(path);
+    const QString modelError = m_samClient->unsupportedModelReason();
+    if (!modelError.isEmpty()) {
+        m_samClient->setModelPath(QString());
+        setStatusText(tr("SAM 错误：%1").arg(modelError));
+        refreshSamControlState();
+        return;
+    }
+    qputenv("DEEPLUX_SAM_MODEL", path.toLocal8Bit());
+    saveModelPath(path);
+    setStatusText(tr("已导入权重：%1").arg(QFileInfo(path).fileName()));
+    refreshSamControlState();
+    if (!m_backendImagePath.isEmpty()) {
+        m_samClient->stopServerProcess();
+        prepareBackendImage();
+    }
+}
+
+void SamAnnotatorDialog::onInitializeEnvironment() {
+    if (m_samClient->isEnvironmentInitializationRunning()) {
+        m_samClient->cancelEnvironmentInitialization();
+        return;
+    }
+    m_samClient->initializeManagedEnvironment();
+}
+
+void SamAnnotatorDialog::onRestartSam() {
+    m_samClient->stopServerProcess();
+    if (!m_backendImagePath.isEmpty()) {
+        prepareBackendImage();
+        return;
+    }
+    if (!samEnvironmentReadyForUse()) {
+        setStatusText(tr("SAM 环境未初始化，请点击初始化环境"));
+        return;
+    }
+    if (!samModelReadyForUse()) {
+        setStatusText(tr("请先导入 SAM 权重"));
+        return;
+    }
+    setStatusText(tr("SAM 启动中..."));
+    m_samClient->startServerProcess();
 }
 
 void SamAnnotatorDialog::onSaveSession() {

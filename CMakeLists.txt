@@ -162,6 +162,19 @@ if(ENABLE_CAMERA_HIKVISION)
     add_subdirectory(src/plugins/cameras/CameraHikVision)
 endif()
 
+# ========== SAM server runtime files ==========
+set(DEEPLUX_SAM_SERVER_SOURCE_DIR ${CMAKE_SOURCE_DIR}/tools/sam_server)
+set(DEEPLUX_SAM_SERVER_BUILD_DIR ${CMAKE_BINARY_DIR}/tools/sam_server)
+
+add_custom_target(stage-sam-server ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${DEEPLUX_SAM_SERVER_SOURCE_DIR}
+            ${DEEPLUX_SAM_SERVER_BUILD_DIR}
+    COMMENT "Staging SAM server runtime files"
+    VERBATIM
+)
+add_dependencies(DeepLux stage-sam-server)
+
 # ========== 测试 ==========
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
@@ -181,3 +194,4 @@ add_custom_target(sync-plugins
 
 # ========== 安装 ==========
 install(DIRECTORY resources/ DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/deeplux)
+install(DIRECTORY tools/sam_server DESTINATION tools)

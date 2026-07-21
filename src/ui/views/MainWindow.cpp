@@ -88,6 +88,7 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QShortcut>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStandardItemModel>
@@ -313,6 +314,21 @@ void applyPluginConfigTheme(QWidget* root, bool isDark) {
                        "background-color: %1; }")
             .arg(surface, text, border);
 
+    if (QLayout* rootLayout = root->layout()) {
+        const QMargins margins = rootLayout->contentsMargins();
+        if (margins.isNull())
+            rootLayout->setContentsMargins(12, 12, 12, 12);
+        rootLayout->setSpacing(qMax(rootLayout->spacing(), 8));
+    }
+
+    for (QFormLayout* form : root->findChildren<QFormLayout*>()) {
+        form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+        form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        form->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        form->setHorizontalSpacing(12);
+        form->setVerticalSpacing(10);
+    }
+
     QList<QWidget*> widgets{root};
     widgets.append(root->findChildren<QWidget*>());
     for (QWidget* widget : widgets) {
@@ -320,10 +336,14 @@ void applyPluginConfigTheme(QWidget* root, bool isDark) {
             qobject_cast<QDoubleSpinBox*>(widget) || qobject_cast<QComboBox*>(widget) ||
             qobject_cast<QTextEdit*>(widget)) {
             widget->setStyleSheet(inputStyle);
+            widget->setMinimumHeight(qMax(widget->minimumHeight(), widget->fontMetrics().height() + 14));
         } else if (qobject_cast<QPushButton*>(widget)) {
             widget->setStyleSheet(buttonStyle);
-        } else if (qobject_cast<QLabel*>(widget)) {
-            widget->setStyleSheet(labelStyle);
+        } else if (QLabel* label = qobject_cast<QLabel*>(widget)) {
+            label->setWordWrap(true);
+            label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+            label->setMinimumHeight(qMax(label->minimumHeight(), label->fontMetrics().height() + 6));
+            label->setStyleSheet(labelStyle);
         } else if (qobject_cast<QCheckBox*>(widget)) {
             widget->setStyleSheet(optionStyle);
         } else if (qobject_cast<QGroupBox*>(widget)) {
@@ -438,6 +458,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
 }
 
 MainWindow::~MainWindow() {
+    if (m_samAnnotatorDialog) {
+        delete m_samAnnotatorDialog.data();
+        m_samAnnotatorDialog.clear();
+    }
     TerminalBridge::instance().shutdown();
     if (m_splashScreen) {
         m_splashScreen->deleteLater();
@@ -3272,7 +3296,6 @@ void MainWindow::onQuickMeasure() {
 }
 
 void MainWindow::onQuickAnnotate() {
-    // 从第一个 ViewportWidget 获取当前图像
     ViewportWidget* targetVp = nullptr;
     for (ViewportWidget* vp : m_displayManager->allViewports()) {
         if (vp && vp->imageWidget() && vp->imageWidget()->hasImage()) {
@@ -3281,22 +3304,21 @@ void MainWindow::onQuickAnnotate() {
         }
     }
 
-    QImage snapshot;
-    QString imagePath;
-
-    if (targetVp) {
-        snapshot = targetVp->currentImage();
-        imagePath = m_lastImportedImagePath;
-    }
-
-    if (snapshot.isNull()) {
+    if (!targetVp || !targetVp->imageWidget()) {
         Logger::instance().warning(tr("没有可用的视口图像，请先导入或采集图像"), "Annotation");
         return;
     }
 
-    SamAnnotatorDialog dlg(this);
-    dlg.setImageSnapshot(snapshot, imagePath);
-    dlg.exec();
+    if (!m_samAnnotatorDialog) {
+        m_samAnnotatorDialog = new SamAnnotatorDialog(this);
+        m_samAnnotatorDialog->setAttribute(Qt::WA_DeleteOnClose);
+        connect(m_samAnnotatorDialog, &QObject::destroyed, this, [this]() { m_samAnnotatorDialog.clear(); });
+    }
+
+    m_samAnnotatorDialog->attachToImageWidget(targetVp->imageWidget(), m_lastImportedImagePath);
+    m_samAnnotatorDialog->show();
+    m_samAnnotatorDialog->raise();
+    m_samAnnotatorDialog->activateWindow();
 }
 
 void MainWindow::setUiRunningState(bool running, bool cycleMode) {

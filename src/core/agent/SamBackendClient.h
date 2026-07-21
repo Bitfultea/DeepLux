@@ -8,6 +8,7 @@
 #include <QProcess>
 #include <QRectF>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 
 class QNetworkReply;
@@ -54,6 +55,32 @@ public:
     QString serverScriptPath() const {
         return m_scriptPath;
     }
+    QString resolvedServerScriptPath() const {
+        return resolvedScriptPath();
+    }
+
+    void setModelPath(const QString& path) {
+        if (m_modelPath == path)
+            return;
+        stopServerProcess();
+        m_modelPath = path;
+    }
+    QString modelPath() const {
+        return m_modelPath;
+    }
+    QString inferredModelType() const;
+    QString unsupportedModelReason() const;
+
+    QString managedEnvironmentPath() const;
+    QString managedPythonPath() const;
+    QString managedSitePackagesPath() const;
+    QStringList requiredPythonModules() const;
+    QString requirementsPath() const;
+    QString resolvedPythonPath() const;
+    bool managedEnvironmentReady() const;
+    bool isEnvironmentInitializationRunning() const {
+        return m_envProcess != nullptr;
+    }
 
     State state() const {
         return m_state;
@@ -74,12 +101,18 @@ public:
     // 启动/停止 Python 进程（可选，便于测试时跳过）
     void startServerProcess();
     void stopServerProcess();
+    void cancelPendingPrediction();
+    void initializeManagedEnvironment();
+    void cancelEnvironmentInitialization();
 
 signals:
     void stateChanged(SamBackendClient::State newState);
     void predictionReady(const QList<QPointF>& polygon, const QRectF& bbox, double score, const QString& maskRle);
     void errorOccurred(const QString& message);
     void embeddingReady(const QString& embeddingId);
+    void environmentInitializationStarted();
+    void environmentInitializationProgress(const QString& message);
+    void environmentInitializationFinished(bool ok, const QString& message);
 
 private slots:
     void onHealthReply();
@@ -94,6 +127,8 @@ private:
     void stopTimeout();
     QString pyPath() const;
     QString resolvedScriptPath() const;
+    void startEnvironmentStep();
+    void finishEnvironmentInitialization(bool ok, const QString& message);
 
     QNetworkAccessManager* m_nam = nullptr;
     QPointer<QNetworkReply> m_pendingHealthReply;
@@ -102,6 +137,7 @@ private:
     QPointer<QNetworkReply> m_pendingUnloadReply;
 
     QProcess* m_process = nullptr;
+    QProcess* m_envProcess = nullptr;
     QTimer m_timeoutTimer;
 
     State m_state = State::NotStarted;
@@ -109,6 +145,7 @@ private:
     QString m_scriptPath;
     QString m_embeddingId;
     QString m_modelName;
+    QString m_modelPath;
 
     // 记录最近一次预测参数，用于 invalid_embedding 重试
     QList<QPointF> m_lastPositive;
@@ -117,6 +154,8 @@ private:
     QString m_lastImagePath;
     bool m_imageRetryPending = false;
     int m_healthPollsRemaining = 0;
+    int m_envInitStep = 0;
+    QString m_envLastOutput;
 };
 
 } // namespace DeepLux

@@ -29,10 +29,12 @@
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>
 #include <core/model/Project.h>
+#include <ui/dialogs/SamAnnotatorDialog.h>
 #include <ui/views/MainWindow.h>
 #include <ui/widgets/AgentChatPanel.h>
 #include <ui/widgets/AgentMessageBubble.h>
 #include <ui/widgets/AgentToolPreviewCard.h>
+#include <ui/widgets/AnnotationOverlayWidget.h>
 #include <ui/widgets/AppIconProvider.h>
 #include <ui/widgets/FlowCanvas.h>
 #include <ui/widgets/HImageWidget.h>
@@ -86,6 +88,7 @@ private slots:
     void testMeasurementConfigButtonCreatesInputNode();
     void testMeasurementConfigButtonWithInstalledPlugins();
     void testPluginConfigDialogRestylesLegacyDarkPlugin();
+    void testQuickAnnotateOpensSamDialogOnMainViewportImage();
 
 private:
     bool installFitLinePlugin(const QString& pluginRoot) const;
@@ -242,6 +245,29 @@ void TestMainWindow::testStepRunHighlightMovesBetweenModules() {
     delete second;
 }
 
+void TestMainWindow::testQuickAnnotateOpensSamDialogOnMainViewportImage() {
+    MainWindow window;
+    QCoreApplication::processEvents();
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    QImage image(64, 48, QImage::Format_RGB32);
+    image.fill(QColor("#22C55E"));
+    imageWidget->setImage(image);
+    QVERIFY(imageWidget->hasImage());
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickAnnotate", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+
+    SamAnnotatorDialog* dialog = window.findChild<SamAnnotatorDialog*>();
+    QVERIFY(dialog != nullptr);
+    QVERIFY(dialog->isVisible());
+    QCOMPARE(dialog->overlayWidget()->parentWidget(), imageWidget);
+}
+
 void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
     QTemporaryDir appDir;
     QVERIFY(appDir.isValid());
@@ -392,6 +418,12 @@ void TestMainWindow::testPluginConfigDialogRestylesLegacyDarkPlugin() {
                  "Light theme config content should be white, not the plugin's legacy dark surface");
         QVERIFY2(!content->styleSheet().contains(QStringLiteral("#1a2332")),
                  "Legacy ConfigWidgetHelper dark surface should be overwritten when dialog opens");
+
+        const QList<QLabel*> labels = content->findChildren<QLabel*>();
+        QVERIFY(!labels.isEmpty());
+        for (QLabel* label : labels) {
+            QVERIFY2(label->wordWrap(), "Config labels should wrap instead of clipping or overlapping");
+        }
 
         QLineEdit* pathEdit = modal->findChild<QLineEdit*>();
         QVERIFY(pathEdit != nullptr);

@@ -17,6 +17,7 @@ class QShortcut;
 class QStackedWidget;
 class QLabel;
 class QPushButton;
+class QWidget;
 class QTemporaryFile;
 class QUndoStack;
 class QEvent;
@@ -54,6 +55,9 @@ public:
 
     // 接收当前图像快照（来自视口）
     void setImageSnapshot(const QImage& image, const QString& imagePath = QString());
+
+    // 将标注 overlay 挂到主界面的图像视图上，Dialog 仅作为配置窗口。
+    void attachToImageWidget(HImageWidget* imageWidget, const QString& imagePath = QString());
 
     // 当前标注会话
     AnnotationSession session() const;
@@ -109,6 +113,18 @@ public:
     QLineEdit* categoryEdit() const {
         return m_categoryEdit;
     }
+    QPushButton* importModelButton() const {
+        return m_importModelButton;
+    }
+    QPushButton* initializeEnvironmentButton() const {
+        return m_initEnvironmentButton;
+    }
+    QPushButton* restartServerButton() const {
+        return m_restartServerButton;
+    }
+    QPushButton* cancelButton() const {
+        return m_cancelButton;
+    }
 
 signals:
     void imageLoaded(const QString& imagePath);
@@ -120,6 +136,9 @@ private slots:
     void onOpenImage();
     void onSaveSession();
     void onExportLabelMe();
+    void onImportModel();
+    void onInitializeEnvironment();
+    void onRestartSam();
     void onConfirm();
     void onCancel();
     void onDeleteSelected();
@@ -142,12 +161,20 @@ private:
     void updateSessionFromImage();
     void prepareBackendImage();
     void requestPrediction();
+    void loadSavedModelPath();
+    void saveModelPath(const QString& path);
+    bool samEnvironmentReadyForUse() const;
+    bool samModelReadyForUse() const;
+    void refreshSamControlState();
     void clearCurrentPrompt();
     void setStatusText(const QString& text);
     void refreshPromptAfterEdit(bool triggerPrediction);
+    HImageWidget* activeImageWidget() const;
+    void moveOverlayToImageWidget(HImageWidget* imageWidget);
 
     // UI
     HImageWidget* m_imageWidget = nullptr;
+    HImageWidget* m_externalImageWidget = nullptr;
     AnnotationOverlayWidget* m_overlay = nullptr;
     QListWidget* m_objectList = nullptr;
     QLineEdit* m_categoryEdit = nullptr;
@@ -158,6 +185,13 @@ private:
     QButtonGroup* m_modeButtonGroup = nullptr;
     QLabel* m_statusLabel = nullptr;
     QPushButton* m_confirmButton = nullptr;
+    QPushButton* m_cancelButton = nullptr;
+    QPushButton* m_openImageButton = nullptr;
+    QWidget* m_openImageRowWidget = nullptr;
+    QPushButton* m_importModelButton = nullptr;
+    QPushButton* m_initEnvironmentButton = nullptr;
+    QPushButton* m_restartServerButton = nullptr;
+    QWidget* m_centerContainer = nullptr;
 
     // 快捷键
     QShortcut* m_scConfirm = nullptr;
