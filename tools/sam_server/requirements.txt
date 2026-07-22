@@ -1,8 +1,10 @@
-fastapi
-uvicorn
-numpy
-pillow
-torch
-torchvision
-segment-anything
-opencv-python
+# SAM 后端依赖 — 版本锁定确保环境可复现
+fastapi>=0.104,<0.111
+uvicorn>=0.24,<0.31
+numpy>=1.24,<2.0
+pillow>=10.0,<11.0
+# SAM 模型依赖（仅真实推理需要，stub 模式不需要）
+# torch>=2.1,<2.5
+# torchvision>=0.16,<0.20
+# segment-anything==1.0
+# opencv-python>=4.8,<4.10
