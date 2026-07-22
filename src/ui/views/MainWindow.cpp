@@ -443,6 +443,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
     // Load Agent settings from ConfigManager (Phase 3)
     loadAgentSettings();
 
+    // P1-3: 从配置加载主题设置
+    {
+        ConfigManager& cfg = ConfigManager::instance();
+        if (cfg.isInitialized()) {
+            m_isDarkTheme = cfg.groupBool("appearance", "darkTheme", false);
+        }
+    }
+
     // Connect ProjectManager signals to sync process tree with Project model
     connect(&ProjectManager::instance(), &ProjectManager::projectCreated, this, &MainWindow::onProjectOpened);
     connect(&ProjectManager::instance(), &ProjectManager::projectOpened, this, &MainWindow::onProjectOpened);
@@ -556,6 +564,8 @@ void MainWindow::loadPluginsWithProgress() {
 void MainWindow::setupUi() {
     setWindowTitle(tr("DeepLux Vision 1.0.0"));
     resize(1280, 800);
+    // P1-5: 提高最小尺寸，确保工具栏和面板在最小窗口下仍可用
+    setMinimumSize(900, 600);
 
     setupMenuBar();
     setupToolBar();
@@ -804,11 +814,14 @@ void MainWindow::setupMainLayout() {
     addToolBoxItem(imgProcItem, tr("图像预处理"), "PerProcessing");
     addToolBoxItem(imgProcItem, tr("颜色识别"), "ColorRecognition");
     addToolBoxItem(imgProcItem, tr("斑点分析"), "Blob");
+    addToolBoxItem(imgProcItem, tr("图像脚本"), "ImageScript");
+    addToolBoxItem(imgProcItem, tr("拼图"), "JigsawPuzzle");
 
     QTreeWidgetItem* detectItem = createCategoryItem(m_toolBoxTree, tr("02 - 检测识别"));
     detectItem->setExpanded(false);
     addToolBoxItem(detectItem, tr("模板匹配"), "Matching");
     addToolBoxItem(detectItem, tr("二维码识别"), "QRCode");
+    addToolBoxItem(detectItem, tr("缺陷检测"), "JiErHanDefectsDet");
 
     QTreeWidgetItem* geometryItem = createCategoryItem(m_toolBoxTree, tr("03 - 几何测量"));
     geometryItem->setExpanded(false);
@@ -820,6 +833,8 @@ void MainWindow::setupMainLayout() {
     addToolBoxItem(geometryItem, tr("测量直线"), "MeasureLine");
     addToolBoxItem(geometryItem, tr("测量间隙"), "MeasureGap");
     addToolBoxItem(geometryItem, tr("测量输入"), "MeasurementInput");
+    addToolBoxItem(geometryItem, tr("自由曲面"), "FreeformSurface");
+    addToolBoxItem(geometryItem, tr("点到平面距离"), "PointSurfaceDistance");
 
     QTreeWidgetItem* geoRelationItem = createCategoryItem(m_toolBoxTree, tr("04 - 几何关系"));
     geoRelationItem->setExpanded(false);
@@ -841,11 +856,17 @@ void MainWindow::setupMainLayout() {
     addToolBoxItem(logicItem, tr("While 循环"), "While");
     addToolBoxItem(logicItem, tr("停止循环"), "StopWhile");
     addToolBoxItem(logicItem, tr("条件判断"), "Condition");
+    addToolBoxItem(logicItem, tr("延时"), "Delay");
+    addToolBoxItem(logicItem, tr("并行"), "Parallel");
+    addToolBoxItem(logicItem, tr("队列入"), "QueueIn");
+    addToolBoxItem(logicItem, tr("队列出"), "QueueOut");
 
     QTreeWidgetItem* systemItem = createCategoryItem(m_toolBoxTree, tr("08 - 系统工具"));
     systemItem->setExpanded(false);
     addToolBoxItem(systemItem, tr("系统时间"), "SystemTime");
     addToolBoxItem(systemItem, tr("文件夹操作"), "Folder");
+    addToolBoxItem(systemItem, tr("显示点"), "ShowPoint");
+    addToolBoxItem(systemItem, tr("时间切片"), "TimeSlice");
 
     QTreeWidgetItem* varItem = createCategoryItem(m_toolBoxTree, tr("09 - 变量工具"));
     varItem->setExpanded(false);
@@ -1357,6 +1378,29 @@ void MainWindow::updateToolBoxPluginItem(const QString& pluginName) {
             item->setIcon(0, icon);
             m_toolDisplayNames.insert(pluginName, displayName);
             return;
+        }
+    }
+
+    // P1-1: 插件不在工具箱中时，按类别自动添加
+    static const QMap<QString, QString> categoryKeywords = {
+        {"image_processing", QStringLiteral("00 - 图像处理")},
+        {"detection", QStringLiteral("02 - 检测识别")},
+        {"geometry", QStringLiteral("03 - 几何测量")},
+        {"calibration", QStringLiteral("04 - 标定工具")},
+        {"logic", QStringLiteral("07 - 逻辑工具")},
+        {"system", QStringLiteral("08 - 系统工具")},
+        {"variable", QStringLiteral("09 - 变量工具")},
+    };
+    const QString category = info.category.toLower();
+    for (auto it = categoryKeywords.constBegin(); it != categoryKeywords.constEnd(); ++it) {
+        if (category.contains(it.key())) {
+            for (int i = 0; i < m_toolBoxTree->topLevelItemCount(); ++i) {
+                QTreeWidgetItem* cat = m_toolBoxTree->topLevelItem(i);
+                if (cat->text(0).startsWith(it.value().left(2))) {
+                    addToolBoxItem(cat, displayName, pluginName);
+                    return;
+                }
+            }
         }
     }
 }
@@ -3524,6 +3568,12 @@ void MainWindow::onLaserSet() {
 void MainWindow::onToggleTheme() {
     m_isDarkTheme = !m_isDarkTheme;
     applyTheme();
+    // P1-3: 持久化主题选择
+    ConfigManager& cfg = ConfigManager::instance();
+    if (cfg.isInitialized()) {
+        cfg.setGroupValue("appearance", "darkTheme", m_isDarkTheme);
+        cfg.save();
+    }
     Logger::instance().info(m_isDarkTheme ? tr("切换到深色主题") : tr("切换到浅色主题"), "System");
 }
 

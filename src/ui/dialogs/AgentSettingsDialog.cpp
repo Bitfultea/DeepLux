@@ -9,9 +9,15 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTextEdit>
@@ -96,8 +102,60 @@ void AgentSettingsDialog::setupUi() {
         accept();
     });
     connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
-    connect(testBtn, &QPushButton::clicked, this,
-            [this]() { QMessageBox::information(this, "Test", "Connection test not yet implemented."); });
+    connect(testBtn, &QPushButton::clicked, this, [this, testBtn]() {
+        // P1-7: 实际测试连接 — 发送一个简单请求到 API
+        const QString endpoint = m_endpointEdit->text().trimmed();
+        const QString apiKey = m_apiKeyEdit->text().trimmed();
+        const QString model = m_modelEdit->text().trimmed();
+
+        if (endpoint.isEmpty() || apiKey.isEmpty() || model.isEmpty()) {
+            QMessageBox::warning(this, tr("测试连接"), tr("请先填写端点、API Key 和模型名称"));
+            return;
+        }
+
+        testBtn->setEnabled(false);
+        testBtn->setText(tr("测试中..."));
+
+        QNetworkAccessManager* nam = new QNetworkAccessManager(this);
+        QUrl url(endpoint);
+        QNetworkRequest req(url);
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        req.setRawHeader("Authorization", ("Bearer " + apiKey).toUtf8());
+
+        QJsonObject body;
+        body["model"] = model;
+        body["max_tokens"] = 5;
+        QJsonArray messages;
+        QJsonObject msg;
+        msg["role"] = "user";
+        msg["content"] = "Hi";
+        messages.append(msg);
+        body["messages"] = messages;
+
+        QNetworkReply* reply = nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+        connect(reply, &QNetworkReply::finished, this, [this, reply, nam, testBtn]() {
+            testBtn->setEnabled(true);
+            testBtn->setText(tr("测试连接"));
+
+            if (reply->error() == QNetworkReply::NoError) {
+                QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+                QJsonObject obj = doc.object();
+                QString modelReply = obj.value("model").toString();
+                QMessageBox::information(this, tr("测试连接"),
+                    tr("连接成功！\n模型: %1").arg(modelReply.isEmpty() ? tr("已响应") : modelReply));
+            } else {
+                int httpCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                QString errBody = QString::fromUtf8(reply->readAll()).left(200);
+                QMessageBox::warning(this, tr("测试连接"),
+                    tr("连接失败 (HTTP %1):\n%2\n%3")
+                        .arg(httpCode)
+                        .arg(reply->errorString())
+                        .arg(errBody));
+            }
+            reply->deleteLater();
+            nam->deleteLater();
+        });
+    });
 }
 
 void AgentSettingsDialog::loadSettings() {
