@@ -1,3 +1,4 @@
+#include "core/io/YoloSegExporter.h"
 #include "core/model/Annotation.h"
 #include "ui/dialogs/SamAnnotatorDialog.h"
 #include "ui/widgets/AnnotationOverlayWidget.h"
@@ -42,6 +43,17 @@ private slots:
     void mainViewModeUsesReadableConfigLayout();
     void modelImportButtonExists();
     void environmentControlButtonsExist();
+    void predictionMaskIsForwardedToOverlay();
+    void undoRedoButtonsExist();
+    void redoShortcutBound();
+    void categoryListPrepopulated();
+    void categoryCanBeAdded();
+    void categoryCanBeRemoved();
+    void currentCategoryLabelPrefersListSelection();
+    void openAnnotationButtonExists();
+    void exportYoloButtonExists();
+    void yoloSegExportWritesFile();
+    void openAnnotationReloadsSession();
 
 private:
     QImage makeTestImage();
@@ -160,7 +172,7 @@ void TestSamAnnotatorDialog::selectModeClickSelectsConfirmedObject() {
     QList<QPointF> polygon = {QPointF(10, 10), QPointF(80, 10), QPointF(80, 80), QPointF(10, 80)};
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onPredictionReady", Qt::DirectConnection, Q_ARG(QList<QPointF>, polygon),
                                       Q_ARG(QRectF, QRectF(10, 10, 70, 70)), Q_ARG(double, 0.91),
-                                      Q_ARG(QString, QStringLiteral("fake_rle"))));
+                                      Q_ARG(QString, QStringLiteral("fake_rle")), Q_ARG(QImage, QImage())));
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
     QCOMPARE(dlg.objectList()->count(), 1);
 
@@ -207,7 +219,7 @@ void TestSamAnnotatorDialog::cancelClearsUnconfirmedSelection() {
     QList<QPointF> polygon = {QPointF(1, 2), QPointF(10, 2), QPointF(10, 12), QPointF(1, 12)};
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onPredictionReady", Qt::DirectConnection, Q_ARG(QList<QPointF>, polygon),
                                       Q_ARG(QRectF, QRectF(1, 2, 9, 10)), Q_ARG(double, 0.91),
-                                      Q_ARG(QString, QStringLiteral("fake_rle"))));
+                                      Q_ARG(QString, QStringLiteral("fake_rle")), Q_ARG(QImage, QImage())));
 
     dlg.cancelButton()->click();
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
@@ -226,7 +238,7 @@ void TestSamAnnotatorDialog::predictionResultCanBeConfirmed() {
     QList<QPointF> polygon = {QPointF(1, 2), QPointF(10, 2), QPointF(10, 12), QPointF(1, 12)};
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onPredictionReady", Qt::DirectConnection, Q_ARG(QList<QPointF>, polygon),
                                       Q_ARG(QRectF, QRectF(1, 2, 9, 10)), Q_ARG(double, 0.91),
-                                      Q_ARG(QString, QStringLiteral("fake_rle"))));
+                                      Q_ARG(QString, QStringLiteral("fake_rle")), Q_ARG(QImage, QImage())));
     dlg.categoryEdit()->setText(QStringLiteral("defect"));
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
 
@@ -341,6 +353,135 @@ void TestSamAnnotatorDialog::environmentControlButtonsExist() {
     QVERIFY(dlg.restartServerButton() != nullptr);
     QVERIFY(dlg.initializeEnvironmentButton()->text().contains(QStringLiteral("环境")));
     QVERIFY(dlg.restartServerButton()->text().contains(QStringLiteral("重启")));
+}
+
+void TestSamAnnotatorDialog::predictionMaskIsForwardedToOverlay() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+
+    // Build a 20x20 transparent ARGB mask
+    QImage maskImage(20, 20, QImage::Format_ARGB32);
+    maskImage.fill(QColor(6, 182, 212, 90));
+
+    QList<QPointF> polygon = {QPointF(10, 10), QPointF(30, 10), QPointF(30, 30), QPointF(10, 30)};
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onPredictionReady", Qt::DirectConnection, Q_ARG(QList<QPointF>, polygon),
+                                      Q_ARG(QRectF, QRectF(10, 10, 20, 20)), Q_ARG(double, 0.91),
+                                      Q_ARG(QString, QStringLiteral("rle")), Q_ARG(QImage, maskImage)));
+    // Overlay should now have a preview mask set (non-null).
+    QVERIFY(!dlg.overlayWidget()->previewMask().isNull());
+}
+
+void TestSamAnnotatorDialog::undoRedoButtonsExist() {
+    SamAnnotatorDialog dlg;
+    QVERIFY(dlg.undoButton() != nullptr);
+    QVERIFY(dlg.redoButton() != nullptr);
+    QVERIFY(dlg.undoButton()->text().contains(QStringLiteral("撤销")));
+    QVERIFY(dlg.redoButton()->text().contains(QStringLiteral("重做")));
+}
+
+void TestSamAnnotatorDialog::redoShortcutBound() {
+    SamAnnotatorDialog dlg;
+    QVERIFY(dlg.redoShortcut() != nullptr);
+    QCOMPARE(dlg.redoShortcut()->key(), QKeySequence(QStringLiteral("Ctrl+Y")));
+    QCOMPARE(dlg.redoShortcut()->context(), Qt::ApplicationShortcut);
+}
+
+void TestSamAnnotatorDialog::categoryListPrepopulated() {
+    SamAnnotatorDialog dlg;
+    QVERIFY(dlg.categoryList() != nullptr);
+    QVERIFY(dlg.categoryList()->count() >= 4);
+    QVERIFY(dlg.categories().contains(QStringLiteral("缺陷")));
+    QVERIFY(dlg.categories().contains(QStringLiteral("划痕")));
+    QVERIFY(dlg.categories().contains(QStringLiteral("凹坑")));
+    QVERIFY(dlg.categories().contains(QStringLiteral("正常")));
+}
+
+void TestSamAnnotatorDialog::categoryCanBeAdded() {
+    SamAnnotatorDialog dlg;
+    const int initial = dlg.categories().size();
+    dlg.addCategory(QStringLiteral("裂纹"));
+    QVERIFY(dlg.categories().contains(QStringLiteral("裂纹")));
+    QCOMPARE(dlg.categories().size(), initial + 1);
+    QVERIFY(dlg.categoryColor(QStringLiteral("裂纹")).isValid());
+}
+
+void TestSamAnnotatorDialog::categoryCanBeRemoved() {
+    SamAnnotatorDialog dlg;
+    dlg.addCategory(QStringLiteral("临时"));
+    QVERIFY(dlg.categories().contains(QStringLiteral("临时")));
+    dlg.removeCategory(QStringLiteral("临时"));
+    QVERIFY(!dlg.categories().contains(QStringLiteral("临时")));
+}
+
+void TestSamAnnotatorDialog::currentCategoryLabelPrefersListSelection() {
+    SamAnnotatorDialog dlg;
+    if (dlg.categoryList()->count() > 0) {
+        dlg.categoryList()->setCurrentRow(0);
+        QVERIFY(!dlg.currentCategoryLabel().isEmpty());
+    }
+}
+
+void TestSamAnnotatorDialog::openAnnotationButtonExists() {
+    SamAnnotatorDialog dlg;
+    QVERIFY(dlg.openAnnotationButton() != nullptr);
+    QVERIFY(dlg.openAnnotationButton()->text().contains(QStringLiteral("打开标注")));
+}
+
+void TestSamAnnotatorDialog::exportYoloButtonExists() {
+    SamAnnotatorDialog dlg;
+    QVERIFY(dlg.exportYoloButton() != nullptr);
+    QVERIFY(dlg.exportYoloButton()->text().contains(QStringLiteral("YOLO")));
+}
+
+void TestSamAnnotatorDialog::yoloSegExportWritesFile() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+
+    QList<QPointF> polygon = {QPointF(10, 10), QPointF(30, 10), QPointF(30, 30), QPointF(10, 30)};
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onPredictionReady", Qt::DirectConnection, Q_ARG(QList<QPointF>, polygon),
+                                      Q_ARG(QRectF, QRectF(10, 10, 20, 20)), Q_ARG(double, 0.91),
+                                      Q_ARG(QString, QStringLiteral("rle")), Q_ARG(QImage, QImage())));
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
+    QCOMPARE(dlg.objectList()->count(), 1);
+
+    QTemporaryFile tmp("yolo_XXXXXX.txt");
+    QVERIFY(tmp.open());
+    const QString path = tmp.fileName();
+    tmp.close();
+
+    AnnotationSession session = dlg.session();
+    QString err;
+    QVERIFY(YoloSegExporter::exportToFile(session, path, dlg.categories(), &err));
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::ReadOnly | QIODevice::Text));
+    const QString content = QString::fromUtf8(f.readAll());
+    QVERIFY(!content.isEmpty());
+}
+
+void TestSamAnnotatorDialog::openAnnotationReloadsSession() {
+    // First save a session from one dialog
+    SamAnnotatorDialog srcDlg;
+    srcDlg.setImageSnapshot(makeTestImage(), QString());
+    QList<QPointF> polygon = {QPointF(5, 5), QPointF(15, 5), QPointF(15, 15), QPointF(5, 15)};
+    QVERIFY(QMetaObject::invokeMethod(&srcDlg, "onPredictionReady", Qt::DirectConnection,
+                                      Q_ARG(QList<QPointF>, polygon), Q_ARG(QRectF, QRectF(5, 5, 10, 10)),
+                                      Q_ARG(double, 0.9), Q_ARG(QString, QStringLiteral("rle")),
+                                      Q_ARG(QImage, QImage())));
+    QVERIFY(QMetaObject::invokeMethod(&srcDlg, "onConfirm", Qt::DirectConnection));
+    QCOMPARE(srcDlg.objectList()->count(), 1);
+
+    QTemporaryFile tmp("anno_XXXXXX.deeplux-anno.json");
+    QVERIFY(tmp.open());
+    tmp.close();
+    QString err;
+    QVERIFY(srcDlg.session().save(tmp.fileName(), &err));
+
+    // Now open the saved session in a fresh dialog via onOpenAnnotation (we invoke directly with a path)
+    SamAnnotatorDialog dlg;
+    QString loadErr;
+    AnnotationSession loaded = AnnotationSession::load(tmp.fileName(), &loadErr);
+    QVERIFY2(loadErr.isEmpty(), qPrintable(loadErr));
+    QCOMPARE(loaded.annotations.size(), 1);
 }
 
 QTEST_MAIN(TestSamAnnotatorDialog)

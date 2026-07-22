@@ -5,7 +5,9 @@ Default mode requires a real SAM checkpoint through DEEPLUX_SAM_MODEL.
 Set DEEPLUX_SAM_STUB=1 only for Qt integration tests without a model.
 """
 import asyncio
+import base64
 import hashlib
+import io
 import json
 import os
 from typing import Dict, List, Optional
@@ -127,6 +129,24 @@ def _encode_rle(mask: np.ndarray) -> str:
     return json.dumps({"size": [h, w], "counts": counts}, separators=(",", ":"))
 
 
+def _encode_mask_png_base64(mask: np.ndarray) -> str:
+    """Encode a binary mask as a base64-encoded RGBA PNG for easy QImage loading on the C++ side."""
+    try:
+        from PIL import Image
+
+        h, w = mask.shape[:2]
+        rgba = np.zeros((h, w, 4), dtype=np.uint8)
+        # Use a semi-transparent cyan for mask pixels, fully transparent for the rest.
+        rgba[mask > 0] = [6, 182, 212, 90]
+        rgba[mask == 0] = [0, 0, 0, 0]
+        img = Image.fromarray(rgba, mode="RGBA")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return ""
+
+
 def _stub_prediction(req: PredictRequest, size):
     w, h = size
     if req.box is not None and len(req.box) >= 4:
@@ -137,7 +157,16 @@ def _stub_prediction(req: PredictRequest, size):
     else:
         x, y, bw, bh = 0, 0, min(50, w), min(50, h)
     polygon = [[x, y], [x + bw, y], [x + bw, y + bh], [x, y + bh]]
-    return {"mask_rle": "", "bbox": [x, y, bw, bh], "polygon": polygon, "score": 0.95, "model_name": MODEL_NAME}
+    mask = np.zeros((int(bh), int(bw)), dtype=np.uint8)
+    mask[1:-1, 1:-1] = 1
+    return {
+        "mask_rle": "",
+        "mask_png_base64": _encode_mask_png_base64(mask),
+        "bbox": [x, y, bw, bh],
+        "polygon": polygon,
+        "score": 0.95,
+        "model_name": MODEL_NAME,
+    }
 
 
 @app.get("/health")
@@ -210,6 +239,7 @@ async def predict(req: PredictRequest):
         polygon = _mask_to_polygon(mask, bbox)
         return {
             "mask_rle": _encode_rle(mask),
+            "mask_png_base64": _encode_mask_png_base64(mask),
             "bbox": bbox,
             "polygon": polygon,
             "score": float(scores[best]),
@@ -226,7 +256,23 @@ def unload_image(req: UnloadRequest):
 
 
 if __name__ == "__main__":
+    import argparse
     import uvicorn
 
-    port = int(os.environ.get("SAM_SERVER_PORT", "8000"))
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=0, help="Port (0=auto)")
+    parser.add_argument("--host", default="127.0.0.1")
+    args = parser.parse_args()
+
+    port = args.port or int(os.environ.get("SAM_SERVER_PORT", "0"))
+    config = uvicorn.Config(app, host=args.host, port=port, log_level="info")
+    server = uvicorn.Server(config)
+    # When port=0, uvicorn assigns a free port; print it for the parent process
+    if port == 0:
+        import sys
+        # uvicorn logs "Uvicorn running on http://127.0.0.1:PORT"
+        # We also print a machine-readable line
+        server.config.load()
+        bound_port = server.servers[0].sockets[0].getsockname()[1] if server.servers else 0
+        print(f"SAM_SERVER_PORT={bound_port}", flush=True)
+    server.run()

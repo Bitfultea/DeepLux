@@ -6,6 +6,8 @@
 #include <QPointF>
 #include <QRectF>
 #include <QString>
+#include <QStringList>
+#include <QHash>
 #include <memory>
 
 class QToolButton;
@@ -20,6 +22,7 @@ class QPushButton;
 class QWidget;
 class QTemporaryFile;
 class QUndoStack;
+class QUndoCommand;
 class QEvent;
 
 namespace DeepLux {
@@ -84,6 +87,37 @@ public:
     QToolButton* selectButton() const {
         return m_btnSelect;
     }
+    QToolButton* undoButton() const {
+        return m_btnUndo;
+    }
+    QToolButton* redoButton() const {
+        return m_btnRedo;
+    }
+
+    // 类别管理
+    QListWidget* categoryList() const {
+        return m_categoryList;
+    }
+    QStringList categories() const;
+    QString currentCategoryLabel() const;
+    QColor categoryColor(const QString& label) const;
+    void addCategory(const QString& label);
+    void removeCategory(const QString& label);
+    QPushButton* addCategoryButton() const {
+        return m_addCategoryButton;
+    }
+    QPushButton* removeCategoryButton() const {
+        return m_removeCategoryButton;
+    }
+    QPushButton* openAnnotationButton() const {
+        return m_openAnnotationButton;
+    }
+    QPushButton* exportYoloButton() const {
+        return m_exportYoloButton;
+    }
+    QShortcut* redoShortcut() const {
+        return m_scRedo;
+    }
 
     // 快捷键访问（供测试验证）
     QShortcut* confirmShortcut() const {
@@ -136,8 +170,10 @@ protected:
 
 private slots:
     void onOpenImage();
+    void onOpenAnnotation();
     void onSaveSession();
     void onExportLabelMe();
+    void onExportYoloSeg();
     void onImportModel();
     void onInitializeEnvironment();
     void onRestartSam();
@@ -145,11 +181,15 @@ private slots:
     void onCancel();
     void onDeleteSelected();
     void onUndo();
+    void onRedo();
     void onModeButtonToggled();
     void onObjectSelectionChanged();
     void onOverlayClicked(const QPointF& imagePoint, Qt::MouseButton button);
     void onOverlayDragEnded(const QPointF& imageStart, const QPointF& imageEnd);
-    void onPredictionReady(const QList<QPointF>& polygon, const QRectF& bbox, double score, const QString& maskRle);
+    void onPredictionReady(const QList<QPointF>& polygon, const QRectF& bbox, double score, const QString& maskRle,
+                           const QImage& maskImage);
+    void onAddCategory();
+    void onRemoveCategory();
 
 private:
     void setupUi();
@@ -158,7 +198,7 @@ private:
     void syncOverlayMode();
     void refreshOverlayCoordConverter();
     void refreshObjectList();
-    void addConfirmedObject(const AnnotationObject& obj);
+    void addConfirmedObject(const AnnotationObject& obj, const QImage& maskImage);
     void commitCurrentPromptAsObject();
     void updateSessionFromImage();
     void prepareBackendImage();
@@ -173,26 +213,34 @@ private:
     void refreshPromptAfterEdit(bool triggerPrediction);
     HImageWidget* activeImageWidget() const;
     void moveOverlayToImageWidget(HImageWidget* imageWidget);
+    void initializeDefaultCategories();
 
     // UI
     HImageWidget* m_imageWidget = nullptr;
     HImageWidget* m_externalImageWidget = nullptr;
     AnnotationOverlayWidget* m_overlay = nullptr;
     QListWidget* m_objectList = nullptr;
+    QListWidget* m_categoryList = nullptr;
     QLineEdit* m_categoryEdit = nullptr;
+    QPushButton* m_addCategoryButton = nullptr;
+    QPushButton* m_removeCategoryButton = nullptr;
     QToolButton* m_btnPositivePoint = nullptr;
     QToolButton* m_btnNegativePoint = nullptr;
     QToolButton* m_btnBox = nullptr;
     QToolButton* m_btnSelect = nullptr;
+    QToolButton* m_btnUndo = nullptr;
+    QToolButton* m_btnRedo = nullptr;
     QButtonGroup* m_modeButtonGroup = nullptr;
     QLabel* m_statusLabel = nullptr;
     QPushButton* m_confirmButton = nullptr;
     QPushButton* m_cancelButton = nullptr;
     QPushButton* m_openImageButton = nullptr;
+    QPushButton* m_openAnnotationButton = nullptr;
     QWidget* m_openImageRowWidget = nullptr;
     QPushButton* m_importModelButton = nullptr;
     QPushButton* m_initEnvironmentButton = nullptr;
     QPushButton* m_restartServerButton = nullptr;
+    QPushButton* m_exportYoloButton = nullptr;
     QWidget* m_centerContainer = nullptr;
 
     // 快捷键
@@ -200,6 +248,11 @@ private:
     QShortcut* m_scCancel = nullptr;
     QShortcut* m_scDelete = nullptr;
     QShortcut* m_scUndo = nullptr;
+    QShortcut* m_scRedo = nullptr;
+
+    // 类别颜色映射
+    QStringList m_categories;
+    QHash<QString, QColor> m_categoryColors;
 
     // 状态
     ToolMode m_toolMode = ToolMode::Select;
@@ -216,8 +269,12 @@ private:
     QList<QPointF> m_previewPolygon;
     QRectF m_previewBbox;
     QString m_previewMaskRle;
+    QImage m_previewMask;
     double m_previewScore = 0.0;
     bool m_hasPrediction = false;
+
+    // 已确认对象的 mask 图像（按 id 缓存）
+    QHash<QString, QImage> m_objectMasks;
 
     // 标注会话
     AnnotationSession* m_session = nullptr; // 持有 ownership

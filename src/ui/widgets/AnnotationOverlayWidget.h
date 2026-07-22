@@ -2,6 +2,8 @@
 
 #include "core/model/Annotation.h"
 
+#include <QImage>
+#include <QHash>
 #include <QList>
 #include <QPointF>
 #include <QRectF>
@@ -34,7 +36,13 @@ public:
     // 设置当前预览（未确认的 mask 预览）
     void setPreviewPolygon(const QList<QPointF>& polygon);
     void setPreviewBox(const QRectF& box);
+    void setPreviewMask(const QImage& maskImage);
     void clearPreview();
+
+    // 设置已确认对象的 mask（按对象 id）
+    void setObjectMask(const QString& id, const QImage& maskImage);
+    void clearObjectMask(const QString& id);
+    QImage objectMask(const QString& id) const;
 
     // 设置当前 prompt 点
     void setPromptPoints(const QList<QPointF>& positive, const QList<QPointF>& negative);
@@ -60,6 +68,11 @@ public:
     void setDragBox(const QRectF& box);
     void clearDragBox();
 
+    // 访问当前预览 mask（供测试）
+    QImage previewMask() const {
+        return m_previewMask;
+    }
+
 signals:
     void widgetClicked(const QPointF& imagePoint, Qt::MouseButton button);
     void dragStarted(const QPointF& imagePoint);
@@ -71,6 +84,7 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void wheelEvent(QWheelEvent* event) override;
 
 private:
     CoordConverter m_imageToWidget;
@@ -78,6 +92,8 @@ private:
     QList<AnnotationObject> m_annotations;
     QList<QPointF> m_previewPolygon;
     QRectF m_previewBox;
+    QImage m_previewMask;
+    QHash<QString, QImage> m_objectMasks;
     QList<QPointF> m_positivePoints;
     QList<QPointF> m_negativePoints;
     QString m_selectedId;

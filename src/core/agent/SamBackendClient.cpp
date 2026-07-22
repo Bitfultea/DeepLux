@@ -3,6 +3,7 @@
 #include "core/common/Logger.h"
 #include "core/platform/PathUtils.h"
 
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -208,6 +209,36 @@ void SamBackendClient::startServerProcess() {
                         .arg(status == QProcess::NormalExit ? QStringLiteral("normal") : QStringLiteral("crash"),
                              stderrText));
             });
+    // Fix 8: 解析 stdout 获取实际端口，同时转发到 Logger
+    connect(m_process, &QProcess::readyReadStandardOutput, this, [this]() {
+        if (!m_process)
+            return;
+        while (m_process->canReadLine()) {
+            const QString line = QString::fromLocal8Bit(m_process->readLine()).trimmed();
+            if (line.isEmpty())
+                continue;
+            if (line.startsWith(QStringLiteral("SAM_SERVER_PORT="))) {
+                const int port = line.mid(16).toInt();
+                if (port > 0) {
+                    m_serverUrl = QStringLiteral("http://127.0.0.1:%1").arg(port);
+                    Logger::instance().info(tr("SAM server 端口: %1").arg(port), "SamBackend");
+                }
+                continue;
+            }
+            Logger::instance().info(line, "SamBackend");
+        }
+    });
+    connect(m_process, &QProcess::readyReadStandardError, this, [this]() {
+        if (!m_process)
+            return;
+        const QByteArray data = m_process->readAllStandardError();
+        const QString text = QString::fromLocal8Bit(data).trimmed();
+        if (text.isEmpty())
+            return;
+        const QStringList lines = text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        for (const QString& line : lines)
+            Logger::instance().warning(line.trimmed(), "SamBackend");
+    });
 
     setState(State::Starting);
     m_healthPollsRemaining = 60;
@@ -640,8 +671,19 @@ void SamBackendClient::onPredictReply() {
     if (!model.isEmpty())
         m_modelName = model;
 
+    // Decode optional mask_png_base64 into a QImage so the UI can render the actual mask.
+    QImage maskImage;
+    const QString maskPngB64 = obj.value("mask_png_base64").toString();
+    if (!maskPngB64.isEmpty()) {
+        const QByteArray pngData = QByteArray::fromBase64(maskPngB64.toLatin1());
+        if (maskImage.loadFromData(pngData, "PNG"))
+            maskImage = maskImage.convertToFormat(QImage::Format_ARGB32);
+        else
+            maskImage = QImage();
+    }
+
     setState(State::Ready);
-    emit predictionReady(polygon, bbox, score, maskRle);
+    emit predictionReady(polygon, bbox, score, maskRle, maskImage);
     stopTimeout();
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QImage>
 #include <QList>
 #include <QNetworkAccessManager>
 #include <QObject>
@@ -107,7 +108,8 @@ public:
 
 signals:
     void stateChanged(SamBackendClient::State newState);
-    void predictionReady(const QList<QPointF>& polygon, const QRectF& bbox, double score, const QString& maskRle);
+    void predictionReady(const QList<QPointF>& polygon, const QRectF& bbox, double score, const QString& maskRle,
+                         const QImage& maskImage);
     void errorOccurred(const QString& message);
     void embeddingReady(const QString& embeddingId);
     void environmentInitializationStarted();
@@ -143,7 +145,7 @@ private:
     QTimer m_timeoutTimer;
 
     State m_state = State::NotStarted;
-    QString m_serverUrl = QStringLiteral("http://127.0.0.1:8000");
+    QString m_serverUrl = QStringLiteral("http://127.0.0.1:0");  // 0 = auto-assign
     QString m_scriptPath;
     QString m_embeddingId;
     QString m_modelName;

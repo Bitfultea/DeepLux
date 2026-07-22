@@ -4,6 +4,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPainterPathStroker>
+#include <QCoreApplication>
 
 namespace DeepLux {
 
@@ -36,10 +37,30 @@ void AnnotationOverlayWidget::setPreviewBox(const QRectF& box) {
     update();
 }
 
+void AnnotationOverlayWidget::setPreviewMask(const QImage& maskImage) {
+    m_previewMask = maskImage;
+    update();
+}
+
 void AnnotationOverlayWidget::clearPreview() {
     m_previewPolygon.clear();
     m_previewBox = QRectF();
+    m_previewMask = QImage();
     update();
+}
+
+void AnnotationOverlayWidget::setObjectMask(const QString& id, const QImage& maskImage) {
+    m_objectMasks.insert(id, maskImage);
+    update();
+}
+
+void AnnotationOverlayWidget::clearObjectMask(const QString& id) {
+    m_objectMasks.remove(id);
+    update();
+}
+
+QImage AnnotationOverlayWidget::objectMask(const QString& id) const {
+    return m_objectMasks.value(id);
 }
 
 void AnnotationOverlayWidget::setPromptPoints(const QList<QPointF>& positive, const QList<QPointF>& negative) {
@@ -80,6 +101,19 @@ void AnnotationOverlayWidget::paintEvent(QPaintEvent*) {
     for (const AnnotationObject& obj : m_annotations) {
         bool isSelected = (obj.id == m_selectedId);
 
+        // 绘制对象 mask（如果有）
+        const QImage objMask = m_objectMasks.value(obj.id);
+        if (!objMask.isNull() && m_imageToWidget) {
+            // mask 是图像坐标的 RGBA 图，按 polygon bbox 对齐绘制
+            QRectF maskRectInImage(0, 0, objMask.width(), objMask.height());
+            // 如果 mask 尺寸与对象 bbox 不一致，按 bbox 缩放对齐
+            QRectF targetImageRect = obj.bbox.isValid() ? obj.bbox : maskRectInImage;
+            QPointF tl = m_imageToWidget(targetImageRect.topLeft());
+            QPointF br = m_imageToWidget(targetImageRect.bottomRight());
+            QRectF widgetTarget(tl, br);
+            painter.drawImage(widgetTarget, objMask, QRectF(0, 0, objMask.width(), objMask.height()));
+        }
+
         // 绘制 polygon 轮廓
         if (obj.polygon.size() >= 2) {
             QPainterPath path;
@@ -100,6 +134,17 @@ void AnnotationOverlayWidget::paintEvent(QPaintEvent*) {
             painter.setPen(pen);
             painter.drawPath(path);
         }
+    }
+
+    // 绘制预览 mask（如果有）
+    if (!m_previewMask.isNull() && m_imageToWidget) {
+        // 将 mask 按 polygon bbox 对齐绘制到 widget
+        QRectF imageRect(0, 0, m_previewMask.width(), m_previewMask.height());
+        QRectF targetImageRect = m_previewBox.isValid() ? m_previewBox : imageRect;
+        QPointF tl = m_imageToWidget(targetImageRect.topLeft());
+        QPointF br = m_imageToWidget(targetImageRect.bottomRight());
+        QRectF widgetTarget(tl, br);
+        painter.drawImage(widgetTarget, m_previewMask, QRectF(0, 0, m_previewMask.width(), m_previewMask.height()));
     }
 
     // 绘制预览 polygon
@@ -158,6 +203,14 @@ void AnnotationOverlayWidget::paintEvent(QPaintEvent*) {
 }
 
 void AnnotationOverlayWidget::mousePressEvent(QMouseEvent* event) {
+    // 中键和 Ctrl+左键转发给父 HImageWidget（平移/缩放）
+    if (event->button() == Qt::MiddleButton ||
+        (event->button() == Qt::LeftButton && event->modifiers() & Qt::ControlModifier)) {
+        if (auto* p = parentWidget())
+            QCoreApplication::sendEvent(p, event);
+        return;
+    }
+
     if (!m_widgetToImage)
         return;
 
@@ -187,6 +240,11 @@ void AnnotationOverlayWidget::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void AnnotationOverlayWidget::mouseReleaseEvent(QMouseEvent* event) {
+    if (event->button() == Qt::MiddleButton) {
+        if (auto* p = parentWidget())
+            QCoreApplication::sendEvent(p, event);
+        return;
+    }
     if (m_isDragging && event->button() == Qt::LeftButton) {
         m_isDragging = false;
         emit dragEnded(m_widgetToImage ? m_widgetToImage(m_dragStart) : m_dragStart,
@@ -194,6 +252,12 @@ void AnnotationOverlayWidget::mouseReleaseEvent(QMouseEvent* event) {
         m_dragBox = QRectF();
         update();
     }
+}
+
+void AnnotationOverlayWidget::wheelEvent(QWheelEvent* event) {
+    // 滚轮缩放转发给父 HImageWidget
+    if (auto* p = parentWidget())
+        QCoreApplication::sendEvent(p, event);
 }
 
 } // namespace DeepLux

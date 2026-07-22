@@ -34,6 +34,7 @@ set(CORE_SOURCES
     io/PlyLoader.cpp
     io/TiffLoader.cpp
     io/LabelMeExporter.cpp
+    io/YoloSegExporter.cpp
     geometry/MeasurementData.cpp
     model/Annotation.cpp
     model/AnnotationCoordinateMapping.cpp
@@ -94,6 +95,7 @@ set(CORE_HEADERS
     io/PlyLoader.h
     io/TiffLoader.h
     io/LabelMeExporter.h
+    io/YoloSegExporter.h
     geometry/MeasurementData.h
     model/Annotation.h
     model/AnnotationCoordinateMapping.h

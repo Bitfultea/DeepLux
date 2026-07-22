@@ -6,16 +6,20 @@
 #include "core/agent/SamBackendClient.h"
 #include "core/common/Logger.h"
 #include "core/io/LabelMeExporter.h"
+#include "core/io/YoloSegExporter.h"
 #include "core/manager/ConfigManager.h"
 #include "core/model/Annotation.h"
 
 #include <QButtonGroup>
+#include <QColor>
+#include <QDialog>
 #include <QDir>
 #include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -83,6 +87,7 @@ SamAnnotatorDialog::SamAnnotatorDialog(QWidget* parent)
     setupShortcuts();
     applyTheme(false);
     refreshOverlayCoordConverter();
+    initializeDefaultCategories();
     loadSavedModelPath();
 
     connect(m_samClient, &SamBackendClient::predictionReady, this, &SamAnnotatorDialog::onPredictionReady);
@@ -358,6 +363,35 @@ void SamAnnotatorDialog::setupUi() {
     configureCompactLineEdit(m_categoryEdit);
     actionCol->addWidget(m_categoryEdit);
 
+    // 类别列表 + 添加/删除按钮
+    m_categoryList = new QListWidget();
+    m_categoryList->setObjectName(QStringLiteral("SamCategoryList"));
+    m_categoryList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_categoryList->setMinimumHeight(56);
+    m_categoryList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_categoryList->setMaximumHeight(80);
+    actionCol->addWidget(m_categoryList);
+
+    auto* categoryButtonRow = new QHBoxLayout();
+    categoryButtonRow->setSpacing(2);
+    actionCol->addLayout(categoryButtonRow);
+
+    m_addCategoryButton = new QPushButton(tr("添加类别"));
+    configureCompactButton(m_addCategoryButton);
+    categoryButtonRow->addWidget(m_addCategoryButton);
+    connect(m_addCategoryButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onAddCategory);
+
+    m_removeCategoryButton = new QPushButton(tr("删除类别"));
+    configureCompactButton(m_removeCategoryButton);
+    categoryButtonRow->addWidget(m_removeCategoryButton);
+    connect(m_removeCategoryButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onRemoveCategory);
+
+    connect(m_categoryList, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* current) {
+        if (current) {
+            m_categoryEdit->setText(current->data(Qt::UserRole).toString());
+        }
+    });
+
     // 对象列表
     auto* lblObjects = new QLabel(tr("对象列表"));
     lblObjects->setObjectName(QStringLiteral("SamObjectListLabel"));
@@ -390,10 +424,15 @@ void SamAnnotatorDialog::setupUi() {
     samActionRow->addWidget(m_restartServerButton);
     connect(m_restartServerButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onRestartSam);
 
-    // 行：保存会话 + 导出 LabelMe（2 同宽）
+    // 行：打开标注 + 保存会话 + 导出 LabelMe + 导出 YOLO Seg
     auto* saveExportRow = new QHBoxLayout();
     saveExportRow->setSpacing(2);
     actionCol->addLayout(saveExportRow);
+
+    m_openAnnotationButton = new QPushButton(tr("打开标注"));
+    configureCompactButton(m_openAnnotationButton);
+    saveExportRow->addWidget(m_openAnnotationButton);
+    connect(m_openAnnotationButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onOpenAnnotation);
 
     auto* saveBtn = new QPushButton(tr("保存会话"));
     configureCompactButton(saveBtn);
@@ -404,6 +443,11 @@ void SamAnnotatorDialog::setupUi() {
     configureCompactButton(exportBtn);
     saveExportRow->addWidget(exportBtn);
     connect(exportBtn, &QPushButton::clicked, this, &SamAnnotatorDialog::onExportLabelMe);
+
+    m_exportYoloButton = new QPushButton(tr("导出 YOLO"));
+    configureCompactButton(m_exportYoloButton);
+    saveExportRow->addWidget(m_exportYoloButton);
+    connect(m_exportYoloButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onExportYoloSeg);
 
     m_statusLabel = new QLabel(tr("未加载图像"));
     m_statusLabel->setObjectName(QStringLiteral("SamStatusLabel"));
@@ -434,10 +478,13 @@ void SamAnnotatorDialog::setupUi() {
 
     auto* modeRow1 = new QHBoxLayout();
     auto* modeRow2 = new QHBoxLayout();
+    auto* modeRow3 = new QHBoxLayout();
     modeRow1->setSpacing(2);
     modeRow2->setSpacing(2);
+    modeRow3->setSpacing(2);
     modeGrid->addLayout(modeRow1);
     modeGrid->addLayout(modeRow2);
+    modeGrid->addLayout(modeRow3);
 
     auto configureModeButton = [](QToolButton* button, const QString& text) {
         button->setText(text);
@@ -449,6 +496,18 @@ void SamAnnotatorDialog::setupUi() {
         button->setMaximumHeight(26);
         button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     };
+
+    m_btnUndo = new QToolButton();
+    configureModeButton(m_btnUndo, tr("撤销"));
+    m_btnUndo->setCheckable(false);
+    modeRow3->addWidget(m_btnUndo);
+    connect(m_btnUndo, &QToolButton::clicked, this, &SamAnnotatorDialog::onUndo);
+
+    m_btnRedo = new QToolButton();
+    configureModeButton(m_btnRedo, tr("重做"));
+    m_btnRedo->setCheckable(false);
+    modeRow3->addWidget(m_btnRedo);
+    connect(m_btnRedo, &QToolButton::clicked, this, &SamAnnotatorDialog::onRedo);
 
     m_btnSelect = new QToolButton();
     configureModeButton(m_btnSelect, tr("选择"));
@@ -516,6 +575,10 @@ void SamAnnotatorDialog::setupShortcuts() {
     m_scUndo = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Z")), this);
     makeAppShortcut(m_scUndo);
     connect(m_scUndo, &QShortcut::activated, this, &SamAnnotatorDialog::onUndo);
+
+    m_scRedo = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Y")), this);
+    makeAppShortcut(m_scRedo);
+    connect(m_scRedo, &QShortcut::activated, this, &SamAnnotatorDialog::onRedo);
 }
 
 void SamAnnotatorDialog::setToolMode(ToolMode mode) {
@@ -697,6 +760,11 @@ void SamAnnotatorDialog::onUndo() {
         m_undoStack->undo();
 }
 
+void SamAnnotatorDialog::onRedo() {
+    if (m_undoStack && m_undoStack->canRedo())
+        m_undoStack->redo();
+}
+
 void SamAnnotatorDialog::onObjectSelectionChanged() {
     auto* item = m_objectList->currentItem();
     QString id;
@@ -717,10 +785,14 @@ void SamAnnotatorDialog::refreshObjectList() {
     m_objectList->blockSignals(false);
 }
 
-void SamAnnotatorDialog::addConfirmedObject(const AnnotationObject& obj) {
+void SamAnnotatorDialog::addConfirmedObject(const AnnotationObject& obj, const QImage& maskImage) {
     m_session->annotations.append(obj);
     refreshObjectList();
     m_overlay->setAnnotations(m_session->annotations);
+    if (!maskImage.isNull()) {
+        m_objectMasks.insert(obj.id, maskImage);
+        m_overlay->setObjectMask(obj.id, maskImage);
+    }
 }
 
 void SamAnnotatorDialog::commitCurrentPromptAsObject() {
@@ -731,8 +803,7 @@ void SamAnnotatorDialog::commitCurrentPromptAsObject() {
 
     AnnotationObject obj;
     obj.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    obj.label =
-        m_categoryEdit->text().trimmed().isEmpty() ? QStringLiteral("object") : m_categoryEdit->text().trimmed();
+    obj.label = currentCategoryLabel();
     obj.prompts.pointsPos = m_positivePoints;
     obj.prompts.pointsNeg = m_negativePoints;
     if (m_dragBox.isValid())
@@ -743,7 +814,8 @@ void SamAnnotatorDialog::commitCurrentPromptAsObject() {
     obj.maskRle = m_previewMaskRle;
     obj.modelName = m_samClient->modelName().isEmpty() ? QStringLiteral("sam") : m_samClient->modelName();
 
-    addConfirmedObject(obj);
+    const QImage maskForObj = m_previewMask;
+    addConfirmedObject(obj, maskForObj);
     clearCurrentPrompt();
     if (m_undoStack)
         m_undoStack->clear();
@@ -757,6 +829,7 @@ void SamAnnotatorDialog::refreshPromptAfterEdit(bool triggerPrediction) {
     m_previewBbox = QRectF();
     m_previewMaskRle.clear();
     m_previewScore = 0.0;
+    m_previewMask = QImage();
     m_overlay->clearPreview();
     m_overlay->setPromptPoints(m_positivePoints, m_negativePoints);
     if (m_dragBox.isValid())
@@ -772,6 +845,7 @@ void SamAnnotatorDialog::clearCurrentPrompt() {
     m_previewPolygon.clear();
     m_previewBbox = QRectF();
     m_previewMaskRle.clear();
+    m_previewMask = QImage();
     m_previewScore = 0.0;
     m_hasPrediction = false;
     if (m_confirmButton)
@@ -846,7 +920,7 @@ void SamAnnotatorDialog::requestPrediction() {
 }
 
 void SamAnnotatorDialog::onPredictionReady(const QList<QPointF>& polygon, const QRectF& bbox, double score,
-                                           const QString& maskRle) {
+                                           const QString& maskRle, const QImage& maskImage) {
     if (polygon.isEmpty()) {
         m_hasPrediction = false;
         if (m_confirmButton)
@@ -859,10 +933,13 @@ void SamAnnotatorDialog::onPredictionReady(const QList<QPointF>& polygon, const 
     m_previewBbox = bbox;
     m_previewScore = score;
     m_previewMaskRle = maskRle;
+    m_previewMask = maskImage;
     m_hasPrediction = true;
     m_overlay->setPreviewPolygon(m_previewPolygon);
     if (m_previewBbox.isValid())
         m_overlay->setPreviewBox(m_previewBbox);
+    if (!m_previewMask.isNull())
+        m_overlay->setPreviewMask(m_previewMask);
     if (m_confirmButton)
         m_confirmButton->setEnabled(true);
     setStatusText(tr("SAM 预测完成 score=%1").arg(score, 0, 'f', 2));
@@ -1073,6 +1150,180 @@ void SamAnnotatorDialog::onExportLabelMe() {
 
 AnnotationSession SamAnnotatorDialog::session() const {
     return *m_session;
+}
+
+// === 类别管理 ===
+
+void SamAnnotatorDialog::initializeDefaultCategories() {
+    m_categories.clear();
+    m_categoryColors.clear();
+    m_categories << QStringLiteral("缺陷") << QStringLiteral("划痕") << QStringLiteral("凹坑")
+                 << QStringLiteral("正常");
+    const QColor palette[] = {QColor(239, 68, 68), QColor(245, 158, 11), QColor(168, 85, 247),
+                              QColor(34, 197, 94)};
+    for (int i = 0; i < m_categories.size(); ++i)
+        m_categoryColors.insert(m_categories[i], palette[i % 4]);
+
+    if (m_categoryList) {
+        m_categoryList->blockSignals(true);
+        m_categoryList->clear();
+        for (const QString& name : m_categories) {
+            auto* item = new QListWidgetItem(name);
+            item->setData(Qt::UserRole, name);
+            const QColor c = m_categoryColors.value(name);
+            item->setForeground(c);
+            m_categoryList->addItem(item);
+        }
+        m_categoryList->blockSignals(false);
+    }
+}
+
+QStringList SamAnnotatorDialog::categories() const {
+    return m_categories;
+}
+
+QString SamAnnotatorDialog::currentCategoryLabel() const {
+    if (m_categoryList && m_categoryList->currentItem()) {
+        const QString label = m_categoryList->currentItem()->data(Qt::UserRole).toString();
+        if (!label.isEmpty())
+            return label;
+    }
+    const QString typed = m_categoryEdit ? m_categoryEdit->text().trimmed() : QString();
+    return typed.isEmpty() ? QStringLiteral("object") : typed;
+}
+
+QColor SamAnnotatorDialog::categoryColor(const QString& label) const {
+    return m_categoryColors.value(label, QColor(6, 182, 212));
+}
+
+void SamAnnotatorDialog::addCategory(const QString& label) {
+    const QString trimmed = label.trimmed();
+    if (trimmed.isEmpty())
+        return;
+    if (m_categories.contains(trimmed))
+        return;
+    m_categories.append(trimmed);
+    const QColor preset[] = {QColor(239, 68, 68),  QColor(245, 158, 11), QColor(168, 85, 247),
+                            QColor(34, 197, 94),   QColor(6, 182, 212),  QColor(234, 179, 8),
+                            QColor(99, 102, 241),  QColor(236, 72, 153), QColor(20, 184, 166),
+                            QColor(249, 115, 22)};
+    m_categoryColors.insert(trimmed, preset[(m_categories.size() - 1) % 10]);
+    if (m_categoryList) {
+        auto* item = new QListWidgetItem(trimmed);
+        item->setData(Qt::UserRole, trimmed);
+        item->setForeground(m_categoryColors.value(trimmed));
+        m_categoryList->addItem(item);
+    }
+}
+
+void SamAnnotatorDialog::removeCategory(const QString& label) {
+    const int idx = m_categories.indexOf(label);
+    if (idx < 0)
+        return;
+    m_categories.removeAt(idx);
+    m_categoryColors.remove(label);
+    if (m_categoryList) {
+        for (int i = 0; i < m_categoryList->count(); ++i) {
+            QListWidgetItem* item = m_categoryList->item(i);
+            if (item && item->data(Qt::UserRole).toString() == label) {
+                delete m_categoryList->takeItem(i);
+                break;
+            }
+        }
+    }
+}
+
+void SamAnnotatorDialog::onAddCategory() {
+    const QString text = m_categoryEdit ? m_categoryEdit->text().trimmed() : QString();
+    if (text.isEmpty()) {
+        QMessageBox::information(this, tr("添加类别"), tr("请在类别输入框中填写名称"));
+        return;
+    }
+    addCategory(text);
+}
+
+void SamAnnotatorDialog::onRemoveCategory() {
+    if (!m_categoryList)
+        return;
+    auto* item = m_categoryList->currentItem();
+    if (!item) {
+        QMessageBox::information(this, tr("删除类别"), tr("请先在类别列表中选中要删除的项"));
+        return;
+    }
+    removeCategory(item->data(Qt::UserRole).toString());
+}
+
+// === 会话重开 ===
+
+void SamAnnotatorDialog::onOpenAnnotation() {
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("打开标注会话"), QString(),
+        tr("DeepLux 标注 (*.deeplux-anno.json);;JSON (*.json);;所有文件 (*.*)"));
+    if (path.isEmpty())
+        return;
+
+    QString err;
+    AnnotationSession loaded = AnnotationSession::load(path, &err);
+    if (!err.isEmpty()) {
+        QMessageBox::warning(this, tr("打开失败"), err);
+        return;
+    }
+
+    // 替换当前会话
+    delete m_session;
+    m_session = new AnnotationSession(loaded);
+    m_objectMasks.clear();
+    if (m_overlay)
+        m_overlay->clearPreview();
+
+    // 尝试加载原图
+    if (!m_session->imagePath.isEmpty() && QFileInfo::exists(m_session->imagePath)) {
+        QImage img(m_session->imagePath);
+        if (!img.isNull()) {
+            m_currentImage = img;
+            m_imagePath = m_session->imagePath;
+            HImageWidget* target = activeImageWidget();
+            if (target) {
+                target->setImage(img);
+                target->fitToWindow();
+            }
+            refreshOverlayCoordConverter();
+        }
+    }
+
+    refreshObjectList();
+    if (m_overlay) {
+        m_overlay->setAnnotations(m_session->annotations);
+        for (const AnnotationObject& obj : m_session->annotations)
+            m_overlay->clearObjectMask(obj.id);
+    }
+    updateSessionFromImage();
+    prepareBackendImage();
+    setStatusText(tr("已打开标注会话（%1 个对象）").arg(m_session->annotations.size()));
+    Logger::instance().info(tr("已打开标注会话 %1").arg(path), "Annotation");
+}
+
+// === YOLO Seg 导出 ===
+
+void SamAnnotatorDialog::onExportYoloSeg() {
+    if (m_session->annotations.isEmpty()) {
+        QMessageBox::information(this, tr("导出"), tr("当前没有标注对象，无需导出"));
+        return;
+    }
+    const QString defaultPath = m_imagePath.isEmpty() ? QStringLiteral("labels.txt")
+                                                      : QFileInfo(m_imagePath).absolutePath() +
+                                                            QStringLiteral("/labels.txt");
+    const QString path =
+        QFileDialog::getSaveFileName(this, tr("导出 YOLO Seg"), defaultPath, tr("文本 (*.txt);;所有文件 (*.*)"));
+    if (path.isEmpty())
+        return;
+    QString err;
+    updateSessionFromImage();
+    if (!YoloSegExporter::exportToFile(*m_session, path, m_categories, &err)) {
+        QMessageBox::warning(this, tr("导出失败"), err);
+        return;
+    }
+    Logger::instance().info(tr("YOLO Seg 已导出至 %1").arg(path), "Annotation");
 }
 
 } // namespace DeepLux
