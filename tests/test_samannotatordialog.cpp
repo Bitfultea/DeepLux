@@ -26,6 +26,7 @@ private slots:
     void cleanup();
 
     void modeButtonsExist();
+    void themeCanMatchMainWindowPalette();
     void shortcutsBound();
     void canOpenFromFile();
     void canAcceptSnapshot();
@@ -66,10 +67,25 @@ void TestSamAnnotatorDialog::modeButtonsExist() {
     QVERIFY(dlg.negativePointButton()->isCheckable());
     QVERIFY(dlg.boxButton()->isCheckable());
     QVERIFY(dlg.selectButton()->isCheckable());
-    QVERIFY(dlg.positivePointButton()->styleSheet().contains(QStringLiteral("QToolButton:checked")));
-    QVERIFY(dlg.selectButton()->styleSheet().contains(QStringLiteral("border-color: #0F172A")));
+    QVERIFY(dlg.styleSheet().contains(QStringLiteral("QToolButton:checked")));
     QCOMPARE(dlg.currentToolMode(), SamAnnotatorDialog::ToolMode::PositivePoint);
     QCOMPARE(dlg.overlayWidget()->mode(), AnnotationOverlayWidget::Mode::PositivePoint);
+}
+
+void TestSamAnnotatorDialog::themeCanMatchMainWindowPalette() {
+    SamAnnotatorDialog dlg;
+
+    dlg.applyTheme(false);
+    QVERIFY(dlg.styleSheet().contains(QStringLiteral("QDialog#SamAnnotatorDialog")));
+    QVERIFY(dlg.styleSheet().contains(QStringLiteral("background-color: #e8e8e8")));
+    QVERIFY(dlg.styleSheet().contains(QStringLiteral("QLineEdit")));
+    QVERIFY(dlg.styleSheet().contains(QStringLiteral("#e2e8f0")));
+
+    dlg.applyTheme(true);
+    QVERIFY(dlg.styleSheet().contains(QStringLiteral("background-color: #2d2d2d")));
+    QVERIFY(dlg.styleSheet().contains(QStringLiteral("#333333")));
+    QVERIFY(dlg.styleSheet().contains(QStringLiteral("#0e7490")));
+    QVERIFY(dlg.styleSheet().contains(QStringLiteral("#06b6d4")));
 }
 
 void TestSamAnnotatorDialog::shortcutsBound() {
@@ -82,6 +98,11 @@ void TestSamAnnotatorDialog::shortcutsBound() {
     QCOMPARE(dlg.cancelShortcut()->key(), QKeySequence(Qt::Key_Escape));
     QCOMPARE(dlg.deleteShortcut()->key(), QKeySequence(Qt::Key_Delete));
     QCOMPARE(dlg.undoShortcut()->key(), QKeySequence(QStringLiteral("Ctrl+Z")));
+
+    QCOMPARE(dlg.confirmShortcut()->context(), Qt::ApplicationShortcut);
+    QCOMPARE(dlg.cancelShortcut()->context(), Qt::ApplicationShortcut);
+    QCOMPARE(dlg.deleteShortcut()->context(), Qt::ApplicationShortcut);
+    QCOMPARE(dlg.undoShortcut()->context(), Qt::ApplicationShortcut);
 }
 
 void TestSamAnnotatorDialog::canOpenFromFile() {
@@ -276,7 +297,8 @@ void TestSamAnnotatorDialog::mainViewModeUsesReadableConfigLayout() {
     QVERIFY2(dlg.minimumWidth() >= 210, "Main-view annotation config window should remain usable");
     QVERIFY2(dlg.minimumWidth() <= 230, "Main-view annotation config window should be about half the previous width");
     QVERIFY2(dlg.height() <= 460, "Main-view annotation config window should not waste vertical space");
-    QVERIFY2(dlg.objectList()->minimumHeight() >= 72, "Object list should have a reasonable minimum height in narrow config window");
+    QVERIFY2(dlg.objectList()->minimumHeight() >= 72,
+             "Object list should have a reasonable minimum height in narrow config window");
     QLabel* categoryLabel = dlg.findChild<QLabel*>(QStringLiteral("SamCategoryLabel"));
     QLabel* objectListLabel = dlg.findChild<QLabel*>(QStringLiteral("SamObjectListLabel"));
     QVERIFY(categoryLabel != nullptr);
@@ -302,10 +324,9 @@ void TestSamAnnotatorDialog::mainViewModeUsesReadableConfigLayout() {
 
     QLabel* hintLabel = dlg.findChild<QLabel*>(QStringLiteral("SamShortcutHintLabel"));
     QVERIFY(hintLabel != nullptr);
-    QVERIFY2(hintLabel->styleSheet().contains(QStringLiteral("background-color: transparent")),
-             "Shortcut hint should blend into the config panel background");
-    QVERIFY2(hintLabel->styleSheet().contains(QStringLiteral("font-size: 10px")),
-             "Shortcut hint should use a smaller font");
+    QVERIFY2(dlg.styleSheet().contains(QStringLiteral("QLabel#SamStatusLabel, QLabel#SamShortcutHintLabel")),
+             "Shortcut hint should inherit the compact config-panel theme");
+    QVERIFY2(dlg.styleSheet().contains(QStringLiteral("font-size: 10px")), "Shortcut hint should use a smaller font");
 }
 
 void TestSamAnnotatorDialog::modelImportButtonExists() {

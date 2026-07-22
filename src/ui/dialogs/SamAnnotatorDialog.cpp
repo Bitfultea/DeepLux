@@ -1,5 +1,6 @@
 #include "SamAnnotatorDialog.h"
 
+#include "../ThemeManager.h"
 #include "../widgets/AnnotationOverlayWidget.h"
 #include "../widgets/HImageWidget.h"
 #include "core/agent/SamBackendClient.h"
@@ -76,9 +77,11 @@ SamAnnotatorDialog::SamAnnotatorDialog(QWidget* parent)
     : QDialog(parent), m_session(new AnnotationSession()), m_samClient(new SamBackendClient(this)),
       m_undoStack(new QUndoStack(this)) {
     setWindowTitle(tr("SAM 快速标注"));
+    setObjectName(QStringLiteral("SamAnnotatorDialog"));
     setMinimumSize(900, 600);
     setupUi();
     setupShortcuts();
+    applyTheme(false);
     refreshOverlayCoordConverter();
     loadSavedModelPath();
 
@@ -169,6 +172,50 @@ void SamAnnotatorDialog::moveOverlayToImageWidget(HImageWidget* imageWidget) {
 void SamAnnotatorDialog::setStatusText(const QString& text) {
     if (m_statusLabel)
         m_statusLabel->setText(text);
+}
+
+void SamAnnotatorDialog::applyTheme(bool isDark) {
+    const ThemePalette pal = ThemeManager::palette(isDark);
+    const QString panelBg = isDark ? QStringLiteral("#252525") : QStringLiteral("#ffffff");
+    const QString inputBg = isDark ? QStringLiteral("#333333") : QStringLiteral("#ffffff");
+    const QString subtleText = isDark ? QStringLiteral("#d1d5db") : QStringLiteral("#64748b");
+    const QString disabledBg = isDark ? QStringLiteral("#555555") : QStringLiteral("#cccccc");
+    const QString modeBg = isDark ? QStringLiteral("#333333") : QStringLiteral("#f8fafc");
+    const QString modeHoverBg = isDark ? QStringLiteral("#3a3a3a") : QStringLiteral("#eef2f7");
+    const QString modeCheckedBg = isDark ? QStringLiteral("#0e7490") : QStringLiteral("#e2e8f0");
+    const QString modeCheckedBorder = isDark ? QStringLiteral("#06b6d4") : QStringLiteral("#0f172a");
+    const QString modeCheckedText = isDark ? QStringLiteral("#ffffff") : QStringLiteral("#0f172a");
+
+    setStyleSheet(
+        QStringLiteral("QDialog#SamAnnotatorDialog { background-color: %1; color: %2; }"
+                       "QWidget#SamControlPanel { background-color: %3; color: %2; }"
+                       "QLabel { background-color: transparent; color: %2; }"
+                       "QLabel#SamStatusLabel, QLabel#SamShortcutHintLabel { color: %4; font-size: 10px; }"
+                       "QLineEdit { background-color: %5; color: %2; border: 1px solid %6; padding: 2px 4px; }"
+                       "QLineEdit:focus { border: 1px solid #0078d7; }"
+                       "QListWidget { background-color: %5; color: %2; border: 1px solid %6; }"
+                       "QListWidget::item:selected { background-color: #0078d7; color: #ffffff; }"
+                       "QPushButton { background-color: #0078d7; color: #ffffff; border: 1px solid #005a9e; "
+                       "padding: 2px 6px; font-weight: 600; }"
+                       "QPushButton:hover { background-color: #1e8ad6; }"
+                       "QPushButton:disabled { background-color: %7; color: #999999; border-color: %6; }"
+                       "QToolButton { border: 1px solid %6; border-radius: 4px; padding: 2px 6px; "
+                       "background-color: %8; color: %2; }"
+                       "QToolButton:hover { background-color: %9; }"
+                       "QToolButton:checked { border: 2px solid %10; background-color: %11; color: %12; "
+                       "font-weight: 700; }")
+            .arg(pal.bgColor)
+            .arg(pal.textColor)
+            .arg(panelBg)
+            .arg(subtleText)
+            .arg(inputBg)
+            .arg(pal.borderColor)
+            .arg(disabledBg)
+            .arg(modeBg)
+            .arg(modeHoverBg)
+            .arg(modeCheckedBorder)
+            .arg(modeCheckedBg)
+            .arg(modeCheckedText));
 }
 
 void SamAnnotatorDialog::loadSavedModelPath() {
@@ -274,6 +321,7 @@ void SamAnnotatorDialog::setupUi() {
 
     // ===== 底部：操作区（整合类别输入 + 对象列表 + 所有操作按钮，全宽，无上方留白）=====
     auto* controlPanel = new QWidget();
+    controlPanel->setObjectName(QStringLiteral("SamControlPanel"));
     controlPanel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto* controlLayout = new QVBoxLayout(controlPanel);
     controlLayout->setContentsMargins(0, 0, 0, 0);
@@ -358,10 +406,10 @@ void SamAnnotatorDialog::setupUi() {
     connect(exportBtn, &QPushButton::clicked, this, &SamAnnotatorDialog::onExportLabelMe);
 
     m_statusLabel = new QLabel(tr("未加载图像"));
+    m_statusLabel->setObjectName(QStringLiteral("SamStatusLabel"));
     m_statusLabel->setMinimumWidth(0);
     m_statusLabel->setWordWrap(true);
     m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-    m_statusLabel->setStyleSheet("color:#64748B;");
     actionCol->addWidget(m_statusLabel);
 
     auto* commitRow = new QHBoxLayout();
@@ -400,12 +448,6 @@ void SamAnnotatorDialog::setupUi() {
         button->setMinimumHeight(26);
         button->setMaximumHeight(26);
         button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        button->setStyleSheet(
-            QStringLiteral("QToolButton { border: 2px solid #CBD5E1; border-radius: 4px; padding: 2px 6px; "
-                           "background: #F8FAFC; color: #334155; }"
-                           "QToolButton:hover { background: #EEF2F7; }"
-                           "QToolButton:checked { border-color: #0F172A; background: #E2E8F0; color: #0F172A; "
-                           "font-weight: 700; }"));
     };
 
     m_btnSelect = new QToolButton();
@@ -429,7 +471,6 @@ void SamAnnotatorDialog::setupUi() {
     hint->setMinimumWidth(0);
     hint->setWordWrap(true);
     hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-    hint->setStyleSheet("background-color: transparent; color:#64748B; font-size: 10px;");
     controlLayout->addWidget(hint);
 
     // 模式按钮互斥
@@ -455,19 +496,25 @@ void SamAnnotatorDialog::setupUi() {
 }
 
 void SamAnnotatorDialog::setupShortcuts() {
+    auto makeAppShortcut = [](QShortcut* shortcut) { shortcut->setContext(Qt::ApplicationShortcut); };
     m_scConfirm = new QShortcut(QKeySequence(Qt::Key_Return), this);
+    makeAppShortcut(m_scConfirm);
     connect(m_scConfirm, &QShortcut::activated, this, &SamAnnotatorDialog::onConfirm);
     // 同时绑定 Enter（Keypad）
     auto* scEnter = new QShortcut(QKeySequence(Qt::Key_Enter), this);
+    makeAppShortcut(scEnter);
     connect(scEnter, &QShortcut::activated, this, &SamAnnotatorDialog::onConfirm);
 
     m_scCancel = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    makeAppShortcut(m_scCancel);
     connect(m_scCancel, &QShortcut::activated, this, &SamAnnotatorDialog::onCancel);
 
     m_scDelete = new QShortcut(QKeySequence(Qt::Key_Delete), this);
+    makeAppShortcut(m_scDelete);
     connect(m_scDelete, &QShortcut::activated, this, &SamAnnotatorDialog::onDeleteSelected);
 
     m_scUndo = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Z")), this);
+    makeAppShortcut(m_scUndo);
     connect(m_scUndo, &QShortcut::activated, this, &SamAnnotatorDialog::onUndo);
 }
 
@@ -865,11 +912,30 @@ void SamAnnotatorDialog::attachToImageWidget(HImageWidget* imageWidget, const QS
     }
 
     if (m_externalImageWidget)
-        m_externalImageWidget->removeEventFilter(this);
+        m_externalImageWidget->disconnect(this);
     m_externalImageWidget = imageWidget;
     connect(imageWidget, &QObject::destroyed, this, [this, imageWidget]() {
         if (m_externalImageWidget == imageWidget)
             m_externalImageWidget = nullptr;
+    });
+    // Fix 2: 监听图像变化，重置标注会话（旧 annotation/embedding/prompt 全部清除）
+    connect(imageWidget, &HImageWidget::imageLoaded, this, [this](const QImage& newImage) {
+        if (m_externalImageWidget && m_externalImageWidget->currentImage() != m_currentImage) {
+            m_currentImage = newImage;
+            m_imagePath.clear();
+            clearCurrentPrompt();
+            if (m_session) {
+                m_session->annotations.clear();
+                m_session->imagePath.clear();
+                m_session->imageWidth = newImage.width();
+                m_session->imageHeight = newImage.height();
+            }
+            refreshObjectList();
+            if (m_samClient)
+                m_samClient->unloadImage();
+            refreshOverlayCoordConverter();
+            prepareBackendImage();
+        }
     });
     m_currentImage = imageWidget->currentImage();
     m_imagePath = imagePath;

@@ -4,6 +4,7 @@ DeepLux SAM FastAPI server.
 Default mode requires a real SAM checkpoint through DEEPLUX_SAM_MODEL.
 Set DEEPLUX_SAM_STUB=1 only for Qt integration tests without a model.
 """
+import asyncio
 import hashlib
 import json
 import os
@@ -24,6 +25,9 @@ embeddings: Dict[str, Dict] = {}
 _predictor = None
 _active_embedding_id: Optional[str] = None
 _load_error: Optional[str] = None
+
+# Fix 4: 序列化 predict 请求，防止并发访问 SamPredictor
+_predict_lock = asyncio.Lock()
 
 
 class SetImageRequest(BaseModel):
@@ -166,7 +170,7 @@ def set_image(req: SetImageRequest):
 
 
 @app.post("/predict")
-def predict(req: PredictRequest):
+async def predict(req: PredictRequest):
     global _active_embedding_id
     meta = embeddings.get(req.embedding_id)
     if meta is None:
@@ -175,40 +179,42 @@ def predict(req: PredictRequest):
     if STUB_MODE:
         return _stub_prediction(req, meta["size"])
 
-    predictor = _ensure_predictor()
-    if _active_embedding_id != req.embedding_id:
-        predictor.set_image(meta["image"])
-        _active_embedding_id = req.embedding_id
+    # Fix 4: 序列化推理，防止并发访问 SamPredictor
+    async with _predict_lock:
+        predictor = _ensure_predictor()
+        if _active_embedding_id != req.embedding_id:
+            predictor.set_image(meta["image"])
+            _active_embedding_id = req.embedding_id
 
-    point_coords = None
-    point_labels = None
-    points = req.points_pos + req.points_neg
-    if points:
-        point_coords = np.array(points, dtype=np.float32)
-        point_labels = np.array([1] * len(req.points_pos) + [0] * len(req.points_neg), dtype=np.int32)
+        point_coords = None
+        point_labels = None
+        points = req.points_pos + req.points_neg
+        if points:
+            point_coords = np.array(points, dtype=np.float32)
+            point_labels = np.array([1] * len(req.points_pos) + [0] * len(req.points_neg), dtype=np.int32)
 
-    box = None
-    if req.box is not None and len(req.box) >= 4:
-        x, y, w, h = req.box[:4]
-        box = np.array([x, y, x + w, y + h], dtype=np.float32)
+        box = None
+        if req.box is not None and len(req.box) >= 4:
+            x, y, w, h = req.box[:4]
+            box = np.array([x, y, x + w, y + h], dtype=np.float32)
 
-    masks, scores, _ = predictor.predict(
-        point_coords=point_coords,
-        point_labels=point_labels,
-        box=box,
-        multimask_output=True,
-    )
-    best = int(np.argmax(scores))
-    mask = masks[best].astype(np.uint8)
-    bbox = _mask_to_bbox(mask)
-    polygon = _mask_to_polygon(mask, bbox)
-    return {
-        "mask_rle": _encode_rle(mask),
-        "bbox": bbox,
-        "polygon": polygon,
-        "score": float(scores[best]),
-        "model_name": MODEL_NAME,
-    }
+        masks, scores, _ = predictor.predict(
+            point_coords=point_coords,
+            point_labels=point_labels,
+            box=box,
+            multimask_output=True,
+        )
+        best = int(np.argmax(scores))
+        mask = masks[best].astype(np.uint8)
+        bbox = _mask_to_bbox(mask)
+        polygon = _mask_to_polygon(mask, bbox)
+        return {
+            "mask_rle": _encode_rle(mask),
+            "bbox": bbox,
+            "polygon": polygon,
+            "score": float(scores[best]),
+            "model_name": MODEL_NAME,
+        }
 
 
 @app.post("/unload_image")

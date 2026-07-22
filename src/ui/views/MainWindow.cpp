@@ -2559,6 +2559,10 @@ void MainWindow::applyTheme() {
     if (m_agentActionLogWidget) {
         m_agentActionLogWidget->applyTheme(m_isDarkTheme);
     }
+
+    if (m_samAnnotatorDialog) {
+        m_samAnnotatorDialog->applyTheme(m_isDarkTheme);
+    }
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
@@ -3296,13 +3300,22 @@ void MainWindow::onQuickMeasure() {
 }
 
 void MainWindow::onQuickAnnotate() {
+    // Fix 3: 选择用户当前操作的视口，而非第一个有图像的视口
     ViewportWidget* targetVp = nullptr;
+    ViewportWidget* fallbackVp = nullptr;
     for (ViewportWidget* vp : m_displayManager->allViewports()) {
         if (vp && vp->imageWidget() && vp->imageWidget()->hasImage()) {
-            targetVp = vp;
-            break;
+            if (!fallbackVp)
+                fallbackVp = vp;
+            // 优先选择有焦点的视口
+            if (vp->underMouse() || (vp->imageWidget() && vp->imageWidget()->underMouse())) {
+                targetVp = vp;
+                break;
+            }
         }
     }
+    if (!targetVp)
+        targetVp = fallbackVp;
 
     if (!targetVp || !targetVp->imageWidget()) {
         Logger::instance().warning(tr("没有可用的视口图像，请先导入或采集图像"), "Annotation");
@@ -3315,7 +3328,10 @@ void MainWindow::onQuickAnnotate() {
         connect(m_samAnnotatorDialog, &QObject::destroyed, this, [this]() { m_samAnnotatorDialog.clear(); });
     }
 
-    m_samAnnotatorDialog->attachToImageWidget(targetVp->imageWidget(), m_lastImportedImagePath);
+    m_samAnnotatorDialog->applyTheme(m_isDarkTheme);
+    // Fix 1: 不传全局 m_lastImportedImagePath，始终使用当前视口图像快照
+    // 对话框会自动保存快照到临时文件供后端使用，避免处理旧文件
+    m_samAnnotatorDialog->attachToImageWidget(targetVp->imageWidget(), QString());
     m_samAnnotatorDialog->show();
     m_samAnnotatorDialog->raise();
     m_samAnnotatorDialog->activateWindow();

@@ -134,6 +134,8 @@ private:
     QPointer<QNetworkReply> m_pendingHealthReply;
     QPointer<QNetworkReply> m_pendingSetImageReply;
     QPointer<QNetworkReply> m_pendingPredictReply;
+    qint64 m_predictSeq = 0;     // Fix 4: 请求序号，忽略过期的推理结果
+    qint64 m_lastCompletedSeq = 0;
     QPointer<QNetworkReply> m_pendingUnloadReply;
 
     QProcess* m_process = nullptr;

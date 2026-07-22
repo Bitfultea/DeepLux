@@ -420,6 +420,9 @@ void SamBackendClient::predict(const QList<QPointF>& positive, const QList<QPoin
     m_lastNegative = negative;
     m_lastBox = box;
 
+    // Fix 4: 分配递增序号，用于在回调中忽略过期结果
+    const qint64 thisSeq = ++m_predictSeq;
+
     setState(State::Busy);
     QUrl url(m_serverUrl + "/predict");
     QNetworkRequest req(url);
@@ -445,6 +448,7 @@ void SamBackendClient::predict(const QList<QPointF>& positive, const QList<QPoin
     }
 
     m_pendingPredictReply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    m_pendingPredictReply->setProperty("predictSeq", thisSeq);
     connect(m_pendingPredictReply, &QNetworkReply::finished, this, &SamBackendClient::onPredictReply);
     startTimeout();
 }
@@ -575,6 +579,14 @@ void SamBackendClient::onSetImageReply() {
 }
 
 void SamBackendClient::onPredictReply() {
+    // Fix 4: 检查请求序号，忽略过期的推理结果
+    const qint64 replySeq = m_pendingPredictReply ? m_pendingPredictReply->property("predictSeq").toLongLong() : 0;
+    if (replySeq > 0 && replySeq <= m_lastCompletedSeq) {
+        stopTimeout();
+        return;  // 过期结果，忽略
+    }
+    m_lastCompletedSeq = replySeq;
+
     QString err;
     QJsonObject obj = parseReply(m_pendingPredictReply, &err);
     if (!err.isEmpty()) {

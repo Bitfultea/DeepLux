@@ -59,6 +59,8 @@ public:
     // 将标注 overlay 挂到主界面的图像视图上，Dialog 仅作为配置窗口。
     void attachToImageWidget(HImageWidget* imageWidget, const QString& imagePath = QString());
 
+    void applyTheme(bool isDark);
+
     // 当前标注会话
     AnnotationSession session() const;
 
