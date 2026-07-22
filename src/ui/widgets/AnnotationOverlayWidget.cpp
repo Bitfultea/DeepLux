@@ -198,9 +198,8 @@ void AnnotationOverlayWidget::paintEvent(QPaintEvent*) {
 }
 
 void AnnotationOverlayWidget::mousePressEvent(QMouseEvent* event) {
-    // 中键和 Ctrl+左键转发给父 HImageWidget（平移/缩放）
-    if (event->button() == Qt::MiddleButton ||
-        (event->button() == Qt::LeftButton && event->modifiers() & Qt::ControlModifier)) {
+    // 中键转发给父 HImageWidget（平移）
+    if (event->button() == Qt::MiddleButton) {
         if (auto* p = parentWidget())
             QCoreApplication::sendEvent(p, event);
         return;

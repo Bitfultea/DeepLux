@@ -1035,8 +1035,7 @@ void SamAnnotatorDialog::attachToImageWidget(HImageWidget* imageWidget, const QS
             m_objectMasks.clear();
             if (m_overlay) {
                 m_overlay->setAnnotations({});
-                m_overlay->clearObjectMask(QString());  // clear all (no-op, but intent)
-                // 逐个清除已缓存的对象 mask
+                // 逐个清除 overlay 内已缓存的对象 mask
                 for (const auto& obj : m_session ? m_session->annotations : QList<AnnotationObject>{}) {
                     m_overlay->clearObjectMask(obj.id);
                 }
