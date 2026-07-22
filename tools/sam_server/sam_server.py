@@ -157,8 +157,12 @@ def _stub_prediction(req: PredictRequest, size):
     else:
         x, y, bw, bh = 0, 0, min(50, w), min(50, h)
     polygon = [[x, y], [x + bw, y], [x + bw, y + bh], [x, y + bh]]
-    mask = np.zeros((int(bh), int(bw)), dtype=np.uint8)
-    mask[1:-1, 1:-1] = 1
+    # Fix P1-5: 返回整图大小的 mask（和真实 SAM 一致），而非 bbox 大小
+    mask = np.zeros((int(h), int(w)), dtype=np.uint8)
+    x1, y1 = max(0, int(x)), max(0, int(y))
+    x2, y2 = min(int(w), int(x + bw)), min(int(h), int(y + bh))
+    if x2 > x1 and y2 > y1:
+        mask[y1+1:y2-1, x1+1:x2-1] = 1
     return {
         "mask_rle": "",
         "mask_png_base64": _encode_mask_png_base64(mask),
@@ -181,7 +185,7 @@ def health():
 
 
 @app.post("/set_image")
-def set_image(req: SetImageRequest):
+async def set_image(req: SetImageRequest):
     global _active_embedding_id
     if not os.path.exists(req.image_path):
         return {"status": "error", "error": "file not found"}
@@ -191,9 +195,11 @@ def set_image(req: SetImageRequest):
     embeddings[eid] = {"path": req.image_path, "size": [size[0], size[1]], "image": image}
 
     if not STUB_MODE:
-        predictor = _ensure_predictor()
-        predictor.set_image(image)
-        _active_embedding_id = eid
+        # Fix P0-3: set_image 也使用预测锁，防止和 predict 并发操作 SamPredictor
+        async with _predict_lock:
+            predictor = _ensure_predictor()
+            predictor.set_image(image)
+            _active_embedding_id = eid
 
     return {"embedding_id": eid, "image_size": [size[0], size[1]], "model_name": MODEL_NAME}
 
@@ -257,6 +263,7 @@ def unload_image(req: UnloadRequest):
 
 if __name__ == "__main__":
     import argparse
+    import socket
     import uvicorn
 
     parser = argparse.ArgumentParser()
@@ -265,14 +272,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     port = args.port or int(os.environ.get("SAM_SERVER_PORT", "0"))
-    config = uvicorn.Config(app, host=args.host, port=port, log_level="info")
-    server = uvicorn.Server(config)
-    # When port=0, uvicorn assigns a free port; print it for the parent process
+
+    # Fix P0-1: 在启动 uvicorn 之前用 socket 探测可用端口
     if port == 0:
-        import sys
-        # uvicorn logs "Uvicorn running on http://127.0.0.1:PORT"
-        # We also print a machine-readable line
-        server.config.load()
-        bound_port = server.servers[0].sockets[0].getsockname()[1] if server.servers else 0
-        print(f"SAM_SERVER_PORT={bound_port}", flush=True)
-    server.run()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind((args.host, 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        print(f"SAM_SERVER_PORT={port}", flush=True)
+
+    uvicorn.run(app, host=args.host, port=port, log_level="info")

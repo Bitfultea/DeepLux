@@ -104,9 +104,14 @@ QString SamBackendClient::managedSitePackagesPath() const {
 }
 
 QStringList SamBackendClient::requiredPythonModules() const {
-    return {QStringLiteral("fastapi"), QStringLiteral("uvicorn"), QStringLiteral("numpy"),
-            QStringLiteral("PIL"),     QStringLiteral("torch"),   QStringLiteral("segment_anything"),
-            QStringLiteral("cv2")};
+    // Base modules always required (matches uncommented lines in requirements.txt)
+    QStringList base = {QStringLiteral("fastapi"), QStringLiteral("uvicorn"),
+                        QStringLiteral("numpy"),  QStringLiteral("PIL")};
+    // SAM model modules only required when a real model path is set (not stub mode)
+    if (!m_modelPath.isEmpty()) {
+        base << QStringLiteral("torch") << QStringLiteral("segment_anything") << QStringLiteral("cv2");
+    }
+    return base;
 }
 
 QString SamBackendClient::requirementsPath() const {
@@ -498,6 +503,8 @@ void SamBackendClient::cancelPendingPrediction() {
 void SamBackendClient::unloadImage() {
     if (m_embeddingId.isEmpty())
         return;
+    // Fix P0-3: 取消任何挂起的 predict，防止 unload 和 predict 竞争
+    cancelPendingPrediction();
     QUrl url(m_serverUrl + "/unload_image");
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -505,6 +512,8 @@ void SamBackendClient::unloadImage() {
     QJsonObject body;
     body["embedding_id"] = m_embeddingId;
     m_pendingUnloadReply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    // 记录 unload 的 embedding ID，回调时检查是否已被新 set_image 替换
+    m_pendingUnloadReply->setProperty("unloadEmbeddingId", m_embeddingId);
     connect(m_pendingUnloadReply, &QNetworkReply::finished, this, &SamBackendClient::onUnloadReply);
     startTimeout();
 }
@@ -688,14 +697,19 @@ void SamBackendClient::onPredictReply() {
 }
 
 void SamBackendClient::onUnloadReply() {
+    // Fix P0-3: 保存要 unload 的 embedding ID，防止新 set_image 设置了新 ID 后被旧 unload 清除
+    const QString unloadedId = m_pendingUnloadReply ? m_pendingUnloadReply->property("unloadEmbeddingId").toString() : QString();
     QString err;
     QJsonObject obj = parseReply(m_pendingUnloadReply, &err);
     Q_UNUSED(obj)
     if (!err.isEmpty()) {
         emit errorOccurred(tr("unloadImage 失败：%1").arg(err));
     }
-    m_embeddingId.clear();
-    setState(State::NotStarted);
+    // 只在当前 embedding 仍然是 unload 的那个时才清除
+    if (m_embeddingId == unloadedId) {
+        m_embeddingId.clear();
+        setState(State::NotStarted);
+    }
     stopTimeout();
 }
 

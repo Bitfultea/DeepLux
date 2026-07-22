@@ -3,6 +3,7 @@
 #include <QDialog>
 #include <QImage>
 #include <QList>
+#include <QPointer>
 #include <QPointF>
 #include <QRectF>
 #include <QString>
@@ -217,8 +218,8 @@ private:
 
     // UI
     HImageWidget* m_imageWidget = nullptr;
-    HImageWidget* m_externalImageWidget = nullptr;
-    AnnotationOverlayWidget* m_overlay = nullptr;
+    QPointer<HImageWidget> m_externalImageWidget;  // Fix P0-4: QPointer 防悬空
+    AnnotationOverlayWidget* m_overlay = nullptr;  // connected to destroyed() to null
     QListWidget* m_objectList = nullptr;
     QListWidget* m_categoryList = nullptr;
     QLineEdit* m_categoryEdit = nullptr;

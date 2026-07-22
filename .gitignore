@@ -69,3 +69,5 @@ make_debug/*
 .sisyphus/*
 
 make_debug/
+__pycache__/
+*.pyc

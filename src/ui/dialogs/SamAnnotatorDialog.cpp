@@ -160,7 +160,7 @@ bool SamAnnotatorDialog::eventFilter(QObject* watched, QEvent* event) {
 }
 
 HImageWidget* SamAnnotatorDialog::activeImageWidget() const {
-    return m_externalImageWidget ? m_externalImageWidget : m_imageWidget;
+    return m_externalImageWidget ? static_cast<HImageWidget*>(m_externalImageWidget) : m_imageWidget;
 }
 
 void SamAnnotatorDialog::moveOverlayToImageWidget(HImageWidget* imageWidget) {
@@ -391,6 +391,8 @@ void SamAnnotatorDialog::setupUi() {
             m_categoryEdit->setText(current->data(Qt::UserRole).toString());
         }
     });
+    // Fix P1-8: 类别输入框 Enter 添加类别而非确认标注
+    connect(m_categoryEdit, &QLineEdit::returnPressed, this, &SamAnnotatorDialog::onAddCategory);
 
     // 对象列表
     auto* lblObjects = new QLabel(tr("对象列表"));
@@ -744,14 +746,22 @@ void SamAnnotatorDialog::onDeleteSelected() {
         tr("删除标注对象"),
         [this, id]() {
             m_session->removeById(id);
+            m_objectMasks.remove(id);
+            if (m_overlay) {
+                m_overlay->clearObjectMask(id);
+                m_overlay->setAnnotations(m_session->annotations);
+            }
             refreshObjectList();
-            m_overlay->setAnnotations(m_session->annotations);
         },
         [this, object, index]() {
             const int insertAt = qBound(0, index, m_session->annotations.size());
             m_session->annotations.insert(insertAt, object);
+            // 恢复 mask 如果有缓存
+            if (m_objectMasks.contains(object.id) && m_overlay)
+                m_overlay->setObjectMask(object.id, m_objectMasks.value(object.id));
+            if (m_overlay)
+                m_overlay->setAnnotations(m_session->annotations);
             refreshObjectList();
-            m_overlay->setAnnotations(m_session->annotations);
         }));
 }
 
@@ -815,10 +825,30 @@ void SamAnnotatorDialog::commitCurrentPromptAsObject() {
     obj.modelName = m_samClient->modelName().isEmpty() ? QStringLiteral("sam") : m_samClient->modelName();
 
     const QImage maskForObj = m_previewMask;
-    addConfirmedObject(obj, maskForObj);
+    // Fix P1-8: 确认对象不清空撤销栈，允许撤销刚确认的对象
+    m_undoStack->push(new LambdaUndoCommand(
+        tr("确认标注对象"),
+        [this, obj, maskForObj]() {
+            m_session->annotations.append(obj);
+            refreshObjectList();
+            if (m_overlay) {
+                m_overlay->setAnnotations(m_session->annotations);
+                if (!maskForObj.isNull()) {
+                    m_objectMasks.insert(obj.id, maskForObj);
+                    m_overlay->setObjectMask(obj.id, maskForObj);
+                }
+            }
+        },
+        [this, obj]() {
+            m_session->removeById(obj.id);
+            m_objectMasks.remove(obj.id);
+            if (m_overlay) {
+                m_overlay->clearObjectMask(obj.id);
+                m_overlay->setAnnotations(m_session->annotations);
+            }
+            refreshObjectList();
+        }));
     clearCurrentPrompt();
-    if (m_undoStack)
-        m_undoStack->clear();
 }
 
 void SamAnnotatorDialog::refreshPromptAfterEdit(bool triggerPrediction) {
@@ -1001,6 +1031,19 @@ void SamAnnotatorDialog::attachToImageWidget(HImageWidget* imageWidget, const QS
             m_currentImage = newImage;
             m_imagePath.clear();
             clearCurrentPrompt();
+            // Fix P1-6: 清除完整 UI 状态
+            m_objectMasks.clear();
+            if (m_overlay) {
+                m_overlay->setAnnotations({});
+                m_overlay->clearObjectMask(QString());  // clear all (no-op, but intent)
+                // 逐个清除已缓存的对象 mask
+                for (const auto& obj : m_session ? m_session->annotations : QList<AnnotationObject>{}) {
+                    m_overlay->clearObjectMask(obj.id);
+                }
+                m_overlay->setSelectedId(QString());
+            }
+            if (m_undoStack)
+                m_undoStack->clear();
             if (m_session) {
                 m_session->annotations.clear();
                 m_session->imagePath.clear();

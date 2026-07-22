@@ -3300,18 +3300,18 @@ void MainWindow::onQuickMeasure() {
 }
 
 void MainWindow::onQuickAnnotate() {
-    // Fix 3: 选择用户当前操作的视口，而非第一个有图像的视口
+    // Fix P1-9: 选择最近有焦点的视口，回退到第一个有图像的视口
     ViewportWidget* targetVp = nullptr;
     ViewportWidget* fallbackVp = nullptr;
     for (ViewportWidget* vp : m_displayManager->allViewports()) {
-        if (vp && vp->imageWidget() && vp->imageWidget()->hasImage()) {
-            if (!fallbackVp)
-                fallbackVp = vp;
-            // 优先选择有焦点的视口
-            if (vp->underMouse() || (vp->imageWidget() && vp->imageWidget()->underMouse())) {
-                targetVp = vp;
-                break;
-            }
+        if (!vp || !vp->imageWidget() || !vp->imageWidget()->hasImage())
+            continue;
+        if (!fallbackVp)
+            fallbackVp = vp;
+        // 优先选择有焦点的或之前交互过的视口
+        if (vp->hasFocus() || (vp->imageWidget() && vp->imageWidget()->hasFocus())) {
+            targetVp = vp;
+            break;
         }
     }
     if (!targetVp)

@@ -101,15 +101,12 @@ void AnnotationOverlayWidget::paintEvent(QPaintEvent*) {
     for (const AnnotationObject& obj : m_annotations) {
         bool isSelected = (obj.id == m_selectedId);
 
-        // 绘制对象 mask（如果有）
+        // 绘制对象 mask（如果有）— mask 是整图大小的 RGBA 图
         const QImage objMask = m_objectMasks.value(obj.id);
         if (!objMask.isNull() && m_imageToWidget) {
-            // mask 是图像坐标的 RGBA 图，按 polygon bbox 对齐绘制
-            QRectF maskRectInImage(0, 0, objMask.width(), objMask.height());
-            // 如果 mask 尺寸与对象 bbox 不一致，按 bbox 缩放对齐
-            QRectF targetImageRect = obj.bbox.isValid() ? obj.bbox : maskRectInImage;
-            QPointF tl = m_imageToWidget(targetImageRect.topLeft());
-            QPointF br = m_imageToWidget(targetImageRect.bottomRight());
+            // Fix P1-5: mask 是整图坐标空间，从 (0,0) 到 (maskW, maskH) 映射到 widget
+            QPointF tl = m_imageToWidget(QPointF(0, 0));
+            QPointF br = m_imageToWidget(QPointF(objMask.width(), objMask.height()));
             QRectF widgetTarget(tl, br);
             painter.drawImage(widgetTarget, objMask, QRectF(0, 0, objMask.width(), objMask.height()));
         }
@@ -136,13 +133,11 @@ void AnnotationOverlayWidget::paintEvent(QPaintEvent*) {
         }
     }
 
-    // 绘制预览 mask（如果有）
+    // 绘制预览 mask（如果有）— 整图大小的 mask
     if (!m_previewMask.isNull() && m_imageToWidget) {
-        // 将 mask 按 polygon bbox 对齐绘制到 widget
-        QRectF imageRect(0, 0, m_previewMask.width(), m_previewMask.height());
-        QRectF targetImageRect = m_previewBox.isValid() ? m_previewBox : imageRect;
-        QPointF tl = m_imageToWidget(targetImageRect.topLeft());
-        QPointF br = m_imageToWidget(targetImageRect.bottomRight());
+        // Fix P1-5: mask 是整图坐标空间
+        QPointF tl = m_imageToWidget(QPointF(0, 0));
+        QPointF br = m_imageToWidget(QPointF(m_previewMask.width(), m_previewMask.height()));
         QRectF widgetTarget(tl, br);
         painter.drawImage(widgetTarget, m_previewMask, QRectF(0, 0, m_previewMask.width(), m_previewMask.height()));
     }
@@ -236,6 +231,10 @@ void AnnotationOverlayWidget::mouseMoveEvent(QMouseEvent* event) {
         if (m_widgetToImage)
             emit dragMoved(m_widgetToImage(event->pos()));
         update();
+    } else if (event->buttons() & Qt::MiddleButton) {
+        // Fix P1-7: 中键移动转发给父 HImageWidget（平移）
+        if (auto* p = parentWidget())
+            QCoreApplication::sendEvent(p, event);
     }
 }
 
