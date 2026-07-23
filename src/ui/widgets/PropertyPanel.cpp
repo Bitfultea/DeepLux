@@ -44,16 +44,9 @@ void PropertyPanel::setupUi()
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(0);
     
-    // 标题
+    // 标题 — 不设置局部颜色，交由 ThemeManager 统一管理
     m_titleLabel = new QLabel(tr("属性"));
-    m_titleLabel->setStyleSheet(
-        "QLabel {"
-        "  background-color: #3c3c3c;"
-        "  color: white;"
-        "  padding: 8px;"
-        "  font-weight: bold;"
-        "}"
-    );
+    m_titleLabel->setObjectName("PropertyPanelTitle");
     mainLayout->addWidget(m_titleLabel);
     
     // 滚动区域
@@ -70,10 +63,9 @@ void PropertyPanel::setupUi()
     m_scrollArea->setWidget(m_contentWidget);
     mainLayout->addWidget(m_scrollArea);
     
-    // 无选择提示
+    // 无选择提示 — 不设置局部颜色
     m_noSelectionLabel = new QLabel(tr("请选择一个模块"));
     m_noSelectionLabel->setAlignment(Qt::AlignCenter);
-    m_noSelectionLabel->setStyleSheet("color: #808080;");
     m_contentLayout->insertWidget(0, m_noSelectionLabel);
 }
 
@@ -285,20 +277,10 @@ QWidget* PropertyPanel::createChoiceWidget(const QString& key, const QJsonObject
 }
 
 void PropertyPanel::applyTheme(bool isDark) {
-    QString bg = isDark ? "#252525" : "#ffffff";
-    QString fg = isDark ? "#ffffff" : "#212121";
-    setStyleSheet(QString("background-color: %1; color: %2;").arg(bg).arg(fg));
-    if (m_contentWidget) {
-        m_contentWidget->setStyleSheet(QString("background-color: %1;").arg(bg));
-    }
-    if (m_scrollArea) {
-        m_scrollArea->setStyleSheet(QString("background-color: %1; border: none;").arg(bg));
-    }
+    // 颜色由 ThemeManager 统一管理，此处仅做必要的字体设置
+    Q_UNUSED(isDark)
     if (m_titleLabel) {
-        m_titleLabel->setStyleSheet(QString("color: %1; font-weight: bold; font-size: 14px; padding: 8px;").arg(fg));
-    }
-    if (m_noSelectionLabel) {
-        m_noSelectionLabel->setStyleSheet(QString("color: %1; padding: 20px;").arg(isDark ? "#888" : "#666"));
+        m_titleLabel->setStyleSheet(QString("font-weight: bold; font-size: 14px; padding: 8px;"));
     }
 }
 

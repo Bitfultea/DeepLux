@@ -43,6 +43,9 @@ public:
     FlowNodeItem* nodeItem(const QString& nodeId) const;
     QList<FlowNodeItem*> getOrderedModules() const;
 
+    // 按 ID 选择节点（程序化调用）
+    void selectNode(const QString& nodeId);
+
 signals:
     void nodeAdded(const QString& nodeId);
     void nodeRemoved(const QString& nodeId);

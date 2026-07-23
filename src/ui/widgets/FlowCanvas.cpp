@@ -216,6 +216,16 @@ FlowNodeItem* FlowCanvas::nodeItem(const QString& nodeId) const {
     return m_nodes.value(nodeId, nullptr);
 }
 
+void FlowCanvas::selectNode(const QString& nodeId) {
+    FlowNodeItem* item = m_nodes.value(nodeId, nullptr);
+    if (!item) {
+        return;
+    }
+    m_scene->clearSelection();
+    item->setSelected(true);
+    emit nodeSelected(nodeId);
+}
+
 QList<FlowNodeItem*> FlowCanvas::getOrderedModules() const {
     if (m_nodes.isEmpty()) {
         return {};
@@ -438,6 +448,13 @@ void FlowNodeItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {
     QGraphicsItem::mousePressEvent(event);
     scene()->clearSelection();
     setSelected(true);
+
+    // 发出 FlowCanvas::nodeSelected 信号
+    QGraphicsScene* currentScene = scene();
+    FlowCanvas* canvas = currentScene ? qobject_cast<FlowCanvas*>(currentScene->parent()) : nullptr;
+    if (canvas) {
+        emit canvas->nodeSelected(m_nodeId);
+    }
 }
 
 // ========== FlowConnectionItem ==========

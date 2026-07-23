@@ -822,8 +822,9 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
 
     QTreeWidget* processTreeForHighlight = window.findChild<QTreeWidget*>("ProcessTree");
     QVERIFY(processTreeForHighlight != nullptr);
-    QVERIFY2(processTreeForHighlight->styleSheet().contains(
-                 QStringLiteral("QTreeWidget::item:selected { background-color: #0078d7; color: #ffffff; }")),
+    // Tree widget 样式现在由 ThemeManager 统一管理，检查全局样式表
+    QVERIFY2(window.styleSheet().contains(
+                 QStringLiteral("QTreeWidget::item:selected { background-color: #0078d7; }")),
              "Process tree mouse selection should use the same deep highlight as run completion");
 
     QWidget* processTabContent = window.findChild<QWidget*>("ProcessTabContent");
@@ -840,14 +841,15 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
 
     QToolButton* processStartButton = window.findChild<QToolButton*>("ProcessStartPauseBtn");
     QVERIFY(processStartButton != nullptr);
-    QVERIFY2(processStartButton->styleSheet().contains(QStringLiteral("QToolButton")),
+    // Process tool button 样式由 ThemeManager 统一管理，检查全局样式表
+    QVERIFY2(window.styleSheet().contains(QStringLiteral("QToolBar QToolButton")),
              "Process toolbar buttons should use the same styled tool-button rules as the tool panel");
 
     QToolButton* processStepButton = window.findChild<QToolButton*>("ProcessStepBtn");
     QVERIFY(processStepButton != nullptr);
     QVERIFY2(processStepButton->toolTip().contains(QStringLiteral("单步执行")),
              "Process toolbar should expose a dedicated one-step execution action");
-    QVERIFY2(processStepButton->styleSheet().contains(QStringLiteral("QToolButton")),
+    QVERIFY2(window.styleSheet().contains(QStringLiteral("QToolBar QToolButton")),
              "Step execution button should share the process toolbar styling");
     const QImage playIcon =
         AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#0F766E")).pixmap(24, 24).toImage();

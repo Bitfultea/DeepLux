@@ -1,0 +1,346 @@
+#include "ModuleInspectorPanel.h"
+#include "PropertyPanel.h"
+
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QScrollArea>
+#include <QVBoxLayout>
+
+namespace DeepLux {
+
+ModuleInspectorPanel::ModuleInspectorPanel(QWidget* parent)
+    : QWidget(parent)
+{
+    setObjectName("ModuleInspectorPanel");
+    setupUi();
+}
+
+ModuleInspectorPanel::~ModuleInspectorPanel() = default;
+
+void ModuleInspectorPanel::setupUi()
+{
+    QVBoxLayout* mainLayout = new QVBoxLayout(this);
+    mainLayout->setContentsMargins(0, 0, 0, 0);
+    mainLayout->setSpacing(0);
+
+    setupHeader();
+    setupEmptyState();
+    setupTabs();
+    setupBottomBar();
+
+    // 默认显示空状态
+    m_emptyState->setVisible(true);
+    m_tabWidget->setVisible(false);
+    m_bottomBar->setVisible(false);
+}
+
+void ModuleInspectorPanel::setupHeader()
+{
+    m_headerFrame = new QFrame();
+    m_headerFrame->setObjectName("InspectorHeader");
+    auto* headerLayout = new QHBoxLayout(m_headerFrame);
+    headerLayout->setContentsMargins(8, 2, 4, 2);
+    headerLayout->setSpacing(4);
+
+    m_iconLabel = new QLabel();
+    m_iconLabel->setObjectName("InspectorIcon");
+    m_iconLabel->setFixedSize(20, 20);
+    headerLayout->addWidget(m_iconLabel);
+
+    m_nameLabel = new QLabel(tr("检查器"));
+    m_nameLabel->setObjectName("InspectorModuleName");
+    headerLayout->addWidget(m_nameLabel, 1);
+
+    m_statusLabel = new QLabel();
+    m_statusLabel->setObjectName("InspectorStatus");
+    headerLayout->addWidget(m_statusLabel);
+
+    m_elapsedLabel = new QLabel();
+    m_elapsedLabel->setObjectName("InspectorElapsed");
+    headerLayout->addWidget(m_elapsedLabel);
+
+    m_pinBtn = new QToolButton();
+    m_pinBtn->setObjectName("InspectorPinBtn");
+    m_pinBtn->setCheckable(true);
+    m_pinBtn->setToolTip(tr("固定"));
+    m_pinBtn->setText(QString::fromUtf8("\xe2\x98\x8c")); // pin symbol fallback
+    connect(m_pinBtn, &QToolButton::toggled, this, &ModuleInspectorPanel::onPinToggled);
+    headerLayout->addWidget(m_pinBtn);
+
+    m_collapseBtn = new QToolButton();
+    m_collapseBtn->setObjectName("InspectorCollapseBtn");
+    m_collapseBtn->setToolTip(tr("折叠"));
+    m_collapseBtn->setText(QString::fromUtf8("\xc2\xab")); // collapse indicator
+    connect(m_collapseBtn, &QToolButton::clicked, this, [this]() { onCollapseToggled(!m_collapsed); });
+    headerLayout->addWidget(m_collapseBtn);
+
+    m_closeBtn = new QToolButton();
+    m_closeBtn->setObjectName("InspectorCloseBtn");
+    m_closeBtn->setToolTip(tr("关闭"));
+    m_closeBtn->setText("x");
+    connect(m_closeBtn, &QToolButton::clicked, this, &ModuleInspectorPanel::onCloseClicked);
+    headerLayout->addWidget(m_closeBtn);
+
+    layout()->addWidget(m_headerFrame);
+}
+
+void ModuleInspectorPanel::setupEmptyState()
+{
+    m_emptyState = new QWidget();
+    m_emptyState->setObjectName("InspectorEmptyState");
+    auto* emptyLayout = new QVBoxLayout(m_emptyState);
+    emptyLayout->setContentsMargins(0, 0, 0, 0);
+    auto* emptyLabel = new QLabel(tr("未选择模块"));
+    emptyLabel->setObjectName("InspectorEmptyLabel");
+    emptyLabel->setAlignment(Qt::AlignCenter);
+    emptyLayout->addStretch();
+    emptyLayout->addWidget(emptyLabel);
+    emptyLayout->addStretch();
+
+    layout()->addWidget(m_emptyState);
+}
+
+void ModuleInspectorPanel::setupTabs()
+{
+    m_tabWidget = new QTabWidget();
+    m_tabWidget->setObjectName("InspectorTabs");
+    m_tabWidget->setDocumentMode(true);
+
+    // 参数页 — 复用 PropertyPanel
+    m_paramsTab = new QWidget();
+    auto* paramsLayout = new QVBoxLayout(m_paramsTab);
+    paramsLayout->setContentsMargins(0, 0, 0, 0);
+    m_propertyPanel = new PropertyPanel(m_paramsTab);
+    connect(m_propertyPanel, &PropertyPanel::paramsChanged,
+            this, &ModuleInspectorPanel::onParamChanged);
+    paramsLayout->addWidget(m_propertyPanel);
+    m_tabWidget->addTab(m_paramsTab, tr("参数"));
+
+    // 结果页
+    setupResultsTab();
+    m_tabWidget->addTab(m_resultsTab, tr("结果"));
+
+    auto* mainLayout = qobject_cast<QVBoxLayout*>(layout());
+    if (mainLayout) {
+        mainLayout->addWidget(m_tabWidget);
+        mainLayout->setStretchFactor(m_tabWidget, 1);
+    } else {
+        layout()->addWidget(m_tabWidget);
+    }
+}
+
+void ModuleInspectorPanel::setupParamsTab()
+{
+    // 已在 setupTabs() 中创建
+}
+
+void ModuleInspectorPanel::setupResultsTab()
+{
+    m_resultsTab = new QWidget();
+    auto* resultsLayout = new QVBoxLayout(m_resultsTab);
+    resultsLayout->setContentsMargins(0, 0, 0, 0);
+
+    m_resultsTable = new QTableWidget();
+    m_resultsTable->setObjectName("InspectorResultsTable");
+    m_resultsTable->setColumnCount(2);
+    m_resultsTable->setHorizontalHeaderLabels(QStringList() << tr("名称") << tr("值"));
+    m_resultsTable->horizontalHeader()->setStretchLastSection(true);
+    m_resultsTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_resultsTable->verticalHeader()->setVisible(false);
+    m_resultsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_resultsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    resultsLayout->addWidget(m_resultsTable);
+}
+
+void ModuleInspectorPanel::setupBottomBar()
+{
+    m_bottomBar = new QWidget();
+    m_bottomBar->setObjectName("InspectorBottomBar");
+    auto* bottomLayout = new QHBoxLayout(m_bottomBar);
+    bottomLayout->setContentsMargins(4, 4, 4, 4);
+    bottomLayout->setSpacing(4);
+
+    m_rerunBtn = new QPushButton(tr("重新运行"));
+    m_rerunBtn->setObjectName("InspectorRerunBtn");
+    connect(m_rerunBtn, &QPushButton::clicked, this, &ModuleInspectorPanel::onRerunClicked);
+    bottomLayout->addWidget(m_rerunBtn);
+
+    m_resetBtn = new QPushButton(tr("恢复默认"));
+    m_resetBtn->setObjectName("InspectorResetBtn");
+    connect(m_resetBtn, &QPushButton::clicked, this, &ModuleInspectorPanel::onResetClicked);
+    bottomLayout->addWidget(m_resetBtn);
+
+    bottomLayout->addStretch();
+
+    m_advancedBtn = new QPushButton(tr("高级配置"));
+    m_advancedBtn->setObjectName("InspectorAdvancedBtn");
+    connect(m_advancedBtn, &QPushButton::clicked, this, &ModuleInspectorPanel::onAdvancedClicked);
+    bottomLayout->addWidget(m_advancedBtn);
+
+    layout()->addWidget(m_bottomBar);
+}
+
+void ModuleInspectorPanel::setModule(IModule* module, const QString& instanceId, const PluginInfo& info)
+{
+    m_currentModule = module;
+    m_instanceId = instanceId;
+    m_currentInfo = info;
+
+    if (!module) {
+        clear();
+        return;
+    }
+
+    // 显示模块内容
+    m_emptyState->setVisible(false);
+    m_tabWidget->setVisible(!m_collapsed);
+    m_bottomBar->setVisible(!m_collapsed);
+
+    // 更新标题
+    m_nameLabel->setText(module->name());
+    m_statusLabel->setText(tr("就绪"));
+    m_elapsedLabel->clear();
+    m_iconLabel->setPixmap(module->icon().pixmap(20, 20));
+
+    // 更新参数页
+    m_propertyPanel->setModule(module, instanceId);
+
+    // 清空结果
+    m_resultsTable->setRowCount(0);
+}
+
+void ModuleInspectorPanel::setOutput(const ImageData& output, bool success, int elapsedMs)
+{
+    if (success) {
+        m_statusLabel->setText(tr("成功"));
+    } else {
+        m_statusLabel->setText(tr("失败"));
+    }
+    m_elapsedLabel->setText(tr("%1 ms").arg(elapsedMs));
+
+    refreshResults(output);
+}
+
+void ModuleInspectorPanel::setDirty(bool dirty)
+{
+    m_dirty = dirty;
+    if (dirty) {
+        m_statusLabel->setText(tr("已修改"));
+    }
+}
+
+void ModuleInspectorPanel::clear()
+{
+    m_currentModule = nullptr;
+    m_instanceId.clear();
+    m_currentInfo = PluginInfo{};
+
+    m_emptyState->setVisible(true);
+    m_tabWidget->setVisible(false);
+    m_bottomBar->setVisible(false);
+
+    m_nameLabel->setText(tr("检查器"));
+    m_statusLabel->clear();
+    m_elapsedLabel->clear();
+    m_iconLabel->clear();
+    m_resultsTable->setRowCount(0);
+
+    m_propertyPanel->clear();
+}
+
+void ModuleInspectorPanel::setPinned(bool pinned)
+{
+    m_pinned = pinned;
+    m_pinBtn->blockSignals(true);
+    m_pinBtn->setChecked(pinned);
+    m_pinBtn->blockSignals(false);
+}
+
+void ModuleInspectorPanel::applyTheme(bool isDark)
+{
+    m_isDarkTheme = isDark;
+    // 颜色和尺寸由 ThemeManager 统一管理
+    if (m_propertyPanel) {
+        m_propertyPanel->applyTheme(isDark);
+    }
+}
+
+void ModuleInspectorPanel::refreshResults(const ImageData& output)
+{
+    m_resultsTable->setRowCount(0);
+    if (!output.isValid()) {
+        return;
+    }
+
+    const QMap<QString, QVariant> all = output.allData();
+    int row = 0;
+    for (auto it = all.constBegin(); it != all.constEnd(); ++it) {
+        // 跳过图像数据本身（不重复显示）
+        const QString key = it.key();
+        if (key == "image" || key == "qimage" || key == "pixmap") {
+            continue;
+        }
+        m_resultsTable->insertRow(row);
+        m_resultsTable->setItem(row, 0, new QTableWidgetItem(key));
+        m_resultsTable->setItem(row, 1, new QTableWidgetItem(it.value().toString()));
+        row++;
+    }
+}
+
+void ModuleInspectorPanel::updateCollapsedState()
+{
+    if (m_collapsed) {
+        m_tabWidget->setVisible(false);
+        m_bottomBar->setVisible(false);
+    } else {
+        if (m_currentModule) {
+            m_tabWidget->setVisible(true);
+            m_bottomBar->setVisible(true);
+        }
+    }
+}
+
+// ===== Slots =====
+
+void ModuleInspectorPanel::onPinToggled(bool checked)
+{
+    m_pinned = checked;
+    emit pinChanged(checked);
+}
+
+void ModuleInspectorPanel::onCollapseToggled(bool collapsed)
+{
+    m_collapsed = collapsed;
+    m_collapseBtn->setText(collapsed ? QString::fromUtf8("\xc2\xbb") : QString::fromUtf8("\xc2\xab"));
+    updateCollapsedState();
+}
+
+void ModuleInspectorPanel::onCloseClicked()
+{
+    emit closeRequested();
+}
+
+void ModuleInspectorPanel::onRerunClicked()
+{
+    emit rerunRequested();
+}
+
+void ModuleInspectorPanel::onResetClicked()
+{
+    if (m_currentModule) {
+        m_currentModule->setParams(m_currentModule->defaultParams());
+        m_propertyPanel->setModule(m_currentModule, m_instanceId);
+    }
+}
+
+void ModuleInspectorPanel::onAdvancedClicked()
+{
+    emit advancedConfigRequested(m_instanceId);
+}
+
+void ModuleInspectorPanel::onParamChanged(const QString& /*moduleId*/, const QString& key, const QVariant& value)
+{
+    emit paramsChanged(m_instanceId, key, value);
+}
+
+} // namespace DeepLux

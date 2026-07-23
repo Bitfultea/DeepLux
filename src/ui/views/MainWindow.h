@@ -34,10 +34,12 @@ class TerminalWidget;
 class AgentActionLogWidget;
 class AgentChatPanel;
 class ProcessTreeController;
+class ModuleInspectorPanel;
 class SamAnnotatorDialog;
 
 class IModule;
 struct PointCloudData;
+struct PluginInfo;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -185,6 +187,9 @@ protected:
     void updateMeasurementResultOnOverlay();
     void clearMeasurementOverlays();
 
+    // 统一选择入口 — 同步流程树、画布和检查器
+    void selectModule(const QString& instanceId, bool revealInspector);
+
     // 流程中的插件实例
     QMap<QString, IModule*> m_flowModules;
     QMap<QString, int> m_measurementPickCursor;
@@ -199,6 +204,17 @@ protected:
 
     // 流程画布（图形化节点编辑器）
     FlowCanvas* m_flowCanvas = nullptr;
+
+    // 主 Splitter 成员（提升自局部变量）
+    QSplitter* m_mainSplitter = nullptr;
+    QSplitter* m_rightSplitter = nullptr;
+    QSplitter* m_rightTopSplitter = nullptr;
+
+    // 右侧检查器面板
+    ModuleInspectorPanel* m_inspectorPanel = nullptr;
+
+    // 当前唯一选中的模块实例 ID
+    QString m_selectedModuleId;
 
     // 视图菜单动作
     QAction* m_viewToolPanelAction = nullptr;

@@ -19,6 +19,7 @@ set(UI_SOURCES
     widgets/ToolBox.cpp
     dialogs/AgentSettingsDialog.cpp
     widgets/ViewportWidget.cpp
+    widgets/ModuleInspectorPanel.cpp
     panels/DataSourcePanel.cpp
     bridge/TerminalBridge.cpp
     process/BashProcess.cpp
@@ -73,6 +74,7 @@ set(UI_HEADERS
     widgets/ToolBox.h
     dialogs/AgentSettingsDialog.h
     widgets/ViewportWidget.h
+    widgets/ModuleInspectorPanel.h
     bridge/TerminalBridge.h
     process/BashProcess.h
     process/PtyImpl.h

@@ -14,6 +14,7 @@
 #include "../widgets/AppIconProvider.h"
 #include "../widgets/FlowCanvas.h"
 #include "../widgets/HImageWidget.h"
+#include "../widgets/ModuleInspectorPanel.h"
 #include "../widgets/TerminalWidget.h"
 #include "../widgets/ViewportWidget.h"
 #include "CameraSetView.h"
@@ -378,7 +379,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
                 clearExecutionHighlight(m_lastExecutedItem);
             }
             m_currentExecutingItem = item;
-            m_processTreeController->setCurrentItem(item);
+            // 删除普通运行过程中的 setCurrentItem 调用
+            // 单步模式允许跟随刚执行模块，但检查器固定时不得切换
+            bool stepMode = !m_isRunning;
+            bool canFollow = stepMode && !(m_inspectorPanel && m_inspectorPanel->isPinned());
+            if (canFollow && m_processTreeController) {
+                m_processTreeController->setCurrentItem(item);
+            }
             item->setBackground(0, QBrush(QColor("#0078D7")));
             item->setForeground(0, QBrush(Qt::white));
             item->setBackground(1, QBrush(QColor("#0078D7")));
@@ -398,9 +405,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
                 if (item) {
                     if (success) {
                         clearExecutionHighlight(item);
-                        if (m_processTreeController) {
-                            m_processTreeController->setCurrentItem(item);
-                        }
+                        // 删除普通运行过程中的 setCurrentItem 调用
                         m_lastExecutedItem = nullptr;
                     } else {
                         const QColor bg("#FEE2E2");
@@ -418,6 +423,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
                 const ImageData out = RunEngine::instance().moduleOutput(moduleName);
                 if (out.isValid()) {
                     displayImage(out);
+                }
+                // 更新检查器结果（选择模块时同时更新检查器）
+                if (m_inspectorPanel && m_selectedModuleId == moduleName) {
+                    m_inspectorPanel->setOutput(out, success, elapsedMs);
                 }
             });
 
@@ -747,16 +756,16 @@ void MainWindow::setupStatusBar() {
 
 void MainWindow::setupMainLayout() {
     // 创建主 Splitter - 水平分割左右
-    QSplitter* mainSplitter = new QSplitter(Qt::Horizontal);
-    mainSplitter->setObjectName("MainSplitter");
-    mainSplitter->setHandleWidth(7);
-    mainSplitter->setChildrenCollapsible(false);
-    mainSplitter->setOpaqueResize(true);
+    m_mainSplitter = new QSplitter(Qt::Horizontal);
+    m_mainSplitter->setObjectName("MainSplitter");
+    m_mainSplitter->setHandleWidth(7);
+    m_mainSplitter->setChildrenCollapsible(false);
+    m_mainSplitter->setOpaqueResize(true);
 
     QWidget* mainContentWidget = new QWidget();
     mainContentWidget->setObjectName("MainContentWidget");
     QVBoxLayout* mainContentLayout = new QVBoxLayout(mainContentWidget);
-    mainContentLayout->setContentsMargins(mainSplitter->handleWidth(), 0, mainSplitter->handleWidth(), 0);
+    mainContentLayout->setContentsMargins(m_mainSplitter->handleWidth(), 0, m_mainSplitter->handleWidth(), 0);
     mainContentLayout->setSpacing(0);
 
     // ========== 左侧：工具面板（贯穿整个高度）==========
@@ -940,21 +949,21 @@ void MainWindow::setupMainLayout() {
     connect(toolCloseBtn, &QToolButton::clicked, m_toolBoxDock, &QDockWidget::close);
 
     // 将工具面板添加到主 Splitter 左侧
-    mainSplitter->addWidget(m_toolBoxDock);
+    m_mainSplitter->addWidget(m_toolBoxDock);
 
     // ========== 右侧：垂直 Splitter（上方：流程 + 显示区域，下方：日志栏）==========
-    QSplitter* rightSplitter = new QSplitter(Qt::Vertical);
-    rightSplitter->setObjectName("RightSplitter");
-    rightSplitter->setHandleWidth(7);
-    rightSplitter->setChildrenCollapsible(false);
-    rightSplitter->setOpaqueResize(true);
+    m_rightSplitter = new QSplitter(Qt::Vertical);
+    m_rightSplitter->setObjectName("RightSplitter");
+    m_rightSplitter->setHandleWidth(7);
+    m_rightSplitter->setChildrenCollapsible(false);
+    m_rightSplitter->setOpaqueResize(true);
 
-    // 右上方区域：水平 Splitter（流程面板 + 显示区域）
-    QSplitter* rightTopSplitter = new QSplitter(Qt::Horizontal);
-    rightTopSplitter->setObjectName("RightTopSplitter");
-    rightTopSplitter->setHandleWidth(7);
-    rightTopSplitter->setChildrenCollapsible(false);
-    rightTopSplitter->setOpaqueResize(true);
+    // 右上方区域：水平 Splitter（流程面板 + 显示区域 + 检查器）
+    m_rightTopSplitter = new QSplitter(Qt::Horizontal);
+    m_rightTopSplitter->setObjectName("RightTopSplitter");
+    m_rightTopSplitter->setHandleWidth(7);
+    m_rightTopSplitter->setChildrenCollapsible(false);
+    m_rightTopSplitter->setOpaqueResize(true);
 
     // ========== 流程面板（QTabWidget：流程 + 画布）==========
     QWidget* processPanelWidget = new QWidget();
@@ -1129,16 +1138,65 @@ void MainWindow::setupMainLayout() {
     imageDisplayWidget->setAcceptDrops(true);     // 接收文件拖放
     imageDisplayWidget->installEventFilter(this); // route drops to eventFilter
 
-    rightTopSplitter->addWidget(processPanelWidget);
+    m_rightTopSplitter->addWidget(processPanelWidget);
 
     processPanelWidget->setMinimumWidth(220);
     processPanelWidget->setMaximumWidth(320);
 
-    rightTopSplitter->addWidget(imageDisplayWidget);
-    rightTopSplitter->setStretchFactor(0, 1);
-    rightTopSplitter->setStretchFactor(1, 8);
+    m_rightTopSplitter->addWidget(imageDisplayWidget);
+    // 主视图逻辑宽度不得被压缩到 620px 以下
+    imageDisplayWidget->setMinimumWidth(620);
 
-    rightSplitter->addWidget(rightTopSplitter);
+    // ========== 右侧检查器面板 ==========
+    m_inspectorPanel = new ModuleInspectorPanel();
+    m_inspectorPanel->setObjectName("ModuleInspectorPanel");
+    const LayoutMetrics metrics = ThemeManager::layoutMetrics();
+    m_inspectorPanel->setMinimumWidth(metrics.inspectorMinWidth);
+    m_inspectorPanel->setMaximumWidth(metrics.inspectorMaxWidth);
+    m_rightTopSplitter->addWidget(m_inspectorPanel);
+
+    m_rightTopSplitter->setStretchFactor(0, 1);  // 流程面板
+    m_rightTopSplitter->setStretchFactor(1, 8);  // 主视图
+    m_rightTopSplitter->setStretchFactor(2, 0);  // 检查器
+
+    // 设置检查器初始宽度
+    m_rightTopSplitter->setSizes({metrics.flowPanelWidth, 800, metrics.inspectorWidth});
+
+    // 连接检查器信号
+    connect(m_inspectorPanel, &ModuleInspectorPanel::paramsChanged,
+            this, [this](const QString& instanceId, const QString& key, const QVariant& value) {
+        Q_UNUSED(instanceId)
+        Q_UNUSED(key)
+        Q_UNUSED(value)
+        m_modulesNeedSync = true;
+    });
+    connect(m_inspectorPanel, &ModuleInspectorPanel::rerunRequested,
+            this, [this]() {
+        if (!m_selectedModuleId.isEmpty()) {
+            executeFlowOnce();
+        }
+    });
+    connect(m_inspectorPanel, &ModuleInspectorPanel::advancedConfigRequested,
+            this, [this](const QString& instanceId) {
+        Logger::instance().info(tr("高级配置请求：%1").arg(instanceId), "System");
+    });
+    connect(m_inspectorPanel, &ModuleInspectorPanel::pinChanged,
+            this, [this](bool pinned) {
+        Q_UNUSED(pinned)
+        // 固定状态由检查器自行管理，此处仅记录
+    });
+    connect(m_inspectorPanel, &ModuleInspectorPanel::closeRequested,
+            this, [this]() {
+        selectModule(QString(), false);
+    });
+
+    // 连接流程树选择信号到检查器
+    connect(m_flowCanvas, &FlowCanvas::nodeSelected,
+            this, [this](const QString& nodeId) {
+        selectModule(nodeId, true);
+    });
+
+    m_rightSplitter->addWidget(m_rightTopSplitter);
 
     // 日志面板 - 下方区域
     m_logDock = new QDockWidget(this);
@@ -1305,18 +1363,22 @@ void MainWindow::setupMainLayout() {
     m_logDock->setWidget(m_logTerminalTabs);
     m_logDock->setMinimumHeight(220);
 
-    rightSplitter->addWidget(m_logDock);
-    rightSplitter->setStretchFactor(0, 7);
-    rightSplitter->setStretchFactor(1, 3);
-    rightSplitter->setSizes(QList<int>() << 620 << 260);
+    m_rightSplitter->addWidget(m_logDock);
+    m_rightSplitter->setStretchFactor(0, 7);
+    m_rightSplitter->setStretchFactor(1, 3);
+
+    // 底部面板使用 LayoutMetrics 的范围
+    m_logDock->setMinimumHeight(metrics.bottomPanelMinHeight);
+    m_logDock->setMaximumHeight(metrics.bottomPanelMaxHeight);
+    m_rightSplitter->setSizes(QList<int>() << 620 << metrics.bottomPanelHeight);
 
     // 将右侧 Splitter 添加到主 Splitter
-    mainSplitter->addWidget(rightSplitter);
-    mainSplitter->setStretchFactor(0, 1);
-    mainSplitter->setStretchFactor(1, 4);
+    m_mainSplitter->addWidget(m_rightSplitter);
+    m_mainSplitter->setStretchFactor(0, 1);
+    m_mainSplitter->setStretchFactor(1, 4);
 
     // 设置中央 widget
-    mainContentLayout->addWidget(mainSplitter);
+    mainContentLayout->addWidget(m_mainSplitter);
     setCentralWidget(mainContentWidget);
 
     // 连接 DockWidget 关闭信号以同步菜单勾选状态
@@ -2470,22 +2532,7 @@ void MainWindow::applyTheme() {
                 QString("QLabel { color: %1; font-weight: 600; font-size: 14px; }").arg(pal.textColor));
     }
 
-    if (m_toolBoxTree) {
-        m_toolBoxTree->setStyleSheet(
-            QString("QTreeWidget { background-color: %1; color: %2; border: none; font-size: 13px; }"
-                    "QTreeWidget::item { height: 28px; padding-left: 2px; padding-right: 2px; }"
-                    "QTreeWidget::item:hover { background-color: %3; }"
-                    "QTreeWidget::item:selected { background-color: #0078d7; color: #ffffff; }")
-                .arg(pal.treeBgColor, pal.treeTextColor, pal.treeHoverColor));
-    }
-    if (m_processTree) {
-        m_processTree->setStyleSheet(
-            QString("QTreeWidget { background-color: %1; color: %2; border: none; font-size: 13px; }"
-                    "QTreeWidget::item { height: 28px; padding-left: 2px; padding-right: 2px; }"
-                    "QTreeWidget::item:hover { background-color: %3; }"
-                    "QTreeWidget::item:selected { background-color: #0078d7; color: #ffffff; }")
-                .arg(pal.treeBgColor, pal.treeTextColor, pal.treeHoverColor));
-    }
+    // Tree widget 样式由 ThemeManager 统一管理，不再局部覆盖
 
     QScrollArea* toolCategoryScroll = findChild<QScrollArea*>("ToolCategoryScroll");
     if (toolCategoryScroll) {
@@ -2501,28 +2548,7 @@ void MainWindow::applyTheme() {
         }
     }
 
-    const QString processToolButtonStyle =
-        QString("QToolButton { background-color: %1; color: %2; border: 1px solid %3; border-radius: 3px; "
-                "padding: 4px 6px; }"
-                "QToolButton:hover { background-color: %4; }"
-                "QToolButton:disabled { background-color: %1; color: #999999; }")
-            .arg(pal.btnBgColor, pal.btnTextColor, pal.toolBtnBorderColor, pal.btnHoverColor);
-    QToolButton* startPauseBtn = findChild<QToolButton*>("ProcessStartPauseBtn");
-    if (startPauseBtn) {
-        startPauseBtn->setStyleSheet(processToolButtonStyle);
-    }
-    QToolButton* stopBtn = findChild<QToolButton*>("ProcessStopBtn");
-    if (stopBtn) {
-        stopBtn->setStyleSheet(processToolButtonStyle);
-    }
-    QToolButton* cycleBtn = findChild<QToolButton*>("ProcessCycleBtn");
-    if (cycleBtn) {
-        cycleBtn->setStyleSheet(processToolButtonStyle);
-    }
-    QToolButton* stepBtn = findChild<QToolButton*>("ProcessStepBtn");
-    if (stepBtn) {
-        stepBtn->setStyleSheet(processToolButtonStyle);
-    }
+    // Process tool button 样式由 ThemeManager 统一管理，不再局部覆盖
 
     QWidget* procToolBar = findChild<QWidget*>("ProcessToolBar");
     if (procToolBar) {
@@ -2595,6 +2621,11 @@ void MainWindow::applyTheme() {
     // 问题 3: 画布主题跟随
     if (m_flowCanvas) {
         m_flowCanvas->applyTheme(m_isDarkTheme);
+    }
+
+    // 检查器面板主题
+    if (m_inspectorPanel) {
+        m_inspectorPanel->applyTheme(m_isDarkTheme);
     }
 
     // 更新 Terminal 主题颜色
@@ -3185,6 +3216,78 @@ void MainWindow::showProcessModuleOutput(QTreeWidgetItem* item) {
         return;
     }
 
+    // 统一走 selectModule 入口
+    selectModule(instanceId, false);
+}
+
+void MainWindow::selectModule(const QString& instanceId, bool revealInspector) {
+    // 如果检查器已固定且 instanceId 不同，不切换
+    if (m_inspectorPanel && m_inspectorPanel->isPinned() &&
+        !m_selectedModuleId.isEmpty() && instanceId != m_selectedModuleId) {
+        return;
+    }
+
+    m_selectedModuleId = instanceId;
+
+    if (instanceId.isEmpty()) {
+        // 清空选择
+        if (m_inspectorPanel) {
+            m_inspectorPanel->clear();
+        }
+        if (m_flowCanvas) {
+            m_flowCanvas->scene()->clearSelection();
+        }
+        return;
+    }
+
+    // 同步流程树选中（用 QSignalBlocker 防止递归选择）
+    if (m_processTreeController) {
+        QTreeWidgetItem* treeItem = m_processTreeController->instanceItem(instanceId);
+        if (treeItem) {
+            QSignalBlocker blocker(m_processTree);
+            m_processTreeController->setCurrentItem(treeItem);
+        }
+    }
+
+    // 同步画布选中（用 QSignalBlocker 防止递归选择）
+    if (m_flowCanvas) {
+        FlowNodeItem* nodeItem = m_flowCanvas->nodeItem(instanceId);
+        if (nodeItem) {
+            QSignalBlocker blocker(m_flowCanvas);
+            m_flowCanvas->scene()->clearSelection();
+            nodeItem->setSelected(true);
+        }
+    }
+
+    // 更新检查器
+    if (m_inspectorPanel) {
+        IModule* module = m_flowModules.value(instanceId, nullptr);
+        if (module) {
+            // 获取插件信息
+            QString moduleId = module->moduleId();
+            PluginInfo info;
+            if (moduleId.startsWith("com.deeplux.plugin.")) {
+                QString pluginName = moduleId.mid(QString("com.deeplux.plugin.").length());
+                info = PluginManager::instance().pluginInfo(pluginName);
+            }
+            m_inspectorPanel->setModule(module, instanceId, info);
+
+            // 如果有输出，更新结果
+            const ImageData output = RunEngine::instance().moduleOutput(instanceId);
+            if (output.isValid()) {
+                int elapsed = m_moduleExecutionTimes.value(instanceId, 0);
+                m_inspectorPanel->setOutput(output, true, elapsed);
+            }
+
+            if (revealInspector) {
+                // 确保检查器可见（如果被折叠则展开）
+            }
+        } else {
+            m_inspectorPanel->clear();
+        }
+    }
+
+    // 同时显示模块输出到主视图
     const ImageData output = RunEngine::instance().moduleOutput(instanceId);
     if (output.isValid()) {
         displayImage(output);
