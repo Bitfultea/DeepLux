@@ -116,11 +116,17 @@ void AgentSettingsDialog::setupUi() {
         testBtn->setEnabled(false);
         testBtn->setText(tr("测试中..."));
 
+        // 问题 6: 补全 endpoint URL + 超时
+        QString normalizedEndpoint = endpoint;
+        if (!normalizedEndpoint.startsWith("http://") && !normalizedEndpoint.startsWith("https://"))
+            normalizedEndpoint = "https://" + normalizedEndpoint;
+
         QNetworkAccessManager* nam = new QNetworkAccessManager(this);
-        QUrl url(endpoint);
+        QUrl url(normalizedEndpoint);
         QNetworkRequest req(url);
         req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
         req.setRawHeader("Authorization", ("Bearer " + apiKey).toUtf8());
+        req.setTransferTimeout(15000);  // 15 秒超时
 
         QJsonObject body;
         body["model"] = model;
@@ -136,6 +142,15 @@ void AgentSettingsDialog::setupUi() {
         connect(reply, &QNetworkReply::finished, this, [this, reply, nam, testBtn]() {
             testBtn->setEnabled(true);
             testBtn->setText(tr("测试连接"));
+
+            // 超时检测
+            if (reply->error() == QNetworkReply::TimeoutError ||
+                reply->error() == QNetworkReply::OperationCanceledError) {
+                QMessageBox::warning(this, tr("测试连接"), tr("请求超时（15 秒），请检查端点和网络"));
+                reply->deleteLater();
+                nam->deleteLater();
+                return;
+            }
 
             if (reply->error() == QNetworkReply::NoError) {
                 QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());

@@ -1075,8 +1075,8 @@ void SamAnnotatorDialog::attachToImageWidget(HImageWidget* imageWidget, const QS
         m_objectList->setMinimumHeight(72);
         // 不设 maximumHeight，让 Expanding 生效，对象列表拉伸填满可用空间
     }
-    setMinimumSize(220, 420);
-    resize(300, 430);
+    setMinimumSize(220, 520);
+    resize(300, 530);
     moveOverlayToImageWidget(imageWidget);
     updateSessionFromImage();
     prepareBackendImage();

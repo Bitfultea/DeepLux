@@ -32,6 +32,11 @@ FlowCanvas::~FlowCanvas() {
     clearNodes();
 }
 
+void FlowCanvas::applyTheme(bool isDark) {
+    setBackgroundBrush(isDark ? QColor("#1e1e1e") : QColor("#f5f5f5"));
+    viewport()->update();
+}
+
 QString FlowCanvas::addNode(const QString& moduleId, const QString& name, const QPointF& pos,
                             const QString& instanceId) {
     QString nodeId = instanceId.isEmpty() ? QString("node_%1").arg(++m_nodeCounter) : instanceId;

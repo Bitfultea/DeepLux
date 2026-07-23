@@ -163,18 +163,10 @@ public:
                     background-color: #3d4758;
                 }
                 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-                    image: none;
-                    border-left: 4px solid transparent;
-                    border-right: 4px solid transparent;
-                    border-bottom: 5px solid #e8f4f8;
-                    width: 0; height: 0;
+                    width: 8px; height: 8px;
                 }
                 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-                    image: none;
-                    border-left: 4px solid transparent;
-                    border-right: 4px solid transparent;
-                    border-top: 5px solid #e8f4f8;
-                    width: 0; height: 0;
+                    width: 8px; height: 8px;
                 }
                 QComboBox {
                     padding-right: 20px;
@@ -215,18 +207,10 @@ public:
                     background-color: #d1d5db;
                 }
                 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-                    image: none;
-                    border-left: 4px solid transparent;
-                    border-right: 4px solid transparent;
-                    border-bottom: 5px solid #1a1a1a;
-                    width: 0; height: 0;
+                    width: 8px; height: 8px;
                 }
                 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-                    image: none;
-                    border-left: 4px solid transparent;
-                    border-right: 4px solid transparent;
-                    border-top: 5px solid #1a1a1a;
-                    width: 0; height: 0;
+                    width: 8px; height: 8px;
                 }
                 QComboBox {
                     padding-right: 20px;
@@ -315,18 +299,10 @@ public:
                 background-color: #3d4758;
             }
             QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-                image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-bottom: 5px solid #e8f4f8;
-                width: 0; height: 0;
+                width: 8px; height: 8px;
             }
             QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-                image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 5px solid #e8f4f8;
-                width: 0; height: 0;
+                width: 8px; height: 8px;
             }
             QComboBox {
                 padding-right: 20px;
@@ -365,18 +341,10 @@ public:
                 background-color: #d1d5db;
             }
             QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-                image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-bottom: 5px solid #1a1a1a;
-                width: 0; height: 0;
+                width: 8px; height: 8px;
             }
             QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-                image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 5px solid #1a1a1a;
-                width: 0; height: 0;
+                width: 8px; height: 8px;
             }
             QComboBox {
                 padding-right: 20px;

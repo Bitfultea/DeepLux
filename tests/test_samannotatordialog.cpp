@@ -308,7 +308,7 @@ void TestSamAnnotatorDialog::mainViewModeUsesReadableConfigLayout() {
 
     QVERIFY2(dlg.minimumWidth() >= 210, "Main-view annotation config window should remain usable");
     QVERIFY2(dlg.minimumWidth() <= 230, "Main-view annotation config window should be about half the previous width");
-    QVERIFY2(dlg.height() <= 460, "Main-view annotation config window should not waste vertical space");
+    QVERIFY2(dlg.height() <= 560, "Main-view annotation config window should not waste vertical space");
     QVERIFY2(dlg.objectList()->minimumHeight() >= 72,
              "Object list should have a reasonable minimum height in narrow config window");
     QLabel* categoryLabel = dlg.findChild<QLabel*>(QStringLiteral("SamCategoryLabel"));

@@ -358,6 +358,15 @@ void applyPluginConfigTheme(QWidget* root, bool isDark) {
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(new DisplayManager(this)) {
 
     setupUi();
+
+    // 问题 1: 在 applyTheme() 之前从配置加载主题，确保持久化生效
+    {
+        ConfigManager& cfg = ConfigManager::instance();
+        if (cfg.isInitialized()) {
+            m_isDarkTheme = cfg.groupBool("appearance", "darkTheme", false);
+        }
+    }
+
     applyTheme();
 
     // RunEngine 信号连接 — 统一执行入口，MainWindow 只做 UI 高亮/状态更新
@@ -442,14 +451,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
 
     // Load Agent settings from ConfigManager (Phase 3)
     loadAgentSettings();
-
-    // P1-3: 从配置加载主题设置
-    {
-        ConfigManager& cfg = ConfigManager::instance();
-        if (cfg.isInitialized()) {
-            m_isDarkTheme = cfg.groupBool("appearance", "darkTheme", false);
-        }
-    }
 
     // Connect ProjectManager signals to sync process tree with Project model
     connect(&ProjectManager::instance(), &ProjectManager::projectCreated, this, &MainWindow::onProjectOpened);
@@ -1104,7 +1105,7 @@ void MainWindow::setupMainLayout() {
     // ---- Tab 2: 画布 ----
     m_flowCanvas = new FlowCanvas(this);
     m_flowCanvas->setObjectName("FlowCanvas");
-    m_flowCanvas->setStyleSheet("background-color: #000000;");
+    m_flowCanvas->setStyleSheet(QString());
     m_processTabWidget->addTab(m_flowCanvas, tr("画布"));
 
     // ---- Tab 3: 数据源 ----
@@ -1383,10 +1384,10 @@ void MainWindow::updateToolBoxPluginItem(const QString& pluginName) {
 
     // P1-1: 插件不在工具箱中时，按类别自动添加
     static const QMap<QString, QString> categoryKeywords = {
-        {"image_processing", QStringLiteral("00 - 图像处理")},
+        {"image_processing", QStringLiteral("01 - 图像处理")},
         {"detection", QStringLiteral("02 - 检测识别")},
         {"geometry", QStringLiteral("03 - 几何测量")},
-        {"calibration", QStringLiteral("04 - 标定工具")},
+        {"calibration", QStringLiteral("05 - 坐标标定")},
         {"logic", QStringLiteral("07 - 逻辑工具")},
         {"system", QStringLiteral("08 - 系统工具")},
         {"variable", QStringLiteral("09 - 变量工具")},
@@ -2584,6 +2585,11 @@ void MainWindow::applyTheme() {
     // 更新 DisplayManager 中的 Viewport 样式
     if (m_displayManager) {
         m_displayManager->applyTheme(m_isDarkTheme);
+    }
+
+    // 问题 3: 画布主题跟随
+    if (m_flowCanvas) {
+        m_flowCanvas->applyTheme(m_isDarkTheme);
     }
 
     // 更新 Terminal 主题颜色

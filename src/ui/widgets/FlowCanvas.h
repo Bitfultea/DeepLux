@@ -61,6 +61,7 @@ private:
 
 public:
     void updateConnectionsForNode(const QString& nodeId);
+    void applyTheme(bool isDark);
 
     QGraphicsScene* m_scene;
     QMap<QString, FlowNodeItem*> m_nodes;

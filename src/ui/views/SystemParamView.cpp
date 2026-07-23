@@ -3,6 +3,7 @@
 #include "../widgets/AppIconProvider.h"
 #include "common/Logger.h"
 #include "core/config/SystemConfig.h"
+#include "core/manager/ConfigManager.h"
 
 #include <QFormLayout>
 #include <QGroupBox>
@@ -116,8 +117,14 @@ void SystemParamView::setupUI() {
 }
 
 void SystemParamView::loadSettings() {
-    SystemConfig& config = SystemConfig::instance();
+    // 问题 2: 主题从 ConfigManager 读取（与 MainWindow 一致），其余从 SystemConfig
+    ConfigManager& cfg = ConfigManager::instance();
+    if (cfg.isInitialized()) {
+        const bool dark = cfg.groupBool("appearance", "darkTheme", false);
+        mThemeCombo->setCurrentIndex(dark ? 0 : 1);
+    }
 
+    SystemConfig& config = SystemConfig::instance();
     m_autoLoadCheck->setChecked(config.autoLoadSolution());
     m_autoSaveCheck->setChecked(config.autoSave());
     m_autoSaveIntervalSpin->setValue(config.autoSaveInterval());
@@ -126,18 +133,20 @@ void SystemParamView::loadSettings() {
     if (langIndex >= 0)
         m_languageCombo->setCurrentIndex(langIndex);
 
-    int themeIndex = mThemeCombo->findData(config.theme());
-    if (themeIndex >= 0)
-        mThemeCombo->setCurrentIndex(themeIndex);
-
     m_cycleIntervalSpin->setValue(config.cycleInterval());
     m_logLevelCombo->setValue(config.logLevel());
     m_enableFileLogCheck->setChecked(config.enableFileLog());
 }
 
 void SystemParamView::saveSettings() {
-    SystemConfig& config = SystemConfig::instance();
+    // 问题 2: 主题写入 ConfigManager（与 MainWindow 一致）
+    ConfigManager& cfg = ConfigManager::instance();
+    if (cfg.isInitialized()) {
+        cfg.setGroupValue("appearance", "darkTheme", mThemeCombo->currentData().toString() == "dark");
+        cfg.save();
+    }
 
+    SystemConfig& config = SystemConfig::instance();
     config.setAutoLoadSolution(m_autoLoadCheck->isChecked());
     config.setAutoSave(m_autoSaveCheck->isChecked());
     config.setAutoSaveInterval(m_autoSaveIntervalSpin->value());
