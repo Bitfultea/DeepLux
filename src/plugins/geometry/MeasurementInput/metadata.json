@@ -4,5 +4,37 @@
     "category": "geometry",
     "version": "1.0.0",
     "author": "DeepLux",
-    "description": "测量输入适配器"
+    "description": "测量输入适配器",
+    "ui": {
+        "parameters": {
+            "mode": {
+                "label": "模式",
+                "order": 10,
+                "options": [
+                    {"value": "point_pair", "label": "两点距离"},
+                    {"value": "point_line", "label": "点到线距离"},
+                    {"value": "line_pair", "label": "两线间距"},
+                    {"value": "point_plane", "label": "点到面距离"},
+                    {"value": "custom", "label": "自定义"}
+                ]
+            },
+            "point1": {"label": "点1", "order": 20},
+            "point2": {"label": "点2", "order": 30},
+            "point": {"label": "点", "order": 40},
+            "line": {"label": "线", "order": 50},
+            "line1": {"label": "线1", "order": 60},
+            "line2": {"label": "线2", "order": 70},
+            "plane": {"label": "平面", "order": 80}
+        },
+        "results": {
+            "point1": {"label": "点1", "precision": 3, "order": 10},
+            "point2": {"label": "点2", "precision": 3, "order": 20},
+            "point": {"label": "点", "precision": 3, "order": 30},
+            "line": {"label": "线", "precision": 3, "order": 40},
+            "line1": {"label": "线1", "precision": 3, "order": 50},
+            "line2": {"label": "线2", "precision": 3, "order": 60},
+            "plane": {"label": "平面", "precision": 3, "order": 70},
+            "measurement_input_mode": {"label": "模式", "order": 80}
+        }
+    }
 }

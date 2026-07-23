@@ -13,6 +13,7 @@
 #include <QMap>
 #include <QPointer>
 #include <QPushButton>
+#include <QSet>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTabWidget>
@@ -21,6 +22,7 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
+#include <QUndoStack>
 #include <QVector>
 
 class QDialog;
@@ -247,6 +249,19 @@ protected:
 
     // 流程树控制器
     ProcessTreeController* m_processTreeController = nullptr;
+
+    // ===== 阶段 5: 参数编辑撤销栈 =====
+    // 仅服务手动 UI 编辑的撤销栈（不合并 Agent 自己的撤销栈）
+    QUndoStack* m_paramUndoStack = nullptr;
+    // 参数修改后标记为脏的模块集合
+    QSet<QString> m_dirtyModuleIds;
+
+    // 参数菜单动作
+    QAction* m_undoAction = nullptr;
+    QAction* m_redoAction = nullptr;
+
+    // 设置参数并推入撤销栈
+    void pushParamCommand(const QString& instanceId, const QString& key, const QVariant& value);
 };
 
 } // namespace DeepLux

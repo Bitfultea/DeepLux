@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QEvent>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QMap>
 #include <QMutex>
 #include <QObject>
@@ -34,6 +35,7 @@ struct PluginInfo {
     QString icon;        // 图标文件名
     bool loaded = false; // 是否已加载
     QString error;       // 错误信息
+    QJsonObject ui;      // 可选 UI 描述（parameters/results 元数据）
 };
 
 /**

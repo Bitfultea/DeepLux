@@ -3,11 +3,12 @@
 #include <ui/widgets/PropertyPanel.h>
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QGroupBox>
-#include <QLineEdit>
-#include <QComboBox>
 #include <QJsonArray>
+#include <QLineEdit>
+#include <QMetaObject>
 
 using namespace DeepLux;
 
@@ -66,6 +67,15 @@ protected:
     }
 };
 
+// Helper: trigger editingFinished on a widget that supports it
+static void triggerEditingFinished(QWidget* widget) {
+    if (auto* edit = qobject_cast<QLineEdit*>(widget)) {
+        QMetaObject::invokeMethod(edit, "editingFinished", Qt::DirectConnection);
+    } else if (auto* spin = qobject_cast<QDoubleSpinBox*>(widget)) {
+        QMetaObject::invokeMethod(spin, "editingFinished", Qt::DirectConnection);
+    }
+}
+
 class TestPropertyPanel : public QObject {
     Q_OBJECT
 
@@ -88,6 +98,7 @@ void TestPropertyPanel::testEditingTextParamUpdatesModuleAndEmitsSignal() {
     QVERIFY(edit != nullptr);
 
     edit->setText("changed");
+    triggerEditingFinished(edit);
 
     QCOMPARE(module.currentParams()["textParam"].toString(), QString("changed"));
     QVERIFY(spy.count() >= 1);
@@ -107,6 +118,7 @@ void TestPropertyPanel::testEditingNumberParamUpdatesModuleAndEmitsSignal() {
     QVERIFY(spin != nullptr);
 
     spin->setValue(42.25);
+    triggerEditingFinished(spin);
 
     QCOMPARE(module.currentParams()["numberParam"].toDouble(), 42.25);
     QVERIFY(spy.count() >= 1);
@@ -172,6 +184,7 @@ void TestPropertyPanel::testInstanceIdOverridesModuleIdInParamSignals() {
     QVERIFY(edit != nullptr);
 
     edit->setText("instance scoped");
+    triggerEditingFinished(edit);
 
     QVERIFY(spy.count() >= 1);
     const QList<QVariant> lastSignal = spy.takeLast();

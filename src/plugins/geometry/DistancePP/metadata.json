@@ -4,5 +4,13 @@
     "category": "geometry",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "计算两点之间的距离"
+    "description": "计算两点之间的距离",
+    "ui": {
+        "parameters": {},
+        "results": {
+            "distance": {"label": "距离", "unit": "px", "precision": 3, "order": 10},
+            "delta_x": {"label": "ΔX", "unit": "px", "precision": 3, "order": 20},
+            "delta_y": {"label": "ΔY", "unit": "px", "precision": 3, "order": 30}
+        }
+    }
 }

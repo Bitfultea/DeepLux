@@ -107,6 +107,7 @@
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QTreeWidgetItemIterator>
+#include <QUndoCommand>
 #include <QUrl>
 #include <QUuid>
 #include <QVBoxLayout>
@@ -116,6 +117,64 @@ namespace DeepLux {
 
 // 前向声明
 class FlowCanvas;
+
+/**
+ * @brief 参数编辑撤销命令
+ *
+ * 同时更新工程（Project::setModuleParam）和运行时模块（IModule::setParam）。
+ * undo/redo 均走此路径，确保两者保持一致。
+ */
+class SetModuleParamCommand : public QUndoCommand {
+public:
+    SetModuleParamCommand(IModule* module, Project* project,
+                          const QString& instanceId,
+                          const QString& key,
+                          const QVariant& newValue,
+                          const QVariant& oldValue,
+                          QUndoCommand* parent = nullptr)
+        : QUndoCommand(parent)
+        , m_module(module)
+        , m_project(project)
+        , m_instanceId(instanceId)
+        , m_key(key)
+        , m_newValue(newValue)
+        , m_oldValue(oldValue)
+    {
+        setText(QCoreApplication::translate("MainWindow", "修改参数 %1.%2")
+                    .arg(instanceId, key));
+    }
+
+    void undo() override { applyValue(m_oldValue); }
+    void redo() override { applyValue(m_newValue); }
+
+private:
+    void applyValue(const QVariant& value) {
+        if (m_module) {
+            m_module->setParam(m_key, value);
+        }
+        if (m_project) {
+            // QVariant -> QJsonValue
+            QJsonValue jsonVal;
+            if (value.type() == QVariant::Bool) {
+                jsonVal = value.toBool();
+            } else if (value.canConvert<double>()) {
+                jsonVal = value.toDouble();
+            } else if (value.canConvert<QString>()) {
+                jsonVal = value.toString();
+            } else {
+                jsonVal = QJsonValue::fromVariant(value);
+            }
+            m_project->setModuleParam(m_instanceId, m_key, jsonVal);
+        }
+    }
+
+    QPointer<IModule> m_module;
+    QPointer<Project> m_project;
+    QString m_instanceId;
+    QString m_key;
+    QVariant m_newValue;
+    QVariant m_oldValue;
+};
 
 namespace {
 QString cleanToolDisplayName(const QString& displayName) {
@@ -360,6 +419,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
 
     setupUi();
 
+    // 参数编辑撤销栈
+    m_paramUndoStack = new QUndoStack(this);
+    connect(m_paramUndoStack, &QUndoStack::canUndoChanged, this, [this](bool can) {
+        if (m_undoAction) m_undoAction->setEnabled(can);
+    });
+    connect(m_paramUndoStack, &QUndoStack::canRedoChanged, this, [this](bool can) {
+        if (m_redoAction) m_redoAction->setEnabled(can);
+    });
+
     // 问题 1: 在 applyTheme() 之前从配置加载主题，确保持久化生效
     {
         ConfigManager& cfg = ConfigManager::instance();
@@ -602,6 +670,17 @@ void MainWindow::setupMenuBar() {
 
     // 参数菜单
     QMenu* paramMenu = menuBar()->addMenu(tr("参数 (&P)"));
+    m_undoAction = paramMenu->addAction(tr("撤销"), this, [this]() {
+        if (m_paramUndoStack) m_paramUndoStack->undo();
+    });
+    m_undoAction->setShortcut(QKeySequence("Ctrl+Z"));
+    m_undoAction->setEnabled(false);
+    m_redoAction = paramMenu->addAction(tr("重做"), this, [this]() {
+        if (m_paramUndoStack) m_paramUndoStack->redo();
+    });
+    m_redoAction->setShortcut(QKeySequence("Ctrl+Y"));
+    m_redoAction->setEnabled(false);
+    paramMenu->addSeparator();
     paramMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Variable, 20, QColor("#7C3AED")), tr("全局变量"),
                          this, &MainWindow::onGlobalVar);
     paramMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::User, 20, QColor("#2563EB")), tr("用户登录"),
@@ -1165,9 +1244,13 @@ void MainWindow::setupMainLayout() {
     // 连接检查器信号
     connect(m_inspectorPanel, &ModuleInspectorPanel::paramsChanged,
             this, [this](const QString& instanceId, const QString& key, const QVariant& value) {
-        Q_UNUSED(instanceId)
-        Q_UNUSED(key)
-        Q_UNUSED(value)
+        // 推入参数撤销栈（同时更新运行时模块和工程）
+        pushParamCommand(instanceId, key, value);
+        // 标记模块为脏
+        m_dirtyModuleIds.insert(instanceId);
+        if (m_inspectorPanel) {
+            m_inspectorPanel->setDirty(true);
+        }
         m_modulesNeedSync = true;
     });
     connect(m_inspectorPanel, &ModuleInspectorPanel::rerunRequested,
@@ -1489,6 +1572,12 @@ void MainWindow::onProjectOpened(Project* project) {
     if (!project)
         return;
 
+    // 清空参数撤销栈和脏标记
+    if (m_paramUndoStack) {
+        m_paramUndoStack->clear();
+    }
+    m_dirtyModuleIds.clear();
+
     // 清空现有流程树
     m_processTreeController->clear();
     if (m_flowCanvas) {
@@ -1532,6 +1621,12 @@ void MainWindow::onProjectOpened(Project* project) {
 }
 
 void MainWindow::onProjectClosed() {
+    // 清空参数撤销栈和脏标记
+    if (m_paramUndoStack) {
+        m_paramUndoStack->clear();
+    }
+    m_dirtyModuleIds.clear();
+
     m_processTreeController->clear();
     if (m_flowCanvas) {
         m_flowCanvas->loadFromProject(nullptr);
@@ -3218,6 +3313,32 @@ void MainWindow::showProcessModuleOutput(QTreeWidgetItem* item) {
 
     // 统一走 selectModule 入口
     selectModule(instanceId, false);
+}
+
+void MainWindow::pushParamCommand(const QString& instanceId, const QString& key, const QVariant& value) {
+    if (!m_paramUndoStack) return;
+
+    Project* project = ProjectManager::instance().currentProject();
+    IModule* module = m_flowModules.value(instanceId, nullptr);
+
+    // 获取旧值
+    QVariant oldValue;
+    if (module) {
+        QJsonObject params = module->currentParams();
+        QJsonValue oldVal = params.value(key);
+        if (oldVal.isBool()) {
+            oldValue = oldVal.toBool();
+        } else if (oldVal.isDouble()) {
+            oldValue = oldVal.toDouble();
+        } else if (oldVal.isString()) {
+            oldValue = oldVal.toString();
+        } else {
+            oldValue = oldVal.toVariant();
+        }
+    }
+
+    auto* cmd = new SetModuleParamCommand(module, project, instanceId, key, value, oldValue);
+    m_paramUndoStack->push(cmd);
 }
 
 void MainWindow::selectModule(const QString& instanceId, bool revealInspector) {

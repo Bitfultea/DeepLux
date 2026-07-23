@@ -150,6 +150,7 @@ bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info) {
     info.icon = json["icon"].toString();
     info.path = path;
     info.loaded = false;
+    info.ui = json["ui"].toObject();
 
     return !info.name.isEmpty();
 }

@@ -3,6 +3,11 @@
 
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonValue>
+#include <QList>
+#include <QPair>
 #include <QScrollArea>
 #include <QVBoxLayout>
 
@@ -202,7 +207,8 @@ void ModuleInspectorPanel::setModule(IModule* module, const QString& instanceId,
     m_elapsedLabel->clear();
     m_iconLabel->setPixmap(module->icon().pixmap(20, 20));
 
-    // 更新参数页
+    // 更新参数页 — 先设置 PluginInfo（含 ui.parameters），再设置模块
+    m_propertyPanel->setPluginInfo(info);
     m_propertyPanel->setModule(module, instanceId);
 
     // 清空结果
@@ -226,6 +232,11 @@ void ModuleInspectorPanel::setDirty(bool dirty)
     m_dirty = dirty;
     if (dirty) {
         m_statusLabel->setText(tr("已修改"));
+        // 结果页保留旧结果但显示提示
+        int resultRow = m_resultsTable->rowCount();
+        m_resultsTable->insertRow(resultRow);
+        m_resultsTable->setItem(resultRow, 0, new QTableWidgetItem(tr("提示")));
+        m_resultsTable->setItem(resultRow, 1, new QTableWidgetItem(tr("参数已修改，待重新运行")));
     }
 }
 
@@ -273,16 +284,64 @@ void ModuleInspectorPanel::refreshResults(const ImageData& output)
     }
 
     const QMap<QString, QVariant> all = output.allData();
-    int row = 0;
+    const QJsonObject uiResults = m_currentInfo.ui.value("results").toObject();
+
+    // 根据 ui.results 中的 order 字段排序
+    QList<QPair<int, QString>> ordered;
+    QStringList unordered;
     for (auto it = all.constBegin(); it != all.constEnd(); ++it) {
+        const QString& key = it.key();
         // 跳过图像数据本身（不重复显示）
-        const QString key = it.key();
         if (key == "image" || key == "qimage" || key == "pixmap") {
             continue;
         }
+        QJsonObject meta = uiResults.value(key).toObject();
+        if (meta.contains("order")) {
+            ordered.append({meta.value("order").toInt(), key});
+        } else {
+            unordered.append(key);
+        }
+    }
+    std::sort(ordered.begin(), ordered.end(),
+              [](const QPair<int, QString>& a, const QPair<int, QString>& b) {
+                  return a.first < b.first;
+              });
+
+    QStringList sortedKeys;
+    for (const auto& p : ordered) {
+        sortedKeys.append(p.second);
+    }
+    sortedKeys.append(unordered);
+
+    // 如果没有 ui.results 描述，通过 allData() 显示原始键值
+    int row = 0;
+    for (const QString& key : sortedKeys) {
+        QVariant value = all.value(key);
+
+        // 获取元数据描述
+        QJsonObject meta = uiResults.value(key).toObject();
+        QString labelText = meta.value("label").toString(key);
+        QString unit = meta.value("unit").toString();
+        if (!unit.isEmpty()) {
+            labelText = QString("%1 (%2)").arg(labelText, unit);
+        }
+
+        // 格式化值
+        int precision = meta.value("precision").toInt(-1);
+        QString valueText;
+        if (value.canConvert<double>() && precision >= 0) {
+            valueText = QString::number(value.toDouble(), 'f', precision);
+        } else if (value.canConvert<QVariantList>()) {
+            // 复杂值（大数组）只显示摘要
+            QVariantList list = value.toList();
+            valueText = tr("[%1 项]").arg(list.size());
+        } else {
+            valueText = value.toString();
+        }
+
         m_resultsTable->insertRow(row);
-        m_resultsTable->setItem(row, 0, new QTableWidgetItem(key));
-        m_resultsTable->setItem(row, 1, new QTableWidgetItem(it.value().toString()));
+        m_resultsTable->setItem(row, 0, new QTableWidgetItem(labelText));
+        m_resultsTable->setItem(row, 1, new QTableWidgetItem(valueText));
         row++;
     }
 }
