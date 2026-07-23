@@ -116,10 +116,16 @@ void AgentSettingsDialog::setupUi() {
         testBtn->setEnabled(false);
         testBtn->setText(tr("测试中..."));
 
-        // 问题 6: 补全 endpoint URL + 超时
+        // 问题 3: 与运行时 OpenAILLMClient 一致的 endpoint 补全逻辑
         QString normalizedEndpoint = endpoint;
         if (!normalizedEndpoint.startsWith("http://") && !normalizedEndpoint.startsWith("https://"))
             normalizedEndpoint = "https://" + normalizedEndpoint;
+        QUrl parsed(normalizedEndpoint);
+        QString path = parsed.path();
+        if (path.isEmpty() || path == "/") {
+            parsed.setPath("/v1/chat/completions");
+            normalizedEndpoint = parsed.toString();
+        }
 
         QNetworkAccessManager* nam = new QNetworkAccessManager(this);
         QUrl url(normalizedEndpoint);

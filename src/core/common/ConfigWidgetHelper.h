@@ -162,12 +162,6 @@ public:
                 QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
                     background-color: #3d4758;
                 }
-                QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-                    width: 8px; height: 8px;
-                }
-                QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-                    width: 8px; height: 8px;
-                }
                 QComboBox {
                     padding-right: 20px;
                 }
@@ -205,12 +199,6 @@ public:
                 QSpinBox::up-button:hover, QSpinBox::down-button:hover,
                 QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
                     background-color: #d1d5db;
-                }
-                QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-                    width: 8px; height: 8px;
-                }
-                QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-                    width: 8px; height: 8px;
                 }
                 QComboBox {
                     padding-right: 20px;
@@ -298,12 +286,6 @@ public:
             QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
                 background-color: #3d4758;
             }
-            QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-                width: 8px; height: 8px;
-            }
-            QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-                width: 8px; height: 8px;
-            }
             QComboBox {
                 padding-right: 20px;
             }
@@ -339,12 +321,6 @@ public:
             QSpinBox::up-button:hover, QSpinBox::down-button:hover,
             QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
                 background-color: #d1d5db;
-            }
-            QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-                width: 8px; height: 8px;
-            }
-            QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-                width: 8px; height: 8px;
             }
             QComboBox {
                 padding-right: 20px;

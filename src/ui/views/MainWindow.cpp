@@ -1391,6 +1391,11 @@ void MainWindow::updateToolBoxPluginItem(const QString& pluginName) {
         {"logic", QStringLiteral("07 - 逻辑工具")},
         {"system", QStringLiteral("08 - 系统工具")},
         {"variable", QStringLiteral("09 - 变量工具")},
+        {"communication", QStringLiteral("14 - 通信")},
+        {"file_comm", QStringLiteral("10 - 文件通讯")},
+        {"hymson3d", QStringLiteral("11 - 3D 工具")},
+        {"camera", QStringLiteral("00 - 常用工具")},
+        {"string", QStringLiteral("13 - 字符串处理")},
     };
     const QString category = info.category.toLower();
     for (auto it = categoryKeywords.constBegin(); it != categoryKeywords.constEnd(); ++it) {
@@ -3533,10 +3538,18 @@ void MainWindow::onCommSettings() {
 }
 
 void MainWindow::onHardwareConfig() {
-    // 使用已实现的 SystemParamView
     SystemParamView dialog(this);
     dialog.setWindowTitle(tr("硬件配置"));
+    const bool wasDark = m_isDarkTheme;
     dialog.exec();
+    // 问题 1: 保存后立即读取并刷新主题
+    ConfigManager& cfg = ConfigManager::instance();
+    if (cfg.isInitialized()) {
+        m_isDarkTheme = cfg.groupBool("appearance", "darkTheme", false);
+        if (m_isDarkTheme != wasDark) {
+            applyTheme();
+        }
+    }
     Logger::instance().info(tr("硬件配置"), "System");
 }
 
