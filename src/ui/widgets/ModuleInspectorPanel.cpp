@@ -274,6 +274,33 @@ void ModuleInspectorPanel::showParamsTab()
     }
 }
 
+void ModuleInspectorPanel::setLayoutMode(LayoutMode mode)
+{
+    if (m_layoutMode == mode) {
+        return;
+    }
+    m_layoutMode = mode;
+
+    switch (mode) {
+    case LayoutMode::Docked:
+        // 完整显示
+        setMaximumWidth(360);
+        updateCollapsedState();
+        break;
+    case LayoutMode::Collapsed:
+        // 折叠为 32px 侧栏，只显示图标栏
+        setMaximumWidth(32);
+        m_tabWidget->setVisible(false);
+        m_bottomBar->setVisible(false);
+        break;
+    case LayoutMode::Floating:
+        // 浮动模式：恢复为独立窗口，不参与主布局
+        setMaximumWidth(360);
+        updateCollapsedState();
+        break;
+    }
+}
+
 void ModuleInspectorPanel::applyTheme(bool isDark)
 {
     m_isDarkTheme = isDark;

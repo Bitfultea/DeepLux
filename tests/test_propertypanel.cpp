@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 #include <core/base/ModuleBase.h>
+#include <core/manager/PluginManager.h>
 #include <ui/widgets/PropertyPanel.h>
 
 #include <QCheckBox>
@@ -7,8 +8,10 @@
 #include <QDoubleSpinBox>
 #include <QGroupBox>
 #include <QJsonArray>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMetaObject>
+#include <QSignalSpy>
 
 using namespace DeepLux;
 
@@ -67,6 +70,53 @@ protected:
     }
 };
 
+class PropertyPanelMetadataModule : public ModuleBase {
+    Q_OBJECT
+
+public:
+    PropertyPanelMetadataModule() {
+        m_moduleId = "metadata-test";
+        m_name = "Metadata Test";
+        m_category = "test";
+        m_params = QJsonObject{
+            {"length", 5.0},
+            {"threshold", 0.5},
+        };
+        m_defaultParams = m_params;
+    }
+
+    void setMetadata(const PluginInfo& info) {
+        m_info = info;
+    }
+
+    PluginInfo pluginInfo() const {
+        return m_info;
+    }
+
+    bool validateParams(const QJsonObject& params, QString& error) const override {
+        // length must be positive
+        if (params.value("length").toDouble() <= 0) {
+            error = QStringLiteral("length must be positive");
+            return false;
+        }
+        return ModuleBase::validateParams(params, error);
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        Q_UNUSED(input)
+        Q_UNUSED(output)
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    PluginInfo m_info;
+};
+
 // Helper: trigger editingFinished on a widget that supports it
 static void triggerEditingFinished(QWidget* widget) {
     if (auto* edit = qobject_cast<QLineEdit*>(widget)) {
@@ -86,6 +136,10 @@ private slots:
     void testStringParamWithOptionsUsesChoiceWidget();
     void testInstanceIdOverridesModuleIdInParamSignals();
     void testSettingModuleTwiceReplacesPreviousParamGroups();
+    void testMetadataLabelDisplayed();
+    void testRangeAndUnitAppliedToSpinBox();
+    void testValidationFailureKeepsOldValue();
+    void testEditingFinishedCommitsOnce();
 };
 
 void TestPropertyPanel::testEditingTextParamUpdatesModuleAndEmitsSignal() {
@@ -205,6 +259,122 @@ void TestPropertyPanel::testSettingModuleTwiceReplacesPreviousParamGroups() {
     panel.clear();
     QCOMPARE(panel.findChildren<QGroupBox*>().size(), 0);
     QVERIFY(panel.currentModuleId().isEmpty());
+}
+
+void TestPropertyPanel::testMetadataLabelDisplayed() {
+    PropertyPanel panel;
+    PropertyPanelMetadataModule module;
+
+    // Build PluginInfo with ui.parameters metadata
+    PluginInfo info;
+    QJsonObject paramsMeta;
+    QJsonObject lengthMeta;
+    lengthMeta["label"] = QStringLiteral("长度");
+    lengthMeta["unit"] = QStringLiteral("mm");
+    lengthMeta["order"] = 1;
+    QJsonObject thresholdMeta;
+    thresholdMeta["label"] = QStringLiteral("阈值");
+    thresholdMeta["order"] = 2;
+    paramsMeta["length"] = lengthMeta;
+    paramsMeta["threshold"] = thresholdMeta;
+    QJsonObject uiObj;
+    uiObj["parameters"] = paramsMeta;
+    info.ui = uiObj;
+
+    panel.setPluginInfo(info);
+    panel.setModule(&module);
+
+    // Find labels that contain "长度" and "阈值"
+    QList<QLabel*> labels = panel.findChildren<QLabel*>();
+    bool foundLength = false;
+    bool foundThreshold = false;
+    for (QLabel* label : labels) {
+        if (label->text().contains(QStringLiteral("长度"))) {
+            foundLength = true;
+        }
+        if (label->text().contains(QStringLiteral("阈值"))) {
+            foundThreshold = true;
+        }
+    }
+    QVERIFY2(foundLength, "Metadata label '长度' should be displayed");
+    QVERIFY2(foundThreshold, "Metadata label '阈值' should be displayed");
+}
+
+void TestPropertyPanel::testRangeAndUnitAppliedToSpinBox() {
+    PropertyPanel panel;
+    PropertyPanelMetadataModule module;
+
+    PluginInfo info;
+    QJsonObject paramsMeta;
+    QJsonObject lengthMeta;
+    lengthMeta["label"] = QStringLiteral("长度");
+    lengthMeta["unit"] = QStringLiteral("mm");
+    lengthMeta["min"] = 0.0;
+    lengthMeta["max"] = 100.0;
+    lengthMeta["step"] = 1.0;
+    paramsMeta["length"] = lengthMeta;
+    QJsonObject uiObj;
+    uiObj["parameters"] = paramsMeta;
+    info.ui = uiObj;
+
+    panel.setPluginInfo(info);
+    panel.setModule(&module);
+
+    QDoubleSpinBox* spin = panel.findChild<QDoubleSpinBox*>();
+    QVERIFY(spin != nullptr);
+    QCOMPARE(spin->minimum(), 0.0);
+    QCOMPARE(spin->maximum(), 100.0);
+    QCOMPARE(spin->singleStep(), 1.0);
+
+    // Verify the unit is shown in the label
+    QList<QLabel*> labels = panel.findChildren<QLabel*>();
+    bool foundUnit = false;
+    for (QLabel* label : labels) {
+        if (label->text().contains(QStringLiteral("mm"))) {
+            foundUnit = true;
+            break;
+        }
+    }
+    QVERIFY2(foundUnit, "Unit 'mm' should be displayed in the label");
+}
+
+void TestPropertyPanel::testValidationFailureKeepsOldValue() {
+    PropertyPanel panel;
+    PropertyPanelMetadataModule module;
+    QSignalSpy spy(&panel, &PropertyPanel::paramsChanged);
+
+    panel.setModule(&module);
+    QDoubleSpinBox* spin = panel.findChild<QDoubleSpinBox*>();
+    QVERIFY(spin != nullptr);
+
+    // Current value should be 5.0 (length)
+    QCOMPARE(spin->value(), 5.0);
+
+    // Set to -1 (invalid: must be positive)
+    spin->setValue(-1.0);
+    triggerEditingFinished(spin);
+
+    // Validation should fail, old value restored
+    QCOMPARE(spin->value(), 5.0);
+    // No signal should have been emitted since validation failed
+    QCOMPARE(spy.count(), 0);
+}
+
+void TestPropertyPanel::testEditingFinishedCommitsOnce() {
+    PropertyPanel panel;
+    PropertyPanelTestModule module;
+    QSignalSpy spy(&panel, &PropertyPanel::paramsChanged);
+
+    panel.setModule(&module);
+    QLineEdit* edit = panel.findChild<QLineEdit*>();
+    QVERIFY(edit != nullptr);
+
+    edit->setText(QStringLiteral("new_value"));
+    triggerEditingFinished(edit);
+
+    // Should emit exactly one signal
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(module.currentParams()["textParam"].toString(), QString("new_value"));
 }
 
 QTEST_MAIN(TestPropertyPanel)

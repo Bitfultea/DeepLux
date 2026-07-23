@@ -217,13 +217,16 @@ FlowNodeItem* FlowCanvas::nodeItem(const QString& nodeId) const {
 }
 
 void FlowCanvas::selectNode(const QString& nodeId) {
+    // 程序化选择：只更新场景选中状态，不发出 nodeSelected 信号。
+    // nodeSelected 仅由用户鼠标点击 (FlowNodeItem::mousePressEvent) 触发，
+    // 避免在 MainWindow::selectModule → selectNode → nodeSelected → selectModule
+    // 之间形成递归选择循环。
     FlowNodeItem* item = m_nodes.value(nodeId, nullptr);
     if (!item) {
         return;
     }
     m_scene->clearSelection();
     item->setSelected(true);
-    emit nodeSelected(nodeId);
 }
 
 QList<FlowNodeItem*> FlowCanvas::getOrderedModules() const {

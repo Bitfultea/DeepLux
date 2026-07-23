@@ -24,6 +24,14 @@ class ModuleInspectorPanel : public QWidget {
     Q_OBJECT
 
 public:
+    /// 检查器布局模式
+    enum class LayoutMode {
+        Docked,   ///< 宽屏：停靠在 RightTopSplitter
+        Collapsed, ///< 中等宽度：折叠为 32px 侧栏
+        Floating,  ///< 小窗口：非模态浮动工具窗
+    };
+    Q_ENUM(LayoutMode)
+
     explicit ModuleInspectorPanel(QWidget* parent = nullptr);
     ~ModuleInspectorPanel() override;
 
@@ -77,6 +85,22 @@ public:
      * 切换到参数页签。
      */
     void showParamsTab();
+
+    /**
+     * @return 当前布局模式
+     */
+    LayoutMode layoutMode() const { return m_layoutMode; }
+
+    /**
+     * 设置布局模式（由 MainWindow 自适应逻辑调用）。
+     */
+    void setLayoutMode(LayoutMode mode);
+
+    /**
+     * 标记用户已手动指定模式，自适应切换不再自动发生。
+     */
+    void setUserOverrideMode(bool override) { m_userOverrideMode = override; }
+    bool userOverrideMode() const { return m_userOverrideMode; }
 
     /**
      * 应用主题。
@@ -148,6 +172,8 @@ private:
     bool m_collapsed = false;
     bool m_dirty = false;
     bool m_isDarkTheme = false;
+    LayoutMode m_layoutMode = LayoutMode::Docked;
+    bool m_userOverrideMode = false;
 };
 
 } // namespace DeepLux

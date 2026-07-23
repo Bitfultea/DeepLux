@@ -54,6 +54,7 @@ set(TEST_SOURCES
     test_expressionengine.cpp
     test_samannotatordialog.cpp
     test_sambackendclient.cpp
+    test_moduleinspectorpanel.cpp
 )
 
 foreach(TEST_FILE ${TEST_SOURCES})

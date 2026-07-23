@@ -121,6 +121,8 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
+    void closeEvent(QCloseEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
     // 左侧面板
     QDockWidget* m_toolBoxDock = nullptr;
@@ -286,6 +288,12 @@ protected:
 
     // 设置参数并推入撤销栈
     void pushParamCommand(const QString& instanceId, const QString& key, const QVariant& value);
+
+    // ===== 阶段 9: 自适应布局与状态保存 =====
+    void saveSettings();
+    void loadSettings();
+    void adaptInspectorLayout();
+    bool m_inspectorClosed = false;
 };
 
 } // namespace DeepLux

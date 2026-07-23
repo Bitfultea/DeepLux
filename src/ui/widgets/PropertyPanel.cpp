@@ -108,7 +108,8 @@ void PropertyPanel::clear()
 {
     m_currentModule = nullptr;
     m_currentModuleId.clear();
-    m_uiParameters = QJsonObject();
+    // 不清除 m_uiParameters — 由 setPluginInfo 管理，
+    // 这样 setModule 调用 clear() 后仍能使用 PluginInfo 中的元数据。
 
     while (QLayoutItem* item = m_contentLayout->takeAt(0)) {
         QWidget* widget = item->widget();

@@ -1,5 +1,7 @@
+#include <QGraphicsSceneEvent>
 #include <QImage>
 #include <QPainter>
+#include <QSignalSpy>
 #include <QtTest/QtTest>
 #include <core/manager/ProjectManager.h>
 #include <core/model/Project.h>
@@ -19,6 +21,8 @@ private slots:
     void testNodeBoundsIncludePorts();
     void testImplicitSequentialRelationIsPainted();
     void testLoadFromProjectRebuildsStableNodesAndConnections();
+    void testNodeClickEmitsNodeSelected();
+    void testProgrammaticSelectNodeDoesNotEmitSignal();
 };
 
 void TestFlowCanvas::init() {
@@ -144,6 +148,45 @@ void TestFlowCanvas::testLoadFromProjectRebuildsStableNodesAndConnections() {
     QVERIFY(canvas.nodeIds().contains("inst_b"));
     QCOMPARE(canvas.nodeItem("inst_a")->pos(), QPointF(10, 20));
     QCOMPARE(canvas.m_connections.size(), 1);
+}
+
+void TestFlowCanvas::testNodeClickEmitsNodeSelected() {
+    FlowCanvas canvas;
+    canvas.resize(400, 200);
+    const QString nodeId = canvas.addNode("module.a", "Module A", QPointF(50, 50));
+
+    QSignalSpy spy(&canvas, &FlowCanvas::nodeSelected);
+    QVERIFY(spy.isValid());
+
+    FlowNodeItem* node = canvas.nodeItem(nodeId);
+    QVERIFY(node != nullptr);
+
+    // Map the node center to viewport coordinates and click
+    const QPointF nodeCenter = node->pos() + QPointF(node->boundingRect().width() / 2,
+                                                     node->boundingRect().height() / 2);
+    const QPoint viewportPos = canvas.mapFromScene(nodeCenter);
+    QTest::mouseClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, viewportPos);
+    QCoreApplication::processEvents();
+
+    QVERIFY2(spy.count() >= 1, "Clicking a node should emit nodeSelected at least once");
+    QCOMPARE(spy.takeFirst().at(0).toString(), nodeId);
+}
+
+void TestFlowCanvas::testProgrammaticSelectNodeDoesNotEmitSignal() {
+    FlowCanvas canvas;
+    const QString nodeId = canvas.addNode("module.a", "Module A", QPointF(50, 50));
+
+    QSignalSpy spy(&canvas, &FlowCanvas::nodeSelected);
+    QVERIFY(spy.isValid());
+
+    canvas.selectNode(nodeId);
+
+    QCOMPARE(spy.count(), 0);
+
+    // Verify the node is actually selected visually
+    FlowNodeItem* node = canvas.nodeItem(nodeId);
+    QVERIFY(node != nullptr);
+    QVERIFY(node->isSelected());
 }
 
 QTEST_MAIN(TestFlowCanvas)

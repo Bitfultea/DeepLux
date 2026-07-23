@@ -86,6 +86,7 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QResizeEvent>
 #include <QScreen>
 #include <QScrollArea>
 #include <QSettings>
@@ -537,6 +538,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
     }
 
     // Connect Agent action log to UI (will be set after m_agentActionLogWidget is created)
+
+    // 阶段 9: 加载持久化设置
+    loadSettings();
 }
 
 MainWindow::~MainWindow() {
@@ -1188,6 +1192,11 @@ void MainWindow::setupMainLayout() {
         if (m_flowCanvas && m_flowCanvas->nodeItem(instanceId)) {
             m_flowCanvas->removeNode(instanceId);
         }
+        // 如果删除的是当前选中的模块，清空检查器
+        if (m_selectedModuleId == instanceId) {
+            selectModule(QString(), false);
+        }
+        m_flowModules.remove(instanceId);
     });
 
     flowLayout->addWidget(m_processTree);
@@ -1288,6 +1297,10 @@ void MainWindow::setupMainLayout() {
     });
     connect(m_inspectorPanel, &ModuleInspectorPanel::closeRequested,
             this, [this]() {
+        m_inspectorClosed = true;
+        if (m_inspectorPanel) {
+            m_inspectorPanel->setVisible(false);
+        }
         selectModule(QString(), false);
     });
 
@@ -3513,6 +3526,20 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector) {
         return;
     }
 
+    // 如果检查器已关闭，不自动展开（除非显式 revealInspector 且用户重新打开）
+    if (m_inspectorClosed && !revealInspector) {
+        m_selectedModuleId = instanceId;
+        if (m_flowCanvas) {
+            m_flowCanvas->scene()->clearSelection();
+            FlowNodeItem* nodeItem = m_flowCanvas->nodeItem(instanceId);
+            if (nodeItem) {
+                QSignalBlocker blocker(m_flowCanvas);
+                nodeItem->setSelected(true);
+            }
+        }
+        return;
+    }
+
     m_selectedModuleId = instanceId;
 
     if (instanceId.isEmpty()) {
@@ -3578,6 +3605,172 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector) {
     if (output.isValid()) {
         displayImage(output);
     }
+}
+
+// ===== 阶段 9: 自适应布局与状态保存 =====
+
+void MainWindow::saveSettings() {
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "DeepLux", "DeepLuxVision");
+
+    // 主窗口尺寸和位置
+    settings.beginGroup("MainWindow");
+    settings.setValue("geometry", saveGeometry());
+    settings.setValue("state", saveState());
+    settings.endGroup();
+
+    // Splitter 状态
+    settings.beginGroup("Splitters");
+    if (m_mainSplitter) {
+        settings.setValue("mainSplitter", m_mainSplitter->saveState());
+    }
+    if (m_rightSplitter) {
+        settings.setValue("rightSplitter", m_rightSplitter->saveState());
+    }
+    if (m_rightTopSplitter) {
+        settings.setValue("rightTopSplitter", m_rightTopSplitter->saveState());
+    }
+    settings.endGroup();
+
+    // 检查器状态
+    settings.beginGroup("Inspector");
+    if (m_inspectorPanel) {
+        settings.setValue("mode", static_cast<int>(m_inspectorPanel->layoutMode()));
+        settings.setValue("pinned", m_inspectorPanel->isPinned());
+        settings.setValue("userOverride", m_inspectorPanel->userOverrideMode());
+    }
+    settings.setValue("closed", m_inspectorClosed);
+    // 检查器宽度
+    if (m_rightTopSplitter) {
+        const auto sizes = m_rightTopSplitter->sizes();
+        if (sizes.size() >= 3) {
+            settings.setValue("width", sizes.at(2));
+        }
+    }
+    settings.endGroup();
+
+    // 底部面板高度
+    settings.beginGroup("BottomPanel");
+    if (m_rightSplitter) {
+        const auto sizes = m_rightSplitter->sizes();
+        if (sizes.size() >= 2) {
+            settings.setValue("height", sizes.at(1));
+        }
+    }
+    settings.endGroup();
+}
+
+void MainWindow::loadSettings() {
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "DeepLux", "DeepLuxVision");
+
+    // 主窗口尺寸和位置
+    settings.beginGroup("MainWindow");
+    const QByteArray geometry = settings.value("geometry").toByteArray();
+    if (!geometry.isEmpty()) {
+        restoreGeometry(geometry);
+    }
+    const QByteArray state = settings.value("state").toByteArray();
+    if (!state.isEmpty()) {
+        restoreState(state);
+    }
+    settings.endGroup();
+
+    // Splitter 状态
+    settings.beginGroup("Splitters");
+    if (m_mainSplitter) {
+        const QByteArray data = settings.value("mainSplitter").toByteArray();
+        if (!data.isEmpty()) {
+            m_mainSplitter->restoreState(data);
+        }
+    }
+    if (m_rightSplitter) {
+        const QByteArray data = settings.value("rightSplitter").toByteArray();
+        if (!data.isEmpty()) {
+            m_rightSplitter->restoreState(data);
+        }
+    }
+    if (m_rightTopSplitter) {
+        const QByteArray data = settings.value("rightTopSplitter").toByteArray();
+        if (!data.isEmpty()) {
+            m_rightTopSplitter->restoreState(data);
+        }
+    }
+    settings.endGroup();
+
+    // 检查器状态
+    settings.beginGroup("Inspector");
+    m_inspectorClosed = settings.value("closed", false).toBool();
+    if (m_inspectorPanel) {
+        const int modeInt = settings.value("mode", static_cast<int>(ModuleInspectorPanel::LayoutMode::Docked)).toInt();
+        m_inspectorPanel->setLayoutMode(static_cast<ModuleInspectorPanel::LayoutMode>(modeInt));
+        m_inspectorPanel->setPinned(settings.value("pinned", false).toBool());
+        m_inspectorPanel->setUserOverrideMode(settings.value("userOverride", false).toBool());
+    }
+    settings.endGroup();
+
+    // 如果检查器上次被关闭，则隐藏
+    if (m_inspectorClosed && m_inspectorPanel) {
+        m_inspectorPanel->setVisible(false);
+    }
+
+    // 自适应布局
+    adaptInspectorLayout();
+}
+
+void MainWindow::adaptInspectorLayout() {
+    if (!m_inspectorPanel) {
+        return;
+    }
+    // 如果检查器已关闭或用户手动指定模式，不自动切换
+    if (m_inspectorClosed || m_inspectorPanel->userOverrideMode()) {
+        return;
+    }
+
+    const int windowWidth = width();
+    const int minMainView = 620; // 主视图最小宽度
+
+    // 计算左侧工具面板 + 流程面板的宽度
+    int leftWidth = 0;
+    if (m_mainSplitter && m_mainSplitter->count() >= 1) {
+        leftWidth = m_mainSplitter->sizes().value(0, 210);
+    }
+
+    // RightTopSplitter 中流程面板宽度
+    int flowPanelWidth = 0;
+    if (m_rightTopSplitter && m_rightTopSplitter->count() >= 3) {
+        flowPanelWidth = m_rightTopSplitter->sizes().value(0, 300);
+    }
+
+    // 可用宽度 = 窗口宽度 - 左侧 - 流程面板 - splitter handle 宽度
+    const int handleW = 7 * 3; // 三个 splitter handle
+    const int available = windowWidth - leftWidth - flowPanelWidth - handleW;
+
+    ModuleInspectorPanel::LayoutMode newMode = m_inspectorPanel->layoutMode();
+
+    if (available < minMainView + 32) {
+        // 小窗口：浮动模式
+        newMode = ModuleInspectorPanel::LayoutMode::Floating;
+    } else if (available < minMainView + m_inspectorPanel->minimumWidth()) {
+        // 中等宽度：折叠为 32px 侧栏
+        newMode = ModuleInspectorPanel::LayoutMode::Collapsed;
+    } else {
+        // 宽屏：正常停靠
+        newMode = ModuleInspectorPanel::LayoutMode::Docked;
+    }
+
+    if (newMode != m_inspectorPanel->layoutMode()) {
+        m_inspectorPanel->setLayoutMode(newMode);
+    }
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+    saveSettings();
+    QMainWindow::closeEvent(event);
+}
+
+void MainWindow::resizeEvent(QResizeEvent* event) {
+    QMainWindow::resizeEvent(event);
+    // 窗口宽度变化时判断是否需要切换检查器模式
+    adaptInspectorLayout();
 }
 
 void MainWindow::displayImage(const ImageData& image, const QString& label) {
