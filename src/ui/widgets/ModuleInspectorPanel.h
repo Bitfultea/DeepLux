@@ -74,6 +74,11 @@ public:
     bool isCollapsed() const { return m_collapsed; }
 
     /**
+     * 切换到参数页签。
+     */
+    void showParamsTab();
+
+    /**
      * 应用主题。
      */
     void applyTheme(bool isDark);

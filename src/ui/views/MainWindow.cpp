@@ -85,6 +85,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScreen>
 #include <QScrollArea>
 #include <QSettings>
@@ -454,12 +455,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
             if (canFollow && m_processTreeController) {
                 m_processTreeController->setCurrentItem(item);
             }
-            item->setBackground(0, QBrush(QColor("#0078D7")));
-            item->setForeground(0, QBrush(Qt::white));
-            item->setBackground(1, QBrush(QColor("#0078D7")));
-            item->setForeground(1, QBrush(Qt::white));
-            item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
-            item->setText(1, tr("执行中..."));
+            // 使用 data role 替代 setBackground，蓝色点=运行中
+            setProcessItemStatus(item, QStringLiteral("running"), tr("执行中..."));
         }
     });
 
@@ -476,16 +473,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
                         // 删除普通运行过程中的 setCurrentItem 调用
                         m_lastExecutedItem = nullptr;
                     } else {
-                        const QColor bg("#FEE2E2");
-                        const QColor fg("#991B1B");
-                        item->setBackground(0, QBrush(bg));
-                        item->setForeground(0, QBrush(fg));
-                        item->setBackground(1, QBrush(bg));
-                        item->setForeground(1, QBrush(fg));
+                        // 红色=失败
+                        setProcessItemStatus(item, QStringLiteral("failure"), tr("%1 ms").arg(elapsedMs));
                         m_lastExecutedItem = item;
                     }
                     m_moduleExecutionTimes[moduleName] = elapsedMs;
-                    item->setText(1, tr("%1 ms").arg(elapsedMs));
+                    if (success) {
+                        // 绿色=成功
+                        setProcessItemStatus(item, QStringLiteral("success"), tr("%1 ms").arg(elapsedMs));
+                    }
                 }
                 // Display this module's output if available.
                 const ImageData out = RunEngine::instance().moduleOutput(moduleName);
@@ -700,6 +696,12 @@ void MainWindow::setupMenuBar() {
     connect(m_viewProcessPanelAction, &QAction::toggled, this, &MainWindow::onToggleProcessPanel);
     viewMenu->addAction(m_viewProcessPanelAction);
 
+    m_viewBottomPanelAction = new QAction(tr("底部面板"), this);
+    m_viewBottomPanelAction->setCheckable(true);
+    m_viewBottomPanelAction->setChecked(true);
+    connect(m_viewBottomPanelAction, &QAction::toggled, this, &MainWindow::onToggleBottomPanel);
+    viewMenu->addAction(m_viewBottomPanelAction);
+
     viewMenu->addSeparator();
     viewMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::QuickMode, 20, QColor("#D97706")), tr("快捷模式"),
                         this, &MainWindow::onQuickMode);
@@ -784,6 +786,8 @@ void MainWindow::setupToolBar() {
     // 运行控制
     mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#16A34A")), tr("单次运行"),
                            this, &MainWindow::onRunOnce);
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Step, 24, QColor("#0F766E")), tr("单步"),
+                           this, &MainWindow::onStepRun);
     mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Cycle, 24, QColor("#2563EB")), tr("循环运行"),
                            this, &MainWindow::onRunCycle);
     mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Stop, 24, QColor("#DC2626")), tr("停止"), this,
@@ -882,10 +886,22 @@ void MainWindow::setupMainLayout() {
         }
     });
 
+    // 搜索框（带清除按钮）
+    m_toolSearchEdit = new QLineEdit();
+    m_toolSearchEdit->setObjectName("ToolSearchEdit");
+    m_toolSearchEdit->setPlaceholderText(tr("搜索工具..."));
+    m_toolSearchEdit->setClearButtonEnabled(true);
+    m_toolSearchEdit->setMaximumHeight(28);
+    connect(m_toolSearchEdit, &QLineEdit::textChanged, this, &MainWindow::filterToolBox);
+    toolCategoryLayout->addWidget(m_toolSearchEdit);
+
     // 创建工具分类的 lambda，禁用分类标题的拖拽
     auto createCategoryItem = [&](QTreeWidget* tree, const QString& text) -> QTreeWidgetItem* {
-        QTreeWidgetItem* item = new QTreeWidgetItem(tree, QStringList(text));
+        // 保存原始文本用于排序，显示文本去除数字前缀
+        QString displayText = stripCategoryPrefix(text);
+        QTreeWidgetItem* item = new QTreeWidgetItem(tree, QStringList(displayText));
         item->setData(0, Qt::UserRole, "category");
+        item->setData(0, Qt::UserRole + 3, text); // 保留原始带前缀文本
         // 禁用拖拽
         item->setFlags(item->flags() & ~Qt::ItemIsDragEnabled);
         return item;
@@ -1143,6 +1159,8 @@ void MainWindow::setupMainLayout() {
     m_processTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_processTree->setColumnHidden(1, false); // 右列显示每个模块的最近执行耗时
     m_processTree->header()->setHidden(true);
+    m_processTree->setUniformRowHeights(true);
+    m_processTree->setIconSize(QSize(20, 20));
     m_processTree->viewport()->installEventFilter(this);
     m_processTree->installEventFilter(this);
     connect(m_processTree, &QTreeWidget::itemClicked, this,
@@ -1261,7 +1279,7 @@ void MainWindow::setupMainLayout() {
     });
     connect(m_inspectorPanel, &ModuleInspectorPanel::advancedConfigRequested,
             this, [this](const QString& instanceId) {
-        Logger::instance().info(tr("高级配置请求：%1").arg(instanceId), "System");
+        openAdvancedPluginConfig(instanceId);
     });
     connect(m_inspectorPanel, &ModuleInspectorPanel::pinChanged,
             this, [this](bool pinned) {
@@ -1284,7 +1302,7 @@ void MainWindow::setupMainLayout() {
     // 日志面板 - 下方区域
     m_logDock = new QDockWidget(this);
     m_logDock->setObjectName("LogDock");
-    m_logDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
+    m_logDock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
 
     // 创建 Tab 容器（日志 + 终端）
     m_logTerminalTabs = new QTabWidget();
@@ -1333,7 +1351,7 @@ void MainWindow::setupMainLayout() {
             showLogLevelMenu();
     });
 
-    int logTabIndex = m_logTerminalTabs->addTab(logWidget, tr("日志"));
+    int logTabIndex = m_logTerminalTabs->addTab(logWidget, tr("运行日志"));
 
     // Tab "日志" 再次点击时打开日志文件（第一次点击切换，第二次点击打开）
     connect(m_logTerminalTabs, &QTabWidget::tabBarClicked, this, [this, logTabIndex](int index) {
@@ -1348,16 +1366,25 @@ void MainWindow::setupMainLayout() {
     TerminalBridge::instance().initialize(m_terminalWidget);
     m_logTerminalTabs->addTab(m_terminalWidget, tr("终端"));
 
-    // ===== Tab 3: Agent Chat =====
+    // ===== Tab 3: Agent (内部页签: 对话 + 操作日志) =====
+    m_agentInnerTabs = new QTabWidget();
+    m_agentInnerTabs->setObjectName("AgentInnerTabs");
+    m_agentInnerTabs->setDocumentMode(true);
+    m_agentInnerTabs->tabBar()->setUsesScrollButtons(false);
+
     m_agentChatPanel = new AgentChatPanel();
-    m_agentChatTabIndex = m_logTerminalTabs->addTab(m_agentChatPanel, tr("Agent 对话"));
-    m_logTerminalTabs->setTabToolTip(m_agentChatTabIndex, tr("Agent 对话"));
+    m_agentInnerTabs->addTab(m_agentChatPanel, tr("对话"));
+    m_agentChatTabIndex = m_logTerminalTabs->addTab(m_agentInnerTabs, tr("Agent"));
+    m_logTerminalTabs->setTabToolTip(m_agentChatTabIndex, tr("Agent"));
     auto setAgentTabStatus = [this](const QString& tooltip, bool focus) {
         if (!m_logTerminalTabs || m_agentChatTabIndex < 0)
             return;
         m_logTerminalTabs->setTabToolTip(m_agentChatTabIndex, tooltip);
         if (focus) {
             m_logTerminalTabs->setCurrentIndex(m_agentChatTabIndex);
+            if (m_agentInnerTabs) {
+                m_agentInnerTabs->setCurrentIndex(0); // 对话页
+            }
         }
     };
     connect(m_agentChatPanel, &AgentChatPanel::userMessageSent, this, [this, setAgentTabStatus](const QString& msg) {
@@ -1374,7 +1401,7 @@ void MainWindow::setupMainLayout() {
     connect(&AgentController::instance(), &AgentController::llmResponseReceived, this,
             [this, setAgentTabStatus](const QString& content, const QJsonArray& toolCalls) {
                 Q_UNUSED(toolCalls);
-                setAgentTabStatus(tr("Agent 对话"), false);
+                setAgentTabStatus(tr("Agent"), false);
                 m_agentChatPanel->setThinking(false);
                 m_agentChatPanel->clearToolPreview();
                 m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Agent, content);
@@ -1431,9 +1458,9 @@ void MainWindow::setupMainLayout() {
     connect(m_agentChatPanel, &AgentChatPanel::toolPreviewCancelled, &AgentController::instance(),
             &AgentController::rejectPendingTools);
 
-    // ===== Tab 4: Agent Action Log =====
+    // Agent 操作日志（内部页签）
     m_agentActionLogWidget = new AgentActionLogWidget();
-    m_logTerminalTabs->addTab(m_agentActionLogWidget, tr("Agent 日志"));
+    m_agentInnerTabs->addTab(m_agentActionLogWidget, tr("操作日志"));
     connect(&AgentController::instance(), &AgentController::actionLogEntryAdded, m_agentActionLogWidget,
             &AgentActionLogWidget::addEntry);
     connect(m_agentActionLogWidget, &AgentActionLogWidget::undoRequested, this,
@@ -1467,6 +1494,8 @@ void MainWindow::setupMainLayout() {
     // 连接 DockWidget 关闭信号以同步菜单勾选状态
     connect(m_toolBoxDock, &QDockWidget::topLevelChanged, this,
             [this](bool) { m_viewToolPanelAction->setChecked(!m_toolBoxDock->isHidden()); });
+    connect(m_logDock, &QDockWidget::visibilityChanged, this,
+            [this](bool visible) { if (m_viewBottomPanelAction) m_viewBottomPanelAction->setChecked(visible); });
 
     // 连接按钮信号
     connect(m_btnStartPause, &QToolButton::clicked, this, [this]() {
@@ -1481,6 +1510,14 @@ void MainWindow::setupMainLayout() {
         connect(runCycleBtn, &QToolButton::clicked, this, &MainWindow::onRunCycle);
     }
     connect(m_btnStepRun, &QToolButton::clicked, this, &MainWindow::onStepRun);
+
+    // Esc 快捷键退出聚焦模式
+    QShortcut* escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    connect(escShortcut, &QShortcut::activated, this, [this]() {
+        if (m_focusMode) {
+            toggleFocusMode();
+        }
+    });
 }
 
 void MainWindow::addToolBoxItem(QTreeWidgetItem* parent, const QString& displayName, const QString& pluginName) {
@@ -1547,7 +1584,12 @@ void MainWindow::updateToolBoxPluginItem(const QString& pluginName) {
         if (category.contains(it.key())) {
             for (int i = 0; i < m_toolBoxTree->topLevelItemCount(); ++i) {
                 QTreeWidgetItem* cat = m_toolBoxTree->topLevelItem(i);
-                if (cat->text(0).startsWith(it.value().left(2))) {
+                // 用原始带前缀文本（UserRole+3）做匹配，显示文本已去除前缀
+                QString origText = cat->data(0, Qt::UserRole + 3).toString();
+                if (origText.isEmpty()) {
+                    origText = cat->text(0);
+                }
+                if (origText.startsWith(it.value().left(2))) {
                     addToolBoxItem(cat, displayName, pluginName);
                     return;
                 }
@@ -1565,6 +1607,12 @@ void MainWindow::onToggleToolPanel(bool checked) {
 void MainWindow::onToggleProcessPanel(bool checked) {
     if (m_processTabWidget) {
         m_processTabWidget->setVisible(checked);
+    }
+}
+
+void MainWindow::onToggleBottomPanel(bool checked) {
+    if (m_logDock) {
+        m_logDock->setVisible(checked);
     }
 }
 
@@ -2758,7 +2806,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         }
     }
 
-    // 处理流程树的双击事件
+    // 处理流程树的双击事件 — 普通双击打开检查器（切换到参数页）
     if (m_processTree && event->type() == QEvent::MouseButtonDblClick) {
         QMouseEvent* mouseEvent = static_cast<QMouseEvent*>(event);
         QTreeWidgetItem* item = nullptr;
@@ -2771,69 +2819,24 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 
         if (item && item->data(0, Qt::UserRole).toString() == "flow_item") {
             QString instanceName = item->data(0, Qt::UserRole + 1).toString();
-            qDebug() << "[DIAG-UI] Double-click module:" << instanceName;
-            if (!instanceName.isEmpty() && m_flowModules.contains(instanceName)) {
-                IModule* module = m_flowModules.value(instanceName);
-                qDebug() << "[DIAG-UI] Creating config widget for" << instanceName << "moduleId=" << module->moduleId();
-                QWidget* configWidget = module->createConfigWidget();
-                qDebug() << "[DIAG-UI] createConfigWidget returned" << configWidget;
-                if (configWidget) {
-                    QDialog* dialog = new QDialog(this);
-                    dialog->setObjectName("PluginConfigDialog");
-                    dialog->setWindowTitle(tr("配置 - %1").arg(item->text(0)));
-                    dialog->setMinimumSize(460, 480);
-                    dialog->setStyleSheet(pluginConfigDialogStyle(m_isDarkTheme));
-                    dialog->setAttribute(Qt::WA_DeleteOnClose);
-                    QVBoxLayout* layout = new QVBoxLayout(dialog);
-                    layout->setContentsMargins(14, 12, 14, 12);
-                    layout->setSpacing(10);
-                    addMeasurementConfigAction(layout, module->moduleId(), instanceName, dialog);
-                    configWidget->setObjectName("PluginConfigContent");
-                    applyPluginConfigTheme(configWidget, m_isDarkTheme);
-                    QScrollArea* scrollArea = new QScrollArea(dialog);
-                    scrollArea->setObjectName("PluginConfigScrollArea");
-                    scrollArea->setWidgetResizable(true);
-                    scrollArea->setFrameShape(QFrame::NoFrame);
-                    scrollArea->setWidget(configWidget);
-                    layout->addWidget(scrollArea, 1);
-                    QHBoxLayout* btnLayout = new QHBoxLayout();
-                    QPushButton* okBtn = new QPushButton(tr("确定"));
-                    okBtn->setObjectName("PluginConfigOkButton");
-                    okBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
-                    QPushButton* cancelBtn = new QPushButton(tr("取消"));
-                    cancelBtn->setObjectName("PluginConfigCancelButton");
-                    cancelBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Cancel, 16, QColor("#DC2626")));
-                    btnLayout->addStretch();
-                    btnLayout->addWidget(okBtn);
-                    btnLayout->addWidget(cancelBtn);
-                    layout->addLayout(btnLayout);
-
-                    // dialog 关闭时把 configWidget 从 dialog 分离，防止被 WA_DeleteOnClose 销毁
-                    // 插件可能缓存了 configWidget 指针，销毁会导致下次 createConfigWidget crash
-                    connect(dialog, &QDialog::finished, dialog, [scrollArea, configWidget]() {
-                        if (scrollArea->widget() == configWidget) {
-                            scrollArea->takeWidget();
-                        }
-                        configWidget->setParent(nullptr);
-                    });
-
-                    connect(okBtn, &QPushButton::clicked, dialog, &QDialog::accept);
-                    connect(cancelBtn, &QPushButton::clicked, dialog, &QDialog::reject);
-
-                    if (dialog->exec() == QDialog::Accepted) {
-                        Logger::instance().info(tr("模块参数已更新：%1").arg(item->text(0)), "Config");
-                    }
-                } else {
-                    Logger::instance().warning(tr("该模块没有配置选项：%1").arg(item->text(0)), "Config");
+            if (!instanceName.isEmpty()) {
+                // 普通双击打开检查器（切换到参数页）
+                selectModule(instanceName, true);
+                if (m_inspectorPanel) {
+                    m_inspectorPanel->showParamsTab();
                 }
             }
             return true;
         }
     }
 
-    // 图像显示区域的拖放处理
+    // 主视图：双击进入/退出聚焦模式，拖放处理文件
     QWidget* imgWidget = m_displayManager ? m_displayManager->centralDisplay() : nullptr;
     if (imgWidget && watched == imgWidget) {
+        if (event->type() == QEvent::MouseButtonDblClick) {
+            toggleFocusMode();
+            return true;
+        }
         if (event->type() == QEvent::DragEnter) {
             QDragEnterEvent* de = static_cast<QDragEnterEvent*>(event);
             if (de->mimeData()->hasUrls()) {
@@ -3290,15 +3293,177 @@ void MainWindow::clearCentralDisplay() {
     }
 }
 
+// ========== 阶段 7: 工具面板搜索 ==========
+
+QString MainWindow::stripCategoryPrefix(const QString& text) {
+    // 去除 "00 - " 之类的数字前缀，但保持原排序
+    // 匹配格式: "DD - " 或 "DD-DD - "
+    QString result = text;
+    static const QRegularExpression prefixRe(QStringLiteral("^\\d{2}\\s*-\\s*"));
+    result.remove(prefixRe);
+    return result;
+}
+
+void MainWindow::filterToolBox(const QString& text) {
+    if (!m_toolBoxTree) {
+        return;
+    }
+
+    const QString lower = text.trimmed().toLower();
+
+    for (int i = 0; i < m_toolBoxTree->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* category = m_toolBoxTree->topLevelItem(i);
+        if (category->data(0, Qt::UserRole).toString() != "category") {
+            continue;
+        }
+
+        bool anyVisible = false;
+        for (int j = 0; j < category->childCount(); ++j) {
+            QTreeWidgetItem* child = category->child(j);
+            bool match = lower.isEmpty() ||
+                         child->text(0).toLower().contains(lower) ||
+                         child->data(0, Qt::UserRole + 1).toString().toLower().contains(lower);
+            child->setHidden(!match);
+            if (match) {
+                anyVisible = true;
+            }
+        }
+
+        // 递归隐藏空分类
+        category->setHidden(!anyVisible && !lower.isEmpty());
+
+        // 搜索时自动展开匹配的分类
+        if (anyVisible && !lower.isEmpty()) {
+            category->setExpanded(true);
+        }
+    }
+}
+
+// ========== 阶段 8: 高级配置弹窗 ==========
+
+void MainWindow::openAdvancedPluginConfig(const QString& instanceId) {
+    if (instanceId.isEmpty() || !m_flowModules.contains(instanceId)) {
+        return;
+    }
+
+    IModule* module = m_flowModules.value(instanceId);
+    if (!module) {
+        return;
+    }
+
+    QWidget* configWidget = module->createConfigWidget();
+    if (!configWidget) {
+        Logger::instance().warning(tr("该模块没有配置选项"), "Config");
+        return;
+    }
+
+    // 查找流程树中的显示名
+    QString displayName = instanceId;
+    QTreeWidgetItem* item = m_processTreeController ? m_processTreeController->instanceItem(instanceId) : nullptr;
+    if (item) {
+        displayName = item->text(0);
+    }
+
+    QDialog* dialog = new QDialog(this);
+    dialog->setObjectName("PluginConfigDialog");
+    dialog->setWindowTitle(tr("配置 - %1").arg(displayName));
+    dialog->setMinimumSize(460, 480);
+    dialog->setStyleSheet(pluginConfigDialogStyle(m_isDarkTheme));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    QVBoxLayout* layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(14, 12, 14, 12);
+    layout->setSpacing(10);
+    addMeasurementConfigAction(layout, module->moduleId(), instanceId, dialog);
+    configWidget->setObjectName("PluginConfigContent");
+    applyPluginConfigTheme(configWidget, m_isDarkTheme);
+    QScrollArea* scrollArea = new QScrollArea(dialog);
+    scrollArea->setObjectName("PluginConfigScrollArea");
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setWidget(configWidget);
+    layout->addWidget(scrollArea, 1);
+    QHBoxLayout* btnLayout = new QHBoxLayout();
+    QPushButton* okBtn = new QPushButton(tr("确定"));
+    okBtn->setObjectName("PluginConfigOkButton");
+    okBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
+    QPushButton* cancelBtn = new QPushButton(tr("取消"));
+    cancelBtn->setObjectName("PluginConfigCancelButton");
+    cancelBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Cancel, 16, QColor("#DC2626")));
+    btnLayout->addStretch();
+    btnLayout->addWidget(okBtn);
+    btnLayout->addWidget(cancelBtn);
+    layout->addLayout(btnLayout);
+
+    // dialog 关闭时把 configWidget 从 dialog 分离，防止被 WA_DeleteOnClose 销毁
+    connect(dialog, &QDialog::finished, dialog, [scrollArea, configWidget]() {
+        if (scrollArea->widget() == configWidget) {
+            scrollArea->takeWidget();
+        }
+        configWidget->setParent(nullptr);
+    });
+
+    connect(okBtn, &QPushButton::clicked, dialog, &QDialog::accept);
+    connect(cancelBtn, &QPushButton::clicked, dialog, &QDialog::reject);
+
+    if (dialog->exec() == QDialog::Accepted) {
+        Logger::instance().info(tr("模块参数已更新：%1").arg(displayName), "Config");
+    }
+}
+
+// ========== 阶段 8: 聚焦模式 ==========
+
+void MainWindow::toggleFocusMode() {
+    m_focusMode = !m_focusMode;
+
+    if (m_focusMode) {
+        // 进入聚焦模式：隐藏左右面板和底部区域
+        m_focusSavedMainSizes = m_mainSplitter->sizes();
+        m_focusSavedRightTopSizes = m_rightTopSplitter->sizes();
+        m_focusSavedRightSplitterSizes = m_rightSplitter->sizes();
+
+        if (m_toolBoxDock) m_toolBoxDock->hide();
+        if (m_processTabWidget) m_processTabWidget->parentWidget()->hide();
+        if (m_inspectorPanel) m_inspectorPanel->hide();
+        if (m_logDock) m_logDock->hide();
+    } else {
+        // 退出聚焦模式：恢复面板
+        if (m_toolBoxDock && m_viewToolPanelAction && m_viewToolPanelAction->isChecked()) m_toolBoxDock->show();
+        if (m_processTabWidget) m_processTabWidget->parentWidget()->show();
+        if (m_inspectorPanel) m_inspectorPanel->show();
+        if (m_logDock && m_viewBottomPanelAction && m_viewBottomPanelAction->isChecked()) m_logDock->show();
+
+        if (!m_focusSavedMainSizes.isEmpty()) m_mainSplitter->setSizes(m_focusSavedMainSizes);
+        if (!m_focusSavedRightTopSizes.isEmpty()) m_rightTopSplitter->setSizes(m_focusSavedRightTopSizes);
+        if (!m_focusSavedRightSplitterSizes.isEmpty()) m_rightSplitter->setSizes(m_focusSavedRightSplitterSizes);
+    }
+}
+
+void MainWindow::_phase8_openAdvancedPluginConfig(const QString& instanceId) {
+    openAdvancedPluginConfig(instanceId);
+}
+
+void MainWindow::_phase8_toggleFocusMode() {
+    toggleFocusMode();
+}
+
 void MainWindow::clearExecutionHighlight(QTreeWidgetItem* item) {
     if (!item) {
         return;
     }
+    // 使用 data role 替代 setBackground — 清除状态
+    item->setData(0, Qt::UserRole + 5, QString());
+}
 
-    item->setBackground(0, QBrush());
-    item->setForeground(0, QBrush());
-    item->setBackground(1, QBrush());
-    item->setForeground(1, QBrush());
+void MainWindow::setProcessItemStatus(QTreeWidgetItem* item, const QString& status, const QString& timeText) {
+    if (!item) {
+        return;
+    }
+    // 状态: running(蓝色), success(绿色), failure(红色), dirty(琥珀色)
+    item->setData(0, Qt::UserRole + 5, status);
+    if (!timeText.isEmpty()) {
+        item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
+        item->setText(1, timeText);
+    }
 }
 
 void MainWindow::showProcessModuleOutput(QTreeWidgetItem* item) {

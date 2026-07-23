@@ -89,6 +89,7 @@ private slots:
     void onImportImage();
     void onToggleToolPanel(bool checked);
     void onToggleProcessPanel(bool checked);
+    void onToggleBottomPanel(bool checked);
     void onProjectOpened(Project* project);
     void onProjectClosed();
     void onDataSourceAdded(const DataSource& ds);
@@ -100,6 +101,8 @@ private slots:
     void onViewportCreated(const QString& viewportId, ViewportWidget* viewport);
     void onPoint2DPicked(const QPointF& point);
     void onPoint3DPicked(const QVector3D& point);
+    void _phase8_openAdvancedPluginConfig(const QString& instanceId);
+    void _phase8_toggleFocusMode();
 
 private:
     void setupUi();
@@ -125,6 +128,7 @@ protected:
     QTreeWidget* m_toolBoxTree = nullptr;
     QTreeWidgetItem* m_currentToolBoxItem = nullptr; // 当前选中的工具箱项
     QMap<QString, QString> m_toolDisplayNames;
+    class QLineEdit* m_toolSearchEdit = nullptr;
 
     // 流程栏控件
     QTreeWidget* m_processTree = nullptr;
@@ -158,6 +162,8 @@ protected:
     AgentActionLogWidget* m_agentActionLogWidget = nullptr;
     AgentChatPanel* m_agentChatPanel = nullptr;
     int m_agentChatTabIndex = -1;
+    // Agent 内部页签（对话 + 操作日志）
+    QTabWidget* m_agentInnerTabs = nullptr;
 
     // 状态栏
     QLabel* m_userLabel = nullptr;
@@ -181,6 +187,18 @@ protected:
     bool importImageFile(const QString& filePath);
     bool importPointCloudFile(const QString& filePath);
     void clearCentralDisplay();
+
+    // 阶段 7: 流程树 data-role 高亮（替代 setBackground）
+    void setProcessItemStatus(QTreeWidgetItem* item, const QString& status, const QString& timeText = QString());
+    // 阶段 7: 工具面板搜索
+    void filterToolBox(const QString& text);
+    // 阶段 7: 分类名称去除数字前缀
+    static QString stripCategoryPrefix(const QString& text);
+    // 阶段 8: 提取高级配置弹窗
+    void openAdvancedPluginConfig(const QString& instanceId);
+    // 阶段 8: 聚焦模式
+    void toggleFocusMode();
+    bool m_focusMode = false;
     void addMeasurementConfigAction(QVBoxLayout* layout, const QString& consumerModuleId,
                                     const QString& consumerInstanceId, QDialog* dialog);
     QString ensureMeasurementInputForMode(const QString& mode, const QString& consumerInstanceId);
@@ -212,6 +230,11 @@ protected:
     QSplitter* m_rightSplitter = nullptr;
     QSplitter* m_rightTopSplitter = nullptr;
 
+    // 聚焦模式：保存/恢复 splitter 尺寸
+    QList<int> m_focusSavedMainSizes;
+    QList<int> m_focusSavedRightTopSizes;
+    QList<int> m_focusSavedRightSplitterSizes;
+
     // 右侧检查器面板
     ModuleInspectorPanel* m_inspectorPanel = nullptr;
 
@@ -221,6 +244,7 @@ protected:
     // 视图菜单动作
     QAction* m_viewToolPanelAction = nullptr;
     QAction* m_viewProcessPanelAction = nullptr;
+    QAction* m_viewBottomPanelAction = nullptr;
 
     // Agent 菜单动作
     QAction* m_agentPermissionAction = nullptr;

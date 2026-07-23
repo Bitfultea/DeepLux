@@ -307,8 +307,9 @@ void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
         button->click();
     });
 
-    const QRect itemRect = processTree->visualItemRect(distanceItem);
-    QTest::mouseDClick(processTree->viewport(), Qt::LeftButton, Qt::NoModifier, itemRect.center());
+    QVERIFY(QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig",
+                                      Qt::DirectConnection,
+                                      Q_ARG(QString, QStringLiteral("distance_1"))));
     QCoreApplication::processEvents();
 
     QVERIFY(clickedSetup);
@@ -370,8 +371,9 @@ void TestMainWindow::testMeasurementConfigButtonWithInstalledPlugins() {
         button->click();
     });
 
-    const QRect itemRect = processTree->visualItemRect(distanceItem);
-    QTest::mouseDClick(processTree->viewport(), Qt::LeftButton, Qt::NoModifier, itemRect.center());
+    QVERIFY(QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig",
+                                      Qt::DirectConnection,
+                                      Q_ARG(QString, QStringLiteral("installed_distance_1"))));
     QCoreApplication::processEvents();
 
     QVERIFY(clickedSetup);
@@ -404,7 +406,6 @@ void TestMainWindow::testPluginConfigDialogRestylesLegacyDarkPlugin() {
     QTreeWidget* processTree = window.findChild<QTreeWidget*>("ProcessTree");
     QVERIFY(processTree != nullptr);
     QCOMPARE(processTree->topLevelItemCount(), 1);
-    QTreeWidgetItem* loaderItem = processTree->topLevelItem(0);
 
     bool checkedDialog = false;
     QTimer::singleShot(20, [&]() {
@@ -449,8 +450,9 @@ void TestMainWindow::testPluginConfigDialogRestylesLegacyDarkPlugin() {
         modal->close();
     });
 
-    const QRect itemRect = processTree->visualItemRect(loaderItem);
-    QTest::mouseDClick(processTree->viewport(), Qt::LeftButton, Qt::NoModifier, itemRect.center());
+    QVERIFY(QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig",
+                                      Qt::DirectConnection,
+                                      Q_ARG(QString, QStringLiteral("pointcloud_1"))));
     QCoreApplication::processEvents();
 
     QVERIFY(checkedDialog);
@@ -882,8 +884,15 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
                             .arg(logTabs->tabBar()->tabRect(0).height())
                             .arg(logTabTextHeight)));
 
-    const int agentChatIndex = logTabs->indexOf(agentPanel);
-    QVERIFY(agentChatIndex >= 0);
+    // agentPanel is now inside Agent inner tabs; find the "Agent" outer tab
+    int agentOuterIndex = -1;
+    for (int i = 0; i < logTabs->count(); ++i) {
+        if (logTabs->tabText(i) == QStringLiteral("Agent")) {
+            agentOuterIndex = i;
+            break;
+        }
+    }
+    QVERIFY2(agentOuterIndex >= 0, "Agent outer tab should exist in bottom panel");
     QJsonArray pendingTools;
     pendingTools.append(QJsonObject{
         {"id", "call_remove"},
@@ -893,8 +902,8 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     });
     emit AgentController::instance().toolsPendingConfirmation(pendingTools);
     QCoreApplication::processEvents();
-    QCOMPARE(logTabs->currentIndex(), agentChatIndex);
-    QVERIFY2(logTabs->tabToolTip(agentChatIndex).contains(QStringLiteral("等待确认")),
+    QCOMPARE(logTabs->currentIndex(), agentOuterIndex);
+    QVERIFY2(logTabs->tabToolTip(agentOuterIndex).contains(QStringLiteral("等待确认")),
              "Agent chat tab should expose pending confirmation state");
 
     QList<AgentMessageBubble*> bubbles = window.findChildren<AgentMessageBubble*>();

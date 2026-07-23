@@ -267,6 +267,13 @@ void ModuleInspectorPanel::setPinned(bool pinned)
     m_pinBtn->blockSignals(false);
 }
 
+void ModuleInspectorPanel::showParamsTab()
+{
+    if (m_tabWidget) {
+        m_tabWidget->setCurrentIndex(0); // 参数页 = index 0
+    }
+}
+
 void ModuleInspectorPanel::applyTheme(bool isDark)
 {
     m_isDarkTheme = isDark;
