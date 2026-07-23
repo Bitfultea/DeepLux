@@ -37,6 +37,13 @@ void DataSourcePanel::setupUi() {
 
     layout->addWidget(m_treeWidget);
 
+    // 空状态提示标签
+    m_emptyLabel = new QLabel(tr("拖入文件或点击导入"), this);
+    m_emptyLabel->setAlignment(Qt::AlignCenter);
+    m_emptyLabel->setStyleSheet("color: #9ca3af; font-size: 13px; background-color: transparent;");
+    m_emptyLabel->setVisible(true);
+    layout->addWidget(m_emptyLabel);
+
     connect(m_treeWidget, &QTreeWidget::itemDoubleClicked, this, &DataSourcePanel::onItemDoubleClicked);
     connect(m_treeWidget, &QTreeWidget::customContextMenuRequested, this, &DataSourcePanel::onContextMenu);
 }
@@ -54,11 +61,16 @@ void DataSourcePanel::createActions() {
 
 void DataSourcePanel::refreshFromProject(Project* project) {
     m_treeWidget->clear();
-    if (!project)
+    if (!project) {
+        if (m_emptyLabel)
+            m_emptyLabel->setVisible(true);
         return;
+    }
     for (const DataSource& ds : project->dataSources()) {
         addDataSource(ds);
     }
+    if (m_emptyLabel)
+        m_emptyLabel->setVisible(m_treeWidget->topLevelItemCount() == 0);
 }
 
 void DataSourcePanel::addDataSource(const DataSource& ds) {
@@ -91,6 +103,9 @@ void DataSourcePanel::addDataSource(const DataSource& ds) {
     } else if (ds.isPointCloud()) {
         item->setIcon(0, AppIconProvider::icon(AppIconProvider::Icon::PointCloud, 18, QColor("#0891B2")));
     }
+
+    if (m_emptyLabel)
+        m_emptyLabel->setVisible(false);
 }
 
 void DataSourcePanel::removeDataSource(const QString& id) {
@@ -98,6 +113,8 @@ void DataSourcePanel::removeDataSource(const QString& id) {
     if (item) {
         delete item;
     }
+    if (m_emptyLabel)
+        m_emptyLabel->setVisible(m_treeWidget->topLevelItemCount() == 0);
 }
 
 QTreeWidgetItem* DataSourcePanel::findItem(const QString& dataSourceId) const {

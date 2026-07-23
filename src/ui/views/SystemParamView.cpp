@@ -17,75 +17,6 @@ SystemParamView::SystemParamView(QWidget* parent) : QDialog(parent) {
     setWindowTitle(tr("System Parameters"));
     setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
     setMinimumSize(600, 550);
-    setStyleSheet(R"(
-        QDialog {
-            background-color: #2b2b2b;
-            color: #ffffff;
-        }
-        QLabel {
-            color: #ffffff;
-            background-color: transparent;
-        }
-        QGroupBox {
-            border: 1px solid #555;
-            border-radius: 6px;
-            margin-top: 10px;
-            padding-top: 10px;
-            color: #ffffff;
-            font-weight: bold;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 5px;
-        }
-        QCheckBox {
-            color: #ffffff;
-            spacing: 5px;
-        }
-        QCheckBox::indicator {
-            width: 18px;
-            height: 18px;
-        }
-        QCheckBox::indicator:unchecked {
-            border: 1px solid #555;
-            border-radius: 3px;
-            background-color: #3a3a3a;
-        }
-        QCheckBox::indicator:checked {
-            border: 1px solid #0078d4;
-            border-radius: 3px;
-            background-color: #0078d4;
-        }
-        QPushButton {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 4px;
-            background-color: #3a3a3a;
-            color: #ffffff;
-            font-size: 13px;
-        }
-        QPushButton:hover {
-            background-color: #444;
-        }
-        QPushButton[default="true"] {
-            background-color: #0078d4;
-        }
-        QPushButton[default="true"]:hover {
-            background-color: #1084d8;
-        }
-        QLineEdit, QSpinBox, QComboBox {
-            padding: 8px;
-            border: 1px solid #555;
-            border-radius: 4px;
-            background-color: #3a3a3a;
-            color: #ffffff;
-        }
-        QSpinBox::up-button, QSpinBox::down-button {
-            background-color: #3a3a3a;
-            border: none;
-        }
-    )");
 
     setupUI();
     loadSettings();
@@ -100,10 +31,6 @@ void SystemParamView::setupUI() {
     m_generalGroup = new QGroupBox(tr("General Settings"), this);
     QFormLayout* generalLayout = new QFormLayout(m_generalGroup);
     generalLayout->setSpacing(10);
-
-    m_projectPathEdit = new QLineEdit(this);
-    m_projectPathEdit->setReadOnly(true);
-    generalLayout->addRow(tr("Project Path:"), m_projectPathEdit);
 
     m_autoLoadCheck = new QCheckBox(tr("Auto-load last project"), this);
     generalLayout->addRow(QString(), m_autoLoadCheck);
@@ -134,14 +61,6 @@ void SystemParamView::setupUI() {
     mThemeCombo->addItem(tr("Light Theme"), "light");
     displayLayout->addRow(tr("Theme:"), mThemeCombo);
 
-    m_showToolbarCheck = new QCheckBox(tr("Show toolbar"), this);
-    m_showToolbarCheck->setChecked(true);
-    displayLayout->addRow(QString(), m_showToolbarCheck);
-
-    m_showStatusbarCheck = new QCheckBox(tr("Show status bar"), this);
-    m_showStatusbarCheck->setChecked(true);
-    displayLayout->addRow(QString(), m_showStatusbarCheck);
-
     mainLayout->addWidget(m_displayGroup);
 
     // Run settings
@@ -154,14 +73,6 @@ void SystemParamView::setupUI() {
     m_cycleIntervalSpin->setSuffix(" ms");
     runLayout->addRow(tr("Cycle Interval:"), m_cycleIntervalSpin);
 
-    m_maxLoopCountSpin = new QSpinBox(this);
-    m_maxLoopCountSpin->setRange(1, 10000);
-    runLayout->addRow(tr("Max Loop Count:"), m_maxLoopCountSpin);
-
-    m_stopOnErrorCheck = new QCheckBox(tr("Stop on error"), this);
-    m_stopOnErrorCheck->setChecked(true);
-    runLayout->addRow(QString(), m_stopOnErrorCheck);
-
     mainLayout->addWidget(m_runGroup);
 
     // Log settings
@@ -173,11 +84,6 @@ void SystemParamView::setupUI() {
     m_logLevelCombo->setRange(0, 5);
     logLayout->addRow(tr("Log Level:"), m_logLevelCombo);
 
-    m_logMaxSizeSpin = new QSpinBox(this);
-    m_logMaxSizeSpin->setRange(1, 100);
-    m_logMaxSizeSpin->setSuffix(" MB");
-    logLayout->addRow(tr("Max Log Size:"), m_logMaxSizeSpin);
-
     m_enableFileLogCheck = new QCheckBox(tr("Enable file logging"), this);
     m_enableFileLogCheck->setChecked(true);
     logLayout->addRow(QString(), m_enableFileLogCheck);
@@ -188,17 +94,14 @@ void SystemParamView::setupUI() {
     QHBoxLayout* btnLayout = new QHBoxLayout();
     btnLayout->setSpacing(10);
 
-    m_applyBtn = new QPushButton(tr("Apply"), this);
-    m_applyBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
-    m_applyBtn->setProperty("default", true);
     m_resetBtn = new QPushButton(tr("Reset"), this);
     m_resetBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Undo, 16, QColor("#D97706")));
     m_saveBtn = new QPushButton(tr("Save"), this);
     m_saveBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Save, 16, QColor("#2563EB")));
+    m_saveBtn->setProperty("default", true);
     m_closeBtn = new QPushButton(tr("Close"), this);
     m_closeBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Close, 16, QColor("#4B5563")));
 
-    btnLayout->addWidget(m_applyBtn);
     btnLayout->addWidget(m_resetBtn);
     btnLayout->addWidget(m_saveBtn);
     btnLayout->addStretch();
@@ -207,7 +110,6 @@ void SystemParamView::setupUI() {
     mainLayout->addLayout(btnLayout);
 
     // Connections
-    connect(m_applyBtn, &QPushButton::clicked, this, &SystemParamView::onApplyClicked);
     connect(m_resetBtn, &QPushButton::clicked, this, &SystemParamView::onResetClicked);
     connect(m_saveBtn, &QPushButton::clicked, this, &SystemParamView::onSaveClicked);
     connect(m_closeBtn, &QPushButton::clicked, this, &SystemParamView::onCloseClicked);
@@ -248,11 +150,6 @@ void SystemParamView::saveSettings() {
     config.setEnableFileLog(m_enableFileLogCheck->isChecked());
 
     config.save();
-}
-
-void SystemParamView::onApplyClicked() {
-    saveSettings();
-    Logger::instance().info("System parameters applied", "Config");
 }
 
 void SystemParamView::onResetClicked() {

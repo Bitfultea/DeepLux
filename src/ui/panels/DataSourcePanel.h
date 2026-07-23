@@ -2,6 +2,7 @@
 
 #include <QWidget>
 #include <QTreeWidget>
+#include <QLabel>
 #include <QMap>
 
 namespace DeepLux {
@@ -56,6 +57,7 @@ private slots:
 
 private:
     QTreeWidget* m_treeWidget = nullptr;
+    QLabel* m_emptyLabel = nullptr;
     QAction* m_deleteAction = nullptr;
     QAction* m_showInFolderAction = nullptr;
     QAction* m_copyPathAction = nullptr;

@@ -355,24 +355,24 @@ void AgentChatPanel::applyTheme(bool isDark) {
 
     if (m_statusLabel) {
         m_statusLabel->setStyleSheet(
-            QString("color: %1; font-size: 11px; font-weight: 600;").arg(theme.statusColor.name()));
+            QString("color: %1; font-size: 12px; font-weight: 600;").arg(theme.statusColor.name()));
     }
     if (m_statusStrip) {
         m_statusStrip->setStyleSheet(
             QString("QWidget#AgentChatStatusStrip { background-color: %1; border-bottom: 1px solid %2; }"
-                    "QLabel { color: %3; font-size: 11px; }")
+                    "QLabel { color: %3; font-size: 12px; }")
                 .arg(bg)
                 .arg(theme.inputBorder.name())
                 .arg(theme.timestampColor.name()));
     }
     if (m_messageCountLabel) {
-        m_messageCountLabel->setStyleSheet(QString("color: %1; font-size: 11px;").arg(theme.timestampColor.name()));
+        m_messageCountLabel->setStyleSheet(QString("color: %1; font-size: 12px;").arg(theme.timestampColor.name()));
     }
     if (m_toolCountLabel) {
-        m_toolCountLabel->setStyleSheet(QString("color: %1; font-size: 11px;").arg(theme.toolName.name()));
+        m_toolCountLabel->setStyleSheet(QString("color: %1; font-size: 12px;").arg(theme.toolName.name()));
     }
     if (m_attachmentCountLabel) {
-        m_attachmentCountLabel->setStyleSheet(QString("color: %1; font-size: 11px;").arg(theme.timestampColor.name()));
+        m_attachmentCountLabel->setStyleSheet(QString("color: %1; font-size: 12px;").arg(theme.timestampColor.name()));
     }
 
     // 输入框：融入面板背景，无独立边框盒，仅顶部细线分隔
@@ -421,7 +421,7 @@ void AgentChatPanel::updateStatusStrip() {
         } else {
             m_statusLabel->setText(tr("Agent 就绪"));
         }
-        m_statusLabel->setStyleSheet(QString("color: %1; font-size: 11px; font-weight: 600;").arg(statusColor.name()));
+        m_statusLabel->setStyleSheet(QString("color: %1; font-size: 12px; font-weight: 600;").arg(statusColor.name()));
     }
     if (m_messageCountLabel) {
         m_messageCountLabel->setText(tr("消息 %1").arg(m_messageCount));

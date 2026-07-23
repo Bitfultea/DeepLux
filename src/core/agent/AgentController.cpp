@@ -513,8 +513,8 @@ void AgentController::trimHistoryIfNeeded() {
 }
 
 void AgentController::onGuiEvent(const GuiEvent& event) {
-    Logger::instance().addLog(QString("[AgentObserver] %1 from %2").arg(event.typeString()).arg(event.source),
-                              LogLevel::Debug, "Agent");
+    // AgentObserver DEBUG 镜像日志过于冗余，降级为不输出
+    Q_UNUSED(event)
 }
 
 QJsonObject AgentController::handleToolCall(const QString& toolName, const QJsonObject& params) {

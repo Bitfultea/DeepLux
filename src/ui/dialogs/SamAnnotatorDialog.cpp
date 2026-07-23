@@ -195,7 +195,7 @@ void SamAnnotatorDialog::applyTheme(bool isDark) {
         QStringLiteral("QDialog#SamAnnotatorDialog { background-color: %1; color: %2; }"
                        "QWidget#SamControlPanel { background-color: %3; color: %2; }"
                        "QLabel { background-color: transparent; color: %2; }"
-                       "QLabel#SamStatusLabel, QLabel#SamShortcutHintLabel { color: %4; font-size: 10px; }"
+                       "QLabel#SamStatusLabel, QLabel#SamShortcutHintLabel { color: %4; font-size: 12px; }"
                        "QLineEdit { background-color: %5; color: %2; border: 1px solid %6; padding: 2px 4px; }"
                        "QLineEdit:focus { border: 1px solid #0078d7; }"
                        "QListWidget { background-color: %5; color: %2; border: 1px solid %6; }"
@@ -426,29 +426,34 @@ void SamAnnotatorDialog::setupUi() {
     samActionRow->addWidget(m_restartServerButton);
     connect(m_restartServerButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onRestartSam);
 
-    // 行：打开标注 + 保存会话 + 导出 LabelMe + 导出 YOLO Seg
-    auto* saveExportRow = new QHBoxLayout();
-    saveExportRow->setSpacing(2);
-    actionCol->addLayout(saveExportRow);
+    // 行1：打开标注 + 保存会话
+    auto* saveExportRow1 = new QHBoxLayout();
+    saveExportRow1->setSpacing(2);
+    actionCol->addLayout(saveExportRow1);
 
     m_openAnnotationButton = new QPushButton(tr("打开标注"));
     configureCompactButton(m_openAnnotationButton);
-    saveExportRow->addWidget(m_openAnnotationButton);
+    saveExportRow1->addWidget(m_openAnnotationButton);
     connect(m_openAnnotationButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onOpenAnnotation);
 
     auto* saveBtn = new QPushButton(tr("保存会话"));
     configureCompactButton(saveBtn);
-    saveExportRow->addWidget(saveBtn);
+    saveExportRow1->addWidget(saveBtn);
     connect(saveBtn, &QPushButton::clicked, this, &SamAnnotatorDialog::onSaveSession);
+
+    // 行2：导出 LabelMe + 导出 YOLO
+    auto* saveExportRow2 = new QHBoxLayout();
+    saveExportRow2->setSpacing(2);
+    actionCol->addLayout(saveExportRow2);
 
     auto* exportBtn = new QPushButton(tr("导出 LabelMe"));
     configureCompactButton(exportBtn);
-    saveExportRow->addWidget(exportBtn);
+    saveExportRow2->addWidget(exportBtn);
     connect(exportBtn, &QPushButton::clicked, this, &SamAnnotatorDialog::onExportLabelMe);
 
     m_exportYoloButton = new QPushButton(tr("导出 YOLO"));
     configureCompactButton(m_exportYoloButton);
-    saveExportRow->addWidget(m_exportYoloButton);
+    saveExportRow2->addWidget(m_exportYoloButton);
     connect(m_exportYoloButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onExportYoloSeg);
 
     m_statusLabel = new QLabel(tr("未加载图像"));

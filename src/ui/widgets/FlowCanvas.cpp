@@ -21,8 +21,10 @@ FlowCanvas::FlowCanvas(QWidget* parent) : QGraphicsView(parent), m_scene(new QGr
     setAcceptDrops(true);
     setSceneRect(-5000, -5000, 10000, 10000);
 
-    // 背景
-    setBackgroundBrush(Qt::black);
+    // 背景 — 跟随主题（深色 #1e1e1e，浅色 #f5f5f5）
+    QPalette pal = viewport()->palette();
+    bool isDark = pal.color(QPalette::Window).lightness() <= 128;
+    setBackgroundBrush(isDark ? QColor("#1e1e1e") : QColor("#f5f5f5"));
 }
 
 FlowCanvas::~FlowCanvas() {

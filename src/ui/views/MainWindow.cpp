@@ -640,11 +640,11 @@ void MainWindow::setupMenuBar() {
 
     // 工具菜单
     QMenu* toolMenu = menuBar()->addMenu(tr("工具 (&T)"));
-    toolMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Camera, 20, QColor("#374151")), tr("相机设置"),
+    toolMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Camera, 20, QColor("#9CA3AF")), tr("相机设置"),
                         this, &MainWindow::onCameraSettings);
     toolMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Communication, 20, QColor("#0891B2")),
                         tr("通讯设置"), this, &MainWindow::onCommSettings);
-    toolMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Hardware, 24, QColor("#4B5563")), tr("硬件配置"),
+    toolMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Hardware, 24, QColor("#D1D5DB")), tr("硬件配置"),
                         this, &MainWindow::onHardwareConfig);
     toolMenu->addAction(tr("Agent 设置"), this, [this]() {
         AgentSettingsDialog dlg(this);
@@ -755,7 +755,7 @@ void MainWindow::setupMainLayout() {
     QWidget* mainContentWidget = new QWidget();
     mainContentWidget->setObjectName("MainContentWidget");
     QVBoxLayout* mainContentLayout = new QVBoxLayout(mainContentWidget);
-    mainContentLayout->setContentsMargins(mainSplitter->handleWidth(), 0, 0, 0);
+    mainContentLayout->setContentsMargins(mainSplitter->handleWidth(), 0, mainSplitter->handleWidth(), 0);
     mainContentLayout->setSpacing(0);
 
     // ========== 左侧：工具面板（贯穿整个高度）==========
@@ -2644,7 +2644,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                     QDialog* dialog = new QDialog(this);
                     dialog->setObjectName("PluginConfigDialog");
                     dialog->setWindowTitle(tr("配置 - %1").arg(item->text(0)));
-                    dialog->setMinimumSize(460, 340);
+                    dialog->setMinimumSize(460, 480);
                     dialog->setStyleSheet(pluginConfigDialogStyle(m_isDarkTheme));
                     dialog->setAttribute(Qt::WA_DeleteOnClose);
                     QVBoxLayout* layout = new QVBoxLayout(dialog);

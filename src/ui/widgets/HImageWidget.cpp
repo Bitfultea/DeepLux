@@ -232,13 +232,21 @@ void HImageWidget::paintEvent(QPaintEvent* event)
             }
         }
 
-        // 绘制信息
-        painter.setPen(QColor(0, 0, 0, 160));
-        painter.drawText(11, 21, QString("Zoom: %1%").arg(m_zoom * 100, 0, 'f', 1));
-        painter.drawText(11, 41, QString("Size: %1 x %2").arg(m_imageWidth).arg(m_imageHeight));
+        // 绘制信息 — 半透明背景矩形 + 文字
+        QString zoomText = QString("Zoom: %1%").arg(m_zoom * 100, 0, 'f', 1);
+        QString sizeText = QString("Size: %1 x %2").arg(m_imageWidth).arg(m_imageHeight);
+        QFont infoFont = painter.font();
+        infoFont.setPointSize(9);
+        painter.setFont(infoFont);
+        QRectF zoomRect = painter.boundingRect(QRectF(10, 8, 200, 20), Qt::AlignLeft | Qt::AlignVCenter, zoomText);
+        QRectF sizeRect = painter.boundingRect(QRectF(10, 28, 200, 20), Qt::AlignLeft | Qt::AlignVCenter, sizeText);
+        QRectF bgRect = zoomRect.united(sizeRect).adjusted(-4, -2, 4, 2);
+        painter.setBrush(QColor(0, 0, 0, 140));
+        painter.setPen(Qt::NoPen);
+        painter.drawRoundedRect(bgRect, 3, 3);
         painter.setPen(Qt::white);
-        painter.drawText(10, 20, QString("Zoom: %1%").arg(m_zoom * 100, 0, 'f', 1));
-        painter.drawText(10, 40, QString("Size: %1 x %2").arg(m_imageWidth).arg(m_imageHeight));
+        painter.drawText(zoomRect, Qt::AlignLeft | Qt::AlignVCenter, zoomText);
+        painter.drawText(sizeRect, Qt::AlignLeft | Qt::AlignVCenter, sizeText);
         return;
     }
 

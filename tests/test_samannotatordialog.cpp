@@ -338,7 +338,7 @@ void TestSamAnnotatorDialog::mainViewModeUsesReadableConfigLayout() {
     QVERIFY(hintLabel != nullptr);
     QVERIFY2(dlg.styleSheet().contains(QStringLiteral("QLabel#SamStatusLabel, QLabel#SamShortcutHintLabel")),
              "Shortcut hint should inherit the compact config-panel theme");
-    QVERIFY2(dlg.styleSheet().contains(QStringLiteral("font-size: 10px")), "Shortcut hint should use a smaller font");
+    QVERIFY2(dlg.styleSheet().contains(QStringLiteral("font-size: 12px")), "Shortcut hint should use a readable font size");
 }
 
 void TestSamAnnotatorDialog::modelImportButtonExists() {

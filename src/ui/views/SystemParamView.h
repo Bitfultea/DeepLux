@@ -18,7 +18,6 @@ public:
     ~SystemParamView() override = default;
 
 private slots:
-    void onApplyClicked();
     void onResetClicked();
     void onCloseClicked();
     void onSaveClicked();
@@ -30,7 +29,6 @@ private:
 
     // General settings
     QGroupBox* m_generalGroup = nullptr;
-    QLineEdit* m_projectPathEdit = nullptr;
     QCheckBox* m_autoLoadCheck = nullptr;
     QCheckBox* m_autoSaveCheck = nullptr;
     QSpinBox* m_autoSaveIntervalSpin = nullptr;
@@ -39,23 +37,17 @@ private:
     QGroupBox* m_displayGroup = nullptr;
     QComboBox* m_languageCombo = nullptr;
     QComboBox* mThemeCombo = nullptr;
-    QCheckBox* m_showToolbarCheck = nullptr;
-    QCheckBox* m_showStatusbarCheck = nullptr;
 
     // Run settings
     QGroupBox* m_runGroup = nullptr;
     QSpinBox* m_cycleIntervalSpin = nullptr;
-    QSpinBox* m_maxLoopCountSpin = nullptr;
-    QCheckBox* m_stopOnErrorCheck = nullptr;
 
     // Log settings
     QGroupBox* m_logGroup = nullptr;
     QSpinBox* m_logLevelCombo = nullptr;
-    QSpinBox* m_logMaxSizeSpin = nullptr;
     QCheckBox* m_enableFileLogCheck = nullptr;
 
     // Buttons
-    QPushButton* m_applyBtn = nullptr;
     QPushButton* m_resetBtn = nullptr;
     QPushButton* m_saveBtn = nullptr;
     QPushButton* m_closeBtn = nullptr;

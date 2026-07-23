@@ -102,7 +102,7 @@ void TestFlowCanvas::testImplicitSequentialRelationIsPainted() {
                 continue;
             }
             const QColor c = image.pixelColor(x, y);
-            if (c.red() > 120 && c.green() > 100 && c.blue() < 120) {
+            if (c.red() > 120 && c.green() > 100 && c.red() > c.blue() + 20) {
                 foundLinePixel = true;
                 break;
             }

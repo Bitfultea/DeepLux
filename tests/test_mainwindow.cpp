@@ -774,7 +774,7 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     const QMargins mainContentMargins = mainContentWidget->layout()->contentsMargins();
     QCOMPARE(mainContentMargins.left(), mainSplitter->handleWidth());
     QCOMPARE(mainContentMargins.top(), 0);
-    QCOMPARE(mainContentMargins.right(), 0);
+    QCOMPARE(mainContentMargins.right(), mainSplitter->handleWidth());
     QCOMPARE(mainContentMargins.bottom(), 0);
     QVERIFY2(rightSplitter->handleWidth() >= 6, "Bottom panel splitter handle should be easy to see and drag");
     QVERIFY2(rightTopSplitter->handleWidth() >= 6, "Process/display splitter handle should be easy to see and drag");
