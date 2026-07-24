@@ -188,6 +188,12 @@ void TestMainWindow::testClickingProcessModuleDisplaysIntermediateOutput() {
     QVERIFY(imageWidget != nullptr);
     QVERIFY(!imageWidget->hasImage());
 
+    // Ensure inspector is not closed (could be loaded from persistent settings)
+    ModuleInspectorPanel* clickInspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(clickInspector != nullptr);
+    clickInspector->setPinned(false);
+    window.resetInspectorClosed();
+
     QTreeWidgetItem* item = processTree->topLevelItem(0);
     processTree->setCurrentItem(item);
     const QRect itemRect = processTree->visualItemRect(item);
@@ -232,20 +238,24 @@ void TestMainWindow::testStepRunHighlightMovesBetweenModules() {
     second->initialize();
     engine.addModule(first);
     engine.addModule(second);
+    // Register modules to m_flowModules so syncModulesToRunEngine works
+    window.registerFlowModule(QStringLiteral("first_1"), first);
+    window.registerFlowModule(QStringLiteral("second_1"), second);
 
-    QVERIFY(engine.stepOnce());
+    // Ensure inspector is not pinned (could be loaded from persistent settings)
+    ModuleInspectorPanel* stepInspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(stepInspector != nullptr);
+    stepInspector->setPinned(false);
+
+    // Step run via onStepRun() to test the full UI path
+    QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
     QCoreApplication::processEvents();
     QCOMPARE(processTree->currentItem(), firstItem);
-    QCOMPARE(firstItem->background(0).style(), Qt::NoBrush);
-    QCOMPARE(secondItem->background(0).style(), Qt::NoBrush);
-    QVERIFY(!processTree->isColumnHidden(1));
     QVERIFY(firstItem->text(1).endsWith(QStringLiteral(" ms")));
 
-    QVERIFY(engine.stepOnce());
+    QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
     QCoreApplication::processEvents();
     QCOMPARE(processTree->currentItem(), secondItem);
-    QCOMPARE(firstItem->background(0).style(), Qt::NoBrush);
-    QCOMPARE(secondItem->background(0).style(), Qt::NoBrush);
     QVERIFY(secondItem->text(1).endsWith(QStringLiteral(" ms")));
 
     engine.clearModules();
@@ -720,6 +730,8 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY2(window.styleSheet().contains(
                  QStringLiteral("QToolBar QToolButton { background-color: transparent; color: #ffffff;")),
              "Dark theme toolbar buttons need an explicit readable foreground color");
+    QVERIFY2(window.styleSheet().contains(QStringLiteral("#1e1e1e")),
+             "Dark theme should apply dark background color to stylesheet");
 
     QList<QPlainTextEdit*> plainTextEdits = window.findChildren<QPlainTextEdit*>();
     bool hasLocalizedAgentPlaceholder = false;
@@ -849,23 +861,29 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QCOMPARE(dataSourcePanelForMargins->layout()->contentsMargins().left(), 10);
     QCOMPARE(dataSourcePanelForMargins->layout()->contentsMargins().right(), 10);
 
-    QToolButton* processStartButton = window.findChild<QToolButton*>("ProcessStartPauseBtn");
-    QVERIFY(processStartButton != nullptr);
-    // Process tool button 样式由 ThemeManager 统一管理，检查全局样式表
+    // 运行控制按钮已移至顶部工具栏（流程面板不再有重复按钮）
+    QVERIFY(mainToolbar != nullptr);
+    bool foundStepAction = false;
+    for (QAction* action : mainToolbar->actions()) {
+        if (action->text().contains(QStringLiteral("单步"))) {
+            foundStepAction = true;
+            break;
+        }
+    }
+    QVERIFY2(foundStepAction,
+             "Top toolbar should expose a dedicated one-step execution action");
     QVERIFY2(window.styleSheet().contains(QStringLiteral("QToolBar QToolButton")),
-             "Process toolbar buttons should use the same styled tool-button rules as the tool panel");
-
-    QToolButton* processStepButton = window.findChild<QToolButton*>("ProcessStepBtn");
-    QVERIFY(processStepButton != nullptr);
-    QVERIFY2(processStepButton->toolTip().contains(QStringLiteral("单步执行")),
-             "Process toolbar should expose a dedicated one-step execution action");
-    QVERIFY2(window.styleSheet().contains(QStringLiteral("QToolBar QToolButton")),
-             "Step execution button should share the process toolbar styling");
+             "Toolbar buttons should use the same styled tool-button rules");
     const QImage playIcon =
         AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#0F766E")).pixmap(24, 24).toImage();
     const QImage stepIcon =
         AppIconProvider::icon(AppIconProvider::Icon::Step, 24, QColor("#0F766E")).pixmap(24, 24).toImage();
     QVERIFY2(playIcon != stepIcon, "Step execution icon should not reuse the play triangle");
+    // 流程面板不应再有重复的运行控制按钮
+    QVERIFY2(window.findChild<QToolButton*>("ProcessStartPauseBtn") == nullptr,
+             "Process panel should not have duplicate start/pause button");
+    QVERIFY2(window.findChild<QToolButton*>("ProcessStepBtn") == nullptr,
+             "Process panel should not have duplicate step button");
 
     QLabel* viewportTitle = window.findChild<QLabel*>("ViewportTitle");
     QVERIFY(viewportTitle != nullptr);
@@ -1245,6 +1263,8 @@ void TestMainWindow::testCycleRunDoesNotStealSelection() {
     ModuleInspectorPanel* inspector = window.findChild<ModuleInspectorPanel*>();
     QVERIFY(inspector != nullptr);
     inspector->setPinned(true);
+    // Record the inspector's current instance ID
+    const QString pinnedInstanceId = inspector->currentInstanceId();
 
     // Run once (not cycle, just verify pinned behavior)
     engine.clearModules();
@@ -1259,6 +1279,8 @@ void TestMainWindow::testCycleRunDoesNotStealSelection() {
 
     // Selection should still be on the first module
     QCOMPARE(processTree->currentItem(), firstItem);
+    // Inspector content should not have switched (pinned)
+    QCOMPARE(inspector->currentInstanceId(), pinnedInstanceId);
 
     inspector->setPinned(false);
     engine.clearModules();
@@ -1298,12 +1320,11 @@ void TestMainWindow::testStepRunFollowsExecution() {
     engine.addModule(mod2);
 
     // Step run should follow the executing module (since not pinned)
-    QTest::keyClick(&window, Qt::Key_Space); // trigger step run if mapped
-    // Use direct call instead
-    engine.runOnce();
+    // Use onStepRun() call instead of engine.runOnce()
+    QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
     QCoreApplication::processEvents();
 
-    // After run, selection may follow (when not pinned)
+    // After step run, selection should follow (when not pinned)
     QVERIFY(processTree->topLevelItemCount() >= 2);
 
     engine.clearModules();

@@ -165,22 +165,29 @@ void ModuleInspectorPanel::setupBottomBar()
     bottomLayout->setContentsMargins(4, 4, 4, 4);
     bottomLayout->setSpacing(4);
 
+    // 主按钮：重新运行（蓝色）
     m_rerunBtn = new QPushButton(tr("重新运行"));
     m_rerunBtn->setObjectName("InspectorRerunBtn");
+    m_rerunBtn->setStyleSheet("QPushButton { background-color: #2563EB; color: white; }");
     connect(m_rerunBtn, &QPushButton::clicked, this, &ModuleInspectorPanel::onRerunClicked);
     bottomLayout->addWidget(m_rerunBtn);
 
-    m_resetBtn = new QPushButton(tr("恢复默认"));
-    m_resetBtn->setObjectName("InspectorResetBtn");
-    connect(m_resetBtn, &QPushButton::clicked, this, &ModuleInspectorPanel::onResetClicked);
-    bottomLayout->addWidget(m_resetBtn);
-
     bottomLayout->addStretch();
 
+    // 次要按钮：高级配置（灰色）
     m_advancedBtn = new QPushButton(tr("高级配置"));
     m_advancedBtn->setObjectName("InspectorAdvancedBtn");
+    m_advancedBtn->setStyleSheet("QPushButton { background-color: #6B7280; color: white; }");
     connect(m_advancedBtn, &QPushButton::clicked, this, &ModuleInspectorPanel::onAdvancedClicked);
     bottomLayout->addWidget(m_advancedBtn);
+
+    // 恢复默认降级为菜单项
+    m_resetBtn = new QPushButton(tr("恢复默认"));
+    m_resetBtn->setObjectName("InspectorResetBtn");
+    m_resetBtn->setStyleSheet("QPushButton { color: gray; border: none; }");
+    m_resetBtn->setToolTip(tr("恢复默认参数"));
+    connect(m_resetBtn, &QPushButton::clicked, this, &ModuleInspectorPanel::onResetClicked);
+    bottomLayout->addWidget(m_resetBtn);
 
     layout()->addWidget(m_bottomBar);
 }
@@ -231,12 +238,10 @@ void ModuleInspectorPanel::setDirty(bool dirty)
 {
     m_dirty = dirty;
     if (dirty) {
+        // 脏状态只在标题栏显示一个图标，不在结果页重复
         m_statusLabel->setText(tr("已修改"));
-        // 结果页保留旧结果但显示提示
-        int resultRow = m_resultsTable->rowCount();
-        m_resultsTable->insertRow(resultRow);
-        m_resultsTable->setItem(resultRow, 0, new QTableWidgetItem(tr("提示")));
-        m_resultsTable->setItem(resultRow, 1, new QTableWidgetItem(tr("参数已修改，待重新运行")));
+    } else {
+        m_statusLabel->setText(tr("就绪"));
     }
 }
 
@@ -283,9 +288,14 @@ void ModuleInspectorPanel::setLayoutMode(LayoutMode mode)
 
     switch (mode) {
     case LayoutMode::Docked:
-        // 完整显示
+        // 停靠模式：回到 splitter 中
+        if (m_originalParent) {
+            setParent(m_originalParent);
+        }
+        setWindowFlags(Qt::Widget);
         setMaximumWidth(360);
         updateCollapsedState();
+        show();
         break;
     case LayoutMode::Collapsed:
         // 折叠为 32px 侧栏，只显示图标栏
@@ -294,9 +304,15 @@ void ModuleInspectorPanel::setLayoutMode(LayoutMode mode)
         m_bottomBar->setVisible(false);
         break;
     case LayoutMode::Floating:
-        // 浮动模式：恢复为独立窗口，不参与主布局
+        // 浮动模式：脱离 splitter，变为独立工具窗口
+        if (!m_originalParent) {
+            m_originalParent = parentWidget();
+        }
+        setParent(nullptr);
+        setWindowFlags(Qt::Tool | Qt::FramelessWindowHint);
         setMaximumWidth(360);
         updateCollapsedState();
+        show();
         break;
     }
 }
@@ -420,10 +436,37 @@ void ModuleInspectorPanel::onRerunClicked()
 
 void ModuleInspectorPanel::onResetClicked()
 {
-    if (m_currentModule) {
-        m_currentModule->setParams(m_currentModule->defaultParams());
-        m_propertyPanel->setModule(m_currentModule, m_instanceId);
+    if (!m_currentModule) {
+        return;
     }
+    // 对每个参数发 paramsChanged 信号，由 MainWindow 推入撤销栈并同步 Project
+    QJsonObject defaults = m_currentModule->defaultParams();
+    QJsonObject current = m_currentModule->currentParams();
+    for (auto it = defaults.begin(); it != defaults.end(); ++it) {
+        const QString& key = it.key();
+        // 跳过 _options 元数据键
+        if (key.endsWith("_options")) {
+            continue;
+        }
+        // 只对实际存在的参数发信号
+        if (!current.contains(key) && !defaults.contains(key)) {
+            continue;
+        }
+        QJsonValue val = it.value();
+        QVariant variantValue;
+        if (val.isBool()) {
+            variantValue = val.toBool();
+        } else if (val.isDouble()) {
+            variantValue = val.toDouble();
+        } else if (val.isString()) {
+            variantValue = val.toString();
+        } else {
+            variantValue = val.toVariant();
+        }
+        emit paramsChanged(m_instanceId, key, variantValue);
+    }
+    // 刷新面板显示
+    m_propertyPanel->setModule(m_currentModule, m_instanceId);
 }
 
 void ModuleInspectorPanel::onAdvancedClicked()

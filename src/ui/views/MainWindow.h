@@ -50,6 +50,12 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
 
+    // 测试辅助：直接注册运行时模块到 m_flowModules
+    Q_INVOKABLE void registerFlowModule(const QString& instanceId, IModule* module);
+
+    // 测试辅助：重置检查器关闭状态
+    void resetInspectorClosed();
+
 private slots:
     void onNewSolution();
     void onSolutionList();
@@ -136,11 +142,9 @@ protected:
     QTreeWidget* m_processTree = nullptr;
     QLabel* m_processTimeLabel = nullptr;
     QWidget* m_processStatusWidget = nullptr;
-    QToolButton* m_btnStartPause = nullptr;
-    QToolButton* m_btnStop = nullptr;
-    QToolButton* m_btnStepRun = nullptr;
     bool m_isRunning = false;
     bool m_isCycleMode = false;
+    bool m_isStepMode = false;
     QTimer* m_cycleTimer = nullptr;
 
     // 流程执行时间和高亮

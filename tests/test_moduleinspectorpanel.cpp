@@ -149,7 +149,13 @@ void TestModuleInspectorPanel::testSetDirtyShowsRerunHint() {
     // Mark dirty
     panel.setDirty(true);
 
-    // Results table should contain a hint row
+    // Dirty state should show in the header status label (not in results table)
+    QLabel* statusLabel = panel.findChild<QLabel*>("InspectorStatus");
+    QVERIFY(statusLabel != nullptr);
+    QVERIFY2(statusLabel->text().contains(QStringLiteral("已修改")),
+             "Dirty state should show '已修改' in the header status label");
+
+    // Results table should NOT contain a hint row (no duplication)
     QTableWidget* resultsTable = panel.findChild<QTableWidget*>("InspectorResultsTable");
     QVERIFY(resultsTable != nullptr);
 
@@ -161,7 +167,7 @@ void TestModuleInspectorPanel::testSetDirtyShowsRerunHint() {
             break;
         }
     }
-    QVERIFY2(foundHint, "Dirty state should show a 'rerun needed' hint in the results table");
+    QVERIFY2(!foundHint, "Dirty state should not duplicate hint in results table");
 }
 
 void TestModuleInspectorPanel::testSetPinnedPreventsSelectionSwitch() {

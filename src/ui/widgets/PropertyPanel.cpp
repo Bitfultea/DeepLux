@@ -7,6 +7,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QPair>
+#include <QSet>
 
 namespace DeepLux {
 
@@ -15,6 +16,19 @@ namespace {
 bool isChoiceInfoKey(const QString& key)
 {
     return key.endsWith("_options");
+}
+
+// 内部字段过滤：以 _ 开头的或已知的内部字段不显示在参数面板
+bool isInternalParamKey(const QString& key)
+{
+    static const QSet<QString> knownInternalKeys = {
+        "cameraId", "grabTimeout", "useFile",
+        "_instanceId", "_moduleId", "_category"
+    };
+    if (key.startsWith('_')) {
+        return true;
+    }
+    return knownInternalKeys.contains(key);
 }
 
 QJsonObject choiceInfoFromValue(const QJsonValue& value)
@@ -41,6 +55,7 @@ QString defaultLabelForKey(const QString& key)
 PropertyPanel::PropertyPanel(QWidget* parent)
     : QWidget(parent)
 {
+    setMinimumWidth(220);
     setupUi();
 }
 
@@ -133,10 +148,10 @@ void PropertyPanel::clear()
 
 QStringList PropertyPanel::sortedParamKeys(const QJsonObject& params) const
 {
-    // 收集非 _options 键
+    // 收集非 _options 键且非内部字段
     QStringList keys;
     for (auto it = params.begin(); it != params.end(); ++it) {
-        if (!isChoiceInfoKey(it.key())) {
+        if (!isChoiceInfoKey(it.key()) && !isInternalParamKey(it.key())) {
             keys.append(it.key());
         }
     }
@@ -280,9 +295,8 @@ bool PropertyPanel::commitParam(const QString& key, const QVariant& value)
         clearWidgetError(w);
     }
 
-    // 同步运行时模块
-    m_currentModule->setParam(key, value);
-    // 发送信号（MainWindow 中会同步 Project::setModuleParam）
+    // 只发信号，不直接修改运行时模块
+    // 由 MainWindow 的 pushParamCommand 统一处理修改和撤销
     emit paramsChanged(m_currentModuleId, key, value);
     return true;
 }

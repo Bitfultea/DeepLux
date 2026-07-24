@@ -451,8 +451,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
             m_currentExecutingItem = item;
             // 删除普通运行过程中的 setCurrentItem 调用
             // 单步模式允许跟随刚执行模块，但检查器固定时不得切换
-            bool stepMode = !m_isRunning;
-            bool canFollow = stepMode && !(m_inspectorPanel && m_inspectorPanel->isPinned());
+            bool canFollow = m_isStepMode && !(m_inspectorPanel && m_inspectorPanel->isPinned());
             if (canFollow && m_processTreeController) {
                 m_processTreeController->setCurrentItem(item);
             }
@@ -487,7 +486,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
                 // Display this module's output if available.
                 const ImageData out = RunEngine::instance().moduleOutput(moduleName);
                 if (out.isValid()) {
-                    displayImage(out);
+                    // 只在没有选中特定模块或当前模块就是执行模块时显示
+                    if (m_selectedModuleId.isEmpty() || m_selectedModuleId == moduleName) {
+                        displayImage(out);
+                    }
                 }
                 // 更新检查器结果（选择模块时同时更新检查器）
                 if (m_inspectorPanel && m_selectedModuleId == moduleName) {
@@ -517,6 +519,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
             QTimer::singleShot(1, this, &MainWindow::executeFlowOnce);
         } else {
             setUiRunningState(false, false);
+            m_isStepMode = false;
         }
     });
 
@@ -774,7 +777,7 @@ void MainWindow::setupToolBar() {
     mainToolbar->setObjectName("MainToolBar");
     mainToolbar->setMovable(false);
     mainToolbar->setIconSize(QSize(24, 24));
-    mainToolbar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+    mainToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 
     // 文件操作
     mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::NewFile, 24, QColor("#2563EB")), tr("新建方案"),
@@ -1086,7 +1089,7 @@ void MainWindow::setupMainLayout() {
     flowLayout->setContentsMargins(10, 8, 10, 8);
     flowLayout->setSpacing(6);
 
-    // 流程面板工具栏
+    // 流程面板工具栏 — 运行控制已统一到顶部工具栏，此处只保留占位
     QWidget* processToolBar = new QWidget();
     QHBoxLayout* processToolBarLayout = new QHBoxLayout(processToolBar);
     processToolBarLayout->setContentsMargins(8, 6, 8, 6);
@@ -1094,55 +1097,10 @@ void MainWindow::setupMainLayout() {
     processToolBar->setObjectName("ProcessToolBar");
     processToolBar->setMinimumHeight(48);
 
-    m_btnStartPause = new QToolButton();
-    m_btnStartPause->setToolTip(tr("单次运行"));
-    m_btnStartPause->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    m_btnStartPause->setMinimumHeight(36);
-    m_btnStartPause->setMaximumHeight(36);
-    m_btnStartPause->setAutoRaise(true);
-    m_btnStartPause->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#16A34A")));
-    m_btnStartPause->setIconSize(QSize(24, 24));
-    m_btnStartPause->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_btnStartPause->setObjectName("ProcessStartPauseBtn");
-
-    m_btnStop = new QToolButton();
-    m_btnStop->setToolTip(tr("停止"));
-    m_btnStop->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    m_btnStop->setMinimumHeight(36);
-    m_btnStop->setMaximumHeight(36);
-    m_btnStop->setAutoRaise(true);
-    m_btnStop->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Stop, 24, QColor("#DC2626")));
-    m_btnStop->setIconSize(QSize(24, 24));
-    m_btnStop->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_btnStop->setObjectName("ProcessStopBtn");
-    m_btnStop->setEnabled(false);
-
-    QToolButton* runCycleBtn = new QToolButton();
-    runCycleBtn->setToolTip(tr("循环运行"));
-    runCycleBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    runCycleBtn->setMinimumHeight(36);
-    runCycleBtn->setMaximumHeight(36);
-    runCycleBtn->setAutoRaise(true);
-    runCycleBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Cycle, 24, QColor("#2563EB")));
-    runCycleBtn->setIconSize(QSize(24, 24));
-    runCycleBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    runCycleBtn->setObjectName("ProcessCycleBtn");
-
-    m_btnStepRun = new QToolButton();
-    m_btnStepRun->setToolTip(tr("单步执行"));
-    m_btnStepRun->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    m_btnStepRun->setMinimumHeight(36);
-    m_btnStepRun->setMaximumHeight(36);
-    m_btnStepRun->setAutoRaise(true);
-    m_btnStepRun->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Step, 24, QColor("#0F766E")));
-    m_btnStepRun->setIconSize(QSize(24, 24));
-    m_btnStepRun->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_btnStepRun->setObjectName("ProcessStepBtn");
-
-    processToolBarLayout->addWidget(m_btnStartPause);
-    processToolBarLayout->addWidget(m_btnStop);
-    processToolBarLayout->addWidget(runCycleBtn);
-    processToolBarLayout->addWidget(m_btnStepRun);
+    // 占位标签（运行控制按钮已移至顶部工具栏）
+    QLabel* processToolBarHint = new QLabel(tr("运行控制见顶部工具栏"));
+    processToolBarHint->setAlignment(Qt::AlignCenter);
+    processToolBarLayout->addWidget(processToolBarHint);
     flowLayout->addWidget(processToolBar);
 
     // 模块树
@@ -1510,19 +1468,7 @@ void MainWindow::setupMainLayout() {
     connect(m_logDock, &QDockWidget::visibilityChanged, this,
             [this](bool visible) { if (m_viewBottomPanelAction) m_viewBottomPanelAction->setChecked(visible); });
 
-    // 连接按钮信号
-    connect(m_btnStartPause, &QToolButton::clicked, this, [this]() {
-        if (m_isRunning) {
-            onStop();
-        } else {
-            onRunOnce();
-        }
-    });
-    connect(m_btnStop, &QToolButton::clicked, this, &MainWindow::onStop);
-    if (QToolButton* runCycleBtn = findChild<QToolButton*>("ProcessCycleBtn")) {
-        connect(runCycleBtn, &QToolButton::clicked, this, &MainWindow::onRunCycle);
-    }
-    connect(m_btnStepRun, &QToolButton::clicked, this, &MainWindow::onStepRun);
+    // 运行控制按钮已移至顶部工具栏，此处无需连接流程面板按钮信号
 
     // Esc 快捷键退出聚焦模式
     QShortcut* escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
@@ -3519,6 +3465,17 @@ void MainWindow::pushParamCommand(const QString& instanceId, const QString& key,
     m_paramUndoStack->push(cmd);
 }
 
+void MainWindow::registerFlowModule(const QString& instanceId, IModule* module) {
+    m_flowModules.insert(instanceId, module);
+}
+
+void MainWindow::resetInspectorClosed() {
+    m_inspectorClosed = false;
+    if (m_inspectorPanel) {
+        m_inspectorPanel->setVisible(true);
+    }
+}
+
 void MainWindow::selectModule(const QString& instanceId, bool revealInspector) {
     // 如果检查器已固定且 instanceId 不同，不切换
     if (m_inspectorPanel && m_inspectorPanel->isPinned() &&
@@ -3526,7 +3483,16 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector) {
         return;
     }
 
-    // 如果检查器已关闭，不自动展开（除非显式 revealInspector 且用户重新打开）
+    // 如果检查器已关闭且用户显式重新打开（revealInspector=true）
+    if (m_inspectorClosed && revealInspector) {
+        m_inspectorClosed = false;
+        if (m_inspectorPanel) {
+            m_inspectorPanel->setVisible(true);
+        }
+        adaptInspectorLayout();
+    }
+
+    // 如果检查器已关闭，不自动展开
     if (m_inspectorClosed && !revealInspector) {
         m_selectedModuleId = instanceId;
         if (m_flowCanvas) {
@@ -3594,6 +3560,8 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector) {
 
             if (revealInspector) {
                 // 确保检查器可见（如果被折叠则展开）
+                m_inspectorPanel->setVisible(true);
+                adaptInspectorLayout();
             }
         } else {
             m_inspectorPanel->clear();
@@ -3736,7 +3704,7 @@ void MainWindow::adaptInspectorLayout() {
 
     // RightTopSplitter 中流程面板宽度
     int flowPanelWidth = 0;
-    if (m_rightTopSplitter && m_rightTopSplitter->count() >= 3) {
+    if (m_rightTopSplitter && m_rightTopSplitter->count() >= 1) {
         flowPanelWidth = m_rightTopSplitter->sizes().value(0, 300);
     }
 
@@ -3758,7 +3726,42 @@ void MainWindow::adaptInspectorLayout() {
     }
 
     if (newMode != m_inspectorPanel->layoutMode()) {
+        // Floating 模式：从 splitter 移除检查器
+        if (newMode == ModuleInspectorPanel::LayoutMode::Floating &&
+            m_rightTopSplitter && m_rightTopSplitter->indexOf(m_inspectorPanel) >= 0) {
+            m_rightTopSplitter->replaceWidget(m_rightTopSplitter->indexOf(m_inspectorPanel), new QWidget());
+        }
+        // Docked/Collapsed 模式：如果检查器不在 splitter 中，加回
+        if ((newMode == ModuleInspectorPanel::LayoutMode::Docked ||
+             newMode == ModuleInspectorPanel::LayoutMode::Collapsed) &&
+            m_rightTopSplitter && m_rightTopSplitter->indexOf(m_inspectorPanel) < 0) {
+            // 移除占位 widget（如果有）
+            for (int i = 0; i < m_rightTopSplitter->count(); ++i) {
+                QWidget* w = m_rightTopSplitter->widget(i);
+                if (w && w->objectName() == "InspectorPlaceholder") {
+                    m_rightTopSplitter->replaceWidget(i, m_inspectorPanel);
+                    break;
+                }
+            }
+            if (m_rightTopSplitter->indexOf(m_inspectorPanel) < 0) {
+                m_rightTopSplitter->addWidget(m_inspectorPanel);
+            }
+        }
         m_inspectorPanel->setLayoutMode(newMode);
+    }
+
+    // 确保主视图宽度在任何模式下不低于 620px
+    if (m_rightTopSplitter && m_rightTopSplitter->count() >= 2) {
+        QList<int> sizes = m_rightTopSplitter->sizes();
+        if (sizes.size() >= 2 && sizes.value(1, 0) < minMainView) {
+            // 修正：将主视图（index 1）设为至少 620px
+            int deficit = minMainView - sizes.value(1, 0);
+            if (sizes.value(0, 0) > minMainView + deficit) {
+                sizes[0] = sizes.value(0, 0) - deficit;
+                sizes[1] = minMainView;
+                m_rightTopSplitter->setSizes(sizes);
+            }
+        }
     }
 }
 
@@ -3977,18 +3980,7 @@ void MainWindow::onQuickAnnotate() {
 void MainWindow::setUiRunningState(bool running, bool cycleMode) {
     m_isRunning = running;
     m_isCycleMode = running && cycleMode;
-
-    if (m_btnStartPause) {
-        m_btnStartPause->setIcon(running ? AppIconProvider::icon(AppIconProvider::Icon::Pause, 24, QColor("#D97706"))
-                                         : AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#16A34A")));
-        m_btnStartPause->setToolTip(running ? tr("暂停") : tr("单次运行"));
-    }
-    if (m_btnStop) {
-        m_btnStop->setEnabled(running);
-    }
-    if (m_btnStepRun) {
-        m_btnStepRun->setEnabled(!running);
-    }
+    // 运行控制按钮已统一到顶部工具栏，状态由 QAction 自动管理
 }
 
 void MainWindow::onRunOnce() {
@@ -4041,14 +4033,17 @@ void MainWindow::onStepRun() {
     }
 
     setUiRunningState(true, false);
+    m_isStepMode = true;
     Logger::instance().info(tr("单步执行"), "System");
     if (!RunEngine::instance().stepOnce()) {
         setUiRunningState(false, false);
+        m_isStepMode = false;
     }
 }
 
 void MainWindow::onStop() {
     setUiRunningState(false, false);
+    m_isStepMode = false;
     RunEngine::instance().stop();
     Logger::instance().info(tr("停止"), "System");
 }

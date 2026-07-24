@@ -5,6 +5,7 @@
 #include "core/model/ImageData.h"
 
 #include <QLabel>
+#include <QPointer>
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -174,6 +175,7 @@ private:
     bool m_isDarkTheme = false;
     LayoutMode m_layoutMode = LayoutMode::Docked;
     bool m_userOverrideMode = false;
+    QPointer<QWidget> m_originalParent;
 };
 
 } // namespace DeepLux
