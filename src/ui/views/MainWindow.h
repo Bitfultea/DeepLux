@@ -299,6 +299,7 @@ protected:
     void adaptInspectorLayout();
     bool m_inspectorClosed = false;
     bool m_toolPanelUserClosed = false;
+    bool m_toolPanelSuppressSignal = false;  // 自适应隐藏时抑制 visibilityChanged 设 userClosed
 };
 
 } // namespace DeepLux

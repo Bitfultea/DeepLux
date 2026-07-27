@@ -75,6 +75,8 @@ void PropertyPanel::setupUi()
     m_scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
     m_contentWidget = new QWidget();
+    m_contentWidget->setObjectName("PropertyPanelContent");
+    m_contentWidget->setAutoFillBackground(true);
     m_contentLayout = new QVBoxLayout(m_contentWidget);
     m_contentLayout->setContentsMargins(8, 8, 8, 8);
     m_contentLayout->setSpacing(8);
@@ -454,7 +456,8 @@ void PropertyPanel::applyTheme(bool isDark) {
     const QString border = isDark ? "#3a3a3a" : "#dddddd";
 
     setStyleSheet(QString(
-        "QScrollArea { background-color: %1; border: none; }"
+        "QScrollArea, QScrollArea > QWidget > QWidget { background-color: %1; border: none; }"
+        "QWidget#PropertyPanelContent { background-color: %1; }"
         "QLabel { color: %2; background-color: transparent; }"
         "QGroupBox { color: %2; border: 1px solid %3; border-radius: 4px; "
         "  margin-top: 8px; padding-top: 8px; background-color: %1; }"

@@ -143,6 +143,7 @@ bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info) {
     QJsonObject json = doc.object();
 
     info.name = json["name"].toString();
+    info.id = json["id"].toString();
     info.version = json["version"].toString();
     info.category = json["category"].toString();
     info.description = json["description"].toString();
@@ -464,13 +465,23 @@ QList<PluginInfo> PluginManager::cameraInfos() const {
 PluginInfo PluginManager::pluginInfo(const QString& name) const {
     QMutexLocker locker(&m_mutex);
 
+    // 1. 精确 name 匹配
     if (m_modules.contains(name)) {
         return m_modules[name];
     }
     if (m_cameras.contains(name)) {
         return m_cameras[name];
     }
-    // P1: 大小写不敏感回退查找 — moduleId 后缀 "grabimage" vs metadata name "GrabImage"
+    // 2. 精确 id 匹配（如 "com.deeplux.plugin.grabimage"）
+    for (const PluginInfo& info : m_modules) {
+        if (info.id == name)
+            return info;
+    }
+    for (const PluginInfo& info : m_cameras) {
+        if (info.id == name)
+            return info;
+    }
+    // 3. 大小写不敏感 name 回退
     for (auto it = m_modules.constBegin(); it != m_modules.constEnd(); ++it) {
         if (it.key().compare(name, Qt::CaseInsensitive) == 0)
             return it.value();
@@ -478,6 +489,14 @@ PluginInfo PluginManager::pluginInfo(const QString& name) const {
     for (auto it = m_cameras.constBegin(); it != m_cameras.constEnd(); ++it) {
         if (it.key().compare(name, Qt::CaseInsensitive) == 0)
             return it.value();
+    }
+    // 4. id 前缀匹配（strip "com.deeplux.plugin." → match id）
+    QString stripped = name;
+    if (stripped.startsWith("com.deeplux.plugin."))
+        stripped = stripped.mid(20);
+    for (const PluginInfo& info : m_modules) {
+        if (info.id.endsWith(stripped, Qt::CaseInsensitive))
+            return info;
     }
     return PluginInfo();
 }

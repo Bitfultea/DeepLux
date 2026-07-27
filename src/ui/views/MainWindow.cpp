@@ -1247,6 +1247,35 @@ void MainWindow::setupMainLayout() {
         }
         m_modulesNeedSync = true;
     });
+    // P1-7: 恢复默认值用 beginMacro 批量为单条撤销记录
+    connect(m_inspectorPanel, &ModuleInspectorPanel::resetDefaultsRequested,
+            this, [this](const QString& instanceId) {
+        IModule* module = m_flowModules.value(instanceId, nullptr);
+        if (!module || !m_paramUndoStack)
+            return;
+        QJsonObject defaults = module->defaultParams();
+        m_paramUndoStack->beginMacro(tr("恢复默认参数"));
+        for (auto it = defaults.begin(); it != defaults.end(); ++it) {
+            const QString& key = it.key();
+            if (key.endsWith("_options"))
+                continue;
+            QJsonValue val = it.value();
+            QVariant variantValue;
+            if (val.isBool())
+                variantValue = val.toBool();
+            else if (val.isDouble())
+                variantValue = val.toDouble();
+            else if (val.isString())
+                variantValue = val.toString();
+            else
+                variantValue = val.toVariant();
+            pushParamCommand(instanceId, key, variantValue);
+        }
+        m_paramUndoStack->endMacro();
+        m_dirtyModuleIds.insert(instanceId);
+        if (m_inspectorPanel)
+            m_inspectorPanel->setDirty(true);
+    });
     connect(m_inspectorPanel, &ModuleInspectorPanel::rerunRequested,
             this, [this]() {
         if (!m_selectedModuleId.isEmpty()) {
@@ -1471,12 +1500,12 @@ void MainWindow::setupMainLayout() {
     mainContentLayout->addWidget(m_mainSplitter);
     setCentralWidget(mainContentWidget);
 
-    // P2: 同步菜单勾选状态，但不触发自适应显示
+    // P2: 同步菜单勾选状态，自适应隐藏不设 userClosed
     connect(m_toolBoxDock, &QDockWidget::visibilityChanged, this,
             [this](bool visible) {
                 if (m_viewToolPanelAction)
                     m_viewToolPanelAction->setChecked(visible);
-                if (!visible)
+                if (!visible && !m_toolPanelSuppressSignal)
                     m_toolPanelUserClosed = true;
             });
     connect(m_logDock, &QDockWidget::visibilityChanged, this,
@@ -3008,6 +3037,8 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                             }
                             Logger::instance().info(tr("已添加插件到流程：%1 (%2)").arg(displayName).arg(instanceName),
                                                     "Flow");
+                            // P1-4: 模块创建后重新选择，更新检查器
+                            selectModule(instanceName, true);
                         });
 
                         dropEvent->setDropAction(Qt::CopyAction);
@@ -3330,13 +3361,15 @@ void MainWindow::openAdvancedPluginConfig(const QString& instanceId) {
         return;
     }
 
+    // P1-1: 保存参数快照，取消时回滚
+    const QJsonObject paramsBefore = module->currentParams();
+
     QWidget* configWidget = module->createConfigWidget();
     if (!configWidget) {
         Logger::instance().warning(tr("该模块没有配置选项"), "Config");
         return;
     }
 
-    // 查找流程树中的显示名
     QString displayName = instanceId;
     QTreeWidgetItem* item = m_processTreeController ? m_processTreeController->instanceItem(instanceId) : nullptr;
     if (item) {
@@ -3373,19 +3406,33 @@ void MainWindow::openAdvancedPluginConfig(const QString& instanceId) {
     btnLayout->addWidget(cancelBtn);
     layout->addLayout(btnLayout);
 
-    // dialog 关闭时把 configWidget 从 dialog 分离，防止被 WA_DeleteOnClose 销毁
-    connect(dialog, &QDialog::finished, dialog, [scrollArea, configWidget]() {
-        if (scrollArea->widget() == configWidget) {
-            scrollArea->takeWidget();
-        }
-        configWidget->setParent(nullptr);
+    // P1-1: dialog 关闭时销毁 configWidget（不再保留悬空指针）
+    connect(dialog, &QDialog::finished, dialog, [configWidget]() {
+        configWidget->deleteLater();
     });
 
     connect(okBtn, &QPushButton::clicked, dialog, &QDialog::accept);
     connect(cancelBtn, &QPushButton::clicked, dialog, &QDialog::reject);
 
     if (dialog->exec() == QDialog::Accepted) {
+        // P1-1: 确定时写回 Project
+        const QJsonObject paramsAfter = module->currentParams();
+        Project* project = ProjectManager::instance().currentProject();
+        if (project) {
+            for (auto it = paramsAfter.constBegin(); it != paramsAfter.constEnd(); ++it) {
+                if (paramsBefore.value(it.key()) != it.value()) {
+                    project->setModuleParam(instanceId, it.key(), it.value());
+                }
+            }
+        }
+        m_dirtyModuleIds.insert(instanceId);
+        if (m_inspectorPanel)
+            m_inspectorPanel->setDirty(true);
         Logger::instance().info(tr("模块参数已更新：%1").arg(displayName), "Config");
+    } else {
+        // P1-1: 取消时回滚参数
+        module->setParams(paramsBefore);
+        Logger::instance().info(tr("已取消配置修改：%1").arg(displayName), "Config");
     }
 }
 
@@ -3562,16 +3609,9 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector) {
     if (m_inspectorPanel) {
         IModule* module = m_flowModules.value(instanceId, nullptr);
         if (module) {
-            // 获取插件信息 — P1: 使用 module->name() 匹配 PluginManager 索引
-            QString moduleId = module->moduleId();
-            PluginInfo info;
-            // 优先用模块的 name() 查找（与 metadata.json name 字段一致）
-            info = PluginManager::instance().pluginInfo(module->name());
-            if (info.name.isEmpty() && moduleId.startsWith("com.deeplux.plugin.")) {
-                // 回退：去掉前缀后大小写不敏感查找
-                QString pluginName = moduleId.mid(QString("com.deeplux.plugin.").length());
-                info = PluginManager::instance().pluginInfo(pluginName);
-            }
+            // P1-6: 直接用 moduleId() 查询，pluginInfo() 内部支持 id/name/大小写多级匹配
+            const QString moduleId = module->moduleId();
+            PluginInfo info = PluginManager::instance().pluginInfo(moduleId);
             m_inspectorPanel->setModule(module, instanceId, info);
 
             // 如果有输出，更新结果
@@ -3725,7 +3765,10 @@ void MainWindow::adaptInspectorLayout() {
     if (m_toolBoxDock) {
         const bool toolShouldBeVisible = windowWidth >= 1100 && !m_toolPanelUserClosed;
         if (m_toolBoxDock->isVisible() != toolShouldBeVisible) {
+            // P2: 抑制 visibilityChanged 设 userClosed（这是自适应隐藏，不是用户操作）
+            m_toolPanelSuppressSignal = true;
             m_toolBoxDock->setVisible(toolShouldBeVisible);
+            m_toolPanelSuppressSignal = false;
         }
     }
 

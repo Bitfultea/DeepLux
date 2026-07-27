@@ -115,6 +115,7 @@ public:
 
 signals:
     void paramsChanged(const QString& instanceId, const QString& key, const QVariant& value);
+    void resetDefaultsRequested(const QString& instanceId);
     void rerunRequested();
     void advancedConfigRequested(const QString& instanceId);
     void pinChanged(bool pinned);

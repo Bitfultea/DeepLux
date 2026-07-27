@@ -26,7 +26,8 @@ class ICamera;
  * @brief 插件信息
  */
 struct PluginInfo {
-    QString name;        // 插件名称
+    QString id;          // 插件完整 ID (metadata.json "id" 字段, 如 "com.deeplux.plugin.grabimage")
+    QString name;        // 插件名称 (metadata.json "name" 字段, 如 "GrabImage")
     QString version;     // 版本
     QString category;    // 分类
     QString path;        // 路径

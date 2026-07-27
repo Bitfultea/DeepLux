@@ -298,15 +298,17 @@ void ModuleInspectorPanel::setLayoutMode(LayoutMode mode)
         }
         setWindowFlags(Qt::Widget);
         setMaximumWidth(360);
-        setMinimumSize(0, 0);  // P2: 重置浮动时的最小尺寸约束
+        setMinimumWidth(0);
+        setMinimumSize(0, 0);
+        onCollapseToggled(false);
         updateCollapsedState();
         show();
         break;
     case LayoutMode::Collapsed:
-        // 折叠为 32px 侧栏，只显示图标栏
+        // P1-3: 折叠模式 — 同步最小宽度和 m_collapsed 状态
+        setMinimumWidth(32);
         setMaximumWidth(32);
-        m_tabWidget->setVisible(false);
-        m_bottomBar->setVisible(false);
+        onCollapseToggled(true);
         break;
     case LayoutMode::Floating:
         // 浮动模式：脱离 splitter，变为独立工具窗口
@@ -461,32 +463,8 @@ void ModuleInspectorPanel::onResetClicked()
     if (!m_currentModule) {
         return;
     }
-    // 对每个参数发 paramsChanged 信号，由 MainWindow 推入撤销栈并同步 Project
-    QJsonObject defaults = m_currentModule->defaultParams();
-    QJsonObject current = m_currentModule->currentParams();
-    for (auto it = defaults.begin(); it != defaults.end(); ++it) {
-        const QString& key = it.key();
-        // 跳过 _options 元数据键
-        if (key.endsWith("_options")) {
-            continue;
-        }
-        // 只对实际存在的参数发信号
-        if (!current.contains(key) && !defaults.contains(key)) {
-            continue;
-        }
-        QJsonValue val = it.value();
-        QVariant variantValue;
-        if (val.isBool()) {
-            variantValue = val.toBool();
-        } else if (val.isDouble()) {
-            variantValue = val.toDouble();
-        } else if (val.isString()) {
-            variantValue = val.toString();
-        } else {
-            variantValue = val.toVariant();
-        }
-        emit paramsChanged(m_instanceId, key, variantValue);
-    }
+    // P1-7: 发单个 resetDefaultsRequested 信号，由 MainWindow 用 beginMacro/endMacro 批量推入撤销栈
+    emit resetDefaultsRequested(m_instanceId);
     // 刷新面板显示
     m_propertyPanel->setModule(m_currentModule, m_instanceId);
 }
