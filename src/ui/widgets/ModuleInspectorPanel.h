@@ -120,6 +120,7 @@ signals:
     void advancedConfigRequested(const QString& instanceId);
     void pinChanged(bool pinned);
     void closeRequested();
+    void collapseToggled(bool collapsed);  // 高: 手动折叠时通知 MainWindow 调整 splitter
 
 private slots:
     void onPinToggled(bool checked);

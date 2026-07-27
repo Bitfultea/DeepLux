@@ -421,11 +421,24 @@ void ModuleInspectorPanel::updateCollapsedState()
     if (m_collapsed) {
         m_tabWidget->setVisible(false);
         m_bottomBar->setVisible(false);
+        // 高: 折叠时隐藏模块名、状态、耗时，只保留图标 + 展开/关闭按钮
+        if (m_nameLabel) m_nameLabel->setVisible(false);
+        if (m_statusLabel) m_statusLabel->setVisible(false);
+        if (m_elapsedLabel) m_elapsedLabel->setVisible(false);
+        if (m_dirtyDot) m_dirtyDot->setVisible(false);
+        if (m_pinBtn) m_pinBtn->setVisible(false);
+        if (m_iconLabel) m_iconLabel->setVisible(false);
     } else {
         if (m_currentModule) {
             m_tabWidget->setVisible(true);
             m_bottomBar->setVisible(true);
         }
+        if (m_nameLabel) m_nameLabel->setVisible(true);
+        if (m_statusLabel) m_statusLabel->setVisible(true);
+        if (m_elapsedLabel) m_elapsedLabel->setVisible(true);
+        if (m_dirtyDot) m_dirtyDot->setVisible(true);
+        if (m_pinBtn) m_pinBtn->setVisible(true);
+        if (m_iconLabel) m_iconLabel->setVisible(true);
     }
 }
 
@@ -440,12 +453,21 @@ void ModuleInspectorPanel::onPinToggled(bool checked)
 void ModuleInspectorPanel::onCollapseToggled(bool collapsed)
 {
     m_collapsed = collapsed;
-    // 折叠时显示向左箭头（展开），展开时显示向右箭头（可折叠）
     m_collapseBtn->setIcon(AppIconProvider::icon(
         collapsed ? AppIconProvider::Icon::ChevronLeft
                   : AppIconProvider::Icon::ChevronRight,
         16));
+    // 高: 手动折叠时调整自身宽度
+    if (collapsed) {
+        setMaximumWidth(32);
+        setMinimumWidth(32);
+    } else {
+        setMaximumWidth(360);
+        setMinimumWidth(0);
+    }
     updateCollapsedState();
+    // 通知 MainWindow 重分配 splitter 空间
+    emit collapseToggled(collapsed);
 }
 
 void ModuleInspectorPanel::onCloseClicked()

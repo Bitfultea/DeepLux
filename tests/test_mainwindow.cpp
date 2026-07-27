@@ -97,6 +97,9 @@ private slots:
     void testCloseInspectorDoesNotAutoExpand();
     void testDeleteModuleClearsInspector();
     void testOldAdvancedConfigDialogStillUsable();
+    void testNarrowWindowToolPanelRestored();
+    void testInspectorManualCollapseResizesSplitter();
+    void testFocusModePreservesLogVisibility();
 
 private:
     bool installFitLinePlugin(const QString& pluginRoot) const;
@@ -1439,6 +1442,96 @@ void TestMainWindow::testOldAdvancedConfigDialogStillUsable() {
         QVERIFY2(spy.count() >= 1,
                  "Advanced config button should emit advancedConfigRequested signal");
     }
+}
+
+// 中: 回归测试 — 窄窗口后工具面板恢复
+void TestMainWindow::testNarrowWindowToolPanelRestored() {
+    MainWindow window;
+    window.resize(1600, 900);
+    window.show();
+    QCoreApplication::processEvents();
+
+    QDockWidget* toolDock = window.findChild<QDockWidget*>("ToolPanelDock");
+    QVERIFY(toolDock != nullptr);
+    QVERIFY2(toolDock->isVisible(), "Tool panel should be visible at 1600px");
+
+    // 缩到 1024px
+    window.resize(1024, 700);
+    QCoreApplication::processEvents();
+
+    // 恢复到 1600px
+    window.resize(1600, 900);
+    QCoreApplication::processEvents();
+
+    QVERIFY2(toolDock->isVisible(),
+             "Tool panel should be restored after window resized back to 1600px");
+}
+
+// 中: 回归测试 — 手动折叠检查器后 splitter 重分配
+void TestMainWindow::testInspectorManualCollapseResizesSplitter() {
+    MainWindow window;
+    window.resize(1440, 900);
+    window.show();
+    QCoreApplication::processEvents();
+
+    auto* inspector = window.findChild<DeepLux::ModuleInspectorPanel*>();
+    if (!inspector)
+        QSKIP("ModuleInspectorPanel not found, skipping");
+
+    QSplitter* rightTopSplitter = window.findChild<QSplitter*>("RightTopSplitter");
+    QVERIFY(rightTopSplitter != nullptr);
+
+    const int inspectorIdx = rightTopSplitter->indexOf(inspector);
+    if (inspectorIdx < 0)
+        QSKIP("Inspector not in splitter, skipping");
+
+    QList<int> beforeSizes = rightTopSplitter->sizes();
+    const int beforeWidth = beforeSizes.value(inspectorIdx, 0);
+    if (beforeWidth <= 32)
+        QSKIP("Inspector width too small in test env, skipping");
+
+    // 模拟折叠信号
+    emit inspector->collapseToggled(true);
+    QCoreApplication::processEvents();
+
+    QList<int> afterSizes = rightTopSplitter->sizes();
+    const int afterWidth = afterSizes.value(inspectorIdx, 0);
+    QVERIFY2(afterWidth <= 32,
+             QString("Inspector should collapse to <=32px after collapseToggled, got %1").arg(afterWidth).toUtf8());
+
+    // 恢复
+    emit inspector->collapseToggled(false);
+    QCoreApplication::processEvents();
+
+    QList<int> restoredSizes = rightTopSplitter->sizes();
+    const int restoredWidth = restoredSizes.value(inspectorIdx, 0);
+    QVERIFY2(restoredWidth > 32,
+             QString("Inspector should expand after collapseToggled(false), got %1").arg(restoredWidth).toUtf8());
+}
+
+// 中: 回归测试 — 焦点模式保留日志面板可见状态
+void TestMainWindow::testFocusModePreservesLogVisibility() {
+    MainWindow window;
+    window.resize(1440, 900);
+    window.show();
+    QCoreApplication::processEvents();
+
+    QDockWidget* logDock = window.findChild<QDockWidget*>("LogDock");
+    QVERIFY(logDock != nullptr);
+    const bool logVisibleBefore = logDock->isVisible();
+
+    // 模拟双击主视图进入焦点模式
+    QWidget* imageDisplay = window.findChild<QWidget*>("ImageDisplayWidget");
+    QVERIFY(imageDisplay != nullptr);
+    QTest::mouseDClick(imageDisplay, Qt::LeftButton);
+    QCoreApplication::processEvents();
+    QVERIFY2(!logDock->isVisible(), "Log dock should be hidden in focus mode");
+
+    // 双击退出
+    QTest::mouseDClick(imageDisplay, Qt::LeftButton);
+    QCoreApplication::processEvents();
+    QVERIFY2(logDock->isVisible() == logVisibleBefore,
+             "Log dock visibility should be restored after exiting focus mode");
 }
 
 QTEST_MAIN(TestMainWindow)

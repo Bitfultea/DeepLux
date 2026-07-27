@@ -1291,6 +1291,25 @@ void MainWindow::setupMainLayout() {
         Q_UNUSED(pinned)
         // 固定状态由检查器自行管理，此处仅记录
     });
+    // 高: 手动折叠时重分配 splitter 空间
+    connect(m_inspectorPanel, &ModuleInspectorPanel::collapseToggled,
+            this, [this](bool collapsed) {
+        if (!m_rightTopSplitter || !m_inspectorPanel)
+            return;
+        QList<int> sizes = m_rightTopSplitter->sizes();
+        const int inspIdx = m_rightTopSplitter->indexOf(m_inspectorPanel);
+        if (inspIdx < 0 || inspIdx >= sizes.size())
+            return;
+        if (collapsed) {
+            int freed = sizes[inspIdx] - 32;
+            sizes[inspIdx] = 32;
+            if (sizes.size() > 1) sizes[1] += freed;
+        } else {
+            sizes[inspIdx] = 280;
+            if (sizes.size() > 1) sizes[1] = qMax(620, sizes[1] - 280);
+        }
+        m_rightTopSplitter->setSizes(sizes);
+    });
     connect(m_inspectorPanel, &ModuleInspectorPanel::closeRequested,
             this, [this]() {
         m_inspectorClosed = true;
@@ -1705,6 +1724,10 @@ void MainWindow::onViewportCreated(const QString& viewportId, ViewportWidget* vi
         return;
     connect(viewport, &ViewportWidget::point2DClicked, this, &MainWindow::onPoint2DPicked, Qt::UniqueConnection);
     connect(viewport, &ViewportWidget::point3DClicked, this, &MainWindow::onPoint3DPicked, Qt::UniqueConnection);
+    // 高: 视口及其子控件也需要事件过滤器，双击进入焦点模式
+    viewport->installEventFilter(this);
+    if (viewport->imageWidget())
+        viewport->imageWidget()->installEventFilter(this);
 }
 
 void MainWindow::onPoint2DPicked(const QPointF& point) {
@@ -3470,17 +3493,18 @@ void MainWindow::toggleFocusMode() {
         m_focusSavedMainSizes = m_mainSplitter->sizes();
         m_focusSavedRightTopSizes = m_rightTopSplitter->sizes();
         m_focusSavedRightSplitterSizes = m_rightSplitter->sizes();
+        m_focusSavedLogVisible = m_logDock ? m_logDock->isVisible() : false;
 
         if (m_toolBoxDock) m_toolBoxDock->setVisible(false);
         if (m_processTabWidget) m_processTabWidget->parentWidget()->setVisible(false);
         if (m_inspectorPanel) m_inspectorPanel->setVisible(false);
         if (m_logDock) m_logDock->setVisible(false);
     } else {
-        // 恢复：检查用户之前的设置，而非 action 勾选
         if (m_toolBoxDock && !m_toolPanelUserClosed) m_toolBoxDock->setVisible(true);
         if (m_processTabWidget) m_processTabWidget->parentWidget()->setVisible(true);
         if (m_inspectorPanel && !m_inspectorClosed) m_inspectorPanel->setVisible(true);
-        if (m_logDock) m_logDock->setVisible(true);
+        // 高: 恢复日志面板到进入焦点前状态
+        if (m_logDock) m_logDock->setVisible(m_focusSavedLogVisible);
 
         if (!m_focusSavedMainSizes.isEmpty()) m_mainSplitter->setSizes(m_focusSavedMainSizes);
         if (!m_focusSavedRightTopSizes.isEmpty()) m_rightTopSplitter->setSizes(m_focusSavedRightTopSizes);

@@ -205,6 +205,7 @@ protected:
     // 阶段 8: 聚焦模式
     void toggleFocusMode();
     bool m_focusMode = false;
+    bool m_focusSavedLogVisible = false;
     void addMeasurementConfigAction(QVBoxLayout* layout, const QString& consumerModuleId,
                                     const QString& consumerInstanceId, QDialog* dialog);
     QString ensureMeasurementInputForMode(const QString& mode, const QString& consumerInstanceId);
