@@ -1066,7 +1066,12 @@ void MainWindow::setupMainLayout() {
     toolTitleWidget->setMinimumHeight(36);
     toolTitleWidget->setObjectName("ToolTitleWidget");
     m_toolBoxDock->setTitleBarWidget(toolTitleWidget);
-    connect(toolCloseBtn, &QToolButton::clicked, m_toolBoxDock, &QDockWidget::close);
+    connect(toolCloseBtn, &QToolButton::clicked, this, [this]() {
+        m_toolPanelUserClosed = true;
+        m_toolBoxDock->setVisible(false);
+        if (m_viewToolPanelAction)
+            m_viewToolPanelAction->setChecked(false);
+    });
 
     // 将工具面板添加到主 Splitter 左侧
     m_mainSplitter->addWidget(m_toolBoxDock);
@@ -1466,9 +1471,14 @@ void MainWindow::setupMainLayout() {
     mainContentLayout->addWidget(m_mainSplitter);
     setCentralWidget(mainContentWidget);
 
-    // 连接 DockWidget 关闭信号以同步菜单勾选状态
-    connect(m_toolBoxDock, &QDockWidget::topLevelChanged, this,
-            [this](bool) { m_viewToolPanelAction->setChecked(!m_toolBoxDock->isHidden()); });
+    // P2: 同步菜单勾选状态，但不触发自适应显示
+    connect(m_toolBoxDock, &QDockWidget::visibilityChanged, this,
+            [this](bool visible) {
+                if (m_viewToolPanelAction)
+                    m_viewToolPanelAction->setChecked(visible);
+                if (!visible)
+                    m_toolPanelUserClosed = true;
+            });
     connect(m_logDock, &QDockWidget::visibilityChanged, this,
             [this](bool visible) { if (m_viewBottomPanelAction) m_viewBottomPanelAction->setChecked(visible); });
 
@@ -3552,10 +3562,13 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector) {
     if (m_inspectorPanel) {
         IModule* module = m_flowModules.value(instanceId, nullptr);
         if (module) {
-            // 获取插件信息
+            // 获取插件信息 — P1: 使用 module->name() 匹配 PluginManager 索引
             QString moduleId = module->moduleId();
             PluginInfo info;
-            if (moduleId.startsWith("com.deeplux.plugin.")) {
+            // 优先用模块的 name() 查找（与 metadata.json name 字段一致）
+            info = PluginManager::instance().pluginInfo(module->name());
+            if (info.name.isEmpty() && moduleId.startsWith("com.deeplux.plugin.")) {
+                // 回退：去掉前缀后大小写不敏感查找
                 QString pluginName = moduleId.mid(QString("com.deeplux.plugin.").length());
                 info = PluginManager::instance().pluginInfo(pluginName);
             }
@@ -3760,7 +3773,7 @@ void MainWindow::adaptInspectorLayout() {
     if (available < minMainView + 32) {
         // 小窗口：浮动模式
         newMode = ModuleInspectorPanel::LayoutMode::Floating;
-    } else if (available < minMainView + m_inspectorPanel->minimumWidth()) {
+    } else if (available < minMainView + 240) {  // P1: 使用固定 240px 而非 minimumWidth()（Docked 重置后为 0）
         // 中等宽度：折叠为 32px 侧栏
         newMode = ModuleInspectorPanel::LayoutMode::Collapsed;
     } else {

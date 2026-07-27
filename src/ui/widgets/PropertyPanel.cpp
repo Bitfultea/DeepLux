@@ -222,10 +222,13 @@ void PropertyPanel::loadParams()
 
             // 合并 ui.parameters 中的元数据和 _options 信息
             QJsonObject meta = m_uiParameters.value(key).toObject();
+            // P2: 也检查 meta 内部的 _options 字段（metadata.json 格式）
             const QJsonValue choiceInfo = params.value(key + "_options");
-            if (choiceInfo.isArray() || choiceInfo.isObject()) {
+            const QJsonValue innerOptions = meta.value("_options");
+            if (innerOptions.isArray()) {
+                meta["options"] = innerOptions.toArray();
+            } else if (choiceInfo.isArray() || choiceInfo.isObject()) {
                 QJsonObject merged = choiceInfoFromValue(choiceInfo);
-                // 合并 options 到 meta
                 if (merged.contains("options") && !meta.contains("options")) {
                     meta["options"] = merged["options"];
                 }
@@ -445,9 +448,28 @@ QWidget* PropertyPanel::createChoiceWidget(const QString& key, const QJsonObject
 }
 
 void PropertyPanel::applyTheme(bool isDark) {
-    Q_UNUSED(isDark)
+    // P1: 实际应用主题，不再忽略 isDark
+    const QString bg = isDark ? "#252525" : "#ffffff";
+    const QString fg = isDark ? "#ffffff" : "#212121";
+    const QString border = isDark ? "#3a3a3a" : "#dddddd";
+
+    setStyleSheet(QString(
+        "QScrollArea { background-color: %1; border: none; }"
+        "QLabel { color: %2; background-color: transparent; }"
+        "QGroupBox { color: %2; border: 1px solid %3; border-radius: 4px; "
+        "  margin-top: 8px; padding-top: 8px; background-color: %1; }"
+        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }"
+        "QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { "
+        "  background-color: %1; color: %2; border: 1px solid %3; padding: 4px; border-radius: 2px; }"
+        "QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { "
+        "  border: 1px solid #0078d7; }"
+        "QCheckBox { color: %2; }"
+        ).arg(bg, fg, border));
+
     if (m_titleLabel) {
-        m_titleLabel->setStyleSheet(QString("font-weight: bold; font-size: 14px; padding: 8px;"));
+        m_titleLabel->setStyleSheet(QString(
+            "font-weight: bold; font-size: 14px; padding: 8px; color: %1; background-color: transparent;")
+            .arg(fg));
     }
 }
 

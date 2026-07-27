@@ -470,6 +470,15 @@ PluginInfo PluginManager::pluginInfo(const QString& name) const {
     if (m_cameras.contains(name)) {
         return m_cameras[name];
     }
+    // P1: 大小写不敏感回退查找 — moduleId 后缀 "grabimage" vs metadata name "GrabImage"
+    for (auto it = m_modules.constBegin(); it != m_modules.constEnd(); ++it) {
+        if (it.key().compare(name, Qt::CaseInsensitive) == 0)
+            return it.value();
+    }
+    for (auto it = m_cameras.constBegin(); it != m_cameras.constEnd(); ++it) {
+        if (it.key().compare(name, Qt::CaseInsensitive) == 0)
+            return it.value();
+    }
     return PluginInfo();
 }
 
