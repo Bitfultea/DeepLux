@@ -22,37 +22,34 @@
                 "label": "相机 ID",
                 "order": 10
             },
-            "useFile": {
-                "label": "使用文件",
-                "order": 20
-            },
             "filePath": {
                 "label": "文件路径",
-                "order": 30
+                "order": 20
             },
             "exposureTime": {
                 "label": "曝光时间",
                 "unit": "us",
                 "min": 0,
                 "step": 100,
-                "order": 40
+                "order": 30
             },
             "gain": {
                 "label": "增益",
                 "min": 0,
                 "step": 0.1,
-                "order": 50
+                "order": 40
             },
             "grabSource": {
                 "label": "采集来源",
-                "order": 60
+                "_options": ["Camera", "File", "Demo"],
+                "order": 50
             },
             "grabTimeout": {
                 "label": "采集超时",
                 "unit": "ms",
                 "min": 100,
                 "step": 100,
-                "order": 70
+                "order": 60
             }
         }
     }

@@ -298,6 +298,7 @@ protected:
     void loadSettings();
     void adaptInspectorLayout();
     bool m_inspectorClosed = false;
+    bool m_toolPanelUserClosed = false;
 };
 
 } // namespace DeepLux

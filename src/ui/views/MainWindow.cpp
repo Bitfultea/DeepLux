@@ -177,8 +177,13 @@ private:
             m_project->setModuleParam(m_instanceId, m_key, jsonVal);
         }
         // 通知检查器刷新参数显示，用于撤销/重做后同步
+        // P0: 延迟刷新到下一事件循环，避免在信号栈中删除发送者控件
         if (m_inspector && m_inspector->currentInstanceId() == m_instanceId) {
-            m_inspector->refreshFromModule();
+            QPointer<ModuleInspectorPanel> inspector = m_inspector;
+            QMetaObject::invokeMethod(inspector.data(), [inspector]() {
+                if (inspector)
+                    inspector->refreshFromModule();
+            }, Qt::QueuedConnection);
         }
     }
 
@@ -1557,6 +1562,7 @@ void MainWindow::updateToolBoxPluginItem(const QString& pluginName) {
 }
 
 void MainWindow::onToggleToolPanel(bool checked) {
+    m_toolPanelUserClosed = !checked;
     if (m_toolBoxDock) {
         m_toolBoxDock->setVisible(checked);
     }
@@ -3701,9 +3707,10 @@ void MainWindow::adaptInspectorLayout() {
     const int minMainView = 620; // 主视图最小宽度
 
     // ===== 窄屏自适应：在判断布局前先压缩流程面板 / 隐藏工具面板 =====
-    // 窗口宽度 < 900px：隐藏左侧工具面板，为主视图腾出空间
+    // P1/P2: 阈值从 900 提到 1100，确保 1024px 窗口也能隐藏工具面板
+    // P2: 如果用户显式关闭工具面板，不自动重新显示
     if (m_toolBoxDock) {
-        const bool toolShouldBeVisible = windowWidth >= 900;
+        const bool toolShouldBeVisible = windowWidth >= 1100 && !m_toolPanelUserClosed;
         if (m_toolBoxDock->isVisible() != toolShouldBeVisible) {
             m_toolBoxDock->setVisible(toolShouldBeVisible);
         }
@@ -3714,17 +3721,23 @@ void MainWindow::adaptInspectorLayout() {
     if (m_mainSplitter && m_mainSplitter->count() >= 1) {
         leftWidth = m_mainSplitter->sizes().value(0, 210);
     }
-    // 工具面板隐藏后，左侧宽度应视为 0（splitter 中隐藏控件不再占用空间）
+    // 工具面板隐藏后，左侧宽度应视为 0
     if (m_toolBoxDock && !m_toolBoxDock->isVisible()) {
         leftWidth = 0;
     }
 
-    // 窗口宽度 < 1100px：将流程面板缩到 200px
+    // 窗口宽度 < 1200px：将流程面板缩到 180px
+    // 同时降低流程面板的最小宽度限制
     int flowPanelWidth = 0;
     if (m_rightTopSplitter && m_rightTopSplitter->count() >= 1) {
         flowPanelWidth = m_rightTopSplitter->sizes().value(0, 300);
     }
-    const int desiredFlowWidth = (windowWidth < 1100) ? 200 : 300;
+    const int desiredFlowWidth = (windowWidth < 1200) ? 180 : 300;
+    // 临时降低最小宽度以允许压缩
+    QWidget* procPanel = findChild<QWidget*>("ProcessPanelWidget");
+    if (procPanel) {
+        procPanel->setMinimumWidth(windowWidth < 1200 ? 150 : 220);
+    }
     if (m_rightTopSplitter && m_rightTopSplitter->count() >= 3 &&
         flowPanelWidth != desiredFlowWidth) {
         QList<int> sizes = m_rightTopSplitter->sizes();

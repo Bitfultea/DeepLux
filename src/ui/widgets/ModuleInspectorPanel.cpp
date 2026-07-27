@@ -298,6 +298,7 @@ void ModuleInspectorPanel::setLayoutMode(LayoutMode mode)
         }
         setWindowFlags(Qt::Widget);
         setMaximumWidth(360);
+        setMinimumSize(0, 0);  // P2: 重置浮动时的最小尺寸约束
         updateCollapsedState();
         show();
         break;
@@ -313,7 +314,8 @@ void ModuleInspectorPanel::setLayoutMode(LayoutMode mode)
             m_originalParent = parentWidget();
         }
         setParent(nullptr);
-        setWindowFlags(Qt::Tool | Qt::FramelessWindowHint);
+        setWindowFlags(Qt::Tool);  // P2: 标准工具窗口，有标题栏可拖动
+        setWindowTitle(tr("模块检查器"));
         setMaximumWidth(360);
         setMinimumSize(280, 400);
         resize(300, 500);
