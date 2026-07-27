@@ -274,13 +274,14 @@ void ViewportWidget::ensure3DContent() {
     if (m_3dContent)
         return;
 
-    // Create 3D content widget — 必须指定 parent 否则 QOpenGLWidget 无法创建 context
     m_3dContent = new Viewport3DContent(this);
     m_3dContent->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_3dContent->setMinimumSize(100, 100);
 
-    // Forward 3D point pick for coordinate picking
     connect(m_3dContent, &Viewport3DContent::point3DClicked, this, &ViewportWidget::point3DClicked);
+
+    // 高: 通知外部安装事件过滤器
+    emit contentWidgetCreated(m_3dContent);
 
     // Replace in layout
     QVBoxLayout* layout = qobject_cast<QVBoxLayout*>(this->layout());

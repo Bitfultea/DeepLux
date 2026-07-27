@@ -1490,23 +1490,30 @@ void TestMainWindow::testInspectorManualCollapseResizesSplitter() {
     if (beforeWidth <= 32)
         QSKIP("Inspector width too small in test env, skipping");
 
-    // 模拟折叠信号
-    emit inspector->collapseToggled(true);
+    // 高: 通过真实按钮点击模拟折叠
+    QToolButton* collapseBtn = inspector->findChild<QToolButton*>("InspectorCollapseBtn");
+    QVERIFY2(collapseBtn != nullptr, "Collapse button should exist");
+    QTest::mouseClick(collapseBtn, Qt::LeftButton);
     QCoreApplication::processEvents();
 
     QList<int> afterSizes = rightTopSplitter->sizes();
     const int afterWidth = afterSizes.value(inspectorIdx, 0);
     QVERIFY2(afterWidth <= 32,
-             QString("Inspector should collapse to <=32px after collapseToggled, got %1").arg(afterWidth).toUtf8());
+             QString("Inspector should collapse to <=32px after button click, got %1").arg(afterWidth).toUtf8());
 
-    // 恢复
-    emit inspector->collapseToggled(false);
+    // 高: 折叠时关闭按钮应该隐藏
+    QToolButton* closeBtn = inspector->findChild<QToolButton*>("InspectorCloseBtn");
+    QVERIFY2(closeBtn != nullptr, "Close button should exist");
+    QVERIFY2(!closeBtn->isVisible(), "Close button should be hidden when collapsed");
+
+    // 再次点击展开
+    QTest::mouseClick(collapseBtn, Qt::LeftButton);
     QCoreApplication::processEvents();
 
     QList<int> restoredSizes = rightTopSplitter->sizes();
     const int restoredWidth = restoredSizes.value(inspectorIdx, 0);
     QVERIFY2(restoredWidth > 32,
-             QString("Inspector should expand after collapseToggled(false), got %1").arg(restoredWidth).toUtf8());
+             QString("Inspector should expand after button click, got %1").arg(restoredWidth).toUtf8());
 }
 
 // 中: 回归测试 — 焦点模式保留日志面板可见状态
@@ -1518,20 +1525,34 @@ void TestMainWindow::testFocusModePreservesLogVisibility() {
 
     QDockWidget* logDock = window.findChild<QDockWidget*>("LogDock");
     QVERIFY(logDock != nullptr);
-    const bool logVisibleBefore = logDock->isVisible();
 
-    // 模拟双击主视图进入焦点模式
-    QWidget* imageDisplay = window.findChild<QWidget*>("ImageDisplayWidget");
-    QVERIFY(imageDisplay != nullptr);
-    QTest::mouseDClick(imageDisplay, Qt::LeftButton);
-    QCoreApplication::processEvents();
-    QVERIFY2(!logDock->isVisible(), "Log dock should be hidden in focus mode");
+    // 测试 1: 日志原本可见
+    {
+        const bool logVisibleBefore = logDock->isVisible();
+        QWidget* imageDisplay = window.findChild<QWidget*>("ImageDisplayWidget");
+        QVERIFY(imageDisplay != nullptr);
+        QTest::mouseDClick(imageDisplay, Qt::LeftButton);
+        QCoreApplication::processEvents();
+        QVERIFY2(!logDock->isVisible(), "Log dock should be hidden in focus mode (test 1)");
+        QTest::mouseDClick(imageDisplay, Qt::LeftButton);
+        QCoreApplication::processEvents();
+        QVERIFY2(logDock->isVisible() == logVisibleBefore,
+                 "Log dock visibility should be restored (test 1)");
+    }
 
-    // 双击退出
-    QTest::mouseDClick(imageDisplay, Qt::LeftButton);
-    QCoreApplication::processEvents();
-    QVERIFY2(logDock->isVisible() == logVisibleBefore,
-             "Log dock visibility should be restored after exiting focus mode");
+    // 测试 2: 日志原本隐藏 — 先隐藏日志再进入焦点
+    {
+        logDock->setVisible(false);
+        QCoreApplication::processEvents();
+        QWidget* imageDisplay = window.findChild<QWidget*>("ImageDisplayWidget");
+        QTest::mouseDClick(imageDisplay, Qt::LeftButton);
+        QCoreApplication::processEvents();
+        QVERIFY2(!logDock->isVisible(), "Log dock should be hidden in focus mode (test 2)");
+        QTest::mouseDClick(imageDisplay, Qt::LeftButton);
+        QCoreApplication::processEvents();
+        QVERIFY2(!logDock->isVisible(),
+                 "Log dock should remain hidden after exiting focus mode (test 2)");
+    }
 }
 
 QTEST_MAIN(TestMainWindow)

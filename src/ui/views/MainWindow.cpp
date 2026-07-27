@@ -1728,6 +1728,9 @@ void MainWindow::onViewportCreated(const QString& viewportId, ViewportWidget* vi
     viewport->installEventFilter(this);
     if (viewport->imageWidget())
         viewport->imageWidget()->installEventFilter(this);
+    // 高: 延迟创建的 3D 控件也需要安装
+    connect(viewport, &ViewportWidget::contentWidgetCreated, this,
+            [this](QWidget* w) { w->installEventFilter(this); });
 }
 
 void MainWindow::onPoint2DPicked(const QPointF& point) {

@@ -85,6 +85,7 @@ void ModuleInspectorPanel::setupHeader()
     m_collapseBtn->setObjectName("InspectorCollapseBtn");
     m_collapseBtn->setToolTip(tr("折叠"));
     m_collapseBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::ChevronRight, 16));
+    m_collapseBtn->setFixedSize(28, 28);
     connect(m_collapseBtn, &QToolButton::clicked, this, [this]() { onCollapseToggled(!m_collapsed); });
     headerLayout->addWidget(m_collapseBtn);
 
@@ -92,6 +93,7 @@ void ModuleInspectorPanel::setupHeader()
     m_closeBtn->setObjectName("InspectorCloseBtn");
     m_closeBtn->setToolTip(tr("关闭"));
     m_closeBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Close, 16));
+    m_closeBtn->setFixedSize(28, 28);
     connect(m_closeBtn, &QToolButton::clicked, this, &ModuleInspectorPanel::onCloseClicked);
     headerLayout->addWidget(m_closeBtn);
 
@@ -421,13 +423,14 @@ void ModuleInspectorPanel::updateCollapsedState()
     if (m_collapsed) {
         m_tabWidget->setVisible(false);
         m_bottomBar->setVisible(false);
-        // 高: 折叠时隐藏模块名、状态、耗时，只保留图标 + 展开/关闭按钮
         if (m_nameLabel) m_nameLabel->setVisible(false);
         if (m_statusLabel) m_statusLabel->setVisible(false);
         if (m_elapsedLabel) m_elapsedLabel->setVisible(false);
         if (m_dirtyDot) m_dirtyDot->setVisible(false);
         if (m_pinBtn) m_pinBtn->setVisible(false);
         if (m_iconLabel) m_iconLabel->setVisible(false);
+        // 高: 折叠时隐藏关闭按钮，只保留展开按钮，避免 32px 内重叠
+        if (m_closeBtn) m_closeBtn->setVisible(false);
     } else {
         if (m_currentModule) {
             m_tabWidget->setVisible(true);
@@ -436,9 +439,11 @@ void ModuleInspectorPanel::updateCollapsedState()
         if (m_nameLabel) m_nameLabel->setVisible(true);
         if (m_statusLabel) m_statusLabel->setVisible(true);
         if (m_elapsedLabel) m_elapsedLabel->setVisible(true);
-        if (m_dirtyDot) m_dirtyDot->setVisible(true);
+        // 中: 脏状态恢复时用 m_dirty 而非无条件 true
+        if (m_dirtyDot) m_dirtyDot->setVisible(m_dirty);
         if (m_pinBtn) m_pinBtn->setVisible(true);
         if (m_iconLabel) m_iconLabel->setVisible(true);
+        if (m_closeBtn) m_closeBtn->setVisible(true);
     }
 }
 

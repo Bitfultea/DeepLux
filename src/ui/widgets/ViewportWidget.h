@@ -95,6 +95,7 @@ signals:
     void imageDisplayed();
     void point2DClicked(const QPointF& point);
     void point3DClicked(const QVector3D& point);
+    void contentWidgetCreated(QWidget* widget);  // 高: 延迟创建的子控件通知
 
 private slots:
     void onCloseClicked();
