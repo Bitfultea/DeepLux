@@ -456,8 +456,10 @@ void PropertyPanel::applyTheme(bool isDark) {
     const QString border = isDark ? "#3a3a3a" : "#dddddd";
 
     setStyleSheet(QString(
+        "PropertyPanel { background-color: %1; }"
         "QScrollArea, QScrollArea > QWidget > QWidget { background-color: %1; border: none; }"
         "QWidget#PropertyPanelContent { background-color: %1; }"
+        "QWidget#PropertyPanelTitle { background-color: %1; }"
         "QLabel { color: %2; background-color: transparent; }"
         "QGroupBox { color: %2; border: 1px solid %3; border-radius: 4px; "
         "  margin-top: 8px; padding-top: 8px; background-color: %1; }"
@@ -471,9 +473,13 @@ void PropertyPanel::applyTheme(bool isDark) {
 
     if (m_titleLabel) {
         m_titleLabel->setStyleSheet(QString(
-            "font-weight: bold; font-size: 14px; padding: 8px; color: %1; background-color: transparent;")
-            .arg(fg));
+            "font-weight: bold; font-size: 14px; padding: 8px; color: %1; background-color: %2;")
+            .arg(fg, bg));
     }
+    setAutoFillBackground(true);
+    QPalette pal = palette();
+    pal.setColor(QPalette::Window, QColor(bg));
+    setPalette(pal);
 }
 
 } // namespace DeepLux

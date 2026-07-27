@@ -1501,10 +1501,14 @@ void MainWindow::setupMainLayout() {
     setCentralWidget(mainContentWidget);
 
     // P2: 同步菜单勾选状态，自适应隐藏不设 userClosed
+    // 高: setChecked 会触发 toggled → onToggleToolPanel → 设 userClosed，
+    //     用 blockSignals 阻止 toggled 回调
     connect(m_toolBoxDock, &QDockWidget::visibilityChanged, this,
             [this](bool visible) {
-                if (m_viewToolPanelAction)
+                if (m_viewToolPanelAction) {
+                    const QSignalBlocker blocker(m_viewToolPanelAction);
                     m_viewToolPanelAction->setChecked(visible);
+                }
                 if (!visible && !m_toolPanelSuppressSignal)
                     m_toolPanelUserClosed = true;
             });
@@ -2840,12 +2844,21 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 
     // 主视图：双击进入/退出聚焦模式，拖放处理文件
     QWidget* imgWidget = m_displayManager ? m_displayManager->centralDisplay() : nullptr;
-    if (imgWidget && watched == imgWidget) {
-        if (event->type() == QEvent::MouseButtonDblClick) {
+    if (imgWidget) {
+        // 高: 双击事件可能由子视口接收，检查 watched 是否是 imgWidget 或其后代
+        bool isMainView = (watched == imgWidget);
+        if (!isMainView) {
+            QWidget* w = qobject_cast<QWidget*>(watched);
+            while (w) {
+                if (w == imgWidget) { isMainView = true; break; }
+                w = w->parentWidget();
+            }
+        }
+        if (isMainView && event->type() == QEvent::MouseButtonDblClick) {
             toggleFocusMode();
             return true;
         }
-        if (event->type() == QEvent::DragEnter) {
+        if (isMainView && event->type() == QEvent::DragEnter) {
             QDragEnterEvent* de = static_cast<QDragEnterEvent*>(event);
             if (de->mimeData()->hasUrls()) {
                 QList<QUrl> urls = de->mimeData()->urls();
@@ -3426,8 +3439,17 @@ void MainWindow::openAdvancedPluginConfig(const QString& instanceId) {
             }
         }
         m_dirtyModuleIds.insert(instanceId);
-        if (m_inspectorPanel)
+        if (m_inspectorPanel) {
             m_inspectorPanel->setDirty(true);
+            // 中: 刷新检查器参数显示
+            if (m_selectedModuleId == instanceId) {
+                QPointer<ModuleInspectorPanel> inspector = m_inspectorPanel;
+                QMetaObject::invokeMethod(this, [inspector]() {
+                    if (inspector) inspector->refreshFromModule();
+                }, Qt::QueuedConnection);
+            }
+        }
+        m_modulesNeedSync = true;
         Logger::instance().info(tr("模块参数已更新：%1").arg(displayName), "Config");
     } else {
         // P1-1: 取消时回滚参数
@@ -3441,27 +3463,31 @@ void MainWindow::openAdvancedPluginConfig(const QString& instanceId) {
 void MainWindow::toggleFocusMode() {
     m_focusMode = !m_focusMode;
 
+    // 高: 抑制 visibilityChanged 在 hide/show 时设 userClosed
+    m_toolPanelSuppressSignal = true;
+
     if (m_focusMode) {
-        // 进入聚焦模式：隐藏左右面板和底部区域
         m_focusSavedMainSizes = m_mainSplitter->sizes();
         m_focusSavedRightTopSizes = m_rightTopSplitter->sizes();
         m_focusSavedRightSplitterSizes = m_rightSplitter->sizes();
 
-        if (m_toolBoxDock) m_toolBoxDock->hide();
-        if (m_processTabWidget) m_processTabWidget->parentWidget()->hide();
-        if (m_inspectorPanel) m_inspectorPanel->hide();
-        if (m_logDock) m_logDock->hide();
+        if (m_toolBoxDock) m_toolBoxDock->setVisible(false);
+        if (m_processTabWidget) m_processTabWidget->parentWidget()->setVisible(false);
+        if (m_inspectorPanel) m_inspectorPanel->setVisible(false);
+        if (m_logDock) m_logDock->setVisible(false);
     } else {
-        // 退出聚焦模式：恢复面板
-        if (m_toolBoxDock && m_viewToolPanelAction && m_viewToolPanelAction->isChecked()) m_toolBoxDock->show();
-        if (m_processTabWidget) m_processTabWidget->parentWidget()->show();
-        if (m_inspectorPanel) m_inspectorPanel->show();
-        if (m_logDock && m_viewBottomPanelAction && m_viewBottomPanelAction->isChecked()) m_logDock->show();
+        // 恢复：检查用户之前的设置，而非 action 勾选
+        if (m_toolBoxDock && !m_toolPanelUserClosed) m_toolBoxDock->setVisible(true);
+        if (m_processTabWidget) m_processTabWidget->parentWidget()->setVisible(true);
+        if (m_inspectorPanel && !m_inspectorClosed) m_inspectorPanel->setVisible(true);
+        if (m_logDock) m_logDock->setVisible(true);
 
         if (!m_focusSavedMainSizes.isEmpty()) m_mainSplitter->setSizes(m_focusSavedMainSizes);
         if (!m_focusSavedRightTopSizes.isEmpty()) m_rightTopSplitter->setSizes(m_focusSavedRightTopSizes);
         if (!m_focusSavedRightSplitterSizes.isEmpty()) m_rightSplitter->setSizes(m_focusSavedRightSplitterSizes);
     }
+
+    m_toolPanelSuppressSignal = false;
 }
 
 void MainWindow::_phase8_openAdvancedPluginConfig(const QString& instanceId) {
@@ -3852,6 +3878,22 @@ void MainWindow::adaptInspectorLayout() {
             }
         }
         m_inspectorPanel->setLayoutMode(newMode);
+        // 高: 折叠/展开后重分配 splitter 空间
+        if (m_rightTopSplitter) {
+            QList<int> sizes = m_rightTopSplitter->sizes();
+            const int inspIdx = m_rightTopSplitter->indexOf(m_inspectorPanel);
+            if (inspIdx >= 0 && inspIdx < sizes.size()) {
+                if (newMode == ModuleInspectorPanel::LayoutMode::Collapsed) {
+                    int freed = sizes[inspIdx] - 32;
+                    sizes[inspIdx] = 32;
+                    if (sizes.size() > 1) sizes[1] += freed;  // 给主视图
+                } else if (newMode == ModuleInspectorPanel::LayoutMode::Docked) {
+                    sizes[inspIdx] = 280;  // 恢复默认宽
+                    if (sizes.size() > 1) sizes[1] = qMax(620, sizes[1] - 280);
+                }
+                m_rightTopSplitter->setSizes(sizes);
+            }
+        }
     }
 
     // 确保主视图宽度在任何模式下不低于 620px

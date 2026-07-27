@@ -491,9 +491,12 @@ PluginInfo PluginManager::pluginInfo(const QString& name) const {
             return it.value();
     }
     // 4. id 前缀匹配（strip "com.deeplux.plugin." → match id）
+    // 低: "com.deeplux.plugin." 长度为 20（含末尾点），mid(20) 正确
+    // 但用 size() 更安全可读
     QString stripped = name;
-    if (stripped.startsWith("com.deeplux.plugin."))
-        stripped = stripped.mid(20);
+    const QString prefix = "com.deeplux.plugin.";
+    if (stripped.startsWith(prefix))
+        stripped = stripped.mid(prefix.size());
     for (const PluginInfo& info : m_modules) {
         if (info.id.endsWith(stripped, Qt::CaseInsensitive))
             return info;
