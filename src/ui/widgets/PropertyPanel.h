@@ -38,6 +38,12 @@ public:
     void applyTheme(bool isDark);
     void clear();
 
+    /**
+     * @brief 从当前模块重新读取参数并刷新控件。
+     * 用于撤销/重做后同步显示。
+     */
+    void refreshFromModule();
+
     QString currentModuleId() const { return m_currentModuleId; }
 
 signals:

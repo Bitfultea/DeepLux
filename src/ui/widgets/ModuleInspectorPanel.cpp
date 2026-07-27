@@ -1,4 +1,5 @@
 #include "ModuleInspectorPanel.h"
+#include "AppIconProvider.h"
 #include "PropertyPanel.h"
 
 #include <QHBoxLayout>
@@ -56,6 +57,14 @@ void ModuleInspectorPanel::setupHeader()
     m_nameLabel->setObjectName("InspectorModuleName");
     headerLayout->addWidget(m_nameLabel, 1);
 
+    // 脏状态小色点：默认隐藏，由 setDirty 控制
+    m_dirtyDot = new QLabel();
+    m_dirtyDot->setObjectName("InspectorDirtyDot");
+    m_dirtyDot->setFixedSize(10, 10);
+    m_dirtyDot->setStyleSheet(QStringLiteral("background-color: #F59E0B; border-radius: 5px;"));
+    m_dirtyDot->setVisible(false);
+    headerLayout->addWidget(m_dirtyDot);
+
     m_statusLabel = new QLabel();
     m_statusLabel->setObjectName("InspectorStatus");
     headerLayout->addWidget(m_statusLabel);
@@ -68,21 +77,21 @@ void ModuleInspectorPanel::setupHeader()
     m_pinBtn->setObjectName("InspectorPinBtn");
     m_pinBtn->setCheckable(true);
     m_pinBtn->setToolTip(tr("固定"));
-    m_pinBtn->setText(QString::fromUtf8("\xe2\x98\x8c")); // pin symbol fallback
+    m_pinBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Pin, 16));
     connect(m_pinBtn, &QToolButton::toggled, this, &ModuleInspectorPanel::onPinToggled);
     headerLayout->addWidget(m_pinBtn);
 
     m_collapseBtn = new QToolButton();
     m_collapseBtn->setObjectName("InspectorCollapseBtn");
     m_collapseBtn->setToolTip(tr("折叠"));
-    m_collapseBtn->setText(QString::fromUtf8("\xc2\xab")); // collapse indicator
+    m_collapseBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::ChevronRight, 16));
     connect(m_collapseBtn, &QToolButton::clicked, this, [this]() { onCollapseToggled(!m_collapsed); });
     headerLayout->addWidget(m_collapseBtn);
 
     m_closeBtn = new QToolButton();
     m_closeBtn->setObjectName("InspectorCloseBtn");
     m_closeBtn->setToolTip(tr("关闭"));
-    m_closeBtn->setText("x");
+    m_closeBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Close, 16));
     connect(m_closeBtn, &QToolButton::clicked, this, &ModuleInspectorPanel::onCloseClicked);
     headerLayout->addWidget(m_closeBtn);
 
@@ -165,26 +174,23 @@ void ModuleInspectorPanel::setupBottomBar()
     bottomLayout->setContentsMargins(4, 4, 4, 4);
     bottomLayout->setSpacing(4);
 
-    // 主按钮：重新运行（蓝色）
+    // 主按钮：重新运行 — 样式由全局 ThemeManager 提供
     m_rerunBtn = new QPushButton(tr("重新运行"));
     m_rerunBtn->setObjectName("InspectorRerunBtn");
-    m_rerunBtn->setStyleSheet("QPushButton { background-color: #2563EB; color: white; }");
     connect(m_rerunBtn, &QPushButton::clicked, this, &ModuleInspectorPanel::onRerunClicked);
     bottomLayout->addWidget(m_rerunBtn);
 
     bottomLayout->addStretch();
 
-    // 次要按钮：高级配置（灰色）
+    // 次要按钮：高级配置 — 样式由全局 ThemeManager 提供
     m_advancedBtn = new QPushButton(tr("高级配置"));
     m_advancedBtn->setObjectName("InspectorAdvancedBtn");
-    m_advancedBtn->setStyleSheet("QPushButton { background-color: #6B7280; color: white; }");
     connect(m_advancedBtn, &QPushButton::clicked, this, &ModuleInspectorPanel::onAdvancedClicked);
     bottomLayout->addWidget(m_advancedBtn);
 
-    // 恢复默认降级为菜单项
+    // 恢复默认降级为菜单项 — 样式由全局 ThemeManager 提供
     m_resetBtn = new QPushButton(tr("恢复默认"));
     m_resetBtn->setObjectName("InspectorResetBtn");
-    m_resetBtn->setStyleSheet("QPushButton { color: gray; border: none; }");
     m_resetBtn->setToolTip(tr("恢复默认参数"));
     connect(m_resetBtn, &QPushButton::clicked, this, &ModuleInspectorPanel::onResetClicked);
     bottomLayout->addWidget(m_resetBtn);
@@ -237,11 +243,9 @@ void ModuleInspectorPanel::setOutput(const ImageData& output, bool success, int 
 void ModuleInspectorPanel::setDirty(bool dirty)
 {
     m_dirty = dirty;
-    if (dirty) {
-        // 脏状态只在标题栏显示一个图标，不在结果页重复
-        m_statusLabel->setText(tr("已修改"));
-    } else {
-        m_statusLabel->setText(tr("就绪"));
+    // 脏状态使用标题栏小色点指示，不再用文字
+    if (m_dirtyDot) {
+        m_dirtyDot->setVisible(dirty);
     }
 }
 
@@ -311,6 +315,8 @@ void ModuleInspectorPanel::setLayoutMode(LayoutMode mode)
         setParent(nullptr);
         setWindowFlags(Qt::Tool | Qt::FramelessWindowHint);
         setMaximumWidth(360);
+        setMinimumSize(280, 400);
+        resize(300, 500);
         updateCollapsedState();
         show();
         break;
@@ -324,6 +330,16 @@ void ModuleInspectorPanel::applyTheme(bool isDark)
     if (m_propertyPanel) {
         m_propertyPanel->applyTheme(isDark);
     }
+}
+
+void ModuleInspectorPanel::refreshFromModule()
+{
+    if (!m_currentModule) {
+        return;
+    }
+    // 重新从当前模块读取参数，用于撤销/重做后同步显示
+    m_propertyPanel->setPluginInfo(m_currentInfo);
+    m_propertyPanel->setModule(m_currentModule, m_instanceId);
 }
 
 void ModuleInspectorPanel::refreshResults(const ImageData& output)
@@ -420,7 +436,11 @@ void ModuleInspectorPanel::onPinToggled(bool checked)
 void ModuleInspectorPanel::onCollapseToggled(bool collapsed)
 {
     m_collapsed = collapsed;
-    m_collapseBtn->setText(collapsed ? QString::fromUtf8("\xc2\xbb") : QString::fromUtf8("\xc2\xab"));
+    // 折叠时显示向左箭头（展开），展开时显示向右箭头（可折叠）
+    m_collapseBtn->setIcon(AppIconProvider::icon(
+        collapsed ? AppIconProvider::Icon::ChevronLeft
+                  : AppIconProvider::Icon::ChevronRight,
+        16));
     updateCollapsedState();
 }
 

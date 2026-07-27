@@ -108,6 +108,11 @@ public:
      */
     void applyTheme(bool isDark);
 
+    /**
+     * @brief 从当前模块重新读取参数并刷新控件（用于撤销/重做后同步显示）。
+     */
+    void refreshFromModule();
+
 signals:
     void paramsChanged(const QString& instanceId, const QString& key, const QVariant& value);
     void rerunRequested();
@@ -141,6 +146,7 @@ private:
     QLabel* m_nameLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
     QLabel* m_elapsedLabel = nullptr;
+    QLabel* m_dirtyDot = nullptr; // 脏状态小色点
     QToolButton* m_pinBtn = nullptr;
     QToolButton* m_collapseBtn = nullptr;
     QToolButton* m_closeBtn = nullptr;

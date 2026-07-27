@@ -304,6 +304,48 @@ void drawIcon(QPainter& painter, AppIconProvider::Icon icon, qreal scale) {
         painter.drawEllipse(rect(14.7, 10, 1.8, 1.8, scale));
         line(painter, scale, 9, 15, 15, 15);
         break;
+    case AppIconProvider::Icon::Pin: {
+        // 推钉图标：下方圆锥 + 顶部圆形针头
+        QPainterPath pin;
+        pin.moveTo(pt(9, 4, scale));
+        pin.lineTo(pt(15, 4, scale));
+        pin.lineTo(pt(13, 9, scale));
+        pin.lineTo(pt(13, 14, scale));
+        pin.lineTo(pt(11, 14, scale));
+        pin.lineTo(pt(11, 9, scale));
+        pin.closeSubpath();
+        painter.drawPath(pin);
+        line(painter, scale, 12, 14, 12, 20);
+        break;
+    }
+    case AppIconProvider::Icon::Unpin: {
+        // 斜杠 + 推钉，表示未固定状态
+        QPainterPath pin;
+        pin.moveTo(pt(9, 4, scale));
+        pin.lineTo(pt(15, 4, scale));
+        pin.lineTo(pt(13, 9, scale));
+        pin.lineTo(pt(13, 14, scale));
+        pin.lineTo(pt(11, 14, scale));
+        pin.lineTo(pt(11, 9, scale));
+        pin.closeSubpath();
+        painter.drawPath(pin);
+        line(painter, scale, 12, 14, 12, 20);
+        // 斜线表示未固定
+        line(painter, scale, 4, 4, 20, 20);
+        break;
+    }
+    case AppIconProvider::Icon::ChevronLeft:
+        chevron(painter, scale, 15, 6, 8, 12, 15, 18);
+        break;
+    case AppIconProvider::Icon::ChevronRight:
+        chevron(painter, scale, 9, 6, 16, 12, 9, 18);
+        break;
+    case AppIconProvider::Icon::Dot:
+        // 小实心圆点，用于脏状态指示
+        painter.setBrush(painter.pen().color());
+        painter.drawEllipse(QPointF(pt(12, 12, scale)), 3 * scale, 3 * scale);
+        painter.setBrush(Qt::NoBrush);
+        break;
     }
 }
 

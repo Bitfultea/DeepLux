@@ -18,17 +18,10 @@ bool isChoiceInfoKey(const QString& key)
     return key.endsWith("_options");
 }
 
-// 内部字段过滤：以 _ 开头的或已知的内部字段不显示在参数面板
+// 内部字段过滤：以 _ 开头的字段不显示在参数面板
 bool isInternalParamKey(const QString& key)
 {
-    static const QSet<QString> knownInternalKeys = {
-        "cameraId", "grabTimeout", "useFile",
-        "_instanceId", "_moduleId", "_category"
-    };
-    if (key.startsWith('_')) {
-        return true;
-    }
-    return knownInternalKeys.contains(key);
+    return key.startsWith('_');
 }
 
 QJsonObject choiceInfoFromValue(const QJsonValue& value)
@@ -65,6 +58,9 @@ PropertyPanel::~PropertyPanel()
 
 void PropertyPanel::setupUi()
 {
+    // 参数页随父容器扩展，并禁止水平滚动条以避免视觉抖动
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(0);
@@ -76,6 +72,7 @@ void PropertyPanel::setupUi()
     m_scrollArea = new QScrollArea();
     m_scrollArea->setWidgetResizable(true);
     m_scrollArea->setFrameShape(QFrame::NoFrame);
+    m_scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
     m_contentWidget = new QWidget();
     m_contentLayout = new QVBoxLayout(m_contentWidget);
@@ -119,6 +116,15 @@ void PropertyPanel::setPluginInfo(const PluginInfo& info)
     }
 }
 
+void PropertyPanel::refreshFromModule()
+{
+    if (!m_currentModule) {
+        return;
+    }
+    // 重新从模块读取参数并刷新控件，用于撤销/重做后同步显示
+    setModule(m_currentModule, m_currentModuleId);
+}
+
 void PropertyPanel::clear()
 {
     m_currentModule = nullptr;
@@ -151,9 +157,16 @@ QStringList PropertyPanel::sortedParamKeys(const QJsonObject& params) const
     // 收集非 _options 键且非内部字段
     QStringList keys;
     for (auto it = params.begin(); it != params.end(); ++it) {
-        if (!isChoiceInfoKey(it.key()) && !isInternalParamKey(it.key())) {
-            keys.append(it.key());
+        const QString& key = it.key();
+        if (isChoiceInfoKey(key) || isInternalParamKey(key)) {
+            continue;
         }
+        // 当存在 ui.parameters 元数据时，只显示元数据中描述的参数；
+        // 没有元数据时显示所有非内部参数（用 key 作为标签）。
+        if (!m_uiParameters.isEmpty() && !m_uiParameters.contains(key)) {
+            continue;
+        }
+        keys.append(key);
     }
 
     // 根据 ui.parameters 中的 order 字段排序
@@ -254,11 +267,16 @@ bool PropertyPanel::commitParam(const QString& key, const QVariant& value)
     // 构造候选参数 JSON
     QJsonObject candidate = m_currentModule->currentParams();
     // QVariant -> QJsonValue
-    if (value.type() == QVariant::Bool) {
+    // 注意：canConvert<double>() 对字符串也返回 true（结果为 0），
+    // 因此必须用 userType() 严格判断类型，避免把字符串误转为数值。
+    const int typeId = value.userType();
+    if (typeId == QMetaType::Bool) {
         candidate[key] = value.toBool();
-    } else if (value.canConvert<double>()) {
+    } else if (typeId == QMetaType::Double || typeId == QMetaType::Int ||
+               typeId == QMetaType::LongLong || typeId == QMetaType::UInt ||
+               typeId == QMetaType::ULongLong || typeId == QMetaType::Float) {
         candidate[key] = value.toDouble();
-    } else if (value.canConvert<QString>()) {
+    } else if (typeId == QMetaType::QString) {
         candidate[key] = value.toString();
     } else {
         // 复杂类型尝试通过 QJsonDocument 转换

@@ -820,15 +820,13 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY2(mainStyle.contains(QStringLiteral("font-size: 13px")),
              "Main panels should pin a consistent base font size");
 
-    QWidget* processToolBar = window.findChild<QWidget*>("ProcessToolBar");
-    QVERIFY(processToolBar != nullptr);
-    QVERIFY(processToolBar->layout() != nullptr);
-    const QMargins processToolbarMargins = processToolBar->layout()->contentsMargins();
+    // 流程面板顶部不再保留无功能的占位工具栏，流程树直接占据剩余空间
+    QVERIFY2(window.findChild<QWidget*>("ProcessToolBar") == nullptr,
+             "Process panel should not retain a non-functional placeholder toolbar above the tree");
     QVERIFY2(window.findChild<QWidget*>("ToolToolBar") == nullptr,
              "Tool panel should not contain dead shortcut buttons above the plugin list");
     QVERIFY2(window.findChild<QToolButton*>("ToolCreateProcessBtn") == nullptr,
              "Removed tool-panel shortcut buttons should not remain clickable but inert");
-    QVERIFY2(processToolbarMargins.top() <= 8, "Panel toolbars should not have excessive top padding");
 
     QWidget* toolCategoryWidget = window.findChild<QWidget*>("ToolCategoryWidget");
     QVERIFY(toolCategoryWidget != nullptr);

@@ -119,6 +119,7 @@ namespace DeepLux {
 
 // 前向声明
 class FlowCanvas;
+class ModuleInspectorPanel;
 
 /**
  * @brief 参数编辑撤销命令
@@ -133,10 +134,12 @@ public:
                           const QString& key,
                           const QVariant& newValue,
                           const QVariant& oldValue,
+                          ModuleInspectorPanel* inspector = nullptr,
                           QUndoCommand* parent = nullptr)
         : QUndoCommand(parent)
         , m_module(module)
         , m_project(project)
+        , m_inspector(inspector)
         , m_instanceId(instanceId)
         , m_key(key)
         , m_newValue(newValue)
@@ -156,22 +159,32 @@ private:
         }
         if (m_project) {
             // QVariant -> QJsonValue
+            // 注意：canConvert<double>() 对字符串也返回 true（结果为 0），
+            // 因此必须用 userType() 严格判断类型，避免把字符串误转为数值。
             QJsonValue jsonVal;
-            if (value.type() == QVariant::Bool) {
+            const int typeId = value.userType();
+            if (typeId == QMetaType::Bool) {
                 jsonVal = value.toBool();
-            } else if (value.canConvert<double>()) {
+            } else if (typeId == QMetaType::Double || typeId == QMetaType::Int ||
+                       typeId == QMetaType::LongLong || typeId == QMetaType::UInt ||
+                       typeId == QMetaType::ULongLong || typeId == QMetaType::Float) {
                 jsonVal = value.toDouble();
-            } else if (value.canConvert<QString>()) {
+            } else if (typeId == QMetaType::QString) {
                 jsonVal = value.toString();
             } else {
                 jsonVal = QJsonValue::fromVariant(value);
             }
             m_project->setModuleParam(m_instanceId, m_key, jsonVal);
         }
+        // 通知检查器刷新参数显示，用于撤销/重做后同步
+        if (m_inspector && m_inspector->currentInstanceId() == m_instanceId) {
+            m_inspector->refreshFromModule();
+        }
     }
 
     QPointer<IModule> m_module;
     QPointer<Project> m_project;
+    QPointer<ModuleInspectorPanel> m_inspector;
     QString m_instanceId;
     QString m_key;
     QVariant m_newValue;
@@ -1089,20 +1102,6 @@ void MainWindow::setupMainLayout() {
     flowLayout->setContentsMargins(10, 8, 10, 8);
     flowLayout->setSpacing(6);
 
-    // 流程面板工具栏 — 运行控制已统一到顶部工具栏，此处只保留占位
-    QWidget* processToolBar = new QWidget();
-    QHBoxLayout* processToolBarLayout = new QHBoxLayout(processToolBar);
-    processToolBarLayout->setContentsMargins(8, 6, 8, 6);
-    processToolBarLayout->setSpacing(4);
-    processToolBar->setObjectName("ProcessToolBar");
-    processToolBar->setMinimumHeight(48);
-
-    // 占位标签（运行控制按钮已移至顶部工具栏）
-    QLabel* processToolBarHint = new QLabel(tr("运行控制见顶部工具栏"));
-    processToolBarHint->setAlignment(Qt::AlignCenter);
-    processToolBarLayout->addWidget(processToolBarHint);
-    flowLayout->addWidget(processToolBar);
-
     // 模块树
     m_processTree = new QTreeWidget();
     m_processTree->setHeaderHidden(true);
@@ -1628,6 +1627,11 @@ void MainWindow::onProjectOpened(Project* project) {
 }
 
 void MainWindow::onProjectClosed() {
+    // P0: 先清空检查器，防止悬空模块指针
+    m_selectedModuleId.clear();
+    if (m_inspectorPanel) {
+        m_inspectorPanel->clear();
+    }
     // 清空参数撤销栈和脏标记
     if (m_paramUndoStack) {
         m_paramUndoStack->clear();
@@ -3461,7 +3465,7 @@ void MainWindow::pushParamCommand(const QString& instanceId, const QString& key,
         }
     }
 
-    auto* cmd = new SetModuleParamCommand(module, project, instanceId, key, value, oldValue);
+    auto* cmd = new SetModuleParamCommand(module, project, instanceId, key, value, oldValue, m_inspectorPanel);
     m_paramUndoStack->push(cmd);
 }
 
@@ -3696,16 +3700,42 @@ void MainWindow::adaptInspectorLayout() {
     const int windowWidth = width();
     const int minMainView = 620; // 主视图最小宽度
 
+    // ===== 窄屏自适应：在判断布局前先压缩流程面板 / 隐藏工具面板 =====
+    // 窗口宽度 < 900px：隐藏左侧工具面板，为主视图腾出空间
+    if (m_toolBoxDock) {
+        const bool toolShouldBeVisible = windowWidth >= 900;
+        if (m_toolBoxDock->isVisible() != toolShouldBeVisible) {
+            m_toolBoxDock->setVisible(toolShouldBeVisible);
+        }
+    }
+
     // 计算左侧工具面板 + 流程面板的宽度
     int leftWidth = 0;
     if (m_mainSplitter && m_mainSplitter->count() >= 1) {
         leftWidth = m_mainSplitter->sizes().value(0, 210);
     }
+    // 工具面板隐藏后，左侧宽度应视为 0（splitter 中隐藏控件不再占用空间）
+    if (m_toolBoxDock && !m_toolBoxDock->isVisible()) {
+        leftWidth = 0;
+    }
 
-    // RightTopSplitter 中流程面板宽度
+    // 窗口宽度 < 1100px：将流程面板缩到 200px
     int flowPanelWidth = 0;
     if (m_rightTopSplitter && m_rightTopSplitter->count() >= 1) {
         flowPanelWidth = m_rightTopSplitter->sizes().value(0, 300);
+    }
+    const int desiredFlowWidth = (windowWidth < 1100) ? 200 : 300;
+    if (m_rightTopSplitter && m_rightTopSplitter->count() >= 3 &&
+        flowPanelWidth != desiredFlowWidth) {
+        QList<int> sizes = m_rightTopSplitter->sizes();
+        const int delta = desiredFlowWidth - sizes.value(0, 0);
+        // 从主视图借出或归还宽度，保持 splitter 总宽不变
+        if (sizes.size() >= 2) {
+            sizes[0] = desiredFlowWidth;
+            sizes[1] = qMax(minMainView, sizes.value(1, 0) - delta);
+            m_rightTopSplitter->setSizes(sizes);
+        }
+        flowPanelWidth = desiredFlowWidth;
     }
 
     // 可用宽度 = 窗口宽度 - 左侧 - 流程面板 - splitter handle 宽度
@@ -3726,20 +3756,25 @@ void MainWindow::adaptInspectorLayout() {
     }
 
     if (newMode != m_inspectorPanel->layoutMode()) {
-        // Floating 模式：从 splitter 移除检查器
+        // Floating 模式：从 splitter 移除检查器，插入命名占位以便后续恢复
         if (newMode == ModuleInspectorPanel::LayoutMode::Floating &&
             m_rightTopSplitter && m_rightTopSplitter->indexOf(m_inspectorPanel) >= 0) {
-            m_rightTopSplitter->replaceWidget(m_rightTopSplitter->indexOf(m_inspectorPanel), new QWidget());
+            QWidget* placeholder = new QWidget();
+            placeholder->setObjectName(QStringLiteral("InspectorPlaceholder"));
+            m_rightTopSplitter->replaceWidget(
+                m_rightTopSplitter->indexOf(m_inspectorPanel), placeholder);
         }
         // Docked/Collapsed 模式：如果检查器不在 splitter 中，加回
         if ((newMode == ModuleInspectorPanel::LayoutMode::Docked ||
              newMode == ModuleInspectorPanel::LayoutMode::Collapsed) &&
             m_rightTopSplitter && m_rightTopSplitter->indexOf(m_inspectorPanel) < 0) {
-            // 移除占位 widget（如果有）
+            // 先找到占位控件并删除，避免占位累积
             for (int i = 0; i < m_rightTopSplitter->count(); ++i) {
                 QWidget* w = m_rightTopSplitter->widget(i);
-                if (w && w->objectName() == "InspectorPlaceholder") {
+                if (w && w->objectName() == QStringLiteral("InspectorPlaceholder")) {
+                    // 用检查器替换占位，随后删除占位
                     m_rightTopSplitter->replaceWidget(i, m_inspectorPanel);
+                    w->deleteLater();
                     break;
                 }
             }

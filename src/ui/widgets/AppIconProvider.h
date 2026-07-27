@@ -52,7 +52,12 @@ public:
         Settings,
         Agent,
         TestConnection,
-        Step
+        Step,
+        Pin,
+        Unpin,
+        ChevronLeft,
+        ChevronRight,
+        Dot
     };
 
     static QIcon icon(Icon icon, int size = 24, const QColor& color = QColor("#374151"));
