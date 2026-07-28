@@ -393,32 +393,51 @@ void FlowNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* opti
     Q_UNUSED(option)
     Q_UNUSED(widget)
 
-    // 背景
-    QColor bgColor = isSelected() ? QColor(0, 120, 212) : QColor(60, 60, 60);
+    // P2: 主题感知节点颜色
+    bool isDark = scene() && scene()->backgroundBrush().color().lightness() <= 128;
+    QColor bgColor, borderColor, textColor, separatorColor;
+    if (isDark) {
+        bgColor = isSelected() ? QColor(0, 120, 212) : QColor(45, 45, 48);
+        borderColor = isSelected() ? QColor("#06B6D4") : QColor("#3b4148");
+        textColor = QColor("#ffffff");
+        separatorColor = QColor("#333333");
+    } else {
+        bgColor = isSelected() ? QColor(0, 120, 212) : QColor(255, 255, 255);
+        borderColor = isSelected() ? QColor("#0078d7") : QColor("#dce2e8");
+        textColor = isSelected() ? QColor("#ffffff") : QColor("#212121");
+        separatorColor = QColor("#e0e0e0");
+    }
+
+    painter->setRenderHint(QPainter::Antialiasing);
     painter->setBrush(bgColor);
-    painter->setPen(QPen(isSelected() ? Qt::white : QColor(100, 100, 100), 2));
-    painter->drawRoundedRect(0, 0, m_width, m_height, 5, 5);
+    painter->setPen(QPen(borderColor, 1.5));
+    painter->drawRoundedRect(0, 0, m_width, m_height, 6, 6);
 
     // 标题
-    painter->setPen(Qt::white);
+    painter->setPen(textColor);
     QFont font = painter->font();
     font.setBold(true);
+    font.setPointSize(9);
     painter->setFont(font);
-    painter->drawText(QRectF(5, 5, m_width - 10, 25), Qt::AlignLeft | Qt::AlignVCenter, m_name);
+    painter->drawText(QRectF(8, 4, m_width - 16, 24), Qt::AlignLeft | Qt::AlignVCenter, m_name);
 
     // 分割线
-    painter->setPen(QColor(80, 80, 80));
+    painter->setPen(separatorColor);
     painter->drawLine(5, 30, m_width - 5, 30);
 
     // 输入端口
-    painter->setBrush(QColor(100, 200, 100));
+    QColor inputColor("#22C55E");
+    painter->setBrush(inputColor);
+    painter->setPen(QPen(inputColor.darker(120), 1));
     for (int i = 0; i < m_inputPorts; i++) {
         qreal y = 35 + i * 20;
         painter->drawEllipse(-5, y, 10, 10);
     }
 
     // 输出端口
-    painter->setBrush(QColor(200, 100, 100));
+    QColor outputColor("#EF4444");
+    painter->setBrush(outputColor);
+    painter->setPen(QPen(outputColor.darker(120), 1));
     for (int i = 0; i < m_outputPorts; i++) {
         qreal y = 35 + i * 20;
         painter->drawEllipse(m_width - 5, y, 10, 10);

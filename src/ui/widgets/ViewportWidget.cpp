@@ -5,8 +5,13 @@
 
 #include <QApplication>
 #include <QCloseEvent>
+#include <QDateTime>
+#include <QDir>
+#include <QFileDialog>
 #include <QHBoxLayout>
+#include <QMessageBox>
 #include <QPalette>
+#include <QStandardPaths>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -21,7 +26,7 @@ namespace DeepLux {
 
 ViewportWidget::ViewportWidget(const QString& id, QWidget* parent)
     : QFrame(parent), m_viewportId(id), m_title(tr("Viewport")), m_imageWidget(nullptr), m_3dContent(nullptr),
-      m_toolbar(nullptr), m_3dToolbar(nullptr), m_displayMode(DisplayMode::Auto2D) {
+      m_toolbar(nullptr), m_displayMode(DisplayMode::Auto2D) {
     setFrameStyle(QFrame::NoFrame);
     setupUi();
     createActions();
@@ -47,74 +52,70 @@ void ViewportWidget::setupUi() {
     m_titleBar->setObjectName("ViewportTitle");
 
     titleLayout->addWidget(m_titleBar);
+    m_contentInfoLabel = new QLabel();
+    m_contentInfoLabel->setObjectName("ViewportContentInfo");
+    titleLayout->addWidget(m_contentInfoLabel);
     titleLayout->addStretch();
 
-    // Toolbar with actions
-    m_toolbar = new QToolBar();
-    m_toolbar->setStyleSheet(R"(
-        QToolBar {
-            background-color: transparent;
-            border: none;
-            spacing: 4px;
-        }
-        QToolButton {
-            background-color: transparent;
-            border: none;
-            padding: 2px;
-            color: #a0a0a0;
-            font-size: 13px;
-        }
-        QToolButton:hover {
-            background-color: #3a3a3a;
-            border-radius: 2px;
-        }
-    )");
-    m_toolbar->setIconSize(QSize(16, 16));
+    m_toolbar = new QToolBar(titleBarWidget);
+    m_toolbar->setObjectName("ViewportToolBar");
+    m_toolbar->setIconSize(QSize(18, 18));
+    m_toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
 
-    // Fit window action
-    m_fitWindowAction =
-        new QAction(AppIconProvider::icon(AppIconProvider::Icon::FitWindow, 16, QColor("#9CA3AF")), tr("适应"), this);
-    m_fitWindowAction->setToolTip(tr("适应窗口"));
-    m_toolbar->addAction(m_fitWindowAction);
-    connect(m_fitWindowAction, &QAction::triggered, this, &ViewportWidget::onFitWindow);
-
-    // Actual size action
-    m_actualSizeAction =
-        new QAction(AppIconProvider::icon(AppIconProvider::Icon::ActualSize, 16, QColor("#9CA3AF")), tr("1:1"), this);
-    m_actualSizeAction->setToolTip(tr("实际像素大小"));
-    m_toolbar->addAction(m_actualSizeAction);
-    connect(m_actualSizeAction, &QAction::triggered, this, &ViewportWidget::onActualSize);
-
-    m_toolbar->addSeparator();
-
-    // Zoom in action
-    m_zoomInAction =
-        new QAction(AppIconProvider::icon(AppIconProvider::Icon::ZoomIn, 16, QColor("#9CA3AF")), tr("+"), this);
-    m_zoomInAction->setToolTip(tr("放大"));
-    m_toolbar->addAction(m_zoomInAction);
-    connect(m_zoomInAction, &QAction::triggered, this, &ViewportWidget::onZoomIn);
-
-    // Zoom out action
     m_zoomOutAction =
-        new QAction(AppIconProvider::icon(AppIconProvider::Icon::ZoomOut, 16, QColor("#9CA3AF")), tr("-"), this);
+        new QAction(AppIconProvider::icon(AppIconProvider::Icon::ZoomOut, 18, QColor("#6B7280")), tr("缩小"), this);
+    m_zoomOutAction->setObjectName("ViewportZoomOutAction");
     m_zoomOutAction->setToolTip(tr("缩小"));
     m_toolbar->addAction(m_zoomOutAction);
     connect(m_zoomOutAction, &QAction::triggered, this, &ViewportWidget::onZoomOut);
 
-    m_toolbar->addSeparator();
+    m_zoomInAction =
+        new QAction(AppIconProvider::icon(AppIconProvider::Icon::ZoomIn, 18, QColor("#6B7280")), tr("放大"), this);
+    m_zoomInAction->setObjectName("ViewportZoomInAction");
+    m_zoomInAction->setToolTip(tr("放大"));
+    m_toolbar->addAction(m_zoomInAction);
+    connect(m_zoomInAction, &QAction::triggered, this, &ViewportWidget::onZoomIn);
+
+    m_zoomLabel = new QLabel(tr("100%"));
+    m_zoomLabel->setObjectName("ViewportZoomLabel");
+    m_zoomLabel->setAlignment(Qt::AlignCenter);
+    m_zoomLabel->setMinimumWidth(52);
+    m_toolbar->addWidget(m_zoomLabel);
+
+    m_fitWindowAction =
+        new QAction(AppIconProvider::icon(AppIconProvider::Icon::FitWindow, 18, QColor("#6B7280")), tr("适应"), this);
+    m_fitWindowAction->setObjectName("ViewportFitAction");
+    m_fitWindowAction->setToolTip(tr("适应窗口"));
+    m_toolbar->addAction(m_fitWindowAction);
+    connect(m_fitWindowAction, &QAction::triggered, this, &ViewportWidget::onFitWindow);
+
+    m_actualSizeAction = new QAction(AppIconProvider::icon(AppIconProvider::Icon::ActualSize, 18, QColor("#6B7280")),
+                                     tr("实际大小"), this);
+    m_actualSizeAction->setObjectName("ViewportActualSizeAction");
+    m_actualSizeAction->setToolTip(tr("实际像素大小 (1:1)"));
+    m_toolbar->addAction(m_actualSizeAction);
+    connect(m_actualSizeAction, &QAction::triggered, this, &ViewportWidget::onActualSize);
 
     // 2D/3D 切换
     m_toggleViewAction = new QAction(tr("3D"), this);
+    m_toggleViewAction->setObjectName("ViewportToggleViewAction");
     m_toggleViewAction->setToolTip(tr("切换到 3D 视图"));
     m_toggleViewAction->setVisible(false);
     m_toolbar->addAction(m_toggleViewAction);
     connect(m_toggleViewAction, &QAction::triggered, this, &ViewportWidget::onToggleView);
 
-    m_toolbar->addSeparator();
+    m_contentSeparatorAction = m_toolbar->addSeparator();
 
-    // Close action
+    m_snapshotAction =
+        new QAction(AppIconProvider::icon(AppIconProvider::Icon::Camera, 18, QColor("#0891B2")), tr("保存快照"), this);
+    m_snapshotAction->setObjectName("ViewportSnapshotAction");
+    m_snapshotAction->setToolTip(tr("保存当前视图快照"));
+    m_toolbar->addAction(m_snapshotAction);
+    connect(m_snapshotAction, &QAction::triggered, this, &ViewportWidget::onSaveSnapshot);
+
     m_closeAction =
-        new QAction(AppIconProvider::icon(AppIconProvider::Icon::Close, 16, QColor("#D1D5DB")), tr("×"), this);
+        new QAction(AppIconProvider::icon(AppIconProvider::Icon::Close, 18, QColor("#6B7280")), tr("关闭"), this);
+    m_closeAction->setObjectName("ViewportCloseAction");
     m_closeAction->setToolTip(tr("关闭"));
     m_toolbar->addAction(m_closeAction);
     connect(m_closeAction, &QAction::triggered, this, &ViewportWidget::onCloseClicked);
@@ -135,35 +136,8 @@ void ViewportWidget::setupUi() {
 
     // Forward 2D image clicks for coordinate picking
     connect(m_imageWidget, &HImageWidget::imageClicked, this, &ViewportWidget::point2DClicked);
-
-    // 3D toolbar (hidden by default)
-    m_3dToolbar = new QToolBar();
-    m_3dToolbar->setStyleSheet(R"(
-        QToolBar {
-            background-color: transparent;
-            border: none;
-            spacing: 4px;
-        }
-        QToolButton {
-            background-color: transparent;
-            border: none;
-            padding: 2px;
-            color: #a0a0a0;
-            font-size: 13px;
-        }
-        QToolButton:hover {
-            background-color: #3a3a3a;
-            border-radius: 2px;
-        }
-    )");
-    m_3dToolbar->setIconSize(QSize(16, 16));
-    // 2D/3D 切换按钮也加到 3D 工具栏（switchTo3D 会隐藏主工具栏）
-    if (m_toggleViewAction) {
-        m_3dToolbar->addAction(m_toggleViewAction);
-    }
-    m_3dToolbar->setVisible(false);
-
-    mainLayout->addWidget(m_3dToolbar);
+    connect(m_imageWidget, &HImageWidget::zoomChanged, this, &ViewportWidget::updateZoomLabel);
+    updateToolbarState();
 }
 
 void ViewportWidget::createActions() {
@@ -186,6 +160,7 @@ void ViewportWidget::displayData(const DisplayData& data) {
         if (m_3dContent) {
             m_3dContent->displayData(data);
         }
+        m_contentInfoLabel->setText(tr("%1 点").arg(data.pointCloudData()->size()));
         QString dsName = data.metadata().value("dataSourceName").toString();
         if (!dsName.isEmpty()) {
             setTitle(dsName);
@@ -195,6 +170,7 @@ void ViewportWidget::displayData(const DisplayData& data) {
         m_hasCachedImage = true;
         switchTo2D();
         m_imageWidget->setImage(m_cachedImage);
+        m_contentInfoLabel->setText(tr("%1 × %2").arg(m_cachedImage.width()).arg(m_cachedImage.height()));
         emit imageDisplayed();
         QString dsName = data.metadata().value("dataSourceName").toString();
         if (!dsName.isEmpty()) {
@@ -215,6 +191,7 @@ void ViewportWidget::displayImage(const QImage& image) {
     m_hasCachedImage = true;
     switchTo2D();
     m_imageWidget->setImage(image);
+    m_contentInfoLabel->setText(tr("%1 × %2").arg(image.width()).arg(image.height()));
     emit imageDisplayed();
     updateToggleAction();
 }
@@ -228,6 +205,9 @@ void ViewportWidget::setDualData(const QImage& image, const DisplayData& cloudDa
     switchTo3D();
     if (m_3dContent) {
         m_3dContent->displayData(cloudData);
+    }
+    if (cloudData.pointCloudData()) {
+        m_contentInfoLabel->setText(tr("%1 点").arg(cloudData.pointCloudData()->size()));
     }
     QString dsName = cloudData.metadata().value("dataSourceName").toString();
     if (!dsName.isEmpty()) {
@@ -261,6 +241,7 @@ void ViewportWidget::updateToggleAction() {
             m_toggleViewAction->setToolTip(QStringLiteral("切换到 3D 视图"));
         }
     }
+    updateToolbarState();
 }
 
 void ViewportWidget::clearDisplay() {
@@ -268,6 +249,13 @@ void ViewportWidget::clearDisplay() {
         m_3dContent->clearDisplay();
     }
     m_imageWidget->clearImage();
+    m_cachedImage = QImage();
+    m_cachedCloudData = DisplayData();
+    m_hasCachedImage = false;
+    m_hasCachedCloud = false;
+    m_contentInfoLabel->clear();
+    updateZoomLabel(1.0);
+    updateToggleAction();
 }
 
 void ViewportWidget::ensure3DContent() {
@@ -307,10 +295,11 @@ void ViewportWidget::switchTo2D() {
         m_3dContent->hide();
     }
     m_imageWidget->show();
+    if (!m_cachedImage.isNull()) {
+        m_contentInfoLabel->setText(tr("%1 × %2").arg(m_cachedImage.width()).arg(m_cachedImage.height()));
+    }
 
-    // Switch toolbar
-    m_toolbar->setVisible(true);
-    m_3dToolbar->setVisible(false);
+    updateToolbarState();
 }
 
 void ViewportWidget::switchTo3D() {
@@ -327,10 +316,29 @@ void ViewportWidget::switchTo3D() {
     if (m_3dContent) {
         m_3dContent->show();
     }
+    if (m_cachedCloudData.pointCloudData()) {
+        m_contentInfoLabel->setText(tr("%1 点").arg(m_cachedCloudData.pointCloudData()->size()));
+    }
 
-    // Switch toolbar
-    m_toolbar->setVisible(false);
-    m_3dToolbar->setVisible(true);
+    updateToolbarState();
+}
+
+void ViewportWidget::updateToolbarState() {
+    const bool imageMode = m_displayMode == DisplayMode::Auto2D;
+    const bool canZoom = imageMode && m_hasCachedImage;
+
+    m_zoomOutAction->setVisible(imageMode);
+    m_zoomInAction->setVisible(imageMode);
+    m_fitWindowAction->setVisible(imageMode);
+    m_actualSizeAction->setVisible(imageMode);
+    m_zoomLabel->setVisible(imageMode);
+
+    m_zoomOutAction->setEnabled(canZoom);
+    m_zoomInAction->setEnabled(canZoom);
+    m_fitWindowAction->setEnabled(canZoom);
+    m_actualSizeAction->setEnabled(canZoom);
+    m_contentSeparatorAction->setVisible(imageMode || m_toggleViewAction->isVisible());
+    m_snapshotAction->setEnabled(m_hasCachedImage || m_hasCachedCloud);
 }
 
 void ViewportWidget::zoomIn() {
@@ -379,6 +387,37 @@ void ViewportWidget::onActualSize() {
     actualSize();
 }
 
+void ViewportWidget::updateZoomLabel(double factor) {
+    m_zoomLabel->setText(tr("%1%").arg(qRound(factor * 100.0)));
+}
+
+void ViewportWidget::onSaveSnapshot() {
+    QImage snapshot;
+    if (m_displayMode == DisplayMode::Auto3D && m_3dContent && m_3dContent->isValid()) {
+        snapshot = m_3dContent->grabFramebuffer();
+    } else if (m_imageWidget && m_imageWidget->hasImage()) {
+        snapshot = m_imageWidget->grab().toImage();
+    }
+    if (snapshot.isNull()) {
+        return;
+    }
+
+    const QString picturesDir = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    const QString defaultPath =
+        QDir(picturesDir)
+            .filePath(QStringLiteral("DeepLux_%1.png").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")));
+    QString filePath = QFileDialog::getSaveFileName(this, tr("保存视图快照"), defaultPath, tr("PNG 图像 (*.png)"));
+    if (filePath.isEmpty()) {
+        return;
+    }
+    if (!filePath.endsWith(QStringLiteral(".png"), Qt::CaseInsensitive)) {
+        filePath += QStringLiteral(".png");
+    }
+    if (!snapshot.save(filePath, "PNG")) {
+        QMessageBox::warning(this, tr("保存视图快照"), tr("无法保存到：%1").arg(filePath));
+    }
+}
+
 void ViewportWidget::setRenderMode(int mode) {
     if (m_3dContent) {
         m_3dContent->setRenderMode(static_cast<ColorMode>(mode));
@@ -396,6 +435,13 @@ void ViewportWidget::setPickMode(bool enabled) {
 }
 
 void ViewportWidget::applyTheme(bool isDark) {
+    const QColor toolColor = isDark ? QColor("#D1D5DB") : QColor("#4B5563");
+    m_zoomOutAction->setIcon(AppIconProvider::icon(AppIconProvider::Icon::ZoomOut, 18, toolColor));
+    m_zoomInAction->setIcon(AppIconProvider::icon(AppIconProvider::Icon::ZoomIn, 18, toolColor));
+    m_fitWindowAction->setIcon(AppIconProvider::icon(AppIconProvider::Icon::FitWindow, 18, toolColor));
+    m_actualSizeAction->setIcon(AppIconProvider::icon(AppIconProvider::Icon::ActualSize, 18, toolColor));
+    m_closeAction->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Close, 18, toolColor));
+
     QPalette imagePalette = m_imageWidget->palette();
     imagePalette.setColor(QPalette::Window, isDark ? QColor("#1a1a1a") : QColor("#ffffff"));
     m_imageWidget->setPalette(imagePalette);
@@ -450,49 +496,6 @@ void ViewportWidget::applyTheme(bool isDark) {
         )");
     }
 
-    // Update toolbar styles
-    QString toolbarStyle = isDark ? R"(
-        QToolBar {
-            background-color: transparent;
-            border: none;
-            spacing: 4px;
-        }
-        QToolButton {
-            background-color: transparent;
-            border: none;
-            padding: 2px;
-            color: #f3f4f6;
-            font-size: 13px;
-        }
-        QToolButton:hover {
-            background-color: #4b5563;
-            border-radius: 2px;
-        }
-        QToolButton:pressed {
-            background-color: #6b7280;
-            border-radius: 2px;
-        }
-    )"
-                                  : R"(
-        QToolBar {
-            background-color: transparent;
-            border: none;
-            spacing: 4px;
-        }
-        QToolButton {
-            background-color: transparent;
-            border: none;
-            padding: 2px;
-            color: #606060;
-            font-size: 13px;
-        }
-        QToolButton:hover {
-            background-color: #e0e0e0;
-            border-radius: 2px;
-        }
-    )";
-    m_toolbar->setStyleSheet(toolbarStyle);
-    m_3dToolbar->setStyleSheet(toolbarStyle);
     if (m_3dContent) {
         m_3dContent->applyTheme(isDark);
     }

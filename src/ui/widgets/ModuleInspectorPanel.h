@@ -27,7 +27,7 @@ class ModuleInspectorPanel : public QWidget {
 public:
     /// 检查器布局模式
     enum class LayoutMode {
-        Docked,   ///< 宽屏：停靠在 RightTopSplitter
+        Docked,    ///< 宽屏：停靠在 RightTopSplitter
         Collapsed, ///< 中等宽度：折叠为 32px 侧栏
         Floating,  ///< 小窗口：非模态浮动工具窗
     };
@@ -70,17 +70,23 @@ public:
     /**
      * @return 当前实例 ID
      */
-    QString currentInstanceId() const { return m_instanceId; }
+    QString currentInstanceId() const {
+        return m_instanceId;
+    }
 
     /**
      * @return 是否已固定
      */
-    bool isPinned() const { return m_pinned; }
+    bool isPinned() const {
+        return m_pinned;
+    }
 
     /**
      * @return 是否处于折叠状态
      */
-    bool isCollapsed() const { return m_collapsed; }
+    bool isCollapsed() const {
+        return m_collapsed;
+    }
 
     /**
      * 切换到参数页签。
@@ -90,7 +96,9 @@ public:
     /**
      * @return 当前布局模式
      */
-    LayoutMode layoutMode() const { return m_layoutMode; }
+    LayoutMode layoutMode() const {
+        return m_layoutMode;
+    }
 
     /**
      * 设置布局模式（由 MainWindow 自适应逻辑调用）。
@@ -100,8 +108,12 @@ public:
     /**
      * 标记用户已手动指定模式，自适应切换不再自动发生。
      */
-    void setUserOverrideMode(bool override) { m_userOverrideMode = override; }
-    bool userOverrideMode() const { return m_userOverrideMode; }
+    void setUserOverrideMode(bool override) {
+        m_userOverrideMode = override;
+    }
+    bool userOverrideMode() const {
+        return m_userOverrideMode;
+    }
 
     /**
      * 应用主题。
@@ -120,7 +132,7 @@ signals:
     void advancedConfigRequested(const QString& instanceId);
     void pinChanged(bool pinned);
     void closeRequested();
-    void collapseToggled(bool collapsed);  // 高: 手动折叠时通知 MainWindow 调整 splitter
+    void collapseToggled(bool collapsed); // 高: 手动折叠时通知 MainWindow 调整 splitter
 
 private slots:
     void onPinToggled(bool checked);
@@ -167,8 +179,7 @@ private:
     // 底部按钮栏
     QWidget* m_bottomBar = nullptr;
     QPushButton* m_rerunBtn = nullptr;
-    QPushButton* m_resetBtn = nullptr;
-    QPushButton* m_advancedBtn = nullptr;
+    QToolButton* m_moreBtn = nullptr;
 
     // 空状态
     QWidget* m_emptyState = nullptr;

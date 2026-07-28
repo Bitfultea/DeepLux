@@ -116,6 +116,7 @@ private:
     void setupToolBar();
     void setupStatusBar();
     void setupMainLayout();
+    void updateProjectContext(Project* project);
     void addToolBoxItem(QTreeWidgetItem* parent, const QString& displayName, const QString& pluginName);
     QString toolDisplayName(const QString& pluginName, const QString& fallback = QString()) const;
     void updateToolBoxPluginItem(const QString& pluginName);
@@ -171,7 +172,7 @@ protected:
     // Agent 内部页签（对话 + 操作日志）
     QTabWidget* m_agentInnerTabs = nullptr;
 
-    // 状态栏
+    // 顶部工程上下文与状态栏
     QLabel* m_userLabel = nullptr;
     QLabel* m_projectLabel = nullptr;
     QWidget* m_processTabContent = nullptr;
@@ -300,7 +301,7 @@ protected:
     void adaptInspectorLayout();
     bool m_inspectorClosed = false;
     bool m_toolPanelUserClosed = false;
-    bool m_toolPanelSuppressSignal = false;  // 自适应隐藏时抑制 visibilityChanged 设 userClosed
+    bool m_toolPanelSuppressSignal = false; // 自适应隐藏时抑制 visibilityChanged 设 userClosed
 };
 
 } // namespace DeepLux

@@ -251,13 +251,16 @@ void TestPropertyPanel::testSettingModuleTwiceReplacesPreviousParamGroups() {
     PropertyPanelTestModule module;
 
     panel.setModule(&module);
-    QCOMPARE(panel.findChildren<QGroupBox*>().size(), 2);
+    QCOMPARE(panel.findChildren<QGroupBox*>().size(), 1);
+    QCOMPARE(panel.findChildren<QWidget*>(QStringLiteral("ModuleInfoContainer")).size(), 1);
 
     panel.setModule(&module);
-    QCOMPARE(panel.findChildren<QGroupBox*>().size(), 2);
+    QCOMPARE(panel.findChildren<QGroupBox*>().size(), 1);
+    QCOMPARE(panel.findChildren<QWidget*>(QStringLiteral("ModuleInfoContainer")).size(), 1);
 
     panel.clear();
     QCOMPARE(panel.findChildren<QGroupBox*>().size(), 0);
+    QCOMPARE(panel.findChildren<QWidget*>(QStringLiteral("ModuleInfoContainer")).size(), 0);
     QVERIFY(panel.currentModuleId().isEmpty());
 }
 

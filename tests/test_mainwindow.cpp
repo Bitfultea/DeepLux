@@ -9,6 +9,8 @@
 #include <QImage>
 #include <QLabel>
 #include <QLayout>
+#include <QMenu>
+#include <QMenuBar>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalSpy>
@@ -113,6 +115,7 @@ void TestMainWindow::init() {
     RunEngine::instance().clearModules();
     RunEngine::instance().clearOutputs();
     qunsetenv("DEEPLUX_APP_DATA_DIR");
+    qunsetenv("DEEPLUX_SHOW_DEBUG_MENU");
 }
 
 void TestMainWindow::cleanup() {
@@ -122,6 +125,7 @@ void TestMainWindow::cleanup() {
     RunEngine::instance().clearModules();
     RunEngine::instance().clearOutputs();
     qunsetenv("DEEPLUX_APP_DATA_DIR");
+    qunsetenv("DEEPLUX_SHOW_DEBUG_MENU");
 }
 
 bool TestMainWindow::installFitLinePlugin(const QString& pluginRoot) const {
@@ -328,8 +332,7 @@ void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
         button->click();
     });
 
-    QVERIFY(QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig",
-                                      Qt::DirectConnection,
+    QVERIFY(QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig", Qt::DirectConnection,
                                       Q_ARG(QString, QStringLiteral("distance_1"))));
     QCoreApplication::processEvents();
 
@@ -392,8 +395,7 @@ void TestMainWindow::testMeasurementConfigButtonWithInstalledPlugins() {
         button->click();
     });
 
-    QVERIFY(QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig",
-                                      Qt::DirectConnection,
+    QVERIFY(QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig", Qt::DirectConnection,
                                       Q_ARG(QString, QStringLiteral("installed_distance_1"))));
     QCoreApplication::processEvents();
 
@@ -471,8 +473,7 @@ void TestMainWindow::testPluginConfigDialogRestylesLegacyDarkPlugin() {
         modal->close();
     });
 
-    QVERIFY(QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig",
-                                      Qt::DirectConnection,
+    QVERIFY(QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig", Qt::DirectConnection,
                                       Q_ARG(QString, QStringLiteral("pointcloud_1"))));
     QCoreApplication::processEvents();
 
@@ -645,16 +646,17 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     }
 
     const QStringList expectedPrimaryActions = {
-        QStringLiteral("新建方案"), QStringLiteral("方案列表"), QStringLiteral("打开"), QStringLiteral("保存"),
-        QStringLiteral("单次运行"), QStringLiteral("循环运行"), QStringLiteral("停止"), QStringLiteral("切换主题"),
+        QStringLiteral("新建方案"), QStringLiteral("打开"),     QStringLiteral("保存"),
+        QStringLiteral("单次运行"), QStringLiteral("单步"),     QStringLiteral("循环运行"),
+        QStringLiteral("停止"),     QStringLiteral("快速测量"), QStringLiteral("快速标注"),
     };
     for (const QString& actionText : expectedPrimaryActions) {
         QVERIFY2(toolbarTexts.contains(actionText), qPrintable(QString("Missing toolbar action: %1").arg(actionText)));
     }
 
     const QStringList lowFrequencyActions = {
-        QStringLiteral("用户登录"), QStringLiteral("全局变量"), QStringLiteral("相机设置"),
-        QStringLiteral("通讯设置"), QStringLiteral("硬件配置"), QStringLiteral("报表查询"),
+        QStringLiteral("方案列表"), QStringLiteral("切换主题"), QStringLiteral("用户登录"), QStringLiteral("全局变量"),
+        QStringLiteral("相机设置"), QStringLiteral("通讯设置"), QStringLiteral("硬件配置"), QStringLiteral("报表查询"),
         QStringLiteral("主页"),     QStringLiteral("UI 设计"),  QStringLiteral("激光设置"),
     };
     for (const QString& actionText : lowFrequencyActions) {
@@ -697,6 +699,15 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QCOMPARE(processTree->defaultDropAction(), Qt::CopyAction);
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project != nullptr);
+    QLabel* projectBreadcrumb = window.findChild<QLabel*>("ProjectBreadcrumbLabel");
+    QVERIFY2(projectBreadcrumb != nullptr, "Project context should be visible in the top chrome");
+    QVERIFY2(projectBreadcrumb->text().contains(project->name()),
+             "Project breadcrumb should follow the current project");
+    QVERIFY2(projectBreadcrumb->parentWidget()->objectName() == QStringLiteral("ProjectBreadcrumb"),
+             "Project context should use a dedicated breadcrumb container");
+
+    QVERIFY2(window.findChild<QMenu*>("DebugMenu") == nullptr,
+             "Debug menu should stay out of the production UI unless explicitly enabled");
     ModuleInstance agentAddedCircle;
     agentAddedCircle.id = QStringLiteral("agent_circle_1");
     agentAddedCircle.moduleId = QStringLiteral("FindCircle");
@@ -871,8 +882,7 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
             break;
         }
     }
-    QVERIFY2(foundStepAction,
-             "Top toolbar should expose a dedicated one-step execution action");
+    QVERIFY2(foundStepAction, "Top toolbar should expose a dedicated one-step execution action");
     QVERIFY2(window.styleSheet().contains(QStringLiteral("QToolBar QToolButton")),
              "Toolbar buttons should use the same styled tool-button rules");
     const QImage playIcon =
@@ -890,6 +900,23 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY(viewportTitle != nullptr);
     QVERIFY2(viewportTitle->styleSheet().contains(QStringLiteral("font-size: 14px")),
              "Viewport title should use the same readable panel title font size");
+    ViewportWidget* primaryViewport = window.findChild<ViewportWidget*>();
+    QVERIFY(primaryViewport != nullptr);
+    QImage toolbarProbe(40, 20, QImage::Format_RGB32);
+    toolbarProbe.fill(Qt::white);
+    primaryViewport->displayImage(toolbarProbe);
+    primaryViewport->actualSize();
+    QLabel* zoomLabel = primaryViewport->findChild<QLabel*>("ViewportZoomLabel");
+    QVERIFY(zoomLabel != nullptr);
+    QCOMPARE(zoomLabel->text(), QStringLiteral("100%"));
+    primaryViewport->zoomIn();
+    QCOMPARE(zoomLabel->text(), QStringLiteral("125%"));
+    QLabel* contentInfo = primaryViewport->findChild<QLabel*>("ViewportContentInfo");
+    QVERIFY(contentInfo != nullptr);
+    QVERIFY(contentInfo->text().contains(QStringLiteral("40")) && contentInfo->text().contains(QStringLiteral("20")));
+    QAction* snapshotAction = primaryViewport->findChild<QAction*>("ViewportSnapshotAction");
+    QVERIFY2(snapshotAction != nullptr && snapshotAction->isEnabled(),
+             "Viewport toolbar should expose a usable snapshot action when data is displayed");
 
     QTabWidget* logTabs = window.findChild<QTabWidget*>("LogTerminalTabs");
     QVERIFY(logTabs != nullptr);
@@ -1228,8 +1255,7 @@ void TestMainWindow::testTreeAndCanvasSyncSelection() {
     QVERIFY(canvas != nullptr);
     FlowNodeItem* nodeItem = canvas->nodeItem(QStringLiteral("sync_1"));
     QVERIFY(nodeItem != nullptr);
-    QVERIFY2(nodeItem->isSelected(),
-             "Canvas node should be selected when process tree item is selected");
+    QVERIFY2(nodeItem->isSelected(), "Canvas node should be selected when process tree item is selected");
 }
 
 void TestMainWindow::testCycleRunDoesNotStealSelection() {
@@ -1375,8 +1401,7 @@ void TestMainWindow::testCloseInspectorDoesNotAutoExpand() {
     processTree->setCurrentItem(item2);
     QCoreApplication::processEvents();
 
-    QVERIFY2(!inspector->isVisible(),
-             "Inspector should not auto-expand after being closed by the user");
+    QVERIFY2(!inspector->isVisible(), "Inspector should not auto-expand after being closed by the user");
 }
 
 void TestMainWindow::testDeleteModuleClearsInspector() {
@@ -1432,16 +1457,12 @@ void TestMainWindow::testOldAdvancedConfigDialogStillUsable() {
     ModuleInspectorPanel* inspector = window.findChild<ModuleInspectorPanel*>();
     QVERIFY(inspector != nullptr);
 
-    QToolButton* advancedBtn = inspector->findChild<QToolButton*>("InspectorAdvancedBtn");
-    if (advancedBtn) {
-        // Click the advanced button - it should emit advancedConfigRequested
-        QSignalSpy spy(inspector, &ModuleInspectorPanel::advancedConfigRequested);
-        QTest::mouseClick(advancedBtn, Qt::LeftButton);
-        QCoreApplication::processEvents();
-        // The signal should have been emitted (the actual dialog may or may not open in offscreen mode)
-        QVERIFY2(spy.count() >= 1,
-                 "Advanced config button should emit advancedConfigRequested signal");
-    }
+    QAction* advancedAction = inspector->findChild<QAction*>("InspectorAdvancedAction");
+    QVERIFY(advancedAction != nullptr);
+    QSignalSpy spy(inspector, &ModuleInspectorPanel::advancedConfigRequested);
+    advancedAction->trigger();
+    QCoreApplication::processEvents();
+    QVERIFY2(spy.count() >= 1, "Advanced config overflow action should emit advancedConfigRequested signal");
 }
 
 // 中: 回归测试 — 窄窗口后工具面板恢复
@@ -1463,8 +1484,7 @@ void TestMainWindow::testNarrowWindowToolPanelRestored() {
     window.resize(1600, 900);
     QCoreApplication::processEvents();
 
-    QVERIFY2(toolDock->isVisible(),
-             "Tool panel should be restored after window resized back to 1600px");
+    QVERIFY2(toolDock->isVisible(), "Tool panel should be restored after window resized back to 1600px");
 }
 
 // 中: 回归测试 — 手动折叠检查器后 splitter 重分配
@@ -1536,8 +1556,7 @@ void TestMainWindow::testFocusModePreservesLogVisibility() {
         QVERIFY2(!logDock->isVisible(), "Log dock should be hidden in focus mode (test 1)");
         QTest::mouseDClick(imageDisplay, Qt::LeftButton);
         QCoreApplication::processEvents();
-        QVERIFY2(logDock->isVisible() == logVisibleBefore,
-                 "Log dock visibility should be restored (test 1)");
+        QVERIFY2(logDock->isVisible() == logVisibleBefore, "Log dock visibility should be restored (test 1)");
     }
 
     // 测试 2: 日志原本隐藏 — 先隐藏日志再进入焦点
@@ -1550,8 +1569,7 @@ void TestMainWindow::testFocusModePreservesLogVisibility() {
         QVERIFY2(!logDock->isVisible(), "Log dock should be hidden in focus mode (test 2)");
         QTest::mouseDClick(imageDisplay, Qt::LeftButton);
         QCoreApplication::processEvents();
-        QVERIFY2(!logDock->isVisible(),
-                 "Log dock should remain hidden after exiting focus mode (test 2)");
+        QVERIFY2(!logDock->isVisible(), "Log dock should remain hidden after exiting focus mode (test 2)");
     }
 }
 

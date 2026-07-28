@@ -1,17 +1,16 @@
 #include "HImageWidget.h"
-#include <QPainter>
-#include <QMouseEvent>
-#include <QWheelEvent>
+
 #include <QDebug>
-#include <cmath>
+#include <QMouseEvent>
+#include <QPainter>
 #include <QStyle>
 #include <QStyleOption>
+#include <QWheelEvent>
+#include <cmath>
 
 namespace DeepLux {
 
-HImageWidget::HImageWidget(QWidget* parent)
-    : QWidget(parent)
-{
+HImageWidget::HImageWidget(QWidget* parent) : QWidget(parent) {
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     // Auto-fill background so stylesheet color is applied before paintEvent
@@ -19,12 +18,9 @@ HImageWidget::HImageWidget(QWidget* parent)
     setAttribute(Qt::WA_StyledBackground, true);
 }
 
-HImageWidget::~HImageWidget()
-{
-}
+HImageWidget::~HImageWidget() {}
 
-void HImageWidget::setImage(const QImage& image)
-{
+void HImageWidget::setImage(const QImage& image) {
     m_image = image;
     m_hasImage = !image.isNull();
 
@@ -41,8 +37,7 @@ void HImageWidget::setImage(const QImage& image)
     update();
 }
 
-void HImageWidget::clearImage()
-{
+void HImageWidget::clearImage() {
     m_image = QImage();
     m_hasImage = false;
     m_imageWidth = 0;
@@ -55,8 +50,7 @@ void HImageWidget::clearImage()
     update();
 }
 
-void HImageWidget::setZoom(double factor)
-{
+void HImageWidget::setZoom(double factor) {
     factor = qBound(0.1, factor, 20.0);
     if (!qFuzzyCompare(m_zoom, factor)) {
         m_zoom = factor;
@@ -66,12 +60,12 @@ void HImageWidget::setZoom(double factor)
     }
 }
 
-void HImageWidget::fitToWindow()
-{
-    if (!m_hasImage) return;
+void HImageWidget::fitToWindow() {
+    if (!m_hasImage)
+        return;
 
-    double scaleX = (double)width() / m_imageWidth;
-    double scaleY = (double)height() / m_imageHeight;
+    double scaleX = (double) width() / m_imageWidth;
+    double scaleY = (double) height() / m_imageHeight;
     m_zoom = qMin(scaleX, scaleY) * 0.95;
 
     // 居中
@@ -84,8 +78,7 @@ void HImageWidget::fitToWindow()
     emit zoomChanged(m_zoom);
 }
 
-void HImageWidget::actualSize()
-{
+void HImageWidget::actualSize() {
     m_zoom = 1.0;
     m_offset = QPointF((width() - m_imageWidth) / 2.0, (height() - m_imageHeight) / 2.0);
     updateTransform();
@@ -93,53 +86,45 @@ void HImageWidget::actualSize()
     emit zoomChanged(m_zoom);
 }
 
-void HImageWidget::setRoiMode(RoiType type)
-{
+void HImageWidget::setRoiMode(RoiType type) {
     m_roiMode = type;
     m_isDrawing = false;
 }
 
-void HImageWidget::clearRois()
-{
+void HImageWidget::clearRois() {
     m_rois.clear();
     update();
 }
 
 void HImageWidget::setMeasurementOverlay(const QList<MeasurementOverlayPoint>& points,
-                                         const QList<MeasurementOverlayLine>& lines)
-{
+                                         const QList<MeasurementOverlayLine>& lines) {
     m_measurementPoints = points;
     m_measurementLines = lines;
     update();
 }
 
-void HImageWidget::clearMeasurementOverlay()
-{
+void HImageWidget::clearMeasurementOverlay() {
     m_measurementPoints.clear();
     m_measurementLines.clear();
     update();
 }
 
-void HImageWidget::updateTransform()
-{
+void HImageWidget::updateTransform() {
     m_transform = QTransform();
     m_transform.translate(m_offset.x(), m_offset.y());
     m_transform.scale(m_zoom, m_zoom);
     m_inverseTransform = m_transform.inverted();
 }
 
-QPointF HImageWidget::widgetToImage(const QPointF& widgetPoint) const
-{
+QPointF HImageWidget::widgetToImage(const QPointF& widgetPoint) const {
     return m_inverseTransform.map(widgetPoint);
 }
 
-QPointF HImageWidget::imageToWidget(const QPointF& imagePoint) const
-{
+QPointF HImageWidget::imageToWidget(const QPointF& imagePoint) const {
     return m_transform.map(imagePoint);
 }
 
-void HImageWidget::paintEvent(QPaintEvent* event)
-{
+void HImageWidget::paintEvent(QPaintEvent* event) {
     Q_UNUSED(event)
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
@@ -199,8 +184,7 @@ void HImageWidget::paintEvent(QPaintEvent* event)
                     font.setPointSize(9);
                     painter.setFont(font);
                     const QRectF textRect = painter.boundingRect(QRectF(), Qt::AlignCenter, line.label);
-                    const QRectF bgRect = textRect.translated(labelPos - textRect.center())
-                                                   .adjusted(-5, -3, 5, 3);
+                    const QRectF bgRect = textRect.translated(labelPos - textRect.center()).adjusted(-5, -3, 5, 3);
 
                     painter.setBrush(QColor(15, 23, 42, 200));
                     painter.setPen(QPen(QColor("#06B6D4"), 1));
@@ -232,21 +216,6 @@ void HImageWidget::paintEvent(QPaintEvent* event)
             }
         }
 
-        // 绘制信息 — 半透明背景矩形 + 文字
-        QString zoomText = QString("Zoom: %1%").arg(m_zoom * 100, 0, 'f', 1);
-        QString sizeText = QString("Size: %1 x %2").arg(m_imageWidth).arg(m_imageHeight);
-        QFont infoFont = painter.font();
-        infoFont.setPointSize(9);
-        painter.setFont(infoFont);
-        QRectF zoomRect = painter.boundingRect(QRectF(10, 8, 200, 20), Qt::AlignLeft | Qt::AlignVCenter, zoomText);
-        QRectF sizeRect = painter.boundingRect(QRectF(10, 28, 200, 20), Qt::AlignLeft | Qt::AlignVCenter, sizeText);
-        QRectF bgRect = zoomRect.united(sizeRect).adjusted(-4, -2, 4, 2);
-        painter.setBrush(QColor(0, 0, 0, 140));
-        painter.setPen(Qt::NoPen);
-        painter.drawRoundedRect(bgRect, 3, 3);
-        painter.setPen(Qt::white);
-        painter.drawText(zoomRect, Qt::AlignLeft | Qt::AlignVCenter, zoomText);
-        painter.drawText(sizeRect, Qt::AlignLeft | Qt::AlignVCenter, sizeText);
         return;
     }
 
@@ -277,16 +246,14 @@ void HImageWidget::paintEvent(QPaintEvent* event)
     painter.drawText(hintRect, Qt::AlignCenter | Qt::TextWordWrap, tr("支持图片、PLY/TIFF 点云和流程模块输出"));
 }
 
-void HImageWidget::resizeEvent(QResizeEvent* event)
-{
+void HImageWidget::resizeEvent(QResizeEvent* event) {
     Q_UNUSED(event)
     if (m_hasImage) {
         fitToWindow();
     }
 }
 
-void HImageWidget::mousePressEvent(QMouseEvent* event)
-{
+void HImageWidget::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
         m_clickPressPos = event->pos();
         m_clickIsLeftButton = true;
@@ -303,8 +270,7 @@ void HImageWidget::mousePressEvent(QMouseEvent* event)
     }
 }
 
-void HImageWidget::mouseMoveEvent(QMouseEvent* event)
-{
+void HImageWidget::mouseMoveEvent(QMouseEvent* event) {
     if (m_hasImage) {
         QPointF imgPos = widgetToImage(event->pos());
         emit mouseMoved(imgPos);
@@ -322,8 +288,7 @@ void HImageWidget::mouseMoveEvent(QMouseEvent* event)
     }
 }
 
-void HImageWidget::mouseReleaseEvent(QMouseEvent* event)
-{
+void HImageWidget::mouseReleaseEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
         if (m_clickIsLeftButton) {
             QPointF delta = event->pos() - m_clickPressPos;
@@ -355,9 +320,9 @@ void HImageWidget::mouseReleaseEvent(QMouseEvent* event)
     }
 }
 
-void HImageWidget::wheelEvent(QWheelEvent* event)
-{
-    if (!m_hasImage) return;
+void HImageWidget::wheelEvent(QWheelEvent* event) {
+    if (!m_hasImage)
+        return;
 
     double delta = event->angleDelta().y() / 120.0;
     double factor = 1.0 + delta * 0.1;

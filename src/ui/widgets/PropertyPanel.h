@@ -25,8 +25,7 @@ struct PluginInfo;
  *
  * 显示和编辑模块参数
  */
-class PropertyPanel : public QWidget
-{
+class PropertyPanel : public QWidget {
     Q_OBJECT
 
 public:
@@ -44,7 +43,9 @@ public:
      */
     void refreshFromModule();
 
-    QString currentModuleId() const { return m_currentModuleId; }
+    QString currentModuleId() const {
+        return m_currentModuleId;
+    }
 
 signals:
     void paramsChanged(const QString& moduleId, const QString& key, const QVariant& value);
@@ -72,7 +73,6 @@ private:
     QWidget* m_contentWidget = nullptr;
     QVBoxLayout* m_contentLayout = nullptr;
 
-    QLabel* m_titleLabel = nullptr;
     QLabel* m_noSelectionLabel = nullptr;
 
     IModule* m_currentModule = nullptr;

@@ -49,63 +49,147 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
     QString inspectorTabSelBg, inspectorTabHoverBg;
 
     if (isDark) {
-        mainWindowBg = "#1e1e1e"; splitterBg = "#1e1e1e";
-        dockBg = "#252525"; dockTitleBg = "#2d2d2d"; dockTitleFg = "#ffffff";
-        dockTitleBorder = "#444444"; dockTitleHover = "#333333";
-        treeBg = "#252525"; treeFg = "#ffffff"; treeHover = "#3a3a3a";
-        tableBg = "#252525"; tableFg = "#ffffff"; tableItemBorder = "#333";
-        headerBg = "#333333"; headerFg = "#ffffff";
-        scrollBg = "#252525"; scrollHandle = "#555555"; scrollHandleHover = "#666666";
-        toolBarBg = "#252525"; toolBarBorder = "#444444";
-        toolBtnFg = "#ffffff"; toolBtnHoverBg = "#3a3a3a"; toolBtnHoverBorder = "#555555";
-        toolBtnCheckedBg = "#0e7490"; toolBtnCheckedBorder = "#06b6d4";
-        menuBarBg = "#252525"; menuBarFg = "#ffffff";
-        menuBg = "#252525"; menuFg = "#ffffff"; menuSelBg = "#0078d7"; menuSelFg = "#ffffff"; menuBorder = "#333";
-        statusBg = "#252525"; statusFg = "#ffffff";
-        btnBg = "#0078d7"; btnFg = "white"; btnHoverBg = "#1e8ad6";
-        btnDisabledBg = "#555555"; btnDisabledFg = "#999999";
-        inputBg = "#333333"; inputFg = "white"; inputBorder = "#555";
+        mainWindowBg = "#1e1e1e";
+        splitterBg = "#1e1e1e";
+        dockBg = "#252525";
+        dockTitleBg = "#2d2d2d";
+        dockTitleFg = "#ffffff";
+        dockTitleBorder = "#444444";
+        dockTitleHover = "#333333";
+        treeBg = "#252525";
+        treeFg = "#ffffff";
+        treeHover = "#3a3a3a";
+        tableBg = "#252525";
+        tableFg = "#ffffff";
+        tableItemBorder = "#333";
+        headerBg = "#333333";
+        headerFg = "#ffffff";
+        scrollBg = "#252525";
+        scrollHandle = "#555555";
+        scrollHandleHover = "#666666";
+        toolBarBg = "#252525";
+        toolBarBorder = "#444444";
+        toolBtnFg = "#ffffff";
+        toolBtnHoverBg = "#3a3a3a";
+        toolBtnHoverBorder = "#555555";
+        toolBtnCheckedBg = "#0e7490";
+        toolBtnCheckedBorder = "#06b6d4";
+        menuBarBg = "#252525";
+        menuBarFg = "#ffffff";
+        menuBg = "#252525";
+        menuFg = "#ffffff";
+        menuSelBg = "#0078d7";
+        menuSelFg = "#ffffff";
+        menuBorder = "#333";
+        statusBg = "#252525";
+        statusFg = "#ffffff";
+        btnBg = "#0078d7";
+        btnFg = "white";
+        btnHoverBg = "#1e8ad6";
+        btnDisabledBg = "#555555";
+        btnDisabledFg = "#999999";
+        inputBg = "#333333";
+        inputFg = "white";
+        inputBorder = "#555";
         splitterHandleMainBg = "#1e1e1e";
-        splitterHandleTopBg = "#30363d"; splitterHandleTopLeftBorder = "#3f4750"; splitterHandleTopRightBorder = "#252b31";
-        splitterHandleVerBg = "#30363d"; splitterHandleVerTopBorder = "#3f4750"; splitterHandleVerBottomBorder = "#252b31";
-        processPanelBg = "#252525"; processPanelRightBorder = "#3b4148";
-        imageDisplayBg = "#1e1e1e"; imageDisplayLeftBorder = "#3b4148";
+        splitterHandleTopBg = "#30363d";
+        splitterHandleTopLeftBorder = "#3f4750";
+        splitterHandleTopRightBorder = "#252b31";
+        splitterHandleVerBg = "#30363d";
+        splitterHandleVerTopBorder = "#3f4750";
+        splitterHandleVerBottomBorder = "#252b31";
+        processPanelBg = "#252525";
+        processPanelRightBorder = "#3b4148";
+        imageDisplayBg = "#1e1e1e";
+        imageDisplayLeftBorder = "#3b4148";
         logDockBorderTop = "#3b4148";
-        labelFg = "#ffffff"; scrollAreaBg = "#252525"; frameBg = "transparent";
-        tabPaneBg = "#252525"; tabBarBg = "#252525";
-        tabBarTabBg = "#333333"; tabBarTabFg = "#ffffff"; tabBarTabSelBg = "#444444"; tabBarTabHoverBg = "#3a3a3a";
-        inspectorPanelBg = "#252525"; inspectorHeaderBg = "#2d2d2d"; inspectorHeaderFg = "#ffffff";
-        inspectorHeaderBorder = "#3b4148"; inspectorEmptyFg = "#888888";
-        inspectorTabSelBg = "#444444"; inspectorTabHoverBg = "#3a3a3a";
+        labelFg = "#ffffff";
+        scrollAreaBg = "#252525";
+        frameBg = "transparent";
+        tabPaneBg = "#252525";
+        tabBarBg = "#252525";
+        tabBarTabBg = "#333333";
+        tabBarTabFg = "#ffffff";
+        tabBarTabSelBg = "#444444";
+        tabBarTabHoverBg = "#3a3a3a";
+        inspectorPanelBg = "#252525";
+        inspectorHeaderBg = "#2d2d2d";
+        inspectorHeaderFg = "#ffffff";
+        inspectorHeaderBorder = "#3b4148";
+        inspectorEmptyFg = "#888888";
+        inspectorTabSelBg = "#444444";
+        inspectorTabHoverBg = "#3a3a3a";
     } else {
-        mainWindowBg = "#f5f5f5"; splitterBg = "#f5f5f5";
-        dockBg = "#ffffff"; dockTitleBg = "#e8e8e8"; dockTitleFg = "#212121";
-        dockTitleBorder = "#cccccc"; dockTitleHover = "#d0d0d0";
-        treeBg = "#ffffff"; treeFg = "#212121"; treeHover = "#e5f3ff";
-        tableBg = "#ffffff"; tableFg = "#212121"; tableItemBorder = "#eeeeee";
-        headerBg = "#f0f0f0"; headerFg = "#212121";
-        scrollBg = "#f0f0f0"; scrollHandle = "#c0c0c0"; scrollHandleHover = "#a0a0a0";
-        toolBarBg = "#f8f8f8"; toolBarBorder = "#dddddd";
-        toolBtnFg = "#212121"; toolBtnHoverBg = "#e5f3ff"; toolBtnHoverBorder = "#0078d7";
-        toolBtnCheckedBg = "#CCEBF2"; toolBtnCheckedBorder = "#0891B2";
-        menuBarBg = "#f8f8f8"; menuBarFg = "#212121";
-        menuBg = "#ffffff"; menuFg = "#212121"; menuSelBg = "#0078d7"; menuSelFg = "#ffffff"; menuBorder = "#cccccc";
-        statusBg = "#f8f8f8"; statusFg = "#212121";
-        btnBg = "#0078d7"; btnFg = "white"; btnHoverBg = "#1e8ad6";
-        btnDisabledBg = "#cccccc"; btnDisabledFg = "#999999";
-        inputBg = "#ffffff"; inputFg = "#212121"; inputBorder = "#cccccc";
+        mainWindowBg = "#f5f5f5";
+        splitterBg = "#f5f5f5";
+        dockBg = "#ffffff";
+        dockTitleBg = "#e8e8e8";
+        dockTitleFg = "#212121";
+        dockTitleBorder = "#cccccc";
+        dockTitleHover = "#d0d0d0";
+        treeBg = "#ffffff";
+        treeFg = "#212121";
+        treeHover = "#e5f3ff";
+        tableBg = "#ffffff";
+        tableFg = "#212121";
+        tableItemBorder = "#eeeeee";
+        headerBg = "#f0f0f0";
+        headerFg = "#212121";
+        scrollBg = "#f0f0f0";
+        scrollHandle = "#c0c0c0";
+        scrollHandleHover = "#a0a0a0";
+        toolBarBg = "#f8f8f8";
+        toolBarBorder = "#dddddd";
+        toolBtnFg = "#212121";
+        toolBtnHoverBg = "#e5f3ff";
+        toolBtnHoverBorder = "#0078d7";
+        toolBtnCheckedBg = "#CCEBF2";
+        toolBtnCheckedBorder = "#0891B2";
+        menuBarBg = "#f8f8f8";
+        menuBarFg = "#212121";
+        menuBg = "#ffffff";
+        menuFg = "#212121";
+        menuSelBg = "#0078d7";
+        menuSelFg = "#ffffff";
+        menuBorder = "#cccccc";
+        statusBg = "#f8f8f8";
+        statusFg = "#212121";
+        btnBg = "#0078d7";
+        btnFg = "white";
+        btnHoverBg = "#1e8ad6";
+        btnDisabledBg = "#cccccc";
+        btnDisabledFg = "#999999";
+        inputBg = "#ffffff";
+        inputFg = "#212121";
+        inputBorder = "#cccccc";
         splitterHandleMainBg = "#f5f5f5";
-        splitterHandleTopBg = "#e4e8ed"; splitterHandleTopLeftBorder = "#d2d8e0"; splitterHandleTopRightBorder = "#f7f8fa";
-        splitterHandleVerBg = "#e4e8ed"; splitterHandleVerTopBorder = "#d2d8e0"; splitterHandleVerBottomBorder = "#f7f8fa";
-        processPanelBg = "#ffffff"; processPanelRightBorder = "#dce2e8";
-        imageDisplayBg = "#ffffff"; imageDisplayLeftBorder = "#dce2e8";
+        splitterHandleTopBg = "#e4e8ed";
+        splitterHandleTopLeftBorder = "#d2d8e0";
+        splitterHandleTopRightBorder = "#f7f8fa";
+        splitterHandleVerBg = "#e4e8ed";
+        splitterHandleVerTopBorder = "#d2d8e0";
+        splitterHandleVerBottomBorder = "#f7f8fa";
+        processPanelBg = "#ffffff";
+        processPanelRightBorder = "#dce2e8";
+        imageDisplayBg = "#ffffff";
+        imageDisplayLeftBorder = "#dce2e8";
         logDockBorderTop = "#dce2e8";
-        labelFg = "#212121"; scrollAreaBg = "#ffffff"; frameBg = "transparent";
-        tabPaneBg = "#ffffff"; tabBarBg = "#ffffff";
-        tabBarTabBg = "#e8e8e8"; tabBarTabFg = "#212121"; tabBarTabSelBg = "#f5f5f5"; tabBarTabHoverBg = "#d0d0d0";
-        inspectorPanelBg = "#ffffff"; inspectorHeaderBg = "#e8e8e8"; inspectorHeaderFg = "#212121";
-        inspectorHeaderBorder = "#dce2e8"; inspectorEmptyFg = "#666666";
-        inspectorTabSelBg = "#f5f5f5"; inspectorTabHoverBg = "#d0d0d0";
+        labelFg = "#212121";
+        scrollAreaBg = "#ffffff";
+        frameBg = "transparent";
+        tabPaneBg = "#ffffff";
+        tabBarBg = "#ffffff";
+        tabBarTabBg = "#e8e8e8";
+        tabBarTabFg = "#212121";
+        tabBarTabSelBg = "#f5f5f5";
+        tabBarTabHoverBg = "#d0d0d0";
+        inspectorPanelBg = "#ffffff";
+        inspectorHeaderBg = "#e8e8e8";
+        inspectorHeaderFg = "#212121";
+        inspectorHeaderBorder = "#dce2e8";
+        inspectorEmptyFg = "#666666";
+        inspectorTabSelBg = "#f5f5f5";
+        inspectorTabHoverBg = "#d0d0d0";
     }
 
     QString s;
@@ -135,28 +219,41 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
     s += QString("QTableWidget::item { border-bottom: %1 solid %2; }").arg(borderW, tableItemBorder);
     s += "QTableWidget::item:selected { background-color: #0078d7; }";
     s += QString("QHeaderView::section { background-color: %1; color: %2; padding: 5px; border: none; "
-                 "font-size: %3; }").arg(headerBg, headerFg, baseFont);
+                 "font-size: %3; }")
+             .arg(headerBg, headerFg, baseFont);
     s += QString("QTableCornerButton::section { background-color: %1; border: none; }").arg(headerBg);
 
     s += QString("QScrollBar:vertical { background-color: %1; width: 12px; border: none; }").arg(scrollBg);
-    s += QString("QScrollBar::handle:vertical { background-color: %1; min-height: 20px; border-radius: 6px; }").arg(scrollHandle);
+    s += QString("QScrollBar::handle:vertical { background-color: %1; min-height: 20px; border-radius: 6px; }")
+             .arg(scrollHandle);
     s += QString("QScrollBar::handle:vertical:hover { background-color: %1; }").arg(scrollHandleHover);
     s += "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }";
     s += QString("QScrollBar:horizontal { background-color: %1; height: 12px; border: none; }").arg(scrollBg);
-    s += QString("QScrollBar::handle:horizontal { background-color: %1; min-width: 20px; border-radius: 6px; }").arg(scrollHandle);
+    s += QString("QScrollBar::handle:horizontal { background-color: %1; min-width: 20px; border-radius: 6px; }")
+             .arg(scrollHandle);
     s += QString("QScrollBar::handle:horizontal:hover { background-color: %1; }").arg(scrollHandleHover);
     s += "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }";
 
     s += QString("QToolBar { background-color: %1; border: %2 solid %3; spacing: %4; padding: 2px; }")
              .arg(toolBarBg, borderW, toolBarBorder, baseSpacing);
     s += QString("QToolBar QToolButton { background-color: transparent; color: %1; padding: 5px; "
-                 "border: %2 solid transparent; }").arg(toolBtnFg, borderW);
+                 "border: %2 solid transparent; }")
+             .arg(toolBtnFg, borderW);
     s += QString("QToolBar QToolButton:hover { background-color: %1; border: %2 solid %3; }")
              .arg(toolBtnHoverBg, borderW, toolBtnHoverBorder);
     s += QString("QToolBar QToolButton:pressed { background-color: %1; border: %2 solid %3; }")
              .arg(toolBtnCheckedBg, borderW, toolBtnCheckedBorder);
     s += QString("QToolBar QToolButton:checked { background-color: %1; color: #ffffff; border: %2 solid %3; }")
              .arg(toolBtnCheckedBg, borderW, toolBtnCheckedBorder);
+    s += QString("QToolBar#ViewportToolBar { background-color: transparent; border: none; spacing: 2px; padding: 0; }");
+    s += QString("QToolBar#ViewportToolBar QToolButton { min-width: %1; max-width: %1; min-height: %1; "
+                 "max-height: %1; padding: 0; }")
+             .arg(px(m.compactIconButtonSize));
+    s += QString("QLabel#ViewportZoomLabel { min-height: %1; max-height: %1; padding: 0 6px; "
+                 "background-color: %2; color: %3; border: %4 solid %5; }")
+             .arg(px(m.compactIconButtonSize), inputBg, inputFg, borderW, inputBorder);
+    s += QString("QLabel#ViewportContentInfo { color: %1; font-size: %2; padding-left: 6px; }")
+             .arg(inspectorEmptyFg, baseFont);
 
     s += QString("QMenuBar { background-color: %1; color: %2; }").arg(menuBarBg, menuBarFg);
     s += QString("QMenuBar::item:selected { background-color: %1; }").arg(treeHover);
@@ -164,12 +261,16 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
              .arg(menuBg, menuFg, borderW, menuBorder);
     s += QString("QMenu::item:selected { background-color: %1; color: %2; }").arg(menuSelBg, menuSelFg);
 
-    s += QString("QStatusBar { background-color: %1; color: %2; font-size: %3; }")
-             .arg(statusBg, statusFg, baseFont);
+    s += QString("QStatusBar { background-color: %1; color: %2; font-size: %3; }").arg(statusBg, statusFg, baseFont);
     s += QString("QStatusBar QLabel { padding: 0 %1; }").arg(baseSpacing);
 
-    s += QString("QPushButton { background-color: %1; color: %2; padding: 5px 15px; border: none; }")
-             .arg(btnBg, btnFg);
+    s += QString("QWidget#ProjectBreadcrumb { background-color: transparent; border-left: %1 solid %2; }")
+             .arg(borderW, menuBorder);
+    s += QString("QLabel#ProjectBreadcrumbLabel { color: %1; font-size: %2; font-weight: 600; }")
+             .arg(menuBarFg, baseFont);
+    s += QString("QLabel#ProjectBreadcrumbIcon { background-color: transparent; }");
+
+    s += QString("QPushButton { background-color: %1; color: %2; padding: 5px 15px; border: none; }").arg(btnBg, btnFg);
     s += QString("QPushButton:hover { background-color: %1; }").arg(btnHoverBg);
     s += QString("QPushButton:disabled { background-color: %1; color: %2; }").arg(btnDisabledBg, btnDisabledFg);
 
@@ -231,9 +332,14 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
     s += QString("QTabBar::tab:hover:!selected { background-color: %1; }").arg(inspectorTabHoverBg);
     s += QString("QWidget#InspectorEmptyState { background-color: %1; }").arg(inspectorPanelBg);
     s += QString("QLabel#InspectorEmptyLabel { color: %1; font-size: %2; }").arg(inspectorEmptyFg, baseFont);
-    s += QString("QPushButton#InspectorRerunBtn, QPushButton#InspectorResetBtn, "
-                 "QPushButton#InspectorAdvancedBtn { min-height: %1; padding: 4px 12px; }")
+    s += QString("QWidget#InspectorBottomBar { background-color: %1; border-top: %2 solid %3; }")
+             .arg(inspectorPanelBg, borderW, inspectorHeaderBorder);
+    s += QString("QPushButton#InspectorRerunBtn { min-height: %1; padding: 4px 12px; font-weight: 600; }")
              .arg(px(m.controlHeight));
+    s += QString("QToolButton#InspectorMoreBtn { min-width: %1; max-width: %1; min-height: %1; max-height: %1; "
+                 "background-color: transparent; border: %2 solid %3; }")
+             .arg(px(m.controlHeight), borderW, inspectorHeaderBorder);
+    s += QString("QToolButton#InspectorMoreBtn:hover { background-color: %1; }").arg(inspectorTabHoverBg);
 
     return s;
 }
@@ -247,28 +353,21 @@ QString ThemeManager::styleSheet(bool isDark) {
 ThemePalette ThemeManager::palette(bool isDark) {
     if (isDark) {
         return {
-            QStringLiteral("#2d2d2d"), QStringLiteral("#444444"), QStringLiteral("#ffffff"),
-            QStringLiteral("#ffffff"), QStringLiteral("#252525"), QStringLiteral("#ffffff"),
-            QStringLiteral("#3a3a3a"), QStringLiteral("#252525"), QStringLiteral("#3b4148"),
-            QStringLiteral("#3a3a3a"), QStringLiteral("#ffffff"), QStringLiteral("#4a4a4a"),
-            QStringLiteral("#555555"), QStringLiteral("#252525"), QStringLiteral("#333333"),
-            QStringLiteral("#ffffff"), QStringLiteral("#3b4148"), QStringLiteral("#3a3a3a"),
-            QStringLiteral("#252525"), QStringLiteral("#a0a0a0"), QStringLiteral("#252525"),
-            QStringLiteral("#333333"), QStringLiteral("#d1d5db"), QStringLiteral("#ffffff"),
-            QStringLiteral("#3a3a3a"), QStringLiteral("#1e1e1e")
-        };
+            QStringLiteral("#2d2d2d"), QStringLiteral("#444444"), QStringLiteral("#ffffff"), QStringLiteral("#ffffff"),
+            QStringLiteral("#252525"), QStringLiteral("#ffffff"), QStringLiteral("#3a3a3a"), QStringLiteral("#252525"),
+            QStringLiteral("#3b4148"), QStringLiteral("#3a3a3a"), QStringLiteral("#ffffff"), QStringLiteral("#4a4a4a"),
+            QStringLiteral("#555555"), QStringLiteral("#252525"), QStringLiteral("#333333"), QStringLiteral("#ffffff"),
+            QStringLiteral("#3b4148"), QStringLiteral("#3a3a3a"), QStringLiteral("#252525"), QStringLiteral("#a0a0a0"),
+            QStringLiteral("#252525"), QStringLiteral("#333333"), QStringLiteral("#d1d5db"), QStringLiteral("#ffffff"),
+            QStringLiteral("#3a3a3a"), QStringLiteral("#1e1e1e")};
     }
-    return {
-        QStringLiteral("#e8e8e8"), QStringLiteral("#cccccc"), QStringLiteral("#212121"),
-        QStringLiteral("#212121"), QStringLiteral("#ffffff"), QStringLiteral("#212121"),
-        QStringLiteral("#e5f3ff"), QStringLiteral("#ffffff"), QStringLiteral("#dce2e8"),
-        QStringLiteral("#e0e0e0"), QStringLiteral("#212121"), QStringLiteral("#d0d0d0"),
-        QStringLiteral("#cccccc"), QStringLiteral("#ffffff"), QStringLiteral("#f0f0f0"),
-        QStringLiteral("#212121"), QStringLiteral("#dce2e8"), QStringLiteral("#e0e0e0"),
-        QStringLiteral("#ffffff"), QStringLiteral("#666666"), QStringLiteral("#ffffff"),
-        QStringLiteral("#e8e8e8"), QStringLiteral("#4b5563"), QStringLiteral("#212121"),
-        QStringLiteral("#dce2e8"), QStringLiteral("#ffffff")
-    };
+    return {QStringLiteral("#e8e8e8"), QStringLiteral("#cccccc"), QStringLiteral("#212121"), QStringLiteral("#212121"),
+            QStringLiteral("#ffffff"), QStringLiteral("#212121"), QStringLiteral("#e5f3ff"), QStringLiteral("#ffffff"),
+            QStringLiteral("#dce2e8"), QStringLiteral("#e0e0e0"), QStringLiteral("#212121"), QStringLiteral("#d0d0d0"),
+            QStringLiteral("#cccccc"), QStringLiteral("#ffffff"), QStringLiteral("#f0f0f0"), QStringLiteral("#212121"),
+            QStringLiteral("#dce2e8"), QStringLiteral("#e0e0e0"), QStringLiteral("#ffffff"), QStringLiteral("#666666"),
+            QStringLiteral("#ffffff"), QStringLiteral("#e8e8e8"), QStringLiteral("#4b5563"), QStringLiteral("#212121"),
+            QStringLiteral("#dce2e8"), QStringLiteral("#ffffff")};
 }
 
 } // namespace DeepLux

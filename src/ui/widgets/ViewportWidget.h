@@ -95,7 +95,7 @@ signals:
     void imageDisplayed();
     void point2DClicked(const QPointF& point);
     void point3DClicked(const QVector3D& point);
-    void contentWidgetCreated(QWidget* widget);  // 高: 延迟创建的子控件通知
+    void contentWidgetCreated(QWidget* widget); // 高: 延迟创建的子控件通知
 
 private slots:
     void onCloseClicked();
@@ -104,6 +104,8 @@ private slots:
     void onFitWindow();
     void onActualSize();
     void onToggleView();
+    void onSaveSnapshot();
+    void updateZoomLabel(double factor);
 
 private:
     void setupUi();
@@ -112,20 +114,24 @@ private:
     void switchTo2D();
     void switchTo3D();
     void updateToggleAction();
+    void updateToolbarState();
 
     QString m_viewportId;
     QString m_title;
 
     QLabel* m_titleBar;
+    QLabel* m_contentInfoLabel = nullptr;
+    QLabel* m_zoomLabel = nullptr;
     HImageWidget* m_imageWidget;
     Viewport3DContent* m_3dContent;
     QToolBar* m_toolbar;
-    QToolBar* m_3dToolbar;
 
     QAction* m_fitWindowAction;
     QAction* m_actualSizeAction;
     QAction* m_zoomInAction;
     QAction* m_zoomOutAction;
+    QAction* m_contentSeparatorAction = nullptr;
+    QAction* m_snapshotAction = nullptr;
     QAction* m_closeAction;
     QAction* m_toggleViewAction = nullptr;
 

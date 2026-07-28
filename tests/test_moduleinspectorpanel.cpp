@@ -1,13 +1,14 @@
+#include <QAction>
+#include <QLabel>
+#include <QPushButton>
+#include <QSignalSpy>
+#include <QTableWidget>
+#include <QToolButton>
 #include <QtTest/QtTest>
 #include <core/base/ModuleBase.h>
 #include <core/manager/PluginManager.h>
 #include <core/model/ImageData.h>
 #include <ui/widgets/ModuleInspectorPanel.h>
-
-#include <QLabel>
-#include <QSignalSpy>
-#include <QTableWidget>
-#include <QToolButton>
 
 using namespace DeepLux;
 
@@ -55,6 +56,7 @@ private slots:
     void testSetPinnedPreventsSelectionSwitch();
     void testThemeSwitchDoesNotCrash();
     void testCloseSignalEmitted();
+    void testPrimaryAndOverflowActions();
 };
 
 void TestModuleInspectorPanel::init() {}
@@ -69,8 +71,7 @@ void TestModuleInspectorPanel::testEmptyStateWhenNoSelection() {
     // The empty state widget should exist and be visible
     QWidget* emptyState = panel.findChild<QWidget*>("InspectorEmptyState");
     QVERIFY(emptyState != nullptr);
-    QVERIFY2(emptyState->isVisibleTo(&panel),
-             "Empty state should be visible when no module is selected");
+    QVERIFY2(emptyState->isVisibleTo(&panel), "Empty state should be visible when no module is selected");
 }
 
 void TestModuleInspectorPanel::testSetModuleShowsNameAndIcon() {
@@ -91,6 +92,16 @@ void TestModuleInspectorPanel::testSetModuleShowsNameAndIcon() {
     QWidget* emptyState = panel.findChild<QWidget*>("InspectorEmptyState");
     QVERIFY(emptyState != nullptr);
     QVERIFY(!emptyState->isVisible());
+
+    QLabel* redundantTitle = panel.findChild<QLabel*>("PropertyPanelTitle");
+    QVERIFY2(redundantTitle == nullptr, "Inspector header should be the single module title");
+    QToolButton* infoToggle = panel.findChild<QToolButton*>("ModuleInfoToggle");
+    QWidget* infoContent = panel.findChild<QWidget*>("ModuleInfoContent");
+    QVERIFY(infoToggle != nullptr);
+    QVERIFY(infoContent != nullptr);
+    QVERIFY2(infoContent->isHidden(), "Technical module metadata should be collapsed by default");
+    infoToggle->setChecked(true);
+    QVERIFY2(!infoContent->isHidden(), "Technical module metadata should remain available on demand");
 }
 
 void TestModuleInspectorPanel::testSetOutputShowsResultsData() {
@@ -125,8 +136,7 @@ void TestModuleInspectorPanel::testSetOutputShowsResultsData() {
     // The results table should contain data
     QTableWidget* resultsTable = panel.findChild<QTableWidget*>("InspectorResultsTable");
     QVERIFY(resultsTable != nullptr);
-    QVERIFY2(resultsTable->rowCount() >= 2,
-             "Results table should contain at least 2 rows of output data");
+    QVERIFY2(resultsTable->rowCount() >= 2, "Results table should contain at least 2 rows of output data");
 
     // Check status label shows success
     QLabel* statusLabel = panel.findChild<QLabel*>("InspectorStatus");
@@ -152,8 +162,7 @@ void TestModuleInspectorPanel::testSetDirtyShowsRerunHint() {
     // Dirty state 应通过标题栏小色点指示（而非文字）
     QLabel* dirtyDot = panel.findChild<QLabel*>("InspectorDirtyDot");
     QVERIFY2(dirtyDot != nullptr, "Dirty state should expose a small color dot in the header");
-    QVERIFY2(dirtyDot->isVisibleTo(&panel),
-             "Dirty state dot should be visible when module is dirty");
+    QVERIFY2(dirtyDot->isVisibleTo(&panel), "Dirty state dot should be visible when module is dirty");
 
     // Results table should NOT contain a hint row (no duplication)
     QTableWidget* resultsTable = panel.findChild<QTableWidget*>("InspectorResultsTable");
@@ -171,8 +180,7 @@ void TestModuleInspectorPanel::testSetDirtyShowsRerunHint() {
 
     // Clear dirty state should hide the dot
     panel.setDirty(false);
-    QVERIFY2(!dirtyDot->isVisibleTo(&panel),
-             "Dirty state dot should be hidden when module is not dirty");
+    QVERIFY2(!dirtyDot->isVisibleTo(&panel), "Dirty state dot should be hidden when module is not dirty");
 }
 
 void TestModuleInspectorPanel::testSetPinnedPreventsSelectionSwitch() {
@@ -217,6 +225,29 @@ void TestModuleInspectorPanel::testCloseSignalEmitted() {
     QTest::mouseClick(closeBtn, Qt::LeftButton);
 
     QCOMPARE(spy.count(), 1);
+}
+
+void TestModuleInspectorPanel::testPrimaryAndOverflowActions() {
+    ModuleInspectorPanel panel;
+    InspectorTestModule module;
+    panel.setModule(&module, QStringLiteral("inst_1"), PluginInfo{});
+
+    auto* rerunButton = panel.findChild<QPushButton*>("InspectorRerunBtn");
+    auto* moreButton = panel.findChild<QToolButton*>("InspectorMoreBtn");
+    QAction* advancedAction = panel.findChild<QAction*>("InspectorAdvancedAction");
+    QAction* resetAction = panel.findChild<QAction*>("InspectorResetAction");
+    QVERIFY2(rerunButton != nullptr, "Rerun should remain the inspector's visible primary action");
+    QVERIFY2(moreButton != nullptr && moreButton->menu() != nullptr,
+             "Secondary inspector actions should live in one overflow menu");
+    QVERIFY(advancedAction != nullptr);
+    QVERIFY(resetAction != nullptr);
+
+    QSignalSpy advancedSpy(&panel, &ModuleInspectorPanel::advancedConfigRequested);
+    QSignalSpy resetSpy(&panel, &ModuleInspectorPanel::resetDefaultsRequested);
+    advancedAction->trigger();
+    resetAction->trigger();
+    QCOMPARE(advancedSpy.count(), 1);
+    QCOMPARE(resetSpy.count(), 1);
 }
 
 QTEST_MAIN(TestModuleInspectorPanel)

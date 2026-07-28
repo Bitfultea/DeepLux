@@ -1,6 +1,8 @@
 #include "PropertyPanel.h"
+
 #include "core/interface/IModule.h"
 #include "core/manager/PluginManager.h"
+
 #include <QDebug>
 #include <QFormLayout>
 #include <QJsonArray>
@@ -8,24 +10,22 @@
 #include <QJsonValue>
 #include <QPair>
 #include <QSet>
+#include <QToolButton>
 
 namespace DeepLux {
 
 namespace {
 
-bool isChoiceInfoKey(const QString& key)
-{
+bool isChoiceInfoKey(const QString& key) {
     return key.endsWith("_options");
 }
 
 // 内部字段过滤：以 _ 开头的字段不显示在参数面板
-bool isInternalParamKey(const QString& key)
-{
+bool isInternalParamKey(const QString& key) {
     return key.startsWith('_');
 }
 
-QJsonObject choiceInfoFromValue(const QJsonValue& value)
-{
+QJsonObject choiceInfoFromValue(const QJsonValue& value) {
     if (value.isObject()) {
         return value.toObject();
     }
@@ -37,37 +37,27 @@ QJsonObject choiceInfoFromValue(const QJsonValue& value)
     return info;
 }
 
-QString defaultLabelForKey(const QString& key)
-{
+QString defaultLabelForKey(const QString& key) {
     // 简单的默认标签：用 key 本身
     return key;
 }
 
 } // namespace
 
-PropertyPanel::PropertyPanel(QWidget* parent)
-    : QWidget(parent)
-{
+PropertyPanel::PropertyPanel(QWidget* parent) : QWidget(parent) {
     setMinimumWidth(220);
     setupUi();
 }
 
-PropertyPanel::~PropertyPanel()
-{
-}
+PropertyPanel::~PropertyPanel() {}
 
-void PropertyPanel::setupUi()
-{
+void PropertyPanel::setupUi() {
     // 参数页随父容器扩展，并禁止水平滚动条以避免视觉抖动
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(0);
-
-    m_titleLabel = new QLabel(tr("属性"));
-    m_titleLabel->setObjectName("PropertyPanelTitle");
-    mainLayout->addWidget(m_titleLabel);
 
     m_scrollArea = new QScrollArea();
     m_scrollArea->setWidgetResizable(true);
@@ -90,27 +80,23 @@ void PropertyPanel::setupUi()
     m_contentLayout->insertWidget(0, m_noSelectionLabel);
 }
 
-void PropertyPanel::setModule(IModule* module, const QString& instanceId)
-{
+void PropertyPanel::setModule(IModule* module, const QString& instanceId) {
     clear();
 
     if (!module) {
         m_noSelectionLabel->setVisible(true);
-        m_titleLabel->setText(tr("属性"));
         return;
     }
 
     m_currentModule = module;
     m_currentModuleId = instanceId.isEmpty() ? module->moduleId() : instanceId;
 
-    m_titleLabel->setText(tr("属性 - %1").arg(module->name()));
     m_noSelectionLabel->setVisible(false);
 
     loadParams();
 }
 
-void PropertyPanel::setPluginInfo(const PluginInfo& info)
-{
+void PropertyPanel::setPluginInfo(const PluginInfo& info) {
     m_uiParameters = info.ui.value("parameters").toObject();
     // 如果模块已加载，重新渲染参数
     if (m_currentModule) {
@@ -118,8 +104,7 @@ void PropertyPanel::setPluginInfo(const PluginInfo& info)
     }
 }
 
-void PropertyPanel::refreshFromModule()
-{
+void PropertyPanel::refreshFromModule() {
     if (!m_currentModule) {
         return;
     }
@@ -127,8 +112,7 @@ void PropertyPanel::refreshFromModule()
     setModule(m_currentModule, m_currentModuleId);
 }
 
-void PropertyPanel::clear()
-{
+void PropertyPanel::clear() {
     m_currentModule = nullptr;
     m_currentModuleId.clear();
     // 不清除 m_uiParameters — 由 setPluginInfo 管理，
@@ -144,9 +128,6 @@ void PropertyPanel::clear()
     m_paramWidgets.clear();
     m_paramLabels.clear();
 
-    if (m_titleLabel) {
-        m_titleLabel->setText(tr("属性"));
-    }
     if (m_noSelectionLabel) {
         m_noSelectionLabel->setVisible(true);
         m_contentLayout->addWidget(m_noSelectionLabel);
@@ -154,8 +135,7 @@ void PropertyPanel::clear()
     m_contentLayout->addStretch();
 }
 
-QStringList PropertyPanel::sortedParamKeys(const QJsonObject& params) const
-{
+QStringList PropertyPanel::sortedParamKeys(const QJsonObject& params) const {
     // 收集非 _options 键且非内部字段
     QStringList keys;
     for (auto it = params.begin(); it != params.end(); ++it) {
@@ -184,9 +164,7 @@ QStringList PropertyPanel::sortedParamKeys(const QJsonObject& params) const
         }
     }
     std::sort(ordered.begin(), ordered.end(),
-              [](const QPair<int, QString>& a, const QPair<int, QString>& b) {
-                  return a.first < b.first;
-              });
+              [](const QPair<int, QString>& a, const QPair<int, QString>& b) { return a.first < b.first; });
 
     QStringList result;
     for (const auto& p : ordered) {
@@ -196,21 +174,11 @@ QStringList PropertyPanel::sortedParamKeys(const QJsonObject& params) const
     return result;
 }
 
-void PropertyPanel::loadParams()
-{
-    if (!m_currentModule) return;
+void PropertyPanel::loadParams() {
+    if (!m_currentModule)
+        return;
 
     QJsonObject params = m_currentModule->currentParams();
-
-    // 模块信息组
-    QGroupBox* infoGroup = new QGroupBox(tr("模块信息"));
-    QFormLayout* infoLayout = new QFormLayout(infoGroup);
-
-    infoLayout->addRow(tr("ID:"), new QLabel(m_currentModule->moduleId()));
-    infoLayout->addRow(tr("类型:"), new QLabel(m_currentModule->category()));
-    infoLayout->addRow(tr("版本:"), new QLabel(m_currentModule->version()));
-
-    m_contentLayout->insertWidget(0, infoGroup);
 
     // 参数组
     if (!params.isEmpty()) {
@@ -255,19 +223,56 @@ void PropertyPanel::loadParams()
                     labelText = QString("%1 (%2)").arg(labelText, unit);
                 }
                 QLabel* label = new QLabel(labelText);
-                label->setMinimumWidth(80);
+                label->setMinimumWidth(88);
+                label->setWordWrap(true);
                 paramsLayout->addRow(label, widget);
                 m_paramWidgets[key] = widget;
             }
         }
 
-        m_contentLayout->insertWidget(1, paramsGroup);
+        m_contentLayout->insertWidget(0, paramsGroup);
     }
+
+    auto* infoContainer = new QWidget();
+    infoContainer->setObjectName("ModuleInfoContainer");
+    auto* infoContainerLayout = new QVBoxLayout(infoContainer);
+    infoContainerLayout->setContentsMargins(0, 0, 0, 0);
+    infoContainerLayout->setSpacing(0);
+
+    auto* infoToggle = new QToolButton(infoContainer);
+    infoToggle->setObjectName("ModuleInfoToggle");
+    infoToggle->setText(tr("模块信息"));
+    infoToggle->setCheckable(true);
+    infoToggle->setArrowType(Qt::RightArrow);
+    infoToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    infoContainerLayout->addWidget(infoToggle);
+
+    auto* infoContent = new QWidget(infoContainer);
+    infoContent->setObjectName("ModuleInfoContent");
+    auto* infoLayout = new QFormLayout(infoContent);
+    auto addInfoRow = [infoLayout](const QString& label, const QString& value) {
+        auto* valueLabel = new QLabel(value);
+        valueLabel->setWordWrap(true);
+        valueLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        valueLabel->setToolTip(value);
+        infoLayout->addRow(label, valueLabel);
+    };
+    addInfoRow(tr("ID:"), m_currentModule->moduleId());
+    addInfoRow(tr("类型:"), m_currentModule->category());
+    addInfoRow(tr("版本:"), m_currentModule->version());
+    infoContent->setVisible(false);
+    infoContainerLayout->addWidget(infoContent);
+
+    connect(infoToggle, &QToolButton::toggled, infoContent, [infoToggle, infoContent](bool expanded) {
+        infoToggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+        infoContent->setVisible(expanded);
+    });
+    m_contentLayout->insertWidget(params.isEmpty() ? 0 : 1, infoContainer);
 }
 
-bool PropertyPanel::commitParam(const QString& key, const QVariant& value)
-{
-    if (!m_currentModule) return false;
+bool PropertyPanel::commitParam(const QString& key, const QVariant& value) {
+    if (!m_currentModule)
+        return false;
 
     // 构造候选参数 JSON
     QJsonObject candidate = m_currentModule->currentParams();
@@ -277,9 +282,8 @@ bool PropertyPanel::commitParam(const QString& key, const QVariant& value)
     const int typeId = value.userType();
     if (typeId == QMetaType::Bool) {
         candidate[key] = value.toBool();
-    } else if (typeId == QMetaType::Double || typeId == QMetaType::Int ||
-               typeId == QMetaType::LongLong || typeId == QMetaType::UInt ||
-               typeId == QMetaType::ULongLong || typeId == QMetaType::Float) {
+    } else if (typeId == QMetaType::Double || typeId == QMetaType::Int || typeId == QMetaType::LongLong ||
+               typeId == QMetaType::UInt || typeId == QMetaType::ULongLong || typeId == QMetaType::Float) {
         candidate[key] = value.toDouble();
     } else if (typeId == QMetaType::QString) {
         candidate[key] = value.toString();
@@ -307,7 +311,8 @@ bool PropertyPanel::commitParam(const QString& key, const QVariant& value)
             check->setChecked(oldVal.toBool());
         } else if (auto* combo = qobject_cast<QComboBox*>(w)) {
             int idx = combo->findData(oldVal.toString());
-            if (idx >= 0) combo->setCurrentIndex(idx);
+            if (idx >= 0)
+                combo->setCurrentIndex(idx);
         }
         return false;
     }
@@ -324,20 +329,17 @@ bool PropertyPanel::commitParam(const QString& key, const QVariant& value)
     return true;
 }
 
-void PropertyPanel::markWidgetError(QWidget* widget, const QString& hint)
-{
+void PropertyPanel::markWidgetError(QWidget* widget, const QString& hint) {
     widget->setStyleSheet("border: 1px solid #EF4444;");
     widget->setToolTip(hint);
 }
 
-void PropertyPanel::clearWidgetError(QWidget* widget)
-{
+void PropertyPanel::clearWidgetError(QWidget* widget) {
     widget->setStyleSheet(QString());
     widget->setToolTip(QString());
 }
 
-QWidget* PropertyPanel::createTextWidget(const QString& key, const QJsonObject& info)
-{
+QWidget* PropertyPanel::createTextWidget(const QString& key, const QJsonObject& info) {
     Q_UNUSED(info)
 
     QLineEdit* edit = new QLineEdit();
@@ -348,15 +350,12 @@ QWidget* PropertyPanel::createTextWidget(const QString& key, const QJsonObject& 
     }
 
     // 文本参数在 editingFinished 时提交
-    connect(edit, &QLineEdit::editingFinished, this, [this, key, edit]() {
-        commitParam(key, edit->text());
-    });
+    connect(edit, &QLineEdit::editingFinished, this, [this, key, edit]() { commitParam(key, edit->text()); });
 
     return edit;
 }
 
-QWidget* PropertyPanel::createNumberWidget(const QString& key, const QJsonObject& info)
-{
+QWidget* PropertyPanel::createNumberWidget(const QString& key, const QJsonObject& info) {
     QDoubleSpinBox* spin = new QDoubleSpinBox();
     spin->setRange(-999999, 999999);
     spin->setDecimals(2);
@@ -381,15 +380,12 @@ QWidget* PropertyPanel::createNumberWidget(const QString& key, const QJsonObject
     }
 
     // 数值参数在 editingFinished 时提交
-    connect(spin, &QDoubleSpinBox::editingFinished, this, [this, key, spin]() {
-        commitParam(key, spin->value());
-    });
+    connect(spin, &QDoubleSpinBox::editingFinished, this, [this, key, spin]() { commitParam(key, spin->value()); });
 
     return spin;
 }
 
-QWidget* PropertyPanel::createBoolWidget(const QString& key, const QJsonObject& info)
-{
+QWidget* PropertyPanel::createBoolWidget(const QString& key, const QJsonObject& info) {
     Q_UNUSED(info)
 
     QCheckBox* check = new QCheckBox();
@@ -400,15 +396,12 @@ QWidget* PropertyPanel::createBoolWidget(const QString& key, const QJsonObject& 
     }
 
     // 复选框在 toggled 时提交
-    connect(check, &QCheckBox::toggled, this, [this, key, check](bool checked) {
-        commitParam(key, checked);
-    });
+    connect(check, &QCheckBox::toggled, this, [this, key, check](bool checked) { commitParam(key, checked); });
 
     return check;
 }
 
-QWidget* PropertyPanel::createChoiceWidget(const QString& key, const QJsonObject& info)
-{
+QWidget* PropertyPanel::createChoiceWidget(const QString& key, const QJsonObject& info) {
     QComboBox* combo = new QComboBox();
     const QJsonArray options = info["options"].toArray();
 
@@ -455,27 +448,25 @@ void PropertyPanel::applyTheme(bool isDark) {
     const QString fg = isDark ? "#ffffff" : "#212121";
     const QString border = isDark ? "#3a3a3a" : "#dddddd";
 
-    setStyleSheet(QString(
-        "PropertyPanel { background-color: %1; }"
-        "QScrollArea, QScrollArea > QWidget > QWidget { background-color: %1; border: none; }"
-        "QWidget#PropertyPanelContent { background-color: %1; }"
-        "QWidget#PropertyPanelTitle { background-color: %1; }"
-        "QLabel { color: %2; background-color: transparent; }"
-        "QGroupBox { color: %2; border: 1px solid %3; border-radius: 4px; "
-        "  margin-top: 8px; padding-top: 8px; background-color: %1; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }"
-        "QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { "
-        "  background-color: %1; color: %2; border: 1px solid %3; padding: 4px; border-radius: 2px; }"
-        "QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { "
-        "  border: 1px solid #0078d7; }"
-        "QCheckBox { color: %2; }"
-        ).arg(bg, fg, border));
+    setStyleSheet(QString("PropertyPanel { background-color: %1; }"
+                          "QScrollArea, QScrollArea > QWidget > QWidget { background-color: %1; border: none; }"
+                          "QWidget#PropertyPanelContent { background-color: %1; }"
+                          "QLabel { color: %2; background-color: transparent; }"
+                          "QGroupBox { color: %2; border: 1px solid %3; border-radius: 4px; "
+                          "  margin-top: 8px; padding-top: 8px; background-color: %1; }"
+                          "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }"
+                          "QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { "
+                          "  background-color: %1; color: %2; border: 1px solid %3; padding: 4px; border-radius: 2px; }"
+                          "QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { "
+                          "  border: 1px solid #0078d7; }"
+                          "QCheckBox { color: %2; }"
+                          "QWidget#ModuleInfoContainer { background-color: %1; border-top: 1px solid %3; }"
+                          "QToolButton#ModuleInfoToggle { background-color: %1; color: %2; border: none; "
+                          "  padding: 4px 0; text-align: left; }"
+                          "QToolButton#ModuleInfoToggle:hover { color: #0078d7; }"
+                          "QWidget#ModuleInfoContent { background-color: %1; border-top: 1px solid %3; }")
+                      .arg(bg, fg, border));
 
-    if (m_titleLabel) {
-        m_titleLabel->setStyleSheet(QString(
-            "font-weight: bold; font-size: 14px; padding: 8px; color: %1; background-color: %2;")
-            .arg(fg, bg));
-    }
     setAutoFillBackground(true);
     QPalette pal = palette();
     pal.setColor(QPalette::Window, QColor(bg));
