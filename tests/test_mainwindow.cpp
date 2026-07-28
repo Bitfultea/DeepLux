@@ -847,7 +847,7 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY(processTreeForHighlight != nullptr);
     // Tree widget 样式现在由 ThemeManager 统一管理，检查全局样式表
     QVERIFY2(window.styleSheet().contains(
-                 QStringLiteral("QTreeWidget::item:selected { background-color: #0078d7; }")),
+                 QStringLiteral("QTreeWidget#ProcessTree::item:selected { background-color: #0078d7; }")),
              "Process tree mouse selection should use the same deep highlight as run completion");
 
     QWidget* processTabContent = window.findChild<QWidget*>("ProcessTabContent");

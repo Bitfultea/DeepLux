@@ -1149,8 +1149,16 @@ void MainWindow::setupMainLayout() {
     m_processTreeController->setClearMeasurementOverlaysCallback([this]() { clearMeasurementOverlays(); });
     connect(m_processTreeController, &ProcessTreeController::moduleAdded, this, [this](const ModuleInstance& module) {
         if (m_flowCanvas && !m_flowCanvas->nodeItem(module.id)) {
+            // P1: 自动分配位置，避免节点重叠在 (0,0)
+            QPointF pos(module.posX, module.posY);
+            if (pos.isNull()) {
+                const int nodeCount = m_flowCanvas->nodeIds().size();
+                const int col = nodeCount % 4;
+                const int row = nodeCount / 4;
+                pos = QPointF(50 + col * 200, 50 + row * 120);
+            }
             m_flowCanvas->addNode(module.moduleId, toolDisplayName(module.moduleId, module.name),
-                                  QPointF(module.posX, module.posY), module.id);
+                                  pos, module.id);
         }
     });
     connect(m_processTreeController, &ProcessTreeController::moduleRemoved, this, [this](const QString& instanceId) {
@@ -3531,14 +3539,37 @@ void MainWindow::clearExecutionHighlight(QTreeWidgetItem* item) {
     }
     // 使用 data role 替代 setBackground — 清除状态
     item->setData(0, Qt::UserRole + 5, QString());
+    item->setIcon(0, QIcon());  // P1: 同时清除状态点图标
 }
 
 void MainWindow::setProcessItemStatus(QTreeWidgetItem* item, const QString& status, const QString& timeText) {
     if (!item) {
         return;
     }
-    // 状态: running(蓝色), success(绿色), failure(红色), dirty(琥珀色)
+    // P1: 用 DecorationRole 渲染状态点，而非只存 UserRole
     item->setData(0, Qt::UserRole + 5, status);
+    // 创建彩色状态点图标
+    QColor dotColor;
+    if (status == "running")
+        dotColor = QColor("#3B82F6");  // 蓝色
+    else if (status == "success")
+        dotColor = QColor("#22C55E");  // 绿色
+    else if (status == "failure")
+        dotColor = QColor("#EF4444");  // 红色
+    else if (status == "dirty")
+        dotColor = QColor("#F59E0B");  // 琥珀色
+    if (dotColor.isValid()) {
+        QPixmap pm(10, 10);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setBrush(dotColor);
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(0, 0, 10, 10);
+        item->setIcon(0, QIcon(pm));
+    } else {
+        item->setIcon(0, QIcon());
+    }
     if (!timeText.isEmpty()) {
         item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
         item->setText(1, timeText);

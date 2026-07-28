@@ -30,6 +30,8 @@ void ModuleInspectorPanel::setupUi()
     mainLayout->setSpacing(0);
 
     setupHeader();
+    // P2: header 固定在顶部，不随内容滚动
+    m_headerFrame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     setupEmptyState();
     setupTabs();
     setupBottomBar();
@@ -234,12 +236,29 @@ void ModuleInspectorPanel::setOutput(const ImageData& output, bool success, int 
 {
     if (success) {
         m_statusLabel->setText(tr("成功"));
+        m_statusLabel->setStyleSheet("color: #22C55E; font-size: 13px;");
     } else {
         m_statusLabel->setText(tr("失败"));
+        m_statusLabel->setStyleSheet("color: #EF4444; font-size: 13px;");
     }
     m_elapsedLabel->setText(tr("%1 ms").arg(elapsedMs));
 
-    refreshResults(output);
+    if (!success) {
+        // P1: 模块失败时显示错误原因
+        m_resultsTable->setRowCount(0);
+        const QMap<QString, QVariant> all = output.allData();
+        QString errorMsg = all.value("error").toString();
+        if (errorMsg.isEmpty())
+            errorMsg = all.value("error_message").toString();
+        if (errorMsg.isEmpty())
+            errorMsg = tr("执行失败，请查看日志获取详细信息");
+        m_resultsTable->insertRow(0);
+        m_resultsTable->setItem(0, 0, new QTableWidgetItem(tr("错误")));
+        m_resultsTable->setItem(0, 1, new QTableWidgetItem(errorMsg));
+        m_resultsTable->item(0, 1)->setForeground(QColor("#EF4444"));
+    } else {
+        refreshResults(output);
+    }
 }
 
 void ModuleInspectorPanel::setDirty(bool dirty)
@@ -332,7 +351,17 @@ void ModuleInspectorPanel::setLayoutMode(LayoutMode mode)
 void ModuleInspectorPanel::applyTheme(bool isDark)
 {
     m_isDarkTheme = isDark;
-    // 颜色和尺寸由 ThemeManager 统一管理
+    // P1: 结果表也需要主题
+    const QString bg = isDark ? "#252525" : "#ffffff";
+    const QString fg = isDark ? "#ffffff" : "#212121";
+    const QString gridCol = isDark ? "#333333" : "#eeeeee";
+    if (m_resultsTable) {
+        m_resultsTable->setStyleSheet(QString(
+            "QTableWidget { background-color: %1; color: %2; border: none; gridline-color: %3; }"
+            "QTableWidget::item { border-bottom: 1px solid %3; }"
+            "QHeaderView::section { background-color: %1; color: %2; padding: 4px; border: none; }"
+        ).arg(bg, fg, gridCol));
+    }
     if (m_propertyPanel) {
         m_propertyPanel->applyTheme(isDark);
     }

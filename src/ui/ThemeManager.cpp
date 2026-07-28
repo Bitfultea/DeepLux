@@ -126,7 +126,9 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
              .arg(treeBg, treeFg, baseFont);
     s += "QTreeWidget::item { height: 28px; padding-left: 2px; padding-right: 2px; }";
     s += QString("QTreeWidget::item:hover { background-color: %1; }").arg(treeHover);
-    s += "QTreeWidget::item:selected { background-color: #0078d7; }";
+    // P2: 工具箱和流程树使用不同的选中色
+    s += QString("QTreeWidget#ToolBoxTree::item:selected { background-color: %1; color: %2; }").arg(treeHover, treeFg);
+    s += "QTreeWidget#ProcessTree::item:selected { background-color: #0078d7; }";
 
     s += QString("QTableWidget { background-color: %1; color: %2; border: none; font-size: %3; }")
              .arg(tableBg, tableFg, baseFont);
