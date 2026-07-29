@@ -158,6 +158,9 @@ void ProcessTreeController::removeFlowModule(const QString& instanceId) {
         return;
     }
 
+    // Fix: 删除当前选中模块时，先通知 MainWindow 清空检查器和撤销栈
+    emit moduleBeingRemoved(instanceId);
+
     Project* project = ProjectManager::instance().currentProject();
     if (project && project->findModule(instanceId)) {
         project->removeModule(instanceId);

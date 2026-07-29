@@ -73,6 +73,7 @@ signals:
     void moduleAdded(const ModuleInstance& module);
     void moduleRemoved(const QString& instanceId);
     void modulesCleared();
+    void moduleBeingRemoved(const QString& instanceId);  // Fix: 删除前通知，让 MainWindow 清空检查器和撤销栈
 
 public slots:
     void onModuleAddedFromProject(const ModuleInstance& module);

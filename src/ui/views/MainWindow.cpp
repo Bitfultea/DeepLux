@@ -1196,11 +1196,30 @@ void MainWindow::setupMainLayout() {
         if (m_flowCanvas && m_flowCanvas->nodeItem(instanceId)) {
             m_flowCanvas->removeNode(instanceId);
         }
-        // 如果删除的是当前选中的模块，清空检查器
+        // Fix: 删除当前选中模块时清空检查器和撤销栈，防止悬空指针
         if (m_selectedModuleId == instanceId) {
-            selectModule(QString(), false);
+            m_selectedModuleId.clear();
+            if (m_inspectorPanel) {
+                m_inspectorPanel->clear();
+            }
+            if (m_paramUndoStack) {
+                m_paramUndoStack->clear();
+            }
         }
         m_flowModules.remove(instanceId);
+    });
+    // Fix: 在模块删除前清空检查器和撤销栈
+    connect(m_processTreeController, &ProcessTreeController::moduleBeingRemoved, this, [this](const QString& instanceId) {
+        if (m_selectedModuleId == instanceId) {
+            m_selectedModuleId.clear();
+            if (m_inspectorPanel) {
+                m_inspectorPanel->clear();
+            }
+            if (m_paramUndoStack) {
+                m_paramUndoStack->clear();
+            }
+            m_dirtyModuleIds.remove(instanceId);
+        }
     });
 
     flowLayout->addWidget(m_processTree);
