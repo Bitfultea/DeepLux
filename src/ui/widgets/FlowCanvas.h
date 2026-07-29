@@ -45,6 +45,7 @@ public:
 
     // 按 ID 选择节点（程序化调用）
     void selectNode(const QString& nodeId);
+    void setNodeExecutionState(const QString& nodeId, const QString& status, const QString& timeText);
 
 signals:
     void nodeAdded(const QString& nodeId);
@@ -93,6 +94,7 @@ public:
         return m_name;
     }
     void setName(const QString& name);
+    void setExecutionState(const QString& status, const QString& timeText);
 
     QRectF boundingRect() const override;
     void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget = nullptr) override;
@@ -118,12 +120,13 @@ private:
     QString m_moduleId;
     QString m_name;
 
-    qreal m_width = 150;
-    qreal m_height = 80;
+    qreal m_width = 220;
+    qreal m_height = 64;
     int m_inputPorts = 1;
     int m_outputPorts = 1;
 
-    bool m_selected = false;
+    QString m_status;
+    QString m_timeText;
 };
 
 /**

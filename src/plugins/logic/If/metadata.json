@@ -4,5 +4,5 @@
     "category": "logic",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "根据条件决定是否执行后续模块"
+    "description": "条件分支；无结束节点时控制紧随其后的模块"
 }

@@ -52,7 +52,10 @@ private slots:
     void testEmptyStateWhenNoSelection();
     void testSetModuleShowsNameAndIcon();
     void testSetOutputShowsResultsData();
+    void testFailureWithoutImageShowsReadableError();
     void testSetDirtyShowsRerunHint();
+    void testSetModuleClearsDirtyState();
+    void testCollapsedEmptyStateStaysHidden();
     void testSetPinnedPreventsSelectionSwitch();
     void testThemeSwitchDoesNotCrash();
     void testCloseSignalEmitted();
@@ -144,6 +147,24 @@ void TestModuleInspectorPanel::testSetOutputShowsResultsData() {
     QVERIFY(statusLabel->text().contains(QStringLiteral("成功")));
 }
 
+void TestModuleInspectorPanel::testFailureWithoutImageShowsReadableError() {
+    ModuleInspectorPanel panel;
+    InspectorTestModule module;
+    panel.setModule(&module, QStringLiteral("inst_1"), PluginInfo{});
+
+    panel.setOutput(ImageData(), false, 7);
+
+    auto* statusLabel = panel.findChild<QLabel*>("InspectorStatus");
+    auto* resultsTable = panel.findChild<QTableWidget*>("InspectorResultsTable");
+    QVERIFY(statusLabel != nullptr);
+    QVERIFY(resultsTable != nullptr);
+    QVERIFY(statusLabel->text().contains(QStringLiteral("失败")));
+    QCOMPARE(resultsTable->rowCount(), 1);
+    QVERIFY(resultsTable->wordWrap());
+    QVERIFY(!resultsTable->item(0, 1)->text().isEmpty());
+    QCOMPARE(resultsTable->item(0, 1)->toolTip(), resultsTable->item(0, 1)->text());
+}
+
 void TestModuleInspectorPanel::testSetDirtyShowsRerunHint() {
     ModuleInspectorPanel panel;
     InspectorTestModule module;
@@ -167,6 +188,7 @@ void TestModuleInspectorPanel::testSetDirtyShowsRerunHint() {
     // Results table should NOT contain a hint row (no duplication)
     QTableWidget* resultsTable = panel.findChild<QTableWidget*>("InspectorResultsTable");
     QVERIFY(resultsTable != nullptr);
+    QCOMPARE(resultsTable->rowCount(), 0);
 
     bool foundHint = false;
     for (int i = 0; i < resultsTable->rowCount(); ++i) {
@@ -181,6 +203,34 @@ void TestModuleInspectorPanel::testSetDirtyShowsRerunHint() {
     // Clear dirty state should hide the dot
     panel.setDirty(false);
     QVERIFY2(!dirtyDot->isVisibleTo(&panel), "Dirty state dot should be hidden when module is not dirty");
+}
+
+void TestModuleInspectorPanel::testSetModuleClearsDirtyState() {
+    ModuleInspectorPanel panel;
+    InspectorTestModule first(QStringLiteral("first"));
+    InspectorTestModule second(QStringLiteral("second"));
+    auto* dirtyDot = panel.findChild<QLabel*>("InspectorDirtyDot");
+    QVERIFY(dirtyDot != nullptr);
+
+    panel.setModule(&first, QStringLiteral("first_1"), PluginInfo{});
+    panel.setDirty(true);
+    QVERIFY(!dirtyDot->isHidden());
+
+    panel.setModule(&second, QStringLiteral("second_1"), PluginInfo{});
+    QVERIFY(dirtyDot->isHidden());
+}
+
+void TestModuleInspectorPanel::testCollapsedEmptyStateStaysHidden() {
+    ModuleInspectorPanel panel;
+    auto* emptyState = panel.findChild<QWidget*>("InspectorEmptyState");
+    QVERIFY(emptyState != nullptr);
+
+    panel.clear();
+    panel.setLayoutMode(ModuleInspectorPanel::LayoutMode::Collapsed);
+    QVERIFY(emptyState->isHidden());
+
+    panel.setLayoutMode(ModuleInspectorPanel::LayoutMode::Docked);
+    QVERIFY(!emptyState->isHidden());
 }
 
 void TestModuleInspectorPanel::testSetPinnedPreventsSelectionSwitch() {

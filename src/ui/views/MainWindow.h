@@ -146,12 +146,12 @@ protected:
     bool m_isRunning = false;
     bool m_isCycleMode = false;
     bool m_isStepMode = false;
+    bool m_closeWhenRunFinishes = false;
     QTimer* m_cycleTimer = nullptr;
 
     // 流程执行时间和高亮
     QMap<QString, int> m_moduleExecutionTimes;         // 模块实例名 -> 执行时间(ms)
     QTreeWidgetItem* m_currentExecutingItem = nullptr; // 当前正在执行的项目
-    QTreeWidgetItem* m_lastExecutedItem = nullptr;     // 最近完成的项目
     int m_currentExecutingIndex = 0;                   // 当前执行索引
     ImageData m_flowInput;                             // 流程执行时的输入数据
     int m_flowTotalTime = 0;                           // 总耗时
@@ -176,6 +176,7 @@ protected:
     QLabel* m_userLabel = nullptr;
     QLabel* m_projectLabel = nullptr;
     QWidget* m_processTabContent = nullptr;
+    QLabel* m_runStatusLabel = nullptr;
     QLabel* m_timeLabel = nullptr;
     // 最后导入的图像路径
     QString m_lastImportedImagePath;
@@ -216,7 +217,7 @@ protected:
     void clearMeasurementOverlays();
 
     // 统一选择入口 — 同步流程树、画布和检查器
-    void selectModule(const QString& instanceId, bool revealInspector);
+    void selectModule(const QString& instanceId, bool revealInspector, bool force = false);
 
     // 流程中的插件实例
     QMap<QString, IModule*> m_flowModules;
@@ -294,6 +295,7 @@ protected:
 
     // 设置参数并推入撤销栈
     void pushParamCommand(const QString& instanceId, const QString& key, const QVariant& value);
+    void markModuleDirty(const QString& instanceId);
 
     // ===== 阶段 9: 自适应布局与状态保存 =====
     void saveSettings();

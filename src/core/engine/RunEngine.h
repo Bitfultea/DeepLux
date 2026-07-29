@@ -92,6 +92,12 @@ public:
     bool isStopped() const {
         return state() == RunState::Stopped;
     }
+    bool isExecuting() const {
+        return m_executing.load(std::memory_order_acquire);
+    }
+    bool isBusy() const {
+        return isExecuting() || state() == RunState::Running || state() == RunState::Paused;
+    }
 
     // 运行模式
     RunMode runMode() const {
@@ -119,6 +125,7 @@ public:
     QList<ModuleBase*> modules() const;
     ModuleBase* getModule(const QString& moduleName) const;
     int getModuleIndex(const QString& moduleName) const;
+    bool buildExecutionOrder(const Project* project, QString& error);
 
     // 输出管理
     void setOutput(const QString& moduleName, const QString& varName, const QVariant& value);
@@ -129,6 +136,7 @@ public:
     // 流水线输出（供 UI 在 moduleFinished 后查询显示数据）
     ImageData lastOutput() const;
     ImageData moduleOutput(const QString& moduleName) const;
+    void invalidateModuleOutput(const QString& moduleName);
 
     // 运行统计
     int totalRuns() const;
@@ -189,7 +197,7 @@ private:
 
     void executeRun();
     void executeModule(const QString& moduleName, ImageData& pipelineData);
-    void clearPipelineOutputs();
+    void clearModuleOutputs();
     void updateStatistics(bool success, int elapsedMs);
     void reset();
 
@@ -199,10 +207,9 @@ private:
     QString getNextSequentialModule(const QString& currentModule);
     QString findSiblingByFlowType(const QString& currentModule, ControlFlowType targetType);
     QString findPreviousByFlowType(const QString& currentModule, ControlFlowType targetType);
-    bool buildExecutionOrder(const Project* project, QString& error);
-
     std::atomic<int> m_state{static_cast<int>(RunState::Idle)};
     std::atomic<int> m_runMode{static_cast<int>(RunMode::None)};
+    std::atomic_bool m_executing{false};
     QTimer* m_cycleTimer = nullptr;
     QList<ModuleBase*> m_modules;
     QList<ModuleBase*> m_ownedModules;
@@ -241,7 +248,10 @@ private:
     QString m_stepCurrentModuleName;
     ImageData m_stepPipelineData;
     bool m_lastExecuteResult = true;
+    bool m_lastControlResult = true;
+    QString m_lastModuleError;
     ImageData m_lastOutput;
+    QString m_lastOutputModuleName;
     QMap<QString, ImageData> m_moduleOutputs;
     mutable QMutex m_lastOutputMutex;
 

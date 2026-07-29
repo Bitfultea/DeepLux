@@ -37,7 +37,7 @@ void ModuleInspectorPanel::setupUi() {
     setupBottomBar();
 
     // 默认显示空状态
-    m_emptyState->setVisible(true);
+    m_emptyState->setVisible(!m_collapsed);
     m_tabWidget->setVisible(false);
     m_bottomBar->setVisible(false);
 }
@@ -77,7 +77,7 @@ void ModuleInspectorPanel::setupHeader() {
     m_pinBtn = new QToolButton();
     m_pinBtn->setObjectName("InspectorPinBtn");
     m_pinBtn->setCheckable(true);
-    m_pinBtn->setToolTip(tr("固定"));
+    m_pinBtn->setToolTip(tr("固定当前模块"));
     m_pinBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Pin, 16));
     connect(m_pinBtn, &QToolButton::toggled, this, &ModuleInspectorPanel::onPinToggled);
     headerLayout->addWidget(m_pinBtn);
@@ -159,6 +159,8 @@ void ModuleInspectorPanel::setupResultsTab() {
     m_resultsTable->horizontalHeader()->setStretchLastSection(true);
     m_resultsTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_resultsTable->verticalHeader()->setVisible(false);
+    m_resultsTable->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_resultsTable->setWordWrap(true);
     m_resultsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_resultsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     resultsLayout->addWidget(m_resultsTable);
@@ -174,8 +176,10 @@ void ModuleInspectorPanel::setupBottomBar() {
     // 主按钮：重新运行 — 样式由全局 ThemeManager 提供
     m_rerunBtn = new QPushButton(tr("重新运行"));
     m_rerunBtn->setObjectName("InspectorRerunBtn");
+    m_rerunBtn->setMinimumWidth(112);
     connect(m_rerunBtn, &QPushButton::clicked, this, &ModuleInspectorPanel::onRerunClicked);
-    bottomLayout->addWidget(m_rerunBtn, 1);
+    bottomLayout->addStretch();
+    bottomLayout->addWidget(m_rerunBtn);
 
     m_moreBtn = new QToolButton();
     m_moreBtn->setObjectName("InspectorMoreBtn");
@@ -198,6 +202,7 @@ void ModuleInspectorPanel::setModule(IModule* module, const QString& instanceId,
     m_currentModule = module;
     m_instanceId = instanceId;
     m_currentInfo = info;
+    setDirty(false);
 
     if (!module) {
         clear();
@@ -225,6 +230,7 @@ void ModuleInspectorPanel::setModule(IModule* module, const QString& instanceId,
 }
 
 void ModuleInspectorPanel::setOutput(const ImageData& output, bool success, int elapsedMs) {
+    setDirty(false);
     if (success) {
         m_statusLabel->setText(tr("成功"));
         m_statusLabel->setStyleSheet("color: #22C55E; font-size: 13px;");
@@ -245,8 +251,11 @@ void ModuleInspectorPanel::setOutput(const ImageData& output, bool success, int 
             errorMsg = tr("执行失败，请查看日志获取详细信息");
         m_resultsTable->insertRow(0);
         m_resultsTable->setItem(0, 0, new QTableWidgetItem(tr("错误")));
-        m_resultsTable->setItem(0, 1, new QTableWidgetItem(errorMsg));
-        m_resultsTable->item(0, 1)->setForeground(QColor("#EF4444"));
+        auto* errorItem = new QTableWidgetItem(errorMsg);
+        errorItem->setForeground(QColor("#EF4444"));
+        errorItem->setToolTip(errorMsg);
+        m_resultsTable->setItem(0, 1, errorItem);
+        m_resultsTable->resizeRowsToContents();
     } else {
         refreshResults(output);
     }
@@ -258,6 +267,12 @@ void ModuleInspectorPanel::setDirty(bool dirty) {
     if (m_dirtyDot) {
         m_dirtyDot->setVisible(dirty);
     }
+    if (dirty) {
+        m_statusLabel->clear();
+        m_statusLabel->setStyleSheet(QString());
+        m_elapsedLabel->clear();
+        m_resultsTable->setRowCount(0);
+    }
 }
 
 void ModuleInspectorPanel::clear() {
@@ -265,7 +280,7 @@ void ModuleInspectorPanel::clear() {
     m_instanceId.clear();
     m_currentInfo = PluginInfo{};
 
-    m_emptyState->setVisible(true);
+    m_emptyState->setVisible(!m_collapsed);
     m_tabWidget->setVisible(false);
     m_bottomBar->setVisible(false);
 
@@ -275,6 +290,7 @@ void ModuleInspectorPanel::clear() {
     m_elapsedLabel->clear();
     m_iconLabel->clear();
     m_resultsTable->setRowCount(0);
+    setDirty(false);
 
     m_propertyPanel->clear();
 }
@@ -283,6 +299,7 @@ void ModuleInspectorPanel::setPinned(bool pinned) {
     m_pinned = pinned;
     m_pinBtn->blockSignals(true);
     m_pinBtn->setChecked(pinned);
+    m_pinBtn->setToolTip(pinned ? tr("取消固定") : tr("固定当前模块"));
     m_pinBtn->blockSignals(false);
 }
 
@@ -425,13 +442,18 @@ void ModuleInspectorPanel::refreshResults(const ImageData& output) {
 
         m_resultsTable->insertRow(row);
         m_resultsTable->setItem(row, 0, new QTableWidgetItem(labelText));
-        m_resultsTable->setItem(row, 1, new QTableWidgetItem(valueText));
+        auto* valueItem = new QTableWidgetItem(valueText);
+        valueItem->setToolTip(valueText);
+        m_resultsTable->setItem(row, 1, valueItem);
         row++;
     }
+    m_resultsTable->resizeRowsToContents();
 }
 
 void ModuleInspectorPanel::updateCollapsedState() {
     if (m_collapsed) {
+        if (m_emptyState)
+            m_emptyState->setVisible(false);
         m_tabWidget->setVisible(false);
         m_bottomBar->setVisible(false);
         if (m_nameLabel)
@@ -450,6 +472,8 @@ void ModuleInspectorPanel::updateCollapsedState() {
         if (m_closeBtn)
             m_closeBtn->setVisible(false);
     } else {
+        if (m_emptyState)
+            m_emptyState->setVisible(!m_currentModule);
         if (m_currentModule) {
             m_tabWidget->setVisible(true);
             m_bottomBar->setVisible(true);
@@ -476,6 +500,7 @@ void ModuleInspectorPanel::updateCollapsedState() {
 
 void ModuleInspectorPanel::onPinToggled(bool checked) {
     m_pinned = checked;
+    m_pinBtn->setToolTip(checked ? tr("取消固定") : tr("固定当前模块"));
     emit pinChanged(checked);
 }
 

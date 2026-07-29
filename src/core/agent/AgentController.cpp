@@ -145,6 +145,8 @@ void AgentController::clearConversation() {
 bool AgentController::undoLastAgentAction() {
     if (!m_actor || !m_actor->undoStack() || !m_actor->undoStack()->canUndo())
         return false;
+    if (RunEngine::instance().isBusy())
+        return false;
     m_actor->undoStack()->undo();
     AgentActionLogEntry e;
     e.timestamp = QDateTime::currentDateTime();

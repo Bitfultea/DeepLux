@@ -19,7 +19,9 @@ public:
     QString category() const override { return "logic"; }
     QString version() const override { return "1.0.0"; }
     QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("根据条件决定是否执行后续模块"); }
+    QString description() const override {
+        return tr("条件分支；无结束节点时控制紧随其后的模块");
+    }
     ControlFlowType flowControlType() const override { return ControlFlowType::Conditional; }
 
     bool initialize() override;

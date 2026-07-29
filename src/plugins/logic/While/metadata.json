@@ -4,5 +4,5 @@
     "category": "logic",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "当条件满足时循环执行"
+    "description": "条件循环；无结束节点时循环紧随其后的模块"
 }

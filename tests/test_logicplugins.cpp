@@ -1,19 +1,42 @@
-#include <QtTest/QtTest>
+#include "core/base/ModuleBase.h"
+#include "core/common/CancellationToken.h"
+#include "core/engine/RunEngine.h"
+#include "core/model/ImageData.h"
+#include "plugins/logic/Delay/DelayPlugin.h"
+#include "plugins/logic/If/IfPlugin.h"
+#include "plugins/logic/Loop/LoopPlugin.h"
+#include "plugins/logic/While/WhilePlugin.h"
+
 #include <QElapsedTimer>
 #include <QJsonObject>
 #include <QThread>
 #include <QVariant>
+#include <QtTest/QtTest>
 #include <thread>
 
-#include "core/model/ImageData.h"
-#include "core/common/CancellationToken.h"
-#include "core/engine/RunEngine.h"
-#include "plugins/logic/If/IfPlugin.h"
-#include "plugins/logic/Loop/LoopPlugin.h"
-#include "plugins/logic/While/WhilePlugin.h"
-#include "plugins/logic/Delay/DelayPlugin.h"
-
 using namespace DeepLux;
+
+class LogicFlowProbeModule : public ModuleBase {
+public:
+    explicit LogicFlowProbeModule(const QString& id) {
+        m_moduleId = id;
+        m_name = id;
+        m_category = "test";
+    }
+
+    int executeCount = 0;
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        ++executeCount;
+        output = input;
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
 
 class TestLogicPlugins : public QObject
 {
@@ -48,6 +71,7 @@ private slots:
     void testLoopDefaultParams();
     void testLoopValidationZeroCount();
     void testLoopFlowControlType();
+    void testLoopRunsFollowingModuleWithoutSyntheticEnd();
 
     // WhilePlugin
     void testWhileNotEmptyTrue();
@@ -113,7 +137,7 @@ void TestLogicPlugins::testIfExpressionFalse()
     });
 
     ImageData input, output;
-    QVERIFY2(!plugin.execute(input, output), "process should return false when condition is false");
+    QVERIFY2(plugin.execute(input, output), "a false condition is a valid result, not an execution failure");
     QCOMPARE(output.data("if_result").toBool(), false);
     QCOMPARE(output.data("if_passed").toBool(), false);
 }
@@ -129,7 +153,7 @@ void TestLogicPlugins::testIfExpressionTrueWithInversion()
     });
 
     ImageData input, output;
-    QVERIFY2(!plugin.execute(input, output), "inverted true should return false");
+    QVERIFY2(plugin.execute(input, output), "a false condition is a valid result, not an execution failure");
     QCOMPARE(output.data("if_result").toBool(), false);
 }
 
@@ -159,7 +183,7 @@ void TestLogicPlugins::testIfExpressionEmptyReturnsFalse()
     });
 
     ImageData input, output;
-    QVERIFY2(!plugin.execute(input, output), "empty expression should evaluate to false");
+    QVERIFY2(plugin.execute(input, output), "an empty expression evaluates false without failing execution");
     QCOMPARE(output.data("if_result").toBool(), false);
 }
 
@@ -198,7 +222,7 @@ void TestLogicPlugins::testIfBoolLinkFalse()
     });
 
     ImageData input, output;
-    QVERIFY2(!plugin.execute(input, output), "BoolLink resolving to false should return false");
+    QVERIFY2(plugin.execute(input, output), "a false BoolLink is a valid result, not an execution failure");
     QCOMPARE(output.data("if_result").toBool(), false);
 }
 
@@ -295,6 +319,29 @@ void TestLogicPlugins::testLoopFlowControlType()
     QCOMPARE(plugin.flowControlType(), ControlFlowType::Loop);
     QCOMPARE(plugin.moduleId(), QString("com.deeplux.plugin.loop"));
     QCOMPARE(plugin.category(), QString("logic"));
+}
+
+void TestLogicPlugins::testLoopRunsFollowingModuleWithoutSyntheticEnd() {
+    RunEngine& engine = RunEngine::instance();
+    engine.stop();
+    engine.clearModules();
+
+    LoopPlugin loop;
+    LogicFlowProbeModule body(QStringLiteral("body"));
+    LogicFlowProbeModule after(QStringLiteral("after"));
+    QVERIFY(loop.initialize());
+    QVERIFY(body.initialize());
+    QVERIFY(after.initialize());
+    loop.setParams(QJsonObject{{"loopCount", 3}});
+    engine.addModule(&loop);
+    engine.addModule(&body);
+    engine.addModule(&after);
+
+    engine.runOnce();
+
+    QCOMPARE(body.executeCount, 3);
+    QCOMPARE(after.executeCount, 1);
+    engine.clearModules();
 }
 
 // =========================================================================

@@ -23,7 +23,7 @@ IfPlugin::IfPlugin(QObject* parent)
     m_name = "条件分支";
     m_moduleId = "IfPlugin";
     m_category = "logic";
-    m_description = "根据条件决定是否执行后续模块";
+    m_description = "条件分支；无结束节点时控制紧随其后的模块";
 }
 
 bool IfPlugin::initialize()
@@ -113,7 +113,7 @@ bool IfPlugin::process(const ImageData& input, ImageData& output)
 
     Logger::instance().info(QString("IfPlugin: condition evaluated to %1").arg(result ? "true" : "false"), "Logic");
 
-    return result;
+    return true;
 }
 
 QWidget* IfPlugin::createConfigWidget()

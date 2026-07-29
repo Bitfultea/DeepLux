@@ -1,5 +1,6 @@
 #include "FlowCanvas.h"
 
+#include "core/common/ModuleIconProvider.h"
 #include "core/manager/ProjectManager.h"
 #include "core/model/Project.h"
 
@@ -9,8 +10,53 @@
 #include <QGraphicsSceneMouseEvent>
 #include <QMimeData>
 #include <QPainter>
+#include <QPolygonF>
+#include <cmath>
 
 namespace DeepLux {
+namespace {
+
+QColor connectionColor(const QGraphicsScene* scene, int alpha = 255) {
+    QColor color = scene && scene->backgroundBrush().color().lightness() <= 128 ? QColor("#94A3B8") : QColor("#64748B");
+    color.setAlpha(alpha);
+    return color;
+}
+
+QPainterPath connectionPath(const QPointF& start, const QPointF& end) {
+    QPainterPath path(start);
+    const qreal dx = end.x() - start.x();
+    const qreal dy = end.y() - start.y();
+    if (qAbs(dy) >= qAbs(dx)) {
+        const qreal offset = qMax<qreal>(32.0, qAbs(dy) / 2.0);
+        const qreal direction = dy >= 0.0 ? 1.0 : -1.0;
+        path.cubicTo(start.x(), start.y() + direction * offset, end.x(), end.y() - direction * offset, end.x(),
+                     end.y());
+    } else {
+        const qreal offset = qMax<qreal>(32.0, qAbs(dx) / 2.0);
+        const qreal direction = dx >= 0.0 ? 1.0 : -1.0;
+        path.cubicTo(start.x() + direction * offset, start.y(), end.x() - direction * offset, end.y(), end.x(),
+                     end.y());
+    }
+    return path;
+}
+
+void drawConnectionArrow(QPainter* painter, const QPainterPath& path, const QColor& color) {
+    if (!painter || path.isEmpty()) {
+        return;
+    }
+    const QPointF tip = path.pointAtPercent(0.56);
+    const QPointF tail = path.pointAtPercent(0.44);
+    const qreal angle = std::atan2(tip.y() - tail.y(), tip.x() - tail.x());
+    const qreal size = 8.0;
+    QPolygonF arrow;
+    arrow << tip << tip - QPointF(std::cos(angle - 0.55) * size, std::sin(angle - 0.55) * size)
+          << tip - QPointF(std::cos(angle + 0.55) * size, std::sin(angle + 0.55) * size);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(color);
+    painter->drawPolygon(arrow);
+}
+
+} // namespace
 
 // ========== FlowCanvas ==========
 
@@ -19,12 +65,13 @@ FlowCanvas::FlowCanvas(QWidget* parent) : QGraphicsView(parent), m_scene(new QGr
     setRenderHint(QPainter::Antialiasing);
     setDragMode(QGraphicsView::RubberBandDrag);
     setAcceptDrops(true);
-    setSceneRect(-5000, -5000, 10000, 10000);
 
     // 背景 — 跟随主题（深色 #1e1e1e，浅色 #f5f5f5）
     QPalette pal = viewport()->palette();
     bool isDark = pal.color(QPalette::Window).lightness() <= 128;
-    setBackgroundBrush(isDark ? QColor("#1e1e1e") : QColor("#f5f5f5"));
+    const QColor background = isDark ? QColor("#1e1e1e") : QColor("#f5f5f5");
+    setBackgroundBrush(background);
+    m_scene->setBackgroundBrush(background);
 }
 
 FlowCanvas::~FlowCanvas() {
@@ -33,7 +80,9 @@ FlowCanvas::~FlowCanvas() {
 }
 
 void FlowCanvas::applyTheme(bool isDark) {
-    setBackgroundBrush(isDark ? QColor("#1e1e1e") : QColor("#f5f5f5"));
+    const QColor background = isDark ? QColor("#1e1e1e") : QColor("#f5f5f5");
+    setBackgroundBrush(background);
+    m_scene->setBackgroundBrush(background);
     viewport()->update();
 }
 
@@ -229,6 +278,12 @@ void FlowCanvas::selectNode(const QString& nodeId) {
     item->setSelected(true);
 }
 
+void FlowCanvas::setNodeExecutionState(const QString& nodeId, const QString& status, const QString& timeText) {
+    if (FlowNodeItem* item = m_nodes.value(nodeId, nullptr)) {
+        item->setExecutionState(status, timeText);
+    }
+}
+
 QList<FlowNodeItem*> FlowCanvas::getOrderedModules() const {
     if (m_nodes.isEmpty()) {
         return {};
@@ -352,7 +407,8 @@ void FlowCanvas::drawBackground(QPainter* painter, const QRectF& rect) {
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
-    painter->setPen(QPen(QColor(200, 200, 100, 190), 2, Qt::DashLine, Qt::RoundCap, Qt::RoundJoin));
+    const QColor lineColor = connectionColor(m_scene, 170);
+    painter->setPen(QPen(lineColor, 2, Qt::DashLine, Qt::RoundCap, Qt::RoundJoin));
     painter->setBrush(Qt::NoBrush);
     for (int i = 0; i < ordered.size() - 1; ++i) {
         FlowNodeItem* from = ordered[i];
@@ -362,11 +418,24 @@ void FlowCanvas::drawBackground(QPainter* painter, const QRectF& rect) {
         }
         const QPointF start = from->scenePos() + from->outputPortPos(0);
         const QPointF end = to->scenePos() + to->inputPortPos(0);
-        const qreal dx = qAbs(end.x() - start.x()) / 2;
-        QPainterPath path(start);
-        path.cubicTo(start.x() + dx, start.y(), end.x() - dx, end.y(), end.x(), end.y());
+        const QPainterPath path = connectionPath(start, end);
         painter->drawPath(path);
+        drawConnectionArrow(painter, path, lineColor);
     }
+
+    // 执行顺序图例
+    const bool isDark = m_scene->backgroundBrush().color().lightness() <= 128;
+    QColor legendColor = isDark ? QColor("#94A3B8") : QColor("#64748B");
+    legendColor.setAlpha(120);
+    painter->setPen(QPen(legendColor, 1, Qt::DashLine));
+    QFont legendFont = painter->font();
+    legendFont.setPointSize(8);
+    painter->setFont(legendFont);
+    const QString legendText = tr("虚线 = 执行顺序");
+    const QRectF legendRect = mapToScene(10, 10).x() >= 0 ? QRectF(mapToScene(10, 10), QSizeF(140, 18))
+                                                           : QRectF(10, 10, 140, 18);
+    painter->drawText(legendRect, Qt::AlignLeft | Qt::AlignVCenter, legendText);
+
     painter->restore();
 }
 
@@ -385,6 +454,12 @@ void FlowNodeItem::setName(const QString& name) {
     update();
 }
 
+void FlowNodeItem::setExecutionState(const QString& status, const QString& timeText) {
+    m_status = status;
+    m_timeText = timeText;
+    update();
+}
+
 QRectF FlowNodeItem::boundingRect() const {
     return QRectF(-6, -2, m_width + 12, m_height + 4);
 }
@@ -395,17 +470,17 @@ void FlowNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* opti
 
     // P2: 主题感知节点颜色
     bool isDark = scene() && scene()->backgroundBrush().color().lightness() <= 128;
-    QColor bgColor, borderColor, textColor, separatorColor;
+    QColor bgColor, borderColor, textColor, secondaryTextColor;
     if (isDark) {
         bgColor = isSelected() ? QColor(0, 120, 212) : QColor(45, 45, 48);
         borderColor = isSelected() ? QColor("#06B6D4") : QColor("#3b4148");
         textColor = QColor("#ffffff");
-        separatorColor = QColor("#333333");
+        secondaryTextColor = isSelected() ? QColor("#E0F2FE") : QColor("#94A3B8");
     } else {
         bgColor = isSelected() ? QColor(0, 120, 212) : QColor(255, 255, 255);
         borderColor = isSelected() ? QColor("#0078d7") : QColor("#dce2e8");
         textColor = isSelected() ? QColor("#ffffff") : QColor("#212121");
-        separatorColor = QColor("#e0e0e0");
+        secondaryTextColor = isSelected() ? QColor("#E0F2FE") : QColor("#64748B");
     }
 
     painter->setRenderHint(QPainter::Antialiasing);
@@ -419,39 +494,63 @@ void FlowNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* opti
     font.setBold(true);
     font.setPointSize(9);
     painter->setFont(font);
-    painter->drawText(QRectF(8, 4, m_width - 16, 24), Qt::AlignLeft | Qt::AlignVCenter, m_name);
+    ModuleIconProvider::instance().iconFor(m_moduleId, QString()).paint(painter, QRect(8, 6, 20, 20));
+    const qreal statusWidth = m_status.isEmpty() ? 8.0 : 72.0;
+    const QRectF titleRect(34, 4, m_width - 42 - statusWidth, 24);
+    painter->drawText(titleRect, Qt::AlignLeft | Qt::AlignVCenter,
+                      painter->fontMetrics().elidedText(m_name, Qt::ElideRight, qRound(titleRect.width())));
 
-    // 分割线
-    painter->setPen(separatorColor);
-    painter->drawLine(5, 30, m_width - 5, 30);
+    font.setBold(false);
+    font.setPointSize(8);
+    painter->setFont(font);
+    painter->setPen(secondaryTextColor);
+    const QRectF subtitleRect(34, 29, m_width - 42, 20);
+    const QString subtitle = m_nodeId != m_name ? m_nodeId : m_moduleId;
+    painter->drawText(subtitleRect, Qt::AlignLeft | Qt::AlignVCenter,
+                      painter->fontMetrics().elidedText(subtitle, Qt::ElideRight, qRound(subtitleRect.width())));
 
-    // 输入端口
-    QColor inputColor("#22C55E");
-    painter->setBrush(inputColor);
-    painter->setPen(QPen(inputColor.darker(120), 1));
+    QColor statusColor;
+    if (m_status == QStringLiteral("running"))
+        statusColor = QColor("#3B82F6");
+    else if (m_status == QStringLiteral("success"))
+        statusColor = QColor("#22C55E");
+    else if (m_status == QStringLiteral("failure"))
+        statusColor = QColor("#EF4444");
+    else if (m_status == QStringLiteral("dirty"))
+        statusColor = QColor("#F59E0B");
+    if (statusColor.isValid()) {
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(statusColor);
+        painter->drawEllipse(QPointF(m_width - 62, 16), 4, 4);
+        painter->setPen(textColor);
+        const QString elapsed = painter->fontMetrics().elidedText(m_timeText, Qt::ElideRight, 48);
+        painter->drawText(QRectF(m_width - 54, 5, 48, 22), Qt::AlignRight | Qt::AlignVCenter, elapsed);
+    }
+
+    // 端口使用连线色，避免与右侧的执行状态色混淆。
+    const QColor portColor = connectionColor(scene());
+    painter->setBrush(portColor);
+    painter->setPen(QPen(portColor.darker(120), 1));
     for (int i = 0; i < m_inputPorts; i++) {
-        qreal y = 35 + i * 20;
-        painter->drawEllipse(-5, y, 10, 10);
+        const qreal x = m_width / 2 + (i - (m_inputPorts - 1) / 2.0) * 20.0;
+        painter->drawEllipse(QPointF(x, 0), 5, 5);
     }
 
     // 输出端口
-    QColor outputColor("#EF4444");
-    painter->setBrush(outputColor);
-    painter->setPen(QPen(outputColor.darker(120), 1));
     for (int i = 0; i < m_outputPorts; i++) {
-        qreal y = 35 + i * 20;
-        painter->drawEllipse(m_width - 5, y, 10, 10);
+        const qreal x = m_width / 2 + (i - (m_outputPorts - 1) / 2.0) * 20.0;
+        painter->drawEllipse(QPointF(x, m_height), 5, 5);
     }
 }
 
 QPointF FlowNodeItem::inputPortPos(int index) const {
-    qreal y = 40 + index * 20;
-    return QPointF(0, y);
+    const qreal x = m_width / 2 + (index - (m_inputPorts - 1) / 2.0) * 20.0;
+    return QPointF(x, 0);
 }
 
 QPointF FlowNodeItem::outputPortPos(int index) const {
-    qreal y = 40 + index * 20;
-    return QPointF(m_width, y);
+    const qreal x = m_width / 2 + (index - (m_outputPorts - 1) / 2.0) * 20.0;
+    return QPointF(x, m_height);
 }
 
 QVariant FlowNodeItem::itemChange(GraphicsItemChange change, const QVariant& value) {
@@ -509,16 +608,18 @@ QRectF FlowConnectionItem::boundingRect() const {
     if (m_path.isEmpty()) {
         return QRectF();
     }
-    return m_path.boundingRect().adjusted(-3, -3, 3, 3);
+    return m_path.boundingRect().adjusted(-10, -10, 10, 10);
 }
 
 void FlowConnectionItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) {
     Q_UNUSED(option)
     Q_UNUSED(widget)
 
-    painter->setPen(QPen(QColor(200, 200, 100), 2));
+    const QColor lineColor = connectionColor(scene());
+    painter->setPen(QPen(lineColor, 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     painter->setBrush(Qt::NoBrush);
     painter->drawPath(m_path);
+    drawConnectionArrow(painter, m_path, lineColor);
 }
 
 void FlowConnectionItem::updatePath() {
@@ -531,10 +632,7 @@ void FlowConnectionItem::updatePath() {
         if (nodesShareScene && itemSceneMatches) {
             QPointF start = m_fromNode->scenePos() + m_fromNode->outputPortPos(m_fromPort);
             QPointF end = m_toNode->scenePos() + m_toNode->inputPortPos(m_toPort);
-            qreal dx = qAbs(end.x() - start.x()) / 2;
-
-            newPath = QPainterPath(start);
-            newPath.cubicTo(start.x() + dx, start.y(), end.x() - dx, end.y(), end.x(), end.y());
+            newPath = connectionPath(start, end);
         }
     }
 

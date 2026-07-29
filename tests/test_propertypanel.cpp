@@ -31,6 +31,11 @@ public:
         m_defaultParams = m_params;
     }
 
+    void addLongParamName() {
+        m_params[QStringLiteral("rcornerCurvatureThreshold")] = 2.0;
+        m_defaultParams = m_params;
+    }
+
 protected:
     bool process(const ImageData& input, ImageData& output) override {
         Q_UNUSED(input)
@@ -137,6 +142,7 @@ private slots:
     void testInstanceIdOverridesModuleIdInParamSignals();
     void testSettingModuleTwiceReplacesPreviousParamGroups();
     void testMetadataLabelDisplayed();
+    void testLongFallbackLabelIsElidedWithTooltip();
     void testRangeAndUnitAppliedToSpinBox();
     void testValidationFailureKeepsOldValue();
     void testEditingFinishedCommitsOnce();
@@ -301,6 +307,26 @@ void TestPropertyPanel::testMetadataLabelDisplayed() {
     }
     QVERIFY2(foundLength, "Metadata label '长度' should be displayed");
     QVERIFY2(foundThreshold, "Metadata label '阈值' should be displayed");
+}
+
+void TestPropertyPanel::testLongFallbackLabelIsElidedWithTooltip() {
+    PropertyPanel panel;
+    PropertyPanelTestModule module;
+    module.addLongParamName();
+    panel.setModule(&module);
+
+    QLabel* longLabel = nullptr;
+    for (QLabel* label : panel.findChildren<QLabel*>()) {
+        if (label->toolTip() == QStringLiteral("rcornerCurvatureThreshold")) {
+            longLabel = label;
+            break;
+        }
+    }
+
+    QVERIFY(longLabel != nullptr);
+    QVERIFY(!longLabel->wordWrap());
+    QVERIFY(longLabel->text() != longLabel->toolTip());
+    QCOMPARE(longLabel->width(), 104);
 }
 
 void TestPropertyPanel::testRangeAndUnitAppliedToSpinBox() {

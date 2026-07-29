@@ -184,6 +184,11 @@ void PropertyPanel::loadParams() {
     if (!params.isEmpty()) {
         QGroupBox* paramsGroup = new QGroupBox(tr("参数"));
         QFormLayout* paramsLayout = new QFormLayout(paramsGroup);
+        paramsLayout->setRowWrapPolicy(QFormLayout::DontWrapRows);
+        paramsLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        paramsLayout->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        paramsLayout->setHorizontalSpacing(8);
+        paramsLayout->setVerticalSpacing(6);
 
         const QStringList sortedKeys = sortedParamKeys(params);
 
@@ -223,8 +228,12 @@ void PropertyPanel::loadParams() {
                     labelText = QString("%1 (%2)").arg(labelText, unit);
                 }
                 QLabel* label = new QLabel(labelText);
-                label->setMinimumWidth(88);
-                label->setWordWrap(true);
+                constexpr int labelWidth = 104;
+                label->setText(label->fontMetrics().elidedText(labelText, Qt::ElideRight, labelWidth));
+                label->setToolTip(labelText);
+                label->setFixedWidth(labelWidth);
+                label->setWordWrap(false);
+                label->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
                 paramsLayout->addRow(label, widget);
                 m_paramWidgets[key] = widget;
             }

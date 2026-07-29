@@ -19,7 +19,9 @@ public:
     QString category() const override { return "logic"; }
     QString version() const override { return "1.0.0"; }
     QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("循环执行指定次数"); }
+    QString description() const override {
+        return tr("按次数循环；无结束节点时循环紧随其后的模块");
+    }
     ControlFlowType flowControlType() const override { return ControlFlowType::Loop; }
 
     bool initialize() override;

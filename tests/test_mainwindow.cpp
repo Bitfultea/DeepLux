@@ -13,6 +13,7 @@
 #include <QMenuBar>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QSignalSpy>
 #include <QSplitter>
 #include <QTabBar>
@@ -32,6 +33,8 @@
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>
 #include <core/model/Project.h>
+#include <functional>
+#include <ui/ThemeManager.h>
 #include <ui/dialogs/SamAnnotatorDialog.h>
 #include <ui/views/MainWindow.h>
 #include <ui/widgets/AgentChatPanel.h>
@@ -57,9 +60,18 @@ public:
         setInstanceName(instanceId);
     }
 
+    std::function<void()> duringProcess;
+    QStringList* executionLog = nullptr;
+
 protected:
     bool process(const ImageData& input, ImageData& output) override {
         Q_UNUSED(input)
+        if (duringProcess) {
+            duringProcess();
+        }
+        if (executionLog) {
+            executionLog->append(instanceName());
+        }
         QImage image(16, 12, QImage::Format_RGB32);
         image.fill(QColor("#22C55E"));
         output = ImageData(image);
@@ -80,6 +92,12 @@ private slots:
     void cleanup();
 
     void testOpenProjectSyncsProcessTreeAndFlowCanvas();
+    void testClosingProjectClearsRunEngineReferencesAndOutputs();
+    void testRunningFlowDefersCloseAndBlocksProjectReplacement();
+    void testRunningFlowRejectsModuleDeletion();
+    void testConnectionChangeRebuildsExecutionTopology();
+    void testDirtyStateInvalidatesDownstreamResults();
+    void testProjectModuleUpdateSyncsRuntimeAndMarksDirty();
     void testHomeSwitchesToFlowCanvas();
     void testAgentMessageRenderingUsesCompactLineSpacing();
     void testAgentThinkingStatusStaysCompactAndSafe();
@@ -94,12 +112,14 @@ private slots:
     void testPluginConfigDialogRestylesLegacyDarkPlugin();
     void testQuickAnnotateOpensSamDialogOnMainViewportImage();
     void testTreeAndCanvasSyncSelection();
+    void testPinnedInspectorKeepsTreeAndCanvasSelectionSynchronized();
     void testCycleRunDoesNotStealSelection();
     void testStepRunFollowsExecution();
     void testCloseInspectorDoesNotAutoExpand();
     void testDeleteModuleClearsInspector();
     void testOldAdvancedConfigDialogStillUsable();
     void testNarrowWindowToolPanelRestored();
+    void testNarrowWindowKeepsCanvasAndCollapsedInspectorReadable();
     void testInspectorManualCollapseResizesSplitter();
     void testFocusModePreservesLogVisibility();
 
@@ -169,14 +189,15 @@ bool TestMainWindow::installRuntimePlugin(const QString& pluginRoot, const QStri
 
 void TestMainWindow::testClickingProcessModuleDisplaysIntermediateOutput() {
     RunEngine& engine = RunEngine::instance();
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
     MainWindowOutputProbeModule* module = new MainWindowOutputProbeModule(QStringLiteral("probe_1"));
     module->initialize();
     engine.addModule(module);
     engine.runOnce();
-
-    MainWindow window;
-    Project* project = ProjectManager::instance().newProject();
-    QVERIFY(project != nullptr);
 
     ModuleInstance instance;
     instance.id = QStringLiteral("probe_1");
@@ -193,6 +214,7 @@ void TestMainWindow::testClickingProcessModuleDisplaysIntermediateOutput() {
     QVERIFY(viewport != nullptr);
     HImageWidget* imageWidget = viewport->imageWidget();
     QVERIFY(imageWidget != nullptr);
+    viewport->clearDisplay();
     QVERIFY(!imageWidget->hasImage());
 
     // Ensure inspector is not closed (could be loaded from persistent settings)
@@ -321,6 +343,13 @@ void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
     QCOMPARE(processTree->topLevelItemCount(), 1);
     QTreeWidgetItem* distanceItem = processTree->topLevelItem(0);
     processTree->setCurrentItem(distanceItem);
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>();
+    ModuleInspectorPanel* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(canvas != nullptr);
+    QVERIFY(inspector != nullptr);
+    QVERIFY(QMetaObject::invokeMethod(canvas, "nodeSelected", Qt::DirectConnection,
+                                      Q_ARG(QString, QStringLiteral("distance_1"))));
+    inspector->setPinned(true);
 
     bool clickedSetup = false;
     QTimer::singleShot(20, [&]() {
@@ -343,6 +372,8 @@ void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
     QCOMPARE(processTree->currentItem(), processTree->topLevelItem(0));
 
     const QString inputId = processTree->topLevelItem(0)->data(0, Qt::UserRole + 1).toString();
+    QVERIFY(inspector->isPinned());
+    QCOMPARE(inspector->currentInstanceId(), inputId);
     ModuleInstance* input = project->findModule(inputId);
     QVERIFY(input != nullptr);
     QCOMPARE(input->moduleId, QStringLiteral("MeasurementInput"));
@@ -541,6 +572,231 @@ void TestMainWindow::testOpenProjectSyncsProcessTreeAndFlowCanvas() {
     QCOMPARE(canvas->nodeIds().size(), 0);
 }
 
+void TestMainWindow::testClosingProjectClearsRunEngineReferencesAndOutputs() {
+    MainWindow window;
+    QVERIFY(ProjectManager::instance().newProject() != nullptr);
+
+    RunEngine& engine = RunEngine::instance();
+    auto* module = new MainWindowOutputProbeModule(QStringLiteral("stale_probe"));
+    module->initialize();
+    engine.addModule(module);
+    engine.runOnce();
+    QCOMPARE(engine.modules().size(), 1);
+    QVERIFY(engine.moduleOutput(QStringLiteral("stale_probe")).isValid());
+
+    ProjectManager::instance().closeProject();
+    QCoreApplication::processEvents();
+
+    QVERIFY(engine.modules().isEmpty());
+    QVERIFY(!engine.moduleOutput(QStringLiteral("stale_probe")).isValid());
+    QVERIFY(engine.moduleOutput(QStringLiteral("stale_probe")).allData().isEmpty());
+    delete module;
+}
+
+void TestMainWindow::testRunningFlowDefersCloseAndBlocksProjectReplacement() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    RunEngine& engine = RunEngine::instance();
+    auto* module = new MainWindowOutputProbeModule(QStringLiteral("busy_probe"));
+    bool callbackRan = false;
+    module->duringProcess = [&]() {
+        callbackRan = true;
+        window.close();
+        QCoreApplication::processEvents();
+        QVERIFY(window.isVisible());
+        QCOMPARE(ProjectManager::instance().currentProject(), project);
+        QVERIFY(ProjectManager::instance().newProject() == nullptr);
+        ProjectManager::instance().closeProject();
+        QCOMPARE(ProjectManager::instance().currentProject(), project);
+    };
+    module->initialize();
+    engine.addModule(module);
+
+    engine.runOnce();
+
+    QVERIFY(callbackRan);
+    QTRY_VERIFY(!window.isVisible());
+    QCOMPARE(ProjectManager::instance().currentProject(), project);
+    engine.clearModules();
+    delete module;
+}
+
+void TestMainWindow::testRunningFlowRejectsModuleDeletion() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance instance;
+    instance.id = QStringLiteral("delete_busy_probe");
+    instance.moduleId = QStringLiteral("OutputProbe");
+    instance.name = QStringLiteral("Busy Delete Probe");
+    project->addModule(instance);
+    QCoreApplication::processEvents();
+
+    auto* module = new MainWindowOutputProbeModule(instance.id);
+    QPointer<MainWindowOutputProbeModule> guard(module);
+    module->initialize();
+    window.registerFlowModule(instance.id, module);
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree != nullptr);
+    processTree->setCurrentItem(processTree->topLevelItem(0));
+    module->duringProcess = [processTree]() {
+        QTest::keyClick(processTree, Qt::Key_Delete);
+        QCoreApplication::processEvents();
+    };
+
+    RunEngine& engine = RunEngine::instance();
+    engine.addModule(module);
+    engine.runOnce();
+
+    QVERIFY(guard != nullptr);
+    QVERIFY(project->findModule(QStringLiteral("delete_busy_probe")) != nullptr);
+    QCOMPARE(processTree->topLevelItemCount(), 1);
+
+    engine.clearModules();
+    project->removeModule(instance.id);
+    QCoreApplication::processEvents();
+    QVERIFY(guard == nullptr);
+}
+
+void TestMainWindow::testConnectionChangeRebuildsExecutionTopology() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    QStringList executionLog;
+    QMap<QString, MainWindowOutputProbeModule*> runtimeModules;
+    for (const QString& id : {QStringLiteral("A"), QStringLiteral("C"), QStringLiteral("B")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("OutputProbe");
+        instance.name = id;
+        project->addModule(instance);
+        auto* module = new MainWindowOutputProbeModule(id);
+        module->executionLog = &executionLog;
+        module->initialize();
+        runtimeModules.insert(id, module);
+        window.registerFlowModule(id, module);
+    }
+    QCoreApplication::processEvents();
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QCOMPARE(executionLog, QStringList({QStringLiteral("A"), QStringLiteral("C"), QStringLiteral("B")}));
+
+    executionLog.clear();
+    ModuleConnection connection;
+    connection.fromModuleId = QStringLiteral("A");
+    connection.toModuleId = QStringLiteral("B");
+    project->addConnection(connection);
+    QCoreApplication::processEvents();
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QCOMPARE(executionLog, QStringList({QStringLiteral("A"), QStringLiteral("B")}));
+    QVERIFY(!RunEngine::instance().moduleOutput(QStringLiteral("C")).isValid());
+
+    RunEngine::instance().clearModules();
+    for (const QString& id : runtimeModules.keys()) {
+        project->removeModule(id);
+    }
+    QCoreApplication::processEvents();
+}
+
+void TestMainWindow::testDirtyStateInvalidatesDownstreamResults() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    for (const QString& id : {QStringLiteral("source"), QStringLiteral("downstream")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("OutputProbe");
+        instance.name = id;
+        project->addModule(instance);
+        auto* module = new MainWindowOutputProbeModule(id);
+        module->initialize();
+        window.registerFlowModule(id, module);
+    }
+    ModuleConnection connection;
+    connection.fromModuleId = QStringLiteral("source");
+    connection.toModuleId = QStringLiteral("downstream");
+    project->addConnection(connection);
+    QCoreApplication::processEvents();
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    RunEngine& engine = RunEngine::instance();
+    QVERIFY(engine.moduleOutput(QStringLiteral("source")).isValid());
+    QVERIFY(engine.moduleOutput(QStringLiteral("downstream")).isValid());
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree != nullptr);
+    HImageWidget* imageWidget = window.findChild<HImageWidget*>();
+    QVERIFY(imageWidget != nullptr);
+    QVERIFY(imageWidget->hasImage());
+
+    // The last successful output is visible even when no module is selected.
+    QVERIFY(project->setModuleParam(QStringLiteral("source"), QStringLiteral("threshold"), 41));
+    QCoreApplication::processEvents();
+    QVERIFY(!engine.moduleOutput(QStringLiteral("source")).isValid());
+    QVERIFY(!engine.moduleOutput(QStringLiteral("downstream")).isValid());
+    QVERIFY(!imageWidget->hasImage());
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    processTree->setCurrentItem(processTree->topLevelItem(1));
+    QCoreApplication::processEvents();
+    QVERIFY(imageWidget->hasImage());
+
+    QVERIFY(project->setModuleParam(QStringLiteral("source"), QStringLiteral("threshold"), 42));
+    QCoreApplication::processEvents();
+
+    QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 5).toString(), QStringLiteral("dirty"));
+    QCOMPARE(processTree->topLevelItem(1)->data(0, Qt::UserRole + 5).toString(), QStringLiteral("dirty"));
+    QVERIFY(!engine.moduleOutput(QStringLiteral("source")).isValid());
+    QVERIFY(!engine.moduleOutput(QStringLiteral("downstream")).isValid());
+    QVERIFY(!imageWidget->hasImage());
+    auto* results = window.findChild<QTableWidget*>(QStringLiteral("InspectorResultsTable"));
+    QVERIFY(results != nullptr);
+    QCOMPARE(results->rowCount(), 0);
+
+    engine.clearModules();
+    project->removeModule(QStringLiteral("source"));
+    project->removeModule(QStringLiteral("downstream"));
+    QCoreApplication::processEvents();
+}
+
+void TestMainWindow::testProjectModuleUpdateSyncsRuntimeAndMarksDirty() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance instance;
+    instance.id = QStringLiteral("dirty_probe");
+    instance.moduleId = QStringLiteral("OutputProbe");
+    instance.name = QStringLiteral("Dirty Probe");
+    project->addModule(instance);
+    QCoreApplication::processEvents();
+
+    auto* module = new MainWindowOutputProbeModule(instance.id);
+    module->initialize();
+    window.registerFlowModule(instance.id, module);
+
+    project->setModuleParam(instance.id, QStringLiteral("threshold"), 42);
+    QCoreApplication::processEvents();
+
+    QCOMPARE(module->currentParams().value(QStringLiteral("threshold")).toInt(), 42);
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree != nullptr);
+    QCOMPARE(processTree->topLevelItemCount(), 1);
+    QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 5).toString(), QStringLiteral("dirty"));
+
+    delete module;
+}
+
 void TestMainWindow::testHomeSwitchesToFlowCanvas() {
     MainWindow window;
 
@@ -653,6 +909,19 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     for (const QString& actionText : expectedPrimaryActions) {
         QVERIFY2(toolbarTexts.contains(actionText), qPrintable(QString("Missing toolbar action: %1").arg(actionText)));
     }
+    QAction* quickMeasureAction = nullptr;
+    QAction* quickAnnotateAction = nullptr;
+    for (QAction* action : mainToolbar->actions()) {
+        const QString text = QString(action->text()).remove('&');
+        if (text == QStringLiteral("快速测量"))
+            quickMeasureAction = action;
+        else if (text == QStringLiteral("快速标注"))
+            quickAnnotateAction = action;
+    }
+    QVERIFY(quickMeasureAction != nullptr);
+    QVERIFY(quickAnnotateAction != nullptr);
+    QVERIFY(quickMeasureAction->icon().pixmap(20, 20).toImage() !=
+            quickAnnotateAction->icon().pixmap(20, 20).toImage());
 
     const QStringList lowFrequencyActions = {
         QStringLiteral("方案列表"), QStringLiteral("切换主题"), QStringLiteral("用户登录"), QStringLiteral("全局变量"),
@@ -691,6 +960,14 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY2(!findCircleTool->text(0).contains(QStringLiteral("🔵")),
              "Plugin icon should be a QIcon, not a repeated emoji in the item text");
     QVERIFY2(!findCircleTool->icon(0).isNull(), "Plugin item should keep a single dedicated icon");
+    QVERIFY(toolTree->topLevelItemCount() >= 15);
+    const auto categoryIcon = [toolTree](int row) {
+        return toolTree->topLevelItem(row)->icon(0).pixmap(20, 20).toImage();
+    };
+    QVERIFY(categoryIcon(0) != categoryIcon(8));
+    QVERIFY(categoryIcon(3) != categoryIcon(4));
+    QVERIFY(categoryIcon(2) != categoryIcon(6));
+    QVERIFY(categoryIcon(10) != categoryIcon(14));
 
     QTreeWidget* processTree = window.findChild<QTreeWidget*>("ProcessTree");
     QVERIFY(processTree != nullptr);
@@ -705,6 +982,12 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
              "Project breadcrumb should follow the current project");
     QVERIFY2(projectBreadcrumb->parentWidget()->objectName() == QStringLiteral("ProjectBreadcrumb"),
              "Project context should use a dedicated breadcrumb container");
+    QVERIFY2(mainToolbar->isAncestorOf(projectBreadcrumb),
+             "Project breadcrumb should remain inside the toolbar instead of reparenting the main window");
+    project->setName(QStringLiteral("在线圆检测"));
+    QCoreApplication::processEvents();
+    QVERIFY2(projectBreadcrumb->text().contains(QStringLiteral("在线圆检测")),
+             "Project breadcrumb should react to names assigned after project creation");
 
     QVERIFY2(window.findChild<QMenu*>("DebugMenu") == nullptr,
              "Debug menu should stay out of the production UI unless explicitly enabled");
@@ -795,6 +1078,11 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY(logDock != nullptr);
     QVERIFY2(logDock->minimumHeight() <= 240,
              qPrintable(QString("Log panel minimum height is too large: %1").arg(logDock->minimumHeight())));
+    QVERIFY2(!window.findChild<QTableWidget*>("LogTable")->verticalHeader()->isVisible(),
+             "Log rows should not spend horizontal space on an unhelpful sequence number");
+    QVERIFY(window.findChild<QToolButton*>("ClearLogButton") != nullptr);
+    QVERIFY(window.findChild<QToolButton*>("CollapseLogButton") != nullptr);
+    QVERIFY(window.findChild<QLabel*>("RunStatusLabel") != nullptr);
 
     QSplitter* mainSplitter = window.findChild<QSplitter*>("MainSplitter");
     QSplitter* rightSplitter = window.findChild<QSplitter*>("RightSplitter");
@@ -802,18 +1090,18 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY(mainSplitter != nullptr);
     QVERIFY(rightSplitter != nullptr);
     QVERIFY(rightTopSplitter != nullptr);
-    QVERIFY2(mainSplitter->handleWidth() >= 6, "Main splitter handle should be easy to see and drag");
+    QVERIFY(mainSplitter->handleWidth() >= ThemeManager::layoutMetrics().splitterHandleWidth);
     QWidget* mainContentWidget = window.findChild<QWidget*>("MainContentWidget");
     QVERIFY2(mainContentWidget != nullptr,
              "Central content should wrap the splitter so the left edge can have a gutter");
     QVERIFY(mainContentWidget->layout() != nullptr);
     const QMargins mainContentMargins = mainContentWidget->layout()->contentsMargins();
-    QCOMPARE(mainContentMargins.left(), mainSplitter->handleWidth());
+    QCOMPARE(mainContentMargins.left(), ThemeManager::layoutMetrics().splitterHandleWidth);
     QCOMPARE(mainContentMargins.top(), 0);
-    QCOMPARE(mainContentMargins.right(), mainSplitter->handleWidth());
+    QCOMPARE(mainContentMargins.right(), ThemeManager::layoutMetrics().splitterHandleWidth);
     QCOMPARE(mainContentMargins.bottom(), 0);
-    QVERIFY2(rightSplitter->handleWidth() >= 6, "Bottom panel splitter handle should be easy to see and drag");
-    QVERIFY2(rightTopSplitter->handleWidth() >= 6, "Process/display splitter handle should be easy to see and drag");
+    QCOMPARE(rightSplitter->handleWidth(), mainSplitter->handleWidth());
+    QCOMPARE(rightTopSplitter->handleWidth(), mainSplitter->handleWidth());
     QVERIFY2(!mainSplitter->childrenCollapsible(), "Primary panels should not collapse accidentally while dragging");
     QVERIFY2(!rightSplitter->childrenCollapsible(),
              "Top and bottom panels should not collapse accidentally while dragging");
@@ -1258,6 +1546,57 @@ void TestMainWindow::testTreeAndCanvasSyncSelection() {
     QVERIFY2(nodeItem->isSelected(), "Canvas node should be selected when process tree item is selected");
 }
 
+void TestMainWindow::testPinnedInspectorKeepsTreeAndCanvasSelectionSynchronized() {
+    MainWindowOutputProbeModule firstModule(QStringLiteral("pinned_1"));
+    MainWindowOutputProbeModule secondModule(QStringLiteral("pinned_2"));
+    QVERIFY(firstModule.initialize());
+    QVERIFY(secondModule.initialize());
+
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    for (const QString& id : {QStringLiteral("pinned_1"), QStringLiteral("pinned_2")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("OutputProbe");
+        instance.name = id;
+        project->addModule(instance);
+    }
+    window.registerFlowModule(QStringLiteral("pinned_1"), &firstModule);
+    window.registerFlowModule(QStringLiteral("pinned_2"), &secondModule);
+    QCoreApplication::processEvents();
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>();
+    ModuleInspectorPanel* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(processTree != nullptr);
+    QVERIFY(canvas != nullptr);
+    QVERIFY(inspector != nullptr);
+
+    QTreeWidgetItem* firstItem = processTree->topLevelItem(0);
+    QVERIFY(QMetaObject::invokeMethod(canvas, "nodeSelected", Qt::DirectConnection,
+                                      Q_ARG(QString, QStringLiteral("pinned_1"))));
+    QCoreApplication::processEvents();
+    inspector->setPinned(true);
+
+    FlowNodeItem* firstNode = canvas->nodeItem(QStringLiteral("pinned_1"));
+    FlowNodeItem* secondNode = canvas->nodeItem(QStringLiteral("pinned_2"));
+    QVERIFY(firstNode != nullptr);
+    QVERIFY(secondNode != nullptr);
+    QTabWidget* processTabs = window.findChild<QTabWidget*>(QStringLiteral("ProcessTabWidget"));
+    QVERIFY(processTabs != nullptr);
+    processTabs->setCurrentWidget(canvas);
+    QTest::mouseClick(canvas->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      canvas->mapFromScene(secondNode->sceneBoundingRect().center()));
+    QCoreApplication::processEvents();
+
+    QCOMPARE(processTree->currentItem(), firstItem);
+    QVERIFY(firstNode->isSelected());
+    QVERIFY(!secondNode->isSelected());
+    QCOMPARE(inspector->currentInstanceId(), QStringLiteral("pinned_1"));
+}
+
 void TestMainWindow::testCycleRunDoesNotStealSelection() {
     RunEngine& engine = RunEngine::instance();
 
@@ -1475,16 +1814,64 @@ void TestMainWindow::testNarrowWindowToolPanelRestored() {
     QDockWidget* toolDock = window.findChild<QDockWidget*>("ToolPanelDock");
     QVERIFY(toolDock != nullptr);
     QVERIFY2(toolDock->isVisible(), "Tool panel should be visible at 1600px");
+    QToolBar* toolbar = window.findChild<QToolBar*>("MainToolBar");
+    QVERIFY(toolbar != nullptr);
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(inspector != nullptr);
+    inspector->setUserOverrideMode(true);
 
     // 缩到 1024px
     window.resize(1024, 700);
     QCoreApplication::processEvents();
+    QVERIFY2(!toolDock->isVisible(), "Tool panel should hide at 1024px even when inspector layout is user-controlled");
+    QCOMPARE(toolbar->toolButtonStyle(), Qt::ToolButtonIconOnly);
 
     // 恢复到 1600px
     window.resize(1600, 900);
     QCoreApplication::processEvents();
 
     QVERIFY2(toolDock->isVisible(), "Tool panel should be restored after window resized back to 1600px");
+    QCOMPARE(toolbar->toolButtonStyle(), Qt::ToolButtonTextBesideIcon);
+}
+
+void TestMainWindow::testNarrowWindowKeepsCanvasAndCollapsedInspectorReadable() {
+    MainWindow window;
+    window.resize(1600, 900);
+    window.show();
+    QCoreApplication::processEvents();
+
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    auto* canvas = window.findChild<FlowCanvas*>("FlowCanvas");
+    auto* processTabs = window.findChild<QTabWidget*>("ProcessTabWidget");
+    auto* processPanel = window.findChild<QWidget*>("ProcessPanelWidget");
+    auto* processTree = window.findChild<QTreeWidget*>("ProcessTree");
+    QVERIFY(inspector != nullptr);
+    QVERIFY(canvas != nullptr);
+    QVERIFY(processTabs != nullptr);
+    QVERIFY(processPanel != nullptr);
+    QVERIFY(processTree != nullptr);
+
+    inspector->setUserOverrideMode(false);
+    inspector->setLayoutMode(ModuleInspectorPanel::LayoutMode::Docked);
+    window.resetInspectorClosed();
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance instance;
+    instance.id = QStringLiteral("narrow_node");
+    instance.moduleId = QStringLiteral("OutputProbe");
+    instance.name = QStringLiteral("Narrow Node");
+    project->addModule(instance);
+    processTabs->setCurrentWidget(canvas);
+
+    window.resize(1024, 700);
+    QCoreApplication::processEvents();
+
+    QCOMPARE(inspector->layoutMode(), ModuleInspectorPanel::LayoutMode::Collapsed);
+    QVERIFY(inspector->findChild<QWidget*>("InspectorEmptyState")->isHidden());
+    QVERIFY(processPanel->width() >= static_cast<int>(canvas->nodeItem(instance.id)->boundingRect().width()));
+    QCOMPARE(canvas->horizontalScrollBar()->maximum(), canvas->horizontalScrollBar()->minimum());
+    QCOMPARE(processTree->horizontalScrollBarPolicy(), Qt::ScrollBarAlwaysOff);
 }
 
 // 中: 回归测试 — 手动折叠检查器后 splitter 重分配

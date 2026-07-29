@@ -277,6 +277,21 @@ Glyph glyphFor(const QString& moduleId, const QString& category) {
     if (cat.contains("image")) {
         return Glyph::Image;
     }
+    if (cat.contains("common")) {
+        return Glyph::Default;
+    }
+    if (cat.contains("relation")) {
+        return Glyph::LinePairDistance;
+    }
+    if (cat.contains("alignment")) {
+        return Glyph::Calibration;
+    }
+    if (cat.contains("file")) {
+        return Glyph::Folder;
+    }
+    if (cat.contains("string")) {
+        return Glyph::Text;
+    }
     if (cat.contains("detect")) {
         return Glyph::Target;
     }
@@ -604,6 +619,16 @@ ModuleIconProvider& ModuleIconProvider::instance() {
 
 QColor ModuleIconProvider::colorForCategory(const QString& category) const {
     const QString cat = category.toLower();
+    if (cat.contains("common"))
+        return QColor("#0F766E");
+    if (cat.contains("relation"))
+        return QColor("#0D9488");
+    if (cat.contains("alignment"))
+        return QColor("#CA8A04");
+    if (cat.contains("file"))
+        return QColor("#B45309");
+    if (cat.contains("string"))
+        return QColor("#BE123C");
     if (cat.contains("image"))
         return QColor("#2563EB");
     if (cat.contains("detect"))

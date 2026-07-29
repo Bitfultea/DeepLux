@@ -20,6 +20,7 @@ private slots:
     void testConnectionHasPaintableBoundsAfterAdd();
     void testNodeBoundsIncludePorts();
     void testImplicitSequentialRelationIsPainted();
+    void testThemeUpdatesSceneBackground();
     void testLoadFromProjectRebuildsStableNodesAndConnections();
     void testNodeClickEmitsNodeSelected();
     void testProgrammaticSelectNodeDoesNotEmitSignal();
@@ -85,11 +86,11 @@ void TestFlowCanvas::testNodeBoundsIncludePorts() {
 
 void TestFlowCanvas::testImplicitSequentialRelationIsPainted() {
     FlowCanvas canvas;
-    canvas.resize(420, 160);
-    canvas.centerOn(120, 40);
+    canvas.resize(300, 260);
+    canvas.centerOn(110, 92);
 
     canvas.addNode("module.a", "Module A", QPointF(0, 0));
-    canvas.addNode("module.b", "Module B", QPointF(260, 0));
+    canvas.addNode("module.b", "Module B", QPointF(0, 120));
     QCOMPARE(canvas.m_connections.size(), 0);
 
     QImage image(canvas.viewport()->size(), QImage::Format_ARGB32);
@@ -98,7 +99,7 @@ void TestFlowCanvas::testImplicitSequentialRelationIsPainted() {
     canvas.render(&painter);
     painter.end();
 
-    const QPoint mid = canvas.mapFromScene(QPointF(205, 40));
+    const QPoint mid = canvas.mapFromScene(QPointF(110, 92));
     bool foundLinePixel = false;
     for (int y = mid.y() - 2; y <= mid.y() + 2 && !foundLinePixel; ++y) {
         for (int x = mid.x() - 2; x <= mid.x() + 2; ++x) {
@@ -106,7 +107,7 @@ void TestFlowCanvas::testImplicitSequentialRelationIsPainted() {
                 continue;
             }
             const QColor c = image.pixelColor(x, y);
-            if (c.red() > 120 && c.green() > 100 && c.red() > c.blue() + 20) {
+            if (c.blue() > c.red() + 10 && c.blue() > c.green() + 5 && c.red() < 220) {
                 foundLinePixel = true;
                 break;
             }
@@ -114,6 +115,16 @@ void TestFlowCanvas::testImplicitSequentialRelationIsPainted() {
     }
     QVERIFY2(foundLinePixel,
              "FlowCanvas should paint an implicit sequence relation when no explicit connection exists");
+}
+
+void TestFlowCanvas::testThemeUpdatesSceneBackground() {
+    FlowCanvas canvas;
+
+    canvas.applyTheme(false);
+    QCOMPARE(canvas.scene()->backgroundBrush().color(), QColor("#f5f5f5"));
+
+    canvas.applyTheme(true);
+    QCOMPARE(canvas.scene()->backgroundBrush().color(), QColor("#1e1e1e"));
 }
 
 void TestFlowCanvas::testLoadFromProjectRebuildsStableNodesAndConnections() {
@@ -162,8 +173,8 @@ void TestFlowCanvas::testNodeClickEmitsNodeSelected() {
     QVERIFY(node != nullptr);
 
     // Map the node center to viewport coordinates and click
-    const QPointF nodeCenter = node->pos() + QPointF(node->boundingRect().width() / 2,
-                                                     node->boundingRect().height() / 2);
+    const QPointF nodeCenter =
+        node->pos() + QPointF(node->boundingRect().width() / 2, node->boundingRect().height() / 2);
     const QPoint viewportPos = canvas.mapFromScene(nodeCenter);
     QTest::mouseClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, viewportPos);
     QCoreApplication::processEvents();

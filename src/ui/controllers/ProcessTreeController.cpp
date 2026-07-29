@@ -1,16 +1,17 @@
 #include "ProcessTreeController.h"
 
+#include "../widgets/AppIconProvider.h"
+#include "core/base/ModuleBase.h"
 #include "core/common/Logger.h"
+#include "core/engine/RunEngine.h"
 #include "core/interface/IModule.h"
 #include "core/manager/PluginManager.h"
 #include "core/manager/ProjectManager.h"
 #include "core/model/Project.h"
-#include "core/base/ModuleBase.h"
-#include "../widgets/AppIconProvider.h"
 
+#include <QAction>
 #include <QLabel>
 #include <QMenu>
-#include <QAction>
 #include <QVBoxLayout>
 
 namespace DeepLux {
@@ -106,6 +107,10 @@ void ProcessTreeController::addModule(const ModuleInstance& inst) {
 }
 
 void ProcessTreeController::removeModule(const QString& instanceId) {
+    if (RunEngine::instance().isBusy()) {
+        Logger::instance().warning(QObject::tr("流程运行中，无法删除模块"), "Flow");
+        return;
+    }
     QTreeWidgetItem* item = m_instanceItemMap.value(instanceId);
     if (item) {
         int idx = m_tree->indexOfTopLevelItem(item);
@@ -146,6 +151,10 @@ void ProcessTreeController::removeModule(const QString& instanceId) {
 
 void ProcessTreeController::removeFlowModule(const QString& instanceId) {
     if (instanceId.isEmpty()) {
+        return;
+    }
+    if (RunEngine::instance().isBusy()) {
+        Logger::instance().warning(QObject::tr("流程运行中，无法删除模块"), "Flow");
         return;
     }
 

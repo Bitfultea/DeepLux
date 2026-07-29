@@ -1,10 +1,13 @@
 #include "ProjectManager.h"
+
+#include "../engine/RunEngine.h"
 #include "../model/Project.h"
 #include "../platform/PathUtils.h"
-#include <QFile>
-#include <QDir>
-#include <QSettings>
+
 #include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QSettings>
 
 namespace DeepLux {
 
@@ -19,13 +22,14 @@ ProjectManager::ProjectManager()
     loadRecentProjects();
 }
 
-ProjectManager::~ProjectManager()
-{
-    closeProject();
-}
+ProjectManager::~ProjectManager() {}
 
 Project* ProjectManager::newProject()
 {
+    if (RunEngine::instance().isBusy()) {
+        emit errorOccurred(tr("流程运行中，无法新建工程"));
+        return nullptr;
+    }
     closeProject();
     
     m_currentProject = std::make_unique<Project>();
@@ -38,6 +42,10 @@ Project* ProjectManager::newProject()
 
 Project* ProjectManager::openProject(const QString& path)
 {
+    if (RunEngine::instance().isBusy()) {
+        emit errorOccurred(tr("流程运行中，无法打开工程"));
+        return nullptr;
+    }
     if (!QFile::exists(path)) {
         emit errorOccurred(tr("文件不存在: %1").arg(path));
         return nullptr;
@@ -108,6 +116,10 @@ bool ProjectManager::saveAsProject(const QString& path)
 
 void ProjectManager::closeProject()
 {
+    if (RunEngine::instance().isBusy()) {
+        emit errorOccurred(tr("流程运行中，无法关闭工程"));
+        return;
+    }
     if (m_currentProject) {
         qDebug() << "Project closed:" << m_currentProject->name();
         m_currentProject.reset();

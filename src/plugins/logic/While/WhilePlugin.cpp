@@ -23,7 +23,7 @@ WhilePlugin::WhilePlugin(QObject* parent)
     m_name = "循环";
     m_moduleId = "WhilePlugin";
     m_category = "logic";
-    m_description = "当条件满足时循环执行";
+    m_description = "条件循环；无结束节点时循环紧随其后的模块";
 }
 
 bool WhilePlugin::initialize()

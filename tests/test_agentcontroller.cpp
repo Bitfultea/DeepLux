@@ -8,10 +8,41 @@
 #undef private
 
 #include "core/agent/AgentActor.h"
-#include "core/agent/ToolSchema.h"
 #include "core/agent/ILLMClient.h"
+#include "core/agent/ToolSchema.h"
+#include "core/base/ModuleBase.h"
+#include "core/engine/RunEngine.h"
 
 using namespace DeepLux;
+
+class AgentBusyProbeModule : public ModuleBase {
+public:
+    AgentBusyProbeModule() {
+        m_moduleId = QStringLiteral("com.deeplux.test.agentbusy");
+        m_name = QStringLiteral("AgentBusy");
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
+
+class UndoCounterCommand : public QUndoCommand {
+public:
+    explicit UndoCounterCommand(int* undoCount) : m_undoCount(undoCount) {}
+    void undo() override {
+        ++*m_undoCount;
+    }
+    void redo() override {}
+
+private:
+    int* m_undoCount;
+};
 
 // ========== Mock LLM Client ==========
 
@@ -230,6 +261,29 @@ private slots:
         QCOMPARE(responseSpy.count(), 1);
         QString reply = responseSpy.takeFirst()[0].toString();
         QVERIFY(reply.contains("busy"));
+    }
+
+    void testUndoRejectedWhileFlowBusy() {
+        AgentController& controller = AgentController::instance();
+        controller.m_actor->undoStack()->clear();
+        int undoCount = 0;
+        controller.m_actor->undoStack()->push(new UndoCounterCommand(&undoCount));
+
+        RunEngine& engine = RunEngine::instance();
+        auto* module = new AgentBusyProbeModule();
+        module->initialize();
+        engine.addModule(module);
+        engine.start();
+
+        QVERIFY(engine.isBusy());
+        QVERIFY(!controller.undoLastAgentAction());
+        QCOMPARE(undoCount, 0);
+
+        engine.stop();
+        engine.clearModules();
+        QVERIFY(controller.undoLastAgentAction());
+        QCOMPARE(undoCount, 1);
+        delete module;
     }
 
     // ---------- 错误恢复 ----------

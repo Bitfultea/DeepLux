@@ -45,7 +45,7 @@ void RunEngine::setCycleMode(bool enabled) {
 }
 
 void RunEngine::runOnce() {
-    if (state() == RunState::Running) {
+    if (isBusy()) {
         return;
     }
 
@@ -56,7 +56,7 @@ void RunEngine::runOnce() {
 }
 
 bool RunEngine::stepOnce() {
-    if (state() == RunState::Running) {
+    if (isBusy()) {
         return false;
     }
 
@@ -75,7 +75,7 @@ bool RunEngine::stepOnce() {
     }
 
     if (m_stepCurrentModuleName.isEmpty()) {
-        clearPipelineOutputs();
+        clearModuleOutputs();
         buildModuleTree();
         QReadLocker locker(&m_moduleLock);
         m_stepCurrentModuleName =
@@ -88,6 +88,7 @@ bool RunEngine::stepOnce() {
         return false;
     }
 
+    m_executing.store(true, std::memory_order_release);
     m_runMode.store(static_cast<int>(RunMode::RunOnce), std::memory_order_release);
     m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
     emit stateChanged(state());
@@ -104,7 +105,7 @@ bool RunEngine::stepOnce() {
 
     const bool success = m_lastExecuteResult;
     if (success) {
-        m_stepCurrentModuleName = getNextModule(moduleToRun, true);
+        m_stepCurrentModuleName = getNextModule(moduleToRun, m_lastControlResult);
         m_currentModuleName = m_stepCurrentModuleName;
         if (m_stepCurrentModuleName.isEmpty()) {
             resetStepState();
@@ -119,9 +120,12 @@ bool RunEngine::stepOnce() {
     RunResult result;
     result.success = success;
     result.errorCode = success ? 0 : -1;
-    result.errorMessage = success ? QString() : tr("Step execution failed: %1").arg(moduleToRun);
+    result.errorMessage =
+        success ? QString()
+                : (m_lastModuleError.isEmpty() ? tr("Step execution failed: %1").arg(moduleToRun) : m_lastModuleError);
     result.elapsedMs = elapsedMs;
     result.finishedTime = QDateTime::currentDateTime();
+    m_executing.store(false, std::memory_order_release);
     emit runFinished(result);
 
     m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
@@ -137,8 +141,22 @@ void RunEngine::resetStepState() {
 }
 
 void RunEngine::start() {
-    if (state() == RunState::Running) {
+    if (isBusy()) {
         return;
+    }
+    {
+        QReadLocker locker(&m_moduleLock);
+        if (m_modules.isEmpty()) {
+            RunResult result;
+            result.success = false;
+            result.errorCode = -1;
+            result.errorMessage = tr("No modules to run");
+            result.elapsedMs = 0;
+            result.finishedTime = QDateTime::currentDateTime();
+            emit errorOccurred(result.errorMessage);
+            emit runFinished(result);
+            return;
+        }
     }
 
     resetStepState();
@@ -208,6 +226,10 @@ void RunEngine::requestCancellation() {
 }
 
 void RunEngine::addModule(ModuleBase* module) {
+    if (isBusy()) {
+        Logger::instance().warning(tr("Cannot add modules while the flow is running"), "Run");
+        return;
+    }
     QWriteLocker locker(&m_moduleLock);
     if (module && !m_modules.contains(module)) {
         m_modules.append(module);
@@ -218,6 +240,10 @@ void RunEngine::addModule(ModuleBase* module) {
 }
 
 bool RunEngine::loadProject(Project* project, ModuleFactory factory) {
+    if (isBusy()) {
+        emit errorOccurred(tr("Cannot load a project while the flow is running"));
+        return false;
+    }
     stop();
     clearModules();
 
@@ -275,6 +301,10 @@ bool RunEngine::loadProject(Project* project, ModuleFactory factory) {
 }
 
 void RunEngine::removeModule(const QString& moduleId) {
+    if (isBusy()) {
+        Logger::instance().warning(tr("Cannot remove modules while the flow is running"), "Run");
+        return;
+    }
     QWriteLocker locker(&m_moduleLock);
     for (int i = 0; i < m_modules.size(); ++i) {
         ModuleBase* module = m_modules[i];
@@ -290,6 +320,10 @@ void RunEngine::removeModule(const QString& moduleId) {
 }
 
 void RunEngine::clearModules() {
+    if (isBusy()) {
+        Logger::instance().warning(tr("Cannot clear modules while a module is executing"), "Run");
+        return;
+    }
     QWriteLocker locker(&m_moduleLock);
     qDeleteAll(m_ownedModules);
     m_ownedModules.clear();
@@ -347,12 +381,13 @@ void RunEngine::clearOutputs() {
         QMutexLocker locker(&m_outputMutex);
         m_outputMap.clear();
     }
-    clearPipelineOutputs();
+    clearModuleOutputs();
 }
 
-void RunEngine::clearPipelineOutputs() {
+void RunEngine::clearModuleOutputs() {
     QMutexLocker locker(&m_lastOutputMutex);
     m_lastOutput = ImageData();
+    m_lastOutputModuleName.clear();
     m_moduleOutputs.clear();
 }
 
@@ -364,6 +399,19 @@ ImageData RunEngine::lastOutput() const {
 ImageData RunEngine::moduleOutput(const QString& moduleName) const {
     QMutexLocker locker(&m_lastOutputMutex);
     return m_moduleOutputs.value(moduleName);
+}
+
+void RunEngine::invalidateModuleOutput(const QString& moduleName) {
+    {
+        QMutexLocker locker(&m_outputMutex);
+        m_outputMap.remove(moduleName);
+    }
+    QMutexLocker locker(&m_lastOutputMutex);
+    m_moduleOutputs.remove(moduleName);
+    if (m_lastOutputModuleName == moduleName) {
+        m_lastOutput = ImageData();
+        m_lastOutputModuleName.clear();
+    }
 }
 
 int RunEngine::totalRuns() const {
@@ -402,9 +450,20 @@ void RunEngine::executeRun() {
             result.errorMessage = tr("No modules to run");
             result.elapsedMs = 0;
             result.finishedTime = QDateTime::currentDateTime();
+            if (runMode() == RunMode::RunCycle) {
+                m_cycleTimer->stop();
+                m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
+                m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
+                emit stateChanged(state());
+                emit cycleStopped();
+            }
             emit runFinished(result);
             return;
         }
+    }
+
+    if (m_executing.exchange(true, std::memory_order_acq_rel)) {
+        return;
     }
 
     m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
@@ -412,7 +471,7 @@ void RunEngine::executeRun() {
     emit runStarted();
 
     m_runStartTime = QDateTime::currentDateTime();
-    clearPipelineOutputs();
+    clearModuleOutputs();
 
     if (m_cancellationToken) {
         m_cancellationToken->reset();
@@ -427,6 +486,8 @@ void RunEngine::executeRun() {
     }
     m_currentModuleName = currentModule;
     ImageData pipelineData;
+    bool allSuccess = true;
+    QString firstError;
 
     while (!currentModule.isEmpty() && state() == RunState::Running) {
         if (m_cancellationToken && m_cancellationToken->isCancelledFast()) {
@@ -443,22 +504,29 @@ void RunEngine::executeRun() {
         }
 
         executeModule(currentModule, pipelineData);
+        if (!m_lastExecuteResult) {
+            allSuccess = false;
+            if (firstError.isEmpty()) {
+                firstError = m_lastModuleError;
+            }
+        }
 
-        currentModule = getNextModule(currentModule, m_lastExecuteResult);
+        currentModule = getNextModule(currentModule, m_lastControlResult);
         m_currentModuleName = currentModule;
     }
 
     int elapsedMs = m_runStartTime.msecsTo(QDateTime::currentDateTime());
-    bool allSuccess = (state() != RunState::Stopped);
+    allSuccess = allSuccess && state() != RunState::Stopped;
     updateStatistics(allSuccess, elapsedMs);
 
     RunResult result;
     result.success = allSuccess;
     result.errorCode = allSuccess ? 0 : -1;
-    result.errorMessage = QString();
+    result.errorMessage = allSuccess ? QString() : (firstError.isEmpty() ? tr("Flow execution failed") : firstError);
     result.elapsedMs = elapsedMs;
     result.finishedTime = QDateTime::currentDateTime();
 
+    m_executing.store(false, std::memory_order_release);
     emit runFinished(result);
 
     if (runMode() == RunMode::RunOnce) {
@@ -468,9 +536,12 @@ void RunEngine::executeRun() {
 }
 
 void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData) {
+    m_lastModuleError.clear();
+    m_lastControlResult = false;
     ModuleBase* module = getModule(moduleName);
     if (!module) {
-        Logger::instance().error(QString("Module not found: %1").arg(moduleName), "Run");
+        m_lastModuleError = tr("Module not found: %1").arg(moduleName);
+        Logger::instance().error(m_lastModuleError, "Run");
         m_lastExecuteResult = false;
         return;
     }
@@ -490,9 +561,21 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
 
     // 执行模块，将上一个模块的输出作为当前模块的输入
     ImageData output;
+    QString moduleError;
+    QMutex moduleErrorMutex;
+    const QMetaObject::Connection errorConnection = connect(
+        module, &IModule::errorOccurred, this,
+        [&moduleError, &moduleErrorMutex](const QString& error) {
+            QMutexLocker locker(&moduleErrorMutex);
+            if (moduleError.isEmpty()) {
+                moduleError = error;
+            }
+        },
+        Qt::DirectConnection);
     QElapsedTimer moduleTimer;
     moduleTimer.start();
     bool success = module->execute(pipelineData, output);
+    disconnect(errorConnection);
     const qint64 elapsedMs = moduleTimer.elapsed();
     Logger::instance().info(QString("Module finished: %1 success=%2 elapsed=%3 ms")
                                 .arg(moduleName)
@@ -503,11 +586,36 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     // 如果执行成功，将当前输出传递为下一个模块的输入
     if (success) {
         pipelineData = output;
+        m_lastControlResult = true;
+        const QMap<QString, QVariant> values = output.allData();
+        if (flowType == ControlFlowType::Conditional || flowType == ControlFlowType::ConditionalElse) {
+            if (values.contains(QStringLiteral("if_result"))) {
+                m_lastControlResult = values.value(QStringLiteral("if_result")).toBool();
+            } else if (values.contains(QStringLiteral("condition_result"))) {
+                m_lastControlResult = values.value(QStringLiteral("condition_result")).toBool();
+            }
+        } else if (flowType == ControlFlowType::While && values.contains(QStringLiteral("while_result"))) {
+            m_lastControlResult = values.value(QStringLiteral("while_result")).toBool();
+        } else if (flowType == ControlFlowType::StopLoop && values.contains(QStringLiteral("stop_while_requested"))) {
+            m_lastControlResult = values.value(QStringLiteral("stop_while_requested")).toBool();
+        }
         {
             QMutexLocker locker(&m_lastOutputMutex);
             m_lastOutput = output;
+            m_lastOutputModuleName = moduleName;
             m_moduleOutputs[moduleName] = output;
         }
+    } else {
+        {
+            QMutexLocker locker(&moduleErrorMutex);
+            m_lastModuleError = moduleError.trimmed();
+        }
+        if (m_lastModuleError.isEmpty()) {
+            m_lastModuleError = tr("Module execution failed: %1").arg(moduleName);
+        }
+        output.setData(QStringLiteral("error"), m_lastModuleError);
+        QMutexLocker locker(&m_lastOutputMutex);
+        m_moduleOutputs[moduleName] = output;
     }
 
     m_lastExecuteResult = success;
@@ -515,7 +623,7 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     emit moduleFinished(moduleName, success, static_cast<int>(elapsedMs));
 
     if (!success) {
-        Logger::instance().error(QString("Module execution failed: %1").arg(moduleName), "Run");
+        Logger::instance().error(QString("Module execution failed: %1: %2").arg(moduleName, m_lastModuleError), "Run");
     }
 }
 
@@ -528,16 +636,28 @@ QString RunEngine::getNextModule(const QString& currentModule, bool lastResult) 
 
     switch (flowType) {
     case ControlFlowType::Conditional:
-        // 条件为 false 时跳过整个分支（找 ConditionalElse 或 ConditionalEnd）
         if (!lastResult) {
-            return findSiblingByFlowType(currentModule, ControlFlowType::ConditionalElse);
+            const QString elseModule = findSiblingByFlowType(currentModule, ControlFlowType::ConditionalElse);
+            if (!elseModule.isEmpty()) {
+                return elseModule;
+            }
+            const QString endModule = findSiblingByFlowType(currentModule, ControlFlowType::ConditionalEnd);
+            if (!endModule.isEmpty()) {
+                return getNextSequentialModule(endModule);
+            }
+            const QString bodyModule = getNextSequentialModule(currentModule);
+            return bodyModule.isEmpty() ? QString() : getNextSequentialModule(bodyModule);
         }
         break;
 
     case ControlFlowType::ConditionalElse:
         if (!lastResult) {
-            // 继续找下一个 ConditionalElse 或 ConditionalEnd
-            return findSiblingByFlowType(currentModule, ControlFlowType::ConditionalElse);
+            const QString elseModule = findSiblingByFlowType(currentModule, ControlFlowType::ConditionalElse);
+            if (!elseModule.isEmpty()) {
+                return elseModule;
+            }
+            const QString endModule = findSiblingByFlowType(currentModule, ControlFlowType::ConditionalEnd);
+            return endModule.isEmpty() ? QString() : getNextSequentialModule(endModule);
         }
         break;
 
@@ -550,34 +670,49 @@ QString RunEngine::getNextModule(const QString& currentModule, bool lastResult) 
 
     case ControlFlowType::Loop: {
         int loopCount = current->currentParams().value("loopCount").toInt(10);
-        if (m_loopIndices[currentModule] < loopCount) {
-            if (lastResult) {
-                // 查找对应的 LoopEnd
-                return findSiblingByFlowType(currentModule, ControlFlowType::LoopEnd);
-            }
+        if (lastResult && m_loopIndices[currentModule] < loopCount) {
+            return getNextSequentialModule(currentModule);
         }
         m_loopIndices.remove(currentModule);
-        break;
+        const QString endModule = findSiblingByFlowType(currentModule, ControlFlowType::LoopEnd);
+        if (!endModule.isEmpty()) {
+            return getNextSequentialModule(endModule);
+        }
+        const QString bodyModule = getNextSequentialModule(currentModule);
+        return bodyModule.isEmpty() ? QString() : getNextSequentialModule(bodyModule);
     }
 
     case ControlFlowType::LoopEnd:
         // 循环结束，跳回对应的 Loop 入口
         return findPreviousByFlowType(currentModule, ControlFlowType::Loop);
 
-    case ControlFlowType::StopLoop:
+    case ControlFlowType::StopLoop: {
         if (lastResult) {
-            return findSiblingByFlowType(currentModule, ControlFlowType::LoopEnd);
+            QString endModule = findSiblingByFlowType(currentModule, ControlFlowType::LoopEnd);
+            const QString whileEnd = findSiblingByFlowType(currentModule, ControlFlowType::WhileEnd);
+            const auto executionIndex = [this](const QString& name) {
+                return m_executionOrder.isEmpty() ? getModuleIndex(name) : m_executionOrder.indexOf(name);
+            };
+            if (endModule.isEmpty() || (!whileEnd.isEmpty() && executionIndex(whileEnd) < executionIndex(endModule))) {
+                endModule = whileEnd;
+            }
+            return endModule.isEmpty() ? QString() : getNextSequentialModule(endModule);
         }
         break;
+    }
 
     case ControlFlowType::While: {
         int maxIter = current->currentParams().value("maxIterations").toInt(100);
         if (lastResult && m_loopIndices[currentModule] < maxIter) {
-            // 查找对应的 WhileEnd
-            return findSiblingByFlowType(currentModule, ControlFlowType::WhileEnd);
+            return getNextSequentialModule(currentModule);
         }
         m_loopIndices.remove(currentModule);
-        break;
+        const QString endModule = findSiblingByFlowType(currentModule, ControlFlowType::WhileEnd);
+        if (!endModule.isEmpty()) {
+            return getNextSequentialModule(endModule);
+        }
+        const QString bodyModule = getNextSequentialModule(currentModule);
+        return bodyModule.isEmpty() ? QString() : getNextSequentialModule(bodyModule);
     }
 
     case ControlFlowType::WhileEnd:
@@ -585,6 +720,20 @@ QString RunEngine::getNextModule(const QString& currentModule, bool lastResult) 
         return findPreviousByFlowType(currentModule, ControlFlowType::While);
 
     case ControlFlowType::Sequential:
+        for (auto it = m_loopIndices.constBegin(); it != m_loopIndices.constEnd(); ++it) {
+            ModuleBase* loop = getModule(it.key());
+            if (!loop || getNextSequentialModule(it.key()) != currentModule) {
+                continue;
+            }
+            const ControlFlowType loopType = loop->flowControlType();
+            const ControlFlowType endType =
+                loopType == ControlFlowType::Loop ? ControlFlowType::LoopEnd : ControlFlowType::WhileEnd;
+            if ((loopType == ControlFlowType::Loop || loopType == ControlFlowType::While) &&
+                findSiblingByFlowType(it.key(), endType).isEmpty()) {
+                return it.key();
+            }
+        }
+        break;
     default:
         break;
     }
@@ -622,11 +771,12 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
         moduleIdSet.insert(id);
     }
 
-    QMap<QString, QStringList> adjacency;
+    QMap<QString, QString> adjacency;
     QMap<QString, int> indegree;
     for (const QString& id : moduleIds) {
         indegree[id] = 0;
     }
+    QSet<QString> connectedModules;
 
     for (const ModuleConnection& conn : project->connections()) {
         if (!moduleIdSet.contains(conn.fromModuleId)) {
@@ -637,33 +787,45 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
             error = tr("Connection references missing target module: %1").arg(conn.toModuleId);
             return false;
         }
-        if (!adjacency[conn.fromModuleId].contains(conn.toModuleId)) {
-            adjacency[conn.fromModuleId].append(conn.toModuleId);
+        if (adjacency.contains(conn.fromModuleId) && adjacency.value(conn.fromModuleId) != conn.toModuleId) {
+            error = tr("Flow branches are not supported yet: %1 has multiple outputs").arg(conn.fromModuleId);
+            return false;
+        }
+        if (indegree.value(conn.toModuleId) > 0 && adjacency.value(conn.fromModuleId) != conn.toModuleId) {
+            error = tr("Flow merges are not supported yet: %1 has multiple inputs").arg(conn.toModuleId);
+            return false;
+        }
+        if (adjacency.value(conn.fromModuleId) != conn.toModuleId) {
+            adjacency[conn.fromModuleId] = conn.toModuleId;
             indegree[conn.toModuleId]++;
         }
+        connectedModules.insert(conn.fromModuleId);
+        connectedModules.insert(conn.toModuleId);
     }
 
     QStringList ready;
-    for (const QString& id : moduleIds) {
+    for (const QString& id : connectedModules) {
         if (indegree.value(id) == 0) {
             ready.append(id);
         }
     }
 
-    while (!ready.isEmpty()) {
-        const QString id = ready.takeFirst();
-        m_executionOrder.append(id);
-        for (const QString& next : adjacency.value(id)) {
-            indegree[next]--;
-            if (indegree[next] == 0) {
-                ready.append(next);
-            }
-        }
+    if (ready.size() != 1) {
+        error = tr("Connected modules must form one linear flow");
+        return false;
     }
 
-    if (m_executionOrder.size() != moduleIds.size()) {
+    QSet<QString> visited;
+    QString current = ready.first();
+    while (!current.isEmpty() && !visited.contains(current)) {
+        visited.insert(current);
+        m_executionOrder.append(current);
+        current = adjacency.value(current);
+    }
+
+    if (!current.isEmpty() || visited != connectedModules) {
         m_executionOrder.clear();
-        error = tr("Project module connections contain a cycle");
+        error = tr("Connected modules contain a cycle or disconnected chains");
         return false;
     }
 
@@ -671,26 +833,80 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
 }
 
 QString RunEngine::findSiblingByFlowType(const QString& currentModule, ControlFlowType targetType) {
-    int currentIndex = getModuleIndex(currentModule);
+    QStringList order = m_executionOrder;
+    if (order.isEmpty()) {
+        QReadLocker locker(&m_moduleLock);
+        for (ModuleBase* module : m_modules) {
+            order.append(runtimeModuleName(module));
+        }
+    }
+
+    const int currentIndex = order.indexOf(currentModule);
     if (currentIndex < 0)
         return QString();
 
-    for (int i = currentIndex + 1; i < m_modules.size(); ++i) {
-        if (m_modules[i]->flowControlType() == targetType) {
-            return runtimeModuleName(m_modules[i]);
+    ModuleBase* current = getModule(currentModule);
+    if (!current)
+        return QString();
+    const ControlFlowType opener = current->flowControlType();
+    const ControlFlowType matchingEnd = opener == ControlFlowType::Conditional ? ControlFlowType::ConditionalEnd
+                                        : opener == ControlFlowType::Loop      ? ControlFlowType::LoopEnd
+                                        : opener == ControlFlowType::While     ? ControlFlowType::WhileEnd
+                                                                               : ControlFlowType::Sequential;
+    int depth = 0;
+    for (int i = currentIndex + 1; i < order.size(); ++i) {
+        ModuleBase* candidate = getModule(order[i]);
+        if (!candidate)
+            continue;
+        const ControlFlowType type = candidate->flowControlType();
+        if (matchingEnd != ControlFlowType::Sequential && type == opener) {
+            ++depth;
+            continue;
+        }
+        if (matchingEnd != ControlFlowType::Sequential && type == matchingEnd) {
+            if (depth == 0) {
+                return type == targetType ? order[i] : QString();
+            }
+            --depth;
+            continue;
+        }
+        if (depth == 0 && type == targetType) {
+            return order[i];
         }
     }
     return QString();
 }
 
 QString RunEngine::findPreviousByFlowType(const QString& currentModule, ControlFlowType targetType) {
-    int currentIndex = getModuleIndex(currentModule);
+    QStringList order = m_executionOrder;
+    if (order.isEmpty()) {
+        QReadLocker locker(&m_moduleLock);
+        for (ModuleBase* module : m_modules) {
+            order.append(runtimeModuleName(module));
+        }
+    }
+
+    const int currentIndex = order.indexOf(currentModule);
     if (currentIndex < 0)
         return QString();
 
+    ModuleBase* current = getModule(currentModule);
+    if (!current)
+        return QString();
+    const ControlFlowType closer = current->flowControlType();
+    int depth = 0;
     for (int i = currentIndex - 1; i >= 0; --i) {
-        if (m_modules[i]->flowControlType() == targetType) {
-            return runtimeModuleName(m_modules[i]);
+        ModuleBase* candidate = getModule(order[i]);
+        if (!candidate)
+            continue;
+        const ControlFlowType type = candidate->flowControlType();
+        if (type == closer) {
+            ++depth;
+        } else if (type == targetType) {
+            if (depth == 0) {
+                return order[i];
+            }
+            --depth;
         }
     }
     return QString();

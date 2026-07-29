@@ -218,6 +218,15 @@ QJsonObject AgentActor::executeTool(const QString& toolName, const QJsonObject& 
         return QJsonObject{{"error", invalid}};
     }
 
+    const bool mutatesFlow = toolName == "create_project" || toolName == "open_project" || toolName == "add_module" ||
+                             toolName == "remove_module" || toolName == "set_param" || toolName == "connect_modules" ||
+                             toolName == "disconnect_modules";
+    if (mutatesFlow && RunEngine::instance().isBusy()) {
+        const QString error = QStringLiteral("Flow is running; stop it before changing the project");
+        emit toolError(toolName, error);
+        return QJsonObject{{"error", error}};
+    }
+
     QJsonObject result;
     if (toolName == "create_project")
         result = createProject(params);
@@ -398,6 +407,9 @@ QJsonObject AgentActor::runFlow(const QJsonObject& params) {
         if (!loaded) {
             return QJsonObject{{"error", loadError.isEmpty() ? QString("Failed to load project") : loadError}};
         }
+    }
+    if (engine.modules().isEmpty()) {
+        return QJsonObject{{"error", "No modules to run"}};
     }
     if (mode == "cycle")
         engine.start();

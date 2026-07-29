@@ -295,6 +295,11 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
                  "border-bottom: %2 solid %3; }")
              .arg(imageDisplayBg, borderW, imageDisplayLeftBorder);
     s += QString("QDockWidget#LogDock { border-top: %1 solid %2; }").arg(borderW, logDockBorderTop);
+    s += QString("QWidget#LogCornerActions { background-color: %1; }").arg(tabBarBg);
+    s += QString("QToolButton#ClearLogButton, QToolButton#CollapseLogButton { background-color: transparent; "
+                 "border: none; padding: 4px; }");
+    s += QString("QToolButton#ClearLogButton:hover, QToolButton#CollapseLogButton:hover { background-color: %1; }")
+             .arg(treeHover);
 
     s += QString("QLabel { color: %1; }").arg(labelFg);
     s += QString("QScrollArea { background-color: %1; }").arg(scrollAreaBg);

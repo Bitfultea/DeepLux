@@ -97,6 +97,7 @@
 #include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QStyle>
 #include <QSystemTrayIcon>
 #include <QTabBar>
 #include <QTabWidget>
@@ -459,9 +460,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
     connect(&RunEngine::instance(), &RunEngine::moduleStarted, this, [this](const QString& moduleName) {
         QTreeWidgetItem* item = m_processTreeController ? m_processTreeController->instanceItem(moduleName) : nullptr;
         if (item) {
-            if (m_lastExecutedItem && m_lastExecutedItem != item) {
-                clearExecutionHighlight(m_lastExecutedItem);
-            }
             m_currentExecutingItem = item;
             // 删除普通运行过程中的 setCurrentItem 调用
             // 单步模式允许跟随刚执行模块，但检查器固定时不得切换
@@ -484,18 +482,18 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
                 if (item) {
                     if (success) {
                         clearExecutionHighlight(item);
-                        // 删除普通运行过程中的 setCurrentItem 调用
-                        m_lastExecutedItem = nullptr;
                     } else {
-                        // 红色=失败
                         setProcessItemStatus(item, QStringLiteral("failure"), tr("%1 ms").arg(elapsedMs));
-                        m_lastExecutedItem = item;
                     }
                     m_moduleExecutionTimes[moduleName] = elapsedMs;
                     if (success) {
                         // 绿色=成功
                         setProcessItemStatus(item, QStringLiteral("success"), tr("%1 ms").arg(elapsedMs));
                     }
+                }
+                m_dirtyModuleIds.remove(moduleName);
+                if (m_inspectorPanel && m_selectedModuleId == moduleName) {
+                    m_inspectorPanel->setDirty(false);
                 }
                 // Display this module's output if available.
                 const ImageData out = RunEngine::instance().moduleOutput(moduleName);
@@ -515,6 +513,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
         if (m_processTimeLabel) {
             m_processTimeLabel->setText(tr("总耗时：%1 ms").arg(result.elapsedMs));
         }
+        if (m_runStatusLabel) {
+            m_runStatusLabel->setText(tr("最近运行：%1 ms").arg(result.elapsedMs));
+        }
         m_currentExecutingItem = nullptr;
 
         // 追加测量结果摘要到日志并更新叠加层
@@ -529,7 +530,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
         // 延迟更新叠加层，确保 displayImage 完成后再设置 overlay
         QTimer::singleShot(0, this, [this]() { updateMeasurementResultOnOverlay(); });
 
-        if (m_isCycleMode && m_isRunning) {
+        if (m_closeWhenRunFinishes) {
+            m_closeWhenRunFinishes = false;
+            setUiRunningState(false, false);
+            QTimer::singleShot(0, this, &QWidget::close);
+        } else if (m_isCycleMode && m_isRunning) {
             QTimer::singleShot(1, this, &MainWindow::executeFlowOnce);
         } else {
             setUiRunningState(false, false);
@@ -807,9 +812,7 @@ void MainWindow::setupMenuBar() {
     m_projectLabel->setMinimumWidth(100);
     m_projectLabel->setMaximumWidth(320);
     breadcrumbLayout->addWidget(m_projectLabel);
-    // P2: 移到工具栏左侧而非菜单栏角落
-    // 不再设为 menuBar corner widget，改由 setupToolBar 插入工具栏
-    m_projectLabel->setParent(this);  // 临时 parent，setupToolBar 会 reparent
+    // setupToolBar() 会把完整的 breadcrumb 容器移入工具栏。
     updateProjectContext(nullptr);
 }
 
@@ -853,14 +856,14 @@ void MainWindow::setupToolBar() {
 
     // 快速测量（无需加入流程）
     m_quickMeasureAction =
-        mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Image, 20, QColor("#0891B2")),
+        mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Laser, 20, QColor("#0891B2")),
                                tr("快速测量"), this, &MainWindow::onQuickMeasure);
     m_quickMeasureAction->setCheckable(true);
     m_quickMeasureAction->setShortcut(QKeySequence(Qt::Key_M));
     mainToolbar->addSeparator();
 
     // 快速标注（SAM）
-    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Image, 20, QColor("#7C3AED")), tr("快速标注"),
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Design, 20, QColor("#7C3AED")), tr("快速标注"),
                            this, &MainWindow::onQuickAnnotate);
     // 方案列表和主题切换保留在菜单中，避免低频命令挤占主工具栏。
 }
@@ -868,6 +871,11 @@ void MainWindow::setupToolBar() {
 void MainWindow::setupStatusBar() {
     QStatusBar* status = statusBar();
     status->setSizeGripEnabled(false); // 禁用右下角 resize grip，避免黑块
+
+    m_runStatusLabel = new QLabel(tr("最近运行：—"));
+    m_runStatusLabel->setObjectName("RunStatusLabel");
+    m_runStatusLabel->setMinimumWidth(140);
+    status->addPermanentWidget(m_runStatusLabel);
 
     m_userLabel = new QLabel(tr("用户：未登录"));
     m_userLabel->setMinimumWidth(150);
@@ -886,10 +894,12 @@ void MainWindow::setupStatusBar() {
 }
 
 void MainWindow::setupMainLayout() {
+    const LayoutMetrics metrics = ThemeManager::layoutMetrics();
+
     // 创建主 Splitter - 水平分割左右
     m_mainSplitter = new QSplitter(Qt::Horizontal);
     m_mainSplitter->setObjectName("MainSplitter");
-    m_mainSplitter->setHandleWidth(6);
+    m_mainSplitter->setHandleWidth(metrics.splitterHandleWidth);
     m_mainSplitter->setChildrenCollapsible(false);
     m_mainSplitter->setOpaqueResize(true);
 
@@ -944,41 +954,21 @@ void MainWindow::setupMainLayout() {
     toolCategoryLayout->addWidget(m_toolSearchEdit);
 
     // 创建工具分类的 lambda，禁用分类标题的拖拽
-    auto createCategoryItem = [&](QTreeWidget* tree, const QString& text) -> QTreeWidgetItem* {
+    auto createCategoryItem = [&](QTreeWidget* tree, const QString& text, const QString& category) -> QTreeWidgetItem* {
         QString displayText = stripCategoryPrefix(text);
         QTreeWidgetItem* item = new QTreeWidgetItem(tree, QStringList(displayText));
         item->setData(0, Qt::UserRole, "category");
         item->setData(0, Qt::UserRole + 3, text);
         item->setFlags(item->flags() & ~Qt::ItemIsDragEnabled);
-        // P2: 分类领域色图标
-        QColor catColor;
-        if (text.contains("图像")) catColor = QColor("#4A90D9");
-        else if (text.contains("检测")) catColor = QColor("#E67E22");
-        else if (text.contains("几何")) catColor = QColor("#27AE60");
-        else if (text.contains("3D")) catColor = QColor("#0891B2");
-        else if (text.contains("标定")) catColor = QColor("#16A085");
-        else if (text.contains("逻辑")) catColor = QColor("#8E44AD");
-        else if (text.contains("系统")) catColor = QColor("#7F8C8D");
-        else if (text.contains("变量")) catColor = QColor("#2C3E50");
-        else if (text.contains("通信") || text.contains("文件")) catColor = QColor("#D35400");
-        else if (text.contains("字符串")) catColor = QColor("#C0392B");
-        else catColor = QColor("#95A5A6");
-        QPixmap catPm(16, 16);
-        catPm.fill(Qt::transparent);
-        QPainter cp(&catPm);
-        cp.setRenderHint(QPainter::Antialiasing);
-        cp.setBrush(catColor);
-        cp.setPen(Qt::NoPen);
-        cp.drawRoundedRect(2, 2, 12, 12, 3, 3);
-        item->setIcon(0, QIcon(catPm));
+        item->setIcon(0, ModuleIconProvider::instance().iconFor(category, category));
         return item;
     };
 
     // 工具分类（使用 createCategoryItem 禁用拖拽）
-    QTreeWidgetItem* commonItem = createCategoryItem(m_toolBoxTree, tr("00 - 常用工具"));
+    QTreeWidgetItem* commonItem = createCategoryItem(m_toolBoxTree, tr("00 - 常用工具"), "common");
     commonItem->setExpanded(true);
 
-    QTreeWidgetItem* imgProcItem = createCategoryItem(m_toolBoxTree, tr("01 - 图像处理"));
+    QTreeWidgetItem* imgProcItem = createCategoryItem(m_toolBoxTree, tr("01 - 图像处理"), "image_processing");
     imgProcItem->setExpanded(false);
     addToolBoxItem(imgProcItem, tr("图像采集"), "GrabImage");
     addToolBoxItem(imgProcItem, tr("保存图像"), "SaveImage");
@@ -989,13 +979,13 @@ void MainWindow::setupMainLayout() {
     addToolBoxItem(imgProcItem, tr("图像脚本"), "ImageScript");
     addToolBoxItem(imgProcItem, tr("拼图"), "JigsawPuzzle");
 
-    QTreeWidgetItem* detectItem = createCategoryItem(m_toolBoxTree, tr("02 - 检测识别"));
+    QTreeWidgetItem* detectItem = createCategoryItem(m_toolBoxTree, tr("02 - 检测识别"), "detection");
     detectItem->setExpanded(false);
     addToolBoxItem(detectItem, tr("模板匹配"), "Matching");
     addToolBoxItem(detectItem, tr("二维码识别"), "QRCode");
     addToolBoxItem(detectItem, tr("缺陷检测"), "JiErHanDefectsDet");
 
-    QTreeWidgetItem* geometryItem = createCategoryItem(m_toolBoxTree, tr("03 - 几何测量"));
+    QTreeWidgetItem* geometryItem = createCategoryItem(m_toolBoxTree, tr("03 - 几何测量"), "geometry");
     geometryItem->setExpanded(false);
     geometryItem->setData(0, Qt::UserRole, "category");
     addToolBoxItem(geometryItem, tr("距离测量 (点到点)"), "DistancePP");
@@ -1008,20 +998,20 @@ void MainWindow::setupMainLayout() {
     addToolBoxItem(geometryItem, tr("自由曲面"), "FreeformSurface");
     addToolBoxItem(geometryItem, tr("点到平面距离"), "PointSurfaceDistance");
 
-    QTreeWidgetItem* geoRelationItem = createCategoryItem(m_toolBoxTree, tr("04 - 几何关系"));
+    QTreeWidgetItem* geoRelationItem = createCategoryItem(m_toolBoxTree, tr("04 - 几何关系"), "relation");
     geoRelationItem->setExpanded(false);
     addToolBoxItem(geoRelationItem, tr("找圆"), "FindCircle");
     addToolBoxItem(geoRelationItem, tr("圆拟合"), "FitCircle");
     addToolBoxItem(geoRelationItem, tr("直线拟合"), "FitLine");
 
-    QTreeWidgetItem* calibItem = createCategoryItem(m_toolBoxTree, tr("05 - 坐标标定"));
+    QTreeWidgetItem* calibItem = createCategoryItem(m_toolBoxTree, tr("05 - 坐标标定"), "calibration");
     calibItem->setExpanded(false);
     addToolBoxItem(calibItem, tr("N 点标定"), "NPointCalibration");
 
-    QTreeWidgetItem* alignItem = createCategoryItem(m_toolBoxTree, tr("06 - 对位工具"));
+    QTreeWidgetItem* alignItem = createCategoryItem(m_toolBoxTree, tr("06 - 对位工具"), "alignment");
     alignItem->setExpanded(false);
 
-    QTreeWidgetItem* logicItem = createCategoryItem(m_toolBoxTree, tr("07 - 逻辑工具"));
+    QTreeWidgetItem* logicItem = createCategoryItem(m_toolBoxTree, tr("07 - 逻辑工具"), "logic");
     logicItem->setExpanded(false);
     addToolBoxItem(logicItem, tr("如果"), "If");
     addToolBoxItem(logicItem, tr("循环"), "Loop");
@@ -1033,14 +1023,14 @@ void MainWindow::setupMainLayout() {
     addToolBoxItem(logicItem, tr("队列入"), "QueueIn");
     addToolBoxItem(logicItem, tr("队列出"), "QueueOut");
 
-    QTreeWidgetItem* systemItem = createCategoryItem(m_toolBoxTree, tr("08 - 系统工具"));
+    QTreeWidgetItem* systemItem = createCategoryItem(m_toolBoxTree, tr("08 - 系统工具"), "system");
     systemItem->setExpanded(false);
     addToolBoxItem(systemItem, tr("系统时间"), "SystemTime");
     addToolBoxItem(systemItem, tr("文件夹操作"), "Folder");
     addToolBoxItem(systemItem, tr("显示点"), "ShowPoint");
     addToolBoxItem(systemItem, tr("时间切片"), "TimeSlice");
 
-    QTreeWidgetItem* varItem = createCategoryItem(m_toolBoxTree, tr("09 - 变量工具"));
+    QTreeWidgetItem* varItem = createCategoryItem(m_toolBoxTree, tr("09 - 变量工具"), "variable");
     varItem->setExpanded(false);
     addToolBoxItem(varItem, tr("变量定义"), "VarDefine");
     addToolBoxItem(varItem, tr("变量设置"), "VarSet");
@@ -1048,26 +1038,26 @@ void MainWindow::setupMainLayout() {
     addToolBoxItem(varItem, tr("数据检查"), "DataCheck");
     addToolBoxItem(varItem, tr("显示数据"), "DisplayData");
 
-    QTreeWidgetItem* fileCommItem = createCategoryItem(m_toolBoxTree, tr("10 - 文件通讯"));
+    QTreeWidgetItem* fileCommItem = createCategoryItem(m_toolBoxTree, tr("10 - 文件通讯"), "file");
     fileCommItem->setExpanded(false);
     addToolBoxItem(fileCommItem, tr("保存数据"), "SaveData");
     addToolBoxItem(fileCommItem, tr("表格输出"), "TableOutPut");
     addToolBoxItem(fileCommItem, tr("写入文本"), "WriteText");
 
-    QTreeWidgetItem* tool3DItem = createCategoryItem(m_toolBoxTree, tr("11 - 3D 工具"));
+    QTreeWidgetItem* tool3DItem = createCategoryItem(m_toolBoxTree, tr("11 - 3D 工具"), "3d");
     tool3DItem->setExpanded(false);
     addToolBoxItem(tool3DItem, tr("加载点云"), "LoadPointCloud");
 
-    QTreeWidgetItem* dlItem = createCategoryItem(m_toolBoxTree, tr("12 - 深度学习"));
+    QTreeWidgetItem* dlItem = createCategoryItem(m_toolBoxTree, tr("12 - 深度学习"), "deep_learning");
     dlItem->setExpanded(false);
 
-    QTreeWidgetItem* strItem = createCategoryItem(m_toolBoxTree, tr("13 - 字符串处理"));
+    QTreeWidgetItem* strItem = createCategoryItem(m_toolBoxTree, tr("13 - 字符串处理"), "string");
     strItem->setExpanded(false);
     addToolBoxItem(strItem, tr("分割字符串"), "SplitString");
     addToolBoxItem(strItem, tr("字符串格式化"), "StrFormat");
     addToolBoxItem(strItem, tr("创建字符串"), "CreateString");
 
-    QTreeWidgetItem* commItem = createCategoryItem(m_toolBoxTree, tr("14 - 通信"));
+    QTreeWidgetItem* commItem = createCategoryItem(m_toolBoxTree, tr("14 - 通信"), "communication");
     commItem->setExpanded(false);
     addToolBoxItem(commItem, tr("PLC 通信"), "PLCCommunicate");
     addToolBoxItem(commItem, tr("PLC 读取"), "PLCRead");
@@ -1121,14 +1111,14 @@ void MainWindow::setupMainLayout() {
     // ========== 右侧：垂直 Splitter（上方：流程 + 显示区域，下方：日志栏）==========
     m_rightSplitter = new QSplitter(Qt::Vertical);
     m_rightSplitter->setObjectName("RightSplitter");
-    m_rightSplitter->setHandleWidth(7);
+    m_rightSplitter->setHandleWidth(metrics.splitterHandleWidth);
     m_rightSplitter->setChildrenCollapsible(false);
     m_rightSplitter->setOpaqueResize(true);
 
     // 右上方区域：水平 Splitter（流程面板 + 显示区域 + 检查器）
     m_rightTopSplitter = new QSplitter(Qt::Horizontal);
     m_rightTopSplitter->setObjectName("RightTopSplitter");
-    m_rightTopSplitter->setHandleWidth(7);
+    m_rightTopSplitter->setHandleWidth(metrics.splitterHandleWidth);
     m_rightTopSplitter->setChildrenCollapsible(false);
     m_rightTopSplitter->setOpaqueResize(true);
 
@@ -1166,6 +1156,7 @@ void MainWindow::setupMainLayout() {
     m_processTree->setDefaultDropAction(Qt::CopyAction);
     m_processTree->setDragDropOverwriteMode(false);
     m_processTree->setDropIndicatorShown(true);
+    m_processTree->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_processTree->setObjectName("ProcessTree");
     m_processTree->setColumnCount(2);
     m_processTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
@@ -1191,20 +1182,17 @@ void MainWindow::setupMainLayout() {
     m_processTreeController->setClearMeasurementOverlaysCallback([this]() { clearMeasurementOverlays(); });
     connect(m_processTreeController, &ProcessTreeController::moduleAdded, this, [this](const ModuleInstance& module) {
         if (m_flowCanvas && !m_flowCanvas->nodeItem(module.id)) {
-            // P1: 自动分配位置，避免节点重叠在 (0,0)
             QPointF pos(module.posX, module.posY);
             if (pos.isNull()) {
                 const int nodeCount = m_flowCanvas->nodeIds().size();
-                const int col = nodeCount % 4;
-                const int row = nodeCount / 4;
-                pos = QPointF(50 + col * 200, 50 + row * 120);
+                pos = QPointF(-110, -220 + nodeCount * 96);
             }
             m_flowCanvas->addNode(module.moduleId, toolDisplayName(module.moduleId, module.name), pos, module.id);
         }
     });
     connect(m_processTreeController, &ProcessTreeController::moduleRemoved, this, [this](const QString& instanceId) {
         m_currentExecutingItem = nullptr;
-        m_lastExecutedItem = nullptr;
+        m_dirtyModuleIds.remove(instanceId);
         if (m_flowCanvas && m_flowCanvas->nodeItem(instanceId)) {
             m_flowCanvas->removeNode(instanceId);
         }
@@ -1272,7 +1260,6 @@ void MainWindow::setupMainLayout() {
     // ========== 右侧检查器面板 ==========
     m_inspectorPanel = new ModuleInspectorPanel();
     m_inspectorPanel->setObjectName("ModuleInspectorPanel");
-    const LayoutMetrics metrics = ThemeManager::layoutMetrics();
     m_inspectorPanel->setMinimumWidth(metrics.inspectorMinWidth);
     m_inspectorPanel->setMaximumWidth(metrics.inspectorMaxWidth);
     m_rightTopSplitter->addWidget(m_inspectorPanel);
@@ -1289,11 +1276,6 @@ void MainWindow::setupMainLayout() {
             [this](const QString& instanceId, const QString& key, const QVariant& value) {
                 // 推入参数撤销栈（同时更新运行时模块和工程）
                 pushParamCommand(instanceId, key, value);
-                // 标记模块为脏
-                m_dirtyModuleIds.insert(instanceId);
-                if (m_inspectorPanel) {
-                    m_inspectorPanel->setDirty(true);
-                }
                 m_modulesNeedSync = true;
             });
     // P1-7: 恢复默认值用 beginMacro 批量为单条撤销记录
@@ -1320,9 +1302,6 @@ void MainWindow::setupMainLayout() {
             pushParamCommand(instanceId, key, variantValue);
         }
         m_paramUndoStack->endMacro();
-        m_dirtyModuleIds.insert(instanceId);
-        if (m_inspectorPanel)
-            m_inspectorPanel->setDirty(true);
     });
     connect(m_inspectorPanel, &ModuleInspectorPanel::rerunRequested, this, [this]() {
         if (!m_selectedModuleId.isEmpty()) {
@@ -1405,7 +1384,7 @@ void MainWindow::setupMainLayout() {
     const int logTextHeight = m_logTable->fontMetrics().height();
     m_logTable->horizontalHeader()->setFixedHeight(qMax(30, logTextHeight + 10));
     m_logTable->verticalHeader()->setDefaultSectionSize(qMax(26, logTextHeight + 6));
-    m_logTable->verticalHeader()->setMinimumWidth(40);
+    m_logTable->verticalHeader()->setVisible(false);
     m_logTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_logTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_logTable->setObjectName("LogTable");
@@ -1415,6 +1394,7 @@ void MainWindow::setupMainLayout() {
 
     // 连接日志信号到表格
     connect(&Logger::instance(), &Logger::logAdded, this, &MainWindow::onLogAdded);
+    connect(&Logger::instance(), &Logger::logsCleared, m_logTable, [this]() { m_logTable->setRowCount(0); });
 
     // 点击表头"级别"列弹出筛选菜单
     connect(m_logTable->horizontalHeader(), &QHeaderView::sectionClicked, this, [this](int logicalIndex) {
@@ -1423,6 +1403,29 @@ void MainWindow::setupMainLayout() {
     });
 
     int logTabIndex = m_logTerminalTabs->addTab(logWidget, tr("运行日志"));
+
+    auto* logActions = new QWidget(m_logTerminalTabs);
+    logActions->setObjectName("LogCornerActions");
+    auto* logActionsLayout = new QHBoxLayout(logActions);
+    logActionsLayout->setContentsMargins(0, 0, 4, 0);
+    logActionsLayout->setSpacing(2);
+    auto* clearLogButton = new QToolButton(logActions);
+    clearLogButton->setObjectName("ClearLogButton");
+    clearLogButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Clear, 16, QColor("#64748B")));
+    clearLogButton->setToolTip(tr("清空日志"));
+    clearLogButton->setAutoRaise(true);
+    clearLogButton->setFixedSize(28, 28);
+    connect(clearLogButton, &QToolButton::clicked, &Logger::instance(), &Logger::clearLogs);
+    logActionsLayout->addWidget(clearLogButton);
+    auto* collapseLogButton = new QToolButton(logActions);
+    collapseLogButton->setObjectName("CollapseLogButton");
+    collapseLogButton->setIcon(style()->standardIcon(QStyle::SP_TitleBarShadeButton));
+    collapseLogButton->setToolTip(tr("收起底部面板"));
+    collapseLogButton->setAutoRaise(true);
+    collapseLogButton->setFixedSize(28, 28);
+    connect(collapseLogButton, &QToolButton::clicked, m_logDock, &QDockWidget::hide);
+    logActionsLayout->addWidget(collapseLogButton);
+    m_logTerminalTabs->setCornerWidget(logActions, Qt::TopRightCorner);
 
     // Tab "日志" 再次点击时打开日志文件（第一次点击切换，第二次点击打开）
     connect(m_logTerminalTabs, &QTabWidget::tabBarClicked, this, [this, logTabIndex](int index) {
@@ -1694,8 +1697,10 @@ void MainWindow::updateProjectContext(Project* project) {
     if (!project) {
         m_projectLabel->setText(tr("工程  /  未打开"));
         m_projectLabel->setToolTip(tr("当前未打开工程"));
-        m_projectLabel->parentWidget()->adjustSize();
-        menuBar()->updateGeometry();
+        if (QWidget* breadcrumb = m_projectLabel->parentWidget()) {
+            breadcrumb->adjustSize();
+            breadcrumb->updateGeometry();
+        }
         return;
     }
 
@@ -1710,13 +1715,18 @@ void MainWindow::updateProjectContext(Project* project) {
     const QString breadcrumbText = tr("工程  /  %1").arg(name);
     m_projectLabel->setText(m_projectLabel->fontMetrics().elidedText(breadcrumbText, Qt::ElideMiddle, 190));
     m_projectLabel->setToolTip(project->filePath().isEmpty() ? tr("尚未保存") : project->filePath());
-    m_projectLabel->parentWidget()->adjustSize();
-    menuBar()->updateGeometry();
+    if (QWidget* breadcrumb = m_projectLabel->parentWidget()) {
+        breadcrumb->adjustSize();
+        breadcrumb->updateGeometry();
+    }
 }
 
 void MainWindow::onProjectOpened(Project* project) {
     if (!project)
         return;
+
+    RunEngine::instance().stop();
+    RunEngine::instance().clearModules();
 
     // 清空参数撤销栈和脏标记
     if (m_paramUndoStack) {
@@ -1750,14 +1760,40 @@ void MainWindow::onProjectOpened(Project* project) {
     connect(project, &Project::moduleAdded, m_processTreeController, &ProcessTreeController::onModuleAddedFromProject);
     connect(project, &Project::moduleRemoved, m_processTreeController,
             &ProcessTreeController::onModuleRemovedFromProject);
-    connect(project, &Project::connectionAdded, this, [this](const ModuleConnection& conn) {
+    connect(project, &Project::moduleUpdated, this, [this, project](const ModuleInstance& instance) {
+        if (ProjectManager::instance().currentProject() != project) {
+            return;
+        }
+        if (IModule* module = m_flowModules.value(instance.id, nullptr)) {
+            module->setParams(instance.params);
+        }
+        m_modulesNeedSync = true;
+        markModuleDirty(instance.id);
+        if (m_inspectorPanel && m_selectedModuleId == instance.id) {
+            m_inspectorPanel->refreshFromModule();
+        }
+    });
+    connect(project, &Project::nameChanged, this, [this, project]() {
+        if (ProjectManager::instance().currentProject() == project) {
+            updateProjectContext(project);
+        }
+    });
+    connect(project, &Project::connectionAdded, this, [this, project](const ModuleConnection& conn) {
         if (m_flowCanvas && m_flowCanvas->nodeItem(conn.fromModuleId) && m_flowCanvas->nodeItem(conn.toModuleId)) {
             m_flowCanvas->addConnection(conn.fromModuleId, conn.fromOutput, conn.toModuleId, conn.toInput);
         }
+        m_modulesNeedSync = true;
+        for (const ModuleInstance& module : project->modules()) {
+            markModuleDirty(module.id);
+        }
     });
-    connect(project, &Project::connectionRemoved, this, [this](const QString& fromId, const QString& toId) {
+    connect(project, &Project::connectionRemoved, this, [this, project](const QString& fromId, const QString& toId) {
         if (m_flowCanvas) {
             m_flowCanvas->removeConnection(fromId, toId);
+        }
+        m_modulesNeedSync = true;
+        for (const ModuleInstance& module : project->modules()) {
+            markModuleDirty(module.id);
         }
     });
     connect(project, &Project::dataSourceAdded, this, &MainWindow::onDataSourceAdded);
@@ -1765,6 +1801,10 @@ void MainWindow::onProjectOpened(Project* project) {
 }
 
 void MainWindow::onProjectClosed() {
+    // RunEngine borrows flow-module pointers; detach them before the controller deletes the modules.
+    RunEngine::instance().stop();
+    RunEngine::instance().clearModules();
+
     // P0: 先清空检查器，防止悬空模块指针
     m_selectedModuleId.clear();
     if (m_inspectorPanel) {
@@ -2736,6 +2776,7 @@ QString MainWindow::ensureMeasurementInputForMode(const QString& mode, const QSt
         }
         m_processTreeController->setCurrentItem(inputItem);
     }
+    selectModule(instanceId, true, true);
 
     m_measurementPickCursor[instanceId] = 0;
     m_measurementPickCount[instanceId] = 0;
@@ -3400,6 +3441,13 @@ void MainWindow::autoConfigureGrabImage(const QString& filePath) {
         if (module && module->moduleId().contains("GrabImage", Qt::CaseInsensitive)) {
             module->setParam("filePath", filePath);
             module->setParam("grabSource", "File");
+            if (Project* project = ProjectManager::instance().currentProject()) {
+                project->setModuleParam(it.key(), QStringLiteral("filePath"), filePath);
+                project->setModuleParam(it.key(), QStringLiteral("grabSource"), QStringLiteral("File"));
+            } else {
+                markModuleDirty(it.key());
+            }
+            m_modulesNeedSync = true;
             Logger::instance().info(tr("已自动配置 GrabImage 模块使用文件：%1").arg(filePath), "System");
             return;
         }
@@ -3531,9 +3579,7 @@ void MainWindow::openAdvancedPluginConfig(const QString& instanceId) {
                 }
             }
         }
-        m_dirtyModuleIds.insert(instanceId);
         if (m_inspectorPanel) {
-            m_inspectorPanel->setDirty(true);
             // 中: 刷新检查器参数显示
             if (m_selectedModuleId == instanceId) {
                 QPointer<ModuleInspectorPanel> inspector = m_inspectorPanel;
@@ -3613,7 +3659,10 @@ void MainWindow::clearExecutionHighlight(QTreeWidgetItem* item) {
     }
     // 使用 data role 替代 setBackground — 清除状态
     item->setData(0, Qt::UserRole + 5, QString());
-    item->setIcon(0, QIcon()); // P1: 同时清除状态点图标
+    item->setIcon(1, QIcon());
+    if (m_flowCanvas) {
+        m_flowCanvas->setNodeExecutionState(item->data(0, Qt::UserRole + 1).toString(), QString(), QString());
+    }
 }
 
 void MainWindow::setProcessItemStatus(QTreeWidgetItem* item, const QString& status, const QString& timeText) {
@@ -3622,6 +3671,9 @@ void MainWindow::setProcessItemStatus(QTreeWidgetItem* item, const QString& stat
     }
     // P1: 用 DecorationRole 渲染状态点，而非只存 UserRole
     item->setData(0, Qt::UserRole + 5, status);
+    if (m_flowCanvas) {
+        m_flowCanvas->setNodeExecutionState(item->data(0, Qt::UserRole + 1).toString(), status, timeText);
+    }
     // 创建彩色状态点图标
     QColor dotColor;
     if (status == "running")
@@ -3640,9 +3692,9 @@ void MainWindow::setProcessItemStatus(QTreeWidgetItem* item, const QString& stat
         p.setBrush(dotColor);
         p.setPen(Qt::NoPen);
         p.drawEllipse(0, 0, 10, 10);
-        item->setIcon(0, QIcon(pm));
+        item->setIcon(1, QIcon(pm));
     } else {
-        item->setIcon(0, QIcon());
+        item->setIcon(1, QIcon());
     }
     if (!timeText.isEmpty()) {
         item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
@@ -3691,6 +3743,66 @@ void MainWindow::pushParamCommand(const QString& instanceId, const QString& key,
     m_paramUndoStack->push(cmd);
 }
 
+void MainWindow::markModuleDirty(const QString& instanceId) {
+    if (instanceId.isEmpty()) {
+        return;
+    }
+
+    QSet<QString> affected{instanceId};
+    if (Project* project = ProjectManager::instance().currentProject()) {
+        const QList<ModuleConnection> connections = project->connections();
+        if (connections.isEmpty()) {
+            bool downstream = false;
+            for (const ModuleInstance& module : project->modules()) {
+                downstream = downstream || module.id == instanceId;
+                if (downstream) {
+                    affected.insert(module.id);
+                }
+            }
+        } else {
+            QStringList pending{instanceId};
+            while (!pending.isEmpty()) {
+                const QString source = pending.takeFirst();
+                for (const ModuleConnection& connection : connections) {
+                    if (connection.fromModuleId == source && !affected.contains(connection.toModuleId)) {
+                        affected.insert(connection.toModuleId);
+                        pending.append(connection.toModuleId);
+                    }
+                }
+            }
+        }
+    }
+
+    RunEngine& engine = RunEngine::instance();
+    bool displayedOutputWasAffected = false;
+    if (m_selectedModuleId.isEmpty()) {
+        for (const QString& id : affected) {
+            const ImageData output = engine.moduleOutput(id);
+            if (output.isValid() || !output.allData().isEmpty()) {
+                displayedOutputWasAffected = true;
+                break;
+            }
+        }
+    } else if (affected.contains(m_selectedModuleId)) {
+        const ImageData output = engine.moduleOutput(m_selectedModuleId);
+        displayedOutputWasAffected = output.isValid() || !output.allData().isEmpty();
+    }
+    for (const QString& id : affected) {
+        m_dirtyModuleIds.insert(id);
+        m_moduleExecutionTimes.remove(id);
+        engine.invalidateModuleOutput(id);
+        if (m_processTreeController) {
+            setProcessItemStatus(m_processTreeController->instanceItem(id), QStringLiteral("dirty"), tr("待运行"));
+        }
+    }
+    if (m_inspectorPanel && affected.contains(m_selectedModuleId)) {
+        m_inspectorPanel->setDirty(true);
+    }
+    if (displayedOutputWasAffected) {
+        clearCentralDisplay();
+    }
+}
+
 void MainWindow::registerFlowModule(const QString& instanceId, IModule* module) {
     m_flowModules.insert(instanceId, module);
 }
@@ -3702,10 +3814,26 @@ void MainWindow::resetInspectorClosed() {
     }
 }
 
-void MainWindow::selectModule(const QString& instanceId, bool revealInspector) {
+void MainWindow::selectModule(const QString& instanceId, bool revealInspector, bool force) {
     // 如果检查器已固定且 instanceId 不同，不切换
-    if (m_inspectorPanel && m_inspectorPanel->isPinned() && !m_selectedModuleId.isEmpty() &&
+    if (!force && m_inspectorPanel && m_inspectorPanel->isPinned() && !m_selectedModuleId.isEmpty() &&
         instanceId != m_selectedModuleId) {
+        const QString pinnedId = m_selectedModuleId;
+        QTimer::singleShot(0, this, [this, pinnedId]() {
+            if (!m_inspectorPanel || !m_inspectorPanel->isPinned() || m_selectedModuleId != pinnedId) {
+                return;
+            }
+            if (m_processTreeController) {
+                if (QTreeWidgetItem* item = m_processTreeController->instanceItem(pinnedId)) {
+                    QSignalBlocker blocker(m_processTree);
+                    m_processTreeController->setCurrentItem(item);
+                }
+            }
+            if (m_flowCanvas) {
+                QSignalBlocker blocker(m_flowCanvas);
+                m_flowCanvas->selectNode(pinnedId);
+            }
+        });
         return;
     }
 
@@ -3745,12 +3873,14 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector) {
         return;
     }
 
+    QTreeWidgetItem* selectedTreeItem = nullptr;
+
     // 同步流程树选中（用 QSignalBlocker 防止递归选择）
     if (m_processTreeController) {
-        QTreeWidgetItem* treeItem = m_processTreeController->instanceItem(instanceId);
-        if (treeItem) {
+        selectedTreeItem = m_processTreeController->instanceItem(instanceId);
+        if (selectedTreeItem) {
             QSignalBlocker blocker(m_processTree);
-            m_processTreeController->setCurrentItem(treeItem);
+            m_processTreeController->setCurrentItem(selectedTreeItem);
         }
     }
 
@@ -3772,12 +3902,18 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector) {
             const QString moduleId = module->moduleId();
             PluginInfo info = PluginManager::instance().pluginInfo(moduleId);
             m_inspectorPanel->setModule(module, instanceId, info);
+            const bool dirty = m_dirtyModuleIds.contains(instanceId);
+            m_inspectorPanel->setDirty(dirty);
 
-            // 如果有输出，更新结果
+            // 恢复该节点最近一次的真实执行状态；失败节点可能没有有效图像输出。
             const ImageData output = RunEngine::instance().moduleOutput(instanceId);
-            if (output.isValid()) {
+            const QString executionState =
+                selectedTreeItem ? selectedTreeItem->data(0, Qt::UserRole + 5).toString() : QString();
+            const bool hasCompletedState =
+                executionState == QStringLiteral("success") || executionState == QStringLiteral("failure");
+            if (!dirty && (hasCompletedState || output.isValid())) {
                 int elapsed = m_moduleExecutionTimes.value(instanceId, 0);
-                m_inspectorPanel->setOutput(output, true, elapsed);
+                m_inspectorPanel->setOutput(output, executionState != QStringLiteral("failure"), elapsed);
             }
 
             if (revealInspector) {
@@ -3792,7 +3928,9 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector) {
 
     // 同时显示模块输出到主视图
     const ImageData output = RunEngine::instance().moduleOutput(instanceId);
-    if (output.isValid()) {
+    if (m_dirtyModuleIds.contains(instanceId)) {
+        clearCentralDisplay();
+    } else if (output.isValid()) {
         displayImage(output);
     }
 }
@@ -3910,10 +4048,6 @@ void MainWindow::adaptInspectorLayout() {
     if (!m_inspectorPanel) {
         return;
     }
-    // 如果检查器已关闭或用户手动指定模式，不自动切换
-    if (m_inspectorClosed || m_inspectorPanel->userOverrideMode()) {
-        return;
-    }
 
     const int windowWidth = width();
     const int minMainView = 620; // 主视图最小宽度
@@ -3932,6 +4066,11 @@ void MainWindow::adaptInspectorLayout() {
         }
     }
 
+    // 用户覆盖只约束检查器自身，不应禁用窗口级的工具面板响应式规则。
+    if (m_inspectorClosed || m_inspectorPanel->userOverrideMode()) {
+        return;
+    }
+
     // 计算左侧工具面板 + 流程面板的宽度
     int leftWidth = 0;
     if (m_mainSplitter && m_mainSplitter->count() >= 1) {
@@ -3942,17 +4081,17 @@ void MainWindow::adaptInspectorLayout() {
         leftWidth = 0;
     }
 
-    // 窗口宽度 < 1200px：将流程面板缩到 180px
+    // 窗口宽度 < 1200px：保留足够宽度完整显示 220px 流程节点。
     // 同时降低流程面板的最小宽度限制
     int flowPanelWidth = 0;
     if (m_rightTopSplitter && m_rightTopSplitter->count() >= 1) {
         flowPanelWidth = m_rightTopSplitter->sizes().value(0, 300);
     }
-    const int desiredFlowWidth = (windowWidth < 1200) ? 180 : 300;
+    const int desiredFlowWidth = (windowWidth < 1200) ? 240 : 300;
     // 临时降低最小宽度以允许压缩
     QWidget* procPanel = findChild<QWidget*>("ProcessPanelWidget");
     if (procPanel) {
-        procPanel->setMinimumWidth(windowWidth < 1200 ? 150 : 220);
+        procPanel->setMinimumWidth(220);
     }
     if (m_rightTopSplitter && m_rightTopSplitter->count() >= 3 && flowPanelWidth != desiredFlowWidth) {
         QList<int> sizes = m_rightTopSplitter->sizes();
@@ -3967,7 +4106,7 @@ void MainWindow::adaptInspectorLayout() {
     }
 
     // 可用宽度 = 窗口宽度 - 左侧 - 流程面板 - splitter handle 宽度
-    const int handleW = 7 * 3; // 三个 splitter handle
+    const int handleW = metrics.splitterHandleWidth * 3;
     const int available = windowWidth - leftWidth - flowPanelWidth - handleW;
 
     ModuleInspectorPanel::LayoutMode newMode = m_inspectorPanel->layoutMode();
@@ -4047,12 +4186,25 @@ void MainWindow::adaptInspectorLayout() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
+    RunEngine& engine = RunEngine::instance();
+    if (engine.isBusy()) {
+        m_closeWhenRunFinishes = true;
+        engine.requestCancellation();
+        event->ignore();
+        if (!engine.isExecuting()) {
+            QTimer::singleShot(0, this, &QWidget::close);
+        }
+        return;
+    }
     saveSettings();
     QMainWindow::closeEvent(event);
 }
 
 void MainWindow::resizeEvent(QResizeEvent* event) {
     QMainWindow::resizeEvent(event);
+    if (QToolBar* toolbar = findChild<QToolBar*>(QStringLiteral("MainToolBar"))) {
+        toolbar->setToolButtonStyle(width() < 1180 ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon);
+    }
     // 窗口宽度变化时判断是否需要切换检查器模式
     adaptInspectorLayout();
 }
@@ -4331,11 +4483,15 @@ void MainWindow::executeFlowOnce() {
     m_processTreeController->setCurrentItem(nullptr);
     for (int i = 0; i < m_processTreeController->topLevelItemCount(); ++i) {
         QTreeWidgetItem* item = m_processTreeController->topLevelItem(i);
-        clearExecutionHighlight(item);
-        item->setText(1, QString());
+        const QString instanceId = item->data(0, Qt::UserRole + 1).toString();
+        if (m_dirtyModuleIds.contains(instanceId)) {
+            setProcessItemStatus(item, QStringLiteral("dirty"), tr("待运行"));
+        } else {
+            clearExecutionHighlight(item);
+            item->setText(1, QString());
+        }
     }
     m_currentExecutingItem = nullptr;
-    m_lastExecutedItem = nullptr;
 
     // 如果没有模块，直接返回
     if (m_processTreeController->topLevelItemCount() == 0) {
@@ -4696,6 +4852,14 @@ bool MainWindow::syncModulesToRunEngine() {
         moduleBase->setInstanceName(instanceName);
         engine.addModule(moduleBase);
         m_processTreeController->setInstanceItem(instanceName, item);
+    }
+
+    QString orderError;
+    if (!engine.buildExecutionOrder(ProjectManager::instance().currentProject(), orderError)) {
+        Logger::instance().error(orderError, "Run");
+        engine.clearModules();
+        m_processTreeController->clearInstanceItemMap();
+        return false;
     }
 
     m_modulesNeedSync = false;

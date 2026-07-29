@@ -4,5 +4,5 @@
     "category": "logic",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "循环执行指定次数"
+    "description": "按次数循环；无结束节点时循环紧随其后的模块"
 }
