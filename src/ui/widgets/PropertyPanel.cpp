@@ -98,10 +98,8 @@ void PropertyPanel::setModule(IModule* module, const QString& instanceId) {
 
 void PropertyPanel::setPluginInfo(const PluginInfo& info) {
     m_uiParameters = info.ui.value("parameters").toObject();
-    // 如果模块已加载，重新渲染参数
-    if (m_currentModule) {
-        setModule(m_currentModule, m_currentModuleId);
-    }
+    // 不在此处重新渲染参数 — 调用方应随后调用 setModule()
+    // 避免 m_currentModule 是已删除的悬空指针时崩溃
 }
 
 void PropertyPanel::refreshFromModule() {
