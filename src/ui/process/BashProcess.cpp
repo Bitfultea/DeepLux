@@ -8,8 +8,8 @@
 #include <QDebug>
 #include <iostream>
 
-// Linux 实现
-#if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD)
+// Linux/macOS 实现
+#if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD) || defined(Q_OS_MACOS) || defined(Q_OS_DARWIN)
 #include "LinuxPtyImpl.cpp"
 #endif
 
@@ -70,7 +70,7 @@ bool BashProcess::initialize()
     }
 
     // 创建 PTY 实现
-#if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD)
+#if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD) || defined(Q_OS_MACOS) || defined(Q_OS_DARWIN)
     m_impl = new LinuxPtyImpl();
 #elif defined(Q_OS_WINDOWS)
     m_impl = new WindowsConPtyImpl();
@@ -116,7 +116,7 @@ bool BashProcess::initialize()
 QString BashProcess::detectShell()
 {
     QStringList candidates;
-#if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD)
+#if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD) || defined(Q_OS_MACOS) || defined(Q_OS_DARWIN)
     candidates << "/bin/bash" << "/usr/bin/bash" << "/bin/sh" << "/usr/bin/sh";
 #elif defined(Q_OS_WINDOWS)
     candidates << "bash" << "cmd.exe" << "powershell.exe";

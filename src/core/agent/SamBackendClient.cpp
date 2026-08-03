@@ -135,7 +135,12 @@ QString SamBackendClient::resolvedPythonPath() const {
         return QString::fromLocal8Bit(env);
     if (managedEnvironmentReady())
         return managedPythonPath();
+#ifdef DEEPLUX_PLATFORM_WINDOWS
+    // Windows 上 python3 通常不存在，使用 python 或 py
+    return QStringLiteral("python");
+#else
     return QStringLiteral("python3");
+#endif
 }
 
 QString SamBackendClient::pyPath() const {

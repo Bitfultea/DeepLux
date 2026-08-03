@@ -48,7 +48,7 @@ set(UI_SOURCES
 )
 
 # Platform-specific PTY implementation
-if(LINUX)
+if(LINUX OR APPLE)
     list(APPEND UI_SOURCES process/LinuxPtyImpl.cpp)
 elseif(WIN32)
     list(APPEND UI_SOURCES process/WindowsPtyImpl.cpp)

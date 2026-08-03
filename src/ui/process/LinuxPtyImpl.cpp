@@ -17,6 +17,9 @@
 #elif defined(Q_OS_FREEBSD)
 #include <libutil.h>
 #include <unistd.h>
+#elif defined(Q_OS_MACOS) || defined(Q_OS_DARWIN)
+#include <util.h>
+#include <unistd.h>
 #endif
 
 namespace DeepLux {
