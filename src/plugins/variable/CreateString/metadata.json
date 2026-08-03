@@ -4,5 +4,21 @@
     "category": "variable",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "创建并初始化字符串变量"
+    "description": "创建并初始化字符串变量",
+    "ui": {
+        "parameters": {
+            "stringSource": {
+                "order": 10,
+                "label": "字符串来源"
+            },
+            "fixedString": {
+                "order": 20,
+                "label": "固定字符串"
+            },
+            "outputVarName": {
+                "order": 30,
+                "label": "输出变量名"
+            }
+        }
+    }
 }

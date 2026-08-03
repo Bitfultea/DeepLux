@@ -36,12 +36,9 @@ protected:
 
 private:
     bool fitCircleRANSAC(const QVector<QPointF>& points,
-                         double& centerX, double& centerY, double& radius);
-
-    double m_threshold = 2.0;
-    double m_iterations = 100;
-    double m_minRadius = 1.0;
-    double m_maxRadius = 1000.0;
+                         double& centerX, double& centerY, double& radius,
+                         double threshold, int iterations,
+                         double minRadius, double maxRadius);
 
     // 输出参数
     double m_resultCenterX = 0.0;

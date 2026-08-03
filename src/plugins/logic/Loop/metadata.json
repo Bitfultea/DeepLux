@@ -4,5 +4,16 @@
     "category": "logic",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "按次数循环；无结束节点时循环紧随其后的模块"
+    "description": "按次数循环；无结束节点时循环紧随其后的模块",
+    "ui": {
+        "parameters": {
+            "loopCount": {
+                "min": 0,
+                "step": 1,
+                "decimals": 0,
+                "order": 10,
+                "label": "循环次数"
+            }
+        }
+    }
 }

@@ -1,29 +1,26 @@
 #include "AgentBridge.h"
-#include "AgentConnection.h"
 
-#include "manager/ProjectManager.h"
+#include "AgentConnection.h"
+#include "config/SystemConfig.h"
 #include "engine/RunEngine.h"
 #include "manager/PluginManager.h"
+#include "manager/ProjectManager.h"
 #include "model/Project.h"
-#include "config/SystemConfig.h"
-#include "platform/Platform.h"
 #include "platform/PathUtils.h"
+#include "platform/Platform.h"
 
+#include <QDebug>
+#include <QDir>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QLocalServer>
 #include <QLocalSocket>
-#include <QJsonDocument>
-#include <QJsonArray>
-#include <QFileInfo>
-#include <QDir>
-#include <QDebug>
+#include <QPointer>
 
 namespace DeepLux {
 
-AgentBridge::AgentBridge(QObject* parent)
-    : QObject(parent)
-    , m_server(nullptr)
-    , m_heartbeatTimer(new QTimer(this))
-{
+AgentBridge::AgentBridge(QObject* parent) : QObject(parent), m_server(nullptr), m_heartbeatTimer(new QTimer(this)) {
     // 心跳定时器 - 10 秒发送一次
     m_heartbeatTimer->setInterval(10000);
     connect(m_heartbeatTimer, &QTimer::timeout, this, &AgentBridge::onHeartbeatTimeout);
@@ -32,18 +29,14 @@ AgentBridge::AgentBridge(QObject* parent)
     registerDefaultQueryHandlers();
 }
 
-void AgentBridge::registerDefaultQueryHandlers()
-{
+void AgentBridge::registerDefaultQueryHandlers() {
     // project query
     registerQueryHandler("project", [this](const QJsonObject& params) {
         Q_UNUSED(params);
         Project* proj = ProjectManager::instance().currentProject();
         if (proj) {
             return QJsonObject{
-                {"name", proj->name()},
-                {"path", proj->filePath()},
-                {"moduleCount", proj->modules().size()}
-            };
+                {"name", proj->name()}, {"path", proj->filePath()}, {"moduleCount", proj->modules().size()}};
         }
         return QJsonObject{{"error", "No project opened"}};
     });
@@ -55,11 +48,21 @@ void AgentBridge::registerDefaultQueryHandlers()
         RunState state = engine.state();
         QString stateStr;
         switch (state) {
-        case RunState::Idle: stateStr = "idle"; break;
-        case RunState::Running: stateStr = "running"; break;
-        case RunState::Paused: stateStr = "paused"; break;
-        case RunState::Stopped: stateStr = "stopped"; break;
-        default: stateStr = "unknown"; break;
+        case RunState::Idle:
+            stateStr = "idle";
+            break;
+        case RunState::Running:
+            stateStr = "running";
+            break;
+        case RunState::Paused:
+            stateStr = "paused";
+            break;
+        case RunState::Stopped:
+            stateStr = "stopped";
+            break;
+        default:
+            stateStr = "unknown";
+            break;
         }
         QJsonObject result;
         result["state"] = stateStr;
@@ -101,20 +104,18 @@ void AgentBridge::registerDefaultQueryHandlers()
     });
 }
 
-AgentBridge::~AgentBridge()
-{
+AgentBridge::~AgentBridge() {
     stop();
 }
 
-AgentBridge& AgentBridge::instance()
-{
+AgentBridge& AgentBridge::instance() {
     static AgentBridge instance;
     return instance;
 }
 
-bool AgentBridge::start()
-{
-    if (m_running) return true;
+bool AgentBridge::start() {
+    if (m_running)
+        return true;
 
 #if defined(Q_OS_LINUX)
     // 使用用户可写的 socket 路径
@@ -144,8 +145,8 @@ bool AgentBridge::start()
         qWarning() << "Failed to start AgentBridge server:" << preferredSocketPath << m_server->serverError()
                    << m_server->errorString() << "falling back to" << fallbackSocketName;
         if (!m_server->listen(fallbackSocketName)) {
-            qWarning() << "Failed to start AgentBridge fallback server:" << fallbackSocketName << m_server->serverError()
-                       << m_server->errorString();
+            qWarning() << "Failed to start AgentBridge fallback server:" << fallbackSocketName
+                       << m_server->serverError() << m_server->errorString();
             delete m_server;
             m_server = nullptr;
             return false;
@@ -168,9 +169,9 @@ bool AgentBridge::start()
     return true;
 }
 
-void AgentBridge::stop()
-{
-    if (!m_running) return;
+void AgentBridge::stop() {
+    if (!m_running)
+        return;
 
     m_heartbeatTimer->stop();
     m_running = false;
@@ -200,25 +201,22 @@ void AgentBridge::stop()
     qDebug() << "AgentBridge stopped";
 }
 
-void AgentBridge::registerQueryHandler(const QString& target, QueryHandler handler)
-{
+void AgentBridge::registerQueryHandler(const QString& target, QueryHandler handler) {
     m_queryHandlers[target] = handler;
 }
 
-void AgentBridge::setToolCallCallback(ToolCallCallback callback)
-{
+void AgentBridge::setToolCallCallback(ToolCallCallback callback) {
     m_toolCallCallback = callback;
 }
 
-void AgentBridge::sendEvent(const QString& event, const QJsonObject& payload)
-{
+void AgentBridge::sendEvent(const QString& event, const QJsonObject& payload) {
     broadcastEvent(event, payload);
 }
 
-void AgentBridge::onNewConnection()
-{
+void AgentBridge::onNewConnection() {
     QLocalSocket* socket = m_server->nextPendingConnection();
-    if (!socket) return;
+    if (!socket)
+        return;
 
     QString clientId = QString("agent-%1").arg(reinterpret_cast<quintptr>(socket), 8, 16, QChar('0'));
 
@@ -237,8 +235,7 @@ void AgentBridge::onNewConnection()
     emit agentConnected(clientId);
 }
 
-void AgentBridge::onClientMessage(const QString& clientId, const QJsonObject& msg)
-{
+void AgentBridge::onClientMessage(const QString& clientId, const QJsonObject& msg) {
     ProtocolResponse response = processMessage(clientId, msg);
     if (response.error) {
         sendError(clientId, response.reqId, response.errorMessage);
@@ -253,8 +250,7 @@ void AgentBridge::onClientMessage(const QString& clientId, const QJsonObject& ms
     sendResponse(clientId, response.reqId, response.payload);
 }
 
-AgentBridge::ProtocolResponse AgentBridge::processMessage(const QString& clientId, const QJsonObject& msg)
-{
+AgentBridge::ProtocolResponse AgentBridge::processMessage(const QString& clientId, const QJsonObject& msg) {
     QString type = msg.value("type").toString();
     QString reqId = msg.value("id").toString();
     QJsonObject payload = msg.value("payload").toObject();
@@ -284,8 +280,7 @@ AgentBridge::ProtocolResponse AgentBridge::processMessage(const QString& clientI
     return response;
 }
 
-void AgentBridge::onClientDisconnected(const QString& clientId)
-{
+void AgentBridge::onClientDisconnected(const QString& clientId) {
     {
         QMutexLocker locker(&m_connectionMutex);
         for (int i = 0; i < m_connections.size(); ++i) {
@@ -302,8 +297,7 @@ void AgentBridge::onClientDisconnected(const QString& clientId)
     qDebug() << "Agent disconnected:" << clientId;
 }
 
-void AgentBridge::registerEventSubscription(const QString& clientId, const QString& event)
-{
+void AgentBridge::registerEventSubscription(const QString& clientId, const QString& event) {
     QMutexLocker locker(&m_connectionMutex);
     if (!m_eventSubscriptions.contains(clientId)) {
         m_eventSubscriptions[clientId] = QStringList();
@@ -314,20 +308,20 @@ void AgentBridge::registerEventSubscription(const QString& clientId, const QStri
     }
 }
 
-void AgentBridge::onHeartbeatTimeout()
-{
+void AgentBridge::onHeartbeatTimeout() {
     QJsonObject pingMsg;
     pingMsg["version"] = PROTOCOL_VERSION;
     pingMsg["type"] = "ping";
 
     QStringList timedOutClients;
     QList<AgentConnection*> toRemove;
+    QList<QPointer<AgentConnection>> heartbeatTargets;
 
     {
         QMutexLocker locker(&m_connectionMutex);
         for (AgentConnection* conn : m_connections) {
             if (conn->isConnected()) {
-                conn->send(pingMsg);
+                heartbeatTargets.append(conn);
             }
         }
         for (auto it = m_missedHeartbeats.begin(); it != m_missedHeartbeats.end(); ++it) {
@@ -348,6 +342,13 @@ void AgentBridge::onHeartbeatTimeout()
         }
     }
 
+    // Socket writes can synchronously emit disconnected(), which re-enters this class.
+    for (const QPointer<AgentConnection>& conn : heartbeatTargets) {
+        if (conn) {
+            conn->send(pingMsg);
+        }
+    }
+
     // 在锁外执行 deleteLater 和信号发射
     for (AgentConnection* conn : toRemove) {
         conn->deleteLater();
@@ -355,20 +356,16 @@ void AgentBridge::onHeartbeatTimeout()
     for (const QString& clientId : timedOutClients) {
         qDebug() << "Agent heartbeat timeout:" << clientId;
         emit agentConnectionLost(clientId);
-        QTimer::singleShot(5000, this, [this, clientId]() {
-            attemptReconnect(clientId);
-        });
+        QTimer::singleShot(5000, this, [this, clientId]() { attemptReconnect(clientId); });
     }
 }
 
-void AgentBridge::attemptReconnect(const QString& clientId)
-{
+void AgentBridge::attemptReconnect(const QString& clientId) {
     qDebug() << "Attempting to reconnect agent:" << clientId;
     // 重连逻辑 - 在此简单实现，实际可能需要更复杂的重连策略
 }
 
-QJsonObject AgentBridge::handleToolCall(const QString& reqId, const QJsonObject& payload)
-{
+QJsonObject AgentBridge::handleToolCall(const QString& reqId, const QJsonObject& payload) {
     Q_UNUSED(reqId);
 
     QString toolName = payload.value("tool").toString();
@@ -385,8 +382,7 @@ QJsonObject AgentBridge::handleToolCall(const QString& reqId, const QJsonObject&
     return QJsonObject{{"error", "Tool call callback not set"}};
 }
 
-QJsonObject AgentBridge::handleQuery(const QString& reqId, const QJsonObject& payload)
-{
+QJsonObject AgentBridge::handleQuery(const QString& reqId, const QJsonObject& payload) {
     Q_UNUSED(reqId);
 
     QString target = payload.value("target").toString();
@@ -398,33 +394,36 @@ QJsonObject AgentBridge::handleQuery(const QString& reqId, const QJsonObject& pa
     return QJsonObject{{"error", "Unknown query target: " + target}};
 }
 
-QJsonObject AgentBridge::handlePing(const QString& reqId)
-{
+QJsonObject AgentBridge::handlePing(const QString& reqId) {
     Q_UNUSED(reqId);
     QJsonObject result;
     result["type"] = "pong";
     return result;
 }
 
-void AgentBridge::sendResponse(const QString& clientId, const QString& reqId, const QJsonObject& payload)
-{
+void AgentBridge::sendResponse(const QString& clientId, const QString& reqId, const QJsonObject& payload) {
     QJsonObject msg;
     msg["version"] = PROTOCOL_VERSION;
     msg["type"] = "result";
     msg["id"] = reqId;
     msg["payload"] = payload;
 
-    QMutexLocker locker(&m_connectionMutex);
-    for (AgentConnection* conn : m_connections) {
-        if (conn->clientId() == clientId) {
-            conn->send(msg);
-            break;
+    QPointer<AgentConnection> target;
+    {
+        QMutexLocker locker(&m_connectionMutex);
+        for (AgentConnection* conn : m_connections) {
+            if (conn->clientId() == clientId) {
+                target = conn;
+                break;
+            }
         }
+    }
+    if (target) {
+        target->send(msg);
     }
 }
 
-void AgentBridge::sendError(const QString& clientId, const QString& reqId, const QString& errorMsg)
-{
+void AgentBridge::sendError(const QString& clientId, const QString& reqId, const QString& errorMsg) {
     QJsonObject msg;
     msg["version"] = PROTOCOL_VERSION;
     msg["type"] = "error";
@@ -433,35 +432,48 @@ void AgentBridge::sendError(const QString& clientId, const QString& reqId, const
     errPayload["message"] = errorMsg;
     msg["payload"] = errPayload;
 
-    QMutexLocker locker(&m_connectionMutex);
-    for (AgentConnection* conn : m_connections) {
-        if (conn->clientId() == clientId) {
-            conn->send(msg);
-            break;
+    QPointer<AgentConnection> target;
+    {
+        QMutexLocker locker(&m_connectionMutex);
+        for (AgentConnection* conn : m_connections) {
+            if (conn->clientId() == clientId) {
+                target = conn;
+                break;
+            }
         }
+    }
+    if (target) {
+        target->send(msg);
     }
 }
 
-void AgentBridge::broadcastEvent(const QString& event, const QJsonObject& payload)
-{
+void AgentBridge::broadcastEvent(const QString& event, const QJsonObject& payload) {
     QJsonObject msg;
     msg["version"] = PROTOCOL_VERSION;
     msg["type"] = "event";
     msg["event"] = event;
     msg["payload"] = payload;
 
-    QMutexLocker locker(&m_connectionMutex);
-    for (auto it = m_eventSubscriptions.begin(); it != m_eventSubscriptions.end(); ++it) {
-        const QString& clientId = it.key();
-        const QStringList& events = it.value();
+    QList<QPointer<AgentConnection>> targets;
+    {
+        QMutexLocker locker(&m_connectionMutex);
+        for (auto it = m_eventSubscriptions.begin(); it != m_eventSubscriptions.end(); ++it) {
+            const QString& clientId = it.key();
+            const QStringList& events = it.value();
 
-        if (events.contains(event) || events.contains("*")) {
-            for (AgentConnection* conn : m_connections) {
-                if (conn->clientId() == clientId && conn->isConnected()) {
-                    conn->send(msg);
-                    break;
+            if (events.contains(event) || events.contains("*")) {
+                for (AgentConnection* conn : m_connections) {
+                    if (conn->clientId() == clientId && conn->isConnected()) {
+                        targets.append(conn);
+                        break;
+                    }
                 }
             }
+        }
+    }
+    for (const QPointer<AgentConnection>& conn : targets) {
+        if (conn) {
+            conn->send(msg);
         }
     }
 }

@@ -4,5 +4,24 @@
     "category": "variable",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "在GlobalVarManager中创建新变量"
+    "description": "在GlobalVarManager中创建新变量",
+    "ui": {
+        "parameters": {
+            "variableName": {
+                "order": 10,
+                "label": "变量名"
+            },
+            "variableType": {
+                "order": 20,
+                "label": "变量类型"
+            },
+            "initialValue": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 30,
+                "label": "初始值"
+            }
+        }
+    }
 }

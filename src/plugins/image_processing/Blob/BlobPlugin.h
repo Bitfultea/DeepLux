@@ -52,9 +52,6 @@ private:
     std::vector<BlobResult> detectBlobs(const cv::Mat& gray, const cv::Mat& mask);
     void applyThreshold(const cv::Mat& gray, cv::Mat& mask);
 
-    double m_minArea = 10.0;
-    double m_maxArea = 10000.0;
-    double m_minCircularity = 0.5;
     int m_blobCount = 0;
     ThresholdType m_thresholdType = ThresholdType::Otsu;
     int m_fixedThreshold = 127;

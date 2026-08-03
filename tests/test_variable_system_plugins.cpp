@@ -1,12 +1,15 @@
-#include <QtTest/QtTest>
-#include <QTemporaryDir>
-
+#include "core/manager/GlobalVarManager.h"
 #include "core/model/ImageData.h"
 #include "plugins/system/SaveData/SaveDataPlugin.h"
 #include "plugins/system/SystemTime/SystemTimePlugin.h"
 #include "plugins/variable/CreateString/CreateStringPlugin.h"
 #include "plugins/variable/MathPlugin/MathPlugin.h"
 #include "plugins/variable/SplitString/SplitStringPlugin.h"
+#include "plugins/variable/StrFormatPlugin/StrFormatPlugin.h"
+
+#include <QJsonArray>
+#include <QTemporaryDir>
+#include <QtTest/QtTest>
 
 using namespace DeepLux;
 
@@ -21,17 +24,14 @@ private slots:
     void testMathRejectsUnsafeRuntimeInputs();
     void testSaveDataReturnsFalseWhenWriteFails();
     void testSystemTimeOutputAndValidation();
+    void testStrFormatUsesInputVariables();
 };
 
-void TestVariableSystemPlugins::testCreateStringFixedOutput()
-{
+void TestVariableSystemPlugins::testCreateStringFixedOutput() {
     CreateStringPlugin plugin;
     QVERIFY(plugin.initialize());
-    plugin.setParams(QJsonObject{
-        {"stringSource", "Fixed"},
-        {"fixedString", "batch-001"},
-        {"outputVarName", "created"}
-    });
+    plugin.setParams(
+        QJsonObject{{"stringSource", "Fixed"}, {"fixedString", "batch-001"}, {"outputVarName", "created"}});
 
     ImageData input;
     ImageData output;
@@ -41,8 +41,7 @@ void TestVariableSystemPlugins::testCreateStringFixedOutput()
     QCOMPARE(output.data("string_length").toInt(), 9);
 }
 
-void TestVariableSystemPlugins::testCreateStringRejectsInvalidParams()
-{
+void TestVariableSystemPlugins::testCreateStringRejectsInvalidParams() {
     CreateStringPlugin plugin;
     QString error;
 
@@ -58,17 +57,11 @@ void TestVariableSystemPlugins::testCreateStringRejectsInvalidParams()
     QVERIFY(!error.isEmpty());
 }
 
-void TestVariableSystemPlugins::testSplitStringOutputAndValidation()
-{
+void TestVariableSystemPlugins::testSplitStringOutputAndValidation() {
     SplitStringPlugin plugin;
     QVERIFY(plugin.initialize());
     plugin.setParams(QJsonObject{
-        {"inputString", "A,B,C"},
-        {"separator", ","},
-        {"useRegex", false},
-        {"outputPrefix", "item"},
-        {"maxSplits", 0}
-    });
+        {"inputString", "A,B,C"}, {"separator", ","}, {"useRegex", false}, {"outputPrefix", "item"}, {"maxSplits", 0}});
 
     ImageData input;
     ImageData output;
@@ -100,16 +93,11 @@ void TestVariableSystemPlugins::testSplitStringOutputAndValidation()
     QVERIFY(!error.isEmpty());
 }
 
-void TestVariableSystemPlugins::testMathOutputAndValidation()
-{
+void TestVariableSystemPlugins::testMathOutputAndValidation() {
     MathPlugin plugin;
     QVERIFY(plugin.initialize());
-    plugin.setParams(QJsonObject{
-        {"operation", "Multiply"},
-        {"operandA", "left"},
-        {"operandB", "4"},
-        {"outputVar", "product"}
-    });
+    plugin.setParams(
+        QJsonObject{{"operation", "Multiply"}, {"operandA", "left"}, {"operandB", "4"}, {"outputVar", "product"}});
 
     ImageData input;
     input.setData("left", 3.5);
@@ -131,16 +119,11 @@ void TestVariableSystemPlugins::testMathOutputAndValidation()
     QVERIFY(!error.isEmpty());
 }
 
-void TestVariableSystemPlugins::testMathRejectsUnsafeRuntimeInputs()
-{
+void TestVariableSystemPlugins::testMathRejectsUnsafeRuntimeInputs() {
     MathPlugin divide;
     QVERIFY(divide.initialize());
-    divide.setParams(QJsonObject{
-        {"operation", "Divide"},
-        {"operandA", "a"},
-        {"operandB", "b"},
-        {"outputVar", "quotient"}
-    });
+    divide.setParams(
+        QJsonObject{{"operation", "Divide"}, {"operandA", "a"}, {"operandB", "b"}, {"outputVar", "quotient"}});
 
     ImageData input;
     input.setData("a", 10.0);
@@ -151,20 +134,15 @@ void TestVariableSystemPlugins::testMathRejectsUnsafeRuntimeInputs()
 
     MathPlugin add;
     QVERIFY(add.initialize());
-    add.setParams(QJsonObject{
-        {"operation", "Add"},
-        {"operandA", "missing_or_literal"},
-        {"operandB", "2"},
-        {"outputVar", "sum"}
-    });
+    add.setParams(
+        QJsonObject{{"operation", "Add"}, {"operandA", "missing_or_literal"}, {"operandB", "2"}, {"outputVar", "sum"}});
 
     output = ImageData();
     QVERIFY2(!add.execute(ImageData(), output), "Should reject unresolved non-numeric operand");
     QVERIFY(!output.data("sum").isValid());
 }
 
-void TestVariableSystemPlugins::testSaveDataReturnsFalseWhenWriteFails()
-{
+void TestVariableSystemPlugins::testSaveDataReturnsFalseWhenWriteFails() {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
 
@@ -183,8 +161,7 @@ void TestVariableSystemPlugins::testSaveDataReturnsFalseWhenWriteFails()
     QCOMPARE(output.data("save_result").toBool(), false);
 }
 
-void TestVariableSystemPlugins::testSystemTimeOutputAndValidation()
-{
+void TestVariableSystemPlugins::testSystemTimeOutputAndValidation() {
     SystemTimePlugin plugin;
     QVERIFY(plugin.initialize());
     plugin.setParams(QJsonObject{{"timeFormat", "yyyy"}});
@@ -207,6 +184,24 @@ void TestVariableSystemPlugins::testSystemTimeOutputAndValidation()
     params["timeFormat"] = "";
     QVERIFY2(!plugin.validateParams(params, error), "Should reject empty time format");
     QVERIFY(!error.isEmpty());
+}
+
+void TestVariableSystemPlugins::testStrFormatUsesInputVariables() {
+    StrFormatPlugin plugin;
+    QVERIFY(plugin.initialize());
+    plugin.setParams(QJsonObject{{"format", "%s_%s"},
+                                 {"inputVariables", QJsonArray{QStringLiteral("batch"), QStringLiteral("001")}},
+                                 {"outputVariable", "formatted"}});
+
+    ImageData output;
+    QVERIFY(plugin.execute(ImageData(), output));
+    QCOMPARE(GlobalVarManager::instance().getVariableValue("formatted").toString(), QString("batch_001"));
+    QCOMPARE(output.data("formatted").toString(), QString("batch_001"));
+
+    QString error;
+    QJsonObject invalid = plugin.currentParams();
+    invalid["inputVariables"] = "batch";
+    QVERIFY(!plugin.validateParams(invalid, error));
 }
 
 QTEST_MAIN(TestVariableSystemPlugins)

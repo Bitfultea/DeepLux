@@ -15,8 +15,7 @@ JigsawPuzzlePlugin::JigsawPuzzlePlugin(QObject* parent)
 {
     m_defaultParams = QJsonObject{
         {"rows", 2},
-        {"cols", 2},
-        {"matchThreshold", 0.3}
+        {"cols", 2}
     };
     m_params = m_defaultParams;
 }

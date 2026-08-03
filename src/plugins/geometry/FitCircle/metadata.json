@@ -4,5 +4,37 @@
     "category": "geometry",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "对输入点集进行圆拟合"
+    "description": "对输入点集进行圆拟合",
+    "ui": {
+        "parameters": {
+            "threshold": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 10,
+                "label": "阈值"
+            },
+            "iterations": {
+                "min": 0,
+                "step": 1,
+                "decimals": 0,
+                "order": 20,
+                "label": "迭代次数"
+            },
+            "minRadius": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 30,
+                "label": "最小半径"
+            },
+            "maxRadius": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 40,
+                "label": "最大半径"
+            }
+        }
+    }
 }

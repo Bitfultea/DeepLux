@@ -195,7 +195,8 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
     QString s;
     s.reserve(8000);
 
-    s += QString("QMainWindow { background-color: %1; color: %2; }").arg(mainWindowBg, labelFg);
+    s +=
+        QString("QMainWindow { background-color: %1; color: %2; font-size: %3; }").arg(mainWindowBg, labelFg, baseFont);
     s += QString("QWidget#MainContentWidget { background-color: %1; }").arg(mainWindowBg);
     s += QString("QSplitter#MainSplitter { background-color: %1; }").arg(splitterBg);
     s += QString("QSplitter::handle { width: %1; }").arg(splitterW);
@@ -234,9 +235,12 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
     s += QString("QScrollBar::handle:horizontal:hover { background-color: %1; }").arg(scrollHandleHover);
     s += "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }";
 
-    s += QString("QToolBar { background-color: %1; border: %2 solid %3; spacing: %4; padding: 2px; }")
-             .arg(toolBarBg, borderW, toolBarBorder, baseSpacing);
-    s += QString("QToolBar QToolButton { background-color: transparent; color: %1; padding: 5px; "
+    s += QString("QToolBar { background-color: %1; border: none; spacing: %2; padding: 0; }")
+             .arg(toolBarBg, baseSpacing);
+    s += QString("QToolBar#MainToolBar { min-height: %1; max-height: %1; border-bottom: %2 solid %3; "
+                 "padding: 0 8px; spacing: 4px; }")
+             .arg(px(m.toolbarHeight), borderW, toolBarBorder);
+    s += QString("QToolBar QToolButton { background-color: transparent; color: %1; min-height: 34px; padding: 4px 8px; "
                  "border: %2 solid transparent; }")
              .arg(toolBtnFg, borderW);
     s += QString("QToolBar QToolButton:hover { background-color: %1; border: %2 solid %3; }")
@@ -255,31 +259,40 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
     s += QString("QLabel#ViewportContentInfo { color: %1; font-size: %2; padding-left: 6px; }")
              .arg(inspectorEmptyFg, baseFont);
 
-    s += QString("QMenuBar { background-color: %1; color: %2; }").arg(menuBarBg, menuBarFg);
+    s += QString("QMenuBar { background-color: %1; color: %2; min-height: 32px; border-bottom: %3 solid %4; }")
+             .arg(menuBarBg, menuBarFg, borderW, menuBorder);
+    s += QString("QMenuBar::item { padding: 5px 8px; background: transparent; }");
     s += QString("QMenuBar::item:selected { background-color: %1; }").arg(treeHover);
     s += QString("QMenu { background-color: %1; color: %2; border: %3 solid %4; }")
              .arg(menuBg, menuFg, borderW, menuBorder);
     s += QString("QMenu::item:selected { background-color: %1; color: %2; }").arg(menuSelBg, menuSelFg);
 
-    s += QString("QStatusBar { background-color: %1; color: %2; font-size: %3; }").arg(statusBg, statusFg, baseFont);
+    s += QString("QStatusBar { background-color: %1; color: %2; font-size: %3; min-height: 28px; "
+                 "border-top: %4 solid %5; }")
+             .arg(statusBg, statusFg, baseFont, borderW, menuBorder);
     s += QString("QStatusBar QLabel { padding: 0 %1; }").arg(baseSpacing);
-
-    s += QString("QWidget#ProjectBreadcrumb { background-color: transparent; border-left: %1 solid %2; }")
+    s += QString("QLabel#RunStatusLabel, QLabel#UserStatusLabel, QLabel#TimeStatusLabel { "
+                 "border-left: %1 solid %2; min-height: 20px; }")
              .arg(borderW, menuBorder);
+
+    s += QString("QWidget#AppBrandHeader { background-color: transparent; border-right: %1 solid %2; }")
+             .arg(borderW, menuBorder);
+    s += QString("QLabel#AppBrandName { color: %1; font-size: %2; font-weight: 700; }").arg(menuBarFg, headerFont);
+    s += QString("QFrame#AppBrandDivider { background-color: %1; max-width: %2; }").arg(menuBorder, borderW);
+    s += QString("QWidget#ProjectBreadcrumb { background-color: transparent; }");
     s += QString("QLabel#ProjectBreadcrumbLabel { color: %1; font-size: %2; font-weight: 600; }")
              .arg(menuBarFg, baseFont);
     s += QString("QLabel#ProjectBreadcrumbIcon { background-color: transparent; }");
 
-    s += QString("QPushButton { background-color: %1; color: %2; padding: 5px 15px; border: none; }").arg(btnBg, btnFg);
+    s += QString("QPushButton { background-color: %1; color: %2; min-height: %3; padding: 3px 12px; "
+                 "border: %4 solid transparent; border-radius: 4px; }")
+             .arg(btnBg, btnFg, px(m.controlHeight), borderW);
     s += QString("QPushButton:hover { background-color: %1; }").arg(btnHoverBg);
     s += QString("QPushButton:disabled { background-color: %1; color: %2; }").arg(btnDisabledBg, btnDisabledFg);
 
-    s += QString("QLineEdit { background-color: %1; color: %2; border: %3 solid %4; padding: 5px; }")
-             .arg(inputBg, inputFg, borderW, inputBorder);
-    s += QString("QComboBox { background-color: %1; color: %2; border: %3 solid %4; padding: 5px; }")
-             .arg(inputBg, inputFg, borderW, inputBorder);
-    s += QString("QSpinBox { background-color: %1; color: %2; border: %3 solid %4; padding: 5px; }")
-             .arg(inputBg, inputFg, borderW, inputBorder);
+    s += QString("QLineEdit, QComboBox, QSpinBox { background-color: %1; color: %2; min-height: %3; "
+                 "border: %4 solid %5; border-radius: 4px; padding: 2px 6px; }")
+             .arg(inputBg, inputFg, px(m.controlHeight), borderW, inputBorder);
 
     s += QString("QSplitter#MainSplitter::handle { background-color: %1; border: none; }").arg(splitterHandleMainBg);
     s += QString("QSplitter#RightTopSplitter::handle:horizontal { background-color: %1; "
@@ -289,17 +302,33 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
                  "border-top: %2 solid %3; border-bottom: %2 solid %4; }")
              .arg(splitterHandleVerBg, borderW, splitterHandleVerTopBorder, splitterHandleVerBottomBorder);
 
-    s += QString("QWidget#ProcessPanelWidget { background-color: %1; border-right: %2 solid %3; }")
-             .arg(processPanelBg, borderW, processPanelRightBorder);
-    s += QString("QWidget#ImageDisplayWidget { background-color: %1; border-left: %2 solid %3; "
-                 "border-bottom: %2 solid %3; }")
-             .arg(imageDisplayBg, borderW, imageDisplayLeftBorder);
+    s += QString("QWidget#ToolPanelWidget, QWidget#ProcessPanelWidget { background-color: %1; }").arg(processPanelBg);
+    s += QString("QWidget#ImageDisplayWidget { background-color: %1; }").arg(imageDisplayBg);
     s += QString("QDockWidget#LogDock { border-top: %1 solid %2; }").arg(borderW, logDockBorderTop);
     s += QString("QWidget#LogCornerActions { background-color: %1; }").arg(tabBarBg);
     s += QString("QToolButton#ClearLogButton, QToolButton#CollapseLogButton { background-color: transparent; "
                  "border: none; padding: 4px; }");
     s += QString("QToolButton#ClearLogButton:hover, QToolButton#CollapseLogButton:hover { background-color: %1; }")
              .arg(treeHover);
+    s += QString("QWidget#ToolTitleWidget { background-color: %1; border-bottom: %2 solid %3; }")
+             .arg(dockTitleBg, borderW, dockTitleBorder);
+    s += QString("QLabel#ToolTitleLabel { color: %1; font-size: %2; font-weight: 600; }").arg(dockTitleFg, headerFont);
+    s += QString("QToolButton#ToolCloseBtn { background-color: transparent; color: %1; border: none; "
+                 "min-width: %2; min-height: %2; max-width: %2; max-height: %2; }")
+             .arg(dockTitleFg, px(m.compactIconButtonSize));
+    s += QString("QToolButton#ToolCloseBtn:hover { background-color: %1; }").arg(treeHover);
+    s += QString("QScrollArea#ToolCategoryScroll, QScrollArea#ToolCategoryScroll > QWidget > QWidget { "
+                 "background-color: %1; border: none; }")
+             .arg(scrollAreaBg);
+    s += QString("QWidget#ProcessControlBar { background-color: %1; border-bottom: %2 solid %3; }")
+             .arg(processPanelBg, borderW, processPanelRightBorder);
+    s += QString("QWidget#ProcessControlBar QToolButton { color: %1; background-color: transparent; min-height: 30px; "
+                 "padding: 3px 7px; border: %2 solid transparent; border-radius: 4px; }")
+             .arg(toolBtnFg, borderW);
+    s += QString("QWidget#ProcessControlBar QToolButton:hover { background-color: %1; border-color: %2; }")
+             .arg(toolBtnHoverBg, toolBtnHoverBorder);
+    s += QString("QWidget#ProcessStatusBar { background-color: %1; border-top: %2 solid %3; }")
+             .arg(processPanelBg, borderW, processPanelRightBorder);
 
     s += QString("QLabel { color: %1; }").arg(labelFg);
     s += QString("QScrollArea { background-color: %1; }").arg(scrollAreaBg);
@@ -312,6 +341,20 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
              .arg(tabBarTabBg, tabBarTabFg, baseFont);
     s += QString("QTabBar::tab:selected { background-color: %1; }").arg(tabBarTabSelBg);
     s += QString("QTabBar::tab:hover:!selected { background-color: %1; }").arg(tabBarTabHoverBg);
+    s += QString("QTabWidget#ProcessTabWidget::pane { border: none; border-top: 2px solid %1; "
+                 "background-color: %2; }")
+             .arg(dockTitleBorder, processPanelBg);
+    s += "QTabWidget#ProcessTabWidget::tab-bar { left: 8px; }";
+    s += QString("QTabWidget#ProcessTabWidget QTabBar::tab { background-color: transparent; color: %1; "
+                 "font-size: %2; font-weight: 600; min-height: 30px; min-width: 56px; padding: 5px 14px; "
+                 "border: none; border-bottom: 2px solid transparent; margin-right: 4px; }")
+             .arg(tabBarTabFg, headerFont);
+    s += "QTabWidget#ProcessTabWidget QTabBar::tab:selected { color: #0078D7; border-bottom-color: #0078D7; }";
+    s += QString("QTabWidget#ProcessTabWidget QTabBar::tab:hover:!selected { color: %1; background-color: %2; }")
+             .arg(tabBarTabFg, dockTitleHover);
+    s += QString("QWidget#ProcessTabContent, QTabWidget#ProcessTabWidget QTreeWidget { background-color: %1; }")
+             .arg(processPanelBg);
+    s += QString("QLabel#ProcessTreeHintLabel { color: %1; }").arg(inspectorEmptyFg);
 
     // ===== ModuleInspector 专用样式 =====
     s += QString("QWidget#ModuleInspectorPanel { background-color: %1; }").arg(inspectorPanelBg);

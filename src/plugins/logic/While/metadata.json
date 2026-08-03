@@ -4,5 +4,28 @@
     "category": "logic",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "条件循环；无结束节点时循环紧随其后的模块"
+    "description": "条件循环；无结束节点时循环紧随其后的模块",
+    "ui": {
+        "parameters": {
+            "conditionVariable": {
+                "order": 10,
+                "label": "条件变量"
+            },
+            "comparison": {
+                "order": 20,
+                "label": "比较方式"
+            },
+            "compareValue": {
+                "order": 30,
+                "label": "比较值"
+            },
+            "maxIterations": {
+                "min": 0,
+                "step": 1,
+                "decimals": 0,
+                "order": 40,
+                "label": "最大迭代次数"
+            }
+        }
+    }
 }

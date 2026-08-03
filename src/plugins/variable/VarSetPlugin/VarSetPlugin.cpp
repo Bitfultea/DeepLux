@@ -152,10 +152,9 @@ QVariant VarSetPlugin::convertValue(const QVariant& val, VarDataType targetType)
 
 bool VarSetPlugin::doValidateParams(const QJsonObject& params, QString& error) const
 {
-    if (params["variableName"].toString().isEmpty()) {
-        error = QString("Variable name cannot be empty");
-        return false;
-    }
+    // 阶段 2: variableName 允许暂时为空，由 process() 在运行时报告"未配置"
+    Q_UNUSED(params)
+    error.clear();
     return true;
 }
 

@@ -4,5 +4,37 @@
     "category": "system",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "在图像上显示点坐标"
+    "description": "在图像上显示点坐标",
+    "ui": {
+        "parameters": {
+            "markerSize": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 10,
+                "label": "标记大小"
+            },
+            "colorR": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 20,
+                "label": "颜色R"
+            },
+            "colorG": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 30,
+                "label": "颜色G"
+            },
+            "colorB": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 40,
+                "label": "颜色B"
+            }
+        }
+    }
 }

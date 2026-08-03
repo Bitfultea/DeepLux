@@ -4,5 +4,23 @@
     "category": "detection",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "在图像中查找与模板匹配的区域"
+    "description": "在图像中查找与模板匹配的区域",
+    "ui": {
+        "parameters": {
+            "matchThreshold": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 10,
+                "label": "匹配阈值"
+            },
+            "maxMatches": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 20,
+                "label": "最大匹配数"
+            }
+        }
+    }
 }

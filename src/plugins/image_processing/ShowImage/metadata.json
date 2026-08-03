@@ -4,5 +4,21 @@
     "category": "image_processing",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "在窗口显示输入图像"
+    "description": "在窗口显示输入图像",
+    "ui": {
+        "parameters": {
+            "windowTitle": {
+                "order": 10,
+                "label": "窗口标题"
+            },
+            "delay": {
+                "min": 0,
+                "step": 100,
+                "decimals": 0,
+                "unit": "ms",
+                "order": 20,
+                "label": "延迟"
+            }
+        }
+    }
 }

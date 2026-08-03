@@ -4,5 +4,16 @@
     "category": "detection",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "剑二韩焊接缺陷检测"
+    "description": "剑二韩焊接缺陷检测",
+    "ui": {
+        "parameters": {
+            "threshold": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 10,
+                "label": "阈值"
+            }
+        }
+    }
 }

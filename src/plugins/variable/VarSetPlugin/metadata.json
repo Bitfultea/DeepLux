@@ -4,5 +4,17 @@
     "category": "variable",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "设置已存在变量的值，支持表达式或引用其他变量"
+    "description": "设置已存在变量的值，支持表达式或引用其他变量",
+    "ui": {
+        "parameters": {
+            "variableName": {
+                "order": 10,
+                "label": "变量名"
+            },
+            "value": {
+                "order": 20,
+                "label": "值"
+            }
+        }
+    }
 }

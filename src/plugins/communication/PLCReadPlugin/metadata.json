@@ -4,5 +4,53 @@
     "category": "communication",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "通过Modbus TCP读取PLC保持寄存器"
+    "description": "通过Modbus TCP读取PLC保持寄存器",
+    "ui": {
+        "parameters": {
+            "ipAddress": {
+                "order": 10,
+                "label": "IP地址"
+            },
+            "port": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 20,
+                "label": "端口"
+            },
+            "slaveId": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 30,
+                "label": "从站ID"
+            },
+            "startAddress": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 40,
+                "label": "起始地址"
+            },
+            "readCount": {
+                "min": 0,
+                "step": 1,
+                "decimals": 0,
+                "order": 50,
+                "label": "读取数量"
+            },
+            "outputVariable": {
+                "order": 60,
+                "label": "输出变量"
+            },
+            "timeout": {
+                "min": 0,
+                "step": 100,
+                "decimals": 0,
+                "unit": "ms",
+                "order": 70,
+                "label": "超时"
+            }
+        }
+    }
 }

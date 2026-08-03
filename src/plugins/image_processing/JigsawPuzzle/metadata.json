@@ -4,5 +4,23 @@
     "category": "image_processing",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "将碎片图像拼接成完整图像"
+    "description": "将碎片图像拼接成完整图像",
+    "ui": {
+        "parameters": {
+            "rows": {
+                "min": 0,
+                "step": 1,
+                "decimals": 0,
+                "order": 10,
+                "label": "行数"
+            },
+            "cols": {
+                "min": 0,
+                "step": 1,
+                "decimals": 0,
+                "order": 20,
+                "label": "列数"
+            }
+        }
+    }
 }

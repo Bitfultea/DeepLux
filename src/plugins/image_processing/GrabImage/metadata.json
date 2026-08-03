@@ -19,11 +19,15 @@
     "ui": {
         "parameters": {
             "cameraId": {
-                "label": "相机 ID",
+                "label": "相机",
+                "editor": "camera",
                 "order": 10
             },
             "filePath": {
                 "label": "文件路径",
+                "editor": "file",
+                "dialogTitle": "选择图像文件",
+                "filter": "图像文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)",
                 "order": 20
             },
             "exposureTime": {
@@ -31,24 +35,32 @@
                 "unit": "us",
                 "min": 0,
                 "step": 100,
+                "decimals": 0,
                 "order": 30
             },
             "gain": {
                 "label": "增益",
                 "min": 0,
                 "step": 0.1,
+                "decimals": 2,
                 "order": 40
             },
             "grabSource": {
-                "label": "采集来源",
-                "_options": ["Camera", "File", "Demo"],
+                "label": "图像源",
+                "_options": [
+                    {"label": "相机", "value": "Camera"},
+                    {"label": "文件", "value": "File"},
+                    {"label": "演示", "value": "Demo"}
+                ],
                 "order": 50
             },
             "grabTimeout": {
                 "label": "采集超时",
                 "unit": "ms",
                 "min": 100,
+                "max": 60000,
                 "step": 100,
+                "decimals": 0,
                 "order": 60
             }
         }

@@ -4,5 +4,16 @@
     "category": "logic",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "并行执行多个分支"
+    "description": "并行执行多个分支",
+    "ui": {
+        "parameters": {
+            "parallelCount": {
+                "min": 0,
+                "step": 1,
+                "decimals": 0,
+                "order": 10,
+                "label": "并行数量"
+            }
+        }
+    }
 }

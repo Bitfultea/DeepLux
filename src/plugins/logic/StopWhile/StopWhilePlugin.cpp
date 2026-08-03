@@ -2,17 +2,14 @@
 #include "core/engine/RunEngine.h"
 #include "core/common/Logger.h"
 #include <QVBoxLayout>
-#include <QFormLayout>
-#include <QCheckBox>
+#include <QLabel>
 
 namespace DeepLux {
 
 StopWhilePlugin::StopWhilePlugin(QObject* parent)
     : ModuleBase(parent)
 {
-    m_defaultParams = QJsonObject{
-        {"stopAlways", true}
-    };
+    m_defaultParams = QJsonObject{};
     m_params = m_defaultParams;
     m_name = "停止循环";
     m_moduleId = "StopWhilePlugin";
@@ -53,19 +50,8 @@ QWidget* StopWhilePlugin::createConfigWidget()
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
-    QFormLayout* formLayout = new QFormLayout();
-
-    QCheckBox* stopCheck = new QCheckBox(tr("总是停止循环"));
-    stopCheck->setChecked(m_params["stopAlways"].toBool(true));
-
-    formLayout->addRow(tr(""), stopCheck);
-
-    layout->addLayout(formLayout);
+    layout->addWidget(new QLabel(tr("此模块放在循环内用于提前退出循环。")));
     layout->addStretch();
-
-    connect(stopCheck, &QCheckBox::toggled, this, [=](bool checked) {
-        setParam("stopAlways", checked);
-    });
 
     return widget;
 }

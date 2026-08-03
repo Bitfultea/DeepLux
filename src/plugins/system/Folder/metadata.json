@@ -4,5 +4,17 @@
     "category": "system",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "创建、删除、遍历文件夹"
+    "description": "创建、删除、遍历文件夹",
+    "ui": {
+        "parameters": {
+            "operation": {
+                "order": 10,
+                "label": "操作模式"
+            },
+            "folderPath": {
+                "order": 20,
+                "label": "文件夹路径"
+            }
+        }
+    }
 }

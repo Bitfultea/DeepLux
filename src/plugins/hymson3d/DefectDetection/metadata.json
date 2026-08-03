@@ -4,5 +4,69 @@
     "category": "hymson3d",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "基于HymsonVision3D的点云缺陷检测插件"
+    "description": "基于HymsonVision3D的点云缺陷检测插件",
+    "ui": {
+        "parameters": {
+            "longNormalDegree": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 10,
+                "label": "长边法线角度"
+            },
+            "longCurvatureThreshold": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 20,
+                "label": "长边曲率阈值"
+            },
+            "rcornerNormalDegree": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 30,
+                "label": "圆角法线角度"
+            },
+            "rcornerCurvatureThreshold": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 40,
+                "label": "圆角曲率阈值"
+            },
+            "heightThreshold": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 50,
+                "label": "高度阈值"
+            },
+            "radius": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 60,
+                "label": "半径"
+            },
+            "minPoints": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 70,
+                "label": "最小点数"
+            },
+            "minDefectsSize": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 80,
+                "label": "最小缺陷尺寸"
+            },
+            "debugMode": {
+                "order": 90,
+                "label": "调试模式"
+            }
+        }
+    }
 }

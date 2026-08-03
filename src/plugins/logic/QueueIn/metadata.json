@@ -4,5 +4,17 @@
     "category": "logic",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "将数据加入队列"
+    "description": "将数据加入队列",
+    "ui": {
+        "parameters": {
+            "queueName": {
+                "order": 10,
+                "label": "队列名称"
+            },
+            "dataVariable": {
+                "order": 20,
+                "label": "数据变量"
+            }
+        }
+    }
 }

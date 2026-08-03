@@ -4,5 +4,71 @@
     "category": "image_processing",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "检测并分析图像中的Blob区域"
+    "description": "检测并分析图像中的Blob区域",
+    "ui": {
+        "parameters": {
+            "minArea": {
+                "min": 1,
+                "step": 10,
+                "decimals": 0,
+                "order": 10,
+                "label": "最小面积"
+            },
+            "maxArea": {
+                "min": 0,
+                "step": 10,
+                "decimals": 0,
+                "order": 20,
+                "label": "最大面积"
+            },
+            "minCircularity": {
+                "min": 0,
+                "max": 1,
+                "step": 0.05,
+                "decimals": 2,
+                "order": 30,
+                "label": "最小圆度"
+            },
+            "thresholdType": {
+                "options": [
+                    {
+                        "label": "Otsu自动",
+                        "value": "Otsu"
+                    },
+                    {
+                        "label": "固定阈值",
+                        "value": "Fixed"
+                    },
+                    {
+                        "label": "自适应阈值",
+                        "value": "Adaptive"
+                    }
+                ],
+                "order": 40,
+                "label": "阈值类型"
+            },
+            "fixedThreshold": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 50,
+                "label": "固定阈值"
+            },
+            "adaptiveBlockSize": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 60,
+                "label": "自适应块大小"
+            },
+            "adaptiveC": {
+                "min": -50,
+                "max": 50,
+                "step": 1,
+                "decimals": 1,
+                "order": 70,
+                "label": "自适应常数"
+            }
+        }
+    }
 }

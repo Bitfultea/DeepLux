@@ -4,5 +4,16 @@
     "category": "geometry",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "处理和分析自由曲面点云数据"
+    "description": "处理和分析自由曲面点云数据",
+    "ui": {
+        "parameters": {
+            "samplingInterval": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 10,
+                "label": "采样间隔"
+            }
+        }
+    }
 }

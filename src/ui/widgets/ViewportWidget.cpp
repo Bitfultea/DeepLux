@@ -399,6 +399,7 @@ void ViewportWidget::onSaveSnapshot() {
         snapshot = m_imageWidget->grab().toImage();
     }
     if (snapshot.isNull()) {
+        QMessageBox::information(this, tr("保存快照"), tr("当前视口没有可保存的内容"));
         return;
     }
 

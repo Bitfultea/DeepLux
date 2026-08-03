@@ -237,8 +237,8 @@ void TestLogicPlugins::testIfValidationEmptyBoolLink()
     QJsonObject params = plugin.defaultParams();
     params["conditionType"] = "BoolLink";
     params["boolLinkText"] = "";
-    QVERIFY2(!plugin.validateParams(params, error), "Empty BoolLink should fail validation");
-    QVERIFY(!error.isEmpty());
+    // 阶段 2: 外部资源（boolLinkText）允许暂时为空，由 process() 在运行时报告"未配置"
+    QVERIFY2(plugin.validateParams(params, error), "Empty BoolLink should pass validation (deferred to runtime)");
 }
 
 void TestLogicPlugins::testIfValidationExpressionOk()
@@ -479,8 +479,8 @@ void TestLogicPlugins::testWhileValidationEmptyVar()
     QString error;
     QJsonObject params = plugin.defaultParams();
     params["conditionVariable"] = "";
-    QVERIFY2(!plugin.validateParams(params, error), "Empty conditionVariable should fail validation");
-    QVERIFY(!error.isEmpty());
+    // 阶段 2: 外部资源（conditionVariable）允许暂时为空，由 process() 在运行时报告"未配置"
+    QVERIFY2(plugin.validateParams(params, error), "Empty conditionVariable should pass validation (deferred to runtime)");
 }
 
 void TestLogicPlugins::testWhileValidationMaxIterations()

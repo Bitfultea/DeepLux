@@ -61,6 +61,9 @@ private:
     void clearPoints();
     bool addPoint(double imgX, double imgY, double worldX, double worldY);
     bool computeCalibration();
+
+public:
+    Q_INVOKABLE void clearPointsPublic() { clearPoints(); }
     cv::Point2d imageToWorld(double imgX, double imgY);
     cv::Point2d worldToImage(double worldX, double worldY);
 

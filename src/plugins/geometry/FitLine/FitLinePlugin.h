@@ -27,8 +27,7 @@ public:
 
     enum class FitMethod {
         RANSAC,
-        LSD,
-        FTH
+        LS
     };
 
     bool initialize() override;
@@ -43,11 +42,8 @@ protected:
 private:
     bool fitLineRANSAC(const QVector<QPointF>& points,
                        double& rx, double& ry,
-                       double& px, double& py);
-
-    FitMethod m_fitMethod = FitMethod::RANSAC;
-    double m_threshold = 3.0;
-    double m_iterations = 100;
+                       double& px, double& py,
+                       const QString& method, double threshold, int iterations);
 
     // 输出参数
     double m_resultRow1 = 0.0;

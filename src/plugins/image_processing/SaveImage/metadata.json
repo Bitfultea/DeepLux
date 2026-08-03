@@ -15,5 +15,25 @@
         "image",
         "file",
         "export"
-    ]
+    ],
+    "ui": {
+        "parameters": {
+            "filePath": {
+                "editor": "file",
+                "order": 10,
+                "label": "文件路径"
+            },
+            "format": {
+                "order": 20,
+                "label": "格式模板"
+            },
+            "quality": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 30,
+                "label": "质量"
+            }
+        }
+    }
 }

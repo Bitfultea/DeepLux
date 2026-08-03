@@ -57,6 +57,7 @@ public:
     // ========== 相机发现 ==========
 
     QList<CameraStatus> discoverCameras();
+    QList<CameraStatus> knownCameras();
     void refreshCameras();
 
     // ========== 连接管理 ==========

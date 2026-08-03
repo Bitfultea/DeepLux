@@ -4,5 +4,40 @@
     "category": "communication",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "TCP客户端数据读写通信"
+    "description": "TCP客户端数据读写通信",
+    "ui": {
+        "parameters": {
+            "host": {
+                "order": 10,
+                "label": "主机地址"
+            },
+            "port": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 20,
+                "label": "端口"
+            },
+            "timeout": {
+                "min": 0,
+                "step": 100,
+                "decimals": 0,
+                "unit": "ms",
+                "order": 30,
+                "label": "超时"
+            },
+            "writeData": {
+                "order": 40,
+                "label": "发送数据"
+            },
+            "readVariable": {
+                "order": 50,
+                "label": "读取变量名"
+            },
+            "operation": {
+                "order": 60,
+                "label": "操作模式"
+            }
+        }
+    }
 }

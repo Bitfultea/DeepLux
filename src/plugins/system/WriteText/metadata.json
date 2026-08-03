@@ -4,5 +4,22 @@
     "category": "system",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "将文本写入文件"
+    "description": "将文本写入文件",
+    "ui": {
+        "parameters": {
+            "filePath": {
+                "editor": "file",
+                "order": 10,
+                "label": "文件路径"
+            },
+            "textContent": {
+                "order": 20,
+                "label": "文本内容"
+            },
+            "appendMode": {
+                "order": 30,
+                "label": "追加模式"
+            }
+        }
+    }
 }

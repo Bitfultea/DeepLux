@@ -1,15 +1,19 @@
 #include "PropertyPanel.h"
 
+#include "core/device/CameraManager.h"
 #include "core/interface/IModule.h"
 #include "core/manager/PluginManager.h"
 
+#include <QAction>
 #include <QDebug>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QPair>
 #include <QSet>
+#include <QStyle>
 #include <QToolButton>
 
 namespace DeepLux {
@@ -68,8 +72,8 @@ void PropertyPanel::setupUi() {
     m_contentWidget->setObjectName("PropertyPanelContent");
     m_contentWidget->setAutoFillBackground(true);
     m_contentLayout = new QVBoxLayout(m_contentWidget);
-    m_contentLayout->setContentsMargins(8, 8, 8, 8);
-    m_contentLayout->setSpacing(8);
+    m_contentLayout->setContentsMargins(10, 10, 10, 10);
+    m_contentLayout->setSpacing(6);
     m_contentLayout->addStretch();
 
     m_scrollArea->setWidget(m_contentWidget);
@@ -186,7 +190,7 @@ void PropertyPanel::loadParams() {
         paramsLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
         paramsLayout->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         paramsLayout->setHorizontalSpacing(8);
-        paramsLayout->setVerticalSpacing(6);
+        paramsLayout->setVerticalSpacing(8);
 
         const QStringList sortedKeys = sortedParamKeys(params);
 
@@ -220,6 +224,7 @@ void PropertyPanel::loadParams() {
             }
 
             if (widget) {
+                widget->setObjectName(QStringLiteral("ParamEditor_%1").arg(key));
                 QString labelText = meta.value("label").toString(defaultLabelForKey(key));
                 QString unit = meta.value("unit").toString();
                 if (!unit.isEmpty()) {
@@ -299,6 +304,10 @@ bool PropertyPanel::commitParam(const QString& key, const QVariant& value) {
         candidate[key] = QJsonValue::fromVariant(value);
     }
 
+    if (candidate.value(key) == m_currentModule->currentParams().value(key)) {
+        return true;
+    }
+
     // 验证
     QString error;
     if (!m_currentModule->validateParams(candidate, error)) {
@@ -347,13 +356,47 @@ void PropertyPanel::clearWidgetError(QWidget* widget) {
 }
 
 QWidget* PropertyPanel::createTextWidget(const QString& key, const QJsonObject& info) {
-    Q_UNUSED(info)
+    const QJsonObject params = m_currentModule ? m_currentModule->currentParams() : QJsonObject();
+
+    if (info.value("editor").toString() == QStringLiteral("camera")) {
+        QComboBox* combo = new QComboBox();
+        combo->addItem(tr("请选择相机"), QString());
+        for (const CameraStatus& camera : CameraManager::instance().knownCameras()) {
+            combo->addItem(QStringLiteral("%1 (%2)").arg(camera.name, camera.deviceId), camera.deviceId);
+        }
+
+        const QString currentCameraId = params.value(key).toString();
+        int index = combo->findData(currentCameraId);
+        if (!currentCameraId.isEmpty() && index < 0) {
+            combo->addItem(currentCameraId, currentCameraId);
+            index = combo->count() - 1;
+        }
+        combo->setCurrentIndex(qMax(0, index));
+
+        connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, key, combo](int index) {
+            if (index >= 0) {
+                commitParam(key, combo->itemData(index).toString());
+            }
+        });
+        return combo;
+    }
 
     QLineEdit* edit = new QLineEdit();
+    edit->setText(params.value(key).toString());
 
-    if (m_currentModule) {
-        QJsonObject params = m_currentModule->currentParams();
-        edit->setText(params[key].toString());
+    if (info.value("editor").toString() == QStringLiteral("file")) {
+        QAction* browseAction =
+            edit->addAction(edit->style()->standardIcon(QStyle::SP_DirOpenIcon), QLineEdit::TrailingPosition);
+        browseAction->setToolTip(tr("浏览..."));
+        connect(browseAction, &QAction::triggered, this, [this, key, edit, info]() {
+            const QString filter = info.value("filter").toString(tr("所有文件 (*.*)"));
+            const QString title = info.value("dialogTitle").toString(tr("选择文件"));
+            const QString path = QFileDialog::getOpenFileName(this, title, edit->text(), filter);
+            if (!path.isEmpty()) {
+                edit->setText(path);
+                commitParam(key, path);
+            }
+        });
     }
 
     // 文本参数在 editingFinished 时提交
@@ -365,7 +408,7 @@ QWidget* PropertyPanel::createTextWidget(const QString& key, const QJsonObject& 
 QWidget* PropertyPanel::createNumberWidget(const QString& key, const QJsonObject& info) {
     QDoubleSpinBox* spin = new QDoubleSpinBox();
     spin->setRange(-999999, 999999);
-    spin->setDecimals(2);
+    spin->setDecimals(info.value("decimals").toInt(2));
 
     // 使用 ui.parameters 中的 min/max/step
     if (info.contains("min")) {

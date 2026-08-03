@@ -4,5 +4,21 @@
     "category": "logic",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "根据条件判断执行分支"
+    "description": "根据条件判断执行分支",
+    "ui": {
+        "parameters": {
+            "variableName": {
+                "order": 10,
+                "label": "变量名"
+            },
+            "operator": {
+                "order": 20,
+                "label": "运算符"
+            },
+            "compareValue": {
+                "order": 30,
+                "label": "比较值"
+            }
+        }
+    }
 }

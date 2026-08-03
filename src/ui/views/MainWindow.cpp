@@ -168,8 +168,7 @@ private:
             }
             m_project->setModuleParam(m_instanceId, m_key, jsonVal);
         }
-        // 通知检查器刷新参数显示，用于撤销/重做后同步
-        // P0: 延迟刷新到下一事件循环，避免在信号栈中删除发送者控件
+        // 撤销/重做后延迟刷新检查器
         if (m_inspector && m_inspector->currentInstanceId() == m_instanceId) {
             QPointer<ModuleInspectorPanel> inspector = m_inspector;
             QMetaObject::invokeMethod(
@@ -436,14 +435,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
 
     // 参数编辑撤销栈
     m_paramUndoStack = new QUndoStack(this);
-    connect(m_paramUndoStack, &QUndoStack::canUndoChanged, this, [this](bool can) {
-        if (m_undoAction)
-            m_undoAction->setEnabled(can);
-    });
-    connect(m_paramUndoStack, &QUndoStack::canRedoChanged, this, [this](bool can) {
-        if (m_redoAction)
-            m_redoAction->setEnabled(can);
-    });
+    connect(m_paramUndoStack, &QUndoStack::canUndoChanged, m_undoAction, &QAction::setEnabled);
+    connect(m_paramUndoStack, &QUndoStack::canRedoChanged, m_redoAction, &QAction::setEnabled);
 
     // 问题 1: 在 applyTheme() 之前从配置加载主题，确保持久化生效
     {
@@ -795,7 +788,27 @@ void MainWindow::setupMenuBar() {
     QMenu* helpMenu = menuBar()->addMenu(tr("帮助 (&H)"));
     helpMenu->addAction(tr("关于"), this, &MainWindow::onAbout);
 
-    auto* breadcrumb = new QWidget(menuBar());
+    auto* appHeader = new QWidget(menuBar());
+    appHeader->setObjectName("AppBrandHeader");
+    auto* appHeaderLayout = new QHBoxLayout(appHeader);
+    appHeaderLayout->setContentsMargins(10, 0, 10, 0);
+    appHeaderLayout->setSpacing(8);
+
+    auto* appIcon = new QLabel(appHeader);
+    appIcon->setPixmap(AppIconProvider::icon(AppIconProvider::Icon::Home, 20, QColor("#1677C8")).pixmap(20, 20));
+    appHeaderLayout->addWidget(appIcon);
+
+    auto* appName = new QLabel(tr("DeepLux Vision"), appHeader);
+    appName->setObjectName("AppBrandName");
+    appHeaderLayout->addWidget(appName);
+
+    auto* divider = new QFrame(appHeader);
+    divider->setObjectName("AppBrandDivider");
+    divider->setFrameShape(QFrame::VLine);
+    divider->setFixedHeight(20);
+    appHeaderLayout->addWidget(divider);
+
+    auto* breadcrumb = new QWidget(appHeader);
     breadcrumb->setObjectName("ProjectBreadcrumb");
     breadcrumb->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     auto* breadcrumbLayout = new QHBoxLayout(breadcrumb);
@@ -812,7 +825,8 @@ void MainWindow::setupMenuBar() {
     m_projectLabel->setMinimumWidth(100);
     m_projectLabel->setMaximumWidth(320);
     breadcrumbLayout->addWidget(m_projectLabel);
-    // setupToolBar() 会把完整的 breadcrumb 容器移入工具栏。
+    appHeaderLayout->addWidget(breadcrumb);
+    menuBar()->setCornerWidget(appHeader, Qt::TopLeftCorner);
     updateProjectContext(nullptr);
 }
 
@@ -822,17 +836,6 @@ void MainWindow::setupToolBar() {
     mainToolbar->setMovable(false);
     mainToolbar->setIconSize(QSize(24, 24));
     mainToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-
-    // P2: 工程上下文放在工具栏最左侧
-    if (m_projectLabel) {
-        QWidget* breadcrumb = m_projectLabel->parentWidget();
-        if (breadcrumb) {
-            mainToolbar->addWidget(breadcrumb);
-        } else {
-            mainToolbar->addWidget(m_projectLabel);
-        }
-        mainToolbar->addSeparator();
-    }
 
     // 文件操作
     mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::NewFile, 24, QColor("#2563EB")), tr("新建方案"),
@@ -878,10 +881,12 @@ void MainWindow::setupStatusBar() {
     status->addPermanentWidget(m_runStatusLabel);
 
     m_userLabel = new QLabel(tr("用户：未登录"));
+    m_userLabel->setObjectName("UserStatusLabel");
     m_userLabel->setMinimumWidth(150);
     status->addPermanentWidget(m_userLabel);
 
     m_timeLabel = new QLabel();
+    m_timeLabel->setObjectName("TimeStatusLabel");
     m_timeLabel->setMinimumWidth(150);
     status->addPermanentWidget(m_timeLabel);
 
@@ -906,7 +911,8 @@ void MainWindow::setupMainLayout() {
     QWidget* mainContentWidget = new QWidget();
     mainContentWidget->setObjectName("MainContentWidget");
     QVBoxLayout* mainContentLayout = new QVBoxLayout(mainContentWidget);
-    mainContentLayout->setContentsMargins(m_mainSplitter->handleWidth(), 0, m_mainSplitter->handleWidth(), 0);
+    const int outerGutter = metrics.baseSpacing;
+    mainContentLayout->setContentsMargins(outerGutter, outerGutter, outerGutter, outerGutter);
     mainContentLayout->setSpacing(0);
 
     // ========== 左侧：工具面板（贯穿整个高度）==========
@@ -1078,12 +1084,12 @@ void MainWindow::setupMainLayout() {
     m_toolBoxDock->setObjectName("ToolPanelDock");
     m_toolBoxDock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable);
     m_toolBoxDock->setWidget(toolPanelWidget);
-    m_toolBoxDock->setMinimumWidth(240);
-    m_toolBoxDock->setMaximumWidth(340);
+    m_toolBoxDock->setMinimumWidth(metrics.toolPanelWidth);
+    m_toolBoxDock->setMaximumWidth(metrics.toolPanelWidth + 90);
     // 自定义标题栏
     QWidget* toolTitleWidget = new QWidget();
     QHBoxLayout* toolTitleLayout = new QHBoxLayout(toolTitleWidget);
-    toolTitleLayout->setContentsMargins(10, 0, 6, 0);
+    toolTitleLayout->setContentsMargins(10, 2, 4, 2);
     toolTitleLayout->setSpacing(5);
     QLabel* toolTitleLabel = new QLabel(tr("工具"));
     toolTitleLabel->setObjectName("ToolTitleLabel");
@@ -1092,10 +1098,10 @@ void MainWindow::setupMainLayout() {
     QToolButton* toolCloseBtn = new QToolButton();
     toolCloseBtn->setText("×");
     toolCloseBtn->setToolTip(tr("关闭"));
-    toolCloseBtn->setFixedSize(20, 20);
+    toolCloseBtn->setFixedSize(metrics.compactIconButtonSize, metrics.compactIconButtonSize);
     toolCloseBtn->setObjectName("ToolCloseBtn");
     toolTitleLayout->addWidget(toolCloseBtn);
-    toolTitleWidget->setMinimumHeight(36);
+    toolTitleWidget->setFixedHeight(metrics.collapsedHeaderHeight);
     toolTitleWidget->setObjectName("ToolTitleWidget");
     m_toolBoxDock->setTitleBarWidget(toolTitleWidget);
     connect(toolCloseBtn, &QToolButton::clicked, this, [this]() {
@@ -1143,6 +1149,34 @@ void MainWindow::setupMainLayout() {
     QVBoxLayout* flowLayout = new QVBoxLayout(m_processTabContent);
     flowLayout->setContentsMargins(10, 8, 10, 8);
     flowLayout->setSpacing(6);
+
+    auto* processControlBar = new QWidget(m_processTabContent);
+    processControlBar->setObjectName("ProcessControlBar");
+    auto* processControlLayout = new QHBoxLayout(processControlBar);
+    processControlLayout->setContentsMargins(0, 0, 0, 0);
+    processControlLayout->setSpacing(4);
+    auto addProcessControl = [this, processControlBar, processControlLayout](
+                                 const QString& objectName, AppIconProvider::Icon icon, const QColor& color,
+                                 const QString& text, const QString& toolTip, auto slot) {
+        auto* button = new QToolButton(processControlBar);
+        button->setObjectName(objectName);
+        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        button->setIcon(AppIconProvider::icon(icon, 18, color));
+        button->setText(text);
+        button->setToolTip(toolTip);
+        connect(button, &QToolButton::clicked, this, slot);
+        processControlLayout->addWidget(button);
+    };
+    addProcessControl("FlowRunButton", AppIconProvider::Icon::Play, QColor("#16A34A"), tr("运行"), tr("运行流程"),
+                      &MainWindow::onRunOnce);
+    addProcessControl("FlowStepButton", AppIconProvider::Icon::Step, QColor("#0F766E"), tr("单步"), tr("单步执行"),
+                      &MainWindow::onStepRun);
+    addProcessControl("FlowCycleButton", AppIconProvider::Icon::Cycle, QColor("#2563EB"), tr("循环"), tr("循环运行"),
+                      &MainWindow::onRunCycle);
+    addProcessControl("FlowStopButton", AppIconProvider::Icon::Stop, QColor("#DC2626"), tr("停止"), tr("停止运行"),
+                      &MainWindow::onStop);
+    processControlLayout->addStretch();
+    flowLayout->addWidget(processControlBar);
 
     // 模块树
     m_processTree = new QTreeWidget();
@@ -1209,18 +1243,19 @@ void MainWindow::setupMainLayout() {
         m_flowModules.remove(instanceId);
     });
     // Fix: 在模块删除前清空检查器和撤销栈
-    connect(m_processTreeController, &ProcessTreeController::moduleBeingRemoved, this, [this](const QString& instanceId) {
-        if (m_selectedModuleId == instanceId) {
-            m_selectedModuleId.clear();
-            if (m_inspectorPanel) {
-                m_inspectorPanel->clear();
-            }
-            if (m_paramUndoStack) {
-                m_paramUndoStack->clear();
-            }
-            m_dirtyModuleIds.remove(instanceId);
-        }
-    });
+    connect(m_processTreeController, &ProcessTreeController::moduleBeingRemoved, this,
+            [this](const QString& instanceId) {
+                if (m_selectedModuleId == instanceId) {
+                    m_selectedModuleId.clear();
+                    if (m_inspectorPanel) {
+                        m_inspectorPanel->clear();
+                    }
+                    if (m_paramUndoStack) {
+                        m_paramUndoStack->clear();
+                    }
+                    m_dirtyModuleIds.remove(instanceId);
+                }
+            });
 
     flowLayout->addWidget(m_processTree);
     flowLayout->setStretchFactor(m_processTree, 1);
@@ -1230,6 +1265,7 @@ void MainWindow::setupMainLayout() {
 
     // 流程状态栏
     m_processStatusWidget = new QWidget();
+    m_processStatusWidget->setObjectName("ProcessStatusBar");
     QHBoxLayout* processStatusLayout = new QHBoxLayout(m_processStatusWidget);
     processStatusLayout->setContentsMargins(8, 5, 8, 5);
     m_processTimeLabel = new QLabel(tr("总耗时：0 ms"));
@@ -1269,12 +1305,12 @@ void MainWindow::setupMainLayout() {
 
     m_rightTopSplitter->addWidget(processPanelWidget);
 
-    processPanelWidget->setMinimumWidth(220);
-    processPanelWidget->setMaximumWidth(320);
+    processPanelWidget->setMinimumWidth(260);
+    processPanelWidget->setMaximumWidth(metrics.flowPanelWidth + 40);
 
     m_rightTopSplitter->addWidget(imageDisplayWidget);
-    // 主视图逻辑宽度不得被压缩到 620px 以下
-    imageDisplayWidget->setMinimumWidth(620);
+    // 主视图在窄窗口下仍保留可用的结果检视区域。
+    imageDisplayWidget->setMinimumWidth(520);
 
     // ========== 右侧检查器面板 ==========
     m_inspectorPanel = new ModuleInspectorPanel();
@@ -1789,7 +1825,16 @@ void MainWindow::onProjectOpened(Project* project) {
         m_modulesNeedSync = true;
         markModuleDirty(instance.id);
         if (m_inspectorPanel && m_selectedModuleId == instance.id) {
-            m_inspectorPanel->refreshFromModule();
+            QPointer<ModuleInspectorPanel> inspector = m_inspectorPanel;
+            const QString instanceId = instance.id;
+            QMetaObject::invokeMethod(
+                inspector.data(),
+                [inspector, instanceId]() {
+                    if (inspector && inspector->currentInstanceId() == instanceId) {
+                        inspector->refreshFromModule();
+                    }
+                },
+                Qt::QueuedConnection);
         }
     });
     connect(project, &Project::nameChanged, this, [this, project]() {
@@ -1846,11 +1891,29 @@ void MainWindow::onProjectClosed() {
 }
 
 void MainWindow::onViewportCreated(const QString& viewportId, ViewportWidget* viewport) {
-    Q_UNUSED(viewportId)
     if (!viewport)
         return;
     connect(viewport, &ViewportWidget::point2DClicked, this, &MainWindow::onPoint2DPicked, Qt::UniqueConnection);
     connect(viewport, &ViewportWidget::point3DClicked, this, &MainWindow::onPoint3DPicked, Qt::UniqueConnection);
+    // 关闭按钮：清空视口内容（单视口时不销毁）
+    connect(
+        viewport, &ViewportWidget::viewportClosed, this,
+        [this](const QString& id) {
+            if (m_displayManager) {
+                if (m_displayManager->viewportCount() > 1) {
+                    m_displayManager->destroyViewport(id);
+                } else {
+                    // 只有一个视口时仅清空内容
+                    ViewportWidget* vp = m_displayManager->viewport(id);
+                    if (vp) {
+                        vp->clearDisplay();
+                        vp->setTitle(tr("主视图"));
+                    }
+                    clearCentralDisplay();
+                }
+            }
+        },
+        Qt::UniqueConnection);
     // 高: 视口及其子控件也需要事件过滤器，双击进入焦点模式
     viewport->installEventFilter(this);
     if (viewport->imageWidget())
@@ -2816,19 +2879,7 @@ void MainWindow::applyTheme() {
     const ThemePalette pal = ThemeManager::palette(m_isDarkTheme);
 
     if (m_toolBoxDock && m_toolBoxDock->titleBarWidget()) {
-        m_toolBoxDock->titleBarWidget()->setStyleSheet(
-            QString("background-color: %1; border: none; border-bottom: 1px solid %2;")
-                .arg(pal.bgColor, pal.borderColor));
-        QLabel* label = m_toolBoxDock->titleBarWidget()->findChild<QLabel*>();
-        if (label)
-            label->setStyleSheet(
-                QString("QLabel { color: %1; font-weight: 600; font-size: 14px; }").arg(pal.textColor));
-        QToolButton* btn = m_toolBoxDock->titleBarWidget()->findChild<QToolButton*>();
-        if (btn)
-            btn->setStyleSheet(
-                QString("QToolButton { background-color: transparent; color: %1; font-size: 18px; border: none; }"
-                        "QToolButton:hover { background-color: #e74c3c; }")
-                    .arg(pal.btnColor));
+        m_toolBoxDock->titleBarWidget()->setStyleSheet(QString());
     }
     if (m_logDock && m_logDock->titleBarWidget()) {
         m_logDock->titleBarWidget()->setStyleSheet(
@@ -2842,50 +2893,40 @@ void MainWindow::applyTheme() {
 
     // Tree widget 样式由 ThemeManager 统一管理，不再局部覆盖
 
-    QScrollArea* toolCategoryScroll = findChild<QScrollArea*>("ToolCategoryScroll");
-    if (toolCategoryScroll) {
-        toolCategoryScroll->setStyleSheet(QString("QScrollArea { background-color: %1; border: none; }"
-                                                  "QScrollArea > QWidget > QWidget { background-color: %1; }")
-                                              .arg(pal.scrollBgColor));
+    if (QScrollArea* toolCategoryScroll = findChild<QScrollArea*>("ToolCategoryScroll")) {
+        toolCategoryScroll->setStyleSheet(QString());
     }
 
     if (m_processStatusWidget) {
-        m_processStatusWidget->setStyleSheet(QString("background-color: %1;").arg(pal.bgColor));
-        if (m_processTimeLabel) {
-            m_processTimeLabel->setStyleSheet(QString("QLabel { color: %1; }").arg(pal.textColor));
-        }
+        m_processStatusWidget->setStyleSheet(QString());
     }
 
     // Process tool button 样式由 ThemeManager 统一管理，不再局部覆盖
 
     QWidget* procToolBar = findChild<QWidget*>("ProcessToolBar");
     if (procToolBar) {
-        procToolBar->setStyleSheet(QString("background-color: %1;").arg(pal.scrollBgColor));
+        procToolBar->setStyleSheet(QString());
     }
 
     QWidget* viewToggleWidget = findChild<QWidget*>("ViewToggleWidget");
     if (viewToggleWidget) {
-        viewToggleWidget->setStyleSheet(QString("background-color: %1;").arg(pal.scrollBgColor));
+        viewToggleWidget->setStyleSheet(QString());
     }
 
     QWidget* toolPanelWidget = findChild<QWidget*>("ToolPanelWidget");
     if (toolPanelWidget) {
-        toolPanelWidget->setStyleSheet(QString("background-color: %1;").arg(pal.scrollBgColor));
+        toolPanelWidget->setStyleSheet(QString());
     }
     QWidget* processPanelWidget = findChild<QWidget*>("ProcessPanelWidget");
     if (processPanelWidget) {
-        processPanelWidget->setStyleSheet(
-            QString("background-color: %1; border-right: 1px solid %2;").arg(pal.scrollBgColor, pal.panelBorderColor));
+        processPanelWidget->setStyleSheet(QString());
     }
     QWidget* imageDisplayWidget = findChild<QWidget*>("ImageDisplayWidget");
     if (imageDisplayWidget) {
-        imageDisplayWidget->setStyleSheet(QString("background-color: %1; border-left: 1px solid %2; "
-                                                  "border-bottom: 1px solid %2;")
-                                              .arg(pal.imageDisplayBg, pal.panelBorderColor));
+        imageDisplayWidget->setStyleSheet(QString());
     }
     if (m_logDock) {
-        m_logDock->setStyleSheet(
-            QString("QDockWidget#LogDock { border-top: 1px solid %1; }").arg(pal.panelBorderColor));
+        m_logDock->setStyleSheet(QString());
     }
     if (m_logTable) {
         m_logTable->setFrameShape(QFrame::NoFrame);
@@ -2901,15 +2942,7 @@ void MainWindow::applyTheme() {
     }
 
     if (m_processTabWidget) {
-        m_processTabWidget->setStyleSheet(
-            QString("QTabWidget::pane { border: none; border-top: 2px solid %1; background-color: %2; }"
-                    "QTabWidget::tab-bar { left: 8px; }"
-                    "QTabBar::tab { background-color: transparent; color: %3; font-size: 14px; font-weight: 600;"
-                    "  min-height: 30px; min-width: 56px; padding: 5px 14px; border: none;"
-                    "  border-bottom: 2px solid transparent; margin-right: 4px; }"
-                    "QTabBar::tab:selected { color: #0078d7; border-bottom: 2px solid #0078d7; }"
-                    "QTabBar::tab:hover:!selected { color: %3; background-color: %1; }")
-                .arg(pal.processTabBorder, pal.processTabBg, pal.processTabFg));
+        m_processTabWidget->setStyleSheet(QString());
     }
     if (m_logTerminalTabs) {
         m_logTerminalTabs->setStyleSheet(
@@ -3536,11 +3569,19 @@ void MainWindow::openAdvancedPluginConfig(const QString& instanceId) {
         return;
     }
 
-    // P1-1: 保存参数快照，取消时回滚
+    // 阶段 1: 保存原始参数快照
     const QJsonObject paramsBefore = module->currentParams();
 
-    QWidget* configWidget = module->createConfigWidget();
+    // 阶段 1: 创建草稿模块（clone），配置控件绑定草稿，不直接修改运行模块
+    IModule* draft = module->clone();
+    if (!draft) {
+        Logger::instance().warning(tr("该模块不支持克隆，无法打开配置"), "Config");
+        return;
+    }
+
+    QWidget* configWidget = draft->createConfigWidget();
     if (!configWidget) {
+        delete draft;
         Logger::instance().warning(tr("该模块没有配置选项"), "Config");
         return;
     }
@@ -3556,7 +3597,6 @@ void MainWindow::openAdvancedPluginConfig(const QString& instanceId) {
     dialog->setWindowTitle(tr("配置 - %1").arg(displayName));
     dialog->setMinimumSize(460, 480);
     dialog->setStyleSheet(pluginConfigDialogStyle(m_isDarkTheme));
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
     QVBoxLayout* layout = new QVBoxLayout(dialog);
     layout->setContentsMargins(14, 12, 14, 12);
     layout->setSpacing(10);
@@ -3569,6 +3609,16 @@ void MainWindow::openAdvancedPluginConfig(const QString& instanceId) {
     scrollArea->setFrameShape(QFrame::NoFrame);
     scrollArea->setWidget(configWidget);
     layout->addWidget(scrollArea, 1);
+
+    // 阶段 1: 校验错误提示标签
+    QLabel* errorLabel = new QLabel(dialog);
+    errorLabel->setObjectName("PluginConfigErrorLabel");
+    errorLabel->setStyleSheet(
+        QString("color: %1; font-weight: bold; padding: 4px;").arg(m_isDarkTheme ? "#F87171" : "#DC2626"));
+    errorLabel->setWordWrap(true);
+    errorLabel->hide();
+    layout->addWidget(errorLabel);
+
     QHBoxLayout* btnLayout = new QHBoxLayout();
     QPushButton* okBtn = new QPushButton(tr("确定"));
     okBtn->setObjectName("PluginConfigOkButton");
@@ -3581,25 +3631,62 @@ void MainWindow::openAdvancedPluginConfig(const QString& instanceId) {
     btnLayout->addWidget(cancelBtn);
     layout->addLayout(btnLayout);
 
-    // P1-1: dialog 关闭时销毁 configWidget（不再保留悬空指针）
-    connect(dialog, &QDialog::finished, dialog, [configWidget]() { configWidget->deleteLater(); });
-
-    connect(okBtn, &QPushButton::clicked, dialog, &QDialog::accept);
+    // 阶段 1: 确定时先校验，校验失败保持弹窗并显示错误
+    QPointer<IModule> modulePtr(module);
+    QPointer<IModule> draftPtr(draft);
+    connect(okBtn, &QPushButton::clicked, this, [modulePtr, draftPtr, errorLabel, dialog]() {
+        if (!modulePtr || !draftPtr)
+            return;
+        const QJsonObject draftParams = draftPtr->currentParams();
+        QString error;
+        if (!modulePtr->validateParams(draftParams, error)) {
+            errorLabel->setText(error);
+            errorLabel->show();
+            return;
+        }
+        dialog->accept();
+    });
     connect(cancelBtn, &QPushButton::clicked, dialog, &QDialog::reject);
 
-    if (dialog->exec() == QDialog::Accepted) {
-        // P1-1: 确定时写回 Project
-        const QJsonObject paramsAfter = module->currentParams();
+    // exec() 返回后 delete dialog，级联销毁所有子对象（含 configWidget、scrollArea 等）。
+    const int result = dialog->exec();
+    delete dialog;
+
+    if (result == QDialog::Accepted) {
+        // 阶段 1: 用 undo macro 提交全部差异，一条可撤销记录
+        const QJsonObject paramsAfter = draft->currentParams();
         Project* project = ProjectManager::instance().currentProject();
-        if (project) {
-            for (auto it = paramsAfter.constBegin(); it != paramsAfter.constEnd(); ++it) {
-                if (paramsBefore.value(it.key()) != it.value()) {
-                    project->setModuleParam(instanceId, it.key(), it.value());
-                }
+
+        bool hasChanges = false;
+        for (auto it = paramsAfter.constBegin(); it != paramsAfter.constEnd(); ++it) {
+            if (!it.key().startsWith('_') && paramsBefore.value(it.key()) != it.value()) {
+                hasChanges = true;
+                break;
             }
         }
+
+        if (hasChanges && project && m_paramUndoStack) {
+            m_paramUndoStack->beginMacro(tr("配置 %1").arg(displayName));
+            for (auto it = paramsAfter.constBegin(); it != paramsAfter.constEnd(); ++it) {
+                const QString& key = it.key();
+                if (key.startsWith('_'))
+                    continue;
+                if (paramsBefore.value(key) != it.value()) {
+                    QVariant newVal = it.value().toVariant();
+                    QVariant oldVal = paramsBefore.value(key).toVariant();
+                    m_paramUndoStack->push(
+                        new SetModuleParamCommand(module, project, instanceId, key, newVal, oldVal, m_inspectorPanel));
+                }
+            }
+            m_paramUndoStack->endMacro();
+        }
+
+        // 阶段 1: 处理非参数副作用（如 NPointCalibration 的清除标定点）
+        if (paramsAfter.value("_clearPointsRequested").toBool()) {
+            QMetaObject::invokeMethod(module, "clearPointsPublic", Qt::DirectConnection);
+        }
+
         if (m_inspectorPanel) {
-            // 中: 刷新检查器参数显示
             if (m_selectedModuleId == instanceId) {
                 QPointer<ModuleInspectorPanel> inspector = m_inspectorPanel;
                 QMetaObject::invokeMethod(
@@ -3614,10 +3701,11 @@ void MainWindow::openAdvancedPluginConfig(const QString& instanceId) {
         m_modulesNeedSync = true;
         Logger::instance().info(tr("模块参数已更新：%1").arg(displayName), "Config");
     } else {
-        // P1-1: 取消时回滚参数
-        module->setParams(paramsBefore);
+        // 阶段 1: 取消时直接销毁草稿，无需回滚（运行模块未被修改）
         Logger::instance().info(tr("已取消配置修改：%1").arg(displayName), "Config");
     }
+
+    delete draft;
 }
 
 // ========== 阶段 8: 聚焦模式 ==========
@@ -4069,7 +4157,7 @@ void MainWindow::adaptInspectorLayout() {
     }
 
     const int windowWidth = width();
-    const int minMainView = 620; // 主视图最小宽度
+    const int minMainView = 520; // 主视图最小宽度
     const LayoutMetrics metrics = ThemeManager::layoutMetrics();
 
     // ===== 窄屏自适应：在判断布局前先压缩流程面板 / 隐藏工具面板 =====
@@ -4093,7 +4181,7 @@ void MainWindow::adaptInspectorLayout() {
     // 计算左侧工具面板 + 流程面板的宽度
     int leftWidth = 0;
     if (m_mainSplitter && m_mainSplitter->count() >= 1) {
-        leftWidth = m_mainSplitter->sizes().value(0, 210);
+        leftWidth = m_mainSplitter->sizes().value(0, metrics.toolPanelWidth);
     }
     // 工具面板隐藏后，左侧宽度应视为 0
     if (m_toolBoxDock && !m_toolBoxDock->isVisible()) {
@@ -4106,11 +4194,11 @@ void MainWindow::adaptInspectorLayout() {
     if (m_rightTopSplitter && m_rightTopSplitter->count() >= 1) {
         flowPanelWidth = m_rightTopSplitter->sizes().value(0, 300);
     }
-    const int desiredFlowWidth = (windowWidth < 1200) ? 240 : 300;
+    const int desiredFlowWidth = (windowWidth < 1200) ? 260 : metrics.flowPanelWidth;
     // 临时降低最小宽度以允许压缩
     QWidget* procPanel = findChild<QWidget*>("ProcessPanelWidget");
     if (procPanel) {
-        procPanel->setMinimumWidth(220);
+        procPanel->setMinimumWidth(260);
     }
     if (m_rightTopSplitter && m_rightTopSplitter->count() >= 3 && flowPanelWidth != desiredFlowWidth) {
         QList<int> sizes = m_rightTopSplitter->sizes();

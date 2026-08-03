@@ -13,6 +13,7 @@
 #include <QMenu>
 #include <QPair>
 #include <QScrollArea>
+#include <QSet>
 #include <QVBoxLayout>
 
 namespace DeepLux {
@@ -46,8 +47,8 @@ void ModuleInspectorPanel::setupHeader() {
     m_headerFrame = new QFrame();
     m_headerFrame->setObjectName("InspectorHeader");
     auto* headerLayout = new QHBoxLayout(m_headerFrame);
-    headerLayout->setContentsMargins(8, 2, 4, 2);
-    headerLayout->setSpacing(4);
+    headerLayout->setContentsMargins(8, 3, 4, 3);
+    headerLayout->setSpacing(3);
 
     m_iconLabel = new QLabel();
     m_iconLabel->setObjectName("InspectorIcon");
@@ -171,14 +172,13 @@ void ModuleInspectorPanel::setupBottomBar() {
     m_bottomBar->setObjectName("InspectorBottomBar");
     auto* bottomLayout = new QHBoxLayout(m_bottomBar);
     bottomLayout->setContentsMargins(8, 6, 8, 6);
-    bottomLayout->setSpacing(6);
+    bottomLayout->setSpacing(4);
 
     // 主按钮：重新运行 — 样式由全局 ThemeManager 提供
     m_rerunBtn = new QPushButton(tr("重新运行"));
     m_rerunBtn->setObjectName("InspectorRerunBtn");
     m_rerunBtn->setMinimumWidth(112);
     connect(m_rerunBtn, &QPushButton::clicked, this, &ModuleInspectorPanel::onRerunClicked);
-    bottomLayout->addStretch();
     bottomLayout->addWidget(m_rerunBtn);
 
     m_moreBtn = new QToolButton();
@@ -188,8 +188,8 @@ void ModuleInspectorPanel::setupBottomBar() {
     m_moreBtn->setPopupMode(QToolButton::InstantPopup);
 
     auto* moreMenu = new QMenu(m_moreBtn);
-    QAction* advancedAction = moreMenu->addAction(tr("高级配置"), this, &ModuleInspectorPanel::onAdvancedClicked);
-    advancedAction->setObjectName("InspectorAdvancedAction");
+    m_advancedAction = moreMenu->addAction(tr("高级配置"), this, &ModuleInspectorPanel::onAdvancedClicked);
+    m_advancedAction->setObjectName("InspectorAdvancedAction");
     QAction* resetAction = moreMenu->addAction(tr("恢复默认参数"), this, &ModuleInspectorPanel::onResetClicked);
     resetAction->setObjectName("InspectorResetAction");
     m_moreBtn->setMenu(moreMenu);
@@ -213,6 +213,19 @@ void ModuleInspectorPanel::setModule(IModule* module, const QString& instanceId,
     m_emptyState->setVisible(false);
     m_tabWidget->setVisible(!m_collapsed);
     m_bottomBar->setVisible(!m_collapsed);
+
+    // 阶段 6: 仅对需要独立窗口的插件显示"高级配置"
+    // N点标定、MeasurementInput、ImageScript、通信硬件插件
+    static const QSet<QString> advancedPlugins = {
+        QStringLiteral("com.deeplux.plugin.npointcalibration"), QStringLiteral("com.deeplux.plugin.measurementinput"),
+        QStringLiteral("com.deeplux.plugin.imagescript"),       QStringLiteral("com.deeplux.plugin.serialport"),
+        QStringLiteral("com.deeplux.plugin.tcpclient"),         QStringLiteral("com.deeplux.plugin.tcpserver"),
+        QStringLiteral("com.deeplux.plugin.plcread"),           QStringLiteral("com.deeplux.plugin.plcwrite"),
+        QStringLiteral("com.deeplux.plugin.plccommunicate"),    QStringLiteral("com.deeplux.plugin.strformat"),
+    };
+    if (m_advancedAction) {
+        m_advancedAction->setVisible(advancedPlugins.contains(module->moduleId()));
+    }
 
     // 更新标题
     m_nameLabel->setText(module->name());

@@ -4,5 +4,13 @@
     "category": "system",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "获取系统当前时间"
+    "description": "获取系统当前时间",
+    "ui": {
+        "parameters": {
+            "timeFormat": {
+                "order": 10,
+                "label": "时间格式"
+            }
+        }
+    }
 }

@@ -1,32 +1,27 @@
 #include "QRCodePlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QLabel>
+
 #include <QComboBox>
+#include <QLabel>
 #include <QLineEdit>
+#include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
-#include <opencv2/opencv.hpp>
 #include <opencv2/objdetect.hpp>
+#include <opencv2/opencv.hpp>
 #endif
 
 namespace DeepLux {
 
-QRCodePlugin::QRCodePlugin(QObject* parent) : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"codeType", "QR_Code"},
-        {"timeout", 5000}
-    };
+QRCodePlugin::QRCodePlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"codeType", "QR_Code"}};
     m_params = m_defaultParams;
 }
 
-QRCodePlugin::~QRCodePlugin()
-{
-}
+QRCodePlugin::~QRCodePlugin() {}
 
-bool QRCodePlugin::initialize()
-{
+bool QRCodePlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -34,13 +29,11 @@ bool QRCodePlugin::initialize()
     return true;
 }
 
-void QRCodePlugin::shutdown()
-{
+void QRCodePlugin::shutdown() {
     ModuleBase::shutdown();
 }
 
-bool QRCodePlugin::process(const ImageData& input, ImageData& output)
-{
+bool QRCodePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -51,10 +44,14 @@ bool QRCodePlugin::process(const ImageData& input, ImageData& output)
         return decodeQRCode(input, output);
     } else {
         CodeType type = CodeType::QR_Code;
-        if (codeType == "Code_128") type = CodeType::Code_128;
-        else if (codeType == "Code_39") type = CodeType::Code_39;
-        else if (codeType == "EAN_13") type = CodeType::EAN_13;
-        else if (codeType == "EAN_8") type = CodeType::EAN_8;
+        if (codeType == "Code_128")
+            type = CodeType::Code_128;
+        else if (codeType == "Code_39")
+            type = CodeType::Code_39;
+        else if (codeType == "EAN_13")
+            type = CodeType::EAN_13;
+        else if (codeType == "EAN_8")
+            type = CodeType::EAN_8;
         return decodeBarCode(input, output, type);
     }
 #else
@@ -64,8 +61,7 @@ bool QRCodePlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-bool QRCodePlugin::decodeQRCode(const ImageData& input, ImageData& output)
-{
+bool QRCodePlugin::decodeQRCode(const ImageData& input, ImageData& output) {
 #ifdef DEEPLUX_HAS_OPENCV
     try {
         cv::Mat mat;
@@ -126,8 +122,7 @@ bool QRCodePlugin::decodeQRCode(const ImageData& input, ImageData& output)
 #endif
 }
 
-bool QRCodePlugin::decodeBarCode(const ImageData& input, ImageData& output, CodeType type)
-{
+bool QRCodePlugin::decodeBarCode(const ImageData& input, ImageData& output, CodeType type) {
 #ifdef DEEPLUX_HAS_OPENCV
     Q_UNUSED(input);
     Q_UNUSED(output);
@@ -143,53 +138,40 @@ bool QRCodePlugin::decodeBarCode(const ImageData& input, ImageData& output, Code
 // qImageToMat is defined in ImageData.cpp
 #endif
 
-bool QRCodePlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
-    Q_UNUSED(params);
+bool QRCodePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
+    if (params["codeType"].toString() != QStringLiteral("QR_Code")) {
+        error = tr("当前版本仅支持二维码识别");
+        return false;
+    }
     error.clear();
     return true;
 }
 
-QWidget* QRCodePlugin::createConfigWidget()
-{
+QWidget* QRCodePlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
     layout->addWidget(new QLabel(tr("码类型:")));
     QComboBox* typeCombo = new QComboBox();
     typeCombo->addItem(tr("二维码"), "QR_Code");
-    typeCombo->addItem(tr("Code 128"), "Code_128");
-    typeCombo->addItem(tr("Code 39"), "Code_39");
-    typeCombo->addItem(tr("EAN-13"), "EAN_13");
-    typeCombo->addItem(tr("EAN-8"), "EAN_8");
 
     QString currentType = m_params["codeType"].toString();
     int index = typeCombo->findData(currentType);
-    if (index >= 0) typeCombo->setCurrentIndex(index);
+    if (index >= 0)
+        typeCombo->setCurrentIndex(index);
     layout->addWidget(typeCombo);
 
-    layout->addWidget(new QLabel(tr("超时(ms):")));
-    QLineEdit* timeoutEdit = new QLineEdit(QString::number(m_params["timeout"].toInt()));
-    layout->addWidget(timeoutEdit);
-
-    layout->addWidget(new QLabel(tr("注意: 条码检测需要zbar库支持")));
     layout->addStretch();
 
     connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            [this, typeCombo](int index) {
-        setParam("codeType", typeCombo->itemData(index).toString());
-    });
-
-    connect(timeoutEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
-        setParam("timeout", text.toInt());
-    });
+            [this, typeCombo](int index) { setParam("codeType", typeCombo->itemData(index).toString()); });
 
     return widget;
 }
 
-IModule* QRCodePlugin::cloneImpl() const
-{
-    QRCodePlugin* clone = new QRCodePlugin();
+IModule* QRCodePlugin::cloneImpl() const {
+    auto* clone = new QRCodePlugin();
+    clone->setParams(currentParams());
     return clone;
 }
 

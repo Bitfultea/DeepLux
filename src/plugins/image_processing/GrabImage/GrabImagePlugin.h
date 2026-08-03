@@ -51,7 +51,6 @@ signals:
 
 protected:
     bool process(const ImageData& input, ImageData& output) override;
-    bool doValidateParams(const QJsonObject& params, QString& error) const override;
 
 private:
     bool grabFromCamera(ImageData& output);

@@ -4,5 +4,46 @@
     "category": "detection",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "检测并测量图像中的线条"
+    "description": "检测并测量图像中的线条",
+    "ui": {
+        "parameters": {
+            "minLength": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 10,
+                "label": "最小长度"
+            },
+            "maxLength": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 20,
+                "label": "最大长度"
+            },
+            "threshold": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 30,
+                "label": "阈值"
+            },
+            "minAngle": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "max": 180,
+                "order": 40,
+                "label": "最小角度"
+            },
+            "maxAngle": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "max": 180,
+                "order": 50,
+                "label": "最大角度"
+            }
+        }
+    }
 }

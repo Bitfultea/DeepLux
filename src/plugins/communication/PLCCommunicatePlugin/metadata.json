@@ -4,5 +4,28 @@
     "category": "communication",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "测试PLC Modbus TCP连接是否正常"
+    "description": "测试PLC Modbus TCP连接是否正常",
+    "ui": {
+        "parameters": {
+            "ipAddress": {
+                "order": 10,
+                "label": "IP地址"
+            },
+            "port": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 20,
+                "label": "端口"
+            },
+            "timeout": {
+                "min": 0,
+                "step": 100,
+                "decimals": 0,
+                "unit": "ms",
+                "order": 30,
+                "label": "超时"
+            }
+        }
+    }
 }

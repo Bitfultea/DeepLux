@@ -35,13 +35,9 @@ protected:
     IModule* cloneImpl() const override;
 
 private:
-    bool detectLines(const cv::Mat& gray, std::vector<cv::Vec4i>& lines);
-
-    double m_minLength = 20.0;
-    double m_maxLength = 1000.0;
-    double m_threshold = 50.0;
-    double m_minAngle = 0.0;
-    double m_maxAngle = 180.0;
+    bool detectLines(const cv::Mat& gray, std::vector<cv::Vec4i>& lines,
+                     double minLength, double maxLength,
+                     double threshold, double minAngle, double maxAngle);
 
     // 输出参数
     double m_resultRow1 = 0.0;

@@ -4,5 +4,13 @@
     "category": "detection",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "识别图像中的指定颜色区域"
+    "description": "识别图像中的指定颜色区域",
+    "ui": {
+        "parameters": {
+            "targetColor": {
+                "order": 10,
+                "label": "目标颜色"
+            }
+        }
+    }
 }

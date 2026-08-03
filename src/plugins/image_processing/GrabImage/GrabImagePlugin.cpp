@@ -2,18 +2,17 @@
 #include "core/device/CameraManager.h"
 #include "core/interface/ICamera.h"
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
+#include <QAction>
 #include <QComboBox>
-#include <QPushButton>
+#include <QDoubleSpinBox>
+#include <QFormLayout>
 #include <QLineEdit>
-#include <QLabel>
 #include <QFileDialog>
-#include <QHBoxLayout>
 #include <QFileInfo>
 #include <QCoreApplication>
+#include <QStyle>
 #include <QThread>
 #include <QElapsedTimer>
-#include <QSpinBox>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -31,7 +30,6 @@ GrabImagePlugin::GrabImagePlugin(QObject* parent)
 {
     m_defaultParams = QJsonObject{
         {"cameraId", ""},
-        {"useFile", false},
         {"filePath", ""},
         {"exposureTime", 10000.0},
         {"gain", 1.0},
@@ -385,120 +383,107 @@ void GrabImagePlugin::setParam(const QString& key, const QVariant& value)
     }
 }
 
-bool GrabImagePlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
-    GrabSource source = static_cast<GrabSource>(
-        params["grabSource"].toString() == "File" ? 1 :
-        params["grabSource"].toString() == "Demo" ? 2 : 0);
-
-    if (source == GrabSource::File) {
-        if (params["filePath"].toString().isEmpty()) {
-            error = tr("使用文件模式时，必须指定文件路径");
-            return false;
-        }
-    }
-    return true;
-}
-
 QWidget* GrabImagePlugin::createConfigWidget()
 {
     QWidget* widget = new QWidget();
-    QVBoxLayout* layout = new QVBoxLayout(widget);
+    QFormLayout* layout = new QFormLayout(widget);
+    layout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    layout->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    layout->setHorizontalSpacing(8);
+    layout->setVerticalSpacing(8);
+
+    const QJsonObject params = currentParams();
 
     // 图像源选择
     QComboBox* sourceCombo = new QComboBox();
+    sourceCombo->setObjectName(QStringLiteral("ParamEditor_grabSource"));
     sourceCombo->addItem(tr("相机"), "Camera");
     sourceCombo->addItem(tr("文件"), "File");
     sourceCombo->addItem(tr("演示"), "Demo");
 
-    QString currentSource = m_params["grabSource"].toString();
-    if (currentSource.isEmpty()) currentSource = "Demo";
+    QString currentSource = params.value("grabSource").toString("Camera");
     int index = sourceCombo->findData(currentSource);
-    if (index < 0) index = 2;
-
-    // 先阻塞信号避免setCurrentIndex触发currentIndexChanged
-    sourceCombo->blockSignals(true);
+    if (index < 0) index = 0;
     sourceCombo->setCurrentIndex(index);
-    sourceCombo->blockSignals(false);
-
-    layout->addWidget(new QLabel(tr("图像源:")));
-    layout->addWidget(sourceCombo);
+    layout->addRow(tr("图像源"), sourceCombo);
 
     // 文件路径控件
-    QLineEdit* filePathEdit = new QLineEdit(m_params["filePath"].toString());
-    QPushButton* browseBtn = new QPushButton(tr("浏览..."));
-    QHBoxLayout* fileLayout = new QHBoxLayout();
-    fileLayout->addWidget(filePathEdit);
-    fileLayout->addWidget(browseBtn);
-    layout->addWidget(new QLabel(tr("文件路径:")));
-    layout->addLayout(fileLayout);
+    QLineEdit* filePathEdit = new QLineEdit(params.value("filePath").toString());
+    filePathEdit->setObjectName(QStringLiteral("ParamEditor_filePath"));
+    QAction* browseAction = filePathEdit->addAction(widget->style()->standardIcon(QStyle::SP_DirOpenIcon),
+                                                     QLineEdit::TrailingPosition);
+    browseAction->setToolTip(tr("浏览..."));
+    layout->addRow(tr("文件路径"), filePathEdit);
 
-    // 相机选择下拉框（从 CameraManager 获取可用相机）
+    // 复用已缓存的发现结果，避免打开配置时再次扫描硬件
     QComboBox* cameraCombo = new QComboBox();
-    cameraCombo->addItem(tr("-- 请选择相机 --"), QString());
-    QList<CameraStatus> cameras = CameraManager::instance().discoverCameras();
+    cameraCombo->setObjectName(QStringLiteral("ParamEditor_cameraId"));
+    cameraCombo->addItem(tr("请选择相机"), QString());
+    const QList<CameraStatus> cameras = CameraManager::instance().knownCameras();
     for (const CameraStatus& cam : cameras) {
         QString label = QString("%1 (%2)").arg(cam.name).arg(cam.deviceId);
         cameraCombo->addItem(label, cam.deviceId);
     }
-    QString currentCameraId = m_params["cameraId"].toString();
+    QString currentCameraId = params.value("cameraId").toString();
     int camIndex = cameraCombo->findData(currentCameraId);
-    if (camIndex >= 0) {
-        cameraCombo->setCurrentIndex(camIndex);
+    if (!currentCameraId.isEmpty() && camIndex < 0) {
+        cameraCombo->addItem(currentCameraId, currentCameraId);
+        camIndex = cameraCombo->count() - 1;
     }
+    cameraCombo->setCurrentIndex(qMax(0, camIndex));
+    layout->addRow(tr("相机"), cameraCombo);
 
-    QLineEdit* exposureEdit = new QLineEdit(QString::number(m_params["exposureTime"].toDouble()));
-    QLineEdit* gainEdit = new QLineEdit(QString::number(m_params["gain"].toDouble()));
-    QSpinBox* timeoutSpin = new QSpinBox();
+    QDoubleSpinBox* exposureSpin = new QDoubleSpinBox();
+    exposureSpin->setObjectName(QStringLiteral("ParamEditor_exposureTime"));
+    exposureSpin->setRange(0, 999999);
+    exposureSpin->setDecimals(0);
+    exposureSpin->setSingleStep(100);
+    exposureSpin->setValue(params.value("exposureTime").toDouble(10000));
+    layout->addRow(tr("曝光时间 (us)"), exposureSpin);
+
+    QDoubleSpinBox* gainSpin = new QDoubleSpinBox();
+    gainSpin->setObjectName(QStringLiteral("ParamEditor_gain"));
+    gainSpin->setRange(0, 999999);
+    gainSpin->setDecimals(2);
+    gainSpin->setSingleStep(0.1);
+    gainSpin->setValue(params.value("gain").toDouble(1));
+    layout->addRow(tr("增益"), gainSpin);
+
+    QDoubleSpinBox* timeoutSpin = new QDoubleSpinBox();
+    timeoutSpin->setObjectName(QStringLiteral("ParamEditor_grabTimeout"));
     timeoutSpin->setRange(100, 60000);
-    timeoutSpin->setValue(m_params["grabTimeout"].toInt(5000));
-    timeoutSpin->setPrefix(tr("采集超时(ms): "));
+    timeoutSpin->setDecimals(0);
+    timeoutSpin->setSingleStep(100);
+    timeoutSpin->setValue(params.value("grabTimeout").toDouble(5000));
+    layout->addRow(tr("采集超时 (ms)"), timeoutSpin);
 
-    layout->addWidget(new QLabel(tr("选择相机:")));
-    layout->addWidget(cameraCombo);
-    layout->addWidget(new QLabel(tr("曝光时间(us):")));
-    layout->addWidget(exposureEdit);
-    layout->addWidget(new QLabel(tr("增益:")));
-    layout->addWidget(gainEdit);
-    layout->addWidget(timeoutSpin);
-
-    layout->addStretch();
-
-    // 信号连接 - 使用activated而不是currentIndexChanged，避免初次设置时触发
-    connect(sourceCombo, QOverload<int>::of(&QComboBox::activated),
-            this, [=](int index) {
+    connect(sourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int index) {
         QString source = sourceCombo->itemData(index).toString();
         setParam("grabSource", source);
     });
 
-    connect(browseBtn, &QPushButton::clicked, this, [=]() {
+    connect(browseAction, &QAction::triggered, this, [=]() {
         QString path = QFileDialog::getOpenFileName(widget, tr("选择图像文件"),
-            QString(), tr("图像文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"));
+            filePathEdit->text(), tr("图像文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"));
         if (!path.isEmpty()) {
             filePathEdit->setText(path);
             setParam("filePath", path);
         }
     });
 
-    connect(filePathEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("filePath", text);
-    });
+    connect(filePathEdit, &QLineEdit::editingFinished, this,
+            [=]() { setParam("filePath", filePathEdit->text()); });
 
-    connect(cameraCombo, QOverload<int>::of(&QComboBox::activated), this, [=](int index) {
+    connect(cameraCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int index) {
         setParam("cameraId", cameraCombo->itemData(index).toString());
     });
 
-    connect(exposureEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("exposureTime", text.toDouble());
-    });
-
-    connect(gainEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("gain", text.toDouble());
-    });
-
-    connect(timeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        setParam("grabTimeout", value);
-    });
+    connect(exposureSpin, &QDoubleSpinBox::editingFinished, this,
+            [=]() { setParam("exposureTime", exposureSpin->value()); });
+    connect(gainSpin, &QDoubleSpinBox::editingFinished, this,
+            [=]() { setParam("gain", gainSpin->value()); });
+    connect(timeoutSpin, &QDoubleSpinBox::editingFinished, this,
+            [=]() { setParam("grabTimeout", timeoutSpin->value()); });
 
     return widget;
 }

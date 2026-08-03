@@ -122,6 +122,11 @@ QList<CameraStatus> CameraManager::discoverCameras() {
     return discovered;
 }
 
+QList<CameraStatus> CameraManager::knownCameras() {
+    QMutexLocker locker(&m_mutex);
+    return m_cameraStatuses.values();
+}
+
 void CameraManager::refreshCameras() {
     {
         // 清除旧的未连接相机状态

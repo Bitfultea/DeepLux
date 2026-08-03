@@ -4,5 +4,35 @@
     "category": "calibration",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "N点标定，用于相机标定和坐标转换"
+    "description": "N点标定，用于相机标定和坐标转换",
+    "ui": {
+        "parameters": {
+            "calibrationType": {
+                "order": 10,
+                "label": "标定类型"
+            },
+            "outputWidth": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 20,
+                "label": "输出宽度"
+            },
+            "outputHeight": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 30,
+                "label": "输出高度"
+            },
+            "inverseTransform": {
+                "order": 40,
+                "label": "逆变换"
+            },
+            "clearPointsOnRun": {
+                "order": 50,
+                "label": "运行时清除点"
+            }
+        }
+    }
 }

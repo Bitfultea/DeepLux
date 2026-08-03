@@ -4,5 +4,23 @@
     "category": "system",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "以表格形式输出数据"
+    "description": "以表格形式输出数据",
+    "ui": {
+        "parameters": {
+            "rowCount": {
+                "min": 0,
+                "step": 1,
+                "decimals": 0,
+                "order": 10,
+                "label": "行数"
+            },
+            "colCount": {
+                "min": 0,
+                "step": 1,
+                "decimals": 0,
+                "order": 20,
+                "label": "列数"
+            }
+        }
+    }
 }

@@ -4,5 +4,34 @@
     "category": "image_processing",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "在图像上显示数据信息"
+    "description": "在图像上显示数据信息",
+    "ui": {
+        "parameters": {
+            "displayText": {
+                "order": 10,
+                "label": "显示文本"
+            },
+            "fontSize": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 20,
+                "label": "字体大小"
+            },
+            "positionX": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 30,
+                "label": "位置X"
+            },
+            "positionY": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 40,
+                "label": "位置Y"
+            }
+        }
+    }
 }

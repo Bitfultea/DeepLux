@@ -4,5 +4,20 @@
     "category": "image_processing",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "使用脚本语言处理图像"
+    "description": "使用脚本语言处理图像",
+    "ui": {
+        "parameters": {
+            "scriptType": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 10,
+                "label": "脚本类型"
+            },
+            "script": {
+                "order": 20,
+                "label": "脚本"
+            }
+        }
+    }
 }

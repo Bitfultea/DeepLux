@@ -1,12 +1,12 @@
-#include <QtTest>
-#include <QCoreApplication>
-#include "plugins/geometry/FitCircle/FitCirclePlugin.h"
 #include "core/model/ImageData.h"
+#include "plugins/geometry/FitCircle/FitCirclePlugin.h"
+
+#include <QCoreApplication>
+#include <QtTest>
 
 using namespace DeepLux;
 
-class TestFitCircle : public QObject
-{
+class TestFitCircle : public QObject {
     Q_OBJECT
 
 private slots:
@@ -42,11 +42,7 @@ private slots:
         QFETCH(double, tolerance);
 
         FitCirclePlugin plugin;
-        plugin.setParams(QJsonObject{
-            {"minRadius", 1.0},
-            {"maxRadius", 500.0},
-            {"iterations", 100}
-        });
+        plugin.setParams(QJsonObject{{"minRadius", 1.0}, {"maxRadius", 500.0}, {"iterations", 100}});
 
         QVERIFY(plugin.initialize());
 
@@ -117,6 +113,27 @@ private slots:
         params["maxRadius"] = 50.0;
         QVERIFY2(!plugin.validateParams(params, error), "Should reject radius range without positive span");
         QVERIFY(!error.isEmpty());
+    }
+
+    void testRansacRejectsOutliers() {
+        FitCirclePlugin plugin;
+        QVERIFY(plugin.initialize());
+        plugin.setParams(
+            QJsonObject{{"threshold", 1.0}, {"iterations", 300}, {"minRadius", 1.0}, {"maxRadius", 100.0}});
+
+        QVector<QPointF> points;
+        for (int i = 0; i < 16; ++i) {
+            const double angle = i * CV_PI / 8;
+            points.append(QPointF(50 + 20 * cos(angle), 50 + 20 * sin(angle)));
+        }
+        points << QPointF(0, 0) << QPointF(100, 0) << QPointF(0, 100) << QPointF(100, 100);
+
+        ImageData input;
+        input.setData("fit_points", QVariant::fromValue(points));
+        ImageData output;
+        QVERIFY(plugin.execute(input, output));
+        QVERIFY2(qAbs(output.data("circle_radius").toDouble() - 20.0) < 1.0,
+                 "RANSAC should fit the inlier circle instead of the outliers");
     }
 
     void testPluginInfo() {

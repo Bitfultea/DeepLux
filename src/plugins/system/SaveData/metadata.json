@@ -4,5 +4,22 @@
     "category": "system",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "将数据保存到文件"
+    "description": "将数据保存到文件",
+    "ui": {
+        "parameters": {
+            "filePath": {
+                "editor": "file",
+                "order": 10,
+                "label": "文件路径"
+            },
+            "fileFormat": {
+                "order": 20,
+                "label": "文件格式"
+            },
+            "appendMode": {
+                "order": 30,
+                "label": "追加模式"
+            }
+        }
+    }
 }

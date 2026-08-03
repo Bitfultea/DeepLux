@@ -180,6 +180,7 @@ private:
     QWidget* m_bottomBar = nullptr;
     QPushButton* m_rerunBtn = nullptr;
     QToolButton* m_moreBtn = nullptr;
+    class QAction* m_advancedAction = nullptr;
 
     // 空状态
     QWidget* m_emptyState = nullptr;

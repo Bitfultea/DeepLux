@@ -37,10 +37,7 @@ bool WhilePlugin::initialize()
 
 bool WhilePlugin::doValidateParams(const QJsonObject& params, QString& error) const
 {
-    if (params["conditionVariable"].toString().isEmpty()) {
-        error = QString("Condition variable cannot be empty");
-        return false;
-    }
+    // 阶段 2: conditionVariable 等外部资源允许暂时为空，由 process() 在运行时报告"未配置"
     if (params["maxIterations"].toInt() <= 0) {
         error = QString("Max iterations must be greater than 0");
         return false;

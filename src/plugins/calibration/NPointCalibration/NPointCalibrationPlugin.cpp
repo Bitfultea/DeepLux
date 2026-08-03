@@ -180,6 +180,8 @@ bool NPointCalibrationPlugin::process(const ImageData& input, ImageData& output)
     }
 
     m_inverseTransform = params["inverseTransform"].toBool();
+    m_outputWidth = params["outputWidth"].toInt(0);
+    m_outputHeight = params["outputHeight"].toInt(0);
 
     bool clearOnRun = params["clearPointsOnRun"].toBool(true);
     if (clearOnRun) {
@@ -205,11 +207,14 @@ bool NPointCalibrationPlugin::process(const ImageData& input, ImageData& output)
         output.setData("point_count", static_cast<int>(m_calibPoints.size()));
 
         if (m_inverseTransform && !m_inputImage.empty()) {
+            cv::Size targetSize = (m_outputWidth > 0 && m_outputHeight > 0)
+                ? cv::Size(m_outputWidth, m_outputHeight)
+                : m_inputImage.size();
             cv::Mat result;
             if (m_calibType == CalibrationType::Perspective && !m_calibResult.homography.empty()) {
-                cv::warpPerspective(m_inputImage, result, m_calibResult.homography, m_inputImage.size());
+                cv::warpPerspective(m_inputImage, result, m_calibResult.homography, targetSize);
             } else if (m_calibType == CalibrationType::Affine && !m_calibResult.affineMatrix.empty()) {
-                cv::warpAffine(m_inputImage, result, m_calibResult.affineMatrix, m_inputImage.size());
+                cv::warpAffine(m_inputImage, result, m_calibResult.affineMatrix, targetSize);
             }
             if (!result.empty()) {
                 output.setMat(result);
@@ -291,10 +296,12 @@ QWidget* NPointCalibrationPlugin::createConfigWidget()
     });
 
     connect(clearBtn, &QPushButton::clicked, this, [=]() {
-        clearPoints();
+        // 阶段 1: 不直接 clearPoints()，改为设置标记，确定后由主程序执行
+        setParam("_clearPointsRequested", true);
         pointCountLabel->setText(tr("当前点数: 0 (需要至少4点)"));
-        statusLabel->setText(tr("状态: 未标定"));
-        Logger::instance().info("NPointCalibration: Points cleared", "Calibration");
+        statusLabel->setText(tr("状态: 未标定 (将在确定后清除)"));
+        clearBtn->setEnabled(false);
+        clearBtn->setText(tr("已请求清除 (确定后生效)"));
     });
 
     return widget;

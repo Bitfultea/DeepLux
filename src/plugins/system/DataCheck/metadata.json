@@ -4,5 +4,41 @@
     "category": "system",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "校验数据格式和范围"
+    "description": "校验数据格式和范围",
+    "ui": {
+        "parameters": {
+            "checkType": {
+                "order": 10,
+                "label": "检查类型"
+            },
+            "minValue": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 20,
+                "label": "最小值"
+            },
+            "maxValue": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 30,
+                "label": "最大值"
+            },
+            "minLength": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 40,
+                "label": "最小长度"
+            },
+            "maxLength": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 50,
+                "label": "最大长度"
+            }
+        }
+    }
 }

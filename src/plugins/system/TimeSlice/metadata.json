@@ -4,5 +4,17 @@
     "category": "system",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "测量代码执行时间"
+    "description": "测量代码执行时间",
+    "ui": {
+        "parameters": {
+            "sliceName": {
+                "order": 10,
+                "label": "切片名称"
+            },
+            "mode": {
+                "order": 20,
+                "label": "模式"
+            }
+        }
+    }
 }

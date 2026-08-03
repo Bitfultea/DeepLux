@@ -49,6 +49,14 @@ bool MeasureLinePlugin::process(const ImageData& input, ImageData& output)
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
+    // 阶段 3: 从 currentParams() 读取参数到局部变量
+    QJsonObject params = currentParams();
+    const double minLength = params["minLength"].toDouble(20.0);
+    const double maxLength = params["maxLength"].toDouble(1000.0);
+    const double threshold = params["threshold"].toDouble(50.0);
+    const double minAngle = params["minAngle"].toDouble(0.0);
+    const double maxAngle = params["maxAngle"].toDouble(180.0);
+
     // 获取图像
     cv::Mat mat;
     if (input.hasMat()) {
@@ -69,13 +77,13 @@ bool MeasureLinePlugin::process(const ImageData& input, ImageData& output)
         m_gray = mat;
     }
 
-    // 使用Canny边缘检测
+    // 使用Canny边缘检测（threshold 参数作为低阈值，2*threshold 作为高阈值）
     cv::Mat edges;
-    cv::Canny(m_gray, edges, 50, 150, 3);
+    cv::Canny(m_gray, edges, threshold, threshold * 3.0, 3);
 
     // 使用Hough变换检测直线
     std::vector<cv::Vec4i> lines;
-    detectLines(edges, lines);
+    detectLines(edges, lines, minLength, maxLength, threshold, minAngle, maxAngle);
 
     if (lines.empty()) {
         emit errorOccurred(tr("未检测到线条"));
@@ -83,13 +91,13 @@ bool MeasureLinePlugin::process(const ImageData& input, ImageData& output)
     }
 
     // 选择最长的线
-    double maxLength = 0;
+    double bestLength = 0;
     cv::Vec4i bestLine = lines[0];
 
     for (const cv::Vec4i& l : lines) {
         double length = sqrt(pow(l[2] - l[0], 2) + pow(l[3] - l[1], 2));
-        if (length > maxLength) {
-            maxLength = length;
+        if (length > bestLength) {
+            bestLength = length;
             bestLine = l;
         }
     }
@@ -98,7 +106,7 @@ bool MeasureLinePlugin::process(const ImageData& input, ImageData& output)
     m_resultCol1 = bestLine[0];
     m_resultRow2 = bestLine[3];
     m_resultCol2 = bestLine[2];
-    m_resultLength = maxLength;
+    m_resultLength = bestLength;
 
     // 计算角度 (0-180度)
     double dx = m_resultCol2 - m_resultCol1;
@@ -134,22 +142,29 @@ bool MeasureLinePlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-bool MeasureLinePlugin::detectLines(const cv::Mat& gray, std::vector<cv::Vec4i>& lines)
+bool MeasureLinePlugin::detectLines(const cv::Mat& gray, std::vector<cv::Vec4i>& lines,
+                                     double minLength, double maxLength,
+                                     double threshold, double minAngle, double maxAngle)
 {
 #ifdef DEEPLUX_HAS_OPENCV
     std::vector<cv::Vec4i> allLines;
+    // 阶段 3: 使用局部参数，maxLength 不再被误当作 Hough maxLineGap
+    // HoughLinesP 的 maxLineGap 使用固定值 10
     cv::HoughLinesP(gray, allLines, 1, CV_PI / 180,
-                     static_cast<int>(m_threshold),
-                     m_minLength, m_maxLength);
+                     static_cast<int>(threshold),
+                     minLength, 10);
 
-    // 过滤角度
+    // 过滤角度和长度
     for (const cv::Vec4i& l : allLines) {
         double dx = static_cast<double>(l[2] - l[0]);
         double dy = static_cast<double>(l[3] - l[1]);
+        double length = sqrt(dx * dx + dy * dy);
+        if (length > maxLength) continue;
+
         double angle = atan2(dy, dx) * 180.0 / CV_PI;
         if (angle < 0) angle += 180.0;
 
-        if (angle >= m_minAngle && angle <= m_maxAngle) {
+        if (angle >= minAngle && angle <= maxAngle) {
             lines.push_back(l);
         }
     }
@@ -158,6 +173,11 @@ bool MeasureLinePlugin::detectLines(const cv::Mat& gray, std::vector<cv::Vec4i>&
 #else
     Q_UNUSED(gray);
     Q_UNUSED(lines);
+    Q_UNUSED(minLength);
+    Q_UNUSED(maxLength);
+    Q_UNUSED(threshold);
+    Q_UNUSED(minAngle);
+    Q_UNUSED(maxAngle);
     return false;
 #endif
 }

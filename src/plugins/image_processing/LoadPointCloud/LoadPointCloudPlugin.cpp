@@ -112,10 +112,9 @@ bool LoadPointCloudPlugin::process(const ImageData& input, ImageData& output)
 
 bool LoadPointCloudPlugin::doValidateParams(const QJsonObject& params, QString& error) const
 {
-    if (params["filePath"].toString().isEmpty()) {
-        error = tr("必须指定点云文件路径");
-        return false;
-    }
+    // 阶段 2: filePath 等外部资源允许暂时为空，由 process() 在运行时报告"未配置"
+    Q_UNUSED(params)
+    error.clear();
     return true;
 }
 

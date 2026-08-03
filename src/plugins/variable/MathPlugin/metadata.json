@@ -4,5 +4,25 @@
     "category": "variable",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "基本数学运算"
+    "description": "基本数学运算",
+    "ui": {
+        "parameters": {
+            "operation": {
+                "order": 10,
+                "label": "操作模式"
+            },
+            "operandA": {
+                "order": 20,
+                "label": "操作数A"
+            },
+            "operandB": {
+                "order": 30,
+                "label": "操作数B"
+            },
+            "outputVar": {
+                "order": 40,
+                "label": "输出变量"
+            }
+        }
+    }
 }

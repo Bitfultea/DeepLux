@@ -126,13 +126,19 @@ std::vector<BlobPlugin::BlobResult> BlobPlugin::detectBlobs(const cv::Mat& gray,
     std::vector<BlobResult> results;
 
 #ifdef DEEPLUX_HAS_OPENCV
+    // 阶段 3: 从 currentParams() 读取面积与圆度过滤参数
+    QJsonObject params = currentParams();
+    const double minArea = params["minArea"].toDouble(10.0);
+    const double maxArea = params["maxArea"].toDouble(10000.0);
+    const double minCircularity = params["minCircularity"].toDouble(0.5);
+
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
     for (const auto& contour : contours) {
         double area = cv::contourArea(contour);
 
-        if (area < m_minArea || area > m_maxArea) continue;
+        if (area < minArea || area > maxArea) continue;
 
         // 计算周长
         double perimeter = cv::arcLength(contour, true);
@@ -143,7 +149,7 @@ std::vector<BlobPlugin::BlobResult> BlobPlugin::detectBlobs(const cv::Mat& gray,
             circularity = 4 * CV_PI * area / (perimeter * perimeter);
         }
 
-        if (circularity < m_minCircularity) continue;
+        if (circularity < minCircularity) continue;
 
         // 计算中心
         cv::Moments moments = cv::moments(contour);

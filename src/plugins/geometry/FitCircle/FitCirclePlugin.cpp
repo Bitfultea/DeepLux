@@ -1,8 +1,12 @@
 #include "FitCirclePlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QLabel>
+
 #include <QDoubleSpinBox>
+#include <QLabel>
+#include <QVBoxLayout>
+#include <cmath>
+#include <random>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -10,24 +14,14 @@
 
 namespace DeepLux {
 
-FitCirclePlugin::FitCirclePlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"threshold", 2.0},
-        {"iterations", 100},
-        {"minRadius", 1.0},
-        {"maxRadius", 1000.0}
-    };
+FitCirclePlugin::FitCirclePlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"threshold", 2.0}, {"iterations", 100}, {"minRadius", 1.0}, {"maxRadius", 1000.0}};
     m_params = m_defaultParams;
 }
 
-FitCirclePlugin::~FitCirclePlugin()
-{
-}
+FitCirclePlugin::~FitCirclePlugin() {}
 
-bool FitCirclePlugin::initialize()
-{
+bool FitCirclePlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -35,17 +29,22 @@ bool FitCirclePlugin::initialize()
     return true;
 }
 
-void FitCirclePlugin::shutdown()
-{
+void FitCirclePlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     m_pointsMat.release();
 #endif
     ModuleBase::shutdown();
 }
 
-bool FitCirclePlugin::process(const ImageData& input, ImageData& output)
-{
+bool FitCirclePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
+
+    // 阶段 3: 从 currentParams() 读取参数到局部变量
+    QJsonObject params = currentParams();
+    const double threshold = params["threshold"].toDouble(2.0);
+    const int iterations = params["iterations"].toInt(100);
+    const double minRadius = params["minRadius"].toDouble(1.0);
+    const double maxRadius = params["maxRadius"].toDouble(1000.0);
 
     // 获取输入点集
     QVariant pointsVar = input.data("fit_points");
@@ -71,7 +70,7 @@ bool FitCirclePlugin::process(const ImageData& input, ImageData& output)
     }
 
     double centerX, centerY, radius;
-    bool success = fitCircleRANSAC(points, centerX, centerY, radius);
+    bool success = fitCircleRANSAC(points, centerX, centerY, radius, threshold, iterations, minRadius, maxRadius);
 
     if (!success) {
         emit errorOccurred(tr("圆拟合失败"));
@@ -97,60 +96,111 @@ bool FitCirclePlugin::process(const ImageData& input, ImageData& output)
     output.setData("circle_error", m_resultError);
 
     QString result = QString("圆: 中心(%1, %2), 半径=%3, 误差=%4")
-                        .arg(m_resultCenterX, 0, 'f', 2)
-                        .arg(m_resultCenterY, 0, 'f', 2)
-                        .arg(m_resultRadius, 0, 'f', 2)
-                        .arg(m_resultError, 0, 'f', 3);
+                         .arg(m_resultCenterX, 0, 'f', 2)
+                         .arg(m_resultCenterY, 0, 'f', 2)
+                         .arg(m_resultRadius, 0, 'f', 2)
+                         .arg(m_resultError, 0, 'f', 3);
     Logger::instance().debug(result, "FitCircle");
 
     return true;
 }
 
-bool FitCirclePlugin::fitCircleRANSAC(const QVector<QPointF>& points,
-                                      double& centerX, double& centerY, double& radius)
-{
+bool FitCirclePlugin::fitCircleRANSAC(const QVector<QPointF>& points, double& centerX, double& centerY, double& radius,
+                                      double threshold, int iterations, double minRadius, double maxRadius) {
 #ifdef DEEPLUX_HAS_OPENCV
-    int n = points.size();
-    if (n < 3) return false;
-
-    // 使用代数距离最小二乘法进行圆拟合
-    // 圆方程: (x-a)² + (y-b)² = r²
-    // 展开: x² - 2ax + a² + y² - 2by + b² = r²
-    // 即: x² + y² = 2ax + 2by + (r² - a² - b²)
-    // 设 C = [2a, 2b, r² - a² - b²]，则 X * C = x² + y²
-
-    cv::Mat A(n, 3, CV_64FC1);
-    cv::Mat B(n, 1, CV_64FC1);
-
-    for (int i = 0; i < n; ++i) {
-        double x = points[i].x();
-        double y = points[i].y();
-        A.at<double>(i, 0) = x;
-        A.at<double>(i, 1) = y;
-        A.at<double>(i, 2) = 1;
-        B.at<double>(i, 0) = x * x + y * y;
+    if (points.size() < 3) {
+        return false;
     }
 
-    cv::Mat C;
-    cv::solve(A, B, C, cv::DECOMP_SVD);
+    auto fitAlgebraic = [](const QVector<QPointF>& fitPoints, double& fittedCenterX, double& fittedCenterY,
+                           double& fittedRadius) {
+        cv::Mat A(fitPoints.size(), 3, CV_64FC1);
+        cv::Mat B(fitPoints.size(), 1, CV_64FC1);
+        for (int i = 0; i < fitPoints.size(); ++i) {
+            const double x = fitPoints[i].x();
+            const double y = fitPoints[i].y();
+            A.at<double>(i, 0) = x;
+            A.at<double>(i, 1) = y;
+            A.at<double>(i, 2) = 1;
+            B.at<double>(i, 0) = x * x + y * y;
+        }
+        cv::Mat C;
+        if (!cv::solve(A, B, C, cv::DECOMP_SVD)) {
+            return false;
+        }
+        fittedCenterX = C.at<double>(0, 0) / 2.0;
+        fittedCenterY = C.at<double>(1, 0) / 2.0;
+        const double radiusSquared = fittedCenterX * fittedCenterX + fittedCenterY * fittedCenterY + C.at<double>(2, 0);
+        if (radiusSquared <= 0.0) {
+            return false;
+        }
+        fittedRadius = std::sqrt(radiusSquared);
+        return std::isfinite(fittedRadius);
+    };
 
-    centerX = C.at<double>(0, 0) / 2.0;
-    centerY = C.at<double>(1, 0) / 2.0;
-    double c = C.at<double>(2, 0);
-    radius = sqrt(centerX * centerX + centerY * centerY + c);
+    QVector<QPointF> bestInliers;
+    std::mt19937 random(0xC1AC1Eu);
+    std::uniform_int_distribution<int> pick(0, points.size() - 1);
+    for (int attempt = 0; attempt < iterations; ++attempt) {
+        const QPointF first = points[pick(random)];
+        const QPointF second = points[pick(random)];
+        const QPointF third = points[pick(random)];
+        const double determinant = 2.0 * (first.x() * (second.y() - third.y()) + second.x() * (third.y() - first.y()) +
+                                          third.x() * (first.y() - second.y()));
+        if (std::abs(determinant) < 1e-9) {
+            continue;
+        }
 
-    return radius > m_minRadius && radius < m_maxRadius;
+        const double firstSquared = first.x() * first.x() + first.y() * first.y();
+        const double secondSquared = second.x() * second.x() + second.y() * second.y();
+        const double thirdSquared = third.x() * third.x() + third.y() * third.y();
+        const double candidateCenterX =
+            (firstSquared * (second.y() - third.y()) + secondSquared * (third.y() - first.y()) +
+             thirdSquared * (first.y() - second.y())) /
+            determinant;
+        const double candidateCenterY =
+            (firstSquared * (third.x() - second.x()) + secondSquared * (first.x() - third.x()) +
+             thirdSquared * (second.x() - first.x())) /
+            determinant;
+        const double candidateRadius = std::hypot(first.x() - candidateCenterX, first.y() - candidateCenterY);
+        if (!std::isfinite(candidateRadius)) {
+            continue;
+        }
+
+        QVector<QPointF> inliers;
+        for (const QPointF& point : points) {
+            const double residual =
+                std::abs(std::hypot(point.x() - candidateCenterX, point.y() - candidateCenterY) - candidateRadius);
+            if (residual <= threshold) {
+                inliers.append(point);
+            }
+        }
+        if (inliers.size() > bestInliers.size()) {
+            bestInliers = inliers;
+        }
+    }
+    if (bestInliers.size() < 3 || !fitAlgebraic(bestInliers, centerX, centerY, radius)) {
+        return false;
+    }
+
+    if (radius < minRadius || radius > maxRadius) {
+        return false;
+    }
+    return true;
 #else
     Q_UNUSED(points);
     Q_UNUSED(centerX);
     Q_UNUSED(centerY);
     Q_UNUSED(radius);
+    Q_UNUSED(threshold);
+    Q_UNUSED(iterations);
+    Q_UNUSED(minRadius);
+    Q_UNUSED(maxRadius);
     return false;
 #endif
 }
 
-bool FitCirclePlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool FitCirclePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     error.clear();
 
     if (params["threshold"].toDouble() <= 0.0) {
@@ -178,8 +228,7 @@ bool FitCirclePlugin::doValidateParams(const QJsonObject& params, QString& error
     return true;
 }
 
-QWidget* FitCirclePlugin::createConfigWidget()
-{
+QWidget* FitCirclePlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -206,20 +255,19 @@ QWidget* FitCirclePlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(minRadiusSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["minRadius"] = value; });
+    connect(minRadiusSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { m_params["minRadius"] = value; });
 
-    connect(maxRadiusSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["maxRadius"] = value; });
+    connect(maxRadiusSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { m_params["maxRadius"] = value; });
 
-    connect(iterSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { m_params["iterations"] = value; });
+    connect(iterSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { m_params["iterations"] = value; });
 
     return widget;
 }
 
-IModule* FitCirclePlugin::cloneImpl() const
-{
+IModule* FitCirclePlugin::cloneImpl() const {
     FitCirclePlugin* clone = new FitCirclePlugin();
     clone->setParams(currentParams());
     return clone;

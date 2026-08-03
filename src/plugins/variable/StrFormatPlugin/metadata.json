@@ -4,5 +4,21 @@
     "category": "variable",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "格式化字符串并输出到变量"
+    "description": "格式化字符串并输出到变量",
+    "ui": {
+        "parameters": {
+            "format": {
+                "order": 10,
+                "label": "格式模板"
+            },
+            "inputVariables": {
+                "order": 20,
+                "label": "输入变量"
+            },
+            "outputVariable": {
+                "order": 30,
+                "label": "输出变量"
+            }
+        }
+    }
 }

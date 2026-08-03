@@ -49,6 +49,13 @@ bool MeasureRectPlugin::process(const ImageData& input, ImageData& output)
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
+    // 阶段 3: 从 currentParams() 读取参数到局部变量
+    QJsonObject params = currentParams();
+    const double minArea = params["minArea"].toDouble(100.0);
+    const double maxArea = params["maxArea"].toDouble(100000.0);
+    const double threshold1 = params["threshold1"].toDouble(50.0);
+    const double threshold2 = params["threshold2"].toDouble(150.0);
+
     // 获取图像
     cv::Mat mat;
     if (input.hasMat()) {
@@ -69,8 +76,8 @@ bool MeasureRectPlugin::process(const ImageData& input, ImageData& output)
         m_gray = mat;
     }
 
-    // 使用Canny边缘检测
-    cv::Canny(m_gray, m_edges, m_threshold1, m_threshold2, 3);
+    // 使用Canny边缘检测（使用局部参数）
+    cv::Canny(m_gray, m_edges, threshold1, threshold2, 3);
 
     // 查找轮廓
     std::vector<std::vector<cv::Point>> contours;
@@ -88,7 +95,7 @@ bool MeasureRectPlugin::process(const ImageData& input, ImageData& output)
 
     for (const auto& contour : contours) {
         double area = cv::contourArea(contour);
-        if (area < m_minArea || area > m_maxArea) continue;
+        if (area < minArea || area > maxArea) continue;
 
         // 使用最小外接矩形
         cv::RotatedRect rect = cv::minAreaRect(contour);

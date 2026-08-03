@@ -1,8 +1,10 @@
 #include <QApplication>
 #include <QClipboard>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
 #include <QDockWidget>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileInfo>
 #include <QHeaderView>
@@ -12,6 +14,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QSignalSpy>
@@ -110,6 +113,7 @@ private slots:
     void testMeasurementConfigButtonCreatesInputNode();
     void testMeasurementConfigButtonWithInstalledPlugins();
     void testPluginConfigDialogRestylesLegacyDarkPlugin();
+    void testGrabImageEditorSurvivesCommitSignal();
     void testQuickAnnotateOpensSamDialogOnMainViewportImage();
     void testTreeAndCanvasSyncSelection();
     void testPinnedInspectorKeepsTreeAndCanvasSelectionSynchronized();
@@ -508,6 +512,104 @@ void TestMainWindow::testPluginConfigDialogRestylesLegacyDarkPlugin() {
                                       Q_ARG(QString, QStringLiteral("pointcloud_1"))));
     QCoreApplication::processEvents();
 
+    QVERIFY(checkedDialog);
+}
+
+void TestMainWindow::testGrabImageEditorSurvivesCommitSignal() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("GrabImage")));
+
+    MainWindow window;
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("GrabImage")));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance grab;
+    grab.id = QStringLiteral("grab_config_1");
+    grab.moduleId = QStringLiteral("GrabImage");
+    grab.name = QStringLiteral("图像采集");
+    project->addModule(grab);
+    QCoreApplication::processEvents();
+
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>();
+    ModuleInspectorPanel* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(canvas != nullptr);
+    QVERIFY(inspector != nullptr);
+    QVERIFY(QMetaObject::invokeMethod(canvas, "nodeSelected", Qt::DirectConnection,
+                                      Q_ARG(QString, QStringLiteral("grab_config_1"))));
+
+    QComboBox* sourceEditor = inspector->findChild<QComboBox*>(QStringLiteral("ParamEditor_grabSource"));
+    QComboBox* cameraEditor = inspector->findChild<QComboBox*>(QStringLiteral("ParamEditor_cameraId"));
+    QLineEdit* pathEditor = inspector->findChild<QLineEdit*>(QStringLiteral("ParamEditor_filePath"));
+    QDoubleSpinBox* exposureEditor = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_exposureTime"));
+    QDoubleSpinBox* gainEditor = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_gain"));
+    QDoubleSpinBox* timeoutEditor = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_grabTimeout"));
+    QVERIFY(sourceEditor != nullptr);
+    QVERIFY(cameraEditor != nullptr);
+    QVERIFY(pathEditor != nullptr);
+    QVERIFY(exposureEditor != nullptr);
+    QVERIFY(gainEditor != nullptr);
+    QVERIFY(timeoutEditor != nullptr);
+    QCOMPARE(sourceEditor->itemText(0), QStringLiteral("相机"));
+    QCOMPARE(sourceEditor->itemText(1), QStringLiteral("文件"));
+    QCOMPARE(sourceEditor->itemText(2), QStringLiteral("演示"));
+    QCOMPARE(exposureEditor->decimals(), 0);
+    QCOMPARE(gainEditor->decimals(), 2);
+    QCOMPARE(timeoutEditor->decimals(), 0);
+    QVERIFY(!pathEditor->actions().isEmpty());
+
+    sourceEditor->setCurrentIndex(sourceEditor->findData(QStringLiteral("File")));
+    ModuleInstance* projectModule = project->findModule(QStringLiteral("grab_config_1"));
+    QVERIFY(projectModule != nullptr);
+    QCOMPARE(projectModule->params.value(QStringLiteral("grabSource")).toString(), QStringLiteral("File"));
+    QCoreApplication::processEvents();
+
+    pathEditor = inspector->findChild<QLineEdit*>(QStringLiteral("ParamEditor_filePath"));
+    QVERIFY(pathEditor != nullptr);
+    QPointer<QLineEdit> editor = pathEditor;
+    editor->setText(QStringLiteral("camera-regression"));
+    QVERIFY(QMetaObject::invokeMethod(editor.data(), "editingFinished", Qt::DirectConnection));
+    QVERIFY2(editor, "Committing a parameter must not delete the focused editor inside its signal handler");
+
+    QCoreApplication::processEvents();
+    QVERIFY(inspector->findChild<QLineEdit*>(QStringLiteral("ParamEditor_filePath")) != nullptr);
+
+    bool checkedDialog = false;
+    QTimer::singleShot(20, [&]() {
+        QWidget* modal = QApplication::activeModalWidget();
+        QVERIFY(modal != nullptr);
+        QComboBox* dialogSource = modal->findChild<QComboBox*>(QStringLiteral("ParamEditor_grabSource"));
+        QComboBox* dialogCamera = modal->findChild<QComboBox*>(QStringLiteral("ParamEditor_cameraId"));
+        QLineEdit* dialogPath = modal->findChild<QLineEdit*>(QStringLiteral("ParamEditor_filePath"));
+        QDoubleSpinBox* dialogExposure = modal->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_exposureTime"));
+        QDoubleSpinBox* dialogGain = modal->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_gain"));
+        QDoubleSpinBox* dialogTimeout = modal->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_grabTimeout"));
+        QVERIFY(dialogSource != nullptr);
+        QVERIFY(dialogCamera != nullptr);
+        QVERIFY(dialogPath != nullptr);
+        QVERIFY(dialogExposure != nullptr);
+        QVERIFY(dialogGain != nullptr);
+        QVERIFY(dialogTimeout != nullptr);
+        QCOMPARE(dialogSource->currentData().toString(), QStringLiteral("File"));
+        QCOMPARE(dialogSource->itemText(0), QStringLiteral("相机"));
+        QCOMPARE(dialogSource->itemText(1), QStringLiteral("文件"));
+        QCOMPARE(dialogSource->itemText(2), QStringLiteral("演示"));
+        QCOMPARE(dialogPath->text(), QStringLiteral("camera-regression"));
+        QVERIFY(!dialogPath->actions().isEmpty());
+        QCOMPARE(dialogExposure->decimals(), 0);
+        QCOMPARE(dialogGain->decimals(), 2);
+        QCOMPARE(dialogTimeout->decimals(), 0);
+        checkedDialog = true;
+        modal->close();
+    });
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig", Qt::DirectConnection,
+                                      Q_ARG(QString, QStringLiteral("grab_config_1"))));
+    QCoreApplication::processEvents();
     QVERIFY(checkedDialog);
 }
 
@@ -982,8 +1084,8 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
              "Project breadcrumb should follow the current project");
     QVERIFY2(projectBreadcrumb->parentWidget()->objectName() == QStringLiteral("ProjectBreadcrumb"),
              "Project context should use a dedicated breadcrumb container");
-    QVERIFY2(mainToolbar->isAncestorOf(projectBreadcrumb),
-             "Project breadcrumb should remain inside the toolbar instead of reparenting the main window");
+    QVERIFY2(window.menuBar()->isAncestorOf(projectBreadcrumb),
+             "Project breadcrumb should remain inside the application header instead of reparenting the main window");
     project->setName(QStringLiteral("在线圆检测"));
     QCoreApplication::processEvents();
     QVERIFY2(projectBreadcrumb->text().contains(QStringLiteral("在线圆检测")),
@@ -1096,10 +1198,11 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
              "Central content should wrap the splitter so the left edge can have a gutter");
     QVERIFY(mainContentWidget->layout() != nullptr);
     const QMargins mainContentMargins = mainContentWidget->layout()->contentsMargins();
-    QCOMPARE(mainContentMargins.left(), ThemeManager::layoutMetrics().splitterHandleWidth);
-    QCOMPARE(mainContentMargins.top(), 0);
-    QCOMPARE(mainContentMargins.right(), ThemeManager::layoutMetrics().splitterHandleWidth);
-    QCOMPARE(mainContentMargins.bottom(), 0);
+    const int outerGutter = ThemeManager::layoutMetrics().baseSpacing;
+    QCOMPARE(mainContentMargins.left(), outerGutter);
+    QCOMPARE(mainContentMargins.top(), outerGutter);
+    QCOMPARE(mainContentMargins.right(), outerGutter);
+    QCOMPARE(mainContentMargins.bottom(), outerGutter);
     QCOMPARE(rightSplitter->handleWidth(), mainSplitter->handleWidth());
     QCOMPARE(rightTopSplitter->handleWidth(), mainSplitter->handleWidth());
     QVERIFY2(!mainSplitter->childrenCollapsible(), "Primary panels should not collapse accidentally while dragging");
@@ -1121,8 +1224,13 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
              "Display panel needs an explicit boundary style");
     QVERIFY2(mainStyle.contains(QStringLiteral("font-size: 13px")),
              "Main panels should pin a consistent base font size");
+    QVERIFY(window.findChild<QWidget*>(QStringLiteral("AppBrandHeader")) != nullptr);
+    QVERIFY(window.findChild<QToolButton*>(QStringLiteral("FlowRunButton")) != nullptr);
+    QVERIFY(window.findChild<QToolButton*>(QStringLiteral("FlowStepButton")) != nullptr);
+    QVERIFY(window.findChild<QToolButton*>(QStringLiteral("FlowCycleButton")) != nullptr);
+    QVERIFY(window.findChild<QToolButton*>(QStringLiteral("FlowStopButton")) != nullptr);
 
-    // 流程面板顶部不再保留无功能的占位工具栏，流程树直接占据剩余空间
+    // 流程面板只保留实际连接到运行槽位的控制条，不再保留历史占位工具栏。
     QVERIFY2(window.findChild<QWidget*>("ProcessToolBar") == nullptr,
              "Process panel should not retain a non-functional placeholder toolbar above the tree");
     QVERIFY2(window.findChild<QWidget*>("ToolToolBar") == nullptr,
@@ -1209,9 +1317,10 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QTabWidget* logTabs = window.findChild<QTabWidget*>("LogTerminalTabs");
     QVERIFY(logTabs != nullptr);
     QVERIFY(logTabs->tabBar() != nullptr);
-    QVERIFY2(processTabs->styleSheet().contains(QStringLiteral("font-size: 14px")),
+    QVERIFY2(mainStyle.contains(QStringLiteral("QTabWidget#ProcessTabWidget QTabBar::tab")) &&
+                 mainStyle.contains(QStringLiteral("font-size: 14px")),
              "Process tabs should use a more readable workflow tab font size");
-    QVERIFY2(processTabs->styleSheet().contains(QStringLiteral("QTabWidget::tab-bar { left: 8px; }")),
+    QVERIFY2(mainStyle.contains(QStringLiteral("QTabWidget#ProcessTabWidget::tab-bar { left: 8px; }")),
              "Process tabs should be inset from the left edge");
     const int processTabTextHeight = processTabs->tabBar()->fontMetrics().height();
     QVERIFY2(processTabs->tabBar()->tabRect(0).height() >= processTabTextHeight + 14,

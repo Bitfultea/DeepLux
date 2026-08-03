@@ -1,12 +1,12 @@
-#include <QtTest>
-#include <QCoreApplication>
-#include "plugins/geometry/FitLine/FitLinePlugin.h"
 #include "core/model/ImageData.h"
+#include "plugins/geometry/FitLine/FitLinePlugin.h"
+
+#include <QCoreApplication>
+#include <QtTest>
 
 using namespace DeepLux;
 
-class TestFitLine : public QObject
-{
+class TestFitLine : public QObject {
     Q_OBJECT
 
 private slots:
@@ -100,6 +100,25 @@ private slots:
         params["fitMethod"] = "Unknown";
         QVERIFY2(!plugin.validateParams(params, error), "Should reject unsupported fitting method");
         QVERIFY(!error.isEmpty());
+    }
+
+    void testRansacRejectsOutliers() {
+        FitLinePlugin plugin;
+        QVERIFY(plugin.initialize());
+        plugin.setParams(QJsonObject{{"fitMethod", "RANSAC"}, {"threshold", 1.0}, {"iterations", 200}});
+
+        QVector<QPointF> points;
+        for (int x = 0; x <= 100; x += 10) {
+            points.append(QPointF(x, 20));
+        }
+        points << QPointF(10, 80) << QPointF(50, -40) << QPointF(90, 130);
+
+        ImageData input;
+        input.setData("fit_points", QVariant::fromValue(points));
+        ImageData output;
+        QVERIFY(plugin.execute(input, output));
+        QVERIFY2(qAbs(output.data("line_rho").toDouble() - 20.0) < 1.0,
+                 "RANSAC should fit the inlier line instead of the outliers");
     }
 
     void testPluginInfo() {

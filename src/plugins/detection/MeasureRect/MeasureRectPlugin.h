@@ -37,11 +37,6 @@ protected:
 private:
     bool findRectangle(const cv::Mat& edges, std::vector<cv::Point>& corners);
 
-    double m_minArea = 100.0;
-    double m_maxArea = 100000.0;
-    double m_threshold1 = 50.0;
-    double m_threshold2 = 150.0;
-
     // 输出参数
     double m_resultRow1 = 0.0;
     double m_resultCol1 = 0.0;

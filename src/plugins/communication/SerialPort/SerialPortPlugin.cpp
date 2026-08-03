@@ -185,10 +185,9 @@ bool SerialPortPlugin::process(const ImageData& input, ImageData& output)
 
 bool SerialPortPlugin::doValidateParams(const QJsonObject& params, QString& error) const
 {
-    if (params["portName"].toString().isEmpty()) {
-        error = QString("Port name cannot be empty");
-        return false;
-    }
+    // 阶段 2: 串口名称等外部资源允许暂时为空，由 process() 在运行时报告"未配置"
+    Q_UNUSED(params)
+    error.clear();
     return true;
 }
 

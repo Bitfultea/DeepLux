@@ -4,5 +4,25 @@
     "category": "logic",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "条件分支；无结束节点时控制紧随其后的模块"
+    "description": "条件分支；无结束节点时控制紧随其后的模块",
+    "ui": {
+        "parameters": {
+            "conditionType": {
+                "order": 10,
+                "label": "条件类型"
+            },
+            "boolLinkText": {
+                "order": 20,
+                "label": "布尔链接"
+            },
+            "expressionString": {
+                "order": 30,
+                "label": "表达式"
+            },
+            "boolInversion": {
+                "order": 40,
+                "label": "布尔取反"
+            }
+        }
+    }
 }

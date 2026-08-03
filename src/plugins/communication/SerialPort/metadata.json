@@ -4,5 +4,59 @@
     "category": "communication",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "串口数据读写通信"
+    "description": "串口数据读写通信",
+    "ui": {
+        "parameters": {
+            "portName": {
+                "order": 10,
+                "label": "串口"
+            },
+            "baudRate": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 20,
+                "label": "波特率"
+            },
+            "dataBits": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 30,
+                "label": "数据位"
+            },
+            "parity": {
+                "order": 40,
+                "label": "校验位"
+            },
+            "stopBits": {
+                "order": 50,
+                "label": "停止位"
+            },
+            "flowControl": {
+                "order": 60,
+                "label": "流控制"
+            },
+            "timeout": {
+                "min": 0,
+                "step": 100,
+                "decimals": 0,
+                "unit": "ms",
+                "order": 70,
+                "label": "超时"
+            },
+            "writeData": {
+                "order": 80,
+                "label": "发送数据"
+            },
+            "readVariable": {
+                "order": 90,
+                "label": "读取变量名"
+            },
+            "operation": {
+                "order": 100,
+                "label": "操作模式"
+            }
+        }
+    }
 }

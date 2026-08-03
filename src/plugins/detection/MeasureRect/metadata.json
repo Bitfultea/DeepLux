@@ -4,5 +4,37 @@
     "category": "detection",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "检测并测量图像中的矩形"
+    "description": "检测并测量图像中的矩形",
+    "ui": {
+        "parameters": {
+            "minArea": {
+                "min": 0,
+                "step": 10,
+                "decimals": 0,
+                "order": 10,
+                "label": "最小面积"
+            },
+            "maxArea": {
+                "min": 0,
+                "step": 10,
+                "decimals": 0,
+                "order": 20,
+                "label": "最大面积"
+            },
+            "threshold1": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 30,
+                "label": "阈值1"
+            },
+            "threshold2": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 40,
+                "label": "阈值2"
+            }
+        }
+    }
 }

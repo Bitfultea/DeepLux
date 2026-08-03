@@ -97,11 +97,7 @@ bool VarDefinePlugin::process(const ImageData& input, ImageData& output)
 
 bool VarDefinePlugin::doValidateParams(const QJsonObject& params, QString& error) const
 {
-    if (params["variableName"].toString().isEmpty()) {
-        error = QString("Variable name cannot be empty");
-        return false;
-    }
-
+    // 阶段 2: variableName 允许暂时为空，由 process() 在运行时报告"未配置"
     QString varType = params["variableType"].toString("double");
     if (!QStringList{"int", "double", "string", "bool"}.contains(varType)) {
         error = QString("Unsupported variable type: %1").arg(varType);

@@ -55,6 +55,7 @@ set(TEST_SOURCES
     test_samannotatordialog.cpp
     test_sambackendclient.cpp
     test_moduleinspectorpanel.cpp
+    test_pluginparametercontracts.cpp
 )
 
 foreach(TEST_FILE ${TEST_SOURCES})
@@ -152,6 +153,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
                 MathPlugin
                 SystemTimePlugin
                 SaveDataPlugin
+                StrFormatPlugin
         )
     endif()
 

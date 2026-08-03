@@ -4,5 +4,34 @@
     "category": "image_processing",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "图像预处理操作：滤波、锐化、形态学操作等"
+    "description": "图像预处理操作：滤波、锐化、形态学操作等",
+    "ui": {
+        "parameters": {
+            "processType": {
+                "order": 10,
+                "label": "处理类型"
+            },
+            "kernelSize": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 20,
+                "label": "核大小"
+            },
+            "sigmaX": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 30,
+                "label": "Sigma X"
+            },
+            "iterations": {
+                "min": 0,
+                "step": 1,
+                "decimals": 0,
+                "order": 40,
+                "label": "迭代次数"
+            }
+        }
+    }
 }

@@ -4,5 +4,32 @@
     "category": "variable",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "按分隔符分割字符串为多个部分"
+    "description": "按分隔符分割字符串为多个部分",
+    "ui": {
+        "parameters": {
+            "inputString": {
+                "order": 10,
+                "label": "输入字符串"
+            },
+            "separator": {
+                "order": 20,
+                "label": "分隔符"
+            },
+            "useRegex": {
+                "order": 30,
+                "label": "使用正则"
+            },
+            "outputPrefix": {
+                "order": 40,
+                "label": "输出前缀"
+            },
+            "maxSplits": {
+                "min": 0,
+                "step": 1,
+                "decimals": 1,
+                "order": 50,
+                "label": "最大分割数"
+            }
+        }
+    }
 }
