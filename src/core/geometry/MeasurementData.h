@@ -31,6 +31,12 @@ struct MeasurementPlane3D {
     MeasurementPoint3D p3;
 };
 
+struct MeasurementSegmentDistance3D {
+    MeasurementPoint3D pointOnFirst;
+    MeasurementPoint3D pointOnSecond;
+    double distance = 0.0;
+};
+
 namespace MeasurementKeys {
 inline constexpr const char* Point = "point";
 inline constexpr const char* Point1 = "point1";
@@ -41,7 +47,7 @@ inline constexpr const char* Line2 = "line2";
 inline constexpr const char* Plane = "plane";
 inline constexpr const char* PointCloud = "point_cloud";
 inline constexpr const char* Dimension = "measurement_dimension";
-}
+} // namespace MeasurementKeys
 
 class MeasurementData {
 public:
@@ -49,6 +55,12 @@ public:
     static std::optional<MeasurementPoint3D> parsePoint3D(const QVariant& value, QString* error);
     static std::optional<MeasurementLine2D> parseLine2D(const QVariant& value, QString* error);
     static std::optional<MeasurementPlane3D> parsePlane3D(const QVariant& value, QString* error);
+
+    // Returns the closest pair on two finite 3D segments, including degenerate segments.
+    static MeasurementSegmentDistance3D closestPointsBetweenSegments(const MeasurementPoint3D& firstStart,
+                                                                     const MeasurementPoint3D& firstEnd,
+                                                                     const MeasurementPoint3D& secondStart,
+                                                                     const MeasurementPoint3D& secondEnd);
 
     static void setPointCloud(ImageData& image, const PointCloudData& cloud);
     static std::optional<PointCloudData> pointCloud(const ImageData& image, QString* error);

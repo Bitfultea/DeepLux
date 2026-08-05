@@ -4,17 +4,49 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVector>
+#include <algorithm>
 #include <cmath>
 
 namespace DeepLux {
+
+namespace {
+
+MeasurementPoint3D subtract(const MeasurementPoint3D& left, const MeasurementPoint3D& right) {
+    return {left.x - right.x, left.y - right.y, left.z - right.z};
+}
+
+MeasurementPoint3D addScaled(const MeasurementPoint3D& point, const MeasurementPoint3D& direction, double scale) {
+    return {point.x + direction.x * scale, point.y + direction.y * scale, point.z + direction.z * scale};
+}
+
+double dot(const MeasurementPoint3D& left, const MeasurementPoint3D& right) {
+    return left.x * right.x + left.y * right.y + left.z * right.z;
+}
+
+MeasurementPoint3D closestPointOnSegment(const MeasurementPoint3D& point, const MeasurementPoint3D& start,
+                                         const MeasurementPoint3D& end) {
+    const MeasurementPoint3D direction = subtract(end, start);
+    const double lengthSquared = dot(direction, direction);
+    if (lengthSquared <= 1e-12) {
+        return start;
+    }
+    const double t = std::clamp(dot(subtract(point, start), direction) / lengthSquared, 0.0, 1.0);
+    return addScaled(start, direction, t);
+}
+
+MeasurementSegmentDistance3D makeSegmentDistance(const MeasurementPoint3D& first, const MeasurementPoint3D& second) {
+    const MeasurementPoint3D delta = subtract(first, second);
+    return {first, second, std::sqrt(dot(delta, delta))};
+}
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // parsePoint2D
 // Accepts: QPointF, or QVariantList with exactly 2 numeric values.
 // Rejects: QVariantList with 3 values (users should use 3D measurement).
 // ---------------------------------------------------------------------------
-std::optional<MeasurementPoint2D> MeasurementData::parsePoint2D(const QVariant& value, QString* error)
-{
+std::optional<MeasurementPoint2D> MeasurementData::parsePoint2D(const QVariant& value, QString* error) {
     // Accept QPointF directly
     if (value.canConvert<QPointF>()) {
         QPointF pt = value.toPointF();
@@ -53,8 +85,7 @@ std::optional<MeasurementPoint2D> MeasurementData::parsePoint2D(const QVariant& 
 // parsePoint3D
 // Accepts: [x, y] (z = 0) or [x, y, z].
 // ---------------------------------------------------------------------------
-std::optional<MeasurementPoint3D> MeasurementData::parsePoint3D(const QVariant& value, QString* error)
-{
+std::optional<MeasurementPoint3D> MeasurementData::parsePoint3D(const QVariant& value, QString* error) {
     if (value.type() != QVariant::List) {
         if (error)
             *error = QStringLiteral("3D point: expected [x, y] or [x, y, z] list");
@@ -96,8 +127,7 @@ std::optional<MeasurementPoint3D> MeasurementData::parsePoint3D(const QVariant& 
 // parseLine2D
 // Accepts: QVector<QPointF> with 2 points, or QVariantList [x1,y1,x2,y2].
 // ---------------------------------------------------------------------------
-std::optional<MeasurementLine2D> MeasurementData::parseLine2D(const QVariant& value, QString* error)
-{
+std::optional<MeasurementLine2D> MeasurementData::parseLine2D(const QVariant& value, QString* error) {
     // Accept flat list of 4 numbers [x1, y1, x2, y2]
     if (value.type() == QVariant::List) {
         QVariantList list = value.toList();
@@ -107,10 +137,7 @@ std::optional<MeasurementLine2D> MeasurementData::parseLine2D(const QVariant& va
             for (int i = 0; i < 4; ++i)
                 vals[i] = list[i].toDouble(&ok[i]);
             if (ok[0] && ok[1] && ok[2] && ok[3]) {
-                return MeasurementLine2D{
-                    {vals[0], vals[1]},
-                    {vals[2], vals[3]}
-                };
+                return MeasurementLine2D{{vals[0], vals[1]}, {vals[2], vals[3]}};
             }
         }
     }
@@ -119,10 +146,7 @@ std::optional<MeasurementLine2D> MeasurementData::parseLine2D(const QVariant& va
     if (value.canConvert<QVector<QPointF>>()) {
         QVector<QPointF> pts = value.value<QVector<QPointF>>();
         if (pts.size() >= 2) {
-            return MeasurementLine2D{
-                {pts[0].x(), pts[0].y()},
-                {pts[1].x(), pts[1].y()}
-            };
+            return MeasurementLine2D{{pts[0].x(), pts[0].y()}, {pts[1].x(), pts[1].y()}};
         }
     }
 
@@ -166,8 +190,7 @@ std::optional<MeasurementLine2D> MeasurementData::parseLine2D(const QVariant& va
 // Accepts: exactly 9 numeric values representing 3 points.
 // Rejects: collinear points (normal length < 1e-10).
 // ---------------------------------------------------------------------------
-std::optional<MeasurementPlane3D> MeasurementData::parsePlane3D(const QVariant& value, QString* error)
-{
+std::optional<MeasurementPlane3D> MeasurementData::parsePlane3D(const QVariant& value, QString* error) {
     if (value.type() != QVariant::List) {
         if (error)
             *error = QStringLiteral("3D plane: expected list of 9 numeric values [x1,y1,z1, x2,y2,z2, x3,y3,z3]");
@@ -221,12 +244,67 @@ std::optional<MeasurementPlane3D> MeasurementData::parsePlane3D(const QVariant& 
     return MeasurementPlane3D{p1, p2, p3};
 }
 
+MeasurementSegmentDistance3D MeasurementData::closestPointsBetweenSegments(const MeasurementPoint3D& firstStart,
+                                                                           const MeasurementPoint3D& firstEnd,
+                                                                           const MeasurementPoint3D& secondStart,
+                                                                           const MeasurementPoint3D& secondEnd) {
+    const MeasurementPoint3D firstDirection = subtract(firstEnd, firstStart);
+    const MeasurementPoint3D secondDirection = subtract(secondEnd, secondStart);
+    const MeasurementPoint3D betweenStarts = subtract(firstStart, secondStart);
+    const double firstLengthSquared = dot(firstDirection, firstDirection);
+    const double secondLengthSquared = dot(secondDirection, secondDirection);
+
+    if (firstLengthSquared <= 1e-12 && secondLengthSquared <= 1e-12) {
+        return makeSegmentDistance(firstStart, secondStart);
+    }
+    if (firstLengthSquared <= 1e-12) {
+        return makeSegmentDistance(firstStart, closestPointOnSegment(firstStart, secondStart, secondEnd));
+    }
+    if (secondLengthSquared <= 1e-12) {
+        return makeSegmentDistance(closestPointOnSegment(secondStart, firstStart, firstEnd), secondStart);
+    }
+
+    const double directionDot = dot(firstDirection, secondDirection);
+    const double firstStartDot = dot(firstDirection, betweenStarts);
+    const double secondStartDot = dot(secondDirection, betweenStarts);
+    const double denominator = firstLengthSquared * secondLengthSquared - directionDot * directionDot;
+
+    if (denominator <= 1e-12 * firstLengthSquared * secondLengthSquared) {
+        MeasurementSegmentDistance3D closest =
+            makeSegmentDistance(firstStart, closestPointOnSegment(firstStart, secondStart, secondEnd));
+        const MeasurementSegmentDistance3D candidates[] = {
+            makeSegmentDistance(firstEnd, closestPointOnSegment(firstEnd, secondStart, secondEnd)),
+            makeSegmentDistance(closestPointOnSegment(secondStart, firstStart, firstEnd), secondStart),
+            makeSegmentDistance(closestPointOnSegment(secondEnd, firstStart, firstEnd), secondEnd),
+        };
+        for (const MeasurementSegmentDistance3D& candidate : candidates) {
+            if (candidate.distance < closest.distance) {
+                closest = candidate;
+            }
+        }
+        return closest;
+    }
+
+    double firstT =
+        std::clamp((directionDot * secondStartDot - firstStartDot * secondLengthSquared) / denominator, 0.0, 1.0);
+    double secondT = (directionDot * firstT + secondStartDot) / secondLengthSquared;
+    if (secondT <= 0.0) {
+        secondT = 0.0;
+        firstT = std::clamp(-firstStartDot / firstLengthSquared, 0.0, 1.0);
+    } else if (secondT >= 1.0) {
+        secondT = 1.0;
+        firstT = std::clamp((directionDot - firstStartDot) / firstLengthSquared, 0.0, 1.0);
+    }
+
+    return makeSegmentDistance(addScaled(firstStart, firstDirection, firstT),
+                               addScaled(secondStart, secondDirection, secondT));
+}
+
 // ---------------------------------------------------------------------------
 // setPointCloud
 // Stores PointCloudData into ImageData metadata under MeasurementKeys::PointCloud.
 // ---------------------------------------------------------------------------
-void MeasurementData::setPointCloud(ImageData& image, const PointCloudData& cloud)
-{
+void MeasurementData::setPointCloud(ImageData& image, const PointCloudData& cloud) {
     image.setData(QString::fromLatin1(MeasurementKeys::PointCloud), QVariant::fromValue(cloud));
 }
 
@@ -234,8 +312,7 @@ void MeasurementData::setPointCloud(ImageData& image, const PointCloudData& clou
 // pointCloud
 // Retrieves PointCloudData from ImageData metadata.
 // ---------------------------------------------------------------------------
-std::optional<PointCloudData> MeasurementData::pointCloud(const ImageData& image, QString* error)
-{
+std::optional<PointCloudData> MeasurementData::pointCloud(const ImageData& image, QString* error) {
     QVariant var = image.data(QString::fromLatin1(MeasurementKeys::PointCloud));
 
     if (!var.isValid()) {

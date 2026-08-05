@@ -1,5 +1,6 @@
-#include <QtTest/QtTest>
 #include "core/geometry/MeasurementData.h"
+
+#include <QtTest/QtTest>
 
 using namespace DeepLux;
 
@@ -11,6 +12,7 @@ private slots:
     void parsePoint3DAccepts2DListAsZ0();
     void parseLine2DAcceptsFourValueList();
     void parsePlane3DRejectsDegeneratePlane();
+    void closestSegmentPointsUsesTrueNearestPair();
     void pointCloudRoundTripThroughImageData();
 };
 
@@ -37,13 +39,23 @@ void TestMeasurementData::parseLine2DAcceptsFourValueList() {
 
 void TestMeasurementData::parsePlane3DRejectsDegeneratePlane() {
     QString error;
-    auto plane = MeasurementData::parsePlane3D(QVariantList{
-        0.0, 0.0, 0.0,
-        1.0, 1.0, 1.0,
-        2.0, 2.0, 2.0
-    }, &error);
+    auto plane = MeasurementData::parsePlane3D(QVariantList{0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0}, &error);
     QVERIFY(!plane.has_value());
     QVERIFY(error.contains("plane"));
+}
+
+void TestMeasurementData::closestSegmentPointsUsesTrueNearestPair() {
+    const MeasurementSegmentDistance3D parallel = MeasurementData::closestPointsBetweenSegments(
+        {0.0, 0.0, 0.0}, {100.0, 0.0, 0.0}, {50.0, 10.0, 0.0}, {150.0, 10.0, 0.0});
+    QCOMPARE(parallel.distance, 10.0);
+    QCOMPARE(parallel.pointOnFirst.y, 0.0);
+    QCOMPARE(parallel.pointOnSecond.y, 10.0);
+
+    const MeasurementSegmentDistance3D skew = MeasurementData::closestPointsBetweenSegments(
+        {-10.0, 0.0, 0.0}, {10.0, 0.0, 0.0}, {0.0, -10.0, 5.0}, {0.0, 10.0, 5.0});
+    QCOMPARE(skew.distance, 5.0);
+    QCOMPARE(skew.pointOnFirst.x, 0.0);
+    QCOMPARE(skew.pointOnSecond.y, 0.0);
 }
 
 void TestMeasurementData::pointCloudRoundTripThroughImageData() {

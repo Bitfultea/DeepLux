@@ -135,7 +135,6 @@ protected:
     QDockWidget* m_toolBoxDock = nullptr;
     // 工具箱控件
     QTreeWidget* m_toolBoxTree = nullptr;
-    QTreeWidgetItem* m_currentToolBoxItem = nullptr; // 当前选中的工具箱项
     QMap<QString, QString> m_toolDisplayNames;
     class QLineEdit* m_toolSearchEdit = nullptr;
 
@@ -169,8 +168,6 @@ protected:
     AgentActionLogWidget* m_agentActionLogWidget = nullptr;
     AgentChatPanel* m_agentChatPanel = nullptr;
     int m_agentChatTabIndex = -1;
-    // Agent 内部页签（对话 + 操作日志）
-    QTabWidget* m_agentInnerTabs = nullptr;
 
     // 顶部工程上下文与状态栏
     QLabel* m_userLabel = nullptr;
@@ -189,7 +186,7 @@ protected:
     void setUiRunningState(bool running, bool cycleMode);
     bool syncModulesToRunEngine();
     void clearExecutionHighlight(QTreeWidgetItem* item);
-    void showProcessModuleOutput(QTreeWidgetItem* item);
+    void showProcessModuleOutput(QTreeWidgetItem* item, bool userInitiated = false);
     void displayImage(const ImageData& image, const QString& label = QString());
     bool importFile(const QString& filePath);
     bool importImageFile(const QString& filePath);
@@ -211,6 +208,9 @@ protected:
     void addMeasurementConfigAction(QVBoxLayout* layout, const QString& consumerModuleId,
                                     const QString& consumerInstanceId, QDialog* dialog);
     QString ensureMeasurementInputForMode(const QString& mode, const QString& consumerInstanceId);
+    IModule* measurementInputForPicking(QString& instanceId);
+    bool requestMeasurementInputForRun();
+    void finishMeasurementPick(const QString& instanceId, const QJsonObject& params, bool is3D);
     void refreshMeasurementOverlay(const QJsonObject& params, int visibleSteps);
     void refreshMeasurementOverlay3D(const QJsonObject& params, int visibleSteps);
     void updateMeasurementResultOnOverlay();
@@ -223,6 +223,8 @@ protected:
     QMap<QString, IModule*> m_flowModules;
     QMap<QString, int> m_measurementPickCursor;
     QMap<QString, int> m_measurementPickCount;
+    QString m_activeMeasurementInputId;
+    QString m_pendingMeasurementInputId;
 
     // 快速测量（无需流程）
     bool m_quickMeasureActive = false;

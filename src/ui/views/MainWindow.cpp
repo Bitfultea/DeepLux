@@ -15,6 +15,7 @@
 #include "../widgets/FlowCanvas.h"
 #include "../widgets/HImageWidget.h"
 #include "../widgets/ModuleInspectorPanel.h"
+#include "../widgets/PluginDragPayload.h"
 #include "../widgets/TerminalWidget.h"
 #include "../widgets/ViewportWidget.h"
 #include "CameraSetView.h"
@@ -51,7 +52,6 @@
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QComboBox>
-#include <QCursor>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDialog>
@@ -231,6 +231,19 @@ QString measurementInputModeText(const QString& mode) {
         return QStringLiteral("点、平面三点");
     }
     return mode;
+}
+
+int measurementPickCountForMode(const QString& mode) {
+    if (mode == QStringLiteral("point_pair")) {
+        return 2;
+    }
+    if (mode == QStringLiteral("point_line")) {
+        return 3;
+    }
+    if (mode == QStringLiteral("line_pair") || mode == QStringLiteral("point_plane")) {
+        return 4;
+    }
+    return 0;
 }
 
 QString measurementSummary(const ImageData& output) {
@@ -943,12 +956,6 @@ void MainWindow::setupMainLayout() {
     m_toolBoxTree->setMouseTracking(true);
     m_toolBoxTree->setAcceptDrops(false); // 禁用工具箱内部拖放，防止生成嵌套菜单
     m_toolBoxTree->setObjectName("ToolBoxTree");
-    m_toolBoxTree->installEventFilter(this);
-    connect(m_toolBoxTree, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int) {
-        if (item && item->data(0, Qt::UserRole).toString() == "plugin") {
-            m_currentToolBoxItem = item;
-        }
-    });
 
     // 搜索框（带清除按钮）
     m_toolSearchEdit = new QLineEdit();
@@ -1202,7 +1209,7 @@ void MainWindow::setupMainLayout() {
     m_processTree->viewport()->installEventFilter(this);
     m_processTree->installEventFilter(this);
     connect(m_processTree, &QTreeWidget::itemClicked, this,
-            [this](QTreeWidgetItem* item, int) { showProcessModuleOutput(item); });
+            [this](QTreeWidgetItem* item, int) { showProcessModuleOutput(item, true); });
     connect(m_processTree, &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem* current, QTreeWidgetItem*) { showProcessModuleOutput(current); });
 
@@ -1227,6 +1234,12 @@ void MainWindow::setupMainLayout() {
     connect(m_processTreeController, &ProcessTreeController::moduleRemoved, this, [this](const QString& instanceId) {
         m_currentExecutingItem = nullptr;
         m_dirtyModuleIds.remove(instanceId);
+        if (m_activeMeasurementInputId == instanceId) {
+            m_activeMeasurementInputId.clear();
+        }
+        if (m_pendingMeasurementInputId == instanceId) {
+            m_pendingMeasurementInputId.clear();
+        }
         if (m_flowCanvas && m_flowCanvas->nodeItem(instanceId)) {
             m_flowCanvas->removeNode(instanceId);
         }
@@ -1254,6 +1267,12 @@ void MainWindow::setupMainLayout() {
                         m_paramUndoStack->clear();
                     }
                     m_dirtyModuleIds.remove(instanceId);
+                }
+                if (m_activeMeasurementInputId == instanceId) {
+                    m_activeMeasurementInputId.clear();
+                }
+                if (m_pendingMeasurementInputId == instanceId) {
+                    m_pendingMeasurementInputId.clear();
                 }
             });
 
@@ -1495,25 +1514,16 @@ void MainWindow::setupMainLayout() {
     TerminalBridge::instance().initialize(m_terminalWidget);
     m_logTerminalTabs->addTab(m_terminalWidget, tr("终端"));
 
-    // ===== Tab 3: Agent (内部页签: 对话 + 操作日志) =====
-    m_agentInnerTabs = new QTabWidget();
-    m_agentInnerTabs->setObjectName("AgentInnerTabs");
-    m_agentInnerTabs->setDocumentMode(true);
-    m_agentInnerTabs->tabBar()->setUsesScrollButtons(false);
-
-    m_agentChatPanel = new AgentChatPanel();
-    m_agentInnerTabs->addTab(m_agentChatPanel, tr("对话"));
-    m_agentChatTabIndex = m_logTerminalTabs->addTab(m_agentInnerTabs, tr("Agent"));
-    m_logTerminalTabs->setTabToolTip(m_agentChatTabIndex, tr("Agent"));
+    // ===== Tab 3: Agent 对话 =====
+    m_agentChatPanel = new AgentChatPanel(m_logTerminalTabs);
+    m_agentChatTabIndex = m_logTerminalTabs->addTab(m_agentChatPanel, tr("Agent 对话"));
+    m_logTerminalTabs->setTabToolTip(m_agentChatTabIndex, tr("与 Agent 对话"));
     auto setAgentTabStatus = [this](const QString& tooltip, bool focus) {
         if (!m_logTerminalTabs || m_agentChatTabIndex < 0)
             return;
         m_logTerminalTabs->setTabToolTip(m_agentChatTabIndex, tooltip);
         if (focus) {
             m_logTerminalTabs->setCurrentIndex(m_agentChatTabIndex);
-            if (m_agentInnerTabs) {
-                m_agentInnerTabs->setCurrentIndex(0); // 对话页
-            }
         }
     };
     connect(m_agentChatPanel, &AgentChatPanel::userMessageSent, this, [this, setAgentTabStatus](const QString& msg) {
@@ -1587,9 +1597,10 @@ void MainWindow::setupMainLayout() {
     connect(m_agentChatPanel, &AgentChatPanel::toolPreviewCancelled, &AgentController::instance(),
             &AgentController::rejectPendingTools);
 
-    // Agent 操作日志（内部页签）
-    m_agentActionLogWidget = new AgentActionLogWidget();
-    m_agentInnerTabs->addTab(m_agentActionLogWidget, tr("操作日志"));
+    // ===== Tab 4: Agent 操作日志 =====
+    m_agentActionLogWidget = new AgentActionLogWidget(m_logTerminalTabs);
+    const int agentLogTabIndex = m_logTerminalTabs->addTab(m_agentActionLogWidget, tr("Agent 日志"));
+    m_logTerminalTabs->setTabToolTip(agentLogTabIndex, tr("Agent 操作日志"));
     connect(&AgentController::instance(), &AgentController::actionLogEntryAdded, m_agentActionLogWidget,
             &AgentActionLogWidget::addEntry);
     connect(m_agentActionLogWidget, &AgentActionLogWidget::undoRequested, this,
@@ -1788,6 +1799,8 @@ void MainWindow::onProjectOpened(Project* project) {
         m_paramUndoStack->clear();
     }
     m_dirtyModuleIds.clear();
+    m_activeMeasurementInputId.clear();
+    m_pendingMeasurementInputId.clear();
 
     // 清空现有流程树
     m_processTreeController->clear();
@@ -1871,6 +1884,8 @@ void MainWindow::onProjectClosed() {
 
     // P0: 先清空检查器，防止悬空模块指针
     m_selectedModuleId.clear();
+    m_activeMeasurementInputId.clear();
+    m_pendingMeasurementInputId.clear();
     if (m_inspectorPanel) {
         m_inspectorPanel->clear();
     }
@@ -1920,6 +1935,135 @@ void MainWindow::onViewportCreated(const QString& viewportId, ViewportWidget* vi
         viewport->imageWidget()->installEventFilter(this);
     // 高: 延迟创建的 3D 控件也需要安装
     connect(viewport, &ViewportWidget::contentWidgetCreated, this, [this](QWidget* w) { w->installEventFilter(this); });
+}
+
+IModule* MainWindow::measurementInputForPicking(QString& instanceId) {
+    QTreeWidgetItem* item = m_processTree ? m_processTree->currentItem() : nullptr;
+    if (item && item->data(0, Qt::UserRole).toString() == QStringLiteral("flow_item")) {
+        const QString selectedId = item->data(0, Qt::UserRole + 1).toString();
+        IModule* selectedModule = m_flowModules.value(selectedId, nullptr);
+        if (selectedModule && selectedModule->moduleId() == QStringLiteral("com.deeplux.plugin.measurementinput")) {
+            m_activeMeasurementInputId = selectedId;
+            instanceId = selectedId;
+            return selectedModule;
+        }
+    }
+
+    IModule* module = m_flowModules.value(m_activeMeasurementInputId, nullptr);
+    if (module && module->moduleId() == QStringLiteral("com.deeplux.plugin.measurementinput")) {
+        instanceId = m_activeMeasurementInputId;
+        return module;
+    }
+
+    m_activeMeasurementInputId.clear();
+    return nullptr;
+}
+
+bool MainWindow::requestMeasurementInputForRun() {
+    if (!m_pendingMeasurementInputId.isEmpty()) {
+        return true;
+    }
+
+    bool hasMeasurementInput = false;
+    for (int row = 0; row < m_processTreeController->topLevelItemCount(); ++row) {
+        QTreeWidgetItem* item = m_processTreeController->topLevelItem(row);
+        const QString instanceId = item ? item->data(0, Qt::UserRole + 1).toString() : QString();
+        IModule* module = m_flowModules.value(instanceId, nullptr);
+        if (!module || module->moduleId() != QStringLiteral("com.deeplux.plugin.measurementinput")) {
+            continue;
+        }
+        hasMeasurementInput = true;
+
+        const QJsonObject params = module->currentParams();
+        const int requiredPickCount = measurementPickCountForMode(params["mode"].toString());
+        if (requiredPickCount == 0) {
+            continue;
+        }
+
+        const bool explicitlyAwaitingPick = params["awaitUserPick"].toBool(false);
+        const bool legacyActiveInput = !params.contains("awaitUserPick") && instanceId == m_activeMeasurementInputId;
+        if ((!explicitlyAwaitingPick && !legacyActiveInput) ||
+            m_measurementPickCount.value(instanceId, 0) >= requiredPickCount) {
+            continue;
+        }
+
+        m_activeMeasurementInputId = instanceId;
+        m_pendingMeasurementInputId = instanceId;
+        selectModule(instanceId, true, true);
+        setProcessItemStatus(
+            item, QStringLiteral("running"),
+            tr("等待拾取 %1/%2").arg(m_measurementPickCount.value(instanceId, 0) + 1).arg(requiredPickCount));
+        Logger::instance().info(
+            tr("流程等待测量输入：请在视图中拾取 %1").arg(measurementInputModeText(params["mode"].toString())),
+            "Measurement");
+        return true;
+    }
+
+    if (!hasMeasurementInput) {
+        for (int row = 0; row < m_processTreeController->topLevelItemCount(); ++row) {
+            QTreeWidgetItem* item = m_processTreeController->topLevelItem(row);
+            const QString consumerInstanceId = item ? item->data(0, Qt::UserRole + 1).toString() : QString();
+            IModule* consumer = m_flowModules.value(consumerInstanceId, nullptr);
+            const QString mode = consumer ? measurementInputModeForConsumer(consumer->moduleId()) : QString();
+            if (mode.isEmpty()) {
+                continue;
+            }
+
+            if (!ensureMeasurementInputForMode(mode, consumerInstanceId).isEmpty()) {
+                Logger::instance().info(tr("已为测量步骤创建交互输入，等待在视图中拾取"), "Measurement");
+                return requestMeasurementInputForRun();
+            }
+            break;
+        }
+    }
+
+    return false;
+}
+
+void MainWindow::finishMeasurementPick(const QString& instanceId, const QJsonObject& params, bool is3D) {
+    const int count = m_measurementPickCount.value(instanceId, 0) + 1;
+    m_measurementPickCount[instanceId] = count;
+    if (is3D) {
+        refreshMeasurementOverlay3D(params, count);
+    } else {
+        refreshMeasurementOverlay(params, count);
+    }
+
+    const int requiredPickCount = measurementPickCountForMode(params["mode"].toString());
+    if (count < requiredPickCount) {
+        if (instanceId == m_pendingMeasurementInputId) {
+            if (QTreeWidgetItem* item = m_processTreeController->instanceItem(instanceId)) {
+                setProcessItemStatus(item, QStringLiteral("running"),
+                                     tr("等待拾取 %1/%2").arg(count + 1).arg(requiredPickCount));
+            }
+        }
+        return;
+    }
+
+    if (IModule* module = m_flowModules.value(instanceId, nullptr)) {
+        module->setParam("awaitUserPick", false);
+    }
+    if (Project* project = ProjectManager::instance().currentProject()) {
+        project->setModuleParam(instanceId, "awaitUserPick", false);
+    }
+    if (instanceId != m_pendingMeasurementInputId) {
+        return;
+    }
+
+    m_pendingMeasurementInputId.clear();
+    if (QTreeWidgetItem* item = m_processTreeController->instanceItem(instanceId)) {
+        setProcessItemStatus(item, QStringLiteral("success"), tr("拾取完成"));
+    }
+    Logger::instance().info(tr("测量输入完成，继续运行流程"), "Measurement");
+    QTimer::singleShot(0, this, [this]() {
+        if (!m_isRunning) {
+            return;
+        }
+        if (requestMeasurementInputForRun()) {
+            return;
+        }
+        executeFlowOnce();
+    });
 }
 
 void MainWindow::onPoint2DPicked(const QPointF& point) {
@@ -1999,12 +2143,14 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
                 QLineF l2(m_quickMeasurePoints[2], m_quickMeasurePoints[3]);
                 double len1 = l1.length();
                 double len2 = l2.length();
-                // 两线间距：取两线中点距离作为近似
-                QPointF m1 = (l1.p1() + l1.p2()) / 2.0;
-                QPointF m2 = (l2.p1() + l2.p2()) / 2.0;
-                double dist = QLineF(m1, m2).length();
+                const MeasurementSegmentDistance3D closest = MeasurementData::closestPointsBetweenSegments(
+                    {l1.p1().x(), l1.p1().y(), 0.0}, {l1.p2().x(), l1.p2().y(), 0.0}, {l2.p1().x(), l2.p1().y(), 0.0},
+                    {l2.p2().x(), l2.p2().y(), 0.0});
+                const QPointF closestOnLine1(closest.pointOnFirst.x, closest.pointOnFirst.y);
+                const QPointF closestOnLine2(closest.pointOnSecond.x, closest.pointOnSecond.y);
+                double dist = closest.distance;
                 QString label = tr("间距: %1").arg(dist, 0, 'f', 3);
-                Logger::instance().info(tr("快速测量: 两线间距=%1 (线1长度=%2, 线2长度=%3)")
+                Logger::instance().info(tr("快速测量: 两线段最近距离=%1 (线1长度=%2, 线2长度=%3)")
                                             .arg(dist, 0, 'f', 3)
                                             .arg(len1, 0, 'f', 3)
                                             .arg(len2, 0, 'f', 3),
@@ -2015,33 +2161,18 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
                               {l2.p2(), QStringLiteral("L2-2")}},
                              {{l1.p1(), l1.p2(), tr("线1: %1").arg(len1, 0, 'f', 3)},
                               {l2.p1(), l2.p2(), tr("线2: %1").arg(len2, 0, 'f', 3)},
-                              {m1, m2, label}});
+                              {closestOnLine1, closestOnLine2, label}});
                 m_quickMeasurePoints.clear();
             }
         }
         return;
     }
 
-    QTreeWidgetItem* item = m_processTree->currentItem();
-    if (!item || item->data(0, Qt::UserRole).toString() != "flow_item") {
-        QGuiApplication::clipboard()->setText(pointText2D(point));
-        Logger::instance().info(QString("2D pick: (%1, %2) — no MeasurementInput selected")
-                                    .arg(point.x(), 0, 'f', 2)
-                                    .arg(point.y(), 0, 'f', 2),
-                                "Picking");
-        return;
-    }
-
-    QString instanceId = item->data(0, Qt::UserRole + 1).toString();
-    IModule* mod = m_flowModules.value(instanceId, nullptr);
+    QString instanceId;
+    IModule* mod = measurementInputForPicking(instanceId);
     if (!mod) {
         QGuiApplication::clipboard()->setText(pointText2D(point));
-        return;
-    }
-
-    if (mod->moduleId() != "com.deeplux.plugin.measurementinput") {
-        QGuiApplication::clipboard()->setText(pointText2D(point));
-        Logger::instance().info(QString("2D pick: (%1, %2) — selected module is not MeasurementInput")
+        Logger::instance().info(QString("2D pick: (%1, %2) — no active MeasurementInput")
                                     .arg(point.x(), 0, 'f', 2)
                                     .arg(point.y(), 0, 'f', 2),
                                 "Picking");
@@ -2055,11 +2186,7 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
 
     const QJsonArray newPoint2D = pointArray2D(point);
     const QJsonArray newPoint3D = pointArray3D(point.x(), point.y(), 0.0);
-    auto finishPick = [&]() {
-        const int count = m_measurementPickCount.value(instanceId, 0) + 1;
-        m_measurementPickCount[instanceId] = count;
-        refreshMeasurementOverlay(mod->currentParams(), count);
-    };
+    auto finishPick = [&]() { finishMeasurementPick(instanceId, mod->currentParams(), false); };
 
     if (mode == "line_pair") {
         const int step = cursor % 4;
@@ -2541,11 +2668,15 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                 const QVector3D& b2 = m_quickMeasurePoints3D[3];
                 double len1 = a1.distanceToPoint(a2);
                 double len2 = b1.distanceToPoint(b2);
-                QVector3D m1 = (a1 + a2) / 2.0f;
-                QVector3D m2 = (b1 + b2) / 2.0f;
-                double dist = m1.distanceToPoint(m2);
+                const MeasurementSegmentDistance3D closest =
+                    MeasurementData::closestPointsBetweenSegments({a1.x(), a1.y(), a1.z()}, {a2.x(), a2.y(), a2.z()},
+                                                                  {b1.x(), b1.y(), b1.z()}, {b2.x(), b2.y(), b2.z()});
+                const QVector3D closestOnLine1(closest.pointOnFirst.x, closest.pointOnFirst.y, closest.pointOnFirst.z);
+                const QVector3D closestOnLine2(closest.pointOnSecond.x, closest.pointOnSecond.y,
+                                               closest.pointOnSecond.z);
+                double dist = closest.distance;
                 QString label = tr("间距: %1").arg(dist, 0, 'f', 3);
-                Logger::instance().info(tr("3D 快速测量: 两线间距=%1 (线1=%2, 线2=%3)")
+                Logger::instance().info(tr("3D 快速测量: 两线段最近距离=%1 (线1=%2, 线2=%3)")
                                             .arg(dist, 0, 'f', 3)
                                             .arg(len1, 0, 'f', 3)
                                             .arg(len2, 0, 'f', 3),
@@ -2556,34 +2687,18 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                                 {b2, QStringLiteral("L2-2")}},
                                {{a1, a2, tr("线1: %1").arg(len1, 0, 'f', 3)},
                                 {b1, b2, tr("线2: %1").arg(len2, 0, 'f', 3)},
-                                {m1, m2, label}});
+                                {closestOnLine1, closestOnLine2, label}});
                 m_quickMeasurePoints3D.clear();
             }
         }
         return;
     }
 
-    QTreeWidgetItem* item = m_processTree->currentItem();
-    if (!item || item->data(0, Qt::UserRole).toString() != "flow_item") {
-        QGuiApplication::clipboard()->setText(pointText3D(point));
-        Logger::instance().info(QString("3D pick: (%1, %2, %3) — no MeasurementInput selected")
-                                    .arg(point.x(), 0, 'f', 3)
-                                    .arg(point.y(), 0, 'f', 3)
-                                    .arg(point.z(), 0, 'f', 3),
-                                "Picking");
-        return;
-    }
-
-    QString instanceId = item->data(0, Qt::UserRole + 1).toString();
-    IModule* mod = m_flowModules.value(instanceId, nullptr);
+    QString instanceId;
+    IModule* mod = measurementInputForPicking(instanceId);
     if (!mod) {
         QGuiApplication::clipboard()->setText(pointText3D(point));
-        return;
-    }
-
-    if (mod->moduleId() != "com.deeplux.plugin.measurementinput") {
-        QGuiApplication::clipboard()->setText(pointText3D(point));
-        Logger::instance().info(QString("3D pick: (%1, %2, %3) — selected module is not MeasurementInput")
+        Logger::instance().info(QString("3D pick: (%1, %2, %3) — no active MeasurementInput")
                                     .arg(point.x(), 0, 'f', 3)
                                     .arg(point.y(), 0, 'f', 3)
                                     .arg(point.z(), 0, 'f', 3),
@@ -2596,11 +2711,7 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
     const int cursor = m_measurementPickCursor.value(instanceId, 0);
     Project* project = ProjectManager::instance().currentProject();
     const QJsonArray newPoint = pointArray3D(point.x(), point.y(), point.z());
-    auto finishPick = [&]() {
-        const int count = m_measurementPickCount.value(instanceId, 0) + 1;
-        m_measurementPickCount[instanceId] = count;
-        refreshMeasurementOverlay3D(mod->currentParams(), count);
-    };
+    auto finishPick = [&]() { finishMeasurementPick(instanceId, mod->currentParams(), true); };
 
     if (mode == "point_plane") {
         const int step = cursor % 4;
@@ -2836,6 +2947,7 @@ QString MainWindow::ensureMeasurementInputForMode(const QString& mode, const QSt
     inst.moduleId = QStringLiteral("MeasurementInput");
     inst.name = toolDisplayName(QStringLiteral("MeasurementInput"), tr("测量输入"));
     inst.params["mode"] = mode;
+    inst.params["awaitUserPick"] = true;
 
     int insertRow = m_processTreeController->topLevelItemCount();
     if (m_processTreeController->containsInstance(consumerInstanceId)) {
@@ -2860,6 +2972,7 @@ QString MainWindow::ensureMeasurementInputForMode(const QString& mode, const QSt
     }
     selectModule(instanceId, true, true);
 
+    m_activeMeasurementInputId = instanceId;
     m_measurementPickCursor[instanceId] = 0;
     m_measurementPickCount[instanceId] = 0;
     m_modulesNeedSync = true;
@@ -2993,17 +3106,6 @@ void MainWindow::applyTheme() {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
-    // 处理工具箱的拖拽开始事件 - 更新当前选中的项
-    if (m_toolBoxTree && watched == m_toolBoxTree && event->type() == QEvent::DragEnter) {
-        QTreeWidgetItem* item = m_toolBoxTree->itemAt(m_toolBoxTree->mapFromGlobal(QCursor::pos()));
-        if (item && item->data(0, Qt::UserRole).toString() == "plugin") {
-            m_currentToolBoxItem = item;
-        } else {
-            // 不是插件项，拒绝拖拽
-            m_currentToolBoxItem = nullptr;
-        }
-    }
-
     // 处理流程树的双击事件 — 普通双击打开检查器（切换到参数页）
     if (m_processTree && event->type() == QEvent::MouseButtonDblClick) {
         QMouseEvent* mouseEvent = static_cast<QMouseEvent*>(event);
@@ -3019,7 +3121,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
             QString instanceName = item->data(0, Qt::UserRole + 1).toString();
             if (!instanceName.isEmpty()) {
                 // 普通双击打开检查器（切换到参数页）
-                selectModule(instanceName, true);
+                selectModule(instanceName, true, true);
                 if (m_inspectorPanel) {
                     m_inspectorPanel->showParamsTab();
                 }
@@ -3171,84 +3273,76 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 
             // 检查是否有来自工具箱的拖放
             if (isToolBoxDrop && mimeData->hasFormat("application/x-qabstractitemmodeldatalist")) {
-                // 优先使用已记录的选中项，否则尝试获取当前项
-                QTreeWidgetItem* sourceItem = m_currentToolBoxItem;
-                if (!sourceItem) {
-                    sourceItem = m_toolBoxTree->currentItem();
-                }
-                // 只允许插件类型的项被拖拽到流程树
-                if (sourceItem && sourceItem->data(0, Qt::UserRole).toString() == "plugin") {
-                    QString pluginName = sourceItem->data(0, Qt::UserRole + 1).toString();
-                    if (!pluginName.isEmpty()) {
-                        if (!ProjectManager::instance().currentProject() && !ProjectManager::instance().newProject()) {
-                            Logger::instance().error(tr("无法创建工程，不能添加插件：%1").arg(pluginName), "Flow");
-                            dropEvent->ignore();
-                            return true;
-                        }
-
-                        // 隐藏提示标签
-                        m_processTreeController->hideHintLabel();
-
-                        const int insertRow = insertRowForDrop();
-
-                        // 先添加树节点（即时视觉反馈），再异步创建模块实例
-                        QTreeWidgetItem* newItem = new QTreeWidgetItem();
-                        newItem->setFlags((newItem->flags() | Qt::ItemIsDragEnabled) & ~Qt::ItemIsDropEnabled);
-                        m_processTreeController->insertTopLevelItem(insertRow, newItem);
-
-                        QString instanceName = pluginName;
-                        int counter = 1;
-                        while (m_processTreeController->isUsedName(instanceName)) {
-                            instanceName = QString("%1_%2").arg(pluginName).arg(counter++);
-                        }
-                        m_processTreeController->insertUsedName(instanceName);
-                        newItem->setData(0, Qt::UserRole, "flow_item");
-                        newItem->setData(0, Qt::UserRole + 1, instanceName);
-                        newItem->setData(0, Qt::UserRole + 2, pluginName);
-                        m_processTreeController->insertInstanceItem(instanceName, newItem); // 防 Project 信号重复创建
-
-                        // 推迟模块创建到事件循环 — 避免在拖放嵌套循环中阻塞
-                        QTimer::singleShot(0, this, [this, pluginName, instanceName, newItem]() {
-                            DeepLux::PluginManager& pm = DeepLux::PluginManager::instance();
-                            IModule* module = pm.createModule(pluginName);
-                            if (!module) {
-                                Logger::instance().error(tr("无法创建插件：%1").arg(pluginName), "Flow");
-                                m_processTreeController->removeModule(instanceName);
-                                return;
-                            }
-                            if (!module->initialize()) {
-                                Logger::instance().error(tr("插件初始化失败：%1").arg(pluginName), "Flow");
-                                delete module;
-                                m_processTreeController->removeModule(instanceName);
-                                return;
-                            }
-                            // 通过 Project 模型添加 — moduleAdded 信号同步 processTree + FlowCanvas
-                            const QString displayName = toolDisplayName(pluginName, module->name());
-                            newItem->setText(0, displayName);
-                            newItem->setIcon(0, module->icon());
-                            m_flowModules.insert(instanceName, module);
-                            m_modulesNeedSync = true;
-                            ModuleInstance inst;
-                            inst.id = instanceName;
-                            inst.moduleId = pluginName;
-                            inst.name = displayName;
-                            Project* proj = ProjectManager::instance().currentProject();
-                            if (proj) {
-                                proj->addModule(inst);
-                                proj->moveModule(instanceName, m_processTreeController->indexOfTopLevelItem(newItem));
-                            }
-                            Logger::instance().info(tr("已添加插件到流程：%1 (%2)").arg(displayName).arg(instanceName),
-                                                    "Flow");
-                            // P1-4: 模块创建后重新选择，更新检查器
-                            selectModule(instanceName, true);
-                        });
-
-                        dropEvent->setDropAction(Qt::CopyAction);
-                        dropEvent->accept();
+                const QString pluginName = PluginDragPayload::pluginName(mimeData);
+                if (!pluginName.isEmpty()) {
+                    if (!ProjectManager::instance().currentProject() && !ProjectManager::instance().newProject()) {
+                        Logger::instance().error(tr("无法创建工程，不能添加插件：%1").arg(pluginName), "Flow");
+                        dropEvent->ignore();
                         return true;
                     }
+
+                    // 隐藏提示标签
+                    m_processTreeController->hideHintLabel();
+
+                    const int insertRow = insertRowForDrop();
+
+                    // 先添加树节点（即时视觉反馈），再异步创建模块实例
+                    QTreeWidgetItem* newItem = new QTreeWidgetItem();
+                    newItem->setFlags((newItem->flags() | Qt::ItemIsDragEnabled) & ~Qt::ItemIsDropEnabled);
+                    m_processTreeController->insertTopLevelItem(insertRow, newItem);
+
+                    QString instanceName = pluginName;
+                    int counter = 1;
+                    while (m_processTreeController->isUsedName(instanceName)) {
+                        instanceName = QString("%1_%2").arg(pluginName).arg(counter++);
+                    }
+                    m_processTreeController->insertUsedName(instanceName);
+                    newItem->setData(0, Qt::UserRole, "flow_item");
+                    newItem->setData(0, Qt::UserRole + 1, instanceName);
+                    newItem->setData(0, Qt::UserRole + 2, pluginName);
+                    m_processTreeController->insertInstanceItem(instanceName, newItem); // 防 Project 信号重复创建
+
+                    // 推迟模块创建到事件循环 — 避免在拖放嵌套循环中阻塞
+                    QTimer::singleShot(0, this, [this, pluginName, instanceName, newItem]() {
+                        DeepLux::PluginManager& pm = DeepLux::PluginManager::instance();
+                        IModule* module = pm.createModule(pluginName);
+                        if (!module) {
+                            Logger::instance().error(tr("无法创建插件：%1").arg(pluginName), "Flow");
+                            m_processTreeController->removeModule(instanceName);
+                            return;
+                        }
+                        if (!module->initialize()) {
+                            Logger::instance().error(tr("插件初始化失败：%1").arg(pluginName), "Flow");
+                            delete module;
+                            m_processTreeController->removeModule(instanceName);
+                            return;
+                        }
+                        // 通过 Project 模型添加 — moduleAdded 信号同步 processTree + FlowCanvas
+                        const QString displayName = toolDisplayName(pluginName, module->name());
+                        newItem->setText(0, displayName);
+                        newItem->setIcon(0, module->icon());
+                        m_flowModules.insert(instanceName, module);
+                        m_modulesNeedSync = true;
+                        ModuleInstance inst;
+                        inst.id = instanceName;
+                        inst.moduleId = pluginName;
+                        inst.name = displayName;
+                        Project* proj = ProjectManager::instance().currentProject();
+                        if (proj) {
+                            proj->addModule(inst);
+                            proj->moveModule(instanceName, m_processTreeController->indexOfTopLevelItem(newItem));
+                        }
+                        Logger::instance().info(tr("已添加插件到流程：%1 (%2)").arg(displayName).arg(instanceName),
+                                                "Flow");
+                        // P1-4: 模块创建后重新选择，更新检查器
+                        selectModule(instanceName, true);
+                    });
+
+                    dropEvent->setDropAction(Qt::CopyAction);
+                    dropEvent->accept();
+                    return true;
                 }
-                // 非插件类型的拖拽，拒绝处理
+                // MIME 载荷不包含有效插件 ID，拒绝处理。
                 return true;
             }
             // Not a plugin drop, let default handling occur
@@ -3809,7 +3903,7 @@ void MainWindow::setProcessItemStatus(QTreeWidgetItem* item, const QString& stat
     }
 }
 
-void MainWindow::showProcessModuleOutput(QTreeWidgetItem* item) {
+void MainWindow::showProcessModuleOutput(QTreeWidgetItem* item, bool userInitiated) {
     if (!item || item->data(0, Qt::UserRole).toString() != QStringLiteral("flow_item")) {
         return;
     }
@@ -3820,7 +3914,7 @@ void MainWindow::showProcessModuleOutput(QTreeWidgetItem* item) {
     }
 
     // 统一走 selectModule 入口
-    selectModule(instanceId, false);
+    selectModule(instanceId, userInitiated, userInitiated);
 }
 
 void MainWindow::pushParamCommand(const QString& instanceId, const QString& key, const QVariant& value) {
@@ -3968,6 +4062,11 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector, b
     }
 
     m_selectedModuleId = instanceId;
+
+    if (IModule* module = m_flowModules.value(instanceId, nullptr);
+        module && module->moduleId() == QStringLiteral("com.deeplux.plugin.measurementinput")) {
+        m_activeMeasurementInputId = instanceId;
+    }
 
     if (instanceId.isEmpty()) {
         // 清空选择
@@ -4441,7 +4540,7 @@ void MainWindow::onQuickMeasure() {
     QMenu menu(this);
     menu.addAction(tr("两点距离"))->setData(0);
     menu.addAction(tr("点到线距离"))->setData(1);
-    menu.addAction(tr("两线间距"))->setData(2);
+    menu.addAction(tr("两线段间距"))->setData(2);
 
     QAction* sel = menu.exec(QCursor::pos());
     if (!sel) {
@@ -4465,7 +4564,7 @@ void MainWindow::onQuickMeasure() {
         }
     }
 
-    QStringList labels = {tr("两点距离"), tr("点到线距离"), tr("两线间距")};
+    QStringList labels = {tr("两点距离"), tr("点到线距离"), tr("两线段间距")};
     Logger::instance().info(tr("快速测量：%1").arg(labels[type]), "Measurement");
 }
 
@@ -4524,6 +4623,9 @@ void MainWindow::onRunOnce() {
         }
         setUiRunningState(true, false);
         Logger::instance().info(tr("运行一次"), "System");
+        if (requestMeasurementInputForRun()) {
+            return;
+        }
         executeFlowOnce();
     } else {
         onStop();
@@ -4541,6 +4643,9 @@ void MainWindow::onRunCycle() {
         }
         setUiRunningState(true, true);
         Logger::instance().info(tr("循环运行"), "System");
+        if (requestMeasurementInputForRun()) {
+            return;
+        }
         executeFlowOnce();
     }
     // 已经在运行时，不做操作，保持循环模式
@@ -4572,6 +4677,13 @@ void MainWindow::onStepRun() {
 }
 
 void MainWindow::onStop() {
+    if (!m_pendingMeasurementInputId.isEmpty()) {
+        if (QTreeWidgetItem* item = m_processTreeController->instanceItem(m_pendingMeasurementInputId)) {
+            clearExecutionHighlight(item);
+            item->setText(1, QString());
+        }
+        m_pendingMeasurementInputId.clear();
+    }
     setUiRunningState(false, false);
     m_isStepMode = false;
     RunEngine::instance().stop();

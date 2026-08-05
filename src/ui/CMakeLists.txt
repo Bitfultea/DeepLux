@@ -75,6 +75,7 @@ set(UI_HEADERS
     dialogs/AgentSettingsDialog.h
     widgets/ViewportWidget.h
     widgets/ModuleInspectorPanel.h
+    widgets/PluginDragPayload.h
     bridge/TerminalBridge.h
     process/BashProcess.h
     process/PtyImpl.h

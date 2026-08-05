@@ -126,6 +126,7 @@ flowchart LR
 | --- | --- |
 | [快速上手](docs/quick-start.md) | 创建找圆流程、单步检查、常见排查。 |
 | [架构说明](docs/architecture.md) | UI、工程、执行引擎、插件、Agent 与 SAM 的职责边界。 |
+| [插件手册](docs/plugins.md) | 59 个运行时插件的用途、接入方式、关键配置和结果说明。 |
 | [CLI 文档](docs/cli.md) | GUI 之外的项目、模块与连接管理命令。 |
 | [终端与 Agent 设计](docs/Terminal_Agent_Design.md) | 受控 Agent 工具调用、审计与权限模型。 |
 | [3D 设计文档](docs/design/) | 点云渲染、LOD 和相关设计记录。 |

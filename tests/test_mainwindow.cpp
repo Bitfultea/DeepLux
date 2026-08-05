@@ -1,3 +1,4 @@
+#include <QAbstractItemModel>
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
@@ -11,6 +12,7 @@
 #include <QImage>
 #include <QLabel>
 #include <QLayout>
+#include <QLineF>
 #include <QMenu>
 #include <QMenuBar>
 #include <QPlainTextEdit>
@@ -48,6 +50,7 @@
 #include <ui/widgets/FlowCanvas.h>
 #include <ui/widgets/HImageWidget.h>
 #include <ui/widgets/ModuleInspectorPanel.h>
+#include <ui/widgets/PluginDragPayload.h>
 #include <ui/widgets/ViewportWidget.h>
 
 using namespace DeepLux;
@@ -104,6 +107,7 @@ private slots:
     void testHomeSwitchesToFlowCanvas();
     void testAgentMessageRenderingUsesCompactLineSpacing();
     void testAgentThinkingStatusStaysCompactAndSafe();
+    void testToolboxDragPayloadUsesDraggedPlugin();
     void testAgentInputErrorPathDoesNotCrashOrStayThinking();
     void testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTheme();
     void testClickingProcessModuleDisplaysIntermediateOutput();
@@ -112,11 +116,13 @@ private slots:
     void testMeasurementPickingViaImageViewportClick();
     void testMeasurementConfigButtonCreatesInputNode();
     void testMeasurementConfigButtonWithInstalledPlugins();
+    void testRunCreatesMeasurementInputForConsumer();
     void testPluginConfigDialogRestylesLegacyDarkPlugin();
     void testGrabImageEditorSurvivesCommitSignal();
     void testQuickAnnotateOpensSamDialogOnMainViewportImage();
     void testTreeAndCanvasSyncSelection();
     void testPinnedInspectorKeepsTreeAndCanvasSelectionSynchronized();
+    void testProcessTreeClickOverridesPinnedInspector();
     void testCycleRunDoesNotStealSelection();
     void testStepRunFollowsExecution();
     void testCloseInspectorDoesNotAutoExpand();
@@ -131,6 +137,26 @@ private:
     bool installFitLinePlugin(const QString& pluginRoot) const;
     bool installRuntimePlugin(const QString& pluginRoot, const QString& pluginName) const;
 };
+
+void TestMainWindow::testToolboxDragPayloadUsesDraggedPlugin() {
+    QTreeWidget tree;
+    QTreeWidgetItem category(&tree, QStringList{QStringLiteral("Geometry")});
+    QTreeWidgetItem distance(&category, QStringList{QStringLiteral("DistancePP")});
+    distance.setData(0, Qt::UserRole, QStringLiteral("plugin"));
+    distance.setData(0, Qt::UserRole + 1, QStringLiteral("DistancePP"));
+    QTreeWidgetItem image(&category, QStringList{QStringLiteral("GrabImage")});
+    image.setData(0, Qt::UserRole, QStringLiteral("plugin"));
+    image.setData(0, Qt::UserRole + 1, QStringLiteral("GrabImage"));
+
+    tree.setCurrentItem(&distance);
+    const QModelIndex categoryIndex = tree.model()->index(0, 0);
+    const QModelIndex imageIndex = tree.model()->index(1, 0, categoryIndex);
+    QVERIFY(imageIndex.isValid());
+    QMimeData* mimeData = tree.model()->mimeData({imageIndex});
+    QVERIFY(mimeData != nullptr);
+    QCOMPARE(PluginDragPayload::pluginName(mimeData), QStringLiteral("GrabImage"));
+    delete mimeData;
+}
 
 void TestMainWindow::init() {
     ProjectManager::instance().closeProject();
@@ -328,6 +354,8 @@ void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
 
     MainWindow window;
+    window.resize(900, 650);
+    window.show();
     QCoreApplication::processEvents();
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
@@ -344,6 +372,14 @@ void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
 
     QTreeWidget* processTree = window.findChild<QTreeWidget*>("ProcessTree");
     QVERIFY(processTree != nullptr);
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+    QImage image(120, 90, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    viewport->displayImage(image);
+    QTRY_VERIFY(imageWidget->hasImage());
     QCOMPARE(processTree->topLevelItemCount(), 1);
     QTreeWidgetItem* distanceItem = processTree->topLevelItem(0);
     processTree->setCurrentItem(distanceItem);
@@ -382,18 +418,45 @@ void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
     QVERIFY(input != nullptr);
     QCOMPARE(input->moduleId, QStringLiteral("MeasurementInput"));
     QCOMPARE(input->params["mode"].toString(), QStringLiteral("point_pair"));
+    QVERIFY(input->params["awaitUserPick"].toBool());
 
-    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
-                                      Q_ARG(QPointF, QPointF(10.0, 20.0))));
-    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
-                                      Q_ARG(QPointF, QPointF(30.0, 45.0))));
+    // 用户可以选中消费模块查看参数，但拾取必须继续写入已启用的测量输入节点。
+    QTest::mouseClick(processTree->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      processTree->visualItemRect(processTree->topLevelItem(1)).center());
+    QTRY_COMPARE(processTree->currentItem(), processTree->topLevelItem(1));
+    QCOMPARE(inspector->currentInstanceId(), QStringLiteral("distance_1"));
+
+    // 运行流程应先进入拾取状态，而不是带着默认坐标直接执行失败。
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+
+    const QPoint widgetPoint1 = imageWidget->imageToWidget(QPointF(10.0, 20.0)).toPoint();
+    QVERIFY(imageWidget->rect().contains(widgetPoint1));
+    const QPointF pickedPoint1 = imageWidget->widgetToImage(widgetPoint1);
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, widgetPoint1);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/2"));
+    const QPoint widgetPoint2 = imageWidget->imageToWidget(QPointF(30.0, 45.0)).toPoint();
+    QVERIFY(imageWidget->rect().contains(widgetPoint2));
+    const QPointF pickedPoint2 = imageWidget->widgetToImage(widgetPoint2);
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, widgetPoint2);
+    QTRY_VERIFY(RunEngine::instance().moduleOutput(QStringLiteral("distance_1")).data("distance").isValid());
 
     input = project->findModule(inputId);
     QVERIFY(input != nullptr);
-    QCOMPARE(input->params["point1"].toArray().at(0).toDouble(), 10.0);
-    QCOMPARE(input->params["point1"].toArray().at(1).toDouble(), 20.0);
-    QCOMPARE(input->params["point2"].toArray().at(0).toDouble(), 30.0);
-    QCOMPARE(input->params["point2"].toArray().at(1).toDouble(), 45.0);
+    QCOMPARE(input->params["point1"].toArray().at(0).toDouble(), pickedPoint1.x());
+    QCOMPARE(input->params["point1"].toArray().at(1).toDouble(), pickedPoint1.y());
+    QCOMPARE(input->params["point2"].toArray().at(0).toDouble(), pickedPoint2.x());
+    QCOMPARE(input->params["point2"].toArray().at(1).toDouble(), pickedPoint2.y());
+    QVERIFY(!input->params["awaitUserPick"].toBool());
+
+    // 单步执行会清空流程树选择，但不应丢失测量输入目标。
+    QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+    QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+    const ImageData output = RunEngine::instance().moduleOutput(QStringLiteral("distance_1"));
+    QVERIFY(output.data("distance").isValid());
+    QCOMPARE(output.data("distance").toDouble(), QLineF(pickedPoint1, pickedPoint2).length());
 }
 
 void TestMainWindow::testMeasurementConfigButtonWithInstalledPlugins() {
@@ -438,6 +501,37 @@ void TestMainWindow::testMeasurementConfigButtonWithInstalledPlugins() {
     QCOMPARE(processTree->topLevelItemCount(), 2);
     QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 2).toString(), QStringLiteral("MeasurementInput"));
     QCOMPARE(processTree->currentItem(), processTree->topLevelItem(0));
+}
+
+void TestMainWindow::testRunCreatesMeasurementInputForConsumer() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance distance;
+    distance.id = QStringLiteral("auto_distance_1");
+    distance.moduleId = QStringLiteral("DistancePP");
+    distance.name = QStringLiteral("点点距离");
+    project->addModule(distance);
+    QCoreApplication::processEvents();
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>("ProcessTree");
+    QVERIFY(processTree != nullptr);
+    QCOMPARE(processTree->topLevelItemCount(), 1);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QCOMPARE(processTree->topLevelItemCount(), 2);
+    QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 2).toString(), QStringLiteral("MeasurementInput"));
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
 }
 
 void TestMainWindow::testPluginConfigDialogRestylesLegacyDarkPlugin() {
@@ -1335,15 +1429,20 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
                             .arg(logTabs->tabBar()->tabRect(0).height())
                             .arg(logTabTextHeight)));
 
-    // agentPanel is now inside Agent inner tabs; find the "Agent" outer tab
-    int agentOuterIndex = -1;
+    int agentChatIndex = -1;
+    int agentLogIndex = -1;
     for (int i = 0; i < logTabs->count(); ++i) {
-        if (logTabs->tabText(i) == QStringLiteral("Agent")) {
-            agentOuterIndex = i;
-            break;
+        if (logTabs->tabText(i) == QStringLiteral("Agent 对话")) {
+            agentChatIndex = i;
+        } else if (logTabs->tabText(i) == QStringLiteral("Agent 日志")) {
+            agentLogIndex = i;
         }
     }
-    QVERIFY2(agentOuterIndex >= 0, "Agent outer tab should exist in bottom panel");
+    QVERIFY2(agentChatIndex >= 0, "Agent chat should be a direct bottom tab");
+    QVERIFY2(agentLogIndex >= 0, "Agent action log should be a direct bottom tab");
+    QVERIFY(window.findChild<QTabWidget*>("AgentInnerTabs") == nullptr);
+    QCOMPARE(logTabs->widget(agentChatIndex), static_cast<QWidget*>(agentPanel));
+    QVERIFY(logTabs->widget(agentLogIndex)->findChild<QTableWidget*>("AgentActionLogTable") != nullptr);
     QJsonArray pendingTools;
     pendingTools.append(QJsonObject{
         {"id", "call_remove"},
@@ -1353,8 +1452,8 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     });
     emit AgentController::instance().toolsPendingConfirmation(pendingTools);
     QCoreApplication::processEvents();
-    QCOMPARE(logTabs->currentIndex(), agentOuterIndex);
-    QVERIFY2(logTabs->tabToolTip(agentOuterIndex).contains(QStringLiteral("等待确认")),
+    QCOMPARE(logTabs->currentIndex(), agentChatIndex);
+    QVERIFY2(logTabs->tabToolTip(agentChatIndex).contains(QStringLiteral("等待确认")),
              "Agent chat tab should expose pending confirmation state");
 
     QList<AgentMessageBubble*> bubbles = window.findChildren<AgentMessageBubble*>();
@@ -1704,6 +1803,44 @@ void TestMainWindow::testPinnedInspectorKeepsTreeAndCanvasSelectionSynchronized(
     QVERIFY(firstNode->isSelected());
     QVERIFY(!secondNode->isSelected());
     QCOMPARE(inspector->currentInstanceId(), QStringLiteral("pinned_1"));
+}
+
+void TestMainWindow::testProcessTreeClickOverridesPinnedInspector() {
+    MainWindowOutputProbeModule firstModule(QStringLiteral("tree_pinned_1"));
+    MainWindowOutputProbeModule secondModule(QStringLiteral("tree_pinned_2"));
+    QVERIFY(firstModule.initialize());
+    QVERIFY(secondModule.initialize());
+
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    for (const QString& id : {QStringLiteral("tree_pinned_1"), QStringLiteral("tree_pinned_2")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("OutputProbe");
+        instance.name = id;
+        project->addModule(instance);
+    }
+    window.registerFlowModule(QStringLiteral("tree_pinned_1"), &firstModule);
+    window.registerFlowModule(QStringLiteral("tree_pinned_2"), &secondModule);
+    QCoreApplication::processEvents();
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    ModuleInspectorPanel* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(processTree != nullptr);
+    QVERIFY(inspector != nullptr);
+
+    QTreeWidgetItem* firstItem = processTree->topLevelItem(0);
+    QTreeWidgetItem* secondItem = processTree->topLevelItem(1);
+    processTree->setCurrentItem(firstItem);
+    QCoreApplication::processEvents();
+    inspector->setPinned(true);
+
+    QTest::mouseClick(processTree->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      processTree->visualItemRect(secondItem).center());
+    QTRY_COMPARE(processTree->currentItem(), secondItem);
+    QCOMPARE(inspector->currentInstanceId(), QStringLiteral("tree_pinned_2"));
 }
 
 void TestMainWindow::testCycleRunDoesNotStealSelection() {
