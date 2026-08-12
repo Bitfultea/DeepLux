@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <defs><style>.title{font-family:'Noto Sans CJK SC';font-size:44px;font-weight:700;fill:#18243A}.sub{font-family:'Noto Sans CJK SC';font-size:22px;fill:#62718A}.head{font-family:'Noto Sans CJK SC';font-size:21px;font-weight:700;fill:#18243A}.body{font-family:'Noto Sans CJK SC';font-size:18px;fill:#52627B}.small{font-family:'Noto Sans CJK SC';font-size:16px;fill:#52627B}.tag{font-family:'Noto Sans CJK SC';font-size:16px;font-weight:700;fill:#C65C00}.white{font-family:'Noto Sans CJK SC';font-size:18px;font-weight:700;fill:#FFF}.mono{font-family:'Noto Sans Mono';font-size:16px;fill:#A44E00}</style></defs>
+  <rect width="1600" height="900" fill="#FBF8F4"/><rect width="1600" height="12" fill="#E26D00"/>
+  <text x="72" y="76" class="tag">DEEPLUX FLOW ENGINEERING / 04</text><text x="72" y="136" class="title">流程执行与中间结果检视：高速路径和调试路径并存</text><text x="72" y="177" class="sub">RunEngine 管执行；MainWindow 管用户意图、可视反馈与工程同步。单步只在用户点击时才产生额外检视成本。</text>
+  <g transform="translate(72 232)">
+    <rect width="398" height="420" rx="12" fill="#FFF" stroke="#E9C7A3" stroke-width="2"/><text x="24" y="40" class="head">工程事实如何进入 RunEngine</text>
+    <rect x="28" y="69" width="342" height="54" rx="7" fill="#FFF2E5"/><text x="48" y="102" class="tag">Project / ProjectManager</text><text x="218" y="102" class="small">节点、连线、参数、布局</text>
+    <path d="M199 123v37" stroke="#E26D00" stroke-width="3"/><path d="M191 152l8 10 8-10" fill="none" stroke="#E26D00" stroke-width="3"/>
+    <rect x="28" y="170" width="342" height="54" rx="7" fill="#FFF2E5"/><text x="48" y="203" class="tag">PluginManager</text><text x="218" y="203" class="small">独立模块实例</text>
+    <path d="M199 224v37" stroke="#E26D00" stroke-width="3"/><path d="M191 253l8 10 8-10" fill="none" stroke="#E26D00" stroke-width="3"/>
+    <rect x="28" y="271" width="342" height="54" rx="7" fill="#FFF2E5"/><text x="48" y="304" class="tag">同步模块与拓扑</text><text x="240" y="304" class="small">按工程排序</text>
+    <path d="M199 325v37" stroke="#E26D00" stroke-width="3"/><path d="M191 354l8 10 8-10" fill="none" stroke="#E26D00" stroke-width="3"/>
+    <rect x="28" y="372" width="342" height="28" rx="6" fill="#C65C00"/><text x="91" y="393" class="white">RunEngine 可运行快照</text>
+  </g>
+  <g transform="translate(506 232)">
+    <rect width="614" height="420" rx="12" fill="#FFF" stroke="#E9C7A3" stroke-width="2"/><text x="24" y="40" class="head">执行状态图：不同命令共享同一可观测状态</text>
+    <rect x="46" y="78" width="104" height="46" rx="23" fill="#E7F7EE" stroke="#13A86B" stroke-width="2"/><text x="75" y="108" class="tag">Idle</text>
+    <rect x="226" y="78" width="132" height="46" rx="23" fill="#FFF2E5" stroke="#E26D00" stroke-width="2"/><text x="251" y="108" class="tag">Preparing</text>
+    <rect x="436" y="78" width="126" height="46" rx="23" fill="#FFF2E5" stroke="#E26D00" stroke-width="2"/><text x="467" y="108" class="tag">Running</text>
+    <path d="M150 101h76m132 0h78" stroke="#E26D00" stroke-width="3"/><path d="M213 93l10 8-10 8m200-16l10 8-10 8" fill="none" stroke="#E26D00" stroke-width="3"/>
+    <rect x="220" y="188" width="144" height="58" rx="8" fill="#F0EBFF" stroke="#7C3AED" stroke-width="2"/><text x="237" y="220" class="tag">WaitingInput</text><text x="242" y="240" class="small">awaitUserPick</text>
+    <path d="M499 124v38h-135" stroke="#7C3AED" stroke-width="3" fill="none"/><path d="M375 154l-11 8 11 8" fill="none" stroke="#7C3AED" stroke-width="3"/>
+    <path d="M292 246v43h207v-165" stroke="#7C3AED" stroke-width="3" fill="none"/><path d="M489 136l10-12 10 12" fill="none" stroke="#7C3AED" stroke-width="3"/>
+    <rect x="46" y="294" width="150" height="86" rx="8" fill="#F7F9FC" stroke="#C9D7E7"/><text x="64" y="323" class="tag">单次运行</text><text x="64" y="352" class="small">执行完整工程一次</text>
+    <rect x="230" y="294" width="150" height="86" rx="8" fill="#F7F9FC" stroke="#C9D7E7"/><text x="248" y="323" class="tag">单步执行</text><text x="248" y="352" class="small">仅推进当前模块</text>
+    <rect x="414" y="294" width="150" height="86" rx="8" fill="#F7F9FC" stroke="#C9D7E7"/><text x="432" y="323" class="tag">循环运行</text><text x="432" y="352" class="small">不隐式创建调试会话</text>
+  </g>
+  <g transform="translate(1156 232)">
+    <rect width="372" height="420" rx="12" fill="#FFF" stroke="#E9C7A3" stroke-width="2"/><text x="24" y="40" class="head">每一步留下什么证据</text>
+    <text x="26" y="86" class="tag">流程栏</text><text x="26" y="114" class="body">当前模块高亮、状态、单节点耗时</text><line x1="26" y1="134" x2="342" y2="134" stroke="#E9C7A3" stroke-width="2"/>
+    <text x="26" y="172" class="tag">主视图</text><text x="26" y="200" class="body">图像 / 点云 / 测量与检测叠加</text><line x1="26" y1="220" x2="342" y2="220" stroke="#E9C7A3" stroke-width="2"/>
+    <text x="26" y="258" class="tag">检查器</text><text x="26" y="286" class="body">参数、模块说明、中间结果与错误</text><line x1="26" y1="306" x2="342" y2="306" stroke="#E9C7A3" stroke-width="2"/>
+    <text x="26" y="344" class="tag">日志</text><text x="26" y="372" class="body">运行上下文、异常、Agent 建议与审计</text>
+  </g>
+  <g transform="translate(72 700)"><rect width="1456" height="152" rx="10" fill="#FFF0E0"/><text x="26" y="36" class="tag">性能边界与验收</text><text x="26" y="71" class="body">循环模式只走连续执行路径；中间结果检视由“单步”或用户选择节点显式触发。停止必须清除等待拾取、高亮和 RunEngine 状态，不能留下半运行工程。</text><text x="26" y="114" class="mono">Project → RunEngine → moduleStarted / moduleFinished → MainWindow（流程高亮、主视图、检查器、日志）</text></g>
+</svg>

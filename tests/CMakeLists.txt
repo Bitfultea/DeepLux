@@ -43,6 +43,7 @@ set(TEST_SOURCES
     test_pointsurfacedistance.cpp
     test_freeformsurface.cpp
     test_measurementinput.cpp
+    test_grabimage.cpp
     test_loadpointcloud.cpp
     test_3d_interaction.cpp
     test_logicplugins.cpp
@@ -115,6 +116,9 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
     if(TEST_NAME STREQUAL "test_measurementinput" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE MeasurementInputPlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_grabimage")
+        target_link_libraries(${TEST_NAME} PRIVATE GrabImagePlugin)
     endif()
     if(TEST_NAME STREQUAL "test_loadpointcloud" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE LoadPointCloudPlugin)

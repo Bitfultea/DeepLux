@@ -5,6 +5,8 @@
 #include <QDebug>
 #include <QOpenGLContext>
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 namespace DeepLux {
 
@@ -64,6 +66,20 @@ void PointCloudRendererOpenGL::setPointCloud(const PointCloudGPUBuffer& buffer, 
     m_currentDistance = 0.0f;
     m_cacheInvalid = true;
 
+    m_zMin = std::numeric_limits<float>::infinity();
+    m_zMax = -std::numeric_limits<float>::infinity();
+    for (size_t i = 2; i < buffer.positions.size(); i += 3) {
+        const float z = buffer.positions[i];
+        if (std::isfinite(z)) {
+            m_zMin = std::min(m_zMin, z);
+            m_zMax = std::max(m_zMax, z);
+        }
+    }
+    if (!std::isfinite(m_zMin) || !std::isfinite(m_zMax)) {
+        m_zMin = 0.0f;
+        m_zMax = 1.0f;
+    }
+
     // 始终将数据存储在 LOD buffer 中，保证指针有效
     m_lodBuffer.setData(buffer);
     selectLODLevel(0);
@@ -73,6 +89,8 @@ void PointCloudRendererOpenGL::setPointCloud(const PointCloudGPUBuffer& buffer, 
 void PointCloudRendererOpenGL::clear() {
     m_buffer = nullptr;
     m_pointCount = 0;
+    m_zMin = 0.0f;
+    m_zMax = 1.0f;
     cleanupBuffers();
 }
 
@@ -220,18 +238,9 @@ void PointCloudRendererOpenGL::render(const QMatrix4x4& viewMatrix, const QMatri
                                QVector3D(m_uniformColor.redF(), m_uniformColor.greenF(), m_uniformColor.blueF()));
 
     // 高度着色范围
-    if (m_colorMode == ColorMode::Height && m_buffer && !m_buffer->positions.empty()) {
-        float zMin = m_buffer->positions[2];
-        float zMax = zMin;
-        for (size_t i = 3; i < m_buffer->positions.size(); i += 3) {
-            float z = m_buffer->positions[i];
-            if (z < zMin)
-                zMin = z;
-            if (z > zMax)
-                zMax = z;
-        }
-        m_program->setUniformValue("uZMin", zMin);
-        m_program->setUniformValue("uZMax", zMax);
+    if (m_colorMode == ColorMode::Height) {
+        m_program->setUniformValue("uZMin", m_zMin);
+        m_program->setUniformValue("uZMax", m_zMax);
     } else {
         m_program->setUniformValue("uZMin", 0.0f);
         m_program->setUniformValue("uZMax", 1.0f);

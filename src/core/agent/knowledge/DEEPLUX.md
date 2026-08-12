@@ -40,7 +40,7 @@ DeepLux is an industrial machine vision software. You create inspection **projec
 ### Image Acquisition
 | Module | Plugin ID | Purpose | Key Parameters |
 |--------|-----------|---------|----------------|
-| GrabImage | `GrabImage` | Capture image from camera or file | `filePath` (string), `grabSource` (enum: File/Camera), `cameraId` (string) |
+| GrabImage | `GrabImage` | Capture image from camera, file, or image folder | `filePath` (auto-detects file or folder), `folderLoop`, `grabSource` (Path/Camera/Demo), `cameraId`; legacy `File`, `Folder`, and `folderPath` remain readable |
 | SaveImage | `SaveImage` | Save processed image to disk | `filePath` (string), `format` (enum: PNG/JPG/BMP) |
 | ShowImage | `ShowImage` | Display image in viewport | `title` (string), `delay` (int ms) |
 

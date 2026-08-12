@@ -12,6 +12,7 @@
 #include <QGuiApplication>
 #include <QHeaderView>
 #include <QMenu>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 
 namespace DeepLux {
@@ -29,6 +30,7 @@ void DataSourcePanel::setupUi() {
     layout->setSpacing(4);
 
     m_treeWidget = new QTreeWidget(this);
+    m_treeWidget->setObjectName("DataSourceTree");
     m_treeWidget->setHeaderHidden(true);
     m_treeWidget->setDragEnabled(true);
     m_treeWidget->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -45,6 +47,7 @@ void DataSourcePanel::setupUi() {
     layout->addWidget(m_emptyLabel);
 
     connect(m_treeWidget, &QTreeWidget::itemDoubleClicked, this, &DataSourcePanel::onItemDoubleClicked);
+    connect(m_treeWidget, &QTreeWidget::itemChanged, this, &DataSourcePanel::onItemChanged);
     connect(m_treeWidget, &QTreeWidget::customContextMenuRequested, this, &DataSourcePanel::onContextMenu);
 }
 
@@ -57,6 +60,9 @@ void DataSourcePanel::createActions() {
 
     m_copyPathAction = new QAction(tr("复制路径"), this);
     connect(m_copyPathAction, &QAction::triggered, this, &DataSourcePanel::onCopyPathAction);
+
+    m_displayInNewViewportAction = new QAction(tr("在新视图显示"), this);
+    connect(m_displayInNewViewportAction, &QAction::triggered, this, &DataSourcePanel::onDisplayInNewViewportAction);
 }
 
 void DataSourcePanel::refreshFromProject(Project* project) {
@@ -74,6 +80,13 @@ void DataSourcePanel::refreshFromProject(Project* project) {
 }
 
 void DataSourcePanel::addDataSource(const DataSource& ds) {
+    if (QTreeWidgetItem* existing = findItem(ds.id)) {
+        QSignalBlocker blocker(m_treeWidget);
+        existing->setCheckState(0, Qt::Checked);
+        return;
+    }
+
+    QSignalBlocker blocker(m_treeWidget);
     QStringList columns;
     columns << ds.name;
 
@@ -94,6 +107,8 @@ void DataSourcePanel::addDataSource(const DataSource& ds) {
 
     QTreeWidgetItem* item = new QTreeWidgetItem(m_treeWidget, columns);
     item->setData(0, Qt::UserRole, ds.id);
+    item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+    item->setCheckState(0, Qt::Checked);
     item->setToolTip(0, tooltip);
     item->setToolTip(1, tooltip);
 
@@ -152,6 +167,8 @@ void DataSourcePanel::onContextMenu(const QPoint& pos) {
     m_treeWidget->setCurrentItem(item);
 
     QMenu menu(this);
+    menu.addAction(m_displayInNewViewportAction);
+    menu.addSeparator();
     menu.addAction(m_showInFolderAction);
     menu.addAction(m_copyPathAction);
     menu.addSeparator();
@@ -177,6 +194,24 @@ void DataSourcePanel::onCopyPathAction() {
     QString id = selectedDataSourceId();
     if (!id.isEmpty()) {
         emit requestCopyPath(id);
+    }
+}
+
+void DataSourcePanel::onDisplayInNewViewportAction() {
+    const QString id = selectedDataSourceId();
+    if (!id.isEmpty()) {
+        emit requestDisplayInNewViewport(id);
+    }
+}
+
+void DataSourcePanel::onItemChanged(QTreeWidgetItem* item, int column) {
+    if (!item || column != 0) {
+        return;
+    }
+
+    const QString id = item->data(0, Qt::UserRole).toString();
+    if (!id.isEmpty()) {
+        emit requestVisibilityChanged(id, item->checkState(0) == Qt::Checked);
     }
 }
 

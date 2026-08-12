@@ -45,7 +45,7 @@ void Viewport3DContent::initializeGL() {
     if (!m_renderer) {
         m_renderer = std::make_unique<PointCloudRendererOpenGL>();
     }
-    m_renderer->setPointSize(5.0f);
+    m_renderer->setPointSize(m_pointSize * static_cast<float>(devicePixelRatioF()));
     m_renderer->setUniformColor(Qt::white);
     m_renderer->initializeGL();
 
@@ -61,6 +61,9 @@ void Viewport3DContent::resizeGL(int w, int h) {
     if (h == 0)
         h = 1;
     glViewport(0, 0, w, h);
+    if (m_renderer) {
+        m_renderer->setPointSize(m_pointSize * static_cast<float>(devicePixelRatioF()));
+    }
     updateMatrices();
     m_needsUpdate = true;
 }
@@ -144,6 +147,18 @@ void Viewport3DContent::setRenderMode(ColorMode mode) {
     }
 }
 
+void Viewport3DContent::setPointSize(float size) {
+    const float clampedSize = std::clamp(size, 1.0f, 8.0f);
+    if (m_pointSize == clampedSize) {
+        return;
+    }
+    m_pointSize = clampedSize;
+    if (m_renderer) {
+        m_renderer->setPointSize(m_pointSize * static_cast<float>(devicePixelRatioF()));
+        update();
+    }
+}
+
 void Viewport3DContent::clearDisplay() {
     m_gpuBuffer.clear();
     if (m_renderer) {
@@ -162,11 +177,25 @@ void Viewport3DContent::setMeasurementOverlay(const QList<MeasurementOverlayPoin
 }
 
 void Viewport3DContent::clearMeasurementOverlay() {
-    if (m_measurementPoints.isEmpty() && m_measurementLines.isEmpty()) {
+    if (m_measurementPoints.isEmpty() && m_measurementLines.isEmpty() && m_infoPanelLines.isEmpty()) {
         return;
     }
     m_measurementPoints.clear();
     m_measurementLines.clear();
+    m_infoPanelLines.clear();
+    update();
+}
+
+void Viewport3DContent::setMeasurementInfoPanel(const QStringList& lines) {
+    m_infoPanelLines = lines;
+    update();
+}
+
+void Viewport3DContent::clearMeasurementInfoPanel() {
+    if (m_infoPanelLines.isEmpty()) {
+        return;
+    }
+    m_infoPanelLines.clear();
     update();
 }
 
@@ -182,6 +211,7 @@ void Viewport3DContent::resetCamera() {
 }
 
 void Viewport3DContent::applyTheme(bool isDark) {
+    m_isDarkTheme = isDark;
     if (m_renderer) {
         m_renderer->setBackgroundColor(isDark ? QColor("#1a1a1a") : QColor("#f0f0f0"));
     }
@@ -228,7 +258,7 @@ bool Viewport3DContent::projectToScreen(const QVector3D& worldPos, QPointF* scre
 }
 
 void Viewport3DContent::drawMeasurementOverlay() {
-    if (m_measurementPoints.isEmpty() && m_measurementLines.isEmpty()) {
+    if (m_measurementPoints.isEmpty() && m_measurementLines.isEmpty() && m_infoPanelLines.isEmpty()) {
         return;
     }
 
@@ -287,6 +317,56 @@ void Viewport3DContent::drawMeasurementOverlay() {
             painter.setPen(QColor("#F8FAFC"));
             painter.drawText(textRect, Qt::AlignCenter, point.label);
         }
+    }
+
+    // ===== 测量结果信息面板（视口右上角固定位置）=====
+    if (!m_infoPanelLines.isEmpty()) {
+        QFont baseFont = painter.font();
+        baseFont.setPointSize(10);
+        QFont boldFont = baseFont;
+        boldFont.setBold(true);
+
+        const QFontMetrics fm(baseFont);
+        const QFontMetrics fmBold(boldFont);
+        const int lineH = fm.height() + 4;
+        const int padX = 10;
+        const int padY = 8;
+
+        // 计算面板尺寸（最后一行加粗，可能更宽）
+        int maxW = 0;
+        for (int i = 0; i < m_infoPanelLines.size(); ++i) {
+            const QFontMetrics& m = (i == m_infoPanelLines.size() - 1) ? fmBold : fm;
+            maxW = qMax(maxW, m.horizontalAdvance(m_infoPanelLines[i]));
+        }
+        const int panelW = maxW + padX * 2;
+        const int panelH = m_infoPanelLines.size() * lineH + padY * 2;
+
+        // 右上角定位
+        const int margin = 12;
+        const QRect panelRect(width() - margin - panelW, margin, panelW, panelH);
+
+        // 面板配色随主题切换
+        const QColor panelBg = m_isDarkTheme ? QColor(17, 24, 39, 215) : QColor(255, 255, 255, 230);
+        const QColor panelBorder(6, 182, 212, 140);
+        const QColor textNormal = m_isDarkTheme ? QColor("#E2E8F0") : QColor("#1E293B");
+        const QColor textHighlight = m_isDarkTheme ? QColor("#22D3EE") : QColor("#0891B2");
+
+        // 面板背景 + 边框
+        painter.setPen(QPen(panelBorder, 1));
+        painter.setBrush(panelBg);
+        painter.drawRoundedRect(panelRect, 6, 6);
+
+        // 逐行绘制文本，最后一行（总距离）加粗高亮
+        int y = panelRect.top() + padY;
+        for (int i = 0; i < m_infoPanelLines.size(); ++i) {
+            const bool isLast = (i == m_infoPanelLines.size() - 1);
+            painter.setFont(isLast ? boldFont : baseFont);
+            painter.setPen(isLast ? textHighlight : textNormal);
+            const QRect lineRect(panelRect.left() + padX, y, panelW - padX * 2, lineH);
+            painter.drawText(lineRect, Qt::AlignLeft | Qt::AlignVCenter, m_infoPanelLines[i]);
+            y += lineH;
+        }
+        painter.setFont(baseFont);
     }
 }
 
@@ -374,8 +454,8 @@ void Viewport3DContent::mouseReleaseEvent(QMouseEvent* event) {
 
     // 拾取模式：左键短点击（非拖拽）拾取最近的 3D 点
     // 非拾取模式：需要 Ctrl+左键
-    const bool isPickClick = event->button() == Qt::LeftButton &&
-                             (m_pickMode || event->modifiers() == Qt::ControlModifier);
+    const bool isPickClick =
+        event->button() == Qt::LeftButton && (m_pickMode || event->modifiers() == Qt::ControlModifier);
 
     if (isPickClick) {
         // 判断是否为点击（移动距离小于阈值）而非拖拽
@@ -383,7 +463,7 @@ void Viewport3DContent::mouseReleaseEvent(QMouseEvent* event) {
             const QPoint delta = event->pos() - m_pickPressPos;
             const int distSq = delta.x() * delta.x() + delta.y() * delta.y();
             if (distSq > 25) { // 5px threshold squared
-                return; // 是拖拽，不拾取
+                return;        // 是拖拽，不拾取
             }
         }
 

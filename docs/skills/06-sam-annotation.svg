@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <defs><style>.title{font-family:'Noto Sans CJK SC';font-size:44px;font-weight:700;fill:#18243A}.sub{font-family:'Noto Sans CJK SC';font-size:22px;fill:#62718A}.head{font-family:'Noto Sans CJK SC';font-size:21px;font-weight:700;fill:#18243A}.body{font-family:'Noto Sans CJK SC';font-size:18px;fill:#52627B}.small{font-family:'Noto Sans CJK SC';font-size:16px;fill:#52627B}.tag{font-family:'Noto Sans CJK SC';font-size:16px;font-weight:700;fill:#D9367A}.white{font-family:'Noto Sans CJK SC';font-size:18px;font-weight:700;fill:#FFF}.mono{font-family:'Noto Sans Mono';font-size:16px;fill:#C22768}</style></defs>
+  <rect width="1600" height="900" fill="#FCF6F9"/><rect width="1600" height="12" fill="#D9367A"/>
+  <text x="72" y="76" class="tag">DEEPLUX SAM ANNOTATION / 06</text><text x="72" y="136" class="title">SAM 快速标注：主视图交互、独立推理服务与训练数据出口</text><text x="72" y="177" class="sub">图像显示、标注叠加、配置面板和模型环境各自负责一层，避免把多轮交互硬塞进同步流程插件。</text>
+  <g transform="translate(72 232)">
+    <rect width="414" height="454" rx="12" fill="#FFF" stroke="#F0C2D7" stroke-width="2"/><text x="24" y="40" class="head">C++ 主视图：用户不离开图像</text>
+    <rect x="24" y="68" width="366" height="223" rx="8" fill="#252A32"/><rect x="60" y="88" width="250" height="175" rx="5" fill="#8A9298"/><path d="M118 124c54-44 141-9 144 54 2 46-41 71-91 63-72-11-103-80-53-117z" fill="#E84D92" opacity=".55" stroke="#FFB3D2" stroke-width="3"/><circle cx="135" cy="151" r="8" fill="#31D384"/><circle cx="226" cy="189" r="8" fill="#F05353"/><rect x="178" y="116" width="74" height="83" fill="none" stroke="#5CB9FF" stroke-width="3"/><text x="68" y="283" class="small">HImageWidget：图像、缩放、坐标变换</text>
+    <text x="24" y="329" class="tag">AnnotationOverlayWidget 独立叠加</text><text x="24" y="358" class="body">mask 位图 / polygon / 正负点 / 框选预览</text><text x="24" y="390" class="body">快捷操作：左键正点、右键负点、Ctrl 拖拽框选、</text><text x="24" y="418" class="body">Enter 确认、Esc 取消当前预览、Delete 删除对象。</text>
+  </g>
+  <g transform="translate(522 232)">
+    <rect width="438" height="454" rx="12" fill="#FFF" stroke="#F0C2D7" stroke-width="2"/><text x="24" y="40" class="head">Qt 协调层：会话、提示与后端生命周期</text>
+    <rect x="24" y="70" width="390" height="56" rx="7" fill="#FDEAF2"/><text x="42" y="104" class="tag">SamAnnotatorDialog</text><text x="246" y="104" class="small">类别 / 对象 / 权重 / 会话</text>
+    <path d="M219 126v29" stroke="#D9367A" stroke-width="3"/><path d="M211 147l8 10 8-10" fill="none" stroke="#D9367A" stroke-width="3"/>
+    <rect x="24" y="165" width="390" height="56" rx="7" fill="#FDEAF2"/><text x="42" y="199" class="tag">SamBackendClient</text><text x="246" y="199" class="small">QProcess + HTTP</text>
+    <path d="M219 221v29" stroke="#D9367A" stroke-width="3"/><path d="M211 242l8 10 8-10" fill="none" stroke="#D9367A" stroke-width="3"/>
+    <rect x="24" y="260" width="390" height="94" rx="7" fill="#FDEAF2"/><text x="42" y="293" class="tag">协议必须包含的缓存语义</text><text x="42" y="322" class="small">/health 轮询就绪；/set_image → embedding_id</text><text x="42" y="346" class="small">/predict 带 embedding_id；/unload_image 回收缓存</text>
+    <rect x="24" y="376" width="390" height="50" rx="7" fill="#FFF1E7"/><text x="42" y="407" class="tag">异常策略：首启超时、进程崩溃重启、状态写入主日志</text>
+  </g>
+  <g transform="translate(996 232)">
+    <rect width="532" height="454" rx="12" fill="#FFF" stroke="#F0C2D7" stroke-width="2"/><text x="24" y="40" class="head">Python 服务与标注资产：隔离但可诊断</text>
+    <rect x="24" y="72" width="218" height="160" rx="8" fill="#FDEAF2"/><text x="42" y="104" class="tag">tools/sam_server</text><text x="42" y="135" class="small">FastAPI + uvicorn</text><text x="42" y="162" class="small">MobileSAM 优先</text><text x="42" y="189" class="small">权重 / GPU 检查</text><text x="42" y="216" class="small">推理 GPU 串行化</text>
+    <rect x="290" y="72" width="218" height="160" rx="8" fill="#FDEAF2"/><text x="308" y="104" class="tag">AnnotationSession</text><text x="308" y="135" class="small">imagePath / imageSize</text><text x="308" y="162" class="small">label / bbox / polygon</text><text x="308" y="189" class="small">mask RLE / prompts</text><text x="308" y="216" class="small">modelName / score</text>
+    <path d="M242 152h48" stroke="#D9367A" stroke-width="3"/><path d="M280 144l10 8-10 8" fill="none" stroke="#D9367A" stroke-width="3"/>
+    <rect x="24" y="270" width="484" height="120" rx="8" fill="#FDEAF2"/><text x="42" y="303" class="tag">持久化与导出</text><text x="42" y="335" class="body">.deeplux-anno.json 保存原图尺寸、对象、掩膜 RLE 与 prompts。</text><text x="42" y="363" class="body">LabelMeExporter 和 YoloSegExporter 输出训练资产。</text><text x="42" y="390" class="small">模型文件与 Python 依赖不进入 C++ 构建或 Git 仓库。</text>
+    <text x="24" y="427" class="small">大图避免 QPainterPath 大量多边形：使用掩膜 QImage / Pixmap 叠加。</text>
+  </g>
+  <g transform="translate(72 730)"><rect width="1456" height="122" rx="10" fill="#FDEAF2"/><text x="26" y="36" class="tag">真正的闭环</text><text x="26" y="70" class="body">加载原图 → 主视图提示 → 缓存 embedding 后多次预测 → 预览与撤销 → 确认对象 → 会话保存 → LabelMe / YOLO 分割导出。</text><text x="26" y="101" class="mono">HImageWidget + AnnotationOverlayWidget  ↔  SamAnnotatorDialog / SamBackendClient  ↔  FastAPI / SAM</text></g>
+</svg>

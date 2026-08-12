@@ -1,7 +1,9 @@
 #pragma once
 
 #include "core/display/DisplayData.h"
+
 #include <QString>
+#include <optional>
 
 namespace DeepLux {
 
@@ -14,8 +16,17 @@ namespace DeepLux {
 class TiffLoader {
 public:
     struct Config {
-        float scaleX; float scaleY; float scaleZ; int step;
-        Config() : scaleX(1.0f), scaleY(1.0f), scaleZ(1.0f), step(1) {}
+        Config() : scaleX(1.0f), scaleY(1.0f), scaleZ(1.0f), offsetZ(0.0f), step(1), autoDetectNoData(true) {}
+
+        float scaleX;
+        float scaleY;
+        float scaleZ;
+        float offsetZ;
+        int step;
+        bool autoDetectNoData;
+        std::optional<double> invalidValue;
+        std::optional<double> validMin;
+        std::optional<double> validMax;
     };
 
     static bool load(const QString& filePath, PointCloudData& outData, QString& errorMsg,

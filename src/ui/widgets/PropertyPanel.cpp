@@ -1,5 +1,6 @@
 #include "PropertyPanel.h"
 
+#include "core/common/ConfigWidgetHelper.h"
 #include "core/device/CameraManager.h"
 #include "core/interface/IModule.h"
 #include "core/manager/PluginManager.h"
@@ -12,6 +13,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QPair>
+#include <QPointer>
 #include <QSet>
 #include <QStyle>
 #include <QToolButton>
@@ -148,6 +150,10 @@ QStringList PropertyPanel::sortedParamKeys(const QJsonObject& params) const {
         // 当存在 ui.parameters 元数据时，只显示元数据中描述的参数；
         // 没有元数据时显示所有非内部参数（用 key 作为标签）。
         if (!m_uiParameters.isEmpty() && !m_uiParameters.contains(key)) {
+            continue;
+        }
+        // 阶段 0: 明确标记为 hidden 的参数不显示（但仍需有 Schema 条目）
+        if (m_uiParameters.value(key).toObject().value("hidden").toBool(false)) {
             continue;
         }
         keys.append(key);
@@ -384,19 +390,65 @@ QWidget* PropertyPanel::createTextWidget(const QString& key, const QJsonObject& 
     QLineEdit* edit = new QLineEdit();
     edit->setText(params.value(key).toString());
 
-    if (info.value("editor").toString() == QStringLiteral("file")) {
+    const QString editor = info.value("editor").toString();
+    if (editor == QStringLiteral("file") || editor == QStringLiteral("folder") ||
+        editor == QStringLiteral("fileOrFolder")) {
+        const QPointer<QLineEdit> guardedEdit(edit);
+        const auto commitPath = [this, key, info](const QString& path) {
+            const QString linkedKey = info.value("setsParam").toString();
+            if (!linkedKey.isEmpty()) {
+                commitParam(linkedKey, info.value("setsValue").toVariant());
+            }
+            commitParam(key, path);
+        };
+        auto browseFile = [this, guardedEdit, info, commitPath]() {
+            const QString title = info.value("dialogTitle").toString(tr("选择路径"));
+            const QString path =
+                QFileDialog::getOpenFileName(this, title, guardedEdit ? guardedEdit->text() : QString(),
+                                             info.value("filter").toString(tr("所有文件 (*.*)")));
+            if (!path.isEmpty()) {
+                if (guardedEdit) {
+                    guardedEdit->setText(path);
+                }
+                commitPath(path);
+            }
+        };
+        auto browseFolder = [this, guardedEdit, info, commitPath]() {
+            const QString title = info.value("folderDialogTitle").toString(tr("选择文件夹"));
+            const QString path =
+                QFileDialog::getExistingDirectory(this, title, guardedEdit ? guardedEdit->text() : QString());
+            if (!path.isEmpty()) {
+                if (guardedEdit) {
+                    guardedEdit->setText(path);
+                }
+                commitPath(path);
+            }
+        };
+
         QAction* browseAction =
             edit->addAction(edit->style()->standardIcon(QStyle::SP_DirOpenIcon), QLineEdit::TrailingPosition);
-        browseAction->setToolTip(tr("浏览..."));
-        connect(browseAction, &QAction::triggered, this, [this, key, edit, info]() {
-            const QString filter = info.value("filter").toString(tr("所有文件 (*.*)"));
-            const QString title = info.value("dialogTitle").toString(tr("选择文件"));
-            const QString path = QFileDialog::getOpenFileName(this, title, edit->text(), filter);
-            if (!path.isEmpty()) {
-                edit->setText(path);
-                commitParam(key, path);
-            }
-        });
+        if (editor == QStringLiteral("file")) {
+            browseAction->setToolTip(tr("选择文件"));
+            connect(browseAction, &QAction::triggered, this, browseFile);
+        } else if (editor == QStringLiteral("folder")) {
+            browseAction->setToolTip(tr("选择文件夹"));
+            connect(browseAction, &QAction::triggered, this, browseFolder);
+        } else {
+            browseAction->setToolTip(tr("选择图像文件或文件夹"));
+            connect(browseAction, &QAction::triggered, this, [this, guardedEdit, info, commitPath]() {
+                const QString path = ConfigWidgetHelper::selectExistingFileOrDirectory(
+                    this, info.value("dialogTitle").toString(tr("选择图像路径")),
+                    guardedEdit ? guardedEdit->text() : QString(), info.value("filter").toString(tr("所有文件 (*.*)")));
+                if (!path.isEmpty()) {
+                    if (guardedEdit) {
+                        guardedEdit->setText(path);
+                    }
+                    commitPath(path);
+                }
+            });
+        }
+        connect(edit, &QLineEdit::editingFinished, this, [edit, commitPath]() { commitPath(edit->text()); });
+        return edit;
     }
 
     // 文本参数在 editingFinished 时提交
@@ -436,17 +488,25 @@ QWidget* PropertyPanel::createNumberWidget(const QString& key, const QJsonObject
 }
 
 QWidget* PropertyPanel::createBoolWidget(const QString& key, const QJsonObject& info) {
-    Q_UNUSED(info)
-
     QCheckBox* check = new QCheckBox();
+    const QString onText = info.value("onText").toString();
+    const QString offText = info.value("offText").toString();
 
     if (m_currentModule) {
         QJsonObject params = m_currentModule->currentParams();
         check->setChecked(params[key].toBool());
     }
+    if (!onText.isEmpty() || !offText.isEmpty()) {
+        check->setText(check->isChecked() ? onText : offText);
+    }
 
     // 复选框在 toggled 时提交
-    connect(check, &QCheckBox::toggled, this, [this, key, check](bool checked) { commitParam(key, checked); });
+    connect(check, &QCheckBox::toggled, this, [this, key, check, onText, offText](bool checked) {
+        if (!onText.isEmpty() || !offText.isEmpty()) {
+            check->setText(checked ? onText : offText);
+        }
+        commitParam(key, checked);
+    });
 
     return check;
 }
@@ -509,7 +569,10 @@ void PropertyPanel::applyTheme(bool isDark) {
                           "  background-color: %1; color: %2; border: 1px solid %3; padding: 4px; border-radius: 2px; }"
                           "QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { "
                           "  border: 1px solid #0078d7; }"
-                          "QCheckBox { color: %2; }"
+                          "QCheckBox { color: %2; background-color: transparent; spacing: 6px; }"
+                          "QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid %3; "
+                          "  border-radius: 3px; background-color: %1; }"
+                          "QCheckBox::indicator:checked { background-color: #0078d7; border-color: #0078d7; }"
                           "QWidget#ModuleInfoContainer { background-color: %1; border-top: 1px solid %3; }"
                           "QToolButton#ModuleInfoToggle { background-color: %1; color: %2; border: none; "
                           "  padding: 4px 0; text-align: left; }"

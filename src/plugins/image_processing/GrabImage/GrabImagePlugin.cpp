@@ -1,40 +1,38 @@
 #include "GrabImagePlugin.h"
+
+#include "core/common/ConfigWidgetHelper.h"
+#include "core/common/Logger.h"
 #include "core/device/CameraManager.h"
 #include "core/interface/ICamera.h"
-#include "core/common/Logger.h"
+
 #include <QAction>
+#include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
+#include <QDir>
 #include <QDoubleSpinBox>
-#include <QFormLayout>
-#include <QLineEdit>
+#include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QCoreApplication>
+#include <QFormLayout>
+#include <QLineEdit>
 #include <QStyle>
 #include <QThread>
-#include <QElapsedTimer>
 
 #ifdef DEEPLUX_HAS_OPENCV
-#include <opencv2/opencv.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/opencv.hpp>
 #include <opencv2/videoio.hpp>
 #endif
 
 namespace DeepLux {
 
 GrabImagePlugin::GrabImagePlugin(QObject* parent)
-    : ModuleBase(parent)
-    , m_grabTimer(new QTimer(this))
-    , m_grabTimedOut(false)
-    , m_grabSuccess(false)
-{
+    : ModuleBase(parent), m_grabTimer(new QTimer(this)), m_grabTimedOut(false), m_grabSuccess(false) {
     m_defaultParams = QJsonObject{
-        {"cameraId", ""},
-        {"filePath", ""},
-        {"exposureTime", 10000.0},
-        {"gain", 1.0},
-        {"grabSource", "Camera"},
-        {"grabTimeout", 5000}  // camera grab timeout in ms
+        {"cameraId", ""},         {"filePath", ""},          {"folderPath", ""},
+        {"folderLoop", true},     {"exposureTime", 10000.0}, {"gain", 1.0},
+        {"grabSource", "Camera"}, {"grabTimeout", 5000} // camera grab timeout in ms
     };
     m_params = m_defaultParams;
 
@@ -42,20 +40,16 @@ GrabImagePlugin::GrabImagePlugin(QObject* parent)
     connect(m_grabTimer, &QTimer::timeout, this, &GrabImagePlugin::onCameraGrabTimeout);
 }
 
-GrabImagePlugin::~GrabImagePlugin()
-{
-}
+GrabImagePlugin::~GrabImagePlugin() {}
 
-bool GrabImagePlugin::initialize()
-{
+bool GrabImagePlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
     return true;
 }
 
-void GrabImagePlugin::shutdown()
-{
+void GrabImagePlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     if (m_capture.isOpened()) {
         m_capture.release();
@@ -64,43 +58,51 @@ void GrabImagePlugin::shutdown()
     ModuleBase::shutdown();
 }
 
-void GrabImagePlugin::onCameraGrabTimeout()
-{
+void GrabImagePlugin::onCameraGrabTimeout() {
     m_grabTimedOut = true;
     m_grabSuccess = false;
 }
 
-bool GrabImagePlugin::process(const ImageData& input, ImageData& output)
-{
+bool GrabImagePlugin::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(input)
 
     // 从 m_params 读取图像源
     QJsonObject params = currentParams();
     QString sourceStr = params["grabSource"].toString();
-    QString filePath = params["filePath"].toString();
+    const QString filePath = params["filePath"].toString().trimmed();
+    const QFileInfo pathInfo(filePath);
 
-    Logger::instance().debug(QString("GrabImage::process - grabSource: %1, filePath: %2").arg(sourceStr).arg(filePath), "GrabImage");
+    if (sourceStr == QStringLiteral("Path") || sourceStr == QStringLiteral("File") ||
+        sourceStr == QStringLiteral("Folder")) {
+        sourceStr = pathInfo.isDir() ? QStringLiteral("Folder") : QStringLiteral("File");
+    }
+
+    Logger::instance().debug(QString("GrabImage::process - grabSource: %1, filePath: %2").arg(sourceStr).arg(filePath),
+                             "GrabImage");
 
     GrabSource source = GrabSource::Demo; // 默认演示模式
     if (sourceStr == "File") {
         source = GrabSource::File;
+    } else if (sourceStr == "Folder") {
+        source = GrabSource::Folder;
     } else if (sourceStr == "Camera") {
         source = GrabSource::Camera;
     }
 
     switch (source) {
-        case GrabSource::File:
-            return grabFromFile(output);
-        case GrabSource::Demo:
-            return grabDemo(output);
-        case GrabSource::Camera:
-        default:
-            return grabFromCamera(output);
+    case GrabSource::File:
+        return grabFromFile(output);
+    case GrabSource::Folder:
+        return grabFromFolder(output);
+    case GrabSource::Demo:
+        return grabDemo(output);
+    case GrabSource::Camera:
+    default:
+        return grabFromCamera(output);
     }
 }
 
-bool GrabImagePlugin::grabFromCamera(ImageData& output)
-{
+bool GrabImagePlugin::grabFromCamera(ImageData& output) {
     QJsonObject params = currentParams();
     QString cameraId = params["cameraId"].toString();
     int grabTimeoutMs = params["grabTimeout"].toInt(5000);
@@ -133,7 +135,8 @@ bool GrabImagePlugin::grabFromCamera(ImageData& output)
             for (const CameraStatus& status : discovered) {
                 if (cm.connectCamera(status.deviceId)) {
                     targetCamera = cm.getCamera(status.deviceId);
-                    if (targetCamera) break;
+                    if (targetCamera)
+                        break;
                 }
             }
         }
@@ -145,7 +148,8 @@ bool GrabImagePlugin::grabFromCamera(ImageData& output)
         double gain = params["gain"].toDouble(1.0);
         targetCamera->setExposureTime(exposureTime);
         targetCamera->setGain(gain);
-        Logger::instance().debug(QString("GrabImage set camera params: exposure=%1, gain=%2").arg(exposureTime).arg(gain), "GrabImage");
+        Logger::instance().debug(
+            QString("GrabImage set camera params: exposure=%1, gain=%2").arg(exposureTime).arg(gain), "GrabImage");
 
         // 确保开始采集
         if (!targetCamera->isAcquiring()) {
@@ -187,14 +191,16 @@ bool GrabImagePlugin::grabFromCamera(ImageData& output)
         m_grabTimer->stop();
 
         if (m_grabTimedOut || frame.isNull()) {
-            emit errorOccurred(tr("相机 %1 采集图像超时 (%2ms)")
-                .arg(targetCamera->deviceId()).arg(grabTimeoutMs));
+            emit errorOccurred(tr("相机 %1 采集图像超时 (%2ms)").arg(targetCamera->deviceId()).arg(grabTimeoutMs));
             return false;
         }
 
         output.setQImage(frame);
         Logger::instance().info(QString("从相机 %1 采集图像成功: %2x%3")
-            .arg(targetCamera->deviceId()).arg(frame.width()).arg(frame.height()), "GrabImage");
+                                    .arg(targetCamera->deviceId())
+                                    .arg(frame.width())
+                                    .arg(frame.height()),
+                                "GrabImage");
         return true;
     }
 
@@ -205,7 +211,8 @@ bool GrabImagePlugin::grabFromCamera(ImageData& output)
     if (!cameraId.isEmpty()) {
         bool ok;
         cameraIndex = cameraId.toInt(&ok);
-        if (!ok) cameraIndex = 0;
+        if (!ok)
+            cameraIndex = 0;
     }
 
     if (!m_capture.isOpened()) {
@@ -261,8 +268,9 @@ bool GrabImagePlugin::grabFromCamera(ImageData& output)
     }
 
     output.setMat(m_frame);
-    Logger::instance().info(QString("从相机 %1 (OpenCV) 采集图像成功: %2x%3")
-        .arg(cameraIndex).arg(m_frame.cols).arg(m_frame.rows), "GrabImage");
+    Logger::instance().info(
+        QString("从相机 %1 (OpenCV) 采集图像成功: %2x%3").arg(cameraIndex).arg(m_frame.cols).arg(m_frame.rows),
+        "GrabImage");
     return true;
 #else
     Q_UNUSED(output);
@@ -271,9 +279,7 @@ bool GrabImagePlugin::grabFromCamera(ImageData& output)
 #endif
 }
 
-bool GrabImagePlugin::grabFromFile(ImageData& output)
-{
-#ifdef DEEPLUX_HAS_OPENCV
+bool GrabImagePlugin::grabFromFile(ImageData& output) {
     QJsonObject params = currentParams();
     QString filePath = params["filePath"].toString();
 
@@ -287,12 +293,74 @@ bool GrabImagePlugin::grabFromFile(ImageData& output)
 
     // 检查文件是否存在
     QFileInfo fileInfo(filePath);
-    Logger::instance().debug(QString("GrabImage::grabFromFile - file exists: %1, isFile: %2").arg(fileInfo.exists()).arg(fileInfo.isFile()), "GrabImage");
+    Logger::instance().debug(
+        QString("GrabImage::grabFromFile - file exists: %1, isFile: %2").arg(fileInfo.exists()).arg(fileInfo.isFile()),
+        "GrabImage");
     if (!fileInfo.exists()) {
         emit errorOccurred(QString("文件不存在: %1").arg(filePath));
         return false;
     }
 
+    if (!loadImageFile(filePath, output)) {
+        return false;
+    }
+    output.setData(QStringLiteral("source_path"), fileInfo.absoluteFilePath());
+    output.setData(QStringLiteral("source_file_name"), fileInfo.fileName());
+    return true;
+}
+
+bool GrabImagePlugin::grabFromFolder(ImageData& output) {
+    const QJsonObject params = currentParams();
+    const QString unifiedPath = params.value("filePath").toString().trimmed();
+    const QString configuredPath =
+        QFileInfo(unifiedPath).isDir() ? unifiedPath : params.value("folderPath").toString().trimmed();
+    const QString folderPath = configuredPath.isEmpty() ? QString() : QDir::cleanPath(configuredPath);
+    const bool loop = params.value("folderLoop").toBool(true);
+    QDir directory(folderPath);
+
+    if (folderPath.isEmpty() || !directory.exists()) {
+        emit errorOccurred(folderPath.isEmpty() ? tr("未指定图像文件夹") : tr("文件夹不存在: %1").arg(folderPath));
+        return false;
+    }
+
+    if (folderPath != m_activeFolderPath) {
+        const QStringList filters = {"*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tif", "*.tiff",
+                                     "*.PNG", "*.JPG", "*.JPEG", "*.BMP", "*.TIF", "*.TIFF"};
+        m_folderFiles = directory.entryList(filters, QDir::Files | QDir::Readable, QDir::Name | QDir::IgnoreCase);
+        m_activeFolderPath = folderPath;
+        m_folderIndex = 0;
+    }
+
+    if (m_folderFiles.isEmpty()) {
+        emit errorOccurred(tr("文件夹中没有支持的图像: %1").arg(folderPath));
+        return false;
+    }
+    if (m_folderIndex >= m_folderFiles.size()) {
+        if (!loop) {
+            emit errorOccurred(tr("文件夹图像已读取完毕"));
+            return false;
+        }
+        m_folderIndex = 0;
+    }
+
+    const int position = m_folderIndex++;
+    const QString filePath = directory.absoluteFilePath(m_folderFiles.at(position));
+    if (!loadImageFile(filePath, output)) {
+        return false;
+    }
+
+    output.setData(QStringLiteral("source_path"), filePath);
+    output.setData(QStringLiteral("source_file_name"), QFileInfo(filePath).fileName());
+    output.setData(QStringLiteral("folder_path"), directory.absolutePath());
+    output.setData(QStringLiteral("folder_position"), position + 1);
+    output.setData(QStringLiteral("folder_count"), m_folderFiles.size());
+    Logger::instance().info(tr("加载文件夹图像 %1/%2: %3").arg(position + 1).arg(m_folderFiles.size()).arg(filePath),
+                            "GrabImage");
+    return true;
+}
+
+bool GrabImagePlugin::loadImageFile(const QString& filePath, ImageData& output) {
+#ifdef DEEPLUX_HAS_OPENCV
     // 使用QImage加载图像（更好地处理各种格式和编码）
     QImage image;
     Logger::instance().debug("GrabImage::grabFromFile - trying QImage::load...", "GrabImage");
@@ -302,53 +370,46 @@ bool GrabImagePlugin::grabFromFile(ImageData& output)
         // 尝试 IMREAD_UNCHANGED 以支持 32 位浮点灰度 TIFF
         Logger::instance().debug("GrabImage::grabFromFile - calling cv::imread...", "GrabImage");
         cv::Mat mat = cv::imread(filePath.toUtf8().constData(), cv::IMREAD_UNCHANGED);
-        Logger::instance().debug(QString("GrabImage::grabFromFile - cv::imread returned, empty=%1").arg(mat.empty()), "GrabImage");
+        Logger::instance().debug(QString("GrabImage::grabFromFile - cv::imread returned, empty=%1").arg(mat.empty()),
+                                 "GrabImage");
         if (mat.empty()) {
             emit errorOccurred(QString("无法加载图像: %1\nOpenCV 不支持此格式").arg(filePath));
             return false;
         }
         output.setMat(mat.clone());
         Logger::instance().info(QString("加载图像成功(OpenCV): %1 (%2x%3, type=%4)")
-            .arg(filePath).arg(mat.cols).arg(mat.rows).arg(mat.type()), "GrabImage");
+                                    .arg(filePath)
+                                    .arg(mat.cols)
+                                    .arg(mat.rows)
+                                    .arg(mat.type()),
+                                "GrabImage");
         return true;
     }
 
-    Logger::instance().debug(QString("GrabImage::grabFromFile - QImage loaded OK, format: %1, size: %2x%3").arg(image.format()).arg(image.width()).arg(image.height()), "GrabImage");
+    Logger::instance().debug(QString("GrabImage::grabFromFile - QImage loaded OK, format: %1, size: %2x%3")
+                                 .arg(image.format())
+                                 .arg(image.width())
+                                 .arg(image.height()),
+                             "GrabImage");
 
-    // 转换为cv::Mat
-    cv::Mat mat;
-    if (image.format() == QImage::Format_RGB32 || image.format() == QImage::Format_ARGB32) {
-        mat = cv::Mat(image.height(), image.width(), CV_8UC4, const_cast<uchar*>(image.bits()), image.bytesPerLine());
-        cv::cvtColor(mat, mat, cv::COLOR_BGRA2BGR);
-    } else if (image.format() == QImage::Format_RGB888) {
-        mat = cv::Mat(image.height(), image.width(), CV_8UC3, const_cast<uchar*>(image.bits()), image.bytesPerLine());
-        cv::cvtColor(mat, mat, cv::COLOR_RGB2BGR);
-    } else if (image.format() == QImage::Format_Grayscale8) {
-        mat = cv::Mat(image.height(), image.width(), CV_8UC1, const_cast<uchar*>(image.bits()), image.bytesPerLine());
-    } else {
-        Logger::instance().debug("GrabImage::grabFromFile - converting to RGB888...", "GrabImage");
-        QImage rgbImage = image.convertToFormat(QImage::Format_RGB888);
-        mat = cv::Mat(rgbImage.height(), rgbImage.width(), CV_8UC3, const_cast<uchar*>(rgbImage.bits()), rgbImage.bytesPerLine());
-        cv::cvtColor(mat, mat, cv::COLOR_RGB2BGR);
-    }
-
-    if (mat.empty()) {
+    output.setQImage(image);
+    if (!output.isValid()) {
         emit errorOccurred(QString("图像数据无效: %1").arg(filePath));
         return false;
     }
 
-    output.setMat(mat.clone());
-    Logger::instance().info(QString("加载图像成功: %1 (%2x%3)").arg(filePath).arg(mat.cols).arg(mat.rows), "GrabImage");
+    Logger::instance().info(QString("加载图像成功: %1 (%2x%3)").arg(filePath).arg(image.width()).arg(image.height()),
+                            "GrabImage");
     return true;
 #else
+    Q_UNUSED(filePath);
     Q_UNUSED(output);
     emit errorOccurred(tr("OpenCV未启用"));
     return false;
 #endif
 }
 
-bool GrabImagePlugin::grabDemo(ImageData& output)
-{
+bool GrabImagePlugin::grabDemo(ImageData& output) {
 #ifdef DEEPLUX_HAS_OPENCV
     // 生成演示图像 - 棋盘格图案
     int width = 640;
@@ -373,18 +434,46 @@ bool GrabImagePlugin::grabDemo(ImageData& output)
 #endif
 }
 
-void GrabImagePlugin::setParam(const QString& key, const QVariant& value)
-{
+void GrabImagePlugin::setParam(const QString& key, const QVariant& value) {
     ModuleBase::setParam(key, value);
     if (key == "filePath") {
-        m_filePath = value.toString();
+        m_filePath = value.toString().trimmed();
+        if (!m_filePath.isEmpty()) {
+            ModuleBase::setParam("grabSource", QStringLiteral("Path"));
+        }
+        m_activeFolderPath.clear();
+        m_folderFiles.clear();
+        m_folderIndex = 0;
+    } else if (key == "folderPath") {
+        m_activeFolderPath.clear();
+        m_folderFiles.clear();
+        m_folderIndex = 0;
     } else if (key == "cameraId") {
         m_cameraId = value.toString();
     }
 }
 
-QWidget* GrabImagePlugin::createConfigWidget()
-{
+void GrabImagePlugin::setParams(const QJsonObject& params) {
+    ModuleBase::setParams(params);
+    QJsonObject current = currentParams();
+    QString path = current.value("filePath").toString().trimmed();
+    if (path.isEmpty() && current.value("grabSource").toString() == QStringLiteral("Folder")) {
+        path = current.value("folderPath").toString().trimmed();
+        if (!path.isEmpty()) {
+            ModuleBase::setParam("filePath", path);
+        }
+    }
+    const QString source = current.value("grabSource").toString();
+    if (!path.isEmpty() && (source == QStringLiteral("File") || source == QStringLiteral("Folder"))) {
+        ModuleBase::setParam("grabSource", QStringLiteral("Path"));
+    }
+    m_filePath = path;
+    m_activeFolderPath.clear();
+    m_folderFiles.clear();
+    m_folderIndex = 0;
+}
+
+QWidget* GrabImagePlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QFormLayout* layout = new QFormLayout(widget);
     layout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
@@ -398,22 +487,33 @@ QWidget* GrabImagePlugin::createConfigWidget()
     QComboBox* sourceCombo = new QComboBox();
     sourceCombo->setObjectName(QStringLiteral("ParamEditor_grabSource"));
     sourceCombo->addItem(tr("相机"), "Camera");
-    sourceCombo->addItem(tr("文件"), "File");
+    sourceCombo->addItem(tr("自动路径"), "Path");
     sourceCombo->addItem(tr("演示"), "Demo");
 
     QString currentSource = params.value("grabSource").toString("Camera");
     int index = sourceCombo->findData(currentSource);
-    if (index < 0) index = 0;
+    if (index < 0)
+        index = 0;
     sourceCombo->setCurrentIndex(index);
     layout->addRow(tr("图像源"), sourceCombo);
 
     // 文件路径控件
-    QLineEdit* filePathEdit = new QLineEdit(params.value("filePath").toString());
+    QString imagePath = params.value("filePath").toString();
+    if (imagePath.isEmpty()) {
+        imagePath = params.value("folderPath").toString();
+    }
+    QLineEdit* filePathEdit = new QLineEdit(imagePath);
     filePathEdit->setObjectName(QStringLiteral("ParamEditor_filePath"));
-    QAction* browseAction = filePathEdit->addAction(widget->style()->standardIcon(QStyle::SP_DirOpenIcon),
-                                                     QLineEdit::TrailingPosition);
-    browseAction->setToolTip(tr("浏览..."));
-    layout->addRow(tr("文件路径"), filePathEdit);
+    QAction* browseAction =
+        filePathEdit->addAction(widget->style()->standardIcon(QStyle::SP_DirOpenIcon), QLineEdit::TrailingPosition);
+    browseAction->setToolTip(tr("选择图像文件或文件夹"));
+    layout->addRow(tr("图像路径"), filePathEdit);
+
+    QCheckBox* folderLoopCheck = new QCheckBox();
+    folderLoopCheck->setObjectName(QStringLiteral("ParamEditor_folderLoop"));
+    folderLoopCheck->setChecked(params.value("folderLoop").toBool(true));
+    folderLoopCheck->setText(folderLoopCheck->isChecked() ? tr("已开启") : tr("已关闭"));
+    layout->addRow(tr("末尾循环"), folderLoopCheck);
 
     // 复用已缓存的发现结果，避免打开配置时再次扫描硬件
     QComboBox* cameraCombo = new QComboBox();
@@ -463,33 +563,39 @@ QWidget* GrabImagePlugin::createConfigWidget()
     });
 
     connect(browseAction, &QAction::triggered, this, [=]() {
-        QString path = QFileDialog::getOpenFileName(widget, tr("选择图像文件"),
-            filePathEdit->text(), tr("图像文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"));
+        const QString path = ConfigWidgetHelper::selectExistingFileOrDirectory(
+            widget, tr("选择图像路径"), filePathEdit->text(), tr("图像文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"));
         if (!path.isEmpty()) {
             filePathEdit->setText(path);
             setParam("filePath", path);
+            sourceCombo->setCurrentIndex(sourceCombo->findData(QStringLiteral("Path")));
         }
     });
 
-    connect(filePathEdit, &QLineEdit::editingFinished, this,
-            [=]() { setParam("filePath", filePathEdit->text()); });
-
-    connect(cameraCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int index) {
-        setParam("cameraId", cameraCombo->itemData(index).toString());
+    connect(filePathEdit, &QLineEdit::editingFinished, this, [=]() {
+        setParam("filePath", filePathEdit->text());
+        const QString source = currentParams().value("grabSource").toString();
+        sourceCombo->setCurrentIndex(sourceCombo->findData(source));
     });
+
+    connect(folderLoopCheck, &QCheckBox::toggled, this, [=](bool checked) {
+        folderLoopCheck->setText(checked ? tr("已开启") : tr("已关闭"));
+        setParam("folderLoop", checked);
+    });
+
+    connect(cameraCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int index) { setParam("cameraId", cameraCombo->itemData(index).toString()); });
 
     connect(exposureSpin, &QDoubleSpinBox::editingFinished, this,
             [=]() { setParam("exposureTime", exposureSpin->value()); });
-    connect(gainSpin, &QDoubleSpinBox::editingFinished, this,
-            [=]() { setParam("gain", gainSpin->value()); });
+    connect(gainSpin, &QDoubleSpinBox::editingFinished, this, [=]() { setParam("gain", gainSpin->value()); });
     connect(timeoutSpin, &QDoubleSpinBox::editingFinished, this,
             [=]() { setParam("grabTimeout", timeoutSpin->value()); });
 
     return widget;
 }
 
-IModule* GrabImagePlugin::cloneImpl() const
-{
+IModule* GrabImagePlugin::cloneImpl() const {
     // 创建新实例，构造函数会初始化默认参数
     GrabImagePlugin* clone = new GrabImagePlugin();
     // 拷贝参数和成员变量

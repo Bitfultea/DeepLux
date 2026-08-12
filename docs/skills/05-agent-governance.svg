@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <defs><style>.title{font-family:'Noto Sans CJK SC';font-size:44px;font-weight:700;fill:#18243A}.sub{font-family:'Noto Sans CJK SC';font-size:22px;fill:#62718A}.head{font-family:'Noto Sans CJK SC';font-size:21px;font-weight:700;fill:#18243A}.body{font-family:'Noto Sans CJK SC';font-size:18px;fill:#52627B}.small{font-family:'Noto Sans CJK SC';font-size:16px;fill:#52627B}.tag{font-family:'Noto Sans CJK SC';font-size:16px;font-weight:700;fill:#1769AA}.white{font-family:'Noto Sans CJK SC';font-size:18px;font-weight:700;fill:#FFF}.mono{font-family:'Noto Sans Mono';font-size:16px;fill:#1769AA}</style></defs>
+  <rect width="1600" height="900" fill="#F5F8FC"/><rect width="1600" height="12" fill="#1769AA"/>
+  <text x="72" y="76" class="tag">DEEPLUX AGENT ENGINEERING / 05</text><text x="72" y="136" class="title">Agent：LLM 能力进入工程生产力之前，先穿过受控执行面</text><text x="72" y="177" class="sub">对话入口、工具白名单、确认卡、撤销栈和审计日志形成闭环；终端与 Agent 的权限边界明确分离。</text>
+  <g transform="translate(72 232)">
+    <rect width="1456" height="250" rx="12" fill="#FFF" stroke="#C5D9EB" stroke-width="2"/><text x="24" y="40" class="head">一次 Agent 请求的真实数据流</text>
+    <g transform="translate(28 76)"><rect width="168" height="102" rx="8" fill="#EAF4FE"/><text x="18" y="33" class="tag">Agent 对话</text><text x="18" y="61" class="small">用户意图</text><text x="18" y="84" class="small">工程上下文</text></g>
+    <g transform="translate(244 76)"><rect width="168" height="102" rx="8" fill="#EAF4FE"/><text x="18" y="33" class="tag">Controller</text><text x="18" y="61" class="small">Idle / Thinking</text><text x="18" y="84" class="small">权限、轮次限制</text></g>
+    <g transform="translate(460 76)"><rect width="168" height="102" rx="8" fill="#EAF4FE"/><text x="18" y="33" class="tag">LLM Client</text><text x="18" y="61" class="small">结构化请求</text><text x="18" y="84" class="small">30 s timeout</text></g>
+    <g transform="translate(676 76)"><rect width="168" height="102" rx="8" fill="#EAF4FE"/><text x="18" y="33" class="tag">ToolSchema</text><text x="18" y="61" class="small">白名单工具</text><text x="18" y="84" class="small">required / enum</text></g>
+    <g transform="translate(892 76)"><rect width="168" height="102" rx="8" fill="#FFF2E5"/><text x="18" y="33" class="tag">确认策略</text><text x="18" y="61" class="small">safe 直接执行</text><text x="18" y="84" class="small">dangerous 待确认</text></g>
+    <g transform="translate(1108 76)"><rect width="168" height="102" rx="8" fill="#EAF4FE"/><text x="18" y="33" class="tag">AgentActor</text><text x="18" y="61" class="small">执行本地工具</text><text x="18" y="84" class="small">业务错误即停止</text></g>
+    <g transform="translate(1324 76)"><rect width="104" height="102" rx="8" fill="#1769AA"/><text x="17" y="39" class="white">工程</text><text x="17" y="66" class="white">+ 撤销</text><text x="17" y="89" class="white">+ 审计</text></g>
+    <path d="M196 127h48m168 0h48m168 0h48m168 0h48m168 0h48m168 0h48" stroke="#1769AA" stroke-width="3"/><path d="M234 119l10 8-10 8m216-16l10 8-10 8m216-16l10 8-10 8m216-16l10 8-10 8m216-16l10 8-10 8m216-16l10 8-10 8" fill="none" stroke="#1769AA" stroke-width="3"/>
+    <text x="28" y="220" class="small">工具结果以 tool message 回写会话；写操作通过 QUndoStack 包裹；操作行写入独立“Agent 日志”页。</text>
+  </g>
+  <g transform="translate(72 514)">
+    <rect width="648" height="252" rx="12" fill="#FFF" stroke="#C5D9EB" stroke-width="2"/><text x="24" y="40" class="head">控制器状态机与循环护栏</text>
+    <rect x="34" y="72" width="102" height="42" rx="21" fill="#E7F7EE"/><text x="59" y="100" class="tag">Idle</text><rect x="194" y="72" width="126" height="42" rx="21" fill="#EAF4FE"/><text x="217" y="100" class="tag">Thinking</text><rect x="378" y="72" width="136" height="42" rx="21" fill="#FFF2E5"/><text x="397" y="100" class="tag">Confirming</text><rect x="514" y="154" width="104" height="42" rx="21" fill="#EAF4FE"/><text x="532" y="182" class="tag">Executing</text>
+    <path d="M136 93h58m126 0h58m126 21v45h-58" stroke="#1769AA" stroke-width="3" fill="none"/><path d="M184 85l10 8-10 8m126-16l10 8-10 8m143 48l-8 10-8-10" fill="none" stroke="#1769AA" stroke-width="3"/>
+    <path d="M514 175H246v-61" stroke="#1769AA" stroke-width="3" fill="none"/><path d="M238 124l8-10 8 10" fill="none" stroke="#1769AA" stroke-width="3"/>
+    <text x="34" y="234" class="small">每轮最多 10 个 tool calls；自动循环最多 20 轮；非 Idle 状态拒绝新消息，避免并发重入。</text>
+  </g>
+  <g transform="translate(756 514)">
+    <rect width="772" height="252" rx="12" fill="#FFF" stroke="#C5D9EB" stroke-width="2"/><text x="24" y="40" class="head">安全边界、用户体验与待完善项</text>
+    <text x="26" y="81" class="tag">允许</text><text x="112" y="81" class="body">读取流程、添加模块、设参数、连接节点、解释结果。</text>
+    <text x="26" y="116" class="tag">拒绝</text><text x="112" y="116" class="body">任意 shell execute；终端只属于用户和 CLI，不是 Agent 通用执行面。</text>
+    <text x="26" y="151" class="tag">确认</text><text x="112" y="151" class="body">高风险写操作在对话附近展示卡片，用户确认后才进入 Actor。</text>
+    <text x="26" y="186" class="tag">撤销</text><text x="112" y="186" class="body">“Agent 日志”撤销最近一个可撤销写操作，不按历史行任意回滚。</text>
+    <text x="26" y="225" class="small">后续：补 AgentBridge IPC 分支测试、状态页签高亮、失败消息重试操作。</text>
+  </g>
+  <g transform="translate(72 798)"><rect width="1456" height="54" rx="10" fill="#EAF4FE"/><text x="26" y="34" class="mono">AgentChatPanel → AgentController → ToolSchema → AgentActor → Project / QUndoStack / AgentActionLogWidget</text></g>
+</svg>

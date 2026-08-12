@@ -80,7 +80,7 @@ void ViewportWidget::setupUi() {
     m_zoomLabel->setObjectName("ViewportZoomLabel");
     m_zoomLabel->setAlignment(Qt::AlignCenter);
     m_zoomLabel->setMinimumWidth(52);
-    m_toolbar->addWidget(m_zoomLabel);
+    m_zoomLabelAction = m_toolbar->addWidget(m_zoomLabel);
 
     m_fitWindowAction =
         new QAction(AppIconProvider::icon(AppIconProvider::Icon::FitWindow, 18, QColor("#6B7280")), tr("适应"), this);
@@ -95,6 +95,34 @@ void ViewportWidget::setupUi() {
     m_actualSizeAction->setToolTip(tr("实际像素大小 (1:1)"));
     m_toolbar->addAction(m_actualSizeAction);
     connect(m_actualSizeAction, &QAction::triggered, this, &ViewportWidget::onActualSize);
+
+    QWidget* pointSizeControl = new QWidget(m_toolbar);
+    pointSizeControl->setObjectName("ViewportPointSizeControl");
+    QHBoxLayout* pointSizeLayout = new QHBoxLayout(pointSizeControl);
+    pointSizeLayout->setContentsMargins(0, 0, 14, 0);
+    pointSizeLayout->setSpacing(3);
+
+    m_pointSizeSpinBox = new QDoubleSpinBox(pointSizeControl);
+    m_pointSizeSpinBox->setObjectName("ViewportPointSizeSpinBox");
+    m_pointSizeSpinBox->setRange(1.0, 8.0);
+    m_pointSizeSpinBox->setSingleStep(0.5);
+    m_pointSizeSpinBox->setDecimals(1);
+    m_pointSizeSpinBox->setValue(2.0);
+    m_pointSizeSpinBox->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_pointSizeSpinBox->setAlignment(Qt::AlignCenter);
+    m_pointSizeSpinBox->setFixedSize(60, 28);
+    QLabel* pointSizeUnit = new QLabel(QStringLiteral("px"), pointSizeControl);
+    pointSizeUnit->setObjectName("ViewportPointSizeUnit");
+    pointSizeLayout->addWidget(m_pointSizeSpinBox);
+    pointSizeLayout->addWidget(pointSizeUnit);
+    pointSizeControl->setToolTip(tr("点大小（可直接输入或滚轮调整）"));
+    m_pointSizeAction = m_toolbar->addWidget(pointSizeControl);
+    m_pointSizeAction->setObjectName("ViewportPointSizeAction");
+    connect(m_pointSizeSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+        if (m_3dContent) {
+            m_3dContent->setPointSize(static_cast<float>(value));
+        }
+    });
 
     // 2D/3D 切换
     m_toggleViewAction = new QAction(tr("3D"), this);
@@ -154,6 +182,8 @@ void ViewportWidget::setTitle(const QString& title) {
 
 void ViewportWidget::displayData(const DisplayData& data) {
     if (data.pointCloudData() && !data.pointCloudData()->isEmpty()) {
+        m_cachedImage = QImage();
+        m_hasCachedImage = false;
         m_cachedCloudData = data;
         m_hasCachedCloud = true;
         switchTo3D();
@@ -166,6 +196,8 @@ void ViewportWidget::displayData(const DisplayData& data) {
             setTitle(dsName);
         }
     } else if (data.imageData()) {
+        m_cachedCloudData = DisplayData();
+        m_hasCachedCloud = false;
         m_cachedImage = data.imageData()->toQImage();
         m_hasCachedImage = true;
         switchTo2D();
@@ -187,6 +219,8 @@ QImage ViewportWidget::currentImage() const {
 }
 
 void ViewportWidget::displayImage(const QImage& image) {
+    m_cachedCloudData = DisplayData();
+    m_hasCachedCloud = false;
     m_cachedImage = image;
     m_hasCachedImage = true;
     switchTo2D();
@@ -196,18 +230,24 @@ void ViewportWidget::displayImage(const QImage& image) {
     updateToggleAction();
 }
 
-void ViewportWidget::setDualData(const QImage& image, const DisplayData& cloudData) {
+void ViewportWidget::setDualData(const QImage& image, const DisplayData& cloudData, DisplayMode initialMode) {
     m_cachedImage = image;
     m_hasCachedImage = true;
     m_cachedCloudData = cloudData;
     m_hasCachedCloud = true;
-    // 默认显示 3D
-    switchTo3D();
-    if (m_3dContent) {
-        m_3dContent->displayData(cloudData);
-    }
-    if (cloudData.pointCloudData()) {
-        m_contentInfoLabel->setText(tr("%1 点").arg(cloudData.pointCloudData()->size()));
+    if (initialMode == DisplayMode::Auto2D) {
+        switchTo2D();
+        m_imageWidget->setImage(image);
+        m_contentInfoLabel->setText(tr("%1 × %2").arg(image.width()).arg(image.height()));
+        emit imageDisplayed();
+    } else {
+        switchTo3D();
+        if (m_3dContent) {
+            m_3dContent->displayData(cloudData);
+        }
+        if (cloudData.pointCloudData()) {
+            m_contentInfoLabel->setText(tr("%1 点").arg(cloudData.pointCloudData()->size()));
+        }
     }
     QString dsName = cloudData.metadata().value("dataSourceName").toString();
     if (!dsName.isEmpty()) {
@@ -263,6 +303,8 @@ void ViewportWidget::ensure3DContent() {
         return;
 
     m_3dContent = new Viewport3DContent(this);
+    m_3dContent->setPointSize(static_cast<float>(m_pointSizeSpinBox->value()));
+    m_3dContent->applyTheme(m_isDarkTheme);
     m_3dContent->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_3dContent->setMinimumSize(100, 100);
 
@@ -271,14 +313,13 @@ void ViewportWidget::ensure3DContent() {
     // 高: 通知外部安装事件过滤器
     emit contentWidgetCreated(m_3dContent);
 
-    // Replace in layout
+    // Keep both renderers in the layout; hidden widgets do not consume layout space.
     QVBoxLayout* layout = qobject_cast<QVBoxLayout*>(this->layout());
     if (layout && m_imageWidget) {
         int index = layout->indexOf(m_imageWidget);
         if (index >= 0) {
-            layout->removeWidget(m_imageWidget);
             m_imageWidget->hide();
-            layout->insertWidget(index, m_3dContent);
+            layout->insertWidget(index, m_3dContent, 1);
             m_3dContent->show();
         }
     }
@@ -325,19 +366,21 @@ void ViewportWidget::switchTo3D() {
 
 void ViewportWidget::updateToolbarState() {
     const bool imageMode = m_displayMode == DisplayMode::Auto2D;
+    const bool cloudMode = m_displayMode == DisplayMode::Auto3D && m_hasCachedCloud;
     const bool canZoom = imageMode && m_hasCachedImage;
 
     m_zoomOutAction->setVisible(imageMode);
     m_zoomInAction->setVisible(imageMode);
     m_fitWindowAction->setVisible(imageMode);
     m_actualSizeAction->setVisible(imageMode);
-    m_zoomLabel->setVisible(imageMode);
+    m_zoomLabelAction->setVisible(imageMode);
+    m_pointSizeAction->setVisible(cloudMode);
 
     m_zoomOutAction->setEnabled(canZoom);
     m_zoomInAction->setEnabled(canZoom);
     m_fitWindowAction->setEnabled(canZoom);
     m_actualSizeAction->setEnabled(canZoom);
-    m_contentSeparatorAction->setVisible(imageMode || m_toggleViewAction->isVisible());
+    m_contentSeparatorAction->setVisible(imageMode || cloudMode || m_toggleViewAction->isVisible());
     m_snapshotAction->setEnabled(m_hasCachedImage || m_hasCachedCloud);
 }
 
@@ -436,6 +479,7 @@ void ViewportWidget::setPickMode(bool enabled) {
 }
 
 void ViewportWidget::applyTheme(bool isDark) {
+    m_isDarkTheme = isDark;
     const QColor toolColor = isDark ? QColor("#D1D5DB") : QColor("#4B5563");
     m_zoomOutAction->setIcon(AppIconProvider::icon(AppIconProvider::Icon::ZoomOut, 18, toolColor));
     m_zoomInAction->setIcon(AppIconProvider::icon(AppIconProvider::Icon::ZoomIn, 18, toolColor));
@@ -500,6 +544,7 @@ void ViewportWidget::applyTheme(bool isDark) {
     if (m_3dContent) {
         m_3dContent->applyTheme(isDark);
     }
+    m_pointSizeSpinBox->setFixedSize(60, 28);
 }
 
 } // namespace DeepLux

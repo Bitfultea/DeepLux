@@ -54,10 +54,19 @@ public:
         return m_renderMode;
     }
     void setRenderMode(ColorMode mode);
+    void setPointSize(float size);
+    float pointSize() const {
+        return m_pointSize;
+    }
     void setMeasurementOverlay(const QList<MeasurementOverlayPoint3D>& points,
                                const QList<MeasurementOverlayLine3D>& lines);
     void clearMeasurementOverlay();
-    void setPickMode(bool enabled) { m_pickMode = enabled; }
+    // 测量结果信息面板（视口右上角固定位置）
+    void setMeasurementInfoPanel(const QStringList& lines);
+    void clearMeasurementInfoPanel();
+    void setPickMode(bool enabled) {
+        m_pickMode = enabled;
+    }
 
 public slots:
     void resetCamera();
@@ -95,6 +104,7 @@ private:
     PointCloudGPUBuffer m_gpuBuffer;
     CameraController m_camera;
     ColorMode m_renderMode = ColorMode::BlinnPhong;
+    float m_pointSize = 2.0f;
 
     QMatrix4x4 m_projectionMatrix;
     QMatrix4x4 m_viewMatrix;
@@ -110,11 +120,13 @@ private:
     QVector3D m_bboxMin;
     QVector3D m_bboxMax;
     bool m_hasBbox = false;
+    bool m_isDarkTheme = true;
 
     // 最近显示的3D点（用于 Ctrl+Click 坐标拾取）
     std::vector<QVector3D> m_lastPoints;
     QList<MeasurementOverlayPoint3D> m_measurementPoints;
     QList<MeasurementOverlayLine3D> m_measurementLines;
+    QStringList m_infoPanelLines;
     bool m_pickMode = false;
     QPoint m_pickPressPos;
 };

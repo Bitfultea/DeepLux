@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <defs><style>.title{font-family:'Noto Sans CJK SC';font-size:44px;font-weight:700;fill:#18243A}.sub{font-family:'Noto Sans CJK SC';font-size:22px;fill:#62718A}.head{font-family:'Noto Sans CJK SC';font-size:21px;font-weight:700;fill:#18243A}.body{font-family:'Noto Sans CJK SC';font-size:18px;fill:#52627B}.small{font-family:'Noto Sans CJK SC';font-size:16px;fill:#52627B}.tag{font-family:'Noto Sans CJK SC';font-size:16px;font-weight:700;fill:#516174}.white{font-family:'Noto Sans CJK SC';font-size:18px;font-weight:700;fill:#FFF}.mono{font-family:'Noto Sans Mono';font-size:16px;fill:#455366}</style></defs>
+  <rect width="1600" height="900" fill="#F5F7F9"/><rect width="1600" height="12" fill="#516174"/>
+  <text x="72" y="76" class="tag">DEEPLUX QUALITY ENGINEERING / 07</text><text x="72" y="136" class="title">根因定位与验证：从用户现象追到共享分支，再证明目标二进制已更新</text><text x="72" y="177" class="sub">修复的完成条件不是“代码看起来合理”，而是用户路径、回归测试、运行日志和正在启动的可执行文件共同给出证据。</text>
+  <g transform="translate(72 232)">
+    <rect width="444" height="460" rx="12" fill="#FFF" stroke="#CDD5DE" stroke-width="2"/><text x="24" y="40" class="head">证据板：先处理矛盾信号</text>
+    <rect x="24" y="70" width="396" height="58" rx="7" fill="#EAF5ED"/><text x="42" y="103" class="tag">用户现象 A：视图点到了，但流程没有输入</text>
+    <rect x="24" y="144" width="396" height="58" rx="7" fill="#FDECEB"/><text x="42" y="177" class="tag">用户现象 B：DistancePP 仍报“未提供第一个点”</text>
+    <text x="24" y="244" class="body">A 与 B 同时成立，说明问题不在拾取本身，</text><text x="24" y="274" class="body">而在“当前选择 → MeasurementInput 目标”的分叉路径。</text>
+    <rect x="24" y="314" width="396" height="106" rx="8" fill="#F1F4F7"/><text x="42" y="346" class="tag">调查输入</text><text x="42" y="375" class="small">用户步骤 / 截图 / 运行日志 / 工程 JSON / 当前进程路径</text><text x="42" y="402" class="small">先让矛盾可解释，再决定改哪里。</text>
+  </g>
+  <g transform="translate(552 232)">
+    <rect width="518" height="460" rx="12" fill="#FFF" stroke="#CDD5DE" stroke-width="2"/><text x="24" y="40" class="head">完整数据流：在共同上游寻找分叉条件</text>
+    <rect x="36" y="76" width="204" height="52" rx="7" fill="#F1F4F7"/><text x="55" y="108" class="tag">用户操作 / GUI 事件</text>
+    <rect x="278" y="76" width="204" height="52" rx="7" fill="#F1F4F7"/><text x="299" y="108" class="tag">工程 / 模块状态</text>
+    <path d="M138 128v48h122V128m0 48v28" stroke="#516174" stroke-width="3" fill="none"/><path d="M252 196l8 10 8-10" fill="none" stroke="#516174" stroke-width="3"/>
+    <rect x="152" y="214" width="216" height="58" rx="7" fill="#FFF2E5" stroke="#E26D00" stroke-width="2"/><text x="175" y="248" class="tag">共享判断 / 状态机</text>
+    <path d="M260 272v42M260 314H104v35m156-35h156v35" stroke="#516174" stroke-width="3" fill="none"/><path d="M96 341l8 10 8-10m304-10l8 10 8-10" fill="none" stroke="#516174" stroke-width="3"/>
+    <rect x="36" y="359" width="136" height="60" rx="7" fill="#EAF5ED"/><text x="55" y="394" class="tag">正确输出</text><rect x="192" y="359" width="136" height="60" rx="7" fill="#FDECEB"/><text x="211" y="394" class="tag">错误输出</text><rect x="348" y="359" width="136" height="60" rx="7" fill="#EEF2FF"/><text x="367" y="394" class="tag">未验证分支</text>
+    <text x="36" y="446" class="small">改动应放在共享判断处，并检查结构变动后每条 signal / 状态迁移的原始意图是否仍成立。</text>
+  </g>
+  <g transform="translate(1106 232)">
+    <rect width="422" height="460" rx="12" fill="#FFF" stroke="#CDD5DE" stroke-width="2"/><text x="24" y="40" class="head">可交付证据：四层验证</text>
+    <text x="26" y="88" class="tag">1. 聚焦测试</text><text x="26" y="116" class="body">新增或更新最小 Qt Test，原缺陷必须失败。</text><line x1="26" y1="136" x2="392" y2="136" stroke="#CDD5DE" stroke-width="2"/>
+    <text x="26" y="176" class="tag">2. 构建目标</text><text x="26" y="204" class="body">只构建受影响的 core / ui / plugin / test target。</text><line x1="26" y1="224" x2="392" y2="224" stroke="#CDD5DE" stroke-width="2"/>
+    <text x="26" y="264" class="tag">3. 真实行为</text><text x="26" y="292" class="body">GUI 截图、插件加载或运行日志验证用户路径。</text><line x1="26" y1="312" x2="392" y2="312" stroke="#CDD5DE" stroke-width="2"/>
+    <text x="26" y="352" class="tag">4. 二进制核对</text><text x="26" y="380" class="body">确认 build/bin/DeepLux 时间戳与实际启动路径。</text><text x="26" y="424" class="small">避免“修复已编译，用户运行的却是旧安装版”。</text>
+  </g>
+  <g transform="translate(72 732)"><rect width="1456" height="120" rx="10" fill="#EEF1F5"/><text x="26" y="36" class="tag">质量闸门</text><text x="26" y="70" class="mono">rg 调用点 → 画数据流 → 找共享分支 → 最小修复 → clang-format → cmake --build → Qt Test → 截图 / 日志 → stat binary → git diff --check</text><text x="26" y="101" class="small">这套方法同时适用于崩溃、数据竞争、插件配置漂移、拖拽错误、测量交互和“修复未生效”。</text></g>
+</svg>

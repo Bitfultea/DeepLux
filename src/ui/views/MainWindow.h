@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/common/Logger.h"
+#include "core/display/DisplayData.h"
 #include "core/model/ImageData.h"
 #include "core/model/Project.h"
 
@@ -100,7 +101,9 @@ private slots:
     void onProjectClosed();
     void onDataSourceAdded(const DataSource& ds);
     void onDataSourceRemoved(const QString& id);
+    void onDataSourceVisibilityChanged(const QString& dataSourceId, bool visible);
     void onDisplayDataSource(const QString& dataSourceId);
+    void onDisplayDataSourceInNewViewport(const QString& dataSourceId);
     void onRemoveDataSource(const QString& dataSourceId);
     void onShowDataSourceInFolder(const QString& dataSourceId);
     void onCopyDataSourcePath(const QString& dataSourceId);
@@ -177,6 +180,12 @@ protected:
     QLabel* m_timeLabel = nullptr;
     // 最后导入的图像路径
     QString m_lastImportedImagePath;
+    // 仅记录用户主动打开的额外视图，默认数据源都渲染在主视图。
+    QMap<QString, QString> m_dataSourceViewportIds;
+    QMap<QString, DisplayData> m_dataSourceDisplayData;
+    QMap<QString, QImage> m_dataSourcePreviewImages;
+    QSet<QString> m_hiddenDataSourceIds;
+    QString m_primaryDataSourceViewportId;
     // 自动配置流程中第一个GrabImage模块的图像路径
     void autoConfigureGrabImage(const QString& filePath);
 
@@ -189,9 +198,13 @@ protected:
     void showProcessModuleOutput(QTreeWidgetItem* item, bool userInitiated = false);
     void displayImage(const ImageData& image, const QString& label = QString());
     bool importFile(const QString& filePath);
-    bool importImageFile(const QString& filePath);
-    bool importPointCloudFile(const QString& filePath);
+    bool importImageFile(const QString& filePath, const QString& existingDataSourceId = QString());
+    bool importPointCloudFile(const QString& filePath, const QString& existingDataSourceId = QString());
     void clearCentralDisplay();
+    ViewportWidget* primaryDataSourceViewport();
+    void rebuildPrimaryDataSourceDisplay();
+    QString ensureDataSourceViewport(const QString& dataSourceId, const QString& title);
+    void clearDataSourceViewports();
 
     // 阶段 7: 流程树 data-role 高亮（替代 setBackground）
     void setProcessItemStatus(QTreeWidgetItem* item, const QString& status, const QString& timeText = QString());
@@ -277,6 +290,7 @@ protected:
     QPointer<SamAnnotatorDialog> m_samAnnotatorDialog;
 
     // 3D 渲染模式（视图菜单内）
+    QAction* m_renderSeparator = nullptr;
     QAction* m_renderActions[6] = {};
     void updateRenderModeCombo();
     void updateRenderModeComboForData(const PointCloudData& pc);

@@ -52,6 +52,7 @@
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QCursor>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDialog>
@@ -115,6 +116,7 @@
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QWidgetAction>
+#include <cmath>
 
 namespace DeepLux {
 
@@ -393,7 +395,11 @@ void applyPluginConfigTheme(QWidget* root, bool isDark) {
                        "QPushButton:disabled { background-color: %3; color: %4; border-color: %3; }")
             .arg(accent, hover, spinButton, isDark ? QStringLiteral("#9ca3af") : QStringLiteral("#777777"));
     const QString optionStyle =
-        QStringLiteral("QCheckBox { color: %1; background-color: transparent; spacing: 6px; }").arg(text);
+        QStringLiteral("QCheckBox { color: %1; background-color: transparent; spacing: 6px; }"
+                       "QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid %2; "
+                       "border-radius: 3px; background-color: %3; }"
+                       "QCheckBox::indicator:checked { background-color: %4; border-color: %4; }")
+            .arg(text, border, input, accent);
     const QString groupStyle =
         QStringLiteral("QGroupBox { background-color: %1; color: %2; border: 1px solid %3; border-radius: 6px; "
                        "font-weight: bold; margin-top: 12px; padding-top: 12px; }"
@@ -744,7 +750,7 @@ void MainWindow::setupMenuBar() {
                         this, &MainWindow::onToggleTheme);
 
     // 3D 渲染模式（菜单项 + 横线分隔）
-    viewMenu->addSeparator();
+    m_renderSeparator = viewMenu->addSeparator();
     QActionGroup* renderGroup = new QActionGroup(this);
     renderGroup->setExclusive(true);
 
@@ -757,11 +763,13 @@ void MainWindow::setupMenuBar() {
     for (int i = 0; i < 6; ++i) {
         m_renderActions[i]->setCheckable(true);
         m_renderActions[i]->setData(i);
+        m_renderActions[i]->setObjectName(QStringLiteral("RenderModeAction%1").arg(i));
         renderGroup->addAction(m_renderActions[i]);
     }
     m_renderActions[5]->setChecked(true);
     connect(renderGroup, &QActionGroup::triggered, this,
             [this](QAction* action) { onRenderModeChanged(action->data().toInt()); });
+    updateRenderModeCombo();
 
     // 工具菜单
     QMenu* toolMenu = menuBar()->addMenu(tr("工具 (&T)"));
@@ -848,6 +856,7 @@ void MainWindow::setupToolBar() {
     mainToolbar->setObjectName("MainToolBar");
     mainToolbar->setMovable(false);
     mainToolbar->setIconSize(QSize(24, 24));
+    mainToolbar->setFixedHeight(ThemeManager::layoutMetrics().toolbarHeight);
     mainToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 
     // 文件操作
@@ -855,7 +864,7 @@ void MainWindow::setupToolBar() {
                            this, &MainWindow::onNewSolution);
     mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::OpenFolder, 24, QColor("#D97706")), tr("打开"),
                            this, &MainWindow::onOpenProject);
-    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Save, 24, QColor("#2563EB")), tr("保存"), this,
+    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Save, 24, QColor("#16a18a")), tr("保存"), this,
                            &MainWindow::onSaveProject);
     mainToolbar->addSeparator();
 
@@ -876,7 +885,7 @@ void MainWindow::setupToolBar() {
                                tr("快速测量"), this, &MainWindow::onQuickMeasure);
     m_quickMeasureAction->setCheckable(true);
     m_quickMeasureAction->setShortcut(QKeySequence(Qt::Key_M));
-    mainToolbar->addSeparator();
+    // mainToolbar->addSeparator();
 
     // 快速标注（SAM）
     mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Design, 20, QColor("#7C3AED")), tr("快速标注"),
@@ -1309,6 +1318,10 @@ void MainWindow::setupMainLayout() {
     // 连接 DataSourcePanel 信号
     connect(m_dataSourcePanel, &DataSourcePanel::requestDisplay, this, &MainWindow::onDisplayDataSource);
     connect(m_dataSourcePanel, &DataSourcePanel::requestRemove, this, &MainWindow::onRemoveDataSource);
+    connect(m_dataSourcePanel, &DataSourcePanel::requestVisibilityChanged, this,
+            &MainWindow::onDataSourceVisibilityChanged);
+    connect(m_dataSourcePanel, &DataSourcePanel::requestDisplayInNewViewport, this,
+            &MainWindow::onDisplayDataSourceInNewViewport);
     connect(m_dataSourcePanel, &DataSourcePanel::requestShowInFolder, this, &MainWindow::onShowDataSourceInFolder);
     connect(m_dataSourcePanel, &DataSourcePanel::requestCopyPath, this, &MainWindow::onCopyDataSourcePath);
 
@@ -1801,6 +1814,7 @@ void MainWindow::onProjectOpened(Project* project) {
     m_dirtyModuleIds.clear();
     m_activeMeasurementInputId.clear();
     m_pendingMeasurementInputId.clear();
+    clearDataSourceViewports();
 
     // 清空现有流程树
     m_processTreeController->clear();
@@ -1894,6 +1908,7 @@ void MainWindow::onProjectClosed() {
         m_paramUndoStack->clear();
     }
     m_dirtyModuleIds.clear();
+    clearDataSourceViewports();
 
     m_processTreeController->clear();
     if (m_flowCanvas) {
@@ -1905,7 +1920,7 @@ void MainWindow::onProjectClosed() {
     updateProjectContext(nullptr);
 }
 
-void MainWindow::onViewportCreated(const QString& viewportId, ViewportWidget* viewport) {
+void MainWindow::onViewportCreated(const QString& /*viewportId*/, ViewportWidget* viewport) {
     if (!viewport)
         return;
     connect(viewport, &ViewportWidget::point2DClicked, this, &MainWindow::onPoint2DPicked, Qt::UniqueConnection);
@@ -1915,16 +1930,21 @@ void MainWindow::onViewportCreated(const QString& viewportId, ViewportWidget* vi
         viewport, &ViewportWidget::viewportClosed, this,
         [this](const QString& id) {
             if (m_displayManager) {
-                if (m_displayManager->viewportCount() > 1) {
-                    m_displayManager->destroyViewport(id);
-                } else {
-                    // 只有一个视口时仅清空内容
+                for (auto it = m_dataSourceViewportIds.begin(); it != m_dataSourceViewportIds.end();) {
+                    if (it.value() == id) {
+                        it = m_dataSourceViewportIds.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                if (id == m_primaryDataSourceViewportId || m_displayManager->viewportCount() <= 1) {
                     ViewportWidget* vp = m_displayManager->viewport(id);
                     if (vp) {
                         vp->clearDisplay();
                         vp->setTitle(tr("主视图"));
                     }
-                    clearCentralDisplay();
+                } else {
+                    m_displayManager->destroyViewport(id);
                 }
             }
         },
@@ -2165,6 +2185,93 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
                 m_quickMeasurePoints.clear();
             }
         }
+        // ---- 三点角度 (3 clicks: vertex P1 + P2 + P3 → angle at P1) ----
+        else if (m_quickMeasureType == 3) {
+            int n = m_quickMeasurePoints.size();
+            if (n < 3) {
+                QList<MeasurementOverlayPoint> pts;
+                for (int i = 0; i < n; ++i)
+                    pts.append({m_quickMeasurePoints[i], ptLabel(i)});
+                buildOverlay(pts, {});
+            } else {
+                const QPointF& v = m_quickMeasurePoints[0]; // vertex
+                const QPointF& p2 = m_quickMeasurePoints[1];
+                const QPointF& p3 = m_quickMeasurePoints[2];
+                // Angle between v->p2 and v->p3
+                QPointF d1 = p2 - v;
+                QPointF d2 = p3 - v;
+                double dot = QPointF::dotProduct(d1, d2);
+                double cross = d1.x() * d2.y() - d1.y() * d2.x();
+                double angleRad = atan2(std::abs(cross), dot);
+                double angleDeg = angleRad * 180.0 / M_PI;
+                QString label = tr("角度: %1°").arg(angleDeg, 0, 'f', 2);
+                Logger::instance().info(tr("快速测量: 三点角度 = %1°").arg(angleDeg, 0, 'f', 2), "Measurement");
+                buildOverlay({{v, QStringLiteral("V")}, {p2, QStringLiteral("P2")}, {p3, QStringLiteral("P3")}},
+                             {{v, p2, QString()}, {v, p3, label}});
+                m_quickMeasurePoints.clear();
+            }
+        }
+        // ---- 三点拟合圆 (3 clicks → circle center, radius) ----
+        else if (m_quickMeasureType == 4) {
+            int n = m_quickMeasurePoints.size();
+            if (n < 3) {
+                QList<MeasurementOverlayPoint> pts;
+                for (int i = 0; i < n; ++i)
+                    pts.append({m_quickMeasurePoints[i], ptLabel(i)});
+                buildOverlay(pts, {});
+            } else {
+                const QPointF& p1 = m_quickMeasurePoints[0];
+                const QPointF& p2 = m_quickMeasurePoints[1];
+                const QPointF& p3 = m_quickMeasurePoints[2];
+                // 三点定圆: 圆心 = 外接圆心
+                double ax = p1.x(), ay = p1.y();
+                double bx = p2.x(), by = p2.y();
+                double cx = p3.x(), cy = p3.y();
+                double d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+                double ux, uy;
+                if (std::abs(d) < 1e-10) {
+                    // 共线，无法拟合圆
+                    Logger::instance().warning(tr("三点共线，无法拟合圆"), "Measurement");
+                    buildOverlay({{p1, QStringLiteral("P1")}, {p2, QStringLiteral("P2")}, {p3, QStringLiteral("P3")}},
+                                 {});
+                    m_quickMeasurePoints.clear();
+                } else {
+                    ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) +
+                          (cx * cx + cy * cy) * (ay - by)) /
+                         d;
+                    uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) +
+                          (cx * cx + cy * cy) * (bx - ax)) /
+                         d;
+                    QPointF center(ux, uy);
+                    double radius = QLineF(center, p1).length();
+                    double circumference = 2.0 * M_PI * radius;
+                    QString label = tr("R=%1, C=%2").arg(radius, 0, 'f', 2).arg(circumference, 0, 'f', 2);
+                    Logger::instance().info(tr("快速测量: 拟合圆 半径=%1, 周长=%2, 圆心=(%3, %4)")
+                                                .arg(radius, 0, 'f', 3)
+                                                .arg(circumference, 0, 'f', 3)
+                                                .arg(ux, 0, 'f', 1)
+                                                .arg(uy, 0, 'f', 1),
+                                            "Measurement");
+                    // 用多段线近似圆
+                    QList<MeasurementOverlayLine> circleLines;
+                    const int segments = 64;
+                    for (int i = 0; i < segments; ++i) {
+                        double a1 = 2.0 * M_PI * i / segments;
+                        double a2 = 2.0 * M_PI * (i + 1) / segments;
+                        circleLines.append({{center.x() + radius * cos(a1), center.y() + radius * sin(a1)},
+                                            {center.x() + radius * cos(a2), center.y() + radius * sin(a2)},
+                                            (i == 0) ? label : QString()});
+                    }
+                    buildOverlay({{p1, QStringLiteral("P1")},
+                                  {p2, QStringLiteral("P2")},
+                                  {p3, QStringLiteral("P3")},
+                                  {center, QStringLiteral("C")}},
+                                 circleLines);
+                    m_quickMeasurePoints.clear();
+                }
+            }
+        }
+        // type 5 (矩形面积) 不在此处理 — 使用 ROI 拖拽模式，见 onQuickMeasure
         return;
     }
 
@@ -2616,10 +2723,28 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                 const QVector3D& a = m_quickMeasurePoints3D[0];
                 const QVector3D& b = m_quickMeasurePoints3D[1];
                 double dist = a.distanceToPoint(b);
+                double dx = std::abs(b.x() - a.x());
+                double dy = std::abs(b.y() - a.y());
+                double dz = std::abs(b.z() - a.z());
                 QString label = tr("距离: %1").arg(dist, 0, 'f', 3);
                 Logger::instance().info(
                     tr("3D 快速测量: %1 → %2 = %3").arg(pointText3D(a)).arg(pointText3D(b)).arg(label), "Measurement");
                 buildOverlay3D({{a, QStringLiteral("P1")}, {b, QStringLiteral("P2")}}, {{a, b, label}});
+                // 方案 A: 视口右上角信息面板，显示坐标与 ΔX/ΔY/ΔZ 分解
+                QStringList infoLines;
+                infoLines << tr("3D 距离测量");
+                infoLines << tr("P1 (%1, %2, %3)").arg(a.x(), 0, 'f', 2).arg(a.y(), 0, 'f', 2).arg(a.z(), 0, 'f', 2);
+                infoLines << tr("P2 (%1, %2, %3)").arg(b.x(), 0, 'f', 2).arg(b.y(), 0, 'f', 2).arg(b.z(), 0, 'f', 2);
+                infoLines << QStringLiteral("────────────");
+                infoLines << tr("ΔX: %1").arg(dx, 0, 'f', 3);
+                infoLines << tr("ΔY: %1").arg(dy, 0, 'f', 3);
+                infoLines << tr("ΔZ: %1").arg(dz, 0, 'f', 3);
+                infoLines << tr("距离: %1").arg(dist, 0, 'f', 3);
+                for (ViewportWidget* vp : m_displayManager->allViewports()) {
+                    if (Viewport3DContent* c = vp ? vp->viewport3D() : nullptr) {
+                        c->setMeasurementInfoPanel(infoLines);
+                    }
+                }
                 m_quickMeasurePoints3D.clear();
             }
         } else if (m_quickMeasureType == 1) {
@@ -2688,6 +2813,121 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                                {{a1, a2, tr("线1: %1").arg(len1, 0, 'f', 3)},
                                 {b1, b2, tr("线2: %1").arg(len2, 0, 'f', 3)},
                                 {closestOnLine1, closestOnLine2, label}});
+                m_quickMeasurePoints3D.clear();
+            }
+        }
+        // ---- 三点角度 (3D: 3 clicks: vertex + 2 points → angle) ----
+        else if (m_quickMeasureType == 3) {
+            int n = m_quickMeasurePoints3D.size();
+            if (n < 3) {
+                QList<MeasurementOverlayPoint3D> pts;
+                for (int i = 0; i < n; ++i)
+                    pts.append({m_quickMeasurePoints3D[i], ptLabel(i)});
+                buildOverlay3D(pts, {});
+            } else {
+                const QVector3D& v = m_quickMeasurePoints3D[0];
+                const QVector3D& p2 = m_quickMeasurePoints3D[1];
+                const QVector3D& p3 = m_quickMeasurePoints3D[2];
+                QVector3D d1 = p2 - v;
+                QVector3D d2 = p3 - v;
+                float dot = QVector3D::dotProduct(d1, d2);
+                float len1 = d1.length();
+                float len2 = d2.length();
+                double angleRad = acos(qBound(-1.0, double(dot) / (len1 * len2 + 1e-12), 1.0));
+                double angleDeg = angleRad * 180.0 / M_PI;
+                QString label = tr("角度: %1°").arg(angleDeg, 0, 'f', 2);
+                Logger::instance().info(tr("3D 快速测量: 三点角度 = %1°").arg(angleDeg, 0, 'f', 2), "Measurement");
+                buildOverlay3D({{v, QStringLiteral("V")}, {p2, QStringLiteral("P2")}, {p3, QStringLiteral("P3")}},
+                               {{v, p2, QString()}, {v, p3, label}});
+                m_quickMeasurePoints3D.clear();
+            }
+        }
+        // ---- 三点拟合圆 (3D: 3 clicks → project to plane, fit circle) ----
+        else if (m_quickMeasureType == 4) {
+            int n = m_quickMeasurePoints3D.size();
+            if (n < 3) {
+                QList<MeasurementOverlayPoint3D> pts;
+                for (int i = 0; i < n; ++i)
+                    pts.append({m_quickMeasurePoints3D[i], ptLabel(i)});
+                buildOverlay3D(pts, {});
+            } else {
+                const QVector3D& p1 = m_quickMeasurePoints3D[0];
+                const QVector3D& p2 = m_quickMeasurePoints3D[1];
+                const QVector3D& p3 = m_quickMeasurePoints3D[2];
+                // 构建局部坐标系: normal = (p2-p1) × (p3-p1)
+                QVector3D u = p2 - p1;
+                QVector3D w = QVector3D::crossProduct(u, p3 - p1);
+                if (w.length() < 1e-6) {
+                    Logger::instance().warning(tr("三点共线，无法拟合圆"), "Measurement");
+                    buildOverlay3D({{p1, QStringLiteral("P1")}, {p2, QStringLiteral("P2")}, {p3, QStringLiteral("P3")}},
+                                   {});
+                    m_quickMeasurePoints3D.clear();
+                } else {
+                    u.normalize();
+                    QVector3D normal = w.normalized();
+                    QVector3D vAxis = QVector3D::crossProduct(normal, u).normalized();
+                    // 投影到局部 2D 坐标
+                    auto project = [&](const QVector3D& p) {
+                        QVector3D d = p - p1;
+                        return QPointF(QVector3D::dotProduct(d, u), QVector3D::dotProduct(d, vAxis));
+                    };
+                    QPointF a2 = project(p1);
+                    QPointF b2 = project(p2);
+                    QPointF c2 = project(p3);
+                    double ax = a2.x(), ay = a2.y();
+                    double bx = b2.x(), by = b2.y();
+                    double cx = c2.x(), cy = c2.y();
+                    double d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+                    double ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) +
+                                 (cx * cx + cy * cy) * (ay - by)) /
+                                d;
+                    double uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) +
+                                 (cx * cx + cy * cy) * (bx - ax)) /
+                                d;
+                    double radius = sqrt(ux * ux + uy * uy);
+                    // 圆心在局部坐标系，转回世界坐标
+                    QVector3D center = p1 + u * ux + vAxis * uy;
+                    double circumference = 2.0 * M_PI * radius;
+                    QString label = tr("R=%1, C=%2").arg(radius, 0, 'f', 2).arg(circumference, 0, 'f', 2);
+                    Logger::instance().info(
+                        tr("3D 快速测量: 拟合圆 半径=%1, 周长=%2").arg(radius, 0, 'f', 3).arg(circumference, 0, 'f', 3),
+                        "Measurement");
+                    // 用多段线近似圆（在三点所在平面上）
+                    QList<MeasurementOverlayLine3D> circleLines3D;
+                    const int segments3D = 64;
+                    for (int i = 0; i < segments3D; ++i) {
+                        double a1 = 2.0 * M_PI * i / segments3D;
+                        double a2 = 2.0 * M_PI * (i + 1) / segments3D;
+                        QVector3D c1 = center + u * (radius * cos(a1)) + vAxis * (radius * sin(a1));
+                        QVector3D c2 = center + u * (radius * cos(a2)) + vAxis * (radius * sin(a2));
+                        circleLines3D.append({c1, c2, (i == 0) ? label : QString()});
+                    }
+                    buildOverlay3D({{p1, QStringLiteral("P1")},
+                                    {p2, QStringLiteral("P2")},
+                                    {p3, QStringLiteral("P3")},
+                                    {center, QStringLiteral("C")}},
+                                   circleLines3D);
+                    m_quickMeasurePoints3D.clear();
+                }
+            }
+        }
+        // ---- 矩形面积 (3D: 2 clicks → 宽/高/面积, 用 X/Y 分量) ----
+        else if (m_quickMeasureType == 5) {
+            if (m_quickMeasurePoints3D.size() == 1) {
+                buildOverlay3D({{m_quickMeasurePoints3D[0], ptLabel(0)}}, {});
+            } else if (m_quickMeasurePoints3D.size() >= 2) {
+                const QVector3D& a = m_quickMeasurePoints3D[0];
+                const QVector3D& b = m_quickMeasurePoints3D[1];
+                double w = std::abs(b.x() - a.x());
+                double h = std::abs(b.y() - a.y());
+                double area = w * h;
+                QString label = tr("W=%1, H=%2, A=%3").arg(w, 0, 'f', 2).arg(h, 0, 'f', 2).arg(area, 0, 'f', 2);
+                Logger::instance().info(tr("3D 快速测量: 矩形 宽=%1, 高=%2, 面积=%3")
+                                            .arg(w, 0, 'f', 3)
+                                            .arg(h, 0, 'f', 3)
+                                            .arg(area, 0, 'f', 3),
+                                        "Measurement");
+                buildOverlay3D({{a, QStringLiteral("P1")}, {b, QStringLiteral("P2")}}, {{a, b, label}});
                 m_quickMeasurePoints3D.clear();
             }
         }
@@ -2823,6 +3063,40 @@ void MainWindow::onDataSourceRemoved(const QString& id) {
     if (m_dataSourcePanel) {
         m_dataSourcePanel->removeDataSource(id);
     }
+    m_hiddenDataSourceIds.remove(id);
+    m_dataSourceDisplayData.remove(id);
+    m_dataSourcePreviewImages.remove(id);
+    const QString viewportId = m_dataSourceViewportIds.take(id);
+    if (m_displayManager && m_displayManager->viewport(viewportId)) {
+        m_displayManager->destroyViewport(viewportId);
+    }
+    rebuildPrimaryDataSourceDisplay();
+    RunEngine::instance().clearOutputs();
+    m_dirtyModuleIds.clear();
+}
+
+void MainWindow::onDataSourceVisibilityChanged(const QString& dataSourceId, bool visible) {
+    if (dataSourceId.isEmpty()) {
+        return;
+    }
+
+    if (visible) {
+        m_hiddenDataSourceIds.remove(dataSourceId);
+    } else {
+        m_hiddenDataSourceIds.insert(dataSourceId);
+    }
+
+    if (ViewportWidget* viewport =
+            m_displayManager ? m_displayManager->viewport(m_dataSourceViewportIds.value(dataSourceId)) : nullptr) {
+        viewport->setVisible(visible);
+    }
+    if (visible && !m_dataSourceDisplayData.contains(dataSourceId)) {
+        onDisplayDataSource(dataSourceId);
+    } else {
+        rebuildPrimaryDataSourceDisplay();
+    }
+
+    Logger::instance().info(tr("数据源%1：%2").arg(visible ? tr("显示") : tr("隐藏"), dataSourceId), "Display");
 }
 
 void MainWindow::onDisplayDataSource(const QString& dataSourceId) {
@@ -2834,6 +3108,15 @@ void MainWindow::onDisplayDataSource(const QString& dataSourceId) {
     if (!ds || !ds->isValid())
         return;
 
+    if (m_hiddenDataSourceIds.contains(dataSourceId)) {
+        return;
+    }
+
+    if (m_dataSourceDisplayData.contains(dataSourceId)) {
+        rebuildPrimaryDataSourceDisplay();
+        return;
+    }
+
     QFileInfo fileInfo(ds->filePath);
     if (!fileInfo.exists()) {
         Logger::instance().warning(tr("数据源文件已丢失：%1").arg(ds->filePath), "System");
@@ -2841,18 +3124,51 @@ void MainWindow::onDisplayDataSource(const QString& dataSourceId) {
     }
 
     if (ds->isPointCloud()) {
-        importPointCloudFile(ds->filePath);
+        importPointCloudFile(ds->filePath, dataSourceId);
     } else if (ds->isImage()) {
-        importImageFile(ds->filePath);
-        // 图像导入后需要实际显示到视口
-        QImage image(ds->filePath);
-        if (!image.isNull() && m_displayManager) {
-            DisplayData data;
-            data.variant() = ImageData(image);
-            data.setMetadata(QVariantMap{{"dataSourceId", ds->id}, {"dataSourceName", ds->name}});
-            m_displayManager->displayData(data);
+        importImageFile(ds->filePath, dataSourceId);
+    }
+}
+
+void MainWindow::onDisplayDataSourceInNewViewport(const QString& dataSourceId) {
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project || dataSourceId.isEmpty()) {
+        return;
+    }
+
+    const auto ds = project->findDataSource(dataSourceId);
+    if (!ds || !ds->isValid()) {
+        return;
+    }
+
+    if (!m_dataSourceDisplayData.contains(dataSourceId)) {
+        if (ds->isPointCloud()) {
+            importPointCloudFile(ds->filePath, dataSourceId);
+        } else if (ds->isImage()) {
+            importImageFile(ds->filePath, dataSourceId);
         }
     }
+
+    const auto data = m_dataSourceDisplayData.constFind(dataSourceId);
+    if (data == m_dataSourceDisplayData.cend()) {
+        return;
+    }
+
+    ViewportWidget* viewport =
+        m_displayManager ? m_displayManager->viewport(ensureDataSourceViewport(dataSourceId, ds->name)) : nullptr;
+    if (!viewport) {
+        return;
+    }
+
+    if (data->pointCloudData() && m_dataSourcePreviewImages.contains(dataSourceId)) {
+        viewport->setDualData(m_dataSourcePreviewImages.value(dataSourceId), *data);
+    } else if (data->imageData()) {
+        viewport->displayData(*data);
+    } else {
+        viewport->displayData(*data);
+    }
+    viewport->setTitle(ds->name);
+    viewport->setVisible(!m_hiddenDataSourceIds.contains(dataSourceId));
 }
 
 void MainWindow::onRemoveDataSource(const QString& dataSourceId) {
@@ -3417,7 +3733,7 @@ bool MainWindow::importFile(const QString& filePath) {
     return importImageFile(filePath);
 }
 
-bool MainWindow::importPointCloudFile(const QString& filePath) {
+bool MainWindow::importPointCloudFile(const QString& filePath, const QString& existingDataSourceId) {
     QFileInfo fileInfo(filePath);
     QString ext = fileInfo.suffix().toLower();
     Logger::instance().info(
@@ -3443,82 +3759,84 @@ bool MainWindow::importPointCloudFile(const QString& filePath) {
         return false;
     }
 
-    // 创建 DataSource 并注册到 Project
-    DataSource ds;
-    ds.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    ds.name = fileInfo.fileName();
-    ds.filePath = fileInfo.absoluteFilePath();
-    ds.type = "pointcloud";
-    ds.metadata["pointCount"] = static_cast<qint64>(pc.size());
-    ds.metadata["fileSize"] = fileInfo.size();
-    ds.importTime = QDateTime::currentMSecsSinceEpoch();
-
     Project* project = ProjectManager::instance().currentProject();
-    if (project) {
-        project->addDataSource(ds);
+    if (!project) {
+        return false;
     }
 
-    Logger::instance().info(QString("[imp3D] loaded %1 points, sending to DisplayManager").arg(pc.size()), "3D");
+    DataSource ds;
+    if (!existingDataSourceId.isEmpty()) {
+        const auto existing = project->findDataSource(existingDataSourceId);
+        if (!existing) {
+            return false;
+        }
+        ds = *existing;
+    } else {
+        for (const DataSource& source : project->dataSources()) {
+            if (source.filePath == fileInfo.absoluteFilePath()) {
+                ds = source;
+                break;
+            }
+        }
+        if (ds.id.isEmpty()) {
+            ds.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            ds.name = fileInfo.fileName();
+            ds.filePath = fileInfo.absoluteFilePath();
+            ds.type = "pointcloud";
+            ds.metadata["pointCount"] = static_cast<qint64>(pc.size());
+            ds.metadata["fileSize"] = fileInfo.size();
+            ds.importTime = QDateTime::currentMSecsSinceEpoch();
+            project->addDataSource(ds);
+        }
+    }
+
+    Logger::instance().info(QString("[imp3D] loaded %1 points, updating main viewport").arg(pc.size()), "3D");
 
     size_t pointCount = pc.size();
-    updateRenderModeComboForData(pc);
-
     DisplayData data;
     data.variant() = std::move(pc);
     data.setTimestamp(QDateTime::currentMSecsSinceEpoch());
     data.setMetadata(QVariantMap{{"dataSourceId", ds.id}, {"dataSourceName", ds.name}});
-    if (m_displayManager) {
-        // 先发送 2D 图像（缓存到视口），再发送 3D 点云（显示并缓存）
-        // 这样视口工具栏出现 2D/3D 切换按钮
-        if (ext == "tif" || ext == "tiff") {
+    QImage previewImage;
+    if (ext == "tif" || ext == "tiff") {
 #ifdef DEEPLUX_HAS_OPENCV
-            cv::Mat mat = cv::imread(filePath.toStdString(), cv::IMREAD_UNCHANGED);
-            Logger::instance().info(QString("[imp3D] cv::imread: empty=%1, type=%2, channels=%3")
-                                        .arg(mat.empty() ? "true" : "false")
-                                        .arg(mat.type())
-                                        .arg(mat.channels()),
-                                    "3D");
-            if (!mat.empty()) {
-                QImage qimg;
-                if (mat.channels() == 1) {
-                    cv::Mat mat8u;
-                    if (mat.type() != CV_8U) {
-                        cv::normalize(mat, mat8u, 0, 255, cv::NORM_MINMAX, CV_8U);
-                    } else {
-                        mat8u = mat;
-                    }
-                    cv::Mat colored;
-                    cv::applyColorMap(mat8u, colored, cv::COLORMAP_JET);
-                    qimg = QImage(colored.data, colored.cols, colored.rows, static_cast<int>(colored.step),
-                                  QImage::Format_RGB888)
-                               .copy();
+        cv::Mat mat = cv::imread(filePath.toStdString(), cv::IMREAD_UNCHANGED);
+        Logger::instance().info(QString("[imp3D] cv::imread: empty=%1, type=%2, channels=%3")
+                                    .arg(mat.empty() ? "true" : "false")
+                                    .arg(mat.type())
+                                    .arg(mat.channels()),
+                                "3D");
+        if (!mat.empty()) {
+            if (mat.channels() == 1) {
+                cv::Mat mat8u;
+                if (mat.type() != CV_8U) {
+                    cv::normalize(mat, mat8u, 0, 255, cv::NORM_MINMAX, CV_8U);
                 } else {
-                    cv::Mat rgb;
-                    cv::cvtColor(mat, rgb, cv::COLOR_BGR2RGB);
-                    qimg =
-                        QImage(rgb.data, rgb.cols, rgb.rows, static_cast<int>(rgb.step), QImage::Format_RGB888).copy();
+                    mat8u = mat;
                 }
-                Logger::instance().info(
-                    QString("[imp3D] 2D image generated: %1x%2, calling setDualData on %3 viewports")
-                        .arg(qimg.width())
-                        .arg(qimg.height())
-                        .arg(m_displayManager->allViewports().size()),
-                    "3D");
-                for (ViewportWidget* vp : m_displayManager->allViewports()) {
-                    if (vp)
-                        vp->setDualData(qimg, data);
-                }
+                cv::Mat colored;
+                cv::applyColorMap(mat8u, colored, cv::COLORMAP_JET);
+                previewImage = QImage(colored.data, colored.cols, colored.rows, static_cast<int>(colored.step),
+                                      QImage::Format_RGB888)
+                                   .copy();
             } else {
-                Logger::instance().warning("[imp3D] cv::imread returned empty, falling back to 3D only", "3D");
-                m_displayManager->displayData(data);
+                cv::Mat rgb;
+                cv::cvtColor(mat, rgb, cv::COLOR_BGR2RGB);
+                previewImage =
+                    QImage(rgb.data, rgb.cols, rgb.rows, static_cast<int>(rgb.step), QImage::Format_RGB888).copy();
             }
-#else
-            m_displayManager->displayData(data);
-#endif
         } else {
-            m_displayManager->displayData(data);
+            Logger::instance().warning("[imp3D] cv::imread returned empty, falling back to 3D only", "3D");
         }
+#endif
     }
+    m_dataSourceDisplayData.insert(ds.id, std::move(data));
+    if (previewImage.isNull()) {
+        m_dataSourcePreviewImages.remove(ds.id);
+    } else {
+        m_dataSourcePreviewImages.insert(ds.id, previewImage);
+    }
+    rebuildPrimaryDataSourceDisplay();
     Logger::instance().info(tr("导入 3D 点云：%1 (%2 点)").arg(fileInfo.fileName()).arg(pointCount), "System");
 
     if (m_processTabWidget && m_dataSourcePanel) {
@@ -3528,31 +3846,51 @@ bool MainWindow::importPointCloudFile(const QString& filePath) {
     return true;
 }
 
-bool MainWindow::importImageFile(const QString& filePath) {
+bool MainWindow::importImageFile(const QString& filePath, const QString& existingDataSourceId) {
     Logger::instance().info(tr("导入图像：%1").arg(filePath), "System");
 
     QFileInfo fileInfo(filePath);
-    DataSource ds;
-    ds.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    ds.name = fileInfo.fileName();
-    ds.filePath = fileInfo.absoluteFilePath();
-    ds.type = "image";
-    ds.metadata["fileSize"] = fileInfo.size();
-    ds.importTime = QDateTime::currentMSecsSinceEpoch();
-
     Project* project = ProjectManager::instance().currentProject();
-    if (project) {
-        project->addDataSource(ds);
+    if (!project) {
+        return false;
     }
 
-    autoConfigureGrabImage(filePath);
+    DataSource ds;
+    if (!existingDataSourceId.isEmpty()) {
+        const auto existing = project->findDataSource(existingDataSourceId);
+        if (!existing) {
+            return false;
+        }
+        ds = *existing;
+    } else {
+        for (const DataSource& source : project->dataSources()) {
+            if (source.filePath == fileInfo.absoluteFilePath()) {
+                ds = source;
+                break;
+            }
+        }
+        if (ds.id.isEmpty()) {
+            ds.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            ds.name = fileInfo.fileName();
+            ds.filePath = fileInfo.absoluteFilePath();
+            ds.type = "image";
+            ds.metadata["fileSize"] = fileInfo.size();
+            ds.importTime = QDateTime::currentMSecsSinceEpoch();
+            project->addDataSource(ds);
+        }
+    }
+
+    if (existingDataSourceId.isEmpty()) {
+        autoConfigureGrabImage(filePath);
+    }
 
     QImage image(filePath);
-    if (!image.isNull() && m_displayManager) {
+    if (!image.isNull()) {
         DisplayData data;
         data.variant() = ImageData(image);
         data.setMetadata(QVariantMap{{"dataSourceId", ds.id}, {"dataSourceName", ds.name}});
-        m_displayManager->displayData(data);
+        m_dataSourceDisplayData.insert(ds.id, std::move(data));
+        rebuildPrimaryDataSourceDisplay();
     }
 
     if (m_processTabWidget && m_dataSourcePanel) {
@@ -3571,13 +3909,40 @@ void MainWindow::onRenderModeChanged(int index) {
 }
 
 void MainWindow::updateRenderModeCombo() {
-    // 菜单项不需要预填充（已在 setupMenuBar 中创建）
+    if (m_renderSeparator) {
+        m_renderSeparator->setVisible(false);
+    }
+    for (QAction* action : m_renderActions) {
+        if (action) {
+            action->setVisible(false);
+        }
+    }
 }
 
 void MainWindow::updateRenderModeComboForData(const PointCloudData& pc) {
-    m_renderActions[1]->setEnabled(pc.hasColors());
-    m_renderActions[3]->setEnabled(!pc.intensities.empty() && pc.intensities.size() == pc.points.size());
-    m_renderActions[4]->setEnabled(pc.hasNormals());
+    const bool supports[] = {
+        true, pc.hasColors(), true, pc.intensities.size() == pc.size(), pc.hasNormals(), pc.hasNormals(),
+    };
+
+    if (m_renderSeparator) {
+        m_renderSeparator->setVisible(true);
+    }
+
+    bool selectedModeSupported = false;
+    for (int i = 0; i < 6; ++i) {
+        QAction* action = m_renderActions[i];
+        if (!action) {
+            continue;
+        }
+        action->setVisible(supports[i]);
+        action->setEnabled(supports[i]);
+        selectedModeSupported = selectedModeSupported || (supports[i] && action->isChecked());
+    }
+
+    if (!selectedModeSupported) {
+        m_renderActions[0]->setChecked(true);
+        onRenderModeChanged(0);
+    }
 }
 
 void MainWindow::autoConfigureGrabImage(const QString& filePath) {
@@ -3604,6 +3969,195 @@ void MainWindow::clearCentralDisplay() {
     if (m_displayManager) {
         m_displayManager->clearAll();
     }
+    updateRenderModeCombo();
+}
+
+ViewportWidget* MainWindow::primaryDataSourceViewport() {
+    if (!m_displayManager) {
+        return nullptr;
+    }
+
+    if (!m_primaryDataSourceViewportId.isEmpty()) {
+        if (ViewportWidget* viewport = m_displayManager->viewport(m_primaryDataSourceViewportId)) {
+            return viewport;
+        }
+    }
+
+    const QList<QString> dedicatedViewportIds = m_dataSourceViewportIds.values();
+    for (ViewportWidget* viewport : m_displayManager->allViewports()) {
+        if (viewport && !dedicatedViewportIds.contains(viewport->viewportId())) {
+            m_primaryDataSourceViewportId = viewport->viewportId();
+            return viewport;
+        }
+    }
+    return nullptr;
+}
+
+void MainWindow::rebuildPrimaryDataSourceDisplay() {
+    ViewportWidget* primaryViewport = primaryDataSourceViewport();
+    Project* project = ProjectManager::instance().currentProject();
+    if (!primaryViewport || !project) {
+        return;
+    }
+
+    QList<QImage> images;
+    bool hasImageData = false;
+    QVector<const PointCloudData*> pointClouds;
+    for (const DataSource& source : project->dataSources()) {
+        if (m_hiddenDataSourceIds.contains(source.id)) {
+            continue;
+        }
+        const auto data = m_dataSourceDisplayData.constFind(source.id);
+        if (data == m_dataSourceDisplayData.cend()) {
+            continue;
+        }
+        if (const ImageData* image = data->imageData()) {
+            const QImage value = image->toQImage();
+            if (!value.isNull()) {
+                images.append(value);
+                hasImageData = true;
+            }
+        }
+        if (const QImage preview = m_dataSourcePreviewImages.value(source.id); !preview.isNull()) {
+            images.append(preview);
+        }
+        if (const PointCloudData* cloud = data->pointCloudData(); cloud && !cloud->isEmpty()) {
+            pointClouds.append(cloud);
+        }
+    }
+
+    if (images.isEmpty() && pointClouds.isEmpty()) {
+        primaryViewport->clearDisplay();
+        primaryViewport->setTitle(tr("主视图"));
+        updateRenderModeCombo();
+        return;
+    }
+
+    QImage compositeImage;
+    if (images.size() == 1) {
+        compositeImage = images.constFirst();
+    } else if (!images.isEmpty()) {
+        int width = 0;
+        int height = 0;
+        for (const QImage& image : images) {
+            width = qMax(width, image.width());
+            height = qMax(height, image.height());
+        }
+        compositeImage = QImage(width, height, QImage::Format_ARGB32_Premultiplied);
+        compositeImage.fill(Qt::black);
+        QPainter painter(&compositeImage);
+        painter.setOpacity(1.0 / images.size());
+        for (const QImage& image : images) {
+            painter.drawImage(0, 0, image);
+        }
+    }
+
+    if (!pointClouds.isEmpty()) {
+        // ponytail: visibility changes rebuild one merged GPU payload; add per-source GPU buffers only if large-cloud
+        // toggles become a bottleneck.
+        PointCloudData merged;
+        size_t pointCount = 0;
+        bool keepColors = true;
+        bool keepNormals = true;
+        bool keepIntensities = true;
+        bool keepLabels = true;
+        for (const PointCloudData* cloud : pointClouds) {
+            pointCount += cloud->size();
+            keepColors = keepColors && cloud->hasColors();
+            keepNormals = keepNormals && cloud->hasNormals();
+            keepIntensities = keepIntensities && cloud->intensities.size() == cloud->size();
+            keepLabels = keepLabels && cloud->hasLabels();
+        }
+        merged.points.reserve(pointCount);
+        if (keepColors)
+            merged.colors.reserve(pointCount);
+        if (keepNormals)
+            merged.normals.reserve(pointCount);
+        if (keepIntensities)
+            merged.intensities.reserve(pointCount);
+        if (keepLabels)
+            merged.labels.reserve(pointCount);
+        for (const PointCloudData* cloud : pointClouds) {
+            merged.points.insert(merged.points.end(), cloud->points.begin(), cloud->points.end());
+            if (keepColors)
+                merged.colors.insert(merged.colors.end(), cloud->colors.begin(), cloud->colors.end());
+            if (keepNormals)
+                merged.normals.insert(merged.normals.end(), cloud->normals.begin(), cloud->normals.end());
+            if (keepIntensities)
+                merged.intensities.insert(merged.intensities.end(), cloud->intensities.begin(),
+                                          cloud->intensities.end());
+            if (keepLabels)
+                merged.labels.insert(merged.labels.end(), cloud->labels.begin(), cloud->labels.end());
+        }
+
+        DisplayData mergedData;
+        mergedData.variant() = std::move(merged);
+        mergedData.setMetadata(QVariantMap{{"dataSourceName", tr("主视图")}});
+        updateRenderModeComboForData(*mergedData.pointCloudData());
+        if (compositeImage.isNull()) {
+            primaryViewport->displayData(mergedData);
+        } else {
+            primaryViewport->setDualData(compositeImage, mergedData,
+                                         hasImageData ? ViewportWidget::DisplayMode::Auto2D
+                                                      : ViewportWidget::DisplayMode::Auto3D);
+        }
+    } else {
+        primaryViewport->displayImage(compositeImage);
+        updateRenderModeCombo();
+    }
+    primaryViewport->setTitle(tr("主视图"));
+    primaryViewport->setVisible(true);
+}
+
+QString MainWindow::ensureDataSourceViewport(const QString& dataSourceId, const QString& title) {
+    if (!m_displayManager || dataSourceId.isEmpty()) {
+        return QString();
+    }
+
+    const QString existingId = m_dataSourceViewportIds.value(dataSourceId);
+    if (!existingId.isEmpty() && m_displayManager->viewport(existingId)) {
+        return existingId;
+    }
+
+    const QString viewportId = m_displayManager->createViewport(title);
+
+    if (ViewportWidget* viewport = m_displayManager->viewport(viewportId)) {
+        viewport->setTitle(title);
+        viewport->setVisible(true);
+    }
+    m_dataSourceViewportIds.insert(dataSourceId, viewportId);
+    return viewportId;
+}
+
+void MainWindow::clearDataSourceViewports() {
+    ViewportWidget* primaryViewport = primaryDataSourceViewport();
+    if (!m_displayManager) {
+        m_dataSourceViewportIds.clear();
+        m_dataSourceDisplayData.clear();
+        m_dataSourcePreviewImages.clear();
+        m_hiddenDataSourceIds.clear();
+        m_primaryDataSourceViewportId.clear();
+        updateRenderModeCombo();
+        return;
+    }
+
+    const QList<QString> viewportIds = m_dataSourceViewportIds.values();
+    for (const QString& viewportId : viewportIds) {
+        if (m_displayManager->viewport(viewportId)) {
+            m_displayManager->destroyViewport(viewportId);
+        }
+    }
+    if (primaryViewport) {
+        primaryViewport->clearDisplay();
+        primaryViewport->setTitle(tr("主视图"));
+        primaryViewport->setVisible(true);
+    }
+    m_dataSourceViewportIds.clear();
+    m_dataSourceDisplayData.clear();
+    m_dataSourcePreviewImages.clear();
+    m_hiddenDataSourceIds.clear();
+    m_primaryDataSourceViewportId = primaryViewport ? primaryViewport->viewportId() : QString();
+    updateRenderModeCombo();
 }
 
 // ========== 阶段 7: 工具面板搜索 ==========
@@ -4528,6 +5082,11 @@ void MainWindow::onQuickMeasure() {
             if (vp) {
                 vp->unsetCursor();
                 vp->setPickMode(false);
+                // 退出矩形 ROI 模式
+                if (HImageWidget* iw = vp->imageWidget()) {
+                    iw->setRoiMode(RoiType::None);
+                    iw->clearRois();
+                }
             }
         }
         clearMeasurementOverlays();
@@ -4541,6 +5100,9 @@ void MainWindow::onQuickMeasure() {
     menu.addAction(tr("两点距离"))->setData(0);
     menu.addAction(tr("点到线距离"))->setData(1);
     menu.addAction(tr("两线段间距"))->setData(2);
+    menu.addAction(tr("三点角度"))->setData(3);
+    menu.addAction(tr("三点拟合圆"))->setData(4);
+    menu.addAction(tr("矩形面积"))->setData(5);
 
     QAction* sel = menu.exec(QCursor::pos());
     if (!sel) {
@@ -4558,13 +5120,62 @@ void MainWindow::onQuickMeasure() {
         m_quickMeasureAction->setChecked(true);
 
     for (ViewportWidget* vp : m_displayManager->allViewports()) {
-        if (vp) {
+        if (!vp)
+            continue;
+        vp->setPickMode(true);
+        if (type == 5) {
+            // 矩形面积：进入 ROI 拖拽模式
             vp->setCursor(Qt::CrossCursor);
-            vp->setPickMode(true);
+            if (HImageWidget* iw = vp->imageWidget()) {
+                iw->clearRois();
+                iw->setRoiMode(RoiType::Rectangle1);
+                // 连接 roiCreated 信号（UniqueConnection 防重复）
+                connect(
+                    iw, &HImageWidget::roiCreated, this,
+                    [this](const RoiData& roi) {
+                        if (!m_quickMeasureActive || m_quickMeasureType != 5)
+                            return;
+                        QPointF a(roi.x1, roi.y1);
+                        QPointF b(roi.x2, roi.y2);
+                        double w = std::abs(b.x() - a.x());
+                        double h = std::abs(b.y() - a.y());
+                        double area = w * h;
+                        QPointF tl(qMin(a.x(), b.x()), qMin(a.y(), b.y()));
+                        QPointF br(qMax(a.x(), b.x()), qMax(a.y(), b.y()));
+                        QPointF topRight(br.x(), tl.y());
+                        QPointF botLeft(tl.x(), br.y());
+                        QString label = tr("W=%1, H=%2, A=%3").arg(w, 0, 'f', 2).arg(h, 0, 'f', 2).arg(area, 0, 'f', 2);
+                        Logger::instance().info(tr("快速测量: 矩形 宽=%1, 高=%2, 面积=%3")
+                                                    .arg(w, 0, 'f', 3)
+                                                    .arg(h, 0, 'f', 3)
+                                                    .arg(area, 0, 'f', 3),
+                                                "Measurement");
+                        // 清除 ROI 绘制，改用测量 overlay 显示
+                        if (HImageWidget* iw2 = qobject_cast<HImageWidget*>(sender())) {
+                            iw2->clearRois();
+                        }
+                        for (ViewportWidget* vp2 : m_displayManager->allViewports()) {
+                            if (HImageWidget* iw3 = vp2 ? vp2->imageWidget() : nullptr) {
+                                if (iw3->hasImage()) {
+                                    iw3->setMeasurementOverlay({{tl, QStringLiteral("TL")}, {br, QStringLiteral("BR")}},
+                                                               {{tl, topRight, QString()},
+                                                                {topRight, br, QString()},
+                                                                {br, botLeft, QString()},
+                                                                {botLeft, tl, label}});
+                                }
+                            }
+                        }
+                    },
+                    Qt::UniqueConnection);
+            }
+        } else {
+            // 其他类型：点击拾取模式
+            vp->setCursor(Qt::CrossCursor);
         }
     }
 
-    QStringList labels = {tr("两点距离"), tr("点到线距离"), tr("两线段间距")};
+    QStringList labels = {tr("两点距离"), tr("点到线距离"), tr("两线段间距"),
+                          tr("三点角度"), tr("三点拟合圆"), tr("矩形面积")};
     Logger::instance().info(tr("快速测量：%1").arg(labels[type]), "Measurement");
 }
 

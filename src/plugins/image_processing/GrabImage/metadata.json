@@ -3,7 +3,7 @@
     "name": "GrabImage",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "Grab image from camera or file",
+    "description": "Grab image from camera, file, or folder",
     "category": "image_processing",
     "depends": [],
     "platforms": [
@@ -24,11 +24,27 @@
                 "order": 10
             },
             "filePath": {
-                "label": "文件路径",
-                "editor": "file",
+                "label": "图像路径",
+                "editor": "fileOrFolder",
                 "dialogTitle": "选择图像文件",
+                "folderDialogTitle": "选择图像文件夹",
                 "filter": "图像文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)",
+                "setsParam": "grabSource",
+                "setsValue": "Path",
                 "order": 20
+            },
+            "folderPath": {
+                "label": "文件夹路径",
+                "editor": "folder",
+                "dialogTitle": "选择图像文件夹",
+                "hidden": true,
+                "order": 22
+            },
+            "folderLoop": {
+                "label": "末尾循环",
+                "onText": "已开启",
+                "offText": "已关闭",
+                "order": 26
             },
             "exposureTime": {
                 "label": "曝光时间",
@@ -49,7 +65,7 @@
                 "label": "图像源",
                 "_options": [
                     {"label": "相机", "value": "Camera"},
-                    {"label": "文件", "value": "File"},
+                    {"label": "自动路径", "value": "Path"},
                     {"label": "演示", "value": "Demo"}
                 ],
                 "order": 50

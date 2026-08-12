@@ -52,6 +52,12 @@ public:
     bool isInteractionActive() const {
         return m_interactionActive;
     }
+    float heightMinimum() const {
+        return m_zMin;
+    }
+    float heightMaximum() const {
+        return m_zMax;
+    }
 
     /**
      * @brief 获取 LOD 控制器引用（用于配置距离阈值等）
@@ -139,7 +145,8 @@ const char* const POINT_CLOUD_VERTEX_SHADER = R"(
     varying vec3 vWorldPos;
 
     vec3 heightColor(float z) {
-        float t = clamp((z - uZMin) / (uZMax - uZMin + 0.0001), 0.0, 1.0);
+        float range = max(uZMax - uZMin, max(abs(uZMin), abs(uZMax)) * 0.000001);
+        float t = clamp((z - uZMin) / max(range, 0.000001), 0.0, 1.0);
         return vec3(
             smoothstep(0.5, 1.0, t),
             sin(t * 3.14159),
@@ -159,7 +166,7 @@ const char* const POINT_CLOUD_VERTEX_SHADER = R"(
         } else if (uColorMode == 1) {
             vColor = aColor;
         } else if (uColorMode == 2) {
-            vColor = heightColor(worldPos.z);
+            vColor = heightColor(aPosition.z);
         } else if (uColorMode == 3) {
             float t = clamp(aIntensity, 0.0, 1.0);
             vColor = vec3(t);

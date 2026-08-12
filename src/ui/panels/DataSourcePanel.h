@@ -1,9 +1,9 @@
 #pragma once
 
-#include <QWidget>
-#include <QTreeWidget>
 #include <QLabel>
 #include <QMap>
+#include <QTreeWidget>
+#include <QWidget>
 
 namespace DeepLux {
 
@@ -16,8 +16,7 @@ struct DataSource;
  * 显示当前项目中已导入的所有数据源（图像 / 3D 点云）。
  * 支持双击显示、拖放、右键操作。
  */
-class DataSourcePanel : public QWidget
-{
+class DataSourcePanel : public QWidget {
     Q_OBJECT
 
 public:
@@ -34,12 +33,16 @@ public:
 signals:
     // 请求显示某个数据源到视口
     void requestDisplay(const QString& dataSourceId);
+    // 请求在额外视图中显示某个数据源
+    void requestDisplayInNewViewport(const QString& dataSourceId);
     // 请求从项目中删除某个数据源
     void requestRemove(const QString& dataSourceId);
     // 请求在文件夹中打开数据源文件
     void requestShowInFolder(const QString& dataSourceId);
     // 请求复制数据源文件路径
     void requestCopyPath(const QString& dataSourceId);
+    // 请求切换数据源在主视图中的可见状态
+    void requestVisibilityChanged(const QString& dataSourceId, bool visible);
 
 protected:
     void setupUi();
@@ -54,6 +57,8 @@ private slots:
     void onDeleteAction();
     void onShowInFolderAction();
     void onCopyPathAction();
+    void onDisplayInNewViewportAction();
+    void onItemChanged(QTreeWidgetItem* item, int column);
 
 private:
     QTreeWidget* m_treeWidget = nullptr;
@@ -61,6 +66,7 @@ private:
     QAction* m_deleteAction = nullptr;
     QAction* m_showInFolderAction = nullptr;
     QAction* m_copyPathAction = nullptr;
+    QAction* m_displayInNewViewportAction = nullptr;
 };
 
 } // namespace DeepLux

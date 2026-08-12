@@ -21,6 +21,7 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
     const QString borderW = px(m.borderWidth);
     const QString splitterW = px(m.splitterHandleWidth);
     const QString baseSpacing = px(m.baseSpacing);
+    const QString toolbarContentHeight = px(m.toolbarHeight - m.borderWidth);
 
     // 深色 / 浅色色组
     QString mainWindowBg, splitterBg;
@@ -239,16 +240,17 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
              .arg(toolBarBg, baseSpacing);
     s += QString("QToolBar#MainToolBar { min-height: %1; max-height: %1; border-bottom: %2 solid %3; "
                  "padding: 0 8px; spacing: 4px; }")
-             .arg(px(m.toolbarHeight), borderW, toolBarBorder);
-    s += QString("QToolBar QToolButton { background-color: transparent; color: %1; min-height: 34px; padding: 4px 8px; "
-                 "border: %2 solid transparent; }")
-             .arg(toolBtnFg, borderW);
-    s += QString("QToolBar QToolButton:hover { background-color: %1; border: %2 solid %3; }")
-             .arg(toolBtnHoverBg, borderW, toolBtnHoverBorder);
-    s += QString("QToolBar QToolButton:pressed { background-color: %1; border: %2 solid %3; }")
-             .arg(toolBtnCheckedBg, borderW, toolBtnCheckedBorder);
-    s += QString("QToolBar QToolButton:checked { background-color: %1; color: #ffffff; border: %2 solid %3; }")
-             .arg(toolBtnCheckedBg, borderW, toolBtnCheckedBorder);
+             .arg(toolbarContentHeight, borderW, toolBarBorder);
+    s += QString(
+             "QToolBar QToolButton { background-color: transparent; color: %1; min-height: 34px; padding: 4px 8px 2px; "
+             "border: none; border-bottom: 2px solid transparent; }")
+             .arg(toolBtnFg);
+    s += QString("QToolBar QToolButton:hover { background-color: %1; border-bottom-color: %2; }")
+             .arg(toolBtnHoverBg, toolBtnHoverBorder);
+    s += QString("QToolBar QToolButton:pressed { background-color: %1; border-bottom-color: %2; }")
+             .arg(toolBtnCheckedBg, toolBtnCheckedBorder);
+    s += QString("QToolBar QToolButton:checked { background-color: %1; color: #ffffff; border-bottom-color: %2; }")
+             .arg(toolBtnCheckedBg, toolBtnCheckedBorder);
     s += QString("QToolBar#ViewportToolBar { background-color: transparent; border: none; spacing: 2px; padding: 0; }");
     s += QString("QToolBar#ViewportToolBar QToolButton { min-width: %1; max-width: %1; min-height: %1; "
                  "max-height: %1; padding: 0; }")
@@ -256,6 +258,9 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
     s += QString("QLabel#ViewportZoomLabel { min-height: %1; max-height: %1; padding: 0 6px; "
                  "background-color: %2; color: %3; border: %4 solid %5; }")
              .arg(px(m.compactIconButtonSize), inputBg, inputFg, borderW, inputBorder);
+    s += QString("QWidget#ViewportPointSizeControl { background-color: transparent; }"
+                 "QLabel#ViewportPointSizeUnit { color: %1; padding: 0; }")
+             .arg(inputFg);
     s += QString("QLabel#ViewportContentInfo { color: %1; font-size: %2; padding-left: 6px; }")
              .arg(inspectorEmptyFg, baseFont);
 
@@ -290,9 +295,12 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
     s += QString("QPushButton:hover { background-color: %1; }").arg(btnHoverBg);
     s += QString("QPushButton:disabled { background-color: %1; color: %2; }").arg(btnDisabledBg, btnDisabledFg);
 
-    s += QString("QLineEdit, QComboBox, QSpinBox { background-color: %1; color: %2; min-height: %3; "
+    s += QString("QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background-color: %1; color: %2; min-height: %3; "
                  "border: %4 solid %5; border-radius: 4px; padding: 2px 6px; }")
              .arg(inputBg, inputFg, px(m.controlHeight), borderW, inputBorder);
+    s += QString("QDoubleSpinBox#ViewportPointSizeSpinBox { min-height: 26px; max-height: 26px; padding: 0 6px; }"
+                 "QDoubleSpinBox#ViewportPointSizeSpinBox QLineEdit { min-height: 0; max-height: 24px; "
+                 "padding: 0; border: none; background-color: transparent; }");
 
     s += QString("QSplitter#MainSplitter::handle { background-color: %1; border: none; }").arg(splitterHandleMainBg);
     s += QString("QSplitter#RightTopSplitter::handle:horizontal { background-color: %1; "

@@ -3,6 +3,7 @@
 #include "core/display/DisplayData.h"
 
 #include <QAction>
+#include <QDoubleSpinBox>
 #include <QFrame>
 #include <QImage>
 #include <QLabel>
@@ -87,7 +88,7 @@ public:
     void setPickMode(bool enabled);
 
     // 设置 2D/3D 双数据（用于 TIFF 等 depth-map 数据）
-    void setDualData(const QImage& image, const DisplayData& cloudData);
+    void setDualData(const QImage& image, const DisplayData& cloudData, DisplayMode initialMode = DisplayMode::Auto3D);
 
 signals:
     void viewportClosed(const QString& viewportId);
@@ -122,6 +123,7 @@ private:
     QLabel* m_titleBar;
     QLabel* m_contentInfoLabel = nullptr;
     QLabel* m_zoomLabel = nullptr;
+    QAction* m_zoomLabelAction = nullptr;
     HImageWidget* m_imageWidget;
     Viewport3DContent* m_3dContent;
     QToolBar* m_toolbar;
@@ -130,12 +132,15 @@ private:
     QAction* m_actualSizeAction;
     QAction* m_zoomInAction;
     QAction* m_zoomOutAction;
+    QDoubleSpinBox* m_pointSizeSpinBox = nullptr;
+    QAction* m_pointSizeAction = nullptr;
     QAction* m_contentSeparatorAction = nullptr;
     QAction* m_snapshotAction = nullptr;
     QAction* m_closeAction;
     QAction* m_toggleViewAction = nullptr;
 
     DisplayMode m_displayMode = DisplayMode::Auto2D;
+    bool m_isDarkTheme = true;
 
     // 2D/3D 双数据缓存（用于切换）
     QImage m_cachedImage;

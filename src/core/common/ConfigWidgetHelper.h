@@ -20,22 +20,72 @@
  *   ConfigWidgetHelper::setGlobalDarkTheme(isDark);
  */
 
+#include <QCheckBox>
+#include <QComboBox>
+#include <QCoreApplication>
+#include <QDialogButtonBox>
+#include <QDir>
+#include <QDoubleSpinBox>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QGroupBox>
 #include <QLabel>
 #include <QLineEdit>
-#include <QSpinBox>
-#include <QDoubleSpinBox>
-#include <QComboBox>
-#include <QCheckBox>
-#include <QGroupBox>
-#include <QWidget>
+#include <QPushButton>
 #include <QSizePolicy>
+#include <QSpinBox>
+#include <QWidget>
 
-class ConfigWidgetHelper
-{
+class ConfigWidgetHelper {
 public:
     // 静态方法：设置全局主题状态（主题切换前调用）
-    static void setGlobalDarkTheme(bool isDark) { s_globalDarkTheme = isDark; }
-    static bool globalDarkTheme() { return s_globalDarkTheme; }
+    static void setGlobalDarkTheme(bool isDark) {
+        s_globalDarkTheme = isDark;
+    }
+    static bool globalDarkTheme() {
+        return s_globalDarkTheme;
+    }
+
+    static QString selectExistingFileOrDirectory(QWidget* parent, const QString& title, const QString& startPath,
+                                                 const QString& filter) {
+        class UnifiedPathDialog final : public QFileDialog {
+        public:
+            using QFileDialog::QFileDialog;
+
+            void acceptCurrentDirectory() {
+                QDialog::accept();
+            }
+        };
+
+        UnifiedPathDialog dialog(parent, title);
+        dialog.setOption(QFileDialog::DontUseNativeDialog, true);
+        dialog.setFileMode(QFileDialog::ExistingFile);
+        dialog.setNameFilter(filter);
+
+        const QFileInfo startInfo(startPath);
+        if (startInfo.isDir()) {
+            dialog.setDirectory(startInfo.absoluteFilePath());
+        } else if (startInfo.exists()) {
+            dialog.setDirectory(startInfo.absolutePath());
+            dialog.selectFile(startInfo.fileName());
+        }
+
+        QString selectedDirectory;
+        if (auto* buttons = dialog.findChild<QDialogButtonBox*>()) {
+            auto* chooseDirectory = buttons->addButton(
+                QCoreApplication::translate("ConfigWidgetHelper", "选择当前文件夹"), QDialogButtonBox::ActionRole);
+            chooseDirectory->setObjectName(QStringLiteral("UnifiedPathChooseFolderButton"));
+            QObject::connect(chooseDirectory, &QPushButton::clicked, &dialog, [&]() {
+                selectedDirectory = dialog.directory().absolutePath();
+                dialog.acceptCurrentDirectory();
+            });
+        }
+
+        if (dialog.exec() != QDialog::Accepted) {
+            return {};
+        }
+        return selectedDirectory.isEmpty() ? dialog.selectedFiles().value(0) : selectedDirectory;
+    }
 
     // 构造函数：默认使用全局主题状态，也可指定特定主题
     ConfigWidgetHelper() : m_darkTheme(s_globalDarkTheme) {}
@@ -46,12 +96,15 @@ public:
         return ConfigWidgetHelper(s_globalDarkTheme);
     }
 
-    void setDarkTheme(bool dark) { m_darkTheme = dark; }
-    bool isDarkTheme() const { return m_darkTheme; }
+    void setDarkTheme(bool dark) {
+        m_darkTheme = dark;
+    }
+    bool isDarkTheme() const {
+        return m_darkTheme;
+    }
 
     // 创建标签（不会水平伸展）
-    QLabel* createLabel(const QString& text, QWidget* parent = nullptr)
-    {
+    QLabel* createLabel(const QString& text, QWidget* parent = nullptr) {
         QLabel* label = new QLabel(text, parent);
         // 设置为优先使用最小尺寸，避免在 QVBoxLayout 中水平伸展
         label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
@@ -64,16 +117,14 @@ public:
     }
 
     // 创建单行输入框
-    QLineEdit* createLineEdit(const QString& text = QString(), QWidget* parent = nullptr)
-    {
+    QLineEdit* createLineEdit(const QString& text = QString(), QWidget* parent = nullptr) {
         QLineEdit* edit = new QLineEdit(text, parent);
         applyInputStyle(edit);
         return edit;
     }
 
     // 创建整数输入框
-    QSpinBox* createSpinBox(int min = 0, int max = 999999, int value = 0, QWidget* parent = nullptr)
-    {
+    QSpinBox* createSpinBox(int min = 0, int max = 999999, int value = 0, QWidget* parent = nullptr) {
         QSpinBox* spin = new QSpinBox(parent);
         spin->setRange(min, max);
         spin->setValue(value);
@@ -82,8 +133,8 @@ public:
     }
 
     // 创建浮点数输入框
-    QDoubleSpinBox* createDoubleSpinBox(double min = 0.0, double max = 999999.0, double value = 0.0, int decimals = 3, QWidget* parent = nullptr)
-    {
+    QDoubleSpinBox* createDoubleSpinBox(double min = 0.0, double max = 999999.0, double value = 0.0, int decimals = 3,
+                                        QWidget* parent = nullptr) {
         QDoubleSpinBox* spin = new QDoubleSpinBox(parent);
         spin->setRange(min, max);
         spin->setValue(value);
@@ -93,16 +144,14 @@ public:
     }
 
     // 创建下拉框
-    QComboBox* createComboBox(QWidget* parent = nullptr)
-    {
+    QComboBox* createComboBox(QWidget* parent = nullptr) {
         QComboBox* combo = new QComboBox(parent);
         applyInputStyle(combo);
         return combo;
     }
 
     // 创建复选框
-    QCheckBox* createCheckBox(const QString& text = QString(), bool checked = false, QWidget* parent = nullptr)
-    {
+    QCheckBox* createCheckBox(const QString& text = QString(), bool checked = false, QWidget* parent = nullptr) {
         QCheckBox* check = new QCheckBox(text, parent);
         check->setChecked(checked);
         if (m_darkTheme) {
@@ -136,8 +185,7 @@ public:
     }
 
     // 应用输入控件样式
-    void applyInputStyle(QWidget* widget)
-    {
+    void applyInputStyle(QWidget* widget) {
         if (m_darkTheme) {
             widget->setStyleSheet(R"(
                 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
@@ -218,8 +266,7 @@ public:
     }
 
     // 应用容器样式（用于 QWidget 作为配置页面）
-    void applyContainerStyle(QWidget* widget)
-    {
+    void applyContainerStyle(QWidget* widget) {
         if (m_darkTheme) {
             widget->setStyleSheet(R"(
                 background-color: #1a2332;
@@ -236,9 +283,10 @@ public:
     // 静态方法：递归更新所有子控件的样式（用于主题切换）
     // skipObjectNames: 跳过具有这些对象名的控件（如日志过滤器等使用 MainWindow 样式的控件）
     static void updateAllWidgetsStyle(QWidget* widget, bool isDark,
-        const QSet<QString>& skipObjectNames = {"LogFilterCombo", "LogPanel"})
-    {
-        if (!widget) return;
+                                      const QSet<QString>& skipObjectNames = {"LogFilterCombo", "LogPanel",
+                                                                              "ViewportPointSizeControl"}) {
+        if (!widget)
+            return;
 
         // 跳过指定对象名的控件（保持原有样式）
         if (skipObjectNames.contains(widget->objectName())) {
@@ -259,9 +307,9 @@ public:
     }
 
     // 静态方法：更新单个控件样式
-    static void updateWidgetStyle(QWidget* widget, bool isDark)
-    {
-        if (!widget) return;
+    static void updateWidgetStyle(QWidget* widget, bool isDark) {
+        if (!widget)
+            return;
 
         QString inputStyle = isDark ? R"(
             QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
@@ -299,7 +347,8 @@ public:
                 border-right: 5px solid transparent;
                 border-top: 5px solid #64748b;
             }
-        )" : R"(
+        )"
+                                    : R"(
             QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
                 background-color: #ffffff;
                 color: #1a1a1a;
@@ -337,23 +386,18 @@ public:
             }
         )";
 
-        QString labelStyle = isDark
-            ? "color: #e8f4f8; background-color: transparent; border: none;"
-            : "color: #1a1a1a; background-color: transparent; border: none;";
+        QString labelStyle = isDark ? "color: #e8f4f8; background-color: transparent; border: none;"
+                                    : "color: #1a1a1a; background-color: transparent; border: none;";
 
-        QString checkStyle = isDark
-            ? "color: #e8f4f8; background-color: transparent; border: none;"
-            : "color: #1a1a1a; background-color: transparent; border: none;";
+        QString checkStyle = isDark ? "color: #e8f4f8; background-color: transparent; border: none;"
+                                    : "color: #1a1a1a; background-color: transparent; border: none;";
 
-        QString containerStyle = isDark
-            ? "background-color: #1a2332; color: #e8f4f8;"
-            : "background-color: #f9fafb; color: #1a1a1a;";
+        QString containerStyle =
+            isDark ? "background-color: #1a2332; color: #e8f4f8;" : "background-color: #f9fafb; color: #1a1a1a;";
 
         // 根据控件类型设置样式
-        if (qobject_cast<QLineEdit*>(widget) ||
-            qobject_cast<QSpinBox*>(widget) ||
-            qobject_cast<QDoubleSpinBox*>(widget) ||
-            qobject_cast<QComboBox*>(widget)) {
+        if (qobject_cast<QLineEdit*>(widget) || qobject_cast<QSpinBox*>(widget) ||
+            qobject_cast<QDoubleSpinBox*>(widget) || qobject_cast<QComboBox*>(widget)) {
             widget->setStyleSheet(inputStyle);
         } else if (qobject_cast<QLabel*>(widget)) {
             widget->setStyleSheet(labelStyle);
@@ -375,7 +419,8 @@ public:
                     left: 12px;
                     padding: 0 4px;
                 }
-            )" : R"(
+            )"
+                                        : R"(
                 QGroupBox {
                     font-weight: bold;
                     color: #1a1a1a;
@@ -396,7 +441,7 @@ public:
 
 private:
     bool m_darkTheme;
-    static bool s_globalDarkTheme;  // 默认跟随主窗口浅色主题
+    static bool s_globalDarkTheme; // 默认跟随主窗口浅色主题
 };
 
 // 静态成员定义

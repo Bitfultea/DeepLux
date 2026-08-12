@@ -49,7 +49,7 @@ struct LayoutMetrics {
     int compactIconButtonSize = 28; // 紧凑图标按钮
 
     // 工具栏
-    int toolbarHeight = 46; // 工具栏高度
+    int toolbarHeight = 52; // 工具栏高度
     int iconSize = 20;      // 图标尺寸
 
     // 间距 / 边距

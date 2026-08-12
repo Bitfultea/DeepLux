@@ -129,6 +129,7 @@ flowchart LR
 | [插件手册](docs/plugins.md) | 59 个运行时插件的用途、接入方式、关键配置和结果说明。 |
 | [CLI 文档](docs/cli.md) | GUI 之外的项目、模块与连接管理命令。 |
 | [终端与 Agent 设计](docs/Terminal_Agent_Design.md) | 受控 Agent 工具调用、审计与权限模型。 |
+| [工程技能图谱](docs/skills/README.md) | UI、插件、测量、流程、Agent、SAM 与质量验证的可复用方法。 |
 | [3D 设计文档](docs/design/) | 点云渲染、LOD 和相关设计记录。 |
 
 ## 开发与验证

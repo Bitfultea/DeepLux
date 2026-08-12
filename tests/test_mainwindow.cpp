@@ -1,5 +1,6 @@
 #include <QAbstractItemModel>
 #include <QApplication>
+#include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
 #include <QCoreApplication>
@@ -7,11 +8,13 @@
 #include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QImage>
 #include <QLabel>
 #include <QLayout>
+#include <QLineEdit>
 #include <QLineF>
 #include <QMenu>
 #include <QMenuBar>
@@ -41,6 +44,7 @@
 #include <functional>
 #include <ui/ThemeManager.h>
 #include <ui/dialogs/SamAnnotatorDialog.h>
+#include <ui/display/3d/Viewport3DContent.h>
 #include <ui/views/MainWindow.h>
 #include <ui/widgets/AgentChatPanel.h>
 #include <ui/widgets/AgentMessageBubble.h>
@@ -110,6 +114,7 @@ private slots:
     void testToolboxDragPayloadUsesDraggedPlugin();
     void testAgentInputErrorPathDoesNotCrashOrStayThinking();
     void testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTheme();
+    void testMainToolbarCheckedStateFitsItsBottomIndicator();
     void testClickingProcessModuleDisplaysIntermediateOutput();
     void testStepRunHighlightMovesBetweenModules();
     void testMeasurementPickingUpdatesInputAndClipboard();
@@ -132,6 +137,9 @@ private slots:
     void testNarrowWindowKeepsCanvasAndCollapsedInspectorReadable();
     void testInspectorManualCollapseResizesSplitter();
     void testFocusModePreservesLogVisibility();
+    void testDataSourceVisibilityCheckboxRebuildsMainViewport();
+    void testMixedDataSourcesKeep2DVisibleAndClearStaleMode();
+    void testRenderMenuOnlyShowsModesSupportedByVisibleClouds();
 
 private:
     bool installFitLinePlugin(const QString& pluginRoot) const;
@@ -639,27 +647,93 @@ void TestMainWindow::testGrabImageEditorSurvivesCommitSignal() {
     QComboBox* sourceEditor = inspector->findChild<QComboBox*>(QStringLiteral("ParamEditor_grabSource"));
     QComboBox* cameraEditor = inspector->findChild<QComboBox*>(QStringLiteral("ParamEditor_cameraId"));
     QLineEdit* pathEditor = inspector->findChild<QLineEdit*>(QStringLiteral("ParamEditor_filePath"));
+    QCheckBox* folderLoopEditor = inspector->findChild<QCheckBox*>(QStringLiteral("ParamEditor_folderLoop"));
     QDoubleSpinBox* exposureEditor = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_exposureTime"));
     QDoubleSpinBox* gainEditor = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_gain"));
     QDoubleSpinBox* timeoutEditor = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_grabTimeout"));
     QVERIFY(sourceEditor != nullptr);
     QVERIFY(cameraEditor != nullptr);
     QVERIFY(pathEditor != nullptr);
+    QVERIFY(inspector->findChild<QLineEdit*>(QStringLiteral("ParamEditor_folderPath")) == nullptr);
+    QVERIFY(folderLoopEditor != nullptr);
     QVERIFY(exposureEditor != nullptr);
     QVERIFY(gainEditor != nullptr);
     QVERIFY(timeoutEditor != nullptr);
     QCOMPARE(sourceEditor->itemText(0), QStringLiteral("相机"));
-    QCOMPARE(sourceEditor->itemText(1), QStringLiteral("文件"));
+    QCOMPARE(sourceEditor->itemText(1), QStringLiteral("自动路径"));
     QCOMPARE(sourceEditor->itemText(2), QStringLiteral("演示"));
     QCOMPARE(exposureEditor->decimals(), 0);
     QCOMPARE(gainEditor->decimals(), 2);
     QCOMPARE(timeoutEditor->decimals(), 0);
-    QVERIFY(!pathEditor->actions().isEmpty());
+    QCOMPARE(pathEditor->actions().size(), 1);
+    QCOMPARE(pathEditor->actions().first()->toolTip(), QStringLiteral("选择图像文件或文件夹"));
+    QVERIFY(folderLoopEditor->isChecked());
+    QCOMPARE(folderLoopEditor->text(), QStringLiteral("已开启"));
 
-    sourceEditor->setCurrentIndex(sourceEditor->findData(QStringLiteral("File")));
+    pathEditor->setText(appDir.path());
+    QPointer<QLineEdit> originalPathEditor(pathEditor);
+    QTimer::singleShot(20, [&]() {
+        auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+        QVERIFY(dialog != nullptr);
+        inspector->refreshFromModule();
+        QVERIFY2(originalPathEditor.isNull(),
+                 "The regression requires the path editor to be rebuilt while the file dialog is open");
+        auto* chooseFolder = dialog->findChild<QPushButton*>(QStringLiteral("UnifiedPathChooseFolderButton"));
+        QVERIFY(chooseFolder != nullptr);
+        chooseFolder->click();
+    });
+    pathEditor->actions().first()->trigger();
+    QCoreApplication::processEvents();
     ModuleInstance* projectModule = project->findModule(QStringLiteral("grab_config_1"));
     QVERIFY(projectModule != nullptr);
-    QCOMPARE(projectModule->params.value(QStringLiteral("grabSource")).toString(), QStringLiteral("File"));
+    QCOMPARE(projectModule->params.value(QStringLiteral("filePath")).toString(), appDir.path());
+    sourceEditor = inspector->findChild<QComboBox*>(QStringLiteral("ParamEditor_grabSource"));
+    QVERIFY(sourceEditor != nullptr);
+    QCOMPARE(sourceEditor->currentData().toString(), QStringLiteral("Path"));
+    QCOMPARE(projectModule->params.value(QStringLiteral("grabSource")).toString(), QStringLiteral("Path"));
+
+    const QString imagePath = appDir.filePath(QStringLiteral("selected.png"));
+    QImage selectedImage(8, 8, QImage::Format_RGB32);
+    selectedImage.fill(Qt::green);
+    QVERIFY(selectedImage.save(imagePath));
+
+    pathEditor = inspector->findChild<QLineEdit*>(QStringLiteral("ParamEditor_filePath"));
+    QVERIFY(pathEditor != nullptr);
+    pathEditor->setText(imagePath);
+    QPointer<QLineEdit> originalFileEditor(pathEditor);
+    QTimer::singleShot(20, [&]() {
+        auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+        QVERIFY(dialog != nullptr);
+        inspector->refreshFromModule();
+        QVERIFY2(originalFileEditor.isNull(),
+                 "The regression requires the path editor to be rebuilt while the file dialog is open");
+        QVERIFY(QMetaObject::invokeMethod(dialog, "done", Qt::DirectConnection, Q_ARG(int, QDialog::Accepted)));
+    });
+    pathEditor->actions().first()->trigger();
+    QCoreApplication::processEvents();
+    projectModule = project->findModule(QStringLiteral("grab_config_1"));
+    QVERIFY(projectModule != nullptr);
+    QCOMPARE(projectModule->params.value(QStringLiteral("filePath")).toString(), imagePath);
+
+    folderLoopEditor = inspector->findChild<QCheckBox*>(QStringLiteral("ParamEditor_folderLoop"));
+    QVERIFY(folderLoopEditor != nullptr);
+    folderLoopEditor->click();
+    QCoreApplication::processEvents();
+    projectModule = project->findModule(QStringLiteral("grab_config_1"));
+    QVERIFY(projectModule != nullptr);
+    QCOMPARE(projectModule->params.value(QStringLiteral("folderLoop")).toBool(), false);
+    folderLoopEditor = inspector->findChild<QCheckBox*>(QStringLiteral("ParamEditor_folderLoop"));
+    QVERIFY(folderLoopEditor != nullptr);
+    QCOMPARE(folderLoopEditor->text(), QStringLiteral("已关闭"));
+    folderLoopEditor->click();
+    QCoreApplication::processEvents();
+
+    sourceEditor = inspector->findChild<QComboBox*>(QStringLiteral("ParamEditor_grabSource"));
+    QVERIFY(sourceEditor != nullptr);
+    sourceEditor->setCurrentIndex(sourceEditor->findData(QStringLiteral("Path")));
+    projectModule = project->findModule(QStringLiteral("grab_config_1"));
+    QVERIFY(projectModule != nullptr);
+    QCOMPARE(projectModule->params.value(QStringLiteral("grabSource")).toString(), QStringLiteral("Path"));
     QCoreApplication::processEvents();
 
     pathEditor = inspector->findChild<QLineEdit*>(QStringLiteral("ParamEditor_filePath"));
@@ -679,21 +753,26 @@ void TestMainWindow::testGrabImageEditorSurvivesCommitSignal() {
         QComboBox* dialogSource = modal->findChild<QComboBox*>(QStringLiteral("ParamEditor_grabSource"));
         QComboBox* dialogCamera = modal->findChild<QComboBox*>(QStringLiteral("ParamEditor_cameraId"));
         QLineEdit* dialogPath = modal->findChild<QLineEdit*>(QStringLiteral("ParamEditor_filePath"));
+        QCheckBox* dialogFolderLoop = modal->findChild<QCheckBox*>(QStringLiteral("ParamEditor_folderLoop"));
         QDoubleSpinBox* dialogExposure = modal->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_exposureTime"));
         QDoubleSpinBox* dialogGain = modal->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_gain"));
         QDoubleSpinBox* dialogTimeout = modal->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_grabTimeout"));
         QVERIFY(dialogSource != nullptr);
         QVERIFY(dialogCamera != nullptr);
         QVERIFY(dialogPath != nullptr);
+        QVERIFY(modal->findChild<QLineEdit*>(QStringLiteral("ParamEditor_folderPath")) == nullptr);
+        QVERIFY(dialogFolderLoop != nullptr);
         QVERIFY(dialogExposure != nullptr);
         QVERIFY(dialogGain != nullptr);
         QVERIFY(dialogTimeout != nullptr);
-        QCOMPARE(dialogSource->currentData().toString(), QStringLiteral("File"));
+        QCOMPARE(dialogSource->currentData().toString(), QStringLiteral("Path"));
         QCOMPARE(dialogSource->itemText(0), QStringLiteral("相机"));
-        QCOMPARE(dialogSource->itemText(1), QStringLiteral("文件"));
+        QCOMPARE(dialogSource->itemText(1), QStringLiteral("自动路径"));
         QCOMPARE(dialogSource->itemText(2), QStringLiteral("演示"));
         QCOMPARE(dialogPath->text(), QStringLiteral("camera-regression"));
-        QVERIFY(!dialogPath->actions().isEmpty());
+        QCOMPARE(dialogPath->actions().size(), 1);
+        QCOMPARE(dialogPath->actions().first()->toolTip(), QStringLiteral("选择图像文件或文件夹"));
+        QVERIFY(dialogFolderLoop->isChecked());
         QCOMPARE(dialogExposure->decimals(), 0);
         QCOMPARE(dialogGain->decimals(), 2);
         QCOMPARE(dialogTimeout->decimals(), 0);
@@ -1513,6 +1592,36 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY(!previewButtonTexts.contains(QStringLiteral("Confirm")));
 }
 
+void TestMainWindow::testMainToolbarCheckedStateFitsItsBottomIndicator() {
+    MainWindow window;
+    window.resize(1280, 800);
+    window.show();
+    QCoreApplication::processEvents();
+
+    QToolBar* toolbar = window.findChild<QToolBar*>(QStringLiteral("MainToolBar"));
+    QVERIFY(toolbar != nullptr);
+    QCOMPARE(toolbar->height(), ThemeManager::layoutMetrics().toolbarHeight);
+
+    QAction* quickMeasureAction = nullptr;
+    for (QAction* action : toolbar->actions()) {
+        if (action->text() == QStringLiteral("快速测量")) {
+            quickMeasureAction = action;
+            break;
+        }
+    }
+    QVERIFY(quickMeasureAction != nullptr);
+    quickMeasureAction->setChecked(true);
+    QCoreApplication::processEvents();
+
+    QToolButton* button = qobject_cast<QToolButton*>(toolbar->widgetForAction(quickMeasureAction));
+    QVERIFY(button != nullptr);
+    QVERIFY2(button->geometry().bottom() + 2 <= toolbar->contentsRect().bottom(),
+             qPrintable(QString("Toolbar bottom indicator is clipped: buttonBottom=%1 toolbarBottom=%2")
+                            .arg(button->geometry().bottom())
+                            .arg(toolbar->contentsRect().bottom())));
+    QVERIFY(window.styleSheet().contains(QStringLiteral("border-bottom: 2px solid transparent")));
+}
+
 void TestMainWindow::testMeasurementPickingUpdatesInputAndClipboard() {
     QTemporaryDir appDir;
     QVERIFY(appDir.isValid());
@@ -1724,6 +1833,276 @@ void TestMainWindow::testMeasurementPickingViaImageViewportClick() {
     QVERIFY2(cyanPixels > 20, qPrintable(QString("Expected visible measurement line, cyanPixels=%1").arg(cyanPixels)));
     QVERIFY2(orangePixels > 20,
              qPrintable(QString("Expected visible picked points, orangePixels=%1").arg(orangePixels)));
+}
+
+void TestMainWindow::testDataSourceVisibilityCheckboxRebuildsMainViewport() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString firstImagePath = dir.filePath(QStringLiteral("first.png"));
+    QImage firstImage(32, 24, QImage::Format_RGB32);
+    firstImage.fill(QColor("#2563EB"));
+    QVERIFY(firstImage.save(firstImagePath));
+
+    const QString secondImagePath = dir.filePath(QStringLiteral("second.png"));
+    QImage secondImage(32, 24, QImage::Format_RGB32);
+    secondImage.fill(QColor("#16A34A"));
+    QVERIFY(secondImage.save(secondImagePath));
+
+    MainWindow window;
+    window.resize(1280, 800);
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    DataSource source;
+    source.id = QStringLiteral("visibility_first");
+    source.name = QStringLiteral("first.png");
+    source.filePath = firstImagePath;
+    source.type = QStringLiteral("image");
+    project->addDataSource(source);
+
+    DataSource secondSource;
+    secondSource.id = QStringLiteral("visibility_second");
+    secondSource.name = QStringLiteral("second.png");
+    secondSource.filePath = secondImagePath;
+    secondSource.type = QStringLiteral("image");
+    project->addDataSource(secondSource);
+
+    QTreeWidget* sourceTree = window.findChild<QTreeWidget*>(QStringLiteral("DataSourceTree"));
+    QVERIFY(sourceTree != nullptr);
+    QTRY_COMPARE(sourceTree->topLevelItemCount(), 2);
+    QTreeWidgetItem* firstItem = sourceTree->topLevelItem(0);
+    QTreeWidgetItem* secondItem = sourceTree->topLevelItem(1);
+    QCOMPARE(firstItem->checkState(0), Qt::Checked);
+    QCOMPARE(secondItem->checkState(0), Qt::Checked);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onDisplayDataSource", Qt::DirectConnection, Q_ARG(QString, source.id)));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onDisplayDataSource", Qt::DirectConnection,
+                                      Q_ARG(QString, secondSource.id)));
+
+    QTRY_COMPARE(window.findChildren<ViewportWidget*>().size(), 1);
+    ViewportWidget* mainViewport = window.findChild<ViewportWidget*>();
+    QVERIFY(mainViewport != nullptr);
+    const QColor compositeColor = mainViewport->currentImage().pixelColor(0, 0);
+    QVERIFY(compositeColor.blue() > 40);
+    QVERIFY(compositeColor.green() > 40);
+
+    secondItem->setCheckState(0, Qt::Unchecked);
+    QTRY_COMPARE(mainViewport->currentImage().pixelColor(0, 0), QColor("#2563EB"));
+
+    secondItem->setCheckState(0, Qt::Checked);
+    QTRY_VERIFY(mainViewport->currentImage().pixelColor(0, 0).blue() > 40);
+    QTRY_VERIFY(mainViewport->currentImage().pixelColor(0, 0).green() > 40);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onDisplayDataSourceInNewViewport", Qt::DirectConnection,
+                                      Q_ARG(QString, secondSource.id)));
+    QTRY_COMPARE(window.findChildren<ViewportWidget*>().size(), 2);
+    ViewportWidget* secondaryViewport = nullptr;
+    for (ViewportWidget* viewport : window.findChildren<ViewportWidget*>()) {
+        if (viewport != mainViewport) {
+            secondaryViewport = viewport;
+            break;
+        }
+    }
+    QVERIFY(secondaryViewport != nullptr);
+    QCOMPARE(secondaryViewport->currentImage().pixelColor(0, 0), QColor("#16A34A"));
+
+    secondItem->setCheckState(0, Qt::Unchecked);
+    QTRY_COMPARE(mainViewport->currentImage().pixelColor(0, 0), QColor("#2563EB"));
+    QTRY_VERIFY(secondaryViewport->isHidden());
+}
+
+void TestMainWindow::testMixedDataSourcesKeep2DVisibleAndClearStaleMode() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString imagePath = dir.filePath(QStringLiteral("source.png"));
+    QImage image(32, 24, QImage::Format_RGB32);
+    image.fill(QColor("#2563EB"));
+    QVERIFY(image.save(imagePath));
+
+    const QString pointCloudPath = dir.filePath(QStringLiteral("source.ply"));
+    QFile pointCloudFile(pointCloudPath);
+    QVERIFY(pointCloudFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    QVERIFY(pointCloudFile.write("ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\n"
+                                 "property float z\nend_header\n0 0 0\n1 0 0\n0 1 0\n") > 0);
+    pointCloudFile.close();
+
+    MainWindow window;
+    window.resize(1280, 800);
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    DataSource imageSource;
+    imageSource.id = QStringLiteral("mixed_image");
+    imageSource.name = QStringLiteral("source.png");
+    imageSource.filePath = imagePath;
+    imageSource.type = QStringLiteral("image");
+    project->addDataSource(imageSource);
+
+    DataSource cloudSource;
+    cloudSource.id = QStringLiteral("mixed_cloud");
+    cloudSource.name = QStringLiteral("source.ply");
+    cloudSource.filePath = pointCloudPath;
+    cloudSource.type = QStringLiteral("pointcloud");
+    project->addDataSource(cloudSource);
+
+    QTreeWidget* sourceTree = window.findChild<QTreeWidget*>(QStringLiteral("DataSourceTree"));
+    QVERIFY(sourceTree != nullptr);
+    QTRY_COMPARE(sourceTree->topLevelItemCount(), 2);
+    QTreeWidgetItem* imageItem = sourceTree->topLevelItem(0);
+    QTreeWidgetItem* cloudItem = sourceTree->topLevelItem(1);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onDisplayDataSource", Qt::DirectConnection,
+                                      Q_ARG(QString, imageSource.id)));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onDisplayDataSource", Qt::DirectConnection,
+                                      Q_ARG(QString, cloudSource.id)));
+
+    ViewportWidget* mainViewport = window.findChild<ViewportWidget*>();
+    QVERIFY(mainViewport != nullptr);
+    QTRY_VERIFY(mainViewport->displayMode() == ViewportWidget::DisplayMode::Auto2D);
+    QCOMPARE(mainViewport->currentImage().size(), image.size());
+    QLabel* contentInfo = mainViewport->findChild<QLabel*>(QStringLiteral("ViewportContentInfo"));
+    QVERIFY(contentInfo != nullptr);
+    QTRY_VERIFY(contentInfo->text().contains(QStringLiteral("32")) &&
+                contentInfo->text().contains(QStringLiteral("24")));
+    QDoubleSpinBox* pointSizeSpinBox =
+        mainViewport->findChild<QDoubleSpinBox*>(QStringLiteral("ViewportPointSizeSpinBox"));
+    QVERIFY(pointSizeSpinBox != nullptr);
+    QCOMPARE(pointSizeSpinBox->minimum(), 1.0);
+    QCOMPARE(pointSizeSpinBox->maximum(), 8.0);
+    QCOMPARE(pointSizeSpinBox->value(), 2.0);
+    QCOMPARE(pointSizeSpinBox->buttonSymbols(), QAbstractSpinBox::NoButtons);
+    QCOMPARE(pointSizeSpinBox->alignment(), Qt::AlignCenter);
+    QTRY_VERIFY(!pointSizeSpinBox->isVisible());
+    QLabel* zoomLabel = mainViewport->findChild<QLabel*>(QStringLiteral("ViewportZoomLabel"));
+    QVERIFY(zoomLabel != nullptr);
+    QTRY_VERIFY(zoomLabel->isVisible());
+
+    imageItem->setCheckState(0, Qt::Unchecked);
+    QTRY_VERIFY(mainViewport->displayMode() == ViewportWidget::DisplayMode::Auto3D);
+    QTRY_VERIFY(pointSizeSpinBox->isVisible());
+    QCOMPARE(pointSizeSpinBox->width(), 60);
+    QTRY_COMPARE(pointSizeSpinBox->height(), 28);
+    QLineEdit* pointSizeEditor = pointSizeSpinBox->findChild<QLineEdit*>();
+    QVERIFY(pointSizeEditor != nullptr);
+    QVERIFY2(pointSizeSpinBox->rect().contains(pointSizeEditor->geometry()),
+             qPrintable(QStringLiteral("spin=%1x%2 editor=(%3,%4 %5x%6)")
+                            .arg(pointSizeSpinBox->width())
+                            .arg(pointSizeSpinBox->height())
+                            .arg(pointSizeEditor->x())
+                            .arg(pointSizeEditor->y())
+                            .arg(pointSizeEditor->width())
+                            .arg(pointSizeEditor->height())));
+    QVERIFY(pointSizeEditor->height() >= pointSizeEditor->fontMetrics().height());
+    QTRY_VERIFY(!zoomLabel->isVisible());
+    QVERIFY(mainViewport->viewport3D() != nullptr);
+    QCOMPARE(mainViewport->viewport3D()->pointSize(), 2.0f);
+    pointSizeSpinBox->setValue(3.5);
+    QCOMPARE(mainViewport->viewport3D()->pointSize(), 3.5f);
+    QAction* toggleAction = mainViewport->findChild<QAction*>(QStringLiteral("ViewportToggleViewAction"));
+    QVERIFY(toggleAction != nullptr);
+    QTRY_VERIFY(!toggleAction->isVisible());
+
+    imageItem->setCheckState(0, Qt::Checked);
+    QTRY_VERIFY(mainViewport->displayMode() == ViewportWidget::DisplayMode::Auto2D);
+    QTRY_VERIFY(!pointSizeSpinBox->isVisible());
+    toggleAction->trigger();
+    QTRY_VERIFY(mainViewport->displayMode() == ViewportWidget::DisplayMode::Auto3D);
+    QTRY_VERIFY(pointSizeSpinBox->isVisible());
+    QCOMPARE(pointSizeSpinBox->value(), 3.5);
+    QCOMPARE(mainViewport->viewport3D()->pointSize(), 3.5f);
+    toggleAction->trigger();
+    QTRY_VERIFY(mainViewport->displayMode() == ViewportWidget::DisplayMode::Auto2D);
+    QTRY_VERIFY(!pointSizeSpinBox->isVisible());
+    QTRY_VERIFY(zoomLabel->isVisible());
+    QVERIFY(mainViewport->layout()->indexOf(mainViewport->imageWidget()) >= 0);
+    QTRY_VERIFY(mainViewport->imageWidget()->isVisible());
+    QTRY_VERIFY(mainViewport->imageWidget()->height() > 100);
+    QVERIFY(mainViewport->imageWidget()->hasImage());
+    cloudItem->setCheckState(0, Qt::Unchecked);
+    QTRY_VERIFY(mainViewport->displayMode() == ViewportWidget::DisplayMode::Auto2D);
+    QTRY_VERIFY(!toggleAction->isVisible());
+
+    PointCloudData cloud;
+    cloud.points = {{0.0, 0.0, 0.0}, {1.0, 0.0, 1.0}};
+    DisplayData cloudData;
+    cloudData.variant() = cloud;
+    mainViewport->clearDisplay();
+    QVERIFY(contentInfo->text().isEmpty());
+    mainViewport->setDualData(image, cloudData, ViewportWidget::DisplayMode::Auto2D);
+    QCOMPARE(contentInfo->text(), QStringLiteral("32 × 24"));
+}
+
+void TestMainWindow::testRenderMenuOnlyShowsModesSupportedByVisibleClouds() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString plainPath = dir.filePath(QStringLiteral("plain.ply"));
+    QFile plainFile(plainPath);
+    QVERIFY(plainFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    QVERIFY(plainFile.write("ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\n"
+                            "property float z\nend_header\n0 0 0\n1 0 0\n0 1 0\n") > 0);
+    plainFile.close();
+
+    const QString richPath = dir.filePath(QStringLiteral("rich.ply"));
+    QFile richFile(richPath);
+    QVERIFY(richFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    QVERIFY(richFile.write("ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\n"
+                           "property float z\nproperty float nx\nproperty float ny\nproperty float nz\n"
+                           "property uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n"
+                           "0 0 0 0 0 1 255 0 0\n1 0 0 0 0 1 0 255 0\n0 1 0 0 0 1 0 0 255\n") > 0);
+    richFile.close();
+
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    DataSource plainSource;
+    plainSource.id = QStringLiteral("plain_cloud");
+    plainSource.name = QStringLiteral("plain.ply");
+    plainSource.filePath = plainPath;
+    plainSource.type = QStringLiteral("pointcloud");
+
+    DataSource richSource;
+    richSource.id = QStringLiteral("rich_cloud");
+    richSource.name = QStringLiteral("rich.ply");
+    richSource.filePath = richPath;
+    richSource.type = QStringLiteral("pointcloud");
+    project->addDataSource(plainSource);
+    project->addDataSource(richSource);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onDisplayDataSource", Qt::DirectConnection,
+                                      Q_ARG(QString, plainSource.id)));
+    QVERIFY(
+        QMetaObject::invokeMethod(&window, "onDisplayDataSource", Qt::DirectConnection, Q_ARG(QString, richSource.id)));
+
+    auto renderAction = [&window](int mode) {
+        return window.findChild<QAction*>(QStringLiteral("RenderModeAction%1").arg(mode));
+    };
+    for (int mode = 0; mode < 6; ++mode) {
+        QVERIFY(renderAction(mode) != nullptr);
+    }
+    QVERIFY(renderAction(0)->isVisible());
+    QVERIFY(!renderAction(1)->isVisible());
+    QVERIFY(renderAction(2)->isVisible());
+    QVERIFY(!renderAction(3)->isVisible());
+    QVERIFY(!renderAction(4)->isVisible());
+    QVERIFY(!renderAction(5)->isVisible());
+    QVERIFY(renderAction(0)->isChecked());
+
+    QTreeWidget* sourceTree = window.findChild<QTreeWidget*>(QStringLiteral("DataSourceTree"));
+    QVERIFY(sourceTree != nullptr);
+    QTRY_COMPARE(sourceTree->topLevelItemCount(), 2);
+    sourceTree->topLevelItem(0)->setCheckState(0, Qt::Unchecked);
+
+    QTRY_VERIFY(renderAction(1)->isVisible());
+    QTRY_VERIFY(renderAction(4)->isVisible());
+    QTRY_VERIFY(renderAction(5)->isVisible());
+    QVERIFY(!renderAction(3)->isVisible());
 }
 
 void TestMainWindow::testTreeAndCanvasSyncSelection() {
