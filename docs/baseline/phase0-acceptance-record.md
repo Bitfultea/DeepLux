@@ -36,12 +36,13 @@
 
 ```text
 cmake --build build -j2                       → 成功
-ctest --test-dir build --output-on-failure    → 57/58 通过
+ctest --test-dir build --output-on-failure    → 58/58 通过（阶段 A 基线，2026-08-17 复测）
 ```
 
 - `test_acceptance_flows`：找圆（圆心 320,240 半径 100，误差≤3px）、两点距离（268.33px，误差≤2px）、
   点云点面距离（3.0，误差≤0.001）均有确定性断言。
-- `test_agentbridge` 在受限环境因 `QLocalServer::listen` 失败，需在正常桌面环境复验。
+- `test_agentbridge` 在本机 offscreen 环境已通过（QLocalServer::listen 正常），无需另行复验。
+- 控制流（If/Loop/While/Parallel）状态以 phase3 记录为准，阶段 A 不对其作完成性结论。
 
 ## GUI 截图
 
