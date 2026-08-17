@@ -112,6 +112,7 @@
 #include <QTreeWidgetItem>
 #include <QTreeWidgetItemIterator>
 #include <QUndoCommand>
+#include <functional>
 #include <QUrl>
 #include <QUuid>
 #include <QVBoxLayout>
@@ -1368,6 +1369,33 @@ void MainWindow::setupMainLayout() {
                 // 推入参数撤销栈（同时更新运行时模块和工程）
                 pushParamCommand(instanceId, key, value);
                 m_modulesNeedSync = true;
+            });
+    // 阶段 B 复核: 检查器启用/断点/备注编辑写回 Project 并同步 RunEngine
+    auto applyRuntimeField = [this](const QString& instanceId, std::function<void(ModuleInstance&)> mut) {
+        Project* project = ProjectManager::instance().currentProject();
+        if (!project)
+            return;
+        if (auto inst = project->moduleById(instanceId)) {
+            ModuleInstance updated = *inst;
+            mut(updated);
+            project->updateModule(instanceId, updated);
+            RunEngine& engine = RunEngine::instance();
+            engine.setModuleDisabled(instanceId, !updated.enabled);
+            engine.setBreakpoint(instanceId, updated.breakpoint);
+            m_modulesNeedSync = true;
+        }
+    };
+    connect(m_inspectorPanel, &ModuleInspectorPanel::enabledToggled, this,
+            [applyRuntimeField](const QString& id, bool enabled) {
+                applyRuntimeField(id, [enabled](ModuleInstance& m) { m.enabled = enabled; });
+            });
+    connect(m_inspectorPanel, &ModuleInspectorPanel::breakpointToggled, this,
+            [applyRuntimeField](const QString& id, bool bp) {
+                applyRuntimeField(id, [bp](ModuleInstance& m) { m.breakpoint = bp; });
+            });
+    connect(m_inspectorPanel, &ModuleInspectorPanel::noteChanged, this,
+            [applyRuntimeField](const QString& id, const QString& note) {
+                applyRuntimeField(id, [note](ModuleInstance& m) { m.note = note; });
             });
     // P1-7: 恢复默认值用 beginMacro 批量为单条撤销记录
     connect(m_inspectorPanel, &ModuleInspectorPanel::resetDefaultsRequested, this, [this](const QString& instanceId) {
@@ -4689,6 +4717,13 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector, b
             const bool dirty = m_dirtyModuleIds.contains(instanceId);
             m_inspectorPanel->setDirty(dirty);
 
+            // 阶段 B 复核: 反映启用/断点/备注到检查器
+            if (Project* project = ProjectManager::instance().currentProject()) {
+                if (auto inst = project->moduleById(instanceId)) {
+                    m_inspectorPanel->setRuntimeState(inst->enabled, inst->breakpoint, inst->note);
+                }
+            }
+
             // 恢复该节点最近一次的真实执行状态；失败节点可能没有有效图像输出。
             const ImageData output = RunEngine::instance().moduleOutput(instanceId);
             const QString executionState =
@@ -5663,6 +5698,14 @@ bool MainWindow::syncModulesToRunEngine() {
         moduleBase->setInstanceName(instanceName);
         engine.addModule(moduleBase);
         m_processTreeController->setInstanceItem(instanceName, item);
+
+        // 阶段 B 复核: GUI 同步 enabled/breakpoint 到 RunEngine
+        if (Project* project = ProjectManager::instance().currentProject()) {
+            if (auto inst = project->moduleById(instanceName)) {
+                engine.setModuleDisabled(instanceName, !inst->enabled);
+                engine.setBreakpoint(instanceName, inst->breakpoint);
+            }
+        }
     }
 
     QString orderError;

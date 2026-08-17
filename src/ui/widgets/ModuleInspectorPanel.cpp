@@ -4,11 +4,13 @@
 #include "AppIconProvider.h"
 #include "PropertyPanel.h"
 
+#include <QCheckBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QLineEdit>
 #include <QList>
 #include <QMenu>
 #include <QPair>
@@ -180,6 +182,39 @@ void ModuleInspectorPanel::setupBottomBar() {
     m_rerunBtn->setMinimumWidth(112);
     connect(m_rerunBtn, &QPushButton::clicked, this, &ModuleInspectorPanel::onRerunClicked);
     bottomLayout->addWidget(m_rerunBtn);
+
+    // 阶段 B 复核: 启用/断点/备注编辑（不增弹窗）
+    m_enabledCheck = new QCheckBox(tr("启用"));
+    m_enabledCheck->setObjectName("InspectorEnabledCheck");
+    m_enabledCheck->setChecked(true);
+    connect(m_enabledCheck, &QCheckBox::toggled, this, [this](bool checked) {
+        if (m_runtimeStateUpdating)
+            return;
+        emit enabledToggled(m_instanceId, checked);
+    });
+    bottomLayout->addWidget(m_enabledCheck);
+
+    m_breakpointBtn = new QToolButton();
+    m_breakpointBtn->setObjectName("InspectorBreakpointBtn");
+    m_breakpointBtn->setText(tr("断点"));
+    m_breakpointBtn->setCheckable(true);
+    m_breakpointBtn->setToolTip(tr("断点：运行到该模块时暂停"));
+    connect(m_breakpointBtn, &QToolButton::toggled, this, [this](bool checked) {
+        if (m_runtimeStateUpdating)
+            return;
+        emit breakpointToggled(m_instanceId, checked);
+    });
+    bottomLayout->addWidget(m_breakpointBtn);
+
+    m_noteEdit = new QLineEdit();
+    m_noteEdit->setObjectName("InspectorNoteEdit");
+    m_noteEdit->setPlaceholderText(tr("备注"));
+    connect(m_noteEdit, &QLineEdit::editingFinished, this, [this]() {
+        if (m_runtimeStateUpdating)
+            return;
+        emit noteChanged(m_instanceId, m_noteEdit->text());
+    });
+    bottomLayout->addWidget(m_noteEdit, 1);
 
     m_moreBtn = new QToolButton();
     m_moreBtn->setObjectName("InspectorMoreBtn");
@@ -382,6 +417,17 @@ void ModuleInspectorPanel::applyTheme(bool isDark) {
     if (m_propertyPanel) {
         m_propertyPanel->applyTheme(isDark);
     }
+}
+
+void ModuleInspectorPanel::setRuntimeState(bool enabled, bool breakpoint, const QString& note) {
+    m_runtimeStateUpdating = true;
+    if (m_enabledCheck)
+        m_enabledCheck->setChecked(enabled);
+    if (m_breakpointBtn)
+        m_breakpointBtn->setChecked(breakpoint);
+    if (m_noteEdit)
+        m_noteEdit->setText(note);
+    m_runtimeStateUpdating = false;
 }
 
 void ModuleInspectorPanel::refreshFromModule() {

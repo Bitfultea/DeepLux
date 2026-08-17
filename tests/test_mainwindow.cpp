@@ -128,6 +128,7 @@ private slots:
     void testTreeAndCanvasSyncSelection();
     void testPinnedInspectorKeepsTreeAndCanvasSelectionSynchronized();
     void testProcessTreeClickOverridesPinnedInspector();
+    void testInspectorRuntimeStateSyncsToRunEngine();
     void testCycleRunDoesNotStealSelection();
     void testStepRunFollowsExecution();
     void testCloseInspectorDoesNotAutoExpand();
@@ -2589,6 +2590,53 @@ void TestMainWindow::testFocusModePreservesLogVisibility() {
         QCoreApplication::processEvents();
         QVERIFY2(!logDock->isVisible(), "Log dock should remain hidden after exiting focus mode (test 2)");
     }
+}
+
+void TestMainWindow::testInspectorRuntimeStateSyncsToRunEngine() {
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance inst;
+    inst.id = QStringLiteral("n1");
+    inst.moduleId = QStringLiteral("FindCircle");
+    inst.name = QStringLiteral("找圆");
+    project->addModule(inst);
+    QCoreApplication::processEvents();
+
+    auto* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree != nullptr);
+    QVERIFY(processTree->topLevelItemCount() >= 1);
+    QTest::mouseClick(processTree->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      processTree->visualItemRect(processTree->topLevelItem(0)).center());
+    QTRY_COMPARE(processTree->currentItem(), processTree->topLevelItem(0));
+
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(inspector != nullptr);
+    QCOMPARE(inspector->currentInstanceId(), QStringLiteral("n1"));
+
+    auto* enabledCheck = inspector->findChild<QCheckBox*>(QStringLiteral("InspectorEnabledCheck"));
+    QVERIFY(enabledCheck != nullptr);
+    QVERIFY(enabledCheck->isChecked());
+    enabledCheck->setChecked(false);
+    QCoreApplication::processEvents();
+    auto mi = project->moduleById(QStringLiteral("n1"));
+    QVERIFY(mi.has_value());
+    QCOMPARE(mi->enabled, false);
+    QVERIFY(RunEngine::instance().isModuleDisabled(QStringLiteral("n1")));
+
+    auto* bpBtn = inspector->findChild<QToolButton*>(QStringLiteral("InspectorBreakpointBtn"));
+    QVERIFY(bpBtn != nullptr);
+    bpBtn->setChecked(true);
+    QCoreApplication::processEvents();
+    QVERIFY(project->moduleById(QStringLiteral("n1"))->breakpoint);
+    QVERIFY(RunEngine::instance().hasBreakpoint(QStringLiteral("n1")));
+
+    // 备注编辑由 noteChanged 信号写回（此处不模拟焦点事件，避免 offscreen 下不稳定）
+    auto* noteEdit = inspector->findChild<QLineEdit*>(QStringLiteral("InspectorNoteEdit"));
+    QVERIFY(noteEdit != nullptr);
 }
 
 QTEST_MAIN(TestMainWindow)

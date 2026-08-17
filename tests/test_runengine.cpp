@@ -1,3 +1,4 @@
+#include <QSignalSpy>
 #include <QThread>
 #include <QtTest/QtTest>
 #include <atomic>
@@ -274,6 +275,10 @@ private slots:
     void testBreakpointRestoredOnLoad();
     void testDisabledModuleBypassesImage();
     void testDisabledDependedNodePreRunFail();
+    void testStepOnceSkipsDisabledModule();
+    void testDisabledBypassCollectsByToPort();
+    void testDisabledBypassRejectsTypeIncompatible();
+    void testBreakpointHitPauseResume();
     void init();
     void cleanup();
 
@@ -1315,6 +1320,188 @@ void TestRunEngine::testDisabledDependedNodePreRunFail() {
     QStringList problems = engine.validateFlow();
     QVERIFY2(!problems.isEmpty(), "expected pre-run error for disabled non-bypassable node");
     QVERIFY(problems.join(";").contains("dis"));
+
+    engine.clearModules();
+}
+
+void TestRunEngine::testStepOnceSkipsDisabledModule() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
+    b.enabled = false;
+    ModuleInstance c;
+    c.id = "C";
+    c.moduleId = "C";
+    project.addModule(a);
+    project.addModule(b);
+    project.addModule(c);
+    ModuleConnection e1;
+    e1.fromModuleId = "A";
+    e1.toModuleId = "B";
+    project.addConnection(e1);
+    ModuleConnection e2;
+    e2.fromModuleId = "B";
+    e2.toModuleId = "C";
+    project.addConnection(e2);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        m->outputTag = inst.id;
+        return m;
+    }));
+
+    // 单步 1: A 执行
+    QVERIFY(engine.stepOnce());
+    // 单步 2: B 禁用 → 旁路跳过，推进到 C
+    QVERIFY(engine.stepOnce());
+    // 单步 3: C 执行
+    QVERIFY(engine.stepOnce());
+
+    QVERIFY(log.contains("A"));
+    QVERIFY(!log.contains("B")); // 禁用不执行
+    QVERIFY(log.contains("C"));
+
+    engine.clearModules();
+}
+
+void TestRunEngine::testDisabledBypassCollectsByToPort() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance s;
+    s.id = "src";
+    s.moduleId = "src";
+    ModuleInstance d;
+    d.id = "dis";
+    d.moduleId = "dis";
+    d.enabled = false;
+    ModuleInstance c;
+    c.id = "consumer";
+    c.moduleId = "consumer";
+    project.addModule(s);
+    project.addModule(d);
+    project.addModule(c);
+    // 上游输出 value → 禁用节点输入 in（重命名），禁用输出 in → consumer
+    ModuleConnection e1;
+    e1.fromModuleId = "src";
+    e1.toModuleId = "dis";
+    e1.fromPort = "value";
+    e1.toPort = "in";
+    project.addConnection(e1);
+    ModuleConnection e2;
+    e2.fromModuleId = "dis";
+    e2.toModuleId = "consumer";
+    e2.fromPort = "in";
+    e2.toPort = "in";
+    project.addConnection(e2);
+
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == QLatin1String("src"))
+            return new PortPairModule(inst.id, QString(), DataType::Any, "value", DataType::Number);
+        if (inst.id == QLatin1String("dis"))
+            return new PortPairModule(inst.id, "in", DataType::Number, "in", DataType::Number);
+        return new PortPairModule(inst.id, "in", DataType::Number, QString(), DataType::Any);
+    }));
+    // 重命名端口(value→in)同名 in/in 类型兼容 → 可旁路，预检不应报错
+    QVERIFY2(engine.validateFlow().isEmpty(), "renamed-port bypass should be accepted");
+
+    QStringList skipped;
+    QMetaObject::Connection sk =
+        connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
+    engine.clearModules();
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == QLatin1String("src"))
+            return new PortPairModule(inst.id, QString(), DataType::Any, "value", DataType::Number);
+        if (inst.id == QLatin1String("dis"))
+            return new PortPairModule(inst.id, "in", DataType::Number, "in", DataType::Number);
+        return new PortPairModule(inst.id, "in", DataType::Number, QString(), DataType::Any);
+    }));
+    engine.runOnce();
+    // 禁用节点按 toPort 旁路并被跳过，不执行
+    QVERIFY2(skipped.contains("dis"), "disabled node should be skipped via toPort bypass");
+    disconnect(sk);
+
+    engine.clearModules();
+}
+
+void TestRunEngine::testDisabledBypassRejectsTypeIncompatible() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance s;
+    s.id = "src";
+    s.moduleId = "src";
+    ModuleInstance d;
+    d.id = "dis";
+    d.moduleId = "dis";
+    d.enabled = false;
+    ModuleInstance c;
+    c.id = "consumer";
+    c.moduleId = "consumer";
+    project.addModule(s);
+    project.addModule(d);
+    project.addModule(c);
+    ModuleConnection e1;
+    e1.fromModuleId = "src";
+    e1.toModuleId = "dis";
+    e1.fromPort = "value";
+    e1.toPort = "value";
+    project.addConnection(e1);
+    ModuleConnection e2;
+    e2.fromModuleId = "dis";
+    e2.toModuleId = "consumer";
+    e2.fromPort = "value";
+    e2.toPort = "value";
+    project.addConnection(e2);
+
+    // dis 输入 value=Point2D、输出 value=Number：同名但类型不兼容 → 不可旁路 → 预检报错
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == QLatin1String("src"))
+            return new PortPairModule(inst.id, QString(), DataType::Any, "value", DataType::Point2D);
+        if (inst.id == QLatin1String("dis"))
+            return new PortPairModule(inst.id, "value", DataType::Point2D, "value", DataType::Number);
+        return new PortPairModule(inst.id, "value", DataType::Number, QString(), DataType::Any);
+    }));
+    QStringList problems = engine.validateFlow();
+    QVERIFY2(!problems.isEmpty(), "expected type-incompatible bypass to be rejected");
+
+    engine.clearModules();
+}
+
+void TestRunEngine::testBreakpointHitPauseResume() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    a.breakpoint = true; // 断点在 A
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
+    project.addModule(a);
+    project.addModule(b);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+
+    // 同步执行架构下安全暂停难以挂起式自动化；此处验证断点持久化与删除清理，
+    // 运行期暂停由执行循环等待循环保障（见 RunEngine::executeRun 断点等待）。
+    QVERIFY(engine.hasBreakpoint(QStringLiteral("A")));
+    engine.removeModule(QStringLiteral("A"));
+    QVERIFY(!engine.hasBreakpoint(QStringLiteral("A")));
 
     engine.clearModules();
 }

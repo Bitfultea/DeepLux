@@ -4,7 +4,9 @@
 #include "core/manager/PluginManager.h"
 #include "core/model/ImageData.h"
 
+#include <QCheckBox>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPointer>
 #include <QPushButton>
 #include <QTabWidget>
@@ -125,6 +127,11 @@ public:
      */
     void refreshFromModule();
 
+    /**
+     * 阶段 B 复核: 反映当前实例的启用/断点/备注状态（不增弹窗）。
+     */
+    void setRuntimeState(bool enabled, bool breakpoint, const QString& note);
+
 signals:
     void paramsChanged(const QString& instanceId, const QString& key, const QVariant& value);
     void resetDefaultsRequested(const QString& instanceId);
@@ -133,6 +140,9 @@ signals:
     void pinChanged(bool pinned);
     void closeRequested();
     void collapseToggled(bool collapsed); // 高: 手动折叠时通知 MainWindow 调整 splitter
+    void enabledToggled(const QString& instanceId, bool enabled);
+    void breakpointToggled(const QString& instanceId, bool breakpoint);
+    void noteChanged(const QString& instanceId, const QString& note);
 
 private slots:
     void onPinToggled(bool checked);
@@ -181,6 +191,10 @@ private:
     QPushButton* m_rerunBtn = nullptr;
     QToolButton* m_moreBtn = nullptr;
     class QAction* m_advancedAction = nullptr;
+    QCheckBox* m_enabledCheck = nullptr;
+    QToolButton* m_breakpointBtn = nullptr;
+    QLineEdit* m_noteEdit = nullptr;
+    bool m_runtimeStateUpdating = false;
 
     // 空状态
     QWidget* m_emptyState = nullptr;

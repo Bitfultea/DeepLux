@@ -204,7 +204,8 @@ bool RunEngine::stepOnce() {
 
     const QString moduleToRun = m_stepCurrentModuleName;
     m_currentModuleName = moduleToRun;
-    executeModule(moduleToRun, m_stepPipelineData);
+    // 阶段 B 复核: 单步与完整运行共用"执行或禁用旁路"入口
+    executeOrBypassModule(moduleToRun, m_stepPipelineData);
 
     const bool success = m_lastExecuteResult;
     if (success) {
@@ -419,8 +420,15 @@ void RunEngine::removeModule(const QString& moduleId) {
     for (int i = 0; i < m_modules.size(); ++i) {
         ModuleBase* module = m_modules[i];
         if (module->id() == moduleId || runtimeModuleName(module) == moduleId) {
-            m_moduleMap.remove(runtimeModuleName(module));
+            const QString name = runtimeModuleName(module);
+            m_moduleMap.remove(name);
             m_modules.removeAt(i);
+            m_disabledModules.remove(name);
+            m_nodeOutputs.remove(name);
+            {
+                QMutexLocker bl(&m_breakpointMutex);
+                m_breakpoints.remove(name);
+            }
             if (m_ownedModules.removeOne(module)) {
                 delete module;
             }
@@ -638,52 +646,25 @@ void RunEngine::executeRun() {
             break;
         }
 
+        // 阶段 B 复核: 断点命中在等待前触发（设标志），恢复后清除标志
+        if (hasBreakpoint(currentModule)) {
+            emit breakpointHit(currentModule);
+            onBreakpointHit();
+        }
         {
             QMutexLocker locker(&m_breakpointMutex);
             while (m_breakpointFlag && !m_continueFlag && state() == RunState::Running) {
                 m_breakpointCondition.wait(&m_breakpointMutex);
             }
             m_continueFlag = false;
+            m_breakpointFlag = false;
         }
 
-        if (m_disabledModules.contains(currentModule)) {
-            // 阶段 B: 禁用节点不执行、不产生旧结果；同名输入/输出端口原样旁路
-            PortValueMap bypass;
-            {
-                QReadLocker locker(&m_moduleLock);
-                ModuleBase* dm = m_moduleMap.value(currentModule, nullptr);
-                const QList<PortSpec> inPorts = dm ? dm->inputPorts() : QList<PortSpec>{};
-                const QList<PortSpec> outPorts = dm ? dm->outputPorts() : QList<PortSpec>{};
-                PortValueMap up;
-                for (const ModuleConnection& conn : m_connections) {
-                    if (conn.toModuleId != currentModule)
-                        continue;
-                    const PortValueMap uo = m_nodeOutputs.value(conn.fromModuleId);
-                    if (uo.contains(conn.fromPort))
-                        up.insert(conn.fromPort, uo.value(conn.fromPort));
-                }
-                for (const PortSpec& out : outPorts)
-                    for (const PortSpec& in : inPorts)
-                        if (in.id == out.id && up.contains(in.id))
-                            bypass.insert(out.id, up.value(in.id));
-                if (!bypass.contains(QStringLiteral("image")) && up.contains(QStringLiteral("image")))
-                    bypass.insert(QStringLiteral("image"), up.value(QStringLiteral("image")));
-            }
-            m_nodeOutputs[currentModule] = bypass;
-            if (bypass.contains(QStringLiteral("image"))) {
-                QMutexLocker locker(&m_lastOutputMutex);
-                m_moduleOutputs[currentModule] = bypass.value(QStringLiteral("image")).value<ImageData>();
-            }
-            emit moduleSkipped(currentModule);
-            m_lastExecuteResult = true; // 旁路不算失败
-            m_lastControlResult = true;
-        } else {
-            executeModule(currentModule, pipelineData);
-            if (!m_lastExecuteResult) {
-                allSuccess = false;
-                if (firstError.isEmpty()) {
-                    firstError = m_lastModuleError;
-                }
+        executeOrBypassModule(currentModule, pipelineData);
+        if (!m_lastExecuteResult) {
+            allSuccess = false;
+            if (firstError.isEmpty()) {
+                firstError = m_lastModuleError;
             }
         }
 
@@ -865,6 +846,66 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     }
 }
 
+namespace {
+// 可旁路输出端口 = image 载体 + 同名且类型兼容的输入/输出端口对
+QSet<QString> bypassableOutputPorts(const QList<PortSpec>& inPorts, const QList<PortSpec>& outPorts) {
+    QSet<QString> r;
+    r.insert(QStringLiteral("image"));
+    for (const PortSpec& out : outPorts)
+        for (const PortSpec& in : inPorts)
+            if (in.id == out.id && portTypesCompatible(in.type, out.type))
+                r.insert(out.id);
+    return r;
+}
+} // namespace
+
+PortValueMap RunEngine::collectBypass(const QString& moduleName) {
+    QReadLocker locker(&m_moduleLock);
+    ModuleBase* dm = m_moduleMap.value(moduleName, nullptr);
+    const QList<PortSpec> inPorts = dm ? dm->inputPorts() : QList<PortSpec>{};
+    const QList<PortSpec> outPorts = dm ? dm->outputPorts() : QList<PortSpec>{};
+    const QSet<QString> bypassable = bypassableOutputPorts(inPorts, outPorts);
+
+    // 按目标端口 toPort 收集上游值
+    PortValueMap received;
+    for (const ModuleConnection& conn : m_connections) {
+        if (conn.toModuleId != moduleName || conn.edgeType == QLatin1String("control"))
+            continue;
+        const PortValueMap uo = m_nodeOutputs.value(conn.fromModuleId);
+        if (uo.contains(conn.fromPort))
+            received.insert(conn.toPort, uo.value(conn.fromPort));
+    }
+
+    PortValueMap bypass;
+    for (const PortSpec& out : outPorts) {
+        if (bypassable.contains(out.id) && received.contains(out.id) &&
+            portValueMatchesType(received.value(out.id), out.type)) {
+            bypass.insert(out.id, received.value(out.id));
+        }
+    }
+    if (!bypass.contains(QStringLiteral("image")) && received.contains(QStringLiteral("image")))
+        bypass.insert(QStringLiteral("image"), received.value(QStringLiteral("image")));
+    return bypass;
+}
+
+void RunEngine::executeOrBypassModule(const QString& moduleName, ImageData& pipelineData) {
+    if (m_disabledModules.contains(moduleName)) {
+        // 禁用节点不执行、不产生旧结果；可旁路端口原样传递
+        const PortValueMap bypass = collectBypass(moduleName);
+        m_nodeOutputs[moduleName] = bypass;
+        if (bypass.contains(QStringLiteral("image"))) {
+            QMutexLocker locker(&m_lastOutputMutex);
+            m_moduleOutputs[moduleName] = bypass.value(QStringLiteral("image")).value<ImageData>();
+        }
+        emit moduleSkipped(moduleName);
+        m_lastExecuteResult = true; // 旁路不算失败
+        m_lastControlResult = true;
+        return;
+    }
+
+    executeModule(moduleName, pipelineData);
+}
+
 QStringList RunEngine::validateFlow() const {
     QStringList errors;
     QReadLocker locker(&m_moduleLock);
@@ -887,13 +928,9 @@ QStringList RunEngine::validateFlow() const {
             }
         }
 
-        // 阶段 B: 禁用节点无法旁路的输出端口若被下游依赖，运行前报错。
-        // image 作为通用载体始终可旁路；同名输入/输出端口可旁路。
+        // 阶段 B 复核: 禁用节点无法旁路的输出端口若被下游依赖，运行前报错（含类型校验）
         if (m_disabledModules.contains(id)) {
-            QSet<QString> bypassable;
-            bypassable.insert(QStringLiteral("image"));
-            for (const PortSpec& in : inPorts)
-                bypassable.insert(in.id);
+            const QSet<QString> bypassable = bypassableOutputPorts(inPorts, outPorts);
             for (const ModuleConnection& conn : m_connections) {
                 if (conn.fromModuleId != id || conn.edgeType == QLatin1String("control"))
                     continue;
@@ -902,7 +939,6 @@ QStringList RunEngine::validateFlow() const {
                 }
             }
         }
-        Q_UNUSED(outPorts);
     }
     return errors;
 }
@@ -1299,6 +1335,20 @@ void RunEngine::setBreakpoint(const QString& moduleName, bool enabled) {
 bool RunEngine::hasBreakpoint(const QString& moduleName) const {
     QMutexLocker locker(&m_breakpointMutex);
     return m_breakpoints.contains(moduleName);
+}
+
+void RunEngine::setModuleDisabled(const QString& moduleName, bool disabled) {
+    QWriteLocker locker(&m_moduleLock);
+    if (disabled) {
+        m_disabledModules.insert(moduleName);
+    } else {
+        m_disabledModules.remove(moduleName);
+    }
+}
+
+bool RunEngine::isModuleDisabled(const QString& moduleName) const {
+    QReadLocker locker(&m_moduleLock);
+    return m_disabledModules.contains(moduleName);
 }
 
 void RunEngine::onBreakpointHit() {

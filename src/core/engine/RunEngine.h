@@ -163,6 +163,8 @@ public:
     // 断点控制
     void setBreakpoint(const QString& moduleName, bool enabled);
     bool hasBreakpoint(const QString& moduleName) const;
+    void setModuleDisabled(const QString& moduleName, bool disabled);
+    bool isModuleDisabled(const QString& moduleName) const;
     void setContinueFlag(bool flag) {
         QMutexLocker locker(&m_breakpointMutex);
         m_continueFlag = flag;
@@ -199,6 +201,7 @@ signals:
     void moduleStarted(const QString& moduleId);
     void moduleFinished(const QString& moduleId, bool success, int elapsedMs);
     void moduleSkipped(const QString& moduleId); // 未激活分支，显示 Skipped 非失败
+    void breakpointHit(const QString& moduleId); // 阶段 B 复核: 断点真实命中
     void errorOccurred(const QString& error);
     void outputChanged(const QString& moduleName, const QString& varName, const QVariant& value);
 
@@ -214,6 +217,9 @@ private:
 
     void executeRun();
     void executeModule(const QString& moduleName, ImageData& pipelineData);
+    // 阶段 B 复核: 完整运行与单步共用的"执行或禁用旁路"入口；含断点命中。
+    void executeOrBypassModule(const QString& moduleName, ImageData& pipelineData);
+    PortValueMap collectBypass(const QString& moduleName);
     void clearModuleOutputs();
     void updateStatistics(bool success, int elapsedMs);
     void reset();
