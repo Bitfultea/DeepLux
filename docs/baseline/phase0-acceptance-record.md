@@ -27,7 +27,7 @@
 - 移除死代码入口（均无实际功能且未接线）：`onUIDesign`、`onLaserSet`、`onCanvasSettings`、
   `onSaveLayout`、`onLoadLayout`、`onLicenseManager`、`onHelp`、`onSchemeManagement`。
 - Parallel 标记实验性：从工具箱隐藏、`metadata.json` 增加 `experimental: true`、
-  `docs/plugins.md` 标注"实验性，未开放"，禁止加入生产流程（阶段 3 前）。
+  `docs/plugins.md` 标注"实验性，未开放"，禁止加入生产流程（阶段 E 验收通过前）。
 - 相机 CMake 选项：开启 `ENABLE_CAMERA_BASLER/HIKVISION` 但源码缺失时给出明确
   `FATAL_ERROR`（已实测），而非"目录不存在"。
 - 文档修正：`docs/plugins.md`、`README.md` 中 QRCode 条码、并行的夸大描述改为实际能力。
@@ -61,7 +61,7 @@ ctest --test-dir build --output-on-failure    → 58/58 通过（阶段 A 基线
 
 1. 对 110 个旧版插件完成参数、端口和结果级人工核验。
 2. ROI→拟合、2D/3D 测量、条件/循环、PLC/相机/AI 模拟流程的验收工程待建。
-3. 正式尺寸 GUI 截图和 `test_agentbridge` 正常环境复验待补。
+3. 正式尺寸 GUI 截图待补（`test_agentbridge` 已在本机 offscreen 通过，见测试结果，不再列为待复验）。
 
 ## 回滚方式
 
