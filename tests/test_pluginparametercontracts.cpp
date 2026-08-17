@@ -45,6 +45,13 @@ private slots:
     void testEnumDefaultsValid();
     void testNumericDefaultsInRange();
 
+    // 阶段 1.3：端口与 ABI 契约
+    void testAllPluginsAbiV2();
+    void testPortsWellFormed();
+    void testMissingRequiredInputReturnsStructuredError();
+    void testWrongPortTypeReturnsStructuredError();
+    void testDeclaredOutputsAreExported();
+
 private:
     struct PluginEntry {
         QString name;         // metadata "name" field
@@ -441,6 +448,116 @@ void TestPluginParameterContracts::testNumericDefaultsInRange() {
         QFAIL(qPrintable(QString("Numeric range failures:\n  - %1")
                              .arg(failures.join("\n  - "))));
     }
+}
+
+// ---------------------------------------------------------------------------
+// 阶段 1.3：端口与 ABI 契约
+// ---------------------------------------------------------------------------
+
+void TestPluginParameterContracts::testAllPluginsAbiV2() {
+    QStringList failures;
+    for (const auto& entry : m_entries) {
+        IModule* module = PluginManager::instance().createModule(entry.name);
+        if (!module) {
+            failures << QString("%1: createModule returned null").arg(entry.name);
+            continue;
+        }
+        if (module->interfaceVersion() != DEEPLUX_MODULE_INTERFACE_VERSION) {
+            failures << QString("%1: interfaceVersion=%2 expected=%3")
+                            .arg(entry.name)
+                            .arg(module->interfaceVersion())
+                            .arg(DEEPLUX_MODULE_INTERFACE_VERSION);
+        }
+        delete module;
+    }
+    if (!failures.isEmpty()) {
+        QFAIL(qPrintable(QString("ABI v2 failures:\n  - %1").arg(failures.join("\n  - "))));
+    }
+}
+
+void TestPluginParameterContracts::testPortsWellFormed() {
+    QStringList failures;
+    for (const auto& entry : m_entries) {
+        const PluginInfo info = PluginManager::instance().pluginInfo(entry.name);
+        // 端口 ID 唯一、显示名非空（PluginManager 加载时已校验，这里复核）
+        auto checkList = [&](const QList<PortSpec>& ports, const char* kind) {
+            QSet<QString> ids;
+            for (const PortSpec& p : ports) {
+                if (p.id.isEmpty())
+                    failures << QString("%1[%2]: empty port id").arg(entry.name, kind);
+                if (p.displayName.isEmpty())
+                    failures << QString("%1[%2]: port %3 empty displayName").arg(entry.name, kind, p.id);
+                if (ids.contains(p.id))
+                    failures << QString("%1[%2]: duplicate port %3").arg(entry.name, kind, p.id);
+                ids.insert(p.id);
+            }
+        };
+        checkList(info.inputPorts, "in");
+        checkList(info.outputPorts, "out");
+
+        // 非源模块应声明 image 输出载体
+        bool hasImageOut = false;
+        for (const PortSpec& p : info.outputPorts)
+            if (p.id == QLatin1String("image"))
+                hasImageOut = true;
+        if (!hasImageOut && entry.name != QLatin1String("MeasurementInput")) {
+            failures << QString("%1: no 'image' output port declared").arg(entry.name);
+        }
+    }
+    if (!failures.isEmpty()) {
+        QFAIL(qPrintable(QString("Port well-formedness failures:\n  - %1").arg(failures.join("\n  - "))));
+    }
+}
+
+void TestPluginParameterContracts::testMissingRequiredInputReturnsStructuredError() {
+    // FitLine 声明必需输入 fit_points；空输入应返回结构化错误而非崩溃
+    IModule* module = PluginManager::instance().createModule(QStringLiteral("FitLine"));
+    QVERIFY(module != nullptr);
+
+    PortValueMap inputs;   // 空：缺少必需 fit_points
+    PortValueMap outputs;
+    ExecutionContext ctx;
+    const ExecutionResult result = module->execute(inputs, outputs, ctx);
+
+    QVERIFY2(!result.success, "expected failure for missing required input");
+    QCOMPARE(result.errorCode, ExecError::MissingRequiredInput);
+    QVERIFY(!result.userMessage.isEmpty());
+    delete module;
+}
+
+void TestPluginParameterContracts::testWrongPortTypeReturnsStructuredError() {
+    IModule* module = PluginManager::instance().createModule(QStringLiteral("FitLine"));
+    QVERIFY(module != nullptr);
+
+    PortValueMap inputs;
+    inputs.insert(QStringLiteral("fit_points"), QStringLiteral("not a point set"));
+    PortValueMap outputs;
+    ExecutionContext ctx;
+    const ExecutionResult result = module->execute(inputs, outputs, ctx);
+
+    QVERIFY(!result.success);
+    QCOMPARE(result.errorCode, ExecError::TypeMismatch);
+    QVERIFY(result.diagnostics.contains(QStringLiteral("fit_points")));
+    delete module;
+}
+
+void TestPluginParameterContracts::testDeclaredOutputsAreExported() {
+    IModule* module = PluginManager::instance().createModule(QStringLiteral("DistancePP"));
+    QVERIFY(module != nullptr);
+    QVERIFY(module->initialize());
+
+    PortValueMap inputs;
+    inputs.insert(QStringLiteral("point1"), QVariantList{200.0, 200.0});
+    inputs.insert(QStringLiteral("point2"), QVariantList{440.0, 320.0});
+    PortValueMap outputs;
+    ExecutionContext ctx;
+    const ExecutionResult result = module->execute(inputs, outputs, ctx);
+
+    QVERIFY2(result.success, qPrintable(result.userMessage));
+    QVERIFY(outputs.contains(QStringLiteral("image")));
+    QVERIFY(outputs.contains(QStringLiteral("distance")));
+    QVERIFY(qAbs(outputs.value(QStringLiteral("distance")).toDouble() - 268.3281573) < 0.001);
+    delete module;
 }
 
 QTEST_MAIN(TestPluginParameterContracts)

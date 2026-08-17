@@ -1,0 +1,8 @@
+{
+  "image": "circle_640x480.png",
+  "circle_center_x": 320,
+  "circle_center_y": 240,
+  "circle_radius": 100,
+  "tolerance_center_px": 3.0,
+  "tolerance_radius_px": 3.0
+}

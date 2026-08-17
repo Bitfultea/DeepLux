@@ -16,5 +16,25 @@
                 "label": "延迟"
             }
         }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            }
+        ]
     }
 }

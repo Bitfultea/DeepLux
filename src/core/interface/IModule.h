@@ -5,19 +5,22 @@
 #include <QJsonObject>
 #include <QIcon>
 #include <QWidget>
+#include <QList>
 
 #include "core/deeplux/ControlFlowType.h"
+#include "core/deeplux/DataContract.h"
 
 namespace DeepLux {
 
 class ImageData;
 
 /**
- * @brief 模块接口版本号
+ * @brief 模块接口版本号（ABI）
+ * v2: 引入强类型端口 execute(PortValueMap, PortValueMap, ExecutionContext)。
  * 当 IModule 接口发生变化（新增/修改/删除虚函数）时，必须递增此版本号，
  * 并重新编译所有插件，否则旧插件的虚表将与主程序不匹配，导致调用错位。
  */
-constexpr int DEEPLUX_MODULE_INTERFACE_VERSION = 1;
+constexpr int DEEPLUX_MODULE_INTERFACE_VERSION = 2;
 
 /**
  * @brief 模块状态枚举
@@ -53,7 +56,21 @@ public:
     virtual void shutdown() = 0;
     virtual bool isInitialized() const = 0;
 
-    virtual bool execute(const ImageData& input, ImageData& output) = 0;
+    /**
+     * @brief ABI v2 强类型端口执行入口
+     *
+     * 输入/输出均以 PortValueMap 传递，类型由 ports 声明约束；
+     * 每次执行携带 ExecutionContext（runId/frameId/时间戳/取消令牌/运行模式）。
+     */
+    virtual ExecutionResult execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) = 0;
+
+    // 端口声明（默认空；ModuleBase 从 metadata 注入或由插件重写）
+    virtual QList<PortSpec> inputPorts() const {
+        return {};
+    }
+    virtual QList<PortSpec> outputPorts() const {
+        return {};
+    }
 
     virtual QJsonObject defaultParams() const = 0;
     virtual QJsonObject currentParams() const = 0;

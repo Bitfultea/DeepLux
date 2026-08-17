@@ -8,9 +8,65 @@
     "ui": {
         "parameters": {},
         "results": {
-            "distance": {"label": "距离", "unit": "px", "precision": 3, "order": 10},
-            "delta_x": {"label": "ΔX", "unit": "px", "precision": 3, "order": 20},
-            "delta_y": {"label": "ΔY", "unit": "px", "precision": 3, "order": 30}
+            "distance": {
+                "label": "距离",
+                "unit": "px",
+                "precision": 3,
+                "order": 10
+            },
+            "delta_x": {
+                "label": "ΔX",
+                "unit": "px",
+                "precision": 3,
+                "order": 20
+            },
+            "delta_y": {
+                "label": "ΔY",
+                "unit": "px",
+                "precision": 3,
+                "order": 30
+            }
         }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "point1",
+                "displayName": "点1",
+                "type": "Point2D",
+                "required": true,
+                "multiple": false
+            },
+            {
+                "id": "point2",
+                "displayName": "点2",
+                "type": "Point2D",
+                "required": true,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "distance",
+                "displayName": "距离",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            }
+        ]
     }
 }

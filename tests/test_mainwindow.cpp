@@ -427,6 +427,12 @@ void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
     QCOMPARE(input->moduleId, QStringLiteral("MeasurementInput"));
     QCOMPARE(input->params["mode"].toString(), QStringLiteral("point_pair"));
     QVERIFY(input->params["awaitUserPick"].toBool());
+    const QList<ModuleConnection> measurementConnections = project->connections();
+    QCOMPARE(measurementConnections.size(), 2);
+    QCOMPARE(measurementConnections.at(0).fromPort, QStringLiteral("point1"));
+    QCOMPARE(measurementConnections.at(0).toPort, QStringLiteral("point1"));
+    QCOMPARE(measurementConnections.at(1).fromPort, QStringLiteral("point2"));
+    QCOMPARE(measurementConnections.at(1).toPort, QStringLiteral("point2"));
 
     // 用户可以选中消费模块查看参数，但拾取必须继续写入已启用的测量输入节点。
     QTest::mouseClick(processTree->viewport(), Qt::LeftButton, Qt::NoModifier,
@@ -971,8 +977,8 @@ void TestMainWindow::testConnectionChangeRebuildsExecutionTopology() {
     QCoreApplication::processEvents();
 
     QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
-    QCOMPARE(executionLog, QStringList({QStringLiteral("A"), QStringLiteral("B")}));
-    QVERIFY(!RunEngine::instance().moduleOutput(QStringLiteral("C")).isValid());
+    QCOMPARE(executionLog, QStringList({QStringLiteral("A"), QStringLiteral("C"), QStringLiteral("B")}));
+    QVERIFY(RunEngine::instance().moduleOutput(QStringLiteral("C")).isValid());
 
     RunEngine::instance().clearModules();
     for (const QString& id : runtimeModules.keys()) {
@@ -1014,12 +1020,12 @@ void TestMainWindow::testDirtyStateInvalidatesDownstreamResults() {
     QVERIFY(imageWidget != nullptr);
     QVERIFY(imageWidget->hasImage());
 
-    // The last successful output is visible even when no module is selected.
+    // Parameter changes invalidate cached outputs, but preserve the user's current viewport context.
     QVERIFY(project->setModuleParam(QStringLiteral("source"), QStringLiteral("threshold"), 41));
     QCoreApplication::processEvents();
     QVERIFY(!engine.moduleOutput(QStringLiteral("source")).isValid());
     QVERIFY(!engine.moduleOutput(QStringLiteral("downstream")).isValid());
-    QVERIFY(!imageWidget->hasImage());
+    QVERIFY(imageWidget->hasImage());
 
     QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
     processTree->setCurrentItem(processTree->topLevelItem(1));
@@ -1033,7 +1039,7 @@ void TestMainWindow::testDirtyStateInvalidatesDownstreamResults() {
     QCOMPARE(processTree->topLevelItem(1)->data(0, Qt::UserRole + 5).toString(), QStringLiteral("dirty"));
     QVERIFY(!engine.moduleOutput(QStringLiteral("source")).isValid());
     QVERIFY(!engine.moduleOutput(QStringLiteral("downstream")).isValid());
-    QVERIFY(!imageWidget->hasImage());
+    QVERIFY(imageWidget->hasImage());
     auto* results = window.findChild<QTableWidget*>(QStringLiteral("InspectorResultsTable"));
     QVERIFY(results != nullptr);
     QCOMPARE(results->rowCount(), 0);

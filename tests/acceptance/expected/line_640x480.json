@@ -1,0 +1,10 @@
+{
+  "image": "line_640x480.png",
+  "line_x1": 120,
+  "line_y1": 360,
+  "line_x2": 520,
+  "line_y2": 120,
+  "line_length": 466.47615158762403,
+  "tolerance_endpoint_px": 4.0,
+  "tolerance_length_px": 4.0
+}

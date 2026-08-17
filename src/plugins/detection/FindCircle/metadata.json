@@ -7,16 +7,109 @@
     "description": "使用Hough变换检测图像中的圆",
     "ui": {
         "parameters": {
-            "minRadius": {"label": "最小半径", "unit": "px", "min": 1, "max": 1000, "step": 1, "order": 10},
-            "maxRadius": {"label": "最大半径", "unit": "px", "min": 1, "max": 2000, "step": 1, "order": 20},
-            "param1": {"label": "Canny 高阈值", "min": 1, "max": 500, "step": 1, "order": 30},
-            "param2": {"label": "累加器阈值", "min": 1, "max": 200, "step": 1, "order": 40}
+            "minRadius": {
+                "label": "最小半径",
+                "unit": "px",
+                "min": 1,
+                "max": 1000,
+                "step": 1,
+                "order": 10
+            },
+            "maxRadius": {
+                "label": "最大半径",
+                "unit": "px",
+                "min": 1,
+                "max": 2000,
+                "step": 1,
+                "order": 20
+            },
+            "param1": {
+                "label": "Canny 高阈值",
+                "min": 1,
+                "max": 500,
+                "step": 1,
+                "order": 30
+            },
+            "param2": {
+                "label": "累加器阈值",
+                "min": 1,
+                "max": 200,
+                "step": 1,
+                "order": 40
+            }
         },
         "results": {
-            "circle_center_x": {"label": "圆心 X", "unit": "px", "precision": 2, "order": 10},
-            "circle_center_y": {"label": "圆心 Y", "unit": "px", "precision": 2, "order": 20},
-            "circle_radius": {"label": "半径", "unit": "px", "precision": 2, "order": 30},
-            "circle_score": {"label": "得分", "precision": 3, "order": 40}
+            "circle_center_x": {
+                "label": "圆心 X",
+                "unit": "px",
+                "precision": 2,
+                "order": 10
+            },
+            "circle_center_y": {
+                "label": "圆心 Y",
+                "unit": "px",
+                "precision": 2,
+                "order": 20
+            },
+            "circle_radius": {
+                "label": "半径",
+                "unit": "px",
+                "precision": 2,
+                "order": 30
+            },
+            "circle_score": {
+                "label": "得分",
+                "precision": 3,
+                "order": 40
+            }
         }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "circle_center_x",
+                "displayName": "圆心X",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "circle_center_y",
+                "displayName": "圆心Y",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "circle_radius",
+                "displayName": "半径",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "circle_score",
+                "displayName": "得分",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            }
+        ]
     }
 }

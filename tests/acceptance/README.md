@@ -1,0 +1,70 @@
+# 固定验收工程与测试数据（阶段 0.1）
+
+本目录承载"固定验收工程 + 固定测试数据 + 预期结果/允许误差"的自动化验收基础，对应
+《DeepLux C++ 重构版完整能力建设计划》阶段 0.1。
+
+## 目录结构
+
+```text
+tests/acceptance/
+├── generate_data.py        # 生成确定性测试数据（无随机性、可重复）
+├── data/                   # 固定测试数据（图像 / 点云），不依赖用户目录
+├── projects/               # 固定验收工程（JSON，图像路径用 @ACCEPTANCE_DATA@ 占位）
+├── expected/               # 每个数据文件的真实几何值与允许误差（JSON）
+└── README.md
+```
+
+对应自动化测试：`tests/test_acceptance_flows.cpp`（CTest 目标 `test_acceptance_flows`）。
+
+## 设计约束
+
+- 测试数据全部落在本目录，不读取用户目录中的临时文件。
+- 几何参数固定、无随机性，保证结果可断言、可回归。
+- 验收工程文件可移植：图像路径使用 `@ACCEPTANCE_DATA@` 占位符，测试运行时替换为
+  `tests/acceptance/data` 的绝对路径。
+- 预期结果与允许误差独立于工程文件存放，便于复核与调整。
+
+## 重新生成测试数据
+
+```bash
+python3 tests/acceptance/generate_data.py
+```
+
+> 生成脚本无随机性，重复运行产物一致。若修改几何参数，请同步更新 `expected/*.json`
+> 与下文"各验收流程"中的预期值。
+
+## 运行验收测试
+
+```bash
+cmake --build build --target test_acceptance_flows
+ctest --test-dir build -R test_acceptance_flows --output-on-failure
+```
+
+## 六个验收流程与状态
+
+| 流程 | 数据 | 验收工程 | 预期/误差 | 状态 |
+| --- | --- | --- | --- | --- |
+| 找圆流程 | `circle_640x480.png` | `projects/accept_findcircle.json` | `expected/circle_640x480.json` | ✅ 已接入自动化 |
+| ROI→点集→直线/圆拟合 | `line_640x480.png` 等 | 待建 | `expected/line_640x480.json` | 数据就绪，工程待建 |
+| 2D 几何测量 | `two_points_640x480.png` | `projects/accept_distancepp.json` | `expected/two_points_640x480.json` | ✅ 已接入自动化 |
+| 3D 点云测量 | `plane_z5.ply` | `projects/accept_point_surface.json` | `expected/plane_z5.json` | ✅ 已接入自动化 |
+| 条件/循环/并行流程 | 无需图像 | 待建 | 执行顺序断言 | Parallel 实验性，暂不纳入生产验收 |
+| PLC/相机/AI 模拟流程 | 模拟器 | 待建 | 契约测试 | 依赖设备模拟器，先建契约测试 |
+
+## 已接入：找圆流程
+
+- 流程：`GrabImage(File)` → `FindCircle`。
+- 数据：640×480 深色背景，白色实心圆，圆心 (320, 240)，半径 100。
+- 断言：`circle_center_x/y`、`circle_radius` 与预期差 ≤ 允许误差（中心 3px、半径 3px）。
+
+## GUI 截图验收约定
+
+- 桌面窗口截图尺寸：`1920×1080`；紧凑窗口截图尺寸：`1280×800`。
+- 每张截图应能体现：主视图叠加结果、检查器参数与结果页、流程画布节点状态、运行日志。
+- 截图文件命名：`<流程名>_<desktop|compact>_<主题>.png`，存放于阶段验收记录目录。
+
+## 待办
+
+1. 为 ROI/拟合、2D 测量、3D 测量流程补充验收工程与自动化断言。
+2. 条件/循环流程补充执行顺序断言；Parallel 在阶段 3 前保持实验性、不纳入生产验收。
+3. PLC/相机/AI 先建设备模拟器与契约测试，再接入模拟流程验收。

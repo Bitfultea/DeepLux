@@ -372,7 +372,15 @@ void PluginTestDialog::onExecuteClicked() {
     m_resultEdit->append(
         QString("[%1] 开始执行: %2\n").arg(QDateTime::currentDateTime().toString("hh:mm:ss")).arg(m_currentPluginName));
 
-    bool success = m_currentModule->execute(input, output);
+    PortValueMap inputs;
+    inputs.insert(QStringLiteral("image"), QVariant::fromValue(input));
+    PortValueMap outputs;
+    ExecutionContext context;
+    const ExecutionResult result = m_currentModule->execute(inputs, outputs, context);
+    const bool success = result.success;
+    if (outputs.contains(QStringLiteral("image"))) {
+        output = outputs.value(QStringLiteral("image")).value<ImageData>();
+    }
 
     if (success) {
         m_resultEdit->setTextColor(Qt::darkGreen);
@@ -380,7 +388,8 @@ void PluginTestDialog::onExecuteClicked() {
         updateResultDisplay(output);
     } else {
         m_resultEdit->setTextColor(Qt::red);
-        m_resultEdit->append(QString("[%1] 执行失败\n").arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
+        m_resultEdit->append(QString("[%1] 执行失败: %2\n")
+                                 .arg(QDateTime::currentDateTime().toString("hh:mm:ss"), result.userMessage));
     }
 }
 

@@ -1,5 +1,6 @@
 #include "PluginManager.h"
 
+#include "../base/ModuleBase.h"
 #include "../common/ModuleIconProvider.h"
 #include "../device/CameraManager.h"
 #include "../interface/ICamera.h"
@@ -13,6 +14,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QPixmap>
 #include <QPluginLoader>
@@ -125,6 +127,50 @@ void PluginManager::scanPlugins() {
     qDebug() << "Cameras found:" << m_cameras.size();
 }
 
+namespace {
+
+// 解析单个端口数组（ports.inputs / ports.outputs）。返回 false 并填充 error 表示声明非法。
+bool parsePortArray(const QJsonArray& arr, QList<PortSpec>& out, QString& error, const QString& pluginName,
+                    const QString& section) {
+    QSet<QString> seen;
+    for (const QJsonValue& v : arr) {
+        if (!v.isObject()) {
+            error = QString("%1: port entry in %2 is not an object").arg(pluginName, section);
+            return false;
+        }
+        QJsonObject o = v.toObject();
+        PortSpec spec;
+        spec.id = o["id"].toString();
+        spec.displayName = o.value("displayName").toString(o.value("name").toString());
+        const QString typeName = o.value("type").toString(QStringLiteral("Any"));
+
+        if (spec.id.isEmpty()) {
+            error = QString("%1: port in %2 missing id").arg(pluginName, section);
+            return false;
+        }
+        if (spec.displayName.isEmpty()) {
+            error = QString("%1: port %2 in %3 has empty display name").arg(pluginName, spec.id, section);
+            return false;
+        }
+        if (seen.contains(spec.id)) {
+            error = QString("%1: duplicate port id %2 in %3").arg(pluginName, spec.id, section);
+            return false;
+        }
+        if (!dataTypeFromString(typeName, spec.type)) {
+            error = QString("%1: port %2 has unknown type %3").arg(pluginName, spec.id, typeName);
+            return false;
+        }
+        spec.required = o.value("required").toBool(false);
+        spec.multiple = o.value("multiple").toBool(false);
+        spec.control = o.value("control").toBool(false);
+        seen.insert(spec.id);
+        out.append(spec);
+    }
+    return true;
+}
+
+} // namespace
+
 bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
@@ -153,6 +199,25 @@ bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info) {
     info.loaded = false;
     info.ui = json["ui"].toObject();
 
+    // ABI v2 模块必须有完整 ports 声明；错误元数据不可进入可加载列表。
+    info.inputPorts.clear();
+    info.outputPorts.clear();
+    QJsonObject ports = json["ports"].toObject();
+    QString portError;
+    if (!info.category.toLower().contains(QStringLiteral("camera"))) {
+        if (ports.isEmpty() || !ports.contains("inputs") || !ports.contains("outputs")) {
+            info.error = QStringLiteral("%1: ABI v2 module metadata requires ports.inputs and ports.outputs").arg(info.name);
+            qWarning() << info.error;
+            return false;
+        }
+        if (!parsePortArray(ports["inputs"].toArray(), info.inputPorts, portError, info.name, QStringLiteral("inputs")) ||
+            !parsePortArray(ports["outputs"].toArray(), info.outputPorts, portError, info.name, QStringLiteral("outputs"))) {
+            info.error = portError;
+            qWarning() << "Invalid ports:" << portError;
+            return false;
+        }
+    }
+
     return !info.name.isEmpty();
 }
 
@@ -173,16 +238,33 @@ bool PluginManager::validateLoadedPlugin(const QString& name, QPluginLoader* loa
         return false;
     }
 
-    IModule* module = qobject_cast<IModule*>(plugin);
-    if (module && module->interfaceVersion() != DEEPLUX_MODULE_INTERFACE_VERSION) {
-        if (error) {
-            *error =
-                QString("Interface version mismatch: plugin=%1, expected=%2, actual=%3. Please rebuild the plugin.")
-                    .arg(name)
-                    .arg(DEEPLUX_MODULE_INTERFACE_VERSION)
-                    .arg(module->interfaceVersion());
+    // 仅对模块插件执行 IModule ABI 校验；相机插件走 ICameraPlugin 注册路径。
+    QMutexLocker locker(&m_mutex);
+    const bool isModule = m_modules.contains(name);
+    locker.unlock();
+
+    if (isModule) {
+        IModule* module = qobject_cast<IModule*>(plugin);
+        // ABI v1（或更旧）二进制的 IID 与虚表不匹配：cast 失败或版本号不符，明确拒绝并提示重编。
+        if (!module) {
+            if (error) {
+                *error = QString("Plugin %1 does not implement IModule ABI v%2 (interface cast failed). "
+                                 "Please rebuild the plugin against the current headers.")
+                             .arg(name)
+                             .arg(DEEPLUX_MODULE_INTERFACE_VERSION);
+            }
+            return false;
         }
-        return false;
+        if (module->interfaceVersion() != DEEPLUX_MODULE_INTERFACE_VERSION) {
+            if (error) {
+                *error =
+                    QString("Interface version mismatch: plugin=%1, expected=%2, actual=%3. Please rebuild the plugin.")
+                        .arg(name)
+                        .arg(DEEPLUX_MODULE_INTERFACE_VERSION)
+                        .arg(module->interfaceVersion());
+            }
+            return false;
+        }
     }
 
     return true;
@@ -558,6 +640,11 @@ IModule* PluginManager::createModule(const QString& name) {
     IModule* clone = mod->clone();
     if (clone) {
         clone->setIcon(mod->icon());
+        // ABI v2：注入 metadata 声明的端口
+        if (ModuleBase* mb = qobject_cast<ModuleBase*>(clone)) {
+            const PluginInfo info = m_modules.value(name);
+            mb->setPorts(info.inputPorts, info.outputPorts);
+        }
         return clone;
     }
 

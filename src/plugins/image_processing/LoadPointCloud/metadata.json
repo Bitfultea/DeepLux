@@ -20,15 +20,60 @@
     ],
     "ui": {
         "parameters": {
-            "filePath": {"label": "文件路径", "order": 10},
-            "tiffStep": {"label": "TIFF 步长", "min": 1, "max": 100, "step": 1, "order": 20},
-            "scaleX": {"label": "X 缩放", "min": 0.0001, "max": 1000, "step": 0.0001, "order": 30},
-            "scaleY": {"label": "Y 缩放", "min": 0.0001, "max": 1000, "step": 0.0001, "order": 40},
-            "scaleZ": {"label": "Z 缩放", "min": 0.0001, "max": 1000, "step": 0.0001, "order": 50}
+            "filePath": {
+                "label": "文件路径",
+                "order": 10
+            },
+            "tiffStep": {
+                "label": "TIFF 步长",
+                "min": 1,
+                "max": 100,
+                "step": 1,
+                "order": 20
+            },
+            "scaleX": {
+                "label": "X 缩放",
+                "min": 0.0001,
+                "max": 1000,
+                "step": 0.0001,
+                "order": 30
+            },
+            "scaleY": {
+                "label": "Y 缩放",
+                "min": 0.0001,
+                "max": 1000,
+                "step": 0.0001,
+                "order": 40
+            },
+            "scaleZ": {
+                "label": "Z 缩放",
+                "min": 0.0001,
+                "max": 1000,
+                "step": 0.0001,
+                "order": 50
+            }
         },
         "results": {
-            "point_count": {"label": "点数", "order": 10},
-            "point_cloud_path": {"label": "文件路径", "order": 20}
+            "point_count": {
+                "label": "点数",
+                "order": 10
+            },
+            "point_cloud_path": {
+                "label": "文件路径",
+                "order": 20
+            }
         }
+    },
+    "ports": {
+        "inputs": [],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            }
+        ]
     }
 }

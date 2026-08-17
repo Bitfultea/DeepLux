@@ -68,5 +68,25 @@
                 "label": "调试模式"
             }
         }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "PointCloud3D",
+                "required": false,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "PointCloud3D",
+                "required": false,
+                "multiple": false
+            }
+        ]
     }
 }

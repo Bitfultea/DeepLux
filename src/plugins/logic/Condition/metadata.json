@@ -20,5 +20,41 @@
                 "label": "比较值"
             }
         }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "true",
+                "displayName": "true",
+                "type": "Boolean",
+                "required": false,
+                "multiple": false,
+                "control": true
+            },
+            {
+                "id": "false",
+                "displayName": "false",
+                "type": "Boolean",
+                "required": false,
+                "multiple": false,
+                "control": true
+            }
+        ]
     }
 }

@@ -203,9 +203,11 @@ QString cleanToolDisplayName(const QString& displayName) {
 }
 
 QString measurementInputModeForConsumer(const QString& moduleId) {
-    if (moduleId == QStringLiteral("com.deeplux.plugin.distancepp") ||
-        moduleId == QStringLiteral("com.deeplux.plugin.measuregap")) {
+    if (moduleId == QStringLiteral("com.deeplux.plugin.distancepp")) {
         return QStringLiteral("point_pair");
+    }
+    if (moduleId == QStringLiteral("com.deeplux.plugin.measuregap")) {
+        return QStringLiteral("line_pair");
     }
     if (moduleId == QStringLiteral("com.deeplux.plugin.distancepl")) {
         return QStringLiteral("point_line");
@@ -1041,7 +1043,9 @@ void MainWindow::setupMainLayout() {
     addToolBoxItem(logicItem, tr("停止循环"), "StopWhile");
     addToolBoxItem(logicItem, tr("条件判断"), "Condition");
     addToolBoxItem(logicItem, tr("延时"), "Delay");
-    addToolBoxItem(logicItem, tr("并行"), "Parallel");
+    // 阶段 0: Parallel 当前无真实并行执行语义（RunEngine 未实现 Parallel 控制流），
+    // 标记为实验性并从工具箱隐藏，禁止加入生产流程；待阶段 3 完成后恢复。
+    // addToolBoxItem(logicItem, tr("并行（实验性）"), "Parallel");
     addToolBoxItem(logicItem, tr("队列入"), "QueueIn");
     addToolBoxItem(logicItem, tr("队列出"), "QueueOut");
 
@@ -1958,6 +1962,15 @@ void MainWindow::onViewportCreated(const QString& /*viewportId*/, ViewportWidget
 }
 
 IModule* MainWindow::measurementInputForPicking(QString& instanceId) {
+    if (!m_pendingMeasurementInputId.isEmpty()) {
+        IModule* pendingModule = m_flowModules.value(m_pendingMeasurementInputId, nullptr);
+        if (pendingModule && pendingModule->moduleId() == QStringLiteral("com.deeplux.plugin.measurementinput")) {
+            instanceId = m_pendingMeasurementInputId;
+            return pendingModule;
+        }
+        m_pendingMeasurementInputId.clear();
+    }
+
     QTreeWidgetItem* item = m_processTree ? m_processTree->currentItem() : nullptr;
     if (item && item->data(0, Qt::UserRole).toString() == QStringLiteral("flow_item")) {
         const QString selectedId = item->data(0, Qt::UserRole + 1).toString();
@@ -3277,6 +3290,33 @@ QString MainWindow::ensureMeasurementInputForMode(const QString& mode, const QSt
     project->addModule(inst);
     project->moveModule(instanceId, insertRow);
 
+    const ModuleInstance* consumerInstance = project->findModule(consumerInstanceId);
+    IModule* consumerModule = m_flowModules.value(consumerInstanceId, nullptr);
+    const QList<PortSpec> consumerPorts =
+        consumerModule ? consumerModule->inputPorts()
+                       : (consumerInstance ? pm.pluginInfo(consumerInstance->moduleId).inputPorts : QList<PortSpec>{});
+    const QList<PortSpec> inputPorts = pm.pluginInfo(QStringLiteral("MeasurementInput")).outputPorts;
+    for (const PortSpec& consumerPort : consumerPorts) {
+        if (!consumerPort.required)
+            continue;
+        bool provided = false;
+        for (const PortSpec& inputPort : inputPorts) {
+            if (inputPort.id == consumerPort.id) {
+                provided = true;
+                break;
+            }
+        }
+        if (!provided)
+            continue;
+        ModuleConnection connection;
+        connection.fromModuleId = instanceId;
+        connection.toModuleId = consumerInstanceId;
+        connection.fromPort = consumerPort.id;
+        connection.toPort = consumerPort.id;
+        connection.edgeType = QStringLiteral("data");
+        project->addConnection(connection);
+    }
+
     QTreeWidgetItem* inputItem = m_processTreeController->instanceItem(instanceId);
     if (inputItem) {
         const int currentRow = m_processTreeController->indexOfTopLevelItem(inputItem);
@@ -4529,19 +4569,6 @@ void MainWindow::markModuleDirty(const QString& instanceId) {
     }
 
     RunEngine& engine = RunEngine::instance();
-    bool displayedOutputWasAffected = false;
-    if (m_selectedModuleId.isEmpty()) {
-        for (const QString& id : affected) {
-            const ImageData output = engine.moduleOutput(id);
-            if (output.isValid() || !output.allData().isEmpty()) {
-                displayedOutputWasAffected = true;
-                break;
-            }
-        }
-    } else if (affected.contains(m_selectedModuleId)) {
-        const ImageData output = engine.moduleOutput(m_selectedModuleId);
-        displayedOutputWasAffected = output.isValid() || !output.allData().isEmpty();
-    }
     for (const QString& id : affected) {
         m_dirtyModuleIds.insert(id);
         m_moduleExecutionTimes.remove(id);
@@ -4552,9 +4579,6 @@ void MainWindow::markModuleDirty(const QString& instanceId) {
     }
     if (m_inspectorPanel && affected.contains(m_selectedModuleId)) {
         m_inspectorPanel->setDirty(true);
-    }
-    if (displayedOutputWasAffected) {
-        clearCentralDisplay();
     }
 }
 
@@ -4688,9 +4712,7 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector, b
 
     // 同时显示模块输出到主视图
     const ImageData output = RunEngine::instance().moduleOutput(instanceId);
-    if (m_dirtyModuleIds.contains(instanceId)) {
-        clearCentralDisplay();
-    } else if (output.isValid()) {
+    if (!m_dirtyModuleIds.contains(instanceId) && output.isValid()) {
         displayImage(output);
     }
 }
@@ -5401,23 +5423,6 @@ void MainWindow::onHome() {
     Logger::instance().info(tr("主页"), "System");
 }
 
-void MainWindow::onUIDesign() {
-    // 显示/激活 FlowCanvas（图形化节点编辑器）
-    if (m_flowCanvas) {
-        if (m_processTabWidget) {
-            m_processTabWidget->setCurrentWidget(m_flowCanvas);
-        }
-        Logger::instance().info(tr("界面设计"), "System");
-    } else {
-        QMessageBox::information(this, tr("UI 设计"), tr("流程编辑器开发中"));
-    }
-}
-
-void MainWindow::onLaserSet() {
-    QMessageBox::information(this, tr("激光设置"), tr("激光设置功能开发中"));
-    Logger::instance().info(tr("激光设置"), "System");
-}
-
 void MainWindow::onToggleTheme() {
     m_isDarkTheme = !m_isDarkTheme;
     applyTheme();
@@ -5446,10 +5451,6 @@ void MainWindow::onSystemSettings() {
     Logger::instance().info(tr("系统设置"), "System");
 }
 
-void MainWindow::onCanvasSettings() {
-    Logger::instance().info(tr("画布设置"), "System");
-}
-
 void MainWindow::onScreenshot() {
     QScreen* screen = QGuiApplication::primaryScreen();
     if (screen) {
@@ -5462,22 +5463,6 @@ void MainWindow::onScreenshot() {
             Logger::instance().info(tr("已保存截图：%1").arg(fileName), "System");
         }
     }
-}
-
-void MainWindow::onSaveLayout() {
-    Logger::instance().info(tr("保存布局"), "System");
-}
-
-void MainWindow::onLoadLayout() {
-    Logger::instance().info(tr("加载布局"), "System");
-}
-
-void MainWindow::onLicenseManager() {
-    Logger::instance().info(tr("许可证管理"), "System");
-}
-
-void MainWindow::onHelp() {
-    Logger::instance().info(tr("帮助"), "System");
 }
 
 void MainWindow::onTest3DRender() {
@@ -5518,10 +5503,6 @@ void MainWindow::onAbout() {
                        tr("<h2>DeepLux Vision 1.0.0</h2>"
                           "<p>工业视觉检测软件</p>"
                           "<p>&copy; 2024 DeepLux. All rights reserved.</p>"));
-}
-
-void MainWindow::onSchemeManagement() {
-    Logger::instance().info(tr("方案管理"), "System");
 }
 
 void MainWindow::onLogAdded(const LogEntry& entry) {

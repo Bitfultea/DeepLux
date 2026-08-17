@@ -1,4 +1,6 @@
+#include <QThread>
 #include <QtTest/QtTest>
+#include <atomic>
 #include <core/base/ModuleBase.h>
 #include <core/common/CancellationToken.h>
 #include <core/common/Logger.h>
@@ -96,12 +98,92 @@ protected:
     }
 };
 
+class TypedPortModule : public ModuleBase {
+    Q_OBJECT
+public:
+    TypedPortModule(const QString& name, DataType type, bool source) : m_type(type), m_source(source) {
+        m_moduleId = QStringLiteral("com.deeplux.test.typed.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+    }
+
+    QList<PortSpec> inputPorts() const override {
+        if (m_source)
+            return {};
+        PortSpec port;
+        port.id = QStringLiteral("value");
+        port.displayName = QStringLiteral("Value");
+        port.type = m_type;
+        port.required = true;
+        return {port};
+    }
+
+    QList<PortSpec> outputPorts() const override {
+        if (!m_source)
+            return {};
+        PortSpec port;
+        port.id = QStringLiteral("value");
+        port.displayName = QStringLiteral("Value");
+        port.type = m_type;
+        return {port};
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    DataType m_type;
+    bool m_source;
+};
+
+// 并行测试模块：睡眠并记录并发度，证明真实并发
+class ParallelSleepModule : public ModuleBase {
+    Q_OBJECT
+public:
+    ParallelSleepModule(const QString& name, std::atomic<int>* running, std::atomic<int>* maxConc, int sleepMs)
+        : m_running(running), m_maxConc(maxConc), m_sleepMs(sleepMs) {
+        m_moduleId = "com.deeplux.test.parallel." + name;
+        m_name = name;
+        m_category = "test";
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        const int cur = ++(*m_running);
+        int expected = m_maxConc->load();
+        while (cur > expected && !m_maxConc->compare_exchange_weak(expected, cur)) {
+        }
+        QThread::msleep(m_sleepMs);
+        --(*m_running);
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    std::atomic<int>* m_running;
+    std::atomic<int>* m_maxConc;
+    int m_sleepMs;
+};
+
 class TestRunEngine : public QObject {
     Q_OBJECT
 
 private slots:
     void initTestCase();
     void cleanupTestCase();
+    void testParallelExecutesConcurrently();
+    void testParallelFailureCancelsGroup();
+    void testValidateFlowReportsMissingRequiredInput();
+    void testSkippedBranchEmitsSkippedNotFailed();
     void init();
     void cleanup();
 
@@ -126,8 +208,10 @@ private slots:
     void testStepOnceStoresIntermediateOutputByModule();
     void testLoadProjectUsesInstanceIdsForDuplicateModuleNames();
     void testLoadProjectExecutesInConnectionTopologyOrder();
-    void testConnectedFlowIgnoresIsolatedModuleData();
-    void testLoadProjectRejectsDisconnectedConnectedChains();
+    void testGraphExecutesIsolatedModulesIndependently();
+    void testLoadProjectSupportsDisconnectedChains();
+    void testLoadProjectSupportsFanOutAndMerge();
+    void testLoadProjectRejectsIncompatiblePortTypes();
     void testLoadProjectRejectsConnectionWithMissingModule();
     void testLoadProjectRejectsConnectionCycle();
     void testModuleExecutionLogsElapsedTime();
@@ -666,7 +750,7 @@ void TestRunEngine::testLoadProjectExecutesInConnectionTopologyOrder() {
     QCOMPARE(executionLog, QStringList({"A", "B", "C"}));
 }
 
-void TestRunEngine::testConnectedFlowIgnoresIsolatedModuleData() {
+void TestRunEngine::testGraphExecutesIsolatedModulesIndependently() {
     RunEngine& engine = RunEngine::instance();
     Project project;
     QStringList executionLog;
@@ -692,14 +776,14 @@ void TestRunEngine::testConnectedFlowIgnoresIsolatedModuleData() {
 
     engine.runOnce();
 
-    QCOMPARE(executionLog, QStringList({QStringLiteral("A"), QStringLiteral("B")}));
+    QCOMPARE(executionLog, QStringList({QStringLiteral("A"), QStringLiteral("C"), QStringLiteral("B")}));
     auto* downstream = qobject_cast<TestExecutionModule*>(engine.getModule(QStringLiteral("B")));
     QVERIFY(downstream != nullptr);
     QCOMPARE(downstream->receivedTag, QStringLiteral("A"));
-    QVERIFY(!engine.moduleOutput(QStringLiteral("C")).isValid());
+    QVERIFY(engine.moduleOutput(QStringLiteral("C")).isValid());
 }
 
-void TestRunEngine::testLoadProjectRejectsDisconnectedConnectedChains() {
+void TestRunEngine::testLoadProjectSupportsDisconnectedChains() {
     RunEngine& engine = RunEngine::instance();
     Project project;
 
@@ -719,8 +803,68 @@ void TestRunEngine::testLoadProjectRejectsDisconnectedConnectedChains() {
     second.toModuleId = QStringLiteral("D");
     project.addConnection(second);
 
-    QVERIFY(!engine.loadProject(&project,
-                                [](const ModuleInstance& instance) { return new TestExecutionModule(instance.id); }));
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        module->outputTag = instance.id;
+        return module;
+    }));
+    engine.runOnce();
+    for (const QString& id : {QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C"), QStringLiteral("D")})
+        QVERIFY2(engine.moduleOutput(id).isValid(), qPrintable(id));
+}
+
+void TestRunEngine::testLoadProjectSupportsFanOutAndMerge() {
+    RunEngine& engine = RunEngine::instance();
+    Project project;
+    QStringList executionLog;
+    for (const QString& id : {QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C"), QStringLiteral("D")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("test");
+        instance.name = id;
+        project.addModule(instance);
+    }
+    for (const QPair<QString, QString>& edge : {QPair<QString, QString>{"A", "B"}, QPair<QString, QString>{"A", "C"},
+                                                QPair<QString, QString>{"B", "D"}, QPair<QString, QString>{"C", "D"}}) {
+        ModuleConnection connection;
+        connection.fromModuleId = edge.first;
+        connection.toModuleId = edge.second;
+        project.addConnection(connection);
+    }
+
+    QVERIFY(engine.loadProject(&project, [&executionLog](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &executionLog;
+        return module;
+    }));
+    engine.runOnce();
+
+    QCOMPARE(executionLog,
+             QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C"), QStringLiteral("D")}));
+}
+
+void TestRunEngine::testLoadProjectRejectsIncompatiblePortTypes() {
+    RunEngine& engine = RunEngine::instance();
+    Project project;
+    ModuleInstance source;
+    source.id = QStringLiteral("source");
+    source.moduleId = QStringLiteral("source");
+    project.addModule(source);
+    ModuleInstance target;
+    target.id = QStringLiteral("target");
+    target.moduleId = QStringLiteral("target");
+    project.addModule(target);
+    ModuleConnection connection;
+    connection.fromModuleId = source.id;
+    connection.toModuleId = target.id;
+    connection.fromPort = QStringLiteral("value");
+    connection.toPort = QStringLiteral("value");
+    project.addConnection(connection);
+
+    QVERIFY(!engine.loadProject(&project, [](const ModuleInstance& instance) {
+        return instance.id == QLatin1String("source") ? new TypedPortModule(instance.id, DataType::String, true)
+                                                      : new TypedPortModule(instance.id, DataType::Point2D, false);
+    }));
     QVERIFY(engine.modules().isEmpty());
 }
 
@@ -838,6 +982,138 @@ void TestRunEngine::testStatistics() {
     QVERIFY(engine.totalRuns() >= 3);
 
     delete module;
+}
+
+void TestRunEngine::testParallelExecutesConcurrently() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(4);
+
+    std::atomic<int> running{0};
+    std::atomic<int> maxConc{0};
+    const int N = 4;
+    QStringList names;
+    for (int i = 0; i < N; ++i) {
+        QString name = QString("par%1").arg(i);
+        auto* mod = new ParallelSleepModule(name, &running, &maxConc, 60);
+        mod->initialize();
+        engine.addModule(mod);
+        names << name;
+    }
+
+    PortValueMap input;
+    const ExecutionResult result = engine.executeParallel(names, input);
+    QVERIFY(result.success);
+    // 证明真实并发：最大并发度应 > 1
+    QVERIFY2(engine.lastParallelMaxConcurrency() > 1,
+             qPrintable(QString("max concurrency=%1, expected >1").arg(engine.lastParallelMaxConcurrency())));
+
+    engine.clearModules();
+}
+
+void TestRunEngine::testParallelFailureCancelsGroup() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(2);
+
+    std::atomic<int> running{0};
+    std::atomic<int> maxConc{0};
+    // 一个失败模块 + 一个睡眠模块
+    auto* failing = new TestExecutionModule("fail");
+    failing->executeResult = false;
+    failing->errorText = "parallel failure";
+    failing->initialize();
+    engine.addModule(failing);
+    auto* slow = new ParallelSleepModule("slow", &running, &maxConc, 200);
+    slow->initialize();
+    engine.addModule(slow);
+
+    PortValueMap input;
+    const ExecutionResult result = engine.executeParallel(QStringList{"fail", "slow"}, input);
+    QVERIFY(!result.success);
+    QVERIFY(!result.userMessage.isEmpty());
+
+    engine.clearModules();
+}
+
+void TestRunEngine::testValidateFlowReportsMissingRequiredInput() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    auto* source = new TypedPortModule("src", DataType::Point2D, true);
+    auto* consumer = new TypedPortModule("consumer", DataType::Point2D, false);
+    source->initialize();
+    consumer->initialize();
+    engine.addModule(source);
+    engine.addModule(consumer);
+
+    // 无连接：consumer 必需输入 value 无上游 → 预检报错
+    Project empty;
+    QString err;
+    QVERIFY(engine.buildExecutionOrder(&empty, err));
+    QStringList problems = engine.validateFlow();
+    QVERIFY2(!problems.isEmpty(), "expected pre-run error for missing required input");
+    QVERIFY(problems.join("; ").contains("consumer"));
+
+    // 有名称匹配的连接 src.value->consumer.value：预检通过。
+    Project linked;
+    ModuleInstance s;
+    s.id = "src";
+    s.moduleId = "src";
+    ModuleInstance c;
+    c.id = "consumer";
+    c.moduleId = "consumer";
+    linked.addModule(s);
+    linked.addModule(c);
+    ModuleConnection conn;
+    conn.fromModuleId = "src";
+    conn.toModuleId = "consumer";
+    conn.fromPort = "value";
+    conn.toPort = "value";
+    linked.addConnection(conn);
+    QString err2;
+    QVERIFY(engine.buildExecutionOrder(&linked, err2));
+    QVERIFY2(engine.validateFlow().isEmpty(), "expected no pre-run error when connected");
+
+    engine.clearModules();
+}
+
+void TestRunEngine::testSkippedBranchEmitsSkippedNotFailed() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    QStringList skipped;
+    QMetaObject::Connection conn =
+        connect(&engine, &RunEngine::moduleSkipped, [&](const QString& name) { skipped.append(name); });
+
+    QStringList executionLog;
+    auto* condition = new TestExecutionModule(QStringLiteral("While"));
+    condition->controlType = ControlFlowType::While;
+    condition->controlResultKey = QStringLiteral("while_result");
+    condition->controlResult = false;
+    condition->executionLog = &executionLog;
+    auto* body = new TestExecutionModule(QStringLiteral("Body"));
+    body->executionLog = &executionLog;
+    auto* end = new TestExecutionModule(QStringLiteral("WhileEnd"));
+    end->controlType = ControlFlowType::WhileEnd;
+    auto* after = new TestExecutionModule(QStringLiteral("After"));
+    after->executionLog = &executionLog;
+    for (TestExecutionModule* m : {condition, body, end, after}) {
+        m->initialize();
+        engine.addModule(m);
+    }
+
+    engine.runOnce();
+
+    // 未激活分支（Body/WhileEnd）应发射 Skipped，且未执行
+    QVERIFY2(skipped.contains(QStringLiteral("Body")), qPrintable(skipped.join(",")));
+    QVERIFY(!executionLog.contains(QStringLiteral("Body")));
+
+    disconnect(conn);
+    engine.clearModules();
+    delete condition;
+    delete body;
+    delete end;
+    delete after;
 }
 
 QTEST_MAIN(TestRunEngine)

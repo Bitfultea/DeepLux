@@ -1,0 +1,43 @@
+{
+    "version": "3.0",
+    "id": "accept-point-surface-0001",
+    "name": "验收-点云点面距离流程",
+    "created": "2026-08-14T00:00:00",
+    "modified": "2026-08-14T00:00:00",
+    "modules": [
+        {
+            "id": "loadcloud",
+            "moduleId": "LoadPointCloud",
+            "name": "加载点云",
+            "posX": 80,
+            "posY": 120,
+            "params": {"filePath": "@ACCEPTANCE_DATA@/plane_z5.ply"}
+        },
+        {
+            "id": "measurementinput",
+            "moduleId": "MeasurementInput",
+            "name": "测量输入",
+            "posX": 320,
+            "posY": 120,
+            "params": {
+                "mode": "point_plane",
+                "point": [4.0, 3.0, 8.0],
+                "plane": [0.0, 0.0, 5.0, 10.0, 0.0, 5.0, 0.0, 6.0, 5.0]
+            }
+        },
+        {
+            "id": "pointsurface",
+            "moduleId": "PointSurfaceDistance",
+            "name": "点面距离",
+            "posX": 560,
+            "posY": 120,
+            "params": {}
+        }
+    ],
+    "connections": [
+        {"fromModuleId": "measurementinput", "toModuleId": "pointsurface", "fromPort": "point", "toPort": "point", "edgeType": "data"},
+        {"fromModuleId": "measurementinput", "toModuleId": "pointsurface", "fromPort": "plane", "toPort": "plane", "edgeType": "data"}
+    ],
+    "flows": [{"id": "main", "name": "主流程", "nodes": ["loadcloud", "measurementinput", "pointsurface"]}],
+    "resources": {"cameras": [], "dataSources": []}
+}

@@ -10,6 +10,7 @@
 #include <QDebug>
 #include <QElapsedTimer>
 #include <QMutexLocker>
+#include <QThread>
 
 namespace DeepLux {
 
@@ -19,6 +20,18 @@ QString runtimeModuleName(ModuleBase* module) {
         return QString();
     }
     return module->instanceName().isEmpty() ? module->name() : module->instanceName();
+}
+
+const PortSpec* findPort(const QList<PortSpec>& ports, const QString& id) {
+    for (const PortSpec& port : ports) {
+        if (port.id == id)
+            return &port;
+    }
+    return nullptr;
+}
+
+bool portTypesCompatible(DataType outputType, DataType inputType) {
+    return outputType == DataType::Any || inputType == DataType::Any || outputType == inputType;
 }
 } // namespace
 
@@ -44,6 +57,90 @@ void RunEngine::setCycleMode(bool enabled) {
     m_runMode.store(static_cast<int>(enabled ? RunMode::RunCycle : RunMode::None), std::memory_order_release);
 }
 
+void RunEngine::setParallelThreadCount(int n) {
+    // 默认上限 max(1, cores-1)
+    const int cap = qMax(1, QThread::idealThreadCount() - 1);
+    int threads = (n <= 0) ? cap : qBound(1, n, qMax(1, QThread::idealThreadCount()));
+    QMutexLocker locker(&m_parallelMutex);
+    m_parallelThreads = threads;
+    if (m_parallelPool)
+        m_parallelPool->setMaxThreadCount(threads);
+}
+
+ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortValueMap& sharedInput) {
+    {
+        QMutexLocker locker(&m_parallelMutex);
+        if (!m_parallelPool) {
+            m_parallelPool = new QThreadPool();
+            m_parallelPool->setMaxThreadCount(qMax(1, m_parallelThreads));
+        }
+    }
+
+    if (m_cancellationToken)
+        m_cancellationToken->reset();
+
+    std::atomic<int> running{0};
+    std::atomic<int> maxConcurrent{0};
+    QMutex errMutex;
+    bool haveError = false;
+    ExecutionResult firstError;
+    QMutex doneMutex;
+    QWaitCondition doneCond;
+    int finished = 0;
+
+    QStringList validNames;
+    for (const QString& name : names)
+        if (getModule(name))
+            validNames.append(name);
+
+    for (const QString& name : validNames) {
+        ModuleBase* mod = getModule(name);
+        // 同一实例同刻仅一次：每个任务持有独立输入/输出副本
+        m_parallelPool->start([this, mod, name, &sharedInput, &running, &maxConcurrent, &errMutex, &haveError,
+                               &firstError, &doneMutex, &doneCond, &finished]() {
+            const int cur = ++running;
+            int expected = maxConcurrent.load();
+            while (cur > expected && !maxConcurrent.compare_exchange_weak(expected, cur)) {
+            }
+
+            PortValueMap in = sharedInput;
+            PortValueMap out;
+            ExecutionContext ctx;
+            ctx.runId = m_runId;
+            ctx.frameId = m_frameId;
+            ctx.cancellationToken = m_cancellationToken;
+            const ExecutionResult r = mod->execute(in, out, ctx);
+            --running;
+
+            if (!r.success) {
+                QMutexLocker locker(&errMutex);
+                if (!haveError) {
+                    haveError = true;
+                    firstError = r;
+                }
+                if (m_cancellationToken)
+                    m_cancellationToken->cancel(); // 取消同组剩余任务
+            }
+
+            QMutexLocker doneLocker(&doneMutex);
+            ++finished;
+            doneCond.wakeAll();
+        });
+    }
+
+    {
+        QMutexLocker locker(&doneMutex);
+        while (finished < validNames.size())
+            doneCond.wait(&doneMutex);
+    }
+
+    m_lastParallelMaxConcurrency = maxConcurrent.load();
+
+    if (haveError)
+        return firstError;
+    return ExecutionResult::ok();
+}
+
 void RunEngine::runOnce() {
     if (isBusy()) {
         return;
@@ -57,6 +154,12 @@ void RunEngine::runOnce() {
 
 bool RunEngine::stepOnce() {
     if (isBusy()) {
+        return false;
+    }
+
+    const QStringList validationErrors = validateFlow();
+    if (!validationErrors.isEmpty()) {
+        emit errorOccurred(validationErrors.join(QStringLiteral("\n")));
         return false;
     }
 
@@ -462,6 +565,25 @@ void RunEngine::executeRun() {
         }
     }
 
+    const QStringList validationErrors = validateFlow();
+    if (!validationErrors.isEmpty()) {
+        RunResult result;
+        result.success = false;
+        result.errorCode = ExecError::TypeMismatch;
+        result.errorMessage = validationErrors.join(QStringLiteral("\n"));
+        result.finishedTime = QDateTime::currentDateTime();
+        emit errorOccurred(result.errorMessage);
+        if (runMode() == RunMode::RunCycle) {
+            m_cycleTimer->stop();
+            m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
+            m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
+            emit stateChanged(state());
+            emit cycleStopped();
+        }
+        emit runFinished(result);
+        return;
+    }
+
     if (m_executing.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
@@ -472,6 +594,13 @@ void RunEngine::executeRun() {
 
     m_runStartTime = QDateTime::currentDateTime();
     clearModuleOutputs();
+
+    // ABI v2: 每次运行生成 runId，帧号从 0 递增
+    m_runId = QString::number(QDateTime::currentMSecsSinceEpoch());
+    m_frameId = 0;
+
+    // 阶段 3.1: 新帧清除上一帧非持久端口缓存，避免读取陈旧值
+    m_nodeOutputs.clear();
 
     if (m_cancellationToken) {
         m_cancellationToken->reset();
@@ -511,7 +640,30 @@ void RunEngine::executeRun() {
             }
         }
 
-        currentModule = getNextModule(currentModule, m_lastControlResult);
+        // 阶段 3.2: 控制节点前向跳过时，被跳过的未激活分支节点标记为 Skipped（非失败）
+        const QString nextModule = getNextModule(currentModule, m_lastControlResult);
+        if (!nextModule.isEmpty()) {
+            // 线性序：优先用 m_executionOrder，否则沿 getNextSequentialModule 遍历
+            QStringList order = m_executionOrder;
+            if (order.isEmpty()) {
+                QReadLocker locker(&m_moduleLock);
+                QString cur = m_modules.isEmpty() ? QString() : runtimeModuleName(m_modules.first());
+                QSet<QString> seen;
+                while (!cur.isEmpty() && !seen.contains(cur)) {
+                    seen.insert(cur);
+                    order.append(cur);
+                    cur = getNextSequentialModule(cur);
+                }
+            }
+            const int curIdx = order.indexOf(currentModule);
+            const int nextIdx = order.indexOf(nextModule);
+            if (curIdx >= 0 && nextIdx > curIdx + 1) {
+                for (int i = curIdx + 1; i < nextIdx; ++i) {
+                    emit moduleSkipped(order[i]);
+                }
+            }
+        }
+        currentModule = nextModule;
         m_currentModuleName = currentModule;
     }
 
@@ -574,7 +726,46 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
         Qt::DirectConnection);
     QElapsedTimer moduleTimer;
     moduleTimer.start();
-    bool success = module->execute(pipelineData, output);
+    // ABI v2：强类型端口执行，携带执行上下文
+    PortValueMap portInputs;
+    bool hasDataInput = false;
+    // 从实际入边按端口 ID 收集上游缓存输出；显式图中没有入边的节点不会继承其他分支的输出。
+    {
+        QReadLocker locker(&m_moduleLock);
+        for (const ModuleConnection& conn : m_connections) {
+            if (conn.toModuleId != moduleName || conn.edgeType == QLatin1String("control"))
+                continue;
+            hasDataInput = true;
+            const PortValueMap upOut = m_nodeOutputs.value(conn.fromModuleId);
+            if (upOut.contains(conn.fromPort)) {
+                portInputs.insert(conn.toPort, upOut.value(conn.fromPort));
+            }
+        }
+    }
+    if (m_connections.isEmpty() || !hasDataInput)
+        portInputs.insert(QStringLiteral("image"),
+                          QVariant::fromValue(m_connections.isEmpty() ? pipelineData : ImageData()));
+    PortValueMap portOutputs;
+    ExecutionContext execCtx;
+    execCtx.runId = m_runId;
+    execCtx.frameId = m_frameId++;
+    execCtx.timestampMs = QDateTime::currentMSecsSinceEpoch();
+    execCtx.runMode = module->flowControlType();
+    execCtx.cancellationToken = m_cancellationToken;
+    const ExecutionResult execResult = module->execute(portInputs, portOutputs, execCtx);
+    bool success = execResult.success;
+    if (success) {
+        m_nodeOutputs[moduleName] = portOutputs; // 缓存每端口输出供下游/单步使用
+    }
+    if (success && portOutputs.contains(QStringLiteral("image"))) {
+        output = portOutputs.value(QStringLiteral("image")).value<ImageData>();
+    }
+    if (!success && !execResult.userMessage.isEmpty()) {
+        QMutexLocker locker(&moduleErrorMutex);
+        if (moduleError.isEmpty()) {
+            moduleError = execResult.userMessage;
+        }
+    }
     disconnect(errorConnection);
     const qint64 elapsedMs = moduleTimer.elapsed();
     Logger::instance().info(QString("Module finished: %1 success=%2 elapsed=%3 ms")
@@ -625,6 +816,30 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     if (!success) {
         Logger::instance().error(QString("Module execution failed: %1: %2").arg(moduleName, m_lastModuleError), "Run");
     }
+}
+
+QStringList RunEngine::validateFlow() const {
+    QStringList errors;
+    QReadLocker locker(&m_moduleLock);
+    for (ModuleBase* module : m_modules) {
+        const QString id = runtimeModuleName(module);
+        const QList<PortSpec> inPorts = module->inputPorts();
+        for (const PortSpec& in : inPorts) {
+            if (!in.required || in.id == QLatin1String("image"))
+                continue;
+            bool supplied = false;
+            for (const ModuleConnection& conn : m_connections) {
+                if (conn.toModuleId != id || conn.toPort != in.id)
+                    continue;
+                supplied = true;
+                break;
+            }
+            if (!supplied) {
+                errors << tr("节点 %1 的必需输入端口 %2 无上游连接").arg(id, in.id);
+            }
+        }
+    }
+    return errors;
 }
 
 QString RunEngine::getNextModule(const QString& currentModule, bool lastResult) {
@@ -759,6 +974,7 @@ QString RunEngine::getNextSequentialModule(const QString& currentModule) {
 
 bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
     m_executionOrder.clear();
+    m_connections = project ? project->connections() : QList<ModuleConnection>{};
     if (!project || project->connections().isEmpty()) {
         return true;
     }
@@ -771,14 +987,17 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
         moduleIdSet.insert(id);
     }
 
-    QMap<QString, QString> adjacency;
+    QMap<QString, ModuleBase*> modulesById;
     QMap<QString, int> indegree;
     for (const QString& id : moduleIds) {
         indegree[id] = 0;
+        modulesById.insert(id, m_moduleMap.value(id));
     }
-    QSet<QString> connectedModules;
+    QMap<QString, QStringList> adjacency;
+    QMap<QString, int> inputCounts;
+    QSet<QString> uniqueEdges;
 
-    for (const ModuleConnection& conn : project->connections()) {
+    for (ModuleConnection& conn : m_connections) {
         if (!moduleIdSet.contains(conn.fromModuleId)) {
             error = tr("Connection references missing source module: %1").arg(conn.fromModuleId);
             return false;
@@ -787,45 +1006,79 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
             error = tr("Connection references missing target module: %1").arg(conn.toModuleId);
             return false;
         }
-        if (adjacency.contains(conn.fromModuleId) && adjacency.value(conn.fromModuleId) != conn.toModuleId) {
-            error = tr("Flow branches are not supported yet: %1 has multiple outputs").arg(conn.fromModuleId);
+        if (conn.edgeType == QLatin1String("pending")) {
+            error = tr("Connection %1 -> %2 requires manual port mapping").arg(conn.fromModuleId, conn.toModuleId);
             return false;
         }
-        if (indegree.value(conn.toModuleId) > 0 && adjacency.value(conn.fromModuleId) != conn.toModuleId) {
-            error = tr("Flow merges are not supported yet: %1 has multiple inputs").arg(conn.toModuleId);
+        if (conn.edgeType == QLatin1String("control")) {
+            error = tr("Explicit control edges are not supported by the graph executor yet");
             return false;
         }
-        if (adjacency.value(conn.fromModuleId) != conn.toModuleId) {
-            adjacency[conn.fromModuleId] = conn.toModuleId;
-            indegree[conn.toModuleId]++;
+        if (conn.fromPort.isEmpty())
+            conn.fromPort = QStringLiteral("image");
+        if (conn.toPort.isEmpty())
+            conn.toPort = QStringLiteral("image");
+        conn.edgeType = QStringLiteral("data");
+
+        ModuleBase* source = modulesById.value(conn.fromModuleId);
+        ModuleBase* target = modulesById.value(conn.toModuleId);
+        const QList<PortSpec> sourcePorts = source ? source->outputPorts() : QList<PortSpec>{};
+        const QList<PortSpec> targetPorts = target ? target->inputPorts() : QList<PortSpec>{};
+        const PortSpec* output = findPort(sourcePorts, conn.fromPort);
+        const PortSpec* input = findPort(targetPorts, conn.toPort);
+        if (!source || !target) {
+            error = tr("Connection references an unavailable runtime module");
+            return false;
         }
-        connectedModules.insert(conn.fromModuleId);
-        connectedModules.insert(conn.toModuleId);
+        if (!sourcePorts.isEmpty() && !output) {
+            error = tr("Node %1 has no output port %2").arg(conn.fromModuleId, conn.fromPort);
+            return false;
+        }
+        if (!targetPorts.isEmpty() && !input) {
+            error = tr("Node %1 has no input port %2").arg(conn.toModuleId, conn.toPort);
+            return false;
+        }
+        if (output && input && !portTypesCompatible(output->type, input->type)) {
+            error = tr("Connection %1.%2 (%3) is incompatible with %4.%5 (%6)")
+                        .arg(conn.fromModuleId, conn.fromPort, dataTypeName(output->type), conn.toModuleId, conn.toPort,
+                             dataTypeName(input->type));
+            return false;
+        }
+
+        const QString edgeKey = conn.fromModuleId + QLatin1Char('\x1f') + conn.toModuleId + QLatin1Char('\x1f') +
+                                conn.fromPort + QLatin1Char('\x1f') + conn.toPort;
+        if (uniqueEdges.contains(edgeKey))
+            continue;
+        uniqueEdges.insert(edgeKey);
+        const QString inputKey = conn.toModuleId + QLatin1Char('\x1f') + conn.toPort;
+        if (++inputCounts[inputKey] > 1 && input && !input->multiple) {
+            error =
+                tr("Input port %1.%2 does not accept multiple upstream connections").arg(conn.toModuleId, conn.toPort);
+            return false;
+        }
+        adjacency[conn.fromModuleId].append(conn.toModuleId);
+        ++indegree[conn.toModuleId];
     }
 
     QStringList ready;
-    for (const QString& id : connectedModules) {
+    for (const QString& id : moduleIds) {
         if (indegree.value(id) == 0) {
             ready.append(id);
         }
     }
 
-    if (ready.size() != 1) {
-        error = tr("Connected modules must form one linear flow");
-        return false;
-    }
-
-    QSet<QString> visited;
-    QString current = ready.first();
-    while (!current.isEmpty() && !visited.contains(current)) {
-        visited.insert(current);
+    while (!ready.isEmpty()) {
+        const QString current = ready.takeFirst();
         m_executionOrder.append(current);
-        current = adjacency.value(current);
+        for (const QString& downstream : adjacency.value(current)) {
+            if (--indegree[downstream] == 0)
+                ready.append(downstream);
+        }
     }
 
-    if (!current.isEmpty() || visited != connectedModules) {
+    if (m_executionOrder.size() != moduleIds.size()) {
         m_executionOrder.clear();
-        error = tr("Connected modules contain a cycle or disconnected chains");
+        error = tr("Data-flow graph contains a cycle");
         return false;
     }
 

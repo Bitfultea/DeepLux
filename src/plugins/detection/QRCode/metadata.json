@@ -3,7 +3,7 @@
     "name": "QRCode",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "Detect QR codes and barcodes",
+    "description": "识别二维码（QR Code）；其他条码格式需额外库支持，暂未开放",
     "category": "detection",
     "platforms": [
         "windows",
@@ -14,10 +14,40 @@
             "codeType": {
                 "label": "码类型",
                 "options": [
-                    {"label": "二维码", "value": "QR_Code"}
+                    {
+                        "label": "二维码",
+                        "value": "QR_Code"
+                    }
                 ],
                 "order": 10
             }
         }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "qr_result",
+                "displayName": "解码文本",
+                "type": "String",
+                "required": false,
+                "multiple": false
+            }
+        ]
     }
 }

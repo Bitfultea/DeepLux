@@ -36,5 +36,81 @@
                 "label": "迭代次数"
             }
         }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "fit_points",
+                "displayName": "拟合点集",
+                "type": "PointSet2D",
+                "required": true,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "line_row1",
+                "displayName": "线行1",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "line_col1",
+                "displayName": "线列1",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "line_row2",
+                "displayName": "线行2",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "line_col2",
+                "displayName": "线列2",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "line_phi",
+                "displayName": "角度",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "line_rho",
+                "displayName": "距离",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "line_error",
+                "displayName": "拟合误差",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            }
+        ]
     }
 }

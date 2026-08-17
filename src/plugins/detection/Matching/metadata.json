@@ -22,5 +22,25 @@
                 "label": "最大匹配数"
             }
         }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            }
+        ]
     }
 }

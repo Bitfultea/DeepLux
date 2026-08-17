@@ -1,0 +1,43 @@
+{
+    "version": "2.0",
+    "id": "accept-findcircle-0001",
+    "name": "验收-找圆流程",
+    "created": "2026-08-13T00:00:00",
+    "modified": "2026-08-13T00:00:00",
+    "modules": [
+        {
+            "id": "grab",
+            "moduleId": "GrabImage",
+            "name": "图像采集",
+            "posX": 80,
+            "posY": 120,
+            "params": {
+                "grabSource": "File",
+                "filePath": "@ACCEPTANCE_DATA@/circle_640x480.png"
+            }
+        },
+        {
+            "id": "findcircle",
+            "moduleId": "FindCircle",
+            "name": "找圆",
+            "posX": 320,
+            "posY": 120,
+            "params": {
+                "minRadius": 50,
+                "maxRadius": 150,
+                "param1": 100,
+                "param2": 50
+            }
+        }
+    ],
+    "connections": [
+        {
+            "fromModuleId": "grab",
+            "toModuleId": "findcircle",
+            "fromOutput": 0,
+            "toInput": 0
+        }
+    ],
+    "cameras": [],
+    "dataSources": []
+}

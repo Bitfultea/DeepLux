@@ -4,8 +4,11 @@
 #include <QEvent>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QList>
 #include <QMap>
 #include <QMutex>
+
+#include "core/deeplux/DataContract.h"
 #include <QObject>
 #include <QPluginLoader>
 #include <QRunnable>
@@ -37,6 +40,8 @@ struct PluginInfo {
     bool loaded = false; // 是否已加载
     QString error;       // 错误信息
     QJsonObject ui;      // 可选 UI 描述（parameters/results 元数据）
+    QList<PortSpec> inputPorts;  // ABI v2 输入端口声明（metadata.json ports.inputs）
+    QList<PortSpec> outputPorts; // ABI v2 输出端口声明（metadata.json ports.outputs）
 };
 
 /**

@@ -114,8 +114,91 @@ bool ModuleBase::execute(const ImageData& input, ImageData& output)
     m_state = success ? ModuleState::Idle : ModuleState::Error;
     emit stateChanged(m_state);
     emit executionCompleted(success);
-    
+
     return success;
+}
+
+void ModuleBase::setPorts(const QList<PortSpec>& inputs, const QList<PortSpec>& outputs)
+{
+    m_inputPorts = inputs;
+    m_outputPorts = outputs;
+}
+
+ExecutionResult ModuleBase::execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context)
+{
+    // 提取 Image2D 载体：优先 "image" 端口，其次任一可转换值
+    ImageData input;
+    if (inputs.contains(QStringLiteral("image")) && inputs.value(QStringLiteral("image")).canConvert<ImageData>()) {
+        input = inputs.value(QStringLiteral("image")).value<ImageData>();
+    } else {
+        for (auto it = inputs.constBegin(); it != inputs.constEnd(); ++it) {
+            if (it.value().canConvert<ImageData>()) {
+                input = it.value().value<ImageData>();
+                break;
+            }
+        }
+    }
+
+    // 将载体中的命名数据键补充为端口值（把原隐藏键显式化为端口）
+    PortValueMap effectiveInputs = inputs;
+    const QMap<QString, QVariant> carrierData = input.allData();
+    for (const PortSpec& spec : m_inputPorts) {
+        if (!effectiveInputs.contains(spec.id) && carrierData.contains(spec.id)) {
+            effectiveInputs.insert(spec.id, carrierData.value(spec.id));
+        }
+    }
+
+    // 必需输入校验：缺失返回结构化错误（运行前/运行期均可识别）
+    for (const PortSpec& spec : m_inputPorts) {
+        if (spec.required && !effectiveInputs.contains(spec.id)) {
+            const QString msg = tr("缺少必需输入：%1").arg(spec.displayName.isEmpty() ? spec.id : spec.displayName);
+            emit errorOccurred(msg);
+            return ExecutionResult::fail(ExecError::MissingRequiredInput, msg,
+                                         QStringLiteral("port=%1").arg(spec.id));
+        }
+        if (effectiveInputs.contains(spec.id) && !portValueMatchesType(effectiveInputs.value(spec.id), spec.type)) {
+            const QString msg = tr("输入类型不匹配：%1").arg(spec.displayName.isEmpty() ? spec.id : spec.displayName);
+            emit errorOccurred(msg);
+            return ExecutionResult::fail(ExecError::TypeMismatch, msg,
+                                         QStringLiteral("port=%1 expected=%2 actual=%3")
+                                             .arg(spec.id, dataTypeName(spec.type),
+                                                  QString::fromLatin1(effectiveInputs.value(spec.id).typeName())));
+        }
+    }
+
+    // 让旧 process(ImageData, ImageData) 插件也能读取端口化调用的命名输入。
+    for (auto it = effectiveInputs.constBegin(); it != effectiveInputs.constEnd(); ++it) {
+        if (it.key() != QLatin1String("image"))
+            input.setData(it.key(), it.value());
+    }
+
+    if (context.cancellationToken) {
+        setCancellationToken(context.cancellationToken);
+    }
+
+    ImageData output;
+    const bool success = execute(input, output);
+    if (!success) {
+        return ExecutionResult::fail(ExecError::Processing, tr("模块执行失败：%1").arg(name()));
+    }
+
+    // 旧插件继续写 ImageData metadata；桥接层只导出 metadata.json 中声明的命名端口。
+    outputs.insert(QStringLiteral("image"), QVariant::fromValue(output));
+    for (const PortSpec& spec : m_outputPorts) {
+        if (spec.id == QLatin1String("image") || !output.hasData(spec.id))
+            continue;
+        const QVariant value = output.data(spec.id);
+        if (!portValueMatchesType(value, spec.type)) {
+            const QString msg = tr("输出类型不匹配：%1").arg(spec.displayName.isEmpty() ? spec.id : spec.displayName);
+            emit errorOccurred(msg);
+            return ExecutionResult::fail(ExecError::TypeMismatch, msg,
+                                         QStringLiteral("port=%1 expected=%2 actual=%3")
+                                             .arg(spec.id, dataTypeName(spec.type),
+                                                  QString::fromLatin1(value.typeName())));
+        }
+        outputs.insert(spec.id, value);
+    }
+    return ExecutionResult::ok();
 }
 
 void ModuleBase::setCancellationToken(CancellationToken* token)

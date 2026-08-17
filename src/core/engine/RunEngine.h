@@ -1,6 +1,7 @@
 #pragma once
 
 #include "deeplux/ControlFlowType.h"
+#include "deeplux/DataContract.h"
 #include "model/ImageData.h"
 
 #include <QDateTime>
@@ -11,6 +12,7 @@
 #include <QReadWriteLock>
 #include <QSet>
 #include <QStack>
+#include <QThreadPool>
 #include <QTimer>
 #include <QWaitCondition>
 #include <atomic>
@@ -25,6 +27,7 @@ namespace DeepLux {
 class ModuleBase;
 class Project;
 struct ModuleInstance;
+struct ModuleConnection;
 
 /**
  * @brief 运行状态
@@ -127,6 +130,9 @@ public:
     int getModuleIndex(const QString& moduleName) const;
     bool buildExecutionOrder(const Project* project, QString& error);
 
+    // 阶段 3.1：运行前校验（必需输入/连接类型），返回错误列表（含节点+端口定位）
+    QStringList validateFlow() const;
+
     // 输出管理
     void setOutput(const QString& moduleName, const QString& varName, const QVariant& value);
     QVariant getOutput(const QString& moduleName, const QString& varName) const;
@@ -143,6 +149,16 @@ public:
     int successRuns() const;
     int failedRuns() const;
     int lastElapsedMs() const;
+
+    // 并行执行（阶段 3.3）
+    void setParallelThreadCount(int n);
+    int parallelThreadCount() const;
+    /// 并发执行一组独立模块；任一失败取消同组并返回首个错误+诊断。
+    ExecutionResult executeParallel(const QStringList& moduleNames, const PortValueMap& sharedInput);
+    /// 上一次 executeParallel 观测到的最大并发度（用于证明真实并发）。
+    int lastParallelMaxConcurrency() const {
+        return m_lastParallelMaxConcurrency;
+    }
 
     // 断点控制
     void setBreakpoint(const QString& moduleName, bool enabled);
@@ -182,6 +198,7 @@ signals:
     void cycleStopped();
     void moduleStarted(const QString& moduleId);
     void moduleFinished(const QString& moduleId, bool success, int elapsedMs);
+    void moduleSkipped(const QString& moduleId); // 未激活分支，显示 Skipped 非失败
     void errorOccurred(const QString& error);
     void outputChanged(const QString& moduleName, const QString& varName, const QVariant& value);
 
@@ -215,6 +232,9 @@ private:
     QList<ModuleBase*> m_ownedModules;
     QMap<QString, ModuleBase*> m_moduleMap;
     QStringList m_executionOrder;
+    QList<ModuleConnection> m_connections; // 阶段 3.1 边集合（端口路由）
+    // 当前帧每节点端口输出缓存（flowId 现阶段为 main）；新帧清除
+    QMap<QString, PortValueMap> m_nodeOutputs;
     mutable QReadWriteLock m_moduleLock;
 
     // 模块树结构
@@ -256,6 +276,16 @@ private:
     mutable QMutex m_lastOutputMutex;
 
     CancellationToken* m_cancellationToken = nullptr;
+
+    // ABI v2 执行上下文：一次运行的 ID 与递增帧号
+    QString m_runId;
+    qint64 m_frameId = 0;
+
+    // 阶段 3.3 受控并行线程池
+    QThreadPool* m_parallelPool = nullptr;
+    int m_parallelThreads = 1;
+    int m_lastParallelMaxConcurrency = 0;
+    mutable QMutex m_parallelMutex;
 };
 
 } // namespace DeepLux

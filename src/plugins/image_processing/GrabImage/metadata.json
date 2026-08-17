@@ -64,9 +64,18 @@
             "grabSource": {
                 "label": "图像源",
                 "_options": [
-                    {"label": "相机", "value": "Camera"},
-                    {"label": "自动路径", "value": "Path"},
-                    {"label": "演示", "value": "Demo"}
+                    {
+                        "label": "相机",
+                        "value": "Camera"
+                    },
+                    {
+                        "label": "自动路径",
+                        "value": "Path"
+                    },
+                    {
+                        "label": "演示",
+                        "value": "Demo"
+                    }
                 ],
                 "order": 50
             },
@@ -80,5 +89,17 @@
                 "order": 60
             }
         }
+    },
+    "ports": {
+        "inputs": [],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            }
+        ]
     }
 }

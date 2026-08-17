@@ -10,8 +10,10 @@ endif()
 
 set(CORE_SOURCES
     base/ModuleBase.cpp
+    deeplux/DataContract.cpp
     platform/PathUtils.cpp
     model/Project.cpp
+    model/ProjectMigrator.cpp
     manager/ProjectManager.cpp
     manager/ConfigManager.cpp
     manager/PluginManager.cpp

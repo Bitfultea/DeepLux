@@ -70,5 +70,32 @@
                 "label": "自适应常数"
             }
         }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "blob_count",
+                "displayName": "斑点数",
+                "type": "Integer",
+                "required": false,
+                "multiple": false
+            }
+        ]
     }
 }

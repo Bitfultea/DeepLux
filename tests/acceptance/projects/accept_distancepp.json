@@ -1,0 +1,35 @@
+{
+    "version": "3.0",
+    "id": "accept-distancepp-0001",
+    "name": "验收-两点距离流程",
+    "created": "2026-08-14T00:00:00",
+    "modified": "2026-08-14T00:00:00",
+    "modules": [
+        {
+            "id": "measurementinput",
+            "moduleId": "MeasurementInput",
+            "name": "测量输入",
+            "posX": 80,
+            "posY": 120,
+            "params": {
+                "mode": "point_pair",
+                "point1": [200.0, 200.0],
+                "point2": [440.0, 320.0]
+            }
+        },
+        {
+            "id": "distancepp",
+            "moduleId": "DistancePP",
+            "name": "两点距离",
+            "posX": 320,
+            "posY": 120,
+            "params": {}
+        }
+    ],
+    "connections": [
+        {"fromModuleId": "measurementinput", "toModuleId": "distancepp", "fromPort": "point1", "toPort": "point1", "edgeType": "data"},
+        {"fromModuleId": "measurementinput", "toModuleId": "distancepp", "fromPort": "point2", "toPort": "point2", "edgeType": "data"}
+    ],
+    "flows": [{"id": "main", "name": "主流程", "nodes": ["measurementinput", "distancepp"]}],
+    "resources": {"cameras": [], "dataSources": []}
+}

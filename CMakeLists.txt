@@ -151,15 +151,32 @@ add_subdirectory(src/plugins/hymson3d)
 add_subdirectory(src/plugins/camera)
 
 # ========== 条件编译插件 ==========
-option(ENABLE_CAMERA_BASLER "Enable Basler camera support" OFF)
-option(ENABLE_CAMERA_HIKVISION "Enable HikVision camera support" OFF)
+# 相机品牌驱动按需接入：仅在对应 SDK 与插件源码就位后才启用。
+# 当前仓库未附带 Basler/HikVision 插件源码；开启选项会给出明确错误，
+# 而非 CMake 的 "add_subdirectory ... not an existing directory" 提示。
+option(ENABLE_CAMERA_BASLER "Enable Basler camera support (requires Basler Pylon SDK plugin source)" OFF)
+option(ENABLE_CAMERA_HIKVISION "Enable HikVision camera support (requires HikVision MVS SDK plugin source)" OFF)
 
 if(ENABLE_CAMERA_BASLER)
-    add_subdirectory(src/plugins/cameras/CameraBasler)
+    if(EXISTS ${CMAKE_SOURCE_DIR}/src/plugins/cameras/CameraBasler/CMakeLists.txt)
+        add_subdirectory(src/plugins/cameras/CameraBasler)
+    else()
+        message(FATAL_ERROR
+            "ENABLE_CAMERA_BASLER=ON 但未找到 src/plugins/cameras/CameraBasler。\n"
+            "Basler 相机驱动尚未随本仓库分发：请先安装 Basler Pylon SDK 并放置相机插件源码，"
+            "或关闭该选项 (-DENABLE_CAMERA_BASLER=OFF)。")
+    endif()
 endif()
 
 if(ENABLE_CAMERA_HIKVISION)
-    add_subdirectory(src/plugins/cameras/CameraHikVision)
+    if(EXISTS ${CMAKE_SOURCE_DIR}/src/plugins/cameras/CameraHikVision/CMakeLists.txt)
+        add_subdirectory(src/plugins/cameras/CameraHikVision)
+    else()
+        message(FATAL_ERROR
+            "ENABLE_CAMERA_HIKVISION=ON 但未找到 src/plugins/cameras/CameraHikVision。\n"
+            "HikVision 相机驱动尚未随本仓库分发：请先安装海康 MVS SDK 并放置相机插件源码，"
+            "或关闭该选项 (-DENABLE_CAMERA_HIKVISION=OFF)。")
+    endif()
 endif()
 
 # ========== SAM server runtime files ==========

@@ -53,9 +53,20 @@ public:
 
     int interfaceVersion() const override { return DEEPLUX_MODULE_INTERFACE_VERSION; }
 
-    bool execute(const ImageData& input, ImageData& output) override;
+    // 旧 process() 插件的源代码兼容入口，不属于 IModule ABI。
+    bool execute(const ImageData& input, ImageData& output);
+    ExecutionResult execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) override;
     void setCancellationToken(CancellationToken* token);
     CancellationToken* cancellationToken() const;
+
+    // 端口声明（由 PluginManager 从 metadata.json 注入）
+    QList<PortSpec> inputPorts() const override {
+        return m_inputPorts;
+    }
+    QList<PortSpec> outputPorts() const override {
+        return m_outputPorts;
+    }
+    void setPorts(const QList<PortSpec>& inputs, const QList<PortSpec>& outputs);
 
     QJsonObject defaultParams() const override;
     QJsonObject currentParams() const override;
@@ -93,6 +104,9 @@ protected:
 
     QJsonObject m_params;
     QJsonObject m_defaultParams;
+
+    QList<PortSpec> m_inputPorts;
+    QList<PortSpec> m_outputPorts;
 
     bool m_initialized = false;
     ModuleState m_state = ModuleState::Idle;

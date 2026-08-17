@@ -45,5 +45,39 @@
                 "label": "最大角度"
             }
         }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "line_length",
+                "displayName": "线长",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "line_angle",
+                "displayName": "角度",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            }
+        ]
     }
 }

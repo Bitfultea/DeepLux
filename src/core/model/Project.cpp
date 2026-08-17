@@ -16,6 +16,12 @@ QJsonObject ModuleConnection::toJson() const {
     json["toModuleId"] = toModuleId;
     json["fromOutput"] = fromOutput;
     json["toInput"] = toInput;
+    if (!fromPort.isEmpty())
+        json["fromPort"] = fromPort;
+    if (!toPort.isEmpty())
+        json["toPort"] = toPort;
+    if (!edgeType.isEmpty())
+        json["edgeType"] = edgeType;
     return json;
 }
 
@@ -25,7 +31,50 @@ ModuleConnection ModuleConnection::fromJson(const QJsonObject& json) {
     conn.toModuleId = json["toModuleId"].toString();
     conn.fromOutput = json["fromOutput"].toInt(0);
     conn.toInput = json["toInput"].toInt(0);
+    conn.fromPort = json["fromPort"].toString();
+    conn.toPort = json["toPort"].toString();
+    conn.edgeType = json["edgeType"].toString(QStringLiteral("data"));
     return conn;
+}
+
+QJsonObject ProjectFlow::toJson() const {
+    QJsonObject json;
+    json["id"] = id;
+    json["name"] = name;
+    QJsonArray nodes;
+    for (const QString& n : nodeIds)
+        nodes.append(n);
+    json["nodes"] = nodes;
+    return json;
+}
+
+ProjectFlow ProjectFlow::fromJson(const QJsonObject& json) {
+    ProjectFlow flow;
+    flow.id = json["id"].toString(QStringLiteral("main"));
+    flow.name = json["name"].toString();
+    for (const QJsonValue& v : json["nodes"].toArray())
+        flow.nodeIds.append(v.toString());
+    return flow;
+}
+
+QJsonObject MigrationRecord::toJson() const {
+    QJsonObject json;
+    json["originalVersion"] = originalVersion;
+    json["migratedAt"] = migratedAt.toString(Qt::ISODate);
+    QJsonArray warns;
+    for (const QString& w : warnings)
+        warns.append(w);
+    json["warnings"] = warns;
+    return json;
+}
+
+MigrationRecord MigrationRecord::fromJson(const QJsonObject& json) {
+    MigrationRecord rec;
+    rec.originalVersion = json["originalVersion"].toString();
+    rec.migratedAt = QDateTime::fromString(json["migratedAt"].toString(), Qt::ISODate);
+    for (const QJsonValue& v : json["warnings"].toArray())
+        rec.warnings.append(v.toString());
+    return rec;
 }
 
 // ========== ModuleInstance ==========
@@ -193,6 +242,11 @@ void Project::removeConnection(const QString& fromId, const QString& toId) {
     }
 }
 
+void Project::setConnections(const QList<ModuleConnection>& conns) {
+    m_connections = conns;
+    touch();
+}
+
 void Project::addCamera(const CameraConfig& camera) {
     m_cameras.append(camera);
     touch();
@@ -248,9 +302,37 @@ std::optional<DataSource> Project::findDataSource(const QString& id) const {
     return std::nullopt;
 }
 
+void Project::setFlows(const QList<ProjectFlow>& flows) {
+    m_flows = flows;
+    touch();
+}
+
+ProjectFlow Project::flow(const QString& flowId) const {
+    for (const ProjectFlow& f : m_flows) {
+        if (f.id == flowId)
+            return f;
+    }
+    return ProjectFlow();
+}
+
+void Project::setRecipes(const QJsonObject& recipes) {
+    m_recipes = recipes;
+    touch();
+}
+
+void Project::setDashboard(const QJsonObject& dashboard) {
+    m_dashboard = dashboard;
+    touch();
+}
+
+void Project::setMigration(const MigrationRecord& rec) {
+    m_migration = rec;
+    touch();
+}
+
 QJsonObject Project::toJson() const {
     QJsonObject json;
-    json["version"] = "2.0";
+    json["version"] = m_formatVersion;
     json["id"] = m_id;
     json["name"] = m_name;
     json["created"] = m_created.toString(Qt::ISODate);
@@ -270,24 +352,48 @@ QJsonObject Project::toJson() const {
     }
     json["connections"] = connectionsArray;
 
-    // 相机
+    // 流程（3.0）：至少包含 main
+    QJsonArray flowsArray;
+    QList<ProjectFlow> flows = m_flows;
+    if (flows.isEmpty()) {
+        ProjectFlow main;
+        main.id = QStringLiteral("main");
+        main.name = QStringLiteral("主流程");
+        for (const auto& m : m_modules)
+            main.nodeIds.append(m.id);
+        flows.append(main);
+    }
+    for (const auto& f : flows) {
+        flowsArray.append(f.toJson());
+    }
+    json["flows"] = flowsArray;
+
+    // 资源（3.0）：相机 + 数据源
+    QJsonObject resources;
     QJsonArray camerasArray;
     for (const auto& camera : m_cameras) {
         camerasArray.append(camera.toJson());
     }
-    json["cameras"] = camerasArray;
-
-    // 数据源
+    resources["cameras"] = camerasArray;
     QJsonArray dataSourcesArray;
     for (const auto& ds : m_dataSources) {
         dataSourcesArray.append(ds.toJson());
     }
-    json["dataSources"] = dataSourcesArray;
+    resources["dataSources"] = dataSourcesArray;
+    json["resources"] = resources;
+
+    // recipes / dashboard / migration（3.0）
+    json["recipes"] = m_recipes;
+    json["dashboard"] = m_dashboard;
+    if (!m_migration.originalVersion.isEmpty()) {
+        json["migration"] = m_migration.toJson();
+    }
 
     return json;
 }
 
 bool Project::fromJson(const QJsonObject& json) {
+    m_formatVersion = json["version"].toString(QStringLiteral("2.0"));
     m_id = json["id"].toString();
     m_name = json["name"].toString();
     m_created = QDateTime::fromString(json["created"].toString(), Qt::ISODate);
@@ -305,16 +411,29 @@ bool Project::fromJson(const QJsonObject& json) {
         m_connections.append(ModuleConnection::fromJson(val.toObject()));
     }
 
+    // 3.0 资源在 resources 下；2.0 在顶层 cameras/dataSources
+    QJsonObject resources = json["resources"].toObject();
+    QJsonArray camerasArray = resources.contains("cameras") ? resources["cameras"].toArray() : json["cameras"].toArray();
     m_cameras.clear();
-    QJsonArray camerasArray = json["cameras"].toArray();
     for (const auto& val : camerasArray) {
         m_cameras.append(CameraConfig::fromJson(val.toObject()));
     }
-
+    QJsonArray dataSourcesArray =
+        resources.contains("dataSources") ? resources["dataSources"].toArray() : json["dataSources"].toArray();
     m_dataSources.clear();
-    QJsonArray dataSourcesArray = json["dataSources"].toArray();
     for (const auto& val : dataSourcesArray) {
         m_dataSources.append(DataSource::fromJson(val.toObject()));
+    }
+
+    // 3.0 流程/recipes/dashboard/migration
+    m_flows.clear();
+    for (const auto& val : json["flows"].toArray()) {
+        m_flows.append(ProjectFlow::fromJson(val.toObject()));
+    }
+    m_recipes = json["recipes"].toObject();
+    m_dashboard = json["dashboard"].toObject();
+    if (json.contains("migration")) {
+        m_migration = MigrationRecord::fromJson(json["migration"].toObject());
     }
 
     m_hasUnsavedChanges = false;

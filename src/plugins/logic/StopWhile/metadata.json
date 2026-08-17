@@ -4,5 +4,33 @@
     "category": "logic",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "放在循环内用于提前退出"
+    "description": "放在循环内用于提前退出",
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "stop",
+                "displayName": "stop",
+                "type": "Boolean",
+                "required": false,
+                "multiple": false,
+                "control": true
+            }
+        ]
+    }
 }

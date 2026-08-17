@@ -4,5 +4,46 @@
     "category": "geometry",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "计算两条直线之间的距离"
+    "description": "计算两条直线之间的距离",
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "line1",
+                "displayName": "线1",
+                "type": "Line2D",
+                "required": true,
+                "multiple": false
+            },
+            {
+                "id": "line2",
+                "displayName": "线2",
+                "type": "Line2D",
+                "required": true,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "distance",
+                "displayName": "距离",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            }
+        ]
+    }
 }

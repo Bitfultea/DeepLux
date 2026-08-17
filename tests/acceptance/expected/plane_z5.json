@@ -1,0 +1,13 @@
+{
+  "point_cloud": "plane_z5.ply",
+  "vertex_count": 273,
+  "plane_z": 5.0,
+  "probe_point": [
+    4.0,
+    3.0,
+    8.0
+  ],
+  "point_surface_distance": 3.0,
+  "tolerance_z": 0.001,
+  "tolerance_distance": 0.001
+}

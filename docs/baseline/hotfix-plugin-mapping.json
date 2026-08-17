@@ -1,0 +1,996 @@
+{
+  "repository": "qhchen-sz/DeepLux",
+  "commit": "47d76c1225e9dba5cfd3674df54cc3327894839b",
+  "plugins": [
+    {
+      "legacyPath": "02Plugins/000常用工具/Plugin.Delay",
+      "legacyCategory": "000常用工具",
+      "legacyPlugin": "Delay",
+      "currentCandidate": "Delay",
+      "currentPluginId": "com.deeplux.plugin.delay",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/000常用工具/Plugin.ShowChart",
+      "legacyCategory": "000常用工具",
+      "legacyPlugin": "ShowChart",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/001图像处理/Plugin.AreaSpray",
+      "legacyCategory": "001图像处理",
+      "legacyPlugin": "AreaSpray",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/001图像处理/Plugin.Blob",
+      "legacyCategory": "001图像处理",
+      "legacyPlugin": "Blob",
+      "currentCandidate": "Blob",
+      "currentPluginId": "com.deeplux.plugin.blob",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/001图像处理/Plugin.CameraReadyWait",
+      "legacyCategory": "001图像处理",
+      "legacyPlugin": "CameraReadyWait",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/001图像处理/Plugin.CropImage",
+      "legacyCategory": "001图像处理",
+      "legacyPlugin": "CropImage",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/001图像处理/Plugin.DepthToGray",
+      "legacyCategory": "001图像处理",
+      "legacyPlugin": "DepthToGray",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/001图像处理/Plugin.DiplayData",
+      "legacyCategory": "001图像处理",
+      "legacyPlugin": "DiplayData",
+      "currentCandidate": "DisplayData",
+      "currentPluginId": "com.deeplux.plugin.displaydata",
+      "matchKind": "candidate",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/001图像处理/Plugin.GrabImage",
+      "legacyCategory": "001图像处理",
+      "legacyPlugin": "GrabImage",
+      "currentCandidate": "GrabImage",
+      "currentPluginId": "com.deeplux.plugin.grabimage",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/001图像处理/Plugin.ImageMerge",
+      "legacyCategory": "001图像处理",
+      "legacyPlugin": "ImageMerge",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/001图像处理/Plugin.ImageOperation",
+      "legacyCategory": "001图像处理",
+      "legacyPlugin": "ImageOperation",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/001图像处理/Plugin.ImageScript",
+      "legacyCategory": "001图像处理",
+      "legacyPlugin": "ImageScript",
+      "currentCandidate": "ImageScript",
+      "currentPluginId": "com.deeplux.plugin.imagescript",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/001图像处理/Plugin.JigsawPuzzle",
+      "legacyCategory": "001图像处理",
+      "legacyPlugin": "JigsawPuzzle",
+      "currentCandidate": "JigsawPuzzle",
+      "currentPluginId": "com.deeplux.plugin.jigsawsolver",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/001图像处理/Plugin.PerProcessing",
+      "legacyCategory": "001图像处理",
+      "legacyPlugin": "PerProcessing",
+      "currentCandidate": "PerProcessing",
+      "currentPluginId": "com.deeplux.plugin.perprocessing",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/001图像处理/Plugin.SaveImage",
+      "legacyCategory": "001图像处理",
+      "legacyPlugin": "SaveImage",
+      "currentCandidate": "SaveImage",
+      "currentPluginId": "com.deeplux.plugin.saveimage",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/001图像处理/Plugin.ShowImage",
+      "legacyCategory": "001图像处理",
+      "legacyPlugin": "ShowImage",
+      "currentCandidate": "ShowImage",
+      "currentPluginId": "com.deeplux.plugin.showimage",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/001图像处理/Plugin.ShowShape",
+      "legacyCategory": "001图像处理",
+      "legacyPlugin": "ShowShape",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.AreaOperations",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "AreaOperations",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.BarcodeReader",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "BarcodeReader",
+      "currentCandidate": "QRCode",
+      "currentPluginId": "com.deeplux.plugin.qrcode",
+      "matchKind": "candidate",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.ColorExtraction",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "ColorExtraction",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.ColorRecognition",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "ColorRecognition",
+      "currentCandidate": "ColorRecognition",
+      "currentPluginId": "com.deeplux.plugin.colorrecognition",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.CreatePoints",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "CreatePoints",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.CreateROI",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "CreateROI",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.EdgeDefectDetection",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "EdgeDefectDetection",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.FindCircle",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "FindCircle",
+      "currentCandidate": "FindCircle",
+      "currentPluginId": "com.deeplux.plugin.findcircle",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.GrayMeasure",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "GrayMeasure",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.GreenRegion",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "GreenRegion",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.LabelRegion",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "LabelRegion",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.Matching",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "Matching",
+      "currentCandidate": "Matching",
+      "currentPluginId": "com.deeplux.plugin.matching",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.Matching1",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "Matching1",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.MeasureCircle",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "MeasureCircle",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.MeasureLine",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "MeasureLine",
+      "currentCandidate": "MeasureLine",
+      "currentPluginId": "com.deeplux.plugin.measureline",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.MeasureRect",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "MeasureRect",
+      "currentCandidate": "MeasureRect",
+      "currentPluginId": "com.deeplux.plugin.measurerect",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/002检测识别/Plugin.QRCode",
+      "legacyCategory": "002检测识别",
+      "legacyPlugin": "QRCode",
+      "currentCandidate": "QRCode",
+      "currentPluginId": "com.deeplux.plugin.qrcode",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/003几何测量/Plugin.DistanceLL",
+      "legacyCategory": "003几何测量",
+      "legacyPlugin": "DistanceLL",
+      "currentCandidate": "LinesDistance",
+      "currentPluginId": "com.deeplux.plugin.linesdistance",
+      "matchKind": "candidate",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/003几何测量/Plugin.DistancePL",
+      "legacyCategory": "003几何测量",
+      "legacyPlugin": "DistancePL",
+      "currentCandidate": "DistancePL",
+      "currentPluginId": "com.deeplux.plugin.distancepl",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/003几何测量/Plugin.DistancePP",
+      "legacyCategory": "003几何测量",
+      "legacyPlugin": "DistancePP",
+      "currentCandidate": "DistancePP",
+      "currentPluginId": "com.deeplux.plugin.distancepp",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/003几何测量/Plugin.LinesDistance",
+      "legacyCategory": "003几何测量",
+      "legacyPlugin": "LinesDistance",
+      "currentCandidate": "LinesDistance",
+      "currentPluginId": "com.deeplux.plugin.linesdistance",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/004几何关系/Plugin.AffineeRegion",
+      "legacyCategory": "004几何关系",
+      "legacyPlugin": "AffineeRegion",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/004几何关系/Plugin.BuildLl",
+      "legacyCategory": "004几何关系",
+      "legacyPlugin": "BuildLl",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/004几何关系/Plugin.FitCircle",
+      "legacyCategory": "004几何关系",
+      "legacyPlugin": "FitCircle",
+      "currentCandidate": "FitCircle",
+      "currentPluginId": "com.deeplux.plugin.fitcircle",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/004几何关系/Plugin.FitEllipse",
+      "legacyCategory": "004几何关系",
+      "legacyPlugin": "FitEllipse",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/004几何关系/Plugin.FitLine",
+      "legacyCategory": "004几何关系",
+      "legacyPlugin": "FitLine",
+      "currentCandidate": "FitLine",
+      "currentPluginId": "com.deeplux.plugin.fitline",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/004几何关系/Plugin.RegionProcess",
+      "legacyCategory": "004几何关系",
+      "legacyPlugin": "RegionProcess",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/005坐标标定/Plugin.CalculateOffset",
+      "legacyCategory": "005坐标标定",
+      "legacyPlugin": "CalculateOffset",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/005坐标标定/Plugin.Coordinate",
+      "legacyCategory": "005坐标标定",
+      "legacyPlugin": "Coordinate",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/005坐标标定/Plugin.MeasureCalib",
+      "legacyCategory": "005坐标标定",
+      "legacyPlugin": "MeasureCalib",
+      "currentCandidate": "NPointCalibration",
+      "currentPluginId": "com.deeplux.plugin.npointcalibration",
+      "matchKind": "candidate",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/005坐标标定/Plugin.NPointCal",
+      "legacyCategory": "005坐标标定",
+      "legacyPlugin": "NPointCal",
+      "currentCandidate": "NPointCalibration",
+      "currentPluginId": "com.deeplux.plugin.npointcalibration",
+      "matchKind": "candidate",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/006对位工具/Plugin.CalibrationConversion",
+      "legacyCategory": "006对位工具",
+      "legacyPlugin": "CalibrationConversion",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/006对位工具/Plugin.RotateNewPoint",
+      "legacyCategory": "006对位工具",
+      "legacyPlugin": "RotateNewPoint",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/007逻辑工具/Plugin.CSharpScript",
+      "legacyCategory": "007逻辑工具",
+      "legacyPlugin": "CSharpScript",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/007逻辑工具/Plugin.If",
+      "legacyCategory": "007逻辑工具",
+      "legacyPlugin": "If",
+      "currentCandidate": "If",
+      "currentPluginId": "com.deeplux.plugin.if",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/007逻辑工具/Plugin.Parallel",
+      "legacyCategory": "007逻辑工具",
+      "legacyPlugin": "Parallel",
+      "currentCandidate": "Parallel",
+      "currentPluginId": "com.deeplux.plugin.parallel",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/007逻辑工具/Plugin.RunProject",
+      "legacyCategory": "007逻辑工具",
+      "legacyPlugin": "RunProject",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/007逻辑工具/Plugin.StopWhile",
+      "legacyCategory": "007逻辑工具",
+      "legacyPlugin": "StopWhile",
+      "currentCandidate": "StopWhile",
+      "currentPluginId": "com.deeplux.plugin.stopwhile",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/007逻辑工具/Plugin.While",
+      "legacyCategory": "007逻辑工具",
+      "legacyPlugin": "While",
+      "currentCandidate": "While",
+      "currentPluginId": "com.deeplux.plugin.while",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/008系统工具/Plugin.DataCheck",
+      "legacyCategory": "008系统工具",
+      "legacyPlugin": "DataCheck",
+      "currentCandidate": "DataCheck",
+      "currentPluginId": "com.deeplux.plugin.datacheck",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/008系统工具/Plugin.Folder",
+      "legacyCategory": "008系统工具",
+      "legacyPlugin": "Folder",
+      "currentCandidate": "Folder",
+      "currentPluginId": "com.deeplux.plugin.folder",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/008系统工具/Plugin.SaveData",
+      "legacyCategory": "008系统工具",
+      "legacyPlugin": "SaveData",
+      "currentCandidate": "SaveData",
+      "currentPluginId": "com.deeplux.plugin.savedata",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/008系统工具/Plugin.ShowPoint",
+      "legacyCategory": "008系统工具",
+      "legacyPlugin": "ShowPoint",
+      "currentCandidate": "ShowPoint",
+      "currentPluginId": "com.deeplux.plugin.showpoint",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/008系统工具/Plugin.SystemTime",
+      "legacyCategory": "008系统工具",
+      "legacyPlugin": "SystemTime",
+      "currentCandidate": "SystemTime",
+      "currentPluginId": "com.deeplux.plugin.systemtime",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/008系统工具/Plugin.TableOutPut",
+      "legacyCategory": "008系统工具",
+      "legacyPlugin": "TableOutPut",
+      "currentCandidate": "TableOutPut",
+      "currentPluginId": "com.deeplux.plugin.tableoutput",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/008系统工具/Plugin.TimeSlice",
+      "legacyCategory": "008系统工具",
+      "legacyPlugin": "TimeSlice",
+      "currentCandidate": "TimeSlice",
+      "currentPluginId": "com.deeplux.plugin.timeslice",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/008系统工具/Plugin.WriteText",
+      "legacyCategory": "008系统工具",
+      "legacyPlugin": "WriteText",
+      "currentCandidate": "WriteText",
+      "currentPluginId": "com.deeplux.plugin.writetext",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/009变量工具/Plugin.CreateString",
+      "legacyCategory": "009变量工具",
+      "legacyPlugin": "CreateString",
+      "currentCandidate": "CreateString",
+      "currentPluginId": "com.deeplux.plugin.createstring",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/009变量工具/Plugin.QueueClear",
+      "legacyCategory": "009变量工具",
+      "legacyPlugin": "QueueClear",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/009变量工具/Plugin.QueueIn",
+      "legacyCategory": "009变量工具",
+      "legacyPlugin": "QueueIn",
+      "currentCandidate": "QueueIn",
+      "currentPluginId": "com.deeplux.plugin.queuein",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/009变量工具/Plugin.QueueOut",
+      "legacyCategory": "009变量工具",
+      "legacyPlugin": "QueueOut",
+      "currentCandidate": "QueueOut",
+      "currentPluginId": "com.deeplux.plugin.queueout",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/009变量工具/Plugin.SplitString",
+      "legacyCategory": "009变量工具",
+      "legacyPlugin": "SplitString",
+      "currentCandidate": "SplitString",
+      "currentPluginId": "com.deeplux.plugin.splitstring",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/009变量工具/Plugin.StrFormat",
+      "legacyCategory": "009变量工具",
+      "legacyPlugin": "StrFormat",
+      "currentCandidate": "StrFormatPlugin",
+      "currentPluginId": "com.deeplux.plugin.strformat",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/009变量工具/Plugin.VarDefine",
+      "legacyCategory": "009变量工具",
+      "legacyPlugin": "VarDefine",
+      "currentCandidate": "VarDefinePlugin",
+      "currentPluginId": "com.deeplux.plugin.vardefine",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/009变量工具/Plugin.VarSet",
+      "legacyCategory": "009变量工具",
+      "legacyPlugin": "VarSet",
+      "currentCandidate": "VarSetPlugin",
+      "currentPluginId": "com.deeplux.plugin.varset",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/010文件通讯/Plugin.HKSetOutPut",
+      "legacyCategory": "010文件通讯",
+      "legacyPlugin": "HKSetOutPut",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/010文件通讯/Plugin.LightControl",
+      "legacyCategory": "010文件通讯",
+      "legacyPlugin": "LightControl",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/010文件通讯/Plugin.PLCCommunicate",
+      "legacyCategory": "010文件通讯",
+      "legacyPlugin": "PLCCommunicate",
+      "currentCandidate": "PLCCommunicatePlugin",
+      "currentPluginId": "com.deeplux.plugin.plccommunicate",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/010文件通讯/Plugin.PLCRead",
+      "legacyCategory": "010文件通讯",
+      "legacyPlugin": "PLCRead",
+      "currentCandidate": "PLCReadPlugin",
+      "currentPluginId": "com.deeplux.plugin.plcread",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/010文件通讯/Plugin.PLCWrite",
+      "legacyCategory": "010文件通讯",
+      "legacyPlugin": "PLCWrite",
+      "currentCandidate": "PLCWritePlugin",
+      "currentPluginId": "com.deeplux.plugin.plcwrite",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/010文件通讯/Plugin.ReceiveStr",
+      "legacyCategory": "010文件通讯",
+      "legacyPlugin": "ReceiveStr",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/010文件通讯/Plugin.SendStr",
+      "legacyCategory": "010文件通讯",
+      "legacyPlugin": "SendStr",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/012深度学习/Plugin.AI",
+      "legacyCategory": "012深度学习",
+      "legacyPlugin": "AI",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/012深度学习/Plugin.AIPost",
+      "legacyCategory": "012深度学习",
+      "legacyPlugin": "AIPost",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/012深度学习/Plugin.Jigsaw",
+      "legacyCategory": "012深度学习",
+      "legacyPlugin": "Jigsaw",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/012深度学习/Plugin.Solder",
+      "legacyCategory": "012深度学习",
+      "legacyPlugin": "Solder",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/012深度学习/Plugin.Yolo",
+      "legacyCategory": "012深度学习",
+      "legacyPlugin": "Yolo",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.3DPreProcessing",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "3DPreProcessing",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.BumpDentDetect",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "BumpDentDetect",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.ContourDetection",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "ContourDetection",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.DepthToImage",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "DepthToImage",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.FitPlane",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "FitPlane",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.Flatness",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "Flatness",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.FreeformSurface",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "FreeformSurface",
+      "currentCandidate": "FreeformSurface",
+      "currentPluginId": "com.deeplux.plugin.freeformsurface",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.GSD",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "GSD",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.GapMeasure3D",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "GapMeasure3D",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.HeightMeasurement",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "HeightMeasurement",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.JiErHanDefectsDet",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "JiErHanDefectsDet",
+      "currentCandidate": "JiErHanDefectsDet",
+      "currentPluginId": "com.deeplux.plugin.jierhandefectsdet",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.LidWeldDetection",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "LidWeldDetection",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.LinePlaneAngle",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "LinePlaneAngle",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.MeasureGap",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "MeasureGap",
+      "currentCandidate": "MeasureGap",
+      "currentPluginId": "com.deeplux.plugin.measuregap",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.PlaneAngle",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "PlaneAngle",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.PlaneCorrection",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "PlaneCorrection",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.PointFilter",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "PointFilter",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.PointSurfaceDistance",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "PointSurfaceDistance",
+      "currentCandidate": "PointSurfaceDistance",
+      "currentPluginId": "com.deeplux.plugin.pointsurfacedistance",
+      "matchKind": "direct",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/0143D/Plugin.VolumeMeasurement",
+      "legacyCategory": "0143D",
+      "legacyPlugin": "VolumeMeasurement",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "missing",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/015包膜机/Plugin.Envelope",
+      "legacyCategory": "015包膜机",
+      "legacyPlugin": "Envelope",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "business_pack",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/015包膜机/Plugin.EnvelopeTieJiao",
+      "legacyCategory": "015包膜机",
+      "legacyPlugin": "EnvelopeTieJiao",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "business_pack",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/016密封钉/Plugin.MPHA",
+      "legacyCategory": "016密封钉",
+      "legacyPlugin": "MPHA",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "business_pack",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/016密封钉/Plugin.SealingPin",
+      "legacyCategory": "016密封钉",
+      "legacyPlugin": "SealingPin",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "business_pack",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/016密封钉/Plugin.SealingPinHanHou",
+      "legacyCategory": "016密封钉",
+      "legacyPlugin": "SealingPinHanHou",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "business_pack",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/016密封钉/Plugin.SealingPinYuhan",
+      "legacyCategory": "016密封钉",
+      "legacyPlugin": "SealingPinYuhan",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "business_pack",
+      "reviewState": "pending"
+    },
+    {
+      "legacyPath": "02Plugins/016密封钉/Plugin.ThreeDimsAI",
+      "legacyCategory": "016密封钉",
+      "legacyPlugin": "ThreeDimsAI",
+      "currentCandidate": "",
+      "currentPluginId": "",
+      "matchKind": "business_pack",
+      "reviewState": "pending"
+    }
+  ]
+}

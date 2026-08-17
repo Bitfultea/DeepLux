@@ -36,5 +36,60 @@
                 "label": "最大半径"
             }
         }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "fit_points",
+                "displayName": "拟合点集",
+                "type": "PointSet2D",
+                "required": true,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "circle_center_x",
+                "displayName": "圆心X",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "circle_center_y",
+                "displayName": "圆心Y",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "circle_radius",
+                "displayName": "半径",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "circle_error",
+                "displayName": "拟合误差",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            }
+        ]
     }
 }

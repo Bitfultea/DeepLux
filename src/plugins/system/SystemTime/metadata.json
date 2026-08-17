@@ -12,5 +12,17 @@
                 "label": "时间格式"
             }
         }
+    },
+    "ports": {
+        "inputs": [],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            }
+        ]
     }
 }

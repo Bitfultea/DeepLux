@@ -36,5 +36,46 @@
                 "label": "阈值2"
             }
         }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "rect_width",
+                "displayName": "宽",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "rect_height",
+                "displayName": "高",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "rect_area",
+                "displayName": "面积",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            }
+        ]
     }
 }

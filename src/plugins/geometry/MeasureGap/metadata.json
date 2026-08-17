@@ -4,5 +4,46 @@
     "category": "geometry",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "测量两点之间的间隙距离"
+    "description": "测量两点之间的间隙距离",
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "line1",
+                "displayName": "线1",
+                "type": "Line2D",
+                "required": true,
+                "multiple": false
+            },
+            {
+                "id": "line2",
+                "displayName": "线2",
+                "type": "Line2D",
+                "required": true,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "gap",
+                "displayName": "间隙",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            }
+        ]
+    }
 }

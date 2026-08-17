@@ -57,6 +57,8 @@ set(TEST_SOURCES
     test_sambackendclient.cpp
     test_moduleinspectorpanel.cpp
     test_pluginparametercontracts.cpp
+    test_acceptance_flows.cpp
+    test_projectmigration.cpp
 )
 
 foreach(TEST_FILE ${TEST_SOURCES})
@@ -158,6 +160,17 @@ foreach(TEST_FILE ${TEST_SOURCES})
                 SystemTimePlugin
                 SaveDataPlugin
                 StrFormatPlugin
+        )
+    endif()
+    # 验收工程测试：插件经 PluginManager 动态加载，仅需保证插件目标先于测试构建
+    if(TEST_NAME STREQUAL "test_acceptance_flows")
+        add_dependencies(${TEST_NAME}
+            GrabImagePlugin
+            FindCirclePlugin
+            MeasurementInputPlugin
+            DistancePPPlugin
+            LoadPointCloudPlugin
+            PointSurfaceDistancePlugin
         )
     endif()
 

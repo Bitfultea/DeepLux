@@ -4,5 +4,46 @@
     "category": "geometry",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "计算点到平面的距离"
+    "description": "计算点到平面的距离",
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "point",
+                "displayName": "点",
+                "type": "Point3D",
+                "required": true,
+                "multiple": false
+            },
+            {
+                "id": "plane",
+                "displayName": "面",
+                "type": "Plane3D",
+                "required": true,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "distance",
+                "displayName": "距离",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            }
+        ]
+    }
 }

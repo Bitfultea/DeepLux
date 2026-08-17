@@ -14,15 +14,45 @@ namespace DeepLux {
 
 /**
  * @brief 模块连接
+ *
+ * 格式 3.0 使用稳定字符串端口 ID（fromPort/toPort）。
+ * fromOutput/toInput 保留为旧 2.0 整数序号，仅用于迁移与兼容。
  */
 struct ModuleConnection {
     QString fromModuleId;
     QString toModuleId;
     int fromOutput = 0;
     int toInput = 0;
+    QString fromPort; // 3.0: 源端口 ID（如 "image"）
+    QString toPort;   // 3.0: 目标端口 ID
+    QString edgeType; // 3.0: "data" 或 "control"
 
     QJsonObject toJson() const;
     static ModuleConnection fromJson(const QJsonObject& json);
+};
+
+/**
+ * @brief 流程（3.0）：一个工程可含多个流程，现阶段至少 main
+ */
+struct ProjectFlow {
+    QString id = QStringLiteral("main");
+    QString name;
+    QStringList nodeIds; // 该流程包含的模块实例 ID（有序）
+
+    QJsonObject toJson() const;
+    static ProjectFlow fromJson(const QJsonObject& json);
+};
+
+/**
+ * @brief 迁移记录（3.0）
+ */
+struct MigrationRecord {
+    QString originalVersion;
+    QDateTime migratedAt;
+    QStringList warnings; // 自动修复/警告/阻塞项
+
+    QJsonObject toJson() const;
+    static MigrationRecord fromJson(const QJsonObject& json);
 };
 
 /**
@@ -104,6 +134,7 @@ public:
     }
     void addConnection(const ModuleConnection& conn);
     void removeConnection(const QString& fromId, const QString& toId);
+    void setConnections(const QList<ModuleConnection>& conns);
 
     // 相机配置
     QList<CameraConfig> cameras() const {
@@ -121,6 +152,39 @@ public:
     void removeDataSource(const QString& id);
     /// 按值返回拷贝以避免悬垂指针——DataSource 是轻量结构体，拷贝开销可忽略
     std::optional<DataSource> findDataSource(const QString& id) const;
+
+    // 流程（3.0）
+    QList<ProjectFlow> flows() const {
+        return m_flows;
+    }
+    void setFlows(const QList<ProjectFlow>& flows);
+    ProjectFlow flow(const QString& flowId) const;
+
+    // 参数覆盖集合（3.0 recipes）
+    QJsonObject recipes() const {
+        return m_recipes;
+    }
+    void setRecipes(const QJsonObject& recipes);
+
+    // 运行看板配置（3.0 dashboard）
+    QJsonObject dashboard() const {
+        return m_dashboard;
+    }
+    void setDashboard(const QJsonObject& dashboard);
+
+    // 迁移记录（3.0）
+    MigrationRecord migration() const {
+        return m_migration;
+    }
+    void setMigration(const MigrationRecord& rec);
+
+    // 格式版本
+    QString formatVersion() const {
+        return m_formatVersion;
+    }
+    void setFormatVersion(const QString& v) {
+        m_formatVersion = v;
+    }
 
     // 序列化
     QJsonObject toJson() const;
@@ -160,6 +224,13 @@ private:
     QList<ModuleConnection> m_connections;
     QList<CameraConfig> m_cameras;
     QList<DataSource> m_dataSources;
+
+    // 3.0 新增
+    QString m_formatVersion = QStringLiteral("3.0");
+    QList<ProjectFlow> m_flows;
+    QJsonObject m_recipes;
+    QJsonObject m_dashboard;
+    MigrationRecord m_migration;
 };
 
 } // namespace DeepLux

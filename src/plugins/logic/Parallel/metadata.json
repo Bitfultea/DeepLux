@@ -4,7 +4,8 @@
     "category": "logic",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "并行执行多个分支",
+    "description": "并行执行多个分支（实验性：当前无真实并行语义，未开放加入生产流程）",
+    "experimental": true,
     "ui": {
         "parameters": {
             "parallelCount": {
@@ -15,5 +16,25 @@
                 "label": "并行数量"
             }
         }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            }
+        ]
     }
 }
