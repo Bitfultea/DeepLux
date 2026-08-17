@@ -87,6 +87,9 @@ QJsonObject ModuleInstance::toJson() const {
     json["posX"] = posX;
     json["posY"] = posY;
     json["params"] = params;
+    json["note"] = note;
+    json["enabled"] = enabled;
+    json["breakpoint"] = breakpoint;
     return json;
 }
 
@@ -98,6 +101,9 @@ ModuleInstance ModuleInstance::fromJson(const QJsonObject& json) {
     inst.posX = json["posX"].toInt(0);
     inst.posY = json["posY"].toInt(0);
     inst.params = json["params"].toObject();
+    inst.note = json["note"].toString();
+    inst.enabled = json["enabled"].toBool(true);      // 旧工程缺省为启用
+    inst.breakpoint = json["breakpoint"].toBool(false);
     return inst;
 }
 

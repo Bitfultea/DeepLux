@@ -372,6 +372,7 @@ bool RunEngine::loadProject(Project* project, ModuleFactory factory) {
         };
     }
 
+    m_disabledModules.clear();
     for (const ModuleInstance& inst : project->modules()) {
         ModuleBase* module = factory(inst);
         if (!module) {
@@ -391,6 +392,12 @@ bool RunEngine::loadProject(Project* project, ModuleFactory factory) {
 
         m_ownedModules.append(module);
         addModule(module);
+
+        // 阶段 B: 断点/禁用同步
+        if (inst.breakpoint)
+            setBreakpoint(inst.id, true);
+        if (!inst.enabled)
+            m_disabledModules.insert(inst.id);
     }
 
     QString orderError;
@@ -433,7 +440,14 @@ void RunEngine::clearModules() {
     m_modules.clear();
     m_moduleMap.clear();
     m_executionOrder.clear();
+    m_disabledModules.clear();
+    m_connections.clear();
+    m_nodeOutputs.clear();
     locker.unlock();
+    {
+        QMutexLocker bl(&m_breakpointMutex);
+        m_breakpoints.clear();
+    }
     clearOutputs();
     resetStepState();
 }
@@ -632,11 +646,44 @@ void RunEngine::executeRun() {
             m_continueFlag = false;
         }
 
-        executeModule(currentModule, pipelineData);
-        if (!m_lastExecuteResult) {
-            allSuccess = false;
-            if (firstError.isEmpty()) {
-                firstError = m_lastModuleError;
+        if (m_disabledModules.contains(currentModule)) {
+            // 阶段 B: 禁用节点不执行、不产生旧结果；同名输入/输出端口原样旁路
+            PortValueMap bypass;
+            {
+                QReadLocker locker(&m_moduleLock);
+                ModuleBase* dm = m_moduleMap.value(currentModule, nullptr);
+                const QList<PortSpec> inPorts = dm ? dm->inputPorts() : QList<PortSpec>{};
+                const QList<PortSpec> outPorts = dm ? dm->outputPorts() : QList<PortSpec>{};
+                PortValueMap up;
+                for (const ModuleConnection& conn : m_connections) {
+                    if (conn.toModuleId != currentModule)
+                        continue;
+                    const PortValueMap uo = m_nodeOutputs.value(conn.fromModuleId);
+                    if (uo.contains(conn.fromPort))
+                        up.insert(conn.fromPort, uo.value(conn.fromPort));
+                }
+                for (const PortSpec& out : outPorts)
+                    for (const PortSpec& in : inPorts)
+                        if (in.id == out.id && up.contains(in.id))
+                            bypass.insert(out.id, up.value(in.id));
+                if (!bypass.contains(QStringLiteral("image")) && up.contains(QStringLiteral("image")))
+                    bypass.insert(QStringLiteral("image"), up.value(QStringLiteral("image")));
+            }
+            m_nodeOutputs[currentModule] = bypass;
+            if (bypass.contains(QStringLiteral("image"))) {
+                QMutexLocker locker(&m_lastOutputMutex);
+                m_moduleOutputs[currentModule] = bypass.value(QStringLiteral("image")).value<ImageData>();
+            }
+            emit moduleSkipped(currentModule);
+            m_lastExecuteResult = true; // 旁路不算失败
+            m_lastControlResult = true;
+        } else {
+            executeModule(currentModule, pipelineData);
+            if (!m_lastExecuteResult) {
+                allSuccess = false;
+                if (firstError.isEmpty()) {
+                    firstError = m_lastModuleError;
+                }
             }
         }
 
@@ -824,6 +871,7 @@ QStringList RunEngine::validateFlow() const {
     for (ModuleBase* module : m_modules) {
         const QString id = runtimeModuleName(module);
         const QList<PortSpec> inPorts = module->inputPorts();
+        const QList<PortSpec> outPorts = module->outputPorts();
         for (const PortSpec& in : inPorts) {
             if (!in.required || in.id == QLatin1String("image"))
                 continue;
@@ -838,6 +886,23 @@ QStringList RunEngine::validateFlow() const {
                 errors << tr("节点 %1 的必需输入端口 %2 无上游连接").arg(id, in.id);
             }
         }
+
+        // 阶段 B: 禁用节点无法旁路的输出端口若被下游依赖，运行前报错。
+        // image 作为通用载体始终可旁路；同名输入/输出端口可旁路。
+        if (m_disabledModules.contains(id)) {
+            QSet<QString> bypassable;
+            bypassable.insert(QStringLiteral("image"));
+            for (const PortSpec& in : inPorts)
+                bypassable.insert(in.id);
+            for (const ModuleConnection& conn : m_connections) {
+                if (conn.fromModuleId != id || conn.edgeType == QLatin1String("control"))
+                    continue;
+                if (!bypassable.contains(conn.fromPort)) {
+                    errors << tr("禁用节点 %1 无法旁路输出端口 %2，但被下游依赖").arg(id, conn.fromPort);
+                }
+            }
+        }
+        Q_UNUSED(outPorts);
     }
     return errors;
 }

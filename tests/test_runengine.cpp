@@ -142,6 +142,93 @@ private:
     bool m_source;
 };
 
+// 非对称端口模块：输入 point1(必需)，输出 image。禁用时无法旁路 image。
+class RequiredInputModule : public ModuleBase {
+    Q_OBJECT
+public:
+    RequiredInputModule(const QString& name) {
+        m_moduleId = QStringLiteral("com.deeplux.test.req.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+    }
+    QList<PortSpec> inputPorts() const override {
+        PortSpec p;
+        p.id = QStringLiteral("point1");
+        p.displayName = QStringLiteral("点1");
+        p.type = DataType::Point2D;
+        p.required = true;
+        return {p};
+    }
+    QList<PortSpec> outputPorts() const override {
+        PortSpec p;
+        p.id = QStringLiteral("image");
+        p.displayName = QStringLiteral("输出");
+        p.type = DataType::Image2D;
+        return {p};
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
+
+// 可配置输入/输出端口模块，用于构造禁用旁路场景
+class PortPairModule : public ModuleBase {
+    Q_OBJECT
+public:
+    PortPairModule(const QString& name, const QString& inId, DataType inType, const QString& outId,
+                   DataType outType)
+        : m_inId(inId), m_inType(inType), m_outId(outId), m_outType(outType) {
+        m_moduleId = QStringLiteral("com.deeplux.test.pair.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+    }
+    QList<PortSpec> inputPorts() const override {
+        QList<PortSpec> r;
+        if (!m_inId.isEmpty()) {
+            PortSpec p;
+            p.id = m_inId;
+            p.displayName = m_inId;
+            p.type = m_inType;
+            p.required = true;
+            r.append(p);
+        }
+        return r;
+    }
+    QList<PortSpec> outputPorts() const override {
+        QList<PortSpec> r;
+        if (!m_outId.isEmpty()) {
+            PortSpec p;
+            p.id = m_outId;
+            p.displayName = m_outId;
+            p.type = m_outType;
+            r.append(p);
+        }
+        return r;
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        output.setData(m_outId, 1.0);
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    QString m_inId;
+    DataType m_inType;
+    QString m_outId;
+    DataType m_outType;
+};
+
 // 并行测试模块：睡眠并记录并发度，证明真实并发
 class ParallelSleepModule : public ModuleBase {
     Q_OBJECT
@@ -184,6 +271,9 @@ private slots:
     void testParallelFailureCancelsGroup();
     void testValidateFlowReportsMissingRequiredInput();
     void testSkippedBranchEmitsSkippedNotFailed();
+    void testBreakpointRestoredOnLoad();
+    void testDisabledModuleBypassesImage();
+    void testDisabledDependedNodePreRunFail();
     void init();
     void cleanup();
 
@@ -1114,6 +1204,119 @@ void TestRunEngine::testSkippedBranchEmitsSkippedNotFailed() {
     delete body;
     delete end;
     delete after;
+}
+
+void TestRunEngine::testBreakpointRestoredOnLoad() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance a;
+    a.id = "a";
+    a.moduleId = "a";
+    a.breakpoint = true;
+    project.addModule(a);
+
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) {
+        return new TestExecutionModule(inst.id);
+    }));
+    QVERIFY(engine.hasBreakpoint(QStringLiteral("a")));
+
+    engine.clearModules();
+}
+
+void TestRunEngine::testDisabledModuleBypassesImage() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    QStringList skipped;
+    QMetaObject::Connection conn =
+        connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
+
+    Project project;
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
+    b.enabled = false;
+    ModuleInstance c;
+    c.id = "C";
+    c.moduleId = "C";
+    project.addModule(a);
+    project.addModule(b);
+    project.addModule(c);
+    ModuleConnection e1;
+    e1.fromModuleId = "A";
+    e1.toModuleId = "B";
+    project.addConnection(e1);
+    ModuleConnection e2;
+    e2.fromModuleId = "B";
+    e2.toModuleId = "C";
+    project.addConnection(e2);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        m->outputTag = inst.id;
+        return m;
+    }));
+    engine.runOnce();
+
+    // B 禁用：被跳过，不执行；C 通过旁路收到 A 的输出
+    QVERIFY(skipped.contains(QStringLiteral("B")));
+    QVERIFY(!log.contains(QStringLiteral("B")));
+    auto* downstream = qobject_cast<TestExecutionModule*>(engine.getModule(QStringLiteral("C")));
+    QVERIFY(downstream != nullptr);
+    QCOMPARE(downstream->receivedTag, QStringLiteral("A"));
+
+    disconnect(conn);
+    engine.clearModules();
+}
+
+void TestRunEngine::testDisabledDependedNodePreRunFail() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance a;
+    a.id = "src";
+    a.moduleId = "src";
+    ModuleInstance b;
+    b.id = "dis";
+    b.moduleId = "dis";
+    b.enabled = false;
+    ModuleInstance c;
+    c.id = "consumer";
+    c.moduleId = "consumer";
+    project.addModule(a);
+    project.addModule(b);
+    project.addModule(c);
+    ModuleConnection e1;
+    e1.fromModuleId = "src";
+    e1.toModuleId = "dis";
+    e1.fromPort = "value";
+    e1.toPort = "value";
+    project.addConnection(e1);
+    ModuleConnection e2;
+    e2.fromModuleId = "dis";
+    e2.toModuleId = "consumer";
+    e2.fromPort = "distance";
+    e2.toPort = "distance";
+    project.addConnection(e2);
+
+    // dis 禁用且输出 distance(非 image, 不在其输入中)无法旁路，被 consumer 依赖 → 预检失败
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == QLatin1String("src"))
+            return new PortPairModule(inst.id, QString(), DataType::Any, "value", DataType::Point2D);
+        if (inst.id == QLatin1String("dis"))
+            return new PortPairModule(inst.id, "value", DataType::Point2D, "distance", DataType::Number);
+        return new PortPairModule(inst.id, "distance", DataType::Number, QString(), DataType::Any);
+    }));
+    QStringList problems = engine.validateFlow();
+    QVERIFY2(!problems.isEmpty(), "expected pre-run error for disabled non-bypassable node");
+    QVERIFY(problems.join(";").contains("dis"));
+
+    engine.clearModules();
 }
 
 QTEST_MAIN(TestRunEngine)

@@ -65,6 +65,9 @@ struct ModuleInstance {
     int posX = 0;
     int posY = 0;
     QJsonObject params;
+    QString note;        // 3.0: 备注
+    bool enabled = true; // 3.0: 启用状态
+    bool breakpoint = false; // 3.0: 断点
 
     QJsonObject toJson() const;
     static ModuleInstance fromJson(const QJsonObject& json);

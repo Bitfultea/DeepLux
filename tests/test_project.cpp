@@ -1,3 +1,5 @@
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QTemporaryFile>
 #include <QtTest/QtTest>
 #include <core/model/Project.h>
@@ -20,6 +22,7 @@ private slots:
     void testCameras();
     void testSerialization();
     void testSaveLoad();
+    void testModuleRuntimeFieldsRoundTrip();
 
 private:
     QString m_tempPath;
@@ -214,6 +217,48 @@ void TestProject::testSaveLoad() {
     }
 
     QFile::remove(m_tempPath);
+}
+
+void TestProject::testModuleRuntimeFieldsRoundTrip() {
+    Project project;
+    ModuleInstance m;
+    m.id = "n1";
+    m.moduleId = "Blob";
+    m.name = "斑点";
+    m.note = "备注内容";
+    m.enabled = false;
+    m.breakpoint = true;
+    project.addModule(m);
+
+    // toJson 含三字段
+    QJsonObject json = project.toJson();
+    QJsonObject mj = json["modules"].toArray().first().toObject();
+    QCOMPARE(mj["note"].toString(), QString("备注内容"));
+    QCOMPARE(mj["enabled"].toBool(), false);
+    QCOMPARE(mj["breakpoint"].toBool(), true);
+
+    // 往返一致
+    Project back;
+    back.fromJson(json);
+    QCOMPARE(back.modules().size(), 1);
+    QCOMPARE(back.modules().first().note, QString("备注内容"));
+    QCOMPARE(back.modules().first().enabled, false);
+    QCOMPARE(back.modules().first().breakpoint, true);
+
+    // 旧工程缺字段 → 默认 enabled=true, breakpoint=false
+    QJsonObject legacy;
+    legacy["id"] = "n2";
+    legacy["moduleId"] = "Blob";
+    QJsonObject projJson;
+    projJson["version"] = "2.0";
+    QJsonArray arr;
+    arr.append(legacy);
+    projJson["modules"] = arr;
+    Project legacyProj;
+    legacyProj.fromJson(projJson);
+    QCOMPARE(legacyProj.modules().first().enabled, true);
+    QCOMPARE(legacyProj.modules().first().breakpoint, false);
+    QVERIFY(legacyProj.modules().first().note.isEmpty());
 }
 
 QTEST_MAIN(TestProject)

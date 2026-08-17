@@ -235,6 +235,7 @@ private:
     QList<ModuleConnection> m_connections; // 阶段 3.1 边集合（端口路由）
     // 当前帧每节点端口输出缓存（flowId 现阶段为 main）；新帧清除
     QMap<QString, PortValueMap> m_nodeOutputs;
+    QSet<QString> m_disabledModules; // 阶段 B: 禁用节点（旁路/Skipped）
     mutable QReadWriteLock m_moduleLock;
 
     // 模块树结构
