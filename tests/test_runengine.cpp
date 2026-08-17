@@ -279,6 +279,8 @@ private slots:
     void testDisabledBypassCollectsByToPort();
     void testDisabledBypassRejectsTypeIncompatible();
     void testBreakpointHitPauseResume();
+    void testBreakpointDoesNotBlockRun();
+    void testRemoveModuleClearsTopology();
     void init();
     void cleanup();
 
@@ -1497,11 +1499,75 @@ void TestRunEngine::testBreakpointHitPauseResume() {
         return m;
     }));
 
-    // 同步执行架构下安全暂停难以挂起式自动化；此处验证断点持久化与删除清理，
-    // 运行期暂停由执行循环等待循环保障（见 RunEngine::executeRun 断点等待）。
+    // 断点持久化与删除清理
     QVERIFY(engine.hasBreakpoint(QStringLiteral("A")));
     engine.removeModule(QStringLiteral("A"));
     QVERIFY(!engine.hasBreakpoint(QStringLiteral("A")));
+
+    engine.clearModules();
+}
+
+void TestRunEngine::testBreakpointDoesNotBlockRun() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    a.breakpoint = true;
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
+    project.addModule(a);
+    project.addModule(b);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+
+    QSignalSpy hitSpy(&engine, &RunEngine::breakpointHit);
+    // 同步运行不得阻塞：runOnce 直接返回且 A、B 均执行，断点命中一次
+    engine.runOnce();
+    QCOMPARE(hitSpy.count(), 1);
+    QCOMPARE(hitSpy.first().first().toString(), QStringLiteral("A"));
+    QVERIFY(log.contains("A"));
+    QVERIFY(log.contains("B"));
+
+    engine.clearModules();
+}
+
+void TestRunEngine::testRemoveModuleClearsTopology() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
+    project.addModule(a);
+    project.addModule(b);
+    ModuleConnection e;
+    e.fromModuleId = "A";
+    e.toModuleId = "B";
+    project.addConnection(e);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+
+    // 删除 A 后运行不应报 Module not found，且 B 仍执行
+    engine.removeModule(QStringLiteral("A"));
+    engine.runOnce();
+    QVERIFY(!log.contains("A"));
+    QVERIFY(log.contains("B"));
 
     engine.clearModules();
 }

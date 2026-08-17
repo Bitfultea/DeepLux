@@ -524,6 +524,16 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
                 }
             });
 
+    // 阶段 B 复核(P2): 禁用/跳过节点在流程栏显示"已跳过"，不记为失败
+    connect(&RunEngine::instance(), &RunEngine::moduleSkipped, this, [this](const QString& moduleName) {
+        QTreeWidgetItem* item =
+            m_processTreeController ? m_processTreeController->instanceItem(moduleName) : nullptr;
+        if (item) {
+            const bool disabled = RunEngine::instance().isModuleDisabled(moduleName);
+            setProcessItemStatus(item, QStringLiteral("skipped"), disabled ? tr("已禁用") : tr("已跳过"));
+        }
+    });
+
     connect(&RunEngine::instance(), &RunEngine::runFinished, this, [this](const RunResult& result) {
         if (m_processTimeLabel) {
             m_processTimeLabel->setText(tr("总耗时：%1 ms").arg(result.elapsedMs));
@@ -4507,6 +4517,8 @@ void MainWindow::setProcessItemStatus(QTreeWidgetItem* item, const QString& stat
         dotColor = QColor("#EF4444"); // 红色
     else if (status == "dirty")
         dotColor = QColor("#F59E0B"); // 琥珀色
+    else if (status == "skipped")
+        dotColor = QColor("#9CA3AF"); // 灰色（已跳过/已禁用）
     if (dotColor.isValid()) {
         QPixmap pm(10, 10);
         pm.fill(Qt::transparent);

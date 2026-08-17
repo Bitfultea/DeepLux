@@ -435,6 +435,13 @@ void RunEngine::removeModule(const QString& moduleId) {
             break;
         }
     }
+    // 阶段 B 复核(P1): 移除引用该节点的连接并使执行序失效，避免从已删节点起跑
+    for (int i = m_connections.size() - 1; i >= 0; --i) {
+        if (m_connections[i].fromModuleId == moduleId || m_connections[i].toModuleId == moduleId) {
+            m_connections.removeAt(i);
+        }
+    }
+    m_executionOrder.clear();
 }
 
 void RunEngine::clearModules() {
@@ -646,18 +653,10 @@ void RunEngine::executeRun() {
             break;
         }
 
-        // 阶段 B 复核: 断点命中在等待前触发（设标志），恢复后清除标志
+        // 阶段 B 复核(P0): 同步（UI 线程）执行下断点不得阻塞事件循环。
+        // 命中仅发射通知信号，不进入条件变量等待；运行期暂停留待引擎脱离 UI 线程的阶段。
         if (hasBreakpoint(currentModule)) {
             emit breakpointHit(currentModule);
-            onBreakpointHit();
-        }
-        {
-            QMutexLocker locker(&m_breakpointMutex);
-            while (m_breakpointFlag && !m_continueFlag && state() == RunState::Running) {
-                m_breakpointCondition.wait(&m_breakpointMutex);
-            }
-            m_continueFlag = false;
-            m_breakpointFlag = false;
         }
 
         executeOrBypassModule(currentModule, pipelineData);
@@ -889,7 +888,7 @@ PortValueMap RunEngine::collectBypass(const QString& moduleName) {
 }
 
 void RunEngine::executeOrBypassModule(const QString& moduleName, ImageData& pipelineData) {
-    if (m_disabledModules.contains(moduleName)) {
+    if (isModuleDisabled(moduleName)) {
         // 禁用节点不执行、不产生旧结果；可旁路端口原样传递
         const PortValueMap bypass = collectBypass(moduleName);
         m_nodeOutputs[moduleName] = bypass;
