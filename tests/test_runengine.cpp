@@ -351,6 +351,11 @@ private slots:
     void testDifferentPortSameNodePairAccepted();
     void testControlEdgeCycleRejected();
     void testNoControlEdgesBehaviorUnchanged();
+    // 阶段 C 复核(P2): 回归测试
+    void testIllegalEdgeTypeRejected();
+    void testNoDataEdgeBackwardControlAccepted();
+    void testControlSelfLoopRejected();
+    void testEdgeTypeRoundTripPreservesInference();
     void init();
     void cleanup();
 
@@ -1931,6 +1936,96 @@ void TestRunEngine::testNoControlEdgesBehaviorUnchanged() {
     engine.runOnce();
     QCOMPARE(log, QStringList({"A", "B"}));
     engine.clearModules();
+}
+
+// ---------------------------------------------------------------------------
+// 阶段 C 复核(P2): 回归测试
+// ---------------------------------------------------------------------------
+
+void TestRunEngine::testIllegalEdgeTypeRejected() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance s; s.id = "src"; s.moduleId = "src";
+    ModuleInstance t; t.id = "tgt"; t.moduleId = "tgt";
+    project.addModule(s);
+    project.addModule(t);
+    ModuleConnection c;
+    c.fromModuleId = "src"; c.toModuleId = "tgt";
+    c.fromPort = "image"; c.toPort = "image";
+    c.edgeType = "bogus";
+    project.addConnection(c);
+    QVERIFY2(!engine.loadProject(&project, [](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->initialize();
+        return m;
+    }), "illegal edgeType should be rejected");
+    engine.clearModules();
+}
+
+void TestRunEngine::testNoDataEdgeBackwardControlAccepted() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    // 仅有控制边 B.next -> A.control，无数据边
+    // A、B 无数据依赖，拓扑序可以是 [A, B] 或 [B, A]
+    // 无论哪种顺序，B->A 控制边都不是环（不形成回路）
+    Project project;
+    ModuleInstance a; a.id = "A"; a.moduleId = "A";
+    ModuleInstance b; b.id = "B"; b.moduleId = "B";
+    project.addModule(a);
+    project.addModule(b);
+    ModuleConnection ctrl;
+    ctrl.fromModuleId = "B"; ctrl.toModuleId = "A";
+    ctrl.fromPort = "next"; ctrl.toPort = "control";
+    ctrl.edgeType = "control";
+    project.addConnection(ctrl);
+    QVERIFY2(engine.loadProject(&project, [](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->initialize();
+        return m;
+    }), "backward control edge without data edges should be accepted (no cycle)");
+    engine.clearModules();
+}
+
+void TestRunEngine::testControlSelfLoopRejected() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    // A.next -> A.control：控制自环
+    Project project;
+    ModuleInstance a; a.id = "A"; a.moduleId = "A";
+    project.addModule(a);
+    ModuleConnection ctrl;
+    ctrl.fromModuleId = "A"; ctrl.toModuleId = "A";
+    ctrl.fromPort = "next"; ctrl.toPort = "control";
+    ctrl.edgeType = "control";
+    project.addConnection(ctrl);
+    QVERIFY2(!engine.loadProject(&project, [](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->initialize();
+        return m;
+    }), "control self-loop should be rejected");
+    engine.clearModules();
+}
+
+void TestRunEngine::testEdgeTypeRoundTripPreservesInference() {
+    // 缺失 edgeType 的 next->control 连接：toJson 不写 edgeType，
+    // fromJson 读回空字符串，引擎应重新推断为 control 而非 data
+    ModuleConnection orig;
+    orig.fromModuleId = "B";
+    orig.toModuleId = "A";
+    orig.fromPort = "next";
+    orig.toPort = "control";
+    // edgeType 为空——引擎应推断为 control
+
+    const QJsonObject json = orig.toJson();
+    // toJson 只在 edgeType 非空时写入，因此 JSON 中不应有 edgeType 字段
+    QVERIFY2(!json.contains("edgeType"), "toJson should omit empty edgeType");
+    QVERIFY2(!json.contains("fromPort") == false, "fromPort should be present");
+
+    ModuleConnection restored = ModuleConnection::fromJson(json);
+    QVERIFY2(restored.edgeType.isEmpty(), "fromJson should preserve empty edgeType for engine inference");
+    QCOMPARE(restored.fromPort, QString("next"));
+    QCOMPARE(restored.toPort, QString("control"));
 }
 
 QTEST_MAIN(TestRunEngine)
