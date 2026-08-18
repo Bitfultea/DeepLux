@@ -1,4 +1,5 @@
 #include <QAbstractItemModel>
+#include <QAction>
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
@@ -129,6 +130,7 @@ private slots:
     void testPinnedInspectorKeepsTreeAndCanvasSelectionSynchronized();
     void testProcessTreeClickOverridesPinnedInspector();
     void testInspectorRuntimeStateSyncsToRunEngine();
+    void testBreakpointPauseAndContinueFromRunButton();
     void testCycleRunDoesNotStealSelection();
     void testStepRunFollowsExecution();
     void testCloseInspectorDoesNotAutoExpand();
@@ -985,6 +987,64 @@ void TestMainWindow::testConnectionChangeRebuildsExecutionTopology() {
     for (const QString& id : runtimeModules.keys()) {
         project->removeModule(id);
     }
+    QCoreApplication::processEvents();
+}
+
+void TestMainWindow::testBreakpointPauseAndContinueFromRunButton() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance first;
+    first.id = QStringLiteral("breakpoint_1");
+    first.moduleId = QStringLiteral("OutputProbe");
+    first.name = QStringLiteral("Breakpoint First");
+    first.breakpoint = true;
+    project->addModule(first);
+
+    ModuleInstance second;
+    second.id = QStringLiteral("breakpoint_2");
+    second.moduleId = QStringLiteral("OutputProbe");
+    second.name = QStringLiteral("Breakpoint Second");
+    project->addModule(second);
+    QCoreApplication::processEvents();
+
+    QStringList executionLog;
+    for (const QString& id : {first.id, second.id}) {
+        auto* module = new MainWindowOutputProbeModule(id);
+        module->executionLog = &executionLog;
+        module->initialize();
+        window.registerFlowModule(id, module);
+    }
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QAction* runAction = window.findChild<QAction*>(QStringLiteral("RunOnceAction"));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(runButton != nullptr);
+    QVERIFY(runAction != nullptr);
+    QVERIFY(processTree != nullptr);
+    QSignalSpy finishedSpy(&RunEngine::instance(), &RunEngine::runFinished);
+
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QVERIFY(RunEngine::instance().isPausedAtBreakpoint());
+    QCOMPARE(executionLog.size(), 0);
+    QCOMPARE(finishedSpy.count(), 0);
+    QCOMPARE(runButton->text(), QStringLiteral("继续"));
+    QCOMPARE(runAction->text(), QStringLiteral("继续"));
+    QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 5).toString(), QStringLiteral("paused"));
+
+    QCoreApplication::processEvents();
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QCOMPARE(executionLog, QStringList({first.id, second.id}));
+    QCOMPARE(finishedSpy.count(), 1);
+    QVERIFY(!RunEngine::instance().isPausedAtBreakpoint());
+    QCOMPARE(runButton->text(), QStringLiteral("运行"));
+    QCOMPARE(runAction->text(), QStringLiteral("单次运行"));
+
+    RunEngine::instance().clearModules();
+    project->removeModule(first.id);
+    project->removeModule(second.id);
     QCoreApplication::processEvents();
 }
 

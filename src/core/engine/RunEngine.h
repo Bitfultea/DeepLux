@@ -14,7 +14,6 @@
 #include <QStack>
 #include <QThreadPool>
 #include <QTimer>
-#include <QWaitCondition>
 #include <atomic>
 #include <functional>
 
@@ -119,8 +118,6 @@ public:
     Q_INVOKABLE void pause();
     Q_INVOKABLE void resume();
     Q_INVOKABLE void stop();
-    // 阶段 B 复核: 非阻塞断点暂停后恢复执行
-    Q_INVOKABLE void continueAfterBreakpoint();
     bool isPausedAtBreakpoint() const;
 
     // 模块管理
@@ -201,6 +198,7 @@ private:
     void executeOrBypassModule(const QString& moduleName, ImageData& pipelineData);
     PortValueMap collectBypass(const QString& moduleName);
     void clearModuleOutputs();
+    void clearBreakpointPauseState();
     void updateStatistics(bool success, int elapsedMs);
     void reset();
 
@@ -243,8 +241,11 @@ private:
     // 阶段 B 复核: 非阻塞断点暂停/恢复
     QString m_pauseResumeModule;
     ImageData m_pausePipelineData;
+    QDateTime m_breakpointPausedAt;
     bool m_pausedAtBreakpoint = false;
     bool m_skipBreakpointOnce = false;
+    bool m_runAllSuccess = true;
+    QString m_runFirstError;
 
     // 统计
     int m_totalRuns = 0;

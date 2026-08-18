@@ -185,6 +185,7 @@ protected:
     bool m_isDarkTheme = false;
     void applyTheme();
     void setUiRunningState(bool running, bool cycleMode);
+    void updateBreakpointRunControls(bool paused);
     bool syncModulesToRunEngine();
     void clearExecutionHighlight(QTreeWidgetItem* item);
     void showProcessModuleOutput(QTreeWidgetItem* item, bool userInitiated = false);

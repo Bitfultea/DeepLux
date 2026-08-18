@@ -518,6 +518,10 @@ void FlowNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* opti
         statusColor = QColor("#EF4444");
     else if (m_status == QStringLiteral("dirty"))
         statusColor = QColor("#F59E0B");
+    else if (m_status == QStringLiteral("paused"))
+        statusColor = QColor("#D97706");
+    else if (m_status == QStringLiteral("skipped"))
+        statusColor = QColor("#9CA3AF");
     if (statusColor.isValid()) {
         painter->setPen(Qt::NoPen);
         painter->setBrush(statusColor);

@@ -11,6 +11,7 @@
 #include <QElapsedTimer>
 #include <QMutexLocker>
 #include <QThread>
+#include <QWaitCondition>
 
 namespace DeepLux {
 
@@ -290,6 +291,11 @@ void RunEngine::resume() {
         return;
     }
 
+    if (m_pausedAtBreakpoint) {
+        executeRun();
+        return;
+    }
+
     m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
     m_cycleTimer->start();
     emit stateChanged(state());
@@ -305,9 +311,7 @@ void RunEngine::stop() {
     m_cycleTimer->stop();
     m_state.store(static_cast<int>(RunState::Stopped), std::memory_order_release);
     m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
-    // 阶段 B 复核: 清除非阻塞断点暂停状态
-    m_pausedAtBreakpoint = false;
-    m_pauseResumeModule.clear();
+    clearBreakpointPauseState();
     if (m_cancellationToken) {
         m_cancellationToken->cancel();
     }
@@ -317,13 +321,6 @@ void RunEngine::stop() {
     emit cycleStopped();
 
     Logger::instance().info(tr("Run stopped"), "Run");
-}
-
-void RunEngine::continueAfterBreakpoint() {
-    if (!m_pausedAtBreakpoint || m_pauseResumeModule.isEmpty()) {
-        return;
-    }
-    executeRun(); // 检测到 resuming=true，从保存的模块继续
 }
 
 bool RunEngine::isPausedAtBreakpoint() const {
@@ -479,8 +476,7 @@ void RunEngine::clearModules() {
     m_disabledModules.clear();
     m_connections.clear();
     m_nodeOutputs.clear();
-    m_pausedAtBreakpoint = false;
-    m_pauseResumeModule.clear();
+    clearBreakpointPauseState();
     locker.unlock();
     {
         QMutexLocker bl(&m_breakpointMutex);
@@ -546,6 +542,14 @@ void RunEngine::clearModuleOutputs() {
     m_moduleOutputs.clear();
 }
 
+void RunEngine::clearBreakpointPauseState() {
+    m_pauseResumeModule.clear();
+    m_pausePipelineData = ImageData();
+    m_breakpointPausedAt = QDateTime();
+    m_pausedAtBreakpoint = false;
+    m_skipBreakpointOnce = false;
+}
+
 ImageData RunEngine::lastOutput() const {
     QMutexLocker locker(&m_lastOutputMutex);
     return m_lastOutput;
@@ -596,7 +600,6 @@ void RunEngine::onTimerTick() {
 }
 
 void RunEngine::executeRun() {
-    // 阶段 B 复核(P0): 断点暂停后恢复——跳过初始化，从保存的模块继续
     const bool resuming = m_pausedAtBreakpoint && !m_pauseResumeModule.isEmpty();
 
     if (!resuming) {
@@ -649,6 +652,9 @@ void RunEngine::executeRun() {
         emit runStarted();
 
         m_runStartTime = QDateTime::currentDateTime();
+        m_runAllSuccess = true;
+        m_runFirstError.clear();
+        clearBreakpointPauseState();
         clearModuleOutputs();
         m_runId = QString::number(QDateTime::currentMSecsSinceEpoch());
         m_frameId = 0;
@@ -660,12 +666,17 @@ void RunEngine::executeRun() {
 
         buildModuleTree();
     } else {
-        // 恢复：重新获取执行锁，状态切回 Running
         if (m_executing.exchange(true, std::memory_order_acq_rel)) {
             return;
         }
+        if (m_breakpointPausedAt.isValid()) {
+            const qint64 pausedMs = m_breakpointPausedAt.msecsTo(QDateTime::currentDateTime());
+            if (pausedMs > 0) {
+                m_runStartTime = m_runStartTime.addMSecs(pausedMs);
+            }
+        }
         m_pausedAtBreakpoint = false;
-        m_skipBreakpointOnce = true; // 跳过恢复模块的断点（否则无限暂停）
+        m_skipBreakpointOnce = true;
         m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
         emit stateChanged(state());
     }
@@ -676,6 +687,8 @@ void RunEngine::executeRun() {
         currentModule = m_pauseResumeModule;
         pipelineData = m_pausePipelineData;
         m_pauseResumeModule.clear();
+        m_pausePipelineData = ImageData();
+        m_breakpointPausedAt = QDateTime();
     } else {
         {
             QReadLocker locker(&m_moduleLock);
@@ -684,8 +697,6 @@ void RunEngine::executeRun() {
         }
     }
     m_currentModuleName = currentModule;
-    bool allSuccess = true;
-    QString firstError;
 
     while (!currentModule.isEmpty() && state() == RunState::Running) {
         if (m_cancellationToken && m_cancellationToken->isCancelledFast()) {
@@ -693,26 +704,25 @@ void RunEngine::executeRun() {
             break;
         }
 
-        // 阶段 B 复核(P0): 非阻塞断点暂停——命中后保存恢复点，释放事件循环
         if (m_skipBreakpointOnce) {
-            m_skipBreakpointOnce = false; // 仅跳过恢复模块一次
+            m_skipBreakpointOnce = false;
         } else if (hasBreakpoint(currentModule)) {
-            emit breakpointHit(currentModule);
             m_pauseResumeModule = currentModule;
             m_pausePipelineData = pipelineData;
+            m_breakpointPausedAt = QDateTime::currentDateTime();
             m_pausedAtBreakpoint = true;
             m_state.store(static_cast<int>(RunState::Paused), std::memory_order_release);
-            emit stateChanged(state());
             m_executing.store(false, std::memory_order_release);
-            // 不发射 runFinished——运行未结束，仅暂停
+            emit stateChanged(state());
+            emit breakpointHit(currentModule);
             return;
         }
 
         executeOrBypassModule(currentModule, pipelineData);
         if (!m_lastExecuteResult) {
-            allSuccess = false;
-            if (firstError.isEmpty()) {
-                firstError = m_lastModuleError;
+            m_runAllSuccess = false;
+            if (m_runFirstError.isEmpty()) {
+                m_runFirstError = m_lastModuleError;
             }
         }
 
@@ -742,18 +752,20 @@ void RunEngine::executeRun() {
         m_currentModuleName = currentModule;
     }
 
-    int elapsedMs = m_runStartTime.msecsTo(QDateTime::currentDateTime());
-    allSuccess = allSuccess && state() != RunState::Stopped;
+    const int elapsedMs = m_runStartTime.msecsTo(QDateTime::currentDateTime());
+    const bool allSuccess = m_runAllSuccess && state() != RunState::Stopped;
     updateStatistics(allSuccess, elapsedMs);
 
     RunResult result;
     result.success = allSuccess;
     result.errorCode = allSuccess ? 0 : -1;
-    result.errorMessage = allSuccess ? QString() : (firstError.isEmpty() ? tr("Flow execution failed") : firstError);
+    result.errorMessage =
+        allSuccess ? QString() : (m_runFirstError.isEmpty() ? tr("Flow execution failed") : m_runFirstError);
     result.elapsedMs = elapsedMs;
     result.finishedTime = QDateTime::currentDateTime();
 
     m_executing.store(false, std::memory_order_release);
+    clearBreakpointPauseState();
     emit runFinished(result);
 
     if (runMode() == RunMode::RunOnce) {

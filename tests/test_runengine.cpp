@@ -280,6 +280,8 @@ private slots:
     void testDisabledBypassRejectsTypeIncompatible();
     void testBreakpointHitPauseResume();
     void testBreakpointDoesNotBlockRun();
+    void testBreakpointPreservesFailureAcrossResume();
+    void testMultipleBreakpointsCanResumeAndStop();
     void testRemoveModuleClearsTopology();
     void init();
     void cleanup();
@@ -1529,6 +1531,14 @@ void TestRunEngine::testBreakpointDoesNotBlockRun() {
     }));
 
     QSignalSpy hitSpy(&engine, &RunEngine::breakpointHit);
+    QSignalSpy finishedSpy(&engine, &RunEngine::runFinished);
+    RunResult result{};
+    const QMetaObject::Connection resultConnection =
+        connect(&engine, &RunEngine::runFinished, this, [&result](const RunResult& value) { result = value; });
+    bool signalSawPausedState = false;
+    connect(&engine, &RunEngine::breakpointHit, this, [&engine, &signalSawPausedState]() {
+        signalSawPausedState = engine.state() == RunState::Paused && engine.isPausedAtBreakpoint();
+    });
 
     // 第一次运行：命中断点 A，暂停（A 尚未执行），runOnce 返回（非阻塞）
     engine.runOnce();
@@ -1537,14 +1547,92 @@ void TestRunEngine::testBreakpointDoesNotBlockRun() {
     QVERIFY2(!log.contains("A"), "breakpoint should pause before A executes");
     QVERIFY2(engine.isPausedAtBreakpoint(), "should be paused at breakpoint");
     QCOMPARE(engine.state(), RunState::Paused);
+    QVERIFY(signalSawPausedState);
+    QCOMPARE(finishedSpy.count(), 0);
 
     // 继续：恢复执行 A 和 B
-    engine.continueAfterBreakpoint();
+    QTest::qWait(200);
+    engine.resume();
     QVERIFY(log.contains("A"));
     QVERIFY(log.contains("B"));
     QVERIFY(!engine.isPausedAtBreakpoint());
+    QCOMPARE(finishedSpy.count(), 1);
+    QVERIFY2(result.elapsedMs < 150, "breakpoint wait time must not be counted as execution time");
+    disconnect(resultConnection);
 
     engine.clearModules();
+}
+
+void TestRunEngine::testBreakpointPreservesFailureAcrossResume() {
+    RunEngine& engine = RunEngine::instance();
+    Project project;
+    ModuleInstance failing;
+    failing.id = QStringLiteral("Failing");
+    failing.moduleId = failing.id;
+    ModuleInstance paused;
+    paused.id = QStringLiteral("Paused");
+    paused.moduleId = paused.id;
+    paused.breakpoint = true;
+    project.addModule(failing);
+    project.addModule(paused);
+
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) {
+        auto* module = new TestExecutionModule(inst.id);
+        if (inst.id == QStringLiteral("Failing")) {
+            module->executeResult = false;
+            module->errorText = QStringLiteral("failure before breakpoint");
+        }
+        return module;
+    }));
+
+    QSignalSpy finishedSpy(&engine, &RunEngine::runFinished);
+    RunResult result{};
+    const QMetaObject::Connection resultConnection =
+        connect(&engine, &RunEngine::runFinished, this, [&result](const RunResult& value) { result = value; });
+    engine.runOnce();
+    QVERIFY(engine.isPausedAtBreakpoint());
+    QCOMPARE(finishedSpy.count(), 0);
+
+    engine.resume();
+    QCOMPARE(finishedSpy.count(), 1);
+    QVERIFY(!result.success);
+    QCOMPARE(result.errorMessage, QStringLiteral("failure before breakpoint"));
+    disconnect(resultConnection);
+}
+
+void TestRunEngine::testMultipleBreakpointsCanResumeAndStop() {
+    RunEngine& engine = RunEngine::instance();
+    Project project;
+    for (const QString& id : {QStringLiteral("A"), QStringLiteral("B")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        instance.breakpoint = true;
+        project.addModule(instance);
+    }
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) {
+        auto* module = new TestExecutionModule(inst.id);
+        module->executionLog = &log;
+        return module;
+    }));
+
+    QSignalSpy hitSpy(&engine, &RunEngine::breakpointHit);
+    engine.runOnce();
+    QCOMPARE(hitSpy.count(), 1);
+    QCOMPARE(hitSpy.at(0).first().toString(), QStringLiteral("A"));
+
+    engine.resume();
+    QCOMPARE(log, QStringList({QStringLiteral("A")}));
+    QCOMPARE(hitSpy.count(), 2);
+    QCOMPARE(hitSpy.at(1).first().toString(), QStringLiteral("B"));
+    QVERIFY(engine.isPausedAtBreakpoint());
+
+    engine.stop();
+    QCOMPARE(engine.state(), RunState::Stopped);
+    QVERIFY(!engine.isPausedAtBreakpoint());
+    QCOMPARE(log, QStringList({QStringLiteral("A")}));
 }
 
 void TestRunEngine::testRemoveModuleClearsTopology() {

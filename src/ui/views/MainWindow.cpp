@@ -526,12 +526,24 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
 
     // 阶段 B 复核(P2): 禁用/跳过节点在流程栏显示"已跳过"，不记为失败
     connect(&RunEngine::instance(), &RunEngine::moduleSkipped, this, [this](const QString& moduleName) {
-        QTreeWidgetItem* item =
-            m_processTreeController ? m_processTreeController->instanceItem(moduleName) : nullptr;
+        QTreeWidgetItem* item = m_processTreeController ? m_processTreeController->instanceItem(moduleName) : nullptr;
         if (item) {
             const bool disabled = RunEngine::instance().isModuleDisabled(moduleName);
             setProcessItemStatus(item, QStringLiteral("skipped"), disabled ? tr("已禁用") : tr("已跳过"));
         }
+    });
+
+    connect(&RunEngine::instance(), &RunEngine::breakpointHit, this, [this](const QString& moduleName) {
+        QTreeWidgetItem* item = m_processTreeController ? m_processTreeController->instanceItem(moduleName) : nullptr;
+        if (item) {
+            m_currentExecutingItem = item;
+            setProcessItemStatus(item, QStringLiteral("paused"), tr("断点暂停"));
+        }
+        updateBreakpointRunControls(true);
+        if (m_runStatusLabel) {
+            m_runStatusLabel->setText(tr("断点暂停：%1").arg(moduleName));
+        }
+        Logger::instance().info(tr("断点暂停：%1，点击运行继续").arg(moduleName), "Run");
     });
 
     connect(&RunEngine::instance(), &RunEngine::runFinished, this, [this](const RunResult& result) {
@@ -882,8 +894,10 @@ void MainWindow::setupToolBar() {
     mainToolbar->addSeparator();
 
     // 运行控制
-    mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#16A34A")), tr("单次运行"),
-                           this, &MainWindow::onRunOnce);
+    QAction* runOnceAction =
+        mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Play, 24, QColor("#16A34A")),
+                               tr("单次运行"), this, &MainWindow::onRunOnce);
+    runOnceAction->setObjectName(QStringLiteral("RunOnceAction"));
     mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Step, 24, QColor("#0F766E")), tr("单步"), this,
                            &MainWindow::onStepRun);
     mainToolbar->addAction(AppIconProvider::icon(AppIconProvider::Icon::Cycle, 24, QColor("#2563EB")), tr("循环运行"),
@@ -4517,6 +4531,8 @@ void MainWindow::setProcessItemStatus(QTreeWidgetItem* item, const QString& stat
         dotColor = QColor("#EF4444"); // 红色
     else if (status == "dirty")
         dotColor = QColor("#F59E0B"); // 琥珀色
+    else if (status == "paused")
+        dotColor = QColor("#D97706"); // 深琥珀色（断点暂停）
     else if (status == "skipped")
         dotColor = QColor("#9CA3AF"); // 灰色（已跳过/已禁用）
     if (dotColor.isValid()) {
@@ -5289,10 +5305,28 @@ void MainWindow::onQuickAnnotate() {
 void MainWindow::setUiRunningState(bool running, bool cycleMode) {
     m_isRunning = running;
     m_isCycleMode = running && cycleMode;
-    // 运行控制按钮已统一到顶部工具栏，状态由 QAction 自动管理
+    if (!running) {
+        updateBreakpointRunControls(false);
+    }
+}
+
+void MainWindow::updateBreakpointRunControls(bool paused) {
+    if (QAction* action = findChild<QAction*>(QStringLiteral("RunOnceAction"))) {
+        action->setText(paused ? tr("继续") : tr("单次运行"));
+        action->setToolTip(paused ? tr("继续执行") : tr("单次运行"));
+    }
+    if (QToolButton* button = findChild<QToolButton*>(QStringLiteral("FlowRunButton"))) {
+        button->setText(paused ? tr("继续") : tr("运行"));
+        button->setToolTip(paused ? tr("继续执行") : tr("运行流程"));
+    }
 }
 
 void MainWindow::onRunOnce() {
+    if (RunEngine::instance().isPausedAtBreakpoint()) {
+        updateBreakpointRunControls(false);
+        RunEngine::instance().resume();
+        return;
+    }
     if (!m_isRunning) {
         if (m_processTree->topLevelItemCount() == 0) {
             if (m_processTimeLabel) {
@@ -5313,6 +5347,11 @@ void MainWindow::onRunOnce() {
 }
 
 void MainWindow::onRunCycle() {
+    if (RunEngine::instance().isPausedAtBreakpoint()) {
+        updateBreakpointRunControls(false);
+        RunEngine::instance().resume();
+        return;
+    }
     if (!m_isRunning) {
         if (m_processTree->topLevelItemCount() == 0) {
             if (m_processTimeLabel) {
