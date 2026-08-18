@@ -119,6 +119,9 @@ public:
     Q_INVOKABLE void pause();
     Q_INVOKABLE void resume();
     Q_INVOKABLE void stop();
+    // 阶段 B 复核: 非阻塞断点暂停后恢复执行
+    Q_INVOKABLE void continueAfterBreakpoint();
+    bool isPausedAtBreakpoint() const;
 
     // 模块管理
     void addModule(ModuleBase* module);
@@ -165,26 +168,6 @@ public:
     bool hasBreakpoint(const QString& moduleName) const;
     void setModuleDisabled(const QString& moduleName, bool disabled);
     bool isModuleDisabled(const QString& moduleName) const;
-    void setContinueFlag(bool flag) {
-        QMutexLocker locker(&m_breakpointMutex);
-        m_continueFlag = flag;
-        if (flag) {
-            m_breakpointCondition.wakeOne();
-        }
-    }
-    void setBreakpointFlag(bool flag) {
-        QMutexLocker locker(&m_breakpointMutex);
-        m_breakpointFlag = flag;
-        if (!flag) {
-            m_breakpointCondition.wakeOne();
-        }
-    }
-    QWaitCondition& breakpointCondition() {
-        return m_breakpointCondition;
-    }
-    QMutex& breakpointMutex() {
-        return m_breakpointMutex;
-    }
 
     // 取消令牌
     CancellationToken* cancellationToken() {
@@ -207,9 +190,6 @@ signals:
 
 public slots:
     void onTimerTick();
-
-private slots:
-    void onBreakpointHit();
 
 private:
     RunEngine();
@@ -257,11 +237,14 @@ private:
     mutable QMutex m_outputMutex;
 
     // 断点控制
+    // 断点集合（m_breakpointMutex 保护）
     QSet<QString> m_breakpoints;
-    bool m_breakpointFlag = false;
-    bool m_continueFlag = false;
     mutable QMutex m_breakpointMutex;
-    QWaitCondition m_breakpointCondition;
+    // 阶段 B 复核: 非阻塞断点暂停/恢复
+    QString m_pauseResumeModule;
+    ImageData m_pausePipelineData;
+    bool m_pausedAtBreakpoint = false;
+    bool m_skipBreakpointOnce = false;
 
     // 统计
     int m_totalRuns = 0;

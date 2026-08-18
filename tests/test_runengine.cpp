@@ -1529,12 +1529,20 @@ void TestRunEngine::testBreakpointDoesNotBlockRun() {
     }));
 
     QSignalSpy hitSpy(&engine, &RunEngine::breakpointHit);
-    // 同步运行不得阻塞：runOnce 直接返回且 A、B 均执行，断点命中一次
+
+    // 第一次运行：命中断点 A，暂停（A 尚未执行），runOnce 返回（非阻塞）
     engine.runOnce();
     QCOMPARE(hitSpy.count(), 1);
     QCOMPARE(hitSpy.first().first().toString(), QStringLiteral("A"));
+    QVERIFY2(!log.contains("A"), "breakpoint should pause before A executes");
+    QVERIFY2(engine.isPausedAtBreakpoint(), "should be paused at breakpoint");
+    QCOMPARE(engine.state(), RunState::Paused);
+
+    // 继续：恢复执行 A 和 B
+    engine.continueAfterBreakpoint();
     QVERIFY(log.contains("A"));
     QVERIFY(log.contains("B"));
+    QVERIFY(!engine.isPausedAtBreakpoint());
 
     engine.clearModules();
 }
