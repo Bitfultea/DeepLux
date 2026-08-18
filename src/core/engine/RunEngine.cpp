@@ -475,6 +475,7 @@ void RunEngine::clearModules() {
     m_executionOrder.clear();
     m_disabledModules.clear();
     m_connections.clear();
+    m_controlEdges.clear();
     m_nodeOutputs.clear();
     clearBreakpointPauseState();
     locker.unlock();
@@ -1134,6 +1135,7 @@ QString RunEngine::getNextSequentialModule(const QString& currentModule) {
 
 bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
     m_executionOrder.clear();
+    m_controlEdges.clear();
     m_connections = project ? project->connections() : QList<ModuleConnection>{};
     if (!project || project->connections().isEmpty()) {
         return true;
@@ -1170,15 +1172,12 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
             error = tr("Connection %1 -> %2 requires manual port mapping").arg(conn.fromModuleId, conn.toModuleId);
             return false;
         }
-        if (conn.edgeType == QLatin1String("control")) {
-            error = tr("Explicit control edges are not supported by the graph executor yet");
-            return false;
-        }
+
+        // 阶段 C: 显式控制边契约——推断边类型并校验端口兼容
         if (conn.fromPort.isEmpty())
             conn.fromPort = QStringLiteral("image");
         if (conn.toPort.isEmpty())
             conn.toPort = QStringLiteral("image");
-        conn.edgeType = QStringLiteral("data");
 
         ModuleBase* source = modulesById.value(conn.fromModuleId);
         ModuleBase* target = modulesById.value(conn.toModuleId);
@@ -1190,15 +1189,51 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
             error = tr("Connection references an unavailable runtime module");
             return false;
         }
-        if (!sourcePorts.isEmpty() && !output) {
+        // 隐式控制端口：next（所有节点的隐式控制输出）和 control（隐式控制输入）
+        const bool fromIsImplicitControl = (conn.fromPort == QLatin1String("next"));
+        const bool toIsImplicitControl = (conn.toPort == QLatin1String("control"));
+        const bool fromIsControl = fromIsImplicitControl || (output && output->control);
+        const bool toIsControl = toIsImplicitControl || (input && input->control);
+
+        // 推断边类型
+        if (conn.edgeType.isEmpty()) {
+            conn.edgeType = (fromIsControl || toIsControl) ? QStringLiteral("control") : QStringLiteral("data");
+        }
+
+        if (conn.edgeType == QLatin1String("data")) {
+            // 数据边：两端必须是非控制端口
+            if (fromIsControl) {
+                error = tr("Data edge %1.%2 targets a control port").arg(conn.fromModuleId, conn.fromPort);
+                return false;
+            }
+            if (toIsControl) {
+                error = tr("Data edge targets control port %1.%2").arg(conn.toModuleId, conn.toPort);
+                return false;
+            }
+        } else if (conn.edgeType == QLatin1String("control")) {
+            // 控制边：源必须是控制输出，目标必须是控制输入
+            if (!fromIsControl) {
+                error = tr("Control edge source %1.%2 is not a control port").arg(conn.fromModuleId, conn.fromPort);
+                return false;
+            }
+            if (!toIsControl) {
+                error = tr("Control edge target %1.%2 is not a control port").arg(conn.toModuleId, conn.toPort);
+                return false;
+            }
+        }
+
+        // 端口存在性校验（隐式端口跳过）
+        if (!fromIsImplicitControl && !sourcePorts.isEmpty() && !output) {
             error = tr("Node %1 has no output port %2").arg(conn.fromModuleId, conn.fromPort);
             return false;
         }
-        if (!targetPorts.isEmpty() && !input) {
+        if (!toIsImplicitControl && !targetPorts.isEmpty() && !input) {
             error = tr("Node %1 has no input port %2").arg(conn.toModuleId, conn.toPort);
             return false;
         }
-        if (output && input && !portTypesCompatible(output->type, input->type)) {
+        // 数据边类型兼容（控制边不做数据类型校验）
+        if (conn.edgeType == QLatin1String("data") && output && input &&
+            !portTypesCompatible(output->type, input->type)) {
             error = tr("Connection %1.%2 (%3) is incompatible with %4.%5 (%6)")
                         .arg(conn.fromModuleId, conn.fromPort, dataTypeName(output->type), conn.toModuleId, conn.toPort,
                              dataTypeName(input->type));
@@ -1207,9 +1242,20 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
 
         const QString edgeKey = conn.fromModuleId + QLatin1Char('\x1f') + conn.toModuleId + QLatin1Char('\x1f') +
                                 conn.fromPort + QLatin1Char('\x1f') + conn.toPort;
-        if (uniqueEdges.contains(edgeKey))
-            continue;
+        if (uniqueEdges.contains(edgeKey)) {
+            error = tr("Duplicate connection %1.%2 -> %3.%4")
+                        .arg(conn.fromModuleId, conn.fromPort, conn.toModuleId, conn.toPort);
+            return false;
+        }
         uniqueEdges.insert(edgeKey);
+
+        if (conn.edgeType == QLatin1String("control")) {
+            // 控制边不参与数据 DAG 拓扑排序，只记录
+            m_controlEdges.append(conn);
+            continue;
+        }
+
+        // 数据边：参与拓扑排序
         const QString inputKey = conn.toModuleId + QLatin1Char('\x1f') + conn.toPort;
         if (++inputCounts[inputKey] > 1 && input && !input->multiple) {
             error =
@@ -1240,6 +1286,17 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
         m_executionOrder.clear();
         error = tr("Data-flow graph contains a cycle");
         return false;
+    }
+
+    // 阶段 C: 控制边环检测——检查控制边是否形成回环（仅在拓扑序中回溯）
+    for (const ModuleConnection& cc : m_controlEdges) {
+        const int fromIdx = m_executionOrder.indexOf(cc.fromModuleId);
+        const int toIdx = m_executionOrder.indexOf(cc.toModuleId);
+        if (fromIdx >= 0 && toIdx >= 0 && toIdx < fromIdx) {
+            error = tr("Control edge %1 -> %2 forms a cycle (backward in execution order)")
+                        .arg(cc.fromModuleId, cc.toModuleId);
+            return false;
+        }
     }
 
     return true;

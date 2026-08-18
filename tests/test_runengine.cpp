@@ -143,6 +143,65 @@ private:
     bool m_source;
 };
 
+// 带控制端口的模块，用于控制边契约测试
+class ControlPortModule : public ModuleBase {
+    Q_OBJECT
+public:
+    ControlPortModule(const QString& name, bool hasControlOut, bool hasControlIn)
+        : m_hasControlOut(hasControlOut), m_hasControlIn(hasControlIn) {
+        m_moduleId = QStringLiteral("com.deeplux.test.ctrl.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+    }
+    QList<PortSpec> inputPorts() const override {
+        QList<PortSpec> ports;
+        PortSpec data;
+        data.id = QStringLiteral("image");
+        data.displayName = QStringLiteral("输入");
+        data.type = DataType::Image2D;
+        ports.append(data);
+        if (m_hasControlIn) {
+            PortSpec ctrl;
+            ctrl.id = QStringLiteral("ctrl_in");
+            ctrl.displayName = QStringLiteral("控制输入");
+            ctrl.type = DataType::Boolean;
+            ctrl.control = true;
+            ports.append(ctrl);
+        }
+        return ports;
+    }
+    QList<PortSpec> outputPorts() const override {
+        QList<PortSpec> ports;
+        PortSpec data;
+        data.id = QStringLiteral("image");
+        data.displayName = QStringLiteral("输出");
+        data.type = DataType::Image2D;
+        ports.append(data);
+        if (m_hasControlOut) {
+            PortSpec ctrl;
+            ctrl.id = QStringLiteral("ctrl_out");
+            ctrl.displayName = QStringLiteral("控制输出");
+            ctrl.type = DataType::Boolean;
+            ctrl.control = true;
+            ports.append(ctrl);
+        }
+        return ports;
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    bool m_hasControlOut;
+    bool m_hasControlIn;
+};
+
 // 非对称端口模块：输入 point1(必需)，输出 image。禁用时无法旁路 image。
 class RequiredInputModule : public ModuleBase {
     Q_OBJECT
@@ -283,6 +342,15 @@ private slots:
     void testBreakpointPreservesFailureAcrossResume();
     void testMultipleBreakpointsCanResumeAndStop();
     void testRemoveModuleClearsTopology();
+    // 阶段 C: 显式控制边契约
+    void testDataEdgeToControlPortRejected();
+    void testControlEdgeToDataPortRejected();
+    void testControlEdgeValidAccepted();
+    void testImplicitControlPortsAccepted();
+    void testDuplicateFourTupleRejected();
+    void testDifferentPortSameNodePairAccepted();
+    void testControlEdgeCycleRejected();
+    void testNoControlEdgesBehaviorUnchanged();
     void init();
     void cleanup();
 
@@ -1665,6 +1733,203 @@ void TestRunEngine::testRemoveModuleClearsTopology() {
     QVERIFY(!log.contains("A"));
     QVERIFY(log.contains("B"));
 
+    engine.clearModules();
+}
+
+
+// ---------------------------------------------------------------------------
+// 阶段 C: 显式控制边契约测试
+// ---------------------------------------------------------------------------
+
+void TestRunEngine::testDataEdgeToControlPortRejected() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance s; s.id = "src"; s.moduleId = "src";
+    ModuleInstance t; t.id = "tgt"; t.moduleId = "tgt";
+    project.addModule(s);
+    project.addModule(t);
+    ModuleConnection c;
+    c.fromModuleId = "src"; c.toModuleId = "tgt";
+    c.fromPort = "image"; c.toPort = "ctrl_in";
+    c.edgeType = "data";
+    project.addConnection(c);
+    QVERIFY2(!engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == QLatin1String("src"))
+            return new ControlPortModule(inst.id, false, false);
+        return new ControlPortModule(inst.id, false, true);
+    }), "should reject data edge to control port");
+    engine.clearModules();
+}
+
+void TestRunEngine::testControlEdgeToDataPortRejected() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance s; s.id = "src"; s.moduleId = "src";
+    ModuleInstance t; t.id = "tgt"; t.moduleId = "tgt";
+    project.addModule(s);
+    project.addModule(t);
+    ModuleConnection dataC;
+    dataC.fromModuleId = "src"; dataC.toModuleId = "tgt";
+    dataC.fromPort = "image"; dataC.toPort = "image";
+    dataC.edgeType = "data";
+    project.addConnection(dataC);
+    ModuleConnection c;
+    c.fromModuleId = "src"; c.toModuleId = "tgt";
+    c.fromPort = "ctrl_out"; c.toPort = "image";
+    c.edgeType = "control";
+    project.addConnection(c);
+    QVERIFY2(!engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == QLatin1String("src"))
+            return new ControlPortModule(inst.id, true, false);
+        return new ControlPortModule(inst.id, false, false);
+    }), "should reject control edge to data port");
+    engine.clearModules();
+}
+
+void TestRunEngine::testControlEdgeValidAccepted() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance s; s.id = "src"; s.moduleId = "src";
+    ModuleInstance t; t.id = "tgt"; t.moduleId = "tgt";
+    project.addModule(s);
+    project.addModule(t);
+    ModuleConnection dataC;
+    dataC.fromModuleId = "src"; dataC.toModuleId = "tgt";
+    dataC.fromPort = "image"; dataC.toPort = "image";
+    dataC.edgeType = "data";
+    project.addConnection(dataC);
+    ModuleConnection ctrlC;
+    ctrlC.fromModuleId = "src"; ctrlC.toModuleId = "tgt";
+    ctrlC.fromPort = "ctrl_out"; ctrlC.toPort = "ctrl_in";
+    ctrlC.edgeType = "control";
+    project.addConnection(ctrlC);
+    QVERIFY2(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+        return new ControlPortModule(inst.id, true, true);
+    }), "valid control edge should be accepted");
+    engine.clearModules();
+}
+
+void TestRunEngine::testImplicitControlPortsAccepted() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance s; s.id = "src"; s.moduleId = "src";
+    ModuleInstance t; t.id = "tgt"; t.moduleId = "tgt";
+    project.addModule(s);
+    project.addModule(t);
+    ModuleConnection dataC;
+    dataC.fromModuleId = "src"; dataC.toModuleId = "tgt";
+    dataC.fromPort = "image"; dataC.toPort = "image";
+    project.addConnection(dataC);
+    ModuleConnection ctrlC;
+    ctrlC.fromModuleId = "src"; ctrlC.toModuleId = "tgt";
+    ctrlC.fromPort = "next"; ctrlC.toPort = "control";
+    ctrlC.edgeType = "control";
+    project.addConnection(ctrlC);
+    QVERIFY2(engine.loadProject(&project, [](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->initialize();
+        return m;
+    }), "implicit control ports should be accepted");
+    engine.clearModules();
+}
+
+void TestRunEngine::testDuplicateFourTupleRejected() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance s; s.id = "src"; s.moduleId = "src";
+    ModuleInstance t; t.id = "tgt"; t.moduleId = "tgt";
+    project.addModule(s);
+    project.addModule(t);
+    ModuleConnection c1;
+    c1.fromModuleId = "src"; c1.toModuleId = "tgt";
+    c1.fromPort = "image"; c1.toPort = "image";
+    project.addConnection(c1);
+    ModuleConnection c2 = c1;
+    project.addConnection(c2);
+    QVERIFY2(!engine.loadProject(&project, [](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->initialize();
+        return m;
+    }), "duplicate 4-tuple should be rejected");
+    engine.clearModules();
+}
+
+void TestRunEngine::testDifferentPortSameNodePairAccepted() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance s; s.id = "src"; s.moduleId = "src";
+    ModuleInstance t; t.id = "tgt"; t.moduleId = "tgt";
+    project.addModule(s);
+    project.addModule(t);
+    ModuleConnection c1;
+    c1.fromModuleId = "src"; c1.toModuleId = "tgt";
+    c1.fromPort = "image"; c1.toPort = "image";
+    c1.edgeType = "data";
+    project.addConnection(c1);
+    ModuleConnection c2;
+    c2.fromModuleId = "src"; c2.toModuleId = "tgt";
+    c2.fromPort = "ctrl_out"; c2.toPort = "ctrl_in";
+    c2.edgeType = "control";
+    project.addConnection(c2);
+    QVERIFY2(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+        return new ControlPortModule(inst.id, true, true);
+    }), "different-port same-pair should be accepted");
+    engine.clearModules();
+}
+
+void TestRunEngine::testControlEdgeCycleRejected() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance a; a.id = "A"; a.moduleId = "A";
+    ModuleInstance b; b.id = "B"; b.moduleId = "B";
+    project.addModule(a);
+    project.addModule(b);
+    ModuleConnection dataA;
+    dataA.fromModuleId = "A"; dataA.toModuleId = "B";
+    dataA.fromPort = "image"; dataA.toPort = "image";
+    dataA.edgeType = "data";
+    project.addConnection(dataA);
+    ModuleConnection ctrlBack;
+    ctrlBack.fromModuleId = "B"; ctrlBack.toModuleId = "A";
+    ctrlBack.fromPort = "next"; ctrlBack.toPort = "control";
+    ctrlBack.edgeType = "control";
+    project.addConnection(ctrlBack);
+    QVERIFY2(!engine.loadProject(&project, [](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->initialize();
+        return m;
+    }), "control edge cycle should be rejected");
+    engine.clearModules();
+}
+
+void TestRunEngine::testNoControlEdgesBehaviorUnchanged() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    QStringList log;
+    Project project;
+    ModuleInstance a; a.id = "A"; a.moduleId = "A";
+    ModuleInstance b; b.id = "B"; b.moduleId = "B";
+    project.addModule(a);
+    project.addModule(b);
+    ModuleConnection c;
+    c.fromModuleId = "A"; c.toModuleId = "B";
+    c.fromPort = "image"; c.toPort = "image";
+    c.edgeType = "data";
+    project.addConnection(c);
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+    engine.runOnce();
+    QCOMPARE(log, QStringList({"A", "B"}));
     engine.clearModules();
 }
 
