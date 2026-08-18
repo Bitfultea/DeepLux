@@ -1220,6 +1220,10 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
                 error = tr("Control edge target %1.%2 is not a control port").arg(conn.toModuleId, conn.toPort);
                 return false;
             }
+        } else {
+            error = tr("Unknown edge type '%1' on connection %3.%4 -> %5.%6")
+                        .arg(conn.edgeType, conn.fromModuleId, conn.fromPort, conn.toModuleId, conn.toPort);
+            return false;
         }
 
         // 端口存在性校验（隐式端口跳过）
@@ -1288,14 +1292,48 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
         return false;
     }
 
-    // 阶段 C: 控制边环检测——检查控制边是否形成回环（仅在拓扑序中回溯）
-    for (const ModuleConnection& cc : m_controlEdges) {
-        const int fromIdx = m_executionOrder.indexOf(cc.fromModuleId);
-        const int toIdx = m_executionOrder.indexOf(cc.toModuleId);
-        if (fromIdx >= 0 && toIdx >= 0 && toIdx < fromIdx) {
-            error = tr("Control edge %1 -> %2 forms a cycle (backward in execution order)")
-                        .arg(cc.fromModuleId, cc.toModuleId);
-            return false;
+    // 阶段 C 复核(P1): 对"数据边 + 控制边"的联合图做真实 DFS 环检测
+    // 控制边不参与数据 DAG 拓扑排序，但需加入联合图检测控制自环和联合环。
+    {
+        QSet<QString> visited;
+        QSet<QString> inStack;
+        // 构建联合邻接表
+        QMap<QString, QStringList> combinedAdj = adjacency;
+        for (const ModuleConnection& cc : m_controlEdges) {
+            combinedAdj[cc.fromModuleId].append(cc.toModuleId);
+        }
+        for (const QString& start : moduleIds) {
+            if (visited.contains(start))
+                continue;
+            QStack<QPair<QString, int>> dfs;
+            QStringList path;
+            dfs.push({start, 0});
+            while (!dfs.isEmpty()) {
+                auto [node, idx] = dfs.top();
+                if (idx == 0) {
+                    if (inStack.contains(node)) {
+                        // 发现环
+                        error = tr("Control or combined graph contains a cycle involving %1").arg(node);
+                        return false;
+                    }
+                    if (visited.contains(node)) {
+                        dfs.pop();
+                        continue;
+                    }
+                    visited.insert(node);
+                    inStack.insert(node);
+                    path.append(node);
+                }
+                const QStringList& neighbors = combinedAdj.value(node);
+                if (idx < neighbors.size()) {
+                    dfs.top().second = idx + 1;
+                    dfs.push({neighbors[idx], 0});
+                } else {
+                    inStack.remove(node);
+                    path.removeLast();
+                    dfs.pop();
+                }
+            }
         }
     }
 

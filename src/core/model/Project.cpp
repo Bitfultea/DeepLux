@@ -33,7 +33,8 @@ ModuleConnection ModuleConnection::fromJson(const QJsonObject& json) {
     conn.toInput = json["toInput"].toInt(0);
     conn.fromPort = json["fromPort"].toString();
     conn.toPort = json["toPort"].toString();
-    conn.edgeType = json["edgeType"].toString(QStringLiteral("data"));
+    // 阶段 C 复核(P1): 缺失 edgeType 默认为空，交给引擎推断（不假设 data）
+    conn.edgeType = json["edgeType"].toString();
     return conn;
 }
 
