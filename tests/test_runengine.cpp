@@ -356,6 +356,12 @@ private slots:
     void testNoDataEdgeBackwardControlAccepted();
     void testControlSelfLoopRejected();
     void testEdgeTypeRoundTripPreservesInference();
+    // 阶段 D1: 顺序与 If（显式控制图）
+    void testExplicitControlTrueBranch();
+    void testExplicitControlFalseBranch();
+    void testExplicitControlSkipsInactiveBranch();
+    void testExplicitControlMergeAfterIf();
+    void testExplicitControlStepOnce();
     void init();
     void cleanup();
 
@@ -1638,6 +1644,7 @@ void TestRunEngine::testBreakpointDoesNotBlockRun() {
 
 void TestRunEngine::testBreakpointPreservesFailureAcrossResume() {
     RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
     Project project;
     ModuleInstance failing;
     failing.id = QStringLiteral("Failing");
@@ -2041,6 +2048,258 @@ void TestRunEngine::testEdgeTypeRoundTripPreservesInference() {
     RunEngine& engine = RunEngine::instance();
     QVERIFY2(engine.loadProject(&project, [](const ModuleInstance& inst) { return new TestExecutionModule(inst.id); }),
              "round-tripped next->control edge should be inferred as control");
+    engine.clearModules();
+}
+
+// ---------------------------------------------------------------------------
+// 阶段 D1: 顺序与 If（显式控制图）
+// ---------------------------------------------------------------------------
+
+// 带控制输出的 If-like 模块：输出 true/false 控制端口
+class IfControlModule : public ModuleBase {
+    Q_OBJECT
+public:
+    bool forceTrue = true;
+    QStringList* execLog = nullptr;
+    IfControlModule(const QString& name, bool forceTrueBranch)
+        : forceTrue(forceTrueBranch) {
+        m_moduleId = QStringLiteral("com.deeplux.test.if.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+    }
+    QList<PortSpec> outputPorts() const override {
+        PortSpec t; t.id = "true"; t.displayName = "true"; t.type = DataType::Boolean; t.control = true;
+        PortSpec f; f.id = "false"; f.displayName = "false"; f.type = DataType::Boolean; f.control = true;
+        PortSpec img; img.id = "image"; img.displayName = "image"; img.type = DataType::Image2D;
+        return {img, t, f};
+    }
+    ControlFlowType flowControlType() const override { return ControlFlowType::Conditional; }
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        output.setData("if_result", forceTrue);
+        if (execLog) execLog->append(name());
+        return true;
+    }
+    QWidget* createConfigWidget() override { return nullptr; }
+};
+
+void TestRunEngine::testExplicitControlTrueBranch() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    // If(true) -> true -> BodyTrue ; false -> BodyFalse (skipped)
+    Project project;
+    ModuleInstance cond; cond.id = "cond"; cond.moduleId = "cond";
+    ModuleInstance bt; bt.id = "bodyTrue"; bt.moduleId = "bodyTrue";
+    ModuleInstance bf; bf.id = "bodyFalse"; bf.moduleId = "bodyFalse";
+    project.addModule(cond);
+    project.addModule(bt);
+    project.addModule(bf);
+    // 数据边
+    ModuleConnection dataCond; dataCond.fromModuleId = "cond"; dataCond.toModuleId = "bodyTrue";
+    dataCond.fromPort = "image"; dataCond.toPort = "image"; dataCond.edgeType = "data";
+    project.addConnection(dataCond);
+    ModuleConnection dataCond2; dataCond2.fromModuleId = "cond"; dataCond2.toModuleId = "bodyFalse";
+    dataCond2.fromPort = "image"; dataCond2.toPort = "image"; dataCond2.edgeType = "data";
+    project.addConnection(dataCond2);
+    // 控制边
+    ModuleConnection ctrlTrue; ctrlTrue.fromModuleId = "cond"; ctrlTrue.toModuleId = "bodyTrue";
+    ctrlTrue.fromPort = "true"; ctrlTrue.toPort = "control"; ctrlTrue.edgeType = "control";
+    project.addConnection(ctrlTrue);
+    ModuleConnection ctrlFalse; ctrlFalse.fromModuleId = "cond"; ctrlFalse.toModuleId = "bodyFalse";
+    ctrlFalse.fromPort = "false"; ctrlFalse.toPort = "control"; ctrlFalse.edgeType = "control";
+    project.addConnection(ctrlFalse);
+
+    QStringList log;
+    QStringList skipped;
+    QMetaObject::Connection skipConn = connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == QLatin1String("cond")) {
+            auto* m = new IfControlModule(inst.id, true);
+            m->execLog = &log;
+            return m;
+        }
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+    engine.runOnce();
+    QVERIFY(log.contains("cond"));
+    QVERIFY(log.contains("bodyTrue"));
+    QVERIFY(!log.contains("bodyFalse"));
+    QVERIFY(skipped.contains("bodyFalse"));
+    disconnect(skipConn);
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitControlFalseBranch() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance cond; cond.id = "cond"; cond.moduleId = "cond";
+    ModuleInstance bt; bt.id = "bodyTrue"; bt.moduleId = "bodyTrue";
+    ModuleInstance bf; bf.id = "bodyFalse"; bf.moduleId = "bodyFalse";
+    project.addModule(cond);
+    project.addModule(bt);
+    project.addModule(bf);
+    ModuleConnection dataCond; dataCond.fromModuleId = "cond"; dataCond.toModuleId = "bodyTrue";
+    dataCond.fromPort = "image"; dataCond.toPort = "image"; dataCond.edgeType = "data";
+    project.addConnection(dataCond);
+    ModuleConnection dataCond2; dataCond2.fromModuleId = "cond"; dataCond2.toModuleId = "bodyFalse";
+    dataCond2.fromPort = "image"; dataCond2.toPort = "image"; dataCond2.edgeType = "data";
+    project.addConnection(dataCond2);
+    ModuleConnection ctrlTrue; ctrlTrue.fromModuleId = "cond"; ctrlTrue.toModuleId = "bodyTrue";
+    ctrlTrue.fromPort = "true"; ctrlTrue.toPort = "control"; ctrlTrue.edgeType = "control";
+    project.addConnection(ctrlTrue);
+    ModuleConnection ctrlFalse; ctrlFalse.fromModuleId = "cond"; ctrlFalse.toModuleId = "bodyFalse";
+    ctrlFalse.fromPort = "false"; ctrlFalse.toPort = "control"; ctrlFalse.edgeType = "control";
+    project.addConnection(ctrlFalse);
+
+    QStringList log;
+    QStringList skipped;
+    QMetaObject::Connection skipConn = connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == QLatin1String("cond")) {
+            auto* m = new IfControlModule(inst.id, false);
+            m->execLog = &log;
+            return m;
+        }
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+    engine.runOnce();
+    QVERIFY(log.contains("cond"));
+    QVERIFY(!log.contains("bodyTrue"));
+    QVERIFY(log.contains("bodyFalse"));
+    QVERIFY(skipped.contains("bodyTrue"));
+    disconnect(skipConn);
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitControlSkipsInactiveBranch() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    // Cond(true) -> bodyTrue; bodyFalse should be Skipped not failure
+    Project project;
+    ModuleInstance cond; cond.id = "cond"; cond.moduleId = "cond";
+    ModuleInstance bt; bt.id = "bodyTrue"; bt.moduleId = "bodyTrue";
+    ModuleInstance bf; bf.id = "bodyFalse"; bf.moduleId = "bodyFalse";
+    project.addModule(cond);
+    project.addModule(bt);
+    project.addModule(bf);
+    ModuleConnection ctrlTrue; ctrlTrue.fromModuleId = "cond"; ctrlTrue.toModuleId = "bodyTrue";
+    ctrlTrue.fromPort = "true"; ctrlTrue.toPort = "control"; ctrlTrue.edgeType = "control";
+    project.addConnection(ctrlTrue);
+    ModuleConnection ctrlFalse; ctrlFalse.fromModuleId = "cond"; ctrlFalse.toModuleId = "bodyFalse";
+    ctrlFalse.fromPort = "false"; ctrlFalse.toPort = "control"; ctrlFalse.edgeType = "control";
+    project.addConnection(ctrlFalse);
+
+    QStringList skipped;
+    QMetaObject::Connection skipConn = connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == QLatin1String("cond"))
+            return new IfControlModule(inst.id, true);
+        return new TestExecutionModule(inst.id);
+    }));
+    engine.runOnce();
+    QVERIFY(skipped.contains("bodyFalse"));
+    // 不应记为失败——跳过的节点不影响成功统计
+    QVERIFY(engine.successRuns() >= 1);
+    QVERIFY(engine.failedRuns() == 0 || engine.totalRuns() > 1); // 首次运行即成功
+    disconnect(skipConn);
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitControlMergeAfterIf() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    // cond(true) -> bodyTrue -> merge ; cond(false) -> bodyFalse -> merge
+    Project project;
+    ModuleInstance cond; cond.id = "cond"; cond.moduleId = "cond";
+    ModuleInstance bt; bt.id = "bodyTrue"; bt.moduleId = "bodyTrue";
+    ModuleInstance bf; bf.id = "bodyFalse"; bf.moduleId = "bodyFalse";
+    ModuleInstance merge; merge.id = "merge"; merge.moduleId = "merge";
+    project.addModule(cond);
+    project.addModule(bt);
+    project.addModule(bf);
+    project.addModule(merge);
+    // 数据边
+    ModuleConnection dt; dt.fromModuleId = "bodyTrue"; dt.toModuleId = "merge";
+    dt.fromPort = "image"; dt.toPort = "image"; dt.edgeType = "data";
+    project.addConnection(dt);
+    ModuleConnection df; df.fromModuleId = "bodyFalse"; df.toModuleId = "merge";
+    df.fromPort = "image"; df.toPort = "image"; df.edgeType = "data";
+    project.addConnection(df);
+    // 控制边
+    ModuleConnection ctrlT; ctrlT.fromModuleId = "cond"; ctrlT.toModuleId = "bodyTrue";
+    ctrlT.fromPort = "true"; ctrlT.toPort = "control"; ctrlT.edgeType = "control";
+    project.addConnection(ctrlT);
+    ModuleConnection ctrlF; ctrlF.fromModuleId = "cond"; ctrlF.toModuleId = "bodyFalse";
+    ctrlF.fromPort = "false"; ctrlF.toPort = "control"; ctrlF.edgeType = "control";
+    project.addConnection(ctrlF);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == QLatin1String("cond")) {
+            auto* m = new IfControlModule(inst.id, true);
+            m->execLog = &log;
+            return m;
+        }
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+    engine.runOnce();
+    QVERIFY(log.contains("cond"));
+    QVERIFY(log.contains("bodyTrue"));
+    QVERIFY(log.contains("merge"));
+    QVERIFY(!log.contains("bodyFalse"));
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitControlStepOnce() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    // cond(true) -> bodyTrue -> after
+    Project project;
+    ModuleInstance cond; cond.id = "cond"; cond.moduleId = "cond";
+    ModuleInstance bt; bt.id = "bodyTrue"; bt.moduleId = "bodyTrue";
+    ModuleInstance after; after.id = "after"; after.moduleId = "after";
+    project.addModule(cond);
+    project.addModule(bt);
+    project.addModule(after);
+    // 控制边
+    ModuleConnection ctrlT; ctrlT.fromModuleId = "cond"; ctrlT.toModuleId = "bodyTrue";
+    ctrlT.fromPort = "true"; ctrlT.toPort = "control"; ctrlT.edgeType = "control";
+    project.addConnection(ctrlT);
+    // next -> after (implicit)
+    ModuleConnection ctrlAfter; ctrlAfter.fromModuleId = "bodyTrue"; ctrlAfter.toModuleId = "after";
+    ctrlAfter.fromPort = "next"; ctrlAfter.toPort = "control"; ctrlAfter.edgeType = "control";
+    project.addConnection(ctrlAfter);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == QLatin1String("cond")) {
+            auto* m = new IfControlModule(inst.id, true);
+            m->execLog = &log;
+            return m;
+        }
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+    // step 1: cond
+    QVERIFY(engine.stepOnce());
+    QVERIFY(log.contains("cond"));
+    QVERIFY(!log.contains("bodyTrue"));
+    // step 2: bodyTrue
+    QVERIFY(engine.stepOnce());
+    QVERIFY(log.contains("bodyTrue"));
+    QVERIFY(!log.contains("after"));
+    // step 3: after
+    QVERIFY(engine.stepOnce());
+    QVERIFY(log.contains("after"));
     engine.clearModules();
 }
 

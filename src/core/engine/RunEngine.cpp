@@ -699,6 +699,147 @@ void RunEngine::executeRun() {
     }
     m_currentModuleName = currentModule;
 
+    // 阶段 D1: 显式控制图存在时走激活队列；否则走 legacy flowControlType 调度
+    if (!m_controlEdges.isEmpty()) {
+        executeRunWithControlGraph(pipelineData);
+    } else {
+        executeRunLegacy(pipelineData, m_runAllSuccess, m_runFirstError);
+    }
+
+    // 断点暂停时不发射 runFinished（运行未结束，仅暂停）
+    if (m_pausedAtBreakpoint) {
+        return;
+    }
+
+    const int elapsedMs = m_runStartTime.msecsTo(QDateTime::currentDateTime());
+    const bool allSuccess = m_runAllSuccess && state() != RunState::Stopped;
+    updateStatistics(allSuccess, elapsedMs);
+
+    RunResult result;
+    result.success = allSuccess;
+    result.errorCode = allSuccess ? 0 : -1;
+    result.errorMessage =
+        allSuccess ? QString() : (m_runFirstError.isEmpty() ? tr("Flow execution failed") : m_runFirstError);
+    result.elapsedMs = elapsedMs;
+    result.finishedTime = QDateTime::currentDateTime();
+
+    m_executing.store(false, std::memory_order_release);
+    clearBreakpointPauseState();
+    emit runFinished(result);
+
+    if (runMode() == RunMode::RunOnce) {
+        m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
+        emit stateChanged(state());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 阶段 D1: 显式控制图执行（激活队列）
+// ---------------------------------------------------------------------------
+
+void RunEngine::executeRunWithControlGraph(ImageData& pipelineData) {
+    // 激活集合：当前帧应执行的节点
+    QSet<QString> activated;
+
+    // 从拓扑序的第一个节点开始激活
+    if (!m_executionOrder.isEmpty()) {
+        activated.insert(m_executionOrder.first());
+    } else if (!m_modules.isEmpty()) {
+        activated.insert(runtimeModuleName(m_modules.first()));
+    }
+
+    // 按拓扑序遍历所有节点
+    QStringList order = m_executionOrder.isEmpty() ? QStringList(runtimeModuleName(m_modules.first())) : m_executionOrder;
+    if (m_executionOrder.isEmpty()) {
+        QReadLocker locker(&m_moduleLock);
+        QString cur = m_modules.isEmpty() ? QString() : runtimeModuleName(m_modules.first());
+        QSet<QString> seen;
+        while (!cur.isEmpty() && !seen.contains(cur)) {
+            seen.insert(cur);
+            order.append(cur);
+            cur = getNextSequentialModule(cur);
+        }
+    }
+
+    for (const QString& mod : order) {
+        if (state() != RunState::Running)
+            break;
+        if (m_cancellationToken && m_cancellationToken->isCancelledFast()) {
+            stop();
+            break;
+        }
+
+        // 断点
+        if (m_skipBreakpointOnce) {
+            m_skipBreakpointOnce = false;
+        } else if (hasBreakpoint(mod)) {
+            m_pauseResumeModule = mod;
+            m_pausePipelineData = pipelineData;
+            m_breakpointPausedAt = QDateTime::currentDateTime();
+            m_pausedAtBreakpoint = true;
+            m_state.store(static_cast<int>(RunState::Paused), std::memory_order_release);
+            m_executing.store(false, std::memory_order_release);
+            emit stateChanged(state());
+            emit breakpointHit(mod);
+            return;
+        }
+
+        if (activated.contains(mod)) {
+            executeOrBypassModule(mod, pipelineData);
+            if (!m_lastExecuteResult) {
+                m_runAllSuccess = false;
+                if (m_runFirstError.isEmpty())
+                    m_runFirstError = m_lastModuleError;
+            }
+
+            // 执行后确定下游激活
+            ModuleBase* module = getModule(mod);
+            if (module) {
+                const bool isConditional = module->flowControlType() == ControlFlowType::Conditional;
+                const bool ifResult = m_lastControlResult;
+
+                // 激活控制边下游
+                for (const ModuleConnection& ce : m_controlEdges) {
+                    if (ce.fromModuleId != mod)
+                        continue;
+                    if (isConditional) {
+                        // If: 只激活 true 或 false 分支
+                        if ((ce.fromPort == "true" && ifResult) ||
+                            (ce.fromPort == "false" && !ifResult)) {
+                            activated.insert(ce.toModuleId);
+                        }
+                    } else {
+                        // 普通节点：激活所有控制边下游（含 next）
+                        activated.insert(ce.toModuleId);
+                    }
+                }
+
+                // 激活数据边下游（数据流隐含控制激活）
+                for (const ModuleConnection& dc : m_connections) {
+                    if (dc.fromModuleId != mod || dc.edgeType == QLatin1String("control"))
+                        continue;
+                    if (isConditional) {
+                        // If: 只激活匹配分支的数据边目标
+                        // true 分支目标应已通过控制边激活；不激活 false 分支数据边目标
+                    } else {
+                        activated.insert(dc.toModuleId);
+                    }
+                }
+            }
+            m_currentModuleName = mod;
+        } else {
+            // 未激活节点：Skipped，非失败
+            emit moduleSkipped(mod);
+        }
+    }
+}
+
+void RunEngine::executeRunLegacy(ImageData& /*pipelineData*/, bool& allSuccess, QString& firstError) {
+    // 阶段 D3: legacy 路径——无控制边时使用 flowControlType 调度
+    // 暂时内联原逻辑（后续 D3 合并）
+    QString currentModule = m_currentModuleName;
+    ImageData pipelineData;
+
     while (!currentModule.isEmpty() && state() == RunState::Running) {
         if (m_cancellationToken && m_cancellationToken->isCancelledFast()) {
             stop();
@@ -721,13 +862,12 @@ void RunEngine::executeRun() {
 
         executeOrBypassModule(currentModule, pipelineData);
         if (!m_lastExecuteResult) {
-            m_runAllSuccess = false;
-            if (m_runFirstError.isEmpty()) {
-                m_runFirstError = m_lastModuleError;
-            }
+            allSuccess = false;
+            if (firstError.isEmpty())
+                firstError = m_lastModuleError;
         }
 
-        // 阶段 3.2: 控制节点前向跳过时，被跳过的未激活分支节点标记为 Skipped（非失败）
+        // 阶段 3.2: 控制节点前向跳过时标记 Skipped
         const QString nextModule = getNextModule(currentModule, m_lastControlResult);
         if (!nextModule.isEmpty()) {
             QStringList order = m_executionOrder;
@@ -744,34 +884,12 @@ void RunEngine::executeRun() {
             const int curIdx = order.indexOf(currentModule);
             const int nextIdx = order.indexOf(nextModule);
             if (curIdx >= 0 && nextIdx > curIdx + 1) {
-                for (int i = curIdx + 1; i < nextIdx; ++i) {
+                for (int i = curIdx + 1; i < nextIdx; ++i)
                     emit moduleSkipped(order[i]);
-                }
             }
         }
         currentModule = nextModule;
         m_currentModuleName = currentModule;
-    }
-
-    const int elapsedMs = m_runStartTime.msecsTo(QDateTime::currentDateTime());
-    const bool allSuccess = m_runAllSuccess && state() != RunState::Stopped;
-    updateStatistics(allSuccess, elapsedMs);
-
-    RunResult result;
-    result.success = allSuccess;
-    result.errorCode = allSuccess ? 0 : -1;
-    result.errorMessage =
-        allSuccess ? QString() : (m_runFirstError.isEmpty() ? tr("Flow execution failed") : m_runFirstError);
-    result.elapsedMs = elapsedMs;
-    result.finishedTime = QDateTime::currentDateTime();
-
-    m_executing.store(false, std::memory_order_release);
-    clearBreakpointPauseState();
-    emit runFinished(result);
-
-    if (runMode() == RunMode::RunOnce) {
-        m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
-        emit stateChanged(state());
     }
 }
 

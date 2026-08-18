@@ -193,6 +193,9 @@ private:
     ~RunEngine();
 
     void executeRun();
+    // 阶段 D1: 显式控制图执行（激活队列）
+    void executeRunWithControlGraph(ImageData& pipelineData);
+    void executeRunLegacy(ImageData& pipelineData, bool& allSuccess, QString& firstError);
     void executeModule(const QString& moduleName, ImageData& pipelineData);
     // 阶段 B 复核: 完整运行与单步共用的"执行或禁用旁路"入口；含断点命中。
     void executeOrBypassModule(const QString& moduleName, ImageData& pipelineData);
