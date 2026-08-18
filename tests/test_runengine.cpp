@@ -2020,12 +2020,28 @@ void TestRunEngine::testEdgeTypeRoundTripPreservesInference() {
     const QJsonObject json = orig.toJson();
     // toJson 只在 edgeType 非空时写入，因此 JSON 中不应有 edgeType 字段
     QVERIFY2(!json.contains("edgeType"), "toJson should omit empty edgeType");
-    QVERIFY2(!json.contains("fromPort") == false, "fromPort should be present");
+    QVERIFY2(json.contains("fromPort"), "fromPort should be present");
 
     ModuleConnection restored = ModuleConnection::fromJson(json);
     QVERIFY2(restored.edgeType.isEmpty(), "fromJson should preserve empty edgeType for engine inference");
     QCOMPARE(restored.fromPort, QString("next"));
     QCOMPARE(restored.toPort, QString("control"));
+
+    Project project;
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
+    project.addModule(a);
+    project.addModule(b);
+    project.addConnection(restored);
+
+    RunEngine& engine = RunEngine::instance();
+    QVERIFY2(engine.loadProject(&project, [](const ModuleInstance& inst) { return new TestExecutionModule(inst.id); }),
+             "round-tripped next->control edge should be inferred as control");
+    engine.clearModules();
 }
 
 QTEST_MAIN(TestRunEngine)
