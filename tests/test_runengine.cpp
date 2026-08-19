@@ -362,6 +362,9 @@ private slots:
     void testExplicitControlSkipsInactiveBranch();
     void testExplicitControlMergeAfterIf();
     void testExplicitControlStepOnce();
+    void testExplicitControlBackwardEdgeRunAndStep();
+    void testExplicitControlBreakpointResume();
+    void testLegacyBreakpointPreservesPipelineData();
     void init();
     void cleanup();
 
@@ -2091,7 +2094,10 @@ void TestRunEngine::testExplicitControlTrueBranch() {
     Project project;
     ModuleInstance cond; cond.id = "cond"; cond.moduleId = "cond";
     ModuleInstance bt; bt.id = "bodyTrue"; bt.moduleId = "bodyTrue";
-    ModuleInstance bf; bf.id = "bodyFalse"; bf.moduleId = "bodyFalse";
+    ModuleInstance bf;
+    bf.id = "bodyFalse";
+    bf.moduleId = "bodyFalse";
+    bf.breakpoint = true;
     project.addModule(cond);
     project.addModule(bt);
     project.addModule(bf);
@@ -2112,6 +2118,7 @@ void TestRunEngine::testExplicitControlTrueBranch() {
 
     QStringList log;
     QStringList skipped;
+    QSignalSpy hitSpy(&engine, &RunEngine::breakpointHit);
     QMetaObject::Connection skipConn = connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
     QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
         if (inst.id == QLatin1String("cond")) {
@@ -2128,6 +2135,8 @@ void TestRunEngine::testExplicitControlTrueBranch() {
     QVERIFY(log.contains("bodyTrue"));
     QVERIFY(!log.contains("bodyFalse"));
     QVERIFY(skipped.contains("bodyFalse"));
+    QCOMPARE(hitSpy.count(), 0);
+    QVERIFY(!engine.isPausedAtBreakpoint());
     disconnect(skipConn);
     engine.clearModules();
 }
@@ -2196,6 +2205,12 @@ void TestRunEngine::testExplicitControlSkipsInactiveBranch() {
     project.addConnection(ctrlFalse);
 
     QStringList skipped;
+    bool finished = false;
+    bool runSucceeded = false;
+    const QMetaObject::Connection resultConn = connect(&engine, &RunEngine::runFinished, [&](const RunResult& result) {
+        finished = true;
+        runSucceeded = result.success;
+    });
     QMetaObject::Connection skipConn = connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
     QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
         if (inst.id == QLatin1String("cond"))
@@ -2204,9 +2219,9 @@ void TestRunEngine::testExplicitControlSkipsInactiveBranch() {
     }));
     engine.runOnce();
     QVERIFY(skipped.contains("bodyFalse"));
-    // 不应记为失败——跳过的节点不影响成功统计
-    QVERIFY(engine.successRuns() >= 1);
-    QVERIFY(engine.failedRuns() == 0 || engine.totalRuns() > 1); // 首次运行即成功
+    QVERIFY(finished);
+    QVERIFY(runSucceeded);
+    disconnect(resultConn);
     disconnect(skipConn);
     engine.clearModules();
 }
@@ -2300,6 +2315,120 @@ void TestRunEngine::testExplicitControlStepOnce() {
     // step 3: after
     QVERIFY(engine.stepOnce());
     QVERIFY(log.contains("after"));
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitControlBackwardEdgeRunAndStep() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
+    project.addModule(a);
+    project.addModule(b);
+    ModuleConnection control;
+    control.fromModuleId = "B";
+    control.toModuleId = "A";
+    control.fromPort = "next";
+    control.toPort = "control";
+    control.edgeType = "control";
+    project.addConnection(control);
+
+    QStringList log;
+    const auto load = [&]() {
+        return engine.loadProject(&project, [&log](const ModuleInstance& instance) {
+            auto* module = new TestExecutionModule(instance.id);
+            module->executionLog = &log;
+            return module;
+        });
+    };
+
+    QVERIFY(load());
+    engine.runOnce();
+    QCOMPARE(log, QStringList({QStringLiteral("B"), QStringLiteral("A")}));
+
+    engine.clearModules();
+    log.clear();
+    QVERIFY(load());
+    QVERIFY(engine.stepOnce());
+    QCOMPARE(log, QStringList({QStringLiteral("B")}));
+    QVERIFY(engine.stepOnce());
+    QCOMPARE(log, QStringList({QStringLiteral("B"), QStringLiteral("A")}));
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitControlBreakpointResume() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
+    b.breakpoint = true;
+    project.addModule(a);
+    project.addModule(b);
+    ModuleConnection control;
+    control.fromModuleId = "A";
+    control.toModuleId = "B";
+    control.fromPort = "next";
+    control.toPort = "control";
+    control.edgeType = "control";
+    project.addConnection(control);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+    QSignalSpy hitSpy(&engine, &RunEngine::breakpointHit);
+
+    engine.runOnce();
+    QCOMPARE(log, QStringList({QStringLiteral("A")}));
+    QCOMPARE(hitSpy.count(), 1);
+    QVERIFY(engine.isPausedAtBreakpoint());
+
+    engine.resume();
+    QCOMPARE(log, QStringList({QStringLiteral("A"), QStringLiteral("B")}));
+    QCOMPARE(hitSpy.count(), 1);
+    QVERIFY(!engine.isPausedAtBreakpoint());
+    engine.clearModules();
+}
+
+void TestRunEngine::testLegacyBreakpointPreservesPipelineData() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance source;
+    source.id = "source";
+    source.moduleId = "source";
+    ModuleInstance sink;
+    sink.id = "sink";
+    sink.moduleId = "sink";
+    sink.breakpoint = true;
+    project.addModule(source);
+    project.addModule(sink);
+
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        if (instance.id == QLatin1String("source"))
+            module->outputTag = QStringLiteral("preserved");
+        return module;
+    }));
+    auto* sinkModule = qobject_cast<TestExecutionModule*>(engine.getModule(QStringLiteral("sink")));
+    QVERIFY(sinkModule);
+
+    engine.runOnce();
+    QVERIFY(engine.isPausedAtBreakpoint());
+    engine.resume();
+    QCOMPARE(sinkModule->receivedTag, QStringLiteral("preserved"));
     engine.clearModules();
 }
 

@@ -181,9 +181,14 @@ bool RunEngine::stepOnce() {
     if (m_stepCurrentModuleName.isEmpty()) {
         clearModuleOutputs();
         buildModuleTree();
-        QReadLocker locker(&m_moduleLock);
-        m_stepCurrentModuleName =
-            m_executionOrder.isEmpty() ? runtimeModuleName(m_modules.first()) : m_executionOrder.first();
+        if (!m_controlEdges.isEmpty()) {
+            initializeControlQueue();
+            m_stepCurrentModuleName = m_controlQueue.value(0);
+        } else {
+            QReadLocker locker(&m_moduleLock);
+            m_stepCurrentModuleName =
+                m_executionOrder.isEmpty() ? runtimeModuleName(m_modules.first()) : m_executionOrder.first();
+        }
         m_stepPipelineData = ImageData();
     }
 
@@ -204,15 +209,28 @@ bool RunEngine::stepOnce() {
     }
 
     const QString moduleToRun = m_stepCurrentModuleName;
+    const bool usesControlGraph = !m_controlEdges.isEmpty();
+    if (usesControlGraph && !m_controlQueue.isEmpty()) {
+        m_controlQueue.takeFirst();
+    }
     m_currentModuleName = moduleToRun;
     // 阶段 B 复核: 单步与完整运行共用"执行或禁用旁路"入口
     executeOrBypassModule(moduleToRun, m_stepPipelineData);
 
     const bool success = m_lastExecuteResult;
     if (success) {
-        m_stepCurrentModuleName = getNextModule(moduleToRun, m_lastControlResult);
+        if (usesControlGraph) {
+            m_controlProcessed.insert(moduleToRun);
+            activateControlSuccessors(moduleToRun);
+            m_stepCurrentModuleName = m_controlQueue.value(0);
+        } else {
+            m_stepCurrentModuleName = getNextModule(moduleToRun, m_lastControlResult);
+        }
         m_currentModuleName = m_stepCurrentModuleName;
         if (m_stepCurrentModuleName.isEmpty()) {
+            if (usesControlGraph) {
+                emitInactiveControlModules();
+            }
             resetStepState();
         }
     } else {
@@ -243,6 +261,7 @@ void RunEngine::resetStepState() {
     m_stepPipelineData = ImageData();
     m_currentModuleName.clear();
     m_loopIndices.clear();
+    clearControlQueue();
 }
 
 void RunEngine::start() {
@@ -448,13 +467,15 @@ void RunEngine::removeModule(const QString& moduleId) {
             m_connections.removeAt(i);
         }
     }
+    for (int i = m_controlEdges.size() - 1; i >= 0; --i) {
+        if (m_controlEdges[i].fromModuleId == removedName || m_controlEdges[i].toModuleId == removedName) {
+            m_controlEdges.removeAt(i);
+        }
+    }
     // 清除已删节点的运行期输出和单步/暂停状态
     if (!removedName.isEmpty()) {
         invalidateModuleOutput(removedName);
-        if (m_stepCurrentModuleName == removedName) {
-            m_stepCurrentModuleName.clear();
-            resetStepState();
-        }
+        resetStepState();
         if (m_pauseResumeModule == removedName) {
             m_pauseResumeModule.clear();
             m_pausedAtBreakpoint = false;
@@ -690,6 +711,9 @@ void RunEngine::executeRun() {
         m_pauseResumeModule.clear();
         m_pausePipelineData = ImageData();
         m_breakpointPausedAt = QDateTime();
+    } else if (!m_controlEdges.isEmpty()) {
+        initializeControlQueue();
+        currentModule = m_controlQueue.value(0);
     } else {
         {
             QReadLocker locker(&m_moduleLock);
@@ -724,6 +748,7 @@ void RunEngine::executeRun() {
     result.finishedTime = QDateTime::currentDateTime();
 
     m_executing.store(false, std::memory_order_release);
+    clearControlQueue();
     clearBreakpointPauseState();
     emit runFinished(result);
 
@@ -738,30 +763,8 @@ void RunEngine::executeRun() {
 // ---------------------------------------------------------------------------
 
 void RunEngine::executeRunWithControlGraph(ImageData& pipelineData) {
-    // 激活集合：当前帧应执行的节点
-    QSet<QString> activated;
-
-    // 从拓扑序的第一个节点开始激活
-    if (!m_executionOrder.isEmpty()) {
-        activated.insert(m_executionOrder.first());
-    } else if (!m_modules.isEmpty()) {
-        activated.insert(runtimeModuleName(m_modules.first()));
-    }
-
-    // 按拓扑序遍历所有节点
-    QStringList order = m_executionOrder.isEmpty() ? QStringList(runtimeModuleName(m_modules.first())) : m_executionOrder;
-    if (m_executionOrder.isEmpty()) {
-        QReadLocker locker(&m_moduleLock);
-        QString cur = m_modules.isEmpty() ? QString() : runtimeModuleName(m_modules.first());
-        QSet<QString> seen;
-        while (!cur.isEmpty() && !seen.contains(cur)) {
-            seen.insert(cur);
-            order.append(cur);
-            cur = getNextSequentialModule(cur);
-        }
-    }
-
-    for (const QString& mod : order) {
+    while (!m_controlQueue.isEmpty()) {
+        const QString mod = m_controlQueue.first();
         if (state() != RunState::Running)
             break;
         if (m_cancellationToken && m_cancellationToken->isCancelledFast()) {
@@ -784,61 +787,95 @@ void RunEngine::executeRunWithControlGraph(ImageData& pipelineData) {
             return;
         }
 
-        if (activated.contains(mod)) {
-            executeOrBypassModule(mod, pipelineData);
-            if (!m_lastExecuteResult) {
-                m_runAllSuccess = false;
-                if (m_runFirstError.isEmpty())
-                    m_runFirstError = m_lastModuleError;
-            }
+        m_controlQueue.takeFirst();
+        executeOrBypassModule(mod, pipelineData);
+        m_controlProcessed.insert(mod);
+        if (!m_lastExecuteResult) {
+            m_runAllSuccess = false;
+            if (m_runFirstError.isEmpty())
+                m_runFirstError = m_lastModuleError;
+        }
+        activateControlSuccessors(mod);
+        m_currentModuleName = m_controlQueue.value(0);
+    }
 
-            // 执行后确定下游激活
-            ModuleBase* module = getModule(mod);
-            if (module) {
-                const bool isConditional = module->flowControlType() == ControlFlowType::Conditional;
-                const bool ifResult = m_lastControlResult;
+    if (m_controlQueue.isEmpty() && state() == RunState::Running)
+        emitInactiveControlModules();
+}
 
-                // 激活控制边下游
-                for (const ModuleConnection& ce : m_controlEdges) {
-                    if (ce.fromModuleId != mod)
-                        continue;
-                    if (isConditional) {
-                        // If: 只激活 true 或 false 分支
-                        if ((ce.fromPort == "true" && ifResult) ||
-                            (ce.fromPort == "false" && !ifResult)) {
-                            activated.insert(ce.toModuleId);
-                        }
-                    } else {
-                        // 普通节点：激活所有控制边下游（含 next）
-                        activated.insert(ce.toModuleId);
-                    }
-                }
+void RunEngine::initializeControlQueue() {
+    clearControlQueue();
+    QSet<QString> hasIncoming;
+    for (const ModuleConnection& connection : m_connections)
+        hasIncoming.insert(connection.toModuleId);
 
-                // 激活数据边下游（数据流隐含控制激活）
-                for (const ModuleConnection& dc : m_connections) {
-                    if (dc.fromModuleId != mod || dc.edgeType == QLatin1String("control"))
-                        continue;
-                    if (isConditional) {
-                        // If: 只激活匹配分支的数据边目标
-                        // true 分支目标应已通过控制边激活；不激活 false 分支数据边目标
-                    } else {
-                        activated.insert(dc.toModuleId);
-                    }
-                }
-            }
-            m_currentModuleName = mod;
-        } else {
-            // 未激活节点：Skipped，非失败
-            emit moduleSkipped(mod);
+    QStringList order = m_executionOrder;
+    if (order.isEmpty()) {
+        QReadLocker locker(&m_moduleLock);
+        for (ModuleBase* module : m_modules)
+            order.append(runtimeModuleName(module));
+    }
+    for (const QString& moduleName : order) {
+        if (!hasIncoming.contains(moduleName)) {
+            m_controlQueue.append(moduleName);
+            m_controlActivated.insert(moduleName);
         }
     }
 }
 
-void RunEngine::executeRunLegacy(ImageData& /*pipelineData*/, bool& allSuccess, QString& firstError) {
+void RunEngine::activateControlSuccessors(const QString& moduleName) {
+    ModuleBase* module = getModule(moduleName);
+    if (!module)
+        return;
+
+    const bool isConditional = module->flowControlType() == ControlFlowType::Conditional;
+    // ponytail: D1 每节点只执行首次激活；D2 定义 all/any 合流后在这里升级等待策略。
+    const auto activate = [this](const QString& downstream) {
+        if (!m_controlActivated.contains(downstream)) {
+            m_controlActivated.insert(downstream);
+            m_controlQueue.append(downstream);
+        }
+    };
+
+    for (const ModuleConnection& connection : m_controlEdges) {
+        if (connection.fromModuleId != moduleName)
+            continue;
+        if (!isConditional || (connection.fromPort == QLatin1String("true") && m_lastControlResult) ||
+            (connection.fromPort == QLatin1String("false") && !m_lastControlResult)) {
+            activate(connection.toModuleId);
+        }
+    }
+    if (!isConditional) {
+        for (const ModuleConnection& connection : m_connections) {
+            if (connection.fromModuleId == moduleName && connection.edgeType != QLatin1String("control"))
+                activate(connection.toModuleId);
+        }
+    }
+}
+
+void RunEngine::emitInactiveControlModules() {
+    QStringList moduleNames;
+    {
+        QReadLocker locker(&m_moduleLock);
+        for (ModuleBase* module : m_modules)
+            moduleNames.append(runtimeModuleName(module));
+    }
+    for (const QString& moduleName : moduleNames) {
+        if (!m_controlProcessed.contains(moduleName))
+            emit moduleSkipped(moduleName);
+    }
+}
+
+void RunEngine::clearControlQueue() {
+    m_controlQueue.clear();
+    m_controlActivated.clear();
+    m_controlProcessed.clear();
+}
+
+void RunEngine::executeRunLegacy(ImageData& pipelineData, bool& allSuccess, QString& firstError) {
     // 阶段 D3: legacy 路径——无控制边时使用 flowControlType 调度
     // 暂时内联原逻辑（后续 D3 合并）
     QString currentModule = m_currentModuleName;
-    ImageData pipelineData;
 
     while (!currentModule.isEmpty() && state() == RunState::Running) {
         if (m_cancellationToken && m_cancellationToken->isCancelledFast()) {
