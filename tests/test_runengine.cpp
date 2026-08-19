@@ -365,6 +365,11 @@ private slots:
     void testExplicitControlBackwardEdgeRunAndStep();
     void testExplicitControlBreakpointResume();
     void testLegacyBreakpointPreservesPipelineData();
+    // 阶段 D2: Loop/While/StopWhile（显式控制图）
+    void testExplicitLoopZeroIterations();
+    void testExplicitLoopThreeIterations();
+    void testExplicitWhileFalseZeroIterations();
+    void testExplicitStopWhileTerminatesLoop();
     void init();
     void cleanup();
 
@@ -2429,6 +2434,272 @@ void TestRunEngine::testLegacyBreakpointPreservesPipelineData() {
     QVERIFY(engine.isPausedAtBreakpoint());
     engine.resume();
     QCOMPARE(sinkModule->receivedTag, QStringLiteral("preserved"));
+    engine.clearModules();
+}
+
+// ---------------------------------------------------------------------------
+// 阶段 D2: Loop/While/StopWhile（显式控制图）
+// ---------------------------------------------------------------------------
+
+class LoopControlModule : public ModuleBase {
+    Q_OBJECT
+public:
+    QStringList* execLog = nullptr;
+    int loopCount = 3;
+    LoopControlModule(const QString& name, int count) : loopCount(count) {
+        m_moduleId = QStringLiteral("com.deeplux.test.loop.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+    }
+    QList<PortSpec> outputPorts() const override {
+        PortSpec body; body.id = "body"; body.displayName = "body"; body.type = DataType::Boolean; body.control = true;
+        PortSpec done; done.id = "done"; done.displayName = "done"; done.type = DataType::Boolean; done.control = true;
+        PortSpec img; img.id = "image"; img.displayName = "image"; img.type = DataType::Image2D;
+        return {img, body, done};
+    }
+    ControlFlowType flowControlType() const override { return ControlFlowType::Loop; }
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        if (execLog) execLog->append(name());
+        return true;
+    }
+    QWidget* createConfigWidget() override { return nullptr; }
+};
+
+class WhileControlModule : public ModuleBase {
+    Q_OBJECT
+public:
+    QStringList* execLog = nullptr;
+    bool forceTrue = true;
+    WhileControlModule(const QString& name, bool forceTrueBranch) : forceTrue(forceTrueBranch) {
+        m_moduleId = QStringLiteral("com.deeplux.test.while.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+    }
+    QList<PortSpec> outputPorts() const override {
+        PortSpec body; body.id = "body"; body.displayName = "body"; body.type = DataType::Boolean; body.control = true;
+        PortSpec done; done.id = "done"; done.displayName = "done"; done.type = DataType::Boolean; done.control = true;
+        PortSpec img; img.id = "image"; img.displayName = "image"; img.type = DataType::Image2D;
+        return {img, body, done};
+    }
+    ControlFlowType flowControlType() const override { return ControlFlowType::While; }
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        output.setData("while_result", forceTrue);
+        if (execLog) execLog->append(name());
+        return true;
+    }
+    QWidget* createConfigWidget() override { return nullptr; }
+};
+
+class StopWhileControlModule : public ModuleBase {
+    Q_OBJECT
+public:
+    QStringList* execLog = nullptr;
+    StopWhileControlModule(const QString& name) {
+        m_moduleId = QStringLiteral("com.deeplux.test.stopwhile.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+    }
+    QList<PortSpec> outputPorts() const override {
+        PortSpec stop; stop.id = "stop"; stop.displayName = "stop"; stop.type = DataType::Boolean; stop.control = true;
+        PortSpec img; img.id = "image"; img.displayName = "image"; img.type = DataType::Image2D;
+        return {img, stop};
+    }
+    ControlFlowType flowControlType() const override { return ControlFlowType::StopLoop; }
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        if (execLog) execLog->append(name());
+        return true;
+    }
+    QWidget* createConfigWidget() override { return nullptr; }
+};
+
+void TestRunEngine::testExplicitLoopZeroIterations() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    // Loop(count=0) -> body(should not execute) -> done -> after
+    Project project;
+    ModuleInstance loop; loop.id = "loop"; loop.moduleId = "loop";
+    loop.params["loopCount"] = 0;
+    ModuleInstance body; body.id = "body"; body.moduleId = "body";
+    ModuleInstance after; after.id = "after"; after.moduleId = "after";
+    project.addModule(loop);
+    project.addModule(body);
+    project.addModule(after);
+    // Control edges: loop.body -> body, loop.done -> after, body.next -> loop (back-edge)
+    ModuleConnection ctrlBody; ctrlBody.fromModuleId = "loop"; ctrlBody.toModuleId = "body";
+    ctrlBody.fromPort = "body"; ctrlBody.toPort = "control"; ctrlBody.edgeType = "control";
+    project.addConnection(ctrlBody);
+    ModuleConnection ctrlDone; ctrlDone.fromModuleId = "loop"; ctrlDone.toModuleId = "after";
+    ctrlDone.fromPort = "done"; ctrlDone.toPort = "control"; ctrlDone.edgeType = "control";
+    project.addConnection(ctrlDone);
+    ModuleConnection ctrlBack; ctrlBack.fromModuleId = "body"; ctrlBack.toModuleId = "loop";
+    ctrlBack.fromPort = "next"; ctrlBack.toPort = "control"; ctrlBack.edgeType = "control";
+    project.addConnection(ctrlBack);
+
+    QStringList log;
+    QStringList skipped;
+    QMetaObject::Connection skipConn = connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == "loop") {
+            auto* m = new LoopControlModule(inst.id, inst.params["loopCount"].toInt(3));
+            m->execLog = &log;
+            return m;
+        }
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+    engine.runOnce();
+    // Loop executes once (done), body skipped, after executes
+    QVERIFY(log.contains("loop"));
+    QVERIFY(!log.contains("body"));
+    QVERIFY(log.contains("after"));
+    QVERIFY(skipped.contains("body"));
+    disconnect(skipConn);
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitLoopThreeIterations() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    // Loop(count=3) -> body x3 -> done -> after
+    Project project;
+    ModuleInstance loop; loop.id = "loop"; loop.moduleId = "loop";
+    loop.params["loopCount"] = 3;
+    ModuleInstance body; body.id = "body"; body.moduleId = "body";
+    ModuleInstance after; after.id = "after"; after.moduleId = "after";
+    project.addModule(loop);
+    project.addModule(body);
+    project.addModule(after);
+    ModuleConnection ctrlBody; ctrlBody.fromModuleId = "loop"; ctrlBody.toModuleId = "body";
+    ctrlBody.fromPort = "body"; ctrlBody.toPort = "control"; ctrlBody.edgeType = "control";
+    project.addConnection(ctrlBody);
+    ModuleConnection ctrlDone; ctrlDone.fromModuleId = "loop"; ctrlDone.toModuleId = "after";
+    ctrlDone.fromPort = "done"; ctrlBody.toPort = "control"; ctrlDone.edgeType = "control";
+    ctrlDone.toPort = "control";
+    project.addConnection(ctrlDone);
+    ModuleConnection ctrlBack; ctrlBack.fromModuleId = "body"; ctrlBack.toModuleId = "loop";
+    ctrlBack.fromPort = "next"; ctrlBack.toPort = "control"; ctrlBack.edgeType = "control";
+    project.addConnection(ctrlBack);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == "loop") {
+            auto* m = new LoopControlModule(inst.id, inst.params["loopCount"].toInt(3));
+            m->execLog = &log;
+            return m;
+        }
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+    engine.runOnce();
+    // Loop executes 4 times (3 body + 1 done), body 3 times, after 1 time
+    QCOMPARE(log.count("loop"), 4);
+    QCOMPARE(log.count("body"), 3);
+    QVERIFY(log.contains("after"));
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitWhileFalseZeroIterations() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    // While(false) -> body(0 times) -> done -> after
+    Project project;
+    ModuleInstance whileMod; whileMod.id = "whileMod"; whileMod.moduleId = "whileMod";
+    whileMod.params["maxIterations"] = 100;
+    ModuleInstance body; body.id = "body"; body.moduleId = "body";
+    ModuleInstance after; after.id = "after"; after.moduleId = "after";
+    project.addModule(whileMod);
+    project.addModule(body);
+    project.addModule(after);
+    ModuleConnection ctrlBody; ctrlBody.fromModuleId = "whileMod"; ctrlBody.toModuleId = "body";
+    ctrlBody.fromPort = "body"; ctrlBody.toPort = "control"; ctrlBody.edgeType = "control";
+    project.addConnection(ctrlBody);
+    ModuleConnection ctrlDone; ctrlDone.fromModuleId = "whileMod"; ctrlDone.toModuleId = "after";
+    ctrlDone.fromPort = "done"; ctrlDone.toPort = "control"; ctrlDone.edgeType = "control";
+    project.addConnection(ctrlDone);
+    ModuleConnection ctrlBack; ctrlBack.fromModuleId = "body"; ctrlBack.toModuleId = "whileMod";
+    ctrlBack.fromPort = "next"; ctrlBack.toPort = "control"; ctrlBack.edgeType = "control";
+    project.addConnection(ctrlBack);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == "whileMod") {
+            auto* m = new WhileControlModule(inst.id, false); // condition false
+            m->execLog = &log;
+            return m;
+        }
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+    engine.runOnce();
+    // While executes once (done), body 0 times, after 1 time
+    QVERIFY(log.contains("whileMod"));
+    QVERIFY(!log.contains("body"));
+    QVERIFY(log.contains("after"));
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitStopWhileTerminatesLoop() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    // While(true) -> body -> StopWhile -> done (loop terminated by StopWhile)
+    Project project;
+    ModuleInstance whileMod; whileMod.id = "whileMod"; whileMod.moduleId = "whileMod";
+    whileMod.params["maxIterations"] = 100;
+    ModuleInstance body; body.id = "body"; body.moduleId = "body";
+    ModuleInstance stopMod; stopMod.id = "stopMod"; stopMod.moduleId = "stopMod";
+    ModuleInstance after; after.id = "after"; after.moduleId = "after";
+    project.addModule(whileMod);
+    project.addModule(body);
+    project.addModule(stopMod);
+    project.addModule(after);
+    // while.body -> body, body.next -> stopMod, stopMod.stop -> whileMod(done target = after)
+    ModuleConnection ctrlBody; ctrlBody.fromModuleId = "whileMod"; ctrlBody.toModuleId = "body";
+    ctrlBody.fromPort = "body"; ctrlBody.toPort = "control"; ctrlBody.edgeType = "control";
+    project.addConnection(ctrlBody);
+    ModuleConnection ctrlToStop; ctrlToStop.fromModuleId = "body"; ctrlToStop.toModuleId = "stopMod";
+    ctrlToStop.fromPort = "next"; ctrlToStop.toPort = "control"; ctrlToStop.edgeType = "control";
+    project.addConnection(ctrlToStop);
+    // StopWhile.stop -> after (jumps to after, skipping back-edge to whileMod)
+    ModuleConnection ctrlStop; ctrlStop.fromModuleId = "stopMod"; ctrlStop.toModuleId = "after";
+    ctrlStop.fromPort = "stop"; ctrlStop.toPort = "control"; ctrlStop.edgeType = "control";
+    project.addConnection(ctrlStop);
+    // while.done -> after (normal exit path)
+    ModuleConnection ctrlDone; ctrlDone.fromModuleId = "whileMod"; ctrlDone.toModuleId = "after";
+    ctrlDone.fromPort = "done"; ctrlDone.toPort = "control"; ctrlDone.edgeType = "control";
+    project.addConnection(ctrlDone);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == "whileMod") {
+            auto* m = new WhileControlModule(inst.id, true); // condition true
+            m->execLog = &log;
+            return m;
+        }
+        if (inst.id == "stopMod") {
+            auto* m = new StopWhileControlModule(inst.id);
+            m->execLog = &log;
+            return m;
+        }
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+    engine.runOnce();
+    // While executes once (body), StopWhile executes, after executes
+    // Body only runs once (StopWhile terminates the loop)
+    QVERIFY(log.contains("whileMod"));
+    QCOMPARE(log.count("body"), 1);
+    QVERIFY(log.contains("stopMod"));
+    QVERIFY(log.contains("after"));
     engine.clearModules();
 }
 

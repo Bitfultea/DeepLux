@@ -805,9 +805,23 @@ void RunEngine::executeRunWithControlGraph(ImageData& pipelineData) {
 
 void RunEngine::initializeControlQueue() {
     clearControlQueue();
+    // 阶段 D2: 初始队列排除有入边的节点；结构化回边（指向 Loop/While）不计入入度
+    QSet<QString> structuredLoopEntries;
+    {
+        QReadLocker locker(&m_moduleLock);
+        for (ModuleBase* mod : m_modules) {
+            const ControlFlowType ft = mod->flowControlType();
+            if (ft == ControlFlowType::Loop || ft == ControlFlowType::While)
+                structuredLoopEntries.insert(runtimeModuleName(mod));
+        }
+    }
     QSet<QString> hasIncoming;
-    for (const ModuleConnection& connection : m_connections)
-        hasIncoming.insert(connection.toModuleId);
+    for (const ModuleConnection& conn : m_connections) {
+        // 数据边计入入度；控制边指向 Loop/While 的结构化回边不计入
+        if (conn.edgeType == QLatin1String("control") && structuredLoopEntries.contains(conn.toModuleId))
+            continue;
+        hasIncoming.insert(conn.toModuleId);
+    }
 
     QStringList order = m_executionOrder;
     if (order.isEmpty()) {
@@ -828,10 +842,88 @@ void RunEngine::activateControlSuccessors(const QString& moduleName) {
     if (!module)
         return;
 
-    const bool isConditional = module->flowControlType() == ControlFlowType::Conditional;
-    // ponytail: D1 每节点只执行首次激活；D2 定义 all/any 合流后在这里升级等待策略。
+    const ControlFlowType ft = module->flowControlType();
+    const bool isConditional = ft == ControlFlowType::Conditional;
+    const bool isLoop = ft == ControlFlowType::Loop;
+    const bool isWhile = ft == ControlFlowType::While;
+    const bool isStopLoop = ft == ControlFlowType::StopLoop;
+
+    // 阶段 D2: 对于 Loop/While，先检查迭代条件再决定激活 body 还是 done
+    if (isLoop) {
+        int loopCount = module->currentParams().value("loopCount").toInt(0);
+        int iter = m_loopIndices.value(moduleName, 0);
+        // executeModule 已在 process() 前递增 m_loopIndices，此处直接用
+        if (iter < loopCount) {
+            // 激活 body 分支（循环体结束后的 next 回边会重新激活 loop）
+            for (const ModuleConnection& ce : m_controlEdges) {
+                if (ce.fromModuleId == moduleName && ce.fromPort == QLatin1String("body")) {
+                    m_controlActivated.remove(ce.toModuleId);
+                    m_controlQueue.append(ce.toModuleId);
+                    m_controlActivated.insert(ce.toModuleId);
+                }
+            }
+        } else {
+            // 激活 done 分支
+            for (const ModuleConnection& ce : m_controlEdges) {
+                if (ce.fromModuleId == moduleName && ce.fromPort == QLatin1String("done")) {
+                    m_controlQueue.append(ce.toModuleId);
+                    m_controlActivated.insert(ce.toModuleId);
+                }
+            }
+            m_loopIndices.remove(moduleName);
+        }
+        return;
+    }
+
+    if (isWhile) {
+        int maxIter = module->currentParams().value("maxIterations").toInt(100);
+        int iter = m_loopIndices.value(moduleName, 0);
+        if (m_lastControlResult && iter < maxIter) {
+            for (const ModuleConnection& ce : m_controlEdges) {
+                if (ce.fromModuleId == moduleName && ce.fromPort == QLatin1String("body")) {
+                    m_controlActivated.remove(ce.toModuleId);
+                    m_controlQueue.append(ce.toModuleId);
+                    m_controlActivated.insert(ce.toModuleId);
+                }
+            }
+        } else {
+            for (const ModuleConnection& ce : m_controlEdges) {
+                if (ce.fromModuleId == moduleName && ce.fromPort == QLatin1String("done")) {
+                    m_controlQueue.append(ce.toModuleId);
+                    m_controlActivated.insert(ce.toModuleId);
+                }
+            }
+            m_loopIndices.remove(moduleName);
+        }
+        return;
+    }
+
+    if (isStopLoop) {
+        // StopLoop: 激活 stop 边的目标（通常跳转到循环外）
+        // 同时清除所属循环的迭代计数（防止循环再次被激活）
+        for (const ModuleConnection& ce : m_controlEdges) {
+            if (ce.fromModuleId == moduleName && ce.fromPort == QLatin1String("stop")) {
+                m_controlQueue.append(ce.toModuleId);
+                m_controlActivated.insert(ce.toModuleId);
+            }
+        }
+        // 清除所有循环的迭代计数
+        m_loopIndices.clear();
+        return;
+    }
+
+    // D1: 普通/条件节点的激活逻辑
+    // D2: 允许重新激活结构化回边目标（Loop/While 节点每轮重新入队）
     const auto activate = [this](const QString& downstream) {
-        if (!m_controlActivated.contains(downstream)) {
+        // 检查目标是否为结构化回边目标（Loop/While），允许重新入队
+        ModuleBase* target = getModule(downstream);
+        const bool isLoopEntry = target &&
+            (target->flowControlType() == ControlFlowType::Loop ||
+             target->flowControlType() == ControlFlowType::While);
+        if (isLoopEntry) {
+            m_controlQueue.append(downstream);
+            m_controlActivated.insert(downstream);
+        } else if (!m_controlActivated.contains(downstream)) {
             m_controlActivated.insert(downstream);
             m_controlQueue.append(downstream);
         }
@@ -845,7 +937,7 @@ void RunEngine::activateControlSuccessors(const QString& moduleName) {
             activate(connection.toModuleId);
         }
     }
-    if (!isConditional) {
+    if (!isConditional && !isStopLoop) {
         for (const ModuleConnection& connection : m_connections) {
             if (connection.fromModuleId == moduleName && connection.edgeType != QLatin1String("control"))
                 activate(connection.toModuleId);
@@ -870,6 +962,7 @@ void RunEngine::clearControlQueue() {
     m_controlQueue.clear();
     m_controlActivated.clear();
     m_controlProcessed.clear();
+    m_loopIndices.clear();
 }
 
 void RunEngine::executeRunLegacy(ImageData& pipelineData, bool& allSuccess, QString& firstError) {
@@ -1447,15 +1540,23 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
         return false;
     }
 
-    // 阶段 C 复核(P1): 对"数据边 + 控制边"的联合图做真实 DFS 环检测
+    // 阶段 C 复核(P1) + 阶段 D2: 对"数据边 + 控制边"的联合图做真实 DFS 环检测
     // 控制边不参与数据 DAG 拓扑排序，但需加入联合图检测控制自环和联合环。
+    // 阶段 D2: 允许结构化回边——控制边指向 Loop/While 节点的回边不算环。
     {
         QSet<QString> visited;
         QSet<QString> inStack;
-        // 构建联合邻接表
         QMap<QString, QStringList> combinedAdj = adjacency;
         for (const ModuleConnection& cc : m_controlEdges) {
             combinedAdj[cc.fromModuleId].append(cc.toModuleId);
+        }
+        // 识别结构化回边目标（Loop/While 节点）
+        QSet<QString> structuredLoopEntries;
+        for (ModuleBase* mod : m_modules) {
+            const ControlFlowType ft = mod->flowControlType();
+            if (ft == ControlFlowType::Loop || ft == ControlFlowType::While) {
+                structuredLoopEntries.insert(runtimeModuleName(mod));
+            }
         }
         for (const QString& start : moduleIds) {
             if (visited.contains(start))
@@ -1467,7 +1568,11 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
                 auto [node, idx] = dfs.top();
                 if (idx == 0) {
                     if (inStack.contains(node)) {
-                        // 发现环
+                        // 发现环——检查是否为结构化回边（指向 Loop/While）
+                        if (structuredLoopEntries.contains(node)) {
+                            dfs.pop();
+                            continue;
+                        }
                         error = tr("Control or combined graph contains a cycle involving %1").arg(node);
                         return false;
                     }
