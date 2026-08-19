@@ -223,11 +223,13 @@ private:
     QList<ModuleBase*> m_ownedModules;
     QMap<QString, ModuleBase*> m_moduleMap;
     QStringList m_executionOrder;
-    QList<ModuleConnection> m_connections; // 阶段 3.1 边集合（端口路由）
+    QList<ModuleConnection> m_connections;  // 阶段 3.1 边集合（端口路由）
     QList<ModuleConnection> m_controlEdges; // 阶段 C: 控制边（不参与数据 DAG）
     QStringList m_controlQueue;
     QSet<QString> m_controlActivated;
     QSet<QString> m_controlProcessed;
+    QSet<QString> m_loopBackEdges;
+    QSet<QString> m_reentrantModules;
     // 当前帧每节点端口输出缓存（flowId 现阶段为 main）；新帧清除
     QMap<QString, PortValueMap> m_nodeOutputs;
     QSet<QString> m_disabledModules; // 阶段 B: 禁用节点（旁路/Skipped）
@@ -240,6 +242,7 @@ private:
 
     // 循环索引
     QMap<QString, int> m_loopIndices;
+    QStringList m_activeLoops;
 
     // 输出映射
     QMap<QString, QMap<QString, QVariant>> m_outputMap;

@@ -370,6 +370,12 @@ private slots:
     void testExplicitLoopThreeIterations();
     void testExplicitWhileFalseZeroIterations();
     void testExplicitStopWhileTerminatesLoop();
+    void testDisabledExplicitLoopExitsThroughDone();
+    void testExplicitLoopMultiModuleBody();
+    void testExplicitLoopAfterPredecessor();
+    void testLoopSelfEdgeRejected();
+    void testLoopDoneBackEdgeRejected();
+    void testNestedStopLoopPreservesOuterCounter();
     void init();
     void cleanup();
 
@@ -2504,46 +2510,88 @@ public:
         m_category = QStringLiteral("test");
     }
     QList<PortSpec> outputPorts() const override {
-        PortSpec stop; stop.id = "stop"; stop.displayName = "stop"; stop.type = DataType::Boolean; stop.control = true;
-        PortSpec img; img.id = "image"; img.displayName = "image"; img.type = DataType::Image2D;
+        PortSpec stop;
+        stop.id = "stop";
+        stop.displayName = "stop";
+        stop.type = DataType::Boolean;
+        stop.control = true;
+        PortSpec img;
+        img.id = "image";
+        img.displayName = "image";
+        img.type = DataType::Image2D;
         return {img, stop};
     }
-    ControlFlowType flowControlType() const override { return ControlFlowType::StopLoop; }
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::StopLoop;
+    }
+
 protected:
     bool process(const ImageData& input, ImageData& output) override {
         output = input;
-        if (execLog) execLog->append(name());
+        if (execLog)
+            execLog->append(name());
         return true;
     }
-    QWidget* createConfigWidget() override { return nullptr; }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
 };
+
+static ModuleConnection controlConnection(const QString& from, const QString& port, const QString& to) {
+    ModuleConnection connection;
+    connection.fromModuleId = from;
+    connection.fromPort = port;
+    connection.toModuleId = to;
+    connection.toPort = QStringLiteral("control");
+    connection.edgeType = QStringLiteral("control");
+    return connection;
+}
 
 void TestRunEngine::testExplicitLoopZeroIterations() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
     // Loop(count=0) -> body(should not execute) -> done -> after
     Project project;
-    ModuleInstance loop; loop.id = "loop"; loop.moduleId = "loop";
+    ModuleInstance loop;
+    loop.id = "loop";
+    loop.moduleId = "loop";
     loop.params["loopCount"] = 0;
-    ModuleInstance body; body.id = "body"; body.moduleId = "body";
-    ModuleInstance after; after.id = "after"; after.moduleId = "after";
+    ModuleInstance body;
+    body.id = "body";
+    body.moduleId = "body";
+    ModuleInstance after;
+    after.id = "after";
+    after.moduleId = "after";
     project.addModule(loop);
     project.addModule(body);
     project.addModule(after);
     // Control edges: loop.body -> body, loop.done -> after, body.next -> loop (back-edge)
-    ModuleConnection ctrlBody; ctrlBody.fromModuleId = "loop"; ctrlBody.toModuleId = "body";
-    ctrlBody.fromPort = "body"; ctrlBody.toPort = "control"; ctrlBody.edgeType = "control";
+    ModuleConnection ctrlBody;
+    ctrlBody.fromModuleId = "loop";
+    ctrlBody.toModuleId = "body";
+    ctrlBody.fromPort = "body";
+    ctrlBody.toPort = "control";
+    ctrlBody.edgeType = "control";
     project.addConnection(ctrlBody);
-    ModuleConnection ctrlDone; ctrlDone.fromModuleId = "loop"; ctrlDone.toModuleId = "after";
-    ctrlDone.fromPort = "done"; ctrlDone.toPort = "control"; ctrlDone.edgeType = "control";
+    ModuleConnection ctrlDone;
+    ctrlDone.fromModuleId = "loop";
+    ctrlDone.toModuleId = "after";
+    ctrlDone.fromPort = "done";
+    ctrlDone.toPort = "control";
+    ctrlDone.edgeType = "control";
     project.addConnection(ctrlDone);
-    ModuleConnection ctrlBack; ctrlBack.fromModuleId = "body"; ctrlBack.toModuleId = "loop";
-    ctrlBack.fromPort = "next"; ctrlBack.toPort = "control"; ctrlBack.edgeType = "control";
+    ModuleConnection ctrlBack;
+    ctrlBack.fromModuleId = "body";
+    ctrlBack.toModuleId = "loop";
+    ctrlBack.fromPort = "next";
+    ctrlBack.toPort = "control";
+    ctrlBack.edgeType = "control";
     project.addConnection(ctrlBack);
 
     QStringList log;
     QStringList skipped;
-    QMetaObject::Connection skipConn = connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
+    QMetaObject::Connection skipConn =
+        connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
     QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
         if (inst.id == "loop") {
             auto* m = new LoopControlModule(inst.id, inst.params["loopCount"].toInt(3));
@@ -2555,10 +2603,7 @@ void TestRunEngine::testExplicitLoopZeroIterations() {
         return m;
     }));
     engine.runOnce();
-    // Loop executes once (done), body skipped, after executes
-    QVERIFY(log.contains("loop"));
-    QVERIFY(!log.contains("body"));
-    QVERIFY(log.contains("after"));
+    QCOMPARE(log, QStringList({"loop", "after"}));
     QVERIFY(skipped.contains("body"));
     disconnect(skipConn);
     engine.clearModules();
@@ -2569,22 +2614,39 @@ void TestRunEngine::testExplicitLoopThreeIterations() {
     engine.clearModules();
     // Loop(count=3) -> body x3 -> done -> after
     Project project;
-    ModuleInstance loop; loop.id = "loop"; loop.moduleId = "loop";
+    ModuleInstance loop;
+    loop.id = "loop";
+    loop.moduleId = "loop";
     loop.params["loopCount"] = 3;
-    ModuleInstance body; body.id = "body"; body.moduleId = "body";
-    ModuleInstance after; after.id = "after"; after.moduleId = "after";
+    ModuleInstance body;
+    body.id = "body";
+    body.moduleId = "body";
+    ModuleInstance after;
+    after.id = "after";
+    after.moduleId = "after";
     project.addModule(loop);
     project.addModule(body);
     project.addModule(after);
-    ModuleConnection ctrlBody; ctrlBody.fromModuleId = "loop"; ctrlBody.toModuleId = "body";
-    ctrlBody.fromPort = "body"; ctrlBody.toPort = "control"; ctrlBody.edgeType = "control";
+    ModuleConnection ctrlBody;
+    ctrlBody.fromModuleId = "loop";
+    ctrlBody.toModuleId = "body";
+    ctrlBody.fromPort = "body";
+    ctrlBody.toPort = "control";
+    ctrlBody.edgeType = "control";
     project.addConnection(ctrlBody);
-    ModuleConnection ctrlDone; ctrlDone.fromModuleId = "loop"; ctrlDone.toModuleId = "after";
-    ctrlDone.fromPort = "done"; ctrlBody.toPort = "control"; ctrlDone.edgeType = "control";
+    ModuleConnection ctrlDone;
+    ctrlDone.fromModuleId = "loop";
+    ctrlDone.toModuleId = "after";
+    ctrlDone.fromPort = "done";
+    ctrlDone.edgeType = "control";
     ctrlDone.toPort = "control";
     project.addConnection(ctrlDone);
-    ModuleConnection ctrlBack; ctrlBack.fromModuleId = "body"; ctrlBack.toModuleId = "loop";
-    ctrlBack.fromPort = "next"; ctrlBack.toPort = "control"; ctrlBack.edgeType = "control";
+    ModuleConnection ctrlBack;
+    ctrlBack.fromModuleId = "body";
+    ctrlBack.toModuleId = "loop";
+    ctrlBack.fromPort = "next";
+    ctrlBack.toPort = "control";
+    ctrlBack.edgeType = "control";
     project.addConnection(ctrlBack);
 
     QStringList log;
@@ -2599,10 +2661,7 @@ void TestRunEngine::testExplicitLoopThreeIterations() {
         return m;
     }));
     engine.runOnce();
-    // Loop executes 4 times (3 body + 1 done), body 3 times, after 1 time
-    QCOMPARE(log.count("loop"), 4);
-    QCOMPARE(log.count("body"), 3);
-    QVERIFY(log.contains("after"));
+    QCOMPARE(log, QStringList({"loop", "body", "loop", "body", "loop", "body", "loop", "after"}));
     engine.clearModules();
 }
 
@@ -2611,14 +2670,22 @@ void TestRunEngine::testExplicitWhileFalseZeroIterations() {
     engine.clearModules();
     // While(false) -> body(0 times) -> done -> after
     Project project;
-    ModuleInstance whileMod; whileMod.id = "whileMod"; whileMod.moduleId = "whileMod";
+    ModuleInstance whileMod;
+    whileMod.id = "whileMod";
+    whileMod.moduleId = "whileMod";
     whileMod.params["maxIterations"] = 100;
-    ModuleInstance body; body.id = "body"; body.moduleId = "body";
-    ModuleInstance after; after.id = "after"; after.moduleId = "after";
+    ModuleInstance body;
+    body.id = "body";
+    body.moduleId = "body";
+    ModuleInstance after;
+    after.id = "after";
+    after.moduleId = "after";
     project.addModule(whileMod);
     project.addModule(body);
     project.addModule(after);
-    ModuleConnection ctrlBody; ctrlBody.fromModuleId = "whileMod"; ctrlBody.toModuleId = "body";
+    ModuleConnection ctrlBody;
+    ctrlBody.fromModuleId = "whileMod";
+    ctrlBody.toModuleId = "body";
     ctrlBody.fromPort = "body"; ctrlBody.toPort = "control"; ctrlBody.edgeType = "control";
     project.addConnection(ctrlBody);
     ModuleConnection ctrlDone; ctrlDone.fromModuleId = "whileMod"; ctrlDone.toModuleId = "after";
@@ -2700,6 +2767,208 @@ void TestRunEngine::testExplicitStopWhileTerminatesLoop() {
     QCOMPARE(log.count("body"), 1);
     QVERIFY(log.contains("stopMod"));
     QVERIFY(log.contains("after"));
+    engine.clearModules();
+}
+
+void TestRunEngine::testDisabledExplicitLoopExitsThroughDone() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    Project project;
+    ModuleInstance loop;
+    loop.id = QStringLiteral("loop");
+    loop.moduleId = QStringLiteral("loop");
+    loop.enabled = false;
+    loop.params[QStringLiteral("loopCount")] = 3;
+    ModuleInstance body;
+    body.id = QStringLiteral("body");
+    body.moduleId = QStringLiteral("body");
+    ModuleInstance after;
+    after.id = QStringLiteral("after");
+    after.moduleId = QStringLiteral("after");
+    project.addModule(loop);
+    project.addModule(body);
+    project.addModule(after);
+    project.addConnection(controlConnection("loop", "body", "body"));
+    project.addConnection(controlConnection("body", "next", "loop"));
+    project.addConnection(controlConnection("loop", "done", "after"));
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("loop")) {
+            auto* module = new LoopControlModule(instance.id, 3);
+            module->execLog = &log;
+            return module;
+        }
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+    engine.runOnce();
+
+    QCOMPARE(log, QStringList({QStringLiteral("after")}));
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitLoopMultiModuleBody() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    Project project;
+    for (const QString& id :
+         {QStringLiteral("loop"), QStringLiteral("first"), QStringLiteral("second"), QStringLiteral("after")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        if (id == QLatin1String("loop"))
+            instance.params[QStringLiteral("loopCount")] = 3;
+        project.addModule(instance);
+    }
+    project.addConnection(controlConnection("loop", "body", "first"));
+    project.addConnection(controlConnection("first", "next", "second"));
+    project.addConnection(controlConnection("second", "next", "loop"));
+    project.addConnection(controlConnection("loop", "done", "after"));
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("loop")) {
+            auto* module = new LoopControlModule(instance.id, 3);
+            module->execLog = &log;
+            return module;
+        }
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+    engine.runOnce();
+
+    QCOMPARE(log, QStringList({"loop", "first", "second", "loop", "first", "second", "loop", "first", "second", "loop",
+                               "after"}));
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitLoopAfterPredecessor() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    Project project;
+    for (const QString& id :
+         {QStringLiteral("start"), QStringLiteral("loop"), QStringLiteral("body"), QStringLiteral("after")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        if (id == QLatin1String("loop"))
+            instance.params[QStringLiteral("loopCount")] = 1;
+        project.addModule(instance);
+    }
+    project.addConnection(controlConnection("start", "next", "loop"));
+    project.addConnection(controlConnection("loop", "body", "body"));
+    project.addConnection(controlConnection("body", "next", "loop"));
+    project.addConnection(controlConnection("loop", "done", "after"));
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("loop")) {
+            auto* module = new LoopControlModule(instance.id, 1);
+            module->execLog = &log;
+            return module;
+        }
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+    engine.runOnce();
+
+    QCOMPARE(log, QStringList({"start", "loop", "body", "loop", "after"}));
+    engine.clearModules();
+}
+
+void TestRunEngine::testLoopSelfEdgeRejected() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    Project project;
+    ModuleInstance loop;
+    loop.id = QStringLiteral("loop");
+    loop.moduleId = QStringLiteral("loop");
+    loop.params[QStringLiteral("loopCount")] = 0;
+    project.addModule(loop);
+    project.addConnection(controlConnection("loop", "next", "loop"));
+
+    QVERIFY(!engine.loadProject(&project,
+                                [](const ModuleInstance& instance) { return new LoopControlModule(instance.id, 0); }));
+    engine.clearModules();
+}
+
+void TestRunEngine::testLoopDoneBackEdgeRejected() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    Project project;
+    for (const QString& id : {QStringLiteral("loop"), QStringLiteral("body"), QStringLiteral("after")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        project.addModule(instance);
+    }
+    project.addConnection(controlConnection("loop", "body", "body"));
+    project.addConnection(controlConnection("loop", "done", "after"));
+    project.addConnection(controlConnection("after", "next", "loop"));
+
+    QVERIFY(!engine.loadProject(&project, [](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("loop"))
+            return new LoopControlModule(instance.id, 1);
+        return new TestExecutionModule(instance.id);
+    }));
+    engine.clearModules();
+}
+
+void TestRunEngine::testNestedStopLoopPreservesOuterCounter() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    Project project;
+    for (const QString& id : {QStringLiteral("outer"), QStringLiteral("inner"), QStringLiteral("stop"),
+                              QStringLiteral("tail"), QStringLiteral("after")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        if (id == QLatin1String("outer"))
+            instance.params[QStringLiteral("loopCount")] = 2;
+        if (id == QLatin1String("inner"))
+            instance.params[QStringLiteral("maxIterations")] = 100;
+        project.addModule(instance);
+    }
+    project.addConnection(controlConnection("outer", "body", "inner"));
+    project.addConnection(controlConnection("inner", "body", "stop"));
+    project.addConnection(controlConnection("stop", "stop", "tail"));
+    project.addConnection(controlConnection("tail", "next", "outer"));
+    project.addConnection(controlConnection("outer", "done", "after"));
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("outer")) {
+            auto* module = new LoopControlModule(instance.id, 2);
+            module->execLog = &log;
+            return module;
+        }
+        if (instance.id == QLatin1String("inner")) {
+            auto* module = new WhileControlModule(instance.id, true);
+            module->execLog = &log;
+            return module;
+        }
+        if (instance.id == QLatin1String("stop")) {
+            auto* module = new StopWhileControlModule(instance.id);
+            module->execLog = &log;
+            return module;
+        }
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+    engine.runOnce();
+
+    QCOMPARE(log, QStringList({"outer", "inner", "stop", "tail", "outer", "inner", "stop", "tail", "outer", "after"}));
     engine.clearModules();
 }
 

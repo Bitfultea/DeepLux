@@ -38,8 +38,7 @@ protected:
     }
 };
 
-class TestLogicPlugins : public QObject
-{
+class TestLogicPlugins : public QObject {
     Q_OBJECT
 
 private slots:
@@ -69,7 +68,7 @@ private slots:
     // LoopPlugin
     void testLoopSetsCount();
     void testLoopDefaultParams();
-    void testLoopValidationZeroCount();
+    void testLoopAllowsZeroCount();
     void testLoopFlowControlType();
     void testLoopRunsFollowingModuleWithoutSyntheticEnd();
 
@@ -291,30 +290,29 @@ void TestLogicPlugins::testLoopSetsCount()
     QCOMPARE(output.data("loop_active").toBool(), true);
 }
 
-void TestLogicPlugins::testLoopDefaultParams()
-{
+void TestLogicPlugins::testLoopDefaultParams() {
     LoopPlugin plugin;
     QJsonObject defaults = plugin.defaultParams();
     QCOMPARE(defaults["loopCount"].toInt(), 1);
 }
 
-void TestLogicPlugins::testLoopValidationZeroCount()
-{
+void TestLogicPlugins::testLoopAllowsZeroCount() {
     LoopPlugin plugin;
+    QVERIFY(plugin.initialize());
     QString error;
     QJsonObject params = plugin.defaultParams();
     params["loopCount"] = 0;
-    QVERIFY2(!plugin.validateParams(params, error), "loopCount=0 should fail validation");
-    QVERIFY(!error.isEmpty());
+    QVERIFY2(plugin.validateParams(params, error), "loopCount=0 should skip the body without failing validation");
+    QVERIFY(error.isEmpty());
 
-    // Also verify execute fails with loopCount <= 0
     plugin.setParams(QJsonObject{{"loopCount", 0}});
     ImageData input, output;
-    QVERIFY2(!plugin.execute(input, output), "execute should return false for loopCount=0");
+    QVERIFY(plugin.execute(input, output));
+    QCOMPARE(output.data("loop_count").toInt(), 0);
+    QCOMPARE(output.data("loop_active").toBool(), false);
 }
 
-void TestLogicPlugins::testLoopFlowControlType()
-{
+void TestLogicPlugins::testLoopFlowControlType() {
     LoopPlugin plugin;
     QCOMPARE(plugin.flowControlType(), ControlFlowType::Loop);
     QCOMPARE(plugin.moduleId(), QString("com.deeplux.plugin.loop"));

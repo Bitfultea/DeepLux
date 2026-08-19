@@ -1,23 +1,19 @@
 #include "LoopPlugin.h"
+
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
+
 #include <QFormLayout>
 #include <QSpinBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-LoopPlugin::LoopPlugin(QObject* parent)
-    : ModuleBase(parent)
-    , m_currentIteration(0)
-{
-    m_defaultParams = QJsonObject{
-        {"loopCount", 1}
-    };
+LoopPlugin::LoopPlugin(QObject* parent) : ModuleBase(parent), m_currentIteration(0) {
+    m_defaultParams = QJsonObject{{"loopCount", 1}};
     m_params = m_defaultParams;
 }
 
-bool LoopPlugin::initialize()
-{
+bool LoopPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -25,15 +21,14 @@ bool LoopPlugin::initialize()
     return true;
 }
 
-bool LoopPlugin::process(const ImageData& input, ImageData& output)
-{
+bool LoopPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     QJsonObject params = currentParams();
     m_loopCount = params["loopCount"].toInt(1);
 
-    if (m_loopCount <= 0) {
-        emit errorOccurred(tr("循环次数必须大于0"));
+    if (m_loopCount < 0) {
+        emit errorOccurred(tr("循环次数不能小于0"));
         return false;
     }
 
@@ -44,31 +39,29 @@ bool LoopPlugin::process(const ImageData& input, ImageData& output)
 
     output.setData("loop_count", m_loopCount);
     output.setData("loop_current", m_currentIteration);
-    output.setData("loop_active", true);
+    output.setData("loop_active", m_loopCount > 0);
 
     Logger::instance().info(QString("Loop: Starting loop with %1 iterations").arg(m_loopCount), "Logic");
 
     return true;
 }
 
-bool LoopPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
-    if (params["loopCount"].toInt() <= 0) {
-        error = QString("Loop count must be greater than 0");
+bool LoopPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
+    if (params["loopCount"].toInt() < 0) {
+        error = QString("Loop count must not be negative");
         return false;
     }
     return true;
 }
 
-QWidget* LoopPlugin::createConfigWidget()
-{
+QWidget* LoopPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
     QFormLayout* formLayout = new QFormLayout();
 
     QSpinBox* loopCountSpin = new QSpinBox();
-    loopCountSpin->setRange(1, 10000);
+    loopCountSpin->setRange(0, 10000);
     loopCountSpin->setValue(m_params["loopCount"].toInt(1));
     loopCountSpin->setPrefix(tr("循环次数: "));
 
@@ -77,15 +70,13 @@ QWidget* LoopPlugin::createConfigWidget()
     layout->addLayout(formLayout);
     layout->addStretch();
 
-    connect(loopCountSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        setParam("loopCount", value);
-    });
+    connect(loopCountSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [=](int value) { setParam("loopCount", value); });
 
     return widget;
 }
 
-IModule* LoopPlugin::cloneImpl() const
-{
+IModule* LoopPlugin::cloneImpl() const {
     return new LoopPlugin();
 }
 
