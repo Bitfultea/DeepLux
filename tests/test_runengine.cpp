@@ -1919,6 +1919,7 @@ void TestRunEngine::testImplicitControlPortsAccepted() {
 }
 
 void TestRunEngine::testDuplicateFourTupleRejected() {
+    // P1-fix: Project::addConnection 幂等去重，重复四元组不进入模型
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
     Project project;
@@ -1937,14 +1938,15 @@ void TestRunEngine::testDuplicateFourTupleRejected() {
     c1.toPort = "image";
     project.addConnection(c1);
     ModuleConnection c2 = c1;
-    project.addConnection(c2);
-    QVERIFY2(!engine.loadProject(&project,
+    project.addConnection(c2); // 幂等——不会重复添加
+    QCOMPARE(project.connections().size(), 1);
+    QVERIFY2(engine.loadProject(&project,
                                  [](const ModuleInstance& inst) {
                                      auto* m = new TestExecutionModule(inst.id);
                                      m->initialize();
                                      return m;
                                  }),
-             "duplicate 4-tuple should be rejected");
+             "idempotent duplicate should be accepted (silently dropped at model level)");
     engine.clearModules();
 }
 

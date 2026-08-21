@@ -387,6 +387,25 @@ void FlowCanvas::updateConnectionsForNode(const QString& nodeId) {
     }
 }
 
+void FlowCanvas::showDragLine(const QPointF& start, const QPointF& end) {
+    if (!m_dragLine) {
+        m_dragLine = new QGraphicsPathItem();
+        m_dragLine->setZValue(5);
+        m_scene->addItem(m_dragLine);
+    }
+    QPainterPath path = connectionPath(start, end);
+    m_dragLine->setPath(path);
+    QPen pen(QColor("#3B82F6"), 2, Qt::DashLine, Qt::RoundCap);
+    m_dragLine->setPen(pen);
+    m_dragLine->show();
+}
+
+void FlowCanvas::hideDragLine() {
+    if (m_dragLine) {
+        m_dragLine->hide();
+    }
+}
+
 void FlowCanvas::dragEnterEvent(QDragEnterEvent* event) {
     if (event->mimeData()->hasText()) {
         event->acceptProposedAction();
@@ -478,9 +497,9 @@ FlowNodeItem::FlowNodeItem(const QString& nodeId, const QString& name, const QSt
 }
 
 void FlowNodeItem::setPortSpecs(const QList<PortSpec>& inputs, const QList<PortSpec>& outputs) {
+    prepareGeometryChange(); // P2-fix: 几何变更前通知场景
     m_inputPortSpecs = inputs;
     m_outputPortSpecs = outputs;
-    // 根据 PortSpec 数量调整高度
     m_height = qMax<qreal>(64, 32 + qMax(inputs.size(), outputs.size()) * 18.0);
     update();
 }
@@ -600,6 +619,13 @@ void FlowNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* opti
     painter->setPen(QPen(borderColor, isSelected() ? 2.0 : 1.5));
     painter->drawRoundedRect(0, 0, m_width, m_height, 6, 6);
 
+    // P2-fix: 兼容目标高亮（绿色外环）
+    if (m_highlightCompatible) {
+        painter->setBrush(Qt::NoBrush);
+        painter->setPen(QPen(QColor("#22C55E"), 2, Qt::DashLine));
+        painter->drawRoundedRect(-3, -3, m_width + 6, m_height + 6, 8, 8);
+    }
+
     // 断点标记（左上角红色小圆点）
     if (m_breakpointVisual) {
         painter->setPen(Qt::NoPen);
@@ -693,14 +719,21 @@ void FlowNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* opti
         painter->drawEllipse(QPointF(m_width / 2, m_height), 5, 5);
     }
 
-    // P2-fix: 拖线临时连线
-    if (m_draggingConnection) {
-        const QPointF start = outputPortPos(m_dragFromPortId);
-        const QPointF end = mapFromScene(m_dragCurrentPos);
-        painter->setPen(QPen(QColor("#3B82F6"), 2, Qt::DashLine, Qt::RoundCap));
-        painter->setBrush(Qt::NoBrush);
-        QPainterPath dragPath = connectionPath(start, end);
-        painter->drawPath(dragPath);
+    // P2-fix: 端口名称标签
+    font.setPointSize(7);
+    painter->setFont(font);
+    painter->setPen(secondaryTextColor);
+    for (int i = 0; i < m_inputPortSpecs.size(); ++i) {
+        const QPointF pos = inputPortPos(i);
+        const QString& pid = m_inputPortSpecs[i].id;
+        const QString label = pid.length() > 6 ? pid.left(5) + QChar(0x2026) : pid;
+        painter->drawText(QRectF(pos.x() - 30, -14, 60, 12), Qt::AlignCenter, label);
+    }
+    for (int i = 0; i < m_outputPortSpecs.size(); ++i) {
+        const QPointF pos = outputPortPos(i);
+        const QString& pid = m_outputPortSpecs[i].id;
+        const QString label = pid.length() > 6 ? pid.left(5) + QChar(0x2026) : pid;
+        painter->drawText(QRectF(pos.x() - 30, m_height + 2, 60, 12), Qt::AlignCenter, label);
     }
 }
 
@@ -741,17 +774,33 @@ void FlowNodeItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {
 void FlowNodeItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
     if (m_draggingConnection) {
         m_dragCurrentPos = event->scenePos();
-        update();
-        // P2-fix: 高亮兼容目标
+        // P1-fix: 使用场景级临时连线（不被节点边界裁剪）
         QGraphicsScene* currentScene = scene();
+        FlowCanvas* canvas = currentScene ? qobject_cast<FlowCanvas*>(currentScene->parent()) : nullptr;
+        if (canvas) {
+            const QPointF start = scenePos() + outputPortPos(m_dragFromPortId);
+            canvas->showDragLine(start, m_dragCurrentPos);
+        }
+        // P2-fix: 兼容目标高亮
         if (currentScene) {
             for (QGraphicsItem* item : currentScene->items(event->scenePos())) {
                 FlowNodeItem* targetNode = dynamic_cast<FlowNodeItem*>(item);
                 if (targetNode && targetNode != this) {
                     QString targetPort = targetNode->inputPortAt(event->scenePos());
+                    bool compatible = false;
                     if (!targetPort.isEmpty()) {
-                        targetNode->update();
+                        for (const PortSpec& outSpec : m_outputPortSpecs) {
+                            if (outSpec.id == m_dragFromPortId) {
+                                for (const PortSpec& inSpec : targetNode->m_inputPortSpecs) {
+                                    if (inSpec.id == targetPort) {
+                                        compatible = FlowCanvas::portsCompatible(outSpec, inSpec);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     }
+                    targetNode->setHighlightCompatible(compatible);
                     break;
                 }
             }
@@ -765,15 +814,25 @@ void FlowNodeItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
 void FlowNodeItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
     if (m_draggingConnection) {
         m_draggingConnection = false;
-        // 查找释放位置是否有兼容输入端口
         QGraphicsScene* currentScene = scene();
+        FlowCanvas* canvas = currentScene ? qobject_cast<FlowCanvas*>(currentScene->parent()) : nullptr;
+        // P1-fix: 隐藏场景级临时连线
+        if (canvas)
+            canvas->hideDragLine();
+        // P2-fix: 清除所有高亮
+        if (currentScene) {
+            for (QGraphicsItem* item : currentScene->items()) {
+                FlowNodeItem* node = dynamic_cast<FlowNodeItem*>(item);
+                if (node)
+                    node->setHighlightCompatible(false);
+            }
+        }
         if (currentScene) {
             for (QGraphicsItem* item : currentScene->items(event->scenePos())) {
                 FlowNodeItem* targetNode = dynamic_cast<FlowNodeItem*>(item);
                 if (targetNode && targetNode != this) {
                     const QString targetPort = targetNode->inputPortAt(event->scenePos());
                     if (!targetPort.isEmpty()) {
-                        // 检查兼容性
                         bool compatible = false;
                         for (const PortSpec& outSpec : m_outputPortSpecs) {
                             if (outSpec.id == m_dragFromPortId) {
@@ -785,13 +844,9 @@ void FlowNodeItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
                                 }
                             }
                         }
-                        if (compatible) {
-                            // 发射连接请求
-                            FlowCanvas* canvas = currentScene ? qobject_cast<FlowCanvas*>(currentScene->parent()) : nullptr;
-                            if (canvas) {
-                                emit canvas->connectionRequest(nodeId(), m_dragFromPortId,
-                                                                targetNode->nodeId(), targetPort);
-                            }
+                        if (compatible && canvas) {
+                            emit canvas->connectionRequest(nodeId(), m_dragFromPortId,
+                                                            targetNode->nodeId(), targetPort);
                         }
                     }
                     break;

@@ -211,6 +211,8 @@ signals:
     void moduleRemoved(const QString& instanceId);
     void connectionAdded(const ModuleConnection& conn);
     void connectionRemoved(const QString& fromId, const QString& toId);
+    void connectionRemovedWithPorts(const QString& fromId, const QString& fromPort,
+                                      const QString& toId, const QString& toPort);
     void dataSourceAdded(const DataSource& ds);
     void dataSourceRemoved(const QString& id);
     void modifiedChanged(bool modified);

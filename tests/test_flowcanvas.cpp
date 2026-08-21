@@ -27,10 +27,13 @@ private slots:
     // 阶段 F 新增
     void testMultiPortConnectionsNotDeduplicated();
     void testDeleteOneConnectionDoesNotDeleteOthers();
+    void testDeleteSecondConnectionPreservesFirst();
     void testSaveReloadPreservesPortConnections();
     void testNodeDragUpdatesConnections();
     void testControlEdgeRenderedAsDashed();
     void testPortSpecsFromPluginManagerLoaded();
+    void testDuplicateConnectionIsIdempotent();
+    void testProjectRemoveConnectionWithPortsPrecise();
 };
 
 void TestFlowCanvas::init() {
@@ -335,6 +338,80 @@ void TestFlowCanvas::testPortSpecsFromPluginManagerLoaded() {
     QCOMPARE(node->inputPortCount(), 1);
     QCOMPARE(node->outputPortCount(), 1);
     QCOMPARE(node->inputPortSpecs().first().id, QString("image"));
+}
+
+void TestFlowCanvas::testDeleteSecondConnectionPreservesFirst() {
+    // P1-fix: 删除 A.val→B.val 时，A.image→B.image 应保留
+    FlowCanvas canvas;
+    Project* project = ProjectManager::instance().currentProject();
+
+    const QString a = canvas.addNode("module.a", "A", QPointF(0, 0));
+    const QString b = canvas.addNode("module.b", "B", QPointF(260, 0));
+
+    canvas.addConnection(a, "image", b, "image");
+    canvas.addConnection(a, "val", b, "val");
+    QCOMPARE(canvas.m_connections.size(), 2);
+    QCOMPARE(project->connections().size(), 2);
+
+    // 删除第二条（val→val）
+    canvas.removeConnection(a, "val", b, "val");
+    QCOMPARE(canvas.m_connections.size(), 1);
+    QCOMPARE(project->connections().size(), 1);
+    // 确认剩余的是 image→image
+    QCOMPARE(canvas.m_connections.first()->fromPortId(), QString("image"));
+    QCOMPARE(canvas.m_connections.first()->toPortId(), QString("image"));
+    QCOMPARE(project->connections().first().fromPort, QString("image"));
+    QCOMPARE(project->connections().first().toPort, QString("image"));
+}
+
+void TestFlowCanvas::testDuplicateConnectionIsIdempotent() {
+    // P1-fix: 重复添加同一四元组连接 → 模型幂等
+    Project project;
+    ModuleInstance a; a.id = "A"; a.moduleId = "module.a"; a.name = "A";
+    ModuleInstance b; b.id = "B"; b.moduleId = "module.b"; b.name = "B";
+    project.addModule(a);
+    project.addModule(b);
+
+    ModuleConnection c;
+    c.fromModuleId = "A"; c.toModuleId = "B";
+    c.fromPort = "image"; c.toPort = "image"; c.edgeType = "data";
+
+    project.addConnection(c);
+    project.addConnection(c); // 重复
+    project.addConnection(c); // 再次重复
+
+    QCOMPARE(project.connections().size(), 1);
+}
+
+void TestFlowCanvas::testProjectRemoveConnectionWithPortsPrecise() {
+    // P1-fix: removeConnectionWithPorts 只删除匹配的四元组
+    Project project;
+    ModuleInstance a; a.id = "A"; a.moduleId = "module.a";
+    ModuleInstance b; b.id = "B"; b.moduleId = "module.b";
+    project.addModule(a);
+    project.addModule(b);
+
+    ModuleConnection c1;
+    c1.fromModuleId = "A"; c1.toModuleId = "B";
+    c1.fromPort = "image"; c1.toPort = "image"; c1.edgeType = "data";
+    ModuleConnection c2;
+    c2.fromModuleId = "A"; c2.toModuleId = "B";
+    c2.fromPort = "val"; c2.toPort = "val"; c2.edgeType = "data";
+    project.addConnection(c1);
+    project.addConnection(c2);
+    QCOMPARE(project.connections().size(), 2);
+
+    QSignalSpy spy(&project, &Project::connectionRemovedWithPorts);
+    project.removeConnectionWithPorts("A", "val", "B", "val");
+
+    QCOMPARE(project.connections().size(), 1);
+    QCOMPARE(project.connections().first().fromPort, QString("image"));
+    QCOMPARE(spy.count(), 1);
+    const auto args = spy.takeFirst();
+    QCOMPARE(args.at(0).toString(), QString("A"));
+    QCOMPARE(args.at(1).toString(), QString("val"));
+    QCOMPARE(args.at(2).toString(), QString("B"));
+    QCOMPARE(args.at(3).toString(), QString("val"));
 }
 
 QTEST_MAIN(TestFlowCanvas)

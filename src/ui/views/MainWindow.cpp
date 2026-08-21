@@ -1967,9 +1967,9 @@ void MainWindow::onProjectOpened(Project* project) {
             markModuleDirty(module.id);
         }
     });
+    // P1-fix: 旧信号——按节点对删除（兼容旧代码路径）
     connect(project, &Project::connectionRemoved, this, [this, project](const QString& fromId, const QString& toId) {
         if (m_flowCanvas) {
-            // P0-fix: 同步删除画布上匹配 from→to 的所有连接（不回写 Project）
             m_flowCanvas->m_syncingFromProject = true;
             for (int i = m_flowCanvas->m_connections.size() - 1; i >= 0; --i) {
                 FlowConnectionItem* conn = m_flowCanvas->m_connections[i];
@@ -1978,6 +1978,20 @@ void MainWindow::onProjectOpened(Project* project) {
                                                    conn->toNodeId(), conn->toPortId());
                 }
             }
+            m_flowCanvas->m_syncingFromProject = false;
+        }
+        m_modulesNeedSync = true;
+        for (const ModuleInstance& module : project->modules()) {
+            markModuleDirty(module.id);
+        }
+    });
+    // P1-fix: 新信号——按完整四元组精确删除一条连接
+    connect(project, &Project::connectionRemovedWithPorts, this,
+            [this, project](const QString& fromId, const QString& fromPort,
+                             const QString& toId, const QString& toPort) {
+        if (m_flowCanvas) {
+            m_flowCanvas->m_syncingFromProject = true;
+            m_flowCanvas->removeConnection(fromId, fromPort, toId, toPort);
             m_flowCanvas->m_syncingFromProject = false;
         }
         m_modulesNeedSync = true;

@@ -80,6 +80,8 @@ private:
 public:
     void updateConnectionsForNode(const QString& nodeId);
     void applyTheme(bool isDark);
+    void showDragLine(const QPointF& start, const QPointF& end);
+    void hideDragLine();
 
     QGraphicsScene* m_scene;
     QMap<QString, FlowNodeItem*> m_nodes;
@@ -88,7 +90,8 @@ public:
     QString m_nextNodeId;
     int m_nodeCounter = 0;
     bool m_loadingProject = false;
-    bool m_syncingFromProject = false; // P0-fix: 防止 Project→Canvas→Project 回写循环
+    bool m_syncingFromProject = false;
+    QGraphicsPathItem* m_dragLine = nullptr; // P1-fix: 场景级临时拖线
 };
 
 /**
@@ -125,6 +128,7 @@ public:
     // 视觉状态
     void setDisabledVisual(bool disabled) { m_disabledVisual = disabled; update(); }
     void setBreakpointVisual(bool bp) { m_breakpointVisual = bp; update(); }
+    void setHighlightCompatible(bool on) { m_highlightCompatible = on; update(); }
     bool isDisabledVisual() const { return m_disabledVisual; }
     bool hasBreakpointVisual() const { return m_breakpointVisual; }
 
@@ -153,6 +157,7 @@ private:
     QString m_timeText;
     bool m_disabledVisual = false;
     bool m_breakpointVisual = false;
+    bool m_highlightCompatible = false;
 
     // 拖线状态
     bool m_draggingConnection = false;

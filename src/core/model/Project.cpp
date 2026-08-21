@@ -233,6 +233,15 @@ std::optional<ModuleInstance> Project::moduleById(const QString& instanceId) con
 }
 
 void Project::addConnection(const ModuleConnection& conn) {
+    // P1-fix: 四元组幂等去重——模型作为唯一事实源
+    for (const ModuleConnection& existing : m_connections) {
+        if (existing.fromModuleId == conn.fromModuleId &&
+            existing.toModuleId == conn.toModuleId &&
+            existing.fromPort == conn.fromPort &&
+            existing.toPort == conn.toPort) {
+            return; // 已存在，幂等
+        }
+    }
     m_connections.append(conn);
     touch();
     emit connectionAdded(conn);
@@ -257,7 +266,8 @@ void Project::removeConnectionWithPorts(const QString& fromId, const QString& fr
             c.fromPort == fromPort && c.toPort == toPort) {
             m_connections.removeAt(i);
             touch();
-            emit connectionRemoved(fromId, toId);
+            // P1-fix: 发射携带完整四元组的信号
+            emit connectionRemovedWithPorts(fromId, fromPort, toId, toPort);
             return;
         }
     }
