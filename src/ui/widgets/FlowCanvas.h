@@ -140,6 +140,7 @@ protected:
     void mousePressEvent(QGraphicsSceneMouseEvent* event) override;
     void mouseMoveEvent(QGraphicsSceneMouseEvent* event) override;
     void mouseReleaseEvent(QGraphicsSceneMouseEvent* event) override;
+    void hoverMoveEvent(QGraphicsSceneHoverEvent* event) override;
 
 private:
     friend class FlowCanvas;
@@ -163,6 +164,7 @@ private:
     bool m_draggingConnection = false;
     QString m_dragFromPortId;
     QPointF m_dragCurrentPos;
+    FlowNodeItem* m_highlightedTarget = nullptr; // P2-fix: 追踪当前高亮节点
 };
 
 /**

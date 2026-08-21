@@ -8,6 +8,7 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QGraphicsSceneMouseEvent>
+#include <QGraphicsSceneHoverEvent>
 #include <QGraphicsTextItem>
 #include <QMimeData>
 #include <QPainter>
@@ -58,7 +59,8 @@ void drawConnectionArrow(QPainter* painter, const QPainterPath& path, const QCol
     painter->drawPolygon(arrow);
 }
 
-QString portTypeDisplayName(DataType type) {
+// P2-fix: 使用 QToolTip 显示端口信息，不再需要静态函数
+[[maybe_unused]] QString portTypeDisplayName(DataType type) {
     switch (type) {
     case DataType::Image2D: return QStringLiteral("Image2D");
     case DataType::Number: return QStringLiteral("Number");
@@ -516,7 +518,8 @@ void FlowNodeItem::setExecutionState(const QString& status, const QString& timeT
 }
 
 QRectF FlowNodeItem::boundingRect() const {
-    return QRectF(-6, -2, m_width + 12, m_height + 4);
+    // P1-fix: 覆盖端口标签（上下 ±14）和高亮外环（±3）
+    return QRectF(-8, -16, m_width + 16, m_height + 32);
 }
 
 QPointF FlowNodeItem::inputPortPos(int index) const {
@@ -748,6 +751,34 @@ QVariant FlowNodeItem::itemChange(GraphicsItemChange change, const QVariant& val
     return QGraphicsItem::itemChange(change, value);
 }
 
+void FlowNodeItem::hoverMoveEvent(QGraphicsSceneHoverEvent* event) {
+    // P2-fix: 端口 tooltip 显示名称、类型、必需
+    const QString inPort = inputPortAt(event->scenePos());
+    if (!inPort.isEmpty()) {
+        for (const PortSpec& spec : m_inputPortSpecs) {
+            if (spec.id == inPort) {
+                QString tip = spec.displayName + QStringLiteral(" (") + portTypeDisplayName(spec.type) + QStringLiteral(")");
+                if (spec.required) tip += QStringLiteral(" [必需]");
+                if (spec.multiple) tip += QStringLiteral(" [多输入]");
+                QToolTip::showText(event->screenPos(), tip);
+                return;
+            }
+        }
+    }
+    const QString outPort = outputPortAt(event->scenePos());
+    if (!outPort.isEmpty()) {
+        for (const PortSpec& spec : m_outputPortSpecs) {
+            if (spec.id == outPort) {
+                QString tip = spec.displayName + QStringLiteral(" (") + portTypeDisplayName(spec.type) + QStringLiteral(")");
+                if (spec.control) tip += QStringLiteral(" [控制]");
+                QToolTip::showText(event->screenPos(), tip);
+                return;
+            }
+        }
+    }
+    QToolTip::hideText();
+}
+
 void FlowNodeItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {
     // 检查是否点击在输出端口上
     if (event->button() == Qt::LeftButton) {
@@ -781,7 +812,10 @@ void FlowNodeItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
             const QPointF start = scenePos() + outputPortPos(m_dragFromPortId);
             canvas->showDragLine(start, m_dragCurrentPos);
         }
-        // P2-fix: 兼容目标高亮
+        // P2-fix: 先清除旧高亮，再设置新高亮
+        if (m_highlightedTarget)
+            m_highlightedTarget->setHighlightCompatible(false);
+        m_highlightedTarget = nullptr;
         if (currentScene) {
             for (QGraphicsItem* item : currentScene->items(event->scenePos())) {
                 FlowNodeItem* targetNode = dynamic_cast<FlowNodeItem*>(item);
@@ -801,6 +835,7 @@ void FlowNodeItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
                         }
                     }
                     targetNode->setHighlightCompatible(compatible);
+                    m_highlightedTarget = targetNode;
                     break;
                 }
             }
@@ -819,14 +854,10 @@ void FlowNodeItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
         // P1-fix: 隐藏场景级临时连线
         if (canvas)
             canvas->hideDragLine();
-        // P2-fix: 清除所有高亮
-        if (currentScene) {
-            for (QGraphicsItem* item : currentScene->items()) {
-                FlowNodeItem* node = dynamic_cast<FlowNodeItem*>(item);
-                if (node)
-                    node->setHighlightCompatible(false);
-            }
-        }
+        // P2-fix: 清除高亮
+        if (m_highlightedTarget)
+            m_highlightedTarget->setHighlightCompatible(false);
+        m_highlightedTarget = nullptr;
         if (currentScene) {
             for (QGraphicsItem* item : currentScene->items(event->scenePos())) {
                 FlowNodeItem* targetNode = dynamic_cast<FlowNodeItem*>(item);

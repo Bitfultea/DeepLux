@@ -67,6 +67,8 @@ private slots:
     void onModuleRemoved(const QString& instanceId);
     void onConnectionAdded(const struct ModuleConnection& conn);
     void onConnectionRemoved(const QString& fromId, const QString& toId);
+    void onConnectionRemovedWithPorts(const QString& fromId, const QString& fromPort,
+                                        const QString& toId, const QString& toPort);
 
     // Logger
     void onLogAdded(const struct LogEntry& entry);

@@ -79,6 +79,8 @@ void AgentObserver::connectProjectSignals(Project* proj)
             this, &AgentObserver::onConnectionAdded);
     connect(proj, &Project::connectionRemoved,
             this, &AgentObserver::onConnectionRemoved);
+    connect(proj, &Project::connectionRemovedWithPorts,
+            this, &AgentObserver::onConnectionRemovedWithPorts);
 }
 
 void AgentObserver::shutdown()
@@ -228,6 +230,17 @@ void AgentObserver::onConnectionRemoved(const QString& fromId, const QString& to
     QJsonObject det;
     det["from"] = fromId;
     det["to"] = toId;
+    pushEvent(GuiEvent(GuiEventType::ConnectionRemoved, "Project", det));
+}
+
+void AgentObserver::onConnectionRemovedWithPorts(const QString& fromId, const QString& fromPort,
+                                                   const QString& toId, const QString& toPort)
+{
+    QJsonObject det;
+    det["from"] = fromId;
+    det["fromPort"] = fromPort;
+    det["to"] = toId;
+    det["toPort"] = toPort;
     pushEvent(GuiEvent(GuiEventType::ConnectionRemoved, "Project", det));
 }
 
