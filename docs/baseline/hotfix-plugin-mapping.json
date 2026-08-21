@@ -72,7 +72,7 @@
       "currentCandidate": "DisplayData",
       "currentPluginId": "com.deeplux.plugin.displaydata",
       "matchKind": "candidate",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.GrabImage",
@@ -108,7 +108,7 @@
       "currentCandidate": "ImageScript",
       "currentPluginId": "com.deeplux.plugin.imagescript",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.JigsawPuzzle",
@@ -126,7 +126,7 @@
       "currentCandidate": "PerProcessing",
       "currentPluginId": "com.deeplux.plugin.perprocessing",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.SaveImage",
@@ -189,7 +189,7 @@
       "currentCandidate": "ColorRecognition",
       "currentPluginId": "com.deeplux.plugin.colorrecognition",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.CreatePoints",
@@ -261,7 +261,7 @@
       "currentCandidate": "Matching",
       "currentPluginId": "com.deeplux.plugin.matching",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.Matching1",

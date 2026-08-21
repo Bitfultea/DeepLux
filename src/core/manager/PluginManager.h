@@ -43,6 +43,7 @@ struct PluginInfo {
     QList<PortSpec> inputPorts;  // ABI v2 输入端口声明（metadata.json ports.inputs）
     QList<PortSpec> outputPorts; // ABI v2 输出端口声明（metadata.json ports.outputs）
     bool threadSafe = false;     // metadata.json execution.threadSafe，并行批次中是否可并发执行
+    bool blocking = false;       // metadata.json execution.blocking，是否有阻塞式 I/O
 };
 
 /**

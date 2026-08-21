@@ -237,6 +237,7 @@ bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info) {
     // 阶段 E: 并行安全标记
     QJsonObject execution = json["execution"].toObject();
     info.threadSafe = execution["threadSafe"].toBool(false);
+    info.blocking = execution["blocking"].toBool(false);
 
     return !info.name.isEmpty();
 }
