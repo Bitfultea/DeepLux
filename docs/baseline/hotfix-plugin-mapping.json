@@ -513,7 +513,7 @@
       "currentCandidate": "DataCheck",
       "currentPluginId": "com.deeplux.plugin.datacheck",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.Folder",
@@ -531,7 +531,7 @@
       "currentCandidate": "SaveData",
       "currentPluginId": "com.deeplux.plugin.savedata",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.ShowPoint",
@@ -540,7 +540,7 @@
       "currentCandidate": "ShowPoint",
       "currentPluginId": "com.deeplux.plugin.showpoint",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.SystemTime",
@@ -558,7 +558,7 @@
       "currentCandidate": "TableOutPut",
       "currentPluginId": "com.deeplux.plugin.tableoutput",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.TimeSlice",
@@ -567,7 +567,7 @@
       "currentCandidate": "TimeSlice",
       "currentPluginId": "com.deeplux.plugin.timeslice",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.WriteText",
@@ -603,7 +603,7 @@
       "currentCandidate": "QueueIn",
       "currentPluginId": "com.deeplux.plugin.queuein",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.QueueOut",
@@ -612,7 +612,7 @@
       "currentCandidate": "QueueOut",
       "currentPluginId": "com.deeplux.plugin.queueout",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.SplitString",
@@ -819,7 +819,7 @@
       "currentCandidate": "FreeformSurface",
       "currentPluginId": "com.deeplux.plugin.freeformsurface",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.GSD",

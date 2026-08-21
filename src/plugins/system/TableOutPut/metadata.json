@@ -42,5 +42,9 @@
                 "multiple": false
             }
         ]
+    },
+    "execution": {
+        "threadSafe": false,
+        "blocking": false
     }
 }
