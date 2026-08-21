@@ -59,19 +59,6 @@ void drawConnectionArrow(QPainter* painter, const QPainterPath& path, const QCol
     painter->drawPolygon(arrow);
 }
 
-// P2-fix: 使用 QToolTip 显示端口信息，不再需要静态函数
-[[maybe_unused]] QString portTypeDisplayName(DataType type) {
-    switch (type) {
-    case DataType::Image2D: return QStringLiteral("Image2D");
-    case DataType::Number: return QStringLiteral("Number");
-    case DataType::Boolean: return QStringLiteral("Boolean");
-    case DataType::String: return QStringLiteral("String");
-    case DataType::Integer: return QStringLiteral("Integer");
-    case DataType::Any: return QStringLiteral("Any");
-    default: return QString();
-    }
-}
-
 } // namespace
 
 // ========== FlowCanvas ==========
@@ -752,14 +739,17 @@ QVariant FlowNodeItem::itemChange(GraphicsItemChange change, const QVariant& val
 }
 
 void FlowNodeItem::hoverMoveEvent(QGraphicsSceneHoverEvent* event) {
-    // P2-fix: 端口 tooltip 显示名称、类型、必需
     const QString inPort = inputPortAt(event->scenePos());
     if (!inPort.isEmpty()) {
         for (const PortSpec& spec : m_inputPortSpecs) {
             if (spec.id == inPort) {
-                QString tip = spec.displayName + QStringLiteral(" (") + portTypeDisplayName(spec.type) + QStringLiteral(")");
-                if (spec.required) tip += QStringLiteral(" [必需]");
-                if (spec.multiple) tip += QStringLiteral(" [多输入]");
+                QString tip = QStringLiteral("%1 (%2)").arg(spec.displayName, dataTypeName(spec.type));
+                if (spec.required)
+                    tip += QStringLiteral(" [必需]");
+                if (spec.multiple)
+                    tip += QStringLiteral(" [多输入]");
+                if (spec.control)
+                    tip += QStringLiteral(" [控制]");
                 QToolTip::showText(event->screenPos(), tip);
                 return;
             }
@@ -769,14 +759,20 @@ void FlowNodeItem::hoverMoveEvent(QGraphicsSceneHoverEvent* event) {
     if (!outPort.isEmpty()) {
         for (const PortSpec& spec : m_outputPortSpecs) {
             if (spec.id == outPort) {
-                QString tip = spec.displayName + QStringLiteral(" (") + portTypeDisplayName(spec.type) + QStringLiteral(")");
-                if (spec.control) tip += QStringLiteral(" [控制]");
+                QString tip = QStringLiteral("%1 (%2)").arg(spec.displayName, dataTypeName(spec.type));
+                if (spec.control)
+                    tip += QStringLiteral(" [控制]");
                 QToolTip::showText(event->screenPos(), tip);
                 return;
             }
         }
     }
     QToolTip::hideText();
+}
+
+void FlowNodeItem::hoverLeaveEvent(QGraphicsSceneHoverEvent* event) {
+    QToolTip::hideText();
+    QGraphicsItem::hoverLeaveEvent(event);
 }
 
 void FlowNodeItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {

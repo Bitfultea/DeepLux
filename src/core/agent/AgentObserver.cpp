@@ -257,8 +257,6 @@ void AgentObserver::setFlowCanvas(QObject* canvas)
                 this, SLOT(onNodeRemoved(QString)));
         connect(m_flowCanvas, SIGNAL(connectionCreated(QString,QString)),
                 this, SLOT(onConnectionCreated(QString,QString)));
-        connect(m_flowCanvas, SIGNAL(connectionRemoved(QString,QString)),
-                this, SLOT(onConnectionRemovedCanvas(QString,QString)));
     }
 }
 
@@ -304,14 +302,6 @@ void AgentObserver::onConnectionCreated(const QString& fromId, const QString& to
     det["from"] = fromId;
     det["to"] = toId;
     pushEvent(GuiEvent(GuiEventType::ConnectionCreated, "FlowCanvas", det));
-}
-
-void AgentObserver::onConnectionRemovedCanvas(const QString& fromId, const QString& toId)
-{
-    QJsonObject det;
-    det["from"] = fromId;
-    det["to"] = toId;
-    pushEvent(GuiEvent(GuiEventType::ConnectionRemoved, "FlowCanvas", det));
 }
 
 } // namespace DeepLux

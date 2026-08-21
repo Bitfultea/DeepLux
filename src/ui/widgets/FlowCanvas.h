@@ -131,6 +131,7 @@ public:
     void setHighlightCompatible(bool on) { m_highlightCompatible = on; update(); }
     bool isDisabledVisual() const { return m_disabledVisual; }
     bool hasBreakpointVisual() const { return m_breakpointVisual; }
+    bool isCompatibleHighlighted() const { return m_highlightCompatible; }
 
     QRectF boundingRect() const override;
     void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget = nullptr) override;
@@ -141,6 +142,7 @@ protected:
     void mouseMoveEvent(QGraphicsSceneMouseEvent* event) override;
     void mouseReleaseEvent(QGraphicsSceneMouseEvent* event) override;
     void hoverMoveEvent(QGraphicsSceneHoverEvent* event) override;
+    void hoverLeaveEvent(QGraphicsSceneHoverEvent* event) override;
 
 private:
     friend class FlowCanvas;

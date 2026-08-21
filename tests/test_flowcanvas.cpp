@@ -2,12 +2,21 @@
 #include <QImage>
 #include <QPainter>
 #include <QSignalSpy>
+#include <QToolTip>
 #include <QtTest/QtTest>
 #include <core/manager/ProjectManager.h>
 #include <core/model/Project.h>
 #include <ui/widgets/FlowCanvas.h>
 
 using namespace DeepLux;
+
+class TestableFlowNodeItem : public FlowNodeItem {
+public:
+    using FlowNodeItem::FlowNodeItem;
+    using FlowNodeItem::mouseMoveEvent;
+    using FlowNodeItem::mousePressEvent;
+    using FlowNodeItem::mouseReleaseEvent;
+};
 
 class TestFlowCanvas : public QObject {
     Q_OBJECT
@@ -34,6 +43,8 @@ private slots:
     void testPortSpecsFromPluginManagerLoaded();
     void testDuplicateConnectionIsIdempotent();
     void testProjectRemoveConnectionWithPortsPrecise();
+    void testPortTooltipUsesCompleteDataTypeName();
+    void testConnectionDragMovesAndClearsCompatibleHighlight();
 };
 
 void TestFlowCanvas::init() {
@@ -412,6 +423,76 @@ void TestFlowCanvas::testProjectRemoveConnectionWithPortsPrecise() {
     QCOMPARE(args.at(1).toString(), QString("val"));
     QCOMPARE(args.at(2).toString(), QString("B"));
     QCOMPARE(args.at(3).toString(), QString("val"));
+}
+
+void TestFlowCanvas::testPortTooltipUsesCompleteDataTypeName() {
+    FlowCanvas canvas;
+    canvas.setSceneRect(0, 0, 400, 240);
+    canvas.resize(400, 240);
+
+    const QString nodeId = canvas.addNode("module.a", "A", QPointF(80, 80));
+    FlowNodeItem* node = canvas.nodeItem(nodeId);
+    QVERIFY(node != nullptr);
+
+    PortSpec input;
+    input.id = "point";
+    input.displayName = QStringLiteral("三维点");
+    input.type = DataType::Point3D;
+    input.required = true;
+    node->setPortSpecs({input}, {});
+
+    canvas.show();
+    QCoreApplication::processEvents();
+    QTest::mouseMove(canvas.viewport(), canvas.mapFromScene(node->scenePos() + node->inputPortPos(0)));
+    QTRY_COMPARE(QToolTip::text(), QStringLiteral("三维点 (Point3D) [必需]"));
+
+    QTest::mouseMove(canvas.viewport(), canvas.mapFromScene(QPointF(10, 10)));
+    QTRY_VERIFY(QToolTip::text().isEmpty());
+}
+
+void TestFlowCanvas::testConnectionDragMovesAndClearsCompatibleHighlight() {
+    FlowCanvas canvas;
+    auto* source = new TestableFlowNodeItem("source", "Source", "module.source");
+    auto* first = new FlowNodeItem("first", "First", "module.first");
+    auto* second = new FlowNodeItem("second", "Second", "module.second");
+    canvas.scene()->addItem(source);
+    canvas.scene()->addItem(first);
+    canvas.scene()->addItem(second);
+    source->setPos(80, 60);
+    first->setPos(80, 240);
+    second->setPos(380, 240);
+
+    PortSpec output;
+    output.id = "point";
+    output.displayName = "point";
+    output.type = DataType::Point3D;
+    PortSpec input = output;
+    source->setPortSpecs({}, {output});
+    first->setPortSpecs({input}, {});
+    second->setPortSpecs({input}, {});
+
+    QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
+    press.setScenePos(source->scenePos() + source->outputPortPos(0));
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+    source->mousePressEvent(&press);
+
+    QGraphicsSceneMouseEvent move(QEvent::GraphicsSceneMouseMove);
+    move.setButtons(Qt::LeftButton);
+    move.setScenePos(first->scenePos() + first->inputPortPos(0));
+    source->mouseMoveEvent(&move);
+    QVERIFY(first->isCompatibleHighlighted());
+
+    move.setScenePos(second->scenePos() + second->inputPortPos(0));
+    source->mouseMoveEvent(&move);
+    QVERIFY(!first->isCompatibleHighlighted());
+    QVERIFY(second->isCompatibleHighlighted());
+
+    QGraphicsSceneMouseEvent release(QEvent::GraphicsSceneMouseRelease);
+    release.setScenePos(second->scenePos() + second->inputPortPos(0));
+    release.setButton(Qt::LeftButton);
+    source->mouseReleaseEvent(&release);
+    QVERIFY(!second->isCompatibleHighlighted());
 }
 
 QTEST_MAIN(TestFlowCanvas)

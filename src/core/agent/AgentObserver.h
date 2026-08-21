@@ -80,7 +80,6 @@ private slots:
     void onNodeAdded(const QString& nodeId);
     void onNodeRemoved(const QString& nodeId);
     void onConnectionCreated(const QString& fromId, const QString& toId);
-    void onConnectionRemovedCanvas(const QString& fromId, const QString& toId);
 
 private:
     void pushEvent(const GuiEvent& event);
