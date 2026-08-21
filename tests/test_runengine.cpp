@@ -241,8 +241,7 @@ protected:
 class PortPairModule : public ModuleBase {
     Q_OBJECT
 public:
-    PortPairModule(const QString& name, const QString& inId, DataType inType, const QString& outId,
-                   DataType outType)
+    PortPairModule(const QString& name, const QString& inId, DataType inType, const QString& outId, DataType outType)
         : m_inId(inId), m_inType(inType), m_outId(outId), m_outType(outType) {
         m_moduleId = QStringLiteral("com.deeplux.test.pair.") + name;
         m_name = name;
@@ -376,6 +375,28 @@ private slots:
     void testLoopSelfEdgeRejected();
     void testLoopDoneBackEdgeRejected();
     void testNestedStopLoopPreservesOuterCounter();
+    // 阶段 D 复核回归
+    void testExplicitDataFanInWaitsForAllInputs();
+    void testExplicitFailureDoesNotActivateSuccessor();
+    void testExplicitLoopClearsInactiveBranchOutputs();
+    void testExplicitWhileStopsAtMaxIterations();
+    void testExplicitLoopStepOnceTraversesIterations();
+    void testExplicitLoopCancellationStopsRun();
+    // 阶段 E1: 多输入聚合
+    void testMultiInputCollectsOrderedList();
+    void testMultiInputTypeMismatchFails();
+    void testMultiInputWaitsForAllUpstreams();
+    void testControlJoinAllWaitsForAllSources();
+    void testControlJoinTracksEdgesNotSources();
+    void testControlJoinPoliciesArePerPort();
+    // 阶段 E2: Parallel 接入主循环
+    void testParallelBatchExecutesConcurrently();
+    void testParallelFailureCancelsRemaining();
+    void testParallelNonThreadSafeFallsBackSequential();
+    void testParallelMixedThreadSafetyFallsBackSequential();
+    void testParallelSingleThreadFailureDoesNotDeadlock();
+    void testParallelBatchHonorsDisabledModule();
+    void testParallelBatchHonorsBreakpoint();
     void init();
     void cleanup();
 
@@ -1318,9 +1339,7 @@ void TestRunEngine::testBreakpointRestoredOnLoad() {
     a.breakpoint = true;
     project.addModule(a);
 
-    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) {
-        return new TestExecutionModule(inst.id);
-    }));
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) { return new TestExecutionModule(inst.id); }));
     QVERIFY(engine.hasBreakpoint(QStringLiteral("a")));
 
     engine.clearModules();
@@ -1762,7 +1781,6 @@ void TestRunEngine::testRemoveModuleClearsTopology() {
     engine.clearModules();
 }
 
-
 // ---------------------------------------------------------------------------
 // 阶段 C: 显式控制边契约测试
 // ---------------------------------------------------------------------------
@@ -1771,20 +1789,28 @@ void TestRunEngine::testDataEdgeToControlPortRejected() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
     Project project;
-    ModuleInstance s; s.id = "src"; s.moduleId = "src";
-    ModuleInstance t; t.id = "tgt"; t.moduleId = "tgt";
+    ModuleInstance s;
+    s.id = "src";
+    s.moduleId = "src";
+    ModuleInstance t;
+    t.id = "tgt";
+    t.moduleId = "tgt";
     project.addModule(s);
     project.addModule(t);
     ModuleConnection c;
-    c.fromModuleId = "src"; c.toModuleId = "tgt";
-    c.fromPort = "image"; c.toPort = "ctrl_in";
+    c.fromModuleId = "src";
+    c.toModuleId = "tgt";
+    c.fromPort = "image";
+    c.toPort = "ctrl_in";
     c.edgeType = "data";
     project.addConnection(c);
-    QVERIFY2(!engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
-        if (inst.id == QLatin1String("src"))
-            return new ControlPortModule(inst.id, false, false);
-        return new ControlPortModule(inst.id, false, true);
-    }), "should reject data edge to control port");
+    QVERIFY2(!engine.loadProject(&project,
+                                 [](const ModuleInstance& inst) -> ModuleBase* {
+                                     if (inst.id == QLatin1String("src"))
+                                         return new ControlPortModule(inst.id, false, false);
+                                     return new ControlPortModule(inst.id, false, true);
+                                 }),
+             "should reject data edge to control port");
     engine.clearModules();
 }
 
@@ -1792,25 +1818,35 @@ void TestRunEngine::testControlEdgeToDataPortRejected() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
     Project project;
-    ModuleInstance s; s.id = "src"; s.moduleId = "src";
-    ModuleInstance t; t.id = "tgt"; t.moduleId = "tgt";
+    ModuleInstance s;
+    s.id = "src";
+    s.moduleId = "src";
+    ModuleInstance t;
+    t.id = "tgt";
+    t.moduleId = "tgt";
     project.addModule(s);
     project.addModule(t);
     ModuleConnection dataC;
-    dataC.fromModuleId = "src"; dataC.toModuleId = "tgt";
-    dataC.fromPort = "image"; dataC.toPort = "image";
+    dataC.fromModuleId = "src";
+    dataC.toModuleId = "tgt";
+    dataC.fromPort = "image";
+    dataC.toPort = "image";
     dataC.edgeType = "data";
     project.addConnection(dataC);
     ModuleConnection c;
-    c.fromModuleId = "src"; c.toModuleId = "tgt";
-    c.fromPort = "ctrl_out"; c.toPort = "image";
+    c.fromModuleId = "src";
+    c.toModuleId = "tgt";
+    c.fromPort = "ctrl_out";
+    c.toPort = "image";
     c.edgeType = "control";
     project.addConnection(c);
-    QVERIFY2(!engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
-        if (inst.id == QLatin1String("src"))
-            return new ControlPortModule(inst.id, true, false);
-        return new ControlPortModule(inst.id, false, false);
-    }), "should reject control edge to data port");
+    QVERIFY2(!engine.loadProject(&project,
+                                 [](const ModuleInstance& inst) -> ModuleBase* {
+                                     if (inst.id == QLatin1String("src"))
+                                         return new ControlPortModule(inst.id, true, false);
+                                     return new ControlPortModule(inst.id, false, false);
+                                 }),
+             "should reject control edge to data port");
     engine.clearModules();
 }
 
@@ -1818,23 +1854,32 @@ void TestRunEngine::testControlEdgeValidAccepted() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
     Project project;
-    ModuleInstance s; s.id = "src"; s.moduleId = "src";
-    ModuleInstance t; t.id = "tgt"; t.moduleId = "tgt";
+    ModuleInstance s;
+    s.id = "src";
+    s.moduleId = "src";
+    ModuleInstance t;
+    t.id = "tgt";
+    t.moduleId = "tgt";
     project.addModule(s);
     project.addModule(t);
     ModuleConnection dataC;
-    dataC.fromModuleId = "src"; dataC.toModuleId = "tgt";
-    dataC.fromPort = "image"; dataC.toPort = "image";
+    dataC.fromModuleId = "src";
+    dataC.toModuleId = "tgt";
+    dataC.fromPort = "image";
+    dataC.toPort = "image";
     dataC.edgeType = "data";
     project.addConnection(dataC);
     ModuleConnection ctrlC;
-    ctrlC.fromModuleId = "src"; ctrlC.toModuleId = "tgt";
-    ctrlC.fromPort = "ctrl_out"; ctrlC.toPort = "ctrl_in";
+    ctrlC.fromModuleId = "src";
+    ctrlC.toModuleId = "tgt";
+    ctrlC.fromPort = "ctrl_out";
+    ctrlC.toPort = "ctrl_in";
     ctrlC.edgeType = "control";
     project.addConnection(ctrlC);
-    QVERIFY2(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
-        return new ControlPortModule(inst.id, true, true);
-    }), "valid control edge should be accepted");
+    QVERIFY2(engine.loadProject(
+                 &project,
+                 [](const ModuleInstance& inst) -> ModuleBase* { return new ControlPortModule(inst.id, true, true); }),
+             "valid control edge should be accepted");
     engine.clearModules();
 }
 
@@ -1842,24 +1887,34 @@ void TestRunEngine::testImplicitControlPortsAccepted() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
     Project project;
-    ModuleInstance s; s.id = "src"; s.moduleId = "src";
-    ModuleInstance t; t.id = "tgt"; t.moduleId = "tgt";
+    ModuleInstance s;
+    s.id = "src";
+    s.moduleId = "src";
+    ModuleInstance t;
+    t.id = "tgt";
+    t.moduleId = "tgt";
     project.addModule(s);
     project.addModule(t);
     ModuleConnection dataC;
-    dataC.fromModuleId = "src"; dataC.toModuleId = "tgt";
-    dataC.fromPort = "image"; dataC.toPort = "image";
+    dataC.fromModuleId = "src";
+    dataC.toModuleId = "tgt";
+    dataC.fromPort = "image";
+    dataC.toPort = "image";
     project.addConnection(dataC);
     ModuleConnection ctrlC;
-    ctrlC.fromModuleId = "src"; ctrlC.toModuleId = "tgt";
-    ctrlC.fromPort = "next"; ctrlC.toPort = "control";
+    ctrlC.fromModuleId = "src";
+    ctrlC.toModuleId = "tgt";
+    ctrlC.fromPort = "next";
+    ctrlC.toPort = "control";
     ctrlC.edgeType = "control";
     project.addConnection(ctrlC);
-    QVERIFY2(engine.loadProject(&project, [](const ModuleInstance& inst) {
-        auto* m = new TestExecutionModule(inst.id);
-        m->initialize();
-        return m;
-    }), "implicit control ports should be accepted");
+    QVERIFY2(engine.loadProject(&project,
+                                [](const ModuleInstance& inst) {
+                                    auto* m = new TestExecutionModule(inst.id);
+                                    m->initialize();
+                                    return m;
+                                }),
+             "implicit control ports should be accepted");
     engine.clearModules();
 }
 
@@ -1867,21 +1922,29 @@ void TestRunEngine::testDuplicateFourTupleRejected() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
     Project project;
-    ModuleInstance s; s.id = "src"; s.moduleId = "src";
-    ModuleInstance t; t.id = "tgt"; t.moduleId = "tgt";
+    ModuleInstance s;
+    s.id = "src";
+    s.moduleId = "src";
+    ModuleInstance t;
+    t.id = "tgt";
+    t.moduleId = "tgt";
     project.addModule(s);
     project.addModule(t);
     ModuleConnection c1;
-    c1.fromModuleId = "src"; c1.toModuleId = "tgt";
-    c1.fromPort = "image"; c1.toPort = "image";
+    c1.fromModuleId = "src";
+    c1.toModuleId = "tgt";
+    c1.fromPort = "image";
+    c1.toPort = "image";
     project.addConnection(c1);
     ModuleConnection c2 = c1;
     project.addConnection(c2);
-    QVERIFY2(!engine.loadProject(&project, [](const ModuleInstance& inst) {
-        auto* m = new TestExecutionModule(inst.id);
-        m->initialize();
-        return m;
-    }), "duplicate 4-tuple should be rejected");
+    QVERIFY2(!engine.loadProject(&project,
+                                 [](const ModuleInstance& inst) {
+                                     auto* m = new TestExecutionModule(inst.id);
+                                     m->initialize();
+                                     return m;
+                                 }),
+             "duplicate 4-tuple should be rejected");
     engine.clearModules();
 }
 
@@ -1889,23 +1952,32 @@ void TestRunEngine::testDifferentPortSameNodePairAccepted() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
     Project project;
-    ModuleInstance s; s.id = "src"; s.moduleId = "src";
-    ModuleInstance t; t.id = "tgt"; t.moduleId = "tgt";
+    ModuleInstance s;
+    s.id = "src";
+    s.moduleId = "src";
+    ModuleInstance t;
+    t.id = "tgt";
+    t.moduleId = "tgt";
     project.addModule(s);
     project.addModule(t);
     ModuleConnection c1;
-    c1.fromModuleId = "src"; c1.toModuleId = "tgt";
-    c1.fromPort = "image"; c1.toPort = "image";
+    c1.fromModuleId = "src";
+    c1.toModuleId = "tgt";
+    c1.fromPort = "image";
+    c1.toPort = "image";
     c1.edgeType = "data";
     project.addConnection(c1);
     ModuleConnection c2;
-    c2.fromModuleId = "src"; c2.toModuleId = "tgt";
-    c2.fromPort = "ctrl_out"; c2.toPort = "ctrl_in";
+    c2.fromModuleId = "src";
+    c2.toModuleId = "tgt";
+    c2.fromPort = "ctrl_out";
+    c2.toPort = "ctrl_in";
     c2.edgeType = "control";
     project.addConnection(c2);
-    QVERIFY2(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
-        return new ControlPortModule(inst.id, true, true);
-    }), "different-port same-pair should be accepted");
+    QVERIFY2(engine.loadProject(
+                 &project,
+                 [](const ModuleInstance& inst) -> ModuleBase* { return new ControlPortModule(inst.id, true, true); }),
+             "different-port same-pair should be accepted");
     engine.clearModules();
 }
 
@@ -1913,25 +1985,35 @@ void TestRunEngine::testControlEdgeCycleRejected() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
     Project project;
-    ModuleInstance a; a.id = "A"; a.moduleId = "A";
-    ModuleInstance b; b.id = "B"; b.moduleId = "B";
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
     project.addModule(a);
     project.addModule(b);
     ModuleConnection dataA;
-    dataA.fromModuleId = "A"; dataA.toModuleId = "B";
-    dataA.fromPort = "image"; dataA.toPort = "image";
+    dataA.fromModuleId = "A";
+    dataA.toModuleId = "B";
+    dataA.fromPort = "image";
+    dataA.toPort = "image";
     dataA.edgeType = "data";
     project.addConnection(dataA);
     ModuleConnection ctrlBack;
-    ctrlBack.fromModuleId = "B"; ctrlBack.toModuleId = "A";
-    ctrlBack.fromPort = "next"; ctrlBack.toPort = "control";
+    ctrlBack.fromModuleId = "B";
+    ctrlBack.toModuleId = "A";
+    ctrlBack.fromPort = "next";
+    ctrlBack.toPort = "control";
     ctrlBack.edgeType = "control";
     project.addConnection(ctrlBack);
-    QVERIFY2(!engine.loadProject(&project, [](const ModuleInstance& inst) {
-        auto* m = new TestExecutionModule(inst.id);
-        m->initialize();
-        return m;
-    }), "control edge cycle should be rejected");
+    QVERIFY2(!engine.loadProject(&project,
+                                 [](const ModuleInstance& inst) {
+                                     auto* m = new TestExecutionModule(inst.id);
+                                     m->initialize();
+                                     return m;
+                                 }),
+             "control edge cycle should be rejected");
     engine.clearModules();
 }
 
@@ -1940,13 +2022,19 @@ void TestRunEngine::testNoControlEdgesBehaviorUnchanged() {
     engine.clearModules();
     QStringList log;
     Project project;
-    ModuleInstance a; a.id = "A"; a.moduleId = "A";
-    ModuleInstance b; b.id = "B"; b.moduleId = "B";
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
     project.addModule(a);
     project.addModule(b);
     ModuleConnection c;
-    c.fromModuleId = "A"; c.toModuleId = "B";
-    c.fromPort = "image"; c.toPort = "image";
+    c.fromModuleId = "A";
+    c.toModuleId = "B";
+    c.fromPort = "image";
+    c.toPort = "image";
     c.edgeType = "data";
     project.addConnection(c);
     QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) {
@@ -1967,20 +2055,28 @@ void TestRunEngine::testIllegalEdgeTypeRejected() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
     Project project;
-    ModuleInstance s; s.id = "src"; s.moduleId = "src";
-    ModuleInstance t; t.id = "tgt"; t.moduleId = "tgt";
+    ModuleInstance s;
+    s.id = "src";
+    s.moduleId = "src";
+    ModuleInstance t;
+    t.id = "tgt";
+    t.moduleId = "tgt";
     project.addModule(s);
     project.addModule(t);
     ModuleConnection c;
-    c.fromModuleId = "src"; c.toModuleId = "tgt";
-    c.fromPort = "image"; c.toPort = "image";
+    c.fromModuleId = "src";
+    c.toModuleId = "tgt";
+    c.fromPort = "image";
+    c.toPort = "image";
     c.edgeType = "bogus";
     project.addConnection(c);
-    QVERIFY2(!engine.loadProject(&project, [](const ModuleInstance& inst) {
-        auto* m = new TestExecutionModule(inst.id);
-        m->initialize();
-        return m;
-    }), "illegal edgeType should be rejected");
+    QVERIFY2(!engine.loadProject(&project,
+                                 [](const ModuleInstance& inst) {
+                                     auto* m = new TestExecutionModule(inst.id);
+                                     m->initialize();
+                                     return m;
+                                 }),
+             "illegal edgeType should be rejected");
     engine.clearModules();
 }
 
@@ -1991,20 +2087,28 @@ void TestRunEngine::testNoDataEdgeBackwardControlAccepted() {
     // A、B 无数据依赖，拓扑序可以是 [A, B] 或 [B, A]
     // 无论哪种顺序，B->A 控制边都不是环（不形成回路）
     Project project;
-    ModuleInstance a; a.id = "A"; a.moduleId = "A";
-    ModuleInstance b; b.id = "B"; b.moduleId = "B";
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
     project.addModule(a);
     project.addModule(b);
     ModuleConnection ctrl;
-    ctrl.fromModuleId = "B"; ctrl.toModuleId = "A";
-    ctrl.fromPort = "next"; ctrl.toPort = "control";
+    ctrl.fromModuleId = "B";
+    ctrl.toModuleId = "A";
+    ctrl.fromPort = "next";
+    ctrl.toPort = "control";
     ctrl.edgeType = "control";
     project.addConnection(ctrl);
-    QVERIFY2(engine.loadProject(&project, [](const ModuleInstance& inst) {
-        auto* m = new TestExecutionModule(inst.id);
-        m->initialize();
-        return m;
-    }), "backward control edge without data edges should be accepted (no cycle)");
+    QVERIFY2(engine.loadProject(&project,
+                                [](const ModuleInstance& inst) {
+                                    auto* m = new TestExecutionModule(inst.id);
+                                    m->initialize();
+                                    return m;
+                                }),
+             "backward control edge without data edges should be accepted (no cycle)");
     engine.clearModules();
 }
 
@@ -2013,18 +2117,24 @@ void TestRunEngine::testControlSelfLoopRejected() {
     engine.clearModules();
     // A.next -> A.control：控制自环
     Project project;
-    ModuleInstance a; a.id = "A"; a.moduleId = "A";
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
     project.addModule(a);
     ModuleConnection ctrl;
-    ctrl.fromModuleId = "A"; ctrl.toModuleId = "A";
-    ctrl.fromPort = "next"; ctrl.toPort = "control";
+    ctrl.fromModuleId = "A";
+    ctrl.toModuleId = "A";
+    ctrl.fromPort = "next";
+    ctrl.toPort = "control";
     ctrl.edgeType = "control";
     project.addConnection(ctrl);
-    QVERIFY2(!engine.loadProject(&project, [](const ModuleInstance& inst) {
-        auto* m = new TestExecutionModule(inst.id);
-        m->initialize();
-        return m;
-    }), "control self-loop should be rejected");
+    QVERIFY2(!engine.loadProject(&project,
+                                 [](const ModuleInstance& inst) {
+                                     auto* m = new TestExecutionModule(inst.id);
+                                     m->initialize();
+                                     return m;
+                                 }),
+             "control self-loop should be rejected");
     engine.clearModules();
 }
 
@@ -2075,27 +2185,43 @@ class IfControlModule : public ModuleBase {
 public:
     bool forceTrue = true;
     QStringList* execLog = nullptr;
-    IfControlModule(const QString& name, bool forceTrueBranch)
-        : forceTrue(forceTrueBranch) {
+    IfControlModule(const QString& name, bool forceTrueBranch) : forceTrue(forceTrueBranch) {
         m_moduleId = QStringLiteral("com.deeplux.test.if.") + name;
         m_name = name;
         m_category = QStringLiteral("test");
     }
     QList<PortSpec> outputPorts() const override {
-        PortSpec t; t.id = "true"; t.displayName = "true"; t.type = DataType::Boolean; t.control = true;
-        PortSpec f; f.id = "false"; f.displayName = "false"; f.type = DataType::Boolean; f.control = true;
-        PortSpec img; img.id = "image"; img.displayName = "image"; img.type = DataType::Image2D;
+        PortSpec t;
+        t.id = "true";
+        t.displayName = "true";
+        t.type = DataType::Boolean;
+        t.control = true;
+        PortSpec f;
+        f.id = "false";
+        f.displayName = "false";
+        f.type = DataType::Boolean;
+        f.control = true;
+        PortSpec img;
+        img.id = "image";
+        img.displayName = "image";
+        img.type = DataType::Image2D;
         return {img, t, f};
     }
-    ControlFlowType flowControlType() const override { return ControlFlowType::Conditional; }
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::Conditional;
+    }
+
 protected:
     bool process(const ImageData& input, ImageData& output) override {
         output = input;
         output.setData("if_result", forceTrue);
-        if (execLog) execLog->append(name());
+        if (execLog)
+            execLog->append(name());
         return true;
     }
-    QWidget* createConfigWidget() override { return nullptr; }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
 };
 
 void TestRunEngine::testExplicitControlTrueBranch() {
@@ -2103,8 +2229,12 @@ void TestRunEngine::testExplicitControlTrueBranch() {
     engine.clearModules();
     // If(true) -> true -> BodyTrue ; false -> BodyFalse (skipped)
     Project project;
-    ModuleInstance cond; cond.id = "cond"; cond.moduleId = "cond";
-    ModuleInstance bt; bt.id = "bodyTrue"; bt.moduleId = "bodyTrue";
+    ModuleInstance cond;
+    cond.id = "cond";
+    cond.moduleId = "cond";
+    ModuleInstance bt;
+    bt.id = "bodyTrue";
+    bt.moduleId = "bodyTrue";
     ModuleInstance bf;
     bf.id = "bodyFalse";
     bf.moduleId = "bodyFalse";
@@ -2113,24 +2243,41 @@ void TestRunEngine::testExplicitControlTrueBranch() {
     project.addModule(bt);
     project.addModule(bf);
     // 数据边
-    ModuleConnection dataCond; dataCond.fromModuleId = "cond"; dataCond.toModuleId = "bodyTrue";
-    dataCond.fromPort = "image"; dataCond.toPort = "image"; dataCond.edgeType = "data";
+    ModuleConnection dataCond;
+    dataCond.fromModuleId = "cond";
+    dataCond.toModuleId = "bodyTrue";
+    dataCond.fromPort = "image";
+    dataCond.toPort = "image";
+    dataCond.edgeType = "data";
     project.addConnection(dataCond);
-    ModuleConnection dataCond2; dataCond2.fromModuleId = "cond"; dataCond2.toModuleId = "bodyFalse";
-    dataCond2.fromPort = "image"; dataCond2.toPort = "image"; dataCond2.edgeType = "data";
+    ModuleConnection dataCond2;
+    dataCond2.fromModuleId = "cond";
+    dataCond2.toModuleId = "bodyFalse";
+    dataCond2.fromPort = "image";
+    dataCond2.toPort = "image";
+    dataCond2.edgeType = "data";
     project.addConnection(dataCond2);
     // 控制边
-    ModuleConnection ctrlTrue; ctrlTrue.fromModuleId = "cond"; ctrlTrue.toModuleId = "bodyTrue";
-    ctrlTrue.fromPort = "true"; ctrlTrue.toPort = "control"; ctrlTrue.edgeType = "control";
+    ModuleConnection ctrlTrue;
+    ctrlTrue.fromModuleId = "cond";
+    ctrlTrue.toModuleId = "bodyTrue";
+    ctrlTrue.fromPort = "true";
+    ctrlTrue.toPort = "control";
+    ctrlTrue.edgeType = "control";
     project.addConnection(ctrlTrue);
-    ModuleConnection ctrlFalse; ctrlFalse.fromModuleId = "cond"; ctrlFalse.toModuleId = "bodyFalse";
-    ctrlFalse.fromPort = "false"; ctrlFalse.toPort = "control"; ctrlFalse.edgeType = "control";
+    ModuleConnection ctrlFalse;
+    ctrlFalse.fromModuleId = "cond";
+    ctrlFalse.toModuleId = "bodyFalse";
+    ctrlFalse.fromPort = "false";
+    ctrlFalse.toPort = "control";
+    ctrlFalse.edgeType = "control";
     project.addConnection(ctrlFalse);
 
     QStringList log;
     QStringList skipped;
     QSignalSpy hitSpy(&engine, &RunEngine::breakpointHit);
-    QMetaObject::Connection skipConn = connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
+    QMetaObject::Connection skipConn =
+        connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
     QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
         if (inst.id == QLatin1String("cond")) {
             auto* m = new IfControlModule(inst.id, true);
@@ -2156,28 +2303,51 @@ void TestRunEngine::testExplicitControlFalseBranch() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
     Project project;
-    ModuleInstance cond; cond.id = "cond"; cond.moduleId = "cond";
-    ModuleInstance bt; bt.id = "bodyTrue"; bt.moduleId = "bodyTrue";
-    ModuleInstance bf; bf.id = "bodyFalse"; bf.moduleId = "bodyFalse";
+    ModuleInstance cond;
+    cond.id = "cond";
+    cond.moduleId = "cond";
+    ModuleInstance bt;
+    bt.id = "bodyTrue";
+    bt.moduleId = "bodyTrue";
+    ModuleInstance bf;
+    bf.id = "bodyFalse";
+    bf.moduleId = "bodyFalse";
     project.addModule(cond);
     project.addModule(bt);
     project.addModule(bf);
-    ModuleConnection dataCond; dataCond.fromModuleId = "cond"; dataCond.toModuleId = "bodyTrue";
-    dataCond.fromPort = "image"; dataCond.toPort = "image"; dataCond.edgeType = "data";
+    ModuleConnection dataCond;
+    dataCond.fromModuleId = "cond";
+    dataCond.toModuleId = "bodyTrue";
+    dataCond.fromPort = "image";
+    dataCond.toPort = "image";
+    dataCond.edgeType = "data";
     project.addConnection(dataCond);
-    ModuleConnection dataCond2; dataCond2.fromModuleId = "cond"; dataCond2.toModuleId = "bodyFalse";
-    dataCond2.fromPort = "image"; dataCond2.toPort = "image"; dataCond2.edgeType = "data";
+    ModuleConnection dataCond2;
+    dataCond2.fromModuleId = "cond";
+    dataCond2.toModuleId = "bodyFalse";
+    dataCond2.fromPort = "image";
+    dataCond2.toPort = "image";
+    dataCond2.edgeType = "data";
     project.addConnection(dataCond2);
-    ModuleConnection ctrlTrue; ctrlTrue.fromModuleId = "cond"; ctrlTrue.toModuleId = "bodyTrue";
-    ctrlTrue.fromPort = "true"; ctrlTrue.toPort = "control"; ctrlTrue.edgeType = "control";
+    ModuleConnection ctrlTrue;
+    ctrlTrue.fromModuleId = "cond";
+    ctrlTrue.toModuleId = "bodyTrue";
+    ctrlTrue.fromPort = "true";
+    ctrlTrue.toPort = "control";
+    ctrlTrue.edgeType = "control";
     project.addConnection(ctrlTrue);
-    ModuleConnection ctrlFalse; ctrlFalse.fromModuleId = "cond"; ctrlFalse.toModuleId = "bodyFalse";
-    ctrlFalse.fromPort = "false"; ctrlFalse.toPort = "control"; ctrlFalse.edgeType = "control";
+    ModuleConnection ctrlFalse;
+    ctrlFalse.fromModuleId = "cond";
+    ctrlFalse.toModuleId = "bodyFalse";
+    ctrlFalse.fromPort = "false";
+    ctrlFalse.toPort = "control";
+    ctrlFalse.edgeType = "control";
     project.addConnection(ctrlFalse);
 
     QStringList log;
     QStringList skipped;
-    QMetaObject::Connection skipConn = connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
+    QMetaObject::Connection skipConn =
+        connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
     QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
         if (inst.id == QLatin1String("cond")) {
             auto* m = new IfControlModule(inst.id, false);
@@ -2202,17 +2372,31 @@ void TestRunEngine::testExplicitControlSkipsInactiveBranch() {
     engine.clearModules();
     // Cond(true) -> bodyTrue; bodyFalse should be Skipped not failure
     Project project;
-    ModuleInstance cond; cond.id = "cond"; cond.moduleId = "cond";
-    ModuleInstance bt; bt.id = "bodyTrue"; bt.moduleId = "bodyTrue";
-    ModuleInstance bf; bf.id = "bodyFalse"; bf.moduleId = "bodyFalse";
+    ModuleInstance cond;
+    cond.id = "cond";
+    cond.moduleId = "cond";
+    ModuleInstance bt;
+    bt.id = "bodyTrue";
+    bt.moduleId = "bodyTrue";
+    ModuleInstance bf;
+    bf.id = "bodyFalse";
+    bf.moduleId = "bodyFalse";
     project.addModule(cond);
     project.addModule(bt);
     project.addModule(bf);
-    ModuleConnection ctrlTrue; ctrlTrue.fromModuleId = "cond"; ctrlTrue.toModuleId = "bodyTrue";
-    ctrlTrue.fromPort = "true"; ctrlTrue.toPort = "control"; ctrlTrue.edgeType = "control";
+    ModuleConnection ctrlTrue;
+    ctrlTrue.fromModuleId = "cond";
+    ctrlTrue.toModuleId = "bodyTrue";
+    ctrlTrue.fromPort = "true";
+    ctrlTrue.toPort = "control";
+    ctrlTrue.edgeType = "control";
     project.addConnection(ctrlTrue);
-    ModuleConnection ctrlFalse; ctrlFalse.fromModuleId = "cond"; ctrlFalse.toModuleId = "bodyFalse";
-    ctrlFalse.fromPort = "false"; ctrlFalse.toPort = "control"; ctrlFalse.edgeType = "control";
+    ModuleConnection ctrlFalse;
+    ctrlFalse.fromModuleId = "cond";
+    ctrlFalse.toModuleId = "bodyFalse";
+    ctrlFalse.fromPort = "false";
+    ctrlFalse.toPort = "control";
+    ctrlFalse.edgeType = "control";
     project.addConnection(ctrlFalse);
 
     QStringList skipped;
@@ -2222,7 +2406,8 @@ void TestRunEngine::testExplicitControlSkipsInactiveBranch() {
         finished = true;
         runSucceeded = result.success;
     });
-    QMetaObject::Connection skipConn = connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
+    QMetaObject::Connection skipConn =
+        connect(&engine, &RunEngine::moduleSkipped, [&](const QString& n) { skipped.append(n); });
     QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
         if (inst.id == QLatin1String("cond"))
             return new IfControlModule(inst.id, true);
@@ -2242,27 +2427,51 @@ void TestRunEngine::testExplicitControlMergeAfterIf() {
     engine.clearModules();
     // cond(true) -> bodyTrue -> merge ; cond(false) -> bodyFalse -> merge
     Project project;
-    ModuleInstance cond; cond.id = "cond"; cond.moduleId = "cond";
-    ModuleInstance bt; bt.id = "bodyTrue"; bt.moduleId = "bodyTrue";
-    ModuleInstance bf; bf.id = "bodyFalse"; bf.moduleId = "bodyFalse";
-    ModuleInstance merge; merge.id = "merge"; merge.moduleId = "merge";
+    ModuleInstance cond;
+    cond.id = "cond";
+    cond.moduleId = "cond";
+    ModuleInstance bt;
+    bt.id = "bodyTrue";
+    bt.moduleId = "bodyTrue";
+    ModuleInstance bf;
+    bf.id = "bodyFalse";
+    bf.moduleId = "bodyFalse";
+    ModuleInstance merge;
+    merge.id = "merge";
+    merge.moduleId = "merge";
     project.addModule(cond);
     project.addModule(bt);
     project.addModule(bf);
     project.addModule(merge);
     // 数据边
-    ModuleConnection dt; dt.fromModuleId = "bodyTrue"; dt.toModuleId = "merge";
-    dt.fromPort = "image"; dt.toPort = "image"; dt.edgeType = "data";
+    ModuleConnection dt;
+    dt.fromModuleId = "bodyTrue";
+    dt.toModuleId = "merge";
+    dt.fromPort = "image";
+    dt.toPort = "image";
+    dt.edgeType = "data";
     project.addConnection(dt);
-    ModuleConnection df; df.fromModuleId = "bodyFalse"; df.toModuleId = "merge";
-    df.fromPort = "image"; df.toPort = "image"; df.edgeType = "data";
+    ModuleConnection df;
+    df.fromModuleId = "bodyFalse";
+    df.toModuleId = "merge";
+    df.fromPort = "image";
+    df.toPort = "image";
+    df.edgeType = "data";
     project.addConnection(df);
     // 控制边
-    ModuleConnection ctrlT; ctrlT.fromModuleId = "cond"; ctrlT.toModuleId = "bodyTrue";
-    ctrlT.fromPort = "true"; ctrlT.toPort = "control"; ctrlT.edgeType = "control";
+    ModuleConnection ctrlT;
+    ctrlT.fromModuleId = "cond";
+    ctrlT.toModuleId = "bodyTrue";
+    ctrlT.fromPort = "true";
+    ctrlT.toPort = "control";
+    ctrlT.edgeType = "control";
     project.addConnection(ctrlT);
-    ModuleConnection ctrlF; ctrlF.fromModuleId = "cond"; ctrlF.toModuleId = "bodyFalse";
-    ctrlF.fromPort = "false"; ctrlF.toPort = "control"; ctrlF.edgeType = "control";
+    ModuleConnection ctrlF;
+    ctrlF.fromModuleId = "cond";
+    ctrlF.toModuleId = "bodyFalse";
+    ctrlF.fromPort = "false";
+    ctrlF.toPort = "control";
+    ctrlF.edgeType = "control";
     project.addConnection(ctrlF);
 
     QStringList log;
@@ -2289,19 +2498,33 @@ void TestRunEngine::testExplicitControlStepOnce() {
     engine.clearModules();
     // cond(true) -> bodyTrue -> after
     Project project;
-    ModuleInstance cond; cond.id = "cond"; cond.moduleId = "cond";
-    ModuleInstance bt; bt.id = "bodyTrue"; bt.moduleId = "bodyTrue";
-    ModuleInstance after; after.id = "after"; after.moduleId = "after";
+    ModuleInstance cond;
+    cond.id = "cond";
+    cond.moduleId = "cond";
+    ModuleInstance bt;
+    bt.id = "bodyTrue";
+    bt.moduleId = "bodyTrue";
+    ModuleInstance after;
+    after.id = "after";
+    after.moduleId = "after";
     project.addModule(cond);
     project.addModule(bt);
     project.addModule(after);
     // 控制边
-    ModuleConnection ctrlT; ctrlT.fromModuleId = "cond"; ctrlT.toModuleId = "bodyTrue";
-    ctrlT.fromPort = "true"; ctrlT.toPort = "control"; ctrlT.edgeType = "control";
+    ModuleConnection ctrlT;
+    ctrlT.fromModuleId = "cond";
+    ctrlT.toModuleId = "bodyTrue";
+    ctrlT.fromPort = "true";
+    ctrlT.toPort = "control";
+    ctrlT.edgeType = "control";
     project.addConnection(ctrlT);
     // next -> after (implicit)
-    ModuleConnection ctrlAfter; ctrlAfter.fromModuleId = "bodyTrue"; ctrlAfter.toModuleId = "after";
-    ctrlAfter.fromPort = "next"; ctrlAfter.toPort = "control"; ctrlAfter.edgeType = "control";
+    ModuleConnection ctrlAfter;
+    ctrlAfter.fromModuleId = "bodyTrue";
+    ctrlAfter.toModuleId = "after";
+    ctrlAfter.fromPort = "next";
+    ctrlAfter.toPort = "control";
+    ctrlAfter.edgeType = "control";
     project.addConnection(ctrlAfter);
 
     QStringList log;
@@ -2458,19 +2681,36 @@ public:
         m_category = QStringLiteral("test");
     }
     QList<PortSpec> outputPorts() const override {
-        PortSpec body; body.id = "body"; body.displayName = "body"; body.type = DataType::Boolean; body.control = true;
-        PortSpec done; done.id = "done"; done.displayName = "done"; done.type = DataType::Boolean; done.control = true;
-        PortSpec img; img.id = "image"; img.displayName = "image"; img.type = DataType::Image2D;
+        PortSpec body;
+        body.id = "body";
+        body.displayName = "body";
+        body.type = DataType::Boolean;
+        body.control = true;
+        PortSpec done;
+        done.id = "done";
+        done.displayName = "done";
+        done.type = DataType::Boolean;
+        done.control = true;
+        PortSpec img;
+        img.id = "image";
+        img.displayName = "image";
+        img.type = DataType::Image2D;
         return {img, body, done};
     }
-    ControlFlowType flowControlType() const override { return ControlFlowType::Loop; }
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::Loop;
+    }
+
 protected:
     bool process(const ImageData& input, ImageData& output) override {
         output = input;
-        if (execLog) execLog->append(name());
+        if (execLog)
+            execLog->append(name());
         return true;
     }
-    QWidget* createConfigWidget() override { return nullptr; }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
 };
 
 class WhileControlModule : public ModuleBase {
@@ -2484,20 +2724,37 @@ public:
         m_category = QStringLiteral("test");
     }
     QList<PortSpec> outputPorts() const override {
-        PortSpec body; body.id = "body"; body.displayName = "body"; body.type = DataType::Boolean; body.control = true;
-        PortSpec done; done.id = "done"; done.displayName = "done"; done.type = DataType::Boolean; done.control = true;
-        PortSpec img; img.id = "image"; img.displayName = "image"; img.type = DataType::Image2D;
+        PortSpec body;
+        body.id = "body";
+        body.displayName = "body";
+        body.type = DataType::Boolean;
+        body.control = true;
+        PortSpec done;
+        done.id = "done";
+        done.displayName = "done";
+        done.type = DataType::Boolean;
+        done.control = true;
+        PortSpec img;
+        img.id = "image";
+        img.displayName = "image";
+        img.type = DataType::Image2D;
         return {img, body, done};
     }
-    ControlFlowType flowControlType() const override { return ControlFlowType::While; }
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::While;
+    }
+
 protected:
     bool process(const ImageData& input, ImageData& output) override {
         output = input;
         output.setData("while_result", forceTrue);
-        if (execLog) execLog->append(name());
+        if (execLog)
+            execLog->append(name());
         return true;
     }
-    QWidget* createConfigWidget() override { return nullptr; }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
 };
 
 class StopWhileControlModule : public ModuleBase {
@@ -2537,14 +2794,1183 @@ protected:
     }
 };
 
-static ModuleConnection controlConnection(const QString& from, const QString& port, const QString& to) {
+class NumberFlowModule : public ModuleBase {
+public:
+    NumberFlowModule(const QString& name, const QStringList& inputs = {}, const QString& output = QString(),
+                     bool inputsRequired = true, QStringList* observations = nullptr, double outputValue = 1.0)
+        : m_inputs(inputs), m_output(output), m_inputsRequired(inputsRequired), m_observations(observations),
+          m_outputValue(outputValue) {
+        m_moduleId = QStringLiteral("com.deeplux.test.number.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+        setPorts(inputPorts(), outputPorts());
+    }
+
+    QList<PortSpec> inputPorts() const override {
+        QList<PortSpec> ports;
+        for (const QString& id : m_inputs) {
+            PortSpec port;
+            port.id = id;
+            port.displayName = id;
+            port.type = DataType::Number;
+            port.required = m_inputsRequired;
+            ports.append(port);
+        }
+        return ports;
+    }
+
+    QList<PortSpec> outputPorts() const override {
+        if (m_output.isEmpty())
+            return {};
+        PortSpec port;
+        port.id = m_output;
+        port.displayName = m_output;
+        port.type = DataType::Number;
+        return {port};
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        if (m_observations) {
+            QString presence;
+            for (const QString& id : m_inputs)
+                presence.append(input.hasData(id) ? QLatin1Char('1') : QLatin1Char('0'));
+            m_observations->append(presence);
+        }
+        if (!m_output.isEmpty())
+            output.setData(m_output, m_outputValue);
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    QStringList m_inputs;
+    QString m_output;
+    bool m_inputsRequired;
+    QStringList* m_observations;
+    double m_outputValue;
+};
+
+class AlternatingConditionModule : public ModuleBase {
+public:
+    explicit AlternatingConditionModule(const QString& name) {
+        m_moduleId = QStringLiteral("com.deeplux.test.alternating.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+        setPorts({}, outputPorts());
+    }
+
+    QList<PortSpec> outputPorts() const override {
+        PortSpec truePort;
+        truePort.id = QStringLiteral("true");
+        truePort.displayName = QStringLiteral("true");
+        truePort.type = DataType::Boolean;
+        truePort.control = true;
+        PortSpec falsePort = truePort;
+        falsePort.id = QStringLiteral("false");
+        falsePort.displayName = QStringLiteral("false");
+        return {truePort, falsePort};
+    }
+
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::Conditional;
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        output.setData(QStringLiteral("if_result"), m_iteration++ == 0);
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    int m_iteration = 0;
+};
+
+static ModuleConnection controlConnection(const QString& from, const QString& port, const QString& to,
+                                          const QString& toPort = QStringLiteral("control")) {
     ModuleConnection connection;
     connection.fromModuleId = from;
     connection.fromPort = port;
     connection.toModuleId = to;
-    connection.toPort = QStringLiteral("control");
+    connection.toPort = toPort;
     connection.edgeType = QStringLiteral("control");
     return connection;
+}
+
+static ModuleConnection dataConnection(const QString& from, const QString& fromPort, const QString& to,
+                                       const QString& toPort) {
+    ModuleConnection connection;
+    connection.fromModuleId = from;
+    connection.fromPort = fromPort;
+    connection.toModuleId = to;
+    connection.toPort = toPort;
+    connection.edgeType = QStringLiteral("data");
+    return connection;
+}
+
+void TestRunEngine::testExplicitDataFanInWaitsForAllInputs() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    Project project;
+    for (const QString& id : {QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("D"), QStringLiteral("C")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        project.addModule(instance);
+    }
+    project.addConnection(dataConnection("A", "a", "C", "a"));
+    project.addConnection(dataConnection("B", "b", "D", "b"));
+    project.addConnection(dataConnection("D", "d", "C", "d"));
+    project.addConnection(controlConnection("A", "next", "C"));
+    project.addConnection(controlConnection("B", "next", "D"));
+    project.addConnection(controlConnection("D", "next", "C"));
+
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("A"))
+            return new NumberFlowModule(instance.id, {}, QStringLiteral("a"));
+        if (instance.id == QLatin1String("B"))
+            return new NumberFlowModule(instance.id, {}, QStringLiteral("b"));
+        if (instance.id == QLatin1String("D"))
+            return new NumberFlowModule(instance.id, {QStringLiteral("b")}, QStringLiteral("d"));
+        return new NumberFlowModule(instance.id, {QStringLiteral("a"), QStringLiteral("d")});
+    }));
+
+    QObject signalContext;
+    QStringList executionOrder;
+    connect(&engine, &RunEngine::moduleStarted, &signalContext,
+            [&executionOrder](const QString& moduleName) { executionOrder.append(moduleName); });
+    engine.runOnce();
+
+    QCOMPARE(executionOrder, QStringList({"A", "B", "D", "C"}));
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitFailureDoesNotActivateSuccessor() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    Project project;
+    for (const QString& id : {QStringLiteral("Fail"), QStringLiteral("Next")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        project.addModule(instance);
+    }
+    project.addConnection(controlConnection("Fail", "next", "Next"));
+
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        module->executeResult = instance.id != QLatin1String("Fail");
+        return module;
+    }));
+
+    QObject signalContext;
+    QStringList executionOrder;
+    QStringList skipped;
+    RunResult result;
+    connect(&engine, &RunEngine::moduleStarted, &signalContext,
+            [&executionOrder](const QString& moduleName) { executionOrder.append(moduleName); });
+    connect(&engine, &RunEngine::moduleSkipped, &signalContext,
+            [&skipped](const QString& moduleName) { skipped.append(moduleName); });
+    connect(&engine, &RunEngine::runFinished, &signalContext,
+            [&result](const RunResult& runResult) { result = runResult; });
+    engine.runOnce();
+
+    QCOMPARE(executionOrder, QStringList({"Fail"}));
+    QVERIFY(skipped.contains(QStringLiteral("Next")));
+    QVERIFY(!result.success);
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitLoopClearsInactiveBranchOutputs() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    Project project;
+    for (const QString& id : {QStringLiteral("Loop"), QStringLiteral("Cond"), QStringLiteral("True"),
+                              QStringLiteral("False"), QStringLiteral("Merge"), QStringLiteral("After")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        if (id == QLatin1String("Loop"))
+            instance.params[QStringLiteral("loopCount")] = 2;
+        project.addModule(instance);
+    }
+    project.addConnection(controlConnection("Loop", "body", "Cond"));
+    project.addConnection(controlConnection("Cond", "true", "True"));
+    project.addConnection(controlConnection("Cond", "false", "False"));
+    project.addConnection(controlConnection("True", "next", "Merge"));
+    project.addConnection(controlConnection("False", "next", "Merge"));
+    project.addConnection(controlConnection("Merge", "next", "Loop"));
+    project.addConnection(controlConnection("Loop", "done", "After"));
+    project.addConnection(dataConnection("True", "value", "Merge", "trueValue"));
+    project.addConnection(dataConnection("False", "value", "Merge", "falseValue"));
+
+    QStringList observations;
+    QVERIFY(engine.loadProject(&project, [&observations](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("Loop"))
+            return new LoopControlModule(instance.id, 2);
+        if (instance.id == QLatin1String("Cond"))
+            return new AlternatingConditionModule(instance.id);
+        if (instance.id == QLatin1String("True") || instance.id == QLatin1String("False"))
+            return new NumberFlowModule(instance.id, {}, QStringLiteral("value"));
+        if (instance.id == QLatin1String("Merge")) {
+            return new NumberFlowModule(instance.id, {QStringLiteral("trueValue"), QStringLiteral("falseValue")},
+                                        QString(), false, &observations);
+        }
+        return new TestExecutionModule(instance.id);
+    }));
+
+    engine.runOnce();
+
+    QCOMPARE(observations, QStringList({"10", "01"}));
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitWhileStopsAtMaxIterations() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    Project project;
+    for (const QString& id : {QStringLiteral("While"), QStringLiteral("Body"), QStringLiteral("After")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        if (id == QLatin1String("While"))
+            instance.params[QStringLiteral("maxIterations")] = 2;
+        project.addModule(instance);
+    }
+    project.addConnection(controlConnection("While", "body", "Body"));
+    project.addConnection(controlConnection("Body", "next", "While"));
+    project.addConnection(controlConnection("While", "done", "After"));
+
+    QStringList executionLog;
+    QVERIFY(engine.loadProject(&project, [&executionLog](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("While")) {
+            auto* module = new WhileControlModule(instance.id, true);
+            module->execLog = &executionLog;
+            return module;
+        }
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &executionLog;
+        return module;
+    }));
+
+    engine.runOnce();
+
+    QCOMPARE(executionLog, QStringList({"While", "Body", "While", "Body", "While", "After"}));
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitLoopStepOnceTraversesIterations() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    Project project;
+    for (const QString& id : {QStringLiteral("Loop"), QStringLiteral("Body"), QStringLiteral("After")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        if (id == QLatin1String("Loop"))
+            instance.params[QStringLiteral("loopCount")] = 2;
+        project.addModule(instance);
+    }
+    project.addConnection(controlConnection("Loop", "body", "Body"));
+    project.addConnection(controlConnection("Body", "next", "Loop"));
+    project.addConnection(controlConnection("Loop", "done", "After"));
+
+    QStringList executionLog;
+    QVERIFY(engine.loadProject(&project, [&executionLog](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("Loop")) {
+            auto* module = new LoopControlModule(instance.id, 2);
+            module->execLog = &executionLog;
+            return module;
+        }
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &executionLog;
+        return module;
+    }));
+
+    const QStringList expected = {"Loop", "Body", "Loop", "Body", "Loop", "After"};
+    for (int step = 0; step < expected.size(); ++step) {
+        QVERIFY(engine.stepOnce());
+        QCOMPARE(executionLog, expected.mid(0, step + 1));
+    }
+    engine.clearModules();
+}
+
+void TestRunEngine::testExplicitLoopCancellationStopsRun() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    Project project;
+    for (const QString& id : {QStringLiteral("Loop"), QStringLiteral("Body"), QStringLiteral("After")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        if (id == QLatin1String("Loop"))
+            instance.params[QStringLiteral("loopCount")] = 100;
+        project.addModule(instance);
+    }
+    project.addConnection(controlConnection("Loop", "body", "Body"));
+    project.addConnection(controlConnection("Body", "next", "Loop"));
+    project.addConnection(controlConnection("Loop", "done", "After"));
+
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("Loop"))
+            return new LoopControlModule(instance.id, 100);
+        if (instance.id == QLatin1String("Body"))
+            return new StopAwareModule;
+        return new TestExecutionModule(instance.id);
+    }));
+    auto* body = qobject_cast<StopAwareModule*>(engine.getModule(QStringLiteral("Body")));
+    QVERIFY(body);
+
+    QObject signalContext;
+    QStringList executionOrder;
+    RunResult result;
+    connect(&engine, &RunEngine::moduleStarted, &signalContext,
+            [&executionOrder](const QString& moduleName) { executionOrder.append(moduleName); });
+    connect(&engine, &RunEngine::runFinished, &signalContext,
+            [&result](const RunResult& runResult) { result = runResult; });
+    engine.runOnce();
+
+    QCOMPARE(executionOrder, QStringList({"Loop", "Body"}));
+    QVERIFY(body->hadCancellationToken);
+    QVERIFY(body->sawCancellation);
+    QVERIFY(!result.success);
+    engine.clearModules();
+}
+
+// ---------------------------------------------------------------------------
+// 阶段 E1: 多输入聚合测试
+// ---------------------------------------------------------------------------
+
+// 多输入聚合模块：两个 Number 上游 -> 聚合为 QVariantList
+class MultiInputAggregatorModule : public ModuleBase {
+    Q_OBJECT
+public:
+    QStringList* observedValues = nullptr;
+    explicit MultiInputAggregatorModule(const QString& name, QStringList* obs = nullptr) : observedValues(obs) {
+        m_moduleId = QStringLiteral("com.deeplux.test.agg.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+        PortSpec in;
+        in.id = "values";
+        in.displayName = "values";
+        in.type = DataType::Number;
+        in.required = true;
+        in.multiple = true;
+        PortSpec out;
+        out.id = "result";
+        out.displayName = "result";
+        out.type = DataType::Number;
+        setPorts({in}, {out});
+    }
+    QList<PortSpec> inputPorts() const override {
+        PortSpec in;
+        in.id = "values";
+        in.displayName = "values";
+        in.type = DataType::Number;
+        in.required = true;
+        in.multiple = true;
+        return {in};
+    }
+    QList<PortSpec> outputPorts() const override {
+        PortSpec out;
+        out.id = "result";
+        out.displayName = "result";
+        out.type = DataType::Number;
+        return {out};
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        if (observedValues) {
+            const QVariant v = input.data("values");
+            if (v.type() == QVariant::List) {
+                const QVariantList list = v.toList();
+                QStringList parts;
+                for (const QVariant& item : list)
+                    parts.append(item.toString());
+                observedValues->append(parts.join(","));
+            } else {
+                observedValues->append(v.toString());
+            }
+        }
+        output.setData("result", 42.0);
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
+
+void TestRunEngine::testMultiInputCollectsOrderedList() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    // A(1) -> C, B(2) -> C, C 聚合 values 端口（multiple=true）
+    Project project;
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance c;
+    c.id = "C";
+    c.moduleId = "C";
+    // 就绪顺序为 B、A；连接插入顺序故意为 A、B，验证聚合遵循执行顺序。
+    project.addModule(b);
+    project.addModule(a);
+    project.addModule(c);
+    // A -> C.values, B -> C.values（fromPort="val" 非 "image"）
+    project.addConnection(dataConnection("A", "val", "C", "values"));
+    project.addConnection(dataConnection("B", "val", "C", "values"));
+
+    QStringList observed;
+    QVERIFY(engine.loadProject(&project, [&observed](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == "C")
+            return new MultiInputAggregatorModule("C", &observed);
+        return new NumberFlowModule(inst.id, {}, "val", true, nullptr, inst.id == "A" ? 1.0 : 2.0);
+    }));
+
+    RunResult result;
+    QMetaObject::Connection resultConn =
+        connect(&engine, &RunEngine::runFinished, this, [&result](const RunResult& r) { result = r; });
+    engine.runOnce();
+    disconnect(resultConn);
+
+    QVERIFY(result.success);
+    QCOMPARE(observed.size(), 1);
+    QCOMPARE(observed.first(), QStringLiteral("2,1"));
+    engine.clearModules();
+}
+
+void TestRunEngine::testMultiInputTypeMismatchFails() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    // A(Image2D via "image") -> C.values(Number, multiple=true) → 类型不匹配
+    Project project;
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance c;
+    c.id = "C";
+    c.moduleId = "C";
+    project.addModule(a);
+    project.addModule(c);
+    // TestExecutionModule 输出 image 端口（Image2D），C 期望 Number
+    project.addConnection(dataConnection("A", "image", "C", "values"));
+
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == "C")
+            return new MultiInputAggregatorModule("C");
+        auto* m = new TestExecutionModule(inst.id);
+        m->initialize();
+        return m;
+    }));
+
+    RunResult result;
+    QMetaObject::Connection resultConn =
+        connect(&engine, &RunEngine::runFinished, this, [&result](const RunResult& r) { result = r; });
+    engine.runOnce();
+    disconnect(resultConn);
+    // 应失败（类型不匹配：TestExecutionModule 输出 Image2D，不是 Number）
+    QVERIFY(!result.success);
+    engine.clearModules();
+}
+
+void TestRunEngine::testMultiInputWaitsForAllUpstreams() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    // A -> C, B -> C(multiple). C 不应在 A 完成前执行
+    Project project;
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
+    ModuleInstance c;
+    c.id = "C";
+    c.moduleId = "C";
+    project.addModule(a);
+    project.addModule(b);
+    project.addModule(c);
+    project.addConnection(dataConnection("A", "val", "C", "values"));
+    project.addConnection(dataConnection("B", "val", "C", "values"));
+
+    QStringList observed;
+    QVERIFY(engine.loadProject(&project, [&observed](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == "C")
+            return new MultiInputAggregatorModule("C", &observed);
+        return new NumberFlowModule(inst.id, {}, "val");
+    }));
+
+    QStringList execLog;
+    QMetaObject::Connection logConn =
+        connect(&engine, &RunEngine::moduleStarted, this, [&execLog](const QString& name) { execLog.append(name); });
+    RunResult result;
+    QMetaObject::Connection resultConn =
+        connect(&engine, &RunEngine::runFinished, this, [&result](const RunResult& r) { result = r; });
+    engine.runOnce();
+    disconnect(logConn);
+    disconnect(resultConn);
+
+    QVERIFY(result.success);
+    QVERIFY(execLog.indexOf("A") < execLog.indexOf("C"));
+    QVERIFY(execLog.indexOf("B") < execLog.indexOf("C"));
+    QCOMPARE(observed.size(), 1);
+    QVERIFY(observed.first().split(",").size() == 2);
+    engine.clearModules();
+}
+
+// 控制汇合 All 策略模块
+class ControlJoinAllModule : public ModuleBase {
+    Q_OBJECT
+public:
+    QStringList* execLog = nullptr;
+    explicit ControlJoinAllModule(const QString& name, QStringList* log = nullptr) : execLog(log) {
+        m_moduleId = QStringLiteral("com.deeplux.test.joinall.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+        PortSpec ctrl;
+        ctrl.id = "control";
+        ctrl.displayName = "control";
+        ctrl.type = DataType::Boolean;
+        ctrl.control = true;
+        ctrl.multiple = true;
+        ctrl.joinPolicy = ControlJoinPolicy::All;
+        PortSpec out;
+        out.id = "image";
+        out.displayName = "image";
+        out.type = DataType::Image2D;
+        setPorts({ctrl}, {out});
+    }
+    QList<PortSpec> inputPorts() const override {
+        PortSpec ctrl;
+        ctrl.id = "control";
+        ctrl.displayName = "control";
+        ctrl.type = DataType::Boolean;
+        ctrl.control = true;
+        ctrl.multiple = true;
+        ctrl.joinPolicy = ControlJoinPolicy::All;
+        return {ctrl};
+    }
+    QList<PortSpec> outputPorts() const override {
+        PortSpec out;
+        out.id = "image";
+        out.displayName = "image";
+        out.type = DataType::Image2D;
+        return {out};
+    }
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::Sequential;
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        if (execLog)
+            execLog->append(name());
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
+
+class ControlJoinMixedModule : public ModuleBase {
+    Q_OBJECT
+public:
+    QStringList* execLog = nullptr;
+    explicit ControlJoinMixedModule(const QString& name, QStringList* log = nullptr) : execLog(log) {
+        m_moduleId = QStringLiteral("com.deeplux.test.joinmixed.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+        setPorts(inputPorts(), outputPorts());
+    }
+    QList<PortSpec> inputPorts() const override {
+        PortSpec all;
+        all.id = QStringLiteral("all");
+        all.displayName = all.id;
+        all.type = DataType::Boolean;
+        all.control = true;
+        all.multiple = true;
+        all.joinPolicy = ControlJoinPolicy::All;
+        PortSpec any = all;
+        any.id = QStringLiteral("any");
+        any.displayName = any.id;
+        any.joinPolicy = ControlJoinPolicy::Any;
+        return {all, any};
+    }
+    QList<PortSpec> outputPorts() const override {
+        PortSpec out;
+        out.id = QStringLiteral("image");
+        out.displayName = out.id;
+        out.type = DataType::Image2D;
+        return {out};
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        if (execLog)
+            execLog->append(name());
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
+
+class ParallelForkModule : public ModuleBase {
+    Q_OBJECT
+public:
+    explicit ParallelForkModule(const QString& name) {
+        m_moduleId = QStringLiteral("com.deeplux.test.parallelfork.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+        setPorts({}, outputPorts());
+    }
+    QList<PortSpec> outputPorts() const override {
+        PortSpec branch;
+        branch.id = QStringLiteral("branch");
+        branch.displayName = branch.id;
+        branch.type = DataType::Boolean;
+        branch.control = true;
+        return {branch};
+    }
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::Parallel;
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
+
+void TestRunEngine::testControlJoinAllWaitsForAllSources() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    // A.next -> C.control, B.next -> C.control, C 声明 joinPolicy=All
+    // C 不应在两个控制边都触发前执行
+    Project project;
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
+    ModuleInstance c;
+    c.id = "C";
+    c.moduleId = "C";
+    project.addModule(a);
+    project.addModule(b);
+    project.addModule(c);
+    project.addConnection(controlConnection("A", "next", "C"));
+    project.addConnection(controlConnection("B", "next", "C"));
+
+    QStringList execLog;
+    QVERIFY(engine.loadProject(&project, [&execLog](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == "C")
+            return new ControlJoinAllModule("C", &execLog);
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &execLog;
+        return m;
+    }));
+
+    RunResult result;
+    QMetaObject::Connection resultConn =
+        connect(&engine, &RunEngine::runFinished, this, [&result](const RunResult& r) { result = r; });
+    engine.runOnce();
+    disconnect(resultConn);
+
+    QVERIFY(result.success);
+    QVERIFY(execLog.contains("A"));
+    QVERIFY(execLog.contains("B"));
+    QVERIFY(execLog.contains("C"));
+    QVERIFY(execLog.indexOf("A") < execLog.indexOf("C"));
+    QVERIFY(execLog.indexOf("B") < execLog.indexOf("C"));
+    engine.clearModules();
+}
+
+void TestRunEngine::testControlJoinTracksEdgesNotSources() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    Project project;
+    ModuleInstance source;
+    source.id = QStringLiteral("Source");
+    source.moduleId = source.id;
+    ModuleInstance join;
+    join.id = QStringLiteral("Join");
+    join.moduleId = join.id;
+    project.addModule(source);
+    project.addModule(join);
+    project.addConnection(controlConnection("Source", "next", "Join", "allA"));
+    project.addConnection(controlConnection("Source", "next", "Join", "allB"));
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("Join")) {
+            class TwoAllPortsModule : public ControlJoinMixedModule {
+            public:
+                using ControlJoinMixedModule::ControlJoinMixedModule;
+                QList<PortSpec> inputPorts() const override {
+                    QList<PortSpec> ports = ControlJoinMixedModule::inputPorts();
+                    ports[0].id = QStringLiteral("allA");
+                    ports[0].displayName = ports[0].id;
+                    ports[1].id = QStringLiteral("allB");
+                    ports[1].displayName = ports[1].id;
+                    ports[1].joinPolicy = ControlJoinPolicy::All;
+                    return ports;
+                }
+            };
+            return new TwoAllPortsModule(instance.id, &log);
+        }
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+
+    engine.runOnce();
+    QCOMPARE(log, QStringList({QStringLiteral("Source"), QStringLiteral("Join")}));
+    engine.clearModules();
+}
+
+void TestRunEngine::testControlJoinPoliciesArePerPort() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    Project project;
+    for (const QString& id :
+         {QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("Cond"), QStringLiteral("Join")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        project.addModule(instance);
+    }
+    project.addConnection(controlConnection("A", "next", "Join", "all"));
+    project.addConnection(controlConnection("B", "next", "Join", "all"));
+    project.addConnection(controlConnection("Cond", "true", "Join", "any"));
+    project.addConnection(controlConnection("Cond", "false", "Join", "any"));
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("Join"))
+            return new ControlJoinMixedModule(instance.id, &log);
+        if (instance.id == QLatin1String("Cond")) {
+            auto* module = new IfControlModule(instance.id, true);
+            module->execLog = &log;
+            return module;
+        }
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+
+    engine.runOnce();
+    QVERIFY(log.contains(QStringLiteral("Join")));
+    QVERIFY(log.indexOf(QStringLiteral("A")) < log.indexOf(QStringLiteral("Join")));
+    QVERIFY(log.indexOf(QStringLiteral("B")) < log.indexOf(QStringLiteral("Join")));
+    QVERIFY(log.indexOf(QStringLiteral("Cond")) < log.indexOf(QStringLiteral("Join")));
+    engine.clearModules();
+}
+
+// ---------------------------------------------------------------------------
+// 阶段 E2: Parallel 接入主循环测试
+// ---------------------------------------------------------------------------
+
+// 线程安全的 sleep 模块（用于验证并发）
+class ThreadSafeSleepModule : public ModuleBase {
+    Q_OBJECT
+public:
+    int sleepMs = 50;
+    QStringList* execLog = nullptr;
+    bool sawCancellation = false;
+    explicit ThreadSafeSleepModule(const QString& name, int ms = 50, QStringList* log = nullptr)
+        : sleepMs(ms), execLog(log) {
+        m_moduleId = QStringLiteral("com.deeplux.test.sleep.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+        setThreadSafe(true);
+        PortSpec out;
+        out.id = "image";
+        out.displayName = "image";
+        out.type = DataType::Image2D;
+        setPorts({}, {out});
+    }
+    QList<PortSpec> outputPorts() const override {
+        PortSpec out;
+        out.id = "image";
+        out.displayName = "image";
+        out.type = DataType::Image2D;
+        return {out};
+    }
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::Sequential;
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        // 协作式取消：分片 sleep，检查取消令牌
+        int remaining = sleepMs;
+        while (remaining > 0) {
+            int chunk = qMin(remaining, 10);
+            QThread::msleep(chunk);
+            remaining -= chunk;
+            auto* tok = cancellationToken();
+            if (tok && tok->isCancelledFast()) {
+                sawCancellation = true;
+                output = input;
+                return true;
+            }
+        }
+        output = input;
+        if (execLog)
+            execLog->append(name());
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
+
+void TestRunEngine::testParallelBatchExecutesConcurrently() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(2);
+
+    // Parallel 显式分叉到 A、B；两个线程安全分支各 sleep 100ms，最后汇合到 C。
+    Project project;
+    ModuleInstance fork;
+    fork.id = QStringLiteral("Fork");
+    fork.moduleId = fork.id;
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
+    ModuleInstance c;
+    c.id = "C";
+    c.moduleId = "C";
+    project.addModule(fork);
+    project.addModule(a);
+    project.addModule(b);
+    project.addModule(c);
+    project.addConnection(controlConnection("Fork", "branch", "A"));
+    project.addConnection(controlConnection("Fork", "branch", "B"));
+    project.addConnection(controlConnection("A", "next", "C"));
+    project.addConnection(controlConnection("B", "next", "C"));
+
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == "Fork")
+            return new ParallelForkModule(inst.id);
+        if (inst.id == "C")
+            return new ControlJoinAllModule(inst.id);
+        return new ThreadSafeSleepModule(inst.id, 100);
+    }));
+
+    RunResult result;
+    QMetaObject::Connection conn =
+        connect(&engine, &RunEngine::runFinished, this, [&result](const RunResult& r) { result = r; });
+    engine.runOnce();
+    disconnect(conn);
+
+    QVERIFY(result.success);
+    // A||B 并行约 100ms；顺序则约 200ms。
+    QVERIFY2(result.elapsedMs < 200, qPrintable(QString("parallel should be < 200ms, got %1").arg(result.elapsedMs)));
+    QVERIFY2(engine.lastParallelMaxConcurrency() >= 2,
+             qPrintable(QString("max concurrency should be >= 2, got %1").arg(engine.lastParallelMaxConcurrency())));
+    engine.clearModules();
+    engine.setParallelThreadCount(1);
+}
+
+// 线程安全的快速失败模块
+class ThreadSafeFailModule : public ModuleBase {
+    Q_OBJECT
+public:
+    explicit ThreadSafeFailModule(const QString& name) {
+        m_moduleId = QStringLiteral("com.deeplux.test.fail.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+        setThreadSafe(true);
+        PortSpec out;
+        out.id = "image";
+        out.displayName = "image";
+        out.type = DataType::Image2D;
+        setPorts({}, {out});
+    }
+    QList<PortSpec> outputPorts() const override {
+        PortSpec out;
+        out.id = "image";
+        out.displayName = "image";
+        out.type = DataType::Image2D;
+        return {out};
+    }
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::Sequential;
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        return false; // 总是失败
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
+
+void TestRunEngine::testParallelFailureCancelsRemaining() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(2);
+
+    // A fails immediately, B sleeps 200ms — B should be cancelled
+    // 控制边汇合到 C
+    Project project;
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
+    ModuleInstance c;
+    c.id = "C";
+    c.moduleId = "C";
+    project.addModule(a);
+    project.addModule(b);
+    project.addModule(c);
+    project.addConnection(controlConnection("A", "next", "C"));
+    project.addConnection(controlConnection("B", "next", "C"));
+
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == "A")
+            return new ThreadSafeFailModule("A");
+        if (inst.id == "B")
+            return new ThreadSafeSleepModule("B", 200);
+        return new ThreadSafeSleepModule("C", 10);
+    }));
+
+    RunResult result;
+    QMetaObject::Connection conn =
+        connect(&engine, &RunEngine::runFinished, this, [&result](const RunResult& r) { result = r; });
+    engine.runOnce();
+    disconnect(conn);
+
+    QVERIFY(!result.success);
+    // A 失败后取消 B（200ms），B 协作退出，总耗时应远小于 200ms
+    QVERIFY2(result.elapsedMs < 150,
+             qPrintable(QString("should not wait for B's 200ms, got %1").arg(result.elapsedMs)));
+    engine.clearModules();
+    engine.setParallelThreadCount(1);
+}
+
+void TestRunEngine::testParallelNonThreadSafeFallsBackSequential() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    // 两个模块标记为非线程安全，控制边汇合到 C → 顺序执行
+    Project project;
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
+    ModuleInstance c;
+    c.id = "C";
+    c.moduleId = "C";
+    project.addModule(a);
+    project.addModule(b);
+    project.addModule(c);
+    project.addConnection(controlConnection("A", "next", "C"));
+    project.addConnection(controlConnection("B", "next", "C"));
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
+        auto* m = new ThreadSafeSleepModule(inst.id, 50, &log);
+        m->setThreadSafe(false);
+        return m;
+    }));
+
+    RunResult result;
+    QMetaObject::Connection conn =
+        connect(&engine, &RunEngine::runFinished, this, [&result](const RunResult& r) { result = r; });
+    engine.runOnce();
+    disconnect(conn);
+
+    QVERIFY(result.success);
+    // 顺序执行 A+B：总耗时应 >= 100ms（50+50）
+    QVERIFY2(result.elapsedMs >= 95, qPrintable(QString("sequential should be >= 95ms, got %1").arg(result.elapsedMs)));
+    engine.clearModules();
+}
+
+void TestRunEngine::testParallelMixedThreadSafetyFallsBackSequential() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(2);
+
+    Project project;
+    for (const QString& id : {QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("Join")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        project.addModule(instance);
+    }
+    project.addConnection(controlConnection("A", "next", "Join"));
+    project.addConnection(controlConnection("B", "next", "Join"));
+
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("Join"))
+            return new ControlJoinAllModule(instance.id);
+        auto* module = new ThreadSafeSleepModule(instance.id, 60);
+        if (instance.id == QLatin1String("A"))
+            module->setThreadSafe(false);
+        return module;
+    }));
+
+    QElapsedTimer timer;
+    timer.start();
+    engine.runOnce();
+    QVERIFY2(timer.elapsed() >= 110, "unsafe first module must not overlap a thread-safe sibling");
+    QVERIFY(engine.lastParallelMaxConcurrency() <= 1);
+    engine.clearModules();
+}
+
+void TestRunEngine::testParallelSingleThreadFailureDoesNotDeadlock() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(1);
+
+    Project project;
+    for (const QString& id : {QStringLiteral("Fail"), QStringLiteral("Slow"), QStringLiteral("Join")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        project.addModule(instance);
+    }
+    project.addConnection(controlConnection("Fail", "next", "Join"));
+    project.addConnection(controlConnection("Slow", "next", "Join"));
+
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("Fail"))
+            return new ThreadSafeFailModule(instance.id);
+        if (instance.id == QLatin1String("Slow"))
+            return new ThreadSafeSleepModule(instance.id, 200);
+        return new ControlJoinAllModule(instance.id);
+    }));
+
+    RunResult result;
+    const QMetaObject::Connection resultConnection =
+        connect(&engine, &RunEngine::runFinished, this, [&result](const RunResult& value) { result = value; });
+    QElapsedTimer timer;
+    timer.start();
+    engine.runOnce();
+    disconnect(resultConnection);
+    QVERIFY(!result.success);
+    QVERIFY2(timer.elapsed() < 500, "single-thread failure must return instead of deadlocking");
+    engine.clearModules();
+}
+
+void TestRunEngine::testParallelBatchHonorsDisabledModule() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(2);
+
+    Project project;
+    ModuleInstance a;
+    a.id = QStringLiteral("A");
+    a.moduleId = a.id;
+    ModuleInstance disabled;
+    disabled.id = QStringLiteral("Disabled");
+    disabled.moduleId = disabled.id;
+    disabled.enabled = false;
+    ModuleInstance join;
+    join.id = QStringLiteral("Join");
+    join.moduleId = join.id;
+    project.addModule(a);
+    project.addModule(disabled);
+    project.addModule(join);
+    project.addConnection(controlConnection("A", "next", "Join"));
+    project.addConnection(controlConnection("Disabled", "next", "Join"));
+
+    QStringList executionLog;
+    QVERIFY(engine.loadProject(&project, [&executionLog](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("Join"))
+            return new ControlJoinAllModule(instance.id);
+        return new ThreadSafeSleepModule(instance.id, 20, &executionLog);
+    }));
+    QSignalSpy skippedSpy(&engine, &RunEngine::moduleSkipped);
+
+    engine.runOnce();
+    QVERIFY(!executionLog.contains(QStringLiteral("Disabled")));
+    QCOMPARE(skippedSpy.count(), 1);
+    QCOMPARE(skippedSpy.first().first().toString(), QStringLiteral("Disabled"));
+    engine.clearModules();
+}
+
+void TestRunEngine::testParallelBatchHonorsBreakpoint() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(2);
+
+    Project project;
+    ModuleInstance a;
+    a.id = QStringLiteral("A");
+    a.moduleId = a.id;
+    ModuleInstance paused;
+    paused.id = QStringLiteral("Paused");
+    paused.moduleId = paused.id;
+    paused.breakpoint = true;
+    ModuleInstance join;
+    join.id = QStringLiteral("Join");
+    join.moduleId = join.id;
+    project.addModule(a);
+    project.addModule(paused);
+    project.addModule(join);
+    project.addConnection(controlConnection("A", "next", "Join"));
+    project.addConnection(controlConnection("Paused", "next", "Join"));
+
+    QStringList executionLog;
+    QVERIFY(engine.loadProject(&project, [&executionLog](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("Join"))
+            return new ControlJoinAllModule(instance.id, &executionLog);
+        return new ThreadSafeSleepModule(instance.id, 20, &executionLog);
+    }));
+    QSignalSpy hitSpy(&engine, &RunEngine::breakpointHit);
+
+    engine.runOnce();
+    QCOMPARE(hitSpy.count(), 1);
+    QVERIFY(engine.isPausedAtBreakpoint());
+    QVERIFY(!executionLog.contains(QStringLiteral("Paused")));
+
+    engine.resume();
+    QVERIFY(executionLog.contains(QStringLiteral("Paused")));
+    QVERIFY(executionLog.contains(QStringLiteral("Join")));
+    engine.clearModules();
 }
 
 void TestRunEngine::testExplicitLoopZeroIterations() {
@@ -2686,13 +4112,23 @@ void TestRunEngine::testExplicitWhileFalseZeroIterations() {
     ModuleConnection ctrlBody;
     ctrlBody.fromModuleId = "whileMod";
     ctrlBody.toModuleId = "body";
-    ctrlBody.fromPort = "body"; ctrlBody.toPort = "control"; ctrlBody.edgeType = "control";
+    ctrlBody.fromPort = "body";
+    ctrlBody.toPort = "control";
+    ctrlBody.edgeType = "control";
     project.addConnection(ctrlBody);
-    ModuleConnection ctrlDone; ctrlDone.fromModuleId = "whileMod"; ctrlDone.toModuleId = "after";
-    ctrlDone.fromPort = "done"; ctrlDone.toPort = "control"; ctrlDone.edgeType = "control";
+    ModuleConnection ctrlDone;
+    ctrlDone.fromModuleId = "whileMod";
+    ctrlDone.toModuleId = "after";
+    ctrlDone.fromPort = "done";
+    ctrlDone.toPort = "control";
+    ctrlDone.edgeType = "control";
     project.addConnection(ctrlDone);
-    ModuleConnection ctrlBack; ctrlBack.fromModuleId = "body"; ctrlBack.toModuleId = "whileMod";
-    ctrlBack.fromPort = "next"; ctrlBack.toPort = "control"; ctrlBack.edgeType = "control";
+    ModuleConnection ctrlBack;
+    ctrlBack.fromModuleId = "body";
+    ctrlBack.toModuleId = "whileMod";
+    ctrlBack.fromPort = "next";
+    ctrlBack.toPort = "control";
+    ctrlBack.edgeType = "control";
     project.addConnection(ctrlBack);
 
     QStringList log;
@@ -2719,29 +4155,53 @@ void TestRunEngine::testExplicitStopWhileTerminatesLoop() {
     engine.clearModules();
     // While(true) -> body -> StopWhile -> done (loop terminated by StopWhile)
     Project project;
-    ModuleInstance whileMod; whileMod.id = "whileMod"; whileMod.moduleId = "whileMod";
+    ModuleInstance whileMod;
+    whileMod.id = "whileMod";
+    whileMod.moduleId = "whileMod";
     whileMod.params["maxIterations"] = 100;
-    ModuleInstance body; body.id = "body"; body.moduleId = "body";
-    ModuleInstance stopMod; stopMod.id = "stopMod"; stopMod.moduleId = "stopMod";
-    ModuleInstance after; after.id = "after"; after.moduleId = "after";
+    ModuleInstance body;
+    body.id = "body";
+    body.moduleId = "body";
+    ModuleInstance stopMod;
+    stopMod.id = "stopMod";
+    stopMod.moduleId = "stopMod";
+    ModuleInstance after;
+    after.id = "after";
+    after.moduleId = "after";
     project.addModule(whileMod);
     project.addModule(body);
     project.addModule(stopMod);
     project.addModule(after);
     // while.body -> body, body.next -> stopMod, stopMod.stop -> whileMod(done target = after)
-    ModuleConnection ctrlBody; ctrlBody.fromModuleId = "whileMod"; ctrlBody.toModuleId = "body";
-    ctrlBody.fromPort = "body"; ctrlBody.toPort = "control"; ctrlBody.edgeType = "control";
+    ModuleConnection ctrlBody;
+    ctrlBody.fromModuleId = "whileMod";
+    ctrlBody.toModuleId = "body";
+    ctrlBody.fromPort = "body";
+    ctrlBody.toPort = "control";
+    ctrlBody.edgeType = "control";
     project.addConnection(ctrlBody);
-    ModuleConnection ctrlToStop; ctrlToStop.fromModuleId = "body"; ctrlToStop.toModuleId = "stopMod";
-    ctrlToStop.fromPort = "next"; ctrlToStop.toPort = "control"; ctrlToStop.edgeType = "control";
+    ModuleConnection ctrlToStop;
+    ctrlToStop.fromModuleId = "body";
+    ctrlToStop.toModuleId = "stopMod";
+    ctrlToStop.fromPort = "next";
+    ctrlToStop.toPort = "control";
+    ctrlToStop.edgeType = "control";
     project.addConnection(ctrlToStop);
     // StopWhile.stop -> after (jumps to after, skipping back-edge to whileMod)
-    ModuleConnection ctrlStop; ctrlStop.fromModuleId = "stopMod"; ctrlStop.toModuleId = "after";
-    ctrlStop.fromPort = "stop"; ctrlStop.toPort = "control"; ctrlStop.edgeType = "control";
+    ModuleConnection ctrlStop;
+    ctrlStop.fromModuleId = "stopMod";
+    ctrlStop.toModuleId = "after";
+    ctrlStop.fromPort = "stop";
+    ctrlStop.toPort = "control";
+    ctrlStop.edgeType = "control";
     project.addConnection(ctrlStop);
     // while.done -> after (normal exit path)
-    ModuleConnection ctrlDone; ctrlDone.fromModuleId = "whileMod"; ctrlDone.toModuleId = "after";
-    ctrlDone.fromPort = "done"; ctrlDone.toPort = "control"; ctrlDone.edgeType = "control";
+    ModuleConnection ctrlDone;
+    ctrlDone.fromModuleId = "whileMod";
+    ctrlDone.toModuleId = "after";
+    ctrlDone.fromPort = "done";
+    ctrlDone.toPort = "control";
+    ctrlDone.edgeType = "control";
     project.addConnection(ctrlDone);
 
     QStringList log;

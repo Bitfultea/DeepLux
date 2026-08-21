@@ -1,30 +1,25 @@
 #include "ParallelPlugin.h"
-#include "core/engine/RunEngine.h"
+
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
-#include <QLabel>
+
 #include <QFormLayout>
+#include <QLabel>
 #include <QSpinBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-ParallelPlugin::ParallelPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"parallelCount", 2}
-    };
+ParallelPlugin::ParallelPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"parallelCount", 2}};
     m_params = m_defaultParams;
     m_name = "并行开始";
     m_moduleId = "ParallelPlugin";
     m_category = "logic";
     m_description = "并行执行多个分支";
     m_parallelCount = 2;
-    m_branchNames = QStringList() << "Branch1" << "Branch2";
 }
 
-bool ParallelPlugin::initialize()
-{
+bool ParallelPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -32,8 +27,7 @@ bool ParallelPlugin::initialize()
     return true;
 }
 
-bool ParallelPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool ParallelPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     int count = params["parallelCount"].toInt(2);
     if (count < 2 || count > 10) {
         error = QString("Parallel count must be between 2 and 10");
@@ -42,8 +36,7 @@ bool ParallelPlugin::doValidateParams(const QJsonObject& params, QString& error)
     return true;
 }
 
-bool ParallelPlugin::process(const ImageData& input, ImageData& output)
-{
+bool ParallelPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
     QJsonObject params = currentParams();
     m_parallelCount = params["parallelCount"].toInt(2);
@@ -51,13 +44,12 @@ bool ParallelPlugin::process(const ImageData& input, ImageData& output)
     output.setData("parallel_count", m_parallelCount);
     output.setData("parallel_started", true);
 
-    Logger::instance().info(QString("Parallel: Starting %1 parallel branches").arg(m_parallelCount), "Logic");
+    Logger::instance().info(QString("Parallel: branch concurrency limited to %1").arg(m_parallelCount), "Logic");
 
     return true;
 }
 
-QWidget* ParallelPlugin::createConfigWidget()
-{
+QWidget* ParallelPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -66,9 +58,9 @@ QWidget* ParallelPlugin::createConfigWidget()
     QSpinBox* countSpin = new QSpinBox();
     countSpin->setRange(2, 10);
     countSpin->setValue(m_params["parallelCount"].toInt(2));
-    countSpin->setPrefix(tr("分支数量: "));
+    countSpin->setPrefix(tr("并发数: "));
 
-    formLayout->addRow(tr("并行分支数:"), countSpin);
+    formLayout->addRow(tr("最大并发数:"), countSpin);
 
     layout->addLayout(formLayout);
     layout->addStretch();
@@ -81,38 +73,32 @@ QWidget* ParallelPlugin::createConfigWidget()
     return widget;
 }
 
-IModule* ParallelPlugin::cloneImpl() const
-{
+IModule* ParallelPlugin::cloneImpl() const {
     return new ParallelPlugin();
 }
 
-bool ParallelEndPlugin::process(const ImageData& input, ImageData& output)
-{
+bool ParallelEndPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
     output.setData("parallel_ended", true);
     Logger::instance().info("Parallel: All branches completed", "Logic");
     return true;
 }
 
-ParallelEndPlugin::ParallelEndPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
+ParallelEndPlugin::ParallelEndPlugin(QObject* parent) : ModuleBase(parent) {
     m_name = "并行结束";
     m_moduleId = "ParallelEndPlugin";
     m_category = "logic";
     m_description = "并行结束，汇总结果";
 }
 
-QWidget* ParallelEndPlugin::createConfigWidget()
-{
+QWidget* ParallelEndPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
     layout->addWidget(new QLabel(tr("(并行结束，无需配置)")));
     return widget;
 }
 
-IModule* ParallelEndPlugin::cloneImpl() const
-{
+IModule* ParallelEndPlugin::cloneImpl() const {
     return new ParallelEndPlugin();
 }
 

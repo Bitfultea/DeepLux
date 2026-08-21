@@ -1,3 +1,6 @@
+#include <QDir>
+#include <QFile>
+#include <QTemporaryDir>
 #include <QtTest/QtTest>
 #include <core/interface/IModule.h>
 #include <core/manager/PluginManager.h>
@@ -17,6 +20,7 @@ private slots:
     void testAvailableModules();
     void testPluginInfo();
     void testCreateModuleClone();
+    void testExecutionMetadataValidation();
 
 private:
 };
@@ -115,6 +119,46 @@ void TestPluginManager::testCreateModuleClone() {
 
     delete a;
     delete b;
+}
+
+void TestPluginManager::testExecutionMetadataValidation() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    const auto writeMetadata = [&root](const QString& directory, const QString& name, const QByteArray& joinPolicy) {
+        const QString pluginDir = root.filePath(directory);
+        if (!QDir().mkpath(pluginDir))
+            return false;
+        QFile file(QDir(pluginDir).filePath(QStringLiteral("metadata.json")));
+        if (!file.open(QIODevice::WriteOnly))
+            return false;
+        const QByteArray json = QByteArray(R"({
+            "id":"com.deeplux.test.metadata",
+            "name":")") + name.toUtf8() +
+                                QByteArray(R"(",
+            "category":"test",
+            "execution":{"threadSafe":true},
+            "ports":{"inputs":[{
+                "id":"control","displayName":"control","type":"Boolean",
+                "control":true,"multiple":true,"joinPolicy":")") +
+                                joinPolicy + QByteArray(R"("}],"outputs":[]}
+        })");
+        return file.write(json) == json.size() && file.flush();
+    };
+
+    QVERIFY(writeMetadata(QStringLiteral("valid"), QStringLiteral("MetadataValid"), "all"));
+    QVERIFY(writeMetadata(QStringLiteral("invalid"), QStringLiteral("MetadataInvalid"), "sometimes"));
+
+    PluginManager& manager = PluginManager::instance();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+
+    const PluginInfo valid = manager.pluginInfo(QStringLiteral("MetadataValid"));
+    QVERIFY(valid.threadSafe);
+    QCOMPARE(valid.inputPorts.size(), 1);
+    QCOMPARE(valid.inputPorts.first().joinPolicy, ControlJoinPolicy::All);
+
+    QVERIFY(manager.pluginInfo(QStringLiteral("MetadataInvalid")).name.isEmpty());
 }
 
 QTEST_MAIN(TestPluginManager)

@@ -5,6 +5,9 @@
     "version": "1.0.0",
     "author": "DeepLux Team",
     "description": "基本数学运算",
+    "execution": {
+        "threadSafe": true
+    },
     "ui": {
         "parameters": {
             "operation": {

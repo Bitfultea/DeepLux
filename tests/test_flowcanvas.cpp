@@ -24,6 +24,13 @@ private slots:
     void testLoadFromProjectRebuildsStableNodesAndConnections();
     void testNodeClickEmitsNodeSelected();
     void testProgrammaticSelectNodeDoesNotEmitSignal();
+    // 阶段 F 新增
+    void testMultiPortConnectionsNotDeduplicated();
+    void testDeleteOneConnectionDoesNotDeleteOthers();
+    void testSaveReloadPreservesPortConnections();
+    void testNodeDragUpdatesConnections();
+    void testControlEdgeRenderedAsDashed();
+    void testPortSpecsFromPluginManagerLoaded();
 };
 
 void TestFlowCanvas::init() {
@@ -49,12 +56,16 @@ void TestFlowCanvas::testAddNodeAndConnectionSyncsToCurrentProject() {
     QCOMPARE(project->findModule(firstId)->posX, 12);
     QCOMPARE(project->findModule(firstId)->posY, 34);
 
-    canvas.addConnection(firstId, 0, secondId, 0);
+    // 阶段 F: 使用字符串端口 ID
+    canvas.addConnection(firstId, "image", secondId, "image");
     QCOMPARE(project->connections().size(), 1);
     QCOMPARE(project->connections().first().fromModuleId, firstId);
     QCOMPARE(project->connections().first().toModuleId, secondId);
+    QCOMPARE(project->connections().first().fromPort, QString("image"));
+    QCOMPARE(project->connections().first().toPort, QString("image"));
 
-    canvas.removeConnection(firstId, secondId);
+    // 按完整 4 元组删除
+    canvas.removeConnection(firstId, "image", secondId, "image");
     QCOMPARE(project->connections().size(), 0);
 }
 
@@ -64,7 +75,7 @@ void TestFlowCanvas::testConnectionHasPaintableBoundsAfterAdd() {
     const QString firstId = canvas.addNode("module.a", "Module A", QPointF(0, 0));
     const QString secondId = canvas.addNode("module.b", "Module B", QPointF(260, 0));
 
-    canvas.addConnection(firstId, 0, secondId, 0);
+    canvas.addConnection(firstId, "image", secondId, "image");
 
     QCOMPARE(canvas.m_connections.size(), 1);
     const QRectF bounds = canvas.m_connections.first()->boundingRect();
@@ -149,6 +160,9 @@ void TestFlowCanvas::testLoadFromProjectRebuildsStableNodesAndConnections() {
     ModuleConnection conn;
     conn.fromModuleId = first.id;
     conn.toModuleId = second.id;
+    conn.fromPort = "image";
+    conn.toPort = "image";
+    conn.edgeType = "data";
     project.addConnection(conn);
 
     FlowCanvas canvas;
@@ -172,7 +186,6 @@ void TestFlowCanvas::testNodeClickEmitsNodeSelected() {
     FlowNodeItem* node = canvas.nodeItem(nodeId);
     QVERIFY(node != nullptr);
 
-    // Map the node center to viewport coordinates and click
     const QPointF nodeCenter =
         node->pos() + QPointF(node->boundingRect().width() / 2, node->boundingRect().height() / 2);
     const QPoint viewportPos = canvas.mapFromScene(nodeCenter);
@@ -194,10 +207,134 @@ void TestFlowCanvas::testProgrammaticSelectNodeDoesNotEmitSignal() {
 
     QCOMPARE(spy.count(), 0);
 
-    // Verify the node is actually selected visually
     FlowNodeItem* node = canvas.nodeItem(nodeId);
     QVERIFY(node != nullptr);
     QVERIFY(node->isSelected());
+}
+
+// ---------------------------------------------------------------------------
+// 阶段 F 新增测试
+// ---------------------------------------------------------------------------
+
+void TestFlowCanvas::testMultiPortConnectionsNotDeduplicated() {
+    // 同节点对、不同端口对 → 两条连接共存
+    FlowCanvas canvas;
+    Project* project = ProjectManager::instance().currentProject();
+
+    const QString a = canvas.addNode("module.a", "A", QPointF(0, 0));
+    const QString b = canvas.addNode("module.b", "B", QPointF(260, 0));
+
+    canvas.addConnection(a, "image", b, "image");
+    canvas.addConnection(a, "val", b, "val");
+
+    QCOMPARE(canvas.m_connections.size(), 2);
+    QCOMPARE(project->connections().size(), 2);
+}
+
+void TestFlowCanvas::testDeleteOneConnectionDoesNotDeleteOthers() {
+    // 删除 A.image→B.image 不影响 A.val→B.val
+    FlowCanvas canvas;
+    Project* project = ProjectManager::instance().currentProject();
+
+    const QString a = canvas.addNode("module.a", "A", QPointF(0, 0));
+    const QString b = canvas.addNode("module.b", "B", QPointF(260, 0));
+
+    canvas.addConnection(a, "image", b, "image");
+    canvas.addConnection(a, "val", b, "val");
+    QCOMPARE(canvas.m_connections.size(), 2);
+
+    canvas.removeConnection(a, "image", b, "image");
+    QCOMPARE(canvas.m_connections.size(), 1);
+    QCOMPARE(canvas.m_connections.first()->fromPortId(), QString("val"));
+    QCOMPARE(canvas.m_connections.first()->toPortId(), QString("val"));
+    QCOMPARE(project->connections().size(), 1);
+}
+
+void TestFlowCanvas::testSaveReloadPreservesPortConnections() {
+    // 创建带字符串端口的工程 → JSON → 重新加载 → 连接端口一致
+    Project project;
+    ModuleInstance a; a.id = "A"; a.moduleId = "module.a"; a.name = "A";
+    ModuleInstance b; b.id = "B"; b.moduleId = "module.b"; b.name = "B";
+    project.addModule(a);
+    project.addModule(b);
+
+    ModuleConnection c1;
+    c1.fromModuleId = "A"; c1.toModuleId = "B";
+    c1.fromPort = "image"; c1.toPort = "image"; c1.edgeType = "data";
+    project.addConnection(c1);
+
+    ModuleConnection c2;
+    c2.fromModuleId = "A"; c2.toModuleId = "B";
+    c2.fromPort = "val"; c2.toPort = "val"; c2.edgeType = "data";
+    project.addConnection(c2);
+
+    QJsonObject json = project.toJson();
+
+    Project restored;
+    restored.fromJson(json);
+
+    QCOMPARE(restored.connections().size(), 2);
+    QCOMPARE(restored.connections()[0].fromPort, QString("image"));
+    QCOMPARE(restored.connections()[0].toPort, QString("image"));
+    QCOMPARE(restored.connections()[1].fromPort, QString("val"));
+    QCOMPARE(restored.connections()[1].toPort, QString("val"));
+
+    FlowCanvas canvas;
+    canvas.loadFromProject(&restored);
+    QCOMPARE(canvas.m_connections.size(), 2);
+}
+
+void TestFlowCanvas::testNodeDragUpdatesConnections() {
+    // 拖动节点后连接路径应更新
+    FlowCanvas canvas;
+    const QString a = canvas.addNode("module.a", "A", QPointF(0, 0));
+    const QString b = canvas.addNode("module.b", "B", QPointF(260, 0));
+    canvas.addConnection(a, "image", b, "image");
+
+    QCOMPARE(canvas.m_connections.size(), 1);
+    FlowConnectionItem* conn = canvas.m_connections.first();
+    const QRectF boundsBefore = conn->boundingRect();
+
+    // 拖动节点 B
+    FlowNodeItem* nodeB = canvas.nodeItem(b);
+    nodeB->setPos(QPointF(300, 100));
+    canvas.updateConnectionsForNode(b);
+
+    const QRectF boundsAfter = conn->boundingRect();
+    QVERIFY2(boundsAfter != boundsBefore, "Connection path should update after node drag");
+}
+
+void TestFlowCanvas::testControlEdgeRenderedAsDashed() {
+    // 控制边应标记为虚线
+    FlowCanvas canvas;
+    const QString a = canvas.addNode("module.a", "A", QPointF(0, 0));
+    const QString b = canvas.addNode("module.b", "B", QPointF(260, 0));
+
+    canvas.addConnection(a, "next", b, "control", "control");
+    QCOMPARE(canvas.m_connections.size(), 1);
+    QVERIFY(canvas.m_connections.first()->isControlEdge());
+}
+
+void TestFlowCanvas::testPortSpecsFromPluginManagerLoaded() {
+    // 节点创建后应从 PluginManager 加载端口声明
+    FlowCanvas canvas;
+    const QString nodeId = canvas.addNode("module.a", "A", QPointF(0, 0));
+    FlowNodeItem* node = canvas.nodeItem(nodeId);
+    QVERIFY(node);
+
+    // 无插件元数据时端口列表为空（默认端口回退）
+    // 主要验证 setPortSpecs 可被调用且不崩溃
+    QList<PortSpec> inputs;
+    PortSpec in; in.id = "image"; in.displayName = "image"; in.type = DataType::Image2D;
+    inputs.append(in);
+    QList<PortSpec> outputs;
+    PortSpec out; out.id = "image"; out.displayName = "image"; out.type = DataType::Image2D;
+    outputs.append(out);
+    node->setPortSpecs(inputs, outputs);
+
+    QCOMPARE(node->inputPortCount(), 1);
+    QCOMPARE(node->outputPortCount(), 1);
+    QCOMPARE(node->inputPortSpecs().first().id, QString("image"));
 }
 
 QTEST_MAIN(TestFlowCanvas)

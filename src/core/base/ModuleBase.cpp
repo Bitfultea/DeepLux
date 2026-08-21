@@ -1,5 +1,7 @@
 #include "ModuleBase.h"
+
 #include "../common/CancellationToken.h"
+
 #include <QDebug>
 #include <QHash>
 #include <QJsonValue>
@@ -9,12 +11,11 @@ namespace DeepLux {
 namespace {
 QHash<const ModuleBase*, CancellationToken*> g_cancellationTokens;
 QMutex g_cancellationTokensMutex;
-}
+} // namespace
 
 // ========== ModuleParam ==========
 
-QJsonObject ModuleParam::toJson() const
-{
+QJsonObject ModuleParam::toJson() const {
     QJsonObject json;
     json["name"] = name;
     json["enabled"] = enabled;
@@ -23,8 +24,7 @@ QJsonObject ModuleParam::toJson() const
     return json;
 }
 
-bool ModuleParam::fromJson(const QJsonObject& json)
-{
+bool ModuleParam::fromJson(const QJsonObject& json) {
     name = json["name"].toString();
     enabled = json["enabled"].toBool(true);
     posX = json["posX"].toInt(0);
@@ -34,52 +34,45 @@ bool ModuleParam::fromJson(const QJsonObject& json)
 
 // ========== ModuleBase ==========
 
-ModuleBase::ModuleBase(QObject* parent)
-    : IModule(parent)
-{
-}
+ModuleBase::ModuleBase(QObject* parent) : IModule(parent) {}
 
-ModuleBase::~ModuleBase()
-{
+ModuleBase::~ModuleBase() {
     QMutexLocker locker(&g_cancellationTokensMutex);
     g_cancellationTokens.remove(this);
 }
 
-bool ModuleBase::initialize()
-{
+bool ModuleBase::initialize() {
     if (m_initialized) {
         return true;
     }
-    
+
     m_state = ModuleState::Idle;
     m_initialized = true;
     emit stateChanged(m_state);
-    
+
     qDebug() << "Module initialized:" << m_name;
     return true;
 }
 
-void ModuleBase::shutdown()
-{
+void ModuleBase::shutdown() {
     if (!m_initialized) {
         return;
     }
-    
+
     m_initialized = false;
     m_state = ModuleState::Idle;
     emit stateChanged(m_state);
-    
+
     qDebug() << "Module shutdown:" << m_name;
 }
 
-bool ModuleBase::execute(const ImageData& input, ImageData& output)
-{
+bool ModuleBase::execute(const ImageData& input, ImageData& output) {
     if (!m_initialized) {
         emit errorOccurred(tr("Module not initialized"));
         emit executionCompleted(false);
         return false;
     }
-    
+
     if (m_state == ModuleState::Running) {
         emit errorOccurred(tr("Module already running"));
         emit executionCompleted(false);
@@ -91,10 +84,10 @@ bool ModuleBase::execute(const ImageData& input, ImageData& output)
         emit executionCompleted(false);
         return false;
     }
-    
+
     m_state = ModuleState::Running;
     emit stateChanged(m_state);
-    
+
     bool success = false;
     try {
         success = process(input, output);
@@ -110,7 +103,7 @@ bool ModuleBase::execute(const ImageData& input, ImageData& output)
         emit errorOccurred(tr("Execution cancelled"));
         success = false;
     }
-    
+
     m_state = success ? ModuleState::Idle : ModuleState::Error;
     emit stateChanged(m_state);
     emit executionCompleted(success);
@@ -118,14 +111,12 @@ bool ModuleBase::execute(const ImageData& input, ImageData& output)
     return success;
 }
 
-void ModuleBase::setPorts(const QList<PortSpec>& inputs, const QList<PortSpec>& outputs)
-{
+void ModuleBase::setPorts(const QList<PortSpec>& inputs, const QList<PortSpec>& outputs) {
     m_inputPorts = inputs;
     m_outputPorts = outputs;
 }
 
-ExecutionResult ModuleBase::execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context)
-{
+ExecutionResult ModuleBase::execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) {
     // 提取 Image2D 载体：优先 "image" 端口，其次任一可转换值
     ImageData input;
     if (inputs.contains(QStringLiteral("image")) && inputs.value(QStringLiteral("image")).canConvert<ImageData>()) {
@@ -153,16 +144,46 @@ ExecutionResult ModuleBase::execute(const PortValueMap& inputs, PortValueMap& ou
         if (spec.required && !effectiveInputs.contains(spec.id)) {
             const QString msg = tr("缺少必需输入：%1").arg(spec.displayName.isEmpty() ? spec.id : spec.displayName);
             emit errorOccurred(msg);
-            return ExecutionResult::fail(ExecError::MissingRequiredInput, msg,
-                                         QStringLiteral("port=%1").arg(spec.id));
+            return ExecutionResult::fail(ExecError::MissingRequiredInput, msg, QStringLiteral("port=%1").arg(spec.id));
         }
-        if (effectiveInputs.contains(spec.id) && !portValueMatchesType(effectiveInputs.value(spec.id), spec.type)) {
-            const QString msg = tr("输入类型不匹配：%1").arg(spec.displayName.isEmpty() ? spec.id : spec.displayName);
-            emit errorOccurred(msg);
-            return ExecutionResult::fail(ExecError::TypeMismatch, msg,
-                                         QStringLiteral("port=%1 expected=%2 actual=%3")
-                                             .arg(spec.id, dataTypeName(spec.type),
-                                                  QString::fromLatin1(effectiveInputs.value(spec.id).typeName())));
+        if (effectiveInputs.contains(spec.id)) {
+            const QVariant& val = effectiveInputs.value(spec.id);
+            if (spec.multiple && !spec.control) {
+                // multiple 数据端口：值为 QVariantList，逐元素校验类型
+                if (val.type() == QVariant::List) {
+                    const QVariantList list = val.toList();
+                    for (int i = 0; i < list.size(); ++i) {
+                        if (!portValueMatchesType(list[i], spec.type)) {
+                            const QString msg = tr("多输入元素类型不匹配：%1[%2]")
+                                                    .arg(spec.displayName.isEmpty() ? spec.id : spec.displayName)
+                                                    .arg(i);
+                            emit errorOccurred(msg);
+                            return ExecutionResult::fail(
+                                ExecError::TypeMismatch, msg,
+                                QStringLiteral("port=%1 index=%2 expected=%3 actual=%4")
+                                    .arg(spec.id)
+                                    .arg(i)
+                                    .arg(dataTypeName(spec.type), QString::fromLatin1(list[i].typeName())));
+                        }
+                    }
+                } else if (!portValueMatchesType(val, spec.type)) {
+                    const QString msg =
+                        tr("输入类型不匹配：%1").arg(spec.displayName.isEmpty() ? spec.id : spec.displayName);
+                    emit errorOccurred(msg);
+                    return ExecutionResult::fail(
+                        ExecError::TypeMismatch, msg,
+                        QStringLiteral("port=%1 expected=%2 actual=%3")
+                            .arg(spec.id, dataTypeName(spec.type), QString::fromLatin1(val.typeName())));
+                }
+            } else if (!portValueMatchesType(val, spec.type)) {
+                const QString msg =
+                    tr("输入类型不匹配：%1").arg(spec.displayName.isEmpty() ? spec.id : spec.displayName);
+                emit errorOccurred(msg);
+                return ExecutionResult::fail(
+                    ExecError::TypeMismatch, msg,
+                    QStringLiteral("port=%1 expected=%2 actual=%3")
+                        .arg(spec.id, dataTypeName(spec.type), QString::fromLatin1(val.typeName())));
+            }
         }
     }
 
@@ -191,18 +212,17 @@ ExecutionResult ModuleBase::execute(const PortValueMap& inputs, PortValueMap& ou
         if (!portValueMatchesType(value, spec.type)) {
             const QString msg = tr("输出类型不匹配：%1").arg(spec.displayName.isEmpty() ? spec.id : spec.displayName);
             emit errorOccurred(msg);
-            return ExecutionResult::fail(ExecError::TypeMismatch, msg,
-                                         QStringLiteral("port=%1 expected=%2 actual=%3")
-                                             .arg(spec.id, dataTypeName(spec.type),
-                                                  QString::fromLatin1(value.typeName())));
+            return ExecutionResult::fail(
+                ExecError::TypeMismatch, msg,
+                QStringLiteral("port=%1 expected=%2 actual=%3")
+                    .arg(spec.id, dataTypeName(spec.type), QString::fromLatin1(value.typeName())));
         }
         outputs.insert(spec.id, value);
     }
     return ExecutionResult::ok();
 }
 
-void ModuleBase::setCancellationToken(CancellationToken* token)
-{
+void ModuleBase::setCancellationToken(CancellationToken* token) {
     QMutexLocker locker(&g_cancellationTokensMutex);
     if (token) {
         g_cancellationTokens.insert(this, token);
@@ -211,25 +231,21 @@ void ModuleBase::setCancellationToken(CancellationToken* token)
     }
 }
 
-CancellationToken* ModuleBase::cancellationToken() const
-{
+CancellationToken* ModuleBase::cancellationToken() const {
     QMutexLocker locker(&g_cancellationTokensMutex);
     return g_cancellationTokens.value(this, nullptr);
 }
 
-bool ModuleBase::isCancellationRequested() const
-{
+bool ModuleBase::isCancellationRequested() const {
     CancellationToken* token = cancellationToken();
     return token && token->isCancelledFast();
 }
 
-QJsonObject ModuleBase::defaultParams() const
-{
+QJsonObject ModuleBase::defaultParams() const {
     return m_defaultParams;
 }
 
-QJsonObject ModuleBase::currentParams() const
-{
+QJsonObject ModuleBase::currentParams() const {
     QMutexLocker locker(&m_paramsMutex);
     // Create a deep copy of the QJsonObject to avoid COW shared data issues
     QJsonObject copy;
@@ -239,8 +255,7 @@ QJsonObject ModuleBase::currentParams() const
     return copy;
 }
 
-void ModuleBase::setParams(const QJsonObject& params)
-{
+void ModuleBase::setParams(const QJsonObject& params) {
     QJsonObject merged = m_defaultParams;
     for (auto it = params.begin(); it != params.end(); ++it) {
         merged[it.key()] = it.value();
@@ -255,26 +270,22 @@ void ModuleBase::setParams(const QJsonObject& params)
     }
 }
 
-void ModuleBase::setParam(const QString& key, const QVariant& value)
-{
+void ModuleBase::setParam(const QString& key, const QVariant& value) {
     QMutexLocker locker(&m_paramsMutex);
     m_params[key] = QJsonValue::fromVariant(value);
 }
 
-bool ModuleBase::validateParams(const QJsonObject& params, QString& error) const
-{
+bool ModuleBase::validateParams(const QJsonObject& params, QString& error) const {
     return doValidateParams(params, error);
 }
 
-bool ModuleBase::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool ModuleBase::doValidateParams(const QJsonObject& params, QString& error) const {
     Q_UNUSED(params)
     Q_UNUSED(error)
     return true;
 }
 
-QJsonObject ModuleBase::toJson() const
-{
+QJsonObject ModuleBase::toJson() const {
     QJsonObject json;
     json["moduleId"] = m_moduleId;
     json["name"] = m_name;
@@ -284,8 +295,7 @@ QJsonObject ModuleBase::toJson() const
     return json;
 }
 
-bool ModuleBase::fromJson(const QJsonObject& json)
-{
+bool ModuleBase::fromJson(const QJsonObject& json) {
     m_moduleId = json["moduleId"].toString();
     m_name = json["name"].toString();
     m_category = json["category"].toString();
@@ -294,8 +304,7 @@ bool ModuleBase::fromJson(const QJsonObject& json)
     return true;
 }
 
-IModule* ModuleBase::clone() const
-{
+IModule* ModuleBase::clone() const {
     IModule* clonedModule = cloneImpl();
     if (!clonedModule) {
         return nullptr;
@@ -332,8 +341,7 @@ IModule* ModuleBase::clone() const
     return clonedModule;
 }
 
-IModule* ModuleBase::cloneImpl() const
-{
+IModule* ModuleBase::cloneImpl() const {
     // Default implementation does not support cloning
     // Plugins that need multiple instances must override this
     qWarning() << "Module does not support cloning:" << m_moduleId;

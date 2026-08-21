@@ -157,7 +157,7 @@ public:
     ExecutionResult executeParallel(const QStringList& moduleNames, const PortValueMap& sharedInput);
     /// 上一次 executeParallel 观测到的最大并发度（用于证明真实并发）。
     int lastParallelMaxConcurrency() const {
-        return m_lastParallelMaxConcurrency;
+        return m_lastParallelMaxConcurrency.load(std::memory_order_acquire);
     }
 
     // 断点控制
@@ -195,8 +195,14 @@ private:
     void executeRun();
     // 阶段 D1: 显式控制图执行（激活队列）
     void executeRunWithControlGraph(ImageData& pipelineData);
+    void executeBatchParallel(const QStringList& batch, ImageData& pipelineData);
+    PortValueMap collectModuleInputs(const QString& moduleName, const ImageData& pipelineData) const;
     void initializeControlQueue();
     void activateControlSuccessors(const QString& moduleName);
+    void tryActivateSuccessor(const QString& sourceModule, const QString& targetModule, bool controlTriggered,
+                              const QString& sourcePort = QString(), const QString& targetPort = QString());
+    bool dataInputsReady(const QString& moduleName) const;
+    void clearLoopIterationOutputs(const QString& loopModule);
     void emitInactiveControlModules();
     void clearControlQueue();
     void executeRunLegacy(ImageData& pipelineData, bool& allSuccess, QString& firstError);
@@ -228,8 +234,10 @@ private:
     QStringList m_controlQueue;
     QSet<QString> m_controlActivated;
     QSet<QString> m_controlProcessed;
+    QMap<QString, QSet<QString>> m_triggeredControlEdges; // 目标 -> 已触发的具体控制边
     QSet<QString> m_loopBackEdges;
     QSet<QString> m_reentrantModules;
+    QMap<QString, QSet<QString>> m_loopRegions;
     // 当前帧每节点端口输出缓存（flowId 现阶段为 main）；新帧清除
     QMap<QString, PortValueMap> m_nodeOutputs;
     QSet<QString> m_disabledModules; // 阶段 B: 禁用节点（旁路/Skipped）
@@ -284,12 +292,12 @@ private:
 
     // ABI v2 执行上下文：一次运行的 ID 与递增帧号
     QString m_runId;
-    qint64 m_frameId = 0;
+    std::atomic<qint64> m_frameId{0};
 
     // 阶段 3.3 受控并行线程池
-    QThreadPool* m_parallelPool = nullptr;
+    QThreadPool m_parallelPool;
     int m_parallelThreads = 1;
-    int m_lastParallelMaxConcurrency = 0;
+    std::atomic<int> m_lastParallelMaxConcurrency{0};
     mutable QMutex m_parallelMutex;
 };
 

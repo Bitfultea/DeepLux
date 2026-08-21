@@ -1,69 +1,81 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
   <defs>
     <style>
-      .title{font-family:'Noto Sans CJK SC';font-size:44px;font-weight:700;fill:#18243A}.sub{font-family:'Noto Sans CJK SC';font-size:21px;fill:#62718A}.tag{font-family:'Noto Sans CJK SC';font-size:16px;font-weight:700;fill:#0F6CBD}.cardNum{font-family:'Noto Sans CJK SC';font-size:44px;font-weight:700;fill:#18243A}.label{font-family:'Noto Sans CJK SC';font-size:21px;font-weight:700;fill:#18243A}.body{font-family:'Noto Sans CJK SC';font-size:18px;fill:#52627B}.small{font-family:'Noto Sans CJK SC';font-size:16px;fill:#62718A}.white{font-family:'Noto Sans CJK SC';font-size:18px;font-weight:700;fill:#FFF}.barNum{font-family:'Noto Sans CJK SC';font-size:32px;font-weight:700;fill:#18243A}.mono{font-family:'Noto Sans Mono';font-size:16px;fill:#0F6CBD}
+      .title{font-family:'Noto Sans CJK SC';font-size:44px;font-weight:700;fill:#18243A}
+      .sub{font-family:'Noto Sans CJK SC';font-size:21px;fill:#62718A}
+      .tag{font-family:'Noto Sans CJK SC';font-size:16px;font-weight:700;fill:#0F6CBD}
+      .label{font-family:'Noto Sans CJK SC';font-size:22px;font-weight:700;fill:#18243A}
+      .body{font-family:'Noto Sans CJK SC';font-size:18px;fill:#52627B}
+      .small{font-family:'Noto Sans CJK SC';font-size:16px;fill:#62718A}
+      .monoSmall{font-family:'Noto Sans Mono';font-size:16px;fill:#62718A}
+      .value{font-family:'Noto Sans CJK SC';font-size:44px;font-weight:700;fill:#18243A}
+      .pct{font-family:'Noto Sans CJK SC';font-size:32px;font-weight:700;fill:#18243A}
     </style>
   </defs>
+
   <rect width="1600" height="900" fill="#F5F7FB"/>
   <rect width="1600" height="12" fill="#0F6CBD"/>
   <text x="72" y="76" class="tag">DEEPLUX ENGINEERING SKILLS / USAGE SNAPSHOT</text>
-  <text x="72" y="136" class="title">DeepLux 专项 Skill 使用情况</text>
-  <text x="72" y="177" class="sub">截至 2026-08-12 · 以“任务级显式启用”为单位，只计算有可追溯证据的实际工作。</text>
+  <text x="72" y="136" class="title">DeepLux 专项 Skill 使用占比</text>
+  <text x="72" y="177" class="sub">截至 2026-08-19 · 共 20 次任务级显式启用 · 饼图按去重后的任务数计算</text>
 
-  <g transform="translate(72 230)">
-    <rect width="318" height="138" rx="10" fill="#FFFFFF" stroke="#C8D5E6" stroke-width="2"/>
-    <rect width="8" height="138" rx="4" fill="#0F6CBD"/>
-    <text x="32" y="51" class="small">已记录任务级使用</text>
-    <text x="32" y="105" class="cardNum">17</text>
-    <text x="106" y="102" class="body">次</text>
-  </g>
-  <g transform="translate(416 230)">
-    <rect width="318" height="138" rx="10" fill="#FFFFFF" stroke="#C8D5E6" stroke-width="2"/>
-    <rect width="8" height="138" rx="4" fill="#17A673"/>
-    <text x="32" y="51" class="small">已可调用专项 skill</text>
-    <text x="32" y="105" class="cardNum">2</text>
-    <text x="94" y="102" class="body">项</text>
-  </g>
-  <g transform="translate(760 230)">
-    <rect width="318" height="138" rx="10" fill="#FFFFFF" stroke="#C8D5E6" stroke-width="2"/>
-    <rect width="8" height="138" rx="4" fill="#8B5CF6"/>
-    <text x="32" y="51" class="small">待固化能力图谱</text>
-    <text x="32" y="105" class="cardNum">5</text>
-    <text x="94" y="102" class="body">项</text>
-  </g>
-  <g transform="translate(1104 230)">
-    <rect width="424" height="138" rx="10" fill="#E8F3FE" stroke="#9AC6F4" stroke-width="2"/>
-    <text x="26" y="48" class="tag">统计解释</text>
-    <text x="26" y="80" class="body">工作流启用记录，不是模型遥测。</text>
-    <text x="26" y="110" class="body">重叠会话与纯计划内容均已剔除。</text>
-  </g>
+  <g transform="translate(72 222)">
+    <rect width="970" height="600" rx="10" fill="#FFFFFF" stroke="#C8D5E6" stroke-width="2"/>
+    <text x="30" y="48" class="label">任务级使用分布</text>
+    <text x="30" y="80" class="small">根因定位仍是主要使用场景，占全部专项 Skill 调用的 70%。</text>
 
-  <g transform="translate(72 435)">
-    <text x="0" y="0" class="label">任务级使用分布</text>
-    <text x="0" y="35" class="small">总计 17 次。横条长度按占比，右侧显示次数与占比。</text>
+    <g aria-label="root-cause-first 14 次 70%; deeplux-qt-ui-audit 6 次 30%">
+      <path d="M 320 330 L 320 120 A 210 210 0 1 1 120.28 394.89 Z"
+            fill="#0F6CBD" stroke="#FFFFFF" stroke-width="5"/>
+      <path d="M 320 330 L 120.28 394.89 A 210 210 0 0 1 320 120 Z"
+            fill="#D99A2B" stroke="#FFFFFF" stroke-width="5"/>
+    </g>
 
-    <text x="0" y="101" class="label">根因定位与验证</text>
-    <text x="0" y="132" class="mono">root-cause-first</text>
-    <rect x="274" y="76" width="900" height="78" rx="8" fill="#E5EBF3"/>
-    <rect x="274" y="76" width="582" height="78" rx="8" fill="#0F6CBD"/>
-    <text x="300" y="124" class="white">崩溃、生命周期、配置链路、运行引擎、输入事件</text>
-    <text x="1214" y="112" class="barNum">11</text>
-    <text x="1281" y="110" class="body">次</text>
-    <text x="1281" y="136" class="tag">64.7%</text>
+    <g transform="translate(570 160)">
+      <rect width="350" height="142" rx="8" fill="#E8F3FE" stroke="#9AC6F4" stroke-width="2"/>
+      <circle cx="28" cy="32" r="8" fill="#0F6CBD"/>
+      <text x="48" y="39" class="label">根因定位与验证</text>
+      <text x="24" y="78" class="monoSmall" fill="#0F6CBD">root-cause-first</text>
+      <text x="24" y="122" class="pct">14 次 · 70.0%</text>
+    </g>
 
-    <text x="0" y="229" class="label">Qt 界面审计</text>
-    <text x="0" y="260" class="mono">deeplux-qt-ui-audit</text>
-    <rect x="274" y="204" width="900" height="78" rx="8" fill="#E5EBF3"/>
-    <rect x="274" y="204" width="318" height="78" rx="8" fill="#17A673"/>
-    <text x="300" y="252" class="white">主题、布局、控件状态、真实 GUI 验收</text>
-    <text x="1214" y="240" class="barNum">6</text>
-    <text x="1265" y="238" class="body">次</text>
-    <text x="1265" y="264" class="tag">35.3%</text>
+    <g transform="translate(570 326)">
+      <rect width="350" height="142" rx="8" fill="#FFF6E5" stroke="#E8C77D" stroke-width="2"/>
+      <circle cx="28" cy="32" r="8" fill="#D99A2B"/>
+      <text x="48" y="39" class="label">Qt 界面审计</text>
+      <text x="24" y="78" class="monoSmall" fill="#9B6710">deeplux-qt-ui-audit</text>
+      <text x="24" y="122" class="pct">6 次 · 30.0%</text>
+    </g>
+
+    <line x1="30" y1="548" x2="940" y2="548" stroke="#D7E0EC" stroke-width="2"/>
+    <text x="30" y="580" class="small">计数单位：任务级显式启用记录；系统技能列表、纯文档提及和重复续接不计入。</text>
   </g>
 
-  <g transform="translate(72 756)">
-    <rect width="1456" height="94" rx="10" fill="#FFFFFF" stroke="#C8D5E6" stroke-width="2"/>
-    <text x="26" y="34" class="tag">能力固化缺口</text>
-    <text x="26" y="66" class="body">插件交付、2D/3D 几何测量、流程执行与检视、Agent 受控协作、SAM 快速标注目前只有方法图谱，尚未成为可调用专项 skill。</text>
+  <g transform="translate(1070 222)">
+    <rect width="458" height="178" rx="10" fill="#FFFFFF" stroke="#C8D5E6" stroke-width="2"/>
+    <rect width="8" height="178" rx="4" fill="#0F6CBD"/>
+    <text x="34" y="48" class="small">已记录任务级使用</text>
+    <text x="34" y="111" class="value">20</text>
+    <text x="102" y="108" class="body">次</text>
+    <text x="34" y="148" class="small">较 2026-08-12 新增 3 次</text>
+  </g>
+
+  <g transform="translate(1070 424)">
+    <rect width="458" height="178" rx="10" fill="#FFFFFF" stroke="#C8D5E6" stroke-width="2"/>
+    <rect width="8" height="178" rx="4" fill="#17A673"/>
+    <text x="34" y="48" class="small">已可调用专项 Skill</text>
+    <text x="34" y="111" class="value">2</text>
+    <text x="66" y="108" class="body">项</text>
+    <text x="34" y="148" class="small">根因定位 · Qt 界面审计</text>
+  </g>
+
+  <g transform="translate(1070 626)">
+    <rect width="458" height="196" rx="10" fill="#FFFFFF" stroke="#C8D5E6" stroke-width="2"/>
+    <rect width="8" height="196" rx="4" fill="#8B5CF6"/>
+    <text x="34" y="48" class="small">待固化能力图谱</text>
+    <text x="34" y="111" class="value">5</text>
+    <text x="66" y="108" class="body">项</text>
+    <text x="34" y="148" class="small">插件 · 测量 · 流程</text>
+    <text x="34" y="176" class="small">Agent · SAM 标注</text>
   </g>
 </svg>

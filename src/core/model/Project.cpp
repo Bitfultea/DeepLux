@@ -249,6 +249,20 @@ void Project::removeConnection(const QString& fromId, const QString& toId) {
     }
 }
 
+void Project::removeConnectionWithPorts(const QString& fromId, const QString& fromPort,
+                                          const QString& toId, const QString& toPort) {
+    for (int i = 0; i < m_connections.size(); i++) {
+        const ModuleConnection& c = m_connections[i];
+        if (c.fromModuleId == fromId && c.toModuleId == toId &&
+            c.fromPort == fromPort && c.toPort == toPort) {
+            m_connections.removeAt(i);
+            touch();
+            emit connectionRemoved(fromId, toId);
+            return;
+        }
+    }
+}
+
 void Project::setConnections(const QList<ModuleConnection>& conns) {
     m_connections = conns;
     touch();

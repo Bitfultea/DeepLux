@@ -1,12 +1,12 @@
 #include "DataContract.h"
 
-#include <QCoreApplication>
-#include <QMutex>
-#include <QMutexLocker>
-
 #include "core/common/CancellationToken.h"
 #include "core/display/DisplayData.h"
 #include "core/model/ImageData.h"
+
+#include <QCoreApplication>
+#include <QMutex>
+#include <QMutexLocker>
 
 namespace DeepLux {
 
@@ -16,28 +16,50 @@ bool ExecutionContext::isCancelled() const {
 
 QString dataTypeName(DataType type) {
     switch (type) {
-    case DataType::Image2D: return QStringLiteral("Image2D");
-    case DataType::HeightMap2D: return QStringLiteral("HeightMap2D");
-    case DataType::PointCloud3D: return QStringLiteral("PointCloud3D");
-    case DataType::Mask2D: return QStringLiteral("Mask2D");
-    case DataType::Region2D: return QStringLiteral("Region2D");
-    case DataType::Point2D: return QStringLiteral("Point2D");
-    case DataType::Point3D: return QStringLiteral("Point3D");
-    case DataType::PointSet2D: return QStringLiteral("PointSet2D");
-    case DataType::Line2D: return QStringLiteral("Line2D");
-    case DataType::Circle2D: return QStringLiteral("Circle2D");
-    case DataType::Ellipse2D: return QStringLiteral("Ellipse2D");
-    case DataType::Plane3D: return QStringLiteral("Plane3D");
-    case DataType::Transform2D: return QStringLiteral("Transform2D");
-    case DataType::DetectionList: return QStringLiteral("DetectionList");
-    case DataType::ClassScores: return QStringLiteral("ClassScores");
-    case DataType::Number: return QStringLiteral("Number");
-    case DataType::Integer: return QStringLiteral("Integer");
-    case DataType::Boolean: return QStringLiteral("Boolean");
-    case DataType::String: return QStringLiteral("String");
-    case DataType::Binary: return QStringLiteral("Binary");
-    case DataType::Table: return QStringLiteral("Table");
-    case DataType::Any: return QStringLiteral("Any");
+    case DataType::Image2D:
+        return QStringLiteral("Image2D");
+    case DataType::HeightMap2D:
+        return QStringLiteral("HeightMap2D");
+    case DataType::PointCloud3D:
+        return QStringLiteral("PointCloud3D");
+    case DataType::Mask2D:
+        return QStringLiteral("Mask2D");
+    case DataType::Region2D:
+        return QStringLiteral("Region2D");
+    case DataType::Point2D:
+        return QStringLiteral("Point2D");
+    case DataType::Point3D:
+        return QStringLiteral("Point3D");
+    case DataType::PointSet2D:
+        return QStringLiteral("PointSet2D");
+    case DataType::Line2D:
+        return QStringLiteral("Line2D");
+    case DataType::Circle2D:
+        return QStringLiteral("Circle2D");
+    case DataType::Ellipse2D:
+        return QStringLiteral("Ellipse2D");
+    case DataType::Plane3D:
+        return QStringLiteral("Plane3D");
+    case DataType::Transform2D:
+        return QStringLiteral("Transform2D");
+    case DataType::DetectionList:
+        return QStringLiteral("DetectionList");
+    case DataType::ClassScores:
+        return QStringLiteral("ClassScores");
+    case DataType::Number:
+        return QStringLiteral("Number");
+    case DataType::Integer:
+        return QStringLiteral("Integer");
+    case DataType::Boolean:
+        return QStringLiteral("Boolean");
+    case DataType::String:
+        return QStringLiteral("String");
+    case DataType::Binary:
+        return QStringLiteral("Binary");
+    case DataType::Table:
+        return QStringLiteral("Table");
+    case DataType::Any:
+        return QStringLiteral("Any");
     }
     return QStringLiteral("Unknown");
 }
@@ -165,6 +187,7 @@ void registerDataContractMetaTypes() {
     registered = true;
 
     qRegisterMetaType<DataType>("DeepLux::DataType");
+    qRegisterMetaType<ControlJoinPolicy>("DeepLux::ControlJoinPolicy");
     qRegisterMetaType<PortSpec>("DeepLux::PortSpec");
     qRegisterMetaType<PortValueMap>("DeepLux::PortValueMap");
     qRegisterMetaType<ExecutionResult>("DeepLux::ExecutionResult");

@@ -46,6 +46,14 @@ enum class DataType {
 };
 
 /**
+ * @brief 控制汇合策略（多入控制端口的激活语义）
+ */
+enum class ControlJoinPolicy {
+    Any, // 任一上游控制边触发即激活（默认）
+    All  // 全部上游控制边触发后才激活
+};
+
+/**
  * @brief 端口描述（由 metadata.json 的 ports.inputs/outputs 声明）
  */
 struct PortSpec {
@@ -55,6 +63,7 @@ struct PortSpec {
     bool required = false; // 仅输入有效：必需输入缺失时返回结构化错误
     bool multiple = false; // 是否可连接多个上游
     bool control = false;  // 阶段 3.2: true 表示控制端口（与数据端口分离）
+    ControlJoinPolicy joinPolicy = ControlJoinPolicy::Any; // multiple+control 时的汇合策略
 };
 
 /// 端口值映射：portId -> QVariant（值为 DataType 对应的注册类型）
@@ -131,3 +140,4 @@ void registerDataContractMetaTypes();
 
 Q_DECLARE_METATYPE(DeepLux::DataType)
 Q_DECLARE_METATYPE(DeepLux::PortSpec)
+Q_DECLARE_METATYPE(DeepLux::ControlJoinPolicy)

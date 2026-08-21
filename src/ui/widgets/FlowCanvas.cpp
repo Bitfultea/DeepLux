@@ -8,9 +8,11 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QGraphicsSceneMouseEvent>
+#include <QGraphicsTextItem>
 #include <QMimeData>
 #include <QPainter>
 #include <QPolygonF>
+#include <QToolTip>
 #include <cmath>
 
 namespace DeepLux {
@@ -56,6 +58,18 @@ void drawConnectionArrow(QPainter* painter, const QPainterPath& path, const QCol
     painter->drawPolygon(arrow);
 }
 
+QString portTypeDisplayName(DataType type) {
+    switch (type) {
+    case DataType::Image2D: return QStringLiteral("Image2D");
+    case DataType::Number: return QStringLiteral("Number");
+    case DataType::Boolean: return QStringLiteral("Boolean");
+    case DataType::String: return QStringLiteral("String");
+    case DataType::Integer: return QStringLiteral("Integer");
+    case DataType::Any: return QStringLiteral("Any");
+    default: return QString();
+    }
+}
+
 } // namespace
 
 // ========== FlowCanvas ==========
@@ -66,7 +80,6 @@ FlowCanvas::FlowCanvas(QWidget* parent) : QGraphicsView(parent), m_scene(new QGr
     setDragMode(QGraphicsView::RubberBandDrag);
     setAcceptDrops(true);
 
-    // 背景 — 跟随主题（深色 #1e1e1e，浅色 #f5f5f5）
     QPalette pal = viewport()->palette();
     bool isDark = pal.color(QPalette::Window).lightness() <= 128;
     const QColor background = isDark ? QColor("#1e1e1e") : QColor("#f5f5f5");
@@ -86,6 +99,20 @@ void FlowCanvas::applyTheme(bool isDark) {
     viewport()->update();
 }
 
+bool FlowCanvas::portsCompatible(const PortSpec& fromPort, const PortSpec& toPort) {
+    if (fromPort.control != toPort.control)
+        return false;
+    if (fromPort.type == DataType::Any || toPort.type == DataType::Any)
+        return true;
+    return fromPort.type == toPort.type;
+}
+
+QString FlowCanvas::connectionKey(const QString& fromId, const QString& fromPort,
+                                    const QString& toId, const QString& toPort) {
+    return fromId + QLatin1Char('\x1f') + fromPort + QLatin1Char('\x1f') +
+           toId + QLatin1Char('\x1f') + toPort;
+}
+
 QString FlowCanvas::addNode(const QString& moduleId, const QString& name, const QPointF& pos,
                             const QString& instanceId) {
     QString nodeId = instanceId.isEmpty() ? QString("node_%1").arg(++m_nodeCounter) : instanceId;
@@ -97,6 +124,12 @@ QString FlowCanvas::addNode(const QString& moduleId, const QString& name, const 
     m_scene->addItem(item);
     item->setPos(pos);
     m_nodes[nodeId] = item;
+
+    // 从 PluginManager 加载端口声明
+    PluginInfo info = PluginManager::instance().pluginInfo(moduleId);
+    if (!info.id.isEmpty()) {
+        item->setPortSpecs(info.inputPorts, info.outputPorts);
+    }
 
     if (!m_loadingProject) {
         Project* project = ProjectManager::instance().currentProject();
@@ -122,7 +155,6 @@ void FlowCanvas::removeNode(const QString& nodeId) {
 
     FlowNodeItem* item = m_nodes.take(nodeId);
 
-    // 清除与此节点相关的连接
     removeConnectionsForNode(nodeId);
 
     m_scene->removeItem(item);
@@ -159,7 +191,6 @@ void FlowCanvas::removeConnectionsForNode(const QString& nodeId) {
 }
 
 void FlowCanvas::clearNodes() {
-    // 先清除所有连接
     clearConnections();
 
     for (auto* item : m_nodes) {
@@ -169,13 +200,18 @@ void FlowCanvas::clearNodes() {
     m_nodes.clear();
 }
 
-void FlowCanvas::addConnection(const QString& fromNodeId, int fromPort, const QString& toNodeId, int toPort) {
+void FlowCanvas::addConnection(const QString& fromNodeId, const QString& fromPortId,
+                               const QString& toNodeId, const QString& toPortId,
+                               const QString& edgeType) {
     if (!m_nodes.contains(fromNodeId) || !m_nodes.contains(toNodeId)) {
         return;
     }
 
+    // 按完整 4 元组去重（允许同节点对不同端口的多连接）
+    const QString key = connectionKey(fromNodeId, fromPortId, toNodeId, toPortId);
     for (FlowConnectionItem* existing : m_connections) {
-        if (existing && existing->fromNodeId() == fromNodeId && existing->toNodeId() == toNodeId) {
+        if (existing && connectionKey(existing->fromNodeId(), existing->fromPortId(),
+                                       existing->toNodeId(), existing->toPortId()) == key) {
             return;
         }
     }
@@ -183,45 +219,42 @@ void FlowCanvas::addConnection(const QString& fromNodeId, int fromPort, const QS
     FlowNodeItem* fromItem = m_nodes[fromNodeId];
     FlowNodeItem* toItem = m_nodes[toNodeId];
 
-    FlowConnectionItem* conn = new FlowConnectionItem(fromItem, fromPort, toItem, toPort);
+    FlowConnectionItem* conn = new FlowConnectionItem(fromItem, fromPortId, toItem, toPortId, edgeType);
     m_scene->addItem(conn);
     m_connections.append(conn);
 
-    if (!m_loadingProject) {
+    if (!m_loadingProject && !m_syncingFromProject) {
         Project* project = ProjectManager::instance().currentProject();
         if (project) {
-            bool exists = false;
-            for (const ModuleConnection& existing : project->connections()) {
-                if (existing.fromModuleId == fromNodeId && existing.toModuleId == toNodeId) {
-                    exists = true;
-                    break;
-                }
-            }
-            if (!exists) {
-                ModuleConnection projectConn;
-                projectConn.fromModuleId = fromNodeId;
-                projectConn.toModuleId = toNodeId;
-                projectConn.fromOutput = fromPort;
-                projectConn.toInput = toPort;
-                project->addConnection(projectConn);
-            }
+            ModuleConnection projectConn;
+            projectConn.fromModuleId = fromNodeId;
+            projectConn.toModuleId = toNodeId;
+            projectConn.fromPort = fromPortId;
+            projectConn.toPort = toPortId;
+            projectConn.edgeType = edgeType;
+            projectConn.fromOutput = 0;
+            projectConn.toInput = 0;
+            project->addConnection(projectConn);
         }
     }
 
     emit connectionCreated(fromNodeId, toNodeId);
 }
 
-void FlowCanvas::removeConnection(const QString& fromNodeId, const QString& toNodeId) {
+void FlowCanvas::removeConnection(const QString& fromNodeId, const QString& fromPortId,
+                                   const QString& toNodeId, const QString& toPortId) {
+    const QString key = connectionKey(fromNodeId, fromPortId, toNodeId, toPortId);
     for (int i = m_connections.size() - 1; i >= 0; i--) {
-        if (m_connections[i]->fromNodeId() == fromNodeId && m_connections[i]->toNodeId() == toNodeId) {
-            FlowConnectionItem* conn = m_connections[i];
+        FlowConnectionItem* conn = m_connections[i];
+        if (connectionKey(conn->fromNodeId(), conn->fromPortId(),
+                         conn->toNodeId(), conn->toPortId()) == key) {
             m_scene->removeItem(conn);
             m_connections.removeAt(i);
             delete conn;
-            if (!m_loadingProject) {
+            if (!m_loadingProject && !m_syncingFromProject) {
                 Project* project = ProjectManager::instance().currentProject();
                 if (project) {
-                    project->removeConnection(fromNodeId, toNodeId);
+                    project->removeConnectionWithPorts(fromNodeId, fromPortId, toNodeId, toPortId);
                 }
             }
             emit connectionRemoved(fromNodeId, toNodeId);
@@ -240,7 +273,11 @@ void FlowCanvas::loadFromProject(Project* project) {
             addNode(inst.moduleId, inst.name, QPointF(inst.posX, inst.posY), inst.id);
         }
         for (const ModuleConnection& conn : project->connections()) {
-            addConnection(conn.fromModuleId, conn.fromOutput, conn.toModuleId, conn.toInput);
+            // 优先使用字符串端口；回退到旧整数字段
+            QString fromPort = conn.fromPort.isEmpty() ? QStringLiteral("image") : conn.fromPort;
+            QString toPort = conn.toPort.isEmpty() ? QStringLiteral("image") : conn.toPort;
+            QString edgeType = conn.edgeType.isEmpty() ? QStringLiteral("data") : conn.edgeType;
+            addConnection(conn.fromModuleId, fromPort, conn.toModuleId, toPort, edgeType);
         }
     }
 
@@ -266,10 +303,6 @@ FlowNodeItem* FlowCanvas::nodeItem(const QString& nodeId) const {
 }
 
 void FlowCanvas::selectNode(const QString& nodeId) {
-    // 程序化选择：只更新场景选中状态，不发出 nodeSelected 信号。
-    // nodeSelected 仅由用户鼠标点击 (FlowNodeItem::mousePressEvent) 触发，
-    // 避免在 MainWindow::selectModule → selectNode → nodeSelected → selectModule
-    // 之间形成递归选择循环。
     FlowNodeItem* item = m_nodes.value(nodeId, nullptr);
     if (!item) {
         return;
@@ -289,7 +322,6 @@ QList<FlowNodeItem*> FlowCanvas::getOrderedModules() const {
         return {};
     }
 
-    // 构建入度表
     QMap<QString, int> inDegree;
     QMap<QString, QStringList> adj;
     for (const QString& nodeId : m_nodes.keys()) {
@@ -305,7 +337,6 @@ QList<FlowNodeItem*> FlowCanvas::getOrderedModules() const {
         }
     }
 
-    // Kahn算法拓扑排序
     QList<FlowNodeItem*> ordered;
     QStringList queue;
 
@@ -328,9 +359,7 @@ QList<FlowNodeItem*> FlowCanvas::getOrderedModules() const {
         }
     }
 
-    // 如果有环或没有连接，按Y坐标排序（保证有连接的节点优先）
     if (ordered.size() != m_nodes.size()) {
-        // 混合策略：先放拓扑排序结果，再追加剩余节点（按Y坐标）
         QSet<QString> visited;
         for (FlowNodeItem* item : ordered) {
             visited.insert(item->nodeId());
@@ -370,7 +399,6 @@ void FlowCanvas::dragMoveEvent(QDragMoveEvent* event) {
 
 void FlowCanvas::dropEvent(QDropEvent* event) {
     QString moduleData = event->mimeData()->text();
-    // 格式: moduleId|name
     QStringList parts = moduleData.split("|");
     if (parts.size() >= 2) {
         QPointF pos = mapToScene(event->pos());
@@ -423,7 +451,6 @@ void FlowCanvas::drawBackground(QPainter* painter, const QRectF& rect) {
         drawConnectionArrow(painter, path, lineColor);
     }
 
-    // 执行顺序图例
     const bool isDark = m_scene->backgroundBrush().color().lightness() <= 128;
     QColor legendColor = isDark ? QColor("#94A3B8") : QColor("#64748B");
     legendColor.setAlpha(120);
@@ -447,6 +474,15 @@ FlowNodeItem::FlowNodeItem(const QString& nodeId, const QString& name, const QSt
     setFlag(QGraphicsItem::ItemIsSelectable);
     setFlag(QGraphicsItem::ItemSendsGeometryChanges);
     setZValue(1);
+    setAcceptHoverEvents(true);
+}
+
+void FlowNodeItem::setPortSpecs(const QList<PortSpec>& inputs, const QList<PortSpec>& outputs) {
+    m_inputPortSpecs = inputs;
+    m_outputPortSpecs = outputs;
+    // 根据 PortSpec 数量调整高度
+    m_height = qMax<qreal>(64, 32 + qMax(inputs.size(), outputs.size()) * 18.0);
+    update();
 }
 
 void FlowNodeItem::setName(const QString& name) {
@@ -464,29 +500,112 @@ QRectF FlowNodeItem::boundingRect() const {
     return QRectF(-6, -2, m_width + 12, m_height + 4);
 }
 
+QPointF FlowNodeItem::inputPortPos(int index) const {
+    const int count = qMax(1, m_inputPortSpecs.size());
+    const qreal spacing = 20.0;
+    const qreal x = m_width / 2 + (index - (count - 1) / 2.0) * spacing;
+    return QPointF(x, 0);
+}
+
+QPointF FlowNodeItem::outputPortPos(int index) const {
+    const int count = qMax(1, m_outputPortSpecs.size());
+    const qreal spacing = 20.0;
+    const qreal x = m_width / 2 + (index - (count - 1) / 2.0) * spacing;
+    return QPointF(x, m_height);
+}
+
+QPointF FlowNodeItem::inputPortPos(const QString& portId) const {
+    for (int i = 0; i < m_inputPortSpecs.size(); ++i) {
+        if (m_inputPortSpecs[i].id == portId)
+            return inputPortPos(i);
+    }
+    return inputPortPos(0);
+}
+
+QPointF FlowNodeItem::outputPortPos(const QString& portId) const {
+    for (int i = 0; i < m_outputPortSpecs.size(); ++i) {
+        if (m_outputPortSpecs[i].id == portId)
+            return outputPortPos(i);
+    }
+    return outputPortPos(0);
+}
+
+QString FlowNodeItem::inputPortAt(const QPointF& pos) const {
+    // 将 pos 转换为节点本地坐标
+    const QPointF local = mapFromScene(pos);
+    for (int i = 0; i < m_inputPortSpecs.size(); ++i) {
+        const QPointF portPos = inputPortPos(i);
+        const qreal dx = local.x() - portPos.x();
+        const qreal dy = local.y() - portPos.y();
+        if (dx * dx + dy * dy <= 36.0) // 6px radius
+            return m_inputPortSpecs[i].id;
+    }
+    return QString();
+}
+
+QString FlowNodeItem::outputPortAt(const QPointF& pos) const {
+    const QPointF local = mapFromScene(pos);
+    for (int i = 0; i < m_outputPortSpecs.size(); ++i) {
+        const QPointF portPos = outputPortPos(i);
+        const qreal dx = local.x() - portPos.x();
+        const qreal dy = local.y() - portPos.y();
+        if (dx * dx + dy * dy <= 36.0)
+            return m_outputPortSpecs[i].id;
+    }
+    return QString();
+}
+
 void FlowNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) {
     Q_UNUSED(option)
     Q_UNUSED(widget)
 
-    // P2: 主题感知节点颜色
     bool isDark = scene() && scene()->backgroundBrush().color().lightness() <= 128;
+
+    // 视觉状态优先级：Selected > Running > Disabled > Breakpoint > Normal
     QColor bgColor, borderColor, textColor, secondaryTextColor;
     if (isDark) {
-        bgColor = isSelected() ? QColor(0, 120, 212) : QColor(45, 45, 48);
-        borderColor = isSelected() ? QColor("#06B6D4") : QColor("#3b4148");
+        bgColor = QColor(45, 45, 48);
+        borderColor = QColor("#3b4148");
         textColor = QColor("#ffffff");
-        secondaryTextColor = isSelected() ? QColor("#E0F2FE") : QColor("#94A3B8");
+        secondaryTextColor = QColor("#94A3B8");
     } else {
-        bgColor = isSelected() ? QColor(0, 120, 212) : QColor(255, 255, 255);
-        borderColor = isSelected() ? QColor("#0078d7") : QColor("#dce2e8");
-        textColor = isSelected() ? QColor("#ffffff") : QColor("#212121");
-        secondaryTextColor = isSelected() ? QColor("#E0F2FE") : QColor("#64748B");
+        bgColor = QColor(255, 255, 255);
+        borderColor = QColor("#dce2e8");
+        textColor = QColor("#212121");
+        secondaryTextColor = QColor("#64748B");
+    }
+
+    // 禁用：灰化
+    if (m_disabledVisual) {
+        bgColor = isDark ? QColor(35, 35, 38) : QColor(240, 240, 240);
+        textColor = textColor.darker(150);
+        secondaryTextColor = secondaryTextColor.darker(150);
+    }
+
+    // 选中：蓝色高亮
+    if (isSelected()) {
+        bgColor = QColor(0, 120, 212);
+        borderColor = isDark ? QColor("#06B6D4") : QColor("#0078d7");
+        textColor = QColor("#ffffff");
+        secondaryTextColor = QColor("#E0F2FE");
+    }
+
+    // 运行中：蓝色边框
+    if (m_status == QStringLiteral("running")) {
+        borderColor = QColor("#3B82F6");
     }
 
     painter->setRenderHint(QPainter::Antialiasing);
     painter->setBrush(bgColor);
-    painter->setPen(QPen(borderColor, 1.5));
+    painter->setPen(QPen(borderColor, isSelected() ? 2.0 : 1.5));
     painter->drawRoundedRect(0, 0, m_width, m_height, 6, 6);
+
+    // 断点标记（左上角红色小圆点）
+    if (m_breakpointVisual) {
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor("#EF4444"));
+        painter->drawEllipse(QPointF(6, 6), 4, 4);
+    }
 
     // 标题
     painter->setPen(textColor);
@@ -509,6 +628,7 @@ void FlowNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* opti
     painter->drawText(subtitleRect, Qt::AlignLeft | Qt::AlignVCenter,
                       painter->fontMetrics().elidedText(subtitle, Qt::ElideRight, qRound(subtitleRect.width())));
 
+    // 执行状态色点
     QColor statusColor;
     if (m_status == QStringLiteral("running"))
         statusColor = QColor("#3B82F6");
@@ -531,35 +651,61 @@ void FlowNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* opti
         painter->drawText(QRectF(m_width - 54, 5, 48, 22), Qt::AlignRight | Qt::AlignVCenter, elapsed);
     }
 
-    // 端口使用连线色，避免与右侧的执行状态色混淆。
+    // 端口绘制
     const QColor portColor = connectionColor(scene());
-    painter->setBrush(portColor);
+    const QColor controlPortColor = portColor.lighter(120);
     painter->setPen(QPen(portColor.darker(120), 1));
-    for (int i = 0; i < m_inputPorts; i++) {
-        const qreal x = m_width / 2 + (i - (m_inputPorts - 1) / 2.0) * 20.0;
-        painter->drawEllipse(QPointF(x, 0), 5, 5);
+
+    // 输入端口
+    for (int i = 0; i < m_inputPortSpecs.size(); i++) {
+        const QPointF pos = inputPortPos(i);
+        const PortSpec& spec = m_inputPortSpecs[i];
+        const QColor& pc = spec.control ? controlPortColor : portColor;
+        painter->setBrush(pc);
+        painter->setPen(QPen(pc.darker(120), 1));
+        painter->drawEllipse(pos, 5, 5);
+        // 必需端口标记
+        if (spec.required) {
+            painter->setPen(QPen(pc.darker(150), 1));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawEllipse(pos, 7, 7);
+        }
+    }
+    // 如果没有声明端口，画一个默认端口
+    if (m_inputPortSpecs.isEmpty()) {
+        painter->setBrush(portColor);
+        painter->setPen(QPen(portColor.darker(120), 1));
+        painter->drawEllipse(QPointF(m_width / 2, 0), 5, 5);
     }
 
     // 输出端口
-    for (int i = 0; i < m_outputPorts; i++) {
-        const qreal x = m_width / 2 + (i - (m_outputPorts - 1) / 2.0) * 20.0;
-        painter->drawEllipse(QPointF(x, m_height), 5, 5);
+    for (int i = 0; i < m_outputPortSpecs.size(); i++) {
+        const QPointF pos = outputPortPos(i);
+        const PortSpec& spec = m_outputPortSpecs[i];
+        const QColor& pc = spec.control ? controlPortColor : portColor;
+        painter->setBrush(pc);
+        painter->setPen(QPen(pc.darker(120), 1));
+        painter->drawEllipse(pos, 5, 5);
     }
-}
+    if (m_outputPortSpecs.isEmpty()) {
+        painter->setBrush(portColor);
+        painter->setPen(QPen(portColor.darker(120), 1));
+        painter->drawEllipse(QPointF(m_width / 2, m_height), 5, 5);
+    }
 
-QPointF FlowNodeItem::inputPortPos(int index) const {
-    const qreal x = m_width / 2 + (index - (m_inputPorts - 1) / 2.0) * 20.0;
-    return QPointF(x, 0);
-}
-
-QPointF FlowNodeItem::outputPortPos(int index) const {
-    const qreal x = m_width / 2 + (index - (m_outputPorts - 1) / 2.0) * 20.0;
-    return QPointF(x, m_height);
+    // P2-fix: 拖线临时连线
+    if (m_draggingConnection) {
+        const QPointF start = outputPortPos(m_dragFromPortId);
+        const QPointF end = mapFromScene(m_dragCurrentPos);
+        painter->setPen(QPen(QColor("#3B82F6"), 2, Qt::DashLine, Qt::RoundCap));
+        painter->setBrush(Qt::NoBrush);
+        QPainterPath dragPath = connectionPath(start, end);
+        painter->drawPath(dragPath);
+    }
 }
 
 QVariant FlowNodeItem::itemChange(GraphicsItemChange change, const QVariant& value) {
     if (change == ItemPositionHasChanged) {
-        // 通过 FlowCanvas 更新相关连接
         QGraphicsScene* currentScene = scene();
         FlowCanvas* canvas = currentScene ? qobject_cast<FlowCanvas*>(currentScene->parent()) : nullptr;
         if (canvas) {
@@ -570,11 +716,21 @@ QVariant FlowNodeItem::itemChange(GraphicsItemChange change, const QVariant& val
 }
 
 void FlowNodeItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {
+    // 检查是否点击在输出端口上
+    if (event->button() == Qt::LeftButton) {
+        const QString portId = outputPortAt(event->scenePos());
+        if (!portId.isEmpty()) {
+            m_draggingConnection = true;
+            m_dragFromPortId = portId;
+            m_dragCurrentPos = event->scenePos();
+            event->accept();
+            return;
+        }
+    }
     QGraphicsItem::mousePressEvent(event);
     scene()->clearSelection();
     setSelected(true);
 
-    // 发出 FlowCanvas::nodeSelected 信号
     QGraphicsScene* currentScene = scene();
     FlowCanvas* canvas = currentScene ? qobject_cast<FlowCanvas*>(currentScene->parent()) : nullptr;
     if (canvas) {
@@ -582,18 +738,90 @@ void FlowNodeItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {
     }
 }
 
+void FlowNodeItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
+    if (m_draggingConnection) {
+        m_dragCurrentPos = event->scenePos();
+        update();
+        // P2-fix: 高亮兼容目标
+        QGraphicsScene* currentScene = scene();
+        if (currentScene) {
+            for (QGraphicsItem* item : currentScene->items(event->scenePos())) {
+                FlowNodeItem* targetNode = dynamic_cast<FlowNodeItem*>(item);
+                if (targetNode && targetNode != this) {
+                    QString targetPort = targetNode->inputPortAt(event->scenePos());
+                    if (!targetPort.isEmpty()) {
+                        targetNode->update();
+                    }
+                    break;
+                }
+            }
+        }
+        event->accept();
+        return;
+    }
+    QGraphicsItem::mouseMoveEvent(event);
+}
+
+void FlowNodeItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
+    if (m_draggingConnection) {
+        m_draggingConnection = false;
+        // 查找释放位置是否有兼容输入端口
+        QGraphicsScene* currentScene = scene();
+        if (currentScene) {
+            for (QGraphicsItem* item : currentScene->items(event->scenePos())) {
+                FlowNodeItem* targetNode = dynamic_cast<FlowNodeItem*>(item);
+                if (targetNode && targetNode != this) {
+                    const QString targetPort = targetNode->inputPortAt(event->scenePos());
+                    if (!targetPort.isEmpty()) {
+                        // 检查兼容性
+                        bool compatible = false;
+                        for (const PortSpec& outSpec : m_outputPortSpecs) {
+                            if (outSpec.id == m_dragFromPortId) {
+                                for (const PortSpec& inSpec : targetNode->m_inputPortSpecs) {
+                                    if (inSpec.id == targetPort) {
+                                        compatible = FlowCanvas::portsCompatible(outSpec, inSpec);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (compatible) {
+                            // 发射连接请求
+                            FlowCanvas* canvas = currentScene ? qobject_cast<FlowCanvas*>(currentScene->parent()) : nullptr;
+                            if (canvas) {
+                                emit canvas->connectionRequest(nodeId(), m_dragFromPortId,
+                                                                targetNode->nodeId(), targetPort);
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        m_dragFromPortId.clear();
+        update();
+        event->accept();
+        return;
+    }
+    QGraphicsItem::mouseReleaseEvent(event);
+}
+
 // ========== FlowConnectionItem ==========
 
-FlowConnectionItem::FlowConnectionItem(FlowNodeItem* fromNode, int fromPort, FlowNodeItem* toNode, int toPort,
-                                       QGraphicsItem* parent)
-    : QGraphicsItem(parent), m_fromNode(fromNode), m_toNode(toNode), m_fromPort(fromPort), m_toPort(toPort) {
+FlowConnectionItem::FlowConnectionItem(FlowNodeItem* fromNode, const QString& fromPortId,
+                                        FlowNodeItem* toNode, const QString& toPortId,
+                                        const QString& edgeType, QGraphicsItem* parent)
+    : QGraphicsItem(parent), m_fromNode(fromNode), m_toNode(toNode),
+      m_fromPortId(fromPortId), m_toPortId(toPortId), m_edgeType(edgeType) {
     setZValue(0);
+    setAcceptHoverEvents(true);
+    setToolTip(QStringLiteral("%1.%2 → %3.%4 (%5)")
+                   .arg(fromNode ? fromNode->nodeId() : QString(), fromPortId,
+                        toNode ? toNode->nodeId() : QString(), toPortId, edgeType));
     updatePath();
 }
 
-FlowConnectionItem::~FlowConnectionItem() {
-    // 不需要清理节点中的引用，因为我们现在通过 nodeId 来查找
-}
+FlowConnectionItem::~FlowConnectionItem() = default;
 
 QString FlowConnectionItem::fromNodeId() const {
     return m_fromNode ? m_fromNode->nodeId() : QString();
@@ -604,7 +832,6 @@ QString FlowConnectionItem::toNodeId() const {
 }
 
 bool FlowConnectionItem::isValid() const {
-    // 检查节点是否仍然有效（在场景中且未被删除）
     return m_fromNode && m_toNode && m_fromNode->scene() == scene() && m_toNode->scene() == scene();
 }
 
@@ -620,7 +847,9 @@ void FlowConnectionItem::paint(QPainter* painter, const QStyleOptionGraphicsItem
     Q_UNUSED(widget)
 
     const QColor lineColor = connectionColor(scene());
-    painter->setPen(QPen(lineColor, 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    // 数据边实线，控制边虚线
+    const Qt::PenStyle penStyle = isControlEdge() ? Qt::DashLine : Qt::SolidLine;
+    painter->setPen(QPen(lineColor, 2, penStyle, Qt::RoundCap, Qt::RoundJoin));
     painter->setBrush(Qt::NoBrush);
     painter->drawPath(m_path);
     drawConnectionArrow(painter, m_path, lineColor);
@@ -634,8 +863,8 @@ void FlowConnectionItem::updatePath() {
         const bool nodesShareScene = nodeScene && nodeScene == m_toNode->scene();
         const bool itemSceneMatches = !scene() || scene() == nodeScene;
         if (nodesShareScene && itemSceneMatches) {
-            QPointF start = m_fromNode->scenePos() + m_fromNode->outputPortPos(m_fromPort);
-            QPointF end = m_toNode->scenePos() + m_toNode->inputPortPos(m_toPort);
+            QPointF start = m_fromNode->scenePos() + m_fromNode->outputPortPos(m_fromPortId);
+            QPointF end = m_toNode->scenePos() + m_toNode->inputPortPos(m_toPortId);
             newPath = connectionPath(start, end);
         }
     }

@@ -1,14 +1,12 @@
-#include <QtTest/QtTest>
-
-#include <core/interface/IModule.h>
-#include <core/manager/PluginManager.h>
-
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
 #include <QWidget>
+#include <QtTest/QtTest>
+#include <core/interface/IModule.h>
+#include <core/manager/PluginManager.h>
 
 using namespace DeepLux;
 
@@ -111,9 +109,11 @@ void TestPluginContracts::testRepresentativePluginsHaveIndependentParamPreservin
         {"MeasurementInput", "MeasurementInput", "src/plugins/geometry/MeasurementInput/metadata.json",
          "libMeasurementInputPlugin.so"},
         {"Loop", "循环", "src/plugins/logic/Loop/metadata.json", "libLoopPlugin.so"},
+        {"Parallel", "Parallel", "src/plugins/logic/Parallel/metadata.json", "libParallelPlugin.so"},
         {"SystemTime", "SystemTime", "src/plugins/system/SystemTime/metadata.json", "libSystemTimePlugin.so"},
         {"Blob", "Blob", "src/plugins/image_processing/Blob/metadata.json", "libBlobPlugin.so"},
-        {"PerProcessing", "PerProcessing", "src/plugins/image_processing/PerProcessing/metadata.json", "libPerProcessingPlugin.so"},
+        {"PerProcessing", "PerProcessing", "src/plugins/image_processing/PerProcessing/metadata.json",
+         "libPerProcessingPlugin.so"},
         {"Matching", "Matching", "src/plugins/detection/Matching/metadata.json", "libMatchingPlugin.so"},
         {"MeasureRect", "MeasureRect", "src/plugins/detection/MeasureRect/metadata.json", "libMeasureRectPlugin.so"},
         {"Folder", "Folder", "src/plugins/system/Folder/metadata.json", "libFolderPlugin.so"},
@@ -144,6 +144,11 @@ void TestPluginContracts::testRepresentativePluginsHaveIndependentParamPreservin
         QVERIFY2(!first->name().isEmpty(), qPrintable(fixture.moduleName));
         QVERIFY2(!first->category().isEmpty(), qPrintable(fixture.moduleName));
         QCOMPARE(first->interfaceVersion(), DEEPLUX_MODULE_INTERFACE_VERSION);
+        if (fixture.moduleName == QLatin1String("Parallel")) {
+            QCOMPARE(first->flowControlType(), ControlFlowType::Parallel);
+            QCOMPARE(first->inputPorts().size(), 2);
+            QCOMPARE(first->outputPorts().size(), 2);
+        }
 
         QString error;
         QVERIFY2(first->validateParams(first->currentParams(), error),

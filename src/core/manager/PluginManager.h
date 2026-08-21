@@ -42,6 +42,7 @@ struct PluginInfo {
     QJsonObject ui;      // 可选 UI 描述（parameters/results 元数据）
     QList<PortSpec> inputPorts;  // ABI v2 输入端口声明（metadata.json ports.inputs）
     QList<PortSpec> outputPorts; // ABI v2 输出端口声明（metadata.json ports.outputs）
+    bool threadSafe = false;     // metadata.json execution.threadSafe，并行批次中是否可并发执行
 };
 
 /**

@@ -67,6 +67,8 @@ public:
         return m_outputPorts;
     }
     void setPorts(const QList<PortSpec>& inputs, const QList<PortSpec>& outputs);
+    bool isThreadSafe() const { return m_threadSafe; }
+    void setThreadSafe(bool safe) { m_threadSafe = safe; }
 
     QJsonObject defaultParams() const override;
     QJsonObject currentParams() const override;
@@ -107,6 +109,7 @@ protected:
 
     QList<PortSpec> m_inputPorts;
     QList<PortSpec> m_outputPorts;
+    bool m_threadSafe = false;
 
     bool m_initialized = false;
     ModuleState m_state = ModuleState::Idle;

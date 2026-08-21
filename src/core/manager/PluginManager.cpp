@@ -163,6 +163,19 @@ bool parsePortArray(const QJsonArray& arr, QList<PortSpec>& out, QString& error,
         spec.required = o.value("required").toBool(false);
         spec.multiple = o.value("multiple").toBool(false);
         spec.control = o.value("control").toBool(false);
+        if (o.contains("joinPolicy") && (!spec.control || !spec.multiple)) {
+            error =
+                QString("%1: port %2 uses joinPolicy without control=true and multiple=true").arg(pluginName, spec.id);
+            return false;
+        }
+        if (spec.control && spec.multiple) {
+            const QString policy = o.value("joinPolicy").toString("any").toLower();
+            if (policy != QLatin1String("any") && policy != QLatin1String("all")) {
+                error = QString("%1: port %2 has unknown joinPolicy %3").arg(pluginName, spec.id, policy);
+                return false;
+            }
+            spec.joinPolicy = policy == QLatin1String("all") ? ControlJoinPolicy::All : ControlJoinPolicy::Any;
+        }
         seen.insert(spec.id);
         out.append(spec);
     }
@@ -206,17 +219,24 @@ bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info) {
     QString portError;
     if (!info.category.toLower().contains(QStringLiteral("camera"))) {
         if (ports.isEmpty() || !ports.contains("inputs") || !ports.contains("outputs")) {
-            info.error = QStringLiteral("%1: ABI v2 module metadata requires ports.inputs and ports.outputs").arg(info.name);
+            info.error =
+                QStringLiteral("%1: ABI v2 module metadata requires ports.inputs and ports.outputs").arg(info.name);
             qWarning() << info.error;
             return false;
         }
-        if (!parsePortArray(ports["inputs"].toArray(), info.inputPorts, portError, info.name, QStringLiteral("inputs")) ||
-            !parsePortArray(ports["outputs"].toArray(), info.outputPorts, portError, info.name, QStringLiteral("outputs"))) {
+        if (!parsePortArray(ports["inputs"].toArray(), info.inputPorts, portError, info.name,
+                            QStringLiteral("inputs")) ||
+            !parsePortArray(ports["outputs"].toArray(), info.outputPorts, portError, info.name,
+                            QStringLiteral("outputs"))) {
             info.error = portError;
             qWarning() << "Invalid ports:" << portError;
             return false;
         }
     }
+
+    // 阶段 E: 并行安全标记
+    QJsonObject execution = json["execution"].toObject();
+    info.threadSafe = execution["threadSafe"].toBool(false);
 
     return !info.name.isEmpty();
 }
@@ -644,6 +664,7 @@ IModule* PluginManager::createModule(const QString& name) {
         if (ModuleBase* mb = qobject_cast<ModuleBase*>(clone)) {
             const PluginInfo info = m_modules.value(name);
             mb->setPorts(info.inputPorts, info.outputPorts);
+            mb->setThreadSafe(info.threadSafe);
         }
         return clone;
     }

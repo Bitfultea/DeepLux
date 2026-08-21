@@ -137,6 +137,8 @@ public:
     }
     void addConnection(const ModuleConnection& conn);
     void removeConnection(const QString& fromId, const QString& toId);
+    void removeConnectionWithPorts(const QString& fromId, const QString& fromPort,
+                                     const QString& toId, const QString& toPort);
     void setConnections(const QList<ModuleConnection>& conns);
 
     // 相机配置

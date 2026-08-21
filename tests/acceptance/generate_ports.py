@@ -91,6 +91,7 @@ CONTROL_PORTS = {
     "循环": {"out": [("body", "control"), ("done", "control")]},
     "条件循环": {"out": [("body", "control"), ("done", "control")]},
     "停止循环": {"out": [("stop", "control")]},
+    "Parallel": {"in": [("control", "all")], "out": [("branch", "control")]},
 }
 
 
@@ -122,6 +123,10 @@ def build_ports(name, category):
                             "required": False, "multiple": False})
 
     # 阶段 3.2: 控制端口（与数据端口分离）
+    for pid, policy in CONTROL_PORTS.get(name, {}).get("in", []):
+        inputs.append({"id": pid, "displayName": pid, "type": "Boolean",
+                       "required": False, "multiple": True, "control": True,
+                       "joinPolicy": policy})
     for entry in CONTROL_PORTS.get(name, {}).get("out", []):
         pid, kind = entry[0], entry[1]
         outputs.append({"id": pid, "displayName": pid, "type": "Boolean",

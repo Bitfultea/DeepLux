@@ -1,19 +1,18 @@
 {
     "id": "com.deeplux.plugin.parallel",
-    "name": "并行执行",
+    "name": "Parallel",
     "category": "logic",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "并行执行多个分支（实验性：当前无真实并行语义，未开放加入生产流程）",
-    "experimental": true,
+    "description": "并行执行由 branch 控制端口连接的线程安全分支",
     "ui": {
         "parameters": {
             "parallelCount": {
-                "min": 0,
+                "min": 2,
                 "step": 1,
                 "decimals": 0,
                 "order": 10,
-                "label": "并行数量"
+                "label": "最大并发数"
             }
         }
     },
@@ -25,6 +24,15 @@
                 "type": "Any",
                 "required": false,
                 "multiple": false
+            },
+            {
+                "id": "control",
+                "displayName": "控制输入",
+                "type": "Boolean",
+                "required": false,
+                "multiple": true,
+                "control": true,
+                "joinPolicy": "all"
             }
         ],
         "outputs": [
@@ -34,6 +42,14 @@
                 "type": "Any",
                 "required": false,
                 "multiple": false
+            },
+            {
+                "id": "branch",
+                "displayName": "并行分支",
+                "type": "Boolean",
+                "required": false,
+                "multiple": false,
+                "control": true
             }
         ]
     }

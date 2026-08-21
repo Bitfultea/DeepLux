@@ -48,7 +48,7 @@ ctest --test-dir build -R test_acceptance_flows --output-on-failure
 | ROI→点集→直线/圆拟合 | `line_640x480.png` 等 | 待建 | `expected/line_640x480.json` | 数据就绪，工程待建 |
 | 2D 几何测量 | `two_points_640x480.png` | `projects/accept_distancepp.json` | `expected/two_points_640x480.json` | ✅ 已接入自动化 |
 | 3D 点云测量 | `plane_z5.ply` | `projects/accept_point_surface.json` | `expected/plane_z5.json` | ✅ 已接入自动化 |
-| 条件/循环/并行流程 | 无需图像 | 待建 | 执行顺序断言 | Parallel 实验性，暂不纳入生产验收 |
+| 条件/循环/并行流程 | 无需图像 | 待建 | 执行顺序断言 | 核心自动化已覆盖，GUI 验收工程待建 |
 | PLC/相机/AI 模拟流程 | 模拟器 | 待建 | 契约测试 | 依赖设备模拟器，先建契约测试 |
 
 ## 已接入：找圆流程
@@ -66,5 +66,5 @@ ctest --test-dir build -R test_acceptance_flows --output-on-failure
 ## 待办
 
 1. 为 ROI/拟合、2D 测量、3D 测量流程补充验收工程与自动化断言。
-2. 条件/循环流程补充执行顺序断言；Parallel 在阶段 3 前保持实验性、不纳入生产验收。
+2. 为条件、循环和 Parallel 补充可视化 GUI 验收工程；核心执行顺序与并发语义已有自动测试。
 3. PLC/相机/AI 先建设备模拟器与契约测试，再接入模拟流程验收。

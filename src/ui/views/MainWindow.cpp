@@ -112,12 +112,12 @@
 #include <QTreeWidgetItem>
 #include <QTreeWidgetItemIterator>
 #include <QUndoCommand>
-#include <functional>
 #include <QUrl>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QWidgetAction>
 #include <cmath>
+#include <functional>
 
 namespace DeepLux {
 
@@ -1068,9 +1068,7 @@ void MainWindow::setupMainLayout() {
     addToolBoxItem(logicItem, tr("停止循环"), "StopWhile");
     addToolBoxItem(logicItem, tr("条件判断"), "Condition");
     addToolBoxItem(logicItem, tr("延时"), "Delay");
-    // 阶段 0: Parallel 当前无真实并行执行语义（RunEngine 未实现 Parallel 控制流），
-    // 标记为实验性并从工具箱隐藏，禁止加入生产流程；待阶段 3 完成后恢复。
-    // addToolBoxItem(logicItem, tr("并行（实验性）"), "Parallel");
+    addToolBoxItem(logicItem, tr("并行执行"), "Parallel");
     addToolBoxItem(logicItem, tr("队列入"), "QueueIn");
     addToolBoxItem(logicItem, tr("队列出"), "QueueOut");
 
@@ -1488,6 +1486,35 @@ void MainWindow::setupMainLayout() {
     // 连接流程树选择信号到检查器
     connect(m_flowCanvas, &FlowCanvas::nodeSelected, this,
             [this](const QString& nodeId) { selectModule(nodeId, true); });
+    connect(m_flowCanvas, &FlowCanvas::connectionRequest, this,
+            [this](const QString& fromId, const QString& fromPort,
+                   const QString& toId, const QString& toPort) {
+                Project* project = ProjectManager::instance().currentProject();
+                if (!project)
+                    return;
+                // P1-fix: 根据两端端口声明推断边类型
+                FlowNodeItem* fromNode = m_flowCanvas->nodeItem(fromId);
+                FlowNodeItem* toNode = m_flowCanvas->nodeItem(toId);
+                bool isControl = false;
+                if (fromNode && toNode) {
+                    for (const PortSpec& spec : fromNode->outputPortSpecs()) {
+                        if (spec.id == fromPort && spec.control) {
+                            for (const PortSpec& inSpec : toNode->inputPortSpecs()) {
+                                if (inSpec.id == toPort && inSpec.control) {
+                                    isControl = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                ModuleConnection conn;
+                conn.fromModuleId = fromId;
+                conn.toModuleId = toId;
+                conn.fromPort = fromPort;
+                conn.toPort = toPort;
+                conn.edgeType = isControl ? QStringLiteral("control") : QStringLiteral("data");
+                project->addConnection(conn);
+            });
 
     m_rightSplitter->addWidget(m_rightTopSplitter);
 
@@ -1927,7 +1954,13 @@ void MainWindow::onProjectOpened(Project* project) {
     });
     connect(project, &Project::connectionAdded, this, [this, project](const ModuleConnection& conn) {
         if (m_flowCanvas && m_flowCanvas->nodeItem(conn.fromModuleId) && m_flowCanvas->nodeItem(conn.toModuleId)) {
-            m_flowCanvas->addConnection(conn.fromModuleId, conn.fromOutput, conn.toModuleId, conn.toInput);
+            const QString fromPort = conn.fromPort.isEmpty() ? QStringLiteral("image") : conn.fromPort;
+            const QString toPort = conn.toPort.isEmpty() ? QStringLiteral("image") : conn.toPort;
+            const QString edgeType = conn.edgeType.isEmpty() ? QStringLiteral("data") : conn.edgeType;
+            // P0-fix: 防止 Project→Canvas→Project 回写循环
+            m_flowCanvas->m_syncingFromProject = true;
+            m_flowCanvas->addConnection(conn.fromModuleId, fromPort, conn.toModuleId, toPort, edgeType);
+            m_flowCanvas->m_syncingFromProject = false;
         }
         m_modulesNeedSync = true;
         for (const ModuleInstance& module : project->modules()) {
@@ -1936,7 +1969,16 @@ void MainWindow::onProjectOpened(Project* project) {
     });
     connect(project, &Project::connectionRemoved, this, [this, project](const QString& fromId, const QString& toId) {
         if (m_flowCanvas) {
-            m_flowCanvas->removeConnection(fromId, toId);
+            // P0-fix: 同步删除画布上匹配 from→to 的所有连接（不回写 Project）
+            m_flowCanvas->m_syncingFromProject = true;
+            for (int i = m_flowCanvas->m_connections.size() - 1; i >= 0; --i) {
+                FlowConnectionItem* conn = m_flowCanvas->m_connections[i];
+                if (conn && conn->fromNodeId() == fromId && conn->toNodeId() == toId) {
+                    m_flowCanvas->removeConnection(conn->fromNodeId(), conn->fromPortId(),
+                                                   conn->toNodeId(), conn->toPortId());
+                }
+            }
+            m_flowCanvas->m_syncingFromProject = false;
         }
         m_modulesNeedSync = true;
         for (const ModuleInstance& module : project->modules()) {

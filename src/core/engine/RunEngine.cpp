@@ -12,6 +12,8 @@
 #include <QMutexLocker>
 #include <QThread>
 #include <QWaitCondition>
+#include <algorithm>
+#include <limits>
 
 namespace DeepLux {
 
@@ -50,11 +52,13 @@ RunEngine::RunEngine()
     : QObject(nullptr), m_cycleTimer(new QTimer(this)), m_cancellationToken(new CancellationToken(this)) {
     m_cycleTimer->setInterval(100);
     connect(m_cycleTimer, &QTimer::timeout, this, &RunEngine::onTimerTick);
+    setParallelThreadCount(0);
     Logger::instance().info("Run engine initialized", "Run");
 }
 
 RunEngine::~RunEngine() {
     stop();
+    m_parallelPool.waitForDone();
     clearModuleTree();
     clearModules();
 }
@@ -69,19 +73,15 @@ void RunEngine::setParallelThreadCount(int n) {
     int threads = (n <= 0) ? cap : qBound(1, n, qMax(1, QThread::idealThreadCount()));
     QMutexLocker locker(&m_parallelMutex);
     m_parallelThreads = threads;
-    if (m_parallelPool)
-        m_parallelPool->setMaxThreadCount(threads);
+    m_parallelPool.setMaxThreadCount(threads);
+}
+
+int RunEngine::parallelThreadCount() const {
+    QMutexLocker locker(&m_parallelMutex);
+    return m_parallelThreads;
 }
 
 ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortValueMap& sharedInput) {
-    {
-        QMutexLocker locker(&m_parallelMutex);
-        if (!m_parallelPool) {
-            m_parallelPool = new QThreadPool();
-            m_parallelPool->setMaxThreadCount(qMax(1, m_parallelThreads));
-        }
-    }
-
     if (m_cancellationToken)
         m_cancellationToken->reset();
 
@@ -102,8 +102,8 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
     for (const QString& name : validNames) {
         ModuleBase* mod = getModule(name);
         // 同一实例同刻仅一次：每个任务持有独立输入/输出副本
-        m_parallelPool->start([this, mod, name, &sharedInput, &running, &maxConcurrent, &errMutex, &haveError,
-                               &firstError, &doneMutex, &doneCond, &finished]() {
+        m_parallelPool.start([this, mod, name, &sharedInput, &running, &maxConcurrent, &errMutex, &haveError,
+                              &firstError, &doneMutex, &doneCond, &finished]() {
             const int cur = ++running;
             int expected = maxConcurrent.load();
             while (cur > expected && !maxConcurrent.compare_exchange_weak(expected, cur)) {
@@ -113,7 +113,7 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
             PortValueMap out;
             ExecutionContext ctx;
             ctx.runId = m_runId;
-            ctx.frameId = m_frameId;
+            ctx.frameId = m_frameId.load(std::memory_order_relaxed);
             ctx.cancellationToken = m_cancellationToken;
             const ExecutionResult r = mod->execute(in, out, ctx);
             --running;
@@ -140,7 +140,7 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
             doneCond.wait(&doneMutex);
     }
 
-    m_lastParallelMaxConcurrency = maxConcurrent.load();
+    m_lastParallelMaxConcurrency.store(maxConcurrent.load(), std::memory_order_release);
 
     if (haveError)
         return firstError;
@@ -185,6 +185,7 @@ bool RunEngine::stepOnce() {
 
     if (m_stepCurrentModuleName.isEmpty()) {
         clearModuleOutputs();
+        m_nodeOutputs.clear();
         buildModuleTree();
         if (!m_controlEdges.isEmpty()) {
             initializeControlQueue();
@@ -481,6 +482,11 @@ void RunEngine::removeModule(const QString& moduleId) {
     }
     // 清除已删节点的运行期输出和单步/暂停状态
     if (!removedName.isEmpty()) {
+        m_triggeredControlEdges.remove(removedName);
+        m_reentrantModules.remove(removedName);
+        m_loopRegions.remove(removedName);
+        for (auto region = m_loopRegions.begin(); region != m_loopRegions.end(); ++region)
+            region->remove(removedName);
         invalidateModuleOutput(removedName);
         resetStepState();
         if (m_pauseResumeModule == removedName) {
@@ -506,6 +512,7 @@ void RunEngine::clearModules() {
     m_controlEdges.clear();
     m_loopBackEdges.clear();
     m_reentrantModules.clear();
+    m_loopRegions.clear();
     m_nodeOutputs.clear();
     clearBreakpointPauseState();
     locker.unlock();
@@ -688,7 +695,8 @@ void RunEngine::executeRun() {
         clearBreakpointPauseState();
         clearModuleOutputs();
         m_runId = QString::number(QDateTime::currentMSecsSinceEpoch());
-        m_frameId = 0;
+        m_frameId.store(0, std::memory_order_release);
+        m_lastParallelMaxConcurrency.store(0, std::memory_order_release);
         m_nodeOutputs.clear();
 
         if (m_cancellationToken) {
@@ -773,13 +781,14 @@ void RunEngine::executeRun() {
 
 void RunEngine::executeRunWithControlGraph(ImageData& pipelineData) {
     while (!m_controlQueue.isEmpty()) {
-        const QString mod = m_controlQueue.first();
         if (state() != RunState::Running)
             break;
         if (m_cancellationToken && m_cancellationToken->isCancelledFast()) {
             stop();
             break;
         }
+
+        const QString mod = m_controlQueue.first();
 
         // 断点
         if (m_skipBreakpointOnce) {
@@ -796,22 +805,216 @@ void RunEngine::executeRunWithControlGraph(ImageData& pipelineData) {
             return;
         }
 
-        m_controlQueue.takeFirst();
+        // 仅并发执行明确声明线程安全、启用且没有断点的就绪模块。
+        QStringList batch;
+        batch.append(m_controlQueue.takeFirst());
         if (m_reentrantModules.contains(mod))
             m_controlActivated.remove(mod);
-        executeOrBypassModule(mod, pipelineData);
-        m_controlProcessed.insert(mod);
-        if (!m_lastExecuteResult) {
-            m_runAllSuccess = false;
-            if (m_runFirstError.isEmpty())
-                m_runFirstError = m_lastModuleError;
+        ModuleBase* firstModule = getModule(mod);
+        const bool canBuildParallelBatch =
+            parallelThreadCount() > 1 && firstModule && firstModule->isThreadSafe() && !isModuleDisabled(mod);
+        while (canBuildParallelBatch && !m_controlQueue.isEmpty()) {
+            const QString nextMod = m_controlQueue.first();
+            ModuleBase* nextModule = getModule(nextMod);
+            if (!nextModule || !nextModule->isThreadSafe() || isModuleDisabled(nextMod) || hasBreakpoint(nextMod))
+                break;
+            batch.append(m_controlQueue.takeFirst());
+            if (m_reentrantModules.contains(nextMod))
+                m_controlActivated.remove(nextMod);
         }
-        activateControlSuccessors(mod);
+
+        if (batch.size() == 1) {
+            executeOrBypassModule(mod, pipelineData);
+            m_controlProcessed.insert(mod);
+            if (!m_lastExecuteResult) {
+                m_runAllSuccess = false;
+                if (m_runFirstError.isEmpty())
+                    m_runFirstError = m_lastModuleError;
+            } else {
+                activateControlSuccessors(mod);
+            }
+        } else {
+            executeBatchParallel(batch, pipelineData);
+        }
         m_currentModuleName = m_controlQueue.value(0);
     }
 
     if (m_controlQueue.isEmpty() && state() == RunState::Running)
         emitInactiveControlModules();
+}
+
+PortValueMap RunEngine::collectModuleInputs(const QString& moduleName, const ImageData& pipelineData) const {
+    QReadLocker locker(&m_moduleLock);
+    ModuleBase* module = m_moduleMap.value(moduleName, nullptr);
+    if (!module)
+        return {};
+
+    QSet<QString> multiPorts;
+    for (const PortSpec& spec : module->inputPorts()) {
+        if (spec.multiple && !spec.control)
+            multiPorts.insert(spec.id);
+    }
+
+    QList<ModuleConnection> incoming;
+    for (const ModuleConnection& connection : m_connections) {
+        if (connection.toModuleId == moduleName && connection.edgeType != QLatin1String("control"))
+            incoming.append(connection);
+    }
+
+    QHash<QString, int> executionRank;
+    for (int i = 0; i < m_executionOrder.size(); ++i)
+        executionRank.insert(m_executionOrder[i], i);
+    std::stable_sort(incoming.begin(), incoming.end(),
+                     [&executionRank](const ModuleConnection& a, const ModuleConnection& b) {
+                         return executionRank.value(a.fromModuleId, std::numeric_limits<int>::max()) <
+                                executionRank.value(b.fromModuleId, std::numeric_limits<int>::max());
+                     });
+
+    PortValueMap inputs;
+    QMap<QString, QVariantList> multiValues;
+    for (const ModuleConnection& connection : incoming) {
+        const PortValueMap upstream = m_nodeOutputs.value(connection.fromModuleId);
+        if (!upstream.contains(connection.fromPort))
+            continue;
+        if (multiPorts.contains(connection.toPort))
+            multiValues[connection.toPort].append(upstream.value(connection.fromPort));
+        else
+            inputs.insert(connection.toPort, upstream.value(connection.fromPort));
+    }
+    for (auto it = multiValues.constBegin(); it != multiValues.constEnd(); ++it)
+        inputs.insert(it.key(), it.value());
+
+    if (incoming.isEmpty())
+        inputs.insert(QStringLiteral("image"), QVariant::fromValue(pipelineData));
+    return inputs;
+}
+
+void RunEngine::executeBatchParallel(const QStringList& batch, ImageData& pipelineData) {
+    struct ParallelResult {
+        bool success = false;
+        QString error;
+        PortValueMap outputs;
+        bool controlResult = false;
+        int elapsedMs = 0;
+    };
+
+    QMap<QString, ParallelResult> results;
+    std::atomic<int> running{0};
+    std::atomic<int> maxConcurrent{0};
+    QMutex resultMutex;
+    QWaitCondition cond;
+    int finished = 0;
+    const int total = batch.size();
+
+    for (const QString& mod : batch) {
+        ModuleBase* module = getModule(mod);
+        if (!module) {
+            ParallelResult missing;
+            missing.error = tr("Parallel module is unavailable: %1").arg(mod);
+            results.insert(mod, missing);
+            ++finished;
+            continue;
+        }
+
+        m_parallelPool.start(
+            [this, mod, module, pipelineData, &results, &resultMutex, &cond, &finished, &running, &maxConcurrent]() {
+                ParallelResult result;
+                QElapsedTimer timer;
+                timer.start();
+                emit moduleStarted(mod);
+
+                if (m_cancellationToken && m_cancellationToken->isCancelledFast()) {
+                    result.error = tr("Parallel module cancelled before execution: %1").arg(mod);
+                } else {
+                    const int cur = ++running;
+                    int expected = maxConcurrent.load();
+                    while (cur > expected && !maxConcurrent.compare_exchange_weak(expected, cur)) {
+                    }
+
+                    module->setCancellationToken(m_cancellationToken);
+                    const PortValueMap portInputs = collectModuleInputs(mod, pipelineData);
+                    PortValueMap portOutputs;
+                    ExecutionContext context;
+                    context.runId = m_runId;
+                    context.frameId = m_frameId.fetch_add(1, std::memory_order_relaxed);
+                    context.timestampMs = QDateTime::currentMSecsSinceEpoch();
+                    context.runMode = module->flowControlType();
+                    context.cancellationToken = m_cancellationToken;
+                    const ExecutionResult execution = module->execute(portInputs, portOutputs, context);
+
+                    result.success = execution.success;
+                    result.outputs = portOutputs;
+                    result.error = execution.userMessage;
+                    if (result.success && portOutputs.contains(QStringLiteral("image"))) {
+                        const ImageData output = portOutputs.value(QStringLiteral("image")).value<ImageData>();
+                        const QMap<QString, QVariant> values = output.allData();
+                        const ControlFlowType type = module->flowControlType();
+                        if (type == ControlFlowType::Conditional || type == ControlFlowType::ConditionalElse) {
+                            if (values.contains(QStringLiteral("if_result")))
+                                result.controlResult = values.value(QStringLiteral("if_result")).toBool();
+                            else if (values.contains(QStringLiteral("condition_result")))
+                                result.controlResult = values.value(QStringLiteral("condition_result")).toBool();
+                        } else if (type == ControlFlowType::While && values.contains(QStringLiteral("while_result"))) {
+                            result.controlResult = values.value(QStringLiteral("while_result")).toBool();
+                        } else if (type == ControlFlowType::StopLoop &&
+                                   values.contains(QStringLiteral("stop_while_requested"))) {
+                            result.controlResult = values.value(QStringLiteral("stop_while_requested")).toBool();
+                        }
+                    }
+                    --running;
+                }
+                result.elapsedMs = static_cast<int>(timer.elapsed());
+
+                {
+                    QMutexLocker locker(&resultMutex);
+                    results.insert(mod, result);
+                    ++finished;
+                    if (!result.success && m_cancellationToken)
+                        m_cancellationToken->cancel();
+                    cond.wakeAll();
+                }
+            });
+    }
+
+    // 等待全部完成
+    {
+        QMutexLocker locker(&resultMutex);
+        while (finished < total)
+            cond.wait(&resultMutex);
+    }
+
+    m_lastParallelMaxConcurrency.store(maxConcurrent.load(), std::memory_order_release);
+
+    // 应用结果到共享状态
+    for (const QString& mod : batch) {
+        const ParallelResult pr = results.value(mod);
+        m_controlProcessed.insert(mod);
+
+        if (pr.success) {
+            m_nodeOutputs[mod] = pr.outputs;
+            if (pr.outputs.contains(QStringLiteral("image"))) {
+                ImageData out = pr.outputs.value(QStringLiteral("image")).value<ImageData>();
+                pipelineData = out;
+                {
+                    QMutexLocker locker(&m_lastOutputMutex);
+                    m_lastOutput = out;
+                    m_lastOutputModuleName = mod;
+                    m_moduleOutputs[mod] = out;
+                }
+            }
+            m_lastExecuteResult = true;
+            m_lastControlResult = pr.controlResult;
+            emit moduleFinished(mod, true, pr.elapsedMs);
+            activateControlSuccessors(mod);
+        } else {
+            m_lastExecuteResult = false;
+            m_lastModuleError = pr.error.isEmpty() ? tr("Parallel module failed: %1").arg(mod) : pr.error;
+            m_runAllSuccess = false;
+            if (m_runFirstError.isEmpty())
+                m_runFirstError = m_lastModuleError;
+            emit moduleFinished(mod, false, pr.elapsedMs);
+        }
+    }
 }
 
 void RunEngine::initializeControlQueue() {
@@ -849,18 +1052,17 @@ void RunEngine::activateControlSuccessors(const QString& moduleName) {
     const bool isWhile = ft == ControlFlowType::While;
     const bool isStopLoop = ft == ControlFlowType::StopLoop;
 
-    const auto activate = [this, &moduleName](const QString& downstream) {
-        const bool canRepeat = m_reentrantModules.contains(moduleName) && m_reentrantModules.contains(downstream);
-        if (!m_controlActivated.contains(downstream) && (!m_controlProcessed.contains(downstream) || canRepeat)) {
-            m_controlActivated.insert(downstream);
-            m_controlQueue.append(downstream);
-        }
+    const auto activateControl = [this](const ModuleConnection& edge) {
+        tryActivateSuccessor(edge.fromModuleId, edge.toModuleId, true, edge.fromPort, edge.toPort);
     };
+
+    if (ft == ControlFlowType::Parallel && module->currentParams().contains(QStringLiteral("parallelCount")))
+        setParallelThreadCount(module->currentParams().value(QStringLiteral("parallelCount")).toInt());
 
     if ((isLoop || isWhile) && isModuleDisabled(moduleName)) {
         for (const ModuleConnection& edge : m_controlEdges) {
             if (edge.fromModuleId == moduleName && edge.fromPort == QLatin1String("done"))
-                activate(edge.toModuleId);
+                activateControl(edge);
         }
         m_loopIndices.remove(moduleName);
         m_activeLoops.removeAll(moduleName);
@@ -871,14 +1073,15 @@ void RunEngine::activateControlSuccessors(const QString& moduleName) {
         const int loopCount = module->currentParams().value("loopCount").toInt(0);
         const int iter = m_loopIndices.value(moduleName, 0);
         if (iter < loopCount) {
+            clearLoopIterationOutputs(moduleName);
             for (const ModuleConnection& edge : m_controlEdges) {
                 if (edge.fromModuleId == moduleName && edge.fromPort == QLatin1String("body"))
-                    activate(edge.toModuleId);
+                    activateControl(edge);
             }
         } else {
             for (const ModuleConnection& edge : m_controlEdges) {
                 if (edge.fromModuleId == moduleName && edge.fromPort == QLatin1String("done"))
-                    activate(edge.toModuleId);
+                    activateControl(edge);
             }
             m_loopIndices.remove(moduleName);
             m_activeLoops.removeAll(moduleName);
@@ -890,14 +1093,15 @@ void RunEngine::activateControlSuccessors(const QString& moduleName) {
         const int maxIter = module->currentParams().value("maxIterations").toInt(100);
         const int iter = m_loopIndices.value(moduleName, 0);
         if (m_lastControlResult && iter < maxIter) {
+            clearLoopIterationOutputs(moduleName);
             for (const ModuleConnection& edge : m_controlEdges) {
                 if (edge.fromModuleId == moduleName && edge.fromPort == QLatin1String("body"))
-                    activate(edge.toModuleId);
+                    activateControl(edge);
             }
         } else {
             for (const ModuleConnection& edge : m_controlEdges) {
                 if (edge.fromModuleId == moduleName && edge.fromPort == QLatin1String("done"))
-                    activate(edge.toModuleId);
+                    activateControl(edge);
             }
             m_loopIndices.remove(moduleName);
             m_activeLoops.removeAll(moduleName);
@@ -908,7 +1112,7 @@ void RunEngine::activateControlSuccessors(const QString& moduleName) {
     if (isStopLoop) {
         for (const ModuleConnection& edge : m_controlEdges) {
             if (edge.fromModuleId == moduleName && edge.fromPort == QLatin1String("stop"))
-                activate(edge.toModuleId);
+                activateControl(edge);
         }
         if (!m_activeLoops.isEmpty()) {
             const QString stoppedLoop = m_activeLoops.takeLast();
@@ -922,14 +1126,97 @@ void RunEngine::activateControlSuccessors(const QString& moduleName) {
             continue;
         if (!isConditional || (connection.fromPort == QLatin1String("true") && m_lastControlResult) ||
             (connection.fromPort == QLatin1String("false") && !m_lastControlResult)) {
-            activate(connection.toModuleId);
+            activateControl(connection);
         }
     }
     if (!isConditional && !isStopLoop) {
         for (const ModuleConnection& connection : m_connections) {
             if (connection.fromModuleId == moduleName && connection.edgeType != QLatin1String("control"))
-                activate(connection.toModuleId);
+                tryActivateSuccessor(moduleName, connection.toModuleId, false);
         }
+    }
+}
+
+void RunEngine::tryActivateSuccessor(const QString& sourceModule, const QString& targetModule, bool controlTriggered,
+                                     const QString& sourcePort, const QString& targetPort) {
+    const bool canRepeat = m_reentrantModules.contains(sourceModule) && m_reentrantModules.contains(targetModule);
+    if (m_controlActivated.contains(targetModule) || (m_controlProcessed.contains(targetModule) && !canRepeat))
+        return;
+
+    if (controlTriggered) {
+        ModuleConnection triggered;
+        triggered.fromModuleId = sourceModule;
+        triggered.toModuleId = targetModule;
+        triggered.fromPort = sourcePort;
+        triggered.toPort = targetPort;
+        m_triggeredControlEdges[targetModule].insert(connectionKey(triggered));
+    }
+
+    QMap<QString, QList<ModuleConnection>> incomingByPort;
+    for (const ModuleConnection& edge : m_controlEdges) {
+        if (edge.toModuleId == targetModule)
+            incomingByPort[edge.toPort].append(edge);
+    }
+
+    ModuleBase* target = getModule(targetModule);
+    const QList<PortSpec> inputPorts = target ? target->inputPorts() : QList<PortSpec>{};
+    const QSet<QString> triggeredEdges = m_triggeredControlEdges.value(targetModule);
+    for (auto it = incomingByPort.constBegin(); it != incomingByPort.constEnd(); ++it) {
+        const PortSpec* port = findPort(inputPorts, it.key());
+        const bool requireAll = port && port->control && port->multiple && port->joinPolicy == ControlJoinPolicy::All;
+        int triggeredCount = 0;
+        for (const ModuleConnection& edge : it.value()) {
+            if (triggeredEdges.contains(connectionKey(edge)))
+                ++triggeredCount;
+        }
+        if (requireAll) {
+            if (triggeredCount != it.value().size())
+                return;
+        } else if (triggeredCount == 0) {
+            return;
+        }
+    }
+
+    if (!dataInputsReady(targetModule))
+        return;
+
+    m_triggeredControlEdges.remove(targetModule);
+    m_controlActivated.insert(targetModule);
+    m_controlQueue.append(targetModule);
+}
+
+bool RunEngine::dataInputsReady(const QString& moduleName) const {
+    ModuleBase* module = getModule(moduleName);
+    if (!module)
+        return false;
+
+    // 统计每个 toPort 的上游连接数与已就绪数
+    QMap<QString, int> totalUpstream;
+    QMap<QString, int> readyUpstream;
+    for (const ModuleConnection& connection : m_connections) {
+        if (connection.toModuleId != moduleName || connection.edgeType == QLatin1String("control"))
+            continue;
+        totalUpstream[connection.toPort]++;
+        if (m_nodeOutputs.contains(connection.fromModuleId) &&
+            m_nodeOutputs.value(connection.fromModuleId).contains(connection.fromPort))
+            readyUpstream[connection.toPort]++;
+    }
+
+    for (const PortSpec& input : module->inputPorts()) {
+        if (!input.required || input.control)
+            continue;
+        const int total = totalUpstream.value(input.id, 0);
+        const int ready = readyUpstream.value(input.id, 0);
+        if (total == 0 || (input.multiple && ready != total) || (!input.multiple && ready == 0))
+            return false;
+    }
+    return true;
+}
+
+void RunEngine::clearLoopIterationOutputs(const QString& loopModule) {
+    for (const QString& moduleName : m_loopRegions.value(loopModule)) {
+        m_nodeOutputs.remove(moduleName);
+        m_triggeredControlEdges.remove(moduleName);
     }
 }
 
@@ -950,6 +1237,7 @@ void RunEngine::clearControlQueue() {
     m_controlQueue.clear();
     m_controlActivated.clear();
     m_controlProcessed.clear();
+    m_triggeredControlEdges.clear();
     m_loopIndices.clear();
     m_activeLoops.clear();
 }
@@ -1053,28 +1341,11 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     QElapsedTimer moduleTimer;
     moduleTimer.start();
     // ABI v2：强类型端口执行，携带执行上下文
-    PortValueMap portInputs;
-    bool hasDataInput = false;
-    // 从实际入边按端口 ID 收集上游缓存输出；显式图中没有入边的节点不会继承其他分支的输出。
-    {
-        QReadLocker locker(&m_moduleLock);
-        for (const ModuleConnection& conn : m_connections) {
-            if (conn.toModuleId != moduleName || conn.edgeType == QLatin1String("control"))
-                continue;
-            hasDataInput = true;
-            const PortValueMap upOut = m_nodeOutputs.value(conn.fromModuleId);
-            if (upOut.contains(conn.fromPort)) {
-                portInputs.insert(conn.toPort, upOut.value(conn.fromPort));
-            }
-        }
-    }
-    if (m_connections.isEmpty() || !hasDataInput)
-        portInputs.insert(QStringLiteral("image"),
-                          QVariant::fromValue(m_connections.isEmpty() ? pipelineData : ImageData()));
+    const PortValueMap portInputs = collectModuleInputs(moduleName, pipelineData);
     PortValueMap portOutputs;
     ExecutionContext execCtx;
     execCtx.runId = m_runId;
-    execCtx.frameId = m_frameId++;
+    execCtx.frameId = m_frameId.fetch_add(1, std::memory_order_relaxed);
     execCtx.timestampMs = QDateTime::currentMSecsSinceEpoch();
     execCtx.runMode = module->flowControlType();
     execCtx.cancellationToken = m_cancellationToken;
@@ -1376,6 +1647,7 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
     m_controlEdges.clear();
     m_loopBackEdges.clear();
     m_reentrantModules.clear();
+    m_loopRegions.clear();
     m_connections = project ? project->connections() : QList<ModuleConnection>{};
     if (!project || project->connections().isEmpty()) {
         return true;
@@ -1640,8 +1912,10 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
         const QSet<QString> reachesBackSource = reachableIn(reducedReverse, {backEdge.fromModuleId});
         m_reentrantModules.insert(backEdge.toModuleId);
         for (const QString& moduleId : bodyReach) {
-            if (reachesBackSource.contains(moduleId))
+            if (reachesBackSource.contains(moduleId)) {
                 m_reentrantModules.insert(moduleId);
+                m_loopRegions[backEdge.toModuleId].insert(moduleId);
+            }
         }
     }
 
