@@ -9,7 +9,7 @@
       "currentCandidate": "Delay",
       "currentPluginId": "com.deeplux.plugin.delay",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/000常用工具/Plugin.ShowChart",
@@ -36,7 +36,7 @@
       "currentCandidate": "Blob",
       "currentPluginId": "com.deeplux.plugin.blob",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.CameraReadyWait",
@@ -81,7 +81,7 @@
       "currentCandidate": "GrabImage",
       "currentPluginId": "com.deeplux.plugin.grabimage",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.ImageMerge",
@@ -117,7 +117,7 @@
       "currentCandidate": "JigsawPuzzle",
       "currentPluginId": "com.deeplux.plugin.jigsawsolver",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.PerProcessing",
@@ -135,7 +135,7 @@
       "currentCandidate": "SaveImage",
       "currentPluginId": "com.deeplux.plugin.saveimage",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.ShowImage",
@@ -144,7 +144,7 @@
       "currentCandidate": "ShowImage",
       "currentPluginId": "com.deeplux.plugin.showimage",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.ShowShape",
@@ -171,7 +171,7 @@
       "currentCandidate": "QRCode",
       "currentPluginId": "com.deeplux.plugin.qrcode",
       "matchKind": "candidate",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.ColorExtraction",
@@ -225,7 +225,7 @@
       "currentCandidate": "FindCircle",
       "currentPluginId": "com.deeplux.plugin.findcircle",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.GrayMeasure",
@@ -288,7 +288,7 @@
       "currentCandidate": "MeasureLine",
       "currentPluginId": "com.deeplux.plugin.measureline",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.MeasureRect",
@@ -297,7 +297,7 @@
       "currentCandidate": "MeasureRect",
       "currentPluginId": "com.deeplux.plugin.measurerect",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.QRCode",
@@ -306,7 +306,7 @@
       "currentCandidate": "QRCode",
       "currentPluginId": "com.deeplux.plugin.qrcode",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/003几何测量/Plugin.DistanceLL",
@@ -315,7 +315,7 @@
       "currentCandidate": "LinesDistance",
       "currentPluginId": "com.deeplux.plugin.linesdistance",
       "matchKind": "candidate",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/003几何测量/Plugin.DistancePL",
@@ -324,7 +324,7 @@
       "currentCandidate": "DistancePL",
       "currentPluginId": "com.deeplux.plugin.distancepl",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/003几何测量/Plugin.DistancePP",
@@ -333,7 +333,7 @@
       "currentCandidate": "DistancePP",
       "currentPluginId": "com.deeplux.plugin.distancepp",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/003几何测量/Plugin.LinesDistance",
@@ -342,7 +342,7 @@
       "currentCandidate": "LinesDistance",
       "currentPluginId": "com.deeplux.plugin.linesdistance",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/004几何关系/Plugin.AffineeRegion",
@@ -369,7 +369,7 @@
       "currentCandidate": "FitCircle",
       "currentPluginId": "com.deeplux.plugin.fitcircle",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/004几何关系/Plugin.FitEllipse",
@@ -387,7 +387,7 @@
       "currentCandidate": "FitLine",
       "currentPluginId": "com.deeplux.plugin.fitline",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/004几何关系/Plugin.RegionProcess",
@@ -423,7 +423,7 @@
       "currentCandidate": "NPointCalibration",
       "currentPluginId": "com.deeplux.plugin.npointcalibration",
       "matchKind": "candidate",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/005坐标标定/Plugin.NPointCal",
@@ -432,7 +432,7 @@
       "currentCandidate": "NPointCalibration",
       "currentPluginId": "com.deeplux.plugin.npointcalibration",
       "matchKind": "candidate",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/006对位工具/Plugin.CalibrationConversion",
@@ -468,7 +468,7 @@
       "currentCandidate": "If",
       "currentPluginId": "com.deeplux.plugin.if",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/007逻辑工具/Plugin.Parallel",
@@ -477,7 +477,7 @@
       "currentCandidate": "Parallel",
       "currentPluginId": "com.deeplux.plugin.parallel",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/007逻辑工具/Plugin.RunProject",
@@ -495,7 +495,7 @@
       "currentCandidate": "StopWhile",
       "currentPluginId": "com.deeplux.plugin.stopwhile",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/007逻辑工具/Plugin.While",
@@ -504,7 +504,7 @@
       "currentCandidate": "While",
       "currentPluginId": "com.deeplux.plugin.while",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.DataCheck",
@@ -522,7 +522,7 @@
       "currentCandidate": "Folder",
       "currentPluginId": "com.deeplux.plugin.folder",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.SaveData",
@@ -549,7 +549,7 @@
       "currentCandidate": "SystemTime",
       "currentPluginId": "com.deeplux.plugin.systemtime",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.TableOutPut",
@@ -576,7 +576,7 @@
       "currentCandidate": "WriteText",
       "currentPluginId": "com.deeplux.plugin.writetext",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.CreateString",
@@ -585,7 +585,7 @@
       "currentCandidate": "CreateString",
       "currentPluginId": "com.deeplux.plugin.createstring",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.QueueClear",
@@ -621,7 +621,7 @@
       "currentCandidate": "SplitString",
       "currentPluginId": "com.deeplux.plugin.splitstring",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.StrFormat",
@@ -630,7 +630,7 @@
       "currentCandidate": "StrFormatPlugin",
       "currentPluginId": "com.deeplux.plugin.strformat",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.VarDefine",
@@ -639,7 +639,7 @@
       "currentCandidate": "VarDefinePlugin",
       "currentPluginId": "com.deeplux.plugin.vardefine",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.VarSet",
@@ -648,7 +648,7 @@
       "currentCandidate": "VarSetPlugin",
       "currentPluginId": "com.deeplux.plugin.varset",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/010文件通讯/Plugin.HKSetOutPut",
@@ -675,7 +675,7 @@
       "currentCandidate": "PLCCommunicatePlugin",
       "currentPluginId": "com.deeplux.plugin.plccommunicate",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/010文件通讯/Plugin.PLCRead",
@@ -684,7 +684,7 @@
       "currentCandidate": "PLCReadPlugin",
       "currentPluginId": "com.deeplux.plugin.plcread",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/010文件通讯/Plugin.PLCWrite",
@@ -693,7 +693,7 @@
       "currentCandidate": "PLCWritePlugin",
       "currentPluginId": "com.deeplux.plugin.plcwrite",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/010文件通讯/Plugin.ReceiveStr",
@@ -855,7 +855,7 @@
       "currentCandidate": "JiErHanDefectsDet",
       "currentPluginId": "com.deeplux.plugin.jierhandefectsdet",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.LidWeldDetection",
@@ -882,7 +882,7 @@
       "currentCandidate": "MeasureGap",
       "currentPluginId": "com.deeplux.plugin.measuregap",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.PlaneAngle",
@@ -918,7 +918,7 @@
       "currentCandidate": "PointSurfaceDistance",
       "currentPluginId": "com.deeplux.plugin.pointsurfacedistance",
       "matchKind": "direct",
-      "reviewState": "pending"
+      "reviewState": "reviewed"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.VolumeMeasurement",
@@ -936,7 +936,8 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "business_pack",
-      "reviewState": "pending"
+      "reviewState": "dependency_recorded",
+      "dependencyNote": "业务包插件，依赖 015包膜机 业务线硬件/协议"
     },
     {
       "legacyPath": "02Plugins/015包膜机/Plugin.EnvelopeTieJiao",
@@ -945,7 +946,8 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "business_pack",
-      "reviewState": "pending"
+      "reviewState": "dependency_recorded",
+      "dependencyNote": "业务包插件，依赖 015包膜机 业务线硬件/协议"
     },
     {
       "legacyPath": "02Plugins/016密封钉/Plugin.MPHA",
@@ -954,7 +956,8 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "business_pack",
-      "reviewState": "pending"
+      "reviewState": "dependency_recorded",
+      "dependencyNote": "业务包插件，依赖 016密封钉 业务线硬件/协议"
     },
     {
       "legacyPath": "02Plugins/016密封钉/Plugin.SealingPin",
@@ -963,7 +966,8 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "business_pack",
-      "reviewState": "pending"
+      "reviewState": "dependency_recorded",
+      "dependencyNote": "业务包插件，依赖 016密封钉 业务线硬件/协议"
     },
     {
       "legacyPath": "02Plugins/016密封钉/Plugin.SealingPinHanHou",
@@ -972,7 +976,8 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "business_pack",
-      "reviewState": "pending"
+      "reviewState": "dependency_recorded",
+      "dependencyNote": "业务包插件，依赖 016密封钉 业务线硬件/协议"
     },
     {
       "legacyPath": "02Plugins/016密封钉/Plugin.SealingPinYuhan",
@@ -981,7 +986,8 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "business_pack",
-      "reviewState": "pending"
+      "reviewState": "dependency_recorded",
+      "dependencyNote": "业务包插件，依赖 016密封钉 业务线硬件/协议"
     },
     {
       "legacyPath": "02Plugins/016密封钉/Plugin.ThreeDimsAI",
@@ -990,7 +996,8 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "business_pack",
-      "reviewState": "pending"
+      "reviewState": "dependency_recorded",
+      "dependencyNote": "业务包插件，依赖 016密封钉 业务线硬件/协议"
     }
   ]
 }
