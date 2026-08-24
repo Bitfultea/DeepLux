@@ -1,98 +1,80 @@
 #include "AgentObserver.h"
+
 #include "GuiEvent.h"
-#include "manager/ProjectManager.h"
+#include "common/Logger.h"
 #include "engine/RunEngine.h"
 #include "manager/PluginManager.h"
+#include "manager/ProjectManager.h"
 #include "model/Project.h"
-#include "common/Logger.h"
 
 #include <QDebug>
 #include <QJsonObject>
 
 namespace DeepLux {
 
-AgentObserver::AgentObserver(QObject* parent)
-    : QObject(parent)
-{
+AgentObserver::AgentObserver(QObject* parent) : QObject(parent) {
     m_eventRing.reserve(MAX_EVENTS);
 }
 
 AgentObserver::~AgentObserver() = default;
 
-bool AgentObserver::initialize()
-{
-    if (m_initialized) return true;
+bool AgentObserver::initialize() {
+    if (m_initialized)
+        return true;
 
-    connect(&ProjectManager::instance(), &ProjectManager::projectCreated,
-            this, &AgentObserver::onProjectCreated);
-    connect(&ProjectManager::instance(), &ProjectManager::projectOpened,
-            this, &AgentObserver::onProjectOpened);
-    connect(&ProjectManager::instance(), &ProjectManager::projectSaved,
-            this, &AgentObserver::onProjectSaved);
-    connect(&ProjectManager::instance(), &ProjectManager::projectClosed,
-            this, &AgentObserver::onProjectClosed);
+    connect(&ProjectManager::instance(), &ProjectManager::projectCreated, this, &AgentObserver::onProjectCreated);
+    connect(&ProjectManager::instance(), &ProjectManager::projectOpened, this, &AgentObserver::onProjectOpened);
+    connect(&ProjectManager::instance(), &ProjectManager::projectSaved, this, &AgentObserver::onProjectSaved);
+    connect(&ProjectManager::instance(), &ProjectManager::projectClosed, this, &AgentObserver::onProjectClosed);
 
-    connect(&RunEngine::instance(), &RunEngine::runStarted,
-            this, &AgentObserver::onRunStarted);
-    connect(&RunEngine::instance(), &RunEngine::runFinished,
-            this, &AgentObserver::onRunFinished);
-    connect(&RunEngine::instance(), &RunEngine::moduleStarted,
-            this, &AgentObserver::onModuleStarted);
-    connect(&RunEngine::instance(), &RunEngine::moduleFinished,
-            this, &AgentObserver::onModuleFinished);
+    connect(&RunEngine::instance(), &RunEngine::runStarted, this, &AgentObserver::onRunStarted);
+    connect(&RunEngine::instance(), &RunEngine::runFinished, this, &AgentObserver::onRunFinished);
+    connect(&RunEngine::instance(), &RunEngine::moduleStarted, this, &AgentObserver::onModuleStarted);
+    connect(&RunEngine::instance(), &RunEngine::moduleFinished, this, &AgentObserver::onModuleFinished);
 
-    connect(&PluginManager::instance(), &PluginManager::pluginLoaded,
-            this, &AgentObserver::onPluginLoaded);
-    connect(&PluginManager::instance(), &PluginManager::pluginUnloaded,
-            this, &AgentObserver::onPluginUnloaded);
+    connect(&PluginManager::instance(), &PluginManager::pluginLoaded, this, &AgentObserver::onPluginLoaded);
+    connect(&PluginManager::instance(), &PluginManager::pluginUnloaded, this, &AgentObserver::onPluginUnloaded);
 
     Project* proj = ProjectManager::instance().currentProject();
     if (proj) {
         connectProjectSignals(proj);
     }
 
-    connect(&ProjectManager::instance(), &ProjectManager::projectOpened,
-            this, [this](Project* newProj) {
-                if (newProj) connectProjectSignals(newProj);
-            });
-    connect(&ProjectManager::instance(), &ProjectManager::projectCreated,
-            this, [this](Project* newProj) {
-                if (newProj) connectProjectSignals(newProj);
-            });
+    connect(&ProjectManager::instance(), &ProjectManager::projectOpened, this, [this](Project* newProj) {
+        if (newProj)
+            connectProjectSignals(newProj);
+    });
+    connect(&ProjectManager::instance(), &ProjectManager::projectCreated, this, [this](Project* newProj) {
+        if (newProj)
+            connectProjectSignals(newProj);
+    });
 
     // Logger
-    connect(&Logger::instance(), &Logger::logAdded,
-            this, &AgentObserver::onLogAdded);
+    connect(&Logger::instance(), &Logger::logAdded, this, &AgentObserver::onLogAdded);
 
     m_initialized = true;
     return true;
 }
 
-void AgentObserver::connectProjectSignals(Project* proj)
-{
-    if (!proj) return;
-    connect(proj, &Project::moduleAdded,
-            this, &AgentObserver::onModuleAdded);
-    connect(proj, &Project::moduleRemoved,
-            this, &AgentObserver::onModuleRemoved);
-    connect(proj, &Project::connectionAdded,
-            this, &AgentObserver::onConnectionAdded);
-    connect(proj, &Project::connectionRemoved,
-            this, &AgentObserver::onConnectionRemoved);
-    connect(proj, &Project::connectionRemovedWithPorts,
-            this, &AgentObserver::onConnectionRemovedWithPorts);
+void AgentObserver::connectProjectSignals(Project* proj) {
+    if (!proj)
+        return;
+    connect(proj, &Project::moduleAdded, this, &AgentObserver::onModuleAdded);
+    connect(proj, &Project::moduleRemoved, this, &AgentObserver::onModuleRemoved);
+    connect(proj, &Project::connectionAdded, this, &AgentObserver::onConnectionAdded);
+    connect(proj, &Project::connectionRemoved, this, &AgentObserver::onConnectionRemoved);
+    connect(proj, &Project::connectionRemovedWithPorts, this, &AgentObserver::onConnectionRemovedWithPorts);
 }
 
-void AgentObserver::shutdown()
-{
-    if (!m_initialized) return;
-    disconnect(this, nullptr, nullptr, nullptr);     // 断开作为 sender 的连接
-    disconnect(nullptr, nullptr, this, nullptr);     // 断开作为 receiver 的连接
+void AgentObserver::shutdown() {
+    if (!m_initialized)
+        return;
+    disconnect(this, nullptr, nullptr, nullptr); // 断开作为 sender 的连接
+    disconnect(nullptr, nullptr, this, nullptr); // 断开作为 receiver 的连接
     m_initialized = false;
 }
 
-QList<GuiEvent> AgentObserver::recentEvents(int count) const
-{
+QList<GuiEvent> AgentObserver::recentEvents(int count) const {
     QList<GuiEvent> result;
     int total = m_ringFull ? MAX_EVENTS : m_ringHead;
     int start = qMax(0, total - count);
@@ -103,13 +85,11 @@ QList<GuiEvent> AgentObserver::recentEvents(int count) const
     return result;
 }
 
-QList<GuiEvent> AgentObserver::allEvents() const
-{
+QList<GuiEvent> AgentObserver::allEvents() const {
     return recentEvents(MAX_EVENTS);
 }
 
-void AgentObserver::pushEvent(const GuiEvent& event)
-{
+void AgentObserver::pushEvent(const GuiEvent& event) {
     if (m_eventRing.size() < MAX_EVENTS) {
         m_eventRing.append(event);
         m_ringHead = m_eventRing.size();
@@ -121,8 +101,7 @@ void AgentObserver::pushEvent(const GuiEvent& event)
     emit guiEventOccurred(event);
 }
 
-void AgentObserver::onProjectCreated(Project* project)
-{
+void AgentObserver::onProjectCreated(Project* project) {
     QJsonObject det;
     if (project) {
         det["name"] = project->name();
@@ -131,8 +110,7 @@ void AgentObserver::onProjectCreated(Project* project)
     pushEvent(GuiEvent(GuiEventType::ProjectCreated, "ProjectManager", det));
 }
 
-void AgentObserver::onProjectOpened(Project* project)
-{
+void AgentObserver::onProjectOpened(Project* project) {
     QJsonObject det;
     if (project) {
         det["name"] = project->name();
@@ -141,8 +119,7 @@ void AgentObserver::onProjectOpened(Project* project)
     pushEvent(GuiEvent(GuiEventType::ProjectOpened, "ProjectManager", det));
 }
 
-void AgentObserver::onProjectSaved(Project* project)
-{
+void AgentObserver::onProjectSaved(Project* project) {
     QJsonObject det;
     if (project) {
         det["name"] = project->name();
@@ -151,18 +128,15 @@ void AgentObserver::onProjectSaved(Project* project)
     pushEvent(GuiEvent(GuiEventType::ProjectSaved, "ProjectManager", det));
 }
 
-void AgentObserver::onProjectClosed()
-{
+void AgentObserver::onProjectClosed() {
     pushEvent(GuiEvent(GuiEventType::ProjectClosed, "ProjectManager"));
 }
 
-void AgentObserver::onRunStarted()
-{
+void AgentObserver::onRunStarted() {
     pushEvent(GuiEvent(GuiEventType::RunStarted, "RunEngine"));
 }
 
-void AgentObserver::onRunFinished(const RunResult& result)
-{
+void AgentObserver::onRunFinished(const RunResult& result) {
     QJsonObject det;
     det["success"] = result.success;
     det["elapsedMs"] = static_cast<int>(result.elapsedMs);
@@ -172,37 +146,32 @@ void AgentObserver::onRunFinished(const RunResult& result)
     pushEvent(GuiEvent(GuiEventType::RunFinished, "RunEngine", det));
 }
 
-void AgentObserver::onModuleStarted(const QString& moduleId)
-{
+void AgentObserver::onModuleStarted(const QString& moduleId) {
     QJsonObject det;
     det["moduleId"] = moduleId;
     pushEvent(GuiEvent(GuiEventType::ModuleStarted, "RunEngine", det));
 }
 
-void AgentObserver::onModuleFinished(const QString& moduleId, bool success)
-{
+void AgentObserver::onModuleFinished(const QString& moduleId, bool success) {
     QJsonObject det;
     det["moduleId"] = moduleId;
     det["success"] = success;
     pushEvent(GuiEvent(GuiEventType::ModuleFinished, "RunEngine", det));
 }
 
-void AgentObserver::onPluginLoaded(const QString& name)
-{
+void AgentObserver::onPluginLoaded(const QString& name) {
     QJsonObject det;
     det["name"] = name;
     pushEvent(GuiEvent(GuiEventType::PluginLoaded, "PluginManager", det));
 }
 
-void AgentObserver::onPluginUnloaded(const QString& name)
-{
+void AgentObserver::onPluginUnloaded(const QString& name) {
     QJsonObject det;
     det["name"] = name;
     pushEvent(GuiEvent(GuiEventType::PluginUnloaded, "PluginManager", det));
 }
 
-void AgentObserver::onModuleAdded(const ModuleInstance& module)
-{
+void AgentObserver::onModuleAdded(const ModuleInstance& module) {
     QJsonObject det;
     det["id"] = module.id;
     det["moduleId"] = module.moduleId;
@@ -210,32 +179,28 @@ void AgentObserver::onModuleAdded(const ModuleInstance& module)
     pushEvent(GuiEvent(GuiEventType::ModuleAdded, "Project", det));
 }
 
-void AgentObserver::onModuleRemoved(const QString& instanceId)
-{
+void AgentObserver::onModuleRemoved(const QString& instanceId) {
     QJsonObject det;
     det["id"] = instanceId;
     pushEvent(GuiEvent(GuiEventType::ModuleRemoved, "Project", det));
 }
 
-void AgentObserver::onConnectionAdded(const ModuleConnection& conn)
-{
+void AgentObserver::onConnectionAdded(const ModuleConnection& conn) {
     QJsonObject det;
     det["from"] = conn.fromModuleId;
     det["to"] = conn.toModuleId;
     pushEvent(GuiEvent(GuiEventType::ConnectionCreated, "Project", det));
 }
 
-void AgentObserver::onConnectionRemoved(const QString& fromId, const QString& toId)
-{
+void AgentObserver::onConnectionRemoved(const QString& fromId, const QString& toId) {
     QJsonObject det;
     det["from"] = fromId;
     det["to"] = toId;
     pushEvent(GuiEvent(GuiEventType::ConnectionRemoved, "Project", det));
 }
 
-void AgentObserver::onConnectionRemovedWithPorts(const QString& fromId, const QString& fromPort,
-                                                   const QString& toId, const QString& toPort)
-{
+void AgentObserver::onConnectionRemovedWithPorts(const QString& fromId, const QString& fromPort, const QString& toId,
+                                                 const QString& toPort) {
     QJsonObject det;
     det["from"] = fromId;
     det["fromPort"] = fromPort;
@@ -244,27 +209,24 @@ void AgentObserver::onConnectionRemovedWithPorts(const QString& fromId, const QS
     pushEvent(GuiEvent(GuiEventType::ConnectionRemoved, "Project", det));
 }
 
-void AgentObserver::setFlowCanvas(QObject* canvas)
-{
+void AgentObserver::setFlowCanvas(QObject* canvas) {
     if (m_flowCanvas) {
         disconnect(m_flowCanvas, nullptr, this, nullptr);
     }
     m_flowCanvas = canvas;
     if (m_flowCanvas) {
-        connect(m_flowCanvas, SIGNAL(nodeAdded(QString)),
-                this, SLOT(onNodeAdded(QString)));
-        connect(m_flowCanvas, SIGNAL(nodeRemoved(QString)),
-                this, SLOT(onNodeRemoved(QString)));
-        connect(m_flowCanvas, SIGNAL(connectionCreated(QString,QString)),
-                this, SLOT(onConnectionCreated(QString,QString)));
+        connect(m_flowCanvas, SIGNAL(nodeAdded(QString)), this, SLOT(onNodeAdded(QString)));
+        connect(m_flowCanvas, SIGNAL(nodeRemoved(QString)), this, SLOT(onNodeRemoved(QString)));
+        connect(m_flowCanvas, SIGNAL(connectionCreated(QString, QString)), this,
+                SLOT(onConnectionCreated(QString, QString)));
     }
 }
 
-void AgentObserver::onLogAdded(const LogEntry& entry)
-{
+void AgentObserver::onLogAdded(const LogEntry& entry) {
     // 防止递归反馈循环：AgentController::onGuiEvent 记录日志到 Logger，
     // Logger 的 logAdded 又被 AgentObserver 监听，如果不切断会形成无限递归。
-    if (entry.category == "Agent") return;
+    if (entry.category == "Agent")
+        return;
 
     QJsonObject det;
     det["level"] = static_cast<int>(entry.level);
@@ -273,8 +235,7 @@ void AgentObserver::onLogAdded(const LogEntry& entry)
     pushEvent(GuiEvent(GuiEventType::LogAdded, "Logger", det));
 }
 
-void AgentObserver::onPropertyChanged(const QString& moduleId, const QString& key, const QVariant& value)
-{
+void AgentObserver::onPropertyChanged(const QString& moduleId, const QString& key, const QVariant& value) {
     QJsonObject det;
     det["moduleId"] = moduleId;
     det["key"] = key;
@@ -282,22 +243,19 @@ void AgentObserver::onPropertyChanged(const QString& moduleId, const QString& ke
     pushEvent(GuiEvent(GuiEventType::PropertyChanged, "PropertyPanel", det));
 }
 
-void AgentObserver::onNodeAdded(const QString& nodeId)
-{
+void AgentObserver::onNodeAdded(const QString& nodeId) {
     QJsonObject det;
     det["nodeId"] = nodeId;
     pushEvent(GuiEvent(GuiEventType::ModuleAdded, "FlowCanvas", det));
 }
 
-void AgentObserver::onNodeRemoved(const QString& nodeId)
-{
+void AgentObserver::onNodeRemoved(const QString& nodeId) {
     QJsonObject det;
     det["nodeId"] = nodeId;
     pushEvent(GuiEvent(GuiEventType::ModuleRemoved, "FlowCanvas", det));
 }
 
-void AgentObserver::onConnectionCreated(const QString& fromId, const QString& toId)
-{
+void AgentObserver::onConnectionCreated(const QString& fromId, const QString& toId) {
     QJsonObject det;
     det["from"] = fromId;
     det["to"] = toId;

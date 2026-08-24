@@ -1,7 +1,7 @@
 #include "core/base/ModuleBase.h"
 #include "core/model/ImageData.h"
-#include "plugins/image_processing/PerProcessing/PerProcessingPlugin.h"
 #include "plugins/detection/Matching/MatchingPlugin.h"
+#include "plugins/image_processing/PerProcessing/PerProcessingPlugin.h"
 
 #include <QJsonObject>
 #include <QVariant>
@@ -38,16 +38,16 @@ private slots:
 static ImageData makeSyntheticImage(int width = 200, int height = 200) {
     cv::Mat mat(height, width, CV_8UC3, cv::Scalar(30, 30, 30));
     // 中心画一个白色矩形作为特征
-    cv::rectangle(mat, cv::Point(width / 2 - 20, height / 2 - 20),
-                  cv::Point(width / 2 + 20, height / 2 + 20), cv::Scalar(255, 255, 255), -1);
+    cv::rectangle(mat, cv::Point(width / 2 - 20, height / 2 - 20), cv::Point(width / 2 + 20, height / 2 + 20),
+                  cv::Scalar(255, 255, 255), -1);
     ImageData data;
     data.setMat(mat);
     return data;
 }
 #endif
 
-static ExecutionResult runModule(ModuleBase& plugin, const QJsonObject& params,
-                                 const ImageData& input, ImageData& output) {
+static ExecutionResult runModule(ModuleBase& plugin, const QJsonObject& params, const ImageData& input,
+                                 ImageData& output) {
     plugin.setParams(params);
     PortValueMap inputs;
     inputs.insert(QStringLiteral("image"), QVariant::fromValue(input));
@@ -120,8 +120,7 @@ void TestImagePlugins::testPerProcessingKernelSizeAffectsResult() {
     QVERIFY(!mLarge.empty());
     cv::Mat diff;
     cv::absdiff(mSmall, mLarge, diff);
-    QVERIFY2(cv::countNonZero(diff.reshape(1)) > 0,
-             "different kernelSize must produce different results");
+    QVERIFY2(cv::countNonZero(diff.reshape(1)) > 0, "different kernelSize must produce different results");
 #else
     QSKIP("OpenCV not available");
 #endif

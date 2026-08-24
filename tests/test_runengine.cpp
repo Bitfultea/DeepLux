@@ -1942,11 +1942,11 @@ void TestRunEngine::testDuplicateFourTupleRejected() {
     project.addConnection(c2); // 幂等——不会重复添加
     QCOMPARE(project.connections().size(), 1);
     QVERIFY2(engine.loadProject(&project,
-                                 [](const ModuleInstance& inst) {
-                                     auto* m = new TestExecutionModule(inst.id);
-                                     m->initialize();
-                                     return m;
-                                 }),
+                                [](const ModuleInstance& inst) {
+                                    auto* m = new TestExecutionModule(inst.id);
+                                    m->initialize();
+                                    return m;
+                                }),
              "idempotent duplicate should be accepted (silently dropped at model level)");
     engine.clearModules();
 }

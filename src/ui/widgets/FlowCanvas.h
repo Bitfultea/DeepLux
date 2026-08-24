@@ -1,7 +1,7 @@
 #pragma once
 
-#include "deeplux/DataContract.h"
 #include "core/manager/PluginManager.h"
+#include "deeplux/DataContract.h"
 
 #include <QGraphicsItem>
 #include <QGraphicsScene>
@@ -38,11 +38,10 @@ public:
     void loadFromProject(Project* project);
 
     // 连接操作（字符串端口 ID）
-    void addConnection(const QString& fromNodeId, const QString& fromPortId,
-                       const QString& toNodeId, const QString& toPortId,
-                       const QString& edgeType = QStringLiteral("data"));
-    void removeConnection(const QString& fromNodeId, const QString& fromPortId,
-                           const QString& toNodeId, const QString& toPortId);
+    void addConnection(const QString& fromNodeId, const QString& fromPortId, const QString& toNodeId,
+                       const QString& toPortId, const QString& edgeType = QStringLiteral("data"));
+    void removeConnection(const QString& fromNodeId, const QString& fromPortId, const QString& toNodeId,
+                          const QString& toPortId);
     void clearConnections();
 
     // 查询
@@ -63,8 +62,7 @@ signals:
     void nodeSelected(const QString& nodeId);
     void connectionCreated(const QString& fromId, const QString& toId);
     void connectionRemoved(const QString& fromId, const QString& toId);
-    void connectionRequest(const QString& fromId, const QString& fromPort,
-                           const QString& toId, const QString& toPort);
+    void connectionRequest(const QString& fromId, const QString& fromPort, const QString& toId, const QString& toPort);
 
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
@@ -74,8 +72,8 @@ protected:
 
 private:
     void removeConnectionsForNode(const QString& nodeId);
-    static QString connectionKey(const QString& fromId, const QString& fromPort,
-                                  const QString& toId, const QString& toPort);
+    static QString connectionKey(const QString& fromId, const QString& fromPort, const QString& toId,
+                                 const QString& toPort);
 
 public:
     void updateConnectionsForNode(const QString& nodeId);
@@ -102,36 +100,65 @@ public:
     explicit FlowNodeItem(const QString& nodeId, const QString& name, const QString& moduleId,
                           QGraphicsItem* parent = nullptr);
 
-    QString nodeId() const { return m_nodeId; }
-    QString moduleId() const { return m_moduleId; }
-    QString name() const { return m_name; }
+    QString nodeId() const {
+        return m_nodeId;
+    }
+    QString moduleId() const {
+        return m_moduleId;
+    }
+    QString name() const {
+        return m_name;
+    }
     void setName(const QString& name);
     void setExecutionState(const QString& status, const QString& timeText);
 
     // 端口声明
     void setPortSpecs(const QList<PortSpec>& inputs, const QList<PortSpec>& outputs);
-    const QList<PortSpec>& inputPortSpecs() const { return m_inputPortSpecs; }
-    const QList<PortSpec>& outputPortSpecs() const { return m_outputPortSpecs; }
+    const QList<PortSpec>& inputPortSpecs() const {
+        return m_inputPortSpecs;
+    }
+    const QList<PortSpec>& outputPortSpecs() const {
+        return m_outputPortSpecs;
+    }
 
     // 端口位置（按端口 ID 查找）
     QPointF inputPortPos(const QString& portId) const;
     QPointF outputPortPos(const QString& portId) const;
     QPointF inputPortPos(int index) const;
     QPointF outputPortPos(int index) const;
-    int inputPortCount() const { return m_inputPortSpecs.size(); }
-    int outputPortCount() const { return m_outputPortSpecs.size(); }
+    int inputPortCount() const {
+        return m_inputPortSpecs.size();
+    }
+    int outputPortCount() const {
+        return m_outputPortSpecs.size();
+    }
 
     // 端口命中测试
     QString inputPortAt(const QPointF& pos) const;
     QString outputPortAt(const QPointF& pos) const;
 
     // 视觉状态
-    void setDisabledVisual(bool disabled) { m_disabledVisual = disabled; update(); }
-    void setBreakpointVisual(bool bp) { m_breakpointVisual = bp; update(); }
-    void setHighlightCompatible(bool on) { m_highlightCompatible = on; update(); }
-    bool isDisabledVisual() const { return m_disabledVisual; }
-    bool hasBreakpointVisual() const { return m_breakpointVisual; }
-    bool isCompatibleHighlighted() const { return m_highlightCompatible; }
+    void setDisabledVisual(bool disabled) {
+        m_disabledVisual = disabled;
+        update();
+    }
+    void setBreakpointVisual(bool bp) {
+        m_breakpointVisual = bp;
+        update();
+    }
+    void setHighlightCompatible(bool on) {
+        m_highlightCompatible = on;
+        update();
+    }
+    bool isDisabledVisual() const {
+        return m_disabledVisual;
+    }
+    bool hasBreakpointVisual() const {
+        return m_breakpointVisual;
+    }
+    bool isCompatibleHighlighted() const {
+        return m_highlightCompatible;
+    }
 
     QRectF boundingRect() const override;
     void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget = nullptr) override;
@@ -174,18 +201,25 @@ private:
  */
 class FlowConnectionItem : public QGraphicsItem {
 public:
-    explicit FlowConnectionItem(FlowNodeItem* fromNode, const QString& fromPortId,
-                                FlowNodeItem* toNode, const QString& toPortId,
-                                const QString& edgeType = QStringLiteral("data"),
+    explicit FlowConnectionItem(FlowNodeItem* fromNode, const QString& fromPortId, FlowNodeItem* toNode,
+                                const QString& toPortId, const QString& edgeType = QStringLiteral("data"),
                                 QGraphicsItem* parent = nullptr);
     ~FlowConnectionItem() override;
 
     QString fromNodeId() const;
     QString toNodeId() const;
-    QString fromPortId() const { return m_fromPortId; }
-    QString toPortId() const { return m_toPortId; }
-    QString edgeType() const { return m_edgeType; }
-    bool isControlEdge() const { return m_edgeType == QLatin1String("control"); }
+    QString fromPortId() const {
+        return m_fromPortId;
+    }
+    QString toPortId() const {
+        return m_toPortId;
+    }
+    QString edgeType() const {
+        return m_edgeType;
+    }
+    bool isControlEdge() const {
+        return m_edgeType == QLatin1String("control");
+    }
 
     QRectF boundingRect() const override;
     void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget = nullptr) override;

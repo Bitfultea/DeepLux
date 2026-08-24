@@ -47,8 +47,8 @@ void TestQueuePlugins::cleanup() {
     GlobalVarManager::instance().clearQueue(QStringLiteral("testq"));
 }
 
-static ExecutionResult runModule(ModuleBase& plugin, const QJsonObject& params,
-                                 const ImageData& input, ImageData& output) {
+static ExecutionResult runModule(ModuleBase& plugin, const QJsonObject& params, const ImageData& input,
+                                 ImageData& output) {
     plugin.setParams(params);
     PortValueMap inputs;
     inputs.insert(QStringLiteral("image"), QVariant::fromValue(input));
@@ -129,8 +129,7 @@ void TestQueuePlugins::testQueueInDataVariableParamAffectsSource() {
 
     const ExecutionResult result = runModule(plugin, params, input, output);
     QVERIFY2(result.success, qPrintable(result.userMessage));
-    QCOMPARE(GlobalVarManager::instance().peekQueue(QStringLiteral("testq")).toString(),
-             QString("from_custom"));
+    QCOMPARE(GlobalVarManager::instance().peekQueue(QStringLiteral("testq")).toString(), QString("from_custom"));
 }
 
 void TestQueuePlugins::testQueueInCloneIndependent() {

@@ -1,38 +1,33 @@
-#include <QtTest/QtTest>
 #include "core/agent/AgentObserver.h"
 #include "core/agent/GuiEvent.h"
 #include "core/manager/ProjectManager.h"
 #include "core/model/Project.h"
 #include "ui/widgets/FlowCanvas.h"
 
+#include <QtTest/QtTest>
+
 using namespace DeepLux;
 
-class TestAgentObserver : public QObject
-{
+class TestAgentObserver : public QObject {
     Q_OBJECT
 
 private slots:
-    void init()
-    {
+    void init() {
         ProjectManager::instance().closeProject();
     }
 
-    void cleanup()
-    {
+    void cleanup() {
         ProjectManager::instance().closeProject();
     }
 
-    void testRecentEventsEmpty()
-    {
+    void testRecentEventsEmpty() {
         AgentObserver observer;
         QList<GuiEvent> events = observer.recentEvents(10);
         QCOMPARE(events.size(), 0);
     }
 
-    void testEventSerialization()
-    {
-        GuiEvent e(GuiEventType::ProjectCreated, "ProjectManager",
-                   QJsonObject{{"name", "Test"}});
+    void testEventSerialization() {
+        GuiEvent e(GuiEventType::ProjectCreated, "ProjectManager", QJsonObject{{"name", "Test"}});
         QCOMPARE(e.typeString(), QString("project_created"));
         QVERIFY(e.timestamp.isValid());
 
@@ -41,16 +36,14 @@ private slots:
         QCOMPARE(json["source"].toString(), QString("ProjectManager"));
     }
 
-    void testEventTypeStrings()
-    {
+    void testEventTypeStrings() {
         QCOMPARE(GuiEvent(GuiEventType::RunStarted, "").typeString(), QString("run_started"));
         QCOMPARE(GuiEvent(GuiEventType::ModuleAdded, "").typeString(), QString("module_added"));
         QCOMPARE(GuiEvent(GuiEventType::PropertyChanged, "").typeString(), QString("property_changed"));
         QCOMPARE(GuiEvent(GuiEventType::Unknown, "").typeString(), QString("unknown"));
     }
 
-    void testCanvasRemovalProducesOneExactProjectEvent()
-    {
+    void testCanvasRemovalProducesOneExactProjectEvent() {
         AgentObserver observer;
         QVERIFY(observer.initialize());
 

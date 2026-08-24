@@ -1,9 +1,9 @@
 #ifndef DEEPLUX_AGENT_OBSERVER_H
 #define DEEPLUX_AGENT_OBSERVER_H
 
-#include <QObject>
-#include <QList>
 #include <QDateTime>
+#include <QList>
+#include <QObject>
 
 namespace DeepLux {
 
@@ -22,8 +22,7 @@ class RunResult;
  * - 只监听信号，不调用方法
  * - 事件存入环形缓冲区（默认保留最近 100 个）
  */
-class AgentObserver : public QObject
-{
+class AgentObserver : public QObject {
     Q_OBJECT
 
 public:
@@ -67,8 +66,8 @@ private slots:
     void onModuleRemoved(const QString& instanceId);
     void onConnectionAdded(const struct ModuleConnection& conn);
     void onConnectionRemoved(const QString& fromId, const QString& toId);
-    void onConnectionRemovedWithPorts(const QString& fromId, const QString& fromPort,
-                                        const QString& toId, const QString& toPort);
+    void onConnectionRemovedWithPorts(const QString& fromId, const QString& fromPort, const QString& toId,
+                                      const QString& toPort);
 
     // Logger
     void onLogAdded(const struct LogEntry& entry);

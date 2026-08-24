@@ -7,8 +7,8 @@
 #include <QDebug>
 #include <QDragEnterEvent>
 #include <QDropEvent>
-#include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSceneHoverEvent>
+#include <QGraphicsSceneMouseEvent>
 #include <QGraphicsTextItem>
 #include <QMimeData>
 #include <QPainter>
@@ -96,10 +96,9 @@ bool FlowCanvas::portsCompatible(const PortSpec& fromPort, const PortSpec& toPor
     return fromPort.type == toPort.type;
 }
 
-QString FlowCanvas::connectionKey(const QString& fromId, const QString& fromPort,
-                                    const QString& toId, const QString& toPort) {
-    return fromId + QLatin1Char('\x1f') + fromPort + QLatin1Char('\x1f') +
-           toId + QLatin1Char('\x1f') + toPort;
+QString FlowCanvas::connectionKey(const QString& fromId, const QString& fromPort, const QString& toId,
+                                  const QString& toPort) {
+    return fromId + QLatin1Char('\x1f') + fromPort + QLatin1Char('\x1f') + toId + QLatin1Char('\x1f') + toPort;
 }
 
 QString FlowCanvas::addNode(const QString& moduleId, const QString& name, const QPointF& pos,
@@ -189,9 +188,8 @@ void FlowCanvas::clearNodes() {
     m_nodes.clear();
 }
 
-void FlowCanvas::addConnection(const QString& fromNodeId, const QString& fromPortId,
-                               const QString& toNodeId, const QString& toPortId,
-                               const QString& edgeType) {
+void FlowCanvas::addConnection(const QString& fromNodeId, const QString& fromPortId, const QString& toNodeId,
+                               const QString& toPortId, const QString& edgeType) {
     if (!m_nodes.contains(fromNodeId) || !m_nodes.contains(toNodeId)) {
         return;
     }
@@ -199,8 +197,8 @@ void FlowCanvas::addConnection(const QString& fromNodeId, const QString& fromPor
     // 按完整 4 元组去重（允许同节点对不同端口的多连接）
     const QString key = connectionKey(fromNodeId, fromPortId, toNodeId, toPortId);
     for (FlowConnectionItem* existing : m_connections) {
-        if (existing && connectionKey(existing->fromNodeId(), existing->fromPortId(),
-                                       existing->toNodeId(), existing->toPortId()) == key) {
+        if (existing && connectionKey(existing->fromNodeId(), existing->fromPortId(), existing->toNodeId(),
+                                      existing->toPortId()) == key) {
             return;
         }
     }
@@ -230,13 +228,12 @@ void FlowCanvas::addConnection(const QString& fromNodeId, const QString& fromPor
     emit connectionCreated(fromNodeId, toNodeId);
 }
 
-void FlowCanvas::removeConnection(const QString& fromNodeId, const QString& fromPortId,
-                                   const QString& toNodeId, const QString& toPortId) {
+void FlowCanvas::removeConnection(const QString& fromNodeId, const QString& fromPortId, const QString& toNodeId,
+                                  const QString& toPortId) {
     const QString key = connectionKey(fromNodeId, fromPortId, toNodeId, toPortId);
     for (int i = m_connections.size() - 1; i >= 0; i--) {
         FlowConnectionItem* conn = m_connections[i];
-        if (connectionKey(conn->fromNodeId(), conn->fromPortId(),
-                         conn->toNodeId(), conn->toPortId()) == key) {
+        if (connectionKey(conn->fromNodeId(), conn->fromPortId(), conn->toNodeId(), conn->toPortId()) == key) {
             m_scene->removeItem(conn);
             m_connections.removeAt(i);
             delete conn;
@@ -467,8 +464,8 @@ void FlowCanvas::drawBackground(QPainter* painter, const QRectF& rect) {
     legendFont.setPointSize(8);
     painter->setFont(legendFont);
     const QString legendText = tr("虚线 = 执行顺序");
-    const QRectF legendRect = mapToScene(10, 10).x() >= 0 ? QRectF(mapToScene(10, 10), QSizeF(140, 18))
-                                                           : QRectF(10, 10, 140, 18);
+    const QRectF legendRect =
+        mapToScene(10, 10).x() >= 0 ? QRectF(mapToScene(10, 10), QSizeF(140, 18)) : QRectF(10, 10, 140, 18);
     painter->drawText(legendRect, Qt::AlignLeft | Qt::AlignVCenter, legendText);
 
     painter->restore();
@@ -872,8 +869,8 @@ void FlowNodeItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
                             }
                         }
                         if (compatible && canvas) {
-                            emit canvas->connectionRequest(nodeId(), m_dragFromPortId,
-                                                            targetNode->nodeId(), targetPort);
+                            emit canvas->connectionRequest(nodeId(), m_dragFromPortId, targetNode->nodeId(),
+                                                           targetPort);
                         }
                     }
                     break;
@@ -890,16 +887,15 @@ void FlowNodeItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
 
 // ========== FlowConnectionItem ==========
 
-FlowConnectionItem::FlowConnectionItem(FlowNodeItem* fromNode, const QString& fromPortId,
-                                        FlowNodeItem* toNode, const QString& toPortId,
-                                        const QString& edgeType, QGraphicsItem* parent)
-    : QGraphicsItem(parent), m_fromNode(fromNode), m_toNode(toNode),
-      m_fromPortId(fromPortId), m_toPortId(toPortId), m_edgeType(edgeType) {
+FlowConnectionItem::FlowConnectionItem(FlowNodeItem* fromNode, const QString& fromPortId, FlowNodeItem* toNode,
+                                       const QString& toPortId, const QString& edgeType, QGraphicsItem* parent)
+    : QGraphicsItem(parent), m_fromNode(fromNode), m_toNode(toNode), m_fromPortId(fromPortId), m_toPortId(toPortId),
+      m_edgeType(edgeType) {
     setZValue(0);
     setAcceptHoverEvents(true);
     setToolTip(QStringLiteral("%1.%2 → %3.%4 (%5)")
-                   .arg(fromNode ? fromNode->nodeId() : QString(), fromPortId,
-                        toNode ? toNode->nodeId() : QString(), toPortId, edgeType));
+                   .arg(fromNode ? fromNode->nodeId() : QString(), fromPortId, toNode ? toNode->nodeId() : QString(),
+                        toPortId, edgeType));
     updatePath();
 }
 

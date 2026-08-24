@@ -812,14 +812,13 @@ void RunEngine::executeRunWithControlGraph(ImageData& pipelineData) {
         if (m_reentrantModules.contains(mod))
             m_controlActivated.remove(mod);
         ModuleBase* firstModule = getModule(mod);
-        const bool canBuildParallelBatch =
-            parallelThreadCount() > 1 && firstModule && firstModule->isThreadSafe() &&
-            !firstModule->isBlocking() && !isModuleDisabled(mod);
+        const bool canBuildParallelBatch = parallelThreadCount() > 1 && firstModule && firstModule->isThreadSafe() &&
+                                           !firstModule->isBlocking() && !isModuleDisabled(mod);
         while (canBuildParallelBatch && !m_controlQueue.isEmpty()) {
             const QString nextMod = m_controlQueue.first();
             ModuleBase* nextModule = getModule(nextMod);
-            if (!nextModule || !nextModule->isThreadSafe() || nextModule->isBlocking() ||
-                isModuleDisabled(nextMod) || hasBreakpoint(nextMod))
+            if (!nextModule || !nextModule->isThreadSafe() || nextModule->isBlocking() || isModuleDisabled(nextMod) ||
+                hasBreakpoint(nextMod))
                 break;
             batch.append(m_controlQueue.takeFirst());
             if (m_reentrantModules.contains(nextMod))

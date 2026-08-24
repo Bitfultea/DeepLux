@@ -603,15 +603,16 @@ void TestPluginParameterContracts::testBlockingInjectedIntoCreatedModule() {
              qPrintable(QString("createModule(%1) must inject blocking=true").arg(blockingPlugin)));
     delete bmod;
 
-    if (!nonBlockingPlugin.isEmpty()) {
-        IModule* nmod = PluginManager::instance().createModule(nonBlockingPlugin);
-        QVERIFY(nmod != nullptr);
-        auto* nbase = qobject_cast<ModuleBase*>(nmod);
-        QVERIFY(nbase != nullptr);
-        QVERIFY2(!nbase->isBlocking(),
-                 qPrintable(QString("createModule(%1) must inject blocking=false").arg(nonBlockingPlugin)));
-        delete nmod;
-    }
+    // G4-fix1: blocking=false 反向验证也必须是强制断言，防止全部插件误标 blocking 时静默跳过
+    QVERIFY2(!nonBlockingPlugin.isEmpty(),
+             "at least one plugin must declare execution.blocking=false for reverse verification");
+    IModule* nmod = PluginManager::instance().createModule(nonBlockingPlugin);
+    QVERIFY2(nmod != nullptr, qPrintable(QString("createModule(%1) must succeed").arg(nonBlockingPlugin)));
+    auto* nbase = qobject_cast<ModuleBase*>(nmod);
+    QVERIFY(nbase != nullptr);
+    QVERIFY2(!nbase->isBlocking(),
+             qPrintable(QString("createModule(%1) must inject blocking=false").arg(nonBlockingPlugin)));
+    delete nmod;
 }
 
 QTEST_MAIN(TestPluginParameterContracts)

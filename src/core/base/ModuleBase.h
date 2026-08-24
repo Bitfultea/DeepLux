@@ -3,8 +3,8 @@
 #include "../interface/IModule.h"
 #include "../model/ImageData.h"
 
-#include <memory>
 #include <QMutex>
+#include <memory>
 
 namespace DeepLux {
 
@@ -13,13 +13,12 @@ class CancellationToken;
 /**
  * @brief 模块参数基类
  */
-struct ModuleParam
-{
+struct ModuleParam {
     QString name;
     bool enabled = true;
     int posX = 0;
     int posY = 0;
-    
+
     virtual QJsonObject toJson() const;
     virtual bool fromJson(const QJsonObject& json);
 };
@@ -27,31 +26,56 @@ struct ModuleParam
 /**
  * @brief 模块基类
  */
-class ModuleBase : public IModule
-{
+class ModuleBase : public IModule {
     Q_OBJECT
 
 public:
     explicit ModuleBase(QObject* parent = nullptr);
     ~ModuleBase() override;
 
-    QString id() const { return m_moduleId; }
-    QString moduleId() const override { return m_moduleId; }
-    QString name() const override { return m_name; }
-    QString instanceName() const { return m_instanceName; }
-    void setInstanceName(const QString& name) { m_instanceName = name; }
-    QString category() const override { return m_category; }
-    QString version() const override { return m_version; }
-    QString author() const override { return m_author; }
-    QString description() const override { return m_description; }
-    QIcon icon() const override { return m_icon; }
-    void setIcon(const QIcon& icon) override { m_icon = icon; }
+    QString id() const {
+        return m_moduleId;
+    }
+    QString moduleId() const override {
+        return m_moduleId;
+    }
+    QString name() const override {
+        return m_name;
+    }
+    QString instanceName() const {
+        return m_instanceName;
+    }
+    void setInstanceName(const QString& name) {
+        m_instanceName = name;
+    }
+    QString category() const override {
+        return m_category;
+    }
+    QString version() const override {
+        return m_version;
+    }
+    QString author() const override {
+        return m_author;
+    }
+    QString description() const override {
+        return m_description;
+    }
+    QIcon icon() const override {
+        return m_icon;
+    }
+    void setIcon(const QIcon& icon) override {
+        m_icon = icon;
+    }
 
     bool initialize() override;
     void shutdown() override;
-    bool isInitialized() const override { return m_initialized; }
+    bool isInitialized() const override {
+        return m_initialized;
+    }
 
-    int interfaceVersion() const override { return DEEPLUX_MODULE_INTERFACE_VERSION; }
+    int interfaceVersion() const override {
+        return DEEPLUX_MODULE_INTERFACE_VERSION;
+    }
 
     // 旧 process() 插件的源代码兼容入口，不属于 IModule ABI。
     bool execute(const ImageData& input, ImageData& output);
@@ -67,10 +91,18 @@ public:
         return m_outputPorts;
     }
     void setPorts(const QList<PortSpec>& inputs, const QList<PortSpec>& outputs);
-    bool isThreadSafe() const { return m_threadSafe; }
-    void setThreadSafe(bool safe) { m_threadSafe = safe; }
-    bool isBlocking() const { return m_blocking; }
-    void setBlocking(bool blocking) { m_blocking = blocking; }
+    bool isThreadSafe() const {
+        return m_threadSafe;
+    }
+    void setThreadSafe(bool safe) {
+        m_threadSafe = safe;
+    }
+    bool isBlocking() const {
+        return m_blocking;
+    }
+    void setBlocking(bool blocking) {
+        m_blocking = blocking;
+    }
 
     QJsonObject defaultParams() const override;
     QJsonObject currentParams() const override;
@@ -91,7 +123,6 @@ protected:
     // Derived classes should override this to provide proper cloning.
     // Default implementation returns nullptr (plugin doesn't support multiple instances).
     virtual IModule* cloneImpl() const;
-
 
     virtual bool process(const ImageData& input, ImageData& output) = 0;
     virtual bool doValidateParams(const QJsonObject& params, QString& error) const;

@@ -637,7 +637,7 @@
       "matchKind": "direct",
       "reviewState": "reviewed",
       "reviewConclusion": "partial",
-      "evidence": "direct 名称匹配；G-fix1 修正 Start/Stop 时间传递（Start 输出 timeslice_start_time，Stop 缺失时报错），test_timeslice 6 用例验证；行为测试：test_timeslice 11 用例（G-fix1 修正 Start/Stop 时间传递）；当前实现行为已通过测试，但与旧版参数/端口/结果等价未对照"
+      "evidence": "direct 名称匹配；G-fix1/G3-fix1 修正 Start/Stop 时间传递（Start 输出 timeslice_start_time，Stop 缺失/非数值/非正/未来时间均报错，改用 steady_clock 单调时钟）；行为测试：test_timeslice 11 用例；当前存在候选实现，旧版等价未证明"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.WriteText",
@@ -679,7 +679,7 @@
       "matchKind": "direct",
       "reviewState": "reviewed",
       "reviewConclusion": "partial",
-      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；行为测试：test_queueplugins 5 用例（入队/空名/空数据/参数影响/clone）；当前实现行为已通过测试，但与旧版参数/端口/结果等价未对照"
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；行为测试：test_queueplugins 5 用例（入队/空名/空数据/参数影响/clone）；当前存在候选实现，旧版等价未证明"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.QueueOut",
@@ -690,7 +690,7 @@
       "matchKind": "direct",
       "reviewState": "reviewed",
       "reviewConclusion": "partial",
-      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；行为测试：test_queueplugins 5 用例（出队/空队列/peek/参数影响/clone）；当前实现行为已通过测试，但与旧版参数/端口/结果等价未对照"
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；行为测试：test_queueplugins 5 用例（出队/空队列/peek/参数影响/clone）；当前存在候选实现，旧版等价未证明"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.SplitString",

@@ -267,19 +267,31 @@ void TestFlowCanvas::testDeleteOneConnectionDoesNotDeleteOthers() {
 void TestFlowCanvas::testSaveReloadPreservesPortConnections() {
     // 创建带字符串端口的工程 → JSON → 重新加载 → 连接端口一致
     Project project;
-    ModuleInstance a; a.id = "A"; a.moduleId = "module.a"; a.name = "A";
-    ModuleInstance b; b.id = "B"; b.moduleId = "module.b"; b.name = "B";
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "module.a";
+    a.name = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "module.b";
+    b.name = "B";
     project.addModule(a);
     project.addModule(b);
 
     ModuleConnection c1;
-    c1.fromModuleId = "A"; c1.toModuleId = "B";
-    c1.fromPort = "image"; c1.toPort = "image"; c1.edgeType = "data";
+    c1.fromModuleId = "A";
+    c1.toModuleId = "B";
+    c1.fromPort = "image";
+    c1.toPort = "image";
+    c1.edgeType = "data";
     project.addConnection(c1);
 
     ModuleConnection c2;
-    c2.fromModuleId = "A"; c2.toModuleId = "B";
-    c2.fromPort = "val"; c2.toPort = "val"; c2.edgeType = "data";
+    c2.fromModuleId = "A";
+    c2.toModuleId = "B";
+    c2.fromPort = "val";
+    c2.toPort = "val";
+    c2.edgeType = "data";
     project.addConnection(c2);
 
     QJsonObject json = project.toJson();
@@ -339,10 +351,16 @@ void TestFlowCanvas::testPortSpecsFromPluginManagerLoaded() {
     // 无插件元数据时端口列表为空（默认端口回退）
     // 主要验证 setPortSpecs 可被调用且不崩溃
     QList<PortSpec> inputs;
-    PortSpec in; in.id = "image"; in.displayName = "image"; in.type = DataType::Image2D;
+    PortSpec in;
+    in.id = "image";
+    in.displayName = "image";
+    in.type = DataType::Image2D;
     inputs.append(in);
     QList<PortSpec> outputs;
-    PortSpec out; out.id = "image"; out.displayName = "image"; out.type = DataType::Image2D;
+    PortSpec out;
+    out.id = "image";
+    out.displayName = "image";
+    out.type = DataType::Image2D;
     outputs.append(out);
     node->setPortSpecs(inputs, outputs);
 
@@ -378,14 +396,23 @@ void TestFlowCanvas::testDeleteSecondConnectionPreservesFirst() {
 void TestFlowCanvas::testDuplicateConnectionIsIdempotent() {
     // P1-fix: 重复添加同一四元组连接 → 模型幂等
     Project project;
-    ModuleInstance a; a.id = "A"; a.moduleId = "module.a"; a.name = "A";
-    ModuleInstance b; b.id = "B"; b.moduleId = "module.b"; b.name = "B";
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "module.a";
+    a.name = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "module.b";
+    b.name = "B";
     project.addModule(a);
     project.addModule(b);
 
     ModuleConnection c;
-    c.fromModuleId = "A"; c.toModuleId = "B";
-    c.fromPort = "image"; c.toPort = "image"; c.edgeType = "data";
+    c.fromModuleId = "A";
+    c.toModuleId = "B";
+    c.fromPort = "image";
+    c.toPort = "image";
+    c.edgeType = "data";
 
     project.addConnection(c);
     project.addConnection(c); // 重复
@@ -397,17 +424,27 @@ void TestFlowCanvas::testDuplicateConnectionIsIdempotent() {
 void TestFlowCanvas::testProjectRemoveConnectionWithPortsPrecise() {
     // P1-fix: removeConnectionWithPorts 只删除匹配的四元组
     Project project;
-    ModuleInstance a; a.id = "A"; a.moduleId = "module.a";
-    ModuleInstance b; b.id = "B"; b.moduleId = "module.b";
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "module.a";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "module.b";
     project.addModule(a);
     project.addModule(b);
 
     ModuleConnection c1;
-    c1.fromModuleId = "A"; c1.toModuleId = "B";
-    c1.fromPort = "image"; c1.toPort = "image"; c1.edgeType = "data";
+    c1.fromModuleId = "A";
+    c1.toModuleId = "B";
+    c1.fromPort = "image";
+    c1.toPort = "image";
+    c1.edgeType = "data";
     ModuleConnection c2;
-    c2.fromModuleId = "A"; c2.toModuleId = "B";
-    c2.fromPort = "val"; c2.toPort = "val"; c2.edgeType = "data";
+    c2.fromModuleId = "A";
+    c2.toModuleId = "B";
+    c2.fromPort = "val";
+    c2.toPort = "val";
+    c2.edgeType = "data";
     project.addConnection(c1);
     project.addConnection(c2);
     QCOMPARE(project.connections().size(), 2);

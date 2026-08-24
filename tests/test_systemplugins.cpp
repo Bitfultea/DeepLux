@@ -6,7 +6,6 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QJsonObject>
 #include <QTemporaryDir>
 #include <QVariant>
 #include <QtTest/QtTest>
@@ -41,8 +40,8 @@ private slots:
     void testSaveDataCloneIndependent();
 };
 
-static ExecutionResult runModule(ModuleBase& plugin, const QJsonObject& params,
-                                 const ImageData& input, ImageData& output) {
+static ExecutionResult runModule(ModuleBase& plugin, const QJsonObject& params, const ImageData& input,
+                                 ImageData& output) {
     plugin.setParams(params);
     PortValueMap inputs;
     inputs.insert(QStringLiteral("image"), QVariant::fromValue(input));
