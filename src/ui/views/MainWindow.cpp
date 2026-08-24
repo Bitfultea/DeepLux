@@ -1197,7 +1197,7 @@ void MainWindow::setupMainLayout() {
     processControlBar->setObjectName("ProcessControlBar");
     auto* processControlLayout = new QHBoxLayout(processControlBar);
     processControlLayout->setContentsMargins(0, 0, 0, 0);
-    processControlLayout->setSpacing(4);
+    processControlLayout->setSpacing(2);
     auto addProcessControl = [this, processControlBar, processControlLayout](
                                  const QString& objectName, AppIconProvider::Icon icon, const QColor& color,
                                  const QString& text, const QString& toolTip, auto slot) {
@@ -1205,6 +1205,7 @@ void MainWindow::setupMainLayout() {
         button->setObjectName(objectName);
         button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
         button->setIcon(AppIconProvider::icon(icon, 18, color));
+        button->setIconSize(QSize(16, 16));
         button->setText(text);
         button->setToolTip(toolTip);
         connect(button, &QToolButton::clicked, this, slot);
@@ -1364,7 +1365,7 @@ void MainWindow::setupMainLayout() {
 
     m_rightTopSplitter->addWidget(processPanelWidget);
 
-    processPanelWidget->setMinimumWidth(260);
+    processPanelWidget->setMinimumWidth(metrics.flowPanelWidth);
     processPanelWidget->setMaximumWidth(metrics.flowPanelWidth + 40);
 
     m_rightTopSplitter->addWidget(imageDisplayWidget);
@@ -1487,8 +1488,7 @@ void MainWindow::setupMainLayout() {
     connect(m_flowCanvas, &FlowCanvas::nodeSelected, this,
             [this](const QString& nodeId) { selectModule(nodeId, true); });
     connect(m_flowCanvas, &FlowCanvas::connectionRequest, this,
-            [this](const QString& fromId, const QString& fromPort,
-                   const QString& toId, const QString& toPort) {
+            [this](const QString& fromId, const QString& fromPort, const QString& toId, const QString& toPort) {
                 Project* project = ProjectManager::instance().currentProject();
                 if (!project)
                     return;
@@ -1974,8 +1974,8 @@ void MainWindow::onProjectOpened(Project* project) {
             for (int i = m_flowCanvas->m_connections.size() - 1; i >= 0; --i) {
                 FlowConnectionItem* conn = m_flowCanvas->m_connections[i];
                 if (conn && conn->fromNodeId() == fromId && conn->toNodeId() == toId) {
-                    m_flowCanvas->removeConnection(conn->fromNodeId(), conn->fromPortId(),
-                                                   conn->toNodeId(), conn->toPortId());
+                    m_flowCanvas->removeConnection(conn->fromNodeId(), conn->fromPortId(), conn->toNodeId(),
+                                                   conn->toPortId());
                 }
             }
             m_flowCanvas->m_syncingFromProject = false;
@@ -1986,19 +1986,19 @@ void MainWindow::onProjectOpened(Project* project) {
         }
     });
     // P1-fix: 新信号——按完整四元组精确删除一条连接
-    connect(project, &Project::connectionRemovedWithPorts, this,
-            [this, project](const QString& fromId, const QString& fromPort,
-                             const QString& toId, const QString& toPort) {
-        if (m_flowCanvas) {
-            m_flowCanvas->m_syncingFromProject = true;
-            m_flowCanvas->removeConnection(fromId, fromPort, toId, toPort);
-            m_flowCanvas->m_syncingFromProject = false;
-        }
-        m_modulesNeedSync = true;
-        for (const ModuleInstance& module : project->modules()) {
-            markModuleDirty(module.id);
-        }
-    });
+    connect(
+        project, &Project::connectionRemovedWithPorts, this,
+        [this, project](const QString& fromId, const QString& fromPort, const QString& toId, const QString& toPort) {
+            if (m_flowCanvas) {
+                m_flowCanvas->m_syncingFromProject = true;
+                m_flowCanvas->removeConnection(fromId, fromPort, toId, toPort);
+                m_flowCanvas->m_syncingFromProject = false;
+            }
+            m_modulesNeedSync = true;
+            for (const ModuleInstance& module : project->modules()) {
+                markModuleDirty(module.id);
+            }
+        });
     connect(project, &Project::dataSourceAdded, this, &MainWindow::onDataSourceAdded);
     connect(project, &Project::dataSourceRemoved, this, &MainWindow::onDataSourceRemoved);
 }
@@ -4983,16 +4983,14 @@ void MainWindow::adaptInspectorLayout() {
     }
 
     // 窗口宽度 < 1200px：保留足够宽度完整显示 220px 流程节点。
-    // 同时降低流程面板的最小宽度限制
     int flowPanelWidth = 0;
     if (m_rightTopSplitter && m_rightTopSplitter->count() >= 1) {
         flowPanelWidth = m_rightTopSplitter->sizes().value(0, 300);
     }
     const int desiredFlowWidth = (windowWidth < 1200) ? 260 : metrics.flowPanelWidth;
-    // 临时降低最小宽度以允许压缩
     QWidget* procPanel = findChild<QWidget*>("ProcessPanelWidget");
     if (procPanel) {
-        procPanel->setMinimumWidth(260);
+        procPanel->setMinimumWidth(desiredFlowWidth);
     }
     if (m_rightTopSplitter && m_rightTopSplitter->count() >= 3 && flowPanelWidth != desiredFlowWidth) {
         QList<int> sizes = m_rightTopSplitter->sizes();
@@ -5105,6 +5103,12 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
     QMainWindow::resizeEvent(event);
     if (QToolBar* toolbar = findChild<QToolBar*>(QStringLiteral("MainToolBar"))) {
         toolbar->setToolButtonStyle(width() < 1180 ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon);
+    }
+    if (QWidget* processControls = findChild<QWidget*>(QStringLiteral("ProcessControlBar"))) {
+        const Qt::ToolButtonStyle style = width() < 1200 ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon;
+        for (QToolButton* button : processControls->findChildren<QToolButton*>()) {
+            button->setToolButtonStyle(style);
+        }
     }
     // 窗口宽度变化时判断是否需要切换检查器模式
     adaptInspectorLayout();

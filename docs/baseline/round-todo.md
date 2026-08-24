@@ -15,10 +15,10 @@
 | 阶段 3 Parallel 接入主循环/解除实验性 | 完成 | Parallel 控制端口、主循环批次、线程安全白名单和回归测试已交付 |
 | 阶段 E 多输入聚合/Parallel | 完成 | multiple 聚合、controlJoinPolicy、批量并行、blocking 排除已交付 |
 | 阶段 F 画布端口交互 | 完成 | 字符串端口、四元组连接、拖线、数据/控制边样式已交付 |
-| TSan 并发验证 | 部分完成 | 已实际执行（需 setarch -R 关 ASLR）；检出 20 处警告，多为未插桩 Qt5 误报，未清零不标通过；见 `tsan-report.md` 与 `tsan-runengine-full.log` |
+| TSan 并发验证 | 部分完成 | 已实际执行（需 setarch -R 关 ASLR）；检出 20 处警告，多为未插桩 Qt5 误报，未清零不标通过；见 `tsan-report.md` 与 `tsan-runengine-full.txt` |
 | 正式尺寸 GUI 截图(1920/1280 深浅) | 完成 | 环境可离屏渲染，已产出 4 张 `screenshots/formal_{1920,1280}_{dark,light}.png`，深浅像素差异已验证 |
 | 阶段 G 13 重构插件/业务包 | 部分完成 | metadata execution 标记+hotfix 映射结论/证据+TimeSlice 修正+blocking 接入+13 插件行为级测试（64/64）已完成；旧版输出端口静态对照已完成（50 插件，见 `legacy-comparison.md`），逐值运行结果等价仍未做，故映射维持 partial |
-| 阶段 H 生产验收/交接报告 | 完成 | 见 `phaseH-handover-report.md`；64/64 测试、格式门禁、截图/TSan/旧版对照证据齐全，遗留清单已如实记录 |
+| 阶段 H 生产验收/交接报告 | 完成 | 见 `phaseH-handover-report.md`；执行与交接闭环完成，64/64 测试、格式门禁、截图/TSan/旧版对照证据齐全；生产门禁遗留仍按本表“部分完成”项跟踪 |
 
 ## 本轮执行顺序（A→H）
 

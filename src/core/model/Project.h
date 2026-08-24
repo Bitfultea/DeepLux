@@ -65,8 +65,8 @@ struct ModuleInstance {
     int posX = 0;
     int posY = 0;
     QJsonObject params;
-    QString note;        // 3.0: 备注
-    bool enabled = true; // 3.0: 启用状态
+    QString note;            // 3.0: 备注
+    bool enabled = true;     // 3.0: 启用状态
     bool breakpoint = false; // 3.0: 断点
 
     QJsonObject toJson() const;
@@ -137,8 +137,8 @@ public:
     }
     void addConnection(const ModuleConnection& conn);
     void removeConnection(const QString& fromId, const QString& toId);
-    void removeConnectionWithPorts(const QString& fromId, const QString& fromPort,
-                                     const QString& toId, const QString& toPort);
+    void removeConnectionWithPorts(const QString& fromId, const QString& fromPort, const QString& toId,
+                                   const QString& toPort);
     void setConnections(const QList<ModuleConnection>& conns);
 
     // 相机配置
@@ -211,8 +211,8 @@ signals:
     void moduleRemoved(const QString& instanceId);
     void connectionAdded(const ModuleConnection& conn);
     void connectionRemoved(const QString& fromId, const QString& toId);
-    void connectionRemovedWithPorts(const QString& fromId, const QString& fromPort,
-                                      const QString& toId, const QString& toPort);
+    void connectionRemovedWithPorts(const QString& fromId, const QString& fromPort, const QString& toId,
+                                    const QString& toPort);
     void dataSourceAdded(const DataSource& ds);
     void dataSourceRemoved(const QString& id);
     void modifiedChanged(bool modified);

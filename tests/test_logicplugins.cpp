@@ -88,18 +88,15 @@ private slots:
     void testDelayCanBeCancelledDuringWait();
 };
 
-void TestLogicPlugins::initTestCase()
-{
+void TestLogicPlugins::initTestCase() {
     qDebug() << "=== TestLogicPlugins Start ===";
 }
 
-void TestLogicPlugins::cleanupTestCase()
-{
+void TestLogicPlugins::cleanupTestCase() {
     qDebug() << "=== TestLogicPlugins End ===";
 }
 
-void TestLogicPlugins::cleanup()
-{
+void TestLogicPlugins::cleanup() {
     // Clear RunEngine outputs between tests to avoid cross-test leakage
     RunEngine::instance().clearOutputs();
 }
@@ -108,16 +105,11 @@ void TestLogicPlugins::cleanup()
 // IfPlugin - Expression mode
 // =========================================================================
 
-void TestLogicPlugins::testIfExpressionTrue()
-{
+void TestLogicPlugins::testIfExpressionTrue() {
     IfPlugin plugin;
     QVERIFY(plugin.initialize());
     plugin.setParams(QJsonObject{
-        {"conditionType", "Expression"},
-        {"expressionString", "true"},
-        {"boolLinkText", ""},
-        {"boolInversion", false}
-    });
+        {"conditionType", "Expression"}, {"expressionString", "true"}, {"boolLinkText", ""}, {"boolInversion", false}});
 
     ImageData input, output;
     QVERIFY(plugin.execute(input, output));
@@ -125,15 +117,11 @@ void TestLogicPlugins::testIfExpressionTrue()
     QCOMPARE(output.data("if_passed").toBool(), true);
 }
 
-void TestLogicPlugins::testIfExpressionFalse()
-{
+void TestLogicPlugins::testIfExpressionFalse() {
     IfPlugin plugin;
     QVERIFY(plugin.initialize());
-    plugin.setParams(QJsonObject{
-        {"conditionType", "Expression"},
-        {"expressionString", "false"},
-        {"boolInversion", false}
-    });
+    plugin.setParams(
+        QJsonObject{{"conditionType", "Expression"}, {"expressionString", "false"}, {"boolInversion", false}});
 
     ImageData input, output;
     QVERIFY2(plugin.execute(input, output), "a false condition is a valid result, not an execution failure");
@@ -141,45 +129,32 @@ void TestLogicPlugins::testIfExpressionFalse()
     QCOMPARE(output.data("if_passed").toBool(), false);
 }
 
-void TestLogicPlugins::testIfExpressionTrueWithInversion()
-{
+void TestLogicPlugins::testIfExpressionTrueWithInversion() {
     IfPlugin plugin;
     QVERIFY(plugin.initialize());
-    plugin.setParams(QJsonObject{
-        {"conditionType", "Expression"},
-        {"expressionString", "true"},
-        {"boolInversion", true}
-    });
+    plugin.setParams(
+        QJsonObject{{"conditionType", "Expression"}, {"expressionString", "true"}, {"boolInversion", true}});
 
     ImageData input, output;
     QVERIFY2(plugin.execute(input, output), "a false condition is a valid result, not an execution failure");
     QCOMPARE(output.data("if_result").toBool(), false);
 }
 
-void TestLogicPlugins::testIfExpressionFalseWithInversion()
-{
+void TestLogicPlugins::testIfExpressionFalseWithInversion() {
     IfPlugin plugin;
     QVERIFY(plugin.initialize());
-    plugin.setParams(QJsonObject{
-        {"conditionType", "Expression"},
-        {"expressionString", "false"},
-        {"boolInversion", true}
-    });
+    plugin.setParams(
+        QJsonObject{{"conditionType", "Expression"}, {"expressionString", "false"}, {"boolInversion", true}});
 
     ImageData input, output;
     QVERIFY(plugin.execute(input, output));
     QCOMPARE(output.data("if_result").toBool(), true);
 }
 
-void TestLogicPlugins::testIfExpressionEmptyReturnsFalse()
-{
+void TestLogicPlugins::testIfExpressionEmptyReturnsFalse() {
     IfPlugin plugin;
     QVERIFY(plugin.initialize());
-    plugin.setParams(QJsonObject{
-        {"conditionType", "Expression"},
-        {"expressionString", ""},
-        {"boolInversion", false}
-    });
+    plugin.setParams(QJsonObject{{"conditionType", "Expression"}, {"expressionString", ""}, {"boolInversion", false}});
 
     ImageData input, output;
     QVERIFY2(plugin.execute(input, output), "an empty expression evaluates false without failing execution");
@@ -190,35 +165,27 @@ void TestLogicPlugins::testIfExpressionEmptyReturnsFalse()
 // IfPlugin - BoolLink mode
 // =========================================================================
 
-void TestLogicPlugins::testIfBoolLinkTrue()
-{
+void TestLogicPlugins::testIfBoolLinkTrue() {
     // Set up RunEngine output so the BoolLink can resolve
     RunEngine::instance().setOutput("SourceModule", "flag", QVariant(true));
 
     IfPlugin plugin;
     QVERIFY(plugin.initialize());
-    plugin.setParams(QJsonObject{
-        {"conditionType", "BoolLink"},
-        {"boolLinkText", "$SourceModule.flag"},
-        {"boolInversion", false}
-    });
+    plugin.setParams(
+        QJsonObject{{"conditionType", "BoolLink"}, {"boolLinkText", "$SourceModule.flag"}, {"boolInversion", false}});
 
     ImageData input, output;
     QVERIFY(plugin.execute(input, output));
     QCOMPARE(output.data("if_result").toBool(), true);
 }
 
-void TestLogicPlugins::testIfBoolLinkFalse()
-{
+void TestLogicPlugins::testIfBoolLinkFalse() {
     RunEngine::instance().setOutput("SourceModule", "flag", QVariant(false));
 
     IfPlugin plugin;
     QVERIFY(plugin.initialize());
-    plugin.setParams(QJsonObject{
-        {"conditionType", "BoolLink"},
-        {"boolLinkText", "$SourceModule.flag"},
-        {"boolInversion", false}
-    });
+    plugin.setParams(
+        QJsonObject{{"conditionType", "BoolLink"}, {"boolLinkText", "$SourceModule.flag"}, {"boolInversion", false}});
 
     ImageData input, output;
     QVERIFY2(plugin.execute(input, output), "a false BoolLink is a valid result, not an execution failure");
@@ -229,8 +196,7 @@ void TestLogicPlugins::testIfBoolLinkFalse()
 // IfPlugin - validation
 // =========================================================================
 
-void TestLogicPlugins::testIfValidationEmptyBoolLink()
-{
+void TestLogicPlugins::testIfValidationEmptyBoolLink() {
     IfPlugin plugin;
     QString error;
     QJsonObject params = plugin.defaultParams();
@@ -240,13 +206,12 @@ void TestLogicPlugins::testIfValidationEmptyBoolLink()
     QVERIFY2(plugin.validateParams(params, error), "Empty BoolLink should pass validation (deferred to runtime)");
 }
 
-void TestLogicPlugins::testIfValidationExpressionOk()
-{
+void TestLogicPlugins::testIfValidationExpressionOk() {
     IfPlugin plugin;
     QString error;
     QJsonObject params = plugin.defaultParams();
     params["conditionType"] = "Expression";
-    params["boolLinkText"] = "";  // Should be OK in Expression mode
+    params["boolLinkText"] = ""; // Should be OK in Expression mode
     QVERIFY2(plugin.validateParams(params, error), "Expression mode should not require boolLinkText");
     QVERIFY(error.isEmpty());
 }
@@ -255,16 +220,14 @@ void TestLogicPlugins::testIfValidationExpressionOk()
 // IfPlugin - metadata
 // =========================================================================
 
-void TestLogicPlugins::testIfFlowControlType()
-{
+void TestLogicPlugins::testIfFlowControlType() {
     IfPlugin plugin;
     QCOMPARE(plugin.flowControlType(), ControlFlowType::Conditional);
     QCOMPARE(plugin.moduleId(), QString("com.deeplux.plugin.if"));
     QCOMPARE(plugin.category(), QString("logic"));
 }
 
-void TestLogicPlugins::testIfEndProcess()
-{
+void TestLogicPlugins::testIfEndProcess() {
     IfEndPlugin plugin;
     QVERIFY(plugin.initialize());
     ImageData input, output;
@@ -276,8 +239,7 @@ void TestLogicPlugins::testIfEndProcess()
 // LoopPlugin
 // =========================================================================
 
-void TestLogicPlugins::testLoopSetsCount()
-{
+void TestLogicPlugins::testLoopSetsCount() {
     LoopPlugin plugin;
     QVERIFY(plugin.initialize());
     plugin.setParams(QJsonObject{{"loopCount", 3}});
@@ -346,16 +308,11 @@ void TestLogicPlugins::testLoopRunsFollowingModuleWithoutSyntheticEnd() {
 // WhilePlugin
 // =========================================================================
 
-void TestLogicPlugins::testWhileNotEmptyTrue()
-{
+void TestLogicPlugins::testWhileNotEmptyTrue() {
     WhilePlugin plugin;
     QVERIFY(plugin.initialize());
     plugin.setParams(QJsonObject{
-        {"conditionVariable", "val"},
-        {"comparison", "NotEmpty"},
-        {"compareValue", ""},
-        {"maxIterations", 100}
-    });
+        {"conditionVariable", "val"}, {"comparison", "NotEmpty"}, {"compareValue", ""}, {"maxIterations", 100}});
 
     ImageData input;
     input.setData("val", QString("hello"));
@@ -364,34 +321,24 @@ void TestLogicPlugins::testWhileNotEmptyTrue()
     QCOMPARE(output.data("while_result").toBool(), true);
 }
 
-void TestLogicPlugins::testWhileNotEmptyFalse()
-{
+void TestLogicPlugins::testWhileNotEmptyFalse() {
     WhilePlugin plugin;
     QVERIFY(plugin.initialize());
     plugin.setParams(QJsonObject{
-        {"conditionVariable", "val"},
-        {"comparison", "NotEmpty"},
-        {"compareValue", ""},
-        {"maxIterations", 100}
-    });
+        {"conditionVariable", "val"}, {"comparison", "NotEmpty"}, {"compareValue", ""}, {"maxIterations", 100}});
 
     ImageData input;
-    input.setData("val", QString(""));  // empty value
+    input.setData("val", QString("")); // empty value
     ImageData output;
     QVERIFY(plugin.execute(input, output));
     QCOMPARE(output.data("while_result").toBool(), false);
 }
 
-void TestLogicPlugins::testWhileEqual()
-{
+void TestLogicPlugins::testWhileEqual() {
     WhilePlugin plugin;
     QVERIFY(plugin.initialize());
     plugin.setParams(QJsonObject{
-        {"conditionVariable", "val"},
-        {"comparison", "Equal"},
-        {"compareValue", "42"},
-        {"maxIterations", 100}
-    });
+        {"conditionVariable", "val"}, {"comparison", "Equal"}, {"compareValue", "42"}, {"maxIterations", 100}});
 
     ImageData input;
     input.setData("val", QString("42"));
@@ -405,16 +352,11 @@ void TestLogicPlugins::testWhileEqual()
     QCOMPARE(output.data("while_result").toBool(), false);
 }
 
-void TestLogicPlugins::testWhileNotEqual()
-{
+void TestLogicPlugins::testWhileNotEqual() {
     WhilePlugin plugin;
     QVERIFY(plugin.initialize());
     plugin.setParams(QJsonObject{
-        {"conditionVariable", "val"},
-        {"comparison", "NotEqual"},
-        {"compareValue", "42"},
-        {"maxIterations", 100}
-    });
+        {"conditionVariable", "val"}, {"comparison", "NotEqual"}, {"compareValue", "42"}, {"maxIterations", 100}});
 
     ImageData input;
     input.setData("val", QString("99"));
@@ -427,16 +369,11 @@ void TestLogicPlugins::testWhileNotEqual()
     QCOMPARE(output.data("while_result").toBool(), false);
 }
 
-void TestLogicPlugins::testWhileGreaterThan()
-{
+void TestLogicPlugins::testWhileGreaterThan() {
     WhilePlugin plugin;
     QVERIFY(plugin.initialize());
     plugin.setParams(QJsonObject{
-        {"conditionVariable", "val"},
-        {"comparison", "GreaterThan"},
-        {"compareValue", "5"},
-        {"maxIterations", 100}
-    });
+        {"conditionVariable", "val"}, {"comparison", "GreaterThan"}, {"compareValue", "5"}, {"maxIterations", 100}});
 
     ImageData input;
     input.setData("val", QString("10"));
@@ -449,16 +386,11 @@ void TestLogicPlugins::testWhileGreaterThan()
     QCOMPARE(output.data("while_result").toBool(), false);
 }
 
-void TestLogicPlugins::testWhileLessThan()
-{
+void TestLogicPlugins::testWhileLessThan() {
     WhilePlugin plugin;
     QVERIFY(plugin.initialize());
     plugin.setParams(QJsonObject{
-        {"conditionVariable", "val"},
-        {"comparison", "LessThan"},
-        {"compareValue", "5"},
-        {"maxIterations", 100}
-    });
+        {"conditionVariable", "val"}, {"comparison", "LessThan"}, {"compareValue", "5"}, {"maxIterations", 100}});
 
     ImageData input;
     input.setData("val", QString("3"));
@@ -471,18 +403,17 @@ void TestLogicPlugins::testWhileLessThan()
     QCOMPARE(output.data("while_result").toBool(), false);
 }
 
-void TestLogicPlugins::testWhileValidationEmptyVar()
-{
+void TestLogicPlugins::testWhileValidationEmptyVar() {
     WhilePlugin plugin;
     QString error;
     QJsonObject params = plugin.defaultParams();
     params["conditionVariable"] = "";
     // 阶段 2: 外部资源（conditionVariable）允许暂时为空，由 process() 在运行时报告"未配置"
-    QVERIFY2(plugin.validateParams(params, error), "Empty conditionVariable should pass validation (deferred to runtime)");
+    QVERIFY2(plugin.validateParams(params, error),
+             "Empty conditionVariable should pass validation (deferred to runtime)");
 }
 
-void TestLogicPlugins::testWhileValidationMaxIterations()
-{
+void TestLogicPlugins::testWhileValidationMaxIterations() {
     WhilePlugin plugin;
     QString error;
     QJsonObject params = plugin.defaultParams();
@@ -492,16 +423,14 @@ void TestLogicPlugins::testWhileValidationMaxIterations()
     QVERIFY(!error.isEmpty());
 }
 
-void TestLogicPlugins::testWhileFlowControlType()
-{
+void TestLogicPlugins::testWhileFlowControlType() {
     WhilePlugin plugin;
     QCOMPARE(plugin.flowControlType(), ControlFlowType::While);
     QCOMPARE(plugin.moduleId(), QString("com.deeplux.plugin.while"));
     QCOMPARE(plugin.category(), QString("logic"));
 }
 
-void TestLogicPlugins::testWhileEndProcess()
-{
+void TestLogicPlugins::testWhileEndProcess() {
     WhileEndPlugin plugin;
     QVERIFY(plugin.initialize());
     ImageData input, output;
@@ -509,8 +438,7 @@ void TestLogicPlugins::testWhileEndProcess()
     QCOMPARE(plugin.flowControlType(), ControlFlowType::WhileEnd);
 }
 
-void TestLogicPlugins::testDelayCanBeCancelledDuringWait()
-{
+void TestLogicPlugins::testDelayCanBeCancelledDuringWait() {
     DelayPlugin plugin;
     QVERIFY(plugin.initialize());
     plugin.setParam(QStringLiteral("delayMs"), 1000);

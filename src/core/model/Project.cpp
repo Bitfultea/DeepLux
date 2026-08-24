@@ -103,7 +103,7 @@ ModuleInstance ModuleInstance::fromJson(const QJsonObject& json) {
     inst.posY = json["posY"].toInt(0);
     inst.params = json["params"].toObject();
     inst.note = json["note"].toString();
-    inst.enabled = json["enabled"].toBool(true);      // 旧工程缺省为启用
+    inst.enabled = json["enabled"].toBool(true); // 旧工程缺省为启用
     inst.breakpoint = json["breakpoint"].toBool(false);
     return inst;
 }
@@ -235,10 +235,8 @@ std::optional<ModuleInstance> Project::moduleById(const QString& instanceId) con
 void Project::addConnection(const ModuleConnection& conn) {
     // P1-fix: 四元组幂等去重——模型作为唯一事实源
     for (const ModuleConnection& existing : m_connections) {
-        if (existing.fromModuleId == conn.fromModuleId &&
-            existing.toModuleId == conn.toModuleId &&
-            existing.fromPort == conn.fromPort &&
-            existing.toPort == conn.toPort) {
+        if (existing.fromModuleId == conn.fromModuleId && existing.toModuleId == conn.toModuleId &&
+            existing.fromPort == conn.fromPort && existing.toPort == conn.toPort) {
             return; // 已存在，幂等
         }
     }
@@ -258,12 +256,11 @@ void Project::removeConnection(const QString& fromId, const QString& toId) {
     }
 }
 
-void Project::removeConnectionWithPorts(const QString& fromId, const QString& fromPort,
-                                          const QString& toId, const QString& toPort) {
+void Project::removeConnectionWithPorts(const QString& fromId, const QString& fromPort, const QString& toId,
+                                        const QString& toPort) {
     for (int i = 0; i < m_connections.size(); i++) {
         const ModuleConnection& c = m_connections[i];
-        if (c.fromModuleId == fromId && c.toModuleId == toId &&
-            c.fromPort == fromPort && c.toPort == toPort) {
+        if (c.fromModuleId == fromId && c.toModuleId == toId && c.fromPort == fromPort && c.toPort == toPort) {
             m_connections.removeAt(i);
             touch();
             // P1-fix: 发射携带完整四元组的信号
@@ -444,7 +441,8 @@ bool Project::fromJson(const QJsonObject& json) {
 
     // 3.0 资源在 resources 下；2.0 在顶层 cameras/dataSources
     QJsonObject resources = json["resources"].toObject();
-    QJsonArray camerasArray = resources.contains("cameras") ? resources["cameras"].toArray() : json["cameras"].toArray();
+    QJsonArray camerasArray =
+        resources.contains("cameras") ? resources["cameras"].toArray() : json["cameras"].toArray();
     m_cameras.clear();
     for (const auto& val : camerasArray) {
         m_cameras.append(CameraConfig::fromJson(val.toObject()));

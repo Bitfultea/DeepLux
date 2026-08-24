@@ -331,7 +331,7 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
     s += QString("QWidget#ProcessControlBar { background-color: %1; border-bottom: %2 solid %3; }")
              .arg(processPanelBg, borderW, processPanelRightBorder);
     s += QString("QWidget#ProcessControlBar QToolButton { color: %1; background-color: transparent; min-height: 30px; "
-                 "padding: 3px 7px; border: %2 solid transparent; border-radius: 4px; }")
+                 "padding: 3px 4px; border: %2 solid transparent; border-radius: 4px; }")
              .arg(toolBtnFg, borderW);
     s += QString("QWidget#ProcessControlBar QToolButton:hover { background-color: %1; border-color: %2; }")
              .arg(toolBtnHoverBg, toolBtnHoverBorder);

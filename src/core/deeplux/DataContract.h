@@ -1,13 +1,13 @@
 #pragma once
 
+#include "core/deeplux/ControlFlowType.h"
+
 #include <QHash>
 #include <QMetaType>
+#include <QPointF>
 #include <QString>
 #include <QVariant>
 #include <QVector>
-#include <QPointF>
-
-#include "core/deeplux/ControlFlowType.h"
 
 namespace DeepLux {
 
@@ -21,9 +21,9 @@ class CancellationToken;
  * 兼容载荷；复杂领域对象在对应生产插件落地时升级为注册元类型。
  */
 enum class DataType {
-    Image2D,       // 载荷: ImageData
-    HeightMap2D,   // 载荷: ImageData（深度/高度语义）
-    PointCloud3D,  // 载荷: ImageData(携带 PointCloudData) 或 PointCloudData
+    Image2D,      // 载荷: ImageData
+    HeightMap2D,  // 载荷: ImageData（深度/高度语义）
+    PointCloud3D, // 载荷: ImageData(携带 PointCloudData) 或 PointCloudData
     Mask2D,
     Region2D,
     Point2D,
@@ -73,8 +73,8 @@ using PortValueMap = QHash<QString, QVariant>;
  * @brief 执行上下文：每次执行携带的运行期信息
  */
 struct ExecutionContext {
-    QString runId;    // 一次完整运行的 ID
-    qint64 frameId = 0; // 帧序号（循环/在线流程递增）
+    QString runId;          // 一次完整运行的 ID
+    qint64 frameId = 0;     // 帧序号（循环/在线流程递增）
     qint64 timestampMs = 0; // 执行开始时间戳
     ControlFlowType runMode = ControlFlowType::Sequential;
     CancellationToken* cancellationToken = nullptr;
@@ -87,9 +87,9 @@ struct ExecutionContext {
  */
 struct ExecutionResult {
     bool success = false;
-    int errorCode = 0;          // 0 表示成功；非 0 为结构化错误码
-    QString userMessage;        // 用户可读错误
-    QString diagnostics;        // 诊断信息（日志/堆栈/端口名等）
+    int errorCode = 0;   // 0 表示成功；非 0 为结构化错误码
+    QString userMessage; // 用户可读错误
+    QString diagnostics; // 诊断信息（日志/堆栈/端口名等）
 
     static ExecutionResult ok() {
         ExecutionResult r;

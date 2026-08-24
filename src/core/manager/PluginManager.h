@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/deeplux/DataContract.h"
+
 #include <QCoreApplication>
 #include <QEvent>
 #include <QJsonObject>
@@ -7,8 +9,6 @@
 #include <QList>
 #include <QMap>
 #include <QMutex>
-
-#include "core/deeplux/DataContract.h"
 #include <QObject>
 #include <QPluginLoader>
 #include <QRunnable>
@@ -29,17 +29,17 @@ class ICamera;
  * @brief 插件信息
  */
 struct PluginInfo {
-    QString id;          // 插件完整 ID (metadata.json "id" 字段, 如 "com.deeplux.plugin.grabimage")
-    QString name;        // 插件名称 (metadata.json "name" 字段, 如 "GrabImage")
-    QString version;     // 版本
-    QString category;    // 分类
-    QString path;        // 路径
-    QString description; // 描述
-    QString author;      // 作者
-    QString icon;        // 图标文件名
-    bool loaded = false; // 是否已加载
-    QString error;       // 错误信息
-    QJsonObject ui;      // 可选 UI 描述（parameters/results 元数据）
+    QString id;                  // 插件完整 ID (metadata.json "id" 字段, 如 "com.deeplux.plugin.grabimage")
+    QString name;                // 插件名称 (metadata.json "name" 字段, 如 "GrabImage")
+    QString version;             // 版本
+    QString category;            // 分类
+    QString path;                // 路径
+    QString description;         // 描述
+    QString author;              // 作者
+    QString icon;                // 图标文件名
+    bool loaded = false;         // 是否已加载
+    QString error;               // 错误信息
+    QJsonObject ui;              // 可选 UI 描述（parameters/results 元数据）
     QList<PortSpec> inputPorts;  // ABI v2 输入端口声明（metadata.json ports.inputs）
     QList<PortSpec> outputPorts; // ABI v2 输出端口声明（metadata.json ports.outputs）
     bool threadSafe = false;     // metadata.json execution.threadSafe，并行批次中是否可并发执行

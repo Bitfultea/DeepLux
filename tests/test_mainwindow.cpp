@@ -115,6 +115,7 @@ private slots:
     void testToolboxDragPayloadUsesDraggedPlugin();
     void testAgentInputErrorPathDoesNotCrashOrStayThinking();
     void testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTheme();
+    void testProcessControlsFitCompactWindow();
     void testMainToolbarCheckedStateFitsItsBottomIndicator();
     void testClickingProcessModuleDisplaysIntermediateOutput();
     void testStepRunHighlightMovesBetweenModules();
@@ -1657,6 +1658,34 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY(previewButtonTexts.contains(QStringLiteral("确认执行")));
     QVERIFY(!previewButtonTexts.contains(QStringLiteral("Cancel")));
     QVERIFY(!previewButtonTexts.contains(QStringLiteral("Confirm")));
+}
+
+void TestMainWindow::testProcessControlsFitCompactWindow() {
+    MainWindow window;
+    window.resize(1280, 800);
+    window.show();
+    QCoreApplication::processEvents();
+
+    const QStringList buttonNames = {QStringLiteral("FlowRunButton"), QStringLiteral("FlowStepButton"),
+                                     QStringLiteral("FlowCycleButton"), QStringLiteral("FlowStopButton")};
+    for (const QString& name : buttonNames) {
+        QToolButton* button = window.findChild<QToolButton*>(name);
+        QVERIFY(button != nullptr);
+        QCOMPARE(button->toolButtonStyle(), Qt::ToolButtonTextBesideIcon);
+        QVERIFY2(button->width() >= button->sizeHint().width(),
+                 qPrintable(QString("%1 is clipped: width=%2 sizeHint=%3")
+                                .arg(name)
+                                .arg(button->width())
+                                .arg(button->sizeHint().width())));
+    }
+
+    window.resize(1024, 800);
+    QCoreApplication::processEvents();
+    for (const QString& name : buttonNames) {
+        QToolButton* button = window.findChild<QToolButton*>(name);
+        QCOMPARE(button->toolButtonStyle(), Qt::ToolButtonIconOnly);
+        QVERIFY(button->width() >= button->sizeHint().width());
+    }
 }
 
 void TestMainWindow::testMainToolbarCheckedStateFitsItsBottomIndicator() {
