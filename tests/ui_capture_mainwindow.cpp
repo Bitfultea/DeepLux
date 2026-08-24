@@ -129,6 +129,36 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
     return ok;
 }
 
+// 收尾2: 正式尺寸截图 1920/1280 深浅（默认浅色起始，切换主题采集深色）
+// "切换主题"动作位于"视图"菜单而非工具栏，需按文本查找 QAction 并 trigger
+static bool triggerActionByText(DeepLux::MainWindow& window, const QString& text) {
+    for (QAction* action : window.findChildren<QAction*>()) {
+        if (action->text().remove('&') == text) {
+            action->trigger();
+            QCoreApplication::processEvents();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool captureFormalSizes(DeepLux::MainWindow& window, const QDir& dir) {
+    bool ok = true;
+
+    // 起始为浅色主题（配置默认 darkTheme=false）
+    ok = captureWindow(window, QSize(1920, 1080), dir.filePath("formal_1920_light.png")) && ok;
+    triggerActionByText(window, QStringLiteral("切换主题")); // → 深色
+    QTest::qWait(200);
+    ok = captureWindow(window, QSize(1920, 1080), dir.filePath("formal_1920_dark.png")) && ok;
+
+    ok = captureWindow(window, QSize(1280, 800), dir.filePath("formal_1280_dark.png")) && ok;
+    triggerActionByText(window, QStringLiteral("切换主题")); // → 浅色
+    QTest::qWait(200);
+    ok = captureWindow(window, QSize(1280, 800), dir.filePath("formal_1280_light.png")) && ok;
+
+    return ok;
+}
+
 bool capturePluginConfigDialog(DeepLux::MainWindow& window, const QDir& dir) {
     if (!DeepLux::PluginManager::instance().isPluginLoaded(QStringLiteral("LoadPointCloud"))) {
         return true;
@@ -196,7 +226,8 @@ int main(int argc, char** argv) {
     bool ok = true;
 
     QTimer::singleShot(800, [&]() {
-        ok = captureWindow(window, QSize(1440, 900), dir.filePath("deeplux_mainwindow_1440x900.png"));
+        ok = captureFormalSizes(window, dir);
+        ok = captureWindow(window, QSize(1440, 900), dir.filePath("deeplux_mainwindow_1440x900.png")) && ok;
         ok = captureWindow(window, QSize(1024, 700), dir.filePath("deeplux_mainwindow_1024x700.png")) && ok;
         ok = capturePluginConfigDialog(window, dir) && ok;
         ok = captureClickedStates(window, dir) && ok;

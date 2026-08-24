@@ -1,0 +1,1353 @@
+********* Start testing of TestRunEngine *********
+Config: Using QtTest library 5.15.2, Qt 5.15.2 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 5.3.1 20160406 (Red Hat 5.3.1-6)), ubuntu 22.04
+QDEBUG : TestRunEngine::initTestCase() === TestRunEngine Start ===
+PASS   : TestRunEngine::initTestCase()
+QDEBUG : TestRunEngine::testParallelExecutesConcurrently() Module initialized: "par0"
+QDEBUG : TestRunEngine::testParallelExecutesConcurrently() Module initialized: "par1"
+QDEBUG : TestRunEngine::testParallelExecutesConcurrently() Module initialized: "par2"
+QDEBUG : TestRunEngine::testParallelExecutesConcurrently() Module initialized: "par3"
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Read of size 8 at 0x7ffff6898840 by thread T5:
+    #0 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::detach() /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h:291 (libdeeplux_core.so.1+0x100036)
+    #1 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::insert(DeepLux::ModuleBase const* const&, DeepLux::CancellationToken* const&) <null> (libdeeplux_core.so.1+0xff4f5)
+    #2 DeepLux::ModuleBase::setCancellationToken(DeepLux::CancellationToken*) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:228 (libdeeplux_core.so.1+0xface0)
+    #3 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:197 (libdeeplux_core.so.1+0xfa2dd)
+    #4 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #5 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #6 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #7 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #8 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous write of size 8 at 0x7ffff6898840 by thread T4:
+    #0 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::detach_helper() <null> (libdeeplux_core.so.1+0x10113c)
+    #1 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::detach() /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h:291 (libdeeplux_core.so.1+0x100059)
+    #2 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::insert(DeepLux::ModuleBase const* const&, DeepLux::CancellationToken* const&) <null> (libdeeplux_core.so.1+0xff4f5)
+    #3 DeepLux::ModuleBase::setCancellationToken(DeepLux::CancellationToken*) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:228 (libdeeplux_core.so.1+0xface0)
+    #4 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:197 (libdeeplux_core.so.1+0xfa2dd)
+    #5 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #6 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #7 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #8 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #9 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Location is global 'DeepLux::(anonymous namespace)::g_cancellationTokens' of size 8 at 0x7ffff6898840 (libdeeplux_core.so.1+0x000000298840)
+
+  Thread T5 'Thread (pooled)' (tid=4061056, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T4 'Thread (pooled)' (tid=4061055, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h:291 in QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::detach()
+==================
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Atomic read of size 4 at 0x7b0c0002eff0 by thread T5:
+    #0 __tsan_atomic32_load ../../../../src/libsanitizer/tsan/tsan_interface_atomic.cpp:534 (libtsan.so.0+0x7fc4e)
+    #1 std::__atomic_base<int>::load(std::memory_order) const /usr/include/c++/11/bits/atomic_base.h:488 (test_runengine+0x8de7d)
+    #2 int QAtomicOps<int>::loadRelaxed<int>(std::atomic<int> const&) /usr/include/x86_64-linux-gnu/qt5/QtCore/qatomic_cxx11.h:239 (test_runengine+0x8de7d)
+    #3 QBasicAtomicInteger<int>::loadRelaxed() const /usr/include/x86_64-linux-gnu/qt5/QtCore/qbasicatomic.h:107 (test_runengine+0x89924)
+    #4 QtPrivate::RefCount::isShared() const /usr/include/x86_64-linux-gnu/qt5/QtCore/qrefcount.h:101 (test_runengine+0x7ad58)
+    #5 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::detach() /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h:291 (libdeeplux_core.so.1+0x100049)
+    #6 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::insert(DeepLux::ModuleBase const* const&, DeepLux::CancellationToken* const&) <null> (libdeeplux_core.so.1+0xff4f5)
+    #7 DeepLux::ModuleBase::setCancellationToken(DeepLux::CancellationToken*) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:228 (libdeeplux_core.so.1+0xface0)
+    #8 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:197 (libdeeplux_core.so.1+0xfa2dd)
+    #9 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #10 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #11 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #12 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #13 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous write of size 8 at 0x7b0c0002eff0 by thread T4:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 QHashData::detach_helper(void (*)(QHashData::Node*, void*), void (*)(QHashData::Node*), int, int) tools/qhash.cpp:503 (libQt5Core.so.5+0xf178b)
+    #2 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::detach() /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h:291 (libdeeplux_core.so.1+0x100059)
+    #3 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::insert(DeepLux::ModuleBase const* const&, DeepLux::CancellationToken* const&) <null> (libdeeplux_core.so.1+0xff4f5)
+    #4 DeepLux::ModuleBase::setCancellationToken(DeepLux::CancellationToken*) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:228 (libdeeplux_core.so.1+0xface0)
+    #5 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:197 (libdeeplux_core.so.1+0xfa2dd)
+    #6 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #7 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #8 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #9 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #10 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Location is heap block of size 48 at 0x7b0c0002efe0 allocated by thread T4:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 QHashData::detach_helper(void (*)(QHashData::Node*, void*), void (*)(QHashData::Node*), int, int) tools/qhash.cpp:503 (libQt5Core.so.5+0xf178b)
+    #2 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::detach() /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h:291 (libdeeplux_core.so.1+0x100059)
+    #3 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::insert(DeepLux::ModuleBase const* const&, DeepLux::CancellationToken* const&) <null> (libdeeplux_core.so.1+0xff4f5)
+    #4 DeepLux::ModuleBase::setCancellationToken(DeepLux::CancellationToken*) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:228 (libdeeplux_core.so.1+0xface0)
+    #5 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:197 (libdeeplux_core.so.1+0xfa2dd)
+    #6 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #7 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #8 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #9 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #10 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Thread T5 'Thread (pooled)' (tid=4061056, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T4 'Thread (pooled)' (tid=4061055, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race /usr/include/c++/11/bits/atomic_base.h:488 in std::__atomic_base<int>::load(std::memory_order) const
+==================
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Read of size 4 at 0x7b0c0002f000 by thread T5:
+    #0 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::findNode(DeepLux::ModuleBase const* const&, unsigned int*) const /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h:945 (libdeeplux_core.so.1+0x1000c8)
+    #1 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::insert(DeepLux::ModuleBase const* const&, DeepLux::CancellationToken* const&) <null> (libdeeplux_core.so.1+0xff50c)
+    #2 DeepLux::ModuleBase::setCancellationToken(DeepLux::CancellationToken*) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:228 (libdeeplux_core.so.1+0xface0)
+    #3 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:197 (libdeeplux_core.so.1+0xfa2dd)
+    #4 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #5 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #6 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #7 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #8 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous write of size 8 at 0x7b0c0002f000 by thread T4:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 QHashData::detach_helper(void (*)(QHashData::Node*, void*), void (*)(QHashData::Node*), int, int) tools/qhash.cpp:503 (libQt5Core.so.5+0xf178b)
+    #2 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::detach() /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h:291 (libdeeplux_core.so.1+0x100059)
+    #3 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::insert(DeepLux::ModuleBase const* const&, DeepLux::CancellationToken* const&) <null> (libdeeplux_core.so.1+0xff4f5)
+    #4 DeepLux::ModuleBase::setCancellationToken(DeepLux::CancellationToken*) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:228 (libdeeplux_core.so.1+0xface0)
+    #5 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:197 (libdeeplux_core.so.1+0xfa2dd)
+    #6 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #7 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #8 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #9 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #10 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Location is heap block of size 48 at 0x7b0c0002efe0 allocated by thread T4:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 QHashData::detach_helper(void (*)(QHashData::Node*, void*), void (*)(QHashData::Node*), int, int) tools/qhash.cpp:503 (libQt5Core.so.5+0xf178b)
+    #2 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::detach() /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h:291 (libdeeplux_core.so.1+0x100059)
+    #3 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::insert(DeepLux::ModuleBase const* const&, DeepLux::CancellationToken* const&) <null> (libdeeplux_core.so.1+0xff4f5)
+    #4 DeepLux::ModuleBase::setCancellationToken(DeepLux::CancellationToken*) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:228 (libdeeplux_core.so.1+0xface0)
+    #5 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:197 (libdeeplux_core.so.1+0xfa2dd)
+    #6 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #7 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #8 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #9 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #10 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Thread T5 'Thread (pooled)' (tid=4061056, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T4 'Thread (pooled)' (tid=4061055, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h:945 in QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::findNode(DeepLux::ModuleBase const* const&, unsigned int*) const
+==================
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Read of size 8 at 0x7b0c0002efe8 by thread T5:
+    #0 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::findNode(DeepLux::ModuleBase const* const&, unsigned int) const <null> (libdeeplux_core.so.1+0x100878)
+    #1 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::findNode(DeepLux::ModuleBase const* const&, unsigned int*) const /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h:950 (libdeeplux_core.so.1+0x10014a)
+    #2 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::insert(DeepLux::ModuleBase const* const&, DeepLux::CancellationToken* const&) <null> (libdeeplux_core.so.1+0xff50c)
+    #3 DeepLux::ModuleBase::setCancellationToken(DeepLux::CancellationToken*) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:228 (libdeeplux_core.so.1+0xface0)
+    #4 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:197 (libdeeplux_core.so.1+0xfa2dd)
+    #5 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #6 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #7 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #8 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #9 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous write of size 8 at 0x7b0c0002efe8 by thread T4:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 QHashData::detach_helper(void (*)(QHashData::Node*, void*), void (*)(QHashData::Node*), int, int) tools/qhash.cpp:503 (libQt5Core.so.5+0xf178b)
+    #2 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::detach() /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h:291 (libdeeplux_core.so.1+0x100059)
+    #3 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::insert(DeepLux::ModuleBase const* const&, DeepLux::CancellationToken* const&) <null> (libdeeplux_core.so.1+0xff4f5)
+    #4 DeepLux::ModuleBase::setCancellationToken(DeepLux::CancellationToken*) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:228 (libdeeplux_core.so.1+0xface0)
+    #5 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:197 (libdeeplux_core.so.1+0xfa2dd)
+    #6 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #7 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #8 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #9 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #10 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Location is heap block of size 48 at 0x7b0c0002efe0 allocated by thread T4:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 QHashData::detach_helper(void (*)(QHashData::Node*, void*), void (*)(QHashData::Node*), int, int) tools/qhash.cpp:503 (libQt5Core.so.5+0xf178b)
+    #2 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::detach() /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h:291 (libdeeplux_core.so.1+0x100059)
+    #3 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::insert(DeepLux::ModuleBase const* const&, DeepLux::CancellationToken* const&) <null> (libdeeplux_core.so.1+0xff4f5)
+    #4 DeepLux::ModuleBase::setCancellationToken(DeepLux::CancellationToken*) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:228 (libdeeplux_core.so.1+0xface0)
+    #5 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:197 (libdeeplux_core.so.1+0xfa2dd)
+    #6 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #7 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #8 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #9 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #10 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Thread T5 'Thread (pooled)' (tid=4061056, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T4 'Thread (pooled)' (tid=4061055, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race (/home/charles/Data/Repo/DeepLux/build-tsan/lib/libdeeplux_core.so.1+0x100878) in QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::findNode(DeepLux::ModuleBase const* const&, unsigned int) const
+==================
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Read of size 8 at 0x7b24000148f0 by thread T5:
+    #0 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::findNode(DeepLux::ModuleBase const* const&, unsigned int) const <null> (libdeeplux_core.so.1+0x1008c5)
+    #1 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::findNode(DeepLux::ModuleBase const* const&, unsigned int*) const /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h:950 (libdeeplux_core.so.1+0x10014a)
+    #2 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::insert(DeepLux::ModuleBase const* const&, DeepLux::CancellationToken* const&) <null> (libdeeplux_core.so.1+0xff50c)
+    #3 DeepLux::ModuleBase::setCancellationToken(DeepLux::CancellationToken*) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:228 (libdeeplux_core.so.1+0xface0)
+    #4 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:197 (libdeeplux_core.so.1+0xfa2dd)
+    #5 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #6 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #7 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #8 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #9 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous write of size 8 at 0x7b24000148f0 by thread T4:
+    #0 operator new[](unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:70 (libtsan.so.0+0x8f2b2)
+    #1 QHashData::rehash(int) tools/qhash.cpp:665 (libQt5Core.so.5+0xf1a33)
+    #2 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::insert(DeepLux::ModuleBase const* const&, DeepLux::CancellationToken* const&) <null> (libdeeplux_core.so.1+0xff55a)
+    #3 DeepLux::ModuleBase::setCancellationToken(DeepLux::CancellationToken*) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:228 (libdeeplux_core.so.1+0xface0)
+    #4 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:197 (libdeeplux_core.so.1+0xfa2dd)
+    #5 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #6 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #7 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #8 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #9 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Location is heap block of size 136 at 0x7b2400014880 allocated by thread T4:
+    #0 operator new[](unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:70 (libtsan.so.0+0x8f2b2)
+    #1 QHashData::rehash(int) tools/qhash.cpp:665 (libQt5Core.so.5+0xf1a33)
+    #2 QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::insert(DeepLux::ModuleBase const* const&, DeepLux::CancellationToken* const&) <null> (libdeeplux_core.so.1+0xff55a)
+    #3 DeepLux::ModuleBase::setCancellationToken(DeepLux::CancellationToken*) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:228 (libdeeplux_core.so.1+0xface0)
+    #4 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:197 (libdeeplux_core.so.1+0xfa2dd)
+    #5 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #6 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #7 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #8 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #9 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Thread T5 'Thread (pooled)' (tid=4061056, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T4 'Thread (pooled)' (tid=4061055, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race (/home/charles/Data/Repo/DeepLux/build-tsan/lib/libdeeplux_core.so.1+0x1008c5) in QHash<DeepLux::ModuleBase const*, DeepLux::CancellationToken*>::findNode(DeepLux::ModuleBase const* const&, unsigned int) const
+==================
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Read of size 8 at 0x7b0c00030018 by thread T4:
+    #0 memcmp ../../../../src/libsanitizer/sanitizer_common/sanitizer_common_interceptors.inc:891 (libtsan.so.0+0x6853b)
+    #1 memcmp ../../../../src/libsanitizer/sanitizer_common/sanitizer_common_interceptors.inc:887 (libtsan.so.0+0x6853b)
+    #2 qMetaTypeCustomType_unlocked kernel/qmetatype.cpp:1024 (libQt5Core.so.5+0x2b0395)
+    #3 int qRegisterMetaType<DeepLux::ImageData>(char const*, DeepLux::ImageData*, QtPrivate::MetaTypeDefinedHelper<DeepLux::ImageData, QMetaTypeId2<DeepLux::ImageData>::Defined&&(!QMetaTypeId2<DeepLux::ImageData>::IsBuiltIn)>::DefinedType) /usr/include/x86_64-linux-gnu/qt5/QtCore/qmetatype.h:1896 (libdeeplux_ui.so.1+0x2f5c49)
+    #4 QMetaTypeId<DeepLux::ImageData>::qt_metatype_id() /home/charles/Data/Repo/DeepLux/src/ui/../core/model/ImageData.h:103 (libdeeplux_ui.so.1+0x2f5500)
+    #5 QMetaTypeId2<DeepLux::ImageData>::qt_metatype_id() /usr/include/x86_64-linux-gnu/qt5/QtCore/qmetatype.h:1776 (libdeeplux_ui.so.1+0x2f923b)
+    #6 int qMetaTypeId<DeepLux::ImageData>() /usr/include/x86_64-linux-gnu/qt5/QtCore/qmetatype.h:1917 (libdeeplux_ui.so.1+0x2f7c63)
+    #7 QVariant QVariant::fromValue<DeepLux::ImageData>(DeepLux::ImageData const&) /usr/include/x86_64-linux-gnu/qt5/QtCore/qvariant.h:371 (libdeeplux_ui.so.1+0x2f6493)
+    #8 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:207 (libdeeplux_core.so.1+0xfa450)
+    #9 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #10 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #11 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #12 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #13 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous write of size 8 at 0x7b0c00030018 by thread T5:
+    #0 malloc ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:655 (libtsan.so.0+0x31c57)
+    #1 QArrayData::allocate(unsigned long, unsigned long, unsigned long, QFlags<QArrayData::AllocationOption>) tools/qarraydata.cpp:218 (libQt5Core.so.5+0xc082c)
+    #2 QMetaTypeId<DeepLux::ImageData>::qt_metatype_id() /home/charles/Data/Repo/DeepLux/src/ui/../core/model/ImageData.h:103 (libdeeplux_ui.so.1+0x2f5500)
+    #3 QMetaTypeId2<DeepLux::ImageData>::qt_metatype_id() /usr/include/x86_64-linux-gnu/qt5/QtCore/qmetatype.h:1776 (libdeeplux_ui.so.1+0x2f923b)
+    #4 int qMetaTypeId<DeepLux::ImageData>() /usr/include/x86_64-linux-gnu/qt5/QtCore/qmetatype.h:1917 (libdeeplux_ui.so.1+0x2f7c63)
+    #5 QVariant QVariant::fromValue<DeepLux::ImageData>(DeepLux::ImageData const&) /usr/include/x86_64-linux-gnu/qt5/QtCore/qvariant.h:371 (libdeeplux_ui.so.1+0x2f6493)
+    #6 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:207 (libdeeplux_core.so.1+0xfa450)
+    #7 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #8 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #9 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #10 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #11 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  As if synchronized via sleep:
+    #0 nanosleep ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:366 (libtsan.so.0+0x6696c)
+    #1 qt_nanosleep(timespec) kernel/qelapsedtimer_unix.cpp:195 (libQt5Core.so.5+0x2f8c0c)
+    #2 DeepLux::ModuleBase::execute(DeepLux::ImageData const&, DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:93 (libdeeplux_core.so.1+0xf8b61)
+    #3 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:201 (libdeeplux_core.so.1+0xfa30c)
+    #4 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #5 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #6 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #7 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #8 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Location is heap block of size 43 at 0x7b0c00030000 allocated by thread T5:
+    #0 malloc ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:655 (libtsan.so.0+0x31c57)
+    #1 QArrayData::allocate(unsigned long, unsigned long, unsigned long, QFlags<QArrayData::AllocationOption>) tools/qarraydata.cpp:218 (libQt5Core.so.5+0xc082c)
+    #2 QMetaTypeId<DeepLux::ImageData>::qt_metatype_id() /home/charles/Data/Repo/DeepLux/src/ui/../core/model/ImageData.h:103 (libdeeplux_ui.so.1+0x2f5500)
+    #3 QMetaTypeId2<DeepLux::ImageData>::qt_metatype_id() /usr/include/x86_64-linux-gnu/qt5/QtCore/qmetatype.h:1776 (libdeeplux_ui.so.1+0x2f923b)
+    #4 int qMetaTypeId<DeepLux::ImageData>() /usr/include/x86_64-linux-gnu/qt5/QtCore/qmetatype.h:1917 (libdeeplux_ui.so.1+0x2f7c63)
+    #5 QVariant QVariant::fromValue<DeepLux::ImageData>(DeepLux::ImageData const&) /usr/include/x86_64-linux-gnu/qt5/QtCore/qvariant.h:371 (libdeeplux_ui.so.1+0x2f6493)
+    #6 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:207 (libdeeplux_core.so.1+0xfa450)
+    #7 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #8 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #9 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #10 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #11 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Thread T4 'Thread (pooled)' (tid=4061055, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T5 'Thread (pooled)' (tid=4061056, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race kernel/qmetatype.cpp:1024 in qMetaTypeCustomType_unlocked
+==================
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Write of size 4 at 0x7fffffffc498 by thread T5:
+    #0 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:132 (libdeeplux_core.so.1+0x16504a)
+    #1 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #2 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #3 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #4 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous read of size 4 at 0x7fffffffc498 by main thread:
+    #0 DeepLux::RunEngine::executeParallel(QStringList const&, QHash<QString, QVariant> const&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:139 (libdeeplux_core.so.1+0x16569e)
+    #1 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #2 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #3 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #4 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  As if synchronized via sleep:
+    #0 nanosleep ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:366 (libtsan.so.0+0x6696c)
+    #1 qt_nanosleep(timespec) kernel/qelapsedtimer_unix.cpp:195 (libQt5Core.so.5+0x2f8c0c)
+    #2 DeepLux::ModuleBase::execute(DeepLux::ImageData const&, DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:93 (libdeeplux_core.so.1+0xf8b61)
+    #3 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:201 (libdeeplux_core.so.1+0xfa30c)
+    #4 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #5 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #6 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #7 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #8 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Location is stack of main thread.
+
+  Location is global '<null>' at 0x000000000000 ([stack]+0x00000001f498)
+
+  Thread T5 'Thread (pooled)' (tid=4061056, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:132 in operator()
+==================
+PASS   : TestRunEngine::testParallelExecutesConcurrently()
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Write of size 8 at 0x7b0800026060 by thread T3:
+    #0 realloc ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:685 (libtsan.so.0+0x34179)
+    #1 QListData::realloc_grow(int) tools/qlist.cpp:170 (libQt5Core.so.5+0xf3070)
+
+  Previous write of size 8 at 0x7b0800026060 by thread T5:
+    #0 malloc ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:655 (libtsan.so.0+0x31c57)
+    #1 QListData::detach_grow(int*, int) tools/qlist.cpp:96 (libQt5Core.so.5+0xf2ed1)
+
+  As if synchronized via sleep:
+    #0 nanosleep ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:366 (libtsan.so.0+0x6696c)
+    #1 qt_nanosleep(timespec) kernel/qelapsedtimer_unix.cpp:195 (libQt5Core.so.5+0x2f8c0c)
+    #2 DeepLux::ModuleBase::execute(DeepLux::ImageData const&, DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:93 (libdeeplux_core.so.1+0xf8b61)
+    #3 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:201 (libdeeplux_core.so.1+0xfa30c)
+    #4 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:118 (libdeeplux_core.so.1+0x164e7b)
+    #5 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #6 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #7 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #8 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Thread T3 'Thread (pooled)' (tid=4061054, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T5 'Thread (pooled)' (tid=4061056, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race tools/qlist.cpp:170 in QListData::realloc_grow(int)
+==================
+QDEBUG : TestRunEngine::testParallelFailureCancelsGroup() Module initialized: "fail"
+QDEBUG : TestRunEngine::testParallelFailureCancelsGroup() Module initialized: "slow"
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Write of size 4 at 0x7fffffffc488 by thread T5:
+    #0 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:132 (libdeeplux_core.so.1+0x16504a)
+    #1 __invoke_impl<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17d187)
+    #2 __invoke_r<void, DeepLux::RunEngine::executeParallel(const QStringList&, const PortValueMap&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17bad6)
+    #3 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17a3cc)
+    #4 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous read of size 4 at 0x7fffffffc488 by main thread:
+    #0 DeepLux::RunEngine::executeParallel(QStringList const&, QHash<QString, QVariant> const&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:139 (libdeeplux_core.so.1+0x16569e)
+    #1 TestRunEngine::testParallelFailureCancelsGroup() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1246 (test_runengine+0x27a82)
+    #2 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:947 (test_runengine+0x55a2f)
+    #3 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #4 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Location is stack of main thread.
+
+  Location is global '<null>' at 0x000000000000 ([stack]+0x00000001f488)
+
+  Thread T5 'Thread (pooled)' (tid=4061056, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:132 in operator()
+==================
+PASS   : TestRunEngine::testParallelFailureCancelsGroup()
+QDEBUG : TestRunEngine::testValidateFlowReportsMissingRequiredInput() Module initialized: "src"
+QDEBUG : TestRunEngine::testValidateFlowReportsMissingRequiredInput() Module initialized: "consumer"
+PASS   : TestRunEngine::testValidateFlowReportsMissingRequiredInput()
+QDEBUG : TestRunEngine::testSkippedBranchEmitsSkippedNotFailed() Module initialized: "While"
+QDEBUG : TestRunEngine::testSkippedBranchEmitsSkippedNotFailed() Module initialized: "Body"
+QDEBUG : TestRunEngine::testSkippedBranchEmitsSkippedNotFailed() Module initialized: "WhileEnd"
+QDEBUG : TestRunEngine::testSkippedBranchEmitsSkippedNotFailed() Module initialized: "After"
+PASS   : TestRunEngine::testSkippedBranchEmitsSkippedNotFailed()
+QDEBUG : TestRunEngine::testBreakpointRestoredOnLoad() Module initialized: "a"
+PASS   : TestRunEngine::testBreakpointRestoredOnLoad()
+QDEBUG : TestRunEngine::testDisabledModuleBypassesImage() Module initialized: "A"
+QDEBUG : TestRunEngine::testDisabledModuleBypassesImage() Module initialized: "B"
+QDEBUG : TestRunEngine::testDisabledModuleBypassesImage() Module initialized: "C"
+PASS   : TestRunEngine::testDisabledModuleBypassesImage()
+QDEBUG : TestRunEngine::testDisabledDependedNodePreRunFail() Module initialized: "src"
+QDEBUG : TestRunEngine::testDisabledDependedNodePreRunFail() Module initialized: "dis"
+QDEBUG : TestRunEngine::testDisabledDependedNodePreRunFail() Module initialized: "consumer"
+PASS   : TestRunEngine::testDisabledDependedNodePreRunFail()
+QDEBUG : TestRunEngine::testStepOnceSkipsDisabledModule() Module initialized: "A"
+QDEBUG : TestRunEngine::testStepOnceSkipsDisabledModule() Module initialized: "B"
+QDEBUG : TestRunEngine::testStepOnceSkipsDisabledModule() Module initialized: "C"
+PASS   : TestRunEngine::testStepOnceSkipsDisabledModule()
+QDEBUG : TestRunEngine::testDisabledBypassCollectsByToPort() Module initialized: "src"
+QDEBUG : TestRunEngine::testDisabledBypassCollectsByToPort() Module initialized: "dis"
+QDEBUG : TestRunEngine::testDisabledBypassCollectsByToPort() Module initialized: "consumer"
+QDEBUG : TestRunEngine::testDisabledBypassCollectsByToPort() Module initialized: "src"
+QDEBUG : TestRunEngine::testDisabledBypassCollectsByToPort() Module initialized: "dis"
+QDEBUG : TestRunEngine::testDisabledBypassCollectsByToPort() Module initialized: "consumer"
+PASS   : TestRunEngine::testDisabledBypassCollectsByToPort()
+QDEBUG : TestRunEngine::testDisabledBypassRejectsTypeIncompatible() Module initialized: "src"
+QDEBUG : TestRunEngine::testDisabledBypassRejectsTypeIncompatible() Module initialized: "dis"
+QDEBUG : TestRunEngine::testDisabledBypassRejectsTypeIncompatible() Module initialized: "consumer"
+PASS   : TestRunEngine::testDisabledBypassRejectsTypeIncompatible()
+QDEBUG : TestRunEngine::testBreakpointHitPauseResume() Module initialized: "A"
+QDEBUG : TestRunEngine::testBreakpointHitPauseResume() Module initialized: "B"
+PASS   : TestRunEngine::testBreakpointHitPauseResume()
+QDEBUG : TestRunEngine::testBreakpointDoesNotBlockRun() Module initialized: "A"
+QDEBUG : TestRunEngine::testBreakpointDoesNotBlockRun() Module initialized: "B"
+QWARN  : TestRunEngine::testBreakpointDoesNotBlockRun() QSignalSpy: Unable to handle parameter 'result' of type 'RunResult' of method 'runFinished', use qRegisterMetaType to register it.
+PASS   : TestRunEngine::testBreakpointDoesNotBlockRun()
+QDEBUG : TestRunEngine::testBreakpointPreservesFailureAcrossResume() Module initialized: "Failing"
+QDEBUG : TestRunEngine::testBreakpointPreservesFailureAcrossResume() Module initialized: "Paused"
+QWARN  : TestRunEngine::testBreakpointPreservesFailureAcrossResume() QSignalSpy: Unable to handle parameter 'result' of type 'RunResult' of method 'runFinished', use qRegisterMetaType to register it.
+PASS   : TestRunEngine::testBreakpointPreservesFailureAcrossResume()
+QDEBUG : TestRunEngine::testMultipleBreakpointsCanResumeAndStop() Module initialized: "A"
+QDEBUG : TestRunEngine::testMultipleBreakpointsCanResumeAndStop() Module initialized: "B"
+PASS   : TestRunEngine::testMultipleBreakpointsCanResumeAndStop()
+QDEBUG : TestRunEngine::testRemoveModuleClearsTopology() Module initialized: "A"
+QDEBUG : TestRunEngine::testRemoveModuleClearsTopology() Module initialized: "B"
+PASS   : TestRunEngine::testRemoveModuleClearsTopology()
+QDEBUG : TestRunEngine::testDataEdgeToControlPortRejected() Module initialized: "src"
+QDEBUG : TestRunEngine::testDataEdgeToControlPortRejected() Module initialized: "tgt"
+PASS   : TestRunEngine::testDataEdgeToControlPortRejected()
+QDEBUG : TestRunEngine::testControlEdgeToDataPortRejected() Module initialized: "src"
+QDEBUG : TestRunEngine::testControlEdgeToDataPortRejected() Module initialized: "tgt"
+PASS   : TestRunEngine::testControlEdgeToDataPortRejected()
+QDEBUG : TestRunEngine::testControlEdgeValidAccepted() Module initialized: "src"
+QDEBUG : TestRunEngine::testControlEdgeValidAccepted() Module initialized: "tgt"
+PASS   : TestRunEngine::testControlEdgeValidAccepted()
+QDEBUG : TestRunEngine::testImplicitControlPortsAccepted() Module initialized: "src"
+QDEBUG : TestRunEngine::testImplicitControlPortsAccepted() Module initialized: "tgt"
+PASS   : TestRunEngine::testImplicitControlPortsAccepted()
+QDEBUG : TestRunEngine::testDuplicateFourTupleRejected() Module initialized: "src"
+QDEBUG : TestRunEngine::testDuplicateFourTupleRejected() Module initialized: "tgt"
+PASS   : TestRunEngine::testDuplicateFourTupleRejected()
+QDEBUG : TestRunEngine::testDifferentPortSameNodePairAccepted() Module initialized: "src"
+QDEBUG : TestRunEngine::testDifferentPortSameNodePairAccepted() Module initialized: "tgt"
+PASS   : TestRunEngine::testDifferentPortSameNodePairAccepted()
+QDEBUG : TestRunEngine::testControlEdgeCycleRejected() Module initialized: "A"
+QDEBUG : TestRunEngine::testControlEdgeCycleRejected() Module initialized: "B"
+PASS   : TestRunEngine::testControlEdgeCycleRejected()
+QDEBUG : TestRunEngine::testNoControlEdgesBehaviorUnchanged() Module initialized: "A"
+QDEBUG : TestRunEngine::testNoControlEdgesBehaviorUnchanged() Module initialized: "B"
+PASS   : TestRunEngine::testNoControlEdgesBehaviorUnchanged()
+QDEBUG : TestRunEngine::testIllegalEdgeTypeRejected() Module initialized: "src"
+QDEBUG : TestRunEngine::testIllegalEdgeTypeRejected() Module initialized: "tgt"
+PASS   : TestRunEngine::testIllegalEdgeTypeRejected()
+QDEBUG : TestRunEngine::testNoDataEdgeBackwardControlAccepted() Module initialized: "A"
+QDEBUG : TestRunEngine::testNoDataEdgeBackwardControlAccepted() Module initialized: "B"
+PASS   : TestRunEngine::testNoDataEdgeBackwardControlAccepted()
+QDEBUG : TestRunEngine::testControlSelfLoopRejected() Module initialized: "A"
+PASS   : TestRunEngine::testControlSelfLoopRejected()
+QDEBUG : TestRunEngine::testEdgeTypeRoundTripPreservesInference() Module initialized: "A"
+QDEBUG : TestRunEngine::testEdgeTypeRoundTripPreservesInference() Module initialized: "B"
+PASS   : TestRunEngine::testEdgeTypeRoundTripPreservesInference()
+QDEBUG : TestRunEngine::testExplicitControlTrueBranch() Module initialized: "cond"
+QDEBUG : TestRunEngine::testExplicitControlTrueBranch() Module initialized: "bodyTrue"
+QDEBUG : TestRunEngine::testExplicitControlTrueBranch() Module initialized: "bodyFalse"
+PASS   : TestRunEngine::testExplicitControlTrueBranch()
+QDEBUG : TestRunEngine::testExplicitControlFalseBranch() Module initialized: "cond"
+QDEBUG : TestRunEngine::testExplicitControlFalseBranch() Module initialized: "bodyTrue"
+QDEBUG : TestRunEngine::testExplicitControlFalseBranch() Module initialized: "bodyFalse"
+PASS   : TestRunEngine::testExplicitControlFalseBranch()
+QDEBUG : TestRunEngine::testExplicitControlSkipsInactiveBranch() Module initialized: "cond"
+QDEBUG : TestRunEngine::testExplicitControlSkipsInactiveBranch() Module initialized: "bodyTrue"
+QDEBUG : TestRunEngine::testExplicitControlSkipsInactiveBranch() Module initialized: "bodyFalse"
+PASS   : TestRunEngine::testExplicitControlSkipsInactiveBranch()
+QDEBUG : TestRunEngine::testExplicitControlMergeAfterIf() Module initialized: "cond"
+QDEBUG : TestRunEngine::testExplicitControlMergeAfterIf() Module initialized: "bodyTrue"
+QDEBUG : TestRunEngine::testExplicitControlMergeAfterIf() Module initialized: "bodyFalse"
+QDEBUG : TestRunEngine::testExplicitControlMergeAfterIf() Module initialized: "merge"
+PASS   : TestRunEngine::testExplicitControlMergeAfterIf()
+QDEBUG : TestRunEngine::testExplicitControlStepOnce() Module initialized: "cond"
+QDEBUG : TestRunEngine::testExplicitControlStepOnce() Module initialized: "bodyTrue"
+QDEBUG : TestRunEngine::testExplicitControlStepOnce() Module initialized: "after"
+PASS   : TestRunEngine::testExplicitControlStepOnce()
+QDEBUG : TestRunEngine::testExplicitControlBackwardEdgeRunAndStep() Module initialized: "A"
+QDEBUG : TestRunEngine::testExplicitControlBackwardEdgeRunAndStep() Module initialized: "B"
+QDEBUG : TestRunEngine::testExplicitControlBackwardEdgeRunAndStep() Module initialized: "A"
+QDEBUG : TestRunEngine::testExplicitControlBackwardEdgeRunAndStep() Module initialized: "B"
+PASS   : TestRunEngine::testExplicitControlBackwardEdgeRunAndStep()
+QDEBUG : TestRunEngine::testExplicitControlBreakpointResume() Module initialized: "A"
+QDEBUG : TestRunEngine::testExplicitControlBreakpointResume() Module initialized: "B"
+PASS   : TestRunEngine::testExplicitControlBreakpointResume()
+QDEBUG : TestRunEngine::testLegacyBreakpointPreservesPipelineData() Module initialized: "source"
+QDEBUG : TestRunEngine::testLegacyBreakpointPreservesPipelineData() Module initialized: "sink"
+PASS   : TestRunEngine::testLegacyBreakpointPreservesPipelineData()
+QDEBUG : TestRunEngine::testExplicitLoopZeroIterations() Module initialized: "loop"
+QDEBUG : TestRunEngine::testExplicitLoopZeroIterations() Module initialized: "body"
+QDEBUG : TestRunEngine::testExplicitLoopZeroIterations() Module initialized: "after"
+PASS   : TestRunEngine::testExplicitLoopZeroIterations()
+QDEBUG : TestRunEngine::testExplicitLoopThreeIterations() Module initialized: "loop"
+QDEBUG : TestRunEngine::testExplicitLoopThreeIterations() Module initialized: "body"
+QDEBUG : TestRunEngine::testExplicitLoopThreeIterations() Module initialized: "after"
+PASS   : TestRunEngine::testExplicitLoopThreeIterations()
+QDEBUG : TestRunEngine::testExplicitWhileFalseZeroIterations() Module initialized: "whileMod"
+QDEBUG : TestRunEngine::testExplicitWhileFalseZeroIterations() Module initialized: "body"
+QDEBUG : TestRunEngine::testExplicitWhileFalseZeroIterations() Module initialized: "after"
+PASS   : TestRunEngine::testExplicitWhileFalseZeroIterations()
+QDEBUG : TestRunEngine::testExplicitStopWhileTerminatesLoop() Module initialized: "whileMod"
+QDEBUG : TestRunEngine::testExplicitStopWhileTerminatesLoop() Module initialized: "body"
+QDEBUG : TestRunEngine::testExplicitStopWhileTerminatesLoop() Module initialized: "stopMod"
+QDEBUG : TestRunEngine::testExplicitStopWhileTerminatesLoop() Module initialized: "after"
+PASS   : TestRunEngine::testExplicitStopWhileTerminatesLoop()
+QDEBUG : TestRunEngine::testDisabledExplicitLoopExitsThroughDone() Module initialized: "loop"
+QDEBUG : TestRunEngine::testDisabledExplicitLoopExitsThroughDone() Module initialized: "body"
+QDEBUG : TestRunEngine::testDisabledExplicitLoopExitsThroughDone() Module initialized: "after"
+PASS   : TestRunEngine::testDisabledExplicitLoopExitsThroughDone()
+QDEBUG : TestRunEngine::testExplicitLoopMultiModuleBody() Module initialized: "loop"
+QDEBUG : TestRunEngine::testExplicitLoopMultiModuleBody() Module initialized: "first"
+QDEBUG : TestRunEngine::testExplicitLoopMultiModuleBody() Module initialized: "second"
+QDEBUG : TestRunEngine::testExplicitLoopMultiModuleBody() Module initialized: "after"
+PASS   : TestRunEngine::testExplicitLoopMultiModuleBody()
+QDEBUG : TestRunEngine::testExplicitLoopAfterPredecessor() Module initialized: "start"
+QDEBUG : TestRunEngine::testExplicitLoopAfterPredecessor() Module initialized: "loop"
+QDEBUG : TestRunEngine::testExplicitLoopAfterPredecessor() Module initialized: "body"
+QDEBUG : TestRunEngine::testExplicitLoopAfterPredecessor() Module initialized: "after"
+PASS   : TestRunEngine::testExplicitLoopAfterPredecessor()
+QDEBUG : TestRunEngine::testLoopSelfEdgeRejected() Module initialized: "loop"
+PASS   : TestRunEngine::testLoopSelfEdgeRejected()
+QDEBUG : TestRunEngine::testLoopDoneBackEdgeRejected() Module initialized: "loop"
+QDEBUG : TestRunEngine::testLoopDoneBackEdgeRejected() Module initialized: "body"
+QDEBUG : TestRunEngine::testLoopDoneBackEdgeRejected() Module initialized: "after"
+PASS   : TestRunEngine::testLoopDoneBackEdgeRejected()
+QDEBUG : TestRunEngine::testNestedStopLoopPreservesOuterCounter() Module initialized: "outer"
+QDEBUG : TestRunEngine::testNestedStopLoopPreservesOuterCounter() Module initialized: "inner"
+QDEBUG : TestRunEngine::testNestedStopLoopPreservesOuterCounter() Module initialized: "stop"
+QDEBUG : TestRunEngine::testNestedStopLoopPreservesOuterCounter() Module initialized: "tail"
+QDEBUG : TestRunEngine::testNestedStopLoopPreservesOuterCounter() Module initialized: "after"
+PASS   : TestRunEngine::testNestedStopLoopPreservesOuterCounter()
+QDEBUG : TestRunEngine::testExplicitDataFanInWaitsForAllInputs() Module initialized: "A"
+QDEBUG : TestRunEngine::testExplicitDataFanInWaitsForAllInputs() Module initialized: "B"
+QDEBUG : TestRunEngine::testExplicitDataFanInWaitsForAllInputs() Module initialized: "D"
+QDEBUG : TestRunEngine::testExplicitDataFanInWaitsForAllInputs() Module initialized: "C"
+PASS   : TestRunEngine::testExplicitDataFanInWaitsForAllInputs()
+QDEBUG : TestRunEngine::testExplicitFailureDoesNotActivateSuccessor() Module initialized: "Fail"
+QDEBUG : TestRunEngine::testExplicitFailureDoesNotActivateSuccessor() Module initialized: "Next"
+PASS   : TestRunEngine::testExplicitFailureDoesNotActivateSuccessor()
+QDEBUG : TestRunEngine::testExplicitLoopClearsInactiveBranchOutputs() Module initialized: "Loop"
+QDEBUG : TestRunEngine::testExplicitLoopClearsInactiveBranchOutputs() Module initialized: "Cond"
+QDEBUG : TestRunEngine::testExplicitLoopClearsInactiveBranchOutputs() Module initialized: "True"
+QDEBUG : TestRunEngine::testExplicitLoopClearsInactiveBranchOutputs() Module initialized: "False"
+QDEBUG : TestRunEngine::testExplicitLoopClearsInactiveBranchOutputs() Module initialized: "Merge"
+QDEBUG : TestRunEngine::testExplicitLoopClearsInactiveBranchOutputs() Module initialized: "After"
+PASS   : TestRunEngine::testExplicitLoopClearsInactiveBranchOutputs()
+QDEBUG : TestRunEngine::testExplicitWhileStopsAtMaxIterations() Module initialized: "While"
+QDEBUG : TestRunEngine::testExplicitWhileStopsAtMaxIterations() Module initialized: "Body"
+QDEBUG : TestRunEngine::testExplicitWhileStopsAtMaxIterations() Module initialized: "After"
+PASS   : TestRunEngine::testExplicitWhileStopsAtMaxIterations()
+QDEBUG : TestRunEngine::testExplicitLoopStepOnceTraversesIterations() Module initialized: "Loop"
+QDEBUG : TestRunEngine::testExplicitLoopStepOnceTraversesIterations() Module initialized: "Body"
+QDEBUG : TestRunEngine::testExplicitLoopStepOnceTraversesIterations() Module initialized: "After"
+PASS   : TestRunEngine::testExplicitLoopStepOnceTraversesIterations()
+QDEBUG : TestRunEngine::testExplicitLoopCancellationStopsRun() Module initialized: "Loop"
+QDEBUG : TestRunEngine::testExplicitLoopCancellationStopsRun() Module initialized: "StopAware"
+QDEBUG : TestRunEngine::testExplicitLoopCancellationStopsRun() Module initialized: "After"
+PASS   : TestRunEngine::testExplicitLoopCancellationStopsRun()
+QDEBUG : TestRunEngine::testMultiInputCollectsOrderedList() Module initialized: "B"
+QDEBUG : TestRunEngine::testMultiInputCollectsOrderedList() Module initialized: "A"
+QDEBUG : TestRunEngine::testMultiInputCollectsOrderedList() Module initialized: "C"
+PASS   : TestRunEngine::testMultiInputCollectsOrderedList()
+QDEBUG : TestRunEngine::testMultiInputTypeMismatchFails() Module initialized: "A"
+QDEBUG : TestRunEngine::testMultiInputTypeMismatchFails() Module initialized: "C"
+PASS   : TestRunEngine::testMultiInputTypeMismatchFails()
+QDEBUG : TestRunEngine::testMultiInputWaitsForAllUpstreams() Module initialized: "A"
+QDEBUG : TestRunEngine::testMultiInputWaitsForAllUpstreams() Module initialized: "B"
+QDEBUG : TestRunEngine::testMultiInputWaitsForAllUpstreams() Module initialized: "C"
+PASS   : TestRunEngine::testMultiInputWaitsForAllUpstreams()
+QDEBUG : TestRunEngine::testControlJoinAllWaitsForAllSources() Module initialized: "A"
+QDEBUG : TestRunEngine::testControlJoinAllWaitsForAllSources() Module initialized: "B"
+QDEBUG : TestRunEngine::testControlJoinAllWaitsForAllSources() Module initialized: "C"
+PASS   : TestRunEngine::testControlJoinAllWaitsForAllSources()
+QDEBUG : TestRunEngine::testControlJoinTracksEdgesNotSources() Module initialized: "Source"
+QDEBUG : TestRunEngine::testControlJoinTracksEdgesNotSources() Module initialized: "Join"
+PASS   : TestRunEngine::testControlJoinTracksEdgesNotSources()
+QDEBUG : TestRunEngine::testControlJoinPoliciesArePerPort() Module initialized: "A"
+QDEBUG : TestRunEngine::testControlJoinPoliciesArePerPort() Module initialized: "B"
+QDEBUG : TestRunEngine::testControlJoinPoliciesArePerPort() Module initialized: "Cond"
+QDEBUG : TestRunEngine::testControlJoinPoliciesArePerPort() Module initialized: "Join"
+PASS   : TestRunEngine::testControlJoinPoliciesArePerPort()
+QDEBUG : TestRunEngine::testParallelBatchExecutesConcurrently() Module initialized: "Fork"
+QDEBUG : TestRunEngine::testParallelBatchExecutesConcurrently() Module initialized: "A"
+QDEBUG : TestRunEngine::testParallelBatchExecutesConcurrently() Module initialized: "B"
+QDEBUG : TestRunEngine::testParallelBatchExecutesConcurrently() Module initialized: "C"
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Read of size 8 at 0x7b0c00035020 by thread T3:
+    #0 _M_get_pointer /usr/include/c++/11/bits/std_function.h:142 (libdeeplux_core.so.1+0x17c74b)
+    #1 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe1)
+    #2 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous write of size 8 at 0x7b0c00035020 by main thread:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 QRunnable::create(std::function<void ()>) thread/qrunnable.cpp:141 (libQt5Core.so.5+0xb1641)
+    #2 DeepLux::RunEngine::executeRunWithControlGraph(DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:839 (libdeeplux_core.so.1+0x16abe3)
+    #3 DeepLux::RunEngine::executeRun() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:745 (libdeeplux_core.so.1+0x16a1ad)
+    #4 DeepLux::RunEngine::runOnce() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:158 (libdeeplux_core.so.1+0x1659c6)
+    #5 TestRunEngine::testParallelBatchExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:3740 (test_runengine+0x464bb)
+    #6 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:1003 (test_runengine+0x55de7)
+    #7 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #8 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Location is heap block of size 48 at 0x7b0c00035010 allocated by main thread:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 QRunnable::create(std::function<void ()>) thread/qrunnable.cpp:141 (libQt5Core.so.5+0xb1641)
+    #2 DeepLux::RunEngine::executeRunWithControlGraph(DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:839 (libdeeplux_core.so.1+0x16abe3)
+    #3 DeepLux::RunEngine::executeRun() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:745 (libdeeplux_core.so.1+0x16a1ad)
+    #4 DeepLux::RunEngine::runOnce() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:158 (libdeeplux_core.so.1+0x1659c6)
+    #5 TestRunEngine::testParallelBatchExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:3740 (test_runengine+0x464bb)
+    #6 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:1003 (test_runengine+0x55de7)
+    #7 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #8 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T3 'Thread (pooled)' (tid=4061054, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race /usr/include/c++/11/bits/std_function.h:142 in _M_get_pointer
+==================
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Read of size 8 at 0x7b1400026840 by thread T3:
+    #0 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:922 (libdeeplux_core.so.1+0x16bdab)
+    #1 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #2 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #3 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #4 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous write of size 8 at 0x7b1400026840 by main thread:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 _M_create<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:161 (libdeeplux_core.so.1+0x17c6cc)
+    #2 _M_init_functor<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:215 (libdeeplux_core.so.1+0x17ab94)
+    #3 function<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:449 (libdeeplux_core.so.1+0x1799f6)
+    #4 DeepLux::RunEngine::executeBatchParallel(QStringList const&, DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:921 (libdeeplux_core.so.1+0x16d30f)
+    #5 DeepLux::RunEngine::executeRunWithControlGraph(DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:839 (libdeeplux_core.so.1+0x16abe3)
+    #6 DeepLux::RunEngine::executeRun() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:745 (libdeeplux_core.so.1+0x16a1ad)
+    #7 DeepLux::RunEngine::runOnce() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:158 (libdeeplux_core.so.1+0x1659c6)
+    #8 TestRunEngine::testParallelBatchExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:3740 (test_runengine+0x464bb)
+    #9 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:1003 (test_runengine+0x55de7)
+    #10 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #11 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Location is heap block of size 80 at 0x7b1400026840 allocated by main thread:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 _M_create<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:161 (libdeeplux_core.so.1+0x17c6cc)
+    #2 _M_init_functor<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:215 (libdeeplux_core.so.1+0x17ab94)
+    #3 function<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:449 (libdeeplux_core.so.1+0x1799f6)
+    #4 DeepLux::RunEngine::executeBatchParallel(QStringList const&, DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:921 (libdeeplux_core.so.1+0x16d30f)
+    #5 DeepLux::RunEngine::executeRunWithControlGraph(DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:839 (libdeeplux_core.so.1+0x16abe3)
+    #6 DeepLux::RunEngine::executeRun() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:745 (libdeeplux_core.so.1+0x16a1ad)
+    #7 DeepLux::RunEngine::runOnce() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:158 (libdeeplux_core.so.1+0x1659c6)
+    #8 TestRunEngine::testParallelBatchExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:3740 (test_runengine+0x464bb)
+    #9 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:1003 (test_runengine+0x55de7)
+    #10 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #11 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T3 'Thread (pooled)' (tid=4061054, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:922 in operator()
+==================
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Read of size 8 at 0x7b1400026880 by thread T3:
+    #0 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:922 (libdeeplux_core.so.1+0x16bf08)
+    #1 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #2 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #3 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #4 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous write of size 8 at 0x7b1400026880 by main thread:
+    #0 <lambda> /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:922 (libdeeplux_core.so.1+0x17c650)
+    #1 _M_create<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:161 (libdeeplux_core.so.1+0x17c6da)
+    #2 _M_init_functor<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:215 (libdeeplux_core.so.1+0x17ab94)
+    #3 function<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:449 (libdeeplux_core.so.1+0x1799f6)
+    #4 DeepLux::RunEngine::executeBatchParallel(QStringList const&, DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:921 (libdeeplux_core.so.1+0x16d30f)
+    #5 DeepLux::RunEngine::executeRunWithControlGraph(DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:839 (libdeeplux_core.so.1+0x16abe3)
+    #6 DeepLux::RunEngine::executeRun() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:745 (libdeeplux_core.so.1+0x16a1ad)
+    #7 DeepLux::RunEngine::runOnce() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:158 (libdeeplux_core.so.1+0x1659c6)
+    #8 TestRunEngine::testParallelBatchExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:3740 (test_runengine+0x464bb)
+    #9 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:1003 (test_runengine+0x55de7)
+    #10 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #11 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Location is heap block of size 80 at 0x7b1400026840 allocated by main thread:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 _M_create<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:161 (libdeeplux_core.so.1+0x17c6cc)
+    #2 _M_init_functor<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:215 (libdeeplux_core.so.1+0x17ab94)
+    #3 function<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:449 (libdeeplux_core.so.1+0x1799f6)
+    #4 DeepLux::RunEngine::executeBatchParallel(QStringList const&, DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:921 (libdeeplux_core.so.1+0x16d30f)
+    #5 DeepLux::RunEngine::executeRunWithControlGraph(DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:839 (libdeeplux_core.so.1+0x16abe3)
+    #6 DeepLux::RunEngine::executeRun() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:745 (libdeeplux_core.so.1+0x16a1ad)
+    #7 DeepLux::RunEngine::runOnce() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:158 (libdeeplux_core.so.1+0x1659c6)
+    #8 TestRunEngine::testParallelBatchExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:3740 (test_runengine+0x464bb)
+    #9 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:1003 (test_runengine+0x55de7)
+    #10 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #11 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T3 'Thread (pooled)' (tid=4061054, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:922 in operator()
+==================
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Write of size 4 at 0x7fffffffc04c by thread T6:
+    #0 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:973 (libdeeplux_core.so.1+0x16ca6a)
+    #1 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #2 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #3 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #4 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous read of size 4 at 0x7fffffffc04c by main thread:
+    #0 DeepLux::RunEngine::executeBatchParallel(QStringList const&, DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:984 (libdeeplux_core.so.1+0x16d3d8)
+    #1 DeepLux::RunEngine::executeRunWithControlGraph(DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:839 (libdeeplux_core.so.1+0x16abe3)
+    #2 DeepLux::RunEngine::executeRun() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:745 (libdeeplux_core.so.1+0x16a1ad)
+    #3 DeepLux::RunEngine::runOnce() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:158 (libdeeplux_core.so.1+0x1659c6)
+    #4 TestRunEngine::testParallelBatchExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:3740 (test_runengine+0x464bb)
+    #5 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:1003 (test_runengine+0x55de7)
+    #6 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #7 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  As if synchronized via sleep:
+    #0 nanosleep ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:366 (libtsan.so.0+0x6696c)
+    #1 qt_nanosleep(timespec) kernel/qelapsedtimer_unix.cpp:195 (libQt5Core.so.5+0x2f8c0c)
+    #2 DeepLux::ModuleBase::execute(DeepLux::ImageData const&, DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:93 (libdeeplux_core.so.1+0xf8b61)
+    #3 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:201 (libdeeplux_core.so.1+0xfa30c)
+    #4 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:945 (libdeeplux_core.so.1+0x16c34f)
+    #5 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #6 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #7 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #8 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Location is stack of main thread.
+
+  Location is global '<null>' at 0x000000000000 ([stack]+0x00000001f04c)
+
+  Thread T6 'Thread (pooled)' (tid=4061057, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:973 in operator()
+==================
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Read of size 8 at 0x7fffffffc068 by thread T3:
+    #0 detach /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:361 (libdeeplux_core.so.1+0x17a8a4)
+    #1 insert /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:713 (libdeeplux_core.so.1+0x1797ab)
+    #2 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:972 (libdeeplux_core.so.1+0x16ca36)
+    #3 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #4 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #5 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #6 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous write of size 8 at 0x7fffffffc068 by thread T6:
+    #0 detach_helper /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:981 (libdeeplux_core.so.1+0x17c474)
+    #1 detach /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:361 (libdeeplux_core.so.1+0x17a8c3)
+    #2 insert /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:713 (libdeeplux_core.so.1+0x1797ab)
+    #3 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:972 (libdeeplux_core.so.1+0x16ca36)
+    #4 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #5 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #6 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #7 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  As if synchronized via sleep:
+    #0 nanosleep ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:366 (libtsan.so.0+0x6696c)
+    #1 qt_nanosleep(timespec) kernel/qelapsedtimer_unix.cpp:195 (libQt5Core.so.5+0x2f8c0c)
+    #2 DeepLux::ModuleBase::execute(DeepLux::ImageData const&, DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:93 (libdeeplux_core.so.1+0xf8b61)
+    #3 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:201 (libdeeplux_core.so.1+0xfa30c)
+    #4 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:945 (libdeeplux_core.so.1+0x16c34f)
+    #5 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #6 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #7 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #8 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Location is stack of main thread.
+
+  Location is global '<null>' at 0x000000000000 ([stack]+0x00000001f068)
+
+  Thread T3 'Thread (pooled)' (tid=4061054, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T6 'Thread (pooled)' (tid=4061057, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:361 in detach
+==================
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Atomic read of size 4 at 0x7b0c00031800 by thread T3:
+    #0 __tsan_atomic32_load ../../../../src/libsanitizer/tsan/tsan_interface_atomic.cpp:534 (libtsan.so.0+0x7fc4e)
+    #1 std::__atomic_base<int>::load(std::memory_order) const /usr/include/c++/11/bits/atomic_base.h:488 (test_runengine+0x8de7d)
+    #2 int QAtomicOps<int>::loadRelaxed<int>(std::atomic<int> const&) /usr/include/x86_64-linux-gnu/qt5/QtCore/qatomic_cxx11.h:239 (test_runengine+0x8de7d)
+    #3 QBasicAtomicInteger<int>::loadRelaxed() const /usr/include/x86_64-linux-gnu/qt5/QtCore/qbasicatomic.h:107 (test_runengine+0x89924)
+    #4 QtPrivate::RefCount::isShared() const /usr/include/x86_64-linux-gnu/qt5/QtCore/qrefcount.h:101 (test_runengine+0x7ad58)
+    #5 detach /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:361 (libdeeplux_core.so.1+0x17a8b3)
+    #6 insert /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:713 (libdeeplux_core.so.1+0x1797ab)
+    #7 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:972 (libdeeplux_core.so.1+0x16ca36)
+    #8 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #9 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #10 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #11 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous write of size 8 at 0x7b0c00031800 by thread T6:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 QMapDataBase::createData() tools/qmap.cpp:360 (libQt5Core.so.5+0xf444d)
+    #2 detach_helper /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:974 (libdeeplux_core.so.1+0x17c387)
+    #3 detach /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:361 (libdeeplux_core.so.1+0x17a8c3)
+    #4 insert /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:713 (libdeeplux_core.so.1+0x1797ab)
+    #5 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:972 (libdeeplux_core.so.1+0x16ca36)
+    #6 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #7 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #8 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #9 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  As if synchronized via sleep:
+    #0 nanosleep ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:366 (libtsan.so.0+0x6696c)
+    #1 qt_nanosleep(timespec) kernel/qelapsedtimer_unix.cpp:195 (libQt5Core.so.5+0x2f8c0c)
+    #2 DeepLux::ModuleBase::execute(DeepLux::ImageData const&, DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:93 (libdeeplux_core.so.1+0xf8b61)
+    #3 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:201 (libdeeplux_core.so.1+0xfa30c)
+    #4 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:945 (libdeeplux_core.so.1+0x16c34f)
+    #5 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #6 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #7 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #8 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Location is heap block of size 40 at 0x7b0c00031800 allocated by thread T6:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 QMapDataBase::createData() tools/qmap.cpp:360 (libQt5Core.so.5+0xf444d)
+    #2 detach_helper /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:974 (libdeeplux_core.so.1+0x17c387)
+    #3 detach /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:361 (libdeeplux_core.so.1+0x17a8c3)
+    #4 insert /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:713 (libdeeplux_core.so.1+0x1797ab)
+    #5 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:972 (libdeeplux_core.so.1+0x16ca36)
+    #6 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #7 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #8 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #9 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Thread T3 'Thread (pooled)' (tid=4061054, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T6 'Thread (pooled)' (tid=4061057, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race /usr/include/c++/11/bits/atomic_base.h:488 in std::__atomic_base<int>::load(std::memory_order) const
+==================
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Read of size 8 at 0x7b0c00031810 by thread T3:
+    #0 root /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:208 (libdeeplux_core.so.1+0x17a910)
+    #1 insert /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:714 (libdeeplux_core.so.1+0x1797c6)
+    #2 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:972 (libdeeplux_core.so.1+0x16ca36)
+    #3 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #4 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #5 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #6 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous write of size 8 at 0x7b0c00031810 by thread T6:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 QMapDataBase::createData() tools/qmap.cpp:360 (libQt5Core.so.5+0xf444d)
+    #2 detach_helper /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:974 (libdeeplux_core.so.1+0x17c387)
+    #3 detach /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:361 (libdeeplux_core.so.1+0x17a8c3)
+    #4 insert /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:713 (libdeeplux_core.so.1+0x1797ab)
+    #5 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:972 (libdeeplux_core.so.1+0x16ca36)
+    #6 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #7 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #8 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #9 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  As if synchronized via sleep:
+    #0 nanosleep ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:366 (libtsan.so.0+0x6696c)
+    #1 qt_nanosleep(timespec) kernel/qelapsedtimer_unix.cpp:195 (libQt5Core.so.5+0x2f8c0c)
+    #2 DeepLux::ModuleBase::execute(DeepLux::ImageData const&, DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:93 (libdeeplux_core.so.1+0xf8b61)
+    #3 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:201 (libdeeplux_core.so.1+0xfa30c)
+    #4 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:945 (libdeeplux_core.so.1+0x16c34f)
+    #5 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #6 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #7 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #8 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Location is heap block of size 40 at 0x7b0c00031800 allocated by thread T6:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 QMapDataBase::createData() tools/qmap.cpp:360 (libQt5Core.so.5+0xf444d)
+    #2 detach_helper /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:974 (libdeeplux_core.so.1+0x17c387)
+    #3 detach /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:361 (libdeeplux_core.so.1+0x17a8c3)
+    #4 insert /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:713 (libdeeplux_core.so.1+0x1797ab)
+    #5 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:972 (libdeeplux_core.so.1+0x16ca36)
+    #6 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #7 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #8 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #9 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Thread T3 'Thread (pooled)' (tid=4061054, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T6 'Thread (pooled)' (tid=4061057, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:208 in root
+==================
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Read of size 8 at 0x7b1000026050 by thread T3:
+    #0 rightNode /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:113 (libdeeplux_core.so.1+0x17a9a2)
+    #1 insert /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:726 (libdeeplux_core.so.1+0x17984b)
+    #2 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:972 (libdeeplux_core.so.1+0x16ca36)
+    #3 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #4 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #5 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #6 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous write of size 8 at 0x7b1000026050 by thread T6:
+    #0 malloc ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:655 (libtsan.so.0+0x31c57)
+    #1 qMapAllocate tools/qmap.cpp:316 (libQt5Core.so.5+0xf4370)
+    #2 QMapDataBase::createNode(int, int, QMapNodeBase*, bool) tools/qmap.cpp:329 (libQt5Core.so.5+0xf4370)
+    #3 insert /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:733 (libdeeplux_core.so.1+0x1798f5)
+    #4 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:972 (libdeeplux_core.so.1+0x16ca36)
+    #5 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #6 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #7 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #8 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  As if synchronized via sleep:
+    #0 nanosleep ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:366 (libtsan.so.0+0x6696c)
+    #1 qt_nanosleep(timespec) kernel/qelapsedtimer_unix.cpp:195 (libQt5Core.so.5+0x2f8c0c)
+    #2 DeepLux::ModuleBase::execute(DeepLux::ImageData const&, DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:93 (libdeeplux_core.so.1+0xf8b61)
+    #3 DeepLux::ModuleBase::execute(QHash<QString, QVariant> const&, QHash<QString, QVariant>&, DeepLux::ExecutionContext&) /home/charles/Data/Repo/DeepLux/src/core/base/ModuleBase.cpp:201 (libdeeplux_core.so.1+0xfa30c)
+    #4 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:945 (libdeeplux_core.so.1+0x16c34f)
+    #5 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #6 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #7 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #8 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Location is heap block of size 64 at 0x7b1000026040 allocated by thread T6:
+    #0 malloc ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:655 (libtsan.so.0+0x31c57)
+    #1 qMapAllocate tools/qmap.cpp:316 (libQt5Core.so.5+0xf4370)
+    #2 QMapDataBase::createNode(int, int, QMapNodeBase*, bool) tools/qmap.cpp:329 (libQt5Core.so.5+0xf4370)
+    #3 insert /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:733 (libdeeplux_core.so.1+0x1798f5)
+    #4 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:972 (libdeeplux_core.so.1+0x16ca36)
+    #5 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #6 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #7 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #8 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Thread T3 'Thread (pooled)' (tid=4061054, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T6 'Thread (pooled)' (tid=4061057, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h:113 in rightNode
+==================
+PASS   : TestRunEngine::testParallelBatchExecutesConcurrently()
+QDEBUG : TestRunEngine::testParallelFailureCancelsRemaining() Module initialized: "A"
+QDEBUG : TestRunEngine::testParallelFailureCancelsRemaining() Module initialized: "B"
+QDEBUG : TestRunEngine::testParallelFailureCancelsRemaining() Module initialized: "C"
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Read of size 8 at 0x7b0c0002bfc0 by thread T5:
+    #0 _M_get_pointer /usr/include/c++/11/bits/std_function.h:142 (libdeeplux_core.so.1+0x17c74b)
+    #1 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe1)
+    #2 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous write of size 8 at 0x7b0c0002bfc0 by main thread:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 QRunnable::create(std::function<void ()>) thread/qrunnable.cpp:141 (libQt5Core.so.5+0xb1641)
+    #2 DeepLux::RunEngine::executeRunWithControlGraph(DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:839 (libdeeplux_core.so.1+0x16abe3)
+    #3 DeepLux::RunEngine::executeRun() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:745 (libdeeplux_core.so.1+0x16a1ad)
+    #4 DeepLux::RunEngine::runOnce() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:158 (libdeeplux_core.so.1+0x1659c6)
+    #5 TestRunEngine::testParallelFailureCancelsRemaining() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:3875 (test_runengine+0x48551)
+    #6 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:1004 (test_runengine+0x55df8)
+    #7 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #8 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Location is heap block of size 48 at 0x7b0c0002bfb0 allocated by main thread:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 QRunnable::create(std::function<void ()>) thread/qrunnable.cpp:141 (libQt5Core.so.5+0xb1641)
+    #2 DeepLux::RunEngine::executeRunWithControlGraph(DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:839 (libdeeplux_core.so.1+0x16abe3)
+    #3 DeepLux::RunEngine::executeRun() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:745 (libdeeplux_core.so.1+0x16a1ad)
+    #4 DeepLux::RunEngine::runOnce() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:158 (libdeeplux_core.so.1+0x1659c6)
+    #5 TestRunEngine::testParallelFailureCancelsRemaining() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:3875 (test_runengine+0x48551)
+    #6 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:1004 (test_runengine+0x55df8)
+    #7 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #8 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T5 'Thread (pooled)' (tid=4061056, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race /usr/include/c++/11/bits/std_function.h:142 in _M_get_pointer
+==================
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Read of size 8 at 0x7b14000269d0 by thread T5:
+    #0 operator() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:922 (libdeeplux_core.so.1+0x16bdab)
+    #1 __invoke_impl<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:61 (libdeeplux_core.so.1+0x17e54d)
+    #2 __invoke_r<void, DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()>&> /usr/include/c++/11/bits/invoke.h:111 (libdeeplux_core.so.1+0x17c789)
+    #3 _M_invoke /usr/include/c++/11/bits/std_function.h:290 (libdeeplux_core.so.1+0x17abe9)
+    #4 QThreadPoolThread::run() thread/qthreadpool.cpp:100 (libQt5Core.so.5+0xb7669)
+
+  Previous write of size 8 at 0x7b14000269d0 by main thread:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 _M_create<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:161 (libdeeplux_core.so.1+0x17c6cc)
+    #2 _M_init_functor<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:215 (libdeeplux_core.so.1+0x17ab94)
+    #3 function<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:449 (libdeeplux_core.so.1+0x1799f6)
+    #4 DeepLux::RunEngine::executeBatchParallel(QStringList const&, DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:921 (libdeeplux_core.so.1+0x16d30f)
+    #5 DeepLux::RunEngine::executeRunWithControlGraph(DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:839 (libdeeplux_core.so.1+0x16abe3)
+    #6 DeepLux::RunEngine::executeRun() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:745 (libdeeplux_core.so.1+0x16a1ad)
+    #7 DeepLux::RunEngine::runOnce() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:158 (libdeeplux_core.so.1+0x1659c6)
+    #8 TestRunEngine::testParallelFailureCancelsRemaining() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:3875 (test_runengine+0x48551)
+    #9 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:1004 (test_runengine+0x55df8)
+    #10 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #11 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Location is heap block of size 80 at 0x7b14000269d0 allocated by main thread:
+    #0 operator new(unsigned long) ../../../../src/libsanitizer/tsan/tsan_new_delete.cpp:64 (libtsan.so.0+0x8f162)
+    #1 _M_create<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:161 (libdeeplux_core.so.1+0x17c6cc)
+    #2 _M_init_functor<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:215 (libdeeplux_core.so.1+0x17ab94)
+    #3 function<DeepLux::RunEngine::executeBatchParallel(const QStringList&, DeepLux::ImageData&)::<lambda()> > /usr/include/c++/11/bits/std_function.h:449 (libdeeplux_core.so.1+0x1799f6)
+    #4 DeepLux::RunEngine::executeBatchParallel(QStringList const&, DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:921 (libdeeplux_core.so.1+0x16d30f)
+    #5 DeepLux::RunEngine::executeRunWithControlGraph(DeepLux::ImageData&) /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:839 (libdeeplux_core.so.1+0x16abe3)
+    #6 DeepLux::RunEngine::executeRun() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:745 (libdeeplux_core.so.1+0x16a1ad)
+    #7 DeepLux::RunEngine::runOnce() /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:158 (libdeeplux_core.so.1+0x1659c6)
+    #8 TestRunEngine::testParallelFailureCancelsRemaining() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:3875 (test_runengine+0x48551)
+    #9 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:1004 (test_runengine+0x55df8)
+    #10 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #11 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T5 'Thread (pooled)' (tid=4061056, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race /home/charles/Data/Repo/DeepLux/src/core/engine/RunEngine.cpp:922 in operator()
+==================
+PASS   : TestRunEngine::testParallelFailureCancelsRemaining()
+QDEBUG : TestRunEngine::testParallelNonThreadSafeFallsBackSequential() Module initialized: "A"
+QDEBUG : TestRunEngine::testParallelNonThreadSafeFallsBackSequential() Module initialized: "B"
+QDEBUG : TestRunEngine::testParallelNonThreadSafeFallsBackSequential() Module initialized: "C"
+PASS   : TestRunEngine::testParallelNonThreadSafeFallsBackSequential()
+QDEBUG : TestRunEngine::testParallelMixedThreadSafetyFallsBackSequential() Module initialized: "A"
+QDEBUG : TestRunEngine::testParallelMixedThreadSafetyFallsBackSequential() Module initialized: "B"
+QDEBUG : TestRunEngine::testParallelMixedThreadSafetyFallsBackSequential() Module initialized: "Join"
+PASS   : TestRunEngine::testParallelMixedThreadSafetyFallsBackSequential()
+QDEBUG : TestRunEngine::testParallelSingleThreadFailureDoesNotDeadlock() Module initialized: "Fail"
+QDEBUG : TestRunEngine::testParallelSingleThreadFailureDoesNotDeadlock() Module initialized: "Slow"
+QDEBUG : TestRunEngine::testParallelSingleThreadFailureDoesNotDeadlock() Module initialized: "Join"
+PASS   : TestRunEngine::testParallelSingleThreadFailureDoesNotDeadlock()
+QDEBUG : TestRunEngine::testParallelBatchHonorsDisabledModule() Module initialized: "A"
+QDEBUG : TestRunEngine::testParallelBatchHonorsDisabledModule() Module initialized: "Disabled"
+QDEBUG : TestRunEngine::testParallelBatchHonorsDisabledModule() Module initialized: "Join"
+PASS   : TestRunEngine::testParallelBatchHonorsDisabledModule()
+QDEBUG : TestRunEngine::testParallelBatchHonorsBreakpoint() Module initialized: "A"
+QDEBUG : TestRunEngine::testParallelBatchHonorsBreakpoint() Module initialized: "Paused"
+QDEBUG : TestRunEngine::testParallelBatchHonorsBreakpoint() Module initialized: "Join"
+PASS   : TestRunEngine::testParallelBatchHonorsBreakpoint()
+QDEBUG : TestRunEngine::testParallelBatchExcludesBlockingModules() Module initialized: "Fork"
+QDEBUG : TestRunEngine::testParallelBatchExcludesBlockingModules() Module initialized: "A"
+QDEBUG : TestRunEngine::testParallelBatchExcludesBlockingModules() Module initialized: "B"
+QDEBUG : TestRunEngine::testParallelBatchExcludesBlockingModules() Module initialized: "C"
+PASS   : TestRunEngine::testParallelBatchExcludesBlockingModules()
+PASS   : TestRunEngine::testSingleton()
+QDEBUG : TestRunEngine::testRunOnce() Module initialized: "TestModule"
+PASS   : TestRunEngine::testRunOnce()
+PASS   : TestRunEngine::testCycleMode()
+QDEBUG : TestRunEngine::testPauseResume() Module initialized: "TestModule"
+PASS   : TestRunEngine::testPauseResume()
+QDEBUG : TestRunEngine::testStop() Module initialized: "TestModule"
+PASS   : TestRunEngine::testStop()
+QDEBUG : TestRunEngine::testStopPropagatesCancellationToRunningModule() Module initialized: "StopAware"
+PASS   : TestRunEngine::testStopPropagatesCancellationToRunningModule()
+QDEBUG : TestRunEngine::testAddModule() Module initialized: "AddTestModule"
+PASS   : TestRunEngine::testAddModule()
+QDEBUG : TestRunEngine::testRemoveModule() Module initialized: "RemoveTestModule"
+PASS   : TestRunEngine::testRemoveModule()
+QDEBUG : TestRunEngine::testClearModules() Module initialized: "Module1"
+QDEBUG : TestRunEngine::testClearModules() Module initialized: "Module2"
+PASS   : TestRunEngine::testClearModules()
+QDEBUG : TestRunEngine::testModuleExecution() Module initialized: "ExecTestModule"
+PASS   : TestRunEngine::testModuleExecution()
+QDEBUG : TestRunEngine::testFailedRunReportsFailureAndPreservesModuleError() Module initialized: "FailingModule"
+PASS   : TestRunEngine::testFailedRunReportsFailureAndPreservesModuleError()
+QDEBUG : TestRunEngine::testFalseControlResultIsNotExecutionFailure() Module initialized: "Condition"
+QDEBUG : TestRunEngine::testFalseControlResultIsNotExecutionFailure() Module initialized: "Body"
+QDEBUG : TestRunEngine::testFalseControlResultIsNotExecutionFailure() Module initialized: "End"
+QDEBUG : TestRunEngine::testFalseControlResultIsNotExecutionFailure() Module initialized: "After"
+PASS   : TestRunEngine::testFalseControlResultIsNotExecutionFailure()
+QDEBUG : TestRunEngine::testConditionalWithoutEndSkipsOneBodyModule() Module initialized: "Condition"
+QDEBUG : TestRunEngine::testConditionalWithoutEndSkipsOneBodyModule() Module initialized: "Body"
+QDEBUG : TestRunEngine::testConditionalWithoutEndSkipsOneBodyModule() Module initialized: "After"
+PASS   : TestRunEngine::testConditionalWithoutEndSkipsOneBodyModule()
+QDEBUG : TestRunEngine::testWhileFalseSkipsLoopBody() Module initialized: "While"
+QDEBUG : TestRunEngine::testWhileFalseSkipsLoopBody() Module initialized: "Body"
+QDEBUG : TestRunEngine::testWhileFalseSkipsLoopBody() Module initialized: "WhileEnd"
+QDEBUG : TestRunEngine::testWhileFalseSkipsLoopBody() Module initialized: "After"
+PASS   : TestRunEngine::testWhileFalseSkipsLoopBody()
+QDEBUG : TestRunEngine::testWhileWithoutEndSkipsOneBodyModule() Module initialized: "While"
+QDEBUG : TestRunEngine::testWhileWithoutEndSkipsOneBodyModule() Module initialized: "Body"
+QDEBUG : TestRunEngine::testWhileWithoutEndSkipsOneBodyModule() Module initialized: "After"
+PASS   : TestRunEngine::testWhileWithoutEndSkipsOneBodyModule()
+QDEBUG : TestRunEngine::testLoopWithoutEndRepeatsOneBodyModule() Module initialized: "Loop"
+QDEBUG : TestRunEngine::testLoopWithoutEndRepeatsOneBodyModule() Module initialized: "Body"
+QDEBUG : TestRunEngine::testLoopWithoutEndRepeatsOneBodyModule() Module initialized: "After"
+PASS   : TestRunEngine::testLoopWithoutEndRepeatsOneBodyModule()
+QWARN  : TestRunEngine::testEmptyCycleDoesNotRemainBusy() QSignalSpy: Unable to handle parameter 'result' of type 'RunResult' of method 'runFinished', use qRegisterMetaType to register it.
+PASS   : TestRunEngine::testEmptyCycleDoesNotRemainBusy()
+QDEBUG : TestRunEngine::testStepOnceExecutesOneModulePerClick() Module initialized: "First"
+QDEBUG : TestRunEngine::testStepOnceExecutesOneModulePerClick() Module initialized: "Second"
+PASS   : TestRunEngine::testStepOnceExecutesOneModulePerClick()
+QDEBUG : TestRunEngine::testStepOnceStoresIntermediateOutputByModule() Module initialized: "First"
+QDEBUG : TestRunEngine::testStepOnceStoresIntermediateOutputByModule() Module initialized: "Second"
+PASS   : TestRunEngine::testStepOnceStoresIntermediateOutputByModule()
+QDEBUG : TestRunEngine::testLoadProjectUsesInstanceIdsForDuplicateModuleNames() Module initialized: "Shared Module"
+QDEBUG : TestRunEngine::testLoadProjectUsesInstanceIdsForDuplicateModuleNames() Module initialized: "Shared Module"
+PASS   : TestRunEngine::testLoadProjectUsesInstanceIdsForDuplicateModuleNames()
+QDEBUG : TestRunEngine::testLoadProjectExecutesInConnectionTopologyOrder() Module initialized: "Third"
+QDEBUG : TestRunEngine::testLoadProjectExecutesInConnectionTopologyOrder() Module initialized: "First"
+QDEBUG : TestRunEngine::testLoadProjectExecutesInConnectionTopologyOrder() Module initialized: "Second"
+PASS   : TestRunEngine::testLoadProjectExecutesInConnectionTopologyOrder()
+QDEBUG : TestRunEngine::testGraphExecutesIsolatedModulesIndependently() Module initialized: "A"
+QDEBUG : TestRunEngine::testGraphExecutesIsolatedModulesIndependently() Module initialized: "C"
+QDEBUG : TestRunEngine::testGraphExecutesIsolatedModulesIndependently() Module initialized: "B"
+PASS   : TestRunEngine::testGraphExecutesIsolatedModulesIndependently()
+QDEBUG : TestRunEngine::testLoadProjectSupportsDisconnectedChains() Module initialized: "A"
+QDEBUG : TestRunEngine::testLoadProjectSupportsDisconnectedChains() Module initialized: "B"
+QDEBUG : TestRunEngine::testLoadProjectSupportsDisconnectedChains() Module initialized: "C"
+QDEBUG : TestRunEngine::testLoadProjectSupportsDisconnectedChains() Module initialized: "D"
+PASS   : TestRunEngine::testLoadProjectSupportsDisconnectedChains()
+QDEBUG : TestRunEngine::testLoadProjectSupportsFanOutAndMerge() Module initialized: "A"
+QDEBUG : TestRunEngine::testLoadProjectSupportsFanOutAndMerge() Module initialized: "B"
+QDEBUG : TestRunEngine::testLoadProjectSupportsFanOutAndMerge() Module initialized: "C"
+QDEBUG : TestRunEngine::testLoadProjectSupportsFanOutAndMerge() Module initialized: "D"
+PASS   : TestRunEngine::testLoadProjectSupportsFanOutAndMerge()
+QDEBUG : TestRunEngine::testLoadProjectRejectsIncompatiblePortTypes() Module initialized: "source"
+QDEBUG : TestRunEngine::testLoadProjectRejectsIncompatiblePortTypes() Module initialized: "target"
+PASS   : TestRunEngine::testLoadProjectRejectsIncompatiblePortTypes()
+QDEBUG : TestRunEngine::testLoadProjectRejectsConnectionWithMissingModule() Module initialized: "Only"
+PASS   : TestRunEngine::testLoadProjectRejectsConnectionWithMissingModule()
+QDEBUG : TestRunEngine::testLoadProjectRejectsConnectionCycle() Module initialized: "Cycle"
+QDEBUG : TestRunEngine::testLoadProjectRejectsConnectionCycle() Module initialized: "Cycle"
+PASS   : TestRunEngine::testLoadProjectRejectsConnectionCycle()
+QDEBUG : TestRunEngine::testModuleExecutionLogsElapsedTime() Module initialized: "TimedModule"
+PASS   : TestRunEngine::testModuleExecutionLogsElapsedTime()
+PASS   : TestRunEngine::testOutputManagement()
+QDEBUG : TestRunEngine::testStatistics() Module initialized: "StatTestModule"
+PASS   : TestRunEngine::testStatistics()
+QDEBUG : TestRunEngine::cleanupTestCase() === TestRunEngine End ===
+PASS   : TestRunEngine::cleanupTestCase()
+Totals: 97 passed, 0 failed, 0 skipped, 0 blacklisted, 3343ms
+********* Finished testing of TestRunEngine *********
+==================
+WARNING: ThreadSanitizer: data race (pid=4061050)
+  Write of size 8 at 0x7b200000c000 by main thread:
+    #0 free ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:711 (libtsan.so.0+0x37ab8)
+    #1 QList<QThreadPoolThread*>::dealloc(QListData::Data*) ../../include/QtCore/../../src/corelib/tools/qlist.h:923 (libQt5Core.so.5+0xb6d39)
+    #2 QList<QThreadPoolThread*>::~QList() ../../include/QtCore/../../src/corelib/tools/qlist.h:874 (libQt5Core.so.5+0xb6d39)
+    #3 QList<QThreadPoolThread*>::operator=(QList<QThreadPoolThread*>&&) ../../include/QtCore/../../src/corelib/tools/qlist.h:167 (libQt5Core.so.5+0xb6d39)
+    #4 QList<QThreadPoolThread*>::clear() ../../include/QtCore/../../src/corelib/tools/qlist.h:930 (libQt5Core.so.5+0xb6d39)
+    #5 QThreadPoolPrivate::reset() thread/qthreadpool.cpp:283 (libQt5Core.so.5+0xb6d39)
+    #6 cxa_at_exit_wrapper ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:397 (libtsan.so.0+0x2cdf4)
+
+  Previous write of size 8 at 0x7b200000c000 by thread T6:
+    #0 realloc ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:685 (libtsan.so.0+0x34179)
+    #1 QListData::realloc_grow(int) tools/qlist.cpp:170 (libQt5Core.so.5+0xf3070)
+
+  As if synchronized via sleep:
+    #0 nanosleep ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:366 (libtsan.so.0+0x6696c)
+    #1 QTestPrivate::qSleep(int) kernel/qtestsupport_core.cpp:58 (libQt5Core.so.5+0x2f4e1d)
+    #2 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:1029 (test_runengine+0x55fa1)
+    #3 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #4 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+  Thread T6 'Thread (pooled)' (tid=4061057, running) created by main thread at:
+    #0 pthread_create ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:969 (libtsan.so.0+0x605b8)
+    #1 QThread::start(QThread::Priority) thread/qthread_unix.cpp:703 (libQt5Core.so.5+0xb3410)
+    #2 TestRunEngine::testParallelExecutesConcurrently() /home/charles/Data/Repo/DeepLux/tests/test_runengine.cpp:1219 (test_runengine+0x27435)
+    #3 TestRunEngine::qt_static_metacall(QObject*, QMetaObject::Call, int, void**) /home/charles/Data/Repo/DeepLux/build-tsan/tests/test_runengine_autogen/include/test_runengine.moc:946 (test_runengine+0x55a1e)
+    #4 QMetaMethod::invoke(QObject*, Qt::ConnectionType, QGenericReturnArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument, QGenericArgument) const kernel/qmetaobject.cpp:2303 (libQt5Core.so.5+0x2a9e90)
+    #5 __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58 (libc.so.6+0x29d8f)
+
+SUMMARY: ThreadSanitizer: data race ../../include/QtCore/../../src/corelib/tools/qlist.h:923 in QList<QThreadPoolThread*>::dealloc(QListData::Data*)
+==================
+ThreadSanitizer: reported 20 warnings
