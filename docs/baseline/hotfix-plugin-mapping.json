@@ -1037,7 +1037,8 @@
       "currentPluginId": "",
       "matchKind": "business_pack",
       "reviewState": "dependency_recorded",
-      "dependencyNote": "业务包插件，依赖 015包膜机 业务线硬件/协议"
+      "dependencyNote": "包膜机整机业务：依赖包膜设备 PLC 运动控制与包膜工位传感器协议；需现场设备联调（本环境无硬件，行为不可验证）",
+      "reviewConclusion": "unverified"
     },
     {
       "legacyPath": "02Plugins/015包膜机/Plugin.EnvelopeTieJiao",
@@ -1047,7 +1048,8 @@
       "currentPluginId": "",
       "matchKind": "business_pack",
       "reviewState": "dependency_recorded",
-      "dependencyNote": "业务包插件，依赖 015包膜机 业务线硬件/协议"
+      "dependencyNote": "包膜机贴胶工位：依赖包膜设备贴胶机构控制与视觉对位协议；需现场设备联调（本环境无硬件，行为不可验证）",
+      "reviewConclusion": "unverified"
     },
     {
       "legacyPath": "02Plugins/016密封钉/Plugin.MPHA",
@@ -1057,7 +1059,8 @@
       "currentPluginId": "",
       "matchKind": "business_pack",
       "reviewState": "dependency_recorded",
-      "dependencyNote": "业务包插件，依赖 016密封钉 业务线硬件/协议"
+      "dependencyNote": "密封钉焊前检测（MPHA）：依赖密封钉焊接工位 3D 相机采集与焊前视觉协议；需现场硬件（本环境无硬件，行为不可验证）",
+      "reviewConclusion": "unverified"
     },
     {
       "legacyPath": "02Plugins/016密封钉/Plugin.SealingPin",
@@ -1067,7 +1070,8 @@
       "currentPluginId": "",
       "matchKind": "business_pack",
       "reviewState": "dependency_recorded",
-      "dependencyNote": "业务包插件，依赖 016密封钉 业务线硬件/协议"
+      "dependencyNote": "密封钉主流程：依赖密封钉组装设备运动控制与检测触发协议；需现场硬件（本环境无硬件，行为不可验证）",
+      "reviewConclusion": "unverified"
     },
     {
       "legacyPath": "02Plugins/016密封钉/Plugin.SealingPinHanHou",
@@ -1077,7 +1081,8 @@
       "currentPluginId": "",
       "matchKind": "business_pack",
       "reviewState": "dependency_recorded",
-      "dependencyNote": "业务包插件，依赖 016密封钉 业务线硬件/协议"
+      "dependencyNote": "密封钉焊后检测：依赖焊后 3D 形貌采集与缺陷判定协议；需现场硬件（本环境无硬件，行为不可验证）",
+      "reviewConclusion": "unverified"
     },
     {
       "legacyPath": "02Plugins/016密封钉/Plugin.SealingPinYuhan",
@@ -1087,7 +1092,8 @@
       "currentPluginId": "",
       "matchKind": "business_pack",
       "reviewState": "dependency_recorded",
-      "dependencyNote": "业务包插件，依赖 016密封钉 业务线硬件/协议"
+      "dependencyNote": "密封钉预焊检测：依赖预焊工位视觉采集与定位协议；需现场硬件（本环境无硬件，行为不可验证）",
+      "reviewConclusion": "unverified"
     },
     {
       "legacyPath": "02Plugins/016密封钉/Plugin.ThreeDimsAI",
@@ -1097,7 +1103,8 @@
       "currentPluginId": "",
       "matchKind": "business_pack",
       "reviewState": "dependency_recorded",
-      "dependencyNote": "业务包插件，依赖 016密封钉 业务线硬件/协议"
+      "dependencyNote": "密封钉 3D AI 检测：依赖 3D 相机点云采集与深度学习推理服务；需现场硬件+模型（本环境无硬件，行为不可验证）",
+      "reviewConclusion": "unverified"
     }
   ]
 }
