@@ -2,6 +2,7 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
+#include <core/base/ModuleBase.h>
 #include <core/interface/IModule.h>
 #include <core/manager/PluginManager.h>
 
@@ -163,7 +164,7 @@ void TestPluginManager::testExecutionMetadataValidation() {
 }
 
 void TestPluginManager::testBlockingMetadataParsedAndInjected() {
-    // G-fix4: execution.blocking 必须被解析并注入模块，且引擎用于排除并行批次
+    // G-fix4 + G2-fix3: execution.blocking 必须被解析、注入模块，删除注入代码本测试应失败
     QTemporaryDir root;
     QVERIFY(root.isValid());
 
@@ -199,6 +200,21 @@ void TestPluginManager::testBlockingMetadataParsedAndInjected() {
 
     const PluginInfo nonBlockingInfo = manager.pluginInfo(QStringLiteral("NonBlockingMod"));
     QVERIFY(!nonBlockingInfo.blocking);
+
+    // G2-fix3: 用真实插件验证 createModule 注入 isBlocking()
+    // SaveData metadata 声明 blocking=true；若删除 PluginManager 的 setBlocking 注入，此断言失败
+    if (manager.pluginInfo(QStringLiteral("SaveData")).blocking) {
+        if (!manager.isPluginLoaded(QStringLiteral("SaveData")))
+            manager.loadPlugin(QStringLiteral("SaveData"), 5000);
+        if (manager.isPluginLoaded(QStringLiteral("SaveData"))) {
+            IModule* mod = manager.createModule(QStringLiteral("SaveData"));
+            QVERIFY(mod != nullptr);
+            auto* mb = qobject_cast<ModuleBase*>(mod);
+            QVERIFY(mb != nullptr);
+            QVERIFY2(mb->isBlocking(), "createModule must inject blocking=true from metadata");
+            delete mod;
+        }
+    }
 }
 
 QTEST_MAIN(TestPluginManager)

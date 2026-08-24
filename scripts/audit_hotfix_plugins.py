@@ -104,8 +104,13 @@ def classify(legacy: dict, current: dict[str, dict]) -> dict:
 
 
 def load_existing_reviews() -> dict[str, dict]:
-    """Load prior review decisions keyed by legacyPlugin so regeneration
-    preserves human review state, conclusions and evidence."""
+    """Load prior review decisions keyed by legacyPath so regeneration
+    preserves human review state, conclusions and evidence.
+
+    G2-fix5: 以 legacyPath 为键（而非 legacyPlugin），并记录当时的候选身份
+    （currentCandidate/currentPluginId/matchKind）。合并时仅当候选身份未变化
+    才继承审核结论，避免候选/ID/匹配类型改变后保留失效的 equivalent。
+    """
     mapping_file = OUTPUT_DIR / "hotfix-plugin-mapping.json"
     if not mapping_file.exists():
         return {}
@@ -115,13 +120,19 @@ def load_existing_reviews() -> dict[str, dict]:
         return {}
     reviews: dict[str, dict] = {}
     for row in payload.get("plugins", []):
-        key = row.get("legacyPlugin")
+        key = row.get("legacyPath")
         if not key:
             continue
         preserved = {}
         for field in ("reviewState", "reviewConclusion", "evidence", "dependencyNote"):
             if field in row:
                 preserved[field] = row[field]
+        # 记录审核时的候选身份，用于合并时校验是否仍有效
+        preserved["_candidateIdentity"] = {
+            "currentCandidate": row.get("currentCandidate", ""),
+            "currentPluginId": row.get("currentPluginId", ""),
+            "matchKind": row.get("matchKind", ""),
+        }
         if preserved:
             reviews[key] = preserved
     return reviews
@@ -157,8 +168,9 @@ def markdown(rows: list[dict]) -> str:
         "",
         "| 审核结论 | 数量 | 含义 |",
         "| --- | ---: | --- |",
-        f"| equivalent | {conclusion_counts.get('equivalent', 0)} | 能力等价 |",
-        f"| partial | {conclusion_counts.get('partial', 0)} | 部分替代（能力有缺失） |",
+        f"| equivalent | {conclusion_counts.get('equivalent', 0)} | 已证明与旧版能力等价（需旧版对照） |",
+        f"| partial | {conclusion_counts.get('partial', 0)} | 当前实现行为已验证，旧版等价未对照 |",
+        f"| unverified | {conclusion_counts.get('unverified', 0)} | 依赖硬件/SDK，行为未验证 |",
         f"| not_equivalent | {conclusion_counts.get('not_equivalent', 0)} | 不等价 |",
         "",
         "完整逐项数据见 `hotfix-plugin-mapping.json`。以下列出需要决策的项目：",
@@ -182,14 +194,33 @@ def main() -> None:
     if len(rows) != 110:
         raise RuntimeError(f"expected 110 legacy plugins, found {len(rows)}")
 
-    # G-fix2: 合并已有审核状态，重跑脚本不丢失人工审核结论
+    # G-fix2 + G2-fix5: 合并已有审核状态，重跑脚本不丢失人工审核结论。
+    # 以 legacyPath 为键；仅当候选身份（候选/ID/匹配类型）未变化时才继承结论，
+    # 否则重置为 pending，避免保留失效的 equivalent。
     existing = load_existing_reviews()
     merged_count = 0
+    invalidated_count = 0
     for row in rows:
-        key = row["legacyPlugin"]
-        if key in existing:
-            row.update(existing[key])
+        key = row["legacyPath"]
+        if key not in existing:
+            continue
+        saved = existing[key]
+        identity = saved.get("_candidateIdentity", {})
+        identity_unchanged = (
+            identity.get("currentCandidate", "") == row["currentCandidate"]
+            and identity.get("currentPluginId", "") == row["currentPluginId"]
+            and identity.get("matchKind", "") == row["matchKind"]
+        )
+        if identity_unchanged:
+            for field in ("reviewState", "reviewConclusion", "evidence", "dependencyNote"):
+                if field in saved:
+                    row[field] = saved[field]
             merged_count += 1
+        else:
+            # 候选身份变化：旧审核结论失效，回退待审
+            row["reviewState"] = "pending"
+            row.pop("reviewConclusion", None)
+            invalidated_count += 1
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     payload = {"repository": REPOSITORY, "commit": COMMIT, "plugins": rows}
@@ -197,7 +228,10 @@ def main() -> None:
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     (OUTPUT_DIR / "hotfix-plugin-mapping.md").write_text(markdown(rows), encoding="utf-8")
-    print(f"wrote {len(rows)} legacy plugin mappings ({merged_count} review states preserved)")
+    print(
+        f"wrote {len(rows)} legacy plugin mappings "
+        f"({merged_count} review states preserved, {invalidated_count} invalidated by candidate change)"
+    )
 
 
 if __name__ == "__main__":

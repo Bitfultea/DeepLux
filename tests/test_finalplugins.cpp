@@ -1,5 +1,7 @@
 #include "core/base/ModuleBase.h"
 #include "core/model/ImageData.h"
+#include "core/geometry/MeasurementData.h"
+#include "core/display/DisplayData.h"
 #include "plugins/image_processing/ImageScript/ImageScriptPlugin.h"
 #include "plugins/system/ShowPoint/ShowPointPlugin.h"
 #include "plugins/geometry/FreeformSurface/FreeformSurfacePlugin.h"
@@ -31,9 +33,10 @@ private slots:
     void testShowPointMissingPointFails();
     void testShowPointCloneIndependent();
 
-    // FreeformSurface（3D 点云依赖，仅契约级验收）
+    // FreeformSurface（3D 点云依赖）
     void testFreeformSurfaceCloneIndependent();
     void testFreeformSurfaceEmptyInputHandled();
+    void testFreeformSurfaceCoplanarPointsLowRoughness();
 };
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -163,6 +166,14 @@ void TestFinalPlugins::testShowPointDrawsMarker() {
     QVERIFY2(result.success, qPrintable(result.userMessage));
     cv::Mat outMat = output.toMat();
     QVERIFY(!outMat.empty());
+
+    // G2-fix2: 验证 (50,50) 处确实绘制了红色标记（原图灰色 128）
+    cv::Vec3b center = outMat.at<cv::Vec3b>(50, 50);
+    QVERIFY2(center[2] > 200, "marker center should be red (R channel high)");  // BGR: [2]=R
+    QVERIFY2(center[0] < 100, "marker center should have low blue");            // [0]=B
+    // 远离标记的点应保持原灰色
+    cv::Vec3b far = outMat.at<cv::Vec3b>(5, 5);
+    QCOMPARE(static_cast<int>(far[0]), 128);
 #else
     QSKIP("OpenCV not available");
 #endif
@@ -222,15 +233,43 @@ void TestFinalPlugins::testFreeformSurfaceEmptyInputHandled() {
     FreeformSurfacePlugin plugin;
     QVERIFY(plugin.initialize());
 
-    // 空输入（无点云）应优雅失败，不崩溃
+    // 空输入（无点云）必须明确失败，不能静默成功
     ImageData input, output;
     PortValueMap inputs;
     inputs.insert(QStringLiteral("image"), QVariant::fromValue(input));
     PortValueMap outputs;
     ExecutionContext ctx;
     const ExecutionResult result = plugin.execute(inputs, outputs, ctx);
-    // 无点云数据时应失败或空输出，不能崩溃
-    Q_UNUSED(result);
+    QVERIFY2(!result.success, "empty point cloud must fail, not silently succeed");
+#else
+    QSKIP("OpenCV not available");
+#endif
+}
+
+void TestFinalPlugins::testFreeformSurfaceCoplanarPointsLowRoughness() {
+#ifdef DEEPLUX_HAS_OPENCV
+    // G2-fix2: 提供共面点云（PointCloudData），验证输出语义（点数/粗糙度≈0）
+    FreeformSurfacePlugin plugin;
+    QVERIFY(plugin.initialize());
+
+    // 构造 z=0 平面上的网格点（完全共面 → 粗糙度应接近 0）
+    PointCloudData cloud;
+    for (int x = 0; x < 10; ++x) {
+        for (int y = 0; y < 10; ++y) {
+            cloud.points.emplace_back(static_cast<double>(x), static_cast<double>(y), 0.0);
+        }
+    }
+    ImageData input;
+    MeasurementData::setPointCloud(input, cloud);
+
+    ImageData output;
+    QJsonObject params{{"samplingInterval", 1.0}};
+    const ExecutionResult result = runModule(plugin, params, input, output);
+    QVERIFY2(result.success, qPrintable(result.userMessage));
+    QCOMPARE(output.data("point_count").toInt(), 100);
+    // 共面点粗糙度应极小
+    QVERIFY2(output.data("surface_roughness").toDouble() < 0.01,
+             "coplanar points must yield near-zero roughness");
 #else
     QSKIP("OpenCV not available");
 #endif

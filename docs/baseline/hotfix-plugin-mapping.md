@@ -21,8 +21,9 @@
 
 | 审核结论 | 数量 | 含义 |
 | --- | ---: | --- |
-| equivalent | 39 | 能力等价 |
-| partial | 11 | 部分替代（能力有缺失） |
+| equivalent | 0 | 已证明与旧版能力等价（需旧版对照） |
+| partial | 46 | 当前实现行为已验证，旧版等价未对照 |
+| unverified | 4 | 依赖硬件/SDK，行为未验证 |
 | not_equivalent | 0 | 不等价 |
 
 完整逐项数据见 `hotfix-plugin-mapping.json`。以下列出需要决策的项目：
@@ -34,7 +35,7 @@
 | CameraReadyWait | `02Plugins/001图像处理/Plugin.CameraReadyWait` | - | missing | - |
 | CropImage | `02Plugins/001图像处理/Plugin.CropImage` | - | missing | - |
 | DepthToGray | `02Plugins/001图像处理/Plugin.DepthToGray` | - | missing | - |
-| DiplayData | `02Plugins/001图像处理/Plugin.DiplayData` | DisplayData | candidate | equivalent |
+| DiplayData | `02Plugins/001图像处理/Plugin.DiplayData` | DisplayData | candidate | partial |
 | ImageMerge | `02Plugins/001图像处理/Plugin.ImageMerge` | - | missing | - |
 | ImageOperation | `02Plugins/001图像处理/Plugin.ImageOperation` | - | missing | - |
 | ShowShape | `02Plugins/001图像处理/Plugin.ShowShape` | - | missing | - |
@@ -49,7 +50,7 @@
 | LabelRegion | `02Plugins/002检测识别/Plugin.LabelRegion` | - | missing | - |
 | Matching1 | `02Plugins/002检测识别/Plugin.Matching1` | - | missing | - |
 | MeasureCircle | `02Plugins/002检测识别/Plugin.MeasureCircle` | - | missing | - |
-| DistanceLL | `02Plugins/003几何测量/Plugin.DistanceLL` | LinesDistance | candidate | equivalent |
+| DistanceLL | `02Plugins/003几何测量/Plugin.DistanceLL` | LinesDistance | candidate | partial |
 | AffineeRegion | `02Plugins/004几何关系/Plugin.AffineeRegion` | - | missing | - |
 | BuildLl | `02Plugins/004几何关系/Plugin.BuildLl` | - | missing | - |
 | FitEllipse | `02Plugins/004几何关系/Plugin.FitEllipse` | - | missing | - |
@@ -57,7 +58,7 @@
 | CalculateOffset | `02Plugins/005坐标标定/Plugin.CalculateOffset` | - | missing | - |
 | Coordinate | `02Plugins/005坐标标定/Plugin.Coordinate` | - | missing | - |
 | MeasureCalib | `02Plugins/005坐标标定/Plugin.MeasureCalib` | NPointCalibration | candidate | partial |
-| NPointCal | `02Plugins/005坐标标定/Plugin.NPointCal` | NPointCalibration | candidate | equivalent |
+| NPointCal | `02Plugins/005坐标标定/Plugin.NPointCal` | NPointCalibration | candidate | partial |
 | CalibrationConversion | `02Plugins/006对位工具/Plugin.CalibrationConversion` | - | missing | - |
 | RotateNewPoint | `02Plugins/006对位工具/Plugin.RotateNewPoint` | - | missing | - |
 | CSharpScript | `02Plugins/007逻辑工具/Plugin.CSharpScript` | - | missing | - |

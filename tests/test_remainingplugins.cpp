@@ -29,6 +29,7 @@ private slots:
 
     // ColorRecognition
     void testColorRecognitionDetectsSolidColor();
+    void testColorRecognitionAbsentColorFails();
     void testColorRecognitionEmptyImageFails();
     void testColorRecognitionCloneIndependent();
 
@@ -159,6 +160,29 @@ void TestRemainingPlugins::testColorRecognitionDetectsSolidColor() {
     ImageData output;
     const ExecutionResult result = runModule(plugin, params, input, output);
     QVERIFY2(result.success, qPrintable(result.userMessage));
+    // G2-fix2: 验证识别结果——整图蓝色，中心点应被检出
+    QVERIFY2(output.hasData("color_center_x"), "must output detected center");
+    QVERIFY2(output.hasData("color_center_y"), "must output detected center");
+    const int cx = output.data("color_center_x").toInt();
+    const int cy = output.data("color_center_y").toInt();
+    QVERIFY2(cx > 0 && cy > 0, "detected center must be within image");
+#else
+    QSKIP("OpenCV not available");
+#endif
+}
+
+void TestRemainingPlugins::testColorRecognitionAbsentColorFails() {
+#ifdef DEEPLUX_HAS_OPENCV
+    ColorRecognitionPlugin plugin;
+    QVERIFY(plugin.initialize());
+
+    // 纯蓝图像但查找红色 → 未检出，应失败
+    ImageData input = makeSolidColorImage(255, 0, 0); // 蓝
+    QJsonObject params{{"targetColor", QStringLiteral("红色")}};
+
+    ImageData output;
+    const ExecutionResult result = runModule(plugin, params, input, output);
+    QVERIFY2(!result.success, "absent target color must fail");
 #else
     QSKIP("OpenCV not available");
 #endif
@@ -211,11 +235,17 @@ void TestRemainingPlugins::testDisplayDataOverlaysText() {
     ImageData output;
     const ExecutionResult result = runModule(plugin, params, input, output);
     QVERIFY2(result.success, qPrintable(result.userMessage));
-    // 输出图像应非空且尺寸一致
     cv::Mat outMat = output.toMat();
     QVERIFY(!outMat.empty());
     QCOMPARE(outMat.cols, 120);
     QCOMPARE(outMat.rows, 120);
+
+    // G2-fix2: 验证文本确实绘制——原图纯色 (50,50,50)，叠加绿色文本后应有像素偏离背景
+    cv::Mat bg(120, 120, CV_8UC3, cv::Scalar(50, 50, 50));
+    cv::Mat diff;
+    cv::absdiff(outMat, bg, diff);
+    QVERIFY2(cv::countNonZero(diff.reshape(1)) > 0,
+             "text overlay must change pixels from the solid background");
 #else
     QSKIP("OpenCV not available");
 #endif

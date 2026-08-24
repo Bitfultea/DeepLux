@@ -42,6 +42,12 @@ bool TimeSlicePlugin::process(const ImageData& input, ImageData& output)
     QString mode = params["mode"].toString();
     m_sliceName = params["sliceName"].toString();
 
+    // G2-fix1: 校验 mode 枚举，未知值不能静默成功
+    if (mode != "Start" && mode != "Stop" && mode != "Reset") {
+        emit errorOccurred(tr("无效的 mode：%1（必须为 Start/Stop/Reset）").arg(mode));
+        return false;
+    }
+
     if (mode == "Start") {
         m_startTime = QDateTime::currentMSecsSinceEpoch();
         // G-fix1: 输出起始时间，供下游 Stop 通过数据边读取
@@ -59,8 +65,22 @@ bool TimeSlicePlugin::process(const ImageData& input, ImageData& output)
             emit errorOccurred(tr("Stop 缺少 timeslice_start_time 输入：请确认上游 Start 节点已连接"));
             return false;
         }
-        m_startTime = startTimeVar.toLongLong();
 
+        // G2-fix1: 校验转换结果——"abc" 等非数值不能静默转为 0
+        bool convOk = false;
+        qint64 startValue = startTimeVar.toLongLong(&convOk);
+        if (!convOk) {
+            emit errorOccurred(tr("timeslice_start_time 不是有效整数：%1").arg(startTimeVar.toString()));
+            return false;
+        }
+
+        // G2-fix1: 校验时间范围——起始时间不能在未来（否则产生负耗时）
+        if (startValue > endTime) {
+            emit errorOccurred(tr("timeslice_start_time(%1) 晚于当前时间(%2)，耗时将为负").arg(startValue).arg(endTime));
+            return false;
+        }
+
+        m_startTime = startValue;
         m_elapsedMs = endTime - m_startTime;
 
         output.setData("timeslice_elapsed_ms", m_elapsedMs);
@@ -81,7 +101,12 @@ bool TimeSlicePlugin::process(const ImageData& input, ImageData& output)
 
 bool TimeSlicePlugin::doValidateParams(const QJsonObject& params, QString& error) const
 {
-    Q_UNUSED(params);
+    // G2-fix1: mode 必须为 Start/Stop/Reset 之一
+    const QString mode = params["mode"].toString();
+    if (mode != "Start" && mode != "Stop" && mode != "Reset") {
+        error = tr("mode 必须为 Start/Stop/Reset，当前为：%1").arg(mode);
+        return false;
+    }
     error.clear();
     return true;
 }
