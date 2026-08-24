@@ -60,6 +60,11 @@ set(TEST_SOURCES
     test_acceptance_flows.cpp
     test_projectmigration.cpp
     test_timeslice.cpp
+    test_queueplugins.cpp
+    test_systemplugins.cpp
+    test_imageplugins.cpp
+    test_remainingplugins.cpp
+    test_finalplugins.cpp
 )
 
 foreach(TEST_FILE ${TEST_SOURCES})
@@ -128,6 +133,21 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
     if(TEST_NAME STREQUAL "test_timeslice")
         target_link_libraries(${TEST_NAME} PRIVATE TimeSlicePlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_queueplugins")
+        target_link_libraries(${TEST_NAME} PRIVATE QueueInPlugin QueueOutPlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_systemplugins")
+        target_link_libraries(${TEST_NAME} PRIVATE DataCheckPlugin SaveDataPlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_imageplugins")
+        target_link_libraries(${TEST_NAME} PRIVATE PerProcessingPlugin MatchingPlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_remainingplugins")
+        target_link_libraries(${TEST_NAME} PRIVATE TableOutPutPlugin ColorRecognitionPlugin DisplayDataPlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_finalplugins")
+        target_link_libraries(${TEST_NAME} PRIVATE ImageScriptPlugin ShowPointPlugin FreeformSurfacePlugin)
     endif()
     if(TEST_NAME STREQUAL "test_clihandler" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE SystemTimePlugin)
