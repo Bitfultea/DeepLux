@@ -1,10 +1,10 @@
 #include "core/base/ModuleBase.h"
-#include "core/model/ImageData.h"
-#include "core/geometry/MeasurementData.h"
 #include "core/display/DisplayData.h"
+#include "core/geometry/MeasurementData.h"
+#include "core/model/ImageData.h"
+#include "plugins/geometry/FreeformSurface/FreeformSurfacePlugin.h"
 #include "plugins/image_processing/ImageScript/ImageScriptPlugin.h"
 #include "plugins/system/ShowPoint/ShowPointPlugin.h"
-#include "plugins/geometry/FreeformSurface/FreeformSurfacePlugin.h"
 
 #include <QJsonObject>
 #include <QVariant>
@@ -48,8 +48,8 @@ static ImageData makeGrayImage(int width = 100, int height = 100) {
 }
 #endif
 
-static ExecutionResult runModule(ModuleBase& plugin, const QJsonObject& params,
-                                 const ImageData& input, ImageData& output) {
+static ExecutionResult runModule(ModuleBase& plugin, const QJsonObject& params, const ImageData& input,
+                                 ImageData& output) {
     plugin.setParams(params);
     PortValueMap inputs;
     inputs.insert(QStringLiteral("image"), QVariant::fromValue(input));
@@ -169,8 +169,8 @@ void TestFinalPlugins::testShowPointDrawsMarker() {
 
     // G2-fix2: 验证 (50,50) 处确实绘制了红色标记（原图灰色 128）
     cv::Vec3b center = outMat.at<cv::Vec3b>(50, 50);
-    QVERIFY2(center[2] > 200, "marker center should be red (R channel high)");  // BGR: [2]=R
-    QVERIFY2(center[0] < 100, "marker center should have low blue");            // [0]=B
+    QVERIFY2(center[2] > 200, "marker center should be red (R channel high)"); // BGR: [2]=R
+    QVERIFY2(center[0] < 100, "marker center should have low blue");           // [0]=B
     // 远离标记的点应保持原灰色
     cv::Vec3b far = outMat.at<cv::Vec3b>(5, 5);
     QCOMPARE(static_cast<int>(far[0]), 128);
@@ -268,8 +268,7 @@ void TestFinalPlugins::testFreeformSurfaceCoplanarPointsLowRoughness() {
     QVERIFY2(result.success, qPrintable(result.userMessage));
     QCOMPARE(output.data("point_count").toInt(), 100);
     // 共面点粗糙度应极小
-    QVERIFY2(output.data("surface_roughness").toDouble() < 0.01,
-             "coplanar points must yield near-zero roughness");
+    QVERIFY2(output.data("surface_roughness").toDouble() < 0.01, "coplanar points must yield near-zero roughness");
 #else
     QSKIP("OpenCV not available");
 #endif

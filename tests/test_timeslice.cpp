@@ -6,8 +6,18 @@
 #include <QThread>
 #include <QVariant>
 #include <QtTest/QtTest>
+#include <chrono>
 
 using namespace DeepLux;
+
+namespace {
+// 与插件实现一致的单调时钟毫秒计数（用于构造测试输入）
+qint64 steadyNowMs() {
+    return static_cast<qint64>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+} // namespace
 
 class TestTimeSlice : public QObject {
     Q_OBJECT
@@ -22,11 +32,15 @@ private slots:
     void testStopFutureStartTimeFails();
     void testUnknownModeFails();
     void testValidateRejectsBadMode();
+    // G3-fix1 新增
+    void testStopZeroStartTimeFails();
+    void testStopNegativeStartTimeFails();
+    void testStartTimeIsMonotonicNotWallClock();
 };
 
 // 辅助：用 ABI v2 execute() 运行 TimeSlice，返回结果与输出载体
-static ExecutionResult runSlice(TimeSlicePlugin& plugin, const QJsonObject& params,
-                                const ImageData& input, ImageData& output) {
+static ExecutionResult runSlice(TimeSlicePlugin& plugin, const QJsonObject& params, const ImageData& input,
+                                ImageData& output) {
     plugin.setParams(params);
     PortValueMap inputs;
     inputs.insert(QStringLiteral("image"), QVariant::fromValue(input));
@@ -54,8 +68,7 @@ void TestTimeSlice::testStartOutputsStartTime() {
 
     QVERIFY2(result.success, qPrintable(result.userMessage));
     // G-fix1: Start 必须输出 timeslice_start_time 供下游 Stop 读取
-    QVERIFY2(output.hasData("timeslice_start_time"),
-             "Start must output timeslice_start_time for downstream Stop");
+    QVERIFY2(output.hasData("timeslice_start_time"), "Start must output timeslice_start_time for downstream Stop");
     QVERIFY(output.data("timeslice_start_time").toLongLong() > 0);
     QCOMPARE(output.data("timeslice_name").toString(), QString("s1"));
 }
@@ -64,9 +77,9 @@ void TestTimeSlice::testStopWithValidStartTimeProducesElapsed() {
     TimeSlicePlugin plugin;
     QVERIFY(plugin.initialize());
 
-    // 模拟上游 Start 已输出起始时间
+    // G3-fix1: 模拟上游 Start 已输出单调时钟起始时间（120ms 前）
     ImageData input;
-    const qint64 startMs = QDateTime::currentMSecsSinceEpoch() - 120; // 120ms 前
+    const qint64 startMs = steadyNowMs() - 120;
     input.setData("timeslice_start_time", startMs);
 
     ImageData output;
@@ -76,7 +89,6 @@ void TestTimeSlice::testStopWithValidStartTimeProducesElapsed() {
     QVERIFY2(result.success, qPrintable(result.userMessage));
     QVERIFY(output.hasData("timeslice_elapsed_ms"));
     const qint64 elapsed = output.data("timeslice_elapsed_ms").toLongLong();
-    // 耗时应 >= 120ms（起始时间在过去），且远小于 Unix 时间戳
     QVERIFY2(elapsed >= 120, qPrintable(QString("elapsed=%1 should be >= 120").arg(elapsed)));
     QVERIFY2(elapsed < 60000, qPrintable(QString("elapsed=%1 unreasonably large").arg(elapsed)));
 }
@@ -133,12 +145,12 @@ void TestTimeSlice::testStopNonNumericStartTimeFails() {
 }
 
 void TestTimeSlice::testStopFutureStartTimeFails() {
-    // G2-fix1: 未来时间戳会产生负耗时，必须拒绝
+    // G2-fix1: 起始时间晚于当前单调时钟会产生负耗时，必须拒绝
     TimeSlicePlugin plugin;
     QVERIFY(plugin.initialize());
 
     ImageData input;
-    const qint64 futureMs = QDateTime::currentMSecsSinceEpoch() + 1000000; // 未来
+    const qint64 futureMs = steadyNowMs() + 1000000; // 未来
     input.setData("timeslice_start_time", futureMs);
     ImageData output;
     QJsonObject params{{"mode", "Stop"}, {"sliceName", "s"}};
@@ -180,6 +192,52 @@ void TestTimeSlice::testValidateRejectsBadMode() {
 
     QJsonObject good{{"mode", "Start"}, {"sliceName", "s"}};
     QVERIFY(plugin.validateParams(good, error));
+}
+
+void TestTimeSlice::testStopZeroStartTimeFails() {
+    // G3-fix1: startValue == 0 必须拒绝（数据损坏），不能产生巨大耗时
+    TimeSlicePlugin plugin;
+    QVERIFY(plugin.initialize());
+
+    ImageData input;
+    input.setData("timeslice_start_time", 0);
+    ImageData output;
+    QJsonObject params{{"mode", "Stop"}, {"sliceName", "s"}};
+    const ExecutionResult result = runSlice(plugin, params, input, output);
+
+    QVERIFY2(!result.success, "zero start time must fail");
+    QVERIFY(!result.userMessage.isEmpty());
+}
+
+void TestTimeSlice::testStopNegativeStartTimeFails() {
+    // G3-fix1: 负起始时间必须拒绝
+    TimeSlicePlugin plugin;
+    QVERIFY(plugin.initialize());
+
+    ImageData input;
+    input.setData("timeslice_start_time", -12345);
+    ImageData output;
+    QJsonObject params{{"mode", "Stop"}, {"sliceName", "s"}};
+    const ExecutionResult result = runSlice(plugin, params, input, output);
+
+    QVERIFY2(!result.success, "negative start time must fail");
+    QVERIFY(!result.userMessage.isEmpty());
+}
+
+void TestTimeSlice::testStartTimeIsMonotonicNotWallClock() {
+    // G3-fix1: Start 输出的起始时间应为单调时钟计数（远小于 Unix 毫秒时间戳）
+    TimeSlicePlugin plugin;
+    QVERIFY(plugin.initialize());
+
+    ImageData input, output;
+    QJsonObject params{{"mode", "Start"}, {"sliceName", "s"}};
+    QVERIFY(runSlice(plugin, params, input, output).success);
+
+    const qint64 startTime = output.data("timeslice_start_time").toLongLong();
+    QVERIFY2(startTime > 0, "monotonic start time must be positive");
+    // 单调时钟计数（进程启动以来）远小于 Unix 毫秒时间戳（~1.7e12）
+    const qint64 wallClockMs = QDateTime::currentMSecsSinceEpoch();
+    QVERIFY2(startTime < wallClockMs, "start time should be steady_clock count, not wall clock");
 }
 
 QTEST_MAIN(TestTimeSlice)

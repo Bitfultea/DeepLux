@@ -1,21 +1,20 @@
-#include <QtTest/QtTest>
-
-#include <core/interface/IModule.h>
-#include <core/manager/PluginManager.h>
-
 #include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
-#include <QJsonDocument>
 #include <QSet>
 #include <QTemporaryDir>
 #include <QVariant>
 #include <QWidget>
-#include <QDirIterator>
+#include <QtTest/QtTest>
+#include <core/base/ModuleBase.h>
+#include <core/interface/IModule.h>
+#include <core/manager/PluginManager.h>
 
 using namespace DeepLux;
 
@@ -51,6 +50,9 @@ private slots:
     void testMissingRequiredInputReturnsStructuredError();
     void testWrongPortTypeReturnsStructuredError();
     void testDeclaredOutputsAreExported();
+
+    // 阶段 G：execution 标记注入
+    void testBlockingInjectedIntoCreatedModule();
 
 private:
     struct PluginEntry {
@@ -94,7 +96,7 @@ void TestPluginParameterContracts::cleanupTestCase() {
 
 bool TestPluginParameterContracts::installAllPlugins() {
     const QString srcRoot = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../src/plugins");
-    const QString libDir  = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../lib");
+    const QString libDir = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../lib");
     const QString pluginRoot = m_tempDir.filePath("plugins");
 
     // Scan for all metadata.json under src/plugins
@@ -112,13 +114,16 @@ bool TestPluginParameterContracts::installAllPlugins() {
 
     for (const QFileInfo& meta : metas) {
         QFile f(meta.filePath());
-        if (!f.open(QIODevice::ReadOnly)) continue;
+        if (!f.open(QIODevice::ReadOnly))
+            continue;
         QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
         f.close();
-        if (!doc.isObject()) continue;
+        if (!doc.isObject())
+            continue;
         QJsonObject json = doc.object();
         QString name = json.value("name").toString();
-        if (name.isEmpty()) continue;
+        if (name.isEmpty())
+            continue;
 
         // Try to find matching .so: lib<name>Plugin.so or lib<dirName>Plugin.so
         const QString dirName = meta.dir().dirName();
@@ -152,18 +157,29 @@ bool TestPluginParameterContracts::installAllPlugins() {
 
 QVariant TestPluginParameterContracts::replacementValue(const QString& key, const QJsonValue& value) const {
     // Pick a replacement value different from default to test clone independence
-    if (key == "fitMethod")   return QString("LS");
-    if (key == "operation")   return QString("Subtract");
-    if (key == "stringSource") return QString("Input");
-    if (key == "maxAngle")    return 120.0;
-    if (key == "matchThreshold") return 0.65;
-    if (key == "grabSource")  return QString("Camera");
-    if (key == "grabTimeout") return 3000;
+    if (key == "fitMethod")
+        return QString("LS");
+    if (key == "operation")
+        return QString("Subtract");
+    if (key == "stringSource")
+        return QString("Input");
+    if (key == "maxAngle")
+        return 120.0;
+    if (key == "matchThreshold")
+        return 0.65;
+    if (key == "grabSource")
+        return QString("Camera");
+    if (key == "grabTimeout")
+        return 3000;
 
-    if (value.isString())  return value.toString() + "_x";
-    if (value.isBool())    return !value.toBool();
-    if (value.isDouble())  return value.toDouble() + 17.0;
-    if (value.isObject())  return value.toObject();  // keep as-is for nested
+    if (value.isString())
+        return value.toString() + "_x";
+    if (value.isBool())
+        return !value.toBool();
+    if (value.isDouble())
+        return value.toDouble() + 17.0;
+    if (value.isObject())
+        return value.toObject(); // keep as-is for nested
     return QVariant("test");
 }
 
@@ -183,15 +199,13 @@ void TestPluginParameterContracts::testDefaultParamsValidate() {
         const QJsonObject params = module->currentParams();
         QString error;
         if (!module->validateParams(params, error)) {
-            failures << QString("%1: validateParams failed for defaults: %2")
-                        .arg(entry.name, error);
+            failures << QString("%1: validateParams failed for defaults: %2").arg(entry.name, error);
         }
         delete module;
     }
 
     if (!failures.isEmpty()) {
-        QFAIL(qPrintable(QString("Default params validation failures:\n  - %1")
-                             .arg(failures.join("\n  - "))));
+        QFAIL(qPrintable(QString("Default params validation failures:\n  - %1").arg(failures.join("\n  - "))));
     }
 }
 
@@ -203,7 +217,8 @@ void TestPluginParameterContracts::testClonePreservesParams() {
     QStringList failures;
     for (const auto& entry : m_entries) {
         IModule* original = PluginManager::instance().createModule(entry.name);
-        if (!original) continue;
+        if (!original)
+            continue;
 
         const QJsonObject defaults = original->currentParams();
         if (defaults.isEmpty()) {
@@ -229,9 +244,8 @@ void TestPluginParameterContracts::testClonePreservesParams() {
         for (auto it = defaults.begin(); it != defaults.end(); ++it) {
             if (cloneParams.value(it.key()) != it.value()) {
                 failures << QString("%1: clone lost param '%2' (orig=%3, clone=%4)")
-                            .arg(entry.name, it.key(),
-                                 it.value().toVariant().toString(),
-                                 cloneParams.value(it.key()).toVariant().toString());
+                                .arg(entry.name, it.key(), it.value().toVariant().toString(),
+                                     cloneParams.value(it.key()).toVariant().toString());
             }
         }
 
@@ -249,8 +263,7 @@ void TestPluginParameterContracts::testClonePreservesParams() {
     }
 
     if (!failures.isEmpty()) {
-        QFAIL(qPrintable(QString("Clone parameter preservation failures:\n  - %1")
-                             .arg(failures.join("\n  - "))));
+        QFAIL(qPrintable(QString("Clone parameter preservation failures:\n  - %1").arg(failures.join("\n  - "))));
     }
 }
 
@@ -264,10 +277,12 @@ void TestPluginParameterContracts::testSchemaKeysExistInDefaultParams() {
         PluginInfo info = PluginManager::instance().pluginInfo(entry.name);
         QJsonObject ui = info.ui;
         QJsonObject paramsSchema = ui.value("parameters").toObject();
-        if (paramsSchema.isEmpty()) continue;  // No schema = uses createConfigWidget()
+        if (paramsSchema.isEmpty())
+            continue; // No schema = uses createConfigWidget()
 
         IModule* module = PluginManager::instance().createModule(entry.name);
-        if (!module) continue;
+        if (!module)
+            continue;
         const QJsonObject defaults = module->defaultParams();
 
         for (auto it = paramsSchema.begin(); it != paramsSchema.end(); ++it) {
@@ -280,8 +295,7 @@ void TestPluginParameterContracts::testSchemaKeysExistInDefaultParams() {
     }
 
     if (!failures.isEmpty()) {
-        QFAIL(qPrintable(QString("Schema key mismatches:\n  - %1")
-                             .arg(failures.join("\n  - "))));
+        QFAIL(qPrintable(QString("Schema key mismatches:\n  - %1").arg(failures.join("\n  - "))));
     }
 }
 
@@ -310,7 +324,7 @@ void TestPluginParameterContracts::testNonInternalParamsHaveSchema() {
                 }
                 delete mod;
                 if (!hasVisibleParams) {
-                    continue;  // No params = no schema needed
+                    continue; // No params = no schema needed
                 }
             }
             failures << QString("%1: no ui.parameters schema (uses createConfigWidget exclusively)").arg(entry.name);
@@ -318,12 +332,14 @@ void TestPluginParameterContracts::testNonInternalParamsHaveSchema() {
         }
 
         IModule* module = PluginManager::instance().createModule(entry.name);
-        if (!module) continue;
+        if (!module)
+            continue;
         const QJsonObject defaults = module->defaultParams();
 
         for (auto it = defaults.begin(); it != defaults.end(); ++it) {
             const QString& key = it.key();
-            if (key.startsWith('_')) continue;  // internal param
+            if (key.startsWith('_'))
+                continue; // internal param
 
             if (!paramsSchema.contains(key)) {
                 failures << QString("%1: param '%2' missing from ui.parameters schema").arg(entry.name, key);
@@ -333,8 +349,7 @@ void TestPluginParameterContracts::testNonInternalParamsHaveSchema() {
     }
 
     if (!failures.isEmpty()) {
-        QFAIL(qPrintable(QString("Missing schema entries:\n  - %1")
-                             .arg(failures.join("\n  - "))));
+        QFAIL(qPrintable(QString("Missing schema entries:\n  - %1").arg(failures.join("\n  - "))));
     }
 }
 
@@ -347,17 +362,20 @@ void TestPluginParameterContracts::testEnumDefaultsValid() {
     for (const auto& entry : m_entries) {
         PluginInfo info = PluginManager::instance().pluginInfo(entry.name);
         QJsonObject paramsSchema = info.ui.value("parameters").toObject();
-        if (paramsSchema.isEmpty()) continue;
+        if (paramsSchema.isEmpty())
+            continue;
 
         IModule* module = PluginManager::instance().createModule(entry.name);
-        if (!module) continue;
+        if (!module)
+            continue;
         const QJsonObject defaults = module->defaultParams();
 
         for (auto it = paramsSchema.begin(); it != paramsSchema.end(); ++it) {
             const QString& key = it.key();
             QJsonObject schema = it.value().toObject();
             QJsonArray options = schema.value("_options").toArray();
-            if (options.isEmpty()) continue;  // Not an enum
+            if (options.isEmpty())
+                continue; // Not an enum
 
             QJsonValue defaultVal = defaults.value(key);
             bool found = false;
@@ -374,15 +392,14 @@ void TestPluginParameterContracts::testEnumDefaultsValid() {
             }
             if (!found) {
                 failures << QString("%1: default value '%2' for '%3' not in _options")
-                            .arg(entry.name, defaultVal.toVariant().toString(), key);
+                                .arg(entry.name, defaultVal.toVariant().toString(), key);
             }
         }
         delete module;
     }
 
     if (!failures.isEmpty()) {
-        QFAIL(qPrintable(QString("Invalid enum defaults:\n  - %1")
-                             .arg(failures.join("\n  - "))));
+        QFAIL(qPrintable(QString("Invalid enum defaults:\n  - %1").arg(failures.join("\n  - "))));
     }
 }
 
@@ -395,10 +412,12 @@ void TestPluginParameterContracts::testNumericDefaultsInRange() {
     for (const auto& entry : m_entries) {
         PluginInfo info = PluginManager::instance().pluginInfo(entry.name);
         QJsonObject paramsSchema = info.ui.value("parameters").toObject();
-        if (paramsSchema.isEmpty()) continue;
+        if (paramsSchema.isEmpty())
+            continue;
 
         IModule* module = PluginManager::instance().createModule(entry.name);
-        if (!module) continue;
+        if (!module)
+            continue;
         const QJsonObject defaults = module->defaultParams();
 
         for (auto it = paramsSchema.begin(); it != paramsSchema.end(); ++it) {
@@ -406,7 +425,8 @@ void TestPluginParameterContracts::testNumericDefaultsInRange() {
             QJsonObject schema = it.value().toObject();
 
             QJsonValue defaultVal = defaults.value(key);
-            if (!defaultVal.isDouble()) continue;  // Only check numeric params
+            if (!defaultVal.isDouble())
+                continue; // Only check numeric params
 
             double dv = defaultVal.toDouble();
 
@@ -414,8 +434,7 @@ void TestPluginParameterContracts::testNumericDefaultsInRange() {
             if (schema.contains("min")) {
                 double mn = schema.value("min").toDouble();
                 if (dv < mn) {
-                    failures << QString("%1: default %2=%3 below min %4")
-                                .arg(entry.name, key).arg(dv).arg(mn);
+                    failures << QString("%1: default %2=%3 below min %4").arg(entry.name, key).arg(dv).arg(mn);
                 }
             }
 
@@ -423,8 +442,7 @@ void TestPluginParameterContracts::testNumericDefaultsInRange() {
             if (schema.contains("max")) {
                 double mx = schema.value("max").toDouble();
                 if (dv > mx) {
-                    failures << QString("%1: default %2=%3 above max %4")
-                                .arg(entry.name, key).arg(dv).arg(mx);
+                    failures << QString("%1: default %2=%3 above max %4").arg(entry.name, key).arg(dv).arg(mx);
                 }
             }
 
@@ -437,7 +455,10 @@ void TestPluginParameterContracts::testNumericDefaultsInRange() {
                 double stepScaled = step * pow10;
                 if (std::abs(stepScaled - std::round(stepScaled)) > 1e-9) {
                     failures << QString("%1: step %2 not expressible with decimals %3 for '%4'")
-                                .arg(entry.name).arg(step).arg(decimals).arg(key);
+                                    .arg(entry.name)
+                                    .arg(step)
+                                    .arg(decimals)
+                                    .arg(key);
                 }
             }
         }
@@ -445,8 +466,7 @@ void TestPluginParameterContracts::testNumericDefaultsInRange() {
     }
 
     if (!failures.isEmpty()) {
-        QFAIL(qPrintable(QString("Numeric range failures:\n  - %1")
-                             .arg(failures.join("\n  - "))));
+        QFAIL(qPrintable(QString("Numeric range failures:\n  - %1").arg(failures.join("\n  - "))));
     }
 }
 
@@ -514,7 +534,7 @@ void TestPluginParameterContracts::testMissingRequiredInputReturnsStructuredErro
     IModule* module = PluginManager::instance().createModule(QStringLiteral("FitLine"));
     QVERIFY(module != nullptr);
 
-    PortValueMap inputs;   // 空：缺少必需 fit_points
+    PortValueMap inputs; // 空：缺少必需 fit_points
     PortValueMap outputs;
     ExecutionContext ctx;
     const ExecutionResult result = module->execute(inputs, outputs, ctx);
@@ -558,6 +578,40 @@ void TestPluginParameterContracts::testDeclaredOutputsAreExported() {
     QVERIFY(outputs.contains(QStringLiteral("distance")));
     QVERIFY(qAbs(outputs.value(QStringLiteral("distance")).toDouble() - 268.3281573) < 0.001);
     delete module;
+}
+
+void TestPluginParameterContracts::testBlockingInjectedIntoCreatedModule() {
+    // G3-fix2: createModule 必须把 metadata execution.blocking 注入模块实例。
+    // 强制断言：找一个声明 blocking=true 的插件，验证 isBlocking() 为 true；
+    // 找一个 blocking=false 的，验证 isBlocking() 为 false。
+    // 若删除 PluginManager::createModule 的 setBlocking 注入，本测试失败。
+    QString blockingPlugin, nonBlockingPlugin;
+    for (const PluginEntry& entry : m_entries) {
+        const PluginInfo info = PluginManager::instance().pluginInfo(entry.name);
+        if (info.blocking && blockingPlugin.isEmpty())
+            blockingPlugin = entry.name;
+        if (!info.blocking && !info.inputPorts.isEmpty() && nonBlockingPlugin.isEmpty())
+            nonBlockingPlugin = entry.name;
+    }
+
+    QVERIFY2(!blockingPlugin.isEmpty(), "at least one plugin must declare execution.blocking=true (e.g. SaveData)");
+    IModule* bmod = PluginManager::instance().createModule(blockingPlugin);
+    QVERIFY2(bmod != nullptr, qPrintable(QString("createModule(%1) must succeed").arg(blockingPlugin)));
+    auto* bbase = qobject_cast<ModuleBase*>(bmod);
+    QVERIFY(bbase != nullptr);
+    QVERIFY2(bbase->isBlocking(),
+             qPrintable(QString("createModule(%1) must inject blocking=true").arg(blockingPlugin)));
+    delete bmod;
+
+    if (!nonBlockingPlugin.isEmpty()) {
+        IModule* nmod = PluginManager::instance().createModule(nonBlockingPlugin);
+        QVERIFY(nmod != nullptr);
+        auto* nbase = qobject_cast<ModuleBase*>(nmod);
+        QVERIFY(nbase != nullptr);
+        QVERIFY2(!nbase->isBlocking(),
+                 qPrintable(QString("createModule(%1) must inject blocking=false").arg(nonBlockingPlugin)));
+        delete nmod;
+    }
 }
 
 QTEST_MAIN(TestPluginParameterContracts)

@@ -211,7 +211,7 @@
       "matchKind": "direct",
       "reviewState": "reviewed",
       "reviewConclusion": "partial",
-      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认；行为测试：test_remainingplugins 3 用例（颜色检测/空图/clone）"
+      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认；行为测试：test_remainingplugins 4 用例（颜色检测/空图/clone）"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.CreatePoints",
@@ -637,7 +637,7 @@
       "matchKind": "direct",
       "reviewState": "reviewed",
       "reviewConclusion": "partial",
-      "evidence": "direct 名称匹配；G-fix1 修正 Start/Stop 时间传递（Start 输出 timeslice_start_time，Stop 缺失时报错），test_timeslice 6 用例验证；行为测试：test_timeslice 6 用例（G-fix1 修正 Start/Stop 时间传递）；当前实现行为已通过测试，但与旧版参数/端口/结果等价未对照"
+      "evidence": "direct 名称匹配；G-fix1 修正 Start/Stop 时间传递（Start 输出 timeslice_start_time，Stop 缺失时报错），test_timeslice 6 用例验证；行为测试：test_timeslice 11 用例（G-fix1 修正 Start/Stop 时间传递）；当前实现行为已通过测试，但与旧版参数/端口/结果等价未对照"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.WriteText",
@@ -913,7 +913,7 @@
       "matchKind": "direct",
       "reviewState": "reviewed",
       "reviewConclusion": "partial",
-      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认；行为测试：test_finalplugins 2 用例（clone/空输入，3D 点云契约级）"
+      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认；行为测试：test_finalplugins 3 用例（clone/空输入，3D 点云契约级）"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.GSD",

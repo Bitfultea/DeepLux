@@ -397,6 +397,7 @@ private slots:
     void testParallelSingleThreadFailureDoesNotDeadlock();
     void testParallelBatchHonorsDisabledModule();
     void testParallelBatchHonorsBreakpoint();
+    void testParallelBatchExcludesBlockingModules();
     void init();
     void cleanup();
 
@@ -3658,6 +3659,45 @@ protected:
     }
 };
 
+// G3-fix2: 线程安全但阻塞的模块（模拟文件 I/O）——不应进入并行批次
+class BlockingSleepModule : public ModuleBase {
+    Q_OBJECT
+public:
+    int sleepMs = 50;
+    explicit BlockingSleepModule(const QString& name, int ms = 50) : sleepMs(ms) {
+        m_moduleId = QStringLiteral("com.deeplux.test.blocking.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+        setThreadSafe(true);
+        setBlocking(true); // 关键：阻塞标记
+        PortSpec out;
+        out.id = "image";
+        out.displayName = "image";
+        out.type = DataType::Image2D;
+        setPorts({}, {out});
+    }
+    QList<PortSpec> outputPorts() const override {
+        PortSpec out;
+        out.id = "image";
+        out.displayName = "image";
+        out.type = DataType::Image2D;
+        return {out};
+    }
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::Sequential;
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        QThread::msleep(sleepMs);
+        output = input;
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
+
 void TestRunEngine::testParallelBatchExecutesConcurrently() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
@@ -3705,6 +3745,59 @@ void TestRunEngine::testParallelBatchExecutesConcurrently() {
     QVERIFY2(result.elapsedMs < 200, qPrintable(QString("parallel should be < 200ms, got %1").arg(result.elapsedMs)));
     QVERIFY2(engine.lastParallelMaxConcurrency() >= 2,
              qPrintable(QString("max concurrency should be >= 2, got %1").arg(engine.lastParallelMaxConcurrency())));
+    engine.clearModules();
+    engine.setParallelThreadCount(1);
+}
+
+void TestRunEngine::testParallelBatchExcludesBlockingModules() {
+    // G3-fix2: 阻塞模块（即使线程安全）不得进入并行批次，必须串行执行。
+    // 同样的 Fork→A,B→C 结构，但 A、B 为 blocking：并发度应 <=1，耗时为串行之和。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(2);
+
+    Project project;
+    ModuleInstance fork;
+    fork.id = QStringLiteral("Fork");
+    fork.moduleId = fork.id;
+    ModuleInstance a;
+    a.id = "A";
+    a.moduleId = "A";
+    ModuleInstance b;
+    b.id = "B";
+    b.moduleId = "B";
+    ModuleInstance c;
+    c.id = "C";
+    c.moduleId = "C";
+    project.addModule(fork);
+    project.addModule(a);
+    project.addModule(b);
+    project.addModule(c);
+    project.addConnection(controlConnection("Fork", "branch", "A"));
+    project.addConnection(controlConnection("Fork", "branch", "B"));
+    project.addConnection(controlConnection("A", "next", "C"));
+    project.addConnection(controlConnection("B", "next", "C"));
+
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == "Fork")
+            return new ParallelForkModule(inst.id);
+        if (inst.id == "C")
+            return new ControlJoinAllModule(inst.id);
+        // A、B 线程安全但阻塞：不应并行
+        return new BlockingSleepModule(inst.id, 100);
+    }));
+
+    RunResult result;
+    QMetaObject::Connection conn =
+        connect(&engine, &RunEngine::runFinished, this, [&result](const RunResult& r) { result = r; });
+    engine.runOnce();
+    disconnect(conn);
+
+    QVERIFY(result.success);
+    // 阻塞模块串行：A(100)+B(100) 应约 200ms，不应并行成 100ms
+    QVERIFY2(engine.lastParallelMaxConcurrency() <= 1,
+             qPrintable(QString("blocking modules must not be parallelized, max concurrency=%1")
+                            .arg(engine.lastParallelMaxConcurrency())));
     engine.clearModules();
     engine.setParallelThreadCount(1);
 }

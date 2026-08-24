@@ -200,21 +200,8 @@ void TestPluginManager::testBlockingMetadataParsedAndInjected() {
 
     const PluginInfo nonBlockingInfo = manager.pluginInfo(QStringLiteral("NonBlockingMod"));
     QVERIFY(!nonBlockingInfo.blocking);
-
-    // G2-fix3: 用真实插件验证 createModule 注入 isBlocking()
-    // SaveData metadata 声明 blocking=true；若删除 PluginManager 的 setBlocking 注入，此断言失败
-    if (manager.pluginInfo(QStringLiteral("SaveData")).blocking) {
-        if (!manager.isPluginLoaded(QStringLiteral("SaveData")))
-            manager.loadPlugin(QStringLiteral("SaveData"), 5000);
-        if (manager.isPluginLoaded(QStringLiteral("SaveData"))) {
-            IModule* mod = manager.createModule(QStringLiteral("SaveData"));
-            QVERIFY(mod != nullptr);
-            auto* mb = qobject_cast<ModuleBase*>(mod);
-            QVERIFY(mb != nullptr);
-            QVERIFY2(mb->isBlocking(), "createModule must inject blocking=true from metadata");
-            delete mod;
-        }
-    }
+    // createModule 注入 isBlocking() 的验证见 test_pluginparametercontracts
+    // （该测试通过 installAllPlugins 可靠加载真实插件）
 }
 
 QTEST_MAIN(TestPluginManager)

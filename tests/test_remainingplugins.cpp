@@ -1,8 +1,8 @@
 #include "core/base/ModuleBase.h"
 #include "core/model/ImageData.h"
-#include "plugins/system/TableOutPut/TableOutPutPlugin.h"
 #include "plugins/detection/ColorRecognition/ColorRecognitionPlugin.h"
 #include "plugins/image_processing/DisplayData/DisplayDataPlugin.h"
+#include "plugins/system/TableOutPut/TableOutPutPlugin.h"
 
 #include <QJsonObject>
 #include <QVariant>
@@ -48,8 +48,8 @@ static ImageData makeSolidColorImage(int b, int g, int r, int width = 120, int h
 }
 #endif
 
-static ExecutionResult runModule(ModuleBase& plugin, const QJsonObject& params,
-                                 const ImageData& input, ImageData& output) {
+static ExecutionResult runModule(ModuleBase& plugin, const QJsonObject& params, const ImageData& input,
+                                 ImageData& output) {
     plugin.setParams(params);
     PortValueMap inputs;
     inputs.insert(QStringLiteral("image"), QVariant::fromValue(input));
@@ -229,8 +229,8 @@ void TestRemainingPlugins::testDisplayDataOverlaysText() {
     QVERIFY(plugin.initialize());
 
     ImageData input = makeSolidColorImage(50, 50, 50);
-    QJsonObject params{{"displayText", QStringLiteral("HELLO")}, {"positionX", 10},
-                       {"positionY", 30}, {"fontSize", 16}};
+    QJsonObject params{
+        {"displayText", QStringLiteral("HELLO")}, {"positionX", 10}, {"positionY", 30}, {"fontSize", 16}};
 
     ImageData output;
     const ExecutionResult result = runModule(plugin, params, input, output);
@@ -244,8 +244,7 @@ void TestRemainingPlugins::testDisplayDataOverlaysText() {
     cv::Mat bg(120, 120, CV_8UC3, cv::Scalar(50, 50, 50));
     cv::Mat diff;
     cv::absdiff(outMat, bg, diff);
-    QVERIFY2(cv::countNonZero(diff.reshape(1)) > 0,
-             "text overlay must change pixels from the solid background");
+    QVERIFY2(cv::countNonZero(diff.reshape(1)) > 0, "text overlay must change pixels from the solid background");
 #else
     QSKIP("OpenCV not available");
 #endif
@@ -257,8 +256,7 @@ void TestRemainingPlugins::testDisplayDataEmptyImageFails() {
     QVERIFY(plugin.initialize());
 
     ImageData input; // 空
-    QJsonObject params{{"displayText", QStringLiteral("X")}, {"positionX", 5},
-                       {"positionY", 15}, {"fontSize", 12}};
+    QJsonObject params{{"displayText", QStringLiteral("X")}, {"positionX", 5}, {"positionY", 15}, {"fontSize", 12}};
 
     ImageData output;
     const ExecutionResult result = runModule(plugin, params, input, output);
@@ -271,8 +269,7 @@ void TestRemainingPlugins::testDisplayDataEmptyImageFails() {
 void TestRemainingPlugins::testDisplayDataCloneIndependent() {
     DisplayDataPlugin plugin;
     QVERIFY(plugin.initialize());
-    QJsonObject params{{"displayText", QStringLiteral("ABC")}, {"positionX", 7},
-                       {"positionY", 8}, {"fontSize", 20}};
+    QJsonObject params{{"displayText", QStringLiteral("ABC")}, {"positionX", 7}, {"positionY", 8}, {"fontSize", 20}};
     plugin.setParams(params);
 
     IModule* clone = plugin.clone();
