@@ -103,8 +103,36 @@ def classify(legacy: dict, current: dict[str, dict]) -> dict:
     }
 
 
+def load_existing_reviews() -> dict[str, dict]:
+    """Load prior review decisions keyed by legacyPlugin so regeneration
+    preserves human review state, conclusions and evidence."""
+    mapping_file = OUTPUT_DIR / "hotfix-plugin-mapping.json"
+    if not mapping_file.exists():
+        return {}
+    try:
+        payload = json.loads(mapping_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    reviews: dict[str, dict] = {}
+    for row in payload.get("plugins", []):
+        key = row.get("legacyPlugin")
+        if not key:
+            continue
+        preserved = {}
+        for field in ("reviewState", "reviewConclusion", "evidence", "dependencyNote"):
+            if field in row:
+                preserved[field] = row[field]
+        if preserved:
+            reviews[key] = preserved
+    return reviews
+
+
 def markdown(rows: list[dict]) -> str:
     counts = Counter(row["matchKind"] for row in rows)
+    review_counts = Counter(row.get("reviewState", "pending") for row in rows)
+    conclusion_counts = Counter(
+        row.get("reviewConclusion", "-") for row in rows if row.get("reviewState") == "reviewed"
+    )
     lines = [
         "# Hotfix 插件映射清单",
         "",
@@ -112,6 +140,7 @@ def markdown(rows: list[dict]) -> str:
         f"- 固定提交：`{COMMIT}`",
         f"- 生成命令：`python3 scripts/audit_hotfix_plugins.py`",
         "- 说明：`direct` 仅代表规范化名称相同；它不是参数、数据契约或运行结果等价的证明。",
+        "- 重跑脚本会保留已有 `reviewState`/`reviewConclusion`/`evidence` 字段（见 `load_existing_reviews`）。",
         "",
         "| 状态 | 数量 | 含义 |",
         "| --- | ---: | --- |",
@@ -120,15 +149,28 @@ def markdown(rows: list[dict]) -> str:
         f"| missing | {counts['missing']} | 当前没有候选实现 |",
         f"| business_pack | {counts['business_pack']} | 业务专用插件，作为可选业务包评审 |",
         "",
+        "| 审核状态 | 数量 |",
+        "| --- | ---: |",
+        f"| reviewed | {review_counts.get('reviewed', 0)} |",
+        f"| dependency_recorded | {review_counts.get('dependency_recorded', 0)} |",
+        f"| pending | {review_counts.get('pending', 0)} |",
+        "",
+        "| 审核结论 | 数量 | 含义 |",
+        "| --- | ---: | --- |",
+        f"| equivalent | {conclusion_counts.get('equivalent', 0)} | 能力等价 |",
+        f"| partial | {conclusion_counts.get('partial', 0)} | 部分替代（能力有缺失） |",
+        f"| not_equivalent | {conclusion_counts.get('not_equivalent', 0)} | 不等价 |",
+        "",
         "完整逐项数据见 `hotfix-plugin-mapping.json`。以下列出需要决策的项目：",
         "",
-        "| 旧版插件 | 旧版目录 | 当前候选 | 状态 |",
-        "| --- | --- | --- | --- |",
+        "| 旧版插件 | 旧版目录 | 当前候选 | 状态 | 审核结论 |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for row in rows:
         if row["matchKind"] != "direct":
+            conclusion = row.get("reviewConclusion", "-")
             lines.append(
-                f"| {row['legacyPlugin']} | `{row['legacyPath']}` | {row['currentCandidate'] or '-'} | {row['matchKind']} |"
+                f"| {row['legacyPlugin']} | `{row['legacyPath']}` | {row['currentCandidate'] or '-'} | {row['matchKind']} | {conclusion} |"
             )
     lines.append("")
     return "\n".join(lines)
@@ -140,13 +182,22 @@ def main() -> None:
     if len(rows) != 110:
         raise RuntimeError(f"expected 110 legacy plugins, found {len(rows)}")
 
+    # G-fix2: 合并已有审核状态，重跑脚本不丢失人工审核结论
+    existing = load_existing_reviews()
+    merged_count = 0
+    for row in rows:
+        key = row["legacyPlugin"]
+        if key in existing:
+            row.update(existing[key])
+            merged_count += 1
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     payload = {"repository": REPOSITORY, "commit": COMMIT, "plugins": rows}
     (OUTPUT_DIR / "hotfix-plugin-mapping.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     (OUTPUT_DIR / "hotfix-plugin-mapping.md").write_text(markdown(rows), encoding="utf-8")
-    print(f"wrote {len(rows)} legacy plugin mappings")
+    print(f"wrote {len(rows)} legacy plugin mappings ({merged_count} review states preserved)")
 
 
 if __name__ == "__main__":

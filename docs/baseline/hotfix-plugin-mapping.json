@@ -9,7 +9,9 @@
       "currentCandidate": "Delay",
       "currentPluginId": "com.deeplux.plugin.delay",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/000常用工具/Plugin.ShowChart",
@@ -36,7 +38,9 @@
       "currentCandidate": "Blob",
       "currentPluginId": "com.deeplux.plugin.blob",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.CameraReadyWait",
@@ -72,7 +76,9 @@
       "currentCandidate": "DisplayData",
       "currentPluginId": "com.deeplux.plugin.displaydata",
       "matchKind": "candidate",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "历史拼写错误（Diplay→Display），指向同一 DisplayData 插件"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.GrabImage",
@@ -81,7 +87,9 @@
       "currentCandidate": "GrabImage",
       "currentPluginId": "com.deeplux.plugin.grabimage",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.ImageMerge",
@@ -108,7 +116,9 @@
       "currentCandidate": "ImageScript",
       "currentPluginId": "com.deeplux.plugin.imagescript",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "partial",
+      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.JigsawPuzzle",
@@ -117,7 +127,9 @@
       "currentCandidate": "JigsawPuzzle",
       "currentPluginId": "com.deeplux.plugin.jigsawsolver",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.PerProcessing",
@@ -126,7 +138,9 @@
       "currentCandidate": "PerProcessing",
       "currentPluginId": "com.deeplux.plugin.perprocessing",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "partial",
+      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.SaveImage",
@@ -135,7 +149,9 @@
       "currentCandidate": "SaveImage",
       "currentPluginId": "com.deeplux.plugin.saveimage",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.ShowImage",
@@ -144,7 +160,9 @@
       "currentCandidate": "ShowImage",
       "currentPluginId": "com.deeplux.plugin.showimage",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.ShowShape",
@@ -171,7 +189,9 @@
       "currentCandidate": "QRCode",
       "currentPluginId": "com.deeplux.plugin.qrcode",
       "matchKind": "candidate",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "partial",
+      "evidence": "候选 QRCode 仅支持 QR 码识别，条码(1D barcode)能力未开放；能力矩阵 detection/QRCode 状态=部分"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.ColorExtraction",
@@ -189,7 +209,9 @@
       "currentCandidate": "ColorRecognition",
       "currentPluginId": "com.deeplux.plugin.colorrecognition",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "partial",
+      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.CreatePoints",
@@ -225,7 +247,9 @@
       "currentCandidate": "FindCircle",
       "currentPluginId": "com.deeplux.plugin.findcircle",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.GrayMeasure",
@@ -261,7 +285,9 @@
       "currentCandidate": "Matching",
       "currentPluginId": "com.deeplux.plugin.matching",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "partial",
+      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.Matching1",
@@ -288,7 +314,9 @@
       "currentCandidate": "MeasureLine",
       "currentPluginId": "com.deeplux.plugin.measureline",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.MeasureRect",
@@ -297,7 +325,9 @@
       "currentCandidate": "MeasureRect",
       "currentPluginId": "com.deeplux.plugin.measurerect",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.QRCode",
@@ -306,7 +336,9 @@
       "currentCandidate": "QRCode",
       "currentPluginId": "com.deeplux.plugin.qrcode",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/003几何测量/Plugin.DistanceLL",
@@ -315,7 +347,9 @@
       "currentCandidate": "LinesDistance",
       "currentPluginId": "com.deeplux.plugin.linesdistance",
       "matchKind": "candidate",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "LinesDistance 实现两线段距离，能力矩阵标\"可用/保留\"，与 DistanceLL 语义一致"
     },
     {
       "legacyPath": "02Plugins/003几何测量/Plugin.DistancePL",
@@ -324,7 +358,9 @@
       "currentCandidate": "DistancePL",
       "currentPluginId": "com.deeplux.plugin.distancepl",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/003几何测量/Plugin.DistancePP",
@@ -333,7 +369,9 @@
       "currentCandidate": "DistancePP",
       "currentPluginId": "com.deeplux.plugin.distancepp",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/003几何测量/Plugin.LinesDistance",
@@ -342,7 +380,9 @@
       "currentCandidate": "LinesDistance",
       "currentPluginId": "com.deeplux.plugin.linesdistance",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/004几何关系/Plugin.AffineeRegion",
@@ -369,7 +409,9 @@
       "currentCandidate": "FitCircle",
       "currentPluginId": "com.deeplux.plugin.fitcircle",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/004几何关系/Plugin.FitEllipse",
@@ -387,7 +429,9 @@
       "currentCandidate": "FitLine",
       "currentPluginId": "com.deeplux.plugin.fitline",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/004几何关系/Plugin.RegionProcess",
@@ -423,7 +467,9 @@
       "currentCandidate": "NPointCalibration",
       "currentPluginId": "com.deeplux.plugin.npointcalibration",
       "matchKind": "candidate",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "partial",
+      "evidence": "NPointCalibration 提供透视/仿射 N 点标定；旧版 MeasureCalib 具体标定流程未逐项核验"
     },
     {
       "legacyPath": "02Plugins/005坐标标定/Plugin.NPointCal",
@@ -432,7 +478,9 @@
       "currentCandidate": "NPointCalibration",
       "currentPluginId": "com.deeplux.plugin.npointcalibration",
       "matchKind": "candidate",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "NPointCalibration 即 N 点标定，与 NPointCal 语义一致，能力矩阵标\"可用/保留\""
     },
     {
       "legacyPath": "02Plugins/006对位工具/Plugin.CalibrationConversion",
@@ -468,7 +516,9 @@
       "currentCandidate": "If",
       "currentPluginId": "com.deeplux.plugin.if",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/007逻辑工具/Plugin.Parallel",
@@ -477,7 +527,9 @@
       "currentCandidate": "Parallel",
       "currentPluginId": "com.deeplux.plugin.parallel",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/007逻辑工具/Plugin.RunProject",
@@ -495,7 +547,9 @@
       "currentCandidate": "StopWhile",
       "currentPluginId": "com.deeplux.plugin.stopwhile",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/007逻辑工具/Plugin.While",
@@ -504,7 +558,9 @@
       "currentCandidate": "While",
       "currentPluginId": "com.deeplux.plugin.while",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.DataCheck",
@@ -513,7 +569,9 @@
       "currentCandidate": "DataCheck",
       "currentPluginId": "com.deeplux.plugin.datacheck",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "partial",
+      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.Folder",
@@ -522,7 +580,9 @@
       "currentCandidate": "Folder",
       "currentPluginId": "com.deeplux.plugin.folder",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.SaveData",
@@ -531,7 +591,9 @@
       "currentCandidate": "SaveData",
       "currentPluginId": "com.deeplux.plugin.savedata",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "partial",
+      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.ShowPoint",
@@ -540,7 +602,9 @@
       "currentCandidate": "ShowPoint",
       "currentPluginId": "com.deeplux.plugin.showpoint",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "partial",
+      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.SystemTime",
@@ -549,7 +613,9 @@
       "currentCandidate": "SystemTime",
       "currentPluginId": "com.deeplux.plugin.systemtime",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.TableOutPut",
@@ -558,7 +624,9 @@
       "currentCandidate": "TableOutPut",
       "currentPluginId": "com.deeplux.plugin.tableoutput",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "partial",
+      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.TimeSlice",
@@ -567,7 +635,9 @@
       "currentCandidate": "TimeSlice",
       "currentPluginId": "com.deeplux.plugin.timeslice",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；G-fix1 修正 Start/Stop 时间传递（Start 输出 timeslice_start_time，Stop 缺失时报错），test_timeslice 6 用例验证"
     },
     {
       "legacyPath": "02Plugins/008系统工具/Plugin.WriteText",
@@ -576,7 +646,9 @@
       "currentCandidate": "WriteText",
       "currentPluginId": "com.deeplux.plugin.writetext",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.CreateString",
@@ -585,7 +657,9 @@
       "currentCandidate": "CreateString",
       "currentPluginId": "com.deeplux.plugin.createstring",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.QueueClear",
@@ -603,7 +677,9 @@
       "currentCandidate": "QueueIn",
       "currentPluginId": "com.deeplux.plugin.queuein",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.QueueOut",
@@ -612,7 +688,9 @@
       "currentCandidate": "QueueOut",
       "currentPluginId": "com.deeplux.plugin.queueout",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.SplitString",
@@ -621,7 +699,9 @@
       "currentCandidate": "SplitString",
       "currentPluginId": "com.deeplux.plugin.splitstring",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.StrFormat",
@@ -630,7 +710,9 @@
       "currentCandidate": "StrFormatPlugin",
       "currentPluginId": "com.deeplux.plugin.strformat",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.VarDefine",
@@ -639,7 +721,9 @@
       "currentCandidate": "VarDefinePlugin",
       "currentPluginId": "com.deeplux.plugin.vardefine",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.VarSet",
@@ -648,7 +732,9 @@
       "currentCandidate": "VarSetPlugin",
       "currentPluginId": "com.deeplux.plugin.varset",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/010文件通讯/Plugin.HKSetOutPut",
@@ -675,7 +761,9 @@
       "currentCandidate": "PLCCommunicatePlugin",
       "currentPluginId": "com.deeplux.plugin.plccommunicate",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/010文件通讯/Plugin.PLCRead",
@@ -684,7 +772,9 @@
       "currentCandidate": "PLCReadPlugin",
       "currentPluginId": "com.deeplux.plugin.plcread",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/010文件通讯/Plugin.PLCWrite",
@@ -693,7 +783,9 @@
       "currentCandidate": "PLCWritePlugin",
       "currentPluginId": "com.deeplux.plugin.plcwrite",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/010文件通讯/Plugin.ReceiveStr",
@@ -819,7 +911,9 @@
       "currentCandidate": "FreeformSurface",
       "currentPluginId": "com.deeplux.plugin.freeformsurface",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "partial",
+      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.GSD",
@@ -855,7 +949,9 @@
       "currentCandidate": "JiErHanDefectsDet",
       "currentPluginId": "com.deeplux.plugin.jierhandefectsdet",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.LidWeldDetection",
@@ -882,7 +978,9 @@
       "currentCandidate": "MeasureGap",
       "currentPluginId": "com.deeplux.plugin.measuregap",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.PlaneAngle",
@@ -918,7 +1016,9 @@
       "currentCandidate": "PointSurfaceDistance",
       "currentPluginId": "com.deeplux.plugin.pointsurfacedistance",
       "matchKind": "direct",
-      "reviewState": "reviewed"
+      "reviewState": "reviewed",
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.VolumeMeasurement",
