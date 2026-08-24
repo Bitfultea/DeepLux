@@ -59,6 +59,7 @@ set(TEST_SOURCES
     test_pluginparametercontracts.cpp
     test_acceptance_flows.cpp
     test_projectmigration.cpp
+    test_timeslice.cpp
 )
 
 foreach(TEST_FILE ${TEST_SOURCES})
@@ -124,6 +125,9 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
     if(TEST_NAME STREQUAL "test_loadpointcloud" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE LoadPointCloudPlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_timeslice")
+        target_link_libraries(${TEST_NAME} PRIVATE TimeSlicePlugin)
     endif()
     if(TEST_NAME STREQUAL "test_clihandler" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE SystemTimePlugin)

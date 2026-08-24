@@ -666,6 +666,7 @@ IModule* PluginManager::createModule(const QString& name) {
             const PluginInfo info = m_modules.value(name);
             mb->setPorts(info.inputPorts, info.outputPorts);
             mb->setThreadSafe(info.threadSafe);
+            mb->setBlocking(info.blocking);
         }
         return clone;
     }

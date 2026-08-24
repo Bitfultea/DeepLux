@@ -44,6 +44,8 @@ bool TimeSlicePlugin::process(const ImageData& input, ImageData& output)
 
     if (mode == "Start") {
         m_startTime = QDateTime::currentMSecsSinceEpoch();
+        // G-fix1: 输出起始时间，供下游 Stop 通过数据边读取
+        output.setData("timeslice_start_time", m_startTime);
         output.setData("timeslice_started", true);
         output.setData("timeslice_name", m_sliceName);
         Logger::instance().debug(QString("时间片开始: %1").arg(m_sliceName), "TimeSlice");
@@ -51,11 +53,13 @@ bool TimeSlicePlugin::process(const ImageData& input, ImageData& output)
     else if (mode == "Stop") {
         qint64 endTime = QDateTime::currentMSecsSinceEpoch();
 
-        // 获取之前的时间
+        // G-fix1: 起始时间必须由上游 Start 通过数据边提供；缺失时结构化报错
         QVariant startTimeVar = input.data("timeslice_start_time");
-        if (startTimeVar.isValid()) {
-            m_startTime = startTimeVar.toLongLong();
+        if (!startTimeVar.isValid()) {
+            emit errorOccurred(tr("Stop 缺少 timeslice_start_time 输入：请确认上游 Start 节点已连接"));
+            return false;
         }
+        m_startTime = startTimeVar.toLongLong();
 
         m_elapsedMs = endTime - m_startTime;
 

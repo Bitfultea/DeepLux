@@ -21,6 +21,7 @@ private slots:
     void testPluginInfo();
     void testCreateModuleClone();
     void testExecutionMetadataValidation();
+    void testBlockingMetadataParsedAndInjected();
 
 private:
 };
@@ -159,6 +160,45 @@ void TestPluginManager::testExecutionMetadataValidation() {
     QCOMPARE(valid.inputPorts.first().joinPolicy, ControlJoinPolicy::All);
 
     QVERIFY(manager.pluginInfo(QStringLiteral("MetadataInvalid")).name.isEmpty());
+}
+
+void TestPluginManager::testBlockingMetadataParsedAndInjected() {
+    // G-fix4: execution.blocking 必须被解析并注入模块，且引擎用于排除并行批次
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    const auto writeMetadata = [&root](const QString& directory, const QString& name, bool blocking) {
+        const QString pluginDir = root.filePath(directory);
+        if (!QDir().mkpath(pluginDir))
+            return false;
+        QFile file(QDir(pluginDir).filePath(QStringLiteral("metadata.json")));
+        if (!file.open(QIODevice::WriteOnly))
+            return false;
+        const QByteArray json = QByteArray(R"({
+            "id":"com.deeplux.test.blocking",
+            "name":")") + name.toUtf8() +
+                                QByteArray(R"(",
+            "category":"test",
+            "execution":{"threadSafe":true,"blocking":)") +
+                                (blocking ? "true" : "false") + QByteArray(R"(},
+            "ports":{"inputs":[],"outputs":[]}
+        })");
+        return file.write(json) == json.size() && file.flush();
+    };
+
+    QVERIFY(writeMetadata(QStringLiteral("blocking"), QStringLiteral("BlockingMod"), true));
+    QVERIFY(writeMetadata(QStringLiteral("nonblocking"), QStringLiteral("NonBlockingMod"), false));
+
+    PluginManager& manager = PluginManager::instance();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+
+    const PluginInfo blockingInfo = manager.pluginInfo(QStringLiteral("BlockingMod"));
+    QVERIFY(blockingInfo.threadSafe);
+    QVERIFY2(blockingInfo.blocking, "blocking=true must be parsed from metadata");
+
+    const PluginInfo nonBlockingInfo = manager.pluginInfo(QStringLiteral("NonBlockingMod"));
+    QVERIFY(!nonBlockingInfo.blocking);
 }
 
 QTEST_MAIN(TestPluginManager)

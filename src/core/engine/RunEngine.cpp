@@ -805,18 +805,21 @@ void RunEngine::executeRunWithControlGraph(ImageData& pipelineData) {
             return;
         }
 
-        // 仅并发执行明确声明线程安全、启用且没有断点的就绪模块。
+        // 仅并发执行明确声明线程安全、非阻塞、启用且没有断点的就绪模块。
+        // G-fix4: blocking 模块（文件 I/O 等）不进并行批次，避免占满线程池。
         QStringList batch;
         batch.append(m_controlQueue.takeFirst());
         if (m_reentrantModules.contains(mod))
             m_controlActivated.remove(mod);
         ModuleBase* firstModule = getModule(mod);
         const bool canBuildParallelBatch =
-            parallelThreadCount() > 1 && firstModule && firstModule->isThreadSafe() && !isModuleDisabled(mod);
+            parallelThreadCount() > 1 && firstModule && firstModule->isThreadSafe() &&
+            !firstModule->isBlocking() && !isModuleDisabled(mod);
         while (canBuildParallelBatch && !m_controlQueue.isEmpty()) {
             const QString nextMod = m_controlQueue.first();
             ModuleBase* nextModule = getModule(nextMod);
-            if (!nextModule || !nextModule->isThreadSafe() || isModuleDisabled(nextMod) || hasBreakpoint(nextMod))
+            if (!nextModule || !nextModule->isThreadSafe() || nextModule->isBlocking() ||
+                isModuleDisabled(nextMod) || hasBreakpoint(nextMod))
                 break;
             batch.append(m_controlQueue.takeFirst());
             if (m_reentrantModules.contains(nextMod))
