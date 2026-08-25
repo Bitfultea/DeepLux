@@ -24,6 +24,11 @@
 | 输出面收窄（partial） | 29 |
 | 输出面相当，语义待确认（partial） | 6 |
 
+> **权威结论以 `hotfix-plugin-mapping.json` 为准**（本表仅为静态端口对照）。
+> 当前 JSON 结论分布：`equivalent=0`、`intentionally_changed=12`、`partial=34`、`unverified=4`。
+> 因未做旧版逐值运行结果对照，**不标任何 `equivalent`**；核心测量插件
+> （FindCircle/FitCircle/FitLine/Matching 等）标 `intentionally_changed`。
+
 ## 逐项对照
 
 | 旧版插件 | 当前候选 | 匹配 | 旧版输出数 | 当前输出数 | 旧版输出（前 8） | 当前输出 id（前 8） | 判定 |

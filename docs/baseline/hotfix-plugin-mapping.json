@@ -248,8 +248,8 @@
       "currentPluginId": "com.deeplux.plugin.findcircle",
       "matchKind": "direct",
       "reviewState": "reviewed",
-      "reviewConclusion": "equivalent",
-      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 7 输出 → 当前 5），见 legacy-comparison.md；输出处置：圆心X/Y、半径保留(circle_center_x/y/radius)并新增score；状态/时间由引擎moduleFinished提供"
+      "reviewConclusion": "intentionally_changed",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 7 输出 → 当前 5），见 legacy-comparison.md；输出处置：核心测量值保留且 id 归一化/强类型化，但未与旧版逐项对照，故标 intentionally_changed 而非 equivalent"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.GrayMeasure",
@@ -287,7 +287,7 @@
       "matchKind": "direct",
       "reviewState": "reviewed",
       "reviewConclusion": "intentionally_changed",
-      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认；行为测试：test_imageplugins 3 用例（模板匹配确定性/空图/clone）；旧版对照：输出面收窄（旧版 7 输出 → 当前 1），见 legacy-comparison.md；输出处置：已声明match_x/y/width/height/count/threshold，覆盖旧版X/Y/匹配数量；角度/分数以match_threshold归一"
+      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认；行为测试：test_imageplugins 3 用例（模板匹配确定性/空图/clone）；旧版对照：输出面收窄（旧版 7 输出 → 当前 1），见 legacy-comparison.md；输出处置：已声明 match_x/y/width/height/count；match_threshold 为匹配阈值（非分数），分数输出待补齐"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.Matching1",
@@ -410,8 +410,8 @@
       "currentPluginId": "com.deeplux.plugin.fitcircle",
       "matchKind": "direct",
       "reviewState": "reviewed",
-      "reviewConclusion": "equivalent",
-      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面相当（旧版 3 → 当前 5），语义待逐项确认；输出处置：中心X/Y/R保留(circle_center_x/y/radius)"
+      "reviewConclusion": "intentionally_changed",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面相当（旧版 3 → 当前 5），语义待逐项确认；输出处置：核心测量值保留且 id 归一化/强类型化，但未与旧版逐项对照，故标 intentionally_changed 而非 equivalent"
     },
     {
       "legacyPath": "02Plugins/004几何关系/Plugin.FitEllipse",
@@ -430,8 +430,8 @@
       "currentPluginId": "com.deeplux.plugin.fitline",
       "matchKind": "direct",
       "reviewState": "reviewed",
-      "reviewConclusion": "equivalent",
-      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面相当（旧版 5 → 当前 8），语义待逐项确认；输出处置：起点/终点/phi/rho/error齐全，覆盖旧版拟合直线+端点语义"
+      "reviewConclusion": "intentionally_changed",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面相当（旧版 5 → 当前 8），语义待逐项确认；输出处置：核心测量值保留且 id 归一化/强类型化，但未与旧版逐项对照，故标 intentionally_changed 而非 equivalent"
     },
     {
       "legacyPath": "02Plugins/004几何关系/Plugin.RegionProcess",
