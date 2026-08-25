@@ -3,6 +3,8 @@
 #include <QCommandLineParser>
 #include <QDir>
 #include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
@@ -221,9 +223,10 @@ bool installPluginForCapture(const QString& repoRoot, const QString& pluginTempR
     return QFile::copy(metaSrc, pluginDir + "/metadata.json") && QFile::copy(libSrc, pluginDir + "/" + libName);
 }
 
-// 收尾2: 加载并运行找圆验收工程，使截图带真实结果。
-// 返回是否成功加载并运行。
-bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& pluginTempRoot) {
+// 阶3: 加载并运行找圆验收工程，等待 runFinished、校验圆结果在误差内、
+// 选择找圆节点并刷新检查器/主视图。任何一步失败返回 false（任务失败）。
+bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& pluginTempRoot,
+                                    DeepLux::MainWindow& window) {
     const QString acceptanceRoot = repoRoot + "/tests/acceptance";
     const QString dataDir = acceptanceRoot + "/data";
 
@@ -289,12 +292,33 @@ bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& plug
         return false;
     }
 
-    // 校验真实圆结果（圆心/半径有效）
+    // 阶3: 校验圆结果落在预期误差内（读 expected/circle_640x480.json）
     const DeepLux::ImageData fcOut = DeepLux::RunEngine::instance().moduleOutput("findcircle");
-    if (!fcOut.data("circle_radius").isValid() || fcOut.data("circle_radius").toDouble() <= 0) {
+    const double gotR = fcOut.data("circle_radius").toDouble();
+    const double gotCx = fcOut.data("circle_center_x").toDouble();
+    const double gotCy = fcOut.data("circle_center_y").toDouble();
+    if (gotR <= 0) {
         qWarning("findcircle produced no valid circle result");
         return false;
     }
+    QFile ef(acceptanceRoot + "/expected/circle_640x480.json");
+    if (ef.open(QIODevice::ReadOnly)) {
+        const QJsonObject exp = QJsonDocument::fromJson(ef.readAll()).object();
+        ef.close();
+        const double tolC = exp["tolerance_center_px"].toDouble();
+        const double tolR = exp["tolerance_radius_px"].toDouble();
+        if (qAbs(gotCx - exp["circle_center_x"].toDouble()) > tolC ||
+            qAbs(gotCy - exp["circle_center_y"].toDouble()) > tolC ||
+            qAbs(gotR - exp["circle_radius"].toDouble()) > tolR) {
+            qWarning("findcircle result outside tolerance: c(%1,%2) r=%3", gotCx, gotCy, gotR);
+            return false;
+        }
+    }
+
+    // 阶3: 选择找圆节点并展示检查器，使截图含检查器结果与节点状态
+    window.selectModuleForCapture(QStringLiteral("findcircle"));
+    QCoreApplication::processEvents();
+    QTest::qWait(100);
     return true;
 }
 
@@ -324,7 +348,7 @@ int main(int argc, char** argv) {
     const QString repoRoot = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../..");
     QTemporaryDir pluginTempRoot;
     const bool ranAcceptance = pluginTempRoot.isValid() &&
-                               loadAndRunFindCircleAcceptance(repoRoot, pluginTempRoot.filePath("plugins"));
+                               loadAndRunFindCircleAcceptance(repoRoot, pluginTempRoot.filePath("plugins"), window);
 
     // P1-4: 验收运行失败须使任务失败，不得静默跳过
     if (!ranAcceptance) {

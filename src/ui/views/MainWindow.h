@@ -56,6 +56,8 @@ public:
 
     // 测试辅助：重置检查器关闭状态
     void resetInspectorClosed();
+    // 测试/截图辅助：统一选择入口（同步流程树/画布/检查器）
+    void selectModuleForCapture(const QString& instanceId) { selectModule(instanceId, true, true); }
 
 private slots:
     void onNewSolution();
