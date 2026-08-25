@@ -39,9 +39,33 @@
 
 ### 步6 说明
 
-- **CI**：`ci.yml` 移除 `sync-plugins || true` 静默失败；新增 `format-gate`
-  （clang-format 全量 `--dry-run --Werror`）与 `windows-msvc` 编译门禁。
+- **CI**：`ci.yml` 移除 `sync-plugins || true` 静默失败；格式门禁改为只查 PR/提交
+  变更的 C++ 文件（受控列表，`set -e` 不静默）；`windows-msvc` 补 `qtserialport`。
 - **硬件模拟**：相机验收以 `GrabImage(File)` 作为无硬件模拟源（固定测试图像）；
   PLC/AI 无模拟器，相关验收保持"依赖设备"标记，先契约测试。
 - **业务包**：7 个业务包依赖已在 `hotfix-plugin-mapping.json` 记录
   （`dependency_recorded`），需现场硬件验收，不在本环境闭环。
+
+## 第二轮七阶段整改（2026-08-25）
+
+| 阶 | 内容 | 状态 | 提交 |
+| --- | --- | --- | --- |
+| 1 | LinesDistance 确定公共点（交叉/接触/共线重叠）+五组测试 | 完成 | bd2ae32^.. |
+| 2 | 可取消短循环停止测试 + 50 次稳定性 | 完成 | 同上 |
+| 3 | GUI 验收证据链（runFinished+误差+选节点+xvfb） | 完成 | 65333a6 |
+| 4 | 迁移结论修正 + 只读一致性测试 | 完成 | 37a6e37 |
+| 5 | CI 格式门禁受控 + Windows SerialPort | 完成 | 8e6170d |
+| 7 | 控制流 GUI 验收工程接入自动化 | 完成 | bd2ae32 |
+
+### 最终门禁（第二轮）
+
+- 全量测试 **64/64** 通过。
+- 格式门禁（变更文件 `clang-format --dry-run --Werror`）**0 违规**。
+- 截图像素+内容：1920/1280 截图含图像/圆叠加/节点状态/耗时/检查器（已验证）。
+- 映射一致性：`testMappingConclusionConsistency` 通过（JSON 与 MD 数量一致）。
+
+### 仍保留（产品级，非门禁阻塞）
+
+- 图像 ROI/边缘点提取→FitLine/FitCircle 的**交互式**工作流（硬编码点集验收保留，不代替交互流）。
+- PLC/AI 设备模拟器契约（需现场硬件）。
+- TSan 20 处警告清零（需插桩 Qt 复测）。
