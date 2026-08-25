@@ -26,10 +26,39 @@ jobs:
         run: cmake --build build -j$(nproc)
 
       - name: Sync plugins
-        run: cmake --build build --target sync-plugins || true
+        run: cmake --build build --target sync-plugins
 
       - name: Test
         run: ctest --test-dir build --output-on-failure --timeout 30
+
+  # 步6: 格式门禁（clang-format 全量检查，不静默）
+  format-gate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+      - name: clang-format check
+        run: |
+          FILES=$(git ls-files 'src/**/*.cpp' 'src/**/*.h' 'tests/**/*.cpp' 'tests/**/*.h')
+          clang-format --dry-run --Werror $FILES
+
+  # 步6: Windows 编译门禁（含 ConPTY/串口依赖）
+  windows-msvc:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: 6.5.3
+          arch: win64_msvc64
+      - name: Install vcpkg deps
+        run: vcpkg install eigen3 opencv4 --triplet x64-windows
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DBUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build --config Release -j
 
   ubuntu-qt6:
     runs-on: ubuntu-24.04
