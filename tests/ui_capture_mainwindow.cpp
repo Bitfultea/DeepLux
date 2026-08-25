@@ -263,9 +263,38 @@ bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& plug
     if (!project)
         return false;
 
+    // 显式将工程装入 RunEngine（确保有模块可运行）
+    if (!DeepLux::RunEngine::instance().loadProject(project)) {
+        qWarning("failed to load findcircle project into RunEngine");
+        return false;
+    }
+
+    // P1-4: 捕获 RunResult 并校验真实圆结果；失败须使任务失败，不得静默跳过
+    DeepLux::RunResult runResult;
+    bool gotResult = false;
+    QMetaObject::Connection conn = QObject::connect(
+        &DeepLux::RunEngine::instance(), &DeepLux::RunEngine::runFinished,
+        [&](const DeepLux::RunResult& r) {
+            runResult = r;
+            gotResult = true;
+        });
+
     DeepLux::RunEngine::instance().runOnce();
     QCoreApplication::processEvents();
     QTest::qWait(200);
+    QObject::disconnect(conn);
+
+    if (!gotResult || !runResult.success) {
+        qWarning("findcircle acceptance run failed: %s", qPrintable(runResult.errorMessage));
+        return false;
+    }
+
+    // 校验真实圆结果（圆心/半径有效）
+    const DeepLux::ImageData fcOut = DeepLux::RunEngine::instance().moduleOutput("findcircle");
+    if (!fcOut.data("circle_radius").isValid() || fcOut.data("circle_radius").toDouble() <= 0) {
+        qWarning("findcircle produced no valid circle result");
+        return false;
+    }
     return true;
 }
 
@@ -297,9 +326,15 @@ int main(int argc, char** argv) {
     const bool ranAcceptance = pluginTempRoot.isValid() &&
                                loadAndRunFindCircleAcceptance(repoRoot, pluginTempRoot.filePath("plugins"));
 
+    // P1-4: 验收运行失败须使任务失败，不得静默跳过
+    if (!ranAcceptance) {
+        qWarning("findcircle acceptance run did not succeed; task fails");
+        ok = false;
+    }
+
     QTimer::singleShot(800, [&]() {
-        ok = captureFormalSizes(window, dir);
-        // 带真实结果的桌面/紧凑截图（若找圆工程成功运行）
+        ok = captureFormalSizes(window, dir) && ok;
+        // 带真实结果的桌面/紧凑截图（验收运行成功后）
         if (ranAcceptance) {
             ok = captureWindow(window, QSize(1920, 1080), dir.filePath("findcircle_desktop_result.png")) && ok;
             ok = captureWindow(window, QSize(1280, 800), dir.filePath("findcircle_compact_result.png")) && ok;
