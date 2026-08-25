@@ -1,7 +1,11 @@
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMap>
+#include <QRegularExpression>
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
 #include <core/manager/PluginManager.h>
@@ -21,10 +25,40 @@ private slots:
     void testSaveCreatesV2Backup();
     void testLoadDoesNotModifyOriginal();
     void testProjectManagerMigratesOnOpenAndBacksUpOnSave();
+    // 阶4: 只读一致性——JSON 结论分布与 legacy-comparison.md 陈述一致，防漂移
+    void testMappingConclusionConsistency();
 
 private:
     void fillV2Project(Project& project);
 };
+
+void TestProjectMigration::testMappingConclusionConsistency() {
+    const QString root = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../..");
+    QFile jf(root + "/docs/baseline/hotfix-plugin-mapping.json");
+    QFile mf(root + "/docs/baseline/legacy-comparison.md");
+    QVERIFY(jf.open(QIODevice::ReadOnly));
+    QVERIFY(mf.open(QIODevice::ReadOnly));
+    const QJsonObject json = QJsonDocument::fromJson(jf.readAll()).object();
+    const QString md = QString::fromUtf8(mf.readAll());
+    jf.close();
+    mf.close();
+
+    // 统计 JSON 结论分布
+    QMap<QString, int> jsonCount;
+    for (const auto& v : json["plugins"].toArray()) {
+        const QJsonObject p = v.toObject();
+        if (p["reviewState"].toString() == "reviewed")
+            jsonCount[p["reviewConclusion"].toString()]++;
+    }
+
+    // MD 汇总行形如 "equivalent=0、intentionally_changed=12、partial=34、unverified=4"
+    for (const QString& key : {"equivalent", "intentionally_changed", "partial", "unverified"}) {
+        QRegularExpression re(key + "=(\\d+)");
+        auto m = re.match(md);
+        QVERIFY2(m.hasMatch(), qPrintable("MD missing count for " + key));
+        QCOMPARE(m.captured(1).toInt(), jsonCount.value(key, 0));
+    }
+}
 
 void TestProjectMigration::fillV2Project(Project& project) {
     // 以 2.0 JSON 载入，确保 formatVersion=2.0
