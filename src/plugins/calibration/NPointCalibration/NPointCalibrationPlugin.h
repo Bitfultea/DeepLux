@@ -3,14 +3,13 @@
 #include "core/base/ModuleBase.h"
 
 #ifdef DEEPLUX_HAS_OPENCV
-#include <opencv2/opencv.hpp>
 #include <opencv2/calib3d.hpp>
+#include <opencv2/opencv.hpp>
 #endif
 
 namespace DeepLux {
 
-class NPointCalibrationPlugin : public ModuleBase
-{
+class NPointCalibrationPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -19,12 +18,24 @@ public:
     explicit NPointCalibrationPlugin(QObject* parent = nullptr);
     ~NPointCalibrationPlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.npointcalibration"; }
-    QString name() const override { return tr("N点标定"); }
-    QString category() const override { return "calibration"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("N点标定，用于相机标定和坐标转换"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.npointcalibration";
+    }
+    QString name() const override {
+        return tr("N点标定");
+    }
+    QString category() const override {
+        return "calibration";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("N点标定，用于相机标定和坐标转换");
+    }
 
     bool initialize() override;
     void shutdown() override;
@@ -36,11 +47,7 @@ protected:
     IModule* cloneImpl() const override;
 
 private:
-    enum class CalibrationType {
-        Perspective,
-        Affine,
-        Polynomial
-    };
+    enum class CalibrationType { Perspective, Affine, Polynomial };
 
     struct CalibPoint {
         double imageX;
@@ -63,7 +70,9 @@ private:
     bool computeCalibration();
 
 public:
-    Q_INVOKABLE void clearPointsPublic() { clearPoints(); }
+    Q_INVOKABLE void clearPointsPublic() {
+        clearPoints();
+    }
     cv::Point2d imageToWorld(double imgX, double imgY);
     cv::Point2d worldToImage(double worldX, double worldY);
 

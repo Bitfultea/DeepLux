@@ -1,9 +1,9 @@
 #ifndef DEEPLUX_GUI_EVENT_H
 #define DEEPLUX_GUI_EVENT_H
 
-#include <QString>
-#include <QJsonObject>
 #include <QDateTime>
+#include <QJsonObject>
+#include <QString>
 
 namespace DeepLux {
 
@@ -12,8 +12,7 @@ namespace DeepLux {
  *
  * Observer 将 Qt 信号转换为结构化的 GuiEvent，供 AgentController 消费。
  */
-enum class GuiEventType
-{
+enum class GuiEventType {
     Unknown,
 
     // 项目生命周期
@@ -56,8 +55,7 @@ enum class GuiEventType
  *
  * 所有 GUI 状态变化都序列化为 GuiEvent，放入环形缓冲区供 LLM 上下文使用。
  */
-struct GuiEvent
-{
+struct GuiEvent {
     QDateTime timestamp;
     GuiEventType type = GuiEventType::Unknown;
     QString source;      // 信号来源类名
@@ -65,27 +63,21 @@ struct GuiEvent
 
     GuiEvent() = default;
     GuiEvent(GuiEventType t, const QString& src, const QJsonObject& det = QJsonObject())
-        : timestamp(QDateTime::currentDateTime())
-        , type(t)
-        , source(src)
-        , details(det)
-    {}
+        : timestamp(QDateTime::currentDateTime()), type(t), source(src), details(det) {}
 
     QString typeString() const;
     QJsonObject toJson() const;
 };
 
-
 /**
  * @brief Agent 操作日志条目
  */
-struct AgentActionLogEntry
-{
+struct AgentActionLogEntry {
     QDateTime timestamp;
-    QString actor;      // "Agent" or "User"
-    QString action;     // action name
-    QString params;     // JSON string of params
-    QString result;     // success / error / pending
+    QString actor;  // "Agent" or "User"
+    QString action; // action name
+    QString params; // JSON string of params
+    QString result; // success / error / pending
     bool undoable = false;
 };
 

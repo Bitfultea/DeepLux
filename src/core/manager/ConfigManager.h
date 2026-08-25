@@ -1,22 +1,21 @@
 #pragma once
 
-#include <QObject>
 #include <QJsonObject>
+#include <QObject>
 #include <QVariant>
 
 namespace DeepLux {
 
-class ConfigManager : public QObject
-{
+class ConfigManager : public QObject {
     Q_OBJECT
 
 public:
     static ConfigManager& instance();
-    
+
     bool initialize();
     bool save();
     void resetToDefaults();
-    
+
     // 单键操作
     void setValue(const QString& key, const QVariant& value);
     QVariant value(const QString& key, const QVariant& defaultValue = QVariant()) const;
@@ -26,7 +25,7 @@ public:
     bool boolVal(const QString& key, bool defaultValue = false) const;
     bool contains(const QString& key) const;
     void remove(const QString& key);
-    
+
     // 分组操作
     void setGroupValue(const QString& group, const QString& key, const QVariant& value);
     QVariant groupValue(const QString& group, const QString& key, const QVariant& defaultValue = QVariant()) const;
@@ -36,14 +35,18 @@ public:
     bool groupBool(const QString& group, const QString& key, bool defaultValue = false) const;
     bool containsGroupKey(const QString& group, const QString& key) const;
     void removeGroupKey(const QString& group, const QString& key);
-    
+
     // 分组管理
     QJsonObject getGroup(const QString& groupName) const;
     void setGroup(const QString& groupName, const QJsonObject& values);
     QStringList groups() const;
-    
-    QString configFilePath() const { return m_configPath; }
-    bool isInitialized() const { return m_initialized; }
+
+    QString configFilePath() const {
+        return m_configPath;
+    }
+    bool isInitialized() const {
+        return m_initialized;
+    }
 
 signals:
     void valueChanged(const QString& key, const QVariant& value);
@@ -53,7 +56,7 @@ signals:
 private:
     ConfigManager();
     ~ConfigManager();
-    
+
     bool load();
     void setDefaults();
 

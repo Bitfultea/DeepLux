@@ -8,8 +8,7 @@
 
 namespace DeepLux {
 
-class MeasureRectPlugin : public ModuleBase
-{
+class MeasureRectPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -18,12 +17,24 @@ public:
     explicit MeasureRectPlugin(QObject* parent = nullptr);
     ~MeasureRectPlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.measurerect"; }
-    QString name() const override { return tr("矩形测量"); }
-    QString category() const override { return "detection"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("检测并测量图像中的矩形"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.measurerect";
+    }
+    QString name() const override {
+        return tr("矩形测量");
+    }
+    QString category() const override {
+        return "detection";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("检测并测量图像中的矩形");
+    }
 
     bool initialize() override;
     void shutdown() override;

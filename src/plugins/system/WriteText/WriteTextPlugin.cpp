@@ -1,30 +1,23 @@
 #include "WriteTextPlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
+
+#include <QCheckBox>
 #include <QLabel>
 #include <QLineEdit>
 #include <QTextEdit>
-#include <QCheckBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-WriteTextPlugin::WriteTextPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"filePath", ""},
-        {"textContent", ""},
-        {"appendMode", false}
-    };
+WriteTextPlugin::WriteTextPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"filePath", ""}, {"textContent", ""}, {"appendMode", false}};
     m_params = m_defaultParams;
 }
 
-WriteTextPlugin::~WriteTextPlugin()
-{
-}
+WriteTextPlugin::~WriteTextPlugin() {}
 
-bool WriteTextPlugin::initialize()
-{
+bool WriteTextPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -32,13 +25,11 @@ bool WriteTextPlugin::initialize()
     return true;
 }
 
-void WriteTextPlugin::shutdown()
-{
+void WriteTextPlugin::shutdown() {
     ModuleBase::shutdown();
 }
 
-bool WriteTextPlugin::process(const ImageData& input, ImageData& output)
-{
+bool WriteTextPlugin::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(output);
     output = input;
 
@@ -81,23 +72,22 @@ bool WriteTextPlugin::process(const ImageData& input, ImageData& output)
     output.setData("write_length", textContent.length());
 
     Logger::instance().debug(QString("写入文本: %1, 长度: %2, 结果: %3")
-                                .arg(filePath)
-                                .arg(textContent.length())
-                                .arg(m_writeResult ? "成功" : "失败"), "WriteText");
+                                 .arg(filePath)
+                                 .arg(textContent.length())
+                                 .arg(m_writeResult ? "成功" : "失败"),
+                             "WriteText");
 
     return true;
 }
 
-bool WriteTextPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool WriteTextPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     // 阶段 2: filePath 等外部资源允许暂时为空，由 process() 在运行时报告"未配置"
     Q_UNUSED(params)
     error.clear();
     return true;
 }
 
-QWidget* WriteTextPlugin::createConfigWidget()
-{
+QWidget* WriteTextPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -113,19 +103,15 @@ QWidget* WriteTextPlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(pathEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
-        setParam("filePath", text);
-    });
+    connect(pathEdit, &QLineEdit::textChanged, this, [this](const QString& text) { setParam("filePath", text); });
 
-    connect(textEdit, &QTextEdit::textChanged, this, [this, textEdit]() {
-        setParam("textContent", textEdit->toPlainText());
-    });
+    connect(textEdit, &QTextEdit::textChanged, this,
+            [this, textEdit]() { setParam("textContent", textEdit->toPlainText()); });
 
     return widget;
 }
 
-IModule* WriteTextPlugin::cloneImpl() const
-{
+IModule* WriteTextPlugin::cloneImpl() const {
     WriteTextPlugin* clone = new WriteTextPlugin();
     return clone;
 }

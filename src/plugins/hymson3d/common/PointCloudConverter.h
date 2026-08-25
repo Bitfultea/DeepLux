@@ -8,7 +8,7 @@ namespace hymson3d {
 namespace geometry {
 class PointCloud;
 }
-}
+} // namespace hymson3d
 #endif
 
 namespace DeepLux {
@@ -78,9 +78,11 @@ inline std::shared_ptr<hymson3d::geometry::PointCloud> PointCloudConverter::toHy
     return cloud;
 }
 
-inline PointCloudData PointCloudConverter::fromHymsonCloud(const std::shared_ptr<hymson3d::geometry::PointCloud>& cloud) {
+inline PointCloudData
+PointCloudConverter::fromHymsonCloud(const std::shared_ptr<hymson3d::geometry::PointCloud>& cloud) {
     PointCloudData data;
-    if (!cloud) return data;
+    if (!cloud)
+        return data;
     data.points = cloud->points_;
     data.normals = cloud->normals_;
     data.colors = cloud->colors_;

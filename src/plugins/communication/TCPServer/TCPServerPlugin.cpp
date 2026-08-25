@@ -1,37 +1,29 @@
 #include "TCPServerPlugin.h"
+
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
+
 #include <QComboBox>
 #include <QFormLayout>
 #include <QLineEdit>
 #include <QSpinBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
 TCPServerPlugin::TCPServerPlugin(QObject* parent)
-    : ModuleBase(parent)
-    , m_server(new QTcpServer(this))
-    , m_clientSocket(nullptr)
-{
+    : ModuleBase(parent), m_server(new QTcpServer(this)), m_clientSocket(nullptr) {
     m_defaultParams = QJsonObject{
-        {"port", 8080},
-        {"timeout", 5000},
-        {"writeData", ""},
-        {"readVariable", "tcp_data"},
-        {"operation", "WriteRead"}
-    };
+        {"port", 8080}, {"timeout", 5000}, {"writeData", ""}, {"readVariable", "tcp_data"}, {"operation", "WriteRead"}};
     m_params = m_defaultParams;
 
     connect(m_server, &QTcpServer::newConnection, this, &TCPServerPlugin::onNewConnection);
 }
 
-TCPServerPlugin::~TCPServerPlugin()
-{
+TCPServerPlugin::~TCPServerPlugin() {
     stopServer();
 }
 
-bool TCPServerPlugin::initialize()
-{
+bool TCPServerPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -39,8 +31,7 @@ bool TCPServerPlugin::initialize()
     return true;
 }
 
-void TCPServerPlugin::onNewConnection()
-{
+void TCPServerPlugin::onNewConnection() {
     m_clientSocket = m_server->nextPendingConnection();
     if (m_clientSocket) {
         connect(m_clientSocket, &QTcpSocket::disconnected, this, &TCPServerPlugin::onDisconnected);
@@ -49,8 +40,7 @@ void TCPServerPlugin::onNewConnection()
     }
 }
 
-void TCPServerPlugin::onDisconnected()
-{
+void TCPServerPlugin::onDisconnected() {
     Logger::instance().debug("TCPServer: Client disconnected", "Communication");
     if (m_clientSocket) {
         m_clientSocket->deleteLater();
@@ -58,13 +48,11 @@ void TCPServerPlugin::onDisconnected()
     }
 }
 
-void TCPServerPlugin::onReadyRead()
-{
+void TCPServerPlugin::onReadyRead() {
     // Data will be read in process()
 }
 
-bool TCPServerPlugin::startServer()
-{
+bool TCPServerPlugin::startServer() {
     if (m_server->isListening()) {
         m_server->close();
     }
@@ -97,8 +85,7 @@ bool TCPServerPlugin::startServer()
     return true;
 }
 
-void TCPServerPlugin::stopServer()
-{
+void TCPServerPlugin::stopServer() {
     if (m_clientSocket) {
         m_clientSocket->disconnectFromHost();
         m_clientSocket->deleteLater();
@@ -110,8 +97,7 @@ void TCPServerPlugin::stopServer()
     }
 }
 
-QString TCPServerPlugin::readFromClient()
-{
+QString TCPServerPlugin::readFromClient() {
     if (!m_clientSocket || !m_clientSocket->waitForReadyRead(m_timeout)) {
         return QString();
     }
@@ -124,8 +110,7 @@ QString TCPServerPlugin::readFromClient()
     return QString::fromUtf8(data);
 }
 
-bool TCPServerPlugin::writeToClient(const QString& data)
-{
+bool TCPServerPlugin::writeToClient(const QString& data) {
     if (!m_clientSocket || m_clientSocket->state() != QAbstractSocket::ConnectedState) {
         emit errorOccurred(tr("客户端未连接"));
         return false;
@@ -142,8 +127,7 @@ bool TCPServerPlugin::writeToClient(const QString& data)
     return true;
 }
 
-bool TCPServerPlugin::process(const ImageData& input, ImageData& output)
-{
+bool TCPServerPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     QJsonObject params = currentParams();
@@ -185,8 +169,7 @@ bool TCPServerPlugin::process(const ImageData& input, ImageData& output)
     return success;
 }
 
-bool TCPServerPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool TCPServerPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     if (params["port"].toInt() <= 0 || params["port"].toInt() > 65535) {
         error = QString("Port must be between 1 and 65535");
         return false;
@@ -194,8 +177,7 @@ bool TCPServerPlugin::doValidateParams(const QJsonObject& params, QString& error
     return true;
 }
 
-QWidget* TCPServerPlugin::createConfigWidget()
-{
+QWidget* TCPServerPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -219,7 +201,8 @@ QWidget* TCPServerPlugin::createConfigWidget()
     operationCombo->addItem(tr("读取"), "Read");
     operationCombo->addItem(tr("写入并读取"), "WriteRead");
     int idx = operationCombo->findData(m_params["operation"].toString("WriteRead"));
-    if (idx >= 0) operationCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        operationCombo->setCurrentIndex(idx);
 
     // Write data
     QLineEdit* writeEdit = new QLineEdit(m_params["writeData"].toString());
@@ -237,31 +220,22 @@ QWidget* TCPServerPlugin::createConfigWidget()
     layout->addStretch();
 
     // Connections
-    connect(portSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        setParam("port", value);
-    });
+    connect(portSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) { setParam("port", value); });
 
-    connect(timeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        setParam("timeout", value);
-    });
+    connect(timeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [=](int value) { setParam("timeout", value); });
 
-    connect(operationCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        setParam("operation", operationCombo->currentData().toString());
-    });
+    connect(operationCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int) { setParam("operation", operationCombo->currentData().toString()); });
 
-    connect(writeEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("writeData", text);
-    });
+    connect(writeEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("writeData", text); });
 
-    connect(readVarEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("readVariable", text);
-    });
+    connect(readVarEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("readVariable", text); });
 
     return widget;
 }
 
-IModule* TCPServerPlugin::cloneImpl() const
-{
+IModule* TCPServerPlugin::cloneImpl() const {
     return new TCPServerPlugin();
 }
 

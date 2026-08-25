@@ -8,8 +8,7 @@
 
 namespace DeepLux {
 
-class MeasureLinePlugin : public ModuleBase
-{
+class MeasureLinePlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -18,12 +17,24 @@ public:
     explicit MeasureLinePlugin(QObject* parent = nullptr);
     ~MeasureLinePlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.measureline"; }
-    QString name() const override { return tr("线条测量"); }
-    QString category() const override { return "detection"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("检测并测量图像中的线条"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.measureline";
+    }
+    QString name() const override {
+        return tr("线条测量");
+    }
+    QString category() const override {
+        return "detection";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("检测并测量图像中的线条");
+    }
 
     bool initialize() override;
     void shutdown() override;
@@ -35,8 +46,7 @@ protected:
     IModule* cloneImpl() const override;
 
 private:
-    bool detectLines(const cv::Mat& gray, std::vector<cv::Vec4i>& lines,
-                     double minLength, double maxLength,
+    bool detectLines(const cv::Mat& gray, std::vector<cv::Vec4i>& lines, double minLength, double maxLength,
                      double threshold, double minAngle, double maxAngle);
 
     // 输出参数

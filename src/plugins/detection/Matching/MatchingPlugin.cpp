@@ -1,9 +1,11 @@
 #include "MatchingPlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QLabel>
+
 #include <QDoubleSpinBox>
+#include <QLabel>
 #include <QSpinBox>
+#include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -11,22 +13,14 @@
 
 namespace DeepLux {
 
-MatchingPlugin::MatchingPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"matchThreshold", 0.8},
-        {"maxMatches", 10}
-    };
+MatchingPlugin::MatchingPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"matchThreshold", 0.8}, {"maxMatches", 10}};
     m_params = m_defaultParams;
 }
 
-MatchingPlugin::~MatchingPlugin()
-{
-}
+MatchingPlugin::~MatchingPlugin() {}
 
-bool MatchingPlugin::initialize()
-{
+bool MatchingPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -34,8 +28,7 @@ bool MatchingPlugin::initialize()
     return true;
 }
 
-void MatchingPlugin::shutdown()
-{
+void MatchingPlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     m_template.release();
     m_resultMat.release();
@@ -43,8 +36,7 @@ void MatchingPlugin::shutdown()
     ModuleBase::shutdown();
 }
 
-bool MatchingPlugin::process(const ImageData& input, ImageData& output)
-{
+bool MatchingPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -80,7 +72,8 @@ bool MatchingPlugin::process(const ImageData& input, ImageData& output)
         int centerX = image.cols / 2;
         int centerY = image.rows / 2;
         int templateSize = qMin(image.cols, image.rows) / 4;
-        m_template = image(cv::Rect(centerX - templateSize/2, centerY - templateSize/2, templateSize, templateSize)).clone();
+        m_template =
+            image(cv::Rect(centerX - templateSize / 2, centerY - templateSize / 2, templateSize, templateSize)).clone();
     }
 
     QJsonObject params = currentParams();
@@ -103,8 +96,7 @@ bool MatchingPlugin::process(const ImageData& input, ImageData& output)
         cv::rectangle(m_resultMat, matches[i], cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
 
         QString label = QString("Match %1").arg(i + 1);
-        cv::putText(m_resultMat, label.toUtf8().constData(),
-                    cv::Point(matches[i].x, matches[i].y - 5),
+        cv::putText(m_resultMat, label.toUtf8().constData(), cv::Point(matches[i].x, matches[i].y - 5),
                     cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
     }
 
@@ -120,8 +112,8 @@ bool MatchingPlugin::process(const ImageData& input, ImageData& output)
         output.setData("match_height", matches[0].height);
     }
 
-    Logger::instance().debug(QString("模板匹配: 找到%1个匹配, 阈值=%2")
-                                .arg(m_matchCount).arg(m_matchThreshold), "Matching");
+    Logger::instance().debug(QString("模板匹配: 找到%1个匹配, 阈值=%2").arg(m_matchCount).arg(m_matchThreshold),
+                             "Matching");
 
     return true;
 #else
@@ -131,8 +123,7 @@ bool MatchingPlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-std::vector<cv::Rect> MatchingPlugin::matchTemplate(const cv::Mat& image, const cv::Mat& templ, double threshold)
-{
+std::vector<cv::Rect> MatchingPlugin::matchTemplate(const cv::Mat& image, const cv::Mat& templ, double threshold) {
     std::vector<cv::Rect> results;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -165,12 +156,8 @@ std::vector<cv::Rect> MatchingPlugin::matchTemplate(const cv::Mat& image, const 
             results.push_back(cv::Rect(maxLoc.x, maxLoc.y, templ.cols, templ.rows));
 
             // 抑制当前匹配区域的响应值，避免重叠
-            cv::Rect suppressRegion(
-                std::max(0, maxLoc.x - templ.cols / 2),
-                std::max(0, maxLoc.y - templ.rows / 2),
-                templ.cols * 2,
-                templ.rows * 2
-            );
+            cv::Rect suppressRegion(std::max(0, maxLoc.x - templ.cols / 2), std::max(0, maxLoc.y - templ.rows / 2),
+                                    templ.cols * 2, templ.rows * 2);
             suppressRegion &= cv::Rect(0, 0, result.cols, result.rows);
             cv::Mat(result, suppressRegion) = cv::Scalar(0);
         } else {
@@ -186,8 +173,7 @@ std::vector<cv::Rect> MatchingPlugin::matchTemplate(const cv::Mat& image, const 
     return results;
 }
 
-bool MatchingPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool MatchingPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     double threshold = params["matchThreshold"].toDouble();
     if (threshold <= 0 || threshold > 1) {
         error = tr("匹配阈值必须在0到1之间");
@@ -196,8 +182,7 @@ bool MatchingPlugin::doValidateParams(const QJsonObject& params, QString& error)
     return true;
 }
 
-QWidget* MatchingPlugin::createConfigWidget()
-{
+QWidget* MatchingPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -216,19 +201,16 @@ QWidget* MatchingPlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(threshSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-        setParam("matchThreshold", value);
-    });
+    connect(threshSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("matchThreshold", value); });
 
-    connect(maxSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        setParam("maxMatches", value);
-    });
+    connect(maxSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int value) { setParam("maxMatches", value); });
 
     return widget;
 }
 
-IModule* MatchingPlugin::cloneImpl() const
-{
+IModule* MatchingPlugin::cloneImpl() const {
     MatchingPlugin* clone = new MatchingPlugin();
     clone->setParams(currentParams());
     return clone;

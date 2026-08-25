@@ -1,9 +1,11 @@
 #include "DisplayDataPlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
+
 #include <QLabel>
-#include <QSpinBox>
 #include <QLineEdit>
+#include <QSpinBox>
+#include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -11,24 +13,14 @@
 
 namespace DeepLux {
 
-DisplayDataPlugin::DisplayDataPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"displayText", ""},
-        {"fontSize", 20},
-        {"positionX", 10},
-        {"positionY", 30}
-    };
+DisplayDataPlugin::DisplayDataPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"displayText", ""}, {"fontSize", 20}, {"positionX", 10}, {"positionY", 30}};
     m_params = m_defaultParams;
 }
 
-DisplayDataPlugin::~DisplayDataPlugin()
-{
-}
+DisplayDataPlugin::~DisplayDataPlugin() {}
 
-bool DisplayDataPlugin::initialize()
-{
+bool DisplayDataPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -36,16 +28,14 @@ bool DisplayDataPlugin::initialize()
     return true;
 }
 
-void DisplayDataPlugin::shutdown()
-{
+void DisplayDataPlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     m_displayMat.release();
 #endif
     ModuleBase::shutdown();
 }
 
-bool DisplayDataPlugin::process(const ImageData& input, ImageData& output)
-{
+bool DisplayDataPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -85,17 +75,15 @@ bool DisplayDataPlugin::process(const ImageData& input, ImageData& output)
 
     // 在图像上绘制文本
     cv::Point point(posX, posY);
-    cv::Scalar color(0, 255, 0);  // 绿色
+    cv::Scalar color(0, 255, 0); // 绿色
     int thickness = 2;
 
     // 支持多行文本
     QStringList lines = text.split('\n');
     int lineHeight = fontSize + 5;
     for (int i = 0; i < lines.size(); ++i) {
-        cv::putText(m_displayMat, lines[i].toUtf8().constData(),
-                    cv::Point(posX, posY + i * lineHeight),
-                    cv::FONT_HERSHEY_SIMPLEX, fontSize / 30.0,
-                    color, thickness, cv::LINE_AA);
+        cv::putText(m_displayMat, lines[i].toUtf8().constData(), cv::Point(posX, posY + i * lineHeight),
+                    cv::FONT_HERSHEY_SIMPLEX, fontSize / 30.0, color, thickness, cv::LINE_AA);
     }
 
     // 设置输出
@@ -113,15 +101,13 @@ bool DisplayDataPlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-bool DisplayDataPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool DisplayDataPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     Q_UNUSED(params);
     error.clear();
     return true;
 }
 
-QWidget* DisplayDataPlugin::createConfigWidget()
-{
+QWidget* DisplayDataPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -149,27 +135,21 @@ QWidget* DisplayDataPlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(textEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
-        m_params["displayText"] = text;
-    });
+    connect(textEdit, &QLineEdit::textChanged, this, [this](const QString& text) { m_params["displayText"] = text; });
 
-    connect(fontSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        m_params["fontSize"] = value;
-    });
+    connect(fontSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int value) { m_params["fontSize"] = value; });
 
-    connect(posXSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        m_params["positionX"] = value;
-    });
+    connect(posXSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int value) { m_params["positionX"] = value; });
 
-    connect(posYSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        m_params["positionY"] = value;
-    });
+    connect(posYSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int value) { m_params["positionY"] = value; });
 
     return widget;
 }
 
-IModule* DisplayDataPlugin::cloneImpl() const
-{
+IModule* DisplayDataPlugin::cloneImpl() const {
     return new DisplayDataPlugin();
 }
 

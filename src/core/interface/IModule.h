@@ -1,14 +1,14 @@
 #pragma once
 
-#include <QObject>
-#include <QString>
-#include <QJsonObject>
-#include <QIcon>
-#include <QWidget>
-#include <QList>
-
 #include "core/deeplux/ControlFlowType.h"
 #include "core/deeplux/DataContract.h"
+
+#include <QIcon>
+#include <QJsonObject>
+#include <QList>
+#include <QObject>
+#include <QString>
+#include <QWidget>
 
 namespace DeepLux {
 
@@ -25,18 +25,12 @@ constexpr int DEEPLUX_MODULE_INTERFACE_VERSION = 2;
 /**
  * @brief 模块状态枚举
  */
-enum class ModuleState {
-    Idle,
-    Running,
-    Error,
-    Disabled
-};
+enum class ModuleState { Idle, Running, Error, Disabled };
 
 /**
  * @brief 模块接口
  */
-class IModule : public QObject
-{
+class IModule : public QObject {
     Q_OBJECT
 
 public:
@@ -49,8 +43,12 @@ public:
     virtual QString version() const = 0;
     virtual QString author() const = 0;
     virtual QString description() const = 0;
-    virtual QIcon icon() const { return QIcon(); }
-    virtual void setIcon(const QIcon& icon) { Q_UNUSED(icon) }
+    virtual QIcon icon() const {
+        return QIcon();
+    }
+    virtual void setIcon(const QIcon& icon) {
+        Q_UNUSED(icon)
+    }
 
     virtual bool initialize() = 0;
     virtual void shutdown() = 0;
@@ -87,7 +85,9 @@ public:
     virtual IModule* clone() const = 0;
 
     // 控制流类型 — 模块根据自身语义声明，RunEngine 据此决定执行顺序
-    virtual ControlFlowType flowControlType() const { return ControlFlowType::Sequential; }
+    virtual ControlFlowType flowControlType() const {
+        return ControlFlowType::Sequential;
+    }
 
     /**
      * @brief 返回插件编译时使用的 IModule 接口版本号

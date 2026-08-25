@@ -1,52 +1,41 @@
 #include "SaveImagePlugin.h"
+
 #include "common/Logger.h"
 #include "core/common/ConfigWidgetHelper.h"
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QPushButton>
-#include <QFileDialog>
+
 #include <QDir>
+#include <QFileDialog>
+#include <QHBoxLayout>
 #include <QPointer>
+#include <QPushButton>
+#include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
-#include <opencv2/opencv.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/opencv.hpp>
 #endif
 
 namespace DeepLux {
 
-SaveImagePlugin::SaveImagePlugin(QObject* parent)
-    : ModuleBase(parent)
-    , m_format("png")
-    , m_quality(95)
-{
-    m_defaultParams = QJsonObject{
-        {"filePath", ""},
-        {"format", "png"},
-        {"quality", 95}
-    };
+SaveImagePlugin::SaveImagePlugin(QObject* parent) : ModuleBase(parent), m_format("png"), m_quality(95) {
+    m_defaultParams = QJsonObject{{"filePath", ""}, {"format", "png"}, {"quality", 95}};
     m_params = m_defaultParams;
 }
 
-SaveImagePlugin::~SaveImagePlugin()
-{
-}
+SaveImagePlugin::~SaveImagePlugin() {}
 
-bool SaveImagePlugin::initialize()
-{
+bool SaveImagePlugin::initialize() {
     return ModuleBase::initialize();
 }
 
-void SaveImagePlugin::shutdown()
-{
+void SaveImagePlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     m_mat.release();
 #endif
     ModuleBase::shutdown();
 }
 
-bool SaveImagePlugin::process(const ImageData& input, ImageData& output)
-{
+bool SaveImagePlugin::process(const ImageData& input, ImageData& output) {
     QJsonObject params = currentParams();
     QString filePath = params["filePath"].toString();
     QString format = params["format"].toString();
@@ -118,8 +107,7 @@ bool SaveImagePlugin::process(const ImageData& input, ImageData& output)
     return true;
 }
 
-bool SaveImagePlugin::saveImage(const QString& filePath, const QString& format, int quality)
-{
+bool SaveImagePlugin::saveImage(const QString& filePath, const QString& format, int quality) {
 #ifdef DEEPLUX_HAS_OPENCV
     try {
         cv::Mat image = m_mat;
@@ -165,17 +153,15 @@ bool SaveImagePlugin::saveImage(const QString& filePath, const QString& format, 
 // qImageToMat is defined in ImageData.cpp
 #endif
 
-bool SaveImagePlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool SaveImagePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     // 阶段 2: filePath 等外部资源允许暂时为空，由 process() 在运行时报告"未配置"
     Q_UNUSED(params)
     error.clear();
     return true;
 }
 
-QWidget* SaveImagePlugin::createConfigWidget()
-{
-    ConfigWidgetHelper factory(true);  // 默认深色主题
+QWidget* SaveImagePlugin::createConfigWidget() {
+    ConfigWidgetHelper factory(true); // 默认深色主题
 
     QWidget* widget = new QWidget();
     factory.applyContainerStyle(widget);
@@ -214,7 +200,8 @@ QWidget* SaveImagePlugin::createConfigWidget()
     formatCombo->addItem("BMP", "bmp");
     formatCombo->addItem("TIFF", "tiff");
     int formatIndex = formatCombo->findData(m_params["format"].toString());
-    if (formatIndex >= 0) formatCombo->setCurrentIndex(formatIndex);
+    if (formatIndex >= 0)
+        formatCombo->setCurrentIndex(formatIndex);
     layout->addWidget(formatCombo);
 
     layout->addStretch();
@@ -222,16 +209,21 @@ QWidget* SaveImagePlugin::createConfigWidget()
     // 使用 QPointer 避免悬垂指针
     QPointer<SaveImagePlugin> pluginPtr(this);
     connect(browseBtn, &QPushButton::clicked, [pluginPtr, filePathEdit, formatCombo]() {
-        if (!pluginPtr) return;
+        if (!pluginPtr)
+            return;
         QString format = formatCombo->currentData().toString();
         QString filter;
-        if (format == "png") filter = "PNG (*.png)";
-        else if (format == "jpg") filter = "JPEG (*.jpg *.jpeg)";
-        else if (format == "bmp") filter = "BMP (*.bmp)";
-        else if (format == "tiff") filter = "TIFF (*.tif *.tiff)";
+        if (format == "png")
+            filter = "PNG (*.png)";
+        else if (format == "jpg")
+            filter = "JPEG (*.jpg *.jpeg)";
+        else if (format == "bmp")
+            filter = "BMP (*.bmp)";
+        else if (format == "tiff")
+            filter = "TIFF (*.tif *.tiff)";
 
-        QString path = QFileDialog::getSaveFileName(nullptr, tr("保存图像"),
-            pluginPtr->m_params["filePath"].toString(), filter);
+        QString path =
+            QFileDialog::getSaveFileName(nullptr, tr("保存图像"), pluginPtr->m_params["filePath"].toString(), filter);
         if (!path.isEmpty()) {
             filePathEdit->setText(path);
             pluginPtr->setParam("filePath", path);
@@ -240,20 +232,20 @@ QWidget* SaveImagePlugin::createConfigWidget()
 
     QPointer<SaveImagePlugin> pluginPtr2(this);
     connect(filePathEdit, &QLineEdit::textChanged, [pluginPtr2](const QString& text) {
-        if (pluginPtr2) pluginPtr2->setParam("filePath", text);
+        if (pluginPtr2)
+            pluginPtr2->setParam("filePath", text);
     });
 
     QPointer<SaveImagePlugin> pluginPtr3(this);
-    connect(formatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            [pluginPtr3, formatCombo](int index) {
-        if (pluginPtr3) pluginPtr3->setParam("format", formatCombo->itemData(index).toString());
+    connect(formatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), [pluginPtr3, formatCombo](int index) {
+        if (pluginPtr3)
+            pluginPtr3->setParam("format", formatCombo->itemData(index).toString());
     });
 
     return widget;
 }
 
-IModule* SaveImagePlugin::cloneImpl() const
-{
+IModule* SaveImagePlugin::cloneImpl() const {
     // 创建新实例
     SaveImagePlugin* clone = new SaveImagePlugin();
     // 直接拷贝基本类型成员变量，避免 QJsonObject 深拷贝的开销

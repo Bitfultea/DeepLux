@@ -3,9 +3,9 @@
 #include "PtyImpl.h"
 
 #include <QCoreApplication>
-#include <QFileInfo>
-#include <QDir>
 #include <QDebug>
+#include <QDir>
+#include <QFileInfo>
 #include <iostream>
 
 // Linux/macOS 实现
@@ -21,13 +21,9 @@
 namespace DeepLux {
 
 BashProcess::BashProcess(QObject* parent)
-    : QObject(parent)
-    , m_state(NotStarted)
-    , m_lastError(None)
-    , m_outputThrottle(new QTimer(this))
-{
+    : QObject(parent), m_state(NotStarted), m_lastError(None), m_outputThrottle(new QTimer(this)) {
     m_outputThrottle->setSingleShot(true);
-    m_outputThrottle->setInterval(50);  // 50ms 节流
+    m_outputThrottle->setInterval(50); // 50ms 节流
     connect(m_outputThrottle, &QTimer::timeout, this, [this]() {
         if (!m_pendingOutput.isEmpty()) {
             emit outputReady(m_pendingOutput);
@@ -36,27 +32,23 @@ BashProcess::BashProcess(QObject* parent)
     });
 
     // 延迟初始化
-    QTimer::singleShot(0, this, [this]() {
-        initialize();
-    });
+    QTimer::singleShot(0, this, [this]() { initialize(); });
 }
 
-BashProcess::~BashProcess()
-{
+BashProcess::~BashProcess() {
     if (m_impl) {
         m_impl->deleteLater();
     }
 }
 
-BashProcess& BashProcess::instance()
-{
+BashProcess& BashProcess::instance() {
     static BashProcess instance;
     return instance;
 }
 
-bool BashProcess::initialize()
-{
-    if (m_state != NotStarted) return m_state == Running;
+bool BashProcess::initialize() {
+    if (m_state != NotStarted)
+        return m_state == Running;
 
     m_state = Starting;
 
@@ -90,17 +82,12 @@ bool BashProcess::initialize()
         }
     });
 
-    connect(m_impl, &PtyImpl::errorReady, this, [this](const QByteArray& data) {
-        emit errorReady(data);
-    });
+    connect(m_impl, &PtyImpl::errorReady, this, [this](const QByteArray& data) { emit errorReady(data); });
 
-    connect(m_impl, &PtyImpl::finished, this, [this](int exitCode) {
-        emit commandFinished(exitCode);
-    });
+    connect(m_impl, &PtyImpl::finished, this, [this](int exitCode) { emit commandFinished(exitCode); });
 
-    connect(m_impl, &PtyImpl::errorOccurred, this, [this](const QString& error) {
-        emit this->errorOccurred(ShellCrashed, error);
-    });
+    connect(m_impl, &PtyImpl::errorOccurred, this,
+            [this](const QString& error) { emit this->errorOccurred(ShellCrashed, error); });
 
     // 启动 shell
     if (!m_impl->start(m_shellPath, QStringList())) {
@@ -113,13 +100,17 @@ bool BashProcess::initialize()
     return true;
 }
 
-QString BashProcess::detectShell()
-{
+QString BashProcess::detectShell() {
     QStringList candidates;
 #if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD) || defined(Q_OS_MACOS) || defined(Q_OS_DARWIN)
-    candidates << "/bin/bash" << "/usr/bin/bash" << "/bin/sh" << "/usr/bin/sh";
+    candidates << "/bin/bash"
+               << "/usr/bin/bash"
+               << "/bin/sh"
+               << "/usr/bin/sh";
 #elif defined(Q_OS_WINDOWS)
-    candidates << "bash" << "cmd.exe" << "powershell.exe";
+    candidates << "bash"
+               << "cmd.exe"
+               << "powershell.exe";
 #endif
 
     for (const QString& shell : candidates) {
@@ -130,65 +121,57 @@ QString BashProcess::detectShell()
     return QString();
 }
 
-void BashProcess::writeCommand(const QString& command)
-{
-    if (m_state != Running || !m_impl) return;
+void BashProcess::writeCommand(const QString& command) {
+    if (m_state != Running || !m_impl)
+        return;
 
     addToHistory(command);
     m_impl->write(command.toUtf8() + "\n");
 }
 
-void BashProcess::writeRaw(const QString& data)
-{
-    if (m_state != Running || !m_impl) return;
+void BashProcess::writeRaw(const QString& data) {
+    if (m_state != Running || !m_impl)
+        return;
     m_impl->write(data.toUtf8());
 }
 
-QStringList BashProcess::history() const
-{
+QStringList BashProcess::history() const {
     QReadLocker locker(&m_historyLock);
     return m_commandHistory;
 }
 
-void BashProcess::addToHistory(const QString& cmd)
-{
+void BashProcess::addToHistory(const QString& cmd) {
     QWriteLocker locker(&m_historyLock);
     if (!cmd.isEmpty() && (m_commandHistory.isEmpty() || m_commandHistory.last() != cmd)) {
         m_commandHistory.append(cmd);
     }
 }
 
-void BashProcess::clearHistory()
-{
+void BashProcess::clearHistory() {
     QWriteLocker locker(&m_historyLock);
     m_commandHistory.clear();
 }
 
-void BashProcess::resize(int cols, int rows)
-{
+void BashProcess::resize(int cols, int rows) {
     if (m_impl) {
         m_impl->resize(cols, rows);
     }
 }
 
-QString BashProcess::findAvailableShell()
-{
+QString BashProcess::findAvailableShell() {
     BashProcess tmp;
     return tmp.detectShell();
 }
 
-bool BashProcess::isShellAvailable(const QString& shellPath)
-{
+bool BashProcess::isShellAvailable(const QString& shellPath) {
     return QFileInfo(shellPath).exists() && QFileInfo(shellPath).isExecutable();
 }
 
-QString BashProcess::cliWrapperPath()
-{
+QString BashProcess::cliWrapperPath() {
     return QDir::homePath() + "/.deeplux/bash_rc";
 }
 
-bool BashProcess::createCliWrapper()
-{
+bool BashProcess::createCliWrapper() {
     QString wrapperPath = cliWrapperPath();
     QDir dir(QFileInfo(wrapperPath).dir());
     if (!dir.exists()) {

@@ -8,8 +8,7 @@
 
 namespace DeepLux {
 
-class FitLinePlugin : public ModuleBase
-{
+class FitLinePlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -18,17 +17,26 @@ public:
     explicit FitLinePlugin(QObject* parent = nullptr);
     ~FitLinePlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.fitline"; }
-    QString name() const override { return tr("直线拟合"); }
-    QString category() const override { return "geometry"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("对输入点集进行直线拟合"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.fitline";
+    }
+    QString name() const override {
+        return tr("直线拟合");
+    }
+    QString category() const override {
+        return "geometry";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("对输入点集进行直线拟合");
+    }
 
-    enum class FitMethod {
-        RANSAC,
-        LS
-    };
+    enum class FitMethod { RANSAC, LS };
 
     bool initialize() override;
     void shutdown() override;
@@ -40,9 +48,7 @@ protected:
     IModule* cloneImpl() const override;
 
 private:
-    bool fitLineRANSAC(const QVector<QPointF>& points,
-                       double& rx, double& ry,
-                       double& px, double& py,
+    bool fitLineRANSAC(const QVector<QPointF>& points, double& rx, double& ry, double& px, double& py,
                        const QString& method, double threshold, int iterations);
 
     // 输出参数

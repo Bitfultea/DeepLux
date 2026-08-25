@@ -19,8 +19,7 @@ struct MotionCapabilities {
 /**
  * @brief 运动控制接口
  */
-class IMotion : public QObject
-{
+class IMotion : public QObject {
     Q_OBJECT
 
 public:

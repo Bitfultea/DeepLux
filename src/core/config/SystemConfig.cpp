@@ -1,30 +1,28 @@
 #include "SystemConfig.h"
+
 #include "common/Logger.h"
 #include "platform/PathUtils.h"
+
 #include <QFile>
 #include <QJsonDocument>
 
 namespace DeepLux {
 
-SystemConfig& SystemConfig::instance()
-{
+SystemConfig& SystemConfig::instance() {
     static SystemConfig instance;
     return instance;
 }
 
-SystemConfig::SystemConfig()
-{
+SystemConfig::SystemConfig() {
     setDefaults();
     load();
 }
 
-SystemConfig::~SystemConfig()
-{
+SystemConfig::~SystemConfig() {
     save();
 }
 
-void SystemConfig::setDefaults()
-{
+void SystemConfig::setDefaults() {
     m_autoLoadSolution = false;
     m_solutionPath = PathUtils::projectPath();
     m_autoRun = false;
@@ -40,8 +38,7 @@ void SystemConfig::setDefaults()
     m_autoSaveInterval = 300;
 }
 
-bool SystemConfig::load()
-{
+bool SystemConfig::load() {
     QString configPath = PathUtils::configPath() + "/system.json";
     QFile file(configPath);
 
@@ -71,8 +68,7 @@ bool SystemConfig::load()
     return true;
 }
 
-bool SystemConfig::save()
-{
+bool SystemConfig::save() {
     QString configPath = PathUtils::configPath() + "/system.json";
     QFile file(configPath);
 
@@ -89,8 +85,7 @@ bool SystemConfig::save()
     return true;
 }
 
-void SystemConfig::loadFromJson(const QJsonObject& json)
-{
+void SystemConfig::loadFromJson(const QJsonObject& json) {
     // 自动加载
     m_autoLoadSolution = json["autoLoadSolution"].toBool(m_autoLoadSolution);
     m_solutionPath = json["solutionPath"].toString(m_solutionPath);
@@ -123,8 +118,7 @@ void SystemConfig::loadFromJson(const QJsonObject& json)
     m_cycleInterval = json["cycleInterval"].toInt(m_cycleInterval);
 }
 
-QJsonObject SystemConfig::saveToJson() const
-{
+QJsonObject SystemConfig::saveToJson() const {
     QJsonObject json;
 
     // 自动加载
@@ -161,8 +155,7 @@ QJsonObject SystemConfig::saveToJson() const
     return json;
 }
 
-void SystemConfig::setAutoLoadSolution(bool enabled)
-{
+void SystemConfig::setAutoLoadSolution(bool enabled) {
     if (m_autoLoadSolution != enabled) {
         m_autoLoadSolution = enabled;
         emit autoLoadSolutionChanged();
@@ -170,8 +163,7 @@ void SystemConfig::setAutoLoadSolution(bool enabled)
     }
 }
 
-void SystemConfig::setSolutionPath(const QString& path)
-{
+void SystemConfig::setSolutionPath(const QString& path) {
     if (m_solutionPath != path) {
         m_solutionPath = path;
         emit solutionPathChanged();
@@ -179,8 +171,7 @@ void SystemConfig::setSolutionPath(const QString& path)
     }
 }
 
-void SystemConfig::setAutoRun(bool enabled)
-{
+void SystemConfig::setAutoRun(bool enabled) {
     if (m_autoRun != enabled) {
         m_autoRun = enabled;
         emit autoRunChanged();
@@ -188,8 +179,7 @@ void SystemConfig::setAutoRun(bool enabled)
     }
 }
 
-void SystemConfig::setTheme(const QString& theme)
-{
+void SystemConfig::setTheme(const QString& theme) {
     if (m_theme != theme) {
         m_theme = theme;
         emit themeChanged();
@@ -197,8 +187,7 @@ void SystemConfig::setTheme(const QString& theme)
     }
 }
 
-void SystemConfig::setLanguage(const QString& lang)
-{
+void SystemConfig::setLanguage(const QString& lang) {
     if (m_language != lang) {
         m_language = lang;
         emit languageChanged();
@@ -206,8 +195,7 @@ void SystemConfig::setLanguage(const QString& lang)
     }
 }
 
-void SystemConfig::setMaxCameras(int max)
-{
+void SystemConfig::setMaxCameras(int max) {
     if (m_maxCameras != max) {
         m_maxCameras = max;
         emit maxCamerasChanged();
@@ -215,8 +203,7 @@ void SystemConfig::setMaxCameras(int max)
     }
 }
 
-void SystemConfig::setLogLevel(int level)
-{
+void SystemConfig::setLogLevel(int level) {
     if (m_logLevel != level) {
         m_logLevel = level;
         emit logLevelChanged();
@@ -224,8 +211,7 @@ void SystemConfig::setLogLevel(int level)
     }
 }
 
-void SystemConfig::setMaxLogFiles(int max)
-{
+void SystemConfig::setMaxLogFiles(int max) {
     if (m_maxLogFiles != max) {
         m_maxLogFiles = max;
         emit maxLogFilesChanged();
@@ -233,8 +219,7 @@ void SystemConfig::setMaxLogFiles(int max)
     }
 }
 
-void SystemConfig::setAutoLoadLayout(bool enabled)
-{
+void SystemConfig::setAutoLoadLayout(bool enabled) {
     if (m_autoLoadLayout != enabled) {
         m_autoLoadLayout = enabled;
         emit autoLoadLayoutChanged();
@@ -242,8 +227,7 @@ void SystemConfig::setAutoLoadLayout(bool enabled)
     }
 }
 
-void SystemConfig::setLayoutFile(const QString& path)
-{
+void SystemConfig::setLayoutFile(const QString& path) {
     if (m_layoutFile != path) {
         m_layoutFile = path;
         emit layoutFileChanged();
@@ -251,8 +235,7 @@ void SystemConfig::setLayoutFile(const QString& path)
     }
 }
 
-void SystemConfig::setProjectPath(const QString& path)
-{
+void SystemConfig::setProjectPath(const QString& path) {
     if (m_projectPath != path) {
         m_projectPath = path;
         emit projectPathChanged();
@@ -260,8 +243,7 @@ void SystemConfig::setProjectPath(const QString& path)
     }
 }
 
-void SystemConfig::setAutoSave(bool enabled)
-{
+void SystemConfig::setAutoSave(bool enabled) {
     if (m_autoSave != enabled) {
         m_autoSave = enabled;
         emit autoSaveChanged();
@@ -269,8 +251,7 @@ void SystemConfig::setAutoSave(bool enabled)
     }
 }
 
-void SystemConfig::setAutoSaveInterval(int seconds)
-{
+void SystemConfig::setAutoSaveInterval(int seconds) {
     if (m_autoSaveInterval != seconds) {
         m_autoSaveInterval = seconds;
         emit autoSaveIntervalChanged();
@@ -278,8 +259,7 @@ void SystemConfig::setAutoSaveInterval(int seconds)
     }
 }
 
-void SystemConfig::setEnableFileLog(bool enabled)
-{
+void SystemConfig::setEnableFileLog(bool enabled) {
     if (m_enableFileLog != enabled) {
         m_enableFileLog = enabled;
         emit enableFileLogChanged();
@@ -287,8 +267,7 @@ void SystemConfig::setEnableFileLog(bool enabled)
     }
 }
 
-void SystemConfig::setCycleInterval(int ms)
-{
+void SystemConfig::setCycleInterval(int ms) {
     if (m_cycleInterval != ms) {
         m_cycleInterval = ms;
         emit cycleIntervalChanged();
@@ -296,8 +275,7 @@ void SystemConfig::setCycleInterval(int ms)
     }
 }
 
-void SystemConfig::reset()
-{
+void SystemConfig::reset() {
     setDefaults();
     emit configChanged();
 }

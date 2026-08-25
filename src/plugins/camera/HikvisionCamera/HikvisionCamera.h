@@ -1,13 +1,14 @@
 #pragma once
 
 #include "core/interface/ICamera.h"
-#include <QString>
-#include <QRect>
+
 #include <QImage>
-#include <QVariantMap>
 #include <QMutex>
+#include <QRect>
 #include <QSemaphore>
+#include <QString>
 #include <QThread>
+#include <QVariantMap>
 
 #ifdef __linux__
 #include "MvCameraControl.h"
@@ -19,8 +20,7 @@ namespace DeepLux {
 /**
  * @brief Hikvision GigE/USB3 相机
  */
-class HikvisionCamera : public ICamera
-{
+class HikvisionCamera : public ICamera {
     Q_OBJECT
     Q_INTERFACES(DeepLux::ICamera)
 
@@ -29,54 +29,90 @@ public:
     ~HikvisionCamera() override;
 
     // ICamera interface
-    QString deviceId() const override { return m_deviceId; }
-    QString name() const override { return m_name; }
-    QString serialNumber() const override { return m_serialNumber; }
-    QString manufacturer() const override { return "Hikvision"; }
-    CameraCapabilities capabilities() const override { return m_capabilities; }
+    QString deviceId() const override {
+        return m_deviceId;
+    }
+    QString name() const override {
+        return m_name;
+    }
+    QString serialNumber() const override {
+        return m_serialNumber;
+    }
+    QString manufacturer() const override {
+        return "Hikvision";
+    }
+    CameraCapabilities capabilities() const override {
+        return m_capabilities;
+    }
 
     bool isPlatformSupported() const override;
     QString platformNotSupportedMessage() const override;
 
     bool connect() override;
     void disconnect() override;
-    bool isConnected() const override { return m_connected; }
+    bool isConnected() const override {
+        return m_connected;
+    }
 
     bool startAcquisition() override;
     void stopAcquisition() override;
-    bool isAcquiring() const override { return m_acquiring; }
+    bool isAcquiring() const override {
+        return m_acquiring;
+    }
     bool triggerSoftware() override;
     void setTriggerMode(TriggerMode mode) override;
-    TriggerMode triggerMode() const override { return m_triggerMode; }
+    TriggerMode triggerMode() const override {
+        return m_triggerMode;
+    }
 
     void setExposureTime(double microseconds) override;
-    double exposureTime() const override { return m_exposureTime; }
+    double exposureTime() const override {
+        return m_exposureTime;
+    }
     void setGain(double gain) override;
-    double gain() const override { return m_gain; }
+    double gain() const override {
+        return m_gain;
+    }
     void setFrameRate(double fps) override;
-    double frameRate() const override { return m_frameRate; }
+    double frameRate() const override {
+        return m_frameRate;
+    }
     void setRoi(int x, int y, int width, int height) override;
-    QRect roi() const override { return m_roi; }
+    QRect roi() const override {
+        return m_roi;
+    }
 
-    QImage lastImage() const override { QMutexLocker locker(&m_frameMutex); return m_lastImage; }
-    QVariantMap lastImageMetadata() const override { return m_metadata; }
-    int imageWidth() const override { return m_lastImage.width(); }
-    int imageHeight() const override { return m_lastImage.height(); }
+    QImage lastImage() const override {
+        QMutexLocker locker(&m_frameMutex);
+        return m_lastImage;
+    }
+    QVariantMap lastImageMetadata() const override {
+        return m_metadata;
+    }
+    int imageWidth() const override {
+        return m_lastImage.width();
+    }
+    int imageHeight() const override {
+        return m_lastImage.height();
+    }
 
     QWidget* createConfigWidget() override;
     QJsonObject toJson() const override;
     bool fromJson(const QJsonObject& json) override;
 
     // Internal for plugin
-    void* cameraHandle() const { return m_hCamera; }
+    void* cameraHandle() const {
+        return m_hCamera;
+    }
     void setDeviceInfo(const QString& name, const QString& serial);
 
 private:
     bool grabFrame();
+
 public:
     bool processFrame(unsigned char* pData, MV_FRAME_OUT_INFO* pFrameInfo);
 
-    void* m_hCamera;  // 海康相机句柄
+    void* m_hCamera; // 海康相机句柄
     QString m_deviceId;
     QString m_name;
     QString m_serialNumber;

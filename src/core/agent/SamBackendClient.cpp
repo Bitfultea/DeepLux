@@ -105,8 +105,8 @@ QString SamBackendClient::managedSitePackagesPath() const {
 
 QStringList SamBackendClient::requiredPythonModules() const {
     // Base modules always required (matches uncommented lines in requirements.txt)
-    QStringList base = {QStringLiteral("fastapi"), QStringLiteral("uvicorn"),
-                        QStringLiteral("numpy"),  QStringLiteral("PIL")};
+    QStringList base = {QStringLiteral("fastapi"), QStringLiteral("uvicorn"), QStringLiteral("numpy"),
+                        QStringLiteral("PIL")};
     // SAM model modules only required when a real model path is set (not stub mode)
     if (!m_modelPath.isEmpty()) {
         base << QStringLiteral("torch") << QStringLiteral("segment_anything") << QStringLiteral("cv2");
@@ -628,7 +628,7 @@ void SamBackendClient::onPredictReply() {
     const qint64 replySeq = m_pendingPredictReply ? m_pendingPredictReply->property("predictSeq").toLongLong() : 0;
     if (replySeq > 0 && replySeq <= m_lastCompletedSeq) {
         stopTimeout();
-        return;  // 过期结果，忽略
+        return; // 过期结果，忽略
     }
     m_lastCompletedSeq = replySeq;
 
@@ -703,7 +703,8 @@ void SamBackendClient::onPredictReply() {
 
 void SamBackendClient::onUnloadReply() {
     // Fix P0-3: 保存要 unload 的 embedding ID，防止新 set_image 设置了新 ID 后被旧 unload 清除
-    const QString unloadedId = m_pendingUnloadReply ? m_pendingUnloadReply->property("unloadEmbeddingId").toString() : QString();
+    const QString unloadedId =
+        m_pendingUnloadReply ? m_pendingUnloadReply->property("unloadEmbeddingId").toString() : QString();
     QString err;
     QJsonObject obj = parseReply(m_pendingUnloadReply, &err);
     Q_UNUSED(obj)

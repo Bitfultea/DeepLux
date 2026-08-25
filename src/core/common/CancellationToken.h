@@ -1,7 +1,7 @@
 #pragma once
 
-#include <QObject>
 #include <QMutex>
+#include <QObject>
 #include <atomic>
 
 namespace DeepLux {
@@ -12,8 +12,7 @@ namespace DeepLux {
  * Multiple consumers can check isCancelled() and react to cancellation.
  * Multiple producers can call cancel() to request cancellation.
  */
-class CancellationToken : public QObject
-{
+class CancellationToken : public QObject {
     Q_OBJECT
 
 public:
@@ -29,7 +28,9 @@ public:
     Q_INVOKABLE void reset();
 
     /// Atomic cancelled flag accessible without locking
-    bool isCancelledFast() const { return m_cancelled.load(std::memory_order_acquire); }
+    bool isCancelledFast() const {
+        return m_cancelled.load(std::memory_order_acquire);
+    }
 
 signals:
     void cancelled();
@@ -44,12 +45,12 @@ private:
  *
  * Usage: place at function entry to ensure cancellation on early return.
  */
-class ScopedCancellation
-{
+class ScopedCancellation {
 public:
     explicit ScopedCancellation(CancellationToken* token) : m_token(token) {}
     ~ScopedCancellation() {
-        if (m_token) m_token->cancel();
+        if (m_token)
+            m_token->cancel();
     }
     CancellationToken* m_token;
 };

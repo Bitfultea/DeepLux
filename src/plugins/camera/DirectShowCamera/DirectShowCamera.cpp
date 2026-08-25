@@ -1,10 +1,11 @@
 #include "DirectShowCamera.h"
+
 #include "core/common/Logger.h"
 
+#include <QDateTime>
+#include <QJsonObject>
 #include <QLabel>
 #include <QVBoxLayout>
-#include <QJsonObject>
-#include <QDateTime>
 
 #ifdef _WIN32
 #include <dshow.h>
@@ -15,10 +16,7 @@
 namespace DeepLux {
 
 DirectShowCamera::DirectShowCamera(const QString& devicePath, QObject* parent)
-    : ICamera(parent)
-    , m_devicePath(devicePath)
-    , m_name(QString("DirectShow %1").arg(devicePath))
-{
+    : ICamera(parent), m_devicePath(devicePath), m_name(QString("DirectShow %1").arg(devicePath)) {
     m_capabilities.softwareTrigger = true;
     m_capabilities.continuousMode = true;
     m_capabilities.exposureControl = true;
@@ -29,13 +27,11 @@ DirectShowCamera::DirectShowCamera(const QString& devicePath, QObject* parent)
     m_capabilities.supportedOnWindows = true;
 }
 
-DirectShowCamera::~DirectShowCamera()
-{
+DirectShowCamera::~DirectShowCamera() {
     disconnect();
 }
 
-bool DirectShowCamera::connect()
-{
+bool DirectShowCamera::connect() {
 #ifdef _WIN32
     if (m_connected) {
         return true;
@@ -56,8 +52,7 @@ bool DirectShowCamera::connect()
 #endif
 }
 
-void DirectShowCamera::disconnect()
-{
+void DirectShowCamera::disconnect() {
 #ifdef _WIN32
     if (!m_connected) {
         return;
@@ -72,8 +67,7 @@ void DirectShowCamera::disconnect()
 #endif
 }
 
-bool DirectShowCamera::openDevice()
-{
+bool DirectShowCamera::openDevice() {
 #ifdef _WIN32
     if (m_pGraph) {
         return true;
@@ -87,16 +81,15 @@ bool DirectShowCamera::openDevice()
     }
 
     // 创建 Filter Graph
-    hr = CoCreateInstance(CLSID_FilterGraph, nullptr, CLSCTX_INPROC_SERVER,
-                          IID_IGraphBuilder, (void**)&m_pGraph);
+    hr = CoCreateInstance(CLSID_FilterGraph, nullptr, CLSCTX_INPROC_SERVER, IID_IGraphBuilder, (void**) &m_pGraph);
     if (FAILED(hr)) {
         qWarning() << "Failed to create FilterGraph:" << hr;
         return false;
     }
 
     // 创建 Capture Graph Builder
-    hr = CoCreateInstance(CLSID_CaptureGraphBuilder2, nullptr, CLSCTX_INPROC_SERVER,
-                          IID_ICaptureGraphBuilder2, (void**)&m_pCapture);
+    hr = CoCreateInstance(CLSID_CaptureGraphBuilder2, nullptr, CLSCTX_INPROC_SERVER, IID_ICaptureGraphBuilder2,
+                          (void**) &m_pCapture);
     if (FAILED(hr)) {
         qWarning() << "Failed to create CaptureGraphBuilder2:" << hr;
         closeDevice();
@@ -112,7 +105,7 @@ bool DirectShowCamera::openDevice()
     }
 
     // 创建媒体控制接口
-    hr = m_pGraph->QueryInterface(IID_IMediaControl, (void**)&m_pControl);
+    hr = m_pGraph->QueryInterface(IID_IMediaControl, (void**) &m_pControl);
     if (FAILED(hr)) {
         qWarning() << "Failed to get IMediaControl:" << hr;
         closeDevice();
@@ -121,8 +114,8 @@ bool DirectShowCamera::openDevice()
 
     // 创建设备枚举器
     ICreateDevEnum* pDevEnum = nullptr;
-    hr = CoCreateInstance(CLSID_SystemDeviceEnum, nullptr, CLSCTX_INPROC_SERVER,
-                          IID_ICreateDevEnum, (void**)&pDevEnum);
+    hr =
+        CoCreateInstance(CLSID_SystemDeviceEnum, nullptr, CLSCTX_INPROC_SERVER, IID_ICreateDevEnum, (void**) &pDevEnum);
     if (FAILED(hr)) {
         qWarning() << "Failed to create SystemDeviceEnum:" << hr;
         closeDevice();
@@ -143,19 +136,19 @@ bool DirectShowCamera::openDevice()
     // 遍历设备查找目标
     IMoniker* pMoniker = nullptr;
     ULONG cFetched = 0;
-    int deviceIndex = m_devicePath.mid(5).toInt();  // "DS0" -> 0, "DS1" -> 1
+    int deviceIndex = m_devicePath.mid(5).toInt(); // "DS0" -> 0, "DS1" -> 1
 
     while (pEnum->Next(1, &pMoniker, &cFetched) == S_OK) {
         if (deviceIndex == 0) {
             // 绑定设备
-            hr = pMoniker->BindToObject(nullptr, nullptr, IID_IBaseFilter, (void**)&m_pDeviceFilter);
+            hr = pMoniker->BindToObject(nullptr, nullptr, IID_IBaseFilter, (void**) &m_pDeviceFilter);
             if (SUCCEEDED(hr)) {
                 // 添加到 Graph
                 hr = m_pGraph->AddFilter(m_pDeviceFilter, L"Capture Device");
                 if (SUCCEEDED(hr)) {
                     // 获取设备名称
                     IPropertyBag* pPropBag = nullptr;
-                    hr = pMoniker->BindToStorage(nullptr, nullptr, IID_IPropertyBag, (void**)&pPropBag);
+                    hr = pMoniker->BindToStorage(nullptr, nullptr, IID_IPropertyBag, (void**) &pPropBag);
                     if (SUCCEEDED(hr)) {
                         VARIANT varName;
                         VariantInit(&varName);
@@ -189,8 +182,7 @@ bool DirectShowCamera::openDevice()
 #endif
 }
 
-void DirectShowCamera::closeDevice()
-{
+void DirectShowCamera::closeDevice() {
 #ifdef _WIN32
     if (m_pControl) {
         m_pControl->Stop();
@@ -218,8 +210,7 @@ void DirectShowCamera::closeDevice()
 #endif
 }
 
-bool DirectShowCamera::configureFormat(int width, int height)
-{
+bool DirectShowCamera::configureFormat(int width, int height) {
 #ifdef _WIN32
     Q_UNUSED(width)
     Q_UNUSED(height)
@@ -232,8 +223,7 @@ bool DirectShowCamera::configureFormat(int width, int height)
 #endif
 }
 
-bool DirectShowCamera::startAcquisition()
-{
+bool DirectShowCamera::startAcquisition() {
 #ifdef _WIN32
     if (!m_connected || !m_pControl) {
         return false;
@@ -259,8 +249,7 @@ bool DirectShowCamera::startAcquisition()
 #endif
 }
 
-void DirectShowCamera::stopAcquisition()
-{
+void DirectShowCamera::stopAcquisition() {
 #ifdef _WIN32
     if (!m_acquiring || !m_pControl) {
         return;
@@ -273,13 +262,11 @@ void DirectShowCamera::stopAcquisition()
 #endif
 }
 
-bool DirectShowCamera::triggerSoftware()
-{
+bool DirectShowCamera::triggerSoftware() {
     return grabFrame();
 }
 
-bool DirectShowCamera::grabFrame()
-{
+bool DirectShowCamera::grabFrame() {
 #ifdef _WIN32
     if (!m_connected) {
         return false;
@@ -301,19 +288,17 @@ bool DirectShowCamera::grabFrame()
 #endif
 }
 
-void DirectShowCamera::setTriggerMode(TriggerMode mode)
-{
+void DirectShowCamera::setTriggerMode(TriggerMode mode) {
     m_triggerMode = mode;
 }
 
-void DirectShowCamera::setExposureTime(double microseconds)
-{
+void DirectShowCamera::setExposureTime(double microseconds) {
     m_exposureTime = microseconds;
     // DirectShow 使用 IAMCameraControl 设置曝光
 #ifdef _WIN32
     if (m_pDeviceFilter) {
         IAMCameraControl* pCameraControl = nullptr;
-        HRESULT hr = m_pDeviceFilter->QueryInterface(IID_IAMCameraControl, (void**)&pCameraControl);
+        HRESULT hr = m_pDeviceFilter->QueryInterface(IID_IAMCameraControl, (void**) &pCameraControl);
         if (SUCCEEDED(hr)) {
             long minVal, maxVal, step, defVal;
             pCameraControl->GetRange(CameraControl_Exposure, &minVal, &maxVal, &step, &defVal, nullptr);
@@ -325,13 +310,12 @@ void DirectShowCamera::setExposureTime(double microseconds)
 #endif
 }
 
-void DirectShowCamera::setGain(double gain)
-{
+void DirectShowCamera::setGain(double gain) {
     m_gain = gain;
 #ifdef _WIN32
     if (m_pDeviceFilter) {
         IAMCameraControl* pCameraControl = nullptr;
-        HRESULT hr = m_pDeviceFilter->QueryInterface(IID_IAMCameraControl, (void**)&pCameraControl);
+        HRESULT hr = m_pDeviceFilter->QueryInterface(IID_IAMCameraControl, (void**) &pCameraControl);
         if (SUCCEEDED(hr)) {
             long minVal, maxVal, step, defVal;
             pCameraControl->GetRange(CameraControl_Gain, &minVal, &maxVal, &step, &defVal, nullptr);
@@ -343,20 +327,17 @@ void DirectShowCamera::setGain(double gain)
 #endif
 }
 
-void DirectShowCamera::setFrameRate(double fps)
-{
+void DirectShowCamera::setFrameRate(double fps) {
     m_frameRate = fps;
     // DirectShow 帧率配置需要在 IAMStreamConfig 上进行
 }
 
-void DirectShowCamera::setRoi(int x, int y, int width, int height)
-{
+void DirectShowCamera::setRoi(int x, int y, int width, int height) {
     m_roi = QRect(x, y, width, height);
     configureFormat(width, height);
 }
 
-QWidget* DirectShowCamera::createConfigWidget()
-{
+QWidget* DirectShowCamera::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -369,8 +350,7 @@ QWidget* DirectShowCamera::createConfigWidget()
     return widget;
 }
 
-QJsonObject DirectShowCamera::toJson() const
-{
+QJsonObject DirectShowCamera::toJson() const {
     QJsonObject json;
     json["devicePath"] = m_devicePath;
     json["name"] = m_name;
@@ -384,8 +364,7 @@ QJsonObject DirectShowCamera::toJson() const
     return json;
 }
 
-bool DirectShowCamera::fromJson(const QJsonObject& json)
-{
+bool DirectShowCamera::fromJson(const QJsonObject& json) {
     m_devicePath = json["devicePath"].toString(m_devicePath);
     m_name = json["name"].toString(m_name);
     m_exposureTime = json["exposureTime"].toDouble(m_exposureTime);

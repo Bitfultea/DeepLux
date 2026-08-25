@@ -1,10 +1,10 @@
 #include "AnnotationOverlayWidget.h"
 
+#include <QCoreApplication>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPainterPathStroker>
-#include <QCoreApplication>
 
 namespace DeepLux {
 

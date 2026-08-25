@@ -1,30 +1,26 @@
 #include "HikvisionCameraPlugin.h"
+
 #include "HikvisionCamera.h"
 #include "core/common/Logger.h"
 
 #ifdef __linux__
-#include "MvCameraControl.h"
 #include "CameraParams.h"
+#include "MvCameraControl.h"
 #endif
 
 using namespace std;
 
 namespace DeepLux {
 
-HikvisionCameraPlugin::HikvisionCameraPlugin(QObject* parent)
-    : ICameraPlugin(parent)
-    , m_sdkInitialized(false)
-{
+HikvisionCameraPlugin::HikvisionCameraPlugin(QObject* parent) : ICameraPlugin(parent), m_sdkInitialized(false) {
     initSDK();
 }
 
-HikvisionCameraPlugin::~HikvisionCameraPlugin()
-{
+HikvisionCameraPlugin::~HikvisionCameraPlugin() {
     cleanupSDK();
 }
 
-bool HikvisionCameraPlugin::initSDK()
-{
+bool HikvisionCameraPlugin::initSDK() {
 #ifdef __linux__
     // 初始化 SDK
     int nRet = MV_CC_Initialize();
@@ -39,8 +35,7 @@ bool HikvisionCameraPlugin::initSDK()
 #endif
 }
 
-void HikvisionCameraPlugin::cleanupSDK()
-{
+void HikvisionCameraPlugin::cleanupSDK() {
 #ifdef __linux__
     if (m_sdkInitialized) {
         MV_CC_Finalize();
@@ -49,8 +44,7 @@ void HikvisionCameraPlugin::cleanupSDK()
 #endif
 }
 
-bool HikvisionCameraPlugin::isAvailable() const
-{
+bool HikvisionCameraPlugin::isAvailable() const {
 #ifdef __linux__
     if (!m_sdkInitialized) {
         return false;
@@ -70,8 +64,7 @@ bool HikvisionCameraPlugin::isAvailable() const
 #endif
 }
 
-QString HikvisionCameraPlugin::availabilityMessage() const
-{
+QString HikvisionCameraPlugin::availabilityMessage() const {
 #ifdef __linux__
     if (!m_sdkInitialized) {
         return QStringLiteral("Hikvision SDK 未初始化");
@@ -94,8 +87,7 @@ QString HikvisionCameraPlugin::availabilityMessage() const
 #endif
 }
 
-QList<CameraInfo> HikvisionCameraPlugin::discoverCameras()
-{
+QList<CameraInfo> HikvisionCameraPlugin::discoverCameras() {
     QList<CameraInfo> cameras;
 
 #ifdef __linux__
@@ -128,24 +120,25 @@ QList<CameraInfo> HikvisionCameraPlugin::discoverCameras()
         if (pDeviceInfo->nTLayerType == MV_GIGE_DEVICE) {
             info.deviceId = QString("GigE:%1").arg(i);
             info.name = QString::fromUtf8(reinterpret_cast<char*>(pDeviceInfo->SpecialInfo.stGigEInfo.chModelName));
-            info.serialNumber = QString::fromUtf8(reinterpret_cast<char*>(pDeviceInfo->SpecialInfo.stGigEInfo.chSerialNumber));
+            info.serialNumber =
+                QString::fromUtf8(reinterpret_cast<char*>(pDeviceInfo->SpecialInfo.stGigEInfo.chSerialNumber));
             info.ipAddress = QString("%1.%2.%3.%4")
-                .arg(pDeviceInfo->SpecialInfo.stGigEInfo.nCurrentIp & 0xFF)
-                .arg((pDeviceInfo->SpecialInfo.stGigEInfo.nCurrentIp >> 8) & 0xFF)
-                .arg((pDeviceInfo->SpecialInfo.stGigEInfo.nCurrentIp >> 16) & 0xFF)
-                .arg((pDeviceInfo->SpecialInfo.stGigEInfo.nCurrentIp >> 24) & 0xFF);
+                                 .arg(pDeviceInfo->SpecialInfo.stGigEInfo.nCurrentIp & 0xFF)
+                                 .arg((pDeviceInfo->SpecialInfo.stGigEInfo.nCurrentIp >> 8) & 0xFF)
+                                 .arg((pDeviceInfo->SpecialInfo.stGigEInfo.nCurrentIp >> 16) & 0xFF)
+                                 .arg((pDeviceInfo->SpecialInfo.stGigEInfo.nCurrentIp >> 24) & 0xFF);
         }
         // USB 设备
         else if (pDeviceInfo->nTLayerType == MV_USB_DEVICE) {
             info.deviceId = QString("USB:%1").arg(i);
             info.name = QString::fromUtf8(reinterpret_cast<char*>(pDeviceInfo->SpecialInfo.stUsb3VInfo.chModelName));
-            info.serialNumber = QString::fromUtf8(reinterpret_cast<char*>(pDeviceInfo->SpecialInfo.stUsb3VInfo.chSerialNumber));
+            info.serialNumber =
+                QString::fromUtf8(reinterpret_cast<char*>(pDeviceInfo->SpecialInfo.stUsb3VInfo.chSerialNumber));
         }
 
         cameras.append(info);
         Logger::instance().info(
-            QString("Hikvision: 发现相机 %1 - %2 (SN: %3)")
-                .arg(info.deviceId).arg(info.name).arg(info.serialNumber),
+            QString("Hikvision: 发现相机 %1 - %2 (SN: %3)").arg(info.deviceId).arg(info.name).arg(info.serialNumber),
             "Camera");
     }
 
@@ -156,8 +149,7 @@ QList<CameraInfo> HikvisionCameraPlugin::discoverCameras()
     return cameras;
 }
 
-QObject* HikvisionCameraPlugin::createCamera(const CameraInfo& info)
-{
+QObject* HikvisionCameraPlugin::createCamera(const CameraInfo& info) {
     if (info.pluginId != "hikvision") {
         return nullptr;
     }
@@ -195,9 +187,7 @@ QObject* HikvisionCameraPlugin::createCamera(const CameraInfo& info)
     void* hCamera = nullptr;
     nRet = MV_CC_CreateHandle(&hCamera, deviceList.pDeviceInfo[deviceIndex]);
     if (nRet != MV_OK) {
-        Logger::instance().warning(
-            QString("创建相机句柄失败: 0x%1").arg(nRet, 0, 16),
-            "Camera");
+        Logger::instance().warning(QString("创建相机句柄失败: 0x%1").arg(nRet, 0, 16), "Camera");
         return nullptr;
     }
 

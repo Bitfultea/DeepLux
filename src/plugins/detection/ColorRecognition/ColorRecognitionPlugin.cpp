@@ -1,8 +1,10 @@
 #include "ColorRecognitionPlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QLabel>
+
 #include <QComboBox>
+#include <QLabel>
+#include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -10,21 +12,14 @@
 
 namespace DeepLux {
 
-ColorRecognitionPlugin::ColorRecognitionPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"targetColor", "红色"}
-    };
+ColorRecognitionPlugin::ColorRecognitionPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"targetColor", "红色"}};
     m_params = m_defaultParams;
 }
 
-ColorRecognitionPlugin::~ColorRecognitionPlugin()
-{
-}
+ColorRecognitionPlugin::~ColorRecognitionPlugin() {}
 
-bool ColorRecognitionPlugin::initialize()
-{
+bool ColorRecognitionPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -32,8 +27,7 @@ bool ColorRecognitionPlugin::initialize()
     return true;
 }
 
-void ColorRecognitionPlugin::shutdown()
-{
+void ColorRecognitionPlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     m_resultMat.release();
     m_mask.release();
@@ -41,8 +35,7 @@ void ColorRecognitionPlugin::shutdown()
     ModuleBase::shutdown();
 }
 
-bool ColorRecognitionPlugin::process(const ImageData& input, ImageData& output)
-{
+bool ColorRecognitionPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -63,14 +56,12 @@ bool ColorRecognitionPlugin::process(const ImageData& input, ImageData& output)
     m_targetColor = params["targetColor"].toString();
 
     // 定义颜色范围
-    std::vector<ColorRange> colorRanges = {
-        {"红色", cv::Scalar(0, 100, 100), cv::Scalar(10, 255, 255)},
-        {"绿色", cv::Scalar(35, 100, 100), cv::Scalar(85, 255, 255)},
-        {"蓝色", cv::Scalar(100, 100, 100), cv::Scalar(130, 255, 255)},
-        {"黄色", cv::Scalar(15, 100, 100), cv::Scalar(35, 255, 255)},
-        {"橙色", cv::Scalar(10, 100, 100), cv::Scalar(25, 255, 255)},
-        {"紫色", cv::Scalar(130, 100, 100), cv::Scalar(170, 255, 255)}
-    };
+    std::vector<ColorRange> colorRanges = {{"红色", cv::Scalar(0, 100, 100), cv::Scalar(10, 255, 255)},
+                                           {"绿色", cv::Scalar(35, 100, 100), cv::Scalar(85, 255, 255)},
+                                           {"蓝色", cv::Scalar(100, 100, 100), cv::Scalar(130, 255, 255)},
+                                           {"黄色", cv::Scalar(15, 100, 100), cv::Scalar(35, 255, 255)},
+                                           {"橙色", cv::Scalar(10, 100, 100), cv::Scalar(25, 255, 255)},
+                                           {"紫色", cv::Scalar(130, 100, 100), cv::Scalar(170, 255, 255)}};
 
     // 转换为HSV颜色空间
     cv::Mat hsv;
@@ -89,7 +80,7 @@ bool ColorRecognitionPlugin::process(const ImageData& input, ImageData& output)
     }
 
     if (!found) {
-        selectedRange = colorRanges[0];  // 默认红色
+        selectedRange = colorRanges[0]; // 默认红色
     }
 
     // 检测颜色
@@ -143,8 +134,8 @@ bool ColorRecognitionPlugin::process(const ImageData& input, ImageData& output)
     output.setData("color_area", area);
     output.setData("color_count", m_colorCount);
 
-    Logger::instance().debug(QString("颜色识别: %1, 面积=%2, 数量=%3")
-                                .arg(m_targetColor).arg(area).arg(m_colorCount), "ColorRecognition");
+    Logger::instance().debug(QString("颜色识别: %1, 面积=%2, 数量=%3").arg(m_targetColor).arg(area).arg(m_colorCount),
+                             "ColorRecognition");
 
     return true;
 #else
@@ -154,9 +145,7 @@ bool ColorRecognitionPlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-bool ColorRecognitionPlugin::detectColor(const cv::Mat& hsv, const ColorRange& range,
-                                         cv::Mat& mask, double& area)
-{
+bool ColorRecognitionPlugin::detectColor(const cv::Mat& hsv, const ColorRange& range, cv::Mat& mask, double& area) {
 #ifdef DEEPLUX_HAS_OPENCV
     cv::inRange(hsv, range.lower, range.upper, mask);
 
@@ -174,15 +163,13 @@ bool ColorRecognitionPlugin::detectColor(const cv::Mat& hsv, const ColorRange& r
 #endif
 }
 
-bool ColorRecognitionPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool ColorRecognitionPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     Q_UNUSED(params);
     error.clear();
     return true;
 }
 
-QWidget* ColorRecognitionPlugin::createConfigWidget()
-{
+QWidget* ColorRecognitionPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -196,20 +183,19 @@ QWidget* ColorRecognitionPlugin::createConfigWidget()
     colorCombo->addItem("紫色", "紫色");
 
     int idx = colorCombo->findData(m_params["targetColor"].toString());
-    if (idx >= 0) colorCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        colorCombo->setCurrentIndex(idx);
     layout->addWidget(colorCombo);
 
     layout->addStretch();
 
-    connect(colorCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, colorCombo](int) {
-        setParam("targetColor", colorCombo->currentData().toString());
-    });
+    connect(colorCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this, colorCombo](int) { setParam("targetColor", colorCombo->currentData().toString()); });
 
     return widget;
 }
 
-IModule* ColorRecognitionPlugin::cloneImpl() const
-{
+IModule* ColorRecognitionPlugin::cloneImpl() const {
     ColorRecognitionPlugin* clone = new ColorRecognitionPlugin();
     return clone;
 }

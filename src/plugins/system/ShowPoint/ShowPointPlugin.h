@@ -8,8 +8,7 @@
 
 namespace DeepLux {
 
-class ShowPointPlugin : public ModuleBase
-{
+class ShowPointPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -18,12 +17,24 @@ public:
     explicit ShowPointPlugin(QObject* parent = nullptr);
     ~ShowPointPlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.showpoint"; }
-    QString name() const override { return tr("显示点"); }
-    QString category() const override { return "system"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("在图像上显示点坐标"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.showpoint";
+    }
+    QString name() const override {
+        return tr("显示点");
+    }
+    QString category() const override {
+        return "system";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("在图像上显示点坐标");
+    }
 
     bool initialize() override;
     void shutdown() override;

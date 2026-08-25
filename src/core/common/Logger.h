@@ -1,25 +1,19 @@
 #pragma once
 
+#include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QMutex>
 #include <QObject>
 #include <QString>
-#include <QDateTime>
-#include <QFile>
 #include <QTextStream>
-#include <QDir>
-#include <QMutex>
 
 namespace DeepLux {
 
 /**
  * @brief 日志类型
  */
-enum class LogLevel {
-    Debug,
-    Info,
-    Warning,
-    Error,
-    Success
-};
+enum class LogLevel { Debug, Info, Warning, Error, Success };
 
 /**
  * @brief 日志条目
@@ -36,8 +30,7 @@ struct LogEntry {
  *
  * 单例模式，全局日志记录器
  */
-class Logger : public QObject
-{
+class Logger : public QObject {
     Q_OBJECT
 
 public:

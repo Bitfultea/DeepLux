@@ -1,28 +1,21 @@
 #include "TCPClientPlugin.h"
+
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
+
 #include <QComboBox>
 #include <QFormLayout>
 #include <QLineEdit>
 #include <QSpinBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
 TCPClientPlugin::TCPClientPlugin(QObject* parent)
-    : ModuleBase(parent)
-    , m_socket(new QTcpSocket(this))
-    , m_timeoutTimer(new QTimer(this))
-    , m_connectLoop(nullptr)
-    , m_readLoop(nullptr)
-{
+    : ModuleBase(parent), m_socket(new QTcpSocket(this)), m_timeoutTimer(new QTimer(this)), m_connectLoop(nullptr),
+      m_readLoop(nullptr) {
     m_defaultParams = QJsonObject{
-        {"host", "127.0.0.1"},
-        {"port", 8080},
-        {"timeout", 3000},
-        {"writeData", ""},
-        {"readVariable", "tcp_data"},
-        {"operation", "WriteRead"}
-    };
+        {"host", "127.0.0.1"},     {"port", 8080}, {"timeout", 3000}, {"writeData", ""}, {"readVariable", "tcp_data"},
+        {"operation", "WriteRead"}};
     m_params = m_defaultParams;
 
     // Timeout timer fires only once per use; we recreate it per-operation
@@ -34,13 +27,11 @@ TCPClientPlugin::TCPClientPlugin(QObject* parent)
     connect(m_socket, &QTcpSocket::readyRead, this, &TCPClientPlugin::onReadyRead);
 }
 
-TCPClientPlugin::~TCPClientPlugin()
-{
+TCPClientPlugin::~TCPClientPlugin() {
     disconnectFromServer();
 }
 
-bool TCPClientPlugin::initialize()
-{
+bool TCPClientPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -48,21 +39,18 @@ bool TCPClientPlugin::initialize()
     return true;
 }
 
-void TCPClientPlugin::onConnected()
-{
+void TCPClientPlugin::onConnected() {
     Logger::instance().debug("TCPClient: Connected to server", "Communication");
     if (m_connectLoop) {
         m_connectLoop->quit();
     }
 }
 
-void TCPClientPlugin::onDisconnected()
-{
+void TCPClientPlugin::onDisconnected() {
     Logger::instance().debug("TCPClient: Disconnected from server", "Communication");
 }
 
-void TCPClientPlugin::onError(QAbstractSocket::SocketError error)
-{
+void TCPClientPlugin::onError(QAbstractSocket::SocketError error) {
     Q_UNUSED(error);
     emit errorOccurred(tr("TCP错误: %1").arg(m_socket->errorString()));
     // Quit any running event loops so we don't stay stuck
@@ -74,28 +62,24 @@ void TCPClientPlugin::onError(QAbstractSocket::SocketError error)
     }
 }
 
-void TCPClientPlugin::onReadyRead()
-{
+void TCPClientPlugin::onReadyRead() {
     m_readBuffer += m_socket->readAll();
     if (m_readLoop) {
         m_readLoop->quit();
     }
 }
 
-void TCPClientPlugin::onConnectTimeout()
-{
+void TCPClientPlugin::onConnectTimeout() {
     if (m_socket->state() != QAbstractSocket::ConnectedState) {
         m_socket->abort();
-        emit errorOccurred(tr("连接到 %1:%2 超时 (%3ms)")
-            .arg(m_host).arg(m_port).arg(m_timeout));
+        emit errorOccurred(tr("连接到 %1:%2 超时 (%3ms)").arg(m_host).arg(m_port).arg(m_timeout));
     }
     if (m_connectLoop) {
         m_connectLoop->quit();
     }
 }
 
-void TCPClientPlugin::onReadTimeout()
-{
+void TCPClientPlugin::onReadTimeout() {
     m_readTimedOut = true;
     m_socket->disconnectFromHost();
     if (m_readLoop) {
@@ -103,8 +87,7 @@ void TCPClientPlugin::onReadTimeout()
     }
 }
 
-bool TCPClientPlugin::connectToServerAsync()
-{
+bool TCPClientPlugin::connectToServerAsync() {
     if (m_socket->state() == QAbstractSocket::ConnectedState) {
         m_socket->disconnectFromHost();
         m_socket->waitForDisconnected(100);
@@ -132,16 +115,13 @@ bool TCPClientPlugin::connectToServerAsync()
     return true;
 }
 
-void TCPClientPlugin::disconnectFromServer()
-{
-    if (m_socket->state() == QAbstractSocket::ConnectedState ||
-        m_socket->state() == QAbstractSocket::ConnectingState) {
+void TCPClientPlugin::disconnectFromServer() {
+    if (m_socket->state() == QAbstractSocket::ConnectedState || m_socket->state() == QAbstractSocket::ConnectingState) {
         m_socket->abort();
     }
 }
 
-QString TCPClientPlugin::readFromServerAsync()
-{
+QString TCPClientPlugin::readFromServerAsync() {
     m_readBuffer.clear();
     m_readTimedOut = false;
 
@@ -171,8 +151,7 @@ QString TCPClientPlugin::readFromServerAsync()
     return QString::fromUtf8(m_readBuffer);
 }
 
-bool TCPClientPlugin::writeToServer(const QString& data)
-{
+bool TCPClientPlugin::writeToServer(const QString& data) {
     if (m_socket->state() != QAbstractSocket::ConnectedState) {
         emit errorOccurred(tr("未连接到服务器"));
         return false;
@@ -189,8 +168,7 @@ bool TCPClientPlugin::writeToServer(const QString& data)
     return true;
 }
 
-bool TCPClientPlugin::process(const ImageData& input, ImageData& output)
-{
+bool TCPClientPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     QJsonObject params = currentParams();
@@ -243,8 +221,7 @@ bool TCPClientPlugin::process(const ImageData& input, ImageData& output)
     return success;
 }
 
-bool TCPClientPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool TCPClientPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     if (params["host"].toString().isEmpty()) {
         error = QString("Host cannot be empty");
         return false;
@@ -256,8 +233,7 @@ bool TCPClientPlugin::doValidateParams(const QJsonObject& params, QString& error
     return true;
 }
 
-QWidget* TCPClientPlugin::createConfigWidget()
-{
+QWidget* TCPClientPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -284,7 +260,8 @@ QWidget* TCPClientPlugin::createConfigWidget()
     operationCombo->addItem(tr("读取"), "Read");
     operationCombo->addItem(tr("写入并读取"), "WriteRead");
     int idx = operationCombo->findData(m_params["operation"].toString("WriteRead"));
-    if (idx >= 0) operationCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        operationCombo->setCurrentIndex(idx);
 
     // Write data
     QLineEdit* writeEdit = new QLineEdit(m_params["writeData"].toString());
@@ -303,35 +280,24 @@ QWidget* TCPClientPlugin::createConfigWidget()
     layout->addStretch();
 
     // Connections
-    connect(hostEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("host", text);
-    });
+    connect(hostEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("host", text); });
 
-    connect(portSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        setParam("port", value);
-    });
+    connect(portSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) { setParam("port", value); });
 
-    connect(timeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        setParam("timeout", value);
-    });
+    connect(timeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [=](int value) { setParam("timeout", value); });
 
-    connect(operationCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        setParam("operation", operationCombo->currentData().toString());
-    });
+    connect(operationCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int) { setParam("operation", operationCombo->currentData().toString()); });
 
-    connect(writeEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("writeData", text);
-    });
+    connect(writeEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("writeData", text); });
 
-    connect(readVarEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("readVariable", text);
-    });
+    connect(readVarEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("readVariable", text); });
 
     return widget;
 }
 
-IModule* TCPClientPlugin::cloneImpl() const
-{
+IModule* TCPClientPlugin::cloneImpl() const {
     return new TCPClientPlugin();
 }
 

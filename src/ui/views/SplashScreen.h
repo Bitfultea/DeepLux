@@ -1,18 +1,17 @@
 #pragma once
 
-#include <QWidget>
+#include <QDesktopWidget>
 #include <QLabel>
 #include <QProgressBar>
-#include <QVBoxLayout>
-#include <QTimer>
-#include <QDesktopWidget>
 #include <QStringList>
 #include <QTextEdit>
+#include <QTimer>
+#include <QVBoxLayout>
+#include <QWidget>
 
 namespace DeepLux {
 
-class SplashScreen : public QWidget
-{
+class SplashScreen : public QWidget {
     Q_OBJECT
 
 public:

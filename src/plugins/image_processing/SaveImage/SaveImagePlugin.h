@@ -8,8 +8,7 @@
 
 namespace DeepLux {
 
-class SaveImagePlugin : public ModuleBase
-{
+class SaveImagePlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -18,12 +17,24 @@ public:
     explicit SaveImagePlugin(QObject* parent = nullptr);
     ~SaveImagePlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.saveimage"; }
-    QString name() const override { return tr("保存图像"); }
-    QString category() const override { return "image_processing"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("保存图像到文件"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.saveimage";
+    }
+    QString name() const override {
+        return tr("保存图像");
+    }
+    QString category() const override {
+        return "image_processing";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("保存图像到文件");
+    }
 
     bool initialize() override;
     void shutdown() override;

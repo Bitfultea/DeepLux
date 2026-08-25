@@ -1,8 +1,8 @@
 #ifndef DEEPLUX_AGENT_CONTROLLER_H
 #define DEEPLUX_AGENT_CONTROLLER_H
 
-#include <QJsonObject>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QMutex>
 #include <QObject>
 #include <memory>
@@ -16,8 +16,7 @@ struct GuiEvent;
 struct AgentActionLogEntry;
 struct AgentMessage;
 
-class AgentController : public QObject
-{
+class AgentController : public QObject {
     Q_OBJECT
 
 public:
@@ -25,10 +24,14 @@ public:
 
     bool initialize();
     void shutdown();
-    bool isInitialized() const { return m_initialized; }
+    bool isInitialized() const {
+        return m_initialized;
+    }
 
     enum class PermissionLevel { Observer, Advisor, Autopilot };
-    PermissionLevel permissionLevel() const { return m_permissionLevel; }
+    PermissionLevel permissionLevel() const {
+        return m_permissionLevel;
+    }
     void setPermissionLevel(PermissionLevel level);
 
     enum class AgentState { Idle, Thinking, Confirming, Executing };
@@ -41,7 +44,9 @@ public:
     QJsonObject handleToolCall(const QString& toolName, const QJsonObject& params);
 
     void setLLMClient(ILLMClient* client);
-    ILLMClient* llmClient() const { return m_llmClient; }
+    ILLMClient* llmClient() const {
+        return m_llmClient;
+    }
 
     void sendUserMessage(const QString& message);
     void sendUserMessageWithImages(const QString& message, const QList<QPixmap>& images);
@@ -49,15 +54,23 @@ public:
     bool undoLastAgentAction();
 
     void logAction(const AgentActionLogEntry& entry);
-    AgentActor* actor() const { return m_actor; }
+    AgentActor* actor() const {
+        return m_actor;
+    }
 
-    bool hasPendingTools() const { return !m_pendingToolCalls.isEmpty(); }
-    QJsonArray pendingToolCalls() const { return m_pendingToolCalls; }
+    bool hasPendingTools() const {
+        return !m_pendingToolCalls.isEmpty();
+    }
+    QJsonArray pendingToolCalls() const {
+        return m_pendingToolCalls;
+    }
     void confirmPendingTools();
     void rejectPendingTools();
 
     // 测试/调试支持：只读访问对话历史大小
-    int conversationHistorySize() const { return m_conversationHistory.size(); }
+    int conversationHistorySize() const {
+        return m_conversationHistory.size();
+    }
 
 signals:
     void actionLogEntryAdded(const AgentActionLogEntry& entry);

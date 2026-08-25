@@ -1,11 +1,11 @@
 #pragma once
 
-#include <memory>
-#include <array>
-#include <vector>
 #include <Eigen/Dense>
-#include <QVector3D>
 #include <QColor>
+#include <QVector3D>
+#include <array>
+#include <memory>
+#include <vector>
 
 namespace DeepLux {
 
@@ -15,23 +15,19 @@ class PointCloudGPUBuffer;
  * @brief 八叉树节点信息（在遍历时计算，不存储）
  */
 struct OctreeNodeInfo {
-    QVector3D origin;      // 节点原点 (最小角)
-    float size;           // 节点大小
-    size_t depth;         // 深度 (root = 0)
-    size_t child_index;   // 在父节点中的索引 (0-7)
+    QVector3D origin;   // 节点原点 (最小角)
+    float size;         // 节点大小
+    size_t depth;       // 深度 (root = 0)
+    size_t child_index; // 在父节点中的索引 (0-7)
 
     // 中心点
     QVector3D center() const {
-        return QVector3D(origin.x() + size * 0.5f,
-                         origin.y() + size * 0.5f,
-                         origin.z() + size * 0.5f);
+        return QVector3D(origin.x() + size * 0.5f, origin.y() + size * 0.5f, origin.z() + size * 0.5f);
     }
 
     // 最大点
     QVector3D maxBound() const {
-        return QVector3D(origin.x() + size,
-                         origin.y() + size,
-                         origin.z() + size);
+        return QVector3D(origin.x() + size, origin.y() + size, origin.z() + size);
     }
 };
 
@@ -60,9 +56,15 @@ public:
     OctreeInternalNode();
     ~OctreeInternalNode() override = default;
 
-    bool isLeaf() const override { return false; }
-    QVector3D center() const override { return m_center; }
-    float size() const override { return m_size; }
+    bool isLeaf() const override {
+        return false;
+    }
+    QVector3D center() const override {
+        return m_center;
+    }
+    float size() const override {
+        return m_size;
+    }
 
     void setInfo(const OctreeNodeInfo& info) {
         m_center = info.center();
@@ -88,9 +90,15 @@ public:
     OctreeLeafNode();
     ~OctreeLeafNode() override = default;
 
-    bool isLeaf() const override { return true; }
-    QVector3D center() const override { return m_center; }
-    float size() const override { return m_size; }
+    bool isLeaf() const override {
+        return true;
+    }
+    QVector3D center() const override {
+        return m_center;
+    }
+    float size() const override {
+        return m_size;
+    }
 
     void setInfo(const OctreeNodeInfo& info) {
         m_center = info.center();

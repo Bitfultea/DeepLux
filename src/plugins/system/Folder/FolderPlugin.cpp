@@ -1,28 +1,22 @@
 #include "FolderPlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QLabel>
+
 #include <QComboBox>
+#include <QLabel>
 #include <QLineEdit>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-FolderPlugin::FolderPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"operation", "Exists"},
-        {"folderPath", ""}
-    };
+FolderPlugin::FolderPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"operation", "Exists"}, {"folderPath", ""}};
     m_params = m_defaultParams;
 }
 
-FolderPlugin::~FolderPlugin()
-{
-}
+FolderPlugin::~FolderPlugin() {}
 
-bool FolderPlugin::initialize()
-{
+bool FolderPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -30,13 +24,11 @@ bool FolderPlugin::initialize()
     return true;
 }
 
-void FolderPlugin::shutdown()
-{
+void FolderPlugin::shutdown() {
     ModuleBase::shutdown();
 }
 
-bool FolderPlugin::process(const ImageData& input, ImageData& output)
-{
+bool FolderPlugin::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(input);
     output = input;
 
@@ -58,26 +50,28 @@ bool FolderPlugin::process(const ImageData& input, ImageData& output)
     if (operation == "Create") {
         QDir dir;
         m_operationResult = dir.mkpath(folderPath);
-        Logger::instance().debug(QString("创建文件夹: %1, 结果: %2").arg(folderPath).arg(m_operationResult ? "成功" : "失败"), "Folder");
-    }
-    else if (operation == "Delete") {
+        Logger::instance().debug(
+            QString("创建文件夹: %1, 结果: %2").arg(folderPath).arg(m_operationResult ? "成功" : "失败"), "Folder");
+    } else if (operation == "Delete") {
         QDir dir(folderPath);
         m_operationResult = dir.exists() && dir.removeRecursively();
-        Logger::instance().debug(QString("删除文件夹: %1, 结果: %2").arg(folderPath).arg(m_operationResult ? "成功" : "失败"), "Folder");
-    }
-    else if (operation == "Exists") {
+        Logger::instance().debug(
+            QString("删除文件夹: %1, 结果: %2").arg(folderPath).arg(m_operationResult ? "成功" : "失败"), "Folder");
+    } else if (operation == "Exists") {
         QDir dir(folderPath);
         m_operationResult = dir.exists();
-        Logger::instance().debug(QString("检查文件夹存在: %1, 结果: %2").arg(folderPath).arg(m_operationResult ? "存在" : "不存在"), "Folder");
-    }
-    else if (operation == "List") {
+        Logger::instance().debug(
+            QString("检查文件夹存在: %1, 结果: %2").arg(folderPath).arg(m_operationResult ? "存在" : "不存在"),
+            "Folder");
+    } else if (operation == "List") {
         QDir dir(folderPath);
         if (dir.exists()) {
             QStringList entries = dir.entryList(QDir::AllEntries | QDir::NoDotAndDotDot);
             output.setData("folder_entries", entries);
             output.setData("folder_count", entries.size());
             m_operationResult = true;
-            Logger::instance().debug(QString("列出文件夹内容: %1, 文件数: %2").arg(folderPath).arg(entries.size()), "Folder");
+            Logger::instance().debug(QString("列出文件夹内容: %1, 文件数: %2").arg(folderPath).arg(entries.size()),
+                                     "Folder");
         } else {
             m_operationResult = false;
         }
@@ -89,8 +83,7 @@ bool FolderPlugin::process(const ImageData& input, ImageData& output)
     return true;
 }
 
-bool FolderPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool FolderPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     QString operation = params["operation"].toString();
     QString folderPath = params["folderPath"].toString();
 
@@ -102,8 +95,7 @@ bool FolderPlugin::doValidateParams(const QJsonObject& params, QString& error) c
     return true;
 }
 
-QWidget* FolderPlugin::createConfigWidget()
-{
+QWidget* FolderPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -115,7 +107,8 @@ QWidget* FolderPlugin::createConfigWidget()
     opCombo->addItem("列出内容", "List");
 
     int idx = opCombo->findData(m_params["operation"].toString());
-    if (idx >= 0) opCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        opCombo->setCurrentIndex(idx);
     layout->addWidget(opCombo);
 
     layout->addWidget(new QLabel(tr("文件夹路径:")));
@@ -124,19 +117,15 @@ QWidget* FolderPlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(opCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, opCombo](int) {
-        setParam("operation", opCombo->currentData().toString());
-    });
+    connect(opCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this, opCombo](int) { setParam("operation", opCombo->currentData().toString()); });
 
-    connect(pathEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
-        setParam("folderPath", text);
-    });
+    connect(pathEdit, &QLineEdit::textChanged, this, [this](const QString& text) { setParam("folderPath", text); });
 
     return widget;
 }
 
-IModule* FolderPlugin::cloneImpl() const
-{
+IModule* FolderPlugin::cloneImpl() const {
     FolderPlugin* clone = new FolderPlugin();
     clone->setParams(currentParams());
     return clone;

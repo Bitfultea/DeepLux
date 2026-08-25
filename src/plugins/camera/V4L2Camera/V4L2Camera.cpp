@@ -1,17 +1,18 @@
 #include "V4L2Camera.h"
+
 #include "core/common/Logger.h"
 
+#include <QDateTime>
+#include <QJsonObject>
 #include <QLabel>
 #include <QVBoxLayout>
-#include <QJsonObject>
-#include <QDateTime>
+#include <errno.h>
 #include <fcntl.h>
-#include <unistd.h>
+#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <errno.h>
-#include <string.h>
+#include <unistd.h>
 
 #ifdef __linux__
 #include <linux/videodev2.h>
@@ -20,10 +21,7 @@
 namespace DeepLux {
 
 V4L2Camera::V4L2Camera(const QString& devicePath, QObject* parent)
-    : ICamera(parent)
-    , m_devicePath(devicePath)
-    , m_name(QString("V4L2 %1").arg(devicePath))
-{
+    : ICamera(parent), m_devicePath(devicePath), m_name(QString("V4L2 %1").arg(devicePath)) {
     m_capabilities.softwareTrigger = true;
     m_capabilities.continuousMode = true;
     m_capabilities.exposureControl = true;
@@ -34,13 +32,11 @@ V4L2Camera::V4L2Camera(const QString& devicePath, QObject* parent)
     m_capabilities.supportedOnWindows = false;
 }
 
-V4L2Camera::~V4L2Camera()
-{
+V4L2Camera::~V4L2Camera() {
     disconnect();
 }
 
-bool V4L2Camera::connect()
-{
+bool V4L2Camera::connect() {
 #ifdef __linux__
     if (m_connected) {
         return true;
@@ -61,8 +57,7 @@ bool V4L2Camera::connect()
 #endif
 }
 
-void V4L2Camera::disconnect()
-{
+void V4L2Camera::disconnect() {
 #ifdef __linux__
     if (!m_connected) {
         return;
@@ -77,8 +72,7 @@ void V4L2Camera::disconnect()
 #endif
 }
 
-bool V4L2Camera::openDevice()
-{
+bool V4L2Camera::openDevice() {
 #ifdef __linux__
     if (m_fd >= 0) {
         return true;
@@ -121,8 +115,7 @@ bool V4L2Camera::openDevice()
 #endif
 }
 
-void V4L2Camera::closeDevice()
-{
+void V4L2Camera::closeDevice() {
 #ifdef __linux__
     uninitBuffers();
     if (m_fd >= 0) {
@@ -132,8 +125,7 @@ void V4L2Camera::closeDevice()
 #endif
 }
 
-bool V4L2Camera::configureFormat(int width, int height)
-{
+bool V4L2Camera::configureFormat(int width, int height) {
 #ifdef __linux__
     if (m_fd < 0) {
         return false;
@@ -166,8 +158,7 @@ bool V4L2Camera::configureFormat(int width, int height)
 #endif
 }
 
-bool V4L2Camera::startAcquisition()
-{
+bool V4L2Camera::startAcquisition() {
 #ifdef __linux__
     if (!m_connected || m_fd < 0) {
         return false;
@@ -186,8 +177,7 @@ bool V4L2Camera::startAcquisition()
 #endif
 }
 
-void V4L2Camera::stopAcquisition()
-{
+void V4L2Camera::stopAcquisition() {
 #ifdef __linux__
     if (!m_acquiring) {
         return;
@@ -199,13 +189,11 @@ void V4L2Camera::stopAcquisition()
 #endif
 }
 
-bool V4L2Camera::triggerSoftware()
-{
+bool V4L2Camera::triggerSoftware() {
     return grabFrame();
 }
 
-bool V4L2Camera::grabFrame()
-{
+bool V4L2Camera::grabFrame() {
 #ifdef __linux__
     if (m_fd < 0 || m_bufferCount == 0) {
         return false;
@@ -247,8 +235,8 @@ bool V4L2Camera::grabFrame()
     }
 
     // 转换帧
-    QImage frame = convertV4L2Frame(m_buffers[buf.index].start, buf.bytesused,
-                                    m_roi.width(), m_roi.height(), m_pixelFormat);
+    QImage frame =
+        convertV4L2Frame(m_buffers[buf.index].start, buf.bytesused, m_roi.width(), m_roi.height(), m_pixelFormat);
 
     // 重新入队
     ioctl(m_fd, VIDIOC_QBUF, &buf);
@@ -271,8 +259,7 @@ bool V4L2Camera::grabFrame()
 }
 
 #ifdef __linux__
-bool V4L2Camera::initBuffers()
-{
+bool V4L2Camera::initBuffers() {
     struct v4l2_requestbuffers req;
     memset(&req, 0, sizeof(req));
     req.count = 2;
@@ -304,9 +291,7 @@ bool V4L2Camera::initBuffers()
         }
 
         m_buffers[i].length = buf.length;
-        m_buffers[i].start = mmap(nullptr, buf.length,
-                                  PROT_READ | PROT_WRITE, MAP_SHARED,
-                                  m_fd, buf.m.offset);
+        m_buffers[i].start = mmap(nullptr, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, m_fd, buf.m.offset);
 
         if (m_buffers[i].start == MAP_FAILED) {
             qWarning() << "mmap failed:" << strerror(errno);
@@ -317,9 +302,9 @@ bool V4L2Camera::initBuffers()
     return true;
 }
 
-void V4L2Camera::uninitBuffers()
-{
-    if (m_fd < 0) return;
+void V4L2Camera::uninitBuffers() {
+    if (m_fd < 0)
+        return;
 
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     ioctl(m_fd, VIDIOC_STREAMOFF, &type);
@@ -342,8 +327,7 @@ void V4L2Camera::uninitBuffers()
     m_bufferCount = 0;
 }
 
-QImage V4L2Camera::convertV4L2Frame(const void* data, size_t bytesused, int width, int height, uint32_t pixelformat)
-{
+QImage V4L2Camera::convertV4L2Frame(const void* data, size_t bytesused, int width, int height, uint32_t pixelformat) {
     if (pixelformat == V4L2_PIX_FMT_MJPEG) {
         QImage image;
         if (image.loadFromData(static_cast<const uchar*>(data), static_cast<int>(bytesused))) {
@@ -366,8 +350,7 @@ QImage V4L2Camera::convertV4L2Frame(const void* data, size_t bytesused, int widt
     return QImage();
 }
 
-QImage V4L2Camera::yuyvToRgb(const uchar* yuyv, int width, int height)
-{
+QImage V4L2Camera::yuyvToRgb(const uchar* yuyv, int width, int height) {
     QImage image(width, height, QImage::Format_RGB888);
     uchar* rgb = image.bits();
 
@@ -398,13 +381,11 @@ QImage V4L2Camera::yuyvToRgb(const uchar* yuyv, int width, int height)
 }
 #endif
 
-void V4L2Camera::setTriggerMode(TriggerMode mode)
-{
+void V4L2Camera::setTriggerMode(TriggerMode mode) {
     m_triggerMode = mode;
 }
 
-void V4L2Camera::setExposureTime(double microseconds)
-{
+void V4L2Camera::setExposureTime(double microseconds) {
     m_exposureTime = microseconds;
 #ifdef __linux__
     if (m_fd >= 0) {
@@ -416,8 +397,7 @@ void V4L2Camera::setExposureTime(double microseconds)
 #endif
 }
 
-void V4L2Camera::setGain(double gain)
-{
+void V4L2Camera::setGain(double gain) {
     m_gain = gain;
 #ifdef __linux__
     if (m_fd >= 0) {
@@ -429,8 +409,7 @@ void V4L2Camera::setGain(double gain)
 #endif
 }
 
-void V4L2Camera::setFrameRate(double fps)
-{
+void V4L2Camera::setFrameRate(double fps) {
     m_frameRate = fps;
 #ifdef __linux__
     if (m_fd >= 0) {
@@ -444,14 +423,12 @@ void V4L2Camera::setFrameRate(double fps)
 #endif
 }
 
-void V4L2Camera::setRoi(int x, int y, int width, int height)
-{
+void V4L2Camera::setRoi(int x, int y, int width, int height) {
     m_roi = QRect(x, y, width, height);
     configureFormat(width, height);
 }
 
-QWidget* V4L2Camera::createConfigWidget()
-{
+QWidget* V4L2Camera::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -464,8 +441,7 @@ QWidget* V4L2Camera::createConfigWidget()
     return widget;
 }
 
-QJsonObject V4L2Camera::toJson() const
-{
+QJsonObject V4L2Camera::toJson() const {
     QJsonObject json;
     json["devicePath"] = m_devicePath;
     json["name"] = m_name;
@@ -479,8 +455,7 @@ QJsonObject V4L2Camera::toJson() const
     return json;
 }
 
-bool V4L2Camera::fromJson(const QJsonObject& json)
-{
+bool V4L2Camera::fromJson(const QJsonObject& json) {
     m_devicePath = json["devicePath"].toString(m_devicePath);
     m_name = json["name"].toString(m_name);
     m_exposureTime = json["exposureTime"].toDouble(m_exposureTime);

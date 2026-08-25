@@ -1,9 +1,9 @@
 #pragma once
 
-#include <QObject>
 #include <QImage>
-#include <QVariant>
 #include <QMap>
+#include <QObject>
+#include <QVariant>
 #include <memory>
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -20,8 +20,7 @@ namespace DeepLux {
  *
  * 当 DEEPLUX_HAS_OPENCV 未定义时，仅支持 QImage 模式
  */
-class ImageData
-{
+class ImageData {
 public:
     ImageData();
     ImageData(const QImage& image);

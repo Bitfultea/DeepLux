@@ -3,10 +3,10 @@
 
 #include "AnsiConstants.h"
 
-#include <QVector>
 #include <QChar>
-#include <QString>
 #include <QSet>
+#include <QString>
+#include <QVector>
 
 namespace DeepLux {
 
@@ -28,14 +28,17 @@ struct Cell {
  * - 滚动历史缓冲区
  * - 光标控制、清屏、滚动区域
  */
-class TerminalScreen
-{
+class TerminalScreen {
 public:
     explicit TerminalScreen(int rows = 24, int cols = 80);
 
     // 尺寸
-    int rows() const { return m_rows; }
-    int cols() const { return m_cols; }
+    int rows() const {
+        return m_rows;
+    }
+    int cols() const {
+        return m_cols;
+    }
     void resize(int rows, int cols);
 
     // 写入字符（光标处写入，自动推进光标）
@@ -47,8 +50,12 @@ public:
     void moveCursor(int dr, int dc);
     void saveCursor();
     void restoreCursor();
-    int cursorRow() const { return m_cursorRow; }
-    int cursorCol() const { return m_cursorCol; }
+    int cursorRow() const {
+        return m_cursorRow;
+    }
+    int cursorCol() const {
+        return m_cursorCol;
+    }
 
     // 清除
     void clearScreen();
@@ -62,8 +69,12 @@ public:
     void scrollUp(int lines = 1);
     void scrollDown(int lines = 1);
     void setScrollRegion(int top, int bottom);
-    int scrollTop() const { return m_scrollTop; }
-    int scrollBottom() const { return m_scrollBottom; }
+    int scrollTop() const {
+        return m_scrollTop;
+    }
+    int scrollBottom() const {
+        return m_scrollBottom;
+    }
 
     // 插入/删除
     void insertChars(int count);
@@ -73,47 +84,72 @@ public:
 
     // 屏幕缓冲区切换
     void useAlternateScreen(bool alternate);
-    bool isAlternateScreen() const { return m_usingAltScreen; }
+    bool isAlternateScreen() const {
+        return m_usingAltScreen;
+    }
 
     // 单元格访问
     const Cell& cellAt(int row, int col) const;
     Cell& cellAt(int row, int col);
-    const QVector<QVector<Cell>>& screen() const { return m_screen; }
+    const QVector<QVector<Cell>>& screen() const {
+        return m_screen;
+    }
 
     // 滚动历史
-    int scrollbackSize() const { return m_scrollback.size(); }
+    int scrollbackSize() const {
+        return m_scrollback.size();
+    }
     const QVector<Cell>& scrollbackLine(int index) const;
     void clearScrollback();
 
     // 当前 SGR 属性
-    CellAttributes& currentAttrs() { return m_currentAttrs; }
-    const CellAttributes& currentAttrs() const { return m_currentAttrs; }
+    CellAttributes& currentAttrs() {
+        return m_currentAttrs;
+    }
+    const CellAttributes& currentAttrs() const {
+        return m_currentAttrs;
+    }
 
     // 光标可见性
-    bool cursorVisible() const { return m_cursorVisible; }
-    void setCursorVisible(bool visible) { m_cursorVisible = visible; }
+    bool cursorVisible() const {
+        return m_cursorVisible;
+    }
+    void setCursorVisible(bool visible) {
+        m_cursorVisible = visible;
+    }
 
     // 滚动偏移（用于查看 scrollback 历史）
-    int scrollOffset() const { return m_scrollOffset; }
+    int scrollOffset() const {
+        return m_scrollOffset;
+    }
     void setScrollOffset(int offset);
 
     // 宽字符检测（East Asian Width）
     static bool isWideChar(QChar c);
 
     // 脏行跟踪（用于优化重绘）
-    const QSet<int>& dirtyRows() const { return m_dirtyRows; }
-    void clearDirtyRows() { m_dirtyRows.clear(); }
-    bool hasDirtyRows() const { return !m_dirtyRows.isEmpty(); }
-    void markDirty(int row) { if (row >= 0 && row < m_rows) m_dirtyRows.insert(row); }
+    const QSet<int>& dirtyRows() const {
+        return m_dirtyRows;
+    }
+    void clearDirtyRows() {
+        m_dirtyRows.clear();
+    }
+    bool hasDirtyRows() const {
+        return !m_dirtyRows.isEmpty();
+    }
+    void markDirty(int row) {
+        if (row >= 0 && row < m_rows)
+            m_dirtyRows.insert(row);
+    }
 
 private:
     void initScreen(QVector<QVector<Cell>>& screen, int rows, int cols);
     void addLineToScrollback(const QVector<Cell>& line);
     void ensureScreenSize();
 
-    QVector<QVector<Cell>> m_screen;       // 当前可见屏幕
-    QVector<QVector<Cell>> m_scrollback;   // 滚动历史
-    QVector<QVector<Cell>> m_altScreen;    // 交替屏幕缓冲区
+    QVector<QVector<Cell>> m_screen;     // 当前可见屏幕
+    QVector<QVector<Cell>> m_scrollback; // 滚动历史
+    QVector<QVector<Cell>> m_altScreen;  // 交替屏幕缓冲区
     bool m_usingAltScreen = false;
 
     int m_rows = 0;

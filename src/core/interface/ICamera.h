@@ -1,9 +1,9 @@
 #pragma once
 
-#include <QObject>
 #include <QImage>
-#include <QVariantMap>
+#include <QObject>
 #include <QRect>
+#include <QVariantMap>
 #include <QWidget>
 
 namespace DeepLux {
@@ -12,9 +12,9 @@ namespace DeepLux {
  * @brief 触发模式
  */
 enum class TriggerMode {
-    Software,       // 软触发
-    Hardware,       // 硬触发
-    Continuous      // 连续采集
+    Software,  // 软触发
+    Hardware,  // 硬触发
+    Continuous // 连续采集
 };
 
 /**
@@ -31,7 +31,7 @@ struct CameraCapabilities {
     bool pixelFormatControl = true;
     bool whiteBalance = false;
     bool depthData = false;
-    
+
     bool supportedOnWindows = true;
     bool supportedOnLinux = true;
 };
@@ -39,8 +39,7 @@ struct CameraCapabilities {
 /**
  * @brief 相机接口 - 所有相机驱动必须实现
  */
-class ICamera : public QObject
-{
+class ICamera : public QObject {
     Q_OBJECT
 
 public:
@@ -48,7 +47,7 @@ public:
     virtual ~ICamera() = default;
 
     // ========== 设备信息 ==========
-    
+
     virtual QString deviceId() const = 0;
     virtual QString name() const = 0;
     virtual QString serialNumber() const = 0;
@@ -56,18 +55,20 @@ public:
     virtual CameraCapabilities capabilities() const = 0;
 
     // ========== 平台支持 ==========
-    
+
     virtual bool isPlatformSupported() const = 0;
-    virtual QString platformNotSupportedMessage() const { return QString(); }
+    virtual QString platformNotSupportedMessage() const {
+        return QString();
+    }
 
     // ========== 连接管理 ==========
-    
+
     virtual bool connect() = 0;
     virtual void disconnect() = 0;
     virtual bool isConnected() const = 0;
 
     // ========== 采集控制 ==========
-    
+
     virtual bool startAcquisition() = 0;
     virtual void stopAcquisition() = 0;
     virtual bool isAcquiring() const = 0;
@@ -76,7 +77,7 @@ public:
     virtual TriggerMode triggerMode() const = 0;
 
     // ========== 参数设置 ==========
-    
+
     virtual void setExposureTime(double microseconds) = 0;
     virtual double exposureTime() const = 0;
     virtual void setGain(double gain) = 0;
@@ -87,14 +88,14 @@ public:
     virtual QRect roi() const = 0;
 
     // ========== 图像获取 ==========
-    
+
     virtual QImage lastImage() const = 0;
     virtual QVariantMap lastImageMetadata() const = 0;
     virtual int imageWidth() const = 0;
     virtual int imageHeight() const = 0;
 
     // ========== 配置 ==========
-    
+
     virtual QWidget* createConfigWidget() = 0;
     virtual QJsonObject toJson() const = 0;
     virtual bool fromJson(const QJsonObject& json) = 0;

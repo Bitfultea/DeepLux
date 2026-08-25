@@ -52,9 +52,6 @@ private:
     // 点到线段最短距离，返回最近点
     static double pointSegmentDistance(double px, double py, double ax, double ay, double bx, double by,
                                        double& nearestX, double& nearestY);
-    // 两线段是否相交
-    static bool segmentsIntersect(double ax1, double ay1, double ax2, double ay2, double bx1, double by1, double bx2,
-                                  double by2);
 
     // 输出参数
     double m_resultDistance = 0.0;

@@ -1,11 +1,13 @@
 #include "OctreeRenderer.h"
+
 #include "CameraController.h"
 #include "PointCloudRendererOpenGL.h"
+
+#include <QDebug>
+#include <QMatrix4x4>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
 #include <QOpenGLShaderProgram>
-#include <QMatrix4x4>
-#include <QDebug>
 #include <cmath>
 
 namespace DeepLux {
@@ -39,16 +41,15 @@ const char* const OCTREE_FRAGMENT_SHADER = R"(
     }
 )";
 
-OctreeRenderer::OctreeRenderer()
-{
-}
+OctreeRenderer::OctreeRenderer() {}
 
 OctreeRenderer::~OctreeRenderer() {
     clear();
 }
 
 void OctreeRenderer::initializeGL() {
-    if (m_initialized) return;
+    if (m_initialized)
+        return;
 
     QOpenGLFunctions* f = QOpenGLContext::currentContext()->functions();
     f->initializeOpenGLFunctions();
@@ -70,7 +71,8 @@ void OctreeRenderer::setOctree(std::shared_ptr<PointCloudOctree> octree) {
 }
 
 void OctreeRenderer::setCamera(const CameraController* camera) {
-    if (!camera) return;
+    if (!camera)
+        return;
 
     m_cameraPosition = camera->eye();
 }
@@ -215,7 +217,8 @@ void OctreeRenderer::updateVisibleNodes() {
 
     std::function<void(OctreeNode*, const OctreeNodeInfo&)> traverse;
     traverse = [&](OctreeNode* node, const OctreeNodeInfo& info) {
-        if (!node) return;
+        if (!node)
+            return;
 
         // 视锥裁剪测试
         if (!m_frustumPlanes.empty()) {
@@ -246,17 +249,16 @@ void OctreeRenderer::updateVisibleNodes() {
         float childSize = info.size * 0.5f;
 
         for (int i = 0; i < 8; ++i) {
-            if (!internal->children[i]) continue;
+            if (!internal->children[i])
+                continue;
 
             OctreeNodeInfo childInfo;
             childInfo.depth = info.depth + 1;
             childInfo.child_index = i;
             childInfo.size = childSize;
-            childInfo.origin = QVector3D(
-                info.origin.x() + ((i & 1) ? childSize : 0),
-                info.origin.y() + ((i & 2) ? childSize : 0),
-                info.origin.z() + ((i & 4) ? childSize : 0)
-            );
+            childInfo.origin =
+                QVector3D(info.origin.x() + ((i & 1) ? childSize : 0), info.origin.y() + ((i & 2) ? childSize : 0),
+                          info.origin.z() + ((i & 4) ? childSize : 0));
 
             traverse(internal->children[i].get(), childInfo);
         }
@@ -273,16 +275,16 @@ void OctreeRenderer::updateVisibleNodes() {
 
 bool OctreeRenderer::isInFrustum(const QVector3D& center, float size) const {
     if (m_frustumPlanes.empty()) {
-        return true;  // 没有视锥数据时默认可见
+        return true; // 没有视锥数据时默认可见
     }
 
     // 简单的球体-立方体相交测试
-    float halfSize = size * 0.5f * std::sqrt(3.0f);  // 立方体内接球半径
+    float halfSize = size * 0.5f * std::sqrt(3.0f); // 立方体内接球半径
 
     for (const auto& plane : m_frustumPlanes) {
         float dist = QVector3D::dotProduct(plane.normal, center) + plane.d;
         if (dist < -halfSize) {
-            return false;  // 完全在平面外
+            return false; // 完全在平面外
         }
     }
     return true;
@@ -303,16 +305,19 @@ bool OctreeRenderer::isSphereInFrustum(const QVector3D& center, float radius) co
 }
 
 void OctreeRenderer::uploadDirtyBuffers() {
-    if (!m_initialized) return;
+    if (!m_initialized)
+        return;
 
     QOpenGLFunctions* f = QOpenGLContext::currentContext()->functions();
 
     for (auto* leaf : m_visibleLeaves) {
-        if (!leaf || !leaf->gpuBuffer) continue;
+        if (!leaf || !leaf->gpuBuffer)
+            continue;
 
         VBOEntry& entry = m_vboCache[leaf];
 
-        if (!entry.dirty && !leaf->dirty) continue;
+        if (!entry.dirty && !leaf->dirty)
+            continue;
 
         // 上传位置数据
         if (leaf->gpuBuffer->dirty || entry.vboPositions == 0) {
@@ -321,10 +326,8 @@ void OctreeRenderer::uploadDirtyBuffers() {
             }
 
             f->glBindBuffer(GL_ARRAY_BUFFER, entry.vboPositions);
-            f->glBufferData(GL_ARRAY_BUFFER,
-                          leaf->gpuBuffer->positions.size() * sizeof(float),
-                          leaf->gpuBuffer->positions.data(),
-                          GL_STATIC_DRAW);
+            f->glBufferData(GL_ARRAY_BUFFER, leaf->gpuBuffer->positions.size() * sizeof(float),
+                            leaf->gpuBuffer->positions.data(), GL_STATIC_DRAW);
         }
 
         // 上传颜色数据
@@ -334,10 +337,8 @@ void OctreeRenderer::uploadDirtyBuffers() {
             }
 
             f->glBindBuffer(GL_ARRAY_BUFFER, entry.vboColors);
-            f->glBufferData(GL_ARRAY_BUFFER,
-                          leaf->gpuBuffer->colors.size() * sizeof(float),
-                          leaf->gpuBuffer->colors.data(),
-                          GL_STATIC_DRAW);
+            f->glBufferData(GL_ARRAY_BUFFER, leaf->gpuBuffer->colors.size() * sizeof(float),
+                            leaf->gpuBuffer->colors.data(), GL_STATIC_DRAW);
         }
 
         entry.pointCount = leaf->gpuBuffer->pointCount();
@@ -347,7 +348,8 @@ void OctreeRenderer::uploadDirtyBuffers() {
 }
 
 void OctreeRenderer::renderNodes() {
-    if (!m_initialized || !m_shaderProgram) return;
+    if (!m_initialized || !m_shaderProgram)
+        return;
 
     QOpenGLFunctions* f = QOpenGLContext::currentContext()->functions();
 
@@ -356,10 +358,12 @@ void OctreeRenderer::renderNodes() {
     m_shaderProgram->bind();
 
     for (auto* leaf : m_visibleLeaves) {
-        if (!leaf) continue;
+        if (!leaf)
+            continue;
 
         VBOEntry& entry = m_vboCache[leaf];
-        if (entry.vboPositions == 0 || entry.pointCount == 0) continue;
+        if (entry.vboPositions == 0 || entry.pointCount == 0)
+            continue;
 
         // 绑定位置
         f->glBindBuffer(GL_ARRAY_BUFFER, entry.vboPositions);
@@ -379,10 +383,8 @@ void OctreeRenderer::renderNodes() {
             }
         } else {
             // 使用统一颜色
-            m_shaderProgram->setAttributeValue("aColor",
-                QVector3D(m_uniformColor.redF(),
-                         m_uniformColor.greenF(),
-                         m_uniformColor.blueF()));
+            m_shaderProgram->setAttributeValue(
+                "aColor", QVector3D(m_uniformColor.redF(), m_uniformColor.greenF(), m_uniformColor.blueF()));
         }
 
         // 绘制
@@ -394,7 +396,8 @@ void OctreeRenderer::renderNodes() {
 }
 
 void OctreeRenderer::render(const QMatrix4x4& viewMatrix, const QMatrix4x4& projectionMatrix) {
-    if (!m_octree || !m_octree->isBuilt()) return;
+    if (!m_octree || !m_octree->isBuilt())
+        return;
 
     if (!m_initialized) {
         initializeGL();
@@ -409,12 +412,7 @@ void OctreeRenderer::render(const QMatrix4x4& viewMatrix, const QMatrix4x4& proj
     // 设置 OpenGL 状态
     QOpenGLFunctions* f = QOpenGLContext::currentContext()->functions();
 
-    f->glClearColor(
-        m_backgroundColor.redF(),
-        m_backgroundColor.greenF(),
-        m_backgroundColor.blueF(),
-        1.0f
-    );
+    f->glClearColor(m_backgroundColor.redF(), m_backgroundColor.greenF(), m_backgroundColor.blueF(), 1.0f);
     f->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     f->glEnable(GL_DEPTH_TEST);
 

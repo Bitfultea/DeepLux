@@ -1,8 +1,10 @@
 #include "JiErHanDefectsDetPlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QLabel>
+
 #include <QDoubleSpinBox>
+#include <QLabel>
+#include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -10,21 +12,14 @@
 
 namespace DeepLux {
 
-JiErHanDefectsDetPlugin::JiErHanDefectsDetPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"threshold", 0.5}
-    };
+JiErHanDefectsDetPlugin::JiErHanDefectsDetPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"threshold", 0.5}};
     m_params = m_defaultParams;
 }
 
-JiErHanDefectsDetPlugin::~JiErHanDefectsDetPlugin()
-{
-}
+JiErHanDefectsDetPlugin::~JiErHanDefectsDetPlugin() {}
 
-bool JiErHanDefectsDetPlugin::initialize()
-{
+bool JiErHanDefectsDetPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -32,16 +27,14 @@ bool JiErHanDefectsDetPlugin::initialize()
     return true;
 }
 
-void JiErHanDefectsDetPlugin::shutdown()
-{
+void JiErHanDefectsDetPlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     m_resultMat.release();
 #endif
     ModuleBase::shutdown();
 }
 
-bool JiErHanDefectsDetPlugin::process(const ImageData& input, ImageData& output)
-{
+bool JiErHanDefectsDetPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -78,8 +71,7 @@ bool JiErHanDefectsDetPlugin::process(const ImageData& input, ImageData& output)
         cv::rectangle(m_resultMat, defect.boundingBox, cv::Scalar(0, 0, 255), 1, cv::LINE_AA);
 
         QString label = QString("%1: %2%").arg(defect.type).arg(defect.confidence * 100, 0, 'f', 1);
-        cv::putText(m_resultMat, label.toUtf8().constData(),
-                    cv::Point(defect.boundingBox.x, defect.boundingBox.y - 5),
+        cv::putText(m_resultMat, label.toUtf8().constData(), cv::Point(defect.boundingBox.x, defect.boundingBox.y - 5),
                     cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 255), 1, cv::LINE_AA);
     }
 
@@ -106,8 +98,7 @@ bool JiErHanDefectsDetPlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-std::vector<JiErHanDefectsDetPlugin::DefectResult> JiErHanDefectsDetPlugin::detectDefects(const cv::Mat& image)
-{
+std::vector<JiErHanDefectsDetPlugin::DefectResult> JiErHanDefectsDetPlugin::detectDefects(const cv::Mat& image) {
     std::vector<DefectResult> results;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -136,7 +127,7 @@ std::vector<JiErHanDefectsDetPlugin::DefectResult> JiErHanDefectsDetPlugin::dete
 
             DefectResult result;
             result.type = "焊接缺陷";
-            result.confidence = qMin(1.0, area / 1000.0);  // 简化的置信度计算
+            result.confidence = qMin(1.0, area / 1000.0); // 简化的置信度计算
             result.boundingBox = bbox;
 
             results.push_back(result);
@@ -147,8 +138,7 @@ std::vector<JiErHanDefectsDetPlugin::DefectResult> JiErHanDefectsDetPlugin::dete
     return results;
 }
 
-bool JiErHanDefectsDetPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool JiErHanDefectsDetPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     double threshold = params["threshold"].toDouble();
     if (threshold <= 0 || threshold > 1) {
         error = tr("阈值必须在0到1之间");
@@ -157,8 +147,7 @@ bool JiErHanDefectsDetPlugin::doValidateParams(const QJsonObject& params, QStrin
     return true;
 }
 
-QWidget* JiErHanDefectsDetPlugin::createConfigWidget()
-{
+QWidget* JiErHanDefectsDetPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -171,15 +160,13 @@ QWidget* JiErHanDefectsDetPlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(threshSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-        setParam("threshold", value);
-    });
+    connect(threshSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("threshold", value); });
 
     return widget;
 }
 
-IModule* JiErHanDefectsDetPlugin::cloneImpl() const
-{
+IModule* JiErHanDefectsDetPlugin::cloneImpl() const {
     JiErHanDefectsDetPlugin* clone = new JiErHanDefectsDetPlugin();
     return clone;
 }

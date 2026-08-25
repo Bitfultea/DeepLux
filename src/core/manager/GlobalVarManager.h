@@ -2,14 +2,14 @@
 
 #include "../common/VarModel.h"
 #include "../platform/Platform.h"
-#include <QObject>
+
 #include <QMutex>
+#include <QObject>
 #include <QWaitCondition>
 
 namespace DeepLux {
 
-class GlobalVarManager : public QObject
-{
+class GlobalVarManager : public QObject {
     Q_OBJECT
 
 public:
@@ -39,11 +39,19 @@ public:
     Q_INVOKABLE void clearQueue(const QString& queueName);
     Q_INVOKABLE QStringList getQueueNames() const;
 
-    bool isEmpty() const { return m_variables.isEmpty(); }
-    int count() const { return m_variables.size(); }
+    bool isEmpty() const {
+        return m_variables.isEmpty();
+    }
+    int count() const {
+        return m_variables.size();
+    }
 
-    void lock() { m_mutex.lock(); }
-    void unlock() { m_mutex.unlock(); }
+    void lock() {
+        m_mutex.lock();
+    }
+    void unlock() {
+        m_mutex.unlock();
+    }
 
 signals:
     void variableAdded(const QString& name);

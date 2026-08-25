@@ -1,8 +1,10 @@
 #include "MeasureRectPlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QLabel>
+
 #include <QDoubleSpinBox>
+#include <QLabel>
+#include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -10,24 +12,15 @@
 
 namespace DeepLux {
 
-MeasureRectPlugin::MeasureRectPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"minArea", 100.0},
-        {"maxArea", 100000.0},
-        {"threshold1", 50.0},
-        {"threshold2", 150.0}
-    };
+MeasureRectPlugin::MeasureRectPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams =
+        QJsonObject{{"minArea", 100.0}, {"maxArea", 100000.0}, {"threshold1", 50.0}, {"threshold2", 150.0}};
     m_params = m_defaultParams;
 }
 
-MeasureRectPlugin::~MeasureRectPlugin()
-{
-}
+MeasureRectPlugin::~MeasureRectPlugin() {}
 
-bool MeasureRectPlugin::initialize()
-{
+bool MeasureRectPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -35,8 +28,7 @@ bool MeasureRectPlugin::initialize()
     return true;
 }
 
-void MeasureRectPlugin::shutdown()
-{
+void MeasureRectPlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     m_gray.release();
     m_edges.release();
@@ -44,8 +36,7 @@ void MeasureRectPlugin::shutdown()
     ModuleBase::shutdown();
 }
 
-bool MeasureRectPlugin::process(const ImageData& input, ImageData& output)
-{
+bool MeasureRectPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -95,7 +86,8 @@ bool MeasureRectPlugin::process(const ImageData& input, ImageData& output)
 
     for (const auto& contour : contours) {
         double area = cv::contourArea(contour);
-        if (area < minArea || area > maxArea) continue;
+        if (area < minArea || area > maxArea)
+            continue;
 
         // 使用最小外接矩形
         cv::RotatedRect rect = cv::minAreaRect(contour);
@@ -125,9 +117,8 @@ bool MeasureRectPlugin::process(const ImageData& input, ImageData& output)
     bestRect.points(corners);
 
     // 按位置排序角点 (左上, 右上, 右下, 左下)
-    std::sort(corners, corners + 4, [](const cv::Point2f& a, const cv::Point2f& b) {
-        return (a.x + a.y * 10) < (b.x + b.y * 10);
-    });
+    std::sort(corners, corners + 4,
+              [](const cv::Point2f& a, const cv::Point2f& b) { return (a.x + a.y * 10) < (b.x + b.y * 10); });
 
     // 计算宽高
     double width = cv::norm(corners[1] - corners[0]);
@@ -153,10 +144,10 @@ bool MeasureRectPlugin::process(const ImageData& input, ImageData& output)
     output.setData("rect_area", m_resultArea);
 
     QString result = QString("矩形: 宽=%1, 高=%2, 角度=%3°, 面积=%4")
-                        .arg(m_resultWidth, 0, 'f', 1)
-                        .arg(m_resultHeight, 0, 'f', 1)
-                        .arg(m_resultAngle, 0, 'f', 1)
-                        .arg(m_resultArea, 0, 'f', 1);
+                         .arg(m_resultWidth, 0, 'f', 1)
+                         .arg(m_resultHeight, 0, 'f', 1)
+                         .arg(m_resultAngle, 0, 'f', 1)
+                         .arg(m_resultArea, 0, 'f', 1);
     Logger::instance().debug(result, "MeasureRect");
 
     return true;
@@ -167,8 +158,7 @@ bool MeasureRectPlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-bool MeasureRectPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool MeasureRectPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     double minArea = params["minArea"].toDouble();
     double maxArea = params["maxArea"].toDouble();
 
@@ -185,8 +175,7 @@ bool MeasureRectPlugin::doValidateParams(const QJsonObject& params, QString& err
     return true;
 }
 
-QWidget* MeasureRectPlugin::createConfigWidget()
-{
+QWidget* MeasureRectPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -220,23 +209,22 @@ QWidget* MeasureRectPlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(minAreaSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { setParam("minArea", value); });
+    connect(minAreaSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("minArea", value); });
 
-    connect(maxAreaSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { setParam("maxArea", value); });
+    connect(maxAreaSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("maxArea", value); });
 
-    connect(thresh1Spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { setParam("threshold1", value); });
+    connect(thresh1Spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("threshold1", value); });
 
-    connect(thresh2Spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { setParam("threshold2", value); });
+    connect(thresh2Spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("threshold2", value); });
 
     return widget;
 }
 
-IModule* MeasureRectPlugin::cloneImpl() const
-{
+IModule* MeasureRectPlugin::cloneImpl() const {
     MeasureRectPlugin* clone = new MeasureRectPlugin();
     clone->setParams(currentParams());
     return clone;

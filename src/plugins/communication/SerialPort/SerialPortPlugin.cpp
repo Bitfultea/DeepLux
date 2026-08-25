@@ -1,40 +1,29 @@
 #include "SerialPortPlugin.h"
+
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
+
 #include <QComboBox>
 #include <QFormLayout>
 #include <QLineEdit>
-#include <QSpinBox>
 #include <QSerialPortInfo>
+#include <QSpinBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-SerialPortPlugin::SerialPortPlugin(QObject* parent)
-    : ModuleBase(parent)
-    , m_serialPort(new QSerialPort(this))
-{
-    m_defaultParams = QJsonObject{
-        {"portName", ""},
-        {"baudRate", 9600},
-        {"dataBits", 8},
-        {"parity", "None"},
-        {"stopBits", "One"},
-        {"flowControl", "None"},
-        {"timeout", 100},
-        {"writeData", ""},
-        {"readVariable", "serial_data"},
-        {"operation", "WriteRead"}
-    };
+SerialPortPlugin::SerialPortPlugin(QObject* parent) : ModuleBase(parent), m_serialPort(new QSerialPort(this)) {
+    m_defaultParams = QJsonObject{{"portName", ""},          {"baudRate", 9600},  {"dataBits", 8},
+                                  {"parity", "None"},        {"stopBits", "One"}, {"flowControl", "None"},
+                                  {"timeout", 100},          {"writeData", ""},   {"readVariable", "serial_data"},
+                                  {"operation", "WriteRead"}};
     m_params = m_defaultParams;
 }
 
-SerialPortPlugin::~SerialPortPlugin()
-{
+SerialPortPlugin::~SerialPortPlugin() {
     closeSerialPort();
 }
 
-bool SerialPortPlugin::initialize()
-{
+bool SerialPortPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -42,8 +31,7 @@ bool SerialPortPlugin::initialize()
     return true;
 }
 
-bool SerialPortPlugin::openSerialPort()
-{
+bool SerialPortPlugin::openSerialPort() {
     if (m_serialPort->isOpen()) {
         m_serialPort->close();
     }
@@ -60,20 +48,19 @@ bool SerialPortPlugin::openSerialPort()
         return false;
     }
 
-    Logger::instance().info(QString("SerialPort: Opened %1 at %2 baud").arg(m_portName).arg(m_baudRate), "Communication");
+    Logger::instance().info(QString("SerialPort: Opened %1 at %2 baud").arg(m_portName).arg(m_baudRate),
+                            "Communication");
     return true;
 }
 
-void SerialPortPlugin::closeSerialPort()
-{
+void SerialPortPlugin::closeSerialPort() {
     if (m_serialPort->isOpen()) {
         m_serialPort->close();
         Logger::instance().info(QString("SerialPort: Closed %1").arg(m_portName), "Communication");
     }
 }
 
-QString SerialPortPlugin::readFromPort()
-{
+QString SerialPortPlugin::readFromPort() {
     if (!m_serialPort->waitForReadyRead(m_timeout)) {
         return QString();
     }
@@ -86,8 +73,7 @@ QString SerialPortPlugin::readFromPort()
     return QString::fromUtf8(data);
 }
 
-bool SerialPortPlugin::writeToPort(const QString& data)
-{
+bool SerialPortPlugin::writeToPort(const QString& data) {
     if (!m_serialPort->isOpen()) {
         emit errorOccurred(tr("串口未打开"));
         return false;
@@ -104,8 +90,7 @@ bool SerialPortPlugin::writeToPort(const QString& data)
     return true;
 }
 
-bool SerialPortPlugin::process(const ImageData& input, ImageData& output)
-{
+bool SerialPortPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     QJsonObject params = currentParams();
@@ -118,31 +103,50 @@ bool SerialPortPlugin::process(const ImageData& input, ImageData& output)
     // Data bits
     int dataBits = params["dataBits"].toInt(8);
     switch (dataBits) {
-        case 5: m_dataBits = QSerialPort::Data5; break;
-        case 6: m_dataBits = QSerialPort::Data6; break;
-        case 7: m_dataBits = QSerialPort::Data7; break;
-        default: m_dataBits = QSerialPort::Data8; break;
+    case 5:
+        m_dataBits = QSerialPort::Data5;
+        break;
+    case 6:
+        m_dataBits = QSerialPort::Data6;
+        break;
+    case 7:
+        m_dataBits = QSerialPort::Data7;
+        break;
+    default:
+        m_dataBits = QSerialPort::Data8;
+        break;
     }
 
     // Parity
     QString parity = params["parity"].toString("None");
-    if (parity == "Even") m_parity = QSerialPort::EvenParity;
-    else if (parity == "Odd") m_parity = QSerialPort::OddParity;
-    else if (parity == "Space") m_parity = QSerialPort::SpaceParity;
-    else if (parity == "Mark") m_parity = QSerialPort::MarkParity;
-    else m_parity = QSerialPort::NoParity;
+    if (parity == "Even")
+        m_parity = QSerialPort::EvenParity;
+    else if (parity == "Odd")
+        m_parity = QSerialPort::OddParity;
+    else if (parity == "Space")
+        m_parity = QSerialPort::SpaceParity;
+    else if (parity == "Mark")
+        m_parity = QSerialPort::MarkParity;
+    else
+        m_parity = QSerialPort::NoParity;
 
     // Stop bits
     QString stopBits = params["stopBits"].toString("One");
-    if (stopBits == "OneAndHalf") m_stopBits = QSerialPort::OneAndHalfStop;
-    else if (stopBits == "Two") m_stopBits = QSerialPort::TwoStop;
-    else m_stopBits = QSerialPort::OneStop;
+    if (stopBits == "OneAndHalf")
+        m_stopBits = QSerialPort::OneAndHalfStop;
+    else if (stopBits == "Two")
+        m_stopBits = QSerialPort::TwoStop;
+    else
+        m_stopBits = QSerialPort::OneStop;
 
     // Flow control
     QString flowControl = params["flowControl"].toString("None");
-    if (flowControl == "Hardware") m_flowControl = QSerialPort::HardwareControl;
-    else if (flowControl == "Software") m_flowControl = QSerialPort::SoftwareControl;
-    else m_flowControl = QSerialPort::NoFlowControl;
+    if (flowControl == "Hardware")
+        m_flowControl = QSerialPort::HardwareControl;
+    else if (flowControl == "Software")
+        m_flowControl = QSerialPort::SoftwareControl;
+    else
+        m_flowControl = QSerialPort::NoFlowControl;
 
     QString operation = params["operation"].toString("WriteRead");
 
@@ -183,16 +187,14 @@ bool SerialPortPlugin::process(const ImageData& input, ImageData& output)
     return success;
 }
 
-bool SerialPortPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool SerialPortPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     // 阶段 2: 串口名称等外部资源允许暂时为空，由 process() 在运行时报告"未配置"
     Q_UNUSED(params)
     error.clear();
     return true;
 }
 
-QWidget* SerialPortPlugin::createConfigWidget()
-{
+QWidget* SerialPortPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -201,12 +203,13 @@ QWidget* SerialPortPlugin::createConfigWidget()
     // Port name combo
     QComboBox* portCombo = new QComboBox();
     const auto ports = QSerialPortInfo::availablePorts();
-    for (const QSerialPortInfo &portInfo : ports) {
+    for (const QSerialPortInfo& portInfo : ports) {
         portCombo->addItem(portInfo.portName(), portInfo.portName());
     }
     QString currentPort = m_params["portName"].toString();
     int idx = portCombo->findData(currentPort);
-    if (idx >= 0) portCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        portCombo->setCurrentIndex(idx);
 
     // Baud rate
     QSpinBox* baudSpin = new QSpinBox();
@@ -221,7 +224,8 @@ QWidget* SerialPortPlugin::createConfigWidget()
     dataBitsCombo->addItem("7", 7);
     dataBitsCombo->addItem("8", 8);
     idx = dataBitsCombo->findData(m_params["dataBits"].toInt(8));
-    if (idx >= 0) dataBitsCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        dataBitsCombo->setCurrentIndex(idx);
 
     // Parity
     QComboBox* parityCombo = new QComboBox();
@@ -231,7 +235,8 @@ QWidget* SerialPortPlugin::createConfigWidget()
     parityCombo->addItem(tr("Space"), "Space");
     parityCombo->addItem(tr("Mark"), "Mark");
     idx = parityCombo->findData(m_params["parity"].toString("None"));
-    if (idx >= 0) parityCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        parityCombo->setCurrentIndex(idx);
 
     // Stop bits
     QComboBox* stopBitsCombo = new QComboBox();
@@ -239,7 +244,8 @@ QWidget* SerialPortPlugin::createConfigWidget()
     stopBitsCombo->addItem("1.5", "OneAndHalf");
     stopBitsCombo->addItem("2", "Two");
     idx = stopBitsCombo->findData(m_params["stopBits"].toString("One"));
-    if (idx >= 0) stopBitsCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        stopBitsCombo->setCurrentIndex(idx);
 
     // Flow control
     QComboBox* flowCombo = new QComboBox();
@@ -247,7 +253,8 @@ QWidget* SerialPortPlugin::createConfigWidget()
     flowCombo->addItem(tr("硬件"), "Hardware");
     flowCombo->addItem(tr("软件"), "Software");
     idx = flowCombo->findData(m_params["flowControl"].toString("None"));
-    if (idx >= 0) flowCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        flowCombo->setCurrentIndex(idx);
 
     // Operation mode
     QComboBox* operationCombo = new QComboBox();
@@ -255,7 +262,8 @@ QWidget* SerialPortPlugin::createConfigWidget()
     operationCombo->addItem(tr("读取"), "Read");
     operationCombo->addItem(tr("写入并读取"), "WriteRead");
     idx = operationCombo->findData(m_params["operation"].toString("WriteRead"));
-    if (idx >= 0) operationCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        operationCombo->setCurrentIndex(idx);
 
     // Write data
     QLineEdit* writeEdit = new QLineEdit(m_params["writeData"].toString());
@@ -284,51 +292,38 @@ QWidget* SerialPortPlugin::createConfigWidget()
     layout->addStretch();
 
     // Connections
-    connect(portCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        setParam("portName", portCombo->currentData().toString());
-    });
+    connect(portCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int) { setParam("portName", portCombo->currentData().toString()); });
 
-    connect(baudSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        setParam("baudRate", value);
-    });
+    connect(baudSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [=](int value) { setParam("baudRate", value); });
 
-    connect(dataBitsCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        setParam("dataBits", dataBitsCombo->currentData().toInt());
-    });
+    connect(dataBitsCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int) { setParam("dataBits", dataBitsCombo->currentData().toInt()); });
 
-    connect(parityCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        setParam("parity", parityCombo->currentData().toString());
-    });
+    connect(parityCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int) { setParam("parity", parityCombo->currentData().toString()); });
 
-    connect(stopBitsCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        setParam("stopBits", stopBitsCombo->currentData().toString());
-    });
+    connect(stopBitsCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int) { setParam("stopBits", stopBitsCombo->currentData().toString()); });
 
-    connect(flowCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        setParam("flowControl", flowCombo->currentData().toString());
-    });
+    connect(flowCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int) { setParam("flowControl", flowCombo->currentData().toString()); });
 
-    connect(operationCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        setParam("operation", operationCombo->currentData().toString());
-    });
+    connect(operationCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int) { setParam("operation", operationCombo->currentData().toString()); });
 
-    connect(writeEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("writeData", text);
-    });
+    connect(writeEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("writeData", text); });
 
-    connect(readVarEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("readVariable", text);
-    });
+    connect(readVarEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("readVariable", text); });
 
-    connect(timeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        setParam("timeout", value);
-    });
+    connect(timeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [=](int value) { setParam("timeout", value); });
 
     return widget;
 }
 
-IModule* SerialPortPlugin::cloneImpl() const
-{
+IModule* SerialPortPlugin::cloneImpl() const {
     return new SerialPortPlugin();
 }
 

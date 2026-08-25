@@ -1,11 +1,11 @@
 #pragma once
 
-#include <QObject>
-#include <QVariant>
-#include <QString>
 #include <QList>
 #include <QMap>
 #include <QMutex>
+#include <QObject>
+#include <QString>
+#include <QVariant>
 
 namespace DeepLux {
 
@@ -27,8 +27,7 @@ enum class VarDataType {
     Rect
 };
 
-class VarModel : public QObject
-{
+class VarModel : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString name READ name WRITE setName NOTIFY nameChanged)
     Q_PROPERTY(VarDataType dataType READ dataType WRITE setDataType NOTIFY dataTypeChanged)
@@ -42,26 +41,58 @@ public:
     VarModel(QObject* parent = nullptr);
     VarModel(const QString& name, VarDataType type, QVariant value, QObject* parent = nullptr);
 
-    QString name() const { return m_name; }
-    void setName(const QString& name) { m_name = name; emit nameChanged(); }
+    QString name() const {
+        return m_name;
+    }
+    void setName(const QString& name) {
+        m_name = name;
+        emit nameChanged();
+    }
 
-    VarDataType dataType() const { return m_dataType; }
-    void setDataType(VarDataType type) { m_dataType = type; emit dataTypeChanged(); }
+    VarDataType dataType() const {
+        return m_dataType;
+    }
+    void setDataType(VarDataType type) {
+        m_dataType = type;
+        emit dataTypeChanged();
+    }
 
-    QVariant value() const { return m_value; }
+    QVariant value() const {
+        return m_value;
+    }
     void setValue(const QVariant& val);
 
-    QString expression() const { return m_expression; }
-    void setExpression(const QString& expr) { m_expression = expr; emit expressionChanged(); }
+    QString expression() const {
+        return m_expression;
+    }
+    void setExpression(const QString& expr) {
+        m_expression = expr;
+        emit expressionChanged();
+    }
 
-    QString note() const { return m_note; }
-    void setNote(const QString& note) { m_note = note; emit noteChanged(); }
+    QString note() const {
+        return m_note;
+    }
+    void setNote(const QString& note) {
+        m_note = note;
+        emit noteChanged();
+    }
 
-    bool isLinked() const { return m_isLinked; }
-    void setIsLinked(bool linked) { m_isLinked = linked; emit isLinkedChanged(); }
+    bool isLinked() const {
+        return m_isLinked;
+    }
+    void setIsLinked(bool linked) {
+        m_isLinked = linked;
+        emit isLinkedChanged();
+    }
 
-    int index() const { return m_index; }
-    void setIndex(int idx) { m_index = idx; emit indexChanged(); }
+    int index() const {
+        return m_index;
+    }
+    void setIndex(int idx) {
+        m_index = idx;
+        emit indexChanged();
+    }
 
     bool compileExpression(const QString& projectId, const QString& moduleName);
     QVariant evaluateExpression();

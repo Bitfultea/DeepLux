@@ -1,28 +1,20 @@
 #include "PLCReadPlugin.h"
+
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
+
 #include <QFormLayout>
+#include <QJsonArray>
 #include <QLineEdit>
 #include <QSpinBox>
-#include <QJsonArray>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
 PLCReadPlugin::PLCReadPlugin(QObject* parent)
-    : ModuleBase(parent)
-    , m_socket(new QTcpSocket(this))
-    , m_connectLoop(nullptr)
-    , m_readLoop(nullptr)
-{
+    : ModuleBase(parent), m_socket(new QTcpSocket(this)), m_connectLoop(nullptr), m_readLoop(nullptr) {
     m_defaultParams = QJsonObject{
-        {"ipAddress", "192.168.1.100"},
-        {"port", 502},
-        {"slaveId", 1},
-        {"startAddress", 0},
-        {"readCount", 10},
-        {"outputVariable", "plc_data"},
-        {"timeout", 3000}
-    };
+        {"ipAddress", "192.168.1.100"}, {"port", 502},    {"slaveId", 1}, {"startAddress", 0}, {"readCount", 10},
+        {"outputVariable", "plc_data"}, {"timeout", 3000}};
     m_params = m_defaultParams;
 
     connect(m_socket, &QTcpSocket::connected, this, &PLCReadPlugin::onConnected);
@@ -31,13 +23,11 @@ PLCReadPlugin::PLCReadPlugin(QObject* parent)
     connect(m_socket, &QTcpSocket::readyRead, this, &PLCReadPlugin::onReadyRead);
 }
 
-PLCReadPlugin::~PLCReadPlugin()
-{
+PLCReadPlugin::~PLCReadPlugin() {
     disconnectFromHost();
 }
 
-bool PLCReadPlugin::initialize()
-{
+bool PLCReadPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -45,21 +35,18 @@ bool PLCReadPlugin::initialize()
     return true;
 }
 
-void PLCReadPlugin::onConnected()
-{
+void PLCReadPlugin::onConnected() {
     Logger::instance().debug("PLCRead: Connected to PLC", "Communication");
     if (m_connectLoop) {
         m_connectLoop->quit();
     }
 }
 
-void PLCReadPlugin::onDisconnected()
-{
+void PLCReadPlugin::onDisconnected() {
     Logger::instance().debug("PLCRead: Disconnected from PLC", "Communication");
 }
 
-void PLCReadPlugin::onError(QAbstractSocket::SocketError error)
-{
+void PLCReadPlugin::onError(QAbstractSocket::SocketError error) {
     Q_UNUSED(error);
     emit errorOccurred(tr("PLC通信错误: %1").arg(m_socket->errorString()));
     if (m_connectLoop && m_connectLoop->isRunning()) {
@@ -70,16 +57,14 @@ void PLCReadPlugin::onError(QAbstractSocket::SocketError error)
     }
 }
 
-void PLCReadPlugin::onReadyRead()
-{
+void PLCReadPlugin::onReadyRead() {
     m_readBuffer += m_socket->readAll();
     if (m_readLoop) {
         m_readLoop->quit();
     }
 }
 
-void PLCReadPlugin::onConnectTimeout()
-{
+void PLCReadPlugin::onConnectTimeout() {
     if (m_socket->state() != QAbstractSocket::ConnectedState) {
         m_socket->abort();
         emit errorOccurred(tr("连接PLC %1:%2 超时").arg(m_host).arg(m_port));
@@ -89,8 +74,7 @@ void PLCReadPlugin::onConnectTimeout()
     }
 }
 
-void PLCReadPlugin::onReadTimeout()
-{
+void PLCReadPlugin::onReadTimeout() {
     m_readTimedOut = true;
     m_socket->disconnectFromHost();
     if (m_readLoop) {
@@ -98,8 +82,7 @@ void PLCReadPlugin::onReadTimeout()
     }
 }
 
-bool PLCReadPlugin::connectToHost()
-{
+bool PLCReadPlugin::connectToHost() {
     if (m_socket->state() == QAbstractSocket::ConnectedState) {
         m_socket->disconnectFromHost();
         m_socket->waitForDisconnected(100);
@@ -126,37 +109,33 @@ bool PLCReadPlugin::connectToHost()
     return true;
 }
 
-void PLCReadPlugin::disconnectFromHost()
-{
-    if (m_socket->state() == QAbstractSocket::ConnectedState ||
-        m_socket->state() == QAbstractSocket::ConnectingState) {
+void PLCReadPlugin::disconnectFromHost() {
+    if (m_socket->state() == QAbstractSocket::ConnectedState || m_socket->state() == QAbstractSocket::ConnectingState) {
         m_socket->abort();
     }
 }
 
-QByteArray PLCReadPlugin::buildReadRequest(quint16 transactionId, quint8 unitId,
-                                            quint16 startAddress, quint16 readCount)
-{
+QByteArray PLCReadPlugin::buildReadRequest(quint16 transactionId, quint8 unitId, quint16 startAddress,
+                                           quint16 readCount) {
     QByteArray request;
     QDataStream stream(&request, QIODevice::WriteOnly);
     stream.setByteOrder(QDataStream::BigEndian);
 
     // MBAP Header (7 bytes)
-    stream << transactionId;        // Transaction ID (2 bytes)
-    stream << quint16(0);           // Protocol ID (2 bytes) - 0 for Modbus
-    stream << quint16(6);           // Length (2 bytes) - remaining bytes after this
-    stream << unitId;               // Unit ID (1 byte)
+    stream << transactionId; // Transaction ID (2 bytes)
+    stream << quint16(0);    // Protocol ID (2 bytes) - 0 for Modbus
+    stream << quint16(6);    // Length (2 bytes) - remaining bytes after this
+    stream << unitId;        // Unit ID (1 byte)
 
     // Function Code 03: Read Holding Registers
-    stream << quint8(0x03);         // Function Code
-    stream << startAddress;         // Starting Address (2 bytes)
-    stream << readCount;            // Quantity of Registers (2 bytes)
+    stream << quint8(0x03); // Function Code
+    stream << startAddress; // Starting Address (2 bytes)
+    stream << readCount;    // Quantity of Registers (2 bytes)
 
     return request;
 }
 
-QVector<quint16> PLCReadPlugin::parseReadResponse(const QByteArray& data)
-{
+QVector<quint16> PLCReadPlugin::parseReadResponse(const QByteArray& data) {
     QVector<quint16> registers;
 
     if (data.size() < 9) {
@@ -172,16 +151,14 @@ QVector<quint16> PLCReadPlugin::parseReadResponse(const QByteArray& data)
 
     // Read register values
     for (int i = 0; i < byteCount; i += 2) {
-        quint16 value = (static_cast<quint8>(data[9 + i]) << 8) |
-                        (static_cast<quint8>(data[10 + i]));
+        quint16 value = (static_cast<quint8>(data[9 + i]) << 8) | (static_cast<quint8>(data[10 + i]));
         registers.append(value);
     }
 
     return registers;
 }
 
-bool PLCReadPlugin::process(const ImageData& input, ImageData& output)
-{
+bool PLCReadPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     m_host = m_params["ipAddress"].toString();
@@ -255,14 +232,14 @@ bool PLCReadPlugin::process(const ImageData& input, ImageData& output)
     output.setData(m_outputVariable, registerArray);
     output.setData(m_outputVariable + "_count", registers.size());
 
-    Logger::instance().debug(QString("PLCRead: Read %1 registers from address %2")
-        .arg(registers.size()).arg(m_startAddress), "Communication");
+    Logger::instance().debug(
+        QString("PLCRead: Read %1 registers from address %2").arg(registers.size()).arg(m_startAddress),
+        "Communication");
 
     return true;
 }
 
-bool PLCReadPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool PLCReadPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     if (params["ipAddress"].toString().isEmpty()) {
         error = QString("IP地址不能为空");
         return false;
@@ -282,8 +259,7 @@ bool PLCReadPlugin::doValidateParams(const QJsonObject& params, QString& error) 
     return true;
 }
 
-QWidget* PLCReadPlugin::createConfigWidget()
-{
+QWidget* PLCReadPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -323,35 +299,25 @@ QWidget* PLCReadPlugin::createConfigWidget()
     layout->addLayout(formLayout);
     layout->addStretch();
 
-    connect(ipEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["ipAddress"] = text;
-    });
+    connect(ipEdit, &QLineEdit::textChanged, this, [=](const QString& text) { m_params["ipAddress"] = text; });
 
-    connect(portSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["port"] = value;
-    });
+    connect(portSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) { m_params["port"] = value; });
 
-    connect(slaveSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["slaveId"] = value;
-    });
+    connect(slaveSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [=](int value) { m_params["slaveId"] = value; });
 
-    connect(addrSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["startAddress"] = value;
-    });
+    connect(addrSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [=](int value) { m_params["startAddress"] = value; });
 
-    connect(countSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["readCount"] = value;
-    });
+    connect(countSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [=](int value) { m_params["readCount"] = value; });
 
-    connect(varEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["outputVariable"] = text;
-    });
+    connect(varEdit, &QLineEdit::textChanged, this, [=](const QString& text) { m_params["outputVariable"] = text; });
 
     return widget;
 }
 
-IModule* PLCReadPlugin::cloneImpl() const
-{
+IModule* PLCReadPlugin::cloneImpl() const {
     return new PLCReadPlugin();
 }
 

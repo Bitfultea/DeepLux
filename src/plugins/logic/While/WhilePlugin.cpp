@@ -1,24 +1,20 @@
 #include "WhilePlugin.h"
-#include "core/engine/RunEngine.h"
+
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
-#include <QLabel>
-#include <QFormLayout>
-#include <QLineEdit>
+#include "core/engine/RunEngine.h"
+
 #include <QComboBox>
+#include <QFormLayout>
+#include <QLabel>
+#include <QLineEdit>
 #include <QSpinBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-WhilePlugin::WhilePlugin(QObject* parent)
-    : ModuleBase(parent)
-{
+WhilePlugin::WhilePlugin(QObject* parent) : ModuleBase(parent) {
     m_defaultParams = QJsonObject{
-        {"conditionVariable", ""},
-        {"comparison", "NotEmpty"},
-        {"compareValue", ""},
-        {"maxIterations", 1000}
-    };
+        {"conditionVariable", ""}, {"comparison", "NotEmpty"}, {"compareValue", ""}, {"maxIterations", 1000}};
     m_params = m_defaultParams;
     m_name = "循环";
     m_moduleId = "WhilePlugin";
@@ -26,8 +22,7 @@ WhilePlugin::WhilePlugin(QObject* parent)
     m_description = "条件循环；无结束节点时循环紧随其后的模块";
 }
 
-bool WhilePlugin::initialize()
-{
+bool WhilePlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -35,8 +30,7 @@ bool WhilePlugin::initialize()
     return true;
 }
 
-bool WhilePlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool WhilePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     // 阶段 2: conditionVariable 等外部资源允许暂时为空，由 process() 在运行时报告"未配置"
     if (params["maxIterations"].toInt() <= 0) {
         error = QString("Max iterations must be greater than 0");
@@ -45,8 +39,7 @@ bool WhilePlugin::doValidateParams(const QJsonObject& params, QString& error) co
     return true;
 }
 
-bool WhilePlugin::evaluateCondition(const QString& value)
-{
+bool WhilePlugin::evaluateCondition(const QString& value) {
     Q_UNUSED(value);
     QJsonObject params = currentParams();
     QString op = params["comparison"].toString("NotEmpty");
@@ -69,8 +62,7 @@ bool WhilePlugin::evaluateCondition(const QString& value)
     return false;
 }
 
-bool WhilePlugin::process(const ImageData& input, ImageData& output)
-{
+bool WhilePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     QJsonObject params = currentParams();
@@ -81,15 +73,15 @@ bool WhilePlugin::process(const ImageData& input, ImageData& output)
     output.setData("while_result", result);
 
     Logger::instance().info(QString("While: condition '%1' %2 = %3")
-        .arg(m_conditionVariable)
-        .arg(params["comparison"].toString())
-        .arg(result ? "true" : "false"), "Logic");
+                                .arg(m_conditionVariable)
+                                .arg(params["comparison"].toString())
+                                .arg(result ? "true" : "false"),
+                            "Logic");
 
     return true;
 }
 
-QWidget* WhilePlugin::createConfigWidget()
-{
+QWidget* WhilePlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -104,7 +96,8 @@ QWidget* WhilePlugin::createConfigWidget()
     opCombo->addItem(tr("大于"), "GreaterThan");
     opCombo->addItem(tr("小于"), "LessThan");
     int idx = opCombo->findData(m_params["comparison"].toString("NotEmpty"));
-    if (idx >= 0) opCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        opCombo->setCurrentIndex(idx);
 
     QLineEdit* compareEdit = new QLineEdit(m_params["compareValue"].toString());
     QSpinBox* maxIterSpin = new QSpinBox();
@@ -120,56 +113,44 @@ QWidget* WhilePlugin::createConfigWidget()
     layout->addLayout(formLayout);
     layout->addStretch();
 
-    connect(varEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("conditionVariable", text);
-    });
+    connect(varEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("conditionVariable", text); });
 
-    connect(opCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        setParam("comparison", opCombo->currentData().toString());
-    });
+    connect(opCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int) { setParam("comparison", opCombo->currentData().toString()); });
 
-    connect(compareEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("compareValue", text);
-    });
+    connect(compareEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("compareValue", text); });
 
-    connect(maxIterSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        setParam("maxIterations", value);
-    });
+    connect(maxIterSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [=](int value) { setParam("maxIterations", value); });
 
     return widget;
 }
 
-IModule* WhilePlugin::cloneImpl() const
-{
+IModule* WhilePlugin::cloneImpl() const {
     return new WhilePlugin();
 }
 
-WhileEndPlugin::WhileEndPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
+WhileEndPlugin::WhileEndPlugin(QObject* parent) : ModuleBase(parent) {
     m_name = "条件循环结束";
     m_moduleId = "WhileEndPlugin";
     m_category = "logic";
     m_description = "条件循环结束";
 }
 
-bool WhileEndPlugin::process(const ImageData& input, ImageData& output)
-{
+bool WhileEndPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
     Logger::instance().debug("WhileEndPlugin: while branch ended", "Logic");
     return true;
 }
 
-QWidget* WhileEndPlugin::createConfigWidget()
-{
+QWidget* WhileEndPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
     layout->addWidget(new QLabel(tr("(循环结束，无需配置)")));
     return widget;
 }
 
-IModule* WhileEndPlugin::cloneImpl() const
-{
+IModule* WhileEndPlugin::cloneImpl() const {
     return new WhileEndPlugin();
 }
 

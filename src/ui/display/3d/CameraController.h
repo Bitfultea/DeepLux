@@ -1,7 +1,7 @@
 #pragma once
 
-#include <QVector3D>
 #include <QMatrix4x4>
+#include <QVector3D>
 
 namespace DeepLux {
 
@@ -51,17 +51,23 @@ public:
     /**
      * @brief 获取视点位置
      */
-    QVector3D eye() const { return m_eye; }
+    QVector3D eye() const {
+        return m_eye;
+    }
 
     /**
      * @brief 获取目标中心
      */
-    QVector3D center() const { return m_center; }
+    QVector3D center() const {
+        return m_center;
+    }
 
     /**
      * @brief 获取上向量
      */
-    QVector3D up() const { return m_up; }
+    QVector3D up() const {
+        return m_up;
+    }
 
     /**
      * @brief 获取相机到目标距离
@@ -82,22 +88,30 @@ public:
     /**
      * @brief 设置视场角
      */
-    void setFOV(float fov) { m_fov = fov; }
+    void setFOV(float fov) {
+        m_fov = fov;
+    }
 
     /**
      * @brief 获取视场角
      */
-    float fov() const { return m_fov; }
+    float fov() const {
+        return m_fov;
+    }
 
     /**
      * @brief 设置近平面
      */
-    void setNearPlane(float near) { m_near = near; }
+    void setNearPlane(float near) {
+        m_near = near;
+    }
 
     /**
      * @brief 设置远平面
      */
-    void setFarPlane(float far) { m_far = far; }
+    void setFarPlane(float far) {
+        m_far = far;
+    }
 
     /**
      * @brief 根据数据包围盒自动取景
@@ -109,17 +123,17 @@ public:
 private:
     void updateEyeFromAngles();
 
-    QVector3D m_center{0, 0, 0};     // 观察目标中心
-    QVector3D m_eye{0, 0, 5};        // 相机位置
-    QVector3D m_up{0, 1, 0};         // 上向量
+    QVector3D m_center{0, 0, 0}; // 观察目标中心
+    QVector3D m_eye{0, 0, 5};    // 相机位置
+    QVector3D m_up{0, 1, 0};     // 上向量
 
-    float m_fov = 45.0f;             // 视场角（度）
-    float m_near = 0.1f;             // 近平面
-    float m_far = 1000.0f;           // 远平面
+    float m_fov = 45.0f;   // 视场角（度）
+    float m_near = 0.1f;   // 近平面
+    float m_far = 1000.0f; // 远平面
 
-    float m_azimuth = 0.0f;          // 水平角度（弧度）
-    float m_elevation = 0.0f;        // 垂直角度（弧度）
-    float m_distance = 5.0f;         // 到目标距离
+    float m_azimuth = 0.0f;   // 水平角度（弧度）
+    float m_elevation = 0.0f; // 垂直角度（弧度）
+    float m_distance = 5.0f;  // 到目标距离
 
     QVector3D m_framedCenter{0, 0, 0};
     float m_framedDistance = 5.0f;

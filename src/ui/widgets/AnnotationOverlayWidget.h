@@ -2,8 +2,8 @@
 
 #include "core/model/Annotation.h"
 
-#include <QImage>
 #include <QHash>
+#include <QImage>
 #include <QList>
 #include <QPointF>
 #include <QRectF>

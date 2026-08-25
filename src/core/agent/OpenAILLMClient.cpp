@@ -1,32 +1,30 @@
 #include "OpenAILLMClient.h"
+
 #include "ToolSchema.h"
 
-#include <QNetworkRequest>
+#include <QDebug>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QJsonArray>
-#include <QDebug>
+#include <QNetworkRequest>
 
 namespace DeepLux {
 
 OpenAILLMClient::OpenAILLMClient(QObject* parent)
-    : ILLMClient(parent)
-    , m_networkManager(new QNetworkAccessManager(this))
-{
-}
+    : ILLMClient(parent), m_networkManager(new QNetworkAccessManager(this)) {}
 
-OpenAILLMClient::~OpenAILLMClient()
-{
+OpenAILLMClient::~OpenAILLMClient() {
     if (m_currentReply) {
         m_currentReply->abort();
         m_currentReply->deleteLater();
     }
 }
 
-void OpenAILLMClient::setApiKey(const QString& key)   { m_apiKey = key; }
+void OpenAILLMClient::setApiKey(const QString& key) {
+    m_apiKey = key;
+}
 
-void OpenAILLMClient::setEndpoint(const QString& url)
-{
+void OpenAILLMClient::setEndpoint(const QString& url) {
     m_endpoint = url;
     QUrl parsed(url);
     QString path = parsed.path();
@@ -37,16 +35,26 @@ void OpenAILLMClient::setEndpoint(const QString& url)
     }
 }
 
-void OpenAILLMClient::setModel(const QString& model)       { m_model = model; }
-void OpenAILLMClient::setTemperature(double temp)          { m_temperature = temp; }
-void OpenAILLMClient::setMaxTokens(int tokens)              { m_maxTokens = tokens; }
-void OpenAILLMClient::setToolsEnabled(bool enabled)         { m_toolsEnabled = enabled; }
-void OpenAILLMClient::setReasoningEffort(const QString& effort) { m_reasoningEffort = effort; }
-void OpenAILLMClient::setThinkingEnabled(bool enabled)      { m_thinkingEnabled = enabled; }
+void OpenAILLMClient::setModel(const QString& model) {
+    m_model = model;
+}
+void OpenAILLMClient::setTemperature(double temp) {
+    m_temperature = temp;
+}
+void OpenAILLMClient::setMaxTokens(int tokens) {
+    m_maxTokens = tokens;
+}
+void OpenAILLMClient::setToolsEnabled(bool enabled) {
+    m_toolsEnabled = enabled;
+}
+void OpenAILLMClient::setReasoningEffort(const QString& effort) {
+    m_reasoningEffort = effort;
+}
+void OpenAILLMClient::setThinkingEnabled(bool enabled) {
+    m_thinkingEnabled = enabled;
+}
 
-void OpenAILLMClient::sendRequest(const AgentConversation& ctx,
-                                  const QList<ToolDefinition>& tools)
-{
+void OpenAILLMClient::sendRequest(const AgentConversation& ctx, const QList<ToolDefinition>& tools) {
     // 中止上一个请求，防止信号串联（Agent 闭环中连续发请求时）
     if (m_currentReply) {
         disconnect(m_currentReply, nullptr, this, nullptr);
@@ -87,20 +95,17 @@ void OpenAILLMClient::sendRequest(const AgentConversation& ctx,
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     request.setRawHeader("Authorization", QString("Bearer %1").arg(m_apiKey).toUtf8());
     request.setRawHeader("Connection", "keep-alive");
-    request.setTransferTimeout(30000);  // 30s 超时，防止无限等待
+    request.setTransferTimeout(30000); // 30s 超时，防止无限等待
 
-    qDebug() << "OpenAILLMClient: Sending request to" << m_endpoint
-             << "model=" << m_model << "msgs=" << ctx.messages.size();
+    qDebug() << "OpenAILLMClient: Sending request to" << m_endpoint << "model=" << m_model
+             << "msgs=" << ctx.messages.size();
 
     m_currentReply = m_networkManager->post(request, data);
-    connect(m_currentReply, &QNetworkReply::finished,
-            this, &OpenAILLMClient::onReplyFinished);
-    connect(m_currentReply, &QNetworkReply::errorOccurred,
-            this, &OpenAILLMClient::onNetworkError);
+    connect(m_currentReply, &QNetworkReply::finished, this, &OpenAILLMClient::onReplyFinished);
+    connect(m_currentReply, &QNetworkReply::errorOccurred, this, &OpenAILLMClient::onNetworkError);
 }
 
-void OpenAILLMClient::onReplyFinished()
-{
+void OpenAILLMClient::onReplyFinished() {
     if (!m_currentReply) {
         return;
     }
@@ -117,8 +122,7 @@ void OpenAILLMClient::onReplyFinished()
     parseResponse(data);
 }
 
-void OpenAILLMClient::parseResponse(const QByteArray& data)
-{
+void OpenAILLMClient::parseResponse(const QByteArray& data) {
     QJsonDocument doc = QJsonDocument::fromJson(data);
     if (!doc.isObject()) {
         emit errorOccurred("Invalid JSON response");
@@ -150,8 +154,7 @@ void OpenAILLMClient::parseResponse(const QByteArray& data)
         QJsonObject func = tc["function"].toObject();
         QJsonValue argsVal = func["arguments"];
         if (argsVal.isObject()) {
-            func["arguments"] = QString(QJsonDocument(argsVal.toObject())
-                .toJson(QJsonDocument::Compact));
+            func["arguments"] = QString(QJsonDocument(argsVal.toObject()).toJson(QJsonDocument::Compact));
             tc["function"] = func;
         }
         resp.toolCalls.append(tc);
@@ -164,8 +167,7 @@ void OpenAILLMClient::parseResponse(const QByteArray& data)
     emit responseReceived(resp);
 }
 
-void OpenAILLMClient::onNetworkError(QNetworkReply::NetworkError error)
-{
+void OpenAILLMClient::onNetworkError(QNetworkReply::NetworkError error) {
     Q_UNUSED(error);
     if (!m_currentReply) {
         return;

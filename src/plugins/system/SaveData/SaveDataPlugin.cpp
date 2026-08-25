@@ -1,33 +1,26 @@
 #include "SaveDataPlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QLabel>
+
 #include <QComboBox>
-#include <QLineEdit>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
+#include <QLineEdit>
 #include <QTextStream>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-SaveDataPlugin::SaveDataPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"filePath", ""},
-        {"fileFormat", "json"},
-        {"appendMode", false}
-    };
+SaveDataPlugin::SaveDataPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"filePath", ""}, {"fileFormat", "json"}, {"appendMode", false}};
     m_params = m_defaultParams;
 }
 
-SaveDataPlugin::~SaveDataPlugin()
-{
-}
+SaveDataPlugin::~SaveDataPlugin() {}
 
-bool SaveDataPlugin::initialize()
-{
+bool SaveDataPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -35,13 +28,11 @@ bool SaveDataPlugin::initialize()
     return true;
 }
 
-void SaveDataPlugin::shutdown()
-{
+void SaveDataPlugin::shutdown() {
     ModuleBase::shutdown();
 }
 
-bool SaveDataPlugin::process(const ImageData& input, ImageData& output)
-{
+bool SaveDataPlugin::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(output);
     output = input;
 
@@ -93,13 +84,13 @@ bool SaveDataPlugin::process(const ImageData& input, ImageData& output)
         emit errorOccurred(QString("保存数据失败: %1").arg(filePath));
     }
 
-    Logger::instance().debug(QString("保存数据: %1, 结果: %2").arg(filePath).arg(m_saveResult ? "成功" : "失败"), "SaveData");
+    Logger::instance().debug(QString("保存数据: %1, 结果: %2").arg(filePath).arg(m_saveResult ? "成功" : "失败"),
+                             "SaveData");
 
     return m_saveResult;
 }
 
-bool SaveDataPlugin::saveToJson(const QString& filePath, const QVariantMap& data)
-{
+bool SaveDataPlugin::saveToJson(const QString& filePath, const QVariantMap& data) {
     QFile file(filePath);
 
     // 检查是否追加模式
@@ -131,8 +122,7 @@ bool SaveDataPlugin::saveToJson(const QString& filePath, const QVariantMap& data
     return false;
 }
 
-bool SaveDataPlugin::saveToCsv(const QString& filePath, const QVariantMap& data)
-{
+bool SaveDataPlugin::saveToCsv(const QString& filePath, const QVariantMap& data) {
     QFile file(filePath);
     QJsonObject params = currentParams();
     QIODevice::OpenMode mode = params["appendMode"].toBool() ? QIODevice::Append : QIODevice::WriteOnly;
@@ -163,8 +153,7 @@ bool SaveDataPlugin::saveToCsv(const QString& filePath, const QVariantMap& data)
     return false;
 }
 
-bool SaveDataPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool SaveDataPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     const QString fileFormat = params["fileFormat"].toString("json");
     if (fileFormat != "json" && fileFormat != "csv" && fileFormat != "text") {
         error = tr("文件格式无效");
@@ -175,8 +164,7 @@ bool SaveDataPlugin::doValidateParams(const QJsonObject& params, QString& error)
     return true;
 }
 
-QWidget* SaveDataPlugin::createConfigWidget()
-{
+QWidget* SaveDataPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -191,24 +179,21 @@ QWidget* SaveDataPlugin::createConfigWidget()
     formatCombo->addItem("文本", "text");
 
     int idx = formatCombo->findData(m_params["fileFormat"].toString());
-    if (idx >= 0) formatCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        formatCombo->setCurrentIndex(idx);
     layout->addWidget(formatCombo);
 
     layout->addStretch();
 
-    connect(pathEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
-        setParam("filePath", text);
-    });
+    connect(pathEdit, &QLineEdit::textChanged, this, [this](const QString& text) { setParam("filePath", text); });
 
-    connect(formatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, formatCombo](int) {
-        setParam("fileFormat", formatCombo->currentData().toString());
-    });
+    connect(formatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this, formatCombo](int) { setParam("fileFormat", formatCombo->currentData().toString()); });
 
     return widget;
 }
 
-IModule* SaveDataPlugin::cloneImpl() const
-{
+IModule* SaveDataPlugin::cloneImpl() const {
     SaveDataPlugin* clone = new SaveDataPlugin();
     clone->setParams(currentParams());
     return clone;

@@ -1,17 +1,17 @@
 #include "ShortcutManager.h"
+
 #include "common/Logger.h"
+
 #include <QKeyEvent>
 
 namespace DeepLux {
 
-ShortcutManager& ShortcutManager::instance()
-{
+ShortcutManager& ShortcutManager::instance() {
     static ShortcutManager instance;
     return instance;
 }
 
-ShortcutManager::ShortcutManager()
-{
+ShortcutManager::ShortcutManager() {
     // 注册默认快捷键
     registerShortcut(ShortcutId::Save, "Save", "保存", ShortcutType::Ctrl, Qt::Key_S);
     registerShortcut(ShortcutId::Open, "Open", "打开", ShortcutType::Ctrl, Qt::Key_O);
@@ -28,14 +28,10 @@ ShortcutManager::ShortcutManager()
     Logger::instance().debug("Shortcut manager initialized", "Shortcut");
 }
 
-ShortcutManager::~ShortcutManager()
-{
-}
+ShortcutManager::~ShortcutManager() {}
 
-void ShortcutManager::registerShortcut(ShortcutId id, const QString& name,
-                                        const QString& description,
-                                        ShortcutType type, int key)
-{
+void ShortcutManager::registerShortcut(ShortcutId id, const QString& name, const QString& description,
+                                       ShortcutType type, int key) {
     ShortcutItem item;
     item.id = id;
     item.name = name;
@@ -47,26 +43,22 @@ void ShortcutManager::registerShortcut(ShortcutId id, const QString& name,
     m_shortcuts[id] = item;
 }
 
-void ShortcutManager::unregisterShortcut(ShortcutId id)
-{
+void ShortcutManager::unregisterShortcut(ShortcutId id) {
     m_shortcuts.remove(id);
 }
 
-QList<ShortcutItem> ShortcutManager::shortcuts() const
-{
+QList<ShortcutItem> ShortcutManager::shortcuts() const {
     return m_shortcuts.values();
 }
 
-ShortcutItem* ShortcutManager::findShortcut(ShortcutId id)
-{
+ShortcutItem* ShortcutManager::findShortcut(ShortcutId id) {
     if (m_shortcuts.contains(id)) {
         return &m_shortcuts[id];
     }
     return nullptr;
 }
 
-bool ShortcutManager::matches(ShortcutId id, ShortcutType type, int key) const
-{
+bool ShortcutManager::matches(ShortcutId id, ShortcutType type, int key) const {
     if (!m_shortcuts.contains(id)) {
         return false;
     }
@@ -75,24 +67,21 @@ bool ShortcutManager::matches(ShortcutId id, ShortcutType type, int key) const
     return item.type == type && item.key == key && item.enabled;
 }
 
-void ShortcutManager::setEnabled(ShortcutId id, bool enabled)
-{
+void ShortcutManager::setEnabled(ShortcutId id, bool enabled) {
     if (m_shortcuts.contains(id)) {
         m_shortcuts[id].enabled = enabled;
         emit shortcutChanged(id);
     }
 }
 
-bool ShortcutManager::isEnabled(ShortcutId id) const
-{
+bool ShortcutManager::isEnabled(ShortcutId id) const {
     if (m_shortcuts.contains(id)) {
         return m_shortcuts[id].enabled;
     }
     return false;
 }
 
-void ShortcutManager::resetToDefaults()
-{
+void ShortcutManager::resetToDefaults() {
     m_shortcuts.clear();
 
     // 重新注册默认快捷键
@@ -111,23 +100,27 @@ void ShortcutManager::resetToDefaults()
     Logger::instance().info("Shortcuts reset to defaults", "Shortcut");
 }
 
-ShortcutType ShortcutManager::getShortcutType(Qt::KeyboardModifiers modifiers) const
-{
+ShortcutType ShortcutManager::getShortcutType(Qt::KeyboardModifiers modifiers) const {
     bool ctrl = modifiers & Qt::ControlModifier;
     bool alt = modifiers & Qt::AltModifier;
     bool shift = modifiers & Qt::ShiftModifier;
 
-    if (ctrl && shift) return ShortcutType::CtrlShift;
-    if (ctrl && alt) return ShortcutType::CtrlAlt;
-    if (alt && shift) return ShortcutType::AltShift;
-    if (ctrl) return ShortcutType::Ctrl;
-    if (alt) return ShortcutType::Alt;
-    if (shift) return ShortcutType::Shift;
+    if (ctrl && shift)
+        return ShortcutType::CtrlShift;
+    if (ctrl && alt)
+        return ShortcutType::CtrlAlt;
+    if (alt && shift)
+        return ShortcutType::AltShift;
+    if (ctrl)
+        return ShortcutType::Ctrl;
+    if (alt)
+        return ShortcutType::Alt;
+    if (shift)
+        return ShortcutType::Shift;
     return ShortcutType::None;
 }
 
-int ShortcutManager::getKeyValue(Qt::Key key) const
-{
+int ShortcutManager::getKeyValue(Qt::Key key) const {
     return key;
 }
 

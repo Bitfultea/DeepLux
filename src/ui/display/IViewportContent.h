@@ -1,7 +1,8 @@
 #pragma once
 
-#include <QWidget>
 #include "core/display/DisplayData.h"
+
+#include <QWidget>
 
 namespace DeepLux {
 
@@ -32,7 +33,9 @@ public:
      * @brief 获取工具栏扩展（可选）
      * @return 工具栏 widget，如果不需要返回 nullptr
      */
-    virtual QWidget* toolbarExtension() { return nullptr; }
+    virtual QWidget* toolbarExtension() {
+        return nullptr;
+    }
 
     /**
      * @brief 获取内容 widget

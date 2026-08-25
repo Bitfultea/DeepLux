@@ -1,9 +1,9 @@
 #pragma once
 
 #include <QDialog>
-#include <QString>
 #include <QJsonObject>
 #include <QMap>
+#include <QString>
 
 class QComboBox;
 class QPushButton;
@@ -35,8 +35,7 @@ class ImageData;
  * - 查看结果
  * - 对比预期值
  */
-class PluginTestDialog : public QDialog
-{
+class PluginTestDialog : public QDialog {
     Q_OBJECT
 
 public:

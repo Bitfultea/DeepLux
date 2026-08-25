@@ -4649,14 +4649,22 @@ void TestRunEngine::testCancelDuringParallelBatch() {
     QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
         if (inst.id == "Fork")
             return new ParallelForkModule(inst.id);
+        // 模块睡 300ms 且支持协作取消
         return new ThreadSafeSleepModule(inst.id, 300);
     }));
 
-    // 启动后立即取消
-    QTimer::singleShot(30, [&engine]() { engine.stop(); });
-    engine.runOnce();
+    // runOnce 同步阻塞事件循环，QTimer 不会按时触发。
+    // 故在后台线程运行，主线程 30ms 后 stop()（取消令牌），验证协作取消真实中止。
+    QElapsedTimer wall;
+    wall.start();
+    std::thread runner([&engine]() { engine.runOnce(); });
+    QThread::msleep(30);
+    engine.stop();
+    runner.join();
+    const qint64 elapsed = wall.elapsed();
 
-    // 取消后不应等待全部 300ms 完成（宽松断言：状态非 Running）
+    // 若无取消，两模块并行需约 300ms；取消后应远小于该值，证明取消真实发生
+    QVERIFY2(elapsed < 250, qPrintable(QString("cancel did not abort early; elapsed=%1ms").arg(elapsed)));
     QVERIFY(engine.state() != RunState::Running);
     engine.clearModules();
     engine.setParallelThreadCount(1);

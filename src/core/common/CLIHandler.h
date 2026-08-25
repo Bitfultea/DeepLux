@@ -12,8 +12,7 @@ class CommandContext;
 /**
  * @brief CLI 命令接口
  */
-class ICommand
-{
+class ICommand {
 public:
     virtual ~ICommand() = default;
 
@@ -33,24 +32,45 @@ public:
 /**
  * @brief CLI 执行上下文
  */
-class CommandContext
-{
+class CommandContext {
 public:
-    bool isGuiMode() const { return m_guiMode; }
-    void setGuiMode(bool mode) { m_guiMode = mode; }
+    bool isGuiMode() const {
+        return m_guiMode;
+    }
+    void setGuiMode(bool mode) {
+        m_guiMode = mode;
+    }
 
-    QString projectPath() const { return m_projectPath; }
-    void setProjectPath(const QString& path) { m_projectPath = path; }
+    QString projectPath() const {
+        return m_projectPath;
+    }
+    void setProjectPath(const QString& path) {
+        m_projectPath = path;
+    }
 
-    bool verbose() const { return m_verbose; }
-    void setVerbose(bool v) { m_verbose = v; }
+    bool verbose() const {
+        return m_verbose;
+    }
+    void setVerbose(bool v) {
+        m_verbose = v;
+    }
 
-    QString errorString() const { return m_errorString; }
-    void setError(const QString& err) { m_errorString = err; }
-    bool hasError() const { return !m_errorString.isEmpty(); }
+    QString errorString() const {
+        return m_errorString;
+    }
+    void setError(const QString& err) {
+        m_errorString = err;
+    }
+    bool hasError() const {
+        return !m_errorString.isEmpty();
+    }
 
-    QVariantMap& data() { return m_data; }
-    const QVariantMap& data() const { return m_data; }
+    QVariantMap& data() {
+        return m_data;
+    }
+    const QVariantMap& data() const {
+        return m_data;
+    }
 
 private:
     bool m_guiMode = false;
@@ -63,8 +83,7 @@ private:
 /**
  * @brief CLI 处理器
  */
-class CLIHandler : public QObject
-{
+class CLIHandler : public QObject {
     Q_OBJECT
 
 public:
@@ -74,16 +93,24 @@ public:
     bool parse(const QStringList& args);
 
     // 是否为 CLI 模式（无 GUI）
-    bool isCLIOnly() const { return m_cliOnly; }
+    bool isCLIOnly() const {
+        return m_cliOnly;
+    }
 
     // 获取要执行的命令
-    QString command() const { return m_command; }
+    QString command() const {
+        return m_command;
+    }
 
     // 获取命令参数
-    QStringList commandArgs() const { return m_commandArgs; }
+    QStringList commandArgs() const {
+        return m_commandArgs;
+    }
 
     // 获取错误信息
-    QString errorString() const { return m_errorString; }
+    QString errorString() const {
+        return m_errorString;
+    }
 
     // 显示帮助
     QString helpText() const;
@@ -92,7 +119,9 @@ public:
     QString versionText() const;
 
     // 是否详细输出
-    bool verbose() const { return m_verbose; }
+    bool verbose() const {
+        return m_verbose;
+    }
 
     // 查找命令
     ICommand* findCommand(const QString& name);

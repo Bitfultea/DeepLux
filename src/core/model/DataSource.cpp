@@ -2,8 +2,7 @@
 
 namespace DeepLux {
 
-QJsonObject DataSource::toJson() const
-{
+QJsonObject DataSource::toJson() const {
     QJsonObject json;
     json["id"] = id;
     json["name"] = name;
@@ -19,8 +18,7 @@ QJsonObject DataSource::toJson() const
     return json;
 }
 
-DataSource DataSource::fromJson(const QJsonObject& json)
-{
+DataSource DataSource::fromJson(const QJsonObject& json) {
     DataSource ds;
     ds.id = json["id"].toString();
     ds.name = json["name"].toString();

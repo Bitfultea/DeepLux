@@ -1,41 +1,35 @@
 #include "MessageDialog.h"
+
 #include "common/Logger.h"
+
 #include <QApplication>
-#include <QMessageBox>
-#include <QLabel>
-#include <QVBoxLayout>
 #include <QDialogButtonBox>
+#include <QLabel>
+#include <QMessageBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
 MessageDialog* MessageDialog::s_instance = nullptr;
 
-MessageDialog& MessageDialog::instance()
-{
+MessageDialog& MessageDialog::instance() {
     if (!s_instance) {
         s_instance = new MessageDialog();
     }
     return *s_instance;
 }
 
-MessageDialog::MessageDialog(QWidget* parent)
-    : QDialog(parent)
-{
+MessageDialog::MessageDialog(QWidget* parent) : QDialog(parent) {
     setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
     setWindowModality(Qt::WindowModal);
 }
 
-void MessageDialog::messageBoxShow(const QString& message, MsgType type)
-{
+void MessageDialog::messageBoxShow(const QString& message, MsgType type) {
     messageBoxShow(message, type, QMessageBox::Ok, true);
 }
 
-MsgType MessageDialog::messageBoxShow(
-    const QString& message,
-    MsgType type,
-    QMessageBox::StandardButtons buttons,
-    bool modal)
-{
+MsgType MessageDialog::messageBoxShow(const QString& message, MsgType type, QMessageBox::StandardButtons buttons,
+                                      bool modal) {
     if (modal) {
         setWindowModality(Qt::ApplicationModal);
     } else {
@@ -58,8 +52,7 @@ MsgType MessageDialog::messageBoxShow(
     return type;
 }
 
-int MessageDialog::information(const QString& message, bool modal)
-{
+int MessageDialog::information(const QString& message, bool modal) {
     QMessageBox msgBox;
     msgBox.setIcon(QMessageBox::Information);
     msgBox.setText(message);
@@ -73,8 +66,7 @@ int MessageDialog::information(const QString& message, bool modal)
     return msgBox.exec();
 }
 
-int MessageDialog::warning(const QString& message, bool modal)
-{
+int MessageDialog::warning(const QString& message, bool modal) {
     QMessageBox msgBox;
     msgBox.setIcon(QMessageBox::Warning);
     msgBox.setText(message);
@@ -88,8 +80,7 @@ int MessageDialog::warning(const QString& message, bool modal)
     return msgBox.exec();
 }
 
-int MessageDialog::error(const QString& message, bool modal)
-{
+int MessageDialog::error(const QString& message, bool modal) {
     QMessageBox msgBox;
     msgBox.setIcon(QMessageBox::Critical);
     msgBox.setText(message);
@@ -103,8 +94,7 @@ int MessageDialog::error(const QString& message, bool modal)
     return msgBox.exec();
 }
 
-int MessageDialog::question(const QString& message, QMessageBox::StandardButtons buttons)
-{
+int MessageDialog::question(const QString& message, QMessageBox::StandardButtons buttons) {
     QMessageBox msgBox;
     msgBox.setIcon(QMessageBox::Question);
     msgBox.setText(message);
@@ -114,25 +104,33 @@ int MessageDialog::question(const QString& message, QMessageBox::StandardButtons
     return msgBox.exec();
 }
 
-QString MessageDialog::getMsgTypeIcon(MsgType type)
-{
+QString MessageDialog::getMsgTypeIcon(MsgType type) {
     switch (type) {
-        case MsgType::Info: return "ℹ️";
-        case MsgType::Warning: return "⚠️";
-        case MsgType::Error: return "❌";
-        case MsgType::Question: return "❓";
-        default: return "";
+    case MsgType::Info:
+        return "ℹ️";
+    case MsgType::Warning:
+        return "⚠️";
+    case MsgType::Error:
+        return "❌";
+    case MsgType::Question:
+        return "❓";
+    default:
+        return "";
     }
 }
 
-QMessageBox::Icon MessageDialog::getQMessageBoxIcon(MsgType type)
-{
+QMessageBox::Icon MessageDialog::getQMessageBoxIcon(MsgType type) {
     switch (type) {
-        case MsgType::Info: return QMessageBox::Information;
-        case MsgType::Warning: return QMessageBox::Warning;
-        case MsgType::Error: return QMessageBox::Critical;
-        case MsgType::Question: return QMessageBox::Question;
-        default: return QMessageBox::NoIcon;
+    case MsgType::Info:
+        return QMessageBox::Information;
+    case MsgType::Warning:
+        return QMessageBox::Warning;
+    case MsgType::Error:
+        return QMessageBox::Critical;
+    case MsgType::Question:
+        return QMessageBox::Question;
+    default:
+        return QMessageBox::NoIcon;
     }
 }
 

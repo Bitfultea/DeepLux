@@ -17,7 +17,7 @@ struct AnnotationSession;
 class YoloSegExporter {
 public:
     static bool exportToFile(const AnnotationSession& session, const QString& outputPath,
-                            const QStringList& classLabels, QString* error = nullptr);
+                             const QStringList& classLabels, QString* error = nullptr);
 
     static QString toJsonString(const AnnotationSession& session, const QStringList& classLabels);
 };

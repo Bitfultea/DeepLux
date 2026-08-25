@@ -8,8 +8,7 @@
 
 namespace DeepLux {
 
-class JiErHanDefectsDetPlugin : public ModuleBase
-{
+class JiErHanDefectsDetPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -18,12 +17,24 @@ public:
     explicit JiErHanDefectsDetPlugin(QObject* parent = nullptr);
     ~JiErHanDefectsDetPlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.jierhandefectsdet"; }
-    QString name() const override { return tr("剑二韩缺陷检测"); }
-    QString category() const override { return "detection"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("剑二韩焊接缺陷检测"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.jierhandefectsdet";
+    }
+    QString name() const override {
+        return tr("剑二韩缺陷检测");
+    }
+    QString category() const override {
+        return "detection";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("剑二韩焊接缺陷检测");
+    }
 
     bool initialize() override;
     void shutdown() override;

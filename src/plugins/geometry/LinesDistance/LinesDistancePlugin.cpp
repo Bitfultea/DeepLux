@@ -104,49 +104,30 @@ double LinesDistancePlugin::pointSegmentDistance(double px, double py, double ax
     return std::hypot(px - nearestX, py - nearestY);
 }
 
-bool LinesDistancePlugin::segmentsIntersect(double ax1, double ay1, double ax2, double ay2, double bx1, double by1,
-                                            double bx2, double by2) {
-    // 方向函数
-    auto orient = [](double px, double py, double qx, double qy, double rx, double ry) {
-        return (qy - py) * (rx - qx) - (qx - px) * (ry - qy);
-    };
-    auto onSegment = [](double px, double py, double qx, double qy, double rx, double ry) {
-        return qMin(px, rx) <= qx && qx <= qMax(px, rx) && qMin(py, ry) <= qy && qy <= qMax(py, ry);
-    };
-
-    const double o1 = orient(ax1, ay1, ax2, ay2, bx1, by1);
-    const double o2 = orient(ax1, ay1, ax2, ay2, bx2, by2);
-    const double o3 = orient(bx1, by1, bx2, by2, ax1, ay1);
-    const double o4 = orient(bx1, by1, bx2, by2, ax2, ay2);
-
-    if (((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) && ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0)))
-        return true;
-
-    // 共线端点落在另一线段上
-    if (qAbs(o1) < 1e-12 && onSegment(ax1, ay1, bx1, by1, ax2, ay2))
-        return true;
-    if (qAbs(o2) < 1e-12 && onSegment(ax1, ay1, bx2, by2, ax2, ay2))
-        return true;
-    if (qAbs(o3) < 1e-12 && onSegment(bx1, by1, ax1, ay1, bx2, by2))
-        return true;
-    if (qAbs(o4) < 1e-12 && onSegment(bx1, by1, ax2, ay2, bx2, by2))
-        return true;
-    return false;
-}
-
 double LinesDistancePlugin::calculateSegmentDistance(double ax1, double ay1, double ax2, double ay2, double bx1,
                                                      double by1, double bx2, double by2, double& nearAx, double& nearAy,
                                                      double& nearBx, double& nearBy) {
-    // 相交（含端点接触）：距离为 0，最近点取交点近似（端点）
-    if (segmentsIntersect(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2)) {
-        nearAx = ax1;
-        nearAy = ay1;
-        nearBx = bx1;
-        nearBy = by1;
-        return 0.0;
+    // P1-2: 相交时最近点应为"真实交点"（两点重合，显示的最短线长度为 0）。
+    // 先求两直线交点，若交点同时落在两线段内 → 距离 0，最近点=交点。
+    const double dax = ax2 - ax1, day = ay2 - ay1;
+    const double dbx = bx2 - bx1, dby = by2 - by1;
+    const double denom = dax * dby - day * dbx;
+    if (qAbs(denom) > 1e-12) {
+        const double t = ((bx1 - ax1) * dby - (by1 - ay1) * dbx) / denom;
+        const double s = ((bx1 - ax1) * day - (by1 - ay1) * dax) / denom;
+        if (t >= 0.0 && t <= 1.0 && s >= 0.0 && s <= 1.0) {
+            const double ix = ax1 + t * dax;
+            const double iy = ay1 + t * day;
+            nearAx = ix;
+            nearAy = iy;
+            nearBx = ix;
+            nearBy = iy;
+            return 0.0;
+        }
     }
 
-    // 不相交：最近距离必为某端点到另一线段的最短距离
+    // 不相交（或共线/端点接触）：最近距离为某端点到另一线段的最短距离。
+    // 端点接触/共线重叠时该距离为 0 且最近点重合。
     double best = std::numeric_limits<double>::max();
     double nx = 0, ny = 0, mx = 0, my = 0;
 

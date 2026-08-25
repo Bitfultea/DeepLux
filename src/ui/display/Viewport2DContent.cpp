@@ -1,13 +1,12 @@
 #include "Viewport2DContent.h"
+
 #include "widgets/HImageWidget.h"
+
 #include <QVBoxLayout>
 
 namespace DeepLux {
 
-Viewport2DContent::Viewport2DContent(QWidget* parent)
-    : QWidget(parent)
-    , m_zoomFactor(1.0)
-{
+Viewport2DContent::Viewport2DContent(QWidget* parent) : QWidget(parent), m_zoomFactor(1.0) {
     // 创建 HImageWidget 并布局
     m_imageWidget = new HImageWidget(this);
     QVBoxLayout* layout = new QVBoxLayout(this);
@@ -16,8 +15,7 @@ Viewport2DContent::Viewport2DContent(QWidget* parent)
     setLayout(layout);
 }
 
-Viewport2DContent::~Viewport2DContent() {
-}
+Viewport2DContent::~Viewport2DContent() {}
 
 void Viewport2DContent::displayData(const DisplayData& data) {
     const auto* imgData = data.imageData();

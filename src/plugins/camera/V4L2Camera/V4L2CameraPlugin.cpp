@@ -1,16 +1,17 @@
 #include "V4L2CameraPlugin.h"
+
 #include "V4L2Camera.h"
 #include "core/common/Logger.h"
 
+#include <QDebug>
 #include <QDir>
 #include <QFile>
-#include <QDebug>
+#include <errno.h>
 #include <fcntl.h>
-#include <unistd.h>
+#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
-#include <errno.h>
-#include <string.h>
+#include <unistd.h>
 
 #ifdef __linux__
 #include <linux/videodev2.h>
@@ -18,17 +19,11 @@
 
 namespace DeepLux {
 
-V4L2CameraPlugin::V4L2CameraPlugin(QObject* parent)
-    : ICameraPlugin(parent)
-{
-}
+V4L2CameraPlugin::V4L2CameraPlugin(QObject* parent) : ICameraPlugin(parent) {}
 
-V4L2CameraPlugin::~V4L2CameraPlugin()
-{
-}
+V4L2CameraPlugin::~V4L2CameraPlugin() {}
 
-bool V4L2CameraPlugin::isAvailable() const
-{
+bool V4L2CameraPlugin::isAvailable() const {
 #ifdef __linux__
     QDir devDir("/dev");
     QStringList devices = devDir.entryList({"video*"});
@@ -38,8 +33,7 @@ bool V4L2CameraPlugin::isAvailable() const
 #endif
 }
 
-QString V4L2CameraPlugin::availabilityMessage() const
-{
+QString V4L2CameraPlugin::availabilityMessage() const {
 #ifdef __linux__
     QDir devDir("/dev");
     QStringList devices = devDir.entryList({"video*"});
@@ -52,8 +46,7 @@ QString V4L2CameraPlugin::availabilityMessage() const
 #endif
 }
 
-QList<CameraInfo> V4L2CameraPlugin::discoverCameras()
-{
+QList<CameraInfo> V4L2CameraPlugin::discoverCameras() {
     QList<CameraInfo> cameras;
 
 #ifdef __linux__
@@ -101,8 +94,7 @@ QList<CameraInfo> V4L2CameraPlugin::discoverCameras()
 
         cameras.append(info);
         Logger::instance().info(
-            QString("V4L2: 发现相机 %1 - %2 (%3x%4)")
-                .arg(devicePath).arg(info.name).arg(info.width).arg(info.height),
+            QString("V4L2: 发现相机 %1 - %2 (%3x%4)").arg(devicePath).arg(info.name).arg(info.width).arg(info.height),
             "Camera");
     }
 #else
@@ -112,8 +104,7 @@ QList<CameraInfo> V4L2CameraPlugin::discoverCameras()
     return cameras;
 }
 
-QObject* V4L2CameraPlugin::createCamera(const CameraInfo& info)
-{
+QObject* V4L2CameraPlugin::createCamera(const CameraInfo& info) {
     if (info.pluginId != "v4l2") {
         return nullptr;
     }
@@ -122,8 +113,7 @@ QObject* V4L2CameraPlugin::createCamera(const CameraInfo& info)
     return qobject_cast<QObject*>(camera);
 }
 
-QString V4L2CameraPlugin::getDeviceName(const QString& devicePath) const
-{
+QString V4L2CameraPlugin::getDeviceName(const QString& devicePath) const {
 #ifdef __linux__
     int fd = open(devicePath.toUtf8().constData(), O_RDONLY);
     if (fd < 0) {
@@ -143,8 +133,7 @@ QString V4L2CameraPlugin::getDeviceName(const QString& devicePath) const
     return QString("V4L2 Device %1").arg(devicePath);
 }
 
-bool V4L2CameraPlugin::isV4L2Device(const QString& devicePath) const
-{
+bool V4L2CameraPlugin::isV4L2Device(const QString& devicePath) const {
 #ifdef __linux__
     struct stat st;
     if (stat(devicePath.toUtf8().constData(), &st) < 0) {

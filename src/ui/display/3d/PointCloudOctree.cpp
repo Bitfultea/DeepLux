@@ -1,17 +1,16 @@
 #include "PointCloudOctree.h"
+
 #include "PointCloudGPUBuffer.h"
 #include "core/display/DisplayData.h"
+
 #include <algorithm>
 #include <cmath>
-#include <thread>
 #include <future>
+#include <thread>
 
 namespace DeepLux {
 
-PointCloudOctree::PointCloudOctree(const Config& config)
-    : m_config(config)
-{
-}
+PointCloudOctree::PointCloudOctree(const Config& config) : m_config(config) {}
 
 PointCloudOctree::~PointCloudOctree() {
     cancelBuild();
@@ -75,12 +74,10 @@ void PointCloudOctree::build(const PointCloudData& pointCloud) {
 
 void PointCloudOctree::buildAsync(const PointCloudData& pointCloud) {
     if (m_building.load()) {
-        return;  // 已经在构建中
+        return; // 已经在构建中
     }
 
-    std::thread builder([this, pointCloud]() {
-        build(pointCloud);
-    });
+    std::thread builder([this, pointCloud]() { build(pointCloud); });
     builder.detach();
 }
 
@@ -92,21 +89,19 @@ int PointCloudOctree::recommendedLODLevel() const {
     // 基于点数量建议 LOD 级别
     // 点数越少，深度可以越深
     if (m_pointCount < m_config.lodThreshold) {
-        return 0;  // 不需要 LOD，全部显示
+        return 0; // 不需要 LOD，全部显示
     }
 
     // 计算推荐的深度级别
     // 每个级别的点数约为 pointsPerNode * 8^level
-    float log8 = std::log(static_cast<float>(m_pointCount) / static_cast<float>(m_config.pointsPerNode))
-                   / std::log(8.0f);
+    float log8 =
+        std::log(static_cast<float>(m_pointCount) / static_cast<float>(m_config.pointsPerNode)) / std::log(8.0f);
     int level = static_cast<int>(std::ceil(log8));
     return std::min(level, static_cast<int>(m_config.maxDepth));
 }
 
-void PointCloudOctree::buildNode(std::shared_ptr<OctreeNode>& node,
-                                 const OctreeNodeInfo& info,
-                                 const PointCloudData& pointCloud,
-                                 const std::vector<size_t>& pointIndices) {
+void PointCloudOctree::buildNode(std::shared_ptr<OctreeNode>& node, const OctreeNodeInfo& info,
+                                 const PointCloudData& pointCloud, const std::vector<size_t>& pointIndices) {
     if (m_cancelled.load()) {
         return;
     }
@@ -114,8 +109,7 @@ void PointCloudOctree::buildNode(std::shared_ptr<OctreeNode>& node,
     m_nodeCount.fetch_add(1);
 
     // 叶子判断：点数太少或达到最大深度
-    if (pointIndices.size() <= m_config.pointsPerNode ||
-        info.depth >= m_config.maxDepth) {
+    if (pointIndices.size() <= m_config.pointsPerNode || info.depth >= m_config.maxDepth) {
 
         auto leaf = std::make_shared<OctreeLeafNode>();
         leaf->setInfo(info);
@@ -164,11 +158,9 @@ void PointCloudOctree::buildNode(std::shared_ptr<OctreeNode>& node,
         childInfo.depth = info.depth + 1;
         childInfo.child_index = i;
         childInfo.size = childSize;
-        childInfo.origin = QVector3D(
-            info.origin.x() + ((i & 1) ? childSize : 0),
-            info.origin.y() + ((i & 2) ? childSize : 0),
-            info.origin.z() + ((i & 4) ? childSize : 0)
-        );
+        childInfo.origin =
+            QVector3D(info.origin.x() + ((i & 1) ? childSize : 0), info.origin.y() + ((i & 2) ? childSize : 0),
+                      info.origin.z() + ((i & 4) ? childSize : 0));
 
         buildNode(internal->children[i], childInfo, pointCloud, childIndices[i]);
     }
@@ -177,9 +169,7 @@ void PointCloudOctree::buildNode(std::shared_ptr<OctreeNode>& node,
     for (auto& child : internal->children) {
         if (child && child->isLeaf()) {
             auto* leaf = static_cast<OctreeLeafNode*>(child.get());
-            internal->indices.insert(internal->indices.end(),
-                                   leaf->indices.begin(),
-                                   leaf->indices.end());
+            internal->indices.insert(internal->indices.end(), leaf->indices.begin(), leaf->indices.end());
         }
     }
 
@@ -187,7 +177,7 @@ void PointCloudOctree::buildNode(std::shared_ptr<OctreeNode>& node,
 }
 
 QVector3D PointCloudOctree::computeAverageColor(const PointCloudData& pointCloud,
-                                               const std::vector<size_t>& indices) const {
+                                                const std::vector<size_t>& indices) const {
     if (indices.empty() || !pointCloud.hasColors()) {
         return QVector3D(1.0f, 1.0f, 1.0f);
     }
@@ -228,7 +218,7 @@ void PointCloudOctree::computeBounds(const PointCloudData& pointCloud) {
 
     // 扩展包围盒为正方体
     float maxExtent = std::max({maxX - minX, maxY - minY, maxZ - minZ});
-    float margin = maxExtent * 0.1f;  // 10% margin
+    float margin = maxExtent * 0.1f; // 10% margin
 
     m_origin = QVector3D(minX - margin, minY - margin, minZ - margin);
     m_size = maxExtent + margin * 2;
@@ -238,41 +228,39 @@ void PointCloudOctree::computeBounds(const PointCloudData& pointCloud) {
     m_size = sizePow;
 }
 
-std::vector<size_t> PointCloudOctree::queryRadius(const QVector3D& center,
-                                                    float radius) const {
+std::vector<size_t> PointCloudOctree::queryRadius(const QVector3D& center, float radius) const {
     std::vector<size_t> result;
 
-    if (!m_root) return result;
+    if (!m_root)
+        return result;
 
     float radiusSq = radius * radius;
 
     std::function<void(OctreeNode*, const OctreeNodeInfo&)> traverse;
     traverse = [&](OctreeNode* node, const OctreeNodeInfo& info) {
-        if (!node) return;
+        if (!node)
+            return;
 
         // 球体与立方体相交测试
-        QVector3D closest = QVector3D(
-            std::max(info.origin.x(), std::min(center.x(), info.origin.x() + info.size)),
-            std::max(info.origin.y(), std::min(center.y(), info.origin.y() + info.size)),
-            std::max(info.origin.z(), std::min(center.z(), info.origin.z() + info.size))
-        );
+        QVector3D closest = QVector3D(std::max(info.origin.x(), std::min(center.x(), info.origin.x() + info.size)),
+                                      std::max(info.origin.y(), std::min(center.y(), info.origin.y() + info.size)),
+                                      std::max(info.origin.z(), std::min(center.z(), info.origin.z() + info.size)));
 
         float dx = center.x() - closest.x();
         float dy = center.y() - closest.y();
         float dz = center.z() - closest.z();
 
         if (dx * dx + dy * dy + dz * dz > radiusSq) {
-            return;  // 不相交，跳过
+            return; // 不相交，跳过
         }
 
         if (node->isLeaf()) {
             auto* leaf = static_cast<OctreeLeafNode*>(node);
             for (size_t idx : leaf->indices) {
-                const auto& p = leaf->gpuBuffer ?
-                    QVector3D(leaf->gpuBuffer->positions[idx * 3],
-                              leaf->gpuBuffer->positions[idx * 3 + 1],
-                              leaf->gpuBuffer->positions[idx * 3 + 2]) :
-                    QVector3D(0, 0, 0);
+                const auto& p = leaf->gpuBuffer ? QVector3D(leaf->gpuBuffer->positions[idx * 3],
+                                                            leaf->gpuBuffer->positions[idx * 3 + 1],
+                                                            leaf->gpuBuffer->positions[idx * 3 + 2])
+                                                : QVector3D(0, 0, 0);
                 float dx = center.x() - p.x();
                 float dy = center.y() - p.y();
                 float dz = center.z() - p.z();
@@ -287,17 +275,16 @@ std::vector<size_t> PointCloudOctree::queryRadius(const QVector3D& center,
         float childSize = info.size * 0.5f;
 
         for (int i = 0; i < 8; ++i) {
-            if (!internal->children[i]) continue;
+            if (!internal->children[i])
+                continue;
 
             OctreeNodeInfo childInfo;
             childInfo.depth = info.depth + 1;
             childInfo.child_index = i;
             childInfo.size = childSize;
-            childInfo.origin = QVector3D(
-                info.origin.x() + ((i & 1) ? childSize : 0),
-                info.origin.y() + ((i & 2) ? childSize : 0),
-                info.origin.z() + ((i & 4) ? childSize : 0)
-            );
+            childInfo.origin =
+                QVector3D(info.origin.x() + ((i & 1) ? childSize : 0), info.origin.y() + ((i & 2) ? childSize : 0),
+                          info.origin.z() + ((i & 4) ? childSize : 0));
 
             traverse(internal->children[i].get(), childInfo);
         }
@@ -312,23 +299,24 @@ std::vector<size_t> PointCloudOctree::queryRadius(const QVector3D& center,
     return result;
 }
 
-std::vector<size_t> PointCloudOctree::queryBox(const QVector3D& min,
-                                               const QVector3D& max) const {
+std::vector<size_t> PointCloudOctree::queryBox(const QVector3D& min, const QVector3D& max) const {
     std::vector<size_t> result;
 
-    if (!m_root) return result;
+    if (!m_root)
+        return result;
 
     std::function<void(OctreeNode*, const OctreeNodeInfo&)> traverse;
     traverse = [&](OctreeNode* node, const OctreeNodeInfo& info) {
-        if (!node) return;
+        if (!node)
+            return;
 
         // AABB 相交测试
-        bool intersects =
-            info.origin.x() <= max.x() && info.origin.x() + info.size >= min.x() &&
-            info.origin.y() <= max.y() && info.origin.y() + info.size >= min.y() &&
-            info.origin.z() <= max.z() && info.origin.z() + info.size >= min.z();
+        bool intersects = info.origin.x() <= max.x() && info.origin.x() + info.size >= min.x() &&
+                          info.origin.y() <= max.y() && info.origin.y() + info.size >= min.y() &&
+                          info.origin.z() <= max.z() && info.origin.z() + info.size >= min.z();
 
-        if (!intersects) return;
+        if (!intersects)
+            return;
 
         if (node->isLeaf()) {
             auto* leaf = static_cast<OctreeLeafNode*>(node);
@@ -342,17 +330,16 @@ std::vector<size_t> PointCloudOctree::queryBox(const QVector3D& min,
         float childSize = info.size * 0.5f;
 
         for (int i = 0; i < 8; ++i) {
-            if (!internal->children[i]) continue;
+            if (!internal->children[i])
+                continue;
 
             OctreeNodeInfo childInfo;
             childInfo.depth = info.depth + 1;
             childInfo.child_index = i;
             childInfo.size = childSize;
-            childInfo.origin = QVector3D(
-                info.origin.x() + ((i & 1) ? childSize : 0),
-                info.origin.y() + ((i & 2) ? childSize : 0),
-                info.origin.z() + ((i & 4) ? childSize : 0)
-            );
+            childInfo.origin =
+                QVector3D(info.origin.x() + ((i & 1) ? childSize : 0), info.origin.y() + ((i & 2) ? childSize : 0),
+                          info.origin.z() + ((i & 4) ? childSize : 0));
 
             traverse(internal->children[i].get(), childInfo);
         }

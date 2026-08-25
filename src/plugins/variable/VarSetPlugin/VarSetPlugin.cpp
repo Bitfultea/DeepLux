@@ -1,32 +1,28 @@
 #include "VarSetPlugin.h"
-#include "core/manager/GlobalVarManager.h"
-#include "core/common/VarModel.h"
+
 #include "core/common/Logger.h"
+#include "core/common/VarModel.h"
 #include "core/engine/RunEngine.h"
-#include <QVBoxLayout>
+#include "core/manager/GlobalVarManager.h"
+
+#include <QFormLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QFormLayout>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-VarSetPlugin::VarSetPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
+VarSetPlugin::VarSetPlugin(QObject* parent) : ModuleBase(parent) {
     m_moduleId = "com.deeplux.plugin.varset";
     m_name = "变量赋值";
     m_category = "variable";
     m_description = "设置已存在变量的值，支持表达式或引用其他变量";
 
-    m_defaultParams = QJsonObject{
-        {"variableName", ""},
-        {"value", ""}
-    };
+    m_defaultParams = QJsonObject{{"variableName", ""}, {"value", ""}};
     m_params = m_defaultParams;
 }
 
-bool VarSetPlugin::initialize()
-{
+bool VarSetPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -34,8 +30,7 @@ bool VarSetPlugin::initialize()
     return true;
 }
 
-bool VarSetPlugin::process(const ImageData& input, ImageData& output)
-{
+bool VarSetPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     QJsonObject params = currentParams();
@@ -67,8 +62,7 @@ bool VarSetPlugin::process(const ImageData& input, ImageData& output)
     return true;
 }
 
-QVariant VarSetPlugin::evaluateExpression(const QString& expr, VarDataType targetType) const
-{
+QVariant VarSetPlugin::evaluateExpression(const QString& expr, VarDataType targetType) const {
     if (expr.isEmpty()) {
         return QVariant();
     }
@@ -94,13 +88,17 @@ QVariant VarSetPlugin::evaluateExpression(const QString& expr, VarDataType targe
         double right = match.captured(3).toDouble();
 
         double result = 0.0;
-        if (op == "+") result = left + right;
-        else if (op == "-") result = left - right;
-        else if (op == "*") result = left * right;
-        else if (op == "/") result = right != 0.0 ? left / right : 0.0;
+        if (op == "+")
+            result = left + right;
+        else if (op == "-")
+            result = left - right;
+        else if (op == "*")
+            result = left * right;
+        else if (op == "/")
+            result = right != 0.0 ? left / right : 0.0;
 
         if (targetType == VarDataType::Int) {
-            return QVariant((int)result);
+            return QVariant((int) result);
         }
         return QVariant(result);
     }
@@ -109,57 +107,55 @@ QVariant VarSetPlugin::evaluateExpression(const QString& expr, VarDataType targe
     return resolveValue(trimmed, targetType);
 }
 
-QVariant VarSetPlugin::resolveValue(const QString& val, VarDataType targetType) const
-{
+QVariant VarSetPlugin::resolveValue(const QString& val, VarDataType targetType) const {
     switch (targetType) {
-        case VarDataType::Int: {
-            bool ok = false;
-            int intVal = val.toInt(&ok);
-            return ok ? QVariant(intVal) : QVariant(0);
-        }
-        case VarDataType::Double: {
-            bool ok = false;
-            double dblVal = val.toDouble(&ok);
-            return ok ? QVariant(dblVal) : QVariant(0.0);
-        }
-        case VarDataType::Bool: {
-            QString lower = val.toLower();
-            if (lower == "true" || lower == "1" || lower == "yes") return QVariant(true);
-            if (lower == "false" || lower == "0" || lower == "no") return QVariant(false);
-            return QVariant(val.toInt() != 0);
-        }
-        case VarDataType::String:
-        default:
-            return QVariant(val);
+    case VarDataType::Int: {
+        bool ok = false;
+        int intVal = val.toInt(&ok);
+        return ok ? QVariant(intVal) : QVariant(0);
+    }
+    case VarDataType::Double: {
+        bool ok = false;
+        double dblVal = val.toDouble(&ok);
+        return ok ? QVariant(dblVal) : QVariant(0.0);
+    }
+    case VarDataType::Bool: {
+        QString lower = val.toLower();
+        if (lower == "true" || lower == "1" || lower == "yes")
+            return QVariant(true);
+        if (lower == "false" || lower == "0" || lower == "no")
+            return QVariant(false);
+        return QVariant(val.toInt() != 0);
+    }
+    case VarDataType::String:
+    default:
+        return QVariant(val);
     }
 }
 
-QVariant VarSetPlugin::convertValue(const QVariant& val, VarDataType targetType) const
-{
+QVariant VarSetPlugin::convertValue(const QVariant& val, VarDataType targetType) const {
     switch (targetType) {
-        case VarDataType::Int:
-            return QVariant(val.toInt());
-        case VarDataType::Double:
-            return QVariant(val.toDouble());
-        case VarDataType::Bool:
-            return QVariant(val.toBool());
-        case VarDataType::String:
-            return QVariant(val.toString());
-        default:
-            return val;
+    case VarDataType::Int:
+        return QVariant(val.toInt());
+    case VarDataType::Double:
+        return QVariant(val.toDouble());
+    case VarDataType::Bool:
+        return QVariant(val.toBool());
+    case VarDataType::String:
+        return QVariant(val.toString());
+    default:
+        return val;
     }
 }
 
-bool VarSetPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool VarSetPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     // 阶段 2: variableName 允许暂时为空，由 process() 在运行时报告"未配置"
     Q_UNUSED(params)
     error.clear();
     return true;
 }
 
-QWidget* VarSetPlugin::createConfigWidget()
-{
+QWidget* VarSetPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -174,19 +170,14 @@ QWidget* VarSetPlugin::createConfigWidget()
     layout->addLayout(formLayout);
     layout->addStretch();
 
-    connect(nameEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("variableName", text);
-    });
+    connect(nameEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("variableName", text); });
 
-    connect(valueEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("value", text);
-    });
+    connect(valueEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("value", text); });
 
     return widget;
 }
 
-IModule* VarSetPlugin::cloneImpl() const
-{
+IModule* VarSetPlugin::cloneImpl() const {
     return new VarSetPlugin();
 }
 

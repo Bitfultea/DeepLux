@@ -1,10 +1,10 @@
 #ifndef DEEPLUX_AGENT_ACTION_LOG_WIDGET_H
 #define DEEPLUX_AGENT_ACTION_LOG_WIDGET_H
 
-#include <QWidget>
-#include <QList>
-
 #include "core/agent/GuiEvent.h"
+
+#include <QList>
+#include <QWidget>
 
 class QTableWidget;
 class QPushButton;
@@ -17,8 +17,7 @@ namespace DeepLux {
  * 显示 Agent 所有操作的时间线，支持撤销。
  * 放置在 MainWindow 的 dock 区域或独立面板。
  */
-class AgentActionLogWidget : public QWidget
-{
+class AgentActionLogWidget : public QWidget {
     Q_OBJECT
 
 public:
@@ -29,7 +28,9 @@ public:
     void updateEntryResult(int row, const QString& result);
     void applyTheme(bool isDark);
 
-    QList<AgentActionLogEntry> entries() const { return m_entries; }
+    QList<AgentActionLogEntry> entries() const {
+        return m_entries;
+    }
 
 signals:
     void undoRequested(int row);

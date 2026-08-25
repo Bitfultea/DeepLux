@@ -1,18 +1,17 @@
 #include "Logger.h"
+
 #include "core/platform/PathUtils.h"
+
 #include <QDebug>
 
 namespace DeepLux {
 
-Logger& Logger::instance()
-{
+Logger& Logger::instance() {
     static Logger instance;
     return instance;
 }
 
-Logger::Logger()
-    : QObject(nullptr)
-{
+Logger::Logger() : QObject(nullptr) {
     // 设置默认日志文件路径
     m_logFilePath = defaultLogFilePath();
 
@@ -29,36 +28,31 @@ Logger::Logger()
     }
 
     // 添加启动日志
-    addLog(QString("=== DeepLux Vision Started at %1 ===").arg(
-        QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss")),
-        LogLevel::Info, "System");
+    addLog(QString("=== DeepLux Vision Started at %1 ===")
+               .arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss")),
+           LogLevel::Info, "System");
 }
 
-Logger::~Logger()
-{
+Logger::~Logger() {
     if (m_logFile && m_logFile->isOpen()) {
-        addLog(QString("=== DeepLux Vision Closed at %1 ===").arg(
-            QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss")),
-            LogLevel::Info, "System");
+        addLog(QString("=== DeepLux Vision Closed at %1 ===")
+                   .arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss")),
+               LogLevel::Info, "System");
         m_logFile->close();
     }
 }
 
-QString Logger::defaultLogDirectory()
-{
+QString Logger::defaultLogDirectory() {
     return PathUtils::logPath();
 }
 
-QString Logger::defaultLogFilePath()
-{
+QString Logger::defaultLogFilePath() {
     QString logDir = defaultLogDirectory();
-    QString fileName = QString("DeepLux_%1.log")
-        .arg(QDateTime::currentDateTime().toString("yyyyMMdd"));
+    QString fileName = QString("DeepLux_%1.log").arg(QDateTime::currentDateTime().toString("yyyyMMdd"));
     return logDir + "/" + fileName;
 }
 
-void Logger::addLog(const QString& message, LogLevel level, const QString& category)
-{
+void Logger::addLog(const QString& message, LogLevel level, const QString& category) {
     LogEntry entry;
 
     {
@@ -87,33 +81,27 @@ void Logger::addLog(const QString& message, LogLevel level, const QString& categ
     emit logAdded(entry);
 }
 
-void Logger::debug(const QString& message, const QString& category)
-{
+void Logger::debug(const QString& message, const QString& category) {
     addLog(message, LogLevel::Debug, category);
 }
 
-void Logger::info(const QString& message, const QString& category)
-{
+void Logger::info(const QString& message, const QString& category) {
     addLog(message, LogLevel::Info, category);
 }
 
-void Logger::warning(const QString& message, const QString& category)
-{
+void Logger::warning(const QString& message, const QString& category) {
     addLog(message, LogLevel::Warning, category);
 }
 
-void Logger::error(const QString& message, const QString& category)
-{
+void Logger::error(const QString& message, const QString& category) {
     addLog(message, LogLevel::Error, category);
 }
 
-void Logger::success(const QString& message, const QString& category)
-{
+void Logger::success(const QString& message, const QString& category) {
     addLog(message, LogLevel::Success, category);
 }
 
-QList<LogEntry> Logger::logs(LogLevel level) const
-{
+QList<LogEntry> Logger::logs(LogLevel level) const {
     QMutexLocker locker(&m_mutex);
     QList<LogEntry> result;
     for (const auto& log : m_logs) {
@@ -124,8 +112,7 @@ QList<LogEntry> Logger::logs(LogLevel level) const
     return result;
 }
 
-QList<LogEntry> Logger::logs(const QString& category) const
-{
+QList<LogEntry> Logger::logs(const QString& category) const {
     QMutexLocker locker(&m_mutex);
     QList<LogEntry> result;
     for (const auto& log : m_logs) {
@@ -136,8 +123,7 @@ QList<LogEntry> Logger::logs(const QString& category) const
     return result;
 }
 
-void Logger::clearLogs()
-{
+void Logger::clearLogs() {
     {
         QMutexLocker locker(&m_mutex);
         m_logs.clear();
@@ -145,50 +131,42 @@ void Logger::clearLogs()
     emit logsCleared();
 }
 
-void Logger::setLogToFile(bool enabled)
-{
+void Logger::setLogToFile(bool enabled) {
     QMutexLocker locker(&m_mutex);
     m_logToFile = enabled;
 }
 
-void Logger::setMaxLogFileSize(qint64 maxBytes)
-{
+void Logger::setMaxLogFileSize(qint64 maxBytes) {
     QMutexLocker locker(&m_mutex);
     m_maxLogFileSize = maxBytes;
 }
 
-void Logger::setMinLevel(LogLevel level)
-{
+void Logger::setMinLevel(LogLevel level) {
     QMutexLocker locker(&m_mutex);
     m_minLevel = level;
 }
 
-QList<LogEntry> Logger::logs() const
-{
+QList<LogEntry> Logger::logs() const {
     QMutexLocker locker(&m_mutex);
     return m_logs;
 }
 
-QString Logger::logFilePath() const
-{
+QString Logger::logFilePath() const {
     QMutexLocker locker(&m_mutex);
     return m_logFilePath;
 }
 
-bool Logger::isLogToFileEnabled() const
-{
+bool Logger::isLogToFileEnabled() const {
     QMutexLocker locker(&m_mutex);
     return m_logToFile;
 }
 
-LogLevel Logger::minLevel() const
-{
+LogLevel Logger::minLevel() const {
     QMutexLocker locker(&m_mutex);
     return m_minLevel;
 }
 
-void Logger::writeToFile(const LogEntry& entry)
-{
+void Logger::writeToFile(const LogEntry& entry) {
     if (!m_logToFile || !m_logStream) {
         return;
     }
@@ -196,17 +174,16 @@ void Logger::writeToFile(const LogEntry& entry)
     rotateLogFileIfNeeded();
 
     QString logLine = QString("[%1] [%2] [%3] %4")
-        .arg(entry.timestamp.toString("yyyy-MM-dd HH:mm:ss.zzz"))
-        .arg(levelToString(entry.level))
-        .arg(entry.category.isEmpty() ? "-" : entry.category)
-        .arg(entry.message);
+                          .arg(entry.timestamp.toString("yyyy-MM-dd HH:mm:ss.zzz"))
+                          .arg(levelToString(entry.level))
+                          .arg(entry.category.isEmpty() ? "-" : entry.category)
+                          .arg(entry.message);
 
     *m_logStream << logLine << "\n";
     m_logStream->flush();
 }
 
-void Logger::rotateLogFileIfNeeded()
-{
+void Logger::rotateLogFileIfNeeded() {
     if (!m_logFile || !m_logFile->isOpen()) {
         return;
     }
@@ -229,27 +206,37 @@ void Logger::rotateLogFileIfNeeded()
     }
 }
 
-QString Logger::levelToString(LogLevel level)
-{
+QString Logger::levelToString(LogLevel level) {
     switch (level) {
-        case LogLevel::Debug:   return "DEBUG";
-        case LogLevel::Info:     return "INFO";
-        case LogLevel::Warning:  return "WARN";
-        case LogLevel::Error:    return "ERROR";
-        case LogLevel::Success:  return "SUCCESS";
-        default:                 return "UNKNOWN";
+    case LogLevel::Debug:
+        return "DEBUG";
+    case LogLevel::Info:
+        return "INFO";
+    case LogLevel::Warning:
+        return "WARN";
+    case LogLevel::Error:
+        return "ERROR";
+    case LogLevel::Success:
+        return "SUCCESS";
+    default:
+        return "UNKNOWN";
     }
 }
 
-QString Logger::levelToColor(LogLevel level)
-{
+QString Logger::levelToColor(LogLevel level) {
     switch (level) {
-        case LogLevel::Debug:   return "#808080";
-        case LogLevel::Info:    return "#00aaff";
-        case LogLevel::Warning:  return "#ffaa00";
-        case LogLevel::Error:    return "#ff4444";
-        case LogLevel::Success:  return "#00ff00";
-        default:                 return "#ffffff";
+    case LogLevel::Debug:
+        return "#808080";
+    case LogLevel::Info:
+        return "#00aaff";
+    case LogLevel::Warning:
+        return "#ffaa00";
+    case LogLevel::Error:
+        return "#ff4444";
+    case LogLevel::Success:
+        return "#00ff00";
+    default:
+        return "#ffffff";
     }
 }
 

@@ -2,9 +2,9 @@
 #define DEEPLUX_BASH_PROCESS_H
 
 #include <QObject>
+#include <QReadWriteLock>
 #include <QString>
 #include <QStringList>
-#include <QReadWriteLock>
 #include <QTimer>
 
 namespace DeepLux {
@@ -23,8 +23,7 @@ class PtyImpl;
  * - 命令历史管理（线程安全）
  * - 输出节流（50ms）
  */
-class BashProcess : public QObject
-{
+class BashProcess : public QObject {
     Q_OBJECT
 
 public:
@@ -38,8 +37,12 @@ public:
     enum Error { None, ShellNotFound, PtyOpenFailed, ForkFailed, ShellCrashed, Timeout };
     Q_ENUM(Error)
 
-    State state() const { return m_state; }
-    Error lastError() const { return m_lastError; }
+    State state() const {
+        return m_state;
+    }
+    Error lastError() const {
+        return m_lastError;
+    }
 
     /**
      * @brief 写入命令到 bash（自动添加换行）

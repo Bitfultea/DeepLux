@@ -1,9 +1,10 @@
 #pragma once
 
 #include "core/interface/ICamera.h"
-#include <QString>
-#include <QRect>
+
 #include <QImage>
+#include <QRect>
+#include <QString>
 #include <QVariantMap>
 
 #ifdef _WIN32
@@ -16,8 +17,7 @@ namespace DeepLux {
 /**
  * @brief DirectShow 相机设备 (Windows)
  */
-class DirectShowCamera : public ICamera
-{
+class DirectShowCamera : public ICamera {
     Q_OBJECT
     Q_INTERFACES(DeepLux::ICamera)
 
@@ -26,39 +26,75 @@ public:
     ~DirectShowCamera() override;
 
     // ICamera interface
-    QString deviceId() const override { return m_devicePath; }
-    QString name() const override { return m_name; }
-    QString serialNumber() const override { return m_serialNumber; }
-    QString manufacturer() const override { return "Windows"; }
-    CameraCapabilities capabilities() const override { return m_capabilities; }
+    QString deviceId() const override {
+        return m_devicePath;
+    }
+    QString name() const override {
+        return m_name;
+    }
+    QString serialNumber() const override {
+        return m_serialNumber;
+    }
+    QString manufacturer() const override {
+        return "Windows";
+    }
+    CameraCapabilities capabilities() const override {
+        return m_capabilities;
+    }
 
-    bool isPlatformSupported() const override { return true; }
-    QString platformNotSupportedMessage() const override { return QString(); }
+    bool isPlatformSupported() const override {
+        return true;
+    }
+    QString platformNotSupportedMessage() const override {
+        return QString();
+    }
 
     bool connect() override;
     void disconnect() override;
-    bool isConnected() const override { return m_connected; }
+    bool isConnected() const override {
+        return m_connected;
+    }
 
     bool startAcquisition() override;
     void stopAcquisition() override;
-    bool isAcquiring() const override { return m_acquiring; }
+    bool isAcquiring() const override {
+        return m_acquiring;
+    }
     bool triggerSoftware() override;
     void setTriggerMode(TriggerMode mode) override;
-    TriggerMode triggerMode() const override { return m_triggerMode; }
+    TriggerMode triggerMode() const override {
+        return m_triggerMode;
+    }
 
     void setExposureTime(double microseconds) override;
-    double exposureTime() const override { return m_exposureTime; }
+    double exposureTime() const override {
+        return m_exposureTime;
+    }
     void setGain(double gain) override;
-    double gain() const override { return m_gain; }
+    double gain() const override {
+        return m_gain;
+    }
     void setFrameRate(double fps) override;
-    double frameRate() const override { return m_frameRate; }
+    double frameRate() const override {
+        return m_frameRate;
+    }
     void setRoi(int x, int y, int width, int height) override;
-    QRect roi() const override { return m_roi; }
+    QRect roi() const override {
+        return m_roi;
+    }
 
-    QImage lastImage() const override { return m_lastImage; }
-    QVariantMap lastImageMetadata() const override { return m_metadata; }
-    int imageWidth() const override { return m_lastImage.width(); }
-    int imageHeight() const override { return m_lastImage.height(); }
+    QImage lastImage() const override {
+        return m_lastImage;
+    }
+    QVariantMap lastImageMetadata() const override {
+        return m_metadata;
+    }
+    int imageWidth() const override {
+        return m_lastImage.width();
+    }
+    int imageHeight() const override {
+        return m_lastImage.height();
+    }
 
     QWidget* createConfigWidget() override;
     QJsonObject toJson() const override;

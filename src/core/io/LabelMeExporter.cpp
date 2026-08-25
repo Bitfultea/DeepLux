@@ -1,10 +1,11 @@
 #include "LabelMeExporter.h"
+
 #include "model/Annotation.h"
 
 #include <QFile>
 #include <QFileInfo>
-#include <QJsonDocument>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 
 namespace DeepLux {

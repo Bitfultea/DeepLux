@@ -1,5 +1,7 @@
 #include "DelayPlugin.h"
+
 #include "core/common/Logger.h"
+
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QFormLayout>
@@ -9,17 +11,12 @@
 
 namespace DeepLux {
 
-DelayPlugin::DelayPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"delayMs", 100}
-    };
+DelayPlugin::DelayPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"delayMs", 100}};
     m_params = m_defaultParams;
 }
 
-bool DelayPlugin::initialize()
-{
+bool DelayPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -27,8 +24,7 @@ bool DelayPlugin::initialize()
     return true;
 }
 
-bool DelayPlugin::process(const ImageData& input, ImageData& output)
-{
+bool DelayPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     QJsonObject params = currentParams();
@@ -58,8 +54,7 @@ bool DelayPlugin::process(const ImageData& input, ImageData& output)
     return !isCancellationRequested();
 }
 
-bool DelayPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool DelayPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     if (params["delayMs"].toInt() <= 0) {
         error = QString("Delay time must be greater than 0");
         return false;
@@ -67,8 +62,7 @@ bool DelayPlugin::doValidateParams(const QJsonObject& params, QString& error) co
     return true;
 }
 
-QWidget* DelayPlugin::createConfigWidget()
-{
+QWidget* DelayPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -84,15 +78,13 @@ QWidget* DelayPlugin::createConfigWidget()
     layout->addLayout(formLayout);
     layout->addStretch();
 
-    connect(delaySpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        setParam("delayMs", value);
-    });
+    connect(delaySpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [=](int value) { setParam("delayMs", value); });
 
     return widget;
 }
 
-IModule* DelayPlugin::cloneImpl() const
-{
+IModule* DelayPlugin::cloneImpl() const {
     return new DelayPlugin();
 }
 

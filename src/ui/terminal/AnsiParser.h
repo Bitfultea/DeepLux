@@ -25,8 +25,7 @@ namespace DeepLux {
  * - 交替屏幕缓冲区 (?1049)
  * - OSC 0/2 标题设置
  */
-class AnsiParser : public QObject
-{
+class AnsiParser : public QObject {
     Q_OBJECT
 
 public:
@@ -58,15 +57,15 @@ signals:
 private:
     // 解析状态
     enum class State {
-        Ground,          // 正常状态
-        Escape,         // 收到 ESC
-        CSI,            // 收到 ESC [
-        CSIParam,       // CSI 参数收集中
-        OSC,            // 收到 ESC ]
-        OSCString,      // OSC 字符串收集中
-        DCS,            // 收到 ESC P
-        DCString,       // DCS 字符串收集中
-        Ignore          // 忽略到 ST (ESC \ 或 BEL)
+        Ground,    // 正常状态
+        Escape,    // 收到 ESC
+        CSI,       // 收到 ESC [
+        CSIParam,  // CSI 参数收集中
+        OSC,       // 收到 ESC ]
+        OSCString, // OSC 字符串收集中
+        DCS,       // 收到 ESC P
+        DCString,  // DCS 字符串收集中
+        Ignore     // 忽略到 ST (ESC \ 或 BEL)
     };
 
     void processByte(char b);
@@ -83,7 +82,7 @@ private:
 
     // CSI 参数
     QVector<int> m_csiParams;
-    QByteArray m_csiPrefix;  // 用于私有参数如 ? > !
+    QByteArray m_csiPrefix; // 用于私有参数如 ? > !
 
     // OSC 参数
     int m_oscParam = 0;

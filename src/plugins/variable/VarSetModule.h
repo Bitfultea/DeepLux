@@ -5,31 +5,50 @@
 
 namespace DeepLux {
 
-class VarSetModule : public ModuleBase
-{
+class VarSetModule : public ModuleBase {
     Q_OBJECT
 
 public:
     explicit VarSetModule(QObject* parent = nullptr);
     ~VarSetModule() override = default;
 
-    QString category() const override { return "变量工具"; }
-    QString description() const override { return "变量赋值模块"; }
+    QString category() const override {
+        return "变量工具";
+    }
+    QString description() const override {
+        return "变量赋值模块";
+    }
 
     QJsonObject defaultParams() const override;
     void setParams(const QJsonObject& params) override;
 
-    QString varName() const { return m_varName; }
-    void setVarName(const QString& name) { m_varName = name; }
+    QString varName() const {
+        return m_varName;
+    }
+    void setVarName(const QString& name) {
+        m_varName = name;
+    }
 
-    VarDataType varType() const { return m_varType; }
-    void setVarType(VarDataType type) { m_varType = type; }
+    VarDataType varType() const {
+        return m_varType;
+    }
+    void setVarType(VarDataType type) {
+        m_varType = type;
+    }
 
-    QString expression() const { return m_expression; }
-    void setExpression(const QString& expr) { m_expression = expr; }
+    QString expression() const {
+        return m_expression;
+    }
+    void setExpression(const QString& expr) {
+        m_expression = expr;
+    }
 
-    QVariant varValue() const { return m_varValue; }
-    void setVarValue(const QVariant& value) { m_varValue = value; }
+    QVariant varValue() const {
+        return m_varValue;
+    }
+    void setVarValue(const QVariant& value) {
+        m_varValue = value;
+    }
 
 signals:
     void varNameChanged();

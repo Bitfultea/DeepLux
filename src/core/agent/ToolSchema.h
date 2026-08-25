@@ -1,30 +1,28 @@
 #ifndef DEEPLUX_TOOL_SCHEMA_H
 #define DEEPLUX_TOOL_SCHEMA_H
 
-#include <QString>
-#include <QList>
-#include <QJsonObject>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QJsonValue>
+#include <QList>
+#include <QString>
 
 namespace DeepLux {
 
 /**
  * @brief Tool 参数定义
  */
-struct ToolParam
-{
+struct ToolParam {
     QString name;
-    QString type;           // "string", "integer", "number", "boolean", "enum", "array", "object"
+    QString type; // "string", "integer", "number", "boolean", "enum", "array", "object"
     QString description;
     bool required = false;
     QJsonValue defaultValue;
     QStringList enumValues; // for "enum" type
 
     ToolParam() = default;
-    ToolParam(const QString& n, const QString& t, const QString& desc,
-              bool req = false, const QJsonValue& def = QJsonValue(),
-              const QStringList& enums = QStringList())
+    ToolParam(const QString& n, const QString& t, const QString& desc, bool req = false,
+              const QJsonValue& def = QJsonValue(), const QStringList& enums = QStringList())
         : name(n), type(t), description(desc), required(req), defaultValue(def), enumValues(enums) {}
 
     QJsonObject toJson() const;
@@ -35,8 +33,7 @@ struct ToolParam
  *
  * C++ 强类型定义，运行时生成 OpenAI Function Calling / Claude Tool Use 格式的 JSON。
  */
-struct ToolDefinition
-{
+struct ToolDefinition {
     QString name;
     QString description;
     QList<ToolParam> params;
@@ -52,8 +49,7 @@ struct ToolDefinition
  *
  * 所有可用工具在编译期注册，运行时动态生成 LLM API 格式。
  */
-class ToolSchema
-{
+class ToolSchema {
 public:
     static ToolSchema& instance();
 

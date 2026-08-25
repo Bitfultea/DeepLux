@@ -2,13 +2,13 @@
 #define DEEPLUX_OPENAI_LLM_CLIENT_H
 
 #include "ILLMClient.h"
+
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 
 namespace DeepLux {
 
-class OpenAILLMClient : public ILLMClient
-{
+class OpenAILLMClient : public ILLMClient {
     Q_OBJECT
 
 public:
@@ -24,8 +24,7 @@ public:
     void setReasoningEffort(const QString& effort);
     void setThinkingEnabled(bool enabled);
 
-    void sendRequest(const AgentConversation& ctx,
-                     const QList<ToolDefinition>& tools) override;
+    void sendRequest(const AgentConversation& ctx, const QList<ToolDefinition>& tools) override;
 
 private slots:
     void onReplyFinished();
@@ -40,7 +39,7 @@ private:
     double m_temperature = 0.3;
     int m_maxTokens = 4096;
     bool m_toolsEnabled = true;
-    QString m_reasoningEffort;   // "high" or "max" (DeepSeek thinking mode)
+    QString m_reasoningEffort; // "high" or "max" (DeepSeek thinking mode)
     bool m_thinkingEnabled = true;
 
     QNetworkAccessManager* m_networkManager = nullptr;

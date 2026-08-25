@@ -2,8 +2,8 @@
 
 #include <QFile>
 #include <QJsonDocument>
-#include <QUuid>
 #include <QRectF>
+#include <QUuid>
 
 namespace DeepLux {
 
@@ -62,8 +62,7 @@ AnnotationPrompt AnnotationPrompt::fromJson(const QJsonObject& json) {
     if (boxVal.isArray()) {
         QJsonArray boxArr = boxVal.toArray();
         if (boxArr.size() >= 4)
-            prompt.box = QRectF(boxArr[0].toDouble(), boxArr[1].toDouble(),
-                                 boxArr[2].toDouble(), boxArr[3].toDouble());
+            prompt.box = QRectF(boxArr[0].toDouble(), boxArr[1].toDouble(), boxArr[2].toDouble(), boxArr[3].toDouble());
     }
 
     return prompt;
@@ -107,8 +106,7 @@ AnnotationObject AnnotationObject::fromJson(const QJsonObject& json) {
 
     QJsonArray bboxArr = json["bbox"].toArray();
     if (bboxArr.size() >= 4) {
-        obj.bbox = QRectF(bboxArr[0].toDouble(), bboxArr[1].toDouble(),
-                          bboxArr[2].toDouble(), bboxArr[3].toDouble());
+        obj.bbox = QRectF(bboxArr[0].toDouble(), bboxArr[1].toDouble(), bboxArr[2].toDouble(), bboxArr[3].toDouble());
     }
 
     QJsonArray polyArr = json["polygon"].toArray();
@@ -162,7 +160,8 @@ AnnotationSession AnnotationSession::fromJson(const QJsonObject& json) {
 AnnotationSession AnnotationSession::load(const QString& filePath, QString* error) {
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {
-        if (error) *error = QStringLiteral("Cannot open file: %1").arg(filePath);
+        if (error)
+            *error = QStringLiteral("Cannot open file: %1").arg(filePath);
         return AnnotationSession();
     }
 
@@ -171,7 +170,8 @@ AnnotationSession AnnotationSession::load(const QString& filePath, QString* erro
     file.close();
 
     if (parseError.error != QJsonParseError::NoError) {
-        if (error) *error = parseError.errorString();
+        if (error)
+            *error = parseError.errorString();
         return AnnotationSession();
     }
 
@@ -181,7 +181,8 @@ AnnotationSession AnnotationSession::load(const QString& filePath, QString* erro
 bool AnnotationSession::save(const QString& filePath, QString* error) const {
     QFile file(filePath);
     if (!file.open(QIODevice::WriteOnly)) {
-        if (error) *error = QStringLiteral("Cannot create file: %1").arg(filePath);
+        if (error)
+            *error = QStringLiteral("Cannot create file: %1").arg(filePath);
         return false;
     }
 

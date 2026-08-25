@@ -8,8 +8,7 @@
 
 namespace DeepLux {
 
-class FitCirclePlugin : public ModuleBase
-{
+class FitCirclePlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -18,12 +17,24 @@ public:
     explicit FitCirclePlugin(QObject* parent = nullptr);
     ~FitCirclePlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.fitcircle"; }
-    QString name() const override { return tr("圆拟合"); }
-    QString category() const override { return "geometry"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("对输入点集进行圆拟合"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.fitcircle";
+    }
+    QString name() const override {
+        return tr("圆拟合");
+    }
+    QString category() const override {
+        return "geometry";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("对输入点集进行圆拟合");
+    }
 
     bool initialize() override;
     void shutdown() override;
@@ -35,10 +46,8 @@ protected:
     IModule* cloneImpl() const override;
 
 private:
-    bool fitCircleRANSAC(const QVector<QPointF>& points,
-                         double& centerX, double& centerY, double& radius,
-                         double threshold, int iterations,
-                         double minRadius, double maxRadius);
+    bool fitCircleRANSAC(const QVector<QPointF>& points, double& centerX, double& centerY, double& radius,
+                         double threshold, int iterations, double minRadius, double maxRadius);
 
     // 输出参数
     double m_resultCenterX = 0.0;

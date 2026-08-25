@@ -1,14 +1,14 @@
 #pragma once
 
 #include "core/base/ModuleBase.h"
+
+#include <QEventLoop>
 #include <QTcpSocket>
 #include <QTimer>
-#include <QEventLoop>
 
 namespace DeepLux {
 
-class TCPClientPlugin : public ModuleBase
-{
+class TCPClientPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -17,18 +17,32 @@ public:
     explicit TCPClientPlugin(QObject* parent = nullptr);
     ~TCPClientPlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.tcpclient"; }
-    QString name() const override { return tr("TCP客户端"); }
-    QString category() const override { return "communication"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("TCP客户端数据读写"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.tcpclient";
+    }
+    QString name() const override {
+        return tr("TCP客户端");
+    }
+    QString category() const override {
+        return "communication";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("TCP客户端数据读写");
+    }
 
     bool initialize() override;
     QWidget* createConfigWidget() override;
 
     /// Number of milliseconds waited during last connect/read
-    int lastWaitMs() const { return m_lastWaitMs; }
+    int lastWaitMs() const {
+        return m_lastWaitMs;
+    }
 
 protected:
     bool process(const ImageData& input, ImageData& output) override;

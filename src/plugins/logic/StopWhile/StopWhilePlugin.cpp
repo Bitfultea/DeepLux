@@ -1,14 +1,14 @@
 #include "StopWhilePlugin.h"
-#include "core/engine/RunEngine.h"
+
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
+#include "core/engine/RunEngine.h"
+
 #include <QLabel>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-StopWhilePlugin::StopWhilePlugin(QObject* parent)
-    : ModuleBase(parent)
-{
+StopWhilePlugin::StopWhilePlugin(QObject* parent) : ModuleBase(parent) {
     m_defaultParams = QJsonObject{};
     m_params = m_defaultParams;
     m_name = "停止循环";
@@ -17,8 +17,7 @@ StopWhilePlugin::StopWhilePlugin(QObject* parent)
     m_description = "放在循环内用于提前退出";
 }
 
-bool StopWhilePlugin::initialize()
-{
+bool StopWhilePlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -26,15 +25,13 @@ bool StopWhilePlugin::initialize()
     return true;
 }
 
-bool StopWhilePlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool StopWhilePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     Q_UNUSED(params);
     error = QString();
     return true;
 }
 
-bool StopWhilePlugin::process(const ImageData& input, ImageData& output)
-{
+bool StopWhilePlugin::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(input);
     output = input;
 
@@ -45,8 +42,7 @@ bool StopWhilePlugin::process(const ImageData& input, ImageData& output)
     return true;
 }
 
-QWidget* StopWhilePlugin::createConfigWidget()
-{
+QWidget* StopWhilePlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -56,8 +52,7 @@ QWidget* StopWhilePlugin::createConfigWidget()
     return widget;
 }
 
-IModule* StopWhilePlugin::cloneImpl() const
-{
+IModule* StopWhilePlugin::cloneImpl() const {
     return new StopWhilePlugin();
 }
 

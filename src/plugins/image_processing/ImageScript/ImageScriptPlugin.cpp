@@ -1,9 +1,11 @@
 #include "ImageScriptPlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
+
+#include <QComboBox>
 #include <QLabel>
 #include <QTextEdit>
-#include <QComboBox>
+#include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -11,22 +13,14 @@
 
 namespace DeepLux {
 
-ImageScriptPlugin::ImageScriptPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"scriptType", 0},
-        {"script", ""}
-    };
+ImageScriptPlugin::ImageScriptPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"scriptType", 0}, {"script", ""}};
     m_params = m_defaultParams;
 }
 
-ImageScriptPlugin::~ImageScriptPlugin()
-{
-}
+ImageScriptPlugin::~ImageScriptPlugin() {}
 
-bool ImageScriptPlugin::initialize()
-{
+bool ImageScriptPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -34,16 +28,14 @@ bool ImageScriptPlugin::initialize()
     return true;
 }
 
-void ImageScriptPlugin::shutdown()
-{
+void ImageScriptPlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     m_resultMat.release();
 #endif
     ModuleBase::shutdown();
 }
 
-bool ImageScriptPlugin::process(const ImageData& input, ImageData& output)
-{
+bool ImageScriptPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -83,8 +75,7 @@ bool ImageScriptPlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-bool ImageScriptPlugin::executeScript(const QString& script, const cv::Mat& input, cv::Mat& output)
-{
+bool ImageScriptPlugin::executeScript(const QString& script, const cv::Mat& input, cv::Mat& output) {
     Q_UNUSED(script);
     Q_UNUSED(input);
     Q_UNUSED(output);
@@ -112,10 +103,7 @@ bool ImageScriptPlugin::executeScript(const QString& script, const cv::Mat& inpu
         break;
     }
     case 3: { // 锐化
-        cv::Mat kernel = (cv::Mat_<float>(3, 3) <<
-            0, -1, 0,
-            -1, 5, -1,
-            0, -1, 0);
+        cv::Mat kernel = (cv::Mat_<float>(3, 3) << 0, -1, 0, -1, 5, -1, 0, -1, 0);
         cv::filter2D(input, output, input.depth(), kernel);
         break;
     }
@@ -127,15 +115,13 @@ bool ImageScriptPlugin::executeScript(const QString& script, const cv::Mat& inpu
     return true;
 }
 
-bool ImageScriptPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool ImageScriptPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     Q_UNUSED(params);
     error.clear();
     return true;
 }
 
-QWidget* ImageScriptPlugin::createConfigWidget()
-{
+QWidget* ImageScriptPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -156,19 +142,16 @@ QWidget* ImageScriptPlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, typeCombo](int) {
-        m_params["scriptType"] = typeCombo->currentData().toInt();
-    });
+    connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this, typeCombo](int) { m_params["scriptType"] = typeCombo->currentData().toInt(); });
 
-    connect(scriptEdit, &QTextEdit::textChanged, this, [this, scriptEdit]() {
-        m_params["script"] = scriptEdit->toPlainText();
-    });
+    connect(scriptEdit, &QTextEdit::textChanged, this,
+            [this, scriptEdit]() { m_params["script"] = scriptEdit->toPlainText(); });
 
     return widget;
 }
 
-IModule* ImageScriptPlugin::cloneImpl() const
-{
+IModule* ImageScriptPlugin::cloneImpl() const {
     ImageScriptPlugin* clone = new ImageScriptPlugin();
     return clone;
 }

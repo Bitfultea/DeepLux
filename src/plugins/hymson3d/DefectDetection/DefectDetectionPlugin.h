@@ -1,8 +1,8 @@
 #pragma once
 
 #include "core/base/ModuleBase.h"
-#include "core/display/IDisplayPort.h"
 #include "core/display/DisplayData.h"
+#include "core/display/IDisplayPort.h"
 
 #ifdef DEEPLUX_HAS_HYMSON3D
 #include "plugins/hymson3d/common/PointCloudConverter.h"
@@ -10,8 +10,7 @@
 
 namespace DeepLux {
 
-class DefectDetectionPlugin : public ModuleBase, public IDisplayPort
-{
+class DefectDetectionPlugin : public ModuleBase, public IDisplayPort {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -20,12 +19,24 @@ public:
     explicit DefectDetectionPlugin(QObject* parent = nullptr);
     ~DefectDetectionPlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.defectdetection"; }
-    QString name() const override { return tr("缺陷检测"); }
-    QString category() const override { return "hymson3d"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("基于HymsonVision3D的点云缺陷检测"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.defectdetection";
+    }
+    QString name() const override {
+        return tr("缺陷检测");
+    }
+    QString category() const override {
+        return "hymson3d";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("基于HymsonVision3D的点云缺陷检测");
+    }
 
     bool initialize() override;
     void shutdown() override;

@@ -1,18 +1,16 @@
 #include "DisplayManager.h"
+
 #include "../../core/display/DisplayData.h"
 #include "../../core/display/IDisplayPort.h"
 #include "../widgets/ViewportWidget.h"
 
-#include <QVBoxLayout>
-#include <QTimer>
 #include <QDebug>
+#include <QTimer>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-DisplayManager::DisplayManager(QObject* parent)
-    : QObject(parent)
-    , m_centralWidget(new QWidget())
-{
+DisplayManager::DisplayManager(QObject* parent) : QObject(parent), m_centralWidget(new QWidget()) {
     // Central widget uses a vertical layout for stacked viewports
     QVBoxLayout* layout = new QVBoxLayout(m_centralWidget);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -24,8 +22,7 @@ DisplayManager::DisplayManager(QObject* parent)
     createViewport(tr("主视图"));
 }
 
-DisplayManager::~DisplayManager()
-{
+DisplayManager::~DisplayManager() {
     // Delete all viewports
     qDeleteAll(m_viewports);
     m_viewports.clear();
@@ -34,8 +31,7 @@ DisplayManager::~DisplayManager()
     delete m_centralWidget;
 }
 
-QString DisplayManager::createViewport(const QString& title)
-{
+QString DisplayManager::createViewport(const QString& title) {
     QString id = generateViewportId();
     QString viewportTitle = title.isEmpty() ? QString("Viewport %1").arg(m_viewportCounter) : title;
 
@@ -56,8 +52,7 @@ QString DisplayManager::createViewport(const QString& title)
     return id;
 }
 
-void DisplayManager::destroyViewport(const QString& id)
-{
+void DisplayManager::destroyViewport(const QString& id) {
     if (!m_viewports.contains(id)) {
         return;
     }
@@ -75,18 +70,15 @@ void DisplayManager::destroyViewport(const QString& id)
     emit viewportDestroyed(id);
 }
 
-ViewportWidget* DisplayManager::viewport(const QString& id) const
-{
+ViewportWidget* DisplayManager::viewport(const QString& id) const {
     return m_viewports.value(id, nullptr);
 }
 
-QVector<ViewportWidget*> DisplayManager::allViewports() const
-{
+QVector<ViewportWidget*> DisplayManager::allViewports() const {
     return m_viewports.values().toVector();
 }
 
-void DisplayManager::displayData(const DisplayData& data, int delayMs)
-{
+void DisplayManager::displayData(const DisplayData& data, int delayMs) {
     QString targetId = data.viewportId();
     qDebug() << "[DM::displayData] targetId=" << targetId << "viewports=" << m_viewports.size();
 
@@ -101,9 +93,7 @@ void DisplayManager::displayData(const DisplayData& data, int delayMs)
     if (const ImageData* img = data.imageData()) {
         QImage image = img->toQImage();
         if (delayMs > 0) {
-            QTimer::singleShot(delayMs, target, [target, image]() {
-                target->displayImage(image);
-            });
+            QTimer::singleShot(delayMs, target, [target, image]() { target->displayImage(image); });
         } else {
             target->displayImage(image);
         }
@@ -118,8 +108,7 @@ void DisplayManager::displayData(const DisplayData& data, int delayMs)
     }
 }
 
-void DisplayManager::displayData(IDisplayPort* source, int delayMs)
-{
+void DisplayManager::displayData(IDisplayPort* source, int delayMs) {
     if (!source || !source->hasDisplayOutput()) {
         return;
     }
@@ -141,8 +130,7 @@ void DisplayManager::displayData(IDisplayPort* source, int delayMs)
     }
 }
 
-void DisplayManager::displayToViewport(const DisplayData& data, const QString& viewportId, int delayMs)
-{
+void DisplayManager::displayToViewport(const DisplayData& data, const QString& viewportId, int delayMs) {
     ViewportWidget* target = m_viewports.value(viewportId, nullptr);
     if (!target) {
         qWarning() << "DisplayManager: Viewport not found:" << viewportId;
@@ -152,9 +140,7 @@ void DisplayManager::displayToViewport(const DisplayData& data, const QString& v
     if (const ImageData* img = data.imageData()) {
         QImage image = img->toQImage();
         if (delayMs > 0) {
-            QTimer::singleShot(delayMs, target, [target, image]() {
-                target->displayImage(image);
-            });
+            QTimer::singleShot(delayMs, target, [target, image]() { target->displayImage(image); });
         } else {
             target->displayImage(image);
         }
@@ -162,20 +148,17 @@ void DisplayManager::displayToViewport(const DisplayData& data, const QString& v
     }
 }
 
-void DisplayManager::clearAll()
-{
+void DisplayManager::clearAll() {
     for (ViewportWidget* viewport : m_viewports) {
         viewport->clearDisplay();
     }
 }
 
-QString DisplayManager::generateViewportId()
-{
+QString DisplayManager::generateViewportId() {
     return QString("viewport_%1").arg(++m_viewportCounter);
 }
 
-ViewportWidget* DisplayManager::findAvailableViewport(const QString& preferredId) const
-{
+ViewportWidget* DisplayManager::findAvailableViewport(const QString& preferredId) const {
     // If preferred ID exists, use it
     if (!preferredId.isEmpty() && m_viewports.contains(preferredId)) {
         return m_viewports[preferredId];
@@ -189,8 +172,7 @@ ViewportWidget* DisplayManager::findAvailableViewport(const QString& preferredId
     return nullptr;
 }
 
-void DisplayManager::applyTheme(bool isDark)
-{
+void DisplayManager::applyTheme(bool isDark) {
     for (ViewportWidget* viewport : m_viewports) {
         if (viewport) {
             viewport->applyTheme(isDark);

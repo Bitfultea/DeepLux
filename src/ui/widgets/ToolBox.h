@@ -1,21 +1,20 @@
 #pragma once
 
-#include <QWidget>
-#include <QTreeWidget>
-#include <QVBoxLayout>
 #include <QLineEdit>
 #include <QMap>
 #include <QPoint>
+#include <QTreeWidget>
+#include <QVBoxLayout>
+#include <QWidget>
 
 namespace DeepLux {
 
 /**
  * @brief 工具箱
- * 
+ *
  * 显示可用模块列表，支持拖拽
  */
-class ToolBox : public QWidget
-{
+class ToolBox : public QWidget {
     Q_OBJECT
 
 public:
@@ -24,14 +23,14 @@ public:
 
     // 添加模块分类
     void addCategory(const QString& name);
-    
+
     // 添加模块到分类
-    void addModule(const QString& category, const QString& moduleId, 
-                   const QString& name, const QString& iconPath = QString());
-    
+    void addModule(const QString& category, const QString& moduleId, const QString& name,
+                   const QString& iconPath = QString());
+
     // 清空
     void clear();
-    
+
     // 搜索过滤
     void setSearchFilter(const QString& filter);
 

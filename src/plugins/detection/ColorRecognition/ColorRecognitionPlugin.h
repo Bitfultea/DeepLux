@@ -8,8 +8,7 @@
 
 namespace DeepLux {
 
-class ColorRecognitionPlugin : public ModuleBase
-{
+class ColorRecognitionPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -18,12 +17,24 @@ public:
     explicit ColorRecognitionPlugin(QObject* parent = nullptr);
     ~ColorRecognitionPlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.colorrecognition"; }
-    QString name() const override { return tr("颜色识别"); }
-    QString category() const override { return "detection"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("识别图像中的指定颜色区域"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.colorrecognition";
+    }
+    QString name() const override {
+        return tr("颜色识别");
+    }
+    QString category() const override {
+        return "detection";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("识别图像中的指定颜色区域");
+    }
 
     bool initialize() override;
     void shutdown() override;

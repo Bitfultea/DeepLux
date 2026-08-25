@@ -1,8 +1,10 @@
 #include "MeasureLinePlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QLabel>
+
 #include <QDoubleSpinBox>
+#include <QLabel>
+#include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -10,25 +12,15 @@
 
 namespace DeepLux {
 
-MeasureLinePlugin::MeasureLinePlugin(QObject* parent)
-    : ModuleBase(parent)
-{
+MeasureLinePlugin::MeasureLinePlugin(QObject* parent) : ModuleBase(parent) {
     m_defaultParams = QJsonObject{
-        {"minLength", 20.0},
-        {"maxLength", 1000.0},
-        {"threshold", 50.0},
-        {"minAngle", 0.0},
-        {"maxAngle", 180.0}
-    };
+        {"minLength", 20.0}, {"maxLength", 1000.0}, {"threshold", 50.0}, {"minAngle", 0.0}, {"maxAngle", 180.0}};
     m_params = m_defaultParams;
 }
 
-MeasureLinePlugin::~MeasureLinePlugin()
-{
-}
+MeasureLinePlugin::~MeasureLinePlugin() {}
 
-bool MeasureLinePlugin::initialize()
-{
+bool MeasureLinePlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -36,16 +28,14 @@ bool MeasureLinePlugin::initialize()
     return true;
 }
 
-void MeasureLinePlugin::shutdown()
-{
+void MeasureLinePlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     m_gray.release();
 #endif
     ModuleBase::shutdown();
 }
 
-bool MeasureLinePlugin::process(const ImageData& input, ImageData& output)
-{
+bool MeasureLinePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -112,7 +102,8 @@ bool MeasureLinePlugin::process(const ImageData& input, ImageData& output)
     double dx = m_resultCol2 - m_resultCol1;
     double dy = m_resultRow2 - m_resultRow1;
     m_resultAngle = atan2(dy, dx) * 180.0 / CV_PI;
-    if (m_resultAngle < 0) m_resultAngle += 180.0;
+    if (m_resultAngle < 0)
+        m_resultAngle += 180.0;
 
     m_resultLineCount = static_cast<int>(lines.size());
 
@@ -126,12 +117,12 @@ bool MeasureLinePlugin::process(const ImageData& input, ImageData& output)
     output.setData("line_count", m_resultLineCount);
 
     QString result = QString("线条: 长度=%1, 角度=%2°, 端点1(%3,%4), 端点2(%5,%6)")
-                        .arg(m_resultLength, 0, 'f', 1)
-                        .arg(m_resultAngle, 0, 'f', 1)
-                        .arg(m_resultRow1, 0, 'f', 1)
-                        .arg(m_resultCol1, 0, 'f', 1)
-                        .arg(m_resultRow2, 0, 'f', 1)
-                        .arg(m_resultCol2, 0, 'f', 1);
+                         .arg(m_resultLength, 0, 'f', 1)
+                         .arg(m_resultAngle, 0, 'f', 1)
+                         .arg(m_resultRow1, 0, 'f', 1)
+                         .arg(m_resultCol1, 0, 'f', 1)
+                         .arg(m_resultRow2, 0, 'f', 1)
+                         .arg(m_resultCol2, 0, 'f', 1);
     Logger::instance().debug(result, "MeasureLine");
 
     return true;
@@ -142,27 +133,25 @@ bool MeasureLinePlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-bool MeasureLinePlugin::detectLines(const cv::Mat& gray, std::vector<cv::Vec4i>& lines,
-                                     double minLength, double maxLength,
-                                     double threshold, double minAngle, double maxAngle)
-{
+bool MeasureLinePlugin::detectLines(const cv::Mat& gray, std::vector<cv::Vec4i>& lines, double minLength,
+                                    double maxLength, double threshold, double minAngle, double maxAngle) {
 #ifdef DEEPLUX_HAS_OPENCV
     std::vector<cv::Vec4i> allLines;
     // 阶段 3: 使用局部参数，maxLength 不再被误当作 Hough maxLineGap
     // HoughLinesP 的 maxLineGap 使用固定值 10
-    cv::HoughLinesP(gray, allLines, 1, CV_PI / 180,
-                     static_cast<int>(threshold),
-                     minLength, 10);
+    cv::HoughLinesP(gray, allLines, 1, CV_PI / 180, static_cast<int>(threshold), minLength, 10);
 
     // 过滤角度和长度
     for (const cv::Vec4i& l : allLines) {
         double dx = static_cast<double>(l[2] - l[0]);
         double dy = static_cast<double>(l[3] - l[1]);
         double length = sqrt(dx * dx + dy * dy);
-        if (length > maxLength) continue;
+        if (length > maxLength)
+            continue;
 
         double angle = atan2(dy, dx) * 180.0 / CV_PI;
-        if (angle < 0) angle += 180.0;
+        if (angle < 0)
+            angle += 180.0;
 
         if (angle >= minAngle && angle <= maxAngle) {
             lines.push_back(l);
@@ -182,8 +171,7 @@ bool MeasureLinePlugin::detectLines(const cv::Mat& gray, std::vector<cv::Vec4i>&
 #endif
 }
 
-bool MeasureLinePlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool MeasureLinePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     const double threshold = params["threshold"].toDouble();
     double minLength = params["minLength"].toDouble();
     double maxLength = params["maxLength"].toDouble();
@@ -218,8 +206,7 @@ bool MeasureLinePlugin::doValidateParams(const QJsonObject& params, QString& err
     return true;
 }
 
-QWidget* MeasureLinePlugin::createConfigWidget()
-{
+QWidget* MeasureLinePlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -246,20 +233,19 @@ QWidget* MeasureLinePlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(minLengthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { setParam("minLength", value); });
+    connect(minLengthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("minLength", value); });
 
-    connect(maxLengthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { setParam("maxLength", value); });
+    connect(maxLengthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("maxLength", value); });
 
-    connect(thresholdSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { setParam("threshold", value); });
+    connect(thresholdSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("threshold", value); });
 
     return widget;
 }
 
-IModule* MeasureLinePlugin::cloneImpl() const
-{
+IModule* MeasureLinePlugin::cloneImpl() const {
     MeasureLinePlugin* clone = new MeasureLinePlugin();
     clone->setParams(currentParams());
     return clone;

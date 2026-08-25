@@ -1,9 +1,9 @@
 #pragma once
 
+#include <QMutex>
 #include <QObject>
 #include <QString>
 #include <QStringList>
-#include <QMutex>
 
 namespace DeepLux {
 
@@ -23,8 +23,7 @@ struct RunResult;
  * 3. 当 CLI 命令执行完成后，触发 GUI 相应更新
  * 4. 拦截 GUI 操作并转换为命令文本显示在终端
  */
-class TerminalBridge : public QObject
-{
+class TerminalBridge : public QObject {
     Q_OBJECT
 
 public:

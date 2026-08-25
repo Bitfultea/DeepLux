@@ -1,15 +1,14 @@
 #pragma once
 
-#include <QDialog>
-#include <QTableWidget>
-#include <QPushButton>
 #include <QComboBox>
+#include <QDialog>
 #include <QLineEdit>
+#include <QPushButton>
+#include <QTableWidget>
 
 namespace DeepLux {
 
-class GlobalVarView : public QDialog
-{
+class GlobalVarView : public QDialog {
     Q_OBJECT
 
 public:

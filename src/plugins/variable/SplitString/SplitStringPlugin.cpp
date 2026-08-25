@@ -1,30 +1,24 @@
 #include "SplitStringPlugin.h"
+
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
+
+#include <QCheckBox>
+#include <QFormLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QCheckBox>
-#include <QSpinBox>
-#include <QFormLayout>
 #include <QRegExp>
+#include <QSpinBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-SplitStringPlugin::SplitStringPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
+SplitStringPlugin::SplitStringPlugin(QObject* parent) : ModuleBase(parent) {
     m_defaultParams = QJsonObject{
-        {"inputString", ""},
-        {"separator", ","},
-        {"useRegex", false},
-        {"outputPrefix", "part"},
-        {"maxSplits", 0}
-    };
+        {"inputString", ""}, {"separator", ","}, {"useRegex", false}, {"outputPrefix", "part"}, {"maxSplits", 0}};
     m_params = m_defaultParams;
 }
 
-bool SplitStringPlugin::initialize()
-{
+bool SplitStringPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -32,8 +26,7 @@ bool SplitStringPlugin::initialize()
     return true;
 }
 
-bool SplitStringPlugin::process(const ImageData& input, ImageData& output)
-{
+bool SplitStringPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     QJsonObject params = currentParams();
@@ -78,14 +71,13 @@ bool SplitStringPlugin::process(const ImageData& input, ImageData& output)
 
     output.setData(QString("%1_total").arg(outputPrefix), parts.size());
 
-    Logger::instance().info(QString("SplitString: Split '%1' into %2 parts")
-        .arg(inputString.left(20)).arg(parts.size()), "Variable");
+    Logger::instance().info(
+        QString("SplitString: Split '%1' into %2 parts").arg(inputString.left(20)).arg(parts.size()), "Variable");
 
     return true;
 }
 
-bool SplitStringPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool SplitStringPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     error.clear();
 
     const QString separator = params["separator"].toString(",");
@@ -115,8 +107,7 @@ bool SplitStringPlugin::doValidateParams(const QJsonObject& params, QString& err
     return true;
 }
 
-QWidget* SplitStringPlugin::createConfigWidget()
-{
+QWidget* SplitStringPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -141,31 +132,21 @@ QWidget* SplitStringPlugin::createConfigWidget()
     layout->addLayout(formLayout);
     layout->addStretch();
 
-    connect(inputEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("inputString", text);
-    });
+    connect(inputEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("inputString", text); });
 
-    connect(sepEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("separator", text);
-    });
+    connect(sepEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("separator", text); });
 
-    connect(regexCheck, &QCheckBox::toggled, this, [=](bool checked) {
-        setParam("useRegex", checked);
-    });
+    connect(regexCheck, &QCheckBox::toggled, this, [=](bool checked) { setParam("useRegex", checked); });
 
-    connect(prefixEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("outputPrefix", text);
-    });
+    connect(prefixEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("outputPrefix", text); });
 
-    connect(maxSplitsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        setParam("maxSplits", value);
-    });
+    connect(maxSplitsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [=](int value) { setParam("maxSplits", value); });
 
     return widget;
 }
 
-IModule* SplitStringPlugin::cloneImpl() const
-{
+IModule* SplitStringPlugin::cloneImpl() const {
     SplitStringPlugin* clone = new SplitStringPlugin();
     clone->setParams(currentParams());
     return clone;

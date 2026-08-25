@@ -8,8 +8,7 @@
 
 namespace DeepLux {
 
-class DistancePPPlugin : public ModuleBase
-{
+class DistancePPPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -18,12 +17,24 @@ public:
     explicit DistancePPPlugin(QObject* parent = nullptr);
     ~DistancePPPlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.distancepp"; }
-    QString name() const override { return tr("点点距离"); }
-    QString category() const override { return "geometry"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("计算两点之间的距离"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.distancepp";
+    }
+    QString name() const override {
+        return tr("点点距离");
+    }
+    QString category() const override {
+        return "geometry";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("计算两点之间的距离");
+    }
 
     bool initialize() override;
     void shutdown() override;

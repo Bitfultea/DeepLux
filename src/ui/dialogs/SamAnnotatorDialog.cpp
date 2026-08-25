@@ -1206,8 +1206,7 @@ void SamAnnotatorDialog::initializeDefaultCategories() {
     m_categoryColors.clear();
     m_categories << QStringLiteral("缺陷") << QStringLiteral("划痕") << QStringLiteral("凹坑")
                  << QStringLiteral("正常");
-    const QColor palette[] = {QColor(239, 68, 68), QColor(245, 158, 11), QColor(168, 85, 247),
-                              QColor(34, 197, 94)};
+    const QColor palette[] = {QColor(239, 68, 68), QColor(245, 158, 11), QColor(168, 85, 247), QColor(34, 197, 94)};
     for (int i = 0; i < m_categories.size(); ++i)
         m_categoryColors.insert(m_categories[i], palette[i % 4]);
 
@@ -1250,10 +1249,9 @@ void SamAnnotatorDialog::addCategory(const QString& label) {
     if (m_categories.contains(trimmed))
         return;
     m_categories.append(trimmed);
-    const QColor preset[] = {QColor(239, 68, 68),  QColor(245, 158, 11), QColor(168, 85, 247),
-                            QColor(34, 197, 94),   QColor(6, 182, 212),  QColor(234, 179, 8),
-                            QColor(99, 102, 241),  QColor(236, 72, 153), QColor(20, 184, 166),
-                            QColor(249, 115, 22)};
+    const QColor preset[] = {QColor(239, 68, 68),  QColor(245, 158, 11), QColor(168, 85, 247), QColor(34, 197, 94),
+                             QColor(6, 182, 212),  QColor(234, 179, 8),  QColor(99, 102, 241), QColor(236, 72, 153),
+                             QColor(20, 184, 166), QColor(249, 115, 22)};
     m_categoryColors.insert(trimmed, preset[(m_categories.size() - 1) % 10]);
     if (m_categoryList) {
         auto* item = new QListWidgetItem(trimmed);
@@ -1304,8 +1302,7 @@ void SamAnnotatorDialog::onRemoveCategory() {
 
 void SamAnnotatorDialog::onOpenAnnotation() {
     const QString path = QFileDialog::getOpenFileName(
-        this, tr("打开标注会话"), QString(),
-        tr("DeepLux 标注 (*.deeplux-anno.json);;JSON (*.json);;所有文件 (*.*)"));
+        this, tr("打开标注会话"), QString(), tr("DeepLux 标注 (*.deeplux-anno.json);;JSON (*.json);;所有文件 (*.*)"));
     if (path.isEmpty())
         return;
 
@@ -1357,9 +1354,9 @@ void SamAnnotatorDialog::onExportYoloSeg() {
         QMessageBox::information(this, tr("导出"), tr("当前没有标注对象，无需导出"));
         return;
     }
-    const QString defaultPath = m_imagePath.isEmpty() ? QStringLiteral("labels.txt")
-                                                      : QFileInfo(m_imagePath).absolutePath() +
-                                                            QStringLiteral("/labels.txt");
+    const QString defaultPath = m_imagePath.isEmpty()
+                                    ? QStringLiteral("labels.txt")
+                                    : QFileInfo(m_imagePath).absolutePath() + QStringLiteral("/labels.txt");
     const QString path =
         QFileDialog::getSaveFileName(this, tr("导出 YOLO Seg"), defaultPath, tr("文本 (*.txt);;所有文件 (*.*)"));
     if (path.isEmpty())

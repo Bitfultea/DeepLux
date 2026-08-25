@@ -1,18 +1,16 @@
 #include "DefectDetectionPlugin.h"
-#include "core/common/Logger.h"
-#include "core/common/ConfigWidgetHelper.h"
 
-#include <QVBoxLayout>
+#include "core/common/ConfigWidgetHelper.h"
+#include "core/common/Logger.h"
+
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QPointer>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-DefectDetectionPlugin::DefectDetectionPlugin(QObject* parent)
-    : ModuleBase(parent)
-    , m_hasDefects(false)
-{
+DefectDetectionPlugin::DefectDetectionPlugin(QObject* parent) : ModuleBase(parent), m_hasDefects(false) {
     m_moduleId = "com.deeplux.plugin.defectdetection";
     m_name = tr("缺陷检测");
     m_category = "hymson3d";
@@ -20,26 +18,21 @@ DefectDetectionPlugin::DefectDetectionPlugin(QObject* parent)
     m_author = "DeepLux Team";
     m_description = tr("基于HymsonVision3D的点云缺陷检测");
 
-    m_defaultParams = QJsonObject{
-        {"longNormalDegree", 30.0},
-        {"longCurvatureThreshold", 0.02},
-        {"rcornerNormalDegree", 30.0},
-        {"rcornerCurvatureThreshold", 0.02},
-        {"heightThreshold", 0.0},
-        {"radius", 0.08},
-        {"minPoints", 5},
-        {"minDefectsSize", 500},
-        {"debugMode", false}
-    };
+    m_defaultParams = QJsonObject{{"longNormalDegree", 30.0},
+                                  {"longCurvatureThreshold", 0.02},
+                                  {"rcornerNormalDegree", 30.0},
+                                  {"rcornerCurvatureThreshold", 0.02},
+                                  {"heightThreshold", 0.0},
+                                  {"radius", 0.08},
+                                  {"minPoints", 5},
+                                  {"minDefectsSize", 500},
+                                  {"debugMode", false}};
     m_params = m_defaultParams;
 }
 
-DefectDetectionPlugin::~DefectDetectionPlugin()
-{
-}
+DefectDetectionPlugin::~DefectDetectionPlugin() {}
 
-bool DefectDetectionPlugin::initialize()
-{
+bool DefectDetectionPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -48,15 +41,13 @@ bool DefectDetectionPlugin::initialize()
     return true;
 }
 
-void DefectDetectionPlugin::shutdown()
-{
+void DefectDetectionPlugin::shutdown() {
     m_defectData.clear();
     m_hasDefects = false;
     ModuleBase::shutdown();
 }
 
-bool DefectDetectionPlugin::process(const ImageData& input, ImageData& output)
-{
+bool DefectDetectionPlugin::process(const ImageData& input, ImageData& output) {
 #ifdef DEEPLUX_HAS_HYMSON3D
     // 获取参数
     float longNormalDegree = m_params["longNormalDegree"].toDouble();
@@ -105,16 +96,9 @@ bool DefectDetectionPlugin::process(const ImageData& input, ImageData& output)
 
     // 执行缺陷检测
     std::vector<hymson3d::geometry::PointCloud::Ptr> defectClouds;
-    hymson3d::pipeline::DefectDetection::detect_smooth_surface_dll(
-        cloud,
-        searchParam,
-        longNormalDegree,
-        longCurvatureThreshold,
-        minDefectsSize,
-        heightThreshold,
-        defectClouds,
-        m_debugMode
-    );
+    hymson3d::pipeline::DefectDetection::detect_smooth_surface_dll(cloud, searchParam, longNormalDegree,
+                                                                   longCurvatureThreshold, minDefectsSize,
+                                                                   heightThreshold, defectClouds, m_debugMode);
 
     // 合并缺陷点云
     m_defectData.clear();
@@ -123,11 +107,12 @@ bool DefectDetectionPlugin::process(const ImageData& input, ImageData& output)
         m_defectData.points.insert(m_defectData.points.end(), data.points.begin(), data.points.end());
         m_defectData.normals.insert(m_defectData.normals.end(), data.normals.begin(), data.normals.end());
         m_defectData.colors.insert(m_defectData.colors.end(), data.colors.begin(), data.colors.end());
-        m_defectData.intensities.insert(m_defectData.intensities.end(), data.intensities.begin(), data.intensities.end());
+        m_defectData.intensities.insert(m_defectData.intensities.end(), data.intensities.begin(),
+                                        data.intensities.end());
     }
 
     // 为缺陷点添加标签
-    m_defectData.labels.assign(m_defectData.points.size(), 1);  // 1 = 缺陷
+    m_defectData.labels.assign(m_defectData.points.size(), 1); // 1 = 缺陷
 
     m_hasDefects = !m_defectData.isEmpty();
     output = input;
@@ -150,16 +135,14 @@ bool DefectDetectionPlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-bool DefectDetectionPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool DefectDetectionPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     Q_UNUSED(params);
     error.clear();
     return true;
 }
 
-QWidget* DefectDetectionPlugin::createConfigWidget()
-{
-    ConfigWidgetHelper factory(true);  // 默认深色主题
+QWidget* DefectDetectionPlugin::createConfigWidget() {
+    ConfigWidgetHelper factory(true); // 默认深色主题
 
     QWidget* widget = new QWidget();
     factory.applyContainerStyle(widget);
@@ -216,11 +199,13 @@ QWidget* DefectDetectionPlugin::createConfigWidget()
     cornerLayout->setSpacing(8);
     cornerLayout->setContentsMargins(12, 8, 12, 12);
 
-    QDoubleSpinBox* cornerNormalSpin = factory.createDoubleSpinBox(0, 90, m_params["rcornerNormalDegree"].toDouble(), 2);
+    QDoubleSpinBox* cornerNormalSpin =
+        factory.createDoubleSpinBox(0, 90, m_params["rcornerNormalDegree"].toDouble(), 2);
     cornerNormalSpin->setSuffix(" deg");
     cornerLayout->addRow(factory.createLabel(tr("法向量角度阈值:")), cornerNormalSpin);
 
-    QDoubleSpinBox* cornerCurveSpin = factory.createDoubleSpinBox(0, 1, m_params["rcornerCurvatureThreshold"].toDouble(), 4);
+    QDoubleSpinBox* cornerCurveSpin =
+        factory.createDoubleSpinBox(0, 1, m_params["rcornerCurvatureThreshold"].toDouble(), 4);
     cornerLayout->addRow(factory.createLabel(tr("曲率阈值:")), cornerCurveSpin);
 
     // 通用参数
@@ -269,30 +254,47 @@ QWidget* DefectDetectionPlugin::createConfigWidget()
     // 信号连接
     QPointer<DefectDetectionPlugin> pluginPtr(this);
 
-    connect(longNormalSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            [pluginPtr](double v) { if (pluginPtr) pluginPtr->m_params["longNormalDegree"] = v; });
-    connect(longCurveSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            [pluginPtr](double v) { if (pluginPtr) pluginPtr->m_params["longCurvatureThreshold"] = v; });
-    connect(cornerNormalSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            [pluginPtr](double v) { if (pluginPtr) pluginPtr->m_params["rcornerNormalDegree"] = v; });
-    connect(cornerCurveSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            [pluginPtr](double v) { if (pluginPtr) pluginPtr->m_params["rcornerCurvatureThreshold"] = v; });
-    connect(heightSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            [pluginPtr](double v) { if (pluginPtr) pluginPtr->m_params["heightThreshold"] = v; });
-    connect(radiusSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            [pluginPtr](double v) { if (pluginPtr) pluginPtr->m_params["radius"] = v; });
-    connect(minPointsSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-            [pluginPtr](int v) { if (pluginPtr) pluginPtr->m_params["minPoints"] = v; });
-    connect(minDefectsSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-            [pluginPtr](int v) { if (pluginPtr) pluginPtr->m_params["minDefectsSize"] = v; });
-    connect(debugCheck, &QCheckBox::toggled,
-            [pluginPtr](bool v) { if (pluginPtr) pluginPtr->m_params["debugMode"] = v; });
+    connect(longNormalSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [pluginPtr](double v) {
+        if (pluginPtr)
+            pluginPtr->m_params["longNormalDegree"] = v;
+    });
+    connect(longCurveSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [pluginPtr](double v) {
+        if (pluginPtr)
+            pluginPtr->m_params["longCurvatureThreshold"] = v;
+    });
+    connect(cornerNormalSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [pluginPtr](double v) {
+        if (pluginPtr)
+            pluginPtr->m_params["rcornerNormalDegree"] = v;
+    });
+    connect(cornerCurveSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [pluginPtr](double v) {
+        if (pluginPtr)
+            pluginPtr->m_params["rcornerCurvatureThreshold"] = v;
+    });
+    connect(heightSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [pluginPtr](double v) {
+        if (pluginPtr)
+            pluginPtr->m_params["heightThreshold"] = v;
+    });
+    connect(radiusSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [pluginPtr](double v) {
+        if (pluginPtr)
+            pluginPtr->m_params["radius"] = v;
+    });
+    connect(minPointsSpin, QOverload<int>::of(&QSpinBox::valueChanged), [pluginPtr](int v) {
+        if (pluginPtr)
+            pluginPtr->m_params["minPoints"] = v;
+    });
+    connect(minDefectsSpin, QOverload<int>::of(&QSpinBox::valueChanged), [pluginPtr](int v) {
+        if (pluginPtr)
+            pluginPtr->m_params["minDefectsSize"] = v;
+    });
+    connect(debugCheck, &QCheckBox::toggled, [pluginPtr](bool v) {
+        if (pluginPtr)
+            pluginPtr->m_params["debugMode"] = v;
+    });
 
     return widget;
 }
 
-IModule* DefectDetectionPlugin::cloneImpl() const
-{
+IModule* DefectDetectionPlugin::cloneImpl() const {
     DefectDetectionPlugin* clone = new DefectDetectionPlugin();
     clone->m_params = m_params;
     clone->m_longNormalDegree = m_longNormalDegree;
@@ -307,13 +309,11 @@ IModule* DefectDetectionPlugin::cloneImpl() const
     return clone;
 }
 
-bool DefectDetectionPlugin::hasDisplayOutput() const
-{
+bool DefectDetectionPlugin::hasDisplayOutput() const {
     return m_hasDefects;
 }
 
-DisplayData DefectDetectionPlugin::getDisplayData() const
-{
+DisplayData DefectDetectionPlugin::getDisplayData() const {
     DisplayData data;
     if (m_hasDefects) {
         data.variant() = m_defectData;
@@ -323,9 +323,8 @@ DisplayData DefectDetectionPlugin::getDisplayData() const
     return data;
 }
 
-QString DefectDetectionPlugin::preferredViewport() const
-{
-    return QString();  // Empty means any available viewport
+QString DefectDetectionPlugin::preferredViewport() const {
+    return QString(); // Empty means any available viewport
 }
 
 } // namespace DeepLux

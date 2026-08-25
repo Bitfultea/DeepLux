@@ -38,19 +38,29 @@ public:
     /**
      * @brief 获取距离阈值
      */
-    const std::array<float, MAX_LOD_LEVELS>& distanceThresholds() const { return m_distanceThresholds; }
+    const std::array<float, MAX_LOD_LEVELS>& distanceThresholds() const {
+        return m_distanceThresholds;
+    }
 
     /**
      * @brief 设置/获取 LOD 是否启用
      */
-    void setEnabled(bool enabled) { m_enabled = enabled; }
-    bool isEnabled() const { return m_enabled; }
+    void setEnabled(bool enabled) {
+        m_enabled = enabled;
+    }
+    bool isEnabled() const {
+        return m_enabled;
+    }
 
     /**
      * @brief 点数预算（用于采样计算）
      */
-    void setPointBudget(size_t budget) { m_pointBudget = budget; }
-    size_t pointBudget() const { return m_pointBudget; }
+    void setPointBudget(size_t budget) {
+        m_pointBudget = budget;
+    }
+    size_t pointBudget() const {
+        return m_pointBudget;
+    }
 
     /**
      * @brief 获取指定 LOD 级别的目标点数
@@ -62,7 +72,7 @@ public:
 private:
     std::array<float, MAX_LOD_LEVELS> m_distanceThresholds = DEFAULT_DISTANCES;
     bool m_enabled = true;
-    size_t m_pointBudget = 100000;  // 默认 10 万点
+    size_t m_pointBudget = 100000; // 默认 10 万点
 };
 
 } // namespace DeepLux

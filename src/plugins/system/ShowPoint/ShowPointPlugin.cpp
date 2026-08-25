@@ -1,8 +1,10 @@
 #include "ShowPointPlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
+
 #include <QLabel>
 #include <QSpinBox>
+#include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -10,24 +12,14 @@
 
 namespace DeepLux {
 
-ShowPointPlugin::ShowPointPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"markerSize", 5},
-        {"colorR", 0},
-        {"colorG", 255},
-        {"colorB", 0}
-    };
+ShowPointPlugin::ShowPointPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"markerSize", 5}, {"colorR", 0}, {"colorG", 255}, {"colorB", 0}};
     m_params = m_defaultParams;
 }
 
-ShowPointPlugin::~ShowPointPlugin()
-{
-}
+ShowPointPlugin::~ShowPointPlugin() {}
 
-bool ShowPointPlugin::initialize()
-{
+bool ShowPointPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -35,16 +27,14 @@ bool ShowPointPlugin::initialize()
     return true;
 }
 
-void ShowPointPlugin::shutdown()
-{
+void ShowPointPlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     m_resultMat.release();
 #endif
     ModuleBase::shutdown();
 }
 
-bool ShowPointPlugin::process(const ImageData& input, ImageData& output)
-{
+bool ShowPointPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -91,13 +81,11 @@ bool ShowPointPlugin::process(const ImageData& input, ImageData& output)
 
     // 绘制点
     cv::Point2i pt(static_cast<int>(x), static_cast<int>(y));
-    cv::circle(m_resultMat, pt, m_markerSize,
-               cv::Scalar(m_markerColorB, m_markerColorG, m_markerColorR), -1, cv::LINE_AA);
+    cv::circle(m_resultMat, pt, m_markerSize, cv::Scalar(m_markerColorB, m_markerColorG, m_markerColorR), -1,
+               cv::LINE_AA);
 
     QString label = QString("(%1, %2)").arg(x, 0, 'f', 1).arg(y, 0, 'f', 1);
-    cv::putText(m_resultMat, label.toUtf8().constData(),
-                cv::Point(pt.x + 10, pt.y - 10),
-                cv::FONT_HERSHEY_SIMPLEX, 0.5,
+    cv::putText(m_resultMat, label.toUtf8().constData(), cv::Point(pt.x + 10, pt.y - 10), cv::FONT_HERSHEY_SIMPLEX, 0.5,
                 cv::Scalar(m_markerColorB, m_markerColorG, m_markerColorR), 1, cv::LINE_AA);
 
     output.setMat(m_resultMat);
@@ -115,15 +103,13 @@ bool ShowPointPlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-bool ShowPointPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool ShowPointPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     Q_UNUSED(params);
     error.clear();
     return true;
 }
 
-QWidget* ShowPointPlugin::createConfigWidget()
-{
+QWidget* ShowPointPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -153,27 +139,19 @@ QWidget* ShowPointPlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(sizeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        setParam("markerSize", value);
-    });
+    connect(sizeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int value) { setParam("markerSize", value); });
 
-    connect(rSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        setParam("colorR", value);
-    });
+    connect(rSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) { setParam("colorR", value); });
 
-    connect(gSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        setParam("colorG", value);
-    });
+    connect(gSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) { setParam("colorG", value); });
 
-    connect(bSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        setParam("colorB", value);
-    });
+    connect(bSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) { setParam("colorB", value); });
 
     return widget;
 }
 
-IModule* ShowPointPlugin::cloneImpl() const
-{
+IModule* ShowPointPlugin::cloneImpl() const {
     ShowPointPlugin* clone = new ShowPointPlugin();
     return clone;
 }

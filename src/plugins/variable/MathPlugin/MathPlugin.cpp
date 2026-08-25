@@ -1,26 +1,24 @@
 #include "MathPlugin.h"
+
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
+
+#include <QComboBox>
 #include <QFormLayout>
 #include <QLineEdit>
-#include <QComboBox>
 #include <QStringList>
+#include <QVBoxLayout>
 #include <cmath>
 
 namespace DeepLux {
 
 namespace {
 
-bool isSupportedOperation(const QString& operation)
-{
-    static const QStringList supported = {
-        "Add", "Subtract", "Multiply", "Divide", "Modulo", "Power", "Min", "Max"
-    };
+bool isSupportedOperation(const QString& operation) {
+    static const QStringList supported = {"Add", "Subtract", "Multiply", "Divide", "Modulo", "Power", "Min", "Max"};
     return supported.contains(operation);
 }
 
-bool toFiniteDouble(const QVariant& value, double& number)
-{
+bool toFiniteDouble(const QVariant& value, double& number) {
     bool ok = false;
     number = value.toDouble(&ok);
     return ok && std::isfinite(number);
@@ -28,20 +26,13 @@ bool toFiniteDouble(const QVariant& value, double& number)
 
 } // namespace
 
-MathPlugin::MathPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"operation", "Add"},
-        {"operandA", ""},
-        {"operandB", ""},
-        {"outputVar", "math_result"}
-    };
+MathPlugin::MathPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams =
+        QJsonObject{{"operation", "Add"}, {"operandA", ""}, {"operandB", ""}, {"outputVar", "math_result"}};
     m_params = m_defaultParams;
 }
 
-bool MathPlugin::initialize()
-{
+bool MathPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -49,21 +40,27 @@ bool MathPlugin::initialize()
     return true;
 }
 
-double MathPlugin::calculate(const QString& op, double a, double b)
-{
-    if (op == "Add") return a + b;
-    if (op == "Subtract") return a - b;
-    if (op == "Multiply") return a * b;
-    if (op == "Divide") return a / b;
-    if (op == "Modulo") return std::fmod(a, b);
-    if (op == "Power") return std::pow(a, b);
-    if (op == "Min") return qMin(a, b);
-    if (op == "Max") return qMax(a, b);
+double MathPlugin::calculate(const QString& op, double a, double b) {
+    if (op == "Add")
+        return a + b;
+    if (op == "Subtract")
+        return a - b;
+    if (op == "Multiply")
+        return a * b;
+    if (op == "Divide")
+        return a / b;
+    if (op == "Modulo")
+        return std::fmod(a, b);
+    if (op == "Power")
+        return std::pow(a, b);
+    if (op == "Min")
+        return qMin(a, b);
+    if (op == "Max")
+        return qMax(a, b);
     return 0;
 }
 
-bool MathPlugin::process(const ImageData& input, ImageData& output)
-{
+bool MathPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     QJsonObject params = currentParams();
@@ -116,14 +113,12 @@ bool MathPlugin::process(const ImageData& input, ImageData& output)
     output.setData(m_outputVar, result);
     output.setData(m_outputVar + "_string", QString::number(result));
 
-    Logger::instance().info(QString("Math: %1 %2 %3 = %4")
-        .arg(a).arg(m_operation).arg(b).arg(result), "Variable");
+    Logger::instance().info(QString("Math: %1 %2 %3 = %4").arg(a).arg(m_operation).arg(b).arg(result), "Variable");
 
     return true;
 }
 
-bool MathPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool MathPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     const QString operation = params["operation"].toString("Add");
     if (!isSupportedOperation(operation)) {
         error = QString("Math operation is unsupported");
@@ -139,8 +134,7 @@ bool MathPlugin::doValidateParams(const QJsonObject& params, QString& error) con
     return true;
 }
 
-QWidget* MathPlugin::createConfigWidget()
-{
+QWidget* MathPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -156,7 +150,8 @@ QWidget* MathPlugin::createConfigWidget()
     opCombo->addItem(tr("最小值"), "Min");
     opCombo->addItem(tr("最大值"), "Max");
     int idx = opCombo->findData(m_params["operation"].toString("Add"));
-    if (idx >= 0) opCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        opCombo->setCurrentIndex(idx);
 
     QLineEdit* operandAEdit = new QLineEdit(m_params["operandA"].toString());
     QLineEdit* operandBEdit = new QLineEdit(m_params["operandB"].toString());
@@ -170,27 +165,19 @@ QWidget* MathPlugin::createConfigWidget()
     layout->addLayout(formLayout);
     layout->addStretch();
 
-    connect(opCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        setParam("operation", opCombo->currentData().toString());
-    });
+    connect(opCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int) { setParam("operation", opCombo->currentData().toString()); });
 
-    connect(operandAEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("operandA", text);
-    });
+    connect(operandAEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("operandA", text); });
 
-    connect(operandBEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("operandB", text);
-    });
+    connect(operandBEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("operandB", text); });
 
-    connect(outputEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("outputVar", text);
-    });
+    connect(outputEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("outputVar", text); });
 
     return widget;
 }
 
-IModule* MathPlugin::cloneImpl() const
-{
+IModule* MathPlugin::cloneImpl() const {
     MathPlugin* clone = new MathPlugin();
     clone->setParams(currentParams());
     return clone;

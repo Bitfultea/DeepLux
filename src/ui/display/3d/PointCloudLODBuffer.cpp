@@ -1,4 +1,5 @@
 #include "PointCloudLODBuffer.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -85,15 +86,12 @@ void PointCloudLODBuffer::generateLODLevels() {
     }
 }
 
-PointCloudGPUBuffer PointCloudLODBuffer::downsample(
-    const PointCloudGPUBuffer& input,
-    size_t targetCount) const
-{
+PointCloudGPUBuffer PointCloudLODBuffer::downsample(const PointCloudGPUBuffer& input, size_t targetCount) const {
     PointCloudGPUBuffer output;
     size_t originalCount = input.pointCount();
 
     if (originalCount <= targetCount) {
-        return input;  // 不需要降采样
+        return input; // 不需要降采样
     }
 
     // 计算采样步长 (等间距采样保证均匀性)
@@ -104,7 +102,8 @@ PointCloudGPUBuffer PointCloudLODBuffer::downsample(
     for (size_t i = 0; i < targetCount; ++i) {
         // 使用四舍五入获得更均匀的分布
         size_t idx = static_cast<size_t>(std::round(i * step));
-        if (idx >= originalCount) idx = originalCount - 1;  // 边界保护
+        if (idx >= originalCount)
+            idx = originalCount - 1; // 边界保护
         size_t base = idx * 3;
         output.positions.push_back(input.positions[base]);
         output.positions.push_back(input.positions[base + 1]);

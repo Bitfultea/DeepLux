@@ -1,9 +1,9 @@
 #pragma once
 
+#include <QDateTime>
 #include <QObject>
 #include <QString>
 #include <QTimer>
-#include <QDateTime>
 
 namespace DeepLux {
 
@@ -12,8 +12,7 @@ class ProjectManager;
 /**
  * @brief 主视图模型
  */
-class MainViewModel : public QObject
-{
+class MainViewModel : public QObject {
     Q_OBJECT
 
     Q_PROPERTY(QString currentTime READ currentTime NOTIFY currentTimeChanged)

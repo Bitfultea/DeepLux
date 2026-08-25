@@ -1,10 +1,10 @@
 #ifndef DEEPLUX_AGENT_ACTOR_H
 #define DEEPLUX_AGENT_ACTOR_H
 
-#include <QObject>
 #include <QJsonObject>
-#include <QUndoStack>
+#include <QObject>
 #include <QPointer>
+#include <QUndoStack>
 
 namespace DeepLux {
 
@@ -20,8 +20,7 @@ class Project;
  * - 只能调用预注册的 ToolSchema 白名单工具
  * - 不能执行 bash / system / QProcess
  */
-class AgentActor : public QObject
-{
+class AgentActor : public QObject {
     Q_OBJECT
 
 public:
@@ -34,7 +33,9 @@ public:
     // 批量执行（支持 macro undo）
     QJsonObject executeTools(const QList<QPair<QString, QJsonObject>>& tools, const QString& macroName);
 
-    QUndoStack* undoStack() const { return m_undoStack; }
+    QUndoStack* undoStack() const {
+        return m_undoStack;
+    }
 
 signals:
     void toolExecuted(const QString& toolName, const QJsonObject& result);

@@ -2,13 +2,12 @@
 
 #include "core/model/Project.h"
 
+#include <QMap>
 #include <QObject>
 #include <QSet>
 #include <QString>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
-#include <QMap>
-
 #include <functional>
 
 class QLabel;
@@ -73,7 +72,7 @@ signals:
     void moduleAdded(const ModuleInstance& module);
     void moduleRemoved(const QString& instanceId);
     void modulesCleared();
-    void moduleBeingRemoved(const QString& instanceId);  // Fix: 删除前通知，让 MainWindow 清空检查器和撤销栈
+    void moduleBeingRemoved(const QString& instanceId); // Fix: 删除前通知，让 MainWindow 清空检查器和撤销栈
 
 public slots:
     void onModuleAddedFromProject(const ModuleInstance& module);

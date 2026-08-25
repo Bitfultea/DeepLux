@@ -1,27 +1,22 @@
 #include "CreateStringPlugin.h"
+
 #include "core/common/Logger.h"
 #include "core/common/VarModel.h"
-#include <QVBoxLayout>
-#include <QLabel>
-#include <QLineEdit>
+
 #include <QComboBox>
 #include <QFormLayout>
+#include <QLabel>
+#include <QLineEdit>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-CreateStringPlugin::CreateStringPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"stringSource", "Fixed"},
-        {"fixedString", ""},
-        {"outputVarName", "newString"}
-    };
+CreateStringPlugin::CreateStringPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"stringSource", "Fixed"}, {"fixedString", ""}, {"outputVarName", "newString"}};
     m_params = m_defaultParams;
 }
 
-bool CreateStringPlugin::initialize()
-{
+bool CreateStringPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -29,8 +24,7 @@ bool CreateStringPlugin::initialize()
     return true;
 }
 
-bool CreateStringPlugin::process(const ImageData& input, ImageData& output)
-{
+bool CreateStringPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     QJsonObject params = currentParams();
@@ -54,13 +48,14 @@ bool CreateStringPlugin::process(const ImageData& input, ImageData& output)
     output.setData("string_length", resultString.length());
 
     Logger::instance().info(QString("CreateString: Created string '%1' with length %2")
-        .arg(resultString.left(20)).arg(resultString.length()), "Variable");
+                                .arg(resultString.left(20))
+                                .arg(resultString.length()),
+                            "Variable");
 
     return true;
 }
 
-bool CreateStringPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool CreateStringPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     const QString stringSource = params["stringSource"].toString("Fixed");
     if (stringSource != "Fixed" && stringSource != "Input") {
         error = QString("String source is unsupported");
@@ -76,8 +71,7 @@ bool CreateStringPlugin::doValidateParams(const QJsonObject& params, QString& er
     return true;
 }
 
-QWidget* CreateStringPlugin::createConfigWidget()
-{
+QWidget* CreateStringPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -88,7 +82,8 @@ QWidget* CreateStringPlugin::createConfigWidget()
     sourceCombo->addItem(tr("从输入获取"), "Input");
     QString currentSource = m_params["stringSource"].toString("Fixed");
     int index = sourceCombo->findData(currentSource);
-    if (index >= 0) sourceCombo->setCurrentIndex(index);
+    if (index >= 0)
+        sourceCombo->setCurrentIndex(index);
 
     QLineEdit* fixedEdit = new QLineEdit(m_params["fixedString"].toString());
     QLineEdit* outputEdit = new QLineEdit(m_params["outputVarName"].toString("newString"));
@@ -100,23 +95,17 @@ QWidget* CreateStringPlugin::createConfigWidget()
     layout->addLayout(formLayout);
     layout->addStretch();
 
-    connect(sourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int idx) {
-        setParam("stringSource", sourceCombo->itemData(idx).toString());
-    });
+    connect(sourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int idx) { setParam("stringSource", sourceCombo->itemData(idx).toString()); });
 
-    connect(fixedEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("fixedString", text);
-    });
+    connect(fixedEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("fixedString", text); });
 
-    connect(outputEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("outputVarName", text);
-    });
+    connect(outputEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("outputVarName", text); });
 
     return widget;
 }
 
-IModule* CreateStringPlugin::cloneImpl() const
-{
+IModule* CreateStringPlugin::cloneImpl() const {
     CreateStringPlugin* clone = new CreateStringPlugin();
     clone->setParams(currentParams());
     return clone;

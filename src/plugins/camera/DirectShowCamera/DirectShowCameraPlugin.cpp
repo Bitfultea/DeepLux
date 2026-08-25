@@ -1,4 +1,5 @@
 #include "DirectShowCameraPlugin.h"
+
 #include "DirectShowCamera.h"
 #include "core/common/Logger.h"
 
@@ -10,17 +11,11 @@
 
 namespace DeepLux {
 
-DirectShowCameraPlugin::DirectShowCameraPlugin(QObject* parent)
-    : ICameraPlugin(parent)
-{
-}
+DirectShowCameraPlugin::DirectShowCameraPlugin(QObject* parent) : ICameraPlugin(parent) {}
 
-DirectShowCameraPlugin::~DirectShowCameraPlugin()
-{
-}
+DirectShowCameraPlugin::~DirectShowCameraPlugin() {}
 
-bool DirectShowCameraPlugin::isAvailable() const
-{
+bool DirectShowCameraPlugin::isAvailable() const {
 #ifdef _WIN32
     return true;
 #else
@@ -28,8 +23,7 @@ bool DirectShowCameraPlugin::isAvailable() const
 #endif
 }
 
-QString DirectShowCameraPlugin::availabilityMessage() const
-{
+QString DirectShowCameraPlugin::availabilityMessage() const {
 #ifdef _WIN32
     return QStringLiteral("DirectShow 相机可用");
 #else
@@ -37,8 +31,7 @@ QString DirectShowCameraPlugin::availabilityMessage() const
 #endif
 }
 
-QList<CameraInfo> DirectShowCameraPlugin::discoverCameras()
-{
+QList<CameraInfo> DirectShowCameraPlugin::discoverCameras() {
     QList<CameraInfo> cameras;
 
 #ifdef _WIN32
@@ -51,8 +44,8 @@ QList<CameraInfo> DirectShowCameraPlugin::discoverCameras()
 
     // 创建设备枚举器
     ICreateDevEnum* pDevEnum = nullptr;
-    hr = CoCreateInstance(CLSID_SystemDeviceEnum, nullptr, CLSCTX_INPROC_SERVER,
-                          IID_ICreateDevEnum, (void**)&pDevEnum);
+    hr =
+        CoCreateInstance(CLSID_SystemDeviceEnum, nullptr, CLSCTX_INPROC_SERVER, IID_ICreateDevEnum, (void**) &pDevEnum);
     if (FAILED(hr)) {
         Logger::instance().warning("Failed to create device enumerator", "Camera");
         CoUninitialize();
@@ -83,7 +76,7 @@ QList<CameraInfo> DirectShowCameraPlugin::discoverCameras()
 
         // 获取设备属性
         IPropertyBag* pPropBag = nullptr;
-        hr = pMoniker->BindToStorage(nullptr, nullptr, IID_IPropertyBag, (void**)&pPropBag);
+        hr = pMoniker->BindToStorage(nullptr, nullptr, IID_IPropertyBag, (void**) &pPropBag);
         if (SUCCEEDED(hr)) {
             // 获取友好名称
             VARIANT varName;
@@ -107,9 +100,7 @@ QList<CameraInfo> DirectShowCameraPlugin::discoverCameras()
         }
 
         cameras.append(info);
-        Logger::instance().info(
-            QString("DirectShow: 发现相机 %1 - %2").arg(info.deviceId).arg(info.name),
-            "Camera");
+        Logger::instance().info(QString("DirectShow: 发现相机 %1 - %2").arg(info.deviceId).arg(info.name), "Camera");
 
         pMoniker->Release();
         deviceIndex++;
@@ -124,8 +115,7 @@ QList<CameraInfo> DirectShowCameraPlugin::discoverCameras()
     return cameras;
 }
 
-QObject* DirectShowCameraPlugin::createCamera(const CameraInfo& info)
-{
+QObject* DirectShowCameraPlugin::createCamera(const CameraInfo& info) {
     if (info.pluginId != "directshow") {
         return nullptr;
     }
@@ -134,8 +124,7 @@ QObject* DirectShowCameraPlugin::createCamera(const CameraInfo& info)
     return qobject_cast<QObject*>(camera);
 }
 
-QString DirectShowCameraPlugin::getDeviceName(int index) const
-{
+QString DirectShowCameraPlugin::getDeviceName(int index) const {
 #ifdef _WIN32
     QString name = QString("DirectShow Camera %1").arg(index);
 
@@ -145,8 +134,8 @@ QString DirectShowCameraPlugin::getDeviceName(int index) const
     }
 
     ICreateDevEnum* pDevEnum = nullptr;
-    hr = CoCreateInstance(CLSID_SystemDeviceEnum, nullptr, CLSCTX_INPROC_SERVER,
-                          IID_ICreateDevEnum, (void**)&pDevEnum);
+    hr =
+        CoCreateInstance(CLSID_SystemDeviceEnum, nullptr, CLSCTX_INPROC_SERVER, IID_ICreateDevEnum, (void**) &pDevEnum);
     if (FAILED(hr)) {
         CoUninitialize();
         return name;
@@ -168,7 +157,7 @@ QString DirectShowCameraPlugin::getDeviceName(int index) const
     while (pEnum->Next(1, &pMoniker, &cFetched) == S_OK) {
         if (currentIndex == index) {
             IPropertyBag* pPropBag = nullptr;
-            hr = pMoniker->BindToStorage(nullptr, nullptr, IID_IPropertyBag, (void**)&pPropBag);
+            hr = pMoniker->BindToStorage(nullptr, nullptr, IID_IPropertyBag, (void**) &pPropBag);
             if (SUCCEEDED(hr)) {
                 VARIANT varName;
                 VariantInit(&varName);
@@ -194,8 +183,7 @@ QString DirectShowCameraPlugin::getDeviceName(int index) const
 #endif
 }
 
-bool DirectShowCameraPlugin::isDirectShowDevice(int index) const
-{
+bool DirectShowCameraPlugin::isDirectShowDevice(int index) const {
 #ifdef _WIN32
     return getDeviceName(index).contains("DirectShow");
 #else

@@ -1,16 +1,15 @@
 #pragma once
 
+#include <QCheckBox>
+#include <QComboBox>
 #include <QDialog>
+#include <QGroupBox>
 #include <QLineEdit>
 #include <QSpinBox>
-#include <QComboBox>
-#include <QCheckBox>
-#include <QGroupBox>
 
 namespace DeepLux {
 
-class SystemParamView : public QDialog
-{
+class SystemParamView : public QDialog {
     Q_OBJECT
 
 public:

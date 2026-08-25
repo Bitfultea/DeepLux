@@ -8,8 +8,7 @@
 
 namespace DeepLux {
 
-class DisplayDataPlugin : public ModuleBase
-{
+class DisplayDataPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -18,12 +17,24 @@ public:
     explicit DisplayDataPlugin(QObject* parent = nullptr);
     ~DisplayDataPlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.displaydata"; }
-    QString name() const override { return tr("数据显示"); }
-    QString category() const override { return "image_processing"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("在图像上显示数据信息"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.displaydata";
+    }
+    QString name() const override {
+        return tr("数据显示");
+    }
+    QString category() const override {
+        return "image_processing";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("在图像上显示数据信息");
+    }
 
     bool initialize() override;
     void shutdown() override;

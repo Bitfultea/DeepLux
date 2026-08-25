@@ -1,7 +1,8 @@
 #pragma once
 
-#include "PointCloudGPUBuffer.h"
 #include "LODController.h"
+#include "PointCloudGPUBuffer.h"
+
 #include <array>
 
 namespace DeepLux {
@@ -32,7 +33,9 @@ public:
     /**
      * @brief 当前激活的 LOD 级别
      */
-    int currentLevel() const { return m_currentLevel; }
+    int currentLevel() const {
+        return m_currentLevel;
+    }
 
     /**
      * @brief 切换到指定级别
@@ -48,12 +51,16 @@ public:
     /**
      * @brief 是否有效
      */
-    bool isValid() const { return m_originalBuffer.isValid(); }
+    bool isValid() const {
+        return m_originalBuffer.isValid();
+    }
 
     /**
      * @brief 原始数据点数量
      */
-    size_t originalPointCount() const { return m_originalBuffer.pointCount(); }
+    size_t originalPointCount() const {
+        return m_originalBuffer.pointCount();
+    }
 
     /**
      * @brief 当前级别点数量
@@ -63,7 +70,9 @@ public:
     /**
      * @brief 原始缓冲区引用
      */
-    const PointCloudGPUBuffer& originalBuffer() const { return m_originalBuffer; }
+    const PointCloudGPUBuffer& originalBuffer() const {
+        return m_originalBuffer;
+    }
 
 private:
     /**

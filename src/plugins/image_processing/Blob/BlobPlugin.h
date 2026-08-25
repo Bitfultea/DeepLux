@@ -8,8 +8,7 @@
 
 namespace DeepLux {
 
-class BlobPlugin : public ModuleBase
-{
+class BlobPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -18,12 +17,24 @@ public:
     explicit BlobPlugin(QObject* parent = nullptr);
     ~BlobPlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.blob"; }
-    QString name() const override { return tr("Blob分析"); }
-    QString category() const override { return "image_processing"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("检测并分析图像中的Blob区域"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.blob";
+    }
+    QString name() const override {
+        return tr("Blob分析");
+    }
+    QString category() const override {
+        return "image_processing";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("检测并分析图像中的Blob区域");
+    }
 
     bool initialize() override;
     void shutdown() override;
@@ -43,11 +54,7 @@ private:
         double circularity;
     };
 
-    enum class ThresholdType {
-        Fixed,
-        Otsu,
-        Adaptive
-    };
+    enum class ThresholdType { Fixed, Otsu, Adaptive };
 
     std::vector<BlobResult> detectBlobs(const cv::Mat& gray, const cv::Mat& mask);
     void applyThreshold(const cv::Mat& gray, cv::Mat& mask);

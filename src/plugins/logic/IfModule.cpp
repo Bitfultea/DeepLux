@@ -1,19 +1,17 @@
 #include "IfModule.h"
-#include "core/engine/RunEngine.h"
+
 #include "core/common/Logger.h"
+#include "core/engine/RunEngine.h"
 
 namespace DeepLux {
 
-IfModule::IfModule(QObject* parent)
-    : ModuleBase(parent)
-{
+IfModule::IfModule(QObject* parent) : ModuleBase(parent) {
     m_name = "如果";
     m_moduleId = "IfModule";
     m_description = "条件分支模块";
 }
 
-QJsonObject IfModule::defaultParams() const
-{
+QJsonObject IfModule::defaultParams() const {
     QJsonObject params;
     params["conditionType"] = "BoolLink";
     params["boolLinkText"] = "";
@@ -22,8 +20,7 @@ QJsonObject IfModule::defaultParams() const
     return params;
 }
 
-void IfModule::setParams(const QJsonObject& params)
-{
+void IfModule::setParams(const QJsonObject& params) {
     QString condType = params.value("conditionType").toString("BoolLink");
     if (condType == "Expression") {
         m_conditionType = ConditionType::Expression;
@@ -36,8 +33,7 @@ void IfModule::setParams(const QJsonObject& params)
     m_boolInversion = params.value("boolInversion").toBool(false);
 }
 
-bool IfModule::evaluateCondition()
-{
+bool IfModule::evaluateCondition() {
     if (m_conditionType == ConditionType::BoolLink) {
         if (m_boolLinkText.isEmpty()) {
             Logger::instance().warning("BoolLink is empty in IfModule", "Logic");
@@ -64,8 +60,7 @@ bool IfModule::evaluateCondition()
 
         Logger::instance().debug(QString("IfModule condition: %1 = %2").arg(m_boolLinkText).arg(result), "Logic");
         return result;
-    }
-    else {
+    } else {
         // 表达式求值 - 简化版本，实际需要表达式引擎
         QString expr = m_expressionString;
         if (expr.isEmpty()) {
@@ -85,8 +80,7 @@ bool IfModule::evaluateCondition()
     }
 }
 
-bool IfModule::process(const ImageData& input, ImageData& output)
-{
+bool IfModule::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(input)
     Q_UNUSED(output)
 

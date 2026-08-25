@@ -1,17 +1,14 @@
 #include "TerminalRenderer.h"
 
-#include <QPaintEvent>
-#include <QMouseEvent>
 #include <QApplication>
 #include <QClipboard>
 #include <QDebug>
+#include <QMouseEvent>
+#include <QPaintEvent>
 
 namespace DeepLux {
 
-TerminalRenderer::TerminalRenderer(TerminalScreen* screen, QWidget* parent)
-    : QWidget(parent)
-    , m_screen(screen)
-{
+TerminalRenderer::TerminalRenderer(TerminalScreen* screen, QWidget* parent) : QWidget(parent), m_screen(screen) {
     setAttribute(Qt::WA_OpaquePaintEvent);
 
     m_font = QFont("DejaVu Sans Mono", 11);
@@ -22,30 +19,26 @@ TerminalRenderer::TerminalRenderer(TerminalScreen* screen, QWidget* parent)
     setCursor(Qt::IBeamCursor);
 }
 
-void TerminalRenderer::setScreen(TerminalScreen* screen)
-{
+void TerminalRenderer::setScreen(TerminalScreen* screen) {
     m_screen = screen;
     update();
 }
 
-void TerminalRenderer::setThemeColors(const QColor& fg, const QColor& bg, const QColor& selectionBg)
-{
+void TerminalRenderer::setThemeColors(const QColor& fg, const QColor& bg, const QColor& selectionBg) {
     m_defaultFg = fg;
     m_defaultBg = bg;
     m_selectionBg = selectionBg;
     update();
 }
 
-void TerminalRenderer::updateCellSize()
-{
+void TerminalRenderer::updateCellSize() {
     QFontMetrics fm(m_font);
     m_cellWidth = fm.horizontalAdvance('W');
     m_cellHeight = fm.height();
     m_baseline = fm.ascent();
 }
 
-QPoint TerminalRenderer::pixelToCell(const QPoint& pos) const
-{
+QPoint TerminalRenderer::pixelToCell(const QPoint& pos) const {
     int col = pos.x() / m_cellWidth;
     int row = pos.y() / m_cellHeight;
     if (m_screen) {
@@ -55,14 +48,13 @@ QPoint TerminalRenderer::pixelToCell(const QPoint& pos) const
     return QPoint(col, row);
 }
 
-QPoint TerminalRenderer::cellToPixel(int row, int col) const
-{
+QPoint TerminalRenderer::cellToPixel(int row, int col) const {
     return QPoint(col * m_cellWidth, row * m_cellHeight);
 }
 
-QString TerminalRenderer::selectedText() const
-{
-    if (!m_selection.active || !m_screen) return QString();
+QString TerminalRenderer::selectedText() const {
+    if (!m_selection.active || !m_screen)
+        return QString();
 
     QString result;
     int startRow = qMin(m_selection.startRow, m_selection.endRow);
@@ -89,17 +81,16 @@ QString TerminalRenderer::selectedText() const
     return result;
 }
 
-void TerminalRenderer::clearSelection()
-{
+void TerminalRenderer::clearSelection() {
     m_selection.active = false;
     m_selection.selecting = false;
     update();
 }
 
-void TerminalRenderer::paintEvent(QPaintEvent* event)
-{
+void TerminalRenderer::paintEvent(QPaintEvent* event) {
     Q_UNUSED(event)
-    if (!m_screen) return;
+    if (!m_screen)
+        return;
 
     QPainter p(this);
     p.setFont(m_font);
@@ -148,8 +139,7 @@ void TerminalRenderer::paintEvent(QPaintEvent* event)
     }
 }
 
-void TerminalRenderer::drawCell(QPainter& p, int row, int col, const Cell& cell)
-{
+void TerminalRenderer::drawCell(QPainter& p, int row, int col, const Cell& cell) {
     int x = col * m_cellWidth;
     int y = row * m_cellHeight;
 
@@ -223,9 +213,9 @@ void TerminalRenderer::drawCell(QPainter& p, int row, int col, const Cell& cell)
     }
 }
 
-void TerminalRenderer::drawCursor(QPainter& p, int row, int col)
-{
-    if (row < 0 || col < 0) return;
+void TerminalRenderer::drawCursor(QPainter& p, int row, int col) {
+    if (row < 0 || col < 0)
+        return;
     int x = col * m_cellWidth;
     int y = row * m_cellHeight;
 
@@ -251,14 +241,12 @@ void TerminalRenderer::drawCursor(QPainter& p, int row, int col)
     }
 }
 
-void TerminalRenderer::drawSelection(QPainter& p)
-{
+void TerminalRenderer::drawSelection(QPainter& p) {
     // 选中背景在 drawCell 中逐个处理，这里不需要额外绘制
     Q_UNUSED(p)
 }
 
-QColor TerminalRenderer::resolveForeground(const CellAttributes& attrs) const
-{
+QColor TerminalRenderer::resolveForeground(const CellAttributes& attrs) const {
     if (attrs.reverse) {
         return resolveBackground(attrs);
     }
@@ -275,8 +263,7 @@ QColor TerminalRenderer::resolveForeground(const CellAttributes& attrs) const
     return m_defaultFg;
 }
 
-QColor TerminalRenderer::resolveBackground(const CellAttributes& attrs) const
-{
+QColor TerminalRenderer::resolveBackground(const CellAttributes& attrs) const {
     if (attrs.reverse) {
         // 反色：交换前景和背景
         CellAttributes rev = attrs;
@@ -307,10 +294,10 @@ QColor TerminalRenderer::resolveBackground(const CellAttributes& attrs) const
     return m_defaultBg;
 }
 
-void TerminalRenderer::resizeEvent(QResizeEvent* event)
-{
+void TerminalRenderer::resizeEvent(QResizeEvent* event) {
     Q_UNUSED(event)
-    if (!m_screen) return;
+    if (!m_screen)
+        return;
 
     int newCols = width() / m_cellWidth;
     int newRows = height() / m_cellHeight;
@@ -324,8 +311,7 @@ void TerminalRenderer::resizeEvent(QResizeEvent* event)
     }
 }
 
-void TerminalRenderer::mousePressEvent(QMouseEvent* event)
-{
+void TerminalRenderer::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
         clearSelection();
         QPoint cell = pixelToCell(event->pos());
@@ -335,13 +321,13 @@ void TerminalRenderer::mousePressEvent(QMouseEvent* event)
         m_selection.endCol = cell.x();
         m_selection.selecting = true;
         m_selection.active = true;
-        if (parentWidget()) parentWidget()->setFocus();
+        if (parentWidget())
+            parentWidget()->setFocus();
         update();
     }
 }
 
-void TerminalRenderer::mouseMoveEvent(QMouseEvent* event)
-{
+void TerminalRenderer::mouseMoveEvent(QMouseEvent* event) {
     if (m_selection.selecting && (event->buttons() & Qt::LeftButton)) {
         QPoint cell = pixelToCell(event->pos());
         m_selection.endRow = cell.y();
@@ -350,8 +336,7 @@ void TerminalRenderer::mouseMoveEvent(QMouseEvent* event)
     }
 }
 
-void TerminalRenderer::mouseReleaseEvent(QMouseEvent* event)
-{
+void TerminalRenderer::mouseReleaseEvent(QMouseEvent* event) {
     Q_UNUSED(event)
     if (m_selection.selecting) {
         m_selection.selecting = false;
@@ -360,14 +345,14 @@ void TerminalRenderer::mouseReleaseEvent(QMouseEvent* event)
     }
 }
 
-void TerminalRenderer::mouseDoubleClickEvent(QMouseEvent* event)
-{
+void TerminalRenderer::mouseDoubleClickEvent(QMouseEvent* event) {
     // 双击选中单词
     QPoint cell = pixelToCell(event->pos());
     int row = cell.y();
     int col = cell.x();
 
-    if (!m_screen || row >= m_screen->rows() || col >= m_screen->cols()) return;
+    if (!m_screen || row >= m_screen->rows() || col >= m_screen->cols())
+        return;
 
     // 找到单词边界
     int startCol = col;

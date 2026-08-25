@@ -1,29 +1,25 @@
 #include "PLCWritePlugin.h"
+
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
+
+#include <QComboBox>
 #include <QFormLayout>
+#include <QJsonArray>
 #include <QLineEdit>
 #include <QSpinBox>
-#include <QComboBox>
-#include <QJsonArray>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
 PLCWritePlugin::PLCWritePlugin(QObject* parent)
-    : ModuleBase(parent)
-    , m_socket(new QTcpSocket(this))
-    , m_connectLoop(nullptr)
-    , m_readLoop(nullptr)
-{
-    m_defaultParams = QJsonObject{
-        {"ipAddress", "192.168.1.100"},
-        {"port", 502},
-        {"slaveId", 1},
-        {"startAddress", 0},
-        {"values", QJsonArray{0}},
-        {"valueSource", "immediate"},
-        {"timeout", 3000}
-    };
+    : ModuleBase(parent), m_socket(new QTcpSocket(this)), m_connectLoop(nullptr), m_readLoop(nullptr) {
+    m_defaultParams = QJsonObject{{"ipAddress", "192.168.1.100"},
+                                  {"port", 502},
+                                  {"slaveId", 1},
+                                  {"startAddress", 0},
+                                  {"values", QJsonArray{0}},
+                                  {"valueSource", "immediate"},
+                                  {"timeout", 3000}};
     m_params = m_defaultParams;
 
     connect(m_socket, &QTcpSocket::connected, this, &PLCWritePlugin::onConnected);
@@ -32,13 +28,11 @@ PLCWritePlugin::PLCWritePlugin(QObject* parent)
     connect(m_socket, &QTcpSocket::readyRead, this, &PLCWritePlugin::onReadyRead);
 }
 
-PLCWritePlugin::~PLCWritePlugin()
-{
+PLCWritePlugin::~PLCWritePlugin() {
     disconnectFromHost();
 }
 
-bool PLCWritePlugin::initialize()
-{
+bool PLCWritePlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -46,21 +40,18 @@ bool PLCWritePlugin::initialize()
     return true;
 }
 
-void PLCWritePlugin::onConnected()
-{
+void PLCWritePlugin::onConnected() {
     Logger::instance().debug("PLCWrite: Connected to PLC", "Communication");
     if (m_connectLoop) {
         m_connectLoop->quit();
     }
 }
 
-void PLCWritePlugin::onDisconnected()
-{
+void PLCWritePlugin::onDisconnected() {
     Logger::instance().debug("PLCWrite: Disconnected from PLC", "Communication");
 }
 
-void PLCWritePlugin::onError(QAbstractSocket::SocketError error)
-{
+void PLCWritePlugin::onError(QAbstractSocket::SocketError error) {
     Q_UNUSED(error);
     emit errorOccurred(tr("PLC通信错误: %1").arg(m_socket->errorString()));
     if (m_connectLoop && m_connectLoop->isRunning()) {
@@ -71,16 +62,14 @@ void PLCWritePlugin::onError(QAbstractSocket::SocketError error)
     }
 }
 
-void PLCWritePlugin::onReadyRead()
-{
+void PLCWritePlugin::onReadyRead() {
     m_readBuffer += m_socket->readAll();
     if (m_readLoop) {
         m_readLoop->quit();
     }
 }
 
-void PLCWritePlugin::onConnectTimeout()
-{
+void PLCWritePlugin::onConnectTimeout() {
     if (m_socket->state() != QAbstractSocket::ConnectedState) {
         m_socket->abort();
         emit errorOccurred(tr("连接PLC %1:%2 超时").arg(m_host).arg(m_port));
@@ -90,8 +79,7 @@ void PLCWritePlugin::onConnectTimeout()
     }
 }
 
-void PLCWritePlugin::onReadTimeout()
-{
+void PLCWritePlugin::onReadTimeout() {
     m_readTimedOut = true;
     m_socket->disconnectFromHost();
     if (m_readLoop) {
@@ -99,8 +87,7 @@ void PLCWritePlugin::onReadTimeout()
     }
 }
 
-bool PLCWritePlugin::connectToHost()
-{
+bool PLCWritePlugin::connectToHost() {
     if (m_socket->state() == QAbstractSocket::ConnectedState) {
         m_socket->disconnectFromHost();
         m_socket->waitForDisconnected(100);
@@ -127,17 +114,14 @@ bool PLCWritePlugin::connectToHost()
     return true;
 }
 
-void PLCWritePlugin::disconnectFromHost()
-{
-    if (m_socket->state() == QAbstractSocket::ConnectedState ||
-        m_socket->state() == QAbstractSocket::ConnectingState) {
+void PLCWritePlugin::disconnectFromHost() {
+    if (m_socket->state() == QAbstractSocket::ConnectedState || m_socket->state() == QAbstractSocket::ConnectingState) {
         m_socket->abort();
     }
 }
 
-QByteArray PLCWritePlugin::buildWriteRequest(quint16 transactionId, quint8 unitId,
-                                              quint16 startAddress, const QVector<quint16>& values)
-{
+QByteArray PLCWritePlugin::buildWriteRequest(quint16 transactionId, quint8 unitId, quint16 startAddress,
+                                             const QVector<quint16>& values) {
     QByteArray request;
     QDataStream stream(&request, QIODevice::WriteOnly);
     stream.setByteOrder(QDataStream::BigEndian);
@@ -146,16 +130,16 @@ QByteArray PLCWritePlugin::buildWriteRequest(quint16 transactionId, quint8 unitI
     quint16 length = 7 + byteCount; // 1 (unit) + 1 (func) + 2 (addr) + 2 (qty) + 1 (bytecount) + byteCount
 
     // MBAP Header
-    stream << transactionId;        // Transaction ID
-    stream << quint16(0);           // Protocol ID
-    stream << length;               // Length
-    stream << unitId;               // Unit ID
+    stream << transactionId; // Transaction ID
+    stream << quint16(0);    // Protocol ID
+    stream << length;        // Length
+    stream << unitId;        // Unit ID
 
     // Function Code 16: Write Multiple Registers
-    stream << quint8(0x10);         // Function Code
-    stream << startAddress;         // Starting Address
+    stream << quint8(0x10);                        // Function Code
+    stream << startAddress;                        // Starting Address
     stream << static_cast<quint16>(values.size()); // Quantity of Registers
-    stream << byteCount;            // Byte Count
+    stream << byteCount;                           // Byte Count
 
     // Register values
     for (quint16 value : values) {
@@ -165,8 +149,7 @@ QByteArray PLCWritePlugin::buildWriteRequest(quint16 transactionId, quint8 unitI
     return request;
 }
 
-bool PLCWritePlugin::parseWriteResponse(const QByteArray& data)
-{
+bool PLCWritePlugin::parseWriteResponse(const QByteArray& data) {
     if (data.size() < 12) {
         return false;
     }
@@ -180,8 +163,7 @@ bool PLCWritePlugin::parseWriteResponse(const QByteArray& data)
     return true;
 }
 
-bool PLCWritePlugin::process(const ImageData& input, ImageData& output)
-{
+bool PLCWritePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     m_host = m_params["ipAddress"].toString();
@@ -281,14 +263,14 @@ bool PLCWritePlugin::process(const ImageData& input, ImageData& output)
     output.setData("plc_write_success", true);
     output.setData("plc_write_count", m_values.size());
 
-    Logger::instance().debug(QString("PLCWrite: Wrote %1 registers to address %2")
-        .arg(m_values.size()).arg(m_startAddress), "Communication");
+    Logger::instance().debug(
+        QString("PLCWrite: Wrote %1 registers to address %2").arg(m_values.size()).arg(m_startAddress),
+        "Communication");
 
     return true;
 }
 
-bool PLCWritePlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool PLCWritePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     if (params["ipAddress"].toString().isEmpty()) {
         error = QString("IP地址不能为空");
         return false;
@@ -308,8 +290,7 @@ bool PLCWritePlugin::doValidateParams(const QJsonObject& params, QString& error)
     return true;
 }
 
-QWidget* PLCWritePlugin::createConfigWidget()
-{
+QWidget* PLCWritePlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -355,25 +336,18 @@ QWidget* PLCWritePlugin::createConfigWidget()
     layout->addLayout(formLayout);
     layout->addStretch();
 
-    connect(ipEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["ipAddress"] = text;
-    });
+    connect(ipEdit, &QLineEdit::textChanged, this, [=](const QString& text) { m_params["ipAddress"] = text; });
 
-    connect(portSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["port"] = value;
-    });
+    connect(portSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) { m_params["port"] = value; });
 
-    connect(slaveSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["slaveId"] = value;
-    });
+    connect(slaveSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [=](int value) { m_params["slaveId"] = value; });
 
-    connect(addrSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["startAddress"] = value;
-    });
+    connect(addrSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [=](int value) { m_params["startAddress"] = value; });
 
-    connect(sourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        m_params["valueSource"] = sourceCombo->currentData().toString();
-    });
+    connect(sourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int) { m_params["valueSource"] = sourceCombo->currentData().toString(); });
 
     connect(valuesEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
         if (sourceCombo->currentData().toString() == "immediate") {
@@ -391,8 +365,7 @@ QWidget* PLCWritePlugin::createConfigWidget()
     return widget;
 }
 
-IModule* PLCWritePlugin::cloneImpl() const
-{
+IModule* PLCWritePlugin::cloneImpl() const {
     return new PLCWritePlugin();
 }
 

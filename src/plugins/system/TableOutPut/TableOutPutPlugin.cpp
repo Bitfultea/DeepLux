@@ -1,27 +1,21 @@
 #include "TableOutPutPlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
+
 #include <QLabel>
 #include <QSpinBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-TableOutPutPlugin::TableOutPutPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"rowCount", 5},
-        {"colCount", 3}
-    };
+TableOutPutPlugin::TableOutPutPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"rowCount", 5}, {"colCount", 3}};
     m_params = m_defaultParams;
 }
 
-TableOutPutPlugin::~TableOutPutPlugin()
-{
-}
+TableOutPutPlugin::~TableOutPutPlugin() {}
 
-bool TableOutPutPlugin::initialize()
-{
+bool TableOutPutPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -29,13 +23,11 @@ bool TableOutPutPlugin::initialize()
     return true;
 }
 
-void TableOutPutPlugin::shutdown()
-{
+void TableOutPutPlugin::shutdown() {
     ModuleBase::shutdown();
 }
 
-bool TableOutPutPlugin::process(const ImageData& input, ImageData& output)
-{
+bool TableOutPutPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     QJsonObject params = currentParams();
@@ -81,8 +73,7 @@ bool TableOutPutPlugin::process(const ImageData& input, ImageData& output)
     return true;
 }
 
-bool TableOutPutPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool TableOutPutPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     int rows = params["rowCount"].toInt();
     int cols = params["colCount"].toInt();
 
@@ -99,8 +90,7 @@ bool TableOutPutPlugin::doValidateParams(const QJsonObject& params, QString& err
     return true;
 }
 
-QWidget* TableOutPutPlugin::createConfigWidget()
-{
+QWidget* TableOutPutPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -118,19 +108,16 @@ QWidget* TableOutPutPlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(rowSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        setParam("rowCount", value);
-    });
+    connect(rowSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int value) { setParam("rowCount", value); });
 
-    connect(colSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        setParam("colCount", value);
-    });
+    connect(colSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int value) { setParam("colCount", value); });
 
     return widget;
 }
 
-IModule* TableOutPutPlugin::cloneImpl() const
-{
+IModule* TableOutPutPlugin::cloneImpl() const {
     TableOutPutPlugin* clone = new TableOutPutPlugin();
     return clone;
 }

@@ -1,47 +1,36 @@
 #include "LoadPointCloudPlugin.h"
+
 #include "common/Logger.h"
 #include "core/common/ConfigWidgetHelper.h"
 #include "core/geometry/MeasurementData.h"
 #include "core/io/PlyLoader.h"
 #include "core/io/TiffLoader.h"
-#include <QFileInfo>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QPushButton>
+
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QHBoxLayout>
 #include <QPointer>
+#include <QPushButton>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-LoadPointCloudPlugin::LoadPointCloudPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"filePath", ""},
-        {"tiffStep", 1},
-        {"scaleX", 1.0},
-        {"scaleY", 1.0},
-        {"scaleZ", 1.0}
-    };
+LoadPointCloudPlugin::LoadPointCloudPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"filePath", ""}, {"tiffStep", 1}, {"scaleX", 1.0}, {"scaleY", 1.0}, {"scaleZ", 1.0}};
     m_params = m_defaultParams;
 }
 
-LoadPointCloudPlugin::~LoadPointCloudPlugin()
-{
-}
+LoadPointCloudPlugin::~LoadPointCloudPlugin() {}
 
-bool LoadPointCloudPlugin::initialize()
-{
+bool LoadPointCloudPlugin::initialize() {
     return ModuleBase::initialize();
 }
 
-void LoadPointCloudPlugin::shutdown()
-{
+void LoadPointCloudPlugin::shutdown() {
     ModuleBase::shutdown();
 }
 
-bool LoadPointCloudPlugin::process(const ImageData& input, ImageData& output)
-{
+bool LoadPointCloudPlugin::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(input);
 
     QJsonObject params = currentParams();
@@ -103,23 +92,20 @@ bool LoadPointCloudPlugin::process(const ImageData& input, ImageData& output)
     output.setData("point_count", static_cast<int>(cloud.points.size()));
     output.setData("point_cloud_path", filePath);
 
-    Logger::instance().debug(
-        QString("点云已加载: %1 (%2 个点)").arg(filePath).arg(cloud.points.size()),
-        "LoadPointCloud");
+    Logger::instance().debug(QString("点云已加载: %1 (%2 个点)").arg(filePath).arg(cloud.points.size()),
+                             "LoadPointCloud");
 
     return true;
 }
 
-bool LoadPointCloudPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool LoadPointCloudPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     // 阶段 2: filePath 等外部资源允许暂时为空，由 process() 在运行时报告"未配置"
     Q_UNUSED(params)
     error.clear();
     return true;
 }
 
-QWidget* LoadPointCloudPlugin::createConfigWidget()
-{
+QWidget* LoadPointCloudPlugin::createConfigWidget() {
     ConfigWidgetHelper factory(true);
 
     QWidget* widget = new QWidget();
@@ -188,10 +174,11 @@ QWidget* LoadPointCloudPlugin::createConfigWidget()
 
     QPointer<LoadPointCloudPlugin> pluginPtr(this);
     connect(browseBtn, &QPushButton::clicked, [pluginPtr, filePathEdit]() {
-        if (!pluginPtr) return;
-        QString path = QFileDialog::getOpenFileName(nullptr, tr("选择点云文件"),
-            pluginPtr->m_params["filePath"].toString(),
-            tr("点云文件 (*.ply *.tif *.tiff);;All Files (*)"));
+        if (!pluginPtr)
+            return;
+        QString path =
+            QFileDialog::getOpenFileName(nullptr, tr("选择点云文件"), pluginPtr->m_params["filePath"].toString(),
+                                         tr("点云文件 (*.ply *.tif *.tiff);;All Files (*)"));
         if (!path.isEmpty()) {
             filePathEdit->setText(path);
             pluginPtr->setParam("filePath", path);
@@ -200,38 +187,38 @@ QWidget* LoadPointCloudPlugin::createConfigWidget()
 
     QPointer<LoadPointCloudPlugin> pluginPtr2(this);
     connect(filePathEdit, &QLineEdit::textChanged, [pluginPtr2](const QString& text) {
-        if (pluginPtr2) pluginPtr2->setParam("filePath", text);
+        if (pluginPtr2)
+            pluginPtr2->setParam("filePath", text);
     });
 
     QPointer<LoadPointCloudPlugin> pluginPtr3(this);
-    connect(tiffStepSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-            [pluginPtr3](int val) {
-        if (pluginPtr3) pluginPtr3->setParam("tiffStep", val);
+    connect(tiffStepSpin, QOverload<int>::of(&QSpinBox::valueChanged), [pluginPtr3](int val) {
+        if (pluginPtr3)
+            pluginPtr3->setParam("tiffStep", val);
     });
 
     QPointer<LoadPointCloudPlugin> pluginPtr4(this);
-    connect(scaleXSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            [pluginPtr4](double val) {
-        if (pluginPtr4) pluginPtr4->setParam("scaleX", val);
+    connect(scaleXSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [pluginPtr4](double val) {
+        if (pluginPtr4)
+            pluginPtr4->setParam("scaleX", val);
     });
 
     QPointer<LoadPointCloudPlugin> pluginPtr5(this);
-    connect(scaleYSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            [pluginPtr5](double val) {
-        if (pluginPtr5) pluginPtr5->setParam("scaleY", val);
+    connect(scaleYSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [pluginPtr5](double val) {
+        if (pluginPtr5)
+            pluginPtr5->setParam("scaleY", val);
     });
 
     QPointer<LoadPointCloudPlugin> pluginPtr6(this);
-    connect(scaleZSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            [pluginPtr6](double val) {
-        if (pluginPtr6) pluginPtr6->setParam("scaleZ", val);
+    connect(scaleZSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [pluginPtr6](double val) {
+        if (pluginPtr6)
+            pluginPtr6->setParam("scaleZ", val);
     });
 
     return widget;
 }
 
-IModule* LoadPointCloudPlugin::cloneImpl() const
-{
+IModule* LoadPointCloudPlugin::cloneImpl() const {
     LoadPointCloudPlugin* clone = new LoadPointCloudPlugin();
     return clone;
 }

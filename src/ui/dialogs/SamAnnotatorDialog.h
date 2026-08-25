@@ -1,14 +1,14 @@
 #pragma once
 
 #include <QDialog>
+#include <QHash>
 #include <QImage>
 #include <QList>
-#include <QPointer>
 #include <QPointF>
+#include <QPointer>
 #include <QRectF>
 #include <QString>
 #include <QStringList>
-#include <QHash>
 #include <memory>
 
 class QToolButton;
@@ -218,8 +218,8 @@ private:
 
     // UI
     HImageWidget* m_imageWidget = nullptr;
-    QPointer<HImageWidget> m_externalImageWidget;  // Fix P0-4: QPointer 防悬空
-    AnnotationOverlayWidget* m_overlay = nullptr;  // connected to destroyed() to null
+    QPointer<HImageWidget> m_externalImageWidget; // Fix P0-4: QPointer 防悬空
+    AnnotationOverlayWidget* m_overlay = nullptr; // connected to destroyed() to null
     QListWidget* m_objectList = nullptr;
     QListWidget* m_categoryList = nullptr;
     QLineEdit* m_categoryEdit = nullptr;

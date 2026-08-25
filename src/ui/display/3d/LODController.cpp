@@ -1,4 +1,5 @@
 #include "LODController.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -8,7 +9,7 @@ LODController::LODController() = default;
 
 int LODController::calculateLODLevel(float cameraDistance) const {
     if (!m_enabled) {
-        return 0;  // LOD 禁用时使用最高细节
+        return 0; // LOD 禁用时使用最高细节
     }
 
     // 从远到近查找第一个小于阈值的级别
@@ -26,7 +27,7 @@ void LODController::setDistanceThresholds(const std::array<float, MAX_LOD_LEVELS
     // 验证阈值递增
     for (int i = 1; i < MAX_LOD_LEVELS; ++i) {
         if (thresholds[i] <= thresholds[i - 1]) {
-            return;  // 无效阈值，不设置
+            return; // 无效阈值，不设置
         }
     }
     m_distanceThresholds = thresholds;

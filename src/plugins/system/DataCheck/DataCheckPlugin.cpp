@@ -1,32 +1,24 @@
 #include "DataCheckPlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QLabel>
+
 #include <QComboBox>
-#include <QSpinBox>
 #include <QDoubleSpinBox>
+#include <QLabel>
+#include <QSpinBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-DataCheckPlugin::DataCheckPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
+DataCheckPlugin::DataCheckPlugin(QObject* parent) : ModuleBase(parent) {
     m_defaultParams = QJsonObject{
-        {"checkType", "Range"},
-        {"minValue", 0.0},
-        {"maxValue", 100.0},
-        {"minLength", 0},
-        {"maxLength", 100}
-    };
+        {"checkType", "Range"}, {"minValue", 0.0}, {"maxValue", 100.0}, {"minLength", 0}, {"maxLength", 100}};
     m_params = m_defaultParams;
 }
 
-DataCheckPlugin::~DataCheckPlugin()
-{
-}
+DataCheckPlugin::~DataCheckPlugin() {}
 
-bool DataCheckPlugin::initialize()
-{
+bool DataCheckPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -34,13 +26,11 @@ bool DataCheckPlugin::initialize()
     return true;
 }
 
-void DataCheckPlugin::shutdown()
-{
+void DataCheckPlugin::shutdown() {
     ModuleBase::shutdown();
 }
 
-bool DataCheckPlugin::process(const ImageData& input, ImageData& output)
-{
+bool DataCheckPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     // 获取要校验的数据
@@ -77,8 +67,7 @@ bool DataCheckPlugin::process(const ImageData& input, ImageData& output)
                 m_errorMessage = QString("值 %1 超出范围 [%2, %3]").arg(dataVar.toDouble()).arg(minVal).arg(maxVal);
             }
         }
-    }
-    else if (checkTypeStr == "Length") {
+    } else if (checkTypeStr == "Length") {
         QString str = dataVar.toString();
         int minLen = params["minLength"].toInt();
         int maxLen = params["maxLength"].toInt();
@@ -87,8 +76,7 @@ bool DataCheckPlugin::process(const ImageData& input, ImageData& output)
         if (!m_checkResult) {
             m_errorMessage = QString("字符串长度 %1 超出范围 [%2, %3]").arg(str.length()).arg(minLen).arg(maxLen);
         }
-    }
-    else if (checkTypeStr == "Null") {
+    } else if (checkTypeStr == "Null") {
         m_checkResult = !dataVar.isNull() && dataVar.isValid();
         if (!m_checkResult) {
             m_errorMessage = "数据为空";
@@ -103,27 +91,26 @@ bool DataCheckPlugin::process(const ImageData& input, ImageData& output)
         emit errorOccurred(m_errorMessage);
     }
 
-    Logger::instance().debug(QString("数据校验: %1, 结果: %2").arg(checkTypeStr).arg(m_checkResult ? "通过" : "失败"), "DataCheck");
+    Logger::instance().debug(QString("数据校验: %1, 结果: %2").arg(checkTypeStr).arg(m_checkResult ? "通过" : "失败"),
+                             "DataCheck");
 
     return true;
 }
 
-bool DataCheckPlugin::checkRange(const QVariant& value, double minVal, double maxVal)
-{
+bool DataCheckPlugin::checkRange(const QVariant& value, double minVal, double maxVal) {
     bool ok;
     double val = value.toDouble(&ok);
-    if (!ok) return false;
+    if (!ok)
+        return false;
     return val >= minVal && val <= maxVal;
 }
 
-bool DataCheckPlugin::checkLength(const QString& value, int minLen, int maxLen)
-{
+bool DataCheckPlugin::checkLength(const QString& value, int minLen, int maxLen) {
     int len = value.length();
     return len >= minLen && len <= maxLen;
 }
 
-bool DataCheckPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool DataCheckPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     double minVal = params["minValue"].toDouble();
     double maxVal = params["maxValue"].toDouble();
 
@@ -134,8 +121,7 @@ bool DataCheckPlugin::doValidateParams(const QJsonObject& params, QString& error
     return true;
 }
 
-QWidget* DataCheckPlugin::createConfigWidget()
-{
+QWidget* DataCheckPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -146,7 +132,8 @@ QWidget* DataCheckPlugin::createConfigWidget()
     typeCombo->addItem("非空校验", "Null");
 
     int idx = typeCombo->findData(m_params["checkType"].toString());
-    if (idx >= 0) typeCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        typeCombo->setCurrentIndex(idx);
     layout->addWidget(typeCombo);
 
     layout->addWidget(new QLabel(tr("最小值:")));
@@ -163,23 +150,19 @@ QWidget* DataCheckPlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, typeCombo](int) {
-        setParam("checkType", typeCombo->currentData().toString());
-    });
+    connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this, typeCombo](int) { setParam("checkType", typeCombo->currentData().toString()); });
 
-    connect(minSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-        setParam("minValue", value);
-    });
+    connect(minSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("minValue", value); });
 
-    connect(maxSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-        setParam("maxValue", value);
-    });
+    connect(maxSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("maxValue", value); });
 
     return widget;
 }
 
-IModule* DataCheckPlugin::cloneImpl() const
-{
+IModule* DataCheckPlugin::cloneImpl() const {
     DataCheckPlugin* clone = new DataCheckPlugin();
     return clone;
 }

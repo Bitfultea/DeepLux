@@ -388,8 +388,8 @@ void PluginTestDialog::onExecuteClicked() {
         updateResultDisplay(output);
     } else {
         m_resultEdit->setTextColor(Qt::red);
-        m_resultEdit->append(QString("[%1] 执行失败: %2\n")
-                                 .arg(QDateTime::currentDateTime().toString("hh:mm:ss"), result.userMessage));
+        m_resultEdit->append(
+            QString("[%1] 执行失败: %2\n").arg(QDateTime::currentDateTime().toString("hh:mm:ss"), result.userMessage));
     }
 }
 

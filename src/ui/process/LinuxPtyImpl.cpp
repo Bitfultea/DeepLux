@@ -1,15 +1,14 @@
 #include "BashProcess.h"
-
 #include "PtyImpl.h"
 
+#include <QDebug>
 #include <QFileInfo>
 #include <QSocketNotifier>
-#include <QDebug>
-#include <unistd.h>
 #include <fcntl.h>
-#include <termios.h>
-#include <sys/ioctl.h>
 #include <signal.h>
+#include <sys/ioctl.h>
+#include <termios.h>
+#include <unistd.h>
 
 #if defined(Q_OS_LINUX)
 #include <pty.h>
@@ -18,36 +17,28 @@
 #include <libutil.h>
 #include <unistd.h>
 #elif defined(Q_OS_MACOS) || defined(Q_OS_DARWIN)
-#include <util.h>
 #include <unistd.h>
+#include <util.h>
 #endif
 
 namespace DeepLux {
 
 // Linux POSIX PTY 实现
-class LinuxPtyImpl : public PtyImpl
-{
+class LinuxPtyImpl : public PtyImpl {
 public:
-    LinuxPtyImpl()
-        : m_masterFd(-1)
-        , m_pid(-1)
-        , m_notifier(nullptr)
-    {
-    }
+    LinuxPtyImpl() : m_masterFd(-1), m_pid(-1), m_notifier(nullptr) {}
 
-    ~LinuxPtyImpl() override
-    {
+    ~LinuxPtyImpl() override {
         kill();
     }
 
-    bool start(const QString& shell, const QStringList& args) override
-    {
+    bool start(const QString& shell, const QStringList& args) override {
         Q_UNUSED(args);
-        
+
         // 确保 CLI wrapper 文件存在
         BashProcess::instance().createCliWrapper();
         QString wrapperPath = BashProcess::instance().cliWrapperPath();
-        
+
         // 打开 PTY master
         m_masterFd = ::open("/dev/ptmx", O_RDWR | O_NOCTTY);
         if (m_masterFd < 0) {
@@ -130,15 +121,13 @@ public:
         return true;
     }
 
-    void write(const QByteArray& data) override
-    {
+    void write(const QByteArray& data) override {
         if (m_masterFd >= 0) {
             ::write(m_masterFd, data.constData(), data.size());
         }
     }
 
-    QByteArray read() override
-    {
+    QByteArray read() override {
         QByteArray buffer;
         if (m_masterFd >= 0) {
             char buf[4096];
@@ -150,8 +139,7 @@ public:
         return buffer;
     }
 
-    void resize(int cols, int rows) override
-    {
+    void resize(int cols, int rows) override {
         if (m_masterFd >= 0) {
             struct winsize ws;
             ws.ws_col = static_cast<unsigned short>(cols);
@@ -160,8 +148,7 @@ public:
         }
     }
 
-    void kill() override
-    {
+    void kill() override {
         if (m_pid > 0) {
             ::kill(m_pid, SIGTERM);
             m_pid = -1;
@@ -172,15 +159,14 @@ public:
         }
     }
 
-    bool isRunning() const override
-    {
-        if (m_pid <= 0) return false;
+    bool isRunning() const override {
+        if (m_pid <= 0)
+            return false;
         return ::kill(m_pid, 0) == 0;
     }
 
 private slots:
-    void onReadyRead()
-    {
+    void onReadyRead() {
         QByteArray data = read();
         if (!data.isEmpty()) {
             emit outputReady(data);

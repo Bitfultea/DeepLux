@@ -1,8 +1,8 @@
 #pragma once
 
-#include <QObject>
-#include <QMap>
 #include <QKeySequence>
+#include <QMap>
+#include <QObject>
 #include <QVector>
 
 namespace DeepLux {
@@ -10,31 +10,23 @@ namespace DeepLux {
 /**
  * @brief 快捷键类型
  */
-enum class ShortcutType {
-    None,
-    Ctrl,
-    Alt,
-    Shift,
-    CtrlShift,
-    AltShift,
-    CtrlAlt
-};
+enum class ShortcutType { None, Ctrl, Alt, Shift, CtrlShift, AltShift, CtrlAlt };
 
 /**
  * @brief 快捷键标识
  */
 enum class ShortcutId {
-    Save,               // Ctrl+S
-    Open,               // Ctrl+O
-    NewProject,         // Ctrl+N
-    Edit,               // Ctrl+E
-    RunOnce,             // F5
-    RunCycle,            // F6
-    Stop,               // Escape
-    ScreenCapture,       // F8
-    Help,                // F9
-    StepRun,            // F10
-    QuickMode           // Ctrl+Q
+    Save,          // Ctrl+S
+    Open,          // Ctrl+O
+    NewProject,    // Ctrl+N
+    Edit,          // Ctrl+E
+    RunOnce,       // F5
+    RunCycle,      // F6
+    Stop,          // Escape
+    ScreenCapture, // F8
+    Help,          // F9
+    StepRun,       // F10
+    QuickMode      // Ctrl+Q
 };
 
 /**
@@ -52,16 +44,14 @@ struct ShortcutItem {
 /**
  * @brief 快捷键管理器
  */
-class ShortcutManager : public QObject
-{
+class ShortcutManager : public QObject {
     Q_OBJECT
 
 public:
     static ShortcutManager& instance();
 
     // 注册/注销快捷键
-    void registerShortcut(ShortcutId id, const QString& name, const QString& description,
-                          ShortcutType type, int key);
+    void registerShortcut(ShortcutId id, const QString& name, const QString& description, ShortcutType type, int key);
     void unregisterShortcut(ShortcutId id);
 
     // 快捷键列表

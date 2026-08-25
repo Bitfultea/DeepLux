@@ -1,33 +1,28 @@
 #include "ConfigWidgetFactory.h"
 
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QLabel>
 #include <QLineEdit>
 #include <QSpinBox>
-#include <QDoubleSpinBox>
-#include <QComboBox>
-#include <QCheckBox>
 
 namespace DeepLux {
 
-ConfigWidgetFactory& ConfigWidgetFactory::instance()
-{
+ConfigWidgetFactory& ConfigWidgetFactory::instance() {
     static ConfigWidgetFactory factory;
     return factory;
 }
 
-ConfigWidgetFactory::ConfigWidgetFactory()
-{
-}
+ConfigWidgetFactory::ConfigWidgetFactory() {}
 
-void ConfigWidgetFactory::setDarkTheme(bool dark)
-{
+void ConfigWidgetFactory::setDarkTheme(bool dark) {
     if (m_darkTheme != dark) {
         m_darkTheme = dark;
     }
 }
 
-QLabel* ConfigWidgetFactory::createLabel(const QString& text, QWidget* parent)
-{
+QLabel* ConfigWidgetFactory::createLabel(const QString& text, QWidget* parent) {
     QLabel* label = new QLabel(text, parent);
     if (m_darkTheme) {
         label->setStyleSheet("color: #e8f4f8; background-color: transparent;");
@@ -37,15 +32,13 @@ QLabel* ConfigWidgetFactory::createLabel(const QString& text, QWidget* parent)
     return label;
 }
 
-QLineEdit* ConfigWidgetFactory::createLineEdit(const QString& text, QWidget* parent)
-{
+QLineEdit* ConfigWidgetFactory::createLineEdit(const QString& text, QWidget* parent) {
     QLineEdit* edit = new QLineEdit(text, parent);
     applyStyle(edit);
     return edit;
 }
 
-QSpinBox* ConfigWidgetFactory::createSpinBox(int min, int max, int value, QWidget* parent)
-{
+QSpinBox* ConfigWidgetFactory::createSpinBox(int min, int max, int value, QWidget* parent) {
     QSpinBox* spin = new QSpinBox(parent);
     spin->setRange(min, max);
     spin->setValue(value);
@@ -53,8 +46,8 @@ QSpinBox* ConfigWidgetFactory::createSpinBox(int min, int max, int value, QWidge
     return spin;
 }
 
-QDoubleSpinBox* ConfigWidgetFactory::createDoubleSpinBox(double min, double max, double value, int decimals, QWidget* parent)
-{
+QDoubleSpinBox* ConfigWidgetFactory::createDoubleSpinBox(double min, double max, double value, int decimals,
+                                                         QWidget* parent) {
     QDoubleSpinBox* spin = new QDoubleSpinBox(parent);
     spin->setRange(min, max);
     spin->setValue(value);
@@ -63,15 +56,13 @@ QDoubleSpinBox* ConfigWidgetFactory::createDoubleSpinBox(double min, double max,
     return spin;
 }
 
-QComboBox* ConfigWidgetFactory::createComboBox(QWidget* parent)
-{
+QComboBox* ConfigWidgetFactory::createComboBox(QWidget* parent) {
     QComboBox* combo = new QComboBox(parent);
     applyStyle(combo);
     return combo;
 }
 
-QCheckBox* ConfigWidgetFactory::createCheckBox(const QString& text, bool checked, QWidget* parent)
-{
+QCheckBox* ConfigWidgetFactory::createCheckBox(const QString& text, bool checked, QWidget* parent) {
     QCheckBox* check = new QCheckBox(text, parent);
     check->setChecked(checked);
     if (m_darkTheme) {
@@ -82,8 +73,7 @@ QCheckBox* ConfigWidgetFactory::createCheckBox(const QString& text, bool checked
     return check;
 }
 
-void ConfigWidgetFactory::applyStyle(QWidget* widget)
-{
+void ConfigWidgetFactory::applyStyle(QWidget* widget) {
     if (m_darkTheme) {
         // 深色主题样式
         widget->setStyleSheet(R"(

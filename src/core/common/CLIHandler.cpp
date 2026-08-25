@@ -1,18 +1,18 @@
 #include "CLIHandler.h"
 
+#include "core/common/Logger.h"
+#include "core/device/CameraManager.h"
+#include "core/engine/RunEngine.h"
+#include "core/manager/PluginManager.h"
+#include "core/manager/ProjectManager.h"
+#include "core/model/Project.h"
+#include "core/platform/Platform.h"
+
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
 #include <QUuid>
-
-#include "core/manager/PluginManager.h"
-#include "core/manager/ProjectManager.h"
-#include "core/device/CameraManager.h"
-#include "core/model/Project.h"
-#include "core/platform/Platform.h"
-#include "core/common/Logger.h"
-#include "core/engine/RunEngine.h"
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -22,15 +22,19 @@ namespace DeepLux {
 
 // ============== 命令实现 ==============
 
-class VersionCommand : public ICommand
-{
+class VersionCommand : public ICommand {
 public:
-    QString name() const override { return "version"; }
-    QString description() const override { return "显示版本信息"; }
-    QString help() const override { return "deeplux version"; }
+    QString name() const override {
+        return "version";
+    }
+    QString description() const override {
+        return "显示版本信息";
+    }
+    QString help() const override {
+        return "deeplux version";
+    }
 
-    int execute(const QStringList& args, CommandContext& ctx) override
-    {
+    int execute(const QStringList& args, CommandContext& ctx) override {
         Q_UNUSED(args);
         Q_UNUSED(ctx);
         printf("DeepLux Vision %s\n", DEEPLUX_VERSION_STRING);
@@ -45,15 +49,19 @@ public:
     }
 };
 
-class HelpCommand : public ICommand
-{
+class HelpCommand : public ICommand {
 public:
-    QString name() const override { return "help"; }
-    QString description() const override { return "显示帮助信息"; }
-    QString help() const override { return "deeplux help [command]"; }
+    QString name() const override {
+        return "help";
+    }
+    QString description() const override {
+        return "显示帮助信息";
+    }
+    QString help() const override {
+        return "deeplux help [command]";
+    }
 
-    int execute(const QStringList& args, CommandContext& ctx) override
-    {
+    int execute(const QStringList& args, CommandContext& ctx) override {
         Q_UNUSED(ctx);
         CLIHandler& handler = CLIHandler::instance();
 
@@ -74,15 +82,19 @@ public:
     }
 };
 
-class InfoCommand : public ICommand
-{
+class InfoCommand : public ICommand {
 public:
-    QString name() const override { return "info"; }
-    QString description() const override { return "显示系统信息"; }
-    QString help() const override { return "deeplux info"; }
+    QString name() const override {
+        return "info";
+    }
+    QString description() const override {
+        return "显示系统信息";
+    }
+    QString help() const override {
+        return "deeplux info";
+    }
 
-    int execute(const QStringList& args, CommandContext& ctx) override
-    {
+    int execute(const QStringList& args, CommandContext& ctx) override {
         Q_UNUSED(args);
         Q_UNUSED(ctx);
 
@@ -102,15 +114,19 @@ public:
     }
 };
 
-class ListPluginsCommand : public ICommand
-{
+class ListPluginsCommand : public ICommand {
 public:
-    QString name() const override { return "list-plugins"; }
-    QString description() const override { return "列出所有已加载的插件"; }
-    QString help() const override { return "deeplux list-plugins"; }
+    QString name() const override {
+        return "list-plugins";
+    }
+    QString description() const override {
+        return "列出所有已加载的插件";
+    }
+    QString help() const override {
+        return "deeplux list-plugins";
+    }
 
-    int execute(const QStringList& args, CommandContext& ctx) override
-    {
+    int execute(const QStringList& args, CommandContext& ctx) override {
         Q_UNUSED(args);
         Q_UNUSED(ctx);
 
@@ -127,10 +143,7 @@ public:
         printf("=== Loaded Plugins (%d) ===\n", plugins.size());
         for (const auto& info : plugins) {
             QString status = info.loaded ? "OK" : "FAIL";
-            printf("[%s] %s v%s (%s)\n",
-                   qPrintable(status),
-                   qPrintable(info.name),
-                   qPrintable(info.version),
+            printf("[%s] %s v%s (%s)\n", qPrintable(status), qPrintable(info.name), qPrintable(info.version),
                    qPrintable(info.category));
         }
         printf("=========================\n");
@@ -138,15 +151,19 @@ public:
     }
 };
 
-class ConnectCameraCommand : public ICommand
-{
+class ConnectCameraCommand : public ICommand {
 public:
-    QString name() const override { return "connect-camera"; }
-    QString description() const override { return "连接相机"; }
-    QString help() const override { return "deeplux connect-camera <camera_id>"; }
+    QString name() const override {
+        return "connect-camera";
+    }
+    QString description() const override {
+        return "连接相机";
+    }
+    QString help() const override {
+        return "deeplux connect-camera <camera_id>";
+    }
 
-    int execute(const QStringList& args, CommandContext& ctx) override
-    {
+    int execute(const QStringList& args, CommandContext& ctx) override {
         Q_UNUSED(ctx);
         if (args.isEmpty()) {
             printf("用法: deeplux connect-camera <camera_id>\n");
@@ -166,15 +183,19 @@ public:
     }
 };
 
-class RunCommand : public ICommand
-{
+class RunCommand : public ICommand {
 public:
-    QString name() const override { return "run"; }
-    QString description() const override { return "运行工程或流程"; }
-    QString help() const override { return "deeplux run <project.dproj> [--flow <name>]"; }
+    QString name() const override {
+        return "run";
+    }
+    QString description() const override {
+        return "运行工程或流程";
+    }
+    QString help() const override {
+        return "deeplux run <project.dproj> [--flow <name>]";
+    }
 
-    int execute(const QStringList& args, CommandContext& ctx) override
-    {
+    int execute(const QStringList& args, CommandContext& ctx) override {
         if (args.isEmpty()) {
             ctx.setError("请指定要运行的工程文件");
             return 1;
@@ -212,8 +233,8 @@ public:
 
         RunEngine& engine = RunEngine::instance();
         QString loadError;
-        QMetaObject::Connection errorConn = QObject::connect(
-            &engine, &RunEngine::errorOccurred, &engine, [&loadError](const QString& error) { loadError = error; });
+        QMetaObject::Connection errorConn = QObject::connect(&engine, &RunEngine::errorOccurred, &engine,
+                                                             [&loadError](const QString& error) { loadError = error; });
 
         if (!engine.loadProject(project)) {
             QObject::disconnect(errorConn);
@@ -224,11 +245,11 @@ public:
 
         RunResult runResult;
         bool hasRunResult = false;
-        QMetaObject::Connection finishedConn =
-            QObject::connect(&engine, &RunEngine::runFinished, &engine, [&runResult, &hasRunResult](const RunResult& result) {
-                runResult = result;
-                hasRunResult = true;
-            });
+        QMetaObject::Connection finishedConn = QObject::connect(&engine, &RunEngine::runFinished, &engine,
+                                                                [&runResult, &hasRunResult](const RunResult& result) {
+                                                                    runResult = result;
+                                                                    hasRunResult = true;
+                                                                });
 
         printf("Running project: %s\n", qPrintable(project->name()));
         engine.runOnce();
@@ -250,15 +271,19 @@ public:
     }
 };
 
-class CreateProjectCommand : public ICommand
-{
+class CreateProjectCommand : public ICommand {
 public:
-    QString name() const override { return "create-project"; }
-    QString description() const override { return "创建新工程"; }
-    QString help() const override { return "deeplux create-project <name> [--path <dir>]"; }
+    QString name() const override {
+        return "create-project";
+    }
+    QString description() const override {
+        return "创建新工程";
+    }
+    QString help() const override {
+        return "deeplux create-project <name> [--path <dir>]";
+    }
 
-    int execute(const QStringList& args, CommandContext& ctx) override
-    {
+    int execute(const QStringList& args, CommandContext& ctx) override {
         if (args.isEmpty()) {
             ctx.setError("请指定工程名称");
             return 1;
@@ -300,15 +325,19 @@ public:
     }
 };
 
-class AddModuleCommand : public ICommand
-{
+class AddModuleCommand : public ICommand {
 public:
-    QString name() const override { return "add-module"; }
-    QString description() const override { return "添加模块到工程"; }
-    QString help() const override { return "deeplux add-module <project> <module_type> [--name <name>] [--pos <x,y>]"; }
+    QString name() const override {
+        return "add-module";
+    }
+    QString description() const override {
+        return "添加模块到工程";
+    }
+    QString help() const override {
+        return "deeplux add-module <project> <module_type> [--name <name>] [--pos <x,y>]";
+    }
 
-    int execute(const QStringList& args, CommandContext& ctx) override
-    {
+    int execute(const QStringList& args, CommandContext& ctx) override {
         if (args.size() < 2) {
             ctx.setError("用法: add-module <project> <module_type> [--name <name>] [--pos <x,y>]");
             return 1;
@@ -349,8 +378,7 @@ public:
         // 检查模块类型是否可用
         QStringList available = PluginManager::instance().availableModules();
         if (!available.contains(moduleType)) {
-            printf("Warning: module '%s' not in available modules, but will be added anyway\n",
-                   qPrintable(moduleType));
+            printf("Warning: module '%s' not in available modules, but will be added anyway\n", qPrintable(moduleType));
         }
 
         // 创建模块实例
@@ -376,15 +404,19 @@ public:
     }
 };
 
-class ConnectModulesCommand : public ICommand
-{
+class ConnectModulesCommand : public ICommand {
 public:
-    QString name() const override { return "connect"; }
-    QString description() const override { return "连接两个模块"; }
-    QString help() const override { return "deeplux connect <project> <from_id> <to_id>"; }
+    QString name() const override {
+        return "connect";
+    }
+    QString description() const override {
+        return "连接两个模块";
+    }
+    QString help() const override {
+        return "deeplux connect <project> <from_id> <to_id>";
+    }
 
-    int execute(const QStringList& args, CommandContext& ctx) override
-    {
+    int execute(const QStringList& args, CommandContext& ctx) override {
         if (args.size() < 3) {
             ctx.setError("用法: connect <project> <from_module_id> <to_module_id>");
             return 1;
@@ -440,15 +472,19 @@ public:
     }
 };
 
-class SaveProjectCommand : public ICommand
-{
+class SaveProjectCommand : public ICommand {
 public:
-    QString name() const override { return "save-project"; }
-    QString description() const override { return "保存工程"; }
-    QString help() const override { return "deeplux save-project <project> [--as <path>]"; }
+    QString name() const override {
+        return "save-project";
+    }
+    QString description() const override {
+        return "保存工程";
+    }
+    QString help() const override {
+        return "deeplux save-project <project> [--as <path>]";
+    }
 
-    int execute(const QStringList& args, CommandContext& ctx) override
-    {
+    int execute(const QStringList& args, CommandContext& ctx) override {
         if (args.isEmpty()) {
             ctx.setError("请指定要保存的工程");
             return 1;
@@ -499,15 +535,19 @@ public:
     }
 };
 
-class ListModulesCommand : public ICommand
-{
+class ListModulesCommand : public ICommand {
 public:
-    QString name() const override { return "list-modules"; }
-    QString description() const override { return "列出工程中的模块"; }
-    QString help() const override { return "deeplux list-modules <project>"; }
+    QString name() const override {
+        return "list-modules";
+    }
+    QString description() const override {
+        return "列出工程中的模块";
+    }
+    QString help() const override {
+        return "deeplux list-modules <project>";
+    }
 
-    int execute(const QStringList& args, CommandContext& ctx) override
-    {
+    int execute(const QStringList& args, CommandContext& ctx) override {
         if (args.isEmpty()) {
             ctx.setError("请指定工程文件");
             return 1;
@@ -536,10 +576,7 @@ public:
 
         printf("=== Modules in %s (%d) ===\n", qPrintable(project->name()), modules.size());
         for (const auto& mod : modules) {
-            printf("[%s] %s (%s) at (%d, %d)\n",
-                   qPrintable(mod.id),
-                   qPrintable(mod.name),
-                   qPrintable(mod.moduleId),
+            printf("[%s] %s (%s) at (%d, %d)\n", qPrintable(mod.id), qPrintable(mod.name), qPrintable(mod.moduleId),
                    mod.posX, mod.posY);
         }
 
@@ -555,15 +592,19 @@ public:
     }
 };
 
-class ListCommandsCommand : public ICommand
-{
+class ListCommandsCommand : public ICommand {
 public:
-    QString name() const override { return "list-commands"; }
-    QString description() const override { return "列出所有可用命令"; }
-    QString help() const override { return "deeplux list-commands"; }
+    QString name() const override {
+        return "list-commands";
+    }
+    QString description() const override {
+        return "列出所有可用命令";
+    }
+    QString help() const override {
+        return "deeplux list-commands";
+    }
 
-    int execute(const QStringList& args, CommandContext& ctx) override
-    {
+    int execute(const QStringList& args, CommandContext& ctx) override {
         Q_UNUSED(args);
         Q_UNUSED(ctx);
 
@@ -586,20 +627,16 @@ public:
 
 // ============== CLIHandler 实现 ==============
 
-CLIHandler::CLIHandler(QObject* parent)
-    : QObject(parent)
-{
+CLIHandler::CLIHandler(QObject* parent) : QObject(parent) {
     setupCommands();
 }
 
-CLIHandler& CLIHandler::instance()
-{
+CLIHandler& CLIHandler::instance() {
     static CLIHandler instance;
     return instance;
 }
 
-void CLIHandler::setupCommands()
-{
+void CLIHandler::setupCommands() {
     m_commands.append(new VersionCommand());
     m_commands.append(new HelpCommand());
     m_commands.append(new InfoCommand());
@@ -614,8 +651,7 @@ void CLIHandler::setupCommands()
     m_commands.append(new ListModulesCommand());
 }
 
-ICommand* CLIHandler::findCommand(const QString& name)
-{
+ICommand* CLIHandler::findCommand(const QString& name) {
     for (ICommand* cmd : m_commands) {
         if (cmd->name() == name) {
             return cmd;
@@ -624,8 +660,7 @@ ICommand* CLIHandler::findCommand(const QString& name)
     return nullptr;
 }
 
-bool CLIHandler::parse(const QStringList& args)
-{
+bool CLIHandler::parse(const QStringList& args) {
     if (args.size() < 2) {
         // 无参数，默认 GUI 模式
         m_cliOnly = false;
@@ -691,45 +726,42 @@ bool CLIHandler::parse(const QStringList& args)
     return true;
 }
 
-QString CLIHandler::helpText() const
-{
-    return QString(
-        "DeepLux Vision %1\n"
-        "\n"
-        "用法: deeplux [选项] [命令] [参数]\n"
-        "\n"
-        "选项:\n"
-        "  -c, --cli          纯 CLI 模式（无 GUI）\n"
-        "  -g, --gui          强制 GUI 模式\n"
-        "  -v, --verbose      详细输出\n"
-        "  -h, --help         显示帮助\n"
-        "  -V, --version      显示版本\n"
-        "\n"
-        "命令:\n"
-        "  help [command]         显示帮助\n"
-        "  version                显示版本信息\n"
-        "  info                   显示系统信息\n"
-        "  list-plugins          列出已加载插件\n"
-        "  list-commands         列出所有命令\n"
-        "  run <file>            运行工程\n"
-        "  create-project <name> 创建新工程\n"
-        "  add-module <proj> <type> [--name <n>] [--pos <x,y>]  添加模块\n"
-        "  connect <proj> <from> <to>  连接两个模块\n"
-        "  save-project <proj> [--as <path>]  保存工程\n"
-        "  list-modules <proj>    列出工程中的模块\n"
-        "\n"
-        "示例:\n"
-        "  deeplux --version\n"
-        "  deeplux list-plugins\n"
-        "  deeplux create-project MyProject\n"
-        "  deeplux add-module project.dproj GrabImage --name \"Grab1\" --pos 100,100\n"
-        "  deeplux list-modules project.dproj\n"
-        "  deeplux save-project project.dproj --as output.dproj\n"
-    ).arg(DEEPLUX_VERSION_STRING);
+QString CLIHandler::helpText() const {
+    return QString("DeepLux Vision %1\n"
+                   "\n"
+                   "用法: deeplux [选项] [命令] [参数]\n"
+                   "\n"
+                   "选项:\n"
+                   "  -c, --cli          纯 CLI 模式（无 GUI）\n"
+                   "  -g, --gui          强制 GUI 模式\n"
+                   "  -v, --verbose      详细输出\n"
+                   "  -h, --help         显示帮助\n"
+                   "  -V, --version      显示版本\n"
+                   "\n"
+                   "命令:\n"
+                   "  help [command]         显示帮助\n"
+                   "  version                显示版本信息\n"
+                   "  info                   显示系统信息\n"
+                   "  list-plugins          列出已加载插件\n"
+                   "  list-commands         列出所有命令\n"
+                   "  run <file>            运行工程\n"
+                   "  create-project <name> 创建新工程\n"
+                   "  add-module <proj> <type> [--name <n>] [--pos <x,y>]  添加模块\n"
+                   "  connect <proj> <from> <to>  连接两个模块\n"
+                   "  save-project <proj> [--as <path>]  保存工程\n"
+                   "  list-modules <proj>    列出工程中的模块\n"
+                   "\n"
+                   "示例:\n"
+                   "  deeplux --version\n"
+                   "  deeplux list-plugins\n"
+                   "  deeplux create-project MyProject\n"
+                   "  deeplux add-module project.dproj GrabImage --name \"Grab1\" --pos 100,100\n"
+                   "  deeplux list-modules project.dproj\n"
+                   "  deeplux save-project project.dproj --as output.dproj\n")
+        .arg(DEEPLUX_VERSION_STRING);
 }
 
-QString CLIHandler::versionText() const
-{
+QString CLIHandler::versionText() const {
     return QString("DeepLux Vision %1").arg(DEEPLUX_VERSION_STRING);
 }
 

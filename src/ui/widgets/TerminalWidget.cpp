@@ -1,33 +1,30 @@
 #include "TerminalWidget.h"
 
-#include "terminal/TerminalScreen.h"
-#include "terminal/TerminalRenderer.h"
-#include "terminal/AnsiParser.h"
 #include "process/BashProcess.h"
+#include "terminal/AnsiParser.h"
+#include "terminal/TerminalRenderer.h"
+#include "terminal/TerminalScreen.h"
 
 #include <QApplication>
-#include <QScrollBar>
-#include <QTimer>
-#include <QTime>
-#include <QTextDocument>
-#include <QTextBlock>
-#include <QTextCursor>
+#include <QClipboard>
 #include <QDebug>
 #include <QRegularExpression>
-#include <QClipboard>
+#include <QScrollBar>
+#include <QTextBlock>
+#include <QTextCursor>
+#include <QTextDocument>
+#include <QTime>
+#include <QTimer>
 
 namespace DeepLux {
 
-TerminalWidget::TerminalWidget(QWidget* parent)
-    : QWidget(parent)
-{
+TerminalWidget::TerminalWidget(QWidget* parent) : QWidget(parent) {
     setupUI();
 }
 
 TerminalWidget::~TerminalWidget() = default;
 
-void TerminalWidget::setupUI()
-{
+void TerminalWidget::setupUI() {
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(0);
@@ -36,9 +33,7 @@ void TerminalWidget::setupUI()
     m_screen = new TerminalScreen(24, 80);
     m_parser = new AnsiParser(m_screen, this);
     connect(m_parser, &AnsiParser::screenUpdated, this, &TerminalWidget::onScreenUpdated);
-    connect(m_parser, &AnsiParser::cliCommandReceived, this, [this](const QString& cmd) {
-        emit commandEntered(cmd);
-    });
+    connect(m_parser, &AnsiParser::cliCommandReceived, this, [this](const QString& cmd) { emit commandEntered(cmd); });
 
     // 渲染器
     m_renderer = new TerminalRenderer(m_screen, this);
@@ -63,45 +58,38 @@ void TerminalWidget::setupUI()
     setFocus();
 }
 
-void TerminalWidget::setThemeColors(const QColor& fg, const QColor& bg, const QColor& selectionBg)
-{
+void TerminalWidget::setThemeColors(const QColor& fg, const QColor& bg, const QColor& selectionBg) {
     if (m_renderer) {
         m_renderer->setThemeColors(fg, bg, selectionBg);
     }
 }
 
-void TerminalWidget::connectToBashProcess(BashProcess* bashProcess)
-{
-    if (!bashProcess) return;
+void TerminalWidget::connectToBashProcess(BashProcess* bashProcess) {
+    if (!bashProcess)
+        return;
     m_bashProcess = bashProcess;
 
-    connect(bashProcess, &BashProcess::outputReady,
-            this, &TerminalWidget::onBashOutput,
-            Qt::QueuedConnection);
+    connect(bashProcess, &BashProcess::outputReady, this, &TerminalWidget::onBashOutput, Qt::QueuedConnection);
 
-    connect(bashProcess, &BashProcess::errorReady,
-            this, &TerminalWidget::onBashError,
-            Qt::QueuedConnection);
+    connect(bashProcess, &BashProcess::errorReady, this, &TerminalWidget::onBashError, Qt::QueuedConnection);
 }
 
-void TerminalWidget::onBashOutput(const QByteArray& data)
-{
+void TerminalWidget::onBashOutput(const QByteArray& data) {
     if (m_parser) {
         m_parser->parse(data);
     }
 }
 
-void TerminalWidget::onBashError(const QByteArray& data)
-{
+void TerminalWidget::onBashError(const QByteArray& data) {
     if (m_parser) {
         // 错误输出也作为 ANSI 文本解析
         m_parser->parse(data);
     }
 }
 
-void TerminalWidget::onScreenUpdated()
-{
-    if (!m_renderer || !m_screen) return;
+void TerminalWidget::onScreenUpdated() {
+    if (!m_renderer || !m_screen)
+        return;
 
     // 使用精确重绘：只更新脏行，而不是整个屏幕
     if (m_screen->hasDirtyRows()) {
@@ -131,15 +119,13 @@ void TerminalWidget::onScreenUpdated()
     }
 }
 
-void TerminalWidget::onRendererSizeChanged(int cols, int rows)
-{
+void TerminalWidget::onRendererSizeChanged(int cols, int rows) {
     if (m_bashProcess) {
         m_bashProcess->resize(cols, rows);
     }
 }
 
-void TerminalWidget::onScrollBarValueChanged(int value)
-{
+void TerminalWidget::onScrollBarValueChanged(int value) {
     if (m_screen) {
         m_screen->setScrollOffset(value);
     }
@@ -148,22 +134,22 @@ void TerminalWidget::onScrollBarValueChanged(int value)
     }
 }
 
-void TerminalWidget::printCommand(const QString& cmd)
-{
-    if (!m_screen) return;
+void TerminalWidget::printCommand(const QString& cmd) {
+    if (!m_screen)
+        return;
     QString timestamp = QTime::currentTime().toString("hh:mm:ss");
     m_parser->writePlainText(QString("[%1] > %2\n").arg(timestamp, cmd));
 }
 
-void TerminalWidget::printOutput(const QString& text)
-{
-    if (!m_screen) return;
+void TerminalWidget::printOutput(const QString& text) {
+    if (!m_screen)
+        return;
     m_parser->writePlainText(text + "\n");
 }
 
-void TerminalWidget::printError(const QString& text)
-{
-    if (!m_screen || !m_parser) return;
+void TerminalWidget::printError(const QString& text) {
+    if (!m_screen || !m_parser)
+        return;
     // 使用红色输出
     m_screen->currentAttrs().fgType = ColorType::Basic;
     m_screen->currentAttrs().fgValue = 1; // red
@@ -171,42 +157,40 @@ void TerminalWidget::printError(const QString& text)
     m_screen->currentAttrs().reset();
 }
 
-void TerminalWidget::printInfo(const QString& text)
-{
-    if (!m_screen || !m_parser) return;
+void TerminalWidget::printInfo(const QString& text) {
+    if (!m_screen || !m_parser)
+        return;
     m_screen->currentAttrs().fgType = ColorType::Basic;
     m_screen->currentAttrs().fgValue = 4; // blue
     m_parser->writePlainText(text + "\n");
     m_screen->currentAttrs().reset();
 }
 
-void TerminalWidget::printSuccess(const QString& text)
-{
-    if (!m_screen || !m_parser) return;
+void TerminalWidget::printSuccess(const QString& text) {
+    if (!m_screen || !m_parser)
+        return;
     m_screen->currentAttrs().fgType = ColorType::Basic;
     m_screen->currentAttrs().fgValue = 2; // green
     m_parser->writePlainText(text + "\n");
     m_screen->currentAttrs().reset();
 }
 
-void TerminalWidget::printWarning(const QString& text)
-{
-    if (!m_screen || !m_parser) return;
+void TerminalWidget::printWarning(const QString& text) {
+    if (!m_screen || !m_parser)
+        return;
     m_screen->currentAttrs().fgType = ColorType::Basic;
     m_screen->currentAttrs().fgValue = 3; // yellow
     m_parser->writePlainText(text + "\n");
     m_screen->currentAttrs().reset();
 }
 
-void TerminalWidget::printRaw(const QString& text)
-{
+void TerminalWidget::printRaw(const QString& text) {
     if (m_parser) {
         m_parser->writePlainText(text);
     }
 }
 
-void TerminalWidget::clear()
-{
+void TerminalWidget::clear() {
     if (m_screen) {
         m_screen->clearScreen();
     }
@@ -215,25 +199,34 @@ void TerminalWidget::clear()
     }
 }
 
-void TerminalWidget::setAvailableCommands(const QStringList& commands)
-{
+void TerminalWidget::setAvailableCommands(const QStringList& commands) {
     m_availableCommands = commands;
 }
 
-void TerminalWidget::onLogMessage(const QString& message, int level)
-{
+void TerminalWidget::onLogMessage(const QString& message, int level) {
     switch (level) {
-    case 0: printOutput(message); break;
-    case 1: printInfo(message); break;
-    case 2: printWarning(message); break;
-    case 3: printError(message); break;
-    case 4: printSuccess(message); break;
-    default: printOutput(message); break;
+    case 0:
+        printOutput(message);
+        break;
+    case 1:
+        printInfo(message);
+        break;
+    case 2:
+        printWarning(message);
+        break;
+    case 3:
+        printError(message);
+        break;
+    case 4:
+        printSuccess(message);
+        break;
+    default:
+        printOutput(message);
+        break;
     }
 }
 
-void TerminalWidget::onCommandExecuted(const QString& command, int exitCode)
-{
+void TerminalWidget::onCommandExecuted(const QString& command, int exitCode) {
     if (exitCode == 0) {
         printSuccess(QString("命令 '%1' 执行成功").arg(command));
     } else {
@@ -241,13 +234,11 @@ void TerminalWidget::onCommandExecuted(const QString& command, int exitCode)
     }
 }
 
-void TerminalWidget::onModuleStarted(const QString& moduleName)
-{
+void TerminalWidget::onModuleStarted(const QString& moduleName) {
     printInfo(QString("模块 '%1' 开始执行").arg(moduleName));
 }
 
-void TerminalWidget::onModuleFinished(const QString& moduleName, bool success)
-{
+void TerminalWidget::onModuleFinished(const QString& moduleName, bool success) {
     if (success) {
         printSuccess(QString("模块 '%1' 执行完成").arg(moduleName));
     } else {
@@ -255,8 +246,7 @@ void TerminalWidget::onModuleFinished(const QString& moduleName, bool success)
     }
 }
 
-void TerminalWidget::keyPressEvent(QKeyEvent* event)
-{
+void TerminalWidget::keyPressEvent(QKeyEvent* event) {
     // 复制/粘贴快捷键（兼容 VSCode 终端行为）
     if (event->modifiers() & Qt::ControlModifier) {
         if (event->key() == Qt::Key_C) {
@@ -298,16 +288,15 @@ void TerminalWidget::keyPressEvent(QKeyEvent* event)
     event->accept();
 }
 
-bool TerminalWidget::focusNextPrevChild(bool next)
-{
+bool TerminalWidget::focusNextPrevChild(bool next) {
     Q_UNUSED(next)
     // 阻止 Qt 用 Tab/Shift+Tab 移动焦点，让 Tab 键发送到 PTY
     return false;
 }
 
-void TerminalWidget::sendKeyToPty(QKeyEvent* event)
-{
-    if (!m_bashProcess) return;
+void TerminalWidget::sendKeyToPty(QKeyEvent* event) {
+    if (!m_bashProcess)
+        return;
 
     Qt::KeyboardModifiers mods = event->modifiers();
     bool ctrl = mods & Qt::ControlModifier;
@@ -386,23 +375,23 @@ void TerminalWidget::sendKeyToPty(QKeyEvent* event)
             return;
         }
         if (key == Qt::Key_6) {
-            m_bashProcess->writeRaw("\x1e");  // Ctrl+^
+            m_bashProcess->writeRaw("\x1e"); // Ctrl+^
             return;
         }
         if (key == Qt::Key_Minus || key == Qt::Key_Underscore) {
-            m_bashProcess->writeRaw("\x1f");  // Ctrl+_
+            m_bashProcess->writeRaw("\x1f"); // Ctrl+_
             return;
         }
         if (key == Qt::Key_BracketLeft) {
-            m_bashProcess->writeRaw("\x1b");  // Ctrl+[
+            m_bashProcess->writeRaw("\x1b"); // Ctrl+[
             return;
         }
         if (key == Qt::Key_Backslash) {
-            m_bashProcess->writeRaw("\x1c");  // Ctrl+\
+            m_bashProcess->writeRaw("\x1c"); // Ctrl+\
             return;
         }
         if (key == Qt::Key_BracketRight) {
-            m_bashProcess->writeRaw("\x1d");  // Ctrl+]
+            m_bashProcess->writeRaw("\x1d"); // Ctrl+]
             return;
         }
     }
@@ -414,8 +403,7 @@ void TerminalWidget::sendKeyToPty(QKeyEvent* event)
     }
 }
 
-void TerminalWidget::sendTextToPty(const QString& text)
-{
+void TerminalWidget::sendTextToPty(const QString& text) {
     if (m_bashProcess) {
         m_bashProcess->writeRaw(text);
     }

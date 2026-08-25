@@ -1,11 +1,11 @@
 #ifndef DEEPLUX_ILLM_CLIENT_H
 #define DEEPLUX_ILLM_CLIENT_H
 
-#include <QObject>
-#include <QJsonObject>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QList>
 #include <QMetaType>
+#include <QObject>
 
 namespace DeepLux {
 
@@ -14,31 +14,28 @@ struct ToolDefinition;
 /**
  * @brief 图像附件
  */
-struct AgentImageAttachment
-{
-    QByteArray data;    // PNG/JPEG raw data
-    QString mimeType;   // "image/png", "image/jpeg"
+struct AgentImageAttachment {
+    QByteArray data;     // PNG/JPEG raw data
+    QString mimeType;    // "image/png", "image/jpeg"
     QString description; // optional description for non-vision models
 };
 
 /**
  * @brief 对话消息
  */
-struct AgentMessage
-{
-    QString role;       // "system", "user", "assistant", "tool"
+struct AgentMessage {
+    QString role; // "system", "user", "assistant", "tool"
     QString content;
-    QJsonArray toolCalls;    // for assistant messages with tool_calls (OpenAI array format)
-    QString toolCallId;      // for tool role messages
+    QJsonArray toolCalls;               // for assistant messages with tool_calls (OpenAI array format)
+    QString toolCallId;                 // for tool role messages
     QList<AgentImageAttachment> images; // for multimodal user messages
-    QString reasoningContent; // DeepSeek thinking mode: 必须原样传回
+    QString reasoningContent;           // DeepSeek thinking mode: 必须原样传回
 };
 
 /**
  * @brief 对话上下文
  */
-struct AgentConversation
-{
+struct AgentConversation {
     QList<AgentMessage> messages;
     QString systemPrompt;
 
@@ -48,13 +45,12 @@ struct AgentConversation
 /**
  * @brief LLM 响应
  */
-struct AgentResponse
-{
+struct AgentResponse {
     bool success = false;
     QString errorMessage;
-    QString content;            // 文本回复
-    QJsonArray toolCalls;       // tool_call 列表
-    QString reasoningContent;   // DeepSeek thinking mode 推理内容
+    QString content;          // 文本回复
+    QJsonArray toolCalls;     // tool_call 列表
+    QString reasoningContent; // DeepSeek thinking mode 推理内容
     int promptTokens = 0;
     int completionTokens = 0;
 };
@@ -66,8 +62,7 @@ struct AgentResponse
  * - 内部使用 QThread + QNetworkAccessManager 做异步 HTTP
  * - 结果通过信号槽回传到 GUI 线程
  */
-class ILLMClient : public QObject
-{
+class ILLMClient : public QObject {
     Q_OBJECT
 
 public:
@@ -83,8 +78,7 @@ public:
     virtual void setToolsEnabled(bool enabled) = 0;
 
     // 发送请求（异步）
-    virtual void sendRequest(const AgentConversation& ctx,
-                             const QList<ToolDefinition>& tools) = 0;
+    virtual void sendRequest(const AgentConversation& ctx, const QList<ToolDefinition>& tools) = 0;
 
 signals:
     void responseReceived(const AgentResponse& resp);

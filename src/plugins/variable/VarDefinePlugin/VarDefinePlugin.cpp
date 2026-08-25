@@ -1,35 +1,30 @@
 #include "VarDefinePlugin.h"
-#include "core/manager/GlobalVarManager.h"
-#include "core/common/VarModel.h"
+
 #include "core/common/Logger.h"
+#include "core/common/VarModel.h"
 #include "core/engine/RunEngine.h"
-#include <QVBoxLayout>
-#include <QLabel>
-#include <QLineEdit>
+#include "core/manager/GlobalVarManager.h"
+
 #include <QComboBox>
 #include <QFormLayout>
+#include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-VarDefinePlugin::VarDefinePlugin(QObject* parent)
-    : ModuleBase(parent)
-{
+VarDefinePlugin::VarDefinePlugin(QObject* parent) : ModuleBase(parent) {
     m_moduleId = "com.deeplux.plugin.vardefine";
     m_name = "变量定义";
     m_category = "variable";
     m_description = "在GlobalVarManager中创建新变量";
 
-    m_defaultParams = QJsonObject{
-        {"variableName", ""},
-        {"variableType", "double"},
-        {"initialValue", 0}
-    };
+    m_defaultParams = QJsonObject{{"variableName", ""}, {"variableType", "double"}, {"initialValue", 0}};
     m_params = m_defaultParams;
 }
 
-bool VarDefinePlugin::initialize()
-{
+bool VarDefinePlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -37,8 +32,7 @@ bool VarDefinePlugin::initialize()
     return true;
 }
 
-bool VarDefinePlugin::process(const ImageData& input, ImageData& output)
-{
+bool VarDefinePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     QJsonObject params = currentParams();
@@ -57,25 +51,25 @@ bool VarDefinePlugin::process(const ImageData& input, ImageData& output)
     // Coerce initial value to the correct type
     QVariant coercedValue = initValue;
     switch (dataType) {
-        case VarDataType::Int:
-        case VarDataType::Double: {
-            bool ok = false;
-            double num = initValue.toDouble(&ok);
-            if (dataType == VarDataType::Int) {
-                coercedValue = initValue.toInt(&ok);
-            } else {
-                coercedValue = ok ? num : 0.0;
-            }
-            break;
+    case VarDataType::Int:
+    case VarDataType::Double: {
+        bool ok = false;
+        double num = initValue.toDouble(&ok);
+        if (dataType == VarDataType::Int) {
+            coercedValue = initValue.toInt(&ok);
+        } else {
+            coercedValue = ok ? num : 0.0;
         }
-        case VarDataType::Bool:
-            coercedValue = initValue.toBool();
-            break;
-        case VarDataType::String:
-            coercedValue = initValue.toString();
-            break;
-        default:
-            break;
+        break;
+    }
+    case VarDataType::Bool:
+        coercedValue = initValue.toBool();
+        break;
+    case VarDataType::String:
+        coercedValue = initValue.toString();
+        break;
+    default:
+        break;
     }
 
     // Create or update variable in GlobalVarManager
@@ -89,14 +83,13 @@ bool VarDefinePlugin::process(const ImageData& input, ImageData& output)
     // Set to RunEngine output
     RunEngine::instance().setOutput(m_name, varName, coercedValue);
 
-    Logger::instance().info(QString("VarDefinePlugin: %1 (%2) = %3")
-        .arg(varName).arg(varType).arg(coercedValue.toString()), "Variable");
+    Logger::instance().info(
+        QString("VarDefinePlugin: %1 (%2) = %3").arg(varName).arg(varType).arg(coercedValue.toString()), "Variable");
 
     return true;
 }
 
-bool VarDefinePlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool VarDefinePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     // 阶段 2: variableName 允许暂时为空，由 process() 在运行时报告"未配置"
     QString varType = params["variableType"].toString("double");
     if (!QStringList{"int", "double", "string", "bool"}.contains(varType)) {
@@ -107,8 +100,7 @@ bool VarDefinePlugin::doValidateParams(const QJsonObject& params, QString& error
     return true;
 }
 
-QWidget* VarDefinePlugin::createConfigWidget()
-{
+QWidget* VarDefinePlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -123,7 +115,8 @@ QWidget* VarDefinePlugin::createConfigWidget()
 
     QString currentType = m_params["variableType"].toString("double");
     int typeIdx = typeCombo->findData(currentType);
-    if (typeIdx >= 0) typeCombo->setCurrentIndex(typeIdx);
+    if (typeIdx >= 0)
+        typeCombo->setCurrentIndex(typeIdx);
 
     QLineEdit* initEdit = new QLineEdit(m_params["initialValue"].toString());
 
@@ -134,13 +127,10 @@ QWidget* VarDefinePlugin::createConfigWidget()
     layout->addLayout(formLayout);
     layout->addStretch();
 
-    connect(nameEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("variableName", text);
-    });
+    connect(nameEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("variableName", text); });
 
-    connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int idx) {
-        setParam("variableType", typeCombo->itemData(idx).toString());
-    });
+    connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int idx) { setParam("variableType", typeCombo->itemData(idx).toString()); });
 
     connect(initEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
         QString varType = m_params["variableType"].toString("double");
@@ -158,8 +148,7 @@ QWidget* VarDefinePlugin::createConfigWidget()
     return widget;
 }
 
-IModule* VarDefinePlugin::cloneImpl() const
-{
+IModule* VarDefinePlugin::cloneImpl() const {
     return new VarDefinePlugin();
 }
 

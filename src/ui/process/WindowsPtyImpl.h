@@ -24,8 +24,7 @@ namespace DeepLux {
  * - 通过命名管道读写数据
  * - 使用 PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE 启动 shell 进程
  */
-class WindowsConPtyImpl : public PtyImpl
-{
+class WindowsConPtyImpl : public PtyImpl {
     Q_OBJECT
 
 public:
@@ -47,8 +46,8 @@ private:
     void cleanup();
 
     HPCON m_hPC = INVALID_HANDLE_VALUE;
-    HANDLE m_hPipeInWrite = INVALID_HANDLE_VALUE;   // 写入 ConPTY 输入
-    HANDLE m_hPipeOutRead = INVALID_HANDLE_VALUE;   // 读取 ConPTY 输出
+    HANDLE m_hPipeInWrite = INVALID_HANDLE_VALUE; // 写入 ConPTY 输入
+    HANDLE m_hPipeOutRead = INVALID_HANDLE_VALUE; // 读取 ConPTY 输出
     HANDLE m_processHandle = INVALID_HANDLE_VALUE;
     DWORD m_processId = 0;
 

@@ -1,8 +1,9 @@
 #ifndef DEEPLUX_AGENT_SETTINGS_DIALOG_H
 #define DEEPLUX_AGENT_SETTINGS_DIALOG_H
 
-#include <QDialog>
 #include "core/agent/AgentController.h"
+
+#include <QDialog>
 
 class QLineEdit;
 class QComboBox;
@@ -18,8 +19,7 @@ namespace DeepLux {
  *
  * 配置模型端点、API Key、温度、权限级别、系统提示词。
  */
-class AgentSettingsDialog : public QDialog
-{
+class AgentSettingsDialog : public QDialog {
     Q_OBJECT
 
 public:

@@ -1,23 +1,17 @@
 #include "PLCCommunicatePlugin.h"
+
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
+
 #include <QFormLayout>
 #include <QLineEdit>
 #include <QSpinBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
 PLCCommunicatePlugin::PLCCommunicatePlugin(QObject* parent)
-    : ModuleBase(parent)
-    , m_socket(new QTcpSocket(this))
-    , m_connectLoop(nullptr)
-    , m_readLoop(nullptr)
-{
-    m_defaultParams = QJsonObject{
-        {"ipAddress", "192.168.1.100"},
-        {"port", 502},
-        {"timeout", 3000}
-    };
+    : ModuleBase(parent), m_socket(new QTcpSocket(this)), m_connectLoop(nullptr), m_readLoop(nullptr) {
+    m_defaultParams = QJsonObject{{"ipAddress", "192.168.1.100"}, {"port", 502}, {"timeout", 3000}};
     m_params = m_defaultParams;
 
     connect(m_socket, &QTcpSocket::connected, this, &PLCCommunicatePlugin::onConnected);
@@ -26,13 +20,11 @@ PLCCommunicatePlugin::PLCCommunicatePlugin(QObject* parent)
     connect(m_socket, &QTcpSocket::readyRead, this, &PLCCommunicatePlugin::onReadyRead);
 }
 
-PLCCommunicatePlugin::~PLCCommunicatePlugin()
-{
+PLCCommunicatePlugin::~PLCCommunicatePlugin() {
     disconnectFromHost();
 }
 
-bool PLCCommunicatePlugin::initialize()
-{
+bool PLCCommunicatePlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -40,21 +32,18 @@ bool PLCCommunicatePlugin::initialize()
     return true;
 }
 
-void PLCCommunicatePlugin::onConnected()
-{
+void PLCCommunicatePlugin::onConnected() {
     Logger::instance().debug("PLCCommunicate: Connected to PLC", "Communication");
     if (m_connectLoop) {
         m_connectLoop->quit();
     }
 }
 
-void PLCCommunicatePlugin::onDisconnected()
-{
+void PLCCommunicatePlugin::onDisconnected() {
     Logger::instance().debug("PLCCommunicate: Disconnected from PLC", "Communication");
 }
 
-void PLCCommunicatePlugin::onError(QAbstractSocket::SocketError error)
-{
+void PLCCommunicatePlugin::onError(QAbstractSocket::SocketError error) {
     Q_UNUSED(error);
     emit errorOccurred(tr("PLC通信错误: %1").arg(m_socket->errorString()));
     if (m_connectLoop && m_connectLoop->isRunning()) {
@@ -65,16 +54,14 @@ void PLCCommunicatePlugin::onError(QAbstractSocket::SocketError error)
     }
 }
 
-void PLCCommunicatePlugin::onReadyRead()
-{
+void PLCCommunicatePlugin::onReadyRead() {
     m_readBuffer += m_socket->readAll();
     if (m_readLoop) {
         m_readLoop->quit();
     }
 }
 
-void PLCCommunicatePlugin::onConnectTimeout()
-{
+void PLCCommunicatePlugin::onConnectTimeout() {
     if (m_socket->state() != QAbstractSocket::ConnectedState) {
         m_socket->abort();
         emit errorOccurred(tr("连接PLC %1:%2 超时").arg(m_host).arg(m_port));
@@ -84,8 +71,7 @@ void PLCCommunicatePlugin::onConnectTimeout()
     }
 }
 
-void PLCCommunicatePlugin::onReadTimeout()
-{
+void PLCCommunicatePlugin::onReadTimeout() {
     m_readTimedOut = true;
     m_socket->disconnectFromHost();
     if (m_readLoop) {
@@ -93,8 +79,7 @@ void PLCCommunicatePlugin::onReadTimeout()
     }
 }
 
-bool PLCCommunicatePlugin::connectToHost()
-{
+bool PLCCommunicatePlugin::connectToHost() {
     if (m_socket->state() == QAbstractSocket::ConnectedState) {
         m_socket->disconnectFromHost();
         m_socket->waitForDisconnected(100);
@@ -120,17 +105,14 @@ bool PLCCommunicatePlugin::connectToHost()
     return true;
 }
 
-void PLCCommunicatePlugin::disconnectFromHost()
-{
-    if (m_socket->state() == QAbstractSocket::ConnectedState ||
-        m_socket->state() == QAbstractSocket::ConnectingState) {
+void PLCCommunicatePlugin::disconnectFromHost() {
+    if (m_socket->state() == QAbstractSocket::ConnectedState || m_socket->state() == QAbstractSocket::ConnectingState) {
         m_socket->abort();
     }
 }
 
-QByteArray PLCCommunicatePlugin::buildReadRequest(quint16 transactionId, quint8 unitId,
-                                                   quint16 startAddress, quint16 readCount)
-{
+QByteArray PLCCommunicatePlugin::buildReadRequest(quint16 transactionId, quint8 unitId, quint16 startAddress,
+                                                  quint16 readCount) {
     QByteArray request;
     QDataStream stream(&request, QIODevice::WriteOnly);
     stream.setByteOrder(QDataStream::BigEndian);
@@ -149,8 +131,7 @@ QByteArray PLCCommunicatePlugin::buildReadRequest(quint16 transactionId, quint8 
     return request;
 }
 
-bool PLCCommunicatePlugin::parseReadResponse(const QByteArray& data)
-{
+bool PLCCommunicatePlugin::parseReadResponse(const QByteArray& data) {
     if (data.size() < 9) {
         return false;
     }
@@ -158,8 +139,7 @@ bool PLCCommunicatePlugin::parseReadResponse(const QByteArray& data)
     return data.size() >= 9 + byteCount;
 }
 
-bool PLCCommunicatePlugin::process(const ImageData& input, ImageData& output)
-{
+bool PLCCommunicatePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     m_host = m_params["ipAddress"].toString();
@@ -207,8 +187,9 @@ bool PLCCommunicatePlugin::process(const ImageData& input, ImageData& output)
     output.setData("plc_response_time_ms", m_lastWaitMs);
 
     if (commOk) {
-        Logger::instance().info(QString("PLCCommunicate: Connection to %1:%2 successful (%3ms)")
-            .arg(m_host).arg(m_port).arg(m_lastWaitMs), "Communication");
+        Logger::instance().info(
+            QString("PLCCommunicate: Connection to %1:%2 successful (%3ms)").arg(m_host).arg(m_port).arg(m_lastWaitMs),
+            "Communication");
     } else {
         emit errorOccurred(tr("PLC通信测试失败"));
     }
@@ -216,8 +197,7 @@ bool PLCCommunicatePlugin::process(const ImageData& input, ImageData& output)
     return commOk;
 }
 
-bool PLCCommunicatePlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool PLCCommunicatePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     if (params["ipAddress"].toString().isEmpty()) {
         error = QString("IP地址不能为空");
         return false;
@@ -229,8 +209,7 @@ bool PLCCommunicatePlugin::doValidateParams(const QJsonObject& params, QString& 
     return true;
 }
 
-QWidget* PLCCommunicatePlugin::createConfigWidget()
-{
+QWidget* PLCCommunicatePlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -255,23 +234,17 @@ QWidget* PLCCommunicatePlugin::createConfigWidget()
     layout->addLayout(formLayout);
     layout->addStretch();
 
-    connect(ipEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        m_params["ipAddress"] = text;
-    });
+    connect(ipEdit, &QLineEdit::textChanged, this, [=](const QString& text) { m_params["ipAddress"] = text; });
 
-    connect(portSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["port"] = value;
-    });
+    connect(portSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) { m_params["port"] = value; });
 
-    connect(timeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int value) {
-        m_params["timeout"] = value;
-    });
+    connect(timeoutSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [=](int value) { m_params["timeout"] = value; });
 
     return widget;
 }
 
-IModule* PLCCommunicatePlugin::cloneImpl() const
-{
+IModule* PLCCommunicatePlugin::cloneImpl() const {
     return new PLCCommunicatePlugin();
 }
 

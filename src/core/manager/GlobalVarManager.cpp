@@ -1,32 +1,29 @@
 #include "GlobalVarManager.h"
+
 #include "common/Logger.h"
 
 namespace DeepLux {
 
 GlobalVarManager* GlobalVarManager::s_instance = nullptr;
 
-GlobalVarManager& GlobalVarManager::instance()
-{
+GlobalVarManager& GlobalVarManager::instance() {
     if (!s_instance) {
         s_instance = new GlobalVarManager();
     }
     return *s_instance;
 }
 
-GlobalVarManager::GlobalVarManager(QObject* parent)
-    : QObject(parent)
-{
+GlobalVarManager::GlobalVarManager(QObject* parent) : QObject(parent) {
     Logger::instance().info("Global variable manager initialized", "Var");
 }
 
-GlobalVarManager::~GlobalVarManager()
-{
+GlobalVarManager::~GlobalVarManager() {
     clearAllVariables();
 }
 
-void GlobalVarManager::addVariable(VarModel* var)
-{
-    if (!var) return;
+void GlobalVarManager::addVariable(VarModel* var) {
+    if (!var)
+        return;
 
     QMutexLocker locker(&m_mutex);
 
@@ -39,11 +36,11 @@ void GlobalVarManager::addVariable(VarModel* var)
 
     m_variables[name] = var;
     emit variableAdded(name);
-    Logger::instance().debug(QString("Variable added: %1 (%2)").arg(name).arg(VarModel::dataTypeToString(var->dataType())), "Var");
+    Logger::instance().debug(
+        QString("Variable added: %1 (%2)").arg(name).arg(VarModel::dataTypeToString(var->dataType())), "Var");
 }
 
-void GlobalVarManager::removeVariable(const QString& name)
-{
+void GlobalVarManager::removeVariable(const QString& name) {
     QMutexLocker locker(&m_mutex);
 
     if (m_variables.contains(name)) {
@@ -54,20 +51,17 @@ void GlobalVarManager::removeVariable(const QString& name)
     }
 }
 
-VarModel* GlobalVarManager::getVariable(const QString& name) const
-{
+VarModel* GlobalVarManager::getVariable(const QString& name) const {
     QMutexLocker locker(&m_mutex);
     return m_variables.value(name, nullptr);
 }
 
-QList<VarModel*> GlobalVarManager::getAllVariables() const
-{
+QList<VarModel*> GlobalVarManager::getAllVariables() const {
     QMutexLocker locker(&m_mutex);
     return m_variables.values();
 }
 
-void GlobalVarManager::clearAllVariables()
-{
+void GlobalVarManager::clearAllVariables() {
     QMutexLocker locker(&m_mutex);
 
     for (auto* var : m_variables) {
@@ -78,14 +72,12 @@ void GlobalVarManager::clearAllVariables()
     Logger::instance().debug("All variables cleared", "Var");
 }
 
-bool GlobalVarManager::hasVariable(const QString& name) const
-{
+bool GlobalVarManager::hasVariable(const QString& name) const {
     QMutexLocker locker(&m_mutex);
     return m_variables.contains(name);
 }
 
-QStringList GlobalVarManager::getVariableNames(VarDataType type) const
-{
+QStringList GlobalVarManager::getVariableNames(VarDataType type) const {
     QMutexLocker locker(&m_mutex);
     QStringList names;
 
@@ -101,14 +93,12 @@ QStringList GlobalVarManager::getVariableNames(VarDataType type) const
     return names;
 }
 
-QStringList GlobalVarManager::getVariableNamesByType(const QString& typeName) const
-{
+QStringList GlobalVarManager::getVariableNamesByType(const QString& typeName) const {
     VarDataType type = VarModel::stringToDataType(typeName);
     return getVariableNames(type);
 }
 
-bool GlobalVarManager::setVariableValue(const QString& name, const QVariant& value)
-{
+bool GlobalVarManager::setVariableValue(const QString& name, const QVariant& value) {
     QMutexLocker locker(&m_mutex);
 
     VarModel* var = m_variables.value(name, nullptr);
@@ -122,8 +112,7 @@ bool GlobalVarManager::setVariableValue(const QString& name, const QVariant& val
     return true;
 }
 
-QVariant GlobalVarManager::getVariableValue(const QString& name) const
-{
+QVariant GlobalVarManager::getVariableValue(const QString& name) const {
     QMutexLocker locker(&m_mutex);
 
     VarModel* var = m_variables.value(name, nullptr);
@@ -133,8 +122,7 @@ QVariant GlobalVarManager::getVariableValue(const QString& name) const
     return var->value();
 }
 
-bool GlobalVarManager::compileVariable(const QString& name, const QString& projectId, const QString& moduleName)
-{
+bool GlobalVarManager::compileVariable(const QString& name, const QString& projectId, const QString& moduleName) {
     QMutexLocker locker(&m_mutex);
 
     VarModel* var = m_variables.value(name, nullptr);
@@ -144,8 +132,7 @@ bool GlobalVarManager::compileVariable(const QString& name, const QString& proje
     return var->compileExpression(projectId, moduleName);
 }
 
-bool GlobalVarManager::evaluateVariable(const QString& name)
-{
+bool GlobalVarManager::evaluateVariable(const QString& name) {
     QMutexLocker locker(&m_mutex);
 
     VarModel* var = m_variables.value(name, nullptr);
@@ -158,14 +145,12 @@ bool GlobalVarManager::evaluateVariable(const QString& name)
     return true;
 }
 
-void GlobalVarManager::enqueue(const QString& queueName, const QVariant& value)
-{
+void GlobalVarManager::enqueue(const QString& queueName, const QVariant& value) {
     QMutexLocker locker(&m_mutex);
     m_queues[queueName].append(value);
 }
 
-QVariant GlobalVarManager::dequeue(const QString& queueName)
-{
+QVariant GlobalVarManager::dequeue(const QString& queueName) {
     QMutexLocker locker(&m_mutex);
     if (m_queues.contains(queueName) && !m_queues[queueName].isEmpty()) {
         return m_queues[queueName].takeFirst();
@@ -173,8 +158,7 @@ QVariant GlobalVarManager::dequeue(const QString& queueName)
     return QVariant();
 }
 
-QVariant GlobalVarManager::peekQueue(const QString& queueName) const
-{
+QVariant GlobalVarManager::peekQueue(const QString& queueName) const {
     QMutexLocker locker(&m_mutex);
     if (m_queues.contains(queueName) && !m_queues[queueName].isEmpty()) {
         return m_queues[queueName].first();
@@ -182,8 +166,7 @@ QVariant GlobalVarManager::peekQueue(const QString& queueName) const
     return QVariant();
 }
 
-int GlobalVarManager::queueSize(const QString& queueName) const
-{
+int GlobalVarManager::queueSize(const QString& queueName) const {
     QMutexLocker locker(&m_mutex);
     if (m_queues.contains(queueName)) {
         return m_queues[queueName].size();
@@ -191,16 +174,14 @@ int GlobalVarManager::queueSize(const QString& queueName) const
     return 0;
 }
 
-void GlobalVarManager::clearQueue(const QString& queueName)
-{
+void GlobalVarManager::clearQueue(const QString& queueName) {
     QMutexLocker locker(&m_mutex);
     if (m_queues.contains(queueName)) {
         m_queues[queueName].clear();
     }
 }
 
-QStringList GlobalVarManager::getQueueNames() const
-{
+QStringList GlobalVarManager::getQueueNames() const {
     QMutexLocker locker(&m_mutex);
     return m_queues.keys();
 }

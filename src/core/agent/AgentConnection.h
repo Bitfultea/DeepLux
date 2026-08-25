@@ -1,17 +1,16 @@
 #ifndef DEEPLUX_AGENT_CONNECTION_H
 #define DEEPLUX_AGENT_CONNECTION_H
 
-#include <QObject>
-#include <QLocalSocket>
 #include <QJsonObject>
+#include <QLocalSocket>
+#include <QObject>
 
 namespace DeepLux {
 
 /**
  * @brief Agent 连接类 - 封装与单个 Agent 的通信
  */
-class AgentConnection : public QObject
-{
+class AgentConnection : public QObject {
     Q_OBJECT
 
 public:
@@ -19,8 +18,12 @@ public:
     ~AgentConnection() override;
 
     void send(const QJsonObject& msg);
-    QString clientId() const { return m_clientId; }
-    bool isConnected() const { return m_socket && m_socket->state() == QLocalSocket::ConnectedState; }
+    QString clientId() const {
+        return m_clientId;
+    }
+    bool isConnected() const {
+        return m_socket && m_socket->state() == QLocalSocket::ConnectedState;
+    }
 
 signals:
     void messageReceived(const QString& clientId, const QJsonObject& msg);

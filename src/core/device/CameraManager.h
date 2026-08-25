@@ -1,12 +1,12 @@
 #pragma once
 
-#include <QObject>
-#include <QString>
+#include <QDateTime>
+#include <QJsonObject>
 #include <QList>
 #include <QMap>
-#include <QJsonObject>
-#include <QDateTime>
 #include <QMutex>
+#include <QObject>
+#include <QString>
 
 namespace DeepLux {
 
@@ -16,13 +16,7 @@ class ICameraPlugin;
 /**
  * @brief 相机状态
  */
-enum class CameraState {
-    Disconnected,
-    Connecting,
-    Connected,
-    Grabbing,
-    Error
-};
+enum class CameraState { Disconnected, Connecting, Connected, Grabbing, Error };
 
 /**
  * @brief 相机状态信息
@@ -40,8 +34,7 @@ struct CameraStatus {
  *
  * 管理所有相机插件和相机实例
  */
-class CameraManager : public QObject
-{
+class CameraManager : public QObject {
     Q_OBJECT
 
 public:
@@ -92,9 +85,9 @@ private:
 
     Q_DISABLE_COPY(CameraManager)
 
-    QMap<QString, ICameraPlugin*> m_plugins;       // pluginId -> plugin
-    QMap<QString, ICamera*> m_cameras;             // deviceId -> camera instance
-    QMap<QString, CameraStatus> m_cameraStatuses;  // deviceId -> status
+    QMap<QString, ICameraPlugin*> m_plugins;      // pluginId -> plugin
+    QMap<QString, ICamera*> m_cameras;            // deviceId -> camera instance
+    QMap<QString, CameraStatus> m_cameraStatuses; // deviceId -> status
     QMutex m_mutex;
 };
 

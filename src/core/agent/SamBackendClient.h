@@ -136,7 +136,7 @@ private:
     QPointer<QNetworkReply> m_pendingHealthReply;
     QPointer<QNetworkReply> m_pendingSetImageReply;
     QPointer<QNetworkReply> m_pendingPredictReply;
-    qint64 m_predictSeq = 0;     // Fix 4: 请求序号，忽略过期的推理结果
+    qint64 m_predictSeq = 0; // Fix 4: 请求序号，忽略过期的推理结果
     qint64 m_lastCompletedSeq = 0;
     QPointer<QNetworkReply> m_pendingUnloadReply;
 
@@ -145,7 +145,7 @@ private:
     QTimer m_timeoutTimer;
 
     State m_state = State::NotStarted;
-    QString m_serverUrl = QStringLiteral("http://127.0.0.1:0");  // 0 = auto-assign
+    QString m_serverUrl = QStringLiteral("http://127.0.0.1:0"); // 0 = auto-assign
     QString m_scriptPath;
     QString m_embeddingId;
     QString m_modelName;

@@ -1,26 +1,22 @@
 #include "DistancePLPlugin.h"
+
 #include "common/Logger.h"
 #include "core/geometry/MeasurementData.h"
-#include <QVBoxLayout>
+
 #include <QLabel>
+#include <QVBoxLayout>
 #include <cmath>
 
 namespace DeepLux {
 
-DistancePLPlugin::DistancePLPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-    };
+DistancePLPlugin::DistancePLPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{};
     m_params = m_defaultParams;
 }
 
-DistancePLPlugin::~DistancePLPlugin()
-{
-}
+DistancePLPlugin::~DistancePLPlugin() {}
 
-bool DistancePLPlugin::initialize()
-{
+bool DistancePLPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -28,13 +24,11 @@ bool DistancePLPlugin::initialize()
     return true;
 }
 
-void DistancePLPlugin::shutdown()
-{
+void DistancePLPlugin::shutdown() {
     ModuleBase::shutdown();
 }
 
-bool DistancePLPlugin::process(const ImageData& input, ImageData& output)
-{
+bool DistancePLPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     // 获取输入数据
@@ -65,9 +59,7 @@ bool DistancePLPlugin::process(const ImageData& input, ImageData& output)
     }
 
     // 计算点到直线的距离
-    m_resultDistance = calculateDistancePointToLine(point->x, point->y,
-                                                    line->p1.x, line->p1.y,
-                                                    line->p2.x, line->p2.y);
+    m_resultDistance = calculateDistancePointToLine(point->x, point->y, line->p1.x, line->p1.y, line->p2.x, line->p2.y);
 
     // 计算垂足点
     double dx = line->p2.x - line->p1.x;
@@ -89,18 +81,16 @@ bool DistancePLPlugin::process(const ImageData& input, ImageData& output)
     output.setData("foot_y", m_resultFootY);
 
     QString result = QString("点线距离: %1, 垂足: (%2, %3)")
-                        .arg(m_resultDistance, 0, 'f', 2)
-                        .arg(m_resultFootX, 0, 'f', 2)
-                        .arg(m_resultFootY, 0, 'f', 2);
+                         .arg(m_resultDistance, 0, 'f', 2)
+                         .arg(m_resultFootX, 0, 'f', 2)
+                         .arg(m_resultFootY, 0, 'f', 2);
     Logger::instance().debug(result, "DistancePL");
 
     return true;
 }
 
-double DistancePLPlugin::calculateDistancePointToLine(double pointX, double pointY,
-                                                      double lineX1, double lineY1,
-                                                      double lineX2, double lineY2)
-{
+double DistancePLPlugin::calculateDistancePointToLine(double pointX, double pointY, double lineX1, double lineY1,
+                                                      double lineX2, double lineY2) {
     // 点到线段的距离公式
     double dx = lineX2 - lineX1;
     double dy = lineY2 - lineY1;
@@ -108,8 +98,7 @@ double DistancePLPlugin::calculateDistancePointToLine(double pointX, double poin
 
     if (lineLengthSq < 1e-10) {
         // 线段是一个点
-        return sqrt((pointX - lineX1) * (pointX - lineX1) +
-                     (pointY - lineY1) * (pointY - lineY1));
+        return sqrt((pointX - lineX1) * (pointX - lineX1) + (pointY - lineY1) * (pointY - lineY1));
     }
 
     // 计算投影参数 t
@@ -119,28 +108,23 @@ double DistancePLPlugin::calculateDistancePointToLine(double pointX, double poin
     if (t >= 0 && t <= 1) {
         double footX = lineX1 + t * dx;
         double footY = lineY1 + t * dy;
-        return sqrt((pointX - footX) * (pointX - footX) +
-                     (pointY - footY) * (pointY - footY));
+        return sqrt((pointX - footX) * (pointX - footX) + (pointY - footY) * (pointY - footY));
     }
 
     // 垂足不在线段上，返回到最近端点的距离
-    double distToStart = sqrt((pointX - lineX1) * (pointX - lineX1) +
-                              (pointY - lineY1) * (pointY - lineY1));
-    double distToEnd = sqrt((pointX - lineX2) * (pointX - lineX2) +
-                           (pointY - lineY2) * (pointY - lineY2));
+    double distToStart = sqrt((pointX - lineX1) * (pointX - lineX1) + (pointY - lineY1) * (pointY - lineY1));
+    double distToEnd = sqrt((pointX - lineX2) * (pointX - lineX2) + (pointY - lineY2) * (pointY - lineY2));
 
     return qMin(distToStart, distToEnd);
 }
 
-bool DistancePLPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool DistancePLPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     Q_UNUSED(params);
     error.clear();
     return true;
 }
 
-QWidget* DistancePLPlugin::createConfigWidget()
-{
+QWidget* DistancePLPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
     layout->addWidget(new QLabel(tr("计算点到直线的距离")));
@@ -148,8 +132,7 @@ QWidget* DistancePLPlugin::createConfigWidget()
     return widget;
 }
 
-IModule* DistancePLPlugin::cloneImpl() const
-{
+IModule* DistancePLPlugin::cloneImpl() const {
     DistancePLPlugin* clone = new DistancePLPlugin();
     return clone;
 }

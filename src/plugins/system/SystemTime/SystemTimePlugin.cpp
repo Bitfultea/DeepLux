@@ -1,26 +1,21 @@
 #include "SystemTimePlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
+
 #include <QLabel>
 #include <QLineEdit>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-SystemTimePlugin::SystemTimePlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"timeFormat", "yyyy-MM-dd HH:mm:ss"}
-    };
+SystemTimePlugin::SystemTimePlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"timeFormat", "yyyy-MM-dd HH:mm:ss"}};
     m_params = m_defaultParams;
 }
 
-SystemTimePlugin::~SystemTimePlugin()
-{
-}
+SystemTimePlugin::~SystemTimePlugin() {}
 
-bool SystemTimePlugin::initialize()
-{
+bool SystemTimePlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -28,13 +23,11 @@ bool SystemTimePlugin::initialize()
     return true;
 }
 
-void SystemTimePlugin::shutdown()
-{
+void SystemTimePlugin::shutdown() {
     ModuleBase::shutdown();
 }
 
-bool SystemTimePlugin::process(const ImageData& input, ImageData& output)
-{
+bool SystemTimePlugin::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(input);
     output = input;
 
@@ -59,8 +52,7 @@ bool SystemTimePlugin::process(const ImageData& input, ImageData& output)
     return true;
 }
 
-bool SystemTimePlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool SystemTimePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     error.clear();
 
     if (params["timeFormat"].toString().trimmed().isEmpty()) {
@@ -71,8 +63,7 @@ bool SystemTimePlugin::doValidateParams(const QJsonObject& params, QString& erro
     return true;
 }
 
-QWidget* SystemTimePlugin::createConfigWidget()
-{
+QWidget* SystemTimePlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -83,15 +74,12 @@ QWidget* SystemTimePlugin::createConfigWidget()
     layout->addWidget(new QLabel(tr("格式示例: yyyy-MM-dd HH:mm:ss")));
     layout->addStretch();
 
-    connect(formatEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
-        setParam("timeFormat", text);
-    });
+    connect(formatEdit, &QLineEdit::textChanged, this, [this](const QString& text) { setParam("timeFormat", text); });
 
     return widget;
 }
 
-IModule* SystemTimePlugin::cloneImpl() const
-{
+IModule* SystemTimePlugin::cloneImpl() const {
     SystemTimePlugin* clone = new SystemTimePlugin();
     clone->setParams(currentParams());
     return clone;

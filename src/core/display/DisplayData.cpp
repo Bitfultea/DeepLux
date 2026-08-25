@@ -1,4 +1,5 @@
 #include "DisplayData.h"
+
 #include "../model/ImageData.h"
 
 namespace DeepLux {

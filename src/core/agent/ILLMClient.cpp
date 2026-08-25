@@ -2,8 +2,7 @@
 
 namespace DeepLux {
 
-QJsonArray AgentConversation::toOpenAIMessages() const
-{
+QJsonArray AgentConversation::toOpenAIMessages() const {
     QJsonArray arr;
 
     if (!systemPrompt.isEmpty()) {
@@ -30,9 +29,8 @@ QJsonArray AgentConversation::toOpenAIMessages() const
                 QJsonObject imageObj;
                 imageObj["type"] = "image_url";
                 QString base64 = img.data.toBase64();
-                imageObj["image_url"] = QJsonObject{
-                    {"url", QString("data:%1;base64,%2").arg(img.mimeType).arg(base64)}
-                };
+                imageObj["image_url"] =
+                    QJsonObject{{"url", QString("data:%1;base64,%2").arg(img.mimeType).arg(base64)}};
                 contentArray.append(imageObj);
             }
             obj["content"] = contentArray;
@@ -41,7 +39,7 @@ QJsonArray AgentConversation::toOpenAIMessages() const
         }
 
         if (msg.role == "assistant" && !msg.toolCalls.isEmpty()) {
-            obj["tool_calls"] = msg.toolCalls;  // QJsonArray, direct OpenAI format
+            obj["tool_calls"] = msg.toolCalls; // QJsonArray, direct OpenAI format
         }
         // DeepSeek thinking mode: reasoning_content 必须原样传回
         if (msg.role == "assistant" && !msg.reasoningContent.isNull()) {

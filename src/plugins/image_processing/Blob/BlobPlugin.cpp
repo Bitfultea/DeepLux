@@ -1,10 +1,12 @@
 #include "BlobPlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QLabel>
-#include <QDoubleSpinBox>
+
 #include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QLabel>
 #include <QSpinBox>
+#include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -12,27 +14,16 @@
 
 namespace DeepLux {
 
-BlobPlugin::BlobPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"minArea", 10.0},
-        {"maxArea", 10000.0},
-        {"minCircularity", 0.5},
-        {"thresholdType", "Otsu"},
-        {"fixedThreshold", 127},
-        {"adaptiveBlockSize", 11},
-        {"adaptiveC", 2}
-    };
+BlobPlugin::BlobPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"minArea", 10.0},         {"maxArea", 10000.0},    {"minCircularity", 0.5},
+                                  {"thresholdType", "Otsu"}, {"fixedThreshold", 127}, {"adaptiveBlockSize", 11},
+                                  {"adaptiveC", 2}};
     m_params = m_defaultParams;
 }
 
-BlobPlugin::~BlobPlugin()
-{
-}
+BlobPlugin::~BlobPlugin() {}
 
-bool BlobPlugin::initialize()
-{
+bool BlobPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -40,8 +31,7 @@ bool BlobPlugin::initialize()
     return true;
 }
 
-void BlobPlugin::shutdown()
-{
+void BlobPlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     m_gray.release();
     m_mask.release();
@@ -49,8 +39,7 @@ void BlobPlugin::shutdown()
     ModuleBase::shutdown();
 }
 
-bool BlobPlugin::process(const ImageData& input, ImageData& output)
-{
+bool BlobPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -105,11 +94,11 @@ bool BlobPlugin::process(const ImageData& input, ImageData& output)
     output.setData("blob_circularity", maxBlob.circularity);
 
     QString result = QString("Blob: 数量=%1, 最大: 中心(%2,%3), 面积=%4, 圆度=%5")
-                        .arg(m_blobCount)
-                        .arg(maxBlob.centerX, 0, 'f', 1)
-                        .arg(maxBlob.centerY, 0, 'f', 1)
-                        .arg(maxBlob.area, 0, 'f', 1)
-                        .arg(maxBlob.circularity, 0, 'f', 2);
+                         .arg(m_blobCount)
+                         .arg(maxBlob.centerX, 0, 'f', 1)
+                         .arg(maxBlob.centerY, 0, 'f', 1)
+                         .arg(maxBlob.area, 0, 'f', 1)
+                         .arg(maxBlob.circularity, 0, 'f', 2);
     Logger::instance().debug(result, "Blob");
 
     return true;
@@ -120,8 +109,7 @@ bool BlobPlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-std::vector<BlobPlugin::BlobResult> BlobPlugin::detectBlobs(const cv::Mat& gray, const cv::Mat& mask)
-{
+std::vector<BlobPlugin::BlobResult> BlobPlugin::detectBlobs(const cv::Mat& gray, const cv::Mat& mask) {
     Q_UNUSED(gray);
     std::vector<BlobResult> results;
 
@@ -138,7 +126,8 @@ std::vector<BlobPlugin::BlobResult> BlobPlugin::detectBlobs(const cv::Mat& gray,
     for (const auto& contour : contours) {
         double area = cv::contourArea(contour);
 
-        if (area < minArea || area > maxArea) continue;
+        if (area < minArea || area > maxArea)
+            continue;
 
         // 计算周长
         double perimeter = cv::arcLength(contour, true);
@@ -149,7 +138,8 @@ std::vector<BlobPlugin::BlobResult> BlobPlugin::detectBlobs(const cv::Mat& gray,
             circularity = 4 * CV_PI * area / (perimeter * perimeter);
         }
 
-        if (circularity < minCircularity) continue;
+        if (circularity < minCircularity)
+            continue;
 
         // 计算中心
         cv::Moments moments = cv::moments(contour);
@@ -170,8 +160,7 @@ std::vector<BlobPlugin::BlobResult> BlobPlugin::detectBlobs(const cv::Mat& gray,
     return results;
 }
 
-void BlobPlugin::applyThreshold(const cv::Mat& gray, cv::Mat& mask)
-{
+void BlobPlugin::applyThreshold(const cv::Mat& gray, cv::Mat& mask) {
 #ifdef DEEPLUX_HAS_OPENCV
     // 获取阈值参数
     QJsonObject params = currentParams();
@@ -181,13 +170,14 @@ void BlobPlugin::applyThreshold(const cv::Mat& gray, cv::Mat& mask)
     m_adaptiveC = params["adaptiveC"].toInt(2);
 
     // 确保block size是奇数
-    if (m_adaptiveBlockSize % 2 == 0) m_adaptiveBlockSize++;
+    if (m_adaptiveBlockSize % 2 == 0)
+        m_adaptiveBlockSize++;
 
     if (typeStr == "Fixed") {
         cv::threshold(gray, mask, m_fixedThreshold, 255, cv::THRESH_BINARY);
     } else if (typeStr == "Adaptive") {
-        cv::adaptiveThreshold(gray, mask, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C,
-                            cv::THRESH_BINARY, m_adaptiveBlockSize, m_adaptiveC);
+        cv::adaptiveThreshold(gray, mask, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY, m_adaptiveBlockSize,
+                              m_adaptiveC);
     } else { // Otsu
         cv::threshold(gray, mask, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
     }
@@ -197,8 +187,7 @@ void BlobPlugin::applyThreshold(const cv::Mat& gray, cv::Mat& mask)
 #endif
 }
 
-bool BlobPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool BlobPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     double minArea = params["minArea"].toDouble();
     double maxArea = params["maxArea"].toDouble();
 
@@ -215,8 +204,7 @@ bool BlobPlugin::doValidateParams(const QJsonObject& params, QString& error) con
     return true;
 }
 
-QWidget* BlobPlugin::createConfigWidget()
-{
+QWidget* BlobPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -227,7 +215,8 @@ QWidget* BlobPlugin::createConfigWidget()
     threshTypeCombo->addItem("自适应阈值", "Adaptive");
     QString currentType = m_params["thresholdType"].toString("Otsu");
     int idx = threshTypeCombo->findData(currentType);
-    if (idx >= 0) threshTypeCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        threshTypeCombo->setCurrentIndex(idx);
     layout->addWidget(threshTypeCombo);
 
     layout->addWidget(new QLabel(tr("固定阈值:")));
@@ -272,32 +261,31 @@ QWidget* BlobPlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(threshTypeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, threshTypeCombo](int) { setParam("thresholdType", threshTypeCombo->currentData().toString()); });
+    connect(threshTypeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this, threshTypeCombo](int) { setParam("thresholdType", threshTypeCombo->currentData().toString()); });
 
-    connect(fixedThreshSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-            this, [this](int value) { setParam("fixedThreshold", value); });
+    connect(fixedThreshSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int value) { setParam("fixedThreshold", value); });
 
-    connect(blockSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-            this, [this](int value) { setParam("adaptiveBlockSize", value); });
+    connect(blockSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int value) { setParam("adaptiveBlockSize", value); });
 
-    connect(adaptiveCSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-            this, [this](int value) { setParam("adaptiveC", value); });
+    connect(adaptiveCSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int value) { setParam("adaptiveC", value); });
 
-    connect(minAreaSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { setParam("minArea", value); });
+    connect(minAreaSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("minArea", value); });
 
-    connect(maxAreaSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { setParam("maxArea", value); });
+    connect(maxAreaSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("maxArea", value); });
 
-    connect(circSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { setParam("minCircularity", value); });
+    connect(circSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("minCircularity", value); });
 
     return widget;
 }
 
-IModule* BlobPlugin::cloneImpl() const
-{
+IModule* BlobPlugin::cloneImpl() const {
     BlobPlugin* clone = new BlobPlugin();
     clone->setParams(currentParams());
     return clone;

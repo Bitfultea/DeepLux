@@ -1,16 +1,16 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
+#include <QMap>
 #include <QObject>
-#include <QVariant>
 #include <QString>
 #include <QStringList>
-#include <QMap>
-#include "../platform/Platform.h"
+#include <QVariant>
 
 namespace DeepLux {
 
-class ExpressionEngine : public QObject
-{
+class ExpressionEngine : public QObject {
     Q_OBJECT
 
 public:
@@ -19,7 +19,9 @@ public:
     bool compile(const QString& expression, const QString& context = QString());
     bool evaluate();
     QVariant result() const;
-    QString errorMessage() const { return m_errorMessage; }
+    QString errorMessage() const {
+        return m_errorMessage;
+    }
 
     static QVariant evaluateExpression(const QString& expression,
                                        const QMap<QString, QVariant>& variables = QMap<QString, QVariant>());

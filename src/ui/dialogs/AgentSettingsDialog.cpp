@@ -132,7 +132,7 @@ void AgentSettingsDialog::setupUi() {
         QNetworkRequest req(url);
         req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
         req.setRawHeader("Authorization", ("Bearer " + apiKey).toUtf8());
-        req.setTransferTimeout(15000);  // 15 秒超时
+        req.setTransferTimeout(15000); // 15 秒超时
 
         QJsonObject body;
         body["model"] = model;
@@ -162,16 +162,15 @@ void AgentSettingsDialog::setupUi() {
                 QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
                 QJsonObject obj = doc.object();
                 QString modelReply = obj.value("model").toString();
-                QMessageBox::information(this, tr("测试连接"),
+                QMessageBox::information(
+                    this, tr("测试连接"),
                     tr("连接成功！\n模型: %1").arg(modelReply.isEmpty() ? tr("已响应") : modelReply));
             } else {
                 int httpCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
                 QString errBody = QString::fromUtf8(reply->readAll()).left(200);
-                QMessageBox::warning(this, tr("测试连接"),
-                    tr("连接失败 (HTTP %1):\n%2\n%3")
-                        .arg(httpCode)
-                        .arg(reply->errorString())
-                        .arg(errBody));
+                QMessageBox::warning(
+                    this, tr("测试连接"),
+                    tr("连接失败 (HTTP %1):\n%2\n%3").arg(httpCode).arg(reply->errorString()).arg(errBody));
             }
             reply->deleteLater();
             nam->deleteLater();

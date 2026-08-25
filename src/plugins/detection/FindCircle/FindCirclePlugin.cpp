@@ -1,9 +1,11 @@
 #include "FindCirclePlugin.h"
+
 #include "common/Logger.h"
 #include "core/display/DisplayData.h"
-#include <QVBoxLayout>
-#include <QLabel>
+
 #include <QDoubleSpinBox>
+#include <QLabel>
+#include <QVBoxLayout>
 #include <cmath>
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -12,24 +14,14 @@
 
 namespace DeepLux {
 
-FindCirclePlugin::FindCirclePlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"minRadius", 10.0},
-        {"maxRadius", 500.0},
-        {"param1", 50.0},
-        {"param2", 30.0}
-    };
+FindCirclePlugin::FindCirclePlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"minRadius", 10.0}, {"maxRadius", 500.0}, {"param1", 50.0}, {"param2", 30.0}};
     m_params = m_defaultParams;
 }
 
-FindCirclePlugin::~FindCirclePlugin()
-{
-}
+FindCirclePlugin::~FindCirclePlugin() {}
 
-bool FindCirclePlugin::initialize()
-{
+bool FindCirclePlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -37,16 +29,14 @@ bool FindCirclePlugin::initialize()
     return true;
 }
 
-void FindCirclePlugin::shutdown()
-{
+void FindCirclePlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     m_gray.release();
 #endif
     ModuleBase::shutdown();
 }
 
-bool FindCirclePlugin::process(const ImageData& input, ImageData& output)
-{
+bool FindCirclePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -116,10 +106,8 @@ bool FindCirclePlugin::process(const ImageData& input, ImageData& output)
     circle.score = m_resultScore;
     output.setData("circle", QVariant::fromValue(circle));
 
-    QString result = QString("圆: 中心(%1, %2), 半径=%3")
-                        .arg(centerX, 0, 'f', 1)
-                        .arg(centerY, 0, 'f', 1)
-                        .arg(radius, 0, 'f', 1);
+    QString result =
+        QString("圆: 中心(%1, %2), 半径=%3").arg(centerX, 0, 'f', 1).arg(centerY, 0, 'f', 1).arg(radius, 0, 'f', 1);
     Logger::instance().debug(result, "FindCircle");
 
     return true;
@@ -130,18 +118,17 @@ bool FindCirclePlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-bool FindCirclePlugin::findCircleHough(const cv::Mat& gray, double& centerX, double& centerY, double& radius)
-{
+bool FindCirclePlugin::findCircleHough(const cv::Mat& gray, double& centerX, double& centerY, double& radius) {
 #ifdef DEEPLUX_HAS_OPENCV
     std::vector<cv::Vec3f> circles;
 
     // Hough圆变换
     cv::HoughCircles(gray, circles, cv::HOUGH_GRADIENT, 1,
-                      gray.rows / 8,  // 圆心之间的最小距离
-                      m_param1,       // Canny高阈值
-                      m_param2,       // 累加器阈值
-                      static_cast<int>(m_minRadius),  // 最小半径
-                      static_cast<int>(m_maxRadius)); // 最大半径
+                     gray.rows / 8,                  // 圆心之间的最小距离
+                     m_param1,                       // Canny高阈值
+                     m_param2,                       // 累加器阈值
+                     static_cast<int>(m_minRadius),  // 最小半径
+                     static_cast<int>(m_maxRadius)); // 最大半径
 
     if (circles.empty()) {
         return false;
@@ -163,8 +150,7 @@ bool FindCirclePlugin::findCircleHough(const cv::Mat& gray, double& centerX, dou
 #endif
 }
 
-bool FindCirclePlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool FindCirclePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     double minR = params["minRadius"].toDouble();
     double maxR = params["maxRadius"].toDouble();
 
@@ -181,8 +167,7 @@ bool FindCirclePlugin::doValidateParams(const QJsonObject& params, QString& erro
     return true;
 }
 
-QWidget* FindCirclePlugin::createConfigWidget()
-{
+QWidget* FindCirclePlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -216,23 +201,22 @@ QWidget* FindCirclePlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(minRadiusSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { setParam("minRadius", value); });
+    connect(minRadiusSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("minRadius", value); });
 
-    connect(maxRadiusSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { setParam("maxRadius", value); });
+    connect(maxRadiusSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("maxRadius", value); });
 
-    connect(param1Spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { setParam("param1", value); });
+    connect(param1Spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("param1", value); });
 
-    connect(param2Spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double value) { setParam("param2", value); });
+    connect(param2Spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { setParam("param2", value); });
 
     return widget;
 }
 
-IModule* FindCirclePlugin::cloneImpl() const
-{
+IModule* FindCirclePlugin::cloneImpl() const {
     FindCirclePlugin* clone = new FindCirclePlugin();
     return clone;
 }

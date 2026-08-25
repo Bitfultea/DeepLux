@@ -1,24 +1,20 @@
 #include "QueueInPlugin.h"
+
 #include "core/common/Logger.h"
 #include "core/manager/GlobalVarManager.h"
-#include <QVBoxLayout>
+
 #include <QFormLayout>
 #include <QLineEdit>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-QueueInPlugin::QueueInPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"queueName", "defaultQueue"},
-        {"dataVariable", ""}
-    };
+QueueInPlugin::QueueInPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"queueName", "defaultQueue"}, {"dataVariable", ""}};
     m_params = m_defaultParams;
 }
 
-bool QueueInPlugin::initialize()
-{
+bool QueueInPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -26,8 +22,7 @@ bool QueueInPlugin::initialize()
     return true;
 }
 
-bool QueueInPlugin::process(const ImageData& input, ImageData& output)
-{
+bool QueueInPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     QJsonObject params = currentParams();
@@ -56,14 +51,13 @@ bool QueueInPlugin::process(const ImageData& input, ImageData& output)
     int queueSize = GlobalVarManager::instance().queueSize(m_queueName);
     output.setData(QString("queue_%1_size").arg(m_queueName), queueSize);
 
-    Logger::instance().info(QString("QueueIn: Added item to queue '%1', size now %2")
-        .arg(m_queueName).arg(queueSize), "Logic");
+    Logger::instance().info(QString("QueueIn: Added item to queue '%1', size now %2").arg(m_queueName).arg(queueSize),
+                            "Logic");
 
     return true;
 }
 
-bool QueueInPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool QueueInPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     if (params["queueName"].toString().isEmpty()) {
         error = QString("Queue name cannot be empty");
         return false;
@@ -71,8 +65,7 @@ bool QueueInPlugin::doValidateParams(const QJsonObject& params, QString& error) 
     return true;
 }
 
-QWidget* QueueInPlugin::createConfigWidget()
-{
+QWidget* QueueInPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -87,19 +80,14 @@ QWidget* QueueInPlugin::createConfigWidget()
     layout->addLayout(formLayout);
     layout->addStretch();
 
-    connect(queueNameEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("queueName", text);
-    });
+    connect(queueNameEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("queueName", text); });
 
-    connect(dataVarEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("dataVariable", text);
-    });
+    connect(dataVarEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("dataVariable", text); });
 
     return widget;
 }
 
-IModule* QueueInPlugin::cloneImpl() const
-{
+IModule* QueueInPlugin::cloneImpl() const {
     return new QueueInPlugin();
 }
 

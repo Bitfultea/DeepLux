@@ -1,38 +1,34 @@
 #include "TerminalBridge.h"
 
-#include "widgets/TerminalWidget.h"
-#include "process/BashProcess.h"
+#include "core/agent/AgentBridge.h"
+#include "core/common/CLIHandler.h"
 #include "core/common/Logger.h"
 #include "core/engine/RunEngine.h"
-#include "core/manager/ProjectManager.h"
 #include "core/manager/PluginManager.h"
+#include "core/manager/ProjectManager.h"
 #include "core/model/Project.h"
-#include "core/common/CLIHandler.h"
-#include "core/agent/AgentBridge.h"
+#include "process/BashProcess.h"
+#include "widgets/TerminalWidget.h"
 
-#include <QTimer>
 #include <QCoreApplication>
 #include <QDebug>
 #include <QJsonObject>
+#include <QTimer>
 
 namespace DeepLux {
 
-TerminalBridge::TerminalBridge(QObject* parent)
-    : QObject(parent)
-{
-}
+TerminalBridge::TerminalBridge(QObject* parent) : QObject(parent) {}
 
 TerminalBridge::~TerminalBridge() = default;
 
-TerminalBridge& TerminalBridge::instance()
-{
+TerminalBridge& TerminalBridge::instance() {
     static TerminalBridge instance;
     return instance;
 }
 
-void TerminalBridge::initialize(TerminalWidget* terminal)
-{
-    if (m_initialized) return;
+void TerminalBridge::initialize(TerminalWidget* terminal) {
+    if (m_initialized)
+        return;
     m_terminal = terminal;
 
     qDebug() << "TerminalBridge::initialize called";
@@ -69,11 +65,8 @@ void TerminalBridge::initialize(TerminalWidget* terminal)
     terminal->connectToBashProcess(&bash);
 
     qDebug() << "BashProcess state:" << bash.state();
-    QStringList commands = {
-        "help", "version", "info", "list-plugins", "list-commands",
-        "run", "create-project", "add-module", "connect",
-        "save-project", "list-modules"
-    };
+    QStringList commands = {"help",           "version",    "info",    "list-plugins", "list-commands", "run",
+                            "create-project", "add-module", "connect", "save-project", "list-modules"};
     terminal->setAvailableCommands(commands);
 
     m_initialized = true;
@@ -99,9 +92,9 @@ void TerminalBridge::initialize(TerminalWidget* terminal)
     }
 }
 
-void TerminalBridge::shutdown()
-{
-    if (!m_initialized) return;
+void TerminalBridge::shutdown() {
+    if (!m_initialized)
+        return;
 
     AgentBridge::instance().stop();
 
@@ -119,8 +112,7 @@ void TerminalBridge::shutdown()
     m_terminal = nullptr;
 }
 
-bool TerminalBridge::executeCommand(const QString& commandLine)
-{
+bool TerminalBridge::executeCommand(const QString& commandLine) {
     if (!m_terminal || commandLine.trimmed().isEmpty()) {
         return false;
     }
@@ -130,7 +122,8 @@ bool TerminalBridge::executeCommand(const QString& commandLine)
 
     // 解析命令和参数
     QStringList parts = trimmed.split(' ', Qt::SkipEmptyParts);
-    if (parts.isEmpty()) return false;
+    if (parts.isEmpty())
+        return false;
 
     QString cmdName = parts.first();
     QStringList args = parts.mid(1);
@@ -171,9 +164,9 @@ bool TerminalBridge::executeCommand(const QString& commandLine)
     return true;
 }
 
-void TerminalBridge::onGuiAction(const QString& action, const QString& detail)
-{
-    if (!m_terminal) return;
+void TerminalBridge::onGuiAction(const QString& action, const QString& detail) {
+    if (!m_terminal)
+        return;
 
     QString cmd;
     QString args;
@@ -204,40 +197,33 @@ void TerminalBridge::onGuiAction(const QString& action, const QString& detail)
     }
 }
 
-void TerminalBridge::executeCliCommand(const QString& commandLine)
-{
+void TerminalBridge::executeCliCommand(const QString& commandLine) {
     executeCommand(commandLine);
 }
 
-void TerminalBridge::appendStdout(const QString& text)
-{
+void TerminalBridge::appendStdout(const QString& text) {
     QMutexLocker locker(&m_bufferMutex);
     m_outputBuffer.append(text);
 }
 
-void TerminalBridge::appendStderr(const QString& text)
-{
+void TerminalBridge::appendStderr(const QString& text) {
     QMutexLocker locker(&m_bufferMutex);
     m_errorBuffer.append(text);
 }
 
-void TerminalBridge::onLogAdded(const LogEntry& entry)
-{
-    if (!m_terminal) return;
+void TerminalBridge::onLogAdded(const LogEntry& entry) {
+    if (!m_terminal)
+        return;
 
     QString message = entry.message;
     switch (entry.level) {
     case LogLevel::Debug:
-        m_terminal->printOutput(QString("[%1] [Debug] [%2] %3")
-                                    .arg(entry.timestamp.toString("hh:mm:ss"))
-                                    .arg(entry.category)
-                                    .arg(message));
+        m_terminal->printOutput(
+            QString("[%1] [Debug] [%2] %3").arg(entry.timestamp.toString("hh:mm:ss")).arg(entry.category).arg(message));
         break;
     case LogLevel::Info:
-        m_terminal->printInfo(QString("[%1] [Info] [%2] %3")
-                                   .arg(entry.timestamp.toString("hh:mm:ss"))
-                                   .arg(entry.category)
-                                   .arg(message));
+        m_terminal->printInfo(
+            QString("[%1] [Info] [%2] %3").arg(entry.timestamp.toString("hh:mm:ss")).arg(entry.category).arg(message));
         break;
     case LogLevel::Warning:
         m_terminal->printWarning(QString("[%1] [Warning] [%2] %3")
@@ -246,10 +232,8 @@ void TerminalBridge::onLogAdded(const LogEntry& entry)
                                      .arg(message));
         break;
     case LogLevel::Error:
-        m_terminal->printError(QString("[%1] [Error] [%2] %3")
-                                   .arg(entry.timestamp.toString("hh:mm:ss"))
-                                   .arg(entry.category)
-                                   .arg(message));
+        m_terminal->printError(
+            QString("[%1] [Error] [%2] %3").arg(entry.timestamp.toString("hh:mm:ss")).arg(entry.category).arg(message));
         break;
     case LogLevel::Success:
         m_terminal->printSuccess(QString("[%1] [Success] [%2] %3")
@@ -260,86 +244,86 @@ void TerminalBridge::onLogAdded(const LogEntry& entry)
     }
 }
 
-void TerminalBridge::onModuleStarted(const QString& moduleId)
-{
-    if (!m_terminal) return;
+void TerminalBridge::onModuleStarted(const QString& moduleId) {
+    if (!m_terminal)
+        return;
     m_terminal->onModuleStarted(moduleId);
 }
 
-void TerminalBridge::onModuleFinished(const QString& moduleId, bool success)
-{
-    if (!m_terminal) return;
+void TerminalBridge::onModuleFinished(const QString& moduleId, bool success) {
+    if (!m_terminal)
+        return;
     m_terminal->onModuleFinished(moduleId, success);
 }
 
-void TerminalBridge::onRunStarted()
-{
-    if (!m_terminal) return;
+void TerminalBridge::onRunStarted() {
+    if (!m_terminal)
+        return;
     m_terminal->printInfo("========== 流程开始执行 ==========");
     AgentBridge::instance().sendEvent("run_started", QJsonObject());
 }
 
-void TerminalBridge::onRunFinished(const RunResult& result)
-{
-    if (!m_terminal) return;
+void TerminalBridge::onRunFinished(const RunResult& result) {
+    if (!m_terminal)
+        return;
     if (result.success) {
-        m_terminal->printSuccess(QString("========== 流程执行完成 (耗时: %1 ms) ==========")
-                                      .arg(result.elapsedMs));
-        AgentBridge::instance().sendEvent("run_finished", QJsonObject{{"success", true}, {"elapsedMs", result.elapsedMs}});
+        m_terminal->printSuccess(QString("========== 流程执行完成 (耗时: %1 ms) ==========").arg(result.elapsedMs));
+        AgentBridge::instance().sendEvent("run_finished",
+                                          QJsonObject{{"success", true}, {"elapsedMs", result.elapsedMs}});
     } else {
-        m_terminal->printError(QString("========== 流程执行失败: %1 ==========")
-                                    .arg(result.errorMessage));
-        AgentBridge::instance().sendEvent("run_finished", QJsonObject{{"success", false}, {"error", result.errorMessage}});
+        m_terminal->printError(QString("========== 流程执行失败: %1 ==========").arg(result.errorMessage));
+        AgentBridge::instance().sendEvent("run_finished",
+                                          QJsonObject{{"success", false}, {"error", result.errorMessage}});
     }
 }
 
-void TerminalBridge::onProjectCreated(Project* project)
-{
-    if (!m_terminal) return;
+void TerminalBridge::onProjectCreated(Project* project) {
+    if (!m_terminal)
+        return;
     if (project) {
         m_terminal->printSuccess(QString("项目已创建: %1").arg(project->name()));
         emit projectCreated(project->name());
     }
 }
 
-void TerminalBridge::onProjectOpened(Project* project)
-{
-    if (!m_terminal) return;
+void TerminalBridge::onProjectOpened(Project* project) {
+    if (!m_terminal)
+        return;
     if (project) {
         m_terminal->printSuccess(QString("项目已打开: %1").arg(project->name()));
         emit projectOpened(project->filePath());
     }
 }
 
-void TerminalBridge::onProjectSaved(Project* project)
-{
-    if (!m_terminal) return;
+void TerminalBridge::onProjectSaved(Project* project) {
+    if (!m_terminal)
+        return;
     if (project) {
         m_terminal->printSuccess(QString("项目已保存: %1").arg(project->filePath()));
     }
 }
 
-void TerminalBridge::onProjectClosed()
-{
-    if (!m_terminal) return;
+void TerminalBridge::onProjectClosed() {
+    if (!m_terminal)
+        return;
     m_terminal->printInfo("项目已关闭");
 }
 
-void TerminalBridge::onPluginLoaded(const QString& name)
-{
-    if (!m_terminal) return;
+void TerminalBridge::onPluginLoaded(const QString& name) {
+    if (!m_terminal)
+        return;
     m_terminal->printSuccess(QString("插件已加载: %1").arg(name));
 }
 
-void TerminalBridge::onPluginUnloaded(const QString& name)
-{
-    if (!m_terminal) return;
+void TerminalBridge::onPluginUnloaded(const QString& name) {
+    if (!m_terminal)
+        return;
     m_terminal->printInfo(QString("插件已卸载: %1").arg(name));
 }
 
-void TerminalBridge::onCommandFinished(int exitCode)
-{
-    if (!m_terminal) return;
+void TerminalBridge::onCommandFinished(int exitCode) {
+    if (!m_terminal)
+        return;
 
     if (exitCode == 0) {
         m_terminal->printSuccess("命令执行成功");
@@ -348,8 +332,7 @@ void TerminalBridge::onCommandFinished(int exitCode)
     }
 }
 
-void TerminalBridge::onCommandEntered(const QString& command)
-{
+void TerminalBridge::onCommandEntered(const QString& command) {
     qDebug() << "TerminalBridge::onCommandEntered:" << command;
 
     // 检查是否为 CLI 内置命令
@@ -367,19 +350,15 @@ void TerminalBridge::onCommandEntered(const QString& command)
     BashProcess::instance().writeCommand(command);
 }
 
-QString TerminalBridge::formatTimestamp() const
-{
+QString TerminalBridge::formatTimestamp() const {
     return QTime::currentTime().toString("hh:mm:ss");
 }
 
-QString TerminalBridge::formatCommand(const QString& cmd) const
-{
-    return QString("<span style='color: #27ae60;'>></span> <span style='color: #ffffff;'>%1</span>")
-               .arg(cmd);
+QString TerminalBridge::formatCommand(const QString& cmd) const {
+    return QString("<span style='color: #27ae60;'>></span> <span style='color: #ffffff;'>%1</span>").arg(cmd);
 }
 
-void TerminalBridge::syncProjectToGui(const QString& projectPath)
-{
+void TerminalBridge::syncProjectToGui(const QString& projectPath) {
     // 当 CLI 打开项目时，同步到 GUI
     ProjectManager::instance().openProject(projectPath);
 }

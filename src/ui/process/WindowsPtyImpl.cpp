@@ -4,30 +4,21 @@
 
 #include "BashProcess.h"
 
-#include <QTimer>
 #include <QDebug>
 #include <QFile>
+#include <QTimer>
 
 namespace DeepLux {
 
 WindowsConPtyImpl::WindowsConPtyImpl()
-    : m_hPC(INVALID_HANDLE_VALUE)
-    , m_hPipeInWrite(INVALID_HANDLE_VALUE)
-    , m_hPipeOutRead(INVALID_HANDLE_VALUE)
-    , m_processHandle(INVALID_HANDLE_VALUE)
-    , m_processId(0)
-    , m_readTimer(nullptr)
-    , m_isRunning(false)
-{
-}
+    : m_hPC(INVALID_HANDLE_VALUE), m_hPipeInWrite(INVALID_HANDLE_VALUE), m_hPipeOutRead(INVALID_HANDLE_VALUE),
+      m_processHandle(INVALID_HANDLE_VALUE), m_processId(0), m_readTimer(nullptr), m_isRunning(false) {}
 
-WindowsConPtyImpl::~WindowsConPtyImpl()
-{
+WindowsConPtyImpl::~WindowsConPtyImpl() {
     kill();
 }
 
-bool WindowsConPtyImpl::start(const QString& shell, const QStringList& args)
-{
+bool WindowsConPtyImpl::start(const QString& shell, const QStringList& args) {
     if (m_isRunning) {
         kill();
     }
@@ -48,8 +39,7 @@ bool WindowsConPtyImpl::start(const QString& shell, const QStringList& args)
     return true;
 }
 
-bool WindowsConPtyImpl::setupConPty(const QString& shell, const QStringList& args)
-{
+bool WindowsConPtyImpl::setupConPty(const QString& shell, const QStringList& args) {
     SECURITY_ATTRIBUTES sa;
     sa.nLength = sizeof(SECURITY_ATTRIBUTES);
     sa.bInheritHandle = TRUE;
@@ -95,8 +85,7 @@ bool WindowsConPtyImpl::setupConPty(const QString& shell, const QStringList& arg
     SIZE_T attrSize = 0;
     InitializeProcThreadAttributeList(nullptr, 1, 0, &attrSize);
 
-    si.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
-        HeapAlloc(GetProcessHeap(), 0, attrSize));
+    si.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(HeapAlloc(GetProcessHeap(), 0, attrSize));
 
     if (!si.lpAttributeList) {
         ClosePseudoConsole(hPC);
@@ -119,9 +108,8 @@ bool WindowsConPtyImpl::setupConPty(const QString& shell, const QStringList& arg
         return false;
     }
 
-    if (!UpdateProcThreadAttribute(si.lpAttributeList, 0,
-                                   PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                                   hPC, sizeof(HPCON), nullptr, nullptr)) {
+    if (!UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hPC, sizeof(HPCON),
+                                   nullptr, nullptr)) {
         DeleteProcThreadAttributeList(si.lpAttributeList);
         HeapFree(GetProcessHeap(), 0, si.lpAttributeList);
         ClosePseudoConsole(hPC);
@@ -150,18 +138,8 @@ bool WindowsConPtyImpl::setupConPty(const QString& shell, const QStringList& arg
 
     std::wstring wideCmdLine = cmdLine.toStdWString();
 
-    BOOL success = CreateProcessW(
-        nullptr,
-        wideCmdLine.data(),
-        nullptr,
-        nullptr,
-        FALSE,
-        EXTENDED_STARTUPINFO_PRESENT,
-        nullptr,
-        nullptr,
-        &si.StartupInfo,
-        &pi
-    );
+    BOOL success = CreateProcessW(nullptr, wideCmdLine.data(), nullptr, nullptr, FALSE, EXTENDED_STARTUPINFO_PRESENT,
+                                  nullptr, nullptr, &si.StartupInfo, &pi);
 
     DeleteProcThreadAttributeList(si.lpAttributeList);
     HeapFree(GetProcessHeap(), 0, si.lpAttributeList);
@@ -188,8 +166,7 @@ bool WindowsConPtyImpl::setupConPty(const QString& shell, const QStringList& arg
     return true;
 }
 
-void WindowsConPtyImpl::write(const QByteArray& data)
-{
+void WindowsConPtyImpl::write(const QByteArray& data) {
     if (!m_isRunning || m_hPipeInWrite == INVALID_HANDLE_VALUE) {
         return;
     }
@@ -198,8 +175,7 @@ void WindowsConPtyImpl::write(const QByteArray& data)
     WriteFile(m_hPipeInWrite, data.constData(), static_cast<DWORD>(data.size()), &written, nullptr);
 }
 
-QByteArray WindowsConPtyImpl::read()
-{
+QByteArray WindowsConPtyImpl::read() {
     QByteArray buffer;
     if (!m_isRunning || m_hPipeOutRead == INVALID_HANDLE_VALUE) {
         return buffer;
@@ -226,8 +202,7 @@ QByteArray WindowsConPtyImpl::read()
     return buffer;
 }
 
-void WindowsConPtyImpl::resize(int cols, int rows)
-{
+void WindowsConPtyImpl::resize(int cols, int rows) {
     if (!m_isRunning || m_hPC == INVALID_HANDLE_VALUE) {
         return;
     }
@@ -238,8 +213,7 @@ void WindowsConPtyImpl::resize(int cols, int rows)
     ResizePseudoConsole(m_hPC, size);
 }
 
-void WindowsConPtyImpl::kill()
-{
+void WindowsConPtyImpl::kill() {
     m_isRunning = false;
 
     if (m_readTimer) {
@@ -273,16 +247,14 @@ void WindowsConPtyImpl::kill()
     m_processId = 0;
 }
 
-bool WindowsConPtyImpl::isRunning() const
-{
+bool WindowsConPtyImpl::isRunning() const {
     if (!m_isRunning || m_processHandle == INVALID_HANDLE_VALUE) {
         return false;
     }
     return WaitForSingleObject(m_processHandle, 0) == WAIT_TIMEOUT;
 }
 
-void WindowsConPtyImpl::onReadyRead()
-{
+void WindowsConPtyImpl::onReadyRead() {
     QByteArray data = read();
     if (!data.isEmpty()) {
         emit outputReady(data);

@@ -34,8 +34,7 @@ class AgentConnection;
  * - event: 主动事件推送
  * - pong: 心跳响应
  */
-class AgentBridge : public QObject
-{
+class AgentBridge : public QObject {
     Q_OBJECT
 
 public:
@@ -44,8 +43,12 @@ public:
     // 启动/停止
     bool start();
     void stop();
-    bool isRunning() const { return m_running; }
-    QString serverName() const { return m_socketPath; }
+    bool isRunning() const {
+        return m_running;
+    }
+    QString serverName() const {
+        return m_socketPath;
+    }
 
     // 查询接口（注册式）
     using QueryHandler = std::function<QJsonObject(const QJsonObject& params)>;

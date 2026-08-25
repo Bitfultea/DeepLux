@@ -1,17 +1,17 @@
-#include <QApplication>
-#include <QSurfaceFormat>
-#include <QFile>
-#include <QIcon>
-#include <QMessageBox>
-#include <QDebug>
-
 #include "core/common/CLIHandler.h"
-#include "ui/views/MainWindow.h"
-#include "core/platform/Platform.h"
-#include "core/platform/PathUtils.h"
 #include "core/manager/ConfigManager.h"
 #include "core/manager/PluginManager.h"
 #include "core/manager/ProjectManager.h"
+#include "core/platform/PathUtils.h"
+#include "core/platform/Platform.h"
+#include "ui/views/MainWindow.h"
+
+#include <QApplication>
+#include <QDebug>
+#include <QFile>
+#include <QIcon>
+#include <QMessageBox>
+#include <QSurfaceFormat>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -19,8 +19,7 @@
 
 using namespace DeepLux;
 
-void initAppDirectories()
-{
+void initAppDirectories() {
     PathUtils::ensureDirExists(PathUtils::appDataPath());
     PathUtils::ensureDirExists(PathUtils::configPath());
     PathUtils::ensureDirExists(PathUtils::pluginPath());
@@ -28,8 +27,7 @@ void initAppDirectories()
     PathUtils::ensureDirExists(PathUtils::projectPath());
 }
 
-bool checkOpenCV()
-{
+bool checkOpenCV() {
 #ifdef DEEPLUX_HAS_OPENCV
     qDebug() << "OpenCV version:" << CV_VERSION;
     return true;
@@ -39,8 +37,7 @@ bool checkOpenCV()
 #endif
 }
 
-void setupStyleSheet(QApplication& app)
-{
+void setupStyleSheet(QApplication& app) {
     QString style = R"(
         QMainWindow {
             background-color: #2b2b2b;
@@ -105,14 +102,11 @@ void setupStyleSheet(QApplication& app)
     app.setStyleSheet(style);
 }
 
-int runCLI(const QStringList& args)
-{
+int runCLI(const QStringList& args) {
     CLIHandler& cli = CLIHandler::instance();
 
     if (!cli.parse(args)) {
-        fprintf(stderr, "Error: %s\n\n%s\n",
-                qPrintable(cli.errorString()),
-                qPrintable(cli.helpText()));
+        fprintf(stderr, "Error: %s\n\n%s\n", qPrintable(cli.errorString()), qPrintable(cli.helpText()));
         return 1;
     }
 
@@ -141,8 +135,7 @@ int runCLI(const QStringList& args)
     return result;
 }
 
-int main(int argc, char* argv[])
-{
+int main(int argc, char* argv[]) {
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
     QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
     QApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
@@ -158,17 +151,15 @@ int main(int argc, char* argv[])
     bool forceCLI = args.contains("--cli") || args.contains("-c");
 
     // 检查是否有任何 CLI 选项（这些都会触发 CLI 模式）
-    bool hasCLIOptions = forceCLI ||
-                          args.contains("--help") || args.contains("-h") ||
-                          args.contains("--version") || args.contains("-V");
+    bool hasCLIOptions =
+        forceCLI || args.contains("--help") || args.contains("-h") || args.contains("--version") || args.contains("-V");
 
     // 检查是否有子命令
     bool hasCommand = false;
     for (int i = 1; i < args.size(); ++i) {
         QString a = args[i];
-        if (a != "--cli" && a != "-c" && a != "--gui" && a != "-g" &&
-            a != "--verbose" && a != "-v" && a != "--help" && a != "-h" &&
-            a != "--version" && a != "-V") {
+        if (a != "--cli" && a != "-c" && a != "--gui" && a != "-g" && a != "--verbose" && a != "-v" && a != "--help" &&
+            a != "-h" && a != "--version" && a != "-V") {
             hasCommand = true;
             break;
         }
@@ -214,9 +205,7 @@ int main(int argc, char* argv[])
     DeepLux::ProjectManager::instance();
 
     if (!checkOpenCV()) {
-        QMessageBox::critical(nullptr,
-            QObject::tr("OpenCV 错误"),
-            QObject::tr("OpenCV 初始化失败"));
+        QMessageBox::critical(nullptr, QObject::tr("OpenCV 错误"), QObject::tr("OpenCV 初始化失败"));
         return -1;
     }
 

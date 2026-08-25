@@ -1,10 +1,11 @@
 #include "HikvisionCamera.h"
+
 #include "core/common/Logger.h"
 
+#include <QDateTime>
+#include <QJsonObject>
 #include <QLabel>
 #include <QVBoxLayout>
-#include <QJsonObject>
-#include <QDateTime>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -18,18 +19,15 @@
 namespace DeepLux {
 
 // 静态回调函数用于图像采集
-static void __stdcall FrameCallback(unsigned char* pData, MV_FRAME_OUT_INFO* pFrameInfo, void* pUser)
-{
-    if (!pUser || !pFrameInfo) return;
+static void __stdcall FrameCallback(unsigned char* pData, MV_FRAME_OUT_INFO* pFrameInfo, void* pUser) {
+    if (!pUser || !pFrameInfo)
+        return;
     HikvisionCamera* pCamera = static_cast<HikvisionCamera*>(pUser);
     pCamera->processFrame(pData, pFrameInfo);
 }
 
 HikvisionCamera::HikvisionCamera(void* handle, const QString& deviceId, QObject* parent)
-    : ICamera(parent)
-    , m_hCamera(handle)
-    , m_deviceId(deviceId)
-{
+    : ICamera(parent), m_hCamera(handle), m_deviceId(deviceId) {
     m_capabilities.softwareTrigger = true;
     m_capabilities.hardwareTrigger = true;
     m_capabilities.continuousMode = true;
@@ -42,13 +40,11 @@ HikvisionCamera::HikvisionCamera(void* handle, const QString& deviceId, QObject*
     m_capabilities.depthData = false;
 }
 
-HikvisionCamera::~HikvisionCamera()
-{
+HikvisionCamera::~HikvisionCamera() {
     disconnect();
 }
 
-bool HikvisionCamera::isPlatformSupported() const
-{
+bool HikvisionCamera::isPlatformSupported() const {
 #if defined(__linux__) || defined(_WIN32)
     return true;
 #else
@@ -56,13 +52,11 @@ bool HikvisionCamera::isPlatformSupported() const
 #endif
 }
 
-QString HikvisionCamera::platformNotSupportedMessage() const
-{
+QString HikvisionCamera::platformNotSupportedMessage() const {
     return QString();
 }
 
-bool HikvisionCamera::connect()
-{
+bool HikvisionCamera::connect() {
 #ifdef __linux__
     if (m_connected) {
         return true;
@@ -118,10 +112,15 @@ bool HikvisionCamera::connect()
 
     MVCC_ENUMVALUE stPixelFormat = {0};
     int fmtRet = MV_CC_GetEnumValue(m_hCamera, "PixelFormat", &stPixelFormat);
-    QString pixelFormatStr = (fmtRet == MV_OK) ? QString("0x%1").arg(stPixelFormat.nCurValue, 0, 16) : QString("Unknown");
+    QString pixelFormatStr =
+        (fmtRet == MV_OK) ? QString("0x%1").arg(stPixelFormat.nCurValue, 0, 16) : QString("Unknown");
 
     Logger::instance().info(QString("Hikvision 相机已连接: %1, 分辨率: %2x%3, 像素格式: %4")
-        .arg(m_deviceId).arg(stWidth.nCurValue).arg(stHeight.nCurValue).arg(pixelFormatStr), "Camera");
+                                .arg(m_deviceId)
+                                .arg(stWidth.nCurValue)
+                                .arg(stHeight.nCurValue)
+                                .arg(pixelFormatStr),
+                            "Camera");
 #else
     Logger::instance().info(QString("Hikvision 相机已连接: %1").arg(m_deviceId), "Camera");
 #endif
@@ -132,8 +131,7 @@ bool HikvisionCamera::connect()
 #endif
 }
 
-void HikvisionCamera::disconnect()
-{
+void HikvisionCamera::disconnect() {
 #ifdef __linux__
     stopAcquisition();
 
@@ -152,8 +150,7 @@ void HikvisionCamera::disconnect()
 #endif
 }
 
-bool HikvisionCamera::startAcquisition()
-{
+bool HikvisionCamera::startAcquisition() {
 #ifdef __linux__
     if (!m_connected || !m_hCamera) {
         return false;
@@ -172,8 +169,7 @@ bool HikvisionCamera::startAcquisition()
 #endif
 }
 
-void HikvisionCamera::stopAcquisition()
-{
+void HikvisionCamera::stopAcquisition() {
 #ifdef __linux__
     if (!m_acquiring) {
         return;
@@ -185,13 +181,11 @@ void HikvisionCamera::stopAcquisition()
 #endif
 }
 
-bool HikvisionCamera::triggerSoftware()
-{
+bool HikvisionCamera::triggerSoftware() {
     return grabFrame();
 }
 
-bool HikvisionCamera::grabFrame()
-{
+bool HikvisionCamera::grabFrame() {
 #ifdef __linux__
     if (!m_connected) {
         return false;
@@ -210,26 +204,25 @@ bool HikvisionCamera::grabFrame()
 #endif
 }
 
-void HikvisionCamera::setTriggerMode(TriggerMode mode)
-{
+void HikvisionCamera::setTriggerMode(TriggerMode mode) {
     m_triggerMode = mode;
 #ifdef __linux__
-    if (!m_hCamera) return;
+    if (!m_hCamera)
+        return;
 
     if (mode == TriggerMode::Software) {
-        MV_CC_SetEnumValue(m_hCamera, "TriggerMode", 1);  // 触发模式
-        MV_CC_SetEnumValue(m_hCamera, "TriggerSource", 7);  // Software
+        MV_CC_SetEnumValue(m_hCamera, "TriggerMode", 1);   // 触发模式
+        MV_CC_SetEnumValue(m_hCamera, "TriggerSource", 7); // Software
     } else if (mode == TriggerMode::Hardware) {
-        MV_CC_SetEnumValue(m_hCamera, "TriggerMode", 1);  // 触发模式
-        MV_CC_SetEnumValue(m_hCamera, "TriggerSource", 0);  // Line0
+        MV_CC_SetEnumValue(m_hCamera, "TriggerMode", 1);   // 触发模式
+        MV_CC_SetEnumValue(m_hCamera, "TriggerSource", 0); // Line0
     } else {
-        MV_CC_SetEnumValue(m_hCamera, "TriggerMode", 0);  // 连续采集
+        MV_CC_SetEnumValue(m_hCamera, "TriggerMode", 0); // 连续采集
     }
 #endif
 }
 
-void HikvisionCamera::setExposureTime(double microseconds)
-{
+void HikvisionCamera::setExposureTime(double microseconds) {
     m_exposureTime = microseconds;
 #ifdef __linux__
     if (m_hCamera) {
@@ -238,8 +231,7 @@ void HikvisionCamera::setExposureTime(double microseconds)
 #endif
 }
 
-void HikvisionCamera::setGain(double gain)
-{
+void HikvisionCamera::setGain(double gain) {
     m_gain = gain;
 #ifdef __linux__
     if (m_hCamera) {
@@ -248,8 +240,7 @@ void HikvisionCamera::setGain(double gain)
 #endif
 }
 
-void HikvisionCamera::setFrameRate(double fps)
-{
+void HikvisionCamera::setFrameRate(double fps) {
     m_frameRate = fps;
 #ifdef __linux__
     if (m_hCamera) {
@@ -258,8 +249,7 @@ void HikvisionCamera::setFrameRate(double fps)
 #endif
 }
 
-void HikvisionCamera::setRoi(int x, int y, int width, int height)
-{
+void HikvisionCamera::setRoi(int x, int y, int width, int height) {
     m_roi = QRect(x, y, width, height);
 #ifdef __linux__
     if (m_hCamera) {
@@ -271,8 +261,7 @@ void HikvisionCamera::setRoi(int x, int y, int width, int height)
 #endif
 }
 
-bool HikvisionCamera::processFrame(unsigned char* pData, MV_FRAME_OUT_INFO* pFrameInfo)
-{
+bool HikvisionCamera::processFrame(unsigned char* pData, MV_FRAME_OUT_INFO* pFrameInfo) {
     QMutexLocker locker(&m_frameMutex);
 
     int nWidth = pFrameInfo->nWidth;
@@ -295,13 +284,17 @@ bool HikvisionCamera::processFrame(unsigned char* pData, MV_FRAME_OUT_INFO* pFra
     int bpp = 0;
     if (static_cast<int>(nDataLen) >= expectedRGB8 - 1024 && static_cast<int>(nDataLen) <= expectedRGB8 + 1024) {
         bpp = 3;
-    } else if (static_cast<int>(nDataLen) >= expectedMono8 - 1024 && static_cast<int>(nDataLen) <= expectedMono8 + 1024) {
+    } else if (static_cast<int>(nDataLen) >= expectedMono8 - 1024 &&
+               static_cast<int>(nDataLen) <= expectedMono8 + 1024) {
         bpp = 1;
     } else {
         // fallback：按像素格式估算
-        if (nPixelFormat == 0x01080001) bpp = 3; // RGB8
-        else if (nPixelFormat == 0x0100000B || nPixelFormat == 0x01100003) bpp = 2; // Mono16/RGB16
-        else bpp = 1;
+        if (nPixelFormat == 0x01080001)
+            bpp = 3; // RGB8
+        else if (nPixelFormat == 0x0100000B || nPixelFormat == 0x01100003)
+            bpp = 2; // Mono16/RGB16
+        else
+            bpp = 1;
     }
 
     QImage image;
@@ -318,9 +311,12 @@ bool HikvisionCamera::processFrame(unsigned char* pData, MV_FRAME_OUT_INFO* pFra
         cv::Mat bayer(nHeight, nWidth, CV_8UC1, const_cast<uchar*>(localData));
         cv::Mat rgb;
         int code = cv::COLOR_BayerRG2RGB;
-        if (isBayerGR) code = cv::COLOR_BayerGR2RGB;
-        else if (isBayerGB) code = cv::COLOR_BayerGB2RGB;
-        else if (isBayerBG) code = cv::COLOR_BayerBG2RGB;
+        if (isBayerGR)
+            code = cv::COLOR_BayerGR2RGB;
+        else if (isBayerGB)
+            code = cv::COLOR_BayerGB2RGB;
+        else if (isBayerBG)
+            code = cv::COLOR_BayerBG2RGB;
         cv::cvtColor(bayer, rgb, code);
         image = QImage(rgb.data, rgb.cols, rgb.rows, static_cast<int>(rgb.step), QImage::Format_RGB888).copy();
 #else
@@ -386,7 +382,11 @@ bool HikvisionCamera::processFrame(unsigned char* pData, MV_FRAME_OUT_INFO* pFra
         QString debugPath = "/tmp/deeplux_debug_frame.png";
         if (m_lastImage.save(debugPath)) {
             Logger::instance().debug(QString("Saved debug frame to %1, format=0x%2, size=%3x%4")
-                .arg(debugPath).arg(nPixelFormat, 0, 16).arg(nWidth).arg(nHeight), "Camera");
+                                         .arg(debugPath)
+                                         .arg(nPixelFormat, 0, 16)
+                                         .arg(nWidth)
+                                         .arg(nHeight),
+                                     "Camera");
         }
     }
 
@@ -394,8 +394,7 @@ bool HikvisionCamera::processFrame(unsigned char* pData, MV_FRAME_OUT_INFO* pFra
     return true;
 }
 
-QWidget* HikvisionCamera::createConfigWidget()
-{
+QWidget* HikvisionCamera::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -408,8 +407,7 @@ QWidget* HikvisionCamera::createConfigWidget()
     return widget;
 }
 
-QJsonObject HikvisionCamera::toJson() const
-{
+QJsonObject HikvisionCamera::toJson() const {
     QJsonObject json;
     json["deviceId"] = m_deviceId;
     json["name"] = m_name;
@@ -423,8 +421,7 @@ QJsonObject HikvisionCamera::toJson() const
     return json;
 }
 
-bool HikvisionCamera::fromJson(const QJsonObject& json)
-{
+bool HikvisionCamera::fromJson(const QJsonObject& json) {
     m_deviceId = json["deviceId"].toString(m_deviceId);
     m_name = json["name"].toString(m_name);
     m_exposureTime = json["exposureTime"].toDouble(m_exposureTime);
@@ -440,8 +437,7 @@ bool HikvisionCamera::fromJson(const QJsonObject& json)
     return true;
 }
 
-void HikvisionCamera::setDeviceInfo(const QString& name, const QString& serial)
-{
+void HikvisionCamera::setDeviceInfo(const QString& name, const QString& serial) {
     m_name = name;
     m_serialNumber = serial;
 }

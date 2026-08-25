@@ -1,33 +1,29 @@
 #include "StrFormatModule.h"
-#include "core/engine/RunEngine.h"
+
 #include "core/common/Logger.h"
+#include "core/engine/RunEngine.h"
 
 namespace DeepLux {
 
-StrFormatModule::StrFormatModule(QObject* parent)
-    : ModuleBase(parent)
-{
+StrFormatModule::StrFormatModule(QObject* parent) : ModuleBase(parent) {
     m_name = "字符串格式化";
     m_moduleId = "StrFormatModule";
     m_description = "字符串格式化模块";
 }
 
-QJsonObject StrFormatModule::defaultParams() const
-{
+QJsonObject StrFormatModule::defaultParams() const {
     QJsonObject params;
     params["inputString"] = "";
     params["formatPattern"] = "%s";
     return params;
 }
 
-void StrFormatModule::setParams(const QJsonObject& params)
-{
+void StrFormatModule::setParams(const QJsonObject& params) {
     m_inputString = params.value("inputString").toString();
     m_formatPattern = params.value("formatPattern").toString("%s");
 }
 
-bool StrFormatModule::process(const ImageData& input, ImageData& output)
-{
+bool StrFormatModule::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(input)
     Q_UNUSED(output)
 
@@ -41,8 +37,7 @@ bool StrFormatModule::process(const ImageData& input, ImageData& output)
     return true;
 }
 
-QString StrFormatModule::formatString(const QString& pattern, const QString& input)
-{
+QString StrFormatModule::formatString(const QString& pattern, const QString& input) {
     // Simple string formatting - replace %s with input
     QString result = pattern;
     result.replace("%s", input);

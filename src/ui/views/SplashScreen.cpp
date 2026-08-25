@@ -1,12 +1,11 @@
 #include "SplashScreen.h"
+
 #include <QApplication>
 #include <QDesktopWidget>
 
 namespace DeepLux {
 
-SplashScreen::SplashScreen(QWidget* parent)
-    : QWidget(parent, Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint)
-{
+SplashScreen::SplashScreen(QWidget* parent) : QWidget(parent, Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint) {
     setAttribute(Qt::WA_ShowWithoutActivating);
     initUI();
 
@@ -17,12 +16,9 @@ SplashScreen::SplashScreen(QWidget* parent)
     move(x, y);
 }
 
-SplashScreen::~SplashScreen()
-{
-}
+SplashScreen::~SplashScreen() {}
 
-void SplashScreen::initUI()
-{
+void SplashScreen::initUI() {
     setFixedSize(420, 320);
     setStyleSheet("background-color: #1a1a2e; border-radius: 10px;");
 
@@ -114,27 +110,23 @@ void SplashScreen::initUI()
     mainLayout->addWidget(m_versionLabel);
 }
 
-void SplashScreen::setProgress(int value, const QString& status)
-{
+void SplashScreen::setProgress(int value, const QString& status) {
     m_progressBar->setValue(value);
     if (!status.isEmpty()) {
         m_statusLabel->setText(status);
     }
 }
 
-void SplashScreen::setStatus(const QString& status)
-{
+void SplashScreen::setStatus(const QString& status) {
     m_statusLabel->setText(status);
 }
 
-void SplashScreen::appendLog(const QString& text)
-{
+void SplashScreen::appendLog(const QString& text) {
     m_logEdit->append(text);
     m_logEdit->ensureCursorVisible();
 }
 
-void SplashScreen::showFailedPlugins(const QStringList& failedPlugins)
-{
+void SplashScreen::showFailedPlugins(const QStringList& failedPlugins) {
     if (!failedPlugins.isEmpty()) {
         m_logEdit->append("");
         m_logEdit->append(QString("<span style='color: #e94560;'>加载失败:</span>"));

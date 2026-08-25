@@ -1,24 +1,20 @@
 #include "IfPlugin.h"
-#include "core/engine/RunEngine.h"
+
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
+#include "core/engine/RunEngine.h"
+
+#include <QCheckBox>
+#include <QComboBox>
 #include <QFormLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QComboBox>
-#include <QCheckBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-IfPlugin::IfPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
+IfPlugin::IfPlugin(QObject* parent) : ModuleBase(parent) {
     m_defaultParams = QJsonObject{
-        {"conditionType", "BoolLink"},
-        {"boolLinkText", ""},
-        {"expressionString", "true"},
-        {"boolInversion", false}
-    };
+        {"conditionType", "BoolLink"}, {"boolLinkText", ""}, {"expressionString", "true"}, {"boolInversion", false}};
     m_params = m_defaultParams;
     m_name = "条件分支";
     m_moduleId = "IfPlugin";
@@ -26,8 +22,7 @@ IfPlugin::IfPlugin(QObject* parent)
     m_description = "条件分支；无结束节点时控制紧随其后的模块";
 }
 
-bool IfPlugin::initialize()
-{
+bool IfPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -35,16 +30,14 @@ bool IfPlugin::initialize()
     return true;
 }
 
-bool IfPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool IfPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     // 阶段 2: boolLinkText 等外部资源允许暂时为空，由 process() 在运行时报告"未配置"
     Q_UNUSED(params)
     error.clear();
     return true;
 }
 
-bool IfPlugin::evaluateCondition()
-{
+bool IfPlugin::evaluateCondition() {
     if (m_conditionType == ConditionType::BoolLink) {
         if (m_boolLinkText.isEmpty()) {
             Logger::instance().warning("BoolLink is empty in IfPlugin", "Logic");
@@ -88,8 +81,7 @@ bool IfPlugin::evaluateCondition()
     }
 }
 
-bool IfPlugin::process(const ImageData& input, ImageData& output)
-{
+bool IfPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     QJsonObject params = currentParams();
@@ -112,8 +104,7 @@ bool IfPlugin::process(const ImageData& input, ImageData& output)
     return true;
 }
 
-QWidget* IfPlugin::createConfigWidget()
-{
+QWidget* IfPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -123,7 +114,8 @@ QWidget* IfPlugin::createConfigWidget()
     typeCombo->addItem(tr("布尔链接"), "BoolLink");
     typeCombo->addItem(tr("表达式"), "Expression");
     int idx = typeCombo->findData(m_params["conditionType"].toString("BoolLink"));
-    if (idx >= 0) typeCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        typeCombo->setCurrentIndex(idx);
 
     QLineEdit* boolLinkEdit = new QLineEdit(m_params["boolLinkText"].toString());
     QLineEdit* exprEdit = new QLineEdit(m_params["expressionString"].toString("true"));
@@ -144,17 +136,11 @@ QWidget* IfPlugin::createConfigWidget()
         exprEdit->setEnabled(typeCombo->currentData().toString() == "Expression");
     });
 
-    connect(boolLinkEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("boolLinkText", text);
-    });
+    connect(boolLinkEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("boolLinkText", text); });
 
-    connect(exprEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("expressionString", text);
-    });
+    connect(exprEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("expressionString", text); });
 
-    connect(invertCheck, &QCheckBox::toggled, this, [=](bool checked) {
-        setParam("boolInversion", checked);
-    });
+    connect(invertCheck, &QCheckBox::toggled, this, [=](bool checked) { setParam("boolInversion", checked); });
 
     const QString conditionType = m_params["conditionType"].toString("BoolLink");
     boolLinkEdit->setEnabled(conditionType == "BoolLink");
@@ -163,31 +149,26 @@ QWidget* IfPlugin::createConfigWidget()
     return widget;
 }
 
-IModule* IfPlugin::cloneImpl() const
-{
+IModule* IfPlugin::cloneImpl() const {
     return new IfPlugin();
 }
 
 // IfEndPlugin
 
-IfEndPlugin::IfEndPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
+IfEndPlugin::IfEndPlugin(QObject* parent) : ModuleBase(parent) {
     m_name = "条件结束";
     m_moduleId = "IfEndPlugin";
     m_category = "logic";
     m_description = "条件分支结束";
 }
 
-bool IfEndPlugin::process(const ImageData& input, ImageData& output)
-{
+bool IfEndPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
     Logger::instance().debug("IfEndPlugin: condition branch ended", "Logic");
     return true;
 }
 
-QWidget* IfEndPlugin::createConfigWidget()
-{
+QWidget* IfEndPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
     QLabel* label = new QLabel(tr("(条件结束，无需配置)"));
@@ -195,8 +176,7 @@ QWidget* IfEndPlugin::createConfigWidget()
     return widget;
 }
 
-IModule* IfEndPlugin::cloneImpl() const
-{
+IModule* IfEndPlugin::cloneImpl() const {
     return new IfEndPlugin();
 }
 

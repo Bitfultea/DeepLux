@@ -1,32 +1,28 @@
 #include "VarDefineModule.h"
+
+#include "core/common/Logger.h"
 #include "core/engine/RunEngine.h"
 #include "core/manager/GlobalVarManager.h"
-#include "core/common/Logger.h"
 
 namespace DeepLux {
 
-VarDefineModule::VarDefineModule(QObject* parent)
-    : ModuleBase(parent)
-{
+VarDefineModule::VarDefineModule(QObject* parent) : ModuleBase(parent) {
     m_name = "变量定义";
     m_moduleId = "VarDefineModule";
     m_description = "变量定义模块";
 }
 
-QJsonObject VarDefineModule::defaultParams() const
-{
+QJsonObject VarDefineModule::defaultParams() const {
     QJsonObject params;
     params["isAlwaysExe"] = true;
     return params;
 }
 
-void VarDefineModule::setParams(const QJsonObject& params)
-{
+void VarDefineModule::setParams(const QJsonObject& params) {
     m_isAlwaysExe = params.value("isAlwaysExe").toBool(true);
 }
 
-bool VarDefineModule::process(const ImageData& input, ImageData& output)
-{
+bool VarDefineModule::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(input)
     Q_UNUSED(output)
 

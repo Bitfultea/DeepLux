@@ -1,25 +1,20 @@
 #include "ConditionPlugin.h"
+
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
+
+#include <QComboBox>
 #include <QFormLayout>
 #include <QLineEdit>
-#include <QComboBox>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-ConditionPlugin::ConditionPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"variableName", ""},
-        {"operator", "NotEmpty"},
-        {"compareValue", ""}
-    };
+ConditionPlugin::ConditionPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"variableName", ""}, {"operator", "NotEmpty"}, {"compareValue", ""}};
     m_params = m_defaultParams;
 }
 
-bool ConditionPlugin::initialize()
-{
+bool ConditionPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -27,8 +22,7 @@ bool ConditionPlugin::initialize()
     return true;
 }
 
-bool ConditionPlugin::evaluateCondition(const QString& value)
-{
+bool ConditionPlugin::evaluateCondition(const QString& value) {
     QJsonObject params = currentParams();
     QString op = params["operator"].toString("NotEmpty");
     QString compareValue = params["compareValue"].toString();
@@ -56,8 +50,7 @@ bool ConditionPlugin::evaluateCondition(const QString& value)
     return false;
 }
 
-bool ConditionPlugin::process(const ImageData& input, ImageData& output)
-{
+bool ConditionPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     QJsonObject params = currentParams();
@@ -74,23 +67,22 @@ bool ConditionPlugin::process(const ImageData& input, ImageData& output)
     output.setData("condition_passed", result);
 
     Logger::instance().info(QString("Condition: '%1' %2 = %3")
-        .arg(m_variableName)
-        .arg(params["operator"].toString())
-        .arg(result ? "true" : "false"), "Logic");
+                                .arg(m_variableName)
+                                .arg(params["operator"].toString())
+                                .arg(result ? "true" : "false"),
+                            "Logic");
 
     return true;
 }
 
-bool ConditionPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool ConditionPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     // 阶段 2: variableName 等外部资源允许暂时为空，由 process() 在运行时报告"未配置"
     Q_UNUSED(params)
     error.clear();
     return true;
 }
 
-QWidget* ConditionPlugin::createConfigWidget()
-{
+QWidget* ConditionPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -109,7 +101,8 @@ QWidget* ConditionPlugin::createConfigWidget()
     opCombo->addItem(tr("开头是"), "StartsWith");
     opCombo->addItem(tr("结尾是"), "EndsWith");
     int idx = opCombo->findData(m_params["operator"].toString("NotEmpty"));
-    if (idx >= 0) opCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        opCombo->setCurrentIndex(idx);
 
     QLineEdit* compareEdit = new QLineEdit(m_params["compareValue"].toString());
 
@@ -120,23 +113,17 @@ QWidget* ConditionPlugin::createConfigWidget()
     layout->addLayout(formLayout);
     layout->addStretch();
 
-    connect(varEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("variableName", text);
-    });
+    connect(varEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("variableName", text); });
 
-    connect(opCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int) {
-        setParam("operator", opCombo->currentData().toString());
-    });
+    connect(opCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int) { setParam("operator", opCombo->currentData().toString()); });
 
-    connect(compareEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
-        setParam("compareValue", text);
-    });
+    connect(compareEdit, &QLineEdit::textChanged, this, [=](const QString& text) { setParam("compareValue", text); });
 
     return widget;
 }
 
-IModule* ConditionPlugin::cloneImpl() const
-{
+IModule* ConditionPlugin::cloneImpl() const {
     return new ConditionPlugin();
 }
 

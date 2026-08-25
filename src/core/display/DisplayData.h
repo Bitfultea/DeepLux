@@ -1,10 +1,10 @@
 #pragma once
 
-#include <variant>
-#include <vector>
+#include <QMetaType>
 #include <QString>
 #include <QVariantMap>
-#include <QMetaType>
+#include <variant>
+#include <vector>
 
 // Eigen for 3D math
 #include <Eigen/Core>
@@ -31,8 +31,12 @@ struct PointCloudData {
     // 强度
     std::vector<float> intensities;
 
-    bool isEmpty() const { return points.empty(); }
-    size_t size() const { return points.size(); }
+    bool isEmpty() const {
+        return points.empty();
+    }
+    size_t size() const {
+        return points.size();
+    }
 
     // 清空数据
     void clear() {
@@ -44,11 +48,17 @@ struct PointCloudData {
     }
 
     // 检查是否有法向量
-    bool hasNormals() const { return normals.size() == points.size(); }
+    bool hasNormals() const {
+        return normals.size() == points.size();
+    }
     // 检查是否有颜色
-    bool hasColors() const { return colors.size() == points.size(); }
+    bool hasColors() const {
+        return colors.size() == points.size();
+    }
     // 检查是否有标签
-    bool hasLabels() const { return labels.size() == points.size(); }
+    bool hasLabels() const {
+        return labels.size() == points.size();
+    }
 };
 
 /**
@@ -57,7 +67,9 @@ struct PointCloudData {
 struct MeshData {
     // To be defined when mesh support is needed
     // Will contain vertices and faces
-    bool isEmpty() const { return true; }
+    bool isEmpty() const {
+        return true;
+    }
 };
 
 /**
@@ -71,7 +83,9 @@ struct Circle2D {
     double radius = 0.0;
     double score = 0.0; // 拟合/检测置信度（可选）
 
-    bool isValid() const { return radius > 0.0; }
+    bool isValid() const {
+        return radius > 0.0;
+    }
 };
 
 /**
@@ -94,8 +108,12 @@ struct Detection {
 struct DetectionList {
     QList<Detection> items;
 
-    bool isEmpty() const { return items.isEmpty(); }
-    int size() const { return items.size(); }
+    bool isEmpty() const {
+        return items.isEmpty();
+    }
+    int size() const {
+        return items.size();
+    }
 };
 
 /**
@@ -111,12 +129,11 @@ struct DetectionList {
  *   }
  */
 struct DisplayData {
-    using Variant = std::variant<
-        std::monostate,    // Empty/invalid state
-        ImageData,         // 2D image data
-        PointCloudData,    // 3D point cloud (Phase 1)
-        MeshData           // 3D mesh data (Future)
-    >;
+    using Variant = std::variant<std::monostate, // Empty/invalid state
+                                 ImageData,      // 2D image data
+                                 PointCloudData, // 3D point cloud (Phase 1)
+                                 MeshData        // 3D mesh data (Future)
+                                 >;
 
     DisplayData() : m_variant(std::monostate{}) {}
 
@@ -129,8 +146,12 @@ struct DisplayData {
     }
 
     // Get the underlying variant
-    const Variant& variant() const { return m_variant; }
-    Variant& variant() { return m_variant; }
+    const Variant& variant() const {
+        return m_variant;
+    }
+    Variant& variant() {
+        return m_variant;
+    }
 
     // Convenience accessors - returns nullptr if wrong type
     const ImageData* imageData() const {
@@ -151,21 +172,35 @@ struct DisplayData {
     }
 
     // Metadata accessors
-    const QString& viewportId() const { return m_viewportId; }
-    void setViewportId(const QString& id) { m_viewportId = id; }
+    const QString& viewportId() const {
+        return m_viewportId;
+    }
+    void setViewportId(const QString& id) {
+        m_viewportId = id;
+    }
 
-    qint64 timestamp() const { return m_timestamp; }
-    void setTimestamp(qint64 ts) { m_timestamp = ts; }
+    qint64 timestamp() const {
+        return m_timestamp;
+    }
+    void setTimestamp(qint64 ts) {
+        m_timestamp = ts;
+    }
 
-    const QVariantMap& metadata() const { return m_metadata; }
-    QVariantMap& metadata() { return m_metadata; }
-    void setMetadata(const QVariantMap& meta) { m_metadata = meta; }
+    const QVariantMap& metadata() const {
+        return m_metadata;
+    }
+    QVariantMap& metadata() {
+        return m_metadata;
+    }
+    void setMetadata(const QVariantMap& meta) {
+        m_metadata = meta;
+    }
 
 private:
     Variant m_variant;
-    QString m_viewportId;      // Target viewport ID (empty = auto)
-    qint64 m_timestamp = 0;    // Timestamp when data was created
-    QVariantMap m_metadata;    // Additional metadata
+    QString m_viewportId;   // Target viewport ID (empty = auto)
+    qint64 m_timestamp = 0; // Timestamp when data was created
+    QVariantMap m_metadata; // Additional metadata
 };
 
 } // namespace DeepLux

@@ -1,38 +1,33 @@
 #include "NPointCalibrationPlugin.h"
+
 #include "core/common/Logger.h"
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QLabel>
-#include <QSpinBox>
-#include <QDoubleSpinBox>
+
 #include <QCheckBox>
-#include <QPushButton>
-#include <QTableWidget>
-#include <QHeaderView>
-#include <QGroupBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QLabel>
+#include <QPushButton>
+#include <QSpinBox>
+#include <QTableWidget>
+#include <QVBoxLayout>
 
 namespace DeepLux {
 
-NPointCalibrationPlugin::NPointCalibrationPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"calibrationType", "Perspective"},
-        {"outputWidth", 0},
-        {"outputHeight", 0},
-        {"inverseTransform", false},
-        {"clearPointsOnRun", true}
-    };
+NPointCalibrationPlugin::NPointCalibrationPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"calibrationType", "Perspective"},
+                                  {"outputWidth", 0},
+                                  {"outputHeight", 0},
+                                  {"inverseTransform", false},
+                                  {"clearPointsOnRun", true}};
     m_params = m_defaultParams;
 }
 
-NPointCalibrationPlugin::~NPointCalibrationPlugin()
-{
-}
+NPointCalibrationPlugin::~NPointCalibrationPlugin() {}
 
-bool NPointCalibrationPlugin::initialize()
-{
+bool NPointCalibrationPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -40,20 +35,17 @@ bool NPointCalibrationPlugin::initialize()
     return true;
 }
 
-void NPointCalibrationPlugin::shutdown()
-{
+void NPointCalibrationPlugin::shutdown() {
     clearPoints();
     ModuleBase::shutdown();
 }
 
-void NPointCalibrationPlugin::clearPoints()
-{
+void NPointCalibrationPlugin::clearPoints() {
     m_calibPoints.clear();
     m_calibResult.isValid = false;
 }
 
-bool NPointCalibrationPlugin::addPoint(double imgX, double imgY, double worldX, double worldY)
-{
+bool NPointCalibrationPlugin::addPoint(double imgX, double imgY, double worldX, double worldY) {
     CalibPoint point;
     point.imageX = imgX;
     point.imageY = imgY;
@@ -63,8 +55,7 @@ bool NPointCalibrationPlugin::addPoint(double imgX, double imgY, double worldX, 
     return true;
 }
 
-bool NPointCalibrationPlugin::computeCalibration()
-{
+bool NPointCalibrationPlugin::computeCalibration() {
     if (m_calibPoints.size() < 4) {
         Logger::instance().warning("NPointCalibration: Need at least 4 points for calibration", "Calibration");
         return false;
@@ -81,7 +72,8 @@ bool NPointCalibrationPlugin::computeCalibration()
             m_calibResult.homography = cv::findHomography(srcPoints, dstPoints, cv::RANSAC);
             if (!m_calibResult.homography.empty()) {
                 m_calibResult.isValid = true;
-                Logger::instance().info("NPointCalibration: Perspective calibration computed successfully", "Calibration");
+                Logger::instance().info("NPointCalibration: Perspective calibration computed successfully",
+                                        "Calibration");
             }
         } else if (m_calibType == CalibrationType::Affine) {
             m_calibResult.affineMatrix = cv::estimateAffine2D(srcPoints, dstPoints);
@@ -109,8 +101,7 @@ bool NPointCalibrationPlugin::computeCalibration()
     return m_calibResult.isValid;
 }
 
-cv::Point2d NPointCalibrationPlugin::imageToWorld(double imgX, double imgY)
-{
+cv::Point2d NPointCalibrationPlugin::imageToWorld(double imgX, double imgY) {
     if (!m_calibResult.isValid) {
         return cv::Point2d(imgX, imgY);
     }
@@ -131,8 +122,7 @@ cv::Point2d NPointCalibrationPlugin::imageToWorld(double imgX, double imgY)
     return cv::Point2d(imgX, imgY);
 }
 
-cv::Point2d NPointCalibrationPlugin::worldToImage(double worldX, double worldY)
-{
+cv::Point2d NPointCalibrationPlugin::worldToImage(double worldX, double worldY) {
     if (!m_calibResult.isValid) {
         return cv::Point2d(worldX, worldY);
     }
@@ -155,8 +145,7 @@ cv::Point2d NPointCalibrationPlugin::worldToImage(double worldX, double worldY)
     return cv::Point2d(worldX, worldY);
 }
 
-bool NPointCalibrationPlugin::process(const ImageData& input, ImageData& output)
-{
+bool NPointCalibrationPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -207,9 +196,8 @@ bool NPointCalibrationPlugin::process(const ImageData& input, ImageData& output)
         output.setData("point_count", static_cast<int>(m_calibPoints.size()));
 
         if (m_inverseTransform && !m_inputImage.empty()) {
-            cv::Size targetSize = (m_outputWidth > 0 && m_outputHeight > 0)
-                ? cv::Size(m_outputWidth, m_outputHeight)
-                : m_inputImage.size();
+            cv::Size targetSize = (m_outputWidth > 0 && m_outputHeight > 0) ? cv::Size(m_outputWidth, m_outputHeight)
+                                                                            : m_inputImage.size();
             cv::Mat result;
             if (m_calibType == CalibrationType::Perspective && !m_calibResult.homography.empty()) {
                 cv::warpPerspective(m_inputImage, result, m_calibResult.homography, targetSize);
@@ -221,7 +209,9 @@ bool NPointCalibrationPlugin::process(const ImageData& input, ImageData& output)
             }
         }
 
-        Logger::instance().info(QString("NPointCalibration: Applied calibration, error: %1px").arg(m_calibResult.reprojectionError), "Calibration");
+        Logger::instance().info(
+            QString("NPointCalibration: Applied calibration, error: %1px").arg(m_calibResult.reprojectionError),
+            "Calibration");
         return true;
     } else {
         output.setData("calibration_valid", false);
@@ -236,15 +226,13 @@ bool NPointCalibrationPlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-bool NPointCalibrationPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool NPointCalibrationPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     Q_UNUSED(params);
     error.clear();
     return true;
 }
 
-QWidget* NPointCalibrationPlugin::createConfigWidget()
-{
+QWidget* NPointCalibrationPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -256,7 +244,8 @@ QWidget* NPointCalibrationPlugin::createConfigWidget()
     typeCombo->addItem(tr("仿射变换"), "Affine");
     QString currentType = m_params["calibrationType"].toString("Perspective");
     int typeIndex = typeCombo->findData(currentType);
-    if (typeIndex >= 0) typeCombo->setCurrentIndex(typeIndex);
+    if (typeIndex >= 0)
+        typeCombo->setCurrentIndex(typeIndex);
     typeLayout->addWidget(new QLabel(tr("变换类型:")));
     typeLayout->addWidget(typeCombo);
 
@@ -287,13 +276,10 @@ QWidget* NPointCalibrationPlugin::createConfigWidget()
     layout->addStretch();
 
     // 信号连接
-    connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int index) {
-        setParam("calibrationType", typeCombo->itemData(index).toString());
-    });
+    connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [=](int index) { setParam("calibrationType", typeCombo->itemData(index).toString()); });
 
-    connect(inverseCheck, &QCheckBox::toggled, this, [=](bool checked) {
-        setParam("inverseTransform", checked);
-    });
+    connect(inverseCheck, &QCheckBox::toggled, this, [=](bool checked) { setParam("inverseTransform", checked); });
 
     connect(clearBtn, &QPushButton::clicked, this, [=]() {
         // 阶段 1: 不直接 clearPoints()，改为设置标记，确定后由主程序执行
@@ -307,8 +293,7 @@ QWidget* NPointCalibrationPlugin::createConfigWidget()
     return widget;
 }
 
-IModule* NPointCalibrationPlugin::cloneImpl() const
-{
+IModule* NPointCalibrationPlugin::cloneImpl() const {
     return new NPointCalibrationPlugin();
 }
 

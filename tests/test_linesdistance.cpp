@@ -6,6 +6,22 @@
 
 using namespace DeepLux;
 
+// 辅助：运行 LinesDistance 并返回最近点间距（应≈distance）
+static double runNearestGap(QVector<QPointF> l1, QVector<QPointF> l2, double& dist) {
+    LinesDistancePlugin plugin;
+    plugin.initialize();
+    ImageData input;
+    input.setData("line1", QVariant::fromValue(l1));
+    input.setData("line2", QVariant::fromValue(l2));
+    ImageData output;
+    if (!plugin.execute(input, output))
+        return -1;
+    dist = output.data("distance").toDouble();
+    const double dx = output.data("nearest_x2").toDouble() - output.data("nearest_x1").toDouble();
+    const double dy = output.data("nearest_y2").toDouble() - output.data("nearest_y1").toDouble();
+    return std::sqrt(dx * dx + dy * dy);
+}
+
 class TestLinesDistance : public QObject {
     Q_OBJECT
 
@@ -131,6 +147,35 @@ private slots:
         QCOMPARE(output.data("nearest_y1").toDouble(), 0.0);
         QCOMPARE(output.data("nearest_x2").toDouble(), 3.0);
         QCOMPARE(output.data("nearest_y2").toDouble(), 0.0);
+    }
+
+    void testIntersectingNearestPointsCoincide() {
+        // P1-2: 交叉线段距离 0，最近点应为真实交点（两点重合）
+        // A [(0,0)-(4,4)]，B [(0,4)-(4,0)]，交点 (2,2)
+        double dist = 0;
+        const double gap = runNearestGap({QPointF(0, 0), QPointF(4, 4)}, {QPointF(0, 4), QPointF(4, 0)}, dist);
+        QVERIFY(gap >= 0);
+        QCOMPARE(dist, 0.0);
+        QVERIFY2(qAbs(gap - dist) < 1e-6,
+                 qPrintable(QString("intersect nearest points must coincide; gap=%1").arg(gap)));
+    }
+
+    void testEndpointTouchingNearestPointsCoincide() {
+        // P1-2: 端点接触距离 0，最近点重合于接触点 (1,0)
+        double dist = 0;
+        const double gap = runNearestGap({QPointF(0, 0), QPointF(1, 0)}, {QPointF(1, 0), QPointF(2, 1)}, dist);
+        QVERIFY(gap >= 0);
+        QCOMPARE(dist, 0.0);
+        QVERIFY2(qAbs(gap) < 1e-6, "touching endpoints must coincide");
+    }
+
+    void testCollinearOverlapNearestPointsCoincide() {
+        // P1-2: 共线重叠距离 0，最近点重合
+        double dist = 0;
+        const double gap = runNearestGap({QPointF(0, 0), QPointF(2, 0)}, {QPointF(1, 0), QPointF(3, 0)}, dist);
+        QVERIFY(gap >= 0);
+        QCOMPARE(dist, 0.0);
+        QVERIFY2(qAbs(gap) < 1e-6, "collinear overlap nearest points must coincide");
     }
 
     void testMissingLine1() {

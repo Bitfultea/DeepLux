@@ -3,17 +3,12 @@
 namespace DeepLux {
 
 TerminalScreen::TerminalScreen(int rows, int cols)
-    : m_rows(rows)
-    , m_cols(cols)
-    , m_scrollTop(0)
-    , m_scrollBottom(rows - 1)
-{
+    : m_rows(rows), m_cols(cols), m_scrollTop(0), m_scrollBottom(rows - 1) {
     initScreen(m_screen, rows, cols);
     initScreen(m_altScreen, rows, cols);
 }
 
-void TerminalScreen::initScreen(QVector<QVector<Cell>>& screen, int rows, int cols)
-{
+void TerminalScreen::initScreen(QVector<QVector<Cell>>& screen, int rows, int cols) {
     screen.resize(rows);
     for (int r = 0; r < rows; ++r) {
         screen[r].resize(cols);
@@ -23,9 +18,9 @@ void TerminalScreen::initScreen(QVector<QVector<Cell>>& screen, int rows, int co
     }
 }
 
-void TerminalScreen::resize(int rows, int cols)
-{
-    if (rows <= 0 || cols <= 0) return;
+void TerminalScreen::resize(int rows, int cols) {
+    if (rows <= 0 || cols <= 0)
+        return;
 
     int oldRows = m_rows;
     int oldCols = m_cols;
@@ -59,10 +54,11 @@ void TerminalScreen::resize(int rows, int cols)
     }
 }
 
-void TerminalScreen::putChar(QChar c)
-{
-    if (m_cursorRow < 0 || m_cursorRow >= m_rows) return;
-    if (m_cursorCol < 0) m_cursorCol = 0;
+void TerminalScreen::putChar(QChar c) {
+    if (m_cursorRow < 0 || m_cursorRow >= m_rows)
+        return;
+    if (m_cursorCol < 0)
+        m_cursorCol = 0;
     // m_cursorCol >= m_cols 时由后面的换行逻辑处理，不要直接丢弃
 
     if (c == QChar('\n')) {
@@ -126,38 +122,32 @@ void TerminalScreen::putChar(QChar c)
     // 其他控制字符忽略
 }
 
-void TerminalScreen::putString(const QString& s)
-{
+void TerminalScreen::putString(const QString& s) {
     for (QChar c : s) {
         putChar(c);
     }
 }
 
-void TerminalScreen::setCursor(int row, int col)
-{
+void TerminalScreen::setCursor(int row, int col) {
     m_cursorRow = qBound(0, row, m_rows - 1);
     m_cursorCol = qBound(0, col, m_cols - 1);
 }
 
-void TerminalScreen::moveCursor(int dr, int dc)
-{
+void TerminalScreen::moveCursor(int dr, int dc) {
     setCursor(m_cursorRow + dr, m_cursorCol + dc);
 }
 
-void TerminalScreen::saveCursor()
-{
+void TerminalScreen::saveCursor() {
     m_savedRow = m_cursorRow;
     m_savedCol = m_cursorCol;
 }
 
-void TerminalScreen::restoreCursor()
-{
+void TerminalScreen::restoreCursor() {
     m_cursorRow = qBound(0, m_savedRow, m_rows - 1);
     m_cursorCol = qBound(0, m_savedCol, m_cols - 1);
 }
 
-void TerminalScreen::clearScreen()
-{
+void TerminalScreen::clearScreen() {
     for (int r = 0; r < m_rows; ++r) {
         for (int c = 0; c < m_cols; ++c) {
             m_screen[r][c] = Cell();
@@ -168,35 +158,34 @@ void TerminalScreen::clearScreen()
     m_cursorCol = 0;
 }
 
-void TerminalScreen::clearToEndOfLine()
-{
-    if (m_cursorRow < 0 || m_cursorRow >= m_rows) return;
+void TerminalScreen::clearToEndOfLine() {
+    if (m_cursorRow < 0 || m_cursorRow >= m_rows)
+        return;
     markDirty(m_cursorRow);
     for (int c = m_cursorCol; c < m_cols; ++c) {
         m_screen[m_cursorRow][c] = Cell();
     }
 }
 
-void TerminalScreen::clearToStartOfLine()
-{
-    if (m_cursorRow < 0 || m_cursorRow >= m_rows) return;
+void TerminalScreen::clearToStartOfLine() {
+    if (m_cursorRow < 0 || m_cursorRow >= m_rows)
+        return;
     markDirty(m_cursorRow);
     for (int c = 0; c <= m_cursorCol; ++c) {
         m_screen[m_cursorRow][c] = Cell();
     }
 }
 
-void TerminalScreen::clearLine()
-{
-    if (m_cursorRow < 0 || m_cursorRow >= m_rows) return;
+void TerminalScreen::clearLine() {
+    if (m_cursorRow < 0 || m_cursorRow >= m_rows)
+        return;
     markDirty(m_cursorRow);
     for (int c = 0; c < m_cols; ++c) {
         m_screen[m_cursorRow][c] = Cell();
     }
 }
 
-void TerminalScreen::clearToEndOfScreen()
-{
+void TerminalScreen::clearToEndOfScreen() {
     clearToEndOfLine();
     for (int r = m_cursorRow + 1; r < m_rows; ++r) {
         markDirty(r);
@@ -206,8 +195,7 @@ void TerminalScreen::clearToEndOfScreen()
     }
 }
 
-void TerminalScreen::clearToStartOfScreen()
-{
+void TerminalScreen::clearToStartOfScreen() {
     for (int r = 0; r < m_cursorRow; ++r) {
         markDirty(r);
         for (int c = 0; c < m_cols; ++c) {
@@ -217,9 +205,9 @@ void TerminalScreen::clearToStartOfScreen()
     clearToStartOfLine();
 }
 
-void TerminalScreen::scrollUp(int lines)
-{
-    if (lines <= 0) return;
+void TerminalScreen::scrollUp(int lines) {
+    if (lines <= 0)
+        return;
     int top = m_scrollTop;
     int bottom = m_scrollBottom;
     int height = bottom - top + 1;
@@ -248,9 +236,9 @@ void TerminalScreen::scrollUp(int lines)
     }
 }
 
-void TerminalScreen::scrollDown(int lines)
-{
-    if (lines <= 0) return;
+void TerminalScreen::scrollDown(int lines) {
+    if (lines <= 0)
+        return;
     int top = m_scrollTop;
     int bottom = m_scrollBottom;
     int height = bottom - top + 1;
@@ -274,17 +262,17 @@ void TerminalScreen::scrollDown(int lines)
     }
 }
 
-void TerminalScreen::setScrollRegion(int top, int bottom)
-{
+void TerminalScreen::setScrollRegion(int top, int bottom) {
     m_scrollTop = qBound(0, top, m_rows - 1);
     m_scrollBottom = qBound(m_scrollTop, bottom, m_rows - 1);
 }
 
-void TerminalScreen::insertChars(int count)
-{
-    if (m_cursorRow < 0 || m_cursorRow >= m_rows) return;
+void TerminalScreen::insertChars(int count) {
+    if (m_cursorRow < 0 || m_cursorRow >= m_rows)
+        return;
     count = qBound(0, count, m_cols - m_cursorCol);
-    if (count <= 0) return;
+    if (count <= 0)
+        return;
 
     markDirty(m_cursorRow);
     // 从右向左移动
@@ -297,11 +285,12 @@ void TerminalScreen::insertChars(int count)
     }
 }
 
-void TerminalScreen::deleteChars(int count)
-{
-    if (m_cursorRow < 0 || m_cursorRow >= m_rows) return;
+void TerminalScreen::deleteChars(int count) {
+    if (m_cursorRow < 0 || m_cursorRow >= m_rows)
+        return;
     count = qBound(0, count, m_cols - m_cursorCol);
-    if (count <= 0) return;
+    if (count <= 0)
+        return;
 
     markDirty(m_cursorRow);
     // 向左移动
@@ -314,11 +303,12 @@ void TerminalScreen::deleteChars(int count)
     }
 }
 
-void TerminalScreen::insertLines(int count)
-{
-    if (m_cursorRow < m_scrollTop || m_cursorRow > m_scrollBottom) return;
+void TerminalScreen::insertLines(int count) {
+    if (m_cursorRow < m_scrollTop || m_cursorRow > m_scrollBottom)
+        return;
     count = qBound(0, count, m_scrollBottom - m_cursorRow + 1);
-    if (count <= 0) return;
+    if (count <= 0)
+        return;
 
     for (int r = m_cursorRow; r <= m_scrollBottom; ++r) {
         markDirty(r);
@@ -335,11 +325,12 @@ void TerminalScreen::insertLines(int count)
     }
 }
 
-void TerminalScreen::deleteLines(int count)
-{
-    if (m_cursorRow < m_scrollTop || m_cursorRow > m_scrollBottom) return;
+void TerminalScreen::deleteLines(int count) {
+    if (m_cursorRow < m_scrollTop || m_cursorRow > m_scrollBottom)
+        return;
     count = qBound(0, count, m_scrollBottom - m_cursorRow + 1);
-    if (count <= 0) return;
+    if (count <= 0)
+        return;
 
     for (int r = m_cursorRow; r <= m_scrollBottom; ++r) {
         markDirty(r);
@@ -356,9 +347,9 @@ void TerminalScreen::deleteLines(int count)
     }
 }
 
-void TerminalScreen::useAlternateScreen(bool alternate)
-{
-    if (alternate == m_usingAltScreen) return;
+void TerminalScreen::useAlternateScreen(bool alternate) {
+    if (alternate == m_usingAltScreen)
+        return;
 
     if (alternate) {
         // 切换到交替屏幕：保存当前屏幕到主缓冲区，清空交替屏幕
@@ -375,72 +366,80 @@ void TerminalScreen::useAlternateScreen(bool alternate)
     }
 }
 
-const Cell& TerminalScreen::cellAt(int row, int col) const
-{
+const Cell& TerminalScreen::cellAt(int row, int col) const {
     static Cell emptyCell;
-    if (row < 0 || row >= m_rows || col < 0 || col >= m_cols) return emptyCell;
+    if (row < 0 || row >= m_rows || col < 0 || col >= m_cols)
+        return emptyCell;
     return m_screen[row][col];
 }
 
-Cell& TerminalScreen::cellAt(int row, int col)
-{
+Cell& TerminalScreen::cellAt(int row, int col) {
     // 注意：不检查越界，调用方需保证
     return m_screen[row][col];
 }
 
-const QVector<Cell>& TerminalScreen::scrollbackLine(int index) const
-{
+const QVector<Cell>& TerminalScreen::scrollbackLine(int index) const {
     static QVector<Cell> emptyLine;
-    if (index < 0 || index >= m_scrollback.size()) return emptyLine;
+    if (index < 0 || index >= m_scrollback.size())
+        return emptyLine;
     return m_scrollback[index];
 }
 
-void TerminalScreen::clearScrollback()
-{
+void TerminalScreen::clearScrollback() {
     m_scrollback.clear();
 }
 
-bool TerminalScreen::isWideChar(QChar c)
-{
+bool TerminalScreen::isWideChar(QChar c) {
     ushort u = c.unicode();
     // CJK Unified Ideographs Extension A
-    if (u >= 0x3400 && u <= 0x4DBF) return true;
+    if (u >= 0x3400 && u <= 0x4DBF)
+        return true;
     // CJK Unified Ideographs
-    if (u >= 0x4E00 && u <= 0x9FFF) return true;
+    if (u >= 0x4E00 && u <= 0x9FFF)
+        return true;
     // Hangul Syllables
-    if (u >= 0xAC00 && u <= 0xD7AF) return true;
+    if (u >= 0xAC00 && u <= 0xD7AF)
+        return true;
     // CJK Compatibility Ideographs
-    if (u >= 0xF900 && u <= 0xFAFF) return true;
+    if (u >= 0xF900 && u <= 0xFAFF)
+        return true;
     // Fullwidth ASCII variants
-    if (u >= 0xFF01 && u <= 0xFF5E) return true;
+    if (u >= 0xFF01 && u <= 0xFF5E)
+        return true;
     // Fullwidth brackets and halfwidth Katakana
-    if (u >= 0xFF5F && u <= 0xFF60) return true;
+    if (u >= 0xFF5F && u <= 0xFF60)
+        return true;
     // Halfwidth CJK punctuation / Halfwidth Katakana
-    if (u >= 0xFFE0 && u <= 0xFFE6) return true;
+    if (u >= 0xFFE0 && u <= 0xFFE6)
+        return true;
     // CJK Symbols and Punctuation
-    if (u >= 0x3000 && u <= 0x303F) return true;
+    if (u >= 0x3000 && u <= 0x303F)
+        return true;
     // Hiragana
-    if (u >= 0x3040 && u <= 0x309F) return true;
+    if (u >= 0x3040 && u <= 0x309F)
+        return true;
     // Katakana
-    if (u >= 0x30A0 && u <= 0x30FF) return true;
+    if (u >= 0x30A0 && u <= 0x30FF)
+        return true;
     // Hangul Jamo
-    if (u >= 0x1100 && u <= 0x11FF) return true;
+    if (u >= 0x1100 && u <= 0x11FF)
+        return true;
     // CJK Strokes, Enclosed CJK Letters and Months
-    if (u >= 0x3200 && u <= 0x32FF) return true;
+    if (u >= 0x3200 && u <= 0x32FF)
+        return true;
     // CJK Compatibility
-    if (u >= 0x3300 && u <= 0x33FF) return true;
+    if (u >= 0x3300 && u <= 0x33FF)
+        return true;
     // CJK Unified Ideographs Extension B 的一部分（在 BMP 外，QChar 无法直接表示）
     return false;
 }
 
-void TerminalScreen::setScrollOffset(int offset)
-{
+void TerminalScreen::setScrollOffset(int offset) {
     int maxOffset = qMax(0, m_scrollback.size());
     m_scrollOffset = qBound(0, offset, maxOffset);
 }
 
-void TerminalScreen::addLineToScrollback(const QVector<Cell>& line)
-{
+void TerminalScreen::addLineToScrollback(const QVector<Cell>& line) {
     m_scrollback.append(line);
     // 限制 scrollback 大小，防止内存无限增长
     const int MAX_SCROLLBACK = 10000;

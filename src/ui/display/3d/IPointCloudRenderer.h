@@ -1,19 +1,13 @@
 #pragma once
 
+#include "PointCloudGPUBuffer.h"
+
 #include <QColor>
 #include <QMatrix4x4>
-#include "PointCloudGPUBuffer.h"
 
 namespace DeepLux {
 
-enum class ColorMode {
-    Uniform = 0,
-    RGB = 1,
-    Height = 2,
-    Intensity = 3,
-    Normal = 4,
-    BlinnPhong = 5
-};
+enum class ColorMode { Uniform = 0, RGB = 1, Height = 2, Intensity = 3, Normal = 4, BlinnPhong = 5 };
 
 class IPointCloudRenderer {
 public:

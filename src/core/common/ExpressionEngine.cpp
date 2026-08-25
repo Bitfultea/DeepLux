@@ -1,26 +1,23 @@
 #include "ExpressionEngine.h"
+
 #include "common/Logger.h"
+
 #include <QRegularExpression>
 
 namespace DeepLux {
 
 ExpressionEngine* ExpressionEngine::s_instance = nullptr;
 
-ExpressionEngine& ExpressionEngine::instance()
-{
+ExpressionEngine& ExpressionEngine::instance() {
     if (!s_instance) {
         s_instance = new ExpressionEngine();
     }
     return *s_instance;
 }
 
-ExpressionEngine::ExpressionEngine(QObject* parent)
-    : QObject(parent)
-{
-}
+ExpressionEngine::ExpressionEngine(QObject* parent) : QObject(parent) {}
 
-bool ExpressionEngine::compile(const QString& expression, const QString& context)
-{
+bool ExpressionEngine::compile(const QString& expression, const QString& context) {
     Q_UNUSED(context)
 
     m_expression = expression;
@@ -44,8 +41,7 @@ bool ExpressionEngine::compile(const QString& expression, const QString& context
     return true;
 }
 
-bool ExpressionEngine::evaluate()
-{
+bool ExpressionEngine::evaluate() {
     if (!m_compiled) {
         m_errorMessage = "Expression not compiled";
         emit evaluationFailed(m_errorMessage);
@@ -77,8 +73,7 @@ bool ExpressionEngine::evaluate()
     }
 
     // String literal
-    if ((expr.startsWith("\"") && expr.endsWith("\"")) ||
-        (expr.startsWith("'") && expr.endsWith("'"))) {
+    if ((expr.startsWith("\"") && expr.endsWith("\"")) || (expr.startsWith("'") && expr.endsWith("'"))) {
         m_result = expr.mid(1, expr.length() - 2);
         emit evaluationSuccess(m_result);
         return true;
@@ -89,26 +84,26 @@ bool ExpressionEngine::evaluate()
     return true;
 }
 
-QVariant ExpressionEngine::result() const
-{
+QVariant ExpressionEngine::result() const {
     return m_result;
 }
 
-QVariant ExpressionEngine::evaluateExpression(const QString& expression,
-                                             const QMap<QString, QVariant>& variables)
-{
+QVariant ExpressionEngine::evaluateExpression(const QString& expression, const QMap<QString, QVariant>& variables) {
     Q_UNUSED(variables)
 
     QString expr = expression.trimmed();
 
     // Boolean literals
-    if (expr == "true" || expr == "True" || expr == "TRUE") return true;
-    if (expr == "false" || expr == "False" || expr == "FALSE") return false;
+    if (expr == "true" || expr == "True" || expr == "TRUE")
+        return true;
+    if (expr == "false" || expr == "False" || expr == "FALSE")
+        return false;
 
     // Numeric values
     bool ok;
     double num = expr.toDouble(&ok);
-    if (ok) return num;
+    if (ok)
+        return num;
 
     // Check for variable references
     if (variables.contains(expr)) {
@@ -119,8 +114,7 @@ QVariant ExpressionEngine::evaluateExpression(const QString& expression,
     return expr;
 }
 
-bool ExpressionEngine::validateExpression(const QString& expression, QString& error)
-{
+bool ExpressionEngine::validateExpression(const QString& expression, QString& error) {
     if (expression.isEmpty()) {
         error = "Empty expression";
         return false;

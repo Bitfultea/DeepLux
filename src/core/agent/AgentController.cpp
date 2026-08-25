@@ -26,11 +26,7 @@ constexpr int kMaxToolCallsPerTurn = 10;
 
 bool isReadOnlyToolName(const QString& toolName) {
     static const QStringList readOnlyTools = {
-        "get_flow_state",
-        "get_available_plugins",
-        "get_module_params_schema",
-        "get_run_results",
-        "read_documentation",
+        "get_flow_state", "get_available_plugins", "get_module_params_schema", "get_run_results", "read_documentation",
     };
     return readOnlyTools.contains(toolName);
 }
@@ -503,7 +499,10 @@ void AgentController::trimHistoryIfNeeded() {
     while (estimated > maxEstTokens) {
         int secondUserIdx = -1, userCount = 0;
         for (int i = 0; i < m_conversationHistory.size(); ++i)
-            if (m_conversationHistory[i].role == "user" && ++userCount == 2) { secondUserIdx = i; break; }
+            if (m_conversationHistory[i].role == "user" && ++userCount == 2) {
+                secondUserIdx = i;
+                break;
+            }
         if (secondUserIdx > 1) {
             m_conversationHistory = m_conversationHistory.mid(secondUserIdx);
             trimLeadingPartialTurn();

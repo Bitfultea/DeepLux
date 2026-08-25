@@ -4,8 +4,7 @@
 
 namespace DeepLux {
 
-class IfPlugin : public ModuleBase
-{
+class IfPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -14,15 +13,27 @@ public:
     explicit IfPlugin(QObject* parent = nullptr);
     ~IfPlugin() override = default;
 
-    QString moduleId() const override { return "com.deeplux.plugin.if"; }
-    QString name() const override { return tr("条件分支"); }
-    QString category() const override { return "logic"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.if";
+    }
+    QString name() const override {
+        return tr("条件分支");
+    }
+    QString category() const override {
+        return "logic";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
     QString description() const override {
         return tr("条件分支；无结束节点时控制紧随其后的模块");
     }
-    ControlFlowType flowControlType() const override { return ControlFlowType::Conditional; }
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::Conditional;
+    }
 
     bool initialize() override;
     QWidget* createConfigWidget() override;
@@ -35,10 +46,7 @@ protected:
 private:
     bool evaluateCondition();
 
-    enum class ConditionType {
-        BoolLink,
-        Expression
-    };
+    enum class ConditionType { BoolLink, Expression };
 
     ConditionType m_conditionType = ConditionType::BoolLink;
     QString m_boolLinkText;
@@ -46,21 +54,34 @@ private:
     bool m_boolInversion = false;
 };
 
-class IfEndPlugin : public ModuleBase
-{
+class IfEndPlugin : public ModuleBase {
     Q_OBJECT
 
 public:
     explicit IfEndPlugin(QObject* parent = nullptr);
     ~IfEndPlugin() override = default;
 
-    QString moduleId() const override { return "com.deeplux.plugin.if.end"; }
-    QString name() const override { return tr("条件结束"); }
-    QString category() const override { return "logic"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("条件分支结束"); }
-    ControlFlowType flowControlType() const override { return ControlFlowType::ConditionalEnd; }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.if.end";
+    }
+    QString name() const override {
+        return tr("条件结束");
+    }
+    QString category() const override {
+        return "logic";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("条件分支结束");
+    }
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::ConditionalEnd;
+    }
 
 protected:
     bool process(const ImageData& input, ImageData& output) override;

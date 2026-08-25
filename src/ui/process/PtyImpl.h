@@ -1,8 +1,8 @@
 #ifndef DEEPLUX_PTY_IMPL_H
 #define DEEPLUX_PTY_IMPL_H
 
-#include <QObject>
 #include <QByteArray>
+#include <QObject>
 #include <QString>
 
 namespace DeepLux {
@@ -13,8 +13,7 @@ namespace DeepLux {
  * Linux 使用 POSIX PTY (/dev/ptmx)
  * Windows 使用 ConPTY (CreatePseudoConsole)
  */
-class PtyImpl : public QObject
-{
+class PtyImpl : public QObject {
     Q_OBJECT
 
 public:

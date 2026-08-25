@@ -8,8 +8,7 @@
 
 namespace DeepLux {
 
-class JigsawPuzzlePlugin : public ModuleBase
-{
+class JigsawPuzzlePlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -18,12 +17,24 @@ public:
     explicit JigsawPuzzlePlugin(QObject* parent = nullptr);
     ~JigsawPuzzlePlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.jigsawsolver"; }
-    QString name() const override { return tr("拼图求解"); }
-    QString category() const override { return "image_processing"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("将碎片图像拼接成完整图像"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.jigsawsolver";
+    }
+    QString name() const override {
+        return tr("拼图求解");
+    }
+    QString category() const override {
+        return "image_processing";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("将碎片图像拼接成完整图像");
+    }
 
     bool initialize() override;
     void shutdown() override;

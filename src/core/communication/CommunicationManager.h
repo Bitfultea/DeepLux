@@ -1,35 +1,24 @@
 #pragma once
 
-#include <QObject>
-#include <QString>
-#include <QList>
 #include <QJsonObject>
+#include <QList>
+#include <QObject>
+#include <QSerialPort>
+#include <QString>
 #include <QTcpServer>
 #include <QTcpSocket>
-#include <QSerialPort>
 
 namespace DeepLux {
 
 /**
  * @brief 通讯类型
  */
-enum class CommunicationType {
-    TCP_Server,
-    TCP_Client,
-    SerialPort,
-    PLC
-};
+enum class CommunicationType { TCP_Server, TCP_Client, SerialPort, PLC };
 
 /**
  * @brief 通讯状态
  */
-enum class CommunicationState {
-    Disconnected,
-    Connecting,
-    Connected,
-    Listening,
-    Error
-};
+enum class CommunicationState { Disconnected, Connecting, Connected, Listening, Error };
 
 /**
  * @brief 通讯配置
@@ -56,15 +45,16 @@ struct CommunicationConfig {
 /**
  * @brief 通讯管理器
  */
-class CommunicationManager : public QObject
-{
+class CommunicationManager : public QObject {
     Q_OBJECT
 
 public:
     static CommunicationManager& instance();
 
     // 通讯配置列表
-    QList<CommunicationConfig> configs() const { return m_configs; }
+    QList<CommunicationConfig> configs() const {
+        return m_configs;
+    }
     CommunicationConfig* findConfig(const QString& configId);
     bool addOrUpdateConfig(const CommunicationConfig& config);
     bool removeConfig(const QString& configId);

@@ -44,9 +44,9 @@ public:
 
 // Helper to check if a QObject implements IDisplayPort via dynamic_cast
 // This works because both IDisplayPort (has virtual dtor) and QObject (has virtual dtor) are polymorphic
-template<typename T>
-inline IDisplayPort* getDisplayPort(T* obj) {
-    if (!obj) return nullptr;
+template <typename T> inline IDisplayPort* getDisplayPort(T* obj) {
+    if (!obj)
+        return nullptr;
     return dynamic_cast<IDisplayPort*>(obj);
 }
 

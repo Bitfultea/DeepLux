@@ -1,7 +1,7 @@
 #pragma once
 
-#include <QWidget>
 #include <QString>
+#include <QWidget>
 
 class QLineEdit;
 class QSpinBox;
@@ -13,8 +13,7 @@ class QLabel;
 /**
  * @brief 配置控件工厂 - 提供统一风格的主题感知控件
  */
-class ConfigWidgetFactory
-{
+class ConfigWidgetFactory {
 public:
     /**
      * @brief 获取全局实例
@@ -29,7 +28,9 @@ public:
     /**
      * @brief 是否为深色主题
      */
-    bool isDarkTheme() const { return m_darkTheme; }
+    bool isDarkTheme() const {
+        return m_darkTheme;
+    }
 
     // ========== 控件创建方法 ==========
 
@@ -51,7 +52,8 @@ public:
     /**
      * @brief 创建浮点数输入框
      */
-    QDoubleSpinBox* createDoubleSpinBox(double min = 0.0, double max = 999999.0, double value = 0.0, int decimals = 3, QWidget* parent = nullptr);
+    QDoubleSpinBox* createDoubleSpinBox(double min = 0.0, double max = 999999.0, double value = 0.0, int decimals = 3,
+                                        QWidget* parent = nullptr);
 
     /**
      * @brief 创建下拉框
@@ -71,12 +73,16 @@ public:
     /**
      * @brief 获取标准间距
      */
-    int standardSpacing() const { return 8; }
+    int standardSpacing() const {
+        return 8;
+    }
 
     /**
      * @brief 获取标准边距
      */
-    int standardMargin() const { return 12; }
+    int standardMargin() const {
+        return 12;
+    }
 
 private:
     ConfigWidgetFactory();
@@ -84,5 +90,5 @@ private:
     ConfigWidgetFactory(const ConfigWidgetFactory&) = delete;
     ConfigWidgetFactory& operator=(const ConfigWidgetFactory&) = delete;
 
-    bool m_darkTheme = true;  // 默认深色主题
+    bool m_darkTheme = true; // 默认深色主题
 };

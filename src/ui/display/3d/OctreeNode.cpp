@@ -1,4 +1,5 @@
 #include "OctreeNode.h"
+
 #include "PointCloudGPUBuffer.h"
 
 namespace DeepLux {

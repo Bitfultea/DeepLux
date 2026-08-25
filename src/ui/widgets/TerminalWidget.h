@@ -1,15 +1,15 @@
 #pragma once
 
-#include <QWidget>
-#include <QLineEdit>
-#include <QHBoxLayout>
-#include <QVBoxLayout>
-#include <QKeyEvent>
 #include <QCompleter>
-#include <QStringListModel>
+#include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
-#include <QString>
+#include <QLineEdit>
 #include <QScrollBar>
+#include <QString>
+#include <QStringListModel>
+#include <QVBoxLayout>
+#include <QWidget>
 
 namespace DeepLux {
 
@@ -28,8 +28,7 @@ class AnsiParser;
  * - stdout/stderr 实时输出
  * - 与 GUI 操作双向同步
  */
-class TerminalWidget : public QWidget
-{
+class TerminalWidget : public QWidget {
     Q_OBJECT
 
 public:

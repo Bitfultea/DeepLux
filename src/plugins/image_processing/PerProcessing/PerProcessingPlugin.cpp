@@ -1,9 +1,11 @@
 #include "PerProcessingPlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
-#include <QLabel>
+
 #include <QComboBox>
+#include <QLabel>
 #include <QSpinBox>
+#include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -11,24 +13,15 @@
 
 namespace DeepLux {
 
-PerProcessingPlugin::PerProcessingPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"processType", "GaussianBlur"},
-        {"kernelSize", 5},
-        {"sigmaX", 1.5},
-        {"iterations", 1}
-    };
+PerProcessingPlugin::PerProcessingPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams =
+        QJsonObject{{"processType", "GaussianBlur"}, {"kernelSize", 5}, {"sigmaX", 1.5}, {"iterations", 1}};
     m_params = m_defaultParams;
 }
 
-PerProcessingPlugin::~PerProcessingPlugin()
-{
-}
+PerProcessingPlugin::~PerProcessingPlugin() {}
 
-bool PerProcessingPlugin::initialize()
-{
+bool PerProcessingPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -36,16 +29,14 @@ bool PerProcessingPlugin::initialize()
     return true;
 }
 
-void PerProcessingPlugin::shutdown()
-{
+void PerProcessingPlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     m_resultMat.release();
 #endif
     ModuleBase::shutdown();
 }
 
-bool PerProcessingPlugin::process(const ImageData& input, ImageData& output)
-{
+bool PerProcessingPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -70,50 +61,40 @@ bool PerProcessingPlugin::process(const ImageData& input, ImageData& output)
     m_iterations = params["iterations"].toInt();
 
     // 确保kernel size是奇数
-    if (m_kernelSize % 2 == 0) m_kernelSize++;
+    if (m_kernelSize % 2 == 0)
+        m_kernelSize++;
 
     cv::Mat gray, processed;
 
     // 根据类型处理
     if (typeStr == "GaussianBlur") {
         cv::GaussianBlur(mat, m_resultMat, cv::Size(m_kernelSize, m_kernelSize), m_sigmaX);
-    }
-    else if (typeStr == "MedianBlur") {
+    } else if (typeStr == "MedianBlur") {
         cv::medianBlur(mat, m_resultMat, m_kernelSize);
-    }
-    else if (typeStr == "BilateralFilter") {
+    } else if (typeStr == "BilateralFilter") {
         cv::bilateralFilter(mat, m_resultMat, m_kernelSize, m_sigmaX * 2, m_sigmaX / 2);
-    }
-    else if (typeStr == "Sobel") {
+    } else if (typeStr == "Sobel") {
         cvtColor(mat, gray, cv::COLOR_BGR2GRAY);
         cv::Sobel(gray, m_resultMat, CV_16S, 1, 1);
         cv::convertScaleAbs(m_resultMat, m_resultMat);
-    }
-    else if (typeStr == "Laplacian") {
+    } else if (typeStr == "Laplacian") {
         cvtColor(mat, gray, cv::COLOR_BGR2GRAY);
         cv::Laplacian(gray, m_resultMat, CV_16S, m_kernelSize);
         cv::convertScaleAbs(m_resultMat, m_resultMat);
-    }
-    else if (typeStr == "Canny") {
+    } else if (typeStr == "Canny") {
         cvtColor(mat, gray, cv::COLOR_BGR2GRAY);
         cv::Canny(gray, m_resultMat, 50, 150, m_kernelSize);
-    }
-    else if (typeStr == "Dilate") {
+    } else if (typeStr == "Dilate") {
         m_resultMat = applyMorphology(mat, cv::MORPH_DILATE);
-    }
-    else if (typeStr == "Erode") {
+    } else if (typeStr == "Erode") {
         m_resultMat = applyMorphology(mat, cv::MORPH_ERODE);
-    }
-    else if (typeStr == "Open") {
+    } else if (typeStr == "Open") {
         m_resultMat = applyMorphology(mat, cv::MORPH_OPEN);
-    }
-    else if (typeStr == "Close") {
+    } else if (typeStr == "Close") {
         m_resultMat = applyMorphology(mat, cv::MORPH_CLOSE);
-    }
-    else if (typeStr == "Gradient") {
+    } else if (typeStr == "Gradient") {
         m_resultMat = applyMorphology(mat, cv::MORPH_GRADIENT);
-    }
-    else {
+    } else {
         m_resultMat = mat;
     }
 
@@ -122,8 +103,8 @@ bool PerProcessingPlugin::process(const ImageData& input, ImageData& output)
     output.setData("processed_width", m_resultMat.cols);
     output.setData("processed_height", m_resultMat.rows);
 
-    Logger::instance().debug(QString("预处理: %1, 尺寸: %2x%3")
-                                .arg(typeStr).arg(m_resultMat.cols).arg(m_resultMat.rows), "PerProcessing");
+    Logger::instance().debug(
+        QString("预处理: %1, 尺寸: %2x%3").arg(typeStr).arg(m_resultMat.cols).arg(m_resultMat.rows), "PerProcessing");
 
     return true;
 #else
@@ -133,8 +114,7 @@ bool PerProcessingPlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-cv::Mat PerProcessingPlugin::applyMorphology(const cv::Mat& input, int operation)
-{
+cv::Mat PerProcessingPlugin::applyMorphology(const cv::Mat& input, int operation) {
 #ifdef DEEPLUX_HAS_OPENCV
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(m_kernelSize, m_kernelSize));
     cv::Mat result;
@@ -145,8 +125,7 @@ cv::Mat PerProcessingPlugin::applyMorphology(const cv::Mat& input, int operation
 #endif
 }
 
-bool PerProcessingPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool PerProcessingPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     int kernelSize = params["kernelSize"].toInt();
     if (kernelSize < 1) {
         error = tr("核大小必须大于0");
@@ -155,8 +134,7 @@ bool PerProcessingPlugin::doValidateParams(const QJsonObject& params, QString& e
     return true;
 }
 
-QWidget* PerProcessingPlugin::createConfigWidget()
-{
+QWidget* PerProcessingPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -176,7 +154,8 @@ QWidget* PerProcessingPlugin::createConfigWidget()
 
     QString currentType = m_params["processType"].toString();
     int idx = typeCombo->findData(currentType);
-    if (idx >= 0) typeCombo->setCurrentIndex(idx);
+    if (idx >= 0)
+        typeCombo->setCurrentIndex(idx);
     layout->addWidget(typeCombo);
 
     layout->addWidget(new QLabel(tr("核大小:")));
@@ -194,23 +173,19 @@ QWidget* PerProcessingPlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, typeCombo](int) {
-        setParam("processType", typeCombo->currentData().toString());
-    });
+    connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this, typeCombo](int) { setParam("processType", typeCombo->currentData().toString()); });
 
-    connect(kernelSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        setParam("kernelSize", value);
-    });
+    connect(kernelSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int value) { setParam("kernelSize", value); });
 
-    connect(iterSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        setParam("iterations", value);
-    });
+    connect(iterSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int value) { setParam("iterations", value); });
 
     return widget;
 }
 
-IModule* PerProcessingPlugin::cloneImpl() const
-{
+IModule* PerProcessingPlugin::cloneImpl() const {
     PerProcessingPlugin* clone = new PerProcessingPlugin();
     clone->setParams(currentParams());
     return clone;

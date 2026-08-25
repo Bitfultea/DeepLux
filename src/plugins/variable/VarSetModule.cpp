@@ -1,20 +1,18 @@
 #include "VarSetModule.h"
+
+#include "core/common/Logger.h"
 #include "core/engine/RunEngine.h"
 #include "core/manager/GlobalVarManager.h"
-#include "core/common/Logger.h"
 
 namespace DeepLux {
 
-VarSetModule::VarSetModule(QObject* parent)
-    : ModuleBase(parent)
-{
+VarSetModule::VarSetModule(QObject* parent) : ModuleBase(parent) {
     m_name = "变量赋值";
     m_moduleId = "VarSetModule";
     m_description = "变量赋值模块";
 }
 
-QJsonObject VarSetModule::defaultParams() const
-{
+QJsonObject VarSetModule::defaultParams() const {
     QJsonObject params;
     params["varName"] = "";
     params["varType"] = "double";
@@ -23,8 +21,7 @@ QJsonObject VarSetModule::defaultParams() const
     return params;
 }
 
-void VarSetModule::setParams(const QJsonObject& params)
-{
+void VarSetModule::setParams(const QJsonObject& params) {
     m_varName = params.value("varName").toString();
     QString typeStr = params.value("varType").toString("double");
     m_varType = VarModel::stringToDataType(typeStr);
@@ -32,8 +29,7 @@ void VarSetModule::setParams(const QJsonObject& params)
     m_varValue = params.value("varValue").toVariant();
 }
 
-bool VarSetModule::process(const ImageData& input, ImageData& output)
-{
+bool VarSetModule::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(input)
     Q_UNUSED(output)
 
@@ -59,8 +55,7 @@ bool VarSetModule::process(const ImageData& input, ImageData& output)
     return true;
 }
 
-QVariant VarSetModule::evaluateSimpleExpression(const QString& expr)
-{
+QVariant VarSetModule::evaluateSimpleExpression(const QString& expr) {
     // 简化表达式处理
     if (expr.isEmpty()) {
         return m_varValue;
@@ -71,7 +66,7 @@ QVariant VarSetModule::evaluateSimpleExpression(const QString& expr)
     double num = expr.toDouble(&ok);
     if (ok) {
         if (m_varType == VarDataType::Int) {
-            return (int)num;
+            return (int) num;
         }
         return num;
     }

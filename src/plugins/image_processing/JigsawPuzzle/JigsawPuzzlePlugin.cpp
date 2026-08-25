@@ -1,8 +1,10 @@
 #include "JigsawPuzzlePlugin.h"
+
 #include "common/Logger.h"
-#include <QVBoxLayout>
+
 #include <QLabel>
 #include <QSpinBox>
+#include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -10,22 +12,14 @@
 
 namespace DeepLux {
 
-JigsawPuzzlePlugin::JigsawPuzzlePlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"rows", 2},
-        {"cols", 2}
-    };
+JigsawPuzzlePlugin::JigsawPuzzlePlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"rows", 2}, {"cols", 2}};
     m_params = m_defaultParams;
 }
 
-JigsawPuzzlePlugin::~JigsawPuzzlePlugin()
-{
-}
+JigsawPuzzlePlugin::~JigsawPuzzlePlugin() {}
 
-bool JigsawPuzzlePlugin::initialize()
-{
+bool JigsawPuzzlePlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -33,16 +27,14 @@ bool JigsawPuzzlePlugin::initialize()
     return true;
 }
 
-void JigsawPuzzlePlugin::shutdown()
-{
+void JigsawPuzzlePlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     m_resultMat.release();
 #endif
     ModuleBase::shutdown();
 }
 
-bool JigsawPuzzlePlugin::process(const ImageData& input, ImageData& output)
-{
+bool JigsawPuzzlePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -110,8 +102,8 @@ bool JigsawPuzzlePlugin::process(const ImageData& input, ImageData& output)
     output.setData("puzzle_cols", m_cols);
     output.setData("puzzle_piece_count", static_cast<int>(pieces.size()));
 
-    Logger::instance().debug(QString("拼图求解: %1x%2, %3个碎片")
-                                .arg(m_rows).arg(m_cols).arg(pieces.size()), "JigsawPuzzle");
+    Logger::instance().debug(QString("拼图求解: %1x%2, %3个碎片").arg(m_rows).arg(m_cols).arg(pieces.size()),
+                             "JigsawPuzzle");
 
     return true;
 #else
@@ -121,10 +113,10 @@ bool JigsawPuzzlePlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-bool JigsawPuzzlePlugin::solvePuzzle(const std::vector<cv::Mat>& pieces, cv::Mat& result, int rows, int cols)
-{
+bool JigsawPuzzlePlugin::solvePuzzle(const std::vector<cv::Mat>& pieces, cv::Mat& result, int rows, int cols) {
     // 简化的拼图求解 - 按相似度匹配
-    if (pieces.empty()) return false;
+    if (pieces.empty())
+        return false;
 
     int pieceWidth = pieces[0].cols;
     int pieceHeight = pieces[0].rows;
@@ -141,8 +133,7 @@ bool JigsawPuzzlePlugin::solvePuzzle(const std::vector<cv::Mat>& pieces, cv::Mat
     return true;
 }
 
-bool JigsawPuzzlePlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool JigsawPuzzlePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     int rows = params["rows"].toInt();
     int cols = params["cols"].toInt();
 
@@ -154,8 +145,7 @@ bool JigsawPuzzlePlugin::doValidateParams(const QJsonObject& params, QString& er
     return true;
 }
 
-QWidget* JigsawPuzzlePlugin::createConfigWidget()
-{
+QWidget* JigsawPuzzlePlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -173,19 +163,16 @@ QWidget* JigsawPuzzlePlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(rowsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        m_params["rows"] = value;
-    });
+    connect(rowsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int value) { m_params["rows"] = value; });
 
-    connect(colsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        m_params["cols"] = value;
-    });
+    connect(colsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int value) { m_params["cols"] = value; });
 
     return widget;
 }
 
-IModule* JigsawPuzzlePlugin::cloneImpl() const
-{
+IModule* JigsawPuzzlePlugin::cloneImpl() const {
     JigsawPuzzlePlugin* clone = new JigsawPuzzlePlugin();
     return clone;
 }

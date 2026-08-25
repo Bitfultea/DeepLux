@@ -1,26 +1,22 @@
 #include "DistancePPPlugin.h"
+
 #include "common/Logger.h"
 #include "core/geometry/MeasurementData.h"
-#include <QVBoxLayout>
+
 #include <QLabel>
+#include <QVBoxLayout>
 #include <cmath>
 
 namespace DeepLux {
 
-DistancePPPlugin::DistancePPPlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-    };
+DistancePPPlugin::DistancePPPlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{};
     m_params = m_defaultParams;
 }
 
-DistancePPPlugin::~DistancePPPlugin()
-{
-}
+DistancePPPlugin::~DistancePPPlugin() {}
 
-bool DistancePPPlugin::initialize()
-{
+bool DistancePPPlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -28,13 +24,11 @@ bool DistancePPPlugin::initialize()
     return true;
 }
 
-void DistancePPPlugin::shutdown()
-{
+void DistancePPPlugin::shutdown() {
     ModuleBase::shutdown();
 }
 
-bool DistancePPPlugin::process(const ImageData& input, ImageData& output)
-{
+bool DistancePPPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     // 获取输入数据
@@ -75,28 +69,25 @@ bool DistancePPPlugin::process(const ImageData& input, ImageData& output)
     output.setData("delta_y", m_resultDeltaY);
 
     QString result = QString("点点距离: %1, ΔX: %2, ΔY: %3")
-                        .arg(m_resultDistance, 0, 'f', 2)
-                        .arg(m_resultDeltaX, 0, 'f', 2)
-                        .arg(m_resultDeltaY, 0, 'f', 2);
+                         .arg(m_resultDistance, 0, 'f', 2)
+                         .arg(m_resultDeltaX, 0, 'f', 2)
+                         .arg(m_resultDeltaY, 0, 'f', 2);
     Logger::instance().debug(result, "DistancePP");
 
     return true;
 }
 
-double DistancePPPlugin::calculateDistance(double x1, double y1, double x2, double y2)
-{
+double DistancePPPlugin::calculateDistance(double x1, double y1, double x2, double y2) {
     return sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
 }
 
-bool DistancePPPlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool DistancePPPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     Q_UNUSED(params);
     error.clear();
     return true;
 }
 
-QWidget* DistancePPPlugin::createConfigWidget()
-{
+QWidget* DistancePPPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
     layout->addWidget(new QLabel(tr("计算两点之间的距离")));
@@ -104,8 +95,7 @@ QWidget* DistancePPPlugin::createConfigWidget()
     return widget;
 }
 
-IModule* DistancePPPlugin::cloneImpl() const
-{
+IModule* DistancePPPlugin::cloneImpl() const {
     DistancePPPlugin* clone = new DistancePPPlugin();
     return clone;
 }

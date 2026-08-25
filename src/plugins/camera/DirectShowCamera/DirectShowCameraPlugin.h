@@ -7,8 +7,7 @@ namespace DeepLux {
 /**
  * @brief DirectShow 相机插件 (Windows)
  */
-class DirectShowCameraPlugin : public ICameraPlugin
-{
+class DirectShowCameraPlugin : public ICameraPlugin {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.ICameraPlugin" FILE "metadata.json")
     Q_INTERFACES(DeepLux::ICameraPlugin)
@@ -18,9 +17,15 @@ public:
     ~DirectShowCameraPlugin() override;
 
     // ICameraPlugin interface
-    QString pluginId() const override { return "directshow"; }
-    QString pluginName() const override { return "DirectShow Camera"; }
-    QString manufacturer() const override { return "Microsoft"; }
+    QString pluginId() const override {
+        return "directshow";
+    }
+    QString pluginName() const override {
+        return "DirectShow Camera";
+    }
+    QString manufacturer() const override {
+        return "Microsoft";
+    }
 
     bool isAvailable() const override;
     QString availabilityMessage() const override;

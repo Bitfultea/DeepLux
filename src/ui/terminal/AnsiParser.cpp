@@ -4,17 +4,13 @@
 
 namespace DeepLux {
 
-AnsiParser::AnsiParser(TerminalScreen* screen, QObject* parent)
-    : QObject(parent)
-    , m_screen(screen)
-{
-}
+AnsiParser::AnsiParser(TerminalScreen* screen, QObject* parent) : QObject(parent), m_screen(screen) {}
 
 AnsiParser::~AnsiParser() = default;
 
-void AnsiParser::parse(const QByteArray& data)
-{
-    if (!m_screen) return;
+void AnsiParser::parse(const QByteArray& data) {
+    if (!m_screen)
+        return;
 
     for (char b : data) {
         processByte(b);
@@ -23,22 +19,20 @@ void AnsiParser::parse(const QByteArray& data)
     emit screenUpdated();
 }
 
-void AnsiParser::parse(const QString& text)
-{
+void AnsiParser::parse(const QString& text) {
     parse(text.toUtf8());
 }
 
-void AnsiParser::writePlainText(const QString& text)
-{
-    if (!m_screen) return;
+void AnsiParser::writePlainText(const QString& text) {
+    if (!m_screen)
+        return;
     for (QChar c : text) {
         m_screen->putChar(c);
     }
     emit screenUpdated();
 }
 
-void AnsiParser::reset()
-{
+void AnsiParser::reset() {
     m_state = State::Ground;
     m_csiParams.clear();
     m_csiPrefix.clear();
@@ -50,8 +44,7 @@ void AnsiParser::reset()
     m_utf8Buffer.clear();
 }
 
-void AnsiParser::processByte(char b)
-{
+void AnsiParser::processByte(char b) {
     uchar ub = static_cast<uchar>(b);
 
     // 非 Ground 状态或 ASCII 字节：直接处理（先清空可能残留的 UTF-8 缓冲区）
@@ -71,9 +64,12 @@ void AnsiParser::processByte(char b)
     // 检查 UTF-8 序列长度
     int expectedLen = 0;
     uchar first = static_cast<uchar>(m_utf8Buffer[0]);
-    if ((first & 0xE0) == 0xC0) expectedLen = 2;
-    else if ((first & 0xF0) == 0xE0) expectedLen = 3;
-    else if ((first & 0xF8) == 0xF0) expectedLen = 4;
+    if ((first & 0xE0) == 0xC0)
+        expectedLen = 2;
+    else if ((first & 0xF0) == 0xE0)
+        expectedLen = 3;
+    else if ((first & 0xF8) == 0xF0)
+        expectedLen = 4;
     else {
         // 非法 UTF-8 起始字节
         processChar(QChar(0xFFFD));
@@ -100,14 +96,10 @@ void AnsiParser::processByte(char b)
     if (expectedLen == 2) {
         codePoint = ((first & 0x1F) << 6) | (m_utf8Buffer[1] & 0x3F);
     } else if (expectedLen == 3) {
-        codePoint = ((first & 0x0F) << 12)
-                  | ((m_utf8Buffer[1] & 0x3F) << 6)
-                  | (m_utf8Buffer[2] & 0x3F);
+        codePoint = ((first & 0x0F) << 12) | ((m_utf8Buffer[1] & 0x3F) << 6) | (m_utf8Buffer[2] & 0x3F);
     } else if (expectedLen == 4) {
-        codePoint = ((first & 0x07) << 18)
-                  | ((m_utf8Buffer[1] & 0x3F) << 12)
-                  | ((m_utf8Buffer[2] & 0x3F) << 6)
-                  | (m_utf8Buffer[3] & 0x3F);
+        codePoint = ((first & 0x07) << 18) | ((m_utf8Buffer[1] & 0x3F) << 12) | ((m_utf8Buffer[2] & 0x3F) << 6) |
+                    (m_utf8Buffer[3] & 0x3F);
     }
 
     // 转换为 QChar(s)
@@ -123,17 +115,17 @@ void AnsiParser::processByte(char b)
     m_utf8Buffer.clear();
 }
 
-void AnsiParser::processChar(QChar c)
-{
-    if (!m_screen) return;
+void AnsiParser::processChar(QChar c) {
+    if (!m_screen)
+        return;
 
     switch (m_state) {
     case State::Ground:
-        if (c.unicode() == 0x1B) {  // ESC
+        if (c.unicode() == 0x1B) { // ESC
             m_state = State::Escape;
-        } else if (c == QChar('\x07')) {  // BEL
+        } else if (c == QChar('\x07')) { // BEL
             emit bell();
-        } else if (c == QChar('\x08')) {  // BS (Backspace)
+        } else if (c == QChar('\x08')) { // BS (Backspace)
             m_screen->moveCursor(0, -1);
         } else if (c.unicode() < 32) {
             // 其他控制字符直接传给 screen（包括 \n, \r, \t）
@@ -254,7 +246,7 @@ void AnsiParser::processChar(QChar c)
 
     case State::DCS:
         if (c.unicode() == 0x1B) {
-            m_state = State::Ignore;  // Expect ST
+            m_state = State::Ignore; // Expect ST
         } else if (c == QChar('\x07')) {
             handleDCS();
             m_state = State::Ground;
@@ -265,7 +257,7 @@ void AnsiParser::processChar(QChar c)
 
     case State::DCString:
         if (c.unicode() == 0x1B) {
-            m_state = State::Ignore;  // Expect ST
+            m_state = State::Ignore; // Expect ST
         } else {
             m_dcsString.append(static_cast<char>(c.unicode()));
         }
@@ -294,8 +286,7 @@ void AnsiParser::processChar(QChar c)
     }
 }
 
-void AnsiParser::handleCSIChar(QChar c)
-{
+void AnsiParser::handleCSIChar(QChar c) {
     if (m_csiPrefix == "?") {
         // DEC Private Mode
         bool set = (c == QChar('h'));
@@ -425,8 +416,7 @@ void AnsiParser::handleCSIChar(QChar c)
     }
 }
 
-void AnsiParser::handleOSC()
-{
+void AnsiParser::handleOSC() {
     if (m_oscParam == 0 || m_oscParam == 2) {
         emit titleChanged(m_oscString);
     } else if (m_oscParam == 888) {
@@ -441,14 +431,12 @@ void AnsiParser::handleOSC()
     m_oscParam = 0;
 }
 
-void AnsiParser::handleDCS()
-{
+void AnsiParser::handleDCS() {
     // DCS 序列通常用于终端特性查询，目前忽略
     m_dcsString.clear();
 }
 
-void AnsiParser::applySGR(const QVector<int>& params)
-{
+void AnsiParser::applySGR(const QVector<int>& params) {
     if (params.isEmpty()) {
         m_screen->currentAttrs().reset();
         return;

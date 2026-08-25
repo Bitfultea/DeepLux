@@ -1,11 +1,11 @@
 #ifndef DEEPLUX_AGENT_TOOL_PREVIEW_CARD_H
 #define DEEPLUX_AGENT_TOOL_PREVIEW_CARD_H
 
-#include <QWidget>
 #include <QJsonObject>
-#include <QList>
 #include <QLabel>
+#include <QList>
 #include <QPushButton>
+#include <QWidget>
 
 namespace DeepLux {
 
@@ -15,8 +15,7 @@ namespace DeepLux {
  * 显示 LLM 计划执行的工具列表，带 [确认]/[取消] 按钮。
  * 作为消息流的一部分插入，样式紧凑。
  */
-class AgentToolPreviewCard : public QWidget
-{
+class AgentToolPreviewCard : public QWidget {
     Q_OBJECT
 
 public:

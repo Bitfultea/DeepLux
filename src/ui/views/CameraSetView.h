@@ -1,16 +1,15 @@
 #pragma once
 
-#include <QDialog>
-#include <QTableWidget>
-#include <QPushButton>
 #include <QComboBox>
+#include <QDialog>
 #include <QLineEdit>
+#include <QPushButton>
 #include <QSpinBox>
+#include <QTableWidget>
 
 namespace DeepLux {
 
-class CameraSetView : public QDialog
-{
+class CameraSetView : public QDialog {
     Q_OBJECT
 
 public:

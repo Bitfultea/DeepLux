@@ -1,14 +1,14 @@
 #pragma once
 
 #include "core/base/ModuleBase.h"
+
+#include <QEventLoop>
 #include <QTcpSocket>
 #include <QTimer>
-#include <QEventLoop>
 
 namespace DeepLux {
 
-class PLCCommunicatePlugin : public ModuleBase
-{
+class PLCCommunicatePlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -17,17 +17,31 @@ public:
     explicit PLCCommunicatePlugin(QObject* parent = nullptr);
     ~PLCCommunicatePlugin() override;
 
-    QString moduleId() const override { return "com.deeplux.plugin.plccommunicate"; }
-    QString name() const override { return tr("PLC通信测试"); }
-    QString category() const override { return "communication"; }
-    QString version() const override { return "1.0.0"; }
-    QString author() const override { return "DeepLux Team"; }
-    QString description() const override { return tr("测试PLC Modbus TCP连接是否正常"); }
+    QString moduleId() const override {
+        return "com.deeplux.plugin.plccommunicate";
+    }
+    QString name() const override {
+        return tr("PLC通信测试");
+    }
+    QString category() const override {
+        return "communication";
+    }
+    QString version() const override {
+        return "1.0.0";
+    }
+    QString author() const override {
+        return "DeepLux Team";
+    }
+    QString description() const override {
+        return tr("测试PLC Modbus TCP连接是否正常");
+    }
 
     bool initialize() override;
     QWidget* createConfigWidget() override;
 
-    int lastWaitMs() const { return m_lastWaitMs; }
+    int lastWaitMs() const {
+        return m_lastWaitMs;
+    }
 
 protected:
     bool process(const ImageData& input, ImageData& output) override;

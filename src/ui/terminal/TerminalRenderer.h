@@ -3,10 +3,10 @@
 
 #include "TerminalScreen.h"
 
-#include <QWidget>
 #include <QFont>
 #include <QFontMetrics>
 #include <QPainter>
+#include <QWidget>
 
 namespace DeepLux {
 
@@ -20,8 +20,7 @@ namespace DeepLux {
  * - 处理鼠标选中
  * - 窗口大小变化时计算新的行列数
  */
-class TerminalRenderer : public QWidget
-{
+class TerminalRenderer : public QWidget {
     Q_OBJECT
 
 public:
@@ -30,18 +29,29 @@ public:
     void setScreen(TerminalScreen* screen);
     void setThemeColors(const QColor& fg, const QColor& bg, const QColor& selectionBg);
 
-    int cellWidth() const { return m_cellWidth; }
-    int cellHeight() const { return m_cellHeight; }
+    int cellWidth() const {
+        return m_cellWidth;
+    }
+    int cellHeight() const {
+        return m_cellHeight;
+    }
 
-    int scrollOffset() const { return m_scrollOffset; }
-    void setScrollOffset(int offset) { m_scrollOffset = offset; update(); }
+    int scrollOffset() const {
+        return m_scrollOffset;
+    }
+    void setScrollOffset(int offset) {
+        m_scrollOffset = offset;
+        update();
+    }
 
     // 像素坐标 -> 单元格坐标
     QPoint pixelToCell(const QPoint& pos) const;
     QPoint cellToPixel(int row, int col) const;
 
     // 选中区域
-    bool hasSelection() const { return m_selection.active; }
+    bool hasSelection() const {
+        return m_selection.active;
+    }
     QString selectedText() const;
     void clearSelection();
 

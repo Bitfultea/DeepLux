@@ -2,13 +2,14 @@
 
 #include "OctreeNode.h"
 #include "PointCloudOctree.h"
-#include <QMatrix4x4>
-#include <QVector3D>
+
 #include <QColor>
+#include <QMatrix4x4>
 #include <QOpenGLShaderProgram>
+#include <QVector3D>
 #include <memory>
-#include <vector>
 #include <unordered_map>
+#include <vector>
 
 namespace DeepLux {
 
@@ -31,18 +32,32 @@ public:
 
     // 设置八叉树
     void setOctree(std::shared_ptr<PointCloudOctree> octree);
-    std::shared_ptr<PointCloudOctree> octree() const { return m_octree; }
+    std::shared_ptr<PointCloudOctree> octree() const {
+        return m_octree;
+    }
 
     // LOD 配置
-    void setLODEnabled(bool enabled) { m_lodEnabled = enabled; }
-    bool isLODEnabled() const { return m_lodEnabled; }
+    void setLODEnabled(bool enabled) {
+        m_lodEnabled = enabled;
+    }
+    bool isLODEnabled() const {
+        return m_lodEnabled;
+    }
 
-    void setMaxLODDepth(int depth) { m_maxLODDepth = depth; }
-    int maxLODDepth() const { return m_maxLODDepth; }
+    void setMaxLODDepth(int depth) {
+        m_maxLODDepth = depth;
+    }
+    int maxLODDepth() const {
+        return m_maxLODDepth;
+    }
 
     // LOD 阈值配置
-    void setLODThreshold(size_t threshold) { m_lodThreshold = threshold; }
-    size_t lodThreshold() const { return m_lodThreshold; }
+    void setLODThreshold(size_t threshold) {
+        m_lodThreshold = threshold;
+    }
+    size_t lodThreshold() const {
+        return m_lodThreshold;
+    }
 
     // 相机设置（用于视锥裁剪和 LOD 计算）
     void setCamera(const CameraController* camera);
@@ -58,16 +73,30 @@ public:
     void clear();
 
     // 状态统计
-    size_t renderedPointCount() const { return m_renderedPointCount; }
-    size_t visibleNodeCount() const { return m_visibleNodeCount; }
-    int currentLODLevel() const { return m_currentLODLevel; }
-    bool isUsingLOD() const { return m_useLOD; }
+    size_t renderedPointCount() const {
+        return m_renderedPointCount;
+    }
+    size_t visibleNodeCount() const {
+        return m_visibleNodeCount;
+    }
+    int currentLODLevel() const {
+        return m_currentLODLevel;
+    }
+    bool isUsingLOD() const {
+        return m_useLOD;
+    }
 
     // 渲染参数
-    void setPointSize(float size) { m_pointSize = size; }
-    float pointSize() const { return m_pointSize; }
+    void setPointSize(float size) {
+        m_pointSize = size;
+    }
+    float pointSize() const {
+        return m_pointSize;
+    }
 
-    void setUniformColor(const QColor& color) { m_uniformColor = color; }
+    void setUniformColor(const QColor& color) {
+        m_uniformColor = color;
+    }
 
 private:
     struct VBOEntry {
@@ -86,7 +115,7 @@ private:
     // 视锥裁剪
     struct Plane {
         QVector3D normal;
-        float d;  // plane equation: normal.dot(p) + d = 0
+        float d; // plane equation: normal.dot(p) + d = 0
     };
     void extractFrustumPlanes(const QMatrix4x4& viewMatrix, const QMatrix4x4& projectionMatrix);
     bool isInFrustum(const QVector3D& center, float size) const;
@@ -118,7 +147,7 @@ private:
     // LOD 控制
     bool m_lodEnabled = true;
     int m_maxLODDepth = 8;
-    size_t m_lodThreshold = 50000;  // 超过 5 万点启用 LOD
+    size_t m_lodThreshold = 50000; // 超过 5 万点启用 LOD
 
     // OpenGL 状态
     bool m_initialized = false;

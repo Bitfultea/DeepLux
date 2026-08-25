@@ -16,11 +16,9 @@
 
 namespace DeepLux {
 
-ProcessTreeController::ProcessTreeController(QTreeWidget* tree, QObject* parent)
-    : QObject(parent), m_tree(tree) {
+ProcessTreeController::ProcessTreeController(QTreeWidget* tree, QObject* parent) : QObject(parent), m_tree(tree) {
     if (m_tree) {
-        connect(m_tree, &QTreeWidget::customContextMenuRequested,
-                this, &ProcessTreeController::onContextMenu);
+        connect(m_tree, &QTreeWidget::customContextMenuRequested, this, &ProcessTreeController::onContextMenu);
     }
 }
 
@@ -89,12 +87,11 @@ void ProcessTreeController::addModule(const ModuleInstance& inst) {
             } else {
                 delete module;
                 module = nullptr;
-                Logger::instance().warning(
-                    QObject::tr("模块初始化失败：%1").arg(inst.moduleId), "Flow");
+                Logger::instance().warning(QObject::tr("模块初始化失败：%1").arg(inst.moduleId), "Flow");
             }
         } else {
-            Logger::instance().warning(
-                QObject::tr("模块不支持克隆，无法创建运行时实例：%1").arg(inst.moduleId), "Flow");
+            Logger::instance().warning(QObject::tr("模块不支持克隆，无法创建运行时实例：%1").arg(inst.moduleId),
+                                       "Flow");
         }
     }
 
@@ -125,8 +122,7 @@ void ProcessTreeController::removeModule(const QString& instanceId) {
     if (m_flowModules && m_flowModules->contains(instanceId)) {
         IModule* module = m_flowModules->take(instanceId);
         if (module) {
-            removedMeasurementInput =
-                module->moduleId() == QStringLiteral("com.deeplux.plugin.measurementinput");
+            removedMeasurementInput = module->moduleId() == QStringLiteral("com.deeplux.plugin.measurementinput");
             module->shutdown();
             delete module;
         }
@@ -345,8 +341,7 @@ void ProcessTreeController::onContextMenu(const QPoint& pos) {
 
     QMenu menu(m_tree);
     QAction* deleteAction = menu.addAction(QObject::tr("删除"));
-    deleteAction->setIcon(
-        AppIconProvider::icon(AppIconProvider::Icon::Delete, 18, QColor("#DC2626")));
+    deleteAction->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Delete, 18, QColor("#DC2626")));
 
     QAction* selectedAction = menu.exec(m_tree->mapToGlobal(pos));
     if (selectedAction == deleteAction) {

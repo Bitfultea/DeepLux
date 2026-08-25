@@ -1,23 +1,12 @@
 #include "CameraController.h"
+
 #include <cmath>
 
 namespace DeepLux {
 
 CameraController::CameraController()
-    : m_center(0, 0, 0)
-    , m_eye(0, 0, 5)
-    , m_up(0, 1, 0)
-    , m_fov(45.0f)
-    , m_near(0.1f)
-    , m_far(1000.0f)
-    , m_azimuth(0.0f)
-    , m_elevation(0.0f)
-    , m_distance(5.0f)
-    , m_framedCenter(0, 0, 0)
-    , m_framedDistance(5.0f)
-    , m_framedFar(1000.0f)
-{
-}
+    : m_center(0, 0, 0), m_eye(0, 0, 5), m_up(0, 1, 0), m_fov(45.0f), m_near(0.1f), m_far(1000.0f), m_azimuth(0.0f),
+      m_elevation(0.0f), m_distance(5.0f), m_framedCenter(0, 0, 0), m_framedDistance(5.0f), m_framedFar(1000.0f) {}
 
 void CameraController::orbit(float deltaAzimuth, float deltaElevation) {
     m_azimuth += deltaAzimuth;
@@ -37,7 +26,7 @@ void CameraController::pan(float deltaX, float deltaY) {
     QVector3D up = QVector3D::crossProduct(right, forward).normalized();
 
     // 在视平面内平移
-    float scale = m_distance * 0.002f;  // 缩放因子
+    float scale = m_distance * 0.002f; // 缩放因子
     QVector3D offset = right * deltaX * scale + up * deltaY * scale;
     m_center += offset;
     m_eye += offset;
@@ -67,8 +56,7 @@ float CameraController::distance() const {
     return m_distance;
 }
 
-void CameraController::frameData(const QVector3D& bboxMin, const QVector3D& bboxMax)
-{
+void CameraController::frameData(const QVector3D& bboxMin, const QVector3D& bboxMax) {
     QVector3D size = bboxMax - bboxMin;
     if (size.length() < 0.0001f) {
         m_center = QVector3D(0, 0, 0);
@@ -87,14 +75,20 @@ void CameraController::frameData(const QVector3D& bboxMin, const QVector3D& bbox
     m_center = (bboxMin + bboxMax) * 0.5f;
     float fovRad = m_fov * static_cast<float>(M_PI) / 180.0f;
     m_distance = (diagonal * 0.5f) / std::tan(fovRad * 0.5f) * 0.7f;
-    if (m_distance < 0.5f) m_distance = 0.5f;
-    if (m_distance > 5000.0f) m_distance = 5000.0f;
+    if (m_distance < 0.5f)
+        m_distance = 0.5f;
+    if (m_distance > 5000.0f)
+        m_distance = 5000.0f;
     m_far = diagonal * 4.0f;
-    if (m_far < 10.0f) m_far = 10.0f;
-    if (m_far > 50000.0f) m_far = 50000.0f;
+    if (m_far < 10.0f)
+        m_far = 10.0f;
+    if (m_far > 50000.0f)
+        m_far = 50000.0f;
     m_near = diagonal * 0.0005f;
-    if (m_near < 0.001f) m_near = 0.001f;
-    if (m_near > 10.0f) m_near = 10.0f;
+    if (m_near < 0.001f)
+        m_near = 0.001f;
+    if (m_near > 10.0f)
+        m_near = 10.0f;
     m_framedCenter = m_center;
     m_framedDistance = m_distance;
     m_framedFar = m_far;
