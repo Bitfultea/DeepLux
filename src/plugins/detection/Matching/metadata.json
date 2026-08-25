@@ -44,6 +44,48 @@
                 "type": "Image2D",
                 "required": false,
                 "multiple": false
+            },
+            {
+                "id": "match_count",
+                "displayName": "匹配数量",
+                "type": "Integer",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "match_threshold",
+                "displayName": "匹配阈值",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "match_x",
+                "displayName": "匹配X",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "match_y",
+                "displayName": "匹配Y",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "match_width",
+                "displayName": "匹配宽",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "match_height",
+                "displayName": "匹配高",
+                "type": "Number",
+                "required": false,
+                "multiple": false
             }
         ]
     }

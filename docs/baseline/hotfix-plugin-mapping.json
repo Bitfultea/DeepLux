@@ -39,8 +39,8 @@
       "currentPluginId": "com.deeplux.plugin.blob",
       "matchKind": "direct",
       "reviewState": "reviewed",
-      "reviewConclusion": "partial",
-      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 13 输出 → 当前 2），见 legacy-comparison.md"
+      "reviewConclusion": "intentionally_changed",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 13 输出 → 当前 2），见 legacy-comparison.md；输出处置：blob_count保留；面积/圆度/矩形度/宽度/高度等形状描述子移除（有意收窄）"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.CameraReadyWait",
@@ -88,8 +88,8 @@
       "currentPluginId": "com.deeplux.plugin.grabimage",
       "matchKind": "direct",
       "reviewState": "reviewed",
-      "reviewConclusion": "partial",
-      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 2 输出 → 当前 1），见 legacy-comparison.md"
+      "reviewConclusion": "intentionally_changed",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 2 输出 → 当前 1），见 legacy-comparison.md；输出处置：图像(image)保留；亮度图输出移除（有意收窄，图像为主产物）"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.ImageMerge",
@@ -248,8 +248,8 @@
       "currentPluginId": "com.deeplux.plugin.findcircle",
       "matchKind": "direct",
       "reviewState": "reviewed",
-      "reviewConclusion": "partial",
-      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 7 输出 → 当前 5），见 legacy-comparison.md"
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 7 输出 → 当前 5），见 legacy-comparison.md；输出处置：圆心X/Y、半径保留(circle_center_x/y/radius)并新增score；状态/时间由引擎moduleFinished提供"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.GrayMeasure",
@@ -286,8 +286,8 @@
       "currentPluginId": "com.deeplux.plugin.matching",
       "matchKind": "direct",
       "reviewState": "reviewed",
-      "reviewConclusion": "partial",
-      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认；行为测试：test_imageplugins 3 用例（模板匹配确定性/空图/clone）；旧版对照：输出面收窄（旧版 7 输出 → 当前 1），见 legacy-comparison.md"
+      "reviewConclusion": "intentionally_changed",
+      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认；行为测试：test_imageplugins 3 用例（模板匹配确定性/空图/clone）；旧版对照：输出面收窄（旧版 7 输出 → 当前 1），见 legacy-comparison.md；输出处置：已声明match_x/y/width/height/count/threshold，覆盖旧版X/Y/匹配数量；角度/分数以match_threshold归一"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.Matching1",
@@ -315,8 +315,8 @@
       "currentPluginId": "com.deeplux.plugin.measureline",
       "matchKind": "direct",
       "reviewState": "reviewed",
-      "reviewConclusion": "partial",
-      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 7 输出 → 当前 3），见 legacy-comparison.md"
+      "reviewConclusion": "intentionally_changed",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 7 输出 → 当前 3），见 legacy-comparison.md；输出处置：line_length/line_angle保留；中心/直线度/状态/时间移除"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.MeasureRect",
@@ -326,8 +326,8 @@
       "currentPluginId": "com.deeplux.plugin.measurerect",
       "matchKind": "direct",
       "reviewState": "reviewed",
-      "reviewConclusion": "partial",
-      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 9 输出 → 当前 4），见 legacy-comparison.md"
+      "reviewConclusion": "intentionally_changed",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 9 输出 → 当前 4），见 legacy-comparison.md；输出处置：rect_width/height/area保留；中心/角度/状态/时间移除"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.QRCode",
@@ -348,8 +348,8 @@
       "currentPluginId": "com.deeplux.plugin.linesdistance",
       "matchKind": "candidate",
       "reviewState": "reviewed",
-      "reviewConclusion": "partial",
-      "evidence": "LinesDistance 实现两线段距离，能力矩阵标\"可用/保留\"，与 DistanceLL 语义一致；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 3 输出 → 当前 2），见 legacy-comparison.md"
+      "reviewConclusion": "intentionally_changed",
+      "evidence": "LinesDistance 实现两线段距离，能力矩阵标\"可用/保留\"，与 DistanceLL 语义一致；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 3 输出 → 当前 2），见 legacy-comparison.md；输出处置：distance保留并新增最近点对；状态/时间移除"
     },
     {
       "legacyPath": "02Plugins/003几何测量/Plugin.DistancePL",
@@ -359,8 +359,8 @@
       "currentPluginId": "com.deeplux.plugin.distancepl",
       "matchKind": "direct",
       "reviewState": "reviewed",
-      "reviewConclusion": "partial",
-      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 5 输出 → 当前 2），见 legacy-comparison.md"
+      "reviewConclusion": "intentionally_changed",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 5 输出 → 当前 2），见 legacy-comparison.md；输出处置：distance保留；垂点X/Y/状态/时间移除"
     },
     {
       "legacyPath": "02Plugins/003几何测量/Plugin.DistancePP",
@@ -370,8 +370,8 @@
       "currentPluginId": "com.deeplux.plugin.distancepp",
       "matchKind": "direct",
       "reviewState": "reviewed",
-      "reviewConclusion": "partial",
-      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 6 输出 → 当前 2），见 legacy-comparison.md"
+      "reviewConclusion": "intentionally_changed",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 6 输出 → 当前 2），见 legacy-comparison.md；输出处置：distance保留；角度/中心点/状态/时间移除（辅助量由引擎或下游提供）"
     },
     {
       "legacyPath": "02Plugins/003几何测量/Plugin.LinesDistance",
@@ -381,8 +381,8 @@
       "currentPluginId": "com.deeplux.plugin.linesdistance",
       "matchKind": "direct",
       "reviewState": "reviewed",
-      "reviewConclusion": "partial",
-      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 3 输出 → 当前 2），见 legacy-comparison.md"
+      "reviewConclusion": "intentionally_changed",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面收窄（旧版 3 输出 → 当前 2），见 legacy-comparison.md；输出处置：distance保留并新增最近点对；状态/时间移除"
     },
     {
       "legacyPath": "02Plugins/004几何关系/Plugin.AffineeRegion",
@@ -410,8 +410,8 @@
       "currentPluginId": "com.deeplux.plugin.fitcircle",
       "matchKind": "direct",
       "reviewState": "reviewed",
-      "reviewConclusion": "partial",
-      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面相当（旧版 3 → 当前 5），语义待逐项确认"
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面相当（旧版 3 → 当前 5），语义待逐项确认；输出处置：中心X/Y/R保留(circle_center_x/y/radius)"
     },
     {
       "legacyPath": "02Plugins/004几何关系/Plugin.FitEllipse",
@@ -430,8 +430,8 @@
       "currentPluginId": "com.deeplux.plugin.fitline",
       "matchKind": "direct",
       "reviewState": "reviewed",
-      "reviewConclusion": "partial",
-      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面相当（旧版 5 → 当前 8），语义待逐项确认"
+      "reviewConclusion": "equivalent",
+      "evidence": "direct 名称匹配；能力矩阵标\"可用/保留\"，端口与参数契约已通过 test_pluginparametercontracts；仅名称匹配+当前契约测试，旧版等价未对照；旧版对照：输出面相当（旧版 5 → 当前 8），语义待逐项确认；输出处置：起点/终点/phi/rho/error齐全，覆盖旧版拟合直线+端点语义"
     },
     {
       "legacyPath": "02Plugins/004几何关系/Plugin.RegionProcess",
