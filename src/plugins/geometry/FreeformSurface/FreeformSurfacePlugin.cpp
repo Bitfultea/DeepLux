@@ -1,9 +1,11 @@
 #include "FreeformSurfacePlugin.h"
+
 #include "common/Logger.h"
 #include "core/geometry/MeasurementData.h"
-#include <QVBoxLayout>
-#include <QLabel>
+
 #include <QDoubleSpinBox>
+#include <QLabel>
+#include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -11,21 +13,14 @@
 
 namespace DeepLux {
 
-FreeformSurfacePlugin::FreeformSurfacePlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-        {"samplingInterval", 1.0}
-    };
+FreeformSurfacePlugin::FreeformSurfacePlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"samplingInterval", 1.0}};
     m_params = m_defaultParams;
 }
 
-FreeformSurfacePlugin::~FreeformSurfacePlugin()
-{
-}
+FreeformSurfacePlugin::~FreeformSurfacePlugin() {}
 
-bool FreeformSurfacePlugin::initialize()
-{
+bool FreeformSurfacePlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -33,17 +28,20 @@ bool FreeformSurfacePlugin::initialize()
     return true;
 }
 
-void FreeformSurfacePlugin::shutdown()
-{
+void FreeformSurfacePlugin::shutdown() {
 #ifdef DEEPLUX_HAS_OPENCV
     m_pointCloud.release();
 #endif
     ModuleBase::shutdown();
 }
 
-bool FreeformSurfacePlugin::process(const ImageData& input, ImageData& output)
-{
+bool FreeformSurfacePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
+
+    // P0-2: 每次执行先重置结果，避免点数不足/拟合失败时沿用上次结果
+    m_pointCount = 0;
+    m_surfaceArea = 0;
+    m_surfaceRoughness = 0;
 
 #ifdef DEEPLUX_HAS_OPENCV
     QJsonObject params = currentParams();
@@ -56,9 +54,8 @@ bool FreeformSurfacePlugin::process(const ImageData& input, ImageData& output)
     auto cloudData = MeasurementData::pointCloud(input, &cloudError);
     if (cloudData) {
         for (const auto& pt : cloudData->points) {
-            points.push_back(cv::Point3f(static_cast<float>(pt.x()),
-                                         static_cast<float>(pt.y()),
-                                         static_cast<float>(pt.z())));
+            points.push_back(
+                cv::Point3f(static_cast<float>(pt.x()), static_cast<float>(pt.y()), static_cast<float>(pt.z())));
         }
     } else {
         QVariant pointsVar = input.data("point_cloud");
@@ -87,12 +84,12 @@ bool FreeformSurfacePlugin::process(const ImageData& input, ImageData& output)
             // 粗糙度：点到拟合平面的距离标准差
             double sumSqDist = 0;
             float a = planeCoeffs[0], b = planeCoeffs[1], c = planeCoeffs[2], d = planeCoeffs[3];
-            float normLen = sqrt(a*a + b*b + c*c);
+            float normLen = sqrt(a * a + b * b + c * c);
             if (normLen < 1e-10f) {
                 m_surfaceRoughness = 0;
             } else {
                 for (const auto& p : points) {
-                    double dist = fabs(a*p.x + b*p.y + c*p.z + d) / normLen;
+                    double dist = fabs(a * p.x + b * p.y + c * p.z + d) / normLen;
                     sumSqDist += dist * dist;
                 }
                 m_surfaceRoughness = sqrt(sumSqDist / points.size());
@@ -111,9 +108,9 @@ bool FreeformSurfacePlugin::process(const ImageData& input, ImageData& output)
     output.setData("surface_roughness", m_surfaceRoughness);
 
     QString result = QString("自由曲面: 点数=%1, 面积=%2, 粗糙度=%3")
-                        .arg(m_pointCount)
-                        .arg(m_surfaceArea, 0, 'f', 2)
-                        .arg(m_surfaceRoughness, 0, 'f', 4);
+                         .arg(m_pointCount)
+                         .arg(m_surfaceArea, 0, 'f', 2)
+                         .arg(m_surfaceRoughness, 0, 'f', 4);
     Logger::instance().debug(result, "FreeformSurface");
 
     return true;
@@ -124,18 +121,22 @@ bool FreeformSurfacePlugin::process(const ImageData& input, ImageData& output)
 #endif
 }
 
-bool FreeformSurfacePlugin::fitPlaneToPoints(const std::vector<cv::Point3f>& points, cv::Vec4f& planeCoeffs)
-{
+bool FreeformSurfacePlugin::fitPlaneToPoints(const std::vector<cv::Point3f>& points, cv::Vec4f& planeCoeffs) {
 #ifdef DEEPLUX_HAS_OPENCV
-    if (points.size() < 3) return false;
+    if (points.size() < 3)
+        return false;
 
     // 正确的 SVD 平面拟合：对中心化后的点做 SVD，最小奇异值对应的右奇异向量即为法向量
     cv::Point3f centroid(0, 0, 0);
     for (const auto& p : points) {
-        centroid.x += p.x; centroid.y += p.y; centroid.z += p.z;
+        centroid.x += p.x;
+        centroid.y += p.y;
+        centroid.z += p.z;
     }
     float n = static_cast<float>(points.size());
-    centroid.x /= n; centroid.y /= n; centroid.z /= n;
+    centroid.x /= n;
+    centroid.y /= n;
+    centroid.z /= n;
 
     cv::Mat A(points.size(), 3, CV_32FC1);
     for (size_t i = 0; i < points.size(); ++i) {
@@ -151,13 +152,14 @@ bool FreeformSurfacePlugin::fitPlaneToPoints(const std::vector<cv::Point3f>& poi
     float a = vt.at<float>(2, 0);
     float b = vt.at<float>(2, 1);
     float c = vt.at<float>(2, 2);
-    float normLen = sqrt(a*a + b*b + c*c);
-    if (normLen < 1e-10f) return false;
+    float normLen = sqrt(a * a + b * b + c * c);
+    if (normLen < 1e-10f)
+        return false;
 
     planeCoeffs[0] = a / normLen;
     planeCoeffs[1] = b / normLen;
     planeCoeffs[2] = c / normLen;
-    planeCoeffs[3] = -(planeCoeffs[0]*centroid.x + planeCoeffs[1]*centroid.y + planeCoeffs[2]*centroid.z);
+    planeCoeffs[3] = -(planeCoeffs[0] * centroid.x + planeCoeffs[1] * centroid.y + planeCoeffs[2] * centroid.z);
 
     return true;
 #else
@@ -165,21 +167,28 @@ bool FreeformSurfacePlugin::fitPlaneToPoints(const std::vector<cv::Point3f>& poi
 #endif
 }
 
-void FreeformSurfacePlugin::computeProjectedArea(const std::vector<cv::Point3f>& points, const cv::Vec4f& planeCoeffs)
-{
+void FreeformSurfacePlugin::computeProjectedArea(const std::vector<cv::Point3f>& points, const cv::Vec4f& planeCoeffs) {
 #ifdef DEEPLUX_HAS_OPENCV
     // 将点投影到拟合平面，然后在平面局部坐标系中计算 2D 凸包面积
     float a = planeCoeffs[0], b = planeCoeffs[1], c = planeCoeffs[2], d = planeCoeffs[3];
-    float normLen = sqrt(a*a + b*b + c*c);
-    if (normLen < 1e-10f) { m_surfaceArea = 0; return; }
+    float normLen = sqrt(a * a + b * b + c * c);
+    if (normLen < 1e-10f) {
+        m_surfaceArea = 0;
+        return;
+    }
 
     cv::Point3f normal(a, b, c);
     // 选择一个不平行于法向量的参考向量来构造平面局部坐标系
     cv::Point3f ref = (fabs(normal.x) < 0.9f) ? cv::Point3f(1, 0, 0) : cv::Point3f(0, 1, 0);
     cv::Point3f uAxis = normal.cross(ref);
-    float uLen = sqrt(uAxis.x*uAxis.x + uAxis.y*uAxis.y + uAxis.z*uAxis.z);
-    if (uLen < 1e-10f) { m_surfaceArea = 0; return; }
-    uAxis.x /= uLen; uAxis.y /= uLen; uAxis.z /= uLen;
+    float uLen = sqrt(uAxis.x * uAxis.x + uAxis.y * uAxis.y + uAxis.z * uAxis.z);
+    if (uLen < 1e-10f) {
+        m_surfaceArea = 0;
+        return;
+    }
+    uAxis.x /= uLen;
+    uAxis.y /= uLen;
+    uAxis.z /= uLen;
 
     cv::Point3f vAxis = normal.cross(uAxis);
 
@@ -195,8 +204,16 @@ void FreeformSurfacePlugin::computeProjectedArea(const std::vector<cv::Point3f>&
     std::vector<int> hullIndices;
     cv::convexHull(projected2D, hullIndices);
     if (hullIndices.size() >= 3) {
-        m_surfaceArea = static_cast<float>(cv::contourArea(cv::Mat(projected2D)));
+        // P0-2: 对"真实凸包点"计算面积，而非原始无序点集。
+        // 旧实现对 projected2D（随输入顺序）调 contourArea，面积随顺序漂移。
+        std::vector<cv::Point2f> hullPoints;
+        hullPoints.reserve(hullIndices.size());
+        for (int idx : hullIndices) {
+            hullPoints.push_back(projected2D[idx]);
+        }
+        m_surfaceArea = static_cast<float>(cv::contourArea(hullPoints));
     } else {
+        // 共线/退化：凸包不足 3 点，面积为 0
         m_surfaceArea = 0;
     }
 #else
@@ -204,8 +221,7 @@ void FreeformSurfacePlugin::computeProjectedArea(const std::vector<cv::Point3f>&
 #endif
 }
 
-bool FreeformSurfacePlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool FreeformSurfacePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     double interval = params["samplingInterval"].toDouble();
     if (interval <= 0) {
         error = tr("采样间隔必须大于0");
@@ -214,8 +230,7 @@ bool FreeformSurfacePlugin::doValidateParams(const QJsonObject& params, QString&
     return true;
 }
 
-QWidget* FreeformSurfacePlugin::createConfigWidget()
-{
+QWidget* FreeformSurfacePlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
@@ -228,15 +243,13 @@ QWidget* FreeformSurfacePlugin::createConfigWidget()
 
     layout->addStretch();
 
-    connect(intervalSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-        m_params["samplingInterval"] = value;
-    });
+    connect(intervalSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double value) { m_params["samplingInterval"] = value; });
 
     return widget;
 }
 
-IModule* FreeformSurfacePlugin::cloneImpl() const
-{
+IModule* FreeformSurfacePlugin::cloneImpl() const {
     FreeformSurfacePlugin* clone = new FreeformSurfacePlugin();
     return clone;
 }
