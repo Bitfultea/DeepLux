@@ -170,12 +170,28 @@ private slots:
     }
 
     void testCollinearOverlapNearestPointsCoincide() {
-        // P1-2: 共线重叠距离 0，最近点重合
+        // 阶1: 共线重叠距离 0，最近点重合且为"确定的重叠起点"(1,0)
+        LinesDistancePlugin plugin;
+        plugin.initialize();
+        ImageData input;
+        input.setData("line1", QVariant::fromValue(QVector<QPointF>{QPointF(0, 0), QPointF(2, 0)}));
+        input.setData("line2", QVariant::fromValue(QVector<QPointF>{QPointF(1, 0), QPointF(3, 0)}));
+        ImageData output;
+        QVERIFY(plugin.execute(input, output));
+        QCOMPARE(output.data("distance").toDouble(), 0.0);
+        // 重叠区间 [1,2]，起点 (1,0)；两最近点坐标相同
+        QCOMPARE(output.data("nearest_x1").toDouble(), 1.0);
+        QCOMPARE(output.data("nearest_y1").toDouble(), 0.0);
+        QCOMPARE(output.data("nearest_x2").toDouble(), 1.0);
+        QCOMPARE(output.data("nearest_y2").toDouble(), 0.0);
+    }
+
+    void testNearCollinearSmallDistance() {
+        // 阶1: 近共线（微偏移）不应判为共线/相交，距离应为小正值而非 0/大值
         double dist = 0;
-        const double gap = runNearestGap({QPointF(0, 0), QPointF(2, 0)}, {QPointF(1, 0), QPointF(3, 0)}, dist);
+        const double gap = runNearestGap({QPointF(0, 0), QPointF(10, 0)}, {QPointF(0, 0.5), QPointF(10, 0.5)}, dist);
         QVERIFY(gap >= 0);
-        QCOMPARE(dist, 0.0);
-        QVERIFY2(qAbs(gap) < 1e-6, "collinear overlap nearest points must coincide");
+        QVERIFY2(qAbs(dist - 0.5) < 1e-6, qPrintable(QString("near-collinear dist should be 0.5, got %1").arg(dist)));
     }
 
     void testMissingLine1() {

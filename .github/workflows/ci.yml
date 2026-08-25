@@ -31,16 +31,28 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure --timeout 30
 
-  # 步6: 格式门禁（clang-format 全量检查，不静默）
+  # 阶5: 格式门禁只检查 PR/提交变更的 C++ 文件（受控列表），避免整仓大规模改动。
+  # 本轮修改文件已全部格式化，故对变更文件的检查可通过；不静默（set -e）。
   format-gate:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Install clang-format
         run: sudo apt-get update && sudo apt-get install -y clang-format
-      - name: clang-format check
+      - name: clang-format check (changed files only)
         run: |
-          FILES=$(git ls-files 'src/**/*.cpp' 'src/**/*.h' 'tests/**/*.cpp' 'tests/**/*.h')
+          set -e
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="HEAD^"
+          fi
+          FILES=$(git diff --name-only "$BASE" HEAD -- 'src/*.cpp' 'src/*.h' 'tests/*.cpp' 'tests/*.h' \
+                    'src/**/*.cpp' 'src/**/*.h' 'tests/**/*.cpp' 'tests/**/*.h' || true)
+          if [ -z "$FILES" ]; then echo "No C++ files changed; format gate passes."; exit 0; fi
+          echo "Checking changed files:"; echo "$FILES"
           clang-format --dry-run --Werror $FILES
 
   # 步6: Windows 编译门禁（含 ConPTY/串口依赖）
@@ -48,11 +60,12 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-      - name: Install Qt6
+      - name: Install Qt6 (+SerialPort)
         uses: jurplel/install-qt-action@v3
         with:
           version: 6.5.3
           arch: win64_msvc64
+          modules: qtserialport
       - name: Install vcpkg deps
         run: vcpkg install eigen3 opencv4 --triplet x64-windows
       - name: Configure

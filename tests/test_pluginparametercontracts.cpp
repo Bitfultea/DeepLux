@@ -12,10 +12,10 @@
 #include <QTemporaryDir>
 #include <QVariant>
 #include <QVector>
-#include <core/deeplux/DataContract.h>
 #include <QWidget>
 #include <QtTest/QtTest>
 #include <core/base/ModuleBase.h>
+#include <core/deeplux/DataContract.h>
 #include <core/interface/IModule.h>
 #include <core/manager/PluginManager.h>
 
@@ -621,8 +621,8 @@ void TestPluginParameterContracts::testBlockingInjectedIntoCreatedModule() {
 }
 
 void TestPluginParameterContracts::testPayloadTypeTightening() {
-    using DeepLux::portValueMatchesType;
     using DeepLux::DataType;
+    using DeepLux::portValueMatchesType;
 
     // PointSet2D: 接受 QPointF 列表 / 2 数值列表
     QVERIFY(portValueMatchesType(QVariant::fromValue(QVector<QPointF>{QPointF(0, 0), QPointF(1, 1)}),

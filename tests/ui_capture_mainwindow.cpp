@@ -275,12 +275,11 @@ bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& plug
     // P1-4: 捕获 RunResult 并校验真实圆结果；失败须使任务失败，不得静默跳过
     DeepLux::RunResult runResult;
     bool gotResult = false;
-    QMetaObject::Connection conn = QObject::connect(
-        &DeepLux::RunEngine::instance(), &DeepLux::RunEngine::runFinished,
-        [&](const DeepLux::RunResult& r) {
-            runResult = r;
-            gotResult = true;
-        });
+    QMetaObject::Connection conn = QObject::connect(&DeepLux::RunEngine::instance(), &DeepLux::RunEngine::runFinished,
+                                                    [&](const DeepLux::RunResult& r) {
+                                                        runResult = r;
+                                                        gotResult = true;
+                                                    });
 
     DeepLux::RunEngine::instance().runOnce();
     QCoreApplication::processEvents();

@@ -18,7 +18,9 @@ struct Circle2D {
     double radius = 0.0;
     double score = 0.0; // 拟合/检测置信度（可选）
 
-    bool isValid() const { return radius > 0.0; }
+    bool isValid() const {
+        return radius > 0.0;
+    }
 };
 
 /**
@@ -41,8 +43,12 @@ struct Detection {
 struct DetectionList {
     QList<Detection> items;
 
-    bool isEmpty() const { return items.isEmpty(); }
-    int size() const { return items.size(); }
+    bool isEmpty() const {
+        return items.isEmpty();
+    }
+    int size() const {
+        return items.size();
+    }
 };
 
 } // namespace DeepLux

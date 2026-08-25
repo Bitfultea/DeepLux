@@ -2,12 +2,12 @@
 #include <QThread>
 #include <QtTest/QtTest>
 #include <atomic>
-#include <thread>
 #include <core/base/ModuleBase.h>
 #include <core/common/CancellationToken.h>
 #include <core/common/Logger.h>
 #include <core/engine/RunEngine.h>
 #include <core/model/Project.h>
+#include <thread>
 
 using namespace DeepLux;
 
@@ -402,6 +402,8 @@ private slots:
     void testLongLoopNoFramePollution();
     void testStopDuringLoopRun();
     void testCancelDuringParallelBatch();
+    // 阶2: 停止/取消稳定性（≥50 次无偶发失败）
+    void testStopStability50Repeats();
     void testParallelBatchExcludesBlockingModules();
     void init();
     void cleanup();
@@ -4668,6 +4670,59 @@ void TestRunEngine::testCancelDuringParallelBatch() {
     QVERIFY(engine.state() != RunState::Running);
     engine.clearModules();
     engine.setParallelThreadCount(1);
+}
+
+void TestRunEngine::testStopStability50Repeats() {
+    // 阶2: 后台执行+主线程 stop()，测试模块用可取消短间隔循环；重复 50 次无偶发失败。
+    RunEngine& engine = RunEngine::instance();
+
+    for (int rep = 0; rep < 50; ++rep) {
+        engine.clearModules();
+        QStringList log;
+        Project project;
+        ModuleInstance loop;
+        loop.id = "loop";
+        loop.moduleId = "loop";
+        loop.params["loopCount"] = 100000;
+        ModuleInstance body;
+        body.id = "body";
+        body.moduleId = "body";
+        ModuleInstance after;
+        after.id = "after";
+        after.moduleId = "after";
+        project.addModule(loop);
+        project.addModule(body);
+        project.addModule(after);
+        project.addConnection(controlConnection("loop", "body", "body"));
+        project.addConnection(controlConnection("body", "next", "loop"));
+        project.addConnection(controlConnection("loop", "done", "after"));
+
+        QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
+            if (inst.id == "loop") {
+                auto* m = new LoopControlModule(inst.id, inst.params["loopCount"].toInt(3));
+                m->execLog = &log;
+                return m;
+            }
+            if (inst.id == "after") {
+                auto* m = new TestExecutionModule(inst.id);
+                m->executionLog = &log;
+                return m;
+            }
+            // 可取消短间隔循环（1ms 分片检查令牌），非一次长睡
+            return new ThreadSafeSleepModule(inst.id, 1, &log);
+        }));
+
+        std::thread runner([&engine]() { engine.runOnce(); });
+        QThread::msleep(5);
+        engine.stop();
+        runner.join();
+
+        // 停止契约：循环被中止（body 远小于上限），且后续 after 未执行
+        QVERIFY2(log.count("body") < 100000, qPrintable(QString("rep %1: stop must abort loop").arg(rep)));
+        QVERIFY2(!log.contains("after"), qPrintable(QString("rep %1: after must not run after stop").arg(rep)));
+        QVERIFY(engine.state() != RunState::Running);
+    }
+    engine.clearModules();
 }
 
 QTEST_MAIN(TestRunEngine)
