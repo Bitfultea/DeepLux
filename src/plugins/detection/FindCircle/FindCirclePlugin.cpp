@@ -1,5 +1,6 @@
 #include "FindCirclePlugin.h"
 #include "common/Logger.h"
+#include "core/display/DisplayData.h"
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QDoubleSpinBox>
@@ -106,6 +107,14 @@ bool FindCirclePlugin::process(const ImageData& input, ImageData& output)
     output.setData("circle_center_y", m_resultCenterY);
     output.setData("circle_radius", m_resultRadius);
     output.setData("circle_score", m_resultScore);
+
+    // 步4: 端口式强类型输出 Circle2D
+    Circle2D circle;
+    circle.centerX = m_resultCenterX;
+    circle.centerY = m_resultCenterY;
+    circle.radius = m_resultRadius;
+    circle.score = m_resultScore;
+    output.setData("circle", QVariant::fromValue(circle));
 
     QString result = QString("圆: 中心(%1, %2), 半径=%3")
                         .arg(centerX, 0, 'f', 1)

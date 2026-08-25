@@ -164,12 +164,16 @@ bool portValueMatchesType(const QVariant& value, DataType type) {
         return value.type() == QVariant::ByteArray;
     case DataType::Table:
         return value.type() == QVariant::Map || value.type() == QVariant::List;
+    case DataType::Circle2D:
+        // 步4: 优先强类型 Circle2D；过渡期接受数值列表 [cx,cy,r]
+        return value.canConvert<Circle2D>() || isNumericList(value, 3);
+    case DataType::DetectionList:
+        // 步4: 优先强类型 DetectionList；过渡期接受列表
+        return value.canConvert<DetectionList>() || value.type() == QVariant::List;
     case DataType::Mask2D:
     case DataType::Region2D:
-    case DataType::Circle2D:
     case DataType::Ellipse2D:
     case DataType::Transform2D:
-    case DataType::DetectionList:
     case DataType::ClassScores:
         return true; // Dedicated payload types are introduced with their producing plugins.
     case DataType::Any:
@@ -192,6 +196,9 @@ void registerDataContractMetaTypes() {
     qRegisterMetaType<PortValueMap>("DeepLux::PortValueMap");
     qRegisterMetaType<ExecutionResult>("DeepLux::ExecutionResult");
     qRegisterMetaType<QVector<QPointF>>("QVector<QPointF>");
+    qRegisterMetaType<Circle2D>("DeepLux::Circle2D");
+    qRegisterMetaType<Detection>("DeepLux::Detection");
+    qRegisterMetaType<DetectionList>("DeepLux::DetectionList");
 }
 
 } // namespace DeepLux

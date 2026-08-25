@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 
+#include <core/display/DisplayData.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/PluginManager.h>
 #include <core/model/ImageData.h>
@@ -158,6 +159,13 @@ void TestAcceptanceFlows::testFindCircleFlow() {
              qPrintable(QString("circle_center_y off: got %1 want %2 ±%3").arg(gotCy).arg(expCy).arg(tolC)));
     QVERIFY2(std::abs(gotR - expR) <= tolR,
              qPrintable(QString("circle_radius off: got %1 want %2 ±%3").arg(gotR).arg(expR).arg(tolR)));
+
+    // 步4: 强类型 Circle2D 输出应存在且与标量值一致
+    QVERIFY2(out.data("circle").canConvert<Circle2D>(), "FindCircle must emit typed Circle2D");
+    const Circle2D circle = out.data("circle").value<Circle2D>();
+    QVERIFY(circle.isValid());
+    QVERIFY2(std::abs(circle.centerX - expCx) <= tolC, "Circle2D.centerX mismatch");
+    QVERIFY2(std::abs(circle.radius - expR) <= tolR, "Circle2D.radius mismatch");
 }
 
 void TestAcceptanceFlows::testPointToPointDistanceFlow() {

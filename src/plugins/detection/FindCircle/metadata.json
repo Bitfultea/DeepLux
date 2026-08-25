@@ -109,6 +109,13 @@
                 "type": "Number",
                 "required": false,
                 "multiple": false
+            },
+            {
+                "id": "circle",
+                "displayName": "圆（强类型）",
+                "type": "Circle2D",
+                "required": false,
+                "multiple": false
             }
         ]
     }
