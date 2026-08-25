@@ -124,6 +124,41 @@ bool isNumericList(const QVariant& value, int expectedSize) {
     return true;
 }
 
+// P2-6: PointSet2D 逐元素校验（QPointF 或 2 数值列表），拒绝任意标量列表
+bool isPointSet2D(const QVariant& value) {
+    if (value.canConvert<QVector<QPointF>>())
+        return true;
+    if (value.type() != QVariant::List)
+        return false;
+    const QVariantList list = value.toList();
+    if (list.isEmpty())
+        return false;
+    for (const QVariant& item : list) {
+        if (item.type() != QVariant::PointF && !isNumericList(item, 2))
+            return false;
+    }
+    return true;
+}
+
+// P2-6: DetectionList 校验（强类型或逐元素 map 含数值 x/y），拒绝任意列表
+bool isDetectionList(const QVariant& value) {
+    if (value.canConvert<DetectionList>())
+        return true;
+    if (value.type() != QVariant::List)
+        return false;
+    const QVariantList list = value.toList();
+    if (list.isEmpty())
+        return false;
+    for (const QVariant& item : list) {
+        if (item.type() != QVariant::Map)
+            return false;
+        const QVariantMap m = item.toMap();
+        if (!isNumeric(m.value("x")) || !isNumeric(m.value("y")))
+            return false;
+    }
+    return true;
+}
+
 } // namespace
 
 bool portValueMatchesType(const QVariant& value, DataType type) {
@@ -146,7 +181,7 @@ bool portValueMatchesType(const QVariant& value, DataType type) {
     case DataType::Point3D:
         return isNumericList(value, 3);
     case DataType::PointSet2D:
-        return value.canConvert<QVector<QPointF>>() || value.type() == QVariant::List;
+        return isPointSet2D(value);
     case DataType::Line2D:
         return isNumericList(value, 4);
     case DataType::Plane3D:
@@ -168,8 +203,8 @@ bool portValueMatchesType(const QVariant& value, DataType type) {
         // 步4: 优先强类型 Circle2D；过渡期接受数值列表 [cx,cy,r]
         return value.canConvert<Circle2D>() || isNumericList(value, 3);
     case DataType::DetectionList:
-        // 步4: 优先强类型 DetectionList；过渡期接受列表
-        return value.canConvert<DetectionList>() || value.type() == QVariant::List;
+        // P2-6: 强类型 DetectionList 或逐元素 map(含数值 x/y)，拒绝任意列表
+        return isDetectionList(value);
     case DataType::Mask2D:
     case DataType::Region2D:
     case DataType::Ellipse2D:

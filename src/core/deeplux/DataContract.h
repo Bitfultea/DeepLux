@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/deeplux/ControlFlowType.h"
+#include "core/deeplux/PayloadTypes.h"
 
 #include <QHash>
 #include <QMetaType>

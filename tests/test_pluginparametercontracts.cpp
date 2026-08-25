@@ -7,9 +7,12 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QPointF>
 #include <QSet>
 #include <QTemporaryDir>
 #include <QVariant>
+#include <QVector>
+#include <core/deeplux/DataContract.h>
 #include <QWidget>
 #include <QtTest/QtTest>
 #include <core/base/ModuleBase.h>
@@ -47,6 +50,8 @@ private slots:
     // 阶段 1.3：端口与 ABI 契约
     void testAllPluginsAbiV2();
     void testPortsWellFormed();
+    // 步4/P2-6：强类型载荷校验
+    void testPayloadTypeTightening();
     void testMissingRequiredInputReturnsStructuredError();
     void testWrongPortTypeReturnsStructuredError();
     void testDeclaredOutputsAreExported();
@@ -613,6 +618,37 @@ void TestPluginParameterContracts::testBlockingInjectedIntoCreatedModule() {
     QVERIFY2(!nbase->isBlocking(),
              qPrintable(QString("createModule(%1) must inject blocking=false").arg(nonBlockingPlugin)));
     delete nmod;
+}
+
+void TestPluginParameterContracts::testPayloadTypeTightening() {
+    using DeepLux::portValueMatchesType;
+    using DeepLux::DataType;
+
+    // PointSet2D: 接受 QPointF 列表 / 2 数值列表
+    QVERIFY(portValueMatchesType(QVariant::fromValue(QVector<QPointF>{QPointF(0, 0), QPointF(1, 1)}),
+                                 DataType::PointSet2D));
+    QVERIFY(portValueMatchesType(QVariant(QVariantList{QVariant(QVariantList{0.0, 0.0})}), DataType::PointSet2D));
+    // PointSet2D: 拒绝任意标量列表
+    QVERIFY(!portValueMatchesType(QVariant(QVariantList{1.0, 2.0, 3.0}), DataType::PointSet2D));
+
+    // DetectionList: 接受强类型
+    DeepLux::DetectionList dl;
+    DeepLux::Detection d;
+    d.x = 1;
+    d.y = 2;
+    dl.items.append(d);
+    QVERIFY(portValueMatchesType(QVariant::fromValue(dl), DataType::DetectionList));
+    // DetectionList: 接受逐元素 map(含数值 x/y)
+    QVERIFY(portValueMatchesType(QVariant(QVariantList{QVariant(QVariantMap{{"x", 1.0}, {"y", 2.0}})}),
+                                 DataType::DetectionList));
+    // DetectionList: 拒绝任意标量列表
+    QVERIFY(!portValueMatchesType(QVariant(QVariantList{1.0, 2.0}), DataType::DetectionList));
+
+    // Circle2D: 接受强类型与 3 数值列表
+    DeepLux::Circle2D c;
+    c.radius = 5;
+    QVERIFY(portValueMatchesType(QVariant::fromValue(c), DataType::Circle2D));
+    QVERIFY(portValueMatchesType(QVariant(QVariantList{1.0, 2.0, 3.0}), DataType::Circle2D));
 }
 
 QTEST_MAIN(TestPluginParameterContracts)

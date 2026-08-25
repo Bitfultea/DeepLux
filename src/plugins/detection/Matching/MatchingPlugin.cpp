@@ -1,6 +1,7 @@
 #include "MatchingPlugin.h"
 
 #include "common/Logger.h"
+#include "core/deeplux/PayloadTypes.h"
 
 #include <QDoubleSpinBox>
 #include <QLabel>
@@ -111,6 +112,20 @@ bool MatchingPlugin::process(const ImageData& input, ImageData& output) {
         output.setData("match_width", matches[0].width);
         output.setData("match_height", matches[0].height);
     }
+
+    // P2-6: 端口式强类型输出 DetectionList（Matching 作为生产者）
+    DetectionList detections;
+    for (size_t i = 0; i < matches.size() && i < static_cast<size_t>(m_maxMatches); ++i) {
+        Detection d;
+        d.x = matches[i].x;
+        d.y = matches[i].y;
+        d.width = matches[i].width;
+        d.height = matches[i].height;
+        d.score = m_matchThreshold; // 模板匹配无逐目标分数，以阈值为下限占位
+        d.label = QString("Match %1").arg(i + 1);
+        detections.items.append(d);
+    }
+    output.setData("detections", QVariant::fromValue(detections));
 
     Logger::instance().debug(QString("模板匹配: 找到%1个匹配, 阈值=%2").arg(m_matchCount).arg(m_matchThreshold),
                              "Matching");
