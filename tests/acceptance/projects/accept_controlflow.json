@@ -1,0 +1,43 @@
+{
+    "version": "3.0",
+    "id": "accept-controlflow-0001",
+    "name": "验收-条件/循环控制流",
+    "created": "2026-08-25T00:00:00",
+    "modified": "2026-08-25T00:00:00",
+    "modules": [
+        {
+            "id": "cond",
+            "moduleId": "条件分支",
+            "name": "条件",
+            "posX": 80,
+            "posY": 120,
+            "params": {
+                "conditionType": "Expression",
+                "expressionString": "true",
+                "boolInversion": false
+            }
+        },
+        {
+            "id": "truebranch",
+            "moduleId": "延时",
+            "name": "真分支",
+            "posX": 320,
+            "posY": 60,
+            "params": { "delayMs": 1 }
+        },
+        {
+            "id": "falsebranch",
+            "moduleId": "延时",
+            "name": "假分支",
+            "posX": 320,
+            "posY": 200,
+            "params": { "delayMs": 1 }
+        }
+    ],
+    "connections": [
+        {"fromModuleId": "cond", "toModuleId": "truebranch", "fromPort": "true", "toPort": "control", "edgeType": "control"},
+        {"fromModuleId": "cond", "toModuleId": "falsebranch", "fromPort": "false", "toPort": "control", "edgeType": "control"}
+    ],
+    "flows": [{"id": "main", "name": "主流程", "nodes": ["cond", "truebranch", "falsebranch"]}],
+    "resources": {"cameras": [], "dataSources": []}
+}

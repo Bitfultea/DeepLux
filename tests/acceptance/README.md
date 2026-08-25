@@ -48,8 +48,8 @@ ctest --test-dir build -R test_acceptance_flows --output-on-failure
 | 点集→直线拟合 | 固定共线点集 | `projects/accept_fitline.json` | `expected/fitline_points.json` | ✅ 已接入自动化 |
 | 2D 几何测量 | `two_points_640x480.png` | `projects/accept_distancepp.json` | `expected/two_points_640x480.json` | ✅ 已接入自动化 |
 | 3D 点云测量 | `plane_z5.ply` | `projects/accept_point_surface.json` | `expected/plane_z5.json` | ✅ 已接入自动化 |
-| 条件/循环/并行流程 | 无需图像 | 待建 | 执行顺序断言 | 核心自动化已覆盖，GUI 验收工程待建 |
-| PLC/相机/AI 模拟流程 | 模拟器 | 待建 | 契约测试 | 依赖设备模拟器，先建契约测试 |
+| 条件/循环/并行流程 | 无需图像 | `projects/accept_controlflow.json` | 执行顺序断言 | ✅ 已接入自动化（If 真分支执行/假分支跳过） |
+| PLC/相机/AI 模拟流程 | 模拟器 | 相机以 `GrabImage(File)` 为无硬件模拟源 | 契约测试 | 部分：相机模拟已用文件源；PLC/AI 需设备模拟器 |
 
 ## 已接入：找圆流程
 

@@ -1,11 +1,3 @@
-#include <QtTest/QtTest>
-
-#include <core/display/DisplayData.h>
-#include <core/engine/RunEngine.h>
-#include <core/manager/PluginManager.h>
-#include <core/model/ImageData.h>
-#include <core/model/Project.h>
-
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -13,8 +5,13 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
-
+#include <QtTest/QtTest>
 #include <cmath>
+#include <core/display/DisplayData.h>
+#include <core/engine/RunEngine.h>
+#include <core/manager/PluginManager.h>
+#include <core/model/ImageData.h>
+#include <core/model/Project.h>
 
 using namespace DeepLux;
 
@@ -35,6 +32,8 @@ private slots:
     void testPointToPointDistanceFlow();
     void testPointCloudPointToPlaneDistanceFlow();
     void testFitLineFlow();
+    // 阶7: 控制流 GUI 验收工程（条件分支执行顺序）
+    void testControlFlowIfBranchFlow();
 
 private:
     QTemporaryDir m_tempDir;
@@ -55,8 +54,9 @@ void TestAcceptanceFlows::initTestCase() {
     PluginManager::instance().shutdown();
     PluginManager::instance().addPluginPath(m_tempDir.filePath("plugins"));
 
-    QVERIFY2(installPlugin("GrabImage", "src/plugins/image_processing/GrabImage/metadata.json", "libGrabImagePlugin.so"),
-             "install GrabImage");
+    QVERIFY2(
+        installPlugin("GrabImage", "src/plugins/image_processing/GrabImage/metadata.json", "libGrabImagePlugin.so"),
+        "install GrabImage");
     QVERIFY2(installPlugin("FindCircle", "src/plugins/detection/FindCircle/metadata.json", "libFindCirclePlugin.so"),
              "install FindCircle");
     QVERIFY2(installPlugin("MeasurementInput", "src/plugins/geometry/MeasurementInput/metadata.json",
@@ -72,6 +72,8 @@ void TestAcceptanceFlows::initTestCase() {
              "install PointSurfaceDistance");
     QVERIFY2(installPlugin("FitLine", "src/plugins/geometry/FitLine/metadata.json", "libFitLinePlugin.so"),
              "install FitLine");
+    QVERIFY2(installPlugin("If", "src/plugins/logic/If/metadata.json", "libIfPlugin.so"), "install If");
+    QVERIFY2(installPlugin("Delay", "src/plugins/logic/Delay/metadata.json", "libDelayPlugin.so"), "install Delay");
 
     QVERIFY(PluginManager::instance().initialize());
     QVERIFY(PluginManager::instance().loadPlugin("GrabImage"));
@@ -81,6 +83,9 @@ void TestAcceptanceFlows::initTestCase() {
     QVERIFY(PluginManager::instance().loadPlugin("LoadPointCloud"));
     QVERIFY(PluginManager::instance().loadPlugin("PointSurfaceDistance"));
     QVERIFY(PluginManager::instance().loadPlugin("FitLine"));
+    // 插件索引键为 metadata name（中文）
+    QVERIFY(PluginManager::instance().loadPlugin("条件分支"));
+    QVERIFY(PluginManager::instance().loadPlugin("延时"));
 }
 
 void TestAcceptanceFlows::cleanup() {
@@ -248,6 +253,31 @@ void TestAcceptanceFlows::testFitLineFlow() {
     const double distToLine = std::abs(dy * 320.0 - dx * 240.0 + (dx * row1 - dy * col1)) / len;
     QVERIFY2(distToLine <= expected["tolerance_endpoint_px"].toDouble(),
              qPrintable(QString("fitted line far from known midpoint: %1").arg(distToLine)));
+}
+
+void TestAcceptanceFlows::testControlFlowIfBranchFlow() {
+    // 阶7: 控制流验收工程——If(1>0) 为真，真分支执行、假分支跳过
+    Project project;
+    QString loadErr = loadProjectWithPlaceholder("projects/accept_controlflow.json", QString(), project);
+    QVERIFY2(loadErr.isEmpty(), qPrintable(loadErr));
+
+    RunEngine& engine = RunEngine::instance();
+    QVERIFY2(engine.loadProject(&project), "load control-flow project");
+
+    QStringList finished;
+    QStringList skipped;
+    QMetaObject::Connection fConn =
+        connect(&engine, &RunEngine::moduleFinished, [&](const QString& id, bool, int) { finished.append(id); });
+    QMetaObject::Connection sConn =
+        connect(&engine, &RunEngine::moduleSkipped, [&](const QString& id) { skipped.append(id); });
+    engine.runOnce();
+    disconnect(fConn);
+    disconnect(sConn);
+
+    QVERIFY2(finished.contains("cond"), "condition must run");
+    QVERIFY2(finished.contains("truebranch"), "true branch must run for 1>0");
+    QVERIFY2(!finished.contains("falsebranch"), "false branch must not run for 1>0");
+    QVERIFY2(skipped.contains("falsebranch"), "false branch must be reported skipped");
 }
 
 QTEST_MAIN(TestAcceptanceFlows)
