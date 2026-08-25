@@ -1,0 +1,47 @@
+{
+    "version": "3.0",
+    "id": "accept-fitline-0001",
+    "name": "验收-点集直线拟合流程",
+    "created": "2026-08-25T00:00:00",
+    "modified": "2026-08-25T00:00:00",
+    "modules": [
+        {
+            "id": "measurementinput",
+            "moduleId": "MeasurementInput",
+            "name": "测量输入",
+            "posX": 80,
+            "posY": 120,
+            "params": {
+                "mode": "point_set",
+                "points": [
+                    [120.0, 360.0],
+                    [170.0, 330.0],
+                    [220.0, 300.0],
+                    [270.0, 270.0],
+                    [320.0, 240.0],
+                    [370.0, 210.0],
+                    [420.0, 180.0],
+                    [470.0, 150.0],
+                    [520.0, 120.0]
+                ]
+            }
+        },
+        {
+            "id": "fitline",
+            "moduleId": "FitLine",
+            "name": "直线拟合",
+            "posX": 320,
+            "posY": 120,
+            "params": {
+                "fitMethod": "LS",
+                "threshold": 1.0,
+                "iterations": 100
+            }
+        }
+    ],
+    "connections": [
+        {"fromModuleId": "measurementinput", "toModuleId": "fitline", "fromPort": "fit_points", "toPort": "fit_points", "edgeType": "data"}
+    ],
+    "flows": [{"id": "main", "name": "主流程", "nodes": ["measurementinput", "fitline"]}],
+    "resources": {"cameras": [], "dataSources": []}
+}

@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPointF>
 #include <QPointer>
 #include <QRegExp>
 #include <QVBoxLayout>
@@ -57,7 +58,8 @@ MeasurementInputPlugin::MeasurementInputPlugin(QObject* parent) : ModuleBase(par
                                   {"line", makeJsonArray({0.0, 0.0, 100.0, 0.0})},
                                   {"line1", makeJsonArray({0.0, 0.0, 100.0, 0.0})},
                                   {"line2", makeJsonArray({0.0, 100.0, 100.0, 100.0})},
-                                  {"plane", makeJsonArray({0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0})}};
+                                  {"plane", makeJsonArray({0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0})},
+                                  {"points", QJsonArray()}};
     m_params = m_defaultParams;
 }
 
@@ -261,6 +263,27 @@ bool MeasurementInputPlugin::process(const ImageData& input, ImageData& output) 
 
         output.setData("measurement_input_mode", mode);
         Logger::instance().debug(QString("测量输入: custom mode"), "MeasurementInput");
+    } else if (mode == "point_set") {
+        // 点集输入：points 为 [[x,y],[x,y],...] 数组，输出 fit_points 供拟合插件使用
+        QJsonArray pointsArr = params["points"].toArray();
+        if (pointsArr.isEmpty()) {
+            emit errorOccurred(tr("point_set 模式需要提供非空 points 数组"));
+            return false;
+        }
+        // 输出 QVector<QPointF>，与拟合插件 canConvert<QVector<QPointF>> 分支对齐
+        QVector<QPointF> pointSet;
+        for (const auto& ptVal : pointsArr) {
+            QJsonArray ptArr = ptVal.toArray();
+            if (ptArr.size() < 2) {
+                emit errorOccurred(tr("points 中每个点至少需要 [x, y] 两个坐标"));
+                return false;
+            }
+            pointSet.append(QPointF(ptArr[0].toDouble(), ptArr[1].toDouble()));
+        }
+        output.setData("fit_points", QVariant::fromValue(pointSet));
+        output.setData("measurement_input_mode", mode);
+        Logger::instance().debug(QString("测量输入: point_set mode, %1 points").arg(pointSet.size()),
+                                 "MeasurementInput");
     } else {
         emit errorOccurred(tr("未知的测量输入模式: %1").arg(mode));
         return false;
@@ -277,7 +300,7 @@ bool MeasurementInputPlugin::doValidateParams(const QJsonObject& params, QString
     }
 
     if (mode != "point_pair" && mode != "point_line" && mode != "line_pair" && mode != "point_plane" &&
-        mode != "custom") {
+        mode != "custom" && mode != "point_set") {
         error = tr("未知的测量输入模式: %1").arg(mode);
         return false;
     }
@@ -298,7 +321,7 @@ QWidget* MeasurementInputPlugin::createConfigWidget() {
 
     QComboBox* modeCombo = new QComboBox(widget);
     modeCombo->setObjectName("MeasurementInputModeCombo");
-    modeCombo->addItems({"point_pair", "point_line", "line_pair", "point_plane", "custom"});
+    modeCombo->addItems({"point_pair", "point_line", "line_pair", "point_plane", "custom", "point_set"});
     modeCombo->setCurrentText(m_params["mode"].toString("point_pair"));
     form->addRow(tr("模式"), modeCombo);
 

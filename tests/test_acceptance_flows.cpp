@@ -33,6 +33,7 @@ private slots:
     void testFindCircleFlow();
     void testPointToPointDistanceFlow();
     void testPointCloudPointToPlaneDistanceFlow();
+    void testFitLineFlow();
 
 private:
     QTemporaryDir m_tempDir;
@@ -68,6 +69,8 @@ void TestAcceptanceFlows::initTestCase() {
     QVERIFY2(installPlugin("PointSurfaceDistance", "src/plugins/geometry/PointSurfaceDistance/metadata.json",
                            "libPointSurfaceDistancePlugin.so"),
              "install PointSurfaceDistance");
+    QVERIFY2(installPlugin("FitLine", "src/plugins/geometry/FitLine/metadata.json", "libFitLinePlugin.so"),
+             "install FitLine");
 
     QVERIFY(PluginManager::instance().initialize());
     QVERIFY(PluginManager::instance().loadPlugin("GrabImage"));
@@ -76,6 +79,7 @@ void TestAcceptanceFlows::initTestCase() {
     QVERIFY(PluginManager::instance().loadPlugin("DistancePP"));
     QVERIFY(PluginManager::instance().loadPlugin("LoadPointCloud"));
     QVERIFY(PluginManager::instance().loadPlugin("PointSurfaceDistance"));
+    QVERIFY(PluginManager::instance().loadPlugin("FitLine"));
 }
 
 void TestAcceptanceFlows::cleanup() {
@@ -198,6 +202,44 @@ void TestAcceptanceFlows::testPointCloudPointToPlaneDistanceFlow() {
     QVERIFY2(std::abs(actual - expected["point_surface_distance"].toDouble()) <=
                  expected["tolerance_distance"].toDouble(),
              qPrintable(QString("point-surface distance off: got %1").arg(actual)));
+}
+
+void TestAcceptanceFlows::testFitLineFlow() {
+    Project project;
+    QString loadErr = loadProjectWithPlaceholder("projects/accept_fitline.json", QString(), project);
+    QVERIFY2(loadErr.isEmpty(), qPrintable(loadErr));
+
+    RunEngine& engine = RunEngine::instance();
+    QVERIFY2(engine.loadProject(&project), "load fit-line project");
+    engine.runOnce();
+
+    const ImageData out = engine.moduleOutput(QStringLiteral("fitline"));
+    QVERIFY2(out.data("line_error").isValid(), "FitLine produced no line_error output");
+
+    QFile expectedFile(QDir(m_acceptanceRoot).filePath("expected/fitline_points.json"));
+    QVERIFY(expectedFile.open(QIODevice::ReadOnly));
+    const QJsonObject expected = QJsonDocument::fromJson(expectedFile.readAll()).object();
+
+    // 共线点 LS 拟合，误差应接近 0
+    const double fitError = out.data("line_error").toDouble();
+    QVERIFY2(fitError <= expected["tolerance_fit_error"].toDouble(),
+             qPrintable(QString("fit error too large: got %1").arg(fitError)));
+
+    // 拟合直线应经过已知线段中点 (320,240) 附近：用拟合直线方程验证
+    // line_row/col 为拟合线上两点，验证中点到拟合线距离很小
+    const double row1 = out.data("line_row1").toDouble();
+    const double col1 = out.data("line_col1").toDouble();
+    const double row2 = out.data("line_row2").toDouble();
+    const double col2 = out.data("line_col2").toDouble();
+    // 拟合线方向 (col2-col1, row2-row1)，中点 (320,240) 到线的距离
+    const double dx = col2 - col1;
+    const double dy = row2 - row1;
+    const double len = std::sqrt(dx * dx + dy * dy);
+    QVERIFY(len > 1e-6);
+    // 点 (x=320, y=240)；线过 (col1, row1)，方向 (dx,dy)
+    const double distToLine = std::abs(dy * 320.0 - dx * 240.0 + (dx * row1 - dy * col1)) / len;
+    QVERIFY2(distToLine <= expected["tolerance_endpoint_px"].toDouble(),
+             qPrintable(QString("fitted line far from known midpoint: %1").arg(distToLine)));
 }
 
 QTEST_MAIN(TestAcceptanceFlows)

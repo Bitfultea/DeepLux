@@ -2,14 +2,17 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QFile>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QWidget>
 #include <QtTest/QTest>
+#include <core/engine/RunEngine.h>
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>
 #include <core/model/Project.h>
@@ -203,6 +206,69 @@ bool capturePluginConfigDialog(DeepLux::MainWindow& window, const QDir& dir) {
     return saved;
 }
 
+// 收尾2: 安装插件到临时目录，供截图工程加载
+bool installPluginForCapture(const QString& repoRoot, const QString& pluginTempRoot, const QString& dirName,
+                             const QString& metadataRel, const QString& libName) {
+    const QString pluginDir = pluginTempRoot + "/" + dirName;
+    if (!QDir().mkpath(pluginDir))
+        return false;
+    const QString metaSrc = QDir(repoRoot).filePath(metadataRel);
+    const QString libSrc = QDir(repoRoot).filePath("build/lib/" + libName);
+    if (!QFileInfo::exists(metaSrc) || !QFileInfo::exists(libSrc))
+        return false;
+    QFile::remove(pluginDir + "/metadata.json");
+    QFile::remove(pluginDir + "/" + libName);
+    return QFile::copy(metaSrc, pluginDir + "/metadata.json") && QFile::copy(libSrc, pluginDir + "/" + libName);
+}
+
+// 收尾2: 加载并运行找圆验收工程，使截图带真实结果。
+// 返回是否成功加载并运行。
+bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& pluginTempRoot) {
+    const QString acceptanceRoot = repoRoot + "/tests/acceptance";
+    const QString dataDir = acceptanceRoot + "/data";
+
+    // 读取工程并替换 @ACCEPTANCE_DATA@ 占位符，写入临时文件
+    QFile pf(acceptanceRoot + "/projects/accept_findcircle.json");
+    if (!pf.open(QIODevice::ReadOnly))
+        return false;
+    QString text = QString::fromUtf8(pf.readAll());
+    pf.close();
+    text.replace(QStringLiteral("@ACCEPTANCE_DATA@"), dataDir);
+
+    QTemporaryDir tmpProj;
+    if (!tmpProj.isValid())
+        return false;
+    const QString tmpProjPath = tmpProj.filePath("accept_findcircle.json");
+    QFile out(tmpProjPath);
+    if (!out.open(QIODevice::WriteOnly))
+        return false;
+    out.write(text.toUtf8());
+    out.close();
+
+    // 安装并加载所需插件
+    if (!installPluginForCapture(repoRoot, pluginTempRoot, "GrabImage",
+                                 "src/plugins/image_processing/GrabImage/metadata.json", "libGrabImagePlugin.so"))
+        return false;
+    if (!installPluginForCapture(repoRoot, pluginTempRoot, "FindCircle",
+                                 "src/plugins/detection/FindCircle/metadata.json", "libFindCirclePlugin.so"))
+        return false;
+
+    DeepLux::PluginManager::instance().addPluginPath(pluginTempRoot);
+    DeepLux::PluginManager::instance().initialize();
+    DeepLux::PluginManager::instance().loadPlugin("GrabImage");
+    DeepLux::PluginManager::instance().loadPlugin("FindCircle");
+
+    // 打开工程并运行
+    DeepLux::Project* project = DeepLux::ProjectManager::instance().openProject(tmpProjPath);
+    if (!project)
+        return false;
+
+    DeepLux::RunEngine::instance().runOnce();
+    QCoreApplication::processEvents();
+    QTest::qWait(200);
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -225,8 +291,19 @@ int main(int argc, char** argv) {
     DeepLux::MainWindow window;
     bool ok = true;
 
+    // 收尾2: 加载并运行找圆验收工程，使截图带真实结果（结果叠加/节点状态/检查器）
+    const QString repoRoot = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../..");
+    QTemporaryDir pluginTempRoot;
+    const bool ranAcceptance = pluginTempRoot.isValid() &&
+                               loadAndRunFindCircleAcceptance(repoRoot, pluginTempRoot.filePath("plugins"));
+
     QTimer::singleShot(800, [&]() {
         ok = captureFormalSizes(window, dir);
+        // 带真实结果的桌面/紧凑截图（若找圆工程成功运行）
+        if (ranAcceptance) {
+            ok = captureWindow(window, QSize(1920, 1080), dir.filePath("findcircle_desktop_result.png")) && ok;
+            ok = captureWindow(window, QSize(1280, 800), dir.filePath("findcircle_compact_result.png")) && ok;
+        }
         ok = captureWindow(window, QSize(1440, 900), dir.filePath("deeplux_mainwindow_1440x900.png")) && ok;
         ok = captureWindow(window, QSize(1024, 700), dir.filePath("deeplux_mainwindow_1024x700.png")) && ok;
         ok = capturePluginConfigDialog(window, dir) && ok;

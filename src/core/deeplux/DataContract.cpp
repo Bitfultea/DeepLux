@@ -191,6 +191,7 @@ void registerDataContractMetaTypes() {
     qRegisterMetaType<PortSpec>("DeepLux::PortSpec");
     qRegisterMetaType<PortValueMap>("DeepLux::PortValueMap");
     qRegisterMetaType<ExecutionResult>("DeepLux::ExecutionResult");
+    qRegisterMetaType<QVector<QPointF>>("QVector<QPointF>");
 }
 
 } // namespace DeepLux

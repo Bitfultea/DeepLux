@@ -45,7 +45,7 @@ ctest --test-dir build -R test_acceptance_flows --output-on-failure
 | 流程 | 数据 | 验收工程 | 预期/误差 | 状态 |
 | --- | --- | --- | --- | --- |
 | 找圆流程 | `circle_640x480.png` | `projects/accept_findcircle.json` | `expected/circle_640x480.json` | ✅ 已接入自动化 |
-| ROI→点集→直线/圆拟合 | `line_640x480.png` 等 | 待建 | `expected/line_640x480.json` | 数据就绪，工程待建 |
+| 点集→直线拟合 | 固定共线点集 | `projects/accept_fitline.json` | `expected/fitline_points.json` | ✅ 已接入自动化 |
 | 2D 几何测量 | `two_points_640x480.png` | `projects/accept_distancepp.json` | `expected/two_points_640x480.json` | ✅ 已接入自动化 |
 | 3D 点云测量 | `plane_z5.ply` | `projects/accept_point_surface.json` | `expected/plane_z5.json` | ✅ 已接入自动化 |
 | 条件/循环/并行流程 | 无需图像 | 待建 | 执行顺序断言 | 核心自动化已覆盖，GUI 验收工程待建 |
@@ -63,8 +63,16 @@ ctest --test-dir build -R test_acceptance_flows --output-on-failure
 - 每张截图应能体现：主视图叠加结果、检查器参数与结果页、流程画布节点状态、运行日志。
 - 截图文件命名：`<流程名>_<desktop|compact>_<主题>.png`，存放于阶段验收记录目录。
 
+## 已接入：点集→直线拟合流程
+
+- 流程：`MeasurementInput(point_set)` → `FitLine`。
+- 数据：沿 (120,360)→(520,120) 直线采样的 9 个共线点（固定、无随机）。
+- 断言：`line_error` ≤ 允许误差（共线点 LS 拟合误差≈0）；拟合线经过已知线段中点附近。
+- 说明：为支撑该流程，MeasurementInput 新增 `point_set` 模式（输出 `fit_points` 点集），
+  并注册 `QVector<QPointF>` 元类型。
+
 ## 待办
 
-1. 为 ROI/拟合、2D 测量、3D 测量流程补充验收工程与自动化断言。
+1. 为图像→点集提取（ROI/特征点）补充验收工程；当前点集由 MeasurementInput 直接提供。
 2. 为条件、循环和 Parallel 补充可视化 GUI 验收工程；核心执行顺序与并发语义已有自动测试。
 3. PLC/相机/AI 先建设备模拟器与契约测试，再接入模拟流程验收。

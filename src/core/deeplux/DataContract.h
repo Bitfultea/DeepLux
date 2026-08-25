@@ -141,3 +141,4 @@ void registerDataContractMetaTypes();
 Q_DECLARE_METATYPE(DeepLux::DataType)
 Q_DECLARE_METATYPE(DeepLux::PortSpec)
 Q_DECLARE_METATYPE(DeepLux::ControlJoinPolicy)
+Q_DECLARE_METATYPE(QVector<QPointF>)

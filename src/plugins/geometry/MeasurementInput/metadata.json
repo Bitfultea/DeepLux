@@ -30,8 +30,16 @@
                     {
                         "value": "custom",
                         "label": "自定义"
+                    },
+                    {
+                        "value": "point_set",
+                        "label": "点集（拟合输入）"
                     }
                 ]
+            },
+            "points": {
+                "label": "点集 [[x,y],...]",
+                "order": 90
             },
             "point1": {
                 "label": "点1",

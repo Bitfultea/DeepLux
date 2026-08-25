@@ -1,0 +1,11 @@
+{
+  "description": "沿 (120,360)->(520,120) 直线采样的 9 个共线点，LS 拟合误差应接近 0",
+  "line_x1": 120,
+  "line_y1": 360,
+  "line_x2": 520,
+  "line_y2": 120,
+  "line_length": 466.47615158762403,
+  "point_count": 9,
+  "tolerance_fit_error": 0.5,
+  "tolerance_endpoint_px": 6.0
+}
