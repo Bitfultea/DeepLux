@@ -4,7 +4,7 @@
     "category": "geometry",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "计算两条直线之间的距离",
+    "description": "计算两条线段之间的最短距离",
     "ports": {
         "inputs": [
             {
@@ -40,6 +40,34 @@
             {
                 "id": "distance",
                 "displayName": "距离",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "nearest_x1",
+                "displayName": "最近点1X",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "nearest_y1",
+                "displayName": "最近点1Y",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "nearest_x2",
+                "displayName": "最近点2X",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "nearest_y2",
+                "displayName": "最近点2Y",
                 "type": "Number",
                 "required": false,
                 "multiple": false

@@ -1,8 +1,12 @@
 #include "LinesDistancePlugin.h"
+
 #include "common/Logger.h"
 #include "core/geometry/MeasurementData.h"
-#include <QVBoxLayout>
+
 #include <QLabel>
+#include <QVBoxLayout>
+#include <cmath>
+#include <limits>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -10,20 +14,14 @@
 
 namespace DeepLux {
 
-LinesDistancePlugin::LinesDistancePlugin(QObject* parent)
-    : ModuleBase(parent)
-{
-    m_defaultParams = QJsonObject{
-    };
+LinesDistancePlugin::LinesDistancePlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{};
     m_params = m_defaultParams;
 }
 
-LinesDistancePlugin::~LinesDistancePlugin()
-{
-}
+LinesDistancePlugin::~LinesDistancePlugin() {}
 
-bool LinesDistancePlugin::initialize()
-{
+bool LinesDistancePlugin::initialize() {
     if (!ModuleBase::initialize()) {
         return false;
     }
@@ -31,13 +29,11 @@ bool LinesDistancePlugin::initialize()
     return true;
 }
 
-void LinesDistancePlugin::shutdown()
-{
+void LinesDistancePlugin::shutdown() {
     ModuleBase::shutdown();
 }
 
-bool LinesDistancePlugin::process(const ImageData& input, ImageData& output)
-{
+bool LinesDistancePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     // 获取输入数据
@@ -69,56 +65,135 @@ bool LinesDistancePlugin::process(const ImageData& input, ImageData& output)
         return false;
     }
 
-    // 计算两直线间的距离
-    m_resultDistance = calculateLinesDistance(line1->p1.x, line1->p1.y, line1->p2.x, line1->p2.y,
-                                              line2->p1.x, line2->p1.y, line2->p2.x, line2->p2.y);
+    // P0-1: 计算两"线段"间的最短距离（有限线段，非无限直线），并输出最近点对
+    m_resultDistance =
+        calculateSegmentDistance(line1->p1.x, line1->p1.y, line1->p2.x, line1->p2.y, line2->p1.x, line2->p1.y,
+                                 line2->p2.x, line2->p2.y, m_nearAx, m_nearAy, m_nearBx, m_nearBy);
 
     // 设置输出数据
     output.setData("distance", m_resultDistance);
+    output.setData("nearest_x1", m_nearAx);
+    output.setData("nearest_y1", m_nearAy);
+    output.setData("nearest_x2", m_nearBx);
+    output.setData("nearest_y2", m_nearBy);
 
-    QString result = QString("线线距离: %1").arg(m_resultDistance, 0, 'f', 2);
+    QString result = QString("线段距离: %1").arg(m_resultDistance, 0, 'f', 2);
     Logger::instance().debug(result, "LinesDistance");
 
     return true;
 }
 
-double LinesDistancePlugin::calculateLinesDistance(double line1X1, double line1Y1, double line1X2, double line1Y2,
-                                                 double line2X1, double line2Y1, double line2X2, double line2Y2)
-{
-    // 将两条直线转换为标准式: Ax + By + C = 0
-    // 计算直线1的参数
-    double A1 = line1Y2 - line1Y1;
-    double B1 = line1X1 - line1X2;
-    double C1 = line1X2 * line1Y1 - line1X1 * line1Y2;
+double LinesDistancePlugin::pointSegmentDistance(double px, double py, double ax, double ay, double bx, double by,
+                                                 double& nearestX, double& nearestY) {
+    const double dx = bx - ax;
+    const double dy = by - ay;
+    const double lenSq = dx * dx + dy * dy;
 
-    // 计算直线2的参数
-    double A2 = line2Y2 - line2Y1;
-    double B2 = line2X1 - line2X2;
-    double C2 = line2X2 * line2Y1 - line2X1 * line2Y2;
-
-    // 计算两条直线是否平行
-    double crossProduct = A1 * B2 - A2 * B1;
-
-    if (qAbs(crossProduct) < 1e-10) {
-        // 两条直线平行，使用点到直线的距离公式
-        // 选择直线1上的一个点，计算到直线2的距离
-        double dist = qAbs(A2 * line1X1 + B2 * line1Y1 + C2) / sqrt(A2 * A2 + B2 * B2);
-        return dist;
-    } else {
-        // 两条直线相交，距离为0
-        return 0.0;
+    // 退化线段（零长度）：端点即最近点
+    if (lenSq < 1e-12) {
+        nearestX = ax;
+        nearestY = ay;
+        return std::hypot(px - ax, py - ay);
     }
+
+    // 投影参数 t ∈ [0,1]
+    double t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+    t = qBound(0.0, t, 1.0);
+    nearestX = ax + t * dx;
+    nearestY = ay + t * dy;
+    return std::hypot(px - nearestX, py - nearestY);
 }
 
-bool LinesDistancePlugin::doValidateParams(const QJsonObject& params, QString& error) const
-{
+bool LinesDistancePlugin::segmentsIntersect(double ax1, double ay1, double ax2, double ay2, double bx1, double by1,
+                                            double bx2, double by2) {
+    // 方向函数
+    auto orient = [](double px, double py, double qx, double qy, double rx, double ry) {
+        return (qy - py) * (rx - qx) - (qx - px) * (ry - qy);
+    };
+    auto onSegment = [](double px, double py, double qx, double qy, double rx, double ry) {
+        return qMin(px, rx) <= qx && qx <= qMax(px, rx) && qMin(py, ry) <= qy && qy <= qMax(py, ry);
+    };
+
+    const double o1 = orient(ax1, ay1, ax2, ay2, bx1, by1);
+    const double o2 = orient(ax1, ay1, ax2, ay2, bx2, by2);
+    const double o3 = orient(bx1, by1, bx2, by2, ax1, ay1);
+    const double o4 = orient(bx1, by1, bx2, by2, ax2, ay2);
+
+    if (((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) && ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0)))
+        return true;
+
+    // 共线端点落在另一线段上
+    if (qAbs(o1) < 1e-12 && onSegment(ax1, ay1, bx1, by1, ax2, ay2))
+        return true;
+    if (qAbs(o2) < 1e-12 && onSegment(ax1, ay1, bx2, by2, ax2, ay2))
+        return true;
+    if (qAbs(o3) < 1e-12 && onSegment(bx1, by1, ax1, ay1, bx2, by2))
+        return true;
+    if (qAbs(o4) < 1e-12 && onSegment(bx1, by1, ax2, ay2, bx2, by2))
+        return true;
+    return false;
+}
+
+double LinesDistancePlugin::calculateSegmentDistance(double ax1, double ay1, double ax2, double ay2, double bx1,
+                                                     double by1, double bx2, double by2, double& nearAx, double& nearAy,
+                                                     double& nearBx, double& nearBy) {
+    // 相交（含端点接触）：距离为 0，最近点取交点近似（端点）
+    if (segmentsIntersect(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2)) {
+        nearAx = ax1;
+        nearAy = ay1;
+        nearBx = bx1;
+        nearBy = by1;
+        return 0.0;
+    }
+
+    // 不相交：最近距离必为某端点到另一线段的最短距离
+    double best = std::numeric_limits<double>::max();
+    double nx = 0, ny = 0, mx = 0, my = 0;
+
+    // 线段 A 的端点到线段 B
+    double d = pointSegmentDistance(ax1, ay1, bx1, by1, bx2, by2, nx, ny);
+    if (d < best) {
+        best = d;
+        nearAx = ax1;
+        nearAy = ay1;
+        nearBx = nx;
+        nearBy = ny;
+    }
+    d = pointSegmentDistance(ax2, ay2, bx1, by1, bx2, by2, nx, ny);
+    if (d < best) {
+        best = d;
+        nearAx = ax2;
+        nearAy = ay2;
+        nearBx = nx;
+        nearBy = ny;
+    }
+    // 线段 B 的端点到线段 A
+    d = pointSegmentDistance(bx1, by1, ax1, ay1, ax2, ay2, mx, my);
+    if (d < best) {
+        best = d;
+        nearAx = mx;
+        nearAy = my;
+        nearBx = bx1;
+        nearBy = by1;
+    }
+    d = pointSegmentDistance(bx2, by2, ax1, ay1, ax2, ay2, mx, my);
+    if (d < best) {
+        best = d;
+        nearAx = mx;
+        nearAy = my;
+        nearBx = bx2;
+        nearBy = by2;
+    }
+    return best;
+}
+
+bool LinesDistancePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     Q_UNUSED(params);
     error.clear();
     return true;
 }
 
-QWidget* LinesDistancePlugin::createConfigWidget()
-{
+QWidget* LinesDistancePlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
     layout->addWidget(new QLabel(tr("计算两条直线之间的距离")));
@@ -126,8 +201,7 @@ QWidget* LinesDistancePlugin::createConfigWidget()
     return widget;
 }
 
-IModule* LinesDistancePlugin::cloneImpl() const
-{
+IModule* LinesDistancePlugin::cloneImpl() const {
     LinesDistancePlugin* clone = new LinesDistancePlugin();
     return clone;
 }
