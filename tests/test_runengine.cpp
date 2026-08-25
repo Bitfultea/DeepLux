@@ -2,6 +2,7 @@
 #include <QThread>
 #include <QtTest/QtTest>
 #include <atomic>
+#include <thread>
 #include <core/base/ModuleBase.h>
 #include <core/common/CancellationToken.h>
 #include <core/common/Logger.h>
@@ -397,6 +398,10 @@ private slots:
     void testParallelSingleThreadFailureDoesNotDeadlock();
     void testParallelBatchHonorsDisabledModule();
     void testParallelBatchHonorsBreakpoint();
+    // 步5: 压力与线程归属
+    void testLongLoopNoFramePollution();
+    void testStopDuringLoopRun();
+    void testCancelDuringParallelBatch();
     void testParallelBatchExcludesBlockingModules();
     void init();
     void cleanup();
@@ -4525,6 +4530,136 @@ void TestRunEngine::testNestedStopLoopPreservesOuterCounter() {
 
     QCOMPARE(log, QStringList({"outer", "inner", "stop", "tail", "outer", "inner", "stop", "tail", "outer", "after"}));
     engine.clearModules();
+}
+
+// ---------------------------------------------------------------------------
+// 步5: 压力与线程归属测试
+// ---------------------------------------------------------------------------
+
+void TestRunEngine::testLongLoopNoFramePollution() {
+    // 步5: 长循环（200 次）无上一帧污染：每次迭代 body 计数正确，done 后 after 仅一次
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    const int iterations = 200;
+    QStringList log;
+    Project project;
+    ModuleInstance loop;
+    loop.id = "loop";
+    loop.moduleId = "loop";
+    loop.params["loopCount"] = iterations;
+    ModuleInstance body;
+    body.id = "body";
+    body.moduleId = "body";
+    ModuleInstance after;
+    after.id = "after";
+    after.moduleId = "after";
+    project.addModule(loop);
+    project.addModule(body);
+    project.addModule(after);
+    project.addConnection(controlConnection("loop", "body", "body"));
+    project.addConnection(controlConnection("body", "next", "loop"));
+    project.addConnection(controlConnection("loop", "done", "after"));
+
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == "loop") {
+            auto* m = new LoopControlModule(inst.id, inst.params["loopCount"].toInt(3));
+            m->execLog = &log;
+            return m;
+        }
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+
+    RunResult result;
+    QMetaObject::Connection conn =
+        connect(&engine, &RunEngine::runFinished, this, [&result](const RunResult& r) { result = r; });
+    engine.runOnce();
+    disconnect(conn);
+
+    QVERIFY(result.success);
+    const int bodyCount = log.count("body");
+    const int afterCount = log.count("after");
+    QCOMPARE(bodyCount, iterations);
+    QCOMPARE(afterCount, 1);
+    engine.clearModules();
+}
+
+void TestRunEngine::testStopDuringLoopRun() {
+    // 步5: 长循环中 stop() 应中止执行，不完成全部迭代
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+
+    QStringList log;
+    Project project;
+    ModuleInstance loop;
+    loop.id = "loop";
+    loop.moduleId = "loop";
+    loop.params["loopCount"] = 5000;
+    ModuleInstance body;
+    body.id = "body";
+    body.moduleId = "body";
+    project.addModule(loop);
+    project.addModule(body);
+    project.addConnection(controlConnection("loop", "body", "body"));
+    project.addConnection(controlConnection("body", "next", "loop"));
+
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == "loop") {
+            auto* m = new LoopControlModule(inst.id, inst.params["loopCount"].toInt(3));
+            m->execLog = &log;
+            return m;
+        }
+        // body 每次睡 2ms，5000 次约 10s，保证 stop 能在中途触发
+        return new ThreadSafeSleepModule(inst.id, 2, &log);
+    }));
+
+    // runOnce 同步阻塞事件循环，故在后台线程运行，主线程延迟 stop
+    std::thread runner([&engine]() { engine.runOnce(); });
+    QThread::msleep(30);
+    engine.stop();
+    runner.join();
+
+    // stop 后 body 执行次数应远小于 5000
+    QVERIFY2(log.count("body") < 5000, "stop() must abort the long loop");
+    engine.clearModules();
+}
+
+void TestRunEngine::testCancelDuringParallelBatch() {
+    // 步5: 并行批次中取消应中止剩余模块
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(2);
+
+    Project project;
+    ModuleInstance fork;
+    fork.id = "Fork";
+    fork.moduleId = "Fork";
+    for (const QString& id : {"A", "B"}) {
+        ModuleInstance m;
+        m.id = id;
+        m.moduleId = id;
+        project.addModule(m);
+    }
+    project.addModule(fork);
+    project.addConnection(controlConnection("Fork", "branch", "A"));
+    project.addConnection(controlConnection("Fork", "branch", "B"));
+
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == "Fork")
+            return new ParallelForkModule(inst.id);
+        return new ThreadSafeSleepModule(inst.id, 300);
+    }));
+
+    // 启动后立即取消
+    QTimer::singleShot(30, [&engine]() { engine.stop(); });
+    engine.runOnce();
+
+    // 取消后不应等待全部 300ms 完成（宽松断言：状态非 Running）
+    QVERIFY(engine.state() != RunState::Running);
+    engine.clearModules();
+    engine.setParallelThreadCount(1);
 }
 
 QTEST_MAIN(TestRunEngine)

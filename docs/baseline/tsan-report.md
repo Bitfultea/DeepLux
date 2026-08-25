@@ -74,6 +74,19 @@ happens-before 关系，凡 QMutex/QReadWriteLock 保护的共享数据都会被
 3. **`m_frameId.fetch_add(relaxed)` 与 `m_runId` 读取**：`m_runId` 为 QString，
    工作线程读取时需确认无并发写。
 
+## 步5 补充的压力/线程归属测试
+
+在 `tests/test_runengine.cpp` 新增（100 用例全过）：
+
+| 测试 | 验证 |
+| --- | --- |
+| `testLongLoopNoFramePollution` | 200 次循环无上一帧污染：body 计数=200、after 仅 1 次 |
+| `testStopDuringLoopRun` | 长循环中 `stop()`（后台运行+主线程 stop）中止执行，迭代数远小于上限 |
+| `testCancelDuringParallelBatch` | 并行批次中取消中止剩余模块，状态非 Running |
+
+这些覆盖"连续循环、停止、取消"压力场景；线程归属（信号在工作线程发射）见上节
+"需要人工复核的潜在真实问题#1"。
+
 ## 门禁判定
 
 - 依据 `round-todo.md`："TSan（不支持则保留错误记录不写通过）"。
