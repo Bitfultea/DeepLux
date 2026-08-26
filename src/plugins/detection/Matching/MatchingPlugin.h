@@ -4,6 +4,7 @@
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
+#include <vector>
 #endif
 
 namespace DeepLux {
@@ -46,7 +47,14 @@ protected:
     IModule* cloneImpl() const override;
 
 private:
-    std::vector<cv::Rect> matchTemplate(const cv::Mat& image, const cv::Mat& templ, double threshold);
+#ifdef DEEPLUX_HAS_OPENCV
+    struct MatchResult {
+        cv::Rect rect;
+        double score = 0.0;
+    };
+
+    std::vector<MatchResult> matchTemplate(const cv::Mat& image, const cv::Mat& templ, double threshold);
+#endif
 
     double m_matchThreshold = 0.8;
     int m_maxMatches = 10;

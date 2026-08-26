@@ -124,7 +124,15 @@ def load_existing_reviews() -> dict[str, dict]:
         if not key:
             continue
         preserved = {}
-        for field in ("reviewState", "reviewConclusion", "evidence", "dependencyNote"):
+        for field in (
+            "reviewState",
+            "dependencyNote",
+            "reviewConclusion",
+            "evidence",
+            "deletedPorts",
+            "replacement",
+            "decision",
+        ):
             if field in row:
                 preserved[field] = row[field]
         # 记录审核时的候选身份，用于合并时校验是否仍有效
@@ -166,9 +174,12 @@ def markdown(rows: list[dict]) -> str:
         f"| dependency_recorded | {review_counts.get('dependency_recorded', 0)} |",
         f"| pending | {review_counts.get('pending', 0)} |",
         "",
+        "- 审核结论统计仅包含 `reviewState=reviewed` 的条目。",
+        "",
         "| 审核结论 | 数量 | 含义 |",
         "| --- | ---: | --- |",
         f"| equivalent | {conclusion_counts.get('equivalent', 0)} | 已证明与旧版能力等价（需旧版参数/端口/结果对照） |",
+        f"| intentionally_changed | {conclusion_counts.get('intentionally_changed', 0)} | 已确认采用不同于旧版的契约或行为 |",
         f"| partial | {conclusion_counts.get('partial', 0)} | 当前存在候选实现，旧版等价未证明 |",
         f"| unverified | {conclusion_counts.get('unverified', 0)} | 依赖硬件/SDK，行为未验证 |",
         f"| not_equivalent | {conclusion_counts.get('not_equivalent', 0)} | 不等价 |",
@@ -212,7 +223,15 @@ def main() -> None:
             and identity.get("matchKind", "") == row["matchKind"]
         )
         if identity_unchanged:
-            for field in ("reviewState", "reviewConclusion", "evidence", "dependencyNote"):
+            for field in (
+                "reviewState",
+                "dependencyNote",
+                "reviewConclusion",
+                "evidence",
+                "deletedPorts",
+                "replacement",
+                "decision",
+            ):
                 if field in saved:
                     row[field] = saved[field]
             merged_count += 1

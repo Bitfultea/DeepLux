@@ -307,14 +307,13 @@
       "matchKind": "direct",
       "reviewState": "reviewed",
       "reviewConclusion": "intentionally_changed",
-      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认；行为测试：test_imageplugins 3 用例（模板匹配确定性/空图/clone）；旧版对照：输出面收窄（旧版 7 输出 → 当前 1），见 legacy-comparison.md；输出处置：已声明 match_x/y/width/height/count；match_threshold 为匹配阈值（非分数），分数输出待补齐",
+      "evidence": "能力矩阵标\"部分/重构\"；参数契约与端口已核验，行为级等价待逐项确认；行为测试：test_imageplugins 覆盖模板匹配确定性、真实分数、空图和 clone；旧版对照：输出面扩展（旧版 7 输出 → 当前 9），见 legacy-comparison.md；输出处置：match_score 与 DetectionList.score 均使用 TM_CCOEFF_NORMED 实际响应值",
       "deletedPorts": [
         "角度",
-        "Deg",
-        "分数"
+        "Deg"
       ],
-      "replacement": "match_x/y/width/height/count + detections(DetectionList)；match_threshold 为阈值非分数",
-      "decision": "分数 deferred，先保位置/计数"
+      "replacement": "match_x/y/width/height/count/score + detections(DetectionList)；match_threshold 仅表示筛选阈值",
+      "decision": "保留真实匹配分数；当前算法不提供旋转角度"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.Matching1",

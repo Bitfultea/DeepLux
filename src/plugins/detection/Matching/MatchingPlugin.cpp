@@ -83,7 +83,7 @@ bool MatchingPlugin::process(const ImageData& input, ImageData& output) {
 
     // 执行模板匹配
     m_resultMat = image.clone();
-    std::vector<cv::Rect> matches = matchTemplate(image, m_template, m_matchThreshold);
+    const std::vector<MatchResult> matches = matchTemplate(image, m_template, m_matchThreshold);
 
     if (matches.empty()) {
         emit errorOccurred(tr("未找到匹配区域"));
@@ -94,10 +94,10 @@ bool MatchingPlugin::process(const ImageData& input, ImageData& output) {
 
     // 绘制匹配结果
     for (size_t i = 0; i < matches.size() && i < static_cast<size_t>(m_maxMatches); ++i) {
-        cv::rectangle(m_resultMat, matches[i], cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
+        cv::rectangle(m_resultMat, matches[i].rect, cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
 
         QString label = QString("Match %1").arg(i + 1);
-        cv::putText(m_resultMat, label.toUtf8().constData(), cv::Point(matches[i].x, matches[i].y - 5),
+        cv::putText(m_resultMat, label.toUtf8().constData(), cv::Point(matches[i].rect.x, matches[i].rect.y - 5),
                     cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
     }
 
@@ -107,21 +107,22 @@ bool MatchingPlugin::process(const ImageData& input, ImageData& output) {
 
     // 返回第一个匹配的位置
     if (!matches.empty()) {
-        output.setData("match_x", matches[0].x);
-        output.setData("match_y", matches[0].y);
-        output.setData("match_width", matches[0].width);
-        output.setData("match_height", matches[0].height);
+        output.setData("match_x", matches[0].rect.x);
+        output.setData("match_y", matches[0].rect.y);
+        output.setData("match_width", matches[0].rect.width);
+        output.setData("match_height", matches[0].rect.height);
+        output.setData("match_score", matches[0].score);
     }
 
     // P2-6: 端口式强类型输出 DetectionList（Matching 作为生产者）
     DetectionList detections;
     for (size_t i = 0; i < matches.size() && i < static_cast<size_t>(m_maxMatches); ++i) {
         Detection d;
-        d.x = matches[i].x;
-        d.y = matches[i].y;
-        d.width = matches[i].width;
-        d.height = matches[i].height;
-        d.score = m_matchThreshold; // 模板匹配无逐目标分数，以阈值为下限占位
+        d.x = matches[i].rect.x;
+        d.y = matches[i].rect.y;
+        d.width = matches[i].rect.width;
+        d.height = matches[i].rect.height;
+        d.score = matches[i].score;
         d.label = QString("Match %1").arg(i + 1);
         detections.items.append(d);
     }
@@ -138,10 +139,10 @@ bool MatchingPlugin::process(const ImageData& input, ImageData& output) {
 #endif
 }
 
-std::vector<cv::Rect> MatchingPlugin::matchTemplate(const cv::Mat& image, const cv::Mat& templ, double threshold) {
-    std::vector<cv::Rect> results;
-
 #ifdef DEEPLUX_HAS_OPENCV
+std::vector<MatchingPlugin::MatchResult> MatchingPlugin::matchTemplate(const cv::Mat& image, const cv::Mat& templ,
+                                                                       double threshold) {
+    std::vector<MatchResult> results;
     cv::Mat gray, templGray;
 
     // 转灰度
@@ -168,7 +169,7 @@ std::vector<cv::Rect> MatchingPlugin::matchTemplate(const cv::Mat& image, const 
         cv::minMaxLoc(result, &minVal, &maxVal, &minLoc, &maxLoc);
 
         if (maxVal >= threshold) {
-            results.push_back(cv::Rect(maxLoc.x, maxLoc.y, templ.cols, templ.rows));
+            results.push_back({cv::Rect(maxLoc.x, maxLoc.y, templ.cols, templ.rows), qBound(0.0, maxVal, 1.0)});
 
             // 抑制当前匹配区域的响应值，避免重叠
             cv::Rect suppressRegion(std::max(0, maxLoc.x - templ.cols / 2), std::max(0, maxLoc.y - templ.rows / 2),
@@ -183,10 +184,9 @@ std::vector<cv::Rect> MatchingPlugin::matchTemplate(const cv::Mat& image, const 
             break;
         }
     }
-#endif
-
     return results;
 }
+#endif
 
 bool MatchingPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     double threshold = params["matchThreshold"].toDouble();

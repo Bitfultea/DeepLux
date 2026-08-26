@@ -88,6 +88,13 @@
                 "multiple": false
             },
             {
+                "id": "match_score",
+                "displayName": "匹配分数",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
                 "id": "detections",
                 "displayName": "检测列表（强类型）",
                 "type": "DetectionList",

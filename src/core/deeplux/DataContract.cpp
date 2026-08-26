@@ -7,6 +7,7 @@
 #include <QCoreApplication>
 #include <QMutex>
 #include <QMutexLocker>
+#include <cmath>
 
 namespace DeepLux {
 
@@ -131,8 +132,6 @@ bool isPointSet2D(const QVariant& value) {
     if (value.type() != QVariant::List)
         return false;
     const QVariantList list = value.toList();
-    if (list.isEmpty())
-        return false;
     for (const QVariant& item : list) {
         if (item.type() != QVariant::PointF && !isNumericList(item, 2))
             return false;
@@ -140,20 +139,34 @@ bool isPointSet2D(const QVariant& value) {
     return true;
 }
 
-// P2-6: DetectionList 校验（强类型或逐元素 map 含数值 x/y），拒绝任意列表
+bool isValidDetection(double x, double y, double width, double height, double score) {
+    return std::isfinite(x) && std::isfinite(y) && std::isfinite(width) && std::isfinite(height) &&
+           std::isfinite(score) && width >= 0.0 && height >= 0.0 && score >= 0.0 && score <= 1.0;
+}
+
+// P2-6: DetectionList 校验（强类型或完整 map），拒绝字段缺失和无效数值
 bool isDetectionList(const QVariant& value) {
-    if (value.canConvert<DetectionList>())
+    if (value.canConvert<DetectionList>()) {
+        const DetectionList detections = value.value<DetectionList>();
+        for (const Detection& detection : detections.items) {
+            if (!isValidDetection(detection.x, detection.y, detection.width, detection.height, detection.score))
+                return false;
+        }
         return true;
+    }
     if (value.type() != QVariant::List)
         return false;
     const QVariantList list = value.toList();
-    if (list.isEmpty())
-        return false;
     for (const QVariant& item : list) {
         if (item.type() != QVariant::Map)
             return false;
         const QVariantMap m = item.toMap();
-        if (!isNumeric(m.value("x")) || !isNumeric(m.value("y")))
+        if (!isNumeric(m.value("x")) || !isNumeric(m.value("y")) || !isNumeric(m.value("width")) ||
+            !isNumeric(m.value("height")) || !isNumeric(m.value("score")) ||
+            !isValidDetection(m.value("x").toDouble(), m.value("y").toDouble(), m.value("width").toDouble(),
+                              m.value("height").toDouble(), m.value("score").toDouble()))
+            return false;
+        if (m.contains("label") && m.value("label").type() != QVariant::String)
             return false;
     }
     return true;
@@ -203,14 +216,14 @@ bool portValueMatchesType(const QVariant& value, DataType type) {
         // 步4: 优先强类型 Circle2D；过渡期接受数值列表 [cx,cy,r]
         return value.canConvert<Circle2D>() || isNumericList(value, 3);
     case DataType::DetectionList:
-        // P2-6: 强类型 DetectionList 或逐元素 map(含数值 x/y)，拒绝任意列表
+        // P2-6: 强类型 DetectionList 或逐元素完整 map
         return isDetectionList(value);
     case DataType::Mask2D:
     case DataType::Region2D:
     case DataType::Ellipse2D:
     case DataType::Transform2D:
     case DataType::ClassScores:
-        return true; // Dedicated payload types are introduced with their producing plugins.
+        return false; // No producing plugin or dedicated payload contract exists yet.
     case DataType::Any:
         return true;
     }

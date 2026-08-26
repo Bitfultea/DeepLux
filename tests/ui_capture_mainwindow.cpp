@@ -2,6 +2,7 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -166,7 +167,8 @@ bool captureFormalSizes(DeepLux::MainWindow& window, const QDir& dir) {
 
 bool capturePluginConfigDialog(DeepLux::MainWindow& window, const QDir& dir) {
     if (!DeepLux::PluginManager::instance().isPluginLoaded(QStringLiteral("LoadPointCloud"))) {
-        return true;
+        qWarning("LoadPointCloud is required for the configuration screenshot");
+        return false;
     }
 
     DeepLux::Project* project = DeepLux::ProjectManager::instance().currentProject();
@@ -184,28 +186,24 @@ bool capturePluginConfigDialog(DeepLux::MainWindow& window, const QDir& dir) {
     project->addModule(loader);
     QCoreApplication::processEvents();
 
-    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
-    if (!processTree || processTree->topLevelItemCount() == 0) {
-        return false;
-    }
+    window.selectModuleForCapture(loader.id);
 
-    QTreeWidgetItem* item = processTree->topLevelItem(processTree->topLevelItemCount() - 1);
     bool saved = false;
     QTimer::singleShot(80, [&]() {
-        QWidget* modal = QApplication::activeModalWidget();
-        if (!modal) {
+        QWidget* dialog = window.findChild<QWidget*>(QStringLiteral("PluginConfigDialog"));
+        if (!dialog) {
             return;
         }
-        modal->resize(560, 430);
+        dialog->resize(560, 480);
         QCoreApplication::processEvents();
-        saved = modal->grab().save(dir.filePath(QStringLiteral("10-plugin-config-dialog.png")));
-        modal->close();
+        saved = dialog->grab().save(dir.filePath(QStringLiteral("10-plugin-config-dialog.png")));
+        dialog->close();
     });
 
-    const QRect itemRect = processTree->visualItemRect(item);
-    QTest::mouseDClick(processTree->viewport(), Qt::LeftButton, Qt::NoModifier, itemRect.center());
+    const bool invoked = QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig", Qt::DirectConnection,
+                                                   Q_ARG(QString, loader.id));
     QTest::qWait(180);
-    return saved;
+    return invoked && saved;
 }
 
 // 收尾2: 安装插件到临时目录，供截图工程加载
@@ -255,11 +253,16 @@ bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& plug
     if (!installPluginForCapture(repoRoot, pluginTempRoot, "FindCircle",
                                  "src/plugins/detection/FindCircle/metadata.json", "libFindCirclePlugin.so"))
         return false;
+    if (!installPluginForCapture(repoRoot, pluginTempRoot, "LoadPointCloud",
+                                 "src/plugins/image_processing/LoadPointCloud/metadata.json",
+                                 "libLoadPointCloudPlugin.so"))
+        return false;
 
     DeepLux::PluginManager::instance().addPluginPath(pluginTempRoot);
     DeepLux::PluginManager::instance().initialize();
     DeepLux::PluginManager::instance().loadPlugin("GrabImage");
     DeepLux::PluginManager::instance().loadPlugin("FindCircle");
+    DeepLux::PluginManager::instance().loadPlugin("LoadPointCloud");
 
     // 打开工程并运行
     DeepLux::Project* project = DeepLux::ProjectManager::instance().openProject(tmpProjPath);
@@ -282,8 +285,12 @@ bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& plug
                                                     });
 
     DeepLux::RunEngine::instance().runOnce();
-    QCoreApplication::processEvents();
-    QTest::qWait(200);
+    QElapsedTimer waitTimer;
+    waitTimer.start();
+    while (!gotResult && waitTimer.elapsed() < 5000) {
+        QCoreApplication::processEvents();
+        QTest::qWait(10);
+    }
     QObject::disconnect(conn);
 
     if (!gotResult || !runResult.success) {
@@ -301,21 +308,34 @@ bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& plug
         return false;
     }
     QFile ef(acceptanceRoot + "/expected/circle_640x480.json");
-    if (ef.open(QIODevice::ReadOnly)) {
-        const QJsonObject exp = QJsonDocument::fromJson(ef.readAll()).object();
-        ef.close();
-        const double tolC = exp["tolerance_center_px"].toDouble();
-        const double tolR = exp["tolerance_radius_px"].toDouble();
-        if (qAbs(gotCx - exp["circle_center_x"].toDouble()) > tolC ||
-            qAbs(gotCy - exp["circle_center_y"].toDouble()) > tolC ||
-            qAbs(gotR - exp["circle_radius"].toDouble()) > tolR) {
-            qWarning("findcircle result outside tolerance: c(%1,%2) r=%3", gotCx, gotCy, gotR);
-            return false;
-        }
+    if (!ef.open(QIODevice::ReadOnly)) {
+        qWarning("failed to open findcircle expected result");
+        return false;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument expectedDocument = QJsonDocument::fromJson(ef.readAll(), &parseError);
+    ef.close();
+    if (parseError.error != QJsonParseError::NoError || !expectedDocument.isObject()) {
+        qWarning("invalid findcircle expected result: %s", qPrintable(parseError.errorString()));
+        return false;
+    }
+    const QJsonObject exp = expectedDocument.object();
+    const double tolC = exp["tolerance_center_px"].toDouble(-1.0);
+    const double tolR = exp["tolerance_radius_px"].toDouble(-1.0);
+    if (tolC < 0.0 || tolR < 0.0 || qAbs(gotCx - exp["circle_center_x"].toDouble()) > tolC ||
+        qAbs(gotCy - exp["circle_center_y"].toDouble()) > tolC || qAbs(gotR - exp["circle_radius"].toDouble()) > tolR) {
+        qWarning("findcircle result outside tolerance: c(%g,%g) r=%g", gotCx, gotCy, gotR);
+        return false;
     }
 
     // 阶3: 选择找圆节点并展示检查器，使截图含检查器结果与节点状态
     window.selectModuleForCapture(QStringLiteral("findcircle"));
+    QTabWidget* inspectorTabs = window.findChild<QTabWidget*>(QStringLiteral("InspectorTabs"));
+    if (!inspectorTabs || inspectorTabs->count() < 2) {
+        qWarning("findcircle inspector result tab is unavailable");
+        return false;
+    }
+    inspectorTabs->setCurrentIndex(1);
     QCoreApplication::processEvents();
     QTest::qWait(100);
     return true;

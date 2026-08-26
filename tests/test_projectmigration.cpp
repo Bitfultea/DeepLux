@@ -36,12 +36,16 @@ void TestProjectMigration::testMappingConclusionConsistency() {
     const QString root = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../..");
     QFile jf(root + "/docs/baseline/hotfix-plugin-mapping.json");
     QFile mf(root + "/docs/baseline/legacy-comparison.md");
+    QFile generatedMf(root + "/docs/baseline/hotfix-plugin-mapping.md");
     QVERIFY(jf.open(QIODevice::ReadOnly));
     QVERIFY(mf.open(QIODevice::ReadOnly));
+    QVERIFY(generatedMf.open(QIODevice::ReadOnly));
     const QJsonObject json = QJsonDocument::fromJson(jf.readAll()).object();
     const QString md = QString::fromUtf8(mf.readAll());
+    const QString generatedMd = QString::fromUtf8(generatedMf.readAll());
     jf.close();
     mf.close();
+    generatedMf.close();
 
     // 统计 JSON 结论分布
     QMap<QString, int> jsonCount;
@@ -52,11 +56,19 @@ void TestProjectMigration::testMappingConclusionConsistency() {
     }
 
     // MD 汇总行形如 "equivalent=0、intentionally_changed=12、partial=34、unverified=4"
-    for (const QString& key : {"equivalent", "intentionally_changed", "partial", "unverified"}) {
+    for (const QString key : {"equivalent", "intentionally_changed", "partial", "unverified"}) {
         QRegularExpression re(key + "=(\\d+)");
         auto m = re.match(md);
         QVERIFY2(m.hasMatch(), qPrintable("MD missing count for " + key));
         QCOMPARE(m.captured(1).toInt(), jsonCount.value(key, 0));
+    }
+
+    for (const QString key : {"equivalent", "intentionally_changed", "partial", "unverified", "not_equivalent"}) {
+        const QRegularExpression re(
+            QStringLiteral("\\|\\s*%1\\s*\\|\\s*(\\d+)\\s*\\|").arg(QRegularExpression::escape(key)));
+        const auto match = re.match(generatedMd);
+        QVERIFY2(match.hasMatch(), qPrintable("generated mapping missing count for " + key));
+        QCOMPARE(match.captured(1).toInt(), jsonCount.value(key, 0));
     }
 }
 

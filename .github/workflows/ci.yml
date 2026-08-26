@@ -47,10 +47,13 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="${{ github.event.pull_request.base.sha }}"
           else
-            BASE="HEAD^"
+            BASE="${{ github.event.before }}"
+            if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+              BASE="$(git rev-list --max-parents=0 HEAD)"
+            fi
           fi
           FILES=$(git diff --name-only "$BASE" HEAD -- 'src/*.cpp' 'src/*.h' 'tests/*.cpp' 'tests/*.h' \
-                    'src/**/*.cpp' 'src/**/*.h' 'tests/**/*.cpp' 'tests/**/*.h' || true)
+                    'src/**/*.cpp' 'src/**/*.h' 'tests/**/*.cpp' 'tests/**/*.h')
           if [ -z "$FILES" ]; then echo "No C++ files changed; format gate passes."; exit 0; fi
           echo "Checking changed files:"; echo "$FILES"
           clang-format --dry-run --Werror $FILES

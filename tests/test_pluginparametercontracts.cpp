@@ -628,6 +628,7 @@ void TestPluginParameterContracts::testPayloadTypeTightening() {
     QVERIFY(portValueMatchesType(QVariant::fromValue(QVector<QPointF>{QPointF(0, 0), QPointF(1, 1)}),
                                  DataType::PointSet2D));
     QVERIFY(portValueMatchesType(QVariant(QVariantList{QVariant(QVariantList{0.0, 0.0})}), DataType::PointSet2D));
+    QVERIFY(portValueMatchesType(QVariant(QVariantList{}), DataType::PointSet2D));
     // PointSet2D: 拒绝任意标量列表
     QVERIFY(!portValueMatchesType(QVariant(QVariantList{1.0, 2.0, 3.0}), DataType::PointSet2D));
 
@@ -636,11 +637,23 @@ void TestPluginParameterContracts::testPayloadTypeTightening() {
     DeepLux::Detection d;
     d.x = 1;
     d.y = 2;
+    d.width = 3;
+    d.height = 4;
+    d.score = 0.8;
     dl.items.append(d);
     QVERIFY(portValueMatchesType(QVariant::fromValue(dl), DataType::DetectionList));
-    // DetectionList: 接受逐元素 map(含数值 x/y)
-    QVERIFY(portValueMatchesType(QVariant(QVariantList{QVariant(QVariantMap{{"x", 1.0}, {"y", 2.0}})}),
-                                 DataType::DetectionList));
+    QVERIFY(portValueMatchesType(QVariant::fromValue(DeepLux::DetectionList{}), DataType::DetectionList));
+    // DetectionList: 接受完整且有效的逐元素 map
+    QVERIFY(portValueMatchesType(
+        QVariant(QVariantList{QVariant(
+            QVariantMap{{"x", 1.0}, {"y", 2.0}, {"width", 3.0}, {"height", 4.0}, {"score", 0.8}, {"label", "ok"}})}),
+        DataType::DetectionList));
+    QVERIFY(portValueMatchesType(QVariant(QVariantList{}), DataType::DetectionList));
+    QVERIFY(!portValueMatchesType(QVariant(QVariantList{QVariant(QVariantMap{{"x", 1.0}, {"y", 2.0}})}),
+                                  DataType::DetectionList));
+    d.score = 1.1;
+    dl.items[0] = d;
+    QVERIFY(!portValueMatchesType(QVariant::fromValue(dl), DataType::DetectionList));
     // DetectionList: 拒绝任意标量列表
     QVERIFY(!portValueMatchesType(QVariant(QVariantList{1.0, 2.0}), DataType::DetectionList));
 
@@ -649,6 +662,12 @@ void TestPluginParameterContracts::testPayloadTypeTightening() {
     c.radius = 5;
     QVERIFY(portValueMatchesType(QVariant::fromValue(c), DataType::Circle2D));
     QVERIFY(portValueMatchesType(QVariant(QVariantList{1.0, 2.0, 3.0}), DataType::Circle2D));
+
+    // 尚无专用载荷和生产者的复杂类型必须失败关闭，不能接受任意 QVariant。
+    for (DataType type :
+         {DataType::Mask2D, DataType::Region2D, DataType::Ellipse2D, DataType::Transform2D, DataType::ClassScores}) {
+        QVERIFY(!portValueMatchesType(QVariant(1), type));
+    }
 }
 
 QTEST_MAIN(TestPluginParameterContracts)

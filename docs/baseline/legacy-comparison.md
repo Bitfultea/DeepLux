@@ -45,7 +45,7 @@
 | BarcodeReader | QRCode | candidate | 3 | 2 | 条形码信息, 状态, 时间 | image, qr_result | 当前输出数(2)<旧版(3)，输出面收窄 |
 | ColorRecognition | ColorRecognition | direct | 5 | 1 | X, Y, 识别面积, 区域, 掩膜图像 | image | 当前输出数(1)<旧版(5)，输出面收窄 |
 | FindCircle | FindCircle | direct | 7 | 5 | 测量圆, 圆心X, 圆心Y, 半径, 直径, 状态, 时间 | image, circle_center_x, circle_center_y, circle_radius, circle_score | 当前输出数(5)<旧版(7)，输出面收窄 |
-| Matching | Matching | direct | 7 | 1 | X, Y, Deg, 角度, 分数, 匹配数量, 匹配结果列表 | image | 当前输出数(1)<旧版(7)，输出面收窄 |
+| Matching | Matching | direct | 7 | 9 | X, Y, Deg, 角度, 分数, 匹配数量, 匹配结果列表 | image, match_count, match_threshold, match_x, match_y, match_width, match_height, match_score, detections | 当前补齐真实分数和强类型检测列表；旋转角度仍未提供 |
 | MeasureLine | MeasureLine | direct | 7 | 3 | 测量直线, 中心X, 中心Y, 角度, 状态, 时间, 直线度 | image, line_length, line_angle | 当前输出数(3)<旧版(7)，输出面收窄 |
 | MeasureRect | MeasureRect | direct | 9 | 4 | 测量矩形, 中心X, 中心Y, 长边l1, 短边l2, 角度(Phi), 角度(Deg), 状态 | image, rect_width, rect_height, rect_area | 当前输出数(4)<旧版(9)，输出面收窄 |
 | QRCode | QRCode | direct | 1 | 2 | 二维码信息 | image, qr_result | 当前输出数(2)≥旧版(1)，覆盖面相当，语义待逐项确认 |

@@ -19,10 +19,13 @@
 | dependency_recorded | 7 |
 | pending | 53 |
 
+- 审核结论统计仅包含 `reviewState=reviewed` 的条目。
+
 | 审核结论 | 数量 | 含义 |
 | --- | ---: | --- |
 | equivalent | 0 | 已证明与旧版能力等价（需旧版参数/端口/结果对照） |
-| partial | 46 | 当前存在候选实现，旧版等价未证明 |
+| intentionally_changed | 12 | 已确认采用不同于旧版的契约或行为 |
+| partial | 34 | 当前存在候选实现，旧版等价未证明 |
 | unverified | 4 | 依赖硬件/SDK，行为未验证 |
 | not_equivalent | 0 | 不等价 |
 
@@ -50,7 +53,7 @@
 | LabelRegion | `02Plugins/002检测识别/Plugin.LabelRegion` | - | missing | - |
 | Matching1 | `02Plugins/002检测识别/Plugin.Matching1` | - | missing | - |
 | MeasureCircle | `02Plugins/002检测识别/Plugin.MeasureCircle` | - | missing | - |
-| DistanceLL | `02Plugins/003几何测量/Plugin.DistanceLL` | LinesDistance | candidate | partial |
+| DistanceLL | `02Plugins/003几何测量/Plugin.DistanceLL` | LinesDistance | candidate | intentionally_changed |
 | AffineeRegion | `02Plugins/004几何关系/Plugin.AffineeRegion` | - | missing | - |
 | BuildLl | `02Plugins/004几何关系/Plugin.BuildLl` | - | missing | - |
 | FitEllipse | `02Plugins/004几何关系/Plugin.FitEllipse` | - | missing | - |
@@ -88,10 +91,10 @@
 | PlaneCorrection | `02Plugins/0143D/Plugin.PlaneCorrection` | - | missing | - |
 | PointFilter | `02Plugins/0143D/Plugin.PointFilter` | - | missing | - |
 | VolumeMeasurement | `02Plugins/0143D/Plugin.VolumeMeasurement` | - | missing | - |
-| Envelope | `02Plugins/015包膜机/Plugin.Envelope` | - | business_pack | - |
-| EnvelopeTieJiao | `02Plugins/015包膜机/Plugin.EnvelopeTieJiao` | - | business_pack | - |
-| MPHA | `02Plugins/016密封钉/Plugin.MPHA` | - | business_pack | - |
-| SealingPin | `02Plugins/016密封钉/Plugin.SealingPin` | - | business_pack | - |
-| SealingPinHanHou | `02Plugins/016密封钉/Plugin.SealingPinHanHou` | - | business_pack | - |
-| SealingPinYuhan | `02Plugins/016密封钉/Plugin.SealingPinYuhan` | - | business_pack | - |
-| ThreeDimsAI | `02Plugins/016密封钉/Plugin.ThreeDimsAI` | - | business_pack | - |
+| Envelope | `02Plugins/015包膜机/Plugin.Envelope` | - | business_pack | unverified |
+| EnvelopeTieJiao | `02Plugins/015包膜机/Plugin.EnvelopeTieJiao` | - | business_pack | unverified |
+| MPHA | `02Plugins/016密封钉/Plugin.MPHA` | - | business_pack | unverified |
+| SealingPin | `02Plugins/016密封钉/Plugin.SealingPin` | - | business_pack | unverified |
+| SealingPinHanHou | `02Plugins/016密封钉/Plugin.SealingPinHanHou` | - | business_pack | unverified |
+| SealingPinYuhan | `02Plugins/016密封钉/Plugin.SealingPinYuhan` | - | business_pack | unverified |
+| ThreeDimsAI | `02Plugins/016密封钉/Plugin.ThreeDimsAI` | - | business_pack | unverified |

@@ -194,6 +194,15 @@ private slots:
         QVERIFY2(qAbs(dist - 0.5) < 1e-6, qPrintable(QString("near-collinear dist should be 0.5, got %1").arg(dist)));
     }
 
+    void testTinyIntersectingSegments() {
+        double dist = 0;
+        const double gap =
+            runNearestGap({QPointF(0, 0), QPointF(1e-8, 1e-8)}, {QPointF(0, 1e-8), QPointF(1e-8, 0)}, dist);
+        QVERIFY(gap >= 0);
+        QVERIFY2(dist < 1e-20, qPrintable(QString("tiny crossing segments must intersect; dist=%1").arg(dist)));
+        QVERIFY2(gap < 1e-20, qPrintable(QString("tiny crossing nearest points must coincide; gap=%1").arg(gap)));
+    }
+
     void testMissingLine1() {
         LinesDistancePlugin plugin;
         QVERIFY(plugin.initialize());

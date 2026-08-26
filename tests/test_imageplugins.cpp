@@ -1,4 +1,5 @@
 #include "core/base/ModuleBase.h"
+#include "core/deeplux/PayloadTypes.h"
 #include "core/model/ImageData.h"
 #include "plugins/detection/Matching/MatchingPlugin.h"
 #include "plugins/image_processing/PerProcessing/PerProcessingPlugin.h"
@@ -186,6 +187,14 @@ void TestImagePlugins::testMatchingFindsTemplateDeterministic() {
     QVERIFY(output.data("match_count").toInt() >= 1);
     QVERIFY(output.hasData("match_x"));
     QVERIFY(output.hasData("match_y"));
+    QVERIFY(output.hasData("match_score"));
+    const double score = output.data("match_score").toDouble();
+    QVERIFY(score > params["matchThreshold"].toDouble());
+    QVERIFY(score <= 1.0);
+    QVERIFY(output.data("detections").canConvert<DetectionList>());
+    const DetectionList detections = output.data("detections").value<DetectionList>();
+    QVERIFY(!detections.isEmpty());
+    QCOMPARE(detections.items.first().score, score);
 #else
     QSKIP("OpenCV not available");
 #endif
