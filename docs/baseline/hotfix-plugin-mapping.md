@@ -94,9 +94,9 @@
 | LidWeldDetection | 0143D | business_pack | P3 | 依赖：盖帽焊接工艺与硬件；属业务检测 |
 | LinePlaneAngle | 0143D | rebuild | P2 | 输入:Line3D+Plane3D；输出:角度；关键参数:Line3D 链接+Plane3D 链接；场景:线与面夹角计算 |
 | PlaneAngle | 0143D | rebuild | P2 | 输入:两 Plane3D；输出:角度；关键参数:两个 Plane3D 链接；场景:两面夹角计算 |
-| PlaneCorrection | 0143D | rebuild | P2 | 输入:深度图 HImage+基准平面图像（链接）；输出:校正后图像/平面度/最大最小偏差/RMS/高度距离；关键参数:参考平面/校正轴；场景:深度图按链接的基准平面图像校正倾斜，输出校正后平面度 |
-| PointFilter | 0143D | rebuild | P2 | 输入:深度图/高度图 HImage（链接）；输出:滤波后图像/原始点数/保留点数；关键参数:距离/强度阈值；旧版经 PointCloudFilter.dll（P/Invoke）执行滤波；场景:高度图点云滤波去噪（旧版调用 PointCloudFilter.dll），输出点数统计 |
-| VolumeMeasurement | 0143D | rebuild | P2 | 输入:深度图/高度图 HImage+基准面；输出:体积/体积单位/有效点数；关键参数:基准面/体积单位；场景:高度图相对基准面的体积计算 |
+| PlaneCorrection | 0143D | rebuild | P2 | 输入:高度图 HImage（第 1 通道为 Z 高度）+基准平面（链接基准平面图像 或 手动 Nx/Ny/Nz/D）+可选 ROI 矩形；输出:校正后图像/平面度/最大最小偏差/RMS/高度距离；关键参数:ePlaneMode（PlaneImage 链接图像/Manual 手动平面 Nx/Ny/Nz/D）/eCorrectionMode（Quick/Projection/PointToPlaneDistance 三种校正模式）/ROI 参数（中心/长边/短边/角度，仿射补正）/TranslateZ（Z 平移）/ResolutionX/Y/Z；场景:高度图按基准平面校正倾斜：支持链接图像或手动平面两种来源、三种校正模式、可选 ROI、Z 平移与 XYZ 分辨率 |
+| PointFilter | 0143D | rebuild | P2 | 输入:高度图/深度图 HImage（单通道或双通道高度+灰度 TIFF）+ROI；输出:滤波后图像/原始点数/保留点数；关键参数:eFilterType 8 种滤波算法及独立参数：VoxelDownSample(VoxelSize)/UniformDownSample(EveryKPoints)/IndexDownSample 与 SelectByIndex(IndicesText/Invert)/StatisticalOutliers(NbNeighbors/StdRatio)/RadiusOutliers(NbPoints/SearchRadius)/AxiFilter(MinVal/MaxVal/Axis 0=X/1=Y/2=Z)/HeightFilter(HeightThreshold)；InvalidValue(丢弃填充值)；旧版经 PointCloudFilter.dll 在物理坐标空间执行；场景:点云滤波/降采样/离群剔除（8 种算法可选），按 ScaleX/Y/Z 物理坐标执行，输出滤波后图像与点数统计 |
+| VolumeMeasurement | 0143D | rebuild | P2 | 输入:高度图 HImage+可选基准平面图像（链接；未链接时以零平面为基准）+测量区域（整图/手动绘制/链接区域）；输出:体积/体积单位/有效点数；关键参数:eVolumeCalcMode（AbovePlane 平面上方/BelowPlane 平面下方）/eMeasureRegionSource（整图/手动绘制/链接区域）/RemoveHeight（移除高度）/ResolutionX/Y/Z/测量 ROI 参数（中心/长边/短边/角度）；场景:相对基准面（链接图像一阶曲面拟合，未链接用零平面）按测量区域积分平面上方/下方体积，支持移除高度与 XYZ 分辨率 |
 
 完整逐项数据见 `hotfix-plugin-mapping.json`。以下列出需要决策的项目：
 
