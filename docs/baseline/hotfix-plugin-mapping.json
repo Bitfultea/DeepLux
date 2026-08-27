@@ -1398,10 +1398,10 @@
       "currentPluginId": "",
       "matchKind": "missing",
       "reviewState": "pending",
-      "evidence": "输入:高度图/深度图 HImage（单通道或双通道高度+灰度 TIFF）+ROI；输出:滤波后图像/原始点数/保留点数；关键参数:eFilterType 8 种滤波算法及独立参数：VoxelDownSample(VoxelSize)/UniformDownSample(EveryKPoints)/IndexDownSample 与 SelectByIndex(IndicesText/Invert)/StatisticalOutliers(NbNeighbors/StdRatio)/RadiusOutliers(NbPoints/SearchRadius)/AxiFilter(MinVal/MaxVal/Axis 0=X/1=Y/2=Z)/HeightFilter(HeightThreshold)；InvalidValue(丢弃填充值)；旧版经 PointCloudFilter.dll 在物理坐标空间执行；场景:点云滤波/降采样/离群剔除（8 种算法可选），按 ScaleX/Y/Z 物理坐标执行，输出滤波后图像与点数统计",
+      "evidence": "输入:高度图/深度图 HImage（1 通道高度或 2 通道高度+灰度；使用图像 domain 作为过滤范围）；输出:滤波后图像/原始点数/保留点数；关键参数:eFilterType 8 种滤波算法及独立参数：VoxelDownSample(VoxelSize)/UniformDownSample(EveryKPoints)/IndexDownSample 与 SelectByIndex(IndicesText/Invert)/StatisticalOutliers(NbNeighbors/StdRatio)/RadiusOutliers(NbPoints/SearchRadius)/AxiFilter(MinVal/MaxVal/Axis 0=X/1=Y/2=Z)/HeightFilter(HeightThreshold)；InvalidValue(丢弃填充值)；旧版经 PointCloudFilter.dll 在物理坐标空间执行；场景:点云滤波/降采样/离群剔除（8 种算法可选），按 ScaleX/Y/Z 物理坐标执行，输出滤波后图像与点数统计",
       "migrationDecision": "rebuild",
       "priority": "P2",
-      "input": "高度图/深度图 HImage（单通道或双通道高度+灰度 TIFF）+ROI",
+      "input": "高度图/深度图 HImage（1 通道高度或 2 通道高度+灰度；使用图像 domain 作为过滤范围）",
       "output": "滤波后图像/原始点数/保留点数",
       "keyParams": "eFilterType 8 种滤波算法及独立参数：VoxelDownSample(VoxelSize)/UniformDownSample(EveryKPoints)/IndexDownSample 与 SelectByIndex(IndicesText/Invert)/StatisticalOutliers(NbNeighbors/StdRatio)/RadiusOutliers(NbPoints/SearchRadius)/AxiFilter(MinVal/MaxVal/Axis 0=X/1=Y/2=Z)/HeightFilter(HeightThreshold)；InvalidValue(丢弃填充值)；旧版经 PointCloudFilter.dll 在物理坐标空间执行",
       "scenario": "点云滤波/降采样/离群剔除（8 种算法可选），按 ScaleX/Y/Z 物理坐标执行，输出滤波后图像与点数统计"
