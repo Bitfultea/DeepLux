@@ -27,6 +27,8 @@ private slots:
     void testProjectManagerMigratesOnOpenAndBacksUpOnSave();
     // 阶4: 只读一致性——JSON 结论分布与 legacy-comparison.md 陈述一致，防漂移
     void testMappingConclusionConsistency();
+    // 阶1: 迁移决策枚举+统计一致性（53 missing 全部决策，JSON 与 MD 一致）
+    void testMigrationDecisionConsistency();
 
 private:
     void fillV2Project(Project& project);
@@ -69,6 +71,56 @@ void TestProjectMigration::testMappingConclusionConsistency() {
         const auto match = re.match(generatedMd);
         QVERIFY2(match.hasMatch(), qPrintable("generated mapping missing count for " + key));
         QCOMPARE(match.captured(1).toInt(), jsonCount.value(key, 0));
+    }
+}
+
+void TestProjectMigration::testMigrationDecisionConsistency() {
+    // 阶1: 53 个 missing 全部得到决策；枚举合法；JSON 与 mapping.md 统计一致
+    const QString root = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../..");
+    QFile jf(root + "/docs/baseline/hotfix-plugin-mapping.json");
+    QFile mf(root + "/docs/baseline/hotfix-plugin-mapping.md");
+    QVERIFY(jf.open(QIODevice::ReadOnly));
+    QVERIFY(mf.open(QIODevice::ReadOnly));
+    const QJsonObject json = QJsonDocument::fromJson(jf.readAll()).object();
+    const QString md = QString::fromUtf8(mf.readAll());
+    jf.close();
+    mf.close();
+
+    const QSet<QString> validEnum{"rebuild", "replace", "retire", "business_pack"};
+    QMap<QString, int> jsonDecision;
+    int missingTotal = 0;
+    for (const auto& v : json["plugins"].toArray()) {
+        const QJsonObject p = v.toObject();
+        if (p["matchKind"].toString() != "missing")
+            continue;
+        ++missingTotal;
+        const QString dec = p["migrationDecision"].toString();
+        QVERIFY2(validEnum.contains(dec),
+                 qPrintable(QString("missing %1 has invalid/no decision '%2'")
+                                .arg(p["legacyPlugin"].toString(), dec)));
+        QVERIFY2(!p["priority"].toString().isEmpty(),
+                 qPrintable("missing item missing priority: " + p["legacyPlugin"].toString().toUtf8()));
+        QVERIFY2(!p["evidence"].toString().isEmpty(),
+                 qPrintable("missing item missing evidence: " + p["legacyPlugin"].toString().toUtf8()));
+        jsonDecision[dec]++;
+    }
+    QVERIFY2(missingTotal == 53, qPrintable(QString("expected 53 missing, got %1").arg(missingTotal)));
+
+    // 截取"迁移范围决策"段，避免与 matchKind 表的 business_pack 计数混淆
+    const int secStart = md.indexOf(QStringLiteral("## 迁移范围决策"));
+    QVERIFY2(secStart >= 0, "mapping.md missing migration decision section");
+    int secEnd = md.indexOf(QStringLiteral("完整逐项数据"), secStart);
+    if (secEnd < 0)
+        secEnd = md.size();
+    const QString sec = md.mid(secStart, secEnd - secStart);
+
+    // mapping.md 迁移决策统计与 JSON 一致
+    for (const QString& key : {"rebuild", "replace", "retire", "business_pack", "pending"}) {
+        const QRegularExpression re(
+            QStringLiteral("\\|\\s*%1\\s*\\|\\s*(\\d+)\\s*\\|").arg(QRegularExpression::escape(key)));
+        const auto match = re.match(sec);
+        QVERIFY2(match.hasMatch(), qPrintable("mapping.md missing migration count for " + key));
+        QCOMPARE(match.captured(1).toInt(), jsonDecision.value(key, 0));
     }
 }
 

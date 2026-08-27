@@ -132,6 +132,9 @@ def load_existing_reviews() -> dict[str, dict]:
             "deletedPorts",
             "replacement",
             "decision",
+            # 阶1: 迁移范围决策字段，重生成不得丢失
+            "migrationDecision",
+            "priority",
         ):
             if field in row:
                 preserved[field] = row[field]
@@ -184,6 +187,33 @@ def markdown(rows: list[dict]) -> str:
         f"| unverified | {conclusion_counts.get('unverified', 0)} | 依赖硬件/SDK，行为未验证 |",
         f"| not_equivalent | {conclusion_counts.get('not_equivalent', 0)} | 不等价 |",
         "",
+    ]
+
+    # 阶1: 53 个 missing 的迁移范围决策统计
+    missing = [r for r in rows if r["matchKind"] == "missing"]
+    decision_counts = Counter(r.get("migrationDecision", "pending") for r in missing)
+    lines += [
+        "## 迁移范围决策（missing 项，阶段 1 冻结）",
+        "",
+        "| 决策 | 数量 | 含义 |",
+        "| --- | ---: | --- |",
+        f"| rebuild | {decision_counts.get('rebuild', 0)} | 需重建：真实算法+端口契约+参数验证+行为测试 |",
+        f"| replace | {decision_counts.get('replace', 0)} | 由当前已有能力/流程替代 |",
+        f"| retire | {decision_counts.get('retire', 0)} | 淘汰：无产品需求或已被覆盖 |",
+        f"| business_pack | {decision_counts.get('business_pack', 0)} | 业务包：依赖硬件/模型，需现场验收 |",
+        f"| pending | {decision_counts.get('pending', 0)} | 未决策 |",
+        "",
+        "| 旧版插件 | 分类 | 决策 | 优先级 | 证据/替代/理由 |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for r in missing:
+        lines.append(
+            f"| {r['legacyPlugin']} | {r['legacyCategory']} | {r.get('migrationDecision','pending')} "
+            f"| {r.get('priority','-')} | {r.get('evidence','-')} |"
+        )
+    lines.append("")
+
+    lines += [
         "完整逐项数据见 `hotfix-plugin-mapping.json`。以下列出需要决策的项目：",
         "",
         "| 旧版插件 | 旧版目录 | 当前候选 | 状态 | 审核结论 |",
@@ -231,6 +261,8 @@ def main() -> None:
                 "deletedPorts",
                 "replacement",
                 "decision",
+                "migrationDecision",
+                "priority",
             ):
                 if field in saved:
                     row[field] = saved[field]

@@ -20,7 +20,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "replace",
+      "priority": "P2",
+      "evidence": "替代流程：曲线/图表展示由主视图 MeasurementOverlay 与检查器结果页承担；无独立图表插件不阻塞核心测量"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.AreaSpray",
@@ -29,7 +32,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "retire",
+      "priority": "P3",
+      "evidence": "淘汰理由：区域喷洒为旧版可视化辅助，无测量语义；当前主视图叠加已覆盖显示需求"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.Blob",
@@ -58,7 +64,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "replace",
+      "priority": "P2",
+      "evidence": "替代流程：相机就绪等待由 GrabImage 的 grabTimeout+重试承担；无需独立等待插件"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.CropImage",
@@ -67,7 +76,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P1",
+      "evidence": "输入:Image2D+ROI；输出:裁剪后 Image2D；关键参数:x/y/w/h；场景:感兴趣区域截取后送检测/测量"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.DepthToGray",
@@ -76,7 +88,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "replace",
+      "priority": "P2",
+      "evidence": "替代流程：深度→灰度归一化可由现有 ImageData 灰度转换承担；非独立算法"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.DiplayData",
@@ -112,7 +127,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:多 Image2D；输出:融合 Image2D；关键参数:融合方式(加/平均/最大)；场景:多帧/多通道融合"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.ImageOperation",
@@ -121,7 +139,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:Image2D；输出:运算后 Image2D；关键参数:运算类型+常量；场景:图像算术/逻辑运算"
     },
     {
       "legacyPath": "02Plugins/001图像处理/Plugin.ImageScript",
@@ -185,7 +206,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "retire",
+      "priority": "P3",
+      "evidence": "淘汰理由：形状绘制为旧版显示辅助；当前 MeasurementOverlay 已覆盖形状叠加显示"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.AreaOperations",
@@ -194,7 +218,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:Region2D 集合；输出:运算后区域+面积；关键参数:并/交/差；场景:区域布尔运算"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.BarcodeReader",
@@ -214,7 +241,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:Image2D+目标色；输出:掩膜+提取区域；关键参数:HSV 范围；场景:按颜色提取区域"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.ColorRecognition",
@@ -234,7 +264,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "replace",
+      "priority": "P2",
+      "evidence": "替代流程：点创建由 MeasurementInput(point) 承担；无需独立建点插件"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.CreateROI",
@@ -243,7 +276,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:交互绘制；输出:ROI(矩形/圆)；关键参数:形状类型；场景:交互式 ROI 生成送检测"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.EdgeDefectDetection",
@@ -252,7 +288,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P1",
+      "evidence": "输入:Image2D+参考边缘；输出:缺陷列表 DetectionList；关键参数:阈值/最小缺陷尺寸；场景:边缘缺陷检测"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.FindCircle",
@@ -278,7 +317,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:Image2D+区域；输出:灰度统计(均值/方差)；关键参数:统计项；场景:灰度质量测量"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.GreenRegion",
@@ -287,7 +329,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "retire",
+      "priority": "P3",
+      "evidence": "淘汰理由：单一绿色区域提取为业务定制；可由 ColorExtraction(rebuild) 通用颜色提取覆盖"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.LabelRegion",
@@ -296,7 +341,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:Region2D；输出:标注后区域+标签；关键参数:标签文本；场景:区域标注"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.Matching",
@@ -322,7 +370,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "retire",
+      "priority": "P3",
+      "evidence": "淘汰理由：与 Matching 功能重复的旧版变体；保留 Matching 即可"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.MeasureCircle",
@@ -331,7 +382,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P1",
+      "evidence": "输入:边缘点集；输出:圆心/半径/圆度；关键参数:半径范围；场景:圆尺寸测量(与 FindCircle 检测互补)"
     },
     {
       "legacyPath": "02Plugins/002检测识别/Plugin.MeasureLine",
@@ -459,7 +513,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "retire",
+      "priority": "P3",
+      "evidence": "淘汰理由：仿射区域为旧版对位辅助；可由 Coordinate/CalculateOffset 组合覆盖"
     },
     {
       "legacyPath": "02Plugins/004几何关系/Plugin.BuildLl",
@@ -468,7 +525,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:两点/两线；输出:构造 Line2D；关键参数:构造方式；场景:由几何元素构造直线"
     },
     {
       "legacyPath": "02Plugins/004几何关系/Plugin.FitCircle",
@@ -494,7 +554,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P1",
+      "evidence": "输入:边缘点集；输出:椭圆中心/长短轴/角度；关键参数:尺寸范围；场景:椭圆拟合测量"
     },
     {
       "legacyPath": "02Plugins/004几何关系/Plugin.FitLine",
@@ -520,7 +583,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:Region2D；输出:处理后区域；关键参数:膨胀/腐蚀/填充；场景:区域形态学处理"
     },
     {
       "legacyPath": "02Plugins/005坐标标定/Plugin.CalculateOffset",
@@ -529,7 +595,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P1",
+      "evidence": "输入:当前坐标+目标坐标；输出:偏移量(dx,dy,dθ)；关键参数:坐标系；场景:对位偏移计算"
     },
     {
       "legacyPath": "02Plugins/005坐标标定/Plugin.Coordinate",
@@ -538,7 +607,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:标定点；输出:坐标变换；关键参数:变换类型；场景:坐标系统一"
     },
     {
       "legacyPath": "02Plugins/005坐标标定/Plugin.MeasureCalib",
@@ -569,7 +641,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:标定参数+像素坐标；输出:物理坐标；关键参数:标定文件；场景:像素→物理坐标换算"
     },
     {
       "legacyPath": "02Plugins/006对位工具/Plugin.RotateNewPoint",
@@ -578,7 +653,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:点+旋转中心+角度；输出:旋转后点；关键参数:角度/中心；场景:对位旋转补偿"
     },
     {
       "legacyPath": "02Plugins/007逻辑工具/Plugin.CSharpScript",
@@ -587,7 +665,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "retire",
+      "priority": "P3",
+      "evidence": "淘汰理由：C# 脚本无法在 C++ 运行时执行；安全与可移植性差；建议以固定内置操作替代"
     },
     {
       "legacyPath": "02Plugins/007逻辑工具/Plugin.If",
@@ -618,7 +699,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "retire",
+      "priority": "P3",
+      "evidence": "淘汰理由：子工程嵌套执行复杂度高、易循环依赖；当前无此产品需求"
     },
     {
       "legacyPath": "02Plugins/007逻辑工具/Plugin.StopWhile",
@@ -748,7 +832,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:队列名；输出:清空确认；关键参数:queueName；场景:与 QueueIn/QueueOut 配套的队列清空"
     },
     {
       "legacyPath": "02Plugins/009变量工具/Plugin.QueueIn",
@@ -823,7 +910,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "business_pack",
+      "priority": "P3",
+      "evidence": "依赖：海康专用输出协议/硬件；属设备集成，需现场联调"
     },
     {
       "legacyPath": "02Plugins/010文件通讯/Plugin.LightControl",
@@ -832,7 +922,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "business_pack",
+      "priority": "P3",
+      "evidence": "依赖：光源控制器串口/网络协议；属硬件集成"
     },
     {
       "legacyPath": "02Plugins/010文件通讯/Plugin.PLCCommunicate",
@@ -874,7 +967,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:TCP/串口连接；输出:接收字符串；关键参数:超时/分隔符；场景:与 TCPServer 配套的字符串接收"
     },
     {
       "legacyPath": "02Plugins/010文件通讯/Plugin.SendStr",
@@ -883,7 +979,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:字符串+连接；输出:发送确认；关键参数:编码/终止符；场景:与 TCPClient 配套的字符串发送"
     },
     {
       "legacyPath": "02Plugins/012深度学习/Plugin.AI",
@@ -892,7 +991,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "business_pack",
+      "priority": "P3",
+      "evidence": "依赖：GPU+深度学习模型权重；属模型集成，保留手工/夜间验收"
     },
     {
       "legacyPath": "02Plugins/012深度学习/Plugin.AIPost",
@@ -901,7 +1003,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "business_pack",
+      "priority": "P3",
+      "evidence": "依赖：AI 后处理模型；属模型集成"
     },
     {
       "legacyPath": "02Plugins/012深度学习/Plugin.Jigsaw",
@@ -910,7 +1015,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "business_pack",
+      "priority": "P3",
+      "evidence": "依赖：拼图检测模型；属业务模型"
     },
     {
       "legacyPath": "02Plugins/012深度学习/Plugin.Solder",
@@ -919,7 +1027,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "business_pack",
+      "priority": "P3",
+      "evidence": "依赖：焊点检测模型/硬件；属业务模型"
     },
     {
       "legacyPath": "02Plugins/012深度学习/Plugin.Yolo",
@@ -928,7 +1039,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "business_pack",
+      "priority": "P3",
+      "evidence": "依赖：YOLO 模型+GPU；属模型集成"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.3DPreProcessing",
@@ -937,7 +1051,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P1",
+      "evidence": "输入:PointCloud3D；输出:滤波/下采样后点云；关键参数:滤波/体素大小；场景:3D 预处理"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.BumpDentDetect",
@@ -946,7 +1063,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "business_pack",
+      "priority": "P3",
+      "evidence": "依赖：凹凸检测工艺模型；属业务检测"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.ContourDetection",
@@ -955,7 +1075,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:PointCloud3D/深度图；输出:轮廓；关键参数:阈值；场景:3D 轮廓提取"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.DepthToImage",
@@ -964,7 +1087,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:深度图；输出:伪彩/灰度 Image2D；关键参数:映射范围；场景:深度可视化"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.FitPlane",
@@ -973,7 +1099,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P1",
+      "evidence": "输入:PointCloud3D；输出:平面系数+拟合误差；关键参数:内点阈值；场景:平面拟合"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.Flatness",
@@ -982,7 +1111,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:PointCloud3D；输出:平面度；关键参数:评定方法；场景:平面度测量"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.FreeformSurface",
@@ -1002,7 +1134,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "retire",
+      "priority": "P3",
+      "evidence": "淘汰理由：GSD(地面采样距离) 为测绘专用指标，非本产品核心"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.GapMeasure3D",
@@ -1011,7 +1146,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P1",
+      "evidence": "输入:两段 3D 轮廓/点云；输出:间隙距离；关键参数:测量方向；场景:3D 间隙测量(与 MeasureGap 互补)"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.HeightMeasurement",
@@ -1020,7 +1158,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:PointCloud3D+基准面；输出:高度差；关键参数:基准；场景:高度测量"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.JiErHanDefectsDet",
@@ -1040,7 +1181,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "business_pack",
+      "priority": "P3",
+      "evidence": "依赖：盖帽焊接工艺与硬件；属业务检测"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.LinePlaneAngle",
@@ -1049,7 +1193,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:Line3D+Plane3D；输出:夹角；关键参数:无；场景:线面角测量"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.MeasureGap",
@@ -1069,7 +1216,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:两 Plane3D；输出:夹角；关键参数:无；场景:面面角测量"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.PlaneCorrection",
@@ -1078,7 +1228,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:PointCloud3D+参考面；输出:校正后点云；关键参数:校正轴；场景:平面校正"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.PointFilter",
@@ -1087,7 +1240,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:PointCloud3D；输出:过滤后点云；关键参数:距离/强度阈值；场景:离群点过滤"
     },
     {
       "legacyPath": "02Plugins/0143D/Plugin.PointSurfaceDistance",
@@ -1107,7 +1263,10 @@
       "currentCandidate": "",
       "currentPluginId": "",
       "matchKind": "missing",
-      "reviewState": "pending"
+      "reviewState": "pending",
+      "migrationDecision": "rebuild",
+      "priority": "P2",
+      "evidence": "输入:PointCloud3D+基准；输出:体积；关键参数:基准面；场景:体积测量"
     },
     {
       "legacyPath": "02Plugins/015包膜机/Plugin.Envelope",

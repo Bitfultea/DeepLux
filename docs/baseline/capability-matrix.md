@@ -150,8 +150,20 @@
 
 > "部分/重构"状态仅为基于当前代码的初步判断，进入对应阶段前需逐个复核 process() 与参数契约测试结果。
 
+## 53 个 missing 迁移范围冻结（阶段 1）
+
+> 逐项决策见 `hotfix-plugin-mapping.json`（`migrationDecision`/`priority`/`evidence`）
+> 与 `hotfix-plugin-mapping.md` 的"迁移范围决策"段；由 `testMigrationDecisionConsistency` 保证一致。
+
+| 决策 | 数量 | 说明 |
+| --- | ---: | --- |
+| rebuild | 32 | 需真实算法+端口契约+参数验证+行为测试；仅阶段 1 审核批准且 P0/P1 者进入阶段 7 实现 |
+| replace | 4 | ShowChart/CameraReadyWait/DepthToGray/CreatePoints，已有当前替代流程（见 evidence） |
+| retire | 8 | AreaSpray/ShowShape/GreenRegion/Matching1/AffineeRegion/CSharpScript/RunProject/GSD，淘汰理由见 evidence |
+| business_pack | 9 | 015/016 业务+AI/模型类（AI/AIPost/Jigsaw/Solder/Yolo/BumpDent/LidWeld/HKSetOutPut/LightControl），依赖硬件/模型 |
+
 ## 迁移前待办
 
 1. 对映射中的 45 个 `direct` 和 5 个 `candidate` 逐项比对参数、端口和确定性结果。
-2. 评审 53 个 `missing` 项，确定重构、替代或淘汰决定。
+2. ~~评审 53 个 `missing` 项~~ 已于阶段 1 冻结（rebuild32/replace4/retire8/business_pack9）。
 3. 将 7 个 `business_pack` 项从通用核心能力中分离，明确各自的交付依赖。
