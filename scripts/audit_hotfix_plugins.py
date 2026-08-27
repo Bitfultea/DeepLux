@@ -103,6 +103,31 @@ def classify(legacy: dict, current: dict[str, dict]) -> dict:
     }
 
 
+# 重生成不得丢失的人工审核与迁移决策字段。读取（load_existing_reviews）与
+# 合并（main）必须共用同一列表，否则重跑脚本会静默删除结构化决策字段。
+# 阶1复核修正：补齐各决策分类的结构化字段（input/output/keyParams/scenario
+# 属 rebuild，reason 属 retire，replacementPluginId 属 replace，dependencies
+# 属 business_pack）。
+PRESERVED_FIELDS = (
+    "reviewState",
+    "dependencyNote",
+    "reviewConclusion",
+    "evidence",
+    "deletedPorts",
+    "replacement",
+    "decision",
+    "migrationDecision",
+    "priority",
+    "input",
+    "output",
+    "keyParams",
+    "scenario",
+    "reason",
+    "replacementPluginId",
+    "dependencies",
+)
+
+
 def load_existing_reviews() -> dict[str, dict]:
     """Load prior review decisions keyed by legacyPath so regeneration
     preserves human review state, conclusions and evidence.
@@ -124,18 +149,7 @@ def load_existing_reviews() -> dict[str, dict]:
         if not key:
             continue
         preserved = {}
-        for field in (
-            "reviewState",
-            "dependencyNote",
-            "reviewConclusion",
-            "evidence",
-            "deletedPorts",
-            "replacement",
-            "decision",
-            # 阶1: 迁移范围决策字段，重生成不得丢失
-            "migrationDecision",
-            "priority",
-        ):
+        for field in PRESERVED_FIELDS:
             if field in row:
                 preserved[field] = row[field]
         # 记录审核时的候选身份，用于合并时校验是否仍有效
@@ -253,17 +267,7 @@ def main() -> None:
             and identity.get("matchKind", "") == row["matchKind"]
         )
         if identity_unchanged:
-            for field in (
-                "reviewState",
-                "dependencyNote",
-                "reviewConclusion",
-                "evidence",
-                "deletedPorts",
-                "replacement",
-                "decision",
-                "migrationDecision",
-                "priority",
-            ):
+            for field in PRESERVED_FIELDS:
                 if field in saved:
                     row[field] = saved[field]
             merged_count += 1

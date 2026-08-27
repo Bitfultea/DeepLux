@@ -120,21 +120,44 @@ void TestProjectMigration::testMigrationDecisionConsistency() {
         QVERIFY2(validEnum.contains(dec), qPrintable(QString("%1 has invalid decision '%2'").arg(name, dec)));
         QVERIFY2(validPriority.contains(prio), qPrintable(QString("%1 has invalid priority '%2'").arg(name, prio)));
 
+        // 阶1复核：字段必须提供真实结构化契约——非空、去空白后长度≥2，
+        // 且不得为占位文本（"见证据"/"待补"等形式通过但无契约信息的值）
+        static const QSet<QString> placeholders{"见证据", "待补", "-", "TBD", "N/A", "?"};
+        const auto substantive = [&](const char* f) {
+            const QString val = p[f].toString().trimmed();
+            QVERIFY2(
+                val.size() >= 2 && !placeholders.contains(val),
+                qPrintable(
+                    QString("%1(%2) field '%3' is empty or placeholder: '%4'").arg(name, dec, f, p[f].toString())));
+        };
+
         // 分类专属字段校验
         if (dec == "rebuild") {
             for (const char* f : {"input", "output", "keyParams", "scenario"}) {
-                QVERIFY2(!p[f].toString().isEmpty(), qPrintable(QString("%1(rebuild) missing %2").arg(name, f)));
+                substantive(f);
             }
+            // evidence 必须与四字段一致，防止字段与结论描述漂移
+            const QString expect = QStringLiteral("输入:%1；输出:%2；关键参数:%3；场景:%4")
+                                       .arg(p["input"].toString(), p["output"].toString(), p["keyParams"].toString(),
+                                            p["scenario"].toString());
+            QVERIFY2(
+                p["evidence"].toString() == expect,
+                qPrintable(QString("%1(rebuild) evidence does not match input/output/keyParams/scenario").arg(name)));
         } else if (dec == "replace") {
             const QString repl = p["replacementPluginId"].toString();
             QVERIFY2(!repl.isEmpty(), qPrintable(QString("%1(replace) missing replacementPluginId").arg(name)));
             QVERIFY2(currentPluginIds.contains(repl),
                      qPrintable(QString("%1 replacement '%2' is not a real current plugin").arg(name, repl)));
+            QVERIFY2(p["evidence"].toString().startsWith(QStringLiteral("替代流程：")),
+                     qPrintable(QString("%1(replace) evidence must start with 替代流程：").arg(name)));
         } else if (dec == "retire") {
-            QVERIFY2(!p["reason"].toString().isEmpty(), qPrintable(QString("%1(retire) missing reason").arg(name)));
+            substantive("reason");
+            QVERIFY2(p["evidence"].toString() == QStringLiteral("淘汰理由：") + p["reason"].toString(),
+                     qPrintable(QString("%1(retire) evidence must equal 淘汰理由：+reason").arg(name)));
         } else if (dec == "business_pack") {
-            QVERIFY2(!p["dependencies"].toString().isEmpty(),
-                     qPrintable(QString("%1(business_pack) missing dependencies").arg(name)));
+            substantive("dependencies");
+            QVERIFY2(p["evidence"].toString().startsWith(QStringLiteral("依赖：")),
+                     qPrintable(QString("%1(business_pack) evidence must start with 依赖：").arg(name)));
         }
         jsonDecision[dec]++;
     }
