@@ -209,6 +209,9 @@ def markdown(rows: list[dict]) -> str:
     lines += [
         "## 迁移范围决策（missing 项，阶段 1 冻结）",
         "",
+        "> 下表 `input/output/keyParams/scenario` 记录的是**旧版契约**（按旧版 ViewModel 源码核验）；",
+        "> 目标 C++ 契约（强类型端口/载荷类型等）在阶段 7 另行设计评审，不得与旧版证据混淆。",
+        "",
         "| 决策 | 数量 | 含义 |",
         "| --- | ---: | --- |",
         f"| rebuild | {decision_counts.get('rebuild', 0)} | 需重建：真实算法+端口契约+参数验证+行为测试 |",

@@ -31,6 +31,9 @@
 
 ## 迁移范围决策（missing 项，阶段 1 冻结）
 
+> 下表 `input/output/keyParams/scenario` 记录的是**旧版契约**（按旧版 ViewModel 源码核验）；
+> 目标 C++ 契约（强类型端口/载荷类型等）在阶段 7 另行设计评审，不得与旧版证据混淆。
+
 | 决策 | 数量 | 含义 |
 | --- | ---: | --- |
 | rebuild | 37 | 需重建：真实算法+端口契约+参数验证+行为测试 |
@@ -45,7 +48,7 @@
 | AreaSpray | 001图像处理 | rebuild | P2 | 输入:Image2D+ROI（整幅图/链接 ROI/手绘喷绘区域三选一）；输出:区域填充后图像 Image2D；关键参数:GrayValue(0-255)/ROI 类型(FullImage/RoiLink/SprayRegion)/笔刷形状(圆形/矩形)；场景:指定区域像素填充掩蔽（如去除干扰区域）后送下游检测 |
 | CameraReadyWait | 001图像处理 | rebuild | P2 | 输入:相机句柄（按序列号选择相机）；输出:就绪结果 bool（OK/NG）；关键参数:Timeout（默认 10000ms，-1=无限等待）/取消支持（CancelWaitForMeasureReady）；场景:采集前就绪同步：确保相机测量就绪后再触发采集，超时或取消判 NG |
 | CropImage | 001图像处理 | rebuild | P1 | 输入:Image2D+多个旋转矩形（手动输入 DataList 或链接数组 CenterX/CenterY/Length1/Length2/Angle）；输出:裁剪图组（ReduceDomain+CropDomain）+ROI 区域组 HRegion；关键参数:矩形参数 X/Y/Deg/L1/L2/HomMat2D 仿射补正/IsOutputCropImage 开关；场景:多 ROI 批量裁剪：数组参数驱动多个旋转矩形，输出多幅裁剪图与区域 |
-| DepthToGray | 001图像处理 | rebuild | P2 | 输入:深度图/PointCloud3D；输出:灰度 Image2D；关键参数:KConst(127.5)/GrayOffset/映射分辨率；场景:3D 深度线性映射为 2D 灰度送检测 |
+| DepthToGray | 001图像处理 | rebuild | P2 | 输入:深度图 HImage（链接）；输出:灰度图/最小 Z/最大 Z/映射比例/建议映射分辨率/饱和比例/源图宽度/源图高度；关键参数:MapResolution(映射分辨率，k=KConst/MapResolution)/ResolutionZ(Z 像素当量)/ConvertMinZ~ConvertMaxZ(转换 Z 范围，越界涂 0)/eFitForm(凹凸模式：全部/凸起/凹陷)/TranslateSize(平移)/HeightFilter(高度过滤)；场景:深度图按 Z 范围与凹凸模式映射为灰度图，输出映射统计（饱和/建议分辨率/源尺寸） |
 | ImageMerge | 001图像处理 | rebuild | P2 | 输入:多 Image2D；输出:合并图像 HImage+裁剪图像列表 HImage[]+裁剪区域列表 HRegion[]；关键参数:DataList（裁剪矩形参数数组）/合并布局；场景:多幅裁剪子图按布局拼接合并为整图，并输出裁剪图/区域列表 |
 | ImageOperation | 001图像处理 | rebuild | P2 | 输入:Image2D；输出:运算后图像 HImage；关键参数:SelectedOperation（运算类型）/OperandMode（操作数图像/常量）/ConstantValue/MultFactor/AddFactor/OffsetX/OffsetY/OffsetAngle；场景:图像与图像/常量的算术运算及旋转平移变换 |
 | ShowShape | 001图像处理 | rebuild | P2 | 输入:Image2D+形状参数组（LineParams/CircleParams/Rect1Params/Rect2Params）；输出:直线/圆/矩形形状对象组（object）+Image2D；关键参数:各形状坐标参数（端点/圆心半径/矩形中心边长角度）/引用上游 ROI 的颜色与填充显示；场景:参数化生成参考形状几何对象，供下游测量/检测作为输入 |
@@ -59,8 +62,8 @@
 | LabelRegion | 002检测识别 | rebuild | P2 | 输入:Region2D；输出:合并区域/区域数量/区域{i}/提取图像{i}；关键参数:PixelMin/PixelMax（灰度范围）/MinArea（最小面积）/IsOutputExtractImage 开关；场景:按灰度范围阈值分割并提取标签连通区域及子图 |
 | Matching1 | 002检测识别 | retire | P3 | 淘汰理由：与 Matching 功能重复的旧版变体；保留 Matching 即可 |
 | MeasureCircle | 002检测识别 | rebuild | P1 | 输入:HImage+初始圆（圆心/半径，可链接变量或 HomMat2D 仿射补正）；输出:测量圆对象/圆心 X/圆心 Y/半径/直径/圆度；关键参数:MeasInfo（Threshold/Length1/Length2/MeasSelect/MeasNum/MeasMode/ExclusionPoint）/屏蔽区域过滤测量点（FilterMeasurePoints+重拟合）/Scale 实际坐标输出；场景:初始圆区域内提取圆周测量点拟合圆；屏蔽区域剔除干扰点后重新拟合 |
-| AffineeRegion | 004几何关系 | rebuild | P2 | 输入:HImage+仿射参数；输出:仿射变换后区域；关键参数:InterpolationMethod/仿射矩阵；场景:区域仿射变换配准 |
-| BuildLl | 004几何关系 | rebuild | P2 | 输入:两点/两线；输出:交点 X/交点 Y/弧度/角度/平行标志；关键参数:两条输入直线链接；场景:由两条直线构建交点/夹角/平行关系 |
+| AffineeRegion | 004几何关系 | rebuild | P2 | 输入:HImage+HRegion（链接，必需，区域无效判 NG）+起点/终点仿射参数；输出:仿射变换后区域；关键参数:起点(X1/Y1/Angle1)与终点(X2/Y2/Angle2)/SelectedInterpolationMethod(插值方法)；场景:VectorAngleToRigid 由起点/终点位姿求刚性矩阵，AffineTransRegion 变换输入区域 |
+| BuildLl | 004几何关系 | rebuild | P2 | 输入:HImage+两条直线对象（Line1/Line2 链接）；输出:交点 X/交点 Y/弧度/角度/平行标志；关键参数:两条直线链接（Line1LinkText/Line2LinkText）；场景:IntersectionLl 由两条直线构建交点/夹角/平行关系 |
 | FitEllipse | 004几何关系 | rebuild | P1 | 输入:边缘点集；输出:中心 X/中心 Y/角度 Phi/长轴 R/短轴 R/椭圆度；关键参数:输入轮廓/边缘点链接；场景:轮廓点拟合椭圆并输出椭圆度 |
 | RegionProcess | 004几何关系 | rebuild | P2 | 输入:Region2D；输出:拟合区域 HRegion+逐区域中心/面积/半径或宽高/角度；关键参数:拟合形状（圆/矩形）/连通区域数量；场景:连通区域逐个拟合几何形状并输出形状参数 |
 | CalculateOffset | 005坐标标定 | rebuild | P1 | 输入:当前坐标+目标坐标；输出:OffsetX/OffsetY/OffsetA；关键参数:当前坐标（X/Y/Φ）与基准坐标（ModeCoord 对 MathCoord）；场景:对位偏移计算，输出平移+角度偏移供补正 |
@@ -79,21 +82,21 @@
 | Jigsaw | 012深度学习 | business_pack | P3 | 依赖：拼图检测模型；属业务模型 |
 | Solder | 012深度学习 | business_pack | P3 | 依赖：焊点检测模型/硬件；属业务模型 |
 | Yolo | 012深度学习 | business_pack | P3 | 依赖：YOLO 模型+GPU；属模型集成 |
-| 3DPreProcessing | 0143D | rebuild | P1 | 输入:PointCloud3D；输出:预处理图像 HImage（深度图）；关键参数:3D 预处理参数（滤波/去噪配置）；场景:深度图/点云测量前的去噪与预处理 |
+| 3DPreProcessing | 0143D | rebuild | P1 | 输入:深度图 HImage（2 通道图 Decompose2 提取深度通道）+可选 ROI（全图/ROI 链接）；输出:预处理图像 HImage（深度图）；关键参数:高度筛选（HeightFilterEnabled/HeightFilterMin/Max/FillValue 越界填充）/3D 预处理参数；场景:深度图通道提取与高度筛选（阈值区间外像素填无效值）等测量前预处理 |
 | BumpDentDetect | 0143D | business_pack | P3 | 依赖：凹凸检测工艺模型；属业务检测 |
-| ContourDetection | 0143D | rebuild | P2 | 输入:PointCloud3D/深度图；输出:各轮廓检测点值/Row/Col 数组+结果总数（含高度差 A/B 值）；关键参数:strip 条带/workface 工位配置/检测阈值；场景:3D 轮廓上检测特征点，输出逐点高度与坐标 |
+| ContourDetection | 0143D | rebuild | P2 | 输入:深度图/高度图 HImage（链接）；输出:各轮廓检测点值/Row/Col 数组+结果总数（含高度差 A/B 值）；关键参数:strip 条带/workface 工位配置/检测阈值；场景:高度图上提取截面轮廓并检测特征点，输出逐点高度与坐标 |
 | DepthToImage | 0143D | rebuild | P2 | 输入:深度图；输出:结果图像/最小 Z/最大 Z/映射比例/建议映射分辨率/饱和比例；关键参数:映射范围（最小/最大 Z）/映射分辨率；场景:深度图线性映射为灰度图像并输出映射统计 |
-| FitPlane | 0143D | rebuild | P1 | 输入:PointCloud3D；输出:法向量 Nx/Ny/Nz/平面距离 D/平面度/最大最小偏差/RMS/拟合平面图像；关键参数:输入点云/深度图链接+拟合方法；场景:点云/深度图拟合平面，输出平面系数与平面度 |
-| Flatness | 0143D | rebuild | P2 | 输入:PointCloud3D；输出:平面度/最大偏差/最小偏差/RMS/Alpha/Beta/Gamma；关键参数:输入点云链接+评定方法；场景:点云平面度评定与姿态角输出 |
+| FitPlane | 0143D | rebuild | P1 | 输入:深度图 HImage+ROI 矩形（中心/长边/短边/角度，可链接+HomMat2D 仿射补正）；输出:法向量 Nx/Ny/Nz/平面距离 D/平面度/最大最小偏差/RMS/拟合平面图像；关键参数:ROI 参数（InitRoiCenterX/Y/Length1/Length2/Angel）/仿射补正/拟合方法；场景:深度图 ROI 内拟合平面，输出平面系数与平面度 |
+| Flatness | 0143D | rebuild | P2 | 输入:深度图 HImage+ROI 矩形（可链接+HomMat2D 仿射补正）；输出:平面度/最大偏差/最小偏差/RMS/Alpha/Beta/Gamma；关键参数:ROI 参数（中心/长边/短边/角度）/评定方法；场景:深度图 ROI 内平面度评定与姿态角输出 |
 | GSD | 0143D | business_pack | P3 | 依赖：GapStepDetect.dll 私有台阶缝隙算法库（源码不在仓库）；旧版名"台阶缝隙检测"，取 ROI 高度图点(≥1000)输出 step_width/step_height，无法离线等价验收 |
-| GapMeasure3D | 0143D | rebuild | P1 | 输入:两段 3D 轮廓/点云；输出:测量宽度/拐角水平垂直欧氏距离/偏移后宽度/是否合格；关键参数:ROI（中心/长度/高度）/算法名称 AlgorithmName/偏移参数；场景:3D 间隙测量：截面轮廓拟合拐角并计算宽度 |
-| HeightMeasurement | 0143D | rebuild | P2 | 输入:PointCloud3D+基准面；输出:断差（HeightDifference）；关键参数:基准面/测量区域链接；场景:点云两区域间高度差（断差）测量 |
+| GapMeasure3D | 0143D | rebuild | P1 | 输入:高度图 HImage（单幅）+截面矩形 ROI（中心 X/Y/长度/高度，可链接）；输出:测量宽度/拐角水平垂直欧氏距离/偏移后宽度/是否合格/算法名称/ROI 参数回显；关键参数:PixelSizeX(X 像素间距)/ZScale(手动 Z 比例)/OffsetMm(偏移距离)/SpecUpperLimit(规格上限)/DerivativeThreshold(导数阈值)/DzZeroThreshold(导数平顶阈值)/EdgeTrim(边缘剔除点数)/MinPeakDistance(峰最小间距)/RowWidth(行取宽)/SinglePeakOffsetRatio(单波峰偏移比例)/平滑参数（SmoothSigma 高斯/MedianSize 中值/Savgol 窗口阶数）/TimeoutMs/MeasureFailValue；场景:高度图 ROI 提取单截面轮廓，导数寻峰拟合拐角并计算间隙宽度 |
+| HeightMeasurement | 0143D | rebuild | P2 | 输入:3D 高度图 HImage+基准 ROI（手动绘制/链接区域/链接基准平面图像三选一）+测量 ROI；输出:断差（HeightDifference）；关键参数:基准模式（外部基准平面/拟合平面/平均高度）/基准与测量 ROI 参数/仿射补正；场景:基准 ROI 计算参考高度（三种模式），测量 ROI 提取断差（实际高度-基准高度） |
 | LidWeldDetection | 0143D | business_pack | P3 | 依赖：盖帽焊接工艺与硬件；属业务检测 |
 | LinePlaneAngle | 0143D | rebuild | P2 | 输入:Line3D+Plane3D；输出:角度；关键参数:Line3D 链接+Plane3D 链接；场景:线与面夹角计算 |
 | PlaneAngle | 0143D | rebuild | P2 | 输入:两 Plane3D；输出:角度；关键参数:两个 Plane3D 链接；场景:两面夹角计算 |
-| PlaneCorrection | 0143D | rebuild | P2 | 输入:PointCloud3D+参考面；输出:校正后图像/平面度/最大最小偏差/RMS/高度距离；关键参数:参考平面/校正轴；场景:深度图按参考平面校正倾斜，输出校正后平面度 |
-| PointFilter | 0143D | rebuild | P2 | 输入:PointCloud3D；输出:滤波后图像/原始点数/保留点数；关键参数:距离/强度阈值（PointFilterNative）；场景:点云滤波去噪，输出点数统计 |
-| VolumeMeasurement | 0143D | rebuild | P2 | 输入:PointCloud3D+基准；输出:体积/体积单位/有效点数；关键参数:基准面/体积单位；场景:点云相对基准面的体积计算 |
+| PlaneCorrection | 0143D | rebuild | P2 | 输入:深度图 HImage+基准平面图像（链接）；输出:校正后图像/平面度/最大最小偏差/RMS/高度距离；关键参数:参考平面/校正轴；场景:深度图按链接的基准平面图像校正倾斜，输出校正后平面度 |
+| PointFilter | 0143D | rebuild | P2 | 输入:深度图/高度图 HImage（链接）；输出:滤波后图像/原始点数/保留点数；关键参数:距离/强度阈值；旧版经 PointCloudFilter.dll（P/Invoke）执行滤波；场景:高度图点云滤波去噪（旧版调用 PointCloudFilter.dll），输出点数统计 |
+| VolumeMeasurement | 0143D | rebuild | P2 | 输入:深度图/高度图 HImage+基准面；输出:体积/体积单位/有效点数；关键参数:基准面/体积单位；场景:高度图相对基准面的体积计算 |
 
 完整逐项数据见 `hotfix-plugin-mapping.json`。以下列出需要决策的项目：
 

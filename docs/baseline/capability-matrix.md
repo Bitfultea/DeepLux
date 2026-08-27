@@ -154,6 +154,9 @@
 
 > 逐项决策见 `hotfix-plugin-mapping.json`（`migrationDecision`/`priority`/`evidence`）
 > 与 `hotfix-plugin-mapping.md` 的"迁移范围决策"段；由 `testMigrationDecisionConsistency` 保证一致。
+>
+> **契约口径**：逐项记录中的 `input/output/keyParams/scenario` 均为**旧版契约**（按旧版 ViewModel 源码核验）；
+> 目标 C++ 契约（强类型端口/载荷类型等）在阶段 7 另行设计评审，届时单独标注"目标输入/目标输出"，不与旧版证据混淆。
 
 | 决策 | 数量 | 说明 |
 | --- | ---: | --- |
