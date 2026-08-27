@@ -157,13 +157,17 @@
 
 | 决策 | 数量 | 说明 |
 | --- | ---: | --- |
-| rebuild | 32 | 需真实算法+端口契约+参数验证+行为测试；仅阶段 1 审核批准且 P0/P1 者进入阶段 7 实现 |
-| replace | 4 | ShowChart/CameraReadyWait/DepthToGray/CreatePoints，已有当前替代流程（见 evidence） |
-| retire | 8 | AreaSpray/ShowShape/GreenRegion/Matching1/AffineeRegion/CSharpScript/RunProject/GSD，淘汰理由见 evidence |
-| business_pack | 9 | 015/016 业务+AI/模型类（AI/AIPost/Jigsaw/Solder/Yolo/BumpDent/LidWeld/HKSetOutPut/LightControl），依赖硬件/模型 |
+| rebuild | 35 | 需真实算法+端口契约+参数验证+行为测试；仅阶段 1 审核批准且 P0/P1 者进入阶段 7 实现 |
+| replace | 2 | CameraReadyWait→com.deeplux.plugin.grabimage；CreatePoints→com.deeplux.plugin.measurementinput |
+| retire | 7 | ShowChart/AreaSpray/ShowShape/GreenRegion/Matching1/CSharpScript/RunProject，淘汰理由见 reason |
+| business_pack | 9 | 015/016 业务+AI/模型类（AI/AIPost/Jigsaw/Solder/Yolo/BumpDent/LidWeld/HKSetOutPut/LightControl），依赖见 dependencies |
+
+> **reviewState 与 migrationDecision 的区别**：`reviewState=pending`(53) 指这 53 项**没有当前候选实现可供等价性复核**（等价性维度未审）；
+> 而 `migrationDecision`(rebuild35/replace2/retire7/business_pack9) 是**范围决策**（已冻结，决定该项去重建/替代/淘汰/业务包）。
+> 两者是独立维度：范围决策完成 ≠ 等价性复核完成。rebuild 项的等价性将在阶段 7 实现后通过行为测试确认。
 
 ## 迁移前待办
 
 1. 对映射中的 45 个 `direct` 和 5 个 `candidate` 逐项比对参数、端口和确定性结果。
-2. ~~评审 53 个 `missing` 项~~ 已于阶段 1 冻结（rebuild32/replace4/retire8/business_pack9）。
+2. ~~评审 53 个 `missing` 项~~ 已于阶段 1 冻结（rebuild35/replace2/retire7/business_pack9）。
 3. 将 7 个 `business_pack` 项从通用核心能力中分离，明确各自的交付依赖。

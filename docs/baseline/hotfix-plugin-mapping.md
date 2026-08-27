@@ -33,19 +33,19 @@
 
 | 决策 | 数量 | 含义 |
 | --- | ---: | --- |
-| rebuild | 32 | 需重建：真实算法+端口契约+参数验证+行为测试 |
-| replace | 4 | 由当前已有能力/流程替代 |
-| retire | 8 | 淘汰：无产品需求或已被覆盖 |
+| rebuild | 35 | 需重建：真实算法+端口契约+参数验证+行为测试 |
+| replace | 2 | 由当前已有能力/流程替代 |
+| retire | 7 | 淘汰：无产品需求或已被覆盖 |
 | business_pack | 9 | 业务包：依赖硬件/模型，需现场验收 |
 | pending | 0 | 未决策 |
 
 | 旧版插件 | 分类 | 决策 | 优先级 | 证据/替代/理由 |
 | --- | --- | --- | --- | --- |
-| ShowChart | 000常用工具 | replace | P2 | 替代流程：曲线/图表展示由主视图 MeasurementOverlay 与检查器结果页承担；无独立图表插件不阻塞核心测量 |
+| ShowChart | 000常用工具 | retire | P3 | 淘汰理由：旧版为 LiveCharts 饼图/图表显示插件，纯展示无测量语义；主视图叠加+检查器结果页已覆盖结果展示，无独立图表产品需求 |
 | AreaSpray | 001图像处理 | retire | P3 | 淘汰理由：区域喷洒为旧版可视化辅助，无测量语义；当前主视图叠加已覆盖显示需求 |
 | CameraReadyWait | 001图像处理 | replace | P2 | 替代流程：相机就绪等待由 GrabImage 的 grabTimeout+重试承担；无需独立等待插件 |
 | CropImage | 001图像处理 | rebuild | P1 | 输入:Image2D+ROI；输出:裁剪后 Image2D；关键参数:x/y/w/h；场景:感兴趣区域截取后送检测/测量 |
-| DepthToGray | 001图像处理 | replace | P2 | 替代流程：深度→灰度归一化可由现有 ImageData 灰度转换承担；非独立算法 |
+| DepthToGray | 001图像处理 | rebuild | P2 | 输入:深度图/PointCloud3D；输出:灰度 Image2D；关键参数:KConst(127.5)/GrayOffset/映射分辨率；场景:3D 深度线性映射为 2D 灰度送检测 |
 | ImageMerge | 001图像处理 | rebuild | P2 | 输入:多 Image2D；输出:融合 Image2D；关键参数:融合方式(加/平均/最大)；场景:多帧/多通道融合 |
 | ImageOperation | 001图像处理 | rebuild | P2 | 输入:Image2D；输出:运算后 Image2D；关键参数:运算类型+常量；场景:图像算术/逻辑运算 |
 | ShowShape | 001图像处理 | retire | P3 | 淘汰理由：形状绘制为旧版显示辅助；当前 MeasurementOverlay 已覆盖形状叠加显示 |
@@ -59,7 +59,7 @@
 | LabelRegion | 002检测识别 | rebuild | P2 | 输入:Region2D；输出:标注后区域+标签；关键参数:标签文本；场景:区域标注 |
 | Matching1 | 002检测识别 | retire | P3 | 淘汰理由：与 Matching 功能重复的旧版变体；保留 Matching 即可 |
 | MeasureCircle | 002检测识别 | rebuild | P1 | 输入:边缘点集；输出:圆心/半径/圆度；关键参数:半径范围；场景:圆尺寸测量(与 FindCircle 检测互补) |
-| AffineeRegion | 004几何关系 | retire | P3 | 淘汰理由：仿射区域为旧版对位辅助；可由 Coordinate/CalculateOffset 组合覆盖 |
+| AffineeRegion | 004几何关系 | rebuild | P2 | 输入:HImage+仿射参数；输出:仿射变换后区域；关键参数:InterpolationMethod/仿射矩阵；场景:区域仿射变换配准 |
 | BuildLl | 004几何关系 | rebuild | P2 | 输入:两点/两线；输出:构造 Line2D；关键参数:构造方式；场景:由几何元素构造直线 |
 | FitEllipse | 004几何关系 | rebuild | P1 | 输入:边缘点集；输出:椭圆中心/长短轴/角度；关键参数:尺寸范围；场景:椭圆拟合测量 |
 | RegionProcess | 004几何关系 | rebuild | P2 | 输入:Region2D；输出:处理后区域；关键参数:膨胀/腐蚀/填充；场景:区域形态学处理 |
@@ -85,7 +85,7 @@
 | DepthToImage | 0143D | rebuild | P2 | 输入:深度图；输出:伪彩/灰度 Image2D；关键参数:映射范围；场景:深度可视化 |
 | FitPlane | 0143D | rebuild | P1 | 输入:PointCloud3D；输出:平面系数+拟合误差；关键参数:内点阈值；场景:平面拟合 |
 | Flatness | 0143D | rebuild | P2 | 输入:PointCloud3D；输出:平面度；关键参数:评定方法；场景:平面度测量 |
-| GSD | 0143D | retire | P3 | 淘汰理由：GSD(地面采样距离) 为测绘专用指标，非本产品核心 |
+| GSD | 0143D | rebuild | P3 | 输入:高度图 HImage；输出:GSD 值(Number)；关键参数:高度图分辨率/映射参数；场景:由高度图计算地面采样距离(GSD)的 3D 度量 |
 | GapMeasure3D | 0143D | rebuild | P1 | 输入:两段 3D 轮廓/点云；输出:间隙距离；关键参数:测量方向；场景:3D 间隙测量(与 MeasureGap 互补) |
 | HeightMeasurement | 0143D | rebuild | P2 | 输入:PointCloud3D+基准面；输出:高度差；关键参数:基准；场景:高度测量 |
 | LidWeldDetection | 0143D | business_pack | P3 | 依赖：盖帽焊接工艺与硬件；属业务检测 |

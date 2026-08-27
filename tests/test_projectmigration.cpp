@@ -1,11 +1,13 @@
 #include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMap>
 #include <QRegularExpression>
+#include <QSet>
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
 #include <core/manager/PluginManager.h>
@@ -87,6 +89,23 @@ void TestProjectMigration::testMigrationDecisionConsistency() {
     mf.close();
 
     const QSet<QString> validEnum{"rebuild", "replace", "retire", "business_pack"};
+    const QSet<QString> validPriority{"P0", "P1", "P2", "P3"};
+
+    // 收集当前真实插件 ID：扫描 src/plugins/*/metadata.json 的 id（权威来源），
+    // 用于校验 replace 的替代 ID 真实存在
+    QSet<QString> currentPluginIds;
+    QDirIterator it(root + "/src/plugins", QStringList() << "metadata.json", QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        QFile mf(it.next());
+        if (!mf.open(QIODevice::ReadOnly))
+            continue;
+        const QJsonObject mo = QJsonDocument::fromJson(mf.readAll()).object();
+        mf.close();
+        if (!mo["id"].toString().isEmpty())
+            currentPluginIds.insert(mo["id"].toString());
+    }
+    QVERIFY2(!currentPluginIds.isEmpty(), "no current plugin metadata found");
+
     QMap<QString, int> jsonDecision;
     int missingTotal = 0;
     for (const auto& v : json["plugins"].toArray()) {
@@ -94,14 +113,29 @@ void TestProjectMigration::testMigrationDecisionConsistency() {
         if (p["matchKind"].toString() != "missing")
             continue;
         ++missingTotal;
+        const QString name = p["legacyPlugin"].toString();
         const QString dec = p["migrationDecision"].toString();
-        QVERIFY2(validEnum.contains(dec),
-                 qPrintable(QString("missing %1 has invalid/no decision '%2'")
-                                .arg(p["legacyPlugin"].toString(), dec)));
-        QVERIFY2(!p["priority"].toString().isEmpty(),
-                 qPrintable("missing item missing priority: " + p["legacyPlugin"].toString().toUtf8()));
-        QVERIFY2(!p["evidence"].toString().isEmpty(),
-                 qPrintable("missing item missing evidence: " + p["legacyPlugin"].toString().toUtf8()));
+        const QString prio = p["priority"].toString();
+        const QByteArray nameCtx = (name + " decision").toUtf8();
+        QVERIFY2(validEnum.contains(dec), qPrintable(QString("%1 has invalid decision '%2'").arg(name, dec)));
+        QVERIFY2(validPriority.contains(prio), qPrintable(QString("%1 has invalid priority '%2'").arg(name, prio)));
+
+        // 分类专属字段校验
+        if (dec == "rebuild") {
+            for (const char* f : {"input", "output", "keyParams", "scenario"}) {
+                QVERIFY2(!p[f].toString().isEmpty(), qPrintable(QString("%1(rebuild) missing %2").arg(name, f)));
+            }
+        } else if (dec == "replace") {
+            const QString repl = p["replacementPluginId"].toString();
+            QVERIFY2(!repl.isEmpty(), qPrintable(QString("%1(replace) missing replacementPluginId").arg(name)));
+            QVERIFY2(currentPluginIds.contains(repl),
+                     qPrintable(QString("%1 replacement '%2' is not a real current plugin").arg(name, repl)));
+        } else if (dec == "retire") {
+            QVERIFY2(!p["reason"].toString().isEmpty(), qPrintable(QString("%1(retire) missing reason").arg(name)));
+        } else if (dec == "business_pack") {
+            QVERIFY2(!p["dependencies"].toString().isEmpty(),
+                     qPrintable(QString("%1(business_pack) missing dependencies").arg(name)));
+        }
         jsonDecision[dec]++;
     }
     QVERIFY2(missingTotal == 53, qPrintable(QString("expected 53 missing, got %1").arg(missingTotal)));
@@ -115,7 +149,7 @@ void TestProjectMigration::testMigrationDecisionConsistency() {
     const QString sec = md.mid(secStart, secEnd - secStart);
 
     // mapping.md 迁移决策统计与 JSON 一致
-    for (const QString& key : {"rebuild", "replace", "retire", "business_pack", "pending"}) {
+    for (const QString key : {"rebuild", "replace", "retire", "business_pack", "pending"}) {
         const QRegularExpression re(
             QStringLiteral("\\|\\s*%1\\s*\\|\\s*(\\d+)\\s*\\|").arg(QRegularExpression::escape(key)));
         const auto match = re.match(sec);
