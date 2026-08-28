@@ -2,6 +2,8 @@
 
 #include "core/base/ModuleBase.h"
 
+#include <vector>
+
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
 #endif
@@ -52,7 +54,7 @@ private:
         cv::Scalar upper;
     };
 
-    bool detectColor(const cv::Mat& hsv, const ColorRange& range, cv::Mat& mask, double& area);
+    bool detectColor(const cv::Mat& hsv, const std::vector<ColorRange>& ranges, cv::Mat& mask, double& area);
 
     QString m_targetColor = "红色";
     int m_colorCount = 0;

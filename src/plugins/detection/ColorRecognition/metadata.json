@@ -9,7 +9,8 @@
         "parameters": {
             "targetColor": {
                 "order": 10,
-                "label": "目标颜色"
+                "label": "目标颜色",
+                "_options": ["红色", "绿色", "蓝色", "黄色", "橙色", "紫色"]
             }
         }
     },

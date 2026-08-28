@@ -4,8 +4,8 @@
 
 #include <QComboBox>
 #include <QLabel>
-#include <QTextEdit>
 #include <QVBoxLayout>
+#include <QtMath>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -14,7 +14,8 @@
 namespace DeepLux {
 
 ImageScriptPlugin::ImageScriptPlugin(QObject* parent) : ModuleBase(parent) {
-    m_defaultParams = QJsonObject{{"scriptType", 0}, {"script", ""}};
+    // 阶段 2：仅保留 scriptType 持久化字段；无效的脚本文本输入已删除
+    m_defaultParams = QJsonObject{{"scriptType", 0}};
     m_params = m_defaultParams;
 }
 
@@ -52,20 +53,19 @@ bool ImageScriptPlugin::process(const ImageData& input, ImageData& output) {
         return false;
     }
 
-    m_script = m_params["script"].toString();
     m_scriptType = m_params["scriptType"].toInt();
 
-    // 执行脚本
-    if (!executeScript(m_script, mat, m_resultMat)) {
-        // 如果脚本执行失败，至少复制原图
-        m_resultMat = mat.clone();
+    // 阶段 2：执行失败即失败关闭——不得复制输入冒充成功，不得置 script_executed=true
+    if (!executeBuiltinOperation(mat, m_resultMat)) {
+        emit errorOccurred(tr("内置图像操作执行失败（类型 %1）").arg(m_scriptType));
+        return false;
     }
 
     output.setMat(m_resultMat);
     output.setData("script_type", m_scriptType);
     output.setData("script_executed", true);
 
-    Logger::instance().debug(QString("图像脚本执行完成, 类型: %1").arg(m_scriptType), "ImageScript");
+    Logger::instance().debug(QString("内置图像操作执行完成, 类型: %1").arg(m_scriptType), "ImageScript");
 
     return true;
 #else
@@ -75,15 +75,8 @@ bool ImageScriptPlugin::process(const ImageData& input, ImageData& output) {
 #endif
 }
 
-bool ImageScriptPlugin::executeScript(const QString& script, const cv::Mat& input, cv::Mat& output) {
-    Q_UNUSED(script);
-    Q_UNUSED(input);
-    Q_UNUSED(output);
-
-    // 简单的内置脚本来处理常见操作
-    // 由于脚本引擎比较复杂，这里提供一个简化版本
-    // 实际项目中可以使用 Lua 或 Python 脚本
-
+bool ImageScriptPlugin::executeBuiltinOperation(const cv::Mat& input, cv::Mat& output) {
+    // 内置图像操作（非脚本解释执行）：类型与 UI 下拉框严格对应
     switch (m_scriptType) {
     case 0: { // 反转
         cv::bitwise_not(input, output);
@@ -108,7 +101,6 @@ bool ImageScriptPlugin::executeScript(const QString& script, const cv::Mat& inpu
         break;
     }
     default:
-        output = input.clone();
         return false;
     }
 
@@ -116,7 +108,16 @@ bool ImageScriptPlugin::executeScript(const QString& script, const cv::Mat& inpu
 }
 
 bool ImageScriptPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
-    Q_UNUSED(params);
+    // 阶段 2：严格校验 0–3 整数；缺失、越界、非整数一律拒绝（失败关闭）
+    if (!params.contains("scriptType")) {
+        error = tr("缺少 scriptType 参数");
+        return false;
+    }
+    const double v = params["scriptType"].toDouble();
+    if (v < 0 || v > 3 || qFloor(v) != v) {
+        error = tr("scriptType 必须是 0–3 的整数（内置操作类型）");
+        return false;
+    }
     error.clear();
     return true;
 }
@@ -125,28 +126,20 @@ QWidget* ImageScriptPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
-    layout->addWidget(new QLabel(tr("脚本类型:")));
+    // 阶段 2：界面为"内置图像操作"，不再提供无效的脚本文本输入
+    layout->addWidget(new QLabel(tr("内置图像操作:")));
     QComboBox* typeCombo = new QComboBox();
-    typeCombo->addItem("图像反转", 0);
-    typeCombo->addItem("转灰度", 1);
-    typeCombo->addItem("模糊", 2);
-    typeCombo->addItem("锐化", 3);
-    typeCombo->setCurrentIndex(m_params["scriptType"].toInt());
+    typeCombo->addItem(tr("图像反转"), 0);
+    typeCombo->addItem(tr("转灰度"), 1);
+    typeCombo->addItem(tr("模糊"), 2);
+    typeCombo->addItem(tr("锐化"), 3);
+    typeCombo->setCurrentIndex(qBound(0, m_params["scriptType"].toInt(), 3));
     layout->addWidget(typeCombo);
-
-    layout->addWidget(new QLabel(tr("脚本内容 (可选):")));
-    QTextEdit* scriptEdit = new QTextEdit();
-    scriptEdit->setPlainText(m_params["script"].toString());
-    scriptEdit->setMaximumHeight(100);
-    layout->addWidget(scriptEdit);
 
     layout->addStretch();
 
     connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-            [this, typeCombo](int) { m_params["scriptType"] = typeCombo->currentData().toInt(); });
-
-    connect(scriptEdit, &QTextEdit::textChanged, this,
-            [this, scriptEdit]() { m_params["script"] = scriptEdit->toPlainText(); });
+            [this, typeCombo](int) { setParam("scriptType", typeCombo->currentData().toInt()); });
 
     return widget;
 }

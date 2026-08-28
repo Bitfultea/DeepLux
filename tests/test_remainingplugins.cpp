@@ -1,6 +1,7 @@
 #include "core/base/ModuleBase.h"
 #include "core/model/ImageData.h"
 #include "plugins/detection/ColorRecognition/ColorRecognitionPlugin.h"
+#include "plugins/detection/JiErHanDefectsDet/JiErHanDefectsDetPlugin.h"
 #include "plugins/image_processing/DisplayData/DisplayDataPlugin.h"
 #include "plugins/system/TableOutPut/TableOutPutPlugin.h"
 
@@ -32,6 +33,13 @@ private slots:
     void testColorRecognitionAbsentColorFails();
     void testColorRecognitionEmptyImageFails();
     void testColorRecognitionCloneIndependent();
+    // 阶段 2：枚举校验 + 红色覆盖 HSV 高色相端
+    void testColorRecognitionHighHueRedDetected();
+    void testColorRecognitionInvalidColorRejected();
+
+    // JiErHanDefectsDet（阶段 2：阈值真实参与过滤）
+    void testJiErHanThresholdFiltersDefects();
+    void testJiErHanInvalidThresholdRejected();
 
     // DisplayData
     void testDisplayDataOverlaysText();
@@ -219,6 +227,91 @@ void TestRemainingPlugins::testColorRecognitionCloneIndependent() {
     cloneBase->setParam("targetColor", QStringLiteral("蓝色"));
     QCOMPARE(plugin.currentParams().value("targetColor").toString(), QString("绿色"));
     delete clone;
+}
+
+void TestRemainingPlugins::testColorRecognitionHighHueRedDetected() {
+#ifdef DEEPLUX_HAS_OPENCV
+    // 阶段 2：红色必须同时覆盖 HSV 色相环两端。
+    // BGR(40,20,255) → OpenCV H≈177（靠近 180 边界的高色相红），旧实现只查 [0,10] 会漏检。
+    ColorRecognitionPlugin plugin;
+    QVERIFY(plugin.initialize());
+
+    ImageData input = makeSolidColorImage(40, 20, 255);
+    QJsonObject params{{"targetColor", QStringLiteral("红色")}};
+
+    ImageData output;
+    const ExecutionResult result = runModule(plugin, params, input, output);
+    QVERIFY2(result.success, qPrintable(result.userMessage));
+    QVERIFY2(output.hasData("color_center_x"), "high-hue red must be detected");
+#else
+    QSKIP("OpenCV not available");
+#endif
+}
+
+void TestRemainingPlugins::testColorRecognitionInvalidColorRejected() {
+    // 阶段 2：颜色枚举严格校验，非法值失败关闭，不得静默回退
+    ColorRecognitionPlugin plugin;
+    QString error;
+
+    QJsonObject bad{{"targetColor", QStringLiteral("粉色")}};
+    QVERIFY2(!plugin.validateParams(bad, error), "invalid color enum must be rejected");
+
+    // setParams 失败关闭：非法值不得覆盖已设置的合法值
+    plugin.setParams(QJsonObject{{"targetColor", QStringLiteral("蓝色")}});
+    plugin.setParams(QJsonObject{{"targetColor", QStringLiteral("粉色")}});
+    QCOMPARE(plugin.currentParams().value("targetColor").toString(), QString("蓝色"));
+}
+
+// ===== JiErHanDefectsDet =====
+
+#ifdef DEEPLUX_HAS_OPENCV
+static ImageData makeDefectImage() {
+    // 确定性图像：浅灰背景 + 一个大暗块（置信度≈1.0）+ 一个小暗块（置信度≈0.3）
+    cv::Mat mat(240, 240, CV_8UC3, cv::Scalar(200, 200, 200));
+    cv::rectangle(mat, cv::Rect(30, 30, 60, 60), cv::Scalar(20, 20, 20), cv::FILLED);
+    cv::rectangle(mat, cv::Rect(150, 150, 18, 18), cv::Scalar(20, 20, 20), cv::FILLED);
+    ImageData data;
+    data.setMat(mat);
+    return data;
+}
+#endif
+
+void TestRemainingPlugins::testJiErHanThresholdFiltersDefects() {
+#ifdef DEEPLUX_HAS_OPENCV
+    // 阶段 2：阈值必须真实参与结果过滤——低阈值保留全部候选，高阈值滤掉低置信度候选
+    JiErHanDefectsDetPlugin plugin;
+    QVERIFY(plugin.initialize());
+
+    const ImageData input = makeDefectImage();
+
+    ImageData outLow, outHigh;
+    QJsonObject low{{"threshold", 0.1}};  // 下限：保留全部候选
+    QJsonObject high{{"threshold", 0.9}}; // 高阈值：仅保留高置信度候选
+
+    QVERIFY2(runModule(plugin, low, input, outLow).success, "low threshold must keep candidates");
+    QCOMPARE(outLow.data("defect_count").toInt(), 2);
+
+    QVERIFY2(runModule(plugin, high, input, outHigh).success, "high threshold must keep high-confidence defect");
+    QCOMPARE(outHigh.data("defect_count").toInt(), 1);
+#else
+    QSKIP("OpenCV not available");
+#endif
+}
+
+void TestRemainingPlugins::testJiErHanInvalidThresholdRejected() {
+    // 阶段 2：阈值范围与 metadata（0.1–1.0, step 0.05, 2 位小数）一致，越界失败关闭
+    JiErHanDefectsDetPlugin plugin;
+    QString error;
+
+    QVERIFY2(!plugin.validateParams(QJsonObject{{"threshold", 0.0}}, error), "threshold=0 must be rejected");
+    QVERIFY2(!plugin.validateParams(QJsonObject{{"threshold", 0.05}}, error),
+             "threshold below min 0.1 must be rejected");
+    QVERIFY2(!plugin.validateParams(QJsonObject{{"threshold", 1.5}}, error),
+             "threshold above max 1.0 must be rejected");
+
+    plugin.setParams(QJsonObject{{"threshold", 0.5}});
+    plugin.setParams(QJsonObject{{"threshold", 2.0}});
+    QCOMPARE(plugin.currentParams().value("threshold").toDouble(), 0.5);
 }
 
 // ===== DisplayData =====

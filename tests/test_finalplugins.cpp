@@ -27,6 +27,9 @@ private slots:
     void testImageScriptTypeParamAffectsResult();
     void testImageScriptEmptyImageFails();
     void testImageScriptCloneIndependent();
+    // 阶段 2：消除假配置/假成功
+    void testImageScriptInvalidTypeRejected();
+    void testImageScriptFailureNotMarkedExecuted();
 
     // ShowPoint
     void testShowPointDrawsMarker();
@@ -75,7 +78,7 @@ void TestFinalPlugins::testImageScriptInvertDeterministic() {
     QVERIFY(p2.initialize());
 
     ImageData input = makeGrayImage();
-    QJsonObject params{{"scriptType", 0}, {"script", ""}}; // 0 = 反转
+    QJsonObject params{{"scriptType", 0}}; // 0 = 反转
 
     ImageData out1, out2;
     QVERIFY(runModule(p1, params, input, out1).success);
@@ -102,8 +105,8 @@ void TestFinalPlugins::testImageScriptTypeParamAffectsResult() {
     QVERIFY(pGray.initialize());
 
     ImageData input = makeGrayImage();
-    QJsonObject invert{{"scriptType", 0}, {"script", ""}};
-    QJsonObject gray{{"scriptType", 1}, {"script", ""}}; // 1 = 灰度
+    QJsonObject invert{{"scriptType", 0}};
+    QJsonObject gray{{"scriptType", 1}}; // 1 = 灰度
 
     ImageData outInvert, outGray;
     QVERIFY(runModule(pInvert, invert, input, outInvert).success);
@@ -123,7 +126,7 @@ void TestFinalPlugins::testImageScriptEmptyImageFails() {
     QVERIFY(plugin.initialize());
 
     ImageData input; // 空
-    QJsonObject params{{"scriptType", 0}, {"script", ""}};
+    QJsonObject params{{"scriptType", 0}};
 
     ImageData output;
     const ExecutionResult result = runModule(plugin, params, input, output);
@@ -133,10 +136,48 @@ void TestFinalPlugins::testImageScriptEmptyImageFails() {
 #endif
 }
 
+void TestFinalPlugins::testImageScriptInvalidTypeRejected() {
+    // 阶段 2：scriptType 严格校验 0–3，越界拒绝（失败关闭）
+    ImageScriptPlugin plugin;
+    QString error;
+
+    QJsonObject tooBig{{"scriptType", 4}};
+    QVERIFY2(!plugin.validateParams(tooBig, error), "scriptType=4 must be rejected");
+
+    QJsonObject negative{{"scriptType", -1}};
+    QVERIFY2(!plugin.validateParams(negative, error), "scriptType=-1 must be rejected");
+
+    QJsonObject nonInteger{{"scriptType", 1.5}};
+    QVERIFY2(!plugin.validateParams(nonInteger, error), "non-integer scriptType must be rejected");
+
+    // setParams 失败关闭：非法值不得覆盖已设置的合法值
+    plugin.setParams(QJsonObject{{"scriptType", 2}});
+    plugin.setParams(QJsonObject{{"scriptType", 9}});
+    QCOMPARE(plugin.currentParams().value("scriptType").toInt(), 2);
+}
+
+void TestFinalPlugins::testImageScriptFailureNotMarkedExecuted() {
+#ifdef DEEPLUX_HAS_OPENCV
+    // 阶段 2：失败时不得设置 script_executed=true（消除假成功）
+    ImageScriptPlugin plugin;
+    QVERIFY(plugin.initialize());
+
+    ImageData input; // 空图 → process 失败
+    QJsonObject params{{"scriptType", 0}};
+
+    ImageData output;
+    const ExecutionResult result = runModule(plugin, params, input, output);
+    QVERIFY2(!result.success, "empty image must fail");
+    QVERIFY2(!output.data("script_executed").toBool(), "failed run must not set script_executed=true");
+#else
+    QSKIP("OpenCV not available");
+#endif
+}
+
 void TestFinalPlugins::testImageScriptCloneIndependent() {
     ImageScriptPlugin plugin;
     QVERIFY(plugin.initialize());
-    QJsonObject params{{"scriptType", 1}, {"script", "test"}};
+    QJsonObject params{{"scriptType", 1}};
     plugin.setParams(params);
 
     IModule* clone = plugin.clone();
