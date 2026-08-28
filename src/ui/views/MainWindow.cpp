@@ -1025,7 +1025,7 @@ void MainWindow::setupMainLayout() {
     addToolBoxItem(imgProcItem, tr("图像预处理"), "PerProcessing");
     addToolBoxItem(imgProcItem, tr("颜色识别"), "ColorRecognition");
     addToolBoxItem(imgProcItem, tr("斑点分析"), "Blob");
-    addToolBoxItem(imgProcItem, tr("图像脚本"), "ImageScript");
+    addToolBoxItem(imgProcItem, tr("内置图像操作"), "ImageScript");
     addToolBoxItem(imgProcItem, tr("拼图"), "JigsawPuzzle");
 
     QTreeWidgetItem* detectItem = createCategoryItem(m_toolBoxTree, tr("02 - 检测识别"), "detection");

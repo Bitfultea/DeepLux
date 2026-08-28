@@ -21,7 +21,7 @@ public:
         return "com.deeplux.plugin.imagescript";
     }
     QString name() const override {
-        return tr("图像脚本");
+        return tr("内置图像操作");
     }
     QString category() const override {
         return "image_processing";

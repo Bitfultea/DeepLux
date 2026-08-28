@@ -219,7 +219,8 @@ void PropertyPanel::loadParams() {
 
             QWidget* widget = nullptr;
 
-            if (value.isString() && (meta.contains("options") || choiceInfo.isArray() || choiceInfo.isObject())) {
+            const bool hasOptions = meta.contains("options") || choiceInfo.isArray() || choiceInfo.isObject();
+            if ((value.isString() || value.isDouble()) && hasOptions) {
                 widget = createChoiceWidget(key, meta);
             } else if (value.isString()) {
                 widget = createTextWidget(key, meta);
@@ -515,38 +516,47 @@ QWidget* PropertyPanel::createChoiceWidget(const QString& key, const QJsonObject
     QComboBox* combo = new QComboBox();
     const QJsonArray options = info["options"].toArray();
 
+    // 选项值按 QVariant 保存：字符串与数值枚举（如 scriptType 0–3）均可回写。
+    // QJsonValue::toVariant() 对整数返回 qlonglong，统一归一化为 double，
+    // 保证提交类型确定且与参数 JSON 的数值存储一致。
+    const auto normalize = [](QVariant value) {
+        if (value.userType() == QMetaType::LongLong || value.userType() == QMetaType::ULongLong ||
+            value.userType() == QMetaType::Int || value.userType() == QMetaType::UInt) {
+            value = value.toDouble();
+        }
+        return value;
+    };
     for (const QJsonValue& optionValue : options) {
         if (optionValue.isObject()) {
             QJsonObject option = optionValue.toObject();
-            const QString value = option["value"].toString();
-            const QString label = option["label"].toString(value);
-            if (!value.isEmpty()) {
+            const QVariant value = normalize(option["value"].toVariant());
+            const QString label = option["label"].toString(value.toString());
+            if (value.isValid() && !value.toString().isEmpty()) {
                 combo->addItem(label, value);
             }
         } else {
-            const QString value = optionValue.toString();
-            if (!value.isEmpty()) {
-                combo->addItem(value, value);
+            const QVariant value = normalize(optionValue.toVariant());
+            if (value.isValid() && !value.toString().isEmpty()) {
+                combo->addItem(value.toString(), value);
             }
         }
     }
 
     if (m_currentModule) {
         QJsonObject params = m_currentModule->currentParams();
-        const QString currentValue = params[key].toString();
+        const QVariant currentValue = params[key].toVariant();
         int index = combo->findData(currentValue);
         if (index >= 0) {
             combo->setCurrentIndex(index);
         }
     }
 
-    // 组合框在 currentIndexChanged（明确选择）时提交
+    // 组合框在 currentIndexChanged（明确选择）时提交，保留选项原始类型
     connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, key, combo](int index) {
         if (index < 0) {
             return;
         }
-        const QString value = combo->itemData(index).toString();
-        commitParam(key, value);
+        commitParam(key, combo->itemData(index));
     });
 
     return combo;

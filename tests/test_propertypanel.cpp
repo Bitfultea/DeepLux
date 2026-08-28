@@ -1,8 +1,3 @@
-#include <QtTest/QtTest>
-#include <core/base/ModuleBase.h>
-#include <core/manager/PluginManager.h>
-#include <ui/widgets/PropertyPanel.h>
-
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -12,6 +7,10 @@
 #include <QLineEdit>
 #include <QMetaObject>
 #include <QSignalSpy>
+#include <QtTest/QtTest>
+#include <core/base/ModuleBase.h>
+#include <core/manager/PluginManager.h>
+#include <ui/widgets/PropertyPanel.h>
 
 using namespace DeepLux;
 
@@ -60,6 +59,30 @@ public:
             {"mode", "Auto"},
             {"mode_options", QJsonArray{"Auto", "Manual"}},
         };
+        m_defaultParams = m_params;
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        Q_UNUSED(input)
+        Q_UNUSED(output)
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
+
+class PropertyPanelNumericChoiceModule : public ModuleBase {
+    Q_OBJECT
+
+public:
+    PropertyPanelNumericChoiceModule() {
+        m_moduleId = "numeric-choice-test";
+        m_name = "Numeric Choice Test";
+        m_category = "test";
+        m_params = QJsonObject{{"scriptType", 0}};
         m_defaultParams = m_params;
     }
 
@@ -139,6 +162,7 @@ private slots:
     void testEditingNumberParamUpdatesModuleAndEmitsSignal();
     void testEditingBoolParamUpdatesModuleAndEmitsSignal();
     void testStringParamWithOptionsUsesChoiceWidget();
+    void testNumericParamWithOptionsUsesChoiceWidget();
     void testInstanceIdOverridesModuleIdInParamSignals();
     void testSettingModuleTwiceReplacesPreviousParamGroups();
     void testMetadataLabelDisplayed();
@@ -232,6 +256,49 @@ void TestPropertyPanel::testStringParamWithOptionsUsesChoiceWidget() {
     QCOMPARE(lastSignal.at(0).toString(), QString("choice-test"));
     QCOMPARE(lastSignal.at(1).toString(), QString("mode"));
     QCOMPARE(lastSignal.at(2).toString(), QString("Manual"));
+}
+
+void TestPropertyPanel::testNumericParamWithOptionsUsesChoiceWidget() {
+    // 数值枚举（如 ImageScript scriptType 0–3）带 _options 时应渲染为组合框
+    // 显示操作名称，而不是数字输入框；提交时保留数值类型。
+    PropertyPanel panel;
+    PropertyPanelNumericChoiceModule module;
+    QSignalSpy spy(&panel, &PropertyPanel::paramsChanged);
+
+    PluginInfo info;
+    QJsonObject typeMeta;
+    typeMeta["label"] = QStringLiteral("内置图像操作");
+    typeMeta["order"] = 1;
+    typeMeta["_options"] = QJsonArray{
+        QJsonObject{{"label", QStringLiteral("图像反转")}, {"value", 0}},
+        QJsonObject{{"label", QStringLiteral("转灰度")}, {"value", 1}},
+    };
+    QJsonObject paramsMeta;
+    paramsMeta["scriptType"] = typeMeta;
+    QJsonObject uiObj;
+    uiObj["parameters"] = paramsMeta;
+    info.ui = uiObj;
+
+    panel.setPluginInfo(info);
+    panel.setModule(&module);
+
+    QList<QComboBox*> combos = panel.findChildren<QComboBox*>();
+    QCOMPARE(combos.size(), 1);
+    QVERIFY2(panel.findChildren<QDoubleSpinBox*>().isEmpty(), "numeric enum must not render as spin box");
+    QComboBox* combo = combos.first();
+    QCOMPARE(combo->count(), 2);
+    QCOMPARE(combo->itemText(0), QStringLiteral("图像反转"));
+    QCOMPARE(combo->itemText(1), QStringLiteral("转灰度"));
+    QCOMPARE(combo->currentData().toInt(), 0);
+
+    combo->setCurrentIndex(1);
+
+    QVERIFY(spy.count() >= 1);
+    const QList<QVariant> lastSignal = spy.takeLast();
+    QCOMPARE(lastSignal.at(0).toString(), QString("numeric-choice-test"));
+    QCOMPARE(lastSignal.at(1).toString(), QString("scriptType"));
+    QCOMPARE(lastSignal.at(2).type(), QVariant::Double); // 提交为数值而非字符串
+    QCOMPARE(lastSignal.at(2).toDouble(), 1.0);
 }
 
 void TestPropertyPanel::testInstanceIdOverridesModuleIdInParamSignals() {

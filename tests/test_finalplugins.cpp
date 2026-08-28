@@ -9,6 +9,7 @@
 #include <QJsonObject>
 #include <QVariant>
 #include <QtTest/QtTest>
+#include <cmath>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -100,21 +101,55 @@ void TestFinalPlugins::testImageScriptInvertDeterministic() {
 
 void TestFinalPlugins::testImageScriptTypeParamAffectsResult() {
 #ifdef DEEPLUX_HAS_OPENCV
-    ImageScriptPlugin pInvert, pGray;
-    QVERIFY(pInvert.initialize());
+    // 阶段 2 复核：用彩色图像做像素级断言——操作必须真实改变像素，
+    // 仅比较 script_type 元数据无法发现"复制输入"的假成功。
+    ImageScriptPlugin pGray, pInvert;
     QVERIFY(pGray.initialize());
+    QVERIFY(pInvert.initialize());
 
-    ImageData input = makeGrayImage();
-    QJsonObject invert{{"scriptType", 0}};
-    QJsonObject gray{{"scriptType", 1}}; // 1 = 灰度
+    // 彩色图（BGR 30/90/210）：BGR2GRAY 灰度值 ≈ 0.114*30 + 0.587*90 + 0.299*210 ≈ 119
+    cv::Mat color(60, 80, CV_8UC3, cv::Scalar(30, 90, 210));
+    ImageData input;
+    input.setMat(color);
 
-    ImageData outInvert, outGray;
-    QVERIFY(runModule(pInvert, invert, input, outInvert).success);
-    QVERIFY(runModule(pGray, gray, input, outGray).success);
-
-    // 不同 scriptType → 不同结果
-    QCOMPARE(outInvert.data("script_type").toInt(), 0);
+    // 1 = 灰度：三通道应相等、等于灰度值，且与原彩色像素不同
+    ImageData outGray;
+    QVERIFY(runModule(pGray, QJsonObject{{"scriptType", 1}}, input, outGray).success);
     QCOMPARE(outGray.data("script_type").toInt(), 1);
+    cv::Mat grayOut = outGray.toMat();
+    QVERIFY(!grayOut.empty());
+    const cv::Vec3b pg = grayOut.at<cv::Vec3b>(30, 40);
+    QCOMPARE(int(pg[0]), int(pg[1]));
+    QCOMPARE(int(pg[1]), int(pg[2]));
+    QVERIFY2(std::abs(pg[0] - 119) <= 2, "gray value must match BGR2GRAY result");
+    cv::Mat diffGray;
+    cv::absdiff(grayOut, color, diffGray);
+    QVERIFY2(cv::countNonZero(diffGray.reshape(1)) > 0, "grayscale must change color pixels");
+
+    // 0 = 反转：逐通道 255-x
+    ImageData outInvert;
+    QVERIFY(runModule(pInvert, QJsonObject{{"scriptType", 0}}, input, outInvert).success);
+    QCOMPARE(outInvert.data("script_type").toInt(), 0);
+    const cv::Vec3b pi = outInvert.toMat().at<cv::Vec3b>(30, 40);
+    QCOMPARE(int(pi[0]), 255 - 30);
+    QCOMPARE(int(pi[1]), 255 - 90);
+    QCOMPARE(int(pi[2]), 255 - 210);
+
+    // 四通道 BGRA 输入：灰度同样必须生效，且保留 alpha 通道
+    ImageScriptPlugin pGray4;
+    QVERIFY(pGray4.initialize());
+    cv::Mat bgra(60, 80, CV_8UC4, cv::Scalar(30, 90, 210, 128));
+    ImageData input4;
+    input4.setMat(bgra);
+    ImageData outGray4;
+    QVERIFY(runModule(pGray4, QJsonObject{{"scriptType", 1}}, input4, outGray4).success);
+    cv::Mat gray4 = outGray4.toMat();
+    QCOMPARE(gray4.channels(), 4);
+    const cv::Vec4b p4 = gray4.at<cv::Vec4b>(30, 40);
+    QCOMPARE(int(p4[0]), int(p4[1]));
+    QCOMPARE(int(p4[1]), int(p4[2]));
+    QVERIFY2(std::abs(p4[0] - 119) <= 2, "BGRA grayscale must change color pixels");
+    QCOMPARE(int(p4[3]), 128); // alpha 保留
 #else
     QSKIP("OpenCV not available");
 #endif
@@ -150,9 +185,21 @@ void TestFinalPlugins::testImageScriptInvalidTypeRejected() {
     QJsonObject nonInteger{{"scriptType", 1.5}};
     QVERIFY2(!plugin.validateParams(nonInteger, error), "non-integer scriptType must be rejected");
 
-    // setParams 失败关闭：非法值不得覆盖已设置的合法值
+    // 错误 JSON 类型同样拒绝：toDouble() 会把字符串/布尔默转为 0，不得被当作合法反转操作
+    QJsonObject stringType{{"scriptType", QStringLiteral("abc")}};
+    QVERIFY2(!plugin.validateParams(stringType, error), "string scriptType must be rejected");
+
+    QJsonObject boolType{{"scriptType", true}};
+    QVERIFY2(!plugin.validateParams(boolType, error), "bool scriptType must be rejected");
+
+    QJsonObject nullType;
+    nullType.insert("scriptType", QJsonValue());
+    QVERIFY2(!plugin.validateParams(nullType, error), "null scriptType must be rejected");
+
+    // setParams 失败关闭：非法值（含错误类型）不得覆盖已设置的合法值
     plugin.setParams(QJsonObject{{"scriptType", 2}});
     plugin.setParams(QJsonObject{{"scriptType", 9}});
+    plugin.setParams(QJsonObject{{"scriptType", QStringLiteral("abc")}});
     QCOMPARE(plugin.currentParams().value("scriptType").toInt(), 2);
 }
 

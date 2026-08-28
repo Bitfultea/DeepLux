@@ -53,7 +53,13 @@ bool ImageScriptPlugin::process(const ImageData& input, ImageData& output) {
         return false;
     }
 
-    m_scriptType = m_params["scriptType"].toInt();
+    // 防御：setParam 等路径不经过 validateParams，运行前再次确认类型合法
+    const QJsonValue typeValue = m_params.value("scriptType");
+    if (!typeValue.isDouble()) {
+        emit errorOccurred(tr("scriptType 类型非法，必须是 0–3 的整数"));
+        return false;
+    }
+    m_scriptType = typeValue.toInt();
 
     // 阶段 2：执行失败即失败关闭——不得复制输入冒充成功，不得置 script_executed=true
     if (!executeBuiltinOperation(mat, m_resultMat)) {
@@ -83,11 +89,22 @@ bool ImageScriptPlugin::executeBuiltinOperation(const cv::Mat& input, cv::Mat& o
         break;
     }
     case 1: { // 灰度
-        if (input.channels() == 3) {
+        const int channels = input.channels();
+        if (channels == 1) {
+            output = input.clone(); // 已是单通道灰度
+        } else if (channels == 3) {
             cvtColor(input, output, cv::COLOR_BGR2GRAY);
             cvtColor(output, output, cv::COLOR_GRAY2BGR);
+        } else if (channels == 4) {
+            // 四通道 BGRA：拆分后灰度化 BGR 并保留原 alpha，避免"复制原图"的假成功
+            std::vector<cv::Mat> ch;
+            cv::split(input, ch);
+            cv::Mat bgr, gray;
+            cv::merge(std::vector<cv::Mat>{ch[0], ch[1], ch[2]}, bgr);
+            cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
+            cv::merge(std::vector<cv::Mat>{gray, gray, gray, ch[3]}, output);
         } else {
-            output = input.clone();
+            return false; // 其余通道数不支持，失败关闭
         }
         break;
     }
@@ -108,12 +125,18 @@ bool ImageScriptPlugin::executeBuiltinOperation(const cv::Mat& input, cv::Mat& o
 }
 
 bool ImageScriptPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
-    // 阶段 2：严格校验 0–3 整数；缺失、越界、非整数一律拒绝（失败关闭）
-    if (!params.contains("scriptType")) {
+    // 阶段 2：严格校验 0–3 整数；缺失、类型错误、越界、非整数一律拒绝（失败关闭）。
+    // 必须先检查 isDouble()：toDouble() 会把字符串/布尔/null 默转为 0，造成非法值被当作反转操作。
+    const QJsonValue value = params.value("scriptType");
+    if (value.isUndefined() || value.isNull()) {
         error = tr("缺少 scriptType 参数");
         return false;
     }
-    const double v = params["scriptType"].toDouble();
+    if (!value.isDouble()) {
+        error = tr("scriptType 必须是数值类型（0–3 的内置操作类型）");
+        return false;
+    }
+    const double v = value.toDouble();
     if (v < 0 || v > 3 || qFloor(v) != v) {
         error = tr("scriptType 必须是 0–3 的整数（内置操作类型）");
         return false;

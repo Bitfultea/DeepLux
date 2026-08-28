@@ -422,7 +422,7 @@ MeasurementInput(point=[0,0,5], plane=[0,0,0, 1,0,0, 0,1,0]) → PointSurfaceDis
 | `ShowPoint` | 显示点 |
 | `Blob` | Blob 检测 |
 | `PerProcessing` | 预处理 |
-| `ImageScript` | 图像脚本 |
+| `ImageScript` | 内置图像操作 |
 
 ### 检测
 | 模块类型 | 说明 |

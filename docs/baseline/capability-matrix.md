@@ -179,23 +179,26 @@
 
 > 阶段 2 已修复 ImageScript（删无效脚本输入+严格 0–3 校验+失败关闭）、
 > JiErHanDefectsDet（阈值真实过滤+实验性标注）、ColorRecognition（颜色枚举校验+红色覆盖色相环两端）。
-> 其余 13 个"部分"状态插件逐项复核如下；按约定本阶段只列出不修复，
-> 修复随各插件的迁移决定进入阶段 7（仅 P0/P1 rebuild 项）或对应业务包验收。
+> 其余 13 个"部分"状态插件逐项复核如下；按约定本阶段只列出不修复。
+>
+> **处置口径**：阶段 7 仅实施阶段 1（53 missing）经审核为 rebuild 且 P0/P1 的项目；
+> 下表均为**既有插件**，不进入阶段 7 范围，其问题记录为遗留项，
+> 随各自"重构"迁移决定（随 IModule ABI v2 统一重编时）或后续专项排期修复；业务包项随现场验收修复。
 
 | 插件 | 复核发现 | 处置 |
 | --- | --- | --- |
-| PerProcessing | processType 无枚举校验，非法类型静默直通返回成功（假成功）；sigmaX 仅高斯/双边生效、iterations 仅形态学生效、Canny 阈值 50/150 硬编码；metadata 无 max/_options，与 UI 范围（核 1–31）不同步 | 阶段 7 重构：枚举校验失败关闭+阈值参数化+metadata 同步 |
-| DisplayData | doValidateParams 为空；displayText 为空且载体无命名数据时不绘制任何内容仍返回成功（空操作成功）；fontSize/position 仅 min 0 无 max，与 UI（8–100/0–2000）不同步 | 阶段 7 重构：参数范围校验+空文本语义 |
-| Matching | 模板取自载体元数据键 template_qimage 而非正式端口；未提供模板时静默改用图像中心区域作模板（猜测行为）；metadata matchThreshold 仅 min 0 无 max，与校验 (0,1]、UI (0.1–1.0) 不同步 | 阶段 7 重构：模板端口化+metadata 同步 |
-| QRCode | 条码分支（Code_128/Code_39/EAN_13/EAN_8）在 decodeBarCode 恒失败；校验已拒绝非 QR 类型，该分支不可达但仍存在；metadata codeType 用 options 而非统一 _options | 阶段 7：移除死分支或显式标注未实现 |
-| FreeformSurface | samplingInterval 生效、点云必需；边界覆盖薄弱（少于 3 点/空点云/退化输入） | 阶段 7 重构：补边界行为测试 |
-| QueueIn | dataVariable 为空回退固定键 item_data；任意类型一律 toString() 转换（结构化数据丢失） | 阶段 7 重构：类型化入队 |
-| QueueOut | 队列空时返回成功，下游无法区分"队列空"与"取到数据"；peekOnly/outputVariable 生效 | 阶段 7 重构：空队列语义 |
-| SaveData | JSON"追加"实为合并覆盖（同名键被覆盖）；CSV 追加跳过表头且不校验列序一致（错列风险） | 阶段 7 重构：追加语义 |
-| DataCheck | Range/Length/Null 校验已实现且失败关闭；非法 checkType 未校验、静默输出 check_passed=false（与校验失败不可区分）；metadata minValue/maxValue 仅 min 0（无法表达负范围） | 阶段 7 重构：枚举校验+metadata 同步 |
-| ShowPoint | markerSize/colorRGB 生效、缺点失败关闭；metadata 仅 min 0 无 max，与 UI 范围（颜色 0–255）不同步 | 阶段 7 重构：metadata 同步 |
-| TableOutPut | rowCount/colCount 有范围校验（1–100/1–20）；数据超出表大小被静默截断且无告警输出 | 阶段 7 重构：截断语义显式化 |
-| TimeSlice | mode 严格校验 Start/Stop/Reset；Stop 对上游 timeslice_start_time 缺失/非法均失败关闭；实现诚实 | P3 不进阶段 7（仅 P0/P1），维持现状观察 |
-| DefectDetection | rcornerNormalDegree/rcornerCurvatureThreshold/minPoints 三个公开参数被 Q_UNUSED，不影响输出（假配置）；实际算法经 hymson3d detect_smooth_surface_dll | 业务包：修复假参数并现场验收 |
+| PerProcessing | processType 无枚举校验，非法类型静默直通返回成功（假成功）；sigmaX 仅高斯/双边生效、iterations 仅形态学生效、Canny 阈值 50/150 硬编码；metadata 无 max/_options，与 UI 范围（核 1–31）不同步 | 遗留项：随"重构"决定修复（枚举校验失败关闭+阈值参数化+metadata 同步），不进阶段 7 |
+| DisplayData | doValidateParams 为空；displayText 为空且载体无命名数据时不绘制任何内容仍返回成功（空操作成功）；fontSize/position 仅 min 0 无 max，与 UI（8–100/0–2000）不同步 | 遗留项：随"重构"决定修复（参数范围校验+空文本语义），不进阶段 7 |
+| Matching | 模板取自载体元数据键 template_qimage 而非正式端口；未提供模板时静默改用图像中心区域作模板（猜测行为）；metadata matchThreshold 仅 min 0 无 max，与校验 (0,1]、UI (0.1–1.0) 不同步 | 遗留项：随"重构"决定修复（模板端口化+metadata 同步），不进阶段 7 |
+| QRCode | 条码分支（Code_128/Code_39/EAN_13/EAN_8）在 decodeBarCode 恒失败；校验已拒绝非 QR 类型，该分支不可达但仍存在；metadata codeType 用 options 而非统一 _options | 遗留项：随专项修复（移除死分支或显式标注未实现），不进阶段 7 |
+| FreeformSurface | samplingInterval 生效、点云必需；边界覆盖薄弱（少于 3 点/空点云/退化输入） | 遗留项：随"重构"决定修复（补边界行为测试），不进阶段 7 |
+| QueueIn | dataVariable 为空回退固定键 item_data；任意类型一律 toString() 转换（结构化数据丢失） | 遗留项：随"重构"决定修复（类型化入队），不进阶段 7 |
+| QueueOut | 队列空时返回成功，下游无法区分"队列空"与"取到数据"；peekOnly/outputVariable 生效 | 遗留项：随"重构"决定修复（空队列语义），不进阶段 7 |
+| SaveData | JSON"追加"实为合并覆盖（同名键被覆盖）；CSV 追加跳过表头且不校验列序一致（错列风险） | 遗留项：随"重构"决定修复（追加语义），不进阶段 7 |
+| DataCheck | Range/Length/Null 校验已实现且失败关闭；非法 checkType 未校验、静默输出 check_passed=false（与校验失败不可区分）；metadata minValue/maxValue 仅 min 0（无法表达负范围） | 遗留项：随"重构"决定修复（枚举校验+metadata 同步），不进阶段 7 |
+| ShowPoint | markerSize/colorRGB 生效、缺点失败关闭；metadata 仅 min 0 无 max，与 UI 范围（颜色 0–255）不同步 | 遗留项：随"重构"决定修复（metadata 同步），不进阶段 7 |
+| TableOutPut | rowCount/colCount 有范围校验（1–100/1–20）；数据超出表大小被静默截断且无告警输出 | 遗留项：随"重构"决定修复（截断语义显式化），不进阶段 7 |
+| TimeSlice | mode 严格校验 Start/Stop/Reset；Stop 对上游 timeslice_start_time 缺失/非法均失败关闭；实现诚实 | 遗留项（P3 重构）：维持现状观察，随专项排期，不进阶段 7 |
+| DefectDetection | rcornerNormalDegree/rcornerCurvatureThreshold/minPoints 三个公开参数被 Q_UNUSED，不影响输出（假配置）；实际算法经 hymson3d detect_smooth_surface_dll | 业务包：随现场验收修复假参数，不进阶段 7 |
 
 > 另：JigsawPuzzle（业务包）源码注释自认"暂时忽略碎片数据"，切分能力不完整，随业务包现场验收。
