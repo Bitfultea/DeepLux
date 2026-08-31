@@ -65,6 +65,7 @@ private slots:
     // 阶段 3：数据与构建契约收口
     void testUnsupportedPortTypesClassified();
     void testMetadataDeclaringUnsupportedTypeRejectedAtLoad();
+    void testPortsFieldsMustBeJsonArrays();
     void testWrongPayloadRejected();
     void testDetectionListBoundary();
 
@@ -699,6 +700,22 @@ void TestPluginParameterContracts::testUnsupportedPortTypesClassified() {
                           DataType::Boolean, DataType::String, DataType::Binary, DataType::Table, DataType::Any}) {
         QVERIFY2(isSupportedPortType(type), qPrintable(dataTypeName(type) + " must be supported"));
     }
+    // 失败关闭：非法枚举值不得被判定为支持（防止未来新增未实现类型自动放行）
+    QVERIFY(!isSupportedPortType(static_cast<DataType>(-1)));
+    QVERIFY(!isSupportedPortType(static_cast<DataType>(9999)));
+}
+
+// 写临时 metadata 并走 PluginManager::loadPluginMetadata 加载门禁
+static void writeMetadataAndLoad(const QTemporaryDir& dir, const QByteArray& content, const QString& fileName,
+                                 bool& loaded, QString& loadError) {
+    const QString path = dir.filePath(fileName);
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(content);
+    file.close();
+    PluginInfo info;
+    loaded = PluginManager::instance().loadPluginMetadata(path, info);
+    loadError = info.error;
 }
 
 void TestPluginParameterContracts::testMetadataDeclaringUnsupportedTypeRejectedAtLoad() {
@@ -728,28 +745,57 @@ void TestPluginParameterContracts::testMetadataDeclaringUnsupportedTypeRejectedA
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
 
-    auto writeAndLoad = [&](const QByteArray& content, const QString& fileName, bool& loaded, QString& loadError) {
-        const QString path = dir.filePath(fileName);
-        QFile file(path);
-        QVERIFY(file.open(QIODevice::WriteOnly));
-        file.write(content);
-        file.close();
-        PluginInfo info;
-        loaded = PluginManager::instance().loadPluginMetadata(path, info);
-        loadError = info.error;
-    };
-
     bool loaded = true;
     QString loadError;
-    writeAndLoad(unsupportedInput, "unsupported_in.json", loaded, loadError);
+    writeMetadataAndLoad(dir, unsupportedInput, "unsupported_in.json", loaded, loadError);
     QVERIFY2(!loaded, "metadata declaring Mask2D input must be rejected at load");
     QVERIFY2(loadError.contains(QStringLiteral("Mask2D")),
              qPrintable("rejection must name the unsupported type, got: " + loadError));
 
-    writeAndLoad(unsupportedOutput, "unsupported_out.json", loaded, loadError);
+    writeMetadataAndLoad(dir, unsupportedOutput, "unsupported_out.json", loaded, loadError);
     QVERIFY2(!loaded, "metadata declaring Region2D output must be rejected at load");
     QVERIFY2(loadError.contains(QStringLiteral("Region2D")),
              qPrintable("rejection must name the unsupported type, got: " + loadError));
+}
+
+void TestPluginParameterContracts::testPortsFieldsMustBeJsonArrays() {
+    // ports.inputs/outputs 不是 JSON 数组时必须拒绝，
+    // 不能被 toArray() 静默转成空数组后按"零端口"合法加载。
+    const QByteArray inputsNotArray = R"({
+        "id": "com.test.portsnotarray1",
+        "name": "PortsNotArrayProbeIn",
+        "category": "test",
+        "version": "1.0.0",
+        "ports": {
+            "inputs": "image",
+            "outputs": [{"id": "image", "displayName": "输出", "type": "Image2D"}]
+        }
+    })";
+    const QByteArray outputsNotArray = R"({
+        "id": "com.test.portsnotarray2",
+        "name": "PortsNotArrayProbeOut",
+        "category": "test",
+        "version": "1.0.0",
+        "ports": {
+            "inputs": [{"id": "image", "displayName": "输入", "type": "Image2D"}],
+            "outputs": {"id": "image", "displayName": "输出", "type": "Image2D"}
+        }
+    })";
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    bool loaded = true;
+    QString loadError;
+    writeMetadataAndLoad(dir, inputsNotArray, "ports_inputs_not_array.json", loaded, loadError);
+    QVERIFY2(!loaded, "metadata with non-array ports.inputs must be rejected at load");
+    QVERIFY2(loadError.contains(QStringLiteral("inputs")),
+             qPrintable("rejection must name ports.inputs, got: " + loadError));
+
+    writeMetadataAndLoad(dir, outputsNotArray, "ports_outputs_not_array.json", loaded, loadError);
+    QVERIFY2(!loaded, "metadata with non-array ports.outputs must be rejected at load");
+    QVERIFY2(loadError.contains(QStringLiteral("outputs")),
+             qPrintable("rejection must name ports.outputs, got: " + loadError));
 }
 
 // ---------------------------------------------------------------------------
@@ -770,6 +816,15 @@ void TestPluginParameterContracts::testWrongPayloadRejected() {
     ImageData withCloud;
     withCloud.setData(QStringLiteral("point_cloud"), QVariant::fromValue(PointCloudData()));
     QVERIFY(portValueMatchesType(QVariant::fromValue(withCloud), DataType::PointCloud3D));
+
+    // PointCloud3D 还必须校验键值本身可转换为 PointCloudData，
+    // 携带错误键值（如字符串）的 ImageData 不得被当作合法点云载荷
+    ImageData badCloud;
+    badCloud.setData(QStringLiteral("point_cloud"), QStringLiteral("invalid"));
+    QVERIFY(!portValueMatchesType(QVariant::fromValue(badCloud), DataType::PointCloud3D));
+    ImageData badCloudList;
+    badCloudList.setData(QStringLiteral("point_cloud"), QVariant(QVariantList{1.0, 2.0}));
+    QVERIFY(!portValueMatchesType(QVariant::fromValue(badCloudList), DataType::PointCloud3D));
 
     // 几何类型拒绝错误维度/错误元素
     QVERIFY(!portValueMatchesType(QVariant(QVariantList{1.0, 2.0, 3.0}), DataType::Line2D)); // 需 4 数值

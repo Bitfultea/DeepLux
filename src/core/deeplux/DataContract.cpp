@@ -98,15 +98,34 @@ bool dataTypeFromString(const QString& name, DataType& out) {
 }
 
 bool isSupportedPortType(DataType type) {
+    // 失败关闭：显式列出支持类型；未列出的枚举值（含非法值与
+    // 未来新增但尚未实现的类型）一律判定为不支持。
     switch (type) {
+    case DataType::Image2D:
+    case DataType::HeightMap2D:
+    case DataType::PointCloud3D:
+    case DataType::Point2D:
+    case DataType::Point3D:
+    case DataType::PointSet2D:
+    case DataType::Line2D:
+    case DataType::Circle2D:
+    case DataType::Plane3D:
+    case DataType::DetectionList:
+    case DataType::Number:
+    case DataType::Integer:
+    case DataType::Boolean:
+    case DataType::String:
+    case DataType::Binary:
+    case DataType::Table:
+    case DataType::Any:
+        return true;
     case DataType::Mask2D:
     case DataType::Region2D:
     case DataType::Ellipse2D:
     case DataType::Transform2D:
     case DataType::ClassScores:
-        return false; // 尚无载荷契约与生产者插件，禁止声明为可运行端口
     default:
-        return true;
+        return false; // 尚无载荷契约与生产者插件（或非法枚举值），禁止声明为可运行端口
     }
 }
 
@@ -198,10 +217,17 @@ bool portValueMatchesType(const QVariant& value, DataType type) {
     case DataType::Image2D:
     case DataType::HeightMap2D:
         return value.canConvert<ImageData>();
-    case DataType::PointCloud3D:
+    case DataType::PointCloud3D: {
         if (value.canConvert<PointCloudData>())
             return true;
-        return value.canConvert<ImageData>() && value.value<ImageData>().hasData(QStringLiteral("point_cloud"));
+        if (!value.canConvert<ImageData>())
+            return false;
+        // 仅存在 point_cloud 键不够：键值必须可转换为 PointCloudData，
+        // 否则 setData("point_cloud", "invalid") 这类错误载荷会被误判合法。
+        const ImageData image = value.value<ImageData>();
+        const QVariant cloud = image.data(QStringLiteral("point_cloud"));
+        return cloud.isValid() && cloud.canConvert<PointCloudData>();
+    }
     case DataType::Point2D:
         return value.type() == QVariant::PointF || isNumericList(value, 2);
     case DataType::Point3D:

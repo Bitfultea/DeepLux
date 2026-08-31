@@ -231,6 +231,18 @@ bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info) {
             qWarning() << info.error;
             return false;
         }
+        // 字段必须是 JSON 数组：字符串/对象经 toArray() 会得到空数组，
+        // 若放行会把插件当作"零端口"合法加载。
+        if (!ports.value("inputs").isArray()) {
+            info.error = QStringLiteral("%1: ports.inputs must be a JSON array").arg(info.name);
+            qWarning() << info.error;
+            return false;
+        }
+        if (!ports.value("outputs").isArray()) {
+            info.error = QStringLiteral("%1: ports.outputs must be a JSON array").arg(info.name);
+            qWarning() << info.error;
+            return false;
+        }
         if (!parsePortArray(ports["inputs"].toArray(), info.inputPorts, portError, info.name,
                             QStringLiteral("inputs")) ||
             !parsePortArray(ports["outputs"].toArray(), info.outputPorts, portError, info.name,

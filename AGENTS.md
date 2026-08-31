@@ -30,7 +30,7 @@ Sync rebuilt plugin libraries into `~/.deeplux/plugins` when testing plugin load
 cmake --build build --target sync-plugins
 ```
 
-Launch the app or CLI from the build output, for example `./build/bin/DeepLux --gui` or `./scripts/deeplux help`. Halcon Runtime is required; OpenCV and camera SDKs are optional.
+Launch the app or CLI from the build output, for example `./build/bin/DeepLux --gui` or `./scripts/deeplux help`. OpenCV is required (CMake configure fails without it); Halcon Runtime and camera SDKs are optional.
 
 ## Coding Style & Naming Conventions
 
