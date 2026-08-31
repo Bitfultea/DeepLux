@@ -204,6 +204,9 @@ QString cleanToolDisplayName(const QString& displayName) {
 }
 
 QString measurementInputModeForConsumer(const QString& moduleId) {
+    if (moduleId == QStringLiteral("com.deeplux.plugin.fitcircle")) {
+        return QStringLiteral("point_set");
+    }
     if (moduleId == QStringLiteral("com.deeplux.plugin.distancepp")) {
         return QStringLiteral("point_pair");
     }
@@ -235,6 +238,9 @@ QString measurementInputModeText(const QString& mode) {
     if (mode == QStringLiteral("point_plane")) {
         return QStringLiteral("点、平面三点");
     }
+    if (mode == QStringLiteral("point_set")) {
+        return QStringLiteral("圆周上的 3 个点");
+    }
     return mode;
 }
 
@@ -242,7 +248,7 @@ int measurementPickCountForMode(const QString& mode) {
     if (mode == QStringLiteral("point_pair")) {
         return 2;
     }
-    if (mode == QStringLiteral("point_line")) {
+    if (mode == QStringLiteral("point_line") || mode == QStringLiteral("point_set")) {
         return 3;
     }
     if (mode == QStringLiteral("line_pair") || mode == QStringLiteral("point_plane")) {
@@ -2416,6 +2422,22 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
     const QJsonArray newPoint3D = pointArray3D(point.x(), point.y(), 0.0);
     auto finishPick = [&]() { finishMeasurementPick(instanceId, mod->currentParams(), false); };
 
+    if (mode == "point_set") {
+        QJsonArray points = params["points"].toArray();
+        points.append(newPoint2D);
+        mod->setParam("points", points);
+        if (project)
+            project->setModuleParam(instanceId, "points", points);
+        Logger::instance().info(QString("2D pick: point set p%1 set to (%2, %3)")
+                                    .arg(points.size())
+                                    .arg(point.x(), 0, 'f', 2)
+                                    .arg(point.y(), 0, 'f', 2),
+                                "Picking");
+        m_measurementPickCursor[instanceId] = points.size();
+        finishPick();
+        return;
+    }
+
     if (mode == "line_pair") {
         const int step = cursor % 4;
         const QString key = step < 2 ? QStringLiteral("line1") : QStringLiteral("line2");
@@ -2526,7 +2548,12 @@ void MainWindow::refreshMeasurementOverlay(const QJsonObject& params, int visibl
         lines.append(MeasurementOverlayLine{pointFromArray2D(arr, 0), pointFromArray2D(arr, 2), label});
     };
 
-    if (mode == QStringLiteral("point_line")) {
+    if (mode == QStringLiteral("point_set")) {
+        const QJsonArray pointSet = params["points"].toArray();
+        for (int i = 0; i < pointSet.size() && i < visibleSteps; ++i) {
+            addPoint(pointSet.at(i).toArray(), QStringLiteral("P%1").arg(i + 1), i + 1);
+        }
+    } else if (mode == QStringLiteral("point_line")) {
         const QJsonArray point = params["point"].toArray();
         const QJsonArray line = params["line"].toArray();
         addPoint(point, QStringLiteral("P"), 1);

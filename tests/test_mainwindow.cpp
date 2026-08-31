@@ -526,21 +526,21 @@ void TestMainWindow::testRunCreatesMeasurementInputForConsumer() {
     QVERIFY(appDir.isValid());
     qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
     const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
-    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("FitCircle")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
 
     MainWindow window;
     QCoreApplication::processEvents();
-    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("FitCircle")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
 
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project != nullptr);
-    ModuleInstance distance;
-    distance.id = QStringLiteral("auto_distance_1");
-    distance.moduleId = QStringLiteral("DistancePP");
-    distance.name = QStringLiteral("点点距离");
-    project->addModule(distance);
+    ModuleInstance circle;
+    circle.id = QStringLiteral("auto_fit_circle_1");
+    circle.moduleId = QStringLiteral("FitCircle");
+    circle.name = QStringLiteral("圆拟合");
+    project->addModule(circle);
     QCoreApplication::processEvents();
 
     QTreeWidget* processTree = window.findChild<QTreeWidget*>("ProcessTree");
@@ -549,7 +549,28 @@ void TestMainWindow::testRunCreatesMeasurementInputForConsumer() {
     QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
     QCOMPARE(processTree->topLevelItemCount(), 2);
     QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 2).toString(), QStringLiteral("MeasurementInput"));
-    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/3"));
+
+    const QString inputId = processTree->topLevelItem(0)->data(0, Qt::UserRole + 1).toString();
+    ModuleInstance* input = project->findModule(inputId);
+    QVERIFY(input != nullptr);
+    QCOMPARE(input->params["mode"].toString(), QStringLiteral("point_set"));
+
+    QSignalSpy finishedSpy(&RunEngine::instance(), &RunEngine::runFinished);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(420.0, 240.0))));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(320.0, 340.0))));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(220.0, 240.0))));
+
+    QTRY_COMPARE(finishedSpy.count(), 1);
+    input = project->findModule(inputId);
+    QVERIFY(input != nullptr);
+    QCOMPARE(input->params["points"].toArray().size(), 3);
+    const ImageData output = RunEngine::instance().moduleOutput(QStringLiteral("auto_fit_circle_1"));
+    QVERIFY(output.hasData("circle_radius"));
+    QVERIFY(qAbs(output.data("circle_radius").toDouble() - 100.0) < 0.1);
 }
 
 void TestMainWindow::testPluginConfigDialogRestylesLegacyDarkPlugin() {

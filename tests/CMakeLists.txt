@@ -196,11 +196,24 @@ foreach(TEST_FILE ${TEST_SOURCES})
             DistancePPPlugin
             LoadPointCloudPlugin
             PointSurfaceDistancePlugin
+            FitLinePlugin
+            FitCirclePlugin
+            IfPlugin
+            DelayPlugin
+            LoopPlugin
+            WhilePlugin
+            StopWhilePlugin
+            ParallelPlugin
+            MathPlugin
+            SaveDataPlugin
         )
     endif()
 
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
     set_tests_properties(${TEST_NAME} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    if(TEST_NAME STREQUAL "test_acceptance_flows")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 10)
+    endif()
     if(TEST_NAME STREQUAL "test_cameramanager")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 2)
     endif()

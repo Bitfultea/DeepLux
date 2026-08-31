@@ -66,9 +66,8 @@
 
 ### 仍保留（产品级，非门禁阻塞）
 
-- 图像 ROI/边缘点提取→FitLine/FitCircle 的 **GUI 交互式**拾取流程（阶段 5 GUI 端到端覆盖）；
-  拾取写参路径的流程级验收已由 `testFitCircleFromPickSessionFlow` 覆盖
-  （空点集拾取门控→逐点提交→圆拟合，固定工程+确定性预期）。
+- 图像 ROI/边缘点提取→FitLine/FitCircle 的完整 GUI 交互验收（阶段 5）；
+  阶段 4 已覆盖 FitCircle 自动创建 `point_set` 输入、3 次主窗口拾取处理写参与圆拟合流程语义。
 - PLC/AI 设备模拟器契约（需现场硬件）。
 - TSan 20 处警告清零（需插桩 Qt 复测）。
 

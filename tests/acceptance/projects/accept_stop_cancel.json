@@ -15,7 +15,7 @@
                 "conditionVariable": "never_set_flag",
                 "comparison": "Empty",
                 "compareValue": "",
-                "maxIterations": 10000
+                "maxIterations": 100
             }
         },
         {

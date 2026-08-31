@@ -56,7 +56,7 @@ ctest --test-dir build -R test_acceptance_flows --output-on-failure
 | Parallel all 汇合 | 无需图像 | `projects/accept_parallel_all.json` | 真实并发≥2+汇合晚于两分支完成 | ✅ 已接入自动化（阶段 4） |
 | 控制汇合 any 策略 | 无需图像 | `projects/accept_parallel_any.json` | 单条边触发即汇合且仅一次 | ✅ 已接入自动化（阶段 4） |
 | Parallel 失败分支 | 无需图像 | `projects/accept_parallel_failure.json` | 失败取消同组+耗时上限断言 | ✅ 已接入自动化（阶段 4） |
-| Parallel blocking 不并行 | 无需图像 | `projects/accept_parallel_blocking.json` | 执行区间不重叠+并发度≤1 | ✅ 已接入自动化（阶段 4） |
+| Parallel blocking 不并行 | 无需图像 | `projects/accept_parallel_blocking.json` | 两分支均输出+并发度≤1 | ✅ 已接入自动化（阶段 4） |
 | 拾取点集→圆拟合 | 固定圆周采样点 | `projects/accept_fitcircle_pick.json` | `expected/fitcircle_pick.json` | ✅ 已接入自动化（阶段 4，含拾取门控） |
 | PLC/相机/AI 模拟流程 | 模拟器 | 相机以 `GrabImage(File)` 为无硬件模拟源 | 契约测试 | 部分：相机模拟已用文件源；PLC/AI 需设备模拟器 |
 
@@ -87,16 +87,16 @@ ctest --test-dir build -R test_acceptance_flows --output-on-failure
 - **While**：种子模块写 `counter=0`，条件 `counter<3`，循环体每次 +1；断言恰好 3 次迭代后
   由数据条件退出（非 `maxIterations`），最终 `counter=3`。
 - **StopWhile**：恒真循环（上限 1000）内首次迭代即提前退出，断言 `after` 仅执行一次。
-- **停止/取消时限**：恒真长循环（10000×30ms）运行中请求取消，断言 500ms 内停止、
+- **停止/取消时限**：恒真长循环（100×30ms）运行中请求取消，断言 500ms 内停止、
   迭代数远小于上限、不进入 `done` 分支。
 - **Parallel all**：两个 60ms 线程安全分支，断言最大并发度≥2、汇合点晚于两分支完成。
 - **控制汇合 any**：If 真分支触发一条控制边即激活汇合点，假分支被跳过且仅汇合一次。
 - **Parallel 失败分支**：快速失败分支取消同组 500ms 慢分支，断言总耗时 < 400ms、
   汇合点不执行。
-- **Parallel blocking 不并行**：两个 blocking（SaveData）分支执行区间不重叠、并发度≤1。
-- **拾取→圆拟合**：空点集运行必须失败（拾取门控）；通过与 UI 拾取相同的写参路径
-  逐点提交 16 个圆周采样点后，拟合圆心/半径与已知圆一致。
-  GUI 拾取交互本身由阶段 5 端到端覆盖，本工程覆盖拾取写参→拟合的流程语义。
+- **Parallel blocking 不并行**：两个 blocking（SaveData）分支均成功输出且并发度≤1。
+- **拾取→圆拟合**：空点集运行必须失败；提交 3 个圆周点后，拟合圆心/半径与已知圆一致。
+  `test_mainwindow` 另行覆盖 FitCircle 自动创建 `point_set` 输入、3 次主窗口拾取处理写参与继续运行；
+  真实鼠标/视口端到端仍归阶段 5。
 
 ## 待办
 

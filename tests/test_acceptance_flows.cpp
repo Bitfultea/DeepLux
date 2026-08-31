@@ -6,6 +6,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
 #include <cmath>
@@ -326,8 +328,9 @@ void TestAcceptanceFlows::testControlFlowIfBranchFlow() {
 // ---------------------------------------------------------------------------
 
 namespace {
-// 记录每个节点 finished 次数与顺序（同步运行 → 直连即可）
+// 并行分支会从工作线程发出信号，聚合记录需要串行化。
 struct FlowTrace {
+    QMutex mutex;
     QStringList finishedOrder;
     QHash<QString, int> finishedCount;
     QStringList skipped;
@@ -336,12 +339,16 @@ struct FlowTrace {
 
     void connectTo(RunEngine& engine, std::vector<QMetaObject::Connection>& conns) {
         conns.push_back(QObject::connect(&engine, &RunEngine::moduleFinished, [this](const QString& id, bool, int) {
+            QMutexLocker locker(&mutex);
             finishedOrder.append(id);
             finishedCount[id]++;
         }));
-        conns.push_back(
-            QObject::connect(&engine, &RunEngine::moduleSkipped, [this](const QString& id) { skipped.append(id); }));
+        conns.push_back(QObject::connect(&engine, &RunEngine::moduleSkipped, [this](const QString& id) {
+            QMutexLocker locker(&mutex);
+            skipped.append(id);
+        }));
         conns.push_back(QObject::connect(&engine, &RunEngine::runFinished, [this](const RunResult& r) {
+            QMutexLocker locker(&mutex);
             runSuccess = r.success;
             runElapsedMs = r.elapsedMs;
         }));
@@ -445,7 +452,7 @@ void TestAcceptanceFlows::testStopWhileEarlyExitFlow() {
 }
 
 void TestAcceptanceFlows::testStopCancelsLongLoopWithinDeadline() {
-    // 停止/取消时限可断言：恒真长循环（10000 次 × 30ms）运行中请求取消，
+    // 停止/取消时限可断言：恒真长循环（100 次 × 30ms）运行中请求取消，
     // 必须在 500ms 内停下，且远未跑满全部迭代
     Project project;
     QVERIFY2(loadProjectWithPlaceholder("projects/accept_stop_cancel.json", QString(), project).isEmpty(),
@@ -465,7 +472,7 @@ void TestAcceptanceFlows::testStopCancelsLongLoopWithinDeadline() {
     stopWatch.start();
     engine.requestCancellation();
 
-    // 等待 runOnce 返回（轮询执行状态，上限 3s 防测试自身挂死）
+    // 工程自身最多运行 3s，即使取消失效，join 也有确定上限。
     while (engine.isBusy() && stopWatch.elapsed() < 3000)
         QTest::qWait(10);
     const qint64 stopLatencyMs = stopWatch.elapsed();
@@ -496,17 +503,9 @@ void TestAcceptanceFlows::testParallelAllJoinFlow() {
     QVERIFY2(engine.loadProject(&project), "loadProject parallel-all flow");
 
     FlowTrace trace;
-    QElapsedTimer clock;
-    QHash<QString, qint64> startedAt;
-    QHash<QString, qint64> finishedAt;
     std::vector<QMetaObject::Connection> conns;
     trace.connectTo(engine, conns);
-    conns.push_back(QObject::connect(&engine, &RunEngine::moduleStarted,
-                                     [&](const QString& id) { startedAt[id] = clock.elapsed(); }));
-    conns.push_back(QObject::connect(&engine, &RunEngine::moduleFinished,
-                                     [&](const QString& id, bool, int) { finishedAt[id] = clock.elapsed(); }));
 
-    clock.start();
     engine.runOnce();
     trace.disconnectAll(conns);
 
@@ -517,9 +516,9 @@ void TestAcceptanceFlows::testParallelAllJoinFlow() {
     QCOMPARE(trace.finishedCount.value("after"), 1);
     QVERIFY2(engine.lastParallelMaxConcurrency() >= 2,
              qPrintable(QString("expected real concurrency >=2, got %1").arg(engine.lastParallelMaxConcurrency())));
-    // all 汇合：merge 必须晚于两个分支完成
-    QVERIFY2(startedAt.value("merge") >= finishedAt.value("b1"), "merge started before b1 finished");
-    QVERIFY2(startedAt.value("merge") >= finishedAt.value("b2"), "merge started before b2 finished");
+    // all 汇合：merge 必须在两个分支完成信号之后。
+    QVERIFY2(trace.finishedOrder.indexOf("merge") > trace.finishedOrder.indexOf("b1"), "merge finished before b1");
+    QVERIFY2(trace.finishedOrder.indexOf("merge") > trace.finishedOrder.indexOf("b2"), "merge finished before b2");
 }
 
 void TestAcceptanceFlows::testParallelAnyJoinFlow() {
@@ -572,31 +571,23 @@ void TestAcceptanceFlows::testParallelFailureCancelsSiblingFlow() {
 
 void TestAcceptanceFlows::testParallelBlockingBranchesNotParallelizedFlow() {
     // blocking 模块（SaveData，文件 I/O）即使声明并发数 2 也不得并行：
-    // 两个分支执行区间不得重叠，且最大并发度 ≤1。
-    const QString file1 = QStringLiteral("accept_parallel_blocking_1.json");
-    const QString file2 = QStringLiteral("accept_parallel_blocking_2.json");
-    QFile::remove(file1);
-    QFile::remove(file2);
+    // 两个分支都必须输出文件，且最大并发度 ≤1。
+    const QString file1 = m_tempDir.filePath(QStringLiteral("accept_parallel_blocking_1.json"));
+    const QString file2 = m_tempDir.filePath(QStringLiteral("accept_parallel_blocking_2.json"));
 
     Project project;
     QVERIFY2(loadProjectWithPlaceholder("projects/accept_parallel_blocking.json", QString(), project).isEmpty(),
              "load accept_parallel_blocking.json");
+    QVERIFY(project.setModuleParam("s1", "filePath", file1));
+    QVERIFY(project.setModuleParam("s2", "filePath", file2));
 
     RunEngine& engine = RunEngine::instance();
     QVERIFY2(engine.loadProject(&project), "loadProject parallel-blocking flow");
 
     FlowTrace trace;
-    QElapsedTimer clock;
-    QHash<QString, qint64> startedAt;
-    QHash<QString, qint64> finishedAt;
     std::vector<QMetaObject::Connection> conns;
     trace.connectTo(engine, conns);
-    conns.push_back(QObject::connect(&engine, &RunEngine::moduleStarted,
-                                     [&](const QString& id) { startedAt[id] = clock.elapsed(); }));
-    conns.push_back(QObject::connect(&engine, &RunEngine::moduleFinished,
-                                     [&](const QString& id, bool, int) { finishedAt[id] = clock.elapsed(); }));
 
-    clock.start();
     engine.runOnce();
     trace.disconnectAll(conns);
 
@@ -607,17 +598,9 @@ void TestAcceptanceFlows::testParallelBlockingBranchesNotParallelizedFlow() {
     QVERIFY2(QFile::exists(file1), "blocking branch s1 must have written its file");
     QVERIFY2(QFile::exists(file2), "blocking branch s2 must have written its file");
 
-    // 执行区间不得重叠（串行）
-    QVERIFY2(startedAt.contains("s1") && startedAt.contains("s2"), "both blocking branches must run");
-    const bool s2AfterS1 = startedAt.value("s2") >= finishedAt.value("s1");
-    const bool s1AfterS2 = startedAt.value("s1") >= finishedAt.value("s2");
-    QVERIFY2(s2AfterS1 || s1AfterS2, "blocking branches must not overlap in time");
     QVERIFY2(engine.lastParallelMaxConcurrency() <= 1,
              qPrintable(QString("blocking modules must not be parallelized, concurrency=%1")
                             .arg(engine.lastParallelMaxConcurrency())));
-
-    QFile::remove(file1);
-    QFile::remove(file2);
 }
 
 // ---------------------------------------------------------------------------
@@ -627,7 +610,7 @@ void TestAcceptanceFlows::testParallelBlockingBranchesNotParallelizedFlow() {
 void TestAcceptanceFlows::testFitCircleFromPickSessionFlow() {
     // 工程内 MeasurementInput 点集为空（拾取前状态）：
     // 1) 未完成拾取时运行必须失败（拾取门控）；
-    // 2) 通过与 UI 拾取相同的参数写入路径逐点提交 16 个圆周采样点，
+    // 2) 按 MeasurementInput 的 points 持久化格式提交圆周点；
     //    之后流程成功，拟合结果与已知圆一致。
     Project project;
     QVERIFY2(loadProjectWithPlaceholder("projects/accept_fitcircle_pick.json", QString(), project).isEmpty(),

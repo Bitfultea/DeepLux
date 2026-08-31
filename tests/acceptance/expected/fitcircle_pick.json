@@ -5,5 +5,5 @@
     "tolerance_center_px": 1.5,
     "tolerance_radius_px": 1.5,
     "tolerance_fit_error": 0.5,
-    "pick_count": 16
+    "pick_count": 3
 }
