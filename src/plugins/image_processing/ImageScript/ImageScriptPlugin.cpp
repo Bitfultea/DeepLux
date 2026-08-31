@@ -54,13 +54,15 @@ bool ImageScriptPlugin::process(const ImageData& input, ImageData& output) {
     }
 
     // 防御：setParam 等路径绕过 setParams 的校验，运行前复用 validateParams 统一判定，
-    // 不重复一套不完整判断（否则 1.5 这类非整数会 toInt() 后静默执行某个合法操作）
+    // 不重复一套不完整判断（否则 1.5 这类非整数会 toInt() 后静默执行某个合法操作）。
+    // 验证与取值必须使用同一份加锁快照，避免期间 setParam() 造成 TOCTOU/数据竞争。
+    const QJsonObject params = currentParams();
     QString paramError;
-    if (!validateParams(currentParams(), paramError)) {
+    if (!validateParams(params, paramError)) {
         emit errorOccurred(paramError.isEmpty() ? tr("scriptType 参数非法") : paramError);
         return false;
     }
-    m_scriptType = m_params.value("scriptType").toInt();
+    m_scriptType = params.value("scriptType").toInt();
 
     // 阶段 2：执行失败即失败关闭——不得复制输入冒充成功，不得置 script_executed=true
     if (!executeBuiltinOperation(mat, m_resultMat)) {
