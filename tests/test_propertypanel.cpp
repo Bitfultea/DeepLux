@@ -98,6 +98,39 @@ protected:
     }
 };
 
+class PropertyPanelValidatedChoiceModule : public ModuleBase {
+    Q_OBJECT
+
+public:
+    PropertyPanelValidatedChoiceModule() {
+        m_moduleId = "validated-choice-test";
+        m_name = "Validated Choice Test";
+        m_category = "test";
+        m_params = QJsonObject{{"level", 0}};
+        m_defaultParams = m_params;
+    }
+
+    bool validateParams(const QJsonObject& params, QString& error) const override {
+        // level=1 被模型拒绝，用于验证面板校验失败后的回滚
+        if (params.value("level").toDouble() == 1.0) {
+            error = QStringLiteral("level=1 不被允许");
+            return false;
+        }
+        return ModuleBase::validateParams(params, error);
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        Q_UNUSED(input)
+        Q_UNUSED(output)
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
+
 class PropertyPanelMetadataModule : public ModuleBase {
     Q_OBJECT
 
@@ -163,6 +196,7 @@ private slots:
     void testEditingBoolParamUpdatesModuleAndEmitsSignal();
     void testStringParamWithOptionsUsesChoiceWidget();
     void testNumericParamWithOptionsUsesChoiceWidget();
+    void testNumericChoiceValidationFailureRollsBackWidget();
     void testInstanceIdOverridesModuleIdInParamSignals();
     void testSettingModuleTwiceReplacesPreviousParamGroups();
     void testMetadataLabelDisplayed();
@@ -299,6 +333,41 @@ void TestPropertyPanel::testNumericParamWithOptionsUsesChoiceWidget() {
     QCOMPARE(lastSignal.at(1).toString(), QString("scriptType"));
     QCOMPARE(lastSignal.at(2).type(), QVariant::Double); // 提交为数值而非字符串
     QCOMPARE(lastSignal.at(2).toDouble(), 1.0);
+}
+
+void TestPropertyPanel::testNumericChoiceValidationFailureRollsBackWidget() {
+    // 数值枚举校验失败：不发提交信号，控件必须按原始数值恢复到旧选项，
+    // 不能停留在被拒绝的选择上。
+    PropertyPanel panel;
+    PropertyPanelValidatedChoiceModule module;
+    QSignalSpy spy(&panel, &PropertyPanel::paramsChanged);
+
+    PluginInfo info;
+    QJsonObject levelMeta;
+    levelMeta["label"] = QStringLiteral("级别");
+    levelMeta["_options"] = QJsonArray{
+        QJsonObject{{"label", QStringLiteral("级别 0")}, {"value", 0}},
+        QJsonObject{{"label", QStringLiteral("级别 1")}, {"value", 1}},
+    };
+    QJsonObject paramsMeta;
+    paramsMeta["level"] = levelMeta;
+    QJsonObject uiObj;
+    uiObj["parameters"] = paramsMeta;
+    info.ui = uiObj;
+
+    panel.setPluginInfo(info);
+    panel.setModule(&module);
+
+    QComboBox* combo = panel.findChild<QComboBox*>();
+    QVERIFY(combo != nullptr);
+    QCOMPARE(combo->currentData().toInt(), 0);
+
+    combo->setCurrentIndex(1); // level=1 将被模型校验拒绝
+
+    QCOMPARE(spy.count(), 0);           // 校验失败不得发出提交信号
+    QCOMPARE(combo->currentIndex(), 0); // 回滚到旧选项
+    QCOMPARE(combo->currentData().toInt(), 0);
+    QCOMPARE(combo->toolTip(), QStringLiteral("level=1 不被允许")); // 错误标记
 }
 
 void TestPropertyPanel::testInstanceIdOverridesModuleIdInParamSignals() {

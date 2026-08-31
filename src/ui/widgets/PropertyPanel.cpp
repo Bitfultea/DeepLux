@@ -333,7 +333,8 @@ bool PropertyPanel::commitParam(const QString& key, const QVariant& value) {
         } else if (auto* check = qobject_cast<QCheckBox*>(w)) {
             check->setChecked(oldVal.toBool());
         } else if (auto* combo = qobject_cast<QComboBox*>(w)) {
-            int idx = combo->findData(oldVal.toString());
+            // 按原始类型查找：数值枚举的 itemData 是 double，toString() 会找不到对应项
+            int idx = combo->findData(oldVal.toVariant());
             if (idx >= 0)
                 combo->setCurrentIndex(idx);
         }

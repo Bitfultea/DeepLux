@@ -31,6 +31,7 @@ private slots:
     // 阶段 2：消除假配置/假成功
     void testImageScriptInvalidTypeRejected();
     void testImageScriptFailureNotMarkedExecuted();
+    void testImageScriptNonIntegerSetParamFailsAtRuntime();
 
     // ShowPoint
     void testShowPointDrawsMarker();
@@ -216,6 +217,23 @@ void TestFinalPlugins::testImageScriptFailureNotMarkedExecuted() {
     const ExecutionResult result = runModule(plugin, params, input, output);
     QVERIFY2(!result.success, "empty image must fail");
     QVERIFY2(!output.data("script_executed").toBool(), "failed run must not set script_executed=true");
+#else
+    QSKIP("OpenCV not available");
+#endif
+}
+
+void TestFinalPlugins::testImageScriptNonIntegerSetParamFailsAtRuntime() {
+#ifdef DEEPLUX_HAS_OPENCV
+    // 阶段 2 复核二轮：setParam 绕过 setParams 的校验，process() 必须复用完整
+    // validateParams——非整数 1.5 不得被 toInt() 后静默执行类型 1 操作。
+    ImageScriptPlugin plugin;
+    QVERIFY(plugin.initialize());
+    plugin.setParam("scriptType", 1.5);
+
+    ImageData input = makeGrayImage();
+    ImageData output;
+    QVERIFY2(!plugin.execute(input, output), "non-integer scriptType via setParam must fail at runtime");
+    QVERIFY2(!output.data("script_executed").toBool(), "must not mark executed on invalid param");
 #else
     QSKIP("OpenCV not available");
 #endif
