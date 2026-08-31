@@ -91,6 +91,10 @@ public:
     IModule* createModule(const QString& name);
     ICamera* createCamera(const QString& name);
 
+    // 解析并校验 metadata.json（端口声明合法性门禁，非法声明拒绝进入可加载列表）。
+    // 加载流程与元数据校验测试共用。
+    bool loadPluginMetadata(const QString& path, PluginInfo& info);
+
 signals:
     void pluginLoaded(const QString& name);
     void pluginUnloaded(const QString& name);
@@ -107,7 +111,6 @@ private:
     PluginManager();
     ~PluginManager();
 
-    bool loadPluginMetadata(const QString& path, PluginInfo& info);
     bool validateLoadedPlugin(const QString& name, QPluginLoader* loader, QString* error) const;
     void markPluginLoaded(const QString& name, QPluginLoader* loader);
     void loadNextPluginAsync();

@@ -50,7 +50,8 @@ flowchart TB
 - CMake 3.16+
 - C++17 编译器
 - Qt 6.6+，或 Qt 5.15.3+；需包含 `Core`、`Gui`、`Widgets`、`Network`、`Sql`、`Test`、`Concurrent` 和 `SerialPort`
-- 可选：OpenCV、Basler Pylon、海康 MVS 等相机 SDK
+- **必需**：OpenCV。自阶段 3 起为产品构建的必需依赖，缺失时配置阶段即失败（`libopencv-dev` 或 vcpkg `opencv4`）。
+- 可选：Basler Pylon、海康 MVS 等相机 SDK
 - 按需：Halcon Runtime 21.11+。当前默认构建不强制链接 Halcon；接入相关插件或 SDK 时才需要。
 
 ### 2. 配置并编译

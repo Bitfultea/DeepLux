@@ -101,6 +101,23 @@ sequenceDiagram
 
 模块实例不能共享模板状态。工程中的每个节点均由插件模板克隆而来，参数、显示名称和运行数据相互独立。
 
+## 数据契约与端口（ABI v2）
+
+跨模块数据一律以 `DataType` 声明（`core/deeplux/DataContract.h`），`metadata.json` 的 `ports` 声明输入/输出端口的类型、必需性与多输入语义。运行期由 `ModuleBase::execute(PortValueMap...)` 桥接层负责：
+
+- 输入侧：按端口声明做必需性与类型校验，不匹配时返回结构化错误码（`ExecError::MissingRequiredInput` / `TypeMismatch`），不进入 `process()`。
+- 输出侧：只导出 `metadata.json` 声明过的命名端口，未声明的输出不进入下游。
+
+**兼容传输策略**：`ImageData` 作为图像载体的同时，可承载命名数据键（`setData`/`data`）；
+旧式 `process(ImageData, ImageData)` 插件产出的命名数据，由桥接层按端口声明显式化为端口值。
+这是 ABI v2 阶段明确的兼容传输方式，不代表"任意键都能跨模块流动"——未在 `metadata.json`
+声明的键不会导出为端口。
+
+**未实现类型在加载期拒绝**：`Mask2D`、`Region2D`、`Ellipse2D`、`Transform2D`、`ClassScores`
+尚无载荷契约与生产者插件。枚举值保留以维持 ABI 稳定，但 `metadata.json` 声明这些类型会在
+`PluginManager::loadPluginMetadata` 阶段被明确拒绝（错误信息指明端口与类型），
+避免"连接合法、运行期永远拒绝"的悬空端口；待对应载荷与插件落地后由 `isSupportedPortType` 放开。
+
 ## Agent 边界
 
 Agent 的 UI 入口是底部“Agent 对话”页，审计入口是“Agent 日志”页。其调用路径为：

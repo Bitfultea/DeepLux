@@ -97,6 +97,19 @@ bool dataTypeFromString(const QString& name, DataType& out) {
     return true;
 }
 
+bool isSupportedPortType(DataType type) {
+    switch (type) {
+    case DataType::Mask2D:
+    case DataType::Region2D:
+    case DataType::Ellipse2D:
+    case DataType::Transform2D:
+    case DataType::ClassScores:
+        return false; // 尚无载荷契约与生产者插件，禁止声明为可运行端口
+    default:
+        return true;
+    }
+}
+
 namespace {
 
 bool isNumeric(const QVariant& value) {

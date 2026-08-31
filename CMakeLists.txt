@@ -117,14 +117,20 @@ if(NOT QT_SSL_WORKS)
 endif()
 
 # ========== 查找 OpenCV ==========
+# 阶段 3：OpenCV 是产品构建的必需依赖；缺失时在配置阶段明确失败，
+# 不再提供"无视觉特性"的降级构建（不引入未被要求的 minimal profile）。
 find_package(OpenCV QUIET)
-if(OpenCV_FOUND)
-    message(STATUS "OpenCV: Found (version: ${OpenCV_VERSION})")
-    message(STATUS "  Include: ${OpenCV_INCLUDE_DIRS}")
-    message(STATUS "  Libraries: ${OpenCV_LIBS}")
-else()
-    message(STATUS "OpenCV: Not found (build without vision features)")
+if(NOT OpenCV_FOUND)
+    message(FATAL_ERROR
+        "OpenCV is REQUIRED to build DeepLux but was not found.\n"
+        "Install it and re-run CMake:\n"
+        "  - Ubuntu/Debian: sudo apt-get install libopencv-dev\n"
+        "  - Windows (vcpkg): vcpkg install opencv4 (pass -DCMAKE_TOOLCHAIN_FILE=.../vcpkg.cmake)\n"
+        "  - Or set -DOpenCV_DIR=<path-to-OpenCVConfig.cmake>")
 endif()
+message(STATUS "OpenCV: Found (version: ${OpenCV_VERSION})")
+message(STATUS "  Include: ${OpenCV_INCLUDE_DIRS}")
+message(STATUS "  Libraries: ${OpenCV_LIBS}")
 
 # ========== 输出配置信息 ==========
 message(STATUS "Qt version: ${Qt${QT_VERSION_MAJOR}_VERSION}")
