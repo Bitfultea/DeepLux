@@ -1,0 +1,58 @@
+{
+    "version": "3.0",
+    "id": "accept-parallel-failure-0001",
+    "name": "验收-Parallel 失败分支取消同组",
+    "created": "2026-08-31T00:00:00",
+    "modified": "2026-08-31T00:00:00",
+    "modules": [
+        {
+            "id": "par",
+            "moduleId": "Parallel",
+            "name": "并行分叉",
+            "posX": 80,
+            "posY": 120,
+            "params": { "parallelCount": 2 }
+        },
+        {
+            "id": "bad",
+            "moduleId": "数学运算",
+            "name": "快速失败分支",
+            "posX": 320,
+            "posY": 40,
+            "params": { "operation": "Add", "operandA": "not_a_number", "operandB": "1", "outputVar": "bad_result" }
+        },
+        {
+            "id": "slow",
+            "moduleId": "延时",
+            "name": "慢分支",
+            "posX": 320,
+            "posY": 200,
+            "params": { "delayMs": 500 }
+        },
+        {
+            "id": "merge",
+            "moduleId": "Parallel",
+            "name": "all 汇合",
+            "posX": 560,
+            "posY": 120,
+            "params": { "parallelCount": 2 }
+        },
+        {
+            "id": "after",
+            "moduleId": "延时",
+            "name": "汇合后",
+            "posX": 800,
+            "posY": 120,
+            "params": { "delayMs": 1 }
+        }
+    ],
+    "connections": [
+        {"fromModuleId": "par", "toModuleId": "bad", "fromPort": "branch", "toPort": "control", "edgeType": "control"},
+        {"fromModuleId": "par", "toModuleId": "slow", "fromPort": "branch", "toPort": "control", "edgeType": "control"},
+        {"fromModuleId": "bad", "toModuleId": "merge", "fromPort": "next", "toPort": "control", "edgeType": "control"},
+        {"fromModuleId": "slow", "toModuleId": "merge", "fromPort": "next", "toPort": "control", "edgeType": "control"},
+        {"fromModuleId": "merge", "toModuleId": "after", "fromPort": "branch", "toPort": "control", "edgeType": "control"}
+    ],
+    "flows": [{"id": "main", "name": "主流程", "nodes": ["par", "bad", "slow", "merge", "after"]}],
+    "resources": {"cameras": [], "dataSources": []}
+}
