@@ -206,6 +206,16 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
     }
     ok = saveShot(window, dir, QStringLiteral("07-theme-toggle.png")) && ok;
 
+    // 切换回浅色，避免以深色主题退出（深色退出路径存在崩溃隐患，另行跟踪）
+    for (QAction* action : window.findChildren<QAction*>()) {
+        if (action->text().remove('&') == QStringLiteral("切换主题")) {
+            action->trigger();
+            break;
+        }
+    }
+    QCoreApplication::processEvents();
+    QTest::qWait(250);
+
     if (QToolButton* toolClose = window.findChild<QToolButton*>(QStringLiteral("ToolCloseBtn"))) {
         QTest::mouseClick(toolClose, Qt::LeftButton, Qt::NoModifier, toolClose->rect().center());
         QCoreApplication::processEvents();

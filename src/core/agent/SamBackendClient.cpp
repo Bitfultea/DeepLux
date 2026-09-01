@@ -194,6 +194,15 @@ void SamBackendClient::settleReply(QPointer<QNetworkReply>& reply) {
     stopTimeout();
 }
 
+void SamBackendClient::abortPendingReply(QPointer<QNetworkReply>& reply) {
+    if (!reply)
+        return;
+    disconnect(reply, nullptr, this, nullptr);
+    reply->abort();
+    reply->deleteLater();
+    reply = nullptr;
+}
+
 void SamBackendClient::startServerProcess() {
     if (m_process)
         return;
@@ -429,17 +438,25 @@ void SamBackendClient::finishEnvironmentInitialization(bool ok, const QString& m
 }
 
 void SamBackendClient::healthCheck() {
+    // latest-wins：同类型请求重叠时取消旧请求，回调按序号只认最新请求
+    abortPendingReply(m_pendingHealthReply);
+    const qint64 thisSeq = ++m_healthSeq;
     setState(State::LoadingModel);
     QUrl url(m_serverUrl + "/health");
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    m_pendingHealthReply = m_nam->get(req);
-
-    connect(m_pendingHealthReply, &QNetworkReply::finished, this, &SamBackendClient::onHealthReply);
+    QNetworkReply* reply = m_nam->get(req);
+    m_pendingHealthReply = reply;
+    reply->setProperty("healthSeq", thisSeq);
+    connect(reply, &QNetworkReply::finished, this, &SamBackendClient::onHealthReply);
     startTimeout();
 }
 
 void SamBackendClient::setImage(const QString& imagePath) {
+    // latest-wins：快速连续切换图像时取消上一个未完成的 set_image，
+    // 避免旧响应覆盖新图的 embedding 或误删新请求。
+    abortPendingReply(m_pendingSetImageReply);
+    const qint64 thisSeq = ++m_setImageSeq;
     if (m_state == State::NotStarted || m_state == State::Error) {
         setState(State::LoadingModel);
     }
@@ -451,9 +468,10 @@ void SamBackendClient::setImage(const QString& imagePath) {
 
     QJsonObject body;
     body["image_path"] = imagePath;
-    m_pendingSetImageReply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-
-    connect(m_pendingSetImageReply, &QNetworkReply::finished, this, &SamBackendClient::onSetImageReply);
+    QNetworkReply* reply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    m_pendingSetImageReply = reply;
+    reply->setProperty("setImageSeq", thisSeq);
+    connect(reply, &QNetworkReply::finished, this, &SamBackendClient::onSetImageReply);
     startTimeout();
 }
 
@@ -519,16 +537,21 @@ void SamBackendClient::unloadImage() {
         return;
     // Fix P0-3: 取消任何挂起的 predict，防止 unload 和 predict 竞争
     cancelPendingPrediction();
+    // latest-wins：取消同类型旧请求，回调按序号只认最新请求
+    abortPendingReply(m_pendingUnloadReply);
+    const qint64 thisSeq = ++m_unloadSeq;
     QUrl url(m_serverUrl + "/unload_image");
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
     QJsonObject body;
     body["embedding_id"] = m_embeddingId;
-    m_pendingUnloadReply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    QNetworkReply* reply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    m_pendingUnloadReply = reply;
+    reply->setProperty("unloadSeq", thisSeq);
     // 记录 unload 的 embedding ID，回调时检查是否已被新 set_image 替换
-    m_pendingUnloadReply->setProperty("unloadEmbeddingId", m_embeddingId);
-    connect(m_pendingUnloadReply, &QNetworkReply::finished, this, &SamBackendClient::onUnloadReply);
+    reply->setProperty("unloadEmbeddingId", m_embeddingId);
+    connect(reply, &QNetworkReply::finished, this, &SamBackendClient::onUnloadReply);
     startTimeout();
 }
 
@@ -558,8 +581,16 @@ static QJsonObject parseReply(QNetworkReply* reply, QString* err) {
 }
 
 void SamBackendClient::onHealthReply() {
+    auto* reply = qobject_cast<QNetworkReply*>(sender());
+    if (!reply)
+        return;
+    // latest-wins：仅处理当前最新请求的响应，忽略被新请求取代/中止的过期回调
+    if (reply != m_pendingHealthReply || reply->property("healthSeq").toLongLong() != m_healthSeq) {
+        reply->deleteLater();
+        return;
+    }
     QString err;
-    QJsonObject obj = parseReply(m_pendingHealthReply, &err);
+    QJsonObject obj = parseReply(reply, &err);
     if (!err.isEmpty()) {
         if (m_process && m_healthPollsRemaining-- > 0) {
             settleReply(m_pendingHealthReply);
@@ -593,8 +624,16 @@ void SamBackendClient::onHealthReply() {
 }
 
 void SamBackendClient::onSetImageReply() {
+    auto* reply = qobject_cast<QNetworkReply*>(sender());
+    if (!reply)
+        return;
+    // latest-wins：仅处理当前最新 set_image 的响应，忽略过期/中止的回调
+    if (reply != m_pendingSetImageReply || reply->property("setImageSeq").toLongLong() != m_setImageSeq) {
+        reply->deleteLater();
+        return;
+    }
     QString err;
-    QJsonObject obj = parseReply(m_pendingSetImageReply, &err);
+    QJsonObject obj = parseReply(reply, &err);
     if (!err.isEmpty()) {
         setState(State::Error);
         emit errorOccurred(tr("setImage 失败：%1").arg(err));
@@ -633,19 +672,21 @@ void SamBackendClient::onSetImageReply() {
 }
 
 void SamBackendClient::onPredictReply() {
-    // Fix 4: 检查请求序号，忽略过期的推理结果
-    const qint64 replySeq = m_pendingPredictReply ? m_pendingPredictReply->property("predictSeq").toLongLong() : 0;
-    if (replySeq > 0 && replySeq <= m_lastCompletedSeq) {
+    auto* reply = qobject_cast<QNetworkReply*>(sender());
+    if (!reply)
+        return;
+    // Fix 4 + latest-wins：只处理当前最新 predict 的响应；过期的推理结果忽略
+    const qint64 replySeq = reply->property("predictSeq").toLongLong();
+    if (reply != m_pendingPredictReply || (replySeq > 0 && replySeq <= m_lastCompletedSeq)) {
         // 过期回复到达（已有更新的 predict 在途）：只清理本条过期回复，
         // 不停止在途请求的超时保护。
-        if (auto* stale = qobject_cast<QNetworkReply*>(sender()))
-            stale->deleteLater();
+        reply->deleteLater();
         return;
     }
     m_lastCompletedSeq = replySeq;
 
     QString err;
-    QJsonObject obj = parseReply(m_pendingPredictReply, &err);
+    QJsonObject obj = parseReply(reply, &err);
     if (!err.isEmpty()) {
         setState(State::Error);
         emit errorOccurred(tr("预测失败：%1").arg(err));
@@ -714,11 +755,18 @@ void SamBackendClient::onPredictReply() {
 }
 
 void SamBackendClient::onUnloadReply() {
+    auto* reply = qobject_cast<QNetworkReply*>(sender());
+    if (!reply)
+        return;
+    // latest-wins：只处理当前最新 unload 的响应，忽略过期/中止的回调
+    if (reply != m_pendingUnloadReply || reply->property("unloadSeq").toLongLong() != m_unloadSeq) {
+        reply->deleteLater();
+        return;
+    }
     // Fix P0-3: 保存要 unload 的 embedding ID，防止新 set_image 设置了新 ID 后被旧 unload 清除
-    const QString unloadedId =
-        m_pendingUnloadReply ? m_pendingUnloadReply->property("unloadEmbeddingId").toString() : QString();
+    const QString unloadedId = reply->property("unloadEmbeddingId").toString();
     QString err;
-    QJsonObject obj = parseReply(m_pendingUnloadReply, &err);
+    QJsonObject obj = parseReply(reply, &err);
     Q_UNUSED(obj)
     if (!err.isEmpty()) {
         emit errorOccurred(tr("unloadImage 失败：%1").arg(err));

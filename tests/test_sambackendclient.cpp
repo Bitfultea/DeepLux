@@ -63,6 +63,7 @@ public:
     // 行为开关
     bool hangAll = false;    // 接受连接但不响应（模拟卡死 → 客户端超时）
     QSet<QString> hangPaths; // 指定路径接受连接但不响应（模拟单个请求挂起）
+    QHash<QString, int> delayMs; // 指定路径延迟 N 毫秒再响应（模拟慢请求）
     QString healthStatus = QStringLiteral("ok");
     QString predictStatus = QStringLiteral("ok");
 
@@ -70,6 +71,7 @@ public:
     QStringList requestLog;
     QJsonObject lastPredictBody;
     QString lastSetImagePath;
+    int setImageCount = 0; // set_image 计数，用于生成递增的 embedding_id
 
 private:
     void onNewConnection() {
@@ -115,7 +117,9 @@ private:
             response = QJsonObject{{"status", healthStatus}, {"model_name", "sam_test_vit_b"}};
         } else if (path == "/set_image") {
             lastSetImagePath = QJsonDocument::fromJson(body).object().value("image_path").toString();
-            response = QJsonObject{{"embedding_id", "emb-test-1"}, {"model_name", "sam_test_vit_b"}};
+            ++setImageCount;
+            response = QJsonObject{{"embedding_id", QStringLiteral("emb-%1").arg(setImageCount)},
+                                   {"model_name", "sam_test_vit_b"}};
         } else if (path == "/predict") {
             lastPredictBody = QJsonDocument::fromJson(body).object();
             response = predictResponse();
@@ -132,8 +136,20 @@ private:
         http += "Content-Length: " + QByteArray::number(payload.size()) + "\r\n";
         http += "Connection: close\r\n\r\n";
         http += payload;
-        socket->write(http);
-        socket->disconnectFromHost();
+
+        const int delay = delayMs.value(path, 0);
+        if (delay > 0) {
+            QPointer<QTcpSocket> guarded(socket);
+            QTimer::singleShot(delay, this, [guarded, http]() {
+                if (!guarded)
+                    return;
+                guarded->write(http);
+                guarded->disconnectFromHost();
+            });
+        } else {
+            socket->write(http);
+            socket->disconnectFromHost();
+        }
     }
 
     QJsonObject predictResponse() {
@@ -206,6 +222,7 @@ private slots:
     void httpServiceHangTriggersRealTimeout();
     void httpServiceCrashAndRecovery();
     void httpServiceConcurrentUnloadSetImageKeepsTimeout();
+    void httpServiceConsecutiveSetImageLatestWins();
 
 private:
     QString m_unusedPortUrl;
@@ -448,7 +465,7 @@ void TestSamBackendClient::httpServiceFullSuccessPath() {
     const QString imagePath = QStringLiteral("/tmp/deeplux_sam_test_image.png");
     client.setImage(imagePath);
     QVERIFY2(waitFor([&] { return embeddingSpy.count() > 0; }), "setImage must emit embeddingReady");
-    QCOMPARE(client.currentEmbeddingId(), QStringLiteral("emb-test-1"));
+    QCOMPARE(client.currentEmbeddingId(), QStringLiteral("emb-1"));
     QCOMPARE(server.lastSetImagePath, imagePath);
 
     // 3) /predict → predictionReady，polygon/bbox/score/mask 均按响应解析
@@ -463,7 +480,7 @@ void TestSamBackendClient::httpServiceFullSuccessPath() {
     QCOMPARE(args.at(2).toDouble(), 0.97);
     QVERIFY2(!args.at(4).value<QImage>().isNull(), "mask_png_base64 must decode to a QImage");
     // 客户端必须携带服务端签发的 embedding_id 请求预测
-    QCOMPARE(server.lastPredictBody.value("embedding_id").toString(), QStringLiteral("emb-test-1"));
+    QCOMPARE(server.lastPredictBody.value("embedding_id").toString(), QStringLiteral("emb-1"));
     QCOMPARE(client.state(), SamBackendClient::State::Ready);
 
     // 4) /unload_image → embedding 清空，回到 NotStarted
@@ -514,7 +531,7 @@ void TestSamBackendClient::httpServiceCrashAndRecovery() {
 
     // 建立会话：set_image 成功
     client.setImage(QStringLiteral("/tmp/deeplux_sam_test_image.png"));
-    QVERIFY2(waitFor([&] { return client.currentEmbeddingId() == QStringLiteral("emb-test-1"); }),
+    QVERIFY2(waitFor([&] { return client.currentEmbeddingId() == QStringLiteral("emb-1"); }),
              "setImage must succeed before crash");
 
     // 崩溃：服务端停止监听，predict 必须失败并进入 Error
@@ -551,7 +568,7 @@ void TestSamBackendClient::httpServiceConcurrentUnloadSetImageKeepsTimeout() {
 
     // 先建立会话（正常响应）
     client.setImage(QStringLiteral("/tmp/deeplux_sam_test_image.png"));
-    QVERIFY2(waitFor([&] { return client.currentEmbeddingId() == QStringLiteral("emb-test-1"); }),
+    QVERIFY2(waitFor([&] { return client.currentEmbeddingId() == QStringLiteral("emb-1"); }),
              "setImage must succeed before concurrency scenario");
 
     // 模拟图像切换：/unload_image 正常响应，紧随其后的 /set_image 挂起
@@ -566,6 +583,33 @@ void TestSamBackendClient::httpServiceConcurrentUnloadSetImageKeepsTimeout() {
              "pending setImage must still be protected by a timeout after the unload reply settled");
     QVERIFY2(timer.elapsed() < 3000, qPrintable(QString("timeout fired too late: %1ms").arg(timer.elapsed())));
     QVERIFY2(errorSpy.count() >= 1, "hung setImage must surface a timeout error");
+}
+
+void TestSamBackendClient::httpServiceConsecutiveSetImageLatestWins() {
+    // 连续快速切换图像：第一个 set_image 被延迟，第二个紧随其后发出。
+    // latest-wins 要求第二个请求生效；延迟的第一个响应（无论先到还是后到）
+    // 都不得覆盖第二个的 embedding，也不得误删第二个请求。
+    SamTestServer server;
+    QVERIFY2(server.listen(), "test HTTP server must listen");
+    server.delayMs[QStringLiteral("/set_image")] = 300; // 第一个 set_image 延迟
+
+    SamBackendClient client;
+    client.setServerUrl(server.url());
+    QSignalSpy embeddingSpy(&client, &SamBackendClient::embeddingReady);
+    QSignalSpy errorSpy(&client, &SamBackendClient::errorOccurred);
+
+    client.setImage(QStringLiteral("/img/a.png")); // 延迟 300ms
+    QTest::qWait(50);                              // 让第一个请求在途
+    server.delayMs.clear();                        // 之后的 set_image 立即响应
+    client.setImage(QStringLiteral("/img/b.png")); // 取消第一个，第二个立即返回
+
+    // 第二个请求的 embedding 生效，且是唯一生效的 embedding
+    QVERIFY2(waitFor([&] { return client.currentEmbeddingId() == QStringLiteral("emb-2"); }, 3000),
+             "latest setImage must win");
+    QCOMPARE(client.state(), SamBackendClient::State::Ready);
+    QCOMPARE(errorSpy.count(), 0);
+    QCOMPARE(embeddingSpy.count(), 1); // 被取消的第一个不应产生 embedding
+    QCOMPARE(embeddingSpy.takeFirst().at(0).toString(), QString("emb-2"));
 }
 
 QTEST_MAIN(TestSamBackendClient)

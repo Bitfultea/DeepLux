@@ -713,10 +713,13 @@ void TestMainWindow::testControlFlowRunRendersBranchStates() {
 void TestMainWindow::testDualMeasurementInputsShowOwnOverlay() {
     // 阶段 5 复核（P1）：多测量支路时叠加必须按选中节点追溯所属测量输入，
     // 不能固定取第一个输入，也不能把流程 A 的点画到流程 B 的结果上。
+    // 每条支路带 GrabImage 图像源，使拟合模块经 DisplayManager::dataDisplayed
+    // 显示输出图像，叠加按"结果模块 → 视口"身份绑定，而非直接调 displayImage。
     QTemporaryDir appDir;
     QVERIFY(appDir.isValid());
     qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
     const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("FitCircle")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
 
@@ -724,8 +727,13 @@ void TestMainWindow::testDualMeasurementInputsShowOwnOverlay() {
     window.resize(1000, 720);
     window.show();
     QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("GrabImage")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("FitCircle")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    const QString imagePath =
+        QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../tests/acceptance/data/circle_640x480.png");
+    QVERIFY2(QFileInfo::exists(imagePath), qPrintable(imagePath));
 
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project != nullptr);
@@ -738,6 +746,15 @@ void TestMainWindow::testDualMeasurementInputsShowOwnOverlay() {
     QJsonArray pointsB;
     for (const QPointF& p : {QPointF(210.0, 120.0), QPointF(150.0, 180.0), QPointF(90.0, 120.0)})
         pointsB.append(QJsonArray{p.x(), p.y()});
+
+    // 支路 A：grab_a → input_a → fit_a
+    ModuleInstance grabA;
+    grabA.id = QStringLiteral("grab_a");
+    grabA.moduleId = QStringLiteral("GrabImage");
+    grabA.name = QStringLiteral("取图A");
+    grabA.params["grabSource"] = QStringLiteral("Path");
+    grabA.params["filePath"] = imagePath;
+    project->addModule(grabA);
 
     ModuleInstance inputA;
     inputA.id = QStringLiteral("input_a");
@@ -753,6 +770,15 @@ void TestMainWindow::testDualMeasurementInputsShowOwnOverlay() {
     fitA.name = QStringLiteral("圆拟合A");
     project->addModule(fitA);
 
+    // 支路 B：grab_b → input_b → fit_b
+    ModuleInstance grabB;
+    grabB.id = QStringLiteral("grab_b");
+    grabB.moduleId = QStringLiteral("GrabImage");
+    grabB.name = QStringLiteral("取图B");
+    grabB.params["grabSource"] = QStringLiteral("Path");
+    grabB.params["filePath"] = imagePath;
+    project->addModule(grabB);
+
     ModuleInstance inputB;
     inputB.id = QStringLiteral("input_b");
     inputB.moduleId = QStringLiteral("MeasurementInput");
@@ -767,21 +793,21 @@ void TestMainWindow::testDualMeasurementInputsShowOwnOverlay() {
     fitB.name = QStringLiteral("圆拟合B");
     project->addModule(fitB);
 
-    ModuleConnection connA;
-    connA.fromModuleId = inputA.id;
-    connA.toModuleId = fitA.id;
-    connA.fromPort = QStringLiteral("fit_points");
-    connA.toPort = QStringLiteral("fit_points");
-    connA.edgeType = QStringLiteral("data");
-    project->addConnection(connA);
-
-    ModuleConnection connB;
-    connB.fromModuleId = inputB.id;
-    connB.toModuleId = fitB.id;
-    connB.fromPort = QStringLiteral("fit_points");
-    connB.toPort = QStringLiteral("fit_points");
-    connB.edgeType = QStringLiteral("data");
-    project->addConnection(connB);
+    auto connectData = [&](const QString& from, const QString& to, const QString& port) {
+        ModuleConnection conn;
+        conn.fromModuleId = from;
+        conn.toModuleId = to;
+        conn.fromPort = port;
+        conn.toPort = port;
+        conn.edgeType = QStringLiteral("data");
+        project->addConnection(conn);
+    };
+    connectData(grabA.id, inputA.id, QStringLiteral("image"));
+    connectData(inputA.id, fitA.id, QStringLiteral("image"));
+    connectData(inputA.id, fitA.id, QStringLiteral("fit_points"));
+    connectData(grabB.id, inputB.id, QStringLiteral("image"));
+    connectData(inputB.id, fitB.id, QStringLiteral("image"));
+    connectData(inputB.id, fitB.id, QStringLiteral("fit_points"));
     QCoreApplication::processEvents();
 
     // 运行前选中支路 B 的拟合节点：运行结束后叠加应归属支路 B
@@ -791,11 +817,6 @@ void TestMainWindow::testDualMeasurementInputsShowOwnOverlay() {
     QVERIFY(viewport != nullptr);
     HImageWidget* imageWidget = viewport->imageWidget();
     QVERIFY(imageWidget != nullptr);
-    QImage image(640, 480, QImage::Format_RGB32);
-    image.fill(QColor("#111827"));
-    viewport->displayImage(image);
-    QCoreApplication::processEvents();
-    QTRY_VERIFY(imageWidget->hasImage());
 
     QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
     QVERIFY(runButton != nullptr);
@@ -805,6 +826,8 @@ void TestMainWindow::testDualMeasurementInputsShowOwnOverlay() {
     QTest::mouseClick(runButton, Qt::LeftButton);
     QTRY_VERIFY(runFinished);
     disconnect(runConnection);
+    // 运行后支路 B 的拟合输出经 DisplayManager 显示，视口应已有图像
+    QTRY_VERIFY(imageWidget->hasImage());
     QTest::qWait(50); // runFinished 之后叠加经 singleShot(0) 更新
 
     // 选中支路 B：叠加应为支路 B 的拾取点，且不是支路 A 的点
@@ -813,8 +836,17 @@ void TestMainWindow::testDualMeasurementInputsShowOwnOverlay() {
     QCOMPARE(overlayPoints.at(0).pos, QPointF(210.0, 120.0));
     QCOMPARE(overlayPoints.at(1).pos, QPointF(150.0, 180.0));
     QCOMPARE(overlayPoints.at(2).pos, QPointF(90.0, 120.0));
-    // 圆叠加来自支路 B 的拟合结果（半径≈60，而非支路 A 的 100）
-    QVERIFY2(!imageWidget->measurementLines().isEmpty(), "selected branch overlay must include fitted circle");
+
+    // 画出的圆必须确实是支路 B 的半径（≈60），而非支路 A 的 100：
+    // 圆叠加的线段端点到圆心 (150,120) 的距离应≈60；若误用支路 A 的结果
+    // （圆心 320,240 半径 100），端点到 (150,120) 的距离将远大于 60。
+    const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
+    QVERIFY2(!overlayLines.isEmpty(), "selected branch overlay must include fitted circle");
+    const QPointF branchBCenter(150.0, 120.0);
+    const double r = QLineF(branchBCenter, overlayLines.first().p1).length();
+    QVERIFY2(qAbs(r - 60.0) < 5.0,
+             qPrintable(QString("drawn circle radius %1 must match branch B (60), not branch A (100)").arg(r)));
+
     const ImageData fitBOut = RunEngine::instance().moduleOutput(fitB.id);
     QVERIFY2(fitBOut.hasData("circle_radius"), "fit_b must produce circle_radius");
     QVERIFY2(qAbs(fitBOut.data("circle_radius").toDouble() - 60.0) < 2.0, "fit_b radius must match branch B points");

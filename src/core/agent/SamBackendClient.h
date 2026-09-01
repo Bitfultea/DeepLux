@@ -138,6 +138,8 @@ private:
     // 某个请求回调结束时调用：先清除该请求的挂起指针，仅当再无任何挂起请求时
     // 才停止超时保护，避免并发请求（如 unload+setImage）互相取消对方的超时。
     void settleReply(QPointer<QNetworkReply>& reply);
+    // latest-wins：发起同类型新请求前取消仍挂起的旧请求，避免旧回调误解析新请求。
+    void abortPendingReply(QPointer<QNetworkReply>& reply);
     QString pyPath() const;
     QString resolvedScriptPath() const;
     void startEnvironmentStep();
@@ -147,9 +149,13 @@ private:
     QPointer<QNetworkReply> m_pendingHealthReply;
     QPointer<QNetworkReply> m_pendingSetImageReply;
     QPointer<QNetworkReply> m_pendingPredictReply;
+    QPointer<QNetworkReply> m_pendingUnloadReply;
+    // 请求序号：同类型请求重叠时，回调据序号判断触发者是否仍为最新请求。
+    qint64 m_healthSeq = 0;
+    qint64 m_setImageSeq = 0;
+    qint64 m_unloadSeq = 0;
     qint64 m_predictSeq = 0; // Fix 4: 请求序号，忽略过期的推理结果
     qint64 m_lastCompletedSeq = 0;
-    QPointer<QNetworkReply> m_pendingUnloadReply;
 
     QProcess* m_process = nullptr;
     QProcess* m_envProcess = nullptr;

@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QDockWidget>
 #include <QElapsedTimer>
+#include <QHash>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMainWindow>
@@ -193,7 +194,7 @@ protected:
     bool syncModulesToRunEngine();
     void clearExecutionHighlight(QTreeWidgetItem* item);
     void showProcessModuleOutput(QTreeWidgetItem* item, bool userInitiated = false);
-    void displayImage(const ImageData& image, const QString& label = QString());
+    void displayImage(const ImageData& image, const QString& label = QString(), const QString& moduleId = QString());
     bool importFile(const QString& filePath);
     bool importImageFile(const QString& filePath, const QString& existingDataSourceId = QString());
     bool importPointCloudFile(const QString& filePath, const QString& existingDataSourceId = QString());
@@ -262,8 +263,11 @@ protected:
     // 当前唯一选中的模块实例 ID
     QString m_selectedModuleId;
 
-    // 最近一次显示图像的视口 ID（测量叠加只更新该关联视口）
-    QString m_lastImageViewportId;
+    // 测量叠加按模块身份绑定视口：模块实例 ID → 视口 ID（由 dataDisplayed 记录）。
+    // 不使用"最近一次显示"的全局值，避免把叠加画到无关支路的视口。
+    QHash<QString, QString> m_moduleViewportIds;
+    QString m_displayingModuleId; // 正在显示图像的模块（用于记录视口归属）
+    bool m_displayingImage2D = false;
 
     // 视图菜单动作
     QAction* m_viewToolPanelAction = nullptr;
