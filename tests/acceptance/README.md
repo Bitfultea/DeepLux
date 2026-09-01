@@ -59,6 +59,9 @@ ctest --test-dir build -R test_acceptance_flows --output-on-failure
 | Parallel blocking 不并行 | 无需图像 | `projects/accept_parallel_blocking.json` | 两分支均输出+并发度≤1 | ✅ 已接入自动化（阶段 4） |
 | 拾取点集→圆拟合 | 固定圆周采样点 | `projects/accept_fitcircle_pick.json` | `expected/fitcircle_pick.json` | ✅ 已接入自动化（阶段 4 引擎级 + 阶段 5 GUI 鼠标拾取） |
 | GUI 条件分支状态 | 无需图像 | 动态确定性工程 | 运行按钮+画布状态点/文字 | ✅ 阶段 5 截图验收 |
+| Agent 假 LLM 端到端 | 固定验收图 | `tests/test_agente2e.cpp` | 建流→连接→运行→读结果全链路断言 | ✅ 已接入自动化（阶段 5，无网络） |
+| SAM 四端点端到端 | 测试内 HTTP 服务 | `tests/test_sambackendclient.cpp` | 成功路径+真实超时+崩溃恢复 | ✅ 已接入自动化（阶段 5，无权重） |
+| GUI 截图自校验 | 动态确定性工程 | `ui_capture_mainwindow`（CTest #66） | 截图存在/尺寸/非空白/关键状态 | ✅ 已接入自动化（阶段 5，失败即测试失败） |
 | PLC/相机/AI 模拟流程 | 模拟器 | 相机以 `GrabImage(File)` 为无硬件模拟源 | 契约测试 | 部分：相机模拟已用文件源；PLC/AI 需设备模拟器 |
 
 ## 已接入：找圆流程
@@ -99,12 +102,22 @@ ctest --test-dir build -R test_acceptance_flows --output-on-failure
   `test_mainwindow` 另行覆盖 FitCircle 自动创建 `point_set` 输入、3 次主窗口拾取处理写参与继续运行；
 真实鼠标/视口端到端由阶段 5 的 `ui_capture_mainwindow` 覆盖。
 
-## 阶段 5 GUI 验收
+## 阶段 5 端到端验收（Agent / SAM / GUI）
 
-- 使用真实 `FlowRunButton` 启动运行，使用 `HImageWidget` 的真实鼠标点击提交 3 个圆周点。
-- 断言包括圆心/半径误差、主视图拟合圆与拾取点像素、运行完成信号和流程节点状态。
-- 条件分支使用真实运行按钮和画布 Tab，截图保留控制边、成功状态点和跳过状态。
-- 专项截图：`fitcircle_pick_result.png`、`controlflow_canvas_result.png`；截图期间临时调整流程栏宽度，结束后恢复。
+- **GUI**：使用真实 `FlowRunButton` 启动运行，使用 `HImageWidget` 的真实鼠标点击提交 3 个圆周点；
+  断言包括圆心/半径误差、主视图拟合圆与拾取点像素、运行完成信号和流程节点状态。
+  条件分支使用真实运行按钮和画布 Tab，截图保留控制边、成功状态点和跳过状态。
+  专项截图：`fitcircle_pick_result.png`、`controlflow_canvas_result.png`；截图期间临时调整流程栏宽度，结束后恢复。
+- **Agent**：`test_agente2e` 使用确定性假 LLM（无网络），Autopilot 完成
+  "创建 GrabImage→FindCircle→连接→运行→读取结果"；断言模块/连接结构、取图参数、
+  运行成功、圆心/半径与 `get_run_results` 统计。
+- **SAM**：`test_sambackendclient` 内置 `SamTestServer`（QTcpServer HTTP 服务），
+  覆盖 `/health`、`/set_image`、`/predict`、`/unload_image`；成功路径断言状态机与
+  embedding/polygon/bbox/score/mask 解析；超时为真实超时（`setTimeoutMs(300)`）；
+  崩溃（停止监听）→ Error → 原端口重启 → Ready → 预测成功。
+- **截图即测试**：`ui_capture_mainwindow` 注册为 CTest（offscreen，TIMEOUT 300s），
+  截图自校验（存在/尺寸/非空白/关键界面状态），任一失败退出码非零 → 测试失败。
+  CI 不下载 SAM 权重；真实 GPU 模型保留现场/夜间验收。
 
 ## 待办
 

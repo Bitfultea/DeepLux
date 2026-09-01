@@ -37,6 +37,7 @@ set(TEST_SOURCES
     test_agentundo.cpp
     test_agentcontroller.cpp
     test_agentbridge.cpp
+    test_agente2e.cpp
     test_variable_system_plugins.cpp
     test_measurementdata.cpp
     test_measuregap.cpp
@@ -220,6 +221,12 @@ foreach(TEST_FILE ${TEST_SOURCES})
             DelayPlugin
         )
     endif()
+    if(TEST_NAME STREQUAL "test_agente2e")
+        add_dependencies(${TEST_NAME}
+            GrabImagePlugin
+            FindCirclePlugin
+        )
+    endif()
 
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
     set_tests_properties(${TEST_NAME} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
@@ -255,3 +262,10 @@ if(OpenCV_FOUND)
     target_link_libraries(ui_capture_mainwindow PRIVATE ${OpenCV_LIBS})
     target_include_directories(ui_capture_mainwindow PRIVATE ${OpenCV_INCLUDE_DIRS})
 endif()
+
+# 阶段 5：GUI 截图验收注册为 CTest——
+# 验收运行或任一截图自校验（存在/尺寸/非空白/关键界面状态）失败都会使测试失败。
+add_test(NAME ui_capture_mainwindow COMMAND ui_capture_mainwindow "${CMAKE_CURRENT_BINARY_DIR}/ui_capture_output")
+set_tests_properties(ui_capture_mainwindow PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    TIMEOUT 300)

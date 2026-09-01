@@ -176,7 +176,7 @@ void SamBackendClient::setState(State s) {
 
 void SamBackendClient::startTimeout(int ms) {
     stopTimeout();
-    m_timeoutTimer.setInterval(ms);
+    m_timeoutTimer.setInterval(ms > 0 ? ms : m_timeoutMs);
     m_timeoutTimer.start();
 }
 
@@ -720,16 +720,22 @@ void SamBackendClient::onUnloadReply() {
 }
 
 void SamBackendClient::onTimeout() {
-    if (m_pendingHealthReply)
-        m_pendingHealthReply->abort();
-    if (m_pendingSetImageReply)
-        m_pendingSetImageReply->abort();
-    if (m_pendingPredictReply)
-        m_pendingPredictReply->abort();
-    if (m_pendingUnloadReply)
-        m_pendingUnloadReply->abort();
+    // 先断开连接再中止：避免被中止回复的回调在超时之后再次触发错误信号，
+    // 保证一次超时只报告一条错误。
+    const auto abortPending = [this](QPointer<QNetworkReply>& reply) {
+        if (!reply)
+            return;
+        disconnect(reply, nullptr, this, nullptr);
+        reply->abort();
+        reply->deleteLater();
+        reply = nullptr;
+    };
+    abortPending(m_pendingHealthReply);
+    abortPending(m_pendingSetImageReply);
+    abortPending(m_pendingPredictReply);
+    abortPending(m_pendingUnloadReply);
     setState(State::Error);
-    emit errorOccurred(tr("SAM 请求超时（30s）"));
+    emit errorOccurred(tr("SAM 请求超时（%1ms）").arg(m_timeoutMs));
 }
 
 } // namespace DeepLux

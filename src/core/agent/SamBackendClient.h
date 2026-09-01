@@ -86,6 +86,14 @@ public:
     State state() const {
         return m_state;
     }
+    // 请求超时（默认 30s）。测试可调小以便在合理时长内断言超时路径。
+    void setTimeoutMs(int ms) {
+        if (ms > 0)
+            m_timeoutMs = ms;
+    }
+    int timeoutMs() const {
+        return m_timeoutMs;
+    }
     QString currentEmbeddingId() const {
         return m_embeddingId;
     }
@@ -125,7 +133,7 @@ private slots:
 
 private:
     void setState(State s);
-    void startTimeout(int ms = 30000);
+    void startTimeout(int ms = -1); // ms<=0 表示使用 setTimeoutMs 配置的超时
     void stopTimeout();
     QString pyPath() const;
     QString resolvedScriptPath() const;
@@ -143,6 +151,7 @@ private:
     QProcess* m_process = nullptr;
     QProcess* m_envProcess = nullptr;
     QTimer m_timeoutTimer;
+    int m_timeoutMs = 30000;
 
     State m_state = State::NotStarted;
     QString m_serverUrl = QStringLiteral("http://127.0.0.1:0"); // 0 = auto-assign

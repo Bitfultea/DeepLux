@@ -28,18 +28,69 @@
 
 namespace {
 
+// 阶段 5：截图自校验——文件必须存在、可解码、尺寸正确、非空白，
+// 任一不满足即判定截图失败（注册为 CTest 后使测试失败）。
+bool verifyCapture(const QString& filePath, const QSize& expectedSize) {
+    const QImage image(filePath);
+    if (image.isNull()) {
+        qWarning("capture missing or unreadable: %s", qPrintable(filePath));
+        return false;
+    }
+    if (image.size() != expectedSize) {
+        qWarning("capture size mismatch: %s got %dx%d want %dx%d", qPrintable(filePath), image.width(), image.height(),
+                 expectedSize.width(), expectedSize.height());
+        return false;
+    }
+    // 非空白：缩采样后统计灰度方差，纯色/空白画面方差≈0
+    const QImage sampled =
+        image.convertToFormat(QImage::Format_RGB32).scaled(160, 100, Qt::IgnoreAspectRatio, Qt::FastTransformation);
+    qint64 sum = 0;
+    qint64 square = 0;
+    int count = 0;
+    for (int y = 0; y < sampled.height(); ++y) {
+        const QRgb* line = reinterpret_cast<const QRgb*>(sampled.constScanLine(y));
+        for (int x = 0; x < sampled.width(); ++x) {
+            const int gray = qGray(line[x]);
+            sum += gray;
+            square += gray * gray;
+            ++count;
+        }
+    }
+    const double mean = static_cast<double>(sum) / count;
+    const double variance = static_cast<double>(square) / count - mean * mean;
+    if (variance < 1.0) {
+        qWarning("capture appears blank (variance %.2f): %s", variance, qPrintable(filePath));
+        return false;
+    }
+    return true;
+}
+
 bool captureWindow(DeepLux::MainWindow& window, const QSize& size, const QString& filePath) {
     window.resize(size);
     window.show();
     QCoreApplication::processEvents();
     QTest::qWait(120);
-    return window.grab().save(filePath);
+    const QPixmap shot = window.grab();
+    const qreal dpr = window.devicePixelRatio();
+    const QSize expected(qRound(size.width() * dpr), qRound(size.height() * dpr));
+    if (shot.size() != expected) {
+        qWarning("grab size mismatch for %s: got %dx%d want %dx%d", qPrintable(filePath), shot.width(), shot.height(),
+                 expected.width(), expected.height());
+        return false;
+    }
+    if (!shot.save(filePath))
+        return false;
+    return verifyCapture(filePath, expected);
 }
 
 bool saveShot(DeepLux::MainWindow& window, const QDir& dir, const QString& name) {
     QCoreApplication::processEvents();
     QTest::qWait(120);
-    return window.grab().save(dir.filePath(name));
+    const QPixmap shot = window.grab();
+    const QString filePath = dir.filePath(name);
+    if (!shot.save(filePath))
+        return false;
+    return verifyCapture(filePath, shot.size());
 }
 
 QTabWidget* tabsByName(DeepLux::MainWindow& window, const char* objectName) {

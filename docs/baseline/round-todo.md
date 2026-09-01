@@ -66,8 +66,10 @@
 
 ### 仍保留（产品级，非门禁阻塞）
 
-- 图像 ROI/边缘点提取→FitLine/FitCircle 的完整 GUI 交互验收（阶段 5）；
-  阶段 4 已覆盖 FitCircle 自动创建 `point_set` 输入、3 次主窗口拾取处理写参与圆拟合流程语义。
+- 图像 ROI/边缘点提取→FitLine/FitCircle 的完整 GUI 交互验收；
+  阶段 4/5 已覆盖 FitCircle 自动创建 `point_set` 输入、3 次主窗口鼠标拾取写参、
+  圆拟合结果叠加与流程语义（阶段 5 另有 Agent/SAM/截图端到端，见下节口径）。
+- SAM 真实 GPU 模型（权重）现场/夜间验收；CI 不下载权重，协议路径由测试内 HTTP 服务覆盖。
 - PLC/AI 设备模拟器契约（需现场硬件）。
 - TSan 20 处警告清零（需插桩 Qt 复测）。
 
@@ -79,8 +81,8 @@
 | 1 | 冻结旧版能力迁移范围（53 missing 逐项决策+生成器幂等） | 完成 | d7dad13..d1edf84（五轮复核） |
 | 2 | 消除公开插件假配置/假成功（ImageScript/JiErHan/ColorRecognition+13 项复核清单） | 完成 | 1dacf1f..0d350f5（四轮复核） |
 | 3 | 收口数据与构建契约（未实现类型加载期拒绝、点云键值校验、端口数组门禁、OpenCV 必需） | 完成 | 5fb386d..ff238eb（二轮复核） |
-| 4 | 补齐流程验收：Loop 固定次数/While 条件退出/StopWhile 提前退出/停止取消时限 + Parallel all/any/失败分支/blocking 不并行 + 拾取→圆拟合真实工作流 | 完成 | 本提交 |
-| 5 | GUI 真实交互验收：主视图鼠标拾取→圆拟合结果叠加；条件分支运行后画布显示成功/跳过状态；专项截图与像素断言 | 进行中 | 待提交 |
+| 4 | 补齐流程验收：Loop 固定次数/While 条件退出/StopWhile 提前退出/停止取消时限 + Parallel all/any/失败分支/blocking 不并行 + 拾取→圆拟合真实工作流 | 完成 | d6e9028..02bc644（含复核收口） |
+| 5 | Agent、SAM 与 GUI 端到端验收：确定性假 LLM 完成"创建 GrabImage→FindCircle→连接→运行→读取结果"；SAM 测试内 HTTP 服务覆盖四端点（成功/超时/崩溃恢复）；ui_capture 注册 CTest 且截图自校验；GUI 真实交互（鼠标拾取→圆拟合叠加、条件分支画布状态、像素断言） | 完成 | 58fadba + 本提交（GUI 部分+Agent/SAM/CTest 补齐） |
 
 ### 阶段 4 流程验收口径
 
@@ -90,3 +92,19 @@
 - 此前"控制流/并行已交付"仅指实现与引擎级回归（阶段 3/E 行）；**流程级验收**
   自本阶段起才有工程证据，勿将"已交付"表述当作"已验收"。
 - 循环验收含重复运行 50 次无跨帧污染；停止/取消时限以 500ms 期限断言。
+
+### 阶段 5 端到端验收口径
+
+- **Agent**：`test_agente2e` 用确定性假 LLM（`ScriptedLLMClient`，无任何网络请求）
+  驱动 Autopilot 完成"创建 GrabImage→FindCircle→连接→运行→读取结果"完整闭环，
+  断言流程结构、参数写入、运行成功、圆心/半径结果（固定验收图）与 `get_run_results`
+  统计回传。
+- **SAM**：`test_sambackendclient` 新增测试内 HTTP 服务（`SamTestServer`），
+  覆盖 `/health`、`/set_image`、`/predict`、`/unload_image` 四端点；
+  成功路径断言状态机、embedding、polygon/bbox/score/mask 解析；
+  超时为真实超时（`setTimeoutMs` 可调，断言 300ms 时限）；
+  崩溃恢复断言原端口重启后回到 Ready 并预测成功。
+- **GUI**：`ui_capture_mainwindow` 已注册 CTest（offscreen），程序自校验截图
+  存在/尺寸/非空白/关键界面状态，任一失败测试即失败；鼠标拾取→圆拟合叠加与
+  条件分支画布状态由 `test_mainwindow` 真实交互用例+像素断言覆盖。
+- **边界**：CI 不下载 SAM 权重；真实 GPU 模型保持现场/夜间验收。
