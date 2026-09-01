@@ -185,6 +185,15 @@ void SamBackendClient::stopTimeout() {
         m_timeoutTimer.stop();
 }
 
+void SamBackendClient::settleReply(QPointer<QNetworkReply>& reply) {
+    reply = nullptr;
+    // 仍有其他请求在途（如 unload 之后紧跟的 setImage）时保持超时保护，
+    // 防止先到的响应取消超时后，另一个请求永久挂起。
+    if (m_pendingHealthReply || m_pendingSetImageReply || m_pendingPredictReply || m_pendingUnloadReply)
+        return;
+    stopTimeout();
+}
+
 void SamBackendClient::startServerProcess() {
     if (m_process)
         return;
@@ -553,13 +562,13 @@ void SamBackendClient::onHealthReply() {
     QJsonObject obj = parseReply(m_pendingHealthReply, &err);
     if (!err.isEmpty()) {
         if (m_process && m_healthPollsRemaining-- > 0) {
-            stopTimeout();
+            settleReply(m_pendingHealthReply);
             QTimer::singleShot(500, this, &SamBackendClient::healthCheck);
             return;
         }
         setState(State::Error);
         emit errorOccurred(tr("健康检查失败：%1").arg(err));
-        stopTimeout();
+        settleReply(m_pendingHealthReply);
         return;
     }
 
@@ -580,7 +589,7 @@ void SamBackendClient::onHealthReply() {
     } else {
         setState(State::LoadingModel);
     }
-    stopTimeout();
+    settleReply(m_pendingHealthReply);
 }
 
 void SamBackendClient::onSetImageReply() {
@@ -589,14 +598,14 @@ void SamBackendClient::onSetImageReply() {
     if (!err.isEmpty()) {
         setState(State::Error);
         emit errorOccurred(tr("setImage 失败：%1").arg(err));
-        stopTimeout();
+        settleReply(m_pendingSetImageReply);
         return;
     }
 
     if (obj.value("status").toString() == "error") {
         setState(State::Error);
         emit errorOccurred(obj.value("error").toString(tr("setImage 失败")));
-        stopTimeout();
+        settleReply(m_pendingSetImageReply);
         return;
     }
 
@@ -604,7 +613,7 @@ void SamBackendClient::onSetImageReply() {
     if (id.isEmpty()) {
         setState(State::Error);
         emit errorOccurred(tr("setImage 响应缺少 embedding_id"));
-        stopTimeout();
+        settleReply(m_pendingSetImageReply);
         return;
     }
 
@@ -616,7 +625,7 @@ void SamBackendClient::onSetImageReply() {
     m_imageRetryPending = false;
     setState(State::Ready);
     emit embeddingReady(id);
-    stopTimeout();
+    settleReply(m_pendingSetImageReply);
 
     if (retryPrediction) {
         predict(m_lastPositive, m_lastNegative, m_lastBox);
@@ -627,8 +636,11 @@ void SamBackendClient::onPredictReply() {
     // Fix 4: 检查请求序号，忽略过期的推理结果
     const qint64 replySeq = m_pendingPredictReply ? m_pendingPredictReply->property("predictSeq").toLongLong() : 0;
     if (replySeq > 0 && replySeq <= m_lastCompletedSeq) {
-        stopTimeout();
-        return; // 过期结果，忽略
+        // 过期回复到达（已有更新的 predict 在途）：只清理本条过期回复，
+        // 不停止在途请求的超时保护。
+        if (auto* stale = qobject_cast<QNetworkReply*>(sender()))
+            stale->deleteLater();
+        return;
     }
     m_lastCompletedSeq = replySeq;
 
@@ -637,7 +649,7 @@ void SamBackendClient::onPredictReply() {
     if (!err.isEmpty()) {
         setState(State::Error);
         emit errorOccurred(tr("预测失败：%1").arg(err));
-        stopTimeout();
+        settleReply(m_pendingPredictReply);
         return;
     }
 
@@ -645,21 +657,21 @@ void SamBackendClient::onPredictReply() {
     if (status == "error") {
         setState(State::Error);
         emit errorOccurred(obj.value("error").toString(tr("预测失败")));
-        stopTimeout();
+        settleReply(m_pendingPredictReply);
         return;
     }
     if (status == "invalid_embedding" && !m_imageRetryPending && !m_lastImagePath.isEmpty()) {
         m_imageRetryPending = true;
         Logger::instance().info(tr("收到 invalid_embedding，自动重新 setImage 并重试"), "SamBackend");
         setState(State::LoadingModel);
-        stopTimeout();
+        settleReply(m_pendingPredictReply);
         setImage(m_lastImagePath);
         return;
     }
     if (status == "invalid_embedding") {
         setState(State::Error);
         emit errorOccurred(tr("embedding 无效，重试失败"));
-        stopTimeout();
+        settleReply(m_pendingPredictReply);
         return;
     }
 
@@ -698,7 +710,7 @@ void SamBackendClient::onPredictReply() {
 
     setState(State::Ready);
     emit predictionReady(polygon, bbox, score, maskRle, maskImage);
-    stopTimeout();
+    settleReply(m_pendingPredictReply);
 }
 
 void SamBackendClient::onUnloadReply() {
@@ -716,7 +728,7 @@ void SamBackendClient::onUnloadReply() {
         m_embeddingId.clear();
         setState(State::NotStarted);
     }
-    stopTimeout();
+    settleReply(m_pendingUnloadReply);
 }
 
 void SamBackendClient::onTimeout() {

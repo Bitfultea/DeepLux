@@ -135,6 +135,9 @@ private:
     void setState(State s);
     void startTimeout(int ms = -1); // ms<=0 表示使用 setTimeoutMs 配置的超时
     void stopTimeout();
+    // 某个请求回调结束时调用：先清除该请求的挂起指针，仅当再无任何挂起请求时
+    // 才停止超时保护，避免并发请求（如 unload+setImage）互相取消对方的超时。
+    void settleReply(QPointer<QNetworkReply>& reply);
     QString pyPath() const;
     QString resolvedScriptPath() const;
     void startEnvironmentStep();

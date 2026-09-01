@@ -125,6 +125,7 @@ private slots:
     void testMeasurementConfigButtonWithInstalledPlugins();
     void testRunCreatesMeasurementInputForConsumer();
     void testControlFlowRunRendersBranchStates();
+    void testDualMeasurementInputsShowOwnOverlay();
     void testPluginConfigDialogRestylesLegacyDarkPlugin();
     void testGrabImageEditorSurvivesCommitSignal();
     void testQuickAnnotateOpensSamDialogOnMainViewportImage();
@@ -707,6 +708,116 @@ void TestMainWindow::testControlFlowRunRendersBranchStates() {
     QCOMPARE(canvas->nodeItem(condition.id)->executionStatus(), QStringLiteral("success"));
     QCOMPARE(canvas->nodeItem(trueBranch.id)->executionStatus(), QStringLiteral("success"));
     QCOMPARE(canvas->nodeItem(falseBranch.id)->executionStatus(), QStringLiteral("skipped"));
+}
+
+void TestMainWindow::testDualMeasurementInputsShowOwnOverlay() {
+    // 阶段 5 复核（P1）：多测量支路时叠加必须按选中节点追溯所属测量输入，
+    // 不能固定取第一个输入，也不能把流程 A 的点画到流程 B 的结果上。
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("FitCircle")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(1000, 720);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("FitCircle")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    // 支路 A：围绕 (320,240) 半径 100 的圆周采样点
+    QJsonArray pointsA;
+    for (const QPointF& p : {QPointF(420.0, 240.0), QPointF(320.0, 340.0), QPointF(220.0, 240.0)})
+        pointsA.append(QJsonArray{p.x(), p.y()});
+    // 支路 B：围绕 (150,120) 半径 60 的圆周采样点（与 A 明显不同）
+    QJsonArray pointsB;
+    for (const QPointF& p : {QPointF(210.0, 120.0), QPointF(150.0, 180.0), QPointF(90.0, 120.0)})
+        pointsB.append(QJsonArray{p.x(), p.y()});
+
+    ModuleInstance inputA;
+    inputA.id = QStringLiteral("input_a");
+    inputA.moduleId = QStringLiteral("MeasurementInput");
+    inputA.name = QStringLiteral("测量输入A");
+    inputA.params["mode"] = QStringLiteral("point_set");
+    inputA.params["points"] = pointsA;
+    project->addModule(inputA);
+
+    ModuleInstance fitA;
+    fitA.id = QStringLiteral("fit_a");
+    fitA.moduleId = QStringLiteral("FitCircle");
+    fitA.name = QStringLiteral("圆拟合A");
+    project->addModule(fitA);
+
+    ModuleInstance inputB;
+    inputB.id = QStringLiteral("input_b");
+    inputB.moduleId = QStringLiteral("MeasurementInput");
+    inputB.name = QStringLiteral("测量输入B");
+    inputB.params["mode"] = QStringLiteral("point_set");
+    inputB.params["points"] = pointsB;
+    project->addModule(inputB);
+
+    ModuleInstance fitB;
+    fitB.id = QStringLiteral("fit_b");
+    fitB.moduleId = QStringLiteral("FitCircle");
+    fitB.name = QStringLiteral("圆拟合B");
+    project->addModule(fitB);
+
+    ModuleConnection connA;
+    connA.fromModuleId = inputA.id;
+    connA.toModuleId = fitA.id;
+    connA.fromPort = QStringLiteral("fit_points");
+    connA.toPort = QStringLiteral("fit_points");
+    connA.edgeType = QStringLiteral("data");
+    project->addConnection(connA);
+
+    ModuleConnection connB;
+    connB.fromModuleId = inputB.id;
+    connB.toModuleId = fitB.id;
+    connB.fromPort = QStringLiteral("fit_points");
+    connB.toPort = QStringLiteral("fit_points");
+    connB.edgeType = QStringLiteral("data");
+    project->addConnection(connB);
+    QCoreApplication::processEvents();
+
+    // 运行前选中支路 B 的拟合节点：运行结束后叠加应归属支路 B
+    window.selectModuleForCapture(fitB.id);
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+    QImage image(640, 480, QImage::Format_RGB32);
+    image.fill(QColor("#111827"));
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(imageWidget->hasImage());
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+    bool runFinished = false;
+    const QMetaObject::Connection runConnection = connect(&RunEngine::instance(), &RunEngine::runFinished, &window,
+                                                          [&](const RunResult&) { runFinished = true; });
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_VERIFY(runFinished);
+    disconnect(runConnection);
+    QTest::qWait(50); // runFinished 之后叠加经 singleShot(0) 更新
+
+    // 选中支路 B：叠加应为支路 B 的拾取点，且不是支路 A 的点
+    const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
+    QCOMPARE(overlayPoints.size(), 3);
+    QCOMPARE(overlayPoints.at(0).pos, QPointF(210.0, 120.0));
+    QCOMPARE(overlayPoints.at(1).pos, QPointF(150.0, 180.0));
+    QCOMPARE(overlayPoints.at(2).pos, QPointF(90.0, 120.0));
+    // 圆叠加来自支路 B 的拟合结果（半径≈60，而非支路 A 的 100）
+    QVERIFY2(!imageWidget->measurementLines().isEmpty(), "selected branch overlay must include fitted circle");
+    const ImageData fitBOut = RunEngine::instance().moduleOutput(fitB.id);
+    QVERIFY2(fitBOut.hasData("circle_radius"), "fit_b must produce circle_radius");
+    QVERIFY2(qAbs(fitBOut.data("circle_radius").toDouble() - 60.0) < 2.0, "fit_b radius must match branch B points");
 }
 
 void TestMainWindow::testPluginConfigDialogRestylesLegacyDarkPlugin() {

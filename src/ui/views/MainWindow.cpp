@@ -601,6 +601,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
     for (ViewportWidget* viewport : m_displayManager->allViewports()) {
         onViewportCreated(viewport->viewportId(), viewport);
     }
+    // 记录最近一次显示图像的视口，测量叠加只更新该关联视口
+    connect(m_displayManager, &DisplayManager::dataDisplayed, this,
+            [this](const QString& viewportId) { m_lastImageViewportId = viewportId; });
 
     // Connect Agent action log to UI (will be set after m_agentActionLogWidget is created)
 
@@ -2593,6 +2596,14 @@ void MainWindow::refreshMeasurementOverlay(const QJsonObject& params, int visibl
         }
     }
 
+    // 只更新关联视口（最近显示图像的视口），无跟踪记录时回退到全部含图像视口
+    ViewportWidget* targetViewport =
+        m_lastImageViewportId.isEmpty() ? nullptr : m_displayManager->viewport(m_lastImageViewportId);
+    HImageWidget* targetImageWidget = targetViewport ? targetViewport->imageWidget() : nullptr;
+    if (targetImageWidget && targetImageWidget->hasImage()) {
+        targetImageWidget->setMeasurementOverlay(points, lines);
+        return;
+    }
     for (ViewportWidget* viewport : m_displayManager->allViewports()) {
         HImageWidget* imageWidget = viewport ? viewport->imageWidget() : nullptr;
         if (imageWidget && imageWidget->hasImage()) {
@@ -2607,41 +2618,91 @@ void MainWindow::updateMeasurementResultOnOverlay() {
     }
 
     // 以项目模型为实例身份权威来源，插件运行实例的名称字段可能为空。
-    QJsonObject inputParams;
-    QString foundInstanceId;
     Project* currentProject = ProjectManager::instance().currentProject();
-    if (currentProject) {
-        for (const ModuleInstance& instance : currentProject->modules()) {
-            const PluginInfo info = PluginManager::instance().pluginInfo(instance.moduleId);
-            if (instance.moduleId.compare(QStringLiteral("MeasurementInput"), Qt::CaseInsensitive) == 0 ||
-                info.id.compare(QStringLiteral("com.deeplux.plugin.measurementinput"), Qt::CaseInsensitive) == 0) {
-                inputParams = instance.params;
-                foundInstanceId = instance.id;
+    if (!currentProject) {
+        return;
+    }
+
+    QList<ModuleInstance> measurementInputs;
+    for (const ModuleInstance& instance : currentProject->modules()) {
+        const PluginInfo info = PluginManager::instance().pluginInfo(instance.moduleId);
+        if (instance.moduleId.compare(QStringLiteral("MeasurementInput"), Qt::CaseInsensitive) == 0 ||
+            info.id.compare(QStringLiteral("com.deeplux.plugin.measurementinput"), Qt::CaseInsensitive) == 0) {
+            measurementInputs.append(instance);
+        }
+    }
+    if (measurementInputs.isEmpty()) {
+        return;
+    }
+
+    // 目标模块是否位于某测量输入的下游链中（含直接/间接连接）
+    auto downstreamContains = [&currentProject](const QString& inputId, const QString& target) {
+        if (target.isEmpty()) {
+            return false;
+        }
+        QSet<QString> visited{inputId};
+        QStringList queue{inputId};
+        while (!queue.isEmpty()) {
+            const QString current = queue.takeFirst();
+            for (const ModuleConnection& connection : currentProject->connections()) {
+                if (connection.fromModuleId != current || visited.contains(connection.toModuleId)) {
+                    continue;
+                }
+                if (connection.toModuleId == target) {
+                    return true;
+                }
+                visited.insert(connection.toModuleId);
+                queue.append(connection.toModuleId);
+            }
+        }
+        return false;
+    };
+
+    // 多测量支路时不得固定取第一个输入，否则会把流程 A 的点与流程 B 的结果组合。
+    // 选择优先级：当前选中节点所属支路 > 最近执行节点所属支路 > 唯一输入；
+    // 无法确定归属时不绘制叠加，避免错配。
+    const ModuleInstance* chosen = nullptr;
+    if (!m_selectedModuleId.isEmpty()) {
+        for (const ModuleInstance& input : measurementInputs) {
+            if (input.id == m_selectedModuleId || downstreamContains(input.id, m_selectedModuleId)) {
+                chosen = &input;
                 break;
             }
         }
     }
-
-    if (inputParams.isEmpty()) {
+    if (!chosen) {
+        const QString lastModule = RunEngine::instance().lastOutputModuleName();
+        for (const ModuleInstance& input : measurementInputs) {
+            if (input.id == lastModule || downstreamContains(input.id, lastModule)) {
+                chosen = &input;
+                break;
+            }
+        }
+    }
+    if (!chosen && measurementInputs.size() == 1) {
+        chosen = &measurementInputs.first();
+    }
+    if (!chosen) {
         return;
     }
+
+    const QJsonObject inputParams = chosen->params;
+    const QString foundInstanceId = chosen->id;
 
     // 优先读取该测量输入的直接下游结果，lastOutput 只作兼容回退。
     const QString mode = inputParams["mode"].toString("point_pair");
     ImageData resultOutput = RunEngine::instance().lastOutput();
-    if (currentProject) {
-        for (const ModuleConnection& connection : currentProject->connections()) {
-            if (connection.fromModuleId != foundInstanceId) {
-                continue;
-            }
-            const ImageData candidate = RunEngine::instance().moduleOutput(connection.toModuleId);
-            const bool matchesPointSet = mode == QStringLiteral("point_set") && candidate.hasData("circle_radius");
-            const bool matchesDistance = mode != QStringLiteral("point_set") &&
-                                         (candidate.hasData("distance") || candidate.hasData("gap_distance"));
-            if (matchesPointSet || matchesDistance) {
-                resultOutput = candidate;
-                break;
-            }
+    for (const ModuleConnection& connection : currentProject->connections()) {
+        if (connection.fromModuleId != foundInstanceId) {
+            continue;
+        }
+        const ImageData candidate = RunEngine::instance().moduleOutput(connection.toModuleId);
+        const bool matchesPointSet = mode == QStringLiteral("point_set") && candidate.hasData("circle_radius");
+        const bool matchesDistance =
+            mode != QStringLiteral("point_set") && (candidate.hasData("distance") || candidate.hasData("gap_distance"));
+        if (matchesPointSet || matchesDistance) {
+            resultOutput = candidate;
+            break;
         }
     }
     const QMap<QString, QVariant> results = resultOutput.allData();
@@ -2764,6 +2825,15 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         }
     }
 
+    // 只更新关联视口：最近一次显示图像的视口。无跟踪记录时回退到全部含图像视口，
+    // 保持既有流程不丢失叠加。
+    ViewportWidget* targetViewport =
+        m_lastImageViewportId.isEmpty() ? nullptr : m_displayManager->viewport(m_lastImageViewportId);
+    HImageWidget* targetImageWidget = targetViewport ? targetViewport->imageWidget() : nullptr;
+    if (targetImageWidget && targetImageWidget->hasImage()) {
+        targetImageWidget->setMeasurementOverlay(points, lines);
+        return;
+    }
     for (ViewportWidget* viewport : m_displayManager->allViewports()) {
         HImageWidget* imageWidget = viewport ? viewport->imageWidget() : nullptr;
         if (imageWidget && imageWidget->hasImage()) {

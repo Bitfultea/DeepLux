@@ -61,7 +61,8 @@ public:
     }
 
     // 行为开关
-    bool hangAll = false; // 接受连接但不响应（模拟卡死 → 客户端超时）
+    bool hangAll = false;    // 接受连接但不响应（模拟卡死 → 客户端超时）
+    QSet<QString> hangPaths; // 指定路径接受连接但不响应（模拟单个请求挂起）
     QString healthStatus = QStringLiteral("ok");
     QString predictStatus = QStringLiteral("ok");
 
@@ -82,6 +83,11 @@ private:
         m_buffers[socket] += socket->readAll();
         if (hangAll)
             return; // 故意不响应，触发客户端超时
+        if (!hangPaths.isEmpty()) {
+            const QList<QByteArray> requestLine = m_buffers[socket].left(m_buffers[socket].indexOf('\r')).split(' ');
+            if (hangPaths.contains(QString::fromLatin1(requestLine.value(1))))
+                return; // 该路径故意不响应（请求体可能未收全也无妨，直接挂起）
+        }
 
         QByteArray& data = m_buffers[socket];
         const int headerEnd = data.indexOf("\r\n\r\n");
@@ -199,6 +205,7 @@ private slots:
     void httpServiceFullSuccessPath();
     void httpServiceHangTriggersRealTimeout();
     void httpServiceCrashAndRecovery();
+    void httpServiceConcurrentUnloadSetImageKeepsTimeout();
 
 private:
     QString m_unusedPortUrl;
@@ -528,6 +535,37 @@ void TestSamBackendClient::httpServiceCrashAndRecovery() {
     client.predict({QPointF(15, 15)}, {}, QRectF());
     QVERIFY2(waitFor([&] { return predictionSpy.count() > 0; }), "predict must succeed after recovery");
     QCOMPARE(client.state(), SamBackendClient::State::Ready);
+}
+
+void TestSamBackendClient::httpServiceConcurrentUnloadSetImageKeepsTimeout() {
+    // 阶段 5 复核回归：图像切换路径会连续调用 unloadImage() 与 setImage()
+    // （见 SamAnnotatorDialog 图像变化处理）。两个请求共用超时计时器时，
+    // 先到的响应会取消超时保护，使挂起的另一个请求永久卡死。
+    // 现在要求：任一请求完成后，只要仍有挂起请求，超时保护必须保持有效。
+    SamTestServer server;
+    QVERIFY2(server.listen(), "test HTTP server must listen");
+
+    SamBackendClient client;
+    client.setServerUrl(server.url());
+    client.setTimeoutMs(300);
+
+    // 先建立会话（正常响应）
+    client.setImage(QStringLiteral("/tmp/deeplux_sam_test_image.png"));
+    QVERIFY2(waitFor([&] { return client.currentEmbeddingId() == QStringLiteral("emb-test-1"); }),
+             "setImage must succeed before concurrency scenario");
+
+    // 模拟图像切换：/unload_image 正常响应，紧随其后的 /set_image 挂起
+    server.hangPaths.insert(QStringLiteral("/set_image"));
+    client.unloadImage();
+    client.setImage(QStringLiteral("/tmp/deeplux_sam_next_image.png"));
+
+    QSignalSpy errorSpy(&client, &SamBackendClient::errorOccurred);
+    QElapsedTimer timer;
+    timer.start();
+    QVERIFY2(waitFor([&] { return client.state() == SamBackendClient::State::Error; }, 5000),
+             "pending setImage must still be protected by a timeout after the unload reply settled");
+    QVERIFY2(timer.elapsed() < 3000, qPrintable(QString("timeout fired too late: %1ms").arg(timer.elapsed())));
+    QVERIFY2(errorSpy.count() >= 1, "hung setImage must surface a timeout error");
 }
 
 QTEST_MAIN(TestSamBackendClient)

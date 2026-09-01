@@ -226,6 +226,10 @@ foreach(TEST_FILE ${TEST_SOURCES})
             GrabImagePlugin
             FindCirclePlugin
         )
+        # 阶段 5 复核：插件库路径以 $<TARGET_FILE:...> 注入，测试不再拼接 .so 库名（跨平台）
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            AGENTE2E_PLUGIN_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+            AGENTE2E_PLUGIN_FindCircle="$<TARGET_FILE:FindCirclePlugin>")
     endif()
 
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
@@ -262,6 +266,15 @@ if(OpenCV_FOUND)
     target_link_libraries(ui_capture_mainwindow PRIVATE ${OpenCV_LIBS})
     target_include_directories(ui_capture_mainwindow PRIVATE ${OpenCV_INCLUDE_DIRS})
 endif()
+# 阶段 5 复核：插件库路径以 $<TARGET_FILE:...> 注入，测试不再拼接 .so 库名（跨平台）
+target_compile_definitions(ui_capture_mainwindow PRIVATE
+    UICAP_PLUGIN_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+    UICAP_PLUGIN_FindCircle="$<TARGET_FILE:FindCirclePlugin>"
+    UICAP_PLUGIN_LoadPointCloud="$<TARGET_FILE:LoadPointCloudPlugin>"
+    UICAP_PLUGIN_MeasurementInput="$<TARGET_FILE:MeasurementInputPlugin>"
+    UICAP_PLUGIN_FitCircle="$<TARGET_FILE:FitCirclePlugin>"
+    UICAP_PLUGIN_If="$<TARGET_FILE:IfPlugin>"
+    UICAP_PLUGIN_Delay="$<TARGET_FILE:DelayPlugin>")
 
 # 阶段 5：GUI 截图验收注册为 CTest——
 # 验收运行或任一截图自校验（存在/尺寸/非空白/关键界面状态）失败都会使测试失败。

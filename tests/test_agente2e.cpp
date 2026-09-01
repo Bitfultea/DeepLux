@@ -60,6 +60,28 @@ public:
     }
 };
 
+/// 作用域守卫：无论断言提前返回还是异常，析构时都无条件恢复单例控制器原来的
+/// LLM 客户端与权限级别，避免控制器继续指向已析构的栈上假客户端（悬空指针）。
+class ScopedLLMClient {
+public:
+    ScopedLLMClient(AgentController& controller, ILLMClient* fake)
+        : m_controller(controller), m_previousClient(controller.llmClient()),
+          m_previousLevel(controller.permissionLevel()) {
+        m_controller.setLLMClient(fake);
+    }
+    ~ScopedLLMClient() {
+        m_controller.setLLMClient(m_previousClient);
+        m_controller.setPermissionLevel(m_previousLevel);
+    }
+    ScopedLLMClient(const ScopedLLMClient&) = delete;
+    ScopedLLMClient& operator=(const ScopedLLMClient&) = delete;
+
+private:
+    AgentController& m_controller;
+    ILLMClient* m_previousClient;
+    AgentController::PermissionLevel m_previousLevel;
+};
+
 } // namespace
 
 class TestAgentEndToEnd : public QObject {
@@ -73,7 +95,7 @@ private slots:
     void testFakeLlmBuildsConnectsRunsAndReadsResult();
 
 private:
-    bool installPlugin(const QString& pluginRoot, const QString& pluginName) const;
+    bool installPlugin(const QString& pluginRoot, const QString& pluginName, const QString& libSrc) const;
     QTemporaryDir m_tempDir;
 };
 
@@ -82,8 +104,10 @@ void TestAgentEndToEnd::initTestCase() {
     qputenv("DEEPLUX_APP_DATA_DIR", m_tempDir.filePath("appdata").toLocal8Bit());
 
     const QString pluginRoot = QDir(m_tempDir.path()).filePath("plugins");
-    QVERIFY2(installPlugin(pluginRoot, QStringLiteral("GrabImage")), "install GrabImage");
-    QVERIFY2(installPlugin(pluginRoot, QStringLiteral("FindCircle")), "install FindCircle");
+    QVERIFY2(installPlugin(pluginRoot, QStringLiteral("GrabImage"), QStringLiteral(AGENTE2E_PLUGIN_GrabImage)),
+             "install GrabImage");
+    QVERIFY2(installPlugin(pluginRoot, QStringLiteral("FindCircle"), QStringLiteral(AGENTE2E_PLUGIN_FindCircle)),
+             "install FindCircle");
 
     PluginManager::instance().shutdown();
     PluginManager::instance().addPluginPath(pluginRoot);
@@ -107,7 +131,8 @@ void TestAgentEndToEnd::cleanup() {
     AgentController::instance().clearConversation();
 }
 
-bool TestAgentEndToEnd::installPlugin(const QString& pluginRoot, const QString& pluginName) const {
+bool TestAgentEndToEnd::installPlugin(const QString& pluginRoot, const QString& pluginName,
+                                      const QString& libSrc) const {
     QDir root(pluginRoot);
     if (!root.mkpath(pluginName))
         return false;
@@ -127,15 +152,15 @@ bool TestAgentEndToEnd::installPlugin(const QString& pluginRoot, const QString& 
             break;
         }
     }
-    const QString libSrc =
-        QDir::cleanPath(QCoreApplication::applicationDirPath() + QString("/../lib/lib%1Plugin.so").arg(pluginName));
+    // 插件库路径由 CMake $<TARGET_FILE:...> 注入，不拼接库名（跨平台）
     if (metadataSrc.isEmpty() || !QFileInfo::exists(libSrc))
         return false;
 
+    const QString destLibName = QFileInfo(libSrc).fileName();
     QFile::remove(pluginDir.filePath("metadata.json"));
-    QFile::remove(pluginDir.filePath(QString("lib%1Plugin.so").arg(pluginName)));
+    QFile::remove(pluginDir.filePath(destLibName));
     return QFile::copy(metadataSrc, pluginDir.filePath("metadata.json")) &&
-           QFile::copy(libSrc, pluginDir.filePath(QString("lib%1Plugin.so").arg(pluginName)));
+           QFile::copy(libSrc, pluginDir.filePath(destLibName));
 }
 
 void TestAgentEndToEnd::testFakeLlmBuildsConnectsRunsAndReadsResult() {
@@ -177,8 +202,8 @@ void TestAgentEndToEnd::testFakeLlmBuildsConnectsRunsAndReadsResult() {
     };
 
     AgentController& controller = AgentController::instance();
-    ILLMClient* oldClient = controller.llmClient();
-    controller.setLLMClient(&fake);
+    // 作用域守卫保证任何断言提前返回时都恢复原客户端，不留下悬空指针
+    ScopedLLMClient scopedClient(controller, &fake);
     controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
 
     QSignalSpy logSpy(&controller, &AgentController::actionLogEntryAdded);
@@ -225,8 +250,7 @@ void TestAgentEndToEnd::testFakeLlmBuildsConnectsRunsAndReadsResult() {
     QVERIFY2(stats.value("successRuns").toInt() >= 1,
              qPrintable(QString("get_run_results must report success, got: %1").arg(lastMsg.content)));
     QCOMPARE(stats.value("failedRuns").toInt(), 0);
-
-    controller.setLLMClient(oldClient);
+    // scopedClient 析构时自动恢复原 LLM 客户端与权限级别
 }
 
 QTEST_MAIN(TestAgentEndToEnd)

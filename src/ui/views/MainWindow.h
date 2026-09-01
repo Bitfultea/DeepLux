@@ -262,6 +262,9 @@ protected:
     // 当前唯一选中的模块实例 ID
     QString m_selectedModuleId;
 
+    // 最近一次显示图像的视口 ID（测量叠加只更新该关联视口）
+    QString m_lastImageViewportId;
+
     // 视图菜单动作
     QAction* m_viewToolPanelAction = nullptr;
     QAction* m_viewProcessPanelAction = nullptr;

@@ -93,6 +93,28 @@ bool saveShot(DeepLux::MainWindow& window, const QDir& dir, const QString& name)
     return verifyCapture(filePath, shot.size());
 }
 
+// 两张截图的平均绝对灰度差，用于断言主题切换等外观变化真实发生
+// （避免"动作没生效但截图非空白"的假阳性）。
+double meanAbsDiff(const QImage& a, const QImage& b) {
+    const QImage ia =
+        a.convertToFormat(QImage::Format_RGB32).scaled(160, 100, Qt::IgnoreAspectRatio, Qt::FastTransformation);
+    const QImage ib =
+        b.convertToFormat(QImage::Format_RGB32).scaled(160, 100, Qt::IgnoreAspectRatio, Qt::FastTransformation);
+    if (ia.size() != ib.size())
+        return 0.0;
+    qint64 total = 0;
+    int count = 0;
+    for (int y = 0; y < ia.height(); ++y) {
+        const QRgb* la = reinterpret_cast<const QRgb*>(ia.constScanLine(y));
+        const QRgb* lb = reinterpret_cast<const QRgb*>(ib.constScanLine(y));
+        for (int x = 0; x < ia.width(); ++x) {
+            total += qAbs(qGray(la[x]) - qGray(lb[x]));
+            ++count;
+        }
+    }
+    return count ? static_cast<double>(total) / count : 0.0;
+}
+
 QTabWidget* tabsByName(DeepLux::MainWindow& window, const char* objectName) {
     return window.findChild<QTabWidget*>(QString::fromLatin1(objectName));
 }
@@ -112,22 +134,6 @@ void clickTab(QTabWidget* tabs, int index) {
         return;
     QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier, tabs->tabBar()->tabRect(index).center());
     QCoreApplication::processEvents();
-}
-
-void clickToolbarAction(QToolBar* toolbar, const QString& text) {
-    if (!toolbar)
-        return;
-    for (QAction* action : toolbar->actions()) {
-        if (action->text().remove('&') == text) {
-            if (QWidget* button = toolbar->widgetForAction(action)) {
-                QTest::mouseClick(button, Qt::LeftButton, Qt::NoModifier, button->rect().center());
-            } else {
-                QTest::mouseClick(toolbar, Qt::LeftButton, Qt::NoModifier, toolbar->actionGeometry(action).center());
-            }
-            QCoreApplication::processEvents();
-            return;
-        }
-    }
 }
 
 void seedAgentChatDemo(DeepLux::MainWindow& window) {
@@ -176,8 +182,28 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
     clickTab(bottomTabs, tabIndex(bottomTabs, QStringLiteral("Agent 日志")));
     ok = saveShot(window, dir, QStringLiteral("06-bottom-agent-log-tab.png")) && ok;
 
-    QToolBar* mainToolbar = window.findChild<QToolBar*>(QStringLiteral("MainToolBar"));
-    clickToolbarAction(mainToolbar, QStringLiteral("切换主题"));
+    // "切换主题"动作位于"视图"菜单而非主工具栏：按文本查找 QAction 并 trigger，
+    // 且断言外观真实变化，避免"动作未生效但截图非空白"的假阳性。
+    const QImage beforeThemeToggle = window.grab().toImage();
+    bool themeToggled = false;
+    for (QAction* action : window.findChildren<QAction*>()) {
+        if (action->text().remove('&') == QStringLiteral("切换主题")) {
+            action->trigger();
+            themeToggled = true;
+            break;
+        }
+    }
+    QCoreApplication::processEvents();
+    QTest::qWait(250);
+    if (!themeToggled) {
+        qWarning("theme toggle action not found");
+        return false;
+    }
+    const double themeDiff = meanAbsDiff(beforeThemeToggle, window.grab().toImage());
+    if (themeDiff < 10.0) {
+        qWarning("theme toggle did not change appearance (mean diff %.2f)", themeDiff);
+        return false;
+    }
     ok = saveShot(window, dir, QStringLiteral("07-theme-toggle.png")) && ok;
 
     if (QToolButton* toolClose = window.findChild<QToolButton*>(QStringLiteral("ToolCloseBtn"))) {
@@ -260,19 +286,21 @@ bool capturePluginConfigDialog(DeepLux::MainWindow& window, const QDir& dir) {
     return invoked && saved;
 }
 
-// 收尾2: 安装插件到临时目录，供截图工程加载
+// 收尾2: 安装插件到临时目录，供截图工程加载。
+// 插件库路径由 CMake 以 $<TARGET_FILE:...> 注入（libSrc），不在测试代码拼接库名，
+// 以适配不同平台的库文件命名（.so/.dll/.dylib）。
 bool installPluginForCapture(const QString& repoRoot, const QString& pluginTempRoot, const QString& dirName,
-                             const QString& metadataRel, const QString& libName) {
+                             const QString& metadataRel, const QString& libSrc) {
     const QString pluginDir = pluginTempRoot + "/" + dirName;
     if (!QDir().mkpath(pluginDir))
         return false;
     const QString metaSrc = QDir(repoRoot).filePath(metadataRel);
-    const QString libSrc = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../lib/" + libName);
     if (!QFileInfo::exists(metaSrc) || !QFileInfo::exists(libSrc))
         return false;
+    const QString destLibName = QFileInfo(libSrc).fileName();
     QFile::remove(pluginDir + "/metadata.json");
-    QFile::remove(pluginDir + "/" + libName);
-    return QFile::copy(metaSrc, pluginDir + "/metadata.json") && QFile::copy(libSrc, pluginDir + "/" + libName);
+    QFile::remove(pluginDir + "/" + destLibName);
+    return QFile::copy(metaSrc, pluginDir + "/metadata.json") && QFile::copy(libSrc, pluginDir + "/" + destLibName);
 }
 
 // 阶3: 加载并运行找圆验收工程，等待 runFinished、校验圆结果在误差内、
@@ -300,16 +328,18 @@ bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& plug
     out.write(text.toUtf8());
     out.close();
 
-    // 安装并加载所需插件
+    // 安装并加载所需插件（库路径由 CMake TARGET_FILE 注入）
     if (!installPluginForCapture(repoRoot, pluginTempRoot, "GrabImage",
-                                 "src/plugins/image_processing/GrabImage/metadata.json", "libGrabImagePlugin.so"))
+                                 "src/plugins/image_processing/GrabImage/metadata.json",
+                                 QStringLiteral(UICAP_PLUGIN_GrabImage)))
         return false;
     if (!installPluginForCapture(repoRoot, pluginTempRoot, "FindCircle",
-                                 "src/plugins/detection/FindCircle/metadata.json", "libFindCirclePlugin.so"))
+                                 "src/plugins/detection/FindCircle/metadata.json",
+                                 QStringLiteral(UICAP_PLUGIN_FindCircle)))
         return false;
     if (!installPluginForCapture(repoRoot, pluginTempRoot, "LoadPointCloud",
                                  "src/plugins/image_processing/LoadPointCloud/metadata.json",
-                                 "libLoadPointCloudPlugin.so"))
+                                 QStringLiteral(UICAP_PLUGIN_LoadPointCloud)))
         return false;
 
     DeepLux::PluginManager::instance().addPluginPath(pluginTempRoot);
@@ -399,9 +429,9 @@ bool captureFitCirclePickAcceptance(const QString& repoRoot, const QString& plug
                                     const QDir& outputDir) {
     if (!installPluginForCapture(repoRoot, pluginTempRoot, "MeasurementInput",
                                  "src/plugins/geometry/MeasurementInput/metadata.json",
-                                 "libMeasurementInputPlugin.so") ||
+                                 QStringLiteral(UICAP_PLUGIN_MeasurementInput)) ||
         !installPluginForCapture(repoRoot, pluginTempRoot, "FitCircle", "src/plugins/geometry/FitCircle/metadata.json",
-                                 "libFitCirclePlugin.so")) {
+                                 QStringLiteral(UICAP_PLUGIN_FitCircle))) {
         return false;
     }
 
@@ -490,9 +520,9 @@ bool captureFitCirclePickAcceptance(const QString& repoRoot, const QString& plug
 bool captureControlFlowAcceptance(const QString& repoRoot, const QString& pluginTempRoot, DeepLux::MainWindow& window,
                                   const QDir& outputDir) {
     if (!installPluginForCapture(repoRoot, pluginTempRoot, "If", "src/plugins/logic/If/metadata.json",
-                                 "libIfPlugin.so") ||
+                                 QStringLiteral(UICAP_PLUGIN_If)) ||
         !installPluginForCapture(repoRoot, pluginTempRoot, "Delay", "src/plugins/logic/Delay/metadata.json",
-                                 "libDelayPlugin.so")) {
+                                 QStringLiteral(UICAP_PLUGIN_Delay))) {
         return false;
     }
 

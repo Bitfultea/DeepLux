@@ -593,6 +593,11 @@ ImageData RunEngine::lastOutput() const {
     return m_lastOutput;
 }
 
+QString RunEngine::lastOutputModuleName() const {
+    QMutexLocker locker(&m_lastOutputMutex);
+    return m_lastOutputModuleName;
+}
+
 ImageData RunEngine::moduleOutput(const QString& moduleName) const {
     QMutexLocker locker(&m_lastOutputMutex);
     return m_moduleOutputs.value(moduleName);

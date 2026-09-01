@@ -141,6 +141,8 @@ public:
 
     // 流水线输出（供 UI 在 moduleFinished 后查询显示数据）
     ImageData lastOutput() const;
+    // 最近一次产生输出的模块名（供 UI 追溯结果归属，避免多支路错配）
+    QString lastOutputModuleName() const;
     ImageData moduleOutput(const QString& moduleName) const;
     void invalidateModuleOutput(const QString& moduleName);
 
