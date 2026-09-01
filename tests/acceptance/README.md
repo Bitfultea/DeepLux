@@ -48,7 +48,7 @@ ctest --test-dir build -R test_acceptance_flows --output-on-failure
 | 点集→直线拟合 | 固定共线点集 | `projects/accept_fitline.json` | `expected/fitline_points.json` | ✅ 已接入自动化 |
 | 2D 几何测量 | `two_points_640x480.png` | `projects/accept_distancepp.json` | `expected/two_points_640x480.json` | ✅ 已接入自动化 |
 | 3D 点云测量 | `plane_z5.ply` | `projects/accept_point_surface.json` | `expected/plane_z5.json` | ✅ 已接入自动化 |
-| 条件分支流程 | 无需图像 | `projects/accept_controlflow.json` | 执行顺序断言 | ✅ 已接入自动化（If 真分支执行/假分支跳过） |
+| 条件分支流程 | 无需图像 | `projects/accept_controlflow.json` | 执行顺序断言 | ✅ 已接入自动化（引擎级；If 真分支执行/假分支跳过） |
 | Loop 固定次数 | 无需图像 | `projects/accept_loop.json` | 执行顺序断言+50 次重跑无污染 | ✅ 已接入自动化（阶段 4） |
 | While 条件退出 | 无需图像 | `projects/accept_while.json` | 计数器数据驱动退出断言 | ✅ 已接入自动化（阶段 4） |
 | StopWhile 提前退出 | 无需图像 | `projects/accept_stopwhile.json` | 仅 1 次迭代即退出断言 | ✅ 已接入自动化（阶段 4） |
@@ -57,7 +57,8 @@ ctest --test-dir build -R test_acceptance_flows --output-on-failure
 | 控制汇合 any 策略 | 无需图像 | `projects/accept_parallel_any.json` | 单条边触发即汇合且仅一次 | ✅ 已接入自动化（阶段 4） |
 | Parallel 失败分支 | 无需图像 | `projects/accept_parallel_failure.json` | 失败取消同组+耗时上限断言 | ✅ 已接入自动化（阶段 4） |
 | Parallel blocking 不并行 | 无需图像 | `projects/accept_parallel_blocking.json` | 两分支均输出+并发度≤1 | ✅ 已接入自动化（阶段 4） |
-| 拾取点集→圆拟合 | 固定圆周采样点 | `projects/accept_fitcircle_pick.json` | `expected/fitcircle_pick.json` | ✅ 已接入自动化（阶段 4，含拾取门控） |
+| 拾取点集→圆拟合 | 固定圆周采样点 | `projects/accept_fitcircle_pick.json` | `expected/fitcircle_pick.json` | ✅ 已接入自动化（阶段 4 引擎级 + 阶段 5 GUI 鼠标拾取） |
+| GUI 条件分支状态 | 无需图像 | 动态确定性工程 | 运行按钮+画布状态点/文字 | ✅ 阶段 5 截图验收 |
 | PLC/相机/AI 模拟流程 | 模拟器 | 相机以 `GrabImage(File)` 为无硬件模拟源 | 契约测试 | 部分：相机模拟已用文件源；PLC/AI 需设备模拟器 |
 
 ## 已接入：找圆流程
@@ -96,10 +97,17 @@ ctest --test-dir build -R test_acceptance_flows --output-on-failure
 - **Parallel blocking 不并行**：两个 blocking（SaveData）分支均成功输出且并发度≤1。
 - **拾取→圆拟合**：空点集运行必须失败；提交 3 个圆周点后，拟合圆心/半径与已知圆一致。
   `test_mainwindow` 另行覆盖 FitCircle 自动创建 `point_set` 输入、3 次主窗口拾取处理写参与继续运行；
-  真实鼠标/视口端到端仍归阶段 5。
+真实鼠标/视口端到端由阶段 5 的 `ui_capture_mainwindow` 覆盖。
+
+## 阶段 5 GUI 验收
+
+- 使用真实 `FlowRunButton` 启动运行，使用 `HImageWidget` 的真实鼠标点击提交 3 个圆周点。
+- 断言包括圆心/半径误差、主视图拟合圆与拾取点像素、运行完成信号和流程节点状态。
+- 条件分支使用真实运行按钮和画布 Tab，截图保留控制边、成功状态点和跳过状态。
+- 专项截图：`fitcircle_pick_result.png`、`controlflow_canvas_result.png`；截图期间临时调整流程栏宽度，结束后恢复。
 
 ## 待办
 
 1. 为图像→点集提取（ROI/特征点）补充验收工程；当前点集由 MeasurementInput 拾取会话提供。
-2. 为控制流补充可视化 GUI 验收工程（阶段 5）；流程级执行顺序与并发语义已由阶段 4 自动测试覆盖。
+2. 为图像 ROI/边缘点提取补充真实 GUI 交互和 FitLine/FitCircle 验收；阶段 5 当前只覆盖 MeasurementInput 点集鼠标拾取。
 3. PLC/相机/AI 先建设备模拟器与契约测试，再接入模拟流程验收。

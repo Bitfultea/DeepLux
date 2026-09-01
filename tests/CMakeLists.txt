@@ -208,6 +208,18 @@ foreach(TEST_FILE ${TEST_SOURCES})
             SaveDataPlugin
         )
     endif()
+    if(TEST_NAME STREQUAL "test_mainwindow")
+        add_dependencies(${TEST_NAME}
+            DistancePPPlugin
+            FitCirclePlugin
+            FitLinePlugin
+            GrabImagePlugin
+            LoadPointCloudPlugin
+            MeasurementInputPlugin
+            IfPlugin
+            DelayPlugin
+        )
+    endif()
 
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
     set_tests_properties(${TEST_NAME} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
@@ -224,6 +236,15 @@ target_link_libraries(ui_capture_mainwindow
     PRIVATE
         deeplux_core
         deeplux_ui
+)
+add_dependencies(ui_capture_mainwindow
+    GrabImagePlugin
+    FindCirclePlugin
+    LoadPointCloudPlugin
+    MeasurementInputPlugin
+    FitCirclePlugin
+    IfPlugin
+    DelayPlugin
 )
 if(Qt6_FOUND)
     target_link_libraries(ui_capture_mainwindow PRIVATE Qt6::Core Qt6::Widgets Qt6::Test)

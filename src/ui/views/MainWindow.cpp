@@ -2606,40 +2606,45 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         return;
     }
 
-    // 查找 MeasurementInput 模块
+    // 以项目模型为实例身份权威来源，插件运行实例的名称字段可能为空。
     QJsonObject inputParams;
     QString foundInstanceId;
-    for (auto it = m_flowModules.constBegin(); it != m_flowModules.constEnd(); ++it) {
-        IModule* mod = it.value();
-        if (!mod)
-            continue;
-        // 匹配 moduleId 或模块名
-        if (mod->moduleId().compare(QStringLiteral("measurementinput"), Qt::CaseInsensitive) == 0 ||
-            mod->moduleId().compare(QStringLiteral("com.deeplux.plugin.measurementinput"), Qt::CaseInsensitive) == 0 ||
-            mod->name().contains(QStringLiteral("测量输入"), Qt::CaseInsensitive)) {
-            inputParams = mod->currentParams();
-            foundInstanceId = it.key();
-            break;
+    Project* currentProject = ProjectManager::instance().currentProject();
+    if (currentProject) {
+        for (const ModuleInstance& instance : currentProject->modules()) {
+            const PluginInfo info = PluginManager::instance().pluginInfo(instance.moduleId);
+            if (instance.moduleId.compare(QStringLiteral("MeasurementInput"), Qt::CaseInsensitive) == 0 ||
+                info.id.compare(QStringLiteral("com.deeplux.plugin.measurementinput"), Qt::CaseInsensitive) == 0) {
+                inputParams = instance.params;
+                foundInstanceId = instance.id;
+                break;
+            }
         }
     }
 
     if (inputParams.isEmpty()) {
-        Logger::instance().debug(
-            QStringLiteral("updateMeasurementResultOnOverlay: no MeasurementInput found in %1 modules")
-                .arg(m_flowModules.size()),
-            "Measurement");
         return;
     }
 
-    Logger::instance().debug(QStringLiteral("updateMeasurementResultOnOverlay: found %1, mode=%2, params=%3")
-                                 .arg(foundInstanceId)
-                                 .arg(inputParams["mode"].toString())
-                                 .arg(QString(QJsonDocument(inputParams).toJson(QJsonDocument::Compact))),
-                             "Measurement");
-
-    // 优先从下游插件输出读取结果，如果没有则从坐标直接计算
-    const ImageData lastOut = RunEngine::instance().lastOutput();
-    const QMap<QString, QVariant> results = lastOut.isValid() ? lastOut.allData() : QMap<QString, QVariant>();
+    // 优先读取该测量输入的直接下游结果，lastOutput 只作兼容回退。
+    const QString mode = inputParams["mode"].toString("point_pair");
+    ImageData resultOutput = RunEngine::instance().lastOutput();
+    if (currentProject) {
+        for (const ModuleConnection& connection : currentProject->connections()) {
+            if (connection.fromModuleId != foundInstanceId) {
+                continue;
+            }
+            const ImageData candidate = RunEngine::instance().moduleOutput(connection.toModuleId);
+            const bool matchesPointSet = mode == QStringLiteral("point_set") && candidate.hasData("circle_radius");
+            const bool matchesDistance = mode != QStringLiteral("point_set") &&
+                                         (candidate.hasData("distance") || candidate.hasData("gap_distance"));
+            if (matchesPointSet || matchesDistance) {
+                resultOutput = candidate;
+                break;
+            }
+        }
+    }
+    const QMap<QString, QVariant> results = resultOutput.allData();
 
     auto resultValue = [&](const QStringList& keys) -> double {
         for (const QString& key : keys) {
@@ -2654,7 +2659,6 @@ void MainWindow::updateMeasurementResultOnOverlay() {
 
     QList<MeasurementOverlayPoint> points;
     QList<MeasurementOverlayLine> lines;
-    const QString mode = inputParams["mode"].toString("point_pair");
 
     if (mode == QStringLiteral("point_pair")) {
         const QJsonArray p1 = inputParams["point1"].toArray();
@@ -2671,6 +2675,28 @@ void MainWindow::updateMeasurementResultOnOverlay() {
                 dist = sqrt(dx * dx + dy * dy);
             }
             lines.append({pointFromArray2D(p1), pointFromArray2D(p2), fmtDist(dist)});
+        }
+    } else if (mode == QStringLiteral("point_set")) {
+        const QJsonArray pointSet = inputParams["points"].toArray();
+        for (int i = 0; i < pointSet.size(); ++i) {
+            const QJsonArray point = pointSet.at(i).toArray();
+            if (point.size() >= 2) {
+                points.append({pointFromArray2D(point), QStringLiteral("P%1").arg(i + 1)});
+            }
+        }
+
+        const double centerX = resultValue({"circle_center_x"});
+        const double centerY = resultValue({"circle_center_y"});
+        const double radius = resultValue({"circle_radius"});
+        if (radius > 0.0) {
+            constexpr int segments = 64;
+            for (int i = 0; i < segments; ++i) {
+                const double angle1 = 2.0 * M_PI * i / segments;
+                const double angle2 = 2.0 * M_PI * (i + 1) / segments;
+                lines.append({QPointF(centerX + radius * std::cos(angle1), centerY + radius * std::sin(angle1)),
+                              QPointF(centerX + radius * std::cos(angle2), centerY + radius * std::sin(angle2)),
+                              i == segments * 7 / 8 ? QStringLiteral("R: %1 px").arg(radius, 0, 'f', 1) : QString()});
+            }
         }
     } else if (mode == QStringLiteral("point_line")) {
         const QJsonArray pt = inputParams["point"].toArray();
@@ -5152,6 +5178,9 @@ void MainWindow::displayImage(const ImageData& image, const QString& label) {
         if (m_displayManager) {
             m_displayManager->displayData(data);
         }
+        return;
+    }
+    if (image.toQImage().isNull()) {
         return;
     }
     DisplayData data(image);

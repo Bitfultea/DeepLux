@@ -124,6 +124,7 @@ private slots:
     void testMeasurementConfigButtonCreatesInputNode();
     void testMeasurementConfigButtonWithInstalledPlugins();
     void testRunCreatesMeasurementInputForConsumer();
+    void testControlFlowRunRendersBranchStates();
     void testPluginConfigDialogRestylesLegacyDarkPlugin();
     void testGrabImageEditorSurvivesCommitSignal();
     void testQuickAnnotateOpensSamDialogOnMainViewportImage();
@@ -530,6 +531,8 @@ void TestMainWindow::testRunCreatesMeasurementInputForConsumer() {
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    window.resize(1000, 720);
+    window.show();
     QCoreApplication::processEvents();
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("FitCircle")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
@@ -544,9 +547,12 @@ void TestMainWindow::testRunCreatesMeasurementInputForConsumer() {
     QCoreApplication::processEvents();
 
     QTreeWidget* processTree = window.findChild<QTreeWidget*>("ProcessTree");
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
     QVERIFY(processTree != nullptr);
+    QVERIFY(runButton != nullptr);
     QCOMPARE(processTree->topLevelItemCount(), 1);
-    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QCoreApplication::processEvents();
     QCOMPARE(processTree->topLevelItemCount(), 2);
     QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 2).toString(), QStringLiteral("MeasurementInput"));
     QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/3"));
@@ -556,21 +562,151 @@ void TestMainWindow::testRunCreatesMeasurementInputForConsumer() {
     QVERIFY(input != nullptr);
     QCOMPARE(input->params["mode"].toString(), QStringLiteral("point_set"));
 
-    QSignalSpy finishedSpy(&RunEngine::instance(), &RunEngine::runFinished);
-    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
-                                      Q_ARG(QPointF, QPointF(420.0, 240.0))));
-    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
-                                      Q_ARG(QPointF, QPointF(320.0, 340.0))));
-    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
-                                      Q_ARG(QPointF, QPointF(220.0, 240.0))));
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+    QImage image(640, 480, QImage::Format_RGB32);
+    image.fill(QColor("#111827"));
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(imageWidget->hasImage());
 
-    QTRY_COMPARE(finishedSpy.count(), 1);
+    bool runFinished = false;
+    const QMetaObject::Connection runConnection = connect(&RunEngine::instance(), &RunEngine::runFinished, &window,
+                                                          [&](const RunResult&) { runFinished = true; });
+    for (const QPointF& point : {QPointF(420.0, 240.0), QPointF(320.0, 340.0), QPointF(220.0, 240.0)}) {
+        const QPoint widgetPoint = imageWidget->imageToWidget(point).toPoint();
+        QVERIFY(imageWidget->rect().contains(widgetPoint));
+        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, widgetPoint);
+        QCoreApplication::processEvents();
+    }
+
+    QTRY_VERIFY(runFinished);
+    disconnect(runConnection);
     input = project->findModule(inputId);
     QVERIFY(input != nullptr);
     QCOMPARE(input->params["points"].toArray().size(), 3);
     const ImageData output = RunEngine::instance().moduleOutput(QStringLiteral("auto_fit_circle_1"));
     QVERIFY(output.hasData("circle_radius"));
-    QVERIFY(qAbs(output.data("circle_radius").toDouble() - 100.0) < 0.1);
+    QVERIFY(qAbs(output.data("circle_radius").toDouble() - 100.0) < 1.0);
+
+    QTRY_VERIFY(imageWidget->hasImage());
+    QTest::qWait(50);
+    const QImage rendered = imageWidget->grab().toImage().convertToFormat(QImage::Format_RGB32);
+    int cyanPixels = 0;
+    int orangePixels = 0;
+    for (int y = 0; y < rendered.height(); ++y) {
+        for (int x = 0; x < rendered.width(); ++x) {
+            const QColor color = rendered.pixelColor(x, y);
+            cyanPixels += color.red() < 100 && color.green() > 120 && color.blue() > 140;
+            orangePixels += color.red() > 180 && color.green() > 80 && color.green() < 190 && color.blue() < 100;
+        }
+    }
+    QVERIFY2(cyanPixels > 100 && orangePixels > 20,
+             qPrintable(QString("Missing fit overlay: cyan=%1 orange=%2").arg(cyanPixels).arg(orangePixels)));
+}
+
+void TestMainWindow::testControlFlowRunRendersBranchStates() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("If")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("Delay")));
+
+    MainWindow window;
+    window.resize(1000, 720);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("条件分支")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("延时")));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance condition;
+    condition.id = QStringLiteral("gui_condition");
+    condition.moduleId = QStringLiteral("条件分支");
+    condition.name = QStringLiteral("条件");
+    condition.params["conditionType"] = QStringLiteral("Expression");
+    condition.params["expressionString"] = QStringLiteral("true");
+    project->addModule(condition);
+
+    ModuleInstance trueBranch;
+    trueBranch.id = QStringLiteral("gui_true");
+    trueBranch.moduleId = QStringLiteral("延时");
+    trueBranch.name = QStringLiteral("真分支");
+    trueBranch.params["delayMs"] = 1;
+    project->addModule(trueBranch);
+
+    ModuleInstance falseBranch = trueBranch;
+    falseBranch.id = QStringLiteral("gui_false");
+    falseBranch.name = QStringLiteral("假分支");
+    project->addModule(falseBranch);
+
+    ModuleConnection trueConnection;
+    trueConnection.fromModuleId = condition.id;
+    trueConnection.toModuleId = trueBranch.id;
+    trueConnection.fromPort = QStringLiteral("true");
+    trueConnection.toPort = QStringLiteral("control");
+    trueConnection.edgeType = QStringLiteral("control");
+    project->addConnection(trueConnection);
+
+    ModuleConnection falseConnection = trueConnection;
+    falseConnection.toModuleId = falseBranch.id;
+    falseConnection.fromPort = QStringLiteral("false");
+    project->addConnection(falseConnection);
+    QCOMPARE(project->connections().size(), 2);
+    QCoreApplication::processEvents();
+
+    QTabWidget* processTabs = window.findChild<QTabWidget*>(QStringLiteral("ProcessTabWidget"));
+    QVERIFY(processTabs != nullptr);
+    const int canvasIndex = processTabs->indexOf(window.findChild<FlowCanvas*>());
+    QVERIFY(canvasIndex >= 0);
+    QTest::mouseClick(processTabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
+                      processTabs->tabBar()->tabRect(canvasIndex).center());
+
+    bool runFinished = false;
+    RunResult runResult;
+    const QMetaObject::Connection runConnection =
+        connect(&RunEngine::instance(), &RunEngine::runFinished, &window, [&](const RunResult& result) {
+            runResult = result;
+            runFinished = true;
+        });
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_VERIFY(runFinished);
+    disconnect(runConnection);
+    QVERIFY2(runResult.success, qPrintable(runResult.errorMessage));
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>();
+    QVERIFY(processTree != nullptr);
+    QVERIFY(canvas != nullptr);
+    auto itemForId = [&](const QString& id) {
+        for (int row = 0; row < processTree->topLevelItemCount(); ++row) {
+            QTreeWidgetItem* item = processTree->topLevelItem(row);
+            if (item->data(0, Qt::UserRole + 1).toString() == id)
+                return item;
+        }
+        return static_cast<QTreeWidgetItem*>(nullptr);
+    };
+
+    QTreeWidgetItem* conditionItem = itemForId(condition.id);
+    QTreeWidgetItem* trueItem = itemForId(trueBranch.id);
+    QTreeWidgetItem* falseItem = itemForId(falseBranch.id);
+    QVERIFY(conditionItem != nullptr);
+    QVERIFY(trueItem != nullptr);
+    QVERIFY(falseItem != nullptr);
+    QCOMPARE(conditionItem->data(0, Qt::UserRole + 5).toString(), QStringLiteral("success"));
+    QCOMPARE(trueItem->data(0, Qt::UserRole + 5).toString(), QStringLiteral("success"));
+    QCOMPARE(falseItem->data(0, Qt::UserRole + 5).toString(), QStringLiteral("skipped"));
+    QCOMPARE(falseItem->text(1), QStringLiteral("已跳过"));
+    QCOMPARE(canvas->nodeItem(condition.id)->executionStatus(), QStringLiteral("success"));
+    QCOMPARE(canvas->nodeItem(trueBranch.id)->executionStatus(), QStringLiteral("success"));
+    QCOMPARE(canvas->nodeItem(falseBranch.id)->executionStatus(), QStringLiteral("skipped"));
 }
 
 void TestMainWindow::testPluginConfigDialogRestylesLegacyDarkPlugin() {
