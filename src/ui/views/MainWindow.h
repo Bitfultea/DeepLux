@@ -61,6 +61,11 @@ public:
     void selectModuleForCapture(const QString& instanceId) {
         selectModule(instanceId, true, true);
     }
+    // 测试辅助：清空选择（与关闭检查器走同一 selectModule(QString()) 路径），
+    // 用于"关闭检查器后测量叠加清除"回归。
+    void clearSelectionForCapture() {
+        selectModule(QString(), false);
+    }
 
 private slots:
     void onNewSolution();

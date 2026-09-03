@@ -1,14 +1,12 @@
 #include <QAction>
 #include <QApplication>
 #include <QCommandLineParser>
-#include <QCryptographicHash>
 #include <QDir>
 #include <QDockWidget>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QSet>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
@@ -31,16 +29,12 @@
 
 namespace {
 
-// 本次运行已保存截图的内容哈希：任一截图与先前截图逐字节相同，
-// 说明对应界面状态变化没有真实发生（如点击空转），必须判失败。
-QSet<QByteArray>& savedShotHashes() {
-    static QSet<QByteArray> hashes;
-    return hashes;
-}
-
-// 阶段 5：截图自校验——文件必须存在、可解码、尺寸正确、非空白、
-// 且与本次运行已保存的任何截图内容不重复（SHA256），
+// 阶段 5：截图自校验——文件必须存在、可解码、尺寸正确、非空白，
 // 任一不满足即判定截图失败（注册为 CTest 后使测试失败）。
+// 注意：不做全局内容唯一性校验——截图含时间/日志等动态区域，
+// 全局哈希既可能因空转但时间变化而漏报，也可能因合法同屏而误报；
+// 状态真实性由 captureClickedStates 中的控件状态断言与针对性前后
+// meanAbsDiff 比较保证。
 bool verifyCapture(const QString& filePath, const QSize& expectedSize) {
     const QImage image(filePath);
     if (image.isNull()) {
@@ -73,18 +67,6 @@ bool verifyCapture(const QString& filePath, const QSize& expectedSize) {
         qWarning("capture appears blank (variance %.2f): %s", variance, qPrintable(filePath));
         return false;
     }
-    // 内容唯一性：重复截图说明状态切换未生效（假阳性门禁）
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        qWarning("capture not re-readable for hash check: %s", qPrintable(filePath));
-        return false;
-    }
-    const QByteArray hash = QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256);
-    if (savedShotHashes().contains(hash)) {
-        qWarning("duplicate capture content (state change did not happen): %s", qPrintable(filePath));
-        return false;
-    }
-    savedShotHashes().insert(hash);
     return true;
 }
 

@@ -61,6 +61,12 @@ public:
     void setMeasurementOverlay(const QList<MeasurementOverlayPoint3D>& points,
                                const QList<MeasurementOverlayLine3D>& lines);
     void clearMeasurementOverlay();
+    QList<MeasurementOverlayPoint3D> measurementPoints3D() const {
+        return m_measurementPoints;
+    }
+    QList<MeasurementOverlayLine3D> measurementLines3D() const {
+        return m_measurementLines;
+    }
     // 测量结果信息面板（视口右上角固定位置）
     void setMeasurementInfoPanel(const QStringList& lines);
     void clearMeasurementInfoPanel();

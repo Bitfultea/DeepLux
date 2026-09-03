@@ -2744,7 +2744,12 @@ void MainWindow::updateMeasurementResultOnOverlay() {
 
     const bool selectedInputNode = m_selectedModuleId.isEmpty() || m_selectedModuleId == chosen->id;
     if (!selectedInputNode) {
-        tryAdoptOwnOutput(m_selectedModuleId);
+        // 选中具体结果模块：只显示其自身输出。未运行/执行失败/无匹配输出时
+        // 清除叠加并返回——不得落入下方按输入点几何推算的"伪测量值"。
+        if (!tryAdoptOwnOutput(m_selectedModuleId)) {
+            clearMeasurementOverlays();
+            return;
+        }
     } else if (preferredModuleId.isEmpty() || !tryAdoptOwnOutput(preferredModuleId)) {
         for (const QString& moduleId : downstreamOf(chosen->id)) {
             const ImageData candidate = RunEngine::instance().moduleOutput(moduleId);
@@ -4938,13 +4943,14 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector, b
     }
 
     if (instanceId.isEmpty()) {
-        // 清空选择
+        // 清空选择（含关闭检查器路径）：同步清除测量叠加，避免旧结果残留
         if (m_inspectorPanel) {
             m_inspectorPanel->clear();
         }
         if (m_flowCanvas) {
             m_flowCanvas->scene()->clearSelection();
         }
+        clearMeasurementOverlays();
         return;
     }
 
