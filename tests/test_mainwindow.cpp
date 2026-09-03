@@ -127,6 +127,7 @@ private slots:
     void testControlFlowRunRendersBranchStates();
     void testDualMeasurementInputsShowOwnOverlay();
     void testSharedDownstreamMeasurementResultNotMisattributed();
+    void testSelectedResultModuleShowsItsOwnMeasurementValue();
     void testDarkThemeCloseAndDestroyWindowDirectly();
     void testPluginConfigDialogRestylesLegacyDarkPlugin();
     void testGrabImageEditorSurvivesCommitSignal();
@@ -970,13 +971,143 @@ void TestMainWindow::testSharedDownstreamMeasurementResultNotMisattributed() {
     QCOMPARE(imageWidget->measurementPoints().at(1).pos, QPointF(150.0, 220.0));
     const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
     QCOMPARE(overlayLines.size(), 1);
-    QVERIFY2(overlayLines.first().label.contains(QStringLiteral("100.000")),
-             qPrintable(QString("line label must use branch B own distance, got: %1").arg(overlayLines.first().label)));
+    // 数值解析而非 contains（避免子串误判）：必须为 B 自身两点距离 100，而非共享节点的 295.466
+    const int labelColon = overlayLines.first().label.indexOf(QStringLiteral(":"));
+    QVERIFY(labelColon >= 0);
+    bool labelOk = false;
+    const double shownDist = overlayLines.first().label.mid(labelColon + 1).trimmed().toDouble(&labelOk);
+    QVERIFY(labelOk);
+    QVERIFY2(qAbs(shownDist - 100.0) < 0.5,
+             qPrintable(QString("line label must use branch B own distance 100, got: %1").arg(shownDist)));
 
     // 选中共享节点本身：归属不唯一，叠加整体清除
     window.selectModuleForCapture(distShared.id);
     QTRY_VERIFY(imageWidget->measurementPoints().isEmpty());
     QVERIFY(imageWidget->measurementLines().isEmpty());
+}
+
+void TestMainWindow::testSelectedResultModuleShowsItsOwnMeasurementValue() {
+    // 阶段 5 复核五轮（P1-2）：一个测量输入挂两个不同结果模块时，
+    // 点击哪个结果模块就必须显示哪个的测量值，不得按 BFS 顺序命中第一个。
+    // input(point_pair) → distA(100) 与 distB(0)：
+    // 选中 distB 时叠加距离必须是 0（distB 自身输出），而不是先入队的 distA 的 100。
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(1000, 720);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("GrabImage")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    const QString imagePath =
+        QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../tests/acceptance/data/circle_640x480.png");
+    QVERIFY2(QFileInfo::exists(imagePath), qPrintable(imagePath));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance grab;
+    grab.id = QStringLiteral("grab");
+    grab.moduleId = QStringLiteral("GrabImage");
+    grab.name = QStringLiteral("取图");
+    grab.params["grabSource"] = QStringLiteral("Path");
+    grab.params["filePath"] = imagePath;
+    project->addModule(grab);
+
+    // 单一测量输入：两点水平相距 100
+    ModuleInstance input;
+    input.id = QStringLiteral("input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("测量输入");
+    input.params["mode"] = QStringLiteral("point_pair");
+    input.params["point1"] = QJsonArray{100.0, 100.0};
+    input.params["point2"] = QJsonArray{200.0, 100.0};
+    project->addModule(input);
+
+    ModuleInstance distA;
+    distA.id = QStringLiteral("dist_a");
+    distA.moduleId = QStringLiteral("DistancePP");
+    distA.name = QStringLiteral("距离A");
+    project->addModule(distA);
+
+    ModuleInstance distB;
+    distB.id = QStringLiteral("dist_b");
+    distB.moduleId = QStringLiteral("DistancePP");
+    distB.name = QStringLiteral("距离B");
+    project->addModule(distB);
+
+    auto connectData = [&](const QString& from, const QString& fromPort, const QString& to, const QString& toPort) {
+        ModuleConnection conn;
+        conn.fromModuleId = from;
+        conn.toModuleId = to;
+        conn.fromPort = fromPort;
+        conn.toPort = toPort;
+        conn.edgeType = QStringLiteral("data");
+        project->addConnection(conn);
+    };
+    connectData(grab.id, QStringLiteral("image"), input.id, QStringLiteral("image"));
+    // distA：P1→P2，距离 100
+    connectData(input.id, QStringLiteral("image"), distA.id, QStringLiteral("image"));
+    connectData(input.id, QStringLiteral("point1"), distA.id, QStringLiteral("point1"));
+    connectData(input.id, QStringLiteral("point2"), distA.id, QStringLiteral("point2"));
+    // distB：P1→P1，距离 0（同一点）
+    connectData(input.id, QStringLiteral("image"), distB.id, QStringLiteral("image"));
+    connectData(input.id, QStringLiteral("point1"), distB.id, QStringLiteral("point1"));
+    connectData(input.id, QStringLiteral("point1"), distB.id, QStringLiteral("point2"));
+    QCoreApplication::processEvents();
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+    bool runFinished = false;
+    const QMetaObject::Connection runConnection = connect(&RunEngine::instance(), &RunEngine::runFinished, &window,
+                                                          [&](const RunResult&) { runFinished = true; });
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_VERIFY(runFinished);
+    disconnect(runConnection);
+
+    // 前提：两个结果模块各自产出不同距离（否则无法区分错配）
+    QVERIFY2(qAbs(RunEngine::instance().moduleOutput(distA.id).data("distance").toDouble() - 100.0) < 0.5,
+             "dist_a must measure 100");
+    QVERIFY2(RunEngine::instance().moduleOutput(distB.id).data("distance").toDouble() < 0.5, "dist_b must measure 0");
+
+    // 从 "距离: %1" 标签解析数值（不用 contains，避免 "100.000" 含子串 "0.000" 的误判）
+    auto labelDistance = [](const QString& label) -> double {
+        const int idx = label.indexOf(QStringLiteral(":"));
+        if (idx < 0)
+            return -1.0;
+        bool ok = false;
+        const double v = label.mid(idx + 1).trimmed().toDouble(&ok);
+        return ok ? v : -1.0;
+    };
+
+    // 选中 distB：必须显示 distB 自身的 0，而不是 BFS 先命中的 distA 的 100
+    window.selectModuleForCapture(distB.id);
+    QTRY_VERIFY(imageWidget->hasImage());
+    QTRY_COMPARE(imageWidget->measurementLines().size(), 1);
+    const double shownB = labelDistance(imageWidget->measurementLines().first().label);
+    QVERIFY2(qAbs(shownB - 0.0) < 0.5, qPrintable(QString("selecting dist_b must show its own value 0, got label: %1")
+                                                      .arg(imageWidget->measurementLines().first().label)));
+
+    // 选中 distA：显示 distA 的 100
+    window.selectModuleForCapture(distA.id);
+    QTRY_COMPARE(imageWidget->measurementLines().size(), 1);
+    const double shownA = labelDistance(imageWidget->measurementLines().first().label);
+    QVERIFY2(qAbs(shownA - 100.0) < 0.5,
+             qPrintable(QString("selecting dist_a must show its own value 100, got label: %1")
+                            .arg(imageWidget->measurementLines().first().label)));
 }
 
 void TestMainWindow::testDarkThemeCloseAndDestroyWindowDirectly() {

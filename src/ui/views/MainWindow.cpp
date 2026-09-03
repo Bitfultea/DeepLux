@@ -2617,19 +2617,11 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         return;
     }
 
-    // 清除所有含图像视口上的测量叠加（无法归属/无测量时调用，避免旧支路叠加残留）
-    auto clearOverlay = [this]() {
-        for (ViewportWidget* viewport : m_displayManager->allViewports()) {
-            HImageWidget* imageWidget = viewport ? viewport->imageWidget() : nullptr;
-            if (imageWidget && imageWidget->hasImage())
-                imageWidget->clearMeasurementOverlay();
-        }
-    };
-
     // 以项目模型为实例身份权威来源，插件运行实例的名称字段可能为空。
+    // 无法归属/无测量时统一清除叠加（含 3D 视口），避免旧支路叠加残留。
     Project* currentProject = ProjectManager::instance().currentProject();
     if (!currentProject) {
-        clearOverlay();
+        clearMeasurementOverlays();
         return;
     }
 
@@ -2642,7 +2634,7 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         }
     }
     if (measurementInputs.isEmpty()) {
-        clearOverlay();
+        clearMeasurementOverlays();
         return;
     }
 
@@ -2681,51 +2673,83 @@ void MainWindow::updateMeasurementResultOnOverlay() {
     // 归属必须唯一：当前选中节点所属支路 > 最近执行节点所属支路 > 唯一输入；
     // 归属不唯一（多个测量输入汇入同一节点）或选中节点不属于任何测量支路时，
     // 清除叠加并返回，避免错配或旧支路叠加残留。
+    // preferredModule：确定支路来源的具体节点（选中节点 / 最近执行节点），
+    // 其自身输出的结果优先于下游 BFS 命中（见下方结果选取规则）。
     const ModuleInstance* chosen = nullptr;
+    QString preferredModuleId;
     if (!m_selectedModuleId.isEmpty()) {
         const QList<const ModuleInstance*> owners = owningInputs(m_selectedModuleId);
         if (owners.size() > 1) {
-            clearOverlay();
+            clearMeasurementOverlays();
             return; // 归属不唯一，不绘制
         }
         if (owners.size() == 1) {
             chosen = owners.first();
+            preferredModuleId = m_selectedModuleId;
         } else {
-            clearOverlay();
+            clearMeasurementOverlays();
             return; // 选中节点不属于任何测量支路，清除叠加，不回退全局最近输出
         }
     }
     if (!chosen) {
-        const QList<const ModuleInstance*> owners = owningInputs(RunEngine::instance().lastOutputModuleName());
+        const QString lastOutputModule = RunEngine::instance().lastOutputModuleName();
+        const QList<const ModuleInstance*> owners = owningInputs(lastOutputModule);
         if (owners.size() > 1) {
-            clearOverlay();
+            clearMeasurementOverlays();
             return; // 归属不唯一，不绘制
         }
-        if (owners.size() == 1)
+        if (owners.size() == 1) {
             chosen = owners.first();
+            preferredModuleId = lastOutputModule;
+        }
     }
     if (!chosen && measurementInputs.size() == 1) {
         chosen = &measurementInputs.first();
     }
     if (!chosen) {
-        clearOverlay();
+        clearMeasurementOverlays();
         return;
     }
 
     const QJsonObject inputParams = chosen->params;
 
-    // 沿所选支路（整个下游链）搜索产生测量结果的模块，不再只查直接下游，
-    // 也不回退全局 lastOutput()（避免混入另一支路的结果）。
-    // 共享下游（同时属于其它测量输入支路）的结果无法归属到所选输入，跳过不采用。
     const QString mode = inputParams["mode"].toString("point_pair");
-    ImageData resultOutput;
-    QString resultModuleId;
-    for (const QString& moduleId : downstreamOf(chosen->id)) {
-        const ImageData candidate = RunEngine::instance().moduleOutput(moduleId);
+    auto resultMatches = [&mode](const ImageData& candidate) {
         const bool matchesPointSet = mode == QStringLiteral("point_set") && candidate.hasData("circle_radius");
         const bool matchesDistance =
             mode != QStringLiteral("point_set") && (candidate.hasData("distance") || candidate.hasData("gap_distance"));
-        if (matchesPointSet || matchesDistance) {
+        return matchesPointSet || matchesDistance;
+    };
+
+    // 结果选取规则：
+    // 1) 选中了测量输入以外的具体模块时，只显示该模块自身输出的测量值——
+    //    点哪个结果模块就显示哪个，不得按 BFS 顺序命中同支路的其它结果模块；
+    //    该模块自身无匹配结果时不绘制结果（不回退下游搜索）。
+    // 2) 选中的是测量输入节点（或无选择而回退）时，优先采用参照模块
+    //    （选中/最近执行节点）自身输出，其次沿所选支路整个下游链搜索；
+    //    不回退全局 lastOutput()（避免混入另一支路结果）；
+    //    共享下游（同时属于其它测量输入支路）的结果归属不唯一，跳过不采用。
+    ImageData resultOutput;
+    QString resultModuleId;
+
+    auto tryAdoptOwnOutput = [&](const QString& moduleId) {
+        const ImageData own = RunEngine::instance().moduleOutput(moduleId);
+        if (resultMatches(own)) {
+            resultOutput = own;
+            resultModuleId = moduleId;
+            return true;
+        }
+        return false;
+    };
+
+    const bool selectedInputNode = m_selectedModuleId.isEmpty() || m_selectedModuleId == chosen->id;
+    if (!selectedInputNode) {
+        tryAdoptOwnOutput(m_selectedModuleId);
+    } else if (preferredModuleId.isEmpty() || !tryAdoptOwnOutput(preferredModuleId)) {
+        for (const QString& moduleId : downstreamOf(chosen->id)) {
+            const ImageData candidate = RunEngine::instance().moduleOutput(moduleId);
+            if (!resultMatches(candidate))
+                continue;
             if (owningInputs(moduleId).size() > 1)
                 continue; // 结果节点同时属于其它测量支路，归属不唯一，跳过
             resultOutput = candidate;

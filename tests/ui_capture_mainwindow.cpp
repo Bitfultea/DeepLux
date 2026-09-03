@@ -1,11 +1,14 @@
 #include <QAction>
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QCryptographicHash>
 #include <QDir>
+#include <QDockWidget>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSet>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
@@ -28,7 +31,15 @@
 
 namespace {
 
-// 阶段 5：截图自校验——文件必须存在、可解码、尺寸正确、非空白，
+// 本次运行已保存截图的内容哈希：任一截图与先前截图逐字节相同，
+// 说明对应界面状态变化没有真实发生（如点击空转），必须判失败。
+QSet<QByteArray>& savedShotHashes() {
+    static QSet<QByteArray> hashes;
+    return hashes;
+}
+
+// 阶段 5：截图自校验——文件必须存在、可解码、尺寸正确、非空白、
+// 且与本次运行已保存的任何截图内容不重复（SHA256），
 // 任一不满足即判定截图失败（注册为 CTest 后使测试失败）。
 bool verifyCapture(const QString& filePath, const QSize& expectedSize) {
     const QImage image(filePath);
@@ -62,6 +73,18 @@ bool verifyCapture(const QString& filePath, const QSize& expectedSize) {
         qWarning("capture appears blank (variance %.2f): %s", variance, qPrintable(filePath));
         return false;
     }
+    // 内容唯一性：重复截图说明状态切换未生效（假阳性门禁）
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        qWarning("capture not re-readable for hash check: %s", qPrintable(filePath));
+        return false;
+    }
+    const QByteArray hash = QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256);
+    if (savedShotHashes().contains(hash)) {
+        qWarning("duplicate capture content (state change did not happen): %s", qPrintable(filePath));
+        return false;
+    }
+    savedShotHashes().insert(hash);
     return true;
 }
 
@@ -119,21 +142,49 @@ QTabWidget* tabsByName(DeepLux::MainWindow& window, const char* objectName) {
     return window.findChild<QTabWidget*>(QString::fromLatin1(objectName));
 }
 
-int tabIndex(QTabWidget* tabs, const QString& text) {
-    if (!tabs)
-        return -1;
-    for (int i = 0; i < tabs->count(); ++i) {
-        if (tabs->tabText(i) == text)
-            return i;
-    }
-    return -1;
-}
+// 前置声明：按文本触发 QAction（定义在下方正式尺寸截图部分）
+bool triggerActionByText(DeepLux::MainWindow& window, const QString& text);
 
-void clickTab(QTabWidget* tabs, int index) {
-    if (!tabs || index < 0 || index >= tabs->count())
-        return;
-    QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier, tabs->tabBar()->tabRect(index).center());
+// 点击切换页签并验证真实生效；控件缺失/隐藏、索引无效或点击后
+// currentIndex 未变化都返回 false（不得静默跳过，否则截图门禁出现假阳性）。
+bool clickTabChecked(QTabWidget* tabs, const QString& text, const char* what) {
+    if (!tabs) {
+        qWarning("%s: tab widget missing", what);
+        return false;
+    }
+    if (!tabs->isVisible()) {
+        qWarning("%s: tab widget hidden", what);
+        return false;
+    }
+    int index = -1;
+    for (int i = 0; i < tabs->count(); ++i) {
+        if (tabs->tabText(i) == text) {
+            index = i;
+            break;
+        }
+    }
+    if (index < 0) {
+        qWarning("%s: tab '%s' not found", what, qPrintable(text));
+        return false;
+    }
+    QTabBar* bar = tabs->tabBar();
+    if (!bar || !bar->isVisible()) {
+        qWarning("%s: tab bar hidden", what);
+        return false;
+    }
+    const QRect tabRect = bar->tabRect(index);
+    if (!tabRect.isValid()) {
+        qWarning("%s: tab rect invalid for index %d", what, index);
+        return false;
+    }
+    QTest::mouseClick(bar, Qt::LeftButton, Qt::NoModifier, tabRect.center());
     QCoreApplication::processEvents();
+    if (tabs->currentIndex() != index) {
+        qWarning("%s: click did not switch to tab '%s' (currentIndex=%d)", what, qPrintable(text),
+                 tabs->currentIndex());
+        return false;
+    }
+    return true;
 }
 
 void seedAgentChatDemo(DeepLux::MainWindow& window) {
@@ -147,42 +198,124 @@ void seedAgentChatDemo(DeepLux::MainWindow& window) {
     panel->setThinking(true);
 }
 
+// 阶段 5 复核（P1-3）：点击态截图必须"状态真实发生 + 截图真实变化"。
+// 历史假阳性根因：窗口 1024 宽 < 自适应阈值 1100 → 工具面板被自动隐藏，
+// "展开工具图标/关闭工具面板"空转；画布页签此前已被切中，点击无变化。
+// 现固定初始状态（加宽窗口、强制工具面板可见、页签归位），并逐步断言
+// currentIndex、控件可见性、关闭后状态与前后截图差异。
 bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
+    bool ok = true;
+
+    // 01: 紧凑窗口初始态（1024）
     window.resize(QSize(1024, 700));
     window.show();
     QCoreApplication::processEvents();
     QTest::qWait(300);
-
-    bool ok = true;
     ok = saveShot(window, dir, QStringLiteral("01-initial-1024.png")) && ok;
 
-    if (QTreeWidget* toolTree = window.findChild<QTreeWidget*>(QStringLiteral("ToolBoxTree"))) {
-        for (int i = 0; i < toolTree->topLevelItemCount(); ++i) {
-            toolTree->topLevelItem(i)->setExpanded(i == 1 || i == 3 || i == 4 || i == 7);
+    // 固定初始状态：加宽窗口使自适应布局不再隐藏工具面板（阈值 1100）
+    window.resize(QSize(1280, 800));
+    window.show();
+    QCoreApplication::processEvents();
+    QTest::qWait(250);
+
+    QDockWidget* toolDock = window.findChild<QDockWidget*>(QStringLiteral("ToolPanelDock"));
+    if (!toolDock) {
+        qWarning("tool dock not found");
+        return false;
+    }
+    // 强制工具面板可见（若被用户态/自适应隐藏，则经"视图→工具"动作打开）
+    if (!toolDock->isVisible()) {
+        if (!triggerActionByText(window, QStringLiteral("工具"))) {
+            qWarning("failed to trigger tool panel view action");
+            return false;
         }
         QCoreApplication::processEvents();
-        ok = saveShot(window, dir, QStringLiteral("09-tool-plugin-icons.png")) && ok;
+        QTest::qWait(200);
+    }
+    if (!toolDock->isVisible()) {
+        qWarning("tool panel still hidden after forcing open");
+        return false;
     }
 
+    // 02/03: 流程页签——先归位到非目标页，再点击切换并断言 currentIndex 与截图变化
     QTabWidget* processTabs = tabsByName(window, "ProcessTabWidget");
-    clickTab(processTabs, tabIndex(processTabs, QStringLiteral("画布")));
+    if (!processTabs) {
+        qWarning("process tab widget not found");
+        return false;
+    }
+    processTabs->setCurrentIndex(0);
+    QCoreApplication::processEvents();
+    QTest::qWait(150);
+    const QImage beforeCanvas = window.grab().toImage();
+    if (!clickTabChecked(processTabs, QStringLiteral("画布"), "02-process-canvas-tab"))
+        return false;
+    QTest::qWait(150);
     ok = saveShot(window, dir, QStringLiteral("02-process-canvas-tab.png")) && ok;
-
-    clickTab(processTabs, tabIndex(processTabs, QStringLiteral("数据源")));
+    if (meanAbsDiff(beforeCanvas, window.grab().toImage()) < 1.0) {
+        qWarning("switching to canvas tab did not change appearance");
+        return false;
+    }
+    if (!clickTabChecked(processTabs, QStringLiteral("数据源"), "03-process-datasource-tab"))
+        return false;
+    QTest::qWait(150);
     ok = saveShot(window, dir, QStringLiteral("03-process-datasource-tab.png")) && ok;
 
+    // 09: 展开工具分类图标——断言树可见、确有分类被展开、且截图相对展开前变化。
+    // 置于页签截图之后：此时工具树尚未展开，09 与 02/03 的内容必然不同。
+    QTreeWidget* toolTree = window.findChild<QTreeWidget*>(QStringLiteral("ToolBoxTree"));
+    if (!toolTree) {
+        qWarning("tool tree not found");
+        return false;
+    }
+    if (!toolTree->isVisible()) {
+        qWarning("tool tree hidden");
+        return false;
+    }
+    const QImage beforeExpand = window.grab().toImage();
+    int expanded = 0;
+    for (int i = 0; i < toolTree->topLevelItemCount(); ++i) {
+        const bool shouldExpand = (i == 1 || i == 3 || i == 4 || i == 7);
+        toolTree->topLevelItem(i)->setExpanded(shouldExpand);
+        if (shouldExpand && toolTree->topLevelItem(i)->isExpanded())
+            ++expanded;
+    }
+    QCoreApplication::processEvents();
+    QTest::qWait(200);
+    if (expanded < 4) {
+        qWarning("tool tree expansion incomplete: %d/4", expanded);
+        return false;
+    }
+    ok = saveShot(window, dir, QStringLiteral("09-tool-plugin-icons.png")) && ok;
+    const double expandDiff = meanAbsDiff(beforeExpand, window.grab().toImage());
+    if (expandDiff < 1.0) {
+        qWarning("tool tree expansion did not change appearance (mean diff %.2f)", expandDiff);
+        return false;
+    }
+
+    // 04/05/06: 底部页签（终端 / Agent 对话 / Agent 日志）
     QTabWidget* bottomTabs = tabsByName(window, "LogTerminalTabs");
-    clickTab(bottomTabs, tabIndex(bottomTabs, QStringLiteral("终端")));
+    if (!bottomTabs) {
+        qWarning("bottom tab widget not found");
+        return false;
+    }
+    if (!clickTabChecked(bottomTabs, QStringLiteral("终端"), "04-bottom-terminal-tab"))
+        return false;
+    QTest::qWait(150);
     ok = saveShot(window, dir, QStringLiteral("04-bottom-terminal-tab.png")) && ok;
 
     seedAgentChatDemo(window);
-    clickTab(bottomTabs, tabIndex(bottomTabs, QStringLiteral("Agent 对话")));
+    if (!clickTabChecked(bottomTabs, QStringLiteral("Agent 对话"), "05-bottom-agent-chat-tab"))
+        return false;
+    QTest::qWait(150);
     ok = saveShot(window, dir, QStringLiteral("05-bottom-agent-chat-tab.png")) && ok;
 
-    clickTab(bottomTabs, tabIndex(bottomTabs, QStringLiteral("Agent 日志")));
+    if (!clickTabChecked(bottomTabs, QStringLiteral("Agent 日志"), "06-bottom-agent-log-tab"))
+        return false;
+    QTest::qWait(150);
     ok = saveShot(window, dir, QStringLiteral("06-bottom-agent-log-tab.png")) && ok;
 
-    // "切换主题"动作位于"视图"菜单而非主工具栏：按文本查找 QAction 并 trigger，
+    // 07: "切换主题"动作位于"视图"菜单而非主工具栏：按文本查找 QAction 并 trigger，
     // 且断言外观真实变化，避免"动作未生效但截图非空白"的假阳性。
     const QImage beforeThemeToggle = window.grab().toImage();
     bool themeToggled = false;
@@ -206,23 +339,40 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
     }
     ok = saveShot(window, dir, QStringLiteral("07-theme-toggle.png")) && ok;
 
-    // P1-3 回归：此后不再切回浅色——本测试以深色主题走到进程退出。
-    // 历史上"深色退出"曾在 main 收尾触发 stack smashing（当时以退出前切回浅色规避）；
-    // 测量归属与模块切换显示修复后，深色退出必须干净；若复现内存写越界，
-    // CTest 将因 abort 判失败。
-
-    if (QToolButton* toolClose = window.findChild<QToolButton*>(QStringLiteral("ToolCloseBtn"))) {
-        QTest::mouseClick(toolClose, Qt::LeftButton, Qt::NoModifier, toolClose->rect().center());
-        QCoreApplication::processEvents();
+    // 08: 关闭工具面板——前置断言面板在打开态，点击关闭按钮后断言
+    // dock 隐藏、"视图→工具"动作取消勾选、且截图相对关闭前真实变化。
+    // （P1-3 深色退出回归：此后不再切回浅色，本测试以深色主题走到进程退出；
+    //   若复现内存写越界，CTest 将因 abort 判失败。）
+    if (!toolDock->isVisible()) {
+        qWarning("tool panel must be visible before close test");
+        return false;
+    }
+    QToolButton* toolClose = window.findChild<QToolButton*>(QStringLiteral("ToolCloseBtn"));
+    if (!toolClose || !toolClose->isVisible()) {
+        qWarning("tool close button missing or hidden");
+        return false;
+    }
+    const QImage beforeClose = window.grab().toImage();
+    QTest::mouseClick(toolClose, Qt::LeftButton, Qt::NoModifier, toolClose->rect().center());
+    QCoreApplication::processEvents();
+    QTest::qWait(200);
+    if (toolDock->isVisible()) {
+        qWarning("tool panel still visible after clicking close");
+        return false;
     }
     ok = saveShot(window, dir, QStringLiteral("08-tool-panel-closed.png")) && ok;
+    const double closeDiff = meanAbsDiff(beforeClose, window.grab().toImage());
+    if (closeDiff < 1.0) {
+        qWarning("closing tool panel did not change appearance (mean diff %.2f)", closeDiff);
+        return false;
+    }
 
     return ok;
 }
 
 // 收尾2: 正式尺寸截图 1920/1280 深浅（默认浅色起始，切换主题采集深色）
 // "切换主题"动作位于"视图"菜单而非工具栏，需按文本查找 QAction 并 trigger
-static bool triggerActionByText(DeepLux::MainWindow& window, const QString& text) {
+bool triggerActionByText(DeepLux::MainWindow& window, const QString& text) {
     for (QAction* action : window.findChildren<QAction*>()) {
         if (action->text().remove('&') == text) {
             action->trigger();
@@ -587,7 +737,8 @@ bool captureControlFlowAcceptance(const QString& repoRoot, const QString& plugin
     QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
     if (!processTabs || !canvas || !runButton)
         return false;
-    clickTab(processTabs, processTabs->indexOf(canvas));
+    if (!clickTabChecked(processTabs, QStringLiteral("画布"), "controlflow-canvas"))
+        return false;
 
     DeepLux::RunResult result;
     bool finished = false;
