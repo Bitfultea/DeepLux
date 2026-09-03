@@ -61,8 +61,8 @@ public:
     }
 
     // 行为开关
-    bool hangAll = false;    // 接受连接但不响应（模拟卡死 → 客户端超时）
-    QSet<QString> hangPaths; // 指定路径接受连接但不响应（模拟单个请求挂起）
+    bool hangAll = false;        // 接受连接但不响应（模拟卡死 → 客户端超时）
+    QSet<QString> hangPaths;     // 指定路径接受连接但不响应（模拟单个请求挂起）
     QHash<QString, int> delayMs; // 指定路径延迟 N 毫秒再响应（模拟慢请求）
     QString healthStatus = QStringLiteral("ok");
     QString predictStatus = QStringLiteral("ok");

@@ -126,6 +126,8 @@ private slots:
     void testRunCreatesMeasurementInputForConsumer();
     void testControlFlowRunRendersBranchStates();
     void testDualMeasurementInputsShowOwnOverlay();
+    void testSharedDownstreamMeasurementResultNotMisattributed();
+    void testDarkThemeCloseAndDestroyWindowDirectly();
     void testPluginConfigDialogRestylesLegacyDarkPlugin();
     void testGrabImageEditorSurvivesCommitSignal();
     void testQuickAnnotateOpensSamDialogOnMainViewportImage();
@@ -850,6 +852,160 @@ void TestMainWindow::testDualMeasurementInputsShowOwnOverlay() {
     const ImageData fitBOut = RunEngine::instance().moduleOutput(fitB.id);
     QVERIFY2(fitBOut.hasData("circle_radius"), "fit_b must produce circle_radius");
     QVERIFY2(qAbs(fitBOut.data("circle_radius").toDouble() - 60.0) < 2.0, "fit_b radius must match branch B points");
+}
+
+void TestMainWindow::testSharedDownstreamMeasurementResultNotMisattributed() {
+    // 阶段 5 复核（P1-2）：汇合结构 inputA + inputB → distShared。
+    // 两个测量输入经不同端口汇入同一个结果节点（DistancePP 的 point1/point2），
+    // 该结果无法唯一归属到任一输入。选中支路 B 时：只绘制 B 自己的两点连线，
+    // 绝不能采用共享节点算出的距离；选中共享节点本身时归属不唯一，叠加整体清除。
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(1000, 720);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("GrabImage")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    const QString imagePath =
+        QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../tests/acceptance/data/circle_640x480.png");
+    QVERIFY2(QFileInfo::exists(imagePath), qPrintable(imagePath));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance grabA;
+    grabA.id = QStringLiteral("grab_a");
+    grabA.moduleId = QStringLiteral("GrabImage");
+    grabA.name = QStringLiteral("取图A");
+    grabA.params["grabSource"] = QStringLiteral("Path");
+    grabA.params["filePath"] = imagePath;
+    project->addModule(grabA);
+
+    // 支路 A：point_pair，首点 (420,240)
+    ModuleInstance inputA;
+    inputA.id = QStringLiteral("input_a");
+    inputA.moduleId = QStringLiteral("MeasurementInput");
+    inputA.name = QStringLiteral("测量输入A");
+    inputA.params["mode"] = QStringLiteral("point_pair");
+    inputA.params["point1"] = QJsonArray{420.0, 240.0};
+    inputA.params["point2"] = QJsonArray{320.0, 340.0};
+    project->addModule(inputA);
+
+    ModuleInstance grabB;
+    grabB.id = QStringLiteral("grab_b");
+    grabB.moduleId = QStringLiteral("GrabImage");
+    grabB.name = QStringLiteral("取图B");
+    grabB.params["grabSource"] = QStringLiteral("Path");
+    grabB.params["filePath"] = imagePath;
+    project->addModule(grabB);
+
+    // 支路 B：point_pair，两点竖直相距 100
+    ModuleInstance inputB;
+    inputB.id = QStringLiteral("input_b");
+    inputB.moduleId = QStringLiteral("MeasurementInput");
+    inputB.name = QStringLiteral("测量输入B");
+    inputB.params["mode"] = QStringLiteral("point_pair");
+    inputB.params["point1"] = QJsonArray{150.0, 120.0};
+    inputB.params["point2"] = QJsonArray{150.0, 220.0};
+    project->addModule(inputB);
+
+    // 共享下游：A 的首点与 B 的首点分别进入 DistancePP 的两个输入端口
+    ModuleInstance distShared;
+    distShared.id = QStringLiteral("dist_shared");
+    distShared.moduleId = QStringLiteral("DistancePP");
+    distShared.name = QStringLiteral("共享距离");
+    project->addModule(distShared);
+
+    auto connectData = [&](const QString& from, const QString& fromPort, const QString& to, const QString& toPort) {
+        ModuleConnection conn;
+        conn.fromModuleId = from;
+        conn.toModuleId = to;
+        conn.fromPort = fromPort;
+        conn.toPort = toPort;
+        conn.edgeType = QStringLiteral("data");
+        project->addConnection(conn);
+    };
+    connectData(grabA.id, QStringLiteral("image"), inputA.id, QStringLiteral("image"));
+    connectData(grabB.id, QStringLiteral("image"), inputB.id, QStringLiteral("image"));
+    connectData(inputA.id, QStringLiteral("point1"), distShared.id, QStringLiteral("point1"));
+    connectData(inputB.id, QStringLiteral("point1"), distShared.id, QStringLiteral("point2"));
+    QCoreApplication::processEvents();
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+    bool runFinished = false;
+    const QMetaObject::Connection runConnection = connect(&RunEngine::instance(), &RunEngine::runFinished, &window,
+                                                          [&](const RunResult&) { runFinished = true; });
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_VERIFY(runFinished);
+    disconnect(runConnection);
+
+    // 前提：共享节点确实产出了距离结果（否则"跳过共享结果"路径未被真正覆盖）。
+    // dist_shared 计算的是 A 首点(420,240)与 B 首点(150,120)的距离 ≈ 295.466。
+    const ImageData sharedOut = RunEngine::instance().moduleOutput(distShared.id);
+    QVERIFY2(sharedOut.hasData("distance"), "dist_shared must produce distance");
+    QVERIFY2(qAbs(sharedOut.data("distance").toDouble() - 295.466) < 1.0,
+             "dist_shared value must reflect the cross-branch point pair");
+
+    // 选中支路 B：绘制 B 的两点与连线；距离必须回退为 B 自身两点的几何距离 100，
+    // 而不是共享节点的 295.466（若误采用共享结果，标签数值即为 295.466）。
+    window.selectModuleForCapture(inputB.id);
+    QTRY_VERIFY(imageWidget->hasImage());
+    QTRY_COMPARE(imageWidget->measurementPoints().size(), 2);
+    QCOMPARE(imageWidget->measurementPoints().at(0).pos, QPointF(150.0, 120.0));
+    QCOMPARE(imageWidget->measurementPoints().at(1).pos, QPointF(150.0, 220.0));
+    const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
+    QCOMPARE(overlayLines.size(), 1);
+    QVERIFY2(overlayLines.first().label.contains(QStringLiteral("100.000")),
+             qPrintable(QString("line label must use branch B own distance, got: %1").arg(overlayLines.first().label)));
+
+    // 选中共享节点本身：归属不唯一，叠加整体清除
+    window.selectModuleForCapture(distShared.id);
+    QTRY_VERIFY(imageWidget->measurementPoints().isEmpty());
+    QVERIFY(imageWidget->measurementLines().isEmpty());
+}
+
+void TestMainWindow::testDarkThemeCloseAndDestroyWindowDirectly() {
+    // P1-3 回归：历史上截图工具在退出前"切回浅色"以规避深色退出崩溃
+    // （main 收尾处 stack smashing）。深色主题下直接关闭窗口并销毁窗口必须干净：
+    // 若复现越界内存写，测试进程会 abort，CTest 判失败。
+    MainWindow window;
+    window.resize(1024, 700);
+    window.show();
+    QCoreApplication::processEvents();
+
+    QAction* themeAction = nullptr;
+    for (QAction* action : window.findChildren<QAction*>()) {
+        if (action->text().remove('&') == QStringLiteral("切换主题")) {
+            themeAction = action;
+            break;
+        }
+    }
+    QVERIFY(themeAction != nullptr);
+    const QString lightSheet = window.styleSheet();
+    themeAction->trigger();
+    QCoreApplication::processEvents();
+    // 确认真的切到深色（styleSheet 与浅色不同且等于深色样式）
+    QCOMPARE(window.styleSheet(), ThemeManager::styleSheet(true));
+    QVERIFY(window.styleSheet() != lightSheet);
+
+    // 深色主题下直接关闭（closeEvent 路径）；窗口在作用域结束时仍以深色析构。
+    window.close();
+    QCoreApplication::processEvents();
 }
 
 void TestMainWindow::testPluginConfigDialogRestylesLegacyDarkPlugin() {

@@ -2617,9 +2617,19 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         return;
     }
 
+    // 清除所有含图像视口上的测量叠加（无法归属/无测量时调用，避免旧支路叠加残留）
+    auto clearOverlay = [this]() {
+        for (ViewportWidget* viewport : m_displayManager->allViewports()) {
+            HImageWidget* imageWidget = viewport ? viewport->imageWidget() : nullptr;
+            if (imageWidget && imageWidget->hasImage())
+                imageWidget->clearMeasurementOverlay();
+        }
+    };
+
     // 以项目模型为实例身份权威来源，插件运行实例的名称字段可能为空。
     Project* currentProject = ProjectManager::instance().currentProject();
     if (!currentProject) {
+        clearOverlay();
         return;
     }
 
@@ -2632,6 +2642,7 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         }
     }
     if (measurementInputs.isEmpty()) {
+        clearOverlay();
         return;
     }
 
@@ -2668,19 +2679,28 @@ void MainWindow::updateMeasurementResultOnOverlay() {
 
     // 多测量支路时不得固定取第一个输入，否则会把流程 A 的点与流程 B 的结果组合。
     // 归属必须唯一：当前选中节点所属支路 > 最近执行节点所属支路 > 唯一输入；
-    // 归属不唯一（多个测量输入汇入同一节点）时不绘制叠加，避免错配。
+    // 归属不唯一（多个测量输入汇入同一节点）或选中节点不属于任何测量支路时，
+    // 清除叠加并返回，避免错配或旧支路叠加残留。
     const ModuleInstance* chosen = nullptr;
     if (!m_selectedModuleId.isEmpty()) {
         const QList<const ModuleInstance*> owners = owningInputs(m_selectedModuleId);
-        if (owners.size() > 1)
+        if (owners.size() > 1) {
+            clearOverlay();
             return; // 归属不唯一，不绘制
-        if (owners.size() == 1)
+        }
+        if (owners.size() == 1) {
             chosen = owners.first();
+        } else {
+            clearOverlay();
+            return; // 选中节点不属于任何测量支路，清除叠加，不回退全局最近输出
+        }
     }
     if (!chosen) {
         const QList<const ModuleInstance*> owners = owningInputs(RunEngine::instance().lastOutputModuleName());
-        if (owners.size() > 1)
+        if (owners.size() > 1) {
+            clearOverlay();
             return; // 归属不唯一，不绘制
+        }
         if (owners.size() == 1)
             chosen = owners.first();
     }
@@ -2688,6 +2708,7 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         chosen = &measurementInputs.first();
     }
     if (!chosen) {
+        clearOverlay();
         return;
     }
 
@@ -2695,6 +2716,7 @@ void MainWindow::updateMeasurementResultOnOverlay() {
 
     // 沿所选支路（整个下游链）搜索产生测量结果的模块，不再只查直接下游，
     // 也不回退全局 lastOutput()（避免混入另一支路的结果）。
+    // 共享下游（同时属于其它测量输入支路）的结果无法归属到所选输入，跳过不采用。
     const QString mode = inputParams["mode"].toString("point_pair");
     ImageData resultOutput;
     QString resultModuleId;
@@ -2704,6 +2726,8 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         const bool matchesDistance =
             mode != QStringLiteral("point_set") && (candidate.hasData("distance") || candidate.hasData("gap_distance"));
         if (matchesPointSet || matchesDistance) {
+            if (owningInputs(moduleId).size() > 1)
+                continue; // 结果节点同时属于其它测量支路，归属不唯一，跳过
             resultOutput = candidate;
             resultModuleId = moduleId;
             break;
@@ -2833,8 +2857,7 @@ void MainWindow::updateMeasurementResultOnOverlay() {
     // 不使用"最近一次显示"的全局值，避免画到无关支路的视口。
     const QString bindModuleId = resultModuleId.isEmpty() ? chosen->id : resultModuleId;
     const QString boundViewportId = m_moduleViewportIds.value(bindModuleId);
-    ViewportWidget* targetViewport =
-        boundViewportId.isEmpty() ? nullptr : m_displayManager->viewport(boundViewportId);
+    ViewportWidget* targetViewport = boundViewportId.isEmpty() ? nullptr : m_displayManager->viewport(boundViewportId);
     HImageWidget* targetImageWidget = targetViewport ? targetViewport->imageWidget() : nullptr;
     if (targetImageWidget && targetImageWidget->hasImage()) {
         targetImageWidget->setMeasurementOverlay(points, lines);
@@ -4961,11 +4984,14 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector, b
         }
     }
 
-    // 同时显示模块输出到主视图
+    // 同时显示模块输出到主视图（传入模块身份，记录模块→视口归属）
     const ImageData output = RunEngine::instance().moduleOutput(instanceId);
     if (!m_dirtyModuleIds.contains(instanceId) && output.isValid()) {
-        displayImage(output);
+        displayImage(output, QString(), instanceId);
     }
+    // 切换模块后按当前选中支路刷新测量叠加，避免旧支路叠加残留
+    // （选中节点不属于任何测量支路时会清除叠加）。
+    updateMeasurementResultOnOverlay();
 }
 
 // ===== 阶段 9: 自适应布局与状态保存 =====
