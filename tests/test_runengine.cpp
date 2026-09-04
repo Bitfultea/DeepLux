@@ -340,13 +340,15 @@ public:
             QMutexLocker locker(m_mutex);
             m_sink->append(context.runId);
         }
-        QThread::msleep(10); // 增大并行重叠窗口
+        m_mark = context.runId; // 供 process 写入输出作为本轮唯一标记
+        QThread::msleep(10);    // 增大并行重叠窗口
         return ModuleBase::execute(inputs, outputs, context);
     }
 
 protected:
     bool process(const ImageData& input, ImageData& output) override {
         output = input;
+        output.setData(QStringLiteral("runmark"), m_mark);
         return true;
     }
     QWidget* createConfigWidget() override {
@@ -356,6 +358,7 @@ protected:
 private:
     QMutex* m_mutex;
     QStringList* m_sink;
+    QString m_mark;
 };
 
 class TestRunEngine : public QObject {
@@ -1451,8 +1454,8 @@ void TestRunEngine::testParallelStressFiftyRunsNoPollution() {
 
     for (int iter = 0; iter < 50; ++iter) {
         engine.clearModules();
-        // 上一轮输出必须已被清除（无残留）
-        QVERIFY2(!engine.moduleOutput(QStringLiteral("entry")).isValid(),
+        // 上一轮输出标记必须已被清除（无残留）
+        QVERIFY2(!engine.moduleOutput(QStringLiteral("entry")).hasData(QStringLiteral("runmark")),
                  qPrintable(QString("rep %1: stale output after clearModules").arg(iter)));
 
         QMutex mutex;
@@ -1479,6 +1482,13 @@ void TestRunEngine::testParallelStressFiftyRunsNoPollution() {
         QVERIFY2(!seenRunIds.contains(roundId),
                  qPrintable(QString("rep %1: runId reused across runs: %2").arg(iter).arg(roundId)));
         seenRunIds.insert(roundId);
+
+        // 本轮输出必须真实携带唯一标记（确认清理前存在有效输出），
+        // 下一轮 clearModules 后再断言标记消失，方能证明"无残留"。
+        const ImageData roundOut = engine.moduleOutput(QStringLiteral("entry"));
+        QVERIFY2(roundOut.hasData(QStringLiteral("runmark")),
+                 qPrintable(QString("rep %1: entry output missing runmark").arg(iter)));
+        QCOMPARE(roundOut.data(QStringLiteral("runmark")).toString(), roundId);
 
         QVERIFY2(engine.state() != RunState::Running, qPrintable(QString("rep %1: state still Running").arg(iter)));
         QVERIFY2(!engine.isBusy(), qPrintable(QString("rep %1: engine still busy").arg(iter)));

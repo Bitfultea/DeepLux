@@ -16,7 +16,7 @@
 | 阶段 3 Parallel 接入主循环/解除实验性 | 完成 | Parallel 控制端口、主循环批次、线程安全白名单和回归测试已交付 |
 | 阶段 E 多输入聚合/Parallel | 完成 | multiple 聚合、controlJoinPolicy、批量并行、blocking 排除已交付 |
 | 阶段 F 画布端口交互 | 完成 | 字符串端口、四元组连接、拖线、数据/控制边样式已交付 |
-| TSan 并发验证 | 部分完成 | 已实际执行（需 setarch -R 关 ASLR）；阶段 6 stop() 重构后复跑（105 用例）SEGV/heap-use-after-free 清零、余 59 处未插桩 Qt5 误报，未清零不标通过；见 `tsan-report.md` 与 `tsan-runengine-full.txt` |
+| TSan 并发验证 | 部分完成 | 已实际执行（需 setarch -R 关 ASLR）；阶段 6 stop() 重构后复跑（105 用例）SEGV/heap-use-after-free 清零、余 49 处未插桩 Qt5 误报，未清零不标通过；见 `tsan-report.md` 与 `tsan-runengine-full.txt` |
 | 正式尺寸 GUI 截图(1920/1280 深浅) | 完成 | 环境可离屏渲染，已产出 4 张 `screenshots/formal_{1920,1280}_{dark,light}.png`，深浅像素差异已验证 |
 | 阶段 G 13 重构插件/业务包 | 部分完成 | metadata execution 标记+hotfix 映射结论/证据+TimeSlice 修正+blocking 接入+13 插件行为级测试（64/64）已完成；旧版输出端口静态对照已完成（50 插件，见 `legacy-comparison.md`），逐值运行结果等价仍未做，结论分布见映射清单 |
 | 阶段 H 生产验收/交接报告 | 完成 | 见 `phaseH-handover-report.md`；执行与交接闭环完成，64/64 测试、格式门禁、截图/TSan/旧版对照证据齐全；生产门禁遗留仍按本表“部分完成”项跟踪 |
@@ -71,7 +71,7 @@
   圆拟合结果叠加与流程语义（阶段 5 另有 Agent/SAM/截图端到端，见下节口径）。
 - SAM 真实 GPU 模型（权重）现场/夜间验收；CI 不下载权重，协议路径由测试内 HTTP 服务覆盖。
 - PLC/AI 设备模拟器契约（需现场硬件）。
-- TSan 残余误报清零（阶段 6 后 59 处，需插桩 Qt 复测）。
+- TSan 残余误报清零（阶段 6 后 49 处，需插桩 Qt 复测）。
 
 ## 生产闭环轮次（分支 agent/production-closure，基线 dc146a0）
 
@@ -83,7 +83,7 @@
 | 3 | 收口数据与构建契约（未实现类型加载期拒绝、点云键值校验、端口数组门禁、OpenCV 必需） | 完成 | 5fb386d..ff238eb（二轮复核） |
 | 4 | 补齐流程验收：Loop 固定次数/While 条件退出/StopWhile 提前退出/停止取消时限 + Parallel all/any/失败分支/blocking 不并行 + 拾取→圆拟合真实工作流 | 完成 | d6e9028..02bc644（含复核收口） |
 | 5 | Agent、SAM 与 GUI 端到端验收：确定性假 LLM 完成"创建 GrabImage→FindCircle→连接→运行→读取结果"；SAM 测试内 HTTP 服务覆盖四端点（成功/超时/崩溃恢复）；ui_capture 注册 CTest 且截图自校验；GUI 真实交互（鼠标拾取→圆拟合叠加、条件分支画布状态、像素断言） | 完成 | 58fadba..cf6dc87（六轮复核收口） |
-| 6 | 并发风险收口：审计 RunEngine 工作线程信号连接（带上下文 Auto→Queued，无跨线程直操 QWidget）；并行批次 ImageData 只读边界；runId 固化（毫秒+单调序号，池线程不读成员字符串）；stop() 非破坏化（执行期状态仅执行线程退出路径清理）；4 个定向测试+50 次并行压力；TSan 分节（SEGV/HUAf 清零，余 59 未插桩误报不标通过） | 完成 | adff5b5 + 本提交（stop() 复核轮） |
+| 6 | 并发风险收口：审计 RunEngine 工作线程信号连接（带上下文 Auto→Queued，无跨线程直操 QWidget）；并行批次 ImageData 只读边界；runId 固化（毫秒+单调序号，池线程不读成员字符串）；stop() 非破坏化（执行期状态仅执行线程退出路径清理）；4 个定向测试+50 次并行压力；TSan 分节（SEGV/HUAf 清零，余 49 未插桩误报不标通过） | 完成 | adff5b5 + 本提交（stop() 复核轮） |
 
 ### 阶段 4 流程验收口径
 

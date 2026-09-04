@@ -112,16 +112,16 @@ happens-before 关系，凡 QMutex/QReadWriteLock 保护的共享数据都会被
 | #1 工作线程 `emit moduleStarted` | 审计全部 RunEngine 信号连接均带上下文对象（Auto→Queued），MainWindow/TerminalBridge/AgentObserver 无跨线程 DirectConnection 直操 QWidget；新增 `testParallelSignalsDeliveredOnReceiverThread` 证明池线程发射的信号排队回接收者线程 | 已证明（定向测试） |
 | #2 `pipelineData`(ImageData) 按值进并行 lambda | 审计确认每任务独立副本、`collectModuleInputs` 对 `m_nodeOutputs`/连接只读、批次结果仅在等待结束后由调用线程写回；代码内加只读边界注释 | 已证明（代码审计） |
 | #3 工作线程读 `m_runId`(QString) | `executeParallel`/`executeBatchParallel` 在调用线程快照 `runId`/`token` 按值捕获，池线程不再读成员字符串；runId 改为"毫秒+单调序号"保证每次运行唯一；新增 `testParallelTasksSeeStableRunId`、`testExecuteParallelPrimitiveStableRunId`、`testParallelStressFiftyRunsNoPollution`（跨轮 ID 去重+无残留输出+状态回落） | 已修复（定向测试） |
-| #4 `stop()` 与执行线程并发清理（复核轮新发现） | 原 `stop()` 在执行线程仍运行时调用 `clearBreakpointPauseState()`/`resetStepState()`→`clearControlQueue()`，与 `executeRunWithControlGraph()` 并发读写同一容器，TSan 复现 QList/QString heap-use-after-free 与 `QString::size()` SEGV。重构：stop() 只发布停止+取消 token；执行期状态仅由执行线程在 `executeRun` 退出路径统一清理；仅当 `!isExecuting()`（空闲/断点暂停）才在 stop() 清理；`isBusy()` 含 `isExecuting()` 阻止 `clearModules()/loadProject()` 在运行未退出时执行 | 已修复（TSan 复跑 SEGV/HUAf 清零） |
+| #4 `stop()` 与执行线程并发清理（复核轮新发现） | 原 `stop()` 在执行线程仍运行时调用 `clearBreakpointPauseState()`/`resetStepState()`→`clearControlQueue()`，与 `executeRunWithControlGraph()` 并发读写同一容器，TSan 复现 QList/QString heap-use-after-free 与 `QString::size()` SEGV。重构：引入生命周期同步点 `m_lifecycleMutex`（+`m_stopPending`/`m_beginInFlight`）串行化"开始(beginExecution)/停止(stop)/执行结束(endExecutionCleanup)/断点暂停"转换；stop() 只发布停止+取消 token，执行期状态仅由执行线程退出路径清理；`m_executing` 在清理完成后才置 false，`isBusy()` 阻止 `clearModules()/loadProject()` 在运行未退出时执行；`executeParallel()` 独立运行时自生成 runId | 已修复（TSan 复跑 SEGV/HUAf 清零、警告降至 49） |
 
 ### 门禁结论（仍不写"通过"）
 
 `build-tsan` 复跑（`setarch -R`，原始日志见 `tsan-runengine-full.txt`）：
-**heap-use-after-free 与 SEGV 均为 0**（stop() 重构消除了真实竞争）；功能侧
-105/105 全过。仍报 **59 处 data race 警告**，栈帧集中在未插桩 Qt5 同步原语
+**heap-use-after-free 与 SEGV 均为 0**（生命周期同步点消除了真实竞争）；功能侧
+105/105 全过。仍报 **49 处 data race 警告**，栈帧集中在未插桩 Qt5 同步原语
 （`QHash::detach`/QMutex/QThreadPool，含 `g_cancellationTokens` 表——已用 QMutex
 保护但 TSan 无法识别未插桩 QMutex 的 happens-before），属高概率误报。
 
 依据门禁规则"不把未确认 TSan 警告写成通过"，阶段 6 维持 **TSan 不通过** 结论：
-#3/#4 已修复、#1/#2 已证明，均以定向测试/TSan 复跑闭环；残余 59 条误报需以
+#3/#4 已修复、#1/#2 已证明，均以定向测试/TSan 复跑闭环；残余 49 条误报需以
 `-fsanitize=thread` 重编 Qt5 后复测方能清零。

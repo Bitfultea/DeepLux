@@ -226,6 +226,14 @@ private:
     std::atomic<int> m_state{static_cast<int>(RunState::Idle)};
     std::atomic<int> m_runMode{static_cast<int>(RunMode::None)};
     std::atomic_bool m_executing{false};
+    // 阶6 复核：生命周期同步点——串行化"开始/停止/执行结束/断点暂停"转换，
+    // 消除 stop() 与执行线程的 check-then-act 竞争。m_stopPending/m_beginInFlight
+    // 仅在 m_lifecycleMutex 内读写。
+    QMutex m_lifecycleMutex;
+    bool m_stopPending = false;
+    bool m_beginInFlight = false;
+    bool beginExecution();
+    void endExecutionCleanup();
     QTimer* m_cycleTimer = nullptr;
     QList<ModuleBase*> m_modules;
     QList<ModuleBase*> m_ownedModules;
