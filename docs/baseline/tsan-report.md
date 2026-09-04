@@ -102,26 +102,30 @@ happens-before 关系，凡 QMutex/QReadWriteLock 保护的共享数据都会被
 
 ## 阶段 6 复核（并发风险收口）
 
-> 日期：2026-09-04。对应提交见 `git log`（阶段 6 及 stop() 复核轮）。功能侧
-> `test_runengine` **105/105 通过**（含 4 个定向测试与 50 次并行压力），全量 CTest 66/66。
+> 日期：2026-09-04。对应提交见 `git log`（阶段 6 及 stop() 复核二/三轮）。功能侧
+> `test_runengine` **108/108 通过**（含 7 个定向测试与 50 次并行压力），全量 CTest 66/66。
 
-### 四类风险的处理与分类
+### 风险处理与分类
 
 | 风险 | 阶段 6 处理 | 分类 |
 | --- | --- | --- |
-| #1 工作线程 `emit moduleStarted` | 审计全部 RunEngine 信号连接均带上下文对象（Auto→Queued），MainWindow/TerminalBridge/AgentObserver 无跨线程 DirectConnection 直操 QWidget；新增 `testParallelSignalsDeliveredOnReceiverThread` 证明池线程发射的信号排队回接收者线程 | 已证明（定向测试） |
-| #2 `pipelineData`(ImageData) 按值进并行 lambda | 审计确认每任务独立副本、`collectModuleInputs` 对 `m_nodeOutputs`/连接只读、批次结果仅在等待结束后由调用线程写回；代码内加只读边界注释 | 已证明（代码审计） |
-| #3 工作线程读 `m_runId`(QString) | `executeParallel`/`executeBatchParallel` 在调用线程快照 `runId`/`token` 按值捕获，池线程不再读成员字符串；runId 改为"毫秒+单调序号"保证每次运行唯一；新增 `testParallelTasksSeeStableRunId`、`testExecuteParallelPrimitiveStableRunId`、`testParallelStressFiftyRunsNoPollution`（跨轮 ID 去重+无残留输出+状态回落） | 已修复（定向测试） |
-| #4 `stop()` 与执行线程并发清理（复核轮新发现） | 原 `stop()` 在执行线程仍运行时调用 `clearBreakpointPauseState()`/`resetStepState()`→`clearControlQueue()`，与 `executeRunWithControlGraph()` 并发读写同一容器，TSan 复现 QList/QString heap-use-after-free 与 `QString::size()` SEGV。重构：引入生命周期同步点 `m_lifecycleMutex`（+`m_stopPending`/`m_beginInFlight`）串行化"开始(beginExecution)/停止(stop)/执行结束(endExecutionCleanup)/断点暂停"转换；stop() 只发布停止+取消 token，执行期状态仅由执行线程退出路径清理；`m_executing` 在清理完成后才置 false，`isBusy()` 阻止 `clearModules()/loadProject()` 在运行未退出时执行；`executeParallel()` 独立运行时自生成 runId | 已修复（TSan 复跑 SEGV/HUAf 清零、警告降至 49） |
+| #1 工作线程 `emit moduleStarted` | 审计全部 RunEngine 信号连接均带上下文对象（Auto→Queued），无跨线程 DirectConnection 直操 QWidget；`testParallelSignalsDeliveredOnReceiverThread` 证明池线程信号排队回接收者线程 | 已证明（定向测试） |
+| #2 `pipelineData`(ImageData) 按值进并行 lambda | 每任务独立副本、`collectModuleInputs` 对 `m_nodeOutputs`/连接只读、批次结果仅在等待结束后由调用线程写回 | 已证明（代码审计） |
+| #3 工作线程读 `m_runId`(QString) | 调用线程快照 `runId`/`token` 按值捕获；`executeParallel()` **始终**自生成局部 runId（不读 `m_runId`，连续独立调用 ID 不同）；runId="毫秒+单调序号" | 已修复（定向测试） |
+| #4 `stop()` 与执行线程并发清理 | 引入唯一生命周期同步点 `m_lifecycleMutex`：所有执行入口（runOnce/onTimerTick/resume）经 `tryBeginExecution()` 在锁内恰好取一次执行权（删除 `m_beginInFlight`）；`stop()/start()/loadProject()/clearModules()` 检查与转换同锁；断点内层只报告命中，外层 `executeRun` 在锁内提交暂停/释放执行权；`m_executing` 清理后才置 false | 已修复（SEGV/HUAf 清零） |
+| #5 并发生命周期回归（复核三轮要求） | 新增 `testConcurrentStopDuringRunKeepsStoppedState`(20 次)、`testStopSimultaneousWithBreakpointHit`、`testClearAndLoadRejectedWhileRunning`，覆盖并发 start/step/run/stop/load/clear 与"断点命中同时停止" | 已证明（定向测试） |
 
 ### 门禁结论（仍不写"通过"）
 
 `build-tsan` 复跑（`setarch -R`，原始日志见 `tsan-runengine-full.txt`）：
-**heap-use-after-free 与 SEGV 均为 0**（生命周期同步点消除了真实竞争）；功能侧
-105/105 全过。仍报 **49 处 data race 警告**，栈帧集中在未插桩 Qt5 同步原语
-（`QHash::detach`/QMutex/QThreadPool，含 `g_cancellationTokens` 表——已用 QMutex
-保护但 TSan 无法识别未插桩 QMutex 的 happens-before），属高概率误报。
+**heap-use-after-free 与 SEGV 均为 0**；功能侧 108/108 全过。data race 警告数受
+调度影响：**单次样本 49，多轮复跑范围 49–62**（本轮两次 55/62），不以此作确定结论。
+
+按调用栈分类（均为高概率误报）：
+- `ImageData` 隐式共享引用计数跨线程拷贝（Qt 未插桩，原子引用计数无法建立 happens-before）；
+- `executeBatchParallel`/`executeParallel` 池任务拷贝 `ImageData`/`ExecutionContext`（同上）；
+- `CancellationToken`/`ModuleBase` 的 `g_cancellationTokens` QHash（已用 QMutex 保护，TSan 不识别未插桩 QMutex）；
+- `qthreadpool`/`qhash.h` 等未插桩 Qt5 内部。
 
 依据门禁规则"不把未确认 TSan 警告写成通过"，阶段 6 维持 **TSan 不通过** 结论：
-#3/#4 已修复、#1/#2 已证明，均以定向测试/TSan 复跑闭环；残余 49 条误报需以
-`-fsanitize=thread` 重编 Qt5 后复测方能清零。
+#3/#4 已修复、#1/#2/#5 已证明；残余误报需以 `-fsanitize=thread` 重编 Qt5 后复测清零。

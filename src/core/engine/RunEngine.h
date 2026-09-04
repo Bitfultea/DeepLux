@@ -226,14 +226,15 @@ private:
     std::atomic<int> m_state{static_cast<int>(RunState::Idle)};
     std::atomic<int> m_runMode{static_cast<int>(RunMode::None)};
     std::atomic_bool m_executing{false};
-    // 阶6 复核：生命周期同步点——串行化"开始/停止/执行结束/断点暂停"转换，
-    // 消除 stop() 与执行线程的 check-then-act 竞争。m_stopPending/m_beginInFlight
-    // 仅在 m_lifecycleMutex 内读写。
+    // 阶6 复核（二轮）：唯一生命周期同步点——所有执行入口经 tryBeginExecution()
+    // 在锁内取得执行权（m_executing 仅在锁内改写）；stop()/start()/loadProject()/
+    // clearModules() 的检查与状态转换使用同一把锁；断点暂停由外层 executeRun 在锁内
+    // 提交并释放执行权。m_stopPending 仅在 m_lifecycleMutex 内读写。
     QMutex m_lifecycleMutex;
     bool m_stopPending = false;
-    bool m_beginInFlight = false;
-    bool beginExecution();
+    bool tryBeginExecution();
     void endExecutionCleanup();
+    bool lifecycleBusyLocked();
     QTimer* m_cycleTimer = nullptr;
     QList<ModuleBase*> m_modules;
     QList<ModuleBase*> m_ownedModules;

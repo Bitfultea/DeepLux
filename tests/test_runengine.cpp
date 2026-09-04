@@ -374,6 +374,10 @@ private slots:
     void testParallelTasksSeeStableRunId();
     void testExecuteParallelPrimitiveStableRunId();
     void testParallelStressFiftyRunsNoPollution();
+    // 阶段 6 复核（三轮）并发生命周期回归
+    void testConcurrentStopDuringRunKeepsStoppedState();
+    void testStopSimultaneousWithBreakpointHit();
+    void testClearAndLoadRejectedWhileRunning();
     void testValidateFlowReportsMissingRequiredInput();
     void testSkippedBranchEmitsSkippedNotFailed();
     void testBreakpointRestoredOnLoad();
@@ -1434,11 +1438,38 @@ void TestRunEngine::testExecuteParallelPrimitiveStableRunId() {
     QVERIFY(result.success);
     QVERIFY2(engine.lastParallelMaxConcurrency() > 1, "executeParallel must run concurrently");
 
-    QMutexLocker locker(&mutex);
-    QCOMPARE(sink.size(), 4);
-    for (const QString& id : sink) {
-        QVERIFY2(!id.isEmpty(), "runId must be non-empty");
-        QCOMPARE(id, sink.first());
+    {
+        QMutexLocker locker(&mutex);
+        QCOMPARE(sink.size(), 4);
+        for (const QString& id : sink) {
+            QVERIFY2(!id.isEmpty(), "runId must be non-empty");
+            QCOMPARE(id, sink.first());
+        }
+    }
+    const QString firstCallId = sink.first();
+
+    // 阶6 复核（三轮）：连续两次独立调用必须各自生成不同 runId，
+    // 不得复用历史运行 ID（executeParallel 不再读 m_runId）。
+    engine.clearModules();
+    QMutex mutex2;
+    QStringList sink2;
+    QStringList names2;
+    for (int i = 0; i < 4; ++i) {
+        const QString name = QString("prim2_%1").arg(i);
+        auto* mod = new RunIdRecordingModule(name, &mutex2, &sink2);
+        mod->initialize();
+        engine.addModule(mod);
+        names2 << name;
+    }
+    QVERIFY(engine.executeParallel(names2, input).success);
+    {
+        QMutexLocker locker(&mutex2);
+        QCOMPARE(sink2.size(), 4);
+        for (const QString& id : sink2) {
+            QVERIFY2(!id.isEmpty(), "runId must be non-empty");
+            QCOMPARE(id, sink2.first());
+        }
+        QVERIFY2(sink2.first() != firstCallId, "consecutive executeParallel calls must not share a runId");
     }
     engine.clearModules();
 }
@@ -1494,6 +1525,115 @@ void TestRunEngine::testParallelStressFiftyRunsNoPollution() {
         QVERIFY2(!engine.isBusy(), qPrintable(QString("rep %1: engine still busy").arg(iter)));
     }
     engine.clearModules();
+}
+
+void TestRunEngine::testConcurrentStopDuringRunKeepsStoppedState() {
+    // 阶6 复核（三轮）：后台运行+前台 stop() 并发，停止态不得被运行收尾覆盖。
+    RunEngine& engine = RunEngine::instance();
+    for (int rep = 0; rep < 20; ++rep) {
+        engine.clearModules();
+        Project project;
+        ModuleInstance s;
+        s.id = QStringLiteral("s");
+        s.moduleId = QStringLiteral("s");
+        project.addModule(s);
+        std::atomic<int> running{0};
+        std::atomic<int> maxConc{0};
+        QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) {
+            return new ParallelSleepModule(inst.id, &running, &maxConc, 300);
+        }));
+
+        std::thread runner([&engine]() { engine.runOnce(); });
+        QThread::msleep(20); // 让运行进入执行
+        engine.stop();
+        runner.join();
+
+        QCOMPARE(engine.state(), RunState::Stopped);
+        QVERIFY2(!engine.isBusy(), "engine must not be busy after stop+join");
+    }
+    engine.clearModules();
+}
+
+void TestRunEngine::testStopSimultaneousWithBreakpointHit() {
+    // 阶6 复核（三轮）："断点命中同时停止"——断点回调内调用 stop()，
+    // 暂停应被放弃、走正常结束，状态为 Stopped 且不残留暂停。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance a;
+    a.id = QStringLiteral("A");
+    a.moduleId = QStringLiteral("A");
+    a.breakpoint = true;
+    ModuleInstance b;
+    b.id = QStringLiteral("B");
+    b.moduleId = QStringLiteral("B");
+    project.addModule(a);
+    project.addModule(b);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+
+    const QMetaObject::Connection stopConn =
+        connect(&engine, &RunEngine::breakpointHit, this, [&engine]() { engine.stop(); });
+    engine.runOnce();
+    disconnect(stopConn);
+
+    QVERIFY2(!engine.isPausedAtBreakpoint(), "stop at breakpoint must abandon pause");
+    QCOMPARE(engine.state(), RunState::Stopped);
+    QVERIFY2(!engine.isBusy(), "engine must settle after stop-at-breakpoint");
+    QVERIFY2(!log.contains("A"), "stop at breakpoint must not execute the paused module");
+
+    // 生命周期已回落：加载无断点工程应能正常执行。
+    Project project2;
+    ModuleInstance c;
+    c.id = QStringLiteral("C");
+    c.moduleId = QStringLiteral("C");
+    project2.addModule(c);
+    QStringList log2;
+    QVERIFY(engine.loadProject(&project2, [&log2](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log2;
+        return m;
+    }));
+    engine.runOnce();
+    QVERIFY2(log2.contains("C"), "engine must run normally after stop-at-breakpoint");
+    engine.clearModules();
+}
+
+void TestRunEngine::testClearAndLoadRejectedWhileRunning() {
+    // 阶6 复核（三轮）：运行期间 clearModules()/loadProject() 必须被拒绝，
+    // 不得删除正在执行的模块（生命周期锁门禁）。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance s;
+    s.id = QStringLiteral("s");
+    s.moduleId = QStringLiteral("s");
+    project.addModule(s);
+    std::atomic<int> running{0};
+    std::atomic<int> maxConc{0};
+    QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) {
+        return new ParallelSleepModule(inst.id, &running, &maxConc, 300);
+    }));
+
+    std::thread runner([&engine]() { engine.runOnce(); });
+    QThread::msleep(20);
+    QVERIFY2(engine.isBusy(), "engine must be busy during background run");
+
+    engine.clearModules();
+    QVERIFY2(!engine.modules().isEmpty(), "clearModules must be rejected while running");
+    Project p2;
+    QVERIFY2(!engine.loadProject(&p2), "loadProject must be rejected while running");
+
+    engine.stop();
+    runner.join();
+    QVERIFY2(!engine.isBusy(), "engine must settle after stop+join");
+    engine.clearModules();
+    QVERIFY(engine.modules().isEmpty());
 }
 
 void TestRunEngine::testValidateFlowReportsMissingRequiredInput() {
