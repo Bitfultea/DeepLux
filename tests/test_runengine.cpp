@@ -1,4 +1,5 @@
 #include <QMutex>
+#include <QSet>
 #include <QSignalSpy>
 #include <QThread>
 #include <QtTest/QtTest>
@@ -368,6 +369,7 @@ private slots:
     // 阶段 6 并发收口定向测试
     void testParallelSignalsDeliveredOnReceiverThread();
     void testParallelTasksSeeStableRunId();
+    void testExecuteParallelPrimitiveStableRunId();
     void testParallelStressFiftyRunsNoPollution();
     void testValidateFlowReportsMissingRequiredInput();
     void testSkippedBranchEmitsSkippedNotFailed();
@@ -1406,14 +1408,53 @@ void TestRunEngine::testParallelTasksSeeStableRunId() {
     engine.clearModules();
 }
 
+void TestRunEngine::testExecuteParallelPrimitiveStableRunId() {
+    // 阶段 6 复核：公开原语 executeParallel() 同样被 runId 快照覆盖——
+    // 同一次调用内所有并行任务看到同一固化 runId。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(4);
+
+    QMutex mutex;
+    QStringList sink;
+    QStringList names;
+    for (int i = 0; i < 4; ++i) {
+        const QString name = QString("prim%1").arg(i);
+        auto* mod = new RunIdRecordingModule(name, &mutex, &sink);
+        mod->initialize();
+        engine.addModule(mod);
+        names << name;
+    }
+
+    PortValueMap input;
+    const ExecutionResult result = engine.executeParallel(names, input);
+    QVERIFY(result.success);
+    QVERIFY2(engine.lastParallelMaxConcurrency() > 1, "executeParallel must run concurrently");
+
+    QMutexLocker locker(&mutex);
+    QCOMPARE(sink.size(), 4);
+    for (const QString& id : sink) {
+        QVERIFY2(!id.isEmpty(), "runId must be non-empty");
+        QCOMPARE(id, sink.first());
+    }
+    engine.clearModules();
+}
+
 void TestRunEngine::testParallelStressFiftyRunsNoPollution() {
-    // 阶段 6 压力：50 次并行运行，每次 runId 在本轮内稳定、运行后状态回落，
-    // 无跨运行污染（上一轮输出/状态不渗入下一轮）。
+    // 阶段 6 复核压力：50 次并行运行。除"本轮内 runId 一致"外，额外验证：
+    //  - 不同运行的 runId 不重复（跨轮 ID 集合去重）；
+    //  - clearModules 后上一轮输出无残留；
+    //  - 每轮结束后状态回落（非 Running、非 busy），控制队列无跨轮污染。
     RunEngine& engine = RunEngine::instance();
     engine.setParallelThreadCount(4);
+    QSet<QString> seenRunIds;
 
     for (int iter = 0; iter < 50; ++iter) {
         engine.clearModules();
+        // 上一轮输出必须已被清除（无残留）
+        QVERIFY2(!engine.moduleOutput(QStringLiteral("entry")).isValid(),
+                 qPrintable(QString("rep %1: stale output after clearModules").arg(iter)));
+
         QMutex mutex;
         QStringList sink;
         Project project;
@@ -1431,6 +1472,16 @@ void TestRunEngine::testParallelStressFiftyRunsNoPollution() {
         QCOMPARE(sink.size(), 4);
         for (const QString& id : sink)
             QCOMPARE(id, sink.first());
+        const QString roundId = sink.first();
+        locker.unlock();
+
+        QVERIFY2(!roundId.isEmpty(), "runId must be non-empty");
+        QVERIFY2(!seenRunIds.contains(roundId),
+                 qPrintable(QString("rep %1: runId reused across runs: %2").arg(iter).arg(roundId)));
+        seenRunIds.insert(roundId);
+
+        QVERIFY2(engine.state() != RunState::Running, qPrintable(QString("rep %1: state still Running").arg(iter)));
+        QVERIFY2(!engine.isBusy(), qPrintable(QString("rep %1: engine still busy").arg(iter)));
     }
     engine.clearModules();
 }

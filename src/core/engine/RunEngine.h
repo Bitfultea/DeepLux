@@ -294,6 +294,7 @@ private:
 
     // ABI v2 执行上下文：一次运行的 ID 与递增帧号
     QString m_runId;
+    std::atomic<qint64> m_runSeq{0}; // 阶6 复核：runId 单调序号，保证每次运行唯一
     std::atomic<qint64> m_frameId{0};
 
     // 阶段 3.3 受控并行线程池

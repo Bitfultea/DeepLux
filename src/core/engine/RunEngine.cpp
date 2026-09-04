@@ -344,11 +344,19 @@ void RunEngine::stop() {
     m_cycleTimer->stop();
     m_state.store(static_cast<int>(RunState::Stopped), std::memory_order_release);
     m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
-    clearBreakpointPauseState();
     if (m_cancellationToken) {
         m_cancellationToken->cancel();
     }
-    resetStepState();
+
+    // 阶6 复核：stop() 只发布停止状态并取消 token；执行期状态（控制队列、
+    // 暂停数据）由执行线程在退出路径（executeRun 收尾）统一清理，避免前台
+    // stop() 与执行线程并发释放/访问同一容器。仅当无执行线程（空闲或断点
+    // 暂停）时才在此清理。isBusy() 含 isExecuting()，可阻止 clearModules/
+    // loadProject 在运行尚未完全退出时执行。
+    if (!isExecuting()) {
+        clearBreakpointPauseState();
+        resetStepState();
+    }
 
     emit stateChanged(state());
     emit cycleStopped();
@@ -705,7 +713,9 @@ void RunEngine::executeRun() {
         m_runFirstError.clear();
         clearBreakpointPauseState();
         clearModuleOutputs();
-        m_runId = QString::number(QDateTime::currentMSecsSinceEpoch());
+        // 阶6 复核：runId 每次运行唯一（毫秒+单调序号），便于检出跨运行污染。
+        m_runId = QString::number(QDateTime::currentMSecsSinceEpoch()) + QLatin1Char('-') +
+                  QString::number(m_runSeq.fetch_add(1, std::memory_order_relaxed));
         m_frameId.store(0, std::memory_order_release);
         m_lastParallelMaxConcurrency.store(0, std::memory_order_release);
         m_nodeOutputs.clear();
