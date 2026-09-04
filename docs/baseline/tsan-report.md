@@ -99,3 +99,28 @@ happens-before 关系，凡 QMutex/QReadWriteLock 保护的共享数据都会被
 1. 用 `-fsanitize=thread` 重编 Qt5.15.3 后复测，可消除绝大部分"未插桩"误报。
 2. 将并行批次内的 `emit moduleStarted` 改为 `Qt::QueuedConnection` 或移出工作线程。
 3. 审查 `pipelineData` / `m_runId` 在并行路径的读写安全性。
+
+## 阶段 6 复核（并发风险收口）
+
+> 日期：2026-09-04。对应提交见 `git log`（阶段 6）。功能侧 `test_runengine`
+> **104/104 通过**（含新增 3 个定向测试与 50 次并行压力），全量 CTest 66/66。
+
+### 三类风险的处理与分类
+
+| 原"潜在真实问题" | 阶段 6 处理 | 分类 |
+| --- | --- | --- |
+| #1 工作线程 `emit moduleStarted` | 审计全部 RunEngine 信号连接均带上下文对象（Auto→Queued），MainWindow/TerminalBridge/AgentObserver 无跨线程 DirectConnection 直操 QWidget；新增 `testParallelSignalsDeliveredOnReceiverThread` 证明池线程发射的信号排队回接收者线程 | 已证明（定向测试） |
+| #2 `pipelineData`(ImageData) 按值进并行 lambda | 审计确认每任务独立副本、`collectModuleInputs` 对 `m_nodeOutputs`/连接只读、批次结果仅在等待结束后由调用线程写回；代码内加只读边界注释 | 已证明（代码审计） |
+| #3 工作线程读 `m_runId`(QString) | `executeParallel`/`executeBatchParallel` 在调用线程快照 `runId`/`token` 按值捕获，池线程不再读成员字符串；新增 `testParallelTasksSeeStableRunId`、`testParallelStressFiftyRunsNoPollution` | 已修复（定向测试） |
+
+### 门禁结论（仍不写"通过"）
+
+`build-tsan` 复跑（`setarch -R`）仍报 **70 处 data race 警告**，栈帧依旧集中在未插桩
+Qt5 同步原语（QMutex/QHash/QThreadPool），并新增 **1 处 SEGV**：
+`operator==(QString&,QString&)`，位于既有压力测试 `testStopStability50Repeats`
+的 `clearModules()/addConnection()` 与后台 run 的 stop/clear 时序（测试 harness 层，
+非 RunEngine 生产路径）。在非 TSan 构建下该测试 50 次重复稳定通过。
+
+依据门禁规则"不把未确认 TSan 警告写成通过"，阶段 6 维持 **TSan 不通过** 结论：
+已修复项（#3）与已证明项（#1/#2）以定向测试/审计闭环；残余警告与 SEGV 归为
+"未插桩 Qt 误报 + 测试 harness 时序"，需以 `-fsanitize=thread` 重编 Qt5 后复测方能清零。

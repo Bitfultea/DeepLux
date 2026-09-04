@@ -1,3 +1,4 @@
+#include <QMutex>
 #include <QSignalSpy>
 #include <QThread>
 #include <QtTest/QtTest>
@@ -321,6 +322,41 @@ private:
     int m_sleepMs;
 };
 
+// 阶段 6：记录每个并行任务收到的 ExecutionContext.runId，
+// 验证同一次运行的所有任务看到同一固化 runId。
+class RunIdRecordingModule : public ModuleBase {
+    Q_OBJECT
+public:
+    RunIdRecordingModule(const QString& name, QMutex* mutex, QStringList* sink) : m_mutex(mutex), m_sink(sink) {
+        m_moduleId = "com.deeplux.test.runid." + name;
+        m_name = name;
+        m_category = "test";
+        setThreadSafe(true);
+    }
+
+    ExecutionResult execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) override {
+        {
+            QMutexLocker locker(m_mutex);
+            m_sink->append(context.runId);
+        }
+        QThread::msleep(10); // 增大并行重叠窗口
+        return ModuleBase::execute(inputs, outputs, context);
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    QMutex* m_mutex;
+    QStringList* m_sink;
+};
+
 class TestRunEngine : public QObject {
     Q_OBJECT
 
@@ -329,6 +365,10 @@ private slots:
     void cleanupTestCase();
     void testParallelExecutesConcurrently();
     void testParallelFailureCancelsGroup();
+    // 阶段 6 并发收口定向测试
+    void testParallelSignalsDeliveredOnReceiverThread();
+    void testParallelTasksSeeStableRunId();
+    void testParallelStressFiftyRunsNoPollution();
     void testValidateFlowReportsMissingRequiredInput();
     void testSkippedBranchEmitsSkippedNotFailed();
     void testBreakpointRestoredOnLoad();
@@ -1254,6 +1294,144 @@ void TestRunEngine::testParallelFailureCancelsGroup() {
     QVERIFY(!result.success);
     QVERIFY(!result.userMessage.isEmpty());
 
+    engine.clearModules();
+}
+
+namespace {
+// 阶段 6 辅助：entry(非线程安全,单独执行) 经隐式控制边 next→control 扇出到
+// 多个线程安全模块，迫使控制图路径将其合入同一并行批次。
+void buildParallelBatchProject(Project& project, int fanout) {
+    ModuleInstance entry;
+    entry.id = QStringLiteral("entry");
+    entry.moduleId = QStringLiteral("entry");
+    project.addModule(entry);
+    for (int i = 0; i < fanout; ++i) {
+        ModuleInstance m;
+        m.id = QStringLiteral("par%1").arg(i);
+        m.moduleId = m.id;
+        project.addModule(m);
+
+        ModuleConnection ctrl;
+        ctrl.fromModuleId = QStringLiteral("entry");
+        ctrl.toModuleId = m.id;
+        ctrl.fromPort = QStringLiteral("next");
+        ctrl.toPort = QStringLiteral("control");
+        ctrl.edgeType = QStringLiteral("control");
+        project.addConnection(ctrl);
+    }
+}
+} // namespace
+
+void TestRunEngine::testParallelSignalsDeliveredOnReceiverThread() {
+    // 阶段 6（P1-1 定向）：并行批次内在工作线程发射的 moduleStarted/moduleFinished，
+    // 经带上下文的连接（Auto→Queued）必须投递到接收者所在线程（主线程），
+    // 证明不存在跨线程 DirectConnection 直操接收者状态。
+    // 槽内只写堆上状态（QSharedPointer），即使早退遗留排队投递也不会悬空。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(4);
+
+    QThread* mainThread = QThread::currentThread();
+    struct SigState {
+        QMutex mutex;
+        QList<QThread*> started;
+        QList<QThread*> finished;
+    };
+    const auto state = QSharedPointer<SigState>::create();
+
+    const QMetaObject::Connection c1 = connect(&engine, &RunEngine::moduleStarted, this, [state](const QString&) {
+        QMutexLocker locker(&state->mutex);
+        state->started.append(QThread::currentThread());
+    });
+    const QMetaObject::Connection c2 =
+        connect(&engine, &RunEngine::moduleFinished, this, [state](const QString&, bool, int) {
+            QMutexLocker locker(&state->mutex);
+            state->finished.append(QThread::currentThread());
+        });
+
+    std::atomic<int> running{0};
+    std::atomic<int> maxConc{0};
+    Project project;
+    buildParallelBatchProject(project, 4);
+    QVERIFY2(engine.loadProject(&project,
+                                [&](const ModuleInstance& inst) -> ModuleBase* {
+                                    auto* mod = new ParallelSleepModule(inst.id, &running, &maxConc, 30);
+                                    mod->setThreadSafe(inst.id != QLatin1String("entry"));
+                                    return mod;
+                                }),
+             "parallel batch project must load");
+
+    engine.runOnce();
+    QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(state->started.size(), 5, 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(state->finished.size(), 5, 5000);
+    disconnect(c1);
+    disconnect(c2);
+
+    // 证明真实走了并行批次（moduleStarted 确由工作线程发射、再排队回主线程）
+    QVERIFY2(engine.lastParallelMaxConcurrency() > 1, "expected a real parallel batch");
+    QMutexLocker locker(&state->mutex);
+    for (QThread* t : state->started)
+        QCOMPARE(t, mainThread);
+    for (QThread* t : state->finished)
+        QCOMPARE(t, mainThread);
+    engine.clearModules();
+}
+
+void TestRunEngine::testParallelTasksSeeStableRunId() {
+    // 阶段 6（P1-3 定向）：同一次运行的所有并行任务必须看到同一固化 runId。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(4);
+
+    QMutex mutex;
+    QStringList sink;
+    Project project;
+    buildParallelBatchProject(project, 4);
+    QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) -> ModuleBase* {
+        auto* mod = new RunIdRecordingModule(inst.id, &mutex, &sink);
+        mod->setThreadSafe(inst.id != QLatin1String("entry"));
+        return mod;
+    }));
+
+    engine.runOnce();
+    QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
+
+    QMutexLocker locker(&mutex);
+    QCOMPARE(sink.size(), 5);
+    for (const QString& id : sink) {
+        QVERIFY2(!id.isEmpty(), "runId must be non-empty");
+        QCOMPARE(id, sink.first());
+    }
+    engine.clearModules();
+}
+
+void TestRunEngine::testParallelStressFiftyRunsNoPollution() {
+    // 阶段 6 压力：50 次并行运行，每次 runId 在本轮内稳定、运行后状态回落，
+    // 无跨运行污染（上一轮输出/状态不渗入下一轮）。
+    RunEngine& engine = RunEngine::instance();
+    engine.setParallelThreadCount(4);
+
+    for (int iter = 0; iter < 50; ++iter) {
+        engine.clearModules();
+        QMutex mutex;
+        QStringList sink;
+        Project project;
+        buildParallelBatchProject(project, 3);
+        QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) -> ModuleBase* {
+            auto* mod = new RunIdRecordingModule(inst.id, &mutex, &sink);
+            mod->setThreadSafe(inst.id != QLatin1String("entry"));
+            return mod;
+        }));
+
+        engine.runOnce();
+        QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
+
+        QMutexLocker locker(&mutex);
+        QCOMPARE(sink.size(), 4);
+        for (const QString& id : sink)
+            QCOMPARE(id, sink.first());
+    }
     engine.clearModules();
 }
 

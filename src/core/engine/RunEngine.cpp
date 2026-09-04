@@ -85,6 +85,11 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
     if (m_cancellationToken)
         m_cancellationToken->reset();
 
+    // 阶6：runId/token 在调用线程快照后按值进入工作任务；
+    // 池线程不得读取可能并发变化的成员字符串（m_runId）。
+    const QString parallelRunId = m_runId;
+    CancellationToken* const parallelToken = m_cancellationToken;
+
     std::atomic<int> running{0};
     std::atomic<int> maxConcurrent{0};
     QMutex errMutex;
@@ -102,8 +107,9 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
     for (const QString& name : validNames) {
         ModuleBase* mod = getModule(name);
         // 同一实例同刻仅一次：每个任务持有独立输入/输出副本
-        m_parallelPool.start([this, mod, name, &sharedInput, &running, &maxConcurrent, &errMutex, &haveError,
-                              &firstError, &doneMutex, &doneCond, &finished]() {
+        // 每任务独立输入/输出副本（in/out 均为局部值）；sharedInput 只读。
+        m_parallelPool.start([this, mod, name, parallelRunId, parallelToken, &sharedInput, &running, &maxConcurrent,
+                              &errMutex, &haveError, &firstError, &doneMutex, &doneCond, &finished]() {
             const int cur = ++running;
             int expected = maxConcurrent.load();
             while (cur > expected && !maxConcurrent.compare_exchange_weak(expected, cur)) {
@@ -112,9 +118,9 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
             PortValueMap in = sharedInput;
             PortValueMap out;
             ExecutionContext ctx;
-            ctx.runId = m_runId;
+            ctx.runId = parallelRunId;
             ctx.frameId = m_frameId.load(std::memory_order_relaxed);
-            ctx.cancellationToken = m_cancellationToken;
+            ctx.cancellationToken = parallelToken;
             const ExecutionResult r = mod->execute(in, out, ctx);
             --running;
 
@@ -124,8 +130,8 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
                     haveError = true;
                     firstError = r;
                 }
-                if (m_cancellationToken)
-                    m_cancellationToken->cancel(); // 取消同组剩余任务
+                if (parallelToken)
+                    parallelToken->cancel(); // 取消同组剩余任务
             }
 
             QMutexLocker doneLocker(&doneMutex);
@@ -913,6 +919,13 @@ void RunEngine::executeBatchParallel(const QStringList& batch, ImageData& pipeli
     int finished = 0;
     const int total = batch.size();
 
+    // 阶6：runId/token 在调用线程快照后按值进入工作任务；池线程不得读取
+    // 可能并发变化的成员字符串（m_runId）。pipelineData 按值捕获为每任务
+    // 独立副本，collectModuleInputs 对其与 m_nodeOutputs 均只读；批次结果
+    // 仅在下方等待结束后由调用线程写回共享状态（只读边界）。
+    const QString batchRunId = m_runId;
+    CancellationToken* const batchToken = m_cancellationToken;
+
     for (const QString& mod : batch) {
         ModuleBase* module = getModule(mod);
         if (!module) {
@@ -923,64 +936,64 @@ void RunEngine::executeBatchParallel(const QStringList& batch, ImageData& pipeli
             continue;
         }
 
-        m_parallelPool.start(
-            [this, mod, module, pipelineData, &results, &resultMutex, &cond, &finished, &running, &maxConcurrent]() {
-                ParallelResult result;
-                QElapsedTimer timer;
-                timer.start();
-                emit moduleStarted(mod);
+        m_parallelPool.start([this, mod, module, batchRunId, batchToken, pipelineData, &results, &resultMutex, &cond,
+                              &finished, &running, &maxConcurrent]() {
+            ParallelResult result;
+            QElapsedTimer timer;
+            timer.start();
+            emit moduleStarted(mod);
 
-                if (m_cancellationToken && m_cancellationToken->isCancelledFast()) {
-                    result.error = tr("Parallel module cancelled before execution: %1").arg(mod);
-                } else {
-                    const int cur = ++running;
-                    int expected = maxConcurrent.load();
-                    while (cur > expected && !maxConcurrent.compare_exchange_weak(expected, cur)) {
-                    }
-
-                    module->setCancellationToken(m_cancellationToken);
-                    const PortValueMap portInputs = collectModuleInputs(mod, pipelineData);
-                    PortValueMap portOutputs;
-                    ExecutionContext context;
-                    context.runId = m_runId;
-                    context.frameId = m_frameId.fetch_add(1, std::memory_order_relaxed);
-                    context.timestampMs = QDateTime::currentMSecsSinceEpoch();
-                    context.runMode = module->flowControlType();
-                    context.cancellationToken = m_cancellationToken;
-                    const ExecutionResult execution = module->execute(portInputs, portOutputs, context);
-
-                    result.success = execution.success;
-                    result.outputs = portOutputs;
-                    result.error = execution.userMessage;
-                    if (result.success && portOutputs.contains(QStringLiteral("image"))) {
-                        const ImageData output = portOutputs.value(QStringLiteral("image")).value<ImageData>();
-                        const QMap<QString, QVariant> values = output.allData();
-                        const ControlFlowType type = module->flowControlType();
-                        if (type == ControlFlowType::Conditional || type == ControlFlowType::ConditionalElse) {
-                            if (values.contains(QStringLiteral("if_result")))
-                                result.controlResult = values.value(QStringLiteral("if_result")).toBool();
-                            else if (values.contains(QStringLiteral("condition_result")))
-                                result.controlResult = values.value(QStringLiteral("condition_result")).toBool();
-                        } else if (type == ControlFlowType::While && values.contains(QStringLiteral("while_result"))) {
-                            result.controlResult = values.value(QStringLiteral("while_result")).toBool();
-                        } else if (type == ControlFlowType::StopLoop &&
-                                   values.contains(QStringLiteral("stop_while_requested"))) {
-                            result.controlResult = values.value(QStringLiteral("stop_while_requested")).toBool();
-                        }
-                    }
-                    --running;
+            if (batchToken && batchToken->isCancelledFast()) {
+                result.error = tr("Parallel module cancelled before execution: %1").arg(mod);
+            } else {
+                const int cur = ++running;
+                int expected = maxConcurrent.load();
+                while (cur > expected && !maxConcurrent.compare_exchange_weak(expected, cur)) {
                 }
-                result.elapsedMs = static_cast<int>(timer.elapsed());
 
-                {
-                    QMutexLocker locker(&resultMutex);
-                    results.insert(mod, result);
-                    ++finished;
-                    if (!result.success && m_cancellationToken)
-                        m_cancellationToken->cancel();
-                    cond.wakeAll();
+                module->setCancellationToken(batchToken);
+                const PortValueMap portInputs = collectModuleInputs(mod, pipelineData);
+                PortValueMap portOutputs;
+                ExecutionContext context;
+                context.runId = batchRunId;
+                context.frameId = m_frameId.fetch_add(1, std::memory_order_relaxed);
+                context.timestampMs = QDateTime::currentMSecsSinceEpoch();
+                context.runMode = module->flowControlType();
+                context.cancellationToken = batchToken;
+                const ExecutionResult execution = module->execute(portInputs, portOutputs, context);
+
+                result.success = execution.success;
+                result.outputs = portOutputs;
+                result.error = execution.userMessage;
+                if (result.success && portOutputs.contains(QStringLiteral("image"))) {
+                    const ImageData output = portOutputs.value(QStringLiteral("image")).value<ImageData>();
+                    const QMap<QString, QVariant> values = output.allData();
+                    const ControlFlowType type = module->flowControlType();
+                    if (type == ControlFlowType::Conditional || type == ControlFlowType::ConditionalElse) {
+                        if (values.contains(QStringLiteral("if_result")))
+                            result.controlResult = values.value(QStringLiteral("if_result")).toBool();
+                        else if (values.contains(QStringLiteral("condition_result")))
+                            result.controlResult = values.value(QStringLiteral("condition_result")).toBool();
+                    } else if (type == ControlFlowType::While && values.contains(QStringLiteral("while_result"))) {
+                        result.controlResult = values.value(QStringLiteral("while_result")).toBool();
+                    } else if (type == ControlFlowType::StopLoop &&
+                               values.contains(QStringLiteral("stop_while_requested"))) {
+                        result.controlResult = values.value(QStringLiteral("stop_while_requested")).toBool();
+                    }
                 }
-            });
+                --running;
+            }
+            result.elapsedMs = static_cast<int>(timer.elapsed());
+
+            {
+                QMutexLocker locker(&resultMutex);
+                results.insert(mod, result);
+                ++finished;
+                if (!result.success && batchToken)
+                    batchToken->cancel();
+                cond.wakeAll();
+            }
+        });
     }
 
     // 等待全部完成
