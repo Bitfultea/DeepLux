@@ -82,12 +82,15 @@ int RunEngine::parallelThreadCount() const {
 }
 
 ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortValueMap& sharedInput) {
-    if (m_cancellationToken)
-        m_cancellationToken->reset();
+    // 阶6 复核（四轮 P0-1）：公开并行原语与执行/维护共享排他租约——取租约期间
+    // clearModules/loadProject 被拒绝（无 UAF），且不再无条件重置全局 token 撤销
+    // 他人停止；token 重置在租约临界区内（此时无其它运行）。
+    if (!tryAcquireLease()) {
+        return ExecutionResult::fail(ExecError::Processing, tr("executeParallel: engine busy or stop pending"),
+                                     QStringLiteral("lease"));
+    }
 
-    // 阶6 复核（三轮）：公开原语 executeParallel() 始终生成自己的局部 runId，
-    // 不再读取 m_runId——完整运行结束后 m_runId 不清空，复用会使连续独立调用
-    // 共享历史 ID。局部 ID 由 m_runSeq 保证非空且每次调用唯一；token 调用线程快照。
+    // 阶6 复核（三轮）：始终生成自己的局部 runId（不读 m_runId），连续独立调用不共享。
     const QString parallelRunId = QString::number(QDateTime::currentMSecsSinceEpoch()) + QLatin1Char('-') +
                                   QString::number(m_runSeq.fetch_add(1, std::memory_order_relaxed));
     CancellationToken* const parallelToken = m_cancellationToken;
@@ -149,6 +152,7 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
     }
 
     m_lastParallelMaxConcurrency.store(maxConcurrent.load(), std::memory_order_release);
+    releaseLease();
 
     if (haveError)
         return firstError;
@@ -160,12 +164,8 @@ void RunEngine::runOnce() {
         return;
     }
 
-    resetStepState();
-    m_runMode.store(static_cast<int>(RunMode::RunOnce), std::memory_order_release);
     Logger::instance().info(tr("Starting single run"), "Run");
-    if (!tryBeginExecution()) {
-        return;
-    }
+    // 阶6 四轮：取权前不修改任何运行/单步状态；取权+提交在 executeRun 内原子完成。
     executeRun();
 }
 
@@ -194,6 +194,18 @@ bool RunEngine::stepOnce() {
         }
     }
 
+    // 阶6 复核（四轮 P1-3）：先取租约、提交状态，再修改单步/控制状态；
+    // 取租约前不触碰任何运行期状态，避免干扰刚开始的另一次运行。
+    if (!tryAcquireLease()) {
+        return false;
+    }
+    m_runMode.store(static_cast<int>(RunMode::RunOnce), std::memory_order_release);
+    m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
+    emit stateChanged(state());
+    emit runStarted();
+
+    m_runStartTime = QDateTime::currentDateTime();
+
     if (m_stepCurrentModuleName.isEmpty()) {
         clearModuleOutputs();
         m_nodeOutputs.clear();
@@ -211,21 +223,8 @@ bool RunEngine::stepOnce() {
 
     if (m_stepCurrentModuleName.isEmpty()) {
         resetStepState();
+        releaseLease();
         return false;
-    }
-
-    // 阶6 复核（二轮）：单步同样经唯一同步点取执行权。
-    if (!tryBeginExecution()) {
-        return false;
-    }
-    m_runMode.store(static_cast<int>(RunMode::RunOnce), std::memory_order_release);
-    m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
-    emit stateChanged(state());
-    emit runStarted();
-
-    m_runStartTime = QDateTime::currentDateTime();
-    if (m_cancellationToken) {
-        m_cancellationToken->reset();
     }
 
     const QString moduleToRun = m_stepCurrentModuleName;
@@ -270,13 +269,9 @@ bool RunEngine::stepOnce() {
                 : (m_lastModuleError.isEmpty() ? tr("Step execution failed: %1").arg(moduleToRun) : m_lastModuleError);
     result.elapsedMs = elapsedMs;
     result.finishedTime = QDateTime::currentDateTime();
-    // 阶6 复核（三轮）：单步收尾只释放执行权（保留跨步控制队列/暂停状态，
-    // 不能走 endExecutionCleanup 清队列）；并发 stop() 已置 Stopped 时不覆盖。
-    {
-        QMutexLocker locker(&m_lifecycleMutex);
-        m_stopPending = false;
-        m_executing.store(false, std::memory_order_release);
-    }
+    // 阶6 复核（四轮）：单步收尾只释放租约（保留跨步控制队列/暂停状态）；
+    // 并发 stop() 已置 Stopped 时下方不覆盖。
+    releaseLease();
     emit runFinished(result);
 
     if (state() != RunState::Stopped) {
@@ -295,10 +290,6 @@ void RunEngine::resetStepState() {
 }
 
 void RunEngine::start() {
-    // 阶6 复核（二轮）：检查走生命周期锁，避免与开始/停止转换交错。
-    if (lifecycleBusyLocked()) {
-        return;
-    }
     {
         QReadLocker locker(&m_moduleLock);
         if (m_modules.isEmpty()) {
@@ -314,12 +305,17 @@ void RunEngine::start() {
         }
     }
 
-    resetStepState();
+    // 阶6 复核（四轮）：检查与"runMode/state 提交"在同一临界区原子完成。
     {
         QMutexLocker locker(&m_lifecycleMutex);
+        if (m_executing.load(std::memory_order_acquire) || m_maintenance || m_stopPending ||
+            state() == RunState::Running || state() == RunState::Paused) {
+            return;
+        }
         m_runMode.store(static_cast<int>(RunMode::RunCycle), std::memory_order_release);
         m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
     }
+    resetStepState();
     emit stateChanged(state());
     emit cycleStarted();
 
@@ -328,11 +324,14 @@ void RunEngine::start() {
 }
 
 void RunEngine::pause() {
-    if (state() != RunState::Running) {
-        return;
+    // 阶6 复核（四轮）：Running→Paused 检查+提交在同一临界区。
+    {
+        QMutexLocker locker(&m_lifecycleMutex);
+        if (state() != RunState::Running) {
+            return;
+        }
+        m_state.store(static_cast<int>(RunState::Paused), std::memory_order_release);
     }
-
-    m_state.store(static_cast<int>(RunState::Paused), std::memory_order_release);
     m_cycleTimer->stop();
     emit stateChanged(state());
 
@@ -345,15 +344,16 @@ void RunEngine::resume() {
     }
 
     if (m_pausedAtBreakpoint) {
-        if (!tryBeginExecution()) {
-            return;
-        }
-        executeRun();
+        // executeRun 内 tryBeginExecution(fresh=false) 原子取权+提交。
+        executeRun(RunMode::RunOnce);
         return;
     }
 
     {
         QMutexLocker locker(&m_lifecycleMutex);
+        if (state() != RunState::Paused) {
+            return;
+        }
         m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
     }
     m_cycleTimer->start();
@@ -362,20 +362,75 @@ void RunEngine::resume() {
     Logger::instance().info(tr("Run resumed"), "Run");
 }
 
-bool RunEngine::tryBeginExecution() {
-    // 唯一取执行权入口：锁内原子判定；m_executing 仅在锁内改写，
-    // 关闭 isBusy-then-act 与"停止请求丢失"窗口。
+bool RunEngine::tryBeginExecution(RunMode mode, bool fresh) {
+    // 唯一取执行权入口：取权、runMode/state 提交、token 重置、每运行重置全部在
+    // 同一临界区完成（阶6 四轮 P1-3/P1-4），stop() 无法插在"取权"与"状态提交"
+    // 之间导致停止丢失或状态卡死。
     QMutexLocker locker(&m_lifecycleMutex);
-    if (m_executing.load(std::memory_order_acquire)) {
+    if (m_executing.load(std::memory_order_acquire) || m_maintenance) {
         return false;
     }
     if (m_stopPending) {
-        // 停止请求先于本次开始：放弃开始并消费停止标志。
         m_stopPending = false;
         return false;
     }
     m_executing.store(true, std::memory_order_release);
+    m_runMode.store(static_cast<int>(mode), std::memory_order_release);
+    m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
+    if (m_cancellationToken) {
+        m_cancellationToken->reset();
+    }
+    if (fresh) {
+        m_runStartTime = QDateTime::currentDateTime();
+        m_runAllSuccess = true;
+        m_runFirstError.clear();
+        m_runId = QString::number(QDateTime::currentMSecsSinceEpoch()) + QLatin1Char('-') +
+                  QString::number(m_runSeq.fetch_add(1, std::memory_order_relaxed));
+        m_frameId.store(0, std::memory_order_release);
+        m_lastParallelMaxConcurrency.store(0, std::memory_order_release);
+    }
     return true;
+}
+
+bool RunEngine::tryAcquireLease() {
+    // 公开并行原语 executeParallel 的排他租约：与执行/维护互斥，取租约时重置
+    // token（此时无其它运行，安全），不再无条件重置全局 token 撤销他人停止。
+    QMutexLocker locker(&m_lifecycleMutex);
+    if (m_executing.load(std::memory_order_acquire) || m_maintenance) {
+        return false;
+    }
+    if (m_stopPending) {
+        m_stopPending = false;
+        return false;
+    }
+    m_executing.store(true, std::memory_order_release);
+    if (m_cancellationToken) {
+        m_cancellationToken->reset();
+    }
+    return true;
+}
+
+void RunEngine::releaseLease() {
+    QMutexLocker locker(&m_lifecycleMutex);
+    m_stopPending = false;
+    m_executing.store(false, std::memory_order_release);
+}
+
+bool RunEngine::tryAcquireMaintenance() {
+    // 模块维护租约：与执行/其它维护互斥；持有期间 tryBeginExecution 拒绝，
+    // 保证维护期间无运行启动（消除 check-then-act 悬空指针/混合工程）。
+    QMutexLocker locker(&m_lifecycleMutex);
+    if (m_executing.load(std::memory_order_acquire) || m_maintenance || state() == RunState::Running ||
+        state() == RunState::Paused) {
+        return false;
+    }
+    m_maintenance = true;
+    return true;
+}
+
+void RunEngine::releaseMaintenance() {
+    QMutexLocker locker(&m_lifecycleMutex);
+    m_maintenance = false;
 }
 
 void RunEngine::endExecutionCleanup() {
@@ -391,7 +446,8 @@ void RunEngine::endExecutionCleanup() {
 
 bool RunEngine::lifecycleBusyLocked() {
     QMutexLocker locker(&m_lifecycleMutex);
-    return m_executing.load(std::memory_order_acquire) || state() == RunState::Running || state() == RunState::Paused;
+    return m_executing.load(std::memory_order_acquire) || m_maintenance || state() == RunState::Running ||
+           state() == RunState::Paused;
 }
 
 void RunEngine::stop() {
@@ -433,11 +489,7 @@ void RunEngine::requestCancellation() {
     stop();
 }
 
-void RunEngine::addModule(ModuleBase* module) {
-    if (lifecycleBusyLocked()) {
-        Logger::instance().warning(tr("Cannot add modules while the flow is running"), "Run");
-        return;
-    }
+void RunEngine::addModuleLocked(ModuleBase* module) {
     QWriteLocker locker(&m_moduleLock);
     if (module && !m_modules.contains(module)) {
         m_modules.append(module);
@@ -447,15 +499,28 @@ void RunEngine::addModule(ModuleBase* module) {
     }
 }
 
+void RunEngine::addModule(ModuleBase* module) {
+    // 阶6 复核（四轮 P0-2）：检查与修改在同一维护租约内原子完成。
+    if (!tryAcquireMaintenance()) {
+        Logger::instance().warning(tr("Cannot add modules while the flow is running"), "Run");
+        return;
+    }
+    addModuleLocked(module);
+    releaseMaintenance();
+}
+
 bool RunEngine::loadProject(Project* project, ModuleFactory factory) {
-    if (lifecycleBusyLocked()) {
+    // 阶6 复核（四轮 P0-2）：整个加载过程持有维护租约，stop()+清空+建模块+添加
+    // 期间无运行启动、无并发维护，杜绝混合工程状态与悬空模块指针。
+    if (!tryAcquireMaintenance()) {
         emit errorOccurred(tr("Cannot load a project while the flow is running"));
         return false;
     }
     stop();
-    clearModules();
+    clearModulesLocked();
 
     if (!project) {
+        releaseMaintenance();
         emit errorOccurred(tr("No project to load"));
         return false;
     }
@@ -481,7 +546,8 @@ bool RunEngine::loadProject(Project* project, ModuleFactory factory) {
     for (const ModuleInstance& inst : project->modules()) {
         ModuleBase* module = factory(inst);
         if (!module) {
-            clearModules();
+            clearModulesLocked();
+            releaseMaintenance();
             emit errorOccurred(tr("Cannot create module: %1").arg(inst.moduleId));
             return false;
         }
@@ -490,13 +556,14 @@ bool RunEngine::loadProject(Project* project, ModuleFactory factory) {
         module->setParams(inst.params);
         if (!module->initialize()) {
             delete module;
-            clearModules();
+            clearModulesLocked();
+            releaseMaintenance();
             emit errorOccurred(tr("Cannot initialize module: %1").arg(inst.moduleId));
             return false;
         }
 
         m_ownedModules.append(module);
-        addModule(module);
+        addModuleLocked(module);
 
         // 阶段 B: 断点/禁用同步
         if (inst.breakpoint)
@@ -507,16 +574,19 @@ bool RunEngine::loadProject(Project* project, ModuleFactory factory) {
 
     QString orderError;
     if (!buildExecutionOrder(project, orderError)) {
-        clearModules();
+        clearModulesLocked();
+        releaseMaintenance();
         emit errorOccurred(orderError);
         return false;
     }
 
+    releaseMaintenance();
     return true;
 }
 
 void RunEngine::removeModule(const QString& moduleId) {
-    if (lifecycleBusyLocked()) {
+    // 阶6 复核（四轮 P0-2）：检查与删除同租约原子，删除期间无运行持有模块指针。
+    if (!tryAcquireMaintenance()) {
         Logger::instance().warning(tr("Cannot remove modules while the flow is running"), "Run");
         return;
     }
@@ -566,13 +636,10 @@ void RunEngine::removeModule(const QString& moduleId) {
             m_pausedAtBreakpoint = false;
         }
     }
+    releaseMaintenance();
 }
 
-void RunEngine::clearModules() {
-    if (lifecycleBusyLocked()) {
-        Logger::instance().warning(tr("Cannot clear modules while a module is executing"), "Run");
-        return;
-    }
+void RunEngine::clearModulesLocked() {
     QWriteLocker locker(&m_moduleLock);
     qDeleteAll(m_ownedModules);
     m_ownedModules.clear();
@@ -594,6 +661,16 @@ void RunEngine::clearModules() {
     }
     clearOutputs();
     resetStepState();
+}
+
+void RunEngine::clearModules() {
+    // 阶6 复核（四轮 P0-2）：检查与清空同维护租约原子完成。
+    if (!tryAcquireMaintenance()) {
+        Logger::instance().warning(tr("Cannot clear modules while a module is executing"), "Run");
+        return;
+    }
+    clearModulesLocked();
+    releaseMaintenance();
 }
 
 QList<ModuleBase*> RunEngine::modules() const {
@@ -710,16 +787,17 @@ int RunEngine::lastElapsedMs() const {
 
 void RunEngine::onTimerTick() {
     if (state() == RunState::Running && runMode() == RunMode::RunCycle) {
-        if (tryBeginExecution()) {
-            executeRun();
-        }
+        executeRun(RunMode::RunCycle);
     }
 }
 
-void RunEngine::executeRun() {
-    // 阶6 复核（三轮）：执行权由各入口（runOnce/onTimerTick/resume）经
-    // tryBeginExecution() 恰好获取一次；executeRun 本身不再重复取权。
+void RunEngine::executeRun(RunMode mode) {
+    // 阶6 复核（四轮）：取权、runMode/state 提交、token 重置、每运行重置全部在
+    // tryBeginExecution 同一临界区原子完成；stop() 无法插进启动窗口。
     const bool resuming = m_pausedAtBreakpoint && !m_pauseResumeModule.isEmpty();
+    if (!tryBeginExecution(mode, !resuming)) {
+        return;
+    }
 
     if (!resuming) {
         {
@@ -732,13 +810,15 @@ void RunEngine::executeRun() {
                 result.errorMessage = tr("No modules to run");
                 result.elapsedMs = 0;
                 result.finishedTime = QDateTime::currentDateTime();
+                // 阶6 四轮：tryBegin 已置 Running，早退须复位 state 避免卡死；
+                // runMode 仅 cycle 复位（保留 RunOnce 供上层断言委托）。
                 if (runMode() == RunMode::RunCycle) {
                     m_cycleTimer->stop();
                     m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
-                    m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
-                    emit stateChanged(state());
                     emit cycleStopped();
                 }
+                m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
+                emit stateChanged(state());
                 emit runFinished(result);
                 return;
             }
@@ -753,40 +833,27 @@ void RunEngine::executeRun() {
             result.errorMessage = validationErrors.join(QStringLiteral("\n"));
             result.finishedTime = QDateTime::currentDateTime();
             emit errorOccurred(result.errorMessage);
+            // 阶6 四轮：tryBegin 已置 Running，校验失败早退须复位 state；
+            // runMode 仅 cycle 复位。
             if (runMode() == RunMode::RunCycle) {
                 m_cycleTimer->stop();
                 m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
-                m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
-                emit stateChanged(state());
                 emit cycleStopped();
             }
+            m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
+            emit stateChanged(state());
             emit runFinished(result);
             return;
         }
 
-        m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
         emit stateChanged(state());
         emit runStarted();
 
-        m_runStartTime = QDateTime::currentDateTime();
-        m_runAllSuccess = true;
-        m_runFirstError.clear();
         clearBreakpointPauseState();
         clearModuleOutputs();
-        // 阶6 复核：runId 每次运行唯一（毫秒+单调序号），便于检出跨运行污染。
-        m_runId = QString::number(QDateTime::currentMSecsSinceEpoch()) + QLatin1Char('-') +
-                  QString::number(m_runSeq.fetch_add(1, std::memory_order_relaxed));
-        m_frameId.store(0, std::memory_order_release);
-        m_lastParallelMaxConcurrency.store(0, std::memory_order_release);
         m_nodeOutputs.clear();
-
-        if (m_cancellationToken) {
-            m_cancellationToken->reset();
-        }
-
         buildModuleTree();
     } else {
-        // 执行槽已由 beginExecution() 获取，此处无需再抢占。
         if (m_breakpointPausedAt.isValid()) {
             const qint64 pausedMs = m_breakpointPausedAt.msecsTo(QDateTime::currentDateTime());
             if (pausedMs > 0) {
@@ -795,7 +862,6 @@ void RunEngine::executeRun() {
         }
         m_pausedAtBreakpoint = false;
         m_skipBreakpointOnce = true;
-        m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
         emit stateChanged(state());
     }
 

@@ -112,14 +112,14 @@ happens-before 关系，凡 QMutex/QReadWriteLock 保护的共享数据都会被
 | #1 工作线程 `emit moduleStarted` | 审计全部 RunEngine 信号连接均带上下文对象（Auto→Queued），无跨线程 DirectConnection 直操 QWidget；`testParallelSignalsDeliveredOnReceiverThread` 证明池线程信号排队回接收者线程 | 已证明（定向测试） |
 | #2 `pipelineData`(ImageData) 按值进并行 lambda | 每任务独立副本、`collectModuleInputs` 对 `m_nodeOutputs`/连接只读、批次结果仅在等待结束后由调用线程写回 | 已证明（代码审计） |
 | #3 工作线程读 `m_runId`(QString) | 调用线程快照 `runId`/`token` 按值捕获；`executeParallel()` **始终**自生成局部 runId（不读 `m_runId`，连续独立调用 ID 不同）；runId="毫秒+单调序号" | 已修复（定向测试） |
-| #4 `stop()` 与执行线程并发清理 | 引入唯一生命周期同步点 `m_lifecycleMutex`：所有执行入口（runOnce/onTimerTick/resume）经 `tryBeginExecution()` 在锁内恰好取一次执行权（删除 `m_beginInFlight`）；`stop()/start()/loadProject()/clearModules()` 检查与转换同锁；断点内层只报告命中，外层 `executeRun` 在锁内提交暂停/释放执行权；`m_executing` 清理后才置 false | 已修复（SEGV/HUAf 清零） |
-| #5 并发生命周期回归（复核三轮要求） | 新增 `testConcurrentStopDuringRunKeepsStoppedState`(20 次)、`testStopSimultaneousWithBreakpointHit`、`testClearAndLoadRejectedWhileRunning`，覆盖并发 start/step/run/stop/load/clear 与"断点命中同时停止" | 已证明（定向测试） |
+| #4 生命周期租约不排他（P0：executeParallel 绕过、维护 check-then-act、stop 被启动覆盖） | 四轮重构为**单一排他租约**：执行（runOnce/onTimerTick/resume/stepOnce）经 `tryBeginExecution()`/`tryAcquireLease()`、维护（add/remove/clear/load）经 `tryAcquireMaintenance()`、公开 `executeParallel()` 经 `tryAcquireLease()`，三者共用 `m_lifecycleMutex` 互斥；**取权与 runMode/state 提交、token 重置同临界区**（消除启动窗口）；维护检查与修改同租约原子（消除悬空指针/混合工程）；早退路径复位 state 防卡死 | 已修复（SEGV/HUAf 清零） |
+| #5 并发生命周期回归（复核三/四轮要求，屏障驱动） | `testConcurrentStopDuringRunKeepsStoppedState`（50 次，entered 屏障+立即 stop，覆盖启动窗口/执行中）、`testConcurrentMaintenanceDuringRunStart`（30 次，run 启动窗口内并发 clear/load）、`testStopSimultaneousWithBreakpointHit`、`testClearAndLoadRejectedWhileRunning`。实际覆盖：并发 run/stop/load/clear 与断点同时停止；start/pause/resume/stepOnce 的转换已串行化但**未**逐一并发回归 | 已证明（定向测试，范围如左列） |
 
 ### 门禁结论（仍不写"通过"）
 
 `build-tsan` 复跑（`setarch -R`，原始日志见 `tsan-runengine-full.txt`）：
-**heap-use-after-free 与 SEGV 均为 0**；功能侧 108/108 全过。data race 警告数受
-调度影响：**单次样本 49，多轮复跑范围 49–62**（本轮两次 55/62），不以此作确定结论。
+**heap-use-after-free 与 SEGV 均为 0**；功能侧 109/109 全过。data race 警告数**随调度
+变化**（实测样本曾在 47–83 间波动），不维护封闭区间、不以此作确定结论。
 
 按调用栈分类（均为高概率误报）：
 - `ImageData` 隐式共享引用计数跨线程拷贝（Qt 未插桩，原子引用计数无法建立 happens-before）；

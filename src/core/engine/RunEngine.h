@@ -194,7 +194,7 @@ private:
     RunEngine();
     ~RunEngine();
 
-    void executeRun();
+    void executeRun(RunMode mode = RunMode::RunOnce);
     // 阶段 D1: 显式控制图执行（激活队列）
     void executeRunWithControlGraph(ImageData& pipelineData);
     void executeBatchParallel(const QStringList& batch, ImageData& pipelineData);
@@ -226,13 +226,22 @@ private:
     std::atomic<int> m_state{static_cast<int>(RunState::Idle)};
     std::atomic<int> m_runMode{static_cast<int>(RunMode::None)};
     std::atomic_bool m_executing{false};
-    // 阶6 复核（二轮）：唯一生命周期同步点——所有执行入口经 tryBeginExecution()
-    // 在锁内取得执行权（m_executing 仅在锁内改写）；stop()/start()/loadProject()/
-    // clearModules() 的检查与状态转换使用同一把锁；断点暂停由外层 executeRun 在锁内
-    // 提交并释放执行权。m_stopPending 仅在 m_lifecycleMutex 内读写。
+    // 阶6 复核（四轮）：唯一排他生命周期租约。执行（runOnce/onTimerTick/resume/
+    // stepOnce）、维护（add/remove/clear/load）、公开并行原语（executeParallel）
+    // 共用 m_lifecycleMutex 下的 m_executing/m_maintenance 租约，互斥且 check-then-act
+    // 原子。tryBeginExecution() 在同一临界区完成"取执行权+runMode/state 提交+token
+    // 重置+每运行重置"，消除启动窗口；stop() 同锁发布停止。m_stopPending/m_maintenance
+    // 仅在 m_lifecycleMutex 内读写。
     QMutex m_lifecycleMutex;
     bool m_stopPending = false;
-    bool tryBeginExecution();
+    bool m_maintenance = false;
+    bool tryBeginExecution(RunMode mode, bool fresh);
+    bool tryAcquireLease();
+    void releaseLease();
+    bool tryAcquireMaintenance();
+    void releaseMaintenance();
+    void clearModulesLocked();
+    void addModuleLocked(ModuleBase* module);
     void endExecutionCleanup();
     bool lifecycleBusyLocked();
     QTimer* m_cycleTimer = nullptr;

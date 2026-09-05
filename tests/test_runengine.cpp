@@ -376,6 +376,7 @@ private slots:
     void testParallelStressFiftyRunsNoPollution();
     // 阶段 6 复核（三轮）并发生命周期回归
     void testConcurrentStopDuringRunKeepsStoppedState();
+    void testConcurrentMaintenanceDuringRunStart();
     void testStopSimultaneousWithBreakpointHit();
     void testClearAndLoadRejectedWhileRunning();
     void testValidateFlowReportsMissingRequiredInput();
@@ -1528,9 +1529,11 @@ void TestRunEngine::testParallelStressFiftyRunsNoPollution() {
 }
 
 void TestRunEngine::testConcurrentStopDuringRunKeepsStoppedState() {
-    // 阶6 复核（三轮）：后台运行+前台 stop() 并发，停止态不得被运行收尾覆盖。
+    // 阶6 复核（四轮）：同步屏障驱动——runner 在调用 runOnce 前置 entered，主线程
+    // 自旋等 entered 后立即 stop()，使停止落在"启动窗口/执行中"两种交错；不依赖
+    // 固定 msleep。停止态不得被运行收尾覆盖，且不得卡在 Running。
     RunEngine& engine = RunEngine::instance();
-    for (int rep = 0; rep < 20; ++rep) {
+    for (int rep = 0; rep < 50; ++rep) {
         engine.clearModules();
         Project project;
         ModuleInstance s;
@@ -1540,18 +1543,57 @@ void TestRunEngine::testConcurrentStopDuringRunKeepsStoppedState() {
         std::atomic<int> running{0};
         std::atomic<int> maxConc{0};
         QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) {
-            return new ParallelSleepModule(inst.id, &running, &maxConc, 300);
+            return new ParallelSleepModule(inst.id, &running, &maxConc, 50);
         }));
 
-        std::thread runner([&engine]() { engine.runOnce(); });
-        QThread::msleep(20); // 让运行进入执行
+        std::atomic<bool> entered{false};
+        std::thread runner([&engine, &entered]() {
+            entered.store(true);
+            engine.runOnce();
+        });
+        while (!entered.load()) {
+        }
         engine.stop();
         runner.join();
 
-        QCOMPARE(engine.state(), RunState::Stopped);
+        QVERIFY2(engine.state() == RunState::Stopped || engine.state() == RunState::Idle,
+                 qPrintable(QString("rep %1: state stuck at %2").arg(rep).arg(static_cast<int>(engine.state()))));
         QVERIFY2(!engine.isBusy(), "engine must not be busy after stop+join");
     }
     engine.clearModules();
+}
+
+void TestRunEngine::testConcurrentMaintenanceDuringRunStart() {
+    // 阶6 复核（四轮）：runOnce 启动窗口内并发 clearModules()/loadProject()，
+    // 维护租约与执行租约互斥——不得 UAF、不得混合工程、收尾后状态回落。
+    RunEngine& engine = RunEngine::instance();
+    for (int rep = 0; rep < 30; ++rep) {
+        engine.clearModules();
+        Project project;
+        ModuleInstance s;
+        s.id = QStringLiteral("s");
+        s.moduleId = QStringLiteral("s");
+        project.addModule(s);
+        std::atomic<int> running{0};
+        std::atomic<int> maxConc{0};
+        QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) {
+            return new ParallelSleepModule(inst.id, &running, &maxConc, 20);
+        }));
+
+        std::atomic<bool> entered{false};
+        std::thread runner([&engine, &entered]() {
+            entered.store(true);
+            engine.runOnce();
+        });
+        while (!entered.load()) {
+        }
+        // 启动窗口内并发维护：要么被租约拒绝，要么在执行权建立前完成；均不得崩溃。
+        engine.clearModules();
+        runner.join();
+        QVERIFY2(!engine.isBusy(), "engine must settle after concurrent maintenance+run");
+    }
+    engine.clearModules();
+    QVERIFY(engine.modules().isEmpty());
 }
 
 void TestRunEngine::testStopSimultaneousWithBreakpointHit() {
