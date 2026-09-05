@@ -269,18 +269,19 @@ bool RunEngine::stepOnce() {
     result.finishedTime = QDateTime::currentDateTime();
     // 阶6 复核（五轮 P1-3）：单步收尾在锁内判定 stop——若停止发生在单步期间，
     // 重置单步状态（下次从流程起点开始）并保持 Stopped；否则保留跨步位置并置 Idle。
+    // 阶6 七轮（P1-5）：清理单步态与释放执行权在同一临界区（递归锁），
+    // 不留"先释放执行权再清理"的交错窗口。
     {
         QMutexLocker locker(&m_lifecycleMutex);
         const bool stopped = m_stopPending || state() == RunState::Stopped;
         m_stopPending = false;
-        m_executing.store(false, std::memory_order_release);
         if (stopped) {
-            locker.unlock();
             resetStepState();
             m_state.store(static_cast<int>(RunState::Stopped), std::memory_order_release);
         } else {
             m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
         }
+        m_executing.store(false, std::memory_order_release);
     }
     emit runFinished(result);
     emit stateChanged(state());
@@ -409,6 +410,66 @@ bool RunEngine::tryBeginExecution(RunMode mode, bool fresh) {
     return true;
 }
 
+bool RunEngine::tryBeginForRun(RunMode mode, bool& resuming, QString& resumeModule, ImageData& resumeData) {
+    // 阶6 七轮（P1-3）：恢复判定、暂停数据转移、执行权获取全部在同一临界区，
+    // stop() 无法插在"读暂停态"与"取执行权"之间把恢复变成全新执行或重跑已停止流程。
+    QMutexLocker locker(&m_lifecycleMutex);
+    const bool paused = m_pausedAtBreakpoint && !m_pauseResumeModule.isEmpty();
+    if (m_executing.load(std::memory_order_acquire) || m_maintenance.load(std::memory_order_acquire)) {
+        return false;
+    }
+    if (m_stopPending) {
+        m_stopPending = false;
+        return false;
+    }
+    resuming = paused;
+    if (paused) {
+        resumeModule = m_pauseResumeModule;
+        resumeData = m_pausePipelineData;
+        if (m_breakpointPausedAt.isValid()) {
+            const qint64 pausedMs = m_breakpointPausedAt.msecsTo(QDateTime::currentDateTime());
+            if (pausedMs > 0) {
+                m_runStartTime = m_runStartTime.addMSecs(pausedMs);
+            }
+        }
+        m_pauseResumeModule.clear();
+        m_pausePipelineData = ImageData();
+        m_breakpointPausedAt = QDateTime();
+        m_pausedAtBreakpoint = false;
+        m_skipBreakpointOnce = true;
+    }
+    m_executing.store(true, std::memory_order_release);
+    m_runMode.store(static_cast<int>(mode), std::memory_order_release);
+    m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
+    if (m_cancellationToken) {
+        m_cancellationToken->reset();
+    }
+    if (!paused) {
+        m_runStartTime = QDateTime::currentDateTime();
+        m_runAllSuccess = true;
+        m_runFirstError.clear();
+        m_runId = QString::number(QDateTime::currentMSecsSinceEpoch()) + QLatin1Char('-') +
+                  QString::number(m_runSeq.fetch_add(1, std::memory_order_relaxed));
+        m_frameId.store(0, std::memory_order_release);
+        m_lastParallelMaxConcurrency.store(0, std::memory_order_release);
+    }
+    return true;
+}
+
+void RunEngine::finalizeRunTail() {
+    // 阶6 七轮（P0-1）：清理+最终状态提交+执行权释放同一临界区，避免"先释放执行权
+    // 再设 Idle"窗口被新一轮运行插入后覆盖。
+    QMutexLocker locker(&m_lifecycleMutex);
+    clearControlQueue();
+    clearBreakpointPauseState();
+    m_stopPending = false;
+    const bool setToIdle = (runMode() == RunMode::RunOnce) && (state() != RunState::Stopped);
+    m_executing.store(false, std::memory_order_release);
+    if (setToIdle) {
+        m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
+    }
+}
+
 bool RunEngine::tryAcquireLease() {
     // 公开并行原语 executeParallel 的排他租约：与执行/维护互斥，且**循环运行/
     // 断点暂停期间拒绝**（P1-4 隔离语义）；取租约时重置 token（此时无其它运行）。
@@ -448,6 +509,12 @@ bool RunEngine::tryAcquireMaintenance() {
 
 void RunEngine::releaseMaintenance() {
     QMutexLocker locker(&m_lifecycleMutex);
+    // 阶6 七轮（P2-6）：维护期间收到的停止请求在此补做清理，避免被丢弃。
+    if (m_stopPending) {
+        m_stopPending = false;
+        clearBreakpointPauseState();
+        resetStepState();
+    }
     m_maintenance = false;
 }
 
@@ -478,17 +545,6 @@ void RunEngine::finalizeAbortedRun(RunMode mode) {
                   std::memory_order_release);
 }
 
-void RunEngine::endExecutionCleanup() {
-    // 执行线程退出路径统一清理；m_executing 在清理完成后才置 false，
-    // 使 lifecycleBusyLocked()/isBusy() 在整个清理期间保持 true，阻止
-    // clearModules/loadProject 在清理完成前并发进入。
-    QMutexLocker locker(&m_lifecycleMutex);
-    clearControlQueue();
-    clearBreakpointPauseState();
-    m_stopPending = false;
-    m_executing.store(false, std::memory_order_release);
-}
-
 bool RunEngine::lifecycleBusyLocked() {
     QMutexLocker locker(&m_lifecycleMutex);
     return m_executing.load(std::memory_order_acquire) || m_maintenance.load(std::memory_order_acquire) ||
@@ -511,9 +567,9 @@ void RunEngine::stop() {
         if (m_executing.load(std::memory_order_acquire)) {
             m_stopPending = true;
         } else if (m_maintenance.load(std::memory_order_acquire)) {
-            // 阶6 五轮：维护租约持有者正在修改控制队列/暂停态，stop() 不并发清理
-            // （交由维护操作的 clearModulesLocked 等清理），避免 Qt 容器竞争。
-            m_stopPending = false;
+            // 阶6 七轮（P2-6）：维护期间不并发清理，但保留 stopPending，由
+            // releaseMaintenance() 补做停止清理（addModule 等路径不自行清理）。
+            m_stopPending = true;
         } else {
             m_stopPending = false;
             clearBreakpointPauseState();
@@ -849,13 +905,11 @@ void RunEngine::onTimerTick() {
 }
 
 void RunEngine::executeRun(RunMode mode) {
-    // 阶6 复核（五轮）：暂停态在锁内读取（stop() 同锁清理，无 UB）。
-    bool resuming;
-    {
-        QMutexLocker locker(&m_lifecycleMutex);
-        resuming = m_pausedAtBreakpoint && !m_pauseResumeModule.isEmpty();
-    }
-    if (!tryBeginExecution(mode, !resuming)) {
+    // 阶6 七轮：恢复判定+暂停数据转移+取执行权原子完成（tryBeginForRun）。
+    bool resuming = false;
+    QString resumeModule;
+    ImageData resumeData;
+    if (!tryBeginForRun(mode, resuming, resumeModule, resumeData)) {
         return;
     }
 
@@ -882,14 +936,13 @@ void RunEngine::executeRun(RunMode mode) {
 
         const QStringList validationErrors = validateFlow();
         if (!validationErrors.isEmpty()) {
-            endExecutionCleanup();
             RunResult result;
             result.success = false;
             result.errorCode = ExecError::TypeMismatch;
             result.errorMessage = validationErrors.join(QStringLiteral("\n"));
             result.finishedTime = QDateTime::currentDateTime();
             emit errorOccurred(result.errorMessage);
-            // 阶6 五轮：原子收尾，不覆盖 stop() 的 Stopped。
+            // 阶6 七轮（P0-2）：仅一次原子终结（不再先 endExecutionCleanup 重复释放）。
             finalizeAbortedRun(mode);
             if (mode == RunMode::RunCycle) {
                 emit cycleStopped();
@@ -907,29 +960,15 @@ void RunEngine::executeRun(RunMode mode) {
         m_nodeOutputs.clear();
         buildModuleTree();
     } else {
-        // 阶6 五轮：恢复分支的暂停态读清在生命周期锁内完成。
-        QMutexLocker locker(&m_lifecycleMutex);
-        if (m_breakpointPausedAt.isValid()) {
-            const qint64 pausedMs = m_breakpointPausedAt.msecsTo(QDateTime::currentDateTime());
-            if (pausedMs > 0) {
-                m_runStartTime = m_runStartTime.addMSecs(pausedMs);
-            }
-        }
-        m_pausedAtBreakpoint = false;
-        m_skipBreakpointOnce = true;
-        locker.unlock();
+        // 阶6 七轮：恢复分支的暂停数据已由 tryBeginForRun 在锁内转移，此处仅通知。
         emit stateChanged(state());
     }
 
     QString currentModule;
     ImageData pipelineData;
     if (resuming) {
-        QMutexLocker locker(&m_lifecycleMutex);
-        currentModule = m_pauseResumeModule;
-        pipelineData = m_pausePipelineData;
-        m_pauseResumeModule.clear();
-        m_pausePipelineData = ImageData();
-        m_breakpointPausedAt = QDateTime();
+        currentModule = resumeModule;
+        pipelineData = resumeData;
     } else if (!m_controlEdges.isEmpty()) {
         initializeControlQueue();
         currentModule = m_controlQueue.value(0);
@@ -941,6 +980,20 @@ void RunEngine::executeRun(RunMode mode) {
         }
     }
     m_currentModuleName = currentModule;
+
+    // 阶6 七轮：恢复目标模块若已不存在（残留暂停态），不得对其解引用；按中止收尾。
+    if (resuming && !getModule(currentModule)) {
+        RunResult result;
+        result.success = false;
+        result.errorCode = -1;
+        result.errorMessage = tr("Resume target module no longer exists");
+        result.elapsedMs = 0;
+        result.finishedTime = QDateTime::currentDateTime();
+        finalizeAbortedRun(mode);
+        emit stateChanged(state());
+        emit runFinished(result);
+        return;
+    }
 
     // 阶段 D1: 显式控制图存在时走激活队列；否则走 legacy flowControlType 调度
     if (!m_controlEdges.isEmpty()) {
@@ -954,10 +1007,12 @@ void RunEngine::executeRun(RunMode mode) {
     // （m_stopPending），放弃暂停、走正常结束路径，避免数据竞争与错误恢复。
     if (m_pausedAtBreakpoint) {
         bool commitPause;
+        QString bpModule;
         {
             QMutexLocker locker(&m_lifecycleMutex);
             commitPause = !m_stopPending;
             if (commitPause) {
+                bpModule = m_pauseResumeModule; // 阶6 七轮（P1-4）：锁内复制模块 ID
                 m_state.store(static_cast<int>(RunState::Paused), std::memory_order_release);
                 m_executing.store(false, std::memory_order_release);
             } else {
@@ -969,9 +1024,10 @@ void RunEngine::executeRun(RunMode mode) {
             }
         }
         if (commitPause) {
-            // 先提交 Paused 再发 breakpointHit，保证断点回调观察到的状态为 Paused。
+            // 先提交 Paused 再发 breakpointHit（用局部副本），保证回调观察到 Paused
+            // 且不会在释放执行权后读可变成员。
             emit stateChanged(state());
-            emit breakpointHit(m_pauseResumeModule);
+            emit breakpointHit(bpModule);
             return; // 暂停：不发射 runFinished（运行未结束）
         }
     }
@@ -988,13 +1044,10 @@ void RunEngine::executeRun(RunMode mode) {
     result.elapsedMs = elapsedMs;
     result.finishedTime = QDateTime::currentDateTime();
 
-    endExecutionCleanup();
+    // 阶6 七轮（P0-1）：清理+最终状态+释放执行权同一临界区。
+    finalizeRunTail();
     emit runFinished(result);
-
-    if (runMode() == RunMode::RunOnce) {
-        m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
-        emit stateChanged(state());
-    }
+    emit stateChanged(state());
 }
 
 // ---------------------------------------------------------------------------

@@ -240,13 +240,16 @@ private:
     bool m_stopPending = false;
     std::atomic_bool m_maintenance{false};
     bool tryBeginExecution(RunMode mode, bool fresh);
+    // 阶6 七轮：恢复判定+暂停数据转移+取执行权在同一临界区原子完成。
+    bool tryBeginForRun(RunMode mode, bool& resuming, QString& resumeModule, ImageData& resumeData);
+    // 阶6 七轮：正常结束在单一临界区内完成清理+最终状态提交+执行权释放。
+    void finalizeRunTail();
     bool tryAcquireLease();
     void releaseLease();
     bool tryAcquireMaintenance();
     void releaseMaintenance();
     void clearModulesLocked();
     void addModuleLocked(ModuleBase* module);
-    void endExecutionCleanup();
     void finalizeAbortedRun(RunMode mode);
     bool lifecycleBusyLocked();
     // 阶6 五轮：内层断点命中在生命周期锁内写暂停态（stop() 同锁清理，无 UB）。
