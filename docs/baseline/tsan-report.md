@@ -103,7 +103,7 @@ happens-before 关系，凡 QMutex/QReadWriteLock 保护的共享数据都会被
 ## 阶段 6 复核（并发风险收口）
 
 > 日期：2026-09-05。对应提交见 `git log`（阶段 6 及 stop() 复核二~八轮）。功能侧
-> `test_runengine` **114/114 通过**（含 12 个定向/回归测试与 50 次并行压力），全量 CTest 66/66。
+> `test_runengine` **115/115 通过**（含 13 个定向/回归测试与 50 次并行压力），全量 CTest 66/66。
 
 ### 风险处理与分类
 
@@ -115,7 +115,8 @@ happens-before 关系，凡 QMutex/QReadWriteLock 保护的共享数据都会被
 | #4 生命周期租约不排他（P0：executeParallel 绕过、维护 check-then-act、stop 被启动覆盖） | 四轮重构为**单一排他租约**：执行（runOnce/onTimerTick/resume/stepOnce）经 `tryBeginExecution()`/`tryAcquireLease()`、维护（add/remove/clear/load）经 `tryAcquireMaintenance()`、公开 `executeParallel()` 经 `tryAcquireLease()`，三者共用 `m_lifecycleMutex` 互斥；**取权与 runMode/state 提交、token 重置同临界区**（消除启动窗口）；维护检查与修改同租约原子（消除悬空指针/混合工程）；早退路径复位 state 防卡死 | 已修复（SEGV/HUAf 清零） |
 | #5 并发生命周期回归（复核三/四/五轮，真信号量屏障） | 五轮改用 **QSemaphore 真实同步点**：`GateModule` 进入 process 释放 entered（执行租约必已持有），主线程 acquire 后 stop 再放行，断言停止获胜/后继未执行/状态 Stopped；`testConcurrentMaintenanceDuringRunStart` 工厂阻塞在维护租约内，断言 runOnce 被拒绝(runStarted=0)、stop 不并发清理、load 成功后模块未被清除。另含 `testStopSimultaneousWithBreakpointHit`、`testClearAndLoadRejectedWhileRunning` | 已证明（确定性屏障） |
 | #7 收尾/恢复非原子（复核七轮）：正常结束先释放执行权再设 Idle、校验早退重复收尾、恢复判定与取权分离、断点信号释放后读成员、单步先释放后清理、维护期停止被丢弃 | 新增 finalizeRunTail()（清理+终态+释放同临界区）、tryBeginForRun()（恢复判定+暂停数据转移+取权同临界区）、校验早退仅一次 finalizeAbortedRun、断点模块 ID 锁内复制后发信号、单步清理与释放同临界区、releaseMaintenance() 补做维护期停止清理、恢复目标模块不存在时按中止收尾 | 已修复（TSan SEGV/HUAf=0） |
-| #8 恢复入口未原子+循环断点退化+缺回归（复核八轮）：resume/tick 锁外判状态后 tryBegin 不校验意图；循环断点恢复退化为单次；无新回归门禁 | tryBeginForRun 引入 RunIntent{Single,CycleTick,Resume} 并在锁内校验预期状态（Single:Idle/Stopped；CycleTick:Running+RunCycle；Resume:Paused+完整暂停上下文）；commitPause 保存 m_pauseRunMode、Resume 还原（循环断点恢复仍循环）；新增 5 个回归：resume-after-stop 不重执行、过期 tick 不执行、循环断点恢复保持 RunCycle、校验收尾不阻塞下一轮、维护期停止清单步态 | 已修复+已证明（114/114） |
+| #8 恢复入口未原子+循环断点退化+缺回归（复核八轮） | tryBeginForRun 引入 RunIntent{Single,CycleTick,Resume,Step} 并在锁内校验预期状态（Single/Step:Idle/Stopped；CycleTick:Running+RunCycle；Resume:Paused+完整暂停上下文）；commitPause 保存 m_pauseRunMode、Resume 还原（循环断点恢复仍循环）；resume()/start() 的定时器启动+信号+日志与状态提交同转换（stop 介入不启定时器、不误导日志）；Step 的 fresh 由 m_stepCurrentModuleName 锁内判定（连续单步共享 runId、frameId 递增） | 已修复（结构上关闭竞态） |
+| #9 回归证据强度（复核九轮） | 新增 `testConsecutiveStepsShareRunIdAndIncrementFrameId`（同 runId+frameId 递增，证明 Step 不重置上下文）。**说明**：`testResumeAfterStopDoesNotReexecute` 与 `testStaleCycleTickAfterStopDoesNotExecute` 为**顺序行为测试**（先 stop 再 resume/等待），父提交亦可通过，仅作行为守卫；竞态的结构修复由 RunIntent 锁内意图校验保证，未以父提交负验证 | 顺序行为测试（非竞态证据） |
 | #6 锁未闭合（复核五轮 P0/P1）：暂停态锁外读、stop 绕过维护租约、stepOnce 非原子、租约不隔离 Running/Paused、早退覆盖停止 | 暂停态（m_pausedAtBreakpoint/m_pauseResumeModule/m_pausePipelineData/m_breakpointPausedAt）全部改为 `m_lifecycleMutex` 内读写（resume/executeRun/内层 setInnerPauseLocked/isPausedAtBreakpoint）；stop() 尊重 m_maintenance 不并发清理；stepOnce 改用 tryBeginExecution 原子启动+锁内收尾（stop 时重置单步态）；tryAcquireLease 拒绝 Running/Paused；空模块/校验早退改 finalizeAbortedRun 原子收尾不覆盖 Stopped；isBusy() 含 m_maintenance；clearBreakpointPauseState()/removeModule 暂停态写入加锁（m_lifecycleMutex 改 QRecursiveMutex 允许重入） | 已修复（TSan SEGV/HUAf=0） |
 
 ### 门禁结论（仍不写"通过"）

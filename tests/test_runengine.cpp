@@ -329,7 +329,8 @@ private:
 class RunIdRecordingModule : public ModuleBase {
     Q_OBJECT
 public:
-    RunIdRecordingModule(const QString& name, QMutex* mutex, QStringList* sink) : m_mutex(mutex), m_sink(sink) {
+    RunIdRecordingModule(const QString& name, QMutex* mutex, QStringList* sink, QList<qint64>* frameSink = nullptr)
+        : m_mutex(mutex), m_sink(sink), m_frameSink(frameSink) {
         m_moduleId = "com.deeplux.test.runid." + name;
         m_name = name;
         m_category = "test";
@@ -340,6 +341,8 @@ public:
         {
             QMutexLocker locker(m_mutex);
             m_sink->append(context.runId);
+            if (m_frameSink)
+                m_frameSink->append(context.frameId);
         }
         m_mark = context.runId; // 供 process 写入输出作为本轮唯一标记
         QThread::msleep(10);    // 增大并行重叠窗口
@@ -359,6 +362,7 @@ protected:
 private:
     QMutex* m_mutex;
     QStringList* m_sink;
+    QList<qint64>* m_frameSink = nullptr;
     QString m_mark;
 };
 
@@ -424,6 +428,7 @@ private slots:
     void testCycleBreakpointResumeKeepsCycleMode();
     void testValidationAbortThenNextRunNotBlocked();
     void testStopDuringMaintenanceClearsStepState();
+    void testConsecutiveStepsShareRunIdAndIncrementFrameId();
     void testValidateFlowReportsMissingRequiredInput();
     void testSkippedBranchEmitsSkippedNotFailed();
     void testBreakpointRestoredOnLoad();
@@ -1944,6 +1949,46 @@ void TestRunEngine::testStopDuringMaintenanceClearsStepState() {
 
     QVERIFY(engine.stepOnce()); // step 状态应已清除 → 从新工程起点 S 开始
     QVERIFY2(log2.contains(QStringLiteral("S")), "step must restart from new project start");
+    engine.clearModules();
+}
+
+void TestRunEngine::testConsecutiveStepsShareRunIdAndIncrementFrameId() {
+    // 阶6 九轮（P1-1）：同一流程连续单步共享同一 runId、frameId 递增；
+    // RunIntent::Step 的 fresh 仅首步为 true，不每步重置上下文。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance m1;
+    m1.id = QStringLiteral("M1");
+    m1.moduleId = QStringLiteral("M1");
+    ModuleInstance m2;
+    m2.id = QStringLiteral("M2");
+    m2.moduleId = QStringLiteral("M2");
+    project.addModule(m1);
+    project.addModule(m2);
+    ModuleConnection control;
+    control.fromModuleId = QStringLiteral("M1");
+    control.toModuleId = QStringLiteral("M2");
+    control.fromPort = QStringLiteral("next");
+    control.toPort = QStringLiteral("control");
+    control.edgeType = QStringLiteral("control");
+    project.addConnection(control);
+
+    QMutex mutex;
+    QStringList runIds;
+    QList<qint64> frames;
+    QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& instance) {
+        return new RunIdRecordingModule(instance.id, &mutex, &runIds, &frames);
+    }));
+
+    QVERIFY(engine.stepOnce()); // 首步：M1，fresh 重置上下文
+    QVERIFY(engine.stepOnce()); // 次步：M2，共享 runId
+
+    QMutexLocker locker(&mutex);
+    QCOMPARE(runIds.size(), 2);
+    QCOMPARE(frames.size(), 2);
+    QCOMPARE(runIds.at(0), runIds.at(1));     // 同一流程连续单步同 runId
+    QCOMPARE(frames.at(1), frames.at(0) + 1); // frameId 递增
     engine.clearModules();
 }
 

@@ -201,7 +201,7 @@ bool RunEngine::stepOnce() {
     QString ignModule;
     ImageData ignData;
     RunMode ignMode = RunMode::RunOnce;
-    if (!tryBeginForRun(RunIntent::Single, ignResuming, ignModule, ignData, ignMode)) {
+    if (!tryBeginForRun(RunIntent::Step, ignResuming, ignModule, ignData, ignMode)) {
         return false;
     }
     emit stateChanged(state());
@@ -327,16 +327,22 @@ void RunEngine::start() {
         m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
         resetStepState();
     }
-    emit stateChanged(state());
-    emit cycleStarted();
-
-    Logger::instance().info(tr("Starting continuous run"), "Run");
+    // 阶6 九轮：定时器启动+cycleStarted+日志与状态提交同转换；stop 介入则不启动、
+    // 不发出误导信号/日志。
+    bool started = false;
     {
         QMutexLocker locker(&m_lifecycleMutex);
         if (state() == RunState::Running) {
             m_cycleTimer->start();
+            started = true;
         }
     }
+    if (!started) {
+        return;
+    }
+    emit stateChanged(state());
+    emit cycleStarted();
+    Logger::instance().info(tr("Starting continuous run"), "Run");
 }
 
 void RunEngine::pause() {
@@ -370,16 +376,21 @@ void RunEngine::resume() {
         return;
     }
 
+    // 阶6 九轮：状态提交+定时器启动+日志同转换；stop 介入则不启定时器、不日志。
+    bool resumed = false;
     {
         QMutexLocker locker(&m_lifecycleMutex);
         if (state() != RunState::Paused) {
             return;
         }
         m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
+        m_cycleTimer->start();
+        resumed = true;
     }
-    m_cycleTimer->start();
+    if (!resumed) {
+        return;
+    }
     emit stateChanged(state());
-
     Logger::instance().info(tr("Run resumed"), "Run");
 }
 
@@ -406,6 +417,16 @@ bool RunEngine::tryBeginForRun(RunIntent intent, bool& resuming, QString& resume
         resuming = false;
         outMode = RunMode::RunOnce;
         fresh = true;
+        break;
+    case RunIntent::Step:
+        // 阶6 九轮（P1-1）：单步 fresh 由 step 位置判定——同一流程连续单步共享
+        // runId/累计状态，仅首步（无 step 位置）重置上下文。
+        if (st != RunState::Idle && st != RunState::Stopped) {
+            return false;
+        }
+        resuming = false;
+        outMode = RunMode::RunOnce;
+        fresh = m_stepCurrentModuleName.isEmpty();
         break;
     case RunIntent::CycleTick:
         if (st != RunState::Running || runMode() != RunMode::RunCycle) {

@@ -81,8 +81,10 @@ public:
 
     using ModuleFactory = std::function<ModuleBase*(const ModuleInstance&)>;
 
-    // 阶6 八轮：取执行权的明确意图；tryBeginForRun 在锁内按意图校验预期状态。
-    enum class RunIntent { Single, CycleTick, Resume };
+    // 阶6 九轮：取执行权的明确意图；tryBeginForRun 在锁内按意图校验预期状态。
+    // Step：单步，fresh 由 m_stepCurrentModuleName 是否为空在锁内判定，连续单步
+    // 共享同一 runId/累计状态（不每步重置）。
+    enum class RunIntent { Single, CycleTick, Resume, Step };
 
     // 运行状态
     RunState state() const {
