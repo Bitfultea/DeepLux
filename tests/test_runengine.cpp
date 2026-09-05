@@ -418,6 +418,12 @@ private slots:
     void testConcurrentMaintenanceDuringRunStart();
     void testStopSimultaneousWithBreakpointHit();
     void testClearAndLoadRejectedWhileRunning();
+    // 阶6 八轮回归：恢复/tick/循环断点/校验收尾/维护停止
+    void testResumeAfterStopDoesNotReexecute();
+    void testStaleCycleTickAfterStopDoesNotExecute();
+    void testCycleBreakpointResumeKeepsCycleMode();
+    void testValidationAbortThenNextRunNotBlocked();
+    void testStopDuringMaintenanceClearsStepState();
     void testValidateFlowReportsMissingRequiredInput();
     void testSkippedBranchEmitsSkippedNotFailed();
     void testBreakpointRestoredOnLoad();
@@ -1733,6 +1739,212 @@ void TestRunEngine::testClearAndLoadRejectedWhileRunning() {
     QVERIFY2(!engine.isBusy(), "engine must settle after stop+join");
     engine.clearModules();
     QVERIFY(engine.modules().isEmpty());
+}
+
+void TestRunEngine::testResumeAfterStopDoesNotReexecute() {
+    // 阶6 八轮（P1-1）：stop 清空暂停态后，resume 因预期状态非 Paused 被拒绝，
+    // 不得把已停止流程当作新运行重新执行。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance a;
+    a.id = QStringLiteral("A");
+    a.moduleId = QStringLiteral("A");
+    a.breakpoint = true;
+    ModuleInstance b;
+    b.id = QStringLiteral("B");
+    b.moduleId = QStringLiteral("B");
+    project.addModule(a);
+    project.addModule(b);
+    ModuleConnection control;
+    control.fromModuleId = QStringLiteral("A");
+    control.toModuleId = QStringLiteral("B");
+    control.fromPort = QStringLiteral("next");
+    control.toPort = QStringLiteral("control");
+    control.edgeType = QStringLiteral("control");
+    project.addConnection(control);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+
+    engine.runOnce();
+    QVERIFY(engine.isPausedAtBreakpoint());
+    QVERIFY(log.isEmpty()); // A 暂停前未执行
+
+    engine.stop();
+    QVERIFY(!engine.isPausedAtBreakpoint());
+    engine.resume(); // 必须被拒绝（state=Stopped）
+    QTest::qWait(150);
+    QVERIFY2(log.isEmpty(), "resume after stop must not re-execute");
+    QCOMPARE(engine.state(), RunState::Stopped);
+    engine.clearModules();
+}
+
+void TestRunEngine::testStaleCycleTickAfterStopDoesNotExecute() {
+    // 阶6 八轮（P1-1）：stop 后过期循环 tick 的 CycleTick 意图因 state!=Running 被
+    // 拒绝，不得再执行模块。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance m;
+    m.id = QStringLiteral("M");
+    m.moduleId = QStringLiteral("M");
+    project.addModule(m);
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+
+    engine.start(); // cycle, tick=100ms
+    QTRY_VERIFY(!log.isEmpty());
+    engine.stop();
+    const int countAfterStop = log.count(QStringLiteral("M"));
+    QTest::qWait(350); // > 3 个 tick
+    QCOMPARE(log.count(QStringLiteral("M")), countAfterStop);
+    QCOMPARE(engine.state(), RunState::Stopped);
+    engine.clearModules();
+}
+
+void TestRunEngine::testCycleBreakpointResumeKeepsCycleMode() {
+    // 阶6 八轮（P1-2）：循环流程命中断点后恢复，仍保持 RunCycle（不退化为单次）。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance a;
+    a.id = QStringLiteral("A");
+    a.moduleId = QStringLiteral("A");
+    a.breakpoint = true;
+    ModuleInstance b;
+    b.id = QStringLiteral("B");
+    b.moduleId = QStringLiteral("B");
+    project.addModule(a);
+    project.addModule(b);
+    ModuleConnection control;
+    control.fromModuleId = QStringLiteral("A");
+    control.toModuleId = QStringLiteral("B");
+    control.fromPort = QStringLiteral("next");
+    control.toPort = QStringLiteral("control");
+    control.edgeType = QStringLiteral("control");
+    project.addConnection(control);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+
+    engine.start(); // cycle
+    QTRY_VERIFY(engine.isPausedAtBreakpoint());
+    QCOMPARE(engine.runMode(), RunMode::RunCycle);
+
+    engine.resume();
+    QCOMPARE(engine.runMode(), RunMode::RunCycle); // 恢复后仍为循环模式
+    QTRY_VERIFY(log.contains(QStringLiteral("B")));
+    QCOMPARE(engine.runMode(), RunMode::RunCycle);
+    QVERIFY2(engine.state() == RunState::Running, "cycle must remain active after resume");
+    engine.stop();
+    engine.clearModules();
+}
+
+void TestRunEngine::testValidationAbortThenNextRunNotBlocked() {
+    // 阶6 八轮：校验失败的原子收尾不得阻塞/覆盖下一轮启动。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project bad;
+    ModuleInstance req;
+    req.id = QStringLiteral("req");
+    req.moduleId = QStringLiteral("req");
+    bad.addModule(req); // 必需输入 point1 未连接 → validateFlow 失败
+    QVERIFY(
+        engine.loadProject(&bad, [](const ModuleInstance& instance) { return new RequiredInputModule(instance.id); }));
+    engine.runOnce(); // 校验失败 → finalizeAbortedRun
+    QVERIFY2(!engine.isBusy(), "aborted run must release lease");
+    QCOMPARE(engine.state(), RunState::Idle);
+
+    engine.clearModules();
+    Project good;
+    ModuleInstance t;
+    t.id = QStringLiteral("T");
+    t.moduleId = QStringLiteral("T");
+    good.addModule(t);
+    QStringList log;
+    QVERIFY(engine.loadProject(&good, [&log](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+    engine.runOnce();
+    QVERIFY2(log.contains(QStringLiteral("T")), "next run must execute after aborted run");
+    QCOMPARE(engine.state(), RunState::Idle);
+    engine.clearModules();
+}
+
+void TestRunEngine::testStopDuringMaintenanceClearsStepState() {
+    // 阶6 八轮（P2-6）：维护期间 stop 的单步清理在 releaseMaintenance 补做，
+    // 下一次单步从新工程起点开始（不残留旧 step 状态）。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project p1;
+    ModuleInstance m1;
+    m1.id = QStringLiteral("M1");
+    m1.moduleId = QStringLiteral("M1");
+    ModuleInstance m2;
+    m2.id = QStringLiteral("M2");
+    m2.moduleId = QStringLiteral("M2");
+    p1.addModule(m1);
+    p1.addModule(m2);
+    ModuleConnection control;
+    control.fromModuleId = QStringLiteral("M1");
+    control.toModuleId = QStringLiteral("M2");
+    control.fromPort = QStringLiteral("next");
+    control.toPort = QStringLiteral("control");
+    control.edgeType = QStringLiteral("control");
+    p1.addConnection(control);
+    QStringList log1;
+    QVERIFY(engine.loadProject(&p1, [&log1](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log1;
+        return module;
+    }));
+    QVERIFY(engine.stepOnce()); // 执行 M1，step 状态指向 M2
+    QVERIFY(log1.contains(QStringLiteral("M1")));
+    QVERIFY(!log1.contains(QStringLiteral("M2")));
+
+    Project p2;
+    ModuleInstance s;
+    s.id = QStringLiteral("S");
+    s.moduleId = QStringLiteral("S");
+    p2.addModule(s);
+    QSemaphore factoryEntered;
+    QSemaphore factoryRelease;
+    bool loaded = false;
+    QStringList log2;
+    std::thread loader([&]() {
+        loaded = engine.loadProject(&p2, [&](const ModuleInstance& instance) {
+            factoryEntered.release();
+            while (!factoryRelease.tryAcquire(1, 10)) {
+            }
+            auto* module = new TestExecutionModule(instance.id);
+            module->executionLog = &log2;
+            return module;
+        });
+    });
+    QVERIFY(factoryEntered.tryAcquire(1, 5000));
+    engine.stop(); // 维护期间停止
+    factoryRelease.release();
+    loader.join();
+    QVERIFY(loaded);
+
+    QVERIFY(engine.stepOnce()); // step 状态应已清除 → 从新工程起点 S 开始
+    QVERIFY2(log2.contains(QStringLiteral("S")), "step must restart from new project start");
+    engine.clearModules();
 }
 
 void TestRunEngine::testValidateFlowReportsMissingRequiredInput() {

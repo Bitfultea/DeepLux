@@ -165,8 +165,8 @@ void RunEngine::runOnce() {
     }
 
     Logger::instance().info(tr("Starting single run"), "Run");
-    // 阶6 四轮：取权前不修改任何运行/单步状态；取权+提交在 executeRun 内原子完成。
-    executeRun();
+    // 阶6 八轮：Single 意图在锁内校验 Idle/Stopped。
+    executeRun(RunIntent::Single);
 }
 
 bool RunEngine::stepOnce() {
@@ -197,8 +197,11 @@ bool RunEngine::stepOnce() {
     // 阶6 复核（五轮 P1-3）：单步使用与完整运行相同的原子启动协议
     // （tryBeginExecution 在锁内提交 runMode/state/token），stop() 无法插在取权与
     // 提交之间；取权后才修改单步/控制状态。
-    const bool freshStep = m_stepCurrentModuleName.isEmpty();
-    if (!tryBeginExecution(RunMode::RunOnce, freshStep)) {
+    bool ignResuming = false;
+    QString ignModule;
+    ImageData ignData;
+    RunMode ignMode = RunMode::RunOnce;
+    if (!tryBeginForRun(RunIntent::Single, ignResuming, ignModule, ignData, ignMode)) {
         return false;
     }
     emit stateChanged(state());
@@ -363,7 +366,7 @@ void RunEngine::resume() {
     }
     if (pausedAtBp) {
         // executeRun 内 tryBeginExecution(fresh=false) 原子取权+提交。
-        executeRun(RunMode::RunOnce);
+        executeRun(RunIntent::Resume);
         return;
     }
 
@@ -380,10 +383,10 @@ void RunEngine::resume() {
     Logger::instance().info(tr("Run resumed"), "Run");
 }
 
-bool RunEngine::tryBeginExecution(RunMode mode, bool fresh) {
-    // 唯一取执行权入口：取权、runMode/state 提交、token 重置、每运行重置全部在
-    // 同一临界区完成（阶6 四轮 P1-3/P1-4），stop() 无法插在"取权"与"状态提交"
-    // 之间导致停止丢失或状态卡死。
+bool RunEngine::tryBeginForRun(RunIntent intent, bool& resuming, QString& resumeModule, ImageData& resumeData,
+                               RunMode& outMode) {
+    // 阶6 八轮（P1-1）：意图+预期状态校验、恢复判定、暂停数据转移、取执行权全部在
+    // 同一临界区。stop() 后旧 resume/旧 tick 因预期状态不再满足而被拒绝，不会重启。
     QMutexLocker locker(&m_lifecycleMutex);
     if (m_executing.load(std::memory_order_acquire) || m_maintenance.load(std::memory_order_acquire)) {
         return false;
@@ -392,38 +395,32 @@ bool RunEngine::tryBeginExecution(RunMode mode, bool fresh) {
         m_stopPending = false;
         return false;
     }
-    m_executing.store(true, std::memory_order_release);
-    m_runMode.store(static_cast<int>(mode), std::memory_order_release);
-    m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
-    if (m_cancellationToken) {
-        m_cancellationToken->reset();
-    }
-    if (fresh) {
-        m_runStartTime = QDateTime::currentDateTime();
-        m_runAllSuccess = true;
-        m_runFirstError.clear();
-        m_runId = QString::number(QDateTime::currentMSecsSinceEpoch()) + QLatin1Char('-') +
-                  QString::number(m_runSeq.fetch_add(1, std::memory_order_relaxed));
-        m_frameId.store(0, std::memory_order_release);
-        m_lastParallelMaxConcurrency.store(0, std::memory_order_release);
-    }
-    return true;
-}
-
-bool RunEngine::tryBeginForRun(RunMode mode, bool& resuming, QString& resumeModule, ImageData& resumeData) {
-    // 阶6 七轮（P1-3）：恢复判定、暂停数据转移、执行权获取全部在同一临界区，
-    // stop() 无法插在"读暂停态"与"取执行权"之间把恢复变成全新执行或重跑已停止流程。
-    QMutexLocker locker(&m_lifecycleMutex);
+    const RunState st = state();
     const bool paused = m_pausedAtBreakpoint && !m_pauseResumeModule.isEmpty();
-    if (m_executing.load(std::memory_order_acquire) || m_maintenance.load(std::memory_order_acquire)) {
-        return false;
-    }
-    if (m_stopPending) {
-        m_stopPending = false;
-        return false;
-    }
-    resuming = paused;
-    if (paused) {
+    bool fresh = false;
+    switch (intent) {
+    case RunIntent::Single:
+        if (st != RunState::Idle && st != RunState::Stopped) {
+            return false;
+        }
+        resuming = false;
+        outMode = RunMode::RunOnce;
+        fresh = true;
+        break;
+    case RunIntent::CycleTick:
+        if (st != RunState::Running || runMode() != RunMode::RunCycle) {
+            return false;
+        }
+        resuming = false;
+        outMode = RunMode::RunCycle;
+        fresh = true;
+        break;
+    case RunIntent::Resume:
+        if (st != RunState::Paused || !paused) {
+            return false;
+        }
+        resuming = true;
+        outMode = m_pauseRunMode; // 阶6 八轮（P1-2）：还原暂停前模式
         resumeModule = m_pauseResumeModule;
         resumeData = m_pausePipelineData;
         if (m_breakpointPausedAt.isValid()) {
@@ -437,14 +434,15 @@ bool RunEngine::tryBeginForRun(RunMode mode, bool& resuming, QString& resumeModu
         m_breakpointPausedAt = QDateTime();
         m_pausedAtBreakpoint = false;
         m_skipBreakpointOnce = true;
+        break;
     }
     m_executing.store(true, std::memory_order_release);
-    m_runMode.store(static_cast<int>(mode), std::memory_order_release);
+    m_runMode.store(static_cast<int>(outMode), std::memory_order_release);
     m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
     if (m_cancellationToken) {
         m_cancellationToken->reset();
     }
-    if (!paused) {
+    if (fresh) {
         m_runStartTime = QDateTime::currentDateTime();
         m_runAllSuccess = true;
         m_runFirstError.clear();
@@ -899,17 +897,17 @@ int RunEngine::lastElapsedMs() const {
 }
 
 void RunEngine::onTimerTick() {
-    if (state() == RunState::Running && runMode() == RunMode::RunCycle) {
-        executeRun(RunMode::RunCycle);
-    }
+    // 阶6 八轮：过期 tick 的意图校验在 tryBeginForRun 锁内完成（stop 后拒绝）。
+    executeRun(RunIntent::CycleTick);
 }
 
-void RunEngine::executeRun(RunMode mode) {
-    // 阶6 七轮：恢复判定+暂停数据转移+取执行权原子完成（tryBeginForRun）。
+void RunEngine::executeRun(RunIntent intent) {
+    // 阶6 八轮：意图+预期状态校验+恢复判定+暂停数据转移+取执行权原子完成。
     bool resuming = false;
     QString resumeModule;
     ImageData resumeData;
-    if (!tryBeginForRun(mode, resuming, resumeModule, resumeData)) {
+    RunMode mode = RunMode::RunOnce;
+    if (!tryBeginForRun(intent, resuming, resumeModule, resumeData, mode)) {
         return;
     }
 
@@ -1013,6 +1011,7 @@ void RunEngine::executeRun(RunMode mode) {
             commitPause = !m_stopPending;
             if (commitPause) {
                 bpModule = m_pauseResumeModule; // 阶6 七轮（P1-4）：锁内复制模块 ID
+                m_pauseRunMode = runMode();     // 阶6 八轮（P1-2）：保存暂停前模式
                 m_state.store(static_cast<int>(RunState::Paused), std::memory_order_release);
                 m_executing.store(false, std::memory_order_release);
             } else {

@@ -81,6 +81,9 @@ public:
 
     using ModuleFactory = std::function<ModuleBase*(const ModuleInstance&)>;
 
+    // 阶6 八轮：取执行权的明确意图；tryBeginForRun 在锁内按意图校验预期状态。
+    enum class RunIntent { Single, CycleTick, Resume };
+
     // 运行状态
     RunState state() const {
         return static_cast<RunState>(m_state.load(std::memory_order_acquire));
@@ -196,7 +199,7 @@ private:
     RunEngine();
     ~RunEngine();
 
-    void executeRun(RunMode mode = RunMode::RunOnce);
+    void executeRun(RunIntent intent);
     // 阶段 D1: 显式控制图执行（激活队列）
     void executeRunWithControlGraph(ImageData& pipelineData);
     void executeBatchParallel(const QStringList& batch, ImageData& pipelineData);
@@ -239,9 +242,10 @@ private:
     mutable QRecursiveMutex m_lifecycleMutex;
     bool m_stopPending = false;
     std::atomic_bool m_maintenance{false};
-    bool tryBeginExecution(RunMode mode, bool fresh);
-    // 阶6 七轮：恢复判定+暂停数据转移+取执行权在同一临界区原子完成。
-    bool tryBeginForRun(RunMode mode, bool& resuming, QString& resumeModule, ImageData& resumeData);
+    RunMode m_pauseRunMode = RunMode::RunOnce; // 暂停前模式，恢复时还原（P1-2 八轮）
+    // 阶6 八轮：恢复判定+暂停数据转移+取执行权+意图校验在同一临界区原子完成。
+    bool tryBeginForRun(RunIntent intent, bool& resuming, QString& resumeModule, ImageData& resumeData,
+                        RunMode& outMode);
     // 阶6 七轮：正常结束在单一临界区内完成清理+最终状态提交+执行权释放。
     void finalizeRunTail();
     bool tryAcquireLease();
