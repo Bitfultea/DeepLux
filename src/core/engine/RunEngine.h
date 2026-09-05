@@ -234,7 +234,9 @@ private:
     // 原子。tryBeginExecution() 在同一临界区完成"取执行权+runMode/state 提交+token
     // 重置+每运行重置"，消除启动窗口；stop() 同锁发布停止。m_stopPending/m_maintenance
     // 仅在 m_lifecycleMutex 内读写。
-    mutable QMutex m_lifecycleMutex;
+    // 阶6 五轮：递归锁——clearBreakpointPauseState() 自身加锁，而 stop()/
+    // endExecutionCleanup()/finalizeAbortedRun() 等已在锁内调用它，需可重入。
+    mutable QRecursiveMutex m_lifecycleMutex;
     bool m_stopPending = false;
     std::atomic_bool m_maintenance{false};
     bool tryBeginExecution(RunMode mode, bool fresh);

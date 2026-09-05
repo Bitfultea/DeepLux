@@ -681,9 +681,13 @@ void RunEngine::removeModule(const QString& moduleId) {
             region->remove(removedName);
         invalidateModuleOutput(removedName);
         resetStepState();
-        if (m_pauseResumeModule == removedName) {
-            m_pauseResumeModule.clear();
-            m_pausedAtBreakpoint = false;
+        // 阶6 五轮：暂停态写入加锁，与锁内读取串行化。
+        {
+            QMutexLocker locker(&m_lifecycleMutex);
+            if (m_pauseResumeModule == removedName) {
+                m_pauseResumeModule.clear();
+                m_pausedAtBreakpoint = false;
+            }
         }
     }
     releaseMaintenance();
@@ -780,6 +784,9 @@ void RunEngine::clearModuleOutputs() {
 }
 
 void RunEngine::clearBreakpointPauseState() {
+    // 阶6 五轮：暂停态清理自身加锁（递归锁，允许已持锁调用者重入），
+    // 与 isPausedAtBreakpoint()/resume()/executeRun 的锁内读取串行化。
+    QMutexLocker locker(&m_lifecycleMutex);
     m_pauseResumeModule.clear();
     m_pausePipelineData = ImageData();
     m_breakpointPausedAt = QDateTime();
