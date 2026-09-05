@@ -98,7 +98,9 @@ public:
         return m_executing.load(std::memory_order_acquire);
     }
     bool isBusy() const {
-        return isExecuting() || state() == RunState::Running || state() == RunState::Paused;
+        // 阶6 五轮：维护租约期间也视为 busy，使外部能观察到维护占用。
+        return isExecuting() || m_maintenance.load(std::memory_order_acquire) || state() == RunState::Running ||
+               state() == RunState::Paused;
     }
 
     // 运行模式
@@ -232,9 +234,9 @@ private:
     // 原子。tryBeginExecution() 在同一临界区完成"取执行权+runMode/state 提交+token
     // 重置+每运行重置"，消除启动窗口；stop() 同锁发布停止。m_stopPending/m_maintenance
     // 仅在 m_lifecycleMutex 内读写。
-    QMutex m_lifecycleMutex;
+    mutable QMutex m_lifecycleMutex;
     bool m_stopPending = false;
-    bool m_maintenance = false;
+    std::atomic_bool m_maintenance{false};
     bool tryBeginExecution(RunMode mode, bool fresh);
     bool tryAcquireLease();
     void releaseLease();
@@ -243,7 +245,10 @@ private:
     void clearModulesLocked();
     void addModuleLocked(ModuleBase* module);
     void endExecutionCleanup();
+    void finalizeAbortedRun(RunMode mode);
     bool lifecycleBusyLocked();
+    // 阶6 五轮：内层断点命中在生命周期锁内写暂停态（stop() 同锁清理，无 UB）。
+    void setInnerPauseLocked(const QString& mod, const ImageData& data);
     QTimer* m_cycleTimer = nullptr;
     QList<ModuleBase*> m_modules;
     QList<ModuleBase*> m_ownedModules;

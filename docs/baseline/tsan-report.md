@@ -113,7 +113,8 @@ happens-before 关系，凡 QMutex/QReadWriteLock 保护的共享数据都会被
 | #2 `pipelineData`(ImageData) 按值进并行 lambda | 每任务独立副本、`collectModuleInputs` 对 `m_nodeOutputs`/连接只读、批次结果仅在等待结束后由调用线程写回 | 已证明（代码审计） |
 | #3 工作线程读 `m_runId`(QString) | 调用线程快照 `runId`/`token` 按值捕获；`executeParallel()` **始终**自生成局部 runId（不读 `m_runId`，连续独立调用 ID 不同）；runId="毫秒+单调序号" | 已修复（定向测试） |
 | #4 生命周期租约不排他（P0：executeParallel 绕过、维护 check-then-act、stop 被启动覆盖） | 四轮重构为**单一排他租约**：执行（runOnce/onTimerTick/resume/stepOnce）经 `tryBeginExecution()`/`tryAcquireLease()`、维护（add/remove/clear/load）经 `tryAcquireMaintenance()`、公开 `executeParallel()` 经 `tryAcquireLease()`，三者共用 `m_lifecycleMutex` 互斥；**取权与 runMode/state 提交、token 重置同临界区**（消除启动窗口）；维护检查与修改同租约原子（消除悬空指针/混合工程）；早退路径复位 state 防卡死 | 已修复（SEGV/HUAf 清零） |
-| #5 并发生命周期回归（复核三/四轮要求，屏障驱动） | `testConcurrentStopDuringRunKeepsStoppedState`（50 次，entered 屏障+立即 stop，覆盖启动窗口/执行中）、`testConcurrentMaintenanceDuringRunStart`（30 次，run 启动窗口内并发 clear/load）、`testStopSimultaneousWithBreakpointHit`、`testClearAndLoadRejectedWhileRunning`。实际覆盖：并发 run/stop/load/clear 与断点同时停止；start/pause/resume/stepOnce 的转换已串行化但**未**逐一并发回归 | 已证明（定向测试，范围如左列） |
+| #5 并发生命周期回归（复核三/四/五轮，真信号量屏障） | 五轮改用 **QSemaphore 真实同步点**：`GateModule` 进入 process 释放 entered（执行租约必已持有），主线程 acquire 后 stop 再放行，断言停止获胜/后继未执行/状态 Stopped；`testConcurrentMaintenanceDuringRunStart` 工厂阻塞在维护租约内，断言 runOnce 被拒绝(runStarted=0)、stop 不并发清理、load 成功后模块未被清除。另含 `testStopSimultaneousWithBreakpointHit`、`testClearAndLoadRejectedWhileRunning` | 已证明（确定性屏障） |
+| #6 锁未闭合（复核五轮 P0/P1）：暂停态锁外读、stop 绕过维护租约、stepOnce 非原子、租约不隔离 Running/Paused、早退覆盖停止 | 暂停态（m_pausedAtBreakpoint/m_pauseResumeModule/m_pausePipelineData/m_breakpointPausedAt）全部改为 `m_lifecycleMutex` 内读写（resume/executeRun/内层 setInnerPauseLocked/isPausedAtBreakpoint）；stop() 尊重 m_maintenance 不并发清理；stepOnce 改用 tryBeginExecution 原子启动+锁内收尾（stop 时重置单步态）；tryAcquireLease 拒绝 Running/Paused；空模块/校验早退改 finalizeAbortedRun 原子收尾不覆盖 Stopped；isBusy() 含 m_maintenance | 已修复（TSan SEGV/HUAf=0） |
 
 ### 门禁结论（仍不写"通过"）
 

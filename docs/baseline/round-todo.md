@@ -83,7 +83,7 @@
 | 3 | 收口数据与构建契约（未实现类型加载期拒绝、点云键值校验、端口数组门禁、OpenCV 必需） | 完成 | 5fb386d..ff238eb（二轮复核） |
 | 4 | 补齐流程验收：Loop 固定次数/While 条件退出/StopWhile 提前退出/停止取消时限 + Parallel all/any/失败分支/blocking 不并行 + 拾取→圆拟合真实工作流 | 完成 | d6e9028..02bc644（含复核收口） |
 | 5 | Agent、SAM 与 GUI 端到端验收：确定性假 LLM 完成"创建 GrabImage→FindCircle→连接→运行→读取结果"；SAM 测试内 HTTP 服务覆盖四端点（成功/超时/崩溃恢复）；ui_capture 注册 CTest 且截图自校验；GUI 真实交互（鼠标拾取→圆拟合叠加、条件分支画布状态、像素断言） | 完成 | 58fadba..cf6dc87（六轮复核收口） |
-| 6 | 并发风险收口：审计 RunEngine 工作线程信号连接（带上下文 Auto→Queued，无跨线程直操 QWidget）；并行批次 ImageData 只读边界；runId 固化（毫秒+单调序号，池线程不读成员字符串）；完整生命周期协议（tryBeginExecution 唯一取权/stop/start/load/clear 同锁/断点外层提交）；executeParallel 恒自生成 runId；7 个定向测试+50 次并行压力+并发 stop/load/clear/断点同时停止回归；TSan 分节（SEGV/HUAf 清零，误报数随调度不标通过） | 完成 | adff5b5 + 本提交（stop() 复核二/三/四轮） |
+| 6 | 并发风险收口：审计 RunEngine 工作线程信号连接（带上下文 Auto→Queued，无跨线程直操 QWidget）；并行批次 ImageData 只读边界；runId 固化（毫秒+单调序号，池线程不读成员字符串）；完整生命周期协议（tryBeginExecution 唯一取权/stop/start/load/clear 同锁/断点外层提交）；executeParallel 恒自生成 runId；7 个定向测试+50 次并行压力+并发 stop/load/clear/断点同时停止回归；TSan 分节（SEGV/HUAf 清零，误报数随调度不标通过） | 完成 | adff5b5 + 本提交（stop() 复核二/三/四/五轮） |
 
 ### 阶段 4 流程验收口径
 

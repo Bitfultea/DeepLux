@@ -1,4 +1,5 @@
 #include <QMutex>
+#include <QSemaphore>
 #include <QSet>
 #include <QSignalSpy>
 #include <QThread>
@@ -359,6 +360,44 @@ private:
     QMutex* m_mutex;
     QStringList* m_sink;
     QString m_mark;
+};
+
+// 阶6 五轮：确定性同步门模块——进入 process 时释放 entered 信号量，随后阻塞在
+// release 信号量上（可被取消令牌打断），用于把"模块已进入执行"变成真实同步点。
+class GateModule : public ModuleBase {
+    Q_OBJECT
+public:
+    GateModule(const QString& name, QSemaphore* entered, QSemaphore* release, QStringList* log)
+        : m_entered(entered), m_release(release), m_log(log) {
+        m_moduleId = QStringLiteral("com.deeplux.test.gate.") + name;
+        m_name = name;
+        m_category = "test";
+        setThreadSafe(true);
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        m_entered->release();
+        // 阻塞直到测试放行；期间若取消令牌置位则提前返回（协作取消）。
+        while (!m_release->tryAcquire(1, 10)) {
+            auto* tok = cancellationToken();
+            if (tok && tok->isCancelledFast()) {
+                return true;
+            }
+        }
+        if (m_log)
+            m_log->append(m_name);
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    QSemaphore* m_entered;
+    QSemaphore* m_release;
+    QStringList* m_log;
 };
 
 class TestRunEngine : public QObject {
@@ -1529,69 +1568,87 @@ void TestRunEngine::testParallelStressFiftyRunsNoPollution() {
 }
 
 void TestRunEngine::testConcurrentStopDuringRunKeepsStoppedState() {
-    // 阶6 复核（四轮）：同步屏障驱动——runner 在调用 runOnce 前置 entered，主线程
-    // 自旋等 entered 后立即 stop()，使停止落在"启动窗口/执行中"两种交错；不依赖
-    // 固定 msleep。停止态不得被运行收尾覆盖，且不得卡在 Running。
+    // 阶6 复核（五轮）：真实同步点——gate 模块进入 process 时释放 entered 信号量，
+    // 此时执行租约必已持有；主线程 acquire 后 stop() 必然落在"执行中"，再放行 gate。
+    // 断言：停止获胜（state=Stopped）、后继模块未执行、引擎回落。
     RunEngine& engine = RunEngine::instance();
-    for (int rep = 0; rep < 50; ++rep) {
-        engine.clearModules();
-        Project project;
-        ModuleInstance s;
-        s.id = QStringLiteral("s");
-        s.moduleId = QStringLiteral("s");
-        project.addModule(s);
-        std::atomic<int> running{0};
-        std::atomic<int> maxConc{0};
-        QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) {
-            return new ParallelSleepModule(inst.id, &running, &maxConc, 50);
-        }));
+    engine.clearModules();
+    Project project;
+    ModuleInstance g;
+    g.id = QStringLiteral("gate");
+    g.moduleId = QStringLiteral("gate");
+    ModuleInstance af;
+    af.id = QStringLiteral("after");
+    af.moduleId = QStringLiteral("after");
+    project.addModule(g);
+    project.addModule(af);
+    ModuleConnection c;
+    c.fromModuleId = QStringLiteral("gate");
+    c.toModuleId = QStringLiteral("after");
+    c.fromPort = QStringLiteral("next");
+    c.toPort = QStringLiteral("control");
+    c.edgeType = QStringLiteral("control");
+    project.addConnection(c);
 
-        std::atomic<bool> entered{false};
-        std::thread runner([&engine, &entered]() {
-            entered.store(true);
-            engine.runOnce();
-        });
-        while (!entered.load()) {
-        }
-        engine.stop();
-        runner.join();
+    QSemaphore entered;
+    QSemaphore release;
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == QStringLiteral("gate"))
+            return new GateModule("gate", &entered, &release, &log);
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
 
-        QVERIFY2(engine.state() == RunState::Stopped || engine.state() == RunState::Idle,
-                 qPrintable(QString("rep %1: state stuck at %2").arg(rep).arg(static_cast<int>(engine.state()))));
-        QVERIFY2(!engine.isBusy(), "engine must not be busy after stop+join");
-    }
+    std::thread runner([&engine]() { engine.runOnce(); });
+    QVERIFY2(entered.tryAcquire(1, 5000), "gate module must enter execution");
+    engine.stop();     // 确定性：gate 执行中停止
+    release.release(); // 放行 gate
+    runner.join();
+
+    QCOMPARE(engine.state(), RunState::Stopped);
+    QVERIFY2(!engine.isBusy(), "engine must not be busy after stop+join");
+    QVERIFY2(!log.contains(QStringLiteral("after")), "stop must prevent successor module execution");
     engine.clearModules();
 }
 
 void TestRunEngine::testConcurrentMaintenanceDuringRunStart() {
-    // 阶6 复核（四轮）：runOnce 启动窗口内并发 clearModules()/loadProject()，
-    // 维护租约与执行租约互斥——不得 UAF、不得混合工程、收尾后状态回落。
+    // 阶6 复核（五轮）：真实同步点——loadProject 的工厂阻塞在 factoryRelease，
+    // 此时维护租约必已持有；主线程在维护期间 runOnce 必须被拒绝（runStarted=0），
+    // stop() 不得与维护并发清理；放行后 load 成功且模块未被 stop 清除。
     RunEngine& engine = RunEngine::instance();
-    for (int rep = 0; rep < 30; ++rep) {
-        engine.clearModules();
-        Project project;
-        ModuleInstance s;
-        s.id = QStringLiteral("s");
-        s.moduleId = QStringLiteral("s");
-        project.addModule(s);
-        std::atomic<int> running{0};
-        std::atomic<int> maxConc{0};
-        QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) {
-            return new ParallelSleepModule(inst.id, &running, &maxConc, 20);
-        }));
+    engine.clearModules();
+    Project project;
+    ModuleInstance s;
+    s.id = QStringLiteral("s");
+    s.moduleId = QStringLiteral("s");
+    project.addModule(s);
 
-        std::atomic<bool> entered{false};
-        std::thread runner([&engine, &entered]() {
-            entered.store(true);
-            engine.runOnce();
+    QSemaphore factoryEntered;
+    QSemaphore factoryRelease;
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    bool loaded = false;
+    std::thread loader([&]() {
+        loaded = engine.loadProject(&project, [&](const ModuleInstance& inst) -> ModuleBase* {
+            factoryEntered.release();
+            while (!factoryRelease.tryAcquire(1, 10)) {
+            }
+            return new TestExecutionModule(inst.id);
         });
-        while (!entered.load()) {
-        }
-        // 启动窗口内并发维护：要么被租约拒绝，要么在执行权建立前完成；均不得崩溃。
-        engine.clearModules();
-        runner.join();
-        QVERIFY2(!engine.isBusy(), "engine must settle after concurrent maintenance+run");
-    }
+    });
+
+    QVERIFY2(factoryEntered.tryAcquire(1, 5000), "factory must run under maintenance lease");
+    QVERIFY2(engine.isBusy(), "maintenance lease must mark engine busy");
+    engine.runOnce(); // 维护期间必须被拒绝
+    QCOMPARE(runStartedSpy.count(), 0);
+    engine.stop(); // 不得与维护并发清理，不得崩溃
+    factoryRelease.release();
+    loader.join();
+
+    QVERIFY2(loaded, "loadProject must succeed after maintenance completes");
+    QVERIFY2(!engine.isBusy(), "engine must settle after load");
+    QCOMPARE(engine.modules().size(), 1);
     engine.clearModules();
     QVERIFY(engine.modules().isEmpty());
 }
