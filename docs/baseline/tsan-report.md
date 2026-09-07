@@ -138,7 +138,10 @@ data race 警告数**随调度变化**（实测样本曾在 47–83 间波动）
 **通知与状态转换原子化（复核十一轮）**：引入生命周期序号 `m_lifecycleGeneration`
 （stop/pause/取权/收尾每次转换自增）。`start()`/`resume()` 在提交锁内启动定时器并记录 gen，
 发送 `stateChanged`/`cycleStarted`/"Starting continuous run"/"Run resumed" 前再次取锁验证
-gen 未变且状态仍 Running；stop 介入（gen 自增）则跳过通知，**不再逆序发 cycleStarted/日志**。
+gen 未变且状态仍 Running；stop 介入（gen 自增）则跳过通知。gen 校验与信号发送之间仍有极窄
+窗口，严格意义上不能保证通知绝不逆序；但 cycleStarted/cycleStopped 在仓库内无实际消费者、
+过期通知无法绕过 RunIntent 触发执行、权威状态/定时器/取消令牌均已正确保护，故**执行语义不受
+影响，通知顺序为 best-effort**（复核十二轮定性，非阻塞）。不值得继续扩大生命周期框架。
 定时器启动与状态提交同临界区；不持锁调用外部 Qt 槽。
 
 依据门禁规则"不把未确认 TSan 警告写成通过"，阶段 6 维持 **TSan 不通过** 结论：
