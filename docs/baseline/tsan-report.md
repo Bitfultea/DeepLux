@@ -122,14 +122,22 @@ happens-before 关系，凡 QMutex/QReadWriteLock 保护的共享数据都会被
 ### 门禁结论（仍不写"通过"）
 
 `build-tsan` 复跑（`setarch -R`，原始日志见 `tsan-runengine-full.txt`）：
-**heap-use-after-free 与 SEGV 均为 0**；功能侧 109/109 全过。data race 警告数**随调度
-变化**（实测样本曾在 47–83 间波动），不维护封闭区间、不以此作确定结论。
+**heap-use-after-free 与 SEGV 均为 0**；功能侧 **115/115** 全过（与上方表格同提交同步）。
+data race 警告数**随调度变化**（实测样本曾在 47–83 间波动），不维护封闭区间、不以此作确定结论。
 
-按调用栈分类（均为高概率误报）：
-- `ImageData` 隐式共享引用计数跨线程拷贝（Qt 未插桩，原子引用计数无法建立 happens-before）；
-- `executeBatchParallel`/`executeParallel` 池任务拷贝 `ImageData`/`ExecutionContext`（同上）；
-- `CancellationToken`/`ModuleBase` 的 `g_cancellationTokens` QHash（已用 QMutex 保护，TSan 不识别未插桩 QMutex）；
-- `qthreadpool`/`qhash.h` 等未插桩 Qt5 内部。
+按调用栈分类：
+- **本方代码计数已原子（非 UB、非误报类）**：`executeParallel`/`executeBatchParallel` 的
+  `running`/`maxConcurrent` 为 `std::atomic<int>`（:98/:99、:1195/:1196），`finished`/
+  `haveError`/`firstError` 由 `doneMutex`/`errMutex` 保护；等待循环保证 lambda 不越过函数
+  生命周期。复核十轮指出的":118 ++running/:130 --running 无同步"经核对为原子操作，非 UB。
+- `ImageData` 隐式共享引用计数跨线程拷贝（Qt 未插桩，原子引用计数无法建立 happens-before）→ 高概率误报；
+- `executeBatchParallel`/`executeParallel` 池任务拷贝 `ImageData`/`ExecutionContext`（同上）→ 高概率误报；
+- `CancellationToken`/`ModuleBase` 的 `g_cancellationTokens` QHash（已用 QMutex 保护，TSan 不识别未插桩 QMutex）→ 高概率误报；
+- `qthreadpool`/`qhash.h` 等未插桩 Qt5 内部 → 高概率误报。
+
+**遗留极窄窗口（复核十轮确认，保护等效）**：`start()`/`resume()` 的定时器启动为"提交锁 +
+锁内重验证"两次锁；第二次锁释放到 `emit cycleStarted`/日志之间仍有极窄窗口，stop 落地后
+可能仍发出一次 `cycleStarted`/一条日志；但定时器不会在停止后启动、日志主体不误导，核心声明成立。
 
 依据门禁规则"不把未确认 TSan 警告写成通过"，阶段 6 维持 **TSan 不通过** 结论：
 #3/#4 已修复、#1/#2/#5 已证明；残余误报需以 `-fsanitize=thread` 重编 Qt5 后复测清零。
