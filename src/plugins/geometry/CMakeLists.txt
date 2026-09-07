@@ -11,6 +11,9 @@ add_subdirectory(FitLine)
 # FitCircle Plugin
 add_subdirectory(FitCircle)
 
+# FitEllipse Plugin（阶7 批1）
+add_subdirectory(FitEllipse)
+
 # DistancePL Plugin
 add_subdirectory(DistancePL)
 

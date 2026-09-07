@@ -17,6 +17,7 @@ set(TEST_SOURCES
     test_findcircle.cpp
     test_measureline.cpp
     test_fitcircle.cpp
+    test_fitellipse.cpp
     test_measurerect.cpp
     test_distancepl.cpp
     test_distancepp.cpp
@@ -101,6 +102,10 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
     if(TEST_NAME STREQUAL "test_fitcircle" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE FitCirclePlugin)
+    endif()
+    # 阶7 批1：FitEllipse 行为+流程验收
+    if(TEST_NAME STREQUAL "test_fitellipse")
+        target_link_libraries(${TEST_NAME} PRIVATE FitEllipsePlugin)
     endif()
     if(TEST_NAME STREQUAL "test_measurerect" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE MeasureRectPlugin)
