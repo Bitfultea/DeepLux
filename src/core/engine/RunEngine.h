@@ -244,6 +244,9 @@ private:
     mutable QRecursiveMutex m_lifecycleMutex;
     bool m_stopPending = false;
     std::atomic_bool m_maintenance{false};
+    // 阶6 十一轮：生命周期序号，每次状态转换（stop/pause/取权/收尾）自增；
+    // start/resume 提交时记录 gen，发通知前重验证 gen+状态，stop 介入则跳过通知。
+    std::atomic<int> m_lifecycleGeneration{0};
     RunMode m_pauseRunMode = RunMode::RunOnce; // 暂停前模式，恢复时还原（P1-2 八轮）
     // 阶6 八轮：恢复判定+暂停数据转移+取执行权+意图校验在同一临界区原子完成。
     bool tryBeginForRun(RunIntent intent, bool& resuming, QString& resumeModule, ImageData& resumeData,

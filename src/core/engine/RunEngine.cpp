@@ -330,15 +330,24 @@ void RunEngine::start() {
     // 阶6 九轮：定时器启动+cycleStarted+日志与状态提交同转换；stop 介入则不启动、
     // 不发出误导信号/日志。
     bool started = false;
+    int gen = 0;
     {
         QMutexLocker locker(&m_lifecycleMutex);
         if (state() == RunState::Running) {
             m_cycleTimer->start();
+            gen = m_lifecycleGeneration;
             started = true;
         }
     }
     if (!started) {
         return;
+    }
+    // 阶6 十一轮：发通知前重验证 generation+状态；stop 介入则不逆序发 cycleStarted/日志。
+    {
+        QMutexLocker locker(&m_lifecycleMutex);
+        if (m_lifecycleGeneration != gen || state() != RunState::Running) {
+            return;
+        }
     }
     emit stateChanged(state());
     emit cycleStarted();
@@ -352,6 +361,7 @@ void RunEngine::pause() {
         if (state() != RunState::Running) {
             return;
         }
+        ++m_lifecycleGeneration; // 阶6 十一轮
         m_state.store(static_cast<int>(RunState::Paused), std::memory_order_release);
     }
     m_cycleTimer->stop();
@@ -378,6 +388,7 @@ void RunEngine::resume() {
 
     // 阶6 九轮：状态提交+定时器启动+日志同转换；stop 介入则不启定时器、不日志。
     bool resumed = false;
+    int gen = 0;
     {
         QMutexLocker locker(&m_lifecycleMutex);
         if (state() != RunState::Paused) {
@@ -385,10 +396,18 @@ void RunEngine::resume() {
         }
         m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
         m_cycleTimer->start();
+        gen = m_lifecycleGeneration;
         resumed = true;
     }
     if (!resumed) {
         return;
+    }
+    // 阶6 十一轮：发通知前重验证 generation+状态；stop 介入则不逆序发日志/信号。
+    {
+        QMutexLocker locker(&m_lifecycleMutex);
+        if (m_lifecycleGeneration != gen || state() != RunState::Running) {
+            return;
+        }
     }
     emit stateChanged(state());
     Logger::instance().info(tr("Run resumed"), "Run");
@@ -457,6 +476,7 @@ bool RunEngine::tryBeginForRun(RunIntent intent, bool& resuming, QString& resume
         m_skipBreakpointOnce = true;
         break;
     }
+    ++m_lifecycleGeneration; // 阶6 十一轮：取权是一次生命周期转换
     m_executing.store(true, std::memory_order_release);
     m_runMode.store(static_cast<int>(outMode), std::memory_order_release);
     m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
@@ -479,6 +499,7 @@ void RunEngine::finalizeRunTail() {
     // 阶6 七轮（P0-1）：清理+最终状态提交+执行权释放同一临界区，避免"先释放执行权
     // 再设 Idle"窗口被新一轮运行插入后覆盖。
     QMutexLocker locker(&m_lifecycleMutex);
+    ++m_lifecycleGeneration; // 阶6 十一轮：运行收尾是一次生命周期转换
     clearControlQueue();
     clearBreakpointPauseState();
     m_stopPending = false;
@@ -530,6 +551,7 @@ void RunEngine::releaseMaintenance() {
     QMutexLocker locker(&m_lifecycleMutex);
     // 阶6 七轮（P2-6）：维护期间收到的停止请求在此补做清理，避免被丢弃。
     if (m_stopPending) {
+        ++m_lifecycleGeneration; // 阶6 十一轮：维护期停止补清理是一次转换
         m_stopPending = false;
         clearBreakpointPauseState();
         resetStepState();
@@ -551,6 +573,7 @@ void RunEngine::finalizeAbortedRun(RunMode mode) {
     // 阶6 五轮：空模块/校验失败早退的原子收尾——在锁内判定是否已有 stop()，
     // 不覆盖 Stopped；仅无停止时复位 Idle，防状态卡死/停止丢失。
     QMutexLocker locker(&m_lifecycleMutex);
+    ++m_lifecycleGeneration; // 阶6 十一轮：中止收尾是一次生命周期转换
     const bool wasStopped = (state() == RunState::Stopped) || m_stopPending;
     clearControlQueue();
     clearBreakpointPauseState();
@@ -578,6 +601,7 @@ void RunEngine::stop() {
     // 有执行权持有者时置 m_stopPending 令其自行退出/放弃；否则就地清理。
     {
         QMutexLocker locker(&m_lifecycleMutex);
+        ++m_lifecycleGeneration; // 阶6 十一轮：停止是一次生命周期转换
         m_state.store(static_cast<int>(RunState::Stopped), std::memory_order_release);
         m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
         if (m_cancellationToken) {

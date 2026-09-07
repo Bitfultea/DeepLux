@@ -102,7 +102,7 @@ happens-before 关系，凡 QMutex/QReadWriteLock 保护的共享数据都会被
 
 ## 阶段 6 复核（并发风险收口）
 
-> 日期：2026-09-05。对应提交见 `git log`（阶段 6 及 stop() 复核二~八轮）。功能侧
+> 日期：2026-09-07。对应提交见 `git log`（阶段 6 及 stop() 复核二~十一轮）。功能侧
 > `test_runengine` **115/115 通过**（含 13 个定向/回归测试与 50 次并行压力），全量 CTest 66/66。
 
 ### 风险处理与分类
@@ -135,9 +135,11 @@ data race 警告数**随调度变化**（实测样本曾在 47–83 间波动）
 - `CancellationToken`/`ModuleBase` 的 `g_cancellationTokens` QHash（已用 QMutex 保护，TSan 不识别未插桩 QMutex）→ 高概率误报；
 - `qthreadpool`/`qhash.h` 等未插桩 Qt5 内部 → 高概率误报。
 
-**遗留极窄窗口（复核十轮确认，保护等效）**：`start()`/`resume()` 的定时器启动为"提交锁 +
-锁内重验证"两次锁；第二次锁释放到 `emit cycleStarted`/日志之间仍有极窄窗口，stop 落地后
-可能仍发出一次 `cycleStarted`/一条日志；但定时器不会在停止后启动、日志主体不误导，核心声明成立。
+**通知与状态转换原子化（复核十一轮）**：引入生命周期序号 `m_lifecycleGeneration`
+（stop/pause/取权/收尾每次转换自增）。`start()`/`resume()` 在提交锁内启动定时器并记录 gen，
+发送 `stateChanged`/`cycleStarted`/"Starting continuous run"/"Run resumed" 前再次取锁验证
+gen 未变且状态仍 Running；stop 介入（gen 自增）则跳过通知，**不再逆序发 cycleStarted/日志**。
+定时器启动与状态提交同临界区；不持锁调用外部 Qt 槽。
 
 依据门禁规则"不把未确认 TSan 警告写成通过"，阶段 6 维持 **TSan 不通过** 结论：
 #3/#4 已修复、#1/#2/#5 已证明；残余误报需以 `-fsanitize=thread` 重编 Qt5 后复测清零。
