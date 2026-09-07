@@ -633,7 +633,7 @@
       "targetInput": "必需 PointSet2D(fit_points) + 可选 Any 载体(image)",
       "targetOutput": "中心X/中心Y/Phi(度,[0,180))/长半轴/短半轴/椭圆度/拟合误差",
       "targetParams": "threshold/iterations/minAxis/maxAxis",
-      "implementationStatus": "stage7-batch1（FitEllipse 已实现；台账重生成需 GH API，离线 404，待环境恢复后同步 matchKind/结论）",
+      "implementationStatus": "stage7-batch1 已实现（FitEllipse/direct）；离线回退已生效并完成同步",
       "reviewConclusion": "intentionally_changed",
       "evidence": "输入:边缘点集；输出:中心 X/中心 Y/角度 Phi/长轴 R/短轴 R/椭圆度；关键参数:输入轮廓/边缘点链接；场景:轮廓点拟合椭圆并输出椭圆度"
     },

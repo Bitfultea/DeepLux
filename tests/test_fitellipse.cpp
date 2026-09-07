@@ -12,6 +12,7 @@
 #include <QTemporaryDir>
 #include <QtTest>
 #include <cmath>
+#include <limits>
 
 using namespace DeepLux;
 
@@ -264,6 +265,38 @@ private slots:
         badPlugin.setParam(QStringLiteral("threshold"), 2.0);
         ImageData okOut;
         QVERIFY2(badPlugin.execute(goodInput, okOut), "legal params must succeed on same points");
+    }
+
+    // 阶7 批1 复核五轮（P1-3）：NaN/±Inf 坐标在输入边界被拒绝（排序严格弱序）
+    void testRejectsNonFinitePoints() {
+        FitEllipsePlugin plugin;
+        QVERIFY(plugin.initialize());
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const double inf = std::numeric_limits<double>::infinity();
+        for (const double bad : {nan, inf, -inf}) {
+            QVector<QPointF> points;
+            for (int i = 0; i < 6; ++i)
+                points << QPointF(100 + i, 100 + i);
+            points[3] = QPointF(bad, 100.0);
+            ImageData input;
+            input.setData("fit_points", QVariant::fromValue(points));
+            ImageData output;
+            QVERIFY2(!plugin.execute(input, output), "non-finite coordinate must be rejected");
+        }
+    }
+
+    // 阶7 批1 复核五轮（P2-4）：运行期参数边界与 metadata 一致
+    void testParamBoundsMatchMetadata() {
+        FitEllipsePlugin plugin;
+        QString error;
+        const auto P = [](double th, double it, double mn, double mx) {
+            return QJsonObject{{"threshold", th}, {"iterations", it}, {"minAxis", mn}, {"maxAxis", mx}};
+        };
+        QVERIFY(plugin.validateParams(P(1e6, 1000, 0.1, 1e6), error));      // 边界内
+        QVERIFY(!plugin.validateParams(P(1e6 + 1, 1000, 0.1, 1e6), error)); // threshold 超上限
+        QVERIFY(!plugin.validateParams(P(2.0, 1001, 0.1, 1e6), error));     // iterations 超上限
+        QVERIFY(!plugin.validateParams(P(2.0, 1000, 0.09, 1e6), error));    // minAxis 低于下限
+        QVERIFY(!plugin.validateParams(P(2.0, 1000, 0.1, 1e6 + 1), error)); // maxAxis 超上限
     }
 
     void testPluginInfo() {

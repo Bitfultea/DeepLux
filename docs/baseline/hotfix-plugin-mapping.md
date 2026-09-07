@@ -29,14 +29,14 @@
 | unverified | 4 | 依赖硬件/SDK，行为未验证 |
 | not_equivalent | 0 | 不等价 |
 
-## 迁移范围决策（missing 项，阶段 1 冻结）
+## 迁移范围决策（阶段 1 冻结范围，存在 migrationDecision）
 
 > 下表 `input/output/keyParams/scenario` 记录的是**旧版契约**（按旧版 ViewModel 源码核验）；
 > 目标 C++ 契约（强类型端口/载荷类型等）在阶段 7 另行设计评审，不得与旧版证据混淆。
 
 | 决策 | 数量 | 含义 |
 | --- | ---: | --- |
-| rebuild | 36 | 需重建：真实算法+端口契约+参数验证+行为测试 |
+| rebuild | 37 | 需重建：真实算法+端口契约+参数验证+行为测试 |
 | replace | 1 | 由当前已有能力/流程替代 |
 | retire | 5 | 淘汰：无产品需求或已被覆盖 |
 | business_pack | 10 | 业务包：依赖硬件/模型，需现场验收 |
@@ -64,6 +64,7 @@
 | MeasureCircle | 002检测识别 | rebuild | P1 | 输入:HImage+初始圆（圆心/半径，可链接变量或 HomMat2D 仿射补正）；输出:测量圆对象/圆心 X/圆心 Y/半径/直径/圆度；关键参数:MeasInfo（Threshold/Length1/Length2/MeasSelect/MeasNum/MeasMode/ExclusionPoint）/屏蔽区域过滤测量点（FilterMeasurePoints+重拟合）/Scale 实际坐标输出；场景:初始圆区域内提取圆周测量点拟合圆；屏蔽区域剔除干扰点后重新拟合 |
 | AffineeRegion | 004几何关系 | rebuild | P2 | 输入:HImage+HRegion（链接，必需，区域无效判 NG）+起点/终点仿射参数；输出:仿射变换后区域；关键参数:起点(X1/Y1/Angle1)与终点(X2/Y2/Angle2)/SelectedInterpolationMethod(插值方法)；场景:VectorAngleToRigid 由起点/终点位姿求刚性矩阵，AffineTransRegion 变换输入区域 |
 | BuildLl | 004几何关系 | rebuild | P2 | 输入:HImage+两条直线对象（Line1/Line2 链接）；输出:交点 X/交点 Y/弧度/角度/平行标志；关键参数:两条直线链接（Line1LinkText/Line2LinkText）；场景:IntersectionLl 由两条直线构建交点/夹角/平行关系 |
+| FitEllipse | 004几何关系 | rebuild | P1 | 输入:边缘点集；输出:中心 X/中心 Y/角度 Phi/长轴 R/短轴 R/椭圆度；关键参数:输入轮廓/边缘点链接；场景:轮廓点拟合椭圆并输出椭圆度 |
 | RegionProcess | 004几何关系 | rebuild | P2 | 输入:Region2D；输出:拟合区域 HRegion+逐区域中心/面积/半径或宽高/角度；关键参数:拟合形状（圆/矩形）/连通区域数量；场景:连通区域逐个拟合几何形状并输出形状参数 |
 | CalculateOffset | 005坐标标定 | rebuild | P1 | 输入:当前坐标+目标坐标；输出:OffsetX/OffsetY/OffsetA；关键参数:当前坐标（X/Y/Φ）与基准坐标（ModeCoord 对 MathCoord）；场景:对位偏移计算，输出平移+角度偏移供补正 |
 | Coordinate | 005坐标标定 | rebuild | P2 | 输入:HImage+当前坐标链接（X/Y/Deg）；输出:刚性变换矩阵 HomMat2D 及其逆（供下游 ROI/测量补正）；关键参数:基准坐标 ModeCoord(X/Y/Φ)/当前坐标链接（X/Y/Deg）/AxisLength 轴长显示；场景:生成基准→当前坐标补正矩阵（VectorAngleToRigid），供多工位对位 |

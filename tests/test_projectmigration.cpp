@@ -52,12 +52,35 @@ void TestProjectMigration::testMappingConclusionConsistency() {
     generatedMf.close();
 
     // 统计 JSON 结论分布
-    // 阶7 批1 复核四轮：FitEllipse 实现后不得再列为 missing（matchKind=direct）；
-    // 磁盘 MD 与测试内重生成 MD 均不得再列其为 missing。
+    QMap<QString, int> jsonCount;
+    for (const auto& v : json["plugins"].toArray()) {
+        const QJsonObject p = v.toObject();
+        if (p["reviewState"].toString() == "reviewed")
+            jsonCount[p["reviewConclusion"].toString()]++;
+    }
+
+    // 阶7 批1 复核五轮：恢复 JSON/静态对照/生成台账三方结论计数校验。
+    // 静态对照 legacy-comparison.md 汇总行形如 "equivalent=0、intentionally_changed=13、…"
+    for (const QString key : {"equivalent", "intentionally_changed", "partial", "unverified"}) {
+        QRegularExpression re(key + "=(\\d+)");
+        auto m = re.match(md);
+        QVERIFY2(m.hasMatch(), qPrintable("legacy-comparison missing count for " + key));
+        QCOMPARE(m.captured(1).toInt(), jsonCount.value(key, 0));
+    }
+
+    for (const QString key : {"equivalent", "intentionally_changed", "partial", "unverified", "not_equivalent"}) {
+        const QRegularExpression re(
+            QStringLiteral("\\|\\s*%1\\s*\\|\\s*(\\d+)\\s*\\|").arg(QRegularExpression::escape(key)));
+        const auto match = re.match(generatedMd);
+        QVERIFY2(match.hasMatch(), qPrintable("generated mapping missing count for " + key));
+        QCOMPARE(match.captured(1).toInt(), jsonCount.value(key, 0));
+    }
+
+    // 阶7 批1 复核四轮：FitEllipse 实现后不得再列为 missing（matchKind=direct）。
     const QString fitEllipseMissingRow =
         QStringLiteral("| FitEllipse | `02Plugins/004几何关系/Plugin.FitEllipse` | - | missing |");
-    QVERIFY2(!md.contains(fitEllipseMissingRow), "FitEllipse must not be listed as missing (disk MD)");
-    QVERIFY2(!generatedMd.contains(fitEllipseMissingRow), "FitEllipse must not be listed as missing (regenerated MD)");
+    QVERIFY2(!md.contains(fitEllipseMissingRow), "FitEllipse must not be listed as missing (legacy-comparison)");
+    QVERIFY2(!generatedMd.contains(fitEllipseMissingRow), "FitEllipse must not be listed as missing (regenerated)");
 }
 
 void TestProjectMigration::testMigrationDecisionConsistency() {
@@ -145,8 +168,9 @@ void TestProjectMigration::testMigrationDecisionConsistency() {
             QVERIFY2(p["evidence"].toString().startsWith(QStringLiteral("依赖：")),
                      qPrintable(QString("%1(business_pack) evidence must start with 依赖：").arg(name)));
         }
-        if (p["matchKind"].toString() != "direct")
-            jsonDecision[dec]++; // MD 决策段仅列非 direct 行
+        // 阶7 批1 复核五轮：MD 决策段按 migrationDecision 展示全部冻结范围（含 direct），
+        // JSON 计数对齐同一范围。
+        jsonDecision[dec]++;
     }
     QVERIFY2(decisionTotal == 53, qPrintable(QString("expected 53 migrationDecision, got %1").arg(decisionTotal)));
 

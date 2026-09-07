@@ -45,14 +45,18 @@ bool parseParamsStrict(const QJsonObject& params, FitEllipsePlugin::ParsedParams
         value = d;
         return true;
     };
-    if (!num("threshold", out.threshold, false, 0.0, 1e9, QObject::tr("阈值必须为有限非负数")))
+    // 阶7 批1 复核五轮（P2-4）：运行期边界与 metadata 完全一致
+    // （threshold[0,1e6]、iterations[1,1000]、minAxis/maxAxis[0.1,1e6]），
+    // 避免 UI/工程文件/Agent 与运行期得到不同结果。
+    constexpr double kMetaMax = 1e6;
+    if (!num("threshold", out.threshold, false, 0.0, kMetaMax + 1.0, QObject::tr("阈值必须为[0,1e6]有限数")))
         return false;
     if (!num("iterations", out.iterations, true, 1.0, static_cast<double>(kMaxRansacAttempts) + 1.0,
              QObject::tr("迭代次数必须为[1,1000]的整数")))
         return false;
-    if (!num("minAxis", out.minAxis, false, 1e-9, 1e9, QObject::tr("最小半轴必须为有限正数")))
+    if (!num("minAxis", out.minAxis, false, 0.1, kMetaMax + 1.0, QObject::tr("最小半轴必须为[0.1,1e6]有限数")))
         return false;
-    if (!num("maxAxis", out.maxAxis, false, 1e-9, 1e9, QObject::tr("最大半轴必须为有限正数")))
+    if (!num("maxAxis", out.maxAxis, false, 0.1, kMetaMax + 1.0, QObject::tr("最大半轴必须为[0.1,1e6]有限数")))
         return false;
     if (out.maxAxis <= out.minAxis) {
         error = QObject::tr("最大半轴必须大于最小半轴");
@@ -233,6 +237,14 @@ bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
                 return false;
             }
             points.append(v.toPointF());
+        }
+    }
+    // 阶7 批1 复核五轮（P1-3）：插件输入边界逐点拒绝 NaN/Inf，
+    // 避免非有限坐标使排序比较器违反严格弱序（std::sort UB）。
+    for (const QPointF& p : points) {
+        if (!std::isfinite(p.x()) || !std::isfinite(p.y())) {
+            emit errorOccurred(tr("拟合点集包含非有限坐标(NaN/Inf)"));
+            return false;
         }
     }
     if (points.size() < 5) {

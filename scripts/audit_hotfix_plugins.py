@@ -221,11 +221,12 @@ def markdown(rows: list[dict]) -> str:
         "",
     ]
 
-    # 阶1: 53 个 missing 的迁移范围决策统计
-    missing = [r for r in rows if r["matchKind"] == "missing"]
-    decision_counts = Counter(r.get("migrationDecision", "pending") for r in missing)
+    # 阶7 批1 复核五轮：阶段 1 冻结范围按"存在 migrationDecision"统计与展示
+    # （实现后 matchKind 变为 direct/candidate，仍属阶段 1 冻结范围，不得从 MD 移除）。
+    scoped = [r for r in rows if r.get("migrationDecision")]
+    decision_counts = Counter(r.get("migrationDecision", "pending") for r in scoped)
     lines += [
-        "## 迁移范围决策（missing 项，阶段 1 冻结）",
+        "## 迁移范围决策（阶段 1 冻结范围，存在 migrationDecision）",
         "",
         "> 下表 `input/output/keyParams/scenario` 记录的是**旧版契约**（按旧版 ViewModel 源码核验）；",
         "> 目标 C++ 契约（强类型端口/载荷类型等）在阶段 7 另行设计评审，不得与旧版证据混淆。",
@@ -241,7 +242,7 @@ def markdown(rows: list[dict]) -> str:
         "| 旧版插件 | 分类 | 决策 | 优先级 | 证据/替代/理由 |",
         "| --- | --- | --- | --- | --- |",
     ]
-    for r in missing:
+    for r in scoped:
         lines.append(
             f"| {r['legacyPlugin']} | {r['legacyCategory']} | {r.get('migrationDecision','pending')} "
             f"| {r.get('priority','-')} | {r.get('evidence','-')} |"
