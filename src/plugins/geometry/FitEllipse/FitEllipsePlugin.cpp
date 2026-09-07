@@ -2,10 +2,8 @@
 
 #include "common/Logger.h"
 
-#include <QDoubleSpinBox>
-#include <QLabel>
-#include <QVBoxLayout>
 #include <cmath>
+#include <random>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -13,57 +11,48 @@
 
 namespace DeepLux {
 
-FitEllipsePlugin::FitEllipsePlugin(QObject* parent) : ModuleBase(parent) {
-    m_defaultParams = QJsonObject{{"threshold", 2.0}, {"iterations", 3}, {"minAxis", 1.0}, {"maxAxis", 5000.0}};
-    m_params = m_defaultParams;
-}
+namespace {
 
-FitEllipsePlugin::~FitEllipsePlugin() {}
-
-bool FitEllipsePlugin::initialize() {
-    if (!ModuleBase::initialize()) {
+// 阶7 批1 复核：严格参数解析——校验 JSON 类型/整数性/有限性/范围，
+// 验证与执行共用同一份快照，杜绝 toDouble()/toInt() 宽松转换假成功。
+bool parseParamsStrict(const QJsonObject& params, FitEllipsePlugin::ParsedParams& out, QString& error) {
+    error.clear();
+    auto num = [&params, &error](const char* key, double& value, bool integer, double lo, double hiExclusive,
+                                 const QString& msg) {
+        const QJsonValue v = params[QLatin1String(key)];
+        if (!v.isDouble()) { // JSON 整数亦为 isDouble==true；字符串/bool/缺失均拒绝
+            error = msg;
+            return false;
+        }
+        const double d = v.toDouble();
+        if (!std::isfinite(d)) {
+            error = msg;
+            return false;
+        }
+        if (integer && std::floor(d) != d) {
+            error = msg;
+            return false;
+        }
+        if (d < lo || d >= hiExclusive) {
+            error = msg;
+            return false;
+        }
+        value = d;
+        return true;
+    };
+    if (!num("threshold", out.threshold, false, 0.0, 1e9, QObject::tr("阈值必须为有限非负数")))
         return false;
-    }
-    qDebug() << "FitEllipsePlugin initialized";
-    return true;
-}
-
-void FitEllipsePlugin::shutdown() {
-    ModuleBase::shutdown();
-}
-
-bool FitEllipsePlugin::fitEllipseLeastSquares(const QVector<QPointF>& points, EllipseResult& result) const {
-#ifdef DEEPLUX_HAS_OPENCV
-    if (points.size() < 5) {
+    if (!num("iterations", out.iterations, true, 1.0, 1e6, QObject::tr("迭代次数必须为>=1的整数")))
         return false;
-    }
-    std::vector<cv::Point2f> cvPoints;
-    cvPoints.reserve(points.size());
-    for (const QPointF& p : points) {
-        cvPoints.emplace_back(static_cast<float>(p.x()), static_cast<float>(p.y()));
-    }
-    // 真实算法：OpenCV 直接最小二乘椭圆拟合（Fitzgibbon 约束圆锥拟合）
-    cv::RotatedRect rr = cv::fitEllipse(cvPoints);
-    const double axisA = rr.size.width * 0.5;
-    const double axisB = rr.size.height * 0.5;
-    if (axisA <= 0.0 || axisB <= 0.0 || !std::isfinite(axisA) || !std::isfinite(axisB)) {
+    if (!num("minAxis", out.minAxis, false, 1e-9, 1e9, QObject::tr("最小半轴必须为有限正数")))
         return false;
-    }
-    result.majorR = std::max(axisA, axisB);
-    result.minorR = std::min(axisA, axisB);
-    // fitEllipse 的 angle 为长轴方向；width 对应 angle 方向
-    result.phi = (axisA >= axisB) ? rr.angle : rr.angle + 90.0;
-    result.centerX = rr.center.x;
-    result.centerY = rr.center.y;
-    if (result.majorR <= 0.0) {
+    if (!num("maxAxis", out.maxAxis, false, 1e-9, 1e9, QObject::tr("最大半轴必须为有限正数")))
+        return false;
+    if (out.maxAxis <= out.minAxis) {
+        error = QObject::tr("最大半轴必须大于最小半轴");
         return false;
     }
     return true;
-#else
-    Q_UNUSED(points);
-    Q_UNUSED(result);
-    return false;
-#endif
 }
 
 double pointEllipseResidual(const QPointF& p, const FitEllipsePlugin::EllipseResult& e) {
@@ -81,14 +70,140 @@ double pointEllipseResidual(const QPointF& p, const FitEllipsePlugin::EllipseRes
     return std::abs(rNorm - 1.0) * a;
 }
 
+#ifdef DEEPLUX_HAS_OPENCV
+bool fitEllipseCv(const QVector<QPointF>& points, FitEllipsePlugin::EllipseResult& result) {
+    if (points.size() < 5) {
+        return false;
+    }
+    std::vector<cv::Point2f> cvPoints;
+    cvPoints.reserve(points.size());
+    for (const QPointF& p : points) {
+        cvPoints.emplace_back(static_cast<float>(p.x()), static_cast<float>(p.y()));
+    }
+    // 真实算法：OpenCV 直接最小二乘椭圆拟合（Fitzgibbon 约束圆锥）
+    const cv::RotatedRect rr = cv::fitEllipse(cvPoints);
+    const double axisA = rr.size.width * 0.5;
+    const double axisB = rr.size.height * 0.5;
+    if (axisA <= 0.0 || axisB <= 0.0 || !std::isfinite(axisA) || !std::isfinite(axisB)) {
+        return false;
+    }
+    result.majorR = std::max(axisA, axisB);
+    result.minorR = std::min(axisA, axisB);
+    // fitEllipse 的 angle 为 width 轴方向；长轴方向按长短轴归正
+    double phi = (axisA >= axisB) ? rr.angle : rr.angle + 90.0;
+    // 阶7 批1 复核：phi 契约归一化到 [0,180) 度
+    phi = std::fmod(phi, 180.0);
+    if (phi < 0.0) {
+        phi += 180.0;
+    }
+    result.phi = phi;
+    result.centerX = rr.center.x;
+    result.centerY = rr.center.y;
+    return result.majorR > 0.0;
+}
+#endif
+
+} // namespace
+
+FitEllipsePlugin::FitEllipsePlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"threshold", 2.0}, {"iterations", 3}, {"minAxis", 0.5}, {"maxAxis", 5000.0}};
+    m_params = m_defaultParams;
+}
+
+FitEllipsePlugin::~FitEllipsePlugin() {}
+
+bool FitEllipsePlugin::initialize() {
+    if (!ModuleBase::initialize()) {
+        return false;
+    }
+    qDebug() << "FitEllipsePlugin initialized";
+    return true;
+}
+
+void FitEllipsePlugin::shutdown() {
+    ModuleBase::shutdown();
+}
+
+bool FitEllipsePlugin::fitEllipseRobust(const QVector<QPointF>& points, double threshold, int iterations,
+                                        EllipseResult& result) const {
+#ifdef DEEPLUX_HAS_OPENCV
+    if (points.size() < 5) {
+        return false;
+    }
+    if (threshold <= 0.0) {
+        return fitEllipseCv(points, result);
+    }
+    // RANSAC 稳健估计：5 点最小采样拟合椭圆，按阈值统计内点，取最优内点集重拟合。
+    // 单个远端离群点不会拉偏最终结果；内点不足则失败关闭。
+    std::mt19937 rng(0xE11F5Eu);
+    std::uniform_int_distribution<int> pick(0, points.size() - 1);
+    QVector<QPointF> bestInliers;
+    double bestError = 0.0;
+    for (int attempt = 0; attempt < iterations; ++attempt) {
+        QVector<QPointF> sample;
+        while (sample.size() < 5) {
+            const QPointF candidate = points[pick(rng)];
+            bool dup = false;
+            for (const QPointF& s : sample) {
+                if (std::abs(s.x() - candidate.x()) < 1e-9 && std::abs(s.y() - candidate.y()) < 1e-9) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                sample.append(candidate);
+            }
+        }
+        EllipseResult candidate;
+        if (!fitEllipseCv(sample, candidate)) {
+            continue;
+        }
+        QVector<QPointF> inliers;
+        double err = 0.0;
+        for (const QPointF& p : points) {
+            const double r = pointEllipseResidual(p, candidate);
+            if (r <= threshold) {
+                inliers.append(p);
+                err += r;
+            }
+        }
+        if (inliers.size() > bestInliers.size() ||
+            (inliers.size() == bestInliers.size() && inliers.size() >= 5 && err < bestError)) {
+            bestInliers = inliers;
+            bestError = err;
+        }
+    }
+    if (bestInliers.size() < 5) {
+        return false; // 失败关闭，不返回被离群点拉偏的结果
+    }
+    if (!fitEllipseCv(bestInliers, result)) {
+        return false;
+    }
+    double total = 0.0;
+    for (const QPointF& p : bestInliers) {
+        total += pointEllipseResidual(p, result);
+    }
+    result.error = total / bestInliers.size();
+    return true;
+#else
+    Q_UNUSED(points);
+    Q_UNUSED(threshold);
+    Q_UNUSED(iterations);
+    Q_UNUSED(result);
+    return false;
+#endif
+}
+
 bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
-    QJsonObject params = currentParams();
-    const double threshold = params["threshold"].toDouble(2.0);
-    const int iterations = params["iterations"].toInt(3);
-    const double minAxis = params["minAxis"].toDouble(1.0);
-    const double maxAxis = params["maxAxis"].toDouble(5000.0);
+    // 阶7 批1 复核：执行前用与验证同一份严格解析快照，非法参数失败关闭。
+    ParsedParams parsed;
+    QString perr;
+    if (!parseParamsStrict(currentParams(), parsed, perr)) {
+        emit errorOccurred(perr);
+        return false;
+    }
 
     QVariant pointsVar = input.data("fit_points");
     if (!pointsVar.isValid()) {
@@ -101,6 +216,10 @@ bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
     } else {
         const QList<QVariant> pointsList = pointsVar.toList();
         for (const QVariant& v : pointsList) {
+            if (!v.canConvert<QPointF>()) {
+                emit errorOccurred(tr("拟合点集包含非法点"));
+                return false;
+            }
             points.append(v.toPointF());
         }
     }
@@ -109,47 +228,15 @@ bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
         return false;
     }
 
-    // 迭代离群剔除：拟合→按阈值剔除→重拟合
-    QVector<QPointF> inliers = points;
     EllipseResult result;
-    bool ok = false;
-    for (int iter = 0; iter < qMax(1, iterations); ++iter) {
-        EllipseResult candidate;
-        if (!fitEllipseLeastSquares(inliers, candidate)) {
-            break;
-        }
-        ok = true;
-        result = candidate;
-        if (threshold <= 0.0) {
-            break;
-        }
-        QVector<QPointF> next;
-        for (const QPointF& p : inliers) {
-            if (pointEllipseResidual(p, candidate) <= threshold) {
-                next.append(p);
-            }
-        }
-        if (next.size() < 5 || next.size() == inliers.size()) {
-            inliers = next.size() < 5 ? inliers : next;
-            break;
-        }
-        inliers = next;
-    }
-    if (!ok) {
-        emit errorOccurred(tr("椭圆拟合失败"));
+    if (!fitEllipseRobust(points, parsed.threshold, static_cast<int>(parsed.iterations), result)) {
+        emit errorOccurred(tr("椭圆拟合失败（内点不足或退化）"));
         return false;
     }
-    if (result.majorR < minAxis || result.majorR > maxAxis || result.minorR < minAxis) {
+    if (result.majorR < parsed.minAxis || result.majorR > parsed.maxAxis || result.minorR < parsed.minAxis) {
         emit errorOccurred(tr("拟合半轴超出参数范围"));
         return false;
     }
-
-    // 平均几何残差作为拟合误差
-    double total = 0.0;
-    for (const QPointF& p : inliers) {
-        total += pointEllipseResidual(p, result);
-    }
-    result.error = inliers.isEmpty() ? 0.0 : total / inliers.size();
     m_result = result;
 
     const double ellipticity = result.majorR > 0.0 ? result.minorR / result.majorR : 0.0;
@@ -173,63 +260,8 @@ bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
 }
 
 bool FitEllipsePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
-    error.clear();
-    if (params["threshold"].toDouble() < 0.0) {
-        error = tr("离群阈值不能为负");
-        return false;
-    }
-    if (params["iterations"].toInt() < 1) {
-        error = tr("剔除迭代次数必须>=1");
-        return false;
-    }
-    const double minAxis = params["minAxis"].toDouble();
-    const double maxAxis = params["maxAxis"].toDouble();
-    if (minAxis <= 0.0) {
-        error = tr("最小半轴必须大于0");
-        return false;
-    }
-    if (maxAxis <= minAxis) {
-        error = tr("最大半轴必须大于最小半轴");
-        return false;
-    }
-    return true;
-}
-
-QWidget* FitEllipsePlugin::createConfigWidget() {
-    QWidget* widget = new QWidget();
-    QVBoxLayout* layout = new QVBoxLayout(widget);
-
-    layout->addWidget(new QLabel(tr("离群阈值:")));
-    QDoubleSpinBox* thresholdSpin = new QDoubleSpinBox();
-    thresholdSpin->setRange(0.0, 100.0);
-    thresholdSpin->setValue(m_params["threshold"].toDouble());
-    thresholdSpin->setSingleStep(0.5);
-    layout->addWidget(thresholdSpin);
-
-    layout->addWidget(new QLabel(tr("最小半轴:")));
-    QDoubleSpinBox* minSpin = new QDoubleSpinBox();
-    minSpin->setRange(0.1, 5000.0);
-    minSpin->setValue(m_params["minAxis"].toDouble());
-    minSpin->setSingleStep(0.5);
-    layout->addWidget(minSpin);
-
-    layout->addWidget(new QLabel(tr("最大半轴:")));
-    QDoubleSpinBox* maxSpin = new QDoubleSpinBox();
-    maxSpin->setRange(1.0, 20000.0);
-    maxSpin->setValue(m_params["maxAxis"].toDouble());
-    maxSpin->setSingleStep(0.5);
-    layout->addWidget(maxSpin);
-
-    layout->addStretch();
-
-    connect(thresholdSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-            [this](double value) { m_params["threshold"] = value; });
-    connect(minSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-            [this](double value) { m_params["minAxis"] = value; });
-    connect(maxSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-            [this](double value) { m_params["maxAxis"] = value; });
-
-    return widget;
+    ParsedParams parsed;
+    return parseParamsStrict(params, parsed, error);
 }
 
 IModule* FitEllipsePlugin::cloneImpl() const {

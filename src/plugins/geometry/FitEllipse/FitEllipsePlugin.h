@@ -19,10 +19,17 @@ public:
     struct EllipseResult {
         double centerX = 0.0;
         double centerY = 0.0;
-        double phi = 0.0;    // 度
+        double phi = 0.0;    // 度，归一化 [0,180)
         double majorR = 0.0; // 长半轴
         double minorR = 0.0; // 短半轴
         double error = 0.0;
+    };
+    // 阶7 批1 复核：严格解析后的参数快照，验证与执行共用。
+    struct ParsedParams {
+        double threshold = 2.0;
+        double iterations = 3.0;
+        double minAxis = 0.5;
+        double maxAxis = 5000.0;
     };
 
     explicit FitEllipsePlugin(QObject* parent = nullptr);
@@ -49,7 +56,11 @@ public:
 
     bool initialize() override;
     void shutdown() override;
-    QWidget* createConfigWidget() override;
+    // 阶7 批1 复核：不提供自定义配置页（返回 nullptr），统一走 metadata/PropertyPanel，
+    // 避免绕过参数锁/验证并产生非法组合。
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
 
 protected:
     bool process(const ImageData& input, ImageData& output) override;
@@ -57,7 +68,8 @@ protected:
     IModule* cloneImpl() const override;
 
 private:
-    bool fitEllipseLeastSquares(const QVector<QPointF>& points, EllipseResult& result) const;
+    bool fitEllipseRobust(const QVector<QPointF>& points, double threshold, int iterations,
+                          EllipseResult& result) const;
 
     EllipseResult m_result;
 };

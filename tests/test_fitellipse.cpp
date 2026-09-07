@@ -19,21 +19,21 @@ class TestFitEllipse : public QObject {
     Q_OBJECT
 
 private:
-    bool installPlugin(const QString& pluginRoot, const QString& name, const QString& domain) const {
+    // 阶7 批1 复核：插件库路径由 CMake $<TARGET_FILE:...> 注入（跨平台），不硬编码 .so 名。
+    bool installPlugin(const QString& pluginRoot, const QString& name, const QString& domain,
+                       const QString& libSrc) const {
         QDir root(pluginRoot);
         if (!root.mkpath(name))
             return false;
         QDir dir(root.filePath(name));
         const QString srcRoot = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../src/plugins");
         const QString metaSrc = QDir(srcRoot).filePath(QString("%1/%2/metadata.json").arg(domain, name));
-        const QString libSrc =
-            QDir::cleanPath(QCoreApplication::applicationDirPath() + QString("/../lib/lib%1Plugin.so").arg(name));
         if (!QFileInfo::exists(metaSrc) || !QFileInfo::exists(libSrc))
             return false;
+        const QString destLib = dir.filePath(QFileInfo(libSrc).fileName());
         QFile::remove(dir.filePath("metadata.json"));
-        QFile::remove(dir.filePath(QString("lib%1Plugin.so").arg(name)));
-        return QFile::copy(metaSrc, dir.filePath("metadata.json")) &&
-               QFile::copy(libSrc, dir.filePath(QString("lib%1Plugin.so").arg(name)));
+        QFile::remove(destLib);
+        return QFile::copy(metaSrc, dir.filePath("metadata.json")) && QFile::copy(libSrc, destLib);
     }
 
 private slots:
@@ -68,6 +68,9 @@ private slots:
         QVERIFY2(std::abs(major - 60) < 3.0, qPrintable(QString("major=%1").arg(major)));
         QVERIFY2(std::abs(minor - 30) < 3.0, qPrintable(QString("minor=%1").arg(minor)));
         QVERIFY2(std::abs(ellip - 0.5) < 0.05, qPrintable(QString("ellipticity=%1").arg(ellip)));
+        const double phi = output.data("ellipse_phi").toDouble();
+        QVERIFY2(phi >= 0.0 && phi < 180.0, qPrintable(QString("phi=%1 not normalized").arg(phi)));
+        QVERIFY2(phi < 5.0 || phi > 175.0, qPrintable(QString("axis-aligned major-x phi=%1").arg(phi)));
     }
 
     void testInsufficientPoints() {
@@ -121,8 +124,10 @@ private slots:
         QVERIFY(appDir.isValid());
         qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
         const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
-        QVERIFY(installPlugin(pluginRoot, QStringLiteral("MeasurementInput"), QStringLiteral("geometry")));
-        QVERIFY(installPlugin(pluginRoot, QStringLiteral("FitEllipse"), QStringLiteral("geometry")));
+        QVERIFY(installPlugin(pluginRoot, QStringLiteral("MeasurementInput"), QStringLiteral("geometry"),
+                              QStringLiteral(TEST_FITELLIPSE_LIB_MeasurementInput)));
+        QVERIFY(installPlugin(pluginRoot, QStringLiteral("FitEllipse"), QStringLiteral("geometry"),
+                              QStringLiteral(TEST_FITELLIPSE_LIB_FitEllipse)));
         DeepLux::PluginManager::instance().addPluginPath(pluginRoot);
         QVERIFY(DeepLux::PluginManager::instance().initialize());
         QVERIFY(DeepLux::PluginManager::instance().loadPlugin(QStringLiteral("MeasurementInput")));
@@ -165,6 +170,77 @@ private slots:
         QVERIFY2(std::abs(out.data("ellipse_minor_r").toDouble() - 25) < 3.0, "minor axis ~25");
         engine.clearModules();
         qunsetenv("DEEPLUX_APP_DATA_DIR");
+    }
+
+    // 阶7 批1 复核（P1-1）：强离群点不得拉偏结果（RANSAC 稳健估计）
+    void testRejectsStrongOutlier() {
+        FitEllipsePlugin plugin;
+        plugin.setParams(QJsonObject{{"threshold", 2.0}, {"iterations", 200}, {"minAxis", 0.5}, {"maxAxis", 1000.0}});
+        QVERIFY(plugin.initialize());
+        QVector<QPointF> points;
+        for (int i = 0; i < 24; ++i) {
+            const double t = i * M_PI / 12.0;
+            points << QPointF(150 + 60 * std::cos(t), 120 + 30 * std::sin(t));
+        }
+        points << QPointF(2000, 2000); // 远端离群点
+        ImageData input;
+        input.setData("fit_points", QVariant::fromValue(points));
+        ImageData output;
+        QVERIFY(plugin.execute(input, output));
+        const double cx = output.data("ellipse_center_x").toDouble();
+        const double cy = output.data("ellipse_center_y").toDouble();
+        const double major = output.data("ellipse_major_r").toDouble();
+        const double minor = output.data("ellipse_minor_r").toDouble();
+        QVERIFY2(std::abs(cx - 150) < 5.0, qPrintable(QString("cx=%1 pulled by outlier").arg(cx)));
+        QVERIFY2(std::abs(cy - 120) < 5.0, qPrintable(QString("cy=%1 pulled by outlier").arg(cy)));
+        QVERIFY2(std::abs(major - 60) < 5.0, qPrintable(QString("major=%1 pulled by outlier").arg(major)));
+        QVERIFY2(std::abs(minor - 30) < 5.0, qPrintable(QString("minor=%1 pulled by outlier").arg(minor)));
+    }
+
+    // 阶7 批1 复核（P1-4）：phi 契约=度、归一化 [0,180)；旋转椭圆恢复角度
+    void testRotatedEllipsePhiNormalized() {
+        FitEllipsePlugin plugin;
+        plugin.setParams(QJsonObject{{"threshold", 0.0}, {"iterations", 1}, {"minAxis", 0.5}, {"maxAxis", 1000.0}});
+        QVERIFY(plugin.initialize());
+        const double rot = 30.0 * M_PI / 180.0;
+        QVector<QPointF> points;
+        for (int i = 0; i < 24; ++i) {
+            const double t = i * M_PI / 12.0;
+            const double x = 60 * std::cos(t);
+            const double y = 30 * std::sin(t);
+            points << QPointF(150 + x * std::cos(rot) - y * std::sin(rot), 120 + x * std::sin(rot) + y * std::cos(rot));
+        }
+        ImageData input;
+        input.setData("fit_points", QVariant::fromValue(points));
+        ImageData output;
+        QVERIFY(plugin.execute(input, output));
+        const double phi = output.data("ellipse_phi").toDouble();
+        QVERIFY2(phi >= 0.0 && phi < 180.0, qPrintable(QString("phi=%1 not in [0,180)").arg(phi)));
+        QVERIFY2(std::abs(phi - 30.0) < 5.0, qPrintable(QString("phi=%1 expected ~30").arg(phi)));
+    }
+
+    // 阶7 批1 复核（P1-3）：严格类型检查，字符串/小数迭代等宽松转换被拒绝
+    void testValidateRejectsLooseTypes() {
+        FitEllipsePlugin plugin;
+        QString error;
+        QVERIFY(!plugin.validateParams(
+            QJsonObject{{"threshold", QStringLiteral("2.0")}, {"iterations", 3}, {"minAxis", 0.5}, {"maxAxis", 100.0}},
+            error));
+        QVERIFY(!plugin.validateParams(
+            QJsonObject{{"threshold", 2.0}, {"iterations", 1.5}, {"minAxis", 0.5}, {"maxAxis", 100.0}}, error));
+        QVERIFY(!plugin.validateParams(
+            QJsonObject{{"threshold", 2.0}, {"iterations", 3}, {"minAxis", 0.5}, {"maxAxis", QStringLiteral("100")}},
+            error));
+        // 执行同样拒绝非法快照
+        plugin.setParams(
+            QJsonObject{{"threshold", QStringLiteral("2.0")}, {"iterations", 3}, {"minAxis", 0.5}, {"maxAxis", 100.0}});
+        QVector<QPointF> points;
+        for (int i = 0; i < 8; ++i)
+            points << QPointF(i, i);
+        ImageData input;
+        input.setData("fit_points", QVariant::fromValue(points));
+        ImageData output;
+        QVERIFY(!plugin.execute(input, output));
     }
 
     void testPluginInfo() {
