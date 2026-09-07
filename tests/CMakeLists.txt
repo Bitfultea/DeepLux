@@ -108,7 +108,9 @@ foreach(TEST_FILE ${TEST_SOURCES})
         target_link_libraries(${TEST_NAME} PRIVATE FitEllipsePlugin)
         target_compile_definitions(${TEST_NAME} PRIVATE
             TEST_FITELLIPSE_LIB_FitEllipse="$<TARGET_FILE:FitEllipsePlugin>"
-            TEST_FITELLIPSE_LIB_MeasurementInput="$<TARGET_FILE:MeasurementInputPlugin>")
+            TEST_FITELLIPSE_LIB_MeasurementInput="$<TARGET_FILE:MeasurementInputPlugin>"
+            TEST_FITELLIPSE_META_FitEllipse="${CMAKE_SOURCE_DIR}/src/plugins/geometry/FitEllipse/metadata.json"
+            TEST_FITELLIPSE_META_MeasurementInput="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json")
     endif()
     if(TEST_NAME STREQUAL "test_measurerect" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE MeasureRectPlugin)

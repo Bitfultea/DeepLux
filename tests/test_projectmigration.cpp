@@ -163,6 +163,28 @@ void TestProjectMigration::testMigrationDecisionConsistency() {
     }
     QVERIFY2(missingTotal == 53, qPrintable(QString("expected 53 missing, got %1").arg(missingTotal)));
 
+    // 阶7 批1 复核三轮（P1-4）：全量一致性——结论枚举合法、候选与 matchKind 不矛盾
+    static const QSet<QString> validConclusions{QStringLiteral("equivalent"), QStringLiteral("intentionally_changed"),
+                                                QStringLiteral("partial"), QStringLiteral("unverified"),
+                                                QStringLiteral("not_equivalent")};
+    for (const auto& v : json["plugins"].toArray()) {
+        const QJsonObject p = v.toObject();
+        const QString name = p["legacyPlugin"].toString();
+        const QString kind = p["matchKind"].toString();
+        const QString cand = p["currentCandidate"].toString();
+        // 候选与 matchKind 不矛盾：missing 不得有候选；有候选不得为 missing
+        if (kind == QStringLiteral("missing")) {
+            QVERIFY2(cand.isEmpty(), qPrintable(QString("%1 matchKind=missing but has candidate %2").arg(name, cand)));
+        } else if (kind == QStringLiteral("direct") || kind == QStringLiteral("candidate")) {
+            QVERIFY2(!cand.isEmpty(), qPrintable(QString("%1 matchKind=%2 but no candidate").arg(name, kind)));
+        }
+        if (p["reviewState"].toString() == QStringLiteral("reviewed") && p.contains("reviewConclusion")) {
+            const QString conc = p["reviewConclusion"].toString();
+            QVERIFY2(validConclusions.contains(conc),
+                     qPrintable(QString("%1 has invalid reviewConclusion '%2'").arg(name, conc)));
+        }
+    }
+
     // 截取"迁移范围决策"段，避免与 matchKind 表的 business_pack 计数混淆
     const int secStart = md.indexOf(QStringLiteral("## 迁移范围决策"));
     QVERIFY2(secStart >= 0, "mapping.md missing migration decision section");

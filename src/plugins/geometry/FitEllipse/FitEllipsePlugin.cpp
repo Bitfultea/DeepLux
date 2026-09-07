@@ -13,6 +13,9 @@ namespace DeepLux {
 
 namespace {
 
+// 阶7 批1 复核三轮（P1-2）：RANSAC 采样硬上限，防长时间无响应。
+constexpr int kMaxRansacAttempts = 1000;
+
 // 阶7 批1 复核：严格参数解析——校验 JSON 类型/整数性/有限性/范围，
 // 验证与执行共用同一份快照，杜绝 toDouble()/toInt() 宽松转换假成功。
 bool parseParamsStrict(const QJsonObject& params, FitEllipsePlugin::ParsedParams& out, QString& error) {
@@ -42,7 +45,8 @@ bool parseParamsStrict(const QJsonObject& params, FitEllipsePlugin::ParsedParams
     };
     if (!num("threshold", out.threshold, false, 0.0, 1e9, QObject::tr("阈值必须为有限非负数")))
         return false;
-    if (!num("iterations", out.iterations, true, 1.0, 1e6, QObject::tr("迭代次数必须为>=1的整数")))
+    if (!num("iterations", out.iterations, true, 1.0, static_cast<double>(kMaxRansacAttempts) + 1.0,
+             QObject::tr("迭代次数必须为[1,1000]的整数")))
         return false;
     if (!num("minAxis", out.minAxis, false, 1e-9, 1e9, QObject::tr("最小半轴必须为有限正数")))
         return false;
@@ -106,7 +110,7 @@ bool fitEllipseCv(const QVector<QPointF>& points, FitEllipsePlugin::EllipseResul
 } // namespace
 
 FitEllipsePlugin::FitEllipsePlugin(QObject* parent) : ModuleBase(parent) {
-    m_defaultParams = QJsonObject{{"threshold", 2.0}, {"iterations", 3}, {"minAxis", 0.5}, {"maxAxis", 5000.0}};
+    m_defaultParams = QJsonObject{{"threshold", 2.0}, {"iterations", 100}, {"minAxis", 0.5}, {"maxAxis", 5000.0}};
     m_params = m_defaultParams;
 }
 
@@ -127,22 +131,41 @@ void FitEllipsePlugin::shutdown() {
 bool FitEllipsePlugin::fitEllipseRobust(const QVector<QPointF>& points, double threshold, int iterations,
                                         EllipseResult& result) const {
 #ifdef DEEPLUX_HAS_OPENCV
-    if (points.size() < 5) {
+    // 阶7 批1 复核三轮（P0-1）：预先去重，唯一点不足 5 直接失败关闭，
+    // 避免采样循环因唯一坐标不足而无限循环。
+    QVector<QPointF> uniq;
+    for (const QPointF& p : points) {
+        bool dup = false;
+        for (const QPointF& u : uniq) {
+            if (std::abs(u.x() - p.x()) < 1e-9 && std::abs(u.y() - p.y()) < 1e-9) {
+                dup = true;
+                break;
+            }
+        }
+        if (!dup) {
+            uniq.append(p);
+        }
+    }
+    if (uniq.size() < 5) {
         return false;
     }
     if (threshold <= 0.0) {
-        return fitEllipseCv(points, result);
+        return fitEllipseCv(uniq, result);
     }
     // RANSAC 稳健估计：5 点最小采样拟合椭圆，按阈值统计内点，取最优内点集重拟合。
-    // 单个远端离群点不会拉偏最终结果；内点不足则失败关闭。
+    // 采样次数硬上限 kMaxRansacAttempts 并检查取消令牌，防长时间无响应。
+    const int attempts = qBound(1, iterations, kMaxRansacAttempts);
     std::mt19937 rng(0xE11F5Eu);
-    std::uniform_int_distribution<int> pick(0, points.size() - 1);
+    std::uniform_int_distribution<int> pick(0, uniq.size() - 1);
     QVector<QPointF> bestInliers;
     double bestError = 0.0;
-    for (int attempt = 0; attempt < iterations; ++attempt) {
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+        if (isCancellationRequested()) {
+            return false;
+        }
         QVector<QPointF> sample;
         while (sample.size() < 5) {
-            const QPointF candidate = points[pick(rng)];
+            const QPointF candidate = uniq[pick(rng)];
             bool dup = false;
             for (const QPointF& s : sample) {
                 if (std::abs(s.x() - candidate.x()) < 1e-9 && std::abs(s.y() - candidate.y()) < 1e-9) {
@@ -160,7 +183,7 @@ bool FitEllipsePlugin::fitEllipseRobust(const QVector<QPointF>& points, double t
         }
         QVector<QPointF> inliers;
         double err = 0.0;
-        for (const QPointF& p : points) {
+        for (const QPointF& p : uniq) {
             const double r = pointEllipseResidual(p, candidate);
             if (r <= threshold) {
                 inliers.append(p);

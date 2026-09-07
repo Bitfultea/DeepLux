@@ -20,14 +20,13 @@ class TestFitEllipse : public QObject {
 
 private:
     // 阶7 批1 复核：插件库路径由 CMake $<TARGET_FILE:...> 注入（跨平台），不硬编码 .so 名。
-    bool installPlugin(const QString& pluginRoot, const QString& name, const QString& domain,
+    // 阶7 批1 复核三轮（P2-5）：metadata 与库路径均由 CMake 注入（跨平台/多配置）。
+    bool installPlugin(const QString& pluginRoot, const QString& name, const QString& metaSrc,
                        const QString& libSrc) const {
         QDir root(pluginRoot);
         if (!root.mkpath(name))
             return false;
         QDir dir(root.filePath(name));
-        const QString srcRoot = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../src/plugins");
-        const QString metaSrc = QDir(srcRoot).filePath(QString("%1/%2/metadata.json").arg(domain, name));
         if (!QFileInfo::exists(metaSrc) || !QFileInfo::exists(libSrc))
             return false;
         const QString destLib = dir.filePath(QFileInfo(libSrc).fileName());
@@ -124,9 +123,10 @@ private slots:
         QVERIFY(appDir.isValid());
         qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
         const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
-        QVERIFY(installPlugin(pluginRoot, QStringLiteral("MeasurementInput"), QStringLiteral("geometry"),
+        QVERIFY(installPlugin(pluginRoot, QStringLiteral("MeasurementInput"),
+                              QStringLiteral(TEST_FITELLIPSE_META_MeasurementInput),
                               QStringLiteral(TEST_FITELLIPSE_LIB_MeasurementInput)));
-        QVERIFY(installPlugin(pluginRoot, QStringLiteral("FitEllipse"), QStringLiteral("geometry"),
+        QVERIFY(installPlugin(pluginRoot, QStringLiteral("FitEllipse"), QStringLiteral(TEST_FITELLIPSE_META_FitEllipse),
                               QStringLiteral(TEST_FITELLIPSE_LIB_FitEllipse)));
         DeepLux::PluginManager::instance().addPluginPath(pluginRoot);
         QVERIFY(DeepLux::PluginManager::instance().initialize());
@@ -174,8 +174,8 @@ private slots:
 
     // 阶7 批1 复核（P1-1）：强离群点不得拉偏结果（RANSAC 稳健估计）
     void testRejectsStrongOutlier() {
+        // 阶7 批1 复核三轮（P1-2）：使用默认参数（threshold=2, iterations=100）验证默认配置稳健
         FitEllipsePlugin plugin;
-        plugin.setParams(QJsonObject{{"threshold", 2.0}, {"iterations", 200}, {"minAxis", 0.5}, {"maxAxis", 1000.0}});
         QVERIFY(plugin.initialize());
         QVector<QPointF> points;
         for (int i = 0; i < 24; ++i) {
@@ -195,6 +195,20 @@ private slots:
         QVERIFY2(std::abs(cy - 120) < 5.0, qPrintable(QString("cy=%1 pulled by outlier").arg(cy)));
         QVERIFY2(std::abs(major - 60) < 5.0, qPrintable(QString("major=%1 pulled by outlier").arg(major)));
         QVERIFY2(std::abs(minor - 30) < 5.0, qPrintable(QString("minor=%1 pulled by outlier").arg(minor)));
+    }
+
+    // 阶7 批1 复核三轮（P0-1）：重复点（唯一点<5）失败关闭，不无限循环
+    void testDuplicatePointsFailClosed() {
+        FitEllipsePlugin plugin;
+        QVERIFY(plugin.initialize());
+        QVector<QPointF> points; // 8 个点但仅 4 个唯一坐标
+        for (int i = 0; i < 2; ++i) {
+            points << QPointF(0, 0) << QPointF(10, 0) << QPointF(10, 5) << QPointF(0, 5);
+        }
+        ImageData input;
+        input.setData("fit_points", QVariant::fromValue(points));
+        ImageData output;
+        QVERIFY(!plugin.execute(input, output));
     }
 
     // 阶7 批1 复核（P1-4）：phi 契约=度、归一化 [0,180)；旋转椭圆恢复角度

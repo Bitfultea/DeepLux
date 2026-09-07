@@ -27,7 +27,7 @@ public:
     // 阶7 批1 复核：严格解析后的参数快照，验证与执行共用。
     struct ParsedParams {
         double threshold = 2.0;
-        double iterations = 3.0;
+        double iterations = 100.0;
         double minAxis = 0.5;
         double maxAxis = 5000.0;
     };

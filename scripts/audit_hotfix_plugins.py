@@ -125,6 +125,10 @@ PRESERVED_FIELDS = (
     "reason",
     "replacementPluginId",
     "dependencies",
+    "targetInput",
+    "targetOutput",
+    "targetParams",
+    "implementationStatus",
 )
 
 
