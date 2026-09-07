@@ -250,6 +250,10 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_cameramanager")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 2)
     endif()
+    # 阶7 批1 复核四轮：拟合含 RANSAC 循环，设 TIMEOUT 防无限循环回归挂死 CI
+    if(TEST_NAME STREQUAL "test_fitellipse")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
+    endif()
 endforeach()
 
 add_executable(ui_capture_mainwindow ui_capture_mainwindow.cpp)

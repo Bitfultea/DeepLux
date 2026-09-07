@@ -20,7 +20,7 @@
                 "step": 1,
                 "decimals": 0,
                 "order": 20,
-                "label": "剔除迭代",
+                "label": "RANSAC采样次数",
                 "max": 1000
             },
             "minAxis": {

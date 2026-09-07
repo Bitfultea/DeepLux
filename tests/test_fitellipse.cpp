@@ -245,16 +245,25 @@ private slots:
         QVERIFY(!plugin.validateParams(
             QJsonObject{{"threshold", 2.0}, {"iterations", 3}, {"minAxis", 0.5}, {"maxAxis", QStringLiteral("100")}},
             error));
-        // 执行同样拒绝非法快照
-        plugin.setParams(
-            QJsonObject{{"threshold", QStringLiteral("2.0")}, {"iterations", 3}, {"minAxis", 0.5}, {"maxAxis", 100.0}});
-        QVector<QPointF> points;
-        for (int i = 0; i < 8; ++i)
-            points << QPointF(i, i);
-        ImageData input;
-        input.setData("fit_points", QVariant::fromValue(points));
-        ImageData output;
-        QVERIFY(!plugin.execute(input, output));
+        // 阶7 批1 复核四轮（P1-1）：setParam 注入非法运行期快照（setParams 会整体拒绝），
+        // 确认 currentParams 保留非法值；用确定可拟合的正常椭圆点集断言失败确因参数解析；
+        // 再恢复合法参数，同一组点必须成功。
+        QVector<QPointF> good;
+        for (int i = 0; i < 24; ++i) {
+            const double t = i * M_PI / 12.0;
+            good << QPointF(150 + 60 * std::cos(t), 120 + 30 * std::sin(t));
+        }
+        FitEllipsePlugin badPlugin;
+        QVERIFY(badPlugin.initialize());
+        badPlugin.setParam(QStringLiteral("threshold"), QStringLiteral("2.0"));
+        QCOMPARE(badPlugin.currentParams()["threshold"].toString(), QStringLiteral("2.0"));
+        ImageData goodInput;
+        goodInput.setData("fit_points", QVariant::fromValue(good));
+        ImageData badOut;
+        QVERIFY2(!badPlugin.execute(goodInput, badOut), "illegal runtime param must fail on parse");
+        badPlugin.setParam(QStringLiteral("threshold"), 2.0);
+        ImageData okOut;
+        QVERIFY2(badPlugin.execute(goodInput, okOut), "legal params must succeed on same points");
     }
 
     void testPluginInfo() {

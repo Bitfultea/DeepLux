@@ -2,7 +2,9 @@
 
 #include "common/Logger.h"
 
+#include <algorithm>
 #include <cmath>
+#include <numeric>
 #include <random>
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -131,51 +133,38 @@ void FitEllipsePlugin::shutdown() {
 bool FitEllipsePlugin::fitEllipseRobust(const QVector<QPointF>& points, double threshold, int iterations,
                                         EllipseResult& result) const {
 #ifdef DEEPLUX_HAS_OPENCV
-    // 阶7 批1 复核三轮（P0-1）：预先去重，唯一点不足 5 直接失败关闭，
-    // 避免采样循环因唯一坐标不足而无限循环。
-    QVector<QPointF> uniq;
-    for (const QPointF& p : points) {
-        bool dup = false;
-        for (const QPointF& u : uniq) {
-            if (std::abs(u.x() - p.x()) < 1e-9 && std::abs(u.y() - p.y()) < 1e-9) {
-                dup = true;
-                break;
-            }
-        }
-        if (!dup) {
-            uniq.append(p);
-        }
-    }
+    // 阶7 批1 复核四轮（P1-2）：排序+unique 去重 O(n log n)，避免 O(n²) 成为
+    // 工业轮廓点集的性能瓶颈；唯一点不足 5 失败关闭。
+    QVector<QPointF> uniq = points;
+    std::sort(uniq.begin(), uniq.end(),
+              [](const QPointF& a, const QPointF& b) { return a.x() != b.x() ? a.x() < b.x() : a.y() < b.y(); });
+    uniq.erase(std::unique(uniq.begin(), uniq.end(),
+                           [](const QPointF& a, const QPointF& b) {
+                               return std::abs(a.x() - b.x()) < 1e-9 && std::abs(a.y() - b.y()) < 1e-9;
+                           }),
+               uniq.end());
     if (uniq.size() < 5) {
         return false;
     }
     if (threshold <= 0.0) {
         return fitEllipseCv(uniq, result);
     }
-    // RANSAC 稳健估计：5 点最小采样拟合椭圆，按阈值统计内点，取最优内点集重拟合。
-    // 采样次数硬上限 kMaxRansacAttempts 并检查取消令牌，防长时间无响应。
+    // RANSAC 稳健估计：每轮打乱索引取前 5 个唯一点（无带重复随机抽取/逐点查重），
+    // 按阈值统计内点，取最优内点集重拟合；采样次数硬上限并检查取消令牌。
     const int attempts = qBound(1, iterations, kMaxRansacAttempts);
     std::mt19937 rng(0xE11F5Eu);
-    std::uniform_int_distribution<int> pick(0, uniq.size() - 1);
+    QVector<int> idx(uniq.size());
+    std::iota(idx.begin(), idx.end(), 0);
     QVector<QPointF> bestInliers;
     double bestError = 0.0;
     for (int attempt = 0; attempt < attempts; ++attempt) {
         if (isCancellationRequested()) {
             return false;
         }
+        std::shuffle(idx.begin(), idx.end(), rng);
         QVector<QPointF> sample;
-        while (sample.size() < 5) {
-            const QPointF candidate = uniq[pick(rng)];
-            bool dup = false;
-            for (const QPointF& s : sample) {
-                if (std::abs(s.x() - candidate.x()) < 1e-9 && std::abs(s.y() - candidate.y()) < 1e-9) {
-                    dup = true;
-                    break;
-                }
-            }
-            if (!dup) {
-                sample.append(candidate);
-            }
+        for (int i = 0; i < 5; ++i) {
+            sample.append(uniq[idx[i]]);
         }
         EllipseResult candidate;
         if (!fitEllipseCv(sample, candidate)) {

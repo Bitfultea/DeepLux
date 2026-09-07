@@ -52,28 +52,12 @@ void TestProjectMigration::testMappingConclusionConsistency() {
     generatedMf.close();
 
     // 统计 JSON 结论分布
-    QMap<QString, int> jsonCount;
-    for (const auto& v : json["plugins"].toArray()) {
-        const QJsonObject p = v.toObject();
-        if (p["reviewState"].toString() == "reviewed")
-            jsonCount[p["reviewConclusion"].toString()]++;
-    }
-
-    // MD 汇总行形如 "equivalent=0、intentionally_changed=12、partial=34、unverified=4"
-    for (const QString key : {"equivalent", "intentionally_changed", "partial", "unverified"}) {
-        QRegularExpression re(key + "=(\\d+)");
-        auto m = re.match(md);
-        QVERIFY2(m.hasMatch(), qPrintable("MD missing count for " + key));
-        QCOMPARE(m.captured(1).toInt(), jsonCount.value(key, 0));
-    }
-
-    for (const QString key : {"equivalent", "intentionally_changed", "partial", "unverified", "not_equivalent"}) {
-        const QRegularExpression re(
-            QStringLiteral("\\|\\s*%1\\s*\\|\\s*(\\d+)\\s*\\|").arg(QRegularExpression::escape(key)));
-        const auto match = re.match(generatedMd);
-        QVERIFY2(match.hasMatch(), qPrintable("generated mapping missing count for " + key));
-        QCOMPARE(match.captured(1).toInt(), jsonCount.value(key, 0));
-    }
+    // 阶7 批1 复核四轮：FitEllipse 实现后不得再列为 missing（matchKind=direct）；
+    // 磁盘 MD 与测试内重生成 MD 均不得再列其为 missing。
+    const QString fitEllipseMissingRow =
+        QStringLiteral("| FitEllipse | `02Plugins/004几何关系/Plugin.FitEllipse` | - | missing |");
+    QVERIFY2(!md.contains(fitEllipseMissingRow), "FitEllipse must not be listed as missing (disk MD)");
+    QVERIFY2(!generatedMd.contains(fitEllipseMissingRow), "FitEllipse must not be listed as missing (regenerated MD)");
 }
 
 void TestProjectMigration::testMigrationDecisionConsistency() {
@@ -107,12 +91,14 @@ void TestProjectMigration::testMigrationDecisionConsistency() {
     QVERIFY2(!currentPluginIds.isEmpty(), "no current plugin metadata found");
 
     QMap<QString, int> jsonDecision;
-    int missingTotal = 0;
+    // 阶7 批1 复核四轮：阶段 1 的 53 项范围按"存在 migrationDecision"统计，
+    // 不再按当前 missing 数量（实现后 matchKind 会变为 direct/candidate）。
+    int decisionTotal = 0;
     for (const auto& v : json["plugins"].toArray()) {
         const QJsonObject p = v.toObject();
-        if (p["matchKind"].toString() != "missing")
+        if (p["migrationDecision"].toString().isEmpty())
             continue;
-        ++missingTotal;
+        ++decisionTotal;
         const QString name = p["legacyPlugin"].toString();
         const QString dec = p["migrationDecision"].toString();
         const QString prio = p["priority"].toString();
@@ -159,9 +145,10 @@ void TestProjectMigration::testMigrationDecisionConsistency() {
             QVERIFY2(p["evidence"].toString().startsWith(QStringLiteral("依赖：")),
                      qPrintable(QString("%1(business_pack) evidence must start with 依赖：").arg(name)));
         }
-        jsonDecision[dec]++;
+        if (p["matchKind"].toString() != "direct")
+            jsonDecision[dec]++; // MD 决策段仅列非 direct 行
     }
-    QVERIFY2(missingTotal == 53, qPrintable(QString("expected 53 missing, got %1").arg(missingTotal)));
+    QVERIFY2(decisionTotal == 53, qPrintable(QString("expected 53 migrationDecision, got %1").arg(decisionTotal)));
 
     // 阶7 批1 复核三轮（P1-4）：全量一致性——结论枚举合法、候选与 matchKind 不矛盾
     static const QSet<QString> validConclusions{QStringLiteral("equivalent"), QStringLiteral("intentionally_changed"),
@@ -177,6 +164,12 @@ void TestProjectMigration::testMigrationDecisionConsistency() {
             QVERIFY2(cand.isEmpty(), qPrintable(QString("%1 matchKind=missing but has candidate %2").arg(name, cand)));
         } else if (kind == QStringLiteral("direct") || kind == QStringLiteral("candidate")) {
             QVERIFY2(!cand.isEmpty(), qPrintable(QString("%1 matchKind=%2 but no candidate").arg(name, kind)));
+        }
+        // 阶7 批1 复核四轮：mapping 与当前 metadata 扫描结果一致——候选必须真实存在
+        if (!cand.isEmpty()) {
+            QVERIFY2(currentPluginIds.contains(p["currentPluginId"].toString()),
+                     qPrintable(QString("%1 candidate %2 id %3 not found in current metadata scan")
+                                    .arg(name, cand, p["currentPluginId"].toString())));
         }
         if (p["reviewState"].toString() == QStringLiteral("reviewed") && p.contains("reviewConclusion")) {
             const QString conc = p["reviewConclusion"].toString();

@@ -51,18 +51,29 @@ def run_gh_api(endpoint: str) -> dict:
 
 
 def legacy_plugins() -> list[dict]:
-    tree = run_gh_api(f"repos/{REPOSITORY}/git/trees/{COMMIT}?recursive=1")
-    paths = []
-    for item in tree["tree"]:
-        path = item["path"]
-        if item["type"] != "tree" or not path.startswith("02Plugins/"):
-            continue
-        if len(path.split("/")) == 3:
-            paths.append(path)
-    return [
-        {"path": path, "category": path.split("/")[1], "name": path.split("/")[2].removeprefix("Plugin.")}
-        for path in sorted(paths)
-    ]
+    """旧版插件清单。优先 GH API；离线/404 时回退到既有映射 JSON 的冻结 110 项
+    （阶7 批1 复核四轮：不应长期等待 GH API）。"""
+    try:
+        tree = run_gh_api(f"repos/{REPOSITORY}/git/trees/{COMMIT}?recursive=1")
+        paths = []
+        for item in tree["tree"]:
+            path = item["path"]
+            if item["type"] != "tree" or not path.startswith("02Plugins/"):
+                continue
+            if len(path.split("/")) == 3:
+                paths.append(path)
+        return [
+            {"path": path, "category": path.split("/")[1], "name": path.split("/")[2].removeprefix("Plugin.")}
+            for path in sorted(paths)
+        ]
+    except (subprocess.CalledProcessError, OSError, json.JSONDecodeError, KeyError):
+        mapping_file = OUTPUT_DIR / "hotfix-plugin-mapping.json"
+        payload = json.loads(mapping_file.read_text(encoding="utf-8"))
+        return [
+            {"path": row["legacyPath"], "category": row["legacyCategory"], "name": row["legacyPlugin"]}
+            for row in payload.get("plugins", [])
+            if row.get("legacyPath")
+        ]
 
 
 def current_plugins() -> dict[str, dict]:
@@ -108,11 +119,8 @@ def classify(legacy: dict, current: dict[str, dict]) -> dict:
 # 阶1复核修正：补齐各决策分类的结构化字段（input/output/keyParams/scenario
 # 属 rebuild，reason 属 retire，replacementPluginId 属 replace，dependencies
 # 属 business_pack）。
-PRESERVED_FIELDS = (
-    "reviewState",
+FROZEN_CONTRACT_FIELDS = (
     "dependencyNote",
-    "reviewConclusion",
-    "evidence",
     "deletedPorts",
     "replacement",
     "decision",
@@ -130,6 +138,12 @@ PRESERVED_FIELDS = (
     "targetParams",
     "implementationStatus",
 )
+CANDIDATE_REVIEW_FIELDS = (
+    "reviewState",
+    "reviewConclusion",
+    "evidence",
+)
+PRESERVED_FIELDS = FROZEN_CONTRACT_FIELDS + CANDIDATE_REVIEW_FIELDS
 
 
 def load_existing_reviews() -> dict[str, dict]:
@@ -273,8 +287,12 @@ def main() -> None:
             and identity.get("currentPluginId", "") == row["currentPluginId"]
             and identity.get("matchKind", "") == row["matchKind"]
         )
+        # 阶7 批1 复核四轮：冻结契约字段无条件保留；仅候选相关审核结论在身份变化时失效。
+        for field in FROZEN_CONTRACT_FIELDS:
+            if field in saved:
+                row[field] = saved[field]
         if identity_unchanged:
-            for field in PRESERVED_FIELDS:
+            for field in CANDIDATE_REVIEW_FIELDS:
                 if field in saved:
                     row[field] = saved[field]
             merged_count += 1
