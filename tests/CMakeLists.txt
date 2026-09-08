@@ -18,6 +18,7 @@ set(TEST_SOURCES
     test_measureline.cpp
     test_fitcircle.cpp
     test_fitellipse.cpp
+    test_detection_batch2.cpp
     test_measurerect.cpp
     test_distancepl.cpp
     test_distancepp.cpp
@@ -111,6 +112,13 @@ foreach(TEST_FILE ${TEST_SOURCES})
             TEST_FITELLIPSE_LIB_MeasurementInput="$<TARGET_FILE:MeasurementInputPlugin>"
             TEST_FITELLIPSE_META_FitEllipse="${CMAKE_SOURCE_DIR}/src/plugins/geometry/FitEllipse/metadata.json"
             TEST_FITELLIPSE_META_MeasurementInput="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json")
+    endif()
+    # 阶7 批2：检测识别批（MeasureCircle/EdgeDefectDetection）行为+流程验收
+    if(TEST_NAME STREQUAL "test_detection_batch2")
+        target_link_libraries(${TEST_NAME} PRIVATE MeasureCirclePlugin EdgeDefectDetectionPlugin GrabImagePlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_BATCH2_LIB_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+            TEST_BATCH2_LIB_MeasureCircle="$<TARGET_FILE:MeasureCirclePlugin>")
     endif()
     if(TEST_NAME STREQUAL "test_measurerect" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE MeasureRectPlugin)

@@ -25,3 +25,9 @@ add_subdirectory(ColorRecognition)
 
 # JiErHanDefectsDet Plugin
 add_subdirectory(JiErHanDefectsDet)
+
+# MeasureCircle Plugin (阶7 批2)
+add_subdirectory(MeasureCircle)
+
+# EdgeDefectDetection Plugin (阶7 批2)
+add_subdirectory(EdgeDefectDetection)
