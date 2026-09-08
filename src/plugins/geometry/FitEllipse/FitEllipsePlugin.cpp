@@ -233,31 +233,31 @@ bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
     // 阶7 批1 复核七轮（P1-1）：仅支持核心契约两种 PointSet2D 载荷
     // （QVector<QPointF> 与 [[x,y],...]）；数值用明确 QVariant 类型判断（拒绝字符串），
     // 删除扁平 [x0,y0,...] 与未声明兼容路径（与 DataContract/运行引擎一致）。
+    // 阶7 批1 复核八轮（P1-1）：数字类型判断与 DataContract::isNumeric 完全一致
+    // （Int/UInt/LongLong/ULongLong/Double），顶层仅 QVariant::List 或 QVector<QPointF>，
+    // 元素仅 QPointF 或 2 数值列表；拒绝 Float/QJsonValue/QJsonArray/扁平/字符串。
     auto numOf = [](const QVariant& x, double& d) {
-        switch (x.userType()) {
-        case QMetaType::Double:
-        case QMetaType::Float:
-        case QMetaType::Int:
-        case QMetaType::UInt:
-        case QMetaType::LongLong:
-        case QMetaType::ULongLong:
+        switch (x.type()) {
+        case QVariant::Int:
+        case QVariant::UInt:
+        case QVariant::LongLong:
+        case QVariant::ULongLong:
+        case QVariant::Double:
             d = x.toDouble();
             return true;
-        case QMetaType::QJsonValue:
-            if (x.toJsonValue().isDouble()) {
-                d = x.toJsonValue().toDouble();
-                return true;
-            }
-            return false;
         default:
-            return false; // 字符串/bool 等一律拒绝
+            return false;
         }
     };
     auto parsePoint = [&numOf](const QVariant& v, QPointF& out) {
-        QVariantList list = v.toList();
-        if (list.isEmpty() && v.userType() == QMetaType::QJsonValue && v.toJsonValue().isArray()) {
-            list = v.toJsonValue().toArray().toVariantList();
+        if (v.type() == QVariant::PointF) {
+            out = v.toPointF();
+            return true;
         }
+        if (v.type() != QVariant::List) {
+            return false;
+        }
+        const QVariantList list = v.toList();
         double x = 0.0;
         double y = 0.0;
         if (list.size() == 2 && numOf(list[0], x) && numOf(list[1], y)) {
@@ -269,11 +269,8 @@ bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
     QVector<QPointF> points;
     if (pointsVar.canConvert<QVector<QPointF>>()) {
         points = pointsVar.value<QVector<QPointF>>();
-    } else {
-        QList<QVariant> asList = pointsVar.toList();
-        if (asList.isEmpty() && pointsVar.userType() == QMetaType::QJsonArray) {
-            asList = pointsVar.toJsonArray().toVariantList();
-        }
+    } else if (pointsVar.type() == QVariant::List) {
+        const QVariantList asList = pointsVar.toList();
         if (asList.isEmpty()) {
             emit errorOccurred(tr("拟合点集格式非法（须为 QVector<QPointF> 或 [[x,y],...]）"));
             return false;
@@ -286,6 +283,9 @@ bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
             }
             points.append(p);
         }
+    } else {
+        emit errorOccurred(tr("拟合点集格式非法（须为 QVector<QPointF> 或 [[x,y],...]）"));
+        return false;
     }
     // 阶7 批1 复核五轮（P1-3）：插件输入边界逐点拒绝 NaN/Inf，
     // 避免非有限坐标使排序比较器违反严格弱序（std::sort UB）。

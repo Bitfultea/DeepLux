@@ -1,3 +1,4 @@
+#include "core/deeplux/DataContract.h"
 #include "core/engine/RunEngine.h"
 #include "core/manager/PluginManager.h"
 #include "core/manager/ProjectManager.h"
@@ -306,42 +307,79 @@ private slots:
         QVERIFY2(plugin.execute(goodInput, goodOut), "finite ellipse points must succeed");
     }
 
-    // 阶7 批1 复核六轮（P1-3）：支持核心契约 [[x,y],...] 列表载荷（QJsonArray 形式）并直接执行
+    // 阶7 批1 复核八轮（P1-1）：插件接受与否必须与核心契约
+    // portValueMatchesType(PointSet2D) 完全一致（ImageData 可能归一化载荷形态）。
     void testPointSet2DListPayload() {
         FitEllipsePlugin plugin;
         QVERIFY(plugin.initialize());
-        QJsonArray list;
-        for (int i = 0; i < 24; ++i) {
-            const double t = i * M_PI / 12.0;
-            list.append(QJsonArray{150 + 60 * std::cos(t), 120 + 30 * std::sin(t)});
+        const auto ellipse = []() {
+            QVector<QPointF> pts;
+            for (int i = 0; i < 24; ++i) {
+                const double t = i * M_PI / 12.0;
+                pts << QPointF(150 + 60 * std::cos(t), 120 + 30 * std::sin(t));
+            }
+            return pts;
+        };
+        // 嵌套 QVariantList（核心契约声明形态）：插件判定须与核心契约一致
+        QVariantList nested;
+        for (const QPointF& p : ellipse())
+            nested.append(QVariantList{p.x(), p.y()});
+        ImageData nestedInput;
+        nestedInput.setData("fit_points", nested);
+        const QVariant nestedStored = nestedInput.data("fit_points");
+        const bool nestedCore = portValueMatchesType(nestedStored, DataType::PointSet2D);
+        ImageData nestedOut;
+        const bool nestedOk = plugin.execute(nestedInput, nestedOut);
+        QCOMPARE(nestedOk, nestedCore);
+        if (nestedOk) {
+            QVERIFY2(std::abs(nestedOut.data("ellipse_major_r").toDouble() - 60) < 3.0, "major axis ~60");
         }
-        ImageData input;
-        input.setData("fit_points", list);
-        ImageData output;
-        QVERIFY2(plugin.execute(input, output), "list-of-[x,y] payload must be accepted");
-        QVERIFY2(std::abs(output.data("ellipse_major_r").toDouble() - 60) < 3.0, "major axis ~60");
+        // 引擎规范形态 QVector<QPointF>：核心契约与插件均须接受且拟合成功
+        ImageData canonInput;
+        canonInput.setData("fit_points", QVariant::fromValue(ellipse()));
+        QVERIFY(portValueMatchesType(canonInput.data("fit_points"), DataType::PointSet2D));
+        ImageData canonOut;
+        QVERIFY2(plugin.execute(canonInput, canonOut), "canonical QVector<QPointF> must be accepted");
+        QVERIFY2(std::abs(canonOut.data("ellipse_major_r").toDouble() - 60) < 3.0, "major axis ~60");
     }
 
-    // 阶7 批1 复核七轮（P1-1）：扁平 [x0,y0,...] 与字符串坐标必须失败（核心契约仅两格式）
+    // 阶7 批1 复核八轮（P1-2）：扁平/字符串用可拟合椭圆构造，QSignalSpy 断言错误来自
+    // "格式非法/非法点"而非拟合退化（恢复错误解析逻辑时测试变红）。
     void testRejectsFlatAndStringCoords() {
         FitEllipsePlugin plugin;
         QVERIFY(plugin.initialize());
-        // 扁平 double 列表（非 [[x,y],...]）必须拒绝
+        const auto ellipse = []() {
+            QVector<QPointF> pts;
+            for (int i = 0; i < 24; ++i) {
+                const double t = i * M_PI / 12.0;
+                pts << QPointF(150 + 60 * std::cos(t), 120 + 30 * std::sin(t));
+            }
+            return pts;
+        };
+        // 扁平 [x0,y0,x1,y1,...]：按椭圆点依次写入（旧扁平解析器会接受并拟合成功）
         QVariantList flat;
-        for (int i = 0; i < 12; ++i)
-            flat << double(100 + i) << double(100 + i);
+        for (const QPointF& p : ellipse())
+            flat << p.x() << p.y();
         ImageData flatInput;
         flatInput.setData("fit_points", flat);
         ImageData out1;
+        QSignalSpy flatSpy(&plugin, &DeepLux::IModule::errorOccurred);
         QVERIFY2(!plugin.execute(flatInput, out1), "flat [x0,y0,...] list must be rejected");
-        // 字符串坐标必须拒绝（不得被宽松转换为 0）
-        QJsonArray strList;
-        for (int i = 0; i < 6; ++i)
-            strList.append(QJsonArray{QStringLiteral("not-a-number"), 100.0});
+        QVERIFY2(flatSpy.count() >= 1 && flatSpy.first().at(0).toString().contains(QStringLiteral("非法")),
+                 qPrintable(QString("flat error must be format/point error, got: %1")
+                                .arg(flatSpy.count() ? flatSpy.first().at(0).toString() : QString())));
+        // 字符串坐标（对应数值字符串）：旧宽松转换会接受并拟合成功
+        QVariantList strList;
+        for (const QPointF& p : ellipse())
+            strList.append(QVariantList{QString::number(p.x()), QString::number(p.y())});
         ImageData strInput;
         strInput.setData("fit_points", strList);
         ImageData out2;
+        QSignalSpy strSpy(&plugin, &DeepLux::IModule::errorOccurred);
         QVERIFY2(!plugin.execute(strInput, out2), "string coordinates must be rejected");
+        QVERIFY2(strSpy.count() >= 1 && strSpy.first().at(0).toString().contains(QStringLiteral("非法")),
+                 qPrintable(QString("string error must be format/point error, got: %1")
+                                .arg(strSpy.count() ? strSpy.first().at(0).toString() : QString())));
     }
 
     // 阶7 批1 复核五轮（P2-4）+ 六轮（P1-1）：运行期边界与 metadata 一致（包含式上限）
