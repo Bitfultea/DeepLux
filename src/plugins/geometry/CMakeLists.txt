@@ -34,3 +34,9 @@ add_subdirectory(FreeformSurface)
 
 # MeasurementInput Plugin
 add_subdirectory(MeasurementInput)
+
+# FitPlane Plugin（阶7 批3：0143D 重建）
+add_subdirectory(FitPlane)
+
+# GapMeasure3D Plugin（阶7 批3：0143D 重建）
+add_subdirectory(GapMeasure3D)

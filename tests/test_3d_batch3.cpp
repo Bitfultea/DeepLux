@@ -1,0 +1,740 @@
+#include "core/deeplux/DataContract.h"
+#include "core/engine/RunEngine.h"
+#include "core/geometry/MeasurementData.h"
+#include "core/manager/PluginManager.h"
+#include "core/manager/ProjectManager.h"
+#include "core/model/ImageData.h"
+#include "core/model/Project.h"
+#include "plugins/geometry/FitPlane/FitPlanePlugin.h"
+#include "plugins/geometry/GapMeasure3D/GapMeasure3DPlugin.h"
+#include "plugins/image_processing/PreProcessing3D/PreProcessing3DPlugin.h"
+
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QSignalSpy>
+#include <QTemporaryDir>
+#include <QtTest>
+#include <cmath>
+#include <limits>
+
+#ifdef DEEPLUX_HAS_OPENCV
+#include <opencv2/opencv.hpp>
+#endif
+
+using namespace DeepLux;
+
+namespace {
+// 倾斜平面高度图（CV_32F）：z = ax·x + ay·y + z0（像素坐标）
+cv::Mat makeTiltedPlane(int w, int h, double ax, double ay, double z0) {
+    cv::Mat m(h, w, CV_32F);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            m.at<float>(y, x) = static_cast<float>(ax * x + ay * y + z0);
+        }
+    }
+    return m;
+}
+
+// V 槽高度图（CV_32F）：基准高度 base，行 [y0,y1] 内列 [x0,x1] 下沉 depth（1px 竖直壁）。
+// 默认槽宽 40px：落沿斜率极值在 299.5，升沿在 339.5（抛物线细化后宽度恰为 40）。
+cv::Mat makeGrooveHeight(int w, int h, int y0, int y1, int x0, int x1, double base, double depth) {
+    cv::Mat m(h, w, CV_32F, cv::Scalar(base));
+    for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+            m.at<float>(y, x) = static_cast<float>(base - depth);
+        }
+    }
+    return m;
+}
+
+QJsonObject preParams(bool filterOn, double hMin, double hMax, double fill, int cx, int cy, int rw, int rh) {
+    return QJsonObject{{"heightFilterEnabled", filterOn},
+                       {"heightFilterMin", hMin},
+                       {"heightFilterMax", hMax},
+                       {"fillValue", fill},
+                       {"roiCenterX", cx},
+                       {"roiCenterY", cy},
+                       {"roiWidth", rw},
+                       {"roiHeight", rh}};
+}
+
+QJsonObject planeParams(double cx, double cy, double l1, double l2, double ang, double px, double py, double zs,
+                        double invalid) {
+    return QJsonObject{{"roiCenterX", cx}, {"roiCenterY", cy}, {"roiLength1", l1},
+                       {"roiLength2", l2}, {"roiAngle", ang},  {"pixelSizeX", px},
+                       {"pixelSizeY", py}, {"zScale", zs},     {"invalidValue", invalid}};
+}
+
+QJsonObject gapParams(double cx, double cy, int len, int rows) {
+    return QJsonObject{{"roiCenterX", cx},   {"roiCenterY", cy},       {"roiLength", len},
+                       {"roiHeight", rows},  {"pixelSizeX", 1.0},      {"zScale", 1.0},
+                       {"smoothSigma", 1.0}, {"medianSize", 0},        {"derivativeThreshold", 0.05},
+                       {"edgeTrim", 2},      {"minPeakDistance", 5},   {"invalidValue", 0.0},
+                       {"offsetMm", 0.0},    {"specUpperLimit", 50.0}, {"measureFailValue", -1.0}};
+}
+} // namespace
+
+class Test3DBatch3 : public QObject {
+    Q_OBJECT
+
+private:
+    QTemporaryDir m_appDir;
+
+    // 阶7 批3：metadata 与库路径均由 CMake 注入（跨平台/多配置，沿用批2复核二轮模式）
+    bool installPlugin(const QString& pluginRoot, const QString& name, const QString& metaSrc,
+                       const QString& libSrc) const {
+        QDir root(pluginRoot);
+        if (!root.mkpath(name))
+            return false;
+        QDir dir(root.filePath(name));
+        if (!QFileInfo::exists(metaSrc) || !QFileInfo::exists(libSrc))
+            return false;
+        const QString destLib = dir.filePath(QFileInfo(libSrc).fileName());
+        QFile::remove(dir.filePath("metadata.json"));
+        QFile::remove(destLib);
+        return QFile::copy(metaSrc, dir.filePath("metadata.json")) && QFile::copy(libSrc, destLib);
+    }
+
+private slots:
+    void initTestCase() {
+        QVERIFY(m_appDir.isValid());
+        qputenv("DEEPLUX_APP_DATA_DIR", m_appDir.path().toLocal8Bit());
+        PluginManager::instance().shutdown();
+        const QString pluginRoot = QDir(m_appDir.path()).filePath("plugins");
+        QVERIFY2(installPlugin(pluginRoot, QStringLiteral("GrabImage"), QStringLiteral(TEST_BATCH3_META_GrabImage),
+                               QStringLiteral(TEST_BATCH3_LIB_GrabImage)),
+                 "install GrabImage");
+        QVERIFY2(installPlugin(pluginRoot, QStringLiteral("3DPreProcessing"),
+                               QStringLiteral(TEST_BATCH3_META_PreProcessing3D),
+                               QStringLiteral(TEST_BATCH3_LIB_PreProcessing3D)),
+                 "install 3DPreProcessing");
+        QVERIFY2(installPlugin(pluginRoot, QStringLiteral("FitPlane"), QStringLiteral(TEST_BATCH3_META_FitPlane),
+                               QStringLiteral(TEST_BATCH3_LIB_FitPlane)),
+                 "install FitPlane");
+        QVERIFY2(installPlugin(pluginRoot, QStringLiteral("GapMeasure3D"),
+                               QStringLiteral(TEST_BATCH3_META_GapMeasure3D),
+                               QStringLiteral(TEST_BATCH3_LIB_GapMeasure3D)),
+                 "install GapMeasure3D");
+        PluginManager::instance().addPluginPath(pluginRoot);
+        QVERIFY(PluginManager::instance().initialize());
+        QVERIFY(PluginManager::instance().loadPlugin(QStringLiteral("GrabImage")));
+        QVERIFY(PluginManager::instance().loadPlugin(QStringLiteral("3DPreProcessing")));
+        QVERIFY(PluginManager::instance().loadPlugin(QStringLiteral("FitPlane")));
+        QVERIFY(PluginManager::instance().loadPlugin(QStringLiteral("GapMeasure3D")));
+    }
+
+    void cleanupTestCase() {
+        qunsetenv("DEEPLUX_APP_DATA_DIR");
+    }
+
+    void cleanup() {
+        RunEngine::instance().stop();
+        RunEngine::instance().clearModules();
+        RunEngine::instance().clearOutputs();
+    }
+
+    // ---------- 3DPreProcessing ----------
+
+    void testPre3DHeightFilter() {
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(preParams(true, 10.0, 50.0, -1.0, 0, 0, 0, 0));
+        QVERIFY(plugin.initialize());
+        ImageData input(makeTiltedPlane(640, 480, 0.1, 0.0, 0.0)); // z = 0.1x ∈ [0, 63.9]
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "height filter must succeed");
+        QCOMPARE(out.toMat().depth(), CV_32F);
+        QVERIFY(std::abs(out.toMat().at<float>(240, 300) - 30.0f) < 1e-3f); // 区间内保留
+        QCOMPARE(out.toMat().at<float>(240, 50), -1.0f);                    // 低于下限 → 填充
+        QCOMPARE(out.toMat().at<float>(240, 550), -1.0f);                   // 高于上限 → 填充
+        QCOMPARE(out.data("valid_pixel_count").toDouble(), 401.0 * 480.0);  // x ∈ [100,500]
+        QCOMPARE(out.data("filtered_pixel_count").toDouble(), 640.0 * 480.0 - 401.0 * 480.0);
+        QVERIFY(std::abs(out.data("min_height").toDouble() - 10.0) < 1e-3);
+        QVERIFY(std::abs(out.data("max_height").toDouble() - 50.0) < 1e-3);
+    }
+
+    void testPre3DFilterDisabledPassthrough() {
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(preParams(false, 0.0, 65535.0, -1.0, 0, 0, 0, 0));
+        QVERIFY(plugin.initialize());
+        ImageData input(makeTiltedPlane(640, 480, 0.1, 0.0, 0.0));
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "passthrough must succeed");
+        QCOMPARE(out.data("valid_pixel_count").toDouble(), 640.0 * 480.0);
+        QCOMPARE(out.data("filtered_pixel_count").toDouble(), 0.0);
+        QVERIFY(std::abs(out.toMat().at<float>(240, 300) - 30.0f) < 1e-3f);
+    }
+
+    void testPre3DTwoChannelDepthExtraction() {
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(preParams(false, 0.0, 65535.0, -1.0, 0, 0, 0, 0));
+        QVERIFY(plugin.initialize());
+        // 2 通道：ch0=强度垃圾值，ch1=深度（旧版 Decompose2 语义取第 2 通道）
+        std::vector<cv::Mat> chs{cv::Mat(480, 640, CV_32F, cv::Scalar(7.0f)), makeTiltedPlane(640, 480, 0.1, 0.0, 0.0)};
+        cv::Mat two;
+        cv::merge(chs, two);
+        ImageData input(two);
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "2-channel depth extraction must succeed");
+        QVERIFY(std::abs(out.toMat().at<float>(240, 300) - 30.0f) < 1e-3f);
+        QCOMPARE(out.data("valid_pixel_count").toDouble(), 640.0 * 480.0);
+    }
+
+    void testPre3DThreeChannelRejected() {
+        PreProcessing3DPlugin plugin;
+        QVERIFY(plugin.initialize());
+        cv::Mat c3(480, 640, CV_8UC3, cv::Scalar(10, 20, 30));
+        ImageData input(c3);
+        QSignalSpy errSpy(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData out;
+        QVERIFY2(!plugin.execute(input, out), "3-channel must fail");
+        QVERIFY2(errSpy.count() >= 1 && errSpy.first().at(0).toString().contains(QStringLiteral("通道")),
+                 "error must mention channels");
+    }
+
+    void testPre3DRoiFill() {
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(preParams(false, 0.0, 65535.0, -7.0, 320, 240, 100, 100));
+        QVERIFY(plugin.initialize());
+        ImageData input(makeTiltedPlane(640, 480, 0.1, 0.0, 0.0));
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "ROI must succeed");
+        QCOMPARE(out.data("valid_pixel_count").toDouble(), 100.0 * 100.0);
+        QVERIFY(std::abs(out.toMat().at<float>(240, 300) - 30.0f) < 1e-3f); // ROI 内保留
+        QCOMPARE(out.toMat().at<float>(240, 100), -7.0f);                   // ROI 外填充
+        QCOMPARE(out.toMat().at<float>(100, 300), -7.0f);
+    }
+
+    void testPre3DNaNFilled() {
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(preParams(false, 0.0, 65535.0, -3.0, 0, 0, 0, 0));
+        QVERIFY(plugin.initialize());
+        cv::Mat m = makeTiltedPlane(640, 480, 0.1, 0.0, 0.0);
+        m(cv::Rect(100, 100, 10, 10)).setTo(std::numeric_limits<float>::quiet_NaN());
+        ImageData input(m);
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "NaN fill must succeed");
+        QCOMPARE(out.data("filtered_pixel_count").toDouble(), 100.0);
+        QCOMPARE(out.toMat().at<float>(105, 105), -3.0f);
+    }
+
+    void testPre3DAllFilteredFails() {
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(preParams(true, 100.0, 200.0, 0.0, 0, 0, 0, 0));
+        QVERIFY(plugin.initialize());
+        ImageData input(makeTiltedPlane(640, 480, 0.1, 0.0, 0.0)); // 值域 [0,63.9] 全部越界
+        QSignalSpy errSpy(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData out;
+        QVERIFY2(!plugin.execute(input, out), "all-filtered must fail closed");
+        QVERIFY2(errSpy.count() >= 1 && errSpy.first().at(0).toString().contains(QStringLiteral("无有效像素")),
+                 "error must report no valid pixels");
+    }
+
+    void testPre3DValidation() {
+        PreProcessing3DPlugin plugin;
+        QString error;
+        QVERIFY(!plugin.validateParams(preParams(true, 50.0, 10.0, 0.0, 0, 0, 0, 0), error)); // min>max
+        QVERIFY(!plugin.validateParams(QJsonObject{{"heightFilterEnabled", QStringLiteral("yes")},
+                                                   {"heightFilterMin", 0.0},
+                                                   {"heightFilterMax", 100.0},
+                                                   {"fillValue", 0.0},
+                                                   {"roiCenterX", 0},
+                                                   {"roiCenterY", 0},
+                                                   {"roiWidth", 0},
+                                                   {"roiHeight", 0}},
+                                       error)); // 布尔类型严格
+        QVERIFY(!plugin.validateParams(QJsonObject{{"heightFilterEnabled", false},
+                                                   {"heightFilterMin", 0.0},
+                                                   {"heightFilterMax", 100.0},
+                                                   {"fillValue", 0.0},
+                                                   {"roiCenterX", 0},
+                                                   {"roiCenterY", 0},
+                                                   {"roiWidth", 10.5},
+                                                   {"roiHeight", 0}},
+                                       error)); // ROI 宽度必须整数
+        QVERIFY(plugin.validateParams(preParams(true, -5.0, 100.0, 0.0, 10, 10, 20, 20), error));
+    }
+
+    void testPre3DClone() {
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(preParams(true, 5.0, 40.0, -2.0, 100, 100, 200, 200));
+        IModule* clone = plugin.clone();
+        QVERIFY(clone != nullptr);
+        auto* clonePre = qobject_cast<PreProcessing3DPlugin*>(clone);
+        QVERIFY(clonePre != nullptr);
+        QCOMPARE(clonePre->currentParams()["heightFilterMin"].toDouble(), 5.0);
+        clonePre->setParams(preParams(false, 0.0, 65535.0, 0.0, 0, 0, 0, 0));
+        QCOMPARE(plugin.currentParams()["heightFilterMin"].toDouble(), 5.0); // 原体不受影响
+        delete clone;
+    }
+
+    // ---------- FitPlane ----------
+
+    void testFitPlaneRecoversTilt() {
+        FitPlanePlugin plugin;
+        plugin.setParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, -99999.0));
+        QVERIFY(plugin.initialize());
+        // z = 0.1x - 0.2y + 50 → n = (-0.1, 0.2, 1)/√1.05, D = -50/√1.05
+        ImageData input(makeTiltedPlane(640, 480, 0.1, -0.2, 50.0));
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "tilted plane fit must succeed");
+        const double norm = std::sqrt(1.05);
+        QVERIFY2(std::abs(out.data("plane_nx").toDouble() - (-0.1 / norm)) < 1e-3, "nx");
+        QVERIFY2(std::abs(out.data("plane_ny").toDouble() - (0.2 / norm)) < 1e-3, "ny");
+        QVERIFY2(std::abs(out.data("plane_nz").toDouble() - (1.0 / norm)) < 1e-3, "nz");
+        QVERIFY2(std::abs(out.data("plane_d").toDouble() - (-50.0 / norm)) < 1e-2, "D");
+        QVERIFY2(out.data("flatness").toDouble() < 0.01, "exact plane flatness ~0");
+        QVERIFY2(out.data("rms").toDouble() < 0.01, "exact plane rms ~0");
+        // 平面度恒等于偏差极值差（口径一致性）
+        QVERIFY2(std::abs(out.data("flatness").toDouble() -
+                          (out.data("max_deviation").toDouble() - out.data("min_deviation").toDouble())) < 1e-12,
+                 "flatness must equal max-min deviation");
+        QCOMPARE(out.data("valid_pixel_count").toDouble(), 640.0 * 480.0);
+    }
+
+    void testFitPlaneInvalidExclusion() {
+        FitPlanePlugin plugin;
+        plugin.setParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, -99999.0));
+        QVERIFY(plugin.initialize());
+        cv::Mat m = makeTiltedPlane(640, 480, 0.1, -0.2, 50.0);
+        m(cv::Rect(0, 0, 100, 480)).setTo(-99999.0f); // 左 100 列标记无效
+        ImageData input(m);
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "fit with invalid block must succeed");
+        QCOMPARE(out.data("valid_pixel_count").toDouble(), 540.0 * 480.0);
+        const double norm = std::sqrt(1.05);
+        QVERIFY2(std::abs(out.data("plane_nx").toDouble() - (-0.1 / norm)) < 1e-3, "nx unaffected by invalid block");
+        QVERIFY2(out.data("flatness").toDouble() < 0.01, "flatness on valid pixels only");
+    }
+
+    void testFitPlaneRotatedRoiIgnoresOutside() {
+        FitPlanePlugin plugin;
+        plugin.setParams(planeParams(320, 240, 200, 100, 30.0, 1.0, 1.0, 1.0, -99999.0));
+        QVERIFY(plugin.initialize());
+        cv::Mat m = makeTiltedPlane(640, 480, 0.1, -0.2, 50.0);
+        // 破坏 ROI 之外的区域（旋转 ROI 的包围盒 ⊂ [208,432]×[146,334]）
+        m(cv::Rect(0, 0, 100, 480)).setTo(1000.0f);
+        m(cv::Rect(541, 0, 99, 480)).setTo(1000.0f);
+        m(cv::Rect(0, 0, 640, 80)).setTo(1000.0f);
+        m(cv::Rect(0, 401, 640, 79)).setTo(1000.0f);
+        ImageData input(m);
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "rotated ROI fit must succeed");
+        const double count = out.data("valid_pixel_count").toDouble();
+        QVERIFY2(count > 15000 && count < 25000, qPrintable(QString("ROI pixel count ~20000, got %1").arg(count)));
+        QVERIFY2(out.data("flatness").toDouble() < 0.01, "garbage outside ROI must not affect fit");
+        const double norm = std::sqrt(1.05);
+        QVERIFY2(std::abs(out.data("plane_nx").toDouble() - (-0.1 / norm)) < 1e-3, "nx");
+    }
+
+    void testFitPlaneCollinearFails() {
+        FitPlanePlugin plugin;
+        // 短边=1 → 单行像素 → 设计矩阵秩亏（共线），必须失败关闭
+        plugin.setParams(planeParams(320, 240, 200, 1, 0.0, 1.0, 1.0, 1.0, -99999.0));
+        QVERIFY(plugin.initialize());
+        ImageData input(makeTiltedPlane(640, 480, 0.1, -0.2, 50.0));
+        QSignalSpy errSpy(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData out;
+        QVERIFY2(!plugin.execute(input, out), "single-row ROI must fail closed");
+        QVERIFY2(errSpy.count() >= 1 && errSpy.first().at(0).toString().contains(QStringLiteral("共线")),
+                 qPrintable(QString("error must report collinear, got: %1")
+                                .arg(errSpy.count() ? errSpy.first().at(0).toString() : QString())));
+    }
+
+    void testFitPlaneTooFewValidFails() {
+        FitPlanePlugin plugin;
+        plugin.setParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, 5.0));
+        QVERIFY(plugin.initialize());
+        cv::Mat m(480, 640, CV_32F, cv::Scalar(5.0f)); // 全部等于 invalidValue
+        ImageData input(m);
+        QSignalSpy errSpy(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData out;
+        QVERIFY2(!plugin.execute(input, out), "all-invalid must fail closed");
+        QVERIFY2(errSpy.count() >= 1 && errSpy.first().at(0).toString().contains(QStringLiteral("有效像素不足")),
+                 "error must report too few valid pixels");
+    }
+
+    void testFitPlaneScaling() {
+        FitPlanePlugin plugin;
+        // z = 0.1x-0.2y+50，pixelSize=2、zScale=3 → 物理平面 Z = 0.15X - 0.3Y + 150
+        plugin.setParams(planeParams(0, 0, 0, 0, 0.0, 2.0, 2.0, 3.0, -99999.0));
+        QVERIFY(plugin.initialize());
+        ImageData input(makeTiltedPlane(640, 480, 0.1, -0.2, 50.0));
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "scaled fit must succeed");
+        const double norm = std::sqrt(0.15 * 0.15 + 0.3 * 0.3 + 1.0);
+        QVERIFY2(std::abs(out.data("plane_nx").toDouble() - (-0.15 / norm)) < 1e-3, "scaled nx");
+        QVERIFY2(std::abs(out.data("plane_ny").toDouble() - (0.3 / norm)) < 1e-3, "scaled ny");
+        QVERIFY2(std::abs(out.data("plane_d").toDouble() - (-150.0 / norm)) < 1e-2, "scaled D");
+        QVERIFY2(out.data("flatness").toDouble() < 0.01, "consistent scaling keeps flatness ~0");
+    }
+
+    void testFitPlaneOutputPlane3DContract() {
+        FitPlanePlugin plugin;
+        plugin.setParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, -99999.0));
+        QVERIFY(plugin.initialize());
+        ImageData input(makeTiltedPlane(640, 480, 0.1, -0.2, 50.0));
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "fit must succeed");
+        const QVariant planeVar = out.data("plane");
+        QVERIFY2(portValueMatchesType(planeVar, DataType::Plane3D), "plane output must satisfy Plane3D contract");
+        QString parseError;
+        const auto parsed = MeasurementData::parsePlane3D(planeVar, &parseError);
+        QVERIFY2(parsed.has_value(), qPrintable("core parsePlane3D must accept plane output: " + parseError));
+        // 解析出的 3 点法向与输出法向平行（|dot| ≈ 1）
+        const MeasurementPoint3D& p1 = parsed->p1;
+        const MeasurementPoint3D& p2 = parsed->p2;
+        const MeasurementPoint3D& p3 = parsed->p3;
+        const double v1x = p2.x - p1.x, v1y = p2.y - p1.y, v1z = p2.z - p1.z;
+        const double v2x = p3.x - p1.x, v2y = p3.y - p1.y, v2z = p3.z - p1.z;
+        const double crx = v1y * v2z - v1z * v2y;
+        const double cry = v1z * v2x - v1x * v2z;
+        const double crz = v1x * v2y - v1y * v2x;
+        const double crLen = std::sqrt(crx * crx + cry * cry + crz * crz);
+        QVERIFY2(crLen > 1e-9, "parsed points must be non-collinear");
+        const double dot = (crx * out.data("plane_nx").toDouble() + cry * out.data("plane_ny").toDouble() +
+                            crz * out.data("plane_nz").toDouble()) /
+                           crLen;
+        QVERIFY2(std::abs(std::abs(dot) - 1.0) < 1e-3,
+                 qPrintable(QString("normals must be parallel, dot=%1").arg(dot)));
+    }
+
+    void testFitPlaneValidation() {
+        FitPlanePlugin plugin;
+        QString error;
+        QVERIFY(!plugin.validateParams(planeParams(0, 0, 0, 0, 0.0, 0.0, 1.0, 1.0, 0.0), error));    // pixelSizeX=0
+        QVERIFY(!plugin.validateParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, -1.0, 0.0), error));   // zScale<0
+        QVERIFY(!plugin.validateParams(planeParams(0, 0, 0, 0, 400.0, 1.0, 1.0, 1.0, 0.0), error));  // roiAngle>360
+        QVERIFY(!plugin.validateParams(planeParams(0, 0, 10.5, 0, 0.0, 1.0, 1.0, 1.0, 0.0), error)); // 非整数长度
+        QVERIFY(!plugin.validateParams(planeParams(-1, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, 0.0), error));   // 中心X<0
+        QVERIFY(plugin.validateParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, 0.0), error));
+    }
+
+    void testFitPlaneClone() {
+        FitPlanePlugin plugin;
+        plugin.setParams(planeParams(100, 100, 50, 40, 10.0, 2.0, 2.0, 3.0, -1.0));
+        IModule* clone = plugin.clone();
+        QVERIFY(clone != nullptr);
+        auto* clonePlane = qobject_cast<FitPlanePlugin*>(clone);
+        QVERIFY(clonePlane != nullptr);
+        QCOMPARE(clonePlane->currentParams()["pixelSizeX"].toDouble(), 2.0);
+        clonePlane->setParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, 0.0));
+        QCOMPARE(plugin.currentParams()["pixelSizeX"].toDouble(), 2.0);
+        delete clone;
+    }
+
+    // ---------- GapMeasure3D ----------
+
+    void testGapMeasuresGrooveWidth() {
+        GapMeasure3DPlugin plugin;
+        plugin.setParams(gapParams(320, 240, 200, 5));
+        QVERIFY(plugin.initialize());
+        // V 槽 x∈[300,339]（宽 40px）、深 10、行 200..280
+        ImageData input(makeGrooveHeight(640, 480, 200, 280, 300, 339, 100.0, 10.0));
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "groove measurement must succeed");
+        QVERIFY2(out.data("gap_found").toBool(), "groove must be found");
+        const double width = out.data("gap_width").toDouble();
+        QVERIFY2(std::abs(width - 40.0) < 1.5, qPrintable(QString("width ~40, got %1").arg(width)));
+        QVERIFY2(out.data("is_pass").toBool(), "width 40 <= spec 50 must pass");
+        QVERIFY2(out.data("corner_dz_mm").toDouble() < 2.0, "symmetric groove corners at same height");
+        const double dx = out.data("corner_dx_mm").toDouble();
+        const double dz = out.data("corner_dz_mm").toDouble();
+        QVERIFY2(std::abs(out.data("corner_dist_mm").toDouble() - std::hypot(dx, dz)) < 1e-9, "euclid consistency");
+        QCOMPARE(out.data("gap_offset_width").toDouble(), width); // offsetMm=0
+        QCOMPARE(out.data("gap_algorithm").toString(), QStringLiteral("derivative-peak"));
+    }
+
+    void testGapSpecFail() {
+        GapMeasure3DPlugin plugin;
+        QJsonObject p = gapParams(320, 240, 200, 5);
+        p["specUpperLimit"] = 30.0;
+        plugin.setParams(p);
+        QVERIFY(plugin.initialize());
+        ImageData input(makeGrooveHeight(640, 480, 200, 280, 300, 339, 100.0, 10.0));
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "measurement must succeed");
+        QVERIFY2(out.data("gap_found").toBool(), "groove must be found");
+        QVERIFY2(!out.data("is_pass").toBool(), "width 40 > spec 30 must fail spec");
+    }
+
+    void testGapFlatSurfaceNotFound() {
+        GapMeasure3DPlugin plugin;
+        plugin.setParams(gapParams(320, 240, 200, 5));
+        QVERIFY(plugin.initialize());
+        cv::Mat flat(480, 640, CV_32F, cv::Scalar(100.0f));
+        ImageData input(flat);
+        ImageData out;
+        // 未检出不是插件失败：按契约输出失败值 + gap_found=false（非伪成功）
+        QVERIFY2(plugin.execute(input, out), "flat surface must succeed with not-found contract");
+        QVERIFY2(!out.data("gap_found").toBool(), "flat surface has no gap");
+        QCOMPARE(out.data("gap_width").toDouble(), -1.0); // measureFailValue
+        QCOMPARE(out.data("gap_offset_width").toDouble(), -1.0);
+        QVERIFY2(!out.data("is_pass").toBool(), "not-found must not pass");
+    }
+
+    void testGapOffsetWidth() {
+        GapMeasure3DPlugin plugin;
+        QJsonObject p = gapParams(320, 240, 200, 5);
+        p["offsetMm"] = 2.5;
+        plugin.setParams(p);
+        QVERIFY(plugin.initialize());
+        ImageData input(makeGrooveHeight(640, 480, 200, 280, 300, 339, 100.0, 10.0));
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "offset measurement must succeed");
+        QVERIFY(out.data("gap_found").toBool());
+        const double width = out.data("gap_width").toDouble();
+        QVERIFY2(std::abs(out.data("gap_offset_width").toDouble() - (width + 5.0)) < 1e-9,
+                 "offset width = width + 2·offsetMm");
+    }
+
+    void testGapMinPeakDistanceTooLarge() {
+        GapMeasure3DPlugin plugin;
+        QJsonObject p = gapParams(320, 240, 200, 5);
+        p["minPeakDistance"] = 50; // 槽宽仅 40px → 升降沿距离不足
+        plugin.setParams(p);
+        QVERIFY(plugin.initialize());
+        ImageData input(makeGrooveHeight(640, 480, 200, 280, 300, 339, 100.0, 10.0));
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "must succeed with not-found contract");
+        QVERIFY2(!out.data("gap_found").toBool(), "corners closer than minPeakDistance must not pair");
+        QCOMPARE(out.data("gap_width").toDouble(), -1.0);
+    }
+
+    void testGapMedianRemovesSpikes() {
+        GapMeasure3DPlugin plugin;
+        QJsonObject p = gapParams(320, 240, 200, 5);
+        p["medianSize"] = 3;
+        plugin.setParams(p);
+        QVERIFY(plugin.initialize());
+        cv::Mat m = makeGrooveHeight(640, 480, 200, 280, 300, 339, 100.0, 10.0);
+        // 中心行上的孤立尖刺（行均值后成为截面伪峰，中值窗口必须滤除）
+        for (const int sx : {250, 270, 290, 320, 350, 370}) {
+            m.at<float>(240, sx) = 500.0f;
+        }
+        ImageData input(m);
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "spiked groove must succeed");
+        QVERIFY2(out.data("gap_found").toBool(), "groove must survive spikes");
+        const double width = out.data("gap_width").toDouble();
+        QVERIFY2(std::abs(width - 40.0) < 2.0,
+                 qPrintable(QString("median must remove spikes, width ~40, got %1").arg(width)));
+    }
+
+    void testGapPixelScaling() {
+        GapMeasure3DPlugin plugin;
+        QJsonObject p = gapParams(320, 240, 200, 5);
+        p["pixelSizeX"] = 2.0;
+        p["zScale"] = 2.0;
+        p["specUpperLimit"] = 100.0;
+        plugin.setParams(p);
+        QVERIFY(plugin.initialize());
+        ImageData input(makeGrooveHeight(640, 480, 200, 280, 300, 339, 100.0, 10.0));
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "scaled measurement must succeed");
+        QVERIFY(out.data("gap_found").toBool());
+        const double width = out.data("gap_width").toDouble();
+        QVERIFY2(std::abs(width - 80.0) < 3.0, qPrintable(QString("width 40px·2mm/px = 80, got %1").arg(width)));
+        QVERIFY2(out.data("is_pass").toBool(), "80 <= spec 100");
+    }
+
+    void testGapRoiOutsideImageFails() {
+        GapMeasure3DPlugin plugin;
+        plugin.setParams(gapParams(5000, 5000, 100, 5));
+        QVERIFY(plugin.initialize());
+        ImageData input(makeGrooveHeight(640, 480, 200, 280, 300, 339, 100.0, 10.0));
+        QSignalSpy errSpy(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData out;
+        QVERIFY2(!plugin.execute(input, out), "ROI outside image must fail");
+        QVERIFY2(errSpy.count() >= 1 && errSpy.first().at(0).toString().contains(QStringLiteral("无交集")),
+                 "error must report no intersection");
+    }
+
+    void testGapValidation() {
+        GapMeasure3DPlugin plugin;
+        QString error;
+        QVERIFY(plugin.validateParams(gapParams(320, 240, 100, 5), error));
+        QJsonObject evenMedian = gapParams(320, 240, 100, 5);
+        evenMedian["medianSize"] = 4;
+        QVERIFY(!plugin.validateParams(evenMedian, error)); // 偶数中值窗口
+        QJsonObject smallMedian = gapParams(320, 240, 100, 5);
+        smallMedian["medianSize"] = 2;
+        QVERIFY(!plugin.validateParams(smallMedian, error)); // <3 非零窗口
+        QVERIFY(!plugin.validateParams(
+            [&] {
+                auto p = gapParams(320, 240, 100, 5);
+                p["roiLength"] = 2;
+                return p;
+            }(),
+            error)); // 截面长度 <3
+        QVERIFY(!plugin.validateParams(
+            [&] {
+                auto p = gapParams(320, 240, 100, 5);
+                p["pixelSizeX"] = 0.0;
+                return p;
+            }(),
+            error));
+        QVERIFY(!plugin.validateParams(
+            [&] {
+                auto p = gapParams(320, 240, 100, 5);
+                p["specUpperLimit"] = 0.0;
+                return p;
+            }(),
+            error));
+        QVERIFY(!plugin.validateParams(
+            [&] {
+                auto p = gapParams(320, 240, 100, 5);
+                p["smoothSigma"] = -0.5;
+                return p;
+            }(),
+            error));
+        QVERIFY(!plugin.validateParams(
+            [&] {
+                auto p = gapParams(320, 240, 100, 5);
+                p["minPeakDistance"] = 0;
+                return p;
+            }(),
+            error));
+        QJsonObject oddMedian = gapParams(320, 240, 100, 5);
+        oddMedian["medianSize"] = 3;
+        QVERIFY(plugin.validateParams(oddMedian, error)); // 奇数窗口合法
+    }
+
+    void testGapClone() {
+        GapMeasure3DPlugin plugin;
+        QJsonObject p = gapParams(100, 100, 50, 3);
+        p["pixelSizeX"] = 0.5;
+        plugin.setParams(p);
+        IModule* clone = plugin.clone();
+        QVERIFY(clone != nullptr);
+        auto* cloneGap = qobject_cast<GapMeasure3DPlugin*>(clone);
+        QVERIFY(cloneGap != nullptr);
+        QCOMPARE(cloneGap->currentParams()["pixelSizeX"].toDouble(), 0.5);
+        cloneGap->setParams(gapParams(320, 240, 100, 5));
+        QCOMPARE(plugin.currentParams()["pixelSizeX"].toDouble(), 0.5);
+        delete clone;
+    }
+
+    // ---------- 流程验收 ----------
+
+    // 流程验收：GrabImage(32F TIFF 高度图) → 3DPreProcessing(高度筛选剔除离群块)
+    // → FitPlane(全图拟合)，经 PluginManager 真实加载 + RunEngine 调度
+    void testFlowPreprocessToPlaneFit() {
+        RunEngine& engine = RunEngine::instance();
+        ProjectManager::instance().closeProject();
+
+        QTemporaryDir dataDir;
+        QVERIFY(dataDir.isValid());
+        const QString tiffPath = dataDir.filePath("tilted_height.tiff");
+        cv::Mat plane = makeTiltedPlane(640, 480, 0.05, -0.1, 50.0);
+        plane(cv::Rect(0, 0, 40, 40)).setTo(5000.0f); // 离群块 → 高度筛选剔除
+        QVERIFY(cv::imwrite(tiffPath.toStdString(), plane));
+
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        ModuleInstance grab;
+        grab.id = QStringLiteral("grab");
+        grab.moduleId = QStringLiteral("GrabImage");
+        grab.params["grabSource"] = QStringLiteral("Path");
+        grab.params["filePath"] = tiffPath;
+        project->addModule(grab);
+
+        ModuleInstance pre;
+        pre.id = QStringLiteral("pre");
+        pre.moduleId = QStringLiteral("3DPreProcessing");
+        pre.params["heightFilterEnabled"] = true;
+        pre.params["heightFilterMin"] = -1000.0;
+        pre.params["heightFilterMax"] = 1000.0;
+        pre.params["fillValue"] = 0.0;
+        project->addModule(pre);
+
+        ModuleInstance fp;
+        fp.id = QStringLiteral("fp");
+        fp.moduleId = QStringLiteral("FitPlane");
+        fp.params["invalidValue"] = 0.0;
+        project->addModule(fp);
+
+        ModuleConnection c1;
+        c1.fromModuleId = QStringLiteral("grab");
+        c1.toModuleId = QStringLiteral("pre");
+        c1.fromPort = QStringLiteral("image");
+        c1.toPort = QStringLiteral("image");
+        c1.edgeType = QStringLiteral("data");
+        project->addConnection(c1);
+        ModuleConnection c2;
+        c2.fromModuleId = QStringLiteral("pre");
+        c2.toModuleId = QStringLiteral("fp");
+        c2.fromPort = QStringLiteral("image");
+        c2.toPort = QStringLiteral("image");
+        c2.edgeType = QStringLiteral("data");
+        project->addConnection(c2);
+
+        QVERIFY(engine.loadProject(project));
+        engine.runOnce();
+
+        const ImageData preOut = engine.moduleOutput(QStringLiteral("pre"));
+        QVERIFY2(preOut.hasData("valid_pixel_count"), "flow must produce preprocessing stats");
+        QCOMPARE(preOut.data("filtered_pixel_count").toDouble(), 40.0 * 40.0);
+        QCOMPARE(preOut.toMat().depth(), CV_32F);
+
+        const ImageData fpOut = engine.moduleOutput(QStringLiteral("fp"));
+        QVERIFY2(fpOut.hasData("plane_nz"), "flow must produce plane normal");
+        QCOMPARE(fpOut.data("valid_pixel_count").toDouble(), 640.0 * 480.0 - 40.0 * 40.0);
+        const double norm = std::sqrt(0.05 * 0.05 + 0.1 * 0.1 + 1.0);
+        QVERIFY2(std::abs(fpOut.data("plane_nx").toDouble() - (-0.05 / norm)) < 0.01, "flow nx");
+        QVERIFY2(std::abs(fpOut.data("plane_ny").toDouble() - (0.1 / norm)) < 0.01, "flow ny");
+        QVERIFY2(fpOut.data("flatness").toDouble() < 0.05, "outlier block removed → flatness small");
+        QVERIFY(portValueMatchesType(fpOut.data("plane"), DataType::Plane3D));
+    }
+
+    // 流程验收：GrabImage(32F TIFF V 槽高度图) → GapMeasure3D，间隙宽度 ~40
+    void testFlowGrabToGapMeasure3D() {
+        RunEngine& engine = RunEngine::instance();
+        ProjectManager::instance().closeProject();
+
+        QTemporaryDir dataDir;
+        QVERIFY(dataDir.isValid());
+        const QString tiffPath = dataDir.filePath("groove_height.tiff");
+        cv::Mat groove = makeGrooveHeight(640, 480, 200, 280, 300, 339, 100.0, 10.0);
+        QVERIFY(cv::imwrite(tiffPath.toStdString(), groove));
+
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        ModuleInstance grab;
+        grab.id = QStringLiteral("grab");
+        grab.moduleId = QStringLiteral("GrabImage");
+        grab.params["grabSource"] = QStringLiteral("Path");
+        grab.params["filePath"] = tiffPath;
+        project->addModule(grab);
+
+        ModuleInstance gap;
+        gap.id = QStringLiteral("gap");
+        gap.moduleId = QStringLiteral("GapMeasure3D");
+        gap.params["roiCenterX"] = 320;
+        gap.params["roiCenterY"] = 240;
+        gap.params["roiLength"] = 200;
+        gap.params["roiHeight"] = 5;
+        gap.params["specUpperLimit"] = 50.0;
+        project->addModule(gap);
+
+        ModuleConnection conn;
+        conn.fromModuleId = QStringLiteral("grab");
+        conn.toModuleId = QStringLiteral("gap");
+        conn.fromPort = QStringLiteral("image");
+        conn.toPort = QStringLiteral("image");
+        conn.edgeType = QStringLiteral("data");
+        project->addConnection(conn);
+
+        QVERIFY(engine.loadProject(project));
+        engine.runOnce();
+        const ImageData out = engine.moduleOutput(QStringLiteral("gap"));
+        QVERIFY2(out.hasData("gap_width"), "flow must produce gap_width");
+        QVERIFY2(out.data("gap_found").toBool(), "flow must find the groove");
+        const double width = out.data("gap_width").toDouble();
+        QVERIFY2(std::abs(width - 40.0) < 1.5, qPrintable(QString("flow gap width ~40, got %1").arg(width)));
+        QVERIFY2(out.data("is_pass").toBool(), "flow gap must pass spec 50");
+    }
+};
+
+QTEST_MAIN(Test3DBatch3)
+#include "test_3d_batch3.moc"

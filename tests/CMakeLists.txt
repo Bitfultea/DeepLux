@@ -19,6 +19,7 @@ set(TEST_SOURCES
     test_fitcircle.cpp
     test_fitellipse.cpp
     test_detection_batch2.cpp
+    test_3d_batch3.cpp
     test_measurerect.cpp
     test_distancepl.cpp
     test_distancepp.cpp
@@ -133,6 +134,26 @@ foreach(TEST_FILE ${TEST_SOURCES})
             TEST_BATCH2_META_EdgeDefectDetection="${CMAKE_SOURCE_DIR}/src/plugins/detection/EdgeDefectDetection/metadata.json"
             TEST_BATCH2_META_MeasurementInput="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json"
             TEST_BATCH2_DATA_Circle="${CMAKE_SOURCE_DIR}/tests/acceptance/data/circle_640x480.png")
+    endif()
+    # 阶7 批3：0143D 批（3DPreProcessing/FitPlane/GapMeasure3D）行为+流程验收
+    # metadata/库路径由 CMake 注入；32F TIFF 高度图由测试运行期生成（无静态资产）
+    if(TEST_NAME STREQUAL "test_3d_batch3")
+        target_link_libraries(${TEST_NAME}
+            PRIVATE
+                PreProcessing3DPlugin
+                FitPlanePlugin
+                GapMeasure3DPlugin
+                GrabImagePlugin
+        )
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_BATCH3_LIB_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+            TEST_BATCH3_LIB_PreProcessing3D="$<TARGET_FILE:PreProcessing3DPlugin>"
+            TEST_BATCH3_LIB_FitPlane="$<TARGET_FILE:FitPlanePlugin>"
+            TEST_BATCH3_LIB_GapMeasure3D="$<TARGET_FILE:GapMeasure3DPlugin>"
+            TEST_BATCH3_META_GrabImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+            TEST_BATCH3_META_PreProcessing3D="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/PreProcessing3D/metadata.json"
+            TEST_BATCH3_META_FitPlane="${CMAKE_SOURCE_DIR}/src/plugins/geometry/FitPlane/metadata.json"
+            TEST_BATCH3_META_GapMeasure3D="${CMAKE_SOURCE_DIR}/src/plugins/geometry/GapMeasure3D/metadata.json")
     endif()
     if(TEST_NAME STREQUAL "test_measurerect" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE MeasureRectPlugin)

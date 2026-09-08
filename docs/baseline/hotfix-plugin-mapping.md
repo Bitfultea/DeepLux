@@ -8,16 +8,16 @@
 
 | 状态 | 数量 | 含义 |
 | --- | ---: | --- |
-| direct | 48 | 名称直接匹配，仍需人工核验能力和参数 |
+| direct | 51 | 名称直接匹配，仍需人工核验能力和参数 |
 | candidate | 5 | 需要确认的历史别名或替代候选 |
-| missing | 50 | 当前没有候选实现 |
+| missing | 47 | 当前没有候选实现 |
 | business_pack | 7 | 业务专用插件，作为可选业务包评审 |
 
 | 审核状态 | 数量 |
 | --- | ---: |
-| reviewed | 53 |
+| reviewed | 56 |
 | dependency_recorded | 7 |
-| pending | 50 |
+| pending | 47 |
 
 - 审核结论统计仅包含 `reviewState=reviewed` 的条目。
 
@@ -25,7 +25,7 @@
 | --- | ---: | --- |
 | equivalent | 0 | 已证明与旧版能力等价（需旧版参数/端口/结果对照） |
 | intentionally_changed | 13 | 已确认采用不同于旧版的契约或行为 |
-| partial | 36 | 当前存在候选实现，旧版等价未证明 |
+| partial | 39 | 当前存在候选实现，旧版等价未证明 |
 | unverified | 4 | 依赖硬件/SDK，行为未验证 |
 | not_equivalent | 0 | 不等价 |
 
@@ -142,14 +142,11 @@
 | Jigsaw | `02Plugins/012深度学习/Plugin.Jigsaw` | - | missing | - |
 | Solder | `02Plugins/012深度学习/Plugin.Solder` | - | missing | - |
 | Yolo | `02Plugins/012深度学习/Plugin.Yolo` | - | missing | - |
-| 3DPreProcessing | `02Plugins/0143D/Plugin.3DPreProcessing` | - | missing | - |
 | BumpDentDetect | `02Plugins/0143D/Plugin.BumpDentDetect` | - | missing | - |
 | ContourDetection | `02Plugins/0143D/Plugin.ContourDetection` | - | missing | - |
 | DepthToImage | `02Plugins/0143D/Plugin.DepthToImage` | - | missing | - |
-| FitPlane | `02Plugins/0143D/Plugin.FitPlane` | - | missing | - |
 | Flatness | `02Plugins/0143D/Plugin.Flatness` | - | missing | - |
 | GSD | `02Plugins/0143D/Plugin.GSD` | - | missing | - |
-| GapMeasure3D | `02Plugins/0143D/Plugin.GapMeasure3D` | - | missing | - |
 | HeightMeasurement | `02Plugins/0143D/Plugin.HeightMeasurement` | - | missing | - |
 | LidWeldDetection | `02Plugins/0143D/Plugin.LidWeldDetection` | - | missing | - |
 | LinePlaneAngle | `02Plugins/0143D/Plugin.LinePlaneAngle` | - | missing | - |
