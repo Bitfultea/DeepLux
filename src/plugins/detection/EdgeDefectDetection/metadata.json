@@ -106,7 +106,7 @@
             {
                 "id": "defect_regions",
                 "displayName": "缺陷区域列表",
-                "type": "String",
+                "type": "Table",
                 "required": false,
                 "multiple": false
             }

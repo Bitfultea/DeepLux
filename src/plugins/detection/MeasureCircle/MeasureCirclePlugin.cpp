@@ -161,10 +161,12 @@ bool MeasureCirclePlugin::process(const ImageData& input, ImageData& output) {
         const double dy = std::sin(ang);
         double bestR = -1.0;
         double bestGrad = -1.0;
-        const double rStart = qMax(1.0, r0 - searchLength);
-        const double rEnd = r0 + searchLength;
-        // 阶7 批2 复核（P1-2）：闭区间 [rStart+1, rEnd-1]，searchLength=1 时仍有单点搜索
-        for (double r = rStart + 1.0; r <= rEnd - 1.0; r += 1.0) {
+        // 阶7 批2 复核三轮（P2-5）：搜索范围 = [max(1, r0-半长), r0+半长] 闭区间，
+        // 符合"搜索半长"语义；合法最小组合（initialRadius=1, searchLength=1）
+        // 不再产生空循环（旧 ±1 收缩为 [2,0]）
+        const double rLow = qMax(1.0, r0 - searchLength);
+        const double rHigh = r0 + searchLength;
+        for (double r = rLow; r <= rHigh; r += 1.0) {
             double im = 0.0;
             double ip = 0.0;
             if (!intensityAt(cx0 + (r - 1) * dx, cy0 + (r - 1) * dy, im))
@@ -201,9 +203,17 @@ bool MeasureCirclePlugin::process(const ImageData& input, ImageData& output) {
                 kept.append(p);
             }
         }
-        if (kept.size() >= 3 && fitCircleAlgebraic(kept, cx, cy, radius)) {
-            edgePoints = kept;
+        // 阶7 批2 复核三轮（P1-4）：启用剔除即失败关闭——剩余点不足或重拟合失败
+        // 必须显式报错，不得静默返回未过滤结果（参数看似生效、实际被忽略）
+        if (kept.size() < 3) {
+            emit errorOccurred(tr("剔除后边缘点不足（%1<3），无法重拟合圆").arg(kept.size()));
+            return false;
         }
+        if (!fitCircleAlgebraic(kept, cx, cy, radius)) {
+            emit errorOccurred(tr("剔除后重拟合圆失败"));
+            return false;
+        }
+        edgePoints = kept;
     }
 
     // 圆度 = 1 - 径向残差标准差/半径（clamp 到 [0,1]）
