@@ -15,29 +15,52 @@ namespace DeepLux {
 
 namespace {
 constexpr double kEdgeGradient = 20.0; // 卡钳梯度阈值（内部常量）
-// 阶7 批2 复核三轮（P1-2）：最低成功射线数与覆盖率门禁（失败关闭）
+// 阶7 批2 复核三轮（P1-2）：最低成功射线数门禁（失败关闭）
 constexpr int kMinEdgeRays = 3;
-constexpr double kMinCoverage = 0.5;
+// 阶7 批2 复核四轮（P1-2）：角度域门禁——同方向重复点去重阈值、明显角度空洞
+// （区域分隔且不计入覆盖）、最低角度覆盖率
+constexpr double kAngleDupEpsDeg = 0.25;
+constexpr double kMaxAngularGapDeg = 30.0;
+constexpr double kMinAngularCoverage = 0.5;
+// 阶7 批2 复核四轮（P1-1）：拟合设计矩阵严重病态/秩亏阈值（相对最小奇异值）
+constexpr double kFitConditionEps = 1e-9;
 
 bool fitCircleAlgebraic(const QVector<QPointF>& pts, double& cx, double& cy, double& r) {
     if (pts.size() < 3) {
         return false;
     }
 #ifdef DEEPLUX_HAS_OPENCV
-    cv::Mat A(pts.size(), 3, CV_64FC1);
-    cv::Mat B(pts.size(), 1, CV_64FC1);
-    for (int i = 0; i < pts.size(); ++i) {
-        const double x = pts[i].x();
-        const double y = pts[i].y();
+    // 阶7 批2 复核四轮（P1-1）：退化防护——DECOMP_SVD 对重复点/共线/秩亏点集
+    // 仍会"成功"并返回有限半径，产生虚假基准圆。先 epsilon 去重（唯一点 >= 3），
+    // 再显式检查设计矩阵奇异值：最小奇异值相对最大奇异值过小即失败关闭。
+    QVector<QPointF> uniq = pts;
+    std::sort(uniq.begin(), uniq.end(),
+              [](const QPointF& a, const QPointF& b) { return a.x() != b.x() ? a.x() < b.x() : a.y() < b.y(); });
+    uniq.erase(
+        std::unique(uniq.begin(), uniq.end(),
+                    [](const QPointF& a, const QPointF& b) { return std::hypot(a.x() - b.x(), a.y() - b.y()) < 1e-9; }),
+        uniq.end());
+    if (uniq.size() < 3) {
+        return false; // 重复点集：唯一点不足
+    }
+    cv::Mat A(uniq.size(), 3, CV_64FC1);
+    cv::Mat B(uniq.size(), 1, CV_64FC1);
+    for (int i = 0; i < uniq.size(); ++i) {
+        const double x = uniq[i].x();
+        const double y = uniq[i].y();
         A.at<double>(i, 0) = x;
         A.at<double>(i, 1) = y;
         A.at<double>(i, 2) = 1.0;
         B.at<double>(i, 0) = x * x + y * y;
     }
-    cv::Mat C;
-    if (!cv::solve(A, B, C, cv::DECOMP_SVD)) {
-        return false;
+    const cv::SVD svd(A);
+    const double sMax = svd.w.at<double>(0);
+    const double sMin = svd.w.at<double>(svd.w.rows - 1);
+    if (!(sMax > 0.0) || !(sMin > kFitConditionEps * sMax)) {
+        return false; // 秩亏（共线/重复）或严重病态
     }
+    cv::Mat C;
+    svd.backSubst(B, C);
     cx = C.at<double>(0, 0) / 2.0;
     cy = C.at<double>(1, 0) / 2.0;
     const double rs = cx * cx + cy * cy + C.at<double>(2, 0);
@@ -189,11 +212,29 @@ bool EdgeDefectDetectionPlugin::process(const ImageData& input, ImageData& outpu
         }
         rays.append(Ray{i, std::atan2(dy, dx), dx / dirR, dy / dirR});
     }
+    std::sort(rays.begin(), rays.end(), [](const Ray& a, const Ray& b) { return a.angle < b.angle; });
+    // 阶7 批2 复核四轮（P1-2）：按角度去重——同方向重复点仅保留首个，
+    // 防止重复点抬高射线计数伪造覆盖率
+    {
+        QVector<Ray> dedup;
+        dedup.reserve(rays.size());
+        for (const Ray& ray : rays) {
+            if (!dedup.isEmpty() && (ray.angle - dedup.last().angle) * 180.0 / M_PI < kAngleDupEpsDeg) {
+                continue;
+            }
+            dedup.append(ray);
+        }
+        // 首尾跨 ±180° 分支也可能同方向重复
+        while (dedup.size() >= 2 &&
+               (dedup.first().angle + 2.0 * M_PI - dedup.last().angle) * 180.0 / M_PI < kAngleDupEpsDeg) {
+            dedup.removeLast();
+        }
+        rays = dedup;
+    }
     if (rays.size() < kMinEdgeRays) {
         emit errorOccurred(tr("参考边缘有效射线方向不足，无法测量偏差"));
         return false;
     }
-    std::sort(rays.begin(), rays.end(), [](const Ray& a, const Ray& b) { return a.angle < b.angle; });
 
     // 阶7 批2 复核三轮（P1-2）：保留每条射线（含失败项）——失败射线记 NaN 并作为
     // 区域分隔，不再压缩删除（压缩会使失败射线两侧的缺陷伪相邻而被合并）。
@@ -229,14 +270,42 @@ bool EdgeDefectDetectionPlugin::process(const ImageData& input, ImageData& outpu
             ++success;
         }
     }
-    // 阶7 批2 复核三轮（P1-2）：最低成功数与覆盖率双门禁，失败关闭
+    // 阶7 批2 复核三轮（P1-2）：最低成功数门禁，失败关闭
     if (success < kMinEdgeRays) {
         emit errorOccurred(tr("有效边缘提取不足（%1/%2 条射线），无法计算偏差").arg(success).arg(n));
         return false;
     }
-    if (static_cast<double>(success) < kMinCoverage * n) {
-        emit errorOccurred(
-            tr("边缘射线覆盖率不足（%1/%2 < %3%），结果不可信").arg(success).arg(n).arg(qRound(kMinCoverage * 100.0)));
+    // 阶7 批2 复核四轮（P1-2）：覆盖率改为角度覆盖率——只统计相邻成功射线间隔
+    // <= kMaxAngularGapDeg 的弧段；同方向重复点或只覆盖一小段圆周的参考点集
+    // 无法再以"成功射线数/输入射线数"伪造 100% 覆盖率
+    int firstOk = -1;
+    int prevOk = -1;
+    double coveredDeg = 0.0;
+    for (int i = 0; i < n; ++i) {
+        if (std::isnan(devs[i])) {
+            continue;
+        }
+        if (firstOk < 0) {
+            firstOk = i;
+        } else {
+            const double gapDeg = (rays[i].angle - rays[prevOk].angle) * 180.0 / M_PI;
+            if (gapDeg <= kMaxAngularGapDeg) {
+                coveredDeg += gapDeg;
+            }
+        }
+        prevOk = i;
+    }
+    if (firstOk >= 0 && prevOk != firstOk) {
+        const double wrapDeg = (rays[firstOk].angle + 2.0 * M_PI - rays[prevOk].angle) * 180.0 / M_PI;
+        if (wrapDeg <= kMaxAngularGapDeg) {
+            coveredDeg += wrapDeg;
+        }
+    }
+    const double angularCoverage = coveredDeg / 360.0;
+    if (angularCoverage < kMinAngularCoverage) {
+        emit errorOccurred(tr("边缘角度覆盖率不足（%1% < %2%），结果不可信")
+                               .arg(qRound(angularCoverage * 100.0))
+                               .arg(qRound(kMinAngularCoverage * 100.0)));
         return false;
     }
 
@@ -276,8 +345,21 @@ bool EdgeDefectDetectionPlugin::process(const ImageData& input, ImageData& outpu
         }
     }
 
-    // 环形区域扫描：同类相邻射线合并为一个区域；类变化（含极性翻转）或分隔结束区域。
-    // defect_count = isConvex 选定极性的区域数，has_defect = defect_count > 0（恒一致）。
+    // 阶7 批2 复核四轮（P1-2）：明显角度空洞（相邻射线角间隔 > kMaxAngularGapDeg）
+    // 作为区域分隔——巨大未采样角区两侧的同类异常不得视为相邻而合并
+    QVector<double> gapDeg(n, 0.0); // gapDeg[j] = 射线 j 到射线 (j+1)%n 的角间隔（度）
+    for (int j = 0; j < n; ++j) {
+        const int k = (j + 1) % n;
+        double g = (rays[k].angle - rays[j].angle) * 180.0 / M_PI;
+        if (k == 0) {
+            g += 360.0; // 跨 atan2 分支回绕
+        }
+        gapDeg[j] = g;
+    }
+
+    // 环形区域扫描：同类相邻射线合并为一个区域；类变化（含极性翻转）、失败/正常
+    // 分隔或角度空洞结束区域。defect_count = isConvex 选定极性的区域数，
+    // has_defect = defect_count > 0（恒一致）。
     struct Region {
         int start;    // 角序起始索引
         int length;   // 区域内射线数
@@ -288,8 +370,9 @@ bool EdgeDefectDetectionPlugin::process(const ImageData& input, ImageData& outpu
     QVector<Region> regions;
     int scanStart = -1;
     for (int i = 0; i < n; ++i) {
-        if (cls[i] != 0 && cls[(i + n - 1) % n] != cls[i]) {
-            scanStart = i; // 区域起点：非分隔且环形前驱类别不同
+        const int pred = (i + n - 1) % n;
+        if (cls[i] != 0 && (cls[pred] != cls[i] || gapDeg[pred] > kMaxAngularGapDeg)) {
+            scanStart = i; // 区域起点：非分隔，且环形前驱类别不同或存在角度空洞
             break;
         }
     }
@@ -307,6 +390,9 @@ bool EdgeDefectDetectionPlugin::process(const ImageData& input, ImageData& outpu
                 if (cls[j] != rg.polarity) {
                     break; // 分隔或极性翻转：区域结束
                 }
+                if (rg.length > 0 && gapDeg[(j + n - 1) % n] > kMaxAngularGapDeg) {
+                    break; // 角度空洞：区域结束
+                }
                 rsum += devs[j];
                 rg.maxAbs = qMax(rg.maxAbs, std::abs(devs[j]));
                 ++rg.length;
@@ -316,7 +402,7 @@ bool EdgeDefectDetectionPlugin::process(const ImageData& input, ImageData& outpu
             regions.append(rg);
         }
     } else if (cls[0] != 0) {
-        // 整圆同类异常（无任何分隔/翻转）：单一环形区域
+        // 整圆同类异常（无任何分隔/翻转/角度空洞）：单一环形区域
         regions.append(Region{0, n, cls[0], maxDev, meanDev});
     }
 
@@ -338,12 +424,17 @@ bool EdgeDefectDetectionPlugin::process(const ImageData& input, ImageData& outpu
             const double d = rad * 180.0 / M_PI;
             return d < 0.0 ? d + 360.0 : d;
         };
+        const double startDeg = deg(first.angle);
+        const double endDeg = deg(last.angle);
         QVariantMap row;
         row.insert(QStringLiteral("polarity"), convex ? QStringLiteral("convex") : QStringLiteral("concave"));
         row.insert(QStringLiteral("start_index"), first.origIndex);
         row.insert(QStringLiteral("end_index"), last.origIndex);
-        row.insert(QStringLiteral("start_angle_deg"), deg(first.angle));
-        row.insert(QStringLiteral("end_angle_deg"), deg(last.angle));
+        row.insert(QStringLiteral("start_angle_deg"), startDeg);
+        row.insert(QStringLiteral("end_angle_deg"), endDeg);
+        // 阶7 批2 复核四轮（P2-3）：跨 0° 区域的归一化角度不单调（如 350°→10°），
+        // 显式给出 wraps_zero 供下游组合判断
+        row.insert(QStringLiteral("wraps_zero"), endDeg < startDeg);
         row.insert(QStringLiteral("sample_count"), rg.length);
         row.insert(QStringLiteral("max_deviation"), rg.maxAbs);
         row.insert(QStringLiteral("mean_deviation"), rg.mean);

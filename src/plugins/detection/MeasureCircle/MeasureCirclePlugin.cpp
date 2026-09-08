@@ -3,6 +3,7 @@
 #include "common/Logger.h"
 #include "core/deeplux/DataContract.h"
 
+#include <algorithm>
 #include <cmath>
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -13,26 +14,45 @@ namespace DeepLux {
 
 namespace {
 constexpr double kMaxGray = 255.0;
+// 阶7 批2 复核四轮（P1-1）：拟合设计矩阵严重病态/秩亏阈值（相对最小奇异值）
+constexpr double kFitConditionEps = 1e-9;
 
 bool fitCircleAlgebraic(const QVector<QPointF>& pts, double& cx, double& cy, double& r) {
     if (pts.size() < 3) {
         return false;
     }
 #ifdef DEEPLUX_HAS_OPENCV
-    cv::Mat A(pts.size(), 3, CV_64FC1);
-    cv::Mat B(pts.size(), 1, CV_64FC1);
-    for (int i = 0; i < pts.size(); ++i) {
-        const double x = pts[i].x();
-        const double y = pts[i].y();
+    // 阶7 批2 复核四轮（P1-1）：退化防护——DECOMP_SVD 对重复点/共线/秩亏点集
+    // 仍会"成功"并返回有限半径，产生虚假测量圆。先 epsilon 去重（唯一点 >= 3），
+    // 再显式检查设计矩阵奇异值：最小奇异值相对最大奇异值过小即失败关闭。
+    QVector<QPointF> uniq = pts;
+    std::sort(uniq.begin(), uniq.end(),
+              [](const QPointF& a, const QPointF& b) { return a.x() != b.x() ? a.x() < b.x() : a.y() < b.y(); });
+    uniq.erase(
+        std::unique(uniq.begin(), uniq.end(),
+                    [](const QPointF& a, const QPointF& b) { return std::hypot(a.x() - b.x(), a.y() - b.y()) < 1e-9; }),
+        uniq.end());
+    if (uniq.size() < 3) {
+        return false; // 重复点集：唯一点不足
+    }
+    cv::Mat A(uniq.size(), 3, CV_64FC1);
+    cv::Mat B(uniq.size(), 1, CV_64FC1);
+    for (int i = 0; i < uniq.size(); ++i) {
+        const double x = uniq[i].x();
+        const double y = uniq[i].y();
         A.at<double>(i, 0) = x;
         A.at<double>(i, 1) = y;
         A.at<double>(i, 2) = 1.0;
         B.at<double>(i, 0) = x * x + y * y;
     }
-    cv::Mat C;
-    if (!cv::solve(A, B, C, cv::DECOMP_SVD)) {
-        return false;
+    const cv::SVD svd(A);
+    const double sMax = svd.w.at<double>(0);
+    const double sMin = svd.w.at<double>(svd.w.rows - 1);
+    if (!(sMax > 0.0) || !(sMin > kFitConditionEps * sMax)) {
+        return false; // 秩亏（共线/重复）或严重病态
     }
+    cv::Mat C;
+    svd.backSubst(B, C);
     cx = C.at<double>(0, 0) / 2.0;
     cy = C.at<double>(1, 0) / 2.0;
     const double rs = cx * cx + cy * cy + C.at<double>(2, 0);

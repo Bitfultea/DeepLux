@@ -4,12 +4,13 @@
 
 namespace DeepLux {
 
-// 阶7 批2：边缘缺陷检测。对参考边缘拟合基准圆，参考点按 atan2 角序排序后
-// 逐射线卡钳实测边缘，偏差 = 实测半径 - 基准圆半径；失败射线保留为区域分隔
-// （最低成功数+覆盖率门禁，失败关闭），|偏差|>阈值 的同类连续射线环形合并为
-// 缺陷区域（极性翻转必切分）。输出选定极性区域数（defect_count/has_defect
+// 阶7 批2：边缘缺陷检测。对参考边缘拟合基准圆（退化点集——重复/共线/严重病态
+// ——失败关闭），参考点按 atan2 角序排序并按角度去重后逐射线卡钳实测边缘，
+// 偏差 = 实测半径 - 基准圆半径；最低成功数 + 角度覆盖率门禁（大角空洞不计入
+// 覆盖），失败射线与明显角度空洞均为区域分隔，|偏差|>阈值 的同类连续射线环形
+// 合并为缺陷区域（极性翻转必切分）。输出选定极性区域数（defect_count/has_defect
 // 恒一致）、凸/凹区域数、结构化区域表（defect_regions,Table：极性/原始索引/
-// 角度/射线数/偏差）与逐采样偏差统计。
+// 角度/wraps_zero/射线数/偏差）与逐采样偏差统计。
 class EdgeDefectDetectionPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")

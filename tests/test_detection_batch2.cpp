@@ -517,6 +517,136 @@ private slots:
         QVERIFY(polarities.contains(QStringLiteral("concave")));
     }
 
+    // 阶7 批2 复核四轮（P1-1）：重复点集不得拟合出虚假基准圆——唯一点 <3 失败关闭
+    void testEdgeDefectDuplicatePointsRejected() {
+        EdgeDefectDetectionPlugin plugin;
+        plugin.setParams(edgeParams(2.5, 10.0, true));
+        QVERIFY(plugin.initialize());
+        ImageData img = makeRingImage(200, 200, 80);
+
+        // 48 个点仅 2 个唯一坐标（DECOMP_SVD 对秩亏矩阵仍返回有限半径）
+        QVector<QPointF> twoUniq;
+        for (int i = 0; i < 24; ++i) {
+            twoUniq << QPointF(280, 200) << QPointF(200, 280);
+        }
+        ImageData in1 = img;
+        in1.setData("reference_edge", QVariant::fromValue(twoUniq));
+        QSignalSpy spy1(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData out1;
+        QVERIFY2(!plugin.execute(in1, out1), "2 unique points must fail closed");
+        QVERIFY2(spy1.count() >= 1 && spy1.first().at(0).toString().contains(QStringLiteral("拟合失败")),
+                 qPrintable(QString("error must be fit failure, got: %1")
+                                .arg(spy1.count() ? spy1.first().at(0).toString() : QString())));
+
+        // 全部点完全相同（唯一点 =1）
+        QVector<QPointF> oneUniq;
+        for (int i = 0; i < 48; ++i) {
+            oneUniq << QPointF(280, 200);
+        }
+        ImageData in2 = img;
+        in2.setData("reference_edge", QVariant::fromValue(oneUniq));
+        ImageData out2;
+        QVERIFY2(!plugin.execute(in2, out2), "1 unique point must fail closed");
+    }
+
+    // 阶7 批2 复核四轮（P1-1）：严格共线点集秩亏——不得拟合出虚假基准圆
+    void testEdgeDefectCollinearPointsRejected() {
+        EdgeDefectDetectionPlugin plugin;
+        plugin.setParams(edgeParams(2.5, 10.0, true));
+        QVERIFY(plugin.initialize());
+        QVector<QPointF> line;
+        for (int i = 0; i < 36; ++i) {
+            line << QPointF(100 + 4.0 * i, 200); // y=200 严格共线
+        }
+        ImageData img = makeRingImage(200, 200, 80);
+        img.setData("reference_edge", QVariant::fromValue(line));
+        QSignalSpy errSpy(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData out;
+        QVERIFY2(!plugin.execute(img, out), "collinear reference must fail closed");
+        QVERIFY2(errSpy.count() >= 1 && errSpy.first().at(0).toString().contains(QStringLiteral("拟合失败")),
+                 qPrintable(QString("error must be fit failure, got: %1")
+                                .arg(errSpy.count() ? errSpy.first().at(0).toString() : QString())));
+    }
+
+    // 阶7 批2 复核四轮（P1-2）：同方向重复点不得伪造覆盖率——72 个参考点聚在
+    // 0°/1°/2° 三个方向：角度去重后仅 3 条射线，角度覆盖 ≈2/360 < 50% → 失败关闭
+    // （旧"成功射线数/输入射线数"口径为 3/3=100% → 伪成功）。
+    void testEdgeDefectDuplicateDirectionCoverage() {
+        EdgeDefectDetectionPlugin plugin;
+        plugin.setParams(edgeParams(2.5, 10.0, true));
+        QVERIFY(plugin.initialize());
+        QVector<QPointF> cluster;
+        for (int i = 0; i < 72; ++i) {
+            const double t = (i % 3) * M_PI / 180.0;
+            cluster << QPointF(200 + 80 * std::cos(t), 200 + 80 * std::sin(t));
+        }
+        ImageData img = makeRingImage(200, 200, 80);
+        img.setData("reference_edge", QVariant::fromValue(cluster));
+        QSignalSpy errSpy(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData out;
+        QVERIFY2(!plugin.execute(img, out), "direction-clustered reference must fail closed");
+        QVERIFY2(errSpy.count() >= 1 && errSpy.first().at(0).toString().contains(QStringLiteral("覆盖率")),
+                 qPrintable(QString("error must be angular coverage gate, got: %1")
+                                .arg(errSpy.count() ? errSpy.first().at(0).toString() : QString())));
+    }
+
+    // 阶7 批2 复核四轮（P1-2）：明显角度空洞必须作为区域分隔——参考点覆盖
+    // [0,165]∪[255,355]（中间 90° 无参考射线），空洞两侧同极性凸出必须切分为
+    // 2 个区域（旧行为跨空洞视为相邻合并成 1 个）；角度覆盖 75% 通过门禁。
+    void testEdgeDefectAngularGapSeparatesRegions() {
+        QVector<QPointF> ref;
+        for (int a = 0; a <= 165; a += 5) {
+            const double t = a * M_PI / 180.0;
+            ref << QPointF(200 + 80 * std::cos(t), 200 + 80 * std::sin(t));
+        }
+        for (int a = 255; a <= 355; a += 5) {
+            const double t = a * M_PI / 180.0;
+            ref << QPointF(200 + 80 * std::cos(t), 200 + 80 * std::sin(t));
+        }
+        ImageData img =
+            makeSegmentRingImage(200, 200, {{{0, 159}, 80}, {{160, 165}, 86}, {{255, 260}, 86}, {{261, 355}, 80}});
+        img.setData("reference_edge", QVariant::fromValue(ref));
+        EdgeDefectDetectionPlugin plugin;
+        plugin.setParams(edgeParams(2.5, 10.0, true));
+        QVERIFY(plugin.initialize());
+        ImageData out;
+        QVERIFY2(plugin.execute(img, out), "gapped reference must succeed (angular coverage 75%)");
+        QCOMPARE(out.data("convex_count").toDouble(), 2.0);
+        QCOMPARE(out.data("defect_count").toDouble(), 2.0);
+        QVERIFY(out.data("has_defect").toBool());
+        const QVariantList rows = out.data("defect_regions").toList();
+        QCOMPARE(rows.size(), 2);
+        for (const QVariant& r : rows) {
+            QCOMPARE(r.toMap().value(QStringLiteral("polarity")).toString(), QStringLiteral("convex"));
+            QCOMPARE(r.toMap().value(QStringLiteral("sample_count")).toInt(), 2);
+            QCOMPARE(r.toMap().value(QStringLiteral("wraps_zero")).toBool(), false);
+        }
+    }
+
+    // 阶7 批2 复核四轮（P2-3）：跨 0° 区域——归一化角度不单调（350°→10°），
+    // wraps_zero 必须为 true，且整段跨零凸出为单一区域（5 条射线）。
+    void testEdgeDefectWrapsZeroRegion() {
+        ImageData img = makeSegmentRingImage(200, 200, {{{350, 359}, 86}, {{0, 10}, 86}, {{11, 349}, 80}});
+        img.setData("reference_edge", QVariant::fromValue(idealCircle(200, 200, 80.0)));
+        EdgeDefectDetectionPlugin plugin;
+        plugin.setParams(edgeParams(2.5, 10.0, true));
+        QVERIFY(plugin.initialize());
+        ImageData out;
+        QVERIFY2(plugin.execute(img, out), "wrapping bump must succeed");
+        QCOMPARE(out.data("convex_count").toDouble(), 1.0);
+        QCOMPARE(out.data("defect_count").toDouble(), 1.0);
+        const QVariantList rows = out.data("defect_regions").toList();
+        QCOMPARE(rows.size(), 1);
+        const QVariantMap row = rows.first().toMap();
+        QCOMPARE(row.value(QStringLiteral("polarity")).toString(), QStringLiteral("convex"));
+        QCOMPARE(row.value(QStringLiteral("sample_count")).toInt(), 5);
+        QCOMPARE(row.value(QStringLiteral("wraps_zero")).toBool(), true);
+        const double startDeg = row.value(QStringLiteral("start_angle_deg")).toDouble();
+        const double endDeg = row.value(QStringLiteral("end_angle_deg")).toDouble();
+        QVERIFY2(startDeg >= 345.0 && startDeg <= 355.0, qPrintable(QString("start ~350, got %1").arg(startDeg)));
+        QVERIFY2(endDeg >= 5.0 && endDeg <= 15.0, qPrintable(QString("end ~10, got %1").arg(endDeg)));
+    }
+
     // 阶7 批2 复核二轮（P1-2）：EdgeDefect searchLength=1 单点闭区间仍能提取边缘，
     // 与参考圆一致时无缺陷。
     void testEdgeDefectSearchLengthOneBoundary() {
