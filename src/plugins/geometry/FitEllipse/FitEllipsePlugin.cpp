@@ -2,6 +2,8 @@
 
 #include "common/Logger.h"
 
+#include <QJsonArray>
+#include <QJsonValue>
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -22,7 +24,9 @@ constexpr int kMaxRansacAttempts = 1000;
 // 验证与执行共用同一份快照，杜绝 toDouble()/toInt() 宽松转换假成功。
 bool parseParamsStrict(const QJsonObject& params, FitEllipsePlugin::ParsedParams& out, QString& error) {
     error.clear();
-    auto num = [&params, &error](const char* key, double& value, bool integer, double lo, double hiExclusive,
+    // 阶7 批1 复核六轮（P1-1）：包含式上限 d > hiInclusive 拒绝，与 metadata max 精确对齐
+    // （1e6+0.5 亦被拒绝）。
+    auto num = [&params, &error](const char* key, double& value, bool integer, double lo, double hiInclusive,
                                  const QString& msg) {
         const QJsonValue v = params[QLatin1String(key)];
         if (!v.isDouble()) { // JSON 整数亦为 isDouble==true；字符串/bool/缺失均拒绝
@@ -38,7 +42,7 @@ bool parseParamsStrict(const QJsonObject& params, FitEllipsePlugin::ParsedParams
             error = msg;
             return false;
         }
-        if (d < lo || d >= hiExclusive) {
+        if (d < lo || d > hiInclusive) {
             error = msg;
             return false;
         }
@@ -49,14 +53,14 @@ bool parseParamsStrict(const QJsonObject& params, FitEllipsePlugin::ParsedParams
     // （threshold[0,1e6]、iterations[1,1000]、minAxis/maxAxis[0.1,1e6]），
     // 避免 UI/工程文件/Agent 与运行期得到不同结果。
     constexpr double kMetaMax = 1e6;
-    if (!num("threshold", out.threshold, false, 0.0, kMetaMax + 1.0, QObject::tr("阈值必须为[0,1e6]有限数")))
+    if (!num("threshold", out.threshold, false, 0.0, kMetaMax, QObject::tr("阈值必须为[0,1e6]有限数")))
         return false;
-    if (!num("iterations", out.iterations, true, 1.0, static_cast<double>(kMaxRansacAttempts) + 1.0,
+    if (!num("iterations", out.iterations, true, 1.0, static_cast<double>(kMaxRansacAttempts),
              QObject::tr("迭代次数必须为[1,1000]的整数")))
         return false;
-    if (!num("minAxis", out.minAxis, false, 0.1, kMetaMax + 1.0, QObject::tr("最小半轴必须为[0.1,1e6]有限数")))
+    if (!num("minAxis", out.minAxis, false, 0.1, kMetaMax, QObject::tr("最小半轴必须为[0.1,1e6]有限数")))
         return false;
-    if (!num("maxAxis", out.maxAxis, false, 0.1, kMetaMax + 1.0, QObject::tr("最大半轴必须为[0.1,1e6]有限数")))
+    if (!num("maxAxis", out.maxAxis, false, 0.1, kMetaMax, QObject::tr("最大半轴必须为[0.1,1e6]有限数")))
         return false;
     if (out.maxAxis <= out.minAxis) {
         error = QObject::tr("最大半轴必须大于最小半轴");
@@ -226,18 +230,73 @@ bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
         emit errorOccurred(tr("未提供拟合点集，请先使用边缘/轮廓提取模块"));
         return false;
     }
+    // 阶7 批1 复核六轮（P1-3）：完整支持 PointSet2D 两种载荷——QVector<QPointF> 与
+    // [[x,y],...] 二元素数值列表（QVariantList{0,1}.canConvert<QPointF>()==false，须显式解析）。
+    // 数值提取：兼容 double/int/QJsonValue（ImageData 元数据可能存为 JSON 值）
+    auto numOf = [](const QVariant& x, double& d) {
+        if (x.canConvert<double>()) {
+            d = x.toDouble();
+            return true;
+        }
+        if (x.userType() == QMetaType::QJsonValue) {
+            d = x.toJsonValue().toDouble();
+            return true;
+        }
+        return false;
+    };
+    auto parsePoint = [&numOf](const QVariant& v, QPointF& out) {
+        if (v.canConvert<QPointF>()) {
+            out = v.toPointF();
+            return true;
+        }
+        QVariantList list = v.toList();
+        if (list.isEmpty() && v.userType() == QMetaType::QJsonArray) {
+            list = v.toJsonArray().toVariantList();
+        }
+        if (list.isEmpty() && v.userType() == QMetaType::QJsonValue && v.toJsonValue().isArray()) {
+            list = v.toJsonValue().toArray().toVariantList();
+        }
+        double x = 0.0;
+        double y = 0.0;
+        if (list.size() == 2 && numOf(list[0], x) && numOf(list[1], y)) {
+            out = QPointF(x, y);
+            return true;
+        }
+        return false;
+    };
     QVector<QPointF> points;
-    if (pointsVar.canConvert<QVector<QPointF>>()) {
-        points = pointsVar.value<QVector<QPointF>>();
-    } else {
-        const QList<QVariant> pointsList = pointsVar.toList();
-        for (const QVariant& v : pointsList) {
-            if (!v.canConvert<QPointF>()) {
+    QList<QVariant> asList = pointsVar.toList();
+    if (asList.isEmpty() && pointsVar.userType() == QMetaType::QJsonArray) {
+        asList = pointsVar.toJsonArray().toVariantList();
+    }
+    // 扁平 [x0,y0,x1,y1,...] 偶数长度 double 列表按对解析（ImageData 元数据可能扁平化）
+    if (!asList.isEmpty() && asList.size() % 2 == 0 && asList.first().canConvert<double>()) {
+        bool allDouble = true;
+        for (const QVariant& v : asList) {
+            if (!v.canConvert<double>()) {
+                allDouble = false;
+                break;
+            }
+        }
+        if (allDouble) {
+            for (int i = 0; i + 1 < asList.size(); i += 2) {
+                points.append(QPointF(asList[i].toDouble(), asList[i + 1].toDouble()));
+            }
+            asList.clear();
+        }
+    }
+    if (!asList.isEmpty()) {
+        // [[x,y],...] 列表载荷：逐元素解析二元素数值列表
+        for (const QVariant& v : asList) {
+            QPointF p;
+            if (!parsePoint(v, p)) {
                 emit errorOccurred(tr("拟合点集包含非法点"));
                 return false;
             }
-            points.append(v.toPointF());
+            points.append(p);
         }
+    } else if (pointsVar.canConvert<QVector<QPointF>>()) {
+        points = pointsVar.value<QVector<QPointF>>();
     }
     // 阶7 批1 复核五轮（P1-3）：插件输入边界逐点拒绝 NaN/Inf，
     // 避免非有限坐标使排序比较器违反严格弱序（std::sort UB）。

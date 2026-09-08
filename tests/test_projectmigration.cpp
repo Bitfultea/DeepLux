@@ -76,11 +76,10 @@ void TestProjectMigration::testMappingConclusionConsistency() {
         QCOMPARE(match.captured(1).toInt(), jsonCount.value(key, 0));
     }
 
-    // 阶7 批1 复核四轮：FitEllipse 实现后不得再列为 missing（matchKind=direct）。
-    const QString fitEllipseMissingRow =
-        QStringLiteral("| FitEllipse | `02Plugins/004几何关系/Plugin.FitEllipse` | - | missing |");
-    QVERIFY2(!md.contains(fitEllipseMissingRow), "FitEllipse must not be listed as missing (legacy-comparison)");
-    QVERIFY2(!generatedMd.contains(fitEllipseMissingRow), "FitEllipse must not be listed as missing (regenerated)");
+    // 阶7 批1 复核六轮（P2-4）：直接断言 FitEllipse 存在于冻结范围表（rebuild/P1），
+    // 而非仅检查其不在 missing 表（legacy-comparison.md 无该表格格式，字符串检查无意义）。
+    QVERIFY2(generatedMd.contains(QStringLiteral("| FitEllipse | 004几何关系 | rebuild | P1 |")),
+             "FitEllipse must appear in frozen decision section as rebuild/P1");
 }
 
 void TestProjectMigration::testMigrationDecisionConsistency() {

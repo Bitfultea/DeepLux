@@ -267,36 +267,65 @@ private slots:
         QVERIFY2(badPlugin.execute(goodInput, okOut), "legal params must succeed on same points");
     }
 
-    // 阶7 批1 复核五轮（P1-3）：NaN/±Inf 坐标在输入边界被拒绝（排序严格弱序）
+    // 阶7 批1 复核六轮（P1-3/P2-2）：使用确定可拟合的椭圆点集，分别注入 NaN/+Inf/-Inf
+    // 断言失败（非因几何退化），最后恢复有限点断言成功。
     void testRejectsNonFinitePoints() {
         FitEllipsePlugin plugin;
         QVERIFY(plugin.initialize());
+        const auto goodPoints = []() {
+            QVector<QPointF> pts;
+            for (int i = 0; i < 24; ++i) {
+                const double t = i * M_PI / 12.0;
+                pts << QPointF(150 + 60 * std::cos(t), 120 + 30 * std::sin(t));
+            }
+            return pts;
+        };
         const double nan = std::numeric_limits<double>::quiet_NaN();
         const double inf = std::numeric_limits<double>::infinity();
         for (const double bad : {nan, inf, -inf}) {
-            QVector<QPointF> points;
-            for (int i = 0; i < 6; ++i)
-                points << QPointF(100 + i, 100 + i);
-            points[3] = QPointF(bad, 100.0);
+            QVector<QPointF> points = goodPoints();
+            points[3] = QPointF(bad, 120.0);
             ImageData input;
             input.setData("fit_points", QVariant::fromValue(points));
             ImageData output;
             QVERIFY2(!plugin.execute(input, output), "non-finite coordinate must be rejected");
         }
+        // 恢复有限点必须成功（证明失败确因非有限坐标而非点集本身）
+        ImageData goodInput;
+        goodInput.setData("fit_points", QVariant::fromValue(goodPoints()));
+        ImageData goodOut;
+        QVERIFY2(plugin.execute(goodInput, goodOut), "finite ellipse points must succeed");
     }
 
-    // 阶7 批1 复核五轮（P2-4）：运行期参数边界与 metadata 一致
+    // 阶7 批1 复核六轮（P1-3）：完整支持 [[x,y],...] 二元素数值列表载荷并直接执行
+    void testPointSet2DListPayload() {
+        FitEllipsePlugin plugin;
+        QVERIFY(plugin.initialize());
+        QVariantList list;
+        for (int i = 0; i < 24; ++i) {
+            const double t = i * M_PI / 12.0;
+            list.append(QVariantList{150 + 60 * std::cos(t), 120 + 30 * std::sin(t)});
+        }
+        ImageData input;
+        input.setData("fit_points", list);
+        ImageData output;
+        QVERIFY2(plugin.execute(input, output), "list-of-[x,y] payload must be accepted");
+        QVERIFY2(std::abs(output.data("ellipse_major_r").toDouble() - 60) < 3.0, "major axis ~60");
+    }
+
+    // 阶7 批1 复核五轮（P2-4）+ 六轮（P1-1）：运行期边界与 metadata 一致（包含式上限）
     void testParamBoundsMatchMetadata() {
         FitEllipsePlugin plugin;
         QString error;
         const auto P = [](double th, double it, double mn, double mx) {
             return QJsonObject{{"threshold", th}, {"iterations", it}, {"minAxis", mn}, {"maxAxis", mx}};
         };
-        QVERIFY(plugin.validateParams(P(1e6, 1000, 0.1, 1e6), error));      // 边界内
-        QVERIFY(!plugin.validateParams(P(1e6 + 1, 1000, 0.1, 1e6), error)); // threshold 超上限
-        QVERIFY(!plugin.validateParams(P(2.0, 1001, 0.1, 1e6), error));     // iterations 超上限
-        QVERIFY(!plugin.validateParams(P(2.0, 1000, 0.09, 1e6), error));    // minAxis 低于下限
-        QVERIFY(!plugin.validateParams(P(2.0, 1000, 0.1, 1e6 + 1), error)); // maxAxis 超上限
+        QVERIFY(plugin.validateParams(P(1e6, 1000, 0.1, 1e6), error));        // 边界内（含上限）
+        QVERIFY(!plugin.validateParams(P(1000000.5, 1000, 0.1, 1e6), error)); // threshold 1e6+0.5 超上限
+        QVERIFY(!plugin.validateParams(P(1e6 + 1, 1000, 0.1, 1e6), error));   // threshold 超上限
+        QVERIFY(!plugin.validateParams(P(2.0, 1001, 0.1, 1e6), error));       // iterations 超上限
+        QVERIFY(!plugin.validateParams(P(2.0, 1000, 0.09, 1e6), error));      // minAxis 低于下限
+        QVERIFY(!plugin.validateParams(P(2.0, 1000, 0.1, 1000000.5), error)); // maxAxis 1e6+0.5 超上限
     }
 
     void testPluginInfo() {
