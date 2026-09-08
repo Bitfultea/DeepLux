@@ -1,6 +1,7 @@
 #include "FitEllipsePlugin.h"
 
 #include "common/Logger.h"
+#include "core/deeplux/DataContract.h"
 
 #include <QJsonArray>
 #include <QJsonValue>
@@ -266,15 +267,17 @@ bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
         }
         return false; // 扁平数字/字符串/非二元素均拒绝
     };
+    // 阶7 批1 复核九轮（P1-1）：格式门禁直接复用核心 portValueMatchesType(PointSet2D)，
+    // 不维护第二份契约；空列表为核心合法格式，交由下方 points.size()<5 报"点数量不足"。
+    if (!portValueMatchesType(pointsVar, DataType::PointSet2D)) {
+        emit errorOccurred(tr("拟合点集格式非法（须为 QVector<QPointF> 或 [[x,y],...]）"));
+        return false;
+    }
     QVector<QPointF> points;
     if (pointsVar.canConvert<QVector<QPointF>>()) {
         points = pointsVar.value<QVector<QPointF>>();
-    } else if (pointsVar.type() == QVariant::List) {
+    } else {
         const QVariantList asList = pointsVar.toList();
-        if (asList.isEmpty()) {
-            emit errorOccurred(tr("拟合点集格式非法（须为 QVector<QPointF> 或 [[x,y],...]）"));
-            return false;
-        }
         for (const QVariant& v : asList) {
             QPointF p;
             if (!parsePoint(v, p)) {
@@ -283,9 +286,6 @@ bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
             }
             points.append(p);
         }
-    } else {
-        emit errorOccurred(tr("拟合点集格式非法（须为 QVector<QPointF> 或 [[x,y],...]）"));
-        return false;
     }
     // 阶7 批1 复核五轮（P1-3）：插件输入边界逐点拒绝 NaN/Inf，
     // 避免非有限坐标使排序比较器违反严格弱序（std::sort UB）。

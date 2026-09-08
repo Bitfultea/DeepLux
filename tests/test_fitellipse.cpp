@@ -307,8 +307,8 @@ private slots:
         QVERIFY2(plugin.execute(goodInput, goodOut), "finite ellipse points must succeed");
     }
 
-    // 阶7 批1 复核八轮（P1-1）：插件接受与否必须与核心契约
-    // portValueMatchesType(PointSet2D) 完全一致（ImageData 可能归一化载荷形态）。
+    // 阶7 批1 复核九轮（P2-2）：PointSet2D 契约边界全覆盖——核心接受形态插件须成功，
+    // 核心拒绝形态插件须报格式错误；空列表核心接受格式、插件报"点数量不足"。
     void testPointSet2DListPayload() {
         FitEllipsePlugin plugin;
         QVERIFY(plugin.initialize());
@@ -320,27 +320,84 @@ private slots:
             }
             return pts;
         };
-        // 嵌套 QVariantList（核心契约声明形态）：插件判定须与核心契约一致
+        // 嵌套数值列表 [[x,y],...]：插件判定须与核心契约一致（ImageData 原样存储，
+        // 核心对存储形态的判定为准）
         QVariantList nested;
         for (const QPointF& p : ellipse())
             nested.append(QVariantList{p.x(), p.y()});
         ImageData nestedInput;
         nestedInput.setData("fit_points", nested);
-        const QVariant nestedStored = nestedInput.data("fit_points");
-        const bool nestedCore = portValueMatchesType(nestedStored, DataType::PointSet2D);
+        const bool nestedCore = portValueMatchesType(nestedInput.data("fit_points"), DataType::PointSet2D);
         ImageData nestedOut;
         const bool nestedOk = plugin.execute(nestedInput, nestedOut);
         QCOMPARE(nestedOk, nestedCore);
         if (nestedOk) {
             QVERIFY2(std::abs(nestedOut.data("ellipse_major_r").toDouble() - 60) < 3.0, "major axis ~60");
         }
-        // 引擎规范形态 QVector<QPointF>：核心契约与插件均须接受且拟合成功
+
+        // QVector<QPointF>：核心接受，插件成功
         ImageData canonInput;
         canonInput.setData("fit_points", QVariant::fromValue(ellipse()));
         QVERIFY(portValueMatchesType(canonInput.data("fit_points"), DataType::PointSet2D));
         ImageData canonOut;
-        QVERIFY2(plugin.execute(canonInput, canonOut), "canonical QVector<QPointF> must be accepted");
-        QVERIFY2(std::abs(canonOut.data("ellipse_major_r").toDouble() - 60) < 3.0, "major axis ~60");
+        QVERIFY2(plugin.execute(canonInput, canonOut), "QVector<QPointF> must be accepted");
+
+        // QVariantList<QPointF>：核心接受，插件成功
+        QVariantList vp;
+        for (const QPointF& p : ellipse())
+            vp.append(QVariant::fromValue(p));
+        ImageData vpInput;
+        vpInput.setData("fit_points", vp);
+        QVERIFY(portValueMatchesType(vpInput.data("fit_points"), DataType::PointSet2D));
+        ImageData vpOut;
+        QVERIFY2(plugin.execute(vpInput, vpOut), "QVariantList<QPointF> must be accepted");
+
+        // 空列表：核心接受格式，插件报"点数量不足"
+        ImageData emptyInput;
+        emptyInput.setData("fit_points", QVariantList{});
+        QVERIFY(portValueMatchesType(emptyInput.data("fit_points"), DataType::PointSet2D));
+        QSignalSpy emptySpy(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData emptyOut;
+        QVERIFY2(!plugin.execute(emptyInput, emptyOut), "empty list must fail on point count");
+        QVERIFY2(emptySpy.count() >= 1 && emptySpy.first().at(0).toString().contains(QStringLiteral("点数量不足")),
+                 qPrintable(QString("empty list error must be point-count, got: %1")
+                                .arg(emptySpy.count() ? emptySpy.first().at(0).toString() : QString())));
+
+        // Float 元素：核心拒绝，插件报格式错误
+        QVariantList floatList;
+        floatList.append(QVariantList{QVariant(1.0f), QVariant(2.0f)});
+        ImageData floatInput;
+        floatInput.setData("fit_points", floatList);
+        QVERIFY(!portValueMatchesType(floatInput.data("fit_points"), DataType::PointSet2D));
+        QSignalSpy floatSpy(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData floatOut;
+        QVERIFY2(!plugin.execute(floatInput, floatOut), "Float element must be rejected");
+        QVERIFY2(floatSpy.count() >= 1 && floatSpy.first().at(0).toString().contains(QStringLiteral("格式非法")),
+                 "Float element error must be format error");
+
+        // QJsonValue 元素：核心拒绝，插件报格式错误
+        QVariantList jvList;
+        jvList.append(QVariantList{QJsonValue(1.0), QJsonValue(2.0)});
+        ImageData jvInput;
+        jvInput.setData("fit_points", jvList);
+        QVERIFY(!portValueMatchesType(jvInput.data("fit_points"), DataType::PointSet2D));
+        QSignalSpy jvSpy(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData jvOut;
+        QVERIFY2(!plugin.execute(jvInput, jvOut), "QJsonValue element must be rejected");
+        QVERIFY2(jvSpy.count() >= 1 && jvSpy.first().at(0).toString().contains(QStringLiteral("格式非法")),
+                 "QJsonValue element error must be format error");
+
+        // 顶层 QJsonArray：核心拒绝，插件报格式错误
+        QJsonArray topJson;
+        topJson.append(QJsonArray{1.0, 2.0});
+        ImageData topInput;
+        topInput.setData("fit_points", topJson);
+        QVERIFY(!portValueMatchesType(topInput.data("fit_points"), DataType::PointSet2D));
+        QSignalSpy topSpy(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData topOut;
+        QVERIFY2(!plugin.execute(topInput, topOut), "top-level QJsonArray must be rejected");
+        QVERIFY2(topSpy.count() >= 1 && topSpy.first().at(0).toString().contains(QStringLiteral("格式非法")),
+                 "top-level QJsonArray error must be format error");
     }
 
     // 阶7 批1 复核八轮（P1-2）：扁平/字符串用可拟合椭圆构造，QSignalSpy 断言错误来自
