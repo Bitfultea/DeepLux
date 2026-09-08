@@ -230,29 +230,31 @@ bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
         emit errorOccurred(tr("未提供拟合点集，请先使用边缘/轮廓提取模块"));
         return false;
     }
-    // 阶7 批1 复核六轮（P1-3）：完整支持 PointSet2D 两种载荷——QVector<QPointF> 与
-    // [[x,y],...] 二元素数值列表（QVariantList{0,1}.canConvert<QPointF>()==false，须显式解析）。
-    // 数值提取：兼容 double/int/QJsonValue（ImageData 元数据可能存为 JSON 值）
+    // 阶7 批1 复核七轮（P1-1）：仅支持核心契约两种 PointSet2D 载荷
+    // （QVector<QPointF> 与 [[x,y],...]）；数值用明确 QVariant 类型判断（拒绝字符串），
+    // 删除扁平 [x0,y0,...] 与未声明兼容路径（与 DataContract/运行引擎一致）。
     auto numOf = [](const QVariant& x, double& d) {
-        if (x.canConvert<double>()) {
+        switch (x.userType()) {
+        case QMetaType::Double:
+        case QMetaType::Float:
+        case QMetaType::Int:
+        case QMetaType::UInt:
+        case QMetaType::LongLong:
+        case QMetaType::ULongLong:
             d = x.toDouble();
             return true;
+        case QMetaType::QJsonValue:
+            if (x.toJsonValue().isDouble()) {
+                d = x.toJsonValue().toDouble();
+                return true;
+            }
+            return false;
+        default:
+            return false; // 字符串/bool 等一律拒绝
         }
-        if (x.userType() == QMetaType::QJsonValue) {
-            d = x.toJsonValue().toDouble();
-            return true;
-        }
-        return false;
     };
     auto parsePoint = [&numOf](const QVariant& v, QPointF& out) {
-        if (v.canConvert<QPointF>()) {
-            out = v.toPointF();
-            return true;
-        }
         QVariantList list = v.toList();
-        if (list.isEmpty() && v.userType() == QMetaType::QJsonArray) {
-            list = v.toJsonArray().toVariantList();
-        }
         if (list.isEmpty() && v.userType() == QMetaType::QJsonValue && v.toJsonValue().isArray()) {
             list = v.toJsonValue().toArray().toVariantList();
         }
@@ -262,31 +264,20 @@ bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
             out = QPointF(x, y);
             return true;
         }
-        return false;
+        return false; // 扁平数字/字符串/非二元素均拒绝
     };
     QVector<QPointF> points;
-    QList<QVariant> asList = pointsVar.toList();
-    if (asList.isEmpty() && pointsVar.userType() == QMetaType::QJsonArray) {
-        asList = pointsVar.toJsonArray().toVariantList();
-    }
-    // 扁平 [x0,y0,x1,y1,...] 偶数长度 double 列表按对解析（ImageData 元数据可能扁平化）
-    if (!asList.isEmpty() && asList.size() % 2 == 0 && asList.first().canConvert<double>()) {
-        bool allDouble = true;
-        for (const QVariant& v : asList) {
-            if (!v.canConvert<double>()) {
-                allDouble = false;
-                break;
-            }
+    if (pointsVar.canConvert<QVector<QPointF>>()) {
+        points = pointsVar.value<QVector<QPointF>>();
+    } else {
+        QList<QVariant> asList = pointsVar.toList();
+        if (asList.isEmpty() && pointsVar.userType() == QMetaType::QJsonArray) {
+            asList = pointsVar.toJsonArray().toVariantList();
         }
-        if (allDouble) {
-            for (int i = 0; i + 1 < asList.size(); i += 2) {
-                points.append(QPointF(asList[i].toDouble(), asList[i + 1].toDouble()));
-            }
-            asList.clear();
+        if (asList.isEmpty()) {
+            emit errorOccurred(tr("拟合点集格式非法（须为 QVector<QPointF> 或 [[x,y],...]）"));
+            return false;
         }
-    }
-    if (!asList.isEmpty()) {
-        // [[x,y],...] 列表载荷：逐元素解析二元素数值列表
         for (const QVariant& v : asList) {
             QPointF p;
             if (!parsePoint(v, p)) {
@@ -295,8 +286,6 @@ bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
             }
             points.append(p);
         }
-    } else if (pointsVar.canConvert<QVector<QPointF>>()) {
-        points = pointsVar.value<QVector<QPointF>>();
     }
     // 阶7 批1 复核五轮（P1-3）：插件输入边界逐点拒绝 NaN/Inf，
     // 避免非有限坐标使排序比较器违反严格弱序（std::sort UB）。

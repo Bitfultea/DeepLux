@@ -9,6 +9,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
 #include <cmath>
@@ -288,7 +290,14 @@ private slots:
             ImageData input;
             input.setData("fit_points", QVariant::fromValue(points));
             ImageData output;
+            // 阶7 批1 复核七轮（P1-2）：QSignalSpy 断言错误确为"非有限坐标"，
+            // 确保删除输入防护后测试变红（而非因几何退化偶然失败）。
+            QSignalSpy errSpy(&plugin, &DeepLux::IModule::errorOccurred);
             QVERIFY2(!plugin.execute(input, output), "non-finite coordinate must be rejected");
+            QVERIFY2(errSpy.count() >= 1, "must emit error for non-finite coordinate");
+            QVERIFY2(
+                errSpy.first().at(0).toString().contains(QStringLiteral("非有限坐标")),
+                qPrintable(QString("error must be non-finite guard, got: %1").arg(errSpy.first().at(0).toString())));
         }
         // 恢复有限点必须成功（证明失败确因非有限坐标而非点集本身）
         ImageData goodInput;
@@ -297,20 +306,42 @@ private slots:
         QVERIFY2(plugin.execute(goodInput, goodOut), "finite ellipse points must succeed");
     }
 
-    // 阶7 批1 复核六轮（P1-3）：完整支持 [[x,y],...] 二元素数值列表载荷并直接执行
+    // 阶7 批1 复核六轮（P1-3）：支持核心契约 [[x,y],...] 列表载荷（QJsonArray 形式）并直接执行
     void testPointSet2DListPayload() {
         FitEllipsePlugin plugin;
         QVERIFY(plugin.initialize());
-        QVariantList list;
+        QJsonArray list;
         for (int i = 0; i < 24; ++i) {
             const double t = i * M_PI / 12.0;
-            list.append(QVariantList{150 + 60 * std::cos(t), 120 + 30 * std::sin(t)});
+            list.append(QJsonArray{150 + 60 * std::cos(t), 120 + 30 * std::sin(t)});
         }
         ImageData input;
         input.setData("fit_points", list);
         ImageData output;
         QVERIFY2(plugin.execute(input, output), "list-of-[x,y] payload must be accepted");
         QVERIFY2(std::abs(output.data("ellipse_major_r").toDouble() - 60) < 3.0, "major axis ~60");
+    }
+
+    // 阶7 批1 复核七轮（P1-1）：扁平 [x0,y0,...] 与字符串坐标必须失败（核心契约仅两格式）
+    void testRejectsFlatAndStringCoords() {
+        FitEllipsePlugin plugin;
+        QVERIFY(plugin.initialize());
+        // 扁平 double 列表（非 [[x,y],...]）必须拒绝
+        QVariantList flat;
+        for (int i = 0; i < 12; ++i)
+            flat << double(100 + i) << double(100 + i);
+        ImageData flatInput;
+        flatInput.setData("fit_points", flat);
+        ImageData out1;
+        QVERIFY2(!plugin.execute(flatInput, out1), "flat [x0,y0,...] list must be rejected");
+        // 字符串坐标必须拒绝（不得被宽松转换为 0）
+        QJsonArray strList;
+        for (int i = 0; i < 6; ++i)
+            strList.append(QJsonArray{QStringLiteral("not-a-number"), 100.0});
+        ImageData strInput;
+        strInput.setData("fit_points", strList);
+        ImageData out2;
+        QVERIFY2(!plugin.execute(strInput, out2), "string coordinates must be rejected");
     }
 
     // 阶7 批1 复核五轮（P2-4）+ 六轮（P1-1）：运行期边界与 metadata 一致（包含式上限）
