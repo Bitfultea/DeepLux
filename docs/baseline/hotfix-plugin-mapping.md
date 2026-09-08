@@ -24,8 +24,8 @@
 | 审核结论 | 数量 | 含义 |
 | --- | ---: | --- |
 | equivalent | 0 | 已证明与旧版能力等价（需旧版参数/端口/结果对照） |
-| intentionally_changed | 15 | 已确认采用不同于旧版的契约或行为 |
-| partial | 34 | 当前存在候选实现，旧版等价未证明 |
+| intentionally_changed | 13 | 已确认采用不同于旧版的契约或行为 |
+| partial | 36 | 当前存在候选实现，旧版等价未证明 |
 | unverified | 4 | 依赖硬件/SDK，行为未验证 |
 | not_equivalent | 0 | 不等价 |
 

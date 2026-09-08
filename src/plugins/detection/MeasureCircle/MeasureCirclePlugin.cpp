@@ -106,12 +106,14 @@ bool MeasureCirclePlugin::doValidateParams(const QJsonObject& params, QString& e
 
 bool MeasureCirclePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
+    // 阶7 批2 复核（P1-3）：只取一次参数快照，验证与执行复用同一快照，
+    // 避免并发 setParam 使执行用未经验证的新参数。
+    const QJsonObject params = currentParams();
     QString perr;
-    if (!doValidateParams(currentParams(), perr)) {
+    if (!doValidateParams(params, perr)) {
         emit errorOccurred(perr);
         return false;
     }
-    const QJsonObject params = currentParams();
     const double cx0 = params["initialCenterX"].toDouble();
     const double cy0 = params["initialCenterY"].toDouble();
     const double r0 = params["initialRadius"].toDouble();
@@ -121,15 +123,25 @@ bool MeasureCirclePlugin::process(const ImageData& input, ImageData& output) {
     const double exclusionRadius = params["exclusionRadius"].toDouble();
 
 #ifdef DEEPLUX_HAS_OPENCV
-    cv::Mat gray = input.toMat();
-    if (gray.empty()) {
+    cv::Mat src = input.toMat();
+    if (src.empty()) {
         emit errorOccurred(tr("输入图像为空"));
         return false;
     }
-    if (gray.channels() > 1) {
-        cv::cvtColor(gray, gray, cv::COLOR_BGR2GRAY);
+    // 阶7 批2 复核（P1-6）：支持 1/3/4 通道；非 8 位归一化到 0..255；2 通道明确失败
+    cv::Mat gray;
+    if (src.channels() == 2) {
+        emit errorOccurred(tr("不支持 2 通道图像"));
+        return false;
     }
-    gray.convertTo(gray, CV_8UC1);
+    if (src.channels() == 1) {
+        gray = src;
+    } else {
+        cv::cvtColor(src, gray, src.channels() == 4 ? cv::COLOR_BGRA2GRAY : cv::COLOR_BGR2GRAY);
+    }
+    if (gray.depth() != CV_8U) {
+        cv::normalize(gray, gray, 0, 255, cv::NORM_MINMAX, CV_8UC1);
+    }
 
     auto intensityAt = [&gray](double x, double y, double& v) {
         const int xi = cvRound(x);
@@ -141,7 +153,7 @@ bool MeasureCirclePlugin::process(const ImageData& input, ImageData& output) {
         return true;
     };
 
-    // 径向卡钳：每个角度沿半径搜索梯度峰值 >= 阈值的边缘点
+    // 径向卡钳：每个角度沿半径搜索梯度峰值 > 阈值（严格大于，零梯度不算边缘）的边缘点
     QVector<QPointF> edgePoints;
     for (int i = 0; i < measureCount; ++i) {
         const double ang = 2.0 * M_PI * i / measureCount;
@@ -151,7 +163,8 @@ bool MeasureCirclePlugin::process(const ImageData& input, ImageData& output) {
         double bestGrad = -1.0;
         const double rStart = qMax(1.0, r0 - searchLength);
         const double rEnd = r0 + searchLength;
-        for (double r = rStart + 1.0; r < rEnd - 1.0; r += 1.0) {
+        // 阶7 批2 复核（P1-2）：闭区间 [rStart+1, rEnd-1]，searchLength=1 时仍有单点搜索
+        for (double r = rStart + 1.0; r <= rEnd - 1.0; r += 1.0) {
             double im = 0.0;
             double ip = 0.0;
             if (!intensityAt(cx0 + (r - 1) * dx, cy0 + (r - 1) * dy, im))
@@ -159,7 +172,7 @@ bool MeasureCirclePlugin::process(const ImageData& input, ImageData& output) {
             if (!intensityAt(cx0 + (r + 1) * dx, cy0 + (r + 1) * dy, ip))
                 continue;
             const double grad = std::abs(ip - im);
-            if (grad >= threshold && grad > bestGrad) {
+            if (grad > threshold && grad > bestGrad) {
                 bestGrad = grad;
                 bestR = r;
             }

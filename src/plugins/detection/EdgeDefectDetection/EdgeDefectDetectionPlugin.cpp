@@ -3,6 +3,7 @@
 #include "common/Logger.h"
 #include "core/deeplux/DataContract.h"
 
+#include <QStringList>
 #include <cmath>
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -91,12 +92,13 @@ bool EdgeDefectDetectionPlugin::doValidateParams(const QJsonObject& params, QStr
 
 bool EdgeDefectDetectionPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
+    // 阶7 批2 复核（P1-3）：只取一次参数快照，验证与执行复用同一快照。
+    const QJsonObject params = currentParams();
     QString perr;
-    if (!doValidateParams(currentParams(), perr)) {
+    if (!doValidateParams(params, perr)) {
         emit errorOccurred(perr);
         return false;
     }
-    const QJsonObject params = currentParams();
     const double threshold = params["threshold"].toDouble();
     const double searchLength = params["searchLength"].toDouble();
     const bool isConvex = params["isConvex"].toBool();
@@ -135,15 +137,25 @@ bool EdgeDefectDetectionPlugin::process(const ImageData& input, ImageData& outpu
     }
 
 #ifdef DEEPLUX_HAS_OPENCV
-    cv::Mat gray = input.toMat();
-    if (gray.empty()) {
+    cv::Mat src = input.toMat();
+    if (src.empty()) {
         emit errorOccurred(tr("输入图像为空"));
         return false;
     }
-    if (gray.channels() > 1) {
-        cv::cvtColor(gray, gray, cv::COLOR_BGR2GRAY);
+    // 阶7 批2 复核（P1-6）：支持 1/3/4 通道；非 8 位归一化到 0..255；2 通道明确失败
+    cv::Mat gray;
+    if (src.channels() == 2) {
+        emit errorOccurred(tr("不支持 2 通道图像"));
+        return false;
     }
-    gray.convertTo(gray, CV_8UC1);
+    if (src.channels() == 1) {
+        gray = src;
+    } else {
+        cv::cvtColor(src, gray, src.channels() == 4 ? cv::COLOR_BGRA2GRAY : cv::COLOR_BGR2GRAY);
+    }
+    if (gray.depth() != CV_8U) {
+        cv::normalize(gray, gray, 0, 255, cv::NORM_MINMAX, CV_8UC1);
+    }
     auto intensityAt = [&gray](double x, double y, double& v) {
         const int xi = cvRound(x);
         const int yi = cvRound(y);
@@ -154,22 +166,25 @@ bool EdgeDefectDetectionPlugin::process(const ImageData& input, ImageData& outpu
         return true;
     };
 
-    // 沿每个参考点方向卡钳实测边缘半径，偏差 = 实测半径 - 参考半径
+    // 阶7 批2 复核（P1-4）：沿每个参考点方向卡钳实测边缘半径；搜索以拟合基准圆半径
+    // baseR 为中心，偏差 = 实测半径 - baseR（基准圆是唯一的比较基准，不再使用
+    // 各参考点自身半径，否则参考边缘的噪声会抵消实测偏差）。
     QVector<double> deviations;
     for (const QPointF& p : refPoints) {
         const double dx = p.x() - cx;
         const double dy = p.y() - cy;
-        const double refR = std::hypot(dx, dy);
-        if (refR <= 0.0) {
+        const double dirR = std::hypot(dx, dy);
+        if (dirR <= 0.0) {
             continue;
         }
-        const double ux = dx / refR;
-        const double uy = dy / refR;
+        const double ux = dx / dirR;
+        const double uy = dy / dirR;
         double bestR = -1.0;
         double bestGrad = -1.0;
-        const double rStart = qMax(1.0, refR - searchLength);
-        const double rEnd = refR + searchLength;
-        for (double r = rStart + 1.0; r < rEnd - 1.0; r += 1.0) {
+        const double rStart = qMax(1.0, baseR - searchLength);
+        const double rEnd = baseR + searchLength;
+        // 阶7 批2 复核（P1-2）：闭区间 [rStart+1, rEnd-1]，searchLength=1 时仍有单点搜索
+        for (double r = rStart + 1.0; r <= rEnd - 1.0; r += 1.0) {
             double im = 0.0;
             double ip = 0.0;
             if (!intensityAt(cx + (r - 1) * ux, cy + (r - 1) * uy, im))
@@ -177,13 +192,14 @@ bool EdgeDefectDetectionPlugin::process(const ImageData& input, ImageData& outpu
             if (!intensityAt(cx + (r + 1) * ux, cy + (r + 1) * uy, ip))
                 continue;
             const double grad = std::abs(ip - im);
-            if (grad >= kEdgeGradient && grad > bestGrad) {
+            // 阶7 批2 复核（P1-1）：严格大于，零梯度不算边缘
+            if (grad > kEdgeGradient && grad > bestGrad) {
                 bestGrad = grad;
                 bestR = r;
             }
         }
         if (bestR > 0.0) {
-            deviations.append(bestR - refR);
+            deviations.append(bestR - baseR);
         }
     }
     if (deviations.isEmpty()) {
@@ -191,40 +207,97 @@ bool EdgeDefectDetectionPlugin::process(const ImageData& input, ImageData& outpu
         return false;
     }
 
-    int convex = 0;
-    int concave = 0;
-    int defects = 0;
+    // 逐采样偏差统计（全极性，与区域计数分离）
+    const int n = deviations.size();
     double maxDev = 0.0;
     double sum = 0.0;
     for (const double d : deviations) {
-        if (d > threshold)
-            ++convex;
-        else if (d < -threshold)
-            ++concave;
-        if (std::abs(d) > threshold)
-            ++defects;
         maxDev = qMax(maxDev, std::abs(d));
         sum += d;
     }
-    const double meanDev = sum / deviations.size();
+    const double meanDev = sum / n;
     double var = 0.0;
     for (const double d : deviations) {
         var += (d - meanDev) * (d - meanDev);
     }
-    const double stddev = std::sqrt(var / deviations.size());
-    const int relevant = isConvex ? convex : concave;
+    const double stddev = std::sqrt(var / n);
 
-    output.setData("has_defect", relevant > 0);
-    output.setData("defect_count", static_cast<double>(defects));
-    output.setData("convex_count", static_cast<double>(convex));
-    output.setData("concave_count", static_cast<double>(concave));
+    // 阶7 批2 复核（P1-5）：|偏差|>阈值 的连续采样（按参考点角序、环形相邻）合并为
+    // 缺陷区域，区域极性由区域内平均偏差决定；defect_count = isConvex 选定极性的
+    // 区域数，has_defect = defect_count > 0（两者恒一致），并输出 defect_regions 列表。
+    struct Region {
+        int start;  // deviations 索引（环形）
+        int length; // 区域内采样数
+        double maxAbs;
+        double mean;
+    };
+    QVector<Region> regions;
+    int firstOk = -1;
+    for (int i = 0; i < n; ++i) {
+        if (std::abs(deviations[i]) <= threshold) {
+            firstOk = i;
+            break;
+        }
+    }
+    if (firstOk < 0) {
+        // 全部采样异常：整体为一个环形区域
+        regions.append(Region{0, n, maxDev, meanDev});
+    } else {
+        // 从第一个正常采样开始线性扫描，环形段在首尾自然合并
+        for (int i = 0; i < n;) {
+            const int idx = (firstOk + i) % n;
+            if (std::abs(deviations[idx]) <= threshold) {
+                ++i;
+                continue;
+            }
+            Region rg{idx, 0, 0.0, 0.0};
+            double rsum = 0.0;
+            while (i < n) {
+                const int j = (firstOk + i) % n;
+                if (std::abs(deviations[j]) <= threshold) {
+                    break;
+                }
+                rsum += deviations[j];
+                rg.maxAbs = qMax(rg.maxAbs, std::abs(deviations[j]));
+                ++rg.length;
+                ++i;
+            }
+            rg.mean = rsum / rg.length;
+            regions.append(rg);
+        }
+    }
+
+    int convexRegions = 0;
+    int concaveRegions = 0;
+    QStringList regionDescs;
+    for (const Region& rg : regions) {
+        const bool convex = rg.mean > 0.0;
+        if (convex) {
+            ++convexRegions;
+        } else {
+            ++concaveRegions;
+        }
+        // 区域描述：起-止索引（环形，起可大于止）:极性:区域内最大|偏差|
+        regionDescs << QString("%1-%2:%3:%4")
+                           .arg(rg.start)
+                           .arg((rg.start + rg.length - 1) % n)
+                           .arg(convex ? QLatin1String("convex") : QLatin1String("concave"))
+                           .arg(rg.maxAbs, 0, 'f', 2);
+    }
+    const int defectRegions = isConvex ? convexRegions : concaveRegions;
+
+    output.setData("has_defect", defectRegions > 0);
+    output.setData("defect_count", static_cast<double>(defectRegions));
+    output.setData("convex_count", static_cast<double>(convexRegions));
+    output.setData("concave_count", static_cast<double>(concaveRegions));
     output.setData("max_deviation", maxDev);
     output.setData("mean_deviation", meanDev);
     output.setData("deviation_stddev", stddev);
-    Logger::instance().debug(QString("边缘缺陷: defects=%1 convex=%2 concave=%3 max=%4")
-                                 .arg(defects)
-                                 .arg(convex)
-                                 .arg(concave)
+    output.setData("defect_regions", regionDescs.join(QLatin1Char(';')));
+    Logger::instance().debug(QString("边缘缺陷: regions=%1 convex=%2 concave=%3 max=%4")
+                                 .arg(defectRegions)
+                                 .arg(convexRegions)
+                                 .arg(concaveRegions)
                                  .arg(maxDev, 0, 'f', 2),
                              "EdgeDefectDetection");
     return true;

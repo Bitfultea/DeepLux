@@ -114,11 +114,25 @@ foreach(TEST_FILE ${TEST_SOURCES})
             TEST_FITELLIPSE_META_MeasurementInput="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json")
     endif()
     # 阶7 批2：检测识别批（MeasureCircle/EdgeDefectDetection）行为+流程验收
+    # 阶7 批2 复核二轮（P2-1）：metadata/库/数据路径全部由 CMake 注入（跨平台/多配置）
     if(TEST_NAME STREQUAL "test_detection_batch2")
-        target_link_libraries(${TEST_NAME} PRIVATE MeasureCirclePlugin EdgeDefectDetectionPlugin GrabImagePlugin)
+        target_link_libraries(${TEST_NAME}
+            PRIVATE
+                MeasureCirclePlugin
+                EdgeDefectDetectionPlugin
+                GrabImagePlugin
+                MeasurementInputPlugin
+        )
         target_compile_definitions(${TEST_NAME} PRIVATE
             TEST_BATCH2_LIB_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
-            TEST_BATCH2_LIB_MeasureCircle="$<TARGET_FILE:MeasureCirclePlugin>")
+            TEST_BATCH2_LIB_MeasureCircle="$<TARGET_FILE:MeasureCirclePlugin>"
+            TEST_BATCH2_LIB_EdgeDefectDetection="$<TARGET_FILE:EdgeDefectDetectionPlugin>"
+            TEST_BATCH2_LIB_MeasurementInput="$<TARGET_FILE:MeasurementInputPlugin>"
+            TEST_BATCH2_META_GrabImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+            TEST_BATCH2_META_MeasureCircle="${CMAKE_SOURCE_DIR}/src/plugins/detection/MeasureCircle/metadata.json"
+            TEST_BATCH2_META_EdgeDefectDetection="${CMAKE_SOURCE_DIR}/src/plugins/detection/EdgeDefectDetection/metadata.json"
+            TEST_BATCH2_META_MeasurementInput="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json"
+            TEST_BATCH2_DATA_Circle="${CMAKE_SOURCE_DIR}/tests/acceptance/data/circle_640x480.png")
     endif()
     if(TEST_NAME STREQUAL "test_measurerect" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE MeasureRectPlugin)

@@ -63,21 +63,21 @@
             },
             {
                 "id": "defect_count",
-                "displayName": "缺陷数",
+                "displayName": "缺陷区域数",
                 "type": "Number",
                 "required": false,
                 "multiple": false
             },
             {
                 "id": "convex_count",
-                "displayName": "凸出数",
+                "displayName": "凸出区域数",
                 "type": "Number",
                 "required": false,
                 "multiple": false
             },
             {
                 "id": "concave_count",
-                "displayName": "凹陷数",
+                "displayName": "凹陷区域数",
                 "type": "Number",
                 "required": false,
                 "multiple": false
@@ -100,6 +100,13 @@
                 "id": "deviation_stddev",
                 "displayName": "偏差标准差",
                 "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "defect_regions",
+                "displayName": "缺陷区域列表",
+                "type": "String",
                 "required": false,
                 "multiple": false
             }

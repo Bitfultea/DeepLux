@@ -5,7 +5,9 @@
 namespace DeepLux {
 
 // 阶7 批2：边缘缺陷检测。对参考边缘拟合基准圆，沿参考点方向卡钳实测边缘，
-// 计算径向偏差（实测半径-参考半径），按阈值统计凸出/凹陷缺陷与偏差统计。
+// 计算径向偏差（实测半径-基准圆半径），按阈值将连续异常采样合并为缺陷区域，
+// 输出选定极性区域数（defect_count/has_defect 恒一致）、凸/凹区域数、
+// 区域列表（defect_regions）与逐采样偏差统计。
 class EdgeDefectDetectionPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
