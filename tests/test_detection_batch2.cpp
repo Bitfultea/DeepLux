@@ -17,6 +17,7 @@
 #include <QtTest>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <random>
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -342,6 +343,32 @@ private slots:
         QVERIFY2(std::abs(radius - 78) < 1.5, qPrintable(QString("refit radius ~78, got %1").arg(radius)));
     }
 
+    // 阶7 批2 复核五轮（P1-1）：平移不变性——同一圆盘从 (160,140) 平移到图像内
+    // 大坐标 (500,400)，半径/圆度结果不变（拟合门禁不得随坐标位置变化）
+    void testMeasureCircleTranslationInvariance() {
+        const auto P = [](double cx, double cy) {
+            return QJsonObject{{"initialCenterX", cx},  {"initialCenterY", cy}, {"initialRadius", 60.0},
+                               {"threshold", 20.0},     {"measureCount", 36},   {"searchLength", 20.0},
+                               {"exclusionRadius", 0.0}};
+        };
+        MeasureCirclePlugin plugin;
+        QVERIFY(plugin.initialize());
+        plugin.setParams(P(160, 140));
+        ImageData outA;
+        QVERIFY2(plugin.execute(makeDiskImage(160, 140, 60), outA), "disk near origin must succeed");
+        plugin.setParams(P(500, 400));
+        ImageData outB;
+        QVERIFY2(plugin.execute(makeDiskImage(500, 400, 60), outB), "disk at large in-image coords must succeed");
+        QVERIFY2(std::abs(outA.data("circle_radius").toDouble() - 60) < 2.0, "radius ~60 (near origin)");
+        QVERIFY2(std::abs(outB.data("circle_radius").toDouble() - 60) < 2.0, "radius ~60 (translated)");
+        QVERIFY2(std::abs(outA.data("circle_radius").toDouble() - outB.data("circle_radius").toDouble()) < 0.5,
+                 "radius invariant under translation");
+        QVERIFY2(std::abs(outB.data("circle_center_x").toDouble() - 500) < 2.0, "center x ~500");
+        QVERIFY2(std::abs(outB.data("circle_center_y").toDouble() - 400) < 2.0, "center y ~400");
+        QVERIFY(outA.data("circle_roundness").toDouble() > 0.9);
+        QVERIFY(outB.data("circle_roundness").toDouble() > 0.9);
+    }
+
     void testEdgeDefectCleanVsDefect() {
         // 参考边缘 = 理想圆点集；干净环无缺陷，带凸出弧段检出单个凸出区域
         const QVector<QPointF> ref = idealCircle(200, 200, 80.0);
@@ -566,6 +593,76 @@ private slots:
         QVERIFY2(errSpy.count() >= 1 && errSpy.first().at(0).toString().contains(QStringLiteral("拟合失败")),
                  qPrintable(QString("error must be fit failure, got: %1")
                                 .arg(errSpy.count() ? errSpy.first().at(0).toString() : QString())));
+    }
+
+    // 阶7 批2 复核五轮（P1-1）：大坐标合法圆——中心 (30000,3)、半径 1 的完整圆
+    // 在绝对坐标下奇异值比 ≈7.9e-10，被四轮 1e-9 门限误拒（"拟合失败"）；
+    // 质心/RMS 归一化后拟合必须成功，失败只可能来自下游射线提取（圆在图像外）。
+    void testEdgeDefectFarOriginFitAccepted() {
+        EdgeDefectDetectionPlugin plugin;
+        plugin.setParams(edgeParams(2.5, 10.0, true));
+        QVERIFY(plugin.initialize());
+        QVector<QPointF> far;
+        for (int a = 0; a < 36; ++a) {
+            const double t = a * 10 * M_PI / 180.0;
+            far << QPointF(30000 + std::cos(t), 3 + std::sin(t));
+        }
+        ImageData img = makeRingImage(200, 200, 80);
+        img.setData("reference_edge", QVariant::fromValue(far));
+        QSignalSpy errSpy(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData out;
+        QVERIFY2(!plugin.execute(img, out), "circle outside image must fail at ray extraction");
+        QVERIFY2(errSpy.count() >= 1, "must emit error");
+        const QString msg = errSpy.first().at(0).toString();
+        QVERIFY2(!msg.contains(QStringLiteral("拟合失败")),
+                 qPrintable(QString("far-origin legit circle must not be rejected by fit gate, got: %1").arg(msg)));
+        QVERIFY2(msg.contains(QStringLiteral("有效边缘提取不足")),
+                 qPrintable(QString("failure must come from ray extraction, got: %1").arg(msg)));
+    }
+
+    // 阶7 批2 复核五轮（P1-1）：非有限参考坐标失败关闭（防排序未定义行为与质心污染）
+    void testEdgeDefectNonFiniteReferenceRejected() {
+        EdgeDefectDetectionPlugin plugin;
+        plugin.setParams(edgeParams(2.5, 10.0, true));
+        QVERIFY(plugin.initialize());
+        QVector<QPointF> pts = idealCircle(200, 200, 80.0);
+        pts[5] = QPointF(std::numeric_limits<double>::quiet_NaN(), 200);
+        ImageData img = makeRingImage(200, 200, 80);
+        img.setData("reference_edge", QVariant::fromValue(pts));
+        QSignalSpy errSpy(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData out;
+        QVERIFY2(!plugin.execute(img, out), "NaN reference coordinate must fail closed");
+        QVERIFY2(errSpy.count() >= 1 && errSpy.first().at(0).toString().contains(QStringLiteral("拟合失败")),
+                 qPrintable(QString("error must be fit failure, got: %1")
+                                .arg(errSpy.count() ? errSpy.first().at(0).toString() : QString())));
+    }
+
+    // 阶7 批2 复核五轮（P1-1）：平移不变性——同一凸出环从 (200,200,r80) 平移到
+    // 图像内大坐标 (540,380,r90)，检测语义（区域数/射线数/最大偏差）不变
+    void testEdgeDefectTranslationInvariance() {
+        EdgeDefectDetectionPlugin plugin;
+        plugin.setParams(edgeParams(2.5, 10.0, true));
+        QVERIFY(plugin.initialize());
+        const auto run = [&plugin](int cx, int cy, int r, ImageData& out) {
+            ImageData img = makeRingImage(cx, cy, r, 6);
+            img.setData("reference_edge", QVariant::fromValue(idealCircle(cx, cy, r)));
+            return plugin.execute(img, out);
+        };
+        ImageData a;
+        ImageData b;
+        QVERIFY2(run(200, 200, 80, a), "ring near origin must succeed");
+        QVERIFY2(run(540, 380, 90, b), "ring at large in-image coords must succeed");
+        QCOMPARE(a.data("convex_count").toDouble(), 1.0);
+        QCOMPARE(b.data("convex_count").toDouble(), 1.0);
+        QCOMPARE(a.data("defect_count").toDouble(), b.data("defect_count").toDouble());
+        QVERIFY2(std::abs(a.data("max_deviation").toDouble() - b.data("max_deviation").toDouble()) < 1.0,
+                 "max deviation invariant under translation");
+        const QVariantList rowsA = a.data("defect_regions").toList();
+        const QVariantList rowsB = b.data("defect_regions").toList();
+        QCOMPARE(rowsA.size(), 1);
+        QCOMPARE(rowsB.size(), 1);
+        QCOMPARE(rowsA.first().toMap().value(QStringLiteral("sample_count")).toInt(),
+                 rowsB.first().toMap().value(QStringLiteral("sample_count")).toInt());
     }
 
     // 阶7 批2 复核四轮（P1-2）：同方向重复点不得伪造覆盖率——72 个参考点聚在

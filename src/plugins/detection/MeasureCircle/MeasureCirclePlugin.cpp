@@ -25,6 +25,12 @@ bool fitCircleAlgebraic(const QVector<QPointF>& pts, double& cx, double& cy, dou
     // 阶7 批2 复核四轮（P1-1）：退化防护——DECOMP_SVD 对重复点/共线/秩亏点集
     // 仍会"成功"并返回有限半径，产生虚假测量圆。先 epsilon 去重（唯一点 >= 3），
     // 再显式检查设计矩阵奇异值：最小奇异值相对最大奇异值过小即失败关闭。
+    // 阶7 批2 复核五轮（P1-1 配套）：非有限坐标进入排序是未定义行为且污染质心/尺度
+    for (const QPointF& p : pts) {
+        if (!std::isfinite(p.x()) || !std::isfinite(p.y())) {
+            return false;
+        }
+    }
     QVector<QPointF> uniq = pts;
     std::sort(uniq.begin(), uniq.end(),
               [](const QPointF& a, const QPointF& b) { return a.x() != b.x() ? a.x() < b.x() : a.y() < b.y(); });
@@ -35,15 +41,37 @@ bool fitCircleAlgebraic(const QVector<QPointF>& pts, double& cx, double& cy, dou
     if (uniq.size() < 3) {
         return false; // 重复点集：唯一点不足
     }
+    // 阶7 批2 复核五轮（P1-1）：平移/尺度归一化——绝对坐标 A=[x,y,1] 的奇异值比
+    // 随圆离原点的距离与尺寸变化（实算中心 (30000,3)、半径 1 的合法圆比例
+    // ≈7.9e-10，被 1e-9 门限误拒；大幅面线扫图像为现实输入）。先去质心并按 RMS
+    // 半径归一化，使奇异值比只依赖点集形状；拟合完成后恢复坐标与尺度。
+    double mx = 0.0;
+    double my = 0.0;
+    for (const QPointF& p : uniq) {
+        mx += p.x();
+        my += p.y();
+    }
+    mx /= uniq.size();
+    my /= uniq.size();
+    double sumSq = 0.0;
+    for (const QPointF& p : uniq) {
+        const double dx = p.x() - mx;
+        const double dy = p.y() - my;
+        sumSq += dx * dx + dy * dy;
+    }
+    const double scale = std::sqrt(sumSq / uniq.size());
+    if (!(scale > 0.0)) {
+        return false;
+    }
     cv::Mat A(uniq.size(), 3, CV_64FC1);
     cv::Mat B(uniq.size(), 1, CV_64FC1);
     for (int i = 0; i < uniq.size(); ++i) {
-        const double x = uniq[i].x();
-        const double y = uniq[i].y();
-        A.at<double>(i, 0) = x;
-        A.at<double>(i, 1) = y;
+        const double u = (uniq[i].x() - mx) / scale;
+        const double v = (uniq[i].y() - my) / scale;
+        A.at<double>(i, 0) = u;
+        A.at<double>(i, 1) = v;
         A.at<double>(i, 2) = 1.0;
-        B.at<double>(i, 0) = x * x + y * y;
+        B.at<double>(i, 0) = u * u + v * v;
     }
     const cv::SVD svd(A);
     const double sMax = svd.w.at<double>(0);
@@ -53,13 +81,15 @@ bool fitCircleAlgebraic(const QVector<QPointF>& pts, double& cx, double& cy, dou
     }
     cv::Mat C;
     svd.backSubst(B, C);
-    cx = C.at<double>(0, 0) / 2.0;
-    cy = C.at<double>(1, 0) / 2.0;
-    const double rs = cx * cx + cy * cy + C.at<double>(2, 0);
-    if (rs <= 0.0) {
+    const double ncx = C.at<double>(0, 0) / 2.0;
+    const double ncy = C.at<double>(1, 0) / 2.0;
+    const double nrs = ncx * ncx + ncy * ncy + C.at<double>(2, 0);
+    if (!(nrs > 0.0)) {
         return false;
     }
-    r = std::sqrt(rs);
+    cx = mx + ncx * scale;
+    cy = my + ncy * scale;
+    r = std::sqrt(nrs) * scale;
     return std::isfinite(cx) && std::isfinite(cy) && std::isfinite(r);
 #else
     Q_UNUSED(pts);
