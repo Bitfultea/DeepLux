@@ -8,23 +8,23 @@
 
 | 状态 | 数量 | 含义 |
 | --- | ---: | --- |
-| direct | 46 | 名称直接匹配，仍需人工核验能力和参数 |
+| direct | 48 | 名称直接匹配，仍需人工核验能力和参数 |
 | candidate | 5 | 需要确认的历史别名或替代候选 |
-| missing | 52 | 当前没有候选实现 |
+| missing | 50 | 当前没有候选实现 |
 | business_pack | 7 | 业务专用插件，作为可选业务包评审 |
 
 | 审核状态 | 数量 |
 | --- | ---: |
-| reviewed | 51 |
+| reviewed | 53 |
 | dependency_recorded | 7 |
-| pending | 52 |
+| pending | 50 |
 
 - 审核结论统计仅包含 `reviewState=reviewed` 的条目。
 
 | 审核结论 | 数量 | 含义 |
 | --- | ---: | --- |
 | equivalent | 0 | 已证明与旧版能力等价（需旧版参数/端口/结果对照） |
-| intentionally_changed | 13 | 已确认采用不同于旧版的契约或行为 |
+| intentionally_changed | 15 | 已确认采用不同于旧版的契约或行为 |
 | partial | 34 | 当前存在候选实现，旧版等价未证明 |
 | unverified | 4 | 依赖硬件/SDK，行为未验证 |
 | not_equivalent | 0 | 不等价 |
@@ -116,12 +116,10 @@
 | ColorExtraction | `02Plugins/002检测识别/Plugin.ColorExtraction` | - | missing | - |
 | CreatePoints | `02Plugins/002检测识别/Plugin.CreatePoints` | - | missing | - |
 | CreateROI | `02Plugins/002检测识别/Plugin.CreateROI` | - | missing | - |
-| EdgeDefectDetection | `02Plugins/002检测识别/Plugin.EdgeDefectDetection` | - | missing | - |
 | GrayMeasure | `02Plugins/002检测识别/Plugin.GrayMeasure` | - | missing | - |
 | GreenRegion | `02Plugins/002检测识别/Plugin.GreenRegion` | - | missing | - |
 | LabelRegion | `02Plugins/002检测识别/Plugin.LabelRegion` | - | missing | - |
 | Matching1 | `02Plugins/002检测识别/Plugin.Matching1` | - | missing | - |
-| MeasureCircle | `02Plugins/002检测识别/Plugin.MeasureCircle` | - | missing | - |
 | DistanceLL | `02Plugins/003几何测量/Plugin.DistanceLL` | LinesDistance | candidate | intentionally_changed |
 | AffineeRegion | `02Plugins/004几何关系/Plugin.AffineeRegion` | - | missing | - |
 | BuildLl | `02Plugins/004几何关系/Plugin.BuildLl` | - | missing | - |
