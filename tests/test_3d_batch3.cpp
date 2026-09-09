@@ -728,6 +728,42 @@ private slots:
         QCOMPARE(out3.data("valid_pixel_count").toDouble(), 440.0 * 480.0); // 哨兵被检出剔除
     }
 
+    // 阶7 批3复核六轮（P1-1）：歧义解除的恢复路径口径——invalidValue 参数始终
+    // 有默认值，无法区分"显式设置"与"默认"，仅设置它仍歧义失败；必须
+    // invalidValue + autoNoData=false 组合（排除正确一侧）或上游契约
+    void testFitPlaneAmbiguityRecoveryPaths() {
+        cv::Mat m(480, 640, CV_32F);
+        for (int y = 0; y < 480; ++y) {
+            for (int x = 0; x < 640; ++x) {
+                m.at<float>(y, x) = (x < 218) ? 0.0f : 2000000.0f; // 两值图：34% 零 + 66% 平台
+            }
+        }
+        // (a) 仅设置 invalidValue（autoNoData 默认开启）→ 仍歧义失败
+        FitPlanePlugin autoFp;
+        autoFp.setParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, 0.0));
+        QVERIFY(autoFp.initialize());
+        ImageData in1(m);
+        QSignalSpy spy1(&autoFp, &DeepLux::IModule::errorOccurred);
+        ImageData out1;
+        QVERIFY2(!autoFp.execute(in1, out1), "invalidValue alone must not resolve ambiguity");
+        QVERIFY2(spy1.count() >= 1 && spy1.first().at(0).toString().contains(QStringLiteral("歧义")),
+                 "must report ambiguity");
+
+        // (b) invalidValue=0 + autoNoData=false → 成功且排除正确一侧（零侧），
+        // 保留 2e6 恒定平台：法向 (0,0,1)、平面度 0、有效数 = 平台像素数
+        QJsonObject off = planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, 0.0);
+        off["autoNoData"] = false;
+        FitPlanePlugin offFp;
+        offFp.setParams(off);
+        QVERIFY(offFp.initialize());
+        ImageData in2(m);
+        ImageData out2;
+        QVERIFY2(offFp.execute(in2, out2), "invalidValue + autoNoData=false must succeed");
+        QCOMPARE(out2.data("valid_pixel_count").toDouble(), (640.0 - 218.0) * 480.0);
+        QVERIFY2(out2.data("flatness").toDouble() < 1e-6, "constant plateau → flatness 0");
+        QVERIFY2(std::abs(out2.data("plane_nz").toDouble() - 1.0) < 1e-9, "constant plateau normal = +Z");
+    }
+
     void testFitPlaneRotatedRoiIgnoresOutside() {
         FitPlanePlugin plugin;
         plugin.setParams(planeParams(320, 240, 200, 100, 30.0, 1.0, 1.0, 1.0, -99999.0));
@@ -1022,6 +1058,49 @@ private slots:
         QVERIFY2(
             std::abs(out2.data("gap_width").toDouble() - 50.0) < 3.0,
             qPrintable(QString("fabricated width ~50 (sentinel band), got %1").arg(out2.data("gap_width").toDouble())));
+    }
+
+    // 阶7 批3复核六轮（P1-1）：Gap 歧义恢复路径——两值图 {2e6 平台 | 0 带 | 2e6}：
+    // (a) 仅 invalidValue 仍歧义失败；(b) invalidValue=0 + autoNoData=false → 0 带
+    // 被排除为 NaN、无伪造边缘（gap_found=false）；(c) invalidValue 不匹配 + off →
+    // 0 带进入截面、在平台/带边界伪造 ~140 宽假间隙（对照证明 (b) 排除了正确一侧）
+    void testGapAmbiguityRecoveryPaths() {
+        cv::Mat m(480, 640, CV_32F, cv::Scalar(2000000.0f));
+        m(cv::Rect(250, 0, 140, 480)).setTo(0.0f); // 中央 0 带（22%），平台 78%
+
+        GapMeasure3DPlugin autoP;
+        autoP.setParams(gapParams(320, 240, 200, 5)); // invalidValue 默认 0
+        QVERIFY(autoP.initialize());
+        ImageData in1(m);
+        QSignalSpy spy1(&autoP, &DeepLux::IModule::errorOccurred);
+        ImageData out1;
+        QVERIFY2(!autoP.execute(in1, out1), "invalidValue alone must not resolve ambiguity");
+        QVERIFY2(spy1.count() >= 1 && spy1.first().at(0).toString().contains(QStringLiteral("歧义")),
+                 "must report ambiguity");
+
+        QJsonObject off = gapParams(320, 240, 200, 5);
+        off["autoNoData"] = false; // invalidValue=0 显式排除 0 带
+        GapMeasure3DPlugin offP;
+        offP.setParams(off);
+        QVERIFY(offP.initialize());
+        ImageData in2(m);
+        ImageData out2;
+        QVERIFY2(offP.execute(in2, out2), "invalidValue + autoNoData=false must succeed");
+        QVERIFY2(!out2.data("gap_found").toBool(), "excluded band must not fabricate a gap");
+        QCOMPARE(out2.data("gap_width").toDouble(), -1.0);
+
+        QJsonObject mismatch = gapParams(320, 240, 200, 5);
+        mismatch["autoNoData"] = false;
+        mismatch["invalidValue"] = 12345.0; // 不匹配 → 0 带保留为数据
+        GapMeasure3DPlugin mmP;
+        mmP.setParams(mismatch);
+        QVERIFY(mmP.initialize());
+        ImageData in3(m);
+        ImageData out3;
+        QVERIFY2(mmP.execute(in3, out3), "mismatch run must succeed");
+        QVERIFY2(out3.data("gap_found").toBool(), "retained band fabricates edges (contrast case)");
+        QVERIFY2(std::abs(out3.data("gap_width").toDouble() - 140.0) < 3.0,
+                 qPrintable(QString("fabricated width ~140, got %1").arg(out3.data("gap_width").toDouble())));
     }
 
     void testGapPixelScaling() {

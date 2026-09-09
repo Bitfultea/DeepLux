@@ -245,6 +245,14 @@ void TestTiffLoader::testNoDataGapFloorConfigurable() {
     badFloor.noDataMinGap = std::numeric_limits<double>::quiet_NaN();
     QVERIFY2(!TiffLoader::load(path, data, error, badFloor), "non-finite floor must fail");
     QVERIFY(error.contains(QLatin1String("noDataMinGap")));
+
+    // 阶7 批3复核六轮（P2-2）：公开 detectNoData 对非法阈值返回 InvalidConfig
+    // （失败关闭，外部调用方不得将非法配置误读为"无 NoData"的 None）
+    const cv::Mat probe(4, 4, CV_32F, cv::Scalar(1.0f));
+    QVERIFY(TiffLoader::detectNoData(probe, std::numeric_limits<double>::quiet_NaN()).status ==
+            TiffLoader::NoDataStatus::InvalidConfig);
+    QVERIFY(TiffLoader::detectNoData(probe, -1.0).status == TiffLoader::NoDataStatus::InvalidConfig);
+    QVERIFY(TiffLoader::detectNoData(probe, 1000.0).status == TiffLoader::NoDataStatus::None);
 #endif
 }
 

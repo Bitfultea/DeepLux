@@ -316,16 +316,19 @@ bool TiffLoader::load(const QString& filePath, PointCloudData& outData, QString&
 }
 
 TiffLoader::NoDataResult TiffLoader::detectNoData(const cv::Mat& image, double minGapFloor) {
+    // 阶7 批3复核六轮（P2-2）：非法阈值上报 InvalidConfig，不与"未检出"混淆
+    // （公开 API 失败关闭，外部调用方不得将非法配置误读为无 NoData）
+    if (!std::isfinite(minGapFloor) || minGapFloor < 0.0) {
+        NoDataResult invalid;
+        invalid.status = NoDataStatus::InvalidConfig;
+        return invalid;
+    }
 #ifdef DEEPLUX_HAS_OPENCV
     // 阶7 批3复核（P1-1）：公开既有重复极值 NoData 判据，供 3D 插件复用同一策略，
     // 避免各插件复制检测逻辑；五轮改为三态（歧义显式上报，不按分布猜测）
-    if (!std::isfinite(minGapFloor) || minGapFloor < 0.0) {
-        return NoDataResult{}; // 非法下限视为未检出（调用方参数校验已拦截）
-    }
     return detectRepeatedExtremeNoData(image, minGapFloor);
 #else
     Q_UNUSED(image);
-    Q_UNUSED(minGapFloor);
     return NoDataResult{};
 #endif
 }

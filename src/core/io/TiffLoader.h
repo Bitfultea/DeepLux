@@ -45,11 +45,13 @@ public:
     static bool load(const QString& filePath, PointCloudData& outData, QString& errorMsg,
                      const Config& config = Config());
 
-    /// NoData 检测结果三态（阶7 批3复核五轮 P1-1：歧义必须显式上报，不得猜测）
+    /// NoData 检测结果（阶7 批3复核五轮 P1-1：歧义必须显式上报，不得猜测；
+    /// 六轮 P2-2：非法阈值独立上报，不与"未检出"混淆）
     enum class NoDataStatus {
-        None,      ///< 未检出哨兵
-        Found,     ///< 单侧极值满足哨兵判据
-        Ambiguous, ///< 两侧极值同时满足判据——分布无法判定哪侧是哨兵
+        None,          ///< 未检出哨兵
+        Found,         ///< 单侧极值满足哨兵判据
+        Ambiguous,     ///< 两侧极值同时满足判据——分布无法判定哪侧是哨兵
+        InvalidConfig, ///< minGapFloor 非有限或为负——调用方配置非法
     };
     struct NoDataResult {
         NoDataStatus status = NoDataStatus::None;
@@ -66,7 +68,11 @@ public:
      * 最近内部值，0=NoData+大正值平台 与 大正值=NoData+0 平台 不可区分）时
      * 返回 Ambiguous——哨兵语义无法从像素分布推导，调用方必须失败关闭并要求
      * 显式哨兵配置或上游契约，不得按绝对值/占比猜测（否则可能反向删除全部
-     * 合法数据）。minGapFloor 为声明格式的默认值 1e6，可经参数调整。
+     * 合法数据）。注意：下游插件的 invalidValue 参数不能单独解除歧义（参数
+     * 模型无法区分默认值与显式设置），恢复路径 = 上游契约，或显式 invalidValue
+     * 并同时关闭 autoNoData。minGapFloor 为声明格式的默认值 1e6，可经参数
+     * 调整；非有限或为负时返回 InvalidConfig（公开 API 对非法配置失败关闭，
+     * 外部调用方不得将其误读为"无 NoData"）。
      */
     static NoDataResult detectNoData(const cv::Mat& image, double minGapFloor = kDefaultNoDataGapFloor);
 };

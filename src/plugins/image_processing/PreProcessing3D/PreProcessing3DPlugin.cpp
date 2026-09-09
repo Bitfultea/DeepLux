@@ -172,8 +172,14 @@ bool PreProcessing3DPlugin::process(const ImageData& input, ImageData& output) {
     if (autoNoData && !carriedQ.has_value()) {
         const TiffLoader::NoDataResult detected = TiffLoader::detectNoData(depthSrc);
         if (detected.status == TiffLoader::NoDataStatus::Ambiguous) {
+            // 阶7 批3复核六轮（P1-1）：提示只给出真实可行的恢复路径——本插件无
+            // invalidValue 参数，高度筛选也无法先于歧义检查生效
             emit errorOccurred(tr("NoData 检测歧义：两侧极值同时满足哨兵判据（如两值图），无法从分布判定哨兵——"
-                                  "请经上游契约、高度筛选区间显式处理，或关闭 autoNoData"));
+                                  "请提供上游 height_invalid_value 契约，或关闭 autoNoData 后以高度筛选区间显式剔除"));
+            return false;
+        }
+        if (detected.status == TiffLoader::NoDataStatus::InvalidConfig) {
+            emit errorOccurred(tr("NoData 检测配置非法（间隙下限非有限或为负）"));
             return false;
         }
         if (detected.status == TiffLoader::NoDataStatus::Found) {

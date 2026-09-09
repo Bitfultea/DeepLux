@@ -204,8 +204,14 @@ bool GapMeasure3DPlugin::process(const ImageData& input, ImageData& output) {
     if (autoNoData && !hasCarried) {
         const TiffLoader::NoDataResult detected = TiffLoader::detectNoData(src);
         if (detected.status == TiffLoader::NoDataStatus::Ambiguous) {
+            // 阶7 批3复核六轮（P1-1）：invalidValue 参数始终有默认值，无法区分
+            // "显式设置"与"默认"，单独设置它不会跳过检测——提示只给真实路径
             emit errorOccurred(tr("NoData 检测歧义：两侧极值同时满足哨兵判据（如两值图），无法从分布判定哨兵——"
-                                  "请经上游契约或 invalidValue 参数显式指定，或关闭 autoNoData"));
+                                  "请使用上游 height_invalid_value 契约，或设置 invalidValue 并同时关闭 autoNoData"));
+            return false;
+        }
+        if (detected.status == TiffLoader::NoDataStatus::InvalidConfig) {
+            emit errorOccurred(tr("NoData 检测配置非法（间隙下限非有限或为负）"));
             return false;
         }
         if (detected.status == TiffLoader::NoDataStatus::Found) {
