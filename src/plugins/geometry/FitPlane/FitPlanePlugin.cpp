@@ -1,10 +1,14 @@
 #include "FitPlanePlugin.h"
 
 #include "common/Logger.h"
+#include "core/deeplux/DataContract.h"
+#include "core/io/TiffLoader.h"
 
 #include <QVariant>
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -64,6 +68,14 @@ bool FitPlanePlugin::doValidateParams(const QJsonObject& params, QString& error)
         return false;
     if (!num("roiAngle", -360.0, 360.0, false, tr("ROI 角度必须为[-360,360]有限数")))
         return false;
+    // 阶7 批3复核（P2-5）：ROI 两个维度必须同时为 0（全图）或同时 >0，
+    // 单维度配置不再静默退回全图
+    const double l1v = params[QLatin1String("roiLength1")].toDouble();
+    const double l2v = params[QLatin1String("roiLength2")].toDouble();
+    if ((l1v > 0.0) != (l2v > 0.0)) {
+        error = tr("ROI 长边与短边必须同时为 0（全图）或同时大于 0");
+        return false;
+    }
     // 像素物理尺寸与 Z 比例必须严格为正（0 会使法向量/物理坐标退化）
     if (!num("pixelSizeX", 1e-6, 1e6, false, tr("X 像素尺寸必须为(0,1e6]有限数")))
         return false;
@@ -144,79 +156,119 @@ bool FitPlanePlugin::process(const ImageData& input, ImageData& output) {
         }
     }
 
-    // 收集有效像素（有限且 != invalidValue；ROI 内）
-    QVector<double> Xs;
-    QVector<double> Ys;
-    QVector<double> Zs;
+    // 阶7 批3复核（P1-1）：无效值契约贯通——输入携带的 height_invalid_value
+    // （3DPreProcessing 写出的统一契约）优先于自身参数，直接输入原图时回退参数；
+    // 浮点高度图再叠加 TiffLoader 重复极值判据的自动 NoData 检测
+    double invalid = invalidValue;
+    const QVariant carriedInvalid = input.data("height_invalid_value");
+    if (carriedInvalid.isValid() && portValueMatchesType(carriedInvalid, DataType::Number)) {
+        invalid = carriedInvalid.toDouble();
+    }
+    // 阶7 批3复核（P1-2）：哨兵按源图存储精度量化——-21474.8359 写入 CV_32F 后
+    // 实为 -21474.8359375，double 参数精确比较必然失配、像素混入拟合
+    double invalidQ = invalid;
+    if (src.depth() == CV_32F) {
+        invalidQ = static_cast<double>(static_cast<float>(invalid));
+    } else if (src.depth() != CV_64F) {
+        invalidQ = std::nearbyint(invalid);
+    }
+    const std::optional<double> noData = TiffLoader::detectNoDataValue(src);
+    const auto isInvalid = [&](double v) {
+        return !std::isfinite(v) || v == invalidQ || (noData.has_value() && v == *noData);
+    };
+    const auto inRoi = [&](int x, int y) {
+        if (!roiOn) {
+            return true;
+        }
+        const double dx = x - roiCx;
+        const double dy = y - roiCy;
+        return std::abs(dx * cosT + dy * sinT) <= h1 && std::abs(-dx * sinT + dy * cosT) <= h2;
+    };
+
+    // 阶7 批3复核（P2-6）：多遍扫描累计正规方程（O(1) 内存，不再按像素分配
+    // Xs/Ys/Zs/A/B），每行检查取消令牌
+    // Pass 1：有效点数与质心
+    qint64 n = 0;
+    double sumX = 0.0;
+    double sumY = 0.0;
     for (int y = y0; y <= y1; ++y) {
+        if (isCancellationRequested()) {
+            return false;
+        }
         const double* row = height.ptr<double>(y);
         for (int x = x0; x <= x1; ++x) {
-            const double v = row[x];
-            if (!std::isfinite(v) || v == invalidValue) {
+            if (!inRoi(x, y) || isInvalid(row[x])) {
                 continue;
             }
-            if (roiOn) {
-                const double dx = x - roiCx;
-                const double dy = y - roiCy;
-                const double u = dx * cosT + dy * sinT;
-                const double w = -dx * sinT + dy * cosT;
-                if (std::abs(u) > h1 || std::abs(w) > h2) {
-                    continue;
-                }
-            }
-            Xs.append(x * pixelSizeX);
-            Ys.append(y * pixelSizeY);
-            Zs.append(v * zScale);
+            ++n;
+            sumX += x * pixelSizeX;
+            sumY += y * pixelSizeY;
         }
     }
-    if (Xs.size() < kMinPlanePoints) {
-        emit errorOccurred(tr("ROI 内有效像素不足（%1<%2），无法拟合平面").arg(Xs.size()).arg(kMinPlanePoints));
+    if (n < kMinPlanePoints) {
+        emit errorOccurred(tr("ROI 内有效像素不足（%1<%2），无法拟合平面").arg(n).arg(kMinPlanePoints));
         return false;
     }
+    const double mx = sumX / static_cast<double>(n);
+    const double my = sumY / static_cast<double>(n);
 
-    // 最小二乘 z = aX+bY+c：设计矩阵去质心 + RMS 归一化，奇异值门禁拒绝
-    // 共线/秩亏/严重病态点集（对平移/尺度不变，批2复核五轮结论）
-    const int n = Xs.size();
-    double mx = 0.0;
-    double my = 0.0;
-    for (int i = 0; i < n; ++i) {
-        mx += Xs[i];
-        my += Ys[i];
+    // Pass 2：去质心二阶矩与 z 交叉项（直接累计中心量，无灾难性抵消）
+    double sxx = 0.0;
+    double sxy = 0.0;
+    double syy = 0.0;
+    double sz = 0.0;
+    double sxz = 0.0;
+    double syz = 0.0;
+    for (int y = y0; y <= y1; ++y) {
+        if (isCancellationRequested()) {
+            return false;
+        }
+        const double* row = height.ptr<double>(y);
+        for (int x = x0; x <= x1; ++x) {
+            if (!inRoi(x, y) || isInvalid(row[x])) {
+                continue;
+            }
+            const double dx = x * pixelSizeX - mx;
+            const double dy = y * pixelSizeY - my;
+            const double zv = row[x] * zScale;
+            sxx += dx * dx;
+            sxy += dx * dy;
+            syy += dy * dy;
+            sz += zv;
+            sxz += dx * zv;
+            syz += dy * zv;
+        }
     }
-    mx /= n;
-    my /= n;
-    double sumSq = 0.0;
-    for (int i = 0; i < n; ++i) {
-        const double dx = Xs[i] - mx;
-        const double dy = Ys[i] - my;
-        sumSq += dx * dx + dy * dy;
-    }
-    const double scale = std::sqrt(sumSq / n);
-    if (!(scale > 0.0)) {
+    const double sum2 = sxx + syy;
+    if (!(sum2 > 0.0)) {
         emit errorOccurred(tr("有效像素坐标退化（全部重合），无法拟合平面"));
         return false;
     }
-    cv::Mat A(n, 3, CV_64FC1);
-    cv::Mat B(n, 1, CV_64FC1);
-    for (int i = 0; i < n; ++i) {
-        A.at<double>(i, 0) = (Xs[i] - mx) / scale;
-        A.at<double>(i, 1) = (Ys[i] - my) / scale;
-        A.at<double>(i, 2) = 1.0;
-        B.at<double>(i, 0) = Zs[i];
-    }
-    const cv::SVD svd(A);
-    const double sMax = svd.w.at<double>(0);
-    const double sMin = svd.w.at<double>(svd.w.rows - 1);
-    if (!(sMax > 0.0) || !(sMin > kFitConditionEps * sMax)) {
+
+    // 归一化 Gram 门禁：设计矩阵 [u,v,1]（u=dx/s, v=dy/s, s=RMS 展布）去质心后
+    // 与常数列正交，σmin² = 2×2 块最小特征值、σmax² = n（迹恒等），门禁等价于
+    // λmin > eps²·n，且对平移/尺度不变（与批2复核五轮 SVD 门禁同一判据）
+    const double s = std::sqrt(sum2 / static_cast<double>(n));
+    const double guu = sxx / (s * s);
+    const double guv = sxy / (s * s);
+    const double gvv = syy / (s * s);
+    const double trG = guu + gvv; // == n
+    const double detG = guu * gvv - guv * guv;
+    const double disc = std::sqrt(std::max(0.0, trG * trG - 4.0 * detG));
+    const double lamMin = (detG > 0.0) ? (2.0 * detG / (trG + disc)) : 0.0; // 稳定形式
+    if (!(lamMin > kFitConditionEps * kFitConditionEps * trG)) {
         emit errorOccurred(tr("平面拟合失败：有效像素共线或严重病态"));
         return false;
     }
-    cv::Mat C;
-    svd.backSubst(B, C);
-    // 归一化空间 z = a'u + b'v + c'（u=(X-mx)/scale, v=(Y-my)/scale）还原物理系数
-    const double a = C.at<double>(0, 0) / scale;
-    const double b = C.at<double>(1, 0) / scale;
-    const double c = C.at<double>(2, 0) - a * mx - b * my;
+    // z = α·u + β·v + γ（去质心后 γ = z̄ 精确成立），还原物理系数 z = aX+bY+c
+    const double suz = sxz / s;
+    const double svz = syz / s;
+    const double alpha = (gvv * suz - guv * svz) / detG;
+    const double beta = (guu * svz - guv * suz) / detG;
+    const double gamma = sz / static_cast<double>(n);
+    const double a = alpha / s;
+    const double b = beta / s;
+    const double c = gamma - a * mx - b * my;
 
     // 法向量（指向 +Z）与平面距离：-aX - bY + z - c = 0 → n·P + D = 0
     const double nLen = std::sqrt(a * a + b * b + 1.0);
@@ -226,27 +278,33 @@ bool FitPlanePlugin::process(const ImageData& input, ImageData& output) {
     const double planeD = -c / nLen;
 
     // Z 向残差统计（mm，最小二乘基准；平面度 = 最大偏差 - 最小偏差）
+    // Pass 3：逐像素重算残差（O(1) 内存），每行响应取消
     double maxRes = -std::numeric_limits<double>::infinity();
     double minRes = std::numeric_limits<double>::infinity();
     double sumSqRes = 0.0;
-    for (int i = 0; i < n; ++i) {
-        const double res = Zs[i] - (a * Xs[i] + b * Ys[i] + c);
-        maxRes = qMax(maxRes, res);
-        minRes = qMin(minRes, res);
-        sumSqRes += res * res;
+    for (int y = y0; y <= y1; ++y) {
+        if (isCancellationRequested()) {
+            return false;
+        }
+        const double* row = height.ptr<double>(y);
+        for (int x = x0; x <= x1; ++x) {
+            if (!inRoi(x, y) || isInvalid(row[x])) {
+                continue;
+            }
+            const double res = row[x] * zScale - (a * (x * pixelSizeX) + b * (y * pixelSizeY) + c);
+            maxRes = qMax(maxRes, res);
+            minRes = qMin(minRes, res);
+            sumSqRes += res * res;
+        }
     }
     const double flatness = maxRes - minRes;
-    const double rms = std::sqrt(sumSqRes / n);
+    const double rms = std::sqrt(sumSqRes / static_cast<double>(n));
 
     // Plane3D 契约输出：拟合平面上 3 个非共线点 [x1,y1,z1, x2,y2,z2, x3,y3,z3]
     // （u=(1,0,a)/|..| 与 v=(0,1,b)/|..| 为平面内两个线性无关方向，步长取点云
     // RMS 展布且不小于 1mm，保证下游 parsePlane3D 的共线防护通过）
-    double zm = 0.0;
-    for (int i = 0; i < n; ++i) {
-        zm += Zs[i];
-    }
-    zm /= n;
-    const double step = qMax(1.0, scale);
+    const double zm = gamma; // 质心处拟合值（最小二乘残差均值为 0，等于 z̄）
+    const double step = qMax(1.0, s);
     const double uLen = std::sqrt(1.0 + a * a);
     const double vLen = std::sqrt(1.0 + b * b);
     QVariantList plane9;

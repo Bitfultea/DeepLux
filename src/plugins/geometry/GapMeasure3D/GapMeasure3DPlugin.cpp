@@ -1,9 +1,12 @@
 #include "GapMeasure3DPlugin.h"
 
 #include "common/Logger.h"
+#include "core/deeplux/DataContract.h"
+#include "core/io/TiffLoader.h"
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -57,7 +60,8 @@ bool GapMeasure3DPlugin::doValidateParams(const QJsonObject& params, QString& er
         return false;
     if (!num("roiCenterY", 0, 1e6, true, tr("ROI 中心Y必须为[0,1e6]整数")))
         return false;
-    if (!num("roiLength", 3, 1e6, true, tr("截面长度必须为[3,1e6]整数")))
+    // 阶7 批3复核（P2-4）：公开下限与执行需求统一为 5（中心差分+边缘剔除需要）
+    if (!num("roiLength", 5, 1e6, true, tr("截面长度必须为[5,1e6]整数")))
         return false;
     if (!num("roiHeight", 1, 1e6, true, tr("行取宽必须为[1,1e6]整数")))
         return false;
@@ -157,6 +161,23 @@ bool GapMeasure3DPlugin::process(const ImageData& input, ImageData& output) {
         return false;
     }
 
+    // 阶7 批3复核（P1-1）：无效值契约贯通——输入携带的 height_invalid_value
+    // （3DPreProcessing 统一契约）优先于自身参数；浮点高度图叠加 TiffLoader
+    // 重复极值判据的自动 NoData 检测
+    double invalid = invalidValue;
+    const QVariant carriedInvalid = input.data("height_invalid_value");
+    if (carriedInvalid.isValid() && portValueMatchesType(carriedInvalid, DataType::Number)) {
+        invalid = carriedInvalid.toDouble();
+    }
+    // 阶7 批3复核（P1-2）：哨兵按源图存储精度量化，避免 CV_32F 非整数哨兵精确比较失配
+    double invalidQ = invalid;
+    if (src.depth() == CV_32F) {
+        invalidQ = static_cast<double>(static_cast<float>(invalid));
+    } else if (src.depth() != CV_64F) {
+        invalidQ = std::nearbyint(invalid);
+    }
+    const std::optional<double> noData = TiffLoader::detectNoDataValue(src);
+
     // 行均值提取截面轮廓：跳过非有限与无效值；整列无效记 NaN
     const double nan = std::nan("");
     QVector<double> z(m, nan);
@@ -165,7 +186,7 @@ bool GapMeasure3DPlugin::process(const ImageData& input, ImageData& output) {
         int cnt = 0;
         for (int y = ys; y <= ye; ++y) {
             const double v = height.at<double>(y, xs + xi);
-            if (!std::isfinite(v) || v == invalidValue) {
+            if (!std::isfinite(v) || v == invalidQ || (noData.has_value() && v == *noData)) {
                 continue;
             }
             sum += v;
@@ -176,12 +197,16 @@ bool GapMeasure3DPlugin::process(const ImageData& input, ImageData& output) {
         }
     }
 
-    // 中值平滑（窗口内有限值的中位数；全无效保持 NaN）
+    // 中值平滑（窗口内有限值的中位数）。阶7 批3复核（P1-3）：无效位置原样保留
+    // NaN，不得用邻域补洞——否则会在缺失条带处伪造出不存在的下降/上升沿
     if (medianSize >= 3) {
         const int half = medianSize / 2;
         QVector<double> med(m, nan);
         QVector<double> win;
         for (int i = 0; i < m; ++i) {
+            if (!std::isfinite(z[i])) {
+                continue;
+            }
             win.clear();
             for (int k = qMax(0, i - half); k <= qMin(m - 1, i + half); ++k) {
                 if (std::isfinite(z[k])) {
@@ -196,11 +221,15 @@ bool GapMeasure3DPlugin::process(const ImageData& input, ImageData& output) {
         z = med;
     }
 
-    // 高斯平滑（仅对有限值卷积并按有效权重归一；全无效保持 NaN）
+    // 高斯平滑（仅对有限值卷积并按有效权重归一）。阶7 批3复核（P1-3）：
+    // 中心为无效位置的输出保持 NaN（不补洞），缺失条带继续作为区域分隔
     if (smoothSigma > 0.0) {
         const int radius = qMax(1, static_cast<int>(std::ceil(3.0 * smoothSigma)));
         QVector<double> sm(m, nan);
         for (int i = 0; i < m; ++i) {
+            if (!std::isfinite(z[i])) {
+                continue;
+            }
             double wsum = 0.0;
             double acc = 0.0;
             for (int k = qMax(0, i - radius); k <= qMin(m - 1, i + radius); ++k) {

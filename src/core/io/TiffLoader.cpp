@@ -249,4 +249,15 @@ bool TiffLoader::load(const QString& filePath, PointCloudData& outData, QString&
 #endif
 }
 
+std::optional<double> TiffLoader::detectNoDataValue(const cv::Mat& image) {
+#ifdef DEEPLUX_HAS_OPENCV
+    // 阶7 批3复核（P1-1）：公开既有重复极值 NoData 判据，供 3D 插件复用同一策略，
+    // 避免各插件复制检测逻辑
+    return detectRepeatedExtremeNoData(image);
+#else
+    Q_UNUSED(image);
+    return std::nullopt;
+#endif
+}
+
 } // namespace DeepLux

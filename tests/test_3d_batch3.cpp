@@ -230,9 +230,59 @@ private slots:
                  "error must report no valid pixels");
     }
 
+    // 阶7 批3复核（P1-1）：自动 NoData 检测（TiffLoader 重复极值判据）——
+    // 69% 像素为 -21474836 哨兵的高度图，默认参数（筛选关闭）也必须剔除并填充
+    void testPre3DNoDataAutoDetect() {
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(preParams(false, 0.0, 65535.0, 0.0, 0, 0, 0, 0));
+        QVERIFY(plugin.initialize());
+        cv::Mat m(100, 200, CV_32F);
+        for (int y = 0; y < 100; ++y) {
+            for (int x = 0; x < 200; ++x) {
+                m.at<float>(y, x) = (x >= 62) ? -21474836.0f : static_cast<float>(50.0 + 0.1 * x);
+            }
+        }
+        ImageData input(m);
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "auto NoData detect must succeed");
+        QCOMPARE(out.data("filtered_pixel_count").toDouble(), 138.0 * 100.0); // 69% NoData
+        QCOMPARE(out.data("valid_pixel_count").toDouble(), 62.0 * 100.0);
+        QCOMPARE(out.toMat().at<float>(50, 100), 0.0f);                   // NoData → fillValue
+        QVERIFY(std::abs(out.toMat().at<float>(50, 30) - 53.0f) < 1e-3f); // 真实高度保留
+        QCOMPARE(out.data("height_invalid_value").toDouble(), 0.0);       // 契约键写出
+    }
+
+    // 阶7 批3复核（P1-1）：非零 fillValue 串联——FitPlane 自身 invalidValue 参数
+    // 故意设为不匹配哨兵，必须凭输入携带的 height_invalid_value 排除填充像素
+    // （契约不贯通时 -7 平面会彻底摧毁拟合 → 测试变红）
+    void testPre3DNonZeroFillCarriedToDownstream() {
+        PreProcessing3DPlugin pre;
+        pre.setParams(preParams(true, 10.0, 1000.0, -7.0, 0, 0, 0, 0));
+        QVERIFY(pre.initialize());
+        ImageData planeIn(makeTiltedPlane(640, 480, 0.1, -0.2, 50.0));
+        ImageData preOut;
+        QVERIFY2(pre.execute(planeIn, preOut), "preprocess must succeed");
+        QCOMPARE(preOut.data("height_invalid_value").toDouble(), -7.0);
+        QVERIFY2(preOut.data("filtered_pixel_count").toDouble() > 0.0, "some pixels must be filtered");
+
+        FitPlanePlugin fp;
+        fp.setParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, 12345.0)); // 故意不匹配的参数
+        QVERIFY(fp.initialize());
+        ImageData fpOut;
+        QVERIFY2(fp.execute(preOut, fpOut), "fit on preprocessed output must succeed");
+        const double norm = std::sqrt(1.05);
+        QVERIFY2(std::abs(fpOut.data("plane_nx").toDouble() - (-0.1 / norm)) < 1e-3,
+                 "carried invalid value must exclude filled pixels");
+        QVERIFY2(fpOut.data("flatness").toDouble() < 0.01, "flatness must ignore filled pixels");
+    }
+
     void testPre3DValidation() {
         PreProcessing3DPlugin plugin;
         QString error;
+        // 阶7 批3复核（P2-5）：ROI 单维度配置必须拒绝（不得静默退回全图）
+        QVERIFY(!plugin.validateParams(preParams(false, 0.0, 100.0, 0.0, 10, 10, 100, 0), error));
+        QVERIFY(!plugin.validateParams(preParams(false, 0.0, 100.0, 0.0, 10, 10, 0, 100), error));
+        QVERIFY(plugin.validateParams(preParams(false, 0.0, 100.0, 0.0, 10, 10, 100, 100), error));
         QVERIFY(!plugin.validateParams(preParams(true, 50.0, 10.0, 0.0, 0, 0, 0, 0), error)); // min>max
         QVERIFY(!plugin.validateParams(QJsonObject{{"heightFilterEnabled", QStringLiteral("yes")},
                                                    {"heightFilterMin", 0.0},
@@ -305,6 +355,24 @@ private slots:
         const double norm = std::sqrt(1.05);
         QVERIFY2(std::abs(out.data("plane_nx").toDouble() - (-0.1 / norm)) < 1e-3, "nx unaffected by invalid block");
         QVERIFY2(out.data("flatness").toDouble() < 0.01, "flatness on valid pixels only");
+    }
+
+    // 阶7 批3复核（P1-2）：CV_32F 非整数哨兵——-21474.8359 存储后实为
+    // -21474.8359375，double 参数精确比较必须按源精度量化后命中；哨兵块取
+    // 40×40（<5% 有限像素）确保不触发 NoData 自动检测，隔离量化路径
+    void testFitPlaneFloat32Sentinel() {
+        FitPlanePlugin plugin;
+        plugin.setParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, -21474.8359));
+        QVERIFY(plugin.initialize());
+        cv::Mat m = makeTiltedPlane(640, 480, 0.1, -0.2, 50.0);
+        m(cv::Rect(0, 0, 40, 40)).setTo(static_cast<float>(-21474.8359));
+        ImageData input(m);
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "sentinel block must be excluded");
+        QCOMPARE(out.data("valid_pixel_count").toDouble(), 640.0 * 480.0 - 40.0 * 40.0);
+        QVERIFY2(out.data("flatness").toDouble() < 0.01, "sentinel pixels must not enter the fit");
+        const double norm = std::sqrt(1.05);
+        QVERIFY2(std::abs(out.data("plane_nx").toDouble() - (-0.1 / norm)) < 1e-3, "nx unaffected by sentinel");
     }
 
     void testFitPlaneRotatedRoiIgnoresOutside() {
@@ -407,6 +475,10 @@ private slots:
         QVERIFY(!plugin.validateParams(planeParams(0, 0, 0, 0, 400.0, 1.0, 1.0, 1.0, 0.0), error));  // roiAngle>360
         QVERIFY(!plugin.validateParams(planeParams(0, 0, 10.5, 0, 0.0, 1.0, 1.0, 1.0, 0.0), error)); // 非整数长度
         QVERIFY(!plugin.validateParams(planeParams(-1, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, 0.0), error));   // 中心X<0
+        // 阶7 批3复核（P2-5）：ROI 单维度配置必须拒绝
+        QVERIFY(!plugin.validateParams(planeParams(10, 10, 100, 0, 0.0, 1.0, 1.0, 1.0, 0.0), error));
+        QVERIFY(!plugin.validateParams(planeParams(10, 10, 0, 100, 0.0, 1.0, 1.0, 1.0, 0.0), error));
+        QVERIFY(plugin.validateParams(planeParams(10, 10, 100, 50, 0.0, 1.0, 1.0, 1.0, 0.0), error));
         QVERIFY(plugin.validateParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, 0.0), error));
     }
 
@@ -521,6 +593,46 @@ private slots:
                  qPrintable(QString("median must remove spikes, width ~40, got %1").arg(width)));
     }
 
+    // 阶7 批3复核（P1-2）：CV_32F 非整数哨兵条带必须按源精度量化后排除——
+    // 否则条带边界会伪造 ±10787 的斜率极值，宽度测成条带而非真实槽（19≠40）
+    void testGapFloat32Sentinel() {
+        GapMeasure3DPlugin plugin;
+        QJsonObject p = gapParams(320, 240, 200, 5);
+        p["invalidValue"] = -21474.8359;
+        plugin.setParams(p);
+        QVERIFY(plugin.initialize());
+        cv::Mat m = makeGrooveHeight(640, 480, 200, 280, 300, 339, 100.0, 10.0);
+        m(cv::Rect(250, 238, 20, 5)).setTo(static_cast<float>(-21474.8359)); // 截面窗口内、槽外
+        ImageData input(m);
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "sentinel strip must be excluded");
+        QVERIFY2(out.data("gap_found").toBool(), "real groove must still be found");
+        const double width = out.data("gap_width").toDouble();
+        QVERIFY2(std::abs(width - 40.0) < 1.5,
+                 qPrintable(QString("sentinel strip must not fabricate corners, width ~40, got %1").arg(width)));
+    }
+
+    // 阶7 批3复核（P1-3）：两条无效条带夹真实平台——σ=7 高斯半径 21 > 条带
+    // 半宽 10，旧补洞行为会把 100→85→100 混出伪造降/升沿（gap_found=true，
+    // 宽度 ≈40 的假间隙）；NaN 保留后条带两侧不相邻，必须不检出
+    void testGapInvalidBandsNoFabricatedGap() {
+        GapMeasure3DPlugin plugin;
+        QJsonObject p = gapParams(320, 240, 200, 5);
+        p["smoothSigma"] = 7.0;
+        plugin.setParams(p);
+        QVERIFY(plugin.initialize());
+        cv::Mat m(480, 640, CV_32F, cv::Scalar(100.0f));
+        m(cv::Rect(310, 200, 20, 81)).setTo(85.0f); // 真实平台
+        m(cv::Rect(290, 200, 20, 81)).setTo(0.0f);  // 无效条带 1（invalidValue=0）
+        m(cv::Rect(330, 200, 20, 81)).setTo(0.0f);  // 无效条带 2
+        ImageData input(m);
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "must succeed with not-found contract");
+        QVERIFY2(!out.data("gap_found").toBool(), "invalid bands must not fabricate a gap");
+        QCOMPARE(out.data("gap_width").toDouble(), -1.0);
+        QVERIFY2(!out.data("is_pass").toBool(), "not-found must not pass");
+    }
+
     void testGapPixelScaling() {
         GapMeasure3DPlugin plugin;
         QJsonObject p = gapParams(320, 240, 200, 5);
@@ -598,6 +710,21 @@ private slots:
         QJsonObject oddMedian = gapParams(320, 240, 100, 5);
         oddMedian["medianSize"] = 3;
         QVERIFY(plugin.validateParams(oddMedian, error)); // 奇数窗口合法
+        // 阶7 批3复核（P2-4）：roiLength 公开下限与执行需求统一为 5
+        QVERIFY(!plugin.validateParams(
+            [&] {
+                auto p = gapParams(320, 240, 100, 5);
+                p["roiLength"] = 4;
+                return p;
+            }(),
+            error));
+        QVERIFY(plugin.validateParams(
+            [&] {
+                auto p = gapParams(320, 240, 100, 5);
+                p["roiLength"] = 5;
+                return p;
+            }(),
+            error));
     }
 
     void testGapClone() {
@@ -645,13 +772,14 @@ private slots:
         pre.params["heightFilterEnabled"] = true;
         pre.params["heightFilterMin"] = -1000.0;
         pre.params["heightFilterMax"] = 1000.0;
-        pre.params["fillValue"] = 0.0;
+        // 阶7 批3复核（P1-1）：非零 fillValue——下游 FitPlane 不再手工对齐参数，
+        // 必须凭输入携带的 height_invalid_value 排除填充像素
+        pre.params["fillValue"] = -7.0;
         project->addModule(pre);
 
         ModuleInstance fp;
         fp.id = QStringLiteral("fp");
-        fp.moduleId = QStringLiteral("FitPlane");
-        fp.params["invalidValue"] = 0.0;
+        fp.moduleId = QStringLiteral("FitPlane"); // invalidValue 保持默认 0（≠ -7）
         project->addModule(fp);
 
         ModuleConnection c1;
@@ -675,6 +803,7 @@ private slots:
         const ImageData preOut = engine.moduleOutput(QStringLiteral("pre"));
         QVERIFY2(preOut.hasData("valid_pixel_count"), "flow must produce preprocessing stats");
         QCOMPARE(preOut.data("filtered_pixel_count").toDouble(), 40.0 * 40.0);
+        QCOMPARE(preOut.data("height_invalid_value").toDouble(), -7.0);
         QCOMPARE(preOut.toMat().depth(), CV_32F);
 
         const ImageData fpOut = engine.moduleOutput(QStringLiteral("fp"));
@@ -733,6 +862,77 @@ private slots:
         const double width = out.data("gap_width").toDouble();
         QVERIFY2(std::abs(width - 40.0) < 1.5, qPrintable(QString("flow gap width ~40, got %1").arg(width)));
         QVERIFY2(out.data("is_pass").toBool(), "flow gap must pass spec 50");
+    }
+
+    // 流程验收（阶7 批3复核 P1-1 真实回归）：400×300 CV_32F TIFF，69% 像素为
+    // NoData 哨兵 -21474836——默认流程（3DPreProcessing 关闭高度筛选 + FitPlane
+    // 默认参数）必须自动检测哨兵并以非零 fillValue 契约键贯通剔除；
+    // 无自动检测时 69% 哨兵像素进入拟合，平面彻底摧毁 → 测试变红
+    void testFlowNoDataTiffEndToEnd() {
+        RunEngine& engine = RunEngine::instance();
+        ProjectManager::instance().closeProject();
+
+        QTemporaryDir dataDir;
+        QVERIFY(dataDir.isValid());
+        const QString tiffPath = dataDir.filePath("nodata_height.tiff");
+        cv::Mat m(300, 400, CV_32F);
+        for (int y = 0; y < 300; ++y) {
+            for (int x = 0; x < 400; ++x) {
+                m.at<float>(y, x) = (x >= 124) ? -21474836.0f : static_cast<float>(0.05 * x - 0.1 * y + 50.0);
+            }
+        }
+        QVERIFY(cv::imwrite(tiffPath.toStdString(), m)); // 124/400 = 31% 真实，69% NoData
+
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        ModuleInstance grab;
+        grab.id = QStringLiteral("grab");
+        grab.moduleId = QStringLiteral("GrabImage");
+        grab.params["grabSource"] = QStringLiteral("Path");
+        grab.params["filePath"] = tiffPath;
+        project->addModule(grab);
+
+        ModuleInstance pre;
+        pre.id = QStringLiteral("pre");
+        pre.moduleId = QStringLiteral("3DPreProcessing");
+        pre.params["fillValue"] = -7.0; // 高度筛选保持默认关闭
+        project->addModule(pre);
+
+        ModuleInstance fp;
+        fp.id = QStringLiteral("fp");
+        fp.moduleId = QStringLiteral("FitPlane"); // 全默认参数（invalidValue=0 ≠ -7）
+        project->addModule(fp);
+
+        ModuleConnection c1;
+        c1.fromModuleId = QStringLiteral("grab");
+        c1.toModuleId = QStringLiteral("pre");
+        c1.fromPort = QStringLiteral("image");
+        c1.toPort = QStringLiteral("image");
+        c1.edgeType = QStringLiteral("data");
+        project->addConnection(c1);
+        ModuleConnection c2;
+        c2.fromModuleId = QStringLiteral("pre");
+        c2.toModuleId = QStringLiteral("fp");
+        c2.fromPort = QStringLiteral("image");
+        c2.toPort = QStringLiteral("image");
+        c2.edgeType = QStringLiteral("data");
+        project->addConnection(c2);
+
+        QVERIFY(engine.loadProject(project));
+        engine.runOnce();
+
+        const ImageData preOut = engine.moduleOutput(QStringLiteral("pre"));
+        QCOMPARE(preOut.data("filtered_pixel_count").toDouble(), 276.0 * 300.0); // 69% NoData
+        QCOMPARE(preOut.data("valid_pixel_count").toDouble(), 124.0 * 300.0);
+        QCOMPARE(preOut.data("height_invalid_value").toDouble(), -7.0);
+
+        const ImageData fpOut = engine.moduleOutput(QStringLiteral("fp"));
+        QVERIFY2(fpOut.hasData("plane_nz"), "flow must produce plane normal");
+        QCOMPARE(fpOut.data("valid_pixel_count").toDouble(), 124.0 * 300.0);
+        const double norm = std::sqrt(0.05 * 0.05 + 0.1 * 0.1 + 1.0);
+        QVERIFY2(std::abs(fpOut.data("plane_nx").toDouble() - (-0.05 / norm)) < 0.01, "NoData-free nx");
+        QVERIFY2(std::abs(fpOut.data("plane_ny").toDouble() - (0.1 / norm)) < 0.01, "NoData-free ny");
+        QVERIFY2(fpOut.data("flatness").toDouble() < 0.05, "sentinel pixels must not enter the fit");
     }
 };
 

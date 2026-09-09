@@ -1,8 +1,10 @@
 #include "PreProcessing3DPlugin.h"
 
 #include "common/Logger.h"
+#include "core/io/TiffLoader.h"
 
 #include <cmath>
+#include <optional>
 #include <vector>
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -75,6 +77,14 @@ bool PreProcessing3DPlugin::doValidateParams(const QJsonObject& params, QString&
         return false;
     if (!num("roiHeight", 0, 1e6, true, tr("ROI 高度必须为[0,1e6]整数（0=全图）")))
         return false;
+    // 阶7 批3复核（P2-5）：ROI 两个维度必须同时为 0（全图）或同时 >0，
+    // 单维度配置不再静默退回全图
+    const int rw = params[QLatin1String("roiWidth")].toInt();
+    const int rh = params[QLatin1String("roiHeight")].toInt();
+    if ((rw > 0) != (rh > 0)) {
+        error = tr("ROI 宽度与高度必须同时为 0（全图）或同时大于 0");
+        return false;
+    }
     return true;
 }
 
@@ -115,10 +125,15 @@ bool PreProcessing3DPlugin::process(const ImageData& input, ImageData& output) {
         emit errorOccurred(tr("高度图须为 1 或 2 通道，收到 %1 通道").arg(src.channels()));
         return false;
     }
+    // 阶7 批3复核（P1-1）：自动 NoData 检测复用 TiffLoader 重复极值判据
+    // （仅单通道 32/64 位浮点生效）——大幅面高度图常见 ~69% 像素为
+    // -21474836 类哨兵，默认流程不得将其当作有效高度
+    const std::optional<double> noData = TiffLoader::detectNoDataValue(depthSrc);
+
     cv::Mat height;
     depthSrc.convertTo(height, CV_64F);
 
-    // ROI（宽或高 <=0 视为全图）
+    // ROI（宽高必须同为 0 或同 >0，已在参数校验强制）
     const bool roiOn = roiW > 0 && roiH > 0;
     cv::Rect roi(0, 0, height.cols, height.rows);
     if (roiOn) {
@@ -144,6 +159,10 @@ bool PreProcessing3DPlugin::process(const ImageData& input, ImageData& output) {
         for (int x = 0; x < height.cols; ++x) {
             const double v = srcRow[x];
             bool keep = rowInRoi && (!roiOn || (x >= roi.x && x < roi.x + roi.width)) && std::isfinite(v);
+            // 检测到的 NoData 哨兵与源值逐位一致（float→double 无损），精确比较安全
+            if (keep && noData.has_value() && v == *noData) {
+                keep = false;
+            }
             if (keep && filterEnabled) {
                 keep = (v >= hMin && v <= hMax);
             }
@@ -174,6 +193,12 @@ bool PreProcessing3DPlugin::process(const ImageData& input, ImageData& output) {
     output.setData("filtered_pixel_count", static_cast<double>(filtered));
     output.setData("min_height", minH);
     output.setData("max_height", maxH);
+    // 阶7 批3复核（P1-1）：统一无效值契约——实际填充过像素时记录 fillValue，
+    // 下游（FitPlane/GapMeasure3D）优先采用该携带值而非各自参数默认值；
+    // 未填充任何像素时不写键，下游回退自身 invalidValue 参数
+    if (filtered > 0) {
+        output.setData("height_invalid_value", fillValue);
+    }
     Logger::instance().debug(QString("3D预处理: valid=%1 filtered=%2 值域[%3,%4]")
                                  .arg(valid)
                                  .arg(filtered)
