@@ -142,13 +142,21 @@ bool PreProcessing3DPlugin::process(const ImageData& input, ImageData& output) {
     if (carriedVar.isValid() && portValueMatchesType(carriedVar, DataType::Number)) {
         // 阶7 批3复核三轮（P1-2）：哨兵按源图存储精度量化（与下游插件同一规则）
         const double carried = carriedVar.toDouble();
+        double quantized = carried;
         if (depthSrc.depth() == CV_32F) {
-            carriedQ = static_cast<double>(static_cast<float>(carried));
+            quantized = static_cast<double>(static_cast<float>(carried));
         } else if (depthSrc.depth() != CV_64F) {
-            carriedQ = std::nearbyint(carried);
-        } else {
-            carriedQ = carried;
+            quantized = std::nearbyint(carried);
         }
+        // 阶7 批3复核四轮（P1-2）：契约值或其量化结果非有限（NaN/±Inf/
+        // 1e300→float 溢出为 Inf）必须失败关闭——DataType::Number 只验证
+        // QVariant 类型不验证有限性，v==NaN 恒假会让自动检测被无效契约
+        // 关闭后所有有限哨兵全部放行
+        if (!std::isfinite(carried) || !std::isfinite(quantized)) {
+            emit errorOccurred(tr("携带的 height_invalid_value 契约值非法（非有限或量化后溢出）: %1").arg(carried));
+            return false;
+        }
+        carriedQ = quantized;
     }
     // 阶7 批3复核三轮（P1-1/P2-6）：自动 NoData 检测（TiffLoader 重复极值判据）
     // 可经 autoNoData 关闭，且在输入已携带无效值契约时让位——避免误删合法大

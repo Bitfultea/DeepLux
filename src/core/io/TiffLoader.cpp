@@ -16,6 +16,11 @@ namespace DeepLux {
 #ifdef DEEPLUX_HAS_OPENCV
 namespace {
 
+// 阶7 批3复核四轮（P1-1）：NoData 判定间隙下限——重复极值与最近内部值的间隙
+// 必须超过 max(100×内部值域, 1e6) 才视为哨兵（mm 级高度图上 >1km 的孤悬重复
+// 极值即哨兵语义；合法大平台的间隙远低于该下限）
+constexpr double kNoDataGapFloor = 1e6;
+
 std::optional<double> singleChannelValue(const cv::Mat& image, int y, int x) {
     switch (image.depth()) {
     case CV_8U:
@@ -93,32 +98,41 @@ std::optional<double> detectRepeatedExtremeNoData(const cv::Mat& image) {
 
     // 阶7 批3复核三轮（P1-1）：两侧独立评估——旧版 secondMaximum <= secondMinimum
     // 全局防护在"哨兵 + 恒定有效值"（仅两个不同值）时漏检真实 NoData；内部值域
-    // 仅在 secondMax > secondMin 时有定义，否则按 0 处理（分离阈值退化为 1）。
-    // 同时增加量级门禁：候选哨兵绝对值必须远超数据尺度（>= max(1e6, 1e4×参考
-    // 尺度)），防止把合法大面积平台（如 69% 的 -1000 平台 + 0..1 细节）误判为
-    // NoData 而删除有效高度。
+    // 仅在 secondMax > secondMin 时有定义，否则按 0 处理。
+    // 阶7 批3复核四轮（P1-1）：哨兵性 = 重复率 + 与最近内部值的绝对间隙。三轮的
+    // 量级门禁以 |绝对高度| 为数据尺度，对有效高度为大负值的真实图漏检
+    // （-4455.5..-2740 + NoData=-21474836：21.5M < 1e4×4455.5=44.6M）。改为
+    // 间隙下限：重复极值与最近内部值的间隙须 > max(100×内部值域, 1e6)——
+    // mm 级高度图上与全部真实数据相隔 >1e6（>1km）的重复极值即哨兵语义；
+    // 合法大平台（-1000 平台 + 0..1 细节，间隙 1000）仍不被误删。
     const double repeatedThreshold = std::max(16.0, static_cast<double>(finiteCount) * 0.05);
     const double interiorRange =
         (std::isfinite(secondMinimum) && std::isfinite(secondMaximum) && secondMaximum > secondMinimum)
             ? (secondMaximum - secondMinimum)
             : 0.0;
-    const double separationThreshold = std::max(interiorRange * 100.0, 1.0);
-    const auto sentinelLike = [&](double extreme, qint64 count, double nearestInterior, double oppositeExtreme) {
+    const double gapThreshold = std::max(interiorRange * 100.0, kNoDataGapFloor);
+    const auto sentinelLike = [&](double extreme, qint64 count, double nearestInterior) {
         if (count < repeatedThreshold) {
             return false;
         }
         if (!std::isfinite(nearestInterior)) {
             return false; // 除候选极值外无其他值，无法建立分离判据
         }
-        if (std::abs(nearestInterior - extreme) <= separationThreshold) {
-            return false;
-        }
-        const double scaleRef = std::max(std::abs(nearestInterior), std::abs(oppositeExtreme));
-        return std::abs(extreme) > std::max(1e6, scaleRef * 1e4);
+        return std::abs(nearestInterior - extreme) > gapThreshold;
     };
-    const bool minimumIsNoData = sentinelLike(minimum, minimumCount, secondMinimum, maximum);
-    const bool maximumIsNoData = sentinelLike(maximum, maximumCount, secondMaximum, minimum);
+    const bool minimumIsNoData = sentinelLike(minimum, minimumCount, secondMinimum);
+    const bool maximumIsNoData = sentinelLike(maximum, maximumCount, secondMaximum);
 
+    if (minimumIsNoData && maximumIsNoData) {
+        // 阶7 批3复核四轮（P1-1）：两侧同时满足重复率与间隙判据（如"哨兵+恒定
+        // 有效值"的两值图，互为最近内部值）——取绝对值更大侧为哨兵：两侧均已
+        // 与数据相隔 >1e6，距 0 更远者才符合存储哨兵语义（-21474836/-3.4e38/
+        // 1e30 类）；绝对值相等视为歧义，不删除任何数据
+        if (std::abs(minimum) == std::abs(maximum)) {
+            return std::nullopt;
+        }
+        return std::abs(minimum) > std::abs(maximum) ? minimum : maximum;
+    }
     if (minimumIsNoData == maximumIsNoData) {
         return std::nullopt;
     }
@@ -138,6 +152,20 @@ bool TiffLoader::load(const QString& filePath, PointCloudData& outData, QString&
     }
     if (config.validMin && config.validMax && *config.validMin > *config.validMax) {
         errorMsg = "TIFF valid minimum must not exceed valid maximum";
+        return false;
+    }
+    // 阶7 批3复核四轮（P2-3）：显式哨兵/有效范围必须有限——invalidValue=NaN 会
+    // 关闭自动检测且后续所有比较恒假，统一在读取图像前失败关闭
+    if (config.invalidValue && !std::isfinite(*config.invalidValue)) {
+        errorMsg = "TIFF explicit invalid value must be finite";
+        return false;
+    }
+    if (config.validMin && !std::isfinite(*config.validMin)) {
+        errorMsg = "TIFF valid minimum must be finite";
+        return false;
+    }
+    if (config.validMax && !std::isfinite(*config.validMax)) {
+        errorMsg = "TIFF valid maximum must be finite";
         return false;
     }
 

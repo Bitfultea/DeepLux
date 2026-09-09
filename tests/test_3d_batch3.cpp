@@ -298,6 +298,81 @@ private slots:
         QCOMPARE(out.data("height_invalid_value").toDouble(), 0.0);
     }
 
+    // 阶7 批3复核四轮（P1-1）：真实图有效高度为大负值（-4455.5..-2740，
+    // NoData=-21474836 占 69%）——三轮量级门禁用绝对高度作数据尺度
+    // （1e4×4455.5=44.6M > 21.5M）漏检，哨兵全部进入计算；绝对间隙下限
+    // （>1e6）与高度偏置无关，必须检出
+    void testPre3DLargeNegativeValidRangeNoData() {
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(preParams(false, 0.0, 65535.0, 0.0, 0, 0, 0, 0));
+        QVERIFY(plugin.initialize());
+        cv::Mat m(100, 200, CV_32F);
+        for (int y = 0; y < 100; ++y) {
+            for (int x = 0; x < 200; ++x) {
+                if (x >= 62) {
+                    m.at<float>(y, x) = -21474836.0f; // 69% NoData
+                } else {
+                    const double t = ((x % 62) + y) / 160.0; // 0..1
+                    m.at<float>(y, x) = static_cast<float>(-4455.5 + 1715.5 * t);
+                }
+            }
+        }
+        ImageData input(m);
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "large-negative valid range NoData must be detected");
+        QCOMPARE(out.data("filtered_pixel_count").toDouble(), 138.0 * 100.0);
+        QCOMPARE(out.data("valid_pixel_count").toDouble(), 62.0 * 100.0);
+        QVERIFY(std::abs(out.data("min_height").toDouble() - (-4455.5)) < 0.5);
+        QVERIFY(std::abs(out.data("max_height").toDouble() - (-2740.0)) < 0.5);
+        QCOMPARE(out.toMat().at<float>(50, 100), 0.0f); // NoData → fillValue
+        QCOMPARE(out.data("height_invalid_value").toDouble(), 0.0);
+    }
+
+    // 阶7 批3复核四轮（P1-2）：非有限携带契约值（NaN/±Inf/1e300 经 float
+    // 量化溢出为 Inf）三插件都必须失败关闭——DataType::Number 只验证 QVariant
+    // 类型不验证有限性，无效契约会关闭自动检测且 v==NaN 恒假，令有限哨兵全部放行
+    void testCarriedContractNonFiniteRejected() {
+        cv::Mat m = makeTiltedPlane(200, 100, 0.1, -0.2, 50.0); // CV_32F
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const double inf = std::numeric_limits<double>::infinity();
+        const QVector<double> badValues{nan, inf, -inf, 1e300};
+
+        for (const double bad : badValues) {
+            PreProcessing3DPlugin pre;
+            pre.setParams(preParams(false, 0.0, 65535.0, -7.0, 0, 0, 0, 0));
+            QVERIFY(pre.initialize());
+            ImageData inPre(m);
+            inPre.setData("height_invalid_value", bad);
+            QSignalSpy spyPre(&pre, &DeepLux::IModule::errorOccurred);
+            ImageData outPre;
+            QVERIFY2(!pre.execute(inPre, outPre), qPrintable(QString("3DPre must reject carried %1").arg(bad)));
+            QVERIFY2(spyPre.count() >= 1 && spyPre.first().at(0).toString().contains(QStringLiteral("契约值非法")),
+                     "error must report illegal contract value");
+
+            FitPlanePlugin fp;
+            fp.setParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, 0.0));
+            QVERIFY(fp.initialize());
+            ImageData inFp(m);
+            inFp.setData("height_invalid_value", bad);
+            QSignalSpy spyFp(&fp, &DeepLux::IModule::errorOccurred);
+            ImageData outFp;
+            QVERIFY2(!fp.execute(inFp, outFp), qPrintable(QString("FitPlane must reject carried %1").arg(bad)));
+            QVERIFY2(spyFp.count() >= 1 && spyFp.first().at(0).toString().contains(QStringLiteral("契约值非法")),
+                     "error must report illegal contract value");
+
+            GapMeasure3DPlugin gap;
+            gap.setParams(gapParams(100, 50, 100, 5));
+            QVERIFY(gap.initialize());
+            ImageData inGap(m);
+            inGap.setData("height_invalid_value", bad);
+            QSignalSpy spyGap(&gap, &DeepLux::IModule::errorOccurred);
+            ImageData outGap;
+            QVERIFY2(!gap.execute(inGap, outGap), qPrintable(QString("GapMeasure3D must reject carried %1").arg(bad)));
+            QVERIFY2(spyGap.count() >= 1 && spyGap.first().at(0).toString().contains(QStringLiteral("契约值非法")),
+                     "error must report illegal contract value");
+        }
+    }
+
     // 阶7 批3复核三轮（P1-1）：autoNoData=false 必须完全关闭检测——哨兵按用户
     // 语义保留为有效高度，不填充、不写契约键
     void testPre3DAutoNoDataDisabled() {

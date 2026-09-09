@@ -19,6 +19,7 @@ private slots:
     void testNegativeAndFlatHeightsRemainValid();
     void testExplicitValidRange();
     void testExplicitInvalidValueQuantizedToFloat();
+    void testConfigNonFiniteRejected();
 };
 
 void TestTiffLoader::testRgb16TiffKeepsColorDepth() {
@@ -173,6 +174,38 @@ void TestTiffLoader::testExplicitInvalidValueQuantizedToFloat() {
     QCOMPARE(static_cast<int>(data.points.size()), 2);
     QVERIFY(qAbs(data.points[0].z() - 1.0) < 1e-6);
     QVERIFY(qAbs(data.points[1].z() - 2.0) < 1e-6);
+#endif
+}
+
+// 阶7 批3复核四轮（P2-3）：显式 invalidValue/validMin/validMax 非有限必须在
+// 读取图像前失败关闭——invalidValue=NaN 会阻止自动检测且后续比较全部恒假
+void TestTiffLoader::testConfigNonFiniteRejected() {
+#ifndef DEEPLUX_HAS_OPENCV
+    QSKIP("OpenCV not available");
+#else
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString path = dir.filePath("plain.tiff");
+    cv::Mat img(1, 2, CV_32F, cv::Scalar(1.0f));
+    QVERIFY(cv::imwrite(path.toStdString(), img));
+
+    PointCloudData data;
+    QString error;
+    TiffLoader::Config nanInvalid;
+    nanInvalid.invalidValue = std::numeric_limits<double>::quiet_NaN();
+    QVERIFY2(!TiffLoader::load(path, data, error, nanInvalid), "NaN invalidValue must fail");
+    QVERIFY(error.contains(QLatin1String("finite")));
+
+    TiffLoader::Config infMin;
+    infMin.validMin = -std::numeric_limits<double>::infinity();
+    QVERIFY2(!TiffLoader::load(path, data, error, infMin), "-Inf validMin must fail");
+    QVERIFY(error.contains(QLatin1String("finite")));
+
+    TiffLoader::Config nanMax;
+    nanMax.validMax = std::numeric_limits<double>::quiet_NaN();
+    QVERIFY2(!TiffLoader::load(path, data, error, nanMax), "NaN validMax must fail");
+    QVERIFY(error.contains(QLatin1String("finite")));
 #endif
 }
 

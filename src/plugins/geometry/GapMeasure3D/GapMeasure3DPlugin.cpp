@@ -183,6 +183,13 @@ bool GapMeasure3DPlugin::process(const ImageData& input, ImageData& output) {
     } else if (src.depth() != CV_64F) {
         invalidQ = std::nearbyint(invalid);
     }
+    // 阶7 批3复核四轮（P1-2）：携带契约值或其量化结果非有限（NaN/±Inf/
+    // 1e300→float Inf）必须失败关闭——否则自动检测被携带值关闭且 v==NaN
+    // 恒假，有限哨兵全部进入剖面（参数 invalidValue 已由校验保证有限）
+    if (hasCarried && (!std::isfinite(invalid) || !std::isfinite(invalidQ))) {
+        emit errorOccurred(tr("携带的 height_invalid_value 契约值非法（非有限或量化后溢出）: %1").arg(invalid));
+        return false;
+    }
     // 阶7 批3复核三轮（P1-1/P2-6）：自动检测可经 autoNoData 关闭，且输入已携带
     // 无效值契约时让位（不重复判定、不误删合法平台，并省去整幅图两遍扫描——
     // 即使只处理很小的截面 ROI）
