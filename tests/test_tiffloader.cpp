@@ -18,6 +18,7 @@ private slots:
     void testFloatTiffFiltersNoDataWithoutChangingGeometry();
     void testNegativeAndFlatHeightsRemainValid();
     void testExplicitValidRange();
+    void testExplicitInvalidValueQuantizedToFloat();
 };
 
 void TestTiffLoader::testRgb16TiffKeepsColorDepth() {
@@ -142,6 +143,36 @@ void TestTiffLoader::testExplicitValidRange() {
     QCOMPARE(static_cast<int>(data.points.size()), 3);
     QCOMPARE(data.points.front().z(), 10.0);
     QCOMPARE(data.points.back().z(), 30.0);
+#endif
+}
+
+// 阶7 批3复核三轮（P2-5）：显式 Config.invalidValue 按源图存储精度量化——
+// 非整数哨兵 -21474.8359 写入 CV_32F 后实为 -21474.8359375，旧版 double
+// 精确比较失配、哨兵像素混入点云
+void TestTiffLoader::testExplicitInvalidValueQuantizedToFloat() {
+#ifndef DEEPLUX_HAS_OPENCV
+    QSKIP("OpenCV not available");
+#else
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString path = dir.filePath("sentinel.tiff");
+    cv::Mat img(1, 3, CV_32F);
+    img.at<float>(0, 0) = static_cast<float>(-21474.8359);
+    img.at<float>(0, 1) = 1.0f;
+    img.at<float>(0, 2) = 2.0f;
+    QVERIFY(cv::imwrite(path.toStdString(), img));
+
+    TiffLoader::Config config;
+    config.autoDetectNoData = false; // 隔离显式哨兵路径
+    config.invalidValue = -21474.8359;
+
+    PointCloudData data;
+    QString error;
+    QVERIFY2(TiffLoader::load(path, data, error, config), qPrintable(error));
+    QCOMPARE(static_cast<int>(data.points.size()), 2);
+    QVERIFY(qAbs(data.points[0].z() - 1.0) < 1e-6);
+    QVERIFY(qAbs(data.points[1].z() - 2.0) < 1e-6);
 #endif
 }
 

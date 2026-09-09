@@ -53,6 +53,7 @@ QJsonObject preParams(bool filterOn, double hMin, double hMax, double fill, int 
                        {"heightFilterMin", hMin},
                        {"heightFilterMax", hMax},
                        {"fillValue", fill},
+                       {"autoNoData", true},
                        {"roiCenterX", cx},
                        {"roiCenterY", cy},
                        {"roiWidth", rw},
@@ -61,17 +62,18 @@ QJsonObject preParams(bool filterOn, double hMin, double hMax, double fill, int 
 
 QJsonObject planeParams(double cx, double cy, double l1, double l2, double ang, double px, double py, double zs,
                         double invalid) {
-    return QJsonObject{{"roiCenterX", cx}, {"roiCenterY", cy}, {"roiLength1", l1},
-                       {"roiLength2", l2}, {"roiAngle", ang},  {"pixelSizeX", px},
-                       {"pixelSizeY", py}, {"zScale", zs},     {"invalidValue", invalid}};
+    return QJsonObject{{"roiCenterX", cx},        {"roiCenterY", cy},  {"roiLength1", l1}, {"roiLength2", l2},
+                       {"roiAngle", ang},         {"pixelSizeX", px},  {"pixelSizeY", py}, {"zScale", zs},
+                       {"invalidValue", invalid}, {"autoNoData", true}};
 }
 
 QJsonObject gapParams(double cx, double cy, int len, int rows) {
-    return QJsonObject{{"roiCenterX", cx},   {"roiCenterY", cy},       {"roiLength", len},
-                       {"roiHeight", rows},  {"pixelSizeX", 1.0},      {"zScale", 1.0},
-                       {"smoothSigma", 1.0}, {"medianSize", 0},        {"derivativeThreshold", 0.05},
-                       {"edgeTrim", 2},      {"minPeakDistance", 5},   {"invalidValue", 0.0},
-                       {"offsetMm", 0.0},    {"specUpperLimit", 50.0}, {"measureFailValue", -1.0}};
+    return QJsonObject{{"roiCenterX", cx},        {"roiCenterY", cy},     {"roiLength", len},
+                       {"roiHeight", rows},       {"pixelSizeX", 1.0},    {"zScale", 1.0},
+                       {"smoothSigma", 1.0},      {"medianSize", 0},      {"derivativeThreshold", 0.05},
+                       {"edgeTrim", 2},           {"minPeakDistance", 5}, {"invalidValue", 0.0},
+                       {"autoNoData", true},      {"offsetMm", 0.0},      {"specUpperLimit", 50.0},
+                       {"measureFailValue", -1.0}};
 }
 } // namespace
 
@@ -252,6 +254,135 @@ private slots:
         QCOMPARE(out.data("height_invalid_value").toDouble(), 0.0);       // 契约键写出
     }
 
+    // 阶7 批3复核三轮（P1-1）：合法大面积平台不得误删——69% 像素为合法恒定
+    // 平台 -1000 + 31% 细节 0..0.62，旧判据（无量级门禁）会把平台判为 NoData
+    void testPre3DFlatValidPlateauNotRemoved() {
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(preParams(false, 0.0, 65535.0, 0.0, 0, 0, 0, 0));
+        QVERIFY(plugin.initialize());
+        cv::Mat m(100, 200, CV_32F);
+        for (int y = 0; y < 100; ++y) {
+            for (int x = 0; x < 200; ++x) {
+                m.at<float>(y, x) = (x < 138) ? -1000.0f : static_cast<float>(0.01 * (x - 138) + 0.005 * (y % 3));
+            }
+        }
+        ImageData input(m);
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "legit plateau must survive");
+        QCOMPARE(out.data("filtered_pixel_count").toDouble(), 0.0);
+        QCOMPARE(out.data("valid_pixel_count").toDouble(), 200.0 * 100.0);
+        QVERIFY2(!out.hasData("height_invalid_value"), "no fill must not write contract key");
+        QCOMPARE(out.toMat().at<float>(50, 50), -1000.0f);
+    }
+
+    // 阶7 批3复核三轮（P1-1）：哨兵 + 恒定有效值（全图仅两个不同值）——旧版
+    // secondMaximum <= secondMinimum 全局防护返回 nullopt 漏检，NoData 全部进入
+    // 计算；两侧独立评估后必须检出
+    void testPre3DConstantValidWithNoDataDetected() {
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(preParams(false, 0.0, 65535.0, 0.0, 0, 0, 0, 0));
+        QVERIFY(plugin.initialize());
+        cv::Mat m(100, 200, CV_32F);
+        for (int y = 0; y < 100; ++y) {
+            for (int x = 0; x < 200; ++x) {
+                m.at<float>(y, x) = (x >= 62) ? -21474836.0f : 42.0f;
+            }
+        }
+        ImageData input(m);
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "sentinel + constant valid must be detected");
+        QCOMPARE(out.data("filtered_pixel_count").toDouble(), 138.0 * 100.0);
+        QCOMPARE(out.data("valid_pixel_count").toDouble(), 62.0 * 100.0);
+        QCOMPARE(out.data("min_height").toDouble(), 42.0);
+        QCOMPARE(out.data("max_height").toDouble(), 42.0);
+        QCOMPARE(out.data("height_invalid_value").toDouble(), 0.0);
+    }
+
+    // 阶7 批3复核三轮（P1-1）：autoNoData=false 必须完全关闭检测——哨兵按用户
+    // 语义保留为有效高度，不填充、不写契约键
+    void testPre3DAutoNoDataDisabled() {
+        QJsonObject p = preParams(false, 0.0, 65535.0, 0.0, 0, 0, 0, 0);
+        p["autoNoData"] = false;
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(p);
+        QVERIFY(plugin.initialize());
+        cv::Mat m(100, 200, CV_32F);
+        for (int y = 0; y < 100; ++y) {
+            for (int x = 0; x < 200; ++x) {
+                m.at<float>(y, x) = (x >= 62) ? -21474836.0f : 42.0f;
+            }
+        }
+        ImageData input(m);
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "disabled detection must keep all finite pixels");
+        QCOMPARE(out.data("filtered_pixel_count").toDouble(), 0.0);
+        QCOMPARE(out.toMat().at<float>(50, 100), -21474836.0f);
+        QVERIFY2(!out.hasData("height_invalid_value"), "no fill must not write contract key");
+    }
+
+    // 阶7 批3复核三轮（P1-2）：有限填充值与存活合法高度相同（合法零平面 +
+    // 1 个 NaN，fillValue=0）时契约无法区分填充与合法像素——必须失败关闭，
+    // 不得写出歧义键让下游删除全部合法零高度
+    void testPre3DFillCollisionFails() {
+        cv::Mat m(480, 640, CV_32F, cv::Scalar(0.0f)); // 合法零平面
+        m.at<float>(10, 10) = std::numeric_limits<float>::quiet_NaN();
+        ImageData input(m);
+
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(preParams(false, 0.0, 65535.0, 0.0, 0, 0, 0, 0)); // fill=0 与合法高度碰撞
+        QVERIFY(plugin.initialize());
+        QSignalSpy errSpy(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData out;
+        QVERIFY2(!plugin.execute(input, out), "fill/valid collision must fail closed");
+        QVERIFY2(errSpy.count() >= 1 && errSpy.first().at(0).toString().contains(QStringLiteral("碰撞")),
+                 qPrintable(QString("error must report collision, got: %1")
+                                .arg(errSpy.count() ? errSpy.first().at(0).toString() : QString())));
+
+        // 不碰撞的填充值：成功且契约键/填充像素正确
+        PreProcessing3DPlugin ok;
+        ok.setParams(preParams(false, 0.0, 65535.0, -7.0, 0, 0, 0, 0));
+        QVERIFY(ok.initialize());
+        ImageData out2;
+        QVERIFY2(ok.execute(input, out2), "non-colliding fill must succeed");
+        QCOMPARE(out2.data("height_invalid_value").toDouble(), -7.0);
+        QCOMPARE(out2.toMat().at<float>(10, 10), -7.0f);
+        QCOMPARE(out2.data("filtered_pixel_count").toDouble(), 1.0);
+    }
+
+    // 阶7 批3复核三轮（P1-3）：两级预处理串联——第二级必须消费第一级契约并把
+    // 旧填充值统一转为本次 fillValue；否则第二级写出的新契约键掩盖旧填充值，
+    // -7 像素泄漏进 FitPlane 摧毁平面度
+    void testPre3DConsumesUpstreamContract() {
+        // 平面值域 [-45.8,113.9]，填充值取 -100/-200（值域外，规避碰撞门禁——
+        // 门禁本身由 testPre3DFillCollisionFails 覆盖）
+        PreProcessing3DPlugin pre1;
+        pre1.setParams(preParams(false, 0.0, 65535.0, -100.0, 0, 0, 0, 0));
+        QVERIFY(pre1.initialize());
+        cv::Mat m = makeTiltedPlane(640, 480, 0.1, -0.2, 50.0);
+        m(cv::Rect(200, 200, 10, 10)).setTo(std::numeric_limits<float>::quiet_NaN());
+        ImageData in1(m);
+        ImageData mid;
+        QVERIFY2(pre1.execute(in1, mid), "pre1 must succeed");
+        QCOMPARE(mid.data("height_invalid_value").toDouble(), -100.0);
+
+        // pre2：筛选关闭但 ROI 裁边 → filtered>0 → 契约键将被覆盖为 -200
+        PreProcessing3DPlugin pre2;
+        pre2.setParams(preParams(false, 0.0, 65535.0, -200.0, 320, 240, 400, 300));
+        QVERIFY(pre2.initialize());
+        ImageData mid2;
+        QVERIFY2(pre2.execute(mid, mid2), "pre2 must succeed");
+        QCOMPARE(mid2.data("height_invalid_value").toDouble(), -200.0);
+        QCOMPARE(mid2.toMat().at<float>(205, 205), -200.0f); // 上游 -100 已转为 -200
+
+        FitPlanePlugin fp;
+        fp.setParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, 0.0)); // 仅凭携带契约
+        QVERIFY(fp.initialize());
+        ImageData fpOut;
+        QVERIFY2(fp.execute(mid2, fpOut), "fit must succeed");
+        QVERIFY2(fpOut.data("flatness").toDouble() < 0.01, "leaked -100 pixels would destroy flatness");
+        QCOMPARE(fpOut.data("valid_pixel_count").toDouble(), mid2.data("valid_pixel_count").toDouble());
+    }
+
     // 阶7 批3复核（P1-1）：非零 fillValue 串联——FitPlane 自身 invalidValue 参数
     // 故意设为不匹配哨兵，必须凭输入携带的 height_invalid_value 排除填充像素
     // （契约不贯通时 -7 平面会彻底摧毁拟合 → 测试变红）
@@ -303,6 +434,14 @@ private slots:
                                                    {"roiHeight", 0}},
                                        error)); // ROI 宽度必须整数
         QVERIFY(plugin.validateParams(preParams(true, -5.0, 100.0, 0.0, 10, 10, 20, 20), error));
+        // 阶7 批3复核三轮（P1-1）：autoNoData 布尔严格
+        QVERIFY(!plugin.validateParams(
+            [&] {
+                auto p = preParams(false, 0.0, 100.0, 0.0, 0, 0, 0, 0);
+                p["autoNoData"] = QStringLiteral("yes");
+                return p;
+            }(),
+            error));
     }
 
     void testPre3DClone() {
@@ -373,6 +512,41 @@ private slots:
         QVERIFY2(out.data("flatness").toDouble() < 0.01, "sentinel pixels must not enter the fit");
         const double norm = std::sqrt(1.05);
         QVERIFY2(std::abs(out.data("plane_nx").toDouble() - (-0.1 / norm)) < 1e-3, "nx unaffected by sentinel");
+    }
+
+    // 阶7 批3复核三轮（P1-1/P2-6）：自动检测的让位与开关——哨兵块 31% 像素：
+    // (a) 输入携带契约键 → 检测让位，哨兵不被剔除（用户显式接管语义）；
+    // (b) autoNoData=false → 同样不检测；(c) 无携带且开启 → 哨兵被检出剔除
+    void testFitPlaneCarriedSkipsAutoDetect() {
+        cv::Mat m = makeTiltedPlane(640, 480, 0.1, -0.2, 50.0);
+        m(cv::Rect(0, 0, 200, 480)).setTo(-21474836.0f); // 96000 像素 = 31% >= 5%
+
+        FitPlanePlugin carriedFp;
+        carriedFp.setParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, -99999.0));
+        QVERIFY(carriedFp.initialize());
+        ImageData in1(m);
+        in1.setData("height_invalid_value", -12345.0); // 携带契约（值不在图中）
+        ImageData out1;
+        QVERIFY2(carriedFp.execute(in1, out1), "carried input must succeed");
+        QCOMPARE(out1.data("valid_pixel_count").toDouble(), 640.0 * 480.0); // 检测让位
+
+        QJsonObject off = planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, -99999.0);
+        off["autoNoData"] = false;
+        FitPlanePlugin offFp;
+        offFp.setParams(off);
+        QVERIFY(offFp.initialize());
+        ImageData in2(m);
+        ImageData out2;
+        QVERIFY2(offFp.execute(in2, out2), "autoNoData=false must succeed");
+        QCOMPARE(out2.data("valid_pixel_count").toDouble(), 640.0 * 480.0);
+
+        FitPlanePlugin autoFp;
+        autoFp.setParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, -99999.0));
+        QVERIFY(autoFp.initialize());
+        ImageData in3(m);
+        ImageData out3;
+        QVERIFY2(autoFp.execute(in3, out3), "auto detection must succeed");
+        QCOMPARE(out3.data("valid_pixel_count").toDouble(), 440.0 * 480.0); // 哨兵被检出剔除
     }
 
     void testFitPlaneRotatedRoiIgnoresOutside() {
@@ -480,6 +654,14 @@ private slots:
         QVERIFY(!plugin.validateParams(planeParams(10, 10, 0, 100, 0.0, 1.0, 1.0, 1.0, 0.0), error));
         QVERIFY(plugin.validateParams(planeParams(10, 10, 100, 50, 0.0, 1.0, 1.0, 1.0, 0.0), error));
         QVERIFY(plugin.validateParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, 0.0), error));
+        // 阶7 批3复核三轮（P1-1）：autoNoData 布尔严格
+        QVERIFY(!plugin.validateParams(
+            [&] {
+                auto p = planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, 0.0);
+                p["autoNoData"] = QStringLiteral("yes");
+                return p;
+            }(),
+            error));
     }
 
     void testFitPlaneClone() {
@@ -633,6 +815,36 @@ private slots:
         QVERIFY2(!out.data("is_pass").toBool(), "not-found must not pass");
     }
 
+    // 阶7 批3复核三轮（P1-1）：GapMeasure3D autoNoData 开关——整列哨兵带
+    // x∈[240,289]（24000 像素，检出条件满足）：开启时带 → NaN，真实槽
+    // （300..339）照常测得 40；关闭时哨兵进入截面，伪造 ~50 宽假间隙
+    void testGapAutoNoDataToggle() {
+        cv::Mat m = makeGrooveHeight(640, 480, 200, 280, 300, 339, 100.0, 10.0);
+        m(cv::Rect(240, 0, 50, 480)).setTo(-21474836.0f);
+
+        GapMeasure3DPlugin onP;
+        onP.setParams(gapParams(320, 240, 200, 5));
+        QVERIFY(onP.initialize());
+        ImageData in1(m);
+        ImageData out1;
+        QVERIFY2(onP.execute(in1, out1), "auto NoData on must succeed");
+        QVERIFY2(out1.data("gap_found").toBool(), "real groove must be found with sentinel excluded");
+        QVERIFY2(std::abs(out1.data("gap_width").toDouble() - 40.0) < 1.5, "width ~40");
+
+        QJsonObject off = gapParams(320, 240, 200, 5);
+        off["autoNoData"] = false;
+        GapMeasure3DPlugin offP;
+        offP.setParams(off);
+        QVERIFY(offP.initialize());
+        ImageData in2(m);
+        ImageData out2;
+        QVERIFY2(offP.execute(in2, out2), "auto NoData off must succeed");
+        QVERIFY2(out2.data("gap_found").toBool(), "sentinel band fabricates edges when not excluded");
+        QVERIFY2(
+            std::abs(out2.data("gap_width").toDouble() - 50.0) < 3.0,
+            qPrintable(QString("fabricated width ~50 (sentinel band), got %1").arg(out2.data("gap_width").toDouble())));
+    }
+
     void testGapPixelScaling() {
         GapMeasure3DPlugin plugin;
         QJsonObject p = gapParams(320, 240, 200, 5);
@@ -722,6 +934,14 @@ private slots:
             [&] {
                 auto p = gapParams(320, 240, 100, 5);
                 p["roiLength"] = 5;
+                return p;
+            }(),
+            error));
+        // 阶7 批3复核三轮（P1-1）：autoNoData 布尔严格
+        QVERIFY(!plugin.validateParams(
+            [&] {
+                auto p = gapParams(320, 240, 100, 5);
+                p["autoNoData"] = QStringLiteral("yes");
                 return p;
             }(),
             error));

@@ -23,9 +23,9 @@ constexpr double kFitConditionEps = 1e-9; // 设计矩阵秩亏/严重病态阈�
 } // namespace
 
 FitPlanePlugin::FitPlanePlugin(QObject* parent) : ModuleBase(parent) {
-    m_defaultParams = QJsonObject{{"roiCenterX", 0},   {"roiCenterY", 0}, {"roiLength1", 0},
-                                  {"roiLength2", 0},   {"roiAngle", 0.0}, {"pixelSizeX", 1.0},
-                                  {"pixelSizeY", 1.0}, {"zScale", 1.0},   {"invalidValue", 0.0}};
+    m_defaultParams = QJsonObject{{"roiCenterX", 0},     {"roiCenterY", 0},   {"roiLength1", 0},   {"roiLength2", 0},
+                                  {"roiAngle", 0.0},     {"pixelSizeX", 1.0}, {"pixelSizeY", 1.0}, {"zScale", 1.0},
+                                  {"invalidValue", 0.0}, {"autoNoData", true}};
     m_params = m_defaultParams;
 }
 
@@ -97,6 +97,11 @@ bool FitPlanePlugin::doValidateParams(const QJsonObject& params, QString& error)
     }
     if (!num("invalidValue", -1e9, 1e9, false, tr("无效值必须为[-1e9,1e9]有限数")))
         return false;
+    // 阶7 批3复核三轮（P1-1）：自动 NoData 检测必须可关闭
+    if (!params[QLatin1String("autoNoData")].isBool()) {
+        error = tr("autoNoData 必须为布尔");
+        return false;
+    }
     return true;
 }
 
@@ -117,6 +122,7 @@ bool FitPlanePlugin::process(const ImageData& input, ImageData& output) {
     const double pixelSizeY = params["pixelSizeY"].toDouble();
     const double zScale = params["zScale"].toDouble();
     const double invalidValue = params["invalidValue"].toDouble();
+    const bool autoNoData = params["autoNoData"].toBool();
 
 #ifdef DEEPLUX_HAS_OPENCV
     cv::Mat src = input.toMat();
@@ -161,7 +167,8 @@ bool FitPlanePlugin::process(const ImageData& input, ImageData& output) {
     // 浮点高度图再叠加 TiffLoader 重复极值判据的自动 NoData 检测
     double invalid = invalidValue;
     const QVariant carriedInvalid = input.data("height_invalid_value");
-    if (carriedInvalid.isValid() && portValueMatchesType(carriedInvalid, DataType::Number)) {
+    const bool hasCarried = carriedInvalid.isValid() && portValueMatchesType(carriedInvalid, DataType::Number);
+    if (hasCarried) {
         invalid = carriedInvalid.toDouble();
     }
     // 阶7 批3复核（P1-2）：哨兵按源图存储精度量化——-21474.8359 写入 CV_32F 后
@@ -172,7 +179,10 @@ bool FitPlanePlugin::process(const ImageData& input, ImageData& output) {
     } else if (src.depth() != CV_64F) {
         invalidQ = std::nearbyint(invalid);
     }
-    const std::optional<double> noData = TiffLoader::detectNoDataValue(src);
+    // 阶7 批3复核三轮（P1-1/P2-6）：自动检测可经 autoNoData 关闭，且输入已携带
+    // 无效值契约时让位（不重复判定、不误删合法平台，并省去整幅图两遍扫描）
+    const std::optional<double> noData =
+        (autoNoData && !hasCarried) ? TiffLoader::detectNoDataValue(src) : std::nullopt;
     const auto isInvalid = [&](double v) {
         return !std::isfinite(v) || v == invalidQ || (noData.has_value() && v == *noData);
     };
@@ -342,6 +352,7 @@ bool FitPlanePlugin::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(pixelSizeY);
     Q_UNUSED(zScale);
     Q_UNUSED(invalidValue);
+    Q_UNUSED(autoNoData);
     emit errorOccurred(tr("FitPlane 需要 OpenCV 支持"));
     return false;
 #endif

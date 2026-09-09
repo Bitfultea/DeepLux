@@ -9,7 +9,8 @@ namespace DeepLux {
 // 平面拟合 z = aX+bY+c（X/Y 为 pixelSize 缩放物理坐标，z 乘 zScale）。
 // 无效值契约：输入携带的 height_invalid_value（3DPreProcessing 写出）优先于
 // 自身 invalidValue 参数，哨兵按源图存储精度量化（CV_32F 非整数哨兵可精确
-// 匹配），浮点高度图叠加 TiffLoader 重复极值 NoData 自动检测。
+// 匹配）；TiffLoader 重复极值 NoData 自动检测可经 autoNoData 关闭，且输入
+// 已携带契约时让位（不重复判定、不误删合法平台、省去整幅扫描）。
 // 拟合为多遍扫描累计正规方程（O(1) 内存），去质心+RMS 归一化的特征值门禁
 // 拒绝共线/秩亏/严重病态（对平移/尺度不变，与批2五轮 SVD 门禁同一判据），
 // 每行响应取消令牌。输出法向量/平面距离/平面度（最大-最小偏差）/偏差极值/

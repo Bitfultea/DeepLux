@@ -1,8 +1,10 @@
 #include "PreProcessing3DPlugin.h"
 
 #include "common/Logger.h"
+#include "core/deeplux/DataContract.h"
 #include "core/io/TiffLoader.h"
 
+#include <QVariant>
 #include <cmath>
 #include <optional>
 #include <vector>
@@ -18,6 +20,7 @@ PreProcessing3DPlugin::PreProcessing3DPlugin(QObject* parent) : ModuleBase(paren
                                   {"heightFilterMin", 0.0},
                                   {"heightFilterMax", 65535.0},
                                   {"fillValue", 0.0},
+                                  {"autoNoData", true},
                                   {"roiCenterX", 0},
                                   {"roiCenterY", 0},
                                   {"roiWidth", 0},
@@ -43,6 +46,11 @@ bool PreProcessing3DPlugin::doValidateParams(const QJsonObject& params, QString&
     error.clear();
     if (!params[QLatin1String("heightFilterEnabled")].isBool()) {
         error = tr("heightFilterEnabled 必须为布尔");
+        return false;
+    }
+    // 阶7 批3复核三轮（P1-1）：自动 NoData 检测必须可关闭（TiffLoader::Config::autoDetectNoData 同语义）
+    if (!params[QLatin1String("autoNoData")].isBool()) {
+        error = tr("autoNoData 必须为布尔");
         return false;
     }
     auto num = [&params, &error](const char* key, double lo, double hi, bool integer, const QString& msg) {
@@ -101,6 +109,7 @@ bool PreProcessing3DPlugin::process(const ImageData& input, ImageData& output) {
     const double hMin = params["heightFilterMin"].toDouble();
     const double hMax = params["heightFilterMax"].toDouble();
     const double fillValue = params["fillValue"].toDouble();
+    const bool autoNoData = params["autoNoData"].toBool();
     const int roiCx = params["roiCenterX"].toInt();
     const int roiCy = params["roiCenterY"].toInt();
     const int roiW = params["roiWidth"].toInt();
@@ -125,10 +134,27 @@ bool PreProcessing3DPlugin::process(const ImageData& input, ImageData& output) {
         emit errorOccurred(tr("高度图须为 1 或 2 通道，收到 %1 通道").arg(src.channels()));
         return false;
     }
-    // 阶7 批3复核（P1-1）：自动 NoData 检测复用 TiffLoader 重复极值判据
-    // （仅单通道 32/64 位浮点生效）——大幅面高度图常见 ~69% 像素为
-    // -21474836 类哨兵，默认流程不得将其当作有效高度
-    const std::optional<double> noData = TiffLoader::detectNoDataValue(depthSrc);
+    // 阶7 批3复核三轮（P1-3）：先消费上游无效值契约——两级预处理串联时，
+    // 上游 height_invalid_value 标记的旧无效像素必须统一转换为本次 fillValue，
+    // 否则旧填充值会随新契约键的覆盖泄漏到下游拟合
+    std::optional<double> carriedQ;
+    const QVariant carriedVar = input.data("height_invalid_value");
+    if (carriedVar.isValid() && portValueMatchesType(carriedVar, DataType::Number)) {
+        // 阶7 批3复核三轮（P1-2）：哨兵按源图存储精度量化（与下游插件同一规则）
+        const double carried = carriedVar.toDouble();
+        if (depthSrc.depth() == CV_32F) {
+            carriedQ = static_cast<double>(static_cast<float>(carried));
+        } else if (depthSrc.depth() != CV_64F) {
+            carriedQ = std::nearbyint(carried);
+        } else {
+            carriedQ = carried;
+        }
+    }
+    // 阶7 批3复核三轮（P1-1/P2-6）：自动 NoData 检测（TiffLoader 重复极值判据）
+    // 可经 autoNoData 关闭，且在输入已携带无效值契约时让位——避免误删合法大
+    // 面积平台、避免与携带值重复判定，并省去整幅图两遍扫描的开销
+    const std::optional<double> noData =
+        (autoNoData && !carriedQ.has_value()) ? TiffLoader::detectNoDataValue(depthSrc) : std::nullopt;
 
     cv::Mat height;
     depthSrc.convertTo(height, CV_64F);
@@ -152,6 +178,7 @@ bool PreProcessing3DPlugin::process(const ImageData& input, ImageData& output) {
     double minH = 0.0;
     double maxH = 0.0;
     bool haveStats = false;
+    bool fillCollides = false; // 阶7 批3复核三轮（P1-2）：存活高度与填充值碰撞检测
     for (int y = 0; y < height.rows; ++y) {
         const double* srcRow = height.ptr<double>(y);
         float* dstRow = out32.ptr<float>(y);
@@ -159,6 +186,10 @@ bool PreProcessing3DPlugin::process(const ImageData& input, ImageData& output) {
         for (int x = 0; x < height.cols; ++x) {
             const double v = srcRow[x];
             bool keep = rowInRoi && (!roiOn || (x >= roi.x && x < roi.x + roi.width)) && std::isfinite(v);
+            // 上游契约标记的旧无效像素统一转为本次 fillValue
+            if (keep && carriedQ.has_value() && v == *carriedQ) {
+                keep = false;
+            }
             // 检测到的 NoData 哨兵与源值逐位一致（float→double 无损），精确比较安全
             if (keep && noData.has_value() && v == *noData) {
                 keep = false;
@@ -168,6 +199,9 @@ bool PreProcessing3DPlugin::process(const ImageData& input, ImageData& output) {
             }
             if (keep) {
                 dstRow[x] = static_cast<float>(v);
+                if (dstRow[x] == fill32) {
+                    fillCollides = true;
+                }
                 ++valid;
                 if (!haveStats) {
                     minH = v;
@@ -187,17 +221,27 @@ bool PreProcessing3DPlugin::process(const ImageData& input, ImageData& output) {
         emit errorOccurred(tr("预处理后无有效像素（ROI/高度筛选过严或输入全无效）"));
         return false;
     }
+    // 阶7 批3复核三轮（P1-2）：有限填充值与存活合法高度相同时，契约无法区分
+    // "填充像素"与"合法高度"（如零平面上出现一个 NaN 且 fillValue=0，下游会
+    // 删除全部合法零高度）——失败关闭而非写出歧义契约
+    if (filtered > 0 && fillCollides) {
+        emit errorOccurred(
+            tr("填充值 %1 与存活合法高度相同，无法表达无效契约（请改用不碰撞的 fillValue）").arg(fillValue));
+        return false;
+    }
 
     output.setMat(out32);
     output.setData("valid_pixel_count", static_cast<double>(valid));
     output.setData("filtered_pixel_count", static_cast<double>(filtered));
     output.setData("min_height", minH);
     output.setData("max_height", maxH);
-    // 阶7 批3复核（P1-1）：统一无效值契约——实际填充过像素时记录 fillValue，
-    // 下游（FitPlane/GapMeasure3D）优先采用该携带值而非各自参数默认值；
-    // 未填充任何像素时不写键，下游回退自身 invalidValue 参数
+    // 阶7 批3复核（P1-1）：统一无效值契约——实际填充过像素时记录填充哨兵，
+    // 下游（3DPreProcessing/FitPlane/GapMeasure3D）优先采用该携带值而非各自
+    // 参数默认值；未填充任何像素时不写键，下游回退自身 invalidValue 参数。
+    // 阶7 批3复核三轮（P2-4）：写入 float 量化后的值，与 CV_32F 像素实际存储
+    // 逐位一致（非精确可表示的 double fillValue 不再造成键与像素不一致）
     if (filtered > 0) {
-        output.setData("height_invalid_value", fillValue);
+        output.setData("height_invalid_value", static_cast<double>(fill32));
     }
     Logger::instance().debug(QString("3D预处理: valid=%1 filtered=%2 值域[%3,%4]")
                                  .arg(valid)
@@ -211,6 +255,7 @@ bool PreProcessing3DPlugin::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(hMin);
     Q_UNUSED(hMax);
     Q_UNUSED(fillValue);
+    Q_UNUSED(autoNoData);
     Q_UNUSED(roiCx);
     Q_UNUSED(roiCy);
     Q_UNUSED(roiW);

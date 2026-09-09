@@ -19,11 +19,11 @@ constexpr int kMinProfileSamples = 5; // 截面最少采样数（中心差分需
 } // namespace
 
 GapMeasure3DPlugin::GapMeasure3DPlugin(QObject* parent) : ModuleBase(parent) {
-    m_defaultParams = QJsonObject{{"roiCenterX", 320},  {"roiCenterY", 240},      {"roiLength", 100},
-                                  {"roiHeight", 5},     {"pixelSizeX", 1.0},      {"zScale", 1.0},
-                                  {"smoothSigma", 1.0}, {"medianSize", 0},        {"derivativeThreshold", 0.05},
-                                  {"edgeTrim", 2},      {"minPeakDistance", 5},   {"invalidValue", 0.0},
-                                  {"offsetMm", 0.0},    {"specUpperLimit", 10.0}, {"measureFailValue", -1.0}};
+    m_defaultParams = QJsonObject{
+        {"roiCenterX", 320},           {"roiCenterY", 240}, {"roiLength", 100},       {"roiHeight", 5},
+        {"pixelSizeX", 1.0},           {"zScale", 1.0},     {"smoothSigma", 1.0},     {"medianSize", 0},
+        {"derivativeThreshold", 0.05}, {"edgeTrim", 2},     {"minPeakDistance", 5},   {"invalidValue", 0.0},
+        {"autoNoData", true},          {"offsetMm", 0.0},   {"specUpperLimit", 10.0}, {"measureFailValue", -1.0}};
     m_params = m_defaultParams;
 }
 
@@ -94,6 +94,11 @@ bool GapMeasure3DPlugin::doValidateParams(const QJsonObject& params, QString& er
         return false;
     if (!num("invalidValue", -1e9, 1e9, false, tr("无效高度值必须为[-1e9,1e9]有限数")))
         return false;
+    // 阶7 批3复核三轮（P1-1）：自动 NoData 检测必须可关闭
+    if (!params[QLatin1String("autoNoData")].isBool()) {
+        error = tr("autoNoData 必须为布尔");
+        return false;
+    }
     if (!num("offsetMm", -1e6, 1e6, false, tr("偏移距离必须为[-1e6,1e6]有限数")))
         return false;
     if (!num("specUpperLimit", 1e-6, 1e6, false, tr("规格上限必须为(0,1e6]有限数")))
@@ -127,6 +132,7 @@ bool GapMeasure3DPlugin::process(const ImageData& input, ImageData& output) {
     const int edgeTrim = params["edgeTrim"].toInt();
     const int minPeakDistance = params["minPeakDistance"].toInt();
     const double invalidValue = params["invalidValue"].toDouble();
+    const bool autoNoData = params["autoNoData"].toBool();
     const double offsetMm = params["offsetMm"].toDouble();
     const double specUpperLimit = params["specUpperLimit"].toDouble();
     const double failValue = params["measureFailValue"].toDouble();
@@ -166,7 +172,8 @@ bool GapMeasure3DPlugin::process(const ImageData& input, ImageData& output) {
     // 重复极值判据的自动 NoData 检测
     double invalid = invalidValue;
     const QVariant carriedInvalid = input.data("height_invalid_value");
-    if (carriedInvalid.isValid() && portValueMatchesType(carriedInvalid, DataType::Number)) {
+    const bool hasCarried = carriedInvalid.isValid() && portValueMatchesType(carriedInvalid, DataType::Number);
+    if (hasCarried) {
         invalid = carriedInvalid.toDouble();
     }
     // 阶7 批3复核（P1-2）：哨兵按源图存储精度量化，避免 CV_32F 非整数哨兵精确比较失配
@@ -176,7 +183,11 @@ bool GapMeasure3DPlugin::process(const ImageData& input, ImageData& output) {
     } else if (src.depth() != CV_64F) {
         invalidQ = std::nearbyint(invalid);
     }
-    const std::optional<double> noData = TiffLoader::detectNoDataValue(src);
+    // 阶7 批3复核三轮（P1-1/P2-6）：自动检测可经 autoNoData 关闭，且输入已携带
+    // 无效值契约时让位（不重复判定、不误删合法平台，并省去整幅图两遍扫描——
+    // 即使只处理很小的截面 ROI）
+    const std::optional<double> noData =
+        (autoNoData && !hasCarried) ? TiffLoader::detectNoDataValue(src) : std::nullopt;
 
     // 行均值提取截面轮廓：跳过非有限与无效值；整列无效记 NaN
     const double nan = std::nan("");
@@ -373,6 +384,7 @@ bool GapMeasure3DPlugin::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(edgeTrim);
     Q_UNUSED(minPeakDistance);
     Q_UNUSED(invalidValue);
+    Q_UNUSED(autoNoData);
     Q_UNUSED(offsetMm);
     Q_UNUSED(specUpperLimit);
     Q_UNUSED(failValue);

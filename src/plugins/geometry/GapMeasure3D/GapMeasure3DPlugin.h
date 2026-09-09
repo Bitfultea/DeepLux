@@ -9,9 +9,10 @@ namespace DeepLux {
 // 起点拐角、其右侧满足最小峰距的最陡上升沿为终点拐角（阈值门限+抛物线
 // 亚像素细化+插值拐角高度），拐角间距 × pixelSizeX 为间隙宽度。
 // 无效值契约：输入携带的 height_invalid_value（3DPreProcessing 写出）优先于
-// 自身 invalidValue 参数，哨兵按源图存储精度量化，浮点高度图叠加 TiffLoader
-// 重复极值 NoData 自动检测；平滑对无效位置原样保留 NaN（不补洞），缺失条带
-// 不会伪造成下降/上升沿。未找到合格拐角时按契约输出 measureFailValue 且
+// 自身 invalidValue 参数，哨兵按源图存储精度量化；TiffLoader 重复极值 NoData
+// 自动检测可经 autoNoData 关闭，且输入已携带契约时让位（小 ROI 也不再整幅
+// 两遍扫描）；平滑对无效位置原样保留 NaN（不补洞），缺失条带不会伪造成
+// 下降/上升沿。未找到合格拐角时按契约输出 measureFailValue 且
 // gap_found=false（真实反映"未检出"，非伪成功）；is_pass = 检出且宽度 <=
 // specUpperLimit；roiLength 公开与执行下限统一为 5。
 class GapMeasure3DPlugin : public ModuleBase {

@@ -78,6 +78,10 @@
                 "decimals": 3,
                 "order": 90,
                 "label": "无效高度值"
+            },
+            "autoNoData": {
+                "order": 100,
+                "label": "自动 NoData 检测"
             }
         }
     },

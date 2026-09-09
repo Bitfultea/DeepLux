@@ -91,17 +91,33 @@ std::optional<double> detectRepeatedExtremeNoData(const cv::Mat& image) {
         }
     }
 
-    if (!std::isfinite(secondMinimum) || !std::isfinite(secondMaximum) || secondMaximum <= secondMinimum) {
-        return std::nullopt;
-    }
-
-    const double interiorRange = secondMaximum - secondMinimum;
-    const double minimumGap = secondMinimum - minimum;
-    const double maximumGap = maximum - secondMaximum;
+    // 阶7 批3复核三轮（P1-1）：两侧独立评估——旧版 secondMaximum <= secondMinimum
+    // 全局防护在"哨兵 + 恒定有效值"（仅两个不同值）时漏检真实 NoData；内部值域
+    // 仅在 secondMax > secondMin 时有定义，否则按 0 处理（分离阈值退化为 1）。
+    // 同时增加量级门禁：候选哨兵绝对值必须远超数据尺度（>= max(1e6, 1e4×参考
+    // 尺度)），防止把合法大面积平台（如 69% 的 -1000 平台 + 0..1 细节）误判为
+    // NoData 而删除有效高度。
     const double repeatedThreshold = std::max(16.0, static_cast<double>(finiteCount) * 0.05);
+    const double interiorRange =
+        (std::isfinite(secondMinimum) && std::isfinite(secondMaximum) && secondMaximum > secondMinimum)
+            ? (secondMaximum - secondMinimum)
+            : 0.0;
     const double separationThreshold = std::max(interiorRange * 100.0, 1.0);
-    const bool minimumIsNoData = minimumCount >= repeatedThreshold && minimumGap > separationThreshold;
-    const bool maximumIsNoData = maximumCount >= repeatedThreshold && maximumGap > separationThreshold;
+    const auto sentinelLike = [&](double extreme, qint64 count, double nearestInterior, double oppositeExtreme) {
+        if (count < repeatedThreshold) {
+            return false;
+        }
+        if (!std::isfinite(nearestInterior)) {
+            return false; // 除候选极值外无其他值，无法建立分离判据
+        }
+        if (std::abs(nearestInterior - extreme) <= separationThreshold) {
+            return false;
+        }
+        const double scaleRef = std::max(std::abs(nearestInterior), std::abs(oppositeExtreme));
+        return std::abs(extreme) > std::max(1e6, scaleRef * 1e4);
+    };
+    const bool minimumIsNoData = sentinelLike(minimum, minimumCount, secondMinimum, maximum);
+    const bool maximumIsNoData = sentinelLike(maximum, maximumCount, secondMaximum, minimum);
 
     if (minimumIsNoData == maximumIsNoData) {
         return std::nullopt;
@@ -145,6 +161,15 @@ bool TiffLoader::load(const QString& filePath, PointCloudData& outData, QString&
     }
 
     std::optional<double> invalidValue = config.invalidValue;
+    // 阶7 批3复核三轮（P2-5）：显式哨兵按源图存储精度量化——非整数哨兵写入
+    // CV_32F 后（如 -21474.8359 → -21474.8359375），double 精确比较必然失配
+    if (invalidValue) {
+        if (depth == CV_32F) {
+            invalidValue = static_cast<double>(static_cast<float>(*invalidValue));
+        } else if (depth != CV_64F) {
+            invalidValue = std::nearbyint(*invalidValue);
+        }
+    }
     if (!invalidValue && !config.validMin && !config.validMax && config.autoDetectNoData) {
         invalidValue = detectRepeatedExtremeNoData(img);
     }
