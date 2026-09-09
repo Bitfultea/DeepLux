@@ -8,24 +8,24 @@
 
 | 状态 | 数量 | 含义 |
 | --- | ---: | --- |
-| direct | 51 | 名称直接匹配，仍需人工核验能力和参数 |
+| direct | 53 | 名称直接匹配，仍需人工核验能力和参数 |
 | candidate | 5 | 需要确认的历史别名或替代候选 |
-| missing | 47 | 当前没有候选实现 |
+| missing | 45 | 当前没有候选实现 |
 | business_pack | 7 | 业务专用插件，作为可选业务包评审 |
 
 | 审核状态 | 数量 |
 | --- | ---: |
-| reviewed | 56 |
+| reviewed | 58 |
 | dependency_recorded | 7 |
-| pending | 47 |
+| pending | 45 |
 
 - 审核结论统计仅包含 `reviewState=reviewed` 的条目。
 
 | 审核结论 | 数量 | 含义 |
 | --- | ---: | --- |
 | equivalent | 0 | 已证明与旧版能力等价（需旧版参数/端口/结果对照） |
-| intentionally_changed | 13 | 已确认采用不同于旧版的契约或行为 |
-| partial | 39 | 当前存在候选实现，旧版等价未证明 |
+| intentionally_changed | 14 | 已确认采用不同于旧版的契约或行为 |
+| partial | 40 | 当前存在候选实现，旧版等价未证明 |
 | unverified | 4 | 依赖硬件/SDK，行为未验证 |
 | not_equivalent | 0 | 不等价 |
 
@@ -105,7 +105,6 @@
 | ShowChart | `02Plugins/000常用工具/Plugin.ShowChart` | - | missing | - |
 | AreaSpray | `02Plugins/001图像处理/Plugin.AreaSpray` | - | missing | - |
 | CameraReadyWait | `02Plugins/001图像处理/Plugin.CameraReadyWait` | - | missing | - |
-| CropImage | `02Plugins/001图像处理/Plugin.CropImage` | - | missing | - |
 | DepthToGray | `02Plugins/001图像处理/Plugin.DepthToGray` | - | missing | - |
 | DiplayData | `02Plugins/001图像处理/Plugin.DiplayData` | DisplayData | candidate | partial |
 | ImageMerge | `02Plugins/001图像处理/Plugin.ImageMerge` | - | missing | - |
@@ -124,7 +123,6 @@
 | AffineeRegion | `02Plugins/004几何关系/Plugin.AffineeRegion` | - | missing | - |
 | BuildLl | `02Plugins/004几何关系/Plugin.BuildLl` | - | missing | - |
 | RegionProcess | `02Plugins/004几何关系/Plugin.RegionProcess` | - | missing | - |
-| CalculateOffset | `02Plugins/005坐标标定/Plugin.CalculateOffset` | - | missing | - |
 | Coordinate | `02Plugins/005坐标标定/Plugin.Coordinate` | - | missing | - |
 | MeasureCalib | `02Plugins/005坐标标定/Plugin.MeasureCalib` | NPointCalibration | candidate | partial |
 | NPointCal | `02Plugins/005坐标标定/Plugin.NPointCal` | NPointCalibration | candidate | partial |

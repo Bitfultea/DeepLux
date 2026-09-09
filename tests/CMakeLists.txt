@@ -20,6 +20,7 @@ set(TEST_SOURCES
     test_fitellipse.cpp
     test_detection_batch2.cpp
     test_3d_batch3.cpp
+    test_batch4.cpp
     test_measurerect.cpp
     test_distancepl.cpp
     test_distancepp.cpp
@@ -154,6 +155,29 @@ foreach(TEST_FILE ${TEST_SOURCES})
             TEST_BATCH3_META_PreProcessing3D="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/PreProcessing3D/metadata.json"
             TEST_BATCH3_META_FitPlane="${CMAKE_SOURCE_DIR}/src/plugins/geometry/FitPlane/metadata.json"
             TEST_BATCH3_META_GapMeasure3D="${CMAKE_SOURCE_DIR}/src/plugins/geometry/GapMeasure3D/metadata.json")
+    endif()
+    # 阶7 批4：CropImage（001图像处理）+ CalculateOffset（005坐标标定）行为+流程验收
+    if(TEST_NAME STREQUAL "test_batch4")
+        target_link_libraries(${TEST_NAME}
+            PRIVATE
+                CropImagePlugin
+                CalculateOffsetPlugin
+                GrabImagePlugin
+                MeasurementInputPlugin
+                MeasureCirclePlugin
+        )
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_BATCH4_LIB_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+            TEST_BATCH4_LIB_CropImage="$<TARGET_FILE:CropImagePlugin>"
+            TEST_BATCH4_LIB_MeasureCircle="$<TARGET_FILE:MeasureCirclePlugin>"
+            TEST_BATCH4_LIB_MeasurementInput="$<TARGET_FILE:MeasurementInputPlugin>"
+            TEST_BATCH4_LIB_CalculateOffset="$<TARGET_FILE:CalculateOffsetPlugin>"
+            TEST_BATCH4_META_GrabImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+            TEST_BATCH4_META_CropImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/CropImage/metadata.json"
+            TEST_BATCH4_META_MeasureCircle="${CMAKE_SOURCE_DIR}/src/plugins/detection/MeasureCircle/metadata.json"
+            TEST_BATCH4_META_MeasurementInput="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json"
+            TEST_BATCH4_META_CalculateOffset="${CMAKE_SOURCE_DIR}/src/plugins/calibration/CalculateOffset/metadata.json"
+            TEST_BATCH4_DATA_Circle="${CMAKE_SOURCE_DIR}/tests/acceptance/data/circle_640x480.png")
     endif()
     if(TEST_NAME STREQUAL "test_measurerect" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE MeasureRectPlugin)
