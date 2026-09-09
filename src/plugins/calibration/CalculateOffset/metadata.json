@@ -4,7 +4,7 @@
     "category": "calibration",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "对位偏移计算：offset = 基准坐标 − 当前坐标，角度差归一化到 (-180,180]；当前坐标可经可选 Point3D 端口 current_point 覆盖（取 x,y，忽略 z）",
+    "description": "对位偏移计算：offset = 当前(实测) − 基准(参考)，与旧版 MathCoord−ModeCoord 方向一致，角度差归一化到 (-180,180]；当前坐标/角度可经可选端口 current_point(Point3D,取 x,y 忽略 z)/current_angle(Number) 逐帧覆盖；Hommat2DTrans 仿射与旋转中心补正未实现",
     "ui": {
         "parameters": {
             "currentX": {
@@ -70,6 +70,13 @@
                 "id": "current_point",
                 "displayName": "当前坐标点",
                 "type": "Point3D",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "current_angle",
+                "displayName": "当前角度",
+                "type": "Number",
                 "required": false,
                 "multiple": false
             }

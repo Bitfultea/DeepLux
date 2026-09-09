@@ -82,10 +82,26 @@ bool CalculateOffsetPlugin::process(const ImageData& input, ImageData& output) {
     }
     double curX = params["currentX"].toDouble();
     double curY = params["currentY"].toDouble();
-    const double curA = params["currentAngle"].toDouble();
+    double curA = params["currentAngle"].toDouble();
     const double tgtX = params["targetX"].toDouble();
     const double tgtY = params["targetY"].toDouble();
     const double tgtA = params["targetAngle"].toDouble();
+
+    // 阶7 批4复核（P1-4）：current_angle Number 端口逐帧覆盖当前角度（旧版
+    // DegLink 运行时链接对应物）；键存在但类型错误或非有限失败关闭
+    const QVariant angVar = input.data("current_angle");
+    if (angVar.isValid()) {
+        if (!portValueMatchesType(angVar, DataType::Number)) {
+            emit errorOccurred(tr("current_angle 端口类型非法（须为数值）"));
+            return false;
+        }
+        const double a = angVar.toDouble();
+        if (!std::isfinite(a)) {
+            emit errorOccurred(tr("current_angle 端口值非有限"));
+            return false;
+        }
+        curA = a;
+    }
 
     // 可选 Point3D 端口覆盖当前坐标（取 x,y，忽略 z）：先经核心契约严格门禁
     // （批1结论：插件判定必须与 portValueMatchesType 一致），再走核心解析
@@ -109,9 +125,13 @@ bool CalculateOffsetPlugin::process(const ImageData& input, ImageData& output) {
         curY = pt->y;
     }
 
-    const double offsetX = tgtX - curX;
-    const double offsetY = tgtY - curY;
-    const double offsetA = normalizeAngle180(tgtA - curA);
+    // 阶7 批4复核（P1-1）：方向与旧版一致——offset = 实测(current) − 参考(target)。
+    // 旧版 OffsetX = -(RealXRef - RealFindX) = Find - Ref（MathCoord 实测链接值减
+    // ModeCoord 参考值）；Hommat2DTrans 仿射与 EnableRotateCenter 旋转中心补正
+    // 未实现（partial），坐标按参数单位直接作差
+    const double offsetX = curX - tgtX;
+    const double offsetY = curY - tgtY;
+    const double offsetA = normalizeAngle180(curA - tgtA);
 
     output.setData("offset_x", offsetX);
     output.setData("offset_y", offsetY);

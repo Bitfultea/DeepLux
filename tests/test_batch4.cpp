@@ -7,12 +7,16 @@
 #include "plugins/calibration/CalculateOffset/CalculateOffsetPlugin.h"
 #include "plugins/image_processing/CropImage/CropImagePlugin.h"
 
+#include <QCheckBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QLabel>
+#include <QLineEdit>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QWidget>
 #include <QtTest>
 #include <cmath>
 #include <limits>
@@ -219,6 +223,83 @@ private slots:
         QCOMPARE(row.value(QStringLiteral("crop_height")).toInt(), 60);
     }
 
+    // 阶7 批4复核（P1-3）：分数中心——包含式包围盒 floor/ceil 不得向内丢像素
+    // （旧 qRound：220.5→221、420.5→421 得宽 200 且丢失 x=420 列）
+    void testCropFractionalCenter() {
+        CropImagePlugin plugin;
+        plugin.setParams(cropParams(QJsonArray{rect(320.5, 240.5, 200, 100, 0)}));
+        QVERIFY(plugin.initialize());
+        ImageData input(makePatternImage(640, 480));
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "fractional center crop must succeed");
+        const QVariantMap row = out.data("crop_images").toList().first().toMap();
+        QCOMPARE(row.value(QStringLiteral("crop_x")).toInt(), 220);      // floor(220.5)
+        QCOMPARE(row.value(QStringLiteral("crop_y")).toInt(), 190);      // floor(190.5)
+        QCOMPARE(row.value(QStringLiteral("crop_width")).toInt(), 201);  // ceil(420.5)-220
+        QCOMPARE(row.value(QStringLiteral("crop_height")).toInt(), 101); // ceil(290.5)-190
+    }
+
+    // 阶7 批4复核（P1-3）：小尺寸矩形不得因取整产生零宽/零高被误判无效
+    void testCropTinyRectStillValid() {
+        CropImagePlugin plugin;
+        plugin.setParams(cropParams(QJsonArray{rect(320, 240, 0.5, 0.5, 0)}));
+        QVERIFY(plugin.initialize());
+        ImageData input(makePatternImage(640, 480));
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "tiny rect must stay valid (旧 qRound 得零宽判无效)");
+        const QVariantMap row = out.data("crop_images").toList().first().toMap();
+        QCOMPARE(row.value(QStringLiteral("valid")).toBool(), true);
+        QVERIFY(row.value(QStringLiteral("crop_width")).toInt() >= 1);
+        QVERIFY(row.value(QStringLiteral("crop_height")).toInt() >= 1);
+    }
+
+    // 阶7 批4复核（P1-3）：贴边 ROI——原点处 1×1 矩形钳制后仍有效
+    void testCropEdgeTouching() {
+        CropImagePlugin plugin;
+        plugin.setParams(cropParams(QJsonArray{rect(0, 0, 1, 1, 0)}));
+        QVERIFY(plugin.initialize());
+        ImageData input(makePatternImage(640, 480));
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "edge-touching ROI must stay valid");
+        const QVariantMap row = out.data("crop_images").toList().first().toMap();
+        QCOMPARE(row.value(QStringLiteral("valid")).toBool(), true);
+        QCOMPARE(row.value(QStringLiteral("crop_x")).toInt(), 0);
+        QCOMPARE(row.value(QStringLiteral("crop_width")).toInt(), 1);
+        QCOMPARE(row.value(QStringLiteral("crop_height")).toInt(), 1);
+    }
+
+    // 阶7 批4复核（P1-2）：GUI 可配置性——createConfigWidget 提供矩形数组编辑，
+    // 合法 JSON 经 validateParams+setParams 写入；非法文本拒绝且保留旧参数
+    void testCropConfigWidget() {
+        CropImagePlugin plugin;
+        QVERIFY(plugin.initialize());
+        QWidget* w = plugin.createConfigWidget();
+        QVERIFY(w != nullptr);
+        auto* rectsEdit = w->findChild<QLineEdit*>("CropImageRectanglesEdit");
+        QVERIFY(rectsEdit != nullptr);
+        auto* firstCheck = w->findChild<QCheckBox*>("CropImageOutputFirstCheck");
+        QVERIFY(firstCheck != nullptr);
+        auto* status = w->findChild<QLabel*>("CropImageConfigStatus");
+        QVERIFY(status != nullptr);
+
+        rectsEdit->setText(QStringLiteral("[[10,10,20,20,0],[50,50,30,30,45]]"));
+        const QJsonArray rects = plugin.currentParams()["rectangles"].toArray();
+        QCOMPARE(rects.size(), 2);
+        QCOMPARE(rects[0].toArray()[2].toDouble(), 20.0);
+
+        firstCheck->setChecked(false);
+        QCOMPARE(plugin.currentParams()["outputFirstAsImage"].toBool(), false);
+
+        rectsEdit->setText(QStringLiteral("not json"));
+        QCOMPARE(plugin.currentParams()["rectangles"].toArray().size(), 2); // 拒绝，保留旧参数
+        QVERIFY(!status->text().isEmpty());
+
+        // 语义非法（l1=0）同样拒绝
+        rectsEdit->setText(QStringLiteral("[[10,10,0,20,0]]"));
+        QCOMPARE(plugin.currentParams()["rectangles"].toArray().size(), 2);
+        delete w;
+    }
+
     void testCropOutputFirstAsImageFalse() {
         CropImagePlugin plugin;
         plugin.setParams(cropParams(QJsonArray{rect(320, 240, 200, 100, 0)}, false));
@@ -271,6 +352,7 @@ private slots:
 
     // ---------- CalculateOffset ----------
 
+    // 阶7 批4复核（P1-1）：方向与旧版一致——offset = 实测(current) − 参考(target)
     void testOffsetBasic() {
         CalculateOffsetPlugin plugin;
         plugin.setParams(offsetParams(10, 20, 30, 35, 55, 40));
@@ -278,9 +360,9 @@ private slots:
         ImageData input;
         ImageData out;
         QVERIFY2(plugin.execute(input, out), "basic offset must succeed");
-        QCOMPARE(out.data("offset_x").toDouble(), 25.0);
-        QCOMPARE(out.data("offset_y").toDouble(), 35.0);
-        QCOMPARE(out.data("offset_a").toDouble(), 10.0);
+        QCOMPARE(out.data("offset_x").toDouble(), -25.0); // 10-35（实测−参考）
+        QCOMPARE(out.data("offset_y").toDouble(), -35.0); // 20-55
+        QCOMPARE(out.data("offset_a").toDouble(), -10.0); // 30-40
     }
 
     void testOffsetAngleNormalization() {
@@ -295,12 +377,45 @@ private slots:
             }
             return out.data("offset_a").toDouble();
         };
-        QCOMPARE(run(170, -170), 20.0); // -340 → +20
-        QCOMPARE(run(0, 181), -179.0);  // 181 → -179
-        QCOMPARE(run(0, 180), 180.0);   // 上界保留 +180
-        QCOMPARE(run(0, -180), 180.0);  // -180 归一化为 +180（(-180,180] 口径）
-        QCOMPARE(run(-350, 0), -10.0);  // 350 → -10
+        // offset_a = normalize180(current − target)（实测−参考）
+        QCOMPARE(run(170, -170), -20.0); // +340 → -20
+        QCOMPARE(run(0, 181), 179.0);    // -181 → +179
+        QCOMPARE(run(0, 180), 180.0);    // -180 归一化为 +180（(-180,180] 口径）
+        QCOMPARE(run(0, -180), 180.0);   // +180 上界保留
+        QCOMPARE(run(-350, 0), 10.0);    // -350 → +10
         QCOMPARE(run(0, 0), 0.0);
+    }
+
+    // 阶7 批4复核（P1-4）：current_angle Number 端口逐帧覆盖当前角度（旧版
+    // DegLink 运行时链接对应物）；类型错误/非有限失败关闭；无端口回退参数
+    void testOffsetAnglePortOverride() {
+        CalculateOffsetPlugin plugin;
+        plugin.setParams(offsetParams(0, 0, 0, 0, 0, 40)); // targetAngle=40
+        QVERIFY(plugin.initialize());
+
+        ImageData in;
+        in.setData("current_angle", 100.0);
+        ImageData out;
+        QVERIFY2(plugin.execute(in, out), "current_angle port must override");
+        QCOMPARE(out.data("offset_a").toDouble(), 60.0); // 100-40
+
+        ImageData badIn;
+        badIn.setData("current_angle", QStringLiteral("90"));
+        QSignalSpy spy(&plugin, &DeepLux::IModule::errorOccurred);
+        ImageData badOut;
+        QVERIFY2(!plugin.execute(badIn, badOut), "wrong-typed angle port must fail closed");
+        QVERIFY2(spy.count() >= 1 && spy.first().at(0).toString().contains(QStringLiteral("类型非法")),
+                 "error must report type violation");
+
+        ImageData nanIn;
+        nanIn.setData("current_angle", std::numeric_limits<double>::quiet_NaN());
+        ImageData nanOut;
+        QVERIFY2(!plugin.execute(nanIn, nanOut), "NaN angle port must fail closed");
+
+        ImageData noPortIn;
+        ImageData noPortOut;
+        QVERIFY2(plugin.execute(noPortIn, noPortOut), "no port must fall back to params");
+        QCOMPARE(noPortOut.data("offset_a").toDouble(), -40.0); // 0-40
     }
 
     // Point3D 端口覆盖当前坐标：插件判定与核心契约一致（批1模式），
@@ -316,8 +431,8 @@ private slots:
         QVERIFY(portValueMatchesType(okIn.data("current_point"), DataType::Point3D));
         ImageData okOut;
         QVERIFY2(plugin.execute(okIn, okOut), "Point3D list must override current coords");
-        QCOMPARE(okOut.data("offset_x").toDouble(), 10.0); // 15-5
-        QCOMPARE(okOut.data("offset_y").toDouble(), 18.0); // 25-7
+        QCOMPARE(okOut.data("offset_x").toDouble(), -10.0); // 5-15（实测−参考）
+        QCOMPARE(okOut.data("offset_y").toDouble(), -18.0); // 7-25
 
         // 非法载荷：判定必须与核心契约一致（全部拒绝）
         const QVariantList badPayloads{
@@ -341,7 +456,7 @@ private slots:
         ImageData noPortIn;
         ImageData noPortOut;
         QVERIFY2(plugin.execute(noPortIn, noPortOut), "no port must fall back to params");
-        QCOMPARE(noPortOut.data("offset_x").toDouble(), 15.0);
+        QCOMPARE(noPortOut.data("offset_x").toDouble(), -15.0); // 0-15
     }
 
     void testOffsetValidation() {
@@ -481,9 +596,9 @@ private slots:
 
         const ImageData out = engine.moduleOutput(QStringLiteral("co"));
         QVERIFY2(out.hasData("offset_x"), "flow must produce offset_x");
-        QCOMPARE(out.data("offset_x").toDouble(), 25.0); // 35-10（端口值生效）
-        QCOMPARE(out.data("offset_y").toDouble(), 35.0); // 55-20
-        QCOMPARE(out.data("offset_a").toDouble(), 10.0);
+        QCOMPARE(out.data("offset_x").toDouble(), -25.0); // 10-35（端口值生效，实测−参考）
+        QCOMPARE(out.data("offset_y").toDouble(), -35.0); // 20-55
+        QCOMPARE(out.data("offset_a").toDouble(), -10.0); // 30-40
     }
 };
 

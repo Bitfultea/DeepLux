@@ -2,7 +2,14 @@
 
 #include "common/Logger.h"
 
+#include <QCheckBox>
+#include <QFormLayout>
 #include <QJsonArray>
+#include <QJsonDocument>
+#include <QLabel>
+#include <QLineEdit>
+#include <QPointer>
+#include <QVBoxLayout>
 #include <QVariant>
 #include <cmath>
 
@@ -125,10 +132,12 @@ bool CropImagePlugin::process(const ImageData& input, ImageData& output) {
         const double halfUy = std::abs(std::sin(theta)) * l1 / 2.0;
         const double halfVx = std::abs(std::sin(theta)) * l2 / 2.0;
         const double halfVy = std::abs(std::cos(theta)) * l2 / 2.0;
-        const int x0 = qMax(0, qRound(cx - halfUx - halfVx));
-        const int y0 = qMax(0, qRound(cy - halfUy - halfVy));
-        const int x1 = qMin(src.cols, qRound(cx + halfUx + halfVx));
-        const int y1 = qMin(src.rows, qRound(cy + halfUy + halfVy));
+        // 阶7 批4复核（P1-3）：包含式包围盒——下界 floor、上界 ceil。qRound 会把
+        // 分数边界向内舍入（遗漏边缘像素），小尺寸/分数中心矩形甚至得到零宽零高
+        const int x0 = qMax(0, static_cast<int>(std::floor(cx - halfUx - halfVx)));
+        const int y0 = qMax(0, static_cast<int>(std::floor(cy - halfUy - halfVy)));
+        const int x1 = qMin(src.cols, static_cast<int>(std::ceil(cx + halfUx + halfVx)));
+        const int y1 = qMin(src.rows, static_cast<int>(std::ceil(cy + halfUy + halfVy)));
         const int w = x1 - x0;
         const int h = y1 - y0;
         const bool valid = (w > 0 && h > 0);
@@ -180,6 +189,66 @@ bool CropImagePlugin::process(const ImageData& input, ImageData& output) {
     emit errorOccurred(tr("CropImage 需要 OpenCV 支持"));
     return false;
 #endif
+}
+
+// 阶7 批4复核（P1-2）：rectangles 为数组参数，PropertyPanel 只为字符串/数字/
+// 布尔创建控件——必须提供独立配置页（MeasurementInput 先例，加入高级配置名单），
+// 否则 GUI 用户只能用默认矩形。写入走 validateParams+setParams（批1结论：
+// 配置页不得绕过验证），非法输入拒绝并保留旧参数。
+QWidget* CropImagePlugin::createConfigWidget() {
+    QWidget* widget = new QWidget();
+    auto* layout = new QVBoxLayout(widget);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(8);
+    layout->addWidget(
+        new QLabel(tr("旋转矩形批量裁剪——矩形数组 [[cx,cy,l1,l2,deg],...]（1..%1 个）").arg(kMaxRects), widget));
+
+    auto* form = new QFormLayout();
+    auto* rectsEdit = new QLineEdit(widget);
+    rectsEdit->setObjectName(QStringLiteral("CropImageRectanglesEdit"));
+    rectsEdit->setText(
+        QString::fromUtf8(QJsonDocument(m_params["rectangles"].toArray()).toJson(QJsonDocument::Compact)));
+    form->addRow(tr("矩形数组"), rectsEdit);
+
+    auto* firstCheck = new QCheckBox(tr("image 端口输出首个裁剪图"), widget);
+    firstCheck->setObjectName(QStringLiteral("CropImageOutputFirstCheck"));
+    firstCheck->setChecked(m_params["outputFirstAsImage"].toBool(true));
+    form->addRow(QString(), firstCheck);
+    layout->addLayout(form);
+
+    auto* status = new QLabel(widget);
+    status->setObjectName(QStringLiteral("CropImageConfigStatus"));
+    status->setWordWrap(true);
+    layout->addWidget(status);
+    layout->addStretch();
+
+    QPointer<CropImagePlugin> pluginPtr(this);
+    const auto apply = [pluginPtr, rectsEdit, firstCheck, status]() {
+        if (!pluginPtr) {
+            return;
+        }
+        QJsonParseError parseError{};
+        const QJsonDocument doc = QJsonDocument::fromJson(rectsEdit->text().toUtf8(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !doc.isArray()) {
+            status->setText(tr("JSON 解析失败：%1（保留原参数）").arg(parseError.errorString()));
+            return;
+        }
+        QJsonObject merged = pluginPtr->currentParams();
+        merged["rectangles"] = doc.array();
+        merged["outputFirstAsImage"] = firstCheck->isChecked();
+        // setParams 为 void（内部验证合并、非法拒绝并保留旧值），先经 validateParams
+        // 取得可读错误再写入
+        QString verr;
+        if (!pluginPtr->validateParams(merged, verr)) {
+            status->setText(verr.isEmpty() ? tr("参数被拒绝（保留原参数）") : verr);
+            return;
+        }
+        pluginPtr->setParams(merged);
+        status->setText(tr("已应用 %1 个矩形").arg(doc.array().size()));
+    };
+    connect(rectsEdit, &QLineEdit::textChanged, widget, apply);
+    connect(firstCheck, &QCheckBox::toggled, widget, apply);
+    return widget;
 }
 
 IModule* CropImagePlugin::cloneImpl() const {

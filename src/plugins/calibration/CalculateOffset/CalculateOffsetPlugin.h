@@ -4,11 +4,14 @@
 
 namespace DeepLux {
 
-// 阶7 批4：对位偏移计算（005坐标标定 重建）。当前坐标（X/Y/Φ）对基准坐标
-// 求平移+角度偏移：offset = target − current，角度差归一化到 (−180,180]。
-// 当前坐标可经可选 Point3D 端口 current_point 覆盖（取 x,y，忽略 z，与
-// MeasurementInput 点输出直接组合；端口存在时先经 portValueMatchesType
-// 严格门禁再 parsePoint3D），否则用 currentX/currentY 参数。
+// 阶7 批4：对位偏移计算（005坐标标定 重建）。offset = 实测(current) −
+// 参考(target)，与旧版 MathCoord−ModeCoord 方向一致（旧版 OffsetX =
+// -(RealRef−RealFind)），角度差归一化到 (−180,180]。当前坐标可经可选
+// Point3D 端口 current_point 覆盖（取 x,y，忽略 z，与 MeasurementInput 点
+// 输出直接组合；先经 portValueMatchesType 严格门禁再 parsePoint3D），当前
+// 角度可经 Number 端口 current_angle 逐帧覆盖（旧版 DegLink 对应物）；类型
+// 错误/非有限失败关闭。旧版 Hommat2DTrans 仿射变换与 EnableRotateCenter
+// 旋转中心补正未实现（台账 partial），坐标按参数单位直接作差。
 class CalculateOffsetPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
