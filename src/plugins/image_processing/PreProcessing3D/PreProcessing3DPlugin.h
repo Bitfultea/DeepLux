@@ -7,9 +7,10 @@ namespace DeepLux {
 // 阶7 批3：3D 预处理（0143D 重建，metadata 名沿用旧版 3DPreProcessing）。
 // 输入数值深度/高度图：单通道 8/16/32/64 位；2 通道按旧版 Decompose2 语义
 // 提取第 2 通道（深度）；3/4 通道明确失败。先消费上游无效值契约
-// （height_invalid_value，按源精度量化），旧无效像素统一转为本次 fillValue；
-// 自动 NoData 检测复用 TiffLoader 重复极值判据（单通道 32/64 位浮点，
-// autoNoData 可关，携带契约时让位）。执行可选 ROI（宽高必须同为 0 或同 >0）
+// （height_invalid_value，按源精度量化；键存在但类型错误或非有限均失败
+// 关闭），旧无效像素统一转为本次 fillValue；自动 NoData 检测复用 TiffLoader
+// 重复极值判据（原始像素单位启发式，单通道 32/64 位浮点，autoNoData 可关，
+// 携带契约时让位，双侧极值同满足判据的歧义图失败关闭不按分布猜测）。执行可选 ROI（宽高必须同为 0 或同 >0）
 // 与高度筛选：非有限值、契约值、NoData 哨兵、区间外与 ROI 外像素统一填充
 // fillValue；填充值与存活合法高度碰撞时失败关闭（契约无法区分二者）；输出
 // CV_32F 高度图、筛选统计，且实际填充过像素时写出 float 量化的

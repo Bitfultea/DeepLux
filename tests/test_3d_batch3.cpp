@@ -275,10 +275,11 @@ private slots:
         QCOMPARE(out.toMat().at<float>(50, 50), -1000.0f);
     }
 
-    // 阶7 批3复核三轮（P1-1）：哨兵 + 恒定有效值（全图仅两个不同值）——旧版
-    // secondMaximum <= secondMinimum 全局防护返回 nullopt 漏检，NoData 全部进入
-    // 计算；两侧独立评估后必须检出
-    void testPre3DConstantValidWithNoDataDetected() {
+    // 阶7 批3复核五轮（P1-1）：两值图（哨兵 + 恒定有效值，双侧极值同时满足
+    // 重复率+间隙判据）——哨兵语义无法从像素分布推导（{0=NoData, 2e6=有效} 与
+    // {0=有效, 2e6=NoData} 直方图完全相同），按绝对值/占比猜测可能反向删除全部
+    // 合法数据，必须上报歧义失败关闭（取代三轮的"两值图检出"口径）
+    void testPre3DTwoValueAmbiguityFailsClosed() {
         PreProcessing3DPlugin plugin;
         plugin.setParams(preParams(false, 0.0, 65535.0, 0.0, 0, 0, 0, 0));
         QVERIFY(plugin.initialize());
@@ -289,10 +290,71 @@ private slots:
             }
         }
         ImageData input(m);
+        QSignalSpy errSpy(&plugin, &DeepLux::IModule::errorOccurred);
         ImageData out;
-        QVERIFY2(plugin.execute(input, out), "sentinel + constant valid must be detected");
-        QCOMPARE(out.data("filtered_pixel_count").toDouble(), 138.0 * 100.0);
-        QCOMPARE(out.data("valid_pixel_count").toDouble(), 62.0 * 100.0);
+        QVERIFY2(!plugin.execute(input, out), "two-value image must be ambiguous, fail closed");
+        QVERIFY2(errSpy.count() >= 1 && errSpy.first().at(0).toString().contains(QStringLiteral("歧义")),
+                 qPrintable(QString("error must report ambiguity, got: %1")
+                                .arg(errSpy.count() ? errSpy.first().at(0).toString() : QString())));
+    }
+
+    // 阶7 批3复核五轮（P1-1）：审核指定三构型——双侧同满足判据时全部歧义失败
+    // 关闭，旧绝对值决胜会反向删除合法平台
+    void testNoDataAmbiguityReviewCases() {
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(preParams(false, 0.0, 65535.0, 0.0, 0, 0, 0, 0));
+        QVERIFY(plugin.initialize());
+        const auto runExpectAmbiguous = [&plugin](const cv::Mat& img, const char* ctx) {
+            ImageData input(img);
+            QSignalSpy errSpy(&plugin, &DeepLux::IModule::errorOccurred);
+            ImageData out;
+            QVERIFY2(!plugin.execute(input, out), ctx);
+            QVERIFY2(errSpy.count() >= 1 && errSpy.first().at(0).toString().contains(QStringLiteral("歧义")), ctx);
+        };
+        // (a) 0=NoData 编码 + 大正值合法定深度平台：旧决胜按绝对值选 2e6 → 反向删除
+        cv::Mat a(100, 200, CV_32F);
+        for (int y = 0; y < 100; ++y) {
+            for (int x = 0; x < 200; ++x) {
+                a.at<float>(y, x) = (x < 138) ? 0.0f : 2000000.0f;
+            }
+        }
+        runExpectAmbiguous(a, "0=NoData + 2e6 legit plateau must be ambiguous");
+        // (b) 较小负值=合法平台 + 较大正值=NoData
+        cv::Mat b(100, 200, CV_32F);
+        for (int y = 0; y < 100; ++y) {
+            for (int x = 0; x < 200; ++x) {
+                b.at<float>(y, x) = (x < 62) ? -1000.0f : 21474836.0f;
+            }
+        }
+        runExpectAmbiguous(b, "-1000 plateau + 21M NoData must be ambiguous");
+        // (c) 两个合法平台且间距超过门限（图中根本没有哨兵）
+        cv::Mat c(100, 200, CV_32F);
+        for (int y = 0; y < 100; ++y) {
+            for (int x = 0; x < 200; ++x) {
+                c.at<float>(y, x) = (x < 100) ? 0.0f : 3000000.0f;
+            }
+        }
+        runExpectAmbiguous(c, "two legit plateaus must be ambiguous");
+    }
+
+    // 阶7 批3复核五轮（P1-1）：哨兵 + 恒定有效值但有效侧占比低于重复阈值
+    // （4% < 5%）——单侧满足判据，仍可检出（三轮"平坦有效面加 NoData"意图
+    // 在无歧义子空间的保留）
+    void testPre3DConstantValidSmallShareDetected() {
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(preParams(false, 0.0, 65535.0, 0.0, 0, 0, 0, 0));
+        QVERIFY(plugin.initialize());
+        cv::Mat m(100, 200, CV_32F);
+        for (int y = 0; y < 100; ++y) {
+            for (int x = 0; x < 200; ++x) {
+                m.at<float>(y, x) = (x >= 8) ? -21474836.0f : 42.0f; // 4% 恒定有效值
+            }
+        }
+        ImageData input(m);
+        ImageData out;
+        QVERIFY2(plugin.execute(input, out), "single-side sentinel must be detected");
+        QCOMPARE(out.data("filtered_pixel_count").toDouble(), 192.0 * 100.0);
+        QCOMPARE(out.data("valid_pixel_count").toDouble(), 8.0 * 100.0);
         QCOMPARE(out.data("min_height").toDouble(), 42.0);
         QCOMPARE(out.data("max_height").toDouble(), 42.0);
         QCOMPARE(out.data("height_invalid_value").toDouble(), 0.0);
@@ -370,6 +432,48 @@ private slots:
             QVERIFY2(!gap.execute(inGap, outGap), qPrintable(QString("GapMeasure3D must reject carried %1").arg(bad)));
             QVERIFY2(spyGap.count() >= 1 && spyGap.first().at(0).toString().contains(QStringLiteral("契约值非法")),
                      "error must report illegal contract value");
+        }
+    }
+
+    // 阶7 批3复核五轮（P2-3）：携带契约键存在但类型错误（字符串/布尔/列表）——
+    // 三插件必须失败关闭，不得静默当作"无契约"并让错误值随 output=input 继续传播
+    void testCarriedContractWrongTypeRejected() {
+        cv::Mat m = makeTiltedPlane(200, 100, 0.1, -0.2, 50.0);
+        const QVariantList badValues{QVariant(QStringLiteral("-7")), QVariant(true), QVariant(QVariantList{1, 2})};
+
+        for (const QVariant& bad : badValues) {
+            PreProcessing3DPlugin pre;
+            pre.setParams(preParams(false, 0.0, 65535.0, -7.0, 0, 0, 0, 0));
+            QVERIFY(pre.initialize());
+            ImageData inPre(m);
+            inPre.setData("height_invalid_value", bad);
+            QSignalSpy spyPre(&pre, &DeepLux::IModule::errorOccurred);
+            ImageData outPre;
+            QVERIFY2(!pre.execute(inPre, outPre), "3DPre must reject wrong-typed contract");
+            QVERIFY2(spyPre.count() >= 1 && spyPre.first().at(0).toString().contains(QStringLiteral("契约类型非法")),
+                     "error must report contract type violation");
+
+            FitPlanePlugin fp;
+            fp.setParams(planeParams(0, 0, 0, 0, 0.0, 1.0, 1.0, 1.0, 0.0));
+            QVERIFY(fp.initialize());
+            ImageData inFp(m);
+            inFp.setData("height_invalid_value", bad);
+            QSignalSpy spyFp(&fp, &DeepLux::IModule::errorOccurred);
+            ImageData outFp;
+            QVERIFY2(!fp.execute(inFp, outFp), "FitPlane must reject wrong-typed contract");
+            QVERIFY2(spyFp.count() >= 1 && spyFp.first().at(0).toString().contains(QStringLiteral("契约类型非法")),
+                     "error must report contract type violation");
+
+            GapMeasure3DPlugin gap;
+            gap.setParams(gapParams(100, 50, 100, 5));
+            QVERIFY(gap.initialize());
+            ImageData inGap(m);
+            inGap.setData("height_invalid_value", bad);
+            QSignalSpy spyGap(&gap, &DeepLux::IModule::errorOccurred);
+            ImageData outGap;
+            QVERIFY2(!gap.execute(inGap, outGap), "GapMeasure3D must reject wrong-typed contract");
+            QVERIFY2(spyGap.count() >= 1 && spyGap.first().at(0).toString().contains(QStringLiteral("契约类型非法")),
+                     "error must report contract type violation");
         }
     }
 

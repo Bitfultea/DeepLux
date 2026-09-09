@@ -139,7 +139,13 @@ bool PreProcessing3DPlugin::process(const ImageData& input, ImageData& output) {
     // 否则旧填充值会随新契约键的覆盖泄漏到下游拟合
     std::optional<double> carriedQ;
     const QVariant carriedVar = input.data("height_invalid_value");
-    if (carriedVar.isValid() && portValueMatchesType(carriedVar, DataType::Number)) {
+    // 阶7 批3复核五轮（P2-3）：键存在但类型错误（字符串/布尔/列表等）必须
+    // 失败关闭——静默忽略会让错误契约随 output=input 继续向下游传播
+    if (carriedVar.isValid() && !portValueMatchesType(carriedVar, DataType::Number)) {
+        emit errorOccurred(tr("height_invalid_value 契约类型非法（须为数值）"));
+        return false;
+    }
+    if (carriedVar.isValid()) {
         // 阶7 批3复核三轮（P1-2）：哨兵按源图存储精度量化（与下游插件同一规则）
         const double carried = carriedVar.toDouble();
         double quantized = carried;
@@ -158,11 +164,22 @@ bool PreProcessing3DPlugin::process(const ImageData& input, ImageData& output) {
         }
         carriedQ = quantized;
     }
-    // 阶7 批3复核三轮（P1-1/P2-6）：自动 NoData 检测（TiffLoader 重复极值判据）
-    // 可经 autoNoData 关闭，且在输入已携带无效值契约时让位——避免误删合法大
-    // 面积平台、避免与携带值重复判定，并省去整幅图两遍扫描的开销
-    const std::optional<double> noData =
-        (autoNoData && !carriedQ.has_value()) ? TiffLoader::detectNoDataValue(depthSrc) : std::nullopt;
+    // 阶7 批3复核三轮（P1-1/P2-6）：自动 NoData 检测（TiffLoader 重复极值判据，
+    // 原始像素单位启发式）可经 autoNoData 关闭，且在输入已携带无效值契约时让位。
+    // 阶7 批3复核五轮（P1-1）：歧义（双侧极值同满足哨兵判据，如两值图）失败
+    // 关闭——哨兵语义无法从像素分布推导，猜测可能反向删除全部合法数据
+    std::optional<double> noData;
+    if (autoNoData && !carriedQ.has_value()) {
+        const TiffLoader::NoDataResult detected = TiffLoader::detectNoData(depthSrc);
+        if (detected.status == TiffLoader::NoDataStatus::Ambiguous) {
+            emit errorOccurred(tr("NoData 检测歧义：两侧极值同时满足哨兵判据（如两值图），无法从分布判定哨兵——"
+                                  "请经上游契约、高度筛选区间显式处理，或关闭 autoNoData"));
+            return false;
+        }
+        if (detected.status == TiffLoader::NoDataStatus::Found) {
+            noData = detected.value;
+        }
+    }
 
     cv::Mat height;
     depthSrc.convertTo(height, CV_64F);

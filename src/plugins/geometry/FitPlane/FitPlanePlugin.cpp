@@ -167,7 +167,13 @@ bool FitPlanePlugin::process(const ImageData& input, ImageData& output) {
     // 浮点高度图再叠加 TiffLoader 重复极值判据的自动 NoData 检测
     double invalid = invalidValue;
     const QVariant carriedInvalid = input.data("height_invalid_value");
-    const bool hasCarried = carriedInvalid.isValid() && portValueMatchesType(carriedInvalid, DataType::Number);
+    // 阶7 批3复核五轮（P2-3）：键存在但类型错误必须失败关闭，不得静默忽略
+    // 并让错误契约随 output=input 继续传播
+    if (carriedInvalid.isValid() && !portValueMatchesType(carriedInvalid, DataType::Number)) {
+        emit errorOccurred(tr("height_invalid_value 契约类型非法（须为数值）"));
+        return false;
+    }
+    const bool hasCarried = carriedInvalid.isValid();
     if (hasCarried) {
         invalid = carriedInvalid.toDouble();
     }
@@ -186,10 +192,21 @@ bool FitPlanePlugin::process(const ImageData& input, ImageData& output) {
         emit errorOccurred(tr("携带的 height_invalid_value 契约值非法（非有限或量化后溢出）: %1").arg(invalid));
         return false;
     }
-    // 阶7 批3复核三轮（P1-1/P2-6）：自动检测可经 autoNoData 关闭，且输入已携带
-    // 无效值契约时让位（不重复判定、不误删合法平台，并省去整幅图两遍扫描）
-    const std::optional<double> noData =
-        (autoNoData && !hasCarried) ? TiffLoader::detectNoDataValue(src) : std::nullopt;
+    // 阶7 批3复核三轮（P1-1/P2-6）：自动检测（原始像素单位启发式）可经 autoNoData
+    // 关闭，且输入已携带无效值契约时让位（不重复判定、不误删合法平台、省去整幅扫描）。
+    // 阶7 批3复核五轮（P1-1）：歧义失败关闭，不按分布猜测哨兵侧
+    std::optional<double> noData;
+    if (autoNoData && !hasCarried) {
+        const TiffLoader::NoDataResult detected = TiffLoader::detectNoData(src);
+        if (detected.status == TiffLoader::NoDataStatus::Ambiguous) {
+            emit errorOccurred(tr("NoData 检测歧义：两侧极值同时满足哨兵判据（如两值图），无法从分布判定哨兵——"
+                                  "请经上游契约或 invalidValue 参数显式指定，或关闭 autoNoData"));
+            return false;
+        }
+        if (detected.status == TiffLoader::NoDataStatus::Found) {
+            noData = detected.value;
+        }
+    }
     const auto isInvalid = [&](double v) {
         return !std::isfinite(v) || v == invalidQ || (noData.has_value() && v == *noData);
     };
