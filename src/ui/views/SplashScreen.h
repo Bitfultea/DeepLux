@@ -1,6 +1,5 @@
 #pragma once
 
-#include <QDesktopWidget>
 #include <QLabel>
 #include <QProgressBar>
 #include <QStringList>
