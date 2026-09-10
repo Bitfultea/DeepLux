@@ -8,11 +8,7 @@ set(PLUGIN_HEADERS
     SaveDataPlugin.h
 )
 
-if(Qt6_FOUND)
-    qt6_add_plugin(SaveDataPlugin SHARED SOURCES ${PLUGIN_SOURCES} ${PLUGIN_HEADERS})
-else()
-    add_library(SaveDataPlugin SHARED ${PLUGIN_SOURCES} ${PLUGIN_HEADERS})
-endif()
+add_library(SaveDataPlugin SHARED ${PLUGIN_SOURCES} ${PLUGIN_HEADERS})
 
 target_link_libraries(SaveDataPlugin PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui Qt${QT_VERSION_MAJOR}::Widgets)
 

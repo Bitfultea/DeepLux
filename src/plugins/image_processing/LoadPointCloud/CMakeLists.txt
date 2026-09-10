@@ -3,11 +3,7 @@
 set(PLUGIN_SOURCES LoadPointCloudPlugin.cpp)
 set(PLUGIN_HEADERS LoadPointCloudPlugin.h)
 
-if(Qt6_FOUND)
-    qt6_add_plugin(LoadPointCloudPlugin SHARED SOURCES ${PLUGIN_SOURCES} ${PLUGIN_HEADERS})
-else()
-    add_library(LoadPointCloudPlugin SHARED ${PLUGIN_SOURCES} ${PLUGIN_HEADERS})
-endif()
+add_library(LoadPointCloudPlugin SHARED ${PLUGIN_SOURCES} ${PLUGIN_HEADERS})
 
 target_link_libraries(LoadPointCloudPlugin PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui Qt${QT_VERSION_MAJOR}::Widgets)
 
