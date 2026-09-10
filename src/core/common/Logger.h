@@ -83,7 +83,7 @@ private:
     QString m_logFilePath;
     QFile* m_logFile = nullptr;
     QTextStream* m_logStream = nullptr;
-    mutable QMutex m_mutex{QMutex::Recursive};
+    mutable QRecursiveMutex m_mutex;
     bool m_logToFile = true;
     LogLevel m_minLevel = LogLevel::Debug;
     qint64 m_maxLogFileSize = 10 * 1024 * 1024; // 10MB

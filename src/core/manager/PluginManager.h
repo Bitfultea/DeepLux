@@ -138,7 +138,7 @@ private:
         QString m_path;
     };
 
-    mutable QMutex m_mutex{QMutex::Recursive};
+    mutable QRecursiveMutex m_mutex;
     QStringList m_pluginPaths;
     QMap<QString, PluginInfo> m_modules;
     QMap<QString, PluginInfo> m_cameras;
