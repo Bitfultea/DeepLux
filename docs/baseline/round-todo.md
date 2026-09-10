@@ -13,7 +13,7 @@
 - 阶段 0–8 全部完成（见下表）；插件手册同步 67 插件（`docs/plugins.md`）；
   台账结论分布 `intentionally_changed=13 / partial=41 / unverified=4`（三方一致）。
 - TSan：阶段 6 报告（`tsan-report.md`）为并发证据基线（SEGV/heap-use-after-free 清零，
-  误报数随调度变化、不标通过）；阶段 7/8 未新增 RunEngine 并发路径，不重跑全量 TSan。
+  未确认的 data race 警告数随调度变化、不标通过）；阶段 7/8 未新增 RunEngine 并发路径，不重跑全量 TSan。
 
 ### 生产闭环轮次（分支 agent/production-closure，基线 dc146a0）
 
@@ -34,9 +34,15 @@
 - SAM 真实 GPU 模型（权重）现场/夜间验收；CI 不下载权重，协议路径由测试内 HTTP 服务覆盖。
 - PLC/AI/相机现场硬件验收；相机验收以 `GrabImage(File)` 作为无硬件模拟源（固定测试图像）。
 - 7 个业务包现场验收（依赖已在 `hotfix-plugin-mapping.json` 记 `dependency_recorded`）。
-- TSan 残余误报清零（需插桩 Qt 复测；数量随调度变化，不标通过）。
+- TSan 残余警告确认与清零（需插桩 Qt 复测；数量随调度变化，不标通过）。
 - 旧版逐值运行结果等价未做（口径声明：静态对照+行为测试+台账结论，见
   `legacy-comparison.md`；结论分布中不标 `equivalent`）。
+
+### 后续产品版本（不属于阶段 0–8）
+
+- vNext-1：处理 13 个既有插件质量遗留项，先修假成功、数据覆盖和结构化数据丢失风险。
+- vNext-2：实现冻结清单中剩余 29 个 P2 rebuild，继续按每批不超过 3 个同域插件验收。
+- 完整名单与分域见 `capability-matrix.md`；外部设备和业务包仍走上方现场验收轨。
 
 ### 阶段 7 重建口径
 
