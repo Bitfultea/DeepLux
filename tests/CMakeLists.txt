@@ -321,6 +321,10 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_fitellipse")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
     endif()
+    # 阶7 批4 复核三轮（P0-1）：角度归一含超大有限数用例，设 TIMEOUT 防循环不终止挂死 CI
+    if(TEST_NAME STREQUAL "test_batch4")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
+    endif()
 endforeach()
 
 add_executable(ui_capture_mainwindow ui_capture_mainwindow.cpp)

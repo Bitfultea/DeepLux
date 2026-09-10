@@ -122,7 +122,9 @@ private slots:
     void testCropAxisAligned() {
         CropImagePlugin plugin;
         QVERIFY(plugin.initialize()); // 默认参数：中心 100×100 矩形
-        plugin.setParams(cropParams(QJsonArray{rect(320, 240, 200, 100, 0)}));
+        // 阶7 批4复核三轮（P1-3）：l1/l2 为半长（旧版 HALCON Length1/2 口径）——
+        // 半长 100/50 → 裁剪 200×100
+        plugin.setParams(cropParams(QJsonArray{rect(320, 240, 100, 50, 0)}));
         ImageData input(makePatternImage(640, 480));
         ImageData out;
         QVERIFY2(plugin.execute(input, out), "axis-aligned crop must succeed");
@@ -149,13 +151,13 @@ private slots:
 
     void testCropRotated45() {
         CropImagePlugin plugin;
-        plugin.setParams(cropParams(QJsonArray{rect(320, 240, 140, 20, 45)}));
+        plugin.setParams(cropParams(QJsonArray{rect(320, 240, 70, 10, 45)})); // 半长 70/10
         QVERIFY(plugin.initialize());
         ImageData input(makePatternImage(640, 480));
         ImageData out;
         QVERIFY2(plugin.execute(input, out), "rotated crop must succeed");
         const QVariantMap row = out.data("crop_images").toList().first().toMap();
-        // 包围盒 = 140·cos45 + 20·sin45 ≈ 113.1 → 半开区间取整 114
+        // 包围盒半宽 = 70·cos45 + 10·sin45 ≈ 56.57 → 全宽 ≈113.1 → floor/ceil 取整 114
         QCOMPARE(row.value(QStringLiteral("crop_width")).toInt(), 114);
         QCOMPARE(row.value(QStringLiteral("crop_height")).toInt(), 114);
         QCOMPARE(row.value(QStringLiteral("valid")).toBool(), true);
@@ -211,7 +213,7 @@ private slots:
 
     void testCropClampedToImage() {
         CropImagePlugin plugin;
-        plugin.setParams(cropParams(QJsonArray{rect(10, 10, 100, 100, 0)})); // 越出左上边界
+        plugin.setParams(cropParams(QJsonArray{rect(10, 10, 50, 50, 0)})); // 半长 50，越出左上边界
         QVERIFY(plugin.initialize());
         ImageData input(makePatternImage(640, 480));
         ImageData out;
@@ -227,7 +229,7 @@ private slots:
     // （旧 qRound：220.5→221、420.5→421 得宽 200 且丢失 x=420 列）
     void testCropFractionalCenter() {
         CropImagePlugin plugin;
-        plugin.setParams(cropParams(QJsonArray{rect(320.5, 240.5, 200, 100, 0)}));
+        plugin.setParams(cropParams(QJsonArray{rect(320.5, 240.5, 100, 50, 0)})); // 半长 100/50
         QVERIFY(plugin.initialize());
         ImageData input(makePatternImage(640, 480));
         ImageData out;
@@ -268,8 +270,9 @@ private slots:
         QCOMPARE(row.value(QStringLiteral("crop_height")).toInt(), 1);
     }
 
-    // 阶7 批4复核（P1-2）：GUI 可配置性——createConfigWidget 提供矩形数组编辑，
-    // 合法 JSON 经 validateParams+setParams 写入；非法文本拒绝且保留旧参数
+    // 阶7 批4复核（P1-2/三轮）：GUI 可配置性——createConfigWidget 提供矩形数组
+    // 编辑；合法 JSON 经 validateParams+setParams 写入；非法编辑毒化草稿参数，
+    // 由外层"确定"统一校验阻止关闭（错误输入不被静默丢弃）
     void testCropConfigWidget() {
         CropImagePlugin plugin;
         QVERIFY(plugin.initialize());
@@ -281,22 +284,35 @@ private slots:
         QVERIFY(firstCheck != nullptr);
         auto* status = w->findChild<QLabel*>("CropImageConfigStatus");
         QVERIFY(status != nullptr);
+        QString verr;
 
         rectsEdit->setText(QStringLiteral("[[10,10,20,20,0],[50,50,30,30,45]]"));
         const QJsonArray rects = plugin.currentParams()["rectangles"].toArray();
         QCOMPARE(rects.size(), 2);
         QCOMPARE(rects[0].toArray()[2].toDouble(), 20.0);
+        QVERIFY(plugin.validateParams(plugin.currentParams(), verr));
 
         firstCheck->setChecked(false);
         QCOMPARE(plugin.currentParams()["outputFirstAsImage"].toBool(), false);
 
+        // 阶7 批4复核三轮（P1-2）：非法编辑必须把非法状态写入草稿（setParam 直写），
+        // 使外层"确定"的统一校验（validateParams(草稿参数)）阻止关闭弹窗——
+        // 仅"保留旧参数"会让外层校验通过、错误输入被静默丢弃
         rectsEdit->setText(QStringLiteral("not json"));
-        QCOMPARE(plugin.currentParams()["rectangles"].toArray().size(), 2); // 拒绝，保留旧参数
         QVERIFY(!status->text().isEmpty());
+        QVERIFY2(!plugin.validateParams(plugin.currentParams(), verr),
+                 "unparsable edit must poison draft params so outer OK validation blocks closing");
 
-        // 语义非法（l1=0）同样拒绝
+        // 语义非法（l1=0）：同样毒化草稿
         rectsEdit->setText(QStringLiteral("[[10,10,0,20,0]]"));
-        QCOMPARE(plugin.currentParams()["rectangles"].toArray().size(), 2);
+        QVERIFY2(!plugin.validateParams(plugin.currentParams(), verr),
+                 "semantic-invalid edit must poison draft params too");
+
+        // 恢复合法输入：草稿重新可通过外层校验
+        rectsEdit->setText(QStringLiteral("[[10,10,20,20,0]]"));
+        QVERIFY2(plugin.validateParams(plugin.currentParams(), verr),
+                 qPrintable(QString("valid edit must restore draft, err: %1").arg(verr)));
+        QCOMPARE(plugin.currentParams()["rectangles"].toArray().size(), 1);
         delete w;
     }
 
@@ -459,6 +475,26 @@ private slots:
         QCOMPARE(noPortOut.data("offset_x").toDouble(), -15.0); // 0-15
     }
 
+    // 阶7 批4复核三轮（P0-1）：超大有限角度必须常数时间归一——旧循环实现对
+    // 1e300 因 d-360==d 浮点吸收永不终止（流程永久卡死）；配合 CTest TIMEOUT
+    // 防挂死回归
+    void testOffsetHugeAngleTerminates() {
+        CalculateOffsetPlugin plugin;
+        plugin.setParams(offsetParams(0, 0, 0, 0, 0, 40));
+        QVERIFY(plugin.initialize());
+        const double huge[] = {1e300, -1e300, 1e18, -1e18};
+        for (const double a : huge) {
+            ImageData in;
+            in.setData("current_angle", a);
+            ImageData out;
+            QVERIFY2(plugin.execute(in, out), qPrintable(QString("huge angle %1 must terminate").arg(a)));
+            const double oa = out.data("offset_a").toDouble();
+            QVERIFY2(std::isfinite(oa), "offset_a must be finite");
+            QVERIFY2(oa > -180.0 && oa <= 180.0,
+                     qPrintable(QString("offset_a %1 must normalize into (-180,180]").arg(oa)));
+        }
+    }
+
     void testOffsetValidation() {
         CalculateOffsetPlugin plugin;
         QString error;
@@ -510,7 +546,7 @@ private slots:
         crop.id = QStringLiteral("crop");
         crop.moduleId = QStringLiteral("CropImage");
         QJsonArray rects;
-        rects.append(rect(320, 240, 300, 300, 0));
+        rects.append(rect(320, 240, 150, 150, 0)); // 半长 150 → 裁剪 300×300
         crop.params["rectangles"] = rects;
         crop.params["outputFirstAsImage"] = true;
         project->addModule(crop);

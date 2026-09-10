@@ -128,10 +128,13 @@ bool CropImagePlugin::process(const ImageData& input, ImageData& output) {
         const double l2 = r[3].toDouble();
         const double deg = r[4].toDouble();
         const double theta = deg * M_PI / 180.0;
-        const double halfUx = std::abs(std::cos(theta)) * l1 / 2.0;
-        const double halfUy = std::abs(std::sin(theta)) * l1 / 2.0;
-        const double halfVx = std::abs(std::sin(theta)) * l2 / 2.0;
-        const double halfVy = std::abs(std::cos(theta)) * l2 / 2.0;
+        // 阶7 批4复核三轮（P1-3）：l1/l2 为半长——与冻结契约的旧版 HALCON
+        // GenRectangle2 Length1/Length2 口径一致（旧仓库 Yolo 即 Length1=Width/2
+        // 直接传入），不再除以二把输入误解为整边长
+        const double halfUx = std::abs(std::cos(theta)) * l1;
+        const double halfUy = std::abs(std::sin(theta)) * l1;
+        const double halfVx = std::abs(std::sin(theta)) * l2;
+        const double halfVy = std::abs(std::cos(theta)) * l2;
         // 阶7 批4复核（P1-3）：包含式包围盒——下界 floor、上界 ceil。qRound 会把
         // 分数边界向内舍入（遗漏边缘像素），小尺寸/分数中心矩形甚至得到零宽零高
         const int x0 = qMax(0, static_cast<int>(std::floor(cx - halfUx - halfVx)));
@@ -230,7 +233,11 @@ QWidget* CropImagePlugin::createConfigWidget() {
         QJsonParseError parseError{};
         const QJsonDocument doc = QJsonDocument::fromJson(rectsEdit->text().toUtf8(), &parseError);
         if (parseError.error != QJsonParseError::NoError || !doc.isArray()) {
-            status->setText(tr("JSON 解析失败：%1（保留原参数）").arg(parseError.errorString()));
+            status->setText(tr("JSON 解析失败：%1").arg(parseError.errorString()));
+            // 阶7 批4复核三轮（P1-2）：非法编辑状态写入草稿（setParam 直写不验证），
+            // 使外层"确定"的统一校验（validateParams(draft->currentParams())）阻止
+            // 关闭弹窗——用户的错误输入不被静默丢弃
+            pluginPtr->setParam(QStringLiteral("rectangles"), rectsEdit->text());
             return;
         }
         QJsonObject merged = pluginPtr->currentParams();
@@ -240,7 +247,10 @@ QWidget* CropImagePlugin::createConfigWidget() {
         // 取得可读错误再写入
         QString verr;
         if (!pluginPtr->validateParams(merged, verr)) {
-            status->setText(verr.isEmpty() ? tr("参数被拒绝（保留原参数）") : verr);
+            status->setText(verr.isEmpty() ? tr("参数非法") : verr);
+            // 语义非法数组同样写入草稿，交由外层"确定"校验阻止关闭
+            pluginPtr->setParam(QStringLiteral("rectangles"), doc.array().toVariantList());
+            pluginPtr->setParam(QStringLiteral("outputFirstAsImage"), firstCheck->isChecked());
             return;
         }
         pluginPtr->setParams(merged);

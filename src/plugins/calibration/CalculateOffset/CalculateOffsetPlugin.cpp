@@ -9,13 +9,15 @@
 namespace DeepLux {
 
 namespace {
-// 角度差归一化到 (-180, 180]（与全代码库度制口径一致）
+// 角度差归一化到 (-180, 180]（与全代码库度制口径一致）。
+// 阶7 批4复核三轮（P0-1）：fmod 常数时间归一——循环逐次减/加 360 对超大
+// 有限角度（如 current_angle 端口传入 1e300）因 d-360==d 浮点吸收而永不
+// 终止，流程永久卡死
 double normalizeAngle180(double deg) {
-    double d = deg;
-    while (d > 180.0) {
+    double d = std::fmod(deg, 360.0); // (-360, 360)
+    if (d > 180.0) {
         d -= 360.0;
-    }
-    while (d <= -180.0) {
+    } else if (d <= -180.0) {
         d += 360.0;
     }
     return d;
