@@ -86,7 +86,7 @@
       "currentPluginId": "com.deeplux.plugin.cropimage",
       "matchKind": "direct",
       "reviewState": "reviewed",
-      "decision": "目标契约收窄为已实现子集（故 partial）：旧版 HomMat2D 仿射补正/HRegion ROI 区域组输出/DataList 手动输入模式未实现；旋转矩形取轴对齐包围盒裁剪（无旋转重采样，四舍五入半开区间），无交集矩形记 valid=false 行不静默丢弃，全部无交集失败关闭；复核二轮：包围盒改包含式取整（下界 floor/上界 ceil，分数边界不向内丢像素、小尺寸矩形不产生零宽误判无效）；GUI 可配置性补齐——rectangles 数组参数提供独立配置页（createConfigWidget，JSON 编辑经 validateParams+setParams 写入，非法输入拒绝保留旧参数）并加入高级配置名单；复核三轮：l1/l2 语义修正为半长（初版误除以二当作整边长，与冻结契约的 HALCON Length1/Length2 口径不一致，现直接作为半长传入包围盒计算，测试同步按半长口径重算）；配置页非法编辑将非法状态写入草稿（setParam 直写），由外层\"确定\"统一校验阻止关闭，错误输入不被静默丢弃",
+      "decision": "目标契约收窄为已实现子集（故 partial）：旧版 HomMat2D 仿射补正/HRegion ROI 区域组输出/DataList 手动输入模式未实现；旋转矩形取包含式轴对齐包围盒裁剪（无旋转重采样；取整口径见复核二轮 floor/ceil 记录），无交集矩形记 valid=false 行不静默丢弃，全部无交集失败关闭；复核二轮：包围盒改包含式取整（下界 floor/上界 ceil，分数边界不向内丢像素、小尺寸矩形不产生零宽误判无效）；GUI 可配置性补齐——rectangles 数组参数提供独立配置页（createConfigWidget，JSON 编辑经 validateParams+setParams 写入，非法输入拒绝保留旧参数）并加入高级配置名单；复核三轮：l1/l2 语义修正为半长（初版误除以二当作整边长，与冻结契约的 HALCON Length1/Length2 口径不一致，现直接作为半长传入包围盒计算，测试同步按半长口径重算）；配置页非法编辑将非法状态写入草稿（setParam 直写），由外层\"确定\"统一校验阻止关闭，错误输入不被静默丢弃；复核四轮：配置页窗口说明/表单标签/占位文本与校验错误统一\"半长\"口径（l1/l2 为 HALCON Length1/Length2 半长，整边长=2×半长），配置页为 rectangles 唯一 GUI 编辑入口；GUI 验收补 MainWindow 级弹窗回归（非法编辑→外层确定阻止关闭→合法恢复→提交写入运行模块）与 11-cropimage-config-dialog.png 截图证据",
       "migrationDecision": "rebuild",
       "priority": "P1",
       "input": "Image2D+多个旋转矩形（手动输入 DataList 或链接数组 CenterX/CenterY/Length1/Length2/Angle）",

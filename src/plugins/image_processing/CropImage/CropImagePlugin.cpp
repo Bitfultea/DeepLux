@@ -68,7 +68,7 @@ bool CropImagePlugin::doValidateParams(const QJsonObject& params, QString& error
         }
         const QJsonArray r = rects[i].toArray();
         if (r.size() != kRectFields) {
-            error = tr("rectangles[%1] 必须恰含 5 个数值 [cx,cy,l1,l2,deg]").arg(i);
+            error = tr("rectangles[%1] 必须恰含 5 个数值 [cx,cy,半长1,半长2,deg]").arg(i);
             return false;
         }
         for (int k = 0; k < kRectFields; ++k) {
@@ -87,7 +87,7 @@ bool CropImagePlugin::doValidateParams(const QJsonObject& params, QString& error
             return false;
         }
         if (!(l1 > 0.0) || l1 > 1e6 || !(l2 > 0.0) || l2 > 1e6) {
-            error = tr("rectangles[%1] 边长必须为(0,1e6]").arg(i);
+            error = tr("rectangles[%1] 半长必须为(0,1e6]（整边长=2×半长）").arg(i);
             return false;
         }
         if (deg < -360.0 || deg > 360.0) {
@@ -196,22 +196,29 @@ bool CropImagePlugin::process(const ImageData& input, ImageData& output) {
 
 // 阶7 批4复核（P1-2）：rectangles 为数组参数，PropertyPanel 只为字符串/数字/
 // 布尔创建控件——必须提供独立配置页（MeasurementInput 先例，加入高级配置名单），
-// 否则 GUI 用户只能用默认矩形。写入走 validateParams+setParams（批1结论：
-// 配置页不得绕过验证），非法输入拒绝并保留旧参数。
+// 否则 GUI 用户只能用默认矩形。合法写入走 validateParams+setParams（批1结论：
+// 配置页不得绕过验证）；非法编辑把非法状态写入草稿（setParam 直写），由外层
+// "确定"的统一校验阻止关闭（复核三轮 P1-2）。
+// 阶7 批4复核四轮（P1）：配置页是 rectangles 唯一的 GUI 编辑入口，窗口说明/
+// 表单标签/占位文本必须明示 l1/l2 为半长（HALCON Length1/Length2 口径），
+// 否则用户按整边长输入会得到两倍尺寸裁剪。
 QWidget* CropImagePlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     auto* layout = new QVBoxLayout(widget);
     layout->setContentsMargins(12, 12, 12, 12);
     layout->setSpacing(8);
-    layout->addWidget(
-        new QLabel(tr("旋转矩形批量裁剪——矩形数组 [[cx,cy,l1,l2,deg],...]（1..%1 个）").arg(kMaxRects), widget));
+    layout->addWidget(new QLabel(tr("旋转矩形批量裁剪——矩形数组 [[cx,cy,半长1,半长2,deg],...]（1..%1 个）\n"
+                                    "半长1/半长2 为 HALCON Length1/Length2 口径：整边长 = 2×半长")
+                                     .arg(kMaxRects),
+                                 widget));
 
     auto* form = new QFormLayout();
     auto* rectsEdit = new QLineEdit(widget);
     rectsEdit->setObjectName(QStringLiteral("CropImageRectanglesEdit"));
     rectsEdit->setText(
         QString::fromUtf8(QJsonDocument(m_params["rectangles"].toArray()).toJson(QJsonDocument::Compact)));
-    form->addRow(tr("矩形数组"), rectsEdit);
+    rectsEdit->setPlaceholderText(QStringLiteral("[[cx,cy,半长1,半长2,deg],...] 如 [[320,240,100,50,0]]"));
+    form->addRow(tr("矩形数组（半长）"), rectsEdit);
 
     auto* firstCheck = new QCheckBox(tr("image 端口输出首个裁剪图"), widget);
     firstCheck->setObjectName(QStringLiteral("CropImageOutputFirstCheck"));

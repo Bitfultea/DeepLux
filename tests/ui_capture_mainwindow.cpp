@@ -440,6 +440,57 @@ bool installPluginForCapture(const QString& repoRoot, const QString& pluginTempR
     return QFile::copy(metaSrc, pluginDir + "/metadata.json") && QFile::copy(libSrc, pluginDir + "/" + destLibName);
 }
 
+// 阶7 批4复核四轮（P2）：CropImage 高级配置页截图——rectangles 数组参数的唯一
+// GUI 编辑入口（半长口径说明/草稿毒化守卫见 test_mainwindow 完整回归），
+// 10-plugin-config-dialog.png 为点云配置页，不覆盖本批新增配置页
+bool captureCropConfigDialog(const QString& repoRoot, const QString& pluginTempRoot, DeepLux::MainWindow& window,
+                             const QDir& dir) {
+    if (!DeepLux::PluginManager::instance().isPluginLoaded(QStringLiteral("CropImage"))) {
+        if (!installPluginForCapture(repoRoot, pluginTempRoot, "CropImage",
+                                     "src/plugins/image_processing/CropImage/metadata.json",
+                                     QStringLiteral(UICAP_PLUGIN_CropImage)))
+            return false;
+        DeepLux::PluginManager::instance().addPluginPath(pluginTempRoot);
+        DeepLux::PluginManager::instance().initialize();
+        if (!DeepLux::PluginManager::instance().loadPlugin("CropImage"))
+            return false;
+    }
+
+    DeepLux::Project* project = DeepLux::ProjectManager::instance().currentProject();
+    if (!project) {
+        project = DeepLux::ProjectManager::instance().newProject();
+    }
+    if (!project) {
+        return false;
+    }
+
+    DeepLux::ModuleInstance cropInst;
+    cropInst.id = QStringLiteral("capture_crop_config");
+    cropInst.moduleId = QStringLiteral("CropImage");
+    cropInst.name = QStringLiteral("图像裁剪");
+    project->addModule(cropInst);
+    QCoreApplication::processEvents();
+
+    window.selectModuleForCapture(cropInst.id);
+
+    bool saved = false;
+    QTimer::singleShot(80, [&]() {
+        QWidget* dialog = window.findChild<QWidget*>(QStringLiteral("PluginConfigDialog"));
+        if (!dialog) {
+            return;
+        }
+        dialog->resize(560, 480);
+        QCoreApplication::processEvents();
+        saved = dialog->grab().save(dir.filePath(QStringLiteral("11-cropimage-config-dialog.png")));
+        dialog->close();
+    });
+
+    const bool invoked = QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig", Qt::DirectConnection,
+                                                   Q_ARG(QString, cropInst.id));
+    QTest::qWait(180);
+    return invoked && saved;
+}
+
 // 阶3: 加载并运行找圆验收工程，等待 runFinished、校验圆结果在误差内、
 // 选择找圆节点并刷新检查器/主视图。任何一步失败返回 false（任务失败）。
 bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& pluginTempRoot,
@@ -820,6 +871,7 @@ int main(int argc, char** argv) {
         ok = captureWindow(window, QSize(1440, 900), dir.filePath("deeplux_mainwindow_1440x900.png")) && ok;
         ok = captureWindow(window, QSize(1024, 700), dir.filePath("deeplux_mainwindow_1024x700.png")) && ok;
         ok = capturePluginConfigDialog(window, dir) && ok;
+        ok = captureCropConfigDialog(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
         ok = captureFitCirclePickAcceptance(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
         ok = captureControlFlowAcceptance(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
         ok = captureClickedStates(window, dir) && ok;

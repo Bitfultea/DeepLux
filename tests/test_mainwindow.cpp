@@ -5,6 +5,7 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDialog>
 #include <QDir>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
@@ -13,6 +14,7 @@
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QImage>
+#include <QJsonArray>
 #include <QLabel>
 #include <QLayout>
 #include <QLineEdit>
@@ -43,6 +45,7 @@
 #include <core/manager/ProjectManager.h>
 #include <core/model/Project.h>
 #include <functional>
+#include <plugins/image_processing/CropImage/CropImagePlugin.h>
 #include <ui/ThemeManager.h>
 #include <ui/dialogs/SamAnnotatorDialog.h>
 #include <ui/display/3d/Viewport3DContent.h>
@@ -144,6 +147,7 @@ private slots:
     void testCloseInspectorDoesNotAutoExpand();
     void testDeleteModuleClearsInspector();
     void testOldAdvancedConfigDialogStillUsable();
+    void testCropImageAdvancedConfigDialogGuardsInvalidEdit();
     void testNarrowWindowToolPanelRestored();
     void testNarrowWindowKeepsCanvasAndCollapsedInspectorReadable();
     void testInspectorManualCollapseResizesSplitter();
@@ -3315,6 +3319,72 @@ void TestMainWindow::testOldAdvancedConfigDialogStillUsable() {
     advancedAction->trigger();
     QCoreApplication::processEvents();
     QVERIFY2(spy.count() >= 1, "Advanced config overflow action should emit advancedConfigRequested signal");
+}
+
+// 阶7 批4复核四轮（P2 完整回归）：从 MainWindow 真实打开 CropImage 高级配置弹窗——
+// 非法编辑毒化草稿后，外层"确定"（validateParams(草稿参数)）必须阻止关闭；
+// 合法恢复后"确定"提交成功，参数经 undo 命令写入运行模块
+void TestMainWindow::testCropImageAdvancedConfigDialogGuardsInvalidEdit() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance instance;
+    instance.id = QStringLiteral("crop_cfg_1");
+    instance.moduleId = QStringLiteral("CropImage");
+    instance.name = QStringLiteral("裁剪配置测试");
+    project->addModule(instance);
+    QCoreApplication::processEvents();
+
+    CropImagePlugin cropModule;
+    QVERIFY(cropModule.initialize());
+    window.registerFlowModule(instance.id, &cropModule);
+
+    QString dialogResult;
+    QTimer::singleShot(0, &window, [&]() {
+        QDialog* dialog = window.findChild<QDialog*>(QStringLiteral("PluginConfigDialog"));
+        if (!dialog) {
+            dialogResult = QStringLiteral("no-dialog");
+            return; // openAdvancedPluginConfig 未创建弹窗时已提前返回，不会挂死
+        }
+        auto* edit = dialog->findChild<QLineEdit*>(QStringLiteral("CropImageRectanglesEdit"));
+        auto* okBtn = dialog->findChild<QPushButton*>(QStringLiteral("PluginConfigOkButton"));
+        if (!edit || !okBtn) {
+            dialogResult = QStringLiteral("no-widgets");
+            dialog->reject();
+            return;
+        }
+        // 非法 JSON → 外层确定必须被阻止（弹窗保持打开）
+        edit->setText(QStringLiteral("not json"));
+        okBtn->click();
+        QCoreApplication::processEvents();
+        if (!dialog->isVisible()) {
+            dialogResult = QStringLiteral("closed-on-unparsable");
+            return;
+        }
+        // 语义非法（半长=0）→ 同样阻止
+        edit->setText(QStringLiteral("[[10,10,0,20,0]]"));
+        okBtn->click();
+        QCoreApplication::processEvents();
+        if (!dialog->isVisible()) {
+            dialogResult = QStringLiteral("closed-on-semantic-invalid");
+            return;
+        }
+        // 合法输入 → 确定提交关闭
+        edit->setText(QStringLiteral("[[100,100,50,40,0]]"));
+        okBtn->click();
+        QCoreApplication::processEvents();
+        dialogResult = dialog->isVisible() ? QStringLiteral("still-open-on-valid") : QStringLiteral("accepted");
+    });
+    QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig", Qt::DirectConnection,
+                              Q_ARG(QString, instance.id));
+    QCOMPARE(dialogResult, QStringLiteral("accepted"));
+
+    // 提交后运行模块参数经 undo 命令更新（半长口径 [[100,100,50,40,0]]）
+    const QJsonArray rects = cropModule.currentParams()[QStringLiteral("rectangles")].toArray();
+    QCOMPARE(rects.size(), 1);
+    QCOMPARE(rects[0].toArray()[0].toDouble(), 100.0);
+    QCOMPARE(rects[0].toArray()[2].toDouble(), 50.0);
 }
 
 // 中: 回归测试 — 窄窗口后工具面板恢复

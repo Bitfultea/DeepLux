@@ -297,6 +297,8 @@ foreach(TEST_FILE ${TEST_SOURCES})
             IfPlugin
             DelayPlugin
         )
+        # 阶7 批4 复核四轮（P2）：CropImage 高级配置弹窗完整回归需直接实例化插件
+        target_link_libraries(${TEST_NAME} PRIVATE CropImagePlugin)
     endif()
     if(TEST_NAME STREQUAL "test_agente2e")
         add_dependencies(${TEST_NAME}
@@ -341,6 +343,7 @@ add_dependencies(ui_capture_mainwindow
     FitCirclePlugin
     IfPlugin
     DelayPlugin
+    CropImagePlugin
 )
 if(Qt6_FOUND)
     target_link_libraries(ui_capture_mainwindow PRIVATE Qt6::Core Qt6::Widgets Qt6::Test)
@@ -359,7 +362,8 @@ target_compile_definitions(ui_capture_mainwindow PRIVATE
     UICAP_PLUGIN_MeasurementInput="$<TARGET_FILE:MeasurementInputPlugin>"
     UICAP_PLUGIN_FitCircle="$<TARGET_FILE:FitCirclePlugin>"
     UICAP_PLUGIN_If="$<TARGET_FILE:IfPlugin>"
-    UICAP_PLUGIN_Delay="$<TARGET_FILE:DelayPlugin>")
+    UICAP_PLUGIN_Delay="$<TARGET_FILE:DelayPlugin>"
+    UICAP_PLUGIN_CropImage="$<TARGET_FILE:CropImagePlugin>")
 
 # 阶段 5：GUI 截图验收注册为 CTest——
 # 验收运行或任一截图自校验（存在/尺寸/非空白/关键界面状态）失败都会使测试失败。
