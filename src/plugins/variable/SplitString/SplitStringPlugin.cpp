@@ -6,7 +6,7 @@
 #include <QFormLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QRegExp>
+#include <QRegularExpression>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
@@ -50,7 +50,7 @@ bool SplitStringPlugin::process(const ImageData& input, ImageData& output) {
 
     QStringList parts;
     if (useRegex) {
-        parts = inputString.split(QRegExp(separator), Qt::SkipEmptyParts);
+        parts = inputString.split(QRegularExpression(separator), Qt::SkipEmptyParts);
     } else {
         if (maxSplits > 0) {
             parts = inputString.split(separator, Qt::SkipEmptyParts, Qt::CaseSensitive);
@@ -97,7 +97,7 @@ bool SplitStringPlugin::doValidateParams(const QJsonObject& params, QString& err
     }
 
     if (params["useRegex"].toBool(false)) {
-        QRegExp regex(separator);
+        QRegularExpression regex(separator);
         if (!regex.isValid()) {
             error = tr("正则表达式无效");
             return false;
