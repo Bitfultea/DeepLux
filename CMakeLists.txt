@@ -57,7 +57,7 @@ endif()
 set(QT_CORE_COMPONENTS Core Gui Widgets Network Sql Test SerialPort Concurrent)
 
 if(USE_QT6)
-    find_package(Qt6 QUIET COMPONENTS ${QT_CORE_COMPONENTS})
+    find_package(Qt6 QUIET COMPONENTS ${QT_CORE_COMPONENTS} OpenGL OpenGLWidgets)
 endif()
 
 if(NOT Qt6_FOUND)

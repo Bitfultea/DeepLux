@@ -128,7 +128,7 @@ if(OpenCV_FOUND)
 endif()
 
 if(Qt6_FOUND)
-    target_link_libraries(deeplux_ui PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL)
+    target_link_libraries(deeplux_ui PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets)
 else()
     target_link_libraries(deeplux_ui PUBLIC Qt5::Core Qt5::Gui Qt5::Widgets)
     find_package(OpenGL QUIET)
