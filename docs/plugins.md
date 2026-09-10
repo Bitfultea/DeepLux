@@ -24,16 +24,16 @@ flowchart LR
 
 | 分类 | 数量 | 模块 |
 | --- | ---: | --- |
-| [图像处理](#图像处理-11) | 11 | 3DPreProcessing、Blob、CropImage、DisplayData、GrabImage、ImageScript、JigsawPuzzle、LoadPointCloud、PerProcessing、SaveImage、ShowImage |
-| [检测识别](#检测识别-9) | 9 | ColorRecognition、EdgeDefectDetection、FindCircle、JiErHanDefectsDet、Matching、MeasureCircle、MeasureLine、MeasureRect、QRCode |
-| [几何测量](#几何测量-12) | 12 | DistancePL、DistancePP、FitCircle、FitEllipse、FitLine、FitPlane、FreeformSurface、GapMeasure3D、LinesDistance、MeasureGap、MeasurementInput、PointSurfaceDistance |
-| [坐标标定](#坐标标定-2) | 2 | CalculateOffset、N点标定 |
-| [相机驱动](#相机驱动-3) | 3 | DirectShow Camera、Hikvision Camera、Video4Linux2 Camera |
-| [通信](#通信-6) | 6 | PLC通信测试、PLC读取、PLC写入、串口通信、TCP客户端、TCP服务器 |
-| [逻辑控制](#逻辑控制-9) | 9 | 条件判断、延时、条件分支、循环、并行执行、队列输入、队列输出、停止循环、条件循环 |
-| [系统工具](#系统工具-8) | 8 | DataCheck、Folder、SaveData、ShowPoint、SystemTime、TableOutPut、TimeSlice、WriteText |
-| [变量](#变量-6) | 6 | 创建字符串、数学运算、分割字符串、字符串格式化、变量定义、变量赋值 |
-| [Hymson 3D](#hymson-3d-1) | 1 | DefectDetection |
+| [图像处理](#图像处理11) | 11 | 3DPreProcessing、Blob、CropImage、DisplayData、GrabImage、ImageScript、JigsawPuzzle、LoadPointCloud、PerProcessing、SaveImage、ShowImage |
+| [检测识别](#检测识别9) | 9 | ColorRecognition、EdgeDefectDetection、FindCircle、JiErHanDefectsDet、Matching、MeasureCircle、MeasureLine、MeasureRect、QRCode |
+| [几何测量](#几何测量12) | 12 | DistancePL、DistancePP、FitCircle、FitEllipse、FitLine、FitPlane、FreeformSurface、GapMeasure3D、LinesDistance、MeasureGap、MeasurementInput、PointSurfaceDistance |
+| [坐标标定](#坐标标定2) | 2 | CalculateOffset、N点标定 |
+| [相机驱动](#相机驱动3) | 3 | DirectShow Camera、Hikvision Camera、Video4Linux2 Camera |
+| [通信](#通信6) | 6 | PLC通信测试、PLC读取、PLC写入、串口通信、TCP客户端、TCP服务器 |
+| [逻辑控制](#逻辑控制9) | 9 | 条件判断、延时、条件分支、循环、并行执行、队列输入、队列输出、停止循环、条件循环 |
+| [系统工具](#系统工具8) | 8 | DataCheck、Folder、SaveData、ShowPoint、SystemTime、TableOutPut、TimeSlice、WriteText |
+| [变量](#变量6) | 6 | 创建字符串、数学运算、分割字符串、字符串格式化、变量定义、变量赋值 |
+| [Hymson 3D](#hymson-3d1) | 1 | DefectDetection |
 
 ## 图像处理（11）
 
@@ -121,14 +121,14 @@ flowchart LR
 - **用途**：在初始圆上径向卡钳提取边缘点并最小二乘拟合圆，输出圆心、半径、直径与圆度。
 - **使用**：接在 `GrabImage` 后；提供初始圆心与半径；梯度阈值与卡钳数决定边缘点质量；exclusionRadius 剔除残差过大的离群点后重拟合（剩余点不足失败关闭）。
 - **关键配置**：initialCenterX/Y、initialRadius、threshold、measureCount、searchLength、exclusionRadius。元数据：[metadata.json](../src/plugins/detection/MeasureCircle/metadata.json)。
-- **检查**：结果包含 circle_center_x/y、circle_radius、circle_diameter、circle_roundness、edge_point_count；纯色图、2 通道输入、非有限哨兵均失败关闭。
+- **检查**：结果包含 circle_center_x/y、circle_radius、circle_diameter、circle_roundness、edge_point_count；纯色图（零梯度不伪造边缘）与 2 通道输入失败关闭；本插件无 NoData/哨兵契约（高度图哨兵处理见 `3DPreProcessing`）。
 
 ### `EdgeDefectDetection` - 边缘缺陷检测
 
 - **用途**：对参考边缘（PointSet2D）拟合基准圆，按角序卡钳实测边缘，按偏差阈值检测凸出/凹陷缺陷区域。
 - **使用**：image 接灰度/高度图，reference_edge 接上游点集（如 `MeasurementInput` point_set 或拟合输出）；参考点按角序排序逐条测量，失败射线与角度空洞作为区域分隔。
-- **关键配置**：threshold（缺陷阈值）、searchLength（搜索半长）、isConvex（计凸出为缺陷）、autoNoData。元数据：[metadata.json](../src/plugins/detection/EdgeDefectDetection/metadata.json)。
-- **检查**：has_defect 与 defect_count（选定极性区域数）恒一致；convex/concave_count 为区域数；defect_regions Table 含极性/原始索引/角度/wraps_zero/射线数/偏差；歧义、覆盖率不足、契约类型错误均失败关闭。
+- **关键配置**：threshold（缺陷阈值）、searchLength（搜索半长）、isConvex（计凸出为缺陷）。元数据：[metadata.json](../src/plugins/detection/EdgeDefectDetection/metadata.json)。
+- **检查**：has_defect 与 defect_count（选定极性区域数）恒一致；convex/concave_count 为区域数；defect_regions Table 含极性/原始索引/角度/wraps_zero/射线数/偏差；参考点不足/退化点集基准圆拟合失败/有效射线数与角度覆盖率不足均失败关闭（本插件无 autoNoData/哨兵契约，哨兵处理见 `3DPreProcessing`）。
 
 ### `ColorRecognition` - 颜色区域识别
 
@@ -144,12 +144,12 @@ flowchart LR
 - **关键配置**：最小/最大半径、Canny 高阈值、累加器阈值。元数据：[metadata.json](../src/plugins/detection/FindCircle/metadata.json)。
 - **检查**：结果页显示 `circle_center_x`、`circle_center_y`、`circle_radius`、`circle_score`；主视图应看到圆形叠加。
 
-### `JiErHanDefectsDet` - 焊接缺陷检测
+### `JiErHanDefectsDet` - 焊接缺陷候选检测（实验性）
 
-- **用途**：针对剑二韩焊接场景执行缺陷检测。
-- **使用**：接在符合该场景成像条件的图像预处理后，先用已标注的正常/异常样本确定阈值，再接报警或结果输出模块。
+- **用途**：**实验性候选检测**——基于边缘+轮廓启发式定位焊接缺陷候选区域，**非真实工业模型**；输出仅供人工复核或下游二次筛选，不得直接作为放行结论。
+- **使用**：接在符合该场景成像条件的图像预处理后，先用已标注的正常/异常样本评估候选质量，再接报警或结果输出模块；生产放行须叠加人工或模型复核。
 - **关键配置**：阈值。元数据：[metadata.json](../src/plugins/detection/JiErHanDefectsDet/metadata.json)。
-- **检查**：将检测结果与样本标签逐一比对；阈值调整应同时关注漏检和误检。
+- **检查**：将候选结果与样本标签逐一比对，明确漏检/误检率后方可进入后续链路；阈值调整应同时关注漏检和误检。
 
 ### `Matching` - 模板匹配
 
@@ -186,7 +186,7 @@ flowchart LR
 - **用途**：对 PointSet2D 点集做最小二乘椭圆拟合（RANSAC 剔离群），输出中心、长短半轴、角度与椭圆度。
 - **使用**：fit_points 接上游点集（如 `MeasurementInput` point_set）；插件判定与核心 portValueMatchesType(PointSet2D) 契约严格一致，非法载荷（字符串/扁平列表/非有限坐标）失败关闭。
 - **关键配置**：threshold（内点阈值）、iterations（RANSAC 迭代）、minAxis/maxAxis（半轴范围）。元数据：[metadata.json](../src/plugins/geometry/FitEllipse/metadata.json)。
-- **检查**：结果包含 ellipse_center_x/y、ellipse_major_r/minor_r、ellipse_phi（度、[0,180) 归一）、ellipse_ellipticity、fit_error；退化/共线/重复点集失败关闭。
+- **检查**：结果包含 ellipse_center_x/y、ellipse_major_r/minor_r、ellipse_phi（度、[0,180) 归一）、ellipse_ellipticity、ellipse_error；退化/共线/重复点集失败关闭。
 
 ### `FitPlane` - 高度图平面拟合
 
