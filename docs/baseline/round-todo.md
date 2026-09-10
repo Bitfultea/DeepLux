@@ -84,6 +84,31 @@
 | 4 | 补齐流程验收：Loop 固定次数/While 条件退出/StopWhile 提前退出/停止取消时限 + Parallel all/any/失败分支/blocking 不并行 + 拾取→圆拟合真实工作流 | 完成 | d6e9028..02bc644（含复核收口） |
 | 5 | Agent、SAM 与 GUI 端到端验收：确定性假 LLM 完成"创建 GrabImage→FindCircle→连接→运行→读取结果"；SAM 测试内 HTTP 服务覆盖四端点（成功/超时/崩溃恢复）；ui_capture 注册 CTest 且截图自校验；GUI 真实交互（鼠标拾取→圆拟合叠加、条件分支画布状态、像素断言） | 完成 | 58fadba..cf6dc87（六轮复核收口） |
 | 6 | 并发风险收口：审计 RunEngine 工作线程信号连接（带上下文 Auto→Queued，无跨线程直操 QWidget）；并行批次 ImageData 只读边界；runId 固化（毫秒+单调序号，池线程不读成员字符串）；完整生命周期协议（tryBeginExecution 唯一取权/stop/start/load/clear 同锁/断点外层提交）；executeParallel 恒自生成 runId；7 个定向测试+50 次并行压力+并发 stop/load/clear/断点同时停止回归；TSan 分节（SEGV/HUAf 清零，误报数随调度不标通过） | 完成 | adff5b5 + 本提交（stop() 复核二/三/四/五轮） |
+| 7 | 旧版 P0/P1 插件重建（4 批 8 插件）：批1 FitEllipse（004几何关系，9 轮复核）；批2 MeasureCircle+EdgeDefectDetection（002检测识别，5 轮复核：NoData/无效值契约/角度覆盖率/歧义失败关闭/InvalidConfig）；批3 3DPreProcessing+FitPlane+GapMeasure3D（0143D，6 轮复核：包含式包围盒/半长口径/角度端口/fmod 防卡死/草稿毒化守卫）；批4 CropImage+CalculateOffset（001图像处理/005坐标标定，4 轮复核：偏移方向对齐旧版/配置页半长口径/MainWindow 级弹窗回归）。每插件真实算法+完整 metadata+端口强契约+参数校验+clone 独立+行为测试+≥1 流程验收；台账按实现子集降级 partial/intentionally_changed 并明示未实现能力 | 完成 | 6393810..6a46c15（24 轮复核） |
+| 8 | 最终交付：plugins.md 同步 67 插件（8 个重建插件条目+分类索引+计数）；状态页阶7/阶8 行；最终门禁（干净构建+全量 CTest 70/70+格式门禁+git diff --check+截图自校验含 11-cropimage-config-dialog+插件同步）；TSan 证据承接阶段 6（阶段 7/8 未新增 RunEngine 并发路径） | 完成 | 本提交 |
+
+### 阶段 7 重建口径
+
+- 仅实现阶段 1 冻结清单中的 P0/P1 重建项；每批 ≤3 个同域插件、独立提交、复核收口后进下一批。
+- 每插件必须：真实算法（禁空实现/固定结果/假成功）、完整 metadata（ui.parameters 含
+  min/max/step/decimals/order/label）、端口强类型且插件判定与核心
+  `portValueMatchesType` 严格一致、参数校验（范围/整数/布尔/数组形态/交叉约束）、
+  clone 独立、行为测试与 ≥1 条流程验收（PluginManager 真实加载 + RunEngine 调度）。
+- 未实现子集（HomMat2D 仿射、旋转中心补正、Savgol、HRegion 组、DataList 模式等）
+  在台账 decision 中逐项明示，结论按实现子集降级，不得标 equivalent。
+- 共享能力沉淀：TiffLoader NoData 三态检测（重复极值+间隙下限+歧义上报+
+  InvalidConfig）、height_invalid_value 无效值契约（携带优先/源精度量化/碰撞与
+  类型错误失败关闭）、拟合退化防护（去重+SVD/特征值门禁+质心 RMS 归一化，
+  平移/尺度不变）、角度 fmod 常数时间归一。
+
+### 阶段 8 最终交付口径
+
+- 文档同步为交付物一部分：plugins.md 插件条目/分类索引/计数与实际
+  `metadata.json` 一致（67）；本状态页为统一实时状态页，阶段行与提交对应。
+- 最终门禁：干净构建、全量 CTest（含 ui_capture 截图自校验）、clang-format
+  门禁、git diff --check、插件同步（sync-plugins）全绿后方可收口。
+- TSan：阶段 6 报告（tsan-report.md）为并发证据基线；阶段 7/8 变更限于插件
+  算法/UI/文档，未新增 RunEngine 并发路径，不重跑全量 TSan。
 
 ### 阶段 4 流程验收口径
 

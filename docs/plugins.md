@@ -1,6 +1,6 @@
 # DeepLux 插件手册
 
-本手册覆盖 `src/plugins` 中全部 59 个带 `metadata.json` 的运行时插件。参数名称和可编辑范围以各插件的元数据为准；本文补充其在流程中的接入位置、实际使用步骤和结果检查方式。
+本手册覆盖 `src/plugins` 中全部 67 个带 `metadata.json` 的运行时插件。参数名称和可编辑范围以各插件的元数据为准；本文补充其在流程中的接入位置、实际使用步骤和结果检查方式。
 
 > 运行前先执行 `cmake --build build --target sync-plugins`。相机、PLC、串口和 3D 模块还受操作系统、硬件、SDK、网络和现场权限影响，配置前应确认相应资源可用。
 
@@ -24,10 +24,10 @@ flowchart LR
 
 | 分类 | 数量 | 模块 |
 | --- | ---: | --- |
-| [图像处理](#图像处理-9) | 9 | Blob、DisplayData、GrabImage、ImageScript、JigsawPuzzle、LoadPointCloud、PerProcessing、SaveImage、ShowImage |
-| [检测识别](#检测识别-7) | 7 | ColorRecognition、FindCircle、JiErHanDefectsDet、Matching、MeasureLine、MeasureRect、QRCode |
-| [几何测量](#几何测量-9) | 9 | DistancePL、DistancePP、FitCircle、FitLine、FreeformSurface、LinesDistance、MeasureGap、MeasurementInput、PointSurfaceDistance |
-| [坐标标定](#坐标标定-1) | 1 | N点标定 |
+| [图像处理](#图像处理-11) | 11 | 3DPreProcessing、Blob、CropImage、DisplayData、GrabImage、ImageScript、JigsawPuzzle、LoadPointCloud、PerProcessing、SaveImage、ShowImage |
+| [检测识别](#检测识别-9) | 9 | ColorRecognition、EdgeDefectDetection、FindCircle、JiErHanDefectsDet、Matching、MeasureCircle、MeasureLine、MeasureRect、QRCode |
+| [几何测量](#几何测量-12) | 12 | DistancePL、DistancePP、FitCircle、FitEllipse、FitLine、FitPlane、FreeformSurface、GapMeasure3D、LinesDistance、MeasureGap、MeasurementInput、PointSurfaceDistance |
+| [坐标标定](#坐标标定-2) | 2 | CalculateOffset、N点标定 |
 | [相机驱动](#相机驱动-3) | 3 | DirectShow Camera、Hikvision Camera、Video4Linux2 Camera |
 | [通信](#通信-6) | 6 | PLC通信测试、PLC读取、PLC写入、串口通信、TCP客户端、TCP服务器 |
 | [逻辑控制](#逻辑控制-9) | 9 | 条件判断、延时、条件分支、循环、并行执行、队列输入、队列输出、停止循环、条件循环 |
@@ -35,7 +35,21 @@ flowchart LR
 | [变量](#变量-6) | 6 | 创建字符串、数学运算、分割字符串、字符串格式化、变量定义、变量赋值 |
 | [Hymson 3D](#hymson-3d-1) | 1 | DefectDetection |
 
-## 图像处理（9）
+## 图像处理（11）
+
+### `3DPreProcessing` - 高度图 3D 预处理
+
+- **用途**：深度/高度图测量前预处理：2 通道输入提取深度通道，自动 NoData 哨兵检测（TiffLoader 重复极值判据），高度筛选与 ROI 填充。
+- **使用**：接在高度图源（如 `GrabImage` 的 32 位 TIFF）后；启用高度筛选把区间外像素填为填充值；ROI 宽高同为 0 为全图、同 >0 生效；输出 CV_32F 高度图。
+- **关键配置**：heightFilterEnabled、heightFilterMin/Max、fillValue、autoNoData、ROI 中心/宽/高。元数据：[metadata.json](../src/plugins/image_processing/PreProcessing3D/metadata.json)。
+- **检查**：核验 valid/filtered 像素数与存活值域；filtered>0 时写出 height_invalid_value 契约键供 `FitPlane`/`GapMeasure3D` 优先消费；填充值与存活高度碰撞、契约键类型错误均失败关闭。
+
+### `CropImage` - 旋转矩形批量裁剪
+
+- **用途**：按 rectangles 数组参数批量裁剪 1–64 个旋转矩形，用于多区域测量前的 ROI 批量提取。
+- **使用**：接在 `GrabImage` 或预处理节点后；数组元素为 `[cx,cy,半长1,半长2,deg]`（半长为 HALCON Length1/Length2 口径，整边长=2×半长）；数组参数经"高级配置"页编辑，非法编辑会阻止弹窗"确定"。`outputFirstAsImage` 为真时 image 端口输出首个有效裁剪图供下游直接消费，否则透传原图。
+- **关键配置**：rectangles（1–64 旋转矩形，包含式包围盒 floor/ceil）、outputFirstAsImage。元数据：[metadata.json](../src/plugins/image_processing/CropImage/metadata.json)。
+- **检查**：crop_count 与 crop_images Table（index/valid/矩形回显/裁剪框/裁剪子图）；与图像无交集的矩形记 valid=false 不静默丢弃，全部无交集节点失败报错。
 
 ### `Blob` - 连通域分析
 
@@ -100,7 +114,21 @@ flowchart LR
 - **关键配置**：窗口标题、延迟。元数据：[metadata.json](../src/plugins/image_processing/ShowImage/metadata.json)。
 - **检查**：确认显示内容为本节点输入，必要时在同位置用主视图和检查器交叉检查。
 
-## 检测识别（7）
+## 检测识别（9）
+
+### `MeasureCircle` - 卡钳圆测量
+
+- **用途**：在初始圆上径向卡钳提取边缘点并最小二乘拟合圆，输出圆心、半径、直径与圆度。
+- **使用**：接在 `GrabImage` 后；提供初始圆心与半径；梯度阈值与卡钳数决定边缘点质量；exclusionRadius 剔除残差过大的离群点后重拟合（剩余点不足失败关闭）。
+- **关键配置**：initialCenterX/Y、initialRadius、threshold、measureCount、searchLength、exclusionRadius。元数据：[metadata.json](../src/plugins/detection/MeasureCircle/metadata.json)。
+- **检查**：结果包含 circle_center_x/y、circle_radius、circle_diameter、circle_roundness、edge_point_count；纯色图、2 通道输入、非有限哨兵均失败关闭。
+
+### `EdgeDefectDetection` - 边缘缺陷检测
+
+- **用途**：对参考边缘（PointSet2D）拟合基准圆，按角序卡钳实测边缘，按偏差阈值检测凸出/凹陷缺陷区域。
+- **使用**：image 接灰度/高度图，reference_edge 接上游点集（如 `MeasurementInput` point_set 或拟合输出）；参考点按角序排序逐条测量，失败射线与角度空洞作为区域分隔。
+- **关键配置**：threshold（缺陷阈值）、searchLength（搜索半长）、isConvex（计凸出为缺陷）、autoNoData。元数据：[metadata.json](../src/plugins/detection/EdgeDefectDetection/metadata.json)。
+- **检查**：has_defect 与 defect_count（选定极性区域数）恒一致；convex/concave_count 为区域数；defect_regions Table 含极性/原始索引/角度/wraps_zero/射线数/偏差；歧义、覆盖率不足、契约类型错误均失败关闭。
 
 ### `ColorRecognition` - 颜色区域识别
 
@@ -151,7 +179,28 @@ flowchart LR
 - **关键配置**：码类型（当前仅支持二维码 QR_Code；Code_128/Code_39/EAN 等条码需额外库支持，暂未开放）。元数据：[metadata.json](../src/plugins/detection/QRCode/metadata.json)。
 - **检查**：在检查器和日志确认解析文本；对失败样本先检查码的像素尺寸、模糊和反光。
 
-## 几何测量（9）
+## 几何测量（12）
+
+### `FitEllipse` - 点集椭圆拟合
+
+- **用途**：对 PointSet2D 点集做最小二乘椭圆拟合（RANSAC 剔离群），输出中心、长短半轴、角度与椭圆度。
+- **使用**：fit_points 接上游点集（如 `MeasurementInput` point_set）；插件判定与核心 portValueMatchesType(PointSet2D) 契约严格一致，非法载荷（字符串/扁平列表/非有限坐标）失败关闭。
+- **关键配置**：threshold（内点阈值）、iterations（RANSAC 迭代）、minAxis/maxAxis（半轴范围）。元数据：[metadata.json](../src/plugins/geometry/FitEllipse/metadata.json)。
+- **检查**：结果包含 ellipse_center_x/y、ellipse_major_r/minor_r、ellipse_phi（度、[0,180) 归一）、ellipse_ellipticity、fit_error；退化/共线/重复点集失败关闭。
+
+### `FitPlane` - 高度图平面拟合
+
+- **用途**：高度图旋转矩形 ROI 内对有效像素最小二乘拟合平面，输出法向量、平面距离与平面度。
+- **使用**：接高度图源（或 `3DPreProcessing` 输出）；ROI 长边/短边为半长（HALCON 口径），同 0 为全图；invalidValue/autoNoData 控制无效像素与哨兵处理。
+- **关键配置**：roiCenterX/Y、roiLength1/2、roiAngle、pixelSizeX/Y、zScale、invalidValue、autoNoData。元数据：[metadata.json](../src/plugins/geometry/FitPlane/metadata.json)。
+- **检查**：plane 为 Plane3D 契约（可与 `PointSurfaceDistance` 组合），另有 plane_nx/ny/nz、plane_d、flatness、max/min_deviation、rms、valid_pixel_count；共线/秩亏/歧义/全无效失败关闭。
+
+### `GapMeasure3D` - 高度图截面间隙测量
+
+- **用途**：ROI 内提取单截面轮廓（行均值），导数寻峰拟合拐角，计算间隙宽度与规格判定（对位偏移测量）。
+- **使用**：接高度图源；ROI 截面长度/行取宽决定轮廓；导数阈值与峰最小间距过滤伪拐角；无效值与缺失条带不伪造边缘（平滑对无效位置保留 NaN）。
+- **关键配置**：roiCenterX/Y、roiLength、roiHeight、pixelSizeX、zScale、smoothSigma、medianSize、derivativeThreshold、edgeTrim、minPeakDistance、invalidValue、offsetMm、specUpperLimit、measureFailValue、autoNoData。元数据：[metadata.json](../src/plugins/geometry/GapMeasure3D/metadata.json)。
+- **检查**：gap_width、gap_offset_width、corner_dx/dz/dist_mm、is_pass、gap_found、gap_algorithm；未检出时按契约输出 measureFailValue 且 gap_found=false（非伪成功）。
 
 ### `MeasurementInput` - 测量输入适配器
 
@@ -216,7 +265,14 @@ flowchart LR
 - **关键配置**：采样间隔。元数据：[metadata.json](../src/plugins/geometry/FreeformSurface/metadata.json)。
 - **检查**：在 3D 主视图查看采样后点云的完整性；采样过大可能遗漏局部细节。
 
-## 坐标标定（1）
+## 坐标标定（2）
+
+### `CalculateOffset` - 对位偏移计算
+
+- **用途**：offset = 实测(current) − 参考(target)，角度差归一化到 (-180,180]，供对位补正输出平移+角度偏移（与旧版 MathCoord−ModeCoord 方向一致）。
+- **使用**：当前坐标/角度可经端口 current_point（Point3D，取 x,y 忽略 z）与 current_angle（Number）逐帧覆盖（可与 `Matching`、`MeasurementInput` 输出组合），无端口时回退参数；端口类型错误/非有限值失败关闭。
+- **关键配置**：currentX/Y/Angle、targetX/Y/Angle。元数据：[metadata.json](../src/plugins/calibration/CalculateOffset/metadata.json)。
+- **检查**：结果包含 offset_x/offset_y/offset_a；旧版 Hommat2DTrans 仿射与旋转中心补正未实现（台账 partial），坐标按参数单位直接作差。
 
 ### `N点标定` - 平面坐标转换
 
@@ -472,6 +528,6 @@ flowchart LR
 
 ## 文档维护
 
-- 本文按当前 `metadata.json` 覆盖 59 个插件。新增插件时必须同步增加本手册条目，并描述其上游数据、关键参数、结果和失败条件。
+- 本文按当前 `metadata.json` 覆盖 67 个插件。新增插件时必须同步增加本手册条目，并描述其上游数据、关键参数、结果和失败条件。
 - 修改参数名称、范围、结果键或平台依赖时，应同时更新本手册与对应元数据，避免检查器与文档出现两套说法。
 - 用户级流程示例见 [快速上手](quick-start.md)，运行时边界见 [架构说明](architecture.md)。
