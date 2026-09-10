@@ -64,10 +64,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Qt6 (+SerialPort)
-        uses: jurplel/install-qt-action@v3
+        uses: jurplel/install-qt-action@v4
         with:
-          version: 6.5.3
-          arch: win64_msvc64
+          version: 6.8.3
+          arch: win64_msvc2022_64
           modules: qtserialport
       - name: Install vcpkg deps
         run: vcpkg install eigen3 opencv4 --triplet x64-windows

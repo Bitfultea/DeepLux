@@ -7,9 +7,6 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-# Find Qt
-find_package(Qt5 COMPONENTS Core Widgets REQUIRED)
-
 # Define sources
 set(SOURCES
     V4L2Camera.cpp
@@ -37,13 +34,12 @@ set_target_properties(V4L2CameraPlugin PROPERTIES
 target_include_directories(V4L2CameraPlugin PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/core
-    ${Qt5Core_PRIVATE_INCLUDE_DIRS}
 )
 
 # Link libraries
 target_link_libraries(V4L2CameraPlugin PRIVATE
-    Qt5::Core
-    Qt5::Widgets
+    Qt${QT_VERSION_MAJOR}::Core
+    Qt${QT_VERSION_MAJOR}::Widgets
     dl
     deeplux_core
 )

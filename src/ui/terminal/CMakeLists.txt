@@ -23,6 +23,6 @@ target_include_directories(deeplux_terminal
 
 target_link_libraries(deeplux_terminal
     PUBLIC
-        Qt5::Core
-        Qt5::Widgets
+        Qt${QT_VERSION_MAJOR}::Core
+        Qt${QT_VERSION_MAJOR}::Widgets
 )

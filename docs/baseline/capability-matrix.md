@@ -91,7 +91,8 @@
 | DirectShow Camera | com.deeplux.camera.directshow | Windows DirectShow 采集 | 依赖硬件 | 待补 | 保留 | P1 |
 | Hikvision Camera | com.deeplux.camera.hikvision | 海康 MVS 采集（需 SDK） | 依赖硬件 | 待补 | 保留 | P2 |
 
-> 相机能力按"先 SDK、模拟器、契约测试，再按真实项目加品牌驱动"推进；Basler/HikVision 插件源码未随仓库分发，对应 CMake 选项开启时给出明确错误。
+> V4L2/DirectShow 按平台选择；Hikvision 源码已随仓库提供，但仅在
+> `ENABLE_CAMERA_HIKVISION=ON` 且 MVS SDK 完整时构建；Basler 源码仍未随仓库分发。
 
 ## 六、通信（6）
 
