@@ -50,7 +50,6 @@ set(CORE_SOURCES
     agent/OpenAILLMClient.cpp
     agent/GuiEvent.cpp
     agent/SamBackendClient.cpp
-    agent/agent_resources.qrc
 )
 
 set(CORE_HEADERS
@@ -103,6 +102,9 @@ set(CORE_HEADERS
     model/AnnotationCoordinateMapping.h
 )
 
+add_library(deeplux_agent_resources STATIC agent/agent_resources.qrc)
+set_target_properties(deeplux_agent_resources PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 add_library(deeplux_core SHARED ${CORE_SOURCES} ${CORE_HEADERS})
 
 target_include_directories(deeplux_core
@@ -115,12 +117,15 @@ target_include_directories(deeplux_core
 target_compile_definitions(deeplux_core PUBLIC ${DEEPLUX_PLATFORM_DEFINE})
 
 if(Qt6_FOUND)
+    target_link_libraries(deeplux_agent_resources PRIVATE Qt6::Core)
     target_link_libraries(deeplux_core PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::SerialPort Qt6::Concurrent)
 else()
     find_package(Qt5Widgets REQUIRED)
     find_package(Qt5Network REQUIRED)
+    target_link_libraries(deeplux_agent_resources PRIVATE Qt5::Core)
     target_link_libraries(deeplux_core PUBLIC Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Network Qt5::SerialPort Qt5::Concurrent)
 endif()
+target_link_libraries(deeplux_core PRIVATE deeplux_agent_resources)
 
 # 阶段 3：OpenCV 为必需依赖（根 CMakeLists 中 find_package 失败即中止），此处恒成立。
 target_compile_definitions(deeplux_core PUBLIC DEEPLUX_HAS_OPENCV)
