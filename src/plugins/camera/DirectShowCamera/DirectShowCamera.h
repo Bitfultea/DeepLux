@@ -103,6 +103,7 @@ public:
 private:
     bool openDevice();
     void closeDevice();
+    bool configureFormat(int width, int height);
     bool grabFrame();
 
     QString m_devicePath;

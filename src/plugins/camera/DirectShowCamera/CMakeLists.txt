@@ -38,6 +38,7 @@ target_include_directories(DirectShowCameraPlugin PRIVATE
 
 # Link libraries
 target_link_libraries(DirectShowCameraPlugin PRIVATE
+    deeplux_core
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::Widgets
     strmiids

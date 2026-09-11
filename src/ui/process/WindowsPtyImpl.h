@@ -1,7 +1,7 @@
 #ifndef DEEPLUX_WINDOWS_PTY_IMPL_H
 #define DEEPLUX_WINDOWS_PTY_IMPL_H
 
-#include "../PtyImpl.h"
+#include "PtyImpl.h"
 
 #if defined(Q_OS_WINDOWS)
 

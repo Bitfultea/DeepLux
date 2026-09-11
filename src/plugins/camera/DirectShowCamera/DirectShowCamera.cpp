@@ -300,10 +300,8 @@ void DirectShowCamera::setExposureTime(double microseconds) {
         IAMCameraControl* pCameraControl = nullptr;
         HRESULT hr = m_pDeviceFilter->QueryInterface(IID_IAMCameraControl, (void**) &pCameraControl);
         if (SUCCEEDED(hr)) {
-            long minVal, maxVal, step, defVal;
-            pCameraControl->GetRange(CameraControl_Exposure, &minVal, &maxVal, &step, &defVal, nullptr);
             long value = static_cast<long>(microseconds);
-            pCameraControl->SetRange(CameraControl_Exposure, value, CameraControl_Flags_Auto);
+            pCameraControl->Set(CameraControl_Exposure, value, CameraControl_Flags_Manual);
             pCameraControl->Release();
         }
     }
@@ -314,14 +312,12 @@ void DirectShowCamera::setGain(double gain) {
     m_gain = gain;
 #ifdef _WIN32
     if (m_pDeviceFilter) {
-        IAMCameraControl* pCameraControl = nullptr;
-        HRESULT hr = m_pDeviceFilter->QueryInterface(IID_IAMCameraControl, (void**) &pCameraControl);
+        IAMVideoProcAmp* pVideoProcAmp = nullptr;
+        HRESULT hr = m_pDeviceFilter->QueryInterface(IID_IAMVideoProcAmp, (void**) &pVideoProcAmp);
         if (SUCCEEDED(hr)) {
-            long minVal, maxVal, step, defVal;
-            pCameraControl->GetRange(CameraControl_Gain, &minVal, &maxVal, &step, &defVal, nullptr);
             long value = static_cast<long>(gain * 100);
-            pCameraControl->SetRange(CameraControl_Gain, value, CameraControl_Flags_Manual);
-            pCameraControl->Release();
+            pVideoProcAmp->Set(VideoProcAmp_Gain, value, VideoProcAmp_Flags_Manual);
+            pVideoProcAmp->Release();
         }
     }
 #endif
