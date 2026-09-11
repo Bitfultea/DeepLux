@@ -44,7 +44,6 @@ set(UI_SOURCES
     views/CommunicationSetView.cpp
     views/GlobalVarView.cpp
     views/SystemParamView.cpp
-    resources/icons.qrc
 )
 
 # Platform-specific PTY implementation
