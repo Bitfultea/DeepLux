@@ -1,5 +1,7 @@
 # DeepLux Unit Tests
 
+set(DEEPLUX_TEST_QPA_PLATFORM "offscreen" CACHE STRING "Qt platform plugin used by GUI tests")
+
 set(TEST_SOURCES
     test_pathtutils.cpp
     test_modulebase.cpp
@@ -312,7 +314,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
 
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
-    set_tests_properties(${TEST_NAME} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    set_tests_properties(${TEST_NAME} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}")
     if(TEST_NAME STREQUAL "test_acceptance_flows")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 10)
     endif()
@@ -369,5 +371,5 @@ target_compile_definitions(ui_capture_mainwindow PRIVATE
 # 验收运行或任一截图自校验（存在/尺寸/非空白/关键界面状态）失败都会使测试失败。
 add_test(NAME ui_capture_mainwindow COMMAND ui_capture_mainwindow "${CMAKE_CURRENT_BINARY_DIR}/ui_capture_output")
 set_tests_properties(ui_capture_mainwindow PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}"
     TIMEOUT 300)
