@@ -251,12 +251,14 @@ void ModuleInspectorPanel::setModule(IModule* module, const QString& instanceId,
 
     // 阶段 6: 仅对需要独立窗口的插件显示"高级配置"
     // N点标定、MeasurementInput、ImageScript、通信硬件插件
+    // 阶7 批4复核（P1-2）：CropImage（rectangles 数组参数 PropertyPanel 无法编辑）
     static const QSet<QString> advancedPlugins = {
         QStringLiteral("com.deeplux.plugin.npointcalibration"), QStringLiteral("com.deeplux.plugin.measurementinput"),
         QStringLiteral("com.deeplux.plugin.imagescript"),       QStringLiteral("com.deeplux.plugin.serialport"),
         QStringLiteral("com.deeplux.plugin.tcpclient"),         QStringLiteral("com.deeplux.plugin.tcpserver"),
         QStringLiteral("com.deeplux.plugin.plcread"),           QStringLiteral("com.deeplux.plugin.plcwrite"),
         QStringLiteral("com.deeplux.plugin.plccommunicate"),    QStringLiteral("com.deeplux.plugin.strformat"),
+        QStringLiteral("com.deeplux.plugin.cropimage"),
     };
     if (m_advancedAction) {
         m_advancedAction->setVisible(advancedPlugins.contains(module->moduleId()));

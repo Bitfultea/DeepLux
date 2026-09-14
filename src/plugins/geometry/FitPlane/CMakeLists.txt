@@ -1,0 +1,18 @@
+# FitPlane Plugin（阶7 批3：0143D 重建）
+
+set(PLUGIN_SOURCES
+    FitPlanePlugin.cpp
+)
+
+set(PLUGIN_HEADERS
+    FitPlanePlugin.h
+)
+
+add_library(FitPlanePlugin SHARED ${PLUGIN_SOURCES} ${PLUGIN_HEADERS})
+
+target_link_libraries(FitPlanePlugin PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui Qt${QT_VERSION_MAJOR}::Widgets)
+
+if(OpenCV_FOUND)
+    target_link_libraries(FitPlanePlugin PRIVATE ${OpenCV_LIBS})
+    target_include_directories(FitPlanePlugin PRIVATE ${OpenCV_INCLUDE_DIRS})
+endif()

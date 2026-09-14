@@ -1,6 +1,8 @@
 #ifndef DEEPLUX_AGENT_CONNECTION_H
 #define DEEPLUX_AGENT_CONNECTION_H
 
+#include "../platform/Platform.h"
+
 #include <QJsonObject>
 #include <QLocalSocket>
 #include <QObject>
@@ -10,7 +12,7 @@ namespace DeepLux {
 /**
  * @brief Agent 连接类 - 封装与单个 Agent 的通信
  */
-class AgentConnection : public QObject {
+class DEEPLUX_API AgentConnection : public QObject {
     Q_OBJECT
 
 public:

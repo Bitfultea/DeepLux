@@ -1,0 +1,345 @@
+#include "FitEllipsePlugin.h"
+
+#include "common/Logger.h"
+#include "core/deeplux/DataContract.h"
+
+#include <QJsonArray>
+#include <QJsonValue>
+#include <algorithm>
+#include <cmath>
+#include <numeric>
+#include <random>
+
+#ifdef DEEPLUX_HAS_OPENCV
+#include <opencv2/opencv.hpp>
+#endif
+
+namespace DeepLux {
+
+namespace {
+
+// 阶7 批1 复核三轮（P1-2）：RANSAC 采样硬上限，防长时间无响应。
+constexpr int kMaxRansacAttempts = 1000;
+
+// 阶7 批1 复核：严格参数解析——校验 JSON 类型/整数性/有限性/范围，
+// 验证与执行共用同一份快照，杜绝 toDouble()/toInt() 宽松转换假成功。
+bool parseParamsStrict(const QJsonObject& params, FitEllipsePlugin::ParsedParams& out, QString& error) {
+    error.clear();
+    // 阶7 批1 复核六轮（P1-1）：包含式上限 d > hiInclusive 拒绝，与 metadata max 精确对齐
+    // （1e6+0.5 亦被拒绝）。
+    auto num = [&params, &error](const char* key, double& value, bool integer, double lo, double hiInclusive,
+                                 const QString& msg) {
+        const QJsonValue v = params[QLatin1String(key)];
+        if (!v.isDouble()) { // JSON 整数亦为 isDouble==true；字符串/bool/缺失均拒绝
+            error = msg;
+            return false;
+        }
+        const double d = v.toDouble();
+        if (!std::isfinite(d)) {
+            error = msg;
+            return false;
+        }
+        if (integer && std::floor(d) != d) {
+            error = msg;
+            return false;
+        }
+        if (d < lo || d > hiInclusive) {
+            error = msg;
+            return false;
+        }
+        value = d;
+        return true;
+    };
+    // 阶7 批1 复核五轮（P2-4）：运行期边界与 metadata 完全一致
+    // （threshold[0,1e6]、iterations[1,1000]、minAxis/maxAxis[0.1,1e6]），
+    // 避免 UI/工程文件/Agent 与运行期得到不同结果。
+    constexpr double kMetaMax = 1e6;
+    if (!num("threshold", out.threshold, false, 0.0, kMetaMax, QObject::tr("阈值必须为[0,1e6]有限数")))
+        return false;
+    if (!num("iterations", out.iterations, true, 1.0, static_cast<double>(kMaxRansacAttempts),
+             QObject::tr("迭代次数必须为[1,1000]的整数")))
+        return false;
+    if (!num("minAxis", out.minAxis, false, 0.1, kMetaMax, QObject::tr("最小半轴必须为[0.1,1e6]有限数")))
+        return false;
+    if (!num("maxAxis", out.maxAxis, false, 0.1, kMetaMax, QObject::tr("最大半轴必须为[0.1,1e6]有限数")))
+        return false;
+    if (out.maxAxis <= out.minAxis) {
+        error = QObject::tr("最大半轴必须大于最小半轴");
+        return false;
+    }
+    return true;
+}
+
+double pointEllipseResidual(const QPointF& p, const FitEllipsePlugin::EllipseResult& e) {
+    // 旋转回椭圆坐标系后的归一化半径偏差（几何近似残差）
+    const double rad = e.phi * M_PI / 180.0;
+    const double cosA = std::cos(rad);
+    const double sinA = std::sin(rad);
+    const double dx = p.x() - e.centerX;
+    const double dy = p.y() - e.centerY;
+    const double xr = dx * cosA + dy * sinA;
+    const double yr = -dx * sinA + dy * cosA;
+    const double a = e.majorR;
+    const double b = e.minorR > 0.0 ? e.minorR : 1e-6;
+    const double rNorm = std::sqrt((xr * xr) / (a * a) + (yr * yr) / (b * b));
+    return std::abs(rNorm - 1.0) * a;
+}
+
+#ifdef DEEPLUX_HAS_OPENCV
+bool fitEllipseCv(const QVector<QPointF>& points, FitEllipsePlugin::EllipseResult& result) {
+    if (points.size() < 5) {
+        return false;
+    }
+    std::vector<cv::Point2f> cvPoints;
+    cvPoints.reserve(points.size());
+    for (const QPointF& p : points) {
+        cvPoints.emplace_back(static_cast<float>(p.x()), static_cast<float>(p.y()));
+    }
+    // 真实算法：OpenCV 直接最小二乘椭圆拟合（Fitzgibbon 约束圆锥）
+    const cv::RotatedRect rr = cv::fitEllipse(cvPoints);
+    const double axisA = rr.size.width * 0.5;
+    const double axisB = rr.size.height * 0.5;
+    if (axisA <= 0.0 || axisB <= 0.0 || !std::isfinite(axisA) || !std::isfinite(axisB)) {
+        return false;
+    }
+    result.majorR = std::max(axisA, axisB);
+    result.minorR = std::min(axisA, axisB);
+    // fitEllipse 的 angle 为 width 轴方向；长轴方向按长短轴归正
+    double phi = (axisA >= axisB) ? rr.angle : rr.angle + 90.0;
+    // 阶7 批1 复核：phi 契约归一化到 [0,180) 度
+    phi = std::fmod(phi, 180.0);
+    if (phi < 0.0) {
+        phi += 180.0;
+    }
+    result.phi = phi;
+    result.centerX = rr.center.x;
+    result.centerY = rr.center.y;
+    return result.majorR > 0.0;
+}
+#endif
+
+} // namespace
+
+FitEllipsePlugin::FitEllipsePlugin(QObject* parent) : ModuleBase(parent) {
+    m_defaultParams = QJsonObject{{"threshold", 2.0}, {"iterations", 100}, {"minAxis", 0.5}, {"maxAxis", 5000.0}};
+    m_params = m_defaultParams;
+}
+
+FitEllipsePlugin::~FitEllipsePlugin() {}
+
+bool FitEllipsePlugin::initialize() {
+    if (!ModuleBase::initialize()) {
+        return false;
+    }
+    qDebug() << "FitEllipsePlugin initialized";
+    return true;
+}
+
+void FitEllipsePlugin::shutdown() {
+    ModuleBase::shutdown();
+}
+
+bool FitEllipsePlugin::fitEllipseRobust(const QVector<QPointF>& points, double threshold, int iterations,
+                                        EllipseResult& result) const {
+#ifdef DEEPLUX_HAS_OPENCV
+    // 阶7 批1 复核四轮（P1-2）：排序+unique 去重 O(n log n)，避免 O(n²) 成为
+    // 工业轮廓点集的性能瓶颈；唯一点不足 5 失败关闭。
+    QVector<QPointF> uniq = points;
+    std::sort(uniq.begin(), uniq.end(),
+              [](const QPointF& a, const QPointF& b) { return a.x() != b.x() ? a.x() < b.x() : a.y() < b.y(); });
+    uniq.erase(std::unique(uniq.begin(), uniq.end(),
+                           [](const QPointF& a, const QPointF& b) {
+                               return std::abs(a.x() - b.x()) < 1e-9 && std::abs(a.y() - b.y()) < 1e-9;
+                           }),
+               uniq.end());
+    if (uniq.size() < 5) {
+        return false;
+    }
+    if (threshold <= 0.0) {
+        return fitEllipseCv(uniq, result);
+    }
+    // RANSAC 稳健估计：每轮打乱索引取前 5 个唯一点（无带重复随机抽取/逐点查重），
+    // 按阈值统计内点，取最优内点集重拟合；采样次数硬上限并检查取消令牌。
+    const int attempts = qBound(1, iterations, kMaxRansacAttempts);
+    std::mt19937 rng(0xE11F5Eu);
+    QVector<int> idx(uniq.size());
+    std::iota(idx.begin(), idx.end(), 0);
+    QVector<QPointF> bestInliers;
+    double bestError = 0.0;
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+        if (isCancellationRequested()) {
+            return false;
+        }
+        std::shuffle(idx.begin(), idx.end(), rng);
+        QVector<QPointF> sample;
+        for (int i = 0; i < 5; ++i) {
+            sample.append(uniq[idx[i]]);
+        }
+        EllipseResult candidate;
+        if (!fitEllipseCv(sample, candidate)) {
+            continue;
+        }
+        QVector<QPointF> inliers;
+        double err = 0.0;
+        for (const QPointF& p : uniq) {
+            const double r = pointEllipseResidual(p, candidate);
+            if (r <= threshold) {
+                inliers.append(p);
+                err += r;
+            }
+        }
+        if (inliers.size() > bestInliers.size() ||
+            (inliers.size() == bestInliers.size() && inliers.size() >= 5 && err < bestError)) {
+            bestInliers = inliers;
+            bestError = err;
+        }
+    }
+    if (bestInliers.size() < 5) {
+        return false; // 失败关闭，不返回被离群点拉偏的结果
+    }
+    if (!fitEllipseCv(bestInliers, result)) {
+        return false;
+    }
+    double total = 0.0;
+    for (const QPointF& p : bestInliers) {
+        total += pointEllipseResidual(p, result);
+    }
+    result.error = total / bestInliers.size();
+    return true;
+#else
+    Q_UNUSED(points);
+    Q_UNUSED(threshold);
+    Q_UNUSED(iterations);
+    Q_UNUSED(result);
+    return false;
+#endif
+}
+
+bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
+    output = input;
+
+    // 阶7 批1 复核：执行前用与验证同一份严格解析快照，非法参数失败关闭。
+    ParsedParams parsed;
+    QString perr;
+    if (!parseParamsStrict(currentParams(), parsed, perr)) {
+        emit errorOccurred(perr);
+        return false;
+    }
+
+    QVariant pointsVar = input.data("fit_points");
+    if (!pointsVar.isValid()) {
+        emit errorOccurred(tr("未提供拟合点集，请先使用边缘/轮廓提取模块"));
+        return false;
+    }
+    // 阶7 批1 复核七轮（P1-1）：仅支持核心契约两种 PointSet2D 载荷
+    // （QVector<QPointF> 与 [[x,y],...]）；数值用明确 QVariant 类型判断（拒绝字符串），
+    // 删除扁平 [x0,y0,...] 与未声明兼容路径（与 DataContract/运行引擎一致）。
+    // 阶7 批1 复核八轮（P1-1）：数字类型判断与 DataContract::isNumeric 完全一致
+    // （Int/UInt/LongLong/ULongLong/Double），顶层仅 QVariant::List 或 QVector<QPointF>，
+    // 元素仅 QPointF 或 2 数值列表；拒绝 Float/QJsonValue/QJsonArray/扁平/字符串。
+    auto numOf = [](const QVariant& x, double& d) {
+        switch (x.type()) {
+        case QVariant::Int:
+        case QVariant::UInt:
+        case QVariant::LongLong:
+        case QVariant::ULongLong:
+        case QVariant::Double:
+            d = x.toDouble();
+            return true;
+        default:
+            return false;
+        }
+    };
+    auto parsePoint = [&numOf](const QVariant& v, QPointF& out) {
+        if (v.type() == QVariant::PointF) {
+            out = v.toPointF();
+            return true;
+        }
+        if (v.type() != QVariant::List) {
+            return false;
+        }
+        const QVariantList list = v.toList();
+        double x = 0.0;
+        double y = 0.0;
+        if (list.size() == 2 && numOf(list[0], x) && numOf(list[1], y)) {
+            out = QPointF(x, y);
+            return true;
+        }
+        return false; // 扁平数字/字符串/非二元素均拒绝
+    };
+    // 阶7 批1 复核九轮（P1-1）：格式门禁直接复用核心 portValueMatchesType(PointSet2D)，
+    // 不维护第二份契约；空列表为核心合法格式，交由下方 points.size()<5 报"点数量不足"。
+    if (!portValueMatchesType(pointsVar, DataType::PointSet2D)) {
+        emit errorOccurred(tr("拟合点集格式非法（须为 QVector<QPointF> 或 [[x,y],...]）"));
+        return false;
+    }
+    QVector<QPointF> points;
+    if (pointsVar.canConvert<QVector<QPointF>>()) {
+        points = pointsVar.value<QVector<QPointF>>();
+    } else {
+        const QVariantList asList = pointsVar.toList();
+        for (const QVariant& v : asList) {
+            QPointF p;
+            if (!parsePoint(v, p)) {
+                emit errorOccurred(tr("拟合点集包含非法点"));
+                return false;
+            }
+            points.append(p);
+        }
+    }
+    // 阶7 批1 复核五轮（P1-3）：插件输入边界逐点拒绝 NaN/Inf，
+    // 避免非有限坐标使排序比较器违反严格弱序（std::sort UB）。
+    for (const QPointF& p : points) {
+        if (!std::isfinite(p.x()) || !std::isfinite(p.y())) {
+            emit errorOccurred(tr("拟合点集包含非有限坐标(NaN/Inf)"));
+            return false;
+        }
+    }
+    if (points.size() < 5) {
+        emit errorOccurred(tr("拟合点数量不足，至少需要5个点"));
+        return false;
+    }
+
+    EllipseResult result;
+    if (!fitEllipseRobust(points, parsed.threshold, static_cast<int>(parsed.iterations), result)) {
+        emit errorOccurred(tr("椭圆拟合失败（内点不足或退化）"));
+        return false;
+    }
+    if (result.majorR < parsed.minAxis || result.majorR > parsed.maxAxis || result.minorR < parsed.minAxis) {
+        emit errorOccurred(tr("拟合半轴超出参数范围"));
+        return false;
+    }
+    m_result = result;
+
+    const double ellipticity = result.majorR > 0.0 ? result.minorR / result.majorR : 0.0;
+    output.setData("ellipse_center_x", result.centerX);
+    output.setData("ellipse_center_y", result.centerY);
+    output.setData("ellipse_phi", result.phi);
+    output.setData("ellipse_major_r", result.majorR);
+    output.setData("ellipse_minor_r", result.minorR);
+    output.setData("ellipse_ellipticity", ellipticity);
+    output.setData("ellipse_error", result.error);
+
+    Logger::instance().debug(QString("椭圆: 中心(%1,%2) phi=%3 a=%4 b=%5 e=%6")
+                                 .arg(result.centerX, 0, 'f', 2)
+                                 .arg(result.centerY, 0, 'f', 2)
+                                 .arg(result.phi, 0, 'f', 2)
+                                 .arg(result.majorR, 0, 'f', 2)
+                                 .arg(result.minorR, 0, 'f', 2)
+                                 .arg(result.error, 0, 'f', 3),
+                             "FitEllipse");
+    return true;
+}
+
+bool FitEllipsePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
+    ParsedParams parsed;
+    return parseParamsStrict(params, parsed, error);
+}
+
+IModule* FitEllipsePlugin::cloneImpl() const {
+    FitEllipsePlugin* clone = new FitEllipsePlugin();
+    clone->setParams(currentParams());
+    return clone;
+}
+
+} // namespace DeepLux

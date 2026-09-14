@@ -4,8 +4,8 @@
 
 #include <QComboBox>
 #include <QLabel>
-#include <QTextEdit>
 #include <QVBoxLayout>
+#include <QtMath>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -14,7 +14,8 @@
 namespace DeepLux {
 
 ImageScriptPlugin::ImageScriptPlugin(QObject* parent) : ModuleBase(parent) {
-    m_defaultParams = QJsonObject{{"scriptType", 0}, {"script", ""}};
+    // 阶段 2：仅保留 scriptType 持久化字段；无效的脚本文本输入已删除
+    m_defaultParams = QJsonObject{{"scriptType", 0}};
     m_params = m_defaultParams;
 }
 
@@ -52,20 +53,28 @@ bool ImageScriptPlugin::process(const ImageData& input, ImageData& output) {
         return false;
     }
 
-    m_script = m_params["script"].toString();
-    m_scriptType = m_params["scriptType"].toInt();
+    // 防御：setParam 等路径绕过 setParams 的校验，运行前复用 validateParams 统一判定，
+    // 不重复一套不完整判断（否则 1.5 这类非整数会 toInt() 后静默执行某个合法操作）。
+    // 验证与取值必须使用同一份加锁快照，避免期间 setParam() 造成 TOCTOU/数据竞争。
+    const QJsonObject params = currentParams();
+    QString paramError;
+    if (!validateParams(params, paramError)) {
+        emit errorOccurred(paramError.isEmpty() ? tr("scriptType 参数非法") : paramError);
+        return false;
+    }
+    m_scriptType = params.value("scriptType").toInt();
 
-    // 执行脚本
-    if (!executeScript(m_script, mat, m_resultMat)) {
-        // 如果脚本执行失败，至少复制原图
-        m_resultMat = mat.clone();
+    // 阶段 2：执行失败即失败关闭——不得复制输入冒充成功，不得置 script_executed=true
+    if (!executeBuiltinOperation(mat, m_resultMat)) {
+        emit errorOccurred(tr("内置图像操作执行失败（类型 %1）").arg(m_scriptType));
+        return false;
     }
 
     output.setMat(m_resultMat);
     output.setData("script_type", m_scriptType);
     output.setData("script_executed", true);
 
-    Logger::instance().debug(QString("图像脚本执行完成, 类型: %1").arg(m_scriptType), "ImageScript");
+    Logger::instance().debug(QString("内置图像操作执行完成, 类型: %1").arg(m_scriptType), "ImageScript");
 
     return true;
 #else
@@ -75,26 +84,30 @@ bool ImageScriptPlugin::process(const ImageData& input, ImageData& output) {
 #endif
 }
 
-bool ImageScriptPlugin::executeScript(const QString& script, const cv::Mat& input, cv::Mat& output) {
-    Q_UNUSED(script);
-    Q_UNUSED(input);
-    Q_UNUSED(output);
-
-    // 简单的内置脚本来处理常见操作
-    // 由于脚本引擎比较复杂，这里提供一个简化版本
-    // 实际项目中可以使用 Lua 或 Python 脚本
-
+bool ImageScriptPlugin::executeBuiltinOperation(const cv::Mat& input, cv::Mat& output) {
+    // 内置图像操作（非脚本解释执行）：类型与 UI 下拉框严格对应
     switch (m_scriptType) {
     case 0: { // 反转
         cv::bitwise_not(input, output);
         break;
     }
     case 1: { // 灰度
-        if (input.channels() == 3) {
+        const int channels = input.channels();
+        if (channels == 1) {
+            output = input.clone(); // 已是单通道灰度
+        } else if (channels == 3) {
             cvtColor(input, output, cv::COLOR_BGR2GRAY);
             cvtColor(output, output, cv::COLOR_GRAY2BGR);
+        } else if (channels == 4) {
+            // 四通道 BGRA：拆分后灰度化 BGR 并保留原 alpha，避免"复制原图"的假成功
+            std::vector<cv::Mat> ch;
+            cv::split(input, ch);
+            cv::Mat bgr, gray;
+            cv::merge(std::vector<cv::Mat>{ch[0], ch[1], ch[2]}, bgr);
+            cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
+            cv::merge(std::vector<cv::Mat>{gray, gray, gray, ch[3]}, output);
         } else {
-            output = input.clone();
+            return false; // 其余通道数不支持，失败关闭
         }
         break;
     }
@@ -108,7 +121,6 @@ bool ImageScriptPlugin::executeScript(const QString& script, const cv::Mat& inpu
         break;
     }
     default:
-        output = input.clone();
         return false;
     }
 
@@ -116,7 +128,22 @@ bool ImageScriptPlugin::executeScript(const QString& script, const cv::Mat& inpu
 }
 
 bool ImageScriptPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
-    Q_UNUSED(params);
+    // 阶段 2：严格校验 0–3 整数；缺失、类型错误、越界、非整数一律拒绝（失败关闭）。
+    // 必须先检查 isDouble()：toDouble() 会把字符串/布尔/null 默转为 0，造成非法值被当作反转操作。
+    const QJsonValue value = params.value("scriptType");
+    if (value.isUndefined() || value.isNull()) {
+        error = tr("缺少 scriptType 参数");
+        return false;
+    }
+    if (!value.isDouble()) {
+        error = tr("scriptType 必须是数值类型（0–3 的内置操作类型）");
+        return false;
+    }
+    const double v = value.toDouble();
+    if (v < 0 || v > 3 || qFloor(v) != v) {
+        error = tr("scriptType 必须是 0–3 的整数（内置操作类型）");
+        return false;
+    }
     error.clear();
     return true;
 }
@@ -125,28 +152,20 @@ QWidget* ImageScriptPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
-    layout->addWidget(new QLabel(tr("脚本类型:")));
+    // 阶段 2：界面为"内置图像操作"，不再提供无效的脚本文本输入
+    layout->addWidget(new QLabel(tr("内置图像操作:")));
     QComboBox* typeCombo = new QComboBox();
-    typeCombo->addItem("图像反转", 0);
-    typeCombo->addItem("转灰度", 1);
-    typeCombo->addItem("模糊", 2);
-    typeCombo->addItem("锐化", 3);
-    typeCombo->setCurrentIndex(m_params["scriptType"].toInt());
+    typeCombo->addItem(tr("图像反转"), 0);
+    typeCombo->addItem(tr("转灰度"), 1);
+    typeCombo->addItem(tr("模糊"), 2);
+    typeCombo->addItem(tr("锐化"), 3);
+    typeCombo->setCurrentIndex(qBound(0, m_params["scriptType"].toInt(), 3));
     layout->addWidget(typeCombo);
-
-    layout->addWidget(new QLabel(tr("脚本内容 (可选):")));
-    QTextEdit* scriptEdit = new QTextEdit();
-    scriptEdit->setPlainText(m_params["script"].toString());
-    scriptEdit->setMaximumHeight(100);
-    layout->addWidget(scriptEdit);
 
     layout->addStretch();
 
     connect(typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-            [this, typeCombo](int) { m_params["scriptType"] = typeCombo->currentData().toInt(); });
-
-    connect(scriptEdit, &QTextEdit::textChanged, this,
-            [this, scriptEdit]() { m_params["script"] = scriptEdit->toPlainText(); });
+            [this, typeCombo](int) { setParam("scriptType", typeCombo->currentData().toInt()); });
 
     return widget;
 }

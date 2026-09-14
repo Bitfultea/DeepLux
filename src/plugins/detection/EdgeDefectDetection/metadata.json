@@ -1,0 +1,115 @@
+{
+    "id": "com.deeplux.plugin.edgedefectdetection",
+    "name": "EdgeDefectDetection",
+    "category": "detection",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "相对参考边缘拟合基准圆，卡钳实测边缘偏差，检测凸出/凹陷缺陷并输出偏差统计",
+    "ui": {
+        "parameters": {
+            "threshold": {
+                "min": 0,
+                "max": 100,
+                "step": 0.5,
+                "decimals": 2,
+                "order": 10,
+                "label": "缺陷阈值"
+            },
+            "searchLength": {
+                "min": 1,
+                "max": 200,
+                "step": 1,
+                "decimals": 1,
+                "order": 20,
+                "label": "搜索半长"
+            },
+            "isConvex": {
+                "order": 30,
+                "label": "计凸出为缺陷"
+            }
+        }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入图像",
+                "type": "Image2D",
+                "required": true,
+                "multiple": false
+            },
+            {
+                "id": "reference_edge",
+                "displayName": "参考边缘",
+                "type": "PointSet2D",
+                "required": true,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "has_defect",
+                "displayName": "是否有缺陷",
+                "type": "Boolean",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "defect_count",
+                "displayName": "缺陷区域数",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "convex_count",
+                "displayName": "凸出区域数",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "concave_count",
+                "displayName": "凹陷区域数",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "max_deviation",
+                "displayName": "最大偏差",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "mean_deviation",
+                "displayName": "平均偏差",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "deviation_stddev",
+                "displayName": "偏差标准差",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "defect_regions",
+                "displayName": "缺陷区域列表",
+                "type": "Table",
+                "required": false,
+                "multiple": false
+            }
+        ]
+    }
+}

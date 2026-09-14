@@ -18,6 +18,10 @@ private slots:
     void testFloatTiffFiltersNoDataWithoutChangingGeometry();
     void testNegativeAndFlatHeightsRemainValid();
     void testExplicitValidRange();
+    void testExplicitInvalidValueQuantizedToFloat();
+    void testConfigNonFiniteRejected();
+    void testNoDataGapFloorConfigurable();
+    void testAmbiguousNoDataFailsLoad();
 };
 
 void TestTiffLoader::testRgb16TiffKeepsColorDepth() {
@@ -142,6 +146,144 @@ void TestTiffLoader::testExplicitValidRange() {
     QCOMPARE(static_cast<int>(data.points.size()), 3);
     QCOMPARE(data.points.front().z(), 10.0);
     QCOMPARE(data.points.back().z(), 30.0);
+#endif
+}
+
+// 阶7 批3复核三轮（P2-5）：显式 Config.invalidValue 按源图存储精度量化——
+// 非整数哨兵 -21474.8359 写入 CV_32F 后实为 -21474.8359375，旧版 double
+// 精确比较失配、哨兵像素混入点云
+void TestTiffLoader::testExplicitInvalidValueQuantizedToFloat() {
+#ifndef DEEPLUX_HAS_OPENCV
+    QSKIP("OpenCV not available");
+#else
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString path = dir.filePath("sentinel.tiff");
+    cv::Mat img(1, 3, CV_32F);
+    img.at<float>(0, 0) = static_cast<float>(-21474.8359);
+    img.at<float>(0, 1) = 1.0f;
+    img.at<float>(0, 2) = 2.0f;
+    QVERIFY(cv::imwrite(path.toStdString(), img));
+
+    TiffLoader::Config config;
+    config.autoDetectNoData = false; // 隔离显式哨兵路径
+    config.invalidValue = -21474.8359;
+
+    PointCloudData data;
+    QString error;
+    QVERIFY2(TiffLoader::load(path, data, error, config), qPrintable(error));
+    QCOMPARE(static_cast<int>(data.points.size()), 2);
+    QVERIFY(qAbs(data.points[0].z() - 1.0) < 1e-6);
+    QVERIFY(qAbs(data.points[1].z() - 2.0) < 1e-6);
+#endif
+}
+
+// 阶7 批3复核四轮（P2-3）：显式 invalidValue/validMin/validMax 非有限必须在
+// 读取图像前失败关闭——invalidValue=NaN 会阻止自动检测且后续比较全部恒假
+void TestTiffLoader::testConfigNonFiniteRejected() {
+#ifndef DEEPLUX_HAS_OPENCV
+    QSKIP("OpenCV not available");
+#else
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString path = dir.filePath("plain.tiff");
+    cv::Mat img(1, 2, CV_32F, cv::Scalar(1.0f));
+    QVERIFY(cv::imwrite(path.toStdString(), img));
+
+    PointCloudData data;
+    QString error;
+    TiffLoader::Config nanInvalid;
+    nanInvalid.invalidValue = std::numeric_limits<double>::quiet_NaN();
+    QVERIFY2(!TiffLoader::load(path, data, error, nanInvalid), "NaN invalidValue must fail");
+    QVERIFY(error.contains(QLatin1String("finite")));
+
+    TiffLoader::Config infMin;
+    infMin.validMin = -std::numeric_limits<double>::infinity();
+    QVERIFY2(!TiffLoader::load(path, data, error, infMin), "-Inf validMin must fail");
+    QVERIFY(error.contains(QLatin1String("finite")));
+
+    TiffLoader::Config nanMax;
+    nanMax.validMax = std::numeric_limits<double>::quiet_NaN();
+    QVERIFY2(!TiffLoader::load(path, data, error, nanMax), "NaN validMax must fail");
+    QVERIFY(error.contains(QLatin1String("finite")));
+#endif
+}
+
+// 阶7 批3复核五轮（P2-2）：自动检测是原始像素单位启发式——小幅值哨兵 -32768
+// 与有效值 0..2 的间隙 32768 低于默认下限 1e6，默认永不检出；noDataMinGap
+// 调低下限后可检出（固定阈值定位为"声明格式默认值 + 可调参数"）
+void TestTiffLoader::testNoDataGapFloorConfigurable() {
+#ifndef DEEPLUX_HAS_OPENCV
+    QSKIP("OpenCV not available");
+#else
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString path = dir.filePath("small_sentinel.tiff");
+    cv::Mat img(10, 10, CV_32F);
+    for (int y = 0; y < 10; ++y) {
+        for (int x = 0; x < 10; ++x) {
+            img.at<float>(y, x) = (x < 7) ? -32768.0f : static_cast<float>(x - 7); // 70% 哨兵 + 0..2
+        }
+    }
+    QVERIFY(cv::imwrite(path.toStdString(), img));
+
+    PointCloudData data;
+    QString error;
+    TiffLoader::Config defaults;
+    QVERIFY2(TiffLoader::load(path, data, error, defaults), qPrintable(error));
+    QCOMPARE(static_cast<int>(data.points.size()), 100); // 默认下限：间隙 32768 < 1e6 → 不检出
+
+    TiffLoader::Config tuned;
+    tuned.noDataMinGap = 1000.0;
+    QVERIFY2(TiffLoader::load(path, data, error, tuned), qPrintable(error));
+    QCOMPARE(static_cast<int>(data.points.size()), 30); // 下限调低：哨兵剔除
+
+    TiffLoader::Config badFloor;
+    badFloor.noDataMinGap = std::numeric_limits<double>::quiet_NaN();
+    QVERIFY2(!TiffLoader::load(path, data, error, badFloor), "non-finite floor must fail");
+    QVERIFY(error.contains(QLatin1String("noDataMinGap")));
+
+    // 阶7 批3复核六轮（P2-2）：公开 detectNoData 对非法阈值返回 InvalidConfig
+    // （失败关闭，外部调用方不得将非法配置误读为"无 NoData"的 None）
+    const cv::Mat probe(4, 4, CV_32F, cv::Scalar(1.0f));
+    QVERIFY(TiffLoader::detectNoData(probe, std::numeric_limits<double>::quiet_NaN()).status ==
+            TiffLoader::NoDataStatus::InvalidConfig);
+    QVERIFY(TiffLoader::detectNoData(probe, -1.0).status == TiffLoader::NoDataStatus::InvalidConfig);
+    QVERIFY(TiffLoader::detectNoData(probe, 1000.0).status == TiffLoader::NoDataStatus::None);
+#endif
+}
+
+// 阶7 批3复核五轮（P1-1）：双侧极值同满足判据（两值图）——load 必须失败关闭
+// 并提示显式哨兵，不得按分布猜测；显式 invalidValue 解除歧义
+void TestTiffLoader::testAmbiguousNoDataFailsLoad() {
+#ifndef DEEPLUX_HAS_OPENCV
+    QSKIP("OpenCV not available");
+#else
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString path = dir.filePath("two_value.tiff");
+    cv::Mat img(10, 10, CV_32F);
+    for (int y = 0; y < 10; ++y) {
+        for (int x = 0; x < 10; ++x) {
+            img.at<float>(y, x) = (x < 5) ? 0.0f : 3000000.0f; // 50/50 两值，间隙 3e6 > 1e6
+        }
+    }
+    QVERIFY(cv::imwrite(path.toStdString(), img));
+
+    PointCloudData data;
+    QString error;
+    TiffLoader::Config config;
+    QVERIFY2(!TiffLoader::load(path, data, error, config), "ambiguous must fail load");
+    QVERIFY(error.contains(QLatin1String("Ambiguous")));
+
+    TiffLoader::Config explicitCfg;
+    explicitCfg.invalidValue = 0.0; // 显式哨兵解除歧义
+    QVERIFY2(TiffLoader::load(path, data, error, explicitCfg), qPrintable(error));
+    QCOMPARE(static_cast<int>(data.points.size()), 50);
 #endif
 }
 

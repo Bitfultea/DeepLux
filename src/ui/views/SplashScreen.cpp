@@ -1,7 +1,7 @@
 #include "SplashScreen.h"
 
-#include <QApplication>
-#include <QDesktopWidget>
+#include <QGuiApplication>
+#include <QScreen>
 
 namespace DeepLux {
 
@@ -9,11 +9,11 @@ SplashScreen::SplashScreen(QWidget* parent) : QWidget(parent, Qt::FramelessWindo
     setAttribute(Qt::WA_ShowWithoutActivating);
     initUI();
 
-    QDesktopWidget* desktop = QApplication::desktop();
-    QRect screenGeometry = desktop->screenGeometry();
-    int x = (screenGeometry.width() - width()) / 2;
-    int y = (screenGeometry.height() - height()) / 2;
-    move(x, y);
+    if (QScreen* screen = QGuiApplication::primaryScreen()) {
+        const QRect screenGeometry = screen->availableGeometry();
+        move(screenGeometry.x() + (screenGeometry.width() - width()) / 2,
+             screenGeometry.y() + (screenGeometry.height() - height()) / 2);
+    }
 }
 
 SplashScreen::~SplashScreen() {}

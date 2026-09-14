@@ -10,7 +10,7 @@
 #include <QLineEdit>
 #include <QPointF>
 #include <QPointer>
-#include <QRegExp>
+#include <QRegularExpression>
 #include <QVBoxLayout>
 
 namespace DeepLux {
@@ -32,7 +32,7 @@ static QString arrayText(const QJsonArray& arr) {
 }
 
 static bool parseArrayText(const QString& text, QJsonArray& out) {
-    const QStringList parts = text.split(QRegExp("[,\\s]+"), Qt::SkipEmptyParts);
+    const QStringList parts = text.split(QRegularExpression("[,\\s]+"), Qt::SkipEmptyParts);
     if (parts.isEmpty()) {
         return false;
     }

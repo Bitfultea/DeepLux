@@ -4,6 +4,7 @@
 
 #include <QComboBox>
 #include <QLabel>
+#include <QSet>
 #include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -55,8 +56,10 @@ bool ColorRecognitionPlugin::process(const ImageData& input, ImageData& output) 
     QJsonObject params = currentParams();
     m_targetColor = params["targetColor"].toString();
 
-    // 定义颜色范围
-    std::vector<ColorRange> colorRanges = {{"红色", cv::Scalar(0, 100, 100), cv::Scalar(10, 255, 255)},
+    // 定义颜色范围。红色跨越色相环两端（低 0–10 与高 170–179），需要两段并集，
+    // 否则高色相的深红/品红偏红会被漏检。
+    std::vector<ColorRange> colorRanges = {{"红色", cv::Scalar(0, 100, 100), cv::Scalar(10, 255, 255)}, // 低色相端
+                                           {"红色", cv::Scalar(170, 100, 100), cv::Scalar(179, 255, 255)}, // 高色相端
                                            {"绿色", cv::Scalar(35, 100, 100), cv::Scalar(85, 255, 255)},
                                            {"蓝色", cv::Scalar(100, 100, 100), cv::Scalar(130, 255, 255)},
                                            {"黄色", cv::Scalar(15, 100, 100), cv::Scalar(35, 255, 255)},
@@ -67,25 +70,21 @@ bool ColorRecognitionPlugin::process(const ImageData& input, ImageData& output) 
     cv::Mat hsv;
     cvtColor(image, hsv, cv::COLOR_BGR2HSV);
 
-    // 找到匹配的颜色
-    ColorRange selectedRange;
-    bool found = false;
-
+    // 收集目标颜色对应的全部 HSV 区间（红色为两段）。阶段 2：未知颜色失败关闭，
+    // 不再静默回退到默认红色。
+    std::vector<ColorRange> selectedRanges;
     for (const auto& range : colorRanges) {
-        if (range.name == m_targetColor) {
-            selectedRange = range;
-            found = true;
-            break;
-        }
+        if (range.name == m_targetColor)
+            selectedRanges.push_back(range);
     }
-
-    if (!found) {
-        selectedRange = colorRanges[0]; // 默认红色
+    if (selectedRanges.empty()) {
+        emit errorOccurred(tr("不支持的目标颜色：%1").arg(m_targetColor));
+        return false;
     }
 
     // 检测颜色
     double area = 0;
-    detectColor(hsv, selectedRange, m_mask, area);
+    detectColor(hsv, selectedRanges, m_mask, area);
 
     if (area < 100) {
         emit errorOccurred(tr("未检测到目标颜色"));
@@ -145,9 +144,15 @@ bool ColorRecognitionPlugin::process(const ImageData& input, ImageData& output) 
 #endif
 }
 
-bool ColorRecognitionPlugin::detectColor(const cv::Mat& hsv, const ColorRange& range, cv::Mat& mask, double& area) {
+bool ColorRecognitionPlugin::detectColor(const cv::Mat& hsv, const std::vector<ColorRange>& ranges, cv::Mat& mask,
+                                         double& area) {
 #ifdef DEEPLUX_HAS_OPENCV
-    cv::inRange(hsv, range.lower, range.upper, mask);
+    mask = cv::Mat::zeros(hsv.size(), CV_8UC1);
+    cv::Mat single;
+    for (const auto& range : ranges) {
+        cv::inRange(hsv, range.lower, range.upper, single);
+        cv::bitwise_or(mask, single, mask);
+    }
 
     // 形态学操作去噪
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
@@ -159,12 +164,23 @@ bool ColorRecognitionPlugin::detectColor(const cv::Mat& hsv, const ColorRange& r
 
     return area > 0;
 #else
+    Q_UNUSED(hsv);
+    Q_UNUSED(ranges);
+    Q_UNUSED(mask);
+    Q_UNUSED(area);
     return false;
 #endif
 }
 
 bool ColorRecognitionPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
-    Q_UNUSED(params);
+    // 阶段 2：颜色枚举严格校验，非法值拒绝（失败关闭），不再静默回退默认色
+    static const QSet<QString> validColors{QStringLiteral("红色"), QStringLiteral("绿色"), QStringLiteral("蓝色"),
+                                           QStringLiteral("黄色"), QStringLiteral("橙色"), QStringLiteral("紫色")};
+    const QString color = params.value("targetColor").toString();
+    if (!validColors.contains(color)) {
+        error = tr("不支持的目标颜色：%1").arg(color);
+        return false;
+    }
     error.clear();
     return true;
 }

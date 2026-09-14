@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QDockWidget>
 #include <QElapsedTimer>
+#include <QHash>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMainWindow>
@@ -59,6 +60,11 @@ public:
     // 测试/截图辅助：统一选择入口（同步流程树/画布/检查器）
     void selectModuleForCapture(const QString& instanceId) {
         selectModule(instanceId, true, true);
+    }
+    // 测试辅助：清空选择（与关闭检查器走同一 selectModule(QString()) 路径），
+    // 用于"关闭检查器后测量叠加清除"回归。
+    void clearSelectionForCapture() {
+        selectModule(QString(), false);
     }
 
 private slots:
@@ -193,7 +199,7 @@ protected:
     bool syncModulesToRunEngine();
     void clearExecutionHighlight(QTreeWidgetItem* item);
     void showProcessModuleOutput(QTreeWidgetItem* item, bool userInitiated = false);
-    void displayImage(const ImageData& image, const QString& label = QString());
+    void displayImage(const ImageData& image, const QString& label = QString(), const QString& moduleId = QString());
     bool importFile(const QString& filePath);
     bool importImageFile(const QString& filePath, const QString& existingDataSourceId = QString());
     bool importPointCloudFile(const QString& filePath, const QString& existingDataSourceId = QString());
@@ -261,6 +267,12 @@ protected:
 
     // 当前唯一选中的模块实例 ID
     QString m_selectedModuleId;
+
+    // 测量叠加按模块身份绑定视口：模块实例 ID → 视口 ID（由 dataDisplayed 记录）。
+    // 不使用"最近一次显示"的全局值，避免把叠加画到无关支路的视口。
+    QHash<QString, QString> m_moduleViewportIds;
+    QString m_displayingModuleId; // 正在显示图像的模块（用于记录视口归属）
+    bool m_displayingImage2D = false;
 
     // 视图菜单动作
     QAction* m_viewToolPanelAction = nullptr;

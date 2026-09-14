@@ -1,7 +1,7 @@
 #ifndef DEEPLUX_WINDOWS_PTY_IMPL_H
 #define DEEPLUX_WINDOWS_PTY_IMPL_H
 
-#include "../PtyImpl.h"
+#include "PtyImpl.h"
 
 #if defined(Q_OS_WINDOWS)
 
@@ -25,8 +25,6 @@ namespace DeepLux {
  * - 使用 PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE 启动 shell 进程
  */
 class WindowsConPtyImpl : public PtyImpl {
-    Q_OBJECT
-
 public:
     WindowsConPtyImpl();
     ~WindowsConPtyImpl() override;
@@ -38,10 +36,9 @@ public:
     void kill() override;
     bool isRunning() const override;
 
-private slots:
+private:
     void onReadyRead();
 
-private:
     bool setupConPty(const QString& shell, const QStringList& args);
     void cleanup();
 

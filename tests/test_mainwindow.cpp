@@ -5,6 +5,7 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDialog>
 #include <QDir>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
@@ -13,6 +14,7 @@
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QImage>
+#include <QJsonArray>
 #include <QLabel>
 #include <QLayout>
 #include <QLineEdit>
@@ -43,6 +45,7 @@
 #include <core/manager/ProjectManager.h>
 #include <core/model/Project.h>
 #include <functional>
+#include <plugins/image_processing/CropImage/CropImagePlugin.h>
 #include <ui/ThemeManager.h>
 #include <ui/dialogs/SamAnnotatorDialog.h>
 #include <ui/display/3d/Viewport3DContent.h>
@@ -124,6 +127,13 @@ private slots:
     void testMeasurementConfigButtonCreatesInputNode();
     void testMeasurementConfigButtonWithInstalledPlugins();
     void testRunCreatesMeasurementInputForConsumer();
+    void testControlFlowRunRendersBranchStates();
+    void testDualMeasurementInputsShowOwnOverlay();
+    void testSharedDownstreamMeasurementResultNotMisattributed();
+    void testSelectedResultModuleShowsItsOwnMeasurementValue();
+    void testNoOutputSelectedModuleClearsOverlays();
+    void testClearSelectionAndCloseInspectorClearOverlays();
+    void testDarkThemeCloseAndDestroyWindowDirectly();
     void testPluginConfigDialogRestylesLegacyDarkPlugin();
     void testGrabImageEditorSurvivesCommitSignal();
     void testQuickAnnotateOpensSamDialogOnMainViewportImage();
@@ -137,6 +147,7 @@ private slots:
     void testCloseInspectorDoesNotAutoExpand();
     void testDeleteModuleClearsInspector();
     void testOldAdvancedConfigDialogStillUsable();
+    void testCropImageAdvancedConfigDialogGuardsInvalidEdit();
     void testNarrowWindowToolPanelRestored();
     void testNarrowWindowKeepsCanvasAndCollapsedInspectorReadable();
     void testInspectorManualCollapseResizesSplitter();
@@ -526,30 +537,815 @@ void TestMainWindow::testRunCreatesMeasurementInputForConsumer() {
     QVERIFY(appDir.isValid());
     qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
     const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
-    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("FitCircle")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    window.resize(1000, 720);
+    window.show();
     QCoreApplication::processEvents();
-    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("FitCircle")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
 
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project != nullptr);
-    ModuleInstance distance;
-    distance.id = QStringLiteral("auto_distance_1");
-    distance.moduleId = QStringLiteral("DistancePP");
-    distance.name = QStringLiteral("点点距离");
-    project->addModule(distance);
+    ModuleInstance circle;
+    circle.id = QStringLiteral("auto_fit_circle_1");
+    circle.moduleId = QStringLiteral("FitCircle");
+    circle.name = QStringLiteral("圆拟合");
+    project->addModule(circle);
     QCoreApplication::processEvents();
 
     QTreeWidget* processTree = window.findChild<QTreeWidget*>("ProcessTree");
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
     QVERIFY(processTree != nullptr);
+    QVERIFY(runButton != nullptr);
     QCOMPARE(processTree->topLevelItemCount(), 1);
-    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QCoreApplication::processEvents();
     QCOMPARE(processTree->topLevelItemCount(), 2);
     QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 2).toString(), QStringLiteral("MeasurementInput"));
-    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/3"));
+
+    const QString inputId = processTree->topLevelItem(0)->data(0, Qt::UserRole + 1).toString();
+    ModuleInstance* input = project->findModule(inputId);
+    QVERIFY(input != nullptr);
+    QCOMPARE(input->params["mode"].toString(), QStringLiteral("point_set"));
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+    QImage image(640, 480, QImage::Format_RGB32);
+    image.fill(QColor("#111827"));
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(imageWidget->hasImage());
+
+    bool runFinished = false;
+    const QMetaObject::Connection runConnection = connect(&RunEngine::instance(), &RunEngine::runFinished, &window,
+                                                          [&](const RunResult&) { runFinished = true; });
+    for (const QPointF& point : {QPointF(420.0, 240.0), QPointF(320.0, 340.0), QPointF(220.0, 240.0)}) {
+        const QPoint widgetPoint = imageWidget->imageToWidget(point).toPoint();
+        QVERIFY(imageWidget->rect().contains(widgetPoint));
+        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, widgetPoint);
+        QCoreApplication::processEvents();
+    }
+
+    QTRY_VERIFY(runFinished);
+    disconnect(runConnection);
+    input = project->findModule(inputId);
+    QVERIFY(input != nullptr);
+    QCOMPARE(input->params["points"].toArray().size(), 3);
+    const ImageData output = RunEngine::instance().moduleOutput(QStringLiteral("auto_fit_circle_1"));
+    QVERIFY(output.hasData("circle_radius"));
+    QVERIFY(qAbs(output.data("circle_radius").toDouble() - 100.0) < 1.0);
+
+    QTRY_VERIFY(imageWidget->hasImage());
+    QTest::qWait(50);
+    const QImage rendered = imageWidget->grab().toImage().convertToFormat(QImage::Format_RGB32);
+    int cyanPixels = 0;
+    int orangePixels = 0;
+    for (int y = 0; y < rendered.height(); ++y) {
+        for (int x = 0; x < rendered.width(); ++x) {
+            const QColor color = rendered.pixelColor(x, y);
+            cyanPixels += color.red() < 100 && color.green() > 120 && color.blue() > 140;
+            orangePixels += color.red() > 180 && color.green() > 80 && color.green() < 190 && color.blue() < 100;
+        }
+    }
+    QVERIFY2(cyanPixels > 100 && orangePixels > 20,
+             qPrintable(QString("Missing fit overlay: cyan=%1 orange=%2").arg(cyanPixels).arg(orangePixels)));
+}
+
+void TestMainWindow::testControlFlowRunRendersBranchStates() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("If")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("Delay")));
+
+    MainWindow window;
+    window.resize(1000, 720);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("条件分支")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("延时")));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance condition;
+    condition.id = QStringLiteral("gui_condition");
+    condition.moduleId = QStringLiteral("条件分支");
+    condition.name = QStringLiteral("条件");
+    condition.params["conditionType"] = QStringLiteral("Expression");
+    condition.params["expressionString"] = QStringLiteral("true");
+    project->addModule(condition);
+
+    ModuleInstance trueBranch;
+    trueBranch.id = QStringLiteral("gui_true");
+    trueBranch.moduleId = QStringLiteral("延时");
+    trueBranch.name = QStringLiteral("真分支");
+    trueBranch.params["delayMs"] = 1;
+    project->addModule(trueBranch);
+
+    ModuleInstance falseBranch = trueBranch;
+    falseBranch.id = QStringLiteral("gui_false");
+    falseBranch.name = QStringLiteral("假分支");
+    project->addModule(falseBranch);
+
+    ModuleConnection trueConnection;
+    trueConnection.fromModuleId = condition.id;
+    trueConnection.toModuleId = trueBranch.id;
+    trueConnection.fromPort = QStringLiteral("true");
+    trueConnection.toPort = QStringLiteral("control");
+    trueConnection.edgeType = QStringLiteral("control");
+    project->addConnection(trueConnection);
+
+    ModuleConnection falseConnection = trueConnection;
+    falseConnection.toModuleId = falseBranch.id;
+    falseConnection.fromPort = QStringLiteral("false");
+    project->addConnection(falseConnection);
+    QCOMPARE(project->connections().size(), 2);
+    QCoreApplication::processEvents();
+
+    QTabWidget* processTabs = window.findChild<QTabWidget*>(QStringLiteral("ProcessTabWidget"));
+    QVERIFY(processTabs != nullptr);
+    const int canvasIndex = processTabs->indexOf(window.findChild<FlowCanvas*>());
+    QVERIFY(canvasIndex >= 0);
+    QTest::mouseClick(processTabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
+                      processTabs->tabBar()->tabRect(canvasIndex).center());
+
+    bool runFinished = false;
+    RunResult runResult;
+    const QMetaObject::Connection runConnection =
+        connect(&RunEngine::instance(), &RunEngine::runFinished, &window, [&](const RunResult& result) {
+            runResult = result;
+            runFinished = true;
+        });
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_VERIFY(runFinished);
+    disconnect(runConnection);
+    QVERIFY2(runResult.success, qPrintable(runResult.errorMessage));
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>();
+    QVERIFY(processTree != nullptr);
+    QVERIFY(canvas != nullptr);
+    auto itemForId = [&](const QString& id) {
+        for (int row = 0; row < processTree->topLevelItemCount(); ++row) {
+            QTreeWidgetItem* item = processTree->topLevelItem(row);
+            if (item->data(0, Qt::UserRole + 1).toString() == id)
+                return item;
+        }
+        return static_cast<QTreeWidgetItem*>(nullptr);
+    };
+
+    QTreeWidgetItem* conditionItem = itemForId(condition.id);
+    QTreeWidgetItem* trueItem = itemForId(trueBranch.id);
+    QTreeWidgetItem* falseItem = itemForId(falseBranch.id);
+    QVERIFY(conditionItem != nullptr);
+    QVERIFY(trueItem != nullptr);
+    QVERIFY(falseItem != nullptr);
+    QCOMPARE(conditionItem->data(0, Qt::UserRole + 5).toString(), QStringLiteral("success"));
+    QCOMPARE(trueItem->data(0, Qt::UserRole + 5).toString(), QStringLiteral("success"));
+    QCOMPARE(falseItem->data(0, Qt::UserRole + 5).toString(), QStringLiteral("skipped"));
+    QCOMPARE(falseItem->text(1), QStringLiteral("已跳过"));
+    QCOMPARE(canvas->nodeItem(condition.id)->executionStatus(), QStringLiteral("success"));
+    QCOMPARE(canvas->nodeItem(trueBranch.id)->executionStatus(), QStringLiteral("success"));
+    QCOMPARE(canvas->nodeItem(falseBranch.id)->executionStatus(), QStringLiteral("skipped"));
+}
+
+void TestMainWindow::testDualMeasurementInputsShowOwnOverlay() {
+    // 阶段 5 复核（P1）：多测量支路时叠加必须按选中节点追溯所属测量输入，
+    // 不能固定取第一个输入，也不能把流程 A 的点画到流程 B 的结果上。
+    // 每条支路带 GrabImage 图像源，使拟合模块经 DisplayManager::dataDisplayed
+    // 显示输出图像，叠加按"结果模块 → 视口"身份绑定，而非直接调 displayImage。
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("FitCircle")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(1000, 720);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("GrabImage")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("FitCircle")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    const QString imagePath =
+        QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../tests/acceptance/data/circle_640x480.png");
+    QVERIFY2(QFileInfo::exists(imagePath), qPrintable(imagePath));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    // 支路 A：围绕 (320,240) 半径 100 的圆周采样点
+    QJsonArray pointsA;
+    for (const QPointF& p : {QPointF(420.0, 240.0), QPointF(320.0, 340.0), QPointF(220.0, 240.0)})
+        pointsA.append(QJsonArray{p.x(), p.y()});
+    // 支路 B：围绕 (150,120) 半径 60 的圆周采样点（与 A 明显不同）
+    QJsonArray pointsB;
+    for (const QPointF& p : {QPointF(210.0, 120.0), QPointF(150.0, 180.0), QPointF(90.0, 120.0)})
+        pointsB.append(QJsonArray{p.x(), p.y()});
+
+    // 支路 A：grab_a → input_a → fit_a
+    ModuleInstance grabA;
+    grabA.id = QStringLiteral("grab_a");
+    grabA.moduleId = QStringLiteral("GrabImage");
+    grabA.name = QStringLiteral("取图A");
+    grabA.params["grabSource"] = QStringLiteral("Path");
+    grabA.params["filePath"] = imagePath;
+    project->addModule(grabA);
+
+    ModuleInstance inputA;
+    inputA.id = QStringLiteral("input_a");
+    inputA.moduleId = QStringLiteral("MeasurementInput");
+    inputA.name = QStringLiteral("测量输入A");
+    inputA.params["mode"] = QStringLiteral("point_set");
+    inputA.params["points"] = pointsA;
+    project->addModule(inputA);
+
+    ModuleInstance fitA;
+    fitA.id = QStringLiteral("fit_a");
+    fitA.moduleId = QStringLiteral("FitCircle");
+    fitA.name = QStringLiteral("圆拟合A");
+    project->addModule(fitA);
+
+    // 支路 B：grab_b → input_b → fit_b
+    ModuleInstance grabB;
+    grabB.id = QStringLiteral("grab_b");
+    grabB.moduleId = QStringLiteral("GrabImage");
+    grabB.name = QStringLiteral("取图B");
+    grabB.params["grabSource"] = QStringLiteral("Path");
+    grabB.params["filePath"] = imagePath;
+    project->addModule(grabB);
+
+    ModuleInstance inputB;
+    inputB.id = QStringLiteral("input_b");
+    inputB.moduleId = QStringLiteral("MeasurementInput");
+    inputB.name = QStringLiteral("测量输入B");
+    inputB.params["mode"] = QStringLiteral("point_set");
+    inputB.params["points"] = pointsB;
+    project->addModule(inputB);
+
+    ModuleInstance fitB;
+    fitB.id = QStringLiteral("fit_b");
+    fitB.moduleId = QStringLiteral("FitCircle");
+    fitB.name = QStringLiteral("圆拟合B");
+    project->addModule(fitB);
+
+    auto connectData = [&](const QString& from, const QString& to, const QString& port) {
+        ModuleConnection conn;
+        conn.fromModuleId = from;
+        conn.toModuleId = to;
+        conn.fromPort = port;
+        conn.toPort = port;
+        conn.edgeType = QStringLiteral("data");
+        project->addConnection(conn);
+    };
+    connectData(grabA.id, inputA.id, QStringLiteral("image"));
+    connectData(inputA.id, fitA.id, QStringLiteral("image"));
+    connectData(inputA.id, fitA.id, QStringLiteral("fit_points"));
+    connectData(grabB.id, inputB.id, QStringLiteral("image"));
+    connectData(inputB.id, fitB.id, QStringLiteral("image"));
+    connectData(inputB.id, fitB.id, QStringLiteral("fit_points"));
+    QCoreApplication::processEvents();
+
+    // 运行前选中支路 B 的拟合节点：运行结束后叠加应归属支路 B
+    window.selectModuleForCapture(fitB.id);
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+    bool runFinished = false;
+    const QMetaObject::Connection runConnection = connect(&RunEngine::instance(), &RunEngine::runFinished, &window,
+                                                          [&](const RunResult&) { runFinished = true; });
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_VERIFY(runFinished);
+    disconnect(runConnection);
+    // 运行后支路 B 的拟合输出经 DisplayManager 显示，视口应已有图像
+    QTRY_VERIFY(imageWidget->hasImage());
+    QTest::qWait(50); // runFinished 之后叠加经 singleShot(0) 更新
+
+    // 选中支路 B：叠加应为支路 B 的拾取点，且不是支路 A 的点
+    const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
+    QCOMPARE(overlayPoints.size(), 3);
+    QCOMPARE(overlayPoints.at(0).pos, QPointF(210.0, 120.0));
+    QCOMPARE(overlayPoints.at(1).pos, QPointF(150.0, 180.0));
+    QCOMPARE(overlayPoints.at(2).pos, QPointF(90.0, 120.0));
+
+    // 画出的圆必须确实是支路 B 的半径（≈60），而非支路 A 的 100：
+    // 圆叠加的线段端点到圆心 (150,120) 的距离应≈60；若误用支路 A 的结果
+    // （圆心 320,240 半径 100），端点到 (150,120) 的距离将远大于 60。
+    const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
+    QVERIFY2(!overlayLines.isEmpty(), "selected branch overlay must include fitted circle");
+    const QPointF branchBCenter(150.0, 120.0);
+    const double r = QLineF(branchBCenter, overlayLines.first().p1).length();
+    QVERIFY2(qAbs(r - 60.0) < 5.0,
+             qPrintable(QString("drawn circle radius %1 must match branch B (60), not branch A (100)").arg(r)));
+
+    const ImageData fitBOut = RunEngine::instance().moduleOutput(fitB.id);
+    QVERIFY2(fitBOut.hasData("circle_radius"), "fit_b must produce circle_radius");
+    QVERIFY2(qAbs(fitBOut.data("circle_radius").toDouble() - 60.0) < 2.0, "fit_b radius must match branch B points");
+}
+
+void TestMainWindow::testSharedDownstreamMeasurementResultNotMisattributed() {
+    // 阶段 5 复核（P1-2）：汇合结构 inputA + inputB → distShared。
+    // 两个测量输入经不同端口汇入同一个结果节点（DistancePP 的 point1/point2），
+    // 该结果无法唯一归属到任一输入。选中支路 B 时：只绘制 B 自己的两点连线，
+    // 绝不能采用共享节点算出的距离；选中共享节点本身时归属不唯一，叠加整体清除。
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(1000, 720);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("GrabImage")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    const QString imagePath =
+        QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../tests/acceptance/data/circle_640x480.png");
+    QVERIFY2(QFileInfo::exists(imagePath), qPrintable(imagePath));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance grabA;
+    grabA.id = QStringLiteral("grab_a");
+    grabA.moduleId = QStringLiteral("GrabImage");
+    grabA.name = QStringLiteral("取图A");
+    grabA.params["grabSource"] = QStringLiteral("Path");
+    grabA.params["filePath"] = imagePath;
+    project->addModule(grabA);
+
+    // 支路 A：point_pair，首点 (420,240)
+    ModuleInstance inputA;
+    inputA.id = QStringLiteral("input_a");
+    inputA.moduleId = QStringLiteral("MeasurementInput");
+    inputA.name = QStringLiteral("测量输入A");
+    inputA.params["mode"] = QStringLiteral("point_pair");
+    inputA.params["point1"] = QJsonArray{420.0, 240.0};
+    inputA.params["point2"] = QJsonArray{320.0, 340.0};
+    project->addModule(inputA);
+
+    ModuleInstance grabB;
+    grabB.id = QStringLiteral("grab_b");
+    grabB.moduleId = QStringLiteral("GrabImage");
+    grabB.name = QStringLiteral("取图B");
+    grabB.params["grabSource"] = QStringLiteral("Path");
+    grabB.params["filePath"] = imagePath;
+    project->addModule(grabB);
+
+    // 支路 B：point_pair，两点竖直相距 100
+    ModuleInstance inputB;
+    inputB.id = QStringLiteral("input_b");
+    inputB.moduleId = QStringLiteral("MeasurementInput");
+    inputB.name = QStringLiteral("测量输入B");
+    inputB.params["mode"] = QStringLiteral("point_pair");
+    inputB.params["point1"] = QJsonArray{150.0, 120.0};
+    inputB.params["point2"] = QJsonArray{150.0, 220.0};
+    project->addModule(inputB);
+
+    // 共享下游：A 的首点与 B 的首点分别进入 DistancePP 的两个输入端口
+    ModuleInstance distShared;
+    distShared.id = QStringLiteral("dist_shared");
+    distShared.moduleId = QStringLiteral("DistancePP");
+    distShared.name = QStringLiteral("共享距离");
+    project->addModule(distShared);
+
+    auto connectData = [&](const QString& from, const QString& fromPort, const QString& to, const QString& toPort) {
+        ModuleConnection conn;
+        conn.fromModuleId = from;
+        conn.toModuleId = to;
+        conn.fromPort = fromPort;
+        conn.toPort = toPort;
+        conn.edgeType = QStringLiteral("data");
+        project->addConnection(conn);
+    };
+    connectData(grabA.id, QStringLiteral("image"), inputA.id, QStringLiteral("image"));
+    connectData(grabB.id, QStringLiteral("image"), inputB.id, QStringLiteral("image"));
+    connectData(inputA.id, QStringLiteral("point1"), distShared.id, QStringLiteral("point1"));
+    connectData(inputB.id, QStringLiteral("point1"), distShared.id, QStringLiteral("point2"));
+    QCoreApplication::processEvents();
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+    bool runFinished = false;
+    const QMetaObject::Connection runConnection = connect(&RunEngine::instance(), &RunEngine::runFinished, &window,
+                                                          [&](const RunResult&) { runFinished = true; });
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_VERIFY(runFinished);
+    disconnect(runConnection);
+
+    // 前提：共享节点确实产出了距离结果（否则"跳过共享结果"路径未被真正覆盖）。
+    // dist_shared 计算的是 A 首点(420,240)与 B 首点(150,120)的距离 ≈ 295.466。
+    const ImageData sharedOut = RunEngine::instance().moduleOutput(distShared.id);
+    QVERIFY2(sharedOut.hasData("distance"), "dist_shared must produce distance");
+    QVERIFY2(qAbs(sharedOut.data("distance").toDouble() - 295.466) < 1.0,
+             "dist_shared value must reflect the cross-branch point pair");
+
+    // 选中支路 B：绘制 B 的两点与连线；距离必须回退为 B 自身两点的几何距离 100，
+    // 而不是共享节点的 295.466（若误采用共享结果，标签数值即为 295.466）。
+    window.selectModuleForCapture(inputB.id);
+    QTRY_VERIFY(imageWidget->hasImage());
+    QTRY_COMPARE(imageWidget->measurementPoints().size(), 2);
+    QCOMPARE(imageWidget->measurementPoints().at(0).pos, QPointF(150.0, 120.0));
+    QCOMPARE(imageWidget->measurementPoints().at(1).pos, QPointF(150.0, 220.0));
+    const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
+    QCOMPARE(overlayLines.size(), 1);
+    // 数值解析而非 contains（避免子串误判）：必须为 B 自身两点距离 100，而非共享节点的 295.466
+    const int labelColon = overlayLines.first().label.indexOf(QStringLiteral(":"));
+    QVERIFY(labelColon >= 0);
+    bool labelOk = false;
+    const double shownDist = overlayLines.first().label.mid(labelColon + 1).trimmed().toDouble(&labelOk);
+    QVERIFY(labelOk);
+    QVERIFY2(qAbs(shownDist - 100.0) < 0.5,
+             qPrintable(QString("line label must use branch B own distance 100, got: %1").arg(shownDist)));
+
+    // 选中共享节点本身：归属不唯一，叠加整体清除
+    window.selectModuleForCapture(distShared.id);
+    QTRY_VERIFY(imageWidget->measurementPoints().isEmpty());
+    QVERIFY(imageWidget->measurementLines().isEmpty());
+}
+
+void TestMainWindow::testSelectedResultModuleShowsItsOwnMeasurementValue() {
+    // 阶段 5 复核五轮（P1-2）：一个测量输入挂两个不同结果模块时，
+    // 点击哪个结果模块就必须显示哪个的测量值，不得按 BFS 顺序命中第一个。
+    // input(point_pair) → distA(100) 与 distB(0)：
+    // 选中 distB 时叠加距离必须是 0（distB 自身输出），而不是先入队的 distA 的 100。
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(1000, 720);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("GrabImage")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    const QString imagePath =
+        QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../tests/acceptance/data/circle_640x480.png");
+    QVERIFY2(QFileInfo::exists(imagePath), qPrintable(imagePath));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance grab;
+    grab.id = QStringLiteral("grab");
+    grab.moduleId = QStringLiteral("GrabImage");
+    grab.name = QStringLiteral("取图");
+    grab.params["grabSource"] = QStringLiteral("Path");
+    grab.params["filePath"] = imagePath;
+    project->addModule(grab);
+
+    // 单一测量输入：两点水平相距 100
+    ModuleInstance input;
+    input.id = QStringLiteral("input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("测量输入");
+    input.params["mode"] = QStringLiteral("point_pair");
+    input.params["point1"] = QJsonArray{100.0, 100.0};
+    input.params["point2"] = QJsonArray{200.0, 100.0};
+    project->addModule(input);
+
+    ModuleInstance distA;
+    distA.id = QStringLiteral("dist_a");
+    distA.moduleId = QStringLiteral("DistancePP");
+    distA.name = QStringLiteral("距离A");
+    project->addModule(distA);
+
+    ModuleInstance distB;
+    distB.id = QStringLiteral("dist_b");
+    distB.moduleId = QStringLiteral("DistancePP");
+    distB.name = QStringLiteral("距离B");
+    project->addModule(distB);
+
+    auto connectData = [&](const QString& from, const QString& fromPort, const QString& to, const QString& toPort) {
+        ModuleConnection conn;
+        conn.fromModuleId = from;
+        conn.toModuleId = to;
+        conn.fromPort = fromPort;
+        conn.toPort = toPort;
+        conn.edgeType = QStringLiteral("data");
+        project->addConnection(conn);
+    };
+    connectData(grab.id, QStringLiteral("image"), input.id, QStringLiteral("image"));
+    // distA：P1→P2，距离 100
+    connectData(input.id, QStringLiteral("image"), distA.id, QStringLiteral("image"));
+    connectData(input.id, QStringLiteral("point1"), distA.id, QStringLiteral("point1"));
+    connectData(input.id, QStringLiteral("point2"), distA.id, QStringLiteral("point2"));
+    // distB：P1→P1，距离 0（同一点）
+    connectData(input.id, QStringLiteral("image"), distB.id, QStringLiteral("image"));
+    connectData(input.id, QStringLiteral("point1"), distB.id, QStringLiteral("point1"));
+    connectData(input.id, QStringLiteral("point1"), distB.id, QStringLiteral("point2"));
+    QCoreApplication::processEvents();
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+    bool runFinished = false;
+    const QMetaObject::Connection runConnection = connect(&RunEngine::instance(), &RunEngine::runFinished, &window,
+                                                          [&](const RunResult&) { runFinished = true; });
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_VERIFY(runFinished);
+    disconnect(runConnection);
+
+    // 前提：两个结果模块各自产出不同距离（否则无法区分错配）
+    QVERIFY2(qAbs(RunEngine::instance().moduleOutput(distA.id).data("distance").toDouble() - 100.0) < 0.5,
+             "dist_a must measure 100");
+    QVERIFY2(RunEngine::instance().moduleOutput(distB.id).data("distance").toDouble() < 0.5, "dist_b must measure 0");
+
+    // 从 "距离: %1" 标签解析数值（不用 contains，避免 "100.000" 含子串 "0.000" 的误判）
+    auto labelDistance = [](const QString& label) -> double {
+        const int idx = label.indexOf(QStringLiteral(":"));
+        if (idx < 0)
+            return -1.0;
+        bool ok = false;
+        const double v = label.mid(idx + 1).trimmed().toDouble(&ok);
+        return ok ? v : -1.0;
+    };
+
+    // 选中 distB：必须显示 distB 自身的 0，而不是 BFS 先命中的 distA 的 100
+    window.selectModuleForCapture(distB.id);
+    QTRY_VERIFY(imageWidget->hasImage());
+    QTRY_COMPARE(imageWidget->measurementLines().size(), 1);
+    const double shownB = labelDistance(imageWidget->measurementLines().first().label);
+    QVERIFY2(qAbs(shownB - 0.0) < 0.5, qPrintable(QString("selecting dist_b must show its own value 0, got label: %1")
+                                                      .arg(imageWidget->measurementLines().first().label)));
+
+    // 选中 distA：显示 distA 的 100
+    window.selectModuleForCapture(distA.id);
+    QTRY_COMPARE(imageWidget->measurementLines().size(), 1);
+    const double shownA = labelDistance(imageWidget->measurementLines().first().label);
+    QVERIFY2(qAbs(shownA - 100.0) < 0.5,
+             qPrintable(QString("selecting dist_a must show its own value 100, got label: %1")
+                            .arg(imageWidget->measurementLines().first().label)));
+}
+
+void TestMainWindow::testNoOutputSelectedModuleClearsOverlays() {
+    // 阶段 5 复核六轮（P1-1）：选中没有匹配输出的具体结果模块时，
+    // 不得按输入点几何推算出"伪测量值"，而应清除 2D/3D 叠加。
+    // 先选中有效模块 distA（显示 100），再选中执行失败（缺必需输入）的
+    // distC，断言 2D、3D 叠加均为空。
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(1000, 720);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+
+    const QString imagePath =
+        QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../tests/acceptance/data/circle_640x480.png");
+    QVERIFY2(QFileInfo::exists(imagePath), qPrintable(imagePath));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance grab;
+    grab.id = QStringLiteral("grab");
+    grab.moduleId = QStringLiteral("GrabImage");
+    grab.params["grabSource"] = QStringLiteral("Path");
+    grab.params["filePath"] = imagePath;
+    project->addModule(grab);
+
+    ModuleInstance input;
+    input.id = QStringLiteral("input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.params["mode"] = QStringLiteral("point_pair");
+    input.params["point1"] = QJsonArray{100.0, 100.0};
+    input.params["point2"] = QJsonArray{200.0, 100.0};
+    project->addModule(input);
+
+    // distA：完整连接 → 有效距离 100
+    ModuleInstance distA;
+    distA.id = QStringLiteral("dist_a");
+    distA.moduleId = QStringLiteral("DistancePP");
+    project->addModule(distA);
+    // extraGrab：下游模块，只产出图像、无任何测量结果（distance/circle_radius）。
+    // 选中它时必须清除叠加而非按输入点几何推算"伪测量值"。
+    ModuleInstance extraGrab;
+    extraGrab.id = QStringLiteral("extra_grab");
+    extraGrab.moduleId = QStringLiteral("GrabImage");
+    extraGrab.params["grabSource"] = QStringLiteral("Path");
+    extraGrab.params["filePath"] = imagePath;
+    project->addModule(extraGrab);
+
+    auto connectData = [&](const QString& from, const QString& fromPort, const QString& to, const QString& toPort) {
+        ModuleConnection conn;
+        conn.fromModuleId = from;
+        conn.toModuleId = to;
+        conn.fromPort = fromPort;
+        conn.toPort = toPort;
+        conn.edgeType = QStringLiteral("data");
+        project->addConnection(conn);
+    };
+    connectData(grab.id, QStringLiteral("image"), input.id, QStringLiteral("image"));
+    connectData(input.id, QStringLiteral("image"), distA.id, QStringLiteral("image"));
+    connectData(input.id, QStringLiteral("point1"), distA.id, QStringLiteral("point1"));
+    connectData(input.id, QStringLiteral("point2"), distA.id, QStringLiteral("point2"));
+    // extraGrab 挂在输入支路下游，运行成功但只产图像、无测量结果。
+    connectData(input.id, QStringLiteral("image"), extraGrab.id, QStringLiteral("image"));
+    QCoreApplication::processEvents();
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+    bool runFinished = false;
+    const QMetaObject::Connection runConnection = connect(&RunEngine::instance(), &RunEngine::runFinished, &window,
+                                                          [&](const RunResult&) { runFinished = true; });
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_VERIFY(runFinished);
+    disconnect(runConnection);
+
+    // distA 有效；extraGrab 只产图像、无测量结果
+    QVERIFY2(qAbs(RunEngine::instance().moduleOutput(distA.id).data("distance").toDouble() - 100.0) < 0.5,
+             "dist_a must measure 100");
+    QVERIFY2(!RunEngine::instance().moduleOutput(extraGrab.id).hasData("distance"),
+             "extra_grab must not produce distance");
+
+    // 选中 distA：有效结果正常显示
+    window.selectModuleForCapture(distA.id);
+    QTRY_COMPARE(imageWidget->measurementLines().size(), 1);
+
+    // 预置 3D 叠加（构造非空状态），用于验证清除路径同时清 3D
+    viewport->ensure3DContent();
+    Viewport3DContent* content3D = viewport->viewport3D();
+    QVERIFY(content3D != nullptr);
+    content3D->setMeasurementOverlay({{QVector3D(1, 1, 1), QStringLiteral("P")}},
+                                     {{QVector3D(0, 0, 0), QVector3D(1, 0, 0), QStringLiteral("L")}});
+    QCOMPARE(content3D->measurementPoints3D().size(), 1);
+
+    // 选中无测量结果的 extraGrab：2D/3D 叠加必须全部清除（不显示伪测量值）
+    window.selectModuleForCapture(extraGrab.id);
+    QTRY_VERIFY(imageWidget->measurementPoints().isEmpty());
+    QVERIFY(imageWidget->measurementLines().isEmpty());
+    QVERIFY(content3D->measurementPoints3D().isEmpty());
+    QVERIFY(content3D->measurementLines3D().isEmpty());
+}
+
+void TestMainWindow::testClearSelectionAndCloseInspectorClearOverlays() {
+    // 阶段 5 复核六轮（P1-2）：清空选择（含关闭检查器路径）必须清除测量叠加，
+    // 不得残留此前模块的结果。
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(1000, 720);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+
+    const QString imagePath =
+        QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../tests/acceptance/data/circle_640x480.png");
+    QVERIFY2(QFileInfo::exists(imagePath), qPrintable(imagePath));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance grab;
+    grab.id = QStringLiteral("grab");
+    grab.moduleId = QStringLiteral("GrabImage");
+    grab.params["grabSource"] = QStringLiteral("Path");
+    grab.params["filePath"] = imagePath;
+    project->addModule(grab);
+
+    ModuleInstance input;
+    input.id = QStringLiteral("input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.params["mode"] = QStringLiteral("point_pair");
+    input.params["point1"] = QJsonArray{100.0, 100.0};
+    input.params["point2"] = QJsonArray{200.0, 100.0};
+    project->addModule(input);
+
+    ModuleInstance distA;
+    distA.id = QStringLiteral("dist_a");
+    distA.moduleId = QStringLiteral("DistancePP");
+    project->addModule(distA);
+
+    auto connectData = [&](const QString& from, const QString& fromPort, const QString& to, const QString& toPort) {
+        ModuleConnection conn;
+        conn.fromModuleId = from;
+        conn.toModuleId = to;
+        conn.fromPort = fromPort;
+        conn.toPort = toPort;
+        conn.edgeType = QStringLiteral("data");
+        project->addConnection(conn);
+    };
+    connectData(grab.id, QStringLiteral("image"), input.id, QStringLiteral("image"));
+    connectData(input.id, QStringLiteral("image"), distA.id, QStringLiteral("image"));
+    connectData(input.id, QStringLiteral("point1"), distA.id, QStringLiteral("point1"));
+    connectData(input.id, QStringLiteral("point2"), distA.id, QStringLiteral("point2"));
+    QCoreApplication::processEvents();
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+    bool runFinished = false;
+    const QMetaObject::Connection runConnection = connect(&RunEngine::instance(), &RunEngine::runFinished, &window,
+                                                          [&](const RunResult&) { runFinished = true; });
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_VERIFY(runFinished);
+    disconnect(runConnection);
+
+    // 选中 distA：叠加正常显示（含预置 3D）
+    window.selectModuleForCapture(distA.id);
+    QTRY_COMPARE(imageWidget->measurementLines().size(), 1);
+    viewport->ensure3DContent();
+    Viewport3DContent* content3D = viewport->viewport3D();
+    QVERIFY(content3D != nullptr);
+    content3D->setMeasurementOverlay({{QVector3D(1, 1, 1), QStringLiteral("P")}},
+                                     {{QVector3D(0, 0, 0), QVector3D(1, 0, 0), QStringLiteral("L")}});
+    QCOMPARE(content3D->measurementPoints3D().size(), 1);
+
+    // 清空选择（与关闭检查器同路径 selectModule(QString())）：2D/3D 叠加清除
+    window.clearSelectionForCapture();
+    QTRY_VERIFY(imageWidget->measurementPoints().isEmpty());
+    QVERIFY(imageWidget->measurementLines().isEmpty());
+    QVERIFY(content3D->measurementPoints3D().isEmpty());
+    QVERIFY(content3D->measurementLines3D().isEmpty());
+}
+
+void TestMainWindow::testDarkThemeCloseAndDestroyWindowDirectly() {
+    // P1-3 回归：历史上截图工具在退出前"切回浅色"以规避深色退出崩溃
+    // （main 收尾处 stack smashing）。深色主题下直接关闭窗口并销毁窗口必须干净：
+    // 若复现越界内存写，测试进程会 abort，CTest 判失败。
+    MainWindow window;
+    window.resize(1024, 700);
+    window.show();
+    QCoreApplication::processEvents();
+
+    QAction* themeAction = nullptr;
+    for (QAction* action : window.findChildren<QAction*>()) {
+        if (action->text().remove('&') == QStringLiteral("切换主题")) {
+            themeAction = action;
+            break;
+        }
+    }
+    QVERIFY(themeAction != nullptr);
+    const QString lightSheet = window.styleSheet();
+    themeAction->trigger();
+    QCoreApplication::processEvents();
+    // 确认真的切到深色（styleSheet 与浅色不同且等于深色样式）
+    QCOMPARE(window.styleSheet(), ThemeManager::styleSheet(true));
+    QVERIFY(window.styleSheet() != lightSheet);
+
+    // 深色主题下直接关闭（closeEvent 路径）；窗口在作用域结束时仍以深色析构。
+    window.close();
+    QCoreApplication::processEvents();
 }
 
 void TestMainWindow::testPluginConfigDialogRestylesLegacyDarkPlugin() {
@@ -2523,6 +3319,72 @@ void TestMainWindow::testOldAdvancedConfigDialogStillUsable() {
     advancedAction->trigger();
     QCoreApplication::processEvents();
     QVERIFY2(spy.count() >= 1, "Advanced config overflow action should emit advancedConfigRequested signal");
+}
+
+// 阶7 批4复核四轮（P2 完整回归）：从 MainWindow 真实打开 CropImage 高级配置弹窗——
+// 非法编辑毒化草稿后，外层"确定"（validateParams(草稿参数)）必须阻止关闭；
+// 合法恢复后"确定"提交成功，参数经 undo 命令写入运行模块
+void TestMainWindow::testCropImageAdvancedConfigDialogGuardsInvalidEdit() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance instance;
+    instance.id = QStringLiteral("crop_cfg_1");
+    instance.moduleId = QStringLiteral("CropImage");
+    instance.name = QStringLiteral("裁剪配置测试");
+    project->addModule(instance);
+    QCoreApplication::processEvents();
+
+    CropImagePlugin cropModule;
+    QVERIFY(cropModule.initialize());
+    window.registerFlowModule(instance.id, &cropModule);
+
+    QString dialogResult;
+    QTimer::singleShot(0, &window, [&]() {
+        QDialog* dialog = window.findChild<QDialog*>(QStringLiteral("PluginConfigDialog"));
+        if (!dialog) {
+            dialogResult = QStringLiteral("no-dialog");
+            return; // openAdvancedPluginConfig 未创建弹窗时已提前返回，不会挂死
+        }
+        auto* edit = dialog->findChild<QLineEdit*>(QStringLiteral("CropImageRectanglesEdit"));
+        auto* okBtn = dialog->findChild<QPushButton*>(QStringLiteral("PluginConfigOkButton"));
+        if (!edit || !okBtn) {
+            dialogResult = QStringLiteral("no-widgets");
+            dialog->reject();
+            return;
+        }
+        // 非法 JSON → 外层确定必须被阻止（弹窗保持打开）
+        edit->setText(QStringLiteral("not json"));
+        okBtn->click();
+        QCoreApplication::processEvents();
+        if (!dialog->isVisible()) {
+            dialogResult = QStringLiteral("closed-on-unparsable");
+            return;
+        }
+        // 语义非法（半长=0）→ 同样阻止
+        edit->setText(QStringLiteral("[[10,10,0,20,0]]"));
+        okBtn->click();
+        QCoreApplication::processEvents();
+        if (!dialog->isVisible()) {
+            dialogResult = QStringLiteral("closed-on-semantic-invalid");
+            return;
+        }
+        // 合法输入 → 确定提交关闭
+        edit->setText(QStringLiteral("[[100,100,50,40,0]]"));
+        okBtn->click();
+        QCoreApplication::processEvents();
+        dialogResult = dialog->isVisible() ? QStringLiteral("still-open-on-valid") : QStringLiteral("accepted");
+    });
+    QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig", Qt::DirectConnection,
+                              Q_ARG(QString, instance.id));
+    QCOMPARE(dialogResult, QStringLiteral("accepted"));
+
+    // 提交后运行模块参数经 undo 命令更新（半长口径 [[100,100,50,40,0]]）
+    const QJsonArray rects = cropModule.currentParams()[QStringLiteral("rectangles")].toArray();
+    QCOMPARE(rects.size(), 1);
+    QCOMPARE(rects[0].toArray()[0].toDouble(), 100.0);
+    QCOMPARE(rects[0].toArray()[2].toDouble(), 50.0);
 }
 
 // 中: 回归测试 — 窄窗口后工具面板恢复

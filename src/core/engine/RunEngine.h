@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../platform/Platform.h"
 #include "deeplux/ControlFlowType.h"
 #include "deeplux/DataContract.h"
 #include "model/ImageData.h"
@@ -73,13 +74,18 @@ public:
 /**
  * @brief 流程运行引擎
  */
-class RunEngine : public QObject {
+class DEEPLUX_API RunEngine : public QObject {
     Q_OBJECT
 
 public:
     static RunEngine& instance();
 
     using ModuleFactory = std::function<ModuleBase*(const ModuleInstance&)>;
+
+    // 阶6 九轮：取执行权的明确意图；tryBeginForRun 在锁内按意图校验预期状态。
+    // Step：单步，fresh 由 m_stepCurrentModuleName 是否为空在锁内判定，连续单步
+    // 共享同一 runId/累计状态（不每步重置）。
+    enum class RunIntent { Single, CycleTick, Resume, Step };
 
     // 运行状态
     RunState state() const {
@@ -98,7 +104,9 @@ public:
         return m_executing.load(std::memory_order_acquire);
     }
     bool isBusy() const {
-        return isExecuting() || state() == RunState::Running || state() == RunState::Paused;
+        // 阶6 五轮：维护租约期间也视为 busy，使外部能观察到维护占用。
+        return isExecuting() || m_maintenance.load(std::memory_order_acquire) || state() == RunState::Running ||
+               state() == RunState::Paused;
     }
 
     // 运行模式
@@ -141,6 +149,8 @@ public:
 
     // 流水线输出（供 UI 在 moduleFinished 后查询显示数据）
     ImageData lastOutput() const;
+    // 最近一次产生输出的模块名（供 UI 追溯结果归属，避免多支路错配）
+    QString lastOutputModuleName() const;
     ImageData moduleOutput(const QString& moduleName) const;
     void invalidateModuleOutput(const QString& moduleName);
 
@@ -192,7 +202,7 @@ private:
     RunEngine();
     ~RunEngine();
 
-    void executeRun();
+    void executeRun(RunIntent intent);
     // 阶段 D1: 显式控制图执行（激活队列）
     void executeRunWithControlGraph(ImageData& pipelineData);
     void executeBatchParallel(const QStringList& batch, ImageData& pipelineData);
@@ -224,6 +234,36 @@ private:
     std::atomic<int> m_state{static_cast<int>(RunState::Idle)};
     std::atomic<int> m_runMode{static_cast<int>(RunMode::None)};
     std::atomic_bool m_executing{false};
+    // 阶6 复核（四轮）：唯一排他生命周期租约。执行（runOnce/onTimerTick/resume/
+    // stepOnce）、维护（add/remove/clear/load）、公开并行原语（executeParallel）
+    // 共用 m_lifecycleMutex 下的 m_executing/m_maintenance 租约，互斥且 check-then-act
+    // 原子。tryBeginExecution() 在同一临界区完成"取执行权+runMode/state 提交+token
+    // 重置+每运行重置"，消除启动窗口；stop() 同锁发布停止。m_stopPending/m_maintenance
+    // 仅在 m_lifecycleMutex 内读写。
+    // 阶6 五轮：递归锁——clearBreakpointPauseState() 自身加锁，而 stop()/
+    // endExecutionCleanup()/finalizeAbortedRun() 等已在锁内调用它，需可重入。
+    mutable QRecursiveMutex m_lifecycleMutex;
+    bool m_stopPending = false;
+    std::atomic_bool m_maintenance{false};
+    // 阶6 十一轮：生命周期序号，每次状态转换（stop/pause/取权/收尾）自增；
+    // start/resume 提交时记录 gen，发通知前重验证 gen+状态，stop 介入则跳过通知。
+    std::atomic<int> m_lifecycleGeneration{0};
+    RunMode m_pauseRunMode = RunMode::RunOnce; // 暂停前模式，恢复时还原（P1-2 八轮）
+    // 阶6 八轮：恢复判定+暂停数据转移+取执行权+意图校验在同一临界区原子完成。
+    bool tryBeginForRun(RunIntent intent, bool& resuming, QString& resumeModule, ImageData& resumeData,
+                        RunMode& outMode);
+    // 阶6 七轮：正常结束在单一临界区内完成清理+最终状态提交+执行权释放。
+    void finalizeRunTail();
+    bool tryAcquireLease();
+    void releaseLease();
+    bool tryAcquireMaintenance();
+    void releaseMaintenance();
+    void clearModulesLocked();
+    void addModuleLocked(ModuleBase* module);
+    void finalizeAbortedRun(RunMode mode);
+    bool lifecycleBusyLocked();
+    // 阶6 五轮：内层断点命中在生命周期锁内写暂停态（stop() 同锁清理，无 UB）。
+    void setInnerPauseLocked(const QString& mod, const ImageData& data);
     QTimer* m_cycleTimer = nullptr;
     QList<ModuleBase*> m_modules;
     QList<ModuleBase*> m_ownedModules;
@@ -292,6 +332,7 @@ private:
 
     // ABI v2 执行上下文：一次运行的 ID 与递增帧号
     QString m_runId;
+    std::atomic<qint64> m_runSeq{0}; // 阶6 复核：runId 单调序号，保证每次运行唯一
     std::atomic<qint64> m_frameId{0};
 
     // 阶段 3.3 受控并行线程池

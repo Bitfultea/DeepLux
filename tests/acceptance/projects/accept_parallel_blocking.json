@@ -1,0 +1,66 @@
+{
+    "version": "3.0",
+    "id": "accept-parallel-blocking-0001",
+    "name": "验收-Parallel blocking 分支不并行",
+    "created": "2026-08-31T00:00:00",
+    "modified": "2026-08-31T00:00:00",
+    "modules": [
+        {
+            "id": "par",
+            "moduleId": "Parallel",
+            "name": "并行分叉",
+            "posX": 80,
+            "posY": 120,
+            "params": { "parallelCount": 2 }
+        },
+        {
+            "id": "s1",
+            "moduleId": "SaveData",
+            "name": "阻塞分支一",
+            "posX": 320,
+            "posY": 40,
+            "params": {
+                "filePath": "accept_parallel_blocking_1.json",
+                "fileFormat": "json",
+                "appendMode": false
+            }
+        },
+        {
+            "id": "s2",
+            "moduleId": "SaveData",
+            "name": "阻塞分支二",
+            "posX": 320,
+            "posY": 200,
+            "params": {
+                "filePath": "accept_parallel_blocking_2.json",
+                "fileFormat": "json",
+                "appendMode": false
+            }
+        },
+        {
+            "id": "merge",
+            "moduleId": "Parallel",
+            "name": "all 汇合",
+            "posX": 560,
+            "posY": 120,
+            "params": { "parallelCount": 2 }
+        },
+        {
+            "id": "after",
+            "moduleId": "延时",
+            "name": "汇合后",
+            "posX": 800,
+            "posY": 120,
+            "params": { "delayMs": 1 }
+        }
+    ],
+    "connections": [
+        {"fromModuleId": "par", "toModuleId": "s1", "fromPort": "branch", "toPort": "control", "edgeType": "control"},
+        {"fromModuleId": "par", "toModuleId": "s2", "fromPort": "branch", "toPort": "control", "edgeType": "control"},
+        {"fromModuleId": "s1", "toModuleId": "merge", "fromPort": "next", "toPort": "control", "edgeType": "control"},
+        {"fromModuleId": "s2", "toModuleId": "merge", "fromPort": "next", "toPort": "control", "edgeType": "control"},
+        {"fromModuleId": "merge", "toModuleId": "after", "fromPort": "branch", "toPort": "control", "edgeType": "control"}
+    ],
+    "flows": [{"id": "main", "name": "主流程", "nodes": ["par", "s1", "s2", "merge", "after"]}],
+    "resources": {"cameras": [], "dataSources": []}
+}

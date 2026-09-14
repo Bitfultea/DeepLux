@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QObject>
 #include <QWidget>
 
@@ -19,7 +21,7 @@ struct MotionCapabilities {
 /**
  * @brief 运动控制接口
  */
-class IMotion : public QObject {
+class DEEPLUX_API IMotion : public QObject {
     Q_OBJECT
 
 public:

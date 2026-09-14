@@ -8,7 +8,7 @@
 
 namespace DeepLux {
 
-class OpenAILLMClient : public ILLMClient {
+class DEEPLUX_API OpenAILLMClient : public ILLMClient {
     Q_OBJECT
 
 public:

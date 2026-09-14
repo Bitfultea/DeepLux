@@ -69,6 +69,12 @@ public:
     void setMeasurementOverlay(const QList<MeasurementOverlayPoint>& points,
                                const QList<MeasurementOverlayLine>& lines);
     void clearMeasurementOverlay();
+    QList<MeasurementOverlayPoint> measurementPoints() const {
+        return m_measurementPoints;
+    }
+    QList<MeasurementOverlayLine> measurementLines() const {
+        return m_measurementLines;
+    }
 
     QPointF widgetToImage(const QPointF& widgetPoint) const;
     QPointF imageToWidget(const QPointF& imagePoint) const;

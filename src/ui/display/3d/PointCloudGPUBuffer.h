@@ -5,7 +5,7 @@
 
 namespace DeepLux {
 
-class PointCloudData;
+struct PointCloudData;
 
 /**
  * @brief GPU 友好的点云缓冲区

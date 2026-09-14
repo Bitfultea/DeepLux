@@ -9,7 +9,7 @@ namespace DeepLux {
 
 class TerminalWidget;
 class ICommand;
-class LogEntry;
+struct LogEntry;
 class Project;
 class AgentBridge;
 struct RunResult;

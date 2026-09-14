@@ -51,18 +51,29 @@ def run_gh_api(endpoint: str) -> dict:
 
 
 def legacy_plugins() -> list[dict]:
-    tree = run_gh_api(f"repos/{REPOSITORY}/git/trees/{COMMIT}?recursive=1")
-    paths = []
-    for item in tree["tree"]:
-        path = item["path"]
-        if item["type"] != "tree" or not path.startswith("02Plugins/"):
-            continue
-        if len(path.split("/")) == 3:
-            paths.append(path)
-    return [
-        {"path": path, "category": path.split("/")[1], "name": path.split("/")[2].removeprefix("Plugin.")}
-        for path in sorted(paths)
-    ]
+    """旧版插件清单。优先 GH API；离线/404 时回退到既有映射 JSON 的冻结 110 项
+    （阶7 批1 复核四轮：不应长期等待 GH API）。"""
+    try:
+        tree = run_gh_api(f"repos/{REPOSITORY}/git/trees/{COMMIT}?recursive=1")
+        paths = []
+        for item in tree["tree"]:
+            path = item["path"]
+            if item["type"] != "tree" or not path.startswith("02Plugins/"):
+                continue
+            if len(path.split("/")) == 3:
+                paths.append(path)
+        return [
+            {"path": path, "category": path.split("/")[1], "name": path.split("/")[2].removeprefix("Plugin.")}
+            for path in sorted(paths)
+        ]
+    except (subprocess.CalledProcessError, OSError, json.JSONDecodeError, KeyError):
+        mapping_file = OUTPUT_DIR / "hotfix-plugin-mapping.json"
+        payload = json.loads(mapping_file.read_text(encoding="utf-8"))
+        return [
+            {"path": row["legacyPath"], "category": row["legacyCategory"], "name": row["legacyPlugin"]}
+            for row in payload.get("plugins", [])
+            if row.get("legacyPath")
+        ]
 
 
 def current_plugins() -> dict[str, dict]:
@@ -103,6 +114,38 @@ def classify(legacy: dict, current: dict[str, dict]) -> dict:
     }
 
 
+# 重生成不得丢失的人工审核与迁移决策字段。读取（load_existing_reviews）与
+# 合并（main）必须共用同一列表，否则重跑脚本会静默删除结构化决策字段。
+# 阶1复核修正：补齐各决策分类的结构化字段（input/output/keyParams/scenario
+# 属 rebuild，reason 属 retire，replacementPluginId 属 replace，dependencies
+# 属 business_pack）。
+FROZEN_CONTRACT_FIELDS = (
+    "dependencyNote",
+    "deletedPorts",
+    "replacement",
+    "decision",
+    "migrationDecision",
+    "priority",
+    "input",
+    "output",
+    "keyParams",
+    "scenario",
+    "reason",
+    "replacementPluginId",
+    "dependencies",
+    "targetInput",
+    "targetOutput",
+    "targetParams",
+    "implementationStatus",
+)
+CANDIDATE_REVIEW_FIELDS = (
+    "reviewState",
+    "reviewConclusion",
+    "evidence",
+)
+PRESERVED_FIELDS = FROZEN_CONTRACT_FIELDS + CANDIDATE_REVIEW_FIELDS
+
+
 def load_existing_reviews() -> dict[str, dict]:
     """Load prior review decisions keyed by legacyPath so regeneration
     preserves human review state, conclusions and evidence.
@@ -124,15 +167,7 @@ def load_existing_reviews() -> dict[str, dict]:
         if not key:
             continue
         preserved = {}
-        for field in (
-            "reviewState",
-            "dependencyNote",
-            "reviewConclusion",
-            "evidence",
-            "deletedPorts",
-            "replacement",
-            "decision",
-        ):
+        for field in PRESERVED_FIELDS:
             if field in row:
                 preserved[field] = row[field]
         # 记录审核时的候选身份，用于合并时校验是否仍有效
@@ -184,6 +219,37 @@ def markdown(rows: list[dict]) -> str:
         f"| unverified | {conclusion_counts.get('unverified', 0)} | 依赖硬件/SDK，行为未验证 |",
         f"| not_equivalent | {conclusion_counts.get('not_equivalent', 0)} | 不等价 |",
         "",
+    ]
+
+    # 阶7 批1 复核五轮：阶段 1 冻结范围按"存在 migrationDecision"统计与展示
+    # （实现后 matchKind 变为 direct/candidate，仍属阶段 1 冻结范围，不得从 MD 移除）。
+    scoped = [r for r in rows if r.get("migrationDecision")]
+    decision_counts = Counter(r.get("migrationDecision", "pending") for r in scoped)
+    lines += [
+        "## 迁移范围决策（阶段 1 冻结范围，存在 migrationDecision）",
+        "",
+        "> 下表 `input/output/keyParams/scenario` 记录的是**旧版契约**（按旧版 ViewModel 源码核验）；",
+        "> 目标 C++ 契约（强类型端口/载荷类型等）在阶段 7 另行设计评审，不得与旧版证据混淆。",
+        "",
+        "| 决策 | 数量 | 含义 |",
+        "| --- | ---: | --- |",
+        f"| rebuild | {decision_counts.get('rebuild', 0)} | 需重建：真实算法+端口契约+参数验证+行为测试 |",
+        f"| replace | {decision_counts.get('replace', 0)} | 由当前已有能力/流程替代 |",
+        f"| retire | {decision_counts.get('retire', 0)} | 淘汰：无产品需求或已被覆盖 |",
+        f"| business_pack | {decision_counts.get('business_pack', 0)} | 业务包：依赖硬件/模型，需现场验收 |",
+        f"| pending | {decision_counts.get('pending', 0)} | 未决策 |",
+        "",
+        "| 旧版插件 | 分类 | 决策 | 优先级 | 证据/替代/理由 |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for r in scoped:
+        lines.append(
+            f"| {r['legacyPlugin']} | {r['legacyCategory']} | {r.get('migrationDecision','pending')} "
+            f"| {r.get('priority','-')} | {r.get('evidence','-')} |"
+        )
+    lines.append("")
+
+    lines += [
         "完整逐项数据见 `hotfix-plugin-mapping.json`。以下列出需要决策的项目：",
         "",
         "| 旧版插件 | 旧版目录 | 当前候选 | 状态 | 审核结论 |",
@@ -222,16 +288,12 @@ def main() -> None:
             and identity.get("currentPluginId", "") == row["currentPluginId"]
             and identity.get("matchKind", "") == row["matchKind"]
         )
+        # 阶7 批1 复核四轮：冻结契约字段无条件保留；仅候选相关审核结论在身份变化时失效。
+        for field in FROZEN_CONTRACT_FIELDS:
+            if field in saved:
+                row[field] = saved[field]
         if identity_unchanged:
-            for field in (
-                "reviewState",
-                "dependencyNote",
-                "reviewConclusion",
-                "evidence",
-                "deletedPorts",
-                "replacement",
-                "decision",
-            ):
+            for field in CANDIDATE_REVIEW_FIELDS:
                 if field in saved:
                     row[field] = saved[field]
             merged_count += 1

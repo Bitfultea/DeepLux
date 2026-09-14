@@ -16,8 +16,11 @@
 #include <QtTest/QtTest>
 #include <core/base/ModuleBase.h>
 #include <core/deeplux/DataContract.h>
+#include <core/display/DisplayData.h>
 #include <core/interface/IModule.h>
 #include <core/manager/PluginManager.h>
+#include <core/model/ImageData.h>
+#include <limits>
 
 using namespace DeepLux;
 
@@ -58,6 +61,13 @@ private slots:
 
     // 阶段 G：execution 标记注入
     void testBlockingInjectedIntoCreatedModule();
+
+    // 阶段 3：数据与构建契约收口
+    void testUnsupportedPortTypesClassified();
+    void testMetadataDeclaringUnsupportedTypeRejectedAtLoad();
+    void testPortsFieldsMustBeJsonArrays();
+    void testWrongPayloadRejected();
+    void testDetectionListBoundary();
 
 private:
     struct PluginEntry {
@@ -668,6 +678,213 @@ void TestPluginParameterContracts::testPayloadTypeTightening() {
          {DataType::Mask2D, DataType::Region2D, DataType::Ellipse2D, DataType::Transform2D, DataType::ClassScores}) {
         QVERIFY(!portValueMatchesType(QVariant(1), type));
     }
+}
+
+// ---------------------------------------------------------------------------
+// 阶段 3：未实现端口类型不得声明为可运行端口（加载期拒绝）
+// ---------------------------------------------------------------------------
+
+void TestPluginParameterContracts::testUnsupportedPortTypesClassified() {
+    using DeepLux::DataType;
+    using DeepLux::isSupportedPortType;
+
+    // 保留枚举 ABI，但以下 5 类尚无载荷契约与生产者插件，不得作为可运行端口类型
+    for (DataType type :
+         {DataType::Mask2D, DataType::Region2D, DataType::Ellipse2D, DataType::Transform2D, DataType::ClassScores}) {
+        QVERIFY2(!isSupportedPortType(type), qPrintable(dataTypeName(type) + " must be unsupported"));
+    }
+    // 已实现的类型不受影响
+    for (DataType type : {DataType::Image2D, DataType::HeightMap2D, DataType::PointCloud3D, DataType::Point2D,
+                          DataType::Point3D, DataType::PointSet2D, DataType::Line2D, DataType::Circle2D,
+                          DataType::Plane3D, DataType::DetectionList, DataType::Number, DataType::Integer,
+                          DataType::Boolean, DataType::String, DataType::Binary, DataType::Table, DataType::Any}) {
+        QVERIFY2(isSupportedPortType(type), qPrintable(dataTypeName(type) + " must be supported"));
+    }
+    // 失败关闭：非法枚举值不得被判定为支持（防止未来新增未实现类型自动放行）
+    QVERIFY(!isSupportedPortType(static_cast<DataType>(-1)));
+    QVERIFY(!isSupportedPortType(static_cast<DataType>(9999)));
+}
+
+// 写临时 metadata 并走 PluginManager::loadPluginMetadata 加载门禁
+static void writeMetadataAndLoad(const QTemporaryDir& dir, const QByteArray& content, const QString& fileName,
+                                 bool& loaded, QString& loadError) {
+    const QString path = dir.filePath(fileName);
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(content);
+    file.close();
+    PluginInfo info;
+    loaded = PluginManager::instance().loadPluginMetadata(path, info);
+    loadError = info.error;
+}
+
+void TestPluginParameterContracts::testMetadataDeclaringUnsupportedTypeRejectedAtLoad() {
+    // metadata 声明未实现类型必须在加载阶段明确拒绝，
+    // 不能放行后再让运行期"连接合法但永远拒绝"。
+    const QByteArray unsupportedInput = R"({
+        "id": "com.test.unsupportedin",
+        "name": "UnsupportedTypeProbeIn",
+        "category": "test",
+        "version": "1.0.0",
+        "ports": {
+            "inputs": [{"id": "mask", "displayName": "掩膜", "type": "Mask2D"}],
+            "outputs": [{"id": "image", "displayName": "输出", "type": "Image2D"}]
+        }
+    })";
+    const QByteArray unsupportedOutput = R"({
+        "id": "com.test.unsupportedout",
+        "name": "UnsupportedTypeProbeOut",
+        "category": "test",
+        "version": "1.0.0",
+        "ports": {
+            "inputs": [{"id": "image", "displayName": "输入", "type": "Image2D"}],
+            "outputs": [{"id": "region", "displayName": "区域", "type": "Region2D"}]
+        }
+    })";
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    bool loaded = true;
+    QString loadError;
+    writeMetadataAndLoad(dir, unsupportedInput, "unsupported_in.json", loaded, loadError);
+    QVERIFY2(!loaded, "metadata declaring Mask2D input must be rejected at load");
+    QVERIFY2(loadError.contains(QStringLiteral("Mask2D")),
+             qPrintable("rejection must name the unsupported type, got: " + loadError));
+
+    writeMetadataAndLoad(dir, unsupportedOutput, "unsupported_out.json", loaded, loadError);
+    QVERIFY2(!loaded, "metadata declaring Region2D output must be rejected at load");
+    QVERIFY2(loadError.contains(QStringLiteral("Region2D")),
+             qPrintable("rejection must name the unsupported type, got: " + loadError));
+}
+
+void TestPluginParameterContracts::testPortsFieldsMustBeJsonArrays() {
+    // ports.inputs/outputs 不是 JSON 数组时必须拒绝，
+    // 不能被 toArray() 静默转成空数组后按"零端口"合法加载。
+    const QByteArray inputsNotArray = R"({
+        "id": "com.test.portsnotarray1",
+        "name": "PortsNotArrayProbeIn",
+        "category": "test",
+        "version": "1.0.0",
+        "ports": {
+            "inputs": "image",
+            "outputs": [{"id": "image", "displayName": "输出", "type": "Image2D"}]
+        }
+    })";
+    const QByteArray outputsNotArray = R"({
+        "id": "com.test.portsnotarray2",
+        "name": "PortsNotArrayProbeOut",
+        "category": "test",
+        "version": "1.0.0",
+        "ports": {
+            "inputs": [{"id": "image", "displayName": "输入", "type": "Image2D"}],
+            "outputs": {"id": "image", "displayName": "输出", "type": "Image2D"}
+        }
+    })";
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    bool loaded = true;
+    QString loadError;
+    writeMetadataAndLoad(dir, inputsNotArray, "ports_inputs_not_array.json", loaded, loadError);
+    QVERIFY2(!loaded, "metadata with non-array ports.inputs must be rejected at load");
+    QVERIFY2(loadError.contains(QStringLiteral("inputs")),
+             qPrintable("rejection must name ports.inputs, got: " + loadError));
+
+    writeMetadataAndLoad(dir, outputsNotArray, "ports_outputs_not_array.json", loaded, loadError);
+    QVERIFY2(!loaded, "metadata with non-array ports.outputs must be rejected at load");
+    QVERIFY2(loadError.contains(QStringLiteral("outputs")),
+             qPrintable("rejection must name ports.outputs, got: " + loadError));
+}
+
+// ---------------------------------------------------------------------------
+// 阶段 3：错误载荷与 DetectionList 边界
+// ---------------------------------------------------------------------------
+
+void TestPluginParameterContracts::testWrongPayloadRejected() {
+    using DeepLux::DataType;
+    using DeepLux::portValueMatchesType;
+
+    // Image2D/HeightMap2D 拒绝非 ImageData 载荷
+    QVERIFY(!portValueMatchesType(QVariant(42), DataType::Image2D));
+    QVERIFY(!portValueMatchesType(QVariant(QStringLiteral("image")), DataType::HeightMap2D));
+
+    // PointCloud3D 拒绝不携带 point_cloud 键的 ImageData
+    ImageData bareImage;
+    QVERIFY(!portValueMatchesType(QVariant::fromValue(bareImage), DataType::PointCloud3D));
+    ImageData withCloud;
+    withCloud.setData(QStringLiteral("point_cloud"), QVariant::fromValue(PointCloudData()));
+    QVERIFY(portValueMatchesType(QVariant::fromValue(withCloud), DataType::PointCloud3D));
+
+    // PointCloud3D 还必须校验键值本身可转换为 PointCloudData，
+    // 携带错误键值（如字符串）的 ImageData 不得被当作合法点云载荷
+    ImageData badCloud;
+    badCloud.setData(QStringLiteral("point_cloud"), QStringLiteral("invalid"));
+    QVERIFY(!portValueMatchesType(QVariant::fromValue(badCloud), DataType::PointCloud3D));
+    ImageData badCloudList;
+    badCloudList.setData(QStringLiteral("point_cloud"), QVariant(QVariantList{1.0, 2.0}));
+    QVERIFY(!portValueMatchesType(QVariant::fromValue(badCloudList), DataType::PointCloud3D));
+
+    // 几何类型拒绝错误维度/错误元素
+    QVERIFY(!portValueMatchesType(QVariant(QVariantList{1.0, 2.0, 3.0}), DataType::Line2D)); // 需 4 数值
+    QVERIFY(!portValueMatchesType(QVariant(QVariantList{1.0, 2.0}), DataType::Plane3D));     // 需 9 数值
+    QVERIFY(!portValueMatchesType(QVariant(QVariantList{QStringLiteral("a"), QStringLiteral("b")}), DataType::Point2D));
+
+    // 标量/容器类型拒绝串型载荷
+    QVERIFY(!portValueMatchesType(QVariant(QStringLiteral("1")), DataType::Number));
+    QVERIFY(!portValueMatchesType(QVariant(1), DataType::Boolean));
+    QVERIFY(!portValueMatchesType(QVariant(1.5), DataType::Integer));
+    QVERIFY(!portValueMatchesType(QVariant(QStringLiteral("table")), DataType::Table));
+    QVERIFY(!portValueMatchesType(QVariant(1), DataType::Binary));
+}
+
+void TestPluginParameterContracts::testDetectionListBoundary() {
+    using DeepLux::DataType;
+    using DeepLux::portValueMatchesType;
+
+    auto mapDetection = [](double x, double y, double w, double h, double score, const QString& label = QString()) {
+        QVariantMap m{{"x", x}, {"y", y}, {"width", w}, {"height", h}, {"score", score}};
+        if (!label.isNull())
+            m.insert("label", label);
+        return QVariant(m);
+    };
+
+    // 空列表合法
+    QVERIFY(portValueMatchesType(QVariant(QVariantList{}), DataType::DetectionList));
+    QVERIFY(portValueMatchesType(QVariant::fromValue(DeepLux::DetectionList{}), DataType::DetectionList));
+
+    // 边界值合法：宽高为 0、score 取 0/1
+    QVERIFY(portValueMatchesType(QVariant(QVariantList{mapDetection(1, 2, 0, 0, 0)}), DataType::DetectionList));
+    QVERIFY(portValueMatchesType(QVariant(QVariantList{mapDetection(1, 2, 3, 4, 1.0)}), DataType::DetectionList));
+
+    // 非法数值拒绝：负宽高、score 越界、NaN
+    QVERIFY(!portValueMatchesType(QVariant(QVariantList{mapDetection(1, 2, -3, 4, 0.5)}), DataType::DetectionList));
+    QVERIFY(!portValueMatchesType(QVariant(QVariantList{mapDetection(1, 2, 3, -4, 0.5)}), DataType::DetectionList));
+    QVERIFY(!portValueMatchesType(QVariant(QVariantList{mapDetection(1, 2, 3, 4, 1.5)}), DataType::DetectionList));
+    QVERIFY(!portValueMatchesType(
+        QVariant(QVariantList{mapDetection(1, 2, 3, 4, std::numeric_limits<double>::quiet_NaN())}),
+        DataType::DetectionList));
+
+    // 字段缺失拒绝；label 必须为字符串
+    QVariantMap missingScore{{"x", 1.0}, {"y", 2.0}, {"width", 3.0}, {"height", 4.0}};
+    QVERIFY(!portValueMatchesType(QVariant(QVariantList{QVariant(missingScore)}), DataType::DetectionList));
+    QVariantMap badLabel{{"x", 1.0}, {"y", 2.0}, {"width", 3.0}, {"height", 4.0}, {"score", 0.5}, {"label", 7}};
+    QVERIFY(!portValueMatchesType(QVariant(QVariantList{QVariant(badLabel)}), DataType::DetectionList));
+
+    // 强类型载荷同样执行边界校验
+    DeepLux::DetectionList dl;
+    DeepLux::Detection d;
+    d.x = 1;
+    d.y = 2;
+    d.width = 3;
+    d.height = 4;
+    d.score = 0.8;
+    dl.items.append(d);
+    QVERIFY(portValueMatchesType(QVariant::fromValue(dl), DataType::DetectionList));
+    d.width = -1;
+    dl.items[0] = d;
+    QVERIFY(!portValueMatchesType(QVariant::fromValue(dl), DataType::DetectionList));
 }
 
 QTEST_MAIN(TestPluginParameterContracts)

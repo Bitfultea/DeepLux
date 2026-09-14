@@ -1,6 +1,8 @@
 #ifndef DEEPLUX_AGENT_OBSERVER_H
 #define DEEPLUX_AGENT_OBSERVER_H
 
+#include "../platform/Platform.h"
+
 #include <QDateTime>
 #include <QList>
 #include <QObject>
@@ -22,7 +24,7 @@ class RunResult;
  * - 只监听信号，不调用方法
  * - 事件存入环形缓冲区（默认保留最近 100 个）
  */
-class AgentObserver : public QObject {
+class DEEPLUX_API AgentObserver : public QObject {
     Q_OBJECT
 
 public:

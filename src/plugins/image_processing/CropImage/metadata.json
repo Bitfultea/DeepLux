@@ -1,0 +1,54 @@
+{
+    "id": "com.deeplux.plugin.cropimage",
+    "name": "CropImage",
+    "category": "image_processing",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "旋转矩形数组（1..64 个 [cx,cy,l1,l2,deg]，l1/l2 为半长，旧版 HALCON Length1/Length2 口径）批量裁剪：逐矩形取包含式轴对齐包围盒与图像求交，输出裁剪图组 Table 与计数；outputFirstAsImage 为真时 image 端口输出首个有效裁剪图；全部无交集失败关闭；数组参数经高级配置页编辑（非法编辑阻止弹窗确定）",
+    "ui": {
+        "parameters": {
+            "rectangles": {
+                "order": 10,
+                "label": "矩形数组 [[cx,cy,l1,l2,deg],...]（l1/l2 半长）"
+            },
+            "outputFirstAsImage": {
+                "order": 20,
+                "label": "输出首裁剪图"
+            }
+        }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入图像",
+                "type": "Image2D",
+                "required": true,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "crop_count",
+                "displayName": "有效裁剪数",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "crop_images",
+                "displayName": "裁剪图组",
+                "type": "Table",
+                "required": false,
+                "multiple": false
+            }
+        ]
+    }
+}

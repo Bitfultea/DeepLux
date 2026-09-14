@@ -16,7 +16,7 @@ namespace DeepLux {
 
 class HImageWidget;
 class Viewport3DContent;
-class DisplayData;
+struct DisplayData;
 
 /**
  * @brief ViewportWidget - Container for display viewport
@@ -65,6 +65,9 @@ public:
     // Clear the display
     void clearDisplay();
 
+    // 确保 3D 渲染器已创建（测试需预置 3D 叠加以验证清除路径时调用）
+    void ensure3DContent();
+
     // Current display mode
     enum class DisplayMode { Auto2D, Auto3D };
     DisplayMode displayMode() const {
@@ -111,7 +114,6 @@ private slots:
 private:
     void setupUi();
     void createActions();
-    void ensure3DContent();
     void switchTo2D();
     void switchTo3D();
     void updateToggleAction();

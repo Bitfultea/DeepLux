@@ -37,9 +37,10 @@ std::optional<double> singleChannelValue(const cv::Mat& image, int y, int x) {
     }
 }
 
-std::optional<double> detectRepeatedExtremeNoData(const cv::Mat& image) {
+TiffLoader::NoDataResult detectRepeatedExtremeNoData(const cv::Mat& image, double minGapFloor) {
+    TiffLoader::NoDataResult result;
     if (image.channels() != 1 || (image.depth() != CV_32F && image.depth() != CV_64F)) {
-        return std::nullopt;
+        return result;
     }
 
     double minimum = std::numeric_limits<double>::infinity();
@@ -71,7 +72,7 @@ std::optional<double> detectRepeatedExtremeNoData(const cv::Mat& image) {
     }
 
     if (finiteCount < 3 || minimum == maximum) {
-        return std::nullopt;
+        return result;
     }
 
     double secondMinimum = std::numeric_limits<double>::infinity();
@@ -91,22 +92,49 @@ std::optional<double> detectRepeatedExtremeNoData(const cv::Mat& image) {
         }
     }
 
-    if (!std::isfinite(secondMinimum) || !std::isfinite(secondMaximum) || secondMaximum <= secondMinimum) {
-        return std::nullopt;
-    }
-
-    const double interiorRange = secondMaximum - secondMinimum;
-    const double minimumGap = secondMinimum - minimum;
-    const double maximumGap = maximum - secondMaximum;
+    // 阶7 批3复核三轮（P1-1）：两侧独立评估——旧版 secondMaximum <= secondMinimum
+    // 全局防护在"哨兵 + 恒定有效值"（仅两个不同值）时漏检真实 NoData；内部值域
+    // 仅在 secondMax > secondMin 时有定义，否则按 0 处理。
+    // 阶7 批3复核四轮（P1-1）：哨兵性 = 重复率 + 与最近内部值的绝对间隙，间隙
+    // 下限与数据高度偏置无关（大负值域真实图 -4455.5..-2740 + NoData=-21474836
+    // 可检出；合法大平台 -1000 + 0..1 细节间隙仅 1000 不被误删）。
+    // 阶7 批3复核五轮（P2-2）：本判据是原始像素单位的启发式——检测发生在
+    // scaleZ/zScale 等任何缩放之前，间隙下限 minGapFloor 是声明格式（大幅值
+    // 存储哨兵）的默认值而非物理量；小幅值哨兵（如 -32768）需调低下限或使用
+    // 显式 invalidValue/上游契约。
     const double repeatedThreshold = std::max(16.0, static_cast<double>(finiteCount) * 0.05);
-    const double separationThreshold = std::max(interiorRange * 100.0, 1.0);
-    const bool minimumIsNoData = minimumCount >= repeatedThreshold && minimumGap > separationThreshold;
-    const bool maximumIsNoData = maximumCount >= repeatedThreshold && maximumGap > separationThreshold;
+    const double interiorRange =
+        (std::isfinite(secondMinimum) && std::isfinite(secondMaximum) && secondMaximum > secondMinimum)
+            ? (secondMaximum - secondMinimum)
+            : 0.0;
+    const double gapThreshold = std::max(interiorRange * 100.0, minGapFloor);
+    const auto sentinelLike = [&](double extreme, qint64 count, double nearestInterior) {
+        if (count < repeatedThreshold) {
+            return false;
+        }
+        if (!std::isfinite(nearestInterior)) {
+            return false; // 除候选极值外无其他值，无法建立分离判据
+        }
+        return std::abs(nearestInterior - extreme) > gapThreshold;
+    };
+    const bool minimumIsNoData = sentinelLike(minimum, minimumCount, secondMinimum);
+    const bool maximumIsNoData = sentinelLike(maximum, maximumCount, secondMaximum);
 
-    if (minimumIsNoData == maximumIsNoData) {
-        return std::nullopt;
+    if (minimumIsNoData && maximumIsNoData) {
+        // 阶7 批3复核五轮（P1-1）：双侧同时满足判据（两值图互为最近内部值）——
+        // 哨兵语义无法从像素分布推导：{0=NoData, 2e6=合法定深度} 与
+        // {0=合法平台, 2e6=NoData} 的直方图完全相同，按绝对值/占比猜测可能
+        // 反向删除全部合法数据。上报歧义，由调用方失败关闭并要求显式哨兵
+        // 配置或上游契约。
+        result.status = TiffLoader::NoDataStatus::Ambiguous;
+        return result;
     }
-    return minimumIsNoData ? minimum : maximum;
+    if (minimumIsNoData == maximumIsNoData) {
+        return result; // 均不满足
+    }
+    result.status = TiffLoader::NoDataStatus::Found;
+    result.value = minimumIsNoData ? minimum : maximum;
+    return result;
 }
 
 } // namespace
@@ -122,6 +150,25 @@ bool TiffLoader::load(const QString& filePath, PointCloudData& outData, QString&
     }
     if (config.validMin && config.validMax && *config.validMin > *config.validMax) {
         errorMsg = "TIFF valid minimum must not exceed valid maximum";
+        return false;
+    }
+    // 阶7 批3复核四轮（P2-3）：显式哨兵/有效范围必须有限——invalidValue=NaN 会
+    // 关闭自动检测且后续所有比较恒假，统一在读取图像前失败关闭
+    if (config.invalidValue && !std::isfinite(*config.invalidValue)) {
+        errorMsg = "TIFF explicit invalid value must be finite";
+        return false;
+    }
+    if (config.validMin && !std::isfinite(*config.validMin)) {
+        errorMsg = "TIFF valid minimum must be finite";
+        return false;
+    }
+    if (config.validMax && !std::isfinite(*config.validMax)) {
+        errorMsg = "TIFF valid maximum must be finite";
+        return false;
+    }
+    // 阶7 批3复核五轮（P2-2）：间隙下限为启发式可调参数，必须为非负有限数
+    if (!std::isfinite(config.noDataMinGap) || config.noDataMinGap < 0.0) {
+        errorMsg = "TIFF noDataMinGap must be a finite non-negative number";
         return false;
     }
 
@@ -145,8 +192,27 @@ bool TiffLoader::load(const QString& filePath, PointCloudData& outData, QString&
     }
 
     std::optional<double> invalidValue = config.invalidValue;
+    // 阶7 批3复核三轮（P2-5）：显式哨兵按源图存储精度量化——非整数哨兵写入
+    // CV_32F 后（如 -21474.8359 → -21474.8359375），double 精确比较必然失配
+    if (invalidValue) {
+        if (depth == CV_32F) {
+            invalidValue = static_cast<double>(static_cast<float>(*invalidValue));
+        } else if (depth != CV_64F) {
+            invalidValue = std::nearbyint(*invalidValue);
+        }
+    }
     if (!invalidValue && !config.validMin && !config.validMax && config.autoDetectNoData) {
-        invalidValue = detectRepeatedExtremeNoData(img);
+        // 阶7 批3复核五轮（P1-1）：歧义（双侧极值同满足哨兵判据）失败关闭——
+        // 要求显式 Config.invalidValue，不按分布猜测
+        const NoDataResult detected = detectRepeatedExtremeNoData(img, config.noDataMinGap);
+        if (detected.status == NoDataStatus::Ambiguous) {
+            errorMsg = "Ambiguous NoData: both extremes satisfy the sentinel criteria; "
+                       "set Config.invalidValue explicitly";
+            return false;
+        }
+        if (detected.status == NoDataStatus::Found) {
+            invalidValue = detected.value;
+        }
     }
 
     outData.clear();
@@ -246,6 +312,24 @@ bool TiffLoader::load(const QString& filePath, PointCloudData& outData, QString&
     Q_UNUSED(config);
     errorMsg = "OpenCV not available (DEEPLUX_HAS_OPENCV not defined)";
     return false;
+#endif
+}
+
+TiffLoader::NoDataResult TiffLoader::detectNoData(const cv::Mat& image, double minGapFloor) {
+    // 阶7 批3复核六轮（P2-2）：非法阈值上报 InvalidConfig，不与"未检出"混淆
+    // （公开 API 失败关闭，外部调用方不得将非法配置误读为无 NoData）
+    if (!std::isfinite(minGapFloor) || minGapFloor < 0.0) {
+        NoDataResult invalid;
+        invalid.status = NoDataStatus::InvalidConfig;
+        return invalid;
+    }
+#ifdef DEEPLUX_HAS_OPENCV
+    // 阶7 批3复核（P1-1）：公开既有重复极值 NoData 判据，供 3D 插件复用同一策略，
+    // 避免各插件复制检测逻辑；五轮改为三态（歧义显式上报，不按分布猜测）
+    return detectRepeatedExtremeNoData(image, minGapFloor);
+#else
+    Q_UNUSED(image);
+    return NoDataResult{};
 #endif
 }
 

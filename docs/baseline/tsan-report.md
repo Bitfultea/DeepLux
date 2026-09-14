@@ -99,3 +99,50 @@ happens-before 关系，凡 QMutex/QReadWriteLock 保护的共享数据都会被
 1. 用 `-fsanitize=thread` 重编 Qt5.15.3 后复测，可消除绝大部分"未插桩"误报。
 2. 将并行批次内的 `emit moduleStarted` 改为 `Qt::QueuedConnection` 或移出工作线程。
 3. 审查 `pipelineData` / `m_runId` 在并行路径的读写安全性。
+
+## 阶段 6 复核（并发风险收口）
+
+> 日期：2026-09-07。对应提交见 `git log`（阶段 6 及 stop() 复核二~十一轮）。功能侧
+> `test_runengine` **115/115 通过**（含 13 个定向/回归测试与 50 次并行压力），全量 CTest 66/66。
+
+### 风险处理与分类
+
+| 风险 | 阶段 6 处理 | 分类 |
+| --- | --- | --- |
+| #1 工作线程 `emit moduleStarted` | 审计全部 RunEngine 信号连接均带上下文对象（Auto→Queued），无跨线程 DirectConnection 直操 QWidget；`testParallelSignalsDeliveredOnReceiverThread` 证明池线程信号排队回接收者线程 | 已证明（定向测试） |
+| #2 `pipelineData`(ImageData) 按值进并行 lambda | 每任务独立副本、`collectModuleInputs` 对 `m_nodeOutputs`/连接只读、批次结果仅在等待结束后由调用线程写回 | 已证明（代码审计） |
+| #3 工作线程读 `m_runId`(QString) | 调用线程快照 `runId`/`token` 按值捕获；`executeParallel()` **始终**自生成局部 runId（不读 `m_runId`，连续独立调用 ID 不同）；runId="毫秒+单调序号" | 已修复（定向测试） |
+| #4 生命周期租约不排他（P0：executeParallel 绕过、维护 check-then-act、stop 被启动覆盖） | 四轮重构为**单一排他租约**：执行（runOnce/onTimerTick/resume/stepOnce）经 `tryBeginExecution()`/`tryAcquireLease()`、维护（add/remove/clear/load）经 `tryAcquireMaintenance()`、公开 `executeParallel()` 经 `tryAcquireLease()`，三者共用 `m_lifecycleMutex` 互斥；**取权与 runMode/state 提交、token 重置同临界区**（消除启动窗口）；维护检查与修改同租约原子（消除悬空指针/混合工程）；早退路径复位 state 防卡死 | 已修复（SEGV/HUAf 清零） |
+| #5 并发生命周期回归（复核三/四/五轮，真信号量屏障） | 五轮改用 **QSemaphore 真实同步点**：`GateModule` 进入 process 释放 entered（执行租约必已持有），主线程 acquire 后 stop 再放行，断言停止获胜/后继未执行/状态 Stopped；`testConcurrentMaintenanceDuringRunStart` 工厂阻塞在维护租约内，断言 runOnce 被拒绝(runStarted=0)、stop 不并发清理、load 成功后模块未被清除。另含 `testStopSimultaneousWithBreakpointHit`、`testClearAndLoadRejectedWhileRunning` | 已证明（确定性屏障） |
+| #7 收尾/恢复非原子（复核七轮）：正常结束先释放执行权再设 Idle、校验早退重复收尾、恢复判定与取权分离、断点信号释放后读成员、单步先释放后清理、维护期停止被丢弃 | 新增 finalizeRunTail()（清理+终态+释放同临界区）、tryBeginForRun()（恢复判定+暂停数据转移+取权同临界区）、校验早退仅一次 finalizeAbortedRun、断点模块 ID 锁内复制后发信号、单步清理与释放同临界区、releaseMaintenance() 补做维护期停止清理、恢复目标模块不存在时按中止收尾 | 已修复（TSan SEGV/HUAf=0） |
+| #8 恢复入口未原子+循环断点退化+缺回归（复核八轮） | tryBeginForRun 引入 RunIntent{Single,CycleTick,Resume,Step} 并在锁内校验预期状态（Single/Step:Idle/Stopped；CycleTick:Running+RunCycle；Resume:Paused+完整暂停上下文）；commitPause 保存 m_pauseRunMode、Resume 还原（循环断点恢复仍循环）；resume()/start() 的定时器启动+信号+日志与状态提交同转换（stop 介入不启定时器、不误导日志）；Step 的 fresh 由 m_stepCurrentModuleName 锁内判定（连续单步共享 runId、frameId 递增） | 已修复（结构上关闭竞态） |
+| #9 回归证据强度（复核九轮） | 新增 `testConsecutiveStepsShareRunIdAndIncrementFrameId`（同 runId+frameId 递增，证明 Step 不重置上下文）。**说明**：`testResumeAfterStopDoesNotReexecute` 与 `testStaleCycleTickAfterStopDoesNotExecute` 为**顺序行为测试**（先 stop 再 resume/等待），父提交亦可通过，仅作行为守卫；竞态的结构修复由 RunIntent 锁内意图校验保证，未以父提交负验证 | 顺序行为测试（非竞态证据） |
+| #6 锁未闭合（复核五轮 P0/P1）：暂停态锁外读、stop 绕过维护租约、stepOnce 非原子、租约不隔离 Running/Paused、早退覆盖停止 | 暂停态（m_pausedAtBreakpoint/m_pauseResumeModule/m_pausePipelineData/m_breakpointPausedAt）全部改为 `m_lifecycleMutex` 内读写（resume/executeRun/内层 setInnerPauseLocked/isPausedAtBreakpoint）；stop() 尊重 m_maintenance 不并发清理；stepOnce 改用 tryBeginExecution 原子启动+锁内收尾（stop 时重置单步态）；tryAcquireLease 拒绝 Running/Paused；空模块/校验早退改 finalizeAbortedRun 原子收尾不覆盖 Stopped；isBusy() 含 m_maintenance；clearBreakpointPauseState()/removeModule 暂停态写入加锁（m_lifecycleMutex 改 QRecursiveMutex 允许重入） | 已修复（TSan SEGV/HUAf=0） |
+
+### 门禁结论（仍不写"通过"）
+
+`build-tsan` 复跑（`setarch -R`，原始日志见 `tsan-runengine-full.txt`）：
+**heap-use-after-free 与 SEGV 均为 0**；功能侧 **115/115** 全过（与上方表格同提交同步）。
+data race 警告数**随调度变化**（实测样本曾在 47–83 间波动），不维护封闭区间、不以此作确定结论。
+
+按调用栈分类：
+- **本方代码计数已原子（非 UB、非误报类）**：`executeParallel`/`executeBatchParallel` 的
+  `running`/`maxConcurrent` 为 `std::atomic<int>`（:98/:99、:1195/:1196），`finished`/
+  `haveError`/`firstError` 由 `doneMutex`/`errMutex` 保护；等待循环保证 lambda 不越过函数
+  生命周期。复核十轮指出的":118 ++running/:130 --running 无同步"经核对为原子操作，非 UB。
+- `ImageData` 隐式共享引用计数跨线程拷贝（Qt 未插桩，原子引用计数无法建立 happens-before）→ 高概率误报；
+- `executeBatchParallel`/`executeParallel` 池任务拷贝 `ImageData`/`ExecutionContext`（同上）→ 高概率误报；
+- `CancellationToken`/`ModuleBase` 的 `g_cancellationTokens` QHash（已用 QMutex 保护，TSan 不识别未插桩 QMutex）→ 高概率误报；
+- `qthreadpool`/`qhash.h` 等未插桩 Qt5 内部 → 高概率误报。
+
+**通知与状态转换原子化（复核十一轮）**：引入生命周期序号 `m_lifecycleGeneration`
+（stop/pause/取权/收尾每次转换自增）。`start()`/`resume()` 在提交锁内启动定时器并记录 gen，
+发送 `stateChanged`/`cycleStarted`/"Starting continuous run"/"Run resumed" 前再次取锁验证
+gen 未变且状态仍 Running；stop 介入（gen 自增）则跳过通知。gen 校验与信号发送之间仍有极窄
+窗口，严格意义上不能保证通知绝不逆序；但 cycleStarted/cycleStopped 在仓库内无实际消费者、
+过期通知无法绕过 RunIntent 触发执行、权威状态/定时器/取消令牌均已正确保护，故**执行语义不受
+影响，通知顺序为 best-effort**（复核十二轮定性，非阻塞）。不值得继续扩大生命周期框架。
+定时器启动与状态提交同临界区；不持锁调用外部 Qt 槽。
+
+依据门禁规则"不把未确认 TSan 警告写成通过"，阶段 6 维持 **TSan 不通过** 结论：
+#3/#4 已修复、#1/#2/#5 已证明；残余误报需以 `-fsanitize=thread` 重编 Qt5 后复测清零。

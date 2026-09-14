@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QObject>
 #include <QStringList>
 #include <memory>
@@ -14,7 +16,7 @@ class Project;
  * 管理项目的创建、打开、保存、关闭
  * 维护最近打开的项目列表
  */
-class ProjectManager : public QObject {
+class DEEPLUX_API ProjectManager : public QObject {
     Q_OBJECT
 
 public:

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../platform/Platform.h"
 #include "DataSource.h"
 
 #include <QDateTime>
@@ -89,7 +90,7 @@ struct CameraConfig {
 /**
  * @brief 项目类
  */
-class Project : public QObject {
+class DEEPLUX_API Project : public QObject {
     Q_OBJECT
 
 public:

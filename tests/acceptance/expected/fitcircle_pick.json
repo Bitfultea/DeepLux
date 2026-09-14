@@ -1,0 +1,9 @@
+{
+    "circle_center_x": 320.0,
+    "circle_center_y": 240.0,
+    "circle_radius": 100.0,
+    "tolerance_center_px": 1.5,
+    "tolerance_radius_px": 1.5,
+    "tolerance_fit_error": 0.5,
+    "pick_count": 3
+}

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../platform/Platform.h"
 #include "core/deeplux/ControlFlowType.h"
 #include "core/deeplux/DataContract.h"
 
@@ -30,7 +31,7 @@ enum class ModuleState { Idle, Running, Error, Disabled };
 /**
  * @brief 模块接口
  */
-class IModule : public QObject {
+class DEEPLUX_API IModule : public QObject {
     Q_OBJECT
 
 public:

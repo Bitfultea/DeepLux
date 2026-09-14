@@ -1,5 +1,7 @@
 # DeepLux Unit Tests
 
+set(DEEPLUX_TEST_QPA_PLATFORM "offscreen" CACHE STRING "Qt platform plugin used by GUI tests")
+
 set(TEST_SOURCES
     test_pathtutils.cpp
     test_modulebase.cpp
@@ -17,6 +19,10 @@ set(TEST_SOURCES
     test_findcircle.cpp
     test_measureline.cpp
     test_fitcircle.cpp
+    test_fitellipse.cpp
+    test_detection_batch2.cpp
+    test_3d_batch3.cpp
+    test_batch4.cpp
     test_measurerect.cpp
     test_distancepl.cpp
     test_distancepp.cpp
@@ -37,6 +43,7 @@ set(TEST_SOURCES
     test_agentundo.cpp
     test_agentcontroller.cpp
     test_agentbridge.cpp
+    test_agente2e.cpp
     test_variable_system_plugins.cpp
     test_measurementdata.cpp
     test_measuregap.cpp
@@ -101,6 +108,79 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_fitcircle" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE FitCirclePlugin)
     endif()
+    # 阶7 批1：FitEllipse 行为+流程验收
+    if(TEST_NAME STREQUAL "test_fitellipse")
+        target_link_libraries(${TEST_NAME} PRIVATE FitEllipsePlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_FITELLIPSE_LIB_FitEllipse="$<TARGET_FILE:FitEllipsePlugin>"
+            TEST_FITELLIPSE_LIB_MeasurementInput="$<TARGET_FILE:MeasurementInputPlugin>"
+            TEST_FITELLIPSE_META_FitEllipse="${CMAKE_SOURCE_DIR}/src/plugins/geometry/FitEllipse/metadata.json"
+            TEST_FITELLIPSE_META_MeasurementInput="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json")
+    endif()
+    # 阶7 批2：检测识别批（MeasureCircle/EdgeDefectDetection）行为+流程验收
+    # 阶7 批2 复核二轮（P2-1）：metadata/库/数据路径全部由 CMake 注入（跨平台/多配置）
+    if(TEST_NAME STREQUAL "test_detection_batch2")
+        target_link_libraries(${TEST_NAME}
+            PRIVATE
+                MeasureCirclePlugin
+                EdgeDefectDetectionPlugin
+                GrabImagePlugin
+                MeasurementInputPlugin
+        )
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_BATCH2_LIB_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+            TEST_BATCH2_LIB_MeasureCircle="$<TARGET_FILE:MeasureCirclePlugin>"
+            TEST_BATCH2_LIB_EdgeDefectDetection="$<TARGET_FILE:EdgeDefectDetectionPlugin>"
+            TEST_BATCH2_LIB_MeasurementInput="$<TARGET_FILE:MeasurementInputPlugin>"
+            TEST_BATCH2_META_GrabImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+            TEST_BATCH2_META_MeasureCircle="${CMAKE_SOURCE_DIR}/src/plugins/detection/MeasureCircle/metadata.json"
+            TEST_BATCH2_META_EdgeDefectDetection="${CMAKE_SOURCE_DIR}/src/plugins/detection/EdgeDefectDetection/metadata.json"
+            TEST_BATCH2_META_MeasurementInput="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json"
+            TEST_BATCH2_DATA_Circle="${CMAKE_SOURCE_DIR}/tests/acceptance/data/circle_640x480.png")
+    endif()
+    # 阶7 批3：0143D 批（3DPreProcessing/FitPlane/GapMeasure3D）行为+流程验收
+    # metadata/库路径由 CMake 注入；32F TIFF 高度图由测试运行期生成（无静态资产）
+    if(TEST_NAME STREQUAL "test_3d_batch3")
+        target_link_libraries(${TEST_NAME}
+            PRIVATE
+                PreProcessing3DPlugin
+                FitPlanePlugin
+                GapMeasure3DPlugin
+                GrabImagePlugin
+        )
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_BATCH3_LIB_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+            TEST_BATCH3_LIB_PreProcessing3D="$<TARGET_FILE:PreProcessing3DPlugin>"
+            TEST_BATCH3_LIB_FitPlane="$<TARGET_FILE:FitPlanePlugin>"
+            TEST_BATCH3_LIB_GapMeasure3D="$<TARGET_FILE:GapMeasure3DPlugin>"
+            TEST_BATCH3_META_GrabImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+            TEST_BATCH3_META_PreProcessing3D="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/PreProcessing3D/metadata.json"
+            TEST_BATCH3_META_FitPlane="${CMAKE_SOURCE_DIR}/src/plugins/geometry/FitPlane/metadata.json"
+            TEST_BATCH3_META_GapMeasure3D="${CMAKE_SOURCE_DIR}/src/plugins/geometry/GapMeasure3D/metadata.json")
+    endif()
+    # 阶7 批4：CropImage（001图像处理）+ CalculateOffset（005坐标标定）行为+流程验收
+    if(TEST_NAME STREQUAL "test_batch4")
+        target_link_libraries(${TEST_NAME}
+            PRIVATE
+                CropImagePlugin
+                CalculateOffsetPlugin
+                GrabImagePlugin
+                MeasurementInputPlugin
+                MeasureCirclePlugin
+        )
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_BATCH4_LIB_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+            TEST_BATCH4_LIB_CropImage="$<TARGET_FILE:CropImagePlugin>"
+            TEST_BATCH4_LIB_MeasureCircle="$<TARGET_FILE:MeasureCirclePlugin>"
+            TEST_BATCH4_LIB_MeasurementInput="$<TARGET_FILE:MeasurementInputPlugin>"
+            TEST_BATCH4_LIB_CalculateOffset="$<TARGET_FILE:CalculateOffsetPlugin>"
+            TEST_BATCH4_META_GrabImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+            TEST_BATCH4_META_CropImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/CropImage/metadata.json"
+            TEST_BATCH4_META_MeasureCircle="${CMAKE_SOURCE_DIR}/src/plugins/detection/MeasureCircle/metadata.json"
+            TEST_BATCH4_META_MeasurementInput="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json"
+            TEST_BATCH4_META_CalculateOffset="${CMAKE_SOURCE_DIR}/src/plugins/calibration/CalculateOffset/metadata.json"
+            TEST_BATCH4_DATA_Circle="${CMAKE_SOURCE_DIR}/tests/acceptance/data/circle_640x480.png")
+    endif()
     if(TEST_NAME STREQUAL "test_measurerect" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE MeasureRectPlugin)
     endif()
@@ -144,7 +224,8 @@ foreach(TEST_FILE ${TEST_SOURCES})
         target_link_libraries(${TEST_NAME} PRIVATE PerProcessingPlugin MatchingPlugin)
     endif()
     if(TEST_NAME STREQUAL "test_remainingplugins")
-        target_link_libraries(${TEST_NAME} PRIVATE TableOutPutPlugin ColorRecognitionPlugin DisplayDataPlugin)
+        target_link_libraries(${TEST_NAME} PRIVATE TableOutPutPlugin ColorRecognitionPlugin DisplayDataPlugin
+                                                   JiErHanDefectsDetPlugin)
     endif()
     if(TEST_NAME STREQUAL "test_finalplugins")
         target_link_libraries(${TEST_NAME} PRIVATE ImageScriptPlugin ShowPointPlugin FreeformSurfacePlugin)
@@ -195,13 +276,58 @@ foreach(TEST_FILE ${TEST_SOURCES})
             DistancePPPlugin
             LoadPointCloudPlugin
             PointSurfaceDistancePlugin
+            FitLinePlugin
+            FitCirclePlugin
+            IfPlugin
+            DelayPlugin
+            LoopPlugin
+            WhilePlugin
+            StopWhilePlugin
+            ParallelPlugin
+            MathPlugin
+            SaveDataPlugin
         )
+    endif()
+    if(TEST_NAME STREQUAL "test_mainwindow")
+        add_dependencies(${TEST_NAME}
+            DistancePPPlugin
+            FitCirclePlugin
+            FitLinePlugin
+            GrabImagePlugin
+            LoadPointCloudPlugin
+            MeasurementInputPlugin
+            IfPlugin
+            DelayPlugin
+        )
+        # 阶7 批4 复核四轮（P2）：CropImage 高级配置弹窗完整回归需直接实例化插件
+        target_link_libraries(${TEST_NAME} PRIVATE CropImagePlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_agente2e")
+        add_dependencies(${TEST_NAME}
+            GrabImagePlugin
+            FindCirclePlugin
+        )
+        # 阶段 5 复核：插件库路径以 $<TARGET_FILE:...> 注入，测试不再拼接 .so 库名（跨平台）
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            AGENTE2E_PLUGIN_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+            AGENTE2E_PLUGIN_FindCircle="$<TARGET_FILE:FindCirclePlugin>")
     endif()
 
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
-    set_tests_properties(${TEST_NAME} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    set_tests_properties(${TEST_NAME} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}")
+    if(TEST_NAME STREQUAL "test_acceptance_flows")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 10)
+    endif()
     if(TEST_NAME STREQUAL "test_cameramanager")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 2)
+    endif()
+    # 阶7 批1 复核四轮：拟合含 RANSAC 循环，设 TIMEOUT 防无限循环回归挂死 CI
+    if(TEST_NAME STREQUAL "test_fitellipse")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
+    endif()
+    # 阶7 批4 复核三轮（P0-1）：角度归一含超大有限数用例，设 TIMEOUT 防循环不终止挂死 CI
+    if(TEST_NAME STREQUAL "test_batch4")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
     endif()
 endforeach()
 
@@ -210,6 +336,16 @@ target_link_libraries(ui_capture_mainwindow
     PRIVATE
         deeplux_core
         deeplux_ui
+)
+add_dependencies(ui_capture_mainwindow
+    GrabImagePlugin
+    FindCirclePlugin
+    LoadPointCloudPlugin
+    MeasurementInputPlugin
+    FitCirclePlugin
+    IfPlugin
+    DelayPlugin
+    CropImagePlugin
 )
 if(Qt6_FOUND)
     target_link_libraries(ui_capture_mainwindow PRIVATE Qt6::Core Qt6::Widgets Qt6::Test)
@@ -220,3 +356,20 @@ if(OpenCV_FOUND)
     target_link_libraries(ui_capture_mainwindow PRIVATE ${OpenCV_LIBS})
     target_include_directories(ui_capture_mainwindow PRIVATE ${OpenCV_INCLUDE_DIRS})
 endif()
+# 阶段 5 复核：插件库路径以 $<TARGET_FILE:...> 注入，测试不再拼接 .so 库名（跨平台）
+target_compile_definitions(ui_capture_mainwindow PRIVATE
+    UICAP_PLUGIN_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+    UICAP_PLUGIN_FindCircle="$<TARGET_FILE:FindCirclePlugin>"
+    UICAP_PLUGIN_LoadPointCloud="$<TARGET_FILE:LoadPointCloudPlugin>"
+    UICAP_PLUGIN_MeasurementInput="$<TARGET_FILE:MeasurementInputPlugin>"
+    UICAP_PLUGIN_FitCircle="$<TARGET_FILE:FitCirclePlugin>"
+    UICAP_PLUGIN_If="$<TARGET_FILE:IfPlugin>"
+    UICAP_PLUGIN_Delay="$<TARGET_FILE:DelayPlugin>"
+    UICAP_PLUGIN_CropImage="$<TARGET_FILE:CropImagePlugin>")
+
+# 阶段 5：GUI 截图验收注册为 CTest——
+# 验收运行或任一截图自校验（存在/尺寸/非空白/关键界面状态）失败都会使测试失败。
+add_test(NAME ui_capture_mainwindow COMMAND ui_capture_mainwindow "${CMAKE_CURRENT_BINARY_DIR}/ui_capture_output")
+set_tests_properties(ui_capture_mainwindow PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}"
+    TIMEOUT 300)

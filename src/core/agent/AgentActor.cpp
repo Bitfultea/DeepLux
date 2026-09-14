@@ -15,6 +15,14 @@
 #include <QJsonDocument>
 #include <QUndoCommand>
 
+static void ensureAgentResources() {
+    static const bool initialized = []() {
+        Q_INIT_RESOURCE(agent_resources);
+        return true;
+    }();
+    Q_UNUSED(initialized)
+}
+
 namespace DeepLux {
 
 namespace {
@@ -200,7 +208,9 @@ private:
 
 // --- AgentActor ---
 
-AgentActor::AgentActor(QObject* parent) : QObject(parent), m_undoStack(new QUndoStack(this)) {}
+AgentActor::AgentActor(QObject* parent) : QObject(parent), m_undoStack(new QUndoStack(this)) {
+    ensureAgentResources();
+}
 
 AgentActor::~AgentActor() = default;
 

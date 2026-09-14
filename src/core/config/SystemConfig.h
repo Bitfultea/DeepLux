@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QJsonObject>
 #include <QObject>
 #include <QString>
@@ -17,7 +19,7 @@ namespace DeepLux {
  * - 显示配置
  * - 保存路径等
  */
-class SystemConfig : public QObject {
+class DEEPLUX_API SystemConfig : public QObject {
     Q_OBJECT
 
 public:

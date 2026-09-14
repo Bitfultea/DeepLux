@@ -64,15 +64,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Qt6 (+SerialPort)
-        uses: jurplel/install-qt-action@v3
+        uses: jurplel/install-qt-action@v4
         with:
-          version: 6.5.3
-          arch: win64_msvc64
+          version: 6.8.3
+          arch: win64_msvc2022_64
           modules: qtserialport
       - name: Install vcpkg deps
         run: vcpkg install eigen3 opencv4 --triplet x64-windows
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DBUILD_TESTS=ON
+        run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DBUILD_TESTS=OFF
       - name: Build
         run: cmake --build build --config Release -j
 
@@ -86,13 +86,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qt6-base-dev qt6-tools-dev \
             libqt6serialport6-dev libeigen3-dev libopencv-dev \
-            libssl-dev pkg-config cmake build-essential
+            libssl-dev pkg-config cmake build-essential xvfb
 
       - name: Configure
-        run: cmake -S . -B build -DBUILD_TESTS=ON
+        run: cmake -S . -B build -DBUILD_TESTS=ON -DDEEPLUX_TEST_QPA_PLATFORM=xcb
 
       - name: Build
         run: cmake --build build -j$(nproc)
 
+      - name: Sync plugins
+        run: cmake --build build --target sync-plugins
+
       - name: Test
-        run: ctest --test-dir build --output-on-failure --timeout 30
+        run: xvfb-run -a ctest --test-dir build --output-on-failure --timeout 30

@@ -21,7 +21,7 @@ public:
         return "com.deeplux.plugin.imagescript";
     }
     QString name() const override {
-        return tr("图像脚本");
+        return tr("内置图像操作");
     }
     QString category() const override {
         return "image_processing";
@@ -33,7 +33,7 @@ public:
         return "DeepLux Team";
     }
     QString description() const override {
-        return tr("使用脚本语言处理图像");
+        return tr("按类型执行内置图像操作（反转/灰度/模糊/锐化）");
     }
 
     bool initialize() override;
@@ -46,10 +46,9 @@ protected:
     IModule* cloneImpl() const override;
 
 private:
-    bool executeScript(const QString& script, const cv::Mat& input, cv::Mat& output);
+    bool executeBuiltinOperation(const cv::Mat& input, cv::Mat& output);
 
-    QString m_script;
-    int m_scriptType = 0; // 0: Built-in operations
+    int m_scriptType = 0; // 内置操作类型（0–3），持久化字段
 
 #ifdef DEEPLUX_HAS_OPENCV
     cv::Mat m_resultMat;

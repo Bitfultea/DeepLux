@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QDateTime>
 #include <QObject>
 #include <QString>
@@ -61,7 +63,7 @@ struct Permission {
 /**
  * @brief 用户管理器
  */
-class UserManager : public QObject {
+class DEEPLUX_API UserManager : public QObject {
     Q_OBJECT
 
 public:

@@ -43,6 +43,9 @@ endif()
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+if(WIN32)
+    set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
 
 # ========== 查找 Qt ==========
 option(USE_QT6 "Use Qt6 instead of Qt5" ON)
@@ -57,7 +60,7 @@ endif()
 set(QT_CORE_COMPONENTS Core Gui Widgets Network Sql Test SerialPort Concurrent)
 
 if(USE_QT6)
-    find_package(Qt6 QUIET COMPONENTS ${QT_CORE_COMPONENTS})
+    find_package(Qt6 QUIET COMPONENTS ${QT_CORE_COMPONENTS} OpenGL OpenGLWidgets)
 endif()
 
 if(NOT Qt6_FOUND)
@@ -117,14 +120,20 @@ if(NOT QT_SSL_WORKS)
 endif()
 
 # ========== 查找 OpenCV ==========
+# 阶段 3：OpenCV 是产品构建的必需依赖；缺失时在配置阶段明确失败，
+# 不再提供"无视觉特性"的降级构建（不引入未被要求的 minimal profile）。
 find_package(OpenCV QUIET)
-if(OpenCV_FOUND)
-    message(STATUS "OpenCV: Found (version: ${OpenCV_VERSION})")
-    message(STATUS "  Include: ${OpenCV_INCLUDE_DIRS}")
-    message(STATUS "  Libraries: ${OpenCV_LIBS}")
-else()
-    message(STATUS "OpenCV: Not found (build without vision features)")
+if(NOT OpenCV_FOUND)
+    message(FATAL_ERROR
+        "OpenCV is REQUIRED to build DeepLux but was not found.\n"
+        "Install it and re-run CMake:\n"
+        "  - Ubuntu/Debian: sudo apt-get install libopencv-dev\n"
+        "  - Windows (vcpkg): vcpkg install opencv4 (pass -DCMAKE_TOOLCHAIN_FILE=.../vcpkg.cmake)\n"
+        "  - Or set -DOpenCV_DIR=<path-to-OpenCVConfig.cmake>")
 endif()
+message(STATUS "OpenCV: Found (version: ${OpenCV_VERSION})")
+message(STATUS "  Include: ${OpenCV_INCLUDE_DIRS}")
+message(STATUS "  Libraries: ${OpenCV_LIBS}")
 
 # ========== 输出配置信息 ==========
 message(STATUS "Qt version: ${Qt${QT_VERSION_MAJOR}_VERSION}")
@@ -139,6 +148,8 @@ add_subdirectory(src/ui)
 add_subdirectory(src/app)
 
 # ========== 插件 ==========
+option(ENABLE_CAMERA_HIKVISION "Enable HikVision camera support (requires HikVision MVS SDK)" OFF)
+
 add_subdirectory(src/plugins/image_processing)
 add_subdirectory(src/plugins/detection)
 add_subdirectory(src/plugins/geometry)
@@ -152,10 +163,7 @@ add_subdirectory(src/plugins/camera)
 
 # ========== 条件编译插件 ==========
 # 相机品牌驱动按需接入：仅在对应 SDK 与插件源码就位后才启用。
-# 当前仓库未附带 Basler/HikVision 插件源码；开启选项会给出明确错误，
-# 而非 CMake 的 "add_subdirectory ... not an existing directory" 提示。
 option(ENABLE_CAMERA_BASLER "Enable Basler camera support (requires Basler Pylon SDK plugin source)" OFF)
-option(ENABLE_CAMERA_HIKVISION "Enable HikVision camera support (requires HikVision MVS SDK plugin source)" OFF)
 
 if(ENABLE_CAMERA_BASLER)
     if(EXISTS ${CMAKE_SOURCE_DIR}/src/plugins/cameras/CameraBasler/CMakeLists.txt)
@@ -165,17 +173,6 @@ if(ENABLE_CAMERA_BASLER)
             "ENABLE_CAMERA_BASLER=ON 但未找到 src/plugins/cameras/CameraBasler。\n"
             "Basler 相机驱动尚未随本仓库分发：请先安装 Basler Pylon SDK 并放置相机插件源码，"
             "或关闭该选项 (-DENABLE_CAMERA_BASLER=OFF)。")
-    endif()
-endif()
-
-if(ENABLE_CAMERA_HIKVISION)
-    if(EXISTS ${CMAKE_SOURCE_DIR}/src/plugins/cameras/CameraHikVision/CMakeLists.txt)
-        add_subdirectory(src/plugins/cameras/CameraHikVision)
-    else()
-        message(FATAL_ERROR
-            "ENABLE_CAMERA_HIKVISION=ON 但未找到 src/plugins/cameras/CameraHikVision。\n"
-            "HikVision 相机驱动尚未随本仓库分发：请先安装海康 MVS SDK 并放置相机插件源码，"
-            "或关闭该选项 (-DENABLE_CAMERA_HIKVISION=OFF)。")
     endif()
 endif()
 

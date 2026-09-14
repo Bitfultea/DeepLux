@@ -7,13 +7,17 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-# Find Qt
-find_package(Qt5 COMPONENTS Core Widgets REQUIRED)
-
 # Hikvision MVS SDK path
 set(MVS_SDK_ROOT "/opt/MVS" CACHE PATH "Hikvision MVS SDK root directory")
 set(MVS_SDK_LIB "${MVS_SDK_ROOT}/lib/64")
 set(MVS_SDK_INCLUDE "${MVS_SDK_ROOT}/include")
+find_library(MVS_CAMERA_CONTROL_LIBRARY NAMES MvCameraControl PATHS "${MVS_SDK_LIB}" NO_DEFAULT_PATH)
+
+if(NOT EXISTS "${MVS_SDK_INCLUDE}/MvCameraControl.h" OR NOT MVS_CAMERA_CONTROL_LIBRARY)
+    message(FATAL_ERROR
+        "ENABLE_CAMERA_HIKVISION=ON requires the Hikvision MVS SDK. "
+        "Set MVS_SDK_ROOT to the SDK directory or disable the plugin.")
+endif()
 
 # Define sources
 set(SOURCES
@@ -49,16 +53,15 @@ target_include_directories(HikvisionCameraPlugin PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/core
     ${MVS_SDK_INCLUDE}
-    ${Qt5Core_PRIVATE_INCLUDE_DIRS}
 )
 
 # Link libraries
 target_link_libraries(HikvisionCameraPlugin PRIVATE
-    Qt5::Core
-    Qt5::Widgets
+    Qt${QT_VERSION_MAJOR}::Core
+    Qt${QT_VERSION_MAJOR}::Widgets
     dl
     deeplux_core
-    ${MVS_SDK_LIB}/libMvCameraControl.so.4.7.0.3
+    ${MVS_CAMERA_CONTROL_LIBRARY}
     pthread
 )
 

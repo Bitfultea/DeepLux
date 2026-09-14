@@ -1,6 +1,8 @@
 #ifndef DEEPLUX_AGENT_CONTROLLER_H
 #define DEEPLUX_AGENT_CONTROLLER_H
 
+#include "ILLMClient.h"
+
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QMutex>
@@ -11,12 +13,10 @@ namespace DeepLux {
 
 class AgentObserver;
 class AgentActor;
-class ILLMClient;
 struct GuiEvent;
 struct AgentActionLogEntry;
-struct AgentMessage;
 
-class AgentController : public QObject {
+class DEEPLUX_API AgentController : public QObject {
     Q_OBJECT
 
 public:

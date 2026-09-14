@@ -33,7 +33,7 @@ public:
         return "DeepLux Team";
     }
     QString description() const override {
-        return tr("剑二韩焊接缺陷检测");
+        return tr("实验性候选检测：基于边缘+轮廓启发式定位焊接缺陷候选区域（非真实工业模型）");
     }
 
     bool initialize() override;

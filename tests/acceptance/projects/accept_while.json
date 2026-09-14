@@ -1,0 +1,54 @@
+{
+    "version": "3.0",
+    "id": "accept-while-0001",
+    "name": "验收-While 条件退出循环",
+    "created": "2026-08-31T00:00:00",
+    "modified": "2026-08-31T00:00:00",
+    "modules": [
+        {
+            "id": "seed",
+            "moduleId": "数学运算",
+            "name": "计数种子",
+            "posX": 40,
+            "posY": 120,
+            "params": { "operation": "Add", "operandA": "0", "operandB": "0", "outputVar": "counter" }
+        },
+        {
+            "id": "whileMod",
+            "moduleId": "条件循环",
+            "name": "条件循环",
+            "posX": 240,
+            "posY": 120,
+            "params": {
+                "conditionVariable": "counter",
+                "comparison": "LessThan",
+                "compareValue": "3",
+                "maxIterations": 100
+            }
+        },
+        {
+            "id": "body",
+            "moduleId": "数学运算",
+            "name": "计数递增",
+            "posX": 480,
+            "posY": 60,
+            "params": { "operation": "Add", "operandA": "counter", "operandB": "1", "outputVar": "counter" }
+        },
+        {
+            "id": "after",
+            "moduleId": "延时",
+            "name": "循环后",
+            "posX": 720,
+            "posY": 120,
+            "params": { "delayMs": 1 }
+        }
+    ],
+    "connections": [
+        {"fromModuleId": "seed", "toModuleId": "whileMod", "fromPort": "next", "toPort": "control", "edgeType": "control"},
+        {"fromModuleId": "whileMod", "toModuleId": "body", "fromPort": "body", "toPort": "control", "edgeType": "control"},
+        {"fromModuleId": "body", "toModuleId": "whileMod", "fromPort": "next", "toPort": "control", "edgeType": "control"},
+        {"fromModuleId": "whileMod", "toModuleId": "after", "fromPort": "done", "toPort": "control", "edgeType": "control"}
+    ],
+    "flows": [{"id": "main", "name": "主流程", "nodes": ["seed", "whileMod", "body", "after"]}],
+    "resources": {"cameras": [], "dataSources": []}
+}

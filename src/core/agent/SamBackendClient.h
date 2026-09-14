@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QImage>
 #include <QList>
 #include <QNetworkAccessManager>
@@ -32,7 +34,7 @@ namespace DeepLux {
  * - 30s 超时：将状态置为 Error 并发出 errorOccurred
  * - 收到 invalid_embedding 时自动重新 setImage 并重试一次预测
  */
-class SamBackendClient : public QObject {
+class DEEPLUX_API SamBackendClient : public QObject {
     Q_OBJECT
 
 public:
@@ -86,6 +88,14 @@ public:
     State state() const {
         return m_state;
     }
+    // 请求超时（默认 30s）。测试可调小以便在合理时长内断言超时路径。
+    void setTimeoutMs(int ms) {
+        if (ms > 0)
+            m_timeoutMs = ms;
+    }
+    int timeoutMs() const {
+        return m_timeoutMs;
+    }
     QString currentEmbeddingId() const {
         return m_embeddingId;
     }
@@ -125,8 +135,13 @@ private slots:
 
 private:
     void setState(State s);
-    void startTimeout(int ms = 30000);
+    void startTimeout(int ms = -1); // ms<=0 表示使用 setTimeoutMs 配置的超时
     void stopTimeout();
+    // 某个请求回调结束时调用：先清除该请求的挂起指针，仅当再无任何挂起请求时
+    // 才停止超时保护，避免并发请求（如 unload+setImage）互相取消对方的超时。
+    void settleReply(QPointer<QNetworkReply>& reply);
+    // latest-wins：发起同类型新请求前取消仍挂起的旧请求，避免旧回调误解析新请求。
+    void abortPendingReply(QPointer<QNetworkReply>& reply);
     QString pyPath() const;
     QString resolvedScriptPath() const;
     void startEnvironmentStep();
@@ -136,13 +151,18 @@ private:
     QPointer<QNetworkReply> m_pendingHealthReply;
     QPointer<QNetworkReply> m_pendingSetImageReply;
     QPointer<QNetworkReply> m_pendingPredictReply;
+    QPointer<QNetworkReply> m_pendingUnloadReply;
+    // 请求序号：同类型请求重叠时，回调据序号判断触发者是否仍为最新请求。
+    qint64 m_healthSeq = 0;
+    qint64 m_setImageSeq = 0;
+    qint64 m_unloadSeq = 0;
     qint64 m_predictSeq = 0; // Fix 4: 请求序号，忽略过期的推理结果
     qint64 m_lastCompletedSeq = 0;
-    QPointer<QNetworkReply> m_pendingUnloadReply;
 
     QProcess* m_process = nullptr;
     QProcess* m_envProcess = nullptr;
     QTimer m_timeoutTimer;
+    int m_timeoutMs = 30000;
 
     State m_state = State::NotStarted;
     QString m_serverUrl = QStringLiteral("http://127.0.0.1:0"); // 0 = auto-assign

@@ -1,0 +1,115 @@
+{
+    "id": "com.deeplux.plugin.calculateoffset",
+    "name": "CalculateOffset",
+    "category": "calibration",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "对位偏移计算：offset = 当前(实测) − 基准(参考)，与旧版 MathCoord−ModeCoord 方向一致，角度差归一化到 (-180,180]；当前坐标/角度可经可选端口 current_point(Point3D,取 x,y 忽略 z)/current_angle(Number) 逐帧覆盖；Hommat2DTrans 仿射与旋转中心补正未实现",
+    "ui": {
+        "parameters": {
+            "currentX": {
+                "min": -1000000,
+                "max": 1000000,
+                "step": 0.001,
+                "decimals": 3,
+                "order": 10,
+                "label": "当前坐标X"
+            },
+            "currentY": {
+                "min": -1000000,
+                "max": 1000000,
+                "step": 0.001,
+                "decimals": 3,
+                "order": 20,
+                "label": "当前坐标Y"
+            },
+            "currentAngle": {
+                "min": -360,
+                "max": 360,
+                "step": 0.01,
+                "decimals": 3,
+                "order": 30,
+                "label": "当前角度Φ(度)"
+            },
+            "targetX": {
+                "min": -1000000,
+                "max": 1000000,
+                "step": 0.001,
+                "decimals": 3,
+                "order": 40,
+                "label": "基准坐标X"
+            },
+            "targetY": {
+                "min": -1000000,
+                "max": 1000000,
+                "step": 0.001,
+                "decimals": 3,
+                "order": 50,
+                "label": "基准坐标Y"
+            },
+            "targetAngle": {
+                "min": -360,
+                "max": 360,
+                "step": 0.01,
+                "decimals": 3,
+                "order": 60,
+                "label": "基准角度Φ(度)"
+            }
+        }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "current_point",
+                "displayName": "当前坐标点",
+                "type": "Point3D",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "current_angle",
+                "displayName": "当前角度",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "offset_x",
+                "displayName": "偏移X",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "offset_y",
+                "displayName": "偏移Y",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "offset_a",
+                "displayName": "偏移角度",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            }
+        ]
+    }
+}

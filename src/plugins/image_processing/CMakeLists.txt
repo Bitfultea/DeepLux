@@ -31,3 +31,9 @@ add_subdirectory(ImageScript)
 
 # LoadPointCloud Plugin
 add_subdirectory(LoadPointCloud)
+
+# 3DPreProcessing Plugin（阶7 批3：0143D 重建，目录 PreProcessing3D）
+add_subdirectory(PreProcessing3D)
+
+# CropImage Plugin（阶7 批4：001图像处理 重建）
+add_subdirectory(CropImage)

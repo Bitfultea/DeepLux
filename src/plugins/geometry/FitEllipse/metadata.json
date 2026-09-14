@@ -1,0 +1,120 @@
+{
+    "id": "com.deeplux.plugin.fitellipse",
+    "name": "FitEllipse",
+    "category": "geometry",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "对输入边缘点集进行椭圆拟合，输出中心/角度/长短轴/椭圆度",
+    "ui": {
+        "parameters": {
+            "threshold": {
+                "min": 0,
+                "step": 0.5,
+                "decimals": 2,
+                "order": 10,
+                "label": "离群阈值",
+                "max": 1000000
+            },
+            "iterations": {
+                "min": 1,
+                "step": 1,
+                "decimals": 0,
+                "order": 20,
+                "label": "RANSAC采样次数",
+                "max": 1000
+            },
+            "minAxis": {
+                "min": 0.1,
+                "step": 0.5,
+                "decimals": 2,
+                "order": 30,
+                "label": "最小半轴",
+                "max": 1000000
+            },
+            "maxAxis": {
+                "min": 0.1,
+                "step": 0.5,
+                "decimals": 2,
+                "order": 40,
+                "label": "最大半轴",
+                "max": 1000000
+            }
+        }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "fit_points",
+                "displayName": "拟合点集",
+                "type": "PointSet2D",
+                "required": true,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "ellipse_center_x",
+                "displayName": "中心X",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "ellipse_center_y",
+                "displayName": "中心Y",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "ellipse_phi",
+                "displayName": "角度Phi",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "ellipse_major_r",
+                "displayName": "长半轴",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "ellipse_minor_r",
+                "displayName": "短半轴",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "ellipse_ellipticity",
+                "displayName": "椭圆度",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "ellipse_error",
+                "displayName": "拟合误差",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            }
+        ]
+    }
+}

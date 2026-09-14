@@ -1,0 +1,212 @@
+{
+    "id": "com.deeplux.plugin.gapmeasure3d",
+    "name": "GapMeasure3D",
+    "category": "geometry",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "高度图截面 ROI 行均值提取轮廓，中值/高斯平滑后导数寻峰拟合拐角，计算间隙宽度/拐角距离/偏移宽度与规格判定；未检出时输出失败值并置 gap_found=false",
+    "ui": {
+        "parameters": {
+            "roiCenterX": {
+                "min": 0,
+                "max": 1000000,
+                "step": 1,
+                "decimals": 0,
+                "order": 10,
+                "label": "截面中心X"
+            },
+            "roiCenterY": {
+                "min": 0,
+                "max": 1000000,
+                "step": 1,
+                "decimals": 0,
+                "order": 20,
+                "label": "截面中心Y"
+            },
+            "roiLength": {
+                "min": 5,
+                "max": 1000000,
+                "step": 1,
+                "decimals": 0,
+                "order": 30,
+                "label": "截面长度(px，≥5)"
+            },
+            "roiHeight": {
+                "min": 1,
+                "max": 1000000,
+                "step": 1,
+                "decimals": 0,
+                "order": 40,
+                "label": "行取宽(px)"
+            },
+            "pixelSizeX": {
+                "min": 0.000001,
+                "max": 1000000,
+                "step": 0.0001,
+                "decimals": 6,
+                "order": 50,
+                "label": "X 像素间距(mm)"
+            },
+            "zScale": {
+                "min": 0.000001,
+                "max": 1000000,
+                "step": 0.0001,
+                "decimals": 6,
+                "order": 60,
+                "label": "Z 比例"
+            },
+            "smoothSigma": {
+                "min": 0,
+                "max": 100,
+                "step": 0.1,
+                "decimals": 2,
+                "order": 70,
+                "label": "高斯σ（0=关闭）"
+            },
+            "medianSize": {
+                "min": 0,
+                "max": 101,
+                "step": 2,
+                "decimals": 0,
+                "order": 80,
+                "label": "中值窗口（0=关闭，奇数）"
+            },
+            "derivativeThreshold": {
+                "min": 0,
+                "max": 1000000,
+                "step": 0.01,
+                "decimals": 4,
+                "order": 90,
+                "label": "导数阈值(mm/mm)"
+            },
+            "edgeTrim": {
+                "min": 0,
+                "max": 1000,
+                "step": 1,
+                "decimals": 0,
+                "order": 100,
+                "label": "边缘剔除点数"
+            },
+            "minPeakDistance": {
+                "min": 1,
+                "max": 1000,
+                "step": 1,
+                "decimals": 0,
+                "order": 110,
+                "label": "峰最小间距(px)"
+            },
+            "invalidValue": {
+                "min": -1000000000,
+                "max": 1000000000,
+                "step": 0.1,
+                "decimals": 3,
+                "order": 120,
+                "label": "无效高度值"
+            },
+            "autoNoData": {
+                "order": 125,
+                "label": "自动 NoData 检测"
+            },
+            "offsetMm": {
+                "min": -1000000,
+                "max": 1000000,
+                "step": 0.01,
+                "decimals": 3,
+                "order": 130,
+                "label": "偏移距离(mm)"
+            },
+            "specUpperLimit": {
+                "min": 0.000001,
+                "max": 1000000,
+                "step": 0.01,
+                "decimals": 3,
+                "order": 140,
+                "label": "规格上限(mm)"
+            },
+            "measureFailValue": {
+                "min": -1000000,
+                "max": 1000000,
+                "step": 0.1,
+                "decimals": 3,
+                "order": 150,
+                "label": "未检出输出值"
+            }
+        }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "高度图",
+                "type": "Any",
+                "required": true,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "gap_width",
+                "displayName": "间隙宽度(mm)",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "gap_offset_width",
+                "displayName": "偏移后宽度(mm)",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "corner_dx_mm",
+                "displayName": "拐角水平距离(mm)",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "corner_dz_mm",
+                "displayName": "拐角垂直距离(mm)",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "corner_dist_mm",
+                "displayName": "拐角欧氏距离(mm)",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "is_pass",
+                "displayName": "是否合格",
+                "type": "Boolean",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "gap_found",
+                "displayName": "是否检出间隙",
+                "type": "Boolean",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "gap_algorithm",
+                "displayName": "算法名称",
+                "type": "String",
+                "required": false,
+                "multiple": false
+            }
+        ]
+    }
+}

@@ -8,7 +8,7 @@
 
 namespace DeepLux {
 
-class DisplayData;
+struct DisplayData;
 class ViewportWidget;
 class IDisplayPort;
 

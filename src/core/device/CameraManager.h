@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QDateTime>
 #include <QJsonObject>
 #include <QList>
@@ -34,7 +36,7 @@ struct CameraStatus {
  *
  * 管理所有相机插件和相机实例
  */
-class CameraManager : public QObject {
+class DEEPLUX_API CameraManager : public QObject {
     Q_OBJECT
 
 public:

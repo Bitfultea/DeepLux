@@ -1,12 +1,14 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QJsonObject>
 #include <QObject>
 #include <QVariant>
 
 namespace DeepLux {
 
-class ConfigManager : public QObject {
+class DEEPLUX_API ConfigManager : public QObject {
     Q_OBJECT
 
 public:

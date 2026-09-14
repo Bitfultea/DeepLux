@@ -44,15 +44,7 @@ set(UI_SOURCES
     views/CommunicationSetView.cpp
     views/GlobalVarView.cpp
     views/SystemParamView.cpp
-    resources/icons.qrc
 )
-
-# Platform-specific PTY implementation
-if(LINUX OR APPLE)
-    list(APPEND UI_SOURCES process/LinuxPtyImpl.cpp)
-elseif(WIN32)
-    list(APPEND UI_SOURCES process/WindowsPtyImpl.cpp)
-endif()
 
 # Terminal components (ANSI parser, renderer)
 add_subdirectory(terminal)
@@ -104,7 +96,11 @@ set(UI_HEADERS
     views/SystemParamView.h
 )
 
-add_library(deeplux_ui SHARED ${UI_SOURCES} ${UI_HEADERS})
+if(WIN32)
+    add_library(deeplux_ui STATIC ${UI_SOURCES} ${UI_HEADERS})
+else()
+    add_library(deeplux_ui SHARED ${UI_SOURCES} ${UI_HEADERS})
+endif()
 
 target_include_directories(deeplux_ui
     PUBLIC
@@ -128,14 +124,13 @@ if(OpenCV_FOUND)
 endif()
 
 if(Qt6_FOUND)
-    target_link_libraries(deeplux_ui PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL)
+    target_link_libraries(deeplux_ui PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets)
 else()
     target_link_libraries(deeplux_ui PUBLIC Qt5::Core Qt5::Gui Qt5::Widgets)
-    find_package(OpenGL QUIET)
-    if(OpenGL_FOUND)
-        target_link_libraries(deeplux_ui PUBLIC ${OPENGL_LIBRARIES})
-    endif()
 endif()
+
+find_package(OpenGL REQUIRED)
+target_link_libraries(deeplux_ui PUBLIC OpenGL::GL)
 
 set_target_properties(deeplux_ui PROPERTIES
     VERSION ${PROJECT_VERSION}

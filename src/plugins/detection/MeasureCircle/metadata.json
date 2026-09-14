@@ -1,0 +1,127 @@
+{
+    "id": "com.deeplux.plugin.measurecircle",
+    "name": "MeasureCircle",
+    "category": "detection",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "在初始圆邻域内以径向卡钳提取边缘点并拟合圆，输出圆心/半径/直径/圆度",
+    "ui": {
+        "parameters": {
+            "initialCenterX": {
+                "min": 0,
+                "step": 1,
+                "decimals": 2,
+                "order": 10,
+                "label": "初始圆心X"
+            },
+            "initialCenterY": {
+                "min": 0,
+                "step": 1,
+                "decimals": 2,
+                "order": 20,
+                "label": "初始圆心Y"
+            },
+            "initialRadius": {
+                "min": 1,
+                "step": 1,
+                "decimals": 2,
+                "order": 30,
+                "label": "初始半径"
+            },
+            "threshold": {
+                "min": 0,
+                "max": 255,
+                "step": 1,
+                "decimals": 1,
+                "order": 40,
+                "label": "梯度阈值"
+            },
+            "measureCount": {
+                "min": 8,
+                "max": 360,
+                "step": 1,
+                "decimals": 0,
+                "order": 50,
+                "label": "卡钳数"
+            },
+            "searchLength": {
+                "min": 1,
+                "max": 500,
+                "step": 1,
+                "decimals": 1,
+                "order": 60,
+                "label": "搜索半长"
+            },
+            "exclusionRadius": {
+                "min": 0,
+                "max": 500,
+                "step": 0.5,
+                "decimals": 2,
+                "order": 70,
+                "label": "剔除半径"
+            }
+        }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入图像",
+                "type": "Image2D",
+                "required": true,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "circle_center_x",
+                "displayName": "圆心X",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "circle_center_y",
+                "displayName": "圆心Y",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "circle_radius",
+                "displayName": "半径",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "circle_diameter",
+                "displayName": "直径",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "circle_roundness",
+                "displayName": "圆度",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "edge_point_count",
+                "displayName": "边缘点数",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            }
+        ]
+    }
+}

@@ -1,0 +1,54 @@
+{
+    "version": "3.0",
+    "id": "accept-stopwhile-0001",
+    "name": "验收-StopWhile 提前退出循环",
+    "created": "2026-08-31T00:00:00",
+    "modified": "2026-08-31T00:00:00",
+    "modules": [
+        {
+            "id": "whileMod",
+            "moduleId": "条件循环",
+            "name": "恒真循环",
+            "posX": 80,
+            "posY": 120,
+            "params": {
+                "conditionVariable": "never_set_flag",
+                "comparison": "Empty",
+                "compareValue": "",
+                "maxIterations": 1000
+            }
+        },
+        {
+            "id": "body",
+            "moduleId": "延时",
+            "name": "循环体",
+            "posX": 320,
+            "posY": 60,
+            "params": { "delayMs": 1 }
+        },
+        {
+            "id": "stopMod",
+            "moduleId": "停止循环",
+            "name": "提前退出",
+            "posX": 560,
+            "posY": 60,
+            "params": {}
+        },
+        {
+            "id": "after",
+            "moduleId": "延时",
+            "name": "循环后",
+            "posX": 800,
+            "posY": 120,
+            "params": { "delayMs": 1 }
+        }
+    ],
+    "connections": [
+        {"fromModuleId": "whileMod", "toModuleId": "body", "fromPort": "body", "toPort": "control", "edgeType": "control"},
+        {"fromModuleId": "body", "toModuleId": "stopMod", "fromPort": "next", "toPort": "control", "edgeType": "control"},
+        {"fromModuleId": "stopMod", "toModuleId": "after", "fromPort": "stop", "toPort": "control", "edgeType": "control"},
+        {"fromModuleId": "whileMod", "toModuleId": "after", "fromPort": "done", "toPort": "control", "edgeType": "control"}
+    ],
+    "flows": [{"id": "main", "name": "主流程", "nodes": ["whileMod", "body", "stopMod", "after"]}],
+    "resources": {"cameras": [], "dataSources": []}
+}

@@ -17,6 +17,12 @@ DeepLux Vision 是面向工业现场的跨平台机器视觉软件。它以可�
 | Agent 协作 | Agent 可读取工程状态、创建或调整流程，并通过受控工具调用执行可审计操作。 |
 | SAM 快速标注 | 在主视图中通过正点、负点和框选生成掩膜预览，支持会话保存及 LabelMe/YOLO 分割导出。 |
 
+## 当前交付状态
+
+- 运行时插件共 **67** 个。近期重建的 `3DPreProcessing`、`CropImage`、`MeasureCircle`、`EdgeDefectDetection`、`FitEllipse`、`FitPlane`、`GapMeasure3D` 和 `CalculateOffset` 已纳入流程、参数校验与自动化验收；用途、配置和失败条件见[插件手册](docs/plugins.md)。
+- CI 覆盖 Qt 5、Qt 6、Windows MSVC 产品构建和格式检查；Linux Qt 5/Qt 6 路径执行完整 CTest。
+- SAM 的真实 GPU 权重、相机/PLC 设备与业务包仍需在现场环境验收；TSan 残余告警需使用插桩 Qt 环境进一步归因，均不作为已完成的现场验证结论。
+
 ## 架构概览
 
 ```mermaid
@@ -50,7 +56,8 @@ flowchart TB
 - CMake 3.16+
 - C++17 编译器
 - Qt 6.6+，或 Qt 5.15.3+；需包含 `Core`、`Gui`、`Widgets`、`Network`、`Sql`、`Test`、`Concurrent` 和 `SerialPort`
-- 可选：OpenCV、Basler Pylon、海康 MVS 等相机 SDK
+- **必需**：OpenCV。自阶段 3 起为产品构建的必需依赖，缺失时配置阶段即失败（`libopencv-dev` 或 vcpkg `opencv4`）。
+- 可选：Basler Pylon、海康 MVS 等相机 SDK
 - 按需：Halcon Runtime 21.11+。当前默认构建不强制链接 Halcon；接入相关插件或 SDK 时才需要。
 
 ### 2. 配置并编译
@@ -62,13 +69,15 @@ cmake -S . -B build -DDEEPLUX_QT_PATH=/path/to/Qt/6.6.0/gcc_64 -DBUILD_TESTS=ON
 cmake --build build -j$(nproc)
 ```
 
-Windows（Visual Studio 2022）：
+Windows（Visual Studio 2022，产品构建）：
 
 ```bat
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 ^
-  -DCMAKE_PREFIX_PATH=C:/Qt/6.6.0/msvc2019_64 -DBUILD_TESTS=ON
+  -DCMAKE_PREFIX_PATH=C:/Qt/6.6.0/msvc2019_64 -DBUILD_TESTS=OFF
 cmake --build build --config Release
 ```
+
+Windows CI 当前验证产品构建；完整自动化测试在 Linux 的 Qt 5/Qt 6 CI 路径运行。
 
 可用 CMake 选项：`-DUSE_QT6=ON|OFF`、`-DENABLE_CAMERA_BASLER=ON`、`-DENABLE_CAMERA_HIKVISION=ON`。
 
@@ -127,7 +136,7 @@ flowchart LR
 | --- | --- |
 | [快速上手](docs/quick-start.md) | 创建找圆流程、单步检查、常见排查。 |
 | [架构说明](docs/architecture.md) | UI、工程、执行引擎、插件、Agent 与 SAM 的职责边界。 |
-| [插件手册](docs/plugins.md) | 59 个运行时插件的用途、接入方式、关键配置和结果说明。 |
+| [插件手册](docs/plugins.md) | 67 个运行时插件的用途、接入方式、关键配置、失败条件和结果说明。 |
 | [CLI 文档](docs/cli.md) | GUI 之外的项目、模块与连接管理命令。 |
 | [终端与 Agent 设计](docs/Terminal_Agent_Design.md) | 受控 Agent 工具调用、审计与权限模型。 |
 | [工程技能图谱](docs/skills/README.md) | UI、插件、测量、流程、Agent、SAM 与质量验证的可复用方法。 |

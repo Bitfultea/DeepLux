@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../platform/Platform.h"
 #include "core/deeplux/DataContract.h"
 
 #include <QCoreApplication>
@@ -51,7 +52,7 @@ struct PluginInfo {
  *
  * 负责扫描、加载、管理插件
  */
-class PluginManager : public QObject {
+class DEEPLUX_API PluginManager : public QObject {
     Q_OBJECT
 
 public:
@@ -91,6 +92,10 @@ public:
     IModule* createModule(const QString& name);
     ICamera* createCamera(const QString& name);
 
+    // 解析并校验 metadata.json（端口声明合法性门禁，非法声明拒绝进入可加载列表）。
+    // 加载流程与元数据校验测试共用。
+    bool loadPluginMetadata(const QString& path, PluginInfo& info);
+
 signals:
     void pluginLoaded(const QString& name);
     void pluginUnloaded(const QString& name);
@@ -107,7 +112,6 @@ private:
     PluginManager();
     ~PluginManager();
 
-    bool loadPluginMetadata(const QString& path, PluginInfo& info);
     bool validateLoadedPlugin(const QString& name, QPluginLoader* loader, QString* error) const;
     void markPluginLoaded(const QString& name, QPluginLoader* loader);
     void loadNextPluginAsync();
@@ -135,7 +139,7 @@ private:
         QString m_path;
     };
 
-    mutable QMutex m_mutex{QMutex::Recursive};
+    mutable QRecursiveMutex m_mutex;
     QStringList m_pluginPaths;
     QMap<QString, PluginInfo> m_modules;
     QMap<QString, PluginInfo> m_cameras;

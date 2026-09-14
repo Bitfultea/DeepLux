@@ -2,6 +2,7 @@
 
 set(APP_SOURCES
     main.cpp
+    ../ui/resources/icons.qrc
 )
 
 add_executable(DeepLux ${APP_SOURCES})

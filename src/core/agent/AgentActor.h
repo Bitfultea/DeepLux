@@ -1,6 +1,8 @@
 #ifndef DEEPLUX_AGENT_ACTOR_H
 #define DEEPLUX_AGENT_ACTOR_H
 
+#include "../platform/Platform.h"
+
 #include <QJsonObject>
 #include <QObject>
 #include <QPointer>
@@ -20,7 +22,7 @@ class Project;
  * - 只能调用预注册的 ToolSchema 白名单工具
  * - 不能执行 bash / system / QProcess
  */
-class AgentActor : public QObject {
+class DEEPLUX_API AgentActor : public QObject {
     Q_OBJECT
 
 public:

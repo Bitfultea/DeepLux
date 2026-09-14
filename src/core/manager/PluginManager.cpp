@@ -160,6 +160,13 @@ bool parsePortArray(const QJsonArray& arr, QList<PortSpec>& out, QString& error,
             error = QString("%1: port %2 has unknown type %3").arg(pluginName, spec.id, typeName);
             return false;
         }
+        // 阶段 3：未实现类型（无载荷契约/生产者插件）不得声明为可运行端口，
+        // 在加载阶段明确拒绝，避免"连接合法、运行期永远拒绝"的悬空端口。
+        if (!isSupportedPortType(spec.type)) {
+            error = QString("%1: port %2 declares unimplemented type %3 (rejected at load)")
+                        .arg(pluginName, spec.id, typeName);
+            return false;
+        }
         spec.required = o.value("required").toBool(false);
         spec.multiple = o.value("multiple").toBool(false);
         spec.control = o.value("control").toBool(false);
@@ -221,6 +228,18 @@ bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info) {
         if (ports.isEmpty() || !ports.contains("inputs") || !ports.contains("outputs")) {
             info.error =
                 QStringLiteral("%1: ABI v2 module metadata requires ports.inputs and ports.outputs").arg(info.name);
+            qWarning() << info.error;
+            return false;
+        }
+        // 字段必须是 JSON 数组：字符串/对象经 toArray() 会得到空数组，
+        // 若放行会把插件当作"零端口"合法加载。
+        if (!ports.value("inputs").isArray()) {
+            info.error = QStringLiteral("%1: ports.inputs must be a JSON array").arg(info.name);
+            qWarning() << info.error;
+            return false;
+        }
+        if (!ports.value("outputs").isArray()) {
+            info.error = QStringLiteral("%1: ports.outputs must be a JSON array").arg(info.name);
             qWarning() << info.error;
             return false;
         }

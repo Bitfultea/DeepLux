@@ -111,6 +111,12 @@ public:
     }
     void setName(const QString& name);
     void setExecutionState(const QString& status, const QString& timeText);
+    QString executionStatus() const {
+        return m_status;
+    }
+    QString executionTimeText() const {
+        return m_timeText;
+    }
 
     // 端口声明
     void setPortSpecs(const QList<PortSpec>& inputs, const QList<PortSpec>& outputs);

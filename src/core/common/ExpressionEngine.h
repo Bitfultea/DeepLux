@@ -10,7 +10,7 @@
 
 namespace DeepLux {
 
-class ExpressionEngine : public QObject {
+class DEEPLUX_API ExpressionEngine : public QObject {
     Q_OBJECT
 
 public:

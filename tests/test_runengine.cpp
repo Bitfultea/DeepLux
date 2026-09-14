@@ -1,3 +1,6 @@
+#include <QMutex>
+#include <QSemaphore>
+#include <QSet>
 #include <QSignalSpy>
 #include <QThread>
 #include <QtTest/QtTest>
@@ -321,6 +324,86 @@ private:
     int m_sleepMs;
 };
 
+// 阶段 6：记录每个并行任务收到的 ExecutionContext.runId，
+// 验证同一次运行的所有任务看到同一固化 runId。
+class RunIdRecordingModule : public ModuleBase {
+    Q_OBJECT
+public:
+    RunIdRecordingModule(const QString& name, QMutex* mutex, QStringList* sink, QList<qint64>* frameSink = nullptr)
+        : m_mutex(mutex), m_sink(sink), m_frameSink(frameSink) {
+        m_moduleId = "com.deeplux.test.runid." + name;
+        m_name = name;
+        m_category = "test";
+        setThreadSafe(true);
+    }
+
+    ExecutionResult execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) override {
+        {
+            QMutexLocker locker(m_mutex);
+            m_sink->append(context.runId);
+            if (m_frameSink)
+                m_frameSink->append(context.frameId);
+        }
+        m_mark = context.runId; // 供 process 写入输出作为本轮唯一标记
+        QThread::msleep(10);    // 增大并行重叠窗口
+        return ModuleBase::execute(inputs, outputs, context);
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        output.setData(QStringLiteral("runmark"), m_mark);
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    QMutex* m_mutex;
+    QStringList* m_sink;
+    QList<qint64>* m_frameSink = nullptr;
+    QString m_mark;
+};
+
+// 阶6 五轮：确定性同步门模块——进入 process 时释放 entered 信号量，随后阻塞在
+// release 信号量上（可被取消令牌打断），用于把"模块已进入执行"变成真实同步点。
+class GateModule : public ModuleBase {
+    Q_OBJECT
+public:
+    GateModule(const QString& name, QSemaphore* entered, QSemaphore* release, QStringList* log)
+        : m_entered(entered), m_release(release), m_log(log) {
+        m_moduleId = QStringLiteral("com.deeplux.test.gate.") + name;
+        m_name = name;
+        m_category = "test";
+        setThreadSafe(true);
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        m_entered->release();
+        // 阻塞直到测试放行；期间若取消令牌置位则提前返回（协作取消）。
+        while (!m_release->tryAcquire(1, 10)) {
+            auto* tok = cancellationToken();
+            if (tok && tok->isCancelledFast()) {
+                return true;
+            }
+        }
+        if (m_log)
+            m_log->append(m_name);
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    QSemaphore* m_entered;
+    QSemaphore* m_release;
+    QStringList* m_log;
+};
+
 class TestRunEngine : public QObject {
     Q_OBJECT
 
@@ -329,6 +412,23 @@ private slots:
     void cleanupTestCase();
     void testParallelExecutesConcurrently();
     void testParallelFailureCancelsGroup();
+    // 阶段 6 并发收口定向测试
+    void testParallelSignalsDeliveredOnReceiverThread();
+    void testParallelTasksSeeStableRunId();
+    void testExecuteParallelPrimitiveStableRunId();
+    void testParallelStressFiftyRunsNoPollution();
+    // 阶段 6 复核（三轮）并发生命周期回归
+    void testConcurrentStopDuringRunKeepsStoppedState();
+    void testConcurrentMaintenanceDuringRunStart();
+    void testStopSimultaneousWithBreakpointHit();
+    void testClearAndLoadRejectedWhileRunning();
+    // 阶6 八轮回归：恢复/tick/循环断点/校验收尾/维护停止
+    void testResumeAfterStopDoesNotReexecute();
+    void testStaleCycleTickAfterStopDoesNotExecute();
+    void testCycleBreakpointResumeKeepsCycleMode();
+    void testValidationAbortThenNextRunNotBlocked();
+    void testStopDuringMaintenanceClearsStepState();
+    void testConsecutiveStepsShareRunIdAndIncrementFrameId();
     void testValidateFlowReportsMissingRequiredInput();
     void testSkippedBranchEmitsSkippedNotFailed();
     void testBreakpointRestoredOnLoad();
@@ -1254,6 +1354,641 @@ void TestRunEngine::testParallelFailureCancelsGroup() {
     QVERIFY(!result.success);
     QVERIFY(!result.userMessage.isEmpty());
 
+    engine.clearModules();
+}
+
+namespace {
+// 阶段 6 辅助：entry(非线程安全,单独执行) 经隐式控制边 next→control 扇出到
+// 多个线程安全模块，迫使控制图路径将其合入同一并行批次。
+void buildParallelBatchProject(Project& project, int fanout) {
+    ModuleInstance entry;
+    entry.id = QStringLiteral("entry");
+    entry.moduleId = QStringLiteral("entry");
+    project.addModule(entry);
+    for (int i = 0; i < fanout; ++i) {
+        ModuleInstance m;
+        m.id = QStringLiteral("par%1").arg(i);
+        m.moduleId = m.id;
+        project.addModule(m);
+
+        ModuleConnection ctrl;
+        ctrl.fromModuleId = QStringLiteral("entry");
+        ctrl.toModuleId = m.id;
+        ctrl.fromPort = QStringLiteral("next");
+        ctrl.toPort = QStringLiteral("control");
+        ctrl.edgeType = QStringLiteral("control");
+        project.addConnection(ctrl);
+    }
+}
+} // namespace
+
+void TestRunEngine::testParallelSignalsDeliveredOnReceiverThread() {
+    // 阶段 6（P1-1 定向）：并行批次内在工作线程发射的 moduleStarted/moduleFinished，
+    // 经带上下文的连接（Auto→Queued）必须投递到接收者所在线程（主线程），
+    // 证明不存在跨线程 DirectConnection 直操接收者状态。
+    // 槽内只写堆上状态（QSharedPointer），即使早退遗留排队投递也不会悬空。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(4);
+
+    QThread* mainThread = QThread::currentThread();
+    struct SigState {
+        QMutex mutex;
+        QList<QThread*> started;
+        QList<QThread*> finished;
+    };
+    const auto state = QSharedPointer<SigState>::create();
+
+    const QMetaObject::Connection c1 = connect(&engine, &RunEngine::moduleStarted, this, [state](const QString&) {
+        QMutexLocker locker(&state->mutex);
+        state->started.append(QThread::currentThread());
+    });
+    const QMetaObject::Connection c2 =
+        connect(&engine, &RunEngine::moduleFinished, this, [state](const QString&, bool, int) {
+            QMutexLocker locker(&state->mutex);
+            state->finished.append(QThread::currentThread());
+        });
+
+    std::atomic<int> running{0};
+    std::atomic<int> maxConc{0};
+    Project project;
+    buildParallelBatchProject(project, 4);
+    QVERIFY2(engine.loadProject(&project,
+                                [&](const ModuleInstance& inst) -> ModuleBase* {
+                                    auto* mod = new ParallelSleepModule(inst.id, &running, &maxConc, 30);
+                                    mod->setThreadSafe(inst.id != QLatin1String("entry"));
+                                    return mod;
+                                }),
+             "parallel batch project must load");
+
+    engine.runOnce();
+    QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(state->started.size(), 5, 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(state->finished.size(), 5, 5000);
+    disconnect(c1);
+    disconnect(c2);
+
+    // 证明真实走了并行批次（moduleStarted 确由工作线程发射、再排队回主线程）
+    QVERIFY2(engine.lastParallelMaxConcurrency() > 1, "expected a real parallel batch");
+    QMutexLocker locker(&state->mutex);
+    for (QThread* t : state->started)
+        QCOMPARE(t, mainThread);
+    for (QThread* t : state->finished)
+        QCOMPARE(t, mainThread);
+    engine.clearModules();
+}
+
+void TestRunEngine::testParallelTasksSeeStableRunId() {
+    // 阶段 6（P1-3 定向）：同一次运行的所有并行任务必须看到同一固化 runId。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(4);
+
+    QMutex mutex;
+    QStringList sink;
+    Project project;
+    buildParallelBatchProject(project, 4);
+    QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) -> ModuleBase* {
+        auto* mod = new RunIdRecordingModule(inst.id, &mutex, &sink);
+        mod->setThreadSafe(inst.id != QLatin1String("entry"));
+        return mod;
+    }));
+
+    engine.runOnce();
+    QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
+
+    QMutexLocker locker(&mutex);
+    QCOMPARE(sink.size(), 5);
+    for (const QString& id : sink) {
+        QVERIFY2(!id.isEmpty(), "runId must be non-empty");
+        QCOMPARE(id, sink.first());
+    }
+    engine.clearModules();
+}
+
+void TestRunEngine::testExecuteParallelPrimitiveStableRunId() {
+    // 阶段 6 复核：公开原语 executeParallel() 同样被 runId 快照覆盖——
+    // 同一次调用内所有并行任务看到同一固化 runId。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(4);
+
+    QMutex mutex;
+    QStringList sink;
+    QStringList names;
+    for (int i = 0; i < 4; ++i) {
+        const QString name = QString("prim%1").arg(i);
+        auto* mod = new RunIdRecordingModule(name, &mutex, &sink);
+        mod->initialize();
+        engine.addModule(mod);
+        names << name;
+    }
+
+    PortValueMap input;
+    const ExecutionResult result = engine.executeParallel(names, input);
+    QVERIFY(result.success);
+    QVERIFY2(engine.lastParallelMaxConcurrency() > 1, "executeParallel must run concurrently");
+
+    {
+        QMutexLocker locker(&mutex);
+        QCOMPARE(sink.size(), 4);
+        for (const QString& id : sink) {
+            QVERIFY2(!id.isEmpty(), "runId must be non-empty");
+            QCOMPARE(id, sink.first());
+        }
+    }
+    const QString firstCallId = sink.first();
+
+    // 阶6 复核（三轮）：连续两次独立调用必须各自生成不同 runId，
+    // 不得复用历史运行 ID（executeParallel 不再读 m_runId）。
+    engine.clearModules();
+    QMutex mutex2;
+    QStringList sink2;
+    QStringList names2;
+    for (int i = 0; i < 4; ++i) {
+        const QString name = QString("prim2_%1").arg(i);
+        auto* mod = new RunIdRecordingModule(name, &mutex2, &sink2);
+        mod->initialize();
+        engine.addModule(mod);
+        names2 << name;
+    }
+    QVERIFY(engine.executeParallel(names2, input).success);
+    {
+        QMutexLocker locker(&mutex2);
+        QCOMPARE(sink2.size(), 4);
+        for (const QString& id : sink2) {
+            QVERIFY2(!id.isEmpty(), "runId must be non-empty");
+            QCOMPARE(id, sink2.first());
+        }
+        QVERIFY2(sink2.first() != firstCallId, "consecutive executeParallel calls must not share a runId");
+    }
+    engine.clearModules();
+}
+
+void TestRunEngine::testParallelStressFiftyRunsNoPollution() {
+    // 阶段 6 复核压力：50 次并行运行。除"本轮内 runId 一致"外，额外验证：
+    //  - 不同运行的 runId 不重复（跨轮 ID 集合去重）；
+    //  - clearModules 后上一轮输出无残留；
+    //  - 每轮结束后状态回落（非 Running、非 busy），控制队列无跨轮污染。
+    RunEngine& engine = RunEngine::instance();
+    engine.setParallelThreadCount(4);
+    QSet<QString> seenRunIds;
+
+    for (int iter = 0; iter < 50; ++iter) {
+        engine.clearModules();
+        // 上一轮输出标记必须已被清除（无残留）
+        QVERIFY2(!engine.moduleOutput(QStringLiteral("entry")).hasData(QStringLiteral("runmark")),
+                 qPrintable(QString("rep %1: stale output after clearModules").arg(iter)));
+
+        QMutex mutex;
+        QStringList sink;
+        Project project;
+        buildParallelBatchProject(project, 3);
+        QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) -> ModuleBase* {
+            auto* mod = new RunIdRecordingModule(inst.id, &mutex, &sink);
+            mod->setThreadSafe(inst.id != QLatin1String("entry"));
+            return mod;
+        }));
+
+        engine.runOnce();
+        QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
+
+        QMutexLocker locker(&mutex);
+        QCOMPARE(sink.size(), 4);
+        for (const QString& id : sink)
+            QCOMPARE(id, sink.first());
+        const QString roundId = sink.first();
+        locker.unlock();
+
+        QVERIFY2(!roundId.isEmpty(), "runId must be non-empty");
+        QVERIFY2(!seenRunIds.contains(roundId),
+                 qPrintable(QString("rep %1: runId reused across runs: %2").arg(iter).arg(roundId)));
+        seenRunIds.insert(roundId);
+
+        // 本轮输出必须真实携带唯一标记（确认清理前存在有效输出），
+        // 下一轮 clearModules 后再断言标记消失，方能证明"无残留"。
+        const ImageData roundOut = engine.moduleOutput(QStringLiteral("entry"));
+        QVERIFY2(roundOut.hasData(QStringLiteral("runmark")),
+                 qPrintable(QString("rep %1: entry output missing runmark").arg(iter)));
+        QCOMPARE(roundOut.data(QStringLiteral("runmark")).toString(), roundId);
+
+        QVERIFY2(engine.state() != RunState::Running, qPrintable(QString("rep %1: state still Running").arg(iter)));
+        QVERIFY2(!engine.isBusy(), qPrintable(QString("rep %1: engine still busy").arg(iter)));
+    }
+    engine.clearModules();
+}
+
+void TestRunEngine::testConcurrentStopDuringRunKeepsStoppedState() {
+    // 阶6 复核（五轮）：真实同步点——gate 模块进入 process 时释放 entered 信号量，
+    // 此时执行租约必已持有；主线程 acquire 后 stop() 必然落在"执行中"，再放行 gate。
+    // 断言：停止获胜（state=Stopped）、后继模块未执行、引擎回落。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance g;
+    g.id = QStringLiteral("gate");
+    g.moduleId = QStringLiteral("gate");
+    ModuleInstance af;
+    af.id = QStringLiteral("after");
+    af.moduleId = QStringLiteral("after");
+    project.addModule(g);
+    project.addModule(af);
+    ModuleConnection c;
+    c.fromModuleId = QStringLiteral("gate");
+    c.toModuleId = QStringLiteral("after");
+    c.fromPort = QStringLiteral("next");
+    c.toPort = QStringLiteral("control");
+    c.edgeType = QStringLiteral("control");
+    project.addConnection(c);
+
+    QSemaphore entered;
+    QSemaphore release;
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) -> ModuleBase* {
+        if (inst.id == QStringLiteral("gate"))
+            return new GateModule("gate", &entered, &release, &log);
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+
+    std::thread runner([&engine]() { engine.runOnce(); });
+    QVERIFY2(entered.tryAcquire(1, 5000), "gate module must enter execution");
+    engine.stop();     // 确定性：gate 执行中停止
+    release.release(); // 放行 gate
+    runner.join();
+
+    QCOMPARE(engine.state(), RunState::Stopped);
+    QVERIFY2(!engine.isBusy(), "engine must not be busy after stop+join");
+    QVERIFY2(!log.contains(QStringLiteral("after")), "stop must prevent successor module execution");
+    engine.clearModules();
+}
+
+void TestRunEngine::testConcurrentMaintenanceDuringRunStart() {
+    // 阶6 复核（五轮）：真实同步点——loadProject 的工厂阻塞在 factoryRelease，
+    // 此时维护租约必已持有；主线程在维护期间 runOnce 必须被拒绝（runStarted=0），
+    // stop() 不得与维护并发清理；放行后 load 成功且模块未被 stop 清除。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance s;
+    s.id = QStringLiteral("s");
+    s.moduleId = QStringLiteral("s");
+    project.addModule(s);
+
+    QSemaphore factoryEntered;
+    QSemaphore factoryRelease;
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    bool loaded = false;
+    std::thread loader([&]() {
+        loaded = engine.loadProject(&project, [&](const ModuleInstance& inst) -> ModuleBase* {
+            factoryEntered.release();
+            while (!factoryRelease.tryAcquire(1, 10)) {
+            }
+            return new TestExecutionModule(inst.id);
+        });
+    });
+
+    QVERIFY2(factoryEntered.tryAcquire(1, 5000), "factory must run under maintenance lease");
+    QVERIFY2(engine.isBusy(), "maintenance lease must mark engine busy");
+    engine.runOnce(); // 维护期间必须被拒绝
+    QCOMPARE(runStartedSpy.count(), 0);
+    engine.stop(); // 不得与维护并发清理，不得崩溃
+    factoryRelease.release();
+    loader.join();
+
+    QVERIFY2(loaded, "loadProject must succeed after maintenance completes");
+    QVERIFY2(!engine.isBusy(), "engine must settle after load");
+    QCOMPARE(engine.modules().size(), 1);
+    engine.clearModules();
+    QVERIFY(engine.modules().isEmpty());
+}
+
+void TestRunEngine::testStopSimultaneousWithBreakpointHit() {
+    // 阶6 复核（三轮）："断点命中同时停止"——断点回调内调用 stop()，
+    // 暂停应被放弃、走正常结束，状态为 Stopped 且不残留暂停。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance a;
+    a.id = QStringLiteral("A");
+    a.moduleId = QStringLiteral("A");
+    a.breakpoint = true;
+    ModuleInstance b;
+    b.id = QStringLiteral("B");
+    b.moduleId = QStringLiteral("B");
+    project.addModule(a);
+    project.addModule(b);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log;
+        return m;
+    }));
+
+    const QMetaObject::Connection stopConn =
+        connect(&engine, &RunEngine::breakpointHit, this, [&engine]() { engine.stop(); });
+    engine.runOnce();
+    disconnect(stopConn);
+
+    QVERIFY2(!engine.isPausedAtBreakpoint(), "stop at breakpoint must abandon pause");
+    QCOMPARE(engine.state(), RunState::Stopped);
+    QVERIFY2(!engine.isBusy(), "engine must settle after stop-at-breakpoint");
+    QVERIFY2(!log.contains("A"), "stop at breakpoint must not execute the paused module");
+
+    // 生命周期已回落：加载无断点工程应能正常执行。
+    Project project2;
+    ModuleInstance c;
+    c.id = QStringLiteral("C");
+    c.moduleId = QStringLiteral("C");
+    project2.addModule(c);
+    QStringList log2;
+    QVERIFY(engine.loadProject(&project2, [&log2](const ModuleInstance& inst) {
+        auto* m = new TestExecutionModule(inst.id);
+        m->executionLog = &log2;
+        return m;
+    }));
+    engine.runOnce();
+    QVERIFY2(log2.contains("C"), "engine must run normally after stop-at-breakpoint");
+    engine.clearModules();
+}
+
+void TestRunEngine::testClearAndLoadRejectedWhileRunning() {
+    // 阶6 复核（三轮）：运行期间 clearModules()/loadProject() 必须被拒绝，
+    // 不得删除正在执行的模块（生命周期锁门禁）。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance s;
+    s.id = QStringLiteral("s");
+    s.moduleId = QStringLiteral("s");
+    project.addModule(s);
+    std::atomic<int> running{0};
+    std::atomic<int> maxConc{0};
+    QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) {
+        return new ParallelSleepModule(inst.id, &running, &maxConc, 300);
+    }));
+
+    std::thread runner([&engine]() { engine.runOnce(); });
+    QThread::msleep(20);
+    QVERIFY2(engine.isBusy(), "engine must be busy during background run");
+
+    engine.clearModules();
+    QVERIFY2(!engine.modules().isEmpty(), "clearModules must be rejected while running");
+    Project p2;
+    QVERIFY2(!engine.loadProject(&p2), "loadProject must be rejected while running");
+
+    engine.stop();
+    runner.join();
+    QVERIFY2(!engine.isBusy(), "engine must settle after stop+join");
+    engine.clearModules();
+    QVERIFY(engine.modules().isEmpty());
+}
+
+void TestRunEngine::testResumeAfterStopDoesNotReexecute() {
+    // 阶6 八轮（P1-1）：stop 清空暂停态后，resume 因预期状态非 Paused 被拒绝，
+    // 不得把已停止流程当作新运行重新执行。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance a;
+    a.id = QStringLiteral("A");
+    a.moduleId = QStringLiteral("A");
+    a.breakpoint = true;
+    ModuleInstance b;
+    b.id = QStringLiteral("B");
+    b.moduleId = QStringLiteral("B");
+    project.addModule(a);
+    project.addModule(b);
+    ModuleConnection control;
+    control.fromModuleId = QStringLiteral("A");
+    control.toModuleId = QStringLiteral("B");
+    control.fromPort = QStringLiteral("next");
+    control.toPort = QStringLiteral("control");
+    control.edgeType = QStringLiteral("control");
+    project.addConnection(control);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+
+    engine.runOnce();
+    QVERIFY(engine.isPausedAtBreakpoint());
+    QVERIFY(log.isEmpty()); // A 暂停前未执行
+
+    engine.stop();
+    QVERIFY(!engine.isPausedAtBreakpoint());
+    engine.resume(); // 必须被拒绝（state=Stopped）
+    QTest::qWait(150);
+    QVERIFY2(log.isEmpty(), "resume after stop must not re-execute");
+    QCOMPARE(engine.state(), RunState::Stopped);
+    engine.clearModules();
+}
+
+void TestRunEngine::testStaleCycleTickAfterStopDoesNotExecute() {
+    // 阶6 八轮（P1-1）：stop 后过期循环 tick 的 CycleTick 意图因 state!=Running 被
+    // 拒绝，不得再执行模块。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance m;
+    m.id = QStringLiteral("M");
+    m.moduleId = QStringLiteral("M");
+    project.addModule(m);
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+
+    engine.start(); // cycle, tick=100ms
+    QTRY_VERIFY(!log.isEmpty());
+    engine.stop();
+    const int countAfterStop = log.count(QStringLiteral("M"));
+    QTest::qWait(350); // > 3 个 tick
+    QCOMPARE(log.count(QStringLiteral("M")), countAfterStop);
+    QCOMPARE(engine.state(), RunState::Stopped);
+    engine.clearModules();
+}
+
+void TestRunEngine::testCycleBreakpointResumeKeepsCycleMode() {
+    // 阶6 八轮（P1-2）：循环流程命中断点后恢复，仍保持 RunCycle（不退化为单次）。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance a;
+    a.id = QStringLiteral("A");
+    a.moduleId = QStringLiteral("A");
+    a.breakpoint = true;
+    ModuleInstance b;
+    b.id = QStringLiteral("B");
+    b.moduleId = QStringLiteral("B");
+    project.addModule(a);
+    project.addModule(b);
+    ModuleConnection control;
+    control.fromModuleId = QStringLiteral("A");
+    control.toModuleId = QStringLiteral("B");
+    control.fromPort = QStringLiteral("next");
+    control.toPort = QStringLiteral("control");
+    control.edgeType = QStringLiteral("control");
+    project.addConnection(control);
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+
+    engine.start(); // cycle
+    QTRY_VERIFY(engine.isPausedAtBreakpoint());
+    QCOMPARE(engine.runMode(), RunMode::RunCycle);
+
+    engine.resume();
+    QCOMPARE(engine.runMode(), RunMode::RunCycle); // 恢复后仍为循环模式
+    QTRY_VERIFY(log.contains(QStringLiteral("B")));
+    QCOMPARE(engine.runMode(), RunMode::RunCycle);
+    QVERIFY2(engine.state() == RunState::Running, "cycle must remain active after resume");
+    engine.stop();
+    engine.clearModules();
+}
+
+void TestRunEngine::testValidationAbortThenNextRunNotBlocked() {
+    // 阶6 八轮：校验失败的原子收尾不得阻塞/覆盖下一轮启动。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project bad;
+    ModuleInstance req;
+    req.id = QStringLiteral("req");
+    req.moduleId = QStringLiteral("req");
+    bad.addModule(req); // 必需输入 point1 未连接 → validateFlow 失败
+    QVERIFY(
+        engine.loadProject(&bad, [](const ModuleInstance& instance) { return new RequiredInputModule(instance.id); }));
+    engine.runOnce(); // 校验失败 → finalizeAbortedRun
+    QVERIFY2(!engine.isBusy(), "aborted run must release lease");
+    QCOMPARE(engine.state(), RunState::Idle);
+
+    engine.clearModules();
+    Project good;
+    ModuleInstance t;
+    t.id = QStringLiteral("T");
+    t.moduleId = QStringLiteral("T");
+    good.addModule(t);
+    QStringList log;
+    QVERIFY(engine.loadProject(&good, [&log](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+    engine.runOnce();
+    QVERIFY2(log.contains(QStringLiteral("T")), "next run must execute after aborted run");
+    QCOMPARE(engine.state(), RunState::Idle);
+    engine.clearModules();
+}
+
+void TestRunEngine::testStopDuringMaintenanceClearsStepState() {
+    // 阶6 八轮（P2-6）：维护期间 stop 的单步清理在 releaseMaintenance 补做，
+    // 下一次单步从新工程起点开始（不残留旧 step 状态）。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project p1;
+    ModuleInstance m1;
+    m1.id = QStringLiteral("M1");
+    m1.moduleId = QStringLiteral("M1");
+    ModuleInstance m2;
+    m2.id = QStringLiteral("M2");
+    m2.moduleId = QStringLiteral("M2");
+    p1.addModule(m1);
+    p1.addModule(m2);
+    ModuleConnection control;
+    control.fromModuleId = QStringLiteral("M1");
+    control.toModuleId = QStringLiteral("M2");
+    control.fromPort = QStringLiteral("next");
+    control.toPort = QStringLiteral("control");
+    control.edgeType = QStringLiteral("control");
+    p1.addConnection(control);
+    QStringList log1;
+    QVERIFY(engine.loadProject(&p1, [&log1](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log1;
+        return module;
+    }));
+    QVERIFY(engine.stepOnce()); // 执行 M1，step 状态指向 M2
+    QVERIFY(log1.contains(QStringLiteral("M1")));
+    QVERIFY(!log1.contains(QStringLiteral("M2")));
+
+    Project p2;
+    ModuleInstance s;
+    s.id = QStringLiteral("S");
+    s.moduleId = QStringLiteral("S");
+    p2.addModule(s);
+    QSemaphore factoryEntered;
+    QSemaphore factoryRelease;
+    bool loaded = false;
+    QStringList log2;
+    std::thread loader([&]() {
+        loaded = engine.loadProject(&p2, [&](const ModuleInstance& instance) {
+            factoryEntered.release();
+            while (!factoryRelease.tryAcquire(1, 10)) {
+            }
+            auto* module = new TestExecutionModule(instance.id);
+            module->executionLog = &log2;
+            return module;
+        });
+    });
+    QVERIFY(factoryEntered.tryAcquire(1, 5000));
+    engine.stop(); // 维护期间停止
+    factoryRelease.release();
+    loader.join();
+    QVERIFY(loaded);
+
+    QVERIFY(engine.stepOnce()); // step 状态应已清除 → 从新工程起点 S 开始
+    QVERIFY2(log2.contains(QStringLiteral("S")), "step must restart from new project start");
+    engine.clearModules();
+}
+
+void TestRunEngine::testConsecutiveStepsShareRunIdAndIncrementFrameId() {
+    // 阶6 九轮（P1-1）：同一流程连续单步共享同一 runId、frameId 递增；
+    // RunIntent::Step 的 fresh 仅首步为 true，不每步重置上下文。
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance m1;
+    m1.id = QStringLiteral("M1");
+    m1.moduleId = QStringLiteral("M1");
+    ModuleInstance m2;
+    m2.id = QStringLiteral("M2");
+    m2.moduleId = QStringLiteral("M2");
+    project.addModule(m1);
+    project.addModule(m2);
+    ModuleConnection control;
+    control.fromModuleId = QStringLiteral("M1");
+    control.toModuleId = QStringLiteral("M2");
+    control.fromPort = QStringLiteral("next");
+    control.toPort = QStringLiteral("control");
+    control.edgeType = QStringLiteral("control");
+    project.addConnection(control);
+
+    QMutex mutex;
+    QStringList runIds;
+    QList<qint64> frames;
+    QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& instance) {
+        return new RunIdRecordingModule(instance.id, &mutex, &runIds, &frames);
+    }));
+
+    QVERIFY(engine.stepOnce()); // 首步：M1，fresh 重置上下文
+    QVERIFY(engine.stepOnce()); // 次步：M2，共享 runId
+
+    QMutexLocker locker(&mutex);
+    QCOMPARE(runIds.size(), 2);
+    QCOMPARE(frames.size(), 2);
+    QCOMPARE(runIds.at(0), runIds.at(1));     // 同一流程连续单步同 runId
+    QCOMPARE(frames.at(1), frames.at(0) + 1); // frameId 递增
     engine.clearModules();
 }
 

@@ -204,6 +204,9 @@ QString cleanToolDisplayName(const QString& displayName) {
 }
 
 QString measurementInputModeForConsumer(const QString& moduleId) {
+    if (moduleId == QStringLiteral("com.deeplux.plugin.fitcircle")) {
+        return QStringLiteral("point_set");
+    }
     if (moduleId == QStringLiteral("com.deeplux.plugin.distancepp")) {
         return QStringLiteral("point_pair");
     }
@@ -235,6 +238,9 @@ QString measurementInputModeText(const QString& mode) {
     if (mode == QStringLiteral("point_plane")) {
         return QStringLiteral("点、平面三点");
     }
+    if (mode == QStringLiteral("point_set")) {
+        return QStringLiteral("圆周上的 3 个点");
+    }
     return mode;
 }
 
@@ -242,7 +248,7 @@ int measurementPickCountForMode(const QString& mode) {
     if (mode == QStringLiteral("point_pair")) {
         return 2;
     }
-    if (mode == QStringLiteral("point_line")) {
+    if (mode == QStringLiteral("point_line") || mode == QStringLiteral("point_set")) {
         return 3;
     }
     if (mode == QStringLiteral("line_pair") || mode == QStringLiteral("point_plane")) {
@@ -515,7 +521,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
                 if (out.isValid()) {
                     // 只在没有选中特定模块或当前模块就是执行模块时显示
                     if (m_selectedModuleId.isEmpty() || m_selectedModuleId == moduleName) {
-                        displayImage(out);
+                        // 传入模块身份，记录模块→视口归属供测量叠加绑定
+                        displayImage(out, QString(), moduleName);
                     }
                 }
                 // 更新检查器结果（选择模块时同时更新检查器）
@@ -595,6 +602,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
     for (ViewportWidget* viewport : m_displayManager->allViewports()) {
         onViewportCreated(viewport->viewportId(), viewport);
     }
+    // 按模块身份记录视口归属：仅 2D 图像显示参与测量叠加绑定（点云不参与）
+    connect(m_displayManager, &DisplayManager::dataDisplayed, this, [this](const QString& viewportId) {
+        if (m_displayingImage2D && !m_displayingModuleId.isEmpty())
+            m_moduleViewportIds.insert(m_displayingModuleId, viewportId);
+        m_displayingModuleId.clear();
+        m_displayingImage2D = false;
+    });
 
     // Connect Agent action log to UI (will be set after m_agentActionLogWidget is created)
 
@@ -1025,7 +1039,7 @@ void MainWindow::setupMainLayout() {
     addToolBoxItem(imgProcItem, tr("图像预处理"), "PerProcessing");
     addToolBoxItem(imgProcItem, tr("颜色识别"), "ColorRecognition");
     addToolBoxItem(imgProcItem, tr("斑点分析"), "Blob");
-    addToolBoxItem(imgProcItem, tr("图像脚本"), "ImageScript");
+    addToolBoxItem(imgProcItem, tr("内置图像操作"), "ImageScript");
     addToolBoxItem(imgProcItem, tr("拼图"), "JigsawPuzzle");
 
     QTreeWidgetItem* detectItem = createCategoryItem(m_toolBoxTree, tr("02 - 检测识别"), "detection");
@@ -2416,6 +2430,22 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
     const QJsonArray newPoint3D = pointArray3D(point.x(), point.y(), 0.0);
     auto finishPick = [&]() { finishMeasurementPick(instanceId, mod->currentParams(), false); };
 
+    if (mode == "point_set") {
+        QJsonArray points = params["points"].toArray();
+        points.append(newPoint2D);
+        mod->setParam("points", points);
+        if (project)
+            project->setModuleParam(instanceId, "points", points);
+        Logger::instance().info(QString("2D pick: point set p%1 set to (%2, %3)")
+                                    .arg(points.size())
+                                    .arg(point.x(), 0, 'f', 2)
+                                    .arg(point.y(), 0, 'f', 2),
+                                "Picking");
+        m_measurementPickCursor[instanceId] = points.size();
+        finishPick();
+        return;
+    }
+
     if (mode == "line_pair") {
         const int step = cursor % 4;
         const QString key = step < 2 ? QStringLiteral("line1") : QStringLiteral("line2");
@@ -2526,7 +2556,12 @@ void MainWindow::refreshMeasurementOverlay(const QJsonObject& params, int visibl
         lines.append(MeasurementOverlayLine{pointFromArray2D(arr, 0), pointFromArray2D(arr, 2), label});
     };
 
-    if (mode == QStringLiteral("point_line")) {
+    if (mode == QStringLiteral("point_set")) {
+        const QJsonArray pointSet = params["points"].toArray();
+        for (int i = 0; i < pointSet.size() && i < visibleSteps; ++i) {
+            addPoint(pointSet.at(i).toArray(), QStringLiteral("P%1").arg(i + 1), i + 1);
+        }
+    } else if (mode == QStringLiteral("point_line")) {
         const QJsonArray point = params["point"].toArray();
         const QJsonArray line = params["line"].toArray();
         addPoint(point, QStringLiteral("P"), 1);
@@ -2566,12 +2601,15 @@ void MainWindow::refreshMeasurementOverlay(const QJsonObject& params, int visibl
         }
     }
 
+    // 拾取阶段叠加画在正在拾取的图像上：仅当含图像的视口唯一（无歧义）时绘制，
+    // 不使用"最近一次显示"的全局值，避免误画到无关视口。
+    QList<HImageWidget*> imageWidgets;
     for (ViewportWidget* viewport : m_displayManager->allViewports()) {
-        HImageWidget* imageWidget = viewport ? viewport->imageWidget() : nullptr;
-        if (imageWidget && imageWidget->hasImage()) {
-            imageWidget->setMeasurementOverlay(points, lines);
-        }
+        if (viewport && viewport->imageWidget() && viewport->imageWidget()->hasImage())
+            imageWidgets.append(viewport->imageWidget());
     }
+    if (imageWidgets.size() == 1)
+        imageWidgets.first()->setMeasurementOverlay(points, lines);
 }
 
 void MainWindow::updateMeasurementResultOnOverlay() {
@@ -2579,40 +2617,152 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         return;
     }
 
-    // 查找 MeasurementInput 模块
-    QJsonObject inputParams;
-    QString foundInstanceId;
-    for (auto it = m_flowModules.constBegin(); it != m_flowModules.constEnd(); ++it) {
-        IModule* mod = it.value();
-        if (!mod)
-            continue;
-        // 匹配 moduleId 或模块名
-        if (mod->moduleId().compare(QStringLiteral("measurementinput"), Qt::CaseInsensitive) == 0 ||
-            mod->moduleId().compare(QStringLiteral("com.deeplux.plugin.measurementinput"), Qt::CaseInsensitive) == 0 ||
-            mod->name().contains(QStringLiteral("测量输入"), Qt::CaseInsensitive)) {
-            inputParams = mod->currentParams();
-            foundInstanceId = it.key();
-            break;
-        }
-    }
-
-    if (inputParams.isEmpty()) {
-        Logger::instance().debug(
-            QStringLiteral("updateMeasurementResultOnOverlay: no MeasurementInput found in %1 modules")
-                .arg(m_flowModules.size()),
-            "Measurement");
+    // 以项目模型为实例身份权威来源，插件运行实例的名称字段可能为空。
+    // 无法归属/无测量时统一清除叠加（含 3D 视口），避免旧支路叠加残留。
+    Project* currentProject = ProjectManager::instance().currentProject();
+    if (!currentProject) {
+        clearMeasurementOverlays();
         return;
     }
 
-    Logger::instance().debug(QStringLiteral("updateMeasurementResultOnOverlay: found %1, mode=%2, params=%3")
-                                 .arg(foundInstanceId)
-                                 .arg(inputParams["mode"].toString())
-                                 .arg(QString(QJsonDocument(inputParams).toJson(QJsonDocument::Compact))),
-                             "Measurement");
+    QList<ModuleInstance> measurementInputs;
+    for (const ModuleInstance& instance : currentProject->modules()) {
+        const PluginInfo info = PluginManager::instance().pluginInfo(instance.moduleId);
+        if (instance.moduleId.compare(QStringLiteral("MeasurementInput"), Qt::CaseInsensitive) == 0 ||
+            info.id.compare(QStringLiteral("com.deeplux.plugin.measurementinput"), Qt::CaseInsensitive) == 0) {
+            measurementInputs.append(instance);
+        }
+    }
+    if (measurementInputs.isEmpty()) {
+        clearMeasurementOverlays();
+        return;
+    }
 
-    // 优先从下游插件输出读取结果，如果没有则从坐标直接计算
-    const ImageData lastOut = RunEngine::instance().lastOutput();
-    const QMap<QString, QVariant> results = lastOut.isValid() ? lastOut.allData() : QMap<QString, QVariant>();
+    // 某测量输入的全部下游模块（含直接/间接连接，不含自身）
+    auto downstreamOf = [&currentProject](const QString& inputId) {
+        QSet<QString> visited{inputId};
+        QStringList queue{inputId};
+        QStringList result;
+        while (!queue.isEmpty()) {
+            const QString current = queue.takeFirst();
+            for (const ModuleConnection& connection : currentProject->connections()) {
+                if (connection.fromModuleId != current || visited.contains(connection.toModuleId)) {
+                    continue;
+                }
+                visited.insert(connection.toModuleId);
+                queue.append(connection.toModuleId);
+                result.append(connection.toModuleId);
+            }
+        }
+        return result;
+    };
+
+    // 拥有目标节点（位于其支路内）的测量输入集合；>1 表示归属不唯一
+    auto owningInputs = [&](const QString& moduleId) {
+        QList<const ModuleInstance*> owners;
+        if (moduleId.isEmpty())
+            return owners;
+        for (const ModuleInstance& input : measurementInputs) {
+            if (input.id == moduleId || downstreamOf(input.id).contains(moduleId))
+                owners.append(&input);
+        }
+        return owners;
+    };
+
+    // 多测量支路时不得固定取第一个输入，否则会把流程 A 的点与流程 B 的结果组合。
+    // 归属必须唯一：当前选中节点所属支路 > 最近执行节点所属支路 > 唯一输入；
+    // 归属不唯一（多个测量输入汇入同一节点）或选中节点不属于任何测量支路时，
+    // 清除叠加并返回，避免错配或旧支路叠加残留。
+    // preferredModule：确定支路来源的具体节点（选中节点 / 最近执行节点），
+    // 其自身输出的结果优先于下游 BFS 命中（见下方结果选取规则）。
+    const ModuleInstance* chosen = nullptr;
+    QString preferredModuleId;
+    if (!m_selectedModuleId.isEmpty()) {
+        const QList<const ModuleInstance*> owners = owningInputs(m_selectedModuleId);
+        if (owners.size() > 1) {
+            clearMeasurementOverlays();
+            return; // 归属不唯一，不绘制
+        }
+        if (owners.size() == 1) {
+            chosen = owners.first();
+            preferredModuleId = m_selectedModuleId;
+        } else {
+            clearMeasurementOverlays();
+            return; // 选中节点不属于任何测量支路，清除叠加，不回退全局最近输出
+        }
+    }
+    if (!chosen) {
+        const QString lastOutputModule = RunEngine::instance().lastOutputModuleName();
+        const QList<const ModuleInstance*> owners = owningInputs(lastOutputModule);
+        if (owners.size() > 1) {
+            clearMeasurementOverlays();
+            return; // 归属不唯一，不绘制
+        }
+        if (owners.size() == 1) {
+            chosen = owners.first();
+            preferredModuleId = lastOutputModule;
+        }
+    }
+    if (!chosen && measurementInputs.size() == 1) {
+        chosen = &measurementInputs.first();
+    }
+    if (!chosen) {
+        clearMeasurementOverlays();
+        return;
+    }
+
+    const QJsonObject inputParams = chosen->params;
+
+    const QString mode = inputParams["mode"].toString("point_pair");
+    auto resultMatches = [&mode](const ImageData& candidate) {
+        const bool matchesPointSet = mode == QStringLiteral("point_set") && candidate.hasData("circle_radius");
+        const bool matchesDistance =
+            mode != QStringLiteral("point_set") && (candidate.hasData("distance") || candidate.hasData("gap_distance"));
+        return matchesPointSet || matchesDistance;
+    };
+
+    // 结果选取规则：
+    // 1) 选中了测量输入以外的具体模块时，只显示该模块自身输出的测量值——
+    //    点哪个结果模块就显示哪个，不得按 BFS 顺序命中同支路的其它结果模块；
+    //    该模块自身无匹配结果时不绘制结果（不回退下游搜索）。
+    // 2) 选中的是测量输入节点（或无选择而回退）时，优先采用参照模块
+    //    （选中/最近执行节点）自身输出，其次沿所选支路整个下游链搜索；
+    //    不回退全局 lastOutput()（避免混入另一支路结果）；
+    //    共享下游（同时属于其它测量输入支路）的结果归属不唯一，跳过不采用。
+    ImageData resultOutput;
+    QString resultModuleId;
+
+    auto tryAdoptOwnOutput = [&](const QString& moduleId) {
+        const ImageData own = RunEngine::instance().moduleOutput(moduleId);
+        if (resultMatches(own)) {
+            resultOutput = own;
+            resultModuleId = moduleId;
+            return true;
+        }
+        return false;
+    };
+
+    const bool selectedInputNode = m_selectedModuleId.isEmpty() || m_selectedModuleId == chosen->id;
+    if (!selectedInputNode) {
+        // 选中具体结果模块：只显示其自身输出。未运行/执行失败/无匹配输出时
+        // 清除叠加并返回——不得落入下方按输入点几何推算的"伪测量值"。
+        if (!tryAdoptOwnOutput(m_selectedModuleId)) {
+            clearMeasurementOverlays();
+            return;
+        }
+    } else if (preferredModuleId.isEmpty() || !tryAdoptOwnOutput(preferredModuleId)) {
+        for (const QString& moduleId : downstreamOf(chosen->id)) {
+            const ImageData candidate = RunEngine::instance().moduleOutput(moduleId);
+            if (!resultMatches(candidate))
+                continue;
+            if (owningInputs(moduleId).size() > 1)
+                continue; // 结果节点同时属于其它测量支路，归属不唯一，跳过
+            resultOutput = candidate;
+            resultModuleId = moduleId;
+            break;
+        }
+    }
+    const QMap<QString, QVariant> results = resultOutput.allData();
 
     auto resultValue = [&](const QStringList& keys) -> double {
         for (const QString& key : keys) {
@@ -2627,7 +2777,6 @@ void MainWindow::updateMeasurementResultOnOverlay() {
 
     QList<MeasurementOverlayPoint> points;
     QList<MeasurementOverlayLine> lines;
-    const QString mode = inputParams["mode"].toString("point_pair");
 
     if (mode == QStringLiteral("point_pair")) {
         const QJsonArray p1 = inputParams["point1"].toArray();
@@ -2644,6 +2793,28 @@ void MainWindow::updateMeasurementResultOnOverlay() {
                 dist = sqrt(dx * dx + dy * dy);
             }
             lines.append({pointFromArray2D(p1), pointFromArray2D(p2), fmtDist(dist)});
+        }
+    } else if (mode == QStringLiteral("point_set")) {
+        const QJsonArray pointSet = inputParams["points"].toArray();
+        for (int i = 0; i < pointSet.size(); ++i) {
+            const QJsonArray point = pointSet.at(i).toArray();
+            if (point.size() >= 2) {
+                points.append({pointFromArray2D(point), QStringLiteral("P%1").arg(i + 1)});
+            }
+        }
+
+        const double centerX = resultValue({"circle_center_x"});
+        const double centerY = resultValue({"circle_center_y"});
+        const double radius = resultValue({"circle_radius"});
+        if (radius > 0.0) {
+            constexpr int segments = 64;
+            for (int i = 0; i < segments; ++i) {
+                const double angle1 = 2.0 * M_PI * i / segments;
+                const double angle2 = 2.0 * M_PI * (i + 1) / segments;
+                lines.append({QPointF(centerX + radius * std::cos(angle1), centerY + radius * std::sin(angle1)),
+                              QPointF(centerX + radius * std::cos(angle2), centerY + radius * std::sin(angle2)),
+                              i == segments * 7 / 8 ? QStringLiteral("R: %1 px").arg(radius, 0, 'f', 1) : QString()});
+            }
         }
     } else if (mode == QStringLiteral("point_line")) {
         const QJsonArray pt = inputParams["point"].toArray();
@@ -2711,12 +2882,25 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         }
     }
 
+    // 视口按模块身份绑定：叠加画在"产生测量结果的模块"所显示的视口上，
+    // 不使用"最近一次显示"的全局值，避免画到无关支路的视口。
+    const QString bindModuleId = resultModuleId.isEmpty() ? chosen->id : resultModuleId;
+    const QString boundViewportId = m_moduleViewportIds.value(bindModuleId);
+    ViewportWidget* targetViewport = boundViewportId.isEmpty() ? nullptr : m_displayManager->viewport(boundViewportId);
+    HImageWidget* targetImageWidget = targetViewport ? targetViewport->imageWidget() : nullptr;
+    if (targetImageWidget && targetImageWidget->hasImage()) {
+        targetImageWidget->setMeasurementOverlay(points, lines);
+        return;
+    }
+    // 兜底：仅当含图像的视口唯一（无歧义）时绘制，避免误画到多支路的无关视口。
+    QList<HImageWidget*> imageWidgets;
     for (ViewportWidget* viewport : m_displayManager->allViewports()) {
         HImageWidget* imageWidget = viewport ? viewport->imageWidget() : nullptr;
-        if (imageWidget && imageWidget->hasImage()) {
-            imageWidget->setMeasurementOverlay(points, lines);
-        }
+        if (imageWidget && imageWidget->hasImage())
+            imageWidgets.append(imageWidget);
     }
+    if (imageWidgets.size() == 1)
+        imageWidgets.first()->setMeasurementOverlay(points, lines);
 }
 
 void MainWindow::refreshMeasurementOverlay3D(const QJsonObject& params, int visibleSteps) {
@@ -4759,13 +4943,14 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector, b
     }
 
     if (instanceId.isEmpty()) {
-        // 清空选择
+        // 清空选择（含关闭检查器路径）：同步清除测量叠加，避免旧结果残留
         if (m_inspectorPanel) {
             m_inspectorPanel->clear();
         }
         if (m_flowCanvas) {
             m_flowCanvas->scene()->clearSelection();
         }
+        clearMeasurementOverlays();
         return;
     }
 
@@ -4829,11 +5014,14 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector, b
         }
     }
 
-    // 同时显示模块输出到主视图
+    // 同时显示模块输出到主视图（传入模块身份，记录模块→视口归属）
     const ImageData output = RunEngine::instance().moduleOutput(instanceId);
     if (!m_dirtyModuleIds.contains(instanceId) && output.isValid()) {
-        displayImage(output);
+        displayImage(output, QString(), instanceId);
     }
+    // 切换模块后按当前选中支路刷新测量叠加，避免旧支路叠加残留
+    // （选中节点不属于任何测量支路时会清除叠加）。
+    updateMeasurementResultOnOverlay();
 }
 
 // ===== 阶段 9: 自适应布局与状态保存 =====
@@ -5114,11 +5302,13 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
     adaptInspectorLayout();
 }
 
-void MainWindow::displayImage(const ImageData& image, const QString& label) {
+void MainWindow::displayImage(const ImageData& image, const QString& label, const QString& moduleId) {
     Q_UNUSED(label);
-    // 如果 ImageData 元数据中包含 PointCloudData，走 3D 显示路径
+    // 如果 ImageData 元数据中包含 PointCloudData，走 3D 显示路径（不参与 2D 测量叠加绑定）
     auto cloud = MeasurementData::pointCloud(image, nullptr);
     if (cloud && !cloud->isEmpty()) {
+        m_displayingModuleId.clear();
+        m_displayingImage2D = false;
         DisplayData data;
         data.variant() = std::move(*cloud);
         data.setTimestamp(QDateTime::currentMSecsSinceEpoch());
@@ -5127,6 +5317,13 @@ void MainWindow::displayImage(const ImageData& image, const QString& label) {
         }
         return;
     }
+    if (image.toQImage().isNull()) {
+        m_displayingModuleId.clear();
+        m_displayingImage2D = false;
+        return;
+    }
+    m_displayingModuleId = moduleId;
+    m_displayingImage2D = true;
     DisplayData data(image);
     if (m_displayManager) {
         m_displayManager->displayData(data);

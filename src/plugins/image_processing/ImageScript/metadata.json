@@ -4,19 +4,18 @@
     "category": "image_processing",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "使用脚本语言处理图像",
+    "description": "按类型执行内置图像操作（反转/灰度/模糊/锐化）",
     "ui": {
         "parameters": {
             "scriptType": {
-                "min": 0,
-                "step": 1,
-                "decimals": 1,
                 "order": 10,
-                "label": "脚本类型"
-            },
-            "script": {
-                "order": 20,
-                "label": "脚本"
+                "label": "内置图像操作",
+                "_options": [
+                    {"label": "图像反转", "value": 0},
+                    {"label": "转灰度", "value": 1},
+                    {"label": "模糊", "value": 2},
+                    {"label": "锐化", "value": 3}
+                ]
             }
         }
     },

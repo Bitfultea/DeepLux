@@ -1,0 +1,131 @@
+{
+    "id": "com.deeplux.plugin.3dpreprocessing",
+    "name": "3DPreProcessing",
+    "category": "image_processing",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "深度/高度图预处理：2 通道提取深度通道，自动 NoData 检测（TiffLoader 判据，autoNoData 可关、输入携带契约时让位），消费上游 height_invalid_value 并统一转为本次填充值，可选 ROI（宽高须同为 0 或同 >0）与高度筛选；填充值与存活高度碰撞时失败关闭；输出 CV_32F 高度图、统计与 float 量化的 height_invalid_value 契约键",
+    "ui": {
+        "parameters": {
+            "heightFilterEnabled": {
+                "order": 10,
+                "label": "启用高度筛选"
+            },
+            "heightFilterMin": {
+                "min": -1000000,
+                "max": 1000000,
+                "step": 0.1,
+                "decimals": 3,
+                "order": 20,
+                "label": "高度下限"
+            },
+            "heightFilterMax": {
+                "min": -1000000,
+                "max": 1000000,
+                "step": 0.1,
+                "decimals": 3,
+                "order": 30,
+                "label": "高度上限"
+            },
+            "fillValue": {
+                "min": -1000000,
+                "max": 1000000,
+                "step": 0.1,
+                "decimals": 3,
+                "order": 40,
+                "label": "越界填充值"
+            },
+            "autoNoData": {
+                "order": 45,
+                "label": "自动 NoData 检测"
+            },
+            "roiCenterX": {
+                "min": 0,
+                "max": 1000000,
+                "step": 1,
+                "decimals": 0,
+                "order": 50,
+                "label": "ROI 中心X"
+            },
+            "roiCenterY": {
+                "min": 0,
+                "max": 1000000,
+                "step": 1,
+                "decimals": 0,
+                "order": 60,
+                "label": "ROI 中心Y"
+            },
+            "roiWidth": {
+                "min": 0,
+                "max": 1000000,
+                "step": 1,
+                "decimals": 0,
+                "order": 70,
+                "label": "ROI 宽度（0=全图）"
+            },
+            "roiHeight": {
+                "min": 0,
+                "max": 1000000,
+                "step": 1,
+                "decimals": 0,
+                "order": 80,
+                "label": "ROI 高度（0=全图）"
+            }
+        }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "深度/高度图",
+                "type": "Any",
+                "required": true,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "预处理高度图",
+                "type": "HeightMap2D",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "valid_pixel_count",
+                "displayName": "有效像素数",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "filtered_pixel_count",
+                "displayName": "被填充像素数",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "min_height",
+                "displayName": "存活最小高度",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "max_height",
+                "displayName": "存活最大高度",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "height_invalid_value",
+                "displayName": "无效高度值契约",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            }
+        ]
+    }
+}

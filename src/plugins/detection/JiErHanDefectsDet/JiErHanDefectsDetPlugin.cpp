@@ -5,6 +5,7 @@
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QVBoxLayout>
+#include <algorithm>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -56,6 +57,12 @@ bool JiErHanDefectsDetPlugin::process(const ImageData& input, ImageData& output)
 
     // 检测缺陷
     std::vector<DefectResult> defects = detectDefects(image);
+
+    // 阶段 2：阈值真实参与结果过滤——仅保留置信度 ≥ 阈值的候选，
+    // 而不是只把阈值写进输出数据却不过滤结果。
+    defects.erase(std::remove_if(defects.begin(), defects.end(),
+                                 [this](const DefectResult& d) { return d.confidence < m_threshold; }),
+                  defects.end());
 
     if (defects.empty()) {
         emit errorOccurred(tr("未检测到缺陷"));
@@ -139,9 +146,10 @@ std::vector<JiErHanDefectsDetPlugin::DefectResult> JiErHanDefectsDetPlugin::dete
 }
 
 bool JiErHanDefectsDetPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
+    // 阶段 2：范围与 metadata（0.1–1.0, step 0.05, 2 位小数）同步
     double threshold = params["threshold"].toDouble();
-    if (threshold <= 0 || threshold > 1) {
-        error = tr("阈值必须在0到1之间");
+    if (threshold < 0.1 || threshold > 1.0) {
+        error = tr("阈值必须在 0.1 到 1.0 之间");
         return false;
     }
     return true;
@@ -151,10 +159,11 @@ QWidget* JiErHanDefectsDetPlugin::createConfigWidget() {
     QWidget* widget = new QWidget();
     QVBoxLayout* layout = new QVBoxLayout(widget);
 
-    layout->addWidget(new QLabel(tr("检测阈值 (0-1):")));
+    layout->addWidget(new QLabel(tr("检测阈值 (0.1-1.0):")));
     QDoubleSpinBox* threshSpin = new QDoubleSpinBox();
     threshSpin->setRange(0.1, 1.0);
     threshSpin->setSingleStep(0.05);
+    threshSpin->setDecimals(2);
     threshSpin->setValue(m_params["threshold"].toDouble());
     layout->addWidget(threshSpin);
 

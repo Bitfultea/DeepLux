@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QKeySequence>
 #include <QMap>
 #include <QObject>
@@ -44,7 +46,7 @@ struct ShortcutItem {
 /**
  * @brief 快捷键管理器
  */
-class ShortcutManager : public QObject {
+class DEEPLUX_API ShortcutManager : public QObject {
     Q_OBJECT
 
 public:

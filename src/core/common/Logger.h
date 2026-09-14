@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -30,7 +32,7 @@ struct LogEntry {
  *
  * 单例模式，全局日志记录器
  */
-class Logger : public QObject {
+class DEEPLUX_API Logger : public QObject {
     Q_OBJECT
 
 public:
@@ -83,7 +85,7 @@ private:
     QString m_logFilePath;
     QFile* m_logFile = nullptr;
     QTextStream* m_logStream = nullptr;
-    mutable QMutex m_mutex{QMutex::Recursive};
+    mutable QRecursiveMutex m_mutex;
     bool m_logToFile = true;
     LogLevel m_minLevel = LogLevel::Debug;
     qint64 m_maxLogFileSize = 10 * 1024 * 1024; // 10MB
