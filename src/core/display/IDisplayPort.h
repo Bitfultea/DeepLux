@@ -4,7 +4,7 @@
 
 // Forward declaration instead of include
 namespace DeepLux {
-class DisplayData;
+struct DisplayData;
 }
 
 namespace DeepLux {

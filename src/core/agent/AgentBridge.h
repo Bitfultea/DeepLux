@@ -1,6 +1,8 @@
 #ifndef DEEPLUX_AGENT_BRIDGE_H
 #define DEEPLUX_AGENT_BRIDGE_H
 
+#include "../platform/Platform.h"
+
 #include <QJsonObject>
 #include <QList>
 #include <QLocalServer>
@@ -34,7 +36,7 @@ class AgentConnection;
  * - event: 主动事件推送
  * - pong: 心跳响应
  */
-class AgentBridge : public QObject {
+class DEEPLUX_API AgentBridge : public QObject {
     Q_OBJECT
 
 public:

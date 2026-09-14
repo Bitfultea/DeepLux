@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QImage>
 #include <QList>
 #include <QNetworkAccessManager>
@@ -32,7 +34,7 @@ namespace DeepLux {
  * - 30s 超时：将状态置为 Error 并发出 errorOccurred
  * - 收到 invalid_embedding 时自动重新 setImage 并重试一次预测
  */
-class SamBackendClient : public QObject {
+class DEEPLUX_API SamBackendClient : public QObject {
     Q_OBJECT
 
 public:

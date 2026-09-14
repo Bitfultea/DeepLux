@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../platform/Platform.h"
 #include "core/deeplux/DataContract.h"
 
 #include <QCoreApplication>
@@ -51,7 +52,7 @@ struct PluginInfo {
  *
  * 负责扫描、加载、管理插件
  */
-class PluginManager : public QObject {
+class DEEPLUX_API PluginManager : public QObject {
     Q_OBJECT
 
 public:

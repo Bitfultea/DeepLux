@@ -9,7 +9,7 @@
 
 namespace DeepLux {
 
-class GlobalVarManager : public QObject {
+class DEEPLUX_API GlobalVarManager : public QObject {
     Q_OBJECT
 
 public:

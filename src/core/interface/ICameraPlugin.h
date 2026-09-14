@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QList>
 #include <QObject>
 #include <QString>
@@ -28,7 +30,7 @@ struct CameraInfo {
  *
  * 用于运行时发现和创建相机实例
  */
-class ICameraPlugin : public QObject {
+class DEEPLUX_API ICameraPlugin : public QObject {
     Q_OBJECT
 public:
     ICameraPlugin(QObject* parent = nullptr) : QObject(parent) {}

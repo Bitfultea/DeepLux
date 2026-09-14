@@ -16,7 +16,7 @@ namespace DeepLux {
 
 class HImageWidget;
 class Viewport3DContent;
-class DisplayData;
+struct DisplayData;
 
 /**
  * @brief ViewportWidget - Container for display viewport

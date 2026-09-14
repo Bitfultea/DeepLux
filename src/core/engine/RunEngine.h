@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../platform/Platform.h"
 #include "deeplux/ControlFlowType.h"
 #include "deeplux/DataContract.h"
 #include "model/ImageData.h"
@@ -73,7 +74,7 @@ public:
 /**
  * @brief 流程运行引擎
  */
-class RunEngine : public QObject {
+class DEEPLUX_API RunEngine : public QObject {
     Q_OBJECT
 
 public:

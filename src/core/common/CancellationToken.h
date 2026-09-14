@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QMutex>
 #include <QObject>
 #include <atomic>
@@ -12,7 +14,7 @@ namespace DeepLux {
  * Multiple consumers can check isCancelled() and react to cancellation.
  * Multiple producers can call cancel() to request cancellation.
  */
-class CancellationToken : public QObject {
+class DEEPLUX_API CancellationToken : public QObject {
     Q_OBJECT
 
 public:

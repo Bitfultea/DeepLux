@@ -1,6 +1,8 @@
 #ifndef DEEPLUX_ILLM_CLIENT_H
 #define DEEPLUX_ILLM_CLIENT_H
 
+#include "../platform/Platform.h"
+
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
@@ -62,7 +64,7 @@ struct AgentResponse {
  * - 内部使用 QThread + QNetworkAccessManager 做异步 HTTP
  * - 结果通过信号槽回传到 GUI 线程
  */
-class ILLMClient : public QObject {
+class DEEPLUX_API ILLMClient : public QObject {
     Q_OBJECT
 
 public:

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QList>
 #include <QMap>
 #include <QMutex>
@@ -27,7 +29,7 @@ enum class VarDataType {
     Rect
 };
 
-class VarModel : public QObject {
+class DEEPLUX_API VarModel : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString name READ name WRITE setName NOTIFY nameChanged)
     Q_PROPERTY(VarDataType dataType READ dataType WRITE setDataType NOTIFY dataTypeChanged)

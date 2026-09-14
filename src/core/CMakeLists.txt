@@ -107,6 +107,8 @@ set_target_properties(deeplux_agent_resources PROPERTIES POSITION_INDEPENDENT_CO
 
 add_library(deeplux_core SHARED ${CORE_SOURCES} ${CORE_HEADERS})
 
+target_compile_definitions(deeplux_core PRIVATE DEEPLUX_CORE_EXPORT)
+
 target_include_directories(deeplux_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}

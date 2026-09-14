@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -30,7 +32,7 @@ struct LogEntry {
  *
  * 单例模式，全局日志记录器
  */
-class Logger : public QObject {
+class DEEPLUX_API Logger : public QObject {
     Q_OBJECT
 
 public:

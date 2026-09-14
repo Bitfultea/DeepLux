@@ -16,7 +16,7 @@ class AgentActor;
 struct GuiEvent;
 struct AgentActionLogEntry;
 
-class AgentController : public QObject {
+class DEEPLUX_API AgentController : public QObject {
     Q_OBJECT
 
 public:

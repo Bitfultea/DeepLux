@@ -11,7 +11,7 @@
 
 namespace DeepLux {
 
-class PointCloudData;
+struct PointCloudData;
 
 /**
  * @brief 点云八叉树

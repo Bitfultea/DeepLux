@@ -26,7 +26,7 @@ struct ModuleParam {
 /**
  * @brief 模块基类
  */
-class ModuleBase : public IModule {
+class DEEPLUX_API ModuleBase : public IModule {
     Q_OBJECT
 
 public:

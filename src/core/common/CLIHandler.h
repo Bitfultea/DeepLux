@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -83,7 +85,7 @@ private:
 /**
  * @brief CLI 处理器
  */
-class CLIHandler : public QObject {
+class DEEPLUX_API CLIHandler : public QObject {
     Q_OBJECT
 
 public:

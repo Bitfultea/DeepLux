@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QImage>
 #include <QObject>
 #include <QRect>
@@ -39,7 +41,7 @@ struct CameraCapabilities {
 /**
  * @brief 相机接口 - 所有相机驱动必须实现
  */
-class ICamera : public QObject {
+class DEEPLUX_API ICamera : public QObject {
     Q_OBJECT
 
 public:

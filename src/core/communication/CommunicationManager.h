@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../platform/Platform.h"
+
 #include <QJsonObject>
 #include <QList>
 #include <QObject>
@@ -45,7 +47,7 @@ struct CommunicationConfig {
 /**
  * @brief 通讯管理器
  */
-class CommunicationManager : public QObject {
+class DEEPLUX_API CommunicationManager : public QObject {
     Q_OBJECT
 
 public:
