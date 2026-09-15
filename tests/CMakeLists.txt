@@ -62,6 +62,7 @@ set(TEST_SOURCES
     test_expressionengine.cpp
     test_samannotatordialog.cpp
     test_sambackendclient.cpp
+    test_sam_region_flow.cpp
     test_moduleinspectorpanel.cpp
     test_pluginparametercontracts.cpp
     test_acceptance_flows.cpp
@@ -208,6 +209,23 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_grabimage")
         target_link_libraries(${TEST_NAME} PRIVATE GrabImagePlugin)
     endif()
+    # SAM 批1：Region2D 契约 + SamPredict 生产者 + RegionStats 消费者行为+流程验收
+    if(TEST_NAME STREQUAL "test_sam_region_flow")
+        target_link_libraries(${TEST_NAME}
+            PRIVATE
+                SamPredictPlugin
+                RegionStatsPlugin
+                GrabImagePlugin
+        )
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_SAMREGION_LIB_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+            TEST_SAMREGION_LIB_SamPredict="$<TARGET_FILE:SamPredictPlugin>"
+            TEST_SAMREGION_LIB_RegionStats="$<TARGET_FILE:RegionStatsPlugin>"
+            TEST_SAMREGION_META_GrabImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+            TEST_SAMREGION_META_SamPredict="${CMAKE_SOURCE_DIR}/src/plugins/detection/SamPredict/metadata.json"
+            TEST_SAMREGION_META_RegionStats="${CMAKE_SOURCE_DIR}/src/plugins/geometry/RegionStats/metadata.json"
+            TEST_SAMREGION_DATA_Circle="${CMAKE_SOURCE_DIR}/tests/acceptance/data/circle_640x480.png")
+    endif()
     # 阶7 Agent 评审修复：set_param 转换/undo 保真回归需要真实可 createModule 的插件
     if(TEST_NAME STREQUAL "test_agentactor")
         target_link_libraries(${TEST_NAME} PRIVATE GrabImagePlugin MeasureCirclePlugin)
@@ -337,6 +355,10 @@ foreach(TEST_FILE ${TEST_SOURCES})
     # 阶7 批4 复核三轮（P0-1）：角度归一含超大有限数用例，设 TIMEOUT 防循环不终止挂死 CI
     if(TEST_NAME STREQUAL "test_batch4")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
+    endif()
+    # SAM 批1：测试内 HTTP 服务 + 嵌套事件循环收口，设 TIMEOUT 防挂死 CI
+    if(TEST_NAME STREQUAL "test_sam_region_flow")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
     endif()
 endforeach()
 

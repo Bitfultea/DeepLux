@@ -1,0 +1,101 @@
+{
+    "id": "com.deeplux.plugin.regionstats",
+    "name": "RegionStats",
+    "category": "geometry",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "消费 Region2D 区域载荷，输出面积（shoelace，polygon 不足 3 点回退 bbox 面积）、外接矩形、质心、点数、置信度与标签",
+    "ui": {
+        "parameters": {}
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "region",
+                "displayName": "区域",
+                "type": "Region2D",
+                "required": true,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "region_area",
+                "displayName": "区域面积",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "bbox_x",
+                "displayName": "外接矩形X",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "bbox_y",
+                "displayName": "外接矩形Y",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "bbox_w",
+                "displayName": "外接矩形宽",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "bbox_h",
+                "displayName": "外接矩形高",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "point_count",
+                "displayName": "多边形点数",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "centroid_x",
+                "displayName": "质心X",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "centroid_y",
+                "displayName": "质心Y",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "score",
+                "displayName": "置信度",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "label",
+                "displayName": "类别标签",
+                "type": "String",
+                "required": false,
+                "multiple": false
+            }
+        ]
+    }
+}

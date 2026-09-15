@@ -2,6 +2,8 @@
 
 #include <QList>
 #include <QMetaType>
+#include <QPointF>
+#include <QRectF>
 #include <QString>
 
 namespace DeepLux {
@@ -51,8 +53,29 @@ struct DetectionList {
     }
 };
 
+/**
+ * @brief 2D 区域载荷（契约层专用载荷类型，SAM 批1）
+ *
+ * 供 SAM 分割等生产者把区域送入主流程：polygon 为原图坐标多边形，bbox 为
+ * 外接矩形，maskRle 为掩膜 RLE 编码（像素掩膜不入载荷，避免跨插件 QImage
+ * 序列化开销；需要像素掩膜的消费者自行解码或经生产者缓存获取）。
+ * 与 AnnotationObject 字段对齐，便于标注会话与流程互转。
+ */
+struct Region2D {
+    QString label;
+    QList<QPointF> polygon; // 原图坐标
+    QRectF bbox;
+    QString maskRle;
+    double score = 0.0;
+
+    bool isValid() const {
+        return polygon.size() >= 3 || bbox.isValid();
+    }
+};
+
 } // namespace DeepLux
 
 Q_DECLARE_METATYPE(DeepLux::Circle2D)
 Q_DECLARE_METATYPE(DeepLux::Detection)
 Q_DECLARE_METATYPE(DeepLux::DetectionList)
+Q_DECLARE_METATYPE(DeepLux::Region2D)

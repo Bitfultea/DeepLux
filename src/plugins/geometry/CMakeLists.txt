@@ -40,3 +40,6 @@ add_subdirectory(FitPlane)
 
 # GapMeasure3D Plugin（阶7 批3：0143D 重建）
 add_subdirectory(GapMeasure3D)
+
+# RegionStats Plugin（SAM 批1：Region2D 消费者）
+add_subdirectory(RegionStats)

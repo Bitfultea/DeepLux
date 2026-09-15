@@ -31,3 +31,6 @@ add_subdirectory(MeasureCircle)
 
 # EdgeDefectDetection Plugin (阶7 批2)
 add_subdirectory(EdgeDefectDetection)
+
+# SamPredict Plugin (SAM 批1)
+add_subdirectory(SamPredict)

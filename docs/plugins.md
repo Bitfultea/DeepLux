@@ -1,6 +1,6 @@
 # DeepLux 插件手册
 
-本手册覆盖 `src/plugins` 中全部 67 个带 `metadata.json` 的运行时插件。参数名称和可编辑范围以各插件的元数据为准；本文补充其在流程中的接入位置、实际使用步骤和结果检查方式。
+本手册覆盖 `src/plugins` 中全部 69 个带 `metadata.json` 的运行时插件。参数名称和可编辑范围以各插件的元数据为准；本文补充其在流程中的接入位置、实际使用步骤和结果检查方式。
 
 > 运行前先执行 `cmake --build build --target sync-plugins`。相机、PLC、串口和 3D 模块还受操作系统、硬件、SDK、网络和现场权限影响，配置前应确认相应资源可用。
 
@@ -25,8 +25,8 @@ flowchart LR
 | 分类 | 数量 | 模块 |
 | --- | ---: | --- |
 | [图像处理](#图像处理11) | 11 | 3DPreProcessing、Blob、CropImage、DisplayData、GrabImage、ImageScript、JigsawPuzzle、LoadPointCloud、PerProcessing、SaveImage、ShowImage |
-| [检测识别](#检测识别9) | 9 | ColorRecognition、EdgeDefectDetection、FindCircle、JiErHanDefectsDet、Matching、MeasureCircle、MeasureLine、MeasureRect、QRCode |
-| [几何测量](#几何测量12) | 12 | DistancePL、DistancePP、FitCircle、FitEllipse、FitLine、FitPlane、FreeformSurface、GapMeasure3D、LinesDistance、MeasureGap、MeasurementInput、PointSurfaceDistance |
+| [检测识别](#检测识别10) | 10 | ColorRecognition、EdgeDefectDetection、FindCircle、JiErHanDefectsDet、Matching、MeasureCircle、MeasureLine、MeasureRect、QRCode、SamPredict |
+| [几何测量](#几何测量13) | 13 | DistancePL、DistancePP、FitCircle、FitEllipse、FitLine、FitPlane、FreeformSurface、GapMeasure3D、LinesDistance、MeasureGap、MeasurementInput、PointSurfaceDistance、RegionStats |
 | [坐标标定](#坐标标定2) | 2 | CalculateOffset、N点标定 |
 | [相机驱动](#相机驱动3) | 3 | DirectShow Camera、Hikvision Camera、Video4Linux2 Camera |
 | [通信](#通信6) | 6 | PLC通信测试、PLC读取、PLC写入、串口通信、TCP客户端、TCP服务器 |
@@ -114,7 +114,7 @@ flowchart LR
 - **关键配置**：窗口标题、延迟。元数据：[metadata.json](../src/plugins/image_processing/ShowImage/metadata.json)。
 - **检查**：确认显示内容为本节点输入，必要时在同位置用主视图和检查器交叉检查。
 
-## 检测识别（9）
+## 检测识别（10）
 
 ### `MeasureCircle` - 卡钳圆测量
 
@@ -179,7 +179,14 @@ flowchart LR
 - **关键配置**：码类型（当前仅支持二维码 QR_Code；Code_128/Code_39/EAN 等条码需额外库支持，暂未开放）。元数据：[metadata.json](../src/plugins/detection/QRCode/metadata.json)。
 - **检查**：在检查器和日志确认解析文本；对失败样本先检查码的像素尺寸、模糊和反光。
 
-## 几何测量（12）
+### `SamPredict` - SAM 点/框 prompt 分割
+
+- **用途**：调用 sam_server 完成 set_image+predict，输出强类型 Region2D（polygon/bbox/maskRle/score/label），供交互式分割与下游区域消费。
+- **使用**：接 `GrabImage` 等 Image2D 图像源；points（正点 `[[x,y],...]`）与 box（`[x,y,w,h]`，w/h>0）至少提供一个 prompt，negativePoints 可排除区域；serverUrl 指向 SAM 服务（默认 `http://127.0.0.1:8990`）。
+- **关键配置**：serverUrl、label、points、negativePoints、box、timeoutMs（100–120000）。元数据：[metadata.json](../src/plugins/detection/SamPredict/metadata.json)。
+- **检查**：成功写出 region（Region2D 契约端口）与 score；prompt 原样透传后端（points_pos/points_neg/box）；超时、后端错误或返回区域无效均失败关闭，不伪造区域。
+
+## 几何测量（13）
 
 ### `FitEllipse` - 点集椭圆拟合
 
@@ -264,6 +271,13 @@ flowchart LR
 - **使用**：接在 `LoadPointCloud` 后；先以较稀的采样验证数据方向和范围，再提高精度进行正式分析。
 - **关键配置**：采样间隔。元数据：[metadata.json](../src/plugins/geometry/FreeformSurface/metadata.json)。
 - **检查**：在 3D 主视图查看采样后点云的完整性；采样过大可能遗漏局部细节。
+
+### `RegionStats` - Region2D 区域统计
+
+- **用途**：消费 Region2D 区域载荷，输出面积、外接矩形、质心、点数、置信度与标签，用于分割区域筛选与结果核验。
+- **使用**：region 端口接 `SamPredict` 的 region 输出（或符合 Region2D 契约的强类型/polygon+bbox map 载荷）；polygon≥3 点按 shoelace 计算面积与面积质心，<3 点回退外接矩形面积与中心。
+- **关键配置**：无可配置参数。元数据：[metadata.json](../src/plugins/geometry/RegionStats/metadata.json)。
+- **检查**：region_area、bbox_x/y/w/h、point_count、centroid_x/y、score、label；不符合契约的载荷失败关闭；polygon-only 强类型的外接矩形由多边形推导，退化多边形质心回退外接矩形中心。
 
 ## 坐标标定（2）
 

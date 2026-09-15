@@ -22,6 +22,27 @@
 namespace DeepLux {
 
 namespace {
+constexpr qint64 kMaxSamResponseBytes = 64LL * 1024 * 1024;
+constexpr const char* kSamResponseTooLarge = "samResponseTooLarge";
+
+void guardSamReplySize(QNetworkReply* reply) {
+    auto abortIfTooLarge = [reply](qint64 received, qint64 total) {
+        if (reply->property(kSamResponseTooLarge).toBool())
+            return;
+        if (received > kMaxSamResponseBytes || total > kMaxSamResponseBytes ||
+            reply->bytesAvailable() > kMaxSamResponseBytes) {
+            reply->setProperty(kSamResponseTooLarge, true);
+            reply->abort();
+        }
+    };
+    QObject::connect(reply, &QNetworkReply::metaDataChanged, reply, [reply, abortIfTooLarge]() {
+        abortIfTooLarge(reply->bytesAvailable(), reply->header(QNetworkRequest::ContentLengthHeader).toLongLong());
+    });
+    QObject::connect(reply, &QNetworkReply::downloadProgress, reply, abortIfTooLarge);
+    QObject::connect(reply, &QIODevice::readyRead, reply,
+                     [reply, abortIfTooLarge]() { abortIfTooLarge(reply->bytesAvailable(), -1); });
+}
+
 QString findSamServerScriptFrom(QDir dir) {
     for (int i = 0; i < 6; ++i) {
         const QString candidate = dir.absoluteFilePath(QStringLiteral("tools/sam_server/sam_server.py"));
@@ -446,6 +467,7 @@ void SamBackendClient::healthCheck() {
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     QNetworkReply* reply = m_nam->get(req);
+    guardSamReplySize(reply);
     m_pendingHealthReply = reply;
     reply->setProperty("healthSeq", thisSeq);
     connect(reply, &QNetworkReply::finished, this, &SamBackendClient::onHealthReply);
@@ -469,6 +491,7 @@ void SamBackendClient::setImage(const QString& imagePath) {
     QJsonObject body;
     body["image_path"] = imagePath;
     QNetworkReply* reply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    guardSamReplySize(reply);
     m_pendingSetImageReply = reply;
     reply->setProperty("setImageSeq", thisSeq);
     connect(reply, &QNetworkReply::finished, this, &SamBackendClient::onSetImageReply);
@@ -516,6 +539,7 @@ void SamBackendClient::predict(const QList<QPointF>& positive, const QList<QPoin
     }
 
     m_pendingPredictReply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    guardSamReplySize(m_pendingPredictReply);
     m_pendingPredictReply->setProperty("predictSeq", thisSeq);
     connect(m_pendingPredictReply, &QNetworkReply::finished, this, &SamBackendClient::onPredictReply);
     startTimeout();
@@ -547,6 +571,7 @@ void SamBackendClient::unloadImage() {
     QJsonObject body;
     body["embedding_id"] = m_embeddingId;
     QNetworkReply* reply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    guardSamReplySize(reply);
     m_pendingUnloadReply = reply;
     reply->setProperty("unloadSeq", thisSeq);
     // 记录 unload 的 embedding ID，回调时检查是否已被新 set_image 替换
@@ -563,13 +588,17 @@ static QJsonObject parseReply(QNetworkReply* reply, QString* err) {
         return result;
     }
     reply->deleteLater();
+    if (reply->property(kSamResponseTooLarge).toBool()) {
+        if (err)
+            *err = QStringLiteral("SAM 响应超过尺寸上限（64MB）");
+        return result;
+    }
     if (reply->error() != QNetworkReply::NoError) {
         if (err)
             *err = reply->errorString();
         return result;
     }
     // 阶7 Agent 评审修复（P3-11）：响应尺寸上限，防止故障/恶意后端以超大响应耗尽内存
-    constexpr qint64 kMaxSamResponseBytes = 64 * 1024 * 1024;
     if (reply->size() > kMaxSamResponseBytes) {
         if (err)
             *err = QStringLiteral("SAM 响应超过尺寸上限（64MB）");

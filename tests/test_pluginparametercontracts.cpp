@@ -673,9 +673,18 @@ void TestPluginParameterContracts::testPayloadTypeTightening() {
     QVERIFY(portValueMatchesType(QVariant::fromValue(c), DataType::Circle2D));
     QVERIFY(portValueMatchesType(QVariant(QVariantList{1.0, 2.0, 3.0}), DataType::Circle2D));
 
+    // Region2D（SAM 批1）: 接受强类型（有效）与 polygon+bbox 完整 map，拒绝任意载荷
+    DeepLux::Region2D r;
+    r.polygon = {QPointF(0, 0), QPointF(4, 0), QPointF(0, 3)};
+    QVERIFY(portValueMatchesType(QVariant::fromValue(r), DataType::Region2D));
+    QVERIFY(!portValueMatchesType(QVariant::fromValue(DeepLux::Region2D{}), DataType::Region2D));
+    QVERIFY(portValueMatchesType(QVariant(QVariantMap{{"polygon", QVariant(QVariantList{})},
+                                                      {"bbox", QVariant(QVariantList{1.0, 2.0, 3.0, 4.0})}}),
+                                 DataType::Region2D));
+    QVERIFY(!portValueMatchesType(QVariant(1), DataType::Region2D));
+
     // 尚无专用载荷和生产者的复杂类型必须失败关闭，不能接受任意 QVariant。
-    for (DataType type :
-         {DataType::Mask2D, DataType::Region2D, DataType::Ellipse2D, DataType::Transform2D, DataType::ClassScores}) {
+    for (DataType type : {DataType::Mask2D, DataType::Ellipse2D, DataType::Transform2D, DataType::ClassScores}) {
         QVERIFY(!portValueMatchesType(QVariant(1), type));
     }
 }
@@ -688,16 +697,17 @@ void TestPluginParameterContracts::testUnsupportedPortTypesClassified() {
     using DeepLux::DataType;
     using DeepLux::isSupportedPortType;
 
-    // 保留枚举 ABI，但以下 5 类尚无载荷契约与生产者插件，不得作为可运行端口类型
-    for (DataType type :
-         {DataType::Mask2D, DataType::Region2D, DataType::Ellipse2D, DataType::Transform2D, DataType::ClassScores}) {
+    // 保留枚举 ABI，但以下 4 类尚无载荷契约与生产者插件，不得作为可运行端口类型
+    // （SAM 批1：Region2D 已有载荷契约与 SamPredict 生产者，升级为受支持）
+    for (DataType type : {DataType::Mask2D, DataType::Ellipse2D, DataType::Transform2D, DataType::ClassScores}) {
         QVERIFY2(!isSupportedPortType(type), qPrintable(dataTypeName(type) + " must be unsupported"));
     }
     // 已实现的类型不受影响
-    for (DataType type : {DataType::Image2D, DataType::HeightMap2D, DataType::PointCloud3D, DataType::Point2D,
-                          DataType::Point3D, DataType::PointSet2D, DataType::Line2D, DataType::Circle2D,
-                          DataType::Plane3D, DataType::DetectionList, DataType::Number, DataType::Integer,
-                          DataType::Boolean, DataType::String, DataType::Binary, DataType::Table, DataType::Any}) {
+    for (DataType type :
+         {DataType::Image2D, DataType::HeightMap2D, DataType::PointCloud3D, DataType::Point2D, DataType::Point3D,
+          DataType::PointSet2D, DataType::Line2D, DataType::Circle2D, DataType::Plane3D, DataType::DetectionList,
+          DataType::Region2D, DataType::Number, DataType::Integer, DataType::Boolean, DataType::String,
+          DataType::Binary, DataType::Table, DataType::Any}) {
         QVERIFY2(isSupportedPortType(type), qPrintable(dataTypeName(type) + " must be supported"));
     }
     // 失败关闭：非法枚举值不得被判定为支持（防止未来新增未实现类型自动放行）
@@ -738,6 +748,17 @@ void TestPluginParameterContracts::testMetadataDeclaringUnsupportedTypeRejectedA
         "version": "1.0.0",
         "ports": {
             "inputs": [{"id": "image", "displayName": "输入", "type": "Image2D"}],
+            "outputs": [{"id": "ellipse", "displayName": "椭圆", "type": "Ellipse2D"}]
+        }
+    })";
+    // SAM 批1：Region2D 已有载荷契约与生产者，加载门禁必须放行（与上方拒绝相对照）
+    const QByteArray regionOutput = R"({
+        "id": "com.test.regionprobe",
+        "name": "Region2DProbe",
+        "category": "test",
+        "version": "1.0.0",
+        "ports": {
+            "inputs": [{"id": "image", "displayName": "输入", "type": "Image2D"}],
             "outputs": [{"id": "region", "displayName": "区域", "type": "Region2D"}]
         }
     })";
@@ -753,9 +774,12 @@ void TestPluginParameterContracts::testMetadataDeclaringUnsupportedTypeRejectedA
              qPrintable("rejection must name the unsupported type, got: " + loadError));
 
     writeMetadataAndLoad(dir, unsupportedOutput, "unsupported_out.json", loaded, loadError);
-    QVERIFY2(!loaded, "metadata declaring Region2D output must be rejected at load");
-    QVERIFY2(loadError.contains(QStringLiteral("Region2D")),
+    QVERIFY2(!loaded, "metadata declaring Ellipse2D output must be rejected at load");
+    QVERIFY2(loadError.contains(QStringLiteral("Ellipse2D")),
              qPrintable("rejection must name the unsupported type, got: " + loadError));
+
+    writeMetadataAndLoad(dir, regionOutput, "region_probe.json", loaded, loadError);
+    QVERIFY2(loaded, qPrintable("metadata declaring Region2D output must load, got: " + loadError));
 }
 
 void TestPluginParameterContracts::testPortsFieldsMustBeJsonArrays() {

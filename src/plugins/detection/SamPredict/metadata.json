@@ -1,0 +1,74 @@
+{
+    "id": "com.deeplux.plugin.sampredict",
+    "name": "SamPredict",
+    "category": "detection",
+    "version": "1.0.0",
+    "author": "DeepLux Team",
+    "description": "SAM 点/框 prompt 分割：调用 sam_server 完成 set_image+predict，输出强类型 Region2D（polygon/bbox/maskRle/score/label）；超时或后端错误失败关闭",
+    "ui": {
+        "parameters": {
+            "serverUrl": {
+                "order": 10,
+                "label": "SAM 服务地址"
+            },
+            "label": {
+                "order": 20,
+                "label": "区域类别标签"
+            },
+            "points": {
+                "order": 30,
+                "label": "正点 [[x,y],...]"
+            },
+            "negativePoints": {
+                "order": 40,
+                "label": "负点 [[x,y],...]"
+            },
+            "box": {
+                "order": 50,
+                "label": "框 [x,y,w,h]（可空）"
+            },
+            "timeoutMs": {
+                "min": 100,
+                "max": 120000,
+                "step": 100,
+                "decimals": 0,
+                "order": 60,
+                "label": "超时(ms)"
+            }
+        }
+    },
+    "ports": {
+        "inputs": [
+            {
+                "id": "image",
+                "displayName": "输入图像",
+                "type": "Image2D",
+                "required": true,
+                "multiple": false
+            }
+        ],
+        "outputs": [
+            {
+                "id": "image",
+                "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "region",
+                "displayName": "分割区域",
+                "type": "Region2D",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "score",
+                "displayName": "置信度",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            }
+        ]
+    }
+}

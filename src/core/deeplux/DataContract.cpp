@@ -111,6 +111,7 @@ bool isSupportedPortType(DataType type) {
     case DataType::Circle2D:
     case DataType::Plane3D:
     case DataType::DetectionList:
+    case DataType::Region2D: // SAM 批1：Region2D 载荷契约 + SamPredict 生产者落地
     case DataType::Number:
     case DataType::Integer:
     case DataType::Boolean:
@@ -120,7 +121,6 @@ bool isSupportedPortType(DataType type) {
     case DataType::Any:
         return true;
     case DataType::Mask2D:
-    case DataType::Region2D:
     case DataType::Ellipse2D:
     case DataType::Transform2D:
     case DataType::ClassScores:
@@ -168,6 +168,41 @@ bool isPointSet2D(const QVariant& value) {
         if (item.type() != QVariant::PointF && !isNumericList(item, 2))
             return false;
     }
+    return true;
+}
+
+// SAM 批1：Region2D 校验（强类型 Region2D 或 polygon+bbox 完整 map）。
+// polygon 元素为 QPointF 或 2 数值列表（与 PointSet2D 元素口径一致）；
+// bbox 为 4 数值 [x,y,w,h]；maskRle/label/score 可选但类型受控。
+bool isRegion2D(const QVariant& value) {
+    if (value.canConvert<Region2D>()) {
+        return value.value<Region2D>().isValid();
+    }
+    if (value.type() != QVariant::Map)
+        return false;
+    const QVariantMap m = value.toMap();
+    const QVariant poly = m.value(QStringLiteral("polygon"));
+    if (poly.type() != QVariant::List)
+        return false;
+    const QVariantList polyList = poly.toList();
+    for (const QVariant& item : polyList) {
+        if (item.type() != QVariant::PointF && !isNumericList(item, 2))
+            return false;
+    }
+    const QVariant bb = m.value(QStringLiteral("bbox"));
+    if (!isNumericList(bb, 4))
+        return false;
+    if (polyList.size() < 3 && (bb.toList()[2].toDouble() <= 0.0 || bb.toList()[3].toDouble() <= 0.0))
+        return false; // polygon 与 bbox 至少其一有效
+    const QVariant score = m.value(QStringLiteral("score"));
+    if (score.isValid() && (!isNumeric(score) || score.toDouble() < 0.0 || score.toDouble() > 1.0))
+        return false;
+    const QVariant rle = m.value(QStringLiteral("maskRle"));
+    if (rle.isValid() && rle.type() != QVariant::String)
+        return false;
+    const QVariant label = m.value(QStringLiteral("label"));
+    if (label.isValid() && label.type() != QVariant::String)
+        return false;
     return true;
 }
 
@@ -257,8 +292,10 @@ bool portValueMatchesType(const QVariant& value, DataType type) {
     case DataType::DetectionList:
         // P2-6: 强类型 DetectionList 或逐元素完整 map
         return isDetectionList(value);
-    case DataType::Mask2D:
     case DataType::Region2D:
+        // SAM 批1: 强类型 Region2D 或 polygon+bbox 完整 map
+        return isRegion2D(value);
+    case DataType::Mask2D:
     case DataType::Ellipse2D:
     case DataType::Transform2D:
     case DataType::ClassScores:
@@ -286,6 +323,7 @@ void registerDataContractMetaTypes() {
     qRegisterMetaType<Circle2D>("DeepLux::Circle2D");
     qRegisterMetaType<Detection>("DeepLux::Detection");
     qRegisterMetaType<DetectionList>("DeepLux::DetectionList");
+    qRegisterMetaType<Region2D>("DeepLux::Region2D");
 }
 
 } // namespace DeepLux
