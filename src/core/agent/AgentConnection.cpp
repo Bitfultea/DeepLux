@@ -6,6 +6,18 @@
 
 namespace DeepLux {
 
+namespace {
+// 阶7 Agent 评审修复（P2-5）：入站消息上限——单行 1MB、缓冲 8MB，
+// 超限即断开，防止故障/恶意对端以超大数据行耗尽内存
+constexpr qint64 kMaxLineBytes = 1 * 1024 * 1024;
+constexpr qint64 kMaxBufferBytes = 8 * 1024 * 1024;
+} // namespace
+
+void AgentConnection::forceClose() {
+    if (m_socket)
+        m_socket->abort();
+}
+
 AgentConnection::AgentConnection(QLocalSocket* socket, const QString& clientId, QObject* parent)
     : QObject(parent), m_socket(socket), m_clientId(clientId) {
     connect(m_socket, &QLocalSocket::readyRead, this, &AgentConnection::onReadyRead);
@@ -36,6 +48,12 @@ void AgentConnection::onReadyRead() {
         return;
 
     m_buffer.append(m_socket->readAll());
+    if (m_buffer.size() > kMaxBufferBytes) {
+        qWarning() << "Agent inbound buffer overflow; dropping connection:" << m_clientId;
+        m_buffer.clear();
+        forceClose();
+        return;
+    }
 
     // 解析 JSON 行（每行一个 JSON 对象）
     parseBuffer();
@@ -56,6 +74,12 @@ void AgentConnection::parseBuffer() {
     // 按行分割，解析 JSON
     while (m_buffer.contains('\n')) {
         int newlineIndex = m_buffer.indexOf('\n');
+        if (newlineIndex > kMaxLineBytes) {
+            qWarning() << "Agent inbound message exceeds size limit; dropping connection:" << m_clientId;
+            m_buffer.clear();
+            forceClose();
+            return;
+        }
         QByteArray line = m_buffer.left(newlineIndex);
         m_buffer = m_buffer.mid(newlineIndex + 1);
 

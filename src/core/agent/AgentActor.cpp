@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
+#include <QTimer>
 #include <QUndoCommand>
 
 static void ensureAgentResources() {
@@ -67,8 +68,15 @@ private:
 
 class AgentAddModuleCmd : public QUndoCommand {
 public:
+    // 阶7 Agent 评审修复（P1-3）：instance id 在构造时生成一次并在 undo/redo 间固定复用，
+    // 避免 redo 重生成 id 导致既有连接（存 id 字符串）悬空
     AgentAddModuleCmd(const QString& moduleId, const QString& instanceName, QUndoCommand* parent = nullptr)
-        : QUndoCommand(parent), m_moduleId(moduleId), m_instanceName(instanceName) {}
+        : QUndoCommand(parent), m_moduleId(moduleId), m_instanceName(instanceName) {
+        m_actualInstanceId =
+            m_instanceName.isEmpty()
+                ? QString("%1_%2").arg(m_moduleId).arg(QDateTime::currentDateTime().toMSecsSinceEpoch())
+                : m_instanceName;
+    }
 
     void undo() override {
         Project* proj = ProjectManager::instance().currentProject();
@@ -80,10 +88,6 @@ public:
         if (!proj)
             return;
         ModuleInstance inst;
-        m_actualInstanceId =
-            m_instanceName.isEmpty()
-                ? QString("%1_%2").arg(m_moduleId).arg(QDateTime::currentDateTime().toMSecsSinceEpoch())
-                : m_instanceName;
         inst.id = m_actualInstanceId;
         inst.moduleId = m_moduleId;
         // 获取模块的中文显示名
@@ -93,6 +97,10 @@ public:
         delete module;
         inst.name = m_instanceName.isEmpty() ? moduleDisplayName : m_instanceName;
         proj->addModule(inst);
+    }
+
+    QString instanceId() const {
+        return m_actualInstanceId;
     }
 
 private:
@@ -110,22 +118,35 @@ public:
             const std::optional<ModuleInstance> inst = proj->moduleById(instanceId);
             if (inst)
                 m_backup = *inst;
+            // 阶7 Agent 评审修复（P1-3）：Project::removeModule 不级联删连接，
+            // 由命令备份关联连接并在 redo/undo 两侧维护连接一致性
+            for (const ModuleConnection& c : proj->connections()) {
+                if (c.fromModuleId == instanceId || c.toModuleId == instanceId)
+                    m_connBackup.append(c);
+            }
         }
     }
     void undo() override {
         Project* proj = ProjectManager::instance().currentProject();
-        if (proj && !m_backup.id.isEmpty())
+        if (proj && !m_backup.id.isEmpty()) {
             proj->addModule(m_backup);
+            for (const ModuleConnection& c : m_connBackup)
+                proj->addConnection(c);
+        }
     }
     void redo() override {
         Project* proj = ProjectManager::instance().currentProject();
-        if (proj)
-            proj->removeModule(m_instanceId);
+        if (!proj)
+            return;
+        for (const ModuleConnection& c : m_connBackup)
+            proj->removeConnectionWithPorts(c.fromModuleId, c.fromPort, c.toModuleId, c.toPort);
+        proj->removeModule(m_instanceId);
     }
 
 private:
     QString m_instanceId;
     ModuleInstance m_backup;
+    QList<ModuleConnection> m_connBackup;
 };
 
 class AgentSetParamCmd : public QUndoCommand {
@@ -154,15 +175,22 @@ private:
 
 class AgentConnectCmd : public QUndoCommand {
 public:
-    AgentConnectCmd(const QString& fromId, const QString& toId, QUndoCommand* parent = nullptr)
-        : QUndoCommand(parent), m_fromId(fromId), m_toId(toId) {
+    // 阶7 Agent 评审修复（P2-4）：支持 schema 声明的可选 port 参数（源输出端口名，
+    // 空串表示由 RunEngine 回落默认 image 端口）
+    AgentConnectCmd(const QString& fromId, const QString& toId, const QString& fromPort = QString(),
+                    QUndoCommand* parent = nullptr)
+        : QUndoCommand(parent), m_fromId(fromId), m_toId(toId), m_fromPort(fromPort) {
         setText(QString("Connect %1 → %2").arg(fromId, toId));
     }
 
     void undo() override {
         Project* proj = ProjectManager::instance().currentProject();
-        if (proj)
+        if (!proj)
+            return;
+        if (m_fromPort.isEmpty())
             proj->removeConnection(m_fromId, m_toId);
+        else
+            proj->removeConnectionWithPorts(m_fromId, m_fromPort, m_toId, m_toPort);
     }
     void redo() override {
         Project* proj = ProjectManager::instance().currentProject();
@@ -171,11 +199,13 @@ public:
         ModuleConnection conn;
         conn.fromModuleId = m_fromId;
         conn.toModuleId = m_toId;
+        conn.fromPort = m_fromPort;
+        conn.toPort = m_toPort;
         proj->addConnection(conn);
     }
 
 private:
-    QString m_fromId, m_toId;
+    QString m_fromId, m_toId, m_fromPort, m_toPort;
 };
 
 class AgentDisconnectCmd : public QUndoCommand {
@@ -210,6 +240,11 @@ private:
 
 AgentActor::AgentActor(QObject* parent) : QObject(parent), m_undoStack(new QUndoStack(this)) {
     ensureAgentResources();
+    // 阶7 Agent 评审修复（P2-7）：schema 成员缓存在插件加载/卸载时失效
+    connect(&PluginManager::instance(), &PluginManager::pluginLoaded, this,
+            [this](const QString&) { m_schemaCache.clear(); });
+    connect(&PluginManager::instance(), &PluginManager::pluginUnloaded, this,
+            [this](const QString&) { m_schemaCache.clear(); });
 }
 
 AgentActor::~AgentActor() = default;
@@ -368,8 +403,54 @@ QJsonObject AgentActor::setParam(const QJsonObject& params) {
     if (!inst)
         return QJsonObject{{"error", QString("Module not found: %1").arg(instanceId)}};
 
-    QJsonValue oldVal = inst->params.value(key);
-    m_undoStack->push(new AgentSetParamCmd(instanceId, key, oldVal, value));
+    // 阶7 Agent 评审修复（P1-1）：schema 声明 value 为字符串且承诺转换——在此按
+    // 目标类型（既有值或插件默认值类型）转换字符串，并经插件 validateParams
+    // 校验通过后才写入 undo 栈；工具层不再对非法值假成功
+    QJsonValue newVal = value;
+    PluginManager& pm = PluginManager::instance();
+    IModule* mod = pm.createModule(inst->moduleId);
+    if (!mod) {
+        return QJsonObject{{"error", QString("Cannot create module for validation: %1").arg(inst->moduleId)}};
+    }
+    if (newVal.isString()) {
+        const QString s = newVal.toString().trimmed();
+        const QJsonValue ref = inst->params.contains(key) ? inst->params.value(key) : mod->defaultParams().value(key);
+        if (ref.isDouble()) {
+            bool ok = false;
+            const double d = s.toDouble(&ok);
+            if (!ok) {
+                delete mod;
+                return QJsonObject{{"error", QString("Value '%1' is not a number for key %2").arg(s, key)}};
+            }
+            newVal = d;
+        } else if (ref.isBool()) {
+            if (s.compare(QLatin1String("true"), Qt::CaseInsensitive) == 0)
+                newVal = true;
+            else if (s.compare(QLatin1String("false"), Qt::CaseInsensitive) == 0)
+                newVal = false;
+            else {
+                delete mod;
+                return QJsonObject{{"error", QString("Value '%1' is not a boolean for key %2").arg(s, key)}};
+            }
+        }
+    }
+    // 镜像运行期语义：模块运行期参数 = 插件默认值 + 工程参数覆盖 + 本次新值
+    QJsonObject merged = mod->defaultParams();
+    for (auto it = inst->params.constBegin(); it != inst->params.constEnd(); ++it)
+        merged.insert(it.key(), it.value());
+    merged.insert(key, newVal);
+    QString verr;
+    if (!mod->validateParams(merged, verr)) {
+        delete mod;
+        emit toolError("set_param", verr);
+        return QJsonObject{{"error", verr}};
+    }
+    // undo 回退值：工程未显式设置过该键时回退到插件默认值，避免 undo 写入
+    // undefined 覆盖默认值导致运行期校验失败
+    QJsonValue oldVal = inst->params.contains(key) ? inst->params.value(key) : mod->defaultParams().value(key);
+    delete mod;
+
+    m_undoStack->push(new AgentSetParamCmd(instanceId, key, oldVal, newVal));
 
     return QJsonObject{{"status", "param_set"}, {"instanceId", instanceId}, {"key", key}};
 }
@@ -386,9 +467,12 @@ QJsonObject AgentActor::connectModules(const QJsonObject& params) {
     if (!proj->findModule(toId))
         return QJsonObject{{"error", QString("Module not found: %1").arg(toId)}};
 
-    m_undoStack->push(new AgentConnectCmd(fromId, toId));
+    // 阶7 Agent 评审修复（P2-4）：落实 schema 声明的可选 port 参数（源输出端口名，
+    // 空串由 RunEngine 回落默认 image 端口），不再静默忽略
+    const QString port = params.value("port").toString();
+    m_undoStack->push(new AgentConnectCmd(fromId, toId, port));
 
-    return QJsonObject{{"status", "connected"}, {"from", fromId}, {"to", toId}};
+    return QJsonObject{{"status", "connected"}, {"from", fromId}, {"to", toId}, {"port", port}};
 }
 
 QJsonObject AgentActor::disconnectModules(const QJsonObject& params) {
@@ -421,11 +505,15 @@ QJsonObject AgentActor::runFlow(const QJsonObject& params) {
     if (engine.modules().isEmpty()) {
         return QJsonObject{{"error", "No modules to run"}};
     }
-    if (mode == "cycle")
+    if (mode == "cycle") {
         engine.start();
-    else
-        engine.runOnce();
-    return QJsonObject{{"status", "started"}, {"mode", mode}};
+    } else {
+        // 阶7 Agent 评审修复（P1-2）：runOnce 改异步触发——同步执行会阻塞主线程
+        // （UI 与 AgentBridge IPC 同线程），长流程期间 stop_flow/pause_flow 无法响应；
+        // LLM 经 get_run_results / observer 的 runFinished 事件轮询收口
+        QTimer::singleShot(0, &engine, []() { RunEngine::instance().runOnce(); });
+    }
+    return QJsonObject{{"status", "started"}, {"mode", mode}, {"async", true}};
 }
 
 QJsonObject AgentActor::stopFlow(const QJsonObject& params) {
@@ -491,11 +579,11 @@ QJsonObject AgentActor::getModuleParamsSchema(const QJsonObject& params) {
     if (!inst)
         return QJsonObject{{"error", QString("Module not found: %1").arg(instanceId)}};
 
-    // 静态缓存：相同 moduleId 的 schema 只生成一次，避免重复 createModule 加载动态库
-    static QMap<QString, QJsonObject> schemaCache;
-    if (schemaCache.contains(inst->moduleId)) {
-        qDebug() << "[DIAG] getModuleParamsSchema: cache hit" << inst->moduleId;
-        return schemaCache[inst->moduleId];
+    // 成员缓存：相同 moduleId 的 schema 只生成一次，避免重复 createModule 加载动态库；
+    // 阶7 Agent 评审修复（P2-7）：由 static 改为成员并在插件加载/卸载时失效，
+    // 避免插件热更或 metadata 变更后返回陈旧 schema
+    if (m_schemaCache.contains(inst->moduleId)) {
+        return m_schemaCache[inst->moduleId];
     }
 
     // Create a temporary module instance to get default params
@@ -512,7 +600,7 @@ QJsonObject AgentActor::getModuleParamsSchema(const QJsonObject& params) {
     schema["currentParams"] = inst->params;
     delete mod;
 
-    schemaCache[inst->moduleId] = schema;
+    m_schemaCache[inst->moduleId] = schema;
     return schema;
 }
 

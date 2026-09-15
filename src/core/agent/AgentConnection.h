@@ -20,6 +20,8 @@ public:
     ~AgentConnection() override;
 
     void send(const QJsonObject& msg);
+    // 阶7 Agent 评审修复（P2-5）：强制断开（入站超限/认证失败等）
+    void forceClose();
     QString clientId() const {
         return m_clientId;
     }

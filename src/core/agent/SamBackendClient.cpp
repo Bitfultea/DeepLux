@@ -568,6 +568,13 @@ static QJsonObject parseReply(QNetworkReply* reply, QString* err) {
             *err = reply->errorString();
         return result;
     }
+    // 阶7 Agent 评审修复（P3-11）：响应尺寸上限，防止故障/恶意后端以超大响应耗尽内存
+    constexpr qint64 kMaxSamResponseBytes = 64 * 1024 * 1024;
+    if (reply->size() > kMaxSamResponseBytes) {
+        if (err)
+            *err = QStringLiteral("SAM 响应超过尺寸上限（64MB）");
+        return result;
+    }
     QByteArray data = reply->readAll();
     QJsonParseError parseErr;
     QJsonDocument doc = QJsonDocument::fromJson(data, &parseErr);

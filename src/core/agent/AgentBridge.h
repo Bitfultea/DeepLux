@@ -76,7 +76,6 @@ private slots:
     void onClientMessage(const QString& clientId, const QJsonObject& msg);
     void onClientDisconnected(const QString& clientId);
     void onHeartbeatTimeout();
-    void attemptReconnect(const QString& clientId);
 
 private:
     struct ProtocolResponse {
@@ -91,6 +90,14 @@ private:
 
     void registerDefaultQueryHandlers();
     ProtocolResponse processMessage(const QString& clientId, const QJsonObject& msg);
+    void forceCloseClient(const QString& clientId);
+
+    // 阶7 Agent 评审修复（P2-8）：可选握手令牌（配置 agent/bridgeToken）。
+    // 未配置时保持既有行为；配置后首条消息必须为
+    // {"type":"auth","payload":{"token":...}}，否则拒绝并断开。
+    // 本地 socket 权限为用户级（Qt 默认），令牌用于防御同用户恶意进程。
+    QString m_authToken;
+    QMap<QString, bool> m_authenticated; // 受 m_connectionMutex 保护
 
     bool m_running = false;
     QLocalServer* m_server = nullptr;

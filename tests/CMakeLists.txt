@@ -208,6 +208,15 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_grabimage")
         target_link_libraries(${TEST_NAME} PRIVATE GrabImagePlugin)
     endif()
+    # 阶7 Agent 评审修复：set_param 转换/undo 保真回归需要真实可 createModule 的插件
+    if(TEST_NAME STREQUAL "test_agentactor")
+        target_link_libraries(${TEST_NAME} PRIVATE GrabImagePlugin MeasureCirclePlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_AGENTACTOR_LIB_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+            TEST_AGENTACTOR_META_GrabImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+            TEST_AGENTACTOR_LIB_MeasureCircle="$<TARGET_FILE:MeasureCirclePlugin>"
+            TEST_AGENTACTOR_META_MeasureCircle="${CMAKE_SOURCE_DIR}/src/plugins/detection/MeasureCircle/metadata.json")
+    endif()
     if(TEST_NAME STREQUAL "test_loadpointcloud" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE LoadPointCloudPlugin)
     endif()

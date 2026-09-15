@@ -4,6 +4,7 @@
 #include "../platform/Platform.h"
 
 #include <QJsonObject>
+#include <QMap>
 #include <QObject>
 #include <QPointer>
 #include <QUndoStack>
@@ -63,6 +64,7 @@ private:
     QJsonObject readDocumentation(const QJsonObject& params);
 
     QUndoStack* m_undoStack;
+    QMap<QString, QJsonObject> m_schemaCache; // 插件加载/卸载时失效（评审 P2-7）
 };
 
 } // namespace DeepLux

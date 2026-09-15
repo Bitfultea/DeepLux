@@ -121,6 +121,47 @@ private slots:
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Confirming);
     }
 
+    // 阶7 Agent 评审修复（P2-8）：配置 agent/bridgeToken 后，未认证消息被拒绝，
+    // 错误令牌断开连接，正确令牌认证后方可查询
+    void testTokenAuthGate() {
+        AgentBridge& bridge = AgentBridge::instance();
+        bridge.m_authToken = QStringLiteral("secret");
+        bridge.m_authenticated.clear();
+
+        auto unauth = process({{"type", "query"}, {"id", "q1"}, {"payload", QJsonObject{{"target", "system"}}}});
+        QVERIFY(unauth.error);
+        QVERIFY(unauth.errorMessage.contains("Unauthorized"));
+
+        auto badAuth = process({{"type", "auth"}, {"id", "a1"}, {"payload", QJsonObject{{"token", "wrong"}}}});
+        QVERIFY(badAuth.error);
+
+        auto goodAuth = process({{"type", "auth"}, {"id", "a2"}, {"payload", QJsonObject{{"token", "secret"}}}});
+        QVERIFY(!goodAuth.error);
+        QCOMPARE(goodAuth.payload["status"].toString(), QString("authenticated"));
+
+        auto query = process({{"type", "query"}, {"id", "q2"}, {"payload", QJsonObject{{"target", "system"}}}});
+        QVERIFY(!query.error);
+
+        bridge.m_authToken.clear();
+        bridge.m_authenticated.clear();
+    }
+
+    // 阶7 Agent 评审修复（P2-5）：单行入站超 1MB 上限即断开连接
+    void testOversizedInboundDropsConnection() {
+        AgentBridge& bridge = AgentBridge::instance();
+        QVERIFY(bridge.start());
+
+        QLocalSocket client;
+        client.connectToServer(bridge.serverName());
+        QVERIFY(client.waitForConnected(1000));
+        QTRY_COMPARE_WITH_TIMEOUT(bridge.m_connections.size(), 1, 1000);
+
+        QByteArray big(2 * 1024 * 1024, 'x');
+        client.write(big + "\n");
+        client.flush();
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QLocalSocket::UnconnectedState, 2000);
+    }
+
     void testResponseWriteDoesNotHoldConnectionMutex() {
         AgentBridge& bridge = AgentBridge::instance();
         QVERIFY(bridge.start());

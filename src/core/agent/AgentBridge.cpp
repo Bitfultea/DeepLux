@@ -3,6 +3,7 @@
 #include "AgentConnection.h"
 #include "config/SystemConfig.h"
 #include "engine/RunEngine.h"
+#include "manager/ConfigManager.h"
 #include "manager/PluginManager.h"
 #include "manager/ProjectManager.h"
 #include "model/Project.h"
@@ -116,6 +117,9 @@ AgentBridge& AgentBridge::instance() {
 bool AgentBridge::start() {
     if (m_running)
         return true;
+
+    // 阶7 Agent 评审修复（P2-8）：可选握手令牌；空值=不启用（保持既有行为）
+    m_authToken = ConfigManager::instance().groupString("agent", "bridgeToken", QString());
 
 #if defined(Q_OS_LINUX)
     // 使用用户可写的 socket 路径
@@ -257,6 +261,36 @@ AgentBridge::ProtocolResponse AgentBridge::processMessage(const QString& clientI
 
     ProtocolResponse response;
     response.reqId = reqId;
+
+    // 阶7 Agent 评审修复（P2-8）：配置 agent/bridgeToken 后启用握手认证
+    if (!m_authToken.isEmpty()) {
+        bool authed = false;
+        {
+            QMutexLocker locker(&m_connectionMutex);
+            authed = m_authenticated.value(clientId, false);
+        }
+        if (!authed) {
+            if (type == "auth") {
+                const bool ok = payload.value("token").toString() == m_authToken;
+                {
+                    QMutexLocker locker(&m_connectionMutex);
+                    m_authenticated[clientId] = ok;
+                }
+                if (ok) {
+                    response.payload = QJsonObject{{"status", "authenticated"}};
+                    return response;
+                }
+                response.error = true;
+                response.errorMessage = "Invalid auth token";
+                forceCloseClient(clientId);
+                return response;
+            }
+            response.error = true;
+            response.errorMessage = "Unauthorized: send {\"type\":\"auth\",\"payload\":{\"token\":...}} first";
+            return response;
+        }
+    }
+
     if (type == "execute") {
         // execute 类型已废弃：Agent 不再能执行任意 bash 命令
         response.error = true;
@@ -292,6 +326,7 @@ void AgentBridge::onClientDisconnected(const QString& clientId) {
         }
         m_missedHeartbeats.remove(clientId);
         m_eventSubscriptions.remove(clientId);
+        m_authenticated.remove(clientId);
     }
     emit agentDisconnected(clientId);
     qDebug() << "Agent disconnected:" << clientId;
@@ -356,13 +391,24 @@ void AgentBridge::onHeartbeatTimeout() {
     for (const QString& clientId : timedOutClients) {
         qDebug() << "Agent heartbeat timeout:" << clientId;
         emit agentConnectionLost(clientId);
-        QTimer::singleShot(5000, this, [this, clientId]() { attemptReconnect(clientId); });
+        // 阶7 Agent 评审修复（P3-9）：移除空实现的 attemptReconnect 死代码；
+        // 重连由客户端侧发起（bridge 仅被动 listen）
     }
 }
 
-void AgentBridge::attemptReconnect(const QString& clientId) {
-    qDebug() << "Attempting to reconnect agent:" << clientId;
-    // 重连逻辑 - 在此简单实现，实际可能需要更复杂的重连策略
+void AgentBridge::forceCloseClient(const QString& clientId) {
+    AgentConnection* target = nullptr;
+    {
+        QMutexLocker locker(&m_connectionMutex);
+        for (AgentConnection* conn : m_connections) {
+            if (conn->clientId() == clientId) {
+                target = conn;
+                break;
+            }
+        }
+    }
+    if (target)
+        target->forceClose();
 }
 
 QJsonObject AgentBridge::handleToolCall(const QString& reqId, const QJsonObject& payload) {

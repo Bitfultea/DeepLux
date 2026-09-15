@@ -47,6 +47,10 @@ public:
     ILLMClient* llmClient() const {
         return m_llmClient;
     }
+    void setSystemPrompt(const QString& prompt);
+    QString systemPrompt() const {
+        return m_systemPrompt;
+    }
 
     void sendUserMessage(const QString& message);
     void sendUserMessageWithImages(const QString& message, const QList<QPixmap>& images);

@@ -105,7 +105,12 @@ void AgentController::shutdown() {
         m_observer->shutdown();
     if (m_llmClient)
         disconnect(m_llmClient, nullptr, this, nullptr);
+    // 阶7 Agent 评审修复（P3-10）：清空客户端与待确认工具，避免 shutdown 后
+    // sendUserMessage 仍向已断开客户端发请求或残留待确认状态
+    m_llmClient = nullptr;
+    m_pendingToolCalls = QJsonArray();
     m_initialized = false;
+    transitionTo(AgentState::Idle);
 }
 
 void AgentController::setPermissionLevel(PermissionLevel level) {
@@ -124,6 +129,12 @@ void AgentController::setLLMClient(ILLMClient* client) {
                 Qt::QueuedConnection);
         connect(m_llmClient, &ILLMClient::errorOccurred, this, &AgentController::onLLMError, Qt::QueuedConnection);
     }
+}
+
+void AgentController::setSystemPrompt(const QString& prompt) {
+    m_systemPrompt = prompt.trimmed();
+    if (m_systemPrompt.isEmpty())
+        m_systemPrompt = defaultSystemPrompt();
 }
 
 void AgentController::logAction(const AgentActionLogEntry& entry) {
@@ -220,6 +231,10 @@ QString AgentController::buildContext() {
 // ========== User Input ==========
 
 void AgentController::sendUserMessage(const QString& message) {
+    if (!m_initialized) {
+        emit llmErrorOccurred("Agent not initialized");
+        return;
+    }
     if (!m_llmClient) {
         emit llmErrorOccurred("LLM client not configured");
         return;
@@ -241,6 +256,10 @@ void AgentController::sendUserMessage(const QString& message) {
 }
 
 void AgentController::sendUserMessageWithImages(const QString& message, const QList<QPixmap>& images) {
+    if (!m_initialized) {
+        emit llmErrorOccurred("Agent not initialized");
+        return;
+    }
     if (!m_llmClient) {
         emit llmErrorOccurred("LLM client not configured");
         return;
@@ -250,18 +269,24 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
         return;
     }
 
-    // DeepSeek 不支持 vision API (image_url 格式), 图片转为文本描述
-    QString actualMessage = message;
-    if (!message.isEmpty())
-        actualMessage += "\n\n";
-    actualMessage += QString("[User attached %1 image(s). Describe what you see or ask the user to describe them. "
-                             "If you need vision capabilities, switch to a multimodal model like gpt-4o or claude.]")
-                         .arg(images.size());
-
     AgentMessage msg;
     msg.role = "user";
-    msg.content = actualMessage;
-    // 不填充 msg.images — DeepSeek 不支持 image_url
+    msg.content = message.isEmpty() ? QStringLiteral("Analyze the attached image.") : message;
+    for (const QPixmap& image : images) {
+        if (image.isNull())
+            continue;
+
+        QByteArray data;
+        QBuffer buffer(&data);
+        if (buffer.open(QIODevice::WriteOnly) && image.save(&buffer, "PNG"))
+            msg.images.append({data, QStringLiteral("image/png"), QString()});
+    }
+    if (msg.images.isEmpty()) {
+        transitionTo(AgentState::Idle);
+        emit llmErrorOccurred("No valid image attachment");
+        return;
+    }
+
     m_conversationHistory.append(msg);
     trimHistoryIfNeeded();
     m_agentTurnCount = 0;
@@ -274,7 +299,9 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
 // ========== LLM Response ==========
 
 void AgentController::onLLMResponse(const AgentResponse& resp) {
-    if (m_state != AgentState::Thinking) {
+    // 阶7 Agent 评审修复（P3-12）：统一经 state() 访问器读状态（带锁），
+    // 避免未来跨线程引入后直读成员造成回归
+    if (state() != AgentState::Thinking) {
         qWarning() << "[AgentController] Unexpected onLLMResponse in state" << stateName(m_state);
         return;
     }
@@ -325,7 +352,7 @@ void AgentController::onLLMResponse(const AgentResponse& resp) {
 // ========== Tool Confirm (通过 QueuedConnection 入队，避免阻塞按钮信号链) ==========
 
 void AgentController::confirmPendingTools() {
-    if (m_state != AgentState::Confirming) {
+    if (state() != AgentState::Confirming) {
         qWarning() << "[AgentController] confirmPendingTools called in state" << stateName(m_state);
         return;
     }
@@ -341,7 +368,7 @@ void AgentController::confirmPendingTools() {
 }
 
 void AgentController::doConfirmPendingTools(QJsonArray calls) {
-    if (m_state != AgentState::Confirming) {
+    if (state() != AgentState::Confirming) {
         qWarning() << "[AgentController] doConfirmPendingTools: state changed to" << stateName(m_state);
         return;
     }
@@ -375,7 +402,7 @@ void AgentController::doConfirmPendingTools(QJsonArray calls) {
 }
 
 void AgentController::rejectPendingTools() {
-    if (m_state != AgentState::Confirming) {
+    if (state() != AgentState::Confirming) {
         qWarning() << "[AgentController] rejectPendingTools called in state" << stateName(m_state);
         return;
     }
@@ -389,7 +416,7 @@ void AgentController::rejectPendingTools() {
 // ========== Agent Loop Core ==========
 
 void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
-    if (m_state != AgentState::Executing) {
+    if (state() != AgentState::Executing) {
         qWarning() << "[AgentController] Unexpected extendAgentLoop in state" << stateName(m_state);
         return;
     }
@@ -511,6 +538,18 @@ void AgentController::trimHistoryIfNeeded() {
             break;
         }
     }
+
+    // 阶7 Agent 评审修复（P2-6）：单用户轮超长时上面的循环会 break 保留超限历史，
+    // 请求可能超出模型窗口；此处按"整轮配对"硬裁剪：丢弃最旧的 assistant 消息
+    // 及其后续连续 tool 消息（保持 tool_call/tool 配对完整），直至条数受控
+    constexpr int kMaxMessages = 64;
+    while (m_conversationHistory.size() > kMaxMessages && !m_conversationHistory.isEmpty() &&
+           m_conversationHistory.first().role == "user" && m_conversationHistory.size() > 2 &&
+           m_conversationHistory[1].role == "assistant") {
+        m_conversationHistory.removeAt(1);
+        while (m_conversationHistory.size() > 1 && m_conversationHistory[1].role == "tool")
+            m_conversationHistory.removeAt(1);
+    }
 }
 
 void AgentController::onGuiEvent(const GuiEvent& event) {
@@ -519,7 +558,7 @@ void AgentController::onGuiEvent(const GuiEvent& event) {
 }
 
 QJsonObject AgentController::handleToolCall(const QString& toolName, const QJsonObject& params) {
-    if (m_state != AgentState::Idle)
+    if (state() != AgentState::Idle)
         return {{"error", "Agent is busy processing another request"}};
     if (!ToolSchema::instance().hasTool(toolName))
         return m_actor->executeTool(toolName, params);
