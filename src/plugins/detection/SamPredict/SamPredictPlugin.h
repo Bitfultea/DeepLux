@@ -9,8 +9,9 @@ namespace DeepLux {
  *
  * 输入 Image2D 与 prompt 参数（正点/负点/框），调用 SamBackendClient 完成
  * set_image + predict，输出强类型 Region2D（polygon/bbox/maskRle/score/label）。
- * 客户端按调用线程栈上创建并以本地事件循环同步收口（NAM 线程亲和），超时
- * 或后端错误失败关闭；mask 像素不入载荷（仅 RLE）。
+ * 客户端按调用线程栈上创建并以本地事件循环同步收口（NAM 线程亲和），超时、
+ * 后端错误或引擎取消（stop，批1 复核二轮 P2-2 轮询令牌）失败关闭；mask
+ * 像素不入载荷（仅 RLE）。
  */
 class SamPredictPlugin : public ModuleBase {
     Q_OBJECT

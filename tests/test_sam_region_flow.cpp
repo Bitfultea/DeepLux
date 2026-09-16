@@ -1,3 +1,4 @@
+#include "core/common/CancellationToken.h"
 #include "core/deeplux/DataContract.h"
 #include "core/deeplux/PayloadTypes.h"
 #include "core/engine/RunEngine.h"
@@ -10,6 +11,7 @@
 #include "plugins/geometry/RegionStats/RegionStatsPlugin.h"
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
@@ -17,8 +19,10 @@
 #include <QJsonObject>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QtTest>
 #include <cmath>
+#include <limits>
 
 using namespace DeepLux;
 using DeepLuxTest::SamTestServer;
@@ -26,8 +30,9 @@ using DeepLuxTest::SamTestServer;
 /**
  * SAM 批1：Region2D 载荷契约 + SamPredict 生产者 + RegionStats 消费者。
  *
- * 覆盖：契约门禁（强类型/两种 map 形态/负例）、SamPredict 参数校验与
- * 对测试后端（helpers/SamTestServer.h）的成功/超时/后端错误失败关闭、
+ * 覆盖：契约门禁（强类型/两种 map 形态/负例，含批1 复核二轮 P2-1 非有限
+ * 数值 NaN/Inf 拒绝）、SamPredict 参数校验与对测试后端
+ * （helpers/SamTestServer.h）的成功/超时/取消（P2-2）/后端错误失败关闭、
  * RegionStats 面积/质心/外接矩形数值断言与无效输入拒绝、克隆独立性，
  * 以及 GrabImage → SamPredict → RegionStats 全流程验收（PluginManager
  * 真实加载 + RunEngine 调度）。
@@ -160,6 +165,63 @@ private slots:
         QVariantMap badScore = bboxOnly;
         badScore["score"] = 1.5;
         QVERIFY(!portValueMatchesType(badScore, DataType::Region2D));
+
+        // 批1 复核二轮（P2-1）：非有限数值失败关闭——isNumeric 仅查类型，
+        // NaN/Inf 必须显式拒绝（score=NaN 因 [0,1] 两端比较均假而会放行）
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const double inf = std::numeric_limits<double>::infinity();
+        for (const double bad : {nan, inf, -inf}) {
+            // map: bbox 分量非有限（polygon<3 时 NaN<=0 为假，旧校验会放行）
+            QVariantMap badBox = bboxOnly;
+            badBox["bbox"] = QVariant(QVariantList{1.0, 2.0, bad, 4.0});
+            QVERIFY2(!portValueMatchesType(badBox, DataType::Region2D), "non-finite bbox must be rejected");
+            // map: score 非有限
+            QVariantMap badScoreNonFinite = bboxOnly;
+            badScoreNonFinite["score"] = bad;
+            QVERIFY2(!portValueMatchesType(badScoreNonFinite, DataType::Region2D), "non-finite score must be rejected");
+            // 强类型：bbox x 非有限但 isValid() 仅查宽高（仍判"有效"）
+            Region2D strongBadBox;
+            strongBadBox.polygon = {QPointF(0, 0), QPointF(4, 0), QPointF(0, 3)};
+            strongBadBox.bbox = QRectF(bad, 0, 4, 3);
+            QVERIFY2(!portValueMatchesType(QVariant::fromValue(strongBadBox), DataType::Region2D),
+                     "non-finite strong bbox must be rejected");
+        }
+
+        // map: polygon 嵌套数值列表含 NaN → 拒绝
+        QVariantMap nanPoly;
+        QVariantList polyN;
+        polyN.append(QVariant(QVariantList{0.0, 0.0}));
+        polyN.append(QVariant(QVariantList{nan, 0.0}));
+        polyN.append(QVariant(QVariantList{0.0, 3.0}));
+        nanPoly["polygon"] = polyN;
+        nanPoly["bbox"] = QVariant(QVariantList{0.0, 0.0, 4.0, 3.0});
+        QVERIFY(!portValueMatchesType(nanPoly, DataType::Region2D));
+
+        // map: polygon QPointF 元素含 Inf → 拒绝
+        QVariantMap infPoint;
+        QVariantList polyI;
+        polyI << QVariant::fromValue(QPointF(0, 0)) << QVariant::fromValue(QPointF(inf, 0))
+              << QVariant::fromValue(QPointF(0, 3));
+        infPoint["polygon"] = polyI;
+        infPoint["bbox"] = QVariant(QVariantList{0.0, 0.0, 4.0, 3.0});
+        QVERIFY(!portValueMatchesType(infPoint, DataType::Region2D));
+
+        // 强类型：polygon 含 NaN / score=NaN 或越界 / bbox 宽=Inf → 拒绝
+        Region2D strong;
+        strong.polygon = {QPointF(0, 0), QPointF(4, 0), QPointF(0, 3)};
+        QVERIFY(portValueMatchesType(QVariant::fromValue(strong), DataType::Region2D));
+        Region2D nanPolyStrong = strong;
+        nanPolyStrong.polygon[1] = QPointF(nan, 0);
+        QVERIFY(!portValueMatchesType(QVariant::fromValue(nanPolyStrong), DataType::Region2D));
+        Region2D nanScoreStrong = strong;
+        nanScoreStrong.score = nan;
+        QVERIFY(!portValueMatchesType(QVariant::fromValue(nanScoreStrong), DataType::Region2D));
+        Region2D highScoreStrong = strong;
+        highScoreStrong.score = 1.5;
+        QVERIFY(!portValueMatchesType(QVariant::fromValue(highScoreStrong), DataType::Region2D));
+        Region2D infBoxStrong;
+        infBoxStrong.bbox = QRectF(0, 0, inf, 3); // isValid 判"有效"，须被有限值检查拒绝
+        QVERIFY(!portValueMatchesType(QVariant::fromValue(infBoxStrong), DataType::Region2D));
 
         // 非 Region2D 载荷 → 拒绝
         QVERIFY(!portValueMatchesType(QVariant(42), DataType::Region2D));
@@ -310,6 +372,40 @@ private slots:
         QVERIFY2(spy.first().at(0).toString().contains(QStringLiteral("超时")),
                  qPrintable(spy.first().at(0).toString()));
         QVERIFY(!output.hasData("region")); // 超时不伪造区域
+    }
+
+    // 批1 复核二轮（P2-2）：嵌套事件循环等待期间引擎 stop()（取消令牌）必须被
+    // 及时响应——不得干等客户端超时（5000ms）或外层 deadline（timeoutMs+2s）
+    void testSamPredictCancellationResponsive() {
+        SamTestServer server;
+        QVERIFY(server.listen());
+        server.hangPaths.insert(QStringLiteral("/predict"));
+
+        SamPredictPlugin plugin;
+        QVERIFY(plugin.initialize());
+        plugin.setParams(samParams(server.url(), QStringLiteral("widget"), 5000));
+
+        CancellationToken token;
+        plugin.setCancellationToken(&token);
+        // 200ms 后取消：定时器事件在 process 的嵌套事件循环内触发
+        QTimer::singleShot(200, &token, &CancellationToken::cancel);
+
+        QImage image(16, 16, QImage::Format_RGB32);
+        image.fill(Qt::white);
+        ImageData input(image);
+        ImageData output;
+        QSignalSpy spy(&plugin, &DeepLux::IModule::errorOccurred);
+        QElapsedTimer timer;
+        timer.start();
+        QVERIFY2(!plugin.execute(input, output), "cancelled predict must fail closed");
+        const qint64 elapsed = timer.elapsed();
+        // 取消轮询 100ms 间隔：~300ms 内必须退出；回归到无轮询实现则为 5000ms+（红）
+        QVERIFY2(elapsed < 3000, qPrintable(QString("cancellation must be responsive, elapsed=%1ms").arg(elapsed)));
+        QVERIFY(spy.count() >= 1);
+        QVERIFY2(spy.first().at(0).toString().contains(QStringLiteral("取消")),
+                 qPrintable(spy.first().at(0).toString()));
+        QVERIFY(!output.hasData("region")); // 取消不伪造区域
+        plugin.setCancellationToken(nullptr);
     }
 
     void testSamPredictBackendErrorFailClosed() {
@@ -473,6 +569,19 @@ private slots:
         badScoreInput.setData("region", badScore);
         ImageData badScoreOut;
         QVERIFY(!plugin.execute(badScoreInput, badScoreOut));
+
+        // 批1 复核二轮（P2-1）：NaN bbox 被契约门禁拒绝，不输出 NaN 面积
+        QVariantMap nanBox;
+        nanBox["polygon"] = QVariant(QVariantList{});
+        nanBox["bbox"] = QVariant(QVariantList{0.0, 0.0, std::numeric_limits<double>::quiet_NaN(), 4.0});
+        ImageData nanInput;
+        nanInput.setData("region", nanBox);
+        ImageData nanOut;
+        QSignalSpy nanSpy(&plugin, &DeepLux::IModule::errorOccurred);
+        QVERIFY(!plugin.execute(nanInput, nanOut));
+        QVERIFY2(nanSpy.first().at(0).toString().contains(QStringLiteral("契约")),
+                 qPrintable(nanSpy.first().at(0).toString()));
+        QVERIFY(!nanOut.hasData("region_area"));
     }
 
     // ---------- 克隆独立性 ----------

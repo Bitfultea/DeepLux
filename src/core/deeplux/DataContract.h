@@ -130,9 +130,10 @@ bool dataTypeFromString(const QString& name, DataType& out);
 /**
  * @brief 类型是否允许被 metadata 声明为可运行端口（阶段 3 收口）
  *
- * Mask2D/Region2D/Ellipse2D/Transform2D/ClassScores 尚无载荷契约与生产者插件：
- * 枚举值保留以维持 ABI 稳定，但 metadata 声明这些类型会在加载阶段被明确拒绝，
- * 避免"连接合法、运行期永远拒绝"的悬空端口。待对应载荷/插件落地后再放开。
+ * Mask2D/Ellipse2D/Transform2D/ClassScores 尚无载荷契约与生产者插件（Region2D
+ * 已于 SAM 批1 落地契约与生产者）：枚举值保留以维持 ABI 稳定，但 metadata
+ * 声明这些类型会在加载阶段被明确拒绝，避免"连接合法、运行期永远拒绝"的
+ * 悬空端口。待对应载荷/插件落地后再放开。
  */
 bool isSupportedPortType(DataType type);
 

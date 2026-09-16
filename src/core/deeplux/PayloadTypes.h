@@ -58,8 +58,12 @@ struct DetectionList {
  *
  * 供 SAM 分割等生产者把区域送入主流程：polygon 为原图坐标多边形，bbox 为
  * 外接矩形，maskRle 为掩膜 RLE 编码（像素掩膜不入载荷，避免跨插件 QImage
- * 序列化开销；需要像素掩膜的消费者自行解码或经生产者缓存获取）。
- * 与 AnnotationObject 字段对齐，便于标注会话与流程互转。
+ * 序列化开销；需要像素掩膜的消费者从 maskRle 自行解码，生产者不缓存掩膜
+ * 像素）。与 AnnotationObject 字段对齐，便于标注会话与流程互转。
+ *
+ * isValid() 为结构体自身的最低有效性（polygon≥3 或 bbox 有效）；端口契约
+ * （DataContract isRegion2D）另要求：map 形态必须同时含 polygon 与 bbox
+ * 字段，且两种形态全部数值分量有限、score∈[0,1]，非有限失败关闭。
  */
 struct Region2D {
     QString label;

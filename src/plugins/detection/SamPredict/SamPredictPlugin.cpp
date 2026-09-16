@@ -154,7 +154,7 @@ bool SamPredictPlugin::process(const ImageData& input, ImageData& output) {
     }
 
     // 客户端栈上创建：NAM 线程亲和 = 调用线程，本地事件循环同步收口；
-    // 超时或后端错误失败关闭，不伪造区域
+    // 超时、后端错误或引擎取消（stop）失败关闭，不伪造区域
     SamBackendClient client;
     client.setServerUrl(serverUrl);
     client.setTimeoutMs(timeoutMs);
@@ -163,13 +163,26 @@ bool SamPredictPlugin::process(const ImageData& input, ImageData& output) {
     QString error;
     bool done = false;
     QEventLoop loop;
+    // 批1 复核二轮（P2-2）：外层 deadline 仅为客户端定时器故障兜底，收紧为
+    // timeoutMs+2s（不再 2 倍放大）；stop() 响应性由下方取消轮询保证
     QTimer deadline;
     deadline.setSingleShot(true);
-    deadline.setInterval(timeoutMs * 2 + 2000);
+    deadline.setInterval(timeoutMs + 2000);
     QObject::connect(&deadline, &QTimer::timeout, &loop, [&]() {
-        error = QStringLiteral("SAM 请求超时（本地等待上限 %1ms）").arg(timeoutMs * 2 + 2000);
+        error = QStringLiteral("SAM 请求超时（本地等待上限 %1ms）").arg(timeoutMs + 2000);
         done = true;
         loop.quit();
+    });
+    // 批1 复核二轮（P2-2）：嵌套事件循环运行在引擎线程，stop() 的取消令牌
+    // 无法中断客户端定时器——轮询令牌提前退出，消除最长 ~242s 不可响应窗口
+    QTimer cancelPoll;
+    cancelPoll.setInterval(100);
+    QObject::connect(&cancelPoll, &QTimer::timeout, &loop, [&]() {
+        if (isCancellationRequested()) {
+            error = tr("SAM 预测已取消");
+            done = true;
+            loop.quit();
+        }
     });
     QObject::connect(
         &client, &SamBackendClient::predictionReady, &loop,
@@ -192,9 +205,11 @@ bool SamPredictPlugin::process(const ImageData& input, ImageData& output) {
     QObject::connect(&client, &SamBackendClient::embeddingReady, &loop,
                      [&](const QString&) { client.predict(pos, neg, box); });
     deadline.start();
+    cancelPoll.start();
     client.setImage(tmp.fileName());
     loop.exec();
     deadline.stop();
+    cancelPoll.stop();
 
     if (!done || !error.isEmpty()) {
         emit errorOccurred(error.isEmpty() ? tr("SAM 预测失败") : error);

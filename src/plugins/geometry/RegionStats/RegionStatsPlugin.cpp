@@ -93,6 +93,8 @@ bool RegionStatsPlugin::doValidateParams(const QJsonObject& params, QString& err
 }
 
 bool RegionStatsPlugin::process(const ImageData& input, ImageData& output) {
+    // 整体拷贝透传承载与全部数据键：maskRle 等不参与统计的字段依赖此行保留
+    // （批1 复核二轮 P3-2：勿改为按键拷贝，否则透传字段会静默丢失）
     output = input;
 
     const QVariant regionVar = input.data(QStringLiteral("region"));
@@ -119,7 +121,7 @@ bool RegionStatsPlugin::process(const ImageData& input, ImageData& output) {
         const QVariant score = m.value(QStringLiteral("score"));
         region.score = score.isValid() ? score.toDouble() : 0.0;
         region.label = m.value(QStringLiteral("label")).toString();
-        // maskRle 不参与统计，原样随 output 透传
+        // maskRle 不参与统计（透传依赖上方 output = input 整体拷贝）
     }
 
     // 外接矩形：优先载荷自带 bbox；polygon-only（强类型允许）时由多边形推导

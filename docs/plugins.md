@@ -184,7 +184,7 @@ flowchart LR
 - **用途**：调用 sam_server 完成 set_image+predict，输出强类型 Region2D（polygon/bbox/maskRle/score/label），供交互式分割与下游区域消费。
 - **使用**：接 `GrabImage` 等 Image2D 图像源；points（正点 `[[x,y],...]`）与 box（`[x,y,w,h]`，w/h>0）至少提供一个 prompt，negativePoints 可排除区域；serverUrl 指向 SAM 服务（默认 `http://127.0.0.1:8990`）。
 - **关键配置**：serverUrl、label、points、negativePoints、box、timeoutMs（100–120000）。元数据：[metadata.json](../src/plugins/detection/SamPredict/metadata.json)。
-- **检查**：成功写出 region（Region2D 契约端口）与 score；prompt 原样透传后端（points_pos/points_neg/box）；超时、后端错误或返回区域无效均失败关闭，不伪造区域。
+- **检查**：成功写出 region（Region2D 契约端口）与 score；prompt 原样透传后端（points_pos/points_neg/box）；超时、后端错误、引擎取消（stop，等待期间轮询取消令牌）或返回区域无效均失败关闭，不伪造区域。
 
 ## 几何测量（13）
 
@@ -275,9 +275,9 @@ flowchart LR
 ### `RegionStats` - Region2D 区域统计
 
 - **用途**：消费 Region2D 区域载荷，输出面积、外接矩形、质心、点数、置信度与标签，用于分割区域筛选与结果核验。
-- **使用**：region 端口接 `SamPredict` 的 region 输出（或符合 Region2D 契约的强类型/polygon+bbox map 载荷）；polygon≥3 点按 shoelace 计算面积与面积质心，<3 点回退外接矩形面积与中心。
+- **使用**：region 端口接 `SamPredict` 的 region 输出，或符合 Region2D 契约的载荷：强类型 Region2D；map 形态**必须同时含 polygon 与 bbox 字段**（bbox 为 `[x,y,w,h]` 4 个有限数值，polygon<3 点时 w/h 须 >0），polygon 元素为 QPointF 或 `[x,y]` 数值列表。polygon≥3 点按 shoelace 计算面积与面积质心，<3 点回退外接矩形面积与中心。
 - **关键配置**：无可配置参数。元数据：[metadata.json](../src/plugins/geometry/RegionStats/metadata.json)。
-- **检查**：region_area、bbox_x/y/w/h、point_count、centroid_x/y、score、label；不符合契约的载荷失败关闭；polygon-only 强类型的外接矩形由多边形推导，退化多边形质心回退外接矩形中心。
+- **检查**：region_area、bbox_x/y/w/h、point_count、centroid_x/y、score、label；不符合契约的载荷（含 NaN/Inf 等非有限数值分量、score 越界）失败关闭；polygon-only 强类型的外接矩形由多边形推导，退化多边形质心回退外接矩形中心。
 
 ## 坐标标定（2）
 

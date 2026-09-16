@@ -171,12 +171,47 @@ bool isPointSet2D(const QVariant& value) {
     return true;
 }
 
-// SAM 批1：Region2D 校验（强类型 Region2D 或 polygon+bbox 完整 map）。
-// polygon 元素为 QPointF 或 2 数值列表（与 PointSet2D 元素口径一致）；
-// bbox 为 4 数值 [x,y,w,h]；maskRle/label/score 可选但类型受控。
+// SAM 批1 复核二轮（P2-1）：有限值防护——isNumeric/isNumericList 仅查类型，
+// NaN/Inf 会放行（score=NaN 因 [0,1] 区间比较两端均为假而通过），Region2D
+// 契约对全部数值分量额外要求 std::isfinite，非有限载荷失败关闭。
+bool isFiniteNumericList(const QVariant& value, int expectedSize) {
+    if (!isNumericList(value, expectedSize))
+        return false;
+    const QVariantList values = value.toList();
+    for (const QVariant& item : values) {
+        if (!std::isfinite(item.toDouble()))
+            return false;
+    }
+    return true;
+}
+
+bool isFinitePoint(const QPointF& p) {
+    return std::isfinite(p.x()) && std::isfinite(p.y());
+}
+
+bool isFiniteRect(const QRectF& r) {
+    return std::isfinite(r.x()) && std::isfinite(r.y()) && std::isfinite(r.width()) && std::isfinite(r.height());
+}
+
+// SAM 批1：Region2D 校验（强类型 Region2D 或 polygon+bbox 完整 map；map 形态
+// 必须同时含 polygon 与 bbox 字段，bbox 为 [x,y,w,h] 4 有限数值）。polygon
+// 元素为 QPointF 或 2 数值列表（与 PointSet2D 元素口径一致）；maskRle/label/
+// score 可选但类型受控；score 两种形态统一要求有限且在 [0,1]。
 bool isRegion2D(const QVariant& value) {
     if (value.canConvert<Region2D>()) {
-        return value.value<Region2D>().isValid();
+        const Region2D region = value.value<Region2D>();
+        if (!region.isValid())
+            return false;
+        for (const QPointF& p : region.polygon) {
+            if (!isFinitePoint(p))
+                return false;
+        }
+        // 无效 bbox 由消费者忽略（polygon 推导或失败关闭），仅需拦截"看似有效但含非有限值"
+        if (region.bbox.isValid() && !isFiniteRect(region.bbox))
+            return false;
+        if (!std::isfinite(region.score) || region.score < 0.0 || region.score > 1.0)
+            return false;
+        return true;
     }
     if (value.type() != QVariant::Map)
         return false;
@@ -186,16 +221,21 @@ bool isRegion2D(const QVariant& value) {
         return false;
     const QVariantList polyList = poly.toList();
     for (const QVariant& item : polyList) {
-        if (item.type() != QVariant::PointF && !isNumericList(item, 2))
+        if (item.type() == QVariant::PointF) {
+            if (!isFinitePoint(item.toPointF()))
+                return false;
+        } else if (!isFiniteNumericList(item, 2)) {
             return false;
+        }
     }
     const QVariant bb = m.value(QStringLiteral("bbox"));
-    if (!isNumericList(bb, 4))
+    if (!isFiniteNumericList(bb, 4))
         return false;
     if (polyList.size() < 3 && (bb.toList()[2].toDouble() <= 0.0 || bb.toList()[3].toDouble() <= 0.0))
         return false; // polygon 与 bbox 至少其一有效
     const QVariant score = m.value(QStringLiteral("score"));
-    if (score.isValid() && (!isNumeric(score) || score.toDouble() < 0.0 || score.toDouble() > 1.0))
+    if (score.isValid() &&
+        (!isNumeric(score) || !std::isfinite(score.toDouble()) || score.toDouble() < 0.0 || score.toDouble() > 1.0))
         return false;
     const QVariant rle = m.value(QStringLiteral("maskRle"));
     if (rle.isValid() && rle.type() != QVariant::String)
