@@ -177,6 +177,19 @@ void AnnotationOverlayWidget::paintEvent(QPaintEvent*) {
         painter.drawRect(m_dragBox);
     }
 
+    // 绘制橡皮擦笔画预览（SAM 批2，红色示意线；实际擦除半径由对话框参数决定）
+    if (m_isErasing && m_eraseStroke.size() >= 1 && m_imageToWidget) {
+        QPen pen(QColor("#EF4444"), 2, Qt::DashLine);
+        pen.setCosmetic(true);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        QPainterPath strokePath(m_imageToWidget(m_eraseStroke.first()));
+        for (int i = 1; i < m_eraseStroke.size(); ++i)
+            strokePath.lineTo(m_imageToWidget(m_eraseStroke[i]));
+        painter.drawPath(strokePath);
+        painter.drawEllipse(m_imageToWidget(m_eraseStroke.last()), 4, 4);
+    }
+
     // 绘制正点（绿色）
     painter.setPen(QPen(QColor("#111827"), 2));
     painter.setBrush(QColor("#22C55E"));
@@ -215,6 +228,12 @@ void AnnotationOverlayWidget::mousePressEvent(QMouseEvent* event) {
         m_isDragging = true;
         m_dragStart = widgetPoint;
         emit dragStarted(imagePoint);
+    } else if (m_mode == Mode::Eraser && event->button() == Qt::LeftButton) {
+        // SAM 批2：橡皮擦按下开始收集笔画折线（原图坐标），释放时一次性发出
+        m_isErasing = true;
+        m_eraseStroke.clear();
+        m_eraseStroke.append(imagePoint);
+        update();
     } else if ((m_mode == Mode::PositivePoint || m_mode == Mode::NegativePoint) &&
                (event->button() == Qt::LeftButton || event->button() == Qt::RightButton)) {
         emit widgetClicked(imagePoint, event->button());
@@ -224,7 +243,15 @@ void AnnotationOverlayWidget::mousePressEvent(QMouseEvent* event) {
 }
 
 void AnnotationOverlayWidget::mouseMoveEvent(QMouseEvent* event) {
-    if (m_isDragging) {
+    if (m_isErasing) {
+        // SAM 批2：橡皮擦拖动收集折线点（去重相邻重复点，防事件洪泛）
+        if (m_widgetToImage) {
+            const QPointF imagePoint = m_widgetToImage(event->pos());
+            if (m_eraseStroke.isEmpty() || m_eraseStroke.last() != imagePoint)
+                m_eraseStroke.append(imagePoint);
+            update();
+        }
+    } else if (m_isDragging) {
         QRectF dragRect(m_dragStart, event->pos());
         m_dragBox = dragRect.normalized();
         if (m_widgetToImage)
@@ -241,6 +268,21 @@ void AnnotationOverlayWidget::mouseReleaseEvent(QMouseEvent* event) {
     if (event->button() == Qt::MiddleButton) {
         if (auto* p = parentWidget())
             QCoreApplication::sendEvent(p, event);
+        return;
+    }
+    if (m_isErasing && event->button() == Qt::LeftButton) {
+        // SAM 批2：笔画结束，一次性发出完整折线（单击=单点笔画）
+        m_isErasing = false;
+        if (m_widgetToImage) {
+            const QPointF imagePoint = m_widgetToImage(event->pos());
+            if (m_eraseStroke.isEmpty() || m_eraseStroke.last() != imagePoint)
+                m_eraseStroke.append(imagePoint);
+        }
+        const QList<QPointF> stroke = m_eraseStroke;
+        m_eraseStroke.clear();
+        update();
+        if (!stroke.isEmpty())
+            emit eraseStrokeFinished(stroke);
         return;
     }
     if (m_isDragging && event->button() == Qt::LeftButton) {

@@ -1,17 +1,20 @@
 #include "core/io/YoloSegExporter.h"
 #include "core/model/Annotation.h"
+#include "core/model/AnnotationMaskOps.h"
 #include "ui/dialogs/SamAnnotatorDialog.h"
 #include "ui/widgets/AnnotationOverlayWidget.h"
 #include "ui/widgets/HImageWidget.h"
 
 #include <QCoreApplication>
 #include <QImage>
+#include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
 #include <QShortcut>
 #include <QSignalSpy>
+#include <QSpinBox>
 #include <QTemporaryFile>
 #include <QTest>
 #include <QToolButton>
@@ -55,8 +58,30 @@ private slots:
     void yoloSegExportWritesFile();
     void openAnnotationReloadsSession();
 
+    // SAM 批2：掩膜编辑（膨胀/腐蚀/橡皮擦/合并/拆分 + undo/redo）
+    void maskEditControlsExist();
+    void maskEditButtonsFollowSelection();
+    void dilateGrowsMaskAndUndoRestores();
+    void erodeToEmptyRejected();
+    void erodeMultiComponentRejected();
+    void eraseStrokeEditsMaskAndUndoRestores();
+    void eraseMissStrokeIsNoOp();
+    void mergeTouchingObjectsAndUndoRestores();
+    void mergeDisjointRejected();
+    void mergeRequiresExactlyTwo();
+    void splitTwoBlobObjectAndUndoRestores();
+    void splitSingleComponentRejected();
+    void editWithoutImageSizeRejected();
+    void editFallsBackToPolygonRasterization();
+
 private:
     QImage makeTestImage();
+    // 整图大小 RGBA 显示掩膜（sam_server 配色），绘制像素矩形（QRect 闭区间语义）
+    static QImage makeDisplayMask(int w, int h, const QList<QRect>& rects);
+    // 注入已确认对象（无需真实 SAM）：onPredictionReady + onConfirm；返回对象 id（失败返回空）
+    static QString confirmObject(SamAnnotatorDialog& dlg, const QList<QPointF>& polygon, const QRectF& bbox,
+                                 const QImage& mask, double score = 0.9);
+    static QList<QPointF> squarePolygon(double x, double y, double size);
 };
 
 void TestSamAnnotatorDialog::initTestCase() {}
@@ -338,7 +363,8 @@ void TestSamAnnotatorDialog::mainViewModeUsesReadableConfigLayout() {
     QVERIFY(hintLabel != nullptr);
     QVERIFY2(dlg.styleSheet().contains(QStringLiteral("QLabel#SamStatusLabel, QLabel#SamShortcutHintLabel")),
              "Shortcut hint should inherit the compact config-panel theme");
-    QVERIFY2(dlg.styleSheet().contains(QStringLiteral("font-size: 12px")), "Shortcut hint should use a readable font size");
+    QVERIFY2(dlg.styleSheet().contains(QStringLiteral("font-size: 12px")),
+             "Shortcut hint should use a readable font size");
 }
 
 void TestSamAnnotatorDialog::modelImportButtonExists() {
@@ -482,6 +508,411 @@ void TestSamAnnotatorDialog::openAnnotationReloadsSession() {
     AnnotationSession loaded = AnnotationSession::load(tmp.fileName(), &loadErr);
     QVERIFY2(loadErr.isEmpty(), qPrintable(loadErr));
     QCOMPARE(loaded.annotations.size(), 1);
+}
+
+// ===== SAM 批2：掩膜编辑 =====
+
+QImage TestSamAnnotatorDialog::makeDisplayMask(int w, int h, const QList<QRect>& rects) {
+    QImage mask(w, h, QImage::Format_ARGB32);
+    mask.fill(0);
+    for (const QRect& r : rects) {
+        for (int y = qMax(0, r.top()); y <= qMin(h - 1, r.bottom()); ++y) {
+            QRgb* row = reinterpret_cast<QRgb*>(mask.scanLine(y));
+            for (int x = qMax(0, r.left()); x <= qMin(w - 1, r.right()); ++x)
+                row[x] = qRgba(6, 182, 212, 90);
+        }
+    }
+    return mask;
+}
+
+QString TestSamAnnotatorDialog::confirmObject(SamAnnotatorDialog& dlg, const QList<QPointF>& polygon,
+                                              const QRectF& bbox, const QImage& mask, double score) {
+    if (!QMetaObject::invokeMethod(&dlg, "onPredictionReady", Qt::DirectConnection, Q_ARG(QList<QPointF>, polygon),
+                                   Q_ARG(QRectF, bbox), Q_ARG(double, score), Q_ARG(QString, QString()),
+                                   Q_ARG(QImage, mask)))
+        return QString();
+    if (!QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection))
+        return QString();
+    const AnnotationSession session = dlg.session();
+    return session.annotations.isEmpty() ? QString() : session.annotations.last().id;
+}
+
+QList<QPointF> TestSamAnnotatorDialog::squarePolygon(double x, double y, double size) {
+    return {QPointF(x, y), QPointF(x + size, y), QPointF(x + size, y + size), QPointF(x, y + size)};
+}
+
+void TestSamAnnotatorDialog::maskEditControlsExist() {
+    SamAnnotatorDialog dlg;
+    QVERIFY(dlg.eraserButton() != nullptr);
+    QVERIFY(dlg.dilateButton() != nullptr);
+    QVERIFY(dlg.erodeButton() != nullptr);
+    QVERIFY(dlg.mergeButton() != nullptr);
+    QVERIFY(dlg.splitButton() != nullptr);
+    QVERIFY(dlg.maskRadiusSpin() != nullptr);
+    QCOMPARE(dlg.maskRadiusSpin()->minimum(), 1);
+    QCOMPARE(dlg.maskRadiusSpin()->maximum(), 32);
+    QCOMPARE(dlg.maskRadiusSpin()->value(), 3);
+    QVERIFY(dlg.eraserButton()->isCheckable());
+    QVERIFY(!dlg.dilateButton()->isCheckable());
+    // 无选中：动作全部禁用
+    QVERIFY(!dlg.dilateButton()->isEnabled());
+    QVERIFY(!dlg.erodeButton()->isEnabled());
+    QVERIFY(!dlg.mergeButton()->isEnabled());
+    QVERIFY(!dlg.splitButton()->isEnabled());
+    // 橡皮擦按钮驱动模式与 overlay 同步
+    dlg.eraserButton()->setChecked(true);
+    QCOMPARE(dlg.currentToolMode(), SamAnnotatorDialog::ToolMode::Eraser);
+    QCOMPARE(dlg.overlayWidget()->mode(), AnnotationOverlayWidget::Mode::Eraser);
+}
+
+void TestSamAnnotatorDialog::maskEditButtonsFollowSelection() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    QVERIFY(!confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20),
+                           makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)}))
+                 .isEmpty());
+    QVERIFY(!confirmObject(dlg, squarePolygon(100, 80, 20), QRectF(100, 80, 20, 20),
+                           makeDisplayMask(200, 150, {QRect(100, 80, 20, 20)}))
+                 .isEmpty());
+    QCOMPARE(dlg.objectList()->count(), 2);
+
+    dlg.objectList()->setCurrentRow(0);
+    QVERIFY(dlg.dilateButton()->isEnabled());
+    QVERIFY(dlg.erodeButton()->isEnabled());
+    QVERIFY(dlg.splitButton()->isEnabled());
+    QVERIFY(!dlg.mergeButton()->isEnabled());
+
+    // 加选第二个（Ctrl 多选语义）→ 仅合并可用
+    dlg.objectList()->selectionModel()->select(dlg.objectList()->model()->index(1, 0), QItemSelectionModel::Select);
+    QVERIFY(dlg.mergeButton()->isEnabled());
+    QVERIFY(!dlg.dilateButton()->isEnabled());
+    QVERIFY(!dlg.splitButton()->isEnabled());
+}
+
+void TestSamAnnotatorDialog::dilateGrowsMaskAndUndoRestores() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    const QImage mask = makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)});
+    const QString id = confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20), mask);
+    QVERIFY(!id.isEmpty());
+    dlg.objectList()->setCurrentRow(0);
+    dlg.maskRadiusSpin()->setValue(2);
+    const AnnotationObject before = dlg.session().annotations.first();
+
+    dlg.dilateButton()->click();
+
+    const AnnotationObject after = dlg.session().annotations.first();
+    QCOMPARE(after.id, id);
+    QCOMPARE(after.bbox, QRectF(48, 38, 24, 24)); // 20x20 → 24x24 外扩 2
+    bool ok = false;
+    const QImage decoded = MaskOps::decodeRle(after.maskRle, &ok);
+    QVERIFY2(ok, "edited object must carry a decodable maskRle");
+    QCOMPARE(MaskOps::foregroundCount(decoded), qint64(576));
+    QVERIFY(after.polygon.size() >= 4);
+    // 来源字段不因几何编辑改变
+    QCOMPARE(after.label, before.label);
+    QCOMPARE(after.score, before.score);
+    // overlay 掩膜缓存同步为整图尺寸
+    QCOMPARE(dlg.overlayWidget()->objectMask(id).size(), QSize(200, 150));
+    QVERIFY(dlg.statusLabel()->text().contains(QStringLiteral("576")));
+    // 编辑后选中保持
+    QCOMPARE(dlg.objectList()->currentRow(), 0);
+
+    // 撤销：逐字段精确还原（含"原对象无 RLE"这一状态）
+    dlg.undoButton()->click();
+    const AnnotationObject restored = dlg.session().annotations.first();
+    QCOMPARE(restored.id, before.id);
+    QCOMPARE(restored.bbox, before.bbox);
+    QCOMPARE(restored.polygon, before.polygon);
+    QCOMPARE(restored.maskRle, before.maskRle);
+    QCOMPARE(restored.score, before.score);
+    QCOMPARE(restored.label, before.label);
+    QCOMPARE(dlg.overlayWidget()->objectMask(id), mask);
+
+    // 重做：再次膨胀
+    dlg.redoButton()->click();
+    QCOMPARE(dlg.session().annotations.first().bbox, QRectF(48, 38, 24, 24));
+}
+
+void TestSamAnnotatorDialog::erodeToEmptyRejected() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    QVERIFY(!confirmObject(dlg, squarePolygon(50, 40, 5), QRectF(50, 40, 5, 5),
+                           makeDisplayMask(200, 150, {QRect(50, 40, 5, 5)}))
+                 .isEmpty());
+    dlg.objectList()->setCurrentRow(0);
+    dlg.maskRadiusSpin()->setValue(3); // 窗口 7 > 5 → 腐蚀后为空
+    const AnnotationObject before = dlg.session().annotations.first();
+
+    dlg.erodeButton()->click();
+
+    QVERIFY(dlg.statusLabel()->text().contains(QStringLiteral("为空")));
+    QCOMPARE(dlg.session().annotations.size(), 1);
+    const AnnotationObject after = dlg.session().annotations.first();
+    QCOMPARE(after.bbox, before.bbox);
+    QCOMPARE(after.maskRle, before.maskRle);
+    QCOMPARE(after.polygon, before.polygon);
+}
+
+void TestSamAnnotatorDialog::erodeMultiComponentRejected() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    // 哑铃形：两方块 + 1px 桥；腐蚀 1 断桥 → 2 连通分量 → 拒绝
+    const QImage dumbbell =
+        makeDisplayMask(200, 150, {QRect(40, 40, 10, 10), QRect(55, 40, 10, 10), QRect(50, 44, 5, 1)});
+    QVERIFY(!confirmObject(dlg, squarePolygon(40, 40, 10), QRectF(40, 40, 25, 10), dumbbell).isEmpty());
+    dlg.objectList()->setCurrentRow(0);
+    dlg.maskRadiusSpin()->setValue(1);
+    const AnnotationObject before = dlg.session().annotations.first();
+
+    dlg.erodeButton()->click();
+
+    QVERIFY2(dlg.statusLabel()->text().contains(QStringLiteral("连通分量")), qPrintable(dlg.statusLabel()->text()));
+    const AnnotationObject after = dlg.session().annotations.first();
+    QCOMPARE(after.bbox, before.bbox);
+    QCOMPARE(after.maskRle, before.maskRle);
+    QCOMPARE(dlg.session().annotations.size(), 1);
+}
+
+void TestSamAnnotatorDialog::eraseStrokeEditsMaskAndUndoRestores() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    const QString id = confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20),
+                                     makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)}));
+    QVERIFY(!id.isEmpty());
+    dlg.objectList()->setCurrentRow(0);
+    dlg.eraserButton()->setChecked(true);
+    dlg.maskRadiusSpin()->setValue(3);
+    const AnnotationObject before = dlg.session().annotations.first();
+
+    // 斜向笔画削掉右下角（不切断区域）
+    const QList<QPointF> stroke = {QPointF(62, 52), QPointF(66, 56), QPointF(72, 62)};
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onEraseStroke", Qt::DirectConnection, Q_ARG(QList<QPointF>, stroke)));
+
+    const AnnotationObject after = dlg.session().annotations.first();
+    bool ok = false;
+    const QImage decoded = MaskOps::decodeRle(after.maskRle, &ok);
+    QVERIFY(ok);
+    const qint64 area = MaskOps::foregroundCount(decoded);
+    QVERIFY2(area < 400 && area > 300, qPrintable(QStringLiteral("eroded area=%1").arg(area)));
+    // 笔画命中点被擦除（在线段上），左上角保留
+    QCOMPARE(int(decoded.constScanLine(56)[66]), 0);
+    QCOMPARE(int(decoded.constScanLine(40)[50]), 255);
+    QVERIFY(dlg.statusLabel()->text().contains(QStringLiteral("橡皮擦掩膜完成")));
+
+    // 撤销精确还原
+    dlg.undoButton()->click();
+    const AnnotationObject restored = dlg.session().annotations.first();
+    QCOMPARE(restored.bbox, before.bbox);
+    QCOMPARE(restored.maskRle, before.maskRle);
+    QCOMPARE(restored.polygon, before.polygon);
+    QCOMPARE(MaskOps::foregroundCount(MaskOps::toBinaryMask(dlg.overlayWidget()->objectMask(id))), qint64(400));
+}
+
+void TestSamAnnotatorDialog::eraseMissStrokeIsNoOp() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    QVERIFY(!confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20),
+                           makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)}))
+                 .isEmpty());
+    dlg.objectList()->setCurrentRow(0);
+    dlg.eraserButton()->setChecked(true);
+    const AnnotationObject before = dlg.session().annotations.first();
+
+    // 远离对象的笔画：未命中 → 不入撤销栈、对象不变
+    const QList<QPointF> miss = {QPointF(150, 100), QPointF(160, 110)};
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onEraseStroke", Qt::DirectConnection, Q_ARG(QList<QPointF>, miss)));
+    QVERIFY(dlg.statusLabel()->text().contains(QStringLiteral("未命中")));
+    const AnnotationObject after = dlg.session().annotations.first();
+    QCOMPARE(after.bbox, before.bbox);
+    QCOMPARE(after.maskRle, before.maskRle);
+    // 栈顶仍是"确认标注对象"命令（未命中笔画没有压栈）：撤销一次即移除对象
+    dlg.undoButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), 0);
+}
+
+void TestSamAnnotatorDialog::mergeTouchingObjectsAndUndoRestores() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    dlg.categoryEdit()->setText(QStringLiteral("A"));
+    const QString idA = confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20),
+                                      makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)}));
+    dlg.categoryEdit()->setText(QStringLiteral("B"));
+    const QString idB = confirmObject(dlg, squarePolygon(60, 40, 20), QRectF(60, 40, 20, 20),
+                                      makeDisplayMask(200, 150, {QRect(60, 40, 20, 20)}));
+    QVERIFY(!idA.isEmpty() && !idB.isEmpty());
+    const AnnotationSession before = dlg.session();
+    const QImage maskB = makeDisplayMask(200, 150, {QRect(60, 40, 20, 20)});
+
+    // 选中两个对象（列表顺序 A、B）
+    dlg.objectList()->setCurrentRow(0);
+    dlg.objectList()->selectionModel()->select(dlg.objectList()->model()->index(1, 0), QItemSelectionModel::Select);
+    QVERIFY(dlg.mergeButton()->isEnabled());
+    dlg.mergeButton()->click();
+
+    const AnnotationSession merged = dlg.session();
+    QCOMPARE(merged.annotations.size(), 1);
+    const AnnotationObject m = merged.annotations.first();
+    QCOMPARE(m.id, idA); // 保留首个对象身份
+    QCOMPARE(m.label, QStringLiteral("A"));
+    QCOMPARE(m.bbox, QRectF(50, 40, 30, 20)); // 并集外接矩形
+    bool ok = false;
+    const QImage decoded = MaskOps::decodeRle(m.maskRle, &ok);
+    QVERIFY(ok);
+    QCOMPARE(MaskOps::foregroundCount(decoded), qint64(600)); // 400+400-200 重叠
+    QVERIFY(dlg.statusLabel()->text().contains(QStringLiteral("600")));
+    QCOMPARE(dlg.objectList()->count(), 1);
+    QVERIFY(dlg.overlayWidget()->objectMask(idB).isNull()); // 被合并对象的缓存已清理
+    QCOMPARE(dlg.overlayWidget()->objectMask(idA).size(), QSize(200, 150));
+
+    // 撤销：两个对象逐字段还原（顺序/身份/掩膜缓存）
+    dlg.undoButton()->click();
+    const AnnotationSession restored = dlg.session();
+    QCOMPARE(restored.annotations.size(), 2);
+    QCOMPARE(restored.annotations[0].id, before.annotations[0].id);
+    QCOMPARE(restored.annotations[1].id, before.annotations[1].id);
+    QCOMPARE(restored.annotations[0].bbox, before.annotations[0].bbox);
+    QCOMPARE(restored.annotations[1].bbox, before.annotations[1].bbox);
+    QCOMPARE(restored.annotations[0].maskRle, before.annotations[0].maskRle);
+    QCOMPARE(dlg.overlayWidget()->objectMask(idB), maskB);
+    QCOMPARE(dlg.objectList()->count(), 2);
+
+    // 重做：再次合并
+    dlg.redoButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), 1);
+}
+
+void TestSamAnnotatorDialog::mergeDisjointRejected() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    QVERIFY(!confirmObject(dlg, squarePolygon(20, 20, 10), QRectF(20, 20, 10, 10),
+                           makeDisplayMask(200, 150, {QRect(20, 20, 10, 10)}))
+                 .isEmpty());
+    QVERIFY(!confirmObject(dlg, squarePolygon(150, 100, 10), QRectF(150, 100, 10, 10),
+                           makeDisplayMask(200, 150, {QRect(150, 100, 10, 10)}))
+                 .isEmpty());
+    const AnnotationSession before = dlg.session();
+    dlg.objectList()->setCurrentRow(0);
+    dlg.objectList()->selectionModel()->select(dlg.objectList()->model()->index(1, 0), QItemSelectionModel::Select);
+    dlg.mergeButton()->click();
+
+    QVERIFY(dlg.statusLabel()->text().contains(QStringLiteral("不连通")));
+    const AnnotationSession after = dlg.session();
+    QCOMPARE(after.annotations.size(), 2);
+    QCOMPARE(after.annotations[0].bbox, before.annotations[0].bbox);
+    QCOMPARE(after.annotations[1].bbox, before.annotations[1].bbox);
+}
+
+void TestSamAnnotatorDialog::mergeRequiresExactlyTwo() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    QVERIFY(!confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20),
+                           makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)}))
+                 .isEmpty());
+    dlg.objectList()->setCurrentRow(0);
+    QVERIFY(!dlg.mergeButton()->isEnabled());
+    // 直接调槽（绕过按钮禁用态）也必须失败关闭——UI 禁用只是第一道防线
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onMergeSelected", Qt::DirectConnection));
+    QVERIFY(dlg.statusLabel()->text().contains(QStringLiteral("恰好选中两个")));
+    QCOMPARE(dlg.session().annotations.size(), 1);
+}
+
+void TestSamAnnotatorDialog::splitTwoBlobObjectAndUndoRestores() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    // 掩膜含两个分离团块（小团 100px 在 raster 序前，大团 200px）；polygon/bbox 描述小团
+    const QImage twoBlob = makeDisplayMask(200, 150, {QRect(30, 30, 10, 10), QRect(100, 80, 20, 10)});
+    const QString id = confirmObject(dlg, squarePolygon(30, 30, 10), QRectF(30, 30, 10, 10), twoBlob, 0.77);
+    QVERIFY(!id.isEmpty());
+    dlg.objectList()->setCurrentRow(0);
+    const AnnotationObject before = dlg.session().annotations.first();
+
+    dlg.splitButton()->click();
+
+    const AnnotationSession split = dlg.session();
+    QCOMPARE(split.annotations.size(), 2);
+    // raster 序：小团派生对象在前，最大分量（大团）保留原身份
+    const AnnotationObject& derived = split.annotations[0];
+    const AnnotationObject& keeper = split.annotations[1];
+    QVERIFY(derived.id != id);
+    QCOMPARE(keeper.id, id);
+    QCOMPARE(keeper.bbox, QRectF(100, 80, 20, 10));
+    QCOMPARE(keeper.score, 0.77); // 保留来源置信度
+    QCOMPARE(derived.score, 0.0); // 派生分量非 SAM 预测，不伪造置信度
+    QVERIFY(derived.prompts.pointsPos.isEmpty() && derived.prompts.pointsNeg.isEmpty());
+    QVERIFY(!derived.prompts.box.has_value());
+    QCOMPARE(derived.bbox, QRectF(30, 30, 10, 10));
+    QCOMPARE(derived.label, before.label);
+    bool okA = false;
+    bool okB = false;
+    QCOMPARE(MaskOps::foregroundCount(MaskOps::decodeRle(derived.maskRle, &okA)), qint64(100));
+    QCOMPARE(MaskOps::foregroundCount(MaskOps::decodeRle(keeper.maskRle, &okB)), qint64(200));
+    QVERIFY(okA && okB);
+    QVERIFY(dlg.statusLabel()->text().contains(QStringLiteral("已拆分为 2")));
+    QCOMPARE(dlg.objectList()->count(), 2);
+    QVERIFY(!dlg.overlayWidget()->objectMask(derived.id).isNull());
+
+    // 撤销：还原为单对象（逐字段）
+    dlg.undoButton()->click();
+    const AnnotationSession restored = dlg.session();
+    QCOMPARE(restored.annotations.size(), 1);
+    QCOMPARE(restored.annotations.first().id, before.id);
+    QCOMPARE(restored.annotations.first().bbox, before.bbox);
+    QCOMPARE(restored.annotations.first().polygon, before.polygon);
+    QCOMPARE(restored.annotations.first().maskRle, before.maskRle);
+    QCOMPARE(restored.annotations.first().score, before.score);
+    QVERIFY(dlg.overlayWidget()->objectMask(derived.id).isNull()); // 派生缓存被清理
+
+    // 重做：再次拆分
+    dlg.redoButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), 2);
+}
+
+void TestSamAnnotatorDialog::splitSingleComponentRejected() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    QVERIFY(!confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20),
+                           makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)}))
+                 .isEmpty());
+    dlg.objectList()->setCurrentRow(0);
+    dlg.splitButton()->click();
+    QVERIFY(dlg.statusLabel()->text().contains(QStringLiteral("单一连通分量")));
+    QCOMPARE(dlg.session().annotations.size(), 1);
+}
+
+void TestSamAnnotatorDialog::editWithoutImageSizeRejected() {
+    SamAnnotatorDialog dlg;
+    // 不加载图像：会话 imageWidth/Height = 0 → 掩膜编辑失败关闭
+    QVERIFY(!confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20), QImage()).isEmpty());
+    dlg.objectList()->setCurrentRow(0);
+    dlg.dilateButton()->click();
+    QVERIFY2(dlg.statusLabel()->text().contains(QStringLiteral("图像尺寸")), qPrintable(dlg.statusLabel()->text()));
+    QCOMPARE(dlg.session().annotations.first().bbox, QRectF(50, 40, 20, 20));
+}
+
+void TestSamAnnotatorDialog::editFallsBackToPolygonRasterization() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    // 无掩膜缓存（QImage()）+ 不可解码的 fake RLE → 回退 polygon 栅格化重建
+    const QString id = confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20), QImage());
+    QVERIFY(!id.isEmpty());
+    QCOMPARE(dlg.session().annotations.first().maskRle, QString()); // 注入时 RLE 为空串参数
+    dlg.objectList()->setCurrentRow(0);
+    dlg.maskRadiusSpin()->setValue(2);
+
+    dlg.dilateButton()->click();
+
+    const AnnotationObject after = dlg.session().annotations.first();
+    bool ok = false;
+    const QImage decoded = MaskOps::decodeRle(after.maskRle, &ok);
+    QVERIFY2(ok, "fallback edit must produce a decodable maskRle");
+    const qint64 area = MaskOps::foregroundCount(decoded);
+    // 栅格化 20x20 方形（±边界像素）膨胀 2 → ~576（允许硬边缘边界归属容差）
+    QVERIFY2(area >= 500 && area <= 700, qPrintable(QStringLiteral("dilated fallback area=%1").arg(area)));
+    QVERIFY(after.bbox.isValid());
+    QVERIFY(dlg.statusLabel()->text().contains(QStringLiteral("完成")));
+    // overlay 缓存已建立（编辑产物）
+    QCOMPARE(dlg.overlayWidget()->objectMask(id).size(), QSize(200, 150));
 }
 
 QTEST_MAIN(TestSamAnnotatorDialog)

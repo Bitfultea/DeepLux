@@ -56,6 +56,7 @@ set(TEST_SOURCES
     test_logicplugins.cpp
     test_annotation_session.cpp
     test_annotation_coordinate_mapping.cpp
+    test_annotationmaskops.cpp
     test_labelme_exporter.cpp
     test_yoloseg_exporter.cpp
     test_annotationoverlaywidget.cpp

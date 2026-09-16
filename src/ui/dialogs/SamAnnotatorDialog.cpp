@@ -9,6 +9,7 @@
 #include "core/io/YoloSegExporter.h"
 #include "core/manager/ConfigManager.h"
 #include "core/model/Annotation.h"
+#include "core/model/AnnotationMaskOps.h"
 
 #include <QButtonGroup>
 #include <QColor>
@@ -28,6 +29,7 @@
 #include <QPushButton>
 #include <QShortcut>
 #include <QSizePolicy>
+#include <QSpinBox>
 #include <QStackedWidget>
 #include <QTemporaryFile>
 #include <QToolButton>
@@ -401,7 +403,8 @@ void SamAnnotatorDialog::setupUi() {
     actionCol->addWidget(lblObjects);
 
     m_objectList = new QListWidget();
-    m_objectList->setSelectionMode(QAbstractItemView::SingleSelection);
+    // SAM 批2：多选用于"合并"（恰好选中两个对象时可用）
+    m_objectList->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_objectList->setMinimumHeight(72);
     m_objectList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     actionCol->addWidget(m_objectList);
@@ -486,12 +489,15 @@ void SamAnnotatorDialog::setupUi() {
     auto* modeRow1 = new QHBoxLayout();
     auto* modeRow2 = new QHBoxLayout();
     auto* modeRow3 = new QHBoxLayout();
+    auto* modeRow4 = new QHBoxLayout(); // SAM 批2：掩膜编辑动作行
     modeRow1->setSpacing(2);
     modeRow2->setSpacing(2);
     modeRow3->setSpacing(2);
+    modeRow4->setSpacing(2);
     modeGrid->addLayout(modeRow1);
     modeGrid->addLayout(modeRow2);
     modeGrid->addLayout(modeRow3);
+    modeGrid->addLayout(modeRow4);
 
     auto configureModeButton = [](QToolButton* button, const QString& text) {
         button->setText(text);
@@ -516,6 +522,52 @@ void SamAnnotatorDialog::setupUi() {
     modeRow3->addWidget(m_btnRedo);
     connect(m_btnRedo, &QToolButton::clicked, this, &SamAnnotatorDialog::onRedo);
 
+    // SAM 批2：形态学/橡皮擦共用半径
+    m_maskRadiusSpin = new QSpinBox();
+    m_maskRadiusSpin->setObjectName(QStringLiteral("SamMaskRadiusSpin"));
+    m_maskRadiusSpin->setRange(1, 32);
+    m_maskRadiusSpin->setValue(3);
+    m_maskRadiusSpin->setPrefix(tr("半径"));
+    m_maskRadiusSpin->setToolTip(tr("膨胀/腐蚀结构元半径与橡皮擦笔刷半径（像素）"));
+    {
+        QFont font = m_maskRadiusSpin->font();
+        font.setPointSize(9);
+        m_maskRadiusSpin->setFont(font);
+    }
+    m_maskRadiusSpin->setMinimumHeight(26);
+    m_maskRadiusSpin->setMaximumHeight(26);
+    m_maskRadiusSpin->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    modeRow3->addWidget(m_maskRadiusSpin);
+
+    // SAM 批2：掩膜编辑动作（作用于对象列表选中项，全部可撤销）
+    m_btnDilate = new QToolButton();
+    configureModeButton(m_btnDilate, tr("膨胀"));
+    m_btnDilate->setCheckable(false);
+    m_btnDilate->setToolTip(tr("选中对象掩膜形态学膨胀（半径见左）"));
+    modeRow4->addWidget(m_btnDilate);
+    connect(m_btnDilate, &QToolButton::clicked, this, &SamAnnotatorDialog::onDilateSelected);
+
+    m_btnErode = new QToolButton();
+    configureModeButton(m_btnErode, tr("腐蚀"));
+    m_btnErode->setCheckable(false);
+    m_btnErode->setToolTip(tr("选中对象掩膜形态学腐蚀（半径见上行）"));
+    modeRow4->addWidget(m_btnErode);
+    connect(m_btnErode, &QToolButton::clicked, this, &SamAnnotatorDialog::onErodeSelected);
+
+    m_btnMerge = new QToolButton();
+    configureModeButton(m_btnMerge, tr("合并"));
+    m_btnMerge->setCheckable(false);
+    m_btnMerge->setToolTip(tr("合并恰好两个选中对象（要求并集连通）"));
+    modeRow4->addWidget(m_btnMerge);
+    connect(m_btnMerge, &QToolButton::clicked, this, &SamAnnotatorDialog::onMergeSelected);
+
+    m_btnSplit = new QToolButton();
+    configureModeButton(m_btnSplit, tr("拆分"));
+    m_btnSplit->setCheckable(false);
+    m_btnSplit->setToolTip(tr("按连通分量拆分选中对象（最大分量保留原身份）"));
+    modeRow4->addWidget(m_btnSplit);
+    connect(m_btnSplit, &QToolButton::clicked, this, &SamAnnotatorDialog::onSplitSelected);
+
     m_btnSelect = new QToolButton();
     configureModeButton(m_btnSelect, tr("选择"));
     modeRow1->addWidget(m_btnSelect);
@@ -532,6 +584,12 @@ void SamAnnotatorDialog::setupUi() {
     configureModeButton(m_btnBox, tr("框选"));
     modeRow2->addWidget(m_btnBox);
 
+    // SAM 批2：橡皮擦（对选中对象掩膜擦除笔画）
+    m_btnEraser = new QToolButton();
+    configureModeButton(m_btnEraser, tr("橡皮擦"));
+    m_btnEraser->setToolTip(tr("在图像上涂抹擦除选中对象的掩膜（半径见撤销行）"));
+    modeRow2->addWidget(m_btnEraser);
+
     auto* hint = new QLabel(tr("Enter 确认 / Esc 取消当前 / Del 删除"));
     hint->setObjectName("SamShortcutHintLabel");
     hint->setMinimumWidth(0);
@@ -546,6 +604,7 @@ void SamAnnotatorDialog::setupUi() {
     m_modeButtonGroup->addButton(m_btnPositivePoint, static_cast<int>(ToolMode::PositivePoint));
     m_modeButtonGroup->addButton(m_btnNegativePoint, static_cast<int>(ToolMode::NegativePoint));
     m_modeButtonGroup->addButton(m_btnBox, static_cast<int>(ToolMode::Box));
+    m_modeButtonGroup->addButton(m_btnEraser, static_cast<int>(ToolMode::Eraser)); // SAM 批2
     connect(m_modeButtonGroup, &QButtonGroup::idToggled, this, [this](int id, bool checked) {
         if (checked) {
             setToolMode(static_cast<ToolMode>(id));
@@ -555,10 +614,13 @@ void SamAnnotatorDialog::setupUi() {
     // overlay 事件 → 转换到原图坐标
     connect(m_overlay, &AnnotationOverlayWidget::widgetClicked, this, &SamAnnotatorDialog::onOverlayClicked);
     connect(m_overlay, &AnnotationOverlayWidget::dragEnded, this, &SamAnnotatorDialog::onOverlayDragEnded);
+    connect(m_overlay, &AnnotationOverlayWidget::eraseStrokeFinished, this, &SamAnnotatorDialog::onEraseStroke);
 
-    // 对象列表选择
+    // 对象列表选择（currentItem 驱动 overlay 高亮；selection 驱动掩膜编辑按钮可用态）
     connect(m_objectList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem*, QListWidgetItem*) { onObjectSelectionChanged(); });
+    connect(m_objectList, &QListWidget::itemSelectionChanged, this, [this]() { updateMaskEditButtonStates(); });
+    updateMaskEditButtonStates();
 }
 
 void SamAnnotatorDialog::setupShortcuts() {
@@ -595,16 +657,19 @@ void SamAnnotatorDialog::setToolMode(ToolMode mode) {
     m_btnPositivePoint->blockSignals(true);
     m_btnNegativePoint->blockSignals(true);
     m_btnBox->blockSignals(true);
+    m_btnEraser->blockSignals(true);
 
     m_btnSelect->setChecked(mode == ToolMode::Select);
     m_btnPositivePoint->setChecked(mode == ToolMode::PositivePoint);
     m_btnNegativePoint->setChecked(mode == ToolMode::NegativePoint);
     m_btnBox->setChecked(mode == ToolMode::Box);
+    m_btnEraser->setChecked(mode == ToolMode::Eraser);
 
     m_btnSelect->blockSignals(false);
     m_btnPositivePoint->blockSignals(false);
     m_btnNegativePoint->blockSignals(false);
     m_btnBox->blockSignals(false);
+    m_btnEraser->blockSignals(false);
 
     syncOverlayMode();
 }
@@ -626,6 +691,9 @@ void SamAnnotatorDialog::syncOverlayMode() {
     case ToolMode::Box:
         om = AnnotationOverlayWidget::Mode::Box;
         break;
+    case ToolMode::Eraser:
+        om = AnnotationOverlayWidget::Mode::Eraser;
+        break;
     }
     m_overlay->setMode(om);
 }
@@ -638,6 +706,8 @@ void SamAnnotatorDialog::onModeButtonToggled() {
         setToolMode(ToolMode::NegativePoint);
     } else if (m_btnBox->isChecked()) {
         setToolMode(ToolMode::Box);
+    } else if (m_btnEraser->isChecked()) {
+        setToolMode(ToolMode::Eraser);
     } else {
         setToolMode(ToolMode::Select);
     }
@@ -780,6 +850,337 @@ void SamAnnotatorDialog::onRedo() {
         m_undoStack->redo();
 }
 
+// ===== SAM 批2：掩膜编辑（膨胀/腐蚀/橡皮擦/合并/拆分，全部入撤销栈）=====
+
+SamAnnotatorDialog::MaskEditSnapshot SamAnnotatorDialog::currentSnapshot() const {
+    return MaskEditSnapshot{m_session->annotations, m_objectMasks};
+}
+
+void SamAnnotatorDialog::applyEditSnapshot(const MaskEditSnapshot& snapshot, const QString& selectId) {
+    if (m_overlay) {
+        // overlay 掩膜缓存只增改不删：先清掉快照中已不存在的 id
+        for (auto it = m_objectMasks.constBegin(); it != m_objectMasks.constEnd(); ++it) {
+            if (!snapshot.displayMasks.contains(it.key()))
+                m_overlay->clearObjectMask(it.key());
+        }
+        m_overlay->setAnnotations(snapshot.annotations);
+        for (auto it = snapshot.displayMasks.constBegin(); it != snapshot.displayMasks.constEnd(); ++it)
+            m_overlay->setObjectMask(it.key(), it.value());
+    }
+    m_session->annotations = snapshot.annotations;
+    m_objectMasks = snapshot.displayMasks;
+    refreshObjectList(selectId);
+    updateMaskEditButtonStates();
+}
+
+void SamAnnotatorDialog::pushMaskEditCommand(const QString& text, const MaskEditSnapshot& before,
+                                             const MaskEditSnapshot& after, const QString& selectId) {
+    m_undoStack->push(new LambdaUndoCommand(
+        text, [this, after, selectId]() { applyEditSnapshot(after, selectId); },
+        [this, before, selectId]() { applyEditSnapshot(before, selectId); }));
+}
+
+bool SamAnnotatorDialog::binaryMaskForObject(const AnnotationObject& obj, QImage& outBinary, QString& error) const {
+    const int w = m_session->imageWidth;
+    const int h = m_session->imageHeight;
+    if (w <= 0 || h <= 0) {
+        error = tr("无法编辑掩膜：会话缺少图像尺寸（请先加载图像）");
+        return false;
+    }
+    // 1) 内存显示掩膜缓存：尺寸==整图才可信（尺寸不符时 overlay 按整图拉伸会错位）
+    const QImage cached = m_objectMasks.value(obj.id);
+    if (!cached.isNull() && cached.width() == w && cached.height() == h) {
+        outBinary = MaskOps::toBinaryMask(cached);
+        return true;
+    }
+    // 2) maskRle（磁盘加载会话的像素来源），解码尺寸必须与整图一致
+    if (!obj.maskRle.isEmpty()) {
+        bool ok = false;
+        const QImage decoded = MaskOps::decodeRle(obj.maskRle, &ok);
+        if (ok && decoded.width() == w && decoded.height() == h) {
+            outBinary = decoded;
+            return true;
+        }
+    }
+    // 3) polygon 栅格化重建（无抗锯齿，确定性）
+    if (obj.polygon.size() >= 3) {
+        outBinary = MaskOps::rasterizePolygon(obj.polygon, w, h);
+        return true;
+    }
+    // 4) bbox 矩形兜底（polygon<3 的退化对象）
+    if (obj.bbox.isValid()) {
+        const QRectF b = obj.bbox;
+        const QList<QPointF> rect = {b.topLeft(), QPointF(b.right(), b.top()), b.bottomRight(),
+                                     QPointF(b.left(), b.bottom())};
+        outBinary = MaskOps::rasterizePolygon(rect, w, h);
+        return true;
+    }
+    error = tr("无法编辑掩膜：对象缺少可用的掩膜/多边形/外接矩形");
+    return false;
+}
+
+QStringList SamAnnotatorDialog::selectedObjectIds() const {
+    QStringList ids;
+    const QList<QListWidgetItem*> selected = m_objectList->selectedItems();
+    if (selected.isEmpty())
+        return ids;
+    // 按标注列表顺序返回（与点击顺序无关，保证合并 a/b 语义确定）
+    for (const AnnotationObject& obj : m_session->annotations) {
+        for (const QListWidgetItem* item : selected) {
+            if (item && item->data(Qt::UserRole).toString() == obj.id) {
+                ids.append(obj.id);
+                break;
+            }
+        }
+    }
+    return ids;
+}
+
+void SamAnnotatorDialog::updateMaskEditButtonStates() {
+    const int n = selectedObjectIds().size();
+    if (m_btnDilate)
+        m_btnDilate->setEnabled(n == 1);
+    if (m_btnErode)
+        m_btnErode->setEnabled(n == 1);
+    if (m_btnSplit)
+        m_btnSplit->setEnabled(n == 1);
+    if (m_btnMerge)
+        m_btnMerge->setEnabled(n == 2);
+}
+
+void SamAnnotatorDialog::commitSingleObjectMaskEdit(const QString& targetId, const QImage& editedBinary,
+                                                    const QString& commandText) {
+    AnnotationObject* target = m_session->findById(targetId);
+    if (!target) {
+        setStatusText(tr("掩膜编辑失败：对象不存在"));
+        return;
+    }
+    // 失败关闭：空结果需要显式删除意图（Delete）；多连通分量在单多边形对象模型
+    // 下无法如实表达（导出器用 polygon，会静默丢像素），拒绝并提示
+    if (MaskOps::foregroundCount(editedBinary) <= 0) {
+        setStatusText(tr("编辑被拒绝：操作后区域为空（如需删除对象请用 Delete）"));
+        return;
+    }
+    if (MaskOps::connectedComponents(editedBinary).size() > 1) {
+        setStatusText(tr("编辑被拒绝：结果含多个连通分量（对象模型为单多边形），请减小半径/笔画或先拆分"));
+        return;
+    }
+
+    AnnotationObject updated = *target;
+    updated.polygon = MaskOps::traceContour(editedBinary);
+    updated.bbox = MaskOps::foregroundBoundingBox(editedBinary);
+    updated.maskRle = MaskOps::encodeRle(editedBinary); // 旧 RLE 随编辑失效，重编码（sam_server 兼容）
+    // id/label/score/prompts/modelName 保留：几何编辑不改变标注来源与置信度
+
+    const MaskEditSnapshot before = currentSnapshot();
+    MaskEditSnapshot after = before;
+    for (AnnotationObject& obj : after.annotations) {
+        if (obj.id == targetId) {
+            obj = updated;
+            break;
+        }
+    }
+    after.displayMasks.insert(targetId, MaskOps::toDisplayMask(editedBinary));
+    pushMaskEditCommand(commandText, before, after, targetId);
+    setStatusText(tr("%1完成：面积 %2 px").arg(commandText).arg(MaskOps::foregroundCount(editedBinary)));
+}
+
+void SamAnnotatorDialog::onDilateSelected() {
+    const QStringList ids = selectedObjectIds();
+    if (ids.size() != 1) {
+        setStatusText(tr("膨胀：请先在列表中选中一个对象"));
+        return;
+    }
+    AnnotationObject* obj = m_session->findById(ids.first());
+    if (!obj)
+        return;
+    QImage binary;
+    QString error;
+    if (!binaryMaskForObject(*obj, binary, error)) {
+        setStatusText(error);
+        return;
+    }
+    const int radius = m_maskRadiusSpin ? m_maskRadiusSpin->value() : 3;
+    commitSingleObjectMaskEdit(ids.first(), MaskOps::dilate(binary, radius), tr("膨胀掩膜"));
+}
+
+void SamAnnotatorDialog::onErodeSelected() {
+    const QStringList ids = selectedObjectIds();
+    if (ids.size() != 1) {
+        setStatusText(tr("腐蚀：请先在列表中选中一个对象"));
+        return;
+    }
+    AnnotationObject* obj = m_session->findById(ids.first());
+    if (!obj)
+        return;
+    QImage binary;
+    QString error;
+    if (!binaryMaskForObject(*obj, binary, error)) {
+        setStatusText(error);
+        return;
+    }
+    const int radius = m_maskRadiusSpin ? m_maskRadiusSpin->value() : 3;
+    commitSingleObjectMaskEdit(ids.first(), MaskOps::erode(binary, radius), tr("腐蚀掩膜"));
+}
+
+void SamAnnotatorDialog::onEraseStroke(const QList<QPointF>& imagePoints) {
+    if (m_toolMode != ToolMode::Eraser || imagePoints.isEmpty())
+        return;
+    const QStringList ids = selectedObjectIds();
+    if (ids.size() != 1) {
+        setStatusText(tr("橡皮擦：请先选中一个要擦除的对象"));
+        return;
+    }
+    AnnotationObject* obj = m_session->findById(ids.first());
+    if (!obj)
+        return;
+    QImage binary;
+    QString error;
+    if (!binaryMaskForObject(*obj, binary, error)) {
+        setStatusText(error);
+        return;
+    }
+    const double radius = m_maskRadiusSpin ? m_maskRadiusSpin->value() : 3.0;
+    const QImage edited = MaskOps::eraseStroke(binary, imagePoints, radius);
+    if (MaskOps::foregroundCount(edited) == MaskOps::foregroundCount(binary)) {
+        setStatusText(tr("橡皮擦：笔画未命中区域，未产生编辑"));
+        return; // 无操作不入撤销栈
+    }
+    commitSingleObjectMaskEdit(ids.first(), edited, tr("橡皮擦掩膜"));
+}
+
+void SamAnnotatorDialog::onMergeSelected() {
+    const QStringList ids = selectedObjectIds();
+    if (ids.size() != 2) {
+        setStatusText(tr("合并：请恰好选中两个对象（Ctrl/Shift 多选）"));
+        return;
+    }
+    AnnotationObject* a = m_session->findById(ids.at(0));
+    AnnotationObject* b = m_session->findById(ids.at(1));
+    if (!a || !b)
+        return;
+    QImage binA;
+    QImage binB;
+    QString error;
+    if (!binaryMaskForObject(*a, binA, error) || !binaryMaskForObject(*b, binB, error)) {
+        setStatusText(error);
+        return;
+    }
+    if (MaskOps::foregroundCount(binA) <= 0 || MaskOps::foregroundCount(binB) <= 0) {
+        setStatusText(tr("合并被拒绝：对象掩膜为空"));
+        return;
+    }
+    QImage unionMask = binA; // binaryMaskForObject 保证与整图同尺寸
+    for (int y = 0; y < unionMask.height(); ++y) {
+        const uchar* src = binB.constScanLine(y);
+        uchar* dst = unionMask.scanLine(y);
+        for (int x = 0; x < unionMask.width(); ++x) {
+            if (src[x])
+                dst[x] = 255;
+        }
+    }
+    if (MaskOps::connectedComponents(unionMask).size() != 1) {
+        setStatusText(tr("合并被拒绝：两区域不连通，单多边形对象无法如实表达"));
+        return;
+    }
+
+    AnnotationObject merged;
+    merged.id = a->id; // 保留首个对象（列表序）的身份，第二个对象被移除
+    merged.label = a->label;
+    merged.prompts.pointsPos = a->prompts.pointsPos + b->prompts.pointsPos;
+    merged.prompts.pointsNeg = a->prompts.pointsNeg + b->prompts.pointsNeg;
+    merged.prompts.box = std::nullopt; // 合并后原框 prompt 来源不再真实，置空
+    merged.polygon = MaskOps::traceContour(unionMask);
+    merged.bbox = MaskOps::foregroundBoundingBox(unionMask);
+    merged.maskRle = MaskOps::encodeRle(unionMask);
+    merged.score = a->score; // 保留首对象来源置信度（合并区域非 SAM 重新预测）
+    merged.modelName = a->modelName;
+
+    const MaskEditSnapshot before = currentSnapshot();
+    MaskEditSnapshot after = before;
+    for (AnnotationObject& obj : after.annotations) {
+        if (obj.id == a->id)
+            obj = merged;
+    }
+    for (int i = after.annotations.size() - 1; i >= 0; --i) {
+        if (after.annotations[i].id == b->id)
+            after.annotations.removeAt(i);
+    }
+    after.displayMasks.remove(b->id);
+    after.displayMasks.insert(merged.id, MaskOps::toDisplayMask(unionMask));
+    pushMaskEditCommand(tr("合并标注对象"), before, after, merged.id);
+    setStatusText(tr("已合并：面积 %1 px").arg(MaskOps::foregroundCount(unionMask)));
+}
+
+void SamAnnotatorDialog::onSplitSelected() {
+    const QStringList ids = selectedObjectIds();
+    if (ids.size() != 1) {
+        setStatusText(tr("拆分：请先在列表中选中一个对象"));
+        return;
+    }
+    const QString id = ids.first();
+    int index = -1;
+    for (int i = 0; i < m_session->annotations.size(); ++i) {
+        if (m_session->annotations[i].id == id) {
+            index = i;
+            break;
+        }
+    }
+    if (index < 0)
+        return;
+    const AnnotationObject original = m_session->annotations[index];
+    QImage binary;
+    QString error;
+    if (!binaryMaskForObject(original, binary, error)) {
+        setStatusText(error);
+        return;
+    }
+    const QList<QImage> components = MaskOps::connectedComponents(binary);
+    if (components.size() < 2) {
+        setStatusText(tr("拆分被拒绝：区域为单一连通分量，无可拆分"));
+        return;
+    }
+    // 最大分量（像素数，平局取 raster 序首个）保留原对象身份，其余为派生对象
+    int largest = 0;
+    qint64 largestCount = -1;
+    for (int i = 0; i < components.size(); ++i) {
+        const qint64 count = MaskOps::foregroundCount(components[i]);
+        if (count > largestCount) {
+            largestCount = count;
+            largest = i;
+        }
+    }
+    QList<AnnotationObject> parts;
+    QList<QImage> partDisplays;
+    for (int i = 0; i < components.size(); ++i) {
+        AnnotationObject part;
+        if (i == largest) {
+            part = original; // 保留 id/label/prompts/score/modelName
+        } else {
+            part.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            part.label = original.label;
+            part.prompts = AnnotationPrompt{}; // 派生分量无 SAM prompt 来源
+            part.score = 0.0;                  // 非 SAM 预测，不伪造置信度
+            part.modelName = original.modelName;
+        }
+        part.polygon = MaskOps::traceContour(components[i]);
+        part.bbox = MaskOps::foregroundBoundingBox(components[i]);
+        part.maskRle = MaskOps::encodeRle(components[i]);
+        parts.append(part);
+        partDisplays.append(MaskOps::toDisplayMask(components[i]));
+    }
+
+    const MaskEditSnapshot before = currentSnapshot();
+    MaskEditSnapshot after = before;
+    after.annotations.removeAt(index);
+    for (int i = parts.size() - 1; i >= 0; --i)
+        after.annotations.insert(index, parts[i]);
+    for (int i = 0; i < parts.size(); ++i)
+        after.displayMasks.insert(parts[i].id, partDisplays[i]);
+    pushMaskEditCommand(tr("拆分标注对象"), before, after, original.id);
+    setStatusText(tr("已拆分为 %1 个对象").arg(parts.size()));
+}
+
 void SamAnnotatorDialog::onObjectSelectionChanged() {
     auto* item = m_objectList->currentItem();
     QString id;
@@ -787,9 +1188,10 @@ void SamAnnotatorDialog::onObjectSelectionChanged() {
         id = item->data(Qt::UserRole).toString();
     }
     m_overlay->setSelectedId(id);
+    updateMaskEditButtonStates();
 }
 
-void SamAnnotatorDialog::refreshObjectList() {
+void SamAnnotatorDialog::refreshObjectList(const QString& selectIdAfter) {
     m_objectList->blockSignals(true);
     m_objectList->clear();
     for (const AnnotationObject& obj : m_session->annotations) {
@@ -798,6 +1200,19 @@ void SamAnnotatorDialog::refreshObjectList() {
         m_objectList->addItem(item);
     }
     m_objectList->blockSignals(false);
+    // SAM 批2：编辑后恢复选中（setCurrentRow 会触发 currentItemChanged →
+    // overlay 高亮与按钮可用态联动）
+    if (!selectIdAfter.isEmpty()) {
+        for (int row = 0; row < m_objectList->count(); ++row) {
+            QListWidgetItem* item = m_objectList->item(row);
+            if (item && item->data(Qt::UserRole).toString() == selectIdAfter) {
+                m_objectList->setCurrentRow(row);
+                break;
+            }
+        }
+    }
+    // blockSignals 抑制了重建期间的选择信号：显式同步按钮可用态防陈旧
+    updateMaskEditButtonStates();
 }
 
 void SamAnnotatorDialog::addConfirmedObject(const AnnotationObject& obj, const QImage& maskImage) {

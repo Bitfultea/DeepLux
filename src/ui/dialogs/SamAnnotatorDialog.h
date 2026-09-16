@@ -17,6 +17,7 @@ class QListWidget;
 class QListWidgetItem;
 class QLineEdit;
 class QShortcut;
+class QSpinBox;
 class QStackedWidget;
 class QLabel;
 class QPushButton;
@@ -68,8 +69,8 @@ public:
     // 当前标注会话
     AnnotationSession session() const;
 
-    // 模式枚举（与 AnnotationOverlayWidget::Mode 对齐）
-    enum class ToolMode { Select, PositivePoint, NegativePoint, Box };
+    // 模式枚举（与 AnnotationOverlayWidget::Mode 对齐；Eraser：SAM 批2 掩膜橡皮擦）
+    enum class ToolMode { Select, PositivePoint, NegativePoint, Box, Eraser };
 
     ToolMode currentToolMode() const {
         return m_toolMode;
@@ -93,6 +94,29 @@ public:
     }
     QToolButton* redoButton() const {
         return m_btnRedo;
+    }
+
+    // SAM 批2：掩膜编辑控件访问（供测试）
+    QToolButton* eraserButton() const {
+        return m_btnEraser;
+    }
+    QToolButton* dilateButton() const {
+        return m_btnDilate;
+    }
+    QToolButton* erodeButton() const {
+        return m_btnErode;
+    }
+    QToolButton* mergeButton() const {
+        return m_btnMerge;
+    }
+    QToolButton* splitButton() const {
+        return m_btnSplit;
+    }
+    QSpinBox* maskRadiusSpin() const {
+        return m_maskRadiusSpin;
+    }
+    QLabel* statusLabel() const {
+        return m_statusLabel;
     }
 
     // 类别管理
@@ -187,6 +211,12 @@ private slots:
     void onObjectSelectionChanged();
     void onOverlayClicked(const QPointF& imagePoint, Qt::MouseButton button);
     void onOverlayDragEnded(const QPointF& imageStart, const QPointF& imageEnd);
+    // SAM 批2：掩膜编辑（膨胀/腐蚀/橡皮擦/合并/拆分，全部入撤销栈）
+    void onDilateSelected();
+    void onErodeSelected();
+    void onMergeSelected();
+    void onSplitSelected();
+    void onEraseStroke(const QList<QPointF>& imagePoints);
     void onPredictionReady(const QList<QPointF>& polygon, const QRectF& bbox, double score, const QString& maskRle,
                            const QImage& maskImage);
     void onAddCategory();
@@ -198,7 +228,7 @@ private:
     void setToolMode(ToolMode mode);
     void syncOverlayMode();
     void refreshOverlayCoordConverter();
-    void refreshObjectList();
+    void refreshObjectList(const QString& selectIdAfter = QString());
     void addConfirmedObject(const AnnotationObject& obj, const QImage& maskImage);
     void commitCurrentPromptAsObject();
     void updateSessionFromImage();
@@ -216,6 +246,26 @@ private:
     void moveOverlayToImageWidget(HImageWidget* imageWidget);
     void initializeDefaultCategories();
 
+    // ===== SAM 批2：掩膜编辑支撑 =====
+    // 编辑快照：标注列表 + 显示掩膜缓存（QImage/QList 隐式共享，拷贝廉价；
+    // undo/redo 整体写回，保证与编辑前逐字段一致）
+    struct MaskEditSnapshot {
+        QList<AnnotationObject> annotations;
+        QHash<QString, QImage> displayMasks;
+    };
+    MaskEditSnapshot currentSnapshot() const;
+    void applyEditSnapshot(const MaskEditSnapshot& snapshot, const QString& selectId);
+    void pushMaskEditCommand(const QString& text, const MaskEditSnapshot& before, const MaskEditSnapshot& after,
+                             const QString& selectId);
+    // 对象可编辑二值掩膜：内存缓存（尺寸==整图才可信）→ maskRle（尺寸匹配）→ polygon 栅格化
+    // → bbox 矩形栅格化；全部不可用则失败关闭
+    bool binaryMaskForObject(const AnnotationObject& obj, QImage& outBinary, QString& error) const;
+    QStringList selectedObjectIds() const; // 按标注列表顺序
+    void updateMaskEditButtonStates();
+    // 单对象几何编辑公共收口：空结果/多连通分量失败关闭；通过则重导出
+    // polygon（外轮廓追踪）/bbox/maskRle（sam_server 兼容编码）并入撤销栈
+    void commitSingleObjectMaskEdit(const QString& targetId, const QImage& editedBinary, const QString& commandText);
+
     // UI
     HImageWidget* m_imageWidget = nullptr;
     QPointer<HImageWidget> m_externalImageWidget; // Fix P0-4: QPointer 防悬空
@@ -231,6 +281,13 @@ private:
     QToolButton* m_btnSelect = nullptr;
     QToolButton* m_btnUndo = nullptr;
     QToolButton* m_btnRedo = nullptr;
+    // SAM 批2：掩膜编辑控件
+    QToolButton* m_btnEraser = nullptr;
+    QToolButton* m_btnDilate = nullptr;
+    QToolButton* m_btnErode = nullptr;
+    QToolButton* m_btnMerge = nullptr;
+    QToolButton* m_btnSplit = nullptr;
+    QSpinBox* m_maskRadiusSpin = nullptr;
     QButtonGroup* m_modeButtonGroup = nullptr;
     QLabel* m_statusLabel = nullptr;
     QPushButton* m_confirmButton = nullptr;

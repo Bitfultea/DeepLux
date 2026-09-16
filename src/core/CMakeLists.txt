@@ -40,6 +40,7 @@ set(CORE_SOURCES
     geometry/MeasurementData.cpp
     model/Annotation.cpp
     model/AnnotationCoordinateMapping.cpp
+    model/AnnotationMaskOps.cpp
     agent/AgentBridge.cpp
     agent/AgentConnection.cpp
     agent/AgentController.cpp
@@ -100,6 +101,7 @@ set(CORE_HEADERS
     geometry/MeasurementData.h
     model/Annotation.h
     model/AnnotationCoordinateMapping.h
+    model/AnnotationMaskOps.h
 )
 
 add_library(deeplux_agent_resources STATIC agent/agent_resources.qrc)

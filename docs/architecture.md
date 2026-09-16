@@ -145,7 +145,7 @@ SAM 标注是主视图上的交互能力，而不是普通流程插件：标注�
 
 ```mermaid
 flowchart LR
-    User[主视图交互<br/>正点 / 负点 / 框选] --> Overlay[AnnotationOverlayWidget]
+    User[主视图交互<br/>正点 / 负点 / 框选 / 橡皮擦] --> Overlay[AnnotationOverlayWidget]
     Overlay --> Dialog[SamAnnotatorDialog]
     Dialog --> Client[SamBackendClient]
     Client --> Server[独立 FastAPI 进程]
@@ -159,6 +159,8 @@ flowchart LR
 - `HImageWidget` 负责图像显示、缩放和坐标变换；标注叠加层独立维护掩膜、多边形和提示点，避免与测量叠加混杂。
 - `SamBackendClient` 管理后端进程和 HTTP 请求。后端按图像缓存 embedding，后续提示点预测复用同一 embedding。
 - Python 依赖和模型权重与 C++ 构建隔离。首次使用通过标注面板初始化环境并导入权重；模型文件不应提交到仓库。
+- 掩膜编辑算法集中在 `MaskOps`（`core/model/AnnotationMaskOps`，纯函数无 UI 依赖）：形态学膨胀/腐蚀（可分离滑窗，越界按背景）、8-连通分量、Moore 外轮廓追踪、橡皮擦笔画、多边形栅格化，以及与 sam_server `_encode_rle` 语义一致的 RLE 编解码（列主序，损坏输入失败关闭）。
+- 标注对话框对已确认对象提供膨胀/腐蚀/橡皮擦/合并/拆分（SAM 批2）：编辑作用于整图尺寸二值掩膜（来源优先级：内存缓存 → maskRle → polygon 栅格化重建），完成后重导出 polygon/bbox/maskRle；每次编辑整体入撤销栈，可精确回滚。空结果、多连通分量结果（单多边形模型无法如实表达）、不连通区域的合并均失败关闭并给出状态栏提示，不静默丢像素；拆分保留最大分量的原对象身份，派生对象 score=0（非 SAM 预测，不伪造置信度）。
 
 ## 验证边界
 

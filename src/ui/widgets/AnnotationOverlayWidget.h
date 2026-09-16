@@ -54,14 +54,19 @@ public:
         return m_selectedId;
     }
 
-    // 交互模式
-    enum class Mode { Select, PositivePoint, NegativePoint, Box };
+    // 交互模式（Eraser：SAM 批2 掩膜橡皮擦——左键按下/拖动收集笔画，释放发一次性笔画事件）
+    enum class Mode { Select, PositivePoint, NegativePoint, Box, Eraser };
     void setMode(Mode mode) {
         m_mode = mode;
         update();
     }
     Mode mode() const {
         return m_mode;
+    }
+
+    // 进行中的橡皮擦笔画（原图坐标，供测试/预览）
+    QList<QPointF> currentEraseStroke() const {
+        return m_eraseStroke;
     }
 
     // 正在拖拽的框选（屏幕坐标）
@@ -78,6 +83,8 @@ signals:
     void dragStarted(const QPointF& imagePoint);
     void dragMoved(const QPointF& imagePoint);
     void dragEnded(const QPointF& imageStart, const QPointF& imageEnd);
+    // SAM 批2：橡皮擦笔画完成（按下→拖动→释放的完整折线，原图坐标；单击=单点笔画）
+    void eraseStrokeFinished(const QList<QPointF>& imagePoints);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -101,6 +108,8 @@ private:
     QRectF m_dragBox;
     bool m_isDragging = false;
     QPointF m_dragStart;
+    bool m_isErasing = false;     // SAM 批2：橡皮擦拖动中
+    QList<QPointF> m_eraseStroke; // 当前笔画折线（原图坐标）
 };
 
 } // namespace DeepLux

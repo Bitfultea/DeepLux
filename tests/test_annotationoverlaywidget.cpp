@@ -23,10 +23,15 @@ private slots:
     void paintWithoutConverterDoesNotCrash();
     void paintWithConverterRenders();
     void emitsImageCoordinatesWhenInverseConverterIsSet();
+    // SAM 批2：橡皮擦模式笔画采集
+    void eraserStrokeCollectsImagePoints();
+    void eraserClickIsSinglePointStroke();
+    void eraserStrokeIgnoredInOtherModes();
 };
 
 void TestAnnotationOverlayWidget::initTestCase() {
     qRegisterMetaType<Qt::MouseButton>("Qt::MouseButton");
+    qRegisterMetaType<QList<QPointF>>("QList<QPointF>");
 }
 
 void TestAnnotationOverlayWidget::cleanup() {}
@@ -138,6 +143,61 @@ void TestAnnotationOverlayWidget::emitsImageCoordinatesWhenInverseConverterIsSet
     const auto args = spy.takeFirst();
     QCOMPARE(args.at(0).toPointF(), QPointF(20, 10));
     QCOMPARE(args.at(1).value<Qt::MouseButton>(), Qt::LeftButton);
+}
+
+// SAM 批2：橡皮擦按下→拖动→释放收集完整笔画（原图坐标），一次性发出
+void TestAnnotationOverlayWidget::eraserStrokeCollectsImagePoints() {
+    AnnotationOverlayWidget w;
+    w.resize(120, 80);
+    w.setMode(AnnotationOverlayWidget::Mode::Eraser);
+    w.setCoordConverter([](const QPointF& p) { return QPointF(p.x() * 2.0, p.y() * 2.0); });
+    w.setInverseCoordConverter([](const QPointF& p) { return QPointF(p.x() / 2.0, p.y() / 2.0); });
+
+    QSignalSpy spy(&w, &AnnotationOverlayWidget::eraseStrokeFinished);
+    QTest::mousePress(&w, Qt::LeftButton, Qt::NoModifier, QPoint(20, 10));
+    QTest::mouseMove(&w, QPoint(40, 20));
+    QTest::mouseMove(&w, QPoint(60, 30));
+    QTest::mouseRelease(&w, Qt::LeftButton, Qt::NoModifier, QPoint(60, 30));
+
+    QCOMPARE(spy.count(), 1);
+    const QList<QPointF> stroke = spy.at(0).at(0).value<QList<QPointF>>();
+    QVERIFY2(stroke.size() >= 2, qPrintable(QStringLiteral("stroke size=%1").arg(stroke.size())));
+    QCOMPARE(stroke.first(), QPointF(10, 5)); // 逆坐标变换：widget/2 → 原图
+    QCOMPARE(stroke.last(), QPointF(30, 15));
+    QVERIFY(w.currentEraseStroke().isEmpty()); // 笔画结束后预览清空
+}
+
+void TestAnnotationOverlayWidget::eraserClickIsSinglePointStroke() {
+    AnnotationOverlayWidget w;
+    w.resize(120, 80);
+    w.setMode(AnnotationOverlayWidget::Mode::Eraser);
+    w.setCoordConverter([](const QPointF& p) { return p; });
+    w.setInverseCoordConverter([](const QPointF& p) { return p; });
+
+    QSignalSpy spy(&w, &AnnotationOverlayWidget::eraseStrokeFinished);
+    QTest::mouseClick(&w, Qt::LeftButton, Qt::NoModifier, QPoint(50, 40));
+    QCOMPARE(spy.count(), 1);
+    const QList<QPointF> stroke = spy.at(0).at(0).value<QList<QPointF>>();
+    QVERIFY2(stroke.size() >= 1, "single click must produce a stroke");
+    QCOMPARE(stroke.first(), QPointF(50, 40));
+}
+
+// 非橡皮擦模式的按下/拖动/释放不得发出笔画事件（模式守卫）
+void TestAnnotationOverlayWidget::eraserStrokeIgnoredInOtherModes() {
+    AnnotationOverlayWidget w;
+    w.resize(120, 80);
+    w.setCoordConverter([](const QPointF& p) { return p; });
+    w.setInverseCoordConverter([](const QPointF& p) { return p; });
+
+    for (const auto mode : {AnnotationOverlayWidget::Mode::Select, AnnotationOverlayWidget::Mode::PositivePoint,
+                            AnnotationOverlayWidget::Mode::Box}) {
+        w.setMode(mode);
+        QSignalSpy spy(&w, &AnnotationOverlayWidget::eraseStrokeFinished);
+        QTest::mousePress(&w, Qt::LeftButton, Qt::NoModifier, QPoint(10, 10));
+        QTest::mouseMove(&w, QPoint(30, 30));
+        QTest::mouseRelease(&w, Qt::LeftButton, Qt::NoModifier, QPoint(30, 30));
+        QCOMPARE(spy.count(), 0);
+    }
 }
 
 QTEST_MAIN(TestAnnotationOverlayWidget)
