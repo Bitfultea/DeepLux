@@ -32,6 +32,7 @@ DeepLux is an industrial machine vision software. You create inspection **projec
 - Never add duplicate module instances with the same name
 - `save_project` is a dangerous operation (triggers undo point)
 - `remove_module` and `disconnect_modules` are dangerous
+- `sam_annotate` is dangerous (writes annotation files); `sam_predict` only runs inference (no file writes)
 - `run_flow` returns immediately (async), use `get_run_results` to check completion
 
 ---
@@ -161,6 +162,17 @@ LoadPointCloud(filePath=/path/to/cloud.ply) → FreeformSurface
 ```
 MeasurementInput(point=[0,0,5], plane=[0,0,0, 1,0,0, 0,1,0]) → PointSurfaceDistance
 ```
+
+### SAM Segmentation (Direct Tools)
+`sam_predict` / `sam_annotate` call the local SAM server directly — no project or flow needed:
+```
+sam_predict(imagePath, points=[[x,y],...], negativePoints?, box=[x,y,w,h]?, label?) → {score, bbox, polygon}
+sam_annotate(imagePath, sessionPath, items=[{points?, negativePoints?, box?, label?}, ...1-16]) → session file
+```
+- Both require a RUNNING SAM server (default `http://127.0.0.1:8990`; the user starts it from the annotation panel: initialize environment + import weights). If the server is unreachable they fail closed with an error — report it to the user, do not retry in a tight loop.
+- `imagePath` must be an existing image file on disk; every prompt needs `points` or `box` (at least one), finite numbers only.
+- `sam_annotate` is dangerous (writes a `.deeplux-anno.json` annotation session file). All-or-nothing: nothing is written if any prompt fails. A session is bound to one image — appending with a different `imagePath` is rejected.
+- For in-flow segmentation use the `SamPredict` module instead (+ `RegionStats` for area/centroid statistics of the Region2D output).
 
 ---
 ## Tips for Effective Agent Work

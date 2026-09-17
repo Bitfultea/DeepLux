@@ -64,6 +64,7 @@ set(TEST_SOURCES
     test_samannotatordialog.cpp
     test_sambackendclient.cpp
     test_sam_region_flow.cpp
+    test_agent_sam_tools.cpp
     test_moduleinspectorpanel.cpp
     test_pluginparametercontracts.cpp
     test_acceptance_flows.cpp
@@ -359,6 +360,10 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
     # SAM 批1：测试内 HTTP 服务 + 嵌套事件循环收口，设 TIMEOUT 防挂死 CI
     if(TEST_NAME STREQUAL "test_sam_region_flow")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
+    endif()
+    # SAM 批3：Agent SAM 工具 × 测试内 HTTP 服务，同设 TIMEOUT
+    if(TEST_NAME STREQUAL "test_agent_sam_tools")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
     endif()
 endforeach()

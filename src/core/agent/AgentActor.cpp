@@ -1,20 +1,26 @@
 #include "AgentActor.h"
 
+#include "SamPredictor.h"
 #include "ToolSchema.h"
 #include "base/ModuleBase.h"
 #include "common/Logger.h"
 #include "engine/RunEngine.h"
 #include "manager/PluginManager.h"
 #include "manager/ProjectManager.h"
+#include "model/Annotation.h"
 #include "model/Project.h"
 
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QImage>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QTimer>
 #include <QUndoCommand>
+#include <QUuid>
 
 static void ensureAgentResources() {
     static const bool initialized = []() {
@@ -307,6 +313,10 @@ QJsonObject AgentActor::executeTool(const QString& toolName, const QJsonObject& 
         result = resumeFlow(params);
     else if (toolName == "read_documentation")
         result = readDocumentation(params);
+    else if (toolName == "sam_predict")
+        result = samPredict(params);
+    else if (toolName == "sam_annotate")
+        result = samAnnotate(params);
     else {
         QString err = QString("Tool not yet implemented: %1").arg(toolName);
         emit toolError(toolName, err);
@@ -693,6 +703,141 @@ QJsonObject AgentActor::readDocumentation(const QJsonObject& params) {
     }
 
     return QJsonObject{{"topic", topic}, {"sections", relevant.size()}, {"content", relevant.join("\n\n")}};
+}
+
+// --- SAM 批3：Agent 工具化 SAM（共享 SamPredictor 同步预测核心）---
+
+QJsonObject AgentActor::samPredict(const QJsonObject& params) {
+    const QString serverUrl = params.value("serverUrl").toString(QStringLiteral("http://127.0.0.1:8990"));
+    const int timeoutMs = params.value("timeoutMs").toInt(30000);
+
+    SamPromptItem item;
+    item.label = params.value("label").toString(QStringLiteral("object"));
+    QString perr;
+    if (!parseSamPointsJson(params.value("points"), item.positivePoints, true, perr))
+        return QJsonObject{{"error", QString("points 非法: %1").arg(perr)}};
+    if (!parseSamPointsJson(params.value("negativePoints"), item.negativePoints, true, perr))
+        return QJsonObject{{"error", QString("negativePoints 非法: %1").arg(perr)}};
+    if (!parseSamBoxJson(params.value("box"), item.box, perr))
+        return QJsonObject{{"error", QString("box 非法: %1").arg(perr)}};
+    if (item.positivePoints.isEmpty() && !item.box.isValid())
+        return QJsonObject{{"error", QString("points 与 box 至少提供一个 prompt")}};
+
+    // imagePath 存在性/serverUrl/timeoutMs 由 runSamPredictBatch 先行校验（不发网络请求）
+    const SamPredictOutcome outcome =
+        runSamPredictBatch(serverUrl, params.value("imagePath").toString(), {item}, timeoutMs);
+    if (!outcome.ok)
+        return QJsonObject{{"error", outcome.error}};
+
+    const Region2D& region = outcome.regions.first();
+    QJsonArray polygon;
+    for (const QPointF& p : region.polygon)
+        polygon.append(QJsonArray{p.x(), p.y()});
+    // 不回传 maskRle 本体（可达 MB 级，会撑爆 LLM 上下文），仅给出长度
+    return QJsonObject{
+        {"status", QStringLiteral("predicted")},
+        {"label", region.label},
+        {"score", region.score},
+        {"bbox", QJsonArray{region.bbox.x(), region.bbox.y(), region.bbox.width(), region.bbox.height()}},
+        {"polygon", polygon},
+        {"polygonPoints", region.polygon.size()},
+        {"maskRleLength", region.maskRle.size()},
+        {"modelName", outcome.modelName}};
+}
+
+QJsonObject AgentActor::samAnnotate(const QJsonObject& params) {
+    const QString imagePath = params.value("imagePath").toString();
+    const QString sessionPath = params.value("sessionPath").toString();
+    const QString serverUrl = params.value("serverUrl").toString(QStringLiteral("http://127.0.0.1:8990"));
+    const int timeoutMs = params.value("timeoutMs").toInt(30000);
+
+    if (sessionPath.trimmed().isEmpty())
+        return QJsonObject{{"error", QString("sessionPath 不能为空")}};
+    const QJsonValue itemsValue = params.value("items");
+    if (!itemsValue.isArray())
+        return QJsonObject{{"error", QString("items 必须为 prompt 对象数组")}};
+    const QJsonArray items = itemsValue.toArray();
+    if (items.isEmpty() || items.size() > 16)
+        return QJsonObject{{"error", QString("items 数量必须在 [1,16]")}};
+
+    QList<SamPromptItem> prompts;
+    for (int i = 0; i < items.size(); ++i) {
+        if (!items[i].isObject())
+            return QJsonObject{{"error", QString("items[%1] 必须为对象").arg(i)}};
+        const QJsonObject itemObj = items[i].toObject();
+        SamPromptItem item;
+        item.label = itemObj.value("label").toString(QStringLiteral("object"));
+        QString perr;
+        if (!parseSamPointsJson(itemObj.value("points"), item.positivePoints, true, perr))
+            return QJsonObject{{"error", QString("items[%1].points 非法: %2").arg(i).arg(perr)}};
+        if (!parseSamPointsJson(itemObj.value("negativePoints"), item.negativePoints, true, perr))
+            return QJsonObject{{"error", QString("items[%1].negativePoints 非法: %2").arg(i).arg(perr)}};
+        if (!parseSamBoxJson(itemObj.value("box"), item.box, perr))
+            return QJsonObject{{"error", QString("items[%1].box 非法: %2").arg(i).arg(perr)}};
+        if (item.positivePoints.isEmpty() && !item.box.isValid())
+            return QJsonObject{{"error", QString("items[%1]：points 与 box 至少提供一个 prompt").arg(i)}};
+        prompts.append(item);
+    }
+
+    // 图像必须可读：会话需要记录真实宽高（不伪造尺寸）
+    const QImage image(imagePath);
+    if (imagePath.isEmpty() || image.isNull())
+        return QJsonObject{{"error", QString("无法读取图像：%1").arg(imagePath)}};
+
+    // 既有会话：追加语义；加载失败或绑定异图均失败关闭（不覆盖用户数据）
+    AnnotationSession session;
+    if (QFileInfo::exists(sessionPath)) {
+        QString loadError;
+        session = AnnotationSession::load(sessionPath, &loadError);
+        if (!loadError.isEmpty())
+            return QJsonObject{{"error", QString("标注会话加载失败：%1").arg(loadError)}};
+        if (!session.imagePath.isEmpty() && session.imagePath != imagePath)
+            return QJsonObject{{"error", QString("会话已绑定其他图像（%1），拒绝混图追加").arg(session.imagePath)}};
+    }
+
+    // 全有或全无：任一 prompt 预测失败则不写文件
+    const SamPredictOutcome outcome = runSamPredictBatch(serverUrl, imagePath, prompts, timeoutMs);
+    if (!outcome.ok) {
+        QJsonObject result{{"error", outcome.error}};
+        if (outcome.failedIndex >= 0)
+            result.insert(QStringLiteral("failedItem"), outcome.failedIndex);
+        return result;
+    }
+
+    const QString modelName = outcome.modelName.isEmpty() ? QStringLiteral("sam") : outcome.modelName;
+    QJsonArray objectIds;
+    for (int i = 0; i < outcome.regions.size(); ++i) {
+        const Region2D& region = outcome.regions[i];
+        AnnotationObject obj;
+        obj.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        obj.label = region.label;
+        obj.bbox = region.bbox;
+        obj.polygon = region.polygon;
+        obj.maskRle = region.maskRle;
+        obj.score = region.score;
+        obj.prompts.pointsPos = prompts[i].positivePoints;
+        obj.prompts.pointsNeg = prompts[i].negativePoints;
+        if (prompts[i].box.isValid())
+            obj.prompts.box = prompts[i].box;
+        obj.modelName = modelName;
+        session.annotations.append(obj);
+        objectIds.append(obj.id);
+    }
+    session.imagePath = imagePath;
+    session.imageWidth = image.width();
+    session.imageHeight = image.height();
+    if (session.modelName.isEmpty())
+        session.modelName = modelName;
+
+    QString saveError;
+    if (!session.save(sessionPath, &saveError))
+        return QJsonObject{{"error", QString("标注会话保存失败：%1").arg(saveError)}};
+
+    return QJsonObject{{"status", QStringLiteral("annotated")},
+                       {"added", objectIds.size()},
+                       {"total", session.annotations.size()},
+                       {"sessionPath", sessionPath},
+                       {"objectIds", objectIds}};
 }
 
 } // namespace DeepLux

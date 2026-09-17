@@ -62,6 +62,9 @@ private:
     QJsonObject pauseFlow(const QJsonObject& params);
     QJsonObject resumeFlow(const QJsonObject& params);
     QJsonObject readDocumentation(const QJsonObject& params);
+    // SAM 批3：Agent 工具化 SAM（共享 SamPredictor 同步预测核心）
+    QJsonObject samPredict(const QJsonObject& params);
+    QJsonObject samAnnotate(const QJsonObject& params);
 
     QUndoStack* m_undoStack;
     QMap<QString, QJsonObject> m_schemaCache; // 插件加载/卸载时失效（评审 P2-7）

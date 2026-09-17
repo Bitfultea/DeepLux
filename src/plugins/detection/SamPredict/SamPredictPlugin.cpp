@@ -1,62 +1,15 @@
 #include "SamPredictPlugin.h"
 
 #include "common/Logger.h"
-#include "core/agent/SamBackendClient.h"
+#include "core/agent/SamPredictor.h"
 #include "core/deeplux/DataContract.h"
 
 #include <QDir>
-#include <QEventLoop>
 #include <QJsonArray>
 #include <QTemporaryFile>
-#include <QTimer>
 #include <cmath>
 
 namespace DeepLux {
-
-namespace {
-bool parsePointList(const QJsonValue& v, QList<QPointF>& out, bool allowEmpty) {
-    if (v.isUndefined() || v.isNull())
-        return allowEmpty;
-    if (!v.isArray())
-        return false;
-    const QJsonArray arr = v.toArray();
-    if (arr.isEmpty())
-        return allowEmpty;
-    for (const QJsonValue& pv : arr) {
-        if (!pv.isArray())
-            return false;
-        const QJsonArray pt = pv.toArray();
-        if (pt.size() != 2 || !pt[0].isDouble() || !pt[1].isDouble())
-            return false;
-        const double x = pt[0].toDouble();
-        const double y = pt[1].toDouble();
-        if (!std::isfinite(x) || !std::isfinite(y))
-            return false;
-        out.append(QPointF(x, y));
-    }
-    return true;
-}
-
-bool parseBox(const QJsonValue& v, QRectF& out) {
-    if (v.isUndefined() || v.isNull())
-        return true; // 可空
-    if (!v.isArray())
-        return false;
-    const QJsonArray arr = v.toArray();
-    if (arr.size() != 4)
-        return false;
-    double vals[4];
-    for (int i = 0; i < 4; ++i) {
-        if (!arr[i].isDouble() || !std::isfinite(arr[i].toDouble()))
-            return false;
-        vals[i] = arr[i].toDouble();
-    }
-    if (vals[2] <= 0.0 || vals[3] <= 0.0)
-        return false;
-    out = QRectF(vals[0], vals[1], vals[2], vals[3]);
-    return true;
-}
-} // namespace
 
 SamPredictPlugin::SamPredictPlugin(QObject* parent) : ModuleBase(parent) {
     m_defaultParams = QJsonObject{{"serverUrl", QStringLiteral("http://127.0.0.1:8990")},
@@ -93,19 +46,21 @@ bool SamPredictPlugin::doValidateParams(const QJsonObject& params, QString& erro
         error = tr("label 必须为字符串");
         return false;
     }
+    // SAM 批3：prompt 解析与 Agent sam_predict 工具共享 SamPredictor 严格口径
     QList<QPointF> pos;
     QList<QPointF> neg;
     QRectF box;
-    if (!parsePointList(params[QLatin1String("points")], pos, true)) {
-        error = tr("points 必须为 [[x,y],...] 有限数值数组");
+    QString perr;
+    if (!parseSamPointsJson(params[QLatin1String("points")], pos, true, perr)) {
+        error = tr("points %1").arg(perr);
         return false;
     }
-    if (!parsePointList(params[QLatin1String("negativePoints")], neg, true)) {
-        error = tr("negativePoints 必须为 [[x,y],...] 有限数值数组");
+    if (!parseSamPointsJson(params[QLatin1String("negativePoints")], neg, true, perr)) {
+        error = tr("negativePoints %1").arg(perr);
         return false;
     }
-    if (!parseBox(params[QLatin1String("box")], box)) {
-        error = tr("box 必须为 [x,y,w,h]（w/h>0）或留空");
+    if (!parseSamBoxJson(params[QLatin1String("box")], box, perr)) {
+        error = tr("box %1").arg(perr);
         return false;
     }
     // 注意：prompt 存在性不在参数校验层要求——默认参数（空 prompt）必须是合法
@@ -126,17 +81,13 @@ bool SamPredictPlugin::process(const ImageData& input, ImageData& output) {
         emit errorOccurred(perr);
         return false;
     }
-    const QString serverUrl = params["serverUrl"].toString();
-    const QString label = params["label"].toString();
-    const int timeoutMs = params["timeoutMs"].toInt();
-    QList<QPointF> pos;
-    QList<QPointF> neg;
-    QRectF box;
-    parsePointList(params["points"], pos, true);
-    parsePointList(params["negativePoints"], neg, true);
-    parseBox(params["box"], box);
+    SamPromptItem item;
+    item.label = params["label"].toString();
+    parseSamPointsJson(params["points"], item.positivePoints, true, perr);
+    parseSamPointsJson(params["negativePoints"], item.negativePoints, true, perr);
+    parseSamBoxJson(params["box"], item.box, perr);
 
-    if (pos.isEmpty() && !box.isValid()) {
+    if (item.positivePoints.isEmpty() && !item.box.isValid()) {
         emit errorOccurred(tr("points 与 box 至少提供一个 prompt"));
         return false;
     }
@@ -153,72 +104,16 @@ bool SamPredictPlugin::process(const ImageData& input, ImageData& output) {
         return false;
     }
 
-    // 客户端栈上创建：NAM 线程亲和 = 调用线程，本地事件循环同步收口；
+    // SAM 批3：同步预测核心（栈上客户端 + 本地事件循环 + 取消轮询 + Region2D
+    // 契约门禁）收口到 SamPredictor，与 Agent sam_predict/sam_annotate 共享；
     // 超时、后端错误或引擎取消（stop）失败关闭，不伪造区域
-    SamBackendClient client;
-    client.setServerUrl(serverUrl);
-    client.setTimeoutMs(timeoutMs);
-
-    Region2D region;
-    QString error;
-    bool done = false;
-    QEventLoop loop;
-    // 批1 复核二轮（P2-2）：外层 deadline 仅为客户端定时器故障兜底，收紧为
-    // timeoutMs+2s（不再 2 倍放大）；stop() 响应性由下方取消轮询保证
-    QTimer deadline;
-    deadline.setSingleShot(true);
-    deadline.setInterval(timeoutMs + 2000);
-    QObject::connect(&deadline, &QTimer::timeout, &loop, [&]() {
-        error = QStringLiteral("SAM 请求超时（本地等待上限 %1ms）").arg(timeoutMs + 2000);
-        done = true;
-        loop.quit();
-    });
-    // 批1 复核二轮（P2-2）：嵌套事件循环运行在引擎线程，stop() 的取消令牌
-    // 无法中断客户端定时器——轮询令牌提前退出，消除最长 ~242s 不可响应窗口
-    QTimer cancelPoll;
-    cancelPoll.setInterval(100);
-    QObject::connect(&cancelPoll, &QTimer::timeout, &loop, [&]() {
-        if (isCancellationRequested()) {
-            error = tr("SAM 预测已取消");
-            done = true;
-            loop.quit();
-        }
-    });
-    QObject::connect(
-        &client, &SamBackendClient::predictionReady, &loop,
-        [&](const QList<QPointF>& polygon, const QRectF& bbox, double score, const QString& maskRle, const QImage&) {
-            region.label = label;
-            region.polygon = polygon;
-            region.bbox = bbox;
-            region.maskRle = maskRle;
-            region.score = score;
-            done = true;
-            loop.quit();
-        });
-    QObject::connect(&client, &SamBackendClient::errorOccurred, &loop, [&](const QString& msg) {
-        if (!done) {
-            error = msg;
-            done = true;
-            loop.quit();
-        }
-    });
-    QObject::connect(&client, &SamBackendClient::embeddingReady, &loop,
-                     [&](const QString&) { client.predict(pos, neg, box); });
-    deadline.start();
-    cancelPoll.start();
-    client.setImage(tmp.fileName());
-    loop.exec();
-    deadline.stop();
-    cancelPoll.stop();
-
-    if (!done || !error.isEmpty()) {
-        emit errorOccurred(error.isEmpty() ? tr("SAM 预测失败") : error);
+    const SamPredictOutcome outcome = runSamPredictBatch(params["serverUrl"].toString(), tmp.fileName(), {item},
+                                                         params["timeoutMs"].toInt(), cancellationToken());
+    if (!outcome.ok) {
+        emit errorOccurred(outcome.error);
         return false;
     }
-    if (!region.isValid()) {
-        emit errorOccurred(tr("SAM 返回区域无效（polygon/bbox 均无效）"));
-        return false;
-    }
+    const Region2D region = outcome.regions.first();
     output.setData("region", QVariant::fromValue(region));
     output.setData("score", region.score);
     Logger::instance().debug(QString("SAM 分割: label=%1 score=%2 polygon=%3")

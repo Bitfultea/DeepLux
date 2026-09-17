@@ -208,6 +208,37 @@ void ToolSchema::registerDefaultTools() {
                   "Read DeepLux module/usage documentation. Use this to learn about "
                   "module parameters, workflows, and best practices when you're unsure.",
                   {{"topic", "string", "Topic to look up (e.g. 'FindCircle', 'workflow', 'GrabImage params')", true}}});
+
+    // sam_predict（SAM 批3）：经本地 SAM 服务对磁盘图像做单次 prompt 分割。
+    // 非 readOnly（触发外部推理而非观察应用状态）、非 dangerous（不写任何文件）
+    registerTool({"sam_predict",
+                  "Run SAM segmentation on an image file with point/box prompts via the local "
+                  "SAM server (must be running). Returns label/score/bbox/polygon of the region. "
+                  "Fails closed on timeout, backend error or contract-invalid region.",
+                  {{"imagePath", "string", "Absolute path to an existing image file", true},
+                   {"points", "array", "Positive prompt points [[x,y],...] with finite numbers", false},
+                   {"negativePoints", "array", "Negative prompt points [[x,y],...]", false},
+                   {"box", "array", "Prompt box [x,y,w,h] with w,h>0 (optional)", false},
+                   {"label", "string", "Label for the predicted region", false, QJsonValue("object")},
+                   {"serverUrl", "string", "SAM server base URL", false, QJsonValue("http://127.0.0.1:8990")},
+                   {"timeoutMs", "integer", "Per-request timeout in ms, [100,120000]", false, QJsonValue(30000)}}});
+
+    // sam_annotate（SAM 批3）：批量 prompt 分割并写入标注会话文件。
+    // dangerous：写磁盘文件（与 save_project 同口径，Autopilot 需确认）
+    registerTool({"sam_annotate",
+                  "Run SAM segmentation for a batch of prompts and append the results as annotation "
+                  "objects to a DeepLux annotation session file (.deeplux-anno.json, created if absent). "
+                  "All-or-nothing: nothing is written if any prediction fails. Refuses to mix images: "
+                  "an existing session bound to a different imagePath is rejected.",
+                  {{"imagePath", "string", "Absolute path to an existing image file", true},
+                   {"sessionPath", "string", "Annotation session file to create or append to", true},
+                   {"items", "array",
+                    "1-16 prompt items [{points?,negativePoints?,box?,label?}]; "
+                    "each item needs points or box",
+                    true},
+                   {"serverUrl", "string", "SAM server base URL", false, QJsonValue("http://127.0.0.1:8990")},
+                   {"timeoutMs", "integer", "Per-request timeout in ms, [100,120000]", false, QJsonValue(30000)}},
+                  true}); // dangerous（写文件）
 }
 
 } // namespace DeepLux

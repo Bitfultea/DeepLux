@@ -7,11 +7,11 @@ namespace DeepLux {
 /**
  * @brief SAM 分割生产者插件（SAM 批1）
  *
- * 输入 Image2D 与 prompt 参数（正点/负点/框），调用 SamBackendClient 完成
- * set_image + predict，输出强类型 Region2D（polygon/bbox/maskRle/score/label）。
- * 客户端按调用线程栈上创建并以本地事件循环同步收口（NAM 线程亲和），超时、
- * 后端错误或引擎取消（stop，批1 复核二轮 P2-2 轮询令牌）失败关闭；mask
- * 像素不入载荷（仅 RLE）。
+ * 输入 Image2D 与 prompt 参数（正点/负点/框），输出强类型 Region2D
+ * （polygon/bbox/maskRle/score/label）。同步预测核心（栈上客户端 + 本地
+ * 事件循环 + 取消轮询 + Region2D 契约门禁）自 SAM 批3 起收口到共享的
+ * SamPredictor（与 Agent sam_predict/sam_annotate 工具同一实现）；超时、
+ * 后端错误或引擎取消（stop）失败关闭；mask 像素不入载荷（仅 RLE）。
  */
 class SamPredictPlugin : public ModuleBase {
     Q_OBJECT

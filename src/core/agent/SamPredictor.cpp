@@ -1,0 +1,228 @@
+#include "SamPredictor.h"
+
+#include "SamBackendClient.h"
+#include "core/common/CancellationToken.h"
+#include "core/deeplux/DataContract.h"
+
+#include <QEventLoop>
+#include <QFileInfo>
+#include <QImage>
+#include <QJsonArray>
+#include <QTimer>
+#include <QVariant>
+#include <cmath>
+
+namespace DeepLux {
+
+bool parseSamPointsJson(const QJsonValue& value, QList<QPointF>& out, bool allowEmpty, QString& error) {
+    error.clear();
+    if (value.isUndefined() || value.isNull()) {
+        if (allowEmpty)
+            return true;
+        error = QStringLiteral("必须为 [[x,y],...] 有限数值数组");
+        return false;
+    }
+    if (!value.isArray()) {
+        error = QStringLiteral("必须为 [[x,y],...] 有限数值数组");
+        return false;
+    }
+    const QJsonArray arr = value.toArray();
+    if (arr.isEmpty()) {
+        if (allowEmpty)
+            return true;
+        error = QStringLiteral("不能为空数组");
+        return false;
+    }
+    for (const QJsonValue& pv : arr) {
+        if (!pv.isArray()) {
+            error = QStringLiteral("元素必须为 [x,y] 数值对");
+            return false;
+        }
+        const QJsonArray pt = pv.toArray();
+        if (pt.size() != 2 || !pt[0].isDouble() || !pt[1].isDouble()) {
+            error = QStringLiteral("元素必须为 [x,y] 数值对");
+            return false;
+        }
+        const double x = pt[0].toDouble();
+        const double y = pt[1].toDouble();
+        if (!std::isfinite(x) || !std::isfinite(y)) {
+            error = QStringLiteral("坐标必须为有限数值");
+            return false;
+        }
+        out.append(QPointF(x, y));
+    }
+    return true;
+}
+
+bool parseSamBoxJson(const QJsonValue& value, QRectF& out, QString& error) {
+    error.clear();
+    out = QRectF();
+    if (value.isUndefined() || value.isNull())
+        return true; // 可空 = 未提供
+    if (!value.isArray()) {
+        error = QStringLiteral("必须为 [x,y,w,h]（w/h>0）或留空");
+        return false;
+    }
+    const QJsonArray arr = value.toArray();
+    if (arr.size() != 4) {
+        error = QStringLiteral("必须为 [x,y,w,h]（w/h>0）或留空");
+        return false;
+    }
+    double vals[4];
+    for (int i = 0; i < 4; ++i) {
+        if (!arr[i].isDouble() || !std::isfinite(arr[i].toDouble())) {
+            error = QStringLiteral("必须为 4 个有限数值 [x,y,w,h]");
+            return false;
+        }
+        vals[i] = arr[i].toDouble();
+    }
+    if (vals[2] <= 0.0 || vals[3] <= 0.0) {
+        error = QStringLiteral("w/h 必须 > 0");
+        return false;
+    }
+    out = QRectF(vals[0], vals[1], vals[2], vals[3]);
+    return true;
+}
+
+SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& imagePath,
+                                     const QList<SamPromptItem>& items, int timeoutMs,
+                                     const CancellationToken* cancel) {
+    SamPredictOutcome outcome;
+    auto fail = [&outcome](const QString& error, int index) {
+        outcome.ok = false;
+        outcome.error = error;
+        outcome.failedIndex = index;
+        return outcome;
+    };
+
+    // 先行校验：参数/图像非法不发任何网络请求（失败关闭）
+    if (serverUrl.trimmed().isEmpty())
+        return fail(QStringLiteral("serverUrl 不能为空"), -1);
+    if (timeoutMs < 100 || timeoutMs > 120000)
+        return fail(QStringLiteral("timeoutMs 必须为[100,120000]"), -1);
+    if (imagePath.isEmpty() || !QFileInfo::exists(imagePath))
+        return fail(QStringLiteral("输入图像不存在：%1").arg(imagePath), -1);
+    if (items.isEmpty())
+        return fail(QStringLiteral("未提供任何 prompt"), -1);
+    for (int i = 0; i < items.size(); ++i) {
+        const SamPromptItem& item = items[i];
+        if (item.positivePoints.isEmpty() && !item.box.isValid())
+            return fail(QStringLiteral("prompt[%1]：points 与 box 至少提供一个").arg(i), i);
+        // 解析层已保证有限性；直调结构体路径（插件/内部复用）再防一道
+        const auto finitePoints = [](const QList<QPointF>& points) {
+            for (const QPointF& p : points) {
+                if (!std::isfinite(p.x()) || !std::isfinite(p.y()))
+                    return false;
+            }
+            return true;
+        };
+        if (!finitePoints(item.positivePoints) || !finitePoints(item.negativePoints))
+            return fail(QStringLiteral("prompt[%1] 含非有限坐标").arg(i), i);
+        if (item.box.isValid() && (!std::isfinite(item.box.x()) || !std::isfinite(item.box.y()) ||
+                                   !std::isfinite(item.box.width()) || !std::isfinite(item.box.height())))
+            return fail(QStringLiteral("prompt[%1] box 含非有限值").arg(i), i);
+    }
+
+    // 客户端栈上创建：NAM 线程亲和 = 调用线程，本地事件循环同步收口。
+    // set_image 一次，embedding 复用逐项 predict。
+    SamBackendClient client;
+    client.setServerUrl(serverUrl);
+    client.setTimeoutMs(timeoutMs);
+
+    QString error;
+    bool done = false;
+    bool embeddingAcquired = false;
+    int nextIndex = 0;
+    QEventLoop loop;
+
+    // 外层 deadline 仅为客户端定时器故障兜底（批1 复核二轮 P2-2 口径），
+    // 每收到一次响应重置，使批量预测的每一步都受同一兜底保护
+    const int deadlineMs = timeoutMs + 2000;
+    QTimer deadline;
+    deadline.setSingleShot(true);
+    deadline.setInterval(deadlineMs);
+    QObject::connect(&deadline, &QTimer::timeout, &loop, [&]() {
+        error = QStringLiteral("SAM 请求超时（本地等待上限 %1ms）").arg(deadlineMs);
+        done = true;
+        loop.quit();
+    });
+    // 取消轮询：调用方（引擎 stop / Agent 取消）令牌 100ms 内响应
+    QTimer cancelPoll;
+    cancelPoll.setInterval(100);
+    QObject::connect(&cancelPoll, &QTimer::timeout, &loop, [&]() {
+        if (cancel && cancel->isCancelledFast()) {
+            error = QStringLiteral("SAM 预测已取消");
+            done = true;
+            loop.quit();
+        }
+    });
+
+    QObject::connect(
+        &client, &SamBackendClient::predictionReady, &loop,
+        [&](const QList<QPointF>& polygon, const QRectF& bbox, double score, const QString& maskRle, const QImage&) {
+            Region2D region;
+            region.label = items[nextIndex].label;
+            region.polygon = polygon;
+            region.bbox = bbox;
+            region.maskRle = maskRle;
+            region.score = score;
+            // 产物在返回前过 Region2D 端口契约门禁（isValid + 有限值 +
+            // score∈[0,1]）：不合格按后端错误失败关闭，不下发可疑区域
+            if (!portValueMatchesType(QVariant::fromValue(region), DataType::Region2D)) {
+                error = QStringLiteral("SAM 返回区域无效或不符合 Region2D 契约");
+                outcome.failedIndex = nextIndex;
+                done = true;
+                loop.quit();
+                return;
+            }
+            outcome.regions.append(region);
+            ++nextIndex;
+            deadline.start(); // 每收到一次响应重置兜底
+            if (nextIndex < items.size()) {
+                // 不可在 predictionReady 回调内重入 predict()：客户端在信号
+                // 返回后才对当前回复 settleReply，重入发起的新请求会被置空并
+                // 丢失超时保护（下一项响应按"过期回复"丢弃 → 挂死到兜底）。
+                // 延迟到下一轮事件循环发起，settle 完成后时序干净。
+                const int next = nextIndex;
+                QTimer::singleShot(0, &client, [&client, &deadline, items, next]() {
+                    deadline.start();
+                    client.predict(items[next].positivePoints, items[next].negativePoints, items[next].box);
+                });
+            } else {
+                outcome.modelName = client.modelName();
+                done = true;
+                loop.quit();
+            }
+        });
+    QObject::connect(&client, &SamBackendClient::errorOccurred, &loop, [&](const QString& msg) {
+        if (!done) {
+            error = msg;
+            outcome.failedIndex = embeddingAcquired ? qMin(nextIndex, items.size() - 1) : -1;
+            done = true;
+            loop.quit();
+        }
+    });
+    QObject::connect(&client, &SamBackendClient::embeddingReady, &loop, [&](const QString&) {
+        embeddingAcquired = true;
+        deadline.start();
+        client.predict(items[0].positivePoints, items[0].negativePoints, items[0].box);
+    });
+
+    deadline.start();
+    cancelPoll.start();
+    client.setImage(imagePath);
+    loop.exec();
+    deadline.stop();
+    cancelPoll.stop();
+
+    if (!done || !error.isEmpty()) {
+        outcome.ok = false;
+        outcome.error = error.isEmpty() ? QStringLiteral("SAM 预测失败") : error;
+        outcome.regions.clear(); // 全有或全无：不返回部分结果
+        return outcome;
+    }
+    outcome.ok = true;
+    return outcome;
+}
+
+} // namespace DeepLux
