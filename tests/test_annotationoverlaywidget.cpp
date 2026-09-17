@@ -55,20 +55,32 @@ void TestAnnotationOverlayWidget::previewPolygonRoundTrip() {
     AnnotationOverlayWidget w;
     w.setCoordConverter([](const QPointF& p) { return p; });
 
-    QList<QPointF> polygon = {QPointF(0, 0), QPointF(100, 0), QPointF(100, 100), QPointF(0, 100)};
+    // 批2 复核二轮：smoke 升级为真实断言（往返一致 + 清除生效）
+    const QList<QPointF> polygon = {QPointF(0, 0), QPointF(100, 0), QPointF(100, 100), QPointF(0, 100)};
     w.setPreviewPolygon(polygon);
+    QCOMPARE(w.previewPolygon(), polygon);
+    QImage mask(4, 4, QImage::Format_ARGB32);
+    mask.fill(QColor(6, 182, 212, 90));
+    w.setPreviewMask(mask);
+    QCOMPARE(w.previewMask(), mask);
     w.clearPreview();
-    // Should not crash after clear
-    QVERIFY(true);
+    QVERIFY(w.previewPolygon().isEmpty());
+    QVERIFY(w.previewMask().isNull());
 }
 
 void TestAnnotationOverlayWidget::promptPointsSetClear() {
     AnnotationOverlayWidget w;
     w.setCoordConverter([](const QPointF& p) { return p; });
 
-    w.setPromptPoints({QPointF(50, 50)}, {QPointF(100, 100)});
+    // 批2 复核二轮：smoke 升级为真实断言（往返一致 + 清除生效）
+    const QList<QPointF> positive = {QPointF(50, 50)};
+    const QList<QPointF> negative = {QPointF(100, 100)};
+    w.setPromptPoints(positive, negative);
+    QCOMPARE(w.positivePromptPoints(), positive);
+    QCOMPARE(w.negativePromptPoints(), negative);
     w.clearPromptPoints();
-    QVERIFY(true);
+    QVERIFY(w.positivePromptPoints().isEmpty());
+    QVERIFY(w.negativePromptPoints().isEmpty());
 }
 
 void TestAnnotationOverlayWidget::selectedIdChanges() {
@@ -190,7 +202,7 @@ void TestAnnotationOverlayWidget::eraserStrokeIgnoredInOtherModes() {
     w.setInverseCoordConverter([](const QPointF& p) { return p; });
 
     for (const auto mode : {AnnotationOverlayWidget::Mode::Select, AnnotationOverlayWidget::Mode::PositivePoint,
-                            AnnotationOverlayWidget::Mode::Box}) {
+                            AnnotationOverlayWidget::Mode::NegativePoint, AnnotationOverlayWidget::Mode::Box}) {
         w.setMode(mode);
         QSignalSpy spy(&w, &AnnotationOverlayWidget::eraseStrokeFinished);
         QTest::mousePress(&w, Qt::LeftButton, Qt::NoModifier, QPoint(10, 10));

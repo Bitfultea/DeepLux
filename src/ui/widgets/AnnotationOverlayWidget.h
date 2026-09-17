@@ -77,6 +77,16 @@ public:
     QImage previewMask() const {
         return m_previewMask;
     }
+    // 批2 复核二轮：预览/提示点只读访问（供测试做真实断言，替代 smoke）
+    QList<QPointF> previewPolygon() const {
+        return m_previewPolygon;
+    }
+    QList<QPointF> positivePromptPoints() const {
+        return m_positivePoints;
+    }
+    QList<QPointF> negativePromptPoints() const {
+        return m_negativePoints;
+    }
 
 signals:
     void widgetClicked(const QPointF& imagePoint, Qt::MouseButton button);

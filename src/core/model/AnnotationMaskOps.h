@@ -35,6 +35,12 @@ QImage toDisplayMask(const QImage& binaryMask);
 QString encodeRle(const QImage& binaryMask);
 /// RLE 字符串 → 二值掩膜；损坏/尺寸非法/游程总和不等于 w*h 时返回空图并置 ok=false
 QImage decodeRle(const QString& rle, bool* ok = nullptr);
+/**
+ * 带期望尺寸的解码（批2 复核二轮 P3）：expectedSize 有效时先比对编码尺寸，
+ * 不匹配立即失败——不展开整幅像素（大图上避免无谓的解码/内存开销）。
+ * expectedSize 无效（默认）时与两参版本行为一致。
+ */
+QImage decodeRle(const QString& rle, const QSize& expectedSize, bool* ok = nullptr);
 
 /**
  * 形态学膨胀/腐蚀：方形结构元，可分离滑动窗口实现（O(w·h)，与半径无关）。

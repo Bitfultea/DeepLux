@@ -229,10 +229,13 @@ void AnnotationOverlayWidget::mousePressEvent(QMouseEvent* event) {
         m_dragStart = widgetPoint;
         emit dragStarted(imagePoint);
     } else if (m_mode == Mode::Eraser && event->button() == Qt::LeftButton) {
-        // SAM 批2：橡皮擦按下开始收集笔画折线（原图坐标），释放时一次性发出
+        // SAM 批2：橡皮擦按下开始收集笔画折线（原图坐标），释放时一次性发出。
+        // 批2 复核二轮（P2-3）：抓取鼠标——笔画拖出 widget 后 move/release 仍
+        // 送达本控件，否则释放事件丢失导致笔画作废且 m_isErasing 卡真
         m_isErasing = true;
         m_eraseStroke.clear();
         m_eraseStroke.append(imagePoint);
+        grabMouse();
         update();
     } else if ((m_mode == Mode::PositivePoint || m_mode == Mode::NegativePoint) &&
                (event->button() == Qt::LeftButton || event->button() == Qt::RightButton)) {
@@ -271,8 +274,9 @@ void AnnotationOverlayWidget::mouseReleaseEvent(QMouseEvent* event) {
         return;
     }
     if (m_isErasing && event->button() == Qt::LeftButton) {
-        // SAM 批2：笔画结束，一次性发出完整折线（单击=单点笔画）
+        // SAM 批2：笔画结束，一次性发出完整折线（单击=单点笔画）；释放鼠标抓取
         m_isErasing = false;
+        releaseMouse();
         if (m_widgetToImage) {
             const QPointF imagePoint = m_widgetToImage(event->pos());
             if (m_eraseStroke.isEmpty() || m_eraseStroke.last() != imagePoint)

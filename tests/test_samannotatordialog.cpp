@@ -73,6 +73,10 @@ private slots:
     void splitSingleComponentRejected();
     void editWithoutImageSizeRejected();
     void editFallsBackToPolygonRasterization();
+    // SAM 批2 复核二轮：会话重置协议与删除掩膜还原回归
+    void undoAfterOpenAnnotationDoesNotCorruptSession();
+    void switchImageSameSizeResetsAnnotationState();
+    void deleteUndoRestoresMaskCache();
 
 private:
     QImage makeTestImage();
@@ -913,6 +917,106 @@ void TestSamAnnotatorDialog::editFallsBackToPolygonRasterization() {
     QVERIFY(dlg.statusLabel()->text().contains(QStringLiteral("完成")));
     // overlay 缓存已建立（编辑产物）
     QCOMPARE(dlg.overlayWidget()->objectMask(id).size(), QSize(200, 150));
+}
+
+// 批2 复核二轮（P1-1）：换载会话 B 后，会话 A 的快照式撤销命令必须已失效——
+// 否则 Ctrl+Z 会用 A 的整表快照覆盖 B（数据损坏）
+void TestSamAnnotatorDialog::undoAfterOpenAnnotationDoesNotCorruptSession() {
+    // 会话 A：对象 + 掩膜编辑（产生快照命令入撤销栈）
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    QVERIFY(!confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20),
+                           makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)}))
+                 .isEmpty());
+    dlg.objectList()->setCurrentRow(0);
+    dlg.maskRadiusSpin()->setValue(2);
+    dlg.dilateButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), 1);
+
+    // 会话 B 文件（2 个对象）
+    SamAnnotatorDialog srcDlg;
+    srcDlg.setImageSnapshot(makeTestImage(), QString());
+    QVERIFY(!confirmObject(srcDlg, squarePolygon(10, 10, 10), QRectF(10, 10, 10, 10), QImage()).isEmpty());
+    QVERIFY(!confirmObject(srcDlg, squarePolygon(100, 100, 10), QRectF(100, 100, 10, 10), QImage()).isEmpty());
+    QTemporaryFile tmp("undo_open_XXXXXX.deeplux-anno.json");
+    QVERIFY(tmp.open());
+    const QString sessionPath = tmp.fileName();
+    tmp.close();
+    QString saveErr;
+    QVERIFY(srcDlg.session().save(sessionPath, &saveErr));
+
+    // 换载会话 B
+    QVERIFY(dlg.openAnnotationFile(sessionPath));
+    QCOMPARE(dlg.session().annotations.size(), 2);
+    QCOMPARE(dlg.objectList()->count(), 2);
+    const QString idB0 = dlg.session().annotations[0].id;
+    const QString idB1 = dlg.session().annotations[1].id;
+
+    // 撤销栈已清：undo/redo 不得改变会话 B
+    dlg.undoButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), 2);
+    QCOMPARE(dlg.session().annotations[0].id, idB0);
+    QCOMPARE(dlg.session().annotations[1].id, idB1);
+    dlg.redoButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), 2);
+
+    // 加载失败路径：失败关闭，会话不受影响
+    QString err;
+    QVERIFY(!dlg.openAnnotationFile(QStringLiteral("/nonexistent/no_such_session.json"), &err));
+    QVERIFY(!err.isEmpty());
+    QCOMPARE(dlg.session().annotations.size(), 2);
+}
+
+// 批2 复核二轮（P1-2）：同尺寸换图必须完整重置（对象/掩膜缓存/撤销栈）——
+// 否则旧对象掩膜仍满足"尺寸==整图"信任条件，编辑会用旧图像素推导新标注
+void TestSamAnnotatorDialog::switchImageSameSizeResetsAnnotationState() {
+    SamAnnotatorDialog dlg;
+    QImage img1(200, 150, QImage::Format_RGB32);
+    img1.fill(QColor("#22C55E"));
+    QImage img2(200, 150, QImage::Format_RGB32);
+    img2.fill(QColor("#3B82F6")); // 同尺寸异内容
+
+    dlg.setImageSnapshot(img1, QStringLiteral("/tmp/img1.png"));
+    const QString id = confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20),
+                                     makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)}));
+    QVERIFY(!id.isEmpty());
+    dlg.objectList()->setCurrentRow(0);
+    dlg.dilateButton()->click(); // 撤销栈留有快照命令
+    QCOMPARE(dlg.session().annotations.size(), 1);
+
+    dlg.setImageSnapshot(img2, QStringLiteral("/tmp/img2.png"));
+    QCOMPARE(dlg.session().annotations.size(), 0);
+    QCOMPARE(dlg.objectList()->count(), 0);
+    QVERIFY(dlg.overlayWidget()->objectMask(id).isNull()); // 掩膜缓存已清
+    dlg.undoButton()->click();                             // 撤销栈已清：不得复活旧对象
+    QCOMPARE(dlg.session().annotations.size(), 0);
+    dlg.redoButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), 0);
+
+    // 同内容快照重复设置不清空（保护进行中标注，如对话框重开）
+    QVERIFY(!confirmObject(dlg, squarePolygon(60, 50, 20), QRectF(60, 50, 20, 20), QImage()).isEmpty());
+    dlg.setImageSnapshot(img2, QStringLiteral("/tmp/img2.png"));
+    QCOMPARE(dlg.session().annotations.size(), 1);
+}
+
+// 批2 复核二轮（P2-2）：删除的撤销必须像素级还原掩膜缓存（命令内捕获快照，
+// 而不是查已被 redo 删除的缓存）
+void TestSamAnnotatorDialog::deleteUndoRestoresMaskCache() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    const QImage mask = makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)});
+    const QString id = confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20), mask);
+    QVERIFY(!id.isEmpty());
+    dlg.objectList()->setCurrentRow(0);
+
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onDeleteSelected", Qt::DirectConnection));
+    QCOMPARE(dlg.session().annotations.size(), 0);
+    QVERIFY(dlg.overlayWidget()->objectMask(id).isNull());
+
+    dlg.undoButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), 1);
+    QCOMPARE(dlg.session().annotations.first().id, id);
+    QCOMPARE(dlg.overlayWidget()->objectMask(id), mask); // 像素级还原，非 polygon 栅格化回落
 }
 
 QTEST_MAIN(TestSamAnnotatorDialog)

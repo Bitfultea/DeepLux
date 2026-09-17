@@ -69,6 +69,18 @@ private slots:
         QCOMPARE(encodeRle(QImage()), QString());
     }
 
+    // 批2 复核二轮（P3）：期望尺寸不匹配在展开像素前快速失败
+    void rleDecodeHonorsExpectedSize() {
+        const QImage mask = makeBinary(2, 2, {QRect(0, 0, 1, 1)});
+        const QString rle = encodeRle(mask);
+        bool ok = true;
+        QCOMPARE(decodeRle(rle, QSize(2, 2), &ok), mask);
+        QVERIFY(ok);
+        QVERIFY(decodeRle(rle, QSize(3, 2), &ok).isNull() && !ok);
+        QVERIFY(decodeRle(rle, QSize(2, 3), &ok).isNull() && !ok);
+        QVERIFY(decodeRle(rle, QSize(), &ok) == mask && ok); // 无效期望 = 不检查（旧行为）
+    }
+
     void rleRoundTrip() {
         const QList<QImage> masks = {
             makeBinary(1, 1, {QRect(0, 0, 1, 1)}),

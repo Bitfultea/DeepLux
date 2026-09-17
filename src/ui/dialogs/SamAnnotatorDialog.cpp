@@ -817,6 +817,9 @@ void SamAnnotatorDialog::onDeleteSelected() {
     if (index < 0)
         return;
 
+    // 批2 复核二轮（P2-2）：掩膜缓存必须在压命令前捕获——redo 会把缓存删除，
+    // undo 里再查 contains 恒为 false，导致恢复后回落 polygon 栅格化丢失像素精度
+    const QImage cachedMask = m_objectMasks.value(id);
     m_undoStack->push(new LambdaUndoCommand(
         tr("删除标注对象"),
         [this, id]() {
@@ -828,12 +831,15 @@ void SamAnnotatorDialog::onDeleteSelected() {
             }
             refreshObjectList();
         },
-        [this, object, index]() {
+        [this, object, index, cachedMask]() {
             const int insertAt = qBound(0, index, m_session->annotations.size());
             m_session->annotations.insert(insertAt, object);
-            // 恢复 mask 如果有缓存
-            if (m_objectMasks.contains(object.id) && m_overlay)
-                m_overlay->setObjectMask(object.id, m_objectMasks.value(object.id));
+            // 恢复命令内捕获的掩膜缓存与 overlay（像素级还原）
+            if (!cachedMask.isNull()) {
+                m_objectMasks.insert(object.id, cachedMask);
+                if (m_overlay)
+                    m_overlay->setObjectMask(object.id, cachedMask);
+            }
             if (m_overlay)
                 m_overlay->setAnnotations(m_session->annotations);
             refreshObjectList();
@@ -893,11 +899,12 @@ bool SamAnnotatorDialog::binaryMaskForObject(const AnnotationObject& obj, QImage
         outBinary = MaskOps::toBinaryMask(cached);
         return true;
     }
-    // 2) maskRle（磁盘加载会话的像素来源），解码尺寸必须与整图一致
+    // 2) maskRle（磁盘加载会话的像素来源）：期望尺寸传入解码器，
+    // 不匹配在展开像素前快速失败（批2 复核二轮 P3）
     if (!obj.maskRle.isEmpty()) {
         bool ok = false;
-        const QImage decoded = MaskOps::decodeRle(obj.maskRle, &ok);
-        if (ok && decoded.width() == w && decoded.height() == h) {
+        const QImage decoded = MaskOps::decodeRle(obj.maskRle, QSize(w, h), &ok);
+        if (ok) {
             outBinary = decoded;
             return true;
         }
@@ -1304,6 +1311,27 @@ void SamAnnotatorDialog::clearCurrentPrompt() {
     m_overlay->clearPreview();
 }
 
+void SamAnnotatorDialog::resetAnnotationState() {
+    // Fix P1-6 完整重置协议（批2 复核二轮 P1-1/P1-2 提取）：换图/重开会话必须
+    // 清 prompt、掩膜缓存、overlay 状态、撤销栈与标注列表——快照式撤销命令是
+    // 整表覆盖，任何残留都会把旧会话数据写回新会话（数据损坏）
+    clearCurrentPrompt();
+    m_objectMasks.clear();
+    if (m_overlay) {
+        for (const AnnotationObject& obj : m_session ? m_session->annotations : QList<AnnotationObject>{})
+            m_overlay->clearObjectMask(obj.id);
+        m_overlay->setAnnotations({});
+        m_overlay->setSelectedId(QString());
+    }
+    if (m_undoStack)
+        m_undoStack->clear();
+    if (m_session) {
+        m_session->annotations.clear();
+        m_session->imagePath.clear();
+    }
+    refreshObjectList();
+}
+
 void SamAnnotatorDialog::prepareBackendImage() {
     m_backendImagePath.clear();
     if (m_currentImage.isNull())
@@ -1419,6 +1447,11 @@ void SamAnnotatorDialog::openImageFromFile(const QString& suggestedPath) {
         QMessageBox::warning(this, tr("打开失败"), tr("无法加载图片：") + path);
         return;
     }
+    // 批2 复核二轮（P1-2）：换图（内容变化）必须走完整重置协议——否则同尺寸
+    // 异图时旧对象掩膜缓存仍满足"尺寸==整图"信任条件，编辑会用旧图像素推导
+    // 新标注（静默错图）。同内容重开不清（保护进行中标注）。
+    if (img != m_currentImage)
+        resetAnnotationState();
     m_currentImage = img;
     m_imagePath = path;
     HImageWidget* target = activeImageWidget();
@@ -1445,31 +1478,17 @@ void SamAnnotatorDialog::attachToImageWidget(HImageWidget* imageWidget, const QS
         if (m_externalImageWidget == imageWidget)
             m_externalImageWidget = nullptr;
     });
-    // Fix 2: 监听图像变化，重置标注会话（旧 annotation/embedding/prompt 全部清除）
+    // Fix 2: 监听图像变化，重置标注会话（批2 复核二轮 P1-2：统一走
+    // resetAnnotationState 协议，与 openImageFromFile/setImageSnapshot 一致）
     connect(imageWidget, &HImageWidget::imageLoaded, this, [this](const QImage& newImage) {
         if (m_externalImageWidget && m_externalImageWidget->currentImage() != m_currentImage) {
             m_currentImage = newImage;
             m_imagePath.clear();
-            clearCurrentPrompt();
-            // Fix P1-6: 清除完整 UI 状态
-            m_objectMasks.clear();
-            if (m_overlay) {
-                m_overlay->setAnnotations({});
-                // 逐个清除 overlay 内已缓存的对象 mask
-                for (const auto& obj : m_session ? m_session->annotations : QList<AnnotationObject>{}) {
-                    m_overlay->clearObjectMask(obj.id);
-                }
-                m_overlay->setSelectedId(QString());
-            }
-            if (m_undoStack)
-                m_undoStack->clear();
+            resetAnnotationState();
             if (m_session) {
-                m_session->annotations.clear();
-                m_session->imagePath.clear();
                 m_session->imageWidth = newImage.width();
                 m_session->imageHeight = newImage.height();
             }
-            refreshObjectList();
             if (m_samClient)
                 m_samClient->unloadImage();
             refreshOverlayCoordConverter();
@@ -1503,6 +1522,10 @@ void SamAnnotatorDialog::onOpenImage() {
 }
 
 void SamAnnotatorDialog::setImageSnapshot(const QImage& image, const QString& imagePath) {
+    // 批2 复核二轮（P1-2）：快照换图 = 新标注对象，复用完整重置协议；
+    // 同内容快照（如对话框重开）不清，保护进行中标注
+    if (!image.isNull() && image != m_currentImage)
+        resetAnnotationState();
     m_currentImage = image;
     m_imagePath = imagePath;
     if (!image.isNull()) {
@@ -1720,20 +1743,41 @@ void SamAnnotatorDialog::onOpenAnnotation() {
         this, tr("打开标注会话"), QString(), tr("DeepLux 标注 (*.deeplux-anno.json);;JSON (*.json);;所有文件 (*.*)"));
     if (path.isEmpty())
         return;
-
     QString err;
-    AnnotationSession loaded = AnnotationSession::load(path, &err);
-    if (!err.isEmpty()) {
+    if (!openAnnotationFile(path, &err))
         QMessageBox::warning(this, tr("打开失败"), err);
-        return;
+}
+
+bool SamAnnotatorDialog::openAnnotationFile(const QString& filePath, QString* error) {
+    QString loadError;
+    const AnnotationSession loaded = AnnotationSession::load(filePath, &loadError);
+    if (!loadError.isEmpty()) {
+        if (error)
+            *error = loadError;
+        setStatusText(tr("打开标注失败：%1").arg(loadError));
+        return false;
     }
+
+    // 批2 复核二轮（P1-1）：会话重开必须清旧撤销命令——批2 快照命令为整表
+    // 覆盖，残留命令会在 Ctrl+Z 时用旧会话数据整体替换新会话（数据损坏）
+    if (m_undoStack)
+        m_undoStack->clear();
+    clearCurrentPrompt();
+    // 清理旧会话 id 的 overlay 对象掩膜缓存与预览（原实现漏清 overlay 侧，
+    // 且误清新会话 id）
+    if (m_overlay) {
+        if (m_session) {
+            for (const AnnotationObject& obj : m_session->annotations)
+                m_overlay->clearObjectMask(obj.id);
+        }
+        m_overlay->clearPreview();
+        m_overlay->setSelectedId(QString());
+    }
+    m_objectMasks.clear();
 
     // 替换当前会话
     delete m_session;
     m_session = new AnnotationSession(loaded);
-    m_objectMasks.clear();
-    if (m_overlay)
-        m_overlay->clearPreview();
 
     // 尝试加载原图
     if (!m_session->imagePath.isEmpty() && QFileInfo::exists(m_session->imagePath)) {
@@ -1751,15 +1795,13 @@ void SamAnnotatorDialog::onOpenAnnotation() {
     }
 
     refreshObjectList();
-    if (m_overlay) {
+    if (m_overlay)
         m_overlay->setAnnotations(m_session->annotations);
-        for (const AnnotationObject& obj : m_session->annotations)
-            m_overlay->clearObjectMask(obj.id);
-    }
     updateSessionFromImage();
     prepareBackendImage();
     setStatusText(tr("已打开标注会话（%1 个对象）").arg(m_session->annotations.size()));
-    Logger::instance().info(tr("已打开标注会话 %1").arg(path), "Annotation");
+    Logger::instance().info(tr("已打开标注会话 %1").arg(filePath), "Annotation");
+    return true;
 }
 
 // === YOLO Seg 导出 ===

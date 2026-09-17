@@ -69,6 +69,10 @@ public:
     // 当前标注会话
     AnnotationSession session() const;
 
+    // 从文件加载并替换标注会话（批2 复核二轮 P1-1：清撤销栈/旧掩膜缓存，
+    // 失败关闭返回 false 并给出 error；onOpenAnnotation 与测试共用）
+    bool openAnnotationFile(const QString& filePath, QString* error = nullptr);
+
     // 模式枚举（与 AnnotationOverlayWidget::Mode 对齐；Eraser：SAM 批2 掩膜橡皮擦）
     enum class ToolMode { Select, PositivePoint, NegativePoint, Box, Eraser };
 
@@ -240,6 +244,9 @@ private:
     bool samModelReadyForUse() const;
     void refreshSamControlState();
     void clearCurrentPrompt();
+    // 会话完整重置协议（Fix P1-6 范式，批2 复核二轮 P1-2 提取复用）：
+    // 清 prompt/掩膜缓存/overlay 状态/撤销栈/标注列表；会话尺寸由调用方设置
+    void resetAnnotationState();
     void setStatusText(const QString& text);
     void refreshPromptAfterEdit(bool triggerPrediction);
     HImageWidget* activeImageWidget() const;

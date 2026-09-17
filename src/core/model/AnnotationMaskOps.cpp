@@ -154,6 +154,10 @@ QString encodeRle(const QImage& binaryMask) {
 }
 
 QImage decodeRle(const QString& rle, bool* ok) {
+    return decodeRle(rle, QSize(), ok);
+}
+
+QImage decodeRle(const QString& rle, const QSize& expectedSize, bool* ok) {
     auto fail = [ok]() {
         if (ok)
             *ok = false;
@@ -177,6 +181,9 @@ QImage decodeRle(const QString& rle, bool* ok) {
         return fail(); // 非法/非整数尺寸（NaN 比较为假，一并拒绝）
     const int h = int(hd);
     const int w = int(wd);
+    // 批2 复核二轮（P3）：期望尺寸不匹配立即失败，不展开整幅像素
+    if (expectedSize.isValid() && (expectedSize.width() != w || expectedSize.height() != h))
+        return fail();
     constexpr qint64 kMaxPixels = 64LL * 1024 * 1024; // 与 SAM 响应上限同量级，防损坏会话文件撑爆内存
     const qint64 total = qint64(h) * w;
     if (total > kMaxPixels)
