@@ -103,7 +103,7 @@ private:
     QLocalServer* m_server = nullptr;
     QString m_socketPath;
     QList<AgentConnection*> m_connections;
-    QMap<QLocalSocket*, QString> m_clientSocketToId;
+    quint64 m_nextClientId = 1;
     mutable QMutex m_connectionMutex;
 
     QTimer* m_heartbeatTimer = nullptr;

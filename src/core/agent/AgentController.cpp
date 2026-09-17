@@ -23,6 +23,8 @@ namespace DeepLux {
 namespace {
 constexpr int kMaxAgentToolTurns = 20;
 constexpr int kMaxToolCallsPerTurn = 10;
+constexpr int kMaxImageAttachments = 4;
+constexpr qint64 kMaxImageAttachmentBytes = 8LL * 1024 * 1024;
 
 bool isReadOnlyToolName(const QString& toolName) {
     static const QStringList readOnlyTools = {
@@ -79,6 +81,8 @@ bool AgentController::initialize() {
         return true;
     qRegisterMetaType<AgentResponse>("AgentResponse");
     qRegisterMetaType<AgentResponse>("DeepLux::AgentResponse");
+    qRegisterMetaType<AgentActionLogEntry>("AgentActionLogEntry");
+    qRegisterMetaType<AgentActionLogEntry>("DeepLux::AgentActionLogEntry");
     ToolSchema::instance().registerDefaultTools();
     if (!m_observer->initialize()) {
         qWarning() << "AgentController: Failed to initialize AgentObserver";
@@ -271,6 +275,14 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
         emit llmErrorOccurred("LLM client not configured");
         return;
     }
+    if (!m_llmClient->supportsImageInput()) {
+        emit llmErrorOccurred("The configured model does not support image input");
+        return;
+    }
+    if (images.size() > kMaxImageAttachments) {
+        emit llmErrorOccurred(QString("Too many image attachments (maximum %1)").arg(kMaxImageAttachments));
+        return;
+    }
     if (!tryTransitionTo(AgentState::Idle, AgentState::Thinking)) {
         emit llmResponseReceived("Agent is busy processing a previous request. Please wait.", {});
         return;
@@ -279,14 +291,22 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
     AgentMessage msg;
     msg.role = "user";
     msg.content = message.isEmpty() ? QStringLiteral("Analyze the attached image.") : message;
+    qint64 totalBytes = 0;
     for (const QPixmap& image : images) {
         if (image.isNull())
             continue;
 
         QByteArray data;
         QBuffer buffer(&data);
-        if (buffer.open(QIODevice::WriteOnly) && image.save(&buffer, "PNG"))
+        if (buffer.open(QIODevice::WriteOnly) && image.save(&buffer, "PNG")) {
+            totalBytes += data.size();
+            if (totalBytes > kMaxImageAttachmentBytes) {
+                transitionTo(AgentState::Idle);
+                emit llmErrorOccurred("Image attachments exceed the 8 MB request limit");
+                return;
+            }
             msg.images.append({data, QStringLiteral("image/png"), QString()});
+        }
     }
     if (msg.images.isEmpty()) {
         transitionTo(AgentState::Idle);
@@ -308,8 +328,9 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
 void AgentController::onLLMResponse(const AgentResponse& resp) {
     // 阶7 Agent 评审修复（P3-12）：统一经 state() 访问器读状态（带锁），
     // 避免未来跨线程引入后直读成员造成回归
-    if (state() != AgentState::Thinking) {
-        qWarning() << "[AgentController] Unexpected onLLMResponse in state" << stateName(m_state);
+    const AgentState currentState = state();
+    if (currentState != AgentState::Thinking) {
+        qWarning() << "[AgentController] Unexpected onLLMResponse in state" << stateName(currentState);
         return;
     }
 
@@ -359,8 +380,9 @@ void AgentController::onLLMResponse(const AgentResponse& resp) {
 // ========== Tool Confirm (通过 QueuedConnection 入队，避免阻塞按钮信号链) ==========
 
 void AgentController::confirmPendingTools() {
-    if (state() != AgentState::Confirming) {
-        qWarning() << "[AgentController] confirmPendingTools called in state" << stateName(m_state);
+    const AgentState currentState = state();
+    if (currentState != AgentState::Confirming) {
+        qWarning() << "[AgentController] confirmPendingTools called in state" << stateName(currentState);
         return;
     }
     if (m_pendingToolCalls.isEmpty()) {
@@ -375,8 +397,9 @@ void AgentController::confirmPendingTools() {
 }
 
 void AgentController::doConfirmPendingTools(QJsonArray calls) {
-    if (state() != AgentState::Confirming) {
-        qWarning() << "[AgentController] doConfirmPendingTools: state changed to" << stateName(m_state);
+    const AgentState currentState = state();
+    if (currentState != AgentState::Confirming) {
+        qWarning() << "[AgentController] doConfirmPendingTools: state changed to" << stateName(currentState);
         return;
     }
     transitionTo(AgentState::Executing);
@@ -409,8 +432,9 @@ void AgentController::doConfirmPendingTools(QJsonArray calls) {
 }
 
 void AgentController::rejectPendingTools() {
-    if (state() != AgentState::Confirming) {
-        qWarning() << "[AgentController] rejectPendingTools called in state" << stateName(m_state);
+    const AgentState currentState = state();
+    if (currentState != AgentState::Confirming) {
+        qWarning() << "[AgentController] rejectPendingTools called in state" << stateName(currentState);
         return;
     }
     // 直接同步执行，避免 QueuedConnection 入队延迟
@@ -423,8 +447,9 @@ void AgentController::rejectPendingTools() {
 // ========== Agent Loop Core ==========
 
 void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
-    if (state() != AgentState::Executing) {
-        qWarning() << "[AgentController] Unexpected extendAgentLoop in state" << stateName(m_state);
+    const AgentState currentState = state();
+    if (currentState != AgentState::Executing) {
+        qWarning() << "[AgentController] Unexpected extendAgentLoop in state" << stateName(currentState);
         return;
     }
     if (toolCalls.size() > kMaxToolCallsPerTurn) {
@@ -513,11 +538,13 @@ void AgentController::trimHistoryIfNeeded() {
     constexpr int maxEstTokens = 256000;
 
     auto estimateHistoryTokens = [this]() {
-        int estimated = m_systemPrompt.length() * 0.3;
+        qint64 estimated = m_systemPrompt.length() * 3 / 10;
         for (const auto& m : m_conversationHistory) {
-            estimated += m.content.length() * 0.3 + 20;
+            estimated += m.content.length() * 3 / 10 + 20;
             if (!m.reasoningContent.isEmpty())
-                estimated += m.reasoningContent.length() * 0.3;
+                estimated += m.reasoningContent.length() * 3 / 10;
+            for (const AgentImageAttachment& image : m.images)
+                estimated += (image.data.size() + 2) / 3;
         }
         return estimated;
     };
@@ -528,33 +555,36 @@ void AgentController::trimHistoryIfNeeded() {
     };
 
     trimLeadingPartialTurn();
-    int estimated = estimateHistoryTokens();
-
-    while (estimated > maxEstTokens) {
+    auto dropOldestTurn = [this, &trimLeadingPartialTurn]() {
         int secondUserIdx = -1, userCount = 0;
         for (int i = 0; i < m_conversationHistory.size(); ++i)
             if (m_conversationHistory[i].role == "user" && ++userCount == 2) {
                 secondUserIdx = i;
                 break;
             }
-        if (secondUserIdx > 1) {
-            m_conversationHistory = m_conversationHistory.mid(secondUserIdx);
-            trimLeadingPartialTurn();
-            estimated = estimateHistoryTokens();
-        } else {
+        if (secondUserIdx < 0)
+            return false;
+        m_conversationHistory = m_conversationHistory.mid(secondUserIdx);
+        trimLeadingPartialTurn();
+        return true;
+    };
+
+    while (estimateHistoryTokens() > maxEstTokens) {
+        if (!dropOldestTurn())
             break;
-        }
     }
 
-    // 阶7 Agent 评审修复（P2-6）：单用户轮超长时上面的循环会 break 保留超限历史，
-    // 请求可能超出模型窗口；此处按"整轮配对"硬裁剪：丢弃最旧的 assistant 消息
-    // 及其后续连续 tool 消息（保持 tool_call/tool 配对完整），直至条数受控
     constexpr int kMaxMessages = 64;
-    while (m_conversationHistory.size() > kMaxMessages && !m_conversationHistory.isEmpty() &&
-           m_conversationHistory.first().role == "user" && m_conversationHistory.size() > 2 &&
-           m_conversationHistory[1].role == "assistant") {
+    while (m_conversationHistory.size() > kMaxMessages) {
+        if (dropOldestTurn())
+            continue;
+        if (m_conversationHistory.size() <= 1)
+            break;
+
+        // A single user turn can contain many assistant/tool exchanges. Remove
+        // the oldest complete exchange so tool results never become orphaned.
         m_conversationHistory.removeAt(1);
-        while (m_conversationHistory.size() > 1 && m_conversationHistory[1].role == "tool")
+        while (m_conversationHistory.size() > 1 && m_conversationHistory[1].role == QStringLiteral("tool"))
             m_conversationHistory.removeAt(1);
     }
 }

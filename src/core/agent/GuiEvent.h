@@ -3,6 +3,7 @@
 
 #include <QDateTime>
 #include <QJsonObject>
+#include <QMetaType>
 #include <QString>
 
 namespace DeepLux {
@@ -82,5 +83,7 @@ struct AgentActionLogEntry {
 };
 
 } // namespace DeepLux
+
+Q_DECLARE_METATYPE(DeepLux::AgentActionLogEntry)
 
 #endif // DEEPLUX_GUI_EVENT_H

@@ -12,6 +12,8 @@ Logger& Logger::instance() {
 }
 
 Logger::Logger() : QObject(nullptr) {
+    qRegisterMetaType<LogEntry>("LogEntry");
+    qRegisterMetaType<LogEntry>("DeepLux::LogEntry");
     // 设置默认日志文件路径
     m_logFilePath = defaultLogFilePath();
 

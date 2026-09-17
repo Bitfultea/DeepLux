@@ -173,11 +173,13 @@ void seedAgentChatDemo(DeepLux::MainWindow& window) {
     auto* panel = window.findChild<DeepLux::AgentChatPanel*>();
     if (!panel)
         return;
-    panel->addMessage(DeepLux::AgentMessageBubble::Sender::User, QStringLiteral("帮我创建一个找圆的流程"));
-    panel->addMessage(DeepLux::AgentMessageBubble::Sender::Agent,
-                      QStringLiteral("参数说明\n\n- param1：Canny边缘检测的高阈值（值越小，检测到的边缘越多）\n\n"
-                                     "- param2：圆心投票数阈值（值越小，越容易检测到圆，但也可能误检）"));
-    panel->setThinking(true);
+    panel->addMessage(DeepLux::AgentMessageBubble::Sender::User, QStringLiteral("检查找圆结果，并给出下一步建议。"));
+    panel->addMessage(
+        DeepLux::AgentMessageBubble::Sender::Agent,
+        QStringLiteral("### 找圆结果\n\n已检测到 **1 个圆**，尺寸符合当前参数范围。\n\n"
+                       "| 测量项 | 结果 |\n| --- | --- |\n| 圆心 | (320, 240) px |\n| 半径 | 100.0 px |\n\n"
+                       "1. 检查边缘是否完整。\n2. 确认后保存测量结果。"));
+    panel->setThinking(false);
 }
 
 // 阶段 5 复核（P1-3）：点击态截图必须"状态真实发生 + 截图真实变化"。
@@ -292,8 +294,28 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
     QTest::qWait(150);
     ok = saveShot(window, dir, QStringLiteral("05-bottom-agent-chat-tab.png")) && ok;
 
+    auto* agentPanel = window.findChild<DeepLux::AgentChatPanel*>();
+    auto* expandChat = window.findChild<QToolButton*>(QStringLiteral("ExpandAgentChatButton"));
+    if (!agentPanel || !expandChat || !expandChat->isVisible()) {
+        qWarning("Agent chat expand control is unavailable");
+        return false;
+    }
+    const int collapsedHeight = agentPanel->height();
+    QTest::mouseClick(expandChat, Qt::LeftButton);
+    QCoreApplication::processEvents();
+    QTest::qWait(150);
+    if (!expandChat->isChecked() || agentPanel->height() <= collapsedHeight + 80) {
+        qWarning("Agent chat did not expand: %d -> %d", collapsedHeight, agentPanel->height());
+        return false;
+    }
+    ok = saveShot(window, dir, QStringLiteral("05b-bottom-agent-chat-expanded.png")) && ok;
+
     if (!clickTabChecked(bottomTabs, QStringLiteral("Agent 日志"), "06-bottom-agent-log-tab"))
         return false;
+    if (expandChat->isChecked()) {
+        qWarning("Agent chat stayed expanded after switching tabs");
+        return false;
+    }
     QTest::qWait(150);
     ok = saveShot(window, dir, QStringLiteral("06-bottom-agent-log-tab.png")) && ok;
 

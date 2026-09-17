@@ -24,6 +24,7 @@
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QSplitter>
@@ -31,6 +32,9 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTextBlock>
+#include <QTextBrowser>
+#include <QTextTable>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -115,6 +119,10 @@ private slots:
     void testHomeSwitchesToFlowCanvas();
     void testAgentMessageRenderingUsesCompactLineSpacing();
     void testAgentThinkingStatusStaysCompactAndSafe();
+    void testAgentComposerPreservesDraftAndAttachmentsWhileBusy();
+    void testAgentHistoryDoesNotJumpWhileReading();
+    void testAgentChatReadableLayout_data();
+    void testAgentChatReadableLayout();
     void testToolboxDragPayloadUsesDraggedPlugin();
     void testAgentInputErrorPathDoesNotCrashOrStayThinking();
     void testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTheme();
@@ -1954,15 +1962,150 @@ void TestMainWindow::testAgentMessageRenderingUsesCompactLineSpacing() {
         QStringLiteral("参数说明\n\n- param1：Canny边缘检测的高阈值\n\n- param2：圆心投票数阈值"), false,
         QColor("#111111"));
 
-    QVERIFY2(html.contains(QStringLiteral("line-height:1.25")),
-             "Agent messages should use terminal-like compact line height");
-    QVERIFY2(!html.contains(QStringLiteral("<br><br>")),
-             "Blank markdown lines should not expand into inconsistent vertical gaps");
-    QVERIFY2(!html.contains(QStringLiteral("<ul")), "Agent markdown lists should render as terminal-style rows");
-    QVERIFY2(!html.contains(QStringLiteral("<li")),
-             "Agent markdown lists should avoid QTextDocument list block spacing");
-    QVERIFY2(html.contains(QStringLiteral("&bull;&nbsp;")),
-             "Agent markdown list items should keep a compact bullet marker");
+    QTextDocument document;
+    document.setHtml(html);
+    int listItems = 0;
+    for (QTextBlock block = document.begin(); block.isValid(); block = block.next()) {
+        if (block.textList())
+            ++listItems;
+        QVERIFY(block.blockFormat().bottomMargin() <= 6);
+    }
+    QCOMPARE(listItems, 2);
+    const QString linkHtml = AgentMessageBubble::markdownToHtml(
+        QStringLiteral("[说明](https://example.test/path)\n\n| 参数 | 值 |\n| --- | --- |\n| 半径 | 100 |"), false);
+    document.setHtml(linkHtml);
+    QVERIFY(document.toPlainText().contains(QStringLiteral("说明")));
+    QVERIFY(!document.toPlainText().contains(QStringLiteral("href=")));
+    int links = 0;
+    for (auto block = document.begin(); block.isValid(); block = block.next())
+        for (auto it = block.begin(); !it.atEnd(); ++it)
+            if (it.fragment().charFormat().anchorHref() == QStringLiteral("https://example.test/path"))
+                ++links;
+    QCOMPARE(links, 1);
+    QVERIFY(qobject_cast<QTextTable*>(document.rootFrame()->childFrames().value(0)));
+}
+
+void TestMainWindow::testAgentComposerPreservesDraftAndAttachmentsWhileBusy() {
+    AgentChatPanel panel;
+    panel.resize(600, 360);
+    panel.show();
+    auto* input = panel.findChild<QPlainTextEdit*>("AgentMessageInput");
+    auto* send = panel.findChild<QToolButton*>("AgentSendMessage");
+    QVERIFY(input && send);
+    QSignalSpy textSpy(&panel, &AgentChatPanel::userMessageSent);
+    QSignalSpy imageSpy(&panel, &AgentChatPanel::userMessageWithImagesSent);
+    input->setPlainText(QStringLiteral("下一步测量"));
+    QPixmap image(24, 24);
+    image.fill(Qt::red);
+    panel.addImageAttachment(image);
+    panel.setThinking(true);
+    QTest::keyClick(input, Qt::Key_Return);
+    QCOMPARE(input->toPlainText(), QStringLiteral("下一步测量"));
+    QCOMPARE(panel.imageAttachments().size(), 1);
+    QCOMPARE(textSpy.count() + imageSpy.count(), 0);
+    QVERIFY(!send->isEnabled());
+    panel.setThinking(false);
+    panel.showToolPreview({{QStringLiteral("set_param"), {{"value", "<literal>"}}}});
+    QTest::keyClick(input, Qt::Key_Return);
+    QCOMPARE(input->toPlainText(), QStringLiteral("下一步测量"));
+    QCOMPARE(textSpy.count() + imageSpy.count(), 0);
+    panel.clearToolPreview();
+    auto* remove = panel.findChild<QToolButton*>("AgentRemoveAttachment");
+    QVERIFY(remove);
+    QTest::mouseClick(remove, Qt::LeftButton);
+    QVERIFY(panel.imageAttachments().isEmpty());
+    QTest::keyClick(input, Qt::Key_Return, Qt::ShiftModifier);
+    QVERIFY(input->toPlainText().contains('\n'));
+    QTest::mouseClick(send, Qt::LeftButton);
+    QCOMPARE(textSpy.count(), 1);
+    QVERIFY(input->toPlainText().isEmpty());
+    auto* copy = panel.findChild<QToolButton*>("AgentCopyMessage");
+    QVERIFY(copy);
+    QTest::mouseClick(copy, Qt::LeftButton);
+    QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("下一步测量"));
+}
+
+void TestMainWindow::testAgentHistoryDoesNotJumpWhileReading() {
+    AgentChatPanel panel;
+    panel.resize(580, 300);
+    panel.show();
+    for (int i = 0; i < 16; ++i)
+        panel.addMessage(AgentMessageBubble::Sender::Agent, QString("Result %1\n\nMeasured radius: 100 px.").arg(i));
+    auto* scroll = panel.findChild<QScrollArea*>("AgentMessageScroll");
+    QVERIFY(scroll);
+    auto* bar = scroll->verticalScrollBar();
+    QTRY_VERIFY(bar->maximum() > 100);
+    QTRY_COMPARE(bar->value(), bar->maximum());
+    bar->setValue(40);
+    panel.addMessage(AgentMessageBubble::Sender::Agent, QStringLiteral("New result"));
+    QTest::qWait(80);
+    QCOMPARE(bar->value(), 40);
+    auto* latest = panel.findChild<QToolButton*>("AgentLatestMessage");
+    QVERIFY(latest && latest->isVisible());
+    QTest::mouseClick(latest, Qt::LeftButton);
+    QTRY_COMPARE(bar->value(), bar->maximum());
+}
+
+void TestMainWindow::testAgentChatReadableLayout_data() {
+    QTest::addColumn<QSize>("size");
+    QTest::addColumn<bool>("dark");
+    for (bool dark : {false, true}) {
+        for (QSize size : {QSize(420, 560), QSize(760, 330), QSize(1040, 680)}) {
+            const QByteArray name = QString("%1-%2").arg(size.width()).arg(dark ? "dark" : "light").toLatin1();
+            QTest::newRow(name) << size << dark;
+        }
+    }
+}
+
+void TestMainWindow::testAgentChatReadableLayout() {
+    QFETCH(QSize, size);
+    QFETCH(bool, dark);
+    AgentChatPanel panel;
+    panel.resize(size);
+    panel.show();
+    panel.addMessage(AgentMessageBubble::Sender::User, QStringLiteral("检查找圆结果，并给出下一步建议。"));
+    QPixmap referenceImage(120, 80);
+    referenceImage.fill(QColor("#2b78c5"));
+    panel.addMessage(AgentMessageBubble::Sender::User, QStringLiteral("参考图像"), {referenceImage});
+    panel.addMessage(
+        AgentMessageBubble::Sender::Agent,
+        QStringLiteral("### 找圆结果\n\n已检测到 **1 个圆**，尺寸符合当前参数范围。\n\n"
+                       "| 测量项 | 结果 |\n| --- | --- |\n| 圆心 | (320, 240) px |\n| 半径 | 100.0 px |\n\n"
+                       "1. 检查边缘是否完整。\n2. 确认后保存测量结果。\n\n"
+                       "[参数说明](https://example.test/docs)"));
+    auto* input = panel.findChild<QPlainTextEdit*>("AgentMessageInput");
+    input->setPlainText(QStringLiteral("将结果保存到当前工程"));
+    panel.applyTheme(dark);
+    QTest::qWait(100);
+    QCOMPARE(panel.size(), size);
+    QCOMPARE(panel.findChildren<QLabel*>("AgentSentImage").size(), 1);
+    for (auto* body : panel.findChildren<QTextBrowser*>()) {
+        QVERIFY(body->geometry().width() > 0);
+        QVERIFY(body->document()->size().height() <= body->height() + 1);
+        QVERIFY(!body->horizontalScrollBar()->isVisible());
+    }
+    const QString output = qEnvironmentVariable("DEEPLUX_AGENT_CAPTURE_DIR");
+    if (!output.isEmpty()) {
+        QVERIFY(QDir().mkpath(output));
+        QVERIFY(panel.grab().save(QDir(output).filePath(QString("chat-%1.png").arg(QTest::currentDataTag()))));
+    }
+    panel.addMessage(AgentMessageBubble::Sender::Agent,
+                     QStringLiteral("```text\n") + QString(300, 'x') + QStringLiteral("\n```"));
+    panel.showToolPreview({{QStringLiteral("set_param"), {{"value", "<literal>&\\\""}, {"key", "filePath"}}}});
+    panel.applyTheme(!dark);
+    panel.applyTheme(dark);
+    QTest::qWait(100);
+    auto* content = panel.findChild<QLabel*>("AgentToolPreviewContent");
+    QVERIFY(content && content->text().contains(QStringLiteral("<literal>")));
+    QCOMPARE(content->textFormat(), Qt::PlainText);
+    auto* confirm = panel.findChild<QPushButton*>("AgentConfirmTools");
+    QVERIFY(confirm && confirm->height() >= 30);
+    for (auto* body : panel.findChildren<QTextBrowser*>()) {
+        QVERIFY(body->document()->size().height() <= body->height() + 1);
+        QVERIFY(body->document()->size().width() <= body->viewport()->width() + 1);
+    }
+    if (!output.isEmpty())
+        QVERIFY(panel.grab().save(QDir(output).filePath(QString("tools-%1.png").arg(QTest::currentDataTag()))));
 }
 
 void TestMainWindow::testAgentThinkingStatusStaysCompactAndSafe() {
@@ -2398,6 +2541,29 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QCOMPARE(logTabs->currentIndex(), agentChatIndex);
     QVERIFY2(logTabs->tabToolTip(agentChatIndex).contains(QStringLiteral("等待确认")),
              "Agent chat tab should expose pending confirmation state");
+    auto* clearLog = window.findChild<QToolButton*>("ClearLogButton");
+    auto* expandChat = window.findChild<QToolButton*>("ExpandAgentChatButton");
+    QVERIFY(clearLog && expandChat);
+    QVERIFY(!clearLog->isVisible());
+    QVERIFY(expandChat->isVisible());
+    const QList<int> originalRightSizes = rightSplitter->sizes();
+    const int originalLogMaximum = logDock->maximumHeight();
+    QTest::mouseClick(expandChat, Qt::LeftButton);
+    QCoreApplication::processEvents();
+    QVERIFY(expandChat->isChecked());
+    QVERIFY(logDock->maximumHeight() > originalLogMaximum);
+    QVERIFY(rightSplitter->sizes().value(1) > originalRightSizes.value(1));
+    logTabs->setCurrentIndex(0);
+    QCoreApplication::processEvents();
+    QVERIFY(!expandChat->isChecked());
+    QCOMPARE(logDock->maximumHeight(), originalLogMaximum);
+    QVERIFY(clearLog->isVisible());
+    QVERIFY(!expandChat->isVisible());
+    const QList<int> restoredRightSizes = rightSplitter->sizes();
+    QVERIFY(qAbs(restoredRightSizes.value(0) - originalRightSizes.value(0)) <= 2);
+    QVERIFY(qAbs(restoredRightSizes.value(1) - originalRightSizes.value(1)) <= 2);
+    logTabs->setCurrentIndex(agentChatIndex);
+    QCoreApplication::processEvents();
 
     QList<AgentMessageBubble*> bubbles = window.findChildren<AgentMessageBubble*>();
     bool hasToolMessage = false;

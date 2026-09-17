@@ -19,9 +19,9 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
-#include <QTimer>
 #include <QUndoCommand>
 #include <QUuid>
+#include <memory>
 
 static void ensureAgentResources() {
     static const bool initialized = []() {
@@ -52,68 +52,53 @@ QString validationError(const QString& toolName, const QJsonObject& params) {
     }
     return QString();
 }
+
+const PortSpec* findPort(const QList<PortSpec>& ports, const QString& id) {
+    for (const PortSpec& port : ports) {
+        if (port.id == id)
+            return &port;
+    }
+    return nullptr;
+}
+
+bool portTypesCompatible(const PortSpec& output, const PortSpec& input) {
+    return output.control == input.control &&
+           (output.type == DataType::Any || input.type == DataType::Any || output.type == input.type);
+}
 } // namespace
 
 // --- Undo Commands ---
 
-class AgentCreateProjectCmd : public QUndoCommand {
-public:
-    AgentCreateProjectCmd(const QString& name, QUndoCommand* parent = nullptr) : QUndoCommand(parent), m_name(name) {}
-
-    void undo() override {
-        ProjectManager::instance().closeProject();
-    }
-    void redo() override {
-        Project* proj = ProjectManager::instance().newProject();
-        if (proj)
-            proj->setName(m_name);
-    }
-
-private:
-    QString m_name;
-};
-
 class AgentAddModuleCmd : public QUndoCommand {
 public:
-    // 阶7 Agent 评审修复（P1-3）：instance id 在构造时生成一次并在 undo/redo 间固定复用，
-    // 避免 redo 重生成 id 导致既有连接（存 id 字符串）悬空
-    AgentAddModuleCmd(const QString& moduleId, const QString& instanceName, QUndoCommand* parent = nullptr)
-        : QUndoCommand(parent), m_moduleId(moduleId), m_instanceName(instanceName) {
-        m_actualInstanceId =
-            m_instanceName.isEmpty()
-                ? QString("%1_%2").arg(m_moduleId).arg(QDateTime::currentDateTime().toMSecsSinceEpoch())
-                : m_instanceName;
-    }
+    AgentAddModuleCmd(const QString& moduleId, const QString& instanceId, const QString& displayName,
+                      QUndoCommand* parent = nullptr)
+        : QUndoCommand(parent), m_moduleId(moduleId), m_instanceId(instanceId), m_displayName(displayName) {}
 
     void undo() override {
         Project* proj = ProjectManager::instance().currentProject();
         if (proj)
-            proj->removeModule(m_actualInstanceId);
+            proj->removeModule(m_instanceId);
     }
     void redo() override {
         Project* proj = ProjectManager::instance().currentProject();
         if (!proj)
             return;
         ModuleInstance inst;
-        inst.id = m_actualInstanceId;
+        inst.id = m_instanceId;
         inst.moduleId = m_moduleId;
-        // 获取模块的中文显示名
-        DeepLux::PluginManager& pm = DeepLux::PluginManager::instance();
-        DeepLux::IModule* module = pm.createModule(m_moduleId);
-        QString moduleDisplayName = module ? module->name() : m_moduleId;
-        delete module;
-        inst.name = m_instanceName.isEmpty() ? moduleDisplayName : m_instanceName;
+        inst.name = m_displayName;
         proj->addModule(inst);
     }
 
     QString instanceId() const {
-        return m_actualInstanceId;
+        return m_instanceId;
     }
 
 private:
     QString m_moduleId;
-    QString m_instanceName;
-    QString m_actualInstanceId; // 记录实际创建的 instance id（含自动生成的时间戳）
+    QString m_instanceId;
+    QString m_displayName;
 };
 
 class AgentRemoveModuleCmd : public QUndoCommand {
@@ -158,15 +143,19 @@ private:
 
 class AgentSetParamCmd : public QUndoCommand {
 public:
-    AgentSetParamCmd(const QString& instanceId, const QString& key, const QJsonValue& oldVal, const QJsonValue& newVal,
-                     QUndoCommand* parent = nullptr)
-        : QUndoCommand(parent), m_instanceId(instanceId), m_key(key), m_oldVal(oldVal), m_newVal(newVal) {}
+    AgentSetParamCmd(const QString& instanceId, const QString& key, bool hadOldValue, const QJsonValue& oldVal,
+                     const QJsonValue& newVal, QUndoCommand* parent = nullptr)
+        : QUndoCommand(parent), m_instanceId(instanceId), m_key(key), m_hadOldValue(hadOldValue), m_oldVal(oldVal),
+          m_newVal(newVal) {}
 
     void undo() override {
         Project* proj = ProjectManager::instance().currentProject();
         if (!proj)
             return;
-        proj->setModuleParam(m_instanceId, m_key, m_oldVal);
+        if (m_hadOldValue)
+            proj->setModuleParam(m_instanceId, m_key, m_oldVal);
+        else
+            proj->removeModuleParam(m_instanceId, m_key);
     }
     void redo() override {
         Project* proj = ProjectManager::instance().currentProject();
@@ -177,16 +166,16 @@ public:
 
 private:
     QString m_instanceId, m_key;
+    bool m_hadOldValue;
     QJsonValue m_oldVal, m_newVal;
 };
 
 class AgentConnectCmd : public QUndoCommand {
 public:
-    // 阶7 Agent 评审修复（P2-4）：支持 schema 声明的可选 port 参数（源输出端口名，
-    // 空串表示由 RunEngine 回落默认 image 端口）
-    AgentConnectCmd(const QString& fromId, const QString& toId, const QString& fromPort = QString(),
-                    QUndoCommand* parent = nullptr)
-        : QUndoCommand(parent), m_fromId(fromId), m_toId(toId), m_fromPort(fromPort) {
+    AgentConnectCmd(const QString& fromId, const QString& fromPort, const QString& toId, const QString& toPort,
+                    const QString& edgeType, QUndoCommand* parent = nullptr)
+        : QUndoCommand(parent), m_fromId(fromId), m_toId(toId), m_fromPort(fromPort), m_toPort(toPort),
+          m_edgeType(edgeType) {
         setText(QString("Connect %1 → %2").arg(fromId, toId));
     }
 
@@ -194,10 +183,7 @@ public:
         Project* proj = ProjectManager::instance().currentProject();
         if (!proj)
             return;
-        if (m_fromPort.isEmpty())
-            proj->removeConnection(m_fromId, m_toId);
-        else
-            proj->removeConnectionWithPorts(m_fromId, m_fromPort, m_toId, m_toPort);
+        proj->removeConnectionWithPorts(m_fromId, m_fromPort, m_toId, m_toPort);
     }
     void redo() override {
         Project* proj = ProjectManager::instance().currentProject();
@@ -208,18 +194,19 @@ public:
         conn.toModuleId = m_toId;
         conn.fromPort = m_fromPort;
         conn.toPort = m_toPort;
+        conn.edgeType = m_edgeType;
         proj->addConnection(conn);
     }
 
 private:
-    QString m_fromId, m_toId, m_fromPort, m_toPort;
+    QString m_fromId, m_toId, m_fromPort, m_toPort, m_edgeType;
 };
 
 class AgentDisconnectCmd : public QUndoCommand {
 public:
-    AgentDisconnectCmd(const QString& fromId, const QString& toId, QUndoCommand* parent = nullptr)
-        : QUndoCommand(parent), m_fromId(fromId), m_toId(toId) {
-        setText(QString("Disconnect %1 → %2").arg(fromId, toId));
+    AgentDisconnectCmd(const ModuleConnection& connection, QUndoCommand* parent = nullptr)
+        : QUndoCommand(parent), m_connection(connection) {
+        setText(QString("Disconnect %1 → %2").arg(connection.fromModuleId, connection.toModuleId));
     }
 
     void undo() override {
@@ -227,20 +214,18 @@ public:
         Project* proj = ProjectManager::instance().currentProject();
         if (!proj)
             return;
-        ModuleConnection conn;
-        conn.fromModuleId = m_fromId;
-        conn.toModuleId = m_toId;
-        proj->addConnection(conn);
+        proj->addConnection(m_connection);
     }
     void redo() override {
         // redo of disconnect = disconnect again
         Project* proj = ProjectManager::instance().currentProject();
         if (proj)
-            proj->removeConnection(m_fromId, m_toId);
+            proj->removeConnectionWithPorts(m_connection.fromModuleId, m_connection.fromPort, m_connection.toModuleId,
+                                            m_connection.toPort);
     }
 
 private:
-    QString m_fromId, m_toId;
+    ModuleConnection m_connection;
 };
 
 // --- AgentActor ---
@@ -252,6 +237,7 @@ AgentActor::AgentActor(QObject* parent) : QObject(parent), m_undoStack(new QUndo
             [this](const QString&) { m_schemaCache.clear(); });
     connect(&PluginManager::instance(), &PluginManager::pluginUnloaded, this,
             [this](const QString&) { m_schemaCache.clear(); });
+    connect(&ProjectManager::instance(), &ProjectManager::projectClosed, m_undoStack, &QUndoStack::clear);
 }
 
 AgentActor::~AgentActor() = default;
@@ -340,14 +326,22 @@ QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& t
         }
     }
 
-    m_undoStack->beginMacro(macroName);
-
     QJsonArray results;
     int executed = 0;
     bool failed = false;
     QString failedTool;
     QString error;
+    bool macroOpen = false;
     for (const auto& pair : tools) {
+        const bool switchesProject =
+            pair.first == QStringLiteral("create_project") || pair.first == QStringLiteral("open_project");
+        if (switchesProject && macroOpen) {
+            m_undoStack->endMacro();
+            macroOpen = false;
+        } else if (!switchesProject && !macroOpen) {
+            m_undoStack->beginMacro(macroName);
+            macroOpen = true;
+        }
         QJsonObject result = executeTool(pair.first, pair.second);
         QJsonObject entry;
         entry["tool"] = pair.first;
@@ -361,8 +355,8 @@ QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& t
         }
         ++executed;
     }
-
-    m_undoStack->endMacro();
+    if (macroOpen)
+        m_undoStack->endMacro();
 
     if (failed) {
         return QJsonObject{{"status", "partial_failed"},
@@ -378,19 +372,39 @@ QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& t
 
 QJsonObject AgentActor::createProject(const QJsonObject& params) {
     QString name = params.value("name").toString("unnamed");
-    m_undoStack->push(new AgentCreateProjectCmd(name));
+    Project* project = ProjectManager::instance().newProject();
+    if (!project)
+        return QJsonObject{{"error", "Failed to create project"}};
+    project->setName(name);
     return QJsonObject{{"status", "created"}, {"name", name}};
 }
 
 QJsonObject AgentActor::addModule(const QJsonObject& params) {
     QString plugin = params.value("plugin").toString();
-    QString instanceName = params.value("instanceName").toString();
+    QString instanceName = params.value("instanceName").toString().trimmed();
     if (plugin.isEmpty())
         return QJsonObject{{"error", "Missing 'plugin' parameter"}};
-    if (!ProjectManager::instance().currentProject())
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project)
         return QJsonObject{{"error", "No project opened"}};
-    m_undoStack->push(new AgentAddModuleCmd(plugin, instanceName));
-    return QJsonObject{{"status", "added"}, {"plugin", plugin}};
+
+    PluginManager& manager = PluginManager::instance();
+    const PluginInfo info = manager.pluginInfo(plugin);
+    if (info.name.isEmpty())
+        return QJsonObject{{"error", QString("Plugin not found: %1").arg(plugin)}};
+    std::unique_ptr<IModule> module(manager.createModule(info.name));
+    if (!module)
+        return QJsonObject{{"error", QString("Plugin is not loaded: %1").arg(plugin)}};
+
+    const QString instanceId = instanceName.isEmpty()
+                                   ? QString("%1_%2").arg(info.name, QUuid::createUuid().toString(QUuid::WithoutBraces))
+                                   : instanceName;
+    if (project->moduleById(instanceId))
+        return QJsonObject{{"error", QString("Module instance already exists: %1").arg(instanceId)}};
+
+    const QString displayName = instanceName.isEmpty() ? module->name() : instanceName;
+    m_undoStack->push(new AgentAddModuleCmd(info.name, instanceId, displayName));
+    return QJsonObject{{"status", "added"}, {"plugin", info.name}, {"instanceId", instanceId}};
 }
 
 QJsonObject AgentActor::removeModule(const QJsonObject& params) {
@@ -423,9 +437,15 @@ QJsonObject AgentActor::setParam(const QJsonObject& params) {
     if (!mod) {
         return QJsonObject{{"error", QString("Cannot create module for validation: %1").arg(inst->moduleId)}};
     }
+    const QJsonObject defaults = mod->defaultParams();
+    const QJsonObject uiParams = pm.pluginInfo(inst->moduleId).ui.value(QStringLiteral("parameters")).toObject();
+    if (!defaults.contains(key) && !uiParams.contains(key)) {
+        delete mod;
+        return QJsonObject{{"error", QString("Unknown parameter '%1' for module %2").arg(key, inst->moduleId)}};
+    }
     if (newVal.isString()) {
         const QString s = newVal.toString().trimmed();
-        const QJsonValue ref = inst->params.contains(key) ? inst->params.value(key) : mod->defaultParams().value(key);
+        const QJsonValue ref = inst->params.contains(key) ? inst->params.value(key) : defaults.value(key);
         if (ref.isDouble()) {
             bool ok = false;
             const double d = s.toDouble(&ok);
@@ -446,7 +466,7 @@ QJsonObject AgentActor::setParam(const QJsonObject& params) {
         }
     }
     // 镜像运行期语义：模块运行期参数 = 插件默认值 + 工程参数覆盖 + 本次新值
-    QJsonObject merged = mod->defaultParams();
+    QJsonObject merged = defaults;
     for (auto it = inst->params.constBegin(); it != inst->params.constEnd(); ++it)
         merged.insert(it.key(), it.value());
     merged.insert(key, newVal);
@@ -456,12 +476,11 @@ QJsonObject AgentActor::setParam(const QJsonObject& params) {
         emit toolError("set_param", verr);
         return QJsonObject{{"error", verr}};
     }
-    // undo 回退值：工程未显式设置过该键时回退到插件默认值，避免 undo 写入
-    // undefined 覆盖默认值导致运行期校验失败
-    QJsonValue oldVal = inst->params.contains(key) ? inst->params.value(key) : mod->defaultParams().value(key);
+    const bool hadOldValue = inst->params.contains(key);
+    const QJsonValue oldVal = inst->params.value(key);
     delete mod;
 
-    m_undoStack->push(new AgentSetParamCmd(instanceId, key, oldVal, newVal));
+    m_undoStack->push(new AgentSetParamCmd(instanceId, key, hadOldValue, oldVal, newVal));
 
     return QJsonObject{{"status", "param_set"}, {"instanceId", instanceId}, {"key", key}};
 }
@@ -473,30 +492,90 @@ QJsonObject AgentActor::connectModules(const QJsonObject& params) {
     Project* proj = ProjectManager::instance().currentProject();
     if (!proj)
         return QJsonObject{{"error", "No project opened"}};
-    if (!proj->findModule(fromId))
+    const std::optional<ModuleInstance> fromModule = proj->moduleById(fromId);
+    const std::optional<ModuleInstance> toModule = proj->moduleById(toId);
+    if (!fromModule)
         return QJsonObject{{"error", QString("Module not found: %1").arg(fromId)}};
-    if (!proj->findModule(toId))
+    if (!toModule)
         return QJsonObject{{"error", QString("Module not found: %1").arg(toId)}};
 
-    // 阶7 Agent 评审修复（P2-4）：落实 schema 声明的可选 port 参数（源输出端口名，
-    // 空串由 RunEngine 回落默认 image 端口），不再静默忽略
-    const QString port = params.value("port").toString();
-    m_undoStack->push(new AgentConnectCmd(fromId, toId, port));
+    PluginManager& manager = PluginManager::instance();
+    const PluginInfo fromInfo = manager.pluginInfo(fromModule->moduleId);
+    const PluginInfo toInfo = manager.pluginInfo(toModule->moduleId);
+    if (fromInfo.name.isEmpty() || toInfo.name.isEmpty())
+        return QJsonObject{{"error", "Cannot resolve plugin metadata for connection"}};
 
-    return QJsonObject{{"status", "connected"}, {"from", fromId}, {"to", toId}, {"port", port}};
+    QString fromPort = params.value("fromPort").toString().trimmed();
+    if (fromPort.isEmpty())
+        fromPort = params.value("port").toString().trimmed();
+    if (fromPort.isEmpty())
+        fromPort = QStringLiteral("image");
+    QString toPort = params.value("toPort").toString().trimmed();
+    if (toPort.isEmpty())
+        toPort = findPort(toInfo.inputPorts, fromPort) ? fromPort : QStringLiteral("image");
+
+    const PortSpec* output = findPort(fromInfo.outputPorts, fromPort);
+    const PortSpec* input = findPort(toInfo.inputPorts, toPort);
+    if (!output)
+        return QJsonObject{{"error", QString("Output port not found: %1.%2").arg(fromId, fromPort)}};
+    if (!input)
+        return QJsonObject{{"error", QString("Input port not found: %1.%2").arg(toId, toPort)}};
+    if (!portTypesCompatible(*output, *input)) {
+        return QJsonObject{
+            {"error", QString("Incompatible ports: %1.%2 -> %3.%4").arg(fromId, fromPort, toId, toPort)}};
+    }
+
+    for (const ModuleConnection& connection : proj->connections()) {
+        if (connection.fromModuleId == fromId && connection.fromPort == fromPort && connection.toModuleId == toId &&
+            connection.toPort == toPort) {
+            return QJsonObject{{"status", "already_connected"},
+                               {"from", fromId},
+                               {"to", toId},
+                               {"fromPort", fromPort},
+                               {"toPort", toPort}};
+        }
+        if (!input->multiple && connection.toModuleId == toId && connection.toPort == toPort)
+            return QJsonObject{{"error", QString("Input port already connected: %1.%2").arg(toId, toPort)}};
+    }
+
+    const QString edgeType = output->control ? QStringLiteral("control") : QStringLiteral("data");
+    m_undoStack->push(new AgentConnectCmd(fromId, fromPort, toId, toPort, edgeType));
+
+    return QJsonObject{
+        {"status", "connected"}, {"from", fromId}, {"to", toId}, {"fromPort", fromPort}, {"toPort", toPort}};
 }
 
 QJsonObject AgentActor::disconnectModules(const QJsonObject& params) {
     QString fromId = params.value("fromId").toString();
     QString toId = params.value("toId").toString();
+    const QString fromPort = params.value("fromPort").toString().trimmed();
+    const QString toPort = params.value("toPort").toString().trimmed();
 
     Project* proj = ProjectManager::instance().currentProject();
     if (!proj)
         return QJsonObject{{"error", "No project opened"}};
 
-    m_undoStack->push(new AgentDisconnectCmd(fromId, toId));
+    QList<ModuleConnection> matches;
+    for (const ModuleConnection& connection : proj->connections()) {
+        if (connection.fromModuleId == fromId && connection.toModuleId == toId &&
+            (fromPort.isEmpty() || connection.fromPort == fromPort) &&
+            (toPort.isEmpty() || connection.toPort == toPort)) {
+            matches.append(connection);
+        }
+    }
+    if (matches.isEmpty())
+        return QJsonObject{{"error", "Connection not found"}};
+    if (matches.size() > 1)
+        return QJsonObject{{"error", "Multiple connections match; specify fromPort and toPort"}};
 
-    return QJsonObject{{"status", "disconnected"}, {"from", fromId}, {"to", toId}};
+    const ModuleConnection connection = matches.first();
+    m_undoStack->push(new AgentDisconnectCmd(connection));
+
+    return QJsonObject{{"status", "disconnected"},
+                       {"from", fromId},
+                       {"to", toId},
+                       {"fromPort", connection.fromPort},
+                       {"toPort", connection.toPort}};
 }
 
 QJsonObject AgentActor::runFlow(const QJsonObject& params) {
@@ -519,10 +598,8 @@ QJsonObject AgentActor::runFlow(const QJsonObject& params) {
     if (mode == "cycle") {
         engine.start();
     } else {
-        // 阶7 Agent 评审修复（P1-2）：runOnce 改异步触发——同步执行会阻塞主线程
-        // （UI 与 AgentBridge IPC 同线程），长流程期间 stop_flow/pause_flow 无法响应；
-        // LLM 经 get_run_results / observer 的 runFinished 事件轮询收口
-        QTimer::singleShot(0, &engine, []() { RunEngine::instance().runOnce(); });
+        if (!engine.runOnceAsync())
+            return QJsonObject{{"error", "Flow is already running"}};
     }
     return QJsonObject{{"status", "started"}, {"mode", mode}, {"async", true}};
 }
@@ -593,25 +670,18 @@ QJsonObject AgentActor::getModuleParamsSchema(const QJsonObject& params) {
     // 成员缓存：相同 moduleId 的 schema 只生成一次，避免重复 createModule 加载动态库；
     // 阶7 Agent 评审修复（P2-7）：由 static 改为成员并在插件加载/卸载时失效，
     // 避免插件热更或 metadata 变更后返回陈旧 schema
-    if (m_schemaCache.contains(inst->moduleId)) {
-        return m_schemaCache[inst->moduleId];
+    QJsonObject schema = m_schemaCache.value(inst->moduleId);
+    if (schema.isEmpty()) {
+        std::unique_ptr<IModule> mod(pm.createModule(inst->moduleId));
+        if (!mod)
+            return QJsonObject{{"error", QString("Cannot create module: %1").arg(inst->moduleId)}};
+        schema["moduleId"] = inst->moduleId;
+        schema["name"] = mod->name();
+        schema["description"] = mod->description();
+        schema["defaultParams"] = mod->defaultParams();
+        m_schemaCache[inst->moduleId] = schema;
     }
-
-    // Create a temporary module instance to get default params
-    IModule* mod = pm.createModule(inst->moduleId);
-    if (!mod) {
-        return QJsonObject{{"error", QString("Cannot create module: %1").arg(inst->moduleId)}};
-    }
-
-    QJsonObject schema;
-    schema["moduleId"] = inst->moduleId;
-    schema["name"] = mod->name();
-    schema["description"] = mod->description();
-    schema["defaultParams"] = mod->defaultParams();
     schema["currentParams"] = inst->params;
-    delete mod;
-
-    m_schemaCache[inst->moduleId] = schema;
     return schema;
 }
 
@@ -630,8 +700,8 @@ QJsonObject AgentActor::openProject(const QJsonObject& params) {
     if (path.isEmpty())
         return QJsonObject{{"error", "Missing 'path' parameter"}};
 
-    bool ok = ProjectManager::instance().openProject(path);
-    if (!ok)
+    Project* opened = ProjectManager::instance().openProject(path);
+    if (!opened)
         return QJsonObject{{"error", "Failed to open project"}};
 
     Project* proj = ProjectManager::instance().currentProject();

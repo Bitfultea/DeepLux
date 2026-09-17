@@ -69,8 +69,15 @@ void AgentObserver::connectProjectSignals(Project* proj) {
 void AgentObserver::shutdown() {
     if (!m_initialized)
         return;
-    disconnect(this, nullptr, nullptr, nullptr); // 断开作为 sender 的连接
-    disconnect(nullptr, nullptr, this, nullptr); // 断开作为 receiver 的连接
+    disconnect(&ProjectManager::instance(), nullptr, this, nullptr);
+    disconnect(&RunEngine::instance(), nullptr, this, nullptr);
+    disconnect(&PluginManager::instance(), nullptr, this, nullptr);
+    disconnect(&Logger::instance(), nullptr, this, nullptr);
+    if (Project* project = ProjectManager::instance().currentProject())
+        disconnect(project, nullptr, this, nullptr);
+    if (m_flowCanvas)
+        disconnect(m_flowCanvas, nullptr, this, nullptr);
+    disconnect(this, nullptr, nullptr, nullptr);
     m_initialized = false;
 }
 

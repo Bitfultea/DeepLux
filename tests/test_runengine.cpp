@@ -2391,9 +2391,10 @@ void TestRunEngine::testBreakpointDoesNotBlockRun() {
     const QMetaObject::Connection resultConnection =
         connect(&engine, &RunEngine::runFinished, this, [&result](const RunResult& value) { result = value; });
     bool signalSawPausedState = false;
-    connect(&engine, &RunEngine::breakpointHit, this, [&engine, &signalSawPausedState]() {
-        signalSawPausedState = engine.state() == RunState::Paused && engine.isPausedAtBreakpoint();
-    });
+    const QMetaObject::Connection breakpointConnection =
+        connect(&engine, &RunEngine::breakpointHit, this, [&engine, &signalSawPausedState]() {
+            signalSawPausedState = engine.state() == RunState::Paused && engine.isPausedAtBreakpoint();
+        });
 
     // 第一次运行：命中断点 A，暂停（A 尚未执行），runOnce 返回（非阻塞）
     engine.runOnce();
@@ -2414,6 +2415,7 @@ void TestRunEngine::testBreakpointDoesNotBlockRun() {
     QCOMPARE(finishedSpy.count(), 1);
     QVERIFY2(result.elapsedMs < 150, "breakpoint wait time must not be counted as execution time");
     disconnect(resultConnection);
+    disconnect(breakpointConnection);
 
     engine.clearModules();
 }

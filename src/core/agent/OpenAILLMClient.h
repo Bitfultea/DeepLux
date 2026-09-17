@@ -21,8 +21,14 @@ public:
     void setTemperature(double temp) override;
     void setMaxTokens(int tokens) override;
     void setToolsEnabled(bool enabled) override;
+    bool supportsImageInput() const override {
+        return m_visionEnabled;
+    }
+    void setVisionEnabled(bool enabled);
     void setReasoningEffort(const QString& effort);
     void setThinkingEnabled(bool enabled);
+
+    static QString normalizeEndpoint(const QString& endpoint);
 
     void sendRequest(const AgentConversation& ctx, const QList<ToolDefinition>& tools) override;
 
@@ -31,6 +37,7 @@ private slots:
     void onNetworkError(QNetworkReply::NetworkError error);
 
 private:
+    QJsonObject buildRequestBody(const AgentConversation& ctx, const QList<ToolDefinition>& tools) const;
     void parseResponse(const QByteArray& data);
 
     QString m_apiKey;
@@ -39,8 +46,9 @@ private:
     double m_temperature = 0.3;
     int m_maxTokens = 4096;
     bool m_toolsEnabled = true;
+    bool m_visionEnabled = true;
     QString m_reasoningEffort; // "high" or "max" (DeepSeek thinking mode)
-    bool m_thinkingEnabled = true;
+    bool m_thinkingEnabled = false;
 
     QNetworkAccessManager* m_networkManager = nullptr;
     QNetworkReply* m_currentReply = nullptr;

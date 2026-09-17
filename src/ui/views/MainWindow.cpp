@@ -834,6 +834,9 @@ void MainWindow::setupMenuBar() {
             client->setTemperature(dlg.temperature());
             client->setMaxTokens(dlg.maxTokens());
             client->setToolsEnabled(dlg.toolsEnabled());
+            client->setVisionEnabled(dlg.visionEnabled());
+            client->setThinkingEnabled(dlg.thinkingEnabled());
+            ctrl.setSystemPrompt(dlg.systemPrompt());
         }
     });
 
@@ -1628,6 +1631,44 @@ void MainWindow::setupMainLayout() {
     m_agentChatPanel = new AgentChatPanel(m_logTerminalTabs);
     m_agentChatTabIndex = m_logTerminalTabs->addTab(m_agentChatPanel, tr("Agent 对话"));
     m_logTerminalTabs->setTabToolTip(m_agentChatTabIndex, tr("与 Agent 对话"));
+    auto* expandChatButton = new QToolButton(logActions);
+    expandChatButton->setObjectName("ExpandAgentChatButton");
+    expandChatButton->setCheckable(true);
+    expandChatButton->setAutoRaise(true);
+    expandChatButton->setFixedSize(28, 28);
+    expandChatButton->setIcon(style()->standardIcon(QStyle::SP_TitleBarMaxButton));
+    expandChatButton->setToolTip(tr("展开对话"));
+    expandChatButton->setAccessibleName(tr("展开对话"));
+    expandChatButton->hide();
+    logActionsLayout->insertWidget(1, expandChatButton);
+    connect(expandChatButton, &QToolButton::toggled, this,
+            [this, expandChatButton, savedSizes = QList<int>(), savedMax = 0](bool expanded) mutable {
+                if (expanded) {
+                    savedSizes = m_rightSplitter->sizes();
+                    savedMax = m_logDock->maximumHeight();
+                    const int total = savedSizes.value(0) + savedSizes.value(1);
+                    m_logDock->setMaximumHeight(QWIDGETSIZE_MAX);
+                    m_rightSplitter->setSizes({total / 3, total * 2 / 3});
+                } else {
+                    m_logDock->setMaximumHeight(savedMax);
+                    m_rightSplitter->setSizes(savedSizes);
+                }
+                expandChatButton->setIcon(
+                    style()->standardIcon(expanded ? QStyle::SP_TitleBarNormalButton : QStyle::SP_TitleBarMaxButton));
+                expandChatButton->setToolTip(expanded ? tr("恢复面板高度") : tr("展开对话"));
+                expandChatButton->setAccessibleName(expandChatButton->toolTip());
+            });
+    connect(m_logTerminalTabs, &QTabWidget::currentChanged, this,
+            [this, logTabIndex, clearLogButton, expandChatButton](int index) {
+                clearLogButton->setVisible(index == logTabIndex);
+                expandChatButton->setVisible(index == m_agentChatTabIndex);
+                if (index != m_agentChatTabIndex)
+                    expandChatButton->setChecked(false);
+            });
+    connect(m_logDock, &QDockWidget::visibilityChanged, expandChatButton, [expandChatButton](bool visible) {
+        if (!visible)
+            expandChatButton->setChecked(false);
+    });
     auto setAgentTabStatus = [this](const QString& tooltip, bool focus) {
         if (!m_logTerminalTabs || m_agentChatTabIndex < 0)
             return;
@@ -1671,7 +1712,7 @@ void MainWindow::setupMainLayout() {
     connect(&AgentController::instance(), &AgentController::llmErrorOccurred, this,
             [this, setAgentTabStatus](const QString& error) {
                 setAgentTabStatus(tr("Agent 出错"), false);
-                m_agentChatPanel->setThinking(false);
+                m_agentChatPanel->setError(error);
                 m_agentChatPanel->clearToolPreview();
                 m_agentChatPanel->addMessage(AgentMessageBubble::Sender::System, QString("Error: %1").arg(error));
                 AgentActionLogEntry entry;
@@ -6060,6 +6101,7 @@ void MainWindow::loadAgentSettings() {
     // Load permission level
     int permLevel = cfg.groupInt("agent", "permissionLevel", 1);
     ctrl.setPermissionLevel(static_cast<AgentController::PermissionLevel>(permLevel));
+    ctrl.setSystemPrompt(cfg.groupString("agent", "systemPrompt", ctrl.systemPrompt()));
 
     // Load and configure LLM client if API key is present
     QString apiKey = cfg.groupString("agent", "apiKey", "");
@@ -6071,8 +6113,9 @@ void MainWindow::loadAgentSettings() {
         client->setTemperature(cfg.groupDouble("agent", "temperature", 0.3));
         client->setMaxTokens(cfg.groupInt("agent", "maxTokens", 4096));
         client->setToolsEnabled(cfg.groupBool("agent", "toolsEnabled", true));
+        client->setVisionEnabled(cfg.groupBool("agent", "visionEnabled", true));
         client->setReasoningEffort(cfg.groupString("agent", "reasoningEffort", ""));
-        client->setThinkingEnabled(cfg.groupBool("agent", "thinkingEnabled", true));
+        client->setThinkingEnabled(cfg.groupBool("agent", "thinkingEnabled", false));
         ctrl.setLLMClient(client);
     }
 

@@ -1,10 +1,11 @@
-#include <QtTest/QtTest>
 #include <QSignalSpy>
+#include <QtTest/QtTest>
 
 // 测试需要访问 AgentController 的私有成员（m_conversationHistory, trimHistory）
 // 这是 Qt 测试中的常见做法，仅用于测试文件
 #define private public
 #include "core/agent/AgentController.h"
+#include "core/agent/OpenAILLMClient.h"
 #undef private
 
 #include "core/agent/AgentActor.h"
@@ -46,8 +47,7 @@ private:
 
 // ========== Mock LLM Client ==========
 
-class MockLLMClient : public ILLMClient
-{
+class MockLLMClient : public ILLMClient {
     Q_OBJECT
 public:
     explicit MockLLMClient(QObject* parent = nullptr) : ILLMClient(parent) {}
@@ -58,13 +58,15 @@ public:
     void setTemperature(double) override {}
     void setMaxTokens(int) override {}
     void setToolsEnabled(bool) override {}
+    bool supportsImageInput() const override {
+        return imageInputSupported;
+    }
 
     AgentConversation lastCtx;
     QList<ToolDefinition> lastTools;
+    bool imageInputSupported = true;
 
-    void sendRequest(const AgentConversation& ctx,
-                     const QList<ToolDefinition>& tools) override
-    {
+    void sendRequest(const AgentConversation& ctx, const QList<ToolDefinition>& tools) override {
         lastCtx = ctx;
         lastTools = tools;
     }
@@ -82,8 +84,7 @@ public:
 
 // ========== Test Suite ==========
 
-class TestAgentController : public QObject
-{
+class TestAgentController : public QObject {
     Q_OBJECT
 
 private:
@@ -91,19 +92,16 @@ private:
     ILLMClient* m_oldClient = nullptr;
 
 private slots:
-    void initTestCase()
-    {
+    void initTestCase() {
         ToolSchema::instance().registerDefaultTools();
         AgentController::instance().initialize();
     }
 
-    void cleanupTestCase()
-    {
+    void cleanupTestCase() {
         AgentController::instance().shutdown();
     }
 
-    void init()
-    {
+    void init() {
         // 每个测试前彻底重置状态（状态机 + 对话历史 + client）
         AgentController::instance().clearConversation();
         AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Advisor);
@@ -115,8 +113,7 @@ private slots:
         AgentController::instance().setLLMClient(m_mock);
     }
 
-    void cleanup()
-    {
+    void cleanup() {
         AgentController::instance().setLLMClient(m_oldClient);
         delete m_mock;
         m_mock = nullptr;
@@ -124,21 +121,18 @@ private slots:
 
     // ---------- 状态机基础 ----------
 
-    void testInitialStateIsIdle()
-    {
+    void testInitialStateIsIdle() {
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
     }
 
-    void testSendMessageTransitionsToThinking()
-    {
+    void testSendMessageTransitionsToThinking() {
         AgentController::instance().sendUserMessage("Hello");
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Thinking);
         QCOMPARE(m_mock->lastCtx.messages.size(), 1);
         QCOMPARE(m_mock->lastCtx.messages.first().role, QString("user"));
     }
 
-    void testPlainTextResponseReturnsToIdle()
-    {
+    void testPlainTextResponseReturnsToIdle() {
         AgentController::instance().sendUserMessage("Hello");
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Thinking);
 
@@ -150,8 +144,7 @@ private slots:
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
     }
 
-    void testErrorReturnsToIdle()
-    {
+    void testErrorReturnsToIdle() {
         AgentController::instance().sendUserMessage("Hello");
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Thinking);
 
@@ -160,10 +153,113 @@ private slots:
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
     }
 
+    void testSystemPromptUpdateAffectsNextRequest() {
+        AgentController& controller = AgentController::instance();
+        const QString originalPrompt = controller.systemPrompt();
+        controller.setSystemPrompt(QStringLiteral("Use the current calibration policy."));
+
+        controller.sendUserMessage(QStringLiteral("Check the project."));
+
+        QVERIFY(m_mock->lastCtx.systemPrompt.startsWith(QStringLiteral("Use the current calibration policy.")));
+        controller.setSystemPrompt(originalPrompt);
+    }
+
+    void testImageAttachmentReachesModelPayload() {
+        QPixmap image(2, 2);
+        image.fill(Qt::red);
+
+        AgentController::instance().sendUserMessageWithImages(QStringLiteral("Inspect this image."), {image});
+
+        QCOMPARE(m_mock->lastCtx.messages.size(), 1);
+        const AgentMessage& message = m_mock->lastCtx.messages.constFirst();
+        QCOMPARE(message.role, QStringLiteral("user"));
+        QCOMPARE(message.content, QStringLiteral("Inspect this image."));
+        QCOMPARE(message.images.size(), 1);
+        QVERIFY(!message.images.constFirst().data.isEmpty());
+        QCOMPARE(message.images.constFirst().mimeType, QStringLiteral("image/png"));
+
+        const QJsonArray messages = m_mock->lastCtx.toOpenAIMessages();
+        const QJsonArray content = messages.last().toObject().value(QStringLiteral("content")).toArray();
+        QCOMPARE(content.size(), 2);
+        QCOMPARE(content.last().toObject().value(QStringLiteral("type")).toString(), QStringLiteral("image_url"));
+        QVERIFY(content.last()
+                    .toObject()
+                    .value(QStringLiteral("image_url"))
+                    .toObject()
+                    .value(QStringLiteral("url"))
+                    .toString()
+                    .startsWith(QStringLiteral("data:image/png;base64,")));
+    }
+
+    void testInvalidImageAttachmentFailsClosed() {
+        QSignalSpy errorSpy(&AgentController::instance(), &AgentController::llmErrorOccurred);
+
+        AgentController::instance().sendUserMessageWithImages(QString(), {QPixmap()});
+
+        QCOMPARE(errorSpy.count(), 1);
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
+        QVERIFY(m_mock->lastCtx.messages.isEmpty());
+    }
+
+    void testImageAttachmentCountIsBounded() {
+        QList<QPixmap> images;
+        for (int i = 0; i < 5; ++i) {
+            QPixmap image(1, 1);
+            image.fill(Qt::red);
+            images.append(image);
+        }
+        QSignalSpy errorSpy(&AgentController::instance(), &AgentController::llmErrorOccurred);
+
+        AgentController::instance().sendUserMessageWithImages(QStringLiteral("Too many"), images);
+
+        QCOMPARE(errorSpy.count(), 1);
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
+        QVERIFY(m_mock->lastCtx.messages.isEmpty());
+    }
+
+    void testImageAttachmentRequiresModelCapability() {
+        m_mock->imageInputSupported = false;
+        QPixmap image(1, 1);
+        image.fill(Qt::red);
+        QSignalSpy errorSpy(&AgentController::instance(), &AgentController::llmErrorOccurred);
+
+        AgentController::instance().sendUserMessageWithImages(QStringLiteral("Inspect"), {image});
+
+        QCOMPARE(errorSpy.count(), 1);
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
+        QVERIFY(m_mock->lastCtx.messages.isEmpty());
+    }
+
+    void testOpenAIRequestDefaultsToCompatiblePayload() {
+        OpenAILLMClient client;
+        AgentConversation context;
+        AgentMessage message;
+        message.role = QStringLiteral("user");
+        message.content = QStringLiteral("Hello");
+        context.messages.append(message);
+
+        const QJsonObject defaultPayload = client.buildRequestBody(context, {});
+        QVERIFY(!defaultPayload.contains(QStringLiteral("thinking")));
+        QVERIFY(!defaultPayload.contains(QStringLiteral("reasoning_effort")));
+
+        client.setThinkingEnabled(true);
+        client.setReasoningEffort(QStringLiteral("high"));
+        const QJsonObject thinkingPayload = client.buildRequestBody(context, {});
+        QCOMPARE(thinkingPayload.value(QStringLiteral("thinking")).toObject().value(QStringLiteral("type")).toString(),
+                 QStringLiteral("enabled"));
+        QCOMPARE(thinkingPayload.value(QStringLiteral("reasoning_effort")).toString(), QStringLiteral("high"));
+    }
+
+    void testEndpointNormalizationMatchesConnectionTest() {
+        QCOMPARE(OpenAILLMClient::normalizeEndpoint(QStringLiteral("api.example.test")),
+                 QStringLiteral("https://api.example.test/v1/chat/completions"));
+        QCOMPARE(OpenAILLMClient::normalizeEndpoint(QStringLiteral("http://localhost:8080/custom")),
+                 QStringLiteral("http://localhost:8080/custom"));
+    }
+
     // ---------- Advisor 模式确认流程 ----------
 
-    void testAdvisorToolCallsTransitionToConfirming()
-    {
+    void testAdvisorToolCallsTransitionToConfirming() {
         AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Advisor);
         AgentController::instance().sendUserMessage("Add module");
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Thinking);
@@ -189,8 +285,7 @@ private slots:
         QVERIFY(!AgentController::instance().pendingToolCalls().isEmpty());
     }
 
-    void testConfirmToolsTransitionsToExecutingAndThenThinking()
-    {
+    void testConfirmToolsTransitionsToExecutingAndThenThinking() {
         // 设置到 Confirming 状态
         AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Advisor);
         AgentController::instance().sendUserMessage("Create project");
@@ -211,7 +306,8 @@ private slots:
         // 确认 — QueuedConnection 需要 processEvents 处理入队的 lambda
         // 单次 processEvents 可能不足以处理完所有内部事件，需多次调用
         AgentController::instance().confirmPendingTools();
-        for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+        for (int i = 0; i < 10; ++i)
+            QCoreApplication::processEvents();
 
         // extendAgentLoop 执行工具后会发送新的 LLM 请求（mock 不响应）
         // 状态应为 Thinking（等待第二轮 LLM 响应）
@@ -219,8 +315,7 @@ private slots:
         QVERIFY(AgentController::instance().pendingToolCalls().isEmpty());
     }
 
-    void testRejectToolsReturnsToIdle()
-    {
+    void testRejectToolsReturnsToIdle() {
         AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Advisor);
         AgentController::instance().sendUserMessage("Add module");
 
@@ -241,7 +336,8 @@ private slots:
 
         // QueuedConnection 需要 processEvents 处理入队的 lambda
         AgentController::instance().rejectPendingTools();
-        for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+        for (int i = 0; i < 10; ++i)
+            QCoreApplication::processEvents();
 
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
         QCOMPARE(responseSpy.count(), 1);
@@ -250,8 +346,7 @@ private slots:
 
     // ---------- 并发防护 ----------
 
-    void testBusyStateRejectsNewMessage()
-    {
+    void testBusyStateRejectsNewMessage() {
         AgentController::instance().sendUserMessage("First");
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Thinking);
 
@@ -288,8 +383,7 @@ private slots:
 
     // ---------- 错误恢复 ----------
 
-    void testErrorInConfirmingCleansPendingTools()
-    {
+    void testErrorInConfirmingCleansPendingTools() {
         AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Advisor);
         AgentController::instance().sendUserMessage("Add module");
 
@@ -318,8 +412,7 @@ private slots:
 
     // ---------- History 截断 ----------
 
-    void testTrimHistoryPreservesMessagePairs()
-    {
+    void testTrimHistoryPreservesMessagePairs() {
         AgentController::instance().clearConversation();
 
         // 构造足够大的历史以超过 token-based 裁剪阈值。
@@ -372,7 +465,8 @@ private slots:
                     if (AgentController::instance().m_conversationHistory[j].role == "assistant") {
                         QJsonArray tcs = AgentController::instance().m_conversationHistory[j].toolCalls;
                         for (const QJsonValue& v : tcs) {
-                            if (v.toObject()["id"].toString() == AgentController::instance().m_conversationHistory[i].toolCallId) {
+                            if (v.toObject()["id"].toString() ==
+                                AgentController::instance().m_conversationHistory[i].toolCallId) {
                                 foundMatchingAssistant = true;
                                 break;
                             }
@@ -381,15 +475,81 @@ private slots:
                     }
                 }
                 QVERIFY2(foundMatchingAssistant,
-                    qPrintable(QString("Tool message at index %1 has no matching assistant tool_call").arg(i)));
+                         qPrintable(QString("Tool message at index %1 has no matching assistant tool_call").arg(i)));
             }
         }
     }
 
+    void testTrimHistoryEnforcesHardMessageLimit() {
+        AgentController::instance().clearConversation();
+        for (int i = 0; i < 40; ++i) {
+            AgentMessage user;
+            user.role = QStringLiteral("user");
+            user.content = QStringLiteral("user-%1").arg(i);
+            AgentController::instance().m_conversationHistory.append(user);
+            AgentMessage assistant;
+            assistant.role = QStringLiteral("assistant");
+            assistant.content = QStringLiteral("assistant-%1").arg(i);
+            AgentController::instance().m_conversationHistory.append(assistant);
+        }
+
+        AgentController::instance().trimHistoryIfNeeded();
+
+        QVERIFY(AgentController::instance().m_conversationHistory.size() <= 64);
+        QCOMPARE(AgentController::instance().m_conversationHistory.first().role, QStringLiteral("user"));
+        QCOMPARE(AgentController::instance().m_conversationHistory.last().content, QStringLiteral("assistant-39"));
+    }
+
+    void testTrimHistoryEnforcesHardLimitWithinSingleUserTurn() {
+        AgentController::instance().clearConversation();
+        AgentMessage user;
+        user.role = QStringLiteral("user");
+        user.content = QStringLiteral("single request");
+        AgentController::instance().m_conversationHistory.append(user);
+        for (int i = 0; i < 35; ++i) {
+            AgentMessage assistant;
+            assistant.role = QStringLiteral("assistant");
+            assistant.toolCalls = QJsonArray{QJsonObject{{"id", QStringLiteral("call-%1").arg(i)}}};
+            AgentController::instance().m_conversationHistory.append(assistant);
+            AgentMessage tool;
+            tool.role = QStringLiteral("tool");
+            tool.toolCallId = QStringLiteral("call-%1").arg(i);
+            AgentController::instance().m_conversationHistory.append(tool);
+        }
+
+        AgentController::instance().trimHistoryIfNeeded();
+
+        QVERIFY(AgentController::instance().m_conversationHistory.size() <= 64);
+        QCOMPARE(AgentController::instance().m_conversationHistory.first().role, QStringLiteral("user"));
+        QVERIFY(AgentController::instance().m_conversationHistory.size() > 1);
+        QCOMPARE(AgentController::instance().m_conversationHistory[1].role, QStringLiteral("assistant"));
+    }
+
+    void testTrimHistoryAccountsForImageBytes() {
+        AgentController::instance().clearConversation();
+        AgentMessage imageTurn;
+        imageTurn.role = QStringLiteral("user");
+        imageTurn.content = QStringLiteral("old image");
+        imageTurn.images.append({QByteArray(2 * 1024 * 1024, 'x'), QStringLiteral("image/png"), QString()});
+        AgentController::instance().m_conversationHistory.append(imageTurn);
+        AgentMessage response;
+        response.role = QStringLiteral("assistant");
+        response.content = QStringLiteral("old response");
+        AgentController::instance().m_conversationHistory.append(response);
+        AgentMessage latest;
+        latest.role = QStringLiteral("user");
+        latest.content = QStringLiteral("latest");
+        AgentController::instance().m_conversationHistory.append(latest);
+
+        AgentController::instance().trimHistoryIfNeeded();
+
+        QCOMPARE(AgentController::instance().m_conversationHistory.size(), 1);
+        QCOMPARE(AgentController::instance().m_conversationHistory.first().content, QStringLiteral("latest"));
+    }
+
     // ---------- 最大轮数限制 ----------
 
-    void testAutopilotStopsAtTurnLimit()
-    {
+    void testAutopilotStopsAtTurnLimit() {
         AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Autopilot);
         AgentController::instance().sendUserMessage("Run");
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Thinking);
@@ -416,8 +576,7 @@ private slots:
         QVERIFY(errorSpy.takeFirst()[0].toString().contains("轮数上限"));
     }
 
-    void testAutopilotRejectsTooManyToolCallsInOneTurn()
-    {
+    void testAutopilotRejectsTooManyToolCallsInOneTurn() {
         AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Autopilot);
         AgentController::instance().sendUserMessage("Run many tools");
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Thinking);
@@ -443,8 +602,7 @@ private slots:
 
     // ---------- Observer 模式 ----------
 
-    void testObserverModeShowsToolsButDoesNotExecute()
-    {
+    void testObserverModeShowsToolsButDoesNotExecute() {
         AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Observer);
         AgentController::instance().sendUserMessage("Show me tools");
 

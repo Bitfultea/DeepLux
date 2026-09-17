@@ -126,6 +126,7 @@ public:
     void removeModule(const QString& instanceId);
     void updateModule(const QString& instanceId, const ModuleInstance& module);
     bool setModuleParam(const QString& instanceId, const QString& key, const QJsonValue& value);
+    bool removeModuleParam(const QString& instanceId, const QString& key);
     bool moveModule(const QString& instanceId, int newIndex);
     /// 返回指向 QList 内部元素的指针——调用方不得跨 addModule/removeModule 持有此指针
     ModuleInstance* findModule(const QString& instanceId);

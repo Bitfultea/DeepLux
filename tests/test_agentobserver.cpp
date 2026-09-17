@@ -74,6 +74,20 @@ private slots:
         QCOMPARE(removal.details.value("toPort").toString(), QString("point"));
         observer.shutdown();
     }
+
+    void testShutdownCanReinitializeWithoutDuplicateEvents() {
+        AgentObserver observer;
+        QVERIFY(observer.initialize());
+        observer.shutdown();
+        QVERIFY(observer.initialize());
+
+        QVERIFY(ProjectManager::instance().newProject());
+        int createdEvents = 0;
+        for (const GuiEvent& event : observer.allEvents())
+            createdEvents += event.type == GuiEventType::ProjectCreated;
+        QCOMPARE(createdEvents, 1);
+        observer.shutdown();
+    }
 };
 
 QTEST_MAIN(TestAgentObserver)

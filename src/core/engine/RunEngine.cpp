@@ -50,14 +50,18 @@ RunEngine& RunEngine::instance() {
 
 RunEngine::RunEngine()
     : QObject(nullptr), m_cycleTimer(new QTimer(this)), m_cancellationToken(new CancellationToken(this)) {
+    qRegisterMetaType<RunResult>("RunResult");
+    qRegisterMetaType<RunResult>("DeepLux::RunResult");
     m_cycleTimer->setInterval(100);
     connect(m_cycleTimer, &QTimer::timeout, this, &RunEngine::onTimerTick);
+    m_runPool.setMaxThreadCount(1);
     setParallelThreadCount(0);
     Logger::instance().info("Run engine initialized", "Run");
 }
 
 RunEngine::~RunEngine() {
     stop();
+    m_runPool.waitForDone();
     m_parallelPool.waitForDone();
     clearModuleTree();
     clearModules();
@@ -65,6 +69,13 @@ RunEngine::~RunEngine() {
 
 void RunEngine::setCycleMode(bool enabled) {
     m_runMode.store(static_cast<int>(enabled ? RunMode::RunCycle : RunMode::None), std::memory_order_release);
+}
+
+void RunEngine::stopCycleTimer() {
+    if (QThread::currentThread() == thread())
+        m_cycleTimer->stop();
+    else
+        QMetaObject::invokeMethod(m_cycleTimer, "stop", Qt::QueuedConnection);
 }
 
 void RunEngine::setParallelThreadCount(int n) {
@@ -167,6 +178,13 @@ void RunEngine::runOnce() {
     Logger::instance().info(tr("Starting single run"), "Run");
     // 阶6 八轮：Single 意图在锁内校验 Idle/Stopped。
     executeRun(RunIntent::Single);
+}
+
+bool RunEngine::runOnceAsync() {
+    if (!executeRunAsync(RunIntent::Single))
+        return false;
+    Logger::instance().info(tr("Starting single run"), "Run");
+    return true;
 }
 
 bool RunEngine::stepOnce() {
@@ -364,7 +382,7 @@ void RunEngine::pause() {
         ++m_lifecycleGeneration; // 阶6 十一轮
         m_state.store(static_cast<int>(RunState::Paused), std::memory_order_release);
     }
-    m_cycleTimer->stop();
+    stopCycleTimer();
     emit stateChanged(state());
 
     Logger::instance().info(tr("Run paused"), "Run");
@@ -580,7 +598,7 @@ void RunEngine::finalizeAbortedRun(RunMode mode) {
     m_stopPending = false;
     m_executing.store(false, std::memory_order_release);
     if (mode == RunMode::RunCycle) {
-        m_cycleTimer->stop();
+        stopCycleTimer();
         m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
     }
     m_state.store(wasStopped ? static_cast<int>(RunState::Stopped) : static_cast<int>(RunState::Idle),
@@ -594,7 +612,7 @@ bool RunEngine::lifecycleBusyLocked() {
 }
 
 void RunEngine::stop() {
-    m_cycleTimer->stop();
+    stopCycleTimer();
 
     // 阶6 复核（二轮）：不在取锁前按 Stopped 提前返回（否则会丢失对"已声明开始、
     // 尚未取执行权"运行的停止请求）。状态转换与清理决策全部在生命周期锁内：
@@ -942,20 +960,35 @@ int RunEngine::lastElapsedMs() const {
 }
 
 void RunEngine::onTimerTick() {
-    // 阶6 八轮：过期 tick 的意图校验在 tryBeginForRun 锁内完成（stop 后拒绝）。
+    // 周期模式保持既有定时器时序；Agent 单次运行单独使用 runOnceAsync()。
     executeRun(RunIntent::CycleTick);
 }
 
 void RunEngine::executeRun(RunIntent intent) {
-    // 阶6 八轮：意图+预期状态校验+恢复判定+暂停数据转移+取执行权原子完成。
     bool resuming = false;
     QString resumeModule;
     ImageData resumeData;
     RunMode mode = RunMode::RunOnce;
-    if (!tryBeginForRun(intent, resuming, resumeModule, resumeData, mode)) {
+    if (!tryBeginForRun(intent, resuming, resumeModule, resumeData, mode))
         return;
-    }
+    executeAcquiredRun(resuming, resumeModule, resumeData, mode);
+}
 
+bool RunEngine::executeRunAsync(RunIntent intent) {
+    bool resuming = false;
+    QString resumeModule;
+    ImageData resumeData;
+    RunMode mode = RunMode::RunOnce;
+    if (!tryBeginForRun(intent, resuming, resumeModule, resumeData, mode))
+        return false;
+    m_runPool.start([this, resuming, resumeModule, resumeData, mode]() {
+        executeAcquiredRun(resuming, resumeModule, resumeData, mode);
+    });
+    return true;
+}
+
+void RunEngine::executeAcquiredRun(bool resuming, const QString& resumeModule, const ImageData& resumeData,
+                                   RunMode mode) {
     if (!resuming) {
         {
             QReadLocker locker(&m_moduleLock);
