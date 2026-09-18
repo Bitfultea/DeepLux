@@ -276,6 +276,50 @@ private slots:
         QVERIFY2(!QFileInfo::exists(sessionPath), "guards must not write the session file");
     }
 
+    // 批3 复核二轮（P1-4）：同路径 ≠ 同图——文件被替换后按尺寸+像素摘要拒绝，
+    // 不把旧坐标系标注追加进新图，且原文件不被改动
+    void samAnnotateRejectsReplacedImageAtSamePath() {
+        SamTestServer server;
+        QVERIFY(server.listen());
+        AgentActor actor;
+        const QString mutablePath = QDir(m_dir.path()).filePath(QStringLiteral("mutable.png"));
+        const QString sessionPath = QDir(m_dir.path()).filePath(QStringLiteral("replaced.deeplux-anno.json"));
+
+        QImage gray(64, 48, QImage::Format_RGB32);
+        gray.fill(Qt::gray);
+        QVERIFY(gray.save(mutablePath, "PNG"));
+        auto r =
+            actor.executeTool(QStringLiteral("sam_annotate"), annotateParams(server.url(), sessionPath, mutablePath));
+        QVERIFY2(!r.contains("error"), qPrintable(r.value("error").toString()));
+        QCOMPARE(r.value("total").toInt(), 2);
+        // 会话已记录摘要
+        QString loadError;
+        AnnotationSession written = AnnotationSession::load(sessionPath, &loadError);
+        QVERIFY(loadError.isEmpty());
+        QVERIFY(!written.imageDigest.isEmpty());
+
+        // 同路径换同尺寸异内容图 → 摘要不符拒绝
+        QImage red(64, 48, QImage::Format_RGB32);
+        red.fill(Qt::red);
+        QVERIFY(red.save(mutablePath, "PNG")); // 覆盖同一路径
+        r = actor.executeTool(QStringLiteral("sam_annotate"), annotateParams(server.url(), sessionPath, mutablePath));
+        QVERIFY2(r.value("error").toString().contains(QStringLiteral("摘要")), qPrintable(r.value("error").toString()));
+
+        // 同路径换异尺寸图 → 尺寸拒绝（尺寸校验先于摘要）
+        QImage big(80, 60, QImage::Format_RGB32);
+        big.fill(Qt::blue);
+        QVERIFY(big.save(mutablePath, "PNG"));
+        r = actor.executeTool(QStringLiteral("sam_annotate"), annotateParams(server.url(), sessionPath, mutablePath));
+        QVERIFY2(r.value("error").toString().contains(QStringLiteral("尺寸")), qPrintable(r.value("error").toString()));
+
+        // 原文件始终未被改动
+        const AnnotationSession unchanged = AnnotationSession::load(sessionPath, &loadError);
+        QVERIFY(loadError.isEmpty());
+        QCOMPARE(unchanged.annotations.size(), 2);
+        QCOMPARE(unchanged.imageWidth, 64);
+        QCOMPARE(unchanged.imageDigest, written.imageDigest);
+    }
+
     // 混图拒绝：既有会话绑定 imagePath，异图追加失败关闭且不改动文件
     void samAnnotateRejectsMixedImage() {
         SamTestServer server;

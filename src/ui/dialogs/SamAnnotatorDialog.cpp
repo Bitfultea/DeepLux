@@ -968,7 +968,9 @@ void SamAnnotatorDialog::commitSingleObjectMaskEdit(const QString& targetId, con
         setStatusText(tr("编辑被拒绝：操作后区域为空（如需删除对象请用 Delete）"));
         return;
     }
-    if (MaskOps::connectedComponents(editedBinary).size() > 1) {
+    // 批3 复核二轮（P1）：只计数路径用早退计数（数到第 2 个分量即停），
+    // 不再为判断"是否多于一个分量"构造全部分量的整图掩膜
+    if (MaskOps::connectedComponentCount(editedBinary, 1) > 1) {
         setStatusText(tr("编辑被拒绝：结果含多个连通分量（对象模型为单多边形），请减小半径/笔画或先拆分"));
         return;
     }
@@ -1086,7 +1088,7 @@ void SamAnnotatorDialog::onMergeSelected() {
                 dst[x] = 255;
         }
     }
-    if (MaskOps::connectedComponents(unionMask).size() != 1) {
+    if (MaskOps::connectedComponentCount(unionMask, 1) != 1) { // 批3 复核二轮（P1）：早退计数
         setStatusText(tr("合并被拒绝：两区域不连通，单多边形对象无法如实表达"));
         return;
     }
@@ -1142,11 +1144,20 @@ void SamAnnotatorDialog::onSplitSelected() {
         setStatusText(error);
         return;
     }
-    const QList<QImage> components = MaskOps::connectedComponents(binary);
-    if (components.size() < 2) {
+    // 批3 复核二轮（P1）：先用早退计数限定分量数——connectedComponents 为每个
+    // 分量分配整图掩膜，碎片化区域（如上万孤立像素）直接构造会耗尽内存
+    constexpr int kMaxSplitComponents = 64; // 拆出 >64 个对象不是合理的标注操作
+    const int componentCount = MaskOps::connectedComponentCount(binary, kMaxSplitComponents);
+    if (componentCount < 2) {
         setStatusText(tr("拆分被拒绝：区域为单一连通分量，无可拆分"));
         return;
     }
+    if (componentCount > kMaxSplitComponents) {
+        setStatusText(
+            tr("拆分被拒绝：连通分量数超过上限 %1（碎片化区域请先用形态学/橡皮擦整理）").arg(kMaxSplitComponents));
+        return;
+    }
+    const QList<QImage> components = MaskOps::connectedComponents(binary);
     // 最大分量（像素数，平局取 raster 序首个）保留原对象身份，其余为派生对象
     int largest = 0;
     qint64 largestCount = -1;

@@ -71,6 +71,7 @@ private slots:
     void mergeRequiresExactlyTwo();
     void splitTwoBlobObjectAndUndoRestores();
     void splitSingleComponentRejected();
+    void splitFragmentedMaskRejected(); // 批3 复核二轮（P1）：碎片掩膜拆分上限
     void editWithoutImageSizeRejected();
     void editFallsBackToPolygonRasterization();
     // SAM 批2 复核二轮：会话重置协议与删除掩膜还原回归
@@ -870,6 +871,23 @@ void TestSamAnnotatorDialog::splitTwoBlobObjectAndUndoRestores() {
     // 重做：再次拆分
     dlg.redoButton()->click();
     QCOMPARE(dlg.session().annotations.size(), 2);
+}
+
+// 批3 复核二轮（P1）：碎片化掩膜（70 个孤立像素 > 64 上限）拆分失败关闭——
+// 旧实现为计数构造 70 张整图掩膜（内存放大的攻击面）
+void TestSamAnnotatorDialog::splitFragmentedMaskRejected() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    QList<QRect> dots;
+    for (int i = 0; i < 10; ++i)
+        for (int j = 0; j < 7; ++j)
+            dots.append(QRect(5 + i * 8, 5 + j * 8, 1, 1));
+    QVERIFY(
+        !confirmObject(dlg, squarePolygon(5, 5, 10), QRectF(5, 5, 80, 60), makeDisplayMask(200, 150, dots)).isEmpty());
+    dlg.objectList()->setCurrentRow(0);
+    dlg.splitButton()->click();
+    QVERIFY2(dlg.statusLabel()->text().contains(QStringLiteral("上限")), qPrintable(dlg.statusLabel()->text()));
+    QCOMPARE(dlg.session().annotations.size(), 1); // 失败关闭，未拆分
 }
 
 void TestSamAnnotatorDialog::splitSingleComponentRejected() {

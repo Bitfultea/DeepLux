@@ -784,8 +784,10 @@ QJsonObject AgentActor::samAnnotate(const QJsonObject& params) {
     if (imagePath.isEmpty() || image.isNull())
         return QJsonObject{{"error", QString("无法读取图像：%1").arg(imagePath)}};
 
-    // 既有会话：追加语义；加载失败或绑定异图均失败关闭（不覆盖用户数据）
+    // 既有会话：追加语义；加载失败、绑定异图、同路径尺寸不符或内容摘要不符
+    // 均失败关闭（不覆盖用户数据，不把旧坐标系标注追加进新图）
     AnnotationSession session;
+    const QString digest = AnnotationSession::computeImageDigest(image);
     if (QFileInfo::exists(sessionPath)) {
         QString loadError;
         session = AnnotationSession::load(sessionPath, &loadError);
@@ -793,7 +795,19 @@ QJsonObject AgentActor::samAnnotate(const QJsonObject& params) {
             return QJsonObject{{"error", QString("标注会话加载失败：%1").arg(loadError)}};
         if (!session.imagePath.isEmpty() && session.imagePath != imagePath)
             return QJsonObject{{"error", QString("会话已绑定其他图像（%1），拒绝混图追加").arg(session.imagePath)}};
+        // 批3 复核二轮（P1-4）：同路径 ≠ 同图——文件被替换后旧标注属于旧坐标系，
+        // 尺寸与像素内容摘要（AnnotationSession::computeImageDigest）双重校验
+        if (session.imageWidth > 0 && session.imageHeight > 0 &&
+            (session.imageWidth != image.width() || session.imageHeight != image.height()))
+            return QJsonObject{{"error", QString("同路径图像尺寸与既有会话不一致（旧 %1x%2 vs 新 %3x%4），拒绝追加")
+                                             .arg(session.imageWidth)
+                                             .arg(session.imageHeight)
+                                             .arg(image.width())
+                                             .arg(image.height())}};
+        if (!session.imageDigest.isEmpty() && session.imageDigest != digest)
+            return QJsonObject{{"error", QString("同路径图像内容已变化（摘要不符），拒绝把旧坐标系标注追加进新图")}};
     }
+    session.imageDigest = digest; // 无摘要的旧会话：本次追加时补记，此后受摘要保护
 
     // 全有或全无：任一 prompt 预测失败则不写文件
     const SamPredictOutcome outcome = runSamPredictBatch(serverUrl, imagePath, prompts, timeoutMs);

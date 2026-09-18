@@ -51,8 +51,17 @@ QImage decodeRle(const QString& rle, const QSize& expectedSize, bool* ok = nullp
 QImage dilate(const QImage& binaryMask, int radius);
 QImage erode(const QImage& binaryMask, int radius);
 
-/// 8-连通分量：按首像素 raster 顺序返回，每个分量为同尺寸独立二值掩膜；空掩膜返回空列表
+/// 8-连通分量：按首像素 raster 顺序返回，每个分量为同尺寸独立二值掩膜；空掩膜返回空列表。
+/// 注意：每分量分配整图尺寸掩膜——调用方必须先用 connectedComponentCount 限定
+/// 分量数上限（碎片化掩膜直接调用可能耗尽内存，批3 复核二轮 P1）
 QList<QImage> connectedComponents(const QImage& binaryMask);
+
+/**
+ * 8-连通分量计数（批3 复核二轮 P1）：只计数路径不构造任何分量图像。
+ * stopAfter>0 时数到第 stopAfter+1 个分量即提前返回（返回值=stopAfter+1，
+ * 不再遍历剩余像素）；stopAfter<=0 返回精确计数。空掩膜返回 0。
+ */
+int connectedComponentCount(const QImage& binaryMask, int stopAfter = 0);
 
 /// 前景像素计数
 qint64 foregroundCount(const QImage& binaryMask);

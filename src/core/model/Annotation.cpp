@@ -1,8 +1,11 @@
 #include "Annotation.h"
 
+#include <QCryptographicHash>
 #include <QFile>
+#include <QImage>
 #include <QJsonDocument>
 #include <QRectF>
+#include <QSaveFile>
 #include <QUuid>
 
 namespace DeepLux {
@@ -131,6 +134,7 @@ QJsonObject AnnotationSession::toJson() const {
     json["imagePath"] = imagePath;
     json["imageWidth"] = imageWidth;
     json["imageHeight"] = imageHeight;
+    json["imageDigest"] = imageDigest; // 批3 复核二轮（P1-4）：图像内容摘要（可空=旧文件）
     json["modelName"] = modelName;
 
     QJsonArray annArr;
@@ -147,6 +151,7 @@ AnnotationSession AnnotationSession::fromJson(const QJsonObject& json) {
     session.imagePath = json["imagePath"].toString();
     session.imageWidth = json["imageWidth"].toInt();
     session.imageHeight = json["imageHeight"].toInt();
+    session.imageDigest = json["imageDigest"].toString();
     session.modelName = json["modelName"].toString();
 
     QJsonArray annArr = json["annotations"].toArray();
@@ -175,22 +180,73 @@ AnnotationSession AnnotationSession::load(const QString& filePath, QString* erro
         return AnnotationSession();
     }
 
-    return fromJson(doc.object());
+    // 批3 复核二轮（P1-5）：最小 schema 严格校验——旧实现把合法 JSON 数组/标量
+    // 经 doc.object() 静默当空会话载入，追加保存后覆盖损坏原文件
+    if (!doc.isObject()) {
+        if (error)
+            *error = QStringLiteral("Not a JSON object (invalid annotation session): %1").arg(filePath);
+        return AnnotationSession();
+    }
+    const QJsonObject obj = doc.object();
+    if (obj.contains(QLatin1String("annotations")) && !obj.value(QLatin1String("annotations")).isArray()) {
+        if (error)
+            *error = QStringLiteral("Field 'annotations' must be an array: %1").arg(filePath);
+        return AnnotationSession();
+    }
+    for (const char* key : {"imageWidth", "imageHeight"}) {
+        if (obj.contains(QLatin1String(key)) && !obj.value(QLatin1String(key)).isDouble()) {
+            if (error)
+                *error = QStringLiteral("Field '%1' must be a number: %2").arg(QLatin1String(key), filePath);
+            return AnnotationSession();
+        }
+    }
+    if (obj.contains(QLatin1String("imagePath")) && !obj.value(QLatin1String("imagePath")).isString()) {
+        if (error)
+            *error = QStringLiteral("Field 'imagePath' must be a string: %1").arg(filePath);
+        return AnnotationSession();
+    }
+
+    return fromJson(obj);
 }
 
 bool AnnotationSession::save(const QString& filePath, QString* error) const {
-    QFile file(filePath);
+    // 批3 复核二轮（P1-5）：QSaveFile 原子替换——先写临时文件再 commit，磁盘满
+    // 或进程中断不会截断/损坏既有会话；写入与提交结果均显式检查
+    QSaveFile file(filePath);
     if (!file.open(QIODevice::WriteOnly)) {
         if (error)
-            *error = QStringLiteral("Cannot create file: %1").arg(filePath);
+            *error = QStringLiteral("Cannot create file: %1 (%2)").arg(filePath, file.errorString());
         return false;
     }
 
-    QJsonDocument doc(toJson());
-    file.write(doc.toJson(QJsonDocument::Indented));
-    file.close();
-
+    const QByteArray data = QJsonDocument(toJson()).toJson(QJsonDocument::Indented);
+    if (file.write(data) != data.size()) {
+        if (error)
+            *error = QStringLiteral("Write failed (disk full or device error): %1").arg(filePath);
+        file.cancelWriting();
+        return false;
+    }
+    if (!file.commit()) {
+        if (error)
+            *error = QStringLiteral("Commit failed: %1 (%2)").arg(filePath, file.errorString());
+        return false;
+    }
     return true;
+}
+
+QString AnnotationSession::computeImageDigest(const QImage& image) {
+    if (image.isNull())
+        return QString();
+    // 批3 复核二轮（P1-4）：同路径 ≠ 同图——像素内容摘要用于会话追加前校验
+    // 图像未被替换。统一转 ARGB32 消除编码/格式差异；逐行仅哈希 width*4 有效
+    // 字节（行尾 padding 不参与，保证同图同摘要的确定性）
+    const QImage canonical = image.convertToFormat(QImage::Format_ARGB32);
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    for (int y = 0; y < canonical.height(); ++y)
+        hash.addData(reinterpret_cast<const char*>(canonical.constScanLine(y)), canonical.width() * 4);
+    hash.addData(QByteArray::number(canonical.width()));
+    hash.addData(QByteArray::number(canonical.height()));
+    return QString::fromLatin1(hash.result().toHex());
 }
 
 AnnotationObject* AnnotationSession::findById(const QString& id) {

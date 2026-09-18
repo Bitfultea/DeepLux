@@ -62,6 +62,8 @@ private slots:
     void httpServiceConcurrentUnloadSetImageKeepsTimeout();
     void httpServiceConsecutiveSetImageLatestWins();
     void oversizedDeclaredResponseIsAbortedBeforeBuffering();
+    // 批3 复核二轮（P1-3）：predict 响应严格解析失败关闭
+    void predictResponseStrictParsing();
 
 private:
     QString m_unusedPortUrl;
@@ -465,6 +467,106 @@ void TestSamBackendClient::oversizedDeclaredResponseIsAbortedBeforeBuffering() {
              "oversized response must fail before its body is buffered");
     QVERIFY(errorSpy.count() >= 1);
     QVERIFY(errorSpy.takeFirst().at(0).toString().contains(QStringLiteral("尺寸上限")));
+}
+
+// 批3 复核二轮（P1-3）：畸形/缺字段 predict 响应必须失败关闭——
+// 旧实现 toArray()/toDouble() 把字符串、布尔值与缺失字段静默转零，
+// "三个错误坐标仍可成为有效多边形"
+void TestSamBackendClient::predictResponseStrictParsing() {
+    SamTestServer server;
+    QVERIFY2(server.listen(), "test HTTP server must listen");
+    server.usePredictOverride = true;
+
+    const QJsonObject valid{{"polygon", QJsonArray{QJsonArray{1.0, 2.0}, QJsonArray{3.0, 4.0}, QJsonArray{5.0, 6.0}}},
+                            {"bbox", QJsonArray{1, 2, 3, 4}},
+                            {"score", 0.9}};
+
+    // 每个用例独立客户端：驱动 setImage→embeddingReady→predict，断言 error 且无 predictionReady
+    const auto driveExpectError = [&](const QJsonObject& response, const QString& expectSubstr) {
+        server.predictResponseOverride = response;
+        SamBackendClient client;
+        client.setServerUrl(server.url());
+        client.setTimeoutMs(2000);
+        QSignalSpy errorSpy(&client, &SamBackendClient::errorOccurred);
+        QSignalSpy predictSpy(&client, &SamBackendClient::predictionReady);
+        QObject::connect(&client, &SamBackendClient::embeddingReady, &client,
+                         [&client]() { client.predict({QPointF(1, 2)}, {}, QRectF()); });
+        client.setImage(QStringLiteral("/tmp/deeplux_strict_parse.png"));
+        QVERIFY2(waitFor([&] { return errorSpy.count() > 0 || predictSpy.count() > 0; }),
+                 qPrintable(QStringLiteral("no outcome for: %1").arg(expectSubstr)));
+        QCOMPARE(predictSpy.count(), 0); // 不得伪造预测结果
+        QVERIFY(errorSpy.count() >= 1);
+        QVERIFY2(
+            errorSpy.first().at(0).toString().contains(expectSubstr),
+            qPrintable(QStringLiteral("expect '%1', got: %2").arg(expectSubstr, errorSpy.first().at(0).toString())));
+    };
+
+    // 未知 status → 拒绝
+    QJsonObject r = valid;
+    r["status"] = QStringLiteral("weird");
+    driveExpectError(r, QStringLiteral("未知状态"));
+    // ok=false + error 字段（真实 server "embedding not found" 形态）→ 拒绝并透传原因
+    driveExpectError(QJsonObject{{"ok", false}, {"error", QStringLiteral("embedding not found")}},
+                     QStringLiteral("embedding not found"));
+    // 非空 error 字段（无 status）→ 拒绝
+    driveExpectError(QJsonObject{{"error", QStringLiteral("boom")}}, QStringLiteral("boom"));
+    // polygon 缺失 / 非数组 / 元素形态错 / 元素长度错
+    driveExpectError(QJsonObject{{"bbox", QJsonArray{1, 2, 3, 4}}, {"score", 0.9}}, QStringLiteral("polygon"));
+    r = valid;
+    r["polygon"] = QStringLiteral("abc");
+    driveExpectError(r, QStringLiteral("polygon"));
+    r = valid;
+    r["polygon"] = QJsonArray{QJsonArray{QStringLiteral("a"), QStringLiteral("b")}};
+    driveExpectError(r, QStringLiteral("polygon"));
+    r = valid;
+    r["polygon"] = QJsonArray{QJsonArray{1.0, 2.0, 3.0}};
+    driveExpectError(r, QStringLiteral("polygon"));
+    // bbox 长度错 / 非数组 → 拒绝
+    r = valid;
+    r["bbox"] = QJsonArray{1, 2, 3};
+    driveExpectError(r, QStringLiteral("bbox"));
+    r = valid;
+    r["bbox"] = true;
+    driveExpectError(r, QStringLiteral("bbox"));
+    // score 缺失 / 越界 / 非数值 → 拒绝
+    r = valid;
+    r.remove(QStringLiteral("score"));
+    driveExpectError(r, QStringLiteral("score"));
+    r = valid;
+    r["score"] = 1.5;
+    driveExpectError(r, QStringLiteral("score"));
+    r = valid;
+    r["score"] = QStringLiteral("high");
+    driveExpectError(r, QStringLiteral("score"));
+    // mask_rle / model_name / mask_png_base64 类型错误 → 拒绝
+    r = valid;
+    r["mask_rle"] = 42;
+    driveExpectError(r, QStringLiteral("mask_rle"));
+    r = valid;
+    r["model_name"] = 7;
+    driveExpectError(r, QStringLiteral("model_name"));
+    r = valid;
+    r["mask_png_base64"] = QJsonArray{1};
+    driveExpectError(r, QStringLiteral("mask_png_base64"));
+
+    // 对照：无 status（真实 sam_server 成功响应不带 status）+ 字段合法 → 成功
+    server.predictResponseOverride = valid;
+    SamBackendClient client;
+    client.setServerUrl(server.url());
+    client.setTimeoutMs(2000);
+    QSignalSpy errorSpy(&client, &SamBackendClient::errorOccurred);
+    QSignalSpy predictSpy(&client, &SamBackendClient::predictionReady);
+    QObject::connect(&client, &SamBackendClient::embeddingReady, &client,
+                     [&client]() { client.predict({QPointF(1, 2)}, {}, QRectF()); });
+    client.setImage(QStringLiteral("/tmp/deeplux_strict_parse.png"));
+    QVERIFY2(waitFor([&] { return predictSpy.count() > 0 || errorSpy.count() > 0; }),
+             "status-less valid response must succeed (real sam_server shape)");
+    QCOMPARE(errorSpy.count(), 0);
+    QCOMPARE(predictSpy.count(), 1);
+    const auto args = predictSpy.first();
+    QCOMPARE(args.at(0).value<QList<QPointF>>().size(), 3);
+    QCOMPARE(args.at(2).toDouble(), 0.9);
+    server.usePredictOverride = false;
 }
 
 QTEST_MAIN(TestSamBackendClient)

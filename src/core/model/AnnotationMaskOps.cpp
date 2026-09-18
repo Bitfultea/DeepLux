@@ -178,21 +178,21 @@ QImage decodeRle(const QString& rle, const QSize& expectedSize, bool* ok) {
     const double hd = size[0].toDouble();
     const double wd = size[1].toDouble();
     if (!(hd >= 1.0) || !(wd >= 1.0) || hd != std::floor(hd) || wd != std::floor(wd))
-        return fail(); // 非法/非整数尺寸（NaN 比较为假，一并拒绝）
+        return fail();                                // 非法/非整数尺寸（NaN 比较为假，一并拒绝）
+    constexpr qint64 kMaxPixels = 64LL * 1024 * 1024; // 与 SAM 响应上限同量级，防损坏会话文件撑爆内存
+    // 批3 复核二轮（P0）：上限判定在 double 阶段先行——超大尺寸（如 1e300）
+    // 先转 int 是未定义行为，不得先转换再检查（乘积溢出为 inf 时同样被拒）
+    if (hd * wd > double(kMaxPixels))
+        return fail();
     const int h = int(hd);
     const int w = int(wd);
     // 批2 复核二轮（P3）：期望尺寸不匹配立即失败，不展开整幅像素
     if (expectedSize.isValid() && (expectedSize.width() != w || expectedSize.height() != h))
         return fail();
-    constexpr qint64 kMaxPixels = 64LL * 1024 * 1024; // 与 SAM 响应上限同量级，防损坏会话文件撑爆内存
     const qint64 total = qint64(h) * w;
-    if (total > kMaxPixels)
-        return fail();
 
     QImage mask(w, h, QImage::Format_Grayscale8);
     mask.fill(0);
-    int x = 0;
-    int y = 0;
     qint64 consumed = 0;
     int value = 0; // counts[0] 为 0 的游程
     for (const QJsonValue& cv : counts) {
@@ -202,25 +202,16 @@ QImage decodeRle(const QString& rle, const QSize& expectedSize, bool* ok) {
         if (!(cd >= 0.0) || cd != std::floor(cd) || cd > double(total))
             return fail();
         const qint64 runLength = qint64(cd);
+        // 批3 复核二轮（P0）：写入前校验剩余容量——旧实现先写像素后累计比较，
+        // {"size":[1,4],"counts":[0,4,0,1]} 会在 x=4 越界写之后才发现溢出
+        if (runLength > total - consumed)
+            return fail();
         if (value != 0) {
-            for (qint64 k = 0; k < runLength; ++k) {
-                mask.scanLine(y)[x] = 255;
-                if (++y == h) {
-                    y = 0;
-                    ++x;
-                }
-            }
-        } else {
-            for (qint64 k = 0; k < runLength; ++k) {
-                if (++y == h) {
-                    y = 0;
-                    ++x;
-                }
-            }
+            // 列主序：线性索引 k → (x=k/h, y=k%h)，不维护可漂移的光标状态
+            for (qint64 k = consumed; k < consumed + runLength; ++k)
+                mask.scanLine(int(k % h))[int(k / h)] = 255;
         }
         consumed += runLength;
-        if (consumed > total)
-            return fail();
         value = 1 - value;
     }
     if (consumed != total)
@@ -290,6 +281,56 @@ QList<QImage> connectedComponents(const QImage& binaryMask) {
         }
     }
     return components;
+}
+
+int connectedComponentCount(const QImage& binaryMask, int stopAfter) {
+    // 批3 复核二轮（P1）：只计数路径不构造任何分量图像——碎片化掩膜（如成千
+    // 上万个孤立像素）经 connectedComponents 会按分量数 × 整图尺寸分配内存直至
+    // 耗尽；stopAfter>0 时数到第 stopAfter+1 个分量种子即提前返回
+    const QImage mask = ensureGray8(binaryMask);
+    if (mask.isNull())
+        return 0;
+    const int w = mask.width();
+    const int h = mask.height();
+    QVector<const uchar*> rows(h);
+    for (int y = 0; y < h; ++y)
+        rows[y] = mask.constScanLine(y);
+
+    QVector<quint8> visited(qint64(w) * h, 0);
+    QVector<QPoint> stack;
+    int count = 0;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const qint64 index = qint64(y) * w + x;
+            if (!rows[y][x] || visited[index])
+                continue;
+            ++count;
+            if (stopAfter > 0 && count > stopAfter)
+                return count;
+            stack.clear();
+            stack.append(QPoint(x, y));
+            visited[index] = 1;
+            while (!stack.isEmpty()) {
+                const QPoint p = stack.takeLast();
+                for (int dy = -1; dy <= 1; ++dy) {
+                    const int ny = p.y() + dy;
+                    if (ny < 0 || ny >= h)
+                        continue;
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int nx = p.x() + dx;
+                        if (nx < 0 || nx >= w)
+                            continue;
+                        const qint64 nindex = qint64(ny) * w + nx;
+                        if (visited[nindex] || !rows[ny][nx])
+                            continue;
+                        visited[nindex] = 1;
+                        stack.append(QPoint(nx, ny));
+                    }
+                }
+            }
+        }
+    }
+    return count;
 }
 
 qint64 foregroundCount(const QImage& binaryMask) {

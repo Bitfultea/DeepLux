@@ -81,6 +81,48 @@ private slots:
         QVERIFY(decodeRle(rle, QSize(), &ok) == mask && ok); // 无效期望 = 不检查（旧行为）
     }
 
+    // 批3 复核二轮（P0）：游程累计超出像素总数必须在写入前拒绝——
+    // 旧实现先写像素后比较，{"size":[1,4],"counts":[0,4,0,1]} 会越界写 x=4
+    void rleDecodeRejectsOverflowBeforeWrite() {
+        bool ok = true;
+        QVERIFY(decodeRle(QStringLiteral(R"({"size":[1,4],"counts":[0,4,0,1]})"), &ok).isNull() && !ok);
+        QVERIFY(decodeRle(QStringLiteral(R"({"size":[1,4],"counts":[0,5]})"), &ok).isNull() && !ok);
+        QVERIFY(decodeRle(QStringLiteral(R"({"size":[2,2],"counts":[0,4,1]})"), &ok).isNull() && !ok);
+        // 数据不足（总和 < w*h）仍拒绝
+        QVERIFY(decodeRle(QStringLiteral(R"({"size":[1,4],"counts":[0,3]})"), &ok).isNull() && !ok);
+        // 超大尺寸必须在 int 转换前拒绝（int(1e300) 为未定义行为）
+        QVERIFY(decodeRle(QStringLiteral(R"({"size":[1e300,1],"counts":[0]})"), &ok).isNull() && !ok);
+        QVERIFY(decodeRle(QStringLiteral(R"({"size":[1e6,1e6],"counts":[0]})"), &ok).isNull() && !ok); // 1e12 > 64M
+        // 合法编码（含末尾补零游程）→ 接受
+        QVERIFY(!decodeRle(QStringLiteral(R"({"size":[1,4],"counts":[0,4,0]})"), &ok).isNull() && ok);
+        QVERIFY(!decodeRle(QStringLiteral(R"({"size":[1,4],"counts":[1,1,0,2]})"), &ok).isNull() && ok);
+        // 写入位置正确性：size=[2,2] counts=[0,1,2,1] 列主序（x 外层）→
+        // 0 个背景、1 个前景 (x0,y0)、2 个背景 (x0,y1)(x1,y0)、1 个前景 (x1,y1)
+        const QImage decoded = decodeRle(QStringLiteral(R"({"size":[2,2],"counts":[0,1,2,1]})"), &ok);
+        QVERIFY(ok);
+        QCOMPARE(int(decoded.constScanLine(0)[0]), 255); // (x0,y0) 前景
+        QCOMPARE(int(decoded.constScanLine(1)[0]), 0);   // (x0,y1) 背景
+        QCOMPARE(int(decoded.constScanLine(0)[1]), 0);   // (x1,y0) 背景
+        QCOMPARE(int(decoded.constScanLine(1)[1]), 255); // (x1,y1) 前景
+    }
+
+    // 批3 复核二轮（P1）：只计数路径早退，不构造分量图像（碎片掩膜不打爆内存）
+    void componentCountEarlyExit() {
+        QList<QRect> dots;
+        for (int i = 0; i < 10; ++i)
+            for (int j = 0; j < 10; ++j)
+                dots.append(QRect(2 + i * 6, 2 + j * 6, 1, 1)); // 100 个孤立像素
+        const QImage fragmented = makeBinary(64, 64, dots);
+        QCOMPARE(connectedComponentCount(fragmented), 100);
+        QCOMPARE(connectedComponentCount(fragmented, 1), 2); // 数到第 2 个即早退
+        QCOMPARE(connectedComponentCount(fragmented, 200), 100);
+        QCOMPARE(connectedComponentCount(makeBinary(8, 8, {})), 0);
+        QCOMPARE(connectedComponentCount(makeBinary(8, 8, {QRect(1, 1, 3, 3)})), 1);
+        // 与 connectedComponents 计数一致
+        QCOMPARE(connectedComponentCount(makeBinary(40, 40, {QRect(2, 2, 5, 5), QRect(20, 20, 5, 5)})), 2);
+        QCOMPARE(connectedComponentCount(QImage()), 0);
+    }
+
     void rleRoundTrip() {
         const QList<QImage> masks = {
             makeBinary(1, 1, {QRect(0, 0, 1, 1)}),

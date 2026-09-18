@@ -57,6 +57,10 @@ public:
     QString healthStatus = QStringLiteral("ok");
     QString predictStatus = QStringLiteral("ok");
     QHash<QString, qint64> responseContentLengths;
+    // 批3 复核二轮（P1-3）：/predict 响应整体覆盖——构造畸形/缺字段响应，
+    // 验证客户端严格解析失败关闭
+    bool usePredictOverride = false;
+    QJsonObject predictResponseOverride;
 
     // 请求记录（断言四个端点都被真实调用）
     QStringList requestLog;
@@ -144,6 +148,8 @@ private:
     }
 
     QJsonObject predictResponse() {
+        if (usePredictOverride)
+            return predictResponseOverride;
         QJsonObject response;
         response["status"] = predictStatus;
         if (predictStatus == "ok") {

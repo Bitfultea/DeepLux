@@ -187,6 +187,14 @@ private slots:
                      "non-finite strong bbox must be rejected");
         }
 
+        // 批3 复核二轮（P2-6）：NaN 宽/高 bbox——isValid() 为假会跳过条件式
+        // 检查，必须被无条件有限性检查拒绝（旧实现 polygon≥3 即放行，
+        // 消费者直读 bbox 会泄漏 NaN）
+        Region2D nanWidthBox;
+        nanWidthBox.polygon = {QPointF(0, 0), QPointF(4, 0), QPointF(0, 3)};
+        nanWidthBox.bbox = QRectF(0, 0, nan, 3); // isValid()==false 但携带 NaN
+        QVERIFY(!portValueMatchesType(QVariant::fromValue(nanWidthBox), DataType::Region2D));
+
         // map: polygon 嵌套数值列表含 NaN → 拒绝
         QVariantMap nanPoly;
         QVariantList polyN;

@@ -1,8 +1,11 @@
-#include <QtTest/QtTest>
-#include <QTemporaryDir>
-#include <QFile>
-#include <QJsonDocument>
 #include "core/model/Annotation.h"
+
+#include <QDir>
+#include <QFile>
+#include <QImage>
+#include <QJsonDocument>
+#include <QTemporaryDir>
+#include <QtTest/QtTest>
 
 using namespace DeepLux;
 
@@ -20,6 +23,10 @@ private slots:
     void findByIdRemoveById();
     void emptyMaskRle();
     void largeCoordinates();
+    // 批3 复核二轮（P1-5/P1-4）：严格加载、原子保存、图像摘要
+    void loadRejectsMalformedFiles();
+    void saveReportsFailureAndKeepsOriginal();
+    void imageDigestDeterministicAndSerialized();
 };
 
 void TestAnnotationSession::initTestCase() {}
@@ -179,7 +186,7 @@ void TestAnnotationSession::emptyMaskRle() {
     AnnotationObject obj;
     obj.id = "ann_001";
     obj.label = "test";
-    obj.maskRle = "";  // 空 RLE
+    obj.maskRle = ""; // 空 RLE
 
     QJsonObject json = obj.toJson();
     AnnotationObject restored = AnnotationObject::fromJson(json);
@@ -206,6 +213,120 @@ void TestAnnotationSession::largeCoordinates() {
     QCOMPARE(restored.bbox.y(), 400.0);
     QCOMPARE(restored.polygon[0].x(), 18000.0);
     QCOMPARE(restored.polygon[2].y(), 450.0);
+}
+
+// 批3 复核二轮（P1-5）：合法 JSON 但非对象/字段类型错误必须失败关闭，
+// 不得静默当空会话载入（否则追加保存会覆盖损坏原文件）
+void TestAnnotationSession::loadRejectsMalformedFiles() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    auto write = [&](const QString& name, const QByteArray& content) -> QString {
+        const QString path = dir.filePath(name);
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly))
+            return QString();
+        f.write(content);
+        f.close();
+        return path;
+    };
+
+    QString err;
+    // 合法 JSON 数组 → 拒绝（旧实现 doc.object() 静默得到空对象）
+    const QString arrayPath = write(QStringLiteral("array.json"), R"([{"id":"a"}])");
+    QVERIFY(!arrayPath.isEmpty());
+    AnnotationSession s = AnnotationSession::load(arrayPath, &err);
+    QVERIFY(!err.isEmpty());
+    QCOMPARE(s.annotations.size(), 0);
+    QVERIFY(err.contains(QStringLiteral("JSON object")));
+
+    // annotations 非数组 → 拒绝
+    err.clear();
+    const QString badAnn = write(QStringLiteral("badann.json"), R"({"imagePath":"x","annotations":{"a":1}})");
+    s = AnnotationSession::load(badAnn, &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("annotations")));
+
+    // imageWidth 非数值 → 拒绝
+    err.clear();
+    const QString badW = write(QStringLiteral("badw.json"), R"({"imageWidth":"640","annotations":[]})");
+    s = AnnotationSession::load(badW, &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("imageWidth")));
+
+    // imagePath 非字符串 → 拒绝
+    err.clear();
+    const QString badP = write(QStringLiteral("badp.json"), R"({"imagePath":42,"annotations":[]})");
+    s = AnnotationSession::load(badP, &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("imagePath")));
+
+    // 合法对象（无可选字段）→ 接受
+    err.clear();
+    const QString good = write(QStringLiteral("good.json"), R"({"annotations":[]})");
+    s = AnnotationSession::load(good, &err);
+    QVERIFY2(err.isEmpty(), qPrintable(err));
+}
+
+// QSaveFile 原子写：失败路径显式报错；成功覆写不残留临时文件
+void TestAnnotationSession::saveReportsFailureAndKeepsOriginal() {
+    AnnotationSession session;
+    session.imagePath = QStringLiteral("/data/x.png");
+
+    // 不可创建路径 → false + error（旧实现忽略 write 结果假成功）
+    QString err;
+    QVERIFY(!session.save(QStringLiteral("/nonexistent_dir_deeplux_anno/fail.json"), &err));
+    QVERIFY(!err.isEmpty());
+
+    // 正常保存 → 文件可读回，且目录中不残留 QSaveFile 临时文件
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("ok.deeplux-anno.json"));
+    err.clear();
+    QVERIFY(session.save(path, &err));
+    QVERIFY2(err.isEmpty(), qPrintable(err));
+    QStringList entries = QDir(dir.path()).entryList(QDir::Files);
+    QCOMPARE(entries.size(), 1); // 仅目标文件，无 .xxxx 临时残留
+    QString loadErr;
+    const AnnotationSession restored = AnnotationSession::load(path, &loadErr);
+    QVERIFY(loadErr.isEmpty());
+    QCOMPARE(restored.imagePath, QStringLiteral("/data/x.png"));
+}
+
+// 批3 复核二轮（P1-4）：图像摘要确定性、判别性与序列化
+void TestAnnotationSession::imageDigestDeterministicAndSerialized() {
+    QImage a(8, 6, QImage::Format_RGB32);
+    a.fill(Qt::gray);
+    QImage aCopy = a.copy();
+    QImage b(8, 6, QImage::Format_RGB32);
+    b.fill(Qt::gray);
+    b.setPixel(3, 3, qRgb(255, 0, 0)); // 单像素差异
+
+    const QString digestA = AnnotationSession::computeImageDigest(a);
+    QVERIFY(!digestA.isEmpty());
+    QCOMPARE(AnnotationSession::computeImageDigest(aCopy), digestA);      // 确定性
+    QVERIFY(AnnotationSession::computeImageDigest(b) != digestA);         // 单像素差异可判别
+    QCOMPARE(AnnotationSession::computeImageDigest(QImage()), QString()); // 空图 → 空摘要
+    // 同像素不同格式（规范化 ARGB32）摘要一致
+    const QImage aArgb = a.convertToFormat(QImage::Format_ARGB32);
+    QCOMPARE(AnnotationSession::computeImageDigest(aArgb), digestA);
+
+    // 摘要随会话序列化往返
+    AnnotationSession session;
+    session.imageDigest = digestA;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("digest.deeplux-anno.json"));
+    QString err;
+    QVERIFY(session.save(path, &err));
+    const AnnotationSession restored = AnnotationSession::load(path, &err);
+    QVERIFY(err.isEmpty());
+    QCOMPARE(restored.imageDigest, digestA);
+    // 旧文件（无 imageDigest 字段）加载 → 空摘要（兼容）
+    QFile f(dir.filePath(QStringLiteral("legacy.json")));
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write(R"({"imagePath":"p","imageWidth":1,"imageHeight":1,"annotations":[]})");
+    f.close();
+    const AnnotationSession legacy = AnnotationSession::load(dir.filePath(QStringLiteral("legacy.json")), &err);
+    QVERIFY(err.isEmpty());
+    QVERIFY(legacy.imageDigest.isEmpty());
 }
 
 QTEST_MAIN(TestAnnotationSession)

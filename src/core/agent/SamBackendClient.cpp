@@ -18,6 +18,7 @@
 #include <QStandardPaths>
 #include <QStringList>
 #include <QUrl>
+#include <cmath>
 
 namespace DeepLux {
 
@@ -730,14 +731,23 @@ void SamBackendClient::onPredictReply() {
         return;
     }
 
-    const QString status = obj.value("status").toString();
-    if (status == "error") {
+    // 批3 复核二轮（P1-3）：响应严格失败关闭。真实 sam_server 成功响应不带
+    // status 字段——"缺失 status"仅进入下方数据字段严格校验；显式失败标记
+    // （status=error / ok=false / 非空 error 字段）与未知 status 均按错误处理，
+    // 字段类型/长度/有限值/score 范围逐项校验，杜绝 toArray()/toDouble() 把
+    // 字符串、布尔值或缺失字段静默转零后"三个错误坐标成为有效多边形"。
+    const auto reject = [this](const QString& message) {
         setState(State::Error);
-        emit errorOccurred(obj.value("error").toString(tr("预测失败")));
+        emit errorOccurred(message);
         settleReply(m_pendingPredictReply);
+    };
+
+    const QString status = obj.value("status").toString();
+    if (status == QLatin1String("error")) {
+        reject(obj.value("error").toString(tr("预测失败")));
         return;
     }
-    if (status == "invalid_embedding" && !m_imageRetryPending && !m_lastImagePath.isEmpty()) {
+    if (status == QLatin1String("invalid_embedding") && !m_imageRetryPending && !m_lastImagePath.isEmpty()) {
         m_imageRetryPending = true;
         Logger::instance().info(tr("收到 invalid_embedding，自动重新 setImage 并重试"), "SamBackend");
         setState(State::LoadingModel);
@@ -745,44 +755,105 @@ void SamBackendClient::onPredictReply() {
         setImage(m_lastImagePath);
         return;
     }
-    if (status == "invalid_embedding") {
-        setState(State::Error);
-        emit errorOccurred(tr("embedding 无效，重试失败"));
-        settleReply(m_pendingPredictReply);
+    if (status == QLatin1String("invalid_embedding")) {
+        reject(tr("embedding 无效，重试失败"));
+        return;
+    }
+    if (!status.isEmpty() && status != QLatin1String("ok")) {
+        reject(tr("预测失败：未知状态 %1").arg(status));
+        return;
+    }
+    const QJsonValue okValue = obj.value("ok");
+    if (okValue.isBool() && !okValue.toBool()) {
+        reject(obj.value("error").toString(tr("预测失败：后端返回 ok=false")));
+        return;
+    }
+    const QJsonValue errorValue = obj.value("error");
+    if (errorValue.isString() && !errorValue.toString().isEmpty()) {
+        reject(tr("预测失败：%1").arg(errorValue.toString()));
         return;
     }
 
+    const QJsonValue polygonValue = obj.value("polygon");
+    if (!polygonValue.isArray()) {
+        reject(tr("预测失败：polygon 必须为数组"));
+        return;
+    }
     QList<QPointF> polygon;
-    QJsonArray polyArr = obj.value("polygon").toArray();
+    const QJsonArray polyArr = polygonValue.toArray();
     for (const QJsonValue& v : polyArr) {
-        QJsonArray pt = v.toArray();
-        if (pt.size() >= 2) {
-            polygon.append(QPointF(pt.at(0).toDouble(), pt.at(1).toDouble()));
+        if (!v.isArray() || v.toArray().size() != 2 || !v.toArray().at(0).isDouble() || !v.toArray().at(1).isDouble()) {
+            reject(tr("预测失败：polygon 元素必须为 [x,y] 数值对"));
+            return;
         }
+        const QPointF point(v.toArray().at(0).toDouble(), v.toArray().at(1).toDouble());
+        if (!std::isfinite(point.x()) || !std::isfinite(point.y())) {
+            reject(tr("预测失败：polygon 坐标必须为有限数值"));
+            return;
+        }
+        polygon.append(point);
     }
 
-    QJsonArray bboxArr = obj.value("bbox").toArray();
     QRectF bbox;
-    if (bboxArr.size() >= 4) {
-        bbox = QRectF(bboxArr.at(0).toDouble(), bboxArr.at(1).toDouble(), bboxArr.at(2).toDouble(),
-                      bboxArr.at(3).toDouble());
+    const QJsonValue bboxValue = obj.value("bbox");
+    if (!bboxValue.isUndefined() && !bboxValue.isNull()) {
+        if (!bboxValue.isArray() || bboxValue.toArray().size() != 4) {
+            reject(tr("预测失败：bbox 必须为 [x,y,w,h] 4 数值或缺省"));
+            return;
+        }
+        const QJsonArray bboxArr = bboxValue.toArray();
+        double vals[4];
+        for (int i = 0; i < 4; ++i) {
+            if (!bboxArr.at(i).isDouble() || !std::isfinite(bboxArr.at(i).toDouble())) {
+                reject(tr("预测失败：bbox 必须为有限数值"));
+                return;
+            }
+            vals[i] = bboxArr.at(i).toDouble();
+        }
+        bbox = QRectF(vals[0], vals[1], vals[2], vals[3]);
     }
 
-    double score = obj.value("score").toDouble(0.0);
-    QString maskRle = obj.value("mask_rle").toString();
-    const QString model = obj.value("model_name").toString();
+    const QJsonValue scoreValue = obj.value("score");
+    if (!scoreValue.isDouble() || !std::isfinite(scoreValue.toDouble()) || scoreValue.toDouble() < 0.0 ||
+        scoreValue.toDouble() > 1.0) {
+        reject(tr("预测失败：score 必须为 [0,1] 有限数值"));
+        return;
+    }
+    const double score = scoreValue.toDouble();
+
+    const QJsonValue rleValue = obj.value("mask_rle");
+    if (!rleValue.isUndefined() && !rleValue.isNull() && !rleValue.isString()) {
+        reject(tr("预测失败：mask_rle 必须为字符串或缺省"));
+        return;
+    }
+    const QString maskRle = rleValue.toString();
+
+    const QJsonValue modelValue = obj.value("model_name");
+    if (!modelValue.isUndefined() && !modelValue.isNull() && !modelValue.isString()) {
+        reject(tr("预测失败：model_name 必须为字符串或缺省"));
+        return;
+    }
+    const QString model = modelValue.toString();
     if (!model.isEmpty())
         m_modelName = model;
 
-    // Decode optional mask_png_base64 into a QImage so the UI can render the actual mask.
+    // mask_png_base64：类型严格校验；base64/PNG 解码失败降级为无掩膜像素
+    // （仅显示辅助，不参与区域契约，不值得失败关闭整个预测）
     QImage maskImage;
-    const QString maskPngB64 = obj.value("mask_png_base64").toString();
-    if (!maskPngB64.isEmpty()) {
-        const QByteArray pngData = QByteArray::fromBase64(maskPngB64.toLatin1());
-        if (maskImage.loadFromData(pngData, "PNG"))
-            maskImage = maskImage.convertToFormat(QImage::Format_ARGB32);
-        else
-            maskImage = QImage();
+    const QJsonValue pngValue = obj.value("mask_png_base64");
+    if (!pngValue.isUndefined() && !pngValue.isNull()) {
+        if (!pngValue.isString()) {
+            reject(tr("预测失败：mask_png_base64 必须为字符串或缺省"));
+            return;
+        }
+        const QString maskPngB64 = pngValue.toString();
+        if (!maskPngB64.isEmpty()) {
+            const QByteArray pngData = QByteArray::fromBase64(maskPngB64.toLatin1());
+            if (maskImage.loadFromData(pngData, "PNG"))
+                maskImage = maskImage.convertToFormat(QImage::Format_ARGB32);
+            else
+                maskImage = QImage();
+        }
     }
 
     setState(State::Ready);

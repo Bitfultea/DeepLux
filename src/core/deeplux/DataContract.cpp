@@ -206,8 +206,10 @@ bool isRegion2D(const QVariant& value) {
             if (!isFinitePoint(p))
                 return false;
         }
-        // 无效 bbox 由消费者忽略（polygon 推导或失败关闭），仅需拦截"看似有效但含非有限值"
-        if (region.bbox.isValid() && !isFiniteRect(region.bbox))
+        // 批3 复核二轮（P2-6）：无条件有限性检查——NaN 宽/高的 bbox 因 isValid()
+        // 为假会跳过条件式检查，但载荷仍携带非有限值（消费者直读 bbox 即泄漏
+        // NaN）；默认构造 QRectF(0,0,0,0) 各分量有限，polygon-only 形态不受影响
+        if (!isFiniteRect(region.bbox))
             return false;
         if (!std::isfinite(region.score) || region.score < 0.0 || region.score > 1.0)
             return false;
