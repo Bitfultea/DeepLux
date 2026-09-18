@@ -1157,6 +1157,19 @@ void SamAnnotatorDialog::onSplitSelected() {
             tr("拆分被拒绝：连通分量数超过上限 %1（碎片化区域请先用形态学/橡皮擦整理）").arg(kMaxSplitComponents));
         return;
     }
+    // 批3 复核三轮（P1-3）：物化前内存预算门禁——connectedComponents 为每个
+    // 分量分配整图二值掩膜（1 字节/像素），派生对象显示掩膜为 ARGB32
+    // （4 字节/像素），峰值按 分量数×5 字节/像素 估算；超预算拒绝，消除
+    // "分量数合规但大图×分量数"的确定性内存峰值（4K×64 ≈ 530MB，
+    // 6400 万像素图可接近 4GB）
+    constexpr qint64 kMaxSplitMaterializeBytes = 256LL * 1024 * 1024;
+    const qint64 estimateBytes = qint64(componentCount) * qint64(binary.width()) * qint64(binary.height()) * 5;
+    if (estimateBytes > kMaxSplitMaterializeBytes) {
+        setStatusText(tr("拆分被拒绝：预计物化内存约 %1 MB，超过预算 %2 MB（分量过多或图像过大）")
+                          .arg(estimateBytes / (1024 * 1024))
+                          .arg(kMaxSplitMaterializeBytes / (1024 * 1024)));
+        return;
+    }
     const QList<QImage> components = MaskOps::connectedComponents(binary);
     // 最大分量（像素数，平局取 raster 序首个）保留原对象身份，其余为派生对象
     int largest = 0;
@@ -1440,7 +1453,34 @@ void SamAnnotatorDialog::updateSessionFromImage() {
     m_session->imagePath = m_imagePath;
     m_session->imageWidth = m_currentImage.width();
     m_session->imageHeight = m_currentImage.height();
+    // 批3 复核三轮（P1-1）：新图绑定路径同步写入像素摘要——保存的会话文件
+    // 自始携带摘要，打开/Agent 追加时才能校验图像未被替换
+    m_session->imageDigest = AnnotationSession::computeImageDigest(m_currentImage);
     m_session->modelName = m_samClient->modelName().isEmpty() ? QStringLiteral("sam") : m_samClient->modelName();
+}
+
+bool SamAnnotatorDialog::saveAnnotationFile(const QString& filePath, QString* error) {
+    if (m_session->annotations.isEmpty()) {
+        const QString message = tr("当前没有标注对象，无需保存");
+        if (error)
+            *error = message;
+        setStatusText(message);
+        return false;
+    }
+    // 仅当内存图像与会话绑定路径一致时才允许回写会话元数据（含摘要补记）；
+    // 防止"打开会话但图像缺失"时用陈旧内存图像覆盖已加载会话的字段
+    if (m_session->imagePath.isEmpty() || m_session->imagePath == m_imagePath)
+        updateSessionFromImage();
+    QString saveError;
+    if (!m_session->save(filePath, &saveError)) {
+        if (error)
+            *error = saveError;
+        setStatusText(tr("保存失败：%1").arg(saveError));
+        return false;
+    }
+    setStatusText(tr("标注会话已保存（%1 个对象）").arg(m_session->annotations.size()));
+    Logger::instance().info(tr("标注会话已保存至 %1").arg(filePath), "Annotation");
+    return true;
 }
 
 void SamAnnotatorDialog::openImageFromFile(const QString& suggestedPath) {
@@ -1617,12 +1657,8 @@ void SamAnnotatorDialog::onSaveSession() {
         return;
 
     QString err;
-    updateSessionFromImage();
-    if (!m_session->save(path, &err)) {
+    if (!saveAnnotationFile(path, &err))
         QMessageBox::warning(this, tr("保存失败"), err);
-        return;
-    }
-    Logger::instance().info(tr("标注会话已保存至 %1").arg(path), "Annotation");
 }
 
 void SamAnnotatorDialog::onExportLabelMe() {
@@ -1636,7 +1672,10 @@ void SamAnnotatorDialog::onExportLabelMe() {
         return;
 
     QString err;
-    updateSessionFromImage();
+    // 批3 复核三轮（P1-1）：仅内存图像与会话绑定一致时才回写会话元数据，
+    // 防止"打开会话但图像缺失"时陈旧图像覆盖已加载会话字段（含摘要）
+    if (m_session->imagePath.isEmpty() || m_session->imagePath == m_imagePath)
+        updateSessionFromImage();
     if (!LabelMeExporter::exportToFile(*m_session, path, &err)) {
         QMessageBox::warning(this, tr("导出失败"), err);
         return;
@@ -1760,13 +1799,34 @@ void SamAnnotatorDialog::onOpenAnnotation() {
 }
 
 bool SamAnnotatorDialog::openAnnotationFile(const QString& filePath, QString* error) {
+    const auto failOpen = [this, error](const QString& message) {
+        if (error)
+            *error = message;
+        setStatusText(message);
+        return false;
+    };
     QString loadError;
     const AnnotationSession loaded = AnnotationSession::load(filePath, &loadError);
-    if (!loadError.isEmpty()) {
-        if (error)
-            *error = loadError;
-        setStatusText(tr("打开标注失败：%1").arg(loadError));
-        return false;
+    if (!loadError.isEmpty())
+        return failOpen(tr("打开标注失败：%1").arg(loadError));
+
+    // 批3 复核三轮（P1-1）：先校验后换态——摘要不符失败关闭时当前会话/撤销栈/
+    // overlay 完全不动（旧实现先替换状态再加载图像，校验失败已污染对话框）
+    QImage sessionImage;
+    if (!loaded.imagePath.isEmpty() && QFileInfo::exists(loaded.imagePath))
+        sessionImage = QImage(loaded.imagePath);
+    bool legacyUnverified = false;
+    if (!sessionImage.isNull()) {
+        if (!loaded.imageDigest.isEmpty()) {
+            const QString computed = AnnotationSession::computeImageDigest(sessionImage);
+            if (computed != loaded.imageDigest)
+                return failOpen(tr("打开标注失败：会话图像摘要与原路径文件内容不符（图像可能已被替换），拒绝打开"));
+        } else if (!loaded.annotations.isEmpty()) {
+            // 旧版无摘要会话：无法校验图像未被替换。不拒绝打开（历史数据不应
+            // 被锁死，错位由用户在叠加层可见），但不在打开时静默补摘要——
+            // 用户核对后走保存路径，由保存以内存图像补记摘要
+            legacyUnverified = true;
+        }
     }
 
     // 批2 复核二轮（P1-1）：会话重开必须清旧撤销命令——批2 快照命令为整表
@@ -1774,8 +1834,7 @@ bool SamAnnotatorDialog::openAnnotationFile(const QString& filePath, QString* er
     if (m_undoStack)
         m_undoStack->clear();
     clearCurrentPrompt();
-    // 清理旧会话 id 的 overlay 对象掩膜缓存与预览（原实现漏清 overlay 侧，
-    // 且误清新会话 id）
+    // 清理旧会话 id 的 overlay 对象掩膜缓存与预览
     if (m_overlay) {
         if (m_session) {
             for (const AnnotationObject& obj : m_session->annotations)
@@ -1790,27 +1849,30 @@ bool SamAnnotatorDialog::openAnnotationFile(const QString& filePath, QString* er
     delete m_session;
     m_session = new AnnotationSession(loaded);
 
-    // 尝试加载原图
-    if (!m_session->imagePath.isEmpty() && QFileInfo::exists(m_session->imagePath)) {
-        QImage img(m_session->imagePath);
-        if (!img.isNull()) {
-            m_currentImage = img;
-            m_imagePath = m_session->imagePath;
-            HImageWidget* target = activeImageWidget();
-            if (target) {
-                target->setImage(img);
-                target->fitToWindow();
-            }
-            refreshOverlayCoordConverter();
+    if (!sessionImage.isNull()) {
+        m_currentImage = sessionImage;
+        m_imagePath = loaded.imagePath;
+        HImageWidget* target = activeImageWidget();
+        if (target) {
+            target->setImage(sessionImage);
+            target->fitToWindow();
         }
+        refreshOverlayCoordConverter();
     }
+    // 批3 复核三轮（P1-1）：不再调用 updateSessionFromImage()——已加载会话的
+    // imagePath/尺寸/modelName/摘要以文件为准；图像缺失时严禁用陈旧的内存
+    // 图像覆盖会话绑定字段（那会把会话静默重绑到无关图像）
 
     refreshObjectList();
     if (m_overlay)
         m_overlay->setAnnotations(m_session->annotations);
-    updateSessionFromImage();
     prepareBackendImage();
-    setStatusText(tr("已打开标注会话（%1 个对象）").arg(m_session->annotations.size()));
+    if (legacyUnverified)
+        setStatusText(tr("已打开标注会话（%1 个对象）——警告：旧版会话无图像摘要，无法校验图像是否被替换，"
+                         "请核对标注对齐后再保存")
+                          .arg(m_session->annotations.size()));
+    else
+        setStatusText(tr("已打开标注会话（%1 个对象）").arg(m_session->annotations.size()));
     Logger::instance().info(tr("已打开标注会话 %1").arg(filePath), "Annotation");
     return true;
 }
@@ -1830,7 +1892,9 @@ void SamAnnotatorDialog::onExportYoloSeg() {
     if (path.isEmpty())
         return;
     QString err;
-    updateSessionFromImage();
+    // 批3 复核三轮（P1-1）：同 LabelMe 导出的一致性守卫
+    if (m_session->imagePath.isEmpty() || m_session->imagePath == m_imagePath)
+        updateSessionFromImage();
     if (!YoloSegExporter::exportToFile(*m_session, path, m_categories, &err)) {
         QMessageBox::warning(this, tr("导出失败"), err);
         return;

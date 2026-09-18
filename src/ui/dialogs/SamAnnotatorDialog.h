@@ -70,8 +70,13 @@ public:
     AnnotationSession session() const;
 
     // 从文件加载并替换标注会话（批2 复核二轮 P1-1：清撤销栈/旧掩膜缓存，
+    // 批3 复核三轮 P1-1：先校验图像摘要后换态，不符拒绝且当前状态不动；
     // 失败关闭返回 false 并给出 error；onOpenAnnotation 与测试共用）
     bool openAnnotationFile(const QString& filePath, QString* error = nullptr);
+
+    // 保存标注会话到文件（批3 复核三轮 P1-1：保存路径写入图像摘要，
+    // 内存图像与会话绑定不一致时不覆盖会话字段；onSaveSession 与测试共用）
+    bool saveAnnotationFile(const QString& filePath, QString* error = nullptr);
 
     // 模式枚举（与 AnnotationOverlayWidget::Mode 对齐；Eraser：SAM 批2 掩膜橡皮擦）
     enum class ToolMode { Select, PositivePoint, NegativePoint, Box, Eraser };

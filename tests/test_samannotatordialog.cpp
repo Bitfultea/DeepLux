@@ -6,8 +6,12 @@
 #include "ui/widgets/HImageWidget.h"
 
 #include <QCoreApplication>
+#include <QFile>
 #include <QImage>
 #include <QItemSelectionModel>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -15,6 +19,7 @@
 #include <QShortcut>
 #include <QSignalSpy>
 #include <QSpinBox>
+#include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QTest>
 #include <QToolButton>
@@ -78,6 +83,11 @@ private slots:
     void undoAfterOpenAnnotationDoesNotCorruptSession();
     void switchImageSameSizeResetsAnnotationState();
     void deleteUndoRestoresMaskCache();
+    // SAM 批3 复核三轮：图像摘要链路（保存写入/打开校验/legacy 警告+保存补记）
+    // 与拆分物化内存预算门禁
+    void saveWritesDigestAndOpenVerifiesIt();
+    void legacySessionOpensWithWarningAndBackfillsOnSave();
+    void splitMemoryBudgetRejected();
 
 private:
     QImage makeTestImage();
@@ -1035,6 +1045,124 @@ void TestSamAnnotatorDialog::deleteUndoRestoresMaskCache() {
     QCOMPARE(dlg.session().annotations.size(), 1);
     QCOMPARE(dlg.session().annotations.first().id, id);
     QCOMPARE(dlg.overlayWidget()->objectMask(id), mask); // 像素级还原，非 polygon 栅格化回落
+}
+
+// 批3 复核三轮（P1-1）：GUI 摘要链路闭合——新图会话内存即携带摘要、保存写入
+// 文件；同路径换图后打开被拒且对话框状态不被污染；恢复原图后打开成功、
+// 再保存摘要稳定
+void TestSamAnnotatorDialog::saveWritesDigestAndOpenVerifiesIt() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imagePath = dir.filePath(QStringLiteral("img.png"));
+    QImage img(200, 150, QImage::Format_RGB32);
+    img.fill(QColor("#22C55E"));
+    QVERIFY(img.save(imagePath, "PNG"));
+
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(img, imagePath);
+    QVERIFY(!confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20),
+                           makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)}))
+                 .isEmpty());
+    // 新图绑定路径内存会话即带摘要
+    QCOMPARE(dlg.session().imageDigest, AnnotationSession::computeImageDigest(img));
+
+    const QString sessionPath = dir.filePath(QStringLiteral("s.deeplux-anno.json"));
+    QVERIFY(dlg.saveAnnotationFile(sessionPath));
+    QString err;
+    const AnnotationSession saved = AnnotationSession::load(sessionPath, &err);
+    QVERIFY2(err.isEmpty(), qPrintable(err));
+    QCOMPARE(saved.imageDigest, AnnotationSession::computeImageDigest(img));
+
+    // 同路径换同尺寸异内容图 → 打开被拒（先校验后换态），对话框状态不被污染
+    QImage img2(200, 150, QImage::Format_RGB32);
+    img2.fill(QColor("#3B82F6"));
+    QVERIFY(img2.save(imagePath, "PNG"));
+    SamAnnotatorDialog dlg2;
+    QString openErr;
+    QVERIFY(!dlg2.openAnnotationFile(sessionPath, &openErr));
+    QVERIFY2(openErr.contains(QStringLiteral("摘要")), qPrintable(openErr));
+    QCOMPARE(dlg2.session().annotations.size(), 0);
+
+    // 恢复原图 → 打开成功，摘要原样保留
+    QVERIFY(img.save(imagePath, "PNG"));
+    SamAnnotatorDialog dlg3;
+    QVERIFY(dlg3.openAnnotationFile(sessionPath));
+    QCOMPARE(dlg3.session().annotations.size(), 1);
+    QCOMPARE(dlg3.session().imageDigest, AnnotationSession::computeImageDigest(img));
+    // 再保存：摘要稳定（内存图像重算一致）
+    const QString sessionPath2 = dir.filePath(QStringLiteral("s2.deeplux-anno.json"));
+    QVERIFY(dlg3.saveAnnotationFile(sessionPath2));
+    const AnnotationSession resaved = AnnotationSession::load(sessionPath2, &err);
+    QVERIFY(err.isEmpty());
+    QCOMPARE(resaved.imageDigest, AnnotationSession::computeImageDigest(img));
+}
+
+// 批3 复核三轮（P1-1）：legacy 无摘要会话——打开放行但显式警告且不静默补摘要；
+// 用户核对后走保存路径，由保存以内存图像补记
+void TestSamAnnotatorDialog::legacySessionOpensWithWarningAndBackfillsOnSave() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imagePath = dir.filePath(QStringLiteral("legacy_img.png"));
+    QImage img(200, 150, QImage::Format_RGB32);
+    img.fill(QColor("#22C55E"));
+    QVERIFY(img.save(imagePath, "PNG"));
+
+    const QString sessionPath = dir.filePath(QStringLiteral("legacy.deeplux-anno.json"));
+    {
+        const QJsonObject obj{
+            {"id", QStringLiteral("legacy1")},
+            {"label", QStringLiteral("old")},
+            {"bbox", QJsonArray{50, 40, 20, 20}},
+            {"polygon", QJsonArray{QJsonArray{50, 40}, QJsonArray{70, 40}, QJsonArray{70, 60}, QJsonArray{50, 60}}},
+            {"mask_rle", QString()},
+            {"score", 0.5},
+            {"model_name", QStringLiteral("sam")},
+            {"prompts", QJsonObject{{"points_pos", QJsonArray{}}, {"points_neg", QJsonArray{}}}}};
+        const QJsonObject session{{"imagePath", imagePath},
+                                  {"imageWidth", 200},
+                                  {"imageHeight", 150},
+                                  {"modelName", QStringLiteral("sam")},
+                                  {"annotations", QJsonArray{obj}}};
+        QFile f(sessionPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QJsonDocument(session).toJson());
+        f.close();
+    }
+
+    SamAnnotatorDialog dlg;
+    QVERIFY(dlg.openAnnotationFile(sessionPath));
+    QCOMPARE(dlg.session().annotations.size(), 1);
+    QVERIFY2(dlg.statusLabel()->text().contains(QStringLiteral("警告")), qPrintable(dlg.statusLabel()->text()));
+    QCOMPARE(dlg.session().imageDigest, QString()); // 打开不静默补摘要
+
+    // 用户确认路径：保存 → 以内存图像补记摘要（imagePath 一致守卫通过）
+    const QString outPath = dir.filePath(QStringLiteral("backfilled.deeplux-anno.json"));
+    QVERIFY(dlg.saveAnnotationFile(outPath));
+    QString err;
+    const AnnotationSession saved = AnnotationSession::load(outPath, &err);
+    QVERIFY2(err.isEmpty(), qPrintable(err));
+    QCOMPARE(saved.imageDigest, AnnotationSession::computeImageDigest(img));
+    QCOMPARE(saved.annotations.size(), 1);
+}
+
+// 批3 复核三轮（P1-3）：分量数合规（60 ≤ 64）但 分量数×整图字节 超物化预算
+// → 拆分失败关闭，不构造任何分量图像
+void TestSamAnnotatorDialog::splitMemoryBudgetRejected() {
+    QImage big(2000, 1500, QImage::Format_RGB32);
+    big.fill(Qt::black);
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(big, QStringLiteral("/tmp/deeplux_split_budget.png"));
+    QList<QRect> dots;
+    for (int i = 0; i < 12; ++i)
+        for (int j = 0; j < 5; ++j)
+            dots.append(QRect(10 + i * 40, 10 + j * 40, 2, 2)); // 60 个孤立小块
+    QVERIFY(!confirmObject(dlg, squarePolygon(10, 10, 20), QRectF(10, 10, 500, 200), makeDisplayMask(2000, 1500, dots))
+                 .isEmpty());
+    dlg.objectList()->setCurrentRow(0);
+    dlg.splitButton()->click();
+    // 60 × 2000×1500 × 5B ≈ 858MB > 256MB 预算
+    QVERIFY2(dlg.statusLabel()->text().contains(QStringLiteral("内存")), qPrintable(dlg.statusLabel()->text()));
+    QCOMPARE(dlg.session().annotations.size(), 1); // 失败关闭，未拆分
 }
 
 QTEST_MAIN(TestSamAnnotatorDialog)

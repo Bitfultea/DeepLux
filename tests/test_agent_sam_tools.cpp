@@ -5,9 +5,11 @@
 #include "helpers/SamTestServer.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QImage>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -318,6 +320,58 @@ private slots:
         QCOMPARE(unchanged.annotations.size(), 2);
         QCOMPARE(unchanged.imageWidth, 64);
         QCOMPARE(unchanged.imageDigest, written.imageDigest);
+    }
+
+    // 批3 复核三轮（P1-1）：无摘要既有会话——非空拒绝追加（无法证明图像未被
+    // 替换，不静默重绑定坐标系）；空会话允许并补记摘要
+    void samAnnotateDigestPolicyForLegacySessions() {
+        SamTestServer server;
+        QVERIFY(server.listen());
+        AgentActor actor;
+
+        auto writeSession = [&](const QString& path, const QJsonArray& annotations) {
+            const QJsonObject session{{"imagePath", m_imagePath},
+                                      {"imageWidth", 64},
+                                      {"imageHeight", 48},
+                                      {"modelName", QStringLiteral("sam")},
+                                      {"annotations", annotations}};
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(QJsonDocument(session).toJson());
+            f.close();
+        };
+
+        // legacy 非空会话（无 imageDigest 字段）→ 拒绝追加，文件不动
+        const QString legacyPath = QDir(m_dir.path()).filePath(QStringLiteral("legacy.deeplux-anno.json"));
+        writeSession(legacyPath, QJsonArray{QJsonObject{{"id", QStringLiteral("legacy1")},
+                                                        {"label", QStringLiteral("old")},
+                                                        {"bbox", QJsonArray{1, 2, 3, 4}},
+                                                        {"polygon", QJsonArray{}},
+                                                        {"mask_rle", QString()},
+                                                        {"score", 0.5},
+                                                        {"model_name", QStringLiteral("sam")}}});
+        auto r =
+            actor.executeTool(QStringLiteral("sam_annotate"), annotateParams(server.url(), legacyPath, m_imagePath));
+        QVERIFY2(r.value("error").toString().contains(QStringLiteral("缺少图像摘要")),
+                 qPrintable(r.value("error").toString()));
+        QString loadError;
+        const AnnotationSession unchanged = AnnotationSession::load(legacyPath, &loadError);
+        QVERIFY(loadError.isEmpty());
+        QCOMPARE(unchanged.annotations.size(), 1);
+
+        // 空会话（无摘要、无标注）→ 允许追加且补记摘要
+        const QString emptyPath = QDir(m_dir.path()).filePath(QStringLiteral("empty.deeplux-anno.json"));
+        writeSession(emptyPath, QJsonArray{});
+        r = actor.executeTool(QStringLiteral("sam_annotate"), annotateParams(server.url(), emptyPath, m_imagePath));
+        QVERIFY2(!r.contains("error"), qPrintable(r.value("error").toString()));
+        QCOMPARE(r.value("total").toInt(), 2);
+        const AnnotationSession filled = AnnotationSession::load(emptyPath, &loadError);
+        QVERIFY(loadError.isEmpty());
+        QVERIFY(!filled.imageDigest.isEmpty());
+        // 同图再追加（摘要一致）→ 允许
+        r = actor.executeTool(QStringLiteral("sam_annotate"), annotateParams(server.url(), emptyPath, m_imagePath));
+        QVERIFY2(!r.contains("error"), qPrintable(r.value("error").toString()));
+        QCOMPARE(r.value("total").toInt(), 4);
     }
 
     // 混图拒绝：既有会话绑定 imagePath，异图追加失败关闭且不改动文件

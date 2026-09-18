@@ -7,8 +7,124 @@
 #include <QRectF>
 #include <QSaveFile>
 #include <QUuid>
+#include <cmath>
 
 namespace DeepLux {
+
+namespace {
+
+// === 批3 复核三轮（P1-2）：会话文件严格 schema 校验 ===
+// 旧实现对数组元素直接 toObject()——{"annotations":[42]} 会静默变成空标注；
+// 尺寸接受负数/小数、摘要接受任意类型。畸形文件被当合法会话载入后，
+// Agent 追加保存会原子地覆盖原文件（物理写安全，但逻辑数据丢失）。
+
+bool isFiniteNumber(const QJsonValue& value) {
+    return value.isDouble() && std::isfinite(value.toDouble());
+}
+
+bool isIntegralNumber(const QJsonValue& value) {
+    return isFiniteNumber(value) && value.toDouble() == std::floor(value.toDouble());
+}
+
+bool validatePointArray(const QJsonArray& arr, const QString& context, QString* error) {
+    for (int i = 0; i < arr.size(); ++i) {
+        const QJsonValue pt = arr[i];
+        if (!pt.isArray() || pt.toArray().size() < 2 || !isFiniteNumber(pt.toArray()[0]) ||
+            !isFiniteNumber(pt.toArray()[1])) {
+            *error = QStringLiteral("%1: 元素必须为有限数值 [x,y]（索引 %2）").arg(context).arg(i);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool validatePromptJson(const QJsonValue& value, const QString& context, QString* error) {
+    if (value.isUndefined() || value.isNull())
+        return true;
+    if (!value.isObject()) {
+        *error = QStringLiteral("%1.prompts 必须为对象").arg(context);
+        return false;
+    }
+    const QJsonObject obj = value.toObject();
+    for (const char* key : {"points_pos", "points_neg"}) {
+        const QJsonValue arr = obj.value(QLatin1String(key));
+        if (arr.isUndefined() || arr.isNull())
+            continue;
+        if (!arr.isArray()) {
+            *error = QStringLiteral("%1.prompts.%2 必须为数组").arg(context, QLatin1String(key));
+            return false;
+        }
+        if (!validatePointArray(arr.toArray(), QStringLiteral("%1.prompts.%2").arg(context, QLatin1String(key)), error))
+            return false;
+    }
+    const QJsonValue box = obj.value(QStringLiteral("box"));
+    if (!box.isUndefined() && !box.isNull()) {
+        if (!box.isArray() || box.toArray().size() < 4) {
+            *error = QStringLiteral("%1.prompts.box 必须为 4 数值数组").arg(context);
+            return false;
+        }
+        for (int i = 0; i < 4; ++i) {
+            if (!isFiniteNumber(box.toArray()[i])) {
+                *error = QStringLiteral("%1.prompts.box 必须为有限数值").arg(context);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool validateObjectJson(const QJsonValue& value, int index, QString* error) {
+    const QString context = QStringLiteral("annotations[%1]").arg(index);
+    if (!value.isObject()) {
+        *error = QStringLiteral("%1 必须为对象").arg(context);
+        return false;
+    }
+    const QJsonObject obj = value.toObject();
+    const QJsonValue id = obj.value(QStringLiteral("id"));
+    if (!id.isString() || id.toString().isEmpty()) {
+        *error = QStringLiteral("%1.id 必须为非空字符串").arg(context);
+        return false;
+    }
+    for (const char* key : {"label", "mask_rle", "model_name"}) {
+        const QJsonValue v = obj.value(QLatin1String(key));
+        if (!v.isUndefined() && !v.isNull() && !v.isString()) {
+            *error = QStringLiteral("%1.%2 必须为字符串").arg(context, QLatin1String(key));
+            return false;
+        }
+    }
+    const QJsonValue bbox = obj.value(QStringLiteral("bbox"));
+    if (!bbox.isUndefined() && !bbox.isNull()) {
+        if (!bbox.isArray() || bbox.toArray().size() < 4) {
+            *error = QStringLiteral("%1.bbox 必须为 4 数值数组").arg(context);
+            return false;
+        }
+        for (int i = 0; i < 4; ++i) {
+            if (!isFiniteNumber(bbox.toArray()[i])) {
+                *error = QStringLiteral("%1.bbox 必须为有限数值").arg(context);
+                return false;
+            }
+        }
+    }
+    const QJsonValue polygon = obj.value(QStringLiteral("polygon"));
+    if (!polygon.isUndefined() && !polygon.isNull()) {
+        if (!polygon.isArray()) {
+            *error = QStringLiteral("%1.polygon 必须为数组").arg(context);
+            return false;
+        }
+        if (!validatePointArray(polygon.toArray(), context + QStringLiteral(".polygon"), error))
+            return false;
+    }
+    const QJsonValue score = obj.value(QStringLiteral("score"));
+    if (!score.isUndefined() && !score.isNull()) {
+        if (!isFiniteNumber(score) || score.toDouble() < 0.0 || score.toDouble() > 1.0) {
+            *error = QStringLiteral("%1.score 必须为 [0,1] 有限数值").arg(context);
+            return false;
+        }
+    }
+    return validatePromptJson(obj.value(QStringLiteral("prompts")), context, error);
+}
+
+} // namespace
 
 // === AnnotationPrompt ===
 
@@ -180,30 +296,40 @@ AnnotationSession AnnotationSession::load(const QString& filePath, QString* erro
         return AnnotationSession();
     }
 
-    // 批3 复核二轮（P1-5）：最小 schema 严格校验——旧实现把合法 JSON 数组/标量
-    // 经 doc.object() 静默当空会话载入，追加保存后覆盖损坏原文件
-    if (!doc.isObject()) {
+    // 批3 复核二轮（P1-5）+ 三轮（P1-2）：严格 schema 校验失败关闭——
+    // 旧实现把合法 JSON 数组经 doc.object() 静默当空会话载入、把 [42] 元素
+    // toObject() 成空标注；畸形文件被当合法会话后，追加保存会覆盖原文件
+    auto failLoad = [error](const QString& message) {
         if (error)
-            *error = QStringLiteral("Not a JSON object (invalid annotation session): %1").arg(filePath);
+            *error = message;
         return AnnotationSession();
-    }
+    };
+    if (!doc.isObject())
+        return failLoad(QStringLiteral("Not a JSON object (invalid annotation session): %1").arg(filePath));
     const QJsonObject obj = doc.object();
-    if (obj.contains(QLatin1String("annotations")) && !obj.value(QLatin1String("annotations")).isArray()) {
-        if (error)
-            *error = QStringLiteral("Field 'annotations' must be an array: %1").arg(filePath);
-        return AnnotationSession();
+    // annotations 必须存在且为数组，逐元素严格校验
+    if (!obj.contains(QLatin1String("annotations")) || !obj.value(QLatin1String("annotations")).isArray())
+        return failLoad(QStringLiteral("Field 'annotations' must be present and be an array: %1").arg(filePath));
+    const QJsonArray annArr = obj.value(QLatin1String("annotations")).toArray();
+    QString fieldError;
+    for (int i = 0; i < annArr.size(); ++i) {
+        if (!validateObjectJson(annArr[i], i, &fieldError))
+            return failLoad(QStringLiteral("%1: %2").arg(fieldError, filePath));
     }
+    // 尺寸：非负整数值（负数/小数/非数值均拒绝）
     for (const char* key : {"imageWidth", "imageHeight"}) {
-        if (obj.contains(QLatin1String(key)) && !obj.value(QLatin1String(key)).isDouble()) {
-            if (error)
-                *error = QStringLiteral("Field '%1' must be a number: %2").arg(QLatin1String(key), filePath);
-            return AnnotationSession();
-        }
+        const QJsonValue v = obj.value(QLatin1String(key));
+        if (v.isUndefined() || v.isNull())
+            continue;
+        if (!isIntegralNumber(v) || v.toDouble() < 0.0)
+            return failLoad(
+                QStringLiteral("Field '%1' must be a non-negative integer: %2").arg(QLatin1String(key), filePath));
     }
-    if (obj.contains(QLatin1String("imagePath")) && !obj.value(QLatin1String("imagePath")).isString()) {
-        if (error)
-            *error = QStringLiteral("Field 'imagePath' must be a string: %1").arg(filePath);
-        return AnnotationSession();
+    // 字符串字段类型受控
+    for (const char* key : {"imagePath", "imageDigest", "modelName"}) {
+        const QJsonValue v = obj.value(QLatin1String(key));
+        if (!v.isUndefined() && !v.isNull() && !v.isString())
+            return failLoad(QStringLiteral("Field '%1' must be a string: %2").arg(QLatin1String(key), filePath));
     }
 
     return fromJson(obj);

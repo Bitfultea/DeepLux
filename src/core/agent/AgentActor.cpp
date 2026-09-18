@@ -804,10 +804,18 @@ QJsonObject AgentActor::samAnnotate(const QJsonObject& params) {
                                              .arg(session.imageHeight)
                                              .arg(image.width())
                                              .arg(image.height())}};
-        if (!session.imageDigest.isEmpty() && session.imageDigest != digest)
-            return QJsonObject{{"error", QString("同路径图像内容已变化（摘要不符），拒绝把旧坐标系标注追加进新图")}};
+        // 批3 复核三轮（P1-1）：摘要策略收紧——有摘要必须一致；无摘要且已含
+        // 标注 = 无法证明图像未被替换，拒绝追加（不静默把旧坐标系标注重绑到
+        // 新图）；仅空会话允许补记摘要
+        if (!session.imageDigest.isEmpty()) {
+            if (session.imageDigest != digest)
+                return QJsonObject{
+                    {"error", QString("同路径图像内容已变化（摘要不符），拒绝把旧坐标系标注追加进新图")}};
+        } else if (!session.annotations.isEmpty()) {
+            return QJsonObject{{"error", QString("既有会话缺少图像摘要且已含标注，无法校验图像未被替换，拒绝追加")}};
+        }
     }
-    session.imageDigest = digest; // 无摘要的旧会话：本次追加时补记，此后受摘要保护
+    session.imageDigest = digest; // 仅三种路径到达：新文件 / 摘要一致 / 空会话补记
 
     // 全有或全无：任一 prompt 预测失败则不写文件
     const SamPredictOutcome outcome = runSamPredictBatch(serverUrl, imagePath, prompts, timeoutMs);

@@ -548,6 +548,17 @@ void TestSamBackendClient::predictResponseStrictParsing() {
     r = valid;
     r["mask_png_base64"] = QJsonArray{1};
     driveExpectError(r, QStringLiteral("mask_png_base64"));
+    // 批3 复核三轮（P2-4）：status/ok/error 存在即强制类型——status:true 经
+    // toString() 为空串会被当"字段缺失"，带合法 polygon 即误发 predictionReady
+    r = valid;
+    r["status"] = true;
+    driveExpectError(r, QStringLiteral("status"));
+    r = valid;
+    r["ok"] = QStringLiteral("false");
+    driveExpectError(r, QStringLiteral("ok"));
+    r = valid;
+    r["error"] = 42;
+    driveExpectError(r, QStringLiteral("error"));
 
     // 对照：无 status（真实 sam_server 成功响应不带 status）+ 字段合法 → 成功
     server.predictResponseOverride = valid;

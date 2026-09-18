@@ -263,6 +263,77 @@ void TestAnnotationSession::loadRejectsMalformedFiles() {
     const QString good = write(QStringLiteral("good.json"), R"({"annotations":[]})");
     s = AnnotationSession::load(good, &err);
     QVERIFY2(err.isEmpty(), qPrintable(err));
+
+    // === 批3 复核三轮（P1-2）：元素级/字段级严格校验 ===
+    // 缺少 annotations 字段 → 拒绝
+    err.clear();
+    s = AnnotationSession::load(write(QStringLiteral("noann.json"), R"({"imagePath":"x"})"), &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("annotations")));
+    // 元素非对象 → 拒绝（旧实现 toObject() 把 42 静默变空标注）
+    err.clear();
+    s = AnnotationSession::load(write(QStringLiteral("el42.json"), R"({"annotations":[42]})"), &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("annotations[0]")));
+    QCOMPARE(s.annotations.size(), 0);
+    // 元素缺 id / id 非字符串 → 拒绝
+    err.clear();
+    s = AnnotationSession::load(write(QStringLiteral("noid.json"), R"({"annotations":[{"label":"a"}]})"), &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("id")));
+    // score 越界 / 非数值 → 拒绝
+    err.clear();
+    s = AnnotationSession::load(write(QStringLiteral("badscore.json"), R"({"annotations":[{"id":"x","score":1.5}]})"),
+                                &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("score")));
+    err.clear();
+    s = AnnotationSession::load(write(QStringLiteral("strscore.json"), R"({"annotations":[{"id":"x","score":"9"}]})"),
+                                &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("score")));
+    // bbox 非数组 / 元素非数值 → 拒绝
+    err.clear();
+    s = AnnotationSession::load(write(QStringLiteral("badbbox.json"), R"({"annotations":[{"id":"x","bbox":"b"}]})"),
+                                &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("bbox")));
+    err.clear();
+    s = AnnotationSession::load(
+        write(QStringLiteral("nanbbox.json"), R"({"annotations":[{"id":"x","bbox":[1,2,3,"w"]}]})"), &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("bbox")));
+    // polygon 元素畸形 → 拒绝
+    err.clear();
+    s = AnnotationSession::load(
+        write(QStringLiteral("badpoly.json"), R"({"annotations":[{"id":"x","polygon":[["a","b"]]}]})"), &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("polygon")));
+    // 尺寸负数/小数 → 拒绝
+    err.clear();
+    s = AnnotationSession::load(write(QStringLiteral("negw.json"), R"({"imageWidth":-1,"annotations":[]})"), &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("imageWidth")));
+    err.clear();
+    s = AnnotationSession::load(write(QStringLiteral("fracw.json"), R"({"imageWidth":10.5,"annotations":[]})"), &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("imageWidth")));
+    // 摘要/模型名类型错误 → 拒绝
+    err.clear();
+    s = AnnotationSession::load(write(QStringLiteral("bigdigest.json"), R"({"imageDigest":42,"annotations":[]})"),
+                                &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("imageDigest")));
+    err.clear();
+    s = AnnotationSession::load(write(QStringLiteral("badmodel.json"), R"({"modelName":7,"annotations":[]})"), &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("modelName")));
+    // prompts 畸形 → 拒绝
+    err.clear();
+    s = AnnotationSession::load(
+        write(QStringLiteral("badprompt.json"), R"({"annotations":[{"id":"x","prompts":{"points_pos":[[1,"a"]]}}]})"),
+        &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("prompts")));
+    // 完整合法对象 → 接受
+    err.clear();
+    s = AnnotationSession::load(
+        write(QStringLiteral("fullok.json"),
+              R"({"imagePath":"p","imageWidth":8,"imageHeight":6,"imageDigest":"ab","modelName":"sam",
+                   "annotations":[{"id":"a1","label":"l","bbox":[1,2,3,4],"polygon":[[1,2],[3,4],[5,6]],
+                                   "mask_rle":"","score":0.5,"model_name":"sam",
+                                   "prompts":{"points_pos":[[1,2]],"points_neg":[],"box":[0,0,2,2]}}]})"),
+        &err);
+    QVERIFY2(err.isEmpty(), qPrintable(err));
+    QCOMPARE(s.annotations.size(), 1);
+    QCOMPARE(s.imageDigest, QStringLiteral("ab"));
 }
 
 // QSaveFile 原子写：失败路径显式报错；成功覆写不残留临时文件
