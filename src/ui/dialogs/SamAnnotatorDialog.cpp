@@ -1812,16 +1812,22 @@ bool SamAnnotatorDialog::openAnnotationFile(const QString& filePath, QString* er
 
     // 批3 复核三轮（P1-1）：先校验后换态——校验失败时当前会话/撤销栈/overlay
     // 完全不动（旧实现先替换状态再加载图像，校验失败已污染对话框）
+    // 批3 复核五轮（P1-2）：绑定规则统一——只要 imagePath 非空就必须可读
+    // （空会话不豁免：丢失绑定图像的空会话若放行，窗口保留旧图，后续标注
+    // 会经保存守卫之外的路径绑定到错误坐标系）；仅"无路径且无标注"允许作为
+    // 未绑定草稿打开（保存时经一致性守卫绑定当前图像）
     QImage sessionImage;
-    if (!loaded.imagePath.isEmpty() && QFileInfo::exists(loaded.imagePath))
+    if (!loaded.imagePath.isEmpty()) {
+        if (!QFileInfo::exists(loaded.imagePath))
+            return failOpen(tr("打开标注失败：会话绑定图像不可读（%1），拒绝打开").arg(loaded.imagePath));
         sessionImage = QImage(loaded.imagePath);
+        if (sessionImage.isNull())
+            return failOpen(tr("打开标注失败：会话绑定图像不可读（%1），拒绝打开").arg(loaded.imagePath));
+    } else if (!loaded.annotations.isEmpty()) {
+        return failOpen(tr("打开标注失败：非空会话未记录图像路径，拒绝在无关图像上显示标注"));
+    }
     bool legacyUnverified = false;
-    if (!loaded.annotations.isEmpty()) {
-        // 批3 复核四轮（P1-1）：非空会话必须有可读的绑定图像——图像缺失/不可读
-        // 时若仍换入会话，标注会被显示与编辑在陈旧的内存图像上（静默错位）
-        if (loaded.imagePath.isEmpty() || sessionImage.isNull())
-            return failOpen(tr("打开标注失败：会话绑定图像不可读（%1），拒绝在无关图像上显示标注")
-                                .arg(loaded.imagePath.isEmpty() ? tr("未记录路径") : loaded.imagePath));
+    if (!sessionImage.isNull()) {
         // 尺寸先行核对（legacy 无摘要会话至少还有尺寸可查）
         if (loaded.imageWidth > 0 && loaded.imageHeight > 0 &&
             (loaded.imageWidth != sessionImage.width() || loaded.imageHeight != sessionImage.height()))
@@ -1834,17 +1840,12 @@ bool SamAnnotatorDialog::openAnnotationFile(const QString& filePath, QString* er
             const QString computed = AnnotationSession::computeImageDigest(sessionImage);
             if (computed != loaded.imageDigest)
                 return failOpen(tr("打开标注失败：会话图像摘要与原路径文件内容不符（图像可能已被替换），拒绝打开"));
-        } else {
+        } else if (!loaded.annotations.isEmpty()) {
             // 旧版无摘要会话：尺寸已核对，内容无法校验。不拒绝打开（历史数据
             // 不应被锁死，错位由用户在叠加层可见），但不在打开时静默补摘要——
             // 用户核对后走保存路径，由保存以内存图像补记摘要
             legacyUnverified = true;
         }
-    } else if (!sessionImage.isNull() && !loaded.imageDigest.isEmpty()) {
-        // 空会话带摘要：同口径校验（防止把会话绑到已被替换的图像上继续标注）
-        const QString computed = AnnotationSession::computeImageDigest(sessionImage);
-        if (computed != loaded.imageDigest)
-            return failOpen(tr("打开标注失败：会话图像摘要与原路径文件内容不符（图像可能已被替换），拒绝打开"));
     }
 
     // 批2 复核二轮（P1-1）：会话重开必须清旧撤销命令——批2 快照命令为整表

@@ -4,6 +4,7 @@
 
 #include <QImage>
 #include <QPixmap>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -63,6 +64,40 @@ private slots:
         // 空 pixmap 不计入
         panel.addImageAttachment(QPixmap());
         QCOMPARE(panel.imageAttachments().size(), AgentChatPanel::kMaxImageAttachments);
+    }
+
+    // 批3 复核五轮（P1-1）：面板忙碌（上一请求 Thinking 中）时再次发送——
+    // onSendClicked 必须直接返回并保留输入。旧提交版无忙碌守卫：先清空输入，
+    // 而控制器忙碌拒绝保留全局 Thinking 状态，MainWindow 的全局状态检查
+    // 误判"本次发送成功"，第二条草稿丢失（复核负向测试已复现）
+    void busyPanelKeepsDraft() {
+        AgentChatPanel panel;
+        panel.setThinking(true); // 模拟上一请求进行中
+        panel.restoreDraft(QStringLiteral("忙碌中的草稿"), {});
+        QVERIFY(QMetaObject::invokeMethod(&panel, "onSendClicked", Qt::DirectConnection));
+        QCOMPARE(panel.inputDraftText(), QStringLiteral("忙碌中的草稿")); // 未被清空
+    }
+
+    // 批3 复核五轮（P2-4）：控制器附件上限显式拒绝并反馈（参数校验先于
+    // 状态/客户端校验，无客户端环境亦可确定性测试）
+    void controllerRejectsTooManyImages() {
+        AgentController& controller = AgentController::instance();
+        controller.shutdown();
+        QSignalSpy spy(&controller, &AgentController::llmErrorOccurred);
+        QImage img(4, 4, QImage::Format_RGB32);
+        img.fill(Qt::red);
+        QList<QPixmap> many;
+        for (int i = 0; i < AgentController::kMaxImageAttachments + 1; ++i)
+            many.append(QPixmap::fromImage(img));
+        controller.sendUserMessageWithImages(QStringLiteral("x"), many);
+        QCOMPARE(spy.count(), 1);
+        QVERIFY(spy.first().at(0).toString().contains(QStringLiteral("Too many image attachments")));
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    }
+
+    // 批3 复核五轮（P2-4）：面板与控制器附件上限为同一契约
+    void attachmentLimitContractAligned() {
+        QCOMPARE(AgentChatPanel::kMaxImageAttachments, AgentController::kMaxImageAttachments);
     }
 
     // restoreDraft 回填文本与限额内附件

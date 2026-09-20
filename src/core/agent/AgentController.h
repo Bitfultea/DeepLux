@@ -22,6 +22,11 @@ class DEEPLUX_API AgentController : public QObject {
 public:
     static AgentController& instance();
 
+    // 批3 复核五轮（P2-4）：图像附件上限——与 AgentChatPanel::kMaxImageAttachments
+    // 为同一契约（测试断言两者相等）；UI 源头限额之外，控制器在
+    // sendUserMessageWithImages 参数校验阶段显式拒绝并给出用户可见反馈
+    static constexpr int kMaxImageAttachments = 4;
+
     bool initialize();
     void shutdown();
     bool isInitialized() const {

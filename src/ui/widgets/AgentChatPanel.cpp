@@ -264,6 +264,11 @@ void AgentChatPanel::onThinkingTimeout() {
 }
 
 void AgentChatPanel::onSendClicked() {
+    // 批3 复核五轮（P1-1）：忙碌守卫——上一请求仍在进行（Thinking）时直接
+    // 返回、输入原样保留；不得先清空再依赖控制器全局状态反推"本次发送是否
+    // 成功"——忙碌拒绝会保留上一请求的 Thinking 状态，反推将误判为成功
+    if (m_isThinking)
+        return;
     QString text = m_inputEdit->toPlainText().trimmed();
     if (text.isEmpty() && m_imageAttachments.isEmpty())
         return;

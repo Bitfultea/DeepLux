@@ -348,6 +348,26 @@ void TestAnnotationSession::loadRejectsMalformedFiles() {
         &err);
     QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("imageDigest")));
 
+    // === 批3 复核五轮（P2-3）：超长数组拒绝——旧 size()<N 口径放行
+    // [x,y,extra]/五元素 bbox，反序列化与再次保存时静默丢弃多余字段 ===
+    err.clear();
+    s = AnnotationSession::load(
+        write(QStringLiteral("extrapt.json"), R"({"annotations":[{"id":"x","polygon":[[1,2,3]]}]})"), &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("polygon")));
+    err.clear();
+    s = AnnotationSession::load(
+        write(QStringLiteral("extrabbox.json"), R"({"annotations":[{"id":"x","bbox":[1,2,3,4,5]}]})"), &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("bbox")));
+    err.clear();
+    s = AnnotationSession::load(
+        write(QStringLiteral("extrabox.json"), R"({"annotations":[{"id":"x","prompts":{"box":[1,2,3,4,5]}}]})"), &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("box")));
+    // 短数组同样拒绝（回归护栏）
+    err.clear();
+    s = AnnotationSession::load(
+        write(QStringLiteral("shortpt.json"), R"({"annotations":[{"id":"x","polygon":[[1]]}]})"), &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("polygon")));
+
     // 完整合法对象（64 位十六进制摘要）→ 接受
     err.clear();
     s = AnnotationSession::load(write(QStringLiteral("fullok.json"),

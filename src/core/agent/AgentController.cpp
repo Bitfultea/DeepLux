@@ -256,6 +256,13 @@ void AgentController::sendUserMessage(const QString& message) {
 }
 
 void AgentController::sendUserMessageWithImages(const QString& message, const QList<QPixmap>& images) {
+    // 批3 复核五轮（P2-4）：附件上限（与 AgentChatPanel::kMaxImageAttachments
+    // 同一契约，测试断言两者相等）——参数校验先于状态/客户端校验，超限在
+    // 任何控制器状态下都得到明确反馈；UI 侧另有源头限额
+    if (images.size() > kMaxImageAttachments) {
+        emit llmErrorOccurred(QString("Too many image attachments (maximum %1)").arg(kMaxImageAttachments));
+        return;
+    }
     if (!m_initialized) {
         emit llmErrorOccurred("Agent not initialized");
         return;

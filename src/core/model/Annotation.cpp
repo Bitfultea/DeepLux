@@ -32,7 +32,9 @@ bool isIntegralNumber(const QJsonValue& value) {
 bool validatePointArray(const QJsonArray& arr, const QString& context, QString* error) {
     for (int i = 0; i < arr.size(); ++i) {
         const QJsonValue pt = arr[i];
-        if (!pt.isArray() || pt.toArray().size() < 2 || !isFiniteNumber(pt.toArray()[0]) ||
+        // 批3 复核五轮（P2-3）：长度严格 ==2——旧口径 size()<2 会放行
+        // [x,y,extra]，反序列化与再次保存时静默丢弃多余字段
+        if (!pt.isArray() || pt.toArray().size() != 2 || !isFiniteNumber(pt.toArray()[0]) ||
             !isFiniteNumber(pt.toArray()[1])) {
             *error = QStringLiteral("%1: 元素必须为有限数值 [x,y]（索引 %2）").arg(context).arg(i);
             return false;
@@ -62,7 +64,7 @@ bool validatePromptJson(const QJsonValue& value, const QString& context, QString
     }
     const QJsonValue box = obj.value(QStringLiteral("box"));
     if (!box.isUndefined() && !box.isNull()) {
-        if (!box.isArray() || box.toArray().size() < 4) {
+        if (!box.isArray() || box.toArray().size() != 4) { // 批3 复核五轮（P2-3）：严格 4 元素
             *error = QStringLiteral("%1.prompts.box 必须为 4 数值数组").arg(context);
             return false;
         }
@@ -97,7 +99,7 @@ bool validateObjectJson(const QJsonValue& value, int index, QString* error) {
     }
     const QJsonValue bbox = obj.value(QStringLiteral("bbox"));
     if (!bbox.isUndefined() && !bbox.isNull()) {
-        if (!bbox.isArray() || bbox.toArray().size() < 4) {
+        if (!bbox.isArray() || bbox.toArray().size() != 4) { // 批3 复核五轮（P2-3）：严格 4 元素
             *error = QStringLiteral("%1.bbox 必须为 4 数值数组").arg(context);
             return false;
         }

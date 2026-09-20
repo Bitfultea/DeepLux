@@ -91,6 +91,9 @@ private slots:
     // SAM 批3 复核四轮（P1-1）：绑定图像不可读/尺寸不符的非空会话拒绝打开
     void openRejectsSessionWithUnreadableImage();
     void openRejectsLegacySessionDimsMismatch();
+    // SAM 批3 复核五轮（P1-2）：绑定规则统一——imagePath 非空必须可读
+    // （空会话不豁免）；仅"无路径且无标注"允许作为未绑定草稿
+    void openRejectsEmptySessionWithLostImage();
 
 private:
     QImage makeTestImage();
@@ -1236,6 +1239,44 @@ void TestSamAnnotatorDialog::openRejectsLegacySessionDimsMismatch() {
     QVERIFY(!dlg.openAnnotationFile(sessionPath, &err));
     QVERIFY2(err.contains(QStringLiteral("尺寸")), qPrintable(err));
     QCOMPARE(dlg.session().annotations.size(), 0);
+}
+
+// 批3 复核五轮（P1-2）：绑定图像丢失的空会话同样拒绝——旧实现放行后窗口
+// 保留之前的图像，后续标注可能经保存守卫之外的路径绑定到错误坐标系
+void TestSamAnnotatorDialog::openRejectsEmptySessionWithLostImage() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString lostPath = dir.filePath(QStringLiteral("gone.png")); // 不存在
+    const QString sessionPath = dir.filePath(QStringLiteral("empty_lost.deeplux-anno.json"));
+    {
+        const QJsonObject session{
+            {"imagePath", lostPath}, {"imageWidth", 200}, {"imageHeight", 150}, {"annotations", QJsonArray{}}};
+        QFile f(sessionPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QJsonDocument(session).toJson());
+        f.close();
+    }
+
+    SamAnnotatorDialog dlg;
+    const QString windowImagePath = dir.filePath(QStringLiteral("window.png"));
+    dlg.setImageSnapshot(makeTestImage(), windowImagePath);
+    QString err;
+    QVERIFY(!dlg.openAnnotationFile(sessionPath, &err));
+    QVERIFY2(err.contains(QStringLiteral("不可读")), qPrintable(err));
+    // 当前会话绑定未被污染
+    QCOMPARE(dlg.session().imagePath, windowImagePath);
+
+    // 未绑定草稿（无路径且无标注）→ 允许打开，保存路径负责绑定当前图像
+    const QString draftPath = dir.filePath(QStringLiteral("draft.deeplux-anno.json"));
+    {
+        QFile f(draftPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(R"({"annotations":[]})");
+        f.close();
+    }
+    QVERIFY(dlg.openAnnotationFile(draftPath));
+    QCOMPARE(dlg.session().annotations.size(), 0);
+    QVERIFY(dlg.session().imagePath.isEmpty());
 }
 
 QTEST_MAIN(TestSamAnnotatorDialog)
