@@ -1640,12 +1640,25 @@ void MainWindow::setupMainLayout() {
         setAgentTabStatus(tr("Agent 正在思考"), false);
         m_agentChatPanel->setThinking(true);
         AgentController::instance().sendUserMessage(msg);
+        // 批3 复核三轮（P2-5）：校验期拒绝（未初始化/无客户端/忙碌）不会进入
+        // Thinking——发送未生效，回填草稿供用户原样重试（面板为乐观 UI 已清空；
+        // 已上屏的用户气泡保留，紧随的系统错误气泡说明未发送原因）
+        if (AgentController::instance().state() != AgentController::AgentState::Thinking) {
+            m_agentChatPanel->setThinking(false);
+            m_agentChatPanel->restoreDraft(msg, {});
+        }
     });
     connect(m_agentChatPanel, &AgentChatPanel::userMessageWithImagesSent, this,
             [this, setAgentTabStatus](const QString& msg, const QList<QPixmap>& images) {
                 setAgentTabStatus(tr("Agent 正在思考"), false);
                 m_agentChatPanel->setThinking(true);
                 AgentController::instance().sendUserMessageWithImages(msg, images);
+                // 批3 复核三轮（P2-5）：模型不支持图片/附件超限/未初始化等拒绝后
+                // 回填草稿与附件（同上）
+                if (AgentController::instance().state() != AgentController::AgentState::Thinking) {
+                    m_agentChatPanel->setThinking(false);
+                    m_agentChatPanel->restoreDraft(msg, images);
+                }
             });
     connect(&AgentController::instance(), &AgentController::llmResponseReceived, this,
             [this, setAgentTabStatus](const QString& content, const QJsonArray& toolCalls) {

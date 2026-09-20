@@ -31,6 +31,10 @@ public:
     void addMessage(AgentMessageBubble::Sender sender, const QString& text);
     void appendToLastMessage(const QString& text);
 
+    // 批3 复核二轮（P2-7）/四轮（P2-5）：附件数量上限与 AgentController
+    // 附件限额对齐——在源头拦截最常见的"发送后被拒、草稿已清"路径
+    static constexpr int kMaxImageAttachments = 4;
+
     void addImageAttachment(const QPixmap& pixmap);
     void showToolPreview(const QList<AgentToolPreviewCard::ToolItem>& tools);
     void clearToolPreview();
@@ -38,6 +42,11 @@ public:
     QList<QPixmap> imageAttachments() const {
         return m_imageAttachments;
     }
+    // 控制器拒绝发送（未初始化/无客户端/模型不支持图片/附件超限等）时由
+    // 调用方回填草稿，用户可原样重试——onSendClicked 为乐观 UI，已先行清空输入
+    void restoreDraft(const QString& text, const QList<QPixmap>& images);
+    // 当前输入框草稿文本（供测试断言回填）
+    QString inputDraftText() const;
 
     void setThinking(bool thinking);
 

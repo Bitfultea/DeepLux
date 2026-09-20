@@ -44,6 +44,7 @@ set(TEST_SOURCES
     test_agentcontroller.cpp
     test_agentbridge.cpp
     test_agente2e.cpp
+    test_agent_draft_restore.cpp
     test_variable_system_plugins.cpp
     test_measurementdata.cpp
     test_measuregap.cpp

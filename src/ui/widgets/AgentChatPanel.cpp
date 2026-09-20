@@ -164,6 +164,12 @@ void AgentChatPanel::appendToLastMessage(const QString& text) {
 }
 
 void AgentChatPanel::addImageAttachment(const QPixmap& pixmap) {
+    if (pixmap.isNull())
+        return;
+    // 批3 复核四轮（P2-5）：源头限额（与 AgentController 附件上限对齐），避免
+    // "附加成功→发送被控制器拒绝→草稿已清空无法重试"；超限静默拒绝
+    if (m_imageAttachments.size() >= kMaxImageAttachments)
+        return;
     m_imageAttachments.append(pixmap);
     updateStatusStrip();
 
@@ -435,3 +441,18 @@ void AgentChatPanel::updateStatusStrip() {
 }
 
 } // namespace DeepLux
+
+void AgentChatPanel::restoreDraft(const QString& text, const QList<QPixmap>& images) {
+    // 批3 复核二轮（P2-7）/四轮（P2-5）：控制器拒绝后回填草稿（文本 + 限额内
+    // 附件）。附件经公共入口 addImageAttachment 逐个回填：限额与附件条刷新
+    // 复用同一实现，不依赖内部布局细节
+    if (!text.isEmpty())
+        m_inputEdit->setPlainText(text);
+    for (const QPixmap& pixmap : images)
+        addImageAttachment(pixmap);
+    m_inputEdit->setFocus();
+}
+
+QString AgentChatPanel::inputDraftText() const {
+    return m_inputEdit->toPlainText();
+}

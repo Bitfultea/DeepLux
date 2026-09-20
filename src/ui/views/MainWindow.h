@@ -55,6 +55,11 @@ public:
     // 测试辅助：直接注册运行时模块到 m_flowModules
     Q_INVOKABLE void registerFlowModule(const QString& instanceId, IModule* module);
 
+    // 测试辅助：Agent 聊天面板（批3 复核四轮 P2-5 草稿恢复回归）
+    AgentChatPanel* agentChatPanel() const {
+        return m_agentChatPanel;
+    }
+
     // 测试辅助：重置检查器关闭状态
     void resetInspectorClosed();
     // 测试/截图辅助：统一选择入口（同步流程树/画布/检查器）
