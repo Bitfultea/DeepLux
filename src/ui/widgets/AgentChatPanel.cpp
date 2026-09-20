@@ -440,8 +440,6 @@ void AgentChatPanel::updateStatusStrip() {
     }
 }
 
-} // namespace DeepLux
-
 void AgentChatPanel::restoreDraft(const QString& text, const QList<QPixmap>& images) {
     // 批3 复核二轮（P2-7）/四轮（P2-5）：控制器拒绝后回填草稿（文本 + 限额内
     // 附件）。附件经公共入口 addImageAttachment 逐个回填：限额与附件条刷新
@@ -456,3 +454,5 @@ void AgentChatPanel::restoreDraft(const QString& text, const QList<QPixmap>& ima
 QString AgentChatPanel::inputDraftText() const {
     return m_inputEdit->toPlainText();
 }
+
+} // namespace DeepLux
