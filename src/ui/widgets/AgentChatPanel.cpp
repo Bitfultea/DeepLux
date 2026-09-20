@@ -268,17 +268,22 @@ void AgentChatPanel::onSendClicked() {
     if (text.isEmpty() && m_imageAttachments.isEmpty())
         return;
 
+    const QList<QPixmap> images = m_imageAttachments; // 清空前快照
     if (!text.isEmpty()) {
         addMessage(AgentMessageBubble::Sender::User, text);
     }
-    if (!m_imageAttachments.isEmpty()) {
-        addMessage(AgentMessageBubble::Sender::User, QString("[Image x%1]").arg(m_imageAttachments.size()));
-        emit userMessageWithImagesSent(text, m_imageAttachments);
-    } else {
-        emit userMessageSent(text);
+    if (!images.isEmpty()) {
+        addMessage(AgentMessageBubble::Sender::User, QString("[Image x%1]").arg(images.size()));
     }
+    // 批3 复核四轮（P2-5，隔离树实测）：先清空再 emit——控制器同步拒绝时
+    // MainWindow 接线在 emit 返回前调用 restoreDraft 回填；若清空发生在
+    // emit 之后，回填的草稿会被随即清掉（旧顺序在同步拒绝路径必然丢草稿）
     m_inputEdit->clear();
     clearImageAttachments();
+    if (!images.isEmpty())
+        emit userMessageWithImagesSent(text, images);
+    else
+        emit userMessageSent(text);
 }
 
 void AgentChatPanel::scrollToBottom() {
