@@ -3,6 +3,7 @@
 #include "ui/widgets/AgentChatPanel.h"
 
 #include <QImage>
+#include <QLabel>
 #include <QPixmap>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -98,6 +99,31 @@ private slots:
     // 批3 复核五轮（P2-4）：面板与控制器附件上限为同一契约
     void attachmentLimitContractAligned() {
         QCOMPARE(AgentChatPanel::kMaxImageAttachments, AgentController::kMaxImageAttachments);
+    }
+
+    // 批3 复核六轮（P2）：第 5 张附件被拒时必须给用户可见反馈——
+    // 静默丢弃会让控制器侧的明确错误反馈在正常 UI 路径永远不可达
+    void attachmentCapShowsUserFeedback() {
+        AgentChatPanel panel;
+        QImage img(8, 8, QImage::Format_RGB32);
+        img.fill(Qt::red);
+        for (int i = 0; i < AgentChatPanel::kMaxImageAttachments; ++i)
+            panel.addImageAttachment(QPixmap::fromImage(img));
+        QVERIFY(panel.attachmentNotice().isEmpty()); // 未超限无提示
+
+        panel.addImageAttachment(QPixmap::fromImage(img)); // 第 5 张 → 拒绝
+        QCOMPARE(panel.imageAttachments().size(), AgentChatPanel::kMaxImageAttachments);
+        QVERIFY2(panel.attachmentNotice().contains(QStringLiteral("最多")), qPrintable(panel.attachmentNotice()));
+        // UI 断言：超限提示经状态条对用户可见（文本或其提示通道）
+        QLabel* status = panel.findChild<QLabel*>(QStringLiteral("AgentChatStatusLabel"));
+        QVERIFY(status != nullptr);
+        const bool visible =
+            status->text().contains(QStringLiteral("最多")) || status->toolTip().contains(QStringLiteral("最多"));
+        QVERIFY2(visible, qPrintable(QStringLiteral("text=%1 tooltip=%2").arg(status->text(), status->toolTip())));
+
+        // 清空附件后提示复位
+        panel.clearImageAttachments();
+        QVERIFY(panel.attachmentNotice().isEmpty());
     }
 
     // restoreDraft 回填文本与限额内附件

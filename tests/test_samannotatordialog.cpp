@@ -94,6 +94,8 @@ private slots:
     // SAM 批3 复核五轮（P1-2）：绑定规则统一——imagePath 非空必须可读
     // （空会话不豁免）；仅"无路径且无标注"允许作为未绑定草稿
     void openRejectsEmptySessionWithLostImage();
+    // SAM 批3 复核六轮（P1）：无摘要非空 legacy 会话必须记录正数宽高
+    void openRejectsLegacySessionWithoutValidDims();
 
 private:
     QImage makeTestImage();
@@ -1277,6 +1279,62 @@ void TestSamAnnotatorDialog::openRejectsEmptySessionWithLostImage() {
     QVERIFY(dlg.openAnnotationFile(draftPath));
     QCOMPARE(dlg.session().annotations.size(), 0);
     QVERIFY(dlg.session().imagePath.isEmpty());
+}
+
+// 批3 复核六轮（P1）：无摘要的非空 legacy 会话——宽高缺失或单边为 0 时
+// 尺寸核对被跳过，打开后保存会以当前图像补记摘要、固化无从校验的绑定。
+// 修复后：必须记录正数宽高，否则失败关闭；宽高齐备则走 legacy 警告路径
+void TestSamAnnotatorDialog::openRejectsLegacySessionWithoutValidDims() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imagePath = dir.filePath(QStringLiteral("legacy.png"));
+    QVERIFY(makeTestImage().save(imagePath, "PNG")); // 200x150
+
+    auto writeLegacy = [&](const QString& name, const QJsonObject& extra) -> QString {
+        const QJsonObject obj{
+            {"id", QStringLiteral("l1")},
+            {"label", QStringLiteral("old")},
+            {"bbox", QJsonArray{50, 40, 20, 20}},
+            {"polygon", QJsonArray{QJsonArray{50, 40}, QJsonArray{70, 40}, QJsonArray{70, 60}, QJsonArray{50, 60}}},
+            {"mask_rle", QString()},
+            {"score", 0.5},
+            {"model_name", QStringLiteral("sam")},
+            {"prompts", QJsonObject{{"points_pos", QJsonArray{}}, {"points_neg", QJsonArray{}}}}};
+        QJsonObject session{{"imagePath", imagePath}, {"annotations", QJsonArray{obj}}};
+        for (auto it = extra.constBegin(); it != extra.constEnd(); ++it)
+            session.insert(it.key(), it.value());
+        const QString path = dir.filePath(name);
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly))
+            return QString();
+        f.write(QJsonDocument(session).toJson());
+        f.close();
+        return path;
+    };
+
+    SamAnnotatorDialog dlg;
+    QString err;
+    // (a) 宽高完全缺失 → 拒绝
+    const QString noDims = writeLegacy(QStringLiteral("nodims.json"), QJsonObject{});
+    QVERIFY(!noDims.isEmpty());
+    QVERIFY(!dlg.openAnnotationFile(noDims, &err));
+    QVERIFY2(err.contains(QStringLiteral("宽高")), qPrintable(err));
+    QCOMPARE(dlg.session().annotations.size(), 0); // 状态零污染
+    // (b) 单边为 0 → 拒绝
+    err.clear();
+    const QString zeroH =
+        writeLegacy(QStringLiteral("zeroH.json"), QJsonObject{{"imageWidth", 200}, {"imageHeight", 0}});
+    QVERIFY(!zeroH.isEmpty());
+    QVERIFY(!dlg.openAnnotationFile(zeroH, &err));
+    QVERIFY2(err.contains(QStringLiteral("宽高")), qPrintable(err));
+    // 对照：宽高齐备且与图像一致 → legacy 警告路径放行
+    const QString okDims =
+        writeLegacy(QStringLiteral("okdims.json"), QJsonObject{{"imageWidth", 200}, {"imageHeight", 150}});
+    QVERIFY(!okDims.isEmpty());
+    QVERIFY(dlg.openAnnotationFile(okDims));
+    QCOMPARE(dlg.session().annotations.size(), 1);
+    QVERIFY(dlg.statusLabel()->text().contains(QStringLiteral("警告")));
+    QCOMPARE(dlg.session().imageDigest, QString()); // 打开仍不静默补摘要
 }
 
 QTEST_MAIN(TestSamAnnotatorDialog)

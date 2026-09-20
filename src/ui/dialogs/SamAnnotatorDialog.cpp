@@ -1841,6 +1841,11 @@ bool SamAnnotatorDialog::openAnnotationFile(const QString& filePath, QString* er
             if (computed != loaded.imageDigest)
                 return failOpen(tr("打开标注失败：会话图像摘要与原路径文件内容不符（图像可能已被替换），拒绝打开"));
         } else if (!loaded.annotations.isEmpty()) {
+            // 批3 复核六轮（P1）：无摘要的非空 legacy 会话必须记录正数宽高——
+            // 尺寸是无摘要时唯一可核对的绑定证据；缺失或单边为 0 时失败关闭，
+            // 否则打开后保存路径会以当前图像补记摘要，把无从校验的绑定固化
+            if (loaded.imageWidth <= 0 || loaded.imageHeight <= 0)
+                return failOpen(tr("打开标注失败：旧版会话缺少图像摘要且未记录有效宽高，无法校验图像绑定，拒绝打开"));
             // 旧版无摘要会话：尺寸已核对，内容无法校验。不拒绝打开（历史数据
             // 不应被锁死，错位由用户在叠加层可见），但不在打开时静默补摘要——
             // 用户核对后走保存路径，由保存以内存图像补记摘要

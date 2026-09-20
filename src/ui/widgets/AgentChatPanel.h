@@ -47,6 +47,11 @@ public:
     void restoreDraft(const QString& text, const QList<QPixmap>& images);
     // 当前输入框草稿文本（供测试断言回填）
     QString inputDraftText() const;
+    // 批3 复核六轮（P2）：附件超限提示（达到上限被拒时置位并经状态条展示，
+    // 成功添加/清空附件后复位；访问器供测试断言）
+    QString attachmentNotice() const {
+        return m_attachmentNotice;
+    }
 
     void setThinking(bool thinking);
 
@@ -79,6 +84,7 @@ private:
     QPlainTextEdit* m_inputEdit = nullptr;
     AgentToolPreviewCard* m_previewCard = nullptr;
     QList<QPixmap> m_imageAttachments;
+    QString m_attachmentNotice; // 批3 复核六轮（P2）：附件超限提示（空=无提示）
     QWidget* m_attachmentBar = nullptr;
     QLabel* m_statusLabel = nullptr;
     QLabel* m_messageCountLabel = nullptr;

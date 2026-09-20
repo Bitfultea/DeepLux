@@ -167,9 +167,15 @@ void AgentChatPanel::addImageAttachment(const QPixmap& pixmap) {
     if (pixmap.isNull())
         return;
     // 批3 复核四轮（P2-5）：源头限额（与 AgentController 附件上限对齐），避免
-    // "附加成功→发送被控制器拒绝→草稿已清空无法重试"；超限静默拒绝
-    if (m_imageAttachments.size() >= kMaxImageAttachments)
+    // "附加成功→发送被控制器拒绝→草稿已清空无法重试"
+    // 批3 复核六轮（P2）：超限给出用户可见反馈（状态条提示）——静默丢弃会让
+    // 控制器侧的明确错误反馈在正常 UI 路径永远不可达；提示随成功添加/清空复位
+    if (m_imageAttachments.size() >= kMaxImageAttachments) {
+        m_attachmentNotice = tr("最多 %1 张附件").arg(kMaxImageAttachments);
+        updateStatusStrip();
         return;
+    }
+    m_attachmentNotice.clear();
     m_imageAttachments.append(pixmap);
     updateStatusStrip();
 
@@ -186,6 +192,7 @@ void AgentChatPanel::addImageAttachment(const QPixmap& pixmap) {
 
 void AgentChatPanel::clearImageAttachments() {
     m_imageAttachments.clear();
+    m_attachmentNotice.clear(); // 批3 复核六轮（P2）：附件清空即复位超限提示
     auto* layout = qobject_cast<QHBoxLayout*>(m_attachmentBar->layout());
     if (layout) {
         while (layout->count() > 1) {
@@ -434,6 +441,10 @@ void AgentChatPanel::updateStatusStrip() {
             statusColor = theme.errorColor;
         } else if (m_isThinking) {
             m_statusLabel->setText(tr("● Agent 正在思考"));
+        } else if (!m_attachmentNotice.isEmpty()) {
+            // 批3 复核六轮（P2）：附件超限提示经状态条对用户可见
+            m_statusLabel->setText(m_attachmentNotice);
+            statusColor = theme.errorColor;
         } else {
             m_statusLabel->setText(tr("Agent 就绪"));
         }
