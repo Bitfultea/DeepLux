@@ -6,8 +6,11 @@
 #include <QJsonDocument>
 #include <QRectF>
 #include <QSaveFile>
+#include <QSet>
 #include <QUuid>
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace DeepLux {
 
@@ -312,24 +315,43 @@ AnnotationSession AnnotationSession::load(const QString& filePath, QString* erro
         return failLoad(QStringLiteral("Field 'annotations' must be present and be an array: %1").arg(filePath));
     const QJsonArray annArr = obj.value(QLatin1String("annotations")).toArray();
     QString fieldError;
+    QSet<QString> seenIds;
     for (int i = 0; i < annArr.size(); ++i) {
         if (!validateObjectJson(annArr[i], i, &fieldError))
             return failLoad(QStringLiteral("%1: %2").arg(fieldError, filePath));
+        // 批3 复核四轮（P1-2）：id 唯一性——findById/removeById/掩膜缓存均以 id
+        // 为键，重复 id 会导致掩膜覆盖与编辑对象错配（只操作第一个同名对象）
+        const QString id = annArr[i].toObject().value(QLatin1String("id")).toString();
+        if (seenIds.contains(id))
+            return failLoad(QStringLiteral("annotations[%1].id duplicated (%2): %3").arg(i).arg(id, filePath));
+        seenIds.insert(id);
     }
-    // 尺寸：非负整数值（负数/小数/非数值均拒绝）
+    // 尺寸：非负整数值且不超 int 表示范围（批3 复核四轮 P2-3：2147483648 经
+    // toInt() 会静默溢出为 0，反序列化不得缩零）
     for (const char* key : {"imageWidth", "imageHeight"}) {
         const QJsonValue v = obj.value(QLatin1String(key));
         if (v.isUndefined() || v.isNull())
             continue;
-        if (!isIntegralNumber(v) || v.toDouble() < 0.0)
+        if (!isIntegralNumber(v) || v.toDouble() < 0.0 || v.toDouble() > double(std::numeric_limits<int>::max()))
             return failLoad(
-                QStringLiteral("Field '%1' must be a non-negative integer: %2").arg(QLatin1String(key), filePath));
+                QStringLiteral("Field '%1' must be an integer in [0, INT_MAX]: %2").arg(QLatin1String(key), filePath));
     }
     // 字符串字段类型受控
     for (const char* key : {"imagePath", "imageDigest", "modelName"}) {
         const QJsonValue v = obj.value(QLatin1String(key));
         if (!v.isUndefined() && !v.isNull() && !v.isString())
             return failLoad(QStringLiteral("Field '%1' must be a string: %2").arg(QLatin1String(key), filePath));
+    }
+    // 批3 复核四轮（P2-3）：imageDigest 为空或 64 位十六进制（SHA-256 hex，
+    // computeImageDigest 产物口径），拒绝任意短串冒充摘要
+    const QJsonValue digestValue = obj.value(QLatin1String("imageDigest"));
+    if (digestValue.isString() && !digestValue.toString().isEmpty()) {
+        const QString digest = digestValue.toString();
+        const bool validHex = digest.size() == 64 && std::all_of(digest.constBegin(), digest.constEnd(), [](QChar c) {
+                                  return c.isDigit() || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+                              });
+        if (!validHex)
+            return failLoad(QStringLiteral("Field 'imageDigest' must be empty or 64 hex characters: %1").arg(filePath));
     }
 
     return fromJson(obj);

@@ -559,6 +559,17 @@ void TestSamBackendClient::predictResponseStrictParsing() {
     r = valid;
     r["error"] = 42;
     driveExpectError(r, QStringLiteral("error"));
+    // 批3 复核四轮（P2-4）：显式 null 不是缺省——status/ok/error 为 null 时
+    // toString()/isBool() 静默降级，带合法 polygon 即误发 predictionReady
+    r = valid;
+    r["status"] = QJsonValue();
+    driveExpectError(r, QStringLiteral("status"));
+    r = valid;
+    r["ok"] = QJsonValue();
+    driveExpectError(r, QStringLiteral("ok"));
+    r = valid;
+    r["error"] = QJsonValue();
+    driveExpectError(r, QStringLiteral("error"));
 
     // 对照：无 status（真实 sam_server 成功响应不带 status）+ 字段合法 → 成功
     server.predictResponseOverride = valid;

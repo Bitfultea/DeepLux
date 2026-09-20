@@ -322,18 +322,45 @@ void TestAnnotationSession::loadRejectsMalformedFiles() {
         write(QStringLiteral("badprompt.json"), R"({"annotations":[{"id":"x","prompts":{"points_pos":[[1,"a"]]}}]})"),
         &err);
     QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("prompts")));
-    // 完整合法对象 → 接受
+
+    // === 批3 复核四轮 ===
+    // P1-2：重复 id → 拒绝（findById/removeById/掩膜缓存以 id 为键）
     err.clear();
     s = AnnotationSession::load(
-        write(QStringLiteral("fullok.json"),
-              R"({"imagePath":"p","imageWidth":8,"imageHeight":6,"imageDigest":"ab","modelName":"sam",
+        write(QStringLiteral("dupid.json"), R"({"annotations":[{"id":"same","score":0.1},{"id":"same","score":0.2}]})"),
+        &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("duplicated")));
+    QCOMPARE(s.annotations.size(), 0);
+    // P2-3：尺寸超 int 上限 → 拒绝（旧实现 toInt() 静默溢出为 0）
+    err.clear();
+    s = AnnotationSession::load(write(QStringLiteral("bigw.json"), R"({"imageWidth":2147483648,"annotations":[]})"),
+                                &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("imageWidth")));
+    // P2-3：摘要必须为空或 64 位十六进制
+    err.clear();
+    s = AnnotationSession::load(write(QStringLiteral("shortdigest.json"), R"({"imageDigest":"ab","annotations":[]})"),
+                                &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("imageDigest")));
+    err.clear();
+    s = AnnotationSession::load(
+        write(QStringLiteral("baddigest.json"),
+              R"({"imageDigest":"gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg","annotations":[]})"),
+        &err);
+    QVERIFY(!err.isEmpty() && err.contains(QStringLiteral("imageDigest")));
+
+    // 完整合法对象（64 位十六进制摘要）→ 接受
+    err.clear();
+    s = AnnotationSession::load(write(QStringLiteral("fullok.json"),
+                                      R"({"imagePath":"p","imageWidth":8,"imageHeight":6,
+                   "imageDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                   "modelName":"sam",
                    "annotations":[{"id":"a1","label":"l","bbox":[1,2,3,4],"polygon":[[1,2],[3,4],[5,6]],
                                    "mask_rle":"","score":0.5,"model_name":"sam",
                                    "prompts":{"points_pos":[[1,2]],"points_neg":[],"box":[0,0,2,2]}}]})"),
-        &err);
+                                &err);
     QVERIFY2(err.isEmpty(), qPrintable(err));
     QCOMPARE(s.annotations.size(), 1);
-    QCOMPARE(s.imageDigest, QStringLiteral("ab"));
+    QCOMPARE(s.imageDigest, QStringLiteral("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
 }
 
 // QSaveFile 原子写：失败路径显式报错；成功覆写不残留临时文件

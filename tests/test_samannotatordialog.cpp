@@ -88,6 +88,9 @@ private slots:
     void saveWritesDigestAndOpenVerifiesIt();
     void legacySessionOpensWithWarningAndBackfillsOnSave();
     void splitMemoryBudgetRejected();
+    // SAM 批3 复核四轮（P1-1）：绑定图像不可读/尺寸不符的非空会话拒绝打开
+    void openRejectsSessionWithUnreadableImage();
+    void openRejectsLegacySessionDimsMismatch();
 
 private:
     QImage makeTestImage();
@@ -961,9 +964,14 @@ void TestSamAnnotatorDialog::undoAfterOpenAnnotationDoesNotCorruptSession() {
     dlg.dilateButton()->click();
     QCOMPARE(dlg.session().annotations.size(), 1);
 
-    // 会话 B 文件（2 个对象）
+    // 会话 B 文件（2 个对象）——批3 复核四轮（P1-1）：非空会话必须绑定可读
+    // 图像才能被打开，srcDlg 需绑定真实存在的图像文件
+    QTemporaryDir srcDir;
+    QVERIFY(srcDir.isValid());
+    const QString srcImagePath = srcDir.filePath(QStringLiteral("b.png"));
+    QVERIFY(makeTestImage().save(srcImagePath, "PNG"));
     SamAnnotatorDialog srcDlg;
-    srcDlg.setImageSnapshot(makeTestImage(), QString());
+    srcDlg.setImageSnapshot(makeTestImage(), srcImagePath);
     QVERIFY(!confirmObject(srcDlg, squarePolygon(10, 10, 10), QRectF(10, 10, 10, 10), QImage()).isEmpty());
     QVERIFY(!confirmObject(srcDlg, squarePolygon(100, 100, 10), QRectF(100, 100, 10, 10), QImage()).isEmpty());
     QTemporaryFile tmp("undo_open_XXXXXX.deeplux-anno.json");
@@ -1163,6 +1171,71 @@ void TestSamAnnotatorDialog::splitMemoryBudgetRejected() {
     // 60 × 2000×1500 × 5B ≈ 858MB > 256MB 预算
     QVERIFY2(dlg.statusLabel()->text().contains(QStringLiteral("内存")), qPrintable(dlg.statusLabel()->text()));
     QCOMPARE(dlg.session().annotations.size(), 1); // 失败关闭，未拆分
+}
+
+// 批3 复核四轮（P1-1）：绑定图像被删除后打开非空会话必须拒绝——
+// 否则新会话标注被显示、编辑在陈旧的内存图像上（静默错位）
+void TestSamAnnotatorDialog::openRejectsSessionWithUnreadableImage() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imagePath = dir.filePath(QStringLiteral("bound.png"));
+    QVERIFY(makeTestImage().save(imagePath, "PNG"));
+
+    SamAnnotatorDialog srcDlg;
+    srcDlg.setImageSnapshot(makeTestImage(), imagePath);
+    QVERIFY(!confirmObject(srcDlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20), QImage()).isEmpty());
+    const QString sessionPath = dir.filePath(QStringLiteral("bound.deeplux-anno.json"));
+    QVERIFY(srcDlg.saveAnnotationFile(sessionPath));
+
+    QVERIFY(QFile::remove(imagePath)); // 绑定图像不可读
+
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), dir.filePath(QStringLiteral("unrelated.png")));
+    const QString currentId = confirmObject(dlg, squarePolygon(10, 10, 10), QRectF(10, 10, 10, 10), QImage());
+    QVERIFY(!currentId.isEmpty());
+
+    QString err;
+    QVERIFY(!dlg.openAnnotationFile(sessionPath, &err));
+    QVERIFY2(err.contains(QStringLiteral("不可读")), qPrintable(err));
+    // 当前会话零污染
+    QCOMPARE(dlg.session().annotations.size(), 1);
+    QCOMPARE(dlg.session().annotations.first().id, currentId);
+}
+
+// 批3 复核四轮（P1-1）：legacy 无摘要会话至少先核对尺寸——尺寸不符拒绝打开
+void TestSamAnnotatorDialog::openRejectsLegacySessionDimsMismatch() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imagePath = dir.filePath(QStringLiteral("legacy.png"));
+    QVERIFY(makeTestImage().save(imagePath, "PNG")); // 200x150
+
+    const QString sessionPath = dir.filePath(QStringLiteral("legacy_dims.deeplux-anno.json"));
+    {
+        const QJsonObject obj{
+            {"id", QStringLiteral("l1")},
+            {"label", QStringLiteral("old")},
+            {"bbox", QJsonArray{50, 40, 20, 20}},
+            {"polygon", QJsonArray{QJsonArray{50, 40}, QJsonArray{70, 40}, QJsonArray{70, 60}, QJsonArray{50, 60}}},
+            {"mask_rle", QString()},
+            {"score", 0.5},
+            {"model_name", QStringLiteral("sam")},
+            {"prompts", QJsonObject{{"points_pos", QJsonArray{}}, {"points_neg", QJsonArray{}}}}};
+        const QJsonObject session{{"imagePath", imagePath},
+                                  {"imageWidth", 300}, // 与真实图像 200x150 不符
+                                  {"imageHeight", 200},
+                                  {"modelName", QStringLiteral("sam")},
+                                  {"annotations", QJsonArray{obj}}};
+        QFile f(sessionPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QJsonDocument(session).toJson());
+        f.close();
+    }
+
+    SamAnnotatorDialog dlg;
+    QString err;
+    QVERIFY(!dlg.openAnnotationFile(sessionPath, &err));
+    QVERIFY2(err.contains(QStringLiteral("尺寸")), qPrintable(err));
+    QCOMPARE(dlg.session().annotations.size(), 0);
 }
 
 QTEST_MAIN(TestSamAnnotatorDialog)

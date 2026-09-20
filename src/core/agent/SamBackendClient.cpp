@@ -742,12 +742,13 @@ void SamBackendClient::onPredictReply() {
         settleReply(m_pendingPredictReply);
     };
 
-    // 批3 复核三轮（P2-4）：status/ok/error 字段存在即强制类型——
+    // 批3 复核三轮（P2-4）+ 四轮：status/ok/error 字段存在即强制类型——
     // status:true 经 toString() 得空串会被当"字段缺失"，带合法 polygon
-    // 即误发 predictionReady；错误类型的显式失败标记同样不得被静默忽略
+    // 即误发 predictionReady；显式 null 同样不是缺省（只有字段不存在才是），
+    // 错误类型的显式失败标记不得被静默忽略
     const QJsonValue statusValue = obj.value("status");
-    if (!statusValue.isUndefined() && !statusValue.isNull() && !statusValue.isString()) {
-        reject(tr("预测失败：status 必须为字符串或缺省"));
+    if (!statusValue.isUndefined() && !statusValue.isString()) {
+        reject(tr("预测失败：status 必须为字符串或不存在"));
         return;
     }
     const QString status = statusValue.toString();
@@ -772,8 +773,8 @@ void SamBackendClient::onPredictReply() {
         return;
     }
     const QJsonValue okValue = obj.value("ok");
-    if (!okValue.isUndefined() && !okValue.isNull() && !okValue.isBool()) {
-        reject(tr("预测失败：ok 必须为布尔或缺省"));
+    if (!okValue.isUndefined() && !okValue.isBool()) {
+        reject(tr("预测失败：ok 必须为布尔或不存在"));
         return;
     }
     if (okValue.isBool() && !okValue.toBool()) {
@@ -781,8 +782,8 @@ void SamBackendClient::onPredictReply() {
         return;
     }
     const QJsonValue errorValue = obj.value("error");
-    if (!errorValue.isUndefined() && !errorValue.isNull() && !errorValue.isString()) {
-        reject(tr("预测失败：error 字段必须为字符串或缺省"));
+    if (!errorValue.isUndefined() && !errorValue.isString()) {
+        reject(tr("预测失败：error 字段必须为字符串或不存在"));
         return;
     }
     if (errorValue.isString() && !errorValue.toString().isEmpty()) {
