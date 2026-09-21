@@ -126,6 +126,34 @@ private slots:
         QVERIFY(panel.attachmentNotice().isEmpty());
     }
 
+    // 批3 复核七轮（P2）：思考/超时状态下超限提示仍须对用户可见——
+    // 状态条主文本忙碌期被"正在思考"占用，而用户在 Agent 运行期间仍可
+    // 粘贴/拖入下一轮附件；提示经附件计数器（或错误通道）常显，不得因
+    // 状态优先级竞争而不可见
+    void attachmentCapNoticeVisibleWhileThinking() {
+        AgentChatPanel panel;
+        panel.setThinking(true); // Agent 运行中：状态条主文本为思考态
+        QImage img(8, 8, QImage::Format_RGB32);
+        img.fill(Qt::red);
+        for (int i = 0; i < AgentChatPanel::kMaxImageAttachments; ++i)
+            panel.addImageAttachment(QPixmap::fromImage(img));
+        panel.addImageAttachment(QPixmap::fromImage(img)); // 第 5 张 → 拒绝
+        QCOMPARE(panel.imageAttachments().size(), AgentChatPanel::kMaxImageAttachments);
+        QVERIFY2(panel.attachmentNotice().contains(QStringLiteral("最多")), qPrintable(panel.attachmentNotice()));
+
+        QLabel* status = panel.findChild<QLabel*>(QStringLiteral("AgentChatStatusLabel"));
+        QLabel* attach = panel.findChild<QLabel*>(QStringLiteral("AgentChatAttachmentCountLabel"));
+        QVERIFY(status != nullptr);
+        QVERIFY(attach != nullptr);
+        // UI 断言：任一用户可见通道承载提示（状态条文本/其提示/附件计数器；
+        // 提交树忙碌期走附件计数器，工作区重建版走错误 tooltip 通道）
+        const bool visible = status->text().contains(QStringLiteral("最多")) ||
+                             status->toolTip().contains(QStringLiteral("最多")) ||
+                             attach->text().contains(QStringLiteral("最多"));
+        QVERIFY2(visible, qPrintable(QStringLiteral("status=%1 tooltip=%2 attach=%3")
+                                         .arg(status->text(), status->toolTip(), attach->text())));
+    }
+
     // restoreDraft 回填文本与限额内附件
     void restoreDraftRefillsTextAndAttachments() {
         AgentChatPanel panel;

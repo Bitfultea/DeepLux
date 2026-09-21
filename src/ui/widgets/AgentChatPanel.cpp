@@ -457,7 +457,13 @@ void AgentChatPanel::updateStatusStrip() {
         m_toolCountLabel->setText(tr("待确认 %1").arg(m_pendingToolCount));
     }
     if (m_attachmentCountLabel) {
-        m_attachmentCountLabel->setText(tr("附件 %1").arg(m_imageAttachments.size()));
+        // 批3 复核七轮（P2）：超限提示经附件计数器常显——状态条主文本在
+        // 思考/超时态让位于运行状态，而用户忙碌期仍可添加附件，提示不得
+        // 因状态优先级竞争而不可见（空闲态另经主文本错误色展示）
+        if (!m_attachmentNotice.isEmpty())
+            m_attachmentCountLabel->setText(m_attachmentNotice);
+        else
+            m_attachmentCountLabel->setText(tr("附件 %1").arg(m_imageAttachments.size()));
     }
 }
 
