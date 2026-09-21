@@ -19,6 +19,22 @@ class QNetworkReply;
 namespace DeepLux {
 
 /**
+ * @brief 多掩膜候选（SAM 批4）——/predict 响应可选 candidates 数组的元素
+ *
+ * sam_server multimask_output 产生至多 3 个候选（按 score 降序），顶层
+ * polygon/bbox/score 字段仍为最佳候选（向后兼容）。候选经客户端严格解析
+ * （类型/有限值/score∈[0,1]），消费方（SamPredictor 的 candidateIndex 选择、
+ * 标注对话框的候选循环）通过 lastCandidates() 读取本次 predict 的候选。
+ */
+struct SamCandidate {
+    QList<QPointF> polygon;
+    QRectF bbox;
+    double score = 0.0;
+    QString maskRle;
+    QImage maskImage;
+};
+
+/**
  * @brief SAM 后端客户端
  *
  * 通过 QNetworkAccessManager 调用 FastAPI（Python sam_server），完成：
@@ -102,6 +118,11 @@ public:
     QString modelName() const {
         return m_modelName;
     }
+    // SAM 批4：最近一次成功 predict 的多掩膜候选（按 score 降序；无候选为空）。
+    // 在 predictionReady 发出前就绪，回调内读取即为本次结果。
+    const QList<SamCandidate>& lastCandidates() const {
+        return m_lastCandidates;
+    }
 
     // API
     void healthCheck();
@@ -176,6 +197,7 @@ private:
     QList<QPointF> m_lastNegative;
     QRectF m_lastBox;
     QString m_lastImagePath;
+    QList<SamCandidate> m_lastCandidates; // SAM 批4：本次 predict 的候选（发起时清空）
     bool m_imageRetryPending = false;
     int m_healthPollsRemaining = 0;
     int m_envInitStep = 0;

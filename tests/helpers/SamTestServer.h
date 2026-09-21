@@ -61,6 +61,8 @@ public:
     // 验证客户端严格解析失败关闭
     bool usePredictOverride = false;
     QJsonObject predictResponseOverride;
+    // SAM 批4：多掩膜候选（candidates[0] 与顶层 best 字段一致，score 降序）
+    bool includePredictCandidates = true;
 
     // 请求记录（断言四个端点都被真实调用）
     QStringList requestLog;
@@ -158,6 +160,23 @@ private:
             response["bbox"] = QJsonArray{10, 10, 10, 10};
             response["score"] = 0.97;
             response["mask_png_base64"] = QString::fromLatin1(tinyMaskPngBase64());
+            if (includePredictCandidates) {
+                // SAM 批4：candidates[0] 与顶层 best 一致；候选 1/2 为不同区域
+                response["candidates"] =
+                    QJsonArray{QJsonObject{{"polygon", QJsonArray{QJsonArray{10, 10}, QJsonArray{20, 10},
+                                                                  QJsonArray{20, 20}, QJsonArray{10, 20}}},
+                                           {"bbox", QJsonArray{10, 10, 10, 10}},
+                                           {"score", 0.97},
+                                           {"mask_png_base64", QString::fromLatin1(tinyMaskPngBase64())}},
+                               QJsonObject{{"polygon", QJsonArray{QJsonArray{30, 30}, QJsonArray{40, 30},
+                                                                  QJsonArray{40, 40}, QJsonArray{30, 40}}},
+                                           {"bbox", QJsonArray{30, 30, 10, 10}},
+                                           {"score", 0.9}},
+                               QJsonObject{{"polygon", QJsonArray{QJsonArray{50, 50}, QJsonArray{55, 50},
+                                                                  QJsonArray{55, 55}, QJsonArray{50, 55}}},
+                                           {"bbox", QJsonArray{50, 50, 5, 5}},
+                                           {"score", 0.8}}};
+            }
         }
         return response;
     }

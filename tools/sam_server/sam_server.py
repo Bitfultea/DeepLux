@@ -163,6 +163,30 @@ def _stub_prediction(req: PredictRequest, size):
     x2, y2 = min(int(w), int(x + bw)), min(int(h), int(y + bh))
     if x2 > x1 and y2 > y1:
         mask[y1+1:y2-1, x1+1:x2-1] = 1
+    # SAM 批4：stub 也返回 candidates（best + 内缩变体，score 降序），
+    # 无权重环境下覆盖多掩膜候选协议形态
+    mask2 = np.zeros((int(h), int(w)), dtype=np.uint8)
+    sx1, sy1 = max(0, int(x) + 2), max(0, int(y) + 2)
+    sx2, sy2 = min(int(w), int(x + bw) - 2), min(int(h), int(y + bh) - 2)
+    if sx2 > sx1 and sy2 > sy1:
+        mask2[sy1+1:sy2-1, sx1+1:sx2-1] = 1
+    bbox2 = _mask_to_bbox(mask2)
+    candidates = [
+        {
+            "polygon": polygon,
+            "bbox": [x, y, bw, bh],
+            "score": 0.95,
+            "mask_rle": "",
+            "mask_png_base64": _encode_mask_png_base64(mask),
+        },
+        {
+            "polygon": _mask_to_polygon(mask2, bbox2),
+            "bbox": bbox2,
+            "score": 0.8,
+            "mask_rle": "",
+            "mask_png_base64": _encode_mask_png_base64(mask2),
+        },
+    ]
     return {
         "mask_rle": "",
         "mask_png_base64": _encode_mask_png_base64(mask),
@@ -170,6 +194,7 @@ def _stub_prediction(req: PredictRequest, size):
         "polygon": polygon,
         "score": 0.95,
         "model_name": MODEL_NAME,
+        "candidates": candidates,
     }
 
 
@@ -243,6 +268,19 @@ async def predict(req: PredictRequest):
         mask = masks[best].astype(np.uint8)
         bbox = _mask_to_bbox(mask)
         polygon = _mask_to_polygon(mask, bbox)
+        # SAM 批4：多掩膜候选（multimask_output 全量，按 score 降序）；
+        # 顶层字段仍为最佳候选，保持向后兼容
+        candidates = []
+        for idx in np.argsort(-np.asarray(scores, dtype=np.float64)):
+            m_i = masks[int(idx)].astype(np.uint8)
+            b_i = _mask_to_bbox(m_i)
+            candidates.append({
+                "polygon": _mask_to_polygon(m_i, b_i),
+                "bbox": b_i,
+                "score": float(scores[int(idx)]),
+                "mask_rle": _encode_rle(m_i),
+                "mask_png_base64": _encode_mask_png_base64(m_i),
+            })
         return {
             "mask_rle": _encode_rle(mask),
             "mask_png_base64": _encode_mask_png_base64(mask),
@@ -250,6 +288,7 @@ async def predict(req: PredictRequest):
             "polygon": polygon,
             "score": float(scores[best]),
             "model_name": MODEL_NAME,
+            "candidates": candidates,
         }
 
 

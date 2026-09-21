@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/agent/SamBackendClient.h" // SamCandidate（批4 多掩膜候选）
+
 #include <QDialog>
 #include <QHash>
 #include <QImage>
@@ -105,6 +107,25 @@ public:
         return m_btnRedo;
     }
 
+    // SAM 批4：多掩膜候选——注入候选（生产路径由 onPredictionReady 从客户端
+    // lastCandidates() 填充；测试直接注入），◀/▶ 循环切换预览，确认所用为所选
+    void setPreviewCandidates(const QList<SamCandidate>& candidates);
+    int previewCandidateCount() const {
+        return m_previewCandidates.size();
+    }
+    int previewCandidateIndex() const {
+        return m_previewCandidateIndex;
+    }
+    QToolButton* prevCandidateButton() const {
+        return m_btnPrevCandidate;
+    }
+    QToolButton* nextCandidateButton() const {
+        return m_btnNextCandidate;
+    }
+    QLabel* candidateLabel() const {
+        return m_candidateLabel;
+    }
+
     // SAM 批2：掩膜编辑控件访问（供测试）
     QToolButton* eraserButton() const {
         return m_btnEraser;
@@ -148,6 +169,10 @@ public:
     }
     QPushButton* exportYoloButton() const {
         return m_exportYoloButton;
+    }
+    // SAM 批4：COCO 导出按钮（供测试）
+    QPushButton* exportCocoButton() const {
+        return m_exportCocoButton;
     }
     QShortcut* redoShortcut() const {
         return m_scRedo;
@@ -208,6 +233,7 @@ private slots:
     void onSaveSession();
     void onExportLabelMe();
     void onExportYoloSeg();
+    void onExportCoco(); // SAM 批4：COCO 导出
     void onImportModel();
     void onInitializeEnvironment();
     void onRestartSam();
@@ -274,6 +300,10 @@ private:
     bool binaryMaskForObject(const AnnotationObject& obj, QImage& outBinary, QString& error) const;
     QStringList selectedObjectIds() const; // 按标注列表顺序
     void updateMaskEditButtonStates();
+
+    // ===== SAM 批4：多掩膜候选支撑 =====
+    void applyCurrentCandidatePreview(); // 将 m_previewCandidates[index] 写入预览态
+    void cycleCandidate(int delta);      // 循环切换（◀ -1 / ▶ +1）
     // 单对象几何编辑公共收口：空结果/多连通分量失败关闭；通过则重导出
     // polygon（外轮廓追踪）/bbox/maskRle（sam_server 兼容编码）并入撤销栈
     void commitSingleObjectMaskEdit(const QString& targetId, const QImage& editedBinary, const QString& commandText);
@@ -300,6 +330,11 @@ private:
     QToolButton* m_btnMerge = nullptr;
     QToolButton* m_btnSplit = nullptr;
     QSpinBox* m_maskRadiusSpin = nullptr;
+    // SAM 批4：候选循环控件（行默认隐藏，candidates>1 时显示，不占紧凑布局空间）
+    QWidget* m_candidateRowWidget = nullptr;
+    QToolButton* m_btnPrevCandidate = nullptr;
+    QToolButton* m_btnNextCandidate = nullptr;
+    QLabel* m_candidateLabel = nullptr;
     QButtonGroup* m_modeButtonGroup = nullptr;
     QLabel* m_statusLabel = nullptr;
     QPushButton* m_confirmButton = nullptr;
@@ -311,6 +346,7 @@ private:
     QPushButton* m_initEnvironmentButton = nullptr;
     QPushButton* m_restartServerButton = nullptr;
     QPushButton* m_exportYoloButton = nullptr;
+    QPushButton* m_exportCocoButton = nullptr; // SAM 批4
     QWidget* m_centerContainer = nullptr;
 
     // 快捷键
@@ -342,6 +378,9 @@ private:
     QImage m_previewMask;
     double m_previewScore = 0.0;
     bool m_hasPrediction = false;
+    // SAM 批4：本次预测的多掩膜候选（score 降序）与当前选择
+    QList<SamCandidate> m_previewCandidates;
+    int m_previewCandidateIndex = 0;
 
     // 已确认对象的 mask 图像（按 id 缓存）
     QHash<QString, QImage> m_objectMasks;

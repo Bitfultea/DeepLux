@@ -124,6 +124,64 @@ private slots:
         QCOMPARE(server.lastPredictBody.value("box").toArray().size(), 4);
     }
 
+    // 批4（C）：多掩膜候选选择——candidateIndex=1 取次佳候选（不同区域），
+    // candidateScores 回传全量 score 降序列表；越界/负值/无候选却指定均失败关闭
+    void samPredictBatchCandidateSelection() {
+        SamTestServer server;
+        QVERIFY(server.listen());
+        SamPromptItem item;
+        item.positivePoints = {QPointF(15, 15)};
+        item.label = QStringLiteral("cand");
+        item.candidateIndex = 1;
+
+        auto outcome = runSamPredictBatch(server.url(), m_imagePath, {item}, 5000);
+        QVERIFY2(outcome.ok, qPrintable(outcome.error));
+        QCOMPARE(outcome.regions.size(), 1);
+        // 选中候选 1（30,30 区域），而非 best（10,10 区域）
+        QCOMPARE(outcome.regions[0].bbox, QRectF(30, 30, 10, 10));
+        QVERIFY(qAbs(outcome.regions[0].score - 0.9) < 1e-9);
+        QCOMPARE(outcome.regions[0].polygon.size(), 4);
+        QCOMPARE(outcome.regions[0].polygon.first(), QPointF(30, 30));
+        QVERIFY(outcome.regions[0].maskRle.isEmpty()); // 候选 1 无 RLE：不伪造字段
+        // candidateScores 回传全部候选 score（降序）
+        QCOMPARE(outcome.candidateScores.size(), 1);
+        QCOMPARE(outcome.candidateScores[0].size(), 3);
+        QVERIFY(qAbs(outcome.candidateScores[0][0] - 0.97) < 1e-9);
+        QVERIFY(qAbs(outcome.candidateScores[0][1] - 0.9) < 1e-9);
+        QVERIFY(qAbs(outcome.candidateScores[0][2] - 0.8) < 1e-9);
+
+        // 越界：本次共 3 个候选，index 5 失败关闭且指认失败项、全有或全无
+        item.candidateIndex = 5;
+        outcome = runSamPredictBatch(server.url(), m_imagePath, {item}, 5000);
+        QVERIFY(!outcome.ok);
+        QVERIFY2(outcome.error.contains(QStringLiteral("越界")), qPrintable(outcome.error));
+        QCOMPARE(outcome.failedIndex, 0);
+        QVERIFY(outcome.regions.isEmpty());
+
+        // 负值：先行校验失败关闭，不发任何网络请求
+        server.requestLog.clear();
+        item.candidateIndex = -1;
+        outcome = runSamPredictBatch(server.url(), m_imagePath, {item}, 5000);
+        QVERIFY(!outcome.ok);
+        QVERIFY(outcome.error.contains(QStringLiteral("candidateIndex")));
+        QVERIFY2(server.requestLog.isEmpty(), "negative index must fail before any network request");
+
+        // 后端未返回候选却指定 index>0 → 失败关闭（不静默回退 best）
+        server.includePredictCandidates = false;
+        item.candidateIndex = 1;
+        outcome = runSamPredictBatch(server.url(), m_imagePath, {item}, 5000);
+        QVERIFY(!outcome.ok);
+        QVERIFY2(outcome.error.contains(QStringLiteral("未返回多掩膜候选")), qPrintable(outcome.error));
+        QCOMPARE(outcome.failedIndex, 0);
+        QVERIFY(outcome.regions.isEmpty());
+        // 无候选 + index 0 → 仍走顶层 best 字段（向后兼容）
+        item.candidateIndex = 0;
+        outcome = runSamPredictBatch(server.url(), m_imagePath, {item}, 5000);
+        QVERIFY2(outcome.ok, qPrintable(outcome.error));
+        QVERIFY(qAbs(outcome.regions[0].score - 0.97) < 1e-9);
+        QVERIFY(outcome.candidateScores[0].isEmpty()); // 无候选 → 空 score 列表
+    }
+
     // 先行校验失败关闭：以下场景均无服务在听，若发出网络请求将超时挂起——快速返回即证明未发请求
     void samPredictValidationFailClosed() {
         AgentActor actor;
@@ -168,6 +226,56 @@ private slots:
         const QJsonObject r = actor.executeTool(QStringLiteral("sam_predict"), params);
         QVERIFY(r.contains("error"));
         QVERIFY(!r.value("error").toString().isEmpty());
+    }
+
+    // 批4（C）：sam_predict 工具 candidateIndex 参数——选中候选、候选摘要回传
+    // （candidateCount/candidateScores/candidateIndex 回显），参数守卫失败关闭
+    void samPredictToolCandidateIndex() {
+        SamTestServer server;
+        QVERIFY(server.listen());
+        AgentActor actor;
+        auto r =
+            actor.executeTool(QStringLiteral("sam_predict"), QJsonObject{{"imagePath", m_imagePath},
+                                                                         {"serverUrl", server.url()},
+                                                                         {"points", QJsonArray{QJsonArray{15, 15}}},
+                                                                         {"candidateIndex", 1},
+                                                                         {"timeoutMs", 5000}});
+        QVERIFY2(!r.contains("error"), qPrintable(r.value("error").toString()));
+        QCOMPARE(r.value("status").toString(), QStringLiteral("predicted"));
+        // 结果为所选候选（30,30 区域，score 0.9），而非 best
+        QVERIFY(qAbs(r.value("score").toDouble() - 0.9) < 1e-9);
+        const QJsonArray bbox = r.value("bbox").toArray();
+        QCOMPARE(bbox[0].toDouble(), 30.0);
+        QCOMPARE(bbox[1].toDouble(), 30.0);
+        QCOMPARE(r.value("polygon").toArray()[0].toArray()[0].toDouble(), 30.0);
+        // 候选摘要：LLM 可据此改选
+        QCOMPARE(r.value("candidateCount").toInt(), 3);
+        QCOMPARE(r.value("candidateIndex").toInt(), 1);
+        const QJsonArray scores = r.value("candidateScores").toArray();
+        QCOMPARE(scores.size(), 3);
+        QVERIFY(qAbs(scores[0].toDouble() - 0.97) < 1e-9);
+        QVERIFY(qAbs(scores[2].toDouble() - 0.8) < 1e-9);
+        QCOMPARE(r.value("maskRleLength").toInt(), 0); // 候选 1 无 RLE
+
+        // 参数守卫：9 / -1 / 1.5 均拒绝且不发网络请求
+        server.requestLog.clear();
+        for (const QJsonValue bad : {QJsonValue(9), QJsonValue(-1), QJsonValue(1.5)}) {
+            r = actor.executeTool(QStringLiteral("sam_predict"), QJsonObject{{"imagePath", m_imagePath},
+                                                                             {"serverUrl", server.url()},
+                                                                             {"points", QJsonArray{QJsonArray{15, 15}}},
+                                                                             {"candidateIndex", bad}});
+            QVERIFY2(r.value("error").toString().contains(QStringLiteral("[0,7]")),
+                     qPrintable(r.value("error").toString()));
+        }
+        QVERIFY2(server.requestLog.isEmpty(), "param guard must fail before any network request");
+
+        // 5 在 [0,7] 内但超本次候选数 → 运行时越界失败关闭
+        r = actor.executeTool(QStringLiteral("sam_predict"), QJsonObject{{"imagePath", m_imagePath},
+                                                                         {"serverUrl", server.url()},
+                                                                         {"points", QJsonArray{QJsonArray{15, 15}}},
+                                                                         {"candidateIndex", 5},
+                                                                         {"timeoutMs", 5000}});
+        QVERIFY(r.value("error").toString().contains(QStringLiteral("越界")));
     }
 
     // ---------- sam_annotate ----------
@@ -372,6 +480,162 @@ private slots:
         r = actor.executeTool(QStringLiteral("sam_annotate"), annotateParams(server.url(), emptyPath, m_imagePath));
         QVERIFY2(!r.contains("error"), qPrintable(r.value("error").toString()));
         QCOMPARE(r.value("total").toInt(), 4);
+    }
+
+    // 批4（B）：LabelMe 矩形 → box prompt 批量分割写入会话；XOR/无矩形/超限/
+    // 损坏文件失败关闭；跳过形状显式报告（不静默）
+    void samAnnotateFromLabelMe() {
+        SamTestServer server;
+        QVERIFY(server.listen());
+        AgentActor actor;
+
+        const QString lmPath = QDir(m_dir.path()).filePath(QStringLiteral("boxes.labelme.json"));
+        {
+            QFile f(lmPath);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(R"({"shapes":[
+                {"label":"defect","shape_type":"rectangle","points":[[10,10],[30,30]]},
+                {"label":"poly","shape_type":"polygon","points":[[1,2],[3,4],[5,6]]},
+                {"label":"dent","shape_type":"rectangle","points":[[40,20],[50,35]]}]})");
+            f.close();
+        }
+        const QString sessionPath = QDir(m_dir.path()).filePath(QStringLiteral("lm.deeplux-anno.json"));
+        auto r = actor.executeTool(QStringLiteral("sam_annotate"), QJsonObject{{"imagePath", m_imagePath},
+                                                                               {"sessionPath", sessionPath},
+                                                                               {"labelMePath", lmPath},
+                                                                               {"serverUrl", server.url()},
+                                                                               {"timeoutMs", 5000}});
+        QVERIFY2(!r.contains("error"), qPrintable(r.value("error").toString()));
+        QCOMPARE(r.value("added").toInt(), 2);
+        QCOMPARE(r.value("importedRectangles").toInt(), 2);
+        QCOMPARE(r.value("skippedShapes").toInt(), 1); // polygon 显式报告跳过
+        QString loadError;
+        const AnnotationSession session = AnnotationSession::load(sessionPath, &loadError);
+        QVERIFY(loadError.isEmpty());
+        QCOMPARE(session.annotations.size(), 2);
+        QCOMPARE(session.annotations[0].label, QStringLiteral("defect"));
+        QVERIFY(session.annotations[0].prompts.box.has_value());
+        QCOMPARE(session.annotations[0].prompts.box.value(), QRectF(10, 10, 20, 20)); // 归一化
+        QCOMPARE(session.annotations[1].label, QStringLiteral("dent"));
+        QCOMPARE(server.lastPredictBody.value("box").toArray().size(), 4); // box prompt 透传
+
+        // XOR：both / neither → 拒绝
+        r = actor.executeTool(QStringLiteral("sam_annotate"), QJsonObject{{"imagePath", m_imagePath},
+                                                                          {"sessionPath", sessionPath},
+                                                                          {"labelMePath", lmPath},
+                                                                          {"items", QJsonArray{QJsonObject{}}},
+                                                                          {"serverUrl", server.url()}});
+        QVERIFY(r.value("error").toString().contains(QStringLiteral("恰好提供一个")));
+        r = actor.executeTool(
+            QStringLiteral("sam_annotate"),
+            QJsonObject{{"imagePath", m_imagePath}, {"sessionPath", sessionPath}, {"serverUrl", server.url()}});
+        QVERIFY(r.value("error").toString().contains(QStringLiteral("恰好提供一个")));
+
+        // 无可用矩形 → 拒绝且不写文件
+        const QString polyOnly = QDir(m_dir.path()).filePath(QStringLiteral("poly.labelme.json"));
+        {
+            QFile f(polyOnly);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(R"({"shapes":[{"label":"p","shape_type":"polygon","points":[[1,2],[3,4],[5,6]]}]})");
+            f.close();
+        }
+        const QString session2 = QDir(m_dir.path()).filePath(QStringLiteral("lm2.deeplux-anno.json"));
+        r = actor.executeTool(QStringLiteral("sam_annotate"), QJsonObject{{"imagePath", m_imagePath},
+                                                                          {"sessionPath", session2},
+                                                                          {"labelMePath", polyOnly},
+                                                                          {"serverUrl", server.url()}});
+        QVERIFY(r.value("error").toString().contains(QStringLiteral("无可用矩形框")));
+        QVERIFY(!QFileInfo::exists(session2));
+
+        // 矩形数超 [1,16] → 拒绝
+        {
+            QJsonArray shapes;
+            for (int i = 0; i < 17; ++i)
+                shapes.append(QJsonObject{{"label", QStringLiteral("r%1").arg(i)},
+                                          {"shape_type", QStringLiteral("rectangle")},
+                                          {"points", QJsonArray{QJsonArray{i, 0}, QJsonArray{i + 1, 2}}}});
+            const QString manyPath = QDir(m_dir.path()).filePath(QStringLiteral("many.labelme.json"));
+            QFile f(manyPath);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(QJsonDocument(QJsonObject{{"shapes", shapes}}).toJson());
+            f.close();
+            r = actor.executeTool(QStringLiteral("sam_annotate"), QJsonObject{{"imagePath", m_imagePath},
+                                                                              {"sessionPath", session2},
+                                                                              {"labelMePath", manyPath},
+                                                                              {"serverUrl", server.url()}});
+            QVERIFY(r.value("error").toString().contains(QStringLiteral("[1,16]")));
+        }
+
+        // 损坏 LabelMe → 失败关闭
+        const QString badLm = QDir(m_dir.path()).filePath(QStringLiteral("bad.labelme.json"));
+        {
+            QFile f(badLm);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("not json");
+            f.close();
+        }
+        r = actor.executeTool(QStringLiteral("sam_annotate"), QJsonObject{{"imagePath", m_imagePath},
+                                                                          {"sessionPath", session2},
+                                                                          {"labelMePath", badLm},
+                                                                          {"serverUrl", server.url()}});
+        QVERIFY(r.value("error").toString().contains(QStringLiteral("LabelMe 导入失败")));
+        QVERIFY(!QFileInfo::exists(session2));
+    }
+
+    // 批4（C）：sam_annotate items[].candidateIndex——写入会话的对象为所选
+    // 候选；参数守卫与运行时越界失败关闭、不落盘
+    void samAnnotateItemCandidateIndex() {
+        SamTestServer server;
+        QVERIFY(server.listen());
+        AgentActor actor;
+        const QString sessionPath = QDir(m_dir.path()).filePath(QStringLiteral("cand.deeplux-anno.json"));
+        auto r =
+            actor.executeTool(QStringLiteral("sam_annotate"),
+                              QJsonObject{{"imagePath", m_imagePath},
+                                          {"sessionPath", sessionPath},
+                                          {"serverUrl", server.url()},
+                                          {"timeoutMs", 5000},
+                                          {"items", QJsonArray{QJsonObject{{"points", QJsonArray{QJsonArray{15, 15}}},
+                                                                           {"label", QStringLiteral("cand")},
+                                                                           {"candidateIndex", 1}}}}});
+        QVERIFY2(!r.contains("error"), qPrintable(r.value("error").toString()));
+        QCOMPARE(r.value("added").toInt(), 1);
+        QString loadError;
+        const AnnotationSession session = AnnotationSession::load(sessionPath, &loadError);
+        QVERIFY(loadError.isEmpty());
+        QCOMPARE(session.annotations.size(), 1);
+        const AnnotationObject& obj = session.annotations[0];
+        QCOMPARE(obj.label, QStringLiteral("cand"));
+        QVERIFY(qAbs(obj.score - 0.9) < 1e-9); // 所选候选而非 best（0.97）
+        QCOMPARE(obj.bbox, QRectF(30, 30, 10, 10));
+        QCOMPARE(obj.polygon.size(), 4);
+        QCOMPARE(obj.polygon.first(), QPointF(30, 30));
+
+        // 参数守卫：items[0].candidateIndex=9 → 拒绝且不发网络请求
+        server.requestLog.clear();
+        const QString session2 = QDir(m_dir.path()).filePath(QStringLiteral("cand2.deeplux-anno.json"));
+        r = actor.executeTool(QStringLiteral("sam_annotate"),
+                              QJsonObject{{"imagePath", m_imagePath},
+                                          {"sessionPath", session2},
+                                          {"serverUrl", server.url()},
+                                          {"items", QJsonArray{QJsonObject{{"points", QJsonArray{QJsonArray{15, 15}}},
+                                                                           {"candidateIndex", 9}}}}});
+        QVERIFY(r.value("error").toString().contains(QStringLiteral("items[0].candidateIndex")));
+        QVERIFY2(server.requestLog.isEmpty(), "param guard must fail before any network request");
+        QVERIFY(!QFileInfo::exists(session2));
+
+        // 运行时越界：candidateIndex=5（合法参数、超本次候选数）→ 全有或全无
+        const QString session3 = QDir(m_dir.path()).filePath(QStringLiteral("cand3.deeplux-anno.json"));
+        r = actor.executeTool(QStringLiteral("sam_annotate"),
+                              QJsonObject{{"imagePath", m_imagePath},
+                                          {"sessionPath", session3},
+                                          {"serverUrl", server.url()},
+                                          {"timeoutMs", 5000},
+                                          {"items", QJsonArray{QJsonObject{{"points", QJsonArray{QJsonArray{15, 15}}},
+                                                                           {"candidateIndex", 5}}}}});
+        QVERIFY(r.value("error").toString().contains(QStringLiteral("越界")));
+        QCOMPARE(r.value("failedItem").toInt(), 0);
+        QVERIFY(!QFileInfo::exists(session3));
     }
 
     // 混图拒绝：既有会话绑定 imagePath，异图追加失败关闭且不改动文件

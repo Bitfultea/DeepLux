@@ -121,6 +121,8 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
         if (item.box.isValid() && (!std::isfinite(item.box.x()) || !std::isfinite(item.box.y()) ||
                                    !std::isfinite(item.box.width()) || !std::isfinite(item.box.height())))
             return fail(QStringLiteral("prompt[%1] box 含非有限值").arg(i), i);
+        if (item.candidateIndex < 0) // 批4（C）：越界上界在收到候选后校验
+            return fail(QStringLiteral("prompt[%1] candidateIndex 必须 >= 0").arg(i), i);
     }
 
     // 客户端栈上创建：NAM 线程亲和 = 调用线程，本地事件循环同步收口。
@@ -160,12 +162,45 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
     QObject::connect(
         &client, &SamBackendClient::predictionReady, &loop,
         [&](const QList<QPointF>& polygon, const QRectF& bbox, double score, const QString& maskRle, const QImage&) {
+            // 批4（C）：多掩膜候选选择——candidates 按 score 降序，index 0 与
+            // 顶层 best 字段一致；越界或无候选却指定 index>0 均失败关闭
+            const QList<SamCandidate> candidates = client.lastCandidates();
+            QList<double> scores;
+            for (const SamCandidate& candidate : candidates)
+                scores.append(candidate.score);
+            outcome.candidateScores.append(scores);
+            const int wanted = items[nextIndex].candidateIndex;
+            QList<QPointF> chosenPolygon = polygon;
+            QRectF chosenBbox = bbox;
+            double chosenScore = score;
+            QString chosenRle = maskRle;
+            if (!candidates.isEmpty()) {
+                if (wanted < 0 || wanted >= candidates.size()) {
+                    error =
+                        QStringLiteral("candidateIndex %1 越界（本次共 %2 个候选）").arg(wanted).arg(candidates.size());
+                    outcome.failedIndex = nextIndex;
+                    done = true;
+                    loop.quit();
+                    return;
+                }
+                const SamCandidate& chosen = candidates[wanted];
+                chosenPolygon = chosen.polygon;
+                chosenBbox = chosen.bbox;
+                chosenScore = chosen.score;
+                chosenRle = chosen.maskRle;
+            } else if (wanted > 0) {
+                error = QStringLiteral("后端未返回多掩膜候选，无法选择 candidateIndex=%1").arg(wanted);
+                outcome.failedIndex = nextIndex;
+                done = true;
+                loop.quit();
+                return;
+            }
             Region2D region;
             region.label = items[nextIndex].label;
-            region.polygon = polygon;
-            region.bbox = bbox;
-            region.maskRle = maskRle;
-            region.score = score;
+            region.polygon = chosenPolygon;
+            region.bbox = chosenBbox;
+            region.maskRle = chosenRle;
+            region.score = chosenScore;
             // 产物在返回前过 Region2D 端口契约门禁（isValid + 有限值 +
             // score∈[0,1]）：不合格按后端错误失败关闭，不下发可疑区域
             if (!portValueMatchesType(QVariant::fromValue(region), DataType::Region2D)) {

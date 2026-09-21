@@ -37,6 +37,8 @@ set(CORE_SOURCES
     io/TiffLoader.cpp
     io/LabelMeExporter.cpp
     io/YoloSegExporter.cpp
+    io/CocoExporter.cpp
+    io/LabelMeImporter.cpp
     geometry/MeasurementData.cpp
     model/Annotation.cpp
     model/AnnotationCoordinateMapping.cpp
@@ -100,6 +102,8 @@ set(CORE_HEADERS
     io/TiffLoader.h
     io/LabelMeExporter.h
     io/YoloSegExporter.h
+    io/CocoExporter.h
+    io/LabelMeImporter.h
     geometry/MeasurementData.h
     model/Annotation.h
     model/AnnotationCoordinateMapping.h

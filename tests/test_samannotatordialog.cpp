@@ -60,6 +60,7 @@ private slots:
     void currentCategoryLabelPrefersListSelection();
     void openAnnotationButtonExists();
     void exportYoloButtonExists();
+    void exportCocoButtonExists(); // SAM 批4
     void yoloSegExportWritesFile();
     void openAnnotationReloadsSession();
 
@@ -96,6 +97,9 @@ private slots:
     void openRejectsEmptySessionWithLostImage();
     // SAM 批3 复核六轮（P1）：无摘要非空 legacy 会话必须记录正数宽高
     void openRejectsLegacySessionWithoutValidDims();
+    // SAM 批4（C）：多掩膜候选循环——◀/▶ 切换预览、确认所用为所选、
+    // candidates<=1 时循环行隐藏、确认/取消后候选清空
+    void candidateCyclingSelectsAlternateRegion();
 
 private:
     QImage makeTestImage();
@@ -480,6 +484,13 @@ void TestSamAnnotatorDialog::exportYoloButtonExists() {
     SamAnnotatorDialog dlg;
     QVERIFY(dlg.exportYoloButton() != nullptr);
     QVERIFY(dlg.exportYoloButton()->text().contains(QStringLiteral("YOLO")));
+}
+
+// SAM 批4：COCO 导出入口（导出逻辑由 test_cocoexporter 覆盖）
+void TestSamAnnotatorDialog::exportCocoButtonExists() {
+    SamAnnotatorDialog dlg;
+    QVERIFY(dlg.exportCocoButton() != nullptr);
+    QVERIFY(dlg.exportCocoButton()->text().contains(QStringLiteral("COCO")));
 }
 
 void TestSamAnnotatorDialog::yoloSegExportWritesFile() {
@@ -1335,6 +1346,88 @@ void TestSamAnnotatorDialog::openRejectsLegacySessionWithoutValidDims() {
     QCOMPARE(dlg.session().annotations.size(), 1);
     QVERIFY(dlg.statusLabel()->text().contains(QStringLiteral("警告")));
     QCOMPARE(dlg.session().imageDigest, QString()); // 打开仍不静默补摘要
+}
+
+// ===== SAM 批4（C）：多掩膜候选循环 =====
+
+void TestSamAnnotatorDialog::candidateCyclingSelectsAlternateRegion() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    dlg.positivePointButton()->setChecked(true);
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(20, 20)),
+                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+
+    auto* row = dlg.findChild<QWidget*>(QStringLiteral("SamCandidateRow"));
+    QVERIFY(row != nullptr);
+
+    // 注入预测：客户端未连测试服务 → lastCandidates 为空 → 无候选态，行隐藏
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onPredictionReady", Qt::DirectConnection,
+                                      Q_ARG(QList<QPointF>, squarePolygon(10, 10, 10)),
+                                      Q_ARG(QRectF, QRectF(10, 10, 10, 10)), Q_ARG(double, 0.97),
+                                      Q_ARG(QString, QStringLiteral("best_rle")), Q_ARG(QImage, QImage())));
+    QCOMPARE(dlg.previewCandidateCount(), 0);
+    QVERIFY(row->isHidden());
+    QCOMPARE(dlg.candidateLabel()->text(), QStringLiteral("候选 0/0"));
+
+    // 注入两个候选（c0=best 区域 10,10；c1=备选区域 30,30）
+    SamCandidate c0;
+    c0.polygon = squarePolygon(10, 10, 10);
+    c0.bbox = QRectF(10, 10, 10, 10);
+    c0.score = 0.97;
+    c0.maskRle = QStringLiteral("rle0");
+    SamCandidate c1;
+    c1.polygon = squarePolygon(30, 30, 10);
+    c1.bbox = QRectF(30, 30, 10, 10);
+    c1.score = 0.9;
+    c1.maskRle = QStringLiteral("rle1");
+    dlg.setPreviewCandidates({c0, c1});
+    QCOMPARE(dlg.previewCandidateCount(), 2);
+    QCOMPARE(dlg.previewCandidateIndex(), 0);
+    QVERIFY(!row->isHidden()); // candidates>1 才显示循环行
+    QCOMPARE(dlg.candidateLabel()->text(), QStringLiteral("候选 1/2 score=0.97"));
+
+    // ▶ 切到备选候选；再 ▶ 循环回 0；◀ 循环到 1
+    dlg.nextCandidateButton()->click();
+    QCOMPARE(dlg.previewCandidateIndex(), 1);
+    QCOMPARE(dlg.candidateLabel()->text(), QStringLiteral("候选 2/2 score=0.90"));
+    dlg.nextCandidateButton()->click();
+    QCOMPARE(dlg.previewCandidateIndex(), 0);
+    dlg.prevCandidateButton()->click();
+    QCOMPARE(dlg.previewCandidateIndex(), 1);
+
+    // 确认：写入会话的是所选候选（30,30 区域 + rle1），而非顶层 best
+    dlg.categoryEdit()->setText(QStringLiteral("defect"));
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
+    const AnnotationSession session = dlg.session();
+    QCOMPARE(session.annotations.size(), 1);
+    const AnnotationObject& obj = session.annotations.first();
+    QCOMPARE(obj.bbox, QRectF(30, 30, 10, 10));
+    QVERIFY(qAbs(obj.score - 0.9) < 1e-9);
+    QCOMPARE(obj.polygon.first(), QPointF(30, 30));
+    QCOMPARE(obj.maskRle, QStringLiteral("rle1"));
+    // 确认后候选随 prompt 清空、行恢复隐藏
+    QCOMPARE(dlg.previewCandidateCount(), 0);
+    QVERIFY(row->isHidden());
+
+    // 单一候选：行隐藏（无循环意义），预览即该候选；◀/▶ 对 n<2 为 no-op
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(20, 20)),
+                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onPredictionReady", Qt::DirectConnection,
+                                      Q_ARG(QList<QPointF>, squarePolygon(10, 10, 10)),
+                                      Q_ARG(QRectF, QRectF(10, 10, 10, 10)), Q_ARG(double, 0.97),
+                                      Q_ARG(QString, QStringLiteral("best_rle")), Q_ARG(QImage, QImage())));
+    dlg.setPreviewCandidates({c1});
+    QCOMPARE(dlg.previewCandidateCount(), 1);
+    QVERIFY(row->isHidden());
+    QCOMPARE(dlg.candidateLabel()->text(), QStringLiteral("候选 1/1 score=0.90"));
+    dlg.nextCandidateButton()->click();
+    QCOMPARE(dlg.previewCandidateIndex(), 0);
+
+    // 取消：候选清空、行隐藏（状态零残留）
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onCancel", Qt::DirectConnection));
+    QCOMPARE(dlg.previewCandidateCount(), 0);
+    QVERIFY(row->isHidden());
+    QCOMPARE(dlg.candidateLabel()->text(), QStringLiteral("候选 0/0"));
 }
 
 QTEST_MAIN(TestSamAnnotatorDialog)

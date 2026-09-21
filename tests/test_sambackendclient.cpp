@@ -64,6 +64,8 @@ private slots:
     void oversizedDeclaredResponseIsAbortedBeforeBuffering();
     // 批3 复核二轮（P1-3）：predict 响应严格解析失败关闭
     void predictResponseStrictParsing();
+    // SAM 批4（C）：多掩膜候选解析与严格校验
+    void predictCandidatesParsedAndStrict();
 
 private:
     QString m_unusedPortUrl;
@@ -588,6 +590,104 @@ void TestSamBackendClient::predictResponseStrictParsing() {
     const auto args = predictSpy.first();
     QCOMPARE(args.at(0).value<QList<QPointF>>().size(), 3);
     QCOMPARE(args.at(2).toDouble(), 0.9);
+    server.usePredictOverride = false;
+}
+
+// SAM 批4（C）：candidates 成功解析（lastCandidates 暴露、score 降序、
+// 掩膜 PNG 解码）与严格校验（非数组/元素非对象/缺 score/数量超限拒绝）
+void TestSamBackendClient::predictCandidatesParsedAndStrict() {
+    SamTestServer server;
+    QVERIFY2(server.listen(), "test HTTP server must listen");
+
+    // 成功路径：默认响应含 3 个候选
+    {
+        SamBackendClient client;
+        client.setServerUrl(server.url());
+        client.setTimeoutMs(2000);
+        QSignalSpy predictSpy(&client, &SamBackendClient::predictionReady);
+        QSignalSpy errorSpy(&client, &SamBackendClient::errorOccurred);
+        QObject::connect(&client, &SamBackendClient::embeddingReady, &client,
+                         [&client]() { client.predict({QPointF(1, 2)}, {}, QRectF()); });
+        client.setImage(QStringLiteral("/tmp/deeplux_cand.png"));
+        QVERIFY2(waitFor([&] { return predictSpy.count() > 0 || errorSpy.count() > 0; }), "predict must settle");
+        QCOMPARE(errorSpy.count(), 0);
+        QCOMPARE(predictSpy.count(), 1);
+        const QList<SamCandidate> candidates = client.lastCandidates();
+        QCOMPARE(candidates.size(), 3);
+        // score 降序且 candidate[0] 与顶层 best 一致
+        QCOMPARE(candidates[0].score, 0.97);
+        QCOMPARE(candidates[1].score, 0.9);
+        QCOMPARE(candidates[2].score, 0.8);
+        QCOMPARE(candidates[1].bbox, QRectF(30, 30, 10, 10));
+        QCOMPARE(candidates[1].polygon.size(), 4);
+        QCOMPARE(candidates[1].polygon.first(), QPointF(30, 30));
+        QVERIFY(!candidates[0].maskImage.isNull()); // mask_png_base64 已解码
+        QVERIFY(candidates[1].maskImage.isNull());  // 无掩膜字段 → 空图（可选）
+    }
+
+    // 严格校验：畸形 candidates 拒绝且不发 predictionReady
+    const QJsonObject valid{{"polygon", QJsonArray{QJsonArray{1.0, 2.0}, QJsonArray{3.0, 4.0}, QJsonArray{5.0, 6.0}}},
+                            {"bbox", QJsonArray{1, 2, 3, 4}},
+                            {"score", 0.9}};
+    const auto goodCandidate = QJsonObject{
+        {"polygon", QJsonArray{QJsonArray{0.0, 0.0}, QJsonArray{2.0, 0.0}, QJsonArray{2.0, 2.0}, QJsonArray{0.0, 2.0}}},
+        {"bbox", QJsonArray{0, 0, 2, 2}},
+        {"score", 0.5}};
+    server.usePredictOverride = true;
+    const auto driveExpectError = [&](const QJsonObject& response, const QString& expectSubstr) {
+        server.predictResponseOverride = response;
+        SamBackendClient client;
+        client.setServerUrl(server.url());
+        client.setTimeoutMs(2000);
+        QSignalSpy errorSpy(&client, &SamBackendClient::errorOccurred);
+        QSignalSpy predictSpy(&client, &SamBackendClient::predictionReady);
+        QObject::connect(&client, &SamBackendClient::embeddingReady, &client,
+                         [&client]() { client.predict({QPointF(1, 2)}, {}, QRectF()); });
+        client.setImage(QStringLiteral("/tmp/deeplux_cand_bad.png"));
+        QVERIFY2(waitFor([&] { return errorSpy.count() > 0 || predictSpy.count() > 0; }),
+                 qPrintable(QStringLiteral("no outcome for: %1").arg(expectSubstr)));
+        QCOMPARE(predictSpy.count(), 0);
+        QVERIFY2(
+            errorSpy.first().at(0).toString().contains(expectSubstr),
+            qPrintable(QStringLiteral("expect '%1', got: %2").arg(expectSubstr, errorSpy.first().at(0).toString())));
+        QVERIFY(client.lastCandidates().isEmpty()); // 失败不残留候选
+    };
+
+    QJsonObject r = valid;
+    r["candidates"] = QStringLiteral("abc");
+    driveExpectError(r, QStringLiteral("candidates"));
+    r = valid;
+    r["candidates"] = QJsonArray{QJsonValue(42)};
+    driveExpectError(r, QStringLiteral("candidates[0]"));
+    r = valid;
+    r["candidates"] = QJsonArray{
+        QJsonObject{{"polygon", goodCandidate.value("polygon")}, {"bbox", goodCandidate.value("bbox")}}}; // 缺 score
+    driveExpectError(r, QStringLiteral("score"));
+    r = valid;
+    QJsonArray many;
+    for (int i = 0; i < 9; ++i)
+        many.append(goodCandidate);
+    r["candidates"] = many;
+    driveExpectError(r, QStringLiteral("上限"));
+
+    // 对照：合法 candidates（含可选字段缺省）→ 成功
+    r = valid;
+    r["candidates"] = QJsonArray{goodCandidate};
+    server.predictResponseOverride = r;
+    {
+        SamBackendClient client;
+        client.setServerUrl(server.url());
+        client.setTimeoutMs(2000);
+        QSignalSpy predictSpy(&client, &SamBackendClient::predictionReady);
+        QSignalSpy errorSpy(&client, &SamBackendClient::errorOccurred);
+        QObject::connect(&client, &SamBackendClient::embeddingReady, &client,
+                         [&client]() { client.predict({QPointF(1, 2)}, {}, QRectF()); });
+        client.setImage(QStringLiteral("/tmp/deeplux_cand_ok.png"));
+        QVERIFY2(waitFor([&] { return predictSpy.count() > 0 || errorSpy.count() > 0; }), "must settle");
+        QCOMPARE(errorSpy.count(), 0);
+        QCOMPARE(client.lastCandidates().size(), 1);
+        QCOMPARE(client.lastCandidates()[0].score, 0.5);
+    }
     server.usePredictOverride = false;
 }
 

@@ -5,6 +5,7 @@
 #include "../widgets/HImageWidget.h"
 #include "core/agent/SamBackendClient.h"
 #include "core/common/Logger.h"
+#include "core/io/CocoExporter.h"
 #include "core/io/LabelMeExporter.h"
 #include "core/io/YoloSegExporter.h"
 #include "core/manager/ConfigManager.h"
@@ -459,6 +460,13 @@ void SamAnnotatorDialog::setupUi() {
     saveExportRow2->addWidget(m_exportYoloButton);
     connect(m_exportYoloButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onExportYoloSeg);
 
+    // SAM 批4：COCO 导出
+    m_exportCocoButton = new QPushButton(tr("导出 COCO"));
+    m_exportCocoButton->setObjectName(QStringLiteral("SamExportCocoButton"));
+    configureCompactButton(m_exportCocoButton);
+    saveExportRow2->addWidget(m_exportCocoButton);
+    connect(m_exportCocoButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onExportCoco);
+
     m_statusLabel = new QLabel(tr("未加载图像"));
     m_statusLabel->setObjectName(QStringLiteral("SamStatusLabel"));
     m_statusLabel->setMinimumWidth(0);
@@ -567,6 +575,35 @@ void SamAnnotatorDialog::setupUi() {
     m_btnSplit->setToolTip(tr("按连通分量拆分选中对象（最大分量保留原身份）"));
     modeRow4->addWidget(m_btnSplit);
     connect(m_btnSplit, &QToolButton::clicked, this, &SamAnnotatorDialog::onSplitSelected);
+
+    // SAM 批4：多掩膜候选循环行（默认隐藏——candidates>1 时显示，隐藏行
+    // 不占布局空间，紧凑模式高度预算不受影响）
+    m_candidateRowWidget = new QWidget();
+    m_candidateRowWidget->setObjectName(QStringLiteral("SamCandidateRow"));
+    auto* candidateRow = new QHBoxLayout(m_candidateRowWidget);
+    candidateRow->setContentsMargins(0, 0, 0, 0);
+    candidateRow->setSpacing(2);
+    m_btnPrevCandidate = new QToolButton();
+    configureModeButton(m_btnPrevCandidate, QStringLiteral("◀"));
+    m_btnPrevCandidate->setCheckable(false);
+    m_btnPrevCandidate->setToolTip(tr("上一个候选掩膜"));
+    m_btnPrevCandidate->setMaximumWidth(34);
+    candidateRow->addWidget(m_btnPrevCandidate);
+    connect(m_btnPrevCandidate, &QToolButton::clicked, this, [this]() { cycleCandidate(-1); });
+    m_candidateLabel = new QLabel(tr("候选 0/0"));
+    m_candidateLabel->setObjectName(QStringLiteral("SamCandidateLabel"));
+    configureCompactLabel(m_candidateLabel);
+    m_candidateLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    candidateRow->addWidget(m_candidateLabel);
+    m_btnNextCandidate = new QToolButton();
+    configureModeButton(m_btnNextCandidate, QStringLiteral("▶"));
+    m_btnNextCandidate->setCheckable(false);
+    m_btnNextCandidate->setToolTip(tr("下一个候选掩膜"));
+    m_btnNextCandidate->setMaximumWidth(34);
+    candidateRow->addWidget(m_btnNextCandidate);
+    connect(m_btnNextCandidate, &QToolButton::clicked, this, [this]() { cycleCandidate(+1); });
+    m_candidateRowWidget->hide();
+    modeGrid->addWidget(m_candidateRowWidget);
 
     m_btnSelect = new QToolButton();
     configureModeButton(m_btnSelect, tr("选择"));
@@ -1329,6 +1366,13 @@ void SamAnnotatorDialog::clearCurrentPrompt() {
     m_previewMask = QImage();
     m_previewScore = 0.0;
     m_hasPrediction = false;
+    // SAM 批4：候选随 prompt 一并清空并隐藏循环行
+    m_previewCandidates.clear();
+    m_previewCandidateIndex = 0;
+    if (m_candidateRowWidget)
+        m_candidateRowWidget->hide();
+    if (m_candidateLabel)
+        m_candidateLabel->setText(tr("候选 0/0"));
     if (m_confirmButton)
         m_confirmButton->setEnabled(false);
     m_overlay->clearPromptPoints();
@@ -1444,7 +1488,55 @@ void SamAnnotatorDialog::onPredictionReady(const QList<QPointF>& polygon, const 
         m_overlay->setPreviewMask(m_previewMask);
     if (m_confirmButton)
         m_confirmButton->setEnabled(true);
+    // SAM 批4：读取本次 predict 的多掩膜候选（信号发出前已由客户端就绪；
+    // candidates[0] 与顶层 best 一致，默认选择即当前预览）
+    setPreviewCandidates(m_samClient ? m_samClient->lastCandidates() : QList<SamCandidate>{});
     setStatusText(tr("SAM 预测完成 score=%1").arg(score, 0, 'f', 2));
+}
+
+void SamAnnotatorDialog::setPreviewCandidates(const QList<SamCandidate>& candidates) {
+    m_previewCandidates = candidates;
+    m_previewCandidateIndex = 0;
+    if (m_candidateRowWidget)
+        m_candidateRowWidget->setVisible(candidates.size() > 1);
+    applyCurrentCandidatePreview();
+}
+
+void SamAnnotatorDialog::applyCurrentCandidatePreview() {
+    if (m_previewCandidates.isEmpty()) {
+        if (m_candidateLabel)
+            m_candidateLabel->setText(tr("候选 0/0"));
+        return; // 无候选：预览保持 onPredictionReady 写入的顶层 best 字段
+    }
+    if (m_previewCandidateIndex < 0 || m_previewCandidateIndex >= m_previewCandidates.size())
+        m_previewCandidateIndex = 0;
+    const SamCandidate& chosen = m_previewCandidates[m_previewCandidateIndex];
+    // 候选写入预览态（单一事实来源：确认路径直接消费 m_preview* 字段）
+    m_previewPolygon = chosen.polygon;
+    m_previewBbox = chosen.bbox;
+    m_previewScore = chosen.score;
+    m_previewMaskRle = chosen.maskRle;
+    m_previewMask = chosen.maskImage;
+    if (m_overlay) {
+        m_overlay->setPreviewPolygon(m_previewPolygon);
+        if (m_previewBbox.isValid())
+            m_overlay->setPreviewBox(m_previewBbox);
+        if (!m_previewMask.isNull())
+            m_overlay->setPreviewMask(m_previewMask);
+    }
+    if (m_candidateLabel)
+        m_candidateLabel->setText(tr("候选 %1/%2 score=%3")
+                                      .arg(m_previewCandidateIndex + 1)
+                                      .arg(m_previewCandidates.size())
+                                      .arg(m_previewScore, 0, 'f', 2));
+}
+
+void SamAnnotatorDialog::cycleCandidate(int delta) {
+    const int n = m_previewCandidates.size();
+    if (n < 2)
+        return;
+    m_previewCandidateIndex = (m_previewCandidateIndex + delta + n) % n;
+    applyCurrentCandidatePreview();
 }
 
 void SamAnnotatorDialog::updateSessionFromImage() {
@@ -1899,6 +1991,32 @@ bool SamAnnotatorDialog::openAnnotationFile(const QString& filePath, QString* er
         setStatusText(tr("已打开标注会话（%1 个对象）").arg(m_session->annotations.size()));
     Logger::instance().info(tr("已打开标注会话 %1").arg(filePath), "Annotation");
     return true;
+}
+
+// === COCO 导出（SAM 批4）===
+
+void SamAnnotatorDialog::onExportCoco() {
+    if (m_session->annotations.isEmpty()) {
+        QMessageBox::information(this, tr("导出"), tr("当前没有标注对象，无需导出"));
+        return;
+    }
+    const QString defaultPath = m_imagePath.isEmpty()
+                                    ? QStringLiteral("annotations.coco.json")
+                                    : QFileInfo(m_imagePath).absolutePath() + QStringLiteral("/annotations.coco.json");
+    const QString path =
+        QFileDialog::getSaveFileName(this, tr("导出 COCO"), defaultPath, tr("JSON (*.json);;所有文件 (*.*)"));
+    if (path.isEmpty())
+        return;
+    // 一致性守卫：仅当内存图像与会话绑定一致时才回写会话元数据（同 LabelMe/YOLO）
+    if (m_session->imagePath.isEmpty() || m_session->imagePath == m_imagePath)
+        updateSessionFromImage();
+    QString err;
+    if (!CocoExporter::exportToFile(*m_session, path, m_categories, &err)) {
+        QMessageBox::warning(this, tr("导出失败"), err);
+        return;
+    }
+    setStatusText(tr("COCO 已导出至 %1").arg(path));
+    Logger::instance().info(tr("COCO 已导出至 %1").arg(path), "Annotation");
 }
 
 // === YOLO Seg 导出 ===

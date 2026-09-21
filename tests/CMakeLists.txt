@@ -60,6 +60,8 @@ set(TEST_SOURCES
     test_annotationmaskops.cpp
     test_labelme_exporter.cpp
     test_yoloseg_exporter.cpp
+    test_cocoexporter.cpp
+    test_labelmeimporter.cpp
     test_annotationoverlaywidget.cpp
     test_expressionengine.cpp
     test_samannotatordialog.cpp

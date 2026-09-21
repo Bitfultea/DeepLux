@@ -27,6 +27,10 @@ struct SamPromptItem {
     QList<QPointF> negativePoints;
     QRectF box;    // 无效 = 未提供
     QString label; // 写入产物 Region2D.label
+    // 批4（C）：多掩膜候选选择——后端返回 candidates（score 降序）时选取
+    // 第 candidateIndex 个；0 = 最佳（与顶层 best 字段一致）。后端未返回
+    // 候选而 index>0，或 index 越界，均失败关闭
+    int candidateIndex = 0;
 };
 
 /// 同步预测结果（ok=false 时 error 非空；regions 仅成功时完整）
@@ -36,6 +40,8 @@ struct SamPredictOutcome {
     int failedIndex = -1;    // 失败发生在第几个 prompt（-1 = set_image/参数阶段）
     QString modelName;       // 后端模型名（成功时；空则调用方自行回退）
     QList<Region2D> regions; // 与 items 一一对应
+    // 批4（C）：每项的候选 score 列表（与 items 对齐；后端无候选时为空列表）
+    QList<QList<double>> candidateScores;
 };
 
 /**

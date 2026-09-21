@@ -220,22 +220,32 @@ void ToolSchema::registerDefaultTools() {
                    {"negativePoints", "array", "Negative prompt points [[x,y],...]", false},
                    {"box", "array", "Prompt box [x,y,w,h] with w,h>0 (optional)", false},
                    {"label", "string", "Label for the predicted region", false, QJsonValue("object")},
+                   {"candidateIndex", "integer",
+                    "Pick among SAM multi-mask candidates sorted by score desc (0=best, default); "
+                    "fails closed if the server returned no candidates or the index is out of range",
+                    false, QJsonValue(0)},
                    {"serverUrl", "string", "SAM server base URL", false, QJsonValue("http://127.0.0.1:8990")},
                    {"timeoutMs", "integer", "Per-request timeout in ms, [100,120000]", false, QJsonValue(30000)}}});
 
-    // sam_annotate（SAM 批3）：批量 prompt 分割并写入标注会话文件。
+    // sam_annotate（SAM 批3，批4 扩展）：批量 prompt 分割并写入标注会话文件。
     // dangerous：写磁盘文件（与 save_project 同口径，Autopilot 需确认）
     registerTool({"sam_annotate",
                   "Run SAM segmentation for a batch of prompts and append the results as annotation "
                   "objects to a DeepLux annotation session file (.deeplux-anno.json, created if absent). "
+                  "Prompts come from 'items' OR 'labelMePath' (exactly one; mutually exclusive). "
                   "All-or-nothing: nothing is written if any prediction fails. Refuses to mix images: "
-                  "an existing session bound to a different imagePath is rejected.",
+                  "an existing session bound to a different image (path/size/digest) is rejected.",
                   {{"imagePath", "string", "Absolute path to an existing image file", true},
                    {"sessionPath", "string", "Annotation session file to create or append to", true},
                    {"items", "array",
-                    "1-16 prompt items [{points?,negativePoints?,box?,label?}]; "
-                    "each item needs points or box",
-                    true},
+                    "1-16 prompt items [{points?,negativePoints?,box?,label?,candidateIndex?}]; "
+                    "each item needs points or box (mutually exclusive with labelMePath)",
+                    false},
+                   {"labelMePath", "string",
+                    "Path to a LabelMe JSON file whose rectangle shapes become box prompts "
+                    "(1-16 usable rectangles; non-rectangles skipped and reported; "
+                    "mutually exclusive with items)",
+                    false},
                    {"serverUrl", "string", "SAM server base URL", false, QJsonValue("http://127.0.0.1:8990")},
                    {"timeoutMs", "integer", "Per-request timeout in ms, [100,120000]", false, QJsonValue(30000)}},
                   true}); // dangerous（写文件）

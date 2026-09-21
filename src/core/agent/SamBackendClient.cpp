@@ -507,6 +507,7 @@ void SamBackendClient::predict(const QList<QPointF>& positive, const QList<QPoin
     }
 
     cancelPendingPrediction();
+    m_lastCandidates.clear(); // 批4（C）：候选与本次 predict 绑定，发起即清空
 
     m_lastPositive = positive;
     m_lastNegative = negative;
@@ -580,6 +581,78 @@ void SamBackendClient::unloadImage() {
     connect(reply, &QNetworkReply::finished, this, &SamBackendClient::onUnloadReply);
     startTimeout();
 }
+
+// ===== SAM 批4（C）：candidates 字段严格解析（与顶层同口径：类型/有限值/
+// score∈[0,1]；成功返回空串，失败返回错误信息，不静默转零）=====
+namespace {
+
+QString parseCandidatePolygon(const QJsonValue& value, QList<QPointF>& out) {
+    if (!value.isArray())
+        return QStringLiteral("polygon 必须为数组");
+    const QJsonArray arr = value.toArray();
+    for (const QJsonValue& v : arr) {
+        if (!v.isArray() || v.toArray().size() != 2 || !v.toArray().at(0).isDouble() || !v.toArray().at(1).isDouble())
+            return QStringLiteral("polygon 元素必须为 [x,y] 数值对");
+        const QPointF point(v.toArray().at(0).toDouble(), v.toArray().at(1).toDouble());
+        if (!std::isfinite(point.x()) || !std::isfinite(point.y()))
+            return QStringLiteral("polygon 坐标必须为有限数值");
+        out.append(point);
+    }
+    return QString();
+}
+
+QString parseCandidateBbox(const QJsonValue& value, QRectF& out) {
+    out = QRectF();
+    if (value.isUndefined() || value.isNull())
+        return QString();
+    if (!value.isArray() || value.toArray().size() != 4)
+        return QStringLiteral("bbox 必须为 [x,y,w,h] 4 数值或缺省");
+    const QJsonArray arr = value.toArray();
+    double vals[4];
+    for (int i = 0; i < 4; ++i) {
+        if (!arr.at(i).isDouble() || !std::isfinite(arr.at(i).toDouble()))
+            return QStringLiteral("bbox 必须为有限数值");
+        vals[i] = arr.at(i).toDouble();
+    }
+    out = QRectF(vals[0], vals[1], vals[2], vals[3]);
+    return QString();
+}
+
+QString parseCandidateScore(const QJsonValue& value, double& out) {
+    if (!value.isDouble() || !std::isfinite(value.toDouble()) || value.toDouble() < 0.0 || value.toDouble() > 1.0)
+        return QStringLiteral("score 必须为 [0,1] 有限数值");
+    out = value.toDouble();
+    return QString();
+}
+
+QString parseCandidateString(const QJsonValue& value, const QString& name, QString& out) {
+    out.clear();
+    if (value.isUndefined() || value.isNull())
+        return QString();
+    if (!value.isString())
+        return QStringLiteral("%1 必须为字符串或缺省").arg(name);
+    out = value.toString();
+    return QString();
+}
+
+QString parseCandidateMaskPng(const QJsonValue& value, QImage& out) {
+    out = QImage();
+    if (value.isUndefined() || value.isNull())
+        return QString();
+    if (!value.isString())
+        return QStringLiteral("mask_png_base64 必须为字符串或缺省");
+    const QString b64 = value.toString();
+    if (!b64.isEmpty()) {
+        const QByteArray pngData = QByteArray::fromBase64(b64.toLatin1());
+        if (out.loadFromData(pngData, "PNG"))
+            out = out.convertToFormat(QImage::Format_ARGB32);
+        else
+            out = QImage(); // 解码失败降级为无掩膜像素（仅显示辅助，不参与契约）
+    }
+    return QString();
+}
+
+} // namespace
 
 static QJsonObject parseReply(QNetworkReply* reply, QString* err) {
     QJsonObject result;
@@ -870,6 +943,46 @@ void SamBackendClient::onPredictReply() {
                 maskImage = maskImage.convertToFormat(QImage::Format_ARGB32);
             else
                 maskImage = QImage();
+        }
+    }
+
+    // 批4（C）：candidates 可选数组（multimask 候选，score 降序）——逐元素
+    // 严格解析（与顶层同口径），上限 8 防滥用；在 predictionReady 发出前
+    // 存入 m_lastCandidates，回调内经 lastCandidates() 读取即为本次结果
+    m_lastCandidates.clear();
+    const QJsonValue candValue = obj.value("candidates");
+    if (!candValue.isUndefined() && !candValue.isNull()) {
+        if (!candValue.isArray()) {
+            reject(tr("预测失败：candidates 必须为数组或缺省"));
+            return;
+        }
+        const QJsonArray candArr = candValue.toArray();
+        if (candArr.size() > 8) {
+            reject(tr("预测失败：candidates 数量超过上限 8"));
+            return;
+        }
+        for (int i = 0; i < candArr.size(); ++i) {
+            if (!candArr[i].isObject()) {
+                reject(tr("预测失败：candidates[%1] 必须为对象").arg(i));
+                return;
+            }
+            const QJsonObject cobj = candArr[i].toObject();
+            SamCandidate candidate;
+            QString candidateError = parseCandidatePolygon(cobj.value("polygon"), candidate.polygon);
+            if (candidateError.isEmpty())
+                candidateError = parseCandidateBbox(cobj.value("bbox"), candidate.bbox);
+            if (candidateError.isEmpty())
+                candidateError = parseCandidateScore(cobj.value("score"), candidate.score);
+            if (candidateError.isEmpty())
+                candidateError =
+                    parseCandidateString(cobj.value("mask_rle"), QStringLiteral("mask_rle"), candidate.maskRle);
+            if (candidateError.isEmpty())
+                candidateError = parseCandidateMaskPng(cobj.value("mask_png_base64"), candidate.maskImage);
+            if (!candidateError.isEmpty()) {
+                reject(tr("预测失败：candidates[%1] %2").arg(i).arg(candidateError));
+                return;
+            }
+            m_lastCandidates.append(candidate);
         }
     }
 

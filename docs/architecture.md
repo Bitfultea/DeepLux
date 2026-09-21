@@ -155,7 +155,7 @@ flowchart LR
     Model --> Server
     Server --> Client
     Client --> Overlay
-    Overlay --> Export[会话保存<br/>LabelMe / YOLO 分割导出]
+    Overlay --> Export[会话保存<br/>LabelMe / YOLO 分割 / COCO 导出]
 ```
 
 - `HImageWidget` 负责图像显示、缩放和坐标变换；标注叠加层独立维护掩膜、多边形和提示点，避免与测量叠加混杂。
@@ -164,6 +164,8 @@ flowchart LR
 - 掩膜编辑算法集中在 `MaskOps`（`core/model/AnnotationMaskOps`，纯函数无 UI 依赖）：形态学膨胀/腐蚀（可分离滑窗，越界按背景）、8-连通分量、Moore 外轮廓追踪、橡皮擦笔画、多边形栅格化，以及与 sam_server `_encode_rle` 语义一致的 RLE 编解码（列主序，损坏输入失败关闭）。
 - 标注对话框对已确认对象提供膨胀/腐蚀/橡皮擦/合并/拆分（SAM 批2）：编辑作用于整图尺寸二值掩膜（来源优先级：内存缓存 → maskRle → polygon 栅格化重建），完成后重导出 polygon/bbox/maskRle；每次编辑整体入撤销栈，可精确回滚。空结果、多连通分量结果（单多边形模型无法如实表达）、不连通区域的合并均失败关闭并给出状态栏提示，不静默丢像素；拆分保留最大分量的原对象身份，派生对象 score=0（非 SAM 预测，不伪造置信度）。
 - Agent 工具化（SAM 批3）：`sam_predict`（单次 prompt 分割，返回 label/score/bbox/polygon JSON，不回传 RLE 本体防上下文爆炸）与 `sam_annotate`（1–16 项批量分割并追加写入 `.deeplux-anno.json` 会话，全有或全无、混图拒绝）注册进 ToolSchema 白名单，与 `SamPredict` 插件共享 `SamPredictor` 同步预测核心（栈上客户端 + 本地事件循环 + 取消轮询 + Region2D 契约门禁；批量项间经事件循环延迟发起，避免在客户端回复 settle 前重入）。权限口径：两者均非 readOnly（最小权限，Observer 拒绝）；`sam_annotate` 为 dangerous（写文件，Autopilot 也需确认）。
+- 导出/导入扩展（SAM 批4）：`CocoExporter`（`core/io`）把会话导出为 COCO instances JSON——area 取值链 maskRle 前景像素数 → polygon 鞋带面积 → bbox 面积，segmentation 为展平多边形环；类别 id 1 起、参数顺序优先并按出现追加；空标注/无效宽高/空标签失败关闭；`QSaveFile` 原子写。`LabelMeImporter` 严格解析 LabelMe shapes（label 非空、points ≥2 且为有限 [x,y] 对、shape_type 缺失按点数推导），`rectangleBoxes` 仅提取非退化矩形并归一化，跳过形状计数显式报告；`sam_annotate` 增加 `labelMePath` 参数与 `items` 互斥二选一（XOR），矩形转 box prompt 批量分割。
+- 多掩膜候选（SAM 批4）：sam_server `/predict` 增返 `candidates`（≤3，score 降序，`candidates[0]` 与顶层 best 字段一致，旧客户端不受影响）；`SamBackendClient` 严格解析（可选字段、上限 8、元素级失败关闭）并经 `lastCandidates()` 暴露；`SamPromptItem.candidateIndex`（0=最佳）在 `SamPredictor` 收口选择——越界、负值、后端无候选却指定 index>0 均失败关闭，`SamPredictOutcome.candidateScores` 回传各项 score 列表；对话框以 ◀/▶ 循环切换预览（candidates>1 才显示循环行），确认写入的是所选候选；`sam_predict`/`sam_annotate` 透传 `candidateIndex`（[0,7] 整数守卫）并回传 candidateCount/candidateScores 摘要供 LLM 改选。
 
 ## 验证边界
 

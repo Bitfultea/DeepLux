@@ -2,6 +2,7 @@
 
 #include "SamPredictor.h"
 #include "ToolSchema.h"
+#include "io/LabelMeImporter.h"
 #include "base/ModuleBase.h"
 #include "common/Logger.h"
 #include "engine/RunEngine.h"
@@ -722,6 +723,14 @@ QJsonObject AgentActor::samPredict(const QJsonObject& params) {
         return QJsonObject{{"error", QString("box 非法: %1").arg(perr)}};
     if (item.positivePoints.isEmpty() && !item.box.isValid())
         return QJsonObject{{"error", QString("points 与 box 至少提供一个 prompt")}};
+    // 批4（C）：候选选择（0=最佳；上界越界由 SamPredictor 按实际候选数失败关闭）
+    const QJsonValue candIdx = params.value("candidateIndex");
+    if (!candIdx.isUndefined() && !candIdx.isNull()) {
+        if (!candIdx.isDouble() || candIdx.toDouble() < 0 || candIdx.toDouble() > 7 ||
+            candIdx.toDouble() != double(qRound(candIdx.toDouble())))
+            return QJsonObject{{"error", QString("candidateIndex 必须为 [0,7] 整数")}};
+        item.candidateIndex = qRound(candIdx.toDouble());
+    }
 
     // imagePath 存在性/serverUrl/timeoutMs 由 runSamPredictBatch 先行校验（不发网络请求）
     const SamPredictOutcome outcome =
@@ -733,6 +742,10 @@ QJsonObject AgentActor::samPredict(const QJsonObject& params) {
     QJsonArray polygon;
     for (const QPointF& p : region.polygon)
         polygon.append(QJsonArray{p.x(), p.y()});
+    // 批4（C）：候选摘要回传（score 列表，降序）——LLM 可据此改选 candidateIndex
+    QJsonArray candidateScores;
+    for (const double s : outcome.candidateScores.value(0))
+        candidateScores.append(s);
     // 不回传 maskRle 本体（可达 MB 级，会撑爆 LLM 上下文），仅给出长度
     return QJsonObject{
         {"status", QStringLiteral("predicted")},
@@ -742,7 +755,10 @@ QJsonObject AgentActor::samPredict(const QJsonObject& params) {
         {"polygon", polygon},
         {"polygonPoints", region.polygon.size()},
         {"maskRleLength", region.maskRle.size()},
-        {"modelName", outcome.modelName}};
+        {"modelName", outcome.modelName},
+        {"candidateCount", candidateScores.size()},
+        {"candidateScores", candidateScores},
+        {"candidateIndex", item.candidateIndex}};
 }
 
 QJsonObject AgentActor::samAnnotate(const QJsonObject& params) {
@@ -753,30 +769,65 @@ QJsonObject AgentActor::samAnnotate(const QJsonObject& params) {
 
     if (sessionPath.trimmed().isEmpty())
         return QJsonObject{{"error", QString("sessionPath 不能为空")}};
+    // 批4（B）：prompt 来源二选一——items 或 labelMePath（互斥且必选其一）
+    const QString labelMePath = params.value("labelMePath").toString().trimmed();
     const QJsonValue itemsValue = params.value("items");
-    if (!itemsValue.isArray())
-        return QJsonObject{{"error", QString("items 必须为 prompt 对象数组")}};
-    const QJsonArray items = itemsValue.toArray();
-    if (items.isEmpty() || items.size() > 16)
-        return QJsonObject{{"error", QString("items 数量必须在 [1,16]")}};
+    const bool hasItems = itemsValue.isArray();
+    if (hasItems == !labelMePath.isEmpty())
+        return QJsonObject{{"error", QString("items 与 labelMePath 必须恰好提供一个（互斥）")}};
 
     QList<SamPromptItem> prompts;
-    for (int i = 0; i < items.size(); ++i) {
-        if (!items[i].isObject())
-            return QJsonObject{{"error", QString("items[%1] 必须为对象").arg(i)}};
-        const QJsonObject itemObj = items[i].toObject();
-        SamPromptItem item;
-        item.label = itemObj.value("label").toString(QStringLiteral("object"));
-        QString perr;
-        if (!parseSamPointsJson(itemObj.value("points"), item.positivePoints, true, perr))
-            return QJsonObject{{"error", QString("items[%1].points 非法: %2").arg(i).arg(perr)}};
-        if (!parseSamPointsJson(itemObj.value("negativePoints"), item.negativePoints, true, perr))
-            return QJsonObject{{"error", QString("items[%1].negativePoints 非法: %2").arg(i).arg(perr)}};
-        if (!parseSamBoxJson(itemObj.value("box"), item.box, perr))
-            return QJsonObject{{"error", QString("items[%1].box 非法: %2").arg(i).arg(perr)}};
-        if (item.positivePoints.isEmpty() && !item.box.isValid())
-            return QJsonObject{{"error", QString("items[%1]：points 与 box 至少提供一个 prompt").arg(i)}};
-        prompts.append(item);
+    int importedRectangles = 0;
+    int skippedShapes = 0;
+    if (!labelMePath.isEmpty()) {
+        // LabelMe 矩形框 → box prompt 批量：严格导入失败关闭；非矩形/退化
+        // 形状跳过并计数，结果中显式报告（不静默）
+        QList<LabelMeShape> shapes;
+        QString importError;
+        if (!LabelMeImporter::loadShapes(labelMePath, shapes, &importError))
+            return QJsonObject{{"error", QString("LabelMe 导入失败：%1").arg(importError)}};
+        const QList<LabelMeBox> boxes = LabelMeImporter::rectangleBoxes(shapes, &skippedShapes);
+        if (boxes.isEmpty())
+            return QJsonObject{
+                {"error", QString("LabelMe 无可用矩形框（跳过非矩形/退化形状 %1 个）").arg(skippedShapes)}};
+        if (boxes.size() > 16)
+            return QJsonObject{{"error", QString("LabelMe 矩形数 %1 超出 [1,16]").arg(boxes.size())}};
+        for (const LabelMeBox& labelMeBox : boxes) {
+            SamPromptItem item;
+            item.label = labelMeBox.label;
+            item.box = labelMeBox.box;
+            prompts.append(item);
+        }
+        importedRectangles = boxes.size();
+    } else {
+        const QJsonArray items = itemsValue.toArray();
+        if (items.isEmpty() || items.size() > 16)
+            return QJsonObject{{"error", QString("items 数量必须在 [1,16]")}};
+        for (int i = 0; i < items.size(); ++i) {
+            if (!items[i].isObject())
+                return QJsonObject{{"error", QString("items[%1] 必须为对象").arg(i)}};
+            const QJsonObject itemObj = items[i].toObject();
+            SamPromptItem item;
+            item.label = itemObj.value("label").toString(QStringLiteral("object"));
+            QString perr;
+            if (!parseSamPointsJson(itemObj.value("points"), item.positivePoints, true, perr))
+                return QJsonObject{{"error", QString("items[%1].points 非法: %2").arg(i).arg(perr)}};
+            if (!parseSamPointsJson(itemObj.value("negativePoints"), item.negativePoints, true, perr))
+                return QJsonObject{{"error", QString("items[%1].negativePoints 非法: %2").arg(i).arg(perr)}};
+            if (!parseSamBoxJson(itemObj.value("box"), item.box, perr))
+                return QJsonObject{{"error", QString("items[%1].box 非法: %2").arg(i).arg(perr)}};
+            if (item.positivePoints.isEmpty() && !item.box.isValid())
+                return QJsonObject{{"error", QString("items[%1]：points 与 box 至少提供一个 prompt").arg(i)}};
+            // 批4（C）：每项可选 candidateIndex（0=最佳；越界由 SamPredictor 失败关闭）
+            const QJsonValue candIdx = itemObj.value("candidateIndex");
+            if (!candIdx.isUndefined() && !candIdx.isNull()) {
+                if (!candIdx.isDouble() || candIdx.toDouble() < 0 || candIdx.toDouble() > 7 ||
+                    candIdx.toDouble() != double(qRound(candIdx.toDouble())))
+                    return QJsonObject{{"error", QString("items[%1].candidateIndex 必须为 [0,7] 整数").arg(i)}};
+                item.candidateIndex = qRound(candIdx.toDouble());
+            }
+            prompts.append(item);
+        }
     }
 
     // 图像必须可读：会话需要记录真实宽高（不伪造尺寸）
@@ -855,11 +906,17 @@ QJsonObject AgentActor::samAnnotate(const QJsonObject& params) {
     if (!session.save(sessionPath, &saveError))
         return QJsonObject{{"error", QString("标注会话保存失败：%1").arg(saveError)}};
 
-    return QJsonObject{{"status", QStringLiteral("annotated")},
+    QJsonObject result{{"status", QStringLiteral("annotated")},
                        {"added", objectIds.size()},
                        {"total", session.annotations.size()},
                        {"sessionPath", sessionPath},
                        {"objectIds", objectIds}};
+    if (importedRectangles > 0) {
+        // 批4（B）：LabelMe 导入统计显式回传（跳过数不为 0 时一并报告，不静默）
+        result.insert(QStringLiteral("importedRectangles"), importedRectangles);
+        result.insert(QStringLiteral("skippedShapes"), skippedShapes);
+    }
+    return result;
 }
 
 } // namespace DeepLux
