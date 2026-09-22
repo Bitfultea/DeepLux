@@ -435,8 +435,7 @@ void AgentChatPanel::updateStatusStrip() {
             m_statusLabel->setText(tr("Agent 就绪"));
         }
         m_statusLabel->setToolTip(m_error);
-        m_statusLabel->setStyleSheet(
-            QString("color: %1; font-size: 12px; font-weight: 600;").arg(statusColor.name()));
+        m_statusLabel->setStyleSheet(QString("color: %1; font-size: 12px; font-weight: 600;").arg(statusColor.name()));
     }
     if (m_messageCountLabel) {
         m_messageCountLabel->setText(tr("消息 %1").arg(m_messageCount));

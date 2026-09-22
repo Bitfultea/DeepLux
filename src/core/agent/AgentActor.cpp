@@ -2,10 +2,10 @@
 
 #include "SamPredictor.h"
 #include "ToolSchema.h"
-#include "io/LabelMeImporter.h"
 #include "base/ModuleBase.h"
 #include "common/Logger.h"
 #include "engine/RunEngine.h"
+#include "io/LabelMeImporter.h"
 #include "manager/PluginManager.h"
 #include "manager/ProjectManager.h"
 #include "model/Annotation.h"
