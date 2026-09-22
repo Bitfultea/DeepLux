@@ -5,6 +5,7 @@
 #include "ui/widgets/AnnotationOverlayWidget.h"
 #include "ui/widgets/HImageWidget.h"
 
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QFile>
 #include <QImage>
@@ -54,10 +55,10 @@ private slots:
     void predictionMaskIsForwardedToOverlay();
     void undoRedoButtonsExist();
     void redoShortcutBound();
-    void categoryListPrepopulated();
+    void categoryDropdownPrepopulated();
     void categoryCanBeAdded();
     void categoryCanBeRemoved();
-    void currentCategoryLabelPrefersListSelection();
+    void currentCategoryLabelPrefersDropdownSelection();
     void openAnnotationButtonExists();
     void exportYoloButtonExists();
     void exportCocoButtonExists(); // SAM 批4
@@ -143,6 +144,7 @@ void TestSamAnnotatorDialog::themeCanMatchMainWindowPalette() {
     QVERIFY(dlg.styleSheet().contains(QStringLiteral("QDialog#SamAnnotatorDialog")));
     QVERIFY(dlg.styleSheet().contains(QStringLiteral("background-color: #e8e8e8")));
     QVERIFY(dlg.styleSheet().contains(QStringLiteral("QLineEdit")));
+    QVERIFY(dlg.styleSheet().contains(QStringLiteral("QComboBox")));
     QVERIFY(dlg.styleSheet().contains(QStringLiteral("#e2e8f0")));
 
     dlg.applyTheme(true);
@@ -238,9 +240,10 @@ void TestSamAnnotatorDialog::selectModeClickSelectsConfirmedObject() {
 
 void TestSamAnnotatorDialog::categoryEditWorks() {
     SamAnnotatorDialog dlg;
-    QVERIFY(dlg.categoryEdit() != nullptr);
-    dlg.categoryEdit()->setText("defect");
-    QCOMPARE(dlg.categoryEdit()->text(), QStringLiteral("defect"));
+    QVERIFY(dlg.categoryCombo() != nullptr);
+    QVERIFY(dlg.categoryCombo()->isEditable());
+    dlg.categoryCombo()->setEditText(QStringLiteral("defect"));
+    QCOMPARE(dlg.categoryCombo()->currentText(), QStringLiteral("defect"));
 }
 
 void TestSamAnnotatorDialog::objectListStartsEmpty() {
@@ -291,7 +294,7 @@ void TestSamAnnotatorDialog::predictionResultCanBeConfirmed() {
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onPredictionReady", Qt::DirectConnection, Q_ARG(QList<QPointF>, polygon),
                                       Q_ARG(QRectF, QRectF(1, 2, 9, 10)), Q_ARG(double, 0.91),
                                       Q_ARG(QString, QStringLiteral("fake_rle")), Q_ARG(QImage, QImage())));
-    dlg.categoryEdit()->setText(QStringLiteral("defect"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("defect"));
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
 
     QCOMPARE(dlg.objectList()->count(), 1);
@@ -369,9 +372,12 @@ void TestSamAnnotatorDialog::mainViewModeUsesReadableConfigLayout() {
     QVERIFY(objectListLabel != nullptr);
     QVERIFY2(categoryLabel->maximumHeight() <= 20, "Category label should be a compact single line");
     QVERIFY2(objectListLabel->maximumHeight() <= 20, "Object list label should be a compact single line");
-    QVERIFY2(dlg.categoryEdit()->maximumHeight() <= 26, "Category input should be compact single-line height");
-    QVERIFY2(dlg.categoryEdit()->geometry().top() - categoryLabel->geometry().bottom() <= 4,
-             "Category label and input should be vertically tight");
+    QVERIFY2(dlg.categoryCombo()->maximumHeight() <= 26, "Category dropdown should be compact single-line height");
+    QVERIFY2(qAbs(dlg.categoryCombo()->geometry().center().y() - categoryLabel->geometry().center().y()) <= 2,
+             "Category label and dropdown should share one row");
+    QVERIFY2(objectListLabel->geometry().top() - dlg.categoryCombo()->geometry().bottom() <= 4,
+             "Category dropdown should not reserve list-height space");
+    QVERIFY(dlg.findChild<QListWidget*>(QStringLiteral("SamCategoryList")) == nullptr);
     QVERIFY2(dlg.initializeEnvironmentButton()->maximumHeight() <= 26, "SAM action buttons should be compact");
     QVERIFY2(dlg.restartServerButton()->maximumHeight() <= 26, "SAM action buttons should be compact");
     QVERIFY(qAbs(dlg.importModelButton()->width() - dlg.initializeEnvironmentButton()->width()) <= 2);
@@ -439,10 +445,11 @@ void TestSamAnnotatorDialog::redoShortcutBound() {
     QCOMPARE(dlg.redoShortcut()->context(), Qt::ApplicationShortcut);
 }
 
-void TestSamAnnotatorDialog::categoryListPrepopulated() {
+void TestSamAnnotatorDialog::categoryDropdownPrepopulated() {
     SamAnnotatorDialog dlg;
-    QVERIFY(dlg.categoryList() != nullptr);
-    QVERIFY(dlg.categoryList()->count() >= 4);
+    QVERIFY(dlg.categoryCombo() != nullptr);
+    QVERIFY(dlg.categoryCombo()->count() >= 4);
+    QVERIFY(dlg.categoryCombo()->itemData(0, Qt::DecorationRole).canConvert<QColor>());
     QVERIFY(dlg.categories().contains(QStringLiteral("缺陷")));
     QVERIFY(dlg.categories().contains(QStringLiteral("划痕")));
     QVERIFY(dlg.categories().contains(QStringLiteral("凹坑")));
@@ -452,9 +459,11 @@ void TestSamAnnotatorDialog::categoryListPrepopulated() {
 void TestSamAnnotatorDialog::categoryCanBeAdded() {
     SamAnnotatorDialog dlg;
     const int initial = dlg.categories().size();
-    dlg.addCategory(QStringLiteral("裂纹"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("裂纹"));
+    QTest::keyClick(dlg.categoryCombo()->lineEdit(), Qt::Key_Return);
     QVERIFY(dlg.categories().contains(QStringLiteral("裂纹")));
     QCOMPARE(dlg.categories().size(), initial + 1);
+    QCOMPARE(dlg.categoryCombo()->currentText(), QStringLiteral("裂纹"));
     QVERIFY(dlg.categoryColor(QStringLiteral("裂纹")).isValid());
 }
 
@@ -462,16 +471,16 @@ void TestSamAnnotatorDialog::categoryCanBeRemoved() {
     SamAnnotatorDialog dlg;
     dlg.addCategory(QStringLiteral("临时"));
     QVERIFY(dlg.categories().contains(QStringLiteral("临时")));
-    dlg.removeCategory(QStringLiteral("临时"));
+    dlg.removeCategoryButton()->click();
     QVERIFY(!dlg.categories().contains(QStringLiteral("临时")));
+    QCOMPARE(dlg.categoryCombo()->findText(QStringLiteral("临时")), -1);
 }
 
-void TestSamAnnotatorDialog::currentCategoryLabelPrefersListSelection() {
+void TestSamAnnotatorDialog::currentCategoryLabelPrefersDropdownSelection() {
     SamAnnotatorDialog dlg;
-    if (dlg.categoryList()->count() > 0) {
-        dlg.categoryList()->setCurrentRow(0);
-        QVERIFY(!dlg.currentCategoryLabel().isEmpty());
-    }
+    QVERIFY(dlg.categoryCombo()->count() > 0);
+    dlg.categoryCombo()->setCurrentIndex(1);
+    QCOMPARE(dlg.currentCategoryLabel(), dlg.categoryCombo()->itemText(1));
 }
 
 void TestSamAnnotatorDialog::openAnnotationButtonExists() {
@@ -768,10 +777,10 @@ void TestSamAnnotatorDialog::eraseMissStrokeIsNoOp() {
 void TestSamAnnotatorDialog::mergeTouchingObjectsAndUndoRestores() {
     SamAnnotatorDialog dlg;
     dlg.setImageSnapshot(makeTestImage(), QString());
-    dlg.categoryEdit()->setText(QStringLiteral("A"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("A"));
     const QString idA = confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20),
                                       makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)}));
-    dlg.categoryEdit()->setText(QStringLiteral("B"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("B"));
     const QString idB = confirmObject(dlg, squarePolygon(60, 40, 20), QRectF(60, 40, 20, 20),
                                       makeDisplayMask(200, 150, {QRect(60, 40, 20, 20)}));
     QVERIFY(!idA.isEmpty() && !idB.isEmpty());
@@ -1396,7 +1405,7 @@ void TestSamAnnotatorDialog::candidateCyclingSelectsAlternateRegion() {
     QCOMPARE(dlg.previewCandidateIndex(), 1);
 
     // 确认：写入会话的是所选候选（30,30 区域 + rle1），而非顶层 best
-    dlg.categoryEdit()->setText(QStringLiteral("defect"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("defect"));
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
     const AnnotationSession session = dlg.session();
     QCOMPARE(session.annotations.size(), 1);
