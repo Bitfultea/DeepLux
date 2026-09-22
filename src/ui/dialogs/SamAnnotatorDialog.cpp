@@ -1652,8 +1652,12 @@ void SamAnnotatorDialog::attachToImageWidget(HImageWidget* imageWidget, const QS
         m_objectList->setMinimumHeight(72);
         // 不设 maximumHeight，让 Expanding 生效，对象列表拉伸填满可用空间
     }
-    setMinimumSize(220, 520);
-    resize(300, 530);
+    // 类别区 4 行（标签20+输入26+列表80+按钮排26+间距6≈158px）折叠为单排
+    // 下拉（26px）后，窗口高度同步收缩 132px（530→398，最小 520→388）：
+    // 节省的竖向空间归还给窗口，对象列表（Expanding）渲染高度与其他组件
+    // 位置/尺寸保持旧布局不变，不被腾出的空间撑大
+    setMinimumSize(220, 388);
+    resize(300, 398);
     moveOverlayToImageWidget(imageWidget);
     updateSessionFromImage();
     prepareBackendImage();
