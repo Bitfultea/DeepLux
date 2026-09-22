@@ -208,8 +208,9 @@ void ToolSchema::registerDefaultTools() {
 
     // read_documentation
     registerTool({"read_documentation",
-                  "Read DeepLux module/usage documentation. Use this to learn about "
-                  "module parameters, workflows, and best practices when you're unsure.",
+                  "Read DeepLux module/usage documentation, including the built-in knowledge base and "
+                  "user-added documents (managed via Agent Settings -> Knowledge Base). Use this to learn "
+                  "about module parameters, workflows, and best practices when you're unsure.",
                   {{"topic", "string", "Topic to look up (e.g. 'FindCircle', 'workflow', 'GrabImage params')", true}}});
 
     // sam_predict（SAM 批3）：经本地 SAM 服务对磁盘图像做单次 prompt 分割。

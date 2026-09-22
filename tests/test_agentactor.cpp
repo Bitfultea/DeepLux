@@ -127,6 +127,38 @@ private slots:
         QVERIFY(result.contains("plugins"));
     }
 
+    // 知识库：read_documentation 同时检索内置（qrc）与用户目录文档
+    void testReadDocumentationSearchesBuiltInAndUserKnowledge() {
+        QVERIFY(AgentActor::knowledgeDocumentPaths().contains(QStringLiteral(":/agent/knowledge/DEEPLUX.md")));
+
+        // 用户知识库目录由 DEEPLUX_APP_DATA_DIR 隔离（initTestCase 已设置临时目录）
+        const QString userDir = AgentActor::userKnowledgeDir();
+        QVERIFY(userDir.startsWith(m_appDataDir.path()));
+        const QString docPath = QDir(userDir).filePath(QStringLiteral("SiteRecipe.md"));
+        {
+            QFile doc(docPath);
+            QVERIFY(doc.open(QIODevice::WriteOnly | QIODevice::Text));
+            doc.write("# Site\n\n## UniqueTopic-XYZ Calibration Recipe\n\nuser knowledge content 42\n");
+            doc.close();
+        }
+        QVERIFY(AgentActor::knowledgeDocumentPaths().contains(docPath));
+
+        AgentActor actor;
+        const QJsonObject result = actor.executeTool("read_documentation", QJsonObject{{"topic", "uniquetopic-xyz"}});
+        QVERIFY(result.value(QStringLiteral("error")).isUndefined());
+        QCOMPARE(result.value(QStringLiteral("sections")).toInt(), 1);
+        const QString content = result.value(QStringLiteral("content")).toString();
+        QVERIFY(content.contains(QStringLiteral("user knowledge content 42")));
+        QVERIFY(content.contains(QStringLiteral("SiteRecipe.md"))); // [来源: xxx] 标注
+
+        // 未命中 topic 时不泄漏用户文档内容
+        const QJsonObject miss = actor.executeTool("read_documentation", QJsonObject{{"topic", "no-such-topic-404"}});
+        QVERIFY(
+            !miss.value(QStringLiteral("content")).toString().contains(QStringLiteral("user knowledge content 42")));
+
+        QVERIFY(QFile::remove(docPath));
+    }
+
     void testGetFlowStateNoProject() {
         AgentActor actor;
         QJsonObject result = actor.executeTool("get_flow_state", QJsonObject());
@@ -346,12 +378,10 @@ private slots:
 
         const int undoCount = actor.undoStack()->count();
         QCOMPARE(actor
-                     .executeTool(
-                         "connect_modules",
-                         QJsonObject{{"fromId", "input"},
-                                     {"toId", "fit"},
-                                     {"fromPort", "fit_points"},
-                                     {"toPort", "fit_points"}})
+                     .executeTool("connect_modules", QJsonObject{{"fromId", "input"},
+                                                                 {"toId", "fit"},
+                                                                 {"fromPort", "fit_points"},
+                                                                 {"toPort", "fit_points"}})
                      .value("status")
                      .toString(),
                  QStringLiteral("already_connected"));
@@ -361,12 +391,10 @@ private slots:
         secondInput.id = QStringLiteral("input2");
         project->addModule(secondInput);
         QVERIFY(actor
-                    .executeTool(
-                        "connect_modules",
-                        QJsonObject{{"fromId", "input2"},
-                                    {"toId", "fit"},
-                                    {"fromPort", "fit_points"},
-                                    {"toPort", "fit_points"}})
+                    .executeTool("connect_modules", QJsonObject{{"fromId", "input2"},
+                                                                {"toId", "fit"},
+                                                                {"fromPort", "fit_points"},
+                                                                {"toPort", "fit_points"}})
                     .contains("error"));
 
         QVERIFY(actor
@@ -384,12 +412,10 @@ private slots:
         QCOMPARE(project->connections().size(), 1);
 
         QVERIFY(!actor
-                     .executeTool(
-                         "disconnect_modules",
-                         QJsonObject{{"fromId", "input"},
-                                     {"toId", "fit"},
-                                     {"fromPort", "fit_points"},
-                                     {"toPort", "fit_points"}})
+                     .executeTool("disconnect_modules", QJsonObject{{"fromId", "input"},
+                                                                    {"toId", "fit"},
+                                                                    {"fromPort", "fit_points"},
+                                                                    {"toPort", "fit_points"}})
                      .contains("error"));
         QVERIFY(project->connections().isEmpty());
         actor.undoStack()->undo();

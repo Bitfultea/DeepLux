@@ -68,6 +68,7 @@ set(TEST_SOURCES
     test_sambackendclient.cpp
     test_sam_region_flow.cpp
     test_agent_sam_tools.cpp
+    test_knowledgebasedialog.cpp
     test_moduleinspectorpanel.cpp
     test_pluginparametercontracts.cpp
     test_acceptance_flows.cpp

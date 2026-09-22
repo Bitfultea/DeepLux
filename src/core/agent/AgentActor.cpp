@@ -10,6 +10,7 @@
 #include "manager/ProjectManager.h"
 #include "model/Annotation.h"
 #include "model/Project.h"
+#include "platform/PathUtils.h"
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -720,47 +721,77 @@ QJsonObject AgentActor::resumeFlow(const QJsonObject& params) {
     return QJsonObject{{"status", "resumed"}};
 }
 
+QString AgentActor::userKnowledgeDir() {
+    const QString dir = PathUtils::appDataPath() + QStringLiteral("/knowledge");
+    PathUtils::ensureDirExists(dir);
+    return dir;
+}
+
+QStringList AgentActor::knowledgeDocumentPaths() {
+    ensureAgentResources();
+
+    QStringList paths;
+
+    // 内置知识库（编译进二进制的 qrc 资源，只读）
+    const QDir builtin(QStringLiteral(":/agent/knowledge"));
+    const QStringList builtinNames = builtin.entryList({QStringLiteral("*.md")}, QDir::Files, QDir::Name);
+    for (const QString& name : builtinNames) {
+        paths.append(builtin.filePath(name));
+    }
+    if (paths.isEmpty()) {
+        // 开发构建的资源异常兜底：尝试源码目录
+        for (const QString& path :
+             {QDir::currentPath() + "/src/core/agent/knowledge/DEEPLUX.md",
+              QCoreApplication::applicationDirPath() + "/../src/core/agent/knowledge/DEEPLUX.md"}) {
+            if (QFileInfo::exists(path)) {
+                paths.append(path);
+            }
+        }
+    }
+
+    // 用户知识库目录（Agent 设置 → 知识库 添加的文档）
+    const QDir userDir(userKnowledgeDir());
+    const QStringList userNames = userDir.entryList(
+        {QStringLiteral("*.md"), QStringLiteral("*.markdown"), QStringLiteral("*.txt")}, QDir::Files, QDir::Name);
+    for (const QString& name : userNames) {
+        paths.append(userDir.filePath(name));
+    }
+
+    return paths;
+}
+
 QJsonObject AgentActor::readDocumentation(const QJsonObject& params) {
     QString topic = params.value("topic").toString().toLower();
     if (topic.isEmpty()) {
         return QJsonObject{{"error", "Missing 'topic' parameter"}};
     }
 
-    QStringList knowledgePaths{
-        ":/agent/knowledge/DEEPLUX.md",
-        QDir::currentPath() + "/src/core/agent/knowledge/DEEPLUX.md",
-        QCoreApplication::applicationDirPath() + "/../src/core/agent/knowledge/DEEPLUX.md",
-    };
-
-    QFile file;
-    for (const QString& path : knowledgePaths) {
-        file.setFileName(path);
-        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            break;
-        }
-    }
-
-    if (!file.isOpen()) {
+    const QStringList knowledgePaths = knowledgeDocumentPaths();
+    if (knowledgePaths.isEmpty()) {
         // 内嵌摘要作为 fallback
         return QJsonObject{{"topic", topic},
                            {"content", "Knowledge base not found. Use get_module_params_schema(instanceId) "
                                        "to discover parameters for specific modules."}};
     }
 
-    QString content = QString::fromUtf8(file.readAll());
-    file.close();
-
-    // 搜索相关段落：按 ## 分节，匹配 topic 关键词
-    QStringList sections = content.split("\n## ");
+    // 遍历全部知识库文档（内置 + 用户添加），按 ## 分节，匹配 topic 关键词
     QStringList relevant;
+    for (const QString& path : knowledgePaths) {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            continue;
+        }
+        const QString content = QString::fromUtf8(file.readAll());
+        file.close();
 
-    for (const QString& sec : sections) {
-        if (sec.toLower().contains(topic) || topic == "all") {
-            // 截断过长段落
-            if (sec.length() > 2000) {
-                relevant.append(sec.left(2000) + "\n... (truncated, use more specific topic)");
-            } else {
-                relevant.append(sec.trimmed());
+        const QString docName = QFileInfo(path).fileName();
+        const QStringList sections = content.split("\n## ");
+        for (const QString& sec : sections) {
+            if (sec.toLower().contains(topic) || topic == "all") {
+                // 截断过长段落
+                QString body =
+                    sec.length() > 2000 ? sec.left(2000) + "\n... (truncated, use more specific topic)" : sec.trimmed();
+                relevant.append(QStringLiteral("[来源: %1]\n%2").arg(docName, body));
             }
         }
     }
@@ -769,7 +800,8 @@ QJsonObject AgentActor::readDocumentation(const QJsonObject& params) {
         return QJsonObject{{"topic", topic},
                            {"content", QString("No documentation found for '%1'. "
                                                "Try broader topics like 'workflow', 'modules', 'params', "
-                                               "or a module name like 'FindCircle'.")
+                                               "or a module name like 'FindCircle'. Users can add custom "
+                                               "documents via Agent Settings → Knowledge Base.")
                                            .arg(topic)}};
     }
 

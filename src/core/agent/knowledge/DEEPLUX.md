@@ -184,3 +184,18 @@ sam_annotate(imagePath, sessionPath, items=[{points?, negativePoints?, box?, lab
 5. **Save before running**: call `save_project` then `run_flow`
 6. **Param values are strings**: JSON values on set_param are always quoted strings in the request
 7. **Order matters**: modules execute in the order they were added, unless connected differently
+
+---
+## Knowledge Base
+
+`read_documentation(topic)` searches two sources, both split into `## ` sections and matched by keyword:
+
+1. **Built-in docs** — bundled with the application (read-only), including this document.
+2. **User docs** — Markdown/text files the user added via **Agent Settings → Knowledge Base**
+   (工具 → Agent 设置 → 知识库). They are copied into the user knowledge directory
+   (`~/.deeplux/knowledge` on Linux) and searched together with built-in docs.
+
+Each returned section is prefixed with `[来源: <file>]` so you can tell which document it came from.
+When the user asks about site-specific conventions, recipes, or domain knowledge that is not covered
+by built-in documentation, search the knowledge base first — the user may have added custom docs.
+If nothing matches, tell the user they can add a document via Agent Settings → Knowledge Base.

@@ -1,6 +1,7 @@
 #include "AgentSettingsDialog.h"
 
 #include "../widgets/AppIconProvider.h"
+#include "KnowledgeBaseDialog.h"
 #include "core/agent/AgentController.h"
 #include "core/agent/OpenAILLMClient.h"
 #include "core/manager/ConfigManager.h"
@@ -98,10 +99,13 @@ void AgentSettingsDialog::setupUi() {
     QPushButton* okBtn = new QPushButton("OK", this);
     QPushButton* cancelBtn = new QPushButton("Cancel", this);
     QPushButton* testBtn = new QPushButton("Test Connection", this);
+    QPushButton* knowledgeBtn = new QPushButton(tr("知识库..."), this);
     okBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
     cancelBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Cancel, 16, QColor("#DC2626")));
     testBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::TestConnection, 16, QColor("#2563EB")));
+    knowledgeBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Report, 16, QColor("#7C3AED")));
     btnLayout->addWidget(testBtn);
+    btnLayout->addWidget(knowledgeBtn);
     btnLayout->addStretch();
     btnLayout->addWidget(okBtn);
     btnLayout->addWidget(cancelBtn);
@@ -112,6 +116,10 @@ void AgentSettingsDialog::setupUi() {
         accept();
     });
     connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
+    connect(knowledgeBtn, &QPushButton::clicked, this, [this]() {
+        KnowledgeBaseDialog dlg(this);
+        dlg.exec();
+    });
     connect(testBtn, &QPushButton::clicked, this, [this, testBtn]() {
         // P1-7: 实际测试连接 — 发送一个简单请求到 API
         const QString endpoint = m_endpointEdit->text().trimmed();

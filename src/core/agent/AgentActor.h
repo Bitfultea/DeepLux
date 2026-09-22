@@ -40,6 +40,19 @@ public:
         return m_undoStack;
     }
 
+    /**
+     * @brief 用户知识库目录（appData/knowledge），不存在时自动创建。
+     *
+     * 用户通过 Agent 设置 → 知识库 添加的文档存放在此，
+     * read_documentation 工具检索时与内置文档一视同仁。
+     */
+    static QString userKnowledgeDir();
+
+    /**
+     * @brief 全部知识库文档路径：内置（qrc）在前，用户目录（*.md、*.markdown、*.txt）在后。
+     */
+    static QStringList knowledgeDocumentPaths();
+
 signals:
     void toolExecuted(const QString& toolName, const QJsonObject& result);
     void toolError(const QString& toolName, const QString& error);
