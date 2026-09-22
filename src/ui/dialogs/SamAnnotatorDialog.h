@@ -15,9 +15,9 @@
 
 class QToolButton;
 class QButtonGroup;
-class QComboBox;
 class QListWidget;
 class QListWidgetItem;
+class QLineEdit;
 class QShortcut;
 class QSpinBox;
 class QStackedWidget;
@@ -41,7 +41,7 @@ struct AnnotationObject;
  * @brief SAM 快速标注对话框
  *
  * 独立窗口，提供基于 SAM 的交互式标注能力。
- * 布局：类别下拉框 + 对象列表 | HImageWidget + AnnotationOverlayWidget | 底部工具栏
+ * 布局：左侧（类别输入 + 对象列表）| 中间（HImageWidget + AnnotationOverlayWidget）| 底部（工具栏）
  *
  * 工作流程：
  * 1. 从文件打开图片或接收当前视口快照
@@ -150,8 +150,8 @@ public:
     }
 
     // 类别管理
-    QComboBox* categoryCombo() const {
-        return m_categoryCombo;
+    QListWidget* categoryList() const {
+        return m_categoryList;
     }
     QStringList categories() const;
     QString currentCategoryLabel() const;
@@ -204,6 +204,9 @@ public:
     }
     QListWidget* objectList() const {
         return m_objectList;
+    }
+    QLineEdit* categoryEdit() const {
+        return m_categoryEdit;
     }
     QPushButton* importModelButton() const {
         return m_importModelButton;
@@ -310,7 +313,8 @@ private:
     QPointer<HImageWidget> m_externalImageWidget; // Fix P0-4: QPointer 防悬空
     AnnotationOverlayWidget* m_overlay = nullptr; // connected to destroyed() to null
     QListWidget* m_objectList = nullptr;
-    QComboBox* m_categoryCombo = nullptr;
+    QListWidget* m_categoryList = nullptr;
+    QLineEdit* m_categoryEdit = nullptr;
     QPushButton* m_addCategoryButton = nullptr;
     QPushButton* m_removeCategoryButton = nullptr;
     QToolButton* m_btnPositivePoint = nullptr;
