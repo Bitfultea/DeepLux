@@ -43,6 +43,7 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
     QString imageDisplayBg, imageDisplayLeftBorder;
     QString logDockBorderTop;
     QString labelFg, scrollAreaBg, frameBg;
+    QString dialogBg, groupBoxBorder, comboArrow, tableAltBg;
     QString tabPaneBg, tabBarBg;
     QString tabBarTabBg, tabBarTabFg, tabBarTabSelBg, tabBarTabHoverBg;
     QString inspectorPanelBg, inspectorHeaderBg, inspectorHeaderFg, inspectorHeaderBorder;
@@ -107,6 +108,10 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
         labelFg = "#ffffff";
         scrollAreaBg = "#252525";
         frameBg = "transparent";
+        dialogBg = "#252525";
+        groupBoxBorder = "#444444";
+        comboArrow = "#a0a0a0";
+        tableAltBg = "#2d2d2d";
         tabPaneBg = "#252525";
         tabBarBg = "#252525";
         tabBarTabBg = "#333333";
@@ -178,6 +183,10 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
         labelFg = "#212121";
         scrollAreaBg = "#ffffff";
         frameBg = "transparent";
+        dialogBg = "#ffffff";
+        groupBoxBorder = "#cccccc";
+        comboArrow = "#6b7280";
+        tableAltBg = "#f8f8f8";
         tabPaneBg = "#ffffff";
         tabBarBg = "#ffffff";
         tabBarTabBg = "#e8e8e8";
@@ -216,8 +225,9 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
     s += QString("QTreeWidget#ToolBoxTree::item:selected { background-color: %1; color: %2; }").arg(treeHover, treeFg);
     s += "QTreeWidget#ProcessTree::item:selected { background-color: #0078d7; }";
 
-    s += QString("QTableWidget { background-color: %1; color: %2; border: none; font-size: %3; }")
-             .arg(tableBg, tableFg, baseFont);
+    s += QString("QTableWidget { background-color: %1; alternate-background-color: %2; color: %3; border: none; "
+                 "gridline-color: %4; font-size: %5; }")
+             .arg(tableBg, tableAltBg, tableFg, tableItemBorder, baseFont);
     s += QString("QTableWidget::item { border-bottom: %1 solid %2; }").arg(borderW, tableItemBorder);
     s += "QTableWidget::item:selected { background-color: #0078d7; }";
     s += QString("QHeaderView::section { background-color: %1; color: %2; padding: 5px; border: none; "
@@ -341,6 +351,26 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
     s += QString("QLabel { color: %1; }").arg(labelFg);
     s += QString("QScrollArea { background-color: %1; }").arg(scrollAreaBg);
     s += QString("QFrame { background-color: %1; }").arg(frameBg);
+
+    // ===== 对话框通用样式 =====
+    // 以 MainWindow 为 parent 的设置对话框（相机/通讯/硬件/Agent/全局变量等）自动继承，
+    // 跟随主题切换；自带样式表的对话框（SAM 标注、插件高级配置）优先级更高，不受影响。
+    s += QString("QDialog { background-color: %1; color: %2; font-size: %3; }").arg(dialogBg, labelFg, baseFont);
+    s += QString("QGroupBox { border: %1 solid %2; border-radius: 6px; margin-top: 10px; padding-top: 10px; "
+                 "color: %3; background-color: transparent; }")
+             .arg(borderW, groupBoxBorder, labelFg);
+    s += "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }";
+    s += QString("QCheckBox, QRadioButton { color: %1; background-color: transparent; spacing: 6px; }").arg(labelFg);
+    s += "QComboBox::drop-down { border: none; width: 20px; }";
+    s += QString("QComboBox::down-arrow { image: none; border-left: 5px solid transparent; "
+                 "border-right: 5px solid transparent; border-top: 5px solid %1; }")
+             .arg(comboArrow);
+    s += QString("QComboBox QAbstractItemView { background-color: %1; color: %2; border: %3 solid %4; "
+                 "selection-background-color: %5; selection-color: %6; }")
+             .arg(inputBg, inputFg, borderW, inputBorder, menuSelBg, menuSelFg);
+    s += QString("QTextEdit, QPlainTextEdit { background-color: %1; color: %2; border: %3 solid %4; "
+                 "border-radius: 4px; }")
+             .arg(inputBg, inputFg, borderW, inputBorder);
 
     s += QString("QTabWidget::pane { border: none; background-color: %1; }").arg(tabPaneBg);
     s += QString("QTabBar { background-color: %1; }").arg(tabBarBg);
