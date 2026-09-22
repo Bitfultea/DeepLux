@@ -1959,7 +1959,7 @@ void TestMainWindow::testHomeSwitchesToFlowCanvas() {
 
 void TestMainWindow::testAgentMessageRenderingUsesCompactLineSpacing() {
     const QString html = AgentMessageBubble::markdownToHtml(
-        QStringLiteral("参数说明\n\n- param1：Canny边缘检测的高阈值\n\n- param2：圆心投票数阈值"), false,
+        QStringLiteral("### 参数说明\n\n- param1：Canny边缘检测的高阈值\n\n- param2：圆心投票数阈值"), false,
         QColor("#111111"));
 
     QTextDocument document;
@@ -1968,9 +1968,19 @@ void TestMainWindow::testAgentMessageRenderingUsesCompactLineSpacing() {
     for (QTextBlock block = document.begin(); block.isValid(); block = block.next()) {
         if (block.textList())
             ++listItems;
-        QVERIFY(block.blockFormat().bottomMargin() <= 6);
+        QVERIFY(block.blockFormat().lineHeight() <= 100);
+        QVERIFY(block.blockFormat().bottomMargin() <= 2);
+        if (block.blockFormat().headingLevel())
+            QVERIFY(block.blockFormat().topMargin() <= 4);
     }
     QCOMPARE(listItems, 2);
+
+    AgentMessageBubble bubble(AgentMessageBubble::Sender::Agent, QStringLiteral("紧凑消息"), false);
+    auto* bubbleLayout = bubble.layout();
+    QVERIFY(bubbleLayout);
+    QVERIFY(bubbleLayout->contentsMargins().top() <= 2);
+    QVERIFY(bubbleLayout->contentsMargins().bottom() <= 2);
+    QVERIFY(bubbleLayout->itemAt(1)->layout()->spacing() <= 2);
     const QString linkHtml = AgentMessageBubble::markdownToHtml(
         QStringLiteral("[说明](https://example.test/path)\n\n| 参数 | 值 |\n| --- | --- |\n| 半径 | 100 |"), false);
     document.setHtml(linkHtml);
@@ -2078,6 +2088,16 @@ void TestMainWindow::testAgentChatReadableLayout() {
     panel.applyTheme(dark);
     QTest::qWait(100);
     QCOMPARE(panel.size(), size);
+    auto* messageScroll = panel.findChild<QScrollArea*>("AgentMessageScroll");
+    auto* firstMessage = panel.findChild<AgentMessageBubble*>("AgentMessage");
+    QVERIFY(messageScroll && firstMessage);
+    const int messageLeft = firstMessage->mapTo(messageScroll->viewport(), QPoint()).x();
+    QVERIFY2(messageLeft <= 24,
+             qPrintable(QString("Agent messages should start at the leading edge, actual x=%1").arg(messageLeft)));
+    const int messageRightGap = messageScroll->viewport()->width() - messageLeft - firstMessage->width();
+    QVERIFY2(messageRightGap <= 24,
+             qPrintable(QString("Agent messages should use the available width, right gap=%1").arg(messageRightGap)));
+    QVERIFY(firstMessage->parentWidget()->layout()->spacing() <= 2);
     QCOMPARE(panel.findChildren<QLabel*>("AgentSentImage").size(), 1);
     for (auto* body : panel.findChildren<QTextBrowser*>()) {
         QVERIFY(body->geometry().width() > 0);

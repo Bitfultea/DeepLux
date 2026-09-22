@@ -90,14 +90,14 @@ void AgentMessageBubble::setupUi() {
     setObjectName("AgentMessage");
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
     auto* row = new QHBoxLayout(this);
-    row->setContentsMargins(0, 6, 0, 6);
-    row->setSpacing(10);
+    row->setContentsMargins(0, 2, 0, 2);
+    row->setSpacing(8);
     m_accentBar = new QWidget(this);
     m_accentBar->setFixedWidth(2);
     row->addWidget(m_accentBar);
 
     auto* column = new QVBoxLayout();
-    column->setSpacing(4);
+    column->setSpacing(2);
     auto* header = new QHBoxLayout();
     header->setSpacing(8);
     m_headerLabel = new QLabel(this);
@@ -206,9 +206,9 @@ QString AgentMessageBubble::markdownToHtml(const QString& md, bool isDark, const
     for (QTextBlock block = document.begin(); block.isValid(); block = block.next()) {
         QTextCursor cursor(block);
         auto format = block.blockFormat();
-        format.setTopMargin(format.headingLevel() ? 8 : 0);
-        format.setBottomMargin(4);
-        format.setLineHeight(135, QTextBlockFormat::ProportionalHeight);
+        format.setTopMargin(format.headingLevel() ? 4 : 0);
+        format.setBottomMargin(2);
+        format.setLineHeight(100, QTextBlockFormat::ProportionalHeight);
         if (format.hasProperty(QTextFormat::BlockCodeFence))
             format.setBackground(theme.codeBlockBg);
         cursor.setBlockFormat(format);
