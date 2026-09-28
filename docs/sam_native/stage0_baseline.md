@@ -4,9 +4,9 @@
 
 | 项 | 状态 |
 |---|---|
-| 性能脚本（同图 100 次混合 prompt，首次编码/重复预测分测） | ✅ `tools/sam_bench` + 配方固化 + 参数守卫回归 16/16 |
+| 性能脚本（同图 100 次混合 prompt，首次编码/重复预测分测） | ✅ `tools/sam_bench` + 配方固化 + 参数守卫回归 22/22 + 重试/二次复核回归 9/9 |
 | 开发机真实 ViT-B **CPU** 基线（现有 Python HTTP 路径） | ✅ 原始 P50/P95 见下，JSON 入库 |
-| 路径开销基线（内嵌 stub，无 Python） | ✅ P95 0.43ms |
+| 路径开销基线（内嵌 stub，无 Python，小载荷口径） | ✅ P95 0.545ms（修复版 bench 复测；首测 0.43ms） |
 | 隔离脏工作区 | ✅ 34 个用户 WIP 文件未混入；阶段0 仅提交 bench/构建接入/文档 |
 | 基线提交 + 定向测试 + 全量 CTest 证据 | ✅ c2ee793；隔离树 75/76（唯一失败为既有 test_runengine 环境项）+ SAM 定向 9 套件全绿 |
 | **CUDA 基线** | ❌ **取不到**：RTX 3090 在 PCI 总线可见但驱动未加载（nvidia-smi 失败、torch.cuda.is_available()=False）→ 按计划书如实标记**阶段0（该项）未通过**，待目标机驱动可用后补测 |
@@ -46,9 +46,9 @@
 
 - 工具：`tools/sam_bench`（走产品同款 `SamBackendClient` HTTP 路径；口径=HTTP 客户端至预测结果，**不含 GUI 候选显示段**——0.5s 交互目标须另测 GUI 段，见 G4）
 - 固定配方：`i%10` → 0–3 单正点(40%) / 4–6 正+负点(30%) / 7–9 框选(30%)；坐标纯整数取模，跨机台一致（README 有完整公式，禁止改动）
-- 失败策略：默认 `--on-error fail`（产品语义失败关闭）；基线采集用 `--on-error continue`——复核二轮 P2-4 收窄后**仅放行明确识别的 F1 score 越界**（错误串精确匹配「score 必须为 [0,1] 有限数值」，覆盖顶层与 candidates[i] 同口径），网络错误/超时/其他解析失败无论模式一律失败关闭 exit 4；违约样本入 JSON `violations`（classification=F1-score-out-of-range），不计入延迟统计；原「连续 5 次失败上限」已移除（非 F1 错误即时中止后该上限无意义）
-- 计时口径（复核二轮 P1-2 修正）：完成信号按操作类型隔离——set_image 只等 `embeddingReady`，predict 只等 `predictionReady`；predict 期间的 `embeddingReady`（客户端对 invalid_embedding 的自动重试链：重 setImage→重发 predict）记为 JSON `retryEvents` 并继续等待，不再可能被误计为一次成功预测；predict 完成后又收到 embeddingReady → 内部不变量违背 exit 5。注入自检：`--inject-invalid-embedding N`（一次性 invalid_embedding）、`--inject-predict-error`（持续 status:error，验证 continue 收窄）
-- 回归：`check_arg_guards.sh` **20/20**（含 `--warmup abc` ok 复用回归 + 3 个注入参数守卫）；`check_retry_regression.sh` **5/5**（inject=1/2 重试计时×3、continue 非 F1 失败关闭、fail 模式对照）
+- 失败策略：默认 `--on-error fail`（产品语义失败关闭）；基线采集用 `--on-error continue`——复核二轮 P2-4 收窄 + **复核三轮 P1 二次复核**：客户端对 score 缺失/类型非法/数值越界返回同一错误串（SamBackendClient.cpp:906 口径），仅按文本分类会把协议故障误放行；continue 下文本命中后必须以原始 HTTP 重放同一 prompt（服务器对同 embedding+prompt 结果确定性）自行解析 JSON，**仅确证「字段存在、为有限数值、越出 [0,1]」才放行**（violations 记 classification=F1-score-out-of-range-confirmed + confirmedRawScore + recheckDetail）；缺失/类型非法/不可复现/复核请求失败一律 exit 4；网络错误/超时/其他解析失败无论模式一律 exit 4；违约样本不计入延迟统计；原「连续 5 次失败上限」已移除（非 F1 错误即时中止后该上限无意义）
+- 计时口径（复核二轮 P1-2 修正）：完成信号按操作类型隔离——set_image 只等 `embeddingReady`，predict 只等 `predictionReady`；predict 期间的 `embeddingReady`（客户端对 invalid_embedding 的自动重试链：重 setImage→重发 predict）记为 JSON `retryEvents` 并继续等待，不再可能被误计为一次成功预测；predict 完成后又收到 embeddingReady → 内部不变量违背 exit 5。注入自检：`--inject-invalid-embedding N`（一次性 invalid_embedding）、`--inject-predict-error`（持续 status:error，验证 continue 收窄）、`--inject-score-fault missing|string|outrange`（持续 score 协议故障/确证越界，验证二次复核分类——复核三轮 P1）
+- 回归：`check_arg_guards.sh` **22/22**（含 `--warmup abc` ok 复用回归 + 5 个注入参数守卫）；`check_retry_regression.sh` **9/9**（inject=1/2 重试计时×3、continue 非 F1 失败关闭、fail 对照、score=missing/string 协议故障 continue 下 exit 4×2、missing fail 对照、outrange 确证对照 violations=3 全部 confirmed rawScore=1.5）
 - 真实后端操作规程：先 `GET /health` 预热模型（首次 1664ms / 重跑 1789ms 至 ready），再跑 bench，避免模型加载计入首次编码（`stage0/server_health_preload.txt`）
 
 ## 基线原始数据
@@ -92,6 +92,20 @@
 
 与 A1 对比：P95 2885.1→2857.6ms（-1.0%，运行间正常波动），结论不变。原始 JSON：`stage0/stage0_cpu_vitb_synth3000_fixedbench.json`
 
+#### A3. 复测（复核三轮修正版 bench：score 违约二次复核，当前主证据）
+
+命令同 A2（端口 32773，预热 1742ms），exit 0。同图同配方（sha256 一致）。
+
+| 指标 | 值 |
+|---|---|
+| 首次编码 set_image | **3129.9 ms** |
+| 重复预测（有效样本 **95/100**） | **P50 2734.2 / P95 2826.5** / P99=max 2846.9 / mean 2736.0 ms |
+| 分组 pos（n=38）/ posneg（n=27）/ box（n=30） | P50 2748.4 / 2761.0 / 2695.7；P95 2829.6 / 2842.3 / 2742.6 ms |
+| F1 违约样本 | 5/103，索引与 A1/A2 一致（23、92 pos；56、66、75 posneg），**全部经二次复核确证为数值越界**，confirmedRawScore=1.000424861907959 / 1.00141978263855 / 1.00023353099823 / 1.000590443611145 / 1.002448201179504 |
+| retryEvents | 0 |
+
+三轮 P95：2885.1 → 2857.6 → 2826.5 ms（±1% 运行间波动，结论稳定）。违约原始值现由**生产路径内取回**（bench 二次复核重放同 prompt），F1 证据不再依赖旁路 curl。原始 JSON：`stage0/stage0_cpu_vitb_synth3000_a3.json`
+
 **解读（复核二轮 P1-3 修正归因口径）**：与 0.5s 目标差 ~5.8×（P95 2885ms）。C 项 stub 的 P95 0.43ms **仅证明**客户端+HTTP+严格解析在**小载荷**下的开销 <1ms——stub 返回 2×2 掩膜 PNG（SamTestServer `tinyMaskPngBase64`），而真实路径需传输并解析 3 个 3000² 全尺寸掩膜的 PNG base64（载荷量级差约 10⁶），两者不可直接相减归因。「耗时主体在服务端（ViT-B CPU 解码器推理 + `sam_server` 纯 Python 逐像素 `_encode_rle` + 全尺寸掩膜 PNG base64 编码）」目前是**待剖析的推测**（依据：`_encode_rle` 为逐像素 Python 循环，3000²×3 候选≈27M 次迭代，数量级估算与 2.8s 相符；传输/解析段占比未单独测量），阶段2 以剖析数据确认，不作为已测结论。CPU 路径按计划不承诺 0.5s；该基线的意义是量化旧路径并为阶段2/4 提供对照。
 
 ### B. CUDA（目标机）
@@ -107,7 +121,7 @@
 
 ## 关键发现与风险
 
-- **F1（阻塞级，需阶段2/3 裁决）**：官方 segment_anything `MaskDecoder.iou_prediction_head` 为纯 MLP，**无 sigmoid/clamp**（`sigmoid_output=False` 仅作用于 mask 分支；源码证据见 `stage0/env_evidence.txt` 末节），IoU score 可 >1（实测违约 prompt 原始值 1.000425、1.001420；v1 图 1.0134/1.0138）。`sam_server` 直接透传 `float(scores[best])`；DeepLux 批3 严格契约 score∈[0,1] 拒绝整次预测 → **现有生产路径对真实模型输出以约 5%（本图集）概率失败关闭**。候选 score 同样受影响（批4 candidates 严格解析同口径）。裁决选项：服务端/导出侧 clamp（改变 score 语义）vs 客户端契约放宽（有限值 + clamp 用于展示、保留原值排序）。**阶段1「分数绝对差≤0.01」门禁须以未 clamp 原始值定义对比口径**。
+- **F1（阻塞级，需阶段2/3 裁决）**：官方 segment_anything `MaskDecoder.iou_prediction_head` 为纯 MLP，**无 sigmoid/clamp**（`sigmoid_output=False` 仅作用于 mask 分支；源码证据见 `stage0/env_evidence.txt` 末节），IoU score 可 >1。A3 复测中 5 例违约原始值已**经生产路径内二次复核取回并确证为数值越界**（1.000425 / 1.001420 / 1.000234 / 1.000590 / 1.002448，均略超 1；v1 斜纹图旁路 curl 另测得 1.0134/1.0138 伴全图退化掩膜）。`sam_server` 直接透传 `float(scores[best])`；DeepLux 批3 严格契约 score∈[0,1] 拒绝整次预测 → **现有生产路径对真实模型输出以约 5%（本图集 5/103）概率失败关闭**。候选 score 同样受影响（批4 candidates 严格解析同口径）。裁决选项：服务端/导出侧 clamp（改变 score 语义）vs 客户端契约放宽（有限值 + clamp 用于展示、保留原值排序）。**阶段1「分数绝对差≤0.01」门禁须以未 clamp 原始值定义对比口径**。
 - **F2（推测，待阶段2 剖析确认）**：旧 CPU 路径 predict ~2.8s 的疑似大头是 `sam_server._encode_rle` 纯 Python 逐像素循环（3000²×3 候选≈27M 像素迭代，数量级估算）+ 全尺寸掩膜 PNG base64 编码与传输；**归因未经分段剖析，不作为已测结论**（复核二轮 P1-3）。若成立，阶段2 原生实现有明确优化空间（RLE C++ 化/掩膜按需编码）。
 - **F3**：sam_env 版本漂移超出 requirements.txt 锁定（见上）。
 - **F4**：隔离树 `test_runengine::testMultipleBreakpointsCanResumeAndStop` 崩溃为既有环境/布局敏感项（基线 c51dce3 隔离树同签名 28/1、主工作区 76/76 通过、复核方历轮无法复现）——非阶段0 引入。
@@ -119,15 +133,16 @@
 
 - 隔离树 @ c55d290（≡c2ee793）：`ctest` → **exit 8**，75/76（唯一失败 test_runengine，单跑 exit 134，28 passed/1 failed）；SAM 定向 9 套件全绿 exit 0（25/16/57/16/12/15/8/5/8）——明细 `stage0/ctest_evidence.txt`
 - 主工作区（含用户 WIP）：全量 CTest **76/76**（复核二轮修改后复跑，见提交信息）
-- bench（复核二轮修正版）：arg guards **20/20**（exit 0）；retry regression **5/5**（inject=1→retryEvents=1、inject=2→retryEvents=2、continue 非 F1 exit 4、fail 对照 exit 4）；stub 冒烟与 3000² 复测 exit 0；真实后端 probe runs=10 exit 0；全量 fail 模式 exit 4×2（F6）；continue 模式 exit 0×2（A1/A2）
-- bench 负向验证（复核二轮）：MUT-A（predict 完成信号回归为 embeddingReady）→ retry 回归 3 用例红（retryEvents=0）；MUT-B（continue 放宽回“所有错误放行”）→ 非 F1 用例红（exit 0≠4）；还原 cmp 逐字节一致后全绿
+- bench（复核三轮修正版）：arg guards **22/22**（exit 0）；retry regression **9/9**（inject=1→retryEvents=1、inject=2→retryEvents=2、continue 非 F1 exit 4、fail 对照、score=missing/string 协议故障 continue 下 exit 4×2、missing fail 对照、outrange 确证对照 violations=3 全部 confirmed rawScore=1.5）；stub 冒烟与 3000² 复测 exit 0；真实后端 probe runs=10 exit 0；全量 fail 模式 exit 4×2（F6）；continue 模式 exit 0×3（A1/A2/A3）
+- bench 负向验证：二轮 MUT-A（predict 完成信号回归为 embeddingReady）→ retry 回归 3 用例红（retryEvents=0）；MUT-B（continue 放宽回“所有错误放行”）→ 非 F1 用例红（exit 0≠4）；三轮 MUT-C（旁路二次复核门禁 `if (false && …)`）→ **score=missing/string 两反例红（exit 0≠4，即审核指出的误分类复现）**，确证对照与 fail 对照保持绿；三次突变均还原 cmp 逐字节一致后全绿
 - `tests/helpers/SamTestServer.h` 新增 `predictInvalidEmbeddingOnce`（默认 0，向后兼容）与一次性注入分支——既有测试全量复跑不受影响（见上）
 - sam_server.py 本阶段零改动
 
 ## 证据文件清单（docs/sam_native/stage0/）
 
 - `stage0_cpu_vitb_synth3000.json` —— CPU 真实基线原始数据（A1 首测/探索，逐次延迟数组+violations；复核方已独立核对）
-- `stage0_cpu_vitb_synth3000_fixedbench.json` —— CPU 真实基线原始数据（**A2 复测/主证据**，修复版 bench）
+- `stage0_cpu_vitb_synth3000_fixedbench.json` —— CPU 真实基线原始数据（A2 复测，信号隔离版 bench）
+- `stage0_cpu_vitb_synth3000_a3.json` —— CPU 真实基线原始数据（**A3 复测/当前主证据**，二次复核版 bench；violations 含 confirmedRawScore 与 recheckDetail）
 - `stage0_dev_stub_synth3000.json` / `stage0_dev_stub_synth3000_fixedbench.json` —— 路径开销原始数据（首测/修复版复测）
 - `f1_raw_scores.txt` —— F1 违约 prompt 原始 score 复现（5 例）+ v1 图对照 + 源码证据摘录
 - `env_evidence.txt` —— 硬件/系统/工具链/Python 环境/权重/F1 源码 grep/requirements 对照

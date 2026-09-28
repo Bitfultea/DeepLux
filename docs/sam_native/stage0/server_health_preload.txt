@@ -19,3 +19,7 @@ INFO:     127.0.0.1:43892 - "POST /predict HTTP/1.1" 200 OK
 == 复核二轮复测（A2）服务器日志摘要（完整日志 /tmp/sam_bench_run/server_rerun.log，*.log 不入库）==
 端口: 48975（--port 0 自动分配）; GET /health 预热: PRELOAD_MS=1789
 请求计数: 103 POST /predict | 1 POST /set_image | 1 GET /health
+
+== 复核三轮 A3 复测（二次复核版 bench）服务器日志摘要（完整日志 /tmp/sam_bench_run/server_a3.log，*.log 不入库）==
+端口: 32773（--port 0 自动分配）; GET /health 预热: PRELOAD_MS=1742
+请求计数: 108 POST /predict（103 基线 + 5 二次复核重放）| 1 POST /set_image | 1 GET /health

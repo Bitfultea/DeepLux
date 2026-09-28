@@ -29,7 +29,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPainter>
+#include <QRegularExpression>
 #include <QScopedPointer>
 #include <QSysInfo>
 #include <QTimer>
@@ -91,8 +95,10 @@ QList<PromptSpec> buildPromptRecipe(int runs, int imageW, int imageH) {
 // 越界 score（实测 1.0134>1，官方 iou_prediction_head 无 sigmoid/clamp，
 // 见基线文档发现 F1），点 prompt 无法给出有效基线；v2 保证任意配方点落
 // 在边界清晰的可分割单元内。内容仅由 --size 整数运算生成，跨平台逐像素
-// 一致。真实工业图集到位后以 --image 替代（性能口径只依赖分辨率，内容
-// 影响 score 合法性与掩膜形态）。
+// 一致。真实工业图集到位后以 --image 替代。适用边界（复核二轮 P1-3）：
+// 编码器成本主要由分辨率决定（ViT 输入统一 1024²），但解码/掩膜后处理/
+// 编码成本随内容与掩膜形态变化——合成图数据仅作开发机流程验证与数量级
+// 参考，不得替代生产机真实图基线作为验收依据。
 bool generateSyntheticImage(const QString& path, int size) {
     if (size < 64 || size > 16384) {
         std::fprintf(stderr, "sam_bench: --size 必须在 [64,16384]，收到 %d\n", size);
@@ -168,6 +174,105 @@ QJsonObject statsFor(const QList<double>& samples) {
     return stats;
 }
 
+// ===== 复核三轮 P1：score 违约二次复核 =====
+// 客户端对 score 缺失、类型非法（字符串/布尔/null）与真正数值越界返回
+// 同一句错误「score 必须为 [0,1] 有限数值」，仅按错误文本分类会把前两类
+// 协议故障在 continue 模式下误放行。此处以原始 HTTP 重放同一 prompt
+// （服务器对同 embedding+prompt 的结果确定性），自行解析 JSON：仅确证
+// 「字段存在、为有限数值、越出 [0,1]」才放行；缺失/类型非法/不可复现/
+// 复核请求失败一律失败关闭。请求体与 SamBackendClient::predict 同构。
+enum class ScoreFaultKind { ConfirmedOutOfRange, ProtocolFault, NotReproduced, RecheckFailed };
+
+struct ScoreRecheck {
+    ScoreFaultKind kind = ScoreFaultKind::RecheckFailed;
+    double rawScore = 0.0;
+    QString detail;
+};
+
+ScoreRecheck recheckScoreViolation(const QString& serverUrl, const QString& embeddingId, const PromptSpec& spec,
+                                   const QString& opError, int timeoutMs) {
+    ScoreRecheck out;
+    QNetworkAccessManager nam;
+    QNetworkRequest req(QUrl(serverUrl + QStringLiteral("/predict")));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QJsonObject body{{"embedding_id", embeddingId}};
+    QJsonArray pos;
+    for (const QPointF& p : spec.positive)
+        pos.append(QJsonArray{p.x(), p.y()});
+    body["points_pos"] = pos;
+    QJsonArray neg;
+    for (const QPointF& p : spec.negative)
+        neg.append(QJsonArray{p.x(), p.y()});
+    body["points_neg"] = neg;
+    if (spec.box.isValid())
+        body["box"] = QJsonArray{spec.box.x(), spec.box.y(), spec.box.width(), spec.box.height()};
+    QNetworkReply* reply = nam.post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    QEventLoop loop;
+    QTimer deadline;
+    deadline.setSingleShot(true);
+    QObject::connect(&deadline, &QTimer::timeout, &loop, [&loop]() { loop.quit(); });
+    QObject::connect(reply, &QNetworkReply::finished, &loop, [&loop]() { loop.quit(); });
+    deadline.start(timeoutMs);
+    loop.exec();
+    deadline.stop();
+    if (!reply->isFinished() || reply->error() != QNetworkReply::NoError) { // Qt5 口径（Qt6 为 QNetworkError）
+        out.detail = QStringLiteral("复核请求失败：%1").arg(reply->errorString());
+        reply->deleteLater();
+        return out; // RecheckFailed → 失败关闭
+    }
+    const QByteArray payload = reply->readAll();
+    reply->deleteLater();
+    QJsonParseError perr{};
+    const QJsonDocument doc = QJsonDocument::fromJson(payload, &perr);
+    if (perr.error != QJsonParseError::NoError || !doc.isObject()) {
+        out.detail = QStringLiteral("复核响应非合法 JSON 对象");
+        return out;
+    }
+    const QJsonObject obj = doc.object();
+    const QString status = obj.value(QStringLiteral("status")).toString();
+    if (!status.isEmpty() && status != QLatin1String("ok")) {
+        out.detail = QStringLiteral("复核响应 status=%1（服务器状态已变，不可确认）").arg(status);
+        return out;
+    }
+    // 定位被拒字段：candidates[N]（批4 严格解析，错误串含下标）或顶层 score
+    QJsonValue scoreValue = obj.value(QStringLiteral("score"));
+    QString field = QStringLiteral("score");
+    static const QRegularExpression candRe(QStringLiteral("candidates\\[(\\d+)\\]"));
+    const QRegularExpressionMatch m = candRe.match(opError);
+    if (m.hasMatch()) {
+        const int idx = m.captured(1).toInt();
+        const QJsonValue candValue = obj.value(QStringLiteral("candidates"));
+        const QJsonArray cand = candValue.toArray();
+        if (!candValue.isArray() || idx < 0 || idx >= cand.size() || !cand[idx].isObject()) {
+            out.kind = ScoreFaultKind::NotReproduced;
+            out.detail = QStringLiteral("复核响应缺 candidates[%1]，无法确认").arg(idx);
+            return out;
+        }
+        scoreValue = cand[idx].toObject().value(QStringLiteral("score"));
+        field = QStringLiteral("candidates[%1].score").arg(idx);
+    }
+    if (scoreValue.isUndefined() || scoreValue.isNull()) {
+        out.kind = ScoreFaultKind::ProtocolFault;
+        out.detail = QStringLiteral("%1 缺失（协议故障，非 F1 数值越界）").arg(field);
+        return out;
+    }
+    if (!scoreValue.isDouble()) {
+        out.kind = ScoreFaultKind::ProtocolFault;
+        out.detail = QStringLiteral("%1 类型非法（协议故障，非 F1 数值越界）").arg(field);
+        return out;
+    }
+    const double v = scoreValue.toDouble();
+    if (std::isfinite(v) && v >= 0.0 && v <= 1.0) {
+        out.kind = ScoreFaultKind::NotReproduced;
+        out.detail = QStringLiteral("%1 复核值 %2 在 [0,1] 内，违约不可复现").arg(field).arg(v);
+        return out;
+    }
+    out.kind = ScoreFaultKind::ConfirmedOutOfRange;
+    out.rawScore = v;
+    out.detail = QStringLiteral("%1=%2 确证数值越界").arg(field).arg(v, 0, 'g', 17);
+    return out;
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -218,8 +323,14 @@ int main(int argc, char* argv[]) {
         QStringLiteral("inject-predict-error"),
         QStringLiteral("仅 --embedded-stub：/predict 持续返回 {\"status\":\"error\"}（非 F1 错误口径），"
                        "验证 continue 模式对非 score 越界错误同样失败关闭"));
+    const QCommandLineOption optInjectScoreFault(
+        QStringLiteral("inject-score-fault"),
+        QStringLiteral("仅 --embedded-stub：/predict 持续返回 score 协议故障响应，回归二次复核分类——"
+                       "missing=缺 score 字段 / string=score 为字符串（两者 continue 下必须失败关闭 exit 4）/ "
+                       "outrange=score 1.5（确证 F1 对照，continue 下放行且 violations 带 confirmedRawScore）"),
+        QStringLiteral("mode"));
     parser.addOptions({optServer, optEmbeddedStub, optImage, optGenImage, optSize, optRuns, optWarmup, optTimeout,
-                       optJson, optTag, optOnError, optInject, optInjectPredictError});
+                       optJson, optTag, optOnError, optInject, optInjectPredictError, optInjectScoreFault});
     parser.process(app);
 
     const QString onErrorMode = parser.value(optOnError);
@@ -241,6 +352,18 @@ int main(int argc, char* argv[]) {
     if (injectPredictError && !parser.isSet(optEmbeddedStub)) {
         std::fprintf(stderr, "sam_bench: --inject-predict-error 仅支持 --embedded-stub（无法注入外部服务器）\n");
         return 2;
+    }
+    const QString scoreFaultMode = parser.value(optInjectScoreFault);
+    if (!scoreFaultMode.isEmpty()) {
+        if (!parser.isSet(optEmbeddedStub)) {
+            std::fprintf(stderr, "sam_bench: --inject-score-fault 仅支持 --embedded-stub（无法注入外部服务器）\n");
+            return 2;
+        }
+        if (scoreFaultMode != QLatin1String("missing") && scoreFaultMode != QLatin1String("string") &&
+            scoreFaultMode != QLatin1String("outrange")) {
+            std::fprintf(stderr, "sam_bench: --inject-score-fault 必须为 missing/string/outrange\n");
+            return 2;
+        }
     }
 
     const bool embeddedStub = parser.isSet(optEmbeddedStub);
@@ -297,6 +420,19 @@ int main(int argc, char* argv[]) {
         stub->predictInvalidEmbeddingOnce = injectInvalidEmbedding; // 复核二轮 P1-2：重试计时回归注入
         if (injectPredictError)
             stub->predictStatus = QStringLiteral("error"); // 复核二轮 P2-4：非 F1 错误收窄回归
+        if (!scoreFaultMode.isEmpty()) {
+            // 复核三轮 P1：score 协议故障注入（持续覆盖 /predict 响应）——
+            // 其余字段保持合法，使 score 成为唯一拒绝原因
+            QJsonObject ov{{"polygon", QJsonArray{QJsonArray{10.0, 10.0}, QJsonArray{20.0, 10.0},
+                                                  QJsonArray{20.0, 20.0}, QJsonArray{10.0, 20.0}}},
+                           {"bbox", QJsonArray{10.0, 10.0, 10.0, 10.0}}};
+            if (scoreFaultMode == QLatin1String("string"))
+                ov["score"] = QStringLiteral("high");
+            else if (scoreFaultMode == QLatin1String("outrange"))
+                ov["score"] = 1.5;
+            stub->usePredictOverride = true;
+            stub->predictResponseOverride = ov;
+        }
         serverUrl = stub->url();
     }
 
@@ -393,21 +529,35 @@ int main(int argc, char* argv[]) {
         double ms = 0.0;
         if (!runOp(
                 OpKind::Predict, [&]() { client.predict(spec.positive, spec.negative, spec.box); }, ms)) {
-            // 复核二轮 P2-4：continue 仅放行明确识别的 F1 score 越界（顶层与
-            // candidates[i] 拒绝串同口径）；网络错误/超时/其他解析失败无论
-            // 模式一律失败关闭退出，不得混入违约统计
-            const bool f1ScoreViolation = opError.contains(QStringLiteral("score 必须为 [0,1] 有限数值"));
-            std::fprintf(stderr, "sam_bench: predict[%d]（%s）失败：%s%s\n", i, qPrintable(spec.kind),
-                         qPrintable(opError), f1ScoreViolation ? "［F1 score 越界］" : "");
-            if (onErrorMode == QLatin1String("fail") || !f1ScoreViolation) {
+            // 复核二轮 P2-4：continue 仅面向 F1 score 越界错误串；网络错误/
+            // 超时/其他解析失败无论模式一律失败关闭退出，不得混入违约统计。
+            // 复核三轮 P1：该错误串同时覆盖 score 缺失/类型非法/数值越界三种
+            // 情形，文本匹配后必须经原始 HTTP 重放二次复核，仅确证数值越界
+            // 才放行；协议故障与不可复现一律失败关闭
+            const bool f1ScoreText = opError.contains(QStringLiteral("score 必须为 [0,1] 有限数值"));
+            std::fprintf(stderr, "sam_bench: predict[%d]（%s）失败：%s\n", i, qPrintable(spec.kind),
+                         qPrintable(opError));
+            if (onErrorMode == QLatin1String("fail") || !f1ScoreText) {
                 QObject::disconnect(scoreConn);
                 return 4;
             }
+            const ScoreRecheck rc =
+                recheckScoreViolation(serverUrl, client.currentEmbeddingId(), spec, opError, timeoutMs);
+            if (rc.kind != ScoreFaultKind::ConfirmedOutOfRange) {
+                std::fprintf(stderr, "sam_bench: 二次复核拒绝放行（%s）：%s\n",
+                             rc.kind == ScoreFaultKind::ProtocolFault ? "协议故障，非 F1 数值越界" : "无法确证数值越界",
+                             qPrintable(rc.detail));
+                QObject::disconnect(scoreConn);
+                return 4;
+            }
+            std::fprintf(stderr, "sam_bench: 二次复核确证 F1 数值越界：%s\n", qPrintable(rc.detail));
             violations.append(QJsonObject{{"index", i},
                                           {"kind", spec.kind},
                                           {"error", opError},
                                           {"measured", i >= warmup},
-                                          {"classification", QStringLiteral("F1-score-out-of-range")}});
+                                          {"classification", QStringLiteral("F1-score-out-of-range-confirmed")},
+                                          {"confirmedRawScore", rc.rawScore},
+                                          {"recheckDetail", rc.detail}});
             continue; // 越界样本不计入延迟统计（拒绝发生在 PNG 解码前，延迟不可比）
         }
         const int candCount = client.lastCandidates().size();
@@ -460,6 +610,7 @@ int main(int argc, char* argv[]) {
         {"onError", onErrorMode},
         {"injectedInvalidEmbedding", injectInvalidEmbedding},
         {"injectedPredictError", injectPredictError},
+        {"injectedScoreFault", scoreFaultMode},
         {"retryEvents", retryEvents},
         {"violationCount", violations.size()},
         {"violations", violations},

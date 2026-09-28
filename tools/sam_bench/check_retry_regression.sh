@@ -94,6 +94,54 @@ else
     fail=1
 fi
 
+# 复核三轮 P1 反例：score 缺失/字符串与真正越界共享同一客户端错误串，
+# continue 必须经二次复核区分——协议故障失败关闭，仅确证数值越界放行。
+for fault in missing string; do
+    "$BENCH" --embedded-stub --gen-image "$TMPIMG" --size 64 --runs 3 \
+        --inject-score-fault "$fault" --on-error continue --json "$TMPJSON" > /dev/null 2>&1
+    rc=$?
+    if [ "$rc" = "4" ]; then
+        echo "PASS [score=$fault 协议故障] continue 下二次复核失败关闭 exit=4"
+    else
+        echo "FAIL [score=$fault 协议故障] exit=$rc（期望 4：不得按文本误分类为 F1 放行）"
+        fail=1
+    fi
+done
+"$BENCH" --embedded-stub --gen-image "$TMPIMG" --size 64 --runs 3 \
+    --inject-score-fault missing --on-error fail --json "$TMPJSON" > /dev/null 2>&1
+rc=$?
+if [ "$rc" = "4" ]; then
+    echo "PASS [score=missing fail 对照] exit=4"
+else
+    echo "FAIL [score=missing fail 对照] exit=$rc（期望 4）"
+    fail=1
+fi
+# 确证越界对照：continue 放行且 violations 带 confirmedRawScore=1.5
+"$BENCH" --embedded-stub --gen-image "$TMPIMG" --size 64 --runs 3 \
+    --inject-score-fault outrange --on-error continue --json "$TMPJSON" > /dev/null 2>&1
+rc=$?
+if [ "$rc" != "0" ]; then
+    echo "FAIL [score=outrange 确证对照] exit=$rc（期望 0）"
+    fail=1
+elif python3 - "$TMPJSON" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+errs = []
+if d.get("violationCount") != 3:
+    errs.append(f"violationCount={d.get('violationCount')} 期望 3")
+for v in d.get("violations", []):
+    if v.get("classification") != "F1-score-out-of-range-confirmed":
+        errs.append(f"classification={v.get('classification')} 期望 confirmed")
+    if abs(v.get("confirmedRawScore", 0) - 1.5) > 1e-9:
+        errs.append(f"confirmedRawScore={v.get('confirmedRawScore')} 期望 1.5")
+if d.get("runsValid") != 0:
+    errs.append(f"runsValid={d.get('runsValid')} 期望 0")
+if errs:
+    print("FAIL [score=outrange 确证对照]:", "; ".join(errs)); sys.exit(1)
+print("PASS [score=outrange 确证对照] violations=3 全部 confirmed rawScore=1.5 runsValid=0")
+PY
+then :; else fail=1; fi
+
 echo "-----"
 if [ "$fail" = "0" ]; then
     echo "retry regression: PASS"
