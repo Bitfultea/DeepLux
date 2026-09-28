@@ -32,15 +32,33 @@ cmake --build build --target sam_bench
 ```
 
 退出码：`0` 成功；`2` 参数错误；`3` 图像/输出文件失败；`4` 后端错误或超时
-（`--on-error fail` 下失败关闭：不输出部分 JSON）。
+（失败关闭：不输出部分 JSON）；`5` 内部计时不变量违背（predict 完成后又
+收到 embeddingReady——工具缺陷守卫）。
 
-`--on-error fail|continue`（默认 fail）：`continue` 用于 F1 类契约冲突场景
-（真实 SAM 的 IoU score 可 >1，超出批3 严格契约 [0,1] → 客户端拒绝该次
-预测）——违约样本记录进 JSON `violations`（index/kind/error/measured），
-**不计入延迟统计**（拒绝发生在 mask PNG 解码前，延迟不可比）；连续 5 次
-失败判定硬故障仍中止（exit 4）。`setImage` 失败任何模式下都失败关闭。
+`--on-error fail|continue`（默认 fail）：`continue` **仅**放行明确识别的
+F1 score 越界（错误串含「score 必须为 [0,1] 有限数值」，覆盖顶层与
+candidates[i] 同口径拒绝）——真实 SAM 的 IoU score 可 >1，超出批3 严格
+契约 [0,1]，客户端拒绝该次预测。违约样本记录进 JSON `violations`
+（index/kind/error/measured/classification=F1-score-out-of-range），
+**不计入延迟统计**（拒绝发生在 mask PNG 解码前，延迟不可比）。
+网络错误、超时及其他任何解析失败**无论模式一律失败关闭 exit 4**，
+不得混入违约统计（复核二轮 P2-4）。`setImage` 失败任何模式下都失败关闭。
 延迟统计始终只包含完整走通产品路径（严格解析成功）的样本；`runsValid`
 与 `violationCount` 如实报告覆盖度。
+
+计时口径（复核二轮 P1-2）：完成信号按操作类型隔离——`set_image` 只以
+`embeddingReady` 收口；`predict` 只以 `predictionReady` 收口。predict
+期间出现 `embeddingReady` 只能来自客户端对 `invalid_embedding` 的自动
+重试链（重 setImage → 重发 predict），记入 JSON `retryEvents` 并继续等待
+真正的预测结果，不得提前结束计时。
+
+注入自检（仅 `--embedded-stub`）：
+- `--inject-invalid-embedding N`：前 N 次 /predict 返回 invalid_embedding，
+  驱动客户端自动重试链，验证上述计时口径；
+- `--inject-predict-error`：/predict 持续返回 {"status":"error"}（非 F1
+  口径），验证 continue 模式对非 score 越界错误同样失败关闭。
+回归脚本：`check_retry_regression.sh`（重试计时 + continue 收窄，5 用例）
+与 `check_arg_guards.sh`（参数守卫，20 用例）。
 
 ## 测量口径
 
@@ -90,7 +108,9 @@ v2 内容：低频平滑底 `v=96+((x/32+y/48) mod 64)` + 12×12 均匀灰度单
 
 `tool/toolVersion/tag/mode/serverUrl/modelName/embeddingId`、
 `environment{os,kernel,arch,qt}`、`image{path,width,height,sha256}`、
-`runs/warmup/timeoutMs/promptRecipe`、`initialEncodeMs`、
+`runs/runsValid/warmup/timeoutMs/promptRecipe`、`initialEncodeMs`、
 `firstCandidates/lastCandidates/firstScore/lastScore`、
 `latenciesMs[]`（原始数据）、`predictStats`、`predictStatsByKind{pos,posneg,box}`、
-`warmupStats`。`image.sha256` 用于跨机台核对「同图」。
+`warmupStats`、`onError/injectedInvalidEmbedding/injectedPredictError/retryEvents`、
+`violationCount/violations[]{index,kind,error,measured,classification}`。
+`image.sha256` 用于跨机台核对「同图」。

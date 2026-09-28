@@ -60,6 +60,11 @@ expect 2 "timeout 越界(50)" --embedded-stub --gen-image "$TMPIMG" --timeout 50
 expect 2 "size 越界(10)" --embedded-stub --gen-image "$TMPIMG" --size 10
 expect 3 "image 不存在（守卫后、监听前失败关闭）" --embedded-stub --image /nonexistent_sam_bench_guard.png
 expect 2 "on-error 非法值" --embedded-stub --gen-image "$TMPIMG" --on-error ignore
+expect 2 "inject 非整数" --embedded-stub --gen-image "$TMPIMG" --inject-invalid-embedding abc
+expect 2 "inject 负值" --embedded-stub --gen-image "$TMPIMG" --inject-invalid-embedding=-1
+# --server 值仅触发守卫（inject 需 embedded-stub），先于任何客户端/连接创建
+expect 2 "inject 需 embedded-stub" --server http://127.0.0.1:1 --gen-image "$TMPIMG" --inject-invalid-embedding 1
+expect 2 "inject-predict-error 需 embedded-stub" --server http://127.0.0.1:1 --gen-image "$TMPIMG" --inject-predict-error
 expect 0 "正向对照：内嵌 stub 小图 3 次预测" --embedded-stub --gen-image "$TMPIMG" --size 64 --runs 3
 
 echo "-----"

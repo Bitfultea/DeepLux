@@ -40,19 +40,27 @@
 - 计划规格：1×约 3000×3000 真实工业图（P95 目标图）+ 细小缺陷样本集（阶段1 IoU≥0.99 逐图复核用）
 - 现状：**真实图集缺失（G2）**。基线以 `sam_bench --gen-image` 确定性合成图 v2 替代：低频平滑底 + 12×12 均匀灰度单元（2px 暗边界）+ 单元中心对比小块；3000×3000，sha256=`a6a01c528d83b67ddb66117fb28cd9c5513697cbe7f825506d59e29a2329e728`
 - v1 高频斜纹生成器已废弃：诱导真实 SAM 输出退化全图掩膜（bbox=[0,0,3000,3000]）且 score=1.0134>1（F1 首批证据）
-- 性能口径只依赖分辨率（ViT 输入统一 resize 1024²），合成图 CPU 基线对生产机有效；**内容相关的精度门禁（阶段1）必须换真实图集**
+- **合成图数据的适用边界（复核二轮 P1-3 修正）**：编码器成本主要由分辨率决定（ViT 输入统一 resize 1024²，架构事实），但解码器/掩膜后处理/编码成本随**掩膜形态与图像内容**变化（内容影响掩膜面积与 RLE 游程结构、PNG 压缩率）。合成图基线仅作为开发机流程验证与数量级参考，**不得替代生产机台真实图基线（G1/G2）作为验收依据**；精度门禁（阶段1）必须使用真实图集
 
 ## 性能脚本与口径
 
 - 工具：`tools/sam_bench`（走产品同款 `SamBackendClient` HTTP 路径；口径=HTTP 客户端至预测结果，**不含 GUI 候选显示段**——0.5s 交互目标须另测 GUI 段，见 G4）
 - 固定配方：`i%10` → 0–3 单正点(40%) / 4–6 正+负点(30%) / 7–9 框选(30%)；坐标纯整数取模，跨机台一致（README 有完整公式，禁止改动）
-- 失败策略：默认 `--on-error fail`（产品语义失败关闭）；基线采集用 `--on-error continue`（F1 违约样本记录进 JSON `violations`，不计入延迟统计，连续 5 次失败仍中止）
-- 参数守卫回归：`check_arg_guards.sh` **16/16**（含 `--warmup abc` 的 ok 复用回归——修复了四个数值参数共享单个 `ok` 被后续成功解析覆盖的缺陷）
-- 真实后端操作规程：先 `GET /health` 预热模型（本次 1664ms 至 ready），再跑 bench，避免模型加载计入首次编码（`stage0/server_health_preload.txt`）
+- 失败策略：默认 `--on-error fail`（产品语义失败关闭）；基线采集用 `--on-error continue`——复核二轮 P2-4 收窄后**仅放行明确识别的 F1 score 越界**（错误串精确匹配「score 必须为 [0,1] 有限数值」，覆盖顶层与 candidates[i] 同口径），网络错误/超时/其他解析失败无论模式一律失败关闭 exit 4；违约样本入 JSON `violations`（classification=F1-score-out-of-range），不计入延迟统计；原「连续 5 次失败上限」已移除（非 F1 错误即时中止后该上限无意义）
+- 计时口径（复核二轮 P1-2 修正）：完成信号按操作类型隔离——set_image 只等 `embeddingReady`，predict 只等 `predictionReady`；predict 期间的 `embeddingReady`（客户端对 invalid_embedding 的自动重试链：重 setImage→重发 predict）记为 JSON `retryEvents` 并继续等待，不再可能被误计为一次成功预测；predict 完成后又收到 embeddingReady → 内部不变量违背 exit 5。注入自检：`--inject-invalid-embedding N`（一次性 invalid_embedding）、`--inject-predict-error`（持续 status:error，验证 continue 收窄）
+- 回归：`check_arg_guards.sh` **20/20**（含 `--warmup abc` ok 复用回归 + 3 个注入参数守卫）；`check_retry_regression.sh` **5/5**（inject=1/2 重试计时×3、continue 非 F1 失败关闭、fail 模式对照）
+- 真实后端操作规程：先 `GET /health` 预热模型（首次 1664ms / 重跑 1789ms 至 ready），再跑 bench，避免模型加载计入首次编码（`stage0/server_health_preload.txt`）
 
 ## 基线原始数据
 
 ### A. 真实 ViT-B CPU（现有 Python sam_server HTTP 路径）
+
+#### A1. 首测（原 bench，探索数据）
+
+> 复核二轮已独立核对本组数据（95 有效样本、5 次 F1 越界、P95=2885.13ms）。
+> 该组数据采集于计时信号隔离修正（P1-2）之前；本次运行中 embedding 全程
+> 有效、未发生 invalid_embedding 重试，embeddingReady 不可能在 predict
+> 窗口内触发，故计时未受该缺陷影响——保留为探索数据，主证据以 A2 为准。
 
 命令：`sam_bench --server http://127.0.0.1:56615 --image <synth_3000_v2> --runs 100 --warmup 3 --timeout 300000 --on-error continue`，exit 0。
 环境：sam_env torch 2.13.0+cu130→CPU（i9-12900K），sam_server @ c55d290 版本。
@@ -69,7 +77,22 @@
 
 原始 JSON（含 95 个逐次延迟数组）：`stage0/stage0_cpu_vitb_synth3000.json`
 
-**解读**：与 0.5s 目标差 ~5.8×（P95 2885ms）。结合 C 项（客户端+HTTP 路径开销 <1ms），耗时 >99.9% 在服务端：ViT-B CPU 解码器推理 + `sam_server` 对 3 个 3000² 候选掩膜的**纯 Python 逐像素 `_encode_rle` + 全尺寸 PNG base64 编码**（F2）。CPU 路径按计划不承诺 0.5s；该基线的意义是量化旧路径并为阶段2/4 提供对照。
+#### A2. 复测（修复版 bench：信号隔离 + F1-only continue，主证据）
+
+命令同 A1（端口 48975，预热 1789ms），exit 0。同图同配方（sha256 一致）。
+
+| 指标 | 值 |
+|---|---|
+| 首次编码 set_image | **3162.1 ms** |
+| 重复预测（有效样本 **95/100**） | **P50 2728.4 / P95 2857.6** / P99=max 2968.3 / mean 2742.8 ms |
+| 分组 pos（n=38）/ posneg（n=27）/ box（n=30） | P50 2756.0 / 2793.0 / 2691.8；P95 2857.6 / 2883.3 / 2778.5 ms |
+| F1 违约样本 | **5/103，索引与 A1 完全一致**（23、92 pos；56、66、75 posneg；classification=F1-score-out-of-range）——配方确定性佐证 |
+| retryEvents | 0（稳定运行无 invalid_embedding，佐证 A1 计时未受 P1-2 缺陷影响） |
+| 候选数(首/末)、score(首/末) | 3/3、0.990/0.975 |
+
+与 A1 对比：P95 2885.1→2857.6ms（-1.0%，运行间正常波动），结论不变。原始 JSON：`stage0/stage0_cpu_vitb_synth3000_fixedbench.json`
+
+**解读（复核二轮 P1-3 修正归因口径）**：与 0.5s 目标差 ~5.8×（P95 2885ms）。C 项 stub 的 P95 0.43ms **仅证明**客户端+HTTP+严格解析在**小载荷**下的开销 <1ms——stub 返回 2×2 掩膜 PNG（SamTestServer `tinyMaskPngBase64`），而真实路径需传输并解析 3 个 3000² 全尺寸掩膜的 PNG base64（载荷量级差约 10⁶），两者不可直接相减归因。「耗时主体在服务端（ViT-B CPU 解码器推理 + `sam_server` 纯 Python 逐像素 `_encode_rle` + 全尺寸掩膜 PNG base64 编码）」目前是**待剖析的推测**（依据：`_encode_rle` 为逐像素 Python 循环，3000²×3 候选≈27M 次迭代，数量级估算与 2.8s 相符；传输/解析段占比未单独测量），阶段2 以剖析数据确认，不作为已测结论。CPU 路径按计划不承诺 0.5s；该基线的意义是量化旧路径并为阶段2/4 提供对照。
 
 ### B. CUDA（目标机）
 
@@ -77,33 +100,39 @@
 
 ### C. 路径开销（内嵌 stub，无 Python；同合成图 v2，runs=100 warmup=3，on-error=fail）
 
-首次编码 0.696 ms；预测 P50 0.2 / **P95 0.43** / max ~0.6 ms；有效 100/100，违约 0。
-→ `SamBackendClient`+HTTP+JSON 严格解析（含 3 候选）全链开销 **<1ms**，不是瓶颈。原始 JSON：`stage0/stage0_dev_stub_synth3000.json`
+- 首测（原 bench）：首次编码 0.696 ms；预测 P50 0.2 / P95 0.43 / max ~0.6 ms；有效 100/100 → `stage0/stage0_dev_stub_synth3000.json`
+- 修复版 bench 复测（信号隔离后）：首次编码 0.654 ms；预测 P50 0.249 / **P95 0.545** / max 1.328 ms；有效 100/100，retryEvents 0 → `stage0/stage0_dev_stub_synth3000_fixedbench.json`
+
+→ `SamBackendClient`+HTTP+JSON 严格解析（含 3 候选）在**小载荷**（stub 掩膜为 2×2 PNG）下开销 <1.5ms。**注意（P1-3）**：真实路径的全尺寸掩膜传输与解析成本不在此数内，不能据此推断真实路径的客户端占比。
 
 ## 关键发现与风险
 
 - **F1（阻塞级，需阶段2/3 裁决）**：官方 segment_anything `MaskDecoder.iou_prediction_head` 为纯 MLP，**无 sigmoid/clamp**（`sigmoid_output=False` 仅作用于 mask 分支；源码证据见 `stage0/env_evidence.txt` 末节），IoU score 可 >1（实测违约 prompt 原始值 1.000425、1.001420；v1 图 1.0134/1.0138）。`sam_server` 直接透传 `float(scores[best])`；DeepLux 批3 严格契约 score∈[0,1] 拒绝整次预测 → **现有生产路径对真实模型输出以约 5%（本图集）概率失败关闭**。候选 score 同样受影响（批4 candidates 严格解析同口径）。裁决选项：服务端/导出侧 clamp（改变 score 语义）vs 客户端契约放宽（有限值 + clamp 用于展示、保留原值排序）。**阶段1「分数绝对差≤0.01」门禁须以未 clamp 原始值定义对比口径**。
-- **F2**：旧 CPU 路径 predict ~2.8s 的大头是 `sam_server._encode_rle` 纯 Python 逐像素循环（3000²×3 候选≈27M 像素迭代）+ 全尺寸掩膜 PNG base64；阶段2 原生实现的明确优化空间（RLE C++ 化/掩膜按需编码）。
+- **F2（推测，待阶段2 剖析确认）**：旧 CPU 路径 predict ~2.8s 的疑似大头是 `sam_server._encode_rle` 纯 Python 逐像素循环（3000²×3 候选≈27M 像素迭代，数量级估算）+ 全尺寸掩膜 PNG base64 编码与传输；**归因未经分段剖析，不作为已测结论**（复核二轮 P1-3）。若成立，阶段2 原生实现有明确优化空间（RLE C++ 化/掩膜按需编码）。
 - **F3**：sam_env 版本漂移超出 requirements.txt 锁定（见上）。
 - **F4**：隔离树 `test_runengine::testMultipleBreakpointsCanResumeAndStop` 崩溃为既有环境/布局敏感项（基线 c51dce3 隔离树同签名 28/1、主工作区 76/76 通过、复核方历轮无法复现）——非阶段0 引入。
 - **F5**：GPU 驱动未加载（卡在位）——CUDA 基线与阶段4 的前置阻塞；需装/修驱动或换目标机。
 - **F6**：bench 两次 fail 模式全量运行均正确失败关闭（v1 图 predict[0]、v2 图 predict[23]，exit 4、无部分 JSON）——工具失败语义实测有效。
+- **F7（复核二轮新观察，既有客户端行为，低优先）**：`SamBackendClient` 对 invalid_embedding 的自动重试**无次数上限**——每轮重试在 embedding 就绪时清除 `m_imageRetryPending`，若服务器持续返回 invalid_embedding 将无限循环「重 setImage→重 predict」（bench inject=2 实测 retryEvents=2 后成功；正常场景=服务器重启后自愈，属合理设计，但持续故障场景仅受单请求超时约束、无总重试预算）。阶段3 接入本地原生后端时该链路语义会重新设计，届时一并处置；本阶段不改动产品代码。
 
 ## 测试证据（命令 + 退出码）
 
 - 隔离树 @ c55d290（≡c2ee793）：`ctest` → **exit 8**，75/76（唯一失败 test_runengine，单跑 exit 134，28 passed/1 failed）；SAM 定向 9 套件全绿 exit 0（25/16/57/16/12/15/8/5/8）——明细 `stage0/ctest_evidence.txt`
-- 主工作区（含用户 WIP）：全量 CTest **76/76**（阶段0 提交后复跑，见提交信息）
-- bench：arg guards **16/16**（exit 0）；stub 冒烟 runs=10 exit 0；真实后端 probe runs=10 exit 0；全量 fail 模式 exit 4×2（F6）；continue 模式 exit 0
+- 主工作区（含用户 WIP）：全量 CTest **76/76**（复核二轮修改后复跑，见提交信息）
+- bench（复核二轮修正版）：arg guards **20/20**（exit 0）；retry regression **5/5**（inject=1→retryEvents=1、inject=2→retryEvents=2、continue 非 F1 exit 4、fail 对照 exit 4）；stub 冒烟与 3000² 复测 exit 0；真实后端 probe runs=10 exit 0；全量 fail 模式 exit 4×2（F6）；continue 模式 exit 0×2（A1/A2）
+- bench 负向验证（复核二轮）：MUT-A（predict 完成信号回归为 embeddingReady）→ retry 回归 3 用例红（retryEvents=0）；MUT-B（continue 放宽回“所有错误放行”）→ 非 F1 用例红（exit 0≠4）；还原 cmp 逐字节一致后全绿
+- `tests/helpers/SamTestServer.h` 新增 `predictInvalidEmbeddingOnce`（默认 0，向后兼容）与一次性注入分支——既有测试全量复跑不受影响（见上）
 - sam_server.py 本阶段零改动
 
 ## 证据文件清单（docs/sam_native/stage0/）
 
-- `stage0_cpu_vitb_synth3000.json` —— CPU 真实基线原始数据（逐次延迟数组+violations）
-- `stage0_dev_stub_synth3000.json` —— 路径开销原始数据
+- `stage0_cpu_vitb_synth3000.json` —— CPU 真实基线原始数据（A1 首测/探索，逐次延迟数组+violations；复核方已独立核对）
+- `stage0_cpu_vitb_synth3000_fixedbench.json` —— CPU 真实基线原始数据（**A2 复测/主证据**，修复版 bench）
+- `stage0_dev_stub_synth3000.json` / `stage0_dev_stub_synth3000_fixedbench.json` —— 路径开销原始数据（首测/修复版复测）
 - `f1_raw_scores.txt` —— F1 违约 prompt 原始 score 复现（5 例）+ v1 图对照 + 源码证据摘录
 - `env_evidence.txt` —— 硬件/系统/工具链/Python 环境/权重/F1 源码 grep/requirements 对照
 - `ctest_evidence.txt` —— 隔离树 ctest 与定向测试（命令+退出码）
-- `server_health_preload.txt` —— sam_server 启动命令/health 响应/预热耗时/运行日志摘要（请求计数+首末行；完整日志 `/tmp/sam_bench_run/server.log` 因 `.gitignore *.log` 规则不入库）
+- `server_health_preload.txt` —— sam_server 启动命令/health 响应/预热耗时/两轮运行日志摘要（请求计数+首末行；完整日志 `/tmp/sam_bench_run/server{,_rerun}.log` 因 `.gitignore *.log` 规则不入库）
 
 ## 缺口与待办
 

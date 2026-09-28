@@ -63,6 +63,10 @@ public:
     QJsonObject predictResponseOverride;
     // SAM 批4：多掩膜候选（candidates[0] 与顶层 best 字段一致，score 降序）
     bool includePredictCandidates = true;
+    // 原生阶段0 复核二轮（P1）：一次性 invalid_embedding 注入——前 N 次 /predict
+    // 返回 {"status":"invalid_embedding"}（客户端将自动重 setImage 并重试预测），
+    // 供 sam_bench 重试计时回归（check_retry_regression.sh）使用；默认 0 不影响既有测试
+    int predictInvalidEmbeddingOnce = 0;
 
     // 请求记录（断言四个端点都被真实调用）
     QStringList requestLog;
@@ -119,7 +123,12 @@ private:
                                    {"model_name", "sam_test_vit_b"}};
         } else if (path == "/predict") {
             lastPredictBody = QJsonDocument::fromJson(body).object();
-            response = predictResponse();
+            if (predictInvalidEmbeddingOnce > 0) {
+                --predictInvalidEmbeddingOnce;
+                response = QJsonObject{{"status", "invalid_embedding"}}; // 触发客户端自动重试链
+            } else {
+                response = predictResponse();
+            }
         } else if (path == "/unload_image") {
             response = QJsonObject{{"status", "ok"}};
         } else {

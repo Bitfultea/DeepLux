@@ -209,13 +209,37 @@ int main(int argc, char* argv[]) {
                        "用于 F1 类契约冲突（真实 SAM score 可>1）下取得有效样本延迟；违约样本不计入延迟"
                        "统计并全量写入 JSON violations；连续 5 次失败判定硬故障中止"),
         QStringLiteral("mode"), QStringLiteral("fail"));
+    const QCommandLineOption optInject(
+        QStringLiteral("inject-invalid-embedding"),
+        QStringLiteral("仅 --embedded-stub：前 N 次 /predict 注入 invalid_embedding，验证客户端自动重试链"
+                       "下的计时正确性（retryEvents 入 JSON；回归见 check_retry_regression.sh）"),
+        QStringLiteral("n"), QStringLiteral("0"));
+    const QCommandLineOption optInjectPredictError(
+        QStringLiteral("inject-predict-error"),
+        QStringLiteral("仅 --embedded-stub：/predict 持续返回 {\"status\":\"error\"}（非 F1 错误口径），"
+                       "验证 continue 模式对非 score 越界错误同样失败关闭"));
     parser.addOptions({optServer, optEmbeddedStub, optImage, optGenImage, optSize, optRuns, optWarmup, optTimeout,
-                       optJson, optTag, optOnError});
+                       optJson, optTag, optOnError, optInject, optInjectPredictError});
     parser.process(app);
 
     const QString onErrorMode = parser.value(optOnError);
     if (onErrorMode != QLatin1String("fail") && onErrorMode != QLatin1String("continue")) {
         std::fprintf(stderr, "sam_bench: --on-error 必须为 fail 或 continue\n");
+        return 2;
+    }
+    bool okInject = false;
+    const int injectInvalidEmbedding = parser.value(optInject).toInt(&okInject);
+    if (!okInject || injectInvalidEmbedding < 0 || injectInvalidEmbedding > 1000) {
+        std::fprintf(stderr, "sam_bench: --inject-invalid-embedding 必须为 [0,1000] 整数\n");
+        return 2;
+    }
+    if (injectInvalidEmbedding > 0 && !parser.isSet(optEmbeddedStub)) {
+        std::fprintf(stderr, "sam_bench: --inject-invalid-embedding 仅支持 --embedded-stub（无法注入外部服务器）\n");
+        return 2;
+    }
+    const bool injectPredictError = parser.isSet(optInjectPredictError);
+    if (injectPredictError && !parser.isSet(optEmbeddedStub)) {
+        std::fprintf(stderr, "sam_bench: --inject-predict-error 仅支持 --embedded-stub（无法注入外部服务器）\n");
         return 2;
     }
 
@@ -270,6 +294,9 @@ int main(int argc, char* argv[]) {
             std::fprintf(stderr, "sam_bench: 内嵌 stub 监听失败\n");
             return 4;
         }
+        stub->predictInvalidEmbeddingOnce = injectInvalidEmbedding; // 复核二轮 P1-2：重试计时回归注入
+        if (injectPredictError)
+            stub->predictStatus = QStringLiteral("error"); // 复核二轮 P2-4：非 F1 错误收窄回归
         serverUrl = stub->url();
     }
 
@@ -277,9 +304,17 @@ int main(int argc, char* argv[]) {
     client.setServerUrl(serverUrl);
     client.setTimeoutMs(timeoutMs);
 
-    // 单操作同步收口：与 runSamPredictBatch 同范式（本地事件循环 + 兜底超时）
+    // 单操作同步收口：与 runSamPredictBatch 同范式（本地事件循环 + 兜底超时）。
+    // 复核二轮 P1-2：完成信号按操作类型隔离——setImage 只等 embeddingReady；
+    // predict 只等 predictionReady。predict 期间出现 embeddingReady 只能来自
+    // 客户端对 invalid_embedding 的自动重试链（重 setImage → 重发 predict），
+    // 记为重试事件并继续等待真正的预测结果；若在本操作已完成后才收到，
+    // 判定计时早退缺陷（内部不变量，exit 5）。
+    enum class OpKind { SetImage, Predict };
     QString opError;
-    const auto runOp = [&](const std::function<void()>& start, double& outMs) -> bool {
+    int retryEvents = 0;
+    bool timingInvariantViolated = false;
+    const auto runOp = [&](OpKind kind, const std::function<void()>& start, double& outMs) -> bool {
         opError.clear();
         bool done = false;
         QEventLoop loop;
@@ -298,25 +333,38 @@ int main(int argc, char* argv[]) {
         deadline.setSingleShot(true);
         QObject::connect(&deadline, &QTimer::timeout, &loop, [&finish]() { finish(QStringLiteral("本地等待超时")); });
         deadline.start(timeoutMs + 2000);
-        auto readyConn =
-            QObject::connect(&client, &SamBackendClient::embeddingReady, &loop, [&finish]() { finish(QString()); });
-        auto predConn = QObject::connect(&client, &SamBackendClient::predictionReady, &loop,
-                                         [&finish](const QList<QPointF>&, const QRectF&, double, const QString&,
-                                                   const QImage&) { finish(QString()); });
+        QMetaObject::Connection completionConn;
+        QMetaObject::Connection retryConn;
+        if (kind == OpKind::SetImage) {
+            completionConn =
+                QObject::connect(&client, &SamBackendClient::embeddingReady, &loop, [&finish]() { finish(QString()); });
+        } else {
+            completionConn = QObject::connect(&client, &SamBackendClient::predictionReady, &loop,
+                                              [&finish](const QList<QPointF>&, const QRectF&, double, const QString&,
+                                                        const QImage&) { finish(QString()); });
+            retryConn = QObject::connect(&client, &SamBackendClient::embeddingReady, &loop, [&]() {
+                if (done)
+                    timingInvariantViolated = true; // 完成后不应再收到重试信号
+                else
+                    ++retryEvents;
+            });
+        }
         timer.start();
         start();
         loop.exec();
         outMs = double(timer.nsecsElapsed()) / 1e6; // 亚毫秒路径（stub）也保留精度
         QObject::disconnect(errConn);
-        QObject::disconnect(readyConn);
-        QObject::disconnect(predConn);
+        QObject::disconnect(completionConn);
+        if (retryConn)
+            QObject::disconnect(retryConn);
         deadline.stop();
         return done && opError.isEmpty();
     };
 
     // ===== 首次编码 =====
     double setMs = 0.0;
-    if (!runOp([&]() { client.setImage(imagePath); }, setMs)) {
+    if (!runOp(
+            OpKind::SetImage, [&]() { client.setImage(imagePath); }, setMs)) {
         std::fprintf(stderr, "sam_bench: setImage 失败：%s\n", qPrintable(opError));
         return 4;
     }
@@ -340,25 +388,28 @@ int main(int argc, char* argv[]) {
         [&lastScore](const QList<QPointF>&, const QRectF&, double s, const QString&, const QImage&) { lastScore = s; });
 
     QJsonArray violations;
-    int consecutiveErrors = 0;
     for (int i = 0; i < runs + warmup; ++i) {
         const PromptSpec& spec = recipe[i];
         double ms = 0.0;
-        if (!runOp([&]() { client.predict(spec.positive, spec.negative, spec.box); }, ms)) {
-            std::fprintf(stderr, "sam_bench: predict[%d]（%s）失败：%s\n", i, qPrintable(spec.kind),
-                         qPrintable(opError));
-            violations.append(
-                QJsonObject{{"index", i}, {"kind", spec.kind}, {"error", opError}, {"measured", i >= warmup}});
-            ++consecutiveErrors;
-            if (onErrorMode == QLatin1String("fail") || consecutiveErrors >= 5) {
-                if (consecutiveErrors >= 5)
-                    std::fprintf(stderr, "sam_bench: 连续 %d 次失败，判定硬故障中止\n", consecutiveErrors);
+        if (!runOp(
+                OpKind::Predict, [&]() { client.predict(spec.positive, spec.negative, spec.box); }, ms)) {
+            // 复核二轮 P2-4：continue 仅放行明确识别的 F1 score 越界（顶层与
+            // candidates[i] 拒绝串同口径）；网络错误/超时/其他解析失败无论
+            // 模式一律失败关闭退出，不得混入违约统计
+            const bool f1ScoreViolation = opError.contains(QStringLiteral("score 必须为 [0,1] 有限数值"));
+            std::fprintf(stderr, "sam_bench: predict[%d]（%s）失败：%s%s\n", i, qPrintable(spec.kind),
+                         qPrintable(opError), f1ScoreViolation ? "［F1 score 越界］" : "");
+            if (onErrorMode == QLatin1String("fail") || !f1ScoreViolation) {
                 QObject::disconnect(scoreConn);
                 return 4;
             }
-            continue; // 违约样本不计入延迟统计（拒绝发生在 PNG 解码前，延迟不可比）
+            violations.append(QJsonObject{{"index", i},
+                                          {"kind", spec.kind},
+                                          {"error", opError},
+                                          {"measured", i >= warmup},
+                                          {"classification", QStringLiteral("F1-score-out-of-range")}});
+            continue; // 越界样本不计入延迟统计（拒绝发生在 PNG 解码前，延迟不可比）
         }
-        consecutiveErrors = 0;
         const int candCount = client.lastCandidates().size();
         if (i < warmup) {
             warmupMs.append(ms);
@@ -378,6 +429,10 @@ int main(int argc, char* argv[]) {
             boxLat.append(ms);
     }
     QObject::disconnect(scoreConn);
+    if (timingInvariantViolated) {
+        std::fprintf(stderr, "sam_bench: 内部不变量违背：predict 完成后又收到 embeddingReady（计时早退缺陷）\n");
+        return 5;
+    }
     client.unloadImage();
 
     // ===== 统计与输出 =====
@@ -403,6 +458,9 @@ int main(int argc, char* argv[]) {
         {"warmup", warmup},
         {"timeoutMs", timeoutMs},
         {"onError", onErrorMode},
+        {"injectedInvalidEmbedding", injectInvalidEmbedding},
+        {"injectedPredictError", injectPredictError},
+        {"retryEvents", retryEvents},
         {"violationCount", violations.size()},
         {"violations", violations},
         {"promptRecipe", QStringLiteral("i%10: 0-3=pos, 4-6=posneg, 7-9=box; 整数取模坐标（README 配方）")},
@@ -436,6 +494,8 @@ int main(int argc, char* argv[]) {
     std::printf("候选数(首/末)=%d/%d score(首/末)=%.3f/%.3f\n", firstCandidates, lastCandidates, firstScore, lastScore);
     std::printf("有效样本=%d/%d 违约样本=%d（on-error=%s；违约不计入延迟统计，明细见 JSON violations）\n",
                 int(latenciesMs.size()), runs, int(violations.size()), qPrintable(onErrorMode));
+    std::printf("重试事件=%d（predict 期间 embeddingReady=invalid_embedding 自动重试）注入=%d\n", retryEvents,
+                injectInvalidEmbedding);
 
     if (parser.isSet(optJson)) {
         QFile out(parser.value(optJson));
