@@ -1,0 +1,76 @@
+== 采集时间: 2026-09-28T09:22:19+08:00 ==
+== 硬件 ==
+Architecture:                            x86_64
+CPU(s):                                  24
+Model name:                              12th Gen Intel(R) Core(TM) i9-12900K
+Thread(s) per core:                      2
+Core(s) per socket:                      16
+Socket(s):                               1
+               total        used        free      shared  buff/cache   available
+Mem:            62Gi        17Gi       3.3Gi       857Mi        41Gi        43Gi
+0000:01:00.0 VGA compatible controller: NVIDIA Corporation GA102 [GeForce RTX 3090] (rev a1)
+0000:01:00.1 Audio device: NVIDIA Corporation GA102 High Definition Audio Controller (rev a1)
+NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver. Make sure that the latest NVIDIA driver is installed and running.
+
+
+== 系统/工具链 ==
+PRETTY_NAME="Ubuntu 22.04.5 LTS"
+6.8.0-138-generic x86_64
+g++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+cmake version 3.29.8
+qtbase5-dev:amd64	5.15.3+dfsg-2ubuntu0.2
+
+== Python 环境 ==
+Python 3.10.12
+--- ~/.deeplux/sam_env（托管环境，sam_server 实跑环境）---
+python 3.10.12
+torch 2.13.0+cu130 cuda_available False
+fastapi 0.139.2 uvicorn 0.51.0
+segment_anything (no __version__)
+numpy 2.2.6 PIL 12.3.0 cv2 5.0.0
+--- 系统 python3 相关包 ---
+[0;93m2026-09-28 09:22:21.109814440 [W:onnxruntime:Default, device_discovery.cc:164 DiscoverDevicesForPlatform] GPU device discovery failed: device_discovery.cc:89 ReadFileContents Failed to open file: "/sys/class/drm/card0/device/vendor"[m
+onnxruntime 1.23.2 ['AzureExecutionProvider', 'CPUExecutionProvider']
+ModuleNotFoundError: No module named 'torch'
+ModuleNotFoundError: No module named 'fastapi'
+
+== conda 环境（均无 torch+fastapi+segment_anything 三件套）==
+
+# conda environments:
+#
+base                   /home/charles/miniconda3
+LLM                    /home/charles/miniconda3/envs/LLM
+isat_env               /home/charles/miniconda3/envs/isat_env
+m3dm                   /home/charles/miniconda3/envs/m3dm
+openpcdet              /home/charles/miniconda3/envs/openpcdet
+tiffTool               /home/charles/miniconda3/envs/tiffTool
+vllm                   /home/charles/miniconda3/envs/vllm
+yolo                   /home/charles/miniconda3/envs/yolo
+
+
+== 权重 ==
+ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912  /home/charles/Downloads/sam_vit_b_01ec64.pth
+-rw-rw-r-- 1 charles charles 375042383  7月 19 10:52 /home/charles/Downloads/sam_vit_b_01ec64.pth
+
+== F1 源码证据：官方 MaskDecoder iou_prediction_head 无 sigmoid/clamp ==
+67:        self.iou_prediction_head = MLP(
+94:        masks, iou_pred = self.predict_masks(
+107:        iou_pred = iou_pred[:, mask_slice]
+110:        return masks, iou_pred
+147:        iou_pred = self.iou_prediction_head(iou_token_out)
+149:        return masks, iou_pred
+161:        sigmoid_output: bool = False,
+169:        self.sigmoid_output = sigmoid_output
+174:        if self.sigmoid_output:
+
+== requirements.txt 锁定范围（对照环境漂移）==
+# SAM 后端依赖 — 版本锁定确保环境可复现
+fastapi>=0.104,<0.111
+uvicorn>=0.24,<0.31
+numpy>=1.24,<2.0
+pillow>=10.0,<11.0
+# SAM 模型依赖（仅真实推理需要，stub 模式不需要）
+# torch>=2.1,<2.5
+# torchvision>=0.16,<0.20
+# segment-anything==1.0
+# opencv-python>=4.8,<4.10

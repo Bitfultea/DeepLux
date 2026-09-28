@@ -1,0 +1,25 @@
+== 隔离树基线测试证据 ==
+树：/tmp/dl_verify_b4 @ c55d290（与阶段0 基线提交 c2ee793 逐字节一致，git diff 为空）
+
+命令: cd /tmp/dl_verify_b4/build && QT_QPA_PLATFORM=offscreen ctest
+CTEST_EXIT=8
+99% tests passed, 1 tests failed out of 76
+The following tests FAILED:
+	 12 - test_runengine (Subprocess aborted)
+Errors while running CTest
+
+命令: QT_QPA_PLATFORM=offscreen ./bin/test_runengine
+RUNENGINE_EXIT=134 (Subprocess aborted, core dumped)
+FAIL!  : TestRunEngine::testMultipleBreakpointsCanResumeAndStop() Received a fatal error.
+   Loc: [Unknown file(0)]
+Totals: 28 passed, 1 failed, 0 skipped, 0 blacklisted, 2559ms
+
+== SAM 定向测试（同一隔离树，全部通过，exit 0）==
+test_sambackendclient: 25 passed | test_agent_sam_tools: 16 passed | test_samannotatordialog: 57 passed
+test_sam_region_flow: 16 passed | test_annotation_session: 12 passed | test_annotationmaskops: 15 passed
+test_cocoexporter: 8 passed | test_labelmeimporter: 5 passed | test_toolschema: 8 passed
+
+== 既有结论（批3/批4 轮次已复核）==
+test_runengine::testMultipleBreakpointsCanResumeAndStop 在隔离构建中为环境/布局敏感崩溃：
+基线 c51dce3 隔离树同签名（28/1），主工作区构建通过（76/76），复核方历轮隔离构建无法复现。
+非阶段0 引入；主工作区构建（build-agent）全量 76/76 通过。

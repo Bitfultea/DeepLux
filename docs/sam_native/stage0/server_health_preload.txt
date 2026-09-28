@@ -1,0 +1,17 @@
+== sam_server 预热与身份信息 ==
+启动命令: DEEPLUX_SAM_MODEL=/home/charles/Downloads/sam_vit_b_01ec64.pth DEEPLUX_SAM_DEVICE=cpu ~/.deeplux/sam_env/bin/python tools/sam_server/sam_server.py --port 0
+端口: 56615（--port 0 自动分配）
+GET /health 响应: {"status":"ready","model_name":"sam-vit_b","mode":"sam"}
+模型预载耗时（health 首次触发 _ensure_predictor 至 ready）: PRELOAD_MS=1664
+说明: bench 测首次编码前先以 /health 预热，避免把模型加载计入 initialEncodeMs
+
+== sam_server 运行日志摘要（完整日志 /tmp/sam_bench_run/server.log，因 .gitignore *.log 规则不入库）==
+请求计数: 146 POST /predict | 6 POST /set_image | 0 POST /unload_image | 1 GET /health
+首 3 行:
+SAM_SERVER_PORT=56615
+INFO:     Started server process [217443]
+INFO:     Waiting for application startup.
+末 3 行:
+INFO:     127.0.0.1:40114 - "POST /predict HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43876 - "POST /predict HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43892 - "POST /predict HTTP/1.1" 200 OK

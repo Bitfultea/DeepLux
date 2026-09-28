@@ -1,0 +1,38 @@
+== F1 证据：真实 sam_server 对 bench 违约 prompt 的原始响应（未 clamp）==
+图像: /tmp/sam_bench_run/synth_3000_v2.png (3000x3000, sha256=a6a01c528d83b67d...)
+违约索引来自 stage0_cpu_vitb_synth3000.json violations: [23, 56, 66, 75, 92]
+
+embedding_id: 2115bf2c72c5e001
+predict[23] (pos) {'points_pos': [[221, 1653]]}
+  顶层 score = 1.000424861907959  (>1 违反契约 [0,1])
+  candidates scores = [1.000425, 0.720249, 0.554345]
+  bbox = [0.0, 1502.0, 249.0, 247.0]
+
+predict[56] (posneg) {'points_pos': [[1612, 716]], 'points_neg': [[693, 1949]]}
+  顶层 score = 1.0014197826385498  (>1 违反契约 [0,1])
+  candidates scores = [1.00142, 0.911051, 0.501985]
+  bbox = [1503.0, 503.0, 247.0, 245.0]
+
+predict[66] (posneg) {'points_pos': [[2882, 1026]], 'points_neg': [[1963, 2259]]}
+  顶层 score = 1.00023353099823  (>1 违反契约 [0,1])
+  candidates scores = [1.000234, 0.686931, 0.462905]
+  bbox = [2508.0, 1002.0, 492.0, 245.0]
+
+predict[75] (posneg) {'points_pos': [[1225, 1025]], 'points_neg': [[306, 2258]]}
+  顶层 score = 1.000590443611145  (>1 违反契约 [0,1])
+  candidates scores = [1.00059, 0.739741, 0.513639]
+  bbox = [755.0, 1002.0, 494.0, 246.0]
+
+predict[92] (pos) {'points_pos': [[584, 712]]}
+  顶层 score = 1.0024482011795044  (>1 违反契约 [0,1])
+  candidates scores = [1.002448, 0.795558, 0.47872]
+  bbox = [501.0, 501.0, 247.0, 248.0]
+
+== 对照：v1 高频斜纹图（已废弃生成器）点 prompt 同样越界 ==
+score=1.0133894681930542 cand=[1.0133894681930542, 1.005773901939392, 0.37185853719711304] bbox=[0,0,3000,3000]（全图退化掩膜）
+score=1.0137947797775269 cand=[1.0137947797775269, 1.0019553899765015, 0.48917356133461] bbox=[0,0,3000,3000]
+
+== 源码证据（~/.deeplux/sam_env segment_anything/modeling/mask_decoder.py）==
+L147: iou_pred = self.iou_prediction_head(iou_token_out)  # 纯 MLP，无 sigmoid/clamp
+L161: sigmoid_output: bool = False  # 该开关仅作用于 mask 分支（L174-175），与 iou_pred 无关
+sam_server.py /predict 直接透传 float(scores[best])；DeepLux 批3 严格契约 score∈[0,1] 拒绝 → 失败关闭

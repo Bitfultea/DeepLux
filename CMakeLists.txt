@@ -189,6 +189,9 @@ add_custom_target(stage-sam-server ALL
 )
 add_dependencies(DeepLux stage-sam-server)
 
+# ========== SAM 性能基线工具（原生推理计划·阶段0）==========
+add_subdirectory(tools/sam_bench)
+
 # ========== 测试 ==========
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
