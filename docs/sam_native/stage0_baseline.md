@@ -1,6 +1,6 @@
 # SAM 原生推理计划 · 阶段0 基线报告
 
-## 结论摘要（阶段0 状态：**部分完成，CUDA 基线项未通过**）
+## 结论摘要（阶段0 状态：**CUDA 基线已补测（2026-09-29 驱动修复后）；余 G1 生产机台确认 / G2 真实图集两项缺口**）
 
 | 项 | 状态 |
 |---|---|
@@ -9,9 +9,9 @@
 | 路径开销基线（内嵌 stub，无 Python，小载荷口径） | ✅ P95 0.545ms（修复版 bench 复测；首测 0.43ms） |
 | 隔离脏工作区 | ✅ 34 个用户 WIP 文件未混入；阶段0 仅提交 bench/构建接入/文档 |
 | 基线提交 + 定向测试 + 全量 CTest 证据 | ✅ c2ee793；隔离树 75/76（唯一失败为既有 test_runengine 环境项）+ SAM 定向 9 套件全绿 |
-| **CUDA 基线** | ❌ **取不到**：RTX 3090 在 PCI 总线可见但驱动未加载（nvidia-smi 失败、torch.cuda.is_available()=False）→ 按计划书如实标记**阶段0（该项）未通过**，待目标机驱动可用后补测 |
-| 目标机（生产机台）清单 | ❌ 未提供（缺口 G1） |
-| 原版 SAM 测试图集（真实工业图） | ❌ 本机缺失（缺口 G2）→ 基线用确定性合成图 v2 替代 |
+| **CUDA 基线** | ✅ **已补测**（2026-09-29 驱动修复后）：RTX 3090 / 驱动 580.178.04 / CUDA 13.0；首次编码 395.1ms（CPU 的 7.9×加速）、重复预测 P95 2700.1ms（与 CPU 几乎持平→F2 实测归因）；见 B 节 |
+| 目标机（生产机台）清单 | ⚠️ 本机清单已补全（GPU/驱动/系统，见环境节）；本机是否即「指定生产机台」待用户确认（G1） |
+| 原版 SAM 测试图集（真实工业图） | ❌ 本机缺失（缺口 G2）→ 基线用确定性合成图 v2 替代；CUDA 基线同口径，真实图到位后复跑 |
 
 ## 基线提交与工作区隔离
 
@@ -23,7 +23,7 @@
 
 - CPU：Intel i9-12900K（16C/24T）；内存 62 GiB
 - OS：Ubuntu 22.04.5 LTS，kernel 6.8.0-138-generic，x86_64
-- GPU：**NVIDIA GeForce RTX 3090（GA102，lspci 0000:01:00.0 在位）——驱动未加载**：`nvidia-smi` 报 "couldn't communicate with the NVIDIA driver"；sam_env torch 2.13.0+cu130 `cuda_available=False`
+- GPU：**NVIDIA GeForce RTX 3090 24GB（GA102，capability 8.6）**。首测时驱动未加载（nvidia-smi 失败、cuda_available=False）；**2026-09-29 用户修复驱动后**：nvidia-smi 正常（Driver 580.178.04 / CUDA 13.0），sam_env torch 2.13.0+cu130 `cuda_available=True`——CUDA 基线据此补测（B 节）
 - 工具链：g++ 11.4.0、cmake 3.29.8、Qt 5.15.3（系统 qtbase5-dev）
 - 原始输出：`stage0/env_evidence.txt`
 
@@ -108,9 +108,20 @@
 
 **解读（复核二轮 P1-3 修正归因口径）**：与 0.5s 目标差 ~5.8×（P95 2885ms）。C 项 stub 的 P95 0.43ms **仅证明**客户端+HTTP+严格解析在**小载荷**下的开销 <1ms——stub 返回 2×2 掩膜 PNG（SamTestServer `tinyMaskPngBase64`），而真实路径需传输并解析 3 个 3000² 全尺寸掩膜的 PNG base64（载荷量级差约 10⁶），两者不可直接相减归因。「耗时主体在服务端（ViT-B CPU 解码器推理 + `sam_server` 纯 Python 逐像素 `_encode_rle` + 全尺寸掩膜 PNG base64 编码）」目前是**待剖析的推测**（依据：`_encode_rle` 为逐像素 Python 循环，3000²×3 候选≈27M 次迭代，数量级估算与 2.8s 相符；传输/解析段占比未单独测量），阶段2 以剖析数据确认，不作为已测结论。CPU 路径按计划不承诺 0.5s；该基线的意义是量化旧路径并为阶段2/4 提供对照。
 
-### B. CUDA（目标机）
+### B. CUDA 基线（本机 RTX 3090，驱动修复后 2026-09-29 补测）
 
-**未获取**——本机驱动未加载（F5）。阶段0 该项**未通过**。目标机命令模板（README）：`sam_bench --server <生产 sam_server> --image <真实3000²图> --runs 100 --warmup 3 --json … --tag …`。
+命令：`sam_bench --server http://127.0.0.1:38739 --image <synth_3000_v2> --runs 100 --warmup 3 --timeout 300000 --on-error continue`，exit 0。环境：`DEEPLUX_SAM_DEVICE=cuda` 显式指定；驱动 580.178.04 / CUDA 13.0 / torch 2.13.0+cu130（cuda_available=True，capability 8.6）；服务进程 GPU 显存 658MiB（加载）→ 峰值 4097MiB（运行）。同图同配方（sha256 与 A1/A2/A3 一致）。
+
+| 指标 | CUDA | CPU（A3） | 倍率 |
+|---|---|---|---|
+| 首次编码 set_image | **395.1 ms** | 3129.9 ms | **7.9× 加速**（含读图/resize/上传+ViT-B GPU 编码） |
+| 重复预测 P50 / P95（有效 95/100） | 2624.9 / **2700.1 ms** | 2734.2 / 2826.5 ms | **≈持平（-4%）** |
+| F1 违约 | 5/103，索引与 CPU 完全一致，确证原始值 1.000432253 / 1.001420498 / 1.000236034 / 1.000603557 / 1.002443671（与 CPU 值差 <1e-5，设备无关性佐证） | 同左 | — |
+| retryEvents | 0 | 0 | — |
+
+**关键归因（天然 A/B 实验，F2 由推测升级为实测结论）**：设备 CPU→CUDA 只改变推理段，首次编码 -2735ms（ViT-B 编码确在 GPU 上加速 7.9×），而重复预测仅 -110ms——即 **~2.6s 的 predict 耗时中解码器推理仅占约 0.1s，其余 ~2.5s 为设备无关的 sam_server Python 后处理**（`_encode_rle` 纯 Python 逐像素 ×3 候选 + 全尺寸掩膜 PNG base64 + MB 级 JSON 序列化 + HTTP 传输）。佐证：运行期 GPU util 采样（2s 间隔）最大仅 16%、多数 2-4%——GPU 绝大部分时间空闲等待服务端后处理。阶段2 原生 C++ 消除该段后，CUDA 路径 P95≤0.5s 的预算充足（编码 395ms 仅首次；重复预测 = GPU 解码 ~0.1s + C++ 后处理）。原始 JSON：`stage0/stage0_cuda_vitb_synth3000.json`
+
+> 注：本组仍为合成图 v2 口径；生产机台/真实图（G1/G2）到位后以同命令复跑即得验收数据。0.5s 目标为「点选→候选显示」交互口径，本数据为 HTTP 客户端至预测结果段（GUI 段另计，G4）。
 
 ### C. 路径开销（内嵌 stub，无 Python；同合成图 v2，runs=100 warmup=3，on-error=fail）
 
@@ -122,10 +133,10 @@
 ## 关键发现与风险
 
 - **F1（阻塞级，需阶段2/3 裁决）**：官方 segment_anything `MaskDecoder.iou_prediction_head` 为纯 MLP，**无 sigmoid/clamp**（`sigmoid_output=False` 仅作用于 mask 分支；源码证据见 `stage0/env_evidence.txt` 末节），IoU score 可 >1。A3 复测中 5 例违约原始值已**经生产路径内二次复核取回并确证为数值越界**（1.000425 / 1.001420 / 1.000234 / 1.000590 / 1.002448，均略超 1；v1 斜纹图旁路 curl 另测得 1.0134/1.0138 伴全图退化掩膜）。`sam_server` 直接透传 `float(scores[best])`；DeepLux 批3 严格契约 score∈[0,1] 拒绝整次预测 → **现有生产路径对真实模型输出以约 5%（本图集 5/103）概率失败关闭**。候选 score 同样受影响（批4 candidates 严格解析同口径）。裁决选项：服务端/导出侧 clamp（改变 score 语义）vs 客户端契约放宽（有限值 + clamp 用于展示、保留原值排序）。**阶段1「分数绝对差≤0.01」门禁须以未 clamp 原始值定义对比口径**。
-- **F2（推测，待阶段2 剖析确认）**：旧 CPU 路径 predict ~2.8s 的疑似大头是 `sam_server._encode_rle` 纯 Python 逐像素循环（3000²×3 候选≈27M 像素迭代，数量级估算）+ 全尺寸掩膜 PNG base64 编码与传输；**归因未经分段剖析，不作为已测结论**（复核二轮 P1-3）。若成立，阶段2 原生实现有明确优化空间（RLE C++ 化/掩膜按需编码）。
+- **F2（已由推测升级为实测归因，CUDA 补测 A/B 实验）**：设备 CPU→CUDA 后首次编码 3130→395ms（7.9×），而重复预测 P50 仅 2734→2625ms（-4%）——**~2.6s predict 中解码器推理仅约 0.1s，其余 ~2.5s 为设备无关的服务端 Python 后处理**（`_encode_rle` 纯 Python 逐像素 ×3 候选 + 全尺寸掩膜 PNG base64 + MB 级 JSON + HTTP 传输）；运行期 GPU util 采样最大 16%（多数 2-4%）佐证 GPU 长期空闲等待。阶段2 原生 C++（RLE/掩膜编码 C++ 化、按需编码）为 P95≤0.5s 的主要收益来源；该归因基于同图同配方 A/B 对照，非分段剖析——阶段2 仍以剖析数据细化各子段占比。
 - **F3**：sam_env 版本漂移超出 requirements.txt 锁定（见上）。
 - **F4**：隔离树 `test_runengine::testMultipleBreakpointsCanResumeAndStop` 崩溃为既有环境/布局敏感项（基线 c51dce3 隔离树同签名 28/1、主工作区 76/76 通过、复核方历轮无法复现）——非阶段0 引入。
-- **F5**：GPU 驱动未加载（卡在位）——CUDA 基线与阶段4 的前置阻塞；需装/修驱动或换目标机。
+- **F5（已解决，2026-09-29）**：GPU 驱动未加载曾阻塞 CUDA 基线；用户修复驱动（580.178.04 / CUDA 13.0）后 G3 已补测（B 节）。阶段4 的本机前置条件就绪。
 - **F6**：bench 两次 fail 模式全量运行均正确失败关闭（v1 图 predict[0]、v2 图 predict[23]，exit 4、无部分 JSON）——工具失败语义实测有效。
 - **F7（复核二轮新观察，既有客户端行为，低优先）**：`SamBackendClient` 对 invalid_embedding 的自动重试**无次数上限**——每轮重试在 embedding 就绪时清除 `m_imageRetryPending`，若服务器持续返回 invalid_embedding 将无限循环「重 setImage→重 predict」（bench inject=2 实测 retryEvents=2 后成功；正常场景=服务器重启后自愈，属合理设计，但持续故障场景仅受单请求超时约束、无总重试预算）。阶段3 接入本地原生后端时该链路语义会重新设计，届时一并处置；本阶段不改动产品代码。
 
@@ -133,7 +144,7 @@
 
 - 隔离树 @ c55d290（≡c2ee793）：`ctest` → **exit 8**，75/76（唯一失败 test_runengine，单跑 exit 134，28 passed/1 failed）；SAM 定向 9 套件全绿 exit 0（25/16/57/16/12/15/8/5/8）——明细 `stage0/ctest_evidence.txt`
 - 主工作区（含用户 WIP）：全量 CTest **76/76**（复核二轮修改后复跑，见提交信息）
-- bench（复核三轮修正版）：arg guards **22/22**（exit 0）；retry regression **9/9**（inject=1→retryEvents=1、inject=2→retryEvents=2、continue 非 F1 exit 4、fail 对照、score=missing/string 协议故障 continue 下 exit 4×2、missing fail 对照、outrange 确证对照 violations=3 全部 confirmed rawScore=1.5）；stub 冒烟与 3000² 复测 exit 0；真实后端 probe runs=10 exit 0；全量 fail 模式 exit 4×2（F6）；continue 模式 exit 0×3（A1/A2/A3）
+- bench（复核三轮修正版）：arg guards **22/22**（exit 0）；retry regression **9/9**（inject=1→retryEvents=1、inject=2→retryEvents=2、continue 非 F1 exit 4、fail 对照、score=missing/string 协议故障 continue 下 exit 4×2、missing fail 对照、outrange 确证对照 violations=3 全部 confirmed rawScore=1.5）；stub 冒烟与 3000² 复测 exit 0；真实后端 probe runs=10 exit 0；全量 fail 模式 exit 4×2（F6）；continue 模式 exit 0×4（A1/A2/A3/**B-CUDA**：CUDA 补测中二次复核对 5 例违约逐一确证，GPU 原始值与 CPU 差 <1e-5）
 - bench 负向验证：二轮 MUT-A（predict 完成信号回归为 embeddingReady）→ retry 回归 3 用例红（retryEvents=0）；MUT-B（continue 放宽回“所有错误放行”）→ 非 F1 用例红（exit 0≠4）；三轮 MUT-C（旁路二次复核门禁 `if (false && …)`）→ **score=missing/string 两反例红（exit 0≠4，即审核指出的误分类复现）**，确证对照与 fail 对照保持绿；三次突变均还原 cmp 逐字节一致后全绿
 - `tests/helpers/SamTestServer.h` 新增 `predictInvalidEmbeddingOnce`（默认 0，向后兼容）与一次性注入分支——既有测试全量复跑不受影响（见上）
 - sam_server.py 本阶段零改动
@@ -142,7 +153,8 @@
 
 - `stage0_cpu_vitb_synth3000.json` —— CPU 真实基线原始数据（A1 首测/探索，逐次延迟数组+violations；复核方已独立核对）
 - `stage0_cpu_vitb_synth3000_fixedbench.json` —— CPU 真实基线原始数据（A2 复测，信号隔离版 bench）
-- `stage0_cpu_vitb_synth3000_a3.json` —— CPU 真实基线原始数据（**A3 复测/当前主证据**，二次复核版 bench；violations 含 confirmedRawScore 与 recheckDetail）
+- `stage0_cpu_vitb_synth3000_a3.json` —— CPU 真实基线原始数据（**A3 复测/CPU 主证据**，二次复核版 bench；violations 含 confirmedRawScore 与 recheckDetail）
+- `stage0_cuda_vitb_synth3000.json` —— **CUDA 基线原始数据**（B 节，驱动修复后补测；GPU 显存/util 证据见 server_health_preload.txt 末节）
 - `stage0_dev_stub_synth3000.json` / `stage0_dev_stub_synth3000_fixedbench.json` —— 路径开销原始数据（首测/修复版复测）
 - `f1_raw_scores.txt` —— F1 违约 prompt 原始 score 复现（5 例）+ v1 图对照 + 源码证据摘录
 - `env_evidence.txt` —— 硬件/系统/工具链/Python 环境/权重/F1 源码 grep/requirements 对照
@@ -153,9 +165,9 @@
 
 | # | 缺口 | 责任/时机 |
 |---|---|---|
-| G1 | 生产机台清单（GPU/驱动/系统）+ 生产机端到端基线 | 用户提供机台后按 README 命令执行 |
-| G2 | 真实工业测试图集（1×3000² + 细小缺陷样本） | 用户提供；阶段1 精度门禁硬依赖 |
-| G3 | **CUDA 基线 → 阶段0 该项未通过** | 目标机驱动可用后补测（F5） |
+| G1 | 「指定生产机台」的确认：本机（i9-12900K + RTX 3090 + 驱动 580.178.04）清单已补全；若另有生产机台，其清单+端到端基线按 README 命令执行 | 用户确认本机即目标机则 G1 关闭 |
+| G2 | 真实工业测试图集（1×3000² + 细小缺陷样本） | 用户提供；阶段1 精度门禁复跑与生产验收硬依赖 |
+| G3 | ~~CUDA 基线~~ **已关闭**（2026-09-29 补测，B 节：首次编码 395.1ms / 重复预测 P95 2700.1ms，合成图口径；真实图到位后复跑） | — |
 | G4 | GUI 段时间计时（点选→候选显示） | 阶段3/4 接入时补测量设施 |
 | G5 | F1 契约裁决（clamp vs 放宽） | 阶段2/3 设计决策，需复核方确认 |
 | G6 | 阶段1 导出链环境（sam_env 有 torch 无 onnx；conda openpcdet/yolo 环境有 onnx 1.15/1.17 但无 segment_anything） | 阶段1 开工时确定导出环境并记录 |

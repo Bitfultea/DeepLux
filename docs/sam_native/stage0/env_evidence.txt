@@ -74,3 +74,8 @@ pillow>=10.0,<11.0
 # torchvision>=0.16,<0.20
 # segment-anything==1.0
 # opencv-python>=4.8,<4.10
+
+== 驱动修复后 GPU 状态（2026-09-29T14:45:59+08:00，阶段0 G3 补测前置核查）==
+nvidia-smi: Driver 580.178.04, CUDA Version 13.0, RTX 3090 24GB, capability (8,6)
+torch(sam_env 2.13.0+cu130): cuda_available=True, device=NVIDIA GeForce RTX 3090
+基线前 GPU 状态: 无计算进程, util 10%, mem 673MiB（桌面占用）

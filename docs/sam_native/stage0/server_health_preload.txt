@@ -23,3 +23,9 @@ INFO:     127.0.0.1:43892 - "POST /predict HTTP/1.1" 200 OK
 == 复核三轮 A3 复测（二次复核版 bench）服务器日志摘要（完整日志 /tmp/sam_bench_run/server_a3.log，*.log 不入库）==
 端口: 32773（--port 0 自动分配）; GET /health 预热: PRELOAD_MS=1742
 请求计数: 108 POST /predict（103 基线 + 5 二次复核重放）| 1 POST /set_image | 1 GET /health
+
+== 阶段0 P0 补测：CUDA 基线（驱动修复后，2026-09-29T14:45:59+08:00）==
+启动命令: DEEPLUX_SAM_MODEL=~/Downloads/sam_vit_b_01ec64.pth DEEPLUX_SAM_DEVICE=cuda ~/.deeplux/sam_env/bin/python sam_server.py --port 0
+端口: 38739; /health 预热: PRELOAD_MS=2116
+GPU 证据: nvidia-smi 驱动 580.178.04 / CUDA 13.0；服务进程 GPU 显存 658MiB（模型加载）→ 运行峰值 4097MiB（基线前空闲 673MiB）；util 采样(2s)最大 16%——GPU 大部分时间空闲等待服务端 Python 后处理（F2 佐证）
+请求计数: 108 POST /predict | 1 POST /set_image
