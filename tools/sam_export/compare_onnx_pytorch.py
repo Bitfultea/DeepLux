@@ -63,9 +63,13 @@ def load_image_rgb(path: str) -> np.ndarray:
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
 
-def recipe_prompts(n: int, w: int, h: int):
-    """阶段0 bench 同配方（i%10：0-3 正点 / 4-6 正负点 / 7-9 框选），
-    保证与性能基线同一坐标序列。返回 [(kind, points_pos, points_neg, box_xywh)]。"""
+def recipe_prompts(n: int, w: int, h: int, neg_seq: int = 103):
+    """阶段0 bench 同配方（i%10：0-3 正点 / 4-6 正负点 / 7-9 框选）。
+    复核二轮 P2-3：负点偏移必须用阶段0 的**序列总长** neg_seq=103
+    （runs=100+warmup=3，bench buildPromptRecipe 内 (i+runs) 的 runs 即
+    103），而非本脚本的取用条数 n——否则 posneg 负点坐标与阶段0 序列
+    不一致（初版 n=12 时 i=4 负点 (2132,2276)≠阶段0 (2489,2577)）。
+    返回 [(kind, points_pos, points_neg, box_xywh)]。"""
     span_x, span_y = max(1, w - 200), max(1, h - 200)
     box_w, box_h = max(8, w // 8), max(8, h // 8)
     span_bx, span_by = max(1, w - box_w - 100), max(1, h - box_h - 100)
@@ -76,7 +80,7 @@ def recipe_prompts(n: int, w: int, h: int):
         if kind <= 3:
             out.append(("pos", pos, [], None))
         elif kind <= 6:
-            neg = [[100 + ((i + n) * 127) % span_x, 100 + ((i + n) * 311) % span_y]]
+            neg = [[100 + ((i + neg_seq) * 127) % span_x, 100 + ((i + neg_seq) * 311) % span_y]]
             out.append(("posneg", pos, neg, None))
         else:
             out.append(("box", [], [], [50 + (i * 211) % span_bx, 50 + (i * 97) % span_by, box_w, box_h]))
@@ -139,15 +143,21 @@ def run_case(predictor, dec_session, embedding_ort, orig_hw, kind, pos, neg, box
     )
     masks_pt = masks_pt > 0
 
-    # ONNX 侧：坐标/框变换直接调用安装版 predictor 同款变换对象
-    # （predict() 内部即 transform.apply_coords/apply_boxes(coords, original_size)）
+    # ONNX 侧坐标变换走 sam_package_common 参考实现（阶段2 C++ 的对照基准，
+    # 复核二轮 P1-1 要求纳入门禁），并与安装版变换逐值对照（transformParity，
+    # max|Δ|>1e-9 即判失败——参考实现错一个分量都会被门禁抓住）
+    parity = 0.0
     if pos or neg:
-        pts_ox = predictor.transform.apply_coords(np.array(pos + neg, dtype=np.float64), (h, w))
+        raw = np.array(pos + neg, dtype=np.float64)
+        pts_ox = C.scale_coords(raw, (h, w))
+        parity = max(parity, float(np.abs(pts_ox - predictor.transform.apply_coords(raw, (h, w))).max()))
     else:
         pts_ox = np.zeros((0, 2))
     labels_ox = point_labels if point_labels is not None else np.zeros((0,), dtype=np.int64)
     if box_xyxy is not None:
-        boxes_ox = predictor.transform.apply_boxes(box_xyxy.reshape(1, 4).astype(np.float64), (h, w))
+        raw_box = box_xyxy.reshape(1, 4).astype(np.float64)
+        boxes_ox = C.scale_boxes(raw_box, (h, w))
+        parity = max(parity, float(np.abs(boxes_ox - predictor.transform.apply_boxes(raw_box, (h, w))).max()))
     else:
         boxes_ox = np.zeros((0, 4))
     masks_ox, scores_ox = C.run_decoder(dec_session, embedding_ort, pts_ox.astype(np.float32), labels_ox,
@@ -156,6 +166,9 @@ def run_case(predictor, dec_session, embedding_ort, orig_hw, kind, pos, neg, box
     comp = compare_candidate_lists(scores_pt, masks_pt, scores_ox, masks_ox)
     comp["kind"] = kind
     comp["prompt"] = {"pos": pos, "neg": neg, "box": box_xywh}
+    comp["transformParityMaxAbsDiff"] = parity
+    if parity > 1e-9:
+        comp["pass"] = False
     return comp
 
 

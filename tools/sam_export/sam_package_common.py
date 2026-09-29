@@ -31,8 +31,18 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+REQUIRED_SEMANTIC_FIELDS = ("preprocessing", "coordinateTransform", "semantics")
+
+
 def load_manifest(package_dir: str) -> dict:
-    """严格加载并校验 manifest（路径/格式版本/family/variant/文件与哈希）——失败关闭。"""
+    """严格加载并校验 manifest——失败关闭。校验面（复核二轮 P1-2 补全）：
+    1) 格式版本/family/variant（不支持项明确报错）；
+    2) 必需语义字段：preprocessing/coordinateTransform/semantics 必须为
+       非空对象——调用方（阶段2 C++ 导入器）依赖这些契约执行预处理/坐标
+       变换/候选选择，缺失即不可安全使用；
+    3) files.encoder/decoder：file 必须为**包内相对文件名**（拒绝绝对路径、
+       路径分隔符与 .. 穿越——保证包自包含），文件存在、SHA-256 与大小
+       逐字节核对。"""
     man_path = os.path.join(package_dir, "manifest.json")
     if not os.path.isfile(man_path):
         raise PackageError(f"模型包缺少 manifest.json：{package_dir}")
@@ -52,14 +62,25 @@ def load_manifest(package_dir: str) -> dict:
     variant = manifest.get("variant")
     if variant not in SUPPORTED_VARIANTS:
         raise PackageError(f"不支持的模型变体：{variant!r}（首版仅验收 {SUPPORTED_VARIANTS}；vit_l/vit_h 请继续使用显式远程模式）")
+    # 必需语义字段（缺失/非对象/空对象均拒绝）
+    for field in REQUIRED_SEMANTIC_FIELDS:
+        value = manifest.get(field)
+        if not isinstance(value, dict) or not value:
+            raise PackageError(f"manifest 缺少必需语义字段 {field!r}（必须为非空对象；调用方依赖该契约）")
     files = manifest.get("files")
     if not isinstance(files, dict) or "encoder" not in files or "decoder" not in files:
         raise PackageError("manifest.files 必须包含 encoder 与 decoder")
     for name in ("encoder", "decoder"):
         entry = files[name]
-        path = os.path.join(package_dir, entry.get("file", ""))
-        if not entry.get("file") or not os.path.isfile(path):
-            raise PackageError(f"模型包缺少 {name} 文件：{entry.get('file')!r}")
+        if not isinstance(entry, dict):
+            raise PackageError(f"manifest.files.{name} 必须为对象")
+        fname = entry.get("file")
+        # 包自包含：仅允许包目录内的裸文件名（拒绝绝对路径/子目录/.. 穿越）
+        if not isinstance(fname, str) or not fname or fname != os.path.basename(fname) or os.path.isabs(fname):
+            raise PackageError(f"manifest.files.{name}.file 必须为包内相对文件名（拒绝绝对路径与穿越）：{fname!r}")
+        path = os.path.join(package_dir, fname)
+        if not os.path.isfile(path):
+            raise PackageError(f"模型包缺少 {name} 文件：{fname!r}")
         actual = sha256_file(path)
         if actual != entry.get("sha256"):
             raise PackageError(f"{name} SHA-256 不符：manifest={entry.get('sha256')} 实际={actual}")
@@ -112,15 +133,34 @@ PIXEL_MEAN = [123.675, 116.28, 103.53]
 PIXEL_STD = [58.395, 57.12, 57.375]
 
 
-def scale_coords(coords: np.ndarray, orig_hw: tuple, target: int = 1024) -> np.ndarray:
-    """ResizeLongestSide.apply_coords 口径（纯缩放，无偏移）。coords [...,2] (x,y)。"""
+def get_preprocess_shape(orig_hw: tuple, target: int = 1024) -> tuple:
+    """安装版 ResizeLongestSide.get_preprocess_shape 精确复刻：
+    scale = target / max(h,w)；new = int(old*scale + 0.5)——**不得再 round()**
+    （复核二轮 P1-1：int(round(x+0.5)) 与 int(x+0.5) 在小数部分 ≥0.5 时差 1，
+    如 395→404 vs 405）。"""
     h, w = orig_hw
-    scale = target / max(h, w)
-    new_h, new_w = int(round(h * scale + 0.5)), int(round(w * scale + 0.5))
+    scale = target * 1.0 / max(h, w)
+    return (int(h * scale + 0.5), int(w * scale + 0.5))
+
+
+def scale_coords(coords: np.ndarray, orig_hw: tuple, target: int = 1024) -> np.ndarray:
+    """安装版 ResizeLongestSide.apply_coords 精确复刻（纯缩放，无偏移）。
+    coords [...,2] (x,y)。逐值对照安装版变换由 compare 门禁强制（transformParity）。"""
+    h, w = orig_hw
+    new_h, new_w = get_preprocess_shape(orig_hw, target)
     out = np.array(coords, dtype=np.float64).copy()
     out[..., 0] = out[..., 0] * (new_w / w)
     out[..., 1] = out[..., 1] * (new_h / h)
     return out
+
+
+def scale_boxes(boxes: np.ndarray, orig_hw: tuple, target: int = 1024) -> np.ndarray:
+    """安装版 ResizeLongestSide.apply_boxes 精确复刻：reshape(-1,2,2) 后对
+    **全部四个分量**逐点 apply_coords（复核二轮 P1-1：初版直接对 [x1,y1,x2,y2]
+    调 scale_coords 只缩放了前两个值——640×480 框 [50,50,200,200] 安装版得
+    [80,80,320,320]，初版误得 [80,80,200,200]）。"""
+    b = np.array(boxes, dtype=np.float64).reshape(-1, 2, 2)
+    return scale_coords(b, orig_hw, target).reshape(-1, 4)
 
 
 def compute_input_size(orig_hw: tuple, target: int = 1024) -> tuple:

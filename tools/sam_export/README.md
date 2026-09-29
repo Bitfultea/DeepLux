@@ -49,9 +49,25 @@ $PY compare_onnx_pytorch.py --package ~/Data/Models/sam1_vit_b_onnx \
     --json compare_report.json
 ```
 
-退出码（三个脚本一致口径）：`0` 通过；`2` 参数/前置失败；`3` 导出失败
-（仅 export）；`4` 校验/门禁不通过。**失败关闭**：export 先写临时目录、
-全部成功后原子落位，失败不留半成品包；compare 任一门禁不过即 exit 4。
+```bash
+# 4) manifest 拒绝用例回归（复核二轮 P1-2：必需语义字段缺失/绝对路径/
+#    .. 穿越/family/variant/哈希/大小/文件缺失均须失败关闭）
+$PY check_manifest_guards.py     # 21 用例（1 正向对照 + 20 拒绝）
+```
+
+退出码（脚本一致口径）：`0` 通过；`1` 回归存在失败（guards）；`2` 参数/
+前置失败；`3` 导出失败（仅 export）；`4` 校验/门禁不通过。**失败关闭**：
+export 先写临时目录、全部成功后原子落位，失败不留半成品包；compare
+任一门禁不过即 exit 4；load_manifest 对缺 `preprocessing/
+coordinateTransform/semantics`、`files.*.file` 绝对路径/子目录/`..` 穿越
+（包自包含）一律拒绝。
+
+compare 门禁额外包含 **transformParity**：ONNX 侧坐标/框变换走
+`sam_package_common` 参考实现（阶段2 C++ 的对照基准），每 case 与安装版
+`ResizeLongestSide.apply_coords/apply_boxes` 逐值对照，max|Δ|>1e-9 判失败
+——参考实现本身在门禁内被验证（复核二轮 P1-1）。prompt 配方与阶段0
+bench 序列严格对齐：负点偏移用阶段0 序列总长 `neg_seq=103`
+（runs=100+warmup=3），**不是** compare 的取用条数。
 
 ## 门禁定义（计划书阶段1，compare_onnx_pytorch.py）
 

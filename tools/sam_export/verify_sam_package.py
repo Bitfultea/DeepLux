@@ -78,6 +78,11 @@ def main() -> int:
         manifest = C.load_manifest(args.package)
         record("manifest+sha256", True,
                f"formatVersion={manifest['formatVersion']} family={manifest['family']} variant={manifest['variant']}")
+        # 复核二轮 P1-2：必需语义字段与包内相对路径已由 load_manifest 强制，
+        # 此处显式记录逐项在场（preprocessing/coordinateTransform/semantics）
+        record("manifest-semantic-fields", True,
+               "必需语义字段齐备: " + ", ".join(C.REQUIRED_SEMANTIC_FIELDS)
+               + "；files.*.file 均为包内裸文件名（拒绝绝对路径/子目录/.. 穿越）")
     except C.PackageError as exc:
         record("manifest+sha256", False, str(exc))
         _finish(report, args.json)
@@ -136,7 +141,7 @@ def main() -> int:
         }
         for name, (pts, labels, boxes) in cases.items():
             pts_s = C.scale_coords(pts, (h, w)).astype(np.float32) if pts.size else pts
-            boxes_s = C.scale_coords(boxes, (h, w)).astype(np.float32) if boxes.size else boxes
+            boxes_s = C.scale_boxes(boxes, (h, w)).astype(np.float32) if boxes.size else boxes
             masks, ious = C.run_decoder(dec, emb, pts_s, labels, boxes_s, (h, w))
             ok = (masks.shape == (3, h, w) and np.isfinite(ious).all() and ious.shape == (3,)
                   and bool((masks.sum(axis=(1, 2)) >= 0).all()))

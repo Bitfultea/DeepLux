@@ -7,6 +7,11 @@
       "detail": "formatVersion=1 family=sam1 variant=vit_b"
     },
     {
+      "name": "manifest-semantic-fields",
+      "pass": true,
+      "detail": "必需语义字段齐备: preprocessing, coordinateTransform, semantics；files.*.file 均为包内裸文件名（拒绝绝对路径/子目录/.. 穿越）"
+    },
+    {
       "name": "onnx.checker",
       "pass": true,
       "detail": ""
@@ -29,12 +34,12 @@
     {
       "name": "decoder-smoke[box-only]",
       "pass": true,
-      "detail": "masks=(3, 480, 640) ious=[0.8991, 0.8924, 0.6514] fg=[4519, 2921, 49]"
+      "detail": "masks=(3, 480, 640) ious=[0.9008, 0.8561, 0.6094] fg=[16943, 13953, 5384]"
     },
     {
       "name": "decoder-smoke[mixed]",
       "pass": true,
-      "detail": "masks=(3, 480, 640) ious=[0.9264, 0.8969, 0.5737] fg=[11726, 11610, 31]"
+      "detail": "masks=(3, 480, 640) ious=[0.9327, 0.9057, 0.6542] fg=[34901, 35705, 4314]"
     }
   ],
   "errors": [],

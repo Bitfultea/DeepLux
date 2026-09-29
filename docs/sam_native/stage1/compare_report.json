@@ -123,7 +123,8 @@
             ],
             "neg": [],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -214,7 +215,8 @@
             ],
             "neg": [],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -305,7 +307,8 @@
             ],
             "neg": [],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -396,7 +399,8 @@
             ],
             "neg": [],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -404,23 +408,23 @@
           "ranks": [
             {
               "rank": 0,
-              "ptIndex": 0,
-              "onnxIndex": 0,
-              "scorePt": 0.8784952163696289,
-              "scoreOnnx": 0.8784964084625244,
-              "scoreDelta": 1.1920928955078125e-06,
-              "iou": 0.9999959724353475,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.9040002226829529,
+              "scoreOnnx": 0.904000997543335,
+              "scoreDelta": 7.748603820800781e-07,
+              "iou": 0.9999885898152691,
               "bboxPt": [
                 0.0,
-                0.0,
+                4.0,
                 1280.0,
-                715.0
+                710.0
               ],
               "bboxOnnx": [
                 0.0,
-                0.0,
+                4.0,
                 1280.0,
-                715.0
+                710.0
               ],
               "bboxMaxDelta": 0.0,
               "scoreRawAbove1": false,
@@ -428,23 +432,23 @@
             },
             {
               "rank": 1,
-              "ptIndex": 1,
-              "onnxIndex": 1,
-              "scorePt": 0.8542978167533875,
-              "scoreOnnx": 0.8542892932891846,
-              "scoreDelta": 8.52346420288086e-06,
-              "iou": 0.9999922154453349,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.8746674060821533,
+              "scoreOnnx": 0.8746713399887085,
+              "scoreDelta": 3.933906555175781e-06,
+              "iou": 0.9999928171368748,
               "bboxPt": [
                 0.0,
-                3.0,
-                1273.0,
-                616.0
+                4.0,
+                1280.0,
+                712.0
               ],
               "bboxOnnx": [
                 0.0,
-                3.0,
-                1273.0,
-                616.0
+                4.0,
+                1280.0,
+                712.0
               ],
               "bboxMaxDelta": 0.0,
               "scoreRawAbove1": false,
@@ -454,21 +458,21 @@
               "rank": 2,
               "ptIndex": 2,
               "onnxIndex": 2,
-              "scorePt": 0.714859127998352,
-              "scoreOnnx": 0.7148456573486328,
-              "scoreDelta": 1.3470649719238281e-05,
-              "iou": 0.9999710283487607,
+              "scorePt": 0.7664996385574341,
+              "scoreOnnx": 0.7665013074874878,
+              "scoreDelta": 1.6689300537109375e-06,
+              "iou": 0.9999813708276476,
               "bboxPt": [
                 0.0,
                 4.0,
-                1274.0,
-                586.0
+                1280.0,
+                636.0
               ],
               "bboxOnnx": [
                 0.0,
                 4.0,
-                1274.0,
-                586.0
+                1280.0,
+                636.0
               ],
               "bboxMaxDelta": 0.0,
               "scoreRawAbove1": false,
@@ -487,12 +491,13 @@
             ],
             "neg": [
               [
-                1052,
-                396
+                729,
+                617
               ]
             ],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -502,21 +507,21 @@
               "rank": 0,
               "ptIndex": 1,
               "onnxIndex": 1,
-              "scorePt": 0.9355284571647644,
-              "scoreOnnx": 0.9355286955833435,
-              "scoreDelta": 2.384185791015625e-07,
-              "iou": 0.9999832457224235,
+              "scorePt": 0.9318855404853821,
+              "scoreOnnx": 0.9318846464157104,
+              "scoreDelta": 8.940696716308594e-07,
+              "iou": 0.9999742116501449,
               "bboxPt": [
-                102.0,
-                17.0,
-                1178.0,
-                701.0
+                0.0,
+                6.0,
+                1280.0,
+                711.0
               ],
               "bboxOnnx": [
-                102.0,
-                17.0,
-                1178.0,
-                701.0
+                0.0,
+                6.0,
+                1280.0,
+                711.0
               ],
               "bboxMaxDelta": 0.0,
               "scoreRawAbove1": false,
@@ -526,10 +531,10 @@
               "rank": 1,
               "ptIndex": 0,
               "onnxIndex": 0,
-              "scorePt": 0.9130467772483826,
-              "scoreOnnx": 0.9130534529685974,
-              "scoreDelta": 6.67572021484375e-06,
-              "iou": 0.9999986535178194,
+              "scorePt": 0.9153909683227539,
+              "scoreOnnx": 0.9153925180435181,
+              "scoreDelta": 1.5497207641601562e-06,
+              "iou": 0.9999963368822838,
               "bboxPt": [
                 0.0,
                 4.0,
@@ -550,21 +555,21 @@
               "rank": 2,
               "ptIndex": 2,
               "onnxIndex": 2,
-              "scorePt": 0.8827289342880249,
-              "scoreOnnx": 0.8827290534973145,
-              "scoreDelta": 1.1920928955078125e-07,
-              "iou": 0.9999642531591271,
+              "scorePt": 0.8215519189834595,
+              "scoreOnnx": 0.8215497732162476,
+              "scoreDelta": 2.1457672119140625e-06,
+              "iou": 0.9999605394260459,
               "bboxPt": [
-                120.0,
-                59.0,
-                1160.0,
-                658.0
+                0.0,
+                322.0,
+                1280.0,
+                396.0
               ],
               "bboxOnnx": [
-                120.0,
-                59.0,
-                1160.0,
-                658.0
+                0.0,
+                322.0,
+                1280.0,
+                396.0
               ],
               "bboxMaxDelta": 0.0,
               "scoreRawAbove1": false,
@@ -583,12 +588,13 @@
             ],
             "neg": [
               [
-                1179,
-                187
+                856,
+                408
               ]
             ],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -596,23 +602,23 @@
           "ranks": [
             {
               "rank": 0,
-              "ptIndex": 0,
-              "onnxIndex": 0,
-              "scorePt": 0.8333843946456909,
-              "scoreOnnx": 0.833382248878479,
-              "scoreDelta": 2.1457672119140625e-06,
-              "iou": 0.9999952114159842,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.8225498199462891,
+              "scoreOnnx": 0.8225479125976562,
+              "scoreDelta": 1.9073486328125e-06,
+              "iou": 0.9999602836879432,
               "bboxPt": [
                 0.0,
-                5.0,
-                1280.0,
-                711.0
+                151.0,
+                1274.0,
+                566.0
               ],
               "bboxOnnx": [
                 0.0,
-                5.0,
-                1280.0,
-                711.0
+                151.0,
+                1274.0,
+                566.0
               ],
               "bboxMaxDelta": 0.0,
               "scoreRawAbove1": false,
@@ -620,23 +626,23 @@
             },
             {
               "rank": 1,
-              "ptIndex": 1,
-              "onnxIndex": 1,
-              "scorePt": 0.7644307017326355,
-              "scoreOnnx": 0.7644324898719788,
-              "scoreDelta": 1.7881393432617188e-06,
-              "iou": 0.9999610349127181,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.8120811581611633,
+              "scoreOnnx": 0.8120788931846619,
+              "scoreDelta": 2.2649765014648438e-06,
+              "iou": 0.9999907896239588,
               "bboxPt": [
                 0.0,
-                111.0,
+                4.0,
                 1280.0,
-                603.0
+                713.0
               ],
               "bboxOnnx": [
                 0.0,
-                111.0,
+                4.0,
                 1280.0,
-                603.0
+                713.0
               ],
               "bboxMaxDelta": 0.0,
               "scoreRawAbove1": false,
@@ -646,21 +652,21 @@
               "rank": 2,
               "ptIndex": 2,
               "onnxIndex": 2,
-              "scorePt": 0.5109983682632446,
-              "scoreOnnx": 0.510981559753418,
-              "scoreDelta": 1.6808509826660156e-05,
-              "iou": 0.9999905685290678,
+              "scorePt": 0.5530872344970703,
+              "scoreOnnx": 0.5530844926834106,
+              "scoreDelta": 2.7418136596679688e-06,
+              "iou": 0.9999843721918782,
               "bboxPt": [
                 0.0,
-                172.0,
+                96.0,
                 1280.0,
-                537.0
+                621.0
               ],
               "bboxOnnx": [
                 0.0,
-                172.0,
+                96.0,
                 1280.0,
-                537.0
+                621.0
               ],
               "bboxMaxDelta": 0.0,
               "scoreRawAbove1": false,
@@ -679,12 +685,13 @@
             ],
             "neg": [
               [
-                226,
-                498
+                983,
+                199
               ]
             ],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -775,7 +782,8 @@
               160,
               90
             ]
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -866,7 +874,8 @@
               160,
               90
             ]
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -957,7 +966,8 @@
               160,
               90
             ]
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -1048,7 +1058,8 @@
             ],
             "neg": [],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -1139,7 +1150,8 @@
             ],
             "neg": [],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         }
       ],
       "pass": true,
@@ -1753,7 +1765,8 @@
             ],
             "neg": [],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -1844,7 +1857,8 @@
             ],
             "neg": [],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -1935,7 +1949,8 @@
             ],
             "neg": [],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -2026,7 +2041,8 @@
             ],
             "neg": [],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -2036,9 +2052,9 @@
               "rank": 0,
               "ptIndex": 2,
               "onnxIndex": 2,
-              "scorePt": 0.9901878833770752,
-              "scoreOnnx": 0.9901870489120483,
-              "scoreDelta": 8.344650268554688e-07,
+              "scorePt": 0.9999674558639526,
+              "scoreOnnx": 0.9999676942825317,
+              "scoreDelta": 2.384185791015625e-07,
               "iou": 1.0,
               "bboxPt": [
                 592.0,
@@ -2060,20 +2076,20 @@
               "rank": 1,
               "ptIndex": 1,
               "onnxIndex": 1,
-              "scorePt": 0.8597745299339294,
-              "scoreOnnx": 0.8597751259803772,
-              "scoreDelta": 5.960464477539062e-07,
+              "scorePt": 0.8838072419166565,
+              "scoreOnnx": 0.8838185667991638,
+              "scoreDelta": 1.1324882507324219e-05,
               "iou": 1.0,
               "bboxPt": [
-                503.0,
-                1255.0,
-                492.0,
+                502.0,
+                1256.0,
+                493.0,
                 243.0
               ],
               "bboxOnnx": [
-                503.0,
-                1255.0,
-                492.0,
+                502.0,
+                1256.0,
+                493.0,
                 243.0
               ],
               "bboxMaxDelta": 0.0,
@@ -2084,21 +2100,21 @@
               "rank": 2,
               "ptIndex": 0,
               "onnxIndex": 0,
-              "scorePt": 0.5292522311210632,
-              "scoreOnnx": 0.5292454957962036,
-              "scoreDelta": 6.735324859619141e-06,
-              "iou": 0.9997919423160071,
+              "scorePt": 0.6607975959777832,
+              "scoreOnnx": 0.6608019471168518,
+              "scoreDelta": 4.351139068603516e-06,
+              "iou": 0.9999137010570774,
               "bboxPt": [
-                256.0,
-                1014.0,
-                1944.0,
-                1234.0
+                72.0,
+                1011.0,
+                2421.0,
+                1726.0
               ],
               "bboxOnnx": [
-                256.0,
-                1014.0,
-                1944.0,
-                1234.0
+                72.0,
+                1011.0,
+                2421.0,
+                1726.0
               ],
               "bboxMaxDelta": 0.0,
               "scoreRawAbove1": false,
@@ -2117,12 +2133,13 @@
             ],
             "neg": [
               [
-                2132,
-                2276
+                2489,
+                2577
               ]
             ],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -2132,21 +2149,21 @@
               "rank": 0,
               "ptIndex": 2,
               "onnxIndex": 2,
-              "scorePt": 0.9769302606582642,
-              "scoreOnnx": 0.9769307374954224,
-              "scoreDelta": 4.76837158203125e-07,
+              "scorePt": 0.9838049411773682,
+              "scoreOnnx": 0.9838039875030518,
+              "scoreDelta": 9.5367431640625e-07,
               "iou": 1.0,
               "bboxPt": [
                 500.0,
-                1501.0,
+                1502.0,
                 250.0,
-                249.0
+                248.0
               ],
               "bboxOnnx": [
                 500.0,
-                1501.0,
+                1502.0,
                 250.0,
-                249.0
+                248.0
               ],
               "bboxMaxDelta": 0.0,
               "scoreRawAbove1": false,
@@ -2156,21 +2173,21 @@
               "rank": 1,
               "ptIndex": 1,
               "onnxIndex": 1,
-              "scorePt": 0.8219620585441589,
-              "scoreOnnx": 0.8219578862190247,
-              "scoreDelta": 4.172325134277344e-06,
-              "iou": 1.0,
+              "scorePt": 0.7251001596450806,
+              "scoreOnnx": 0.7251096963882446,
+              "scoreDelta": 9.5367431640625e-06,
+              "iou": 0.9999137834412477,
               "bboxPt": [
-                501.0,
-                1502.0,
-                746.0,
-                248.0
+                500.0,
+                1500.0,
+                741.0,
+                1236.0
               ],
               "bboxOnnx": [
-                501.0,
-                1502.0,
-                746.0,
-                248.0
+                500.0,
+                1500.0,
+                741.0,
+                1236.0
               ],
               "bboxMaxDelta": 0.0,
               "scoreRawAbove1": false,
@@ -2180,21 +2197,21 @@
               "rank": 2,
               "ptIndex": 0,
               "onnxIndex": 0,
-              "scorePt": 0.5848771333694458,
-              "scoreOnnx": 0.5848800539970398,
-              "scoreDelta": 2.9206275939941406e-06,
-              "iou": 0.999936884476331,
+              "scorePt": 0.5405613780021667,
+              "scoreOnnx": 0.5405676364898682,
+              "scoreDelta": 6.258487701416016e-06,
+              "iou": 0.9999400482318737,
               "bboxPt": [
                 0.0,
-                278.0,
+                506.0,
                 3000.0,
-                2722.0
+                2494.0
               ],
               "bboxOnnx": [
                 0.0,
-                278.0,
+                506.0,
                 3000.0,
-                2722.0
+                2494.0
               ],
               "bboxMaxDelta": 0.0,
               "scoreRawAbove1": false,
@@ -2213,12 +2230,13 @@
             ],
             "neg": [
               [
-                2259,
-                2587
+                2616,
+                2888
               ]
             ],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -2228,21 +2246,21 @@
               "rank": 0,
               "ptIndex": 2,
               "onnxIndex": 2,
-              "scorePt": 0.973811149597168,
-              "scoreOnnx": 0.9738119840621948,
-              "scoreDelta": 8.344650268554688e-07,
+              "scorePt": 0.9803224802017212,
+              "scoreOnnx": 0.9803222417831421,
+              "scoreDelta": 2.384185791015625e-07,
               "iou": 1.0,
               "bboxPt": [
-                751.0,
-                1753.0,
-                249.0,
-                246.0
+                752.0,
+                1256.0,
+                247.0,
+                742.0
               ],
               "bboxOnnx": [
-                751.0,
-                1753.0,
-                249.0,
-                246.0
+                752.0,
+                1256.0,
+                247.0,
+                742.0
               ],
               "bboxMaxDelta": 0.0,
               "scoreRawAbove1": false,
@@ -2252,21 +2270,21 @@
               "rank": 1,
               "ptIndex": 1,
               "onnxIndex": 1,
-              "scorePt": 0.7366690039634705,
-              "scoreOnnx": 0.7366686463356018,
-              "scoreDelta": 3.5762786865234375e-07,
-              "iou": 1.0,
+              "scorePt": 0.7601553797721863,
+              "scoreOnnx": 0.7601560950279236,
+              "scoreDelta": 7.152557373046875e-07,
+              "iou": 0.9999774958930004,
               "bboxPt": [
-                750.0,
-                1752.0,
-                492.0,
-                499.0
+                504.0,
+                1037.0,
+                740.0,
+                1198.0
               ],
               "bboxOnnx": [
-                750.0,
-                1752.0,
-                492.0,
-                499.0
+                504.0,
+                1037.0,
+                740.0,
+                1198.0
               ],
               "bboxMaxDelta": 0.0,
               "scoreRawAbove1": false,
@@ -2276,21 +2294,21 @@
               "rank": 2,
               "ptIndex": 0,
               "onnxIndex": 0,
-              "scorePt": 0.6122280359268188,
-              "scoreOnnx": 0.612229585647583,
-              "scoreDelta": 1.5497207641601562e-06,
-              "iou": 0.9999884203131568,
+              "scorePt": 0.6507312059402466,
+              "scoreOnnx": 0.6507375836372375,
+              "scoreDelta": 6.377696990966797e-06,
+              "iou": 0.9999682108049432,
               "bboxPt": [
                 0.0,
-                1012.0,
+                513.0,
                 3000.0,
-                1988.0
+                2390.0
               ],
               "bboxOnnx": [
                 0.0,
-                1012.0,
+                513.0,
                 3000.0,
-                1988.0
+                2390.0
               ],
               "bboxMaxDelta": 0.0,
               "scoreRawAbove1": false,
@@ -2309,12 +2327,13 @@
             ],
             "neg": [
               [
-                2386,
-                2898
+                2743,
+                399
               ]
             ],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -2405,7 +2424,8 @@
               375,
               375
             ]
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -2496,7 +2516,8 @@
               375,
               375
             ]
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -2587,7 +2608,8 @@
               375,
               375
             ]
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -2678,7 +2700,8 @@
             ],
             "neg": [],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "countEqual": true,
@@ -2769,7 +2792,8 @@
             ],
             "neg": [],
             "box": null
-          }
+          },
+          "transformParityMaxAbsDiff": 0.0
         }
       ],
       "pass": true
