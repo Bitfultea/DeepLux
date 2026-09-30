@@ -62,7 +62,18 @@ struct OrtSessionRAII {
     }
 };
 
-// 创建 OrtValue 张量（零拷贝：用外部 buffer）
+// P1-3：校验输出张量形状（防越界读取——SHA 只证明文件与 manifest 一致，
+// 不保证运行时输出形状符合预期）
+void validateOutputShape(OrtValue* val, size_t expectedElemCount, const char* name) {
+    OrtTensorTypeAndShapeInfo* info = nullptr;
+    ORT_CK(g_ort->GetTensorTypeAndShape(val, &info));
+    size_t elemCount = 0;
+    ORT_CK(g_ort->GetTensorShapeElementCount(info, &elemCount));
+    // GetTensorTypeAndShape 返回借用引用（OrtValue 内部数据），不需 Release
+    if (elemCount != expectedElemCount)
+        throw std::runtime_error(std::string(name) + " 输出元素数不符：期望 " + std::to_string(expectedElemCount) +
+                                 " 实际 " + std::to_string(elemCount));
+}
 struct OrtValueRAII {
     OrtValue* val = nullptr;
     ~OrtValueRAII() {
@@ -206,6 +217,9 @@ struct SamOnnxInference::Impl {
         OrtValue* outputs[1] = {nullptr};
         ORT_CK(g_ort->Run(encoder.sess, nullptr, inNames, &inputTensor.val, 1, outNames, 1, outputs));
 
+        // P1-3：校验输出形状（[1,256,64,64]=1,048,576 元素）防越界读取
+        validateOutputShape(outputs[0], size_t(256 * 64 * 64), "encoder");
+
         // 提取输出
         void* outData;
         ORT_CK(g_ort->GetTensorMutableData(outputs[0], &outData));
@@ -316,6 +330,10 @@ struct SamOnnxInference::Impl {
         OrtValue* outputs[2] = {nullptr, nullptr};
         ORT_CK(g_ort->Run(decoder.sess, nullptr, inNames, inputs, 4, outNames, 2, outputs));
 
+        // P1-3：校验输出形状（masks [1,3,256,256]=196608，iou [1,3]=3）防越界读取
+        validateOutputShape(outputs[0], size_t(3 * 256 * 256), "decoder.masks");
+        validateOutputShape(outputs[1], size_t(3), "decoder.iou");
+
         // 提取 low_res_masks [1,3,256,256] 和 iou [1,3]
         void* maskData;
         ORT_CK(g_ort->GetTensorMutableData(outputs[0], &maskData));
@@ -404,9 +422,12 @@ bool SamOnnxInference::loadPackage(const QString& packageDir) {
             m_impl->lastError = QStringLiteral("manifest.%1 必须为非空字符串").arg(path);
             return false;
         }
-        if (type == "array3num" && (!val.isArray() || val.toArray().size() != 3 || !val.toArray().at(0).isDouble())) {
-            m_impl->lastError = QStringLiteral("manifest.%1 必须为 3 个数值数组").arg(path);
-            return false;
+        if (type == "array3num") {
+            QJsonArray arr = val.toArray();
+            if (arr.size() != 3 || !arr.at(0).isDouble() || !arr.at(1).isDouble() || !arr.at(2).isDouble()) {
+                m_impl->lastError = QStringLiteral("manifest.%1 必须为 3 个数值数组").arg(path);
+                return false;
+            }
         }
         return true;
     };
@@ -439,6 +460,11 @@ bool SamOnnxInference::loadPackage(const QString& packageDir) {
         return false;
     if (!requireField("coordinateTransform.mode", ct.value("mode"), "string"))
         return false;
+    // 复核二轮 P1-2：mode 只支持 scale 口径
+    if (!ct.value("mode").toString().contains("scale", Qt::CaseInsensitive)) {
+        m_impl->lastError = QStringLiteral("coordinateTransform.mode 必须含 scale（仅支持纯缩放口径）");
+        return false;
+    }
 
     // semantics
     QJsonObject sem = m_impl->manifest.value("semantics").toObject();
@@ -489,9 +515,14 @@ bool SamOnnxInference::loadPackage(const QString& packageDir) {
             m_impl->lastError = QStringLiteral("%1 SHA-256 不符").arg(name);
             return false;
         }
+        // P1-2 修正：sizeBytes 必须存在且匹配（初版缺失时跳过）
+        if (!meta.contains("sizeBytes")) {
+            m_impl->lastError = QStringLiteral("%1 缺少 sizeBytes 字段").arg(name);
+            return false;
+        }
         qint64 actualSize = f.size();
         qint64 expectedSize = static_cast<qint64>(meta.value("sizeBytes").toDouble(-1));
-        if (expectedSize >= 0 && actualSize != expectedSize) {
+        if (actualSize != expectedSize) {
             m_impl->lastError =
                 QStringLiteral("%1 大小不符：manifest=%2 实际=%3").arg(name).arg(expectedSize).arg(actualSize);
             return false;
@@ -506,15 +537,36 @@ bool SamOnnxInference::loadPackage(const QString& packageDir) {
     if (!checkFile(decPath, decMeta, "decoder"))
         return false;
 
-    // 4. 加载 ORT sessions
+    // 4. 加载 ORT sessions（P1-4：创建到临时变量，两段都成功后才提交——
+    // 避免半更新状态与重复加载泄漏旧会话）
     try {
         OrtEnvHolder& env = ortEnv();
         OrtSessionOptions* opts;
         ORT_CK(g_ort->CreateSessionOptions(&opts));
         g_ort->AddSessionConfigEntry(opts, "session.intra_op_num_threads", "4");
-        ORT_CK(g_ort->CreateSession(env.env, encPath.toUtf8().constData(), opts, &m_impl->encoder.sess));
-        ORT_CK(g_ort->CreateSession(env.env, decPath.toUtf8().constData(), opts, &m_impl->decoder.sess));
+
+        OrtSession* tmpEnc = nullptr;
+        OrtSession* tmpDec = nullptr;
+        try {
+            ORT_CK(g_ort->CreateSession(env.env, encPath.toUtf8().constData(), opts, &tmpEnc));
+            ORT_CK(g_ort->CreateSession(env.env, decPath.toUtf8().constData(), opts, &tmpDec));
+        } catch (...) {
+            if (tmpEnc)
+                g_ort->ReleaseSession(tmpEnc);
+            if (tmpDec)
+                g_ort->ReleaseSession(tmpDec);
+            g_ort->ReleaseSessionOptions(opts);
+            throw;
+        }
         g_ort->ReleaseSessionOptions(opts);
+
+        // 两段都成功——释放旧会话（如有），提交新会话
+        if (m_impl->encoder.sess)
+            g_ort->ReleaseSession(m_impl->encoder.sess);
+        if (m_impl->decoder.sess)
+            g_ort->ReleaseSession(m_impl->decoder.sess);
+        m_impl->encoder.sess = tmpEnc;
+        m_impl->decoder.sess = tmpDec;
         ORT_CK(g_ort->GetAllocatorWithDefaultOptions(&m_impl->encoder.allocator));
         ORT_CK(g_ort->GetAllocatorWithDefaultOptions(&m_impl->decoder.allocator));
     } catch (const std::exception& e) {
