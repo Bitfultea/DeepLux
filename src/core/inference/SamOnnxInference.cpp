@@ -46,9 +46,9 @@ OrtEnvHolder& ortEnv() {
     do {                                                                                                               \
         OrtStatus* _st = (expr);                                                                                       \
         if (_st) {                                                                                                     \
-            const char* _msg = g_ort->GetErrorMessage(_st);                                                            \
+            std::string _msgCopy(g_ort->GetErrorMessage(_st));                                                         \
             g_ort->ReleaseStatus(_st);                                                                                 \
-            throw std::runtime_error(_msg);                                                                            \
+            throw std::runtime_error(_msgCopy);                                                                        \
         }                                                                                                              \
     } while (0)
 
@@ -77,12 +77,15 @@ QSize getPreprocessShape(int h, int w, int target = TARGET_SIZE) {
     return {int(w * scale + 0.5), int(h * scale + 0.5)}; // (width, height)
 }
 
-// 图像哈希（下采样 128² → sha256，快速检测换图）
+// 图像哈希（全量像素数据 + 尺寸 → sha256；不漏 1 像素差异，P1-4 修正）
 QString computeImageHash(const cv::Mat& image) {
-    cv::Mat small;
-    cv::resize(image, small, cv::Size(128, 128), 0, 0, cv::INTER_AREA);
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    hash.addData(reinterpret_cast<const char*>(small.data), small.total() * small.elemSize());
+    // 尺寸 + 通道数先入哈希（换尺寸同内容也不命中）
+    const int32_t meta[] = {image.rows, image.cols, image.channels()};
+    hash.addData(reinterpret_cast<const char*>(meta), sizeof(meta));
+    // 全量像素数据（连续行扫描；非连续 Mat 逐行入哈希）
+    for (int y = 0; y < image.rows; ++y)
+        hash.addData(reinterpret_cast<const char*>(image.ptr(y)), image.cols * image.elemSize());
     return QString::fromLatin1(hash.result().toHex());
 }
 
@@ -136,7 +139,8 @@ struct SamOnnxInference::Impl {
     // cancel
     std::atomic<bool> cancelled{false};
 
-    // 预处理：RGB float32 → resize → pad → normalize → NCHW blob
+    // 预处理：RGB → resize → **先归一化后零填充**（安装版 Sam.preprocess 口径，
+    // P0-1 修正：填充区值为归一化空间的 0 而非 (0-mean)/std≈[-2.118,...]）
     cv::Mat preprocess(const cv::Mat& image, QSize& outInputSize) {
         cv::Mat rgb;
         if (image.channels() == 1)
@@ -153,26 +157,29 @@ struct SamOnnxInference::Impl {
         cv::Mat resized;
         cv::resize(rgb, resized, cv::Size(newSize.width(), newSize.height()), 0, 0, cv::INTER_LINEAR);
 
-        // pad to 1024²
-        cv::Mat padded = cv::Mat::zeros(TARGET_SIZE, TARGET_SIZE, CV_32FC3);
+        // 先归一化（per-channel (x-mean)/std）
         cv::Mat resizedf;
         resized.convertTo(resizedf, CV_32FC3);
-        resizedf.copyTo(padded(cv::Rect(0, 0, newSize.width(), newSize.height())));
-
-        // normalize: (x - mean) / std（per-channel，先归一化后填充已在上一步完成）
         cv::Mat chs[3];
-        cv::split(padded, chs);
+        cv::split(resizedf, chs);
         for (int c = 0; c < 3; ++c)
             chs[c] = (chs[c] - PIXEL_MEAN[c]) / PIXEL_STD[c];
+        cv::Mat normalized;
+        cv::merge(chs, 3, normalized);
 
-        // HWC → NCHW：三通道扁平化拼接为 [3*1024*1024] float32
+        // 后零填充（归一化空间 0 = 无信息；1024² 底色）
+        cv::Mat padded = cv::Mat::zeros(TARGET_SIZE, TARGET_SIZE, CV_32FC3);
+        normalized.copyTo(padded(cv::Rect(0, 0, newSize.width(), newSize.height())));
+
+        // HWC → NCHW
+        cv::split(padded, chs);
         cv::Mat blob(1, 3 * TARGET_SIZE * TARGET_SIZE, CV_32F);
         float* dst = (float*) blob.data;
         for (int c = 0; c < 3; ++c) {
-            cv::Mat flat = chs[c].reshape(1, 1); // [1, 1024*1024]
+            cv::Mat flat = chs[c].reshape(1, 1);
             std::memcpy(dst + c * TARGET_SIZE * TARGET_SIZE, flat.data, TARGET_SIZE * TARGET_SIZE * sizeof(float));
         }
-        return blob; // [1, 3*1024*1024] 连续 float32，ORT 用 shape [1,3,1024,1024] 解释
+        return blob;
     }
 
     // 编码器前向
@@ -213,14 +220,15 @@ struct SamOnnxInference::Impl {
     // 解码器前向
     // 返回 (low_res_masks [1,3,256,256] float32, iou [1,3] float32)
     std::pair<cv::Mat, cv::Mat> runDecoder(const cv::Mat& embedding, const QList<QPointF>& scaledPos,
-                                           const QList<QPointF>& scaledNeg, const QRectF& scaledBoxXYXY, int origH,
+                                           const QList<QPointF>& scaledNeg, const QRectF& scaledBox, int origH,
                                            int origW) {
         // 构造输入
         int nPts = scaledPos.size() + scaledNeg.size();
-        int nBox = scaledBoxXYXY.isValid() ? 1 : 0;
+        int nBox = scaledBox.isValid() ? 1 : 0;
 
-        // point_coords [N,2] float32
-        std::vector<float> coordsData(std::max(nPts, 1) * 2, 0);
+        // point_coords [N,2] float32（N=0 时传真正的零维张量 [0,2]——P0-2 修正：
+        // 不伪造空提示，模型 wrapper 的 index_select 自身处理零尺寸）
+        std::vector<float> coordsData(nPts * 2, 0);
         int idx = 0;
         for (const auto& p : scaledPos) {
             coordsData[idx * 2] = p.x();
@@ -234,20 +242,21 @@ struct SamOnnxInference::Impl {
         }
 
         // point_labels [N] int64
-        std::vector<int64_t> labelsData(std::max(nPts, 1), 0);
+        std::vector<int64_t> labelsData(nPts, 0);
         idx = 0;
         for (int i = 0; i < scaledPos.size(); ++i)
             labelsData[idx++] = 1;
         for (int i = 0; i < scaledNeg.size(); ++i)
             labelsData[idx++] = 0;
 
-        // boxes [M,4] float32
-        std::vector<float> boxesData(std::max(nBox, 1) * 4, 0);
+        // boxes [M,4] float32（M=0 时传真正的零维张量 [0,4]）
+        std::vector<float> boxesData(nBox * 4, 0);
         if (nBox) {
-            boxesData[0] = scaledBoxXYXY.x();
-            boxesData[1] = scaledBoxXYXY.y();
-            boxesData[2] = scaledBoxXYXY.x() + scaledBoxXYXY.width();
-            boxesData[3] = scaledBoxXYXY.y() + scaledBoxXYXY.height();
+            // scaledBox 是 xywh（scaleBox 返回口径）：x1, y1, x2-x1, y2-y1
+            boxesData[0] = scaledBox.x();
+            boxesData[1] = scaledBox.y();
+            boxesData[2] = scaledBox.x() + scaledBox.width();
+            boxesData[3] = scaledBox.y() + scaledBox.height();
         }
 
         // 如果没有点也没有框 → 返回错误
@@ -279,22 +288,23 @@ struct SamOnnxInference::Impl {
                                                      embedding.total() * embedding.elemSize(), embShape, 4,
                                                      ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &embTensor.val));
 
-        // point_coords: [N,2] float32
-        int64_t coordsShape[] = {std::max(nPts, 1), 2};
+        // point_coords: [N,2] float32（N=0 时 shape={0,2} 真正零维——P0-2）
+        int64_t coordsShape[] = {nPts, 2};
         OrtValueRAII coordsTensor;
+        // nPts=0 时 data 长度=0，ORT 接受 nullptr + 0 长度的零维张量
         ORT_CK(g_ort->CreateTensorWithDataAsOrtValue(memInfo, coordsData.data(), coordsData.size() * sizeof(float),
                                                      coordsShape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
                                                      &coordsTensor.val));
 
-        // point_labels: [N] int64
-        int64_t labelsShape[] = {std::max(nPts, 1)};
+        // point_labels: [N] int64（N=0 时 shape={0}）
+        int64_t labelsShape[] = {nPts};
         OrtValueRAII labelsTensor;
         ORT_CK(g_ort->CreateTensorWithDataAsOrtValue(memInfo, labelsData.data(), labelsData.size() * sizeof(int64_t),
                                                      labelsShape, 1, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
                                                      &labelsTensor.val));
 
-        // boxes: [M,4] float32
-        int64_t boxesShape[] = {std::max(nBox, 1), 4};
+        // boxes: [M,4] float32（M=0 时 shape={0,4}）
+        int64_t boxesShape[] = {nBox, 4};
         OrtValueRAII boxesTensor;
         ORT_CK(g_ort->CreateTensorWithDataAsOrtValue(memInfo, boxesData.data(), boxesData.size() * sizeof(float),
                                                      boxesShape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
@@ -384,44 +394,117 @@ bool SamOnnxInference::loadPackage(const QString& packageDir) {
         m_impl->lastError = QStringLiteral("不支持的模型变体（仅支持 vit_b）");
         return false;
     }
-    // 必需语义字段
-    for (const char* field : {"preprocessing", "coordinateTransform", "semantics"}) {
-        if (!m_impl->manifest.value(field).isObject() || m_impl->manifest.value(field).toObject().isEmpty()) {
-            m_impl->lastError = QStringLiteral("manifest 缺少必需语义字段 %1").arg(field);
+    // 必需语义字段 + 具体值校验（P1-5：初版只查非空对象，接受 {"junk":1}）
+    auto requireField = [&](const QString& path, const QJsonValue& val, const QString& type) -> bool {
+        if (type == "object" && (!val.isObject() || val.toObject().isEmpty())) {
+            m_impl->lastError = QStringLiteral("manifest.%1 必须为非空对象").arg(path);
             return false;
         }
+        if (type == "string" && (!val.isString() || val.toString().isEmpty())) {
+            m_impl->lastError = QStringLiteral("manifest.%1 必须为非空字符串").arg(path);
+            return false;
+        }
+        if (type == "array3num" && (!val.isArray() || val.toArray().size() != 3 || !val.toArray().at(0).isDouble())) {
+            m_impl->lastError = QStringLiteral("manifest.%1 必须为 3 个数值数组").arg(path);
+            return false;
+        }
+        return true;
+    };
+
+    // preprocessing
+    QJsonObject pp = m_impl->manifest.value("preprocessing").toObject();
+    if (!requireField("preprocessing", m_impl->manifest.value("preprocessing"), "object"))
+        return false;
+    if (pp.value("colorOrder").toString() != "RGB") {
+        m_impl->lastError = QStringLiteral("preprocessing.colorOrder 必须为 RGB");
+        return false;
     }
-    // files
+    QJsonObject rz = pp.value("resize").toObject();
+    if (rz.value("mode").toString() != "longestSide" || !rz.value("targetSize").isDouble()) {
+        m_impl->lastError = QStringLiteral("preprocessing.resize.mode 必须为 longestSide 且 targetSize 为整数");
+        return false;
+    }
+    if (rz.value("targetSize").toInt() != TARGET_SIZE) {
+        m_impl->lastError = QStringLiteral("preprocessing.resize.targetSize 必须为 %1").arg(TARGET_SIZE);
+        return false;
+    }
+    QJsonObject nm = pp.value("normalize").toObject();
+    if (!requireField("preprocessing.normalize.mean", nm.value("mean"), "array3num") ||
+        !requireField("preprocessing.normalize.std", nm.value("std"), "array3num"))
+        return false;
+
+    // coordinateTransform
+    QJsonObject ct = m_impl->manifest.value("coordinateTransform").toObject();
+    if (!requireField("coordinateTransform", m_impl->manifest.value("coordinateTransform"), "object"))
+        return false;
+    if (!requireField("coordinateTransform.mode", ct.value("mode"), "string"))
+        return false;
+
+    // semantics
+    QJsonObject sem = m_impl->manifest.value("semantics").toObject();
+    if (!requireField("semantics", m_impl->manifest.value("semantics"), "object"))
+        return false;
+    if (!requireField("semantics.decoderOutputs", sem.value("decoderOutputs"), "string"))
+        return false;
+    if (!requireField("semantics.candidateSelection", sem.value("candidateSelection"), "string"))
+        return false;
+    QJsonObject post = sem.value("postprocess").toObject();
+    if (post.value("mode").toString() != "caller") {
+        m_impl->lastError = QStringLiteral("semantics.postprocess.mode 必须为 caller");
+        return false;
+    }
+
+    // files：包内裸文件名（拒绝绝对路径/穿越/符号链接——P1-5）
     QJsonObject files = m_impl->manifest.value("files").toObject();
     QJsonObject encMeta = files.value("encoder").toObject();
     QJsonObject decMeta = files.value("decoder").toObject();
     QString encFile = encMeta.value("file").toString();
     QString decFile = decMeta.value("file").toString();
-    if (encFile != QFileInfo(encFile).fileName() || decFile != QFileInfo(decFile).fileName()) {
-        m_impl->lastError = QStringLiteral("files.*.file 必须为包内裸文件名（拒绝绝对路径/穿越）");
-        return false;
+    for (const auto& [meta, name] :
+         {std::make_pair(encMeta, QStringLiteral("encoder")), std::make_pair(decMeta, QStringLiteral("decoder"))}) {
+        QString fname = meta.value("file").toString();
+        if (fname != QFileInfo(fname).fileName() || fname.isEmpty()) {
+            m_impl->lastError = QStringLiteral("files.%1.file 必须为包内裸文件名").arg(name);
+            return false;
+        }
+        // 符号链接拒绝（包自包含）
+        QString fullPath = packageDir + "/" + fname;
+        QFileInfo fi(fullPath);
+        if (fi.isSymLink()) {
+            m_impl->lastError = QStringLiteral("files.%1.file 不得为符号链接").arg(name);
+            return false;
+        }
     }
 
-    // 3. SHA-256 校验
-    auto checkSha256 = [](const QString& path, const QString& expected) -> bool {
+    // 3. SHA-256 + sizeBytes 校验
+    auto checkFile = [&](const QString& path, const QJsonObject& meta, const QString& name) -> bool {
         QFile f(path);
-        if (!f.open(QIODevice::ReadOnly))
+        if (!f.open(QIODevice::ReadOnly)) {
+            m_impl->lastError = QStringLiteral("%1 文件不可读").arg(name);
             return false;
+        }
         QCryptographicHash hash(QCryptographicHash::Sha256);
         hash.addData(&f);
-        return QString::fromLatin1(hash.result().toHex()) == expected;
+        if (QString::fromLatin1(hash.result().toHex()) != meta.value("sha256").toString()) {
+            m_impl->lastError = QStringLiteral("%1 SHA-256 不符").arg(name);
+            return false;
+        }
+        qint64 actualSize = f.size();
+        qint64 expectedSize = static_cast<qint64>(meta.value("sizeBytes").toDouble(-1));
+        if (expectedSize >= 0 && actualSize != expectedSize) {
+            m_impl->lastError =
+                QStringLiteral("%1 大小不符：manifest=%2 实际=%3").arg(name).arg(expectedSize).arg(actualSize);
+            return false;
+        }
+        return true;
     };
 
     QString encPath = packageDir + "/" + encFile;
     QString decPath = packageDir + "/" + decFile;
-    if (!checkSha256(encPath, encMeta.value("sha256").toString())) {
-        m_impl->lastError = QStringLiteral("encoder SHA-256 不符");
+    if (!checkFile(encPath, encMeta, "encoder"))
         return false;
-    }
-    if (!checkSha256(decPath, decMeta.value("sha256").toString())) {
-        m_impl->lastError = QStringLiteral("decoder SHA-256 不符");
+    if (!checkFile(decPath, decMeta, "decoder"))
         return false;
-    }
 
     // 4. 加载 ORT sessions
     try {
@@ -521,18 +604,16 @@ SamNativeResult SamOnnxInference::predict(const cv::Mat& image, const QList<QPoi
             scaledNeg.append(scalePoint(p, origH, origW, inputSize));
         QRectF scaledBox;
         if (box.isValid()) {
-            QRectF xywh = scaleBox(box, origH, origW, inputSize);
-            scaledBox = QRectF(xywh.x(), xywh.y(), xywh.width(), xywh.height()); // xywh
-            // decoder 需要.xyxy: 在 runDecoder 中构造
+            // scaleBox 返回 xywh (x1, y1, x2-x1, y2-y1)——runDecoder 内部
+            // x()+width()=x2, y()+height()=y2 转为 xyxy，直接传 xywh 即可
+            // P0-3 修正：初版把 xywh 的 w/h 当绝对坐标再包一层 QRectF 导致
+            // x()+width()=x1+x2 双重相加（框传成 [160,160,640,640] 而非 [160,160,480,480]）
+            scaledBox = scaleBox(box, origH, origW, inputSize);
         }
 
         // 3. 解码器
         auto [lowRes, iou] =
-            m_impl->runDecoder(embedding, scaledPos, scaledNeg,
-                               box.isValid() ? QRectF(scaledBox.x(), scaledBox.y(), scaledBox.x() + scaledBox.width(),
-                                                      scaledBox.y() + scaledBox.height())
-                                             : QRectF(),
-                               origH, origW);
+            m_impl->runDecoder(embedding, scaledPos, scaledNeg, box.isValid() ? scaledBox : QRectF(), origH, origW);
 
         if (m_impl->cancelled) {
             result.cancelled = true;
