@@ -117,6 +117,30 @@ add_library(deeplux_core SHARED ${CORE_SOURCES} ${CORE_HEADERS})
 
 target_compile_definitions(deeplux_core PRIVATE DEEPLUX_CORE_EXPORT)
 
+# ========== 阶段2：原生 SAM 推理（onnxruntime，可选）==========
+option(DEEPLUX_NATIVE_SAM "Enable native SAM ONNX inference (requires onnxruntime)" OFF)
+if(DEEPLUX_NATIVE_SAM)
+    if(NOT DEFINED ENV{ONNXRUNTIME_DIR})
+        if(EXISTS "$ENV{HOME}/Data/onnxruntime/include/onnxruntime_c_api.h")
+            set(ONNXRUNTIME_DIR "$ENV{HOME}/Data/onnxruntime" CACHE PATH "onnxruntime install dir")
+        else()
+            message(FATAL_ERROR "DEEPLUX_NATIVE_SAM=ON 但未找到 onnxruntime：设置 ONNXRUNTIME_DIR")
+        endif()
+    else()
+        set(ONNXRUNTIME_DIR "$ENV{ONNXRUNTIME_DIR}" CACHE PATH "onnxruntime install dir")
+    endif()
+    target_sources(deeplux_core PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inference/SamOnnxInference.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/inference/SamOnnxInference.h)
+    target_include_directories(deeplux_core PRIVATE ${ONNXRUNTIME_DIR}/include)
+    target_link_libraries(deeplux_core PUBLIC ${ONNXRUNTIME_DIR}/lib/libonnxruntime.so)
+    target_compile_definitions(deeplux_core PUBLIC DEEPLUX_HAS_ONNXRUNTIME)
+    set_target_properties(deeplux_core PROPERTIES
+        BUILD_RPATH "${ONNXRUNTIME_DIR}/lib"
+        INSTALL_RPATH "${ONNXRUNTIME_DIR}/lib")
+    message(STATUS "Native SAM inference: enabled (onnxruntime at ${ONNXRUNTIME_DIR})")
+endif()
+
 target_include_directories(deeplux_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}

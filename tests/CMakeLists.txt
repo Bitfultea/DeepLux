@@ -413,3 +413,18 @@ add_test(NAME ui_capture_mainwindow COMMAND ui_capture_mainwindow "${CMAKE_CURRE
 set_tests_properties(ui_capture_mainwindow PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}"
     TIMEOUT 300)
+
+# ========== 阶段2：原生 SAM ONNX 推理测试（条件编译）==========
+if(DEEPLUX_NATIVE_SAM)
+    add_executable(test_sam_onnx_inference test_sam_onnx_inference.cpp)
+    target_link_libraries(test_sam_onnx_inference PRIVATE deeplux_core)
+    if(Qt6_FOUND)
+        target_link_libraries(test_sam_onnx_inference PRIVATE Qt6::Core Qt6::Test)
+    else()
+        target_link_libraries(test_sam_onnx_inference PRIVATE Qt5::Core Qt5::Test)
+    endif()
+    target_compile_definitions(test_sam_onnx_inference PRIVATE
+        TEST_SAM_PACKAGE_DIR="$ENV{HOME}/Data/Models/sam1_vit_b_onnx")
+    add_test(NAME test_sam_onnx_inference COMMAND test_sam_onnx_inference)
+    set_tests_properties(test_sam_onnx_inference PROPERTIES TIMEOUT 120)
+endif()
