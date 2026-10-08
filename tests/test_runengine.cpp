@@ -2391,7 +2391,8 @@ void TestRunEngine::testBreakpointDoesNotBlockRun() {
     const QMetaObject::Connection resultConnection =
         connect(&engine, &RunEngine::runFinished, this, [&result](const RunResult& value) { result = value; });
     bool signalSawPausedState = false;
-    connect(&engine, &RunEngine::breakpointHit, this, [&engine, &signalSawPausedState]() {
+    QObject breakpointContext;
+    connect(&engine, &RunEngine::breakpointHit, &breakpointContext, [&engine, &signalSawPausedState]() {
         signalSawPausedState = engine.state() == RunState::Paused && engine.isPausedAtBreakpoint();
     });
 
