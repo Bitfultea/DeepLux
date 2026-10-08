@@ -7,10 +7,16 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
+#include <initializer_list>
 #include <onnxruntime_c_api.h>
 #include <opencv2/imgproc.hpp>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace DeepLux {
 
@@ -28,7 +34,14 @@ struct OrtEnvHolder {
     OrtEnvHolder() {
         if (!g_ort)
             g_ort = OrtGetApiBase()->GetApi(ORT_API_VERSION);
-        g_ort->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "DeepLux_SamNative", &env);
+        if (!g_ort)
+            throw std::runtime_error("onnxruntime API version mismatch");
+        OrtStatus* status = g_ort->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "DeepLux_SamNative", &env);
+        if (status) {
+            std::string message(g_ort->GetErrorMessage(status));
+            g_ort->ReleaseStatus(status);
+            throw std::runtime_error(message);
+        }
     }
     ~OrtEnvHolder() {
         if (env)
@@ -62,17 +75,67 @@ struct OrtSessionRAII {
     }
 };
 
-// P1-3：校验输出张量形状（防越界读取——SHA 只证明文件与 manifest 一致，
-// 不保证运行时输出形状符合预期）
-void validateOutputShape(OrtValue* val, size_t expectedElemCount, const char* name) {
+struct OrtSessionOptionsRAII {
+    OrtSessionOptions* opts = nullptr;
+    ~OrtSessionOptionsRAII() {
+        if (opts)
+            g_ort->ReleaseSessionOptions(opts);
+    }
+};
+
+struct OrtShapeRAII {
     OrtTensorTypeAndShapeInfo* info = nullptr;
-    ORT_CK(g_ort->GetTensorTypeAndShape(val, &info));
-    size_t elemCount = 0;
-    ORT_CK(g_ort->GetTensorShapeElementCount(info, &elemCount));
-    // GetTensorTypeAndShape 返回借用引用（OrtValue 内部数据），不需 Release
-    if (elemCount != expectedElemCount)
-        throw std::runtime_error(std::string(name) + " 输出元素数不符：期望 " + std::to_string(expectedElemCount) +
-                                 " 实际 " + std::to_string(elemCount));
+    ~OrtShapeRAII() {
+        if (info)
+            g_ort->ReleaseTensorTypeAndShapeInfo(info);
+    }
+};
+
+struct OrtMemoryInfoRAII {
+    OrtMemoryInfo* info = nullptr;
+    ~OrtMemoryInfoRAII() {
+        if (info)
+            g_ort->ReleaseMemoryInfo(info);
+    }
+};
+
+template <size_t N> struct OrtNamesRAII {
+    explicit OrtNamesRAII(OrtAllocator* allocator) : allocator(allocator) {}
+    ~OrtNamesRAII() {
+        for (char* name : names)
+            if (name) {
+                if (OrtStatus* status = g_ort->AllocatorFree(allocator, name))
+                    g_ort->ReleaseStatus(status);
+            }
+    }
+    OrtAllocator* allocator;
+    std::array<char*, N> names{};
+};
+
+template <size_t N> struct OrtOutputsRAII {
+    ~OrtOutputsRAII() {
+        for (OrtValue* value : values)
+            if (value)
+                g_ort->ReleaseValue(value);
+    }
+    std::array<OrtValue*, N> values{};
+};
+
+void validateOutputShape(OrtValue* value, std::initializer_list<int64_t> expected, const char* name) {
+    OrtShapeRAII shape;
+    ORT_CK(g_ort->GetTensorTypeAndShape(value, &shape.info));
+    ONNXTensorElementDataType type;
+    ORT_CK(g_ort->GetTensorElementType(shape.info, &type));
+    if (type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT)
+        throw std::runtime_error(std::string(name) + " 输出类型必须为 float32");
+    size_t rank = 0;
+    ORT_CK(g_ort->GetDimensionsCount(shape.info, &rank));
+    if (rank != expected.size())
+        throw std::runtime_error(std::string(name) + " 输出维数不符");
+    std::vector<int64_t> dimensions(rank);
+    ORT_CK(g_ort->GetDimensions(shape.info, dimensions.data(), rank));
+    if (!std::equal(dimensions.begin(), dimensions.end(), expected.begin()))
+        throw std::runtime_error(std::string(name) + " 输出形状不符");
 }
 struct OrtValueRAII {
     OrtValue* val = nullptr;
@@ -92,7 +155,7 @@ QSize getPreprocessShape(int h, int w, int target = TARGET_SIZE) {
 QString computeImageHash(const cv::Mat& image) {
     QCryptographicHash hash(QCryptographicHash::Sha256);
     // 尺寸 + 通道数先入哈希（换尺寸同内容也不命中）
-    const int32_t meta[] = {image.rows, image.cols, image.channels()};
+    const int32_t meta[] = {image.rows, image.cols, image.type()};
     hash.addData(reinterpret_cast<const char*>(meta), sizeof(meta));
     // 全量像素数据（连续行扫描；非连续 Mat 逐行入哈希）
     for (int y = 0; y < image.rows; ++y)
@@ -116,6 +179,73 @@ QPointF scalePoint(const QPointF& pt, int origH, int origW, const QSize& newSize
     double sx = newSize.width() / double(origW);
     double sy = newSize.height() / double(origH);
     return {pt.x() * sx, pt.y() * sy};
+}
+
+struct BilinearTap {
+    int first = 0;
+    std::vector<int> weights;
+};
+
+std::vector<BilinearTap> bilinearTaps(int sourceSize, int outputSize) {
+    constexpr int precision = 1 << 22;
+    const double scale = double(sourceSize) / outputSize;
+    const double filterScale = std::max(1.0, scale);
+    std::vector<BilinearTap> taps(outputSize);
+    for (int i = 0; i < outputSize; ++i) {
+        const double center = (i + 0.5) * scale;
+        const int first = std::max(0, int(center - filterScale + 0.5));
+        const int last = std::min(sourceSize, int(center + filterScale + 0.5));
+        BilinearTap& tap = taps[i];
+        tap.first = first;
+        std::vector<double> coefficients;
+        double total = 0;
+        for (int j = first; j < last; ++j) {
+            const double distance = std::abs((j - center + 0.5) / filterScale);
+            const double weight = std::max(0.0, 1.0 - distance);
+            coefficients.push_back(weight);
+            total += weight;
+        }
+        for (double weight : coefficients)
+            tap.weights.push_back(int(weight / total * precision + 0.5));
+    }
+    return taps;
+}
+
+cv::Mat resizePillowBilinear(const cv::Mat& image, const cv::Size& outputSize) {
+    // Pillow RGB8 bilinear is separable and rounds to uint8 after each axis.
+    // https://github.com/python-pillow/Pillow/blob/main/src/libImaging/Resample.c
+    constexpr int precisionBits = 22;
+    auto resizeAxis = [](const cv::Mat& source, int outputLength, bool horizontal) {
+        const auto taps = bilinearTaps(horizontal ? source.cols : source.rows, outputLength);
+        cv::Mat output(horizontal ? source.rows : outputLength, horizontal ? outputLength : source.cols, CV_8UC3);
+        for (int y = 0; y < output.rows; ++y) {
+            auto* dst = output.ptr<cv::Vec3b>(y);
+            for (int x = 0; x < output.cols; ++x) {
+                const auto& tap = taps[horizontal ? x : y];
+                int64_t sum[3] = {1LL << (precisionBits - 1), 1LL << (precisionBits - 1), 1LL << (precisionBits - 1)};
+                for (size_t k = 0; k < tap.weights.size(); ++k) {
+                    const cv::Vec3b& pixel =
+                        source.ptr<cv::Vec3b>(horizontal ? y : tap.first + int(k))[horizontal ? tap.first + int(k) : x];
+                    for (int c = 0; c < 3; ++c)
+                        sum[c] += int64_t(pixel[c]) * tap.weights[k];
+                }
+                for (int c = 0; c < 3; ++c)
+                    dst[x][c] = static_cast<uchar>(std::clamp(sum[c] >> precisionBits, int64_t(0), int64_t(255)));
+            }
+        }
+        return output;
+    };
+
+    const bool verticalFirst =
+        image.rows > outputSize.height && image.rows - outputSize.height > 2 * (image.cols - outputSize.width);
+    cv::Mat result = image;
+    if (verticalFirst && result.rows != outputSize.height)
+        result = resizeAxis(result, outputSize.height, false);
+    if (result.cols != outputSize.width)
+        result = resizeAxis(result, outputSize.width, true);
+    if (!verticalFirst && result.rows != outputSize.height)
+        result = resizeAxis(result, outputSize.height, false);
+    return result;
 }
 
 // 框变换（安装版 apply_boxes 口径：reshape(-1,2,2) 全四分量缩放）
@@ -153,20 +283,11 @@ struct SamOnnxInference::Impl {
     // 预处理：RGB → resize → **先归一化后零填充**（安装版 Sam.preprocess 口径，
     // P0-1 修正：填充区值为归一化空间的 0 而非 (0-mean)/std≈[-2.118,...]）
     cv::Mat preprocess(const cv::Mat& image, QSize& outInputSize) {
-        cv::Mat rgb;
-        if (image.channels() == 1)
-            cv::cvtColor(image, rgb, cv::COLOR_GRAY2RGB);
-        else if (image.channels() == 4)
-            cv::cvtColor(image, rgb, cv::COLOR_BGRA2RGB);
-        else
-            rgb = image;
-
-        int h = rgb.rows, w = rgb.cols;
+        int h = image.rows, w = image.cols;
         QSize newSize = getPreprocessShape(h, w);
         outInputSize = newSize;
 
-        cv::Mat resized;
-        cv::resize(rgb, resized, cv::Size(newSize.width(), newSize.height()), 0, 0, cv::INTER_LINEAR);
+        cv::Mat resized = resizePillowBilinear(image, cv::Size(newSize.width(), newSize.height()));
 
         // 先归一化（per-channel (x-mean)/std）
         cv::Mat resizedf;
@@ -195,47 +316,35 @@ struct SamOnnxInference::Impl {
 
     // 编码器前向
     cv::Mat runEncoder(const cv::Mat& inputBlob) {
-        const char* inNames[1];
-        const char* outNames[1];
-        char* inName;
-        ORT_CK(g_ort->SessionGetInputName(encoder.sess, 0, encoder.allocator, &inName));
-        inNames[0] = inName;
-        char* outName;
-        ORT_CK(g_ort->SessionGetOutputName(encoder.sess, 0, encoder.allocator, &outName));
-        outNames[0] = outName;
+        OrtNamesRAII<1> inNames(encoder.allocator), outNames(encoder.allocator);
+        ORT_CK(g_ort->SessionGetInputName(encoder.sess, 0, encoder.allocator, &inNames.names[0]));
+        ORT_CK(g_ort->SessionGetOutputName(encoder.sess, 0, encoder.allocator, &outNames.names[0]));
+        const char* inputNames[] = {inNames.names[0]};
+        const char* outputNames[] = {outNames.names[0]};
 
-        OrtMemoryInfo* memInfo = nullptr;
-        ORT_CK(g_ort->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &memInfo));
+        OrtMemoryInfoRAII memInfo;
+        ORT_CK(g_ort->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &memInfo.info));
 
         int64_t shape[] = {1, 3, TARGET_SIZE, TARGET_SIZE};
         OrtValueRAII inputTensor;
-        ORT_CK(g_ort->CreateTensorWithDataAsOrtValue(memInfo, (void*) inputBlob.data,
+        ORT_CK(g_ort->CreateTensorWithDataAsOrtValue(memInfo.info, (void*) inputBlob.data,
                                                      inputBlob.total() * inputBlob.elemSize(), shape, 4,
                                                      ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &inputTensor.val));
-        g_ort->ReleaseMemoryInfo(memInfo);
-
-        OrtValue* outputs[1] = {nullptr};
-        ORT_CK(g_ort->Run(encoder.sess, nullptr, inNames, &inputTensor.val, 1, outNames, 1, outputs));
-
-        // P1-3：校验输出形状（[1,256,64,64]=1,048,576 元素）防越界读取
-        validateOutputShape(outputs[0], size_t(256 * 64 * 64), "encoder");
-
-        // 提取输出
+        OrtOutputsRAII<1> outputs;
+        ORT_CK(
+            g_ort->Run(encoder.sess, nullptr, inputNames, &inputTensor.val, 1, outputNames, 1, outputs.values.data()));
+        validateOutputShape(outputs.values[0], {1, 256, 64, 64}, "encoder");
         void* outData;
-        ORT_CK(g_ort->GetTensorMutableData(outputs[0], &outData));
+        ORT_CK(g_ort->GetTensorMutableData(outputs.values[0], &outData));
         cv::Mat embedding(1, 256 * 64 * 64, CV_32F, outData);
         cv::Mat copy = embedding.clone();
-        g_ort->ReleaseValue(outputs[0]);
-        g_ort->AllocatorFree(encoder.allocator, inName);
-        g_ort->AllocatorFree(encoder.allocator, outName);
         return copy.reshape(1, {1, 256, 64, 64});
     }
 
     // 解码器前向
     // 返回 (low_res_masks [1,3,256,256] float32, iou [1,3] float32)
     std::pair<cv::Mat, cv::Mat> runDecoder(const cv::Mat& embedding, const QList<QPointF>& scaledPos,
-                                           const QList<QPointF>& scaledNeg, const QRectF& scaledBox, int origH,
-                                           int origW) {
+                                           const QList<QPointF>& scaledNeg, const QRectF& scaledBox) {
         // 构造输入
         int nPts = scaledPos.size() + scaledNeg.size();
         int nBox = scaledBox.isValid() ? 1 : 0;
@@ -278,27 +387,26 @@ struct SamOnnxInference::Impl {
             throw std::runtime_error("至少需要一个 prompt（点或框）");
 
         // 获取 decoder 的输入/输出名称
-        char* names[4];
+        OrtNamesRAII<4> names(decoder.allocator);
+        OrtNamesRAII<2> outNamesC(decoder.allocator);
         const char* inNames[4];
         for (size_t i = 0; i < 4; ++i) {
-            ORT_CK(g_ort->SessionGetInputName(decoder.sess, i, decoder.allocator, &names[i]));
-            inNames[i] = names[i];
+            ORT_CK(g_ort->SessionGetInputName(decoder.sess, i, decoder.allocator, &names.names[i]));
+            inNames[i] = names.names[i];
         }
-        size_t nOut = 2;
-        char* outNamesC[2];
         const char* outNames[2];
-        for (size_t i = 0; i < nOut; ++i) {
-            ORT_CK(g_ort->SessionGetOutputName(decoder.sess, i, decoder.allocator, &outNamesC[i]));
-            outNames[i] = outNamesC[i];
+        for (size_t i = 0; i < 2; ++i) {
+            ORT_CK(g_ort->SessionGetOutputName(decoder.sess, i, decoder.allocator, &outNamesC.names[i]));
+            outNames[i] = outNamesC.names[i];
         }
 
-        OrtMemoryInfo* memInfo = nullptr;
-        ORT_CK(g_ort->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &memInfo));
+        OrtMemoryInfoRAII memInfo;
+        ORT_CK(g_ort->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &memInfo.info));
 
         // image_embeddings: [1,256,64,64] float32（零拷贝）
         int64_t embShape[] = {1, 256, 64, 64};
         OrtValueRAII embTensor;
-        ORT_CK(g_ort->CreateTensorWithDataAsOrtValue(memInfo, (void*) embedding.data,
+        ORT_CK(g_ort->CreateTensorWithDataAsOrtValue(memInfo.info, (void*) embedding.data,
                                                      embedding.total() * embedding.elemSize(), embShape, 4,
                                                      ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &embTensor.val));
 
@@ -306,51 +414,40 @@ struct SamOnnxInference::Impl {
         int64_t coordsShape[] = {nPts, 2};
         OrtValueRAII coordsTensor;
         // nPts=0 时 data 长度=0，ORT 接受 nullptr + 0 长度的零维张量
-        ORT_CK(g_ort->CreateTensorWithDataAsOrtValue(memInfo, coordsData.data(), coordsData.size() * sizeof(float),
+        ORT_CK(g_ort->CreateTensorWithDataAsOrtValue(memInfo.info, coordsData.data(), coordsData.size() * sizeof(float),
                                                      coordsShape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
                                                      &coordsTensor.val));
 
         // point_labels: [N] int64（N=0 时 shape={0}）
         int64_t labelsShape[] = {nPts};
         OrtValueRAII labelsTensor;
-        ORT_CK(g_ort->CreateTensorWithDataAsOrtValue(memInfo, labelsData.data(), labelsData.size() * sizeof(int64_t),
-                                                     labelsShape, 1, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
-                                                     &labelsTensor.val));
+        ORT_CK(g_ort->CreateTensorWithDataAsOrtValue(memInfo.info, labelsData.data(),
+                                                     labelsData.size() * sizeof(int64_t), labelsShape, 1,
+                                                     ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &labelsTensor.val));
 
         // boxes: [M,4] float32（M=0 时 shape={0,4}）
         int64_t boxesShape[] = {nBox, 4};
         OrtValueRAII boxesTensor;
-        ORT_CK(g_ort->CreateTensorWithDataAsOrtValue(memInfo, boxesData.data(), boxesData.size() * sizeof(float),
+        ORT_CK(g_ort->CreateTensorWithDataAsOrtValue(memInfo.info, boxesData.data(), boxesData.size() * sizeof(float),
                                                      boxesShape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
                                                      &boxesTensor.val));
 
-        g_ort->ReleaseMemoryInfo(memInfo);
-
         const OrtValue* inputs[4] = {embTensor.val, coordsTensor.val, labelsTensor.val, boxesTensor.val};
-        OrtValue* outputs[2] = {nullptr, nullptr};
-        ORT_CK(g_ort->Run(decoder.sess, nullptr, inNames, inputs, 4, outNames, 2, outputs));
-
-        // P1-3：校验输出形状（masks [1,3,256,256]=196608，iou [1,3]=3）防越界读取
-        validateOutputShape(outputs[0], size_t(3 * 256 * 256), "decoder.masks");
-        validateOutputShape(outputs[1], size_t(3), "decoder.iou");
+        OrtOutputsRAII<2> outputs;
+        ORT_CK(g_ort->Run(decoder.sess, nullptr, inNames, inputs, 4, outNames, 2, outputs.values.data()));
+        validateOutputShape(outputs.values[0], {1, 3, 256, 256}, "decoder.masks");
+        validateOutputShape(outputs.values[1], {1, 3}, "decoder.iou");
 
         // 提取 low_res_masks [1,3,256,256] 和 iou [1,3]
         void* maskData;
-        ORT_CK(g_ort->GetTensorMutableData(outputs[0], &maskData));
+        ORT_CK(g_ort->GetTensorMutableData(outputs.values[0], &maskData));
         cv::Mat lowRes(1, 3 * 256 * 256, CV_32F, maskData);
         cv::Mat lowResCopy = lowRes.clone();
 
         void* iouData;
-        ORT_CK(g_ort->GetTensorMutableData(outputs[1], &iouData));
+        ORT_CK(g_ort->GetTensorMutableData(outputs.values[1], &iouData));
         cv::Mat iou(1, 3, CV_32F, iouData);
         cv::Mat iouCopy = iou.clone();
-
-        g_ort->ReleaseValue(outputs[0]);
-        g_ort->ReleaseValue(outputs[1]);
-        for (size_t i = 0; i < 4; ++i)
-            g_ort->AllocatorFree(decoder.allocator, names[i]);
-        for (size_t i = 0; i < 2; ++i)
-            g_ort->AllocatorFree(decoder.allocator, outNamesC[i]);
 
         return {lowResCopy.reshape(1, {1, 3, 256, 256}), iouCopy.reshape(1, {1, 3})};
     }
@@ -386,6 +483,10 @@ bool SamOnnxInference::loadPackage(const QString& packageDir) {
 
     // 1. 加载 manifest
     QString manPath = packageDir + "/manifest.json";
+    if (QFileInfo(manPath).isSymLink()) {
+        m_impl->lastError = QStringLiteral("manifest.json 不得为符号链接");
+        return false;
+    }
     QFile f(manPath);
     if (!f.open(QIODevice::ReadOnly)) {
         m_impl->lastError = QStringLiteral("无法读取 manifest.json：%1").arg(manPath);
@@ -445,14 +546,44 @@ bool SamOnnxInference::loadPackage(const QString& packageDir) {
         m_impl->lastError = QStringLiteral("preprocessing.resize.mode 必须为 longestSide 且 targetSize 为整数");
         return false;
     }
-    if (rz.value("targetSize").toInt() != TARGET_SIZE) {
+    if (rz.value("targetSize").toDouble() != TARGET_SIZE) {
         m_impl->lastError = QStringLiteral("preprocessing.resize.targetSize 必须为 %1").arg(TARGET_SIZE);
         return false;
     }
+    const QJsonArray padTo = pp.value("pad").toObject().value("to").toArray();
+    const QJsonArray padSides = pp.value("pad").toObject().value("sides").toArray();
+    if (pp.value("order").toString() !=
+            QStringLiteral("先归一化后零填充（Sam.preprocess 顺序；填充值为归一化空间的 0）") ||
+        padTo != QJsonArray{TARGET_SIZE, TARGET_SIZE} || padSides != QJsonArray{"bottom", "right"} ||
+        pp.value("pad").toObject().value("value").toDouble(-1) != 0) {
+        m_impl->lastError = QStringLiteral("preprocessing 归一化/填充契约不符");
+        return false;
+    }
     QJsonObject nm = pp.value("normalize").toObject();
+    if (nm.value("scale").toString() != QStringLiteral("0-255 float32（不除 255）")) {
+        m_impl->lastError = QStringLiteral("preprocessing.normalize.scale 不符");
+        return false;
+    }
     if (!requireField("preprocessing.normalize.mean", nm.value("mean"), "array3num") ||
         !requireField("preprocessing.normalize.std", nm.value("std"), "array3num"))
         return false;
+    // P1-4：均值/标准差须与实际使用的常量匹配（初版只验证三项是数字）
+    {
+        QJsonArray meanArr = nm.value("mean").toArray();
+        QJsonArray stdArr = nm.value("std").toArray();
+        for (int c = 0; c < 3; ++c) {
+            if (std::abs(meanArr.at(c).toDouble() - PIXEL_MEAN[c]) > 1e-3) {
+                m_impl->lastError =
+                    QStringLiteral("preprocessing.normalize.mean[%1] 不匹配实际常量 %2").arg(c).arg(PIXEL_MEAN[c]);
+                return false;
+            }
+            if (std::abs(stdArr.at(c).toDouble() - PIXEL_STD[c]) > 1e-3) {
+                m_impl->lastError =
+                    QStringLiteral("preprocessing.normalize.std[%1] 不匹配实际常量 %2").arg(c).arg(PIXEL_STD[c]);
+                return false;
+            }
+        }
+    }
 
     // coordinateTransform
     QJsonObject ct = m_impl->manifest.value("coordinateTransform").toObject();
@@ -460,9 +591,8 @@ bool SamOnnxInference::loadPackage(const QString& packageDir) {
         return false;
     if (!requireField("coordinateTransform.mode", ct.value("mode"), "string"))
         return false;
-    // 复核二轮 P1-2：mode 只支持 scale 口径
-    if (!ct.value("mode").toString().contains("scale", Qt::CaseInsensitive)) {
-        m_impl->lastError = QStringLiteral("coordinateTransform.mode 必须含 scale（仅支持纯缩放口径）");
+    if (ct.value("mode").toString() != QStringLiteral("scale-only（ResizeLongestSide.apply_coords/apply_boxes）")) {
+        m_impl->lastError = QStringLiteral("coordinateTransform.mode 不支持");
         return false;
     }
 
@@ -516,8 +646,10 @@ bool SamOnnxInference::loadPackage(const QString& packageDir) {
             return false;
         }
         // P1-2 修正：sizeBytes 必须存在且匹配（初版缺失时跳过）
-        if (!meta.contains("sizeBytes")) {
-            m_impl->lastError = QStringLiteral("%1 缺少 sizeBytes 字段").arg(name);
+        const QJsonValue sizeValue = meta.value("sizeBytes");
+        if (!sizeValue.isDouble() || !std::isfinite(sizeValue.toDouble()) || sizeValue.toDouble() < 0 ||
+            sizeValue.toDouble() >= std::ldexp(1.0, 63) || std::floor(sizeValue.toDouble()) != sizeValue.toDouble()) {
+            m_impl->lastError = QStringLiteral("%1 sizeBytes 必须为有效非负整数").arg(name);
             return false;
         }
         qint64 actualSize = f.size();
@@ -537,38 +669,21 @@ bool SamOnnxInference::loadPackage(const QString& packageDir) {
     if (!checkFile(decPath, decMeta, "decoder"))
         return false;
 
-    // 4. 加载 ORT sessions（P1-4：创建到临时变量，两段都成功后才提交——
-    // 避免半更新状态与重复加载泄漏旧会话）
+    // 两段都成功后才替换旧会话。
     try {
         OrtEnvHolder& env = ortEnv();
-        OrtSessionOptions* opts;
-        ORT_CK(g_ort->CreateSessionOptions(&opts));
-        g_ort->AddSessionConfigEntry(opts, "session.intra_op_num_threads", "4");
-
-        OrtSession* tmpEnc = nullptr;
-        OrtSession* tmpDec = nullptr;
-        try {
-            ORT_CK(g_ort->CreateSession(env.env, encPath.toUtf8().constData(), opts, &tmpEnc));
-            ORT_CK(g_ort->CreateSession(env.env, decPath.toUtf8().constData(), opts, &tmpDec));
-        } catch (...) {
-            if (tmpEnc)
-                g_ort->ReleaseSession(tmpEnc);
-            if (tmpDec)
-                g_ort->ReleaseSession(tmpDec);
-            g_ort->ReleaseSessionOptions(opts);
-            throw;
-        }
-        g_ort->ReleaseSessionOptions(opts);
-
-        // 两段都成功——释放旧会话（如有），提交新会话
-        if (m_impl->encoder.sess)
-            g_ort->ReleaseSession(m_impl->encoder.sess);
-        if (m_impl->decoder.sess)
-            g_ort->ReleaseSession(m_impl->decoder.sess);
-        m_impl->encoder.sess = tmpEnc;
-        m_impl->decoder.sess = tmpDec;
-        ORT_CK(g_ort->GetAllocatorWithDefaultOptions(&m_impl->encoder.allocator));
-        ORT_CK(g_ort->GetAllocatorWithDefaultOptions(&m_impl->decoder.allocator));
+        OrtSessionOptionsRAII opts;
+        ORT_CK(g_ort->CreateSessionOptions(&opts.opts));
+        ORT_CK(g_ort->SetIntraOpNumThreads(opts.opts, 4));
+        OrtSessionRAII newEncoder, newDecoder;
+        ORT_CK(g_ort->CreateSession(env.env, encPath.toUtf8().constData(), opts.opts, &newEncoder.sess));
+        ORT_CK(g_ort->CreateSession(env.env, decPath.toUtf8().constData(), opts.opts, &newDecoder.sess));
+        ORT_CK(g_ort->GetAllocatorWithDefaultOptions(&newEncoder.allocator));
+        newDecoder.allocator = newEncoder.allocator;
+        std::swap(m_impl->encoder.sess, newEncoder.sess);
+        std::swap(m_impl->decoder.sess, newDecoder.sess);
+        m_impl->encoder.allocator = newEncoder.allocator;
+        m_impl->decoder.allocator = newDecoder.allocator;
     } catch (const std::exception& e) {
         m_impl->lastError = QStringLiteral("ORT 加载失败：%1").arg(e.what());
         return false;
@@ -608,6 +723,21 @@ SamNativeResult SamOnnxInference::predict(const cv::Mat& image, const QList<QPoi
 
     if (!m_impl->loaded) {
         result.error = QStringLiteral("模型包未加载");
+        return result;
+    }
+    if (image.empty() || image.type() != CV_8UC3) {
+        result.error = QStringLiteral("图像必须为非空 RGB 8 位 3 通道");
+        return result;
+    }
+    for (const QPointF& point : positivePoints + negativePoints) {
+        if (!std::isfinite(point.x()) || !std::isfinite(point.y())) {
+            result.error = QStringLiteral("prompt 点坐标必须为有限数值");
+            return result;
+        }
+    }
+    if (box != QRectF() && (!box.isValid() || !std::isfinite(box.x()) || !std::isfinite(box.y()) ||
+                            !std::isfinite(box.width()) || !std::isfinite(box.height()))) {
+        result.error = QStringLiteral("prompt 框必须为有限且有效的矩形");
         return result;
     }
     if (positivePoints.isEmpty() && negativePoints.isEmpty() && !box.isValid()) {
@@ -664,8 +794,7 @@ SamNativeResult SamOnnxInference::predict(const cv::Mat& image, const QList<QPoi
         }
 
         // 3. 解码器
-        auto [lowRes, iou] =
-            m_impl->runDecoder(embedding, scaledPos, scaledNeg, box.isValid() ? scaledBox : QRectF(), origH, origW);
+        auto [lowRes, iou] = m_impl->runDecoder(embedding, scaledPos, scaledNeg, box.isValid() ? scaledBox : QRectF());
 
         if (m_impl->cancelled) {
             result.cancelled = true;
@@ -676,8 +805,11 @@ SamNativeResult SamOnnxInference::predict(const cv::Mat& image, const QList<QPoi
         // lowRes: [1,3,256,256]，iou: [1,3]
         const float* iouPtr = (const float*) iou.data;
         QList<QPair<double, int>> scored; // (score, channelIndex)
-        for (int c = 0; c < 3; ++c)
+        for (int c = 0; c < 3; ++c) {
+            if (!std::isfinite(iouPtr[c]))
+                throw std::runtime_error("decoder 输出非有限分数");
             scored.append({iouPtr[c], c});
+        }
         // 降序排序
         std::sort(scored.begin(), scored.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
 

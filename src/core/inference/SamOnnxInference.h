@@ -49,8 +49,7 @@ public:
     // 同步执行（调用方应在工作线程调用）
     // image 契约：**必须为 RGB 格式的 3 通道 cv::Mat**（与 SamPredictor.set_image 的
     // RGB 口径一致；cv::imread 返回 BGR，调用方须先 cvtColor BGR→RGB）
-    // 预处理使用 cv::INTER_LINEAR 近似 PIL 双线性（阶段1 参考实现的口径），
-    // 已知存在亚像素级重采样差异——精度等价性由逐像素/分数对照回归验证
+    // 预处理按阶段1参考实现的 Pillow RGB8 双线性/抗锯齿口径重采样
     SamNativeResult predict(const cv::Mat& image, const QList<QPointF>& positivePoints,
                             const QList<QPointF>& negativePoints, const QRectF& box = QRectF());
 
