@@ -1,6 +1,14 @@
 // 阶段2 测试：原生 SAM ONNX 推理核心——无 Python 真实模型流程、缓存失效、失败关闭
+#include "core/agent/AgentActor.h"
+#include "core/agent/SamPredictor.h"
+#include "core/agent/ToolSchema.h"
+#include "core/common/CancellationToken.h"
+#include "core/deeplux/DataContract.h"
 #include "core/inference/SamOnnxInference.h"
 #include "core/inference/SamPillowResize.h"
+#include "core/model/AnnotationMaskOps.h"
+#include "core/model/ImageData.h"
+#include "plugins/detection/SamPredict/SamPredictPlugin.h"
 
 #include <QCryptographicHash>
 #include <QFile>
@@ -26,6 +34,7 @@ private slots:
         m_packageDir = QStringLiteral(TEST_SAM_PACKAGE_DIR);
         QVERIFY2(QFile::exists(m_packageDir + "/manifest.json"),
                  qPrintable(QString("缺少 SAM 模型包：%1").arg(m_packageDir)));
+        qputenv("DEEPLUX_SAM_PACKAGE", QFile::encodeName(m_packageDir));
     }
 
     void loadAndPredict() {
@@ -198,6 +207,88 @@ private slots:
         for (int y = 0; y < resized.rows; ++y)
             hash.addData(reinterpret_cast<const char*>(resized.ptr(y)), resized.cols * resized.elemSize());
         QCOMPARE(hash.result().toHex(), QByteArray("3cf48675ec7b43fc4ca7a35e09682782ca9b24335041b1559443dce276e4c44d"));
+    }
+
+    void nativeProductFlow() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        cv::Mat rgb(480, 640, CV_8UC3, cv::Scalar(96, 110, 100));
+        cv::rectangle(rgb, cv::Rect(200, 150, 80, 60), cv::Scalar(255, 255, 255), -1);
+        cv::Mat bgr;
+        cv::cvtColor(rgb, bgr, cv::COLOR_RGB2BGR);
+        const QString imagePath = dir.path() + "/prompt.png";
+        QVERIFY(cv::imwrite(QFile::encodeName(imagePath).constData(), bgr));
+
+        SamPromptItem item;
+        item.positivePoints = {QPointF(240, 180)};
+        item.label = "defect";
+        const SamPredictOutcome result = runSamPredictBatch("native", imagePath, {item}, 30000);
+        QVERIFY2(result.ok, qPrintable(result.error));
+        QCOMPARE(result.regions.size(), 1);
+        QCOMPARE(result.candidateScores.size(), 1);
+        QCOMPARE(result.candidateScores[0].size(), 3);
+        QCOMPARE(result.regions[0].label, QString("defect"));
+        QCOMPARE(result.candidateScores[0][0], 1.0); // 原始分数可 >1，产品 Region2D 分数裁剪至 [0,1]
+        QVERIFY(result.regions[0].score >= 0.0 && result.regions[0].score <= 1.0);
+        QVERIFY(result.regions[0].bbox.isValid());
+        bool decoded = false;
+        const QImage mask = MaskOps::decodeRle(result.regions[0].maskRle, QSize(640, 480), &decoded);
+        QVERIFY(decoded);
+        QVERIFY(MaskOps::foregroundCount(mask) > 0);
+
+        ToolSchema::instance().registerDefaultTools();
+        AgentActor actor;
+        const QJsonObject toolResult =
+            actor.executeTool("sam_predict", QJsonObject{{"imagePath", imagePath},
+                                                         {"serverUrl", "native"},
+                                                         {"points", QJsonArray{QJsonArray{240, 180}}},
+                                                         {"label", "defect"},
+                                                         {"timeoutMs", 30000}});
+        QVERIFY2(!toolResult.contains("error"), qPrintable(toolResult.value("error").toString()));
+        QCOMPARE(toolResult.value("status").toString(), QString("predicted"));
+        QVERIFY(toolResult.value("maskRleLength").toInt() > 0);
+
+        SamPredictPlugin plugin;
+        QVERIFY(plugin.initialize());
+        QJsonObject params = plugin.defaultParams();
+        params.insert("serverUrl", "native");
+        params.insert("label", "defect");
+        params.insert("points", QJsonArray{QJsonArray{240, 180}});
+        params.insert("timeoutMs", 30000);
+        QString paramError;
+        QVERIFY2(plugin.validateParams(params, paramError), qPrintable(paramError));
+        plugin.setParams(params);
+        QCOMPARE(plugin.currentParams().value("serverUrl").toString(), QString("native"));
+        ImageData pluginOutput;
+        QVERIFY(plugin.execute(ImageData(QImage(imagePath)), pluginOutput));
+        const QVariant regionValue = pluginOutput.data("region");
+        QVERIFY(portValueMatchesType(regionValue, DataType::Region2D));
+        QCOMPARE(regionValue.value<Region2D>().label, QString("defect"));
+        QVERIFY(!regionValue.value<Region2D>().maskRle.isEmpty());
+
+        item.candidateIndex = 3;
+        const SamPredictOutcome invalid = runSamPredictBatch("native", imagePath, {item}, 30000);
+        QVERIFY(!invalid.ok);
+        QCOMPARE(invalid.failedIndex, 0);
+        QVERIFY(invalid.regions.isEmpty());
+        QVERIFY(invalid.error.contains("candidateIndex"));
+
+        item.candidateIndex = 1;
+        const SamPredictOutcome alternative = runSamPredictBatch("native", imagePath, {item}, 30000);
+        QVERIFY2(alternative.ok, qPrintable(alternative.error));
+        QVERIFY(alternative.regions[0].maskRle != result.regions[0].maskRle);
+
+        CancellationToken cancelled;
+        cancelled.cancel();
+        const SamPredictOutcome stopped = runSamPredictBatch("native", imagePath, {item}, 30000, &cancelled);
+        QVERIFY(!stopped.ok);
+        QVERIFY(stopped.error.contains("取消"));
+
+        qunsetenv("DEEPLUX_SAM_PACKAGE");
+        const SamPredictOutcome unconfigured = runSamPredictBatch("native", imagePath, {item}, 30000);
+        QVERIFY(!unconfigured.ok);
+        QVERIFY(unconfigured.error.contains("DEEPLUX_SAM_PACKAGE"));
+        qputenv("DEEPLUX_SAM_PACKAGE", QFile::encodeName(m_packageDir));
     }
 
     void rejectsManifestMismatch() {

@@ -4,12 +4,12 @@
     "category": "detection",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "SAM 点/框 prompt 分割：调用 sam_server 完成 set_image+predict，输出强类型 Region2D（polygon/bbox/maskRle/score/label）；超时或后端错误失败关闭",
+    "description": "SAM 点/框 prompt 分割：HTTP sam_server 或显式 native ONNX 模式，输出强类型 Region2D（polygon/bbox/maskRle/score/label）；超时或后端错误失败关闭",
     "ui": {
         "parameters": {
             "serverUrl": {
                 "order": 10,
-                "label": "SAM 服务地址"
+                "label": "SAM 服务地址或 native"
             },
             "label": {
                 "order": 20,

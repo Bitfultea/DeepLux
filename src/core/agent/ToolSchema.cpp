@@ -209,11 +209,11 @@ void ToolSchema::registerDefaultTools() {
                   "module parameters, workflows, and best practices when you're unsure.",
                   {{"topic", "string", "Topic to look up (e.g. 'FindCircle', 'workflow', 'GrabImage params')", true}}});
 
-    // sam_predict（SAM 批3）：经本地 SAM 服务对磁盘图像做单次 prompt 分割。
+    // sam_predict（SAM 批3）：对磁盘图像做单次 prompt 分割。
     // 非 readOnly（触发外部推理而非观察应用状态）、非 dangerous（不写任何文件）
     registerTool({"sam_predict",
-                  "Run SAM segmentation on an image file with point/box prompts via the local "
-                  "SAM server (must be running). Returns label/score/bbox/polygon of the region. "
+                  "Run SAM segmentation on an image file with point/box prompts via an HTTP SAM server "
+                  "or explicit native ONNX mode. Returns label/score/bbox/polygon of the region. "
                   "Fails closed on timeout, backend error or contract-invalid region.",
                   {{"imagePath", "string", "Absolute path to an existing image file", true},
                    {"points", "array", "Positive prompt points [[x,y],...] with finite numbers", false},
@@ -224,7 +224,8 @@ void ToolSchema::registerDefaultTools() {
                     "Pick among SAM multi-mask candidates sorted by score desc (0=best, default); "
                     "fails closed if the server returned no candidates or the index is out of range",
                     false, QJsonValue(0)},
-                   {"serverUrl", "string", "SAM server base URL", false, QJsonValue("http://127.0.0.1:8990")},
+                   {"serverUrl", "string", "SAM server URL, or 'native' with DEEPLUX_SAM_PACKAGE", false,
+                    QJsonValue("http://127.0.0.1:8990")},
                    {"timeoutMs", "integer", "Per-request timeout in ms, [100,120000]", false, QJsonValue(30000)}}});
 
     // sam_annotate（SAM 批3，批4 扩展）：批量 prompt 分割并写入标注会话文件。
@@ -246,7 +247,8 @@ void ToolSchema::registerDefaultTools() {
                     "(1-16 usable rectangles; non-rectangles skipped and reported; "
                     "mutually exclusive with items)",
                     false},
-                   {"serverUrl", "string", "SAM server base URL", false, QJsonValue("http://127.0.0.1:8990")},
+                   {"serverUrl", "string", "SAM server URL, or 'native' with DEEPLUX_SAM_PACKAGE", false,
+                    QJsonValue("http://127.0.0.1:8990")},
                    {"timeoutMs", "integer", "Per-request timeout in ms, [100,120000]", false, QJsonValue(30000)}},
                   true}); // dangerous（写文件）
 }

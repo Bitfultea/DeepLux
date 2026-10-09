@@ -417,7 +417,7 @@ set_tests_properties(ui_capture_mainwindow PROPERTIES
 # ========== 阶段2：原生 SAM ONNX 推理测试（条件编译）==========
 if(DEEPLUX_NATIVE_SAM)
     add_executable(test_sam_onnx_inference test_sam_onnx_inference.cpp)
-    target_link_libraries(test_sam_onnx_inference PRIVATE deeplux_core)
+    target_link_libraries(test_sam_onnx_inference PRIVATE deeplux_core SamPredictPlugin)
     if(Qt6_FOUND)
         target_link_libraries(test_sam_onnx_inference PRIVATE Qt6::Core Qt6::Test)
     else()

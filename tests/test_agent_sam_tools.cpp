@@ -60,6 +60,17 @@ private slots:
         ToolSchema::instance().registerDefaultTools();
     }
 
+#ifndef DEEPLUX_HAS_ONNXRUNTIME
+    void nativeModeUnavailableFailsClosed() {
+        SamPromptItem item;
+        item.positivePoints = {QPointF(32, 24)};
+        const SamPredictOutcome result = runSamPredictBatch("native", m_imagePath, {item}, 5000);
+        QVERIFY(!result.ok);
+        QVERIFY(result.error.contains("未启用原生"));
+        QVERIFY(result.regions.isEmpty());
+    }
+#endif
+
     // ---------- sam_predict ----------
 
     void samPredictSuccessAgainstTestServer() {

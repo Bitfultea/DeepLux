@@ -15,8 +15,8 @@ class CancellationToken;
 /**
  * @brief 同步 SAM 预测核心（SAM 批3：SamPredictPlugin 与 Agent 工具共享）
  *
- * 单一实现收口"栈上 SamBackendClient + 本地事件循环"的同步预测语义
- * （NAM 线程亲和 = 调用线程）：set_image 一次、embedding 复用、逐项 predict。
+ * HTTP 模式用栈上 SamBackendClient + 本地事件循环；显式 serverUrl="native"
+ * 时使用 DEEPLUX_SAM_PACKAGE 指定的原生 ONNX 模型包。
  * 失败关闭：超时/后端错误/取消/区域无效或不符合 Region2D 契约（含非有限
  * 数值、score 越界）均不伪造区域。
  */
@@ -46,10 +46,12 @@ struct SamPredictOutcome {
 
 /**
  * 同步执行 set_image + N×predict。
- * - serverUrl/imagePath 先行校验（空/不存在失败关闭，不发网络请求）
+ * - serverUrl/imagePath 先行校验（空/不存在失败关闭，不发网络请求）；
+ *   native 仅在 DEEPLUX_NATIVE_SAM=ON 构建中可用，不会静默回退 Python
  * - timeoutMs ∈ [100,120000]，为"单请求"客户端超时；外层 deadline=timeoutMs+2000
  *   仅作客户端定时器故障兜底，且每收到一次响应重置（批1 复核二轮 P2-2 口径）
- * - cancel 非空时 100ms 轮询，取消后 error="SAM 预测已取消"
+ * - HTTP 模式 cancel 每 100ms 轮询；原生模式在模型操作前后检查取消，
+ *   timeoutMs 为操作完成后的失败关闭上限，不能中断正在执行的 ORT 调用
  * - 每个产物在返回前过 Region2D 端口契约门禁（portValueMatchesType），
  *   不合格视为后端错误失败关闭
  */
