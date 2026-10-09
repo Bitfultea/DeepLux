@@ -1,6 +1,8 @@
 // 阶段2 测试：原生 SAM ONNX 推理核心——无 Python 真实模型流程、缓存失效、失败关闭
 #include "core/inference/SamOnnxInference.h"
+#include "core/inference/SamPillowResize.h"
 
+#include <QCryptographicHash>
 #include <QFile>
 #include <QImage>
 #include <QJsonArray>
@@ -132,31 +134,20 @@ private slots:
                 goldenMasks[j] = cv::imread(QFile::encodeName(path).constData(), cv::IMREAD_GRAYSCALE);
                 QVERIFY2(!goldenMasks[j].empty(), qPrintable(path));
             }
-            std::array<std::array<bool, 3>, 3> compatible{};
             for (int i = 0; i < 3; ++i) {
                 const auto& candidate = r.candidates[i];
-                for (int j = 0; j < 3; ++j) {
-                    if (std::abs(candidate.score - testCase.scores[j]) > 0.01)
-                        continue;
-                    cv::Mat intersection, united;
-                    cv::bitwise_and(candidate.mask, goldenMasks[j], intersection);
-                    cv::bitwise_or(candidate.mask, goldenMasks[j], united);
-                    const int unionPixels = cv::countNonZero(united);
-                    if (!unionPixels || double(cv::countNonZero(intersection)) / unionPixels < 0.99)
-                        continue;
-                    const cv::Rect bbox = cv::boundingRect(goldenMasks[j]);
-                    const QRectF& actual = candidate.bbox;
-                    compatible[i][j] = std::abs(actual.x() - bbox.x) <= 1 && std::abs(actual.y() - bbox.y) <= 1 &&
-                                       std::abs(actual.width() - bbox.width) <= 1 &&
-                                       std::abs(actual.height() - bbox.height) <= 1;
-                }
+                QVERIFY2(std::abs(candidate.score - testCase.scores[i]) <= 0.01, testCase.name);
+                cv::Mat intersection, united;
+                cv::bitwise_and(candidate.mask, goldenMasks[i], intersection);
+                cv::bitwise_or(candidate.mask, goldenMasks[i], united);
+                const int unionPixels = cv::countNonZero(united);
+                QVERIFY2(unionPixels && double(cv::countNonZero(intersection)) / unionPixels >= 0.99, testCase.name);
+                const cv::Rect bbox = cv::boundingRect(goldenMasks[i]);
+                const QRectF& actual = candidate.bbox;
+                QVERIFY2(std::abs(actual.x() - bbox.x) <= 1 && std::abs(actual.y() - bbox.y) <= 1 &&
+                             std::abs(actual.width() - bbox.width) <= 1 && std::abs(actual.height() - bbox.height) <= 1,
+                         testCase.name);
             }
-            std::array<int, 3> order{0, 1, 2};
-            bool matched = false;
-            do {
-                matched = compatible[0][order[0]] && compatible[1][order[1]] && compatible[2][order[2]];
-            } while (!matched && std::next_permutation(order.begin(), order.end()));
-            QVERIFY2(matched, qPrintable(QString("%1: scores/masks/bboxes differ from PyTorch").arg(testCase.name)));
         }
     }
 
@@ -195,13 +186,27 @@ private slots:
         QVERIFY(std::abs(result.candidates[2].bbox.height() - 295) <= 1);
     }
 
+    void portraitResizeMatchesPillowPixels() {
+        cv::Mat image(1200, 480, CV_8UC3);
+        for (int y = 0; y < image.rows; ++y) {
+            auto* row = image.ptr<cv::Vec3b>(y);
+            for (int x = 0; x < image.cols; ++x)
+                row[x] = cv::Vec3b((x * 17 + y * 13) % 256, (x * 7 + y * 29 + 53) % 256, (x * 31 + y * 3 + 101) % 256);
+        }
+        const cv::Mat resized = SamNativeDetail::resizePillowBilinear(image, cv::Size(410, 1024));
+        QCryptographicHash hash(QCryptographicHash::Sha256);
+        for (int y = 0; y < resized.rows; ++y)
+            hash.addData(reinterpret_cast<const char*>(resized.ptr(y)), resized.cols * resized.elemSize());
+        QCOMPARE(hash.result().toHex(), QByteArray("3cf48675ec7b43fc4ca7a35e09682782ca9b24335041b1559443dce276e4c44d"));
+    }
+
     void rejectsManifestMismatch() {
         QFile source(m_packageDir + "/manifest.json");
         QVERIFY(source.open(QIODevice::ReadOnly));
         const QJsonObject original = QJsonDocument::fromJson(source.readAll()).object();
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
-        for (int variant = 0; variant < 4; ++variant) {
+        for (int variant = 0; variant < 5; ++variant) {
             QJsonObject manifest = original;
             QString expectedError;
             if (variant == 0) {
@@ -219,11 +224,16 @@ private slots:
                 } else if (variant == 2) {
                     preprocessing["order"] = "pad before normalize";
                     expectedError = "preprocessing";
-                } else {
+                } else if (variant == 3) {
                     QJsonObject resize = preprocessing.value("resize").toObject();
                     resize["targetSize"] = 1024.5;
                     preprocessing["resize"] = resize;
                     expectedError = "preprocessing.resize.targetSize";
+                } else {
+                    QJsonObject resize = preprocessing.value("resize").toObject();
+                    resize["interpolation"] = "nearest";
+                    preprocessing["resize"] = resize;
+                    expectedError = "preprocessing.resize.interpolation";
                 }
                 manifest["preprocessing"] = preprocessing;
             }
