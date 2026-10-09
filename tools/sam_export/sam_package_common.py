@@ -44,7 +44,7 @@ def load_manifest(package_dir: str) -> dict:
        路径分隔符与 .. 穿越——保证包自包含），文件存在、SHA-256 与大小
        逐字节核对。"""
     man_path = os.path.join(package_dir, "manifest.json")
-    if not os.path.isfile(man_path):
+    if not os.path.isfile(man_path) or os.path.islink(man_path):
         raise PackageError(f"模型包缺少 manifest.json：{package_dir}")
     with open(man_path, encoding="utf-8") as f:
         try:
@@ -54,7 +54,7 @@ def load_manifest(package_dir: str) -> dict:
     if not isinstance(manifest, dict):
         raise PackageError("manifest.json 必须为 JSON 对象")
     fv = manifest.get("formatVersion")
-    if fv != FORMAT_VERSION:
+    if type(fv) is not int or fv != FORMAT_VERSION:
         raise PackageError(f"不支持的模型包格式版本：{fv!r}（本工具支持 {FORMAT_VERSION}）")
     family = manifest.get("family")
     if family != FAMILY:
@@ -67,6 +67,10 @@ def load_manifest(package_dir: str) -> dict:
         value = manifest.get(field)
         if not isinstance(value, dict) or not value:
             raise PackageError(f"manifest 缺少必需语义字段 {field!r}（必须为非空对象；调用方依赖该契约）")
+        expected = v1_runtime_semantics()[field]
+        if json.dumps(value, sort_keys=True, ensure_ascii=False) != json.dumps(expected, sort_keys=True,
+                                                                               ensure_ascii=False):
+            raise PackageError(f"manifest.{field} 与受支持的 SAM1 ViT-B v1 运行语义不符")
     files = manifest.get("files")
     if not isinstance(files, dict) or "encoder" not in files or "decoder" not in files:
         raise PackageError("manifest.files 必须包含 encoder 与 decoder")
@@ -76,16 +80,19 @@ def load_manifest(package_dir: str) -> dict:
             raise PackageError(f"manifest.files.{name} 必须为对象")
         fname = entry.get("file")
         # 包自包含：仅允许包目录内的裸文件名（拒绝绝对路径/子目录/.. 穿越）
-        if not isinstance(fname, str) or not fname or fname != os.path.basename(fname) or os.path.isabs(fname):
+        if (not isinstance(fname, str) or not fname or fname in (".", "..") or "/" in fname or "\\" in fname
+                or fname != os.path.basename(fname) or os.path.isabs(fname)):
             raise PackageError(f"manifest.files.{name}.file 必须为包内相对文件名（拒绝绝对路径与穿越）：{fname!r}")
         path = os.path.join(package_dir, fname)
-        if not os.path.isfile(path):
+        if not os.path.isfile(path) or os.path.islink(path):
             raise PackageError(f"模型包缺少 {name} 文件：{fname!r}")
+        if type(entry.get("sizeBytes")) is not int or entry["sizeBytes"] < 0:
+            raise PackageError(f"manifest.files.{name}.sizeBytes 必须为非负整数")
         actual = sha256_file(path)
         if actual != entry.get("sha256"):
             raise PackageError(f"{name} SHA-256 不符：manifest={entry.get('sha256')} 实际={actual}")
         size = os.path.getsize(path)
-        if entry.get("sizeBytes") is not None and size != entry["sizeBytes"]:
+        if size != entry["sizeBytes"]:
             raise PackageError(f"{name} 大小不符：manifest={entry['sizeBytes']} 实际={size}")
     return manifest
 
@@ -131,6 +138,49 @@ def preprocess_image(img_rgb: np.ndarray, target: int = 1024) -> tuple:
 
 PIXEL_MEAN = [123.675, 116.28, 103.53]
 PIXEL_STD = [58.395, 57.12, 57.375]
+
+
+def v1_runtime_semantics(pixel_mean=None, pixel_std=None, target_size: int = 1024) -> dict:
+    """The fixed SAM1 ViT-B caller-side contract shared by export and import."""
+    if target_size != 1024:
+        raise PackageError(f"SAM1 ViT-B v1 仅支持 1024 输入，收到 {target_size}")
+    mean = pixel_mean if pixel_mean is not None else [float(np.float32(v)) for v in PIXEL_MEAN]
+    std = pixel_std if pixel_std is not None else [float(np.float32(v)) for v in PIXEL_STD]
+    return {
+        "preprocessing": {
+            "colorOrder": "RGB",
+            "resize": {"mode": "longestSide", "targetSize": target_size,
+                       "interpolation": "ResizeLongestSide.apply_image 口径：torchvision resize(to_pil_image)（PIL 双线性；"
+                                        "阶段2 C++ 重采样器须与门禁对照验证）"},
+            "order": "先归一化后零填充（Sam.preprocess 顺序；填充值为归一化空间的 0）",
+            "pad": {"to": [target_size, target_size], "value": 0.0, "sides": ["bottom", "right"]},
+            "normalize": {"scale": "0-255 float32（不除 255）", "mean": mean, "std": std},
+        },
+        "coordinateTransform": {
+            "mode": "scale-only（ResizeLongestSide.apply_coords/apply_boxes）",
+            "factor": "new/old，new = int(old * 1024 / max(h,w) + 0.5)（get_preprocess_shape 口径）",
+            "space": "decoder 的 point_coords/boxes 均为变换后 1024 尺度；boxes 为 xyxy",
+        },
+        "semantics": {
+            "decoderOutputs": "low_res_masks [1,3,256,256] 为 logits；iou_predictions [1,3] 为未 clamp "
+                              "原始值（F1：可 >1，阶段1 门禁按原始值比较）",
+            "postprocess": {
+                "mode": "caller",
+                "reference": "Sam.postprocess_masks（官方 wrapper 将其入图，动态 size 插值在 torch 2.13 "
+                             "legacy tracer 不可导出，故由调用方执行）",
+                "steps": ["bilinear 256→1024²（align_corners=False）",
+                          "去填充裁剪 [..., :input_h, :input_w]，input_size=ResizeLongestSide."
+                          "get_preprocess_shape(原图)——非方形图缺此步会拉伸错位",
+                          "bilinear input_size→原图 (h,w)（align_corners=False）",
+                          "阈值 >0（等价 predictor mask_threshold=0.0）"],
+            },
+            "candidateSelection": "下游按 sam_server 语义：np.argsort(-scores) 降序；best=第 0；candidates=全量",
+            "promptEncoding": "point_labels：1=正点 0=负点；boxes xyxy；零尺寸维表示未提供该类 prompt",
+            "unsupported": ["mask_input/has_mask_input（掩膜 prompt 未导出，导入含该输入的包须报错）",
+                            "orig_im_size 图内 postprocess（本包为 caller 模式）",
+                            "vit_l/vit_h（首版仅 vit_b）", "sam2/sam3（family 不符须报错）"],
+        },
+    }
 
 
 def get_preprocess_shape(orig_hw: tuple, target: int = 1024) -> tuple:

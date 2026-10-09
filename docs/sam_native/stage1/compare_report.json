@@ -1163,6 +1163,16 @@
             110
           ],
           "radius": 3,
+          "prompt": {
+            "pos": [
+              [
+                120,
+                110
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
           "pass": true,
           "ranks": [
             {
@@ -1238,7 +1248,10 @@
               "pass": true
             }
           ],
-          "tieAdjusted": false
+          "countEqual": true,
+          "selectedEqual": true,
+          "tieAdjusted": false,
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "defect": 1,
@@ -1247,6 +1260,16 @@
             247
           ],
           "radius": 10,
+          "prompt": {
+            "pos": [
+              [
+                310,
+                247
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
           "pass": true,
           "ranks": [
             {
@@ -1322,7 +1345,10 @@
               "pass": true
             }
           ],
-          "tieAdjusted": false
+          "countEqual": true,
+          "selectedEqual": true,
+          "tieAdjusted": false,
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "defect": 2,
@@ -1331,6 +1357,16 @@
             384
           ],
           "radius": 9,
+          "prompt": {
+            "pos": [
+              [
+                500,
+                384
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
           "pass": true,
           "ranks": [
             {
@@ -1406,7 +1442,10 @@
               "pass": true
             }
           ],
-          "tieAdjusted": false
+          "countEqual": true,
+          "selectedEqual": true,
+          "tieAdjusted": false,
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "defect": 3,
@@ -1415,6 +1454,16 @@
             521
           ],
           "radius": 8,
+          "prompt": {
+            "pos": [
+              [
+                690,
+                521
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
           "pass": true,
           "ranks": [
             {
@@ -1490,7 +1539,10 @@
               "pass": true
             }
           ],
-          "tieAdjusted": false
+          "countEqual": true,
+          "selectedEqual": true,
+          "tieAdjusted": false,
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "defect": 4,
@@ -1499,6 +1551,16 @@
             158
           ],
           "radius": 7,
+          "prompt": {
+            "pos": [
+              [
+                880,
+                158
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
           "pass": true,
           "ranks": [
             {
@@ -1574,7 +1636,10 @@
               "pass": true
             }
           ],
-          "tieAdjusted": false
+          "countEqual": true,
+          "selectedEqual": true,
+          "tieAdjusted": false,
+          "transformParityMaxAbsDiff": 0.0
         },
         {
           "defect": 5,
@@ -1583,6 +1648,16 @@
             295
           ],
           "radius": 6,
+          "prompt": {
+            "pos": [
+              [
+                1070,
+                295
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
           "pass": true,
           "ranks": [
             {
@@ -1658,7 +1733,10 @@
               "pass": true
             }
           ],
-          "tieAdjusted": false
+          "countEqual": true,
+          "selectedEqual": true,
+          "tieAdjusted": false,
+          "transformParityMaxAbsDiff": 0.0
         }
       ]
     },

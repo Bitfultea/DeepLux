@@ -9,7 +9,7 @@
     {
       "name": "manifest-semantic-fields",
       "pass": true,
-      "detail": "必需语义字段齐备: preprocessing, coordinateTransform, semantics；files.*.file 均为包内裸文件名（拒绝绝对路径/子目录/.. 穿越）"
+      "detail": "完整 SAM1 ViT-B v1 运行语义已匹配: preprocessing, coordinateTransform, semantics；模型文件为包内普通文件（拒绝路径穿越与符号链接）"
     },
     {
       "name": "onnx.checker",

@@ -41,6 +41,8 @@ import tempfile
 
 import torch
 
+import sam_package_common as C
+
 FORMAT_VERSION = 1
 FAMILY = "sam1"
 
@@ -314,45 +316,13 @@ def main() -> int:
                     "outputs": dec_out,
                 },
             },
-            "preprocessing": {
-                "colorOrder": "RGB",
-                "resize": {"mode": "longestSide", "targetSize": int(sam.image_encoder.img_size),
-                            "interpolation": "ResizeLongestSide.apply_image 口径：torchvision resize(to_pil_image)（PIL 双线性；"
-                                             "阶段2 C++ 重采样器须与门禁对照验证）"},
-                "order": "先归一化后零填充（Sam.preprocess 顺序；填充值为归一化空间的 0）",
-                "pad": {"to": [int(sam.image_encoder.img_size)] * 2, "value": 0.0, "sides": ["bottom", "right"]},
-                "normalize": {"scale": "0-255 float32（不除 255）", "mean": pixel_mean, "std": pixel_std},
-            },
-            "coordinateTransform": {
-                "mode": "scale-only（ResizeLongestSide.apply_coords/apply_boxes）",
-                "factor": "new/old，new = round(old * 1024 / max(h,w))（get_preprocess_shape 口径）",
-                "space": "decoder 的 point_coords/boxes 均为变换后 1024 尺度；boxes 为 xyxy",
-            },
-            "semantics": {
-                "decoderOutputs": "low_res_masks [1,3,256,256] 为 logits；iou_predictions [1,3] 为未 clamp "
-                                  "原始值（F1：可 >1，阶段1 门禁按原始值比较）",
-                "postprocess": {
-                    "mode": "caller",
-                    "reference": "Sam.postprocess_masks（官方 wrapper 将其入图，动态 size 插值在 torch 2.13 "
-                                 "legacy tracer 不可导出，故由调用方执行）",
-                    "steps": ["bilinear 256→1024²（align_corners=False）",
-                               "去填充裁剪 [..., :input_h, :input_w]，input_size=ResizeLongestSide."
-                               "get_preprocess_shape(原图)——非方形图缺此步会拉伸错位",
-                               "bilinear input_size→原图 (h,w)（align_corners=False）",
-                               "阈值 >0（等价 predictor mask_threshold=0.0）"],
-                },
-                "candidateSelection": "下游按 sam_server 语义：np.argsort(-scores) 降序；best=第 0；candidates=全量",
-                "promptEncoding": "point_labels：1=正点 0=负点；boxes xyxy；零尺寸维表示未提供该类 prompt",
-                "unsupported": ["mask_input/has_mask_input（掩膜 prompt 未导出，导入含该输入的包须报错）",
-                                 "orig_im_size 图内 postprocess（本包为 caller 模式）",
-                                 "vit_l/vit_h（首版仅 vit_b）", "sam2/sam3（family 不符须报错）"],
-            },
             "exportTool": {
                 "script": "tools/sam_export/export_sam_package.py",
                 "torch": torch.__version__,
                 "python": sys.version.split()[0],
             },
         }
+        manifest.update(C.v1_runtime_semantics(pixel_mean, pixel_std, int(sam.image_encoder.img_size)))
         try:
             import onnx as onnx_mod
 

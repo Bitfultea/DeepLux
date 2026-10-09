@@ -30,9 +30,7 @@ def build_valid_manifest(files_meta):
         "family": "sam1",
         "variant": "vit_b",
         "files": files_meta,
-        "preprocessing": {"colorOrder": "RGB", "normalize": {"mean": [1.0], "std": [1.0]}},
-        "coordinateTransform": {"mode": "scale-only"},
-        "semantics": {"candidateSelection": "argsort(-scores)"},
+        **C.v1_runtime_semantics(),
     }
 
 
@@ -99,6 +97,10 @@ def main():
         expect_reject(f"缺少 {field}", lambda m, _p, f=field: m.pop(f))
         expect_reject(f"{field} 为空对象", lambda m, _p, f=field: m.__setitem__(f, {}))
         expect_reject(f"{field} 非对象", lambda m, _p, f=field: m.__setitem__(f, "x"))
+        expect_reject(f"{field} 任意非空对象", lambda m, _p, f=field: m.__setitem__(f, {"junk": 1}))
+    expect_reject("预处理顺序改变", lambda m, _p: m["preprocessing"].__setitem__("order", "先填充后归一化"))
+    expect_reject("坐标缩放公式改变", lambda m, _p: m["coordinateTransform"].__setitem__("factor", "round"))
+    expect_reject("图内后处理不支持", lambda m, _p: m["semantics"]["postprocess"].__setitem__("mode", "in-graph"))
 
     # P1-2 包自包含：files.*.file 路径
     expect_reject("encoder.file 绝对路径",
@@ -107,6 +109,8 @@ def main():
                   lambda m, _p: m["files"]["decoder"].__setitem__("file", "../decoder.onnx"))
     expect_reject("encoder.file 子目录",
                   lambda m, _p: m["files"]["encoder"].__setitem__("file", "sub/encoder.onnx"))
+    expect_reject("encoder.file Windows 分隔符",
+                  lambda m, _p: m["files"]["encoder"].__setitem__("file", "sub\\encoder.onnx"))
     expect_reject("decoder.file 空串",
                   lambda m, _p: m["files"]["decoder"].__setitem__("file", ""))
     expect_reject("encoder.file 缺失",
@@ -114,18 +118,28 @@ def main():
 
     # 既有契约（回归保护）
     expect_reject("formatVersion 不符", lambda m, _p: m.__setitem__("formatVersion", 2))
+    expect_reject("formatVersion 布尔值", lambda m, _p: m.__setitem__("formatVersion", True))
     expect_reject("family=sam2 明确报错", lambda m, _p: m.__setitem__("family", "sam2"))
     expect_reject("variant=vit_l 明确报错", lambda m, _p: m.__setitem__("variant", "vit_l"))
     expect_reject("sha256 不符",
                   lambda m, _p: m["files"]["encoder"].__setitem__("sha256", "0" * 64))
     expect_reject("sizeBytes 不符",
                   lambda m, _p: m["files"]["decoder"].__setitem__("sizeBytes", 1))
+    expect_reject("sizeBytes 缺失", lambda m, _p: m["files"]["decoder"].pop("sizeBytes"))
+    expect_reject("encoder 符号链接指向包外", move_encoder_outside)
     expect_reject("decoder 文件不存在",
                   lambda m, _p: os.remove(os.path.join(_p, "decoder.onnx")))
 
     print("-----")
     print(f"manifest guards: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1
+
+
+def move_encoder_outside(_manifest, package_dir):
+    source = os.path.join(package_dir, "encoder.onnx")
+    outside = os.path.join(os.path.dirname(package_dir), "outside.onnx")
+    os.replace(source, outside)
+    os.symlink(outside, source)
 
 
 if __name__ == "__main__":

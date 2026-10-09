@@ -1,6 +1,6 @@
 # SAM 原生推理计划 · 阶段1 模型导出报告
 
-## 结论摘要（阶段1 状态：**门禁数值见下；真实工业图集复跑项待 G2**）
+## 结论摘要（阶段1 在用户批准的可得图集范围内通过；生产门禁递延）
 
 | 项 | 状态 |
 |---|---|
@@ -8,26 +8,27 @@
 | ViT-B 解码器 ONNX 导出（含 prompt encoder，多候选输出） | ✅ decoder.onnx（三种 prompt 形态功能冒烟通过，含零尺寸维） |
 | 模型包 manifest v1（格式版本/family=sam1/variant=vit_b/SHA-256） | ✅ + verify 严格校验（不支持的 family/variant/哈希不符均明确报错） |
 | ONNX Runtime CPU 跑通完整预测 | ✅ 图像→encoder→embedding→prompt→decoder→掩膜（verify 冒烟 + compare 全链） |
-| 精度门禁：候选数及选中候选一致 | ✅ 30 case × 3 秩=90 全部一致（ties=0，无平手交换） |
+| 精度门禁：候选数及选中候选一致 | ✅ 合成全分辨率 90 秩；真实缺陷图 297 秩（含内置合成对照），均通过；非平手换首位回归已堵住 |
 | 精度门禁：bbox 偏差 ≤1px | ✅ 全部 0.00 px |
-| 精度门禁：掩膜 IoU ≥0.99 | ✅ 最差 0.999764（全 90 秩，含缺陷用例） |
-| 精度门禁：分数绝对差 ≤0.01（未 clamp 原始值，F1 口径） | ✅ 全 90 秩最差 **8.625e-05**（复核二轮校正：初版 1.8e-05 漏计缺陷用例） |
+| 精度门禁：掩膜 IoU ≥0.99 | ✅ 合成全分辨率最差 0.999764；真实缺陷图最差 0.998989 |
+| 精度门禁：分数绝对差 ≤0.01（未 clamp 原始值，F1 口径） | ✅ 两组最差均 **8.625e-05**（内置合成缺陷用例） |
 | 坐标参考实现纳入门禁（复核二轮 P1-1） | ✅ transformParity 全 case max\|Δ\|=0.0（逐位一致）+ 7 尺寸随机批量对照 worst diff=0.0 |
-| manifest 契约校验（复核二轮 P1-2） | ✅ 必需语义字段+包内路径强制；check_manifest_guards **21/21** |
-| 细小缺陷样本逐图复核 | ✅ 内置确定性合成缺陷图 6/6 缺陷全过（真实缺陷样本待 G2 图集复跑） |
-| 真实工业图集复跑 | ⏳ G2 缺口（阶段0 已记录）——图集到位后以同脚本复跑即得 |
+| manifest 契约校验 | ✅ 完整 SAM1 ViT-B v1 语义、包内路径/符号链接；check_manifest_guards **31/31** |
+| 细小缺陷样本逐图复核 | ✅ 内置合成缺陷 6/6；真实 800×565 工业图 6 张，YOLO-seg 标注 9/9（其中针孔类 6） |
+| 真实全分辨率工业图复跑 | 未覆盖：用户确认暂无原图，允许本阶段改用 800×565 真实缺陷图；不能据此宣称全分辨率生产精度 |
 
 ## 基线 / 交付 / 工作树
 
-- 基线：`e0a91cc`（阶段0 三轮修正）；独立工作树 `~/Data/Worktrees/dl_stage1`，
+- 原始基线：`e0a91cc`（阶段0 三轮修正）；本次复核基线：`1c10642`；独立工作树 `~/Data/Worktrees/dl_stage1`，
   分支 `agent/sam-native-stage1`（主工作区 34 个用户 WIP 文件零接触）
-- 阶段1 提交仅含：`tools/sam_export/*`（4 个新文件）+ `docs/sam_native/stage1*`；
-  **无 C++/CMake 改动**（构建与 CTest 状态与 e0a91cc 验证一致）
+- 本次修正仅涉及 `tools/sam_export/*` 与 `docs/sam_native/stage1*`；
+  **无 C++/CMake 改动**，主工作区用户 WIP 未触碰。本次未重新运行全量 CTest。
 - 模型包与权重**不入库**（仓库规则），仅 SHA-256/规格记录于本文档
 
 ## 模型包
 
-- 路径（开发机）：`~/Data/Models/sam1_vit_b_onnx/`
+- 路径（本机生成/验证）：`~/Data/Models/sam1_vit_b_onnx/`；修正前包备份于
+  `~/Data/Models/sam1_vit_b_onnx.pre_stage1_fix_20260930/`，未覆盖旧 ONNX 权重
 - manifest：formatVersion=1，family=sam1，variant=vit_b
 - 源权重：`~/Downloads/sam_vit_b_01ec64.pth` sha256=`ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912`（375,042,383 B）
 - `encoder.onnx`：sha256=`f6b1ae360681154c691c1947f6931ff6977c16ad92faf97e0ee5f2ad0867be62`（359,210,524 B，opset 17）
@@ -107,7 +108,22 @@ transformParity 门禁 + 配方负点对齐阶段0 neg_seq=103），两图共 24
 > transformParity=0.0 表示参考实现（scale_coords/scale_boxes）与安装版
 > 变换在全部 case 逐位一致。
 
-原始 JSON（逐 case 全指标 + parity）：`stage1/compare_report.json`
+原始 JSON（逐 case 全指标 + parity）：`stage1/compare_report.json`。
+这份报告仅含合成图，不包含下面的真实样本。
+
+### 真实工业缺陷样本（本轮新增）
+
+用户提供图集 `dataset_rank_plus_pinhole_20260811/images/train`，使用同级
+`labels/train` 的 YOLO-seg 多边形，每条标注栅格化后选内部距离最大点作为
+确定性正点。6 张 `new_pinhole_{162,163,165,166,167,168}.png`
+均为 **800×565**；合计 9 条标注（class 0 六条、class 2 三条）。
+工具对每张图运行 12 条混合 prompt，逐标注再运行一点 prompt，并始终包含
+内置合成对照：7 图、84 条混合用例、15 条逐缺陷用例、**297 个候选秩**。
+全部通过；最差 IoU **0.99898888**，最大分数绝对差
+**8.6248e-05**，最大 bbox 偏差 **0px**，坐标变换 parity **0**，
+无 tieAdjusted。逐图 SHA-256、标注 SHA-256、prompt、原始指标见
+`stage1/compare_real_report.json`。这证明导出模型与 PyTorch 路径等价，
+**不证明预测掩膜与人工标注重合**，也不替代真实约 3000×3000 图像验收。
 
 ## 预处理/坐标/postprocess 语义核对（阶段2 必读；复核二轮校正表述）
 
@@ -150,35 +166,42 @@ transformParity 门禁 + 配方负点对齐阶段0 neg_seq=103），两图共 24
 2. encoderCheck cos=0.805 → X2/X3 → 对照脚本改用安装版变换管线；
 3. 非方形图 IoU 0~0.28 → X4 → caller postprocess 补裁剪步；
 4. 复核二轮：坐标参考实现 X5 重写+纳入门禁；load_manifest 补必需语义
-   字段与包内路径校验（check_manifest_guards 21/21）；compare 配方负点
+   字段与包内路径校验（当时 check_manifest_guards 21/21）；compare 配方负点
    偏移对齐阶段0（neg_seq=103，初版 n=12 时 posneg 负点与阶段0 序列
    不一致，「同配方」声明一度不实）；文档 X1 错误表述撤回。
 
-## 包校验（verify_sam_package.py 8/8 PASS + check_manifest_guards.py 21/21）
+## 包校验（verify_sam_package.py 8/8 PASS + check_manifest_guards.py 31/31）
 
-verify：manifest 严格 schema（formatVersion/family/variant/必需语义字段
-preprocessing/coordinateTransform/semantics——复核二轮 P1-2 补全，缺失/
-空对象/非对象均拒绝；files.*.file 仅允许包内裸文件名，绝对路径/子目录/
-`..` 穿越拒绝=包自包含）、SHA-256 与大小逐字节核对、onnx.checker、ORT
+verify：manifest 严格 schema（formatVersion/family/variant/完整 v1 运行语义
+preprocessing/coordinateTransform/semantics；任意非空伪对象、错误预处理
+顺序/坐标公式/后处理模式均拒绝；files.*.file 仅允许包内裸文件名，
+绝对路径/子目录/`..` 穿越及包内符号链接拒绝）、SHA-256 与大小逐字节核对、onnx.checker、ORT
 实测 IO 与 manifest 一致（名称/dtype/静态维/动态维符号）、encoder 冒烟
 （有限 embedding）、decoder 三形态冒烟（points-only/box-only/mixed，含
 零尺寸维；坐标经修正后的参考实现变换）。原始 JSON：
 `stage1/verify_report.json`。
 
-拒绝用例回归 check_manifest_guards.py **21/21**（1 正向对照 + 20 拒绝：
-三个必需语义字段 ×{缺失/空/非对象}、绝对路径/../穿越/子目录/空串/缺失
-file 名、formatVersion/family=sam2/variant=vit_l、sha256/sizeBytes 不符、
-文件不存在——全部 PackageError 失败关闭，复核方内存删字段场景已覆盖）。
+拒绝用例回归 check_manifest_guards.py **31/31**（1 正向对照 + 30 拒绝：
+必需语义字段缺失/空/非对象/伪对象、错误运行语义、跨平台路径穿越、
+bool 版本号、缺失大小、包外符号链接、哈希/大小不符等）。
+`check_compare_guards.py` 的非平手首位换位、真平手、空候选、YOLO 标注
+合法/畸形/缺失回归亦通过；旧门禁可能将非平手换首位当作通过，现仅
+在两侧原始分数均处于 <0.01 平手带时容许换位。
 
 ## 证据文件清单（docs/sam_native/stage1/）
 
 - `verify_report.json` —— 包校验逐项结果
-- `compare_report.json` —— 精度门禁原始数据（逐 case 全指标 + encoderCheck + 逐缺陷复核）
+- `compare_report.json` —— 合成 3000×3000 + 内置缺陷对照原始数据
+- `compare_real_report.json` —— 6 张真实图 + 标注逐缺陷对照原始数据
 
 ## 缺口与待办
 
 | # | 项 | 说明 |
 |---|---|---|
-| G2 | 真实工业图集 | 细小缺陷「逐图复核」当前以确定性合成缺陷图执行（6 缺陷 3-10px）；真实图集到位后 `compare_onnx_pytorch.py --image …` 复跑即得（脚本零改动） |
-| — | 阶段0 P0（CUDA/生产机基线） | 不受阶段1 影响，仍待目标机资源 |
+| G1 | 机台角色 | 当前 RTX 3090 本机按**生成/验证机**使用，不认定为最终生产机；模型包应可迁移，但目标机部署、CUDA 与端到端耗时仍需独立验收 |
+| G2 | 真实全分辨率工业图 | 用户确认暂无约 3000×3000 原图，批准本阶段使用其他尺寸；已用 6 张真实 800×565 缺陷图与同名标注逐缺陷复核。未来取得原图后须补跑，不得把合成图或 800×565 结果表述为全分辨率证据 |
 | — | F1 契约裁决 | 本包输出原始分数（可>1）；阶段2/3 接入产品时须落地 clamp/放宽裁决（阶段0 G5） |
+
+阶段1 的导出与当前可得真实数据等价门禁已通过，可以推进阶段2。
+G1 的目标机部署/CUDA 性能和 G2 的真实全分辨率精度仍是生产验收缺口，
+本阶段通过不等于这些门禁通过。

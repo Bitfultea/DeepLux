@@ -78,11 +78,9 @@ def main() -> int:
         manifest = C.load_manifest(args.package)
         record("manifest+sha256", True,
                f"formatVersion={manifest['formatVersion']} family={manifest['family']} variant={manifest['variant']}")
-        # 复核二轮 P1-2：必需语义字段与包内相对路径已由 load_manifest 强制，
-        # 此处显式记录逐项在场（preprocessing/coordinateTransform/semantics）
         record("manifest-semantic-fields", True,
-               "必需语义字段齐备: " + ", ".join(C.REQUIRED_SEMANTIC_FIELDS)
-               + "；files.*.file 均为包内裸文件名（拒绝绝对路径/子目录/.. 穿越）")
+               "完整 SAM1 ViT-B v1 运行语义已匹配: " + ", ".join(C.REQUIRED_SEMANTIC_FIELDS)
+               + "；模型文件为包内普通文件（拒绝路径穿越与符号链接）")
     except C.PackageError as exc:
         record("manifest+sha256", False, str(exc))
         _finish(report, args.json)

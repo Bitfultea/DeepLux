@@ -26,14 +26,17 @@ predictor 内部 embedding 逐元素对比（max_abs/mean_abs/cosine）。
   PYTHONPATH=<deps> ~/.deeplux/sam_env/bin/python compare_onnx_pytorch.py \
       --package ~/Data/Models/sam1_vit_b_onnx \
       --checkpoint ~/Downloads/sam_vit_b_01ec64.pth \
-      [--image path.png ...] [--cases-per-image 12] [--json out.json]
+      [--image path.png ...] [--yolo-labels-dir path/to/labels] \
+      [--cases-per-image 12] [--json out.json]
 内置确定性细小缺陷合成图始终参与（逐缺陷复核）；--image 可追加真实图。
+--yolo-labels-dir 为每张 --image 读取同名 YOLO-seg 文件并生成逐缺陷点 prompt。
 退出码：0 全部通过；2 参数错误；4 任一门禁不通过（失败关闭）。
 """
 
 import argparse
 import hashlib
 import json
+import os
 import sys
 
 import numpy as np
@@ -63,6 +66,44 @@ def load_image_rgb(path: str) -> np.ndarray:
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
 
+def load_yolo_defects(label_path: str, width: int, height: int) -> list:
+    """Turn each normalized YOLO-seg polygon into a deterministic interior point."""
+    import cv2
+
+    try:
+        with open(label_path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"标注不可读：{label_path}: {exc}") from exc
+    if not lines:
+        raise ValueError(f"标注为空：{label_path}")
+
+    defects = []
+    for line_no, line in enumerate(lines, 1):
+        parts = line.split()
+        if len(parts) < 7 or (len(parts) - 1) % 2:
+            raise ValueError(f"标注第 {line_no} 行不是 YOLO 分割多边形")
+        try:
+            class_id = int(parts[0])
+            values = np.asarray([float(value) for value in parts[1:]], dtype=np.float64)
+        except ValueError as exc:
+            raise ValueError(f"标注第 {line_no} 行含非法数字") from exc
+        if class_id < 0 or not np.isfinite(values).all() or (values < 0).any() or (values > 1).any():
+            raise ValueError(f"标注第 {line_no} 行类别或归一化坐标非法")
+        points = np.rint(values.reshape(-1, 2) * [width - 1, height - 1]).astype(np.int32)
+        if cv2.contourArea(points.astype(np.float32)) <= 0:
+            raise ValueError(f"标注第 {line_no} 行多边形退化")
+        mask = np.zeros((height, width), dtype=np.uint8)
+        cv2.fillPoly(mask, [points], 1)
+        if not mask.any():
+            raise ValueError(f"标注第 {line_no} 行没有有效像素")
+        distance = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+        cy, cx = np.unravel_index(int(distance.argmax()), distance.shape)
+        defects.append({"center": [int(cx), int(cy)], "classId": class_id,
+                        "labelLine": line_no, "areaPixels": int(mask.sum())})
+    return defects
+
+
 def recipe_prompts(n: int, w: int, h: int, neg_seq: int = 103):
     """阶段0 bench 同配方（i%10：0-3 正点 / 4-6 正负点 / 7-9 框选）。
     复核二轮 P2-3：负点偏移必须用阶段0 的**序列总长** neg_seq=103
@@ -88,7 +129,7 @@ def recipe_prompts(n: int, w: int, h: int, neg_seq: int = 103):
 
 
 def compare_candidate_lists(scores_pt, masks_pt, scores_ox, masks_ox):
-    """按 sam_server 语义排序后逐秩对比；平手带内允许秩交换（集合级匹配）。"""
+    """按 sam_server 语义排序后逐秩对比；双侧平手带内才允许秩交换。"""
     order_pt = np.argsort(-np.asarray(scores_pt, dtype=np.float64))
     order_ox = np.argsort(-np.asarray(scores_ox, dtype=np.float64))
     result = {
@@ -98,17 +139,20 @@ def compare_candidate_lists(scores_pt, masks_pt, scores_ox, masks_ox):
         "tieAdjusted": False,
         "pass": True,
     }
-    if not result["countEqual"]:
+    if not result["countEqual"] or not len(order_pt):
         result["pass"] = False
         return result
-    strict_order_ok = bool((order_pt == order_ox).all())
     for r in range(len(order_pt)):
         ip, io = int(order_pt[r]), int(order_ox[r])
         sp, so = float(scores_pt[ip]), float(scores_ox[io])
         iou = C.mask_iou(masks_pt[ip], masks_ox[io])
         bb_p, bb_o = C.mask_to_bbox(masks_pt[ip]), C.mask_to_bbox(masks_ox[io])
         bbox_delta = max(abs(a - b) for a, b in zip(bb_p, bb_o))
-        rank_pass = abs(sp - so) <= SCORE_TOL and iou >= IOU_MIN and bbox_delta <= BBOX_TOL
+        tied_swap = (ip != io and abs(float(scores_pt[ip]) - float(scores_pt[io])) < SCORE_TOL
+                     and abs(float(scores_ox[ip]) - float(scores_ox[io])) < SCORE_TOL)
+        rank_pass = (abs(sp - so) <= SCORE_TOL and iou >= IOU_MIN and bbox_delta <= BBOX_TOL
+                     and (ip == io or tied_swap))
+        result["tieAdjusted"] |= tied_swap
         result["ranks"].append({
             "rank": r, "ptIndex": ip, "onnxIndex": io,
             "scorePt": sp, "scoreOnnx": so, "scoreDelta": abs(sp - so),
@@ -118,13 +162,6 @@ def compare_candidate_lists(scores_pt, masks_pt, scores_ox, masks_ox):
         })
         if not rank_pass:
             result["pass"] = False
-    if not strict_order_ok and result["pass"]:
-        # 秩序不同但逐秩指标全过 → 只可能是平手带内交换：验证相邻分差确在容差内
-        s_pt = np.asarray(scores_pt, dtype=np.float64)[order_pt]
-        adjacent = np.abs(np.diff(s_pt))
-        result["tieAdjusted"] = bool((adjacent < SCORE_TOL).any())
-        if not result["tieAdjusted"]:
-            result["pass"] = False  # 非平手却秩序不同 → 选中候选不一致
     return result
 
 
@@ -177,9 +214,13 @@ def main() -> int:
     ap.add_argument("--package", required=True)
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--image", action="append", default=[], help="追加参与对照的图像（可多次）")
+    ap.add_argument("--yolo-labels-dir", help="为每个 --image 读取同名 YOLO-seg 标注并逐缺陷对照")
     ap.add_argument("--cases-per-image", type=int, default=12)
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
+    if args.yolo_labels_dir and not args.image:
+        print("--yolo-labels-dir 需要至少一个 --image", file=sys.stderr)
+        return 2
 
     try:
         manifest = C.load_manifest(args.package)
@@ -224,19 +265,33 @@ def main() -> int:
     # 图像集合：内置细小缺陷合成图（逐缺陷复核）+ 追加图像
     images = []
     defect_img, defects = C.make_small_defect_image()
-    images.append(("<builtin-small-defects-1280x720>", defect_img, defects))
+    images.append(("<builtin-small-defects-1280x720>", defect_img,
+                   [{"center": [cx, cy], "radius": r} for cx, cy, r in defects], None))
     for path in args.image:
         try:
-            images.append((path, load_image_rgb(path), None))
+            img = load_image_rgb(path)
         except FileNotFoundError:
             print(f"图像不可读：{path}", file=sys.stderr)
             return 2
+        label_path = None
+        image_defects = None
+        if args.yolo_labels_dir:
+            label_path = os.path.join(args.yolo_labels_dir, os.path.splitext(os.path.basename(path))[0] + ".txt")
+            try:
+                image_defects = load_yolo_defects(label_path, img.shape[1], img.shape[0])
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+        images.append((path, img, image_defects, label_path))
 
-    for name, img_rgb, defects in images:
+    for name, img_rgb, defects, label_path in images:
         h, w = img_rgb.shape[:2]
         entry = {"image": name, "size": [w, h], "sha256": None, "encoderCheck": {}, "cases": [], "pass": True}
         if name != "<builtin-small-defects-1280x720>":
             entry["sha256"] = sha256_file(name)
+        if label_path:
+            entry["labelPath"] = label_path
+            entry["labelSha256"] = sha256_file(label_path)
         print(f"== 图像 {name} ({w}x{h}) ==")
 
         # PyTorch embedding（set_image 内部完成安装版预处理）
@@ -278,17 +333,19 @@ def main() -> int:
         # 细小缺陷逐缺陷复核（点 prompt 置于缺陷中心）
         if defects:
             entry["defectReview"] = []
-            for k, (cx, cy, r) in enumerate(defects):
+            for k, defect in enumerate(defects):
+                cx, cy = defect["center"]
                 comp = run_case(predictor, dec_session, emb_ox, (h, w), "defect-point", [[cx, cy]], [], None)
-                row = {"defect": k, "center": [cx, cy], "radius": r, **{kk: comp[kk] for kk in ("pass", "ranks", "tieAdjusted")}}
+                row = {"defect": k, **defect,
+                       **{key: comp[key] for key in ("prompt", "pass", "ranks", "countEqual",
+                                                      "selectedEqual", "tieAdjusted", "transformParityMaxAbsDiff")}}
                 entry["defectReview"].append(row)
                 if not comp["pass"]:
                     entry["pass"] = False
                 r0 = comp["ranks"][0] if comp["ranks"] else {}
-                fg = None
-                print(f"  defect[{k}] c=({cx},{cy}) r={r} {'PASS' if comp['pass'] else 'FAIL'} "
+                print(f"  defect[{k}] c=({cx},{cy}) {'PASS' if comp['pass'] else 'FAIL'} "
                       f"score Δ={r0.get('scoreDelta', float('nan')):.5f} IoU={r0.get('iou', float('nan')):.5f} "
-                      f"bboxΔ={r0.get('bboxMaxDelta', float('nan')):.2f} fg={fg}")
+                      f"bboxΔ={r0.get('bboxMaxDelta', float('nan')):.2f}")
         if not entry["pass"]:
             report["overallPass"] = False
         report["images"].append(entry)

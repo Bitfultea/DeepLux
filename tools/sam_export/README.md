@@ -50,17 +50,28 @@ $PY compare_onnx_pytorch.py --package ~/Data/Models/sam1_vit_b_onnx \
 ```
 
 ```bash
-# 4) manifest 拒绝用例回归（复核二轮 P1-2：必需语义字段缺失/绝对路径/
-#    .. 穿越/family/variant/哈希/大小/文件缺失均须失败关闭）
-$PY check_manifest_guards.py     # 21 用例（1 正向对照 + 20 拒绝）
+# 4) 真实图像 + 同名 YOLO-seg 标注，逐缺陷生成多边形内部正点
+$PY compare_onnx_pytorch.py --package ~/Data/Models/sam1_vit_b_onnx \
+    --checkpoint ~/Downloads/sam_vit_b_01ec64.pth \
+    --image /path/to/images/train/example.png \
+    --yolo-labels-dir /path/to/labels/train --json compare_real_report.json
+
+# 5) 不依赖模型的门禁回归
+$PY check_manifest_guards.py     # 31/31：语义、路径、哈希、大小、符号链接等
+$PY check_compare_guards.py      # 排序平手与非平手、YOLO 标注解析
 ```
 
 退出码（脚本一致口径）：`0` 通过；`1` 回归存在失败（guards）；`2` 参数/
 前置失败；`3` 导出失败（仅 export）；`4` 校验/门禁不通过。**失败关闭**：
 export 先写临时目录、全部成功后原子落位，失败不留半成品包；compare
-任一门禁不过即 exit 4；load_manifest 对缺 `preprocessing/
-coordinateTransform/semantics`、`files.*.file` 绝对路径/子目录/`..` 穿越
-（包自包含）一律拒绝。
+任一门禁不过即 exit 4；标签缺失/畸形为参数错误 exit 2。load_manifest
+仅接受当前 SAM1 ViT-B v1 完整运行语义，并拒绝文件穿越及符号链接。
+
+YOLO-seg 每行需是 `class x1 y1 x2 y2 x3 y3 ...`，坐标归一化到 [0,1]。
+脚本将多边形栅格化，以内部距离变换最大点作为确定性正点；原始 JSON 记录
+图像/标注 SHA-256、类别、标注行、prompt、逐候选指标。此门禁检查 ONNX
+与 PyTorch **结果等价**，不衡量预测掩膜相对人工标注的准确率。真实
+3000×3000 工业图像与部署机性能仍需单独验收。
 
 compare 门禁额外包含 **transformParity**：ONNX 侧坐标/框变换走
 `sam_package_common` 参考实现（阶段2 C++ 的对照基准），每 case 与安装版
@@ -74,12 +85,12 @@ bench 序列严格对齐：负点偏移用阶段0 序列总长 `neg_seq=103`
 | 门禁 | 阈值 | 口径 |
 |---|---|---|
 | 候选数一致 | 相等 | 两侧均 multimask_output=True → 3 |
-| 选中候选一致 | rank-0 相同 | 两侧同按 sam_server 语义 `np.argsort(-scores)`；平手带（相邻原始分差 < 0.01）内允许秩交换但须逐秩指标全过，JSON 记 `tieAdjusted` |
+| 选中候选一致 | rank-0 相同 | 两侧同按 sam_server 语义 `np.argsort(-scores)`；仅当交换的两个原始分数在两侧都相差 <0.01 时允许秩交换，仍须逐秩指标全过，JSON 记 `tieAdjusted` |
 | bbox 偏差 | ≤ 1 px（逐分量） | bbox 均由二值掩膜按 sam_server `_mask_to_bbox` 口径导出 |
 | 掩膜 IoU | ≥ 0.99 | 二值掩膜（PyTorch 侧 predictor 阈值 >0；ONNX 侧 logits >0） |
 | 分数绝对差 | ≤ 0.01 | **未 clamp 原始值**直接相减（阶段0 F1 口径：官方 iou head 无 sigmoid/clamp，score 可 >1，两侧同源同口径） |
 | 编码器单独验证 | max_abs ≤ 1e-2 且 cosine ≥ 0.999999 | ORT embedding vs `predictor.features`（官方仅提供解码器导出，编码器须单独验证） |
-| 细小缺陷逐图复核 | 每缺陷一行全指标 | 内置确定性合成缺陷图（6 个 3-10px 斑，点 prompt 置中心）；真实缺陷图集（G2）到位后追加 |
+| 细小缺陷逐图复核 | 每缺陷一行全指标 | 内置确定性合成缺陷图（6 个 3-10px 斑）；真实图使用 `--yolo-labels-dir` 为每条标注生成内部正点 |
 
 任一关键项不通过 → **停止原生迁移**，不以近似算法代替（计划书）。
 
