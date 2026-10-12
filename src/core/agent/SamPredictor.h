@@ -18,7 +18,8 @@ class CancellationToken;
  * HTTP 模式用栈上 SamBackendClient + 本地事件循环；显式 serverUrl="native"
  * 时使用 DEEPLUX_SAM_PACKAGE 指定的原生 ONNX 模型包。
  * 失败关闭：超时/后端错误/取消/区域无效或不符合 Region2D 契约（含非有限
- * 数值、score 越界）均不伪造区域。
+ * 数值）均不伪造区域。原生模型输出未经裁剪的候选分数，写入 Region2D 时
+ * 才归一到其 [0,1] 契约；HTTP 路径继续拒绝协议越界分数。
  */
 
 /// 一次 prompt（批量预测的一项）
@@ -40,7 +41,7 @@ struct SamPredictOutcome {
     int failedIndex = -1;    // 失败发生在第几个 prompt（-1 = set_image/参数阶段）
     QString modelName;       // 后端模型名（成功时；空则调用方自行回退）
     QList<Region2D> regions; // 与 items 一一对应
-    // 批4（C）：每项的候选 score 列表（与 items 对齐；后端无候选时为空列表）
+    // 与 items 对齐；native 保留原始模型分数（可能 >1），HTTP 为协议分数
     QList<QList<double>> candidateScores;
 };
 

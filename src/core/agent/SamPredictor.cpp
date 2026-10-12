@@ -10,15 +10,22 @@
 #include <opencv2/core.hpp>
 #endif
 
+#include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QImage>
 #include <QJsonArray>
+#include <QPointer>
+#include <QThread>
+#include <QThreadPool>
 #include <QTimer>
 #include <QVariant>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <future>
+#include <memory>
 
 namespace DeepLux {
 
@@ -139,6 +146,38 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
 #ifndef DEEPLUX_HAS_ONNXRUNTIME
         return fail(QStringLiteral("此构建未启用原生 SAM 推理"), -1);
 #else
+        if (QCoreApplication::instance() && QThread::currentThread() == QCoreApplication::instance()->thread()) {
+            // 应用先销毁线程池/线程局部会话，静态 ORT 环境才能最后析构。
+            static QPointer<QThreadPool> pool;
+            if (!pool) {
+                pool = new QThreadPool(QCoreApplication::instance());
+                pool->setMaxThreadCount(1);
+                pool->setExpiryTimeout(-1); // 保留工作线程的模型和 embedding 缓存
+            }
+            auto work = std::make_shared<std::packaged_task<SamPredictOutcome()>>(
+                [serverUrl, imagePath, items, timeoutMs, cancel] {
+                    return runSamPredictBatch(serverUrl, imagePath, items, timeoutMs, cancel);
+                });
+            auto future = work->get_future();
+            pool->start([work] { (*work)(); });
+
+            QEventLoop loop;
+            QTimer poll;
+            poll.setInterval(10);
+            QObject::connect(&poll, &QTimer::timeout, &loop, [&] {
+                if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready)
+                    loop.quit();
+            });
+            poll.start();
+            loop.exec();
+            future.wait(); // 应用退出使嵌套事件循环提前结束时，也不能留下悬空的取消令牌
+            try {
+                return future.get();
+            } catch (const std::exception& e) {
+                return fail(QStringLiteral("原生 SAM 工作线程失败：%1").arg(e.what()), -1);
+            }
+        }
+
         const QString packageDir = qEnvironmentVariable("DEEPLUX_SAM_PACKAGE");
         if (packageDir.isEmpty())
             return fail(QStringLiteral("未设置 DEEPLUX_SAM_PACKAGE 模型包路径"), -1);
@@ -184,8 +223,11 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
                             i);
 
             QList<double> scores;
-            for (const SamNativeCandidate& candidate : prediction.candidates)
-                scores.append(std::clamp(candidate.score, 0.0, 1.0));
+            for (const SamNativeCandidate& candidate : prediction.candidates) {
+                if (!std::isfinite(candidate.score))
+                    return fail(QStringLiteral("原生 SAM 返回非有限候选分数"), i);
+                scores.append(candidate.score);
+            }
             const SamNativeCandidate& selected = prediction.candidates[item.candidateIndex];
             if (selected.mask.empty() || selected.mask.type() != CV_8UC1 || selected.mask.cols != rgb.width() ||
                 selected.mask.rows != rgb.height())
@@ -194,10 +236,10 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
                               QImage::Format_Grayscale8);
             Region2D region;
             region.label = item.label;
-            region.polygon = MaskOps::traceContour(mask);
+            region.polygon = MaskOps::traceLargestContour(mask);
             region.bbox = MaskOps::foregroundBoundingBox(mask);
             region.maskRle = MaskOps::encodeRle(mask);
-            region.score = scores[item.candidateIndex];
+            region.score = std::clamp(selected.score, 0.0, 1.0);
             if (cancel && cancel->isCancelledFast())
                 return fail(QStringLiteral("SAM 预测已取消"), i);
             if (timer.elapsed() > timeoutMs)

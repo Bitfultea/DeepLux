@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstring>
 #include <initializer_list>
+#include <memory>
 #include <onnxruntime_c_api.h>
 #include <opencv2/imgproc.hpp>
 #include <stdexcept>
@@ -52,8 +53,8 @@ struct OrtEnvHolder {
 };
 
 // 全局单例（线程安全的静态初始化）
-OrtEnvHolder& ortEnv() {
-    static OrtEnvHolder h;
+std::shared_ptr<OrtEnvHolder> ortEnv() {
+    static auto h = std::make_shared<OrtEnvHolder>();
     return h;
 }
 
@@ -204,6 +205,7 @@ struct SamOnnxInference::Impl {
     bool loaded = false;
 
     // ORT sessions
+    std::shared_ptr<OrtEnvHolder> env; // 必须晚于 encoder/decoder 析构
     OrtSessionRAII encoder;
     OrtSessionRAII decoder;
 
@@ -612,19 +614,20 @@ bool SamOnnxInference::loadPackage(const QString& packageDir) {
 
     // 两段都成功后才替换旧会话。
     try {
-        OrtEnvHolder& env = ortEnv();
+        const auto env = ortEnv();
         OrtSessionOptionsRAII opts;
         ORT_CK(g_ort->CreateSessionOptions(&opts.opts));
         ORT_CK(g_ort->SetIntraOpNumThreads(opts.opts, 4));
         OrtSessionRAII newEncoder, newDecoder;
-        ORT_CK(g_ort->CreateSession(env.env, encPath.toUtf8().constData(), opts.opts, &newEncoder.sess));
-        ORT_CK(g_ort->CreateSession(env.env, decPath.toUtf8().constData(), opts.opts, &newDecoder.sess));
+        ORT_CK(g_ort->CreateSession(env->env, encPath.toUtf8().constData(), opts.opts, &newEncoder.sess));
+        ORT_CK(g_ort->CreateSession(env->env, decPath.toUtf8().constData(), opts.opts, &newDecoder.sess));
         ORT_CK(g_ort->GetAllocatorWithDefaultOptions(&newEncoder.allocator));
         newDecoder.allocator = newEncoder.allocator;
         std::swap(m_impl->encoder.sess, newEncoder.sess);
         std::swap(m_impl->decoder.sess, newDecoder.sess);
         m_impl->encoder.allocator = newEncoder.allocator;
         m_impl->decoder.allocator = newDecoder.allocator;
+        m_impl->env = env;
     } catch (const std::exception& e) {
         m_impl->lastError = QStringLiteral("ORT 加载失败：%1").arg(e.what());
         return false;

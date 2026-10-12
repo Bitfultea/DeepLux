@@ -250,6 +250,17 @@ private slots:
             QVERIFY(p.x() <= 4 && p.y() <= 4);
     }
 
+    void traceLargestContourSelectsMainComponent() {
+        const QImage mask = makeBinary(80, 80, {QRect(2, 2, 3, 3), QRect(30, 25, 30, 20)});
+        const QList<QPointF> polygon = traceLargestContour(mask);
+        QVERIFY(polygon.size() >= 4);
+        for (const QPointF& point : polygon) {
+            QVERIFY(point.x() >= 30 && point.x() <= 59);
+            QVERIFY(point.y() >= 25 && point.y() <= 44);
+        }
+        QVERIFY(traceLargestContour(makeBinary(8, 8, {})).isEmpty());
+    }
+
     void foregroundBoundingBoxContract() {
         QCOMPARE(foregroundBoundingBox(makeBinary(30, 30, {QRect(5, 7, 4, 3)})), QRectF(5, 7, 4, 3));
         QVERIFY(!foregroundBoundingBox(makeBinary(30, 30, {})).isValid());

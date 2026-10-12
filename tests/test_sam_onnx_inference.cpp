@@ -16,8 +16,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSemaphore>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QThreadPool>
+#include <QTimer>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -222,13 +225,17 @@ private slots:
         SamPromptItem item;
         item.positivePoints = {QPointF(240, 180)};
         item.label = "defect";
+        bool guiEventProcessed = false;
+        QTimer::singleShot(0, this, [&] { guiEventProcessed = true; });
         const SamPredictOutcome result = runSamPredictBatch("native", imagePath, {item}, 30000);
+        QVERIFY(guiEventProcessed); // 主线程等待推理期间仍处理 GUI 事件
         QVERIFY2(result.ok, qPrintable(result.error));
         QCOMPARE(result.regions.size(), 1);
         QCOMPARE(result.candidateScores.size(), 1);
         QCOMPARE(result.candidateScores[0].size(), 3);
         QCOMPARE(result.regions[0].label, QString("defect"));
-        QCOMPARE(result.candidateScores[0][0], 1.0); // 原始分数可 >1，产品 Region2D 分数裁剪至 [0,1]
+        QVERIFY(result.candidateScores[0][0] > 1.0); // 保留原始模型分数用于对照和候选排序
+        QCOMPARE(result.regions[0].score, 1.0);      // 仅 Region2D 按载荷契约归一
         QVERIFY(result.regions[0].score >= 0.0 && result.regions[0].score <= 1.0);
         QVERIFY(result.regions[0].bbox.isValid());
         bool decoded = false;
@@ -284,11 +291,42 @@ private slots:
         QVERIFY(!stopped.ok);
         QVERIFY(stopped.error.contains("取消"));
 
+        CancellationToken cancelDuringRun;
+        bool cancelEventProcessed = false;
+        QTimer::singleShot(0, this, [&] {
+            cancelEventProcessed = true;
+            cancelDuringRun.cancel();
+        });
+        const SamPredictOutcome interrupted = runSamPredictBatch("native", imagePath, {item}, 30000, &cancelDuringRun);
+        QVERIFY(cancelEventProcessed);
+        QVERIFY(!interrupted.ok);
+        QVERIFY(interrupted.error.contains("取消"));
+
         qunsetenv("DEEPLUX_SAM_PACKAGE");
         const SamPredictOutcome unconfigured = runSamPredictBatch("native", imagePath, {item}, 30000);
         QVERIFY(!unconfigured.ok);
         QVERIFY(unconfigured.error.contains("DEEPLUX_SAM_PACKAGE"));
         qputenv("DEEPLUX_SAM_PACKAGE", QFile::encodeName(m_packageDir));
+    }
+
+    void persistentPoolSessionSurvivesShutdown() {
+        static QThreadPool pool; // 先于工作线程中的 ORT 环境构造，且晚于它析构
+        pool.setMaxThreadCount(1);
+        pool.setExpiryTimeout(-1);
+        QSemaphore done;
+        bool loaded = false;
+        QString error;
+        pool.start([&] {
+            thread_local SamOnnxInference inference;
+            loaded = inference.loadPackage(m_packageDir);
+            error = inference.lastError();
+            done.release();
+        });
+        const bool completed = done.tryAcquire(1, 30000);
+        if (!completed)
+            pool.waitForDone(); // 超时也须结束引用栈变量的任务
+        QVERIFY2(completed, "native model load timed out");
+        QVERIFY2(loaded, qPrintable(error));
     }
 
     void rejectsManifestMismatch() {

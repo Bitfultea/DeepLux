@@ -74,6 +74,9 @@ qint64 foregroundCount(const QImage& binaryMask);
  */
 QList<QPointF> traceContour(const QImage& binaryMask);
 
+/// 与 SAM HTTP 服务一致：取面积最大的外轮廓并按其近似精度简化；空掩膜返回空列表。
+QList<QPointF> traceLargestContour(const QImage& binaryMask);
+
 /// 前景像素包围矩形（x=minX, y=minY, w=maxX-minX+1, h=maxY-minY+1，像素中心口径）；空掩膜返回无效 QRectF()
 QRectF foregroundBoundingBox(const QImage& binaryMask);
 

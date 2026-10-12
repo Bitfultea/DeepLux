@@ -8,7 +8,10 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QVector>
+#include <algorithm>
 #include <cmath>
+#include <opencv2/imgproc.hpp>
+#include <vector>
 
 namespace DeepLux {
 
@@ -420,6 +423,26 @@ QList<QPointF> traceContour(const QImage& binaryMask) {
     }
     if (polygon.size() >= 2 && polygon.first() == polygon.last())
         polygon.removeLast();
+    return polygon;
+}
+
+QList<QPointF> traceLargestContour(const QImage& binaryMask) {
+    const QImage mask = ensureGray8(binaryMask);
+    if (mask.isNull())
+        return {};
+    const cv::Mat view(mask.height(), mask.width(), CV_8UC1, const_cast<uchar*>(mask.constBits()), mask.bytesPerLine());
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(view.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    if (contours.empty())
+        return {};
+    const auto largest = std::max_element(contours.begin(), contours.end(), [](const auto& a, const auto& b) {
+        return cv::contourArea(a) < cv::contourArea(b);
+    });
+    std::vector<cv::Point> simplified;
+    cv::approxPolyDP(*largest, simplified, std::max(1.0, 0.002 * cv::arcLength(*largest, true)), true);
+    QList<QPointF> polygon;
+    for (const cv::Point& point : simplified)
+        polygon.append(QPointF(point.x, point.y));
     return polygon;
 }
 
