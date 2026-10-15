@@ -11,8 +11,10 @@
 #include "plugins/detection/SamPredict/SamPredictPlugin.h"
 
 #include <QCryptographicHash>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -165,6 +167,125 @@ private slots:
             QVERIFY(cudaNodes > 0);
             QVERIFY(computeNodes > 0);
         }
+    }
+
+    void cudaRealImageParity() {
+        if (qEnvironmentVariable("DEEPLUX_TEST_CUDA_REAL") != QLatin1String("1"))
+            QSKIP("设置 DEEPLUX_TEST_CUDA_REAL=1 和 DEEPLUX_TEST_REAL_SAM_IMAGES 后运行真实图对照");
+        const QString imagesDir = qEnvironmentVariable("DEEPLUX_TEST_REAL_SAM_IMAGES");
+        QVERIFY2(QDir(imagesDir).exists(), qPrintable(imagesDir));
+        QFile report(QStringLiteral(TEST_SAM_REAL_REPORT));
+        QVERIFY2(report.open(QIODevice::ReadOnly), qPrintable(report.fileName()));
+        const QJsonDocument reference = QJsonDocument::fromJson(report.readAll());
+        QVERIFY(reference.isObject());
+
+        SamOnnxInference inf;
+        QVERIFY2(inf.loadPackage(m_packageDir, QStringLiteral("cuda")), qPrintable(inf.lastError()));
+        SamOnnxInference cpu;
+        QVERIFY2(cpu.loadPackage(m_packageDir, QStringLiteral("cpu")), qPrintable(cpu.lastError()));
+        int checked = 0;
+        for (const QJsonValue& imageValue : reference.object().value(QStringLiteral("images")).toArray()) {
+            const QJsonObject imageEntry = imageValue.toObject();
+            const QString originalPath = imageEntry.value(QStringLiteral("image")).toString();
+            if (originalPath.startsWith(QLatin1Char('<')))
+                continue;
+            const QString imagePath = QDir(imagesDir).filePath(QFileInfo(originalPath).fileName());
+            QFile imageFile(imagePath);
+            QVERIFY2(imageFile.open(QIODevice::ReadOnly), qPrintable(imagePath));
+            const QString actualSha =
+                QString::fromLatin1(QCryptographicHash::hash(imageFile.readAll(), QCryptographicHash::Sha256).toHex());
+            QCOMPARE(actualSha, imageEntry.value(QStringLiteral("sha256")).toString());
+            cv::Mat bgr = cv::imread(QFile::encodeName(imagePath).constData(), cv::IMREAD_COLOR);
+            QVERIFY2(!bgr.empty(), qPrintable(imagePath));
+            cv::Mat rgb;
+            cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
+
+            for (const QString& kind : {QStringLiteral("pos"), QStringLiteral("posneg"), QStringLiteral("box")}) {
+                QJsonObject selected;
+                double largestMargin = -1;
+                for (const QJsonValue& caseValue : imageEntry.value(QStringLiteral("cases")).toArray()) {
+                    const QJsonObject candidate = caseValue.toObject();
+                    if (candidate.value(QStringLiteral("kind")).toString() != kind)
+                        continue;
+                    const QJsonArray ranks = candidate.value(QStringLiteral("ranks")).toArray();
+                    if (ranks.size() < 2)
+                        continue;
+                    const double margin = ranks[0].toObject().value(QStringLiteral("scoreOnnx")).toDouble() -
+                                          ranks[1].toObject().value(QStringLiteral("scoreOnnx")).toDouble();
+                    if (margin > largestMargin) {
+                        largestMargin = margin;
+                        selected = candidate;
+                    }
+                }
+                QVERIFY2(!selected.isEmpty(), qPrintable(imagePath + QStringLiteral(":") + kind));
+                const QJsonObject prompt = selected.value(QStringLiteral("prompt")).toObject();
+                const auto points = [](const QJsonArray& items) {
+                    QList<QPointF> result;
+                    for (const QJsonValue& item : items) {
+                        const QJsonArray pair = item.toArray();
+                        result.append(QPointF(pair[0].toDouble(), pair[1].toDouble()));
+                    }
+                    return result;
+                };
+                QRectF box;
+                const QJsonArray boxValues = prompt.value(QStringLiteral("box")).toArray();
+                if (boxValues.size() == 4)
+                    box = QRectF(boxValues[0].toDouble(), boxValues[1].toDouble(), boxValues[2].toDouble(),
+                                 boxValues[3].toDouble());
+                const SamNativeResult result = inf.predict(rgb, points(prompt.value(QStringLiteral("pos")).toArray()),
+                                                           points(prompt.value(QStringLiteral("neg")).toArray()), box);
+                QVERIFY2(result.ok,
+                         qPrintable(imagePath + QStringLiteral(":") + kind + QStringLiteral(" ") + result.error));
+                QCOMPARE(result.candidates.size(), 3);
+                const SamNativeResult cpuResult =
+                    cpu.predict(rgb, points(prompt.value(QStringLiteral("pos")).toArray()),
+                                points(prompt.value(QStringLiteral("neg")).toArray()), box);
+                QVERIFY2(cpuResult.ok,
+                         qPrintable(imagePath + QStringLiteral(":") + kind + QStringLiteral(" ") + cpuResult.error));
+                QCOMPARE(cpuResult.candidates.size(), 3);
+                const QJsonObject expected = selected.value(QStringLiteral("ranks")).toArray()[0].toObject();
+                const SamNativeCandidate& actual = result.candidates.first();
+                const cv::Mat& cpuMask = cpuResult.candidates.first().mask;
+                QCOMPARE(actual.mask.rows, cpuMask.rows);
+                QCOMPARE(actual.mask.cols, cpuMask.cols);
+                cv::Mat intersection, united;
+                cv::bitwise_and(actual.mask, cpuMask, intersection);
+                cv::bitwise_or(actual.mask, cpuMask, united);
+                const int unionPixels = cv::countNonZero(united);
+                QVERIFY(unionPixels > 0);
+                const double maskIoU = double(cv::countNonZero(intersection)) / unionPixels;
+                const double scoreDelta =
+                    std::abs(actual.score - expected.value(QStringLiteral("scoreOnnx")).toDouble());
+                const QJsonArray bbox = expected.value(QStringLiteral("bboxOnnx")).toArray();
+                QVERIFY(bbox.size() == 4);
+                const double bboxDelta = std::max({std::abs(actual.bbox.x() - bbox[0].toDouble()),
+                                                   std::abs(actual.bbox.y() - bbox[1].toDouble()),
+                                                   std::abs(actual.bbox.width() - bbox[2].toDouble()),
+                                                   std::abs(actual.bbox.height() - bbox[3].toDouble())});
+                qInfo("real CUDA %s %s: scoreDelta=%.6f bboxDelta=%.1f cpuMaskIoU=%.6f",
+                      qPrintable(QFileInfo(imagePath).fileName()), qPrintable(kind), scoreDelta, bboxDelta, maskIoU);
+                QVERIFY2(scoreDelta <= 0.01, qPrintable(imagePath + QStringLiteral(":") + kind));
+                QVERIFY2(bboxDelta <= 1.0, qPrintable(imagePath + QStringLiteral(":") + kind));
+                QVERIFY2(maskIoU >= 0.99, qPrintable(imagePath + QStringLiteral(":") + kind));
+                ++checked;
+            }
+        }
+        QCOMPARE(checked, 18);
+    }
+
+    void cudaDualSessionShutdown() {
+        if (qEnvironmentVariable("DEEPLUX_TEST_CUDA") != QLatin1String("1"))
+            QSKIP("设置 DEEPLUX_TEST_CUDA=1 后运行双会话生命周期回归");
+        SamOnnxInference cuda;
+        QVERIFY2(cuda.loadPackage(m_packageDir, QStringLiteral("cuda")), qPrintable(cuda.lastError()));
+        SamOnnxInference cpu;
+        QVERIFY2(cpu.loadPackage(m_packageDir, QStringLiteral("cpu")), qPrintable(cpu.lastError()));
+        cv::Mat image(480, 640, CV_8UC3, cv::Scalar(96, 110, 100));
+        cv::rectangle(image, cv::Rect(200, 150, 80, 60), cv::Scalar(255, 255, 255), -1);
+        const SamNativeResult cudaResult = cuda.predict(image, {QPointF(240, 180)}, {}, QRectF());
+        QVERIFY2(cudaResult.ok, qPrintable(cudaResult.error));
+        const SamNativeResult cpuResult = cpu.predict(image, {QPointF(240, 180)}, {}, QRectF());
+        QVERIFY2(cpuResult.ok, qPrintable(cpuResult.error));
     }
 
     void cudaSynthetic3000Benchmark() {

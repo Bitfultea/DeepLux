@@ -428,7 +428,8 @@ if(DEEPLUX_NATIVE_SAM)
     endif()
     target_compile_definitions(test_sam_onnx_inference PRIVATE
         TEST_SAM_PACKAGE_DIR="$ENV{HOME}/Data/Models/sam1_vit_b_onnx"
-        TEST_SAM_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/acceptance/data/sam_native_golden")
+        TEST_SAM_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/acceptance/data/sam_native_golden"
+        TEST_SAM_REAL_REPORT="${CMAKE_SOURCE_DIR}/docs/sam_native/stage1/compare_real_report.json")
     add_test(NAME test_sam_onnx_inference COMMAND test_sam_onnx_inference)
     set_tests_properties(test_sam_onnx_inference PROPERTIES TIMEOUT 120)
     add_test(NAME test_sam_native_pool_exit COMMAND test_sam_onnx_inference persistentPoolSessionSurvivesShutdown)

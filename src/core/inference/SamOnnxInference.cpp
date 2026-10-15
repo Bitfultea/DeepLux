@@ -46,15 +46,11 @@ struct OrtEnvHolder {
             throw std::runtime_error(message);
         }
     }
-    ~OrtEnvHolder() {
-        if (env)
-            g_ort->ReleaseEnv(env);
-    }
 };
 
-// 全局单例（线程安全的静态初始化）
-std::shared_ptr<OrtEnvHolder> ortEnv() {
-    static auto h = std::make_shared<OrtEnvHolder>();
+// CUDA Provider 在进程退出时可能晚于静态对象析构；环境保持到进程终止，会话仍按需释放。
+OrtEnvHolder* ortEnv() {
+    static auto* const h = new OrtEnvHolder();
     return h;
 }
 
@@ -220,7 +216,6 @@ struct SamOnnxInference::Impl {
     bool profilingEnabled = false;
 
     // ORT sessions
-    std::shared_ptr<OrtEnvHolder> env; // 必须晚于 encoder/decoder 析构
     OrtSessionRAII encoder;
     OrtSessionRAII decoder;
 
@@ -433,7 +428,6 @@ bool SamOnnxInference::loadPackage(const QString& packageDir, const QString& dev
     m_impl->profilingEnabled = false;
     m_impl->encoder.reset();
     m_impl->decoder.reset();
-    m_impl->env.reset();
     m_impl->cachedImageHash.clear();
     m_impl->cachedEmbedding.release();
     m_impl->cachedInputSize = QSize();
@@ -671,7 +665,6 @@ bool SamOnnxInference::loadPackage(const QString& packageDir, const QString& dev
         std::swap(m_impl->decoder.sess, newDecoder.sess);
         m_impl->encoder.allocator = newEncoder.allocator;
         m_impl->decoder.allocator = newDecoder.allocator;
-        m_impl->env = env;
         m_impl->device = device;
         m_impl->profilingEnabled = !profilePrefix.isEmpty();
     } catch (const std::exception& e) {
