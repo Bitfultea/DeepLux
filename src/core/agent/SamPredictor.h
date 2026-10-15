@@ -1,16 +1,26 @@
 #pragma once
 
+#include "SamBackendClient.h"
 #include "core/deeplux/PayloadTypes.h"
 
 #include <QJsonValue>
 #include <QList>
 #include <QPointF>
 #include <QRectF>
+#include <QSize>
 #include <QString>
+
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+class QThreadPool;
+#endif
 
 namespace DeepLux {
 
 class CancellationToken;
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+struct SamNativeResult;
+QThreadPool* samNativeThreadPool(); // 应用持有，关闭标注窗口不等待在途 ONNX 调用
+#endif
 
 /**
  * @brief 同步 SAM 预测核心（SAM 批3：SamPredictPlugin 与 Agent 工具共享）
@@ -43,7 +53,16 @@ struct SamPredictOutcome {
     QList<Region2D> regions; // 与 items 一一对应
     // 与 items 对齐；native 保留原始模型分数（可能 >1），HTTP 为协议分数
     QList<QList<double>> candidateScores;
+    // 仅显式请求时填充，供 GUI 循环预览；普通 Agent/插件路径不物化全部掩膜。
+    QList<QList<SamCandidate>> previewCandidates;
 };
+
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+namespace SamPredictorDetail {
+SamPredictOutcome convertNativeCandidates(const SamNativeResult& prediction, const SamPromptItem& item,
+                                          const QSize& imageSize, bool includeCandidates);
+}
+#endif
 
 /**
  * 同步执行 set_image + N×predict。
@@ -58,7 +77,7 @@ struct SamPredictOutcome {
  */
 SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& imagePath,
                                      const QList<SamPromptItem>& items, int timeoutMs,
-                                     const CancellationToken* cancel = nullptr);
+                                     const CancellationToken* cancel = nullptr, bool includeCandidates = false);
 
 /// JSON prompt 解析（严格有限数值，失败关闭并给出 error）：
 /// points/negativePoints 形态 [[x,y],...]；undefined/null 时按 allowEmpty 处理

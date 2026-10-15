@@ -14,6 +14,7 @@
 
 #include <QButtonGroup>
 #include <QColor>
+#include <QComboBox>
 #include <QDialog>
 #include <QDir>
 #include <QEvent>
@@ -195,23 +196,24 @@ void SamAnnotatorDialog::applyTheme(bool isDark) {
     const QString modeCheckedText = isDark ? QStringLiteral("#ffffff") : QStringLiteral("#0f172a");
 
     setStyleSheet(
-        QStringLiteral("QDialog#SamAnnotatorDialog { background-color: %1; color: %2; }"
-                       "QWidget#SamControlPanel { background-color: %3; color: %2; }"
-                       "QLabel { background-color: transparent; color: %2; }"
-                       "QLabel#SamStatusLabel, QLabel#SamShortcutHintLabel { color: %4; font-size: 12px; }"
-                       "QLineEdit { background-color: %5; color: %2; border: 1px solid %6; padding: 2px 4px; }"
-                       "QLineEdit:focus { border: 1px solid #0078d7; }"
-                       "QListWidget { background-color: %5; color: %2; border: 1px solid %6; }"
-                       "QListWidget::item:selected { background-color: #0078d7; color: #ffffff; }"
-                       "QPushButton { background-color: #0078d7; color: #ffffff; border: 1px solid #005a9e; "
-                       "padding: 2px 6px; font-weight: 600; }"
-                       "QPushButton:hover { background-color: #1e8ad6; }"
-                       "QPushButton:disabled { background-color: %7; color: #999999; border-color: %6; }"
-                       "QToolButton { border: 1px solid %6; border-radius: 4px; padding: 2px 6px; "
-                       "background-color: %8; color: %2; }"
-                       "QToolButton:hover { background-color: %9; }"
-                       "QToolButton:checked { border: 2px solid %10; background-color: %11; color: %12; "
-                       "font-weight: 700; }")
+        QStringLiteral(
+            "QDialog#SamAnnotatorDialog { background-color: %1; color: %2; }"
+            "QWidget#SamControlPanel { background-color: %3; color: %2; }"
+            "QLabel { background-color: transparent; color: %2; }"
+            "QLabel#SamStatusLabel, QLabel#SamShortcutHintLabel { color: %4; font-size: 12px; }"
+            "QLineEdit, QComboBox { background-color: %5; color: %2; border: 1px solid %6; padding: 2px 4px; }"
+            "QLineEdit:focus { border: 1px solid #0078d7; }"
+            "QListWidget { background-color: %5; color: %2; border: 1px solid %6; }"
+            "QListWidget::item:selected { background-color: #0078d7; color: #ffffff; }"
+            "QPushButton { background-color: #0078d7; color: #ffffff; border: 1px solid #005a9e; "
+            "padding: 2px 6px; font-weight: 600; }"
+            "QPushButton:hover { background-color: #1e8ad6; }"
+            "QPushButton:disabled { background-color: %7; color: #999999; border-color: %6; }"
+            "QToolButton { border: 1px solid %6; border-radius: 4px; padding: 2px 6px; "
+            "background-color: %8; color: %2; }"
+            "QToolButton:hover { background-color: %9; }"
+            "QToolButton:checked { border: 2px solid %10; background-color: %11; color: %12; "
+            "font-weight: 700; }")
             .arg(pal.bgColor)
             .arg(pal.textColor)
             .arg(panelBg)
@@ -256,14 +258,25 @@ void SamAnnotatorDialog::saveModelPath(const QString& path) {
 }
 
 bool SamAnnotatorDialog::samEnvironmentReadyForUse() const {
+    if (m_samClient->serverUrl() == QLatin1String("native"))
+        return QFileInfo(qEnvironmentVariable("DEEPLUX_SAM_PACKAGE")).isDir();
     return !qgetenv("SAM_SERVER_PYTHON").isEmpty() || m_samClient->managedEnvironmentReady();
 }
 
 bool SamAnnotatorDialog::samModelReadyForUse() const {
+    if (m_samClient->serverUrl() == QLatin1String("native"))
+        return QFileInfo(qEnvironmentVariable("DEEPLUX_SAM_PACKAGE")).isDir();
     return !m_samClient->modelPath().isEmpty() || !qgetenv("DEEPLUX_SAM_MODEL").isEmpty();
 }
 
 void SamAnnotatorDialog::refreshSamControlState() {
+    const bool native = m_samClient->serverUrl() == QLatin1String("native");
+    if (m_importModelButton)
+        m_importModelButton->setVisible(!native);
+    if (m_initEnvironmentButton)
+        m_initEnvironmentButton->setVisible(!native);
+    if (m_restartServerButton)
+        m_restartServerButton->setVisible(!native);
     const bool envOverride = !qgetenv("SAM_SERVER_PYTHON").isEmpty();
     const bool envReady = samEnvironmentReadyForUse();
     if (m_initEnvironmentButton) {
@@ -401,7 +414,32 @@ void SamAnnotatorDialog::setupUi() {
     auto* lblObjects = new QLabel(tr("对象列表"));
     lblObjects->setObjectName(QStringLiteral("SamObjectListLabel"));
     configureCompactLabel(lblObjects);
-    actionCol->addWidget(lblObjects);
+    auto* objectHeader = new QHBoxLayout();
+    objectHeader->setSpacing(4);
+    objectHeader->addWidget(lblObjects);
+    objectHeader->addStretch();
+    auto* backendLabel = new QLabel(tr("推理后端"));
+    configureCompactLabel(backendLabel);
+    objectHeader->addWidget(backendLabel);
+    m_backendMode = new QComboBox();
+    m_backendMode->setObjectName(QStringLiteral("SamBackendMode"));
+    m_backendMode->addItem(tr("Python 服务"), QStringLiteral("http"));
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+    m_backendMode->addItem(tr("本机 ONNX"), QStringLiteral("native"));
+#endif
+    m_backendMode->setToolTip(tr("Python 服务使用已有 SAM 环境；本机 ONNX 使用 DEEPLUX_SAM_PACKAGE 模型包"));
+    m_backendMode->setFixedHeight(26);
+    objectHeader->addWidget(m_backendMode);
+    actionCol->addLayout(objectHeader);
+    connect(m_backendMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
+        m_samClient->stopServerProcess();
+        m_samClient->setServerUrl(m_backendMode->itemData(index).toString() == QLatin1String("native")
+                                      ? QStringLiteral("native")
+                                      : QStringLiteral("http://127.0.0.1:0"));
+        clearCurrentPrompt();
+        refreshSamControlState();
+        prepareBackendImage();
+    });
 
     m_objectList = new QListWidget();
     // SAM 批2：多选用于"合并"（恰好选中两个对象时可用）
@@ -1401,6 +1439,7 @@ void SamAnnotatorDialog::resetAnnotationState() {
 }
 
 void SamAnnotatorDialog::prepareBackendImage() {
+    m_samClient->cancelPendingPrediction();
     m_backendImagePath.clear();
     if (m_currentImage.isNull())
         return;
@@ -1429,12 +1468,16 @@ void SamAnnotatorDialog::prepareBackendImage() {
     }
 
     if (!samEnvironmentReadyForUse()) {
-        setStatusText(tr("SAM 环境未初始化，请点击初始化环境"));
+        setStatusText(m_samClient->serverUrl() == QLatin1String("native")
+                          ? tr("原生 SAM 模型包不可用：请设置 DEEPLUX_SAM_PACKAGE")
+                          : tr("SAM 环境未初始化，请点击初始化环境"));
         refreshSamControlState();
         return;
     }
     if (!samModelReadyForUse()) {
-        setStatusText(tr("请先导入 SAM 权重"));
+        setStatusText(m_samClient->serverUrl() == QLatin1String("native")
+                          ? tr("原生 SAM 模型包不可用：请设置 DEEPLUX_SAM_PACKAGE")
+                          : tr("请先导入 SAM 权重"));
         refreshSamControlState();
         return;
     }

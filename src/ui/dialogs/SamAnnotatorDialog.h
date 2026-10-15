@@ -18,6 +18,7 @@ class QButtonGroup;
 class QListWidget;
 class QListWidgetItem;
 class QLineEdit;
+class QComboBox;
 class QShortcut;
 class QSpinBox;
 class QStackedWidget;
@@ -313,6 +314,7 @@ private:
     QPointer<HImageWidget> m_externalImageWidget; // Fix P0-4: QPointer 防悬空
     AnnotationOverlayWidget* m_overlay = nullptr; // connected to destroyed() to null
     QListWidget* m_objectList = nullptr;
+    QComboBox* m_backendMode = nullptr;
     QListWidget* m_categoryList = nullptr;
     QLineEdit* m_categoryEdit = nullptr;
     QPushButton* m_addCategoryButton = nullptr;

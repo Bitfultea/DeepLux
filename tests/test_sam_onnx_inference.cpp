@@ -65,6 +65,28 @@ private slots:
         QVERIFY(cv::countNonZero(r.candidates[0].mask > 0) > 0);
     }
 
+    void optionalEmptyCandidateDoesNotDiscardValidSelection() {
+        cv::Mat valid(32, 32, CV_8UC1, cv::Scalar(0));
+        cv::rectangle(valid, cv::Rect(8, 8, 12, 12), cv::Scalar(255), -1);
+        cv::Mat alternate(32, 32, CV_8UC1, cv::Scalar(0));
+        cv::rectangle(alternate, cv::Rect(12, 12, 10, 10), cv::Scalar(255), -1);
+        SamNativeResult prediction;
+        prediction.ok = true;
+        prediction.candidates = {{valid, {}, 0.9}, {cv::Mat::zeros(32, 32, CV_8UC1), {}, 0.8}, {alternate, {}, 0.7}};
+        SamPromptItem item;
+        item.label = QStringLiteral("defect");
+        SamPredictOutcome converted =
+            SamPredictorDetail::convertNativeCandidates(prediction, item, QSize(32, 32), true);
+        QVERIFY2(converted.ok, qPrintable(converted.error));
+        QCOMPARE(converted.regions.size(), 1);
+        QCOMPARE(converted.previewCandidates.first().size(), 2);
+        QCOMPARE(converted.candidateScores.first().size(), 3);
+        item.candidateIndex = 1;
+        converted = SamPredictorDetail::convertNativeCandidates(prediction, item, QSize(32, 32), true);
+        QVERIFY(!converted.ok);
+        QVERIFY(converted.error.contains(QStringLiteral("空掩膜")));
+    }
+
     void embeddingCache() {
         SamOnnxInference inf;
         QVERIFY(inf.loadPackage(m_packageDir));

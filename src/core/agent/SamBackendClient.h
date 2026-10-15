@@ -13,6 +13,9 @@
 #include <QString>
 #include <QStringList>
 #include <QTimer>
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+#include <memory>
+#endif
 
 class QNetworkReply;
 
@@ -184,6 +187,11 @@ private:
     QProcess* m_envProcess = nullptr;
     QTimer m_timeoutTimer;
     int m_timeoutMs = 30000;
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+    struct NativeRequest;
+    std::unique_ptr<NativeRequest> m_nativeRequest;
+    QTimer m_nativePollTimer;
+#endif
 
     State m_state = State::NotStarted;
     QString m_serverUrl = QStringLiteral("http://127.0.0.1:0"); // 0 = auto-assign

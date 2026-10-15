@@ -1,3 +1,4 @@
+#include "core/agent/SamPredictor.h"
 #include "core/io/YoloSegExporter.h"
 #include "core/model/Annotation.h"
 #include "core/model/AnnotationMaskOps.h"
@@ -5,7 +6,9 @@
 #include "ui/widgets/AnnotationOverlayWidget.h"
 #include "ui/widgets/HImageWidget.h"
 
+#include <QComboBox>
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
 #include <QItemSelectionModel>
@@ -15,15 +18,22 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPainter>
 #include <QPushButton>
+#include <QSemaphore>
 #include <QShortcut>
 #include <QSignalSpy>
 #include <QSpinBox>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QTest>
+#include <QThreadPool>
 #include <QToolButton>
 #include <QtTest/QtTest>
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <thread>
 
 using namespace DeepLux;
 
@@ -100,6 +110,11 @@ private slots:
     // SAM 批4（C）：多掩膜候选循环——◀/▶ 切换预览、确认所用为所选、
     // candidates<=1 时循环行隐藏、确认/取消后候选清空
     void candidateCyclingSelectsAlternateRegion();
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+    void nativeBackendPredictsAndConfirmsSelectedCandidate();
+    void nativeBackendAcceptsNegativePointOnly();
+    void closingWithNativeRequestQueuedDoesNotBlockUi();
+#endif
 
 private:
     QImage makeTestImage();
@@ -122,6 +137,12 @@ QImage TestSamAnnotatorDialog::makeTestImage() {
 
 void TestSamAnnotatorDialog::modeButtonsExist() {
     SamAnnotatorDialog dlg;
+    auto* backendMode = dlg.findChild<QComboBox*>(QStringLiteral("SamBackendMode"));
+    QVERIFY(backendMode);
+    QCOMPARE(backendMode->currentData().toString(), QStringLiteral("http"));
+#ifndef DEEPLUX_HAS_ONNXRUNTIME
+    QCOMPARE(backendMode->count(), 1);
+#endif
     QVERIFY(dlg.positivePointButton());
     QVERIFY(dlg.negativePointButton());
     QVERIFY(dlg.boxButton());
@@ -1429,6 +1450,154 @@ void TestSamAnnotatorDialog::candidateCyclingSelectsAlternateRegion() {
     QVERIFY(row->isHidden());
     QCOMPARE(dlg.candidateLabel()->text(), QStringLiteral("候选 0/0"));
 }
+
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+void TestSamAnnotatorDialog::nativeBackendPredictsAndConfirmsSelectedCandidate() {
+    const QString packageDir = QStringLiteral(TEST_SAM_PACKAGE_DIR);
+    QVERIFY2(QFile::exists(packageDir + QStringLiteral("/manifest.json")), qPrintable(packageDir));
+    qputenv("DEEPLUX_SAM_PACKAGE", QFile::encodeName(packageDir));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QImage image(640, 480, QImage::Format_RGB888);
+    image.fill(QColor(96, 110, 100));
+    QPainter painter(&image);
+    painter.fillRect(QRect(200, 150, 80, 60), Qt::white);
+    painter.end();
+    const QString imagePath = dir.filePath(QStringLiteral("native.png"));
+    QVERIFY(image.save(imagePath));
+
+    SamAnnotatorDialog dlg;
+    auto* mode = dlg.findChild<QComboBox*>(QStringLiteral("SamBackendMode"));
+    QVERIFY(mode);
+    QCOMPARE(mode->currentData().toString(), QStringLiteral("http"));
+    const int nativeIndex = mode->findData(QStringLiteral("native"));
+    QVERIFY(nativeIndex >= 0);
+    mode->setCurrentIndex(nativeIndex);
+    QCOMPARE(dlg.backendClient()->serverUrl(), QStringLiteral("native"));
+    dlg.show();
+    QCoreApplication::processEvents();
+    const QString capturePath = qEnvironmentVariable("DEEPLUX_SAM_UI_CAPTURE");
+    if (!capturePath.isEmpty())
+        QVERIFY(dlg.grab().save(capturePath));
+    dlg.setImageSnapshot(image, imagePath);
+    QCOMPARE(dlg.backendClient()->currentEmbeddingId(), imagePath);
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(240, 180)),
+                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    QTRY_COMPARE_WITH_TIMEOUT(dlg.previewCandidateCount(), 3, 30000);
+    const QList<SamCandidate> candidates = dlg.backendClient()->lastCandidates();
+    QCOMPARE(candidates.size(), 3);
+    QVERIFY(!candidates[1].maskRle.isEmpty());
+    QVERIFY(candidates[0].maskRle != candidates[1].maskRle);
+    dlg.nextCandidateButton()->click();
+    QCOMPARE(dlg.previewCandidateIndex(), 1);
+    dlg.categoryEdit()->setText(QStringLiteral("defect"));
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
+    const AnnotationSession session = dlg.session();
+    QCOMPARE(session.annotations.size(), 1);
+    QCOMPARE(session.annotations.first().maskRle, candidates[1].maskRle);
+    QCOMPARE(session.annotations.first().bbox, candidates[1].bbox);
+
+    QSignalSpy predictions(dlg.backendClient(), &SamBackendClient::predictionReady);
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(240, 180)),
+                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    QImage nextImage = image;
+    nextImage.fill(QColor(96, 110, 100));
+    QPainter nextPainter(&nextImage);
+    nextPainter.fillRect(QRect(300, 150, 80, 60), Qt::white);
+    nextPainter.end();
+    const QString nextPath = dir.filePath(QStringLiteral("next.png"));
+    QVERIFY(nextImage.save(nextPath));
+    dlg.setImageSnapshot(nextImage, nextPath);
+    QCOMPARE(dlg.backendClient()->currentEmbeddingId(), nextPath);
+    QCOMPARE(dlg.previewCandidateCount(), 0);
+    QVERIFY(dlg.backendClient()->lastCandidates().isEmpty());
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(340, 180)),
+                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    QTRY_COMPARE_WITH_TIMEOUT(dlg.previewCandidateCount(), 3, 30000);
+    QCOMPARE(predictions.size(), 1); // 旧图在途结果不得覆盖新图
+
+    mode->setCurrentIndex(0);
+    QCOMPARE(dlg.backendClient()->serverUrl(), QStringLiteral("http://127.0.0.1:0"));
+    QCOMPARE(dlg.previewCandidateCount(), 0);
+}
+
+void TestSamAnnotatorDialog::nativeBackendAcceptsNegativePointOnly() {
+    qputenv("DEEPLUX_SAM_PACKAGE", QFile::encodeName(QStringLiteral(TEST_SAM_PACKAGE_DIR)));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QImage image(640, 480, QImage::Format_RGB888);
+    image.fill(Qt::white);
+    const QString imagePath = dir.filePath(QStringLiteral("negative-only.png"));
+    QVERIFY(image.save(imagePath));
+
+    SamAnnotatorDialog dlg;
+    auto* mode = dlg.findChild<QComboBox*>(QStringLiteral("SamBackendMode"));
+    QVERIFY(mode);
+    mode->setCurrentIndex(mode->findData(QStringLiteral("native")));
+    dlg.setImageSnapshot(image, imagePath);
+    dlg.negativePointButton()->click();
+    QSignalSpy predictions(dlg.backendClient(), &SamBackendClient::predictionReady);
+    QSignalSpy errors(dlg.backendClient(), &SamBackendClient::errorOccurred);
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(240, 180)),
+                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    QTRY_VERIFY_WITH_TIMEOUT(!predictions.isEmpty() || !errors.isEmpty(), 30000);
+    QVERIFY2(!predictions.isEmpty(),
+             errors.isEmpty() ? "原生 SAM 未返回负点预测" : qPrintable(errors.first().first().toString()));
+    for (const QList<QVariant>& error : errors)
+        QVERIFY2(!error.first().toString().contains(QStringLiteral("至少提供一个")),
+                 qPrintable(error.first().toString()));
+}
+
+void TestSamAnnotatorDialog::closingWithNativeRequestQueuedDoesNotBlockUi() {
+    qputenv("DEEPLUX_SAM_PACKAGE", QFile::encodeName(QStringLiteral(TEST_SAM_PACKAGE_DIR)));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QImage image(640, 480, QImage::Format_RGB888);
+    image.fill(Qt::white);
+    const QString imagePath = dir.filePath(QStringLiteral("close.png"));
+    QVERIFY(image.save(imagePath));
+    auto dlg = std::make_unique<SamAnnotatorDialog>();
+    auto* mode = dlg->findChild<QComboBox*>(QStringLiteral("SamBackendMode"));
+    QVERIFY(mode);
+    mode->setCurrentIndex(mode->findData(QStringLiteral("native")));
+    dlg->setImageSnapshot(image, imagePath);
+    QThreadPool* pool = samNativeThreadPool();
+    QVERIFY(pool);
+    QTRY_COMPARE_WITH_TIMEOUT(pool->activeThreadCount(), 0, 30000);
+    auto gate = std::make_shared<QSemaphore>();
+    auto entered = std::make_shared<QSemaphore>();
+    pool->start([gate, entered] {
+        entered->release();
+        gate->acquire();
+    });
+    if (!entered->tryAcquire(1, 2000)) {
+        gate->release();
+        QFAIL("共享原生线程池的阻塞任务未在 2 秒内启动");
+    }
+    const bool invoked =
+        QMetaObject::invokeMethod(dlg.get(), "onOverlayClicked", Qt::DirectConnection,
+                                  Q_ARG(QPointF, QPointF(240, 180)), Q_ARG(Qt::MouseButton, Qt::LeftButton));
+    const bool requestBusy = invoked && dlg->backendClient()->state() == SamBackendClient::State::Busy;
+    std::atomic<bool> gateReleased{false};
+    std::thread watchdog([gate, &gateReleased] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        gateReleased.store(true, std::memory_order_release);
+        gate->release();
+    });
+    QElapsedTimer timer;
+    timer.start();
+    dlg.reset();
+    const qint64 closeMs = timer.elapsed();
+    const bool releasedBeforeClose = gateReleased.load(std::memory_order_acquire);
+    const bool poolStillActive = pool->activeThreadCount() > 0;
+    watchdog.join();
+    QVERIFY(invoked);
+    QVERIFY(requestBusy);
+    QVERIFY(!releasedBeforeClose);
+    QVERIFY(poolStillActive);
+    QVERIFY2(closeMs < 1000, qPrintable(QStringLiteral("关闭耗时 %1 ms").arg(closeMs)));
+}
+#endif
 
 QTEST_MAIN(TestSamAnnotatorDialog)
 #include "test_samannotatordialog.moc"

@@ -2,6 +2,15 @@
 
 #include "core/common/Logger.h"
 #include "core/platform/PathUtils.h"
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+#include "SamPredictor.h"
+#include "core/common/CancellationToken.h"
+
+#include <QThreadPool>
+#include <chrono>
+#include <future>
+#include <memory>
+#endif
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -56,9 +65,42 @@ QString findSamServerScriptFrom(QDir dir) {
 }
 } // namespace
 
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+struct SamBackendClient::NativeRequest {
+    std::future<SamPredictOutcome> future;
+    std::shared_ptr<CancellationToken> cancel;
+};
+#endif
+
 SamBackendClient::SamBackendClient(QObject* parent) : QObject(parent), m_nam(new QNetworkAccessManager(this)) {
     m_timeoutTimer.setSingleShot(true);
     connect(&m_timeoutTimer, &QTimer::timeout, this, &SamBackendClient::onTimeout);
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+    m_nativePollTimer.setInterval(10);
+    connect(&m_nativePollTimer, &QTimer::timeout, this, [this]() {
+        if (!m_nativeRequest ||
+            m_nativeRequest->future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+            return;
+        SamPredictOutcome result;
+        try {
+            result = m_nativeRequest->future.get();
+        } catch (const std::exception& e) {
+            result.error = tr("原生 SAM 工作线程失败：%1").arg(e.what());
+        }
+        m_nativePollTimer.stop();
+        m_nativeRequest.reset();
+        if (!result.ok || result.previewCandidates.size() != 1 || result.previewCandidates.first().isEmpty()) {
+            setState(State::Error);
+            emit errorOccurred(result.error.isEmpty() ? tr("原生 SAM 未返回有效候选") : result.error);
+            return;
+        }
+        m_lastCandidates = result.previewCandidates.first();
+        m_modelName = result.modelName;
+        setState(State::Ready);
+        const SamCandidate& best = m_lastCandidates.first();
+        emit predictionReady(best.polygon, best.bbox, best.score, best.maskRle, best.maskImage);
+    });
+#endif
 }
 
 SamBackendClient::~SamBackendClient() {
@@ -226,6 +268,22 @@ void SamBackendClient::abortPendingReply(QPointer<QNetworkReply>& reply) {
 }
 
 void SamBackendClient::startServerProcess() {
+    if (m_serverUrl == QLatin1String("native")) {
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+        const QString packageDir = qEnvironmentVariable("DEEPLUX_SAM_PACKAGE");
+        if (!QFileInfo(packageDir).isDir()) {
+            setState(State::Error);
+            emit errorOccurred(tr("原生 SAM 模型包目录不存在：%1").arg(packageDir));
+            return;
+        }
+        m_modelName = QStringLiteral("sam1_vit_b");
+        setState(State::Ready);
+#else
+        setState(State::Error);
+        emit errorOccurred(tr("此构建未启用原生 SAM 推理"));
+#endif
+        return;
+    }
     if (m_process)
         return;
 
@@ -313,6 +371,12 @@ void SamBackendClient::startServerProcess() {
 }
 
 void SamBackendClient::stopServerProcess() {
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+    if (m_nativeRequest)
+        m_nativeRequest->cancel->cancel();
+    m_nativePollTimer.stop();
+    m_nativeRequest.reset();
+#endif
     auto cancelReply = [this](QPointer<QNetworkReply>& reply) {
         if (!reply)
             return;
@@ -334,6 +398,7 @@ void SamBackendClient::stopServerProcess() {
         m_process = nullptr;
     }
     m_embeddingId.clear();
+    m_lastCandidates.clear();
     m_imageRetryPending = false;
     m_healthPollsRemaining = 0;
     stopTimeout();
@@ -460,6 +525,10 @@ void SamBackendClient::finishEnvironmentInitialization(bool ok, const QString& m
 }
 
 void SamBackendClient::healthCheck() {
+    if (m_serverUrl == QLatin1String("native")) {
+        startServerProcess();
+        return;
+    }
     // latest-wins：同类型请求重叠时取消旧请求，回调按序号只认最新请求
     abortPendingReply(m_pendingHealthReply);
     const qint64 thisSeq = ++m_healthSeq;
@@ -476,6 +545,21 @@ void SamBackendClient::healthCheck() {
 }
 
 void SamBackendClient::setImage(const QString& imagePath) {
+    if (m_serverUrl == QLatin1String("native")) {
+        cancelPendingPrediction();
+        m_embeddingId.clear();
+        m_lastCandidates.clear();
+        m_lastImagePath = imagePath;
+        if (!QFileInfo(imagePath).isFile()) {
+            setState(State::Error);
+            emit errorOccurred(tr("原生 SAM 图像不存在：%1").arg(imagePath));
+            return;
+        }
+        m_embeddingId = imagePath;
+        setState(State::Ready);
+        emit embeddingReady(m_embeddingId);
+        return;
+    }
     // latest-wins：快速连续切换图像时取消上一个未完成的 set_image，
     // 避免旧响应覆盖新图的 embedding 或误删新请求。
     abortPendingReply(m_pendingSetImageReply);
@@ -503,6 +587,41 @@ void SamBackendClient::predict(const QList<QPointF>& positive, const QList<QPoin
     if (m_embeddingId.isEmpty()) {
         setState(State::Error);
         emit errorOccurred(tr("尚无 embedding，无法预测"));
+        return;
+    }
+
+    if (m_serverUrl == QLatin1String("native")) {
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+        cancelPendingPrediction();
+        m_lastCandidates.clear();
+        auto request = std::make_unique<NativeRequest>();
+        request->cancel = std::make_shared<CancellationToken>();
+        SamPromptItem item;
+        item.positivePoints = positive;
+        item.negativePoints = negative;
+        item.box = box;
+        const QString imagePath = m_lastImagePath;
+        const int timeoutMs = m_timeoutMs;
+        const auto token = request->cancel;
+        auto work = std::make_shared<std::packaged_task<SamPredictOutcome()>>([imagePath, item, timeoutMs, token] {
+            return runSamPredictBatch(QStringLiteral("native"), imagePath, {item}, timeoutMs, token.get(), true);
+        });
+        request->future = work->get_future();
+        m_nativeRequest = std::move(request);
+        QThreadPool* pool = samNativeThreadPool();
+        if (!pool) {
+            m_nativeRequest.reset();
+            setState(State::Error);
+            emit errorOccurred(tr("原生 SAM 只能从应用主线程启动"));
+            return;
+        }
+        pool->start([work] { (*work)(); });
+        setState(State::Busy);
+        m_nativePollTimer.start();
+#else
+        setState(State::Error);
+        emit errorOccurred(tr("此构建未启用原生 SAM 推理"));
+#endif
         return;
     }
 
@@ -548,6 +667,18 @@ void SamBackendClient::predict(const QList<QPointF>& positive, const QList<QPoin
 }
 
 void SamBackendClient::cancelPendingPrediction() {
+    if (m_serverUrl == QLatin1String("native")) {
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+        if (!m_nativeRequest)
+            return;
+        m_nativeRequest->cancel->cancel();
+        m_nativePollTimer.stop();
+        m_nativeRequest.reset();
+        m_lastCandidates.clear();
+        setState(m_embeddingId.isEmpty() ? State::NotStarted : State::Ready);
+#endif
+        return;
+    }
     if (!m_pendingPredictReply)
         return;
     disconnect(m_pendingPredictReply, nullptr, this, nullptr);
@@ -559,6 +690,14 @@ void SamBackendClient::cancelPendingPrediction() {
 }
 
 void SamBackendClient::unloadImage() {
+    if (m_serverUrl == QLatin1String("native")) {
+        cancelPendingPrediction();
+        m_embeddingId.clear();
+        m_lastImagePath.clear();
+        m_lastCandidates.clear();
+        setState(State::NotStarted);
+        return;
+    }
     if (m_embeddingId.isEmpty())
         return;
     // Fix P0-3: 取消任何挂起的 predict，防止 unload 和 predict 竞争
