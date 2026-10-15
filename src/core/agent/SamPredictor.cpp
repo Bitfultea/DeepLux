@@ -99,6 +99,11 @@ SamPredictOutcome convertNativeCandidates(const SamNativeResult& prediction, con
             preview.score = region.score;
             preview.maskRle = region.maskRle;
             preview.maskImage = MaskOps::toDisplayMask(mask);
+            if (preview.maskImage.isNull()) {
+                if (index == item.candidateIndex)
+                    return fail(QStringLiteral("原生 SAM 预览掩膜分配失败"));
+                continue;
+            }
             previews.append(preview);
         }
     }
@@ -260,6 +265,9 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
         const QString packageDir = qEnvironmentVariable("DEEPLUX_SAM_PACKAGE");
         if (packageDir.isEmpty())
             return fail(QStringLiteral("未设置 DEEPLUX_SAM_PACKAGE 模型包路径"), -1);
+        const QString device = qEnvironmentVariable("DEEPLUX_SAM_DEVICE", "cpu").trimmed().toLower();
+        if (device != QLatin1String("cpu") && device != QLatin1String("cuda"))
+            return fail(QStringLiteral("DEEPLUX_SAM_DEVICE 仅支持 cpu 或 cuda：%1").arg(device), -1);
         if (cancel && cancel->isCancelledFast())
             return fail(QStringLiteral("SAM 预测已取消"), -1);
 
@@ -267,7 +275,8 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
         thread_local SamOnnxInference inference;
         QElapsedTimer timer;
         timer.start();
-        if ((!inference.isLoaded() || inference.packageDir() != packageDir) && !inference.loadPackage(packageDir))
+        if ((!inference.isLoaded() || inference.packageDir() != packageDir || inference.device() != device) &&
+            !inference.loadPackage(packageDir, device))
             return fail(QStringLiteral("原生 SAM 模型包加载失败：%1").arg(inference.lastError()), -1);
         if (timer.elapsed() > timeoutMs)
             return fail(QStringLiteral("原生 SAM 模型包加载超时"), -1);
@@ -291,8 +300,13 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
                 return fail(QStringLiteral("SAM 预测已取消"), i);
             if (timer.elapsed() > timeoutMs)
                 return fail(QStringLiteral("原生 SAM 预测超时"), i);
-            const SamPredictOutcome converted =
-                SamPredictorDetail::convertNativeCandidates(prediction, item, rgb.size(), includeCandidates);
+            SamPredictOutcome converted;
+            try {
+                converted =
+                    SamPredictorDetail::convertNativeCandidates(prediction, item, rgb.size(), includeCandidates);
+            } catch (const std::exception& e) {
+                return fail(QStringLiteral("原生 SAM 候选转换失败：%1").arg(e.what()), i);
+            }
             if (!converted.ok)
                 return fail(converted.error, i);
             if (cancel && cancel->isCancelledFast())

@@ -115,6 +115,8 @@ QImage toDisplayMask(const QImage& binaryMask) {
     if (gray.isNull())
         return QImage();
     QImage out(gray.width(), gray.height(), QImage::Format_ARGB32);
+    if (out.isNull())
+        return QImage();
     const QRgb foreground = qRgba(6, 182, 212, 90); // sam_server mask_png_base64 配色
     for (int y = 0; y < gray.height(); ++y) {
         const uchar* srow = gray.constScanLine(y);
@@ -131,17 +133,20 @@ QString encodeRle(const QImage& binaryMask) {
         return QString();
     const int w = mask.width();
     const int h = mask.height();
-    QVector<const uchar*> rows(h);
-    for (int y = 0; y < h; ++y)
-        rows[y] = mask.constScanLine(y);
+    // 分块转置后顺序扫描仍是原图列主序，缓冲不随图像宽度增长。
+    const cv::Mat source(h, w, CV_8UC1, const_cast<uchar*>(mask.constBits()), mask.bytesPerLine());
 
     // 与 sam_server _encode_rle 一致：列主序（x 外层、y 内层），counts[0] 为 0 的游程
     QJsonArray counts;
     int last = 0;
     int run = 0;
-    for (int x = 0; x < w; ++x) {
-        for (int y = 0; y < h; ++y) {
-            const int value = rows[y][x] ? 1 : 0;
+    constexpr int kColumnTile = 64;
+    cv::Mat columnOrder;
+    for (int x = 0; x < w; x += kColumnTile) {
+        cv::transpose(source.colRange(x, qMin(x + kColumnTile, w)), columnOrder);
+        const uchar* pixels = columnOrder.ptr<uchar>();
+        for (size_t i = 0; i < columnOrder.total(); ++i) {
+            const int value = pixels[i] ? 1 : 0;
             if (value == last) {
                 ++run;
             } else {

@@ -40,10 +40,15 @@ public:
     ~SamOnnxInference();
 
     // 加载模型包（manifest.json + encoder.onnx + decoder.onnx）
-    bool loadPackage(const QString& packageDir);
+    // cuda 请求在 Provider 不可用时失败，不隐式回退 CPU。
+    bool loadPackage(const QString& packageDir, const QString& device = QStringLiteral("cpu"),
+                     const QString& profilePrefix = QString());
     bool isLoaded() const;
     QString lastError() const;
     QString packageDir() const;
+    QString device() const;
+    // 仅在加载时传入 profilePrefix 后可用；返回 encoder/decoder 的 ORT profiling 文件。
+    QStringList endProfiling();
 
     // 预测：给图像 + prompt，返回候选列表
     // 同步执行（调用方应在工作线程调用）

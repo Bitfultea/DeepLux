@@ -11,12 +11,15 @@
 #include "plugins/detection/SamPredict/SamPredictPlugin.h"
 
 #include <QCryptographicHash>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPainter>
 #include <QSemaphore>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QThreadPool>
@@ -27,6 +30,7 @@
 #include <limits>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+#include <vector>
 
 using namespace DeepLux;
 
@@ -63,6 +67,203 @@ private slots:
         QVERIFY(r.candidates[1].score >= r.candidates[2].score);
         // 掩膜面积 >0
         QVERIFY(cv::countNonZero(r.candidates[0].mask > 0) > 0);
+    }
+
+    void deviceSelection() {
+        SamOnnxInference inf;
+        QVERIFY2(inf.loadPackage(m_packageDir, QStringLiteral("cpu")), qPrintable(inf.lastError()));
+        QCOMPARE(inf.device(), QStringLiteral("cpu"));
+        QVERIFY(!inf.loadPackage(m_packageDir, QStringLiteral("invalid")));
+        QVERIFY(inf.lastError().contains(QStringLiteral("device")));
+        QVERIFY(!inf.isLoaded());
+    }
+
+    void cudaProvider() {
+        if (qEnvironmentVariable("DEEPLUX_TEST_CUDA") != QLatin1String("1"))
+            QSKIP("设置 DEEPLUX_TEST_CUDA=1 后，在 CUDA 版 ONNX Runtime 构建中运行");
+        SamOnnxInference inf;
+        QElapsedTimer timer;
+        timer.start();
+        QVERIFY2(inf.loadPackage(m_packageDir, QStringLiteral("cuda")), qPrintable(inf.lastError()));
+        QCOMPARE(inf.device(), QStringLiteral("cuda"));
+        const qint64 loadMs = timer.elapsed();
+
+        cv::Mat img(480, 640, CV_8UC3, cv::Scalar(96, 110, 100));
+        cv::rectangle(img, cv::Rect(200, 150, 80, 60), cv::Scalar(255, 255, 255), -1);
+        timer.restart();
+        const SamNativeResult first = inf.predict(img, {QPointF(240, 180)}, {}, QRectF());
+        QVERIFY2(first.ok, qPrintable(first.error));
+        QVERIFY(!first.cacheHit);
+        const qint64 firstMs = timer.elapsed();
+        timer.restart();
+        const SamNativeResult repeated = inf.predict(img, {QPointF(240, 180)}, {}, QRectF());
+        QVERIFY2(repeated.ok, qPrintable(repeated.error));
+        const qint64 cachedMs = timer.elapsed();
+        QVERIFY(repeated.cacheHit);
+        QCOMPARE(repeated.candidates.size(), 3);
+        QVERIFY(cv::countNonZero(repeated.candidates.first().mask) > 0);
+        const QString goldenPath = QStringLiteral(TEST_SAM_GOLDEN_DIR) + QStringLiteral("/point_0.png");
+        const cv::Mat golden = cv::imread(QFile::encodeName(goldenPath).constData(), cv::IMREAD_GRAYSCALE);
+        QVERIFY2(!golden.empty(), qPrintable(goldenPath));
+        cv::Mat intersection, united;
+        cv::bitwise_and(repeated.candidates.first().mask, golden, intersection);
+        cv::bitwise_or(repeated.candidates.first().mask, golden, united);
+        QVERIFY(cv::countNonZero(united) > 0);
+        QVERIFY(double(cv::countNonZero(intersection)) / cv::countNonZero(united) >= 0.99);
+        QVERIFY(std::abs(repeated.candidates.first().score - 1.002875328) <= 0.01);
+        qInfo("CUDA load=%lldms first=%lldms cached=%lldms", static_cast<long long>(loadMs),
+              static_cast<long long>(firstMs), static_cast<long long>(cachedMs));
+
+        QVERIFY(!inf.loadPackage(m_packageDir, QStringLiteral("invalid")));
+        QVERIFY(!inf.isLoaded());
+        QVERIFY(!inf.hasCachedEmbedding());
+        const SamNativeResult afterFailure = inf.predict(img, {QPointF(240, 180)}, {}, QRectF());
+        QVERIFY(!afterFailure.ok);
+        QVERIFY(afterFailure.error.contains(QStringLiteral("未加载")));
+        QVERIFY2(inf.loadPackage(m_packageDir, QStringLiteral("cpu")), qPrintable(inf.lastError()));
+        QCOMPARE(inf.device(), QStringLiteral("cpu"));
+        QVERIFY(!inf.hasCachedEmbedding());
+        const SamNativeResult afterSwitch = inf.predict(img, {QPointF(240, 180)}, {}, QRectF());
+        QVERIFY2(afterSwitch.ok, qPrintable(afterSwitch.error));
+        QVERIFY(!afterSwitch.cacheHit);
+    }
+
+    void cudaExecutionProfile() {
+        if (qEnvironmentVariable("DEEPLUX_TEST_CUDA") != QLatin1String("1"))
+            QSKIP("设置 DEEPLUX_TEST_CUDA=1 后，在 CUDA 版运行时上运行");
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString prefix = qEnvironmentVariable("DEEPLUX_SAM_PROFILE_PREFIX", dir.filePath(QStringLiteral("sam")));
+        SamOnnxInference inf;
+        QVERIFY2(inf.loadPackage(m_packageDir, QStringLiteral("cuda"), prefix), qPrintable(inf.lastError()));
+        cv::Mat img(480, 640, CV_8UC3, cv::Scalar(96, 110, 100));
+        cv::rectangle(img, cv::Rect(200, 150, 80, 60), cv::Scalar(255, 255, 255), -1);
+        const SamNativeResult result = inf.predict(img, {QPointF(240, 180)}, {}, QRectF());
+        QVERIFY2(result.ok, qPrintable(result.error));
+        const QStringList profiles = inf.endProfiling();
+        QVERIFY2(profiles.size() == 2, qPrintable(inf.lastError()));
+        for (const QString& path : profiles) {
+            QFile file(path);
+            QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(path));
+            const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+            QVERIFY2(doc.isArray(), qPrintable(path));
+            int cudaNodes = 0;
+            int computeNodes = 0;
+            for (const QJsonValue& event : doc.array()) {
+                const QJsonObject obj = event.toObject();
+                if (obj.value(QStringLiteral("cat")).toString() != QLatin1String("Node"))
+                    continue;
+                const QJsonObject args = obj.value(QStringLiteral("args")).toObject();
+                if (args.value(QStringLiteral("provider")).toString() != QLatin1String("CUDAExecutionProvider"))
+                    continue;
+                ++cudaNodes;
+                const QString op = args.value(QStringLiteral("op_name")).toString();
+                if (op == QLatin1String("Conv") || op == QLatin1String("MatMul") || op == QLatin1String("Gemm"))
+                    ++computeNodes;
+            }
+            qInfo("ORT profile %s: CUDA nodes=%d compute nodes=%d", qPrintable(path), cudaNodes, computeNodes);
+            QVERIFY(cudaNodes > 0);
+            QVERIFY(computeNodes > 0);
+        }
+    }
+
+    void cudaSynthetic3000Benchmark() {
+        if (qEnvironmentVariable("DEEPLUX_TEST_CUDA_BENCH") != QLatin1String("1"))
+            QSKIP("设置 DEEPLUX_TEST_CUDA_BENCH=1 后，在 CUDA 版运行时上运行");
+        SamOnnxInference inf;
+        QVERIFY2(inf.loadPackage(m_packageDir, QStringLiteral("cuda")), qPrintable(inf.lastError()));
+        cv::Mat img(3000, 3000, CV_8UC3, cv::Scalar(96, 110, 100));
+        cv::rectangle(img, cv::Rect(1400, 1400, 120, 80), cv::Scalar(255, 255, 255), -1);
+        const QList<QPointF> point = {QPointF(1460, 1440)};
+        SamNativeResult warmup = inf.predict(img, point, {}, QRectF());
+        QVERIFY2(warmup.ok, qPrintable(warmup.error));
+        std::vector<double> milliseconds;
+        QStringList raw;
+        for (int i = 0; i < 30; ++i) {
+            QElapsedTimer timer;
+            timer.start();
+            const SamNativeResult result = inf.predict(img, point, {}, QRectF());
+            QVERIFY2(result.ok, qPrintable(result.error));
+            QVERIFY(result.cacheHit);
+            const double elapsed = timer.nsecsElapsed() / 1e6;
+            milliseconds.push_back(elapsed);
+            raw.append(QString::number(elapsed, 'f', 3));
+        }
+        std::sort(milliseconds.begin(), milliseconds.end());
+        qInfo("CUDA 3000x3000 cached predict ms: p50=%.3f p95=%.3f raw=[%s]", milliseconds[14], milliseconds[28],
+              qPrintable(raw.join(',')));
+    }
+
+    void cudaProduct3000Benchmark() {
+        if (qEnvironmentVariable("DEEPLUX_TEST_CUDA_BENCH") != QLatin1String("1"))
+            QSKIP("设置 DEEPLUX_TEST_CUDA_BENCH=1 后，在 CUDA 版运行时上运行");
+        QCOMPARE(qEnvironmentVariable("DEEPLUX_SAM_DEVICE"), QStringLiteral("cuda"));
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QImage image(3000, 3000, QImage::Format_RGB888);
+        image.fill(QColor(96, 110, 100));
+        QPainter painter(&image);
+        painter.fillRect(QRect(1400, 1400, 120, 80), Qt::white);
+        painter.end();
+        const QString path = dir.filePath(QStringLiteral("synthetic3000.png"));
+        QVERIFY(image.save(path));
+        SamPromptItem item;
+        item.label = QStringLiteral("defect");
+        item.positivePoints = {QPointF(1460, 1440)};
+        const auto predict = [&] {
+            return runSamPredictBatch(QStringLiteral("native"), path, {item}, 30000, nullptr, true);
+        };
+        const SamPredictOutcome warmup = predict();
+        QVERIFY2(warmup.ok, qPrintable(warmup.error));
+        std::vector<double> milliseconds;
+        QStringList raw;
+        for (int i = 0; i < 100; ++i) {
+            QElapsedTimer timer;
+            timer.start();
+            const SamPredictOutcome result = predict();
+            QVERIFY2(result.ok, qPrintable(result.error));
+            QVERIFY(!result.previewCandidates.isEmpty());
+            const double elapsed = timer.nsecsElapsed() / 1e6;
+            milliseconds.push_back(elapsed);
+            raw.append(QString::number(elapsed, 'f', 3));
+        }
+        std::sort(milliseconds.begin(), milliseconds.end());
+        const double p95 = milliseconds[94];
+        qInfo("CUDA product 3000x3000 cached predict ms: p50=%.3f p95=%.3f raw=[%s]", milliseconds[49], p95,
+              qPrintable(raw.join(',')));
+        QVERIFY2(p95 <= 500.0, qPrintable(QStringLiteral("原生 SAM 3000x3000 P95 超过 500ms：%1ms").arg(p95)));
+    }
+
+    void cudaConversionProfile() {
+        if (qEnvironmentVariable("DEEPLUX_TEST_CUDA_BENCH") != QLatin1String("1"))
+            QSKIP("设置 DEEPLUX_TEST_CUDA_BENCH=1 后，在 CUDA 版运行时上运行");
+        SamOnnxInference inf;
+        QVERIFY2(inf.loadPackage(m_packageDir, QStringLiteral("cuda")), qPrintable(inf.lastError()));
+        cv::Mat img(3000, 3000, CV_8UC3, cv::Scalar(96, 110, 100));
+        cv::rectangle(img, cv::Rect(1400, 1400, 120, 80), cv::Scalar(255, 255, 255), -1);
+        const SamNativeResult prediction = inf.predict(img, {QPointF(1460, 1440)}, {}, QRectF());
+        QVERIFY2(prediction.ok, qPrintable(prediction.error));
+        for (int i = 0; i < prediction.candidates.size(); ++i) {
+            const cv::Mat& m = prediction.candidates[i].mask;
+            const QImage mask(m.data, m.cols, m.rows, int(m.step), QImage::Format_Grayscale8);
+            QElapsedTimer timer;
+            timer.start();
+            const QList<QPointF> polygon = MaskOps::traceLargestContour(mask);
+            const double contourMs = timer.nsecsElapsed() / 1e6;
+            timer.restart();
+            const QRectF bbox = MaskOps::foregroundBoundingBox(mask);
+            const double bboxMs = timer.nsecsElapsed() / 1e6;
+            timer.restart();
+            const QString rle = MaskOps::encodeRle(mask);
+            const double rleMs = timer.nsecsElapsed() / 1e6;
+            timer.restart();
+            const QImage display = MaskOps::toDisplayMask(mask);
+            const double displayMs = timer.nsecsElapsed() / 1e6;
+            qInfo("candidate %d contour=%.3f bbox=%.3f rle=%.3f display=%.3f polygon=%d rleChars=%d displayBytes=%lld",
+                  i, contourMs, bboxMs, rleMs, displayMs, polygon.size(), rle.size(),
+                  static_cast<long long>(display.sizeInBytes()));
+            QVERIFY(!bbox.isEmpty());
+        }
     }
 
     void optionalEmptyCandidateDoesNotDiscardValidSelection() {
