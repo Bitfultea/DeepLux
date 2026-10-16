@@ -75,6 +75,12 @@ if [[ ! -f "$manifest" || -L "$manifest" ]]; then
     echo "Missing or linked plugin manifest: $manifest" >&2
     exit 1
 fi
+smoke_script="${prefix}/bin/verify-sam-native-runtime.sh"
+smoke_project="${prefix}/${datarootdir}/deeplux/accept_sam_native_demo.json"
+if [[ ! -x "$smoke_script" || -L "$smoke_script" || ! -f "$smoke_project" || -L "$smoke_project" ]]; then
+    echo "Missing or linked installed native SAM smoke assets" >&2
+    exit 1
+fi
 mapfile -t expected_plugins < "$manifest"
 if [[ ${#expected_plugins[@]} -eq 0 ]]; then
     echo "Plugin manifest is empty: $manifest" >&2

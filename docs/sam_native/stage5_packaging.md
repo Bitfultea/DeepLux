@@ -23,6 +23,15 @@ macOS 原生推理仍不支持。
 不会将含该绝对路径的插件判作可重定位包；需另行打包和验收相机 SDK。
 Windows 插件打包与迁移尚未在本批验证。
 
+第三批在原生推理构建的 Linux 包中安装 `verify-sam-native-runtime.sh` 和
+`accept_sam_native_demo.json`。验收工程无需外部图像文件，使用
+GrabImage 演示图 → SamPredict(native) → RegionStats 消费 Region2D；脚本隔离
+`HOME`/用户插件目录、清空 `LD_LIBRARY_PATH`。同一工程先用空模型目录做
+`manifest.json` 失败负对照（只接受 CLI 退出码 1），再用指定模型包运行；
+两次运行均有 120 秒上限和 TERM 后 5 秒强制结束。超时、负对照失效或正例失败
+均返回非零。
+模型包仍单独提供，不随程序安装。
+
 ## 生成机复现
 
 ```bash
@@ -30,6 +39,7 @@ cmake -S . -B build -DDEEPLUX_NATIVE_SAM=ON -DONNXRUNTIME_DIR=/path/to/onnxrunti
 cmake --build build -j4
 cmake --install build --prefix /tmp/deeplux-native-install
 bash scripts/verify-sam-native-install.sh /tmp/deeplux-native-install
+/tmp/deeplux-native-install/bin/verify-sam-native-runtime.sh /path/to/sam1_vit_b_onnx cpu
 ```
 
 模型包独立迁移并保持 `manifest.json`、`encoder.onnx`、`decoder.onnx` 原样；运行时设置
@@ -49,6 +59,10 @@ bash scripts/verify-sam-native-install.sh /tmp/deeplux-native-install
   在隔离 `HOME` 和清空 `LD_LIBRARY_PATH` 下，安装版 `DeepLux list-plugins`
   能扫描包内模块；`DeepLux run tests/acceptance/projects/accept_distancepp.json`
   实际加载 MeasurementInput 和 DistancePP 并执行成功（退出码 0）。
+- 第三批将安装包复制到不同路径后，执行包内脚本，真实 ViT-B CPU 模型完成
+  GrabImage → SamPredict → RegionStats 工程，退出码 0；用无 manifest 的目录替换
+  模型包，原生插件报错且脚本退出码 1。此项证明当前机器上搬迁后的原生 CPU
+  产品路径可运行，不是无 Python 系统或目标 NVIDIA 机台验收。
 - GPU SDK 的 1.23.2 主库、CUDA Provider（约 416 MiB）和 shared Provider 均
   复制为包内真实文件；`LD_LIBRARY_PATH` 仅指向安装包 `lib` 时，
   `cudaProvider` 与 `cudaDualSessionShutdown` 4/4 通过，退出码 0。

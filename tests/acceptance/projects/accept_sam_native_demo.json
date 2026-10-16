@@ -1,0 +1,46 @@
+{
+    "version": "3.0",
+    "id": "accept-sam-native-demo-0001",
+    "name": "SAM native installed smoke",
+    "created": "2026-10-16T00:00:00",
+    "modified": "2026-10-16T00:00:00",
+    "modules": [
+        {
+            "id": "grabimage",
+            "moduleId": "GrabImage",
+            "name": "Demo image",
+            "posX": 80,
+            "posY": 120,
+            "params": {"grabSource": "Demo"}
+        },
+        {
+            "id": "sampredict",
+            "moduleId": "SamPredict",
+            "name": "Native SAM",
+            "posX": 320,
+            "posY": 120,
+            "params": {
+                "serverUrl": "native",
+                "label": "object",
+                "points": [[320, 240]],
+                "negativePoints": [],
+                "box": null,
+                "timeoutMs": 30000
+            }
+        },
+        {
+            "id": "regionstats",
+            "moduleId": "RegionStats",
+            "name": "Region stats",
+            "posX": 560,
+            "posY": 120,
+            "params": {}
+        }
+    ],
+    "connections": [
+        {"fromModuleId": "grabimage", "toModuleId": "sampredict", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+        {"fromModuleId": "sampredict", "toModuleId": "regionstats", "fromPort": "region", "toPort": "region", "edgeType": "data"}
+    ],
+    "flows": [{"id": "main", "name": "Main", "nodes": ["grabimage", "sampredict", "regionstats"]}],
+    "resources": {"cameras": [], "dataSources": []}
+}

@@ -272,4 +272,12 @@ if(UNIX AND NOT APPLE)
     file(WRITE "${CMAKE_BINARY_DIR}/plugins.manifest" "${packaged_plugin_manifest}\n")
     install(FILES "${CMAKE_BINARY_DIR}/plugins.manifest"
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/deeplux")
+    if(DEEPLUX_NATIVE_SAM)
+        configure_file(scripts/verify-sam-native-runtime.sh.in
+            "${CMAKE_BINARY_DIR}/verify-sam-native-runtime.sh" @ONLY)
+        install(PROGRAMS "${CMAKE_BINARY_DIR}/verify-sam-native-runtime.sh"
+            DESTINATION "${CMAKE_INSTALL_BINDIR}")
+        install(FILES tests/acceptance/projects/accept_sam_native_demo.json
+            DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/deeplux")
+    endif()
 endif()
