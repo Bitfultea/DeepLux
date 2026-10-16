@@ -217,5 +217,7 @@ else()
 endif()
 
 # ========== 安装 ==========
-install(DIRECTORY resources/ DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/deeplux)
+if(EXISTS "${CMAKE_SOURCE_DIR}/resources")
+    install(DIRECTORY resources/ DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/deeplux)
+endif()
 install(DIRECTORY tools/sam_server DESTINATION tools)

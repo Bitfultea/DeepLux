@@ -67,5 +67,5 @@ target_link_libraries(HikvisionCameraPlugin PRIVATE
 
 # Install rule
 install(TARGETS HikvisionCameraPlugin
-    LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/plugins/camera
+    LIBRARY DESTINATION plugins/camera
 )

@@ -137,6 +137,9 @@ set_target_properties(deeplux_ui PROPERTIES
     SOVERSION ${PROJECT_VERSION_MAJOR}
     OUTPUT_NAME deeplux_ui
 )
+if(UNIX AND NOT APPLE)
+    set_target_properties(deeplux_ui PROPERTIES INSTALL_RPATH "$ORIGIN")
+endif()
 
 install(TARGETS deeplux_ui
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

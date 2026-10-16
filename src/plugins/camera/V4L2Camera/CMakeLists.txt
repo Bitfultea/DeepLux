@@ -46,5 +46,5 @@ target_link_libraries(V4L2CameraPlugin PRIVATE
 
 # Install rule
 install(TARGETS V4L2CameraPlugin
-    LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/plugins/camera
+    LIBRARY DESTINATION plugins/camera
 )

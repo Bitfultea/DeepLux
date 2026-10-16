@@ -49,5 +49,5 @@ target_compile_definitions(DirectShowCameraPlugin PRIVATE _WIN32)
 
 # Install rule
 install(TARGETS DirectShowCameraPlugin
-    LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/plugins/camera
+    LIBRARY DESTINATION plugins/camera
 )

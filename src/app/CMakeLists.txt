@@ -36,6 +36,7 @@ if(WIN32)
 else()
     set_target_properties(DeepLux PROPERTIES
         OUTPUT_NAME "DeepLux"
+        INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}"
     )
 endif()
 
