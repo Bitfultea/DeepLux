@@ -105,6 +105,18 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_fitline" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE FitLinePlugin)
     endif()
+    if(TEST_NAME STREQUAL "test_pluginmanager")
+        add_dependencies(${TEST_NAME} MeasurementInputPlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_PLUGINMANAGER_LIB="$<TARGET_FILE:MeasurementInputPlugin>"
+            TEST_PLUGINMANAGER_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json")
+        if(UNIX AND NOT APPLE)
+            add_dependencies(${TEST_NAME} V4L2CameraPlugin)
+            target_compile_definitions(${TEST_NAME} PRIVATE
+                TEST_PLUGINMANAGER_CAMERA_LIB="$<TARGET_FILE:V4L2CameraPlugin>"
+                TEST_PLUGINMANAGER_CAMERA_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/camera/V4L2Camera/metadata.json")
+        endif()
+    endif()
     if(TEST_NAME STREQUAL "test_findcircle" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE FindCirclePlugin)
     endif()
@@ -347,6 +359,9 @@ foreach(TEST_FILE ${TEST_SOURCES})
 
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
     set_tests_properties(${TEST_NAME} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}")
+    if(TEST_NAME STREQUAL "test_pluginmanager")
+        set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
+    endif()
     if(TEST_NAME STREQUAL "test_acceptance_flows")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 10)
     endif()

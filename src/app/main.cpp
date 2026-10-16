@@ -7,6 +7,7 @@
 #include "ui/views/MainWindow.h"
 
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDebug>
 #include <QFile>
 #include <QIcon>
@@ -167,6 +168,8 @@ int main(int argc, char* argv[]) {
 
     // 如果有 CLI 选项或子命令且不是强制 GUI 模式，使用 CLI
     if ((hasCLIOptions || hasCommand) && !args.contains("--gui") && !args.contains("-g")) {
+        QCoreApplication app(argc, argv);
+        app.setApplicationName("DeepLux");
         // 初始化必要的管理器
         initAppDirectories();
         ProjectManager::instance();

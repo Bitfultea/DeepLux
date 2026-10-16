@@ -64,8 +64,3 @@ target_link_libraries(HikvisionCameraPlugin PRIVATE
     ${MVS_CAMERA_CONTROL_LIBRARY}
     pthread
 )
-
-# Install rule
-install(TARGETS HikvisionCameraPlugin
-    LIBRARY DESTINATION plugins/camera
-)

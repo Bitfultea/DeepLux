@@ -43,8 +43,3 @@ target_link_libraries(V4L2CameraPlugin PRIVATE
     dl
     deeplux_core
 )
-
-# Install rule
-install(TARGETS V4L2CameraPlugin
-    LIBRARY DESTINATION plugins/camera
-)

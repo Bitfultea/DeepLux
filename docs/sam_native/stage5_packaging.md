@@ -1,4 +1,4 @@
-# SAM 原生部署：阶段 5 第一批（Linux 安装路径）
+# SAM 原生部署：阶段 5（Linux 安装与插件）
 
 ## 本批范围
 
@@ -9,9 +9,19 @@ RUNPATH。Windows 配置识别 `lib/onnxruntime.lib` 及 `lib` 或 `bin` 中的
 `onnxruntime.dll`，并从所选目录安装运行库；本批未在 Windows 构建或运行。
 macOS 原生推理仍不支持。
 
-本批只解决运行库的安装可重定位性，不是完整离线应用发行包：当前 CMake 安装规则
-仍只安装相机插件，不安装其余全部业务插件；Qt/OpenCV、CUDA/cuDNN 和显卡驱动
-仍需目标系统提供。Python HTTP 服务仍保留为可选路径，但原生推理不调用 Python。
+第二批将所有本次构建的 Linux 插件目标及其 metadata 安装到 `plugins/<插件目录>`，
+每个插件使用 `$ORIGIN/../../lib` RUNPATH；安装清单记录本次构建的插件集合。
+加载器扫描包内插件后再扫描用户插件目录；同名用户插件加载或 ABI 校验失败时回退
+包内版本。CLI 模式创建 `QCoreApplication`，因此从迁移后的
+`bin/DeepLux` 运行时可定位旁边的 `plugins` 目录。安装验证脚本拒绝缺失 metadata、
+库文件、非相对 RUNPATH、符号链接、未解析依赖或清单漏项。当前布局要求
+`CMAKE_INSTALL_BINDIR=bin`，其他值在配置阶段拒绝。
+
+这仍不是完整离线应用发行包：Qt/OpenCV、CUDA/cuDNN 和显卡驱动需目标系统提供；
+可选相机 SDK 也需按设备单独部署。Python HTTP 服务仍保留为可选路径，但原生推理
+不调用 Python。若启用 Hikvision 插件，保留原有 MVS SDK 路径，但当前严格安装验证
+不会将含该绝对路径的插件判作可重定位包；需另行打包和验收相机 SDK。
+Windows 插件打包与迁移尚未在本批验证。
 
 ## 生成机复现
 
@@ -33,7 +43,12 @@ bash scripts/verify-sam-native-install.sh /tmp/deeplux-native-install
   `DESTDIR` 暂存安装的清单仍统一记录逻辑安装前缀。
   `readelf` 显示应用 RUNPATH 为 `$ORIGIN/../lib`、核心/UI 库为 `$ORIGIN`。
   清空 `LD_LIBRARY_PATH`、令 `HOME=/tmp` 后，安装版及搬迁副本的
-  `DeepLux --version` 均退出码 0，日志显示当前隔离目录下 0 个插件。
+  第一批安装的 `DeepLux --version` 均退出码 0，当时尚无业务插件。
+- 第二批 CMake 安装包含 66 个插件目录（65 个模块 + 1 个 V4L2 相机）；
+  每个目录含动态库和 metadata，插件库 RUNPATH 均为相对路径。
+  在隔离 `HOME` 和清空 `LD_LIBRARY_PATH` 下，安装版 `DeepLux list-plugins`
+  能扫描包内模块；`DeepLux run tests/acceptance/projects/accept_distancepp.json`
+  实际加载 MeasurementInput 和 DistancePP 并执行成功（退出码 0）。
 - GPU SDK 的 1.23.2 主库、CUDA Provider（约 416 MiB）和 shared Provider 均
   复制为包内真实文件；`LD_LIBRARY_PATH` 仅指向安装包 `lib` 时，
   `cudaProvider` 与 `cudaDualSessionShutdown` 4/4 通过，退出码 0。

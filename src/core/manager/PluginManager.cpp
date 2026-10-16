@@ -84,7 +84,18 @@ void PluginManager::shutdown() {
 void PluginManager::scanPlugins() {
     QMutexLocker locker(&m_mutex);
 
-    QStringList searchPaths = m_pluginPaths;
+    QStringList searchPaths;
+    const QString bundledPath =
+        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QStringLiteral("../plugins"));
+    m_bundledPlugins.clear();
+    if (QDir(bundledPath).exists()) {
+        searchPaths.append(bundledPath);
+    }
+    for (const QString& path : m_pluginPaths) {
+        if (!searchPaths.contains(path)) {
+            searchPaths.append(path);
+        }
+    }
     QString defaultPath = PathUtils::pluginPath();
     if (!searchPaths.contains(defaultPath)) {
         searchPaths.append(defaultPath);
@@ -113,9 +124,14 @@ void PluginManager::scanPlugins() {
 
             PluginInfo info;
             if (loadPluginMetadata(metadataPath, info)) {
+                if (basePath == bundledPath) {
+                    m_bundledPlugins[info.name] = info;
+                }
                 if (info.category.toLower().contains("camera")) {
+                    m_modules.remove(info.name);
                     m_cameras[info.name] = info;
                 } else {
+                    m_cameras.remove(info.name);
                     m_modules[info.name] = info;
                 }
                 qDebug() << "Found plugin:" << info.name << "at" << pluginPath;
@@ -261,7 +277,8 @@ bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info) {
     return !info.name.isEmpty();
 }
 
-bool PluginManager::validateLoadedPlugin(const QString& name, QPluginLoader* loader, QString* error) const {
+bool PluginManager::validateLoadedPlugin(const PluginInfo& candidate, QPluginLoader* loader, QString* error) const {
+    const QString& name = candidate.name;
     if (!loader) {
         if (error) {
             *error = QString("Plugin loader is null: %1").arg(name);
@@ -278,12 +295,10 @@ bool PluginManager::validateLoadedPlugin(const QString& name, QPluginLoader* loa
         return false;
     }
 
-    // 仅对模块插件执行 IModule ABI 校验；相机插件走 ICameraPlugin 注册路径。
-    QMutexLocker locker(&m_mutex);
-    const bool isModule = m_modules.contains(name);
-    locker.unlock();
+    // A user override and its bundled fallback may declare different categories.
+    const bool isCamera = candidate.category.toLower().contains(QStringLiteral("camera"));
 
-    if (isModule) {
+    if (!isCamera) {
         IModule* module = qobject_cast<IModule*>(plugin);
         // ABI v1（或更旧）二进制的 IID 与虚表不匹配：cast 失败或版本号不符，明确拒绝并提示重编。
         if (!module) {
@@ -305,6 +320,11 @@ bool PluginManager::validateLoadedPlugin(const QString& name, QPluginLoader* loa
             }
             return false;
         }
+    } else if (!qobject_cast<ICameraPlugin*>(plugin)) {
+        if (error) {
+            *error = QStringLiteral("Plugin %1 does not implement ICameraPlugin (interface cast failed)").arg(name);
+        }
+        return false;
     }
 
     return true;
@@ -353,70 +373,95 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
         }
     }
 
-    if (info.path.isEmpty()) {
-        emit pluginLoadFailed(name, "Plugin metadata path is empty");
-        return false;
+    PluginInfo bundledInfo;
+    {
+        QMutexLocker locker(&m_mutex);
+        bundledInfo = m_bundledPlugins.value(name);
     }
 
-    // info.path is the metadata.json path, get the directory containing it
-    QDir dir(QFileInfo(info.path).absoluteDir());
-    QStringList filters;
+    auto loadCandidate = [this, &name](const PluginInfo& candidate, QString& error) -> QPluginLoader* {
+        error.clear();
+        if (candidate.path.isEmpty()) {
+            error = QStringLiteral("Plugin metadata path is empty");
+            return nullptr;
+        }
+        QDir candidateDir(QFileInfo(candidate.path).absoluteDir());
+        QStringList filters;
 #ifdef Q_OS_WIN
-    filters << "*.dll";
+        filters << "*.dll";
+#elif defined(Q_OS_DARWIN)
+        filters << "*.dylib"
+                << "*.so";
 #else
-    filters << "*.so";
+        filters << "*.so";
 #endif
-    QStringList libs = dir.entryList(filters, QDir::Files);
-    if (libs.isEmpty()) {
-        emit pluginLoadFailed(name, "No library file found");
-        return false;
-    }
-    QString libPath = dir.filePath(libs.first());
-
-    QPluginLoader* loader = new QPluginLoader(libPath);
-    bool loaded = loader->load();
-    if (loaded) {
-        QString validationError;
-        if (!validateLoadedPlugin(name, loader, &validationError)) {
-            qCritical() << validationError;
+        const QStringList libs = candidateDir.entryList(filters, QDir::Files);
+        if (libs.isEmpty()) {
+            error = QStringLiteral("No library file found");
+            return nullptr;
+        }
+        auto* loader = new QPluginLoader(candidateDir.filePath(libs.first()));
+        if (!loader->load() || !validateLoadedPlugin(candidate, loader, &error)) {
+            if (error.isEmpty()) {
+                error = loader->errorString();
+            }
             loader->unload();
             delete loader;
-            emit pluginLoadFailed(name, validationError);
-            return false;
+            return nullptr;
         }
+        return loader;
+    };
 
-        QObject* plugin = loader->instance();
-        markPluginLoaded(name, loader);
-        qDebug() << "Plugin loaded:" << name;
-
-        emit pluginLoaded(name);
-
-        // 设置模块图标
-        if (hasGuiApplication() && !info.icon.isEmpty()) {
-            QString iconPath = dir.filePath(info.icon);
-            if (QFile::exists(iconPath)) {
-                DeepLux::IModule* module = qobject_cast<DeepLux::IModule*>(plugin);
-                if (module) {
-                    module->setIcon(QIcon(iconPath));
-                }
+    QString error;
+    QPluginLoader* loader = loadCandidate(info, error);
+    if (!loader && !bundledInfo.path.isEmpty() && bundledInfo.path != info.path) {
+        const QString userError = error;
+        loader = loadCandidate(bundledInfo, error);
+        if (loader) {
+            qWarning() << "User plugin failed, using bundled plugin:" << name << userError;
+            info = bundledInfo;
+            QMutexLocker locker(&m_mutex);
+            if (bundledInfo.category.toLower().contains(QStringLiteral("camera"))) {
+                m_modules.remove(name);
+                m_cameras[name] = bundledInfo;
+            } else {
+                m_cameras.remove(name);
+                m_modules[name] = bundledInfo;
             }
+        } else {
+            error = QStringLiteral("User plugin: %1; bundled plugin: %2").arg(userError, error);
         }
-
-        // 如果是相机插件，注册到 CameraManager
-        ICameraPlugin* cameraPlugin = qobject_cast<ICameraPlugin*>(plugin);
-        if (cameraPlugin) {
-            CameraManager::instance().registerCameraPlugin(cameraPlugin);
-            qDebug() << "Camera plugin registered:" << name;
-        }
-
-        return true;
-    } else {
-        QString error = loader->errorString();
-        qWarning() << "Plugin load failed:" << name << error;
-        delete loader;
+    }
+    if (!loader) {
         emit pluginLoadFailed(name, error);
         return false;
     }
+
+    QObject* plugin = loader->instance();
+    markPluginLoaded(name, loader);
+    qDebug() << "Plugin loaded:" << name;
+
+    emit pluginLoaded(name);
+
+    // 设置模块图标
+    if (hasGuiApplication() && !info.icon.isEmpty()) {
+        const QString iconPath = QFileInfo(info.path).absoluteDir().filePath(info.icon);
+        if (QFile::exists(iconPath)) {
+            DeepLux::IModule* module = qobject_cast<DeepLux::IModule*>(plugin);
+            if (module) {
+                module->setIcon(QIcon(iconPath));
+            }
+        }
+    }
+
+    // 如果是相机插件，注册到 CameraManager
+    ICameraPlugin* cameraPlugin = qobject_cast<ICameraPlugin*>(plugin);
+    if (cameraPlugin) {
+        CameraManager::instance().registerCameraPlugin(cameraPlugin);
+        qDebug() << "Camera plugin registered:" << name;
+    }
+
+    return true;
 }
 
 void PluginManager::unloadPlugin(const QString& name) {
@@ -518,7 +563,12 @@ bool PluginManager::event(QEvent* event) {
         m_loadingCurrent++;
 
         QString validationError;
-        if (loadEvent->success && validateLoadedPlugin(loadEvent->name, loadEvent->loader, &validationError)) {
+        const PluginInfo candidate = pluginInfo(loadEvent->name);
+        if (candidate.name.isEmpty()) {
+            validationError = QStringLiteral("Plugin metadata not found: %1").arg(loadEvent->name);
+        }
+        if (loadEvent->success && !candidate.name.isEmpty() &&
+            validateLoadedPlugin(candidate, loadEvent->loader, &validationError)) {
             markPluginLoaded(loadEvent->name, loadEvent->loader);
             emit pluginLoaded(loadEvent->name);
 

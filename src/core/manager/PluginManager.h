@@ -112,7 +112,7 @@ private:
     PluginManager();
     ~PluginManager();
 
-    bool validateLoadedPlugin(const QString& name, QPluginLoader* loader, QString* error) const;
+    bool validateLoadedPlugin(const PluginInfo& candidate, QPluginLoader* loader, QString* error) const;
     void markPluginLoaded(const QString& name, QPluginLoader* loader);
     void loadNextPluginAsync();
 
@@ -143,6 +143,7 @@ private:
     QStringList m_pluginPaths;
     QMap<QString, PluginInfo> m_modules;
     QMap<QString, PluginInfo> m_cameras;
+    QMap<QString, PluginInfo> m_bundledPlugins;
     QMap<QString, QObject*> m_loadedPlugins;
     QMap<QString, QPluginLoader*> m_pluginLoaders;
     // 正在加载的插件集合，用于避免重复加载
