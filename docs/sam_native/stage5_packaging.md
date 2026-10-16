@@ -42,8 +42,8 @@ bash scripts/verify-sam-native-install.sh /tmp/deeplux-native-install
 - CPU SDK 安装两次均成功，`install_manifest.txt` 包含主库与相对符号链接；
   `DESTDIR` 暂存安装的清单仍统一记录逻辑安装前缀。
   `readelf` 显示应用 RUNPATH 为 `$ORIGIN/../lib`、核心/UI 库为 `$ORIGIN`。
-  清空 `LD_LIBRARY_PATH`、令 `HOME=/tmp` 后，安装版及搬迁副本的
-  第一批安装的 `DeepLux --version` 均退出码 0，当时尚无业务插件。
+  第一批清空 `LD_LIBRARY_PATH`、隔离 `HOME` 后，安装版及搬迁副本的
+  `DeepLux --version` 均退出码 0；当时尚无业务插件。
 - 第二批 CMake 安装包含 66 个插件目录（65 个模块 + 1 个 V4L2 相机）；
   每个目录含动态库和 metadata，插件库 RUNPATH 均为相对路径。
   在隔离 `HOME` 和清空 `LD_LIBRARY_PATH` 下，安装版 `DeepLux list-plugins`
@@ -55,6 +55,6 @@ bash scripts/verify-sam-native-install.sh /tmp/deeplux-native-install
 - 上述运行仍依赖本机 Qt/OpenCV、CUDA 12/cuDNN 9 和驱动；未在另一台目标机、
   无 Python 的纯净系统或 Windows 上验收。真实约 3000×3000 工业原图也尚未取得。
   这些均不得由本批本机测试替代为生产 PASS。
-- `DEEPLUX_NATIVE_SAM=OFF` 的标注对话框/掩膜定向 CTest 2/2 通过；
+- `DEEPLUX_NATIVE_SAM=OFF` 的插件管理/标注对话框/掩膜定向 CTest 3/3 通过；
   CPU ON 全量 CTest 78/78 通过。错误 SDK 路径在配置阶段按预期拒绝；
   验收脚本对包外绝对/相对越界链接、缺失 UI 库均以退出码 1 拒绝。
