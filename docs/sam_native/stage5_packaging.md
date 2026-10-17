@@ -42,6 +42,12 @@ bash scripts/verify-sam-native-install.sh /tmp/deeplux-native-install
 /tmp/deeplux-native-install/bin/verify-sam-native-runtime.sh /path/to/sam1_vit_b_onnx cpu
 ```
 
+CUDA 安装验收须用含 `libonnxruntime_providers_cuda.so` 的 GPU SDK 单独构建安装包，
+不能把 CPU-only SDK 构建的包切换为 `DEEPLUX_SAM_DEVICE=cuda`。在本机系统 Qt 环境中，
+新建构建目录时显式传入 `-DQt5_DIR=/usr/lib/x86_64-linux-gnu/cmake/Qt5`，避免
+自动选中本机另一套不兼容 OpenSSL 3 的 Qt 5.15.2。安装后将整个前缀复制到新路径，
+在可访问 GPU 的环境执行包内脚本并选择 `cuda`；脚本的负对照仍必须先通过。
+
 模型包独立迁移并保持 `manifest.json`、`encoder.onnx`、`decoder.onnx` 原样；运行时设置
 `DEEPLUX_SAM_PACKAGE=/path/to/sam1_vit_b_onnx`，选用 CUDA 时另设
 `DEEPLUX_SAM_DEVICE=cuda`。复制模型包后需重新校验 manifest 内的大小与 SHA-256，
@@ -66,9 +72,40 @@ bash scripts/verify-sam-native-install.sh /tmp/deeplux-native-install
 - GPU SDK 的 1.23.2 主库、CUDA Provider（约 416 MiB）和 shared Provider 均
   复制为包内真实文件；`LD_LIBRARY_PATH` 仅指向安装包 `lib` 时，
   `cudaProvider` 与 `cudaDualSessionShutdown` 4/4 通过，退出码 0。
+- 第四批用上述 GPU SDK 全新配置、构建并安装 66 个插件，包迁移到另一目录后
+  `verify-sam-native-install.sh` 通过；在本机 RTX 3090 可访问环境，包内
+  `verify-sam-native-runtime.sh` 的 CPU 与 CUDA 产品流程均退出码 0。
+  对照：CPU-only SDK 构建包请求 CUDA 会明确报 Provider 未启用；受限沙箱中
+  GPU SDK 包报 `no CUDA-capable device is detected`，不能把这两个失败记为
+  产品 CUDA 通过或替代目标机验证。
 - 上述运行仍依赖本机 Qt/OpenCV、CUDA 12/cuDNN 9 和驱动；未在另一台目标机、
   无 Python 的纯净系统或 Windows 上验收。真实约 3000×3000 工业原图也尚未取得。
   这些均不得由本批本机测试替代为生产 PASS。
 - `DEEPLUX_NATIVE_SAM=OFF` 的插件管理/标注对话框/掩膜定向 CTest 3/3 通过；
   CPU ON 全量 CTest 78/78 通过。错误 SDK 路径在配置阶段按预期拒绝；
   验收脚本对包外绝对/相对越界链接、缺失 UI 库均以退出码 1 拒绝。
+
+第四批生成机复核命令（`MODEL_PACKAGE` 指向本机独立提供的 ViT-B ONNX 包，
+`GPU_ONNXRUNTIME_DIR` 指向含 CUDA Provider 的 GPU SDK；本地路径不入库）：
+
+```bash
+cmake -S . -B /tmp/deeplux-sam-gpu-build -DQt5_DIR=/usr/lib/x86_64-linux-gnu/cmake/Qt5 \
+  -DDEEPLUX_NATIVE_SAM=ON -DONNXRUNTIME_DIR="$GPU_ONNXRUNTIME_DIR" \
+  -DBUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build /tmp/deeplux-sam-gpu-build -j4
+DESTDIR=/tmp/deeplux-sam-gpu-stage cmake --install /tmp/deeplux-sam-gpu-build --prefix /usr/local
+bash scripts/verify-sam-native-install.sh /tmp/deeplux-sam-gpu-stage/usr/local
+cp -a /tmp/deeplux-sam-gpu-stage/usr/local /tmp/deeplux-sam-gpu-relocated
+/tmp/deeplux-sam-gpu-relocated/bin/verify-sam-native-runtime.sh "$MODEL_PACKAGE" cuda
+```
+
+上述步骤在本机同构临时目录实跑：配置、构建、安装、包结构校验、迁移后
+CUDA smoke 均退出码 0；包结构校验输出 `PASS: relative RUNPATH, bundled
+ONNX Runtime, and 66 packaged plugins`，包内脚本输出 `PASS: installed
+GrabImage -> SamPredict(native/cuda) -> RegionStats workflow`。
+额外直接运行迁移包 `DeepLux run` 捕获完整 CLI 输出，ORT 日志出现
+`CUDAExecutionProvider`，末行 `Run completed: 2628 ms`，退出码 0。
+本轮原始 CLI 日志暂存 `/tmp/dl_stage5_batch4_cuda_cli_raw.log`，SHA-256 为
+`9c92bee2730581372dcac773d92348c7fb7761ec7b0cb00792c22771b526d265`；
+临时日志不是仓库交付物，复核时应以上述命令重新生成。独立代码审核者的环境
+无法访问 GPU，故本项仍是执行者在生成机上的实测，不是独立目标机 PASS。
