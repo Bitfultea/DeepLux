@@ -110,6 +110,7 @@ private slots:
     // SAM 批4（C）：多掩膜候选循环——◀/▶ 切换预览、确认所用为所选、
     // candidates<=1 时循环行隐藏、确认/取消后候选清空
     void candidateCyclingSelectsAlternateRegion();
+    void standaloneImageViewportRemainsVisible();
 #ifdef DEEPLUX_HAS_ONNXRUNTIME
     void nativeBackendPredictsAndConfirmsSelectedCandidate();
     void nativeBackendAcceptsNegativePointOnly();
@@ -1371,6 +1372,26 @@ void TestSamAnnotatorDialog::openRejectsLegacySessionWithoutValidDims() {
 
 // ===== SAM 批4（C）：多掩膜候选循环 =====
 
+void TestSamAnnotatorDialog::standaloneImageViewportRemainsVisible() {
+    SamAnnotatorDialog dlg;
+    dlg.resize(1280, 1050);
+    dlg.show();
+    dlg.setImageSnapshot(makeTestImage());
+    QCoreApplication::processEvents();
+
+    QVERIFY(dlg.imageWidget()->height() >= 200);
+    QCOMPARE(dlg.overlayWidget()->size(), dlg.imageWidget()->size());
+
+    dlg.resize(900, 600);
+    QCoreApplication::processEvents();
+    QVERIFY(dlg.imageWidget()->height() >= 180);
+    QCOMPARE(dlg.overlayWidget()->size(), dlg.imageWidget()->size());
+    auto* cancel = dlg.findChild<QPushButton*>(QStringLiteral("SamCancelButton"));
+    QVERIFY(cancel);
+    QVERIFY(cancel->isVisible());
+    QVERIFY(cancel->mapTo(&dlg, cancel->rect().bottomRight()).y() < dlg.height());
+}
+
 void TestSamAnnotatorDialog::candidateCyclingSelectsAlternateRegion() {
     SamAnnotatorDialog dlg;
     dlg.setImageSnapshot(makeTestImage(), QString());
@@ -1481,8 +1502,9 @@ void TestSamAnnotatorDialog::nativeBackendPredictsAndConfirmsSelectedCandidate()
         QVERIFY(dlg.grab().save(capturePath));
     dlg.setImageSnapshot(image, imagePath);
     QCOMPARE(dlg.backendClient()->currentEmbeddingId(), imagePath);
-    QVERIFY(QMetaObject::invokeMethod(&dlg, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(240, 180)),
-                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    const QPoint clickPoint = dlg.imageWidget()->imageToWidget(QPointF(240, 180)).toPoint();
+    QVERIFY(dlg.overlayWidget()->rect().contains(clickPoint));
+    QTest::mouseClick(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, clickPoint);
     QTRY_COMPARE_WITH_TIMEOUT(dlg.previewCandidateCount(), 3, 30000);
     const QList<SamCandidate> candidates = dlg.backendClient()->lastCandidates();
     QCOMPARE(candidates.size(), 3);

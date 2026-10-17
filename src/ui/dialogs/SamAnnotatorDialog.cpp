@@ -29,6 +29,7 @@
 #include <QMessageBox>
 #include <QPainterPath>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QShortcut>
 #include <QSizePolicy>
 #include <QSpinBox>
@@ -199,6 +200,8 @@ void SamAnnotatorDialog::applyTheme(bool isDark) {
         QStringLiteral(
             "QDialog#SamAnnotatorDialog { background-color: %1; color: %2; }"
             "QWidget#SamControlPanel { background-color: %3; color: %2; }"
+            "QScrollArea#SamControlScroll { background-color: %3; border: 0; }"
+            "QWidget#SamControlViewport, QWidget#SamControlScrollContent { background-color: %3; }"
             "QLabel { background-color: transparent; color: %2; }"
             "QLabel#SamStatusLabel, QLabel#SamShortcutHintLabel { color: %4; font-size: 12px; }"
             "QLineEdit, QComboBox { background-color: %5; color: %2; border: 1px solid %6; padding: 2px 4px; }"
@@ -328,6 +331,7 @@ void SamAnnotatorDialog::setupUi() {
     centerLayout->setContentsMargins(0, 0, 0, 0);
 
     m_imageWidget = new HImageWidget(m_centerContainer);
+    m_imageWidget->setMinimumHeight(200);
     centerLayout->addWidget(m_imageWidget, 1);
 
     // AnnotationOverlayWidget 作为透明覆盖层，与 HImageWidget 同尺寸
@@ -338,7 +342,7 @@ void SamAnnotatorDialog::setupUi() {
     m_overlay->show();
     m_imageWidget->installEventFilter(this);
 
-    root->addWidget(m_centerContainer);
+    root->addWidget(m_centerContainer, 1);
 
     // ===== 底部：操作区（整合类别输入 + 对象列表 + 所有操作按钮，全宽，无上方留白）=====
     auto* controlPanel = new QWidget();
@@ -347,11 +351,21 @@ void SamAnnotatorDialog::setupUi() {
     auto* controlLayout = new QVBoxLayout(controlPanel);
     controlLayout->setContentsMargins(0, 0, 0, 0);
     controlLayout->setSpacing(2);
-    root->addWidget(controlPanel, 1);
+    root->addWidget(controlPanel);
 
-    auto* actionCol = new QVBoxLayout();
+    auto* controlScroll = new QScrollArea(controlPanel);
+    controlScroll->setObjectName(QStringLiteral("SamControlScroll"));
+    controlScroll->setFrameShape(QFrame::NoFrame);
+    controlScroll->setWidgetResizable(true);
+    controlScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    controlScroll->viewport()->setObjectName(QStringLiteral("SamControlViewport"));
+    controlLayout->addWidget(controlScroll, 1);
+    auto* actionWidget = new QWidget(controlScroll);
+    actionWidget->setObjectName(QStringLiteral("SamControlScrollContent"));
+    auto* actionCol = new QVBoxLayout(actionWidget);
+    actionCol->setContentsMargins(0, 0, 0, 0);
     actionCol->setSpacing(2);
-    controlLayout->addLayout(actionCol, 1);
+    controlScroll->setWidget(actionWidget);
 
     // 行1：打开图片（单独全宽）
     m_openImageRowWidget = new QWidget();
@@ -510,11 +524,11 @@ void SamAnnotatorDialog::setupUi() {
     m_statusLabel->setMinimumWidth(0);
     m_statusLabel->setWordWrap(true);
     m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-    actionCol->addWidget(m_statusLabel);
+    controlLayout->addWidget(m_statusLabel);
 
     auto* commitRow = new QHBoxLayout();
     commitRow->setSpacing(2);
-    actionCol->addLayout(commitRow);
+    controlLayout->addLayout(commitRow);
 
     m_confirmButton = new QPushButton(tr("确认"));
     configureCompactButton(m_confirmButton);
