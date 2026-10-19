@@ -17,7 +17,7 @@ class Project;
  * @brief Agent Actor —— Tool API 执行器
  *
  * 将 LLM 返回的 tool calls 路由到实际的 Manager API。
- * 所有写操作通过 QUndoStack 包装，支持撤销。
+ * 工程内编辑通过 QUndoStack 包装；新建/打开工程会清空撤销历史。
  *
  * 安全约束：
  * - 只能调用预注册的 ToolSchema 白名单工具
@@ -39,6 +39,19 @@ public:
     QUndoStack* undoStack() const {
         return m_undoStack;
     }
+
+    /**
+     * @brief 用户知识库目录（appData/knowledge），不存在时自动创建。
+     *
+     * 用户通过 Agent 设置 → 知识库 添加的文档存放在此，
+     * read_documentation 工具检索时与内置文档一视同仁。
+     */
+    static QString userKnowledgeDir();
+
+    /**
+     * @brief 全部知识库文档路径：内置（qrc）在前，用户目录（*.md、*.markdown、*.txt）在后。
+     */
+    static QStringList knowledgeDocumentPaths();
 
 signals:
     void toolExecuted(const QString& toolName, const QJsonObject& result);

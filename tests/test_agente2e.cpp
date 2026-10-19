@@ -12,6 +12,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QtTest/QtTest>
+#include <algorithm>
 #include <cmath>
 #include <optional>
 
@@ -46,6 +47,20 @@ public:
         Q_UNUSED(tools);
         received.append(ctx);
         const int turn = received.size() - 1;
+        deliverTurn(turn);
+    }
+
+private:
+    void deliverTurn(int turn) {
+        const QJsonArray calls = scriptedTurns.value(turn);
+        const bool readsRunResult = std::any_of(calls.begin(), calls.end(), [](const QJsonValue& call) {
+            return call.toObject().value(QStringLiteral("name")).toString() == QStringLiteral("get_run_results");
+        });
+        if (readsRunResult && RunEngine::instance().isBusy()) {
+            QTimer::singleShot(5, this, [this, turn]() { deliverTurn(turn); });
+            return;
+        }
+
         QTimer::singleShot(0, this, [this, turn]() {
             AgentResponse resp;
             resp.success = true;
@@ -208,6 +223,7 @@ void TestAgentEndToEnd::testFakeLlmBuildsConnectsRunsAndReadsResult() {
 
     QSignalSpy logSpy(&controller, &AgentController::actionLogEntryAdded);
     QSignalSpy errorSpy(&controller, &AgentController::llmErrorOccurred);
+    QSignalSpy runFinishedSpy(&RunEngine::instance(), &RunEngine::runFinished);
 
     controller.sendUserMessage(QStringLiteral("创建找圆流程：GrabImage 供图给 FindCircle，运行一次并读取结果"));
 
@@ -215,6 +231,7 @@ void TestAgentEndToEnd::testFakeLlmBuildsConnectsRunsAndReadsResult() {
     QTRY_VERIFY_WITH_TIMEOUT(controller.state() == AgentController::AgentState::Idle && fake.received.size() == 6,
                              20000);
     QCOMPARE(errorSpy.count(), 0);
+    QCOMPARE(runFinishedSpy.count(), 1);
 
     // 1) 流程结构由假 LLM 工具调用建立：2 模块 + 1 连接
     QVERIFY2(project->findModule("grab_1") != nullptr, "grab_1 must exist");
@@ -240,6 +257,8 @@ void TestAgentEndToEnd::testFakeLlmBuildsConnectsRunsAndReadsResult() {
 
     // 4) 7 次工具调用全部真实执行（动作日志可审计）
     QCOMPARE(logSpy.count(), 7);
+    QVERIFY(logSpy.first().first().canConvert<AgentActionLogEntry>());
+    QCOMPARE(logSpy.first().first().value<AgentActionLogEntry>().action, QStringLiteral("add_module"));
 
     // 5) get_run_results 的结果作为 tool 消息回传进对话，可读取成功统计
     const AgentConversation& lastCtx = fake.received.last();

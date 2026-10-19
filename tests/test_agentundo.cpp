@@ -1,53 +1,45 @@
-#include <QtTest/QtTest>
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
 #include "core/agent/ToolSchema.h"
 #include "manager/ProjectManager.h"
 
+#include <QtTest/QtTest>
+
 using namespace DeepLux;
 
-class TestAgentUndo : public QObject
-{
+class TestAgentUndo : public QObject {
     Q_OBJECT
 
 private slots:
-    void initTestCase()
-    {
+    void initTestCase() {
         ToolSchema::instance().registerDefaultTools();
     }
 
-    void init()
-    {
+    void init() {
         AgentController::instance().clearConversation();
         ProjectManager::instance().closeProject();
     }
 
-    void cleanup()
-    {
+    void cleanup() {
         AgentController::instance().clearConversation();
         ProjectManager::instance().closeProject();
     }
 
-    void testUndoStackExists()
-    {
+    void testUndoStackExists() {
         AgentActor actor;
         QVERIFY(actor.undoStack() != nullptr);
         QCOMPARE(actor.undoStack()->count(), 0);
     }
 
-    void testCreateProjectUndo()
-    {
+    void testCreateProjectClearsUndoHistory() {
         AgentActor actor;
-        int undoCountBefore = actor.undoStack()->count();
         actor.executeTool("create_project", QJsonObject{{"name", "UndoTest"}});
-        QCOMPARE(actor.undoStack()->count(), undoCountBefore + 1);
-
+        QCOMPARE(actor.undoStack()->count(), 0);
         actor.undoStack()->undo();
-        // Project should be closed after undo
+        QVERIFY(ProjectManager::instance().currentProject() != nullptr);
     }
 
-    void testBatchExecutionMacro()
-    {
+    void testBatchExecutionMacro() {
         AgentActor actor;
         QList<QPair<QString, QJsonObject>> tools;
         tools.append(qMakePair(QString("create_project"), QJsonObject{{"name", "BatchTest"}}));
@@ -57,16 +49,15 @@ private slots:
         QVERIFY(actor.undoStack()->count() > 0);
     }
 
-    void testControllerUndoLastAgentAction()
-    {
+    void testControllerUndoLastAgentAction() {
         AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Autopilot);
-        QJsonObject result = AgentController::instance().handleToolCall(
-            "create_project", QJsonObject{{"name", "UndoViaController"}});
+        QJsonObject result =
+            AgentController::instance().handleToolCall("create_project", QJsonObject{{"name", "UndoViaController"}});
         QCOMPARE(result["status"].toString(), QString("created"));
         QVERIFY(ProjectManager::instance().currentProject() != nullptr);
 
-        QVERIFY(AgentController::instance().undoLastAgentAction());
-        QVERIFY(ProjectManager::instance().currentProject() == nullptr);
+        QVERIFY(!AgentController::instance().undoLastAgentAction());
+        QVERIFY(ProjectManager::instance().currentProject() != nullptr);
     }
 };
 

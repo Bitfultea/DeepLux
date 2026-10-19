@@ -19,67 +19,47 @@ AgentToolPreviewCard::AgentToolPreviewCard(const QList<ToolItem>& tools, bool is
 
 void AgentToolPreviewCard::setupUi() {
     auto* mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(8, 2, 8, 2);
-    mainLayout->setSpacing(2);
+    setObjectName("AgentToolPreview");
+    setAttribute(Qt::WA_StyledBackground);
+    mainLayout->setContentsMargins(12, 8, 12, 8);
+    mainLayout->setSpacing(8);
 
-    ChatTheme theme = m_isDark ? ChatTheme::dark() : ChatTheme::light();
-
-    // 标题 + 工具列表（紧凑内联）
     QStringList lines;
-    lines.append(
-        QString("<span style=\"font-weight:bold;color:%1;\">Agent wants to execute:</span>").arg(theme.toolFg.name()));
+    lines.append(tr("待确认操作 · %1 项").arg(m_tools.size()));
 
     for (int i = 0; i < m_tools.size(); ++i) {
         const ToolItem& t = m_tools[i];
         const bool dangerous = ToolSchema::instance().findTool(t.name).dangerous;
         const QString riskLabel = dangerous ? tr(" [高风险]") : QString();
-        QString line = QString("<span style=\"color:%1;\">  %2. %3%4</span>")
-                           .arg(theme.toolFg.name())
-                           .arg(i + 1)
-                           .arg(t.name, riskLabel);
+        QString line = QString("%1. %2%3").arg(i + 1).arg(t.name, riskLabel);
 
-        // 内联参数: key: "value" 格式, 紧凑单行
         if (!t.params.isEmpty()) {
-            QStringList paramParts;
-            for (auto it = t.params.begin(); it != t.params.end(); ++it) {
-                QJsonValue val = it.value();
-                QString valStr;
-                if (val.isString())
-                    valStr = QString("\"%1\"").arg(val.toString());
-                else
-                    valStr = QString(QJsonDocument(QJsonObject{{it.key(), val}}).toJson(QJsonDocument::Compact))
-                                 .mid(1 + it.key().length() + 3)
-                                 .chopped(1);
-                paramParts.append(QString("%1: %2").arg(it.key()).arg(valStr));
-            }
-            line = QString("<span style=\"color:%1;\">  %2. %3(</span>"
-                           "<span style=\"color:%4;\">%5</span>"
-                           "<span style=\"color:%1;\">)</span>")
-                       .arg(theme.toolFg.name())
-                       .arg(i + 1)
-                       .arg(t.name)
-                       .arg(theme.codeBlockFg.name())
-                       .arg(paramParts.join(", ") + riskLabel);
+            line += "\n" + QString::fromUtf8(QJsonDocument(t.params).toJson(QJsonDocument::Indented)).trimmed();
         }
         lines.append(line);
     }
 
-    QLabel* content = new QLabel(lines.join("<br>"), this);
-    content->setTextFormat(Qt::RichText);
+    QLabel* content = new QLabel(lines.join("\n\n"), this);
+    content->setObjectName("AgentToolPreviewContent");
+    content->setTextFormat(Qt::PlainText);
+    content->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    content->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     content->setWordWrap(true);
     m_contentLabel = content;
     mainLayout->addWidget(content);
 
     // 确认/取消按钮
     auto* btnLayout = new QHBoxLayout();
-    btnLayout->setSpacing(4);
+    btnLayout->setSpacing(8);
     btnLayout->addStretch();
 
     m_cancelBtn = new QPushButton(tr("取消"), this);
+    m_cancelBtn->setObjectName("AgentCancelTools");
     m_cancelBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Cancel, 14, QColor("#DC2626")));
     m_confirmBtn = new QPushButton(tr("确认执行"), this);
+    m_confirmBtn->setObjectName("AgentConfirmTools");
     m_confirmBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 14, QColor("#16A34A")));
-    const int buttonHeight = qMax(28, m_confirmBtn->fontMetrics().height() + 8);
+    const int buttonHeight = qMax(32, m_confirmBtn->fontMetrics().height() + 10);
     m_cancelBtn->setMinimumHeight(buttonHeight);
     m_confirmBtn->setMinimumHeight(buttonHeight);
 
@@ -105,20 +85,23 @@ void AgentToolPreviewCard::applyTheme(bool isDark) {
     m_isDark = isDark;
     ChatTheme theme = isDark ? ChatTheme::dark() : ChatTheme::light();
 
-    setStyleSheet(QString("AgentToolPreviewCard { border-left: 2px solid #f59e0b; }"));
+    setStyleSheet(QString("QWidget#AgentToolPreview { border-left:2px solid %1; background:%2; }")
+                      .arg(theme.toolName.name(), theme.inlineCodeBg.name()));
+    m_contentLabel->setStyleSheet(
+        QString("color:%1; font-size:13px; background:transparent;").arg(theme.userFg.name()));
 
     if (m_cancelBtn) {
         m_cancelBtn->setStyleSheet(QString("QPushButton { background: transparent; color: %1; border: 1px solid %2; "
-                                           "border-radius: 3px; padding: 0 8px; font-size: 11px; }"
-                                           "QPushButton:hover { background: %3; }")
+                                           "border-radius: 4px; padding: 0 12px; font-size: 12px; }"
+                                           "QPushButton:hover,QPushButton:focus { background: %3; }")
                                        .arg(theme.errorColor.name())
                                        .arg(theme.errorColor.name())
                                        .arg(theme.inputBorder.name()));
     }
     if (m_confirmBtn) {
         m_confirmBtn->setStyleSheet(QString("QPushButton { background: transparent; color: %1; border: 1px solid %1; "
-                                            "border-radius: 3px; padding: 0 8px; font-size: 11px; }"
-                                            "QPushButton:hover { background: %2; }")
+                                            "border-radius: 4px; padding: 0 12px; font-size: 12px; }"
+                                            "QPushButton:hover,QPushButton:focus { background: %2; }")
                                         .arg(theme.agentName.name())
                                         .arg(theme.inputBorder.name()));
     }

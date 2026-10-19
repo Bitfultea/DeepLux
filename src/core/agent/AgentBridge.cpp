@@ -174,8 +174,13 @@ bool AgentBridge::start() {
 }
 
 void AgentBridge::stop() {
-    if (!m_running)
+    if (!m_running) {
+        QMutexLocker locker(&m_connectionMutex);
+        m_missedHeartbeats.clear();
+        m_eventSubscriptions.clear();
+        m_authenticated.clear();
         return;
+    }
 
     m_heartbeatTimer->stop();
     m_running = false;
@@ -189,7 +194,7 @@ void AgentBridge::stop() {
         m_connections.clear();
         m_missedHeartbeats.clear();
         m_eventSubscriptions.clear();
-        m_clientSocketToId.clear();
+        m_authenticated.clear();
     }
 
     if (m_server) {
@@ -222,13 +227,16 @@ void AgentBridge::onNewConnection() {
     if (!socket)
         return;
 
-    QString clientId = QString("agent-%1").arg(reinterpret_cast<quintptr>(socket), 8, 16, QChar('0'));
+    QString clientId;
+    {
+        QMutexLocker locker(&m_connectionMutex);
+        clientId = QStringLiteral("agent-%1").arg(m_nextClientId++);
+    }
 
     AgentConnection* conn = new AgentConnection(socket, clientId, this);
     {
         QMutexLocker locker(&m_connectionMutex);
         m_connections.append(conn);
-        m_clientSocketToId[socket] = clientId;
         m_missedHeartbeats[clientId] = 0;
     }
 
@@ -374,6 +382,8 @@ void AgentBridge::onHeartbeatTimeout() {
                 }
             }
             m_missedHeartbeats.remove(clientId);
+            m_eventSubscriptions.remove(clientId);
+            m_authenticated.remove(clientId);
         }
     }
 

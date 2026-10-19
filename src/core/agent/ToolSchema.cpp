@@ -151,18 +151,21 @@ void ToolSchema::registerDefaultTools() {
                    {"value", "string", "Parameter value (as string, will be converted)", true}}});
 
     // connect_modules
-    // 阶7 Agent 评审修复（P2-4）：port 参数已落实（源输出端口名，缺省回落 image 端口）
     registerTool({"connect_modules",
                   "Connect two modules in the flow",
                   {{"fromId", "string", "Source module instance ID", true},
                    {"toId", "string", "Target module instance ID", true},
-                   {"port", "string", "Source output port name (default: image)", false}}});
+                   {"fromPort", "string", "Source output port name (default: image)", false},
+                   {"toPort", "string", "Target input port name (default: matching source port or image)", false},
+                   {"port", "string", "Legacy alias for fromPort", false}}});
 
     // disconnect_modules
     registerTool({"disconnect_modules",
                   "Disconnect two modules",
                   {{"fromId", "string", "Source module instance ID", true},
-                   {"toId", "string", "Target module instance ID", true}}});
+                   {"toId", "string", "Target module instance ID", true},
+                   {"fromPort", "string", "Source output port name", false},
+                   {"toPort", "string", "Target input port name", false}}});
 
     // run_flow
     registerTool({"run_flow",
@@ -205,8 +208,9 @@ void ToolSchema::registerDefaultTools() {
 
     // read_documentation
     registerTool({"read_documentation",
-                  "Read DeepLux module/usage documentation. Use this to learn about "
-                  "module parameters, workflows, and best practices when you're unsure.",
+                  "Read DeepLux module/usage documentation, including the built-in knowledge base and "
+                  "user-added documents (managed via Agent Settings -> Knowledge Base). Use this to learn "
+                  "about module parameters, workflows, and best practices when you're unsure.",
                   {{"topic", "string", "Topic to look up (e.g. 'FindCircle', 'workflow', 'GrabImage params')", true}}});
 
     // sam_predict（SAM 批3）：对磁盘图像做单次 prompt 分割。

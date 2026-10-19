@@ -33,6 +33,8 @@ public:
     AgentController::PermissionLevel permissionLevel() const;
     QString systemPrompt() const;
     bool toolsEnabled() const;
+    bool visionEnabled() const;
+    bool thinkingEnabled() const;
 
 private:
     void setupUi();
@@ -47,6 +49,8 @@ private:
     QComboBox* m_permissionCombo = nullptr;
     QTextEdit* m_systemPromptEdit = nullptr;
     QCheckBox* m_toolsCheck = nullptr;
+    QCheckBox* m_visionCheck = nullptr;
+    QCheckBox* m_thinkingCheck = nullptr;
 };
 
 } // namespace DeepLux

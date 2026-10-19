@@ -1,7 +1,9 @@
 #include "AgentSettingsDialog.h"
 
 #include "../widgets/AppIconProvider.h"
+#include "KnowledgeBaseDialog.h"
 #include "core/agent/AgentController.h"
+#include "core/agent/OpenAILLMClient.h"
 #include "core/manager/ConfigManager.h"
 
 #include <QCheckBox>
@@ -82,16 +84,28 @@ void AgentSettingsDialog::setupUi() {
         "Disable if your API provider does not support function calling (e.g. some DeepSeek models)");
     formLayout->addRow(m_toolsCheck);
 
+    m_visionCheck = new QCheckBox("Enable image input", this);
+    m_visionCheck->setChecked(true);
+    m_visionCheck->setToolTip("Disable when the configured model accepts text only");
+    formLayout->addRow(m_visionCheck);
+
+    m_thinkingCheck = new QCheckBox("Enable provider thinking extension", this);
+    m_thinkingCheck->setToolTip("Enable only for providers that support the DeepSeek-compatible thinking field");
+    formLayout->addRow(m_thinkingCheck);
+
     mainLayout->addLayout(formLayout);
 
     auto* btnLayout = new QHBoxLayout();
     QPushButton* okBtn = new QPushButton("OK", this);
     QPushButton* cancelBtn = new QPushButton("Cancel", this);
     QPushButton* testBtn = new QPushButton("Test Connection", this);
+    QPushButton* knowledgeBtn = new QPushButton(tr("知识库..."), this);
     okBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
     cancelBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Cancel, 16, QColor("#DC2626")));
     testBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::TestConnection, 16, QColor("#2563EB")));
+    knowledgeBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Report, 16, QColor("#7C3AED")));
     btnLayout->addWidget(testBtn);
+    btnLayout->addWidget(knowledgeBtn);
     btnLayout->addStretch();
     btnLayout->addWidget(okBtn);
     btnLayout->addWidget(cancelBtn);
@@ -102,6 +116,10 @@ void AgentSettingsDialog::setupUi() {
         accept();
     });
     connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
+    connect(knowledgeBtn, &QPushButton::clicked, this, [this]() {
+        KnowledgeBaseDialog dlg(this);
+        dlg.exec();
+    });
     connect(testBtn, &QPushButton::clicked, this, [this, testBtn]() {
         // P1-7: 实际测试连接 — 发送一个简单请求到 API
         const QString endpoint = m_endpointEdit->text().trimmed();
@@ -116,16 +134,7 @@ void AgentSettingsDialog::setupUi() {
         testBtn->setEnabled(false);
         testBtn->setText(tr("测试中..."));
 
-        // 问题 3: 与运行时 OpenAILLMClient 一致的 endpoint 补全逻辑
-        QString normalizedEndpoint = endpoint;
-        if (!normalizedEndpoint.startsWith("http://") && !normalizedEndpoint.startsWith("https://"))
-            normalizedEndpoint = "https://" + normalizedEndpoint;
-        QUrl parsed(normalizedEndpoint);
-        QString path = parsed.path();
-        if (path.isEmpty() || path == "/") {
-            parsed.setPath("/v1/chat/completions");
-            normalizedEndpoint = parsed.toString();
-        }
+        const QString normalizedEndpoint = OpenAILLMClient::normalizeEndpoint(endpoint);
 
         QNetworkAccessManager* nam = new QNetworkAccessManager(this);
         QUrl url(normalizedEndpoint);
@@ -143,6 +152,8 @@ void AgentSettingsDialog::setupUi() {
         msg["content"] = "Hi";
         messages.append(msg);
         body["messages"] = messages;
+        if (m_thinkingCheck->isChecked())
+            body["thinking"] = QJsonObject{{"type", "enabled"}};
 
         QNetworkReply* reply = nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
         connect(reply, &QNetworkReply::finished, this, [this, reply, nam, testBtn]() {
@@ -184,15 +195,13 @@ void AgentSettingsDialog::loadSettings() {
     m_apiKeyEdit->setText(cfg.groupString("agent", "apiKey", ""));
     m_modelEdit->setText(cfg.groupString("agent", "model", "gpt-4o"));
     m_toolsCheck->setChecked(cfg.groupBool("agent", "toolsEnabled", true));
+    m_visionCheck->setChecked(cfg.groupBool("agent", "visionEnabled", true));
+    m_thinkingCheck->setChecked(cfg.groupBool("agent", "thinkingEnabled", false));
     m_tempSpin->setValue(cfg.groupDouble("agent", "temperature", 0.3));
     m_maxTokensSpin->setValue(cfg.groupInt("agent", "maxTokens", 4096));
     m_permissionCombo->setCurrentIndex(cfg.groupInt("agent", "permissionLevel", 1));
     m_systemPromptEdit->setPlainText(
-        cfg.groupString("agent", "systemPrompt",
-                        "You are an AI assistant for DeepLux Vision, an industrial vision software. "
-                        "You can help users create and manage vision inspection workflows. "
-                        "You have access to tools for project management, module configuration, and flow execution. "
-                        "Always be concise and professional."));
+        cfg.groupString("agent", "systemPrompt", AgentController::instance().systemPrompt()));
 }
 
 void AgentSettingsDialog::saveSettings() {
@@ -205,6 +214,8 @@ void AgentSettingsDialog::saveSettings() {
     cfg.setGroupValue("agent", "permissionLevel", m_permissionCombo->currentIndex());
     cfg.setGroupValue("agent", "systemPrompt", m_systemPromptEdit->toPlainText());
     cfg.setGroupValue("agent", "toolsEnabled", m_toolsCheck->isChecked());
+    cfg.setGroupValue("agent", "visionEnabled", m_visionCheck->isChecked());
+    cfg.setGroupValue("agent", "thinkingEnabled", m_thinkingCheck->isChecked());
     cfg.save();
 }
 
@@ -238,6 +249,14 @@ QString AgentSettingsDialog::systemPrompt() const {
 
 bool AgentSettingsDialog::toolsEnabled() const {
     return m_toolsCheck->isChecked();
+}
+
+bool AgentSettingsDialog::visionEnabled() const {
+    return m_visionCheck->isChecked();
+}
+
+bool AgentSettingsDialog::thinkingEnabled() const {
+    return m_thinkingCheck->isChecked();
 }
 
 } // namespace DeepLux

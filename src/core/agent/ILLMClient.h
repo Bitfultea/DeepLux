@@ -78,6 +78,9 @@ public:
     virtual void setTemperature(double temp) = 0;
     virtual void setMaxTokens(int tokens) = 0;
     virtual void setToolsEnabled(bool enabled) = 0;
+    virtual bool supportsImageInput() const {
+        return false;
+    }
 
     // 发送请求（异步）
     virtual void sendRequest(const AgentConversation& ctx, const QList<ToolDefinition>& tools) = 0;

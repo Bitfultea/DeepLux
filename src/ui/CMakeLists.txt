@@ -18,6 +18,7 @@ set(UI_SOURCES
     widgets/AppIconProvider.cpp
     widgets/ToolBox.cpp
     dialogs/AgentSettingsDialog.cpp
+    dialogs/KnowledgeBaseDialog.cpp
     widgets/ViewportWidget.cpp
     widgets/ModuleInspectorPanel.cpp
     panels/DataSourcePanel.cpp
@@ -65,6 +66,7 @@ set(UI_HEADERS
     widgets/AppIconProvider.h
     widgets/ToolBox.h
     dialogs/AgentSettingsDialog.h
+    dialogs/KnowledgeBaseDialog.h
     widgets/ViewportWidget.h
     widgets/ModuleInspectorPanel.h
     widgets/PluginDragPayload.h

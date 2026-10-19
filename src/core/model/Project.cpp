@@ -149,6 +149,8 @@ void Project::setFilePath(const QString& path) {
 }
 
 void Project::addModule(const ModuleInstance& module) {
+    if (!module.id.isEmpty() && moduleById(module.id))
+        return;
     m_modules.append(module);
     touch();
     emit moduleAdded(module);
@@ -180,6 +182,18 @@ bool Project::setModuleParam(const QString& instanceId, const QString& key, cons
     for (int i = 0; i < m_modules.size(); i++) {
         if (m_modules[i].id == instanceId) {
             m_modules[i].params[key] = value;
+            touch();
+            emit moduleUpdated(m_modules[i]);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Project::removeModuleParam(const QString& instanceId, const QString& key) {
+    for (int i = 0; i < m_modules.size(); ++i) {
+        if (m_modules[i].id == instanceId && m_modules[i].params.contains(key)) {
+            m_modules[i].params.remove(key);
             touch();
             emit moduleUpdated(m_modules[i]);
             return true;

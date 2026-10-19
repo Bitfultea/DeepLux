@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkRequest>
+#include <QUrl>
 
 namespace DeepLux {
 
@@ -25,14 +26,21 @@ void OpenAILLMClient::setApiKey(const QString& key) {
 }
 
 void OpenAILLMClient::setEndpoint(const QString& url) {
-    m_endpoint = url;
-    QUrl parsed(url);
+    m_endpoint = normalizeEndpoint(url);
+}
+
+QString OpenAILLMClient::normalizeEndpoint(const QString& endpoint) {
+    QString normalized = endpoint.trimmed();
+    if (!normalized.startsWith("http://") && !normalized.startsWith("https://"))
+        normalized.prepend("https://");
+
+    QUrl parsed(normalized);
     QString path = parsed.path();
     if (path.isEmpty() || path == "/") {
         parsed.setPath("/v1/chat/completions");
-        m_endpoint = parsed.toString();
-        qDebug() << "OpenAILLMClient: Auto-completed endpoint to" << m_endpoint;
+        normalized = parsed.toString();
     }
+    return normalized;
 }
 
 void OpenAILLMClient::setModel(const QString& model) {
@@ -47,6 +55,9 @@ void OpenAILLMClient::setMaxTokens(int tokens) {
 void OpenAILLMClient::setToolsEnabled(bool enabled) {
     m_toolsEnabled = enabled;
 }
+void OpenAILLMClient::setVisionEnabled(bool enabled) {
+    m_visionEnabled = enabled;
+}
 void OpenAILLMClient::setReasoningEffort(const QString& effort) {
     m_reasoningEffort = effort;
 }
@@ -54,15 +65,7 @@ void OpenAILLMClient::setThinkingEnabled(bool enabled) {
     m_thinkingEnabled = enabled;
 }
 
-void OpenAILLMClient::sendRequest(const AgentConversation& ctx, const QList<ToolDefinition>& tools) {
-    // 中止上一个请求，防止信号串联（Agent 闭环中连续发请求时）
-    if (m_currentReply) {
-        disconnect(m_currentReply, nullptr, this, nullptr);
-        m_currentReply->abort();
-        m_currentReply->deleteLater();
-        m_currentReply = nullptr;
-    }
-
+QJsonObject OpenAILLMClient::buildRequestBody(const AgentConversation& ctx, const QList<ToolDefinition>& tools) const {
     QJsonObject body;
     body["model"] = m_model;
     body["temperature"] = m_temperature;
@@ -87,7 +90,19 @@ void OpenAILLMClient::sendRequest(const AgentConversation& ctx, const QList<Tool
         body["thinking"] = QJsonObject{{"type", "enabled"}};
     }
 
-    QJsonDocument doc(body);
+    return body;
+}
+
+void OpenAILLMClient::sendRequest(const AgentConversation& ctx, const QList<ToolDefinition>& tools) {
+    // 中止上一个请求，防止信号串联（Agent 闭环中连续发请求时）
+    if (m_currentReply) {
+        disconnect(m_currentReply, nullptr, this, nullptr);
+        m_currentReply->abort();
+        m_currentReply->deleteLater();
+        m_currentReply = nullptr;
+    }
+
+    QJsonDocument doc(buildRequestBody(ctx, tools));
     QByteArray data = doc.toJson();
 
     QUrl url(m_endpoint);

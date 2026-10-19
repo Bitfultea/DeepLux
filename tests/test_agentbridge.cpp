@@ -146,6 +146,22 @@ private slots:
         bridge.m_authenticated.clear();
     }
 
+    void testStopAndHeartbeatTimeoutClearSessionState() {
+        AgentBridge& bridge = AgentBridge::instance();
+        bridge.m_authenticated.insert(QStringLiteral("stale"), true);
+        bridge.m_eventSubscriptions.insert(QStringLiteral("stale"), {QStringLiteral("*")});
+        bridge.m_missedHeartbeats.insert(QStringLiteral("stale"), 2);
+
+        bridge.onHeartbeatTimeout();
+        QVERIFY(!bridge.m_authenticated.contains(QStringLiteral("stale")));
+        QVERIFY(!bridge.m_eventSubscriptions.contains(QStringLiteral("stale")));
+        QVERIFY(!bridge.m_missedHeartbeats.contains(QStringLiteral("stale")));
+
+        bridge.m_authenticated.insert(QStringLiteral("restart-stale"), true);
+        bridge.stop();
+        QVERIFY(bridge.m_authenticated.isEmpty());
+    }
+
     // 阶7 Agent 评审修复（P2-5）：单行入站超 1MB 上限即断开连接
     void testOversizedInboundDropsConnection() {
         AgentBridge& bridge = AgentBridge::instance();

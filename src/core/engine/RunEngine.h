@@ -120,6 +120,7 @@ public:
 
     // 运行控制
     Q_INVOKABLE void runOnce();
+    bool runOnceAsync();
     Q_INVOKABLE bool stepOnce();
     Q_INVOKABLE void resetStepState();
     Q_INVOKABLE void start();
@@ -203,6 +204,8 @@ private:
     ~RunEngine();
 
     void executeRun(RunIntent intent);
+    bool executeRunAsync(RunIntent intent);
+    void executeAcquiredRun(bool resuming, const QString& resumeModule, const ImageData& resumeData, RunMode mode);
     // 阶段 D1: 显式控制图执行（激活队列）
     void executeRunWithControlGraph(ImageData& pipelineData);
     void executeBatchParallel(const QStringList& batch, ImageData& pipelineData);
@@ -224,6 +227,7 @@ private:
     void clearBreakpointPauseState();
     void updateStatistics(bool success, int elapsedMs);
     void reset();
+    void stopCycleTimer();
 
     void buildModuleTree();
     void clearModuleTree();
@@ -336,6 +340,7 @@ private:
     std::atomic<qint64> m_frameId{0};
 
     // 阶段 3.3 受控并行线程池
+    QThreadPool m_runPool;
     QThreadPool m_parallelPool;
     int m_parallelThreads = 1;
     std::atomic<int> m_lastParallelMaxConcurrency{0};
@@ -343,3 +348,5 @@ private:
 };
 
 } // namespace DeepLux
+
+Q_DECLARE_METATYPE(DeepLux::RunResult)

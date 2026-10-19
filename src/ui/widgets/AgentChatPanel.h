@@ -10,6 +10,7 @@ class QScrollArea;
 class QVBoxLayout;
 class QLabel;
 class QTimer;
+class QToolButton;
 
 #include "AgentMessageBubble.h"
 #include "AgentToolPreviewCard.h"
@@ -17,9 +18,9 @@ class QTimer;
 namespace DeepLux {
 
 /**
- * @brief Agent 聊天主面板 —— Claude Code 终端风格
+ * @brief Agent 对话面板
  *
- * 全宽流式单列布局 + Markdown 渲染 + 内联自适应输入
+ * 单列阅读布局、Markdown 渲染和带图片附件的自适应输入。
  */
 class AgentChatPanel : public QWidget {
     Q_OBJECT
@@ -28,7 +29,7 @@ public:
     explicit AgentChatPanel(QWidget* parent = nullptr);
     ~AgentChatPanel() override;
 
-    void addMessage(AgentMessageBubble::Sender sender, const QString& text);
+    void addMessage(AgentMessageBubble::Sender sender, const QString& text, const QList<QPixmap>& images = {});
     void appendToLastMessage(const QString& text);
 
     // 批3 复核二轮（P2-7）/四轮（P2-5）：附件数量上限与 AgentController
@@ -54,6 +55,7 @@ public:
     }
 
     void setThinking(bool thinking);
+    void setError(const QString& error);
 
     void applyTheme(bool isDark);
 
@@ -74,6 +76,8 @@ private:
     void updateInputHeight();
     void updateStatusStrip();
     void insertMessage(AgentMessageBubble* bubble);
+    void rebuildAttachments();
+    void updateSendButton();
 
     bool eventFilter(QObject* obj, QEvent* event) override;
 
@@ -91,6 +95,13 @@ private:
     QLabel* m_toolCountLabel = nullptr;
     QLabel* m_attachmentCountLabel = nullptr;
     QTimer* m_thinkingTimer = nullptr;
+    QToolButton* m_sendButton = nullptr;
+    QToolButton* m_attachButton = nullptr;
+    QToolButton* m_latestButton = nullptr;
+    QLabel* m_emptyLabel = nullptr;
+    bool m_followTail = true;
+    bool m_composing = false;
+    QString m_error;
 
     AgentMessageBubble* m_lastAgentBubble = nullptr;
     bool m_isDark = false;
