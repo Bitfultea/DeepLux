@@ -145,6 +145,7 @@ private slots:
     void testPluginConfigDialogRestylesLegacyDarkPlugin();
     void testGrabImageEditorSurvivesCommitSignal();
     void testQuickAnnotateOpensSamDialogOnMainViewportImage();
+    void testQuickAnnotateNativeRealImageShowsMask();
     void testTreeAndCanvasSyncSelection();
     void testPinnedInspectorKeepsTreeAndCanvasSelectionSynchronized();
     void testProcessTreeClickOverridesPinnedInspector();
@@ -374,6 +375,60 @@ void TestMainWindow::testQuickAnnotateOpensSamDialogOnMainViewportImage() {
     QVERIFY(dialog != nullptr);
     QVERIFY(dialog->isVisible());
     QCOMPARE(dialog->overlayWidget()->parentWidget(), imageWidget);
+}
+
+void TestMainWindow::testQuickAnnotateNativeRealImageShowsMask() {
+#ifndef DEEPLUX_HAS_ONNXRUNTIME
+    QSKIP("原生 SAM 未启用");
+#else
+    const QString imagePath = qEnvironmentVariable("DEEPLUX_TEST_REAL_SAM_IMAGE");
+    if (imagePath.isEmpty())
+        QSKIP("设置 DEEPLUX_TEST_REAL_SAM_IMAGE 后运行真实图 GUI 验收");
+    QVERIFY2(QFileInfo(imagePath).isFile(), qPrintable(imagePath));
+    QVERIFY2(QFileInfo(qEnvironmentVariable("DEEPLUX_SAM_PACKAGE")).isDir(), "缺少 DEEPLUX_SAM_PACKAGE");
+    const QImage image(imagePath);
+    QCOMPARE(image.size(), QSize(800, 565));
+
+    MainWindow window;
+    window.resize(1280, 800);
+    window.show();
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget);
+    imageWidget->setImage(image);
+    imageWidget->fitToWindow();
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickAnnotate", Qt::DirectConnection));
+    SamAnnotatorDialog* dialog = window.findChild<SamAnnotatorDialog*>();
+    QVERIFY(dialog);
+    auto* mode = dialog->findChild<QComboBox*>(QStringLiteral("SamBackendMode"));
+    QVERIFY(mode);
+    const int nativeIndex = mode->findData(QStringLiteral("native"));
+    QVERIFY(nativeIndex >= 0);
+    mode->setCurrentIndex(nativeIndex);
+    QTRY_VERIFY(!dialog->backendClient()->currentEmbeddingId().isEmpty());
+    QCOMPARE(dialog->overlayWidget()->parentWidget(), imageWidget);
+
+    const QPoint click = imageWidget->imageToWidget(QPointF(550, 320)).toPoint();
+    QVERIFY(dialog->overlayWidget()->rect().contains(click));
+    QTest::mouseClick(dialog->overlayWidget(), Qt::LeftButton, Qt::NoModifier, click);
+    QTRY_COMPARE_WITH_TIMEOUT(dialog->previewCandidateCount(), 3, 30000);
+    const QImage mask = dialog->overlayWidget()->previewMask();
+    QCOMPARE(mask.size(), image.size());
+    const QRectF bbox = dialog->backendClient()->lastCandidates().first().bbox;
+    QVERIFY(qAbs(bbox.left() - 186.0) <= 1.0);
+    QVERIFY(qAbs(bbox.top() - 107.0) <= 1.0);
+    QVERIFY(qAbs(bbox.right() - 608.0) <= 1.0);
+    QVERIFY(qAbs(bbox.bottom() - 536.0) <= 1.0);
+    int visiblePixels = 0;
+    for (int y = 0; y < mask.height(); ++y) {
+        for (int x = 0; x < mask.width(); ++x)
+            visiblePixels += qAlpha(mask.pixel(x, y)) > 0;
+    }
+    QVERIFY(visiblePixels > 100000);
+    QVERIFY(dialog->statusLabel()->text().contains(QStringLiteral("预测完成")));
+#endif
 }
 
 void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
