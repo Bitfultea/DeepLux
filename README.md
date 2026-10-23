@@ -34,7 +34,7 @@ flowchart TB
     Modules[视觉插件<br/>采集、处理、检测、测量、控制]
     Devices[设备与外部系统<br/>相机、文件、PLC、网络]
     Agent[AgentController / AgentActor<br/>受控工具调用、确认、撤销]
-    SAM[SAM 标注服务<br/>FastAPI + 模型推理]
+    SAM[SAM 推理后端<br/>本机 ONNX / Python 服务]
 
     UI <--> Project
     UI <--> Engine
@@ -57,6 +57,7 @@ flowchart TB
 - C++17 编译器
 - Qt 6.6+，或 Qt 5.15.3+；需包含 `Core`、`Gui`、`Widgets`、`Network`、`Sql`、`Test`、`Concurrent` 和 `SerialPort`
 - **必需**：OpenCV。自阶段 3 起为产品构建的必需依赖，缺失时配置阶段即失败（`libopencv-dev` 或 vcpkg `opencv4`）。
+- 默认启用原生 SAM：配置时提供 ONNX Runtime SDK 的 `ONNXRUNTIME_DIR`；不构建原生推理时显式传入 `-DDEEPLUX_NATIVE_SAM=OFF`，Python 服务路径仍可用。
 - 可选：Basler Pylon、海康 MVS 等相机 SDK
 - 按需：Halcon Runtime 21.11+。当前默认构建不强制链接 Halcon；接入相关插件或 SDK 时才需要。
 
@@ -65,7 +66,8 @@ flowchart TB
 Linux：
 
 ```bash
-cmake -S . -B build -DDEEPLUX_QT_PATH=/path/to/Qt/6.6.0/gcc_64 -DBUILD_TESTS=ON
+cmake -S . -B build -DDEEPLUX_QT_PATH=/path/to/Qt/6.6.0/gcc_64 -DBUILD_TESTS=ON \
+  -DONNXRUNTIME_DIR=/path/to/onnxruntime
 cmake --build build -j$(nproc)
 ```
 
@@ -73,11 +75,12 @@ Windows（Visual Studio 2022，产品构建）：
 
 ```bat
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 ^
-  -DCMAKE_PREFIX_PATH=C:/Qt/6.6.0/msvc2019_64 -DBUILD_TESTS=OFF
+  -DCMAKE_PREFIX_PATH=C:/Qt/6.6.0/msvc2019_64 -DBUILD_TESTS=OFF ^
+  -DONNXRUNTIME_DIR=C:/path/to/onnxruntime
 cmake --build build --config Release
 ```
 
-Windows CI 当前验证产品构建；完整自动化测试在 Linux 的 Qt 5/Qt 6 CI 路径运行。
+Windows CI 显式关闭原生 SAM，验证其余产品构建；完整自动化测试在 Linux 的 Qt 5/Qt 6 CI 路径运行。
 
 可用 CMake 选项：`-DUSE_QT6=ON|OFF`、`-DENABLE_CAMERA_BASLER=ON`、`-DENABLE_CAMERA_HIKVISION=ON`。
 
@@ -112,7 +115,7 @@ flowchart LR
 ## Agent 与 SAM 标注
 
 - **Agent**：主入口位于底部“Agent 对话”页。Agent 仅能调用已声明的内部工具，写操作经过权限、确认和撤销链路，不具备任意 shell 执行权限。详见 [终端与 Agent 设计](docs/Terminal_Agent_Design.md)。
-- **SAM 标注**：从顶部“快速标注”打开配置面板，在主视图选择正点、负点或框选以预览掩膜。首次使用需要在面板中初始化 Python 环境并导入兼容的 SAM 权重；模型运行在独立 FastAPI 进程中，不污染 C++ 构建环境。
+- **SAM 标注**：从顶部“快速标注”打开配置面板，在主视图选择正点、负点或框选以预览掩膜。可在“推理后端”中选择本机 ONNX（需 `DEEPLUX_SAM_PACKAGE` 模型包，无需 Python 环境），或选择 Python 服务并在面板中初始化环境、导入兼容权重。
 
 ## 项目结构
 

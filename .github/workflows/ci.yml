@@ -20,7 +20,7 @@ jobs:
             libssl-dev pkg-config cmake build-essential
 
       - name: Configure
-        run: cmake -S . -B build -DBUILD_TESTS=ON
+        run: cmake -S . -B build -DBUILD_TESTS=ON -DDEEPLUX_NATIVE_SAM=OFF
 
       - name: Build
         run: cmake --build build -j$(nproc)
@@ -72,7 +72,7 @@ jobs:
       - name: Install vcpkg deps
         run: vcpkg install eigen3 opencv4 --triplet x64-windows
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DBUILD_TESTS=OFF
+        run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DBUILD_TESTS=OFF -DDEEPLUX_NATIVE_SAM=OFF
       - name: Build
         run: cmake --build build --config Release -j
 
@@ -89,7 +89,7 @@ jobs:
             libssl-dev pkg-config cmake build-essential xvfb
 
       - name: Configure
-        run: cmake -S . -B build -DBUILD_TESTS=ON -DDEEPLUX_TEST_QPA_PLATFORM=xcb
+        run: cmake -S . -B build -DBUILD_TESTS=ON -DDEEPLUX_TEST_QPA_PLATFORM=xcb -DDEEPLUX_NATIVE_SAM=OFF
 
       - name: Build
         run: cmake --build build -j$(nproc)

@@ -118,7 +118,7 @@ add_library(deeplux_core SHARED ${CORE_SOURCES} ${CORE_HEADERS})
 target_compile_definitions(deeplux_core PRIVATE DEEPLUX_CORE_EXPORT)
 
 # ========== 阶段2：原生 SAM 推理（onnxruntime，可选）==========
-option(DEEPLUX_NATIVE_SAM "Enable native SAM ONNX inference (requires onnxruntime)" OFF)
+option(DEEPLUX_NATIVE_SAM "Enable native SAM ONNX inference (requires onnxruntime)" ON)
 if(DEEPLUX_NATIVE_SAM)
     if(NOT ONNXRUNTIME_DIR AND DEFINED ENV{ONNXRUNTIME_DIR})
         set(ONNXRUNTIME_DIR "$ENV{ONNXRUNTIME_DIR}" CACHE PATH "onnxruntime install dir")

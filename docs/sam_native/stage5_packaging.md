@@ -2,8 +2,9 @@
 
 ## 本批范围
 
-`DEEPLUX_NATIVE_SAM=ON` 现在要求显式提供 `ONNXRUNTIME_DIR`（CMake 参数或同名环境变量），
-并在配置阶段检查头文件和平台运行库。Linux 安装将 ONNX Runtime 主库及现有 Provider
+`DEEPLUX_NATIVE_SAM` 默认 `ON`，需要显式提供 `ONNXRUNTIME_DIR`（CMake 参数或同名环境变量）；
+不需要原生推理时可设 `-DDEEPLUX_NATIVE_SAM=OFF`。启用时在配置阶段检查头文件和平台运行库。
+Linux 安装将 ONNX Runtime 主库及现有 Provider
 复制为真实文件，版本符号链接改为包内相对链接；DeepLux、核心库和 UI 库使用相对
 RUNPATH。Windows 配置识别 `lib/onnxruntime.lib` 及 `lib` 或 `bin` 中的
 `onnxruntime.dll`，并从所选目录安装运行库；本批未在 Windows 构建或运行。
