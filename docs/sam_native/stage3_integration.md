@@ -7,7 +7,7 @@
 
 ## 启用
 
-1. 构建时设置 `-DDEEPLUX_NATIVE_SAM=ON` 并提供 `ONNXRUNTIME_DIR`。
+1. 原生 SAM 默认参与构建；配置时提供 `ONNXRUNTIME_DIR`。不构建原生推理时显式设置 `-DDEEPLUX_NATIVE_SAM=OFF`。
 2. 启动前设置 `DEEPLUX_SAM_PACKAGE=/path/to/sam1_vit_b_onnx`。
 3. 在工具调用或插件参数中设置 `serverUrl=native`，或在标注对话框中选择“本机 ONNX”。
 

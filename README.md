@@ -15,13 +15,13 @@ DeepLux Vision 是面向工业现场的跨平台机器视觉软件。它以可�
 | 插件扩展 | 图像处理、检测识别、几何测量、标定、逻辑、通信、变量、3D 和相机插件按需加载。 |
 | 2D/3D 数据 | 流程可处理图像与点云；3D 两点距离额外给出 ΔX/ΔY/ΔZ 分量，结果面板随主题自适应。 |
 | Agent 协作 | Agent 可读取工程状态、创建或调整流程，并通过受控工具调用执行可审计操作。 |
-| SAM 快速标注 | 在主视图中通过正点、负点和框选生成掩膜预览，支持会话保存及 LabelMe/YOLO 分割导出。 |
+| SAM 快速标注 | 在主视图中通过正点、负点和框选生成掩膜预览，可切换候选、编辑已确认掩膜，并保存会话或导出 LabelMe/YOLO/COCO。 |
 
 ## 当前交付状态
 
 - 运行时插件共 **67** 个。近期重建的 `3DPreProcessing`、`CropImage`、`MeasureCircle`、`EdgeDefectDetection`、`FitEllipse`、`FitPlane`、`GapMeasure3D` 和 `CalculateOffset` 已纳入流程、参数校验与自动化验收；用途、配置和失败条件见[插件手册](docs/plugins.md)。
 - CI 覆盖 Qt 5、Qt 6、Windows MSVC 产品构建和格式检查；Linux Qt 5/Qt 6 路径执行完整 CTest。
-- SAM 的真实 GPU 权重、相机/PLC 设备与业务包仍需在现场环境验收；TSan 残余告警需使用插桩 Qt 环境进一步归因，均不作为已完成的现场验证结论。
+- 原生 SAM1 ViT-B ONNX 模型包已在本机 RTX 3090 的 CPU/CUDA 路径通过安装包迁移后的演示工程验证；真实工业原图、异机部署和无 Python 纯净系统仍待验收。相机/PLC 设备与业务包仍需现场验收；TSan 残余告警需使用插桩 Qt 环境进一步归因。[验证边界](docs/sam_native/stage5_packaging.md)
 
 ## 架构概览
 
@@ -115,7 +115,7 @@ flowchart LR
 ## Agent 与 SAM 标注
 
 - **Agent**：主入口位于底部“Agent 对话”页。Agent 仅能调用已声明的内部工具，写操作经过权限、确认和撤销链路，不具备任意 shell 执行权限。详见 [终端与 Agent 设计](docs/Terminal_Agent_Design.md)。
-- **SAM 标注**：从顶部“快速标注”打开配置面板，在主视图选择正点、负点或框选以预览掩膜。可在“推理后端”中选择本机 ONNX（需 `DEEPLUX_SAM_PACKAGE` 模型包，无需 Python 环境），或选择 Python 服务并在面板中初始化环境、导入兼容权重。
+- **SAM 标注**：从顶部“快速标注”打开面板，先在类别下拉框选择或输入类别，再用正点、负点或框选生成预览；有多个候选时切换后确认。已确认对象的膨胀、腐蚀、合并等操作收在“掩膜编辑”菜单，最后可保存会话或导出 LabelMe/YOLO/COCO。推理后端默认是 Python 服务；选择“本机 ONNX”需设置 `DEEPLUX_SAM_PACKAGE` 模型包，原生路径运行时不依赖 Python。操作见[快速上手](docs/quick-start.md)，部署边界见[原生 SAM 安装说明](docs/sam_native/stage5_packaging.md)。
 
 ## 项目结构
 

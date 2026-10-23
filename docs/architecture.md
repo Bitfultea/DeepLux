@@ -20,6 +20,7 @@ flowchart TB
         PM[PluginManager]
         Agent[AgentController / AgentActor / AgentBridge]
         Device[CameraManager]
+        SamClient[SamBackendClient / SamPredictor]
     end
 
     subgraph Extensions[扩展层：src/plugins]
@@ -31,7 +32,8 @@ flowchart TB
 
     subgraph External[外部能力]
         IO[文件、相机、PLC、网络]
-        SamServer[SAM FastAPI 服务]
+        SamNative[本机 ONNX Runtime / SAM 模型包]
+        SamServer[Python FastAPI / SAM 权重]
     end
 
     MW --> Canvas
@@ -52,7 +54,9 @@ flowchart TB
     Device <--> IO
     Agent <--> Project
     Log <--> Agent
-    Viewport <--> SamServer
+    Viewport <--> SamClient
+    SamClient <--> SamNative
+    SamClient <--> SamServer
 ```
 
 | 层 | 主要职责 | 不承担的职责 |
@@ -149,18 +153,16 @@ SAM 标注是主视图上的交互能力，而不是普通流程插件：标注�
 flowchart LR
     User[主视图交互<br/>正点 / 负点 / 框选 / 橡皮擦] --> Overlay[AnnotationOverlayWidget]
     Overlay --> Dialog[SamAnnotatorDialog]
-    Dialog --> Client[SamBackendClient]
-    Client --> Server[独立 FastAPI 进程]
-    Server --> Model[SAM 权重与推理]
-    Model --> Server
-    Server --> Client
+    Dialog --> Client[SamBackendClient / SamPredictor]
+    Client <--> Native[本机 ONNX Runtime / 模型包]
+    Client <--> Server[Python FastAPI / SAM 权重]
     Client --> Overlay
     Overlay --> Export[会话保存<br/>LabelMe / YOLO 分割 / COCO 导出]
 ```
 
 - `HImageWidget` 负责图像显示、缩放和坐标变换；标注叠加层独立维护掩膜、多边形和提示点，避免与测量叠加混杂。
-- `SamBackendClient` 管理后端进程和 HTTP 请求。后端按图像缓存 embedding，后续提示点预测复用同一 embedding。
-- Python 依赖和模型权重与 C++ 构建隔离。首次使用通过标注面板初始化环境并导入权重；模型文件不应提交到仓库。
+- `SamBackendClient` 管理 Python 服务进程和 HTTP 请求；原生路径由 C++ ONNX 推理核心执行。两条路径都可复用同图 embedding，换图后重新编码。
+- 原生 SAM 默认参与编译，需在配置时提供 ONNX Runtime SDK；运行时单独提供 `DEEPLUX_SAM_PACKAGE` 模型包，不需要 Python。Python 服务仍是标注面板默认后端，其依赖和权重与 C++ 构建隔离。模型文件均不应提交到仓库；CPU/CUDA 与异机部署的验证边界见[安装说明](sam_native/stage5_packaging.md)。
 - 掩膜编辑算法集中在 `MaskOps`（`core/model/AnnotationMaskOps`，纯函数无 UI 依赖）：形态学膨胀/腐蚀（可分离滑窗，越界按背景）、8-连通分量、Moore 外轮廓追踪、橡皮擦笔画、多边形栅格化，以及与 sam_server `_encode_rle` 语义一致的 RLE 编解码（列主序，损坏输入失败关闭）。
 - 标注对话框对已确认对象提供膨胀/腐蚀/橡皮擦/合并/拆分（SAM 批2）：编辑作用于整图尺寸二值掩膜（来源优先级：内存缓存 → maskRle → polygon 栅格化重建），完成后重导出 polygon/bbox/maskRle；每次编辑整体入撤销栈，可精确回滚。空结果、多连通分量结果（单多边形模型无法如实表达）、不连通区域的合并均失败关闭并给出状态栏提示，不静默丢像素；拆分保留最大分量的原对象身份，派生对象 score=0（非 SAM 预测，不伪造置信度）。
 - Agent 工具化（SAM 批3）：`sam_predict`（单次 prompt 分割，返回 label/score/bbox/polygon JSON，不回传 RLE 本体防上下文爆炸）与 `sam_annotate`（1–16 项批量分割并追加写入 `.deeplux-anno.json` 会话，全有或全无、混图拒绝）注册进 ToolSchema 白名单，与 `SamPredict` 插件共享 `SamPredictor` 同步预测核心（栈上客户端 + 本地事件循环 + 取消轮询 + Region2D 契约门禁；批量项间经事件循环延迟发起，避免在客户端回复 settle 前重入）。权限口径：两者均非 readOnly（最小权限，Observer 拒绝）；`sam_annotate` 为 dangerous（写文件，Autopilot 也需确认）。
