@@ -2,10 +2,13 @@
 #include "core/io/YoloSegExporter.h"
 #include "core/model/Annotation.h"
 #include "core/model/AnnotationMaskOps.h"
+#include "ui/ThemeManager.h"
 #include "ui/dialogs/SamAnnotatorDialog.h"
 #include "ui/widgets/AnnotationOverlayWidget.h"
 #include "ui/widgets/HImageWidget.h"
 
+#include <QAbstractItemView>
+#include <QApplication>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -18,8 +21,10 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QPainter>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSemaphore>
 #include <QShortcut>
 #include <QSignalSpy>
@@ -59,15 +64,18 @@ private slots:
     void canAttachOverlayToMainViewImageWidget();
     void mainViewOverlayUsesMainViewCoordinates();
     void mainViewModeUsesReadableConfigLayout();
+    void compactCommitButtonsDoNotOverlapModeRow();
+    void categoryAndBackendRowsShareCompactSizing();
+    void categoryDropdownUsesOneCompactRow();
     void modelImportButtonExists();
     void environmentControlButtonsExist();
     void predictionMaskIsForwardedToOverlay();
     void undoRedoButtonsExist();
     void redoShortcutBound();
-    void categoryListPrepopulated();
+    void categoryDropdownPrepopulated();
     void categoryCanBeAdded();
     void categoryCanBeRemoved();
-    void currentCategoryLabelPrefersListSelection();
+    void currentCategoryLabelPrefersDropdownSelection();
     void openAnnotationButtonExists();
     void exportYoloButtonExists();
     void exportCocoButtonExists(); // SAM 批4
@@ -76,6 +84,7 @@ private slots:
 
     // SAM 批2：掩膜编辑（膨胀/腐蚀/橡皮擦/合并/拆分 + undo/redo）
     void maskEditControlsExist();
+    void maskEditMenuIsContextual();
     void maskEditButtonsFollowSelection();
     void dilateGrowsMaskAndUndoRestores();
     void erodeToEmptyRejected();
@@ -260,9 +269,10 @@ void TestSamAnnotatorDialog::selectModeClickSelectsConfirmedObject() {
 
 void TestSamAnnotatorDialog::categoryEditWorks() {
     SamAnnotatorDialog dlg;
-    QVERIFY(dlg.categoryEdit() != nullptr);
-    dlg.categoryEdit()->setText("defect");
-    QCOMPARE(dlg.categoryEdit()->text(), QStringLiteral("defect"));
+    QVERIFY(dlg.categoryCombo() != nullptr);
+    QVERIFY(dlg.categoryCombo()->isEditable());
+    dlg.categoryCombo()->setEditText(QStringLiteral("defect"));
+    QCOMPARE(dlg.categoryCombo()->currentText(), QStringLiteral("defect"));
 }
 
 void TestSamAnnotatorDialog::objectListStartsEmpty() {
@@ -313,7 +323,7 @@ void TestSamAnnotatorDialog::predictionResultCanBeConfirmed() {
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onPredictionReady", Qt::DirectConnection, Q_ARG(QList<QPointF>, polygon),
                                       Q_ARG(QRectF, QRectF(1, 2, 9, 10)), Q_ARG(double, 0.91),
                                       Q_ARG(QString, QStringLiteral("fake_rle")), Q_ARG(QImage, QImage())));
-    dlg.categoryEdit()->setText(QStringLiteral("defect"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("defect"));
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
 
     QCOMPARE(dlg.objectList()->count(), 1);
@@ -391,9 +401,9 @@ void TestSamAnnotatorDialog::mainViewModeUsesReadableConfigLayout() {
     QVERIFY(objectListLabel != nullptr);
     QVERIFY2(categoryLabel->maximumHeight() <= 20, "Category label should be a compact single line");
     QVERIFY2(objectListLabel->maximumHeight() <= 20, "Object list label should be a compact single line");
-    QVERIFY2(dlg.categoryEdit()->maximumHeight() <= 26, "Category input should be compact single-line height");
-    QVERIFY2(dlg.categoryEdit()->geometry().top() - categoryLabel->geometry().bottom() <= 4,
-             "Category label and input should be vertically tight");
+    QVERIFY2(dlg.categoryCombo()->maximumHeight() <= 26, "Category dropdown should be compact single-line height");
+    QVERIFY2(qAbs(dlg.categoryCombo()->geometry().center().y() - categoryLabel->geometry().center().y()) <= 2,
+             "Category label and dropdown should share one row");
     QVERIFY2(dlg.initializeEnvironmentButton()->maximumHeight() <= 26, "SAM action buttons should be compact");
     QVERIFY2(dlg.restartServerButton()->maximumHeight() <= 26, "SAM action buttons should be compact");
     QVERIFY(qAbs(dlg.importModelButton()->width() - dlg.initializeEnvironmentButton()->width()) <= 2);
@@ -414,6 +424,182 @@ void TestSamAnnotatorDialog::mainViewModeUsesReadableConfigLayout() {
              "Shortcut hint should inherit the compact config-panel theme");
     QVERIFY2(dlg.styleSheet().contains(QStringLiteral("font-size: 12px")),
              "Shortcut hint should use a readable font size");
+}
+
+void TestSamAnnotatorDialog::compactCommitButtonsDoNotOverlapModeRow() {
+    struct AppStyleRestore {
+        QString oldStyle = qApp->styleSheet();
+        ~AppStyleRestore() {
+            qApp->setStyleSheet(oldStyle);
+        }
+    } restore;
+    qApp->setStyleSheet(ThemeManager::styleSheet(false));
+
+    HImageWidget mainView;
+    mainView.resize(320, 240);
+    mainView.setImage(makeTestImage());
+    SamAnnotatorDialog dlg;
+    dlg.attachToImageWidget(&mainView, QString());
+    dlg.resize(320, 530);
+    dlg.show();
+    QCoreApplication::processEvents();
+
+    auto* confirm = dlg.findChild<QPushButton*>(QStringLiteral("SamConfirmButton"));
+    auto* cancel = dlg.findChild<QPushButton*>(QStringLiteral("SamCancelButton"));
+    QVERIFY(confirm);
+    QVERIFY(cancel);
+    auto verifyRows = [&]() {
+        const int modeTop = dlg.positivePointButton()->mapTo(&dlg, QPoint(0, 0)).y();
+        for (QPushButton* button : {confirm, cancel}) {
+            if (button->height() != 26 || button->mapTo(&dlg, QPoint(0, button->height())).y() + 2 > modeTop)
+                return false;
+        }
+        return true;
+    };
+    QVERIFY2(verifyRows(), "Commit buttons must fit above the mode-button row under the app stylesheet");
+    const QString capturePath = qEnvironmentVariable("DEEPLUX_TEST_SAM_COMMIT_CAPTURE");
+    if (!capturePath.isEmpty())
+        QVERIFY(dlg.grab().save(capturePath));
+
+    qApp->setStyleSheet(ThemeManager::styleSheet(true));
+    dlg.applyTheme(true);
+    QCoreApplication::processEvents();
+    QVERIFY2(verifyRows(), "Commit buttons must also fit in the dark theme");
+    if (!capturePath.isEmpty())
+        QVERIFY(dlg.grab().save(capturePath + QStringLiteral(".dark.png")));
+}
+
+void TestSamAnnotatorDialog::categoryAndBackendRowsShareCompactSizing() {
+    struct AppStyleRestore {
+        QString oldStyle = qApp->styleSheet();
+        ~AppStyleRestore() {
+            qApp->setStyleSheet(oldStyle);
+        }
+    } restore;
+    qApp->setStyleSheet(ThemeManager::styleSheet(false));
+
+    HImageWidget mainView;
+    mainView.resize(320, 240);
+    mainView.setImage(makeTestImage());
+    SamAnnotatorDialog dlg;
+    dlg.attachToImageWidget(&mainView, QString());
+    dlg.resize(320, 530);
+    dlg.show();
+    QCoreApplication::processEvents();
+
+    auto* categoryLabel = dlg.findChild<QLabel*>(QStringLiteral("SamCategoryLabel"));
+    auto* objectLabel = dlg.findChild<QLabel*>(QStringLiteral("SamObjectListLabel"));
+    auto* backendLabel = dlg.findChild<QLabel*>(QStringLiteral("SamBackendLabel"));
+    auto* backend = dlg.findChild<QComboBox*>(QStringLiteral("SamBackendMode"));
+    QVERIFY(categoryLabel);
+    QVERIFY(objectLabel);
+    QVERIFY(backendLabel);
+    QVERIFY(backend);
+
+    auto verifyRows = [&]() {
+        const auto centerY = [&dlg](QWidget* widget) {
+            return widget->mapTo(&dlg, QPoint(0, widget->height() / 2)).y();
+        };
+        return dlg.categoryCombo()->height() == 26 && backend->height() == 26 &&
+               dlg.addCategoryButton()->height() == 26 && dlg.removeCategoryButton()->height() == 26 &&
+               qAbs(centerY(categoryLabel) - centerY(dlg.categoryCombo())) <= 2 &&
+               qAbs(centerY(objectLabel) - centerY(backend)) <= 2 &&
+               qAbs(centerY(backendLabel) - centerY(backend)) <= 2 && categoryLabel->font().pointSize() == 9 &&
+               objectLabel->font().pointSize() == 9 && backendLabel->font().pointSize() == 9 &&
+               dlg.categoryCombo()->font().pointSize() == 9 &&
+               dlg.categoryCombo()->lineEdit()->font().pointSize() == 9 && backend->font().pointSize() == 9;
+    };
+    QVERIFY2(verifyRows(), "SAM config rows must share compact height, centerline and font under app theme");
+    const QString capturePath = qEnvironmentVariable("DEEPLUX_TEST_SAM_HEADER_CAPTURE");
+    if (!capturePath.isEmpty())
+        QVERIFY(dlg.grab().save(capturePath));
+    backend->showPopup();
+    QCoreApplication::processEvents();
+    QCOMPARE(backend->view()->font().pointSize(), 9);
+    const QRect lastOption = backend->view()->visualRect(backend->model()->index(backend->count() - 1, 0));
+    QVERIFY2(lastOption.bottom() < backend->view()->viewport()->height(),
+             "The backend popup must show every option without clipping");
+    if (!capturePath.isEmpty())
+        QVERIFY(backend->view()->grab().save(capturePath + QStringLiteral(".backend-menu.png")));
+    if (!capturePath.isEmpty())
+        QVERIFY(backend->view()->window()->grab().save(capturePath + QStringLiteral(".backend-popup.png")));
+    backend->hidePopup();
+    QCoreApplication::processEvents();
+    dlg.categoryCombo()->showPopup();
+    QCoreApplication::processEvents();
+    QCOMPARE(dlg.categoryCombo()->view()->font().pointSize(), 9);
+    const QRect lastCategory = dlg.categoryCombo()->view()->visualRect(
+        dlg.categoryCombo()->model()->index(dlg.categoryCombo()->count() - 1, 0));
+    QVERIFY2(lastCategory.bottom() < dlg.categoryCombo()->view()->viewport()->height(),
+             "The category popup must show every preset without clipping");
+    if (!capturePath.isEmpty())
+        QVERIFY(
+            dlg.categoryCombo()->view()->window()->grab().save(capturePath + QStringLiteral(".category-popup.png")));
+    dlg.categoryCombo()->hidePopup();
+    QCoreApplication::processEvents();
+
+    dlg.resize(220, 530);
+    QCoreApplication::processEvents();
+    auto* scroll = dlg.findChild<QScrollArea*>(QStringLiteral("SamControlScroll"));
+    auto* content = dlg.findChild<QWidget*>(QStringLiteral("SamControlScrollContent"));
+    QVERIFY2(content->width() <= scroll->viewport()->width(),
+             "Compact SAM controls must fit the viewport without horizontal clipping");
+    QVERIFY(!backendLabel->isVisibleTo(&dlg));
+    QVERIFY(dlg.categoryCombo()->height() == 26 && backend->height() == 26);
+    const auto leftX = [&dlg](QWidget* widget) { return widget->mapTo(&dlg, QPoint(0, 0)).x(); };
+    const auto rightX = [&dlg](QWidget* widget) { return widget->mapTo(&dlg, QPoint(widget->width(), 0)).x(); };
+    QVERIFY(rightX(categoryLabel) + 2 <= leftX(dlg.categoryCombo()));
+    QVERIFY(rightX(dlg.categoryCombo()) + 2 <= leftX(dlg.addCategoryButton()));
+    QVERIFY(rightX(objectLabel) + 2 <= leftX(backend));
+    QVERIFY2(rightX(backend) <= rightX(content), "Backend selector must remain inside the narrow viewport");
+    QVERIFY2(rightX(dlg.removeCategoryButton()) <= rightX(content),
+             "Category actions must remain inside the narrow viewport");
+    QVERIFY(backend->fontMetrics().horizontalAdvance(backend->currentText()) <= backend->width() - 24);
+    if (!capturePath.isEmpty())
+        QVERIFY(dlg.grab().save(capturePath + QStringLiteral(".narrow.png")));
+
+    qApp->setStyleSheet(ThemeManager::styleSheet(true));
+    dlg.applyTheme(true);
+    QCoreApplication::processEvents();
+    QVERIFY(!backendLabel->isVisibleTo(&dlg));
+    QVERIFY(dlg.categoryCombo()->height() == 26 && backend->height() == 26);
+    if (!capturePath.isEmpty())
+        QVERIFY(dlg.grab().save(capturePath + QStringLiteral(".narrow.dark.png")));
+    dlg.resize(300, 530);
+    QCoreApplication::processEvents();
+    QVERIFY(backendLabel->isVisibleTo(&dlg));
+    QVERIFY2(verifyRows(), "SAM config rows must remain aligned in the dark theme");
+    if (!capturePath.isEmpty())
+        QVERIFY(dlg.grab().save(capturePath + QStringLiteral(".dark.png")));
+}
+
+void TestSamAnnotatorDialog::categoryDropdownUsesOneCompactRow() {
+    HImageWidget mainView;
+    mainView.resize(320, 240);
+    mainView.setImage(makeTestImage());
+
+    SamAnnotatorDialog dlg;
+    dlg.attachToImageWidget(&mainView, QString());
+    dlg.show();
+    QCoreApplication::processEvents();
+
+    auto* combo = dlg.findChild<QComboBox*>(QStringLiteral("SamCategoryCombo"));
+    auto* label = dlg.findChild<QLabel*>(QStringLiteral("SamCategoryLabel"));
+    QVERIFY(combo);
+    QVERIFY(label);
+    QVERIFY(combo->isEditable());
+    QVERIFY(combo->count() >= 4);
+    QVERIFY(qAbs(combo->geometry().center().y() - label->geometry().center().y()) <= 2);
+    QVERIFY(qAbs(combo->geometry().center().y() - dlg.addCategoryButton()->geometry().center().y()) <= 2);
+    QVERIFY(qAbs(combo->geometry().center().y() - dlg.removeCategoryButton()->geometry().center().y()) <= 2);
+    QVERIFY(!dlg.findChild<QListWidget*>(QStringLiteral("SamCategoryList")));
+    const QString capturePath = qEnvironmentVariable("DEEPLUX_TEST_SAM_CAPTURE");
+    if (!capturePath.isEmpty()) {
+        QVERIFY(dlg.grab().save(capturePath));
+        dlg.applyTheme(true);
+        QCoreApplication::processEvents();
+        QVERIFY(dlg.grab().save(capturePath + QStringLiteral(".dark.png")));
+    }
 }
 
 void TestSamAnnotatorDialog::modelImportButtonExists() {
@@ -461,10 +647,11 @@ void TestSamAnnotatorDialog::redoShortcutBound() {
     QCOMPARE(dlg.redoShortcut()->context(), Qt::ApplicationShortcut);
 }
 
-void TestSamAnnotatorDialog::categoryListPrepopulated() {
+void TestSamAnnotatorDialog::categoryDropdownPrepopulated() {
     SamAnnotatorDialog dlg;
-    QVERIFY(dlg.categoryList() != nullptr);
-    QVERIFY(dlg.categoryList()->count() >= 4);
+    QVERIFY(dlg.categoryCombo() != nullptr);
+    QVERIFY(dlg.categoryCombo()->count() >= 4);
+    QVERIFY(dlg.categoryCombo()->itemData(0, Qt::DecorationRole).canConvert<QColor>());
     QVERIFY(dlg.categories().contains(QStringLiteral("缺陷")));
     QVERIFY(dlg.categories().contains(QStringLiteral("划痕")));
     QVERIFY(dlg.categories().contains(QStringLiteral("凹坑")));
@@ -474,9 +661,11 @@ void TestSamAnnotatorDialog::categoryListPrepopulated() {
 void TestSamAnnotatorDialog::categoryCanBeAdded() {
     SamAnnotatorDialog dlg;
     const int initial = dlg.categories().size();
-    dlg.addCategory(QStringLiteral("裂纹"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("裂纹"));
+    QTest::keyClick(dlg.categoryCombo()->lineEdit(), Qt::Key_Return);
     QVERIFY(dlg.categories().contains(QStringLiteral("裂纹")));
     QCOMPARE(dlg.categories().size(), initial + 1);
+    QCOMPARE(dlg.categoryCombo()->currentText(), QStringLiteral("裂纹"));
     QVERIFY(dlg.categoryColor(QStringLiteral("裂纹")).isValid());
 }
 
@@ -484,16 +673,16 @@ void TestSamAnnotatorDialog::categoryCanBeRemoved() {
     SamAnnotatorDialog dlg;
     dlg.addCategory(QStringLiteral("临时"));
     QVERIFY(dlg.categories().contains(QStringLiteral("临时")));
-    dlg.removeCategory(QStringLiteral("临时"));
+    dlg.removeCategoryButton()->click();
     QVERIFY(!dlg.categories().contains(QStringLiteral("临时")));
+    QCOMPARE(dlg.categoryCombo()->findText(QStringLiteral("临时")), -1);
 }
 
-void TestSamAnnotatorDialog::currentCategoryLabelPrefersListSelection() {
+void TestSamAnnotatorDialog::currentCategoryLabelPrefersDropdownSelection() {
     SamAnnotatorDialog dlg;
-    if (dlg.categoryList()->count() > 0) {
-        dlg.categoryList()->setCurrentRow(0);
-        QVERIFY(!dlg.currentCategoryLabel().isEmpty());
-    }
+    QVERIFY(dlg.categoryCombo()->count() > 1);
+    dlg.categoryCombo()->setCurrentIndex(1);
+    QCOMPARE(dlg.currentCategoryLabel(), dlg.categoryCombo()->itemText(1));
 }
 
 void TestSamAnnotatorDialog::openAnnotationButtonExists() {
@@ -599,6 +788,9 @@ QList<QPointF> TestSamAnnotatorDialog::squarePolygon(double x, double y, double 
 
 void TestSamAnnotatorDialog::maskEditControlsExist() {
     SamAnnotatorDialog dlg;
+    auto* menuButton = dlg.findChild<QToolButton*>(QStringLiteral("SamMaskEditMenuButton"));
+    QVERIFY(menuButton);
+    QVERIFY(menuButton->menu());
     QVERIFY(dlg.eraserButton() != nullptr);
     QVERIFY(dlg.dilateButton() != nullptr);
     QVERIFY(dlg.erodeButton() != nullptr);
@@ -619,6 +811,78 @@ void TestSamAnnotatorDialog::maskEditControlsExist() {
     dlg.eraserButton()->setChecked(true);
     QCOMPARE(dlg.currentToolMode(), SamAnnotatorDialog::ToolMode::Eraser);
     QCOMPARE(dlg.overlayWidget()->mode(), AnnotationOverlayWidget::Mode::Eraser);
+}
+
+void TestSamAnnotatorDialog::maskEditMenuIsContextual() {
+    struct AppStyleRestore {
+        QString oldStyle = qApp->styleSheet();
+        ~AppStyleRestore() {
+            qApp->setStyleSheet(oldStyle);
+        }
+    } restore;
+    qApp->setStyleSheet(QStringLiteral("QWidget { background-color: #2b2b2b; color: #ffffff; }"));
+    HImageWidget mainView;
+    mainView.resize(320, 240);
+    mainView.setImage(makeTestImage());
+    SamAnnotatorDialog dlg;
+    dlg.attachToImageWidget(&mainView, QString());
+    dlg.show();
+    QCoreApplication::processEvents();
+    QVERIFY(!confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20),
+                           makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)}))
+                 .isEmpty());
+    QVERIFY(!confirmObject(dlg, squarePolygon(100, 80, 20), QRectF(100, 80, 20, 20),
+                           makeDisplayMask(200, 150, {QRect(100, 80, 20, 20)}))
+                 .isEmpty());
+
+    auto* menuButton = dlg.findChild<QToolButton*>(QStringLiteral("SamMaskEditMenuButton"));
+    QVERIFY(menuButton);
+    dlg.objectList()->setCurrentRow(0);
+    QVERIFY(menuButton->isEnabled());
+    QVERIFY(!dlg.eraserButton()->parentWidget()->isHidden());
+    QVERIFY(dlg.mergeButton()->isHidden());
+    auto* menu = menuButton->menu();
+    menu->popup(menuButton->mapToGlobal(QPoint(0, menuButton->height())));
+    QCoreApplication::processEvents();
+    QVERIFY(menu->isVisible());
+    auto* menuContent = menu->findChild<QWidget*>(QStringLiteral("SamMaskEditMenuContent"));
+    QVERIFY(menuContent);
+    const QColor lightBg = menuContent->grab().toImage().pixelColor(1, 1);
+    QVERIFY2(lightBg.lightness() > 200, qPrintable(QStringLiteral("Light menu background: %1").arg(lightBg.name())));
+    const QColor singleBg =
+        dlg.eraserButton()->parentWidget()->grab().toImage().pixelColor(5, dlg.eraserButton()->height() + 2);
+    QVERIFY2(singleBg.lightness() > 200, qPrintable(QStringLiteral("Light mask controls: %1").arg(singleBg.name())));
+    const int singleMenuHeight = menu->height();
+    const QString capturePath = qEnvironmentVariable("DEEPLUX_TEST_SAM_MENU_CAPTURE");
+    if (!capturePath.isEmpty()) {
+        QVERIFY(dlg.grab().save(capturePath));
+        QVERIFY(menu->grab().save(capturePath + QStringLiteral(".menu.png")));
+    }
+    menu->hide();
+    dlg.eraserButton()->click();
+    QCOMPARE(dlg.currentToolMode(), SamAnnotatorDialog::ToolMode::Eraser);
+
+    dlg.objectList()->selectionModel()->select(dlg.objectList()->model()->index(1, 0), QItemSelectionModel::Select);
+    QVERIFY(menuButton->isEnabled());
+    QVERIFY(dlg.eraserButton()->parentWidget()->isHidden());
+    QVERIFY(!dlg.mergeButton()->isHidden());
+    QCOMPARE(dlg.currentToolMode(), SamAnnotatorDialog::ToolMode::Select);
+    menu->popup(menuButton->mapToGlobal(QPoint(0, menuButton->height())));
+    QCoreApplication::processEvents();
+    QVERIFY2(menu->height() < singleMenuHeight, "Two-object menu should shrink to the merge action");
+    if (!capturePath.isEmpty())
+        QVERIFY(menu->grab().save(capturePath + QStringLiteral(".pair.png")));
+    menu->hide();
+
+    dlg.objectList()->setCurrentRow(0);
+    dlg.applyTheme(true);
+    menu->popup(menuButton->mapToGlobal(QPoint(0, menuButton->height())));
+    QCoreApplication::processEvents();
+    const QColor darkBg = menuContent->grab().toImage().pixelColor(1, 1);
+    QVERIFY2(darkBg.lightness() < 100, qPrintable(QStringLiteral("Dark menu background: %1").arg(darkBg.name())));
+    if (!capturePath.isEmpty())
+        QVERIFY(menu->grab().save(capturePath + QStringLiteral(".dark.png")));
+    menu->hide();
 }
 
 void TestSamAnnotatorDialog::maskEditButtonsFollowSelection() {
@@ -790,10 +1054,10 @@ void TestSamAnnotatorDialog::eraseMissStrokeIsNoOp() {
 void TestSamAnnotatorDialog::mergeTouchingObjectsAndUndoRestores() {
     SamAnnotatorDialog dlg;
     dlg.setImageSnapshot(makeTestImage(), QString());
-    dlg.categoryEdit()->setText(QStringLiteral("A"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("A"));
     const QString idA = confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20),
                                       makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)}));
-    dlg.categoryEdit()->setText(QStringLiteral("B"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("B"));
     const QString idB = confirmObject(dlg, squarePolygon(60, 40, 20), QRectF(60, 40, 20, 20),
                                       makeDisplayMask(200, 150, {QRect(60, 40, 20, 20)}));
     QVERIFY(!idA.isEmpty() && !idB.isEmpty());
@@ -1438,7 +1702,7 @@ void TestSamAnnotatorDialog::candidateCyclingSelectsAlternateRegion() {
     QCOMPARE(dlg.previewCandidateIndex(), 1);
 
     // 确认：写入会话的是所选候选（30,30 区域 + rle1），而非顶层 best
-    dlg.categoryEdit()->setText(QStringLiteral("defect"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("defect"));
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
     const AnnotationSession session = dlg.session();
     QCOMPARE(session.annotations.size(), 1);
@@ -1512,7 +1776,7 @@ void TestSamAnnotatorDialog::nativeBackendPredictsAndConfirmsSelectedCandidate()
     QVERIFY(candidates[0].maskRle != candidates[1].maskRle);
     dlg.nextCandidateButton()->click();
     QCOMPARE(dlg.previewCandidateIndex(), 1);
-    dlg.categoryEdit()->setText(QStringLiteral("defect"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("defect"));
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
     const AnnotationSession session = dlg.session();
     QCOMPARE(session.annotations.size(), 1);

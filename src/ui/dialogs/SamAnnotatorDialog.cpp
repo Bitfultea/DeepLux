@@ -12,6 +12,8 @@
 #include "core/model/Annotation.h"
 #include "core/model/AnnotationMaskOps.h"
 
+#include <QAbstractItemView>
+#include <QBoxLayout>
 #include <QButtonGroup>
 #include <QColor>
 #include <QComboBox>
@@ -26,21 +28,25 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPainterPath>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScrollArea>
 #include <QShortcut>
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QTemporaryFile>
+#include <QTimer>
 #include <QToolButton>
 #include <QUndoCommand>
 #include <QUndoStack>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QWidgetAction>
 #include <functional>
 
 namespace DeepLux {
@@ -184,6 +190,27 @@ void SamAnnotatorDialog::setStatusText(const QString& text) {
         m_statusLabel->setText(text);
 }
 
+void SamAnnotatorDialog::resizeEvent(QResizeEvent* event) {
+    QDialog::resizeEvent(event);
+    if (m_backendLabel)
+        m_backendLabel->setVisible(width() >= 260);
+    if (!m_exportRowLayout)
+        return;
+    const auto direction = width() < 296 ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight;
+    if (m_exportRowLayout->direction() != direction)
+        m_exportRowLayout->setDirection(direction);
+    if (!m_controlScroll || m_scrollResizeQueued)
+        return;
+    m_scrollResizeQueued = true;
+    QTimer::singleShot(0, this, [this]() {
+        m_scrollResizeQueued = false;
+        QWidget* content = m_controlScroll->widget();
+        const int viewportWidth = m_controlScroll->viewport()->width();
+        if (content && content->minimumSizeHint().width() <= viewportWidth && content->width() != viewportWidth)
+            content->resize(viewportWidth, content->height());
+    });
+}
+
 void SamAnnotatorDialog::applyTheme(bool isDark) {
     const ThemePalette pal = ThemeManager::palette(isDark);
     const QString panelBg = isDark ? QStringLiteral("#252525") : QStringLiteral("#ffffff");
@@ -196,39 +223,59 @@ void SamAnnotatorDialog::applyTheme(bool isDark) {
     const QString modeCheckedBorder = isDark ? QStringLiteral("#06b6d4") : QStringLiteral("#0f172a");
     const QString modeCheckedText = isDark ? QStringLiteral("#ffffff") : QStringLiteral("#0f172a");
 
-    setStyleSheet(
-        QStringLiteral(
-            "QDialog#SamAnnotatorDialog { background-color: %1; color: %2; }"
-            "QWidget#SamControlPanel { background-color: %3; color: %2; }"
-            "QScrollArea#SamControlScroll { background-color: %3; border: 0; }"
-            "QWidget#SamControlViewport, QWidget#SamControlScrollContent { background-color: %3; }"
-            "QLabel { background-color: transparent; color: %2; }"
-            "QLabel#SamStatusLabel, QLabel#SamShortcutHintLabel { color: %4; font-size: 12px; }"
-            "QLineEdit, QComboBox { background-color: %5; color: %2; border: 1px solid %6; padding: 2px 4px; }"
-            "QLineEdit:focus { border: 1px solid #0078d7; }"
-            "QListWidget { background-color: %5; color: %2; border: 1px solid %6; }"
-            "QListWidget::item:selected { background-color: #0078d7; color: #ffffff; }"
-            "QPushButton { background-color: #0078d7; color: #ffffff; border: 1px solid #005a9e; "
-            "padding: 2px 6px; font-weight: 600; }"
-            "QPushButton:hover { background-color: #1e8ad6; }"
-            "QPushButton:disabled { background-color: %7; color: #999999; border-color: %6; }"
-            "QToolButton { border: 1px solid %6; border-radius: 4px; padding: 2px 6px; "
-            "background-color: %8; color: %2; }"
-            "QToolButton:hover { background-color: %9; }"
-            "QToolButton:checked { border: 2px solid %10; background-color: %11; color: %12; "
-            "font-weight: 700; }")
-            .arg(pal.bgColor)
-            .arg(pal.textColor)
-            .arg(panelBg)
-            .arg(subtleText)
-            .arg(inputBg)
-            .arg(pal.borderColor)
-            .arg(disabledBg)
-            .arg(modeBg)
-            .arg(modeHoverBg)
-            .arg(modeCheckedBorder)
-            .arg(modeCheckedBg)
-            .arg(modeCheckedText));
+    setStyleSheet(QStringLiteral("QDialog#SamAnnotatorDialog { background-color: %1; color: %2; }"
+                                 "QWidget#SamControlPanel { background-color: %3; color: %2; }"
+                                 "QScrollArea#SamControlScroll { background-color: %3; border: 0; }"
+                                 "QWidget#SamControlViewport, QWidget#SamControlScrollContent { background-color: %3; }"
+                                 "QLabel { background-color: transparent; color: %2; }"
+                                 "QLabel#SamStatusLabel, QLabel#SamShortcutHintLabel { color: %4; font-size: 12px; }"
+                                 "QLineEdit, QComboBox { background-color: %5; color: %2; border: 1px solid %6; "
+                                 "min-height: 0px; padding: 0 4px; }"
+                                 "QComboBox { min-height: 24px; font-size: 9pt; }"
+                                 "QComboBox QAbstractItemView { font-size: 9pt; }"
+                                 "QLineEdit:focus, QComboBox:focus { border: 1px solid #0078d7; }"
+                                 "QSpinBox { background-color: %5; color: %2; border: 1px solid %6; padding: 2px 4px; }"
+                                 "QListWidget { background-color: %5; color: %2; border: 1px solid %6; }"
+                                 "QListWidget::item:selected { background-color: #0078d7; color: #ffffff; }"
+                                 "QMenu#SamMaskEditMenu { background-color: %3; color: %2; border: 1px solid %6; }"
+                                 "QWidget#SamMaskEditMenuContent { background-color: %3; color: %2; }"
+                                 "QPushButton { background-color: #0078d7; color: #ffffff; min-height: 0px; "
+                                 "border: 1px solid #005a9e; "
+                                 "padding: 2px 6px; font-weight: 600; }"
+                                 "QPushButton:hover { background-color: #1e8ad6; }"
+                                 "QPushButton:disabled { background-color: %7; color: #999999; border-color: %6; }"
+                                 "QToolButton { border: 1px solid %6; border-radius: 4px; padding: 2px 6px; "
+                                 "background-color: %8; color: %2; }"
+                                 "QToolButton:hover { background-color: %9; }"
+                                 "QToolButton:checked { border: 2px solid %10; background-color: %11; color: %12; "
+                                 "font-weight: 700; }")
+                      .arg(pal.bgColor)
+                      .arg(pal.textColor)
+                      .arg(panelBg)
+                      .arg(subtleText)
+                      .arg(inputBg)
+                      .arg(pal.borderColor)
+                      .arg(disabledBg)
+                      .arg(modeBg)
+                      .arg(modeHoverBg)
+                      .arg(modeCheckedBorder)
+                      .arg(modeCheckedBg)
+                      .arg(modeCheckedText));
+
+    // QScrollArea reparents its content under a viewport; the application-level QWidget rule can
+    // otherwise override the dialog background and leave dark labels on a dark panel.
+    if (auto* content = findChild<QWidget*>(QStringLiteral("SamControlScrollContent"))) {
+        content->setStyleSheet(QStringLiteral("QWidget#SamControlScrollContent { background-color: %1; color: %2; }")
+                                   .arg(panelBg, pal.textColor));
+    }
+    if (auto* viewport = findChild<QWidget*>(QStringLiteral("SamControlViewport"))) {
+        viewport->setStyleSheet(QStringLiteral("QWidget#SamControlViewport { background-color: %1; }").arg(panelBg));
+    }
+    if (m_singleMaskActionsWidget) {
+        m_singleMaskActionsWidget->setStyleSheet(
+            QStringLiteral("QWidget#SamMaskEditMenuContent { background-color: %1; color: %2; }")
+                .arg(panelBg, pal.textColor));
+    }
 }
 
 void SamAnnotatorDialog::loadSavedModelPath() {
@@ -310,18 +357,23 @@ void SamAnnotatorDialog::setupUi() {
     };
 
     auto configureCompactLabel = [](QLabel* label) {
+        QFont font = label->font();
+        font.setPointSize(9);
+        label->setFont(font);
         label->setMinimumHeight(20);
         label->setMaximumHeight(20);
         label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     };
 
-    auto configureCompactLineEdit = [](QLineEdit* edit) {
-        QFont font = edit->font();
+    auto configureCompactCombo = [](QComboBox* combo) {
+        QFont font = combo->font();
         font.setPointSize(9);
-        edit->setFont(font);
-        edit->setMinimumHeight(26);
-        edit->setMaximumHeight(26);
-        edit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        combo->setFont(font);
+        if (combo->isEditable())
+            combo->lineEdit()->setFont(font);
+        combo->setMinimumHeight(26);
+        combo->setMaximumHeight(26);
+        combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     };
 
     // ===== 中间：HImageWidget + 覆盖层（独占 hSplit）=====
@@ -354,6 +406,7 @@ void SamAnnotatorDialog::setupUi() {
     root->addWidget(controlPanel);
 
     auto* controlScroll = new QScrollArea(controlPanel);
+    m_controlScroll = controlScroll;
     controlScroll->setObjectName(QStringLiteral("SamControlScroll"));
     controlScroll->setFrameShape(QFrame::NoFrame);
     controlScroll->setWidgetResizable(true);
@@ -381,68 +434,69 @@ void SamAnnotatorDialog::setupUi() {
     openRow->addWidget(m_openImageButton);
     connect(m_openImageButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onOpenImage);
 
-    // 类别
+    auto* categoryRow = new QHBoxLayout();
+    categoryRow->setSpacing(2);
+    actionCol->addLayout(categoryRow);
+
     auto* lblCategory = new QLabel(tr("类别"));
     lblCategory->setObjectName(QStringLiteral("SamCategoryLabel"));
     configureCompactLabel(lblCategory);
-    actionCol->addWidget(lblCategory);
+    categoryRow->addWidget(lblCategory);
 
-    // 类别输入（全宽）
-    m_categoryEdit = new QLineEdit();
-    m_categoryEdit->setPlaceholderText(tr("输入类别名，如 defect"));
-    configureCompactLineEdit(m_categoryEdit);
-    actionCol->addWidget(m_categoryEdit);
+    m_categoryCombo = new QComboBox();
+    m_categoryCombo->setObjectName(QStringLiteral("SamCategoryCombo"));
+    m_categoryCombo->setEditable(true);
+    m_categoryCombo->setInsertPolicy(QComboBox::NoInsert);
+    m_categoryCombo->setMaxVisibleItems(10);
+    m_categoryCombo->lineEdit()->setPlaceholderText(tr("选择或输入类别"));
+    configureCompactCombo(m_categoryCombo);
+    categoryRow->addWidget(m_categoryCombo, 1);
 
-    // 类别列表 + 添加/删除按钮
-    m_categoryList = new QListWidget();
-    m_categoryList->setObjectName(QStringLiteral("SamCategoryList"));
-    m_categoryList->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_categoryList->setMinimumHeight(56);
-    m_categoryList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_categoryList->setMaximumHeight(80);
-    actionCol->addWidget(m_categoryList);
-
-    auto* categoryButtonRow = new QHBoxLayout();
-    categoryButtonRow->setSpacing(2);
-    actionCol->addLayout(categoryButtonRow);
-
-    m_addCategoryButton = new QPushButton(tr("添加类别"));
+    m_addCategoryButton = new QPushButton(QStringLiteral("+"));
+    m_addCategoryButton->setObjectName(QStringLiteral("SamAddCategoryButton"));
+    m_addCategoryButton->setToolTip(tr("添加类别"));
+    m_addCategoryButton->setAccessibleName(tr("添加类别"));
     configureCompactButton(m_addCategoryButton);
-    categoryButtonRow->addWidget(m_addCategoryButton);
+    m_addCategoryButton->setFixedWidth(28);
+    categoryRow->addWidget(m_addCategoryButton);
     connect(m_addCategoryButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onAddCategory);
 
-    m_removeCategoryButton = new QPushButton(tr("删除类别"));
+    m_removeCategoryButton = new QPushButton(QStringLiteral("-"));
+    m_removeCategoryButton->setObjectName(QStringLiteral("SamRemoveCategoryButton"));
+    m_removeCategoryButton->setToolTip(tr("删除当前类别"));
+    m_removeCategoryButton->setAccessibleName(tr("删除当前类别"));
     configureCompactButton(m_removeCategoryButton);
-    categoryButtonRow->addWidget(m_removeCategoryButton);
+    m_removeCategoryButton->setFixedWidth(28);
+    categoryRow->addWidget(m_removeCategoryButton);
     connect(m_removeCategoryButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onRemoveCategory);
 
-    connect(m_categoryList, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* current) {
-        if (current) {
-            m_categoryEdit->setText(current->data(Qt::UserRole).toString());
-        }
-    });
-    // Fix P1-8: 类别输入框 Enter 添加类别而非确认标注
-    connect(m_categoryEdit, &QLineEdit::returnPressed, this, &SamAnnotatorDialog::onAddCategory);
+    connect(m_categoryCombo, &QComboBox::currentTextChanged, this,
+            [this](const QString& text) { m_removeCategoryButton->setEnabled(m_categories.contains(text.trimmed())); });
+    connect(m_categoryCombo->lineEdit(), &QLineEdit::returnPressed, this, &SamAnnotatorDialog::onAddCategory);
 
     // 对象列表
     auto* lblObjects = new QLabel(tr("对象列表"));
     lblObjects->setObjectName(QStringLiteral("SamObjectListLabel"));
     configureCompactLabel(lblObjects);
     auto* objectHeader = new QHBoxLayout();
-    objectHeader->setSpacing(4);
+    objectHeader->setSpacing(2);
     objectHeader->addWidget(lblObjects);
     objectHeader->addStretch();
-    auto* backendLabel = new QLabel(tr("推理后端"));
-    configureCompactLabel(backendLabel);
-    objectHeader->addWidget(backendLabel);
+    m_backendLabel = new QLabel(tr("推理后端"));
+    m_backendLabel->setObjectName(QStringLiteral("SamBackendLabel"));
+    configureCompactLabel(m_backendLabel);
+    objectHeader->addWidget(m_backendLabel);
     m_backendMode = new QComboBox();
     m_backendMode->setObjectName(QStringLiteral("SamBackendMode"));
     m_backendMode->addItem(tr("Python 服务"), QStringLiteral("http"));
 #ifdef DEEPLUX_HAS_ONNXRUNTIME
     m_backendMode->addItem(tr("本机 ONNX"), QStringLiteral("native"));
 #endif
-    m_backendMode->setToolTip(tr("Python 服务使用已有 SAM 环境；本机 ONNX 使用 DEEPLUX_SAM_PACKAGE 模型包"));
-    m_backendMode->setFixedHeight(26);
+    m_backendMode->setToolTip(tr("推理后端：Python 服务使用已有 SAM 环境；本机 ONNX 使用 DEEPLUX_SAM_PACKAGE 模型包"));
+    m_backendMode->setAccessibleName(tr("推理后端"));
+    configureCompactCombo(m_backendMode);
+    m_backendMode->setMinimumWidth(120);
+    m_backendMode->view()->setMinimumHeight(m_backendMode->count() * 26 + 2);
     objectHeader->addWidget(m_backendMode);
     actionCol->addLayout(objectHeader);
     connect(m_backendMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
@@ -462,6 +516,21 @@ void SamAnnotatorDialog::setupUi() {
     m_objectList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     actionCol->addWidget(m_objectList);
 
+    m_maskEditMenuButton = new QToolButton();
+    m_maskEditMenuButton->setObjectName(QStringLiteral("SamMaskEditMenuButton"));
+    m_maskEditMenuButton->setText(tr("掩膜编辑"));
+    m_maskEditMenuButton->setPopupMode(QToolButton::InstantPopup);
+    m_maskEditMenuButton->setToolTip(tr("编辑所选对象的掩膜"));
+    m_maskEditMenuButton->setAccessibleName(tr("掩膜编辑"));
+    {
+        QFont font = m_maskEditMenuButton->font();
+        font.setPointSize(9);
+        m_maskEditMenuButton->setFont(font);
+    }
+    m_maskEditMenuButton->setFixedHeight(26);
+    m_maskEditMenuButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    actionCol->addWidget(m_maskEditMenuButton);
+
     // 行：导入权重 + 初始化环境 + 重启 SAM（3 同宽；窄窗口测试要求三者等宽）
     auto* samActionRow = new QHBoxLayout();
     samActionRow->setSpacing(2);
@@ -469,16 +538,19 @@ void SamAnnotatorDialog::setupUi() {
 
     m_importModelButton = new QPushButton(tr("导入权重"));
     configureCompactButton(m_importModelButton);
+    m_importModelButton->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     samActionRow->addWidget(m_importModelButton);
     connect(m_importModelButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onImportModel);
 
     m_initEnvironmentButton = new QPushButton(tr("初始化环境"));
     configureCompactButton(m_initEnvironmentButton);
+    m_initEnvironmentButton->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     samActionRow->addWidget(m_initEnvironmentButton);
     connect(m_initEnvironmentButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onInitializeEnvironment);
 
     m_restartServerButton = new QPushButton(tr("重启 SAM"));
     configureCompactButton(m_restartServerButton);
+    m_restartServerButton->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     samActionRow->addWidget(m_restartServerButton);
     connect(m_restartServerButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onRestartSam);
 
@@ -498,25 +570,25 @@ void SamAnnotatorDialog::setupUi() {
     connect(saveBtn, &QPushButton::clicked, this, &SamAnnotatorDialog::onSaveSession);
 
     // 行2：导出 LabelMe + 导出 YOLO
-    auto* saveExportRow2 = new QHBoxLayout();
-    saveExportRow2->setSpacing(2);
-    actionCol->addLayout(saveExportRow2);
+    m_exportRowLayout = new QBoxLayout(QBoxLayout::LeftToRight);
+    m_exportRowLayout->setSpacing(2);
+    actionCol->addLayout(m_exportRowLayout);
 
     auto* exportBtn = new QPushButton(tr("导出 LabelMe"));
     configureCompactButton(exportBtn);
-    saveExportRow2->addWidget(exportBtn);
+    m_exportRowLayout->addWidget(exportBtn);
     connect(exportBtn, &QPushButton::clicked, this, &SamAnnotatorDialog::onExportLabelMe);
 
     m_exportYoloButton = new QPushButton(tr("导出 YOLO"));
     configureCompactButton(m_exportYoloButton);
-    saveExportRow2->addWidget(m_exportYoloButton);
+    m_exportRowLayout->addWidget(m_exportYoloButton);
     connect(m_exportYoloButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onExportYoloSeg);
 
     // SAM 批4：COCO 导出
     m_exportCocoButton = new QPushButton(tr("导出 COCO"));
     m_exportCocoButton->setObjectName(QStringLiteral("SamExportCocoButton"));
     configureCompactButton(m_exportCocoButton);
-    saveExportRow2->addWidget(m_exportCocoButton);
+    m_exportRowLayout->addWidget(m_exportCocoButton);
     connect(m_exportCocoButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onExportCoco);
 
     m_statusLabel = new QLabel(tr("未加载图像"));
@@ -531,6 +603,7 @@ void SamAnnotatorDialog::setupUi() {
     controlLayout->addLayout(commitRow);
 
     m_confirmButton = new QPushButton(tr("确认"));
+    m_confirmButton->setObjectName(QStringLiteral("SamConfirmButton"));
     configureCompactButton(m_confirmButton);
     m_confirmButton->setEnabled(false);
     commitRow->addWidget(m_confirmButton);
@@ -548,16 +621,10 @@ void SamAnnotatorDialog::setupUi() {
 
     auto* modeRow1 = new QHBoxLayout();
     auto* modeRow2 = new QHBoxLayout();
-    auto* modeRow3 = new QHBoxLayout();
-    auto* modeRow4 = new QHBoxLayout(); // SAM 批2：掩膜编辑动作行
     modeRow1->setSpacing(2);
     modeRow2->setSpacing(2);
-    modeRow3->setSpacing(2);
-    modeRow4->setSpacing(2);
     modeGrid->addLayout(modeRow1);
     modeGrid->addLayout(modeRow2);
-    modeGrid->addLayout(modeRow3);
-    modeGrid->addLayout(modeRow4);
 
     auto configureModeButton = [](QToolButton* button, const QString& text) {
         button->setText(text);
@@ -573,13 +640,13 @@ void SamAnnotatorDialog::setupUi() {
     m_btnUndo = new QToolButton();
     configureModeButton(m_btnUndo, tr("撤销"));
     m_btnUndo->setCheckable(false);
-    modeRow3->addWidget(m_btnUndo);
+    modeRow2->addWidget(m_btnUndo);
     connect(m_btnUndo, &QToolButton::clicked, this, &SamAnnotatorDialog::onUndo);
 
     m_btnRedo = new QToolButton();
     configureModeButton(m_btnRedo, tr("重做"));
     m_btnRedo->setCheckable(false);
-    modeRow3->addWidget(m_btnRedo);
+    modeRow2->addWidget(m_btnRedo);
     connect(m_btnRedo, &QToolButton::clicked, this, &SamAnnotatorDialog::onRedo);
 
     // SAM 批2：形态学/橡皮擦共用半径
@@ -597,36 +664,81 @@ void SamAnnotatorDialog::setupUi() {
     m_maskRadiusSpin->setMinimumHeight(26);
     m_maskRadiusSpin->setMaximumHeight(26);
     m_maskRadiusSpin->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    modeRow3->addWidget(m_maskRadiusSpin);
+
+    m_btnEraser = new QToolButton();
+    configureModeButton(m_btnEraser, tr("橡皮擦"));
+    m_btnEraser->setToolTip(tr("在图像上涂抹擦除选中对象的掩膜（半径见掩膜编辑菜单）"));
 
     // SAM 批2：掩膜编辑动作（作用于对象列表选中项，全部可撤销）
     m_btnDilate = new QToolButton();
     configureModeButton(m_btnDilate, tr("膨胀"));
     m_btnDilate->setCheckable(false);
-    m_btnDilate->setToolTip(tr("选中对象掩膜形态学膨胀（半径见左）"));
-    modeRow4->addWidget(m_btnDilate);
-    connect(m_btnDilate, &QToolButton::clicked, this, &SamAnnotatorDialog::onDilateSelected);
+    m_btnDilate->setToolTip(tr("选中对象掩膜形态学膨胀"));
 
     m_btnErode = new QToolButton();
     configureModeButton(m_btnErode, tr("腐蚀"));
     m_btnErode->setCheckable(false);
-    m_btnErode->setToolTip(tr("选中对象掩膜形态学腐蚀（半径见上行）"));
-    modeRow4->addWidget(m_btnErode);
-    connect(m_btnErode, &QToolButton::clicked, this, &SamAnnotatorDialog::onErodeSelected);
+    m_btnErode->setToolTip(tr("选中对象掩膜形态学腐蚀"));
 
     m_btnMerge = new QToolButton();
     configureModeButton(m_btnMerge, tr("合并"));
     m_btnMerge->setCheckable(false);
     m_btnMerge->setToolTip(tr("合并恰好两个选中对象（要求并集连通）"));
-    modeRow4->addWidget(m_btnMerge);
-    connect(m_btnMerge, &QToolButton::clicked, this, &SamAnnotatorDialog::onMergeSelected);
 
     m_btnSplit = new QToolButton();
     configureModeButton(m_btnSplit, tr("拆分"));
     m_btnSplit->setCheckable(false);
     m_btnSplit->setToolTip(tr("按连通分量拆分选中对象（最大分量保留原身份）"));
-    modeRow4->addWidget(m_btnSplit);
-    connect(m_btnSplit, &QToolButton::clicked, this, &SamAnnotatorDialog::onSplitSelected);
+
+    m_maskEditMenu = new QMenu(m_maskEditMenuButton);
+    m_maskEditMenu->setObjectName(QStringLiteral("SamMaskEditMenu"));
+    m_maskEditMenu->setMinimumWidth(210);
+    m_singleMaskActionsWidget = new QWidget(m_maskEditMenu);
+    m_singleMaskActionsWidget->setObjectName(QStringLiteral("SamMaskEditMenuContent"));
+    auto* singleLayout = new QVBoxLayout(m_singleMaskActionsWidget);
+    singleLayout->setContentsMargins(6, 6, 6, 6);
+    singleLayout->setSpacing(4);
+    singleLayout->addWidget(m_btnEraser);
+    auto* radiusRow = new QHBoxLayout();
+    radiusRow->setSpacing(4);
+    radiusRow->addWidget(new QLabel(tr("半径")));
+    radiusRow->addWidget(m_maskRadiusSpin);
+    singleLayout->addLayout(radiusRow);
+    auto* morphologyRow = new QHBoxLayout();
+    morphologyRow->setSpacing(4);
+    morphologyRow->addWidget(m_btnDilate);
+    morphologyRow->addWidget(m_btnErode);
+    singleLayout->addLayout(morphologyRow);
+    singleLayout->addWidget(m_btnSplit);
+
+    auto* singleAction = new QWidgetAction(m_maskEditMenu);
+    singleAction->setDefaultWidget(m_singleMaskActionsWidget);
+    m_maskEditMenu->addAction(singleAction);
+    m_singleMaskAction = singleAction;
+
+    auto* mergeAction = new QWidgetAction(m_maskEditMenu);
+    mergeAction->setDefaultWidget(m_btnMerge);
+    m_maskEditMenu->addAction(mergeAction);
+    m_mergeMaskAction = mergeAction;
+    m_maskEditMenuButton->setMenu(m_maskEditMenu);
+
+    connect(m_btnEraser, &QToolButton::clicked, m_maskEditMenu, &QMenu::hide);
+    connect(m_btnDilate, &QToolButton::clicked, this, [this]() {
+        onDilateSelected();
+        m_maskEditMenu->hide();
+    });
+    connect(m_btnErode, &QToolButton::clicked, this, [this]() {
+        onErodeSelected();
+        m_maskEditMenu->hide();
+    });
+    connect(m_btnMerge, &QToolButton::clicked, this, [this]() {
+        onMergeSelected();
+        m_maskEditMenu->hide();
+    });
+    connect(m_btnSplit, &QToolButton::clicked, this, [this]() {
+        onSplitSelected();
+        m_maskEditMenu->hide();
+    });
 
     // SAM 批4：多掩膜候选循环行（默认隐藏——candidates>1 时显示，隐藏行
     // 不占布局空间，紧凑模式高度预算不受影响）
@@ -659,25 +771,23 @@ void SamAnnotatorDialog::setupUi() {
 
     m_btnSelect = new QToolButton();
     configureModeButton(m_btnSelect, tr("选择"));
+    m_btnSelect->setToolTip(tr("单击已确认的标注对象，选中后可编辑或删除。"));
     modeRow1->addWidget(m_btnSelect);
 
     m_btnPositivePoint = new QToolButton();
     configureModeButton(m_btnPositivePoint, tr("正点"));
+    m_btnPositivePoint->setToolTip(tr("单击目标内部，提示 SAM 将该处纳入分割结果。"));
     modeRow1->addWidget(m_btnPositivePoint);
 
     m_btnNegativePoint = new QToolButton();
     configureModeButton(m_btnNegativePoint, tr("负点"));
-    modeRow2->addWidget(m_btnNegativePoint);
+    m_btnNegativePoint->setToolTip(tr("单击背景或误选区域，提示 SAM 从分割结果中排除该处。"));
+    modeRow1->addWidget(m_btnNegativePoint);
 
     m_btnBox = new QToolButton();
     configureModeButton(m_btnBox, tr("框选"));
-    modeRow2->addWidget(m_btnBox);
-
-    // SAM 批2：橡皮擦（对选中对象掩膜擦除笔画）
-    m_btnEraser = new QToolButton();
-    configureModeButton(m_btnEraser, tr("橡皮擦"));
-    m_btnEraser->setToolTip(tr("在图像上涂抹擦除选中对象的掩膜（半径见撤销行）"));
-    modeRow2->addWidget(m_btnEraser);
+    m_btnBox->setToolTip(tr("按住左键拖出包围目标的矩形，提示 SAM 目标的大致位置。"));
+    modeRow1->addWidget(m_btnBox);
 
     auto* hint = new QLabel(tr("Enter 确认 / Esc 取消当前 / Del 删除"));
     hint->setObjectName("SamShortcutHintLabel");
@@ -1034,14 +1144,32 @@ QStringList SamAnnotatorDialog::selectedObjectIds() const {
 
 void SamAnnotatorDialog::updateMaskEditButtonStates() {
     const int n = selectedObjectIds().size();
+    const bool single = n == 1;
+    const bool pair = n == 2;
+    if (!single && m_btnEraser && m_btnEraser->isChecked() && m_btnSelect)
+        m_btnSelect->setChecked(true);
+    if (m_maskEditMenuButton)
+        m_maskEditMenuButton->setEnabled(single || pair);
+    if (m_singleMaskAction)
+        m_singleMaskAction->setVisible(single);
+    if (m_mergeMaskAction)
+        m_mergeMaskAction->setVisible(pair);
+    if (m_singleMaskActionsWidget)
+        m_singleMaskActionsWidget->setVisible(single);
+    if (m_btnEraser)
+        m_btnEraser->setEnabled(single);
+    if (m_maskRadiusSpin)
+        m_maskRadiusSpin->setEnabled(single);
     if (m_btnDilate)
-        m_btnDilate->setEnabled(n == 1);
+        m_btnDilate->setEnabled(single);
     if (m_btnErode)
-        m_btnErode->setEnabled(n == 1);
+        m_btnErode->setEnabled(single);
     if (m_btnSplit)
-        m_btnSplit->setEnabled(n == 1);
-    if (m_btnMerge)
-        m_btnMerge->setEnabled(n == 2);
+        m_btnSplit->setEnabled(single);
+    if (m_btnMerge) {
+        m_btnMerge->setVisible(pair);
+        m_btnMerge->setEnabled(pair);
+    }
 }
 
 void SamAnnotatorDialog::commitSingleObjectMaskEdit(const QString& targetId, const QImage& editedBinary,
@@ -1847,17 +1975,17 @@ void SamAnnotatorDialog::initializeDefaultCategories() {
     for (int i = 0; i < m_categories.size(); ++i)
         m_categoryColors.insert(m_categories[i], palette[i % 4]);
 
-    if (m_categoryList) {
-        m_categoryList->blockSignals(true);
-        m_categoryList->clear();
+    if (m_categoryCombo) {
+        m_categoryCombo->blockSignals(true);
+        m_categoryCombo->clear();
         for (const QString& name : m_categories) {
-            auto* item = new QListWidgetItem(name);
-            item->setData(Qt::UserRole, name);
-            const QColor c = m_categoryColors.value(name);
-            item->setForeground(c);
-            m_categoryList->addItem(item);
+            m_categoryCombo->addItem(name, name);
+            m_categoryCombo->setItemData(m_categoryCombo->count() - 1, m_categoryColors.value(name),
+                                         Qt::DecorationRole);
         }
-        m_categoryList->blockSignals(false);
+        m_categoryCombo->setCurrentIndex(m_categories.isEmpty() ? -1 : 0);
+        m_categoryCombo->blockSignals(false);
+        m_removeCategoryButton->setEnabled(!m_categories.isEmpty());
     }
 }
 
@@ -1866,13 +1994,8 @@ QStringList SamAnnotatorDialog::categories() const {
 }
 
 QString SamAnnotatorDialog::currentCategoryLabel() const {
-    if (m_categoryList && m_categoryList->currentItem()) {
-        const QString label = m_categoryList->currentItem()->data(Qt::UserRole).toString();
-        if (!label.isEmpty())
-            return label;
-    }
-    const QString typed = m_categoryEdit ? m_categoryEdit->text().trimmed() : QString();
-    return typed.isEmpty() ? QStringLiteral("object") : typed;
+    const QString label = m_categoryCombo ? m_categoryCombo->currentText().trimmed() : QString();
+    return label.isEmpty() ? QStringLiteral("object") : label;
 }
 
 QColor SamAnnotatorDialog::categoryColor(const QString& label) const {
@@ -1883,18 +2006,22 @@ void SamAnnotatorDialog::addCategory(const QString& label) {
     const QString trimmed = label.trimmed();
     if (trimmed.isEmpty())
         return;
-    if (m_categories.contains(trimmed))
+    const int existing = m_categories.indexOf(trimmed);
+    if (existing >= 0) {
+        if (m_categoryCombo)
+            m_categoryCombo->setCurrentIndex(existing);
         return;
+    }
     m_categories.append(trimmed);
     const QColor preset[] = {QColor(239, 68, 68),  QColor(245, 158, 11), QColor(168, 85, 247), QColor(34, 197, 94),
                              QColor(6, 182, 212),  QColor(234, 179, 8),  QColor(99, 102, 241), QColor(236, 72, 153),
                              QColor(20, 184, 166), QColor(249, 115, 22)};
     m_categoryColors.insert(trimmed, preset[(m_categories.size() - 1) % 10]);
-    if (m_categoryList) {
-        auto* item = new QListWidgetItem(trimmed);
-        item->setData(Qt::UserRole, trimmed);
-        item->setForeground(m_categoryColors.value(trimmed));
-        m_categoryList->addItem(item);
+    if (m_categoryCombo) {
+        m_categoryCombo->addItem(trimmed, trimmed);
+        const int index = m_categoryCombo->count() - 1;
+        m_categoryCombo->setItemData(index, m_categoryColors.value(trimmed), Qt::DecorationRole);
+        m_categoryCombo->setCurrentIndex(index);
     }
 }
 
@@ -1904,35 +2031,28 @@ void SamAnnotatorDialog::removeCategory(const QString& label) {
         return;
     m_categories.removeAt(idx);
     m_categoryColors.remove(label);
-    if (m_categoryList) {
-        for (int i = 0; i < m_categoryList->count(); ++i) {
-            QListWidgetItem* item = m_categoryList->item(i);
-            if (item && item->data(Qt::UserRole).toString() == label) {
-                delete m_categoryList->takeItem(i);
-                break;
-            }
-        }
-    }
+    if (m_categoryCombo)
+        m_categoryCombo->removeItem(m_categoryCombo->findData(label));
 }
 
 void SamAnnotatorDialog::onAddCategory() {
-    const QString text = m_categoryEdit ? m_categoryEdit->text().trimmed() : QString();
+    const QString text = m_categoryCombo ? m_categoryCombo->currentText().trimmed() : QString();
     if (text.isEmpty()) {
-        QMessageBox::information(this, tr("添加类别"), tr("请在类别输入框中填写名称"));
+        QMessageBox::information(this, tr("添加类别"), tr("请在类别下拉框中填写名称"));
         return;
     }
     addCategory(text);
 }
 
 void SamAnnotatorDialog::onRemoveCategory() {
-    if (!m_categoryList)
+    if (!m_categoryCombo)
         return;
-    auto* item = m_categoryList->currentItem();
-    if (!item) {
-        QMessageBox::information(this, tr("删除类别"), tr("请先在类别列表中选中要删除的项"));
+    const QString label = m_categoryCombo->currentText().trimmed();
+    if (!m_categories.contains(label)) {
+        QMessageBox::information(this, tr("删除类别"), tr("请先从下拉菜单中选择要删除的类别"));
         return;
     }
-    removeCategory(item->data(Qt::UserRole).toString());
+    removeCategory(label);
 }
 
 // === 会话重开 ===

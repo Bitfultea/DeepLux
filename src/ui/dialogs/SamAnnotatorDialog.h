@@ -14,10 +14,12 @@
 #include <memory>
 
 class QToolButton;
+class QAction;
+class QMenu;
 class QButtonGroup;
+class QBoxLayout;
 class QListWidget;
 class QListWidgetItem;
-class QLineEdit;
 class QComboBox;
 class QShortcut;
 class QSpinBox;
@@ -29,6 +31,8 @@ class QTemporaryFile;
 class QUndoStack;
 class QUndoCommand;
 class QEvent;
+class QResizeEvent;
+class QScrollArea;
 
 namespace DeepLux {
 
@@ -42,7 +46,7 @@ struct AnnotationObject;
  * @brief SAM 快速标注对话框
  *
  * 独立窗口，提供基于 SAM 的交互式标注能力。
- * 布局：左侧（类别输入 + 对象列表）| 中间（HImageWidget + AnnotationOverlayWidget）| 底部（工具栏）
+ * 布局：类别下拉框 + 对象列表 | HImageWidget + AnnotationOverlayWidget | 底部工具栏
  *
  * 工作流程：
  * 1. 从文件打开图片或接收当前视口快照
@@ -151,8 +155,8 @@ public:
     }
 
     // 类别管理
-    QListWidget* categoryList() const {
-        return m_categoryList;
+    QComboBox* categoryCombo() const {
+        return m_categoryCombo;
     }
     QStringList categories() const;
     QString currentCategoryLabel() const;
@@ -206,9 +210,6 @@ public:
     QListWidget* objectList() const {
         return m_objectList;
     }
-    QLineEdit* categoryEdit() const {
-        return m_categoryEdit;
-    }
     QPushButton* importModelButton() const {
         return m_importModelButton;
     }
@@ -227,6 +228,7 @@ signals:
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
 private slots:
     void onOpenImage();
@@ -314,9 +316,9 @@ private:
     QPointer<HImageWidget> m_externalImageWidget; // Fix P0-4: QPointer 防悬空
     AnnotationOverlayWidget* m_overlay = nullptr; // connected to destroyed() to null
     QListWidget* m_objectList = nullptr;
+    QLabel* m_backendLabel = nullptr;
     QComboBox* m_backendMode = nullptr;
-    QListWidget* m_categoryList = nullptr;
-    QLineEdit* m_categoryEdit = nullptr;
+    QComboBox* m_categoryCombo = nullptr;
     QPushButton* m_addCategoryButton = nullptr;
     QPushButton* m_removeCategoryButton = nullptr;
     QToolButton* m_btnPositivePoint = nullptr;
@@ -326,6 +328,11 @@ private:
     QToolButton* m_btnUndo = nullptr;
     QToolButton* m_btnRedo = nullptr;
     // SAM 批2：掩膜编辑控件
+    QToolButton* m_maskEditMenuButton = nullptr;
+    QMenu* m_maskEditMenu = nullptr;
+    QAction* m_singleMaskAction = nullptr;
+    QAction* m_mergeMaskAction = nullptr;
+    QWidget* m_singleMaskActionsWidget = nullptr;
     QToolButton* m_btnEraser = nullptr;
     QToolButton* m_btnDilate = nullptr;
     QToolButton* m_btnErode = nullptr;
@@ -349,6 +356,9 @@ private:
     QPushButton* m_restartServerButton = nullptr;
     QPushButton* m_exportYoloButton = nullptr;
     QPushButton* m_exportCocoButton = nullptr; // SAM 批4
+    QBoxLayout* m_exportRowLayout = nullptr;
+    QScrollArea* m_controlScroll = nullptr;
+    bool m_scrollResizeQueued = false;
     QWidget* m_centerContainer = nullptr;
 
     // 快捷键

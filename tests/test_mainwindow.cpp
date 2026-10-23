@@ -355,6 +355,13 @@ void TestMainWindow::testStepRunHighlightMovesBetweenModules() {
 }
 
 void TestMainWindow::testQuickAnnotateOpensSamDialogOnMainViewportImage() {
+    struct AppStyleRestore {
+        QString oldStyle = qApp->styleSheet();
+        ~AppStyleRestore() {
+            qApp->setStyleSheet(oldStyle);
+        }
+    } restore;
+    qApp->setStyleSheet(QStringLiteral("QWidget { background-color: #2b2b2b; color: #ffffff; }"));
     MainWindow window;
     QCoreApplication::processEvents();
 
@@ -375,6 +382,34 @@ void TestMainWindow::testQuickAnnotateOpensSamDialogOnMainViewportImage() {
     QVERIFY(dialog != nullptr);
     QVERIFY(dialog->isVisible());
     QCOMPARE(dialog->overlayWidget()->parentWidget(), imageWidget);
+    auto* content = dialog->findChild<QWidget*>(QStringLiteral("SamControlScrollContent"));
+    auto* categoryLabel = dialog->findChild<QLabel*>(QStringLiteral("SamCategoryLabel"));
+    auto* objectLabel = dialog->findChild<QLabel*>(QStringLiteral("SamObjectListLabel"));
+    QVERIFY(content && categoryLabel && objectLabel);
+    auto labelsReadable = [&]() {
+        const QColor background = content->grab().toImage().pixelColor(1, 1);
+        for (QLabel* label : {categoryLabel, objectLabel}) {
+            const QColor foreground = label->palette().color(QPalette::WindowText);
+            if (qAbs(qGray(background.rgb()) - qGray(foreground.rgb())) < 100)
+                return QStringLiteral("Unreadable SAM label: background=%1 text=%2")
+                    .arg(background.name(), foreground.name());
+        }
+        return QString();
+    };
+    QVERIFY2(labelsReadable().isEmpty(), qPrintable(labelsReadable()));
+    const QString capturePath = qEnvironmentVariable("DEEPLUX_TEST_SAM_MAIN_CAPTURE");
+    if (!capturePath.isEmpty())
+        QVERIFY(dialog->grab().save(capturePath));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onToggleTheme", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+    QVERIFY2(labelsReadable().isEmpty(), qPrintable(labelsReadable()));
+    if (!capturePath.isEmpty())
+        QVERIFY(dialog->grab().save(capturePath + QStringLiteral(".toggled.png")));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onToggleTheme", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+    QVERIFY2(labelsReadable().isEmpty(), qPrintable(labelsReadable()));
+    if (!capturePath.isEmpty())
+        QVERIFY(dialog->grab().save(capturePath + QStringLiteral(".restored.png")));
 }
 
 void TestMainWindow::testQuickAnnotateNativeRealImageShowsMask() {
