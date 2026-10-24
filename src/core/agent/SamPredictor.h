@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SamBackendClient.h"
+#include "SamNativeSettings.h"
 #include "core/deeplux/PayloadTypes.h"
 
 #include <QJsonValue>
@@ -26,7 +27,7 @@ QThreadPool* samNativeThreadPool(); // 应用持有，关闭标注窗口不等�
  * @brief 同步 SAM 预测核心（SAM 批3：SamPredictPlugin 与 Agent 工具共享）
  *
  * HTTP 模式用栈上 SamBackendClient + 本地事件循环；显式 serverUrl="native"
- * 时使用 DEEPLUX_SAM_PACKAGE 指定的原生 ONNX 模型包。
+ * 时使用 SamNativeSettings 提供的模型包配置，环境变量可作为部署覆盖。
  * 失败关闭：超时/后端错误/取消/区域无效或不符合 Region2D 契约（含非有限
  * 数值）均不伪造区域。原生模型输出未经裁剪的候选分数，写入 Region2D 时
  * 才归一到其 [0,1] 契约；HTTP 路径继续拒绝协议越界分数。
@@ -50,6 +51,7 @@ struct SamPredictOutcome {
     QString error;
     int failedIndex = -1;    // 失败发生在第几个 prompt（-1 = set_image/参数阶段）
     QString modelName;       // 后端模型名（成功时；空则调用方自行回退）
+    QString nativeDevice;    // 原生模式实际使用的设备（auto 解析后）
     QList<Region2D> regions; // 与 items 一一对应
     // 与 items 对齐；native 保留原始模型分数（可能 >1），HTTP 为协议分数
     QList<QList<double>> candidateScores;
@@ -77,7 +79,8 @@ SamPredictOutcome convertNativeCandidates(const SamNativeResult& prediction, con
  */
 SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& imagePath,
                                      const QList<SamPromptItem>& items, int timeoutMs,
-                                     const CancellationToken* cancel = nullptr, bool includeCandidates = false);
+                                     const CancellationToken* cancel = nullptr, bool includeCandidates = false,
+                                     const SamNativeConfig& nativeConfig = {});
 
 /// JSON prompt 解析（严格有限数值，失败关闭并给出 error）：
 /// points/negativePoints 形态 [[x,y],...]；undefined/null 时按 allowEmpty 处理

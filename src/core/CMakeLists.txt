@@ -53,6 +53,7 @@ set(CORE_SOURCES
     agent/OpenAILLMClient.cpp
     agent/GuiEvent.cpp
     agent/SamBackendClient.cpp
+    agent/SamNativeSettings.cpp
     agent/SamPredictor.cpp
 )
 
@@ -97,6 +98,7 @@ set(CORE_HEADERS
     agent/OpenAILLMClient.h
     agent/GuiEvent.h
     agent/SamBackendClient.h
+    agent/SamNativeSettings.h
     agent/SamPredictor.h
     io/PlyLoader.h
     io/TiffLoader.h

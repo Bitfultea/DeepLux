@@ -211,6 +211,7 @@ struct SamOnnxInference::Impl {
     QJsonObject manifest;
     QString packageDir;
     QString device = QStringLiteral("cpu");
+    QString requestedDevice = QStringLiteral("cpu");
     QString lastError;
     bool loaded = false;
     bool profilingEnabled = false;
@@ -433,8 +434,8 @@ bool SamOnnxInference::loadPackage(const QString& packageDir, const QString& dev
     m_impl->cachedInputSize = QSize();
     m_impl->packageDir = packageDir;
     m_impl->lastError.clear();
-    if (device != QLatin1String("cpu") && device != QLatin1String("cuda")) {
-        m_impl->lastError = QStringLiteral("原生 SAM device 仅支持 cpu 或 cuda：%1").arg(device);
+    if (device != QLatin1String("auto") && device != QLatin1String("cpu") && device != QLatin1String("cuda")) {
+        m_impl->lastError = QStringLiteral("原生 SAM device 仅支持 auto、cpu 或 cuda：%1").arg(device);
         return false;
     }
 
@@ -635,37 +636,55 @@ bool SamOnnxInference::loadPackage(const QString& packageDir, const QString& dev
     // 两段都成功后才发布新会话。
     try {
         const auto env = ortEnv();
-        auto configure = [&](OrtSessionOptionsRAII& opts, const QString& name) {
-            ORT_CK(g_ort->CreateSessionOptions(&opts.opts));
-            ORT_CK(g_ort->SetIntraOpNumThreads(opts.opts, 4));
-            if (device == QLatin1String("cuda")) {
-                OrtCUDAOptionsRAII cuda;
-                ORT_CK(g_ort->CreateCUDAProviderOptions(&cuda.opts));
-                ORT_CK(g_ort->SessionOptionsAppendExecutionProvider_CUDA_V2(opts.opts, cuda.opts));
-            }
-            if (!profilePrefix.isEmpty()) {
+        auto createSessions = [&](const QString& selectedDevice, OrtSessionRAII& newEncoder,
+                                  OrtSessionRAII& newDecoder) {
+            auto configure = [&](OrtSessionOptionsRAII& opts, const QString& name) {
+                ORT_CK(g_ort->CreateSessionOptions(&opts.opts));
+                ORT_CK(g_ort->SetIntraOpNumThreads(opts.opts, 4));
+                if (selectedDevice == QLatin1String("cuda")) {
+                    OrtCUDAOptionsRAII cuda;
+                    ORT_CK(g_ort->CreateCUDAProviderOptions(&cuda.opts));
+                    ORT_CK(g_ort->SessionOptionsAppendExecutionProvider_CUDA_V2(opts.opts, cuda.opts));
+                }
+                if (!profilePrefix.isEmpty()) {
 #ifdef _WIN32
-                const std::wstring prefix = (profilePrefix + name).toStdWString();
-                ORT_CK(g_ort->EnableProfiling(opts.opts, prefix.c_str()));
+                    const std::wstring prefix = (profilePrefix + name).toStdWString();
+                    ORT_CK(g_ort->EnableProfiling(opts.opts, prefix.c_str()));
 #else
-                const QByteArray prefix = (profilePrefix + name).toUtf8();
-                ORT_CK(g_ort->EnableProfiling(opts.opts, prefix.constData()));
+                    const QByteArray prefix = (profilePrefix + name).toUtf8();
+                    ORT_CK(g_ort->EnableProfiling(opts.opts, prefix.constData()));
 #endif
-            }
+                }
+            };
+            OrtSessionOptionsRAII encoderOpts, decoderOpts;
+            configure(encoderOpts, QStringLiteral("_encoder"));
+            configure(decoderOpts, QStringLiteral("_decoder"));
+            ORT_CK(g_ort->CreateSession(env->env, encPath.toUtf8().constData(), encoderOpts.opts, &newEncoder.sess));
+            ORT_CK(g_ort->CreateSession(env->env, decPath.toUtf8().constData(), decoderOpts.opts, &newDecoder.sess));
         };
-        OrtSessionOptionsRAII encoderOpts, decoderOpts;
-        configure(encoderOpts, QStringLiteral("_encoder"));
-        configure(decoderOpts, QStringLiteral("_decoder"));
         OrtSessionRAII newEncoder, newDecoder;
-        ORT_CK(g_ort->CreateSession(env->env, encPath.toUtf8().constData(), encoderOpts.opts, &newEncoder.sess));
-        ORT_CK(g_ort->CreateSession(env->env, decPath.toUtf8().constData(), decoderOpts.opts, &newDecoder.sess));
+        QString activeDevice = device;
+        if (device == QLatin1String("auto")) {
+            try {
+                createSessions(QStringLiteral("cuda"), newEncoder, newDecoder);
+                activeDevice = QStringLiteral("cuda");
+            } catch (const std::exception&) {
+                newEncoder.reset();
+                newDecoder.reset();
+                createSessions(QStringLiteral("cpu"), newEncoder, newDecoder);
+                activeDevice = QStringLiteral("cpu");
+            }
+        } else {
+            createSessions(device, newEncoder, newDecoder);
+        }
         ORT_CK(g_ort->GetAllocatorWithDefaultOptions(&newEncoder.allocator));
         newDecoder.allocator = newEncoder.allocator;
         std::swap(m_impl->encoder.sess, newEncoder.sess);
         std::swap(m_impl->decoder.sess, newDecoder.sess);
         m_impl->encoder.allocator = newEncoder.allocator;
         m_impl->decoder.allocator = newDecoder.allocator;
-        m_impl->device = device;
+        m_impl->device = activeDevice;
+        m_impl->requestedDevice = device;
         m_impl->profilingEnabled = !profilePrefix.isEmpty();
     } catch (const std::exception& e) {
         m_impl->lastError = QStringLiteral("ORT 加载失败：%1").arg(e.what());
@@ -687,6 +706,9 @@ QString SamOnnxInference::packageDir() const {
 }
 QString SamOnnxInference::device() const {
     return m_impl->device;
+}
+QString SamOnnxInference::requestedDevice() const {
+    return m_impl->requestedDevice;
 }
 QStringList SamOnnxInference::endProfiling() {
     if (!m_impl->loaded || !m_impl->profilingEnabled)

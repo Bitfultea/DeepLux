@@ -2,8 +2,10 @@
 
 #include "../ThemeManager.h"
 #include "../widgets/AnnotationOverlayWidget.h"
+#include "../widgets/AppIconProvider.h"
 #include "../widgets/HImageWidget.h"
 #include "core/agent/SamBackendClient.h"
+#include "core/agent/SamNativeSettings.h"
 #include "core/common/Logger.h"
 #include "core/io/CocoExporter.h"
 #include "core/io/LabelMeExporter.h"
@@ -18,13 +20,17 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
+#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -67,6 +73,46 @@ bool annotationContainsImagePoint(const AnnotationObject& obj, const QPointF& im
     return obj.bbox.adjusted(-2, -2, 2, 2).contains(imagePoint);
 }
 
+bool inspectSamModelPackage(const QString& path, QString* summary) {
+    const QFileInfo directoryInfo(path);
+    if (!directoryInfo.isDir()) {
+        if (summary)
+            *summary = QObject::tr("目录不存在");
+        return false;
+    }
+    QFile manifest(QDir(path).filePath(QStringLiteral("manifest.json")));
+    if (QFileInfo(manifest.fileName()).isSymLink() || !manifest.open(QIODevice::ReadOnly)) {
+        if (summary)
+            *summary = QObject::tr("缺少可读取的 manifest.json");
+        return false;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(manifest.readAll(), &parseError);
+    const QJsonObject root = document.object();
+    if (parseError.error != QJsonParseError::NoError || root.value(QStringLiteral("formatVersion")).toInt() != 1 ||
+        root.value(QStringLiteral("family")).toString() != QLatin1String("sam1") ||
+        root.value(QStringLiteral("variant")).toString() != QLatin1String("vit_b")) {
+        if (summary)
+            *summary = QObject::tr("清单无效或模型版本不受支持（当前需要 SAM1 ViT-B）");
+        return false;
+    }
+    const QJsonObject files = root.value(QStringLiteral("files")).toObject();
+    for (const QString& key : {QStringLiteral("encoder"), QStringLiteral("decoder")}) {
+        const QJsonObject entry = files.value(key).toObject();
+        const QString fileName = entry.value(QStringLiteral("file")).toString();
+        const QFileInfo modelFile(QDir(path).filePath(fileName));
+        if (fileName.isEmpty() || QFileInfo(fileName).fileName() != fileName || modelFile.isSymLink() ||
+            !modelFile.isFile() || modelFile.size() <= 0) {
+            if (summary)
+                *summary = QObject::tr("清单引用的 %1 文件缺失或无效").arg(key);
+            return false;
+        }
+    }
+    if (summary)
+        *summary = QObject::tr("包结构通过；文件 SHA-256 将在首次推理加载时校验");
+    return true;
+}
+
 } // namespace
 
 class LambdaUndoCommand : public QUndoCommand {
@@ -103,7 +149,9 @@ SamAnnotatorDialog::SamAnnotatorDialog(QWidget* parent)
 
     connect(m_samClient, &SamBackendClient::predictionReady, this, &SamAnnotatorDialog::onPredictionReady);
     connect(m_samClient, &SamBackendClient::embeddingReady, this, [this](const QString&) {
-        setStatusText(tr("SAM 已就绪"));
+        setStatusText(m_samClient->serverUrl() == QLatin1String("native")
+                          ? tr("图像已就绪；ONNX 模型将在首次预测时加载")
+                          : tr("SAM 已就绪"));
         if (!m_positivePoints.isEmpty() || !m_negativePoints.isEmpty() || m_dragBox.isValid()) {
             requestPrediction();
         }
@@ -136,7 +184,9 @@ SamAnnotatorDialog::SamAnnotatorDialog(QWidget* parent)
         else if (state == SamBackendClient::State::LoadingModel)
             setStatusText(tr("SAM 加载图像..."));
         else if (state == SamBackendClient::State::Ready) {
-            setStatusText(tr("SAM 已就绪"));
+            setStatusText(m_samClient->serverUrl() == QLatin1String("native")
+                              ? tr("图像已就绪；ONNX 模型将在首次预测时加载")
+                              : tr("SAM 已就绪"));
             if (m_samClient->currentEmbeddingId().isEmpty() && !m_backendImagePath.isEmpty()) {
                 m_samClient->setImage(m_backendImagePath);
             }
@@ -212,6 +262,7 @@ void SamAnnotatorDialog::resizeEvent(QResizeEvent* event) {
 }
 
 void SamAnnotatorDialog::applyTheme(bool isDark) {
+    m_isDarkTheme = isDark;
     const ThemePalette pal = ThemeManager::palette(isDark);
     const QString panelBg = isDark ? QStringLiteral("#252525") : QStringLiteral("#ffffff");
     const QString inputBg = isDark ? QStringLiteral("#333333") : QStringLiteral("#ffffff");
@@ -309,25 +360,28 @@ void SamAnnotatorDialog::saveModelPath(const QString& path) {
 
 bool SamAnnotatorDialog::samEnvironmentReadyForUse() const {
     if (m_samClient->serverUrl() == QLatin1String("native"))
-        return QFileInfo(qEnvironmentVariable("DEEPLUX_SAM_PACKAGE")).isDir();
+        return SamNativeSettings::snapshot().error.isEmpty();
     return !qgetenv("SAM_SERVER_PYTHON").isEmpty() || m_samClient->managedEnvironmentReady();
 }
 
 bool SamAnnotatorDialog::samModelReadyForUse() const {
     if (m_samClient->serverUrl() == QLatin1String("native"))
-        return QFileInfo(qEnvironmentVariable("DEEPLUX_SAM_PACKAGE")).isDir();
+        return SamNativeSettings::snapshot().error.isEmpty();
     return !m_samClient->modelPath().isEmpty() || !qgetenv("DEEPLUX_SAM_MODEL").isEmpty();
 }
 
 void SamAnnotatorDialog::refreshSamControlState() {
     const bool native = m_samClient->serverUrl() == QLatin1String("native");
-    if (m_importModelButton)
-        m_importModelButton->setVisible(!native);
+    if (m_importModelButton) {
+        m_importModelButton->setVisible(true);
+        m_importModelButton->setText(native ? tr("模型设置…") : tr("导入权重"));
+        m_importModelButton->setIcon(native ? AppIconProvider::icon(AppIconProvider::Icon::Settings, 16) : QIcon());
+    }
     if (m_initEnvironmentButton)
         m_initEnvironmentButton->setVisible(!native);
     if (m_restartServerButton)
         m_restartServerButton->setVisible(!native);
-    const bool envOverride = !qgetenv("SAM_SERVER_PYTHON").isEmpty();
+    const bool envOverride = !native && !qgetenv("SAM_SERVER_PYTHON").isEmpty();
     const bool envReady = samEnvironmentReadyForUse();
     if (m_initEnvironmentButton) {
         const bool running = m_samClient->isEnvironmentInitializationRunning();
@@ -492,7 +546,7 @@ void SamAnnotatorDialog::setupUi() {
 #ifdef DEEPLUX_HAS_ONNXRUNTIME
     m_backendMode->addItem(tr("本机 ONNX"), QStringLiteral("native"));
 #endif
-    m_backendMode->setToolTip(tr("推理后端：Python 服务使用已有 SAM 环境；本机 ONNX 使用 DEEPLUX_SAM_PACKAGE 模型包"));
+    m_backendMode->setToolTip(tr("推理后端：Python 服务使用已有 SAM 环境；本机 ONNX 在“模型设置…”中选择模型包"));
     m_backendMode->setAccessibleName(tr("推理后端"));
     configureCompactCombo(m_backendMode);
     m_backendMode->setMinimumWidth(120);
@@ -537,6 +591,7 @@ void SamAnnotatorDialog::setupUi() {
     actionCol->addLayout(samActionRow);
 
     m_importModelButton = new QPushButton(tr("导入权重"));
+    m_importModelButton->setObjectName(QStringLiteral("SamModelActionButton"));
     configureCompactButton(m_importModelButton);
     m_importModelButton->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     samActionRow->addWidget(m_importModelButton);
@@ -1610,15 +1665,17 @@ void SamAnnotatorDialog::prepareBackendImage() {
     }
 
     if (!samEnvironmentReadyForUse()) {
+        const SamNativeConfig nativeConfig = SamNativeSettings::snapshot();
         setStatusText(m_samClient->serverUrl() == QLatin1String("native")
-                          ? tr("原生 SAM 模型包不可用：请设置 DEEPLUX_SAM_PACKAGE")
+                          ? nativeConfig.error + tr("；点击“模型设置…”选择模型包")
                           : tr("SAM 环境未初始化，请点击初始化环境"));
         refreshSamControlState();
         return;
     }
     if (!samModelReadyForUse()) {
+        const SamNativeConfig nativeConfig = SamNativeSettings::snapshot();
         setStatusText(m_samClient->serverUrl() == QLatin1String("native")
-                          ? tr("原生 SAM 模型包不可用：请设置 DEEPLUX_SAM_PACKAGE")
+                          ? nativeConfig.error + tr("；点击“模型设置…”选择模型包")
                           : tr("请先导入 SAM 权重"));
         refreshSamControlState();
         return;
@@ -1676,7 +1733,10 @@ void SamAnnotatorDialog::onPredictionReady(const QList<QPointF>& polygon, const 
     // SAM 批4：读取本次 predict 的多掩膜候选（信号发出前已由客户端就绪；
     // candidates[0] 与顶层 best 一致，默认选择即当前预览）
     setPreviewCandidates(m_samClient ? m_samClient->lastCandidates() : QList<SamCandidate>{});
-    setStatusText(tr("SAM 预测完成 score=%1").arg(score, 0, 'f', 2));
+    const QString device = m_samClient && m_samClient->serverUrl() == QLatin1String("native")
+                               ? QStringLiteral(" · ONNX · %1").arg(m_samClient->nativeDevice().toUpper())
+                               : QString();
+    setStatusText(tr("SAM 预测完成%1 score=%2").arg(device).arg(score, 0, 'f', 2));
 }
 
 void SamAnnotatorDialog::setPreviewCandidates(const QList<SamCandidate>& candidates) {
@@ -1870,6 +1930,10 @@ void SamAnnotatorDialog::setImageSnapshot(const QImage& image, const QString& im
 }
 
 void SamAnnotatorDialog::onImportModel() {
+    if (m_samClient->serverUrl() == QLatin1String("native")) {
+        showNativeModelSettings();
+        return;
+    }
     const QString path = QFileDialog::getOpenFileName(this, tr("导入 SAM 权重"), QString(),
                                                       tr("SAM 权重 (*.pth *.pt *.ckpt);;所有文件 (*.*)"));
     if (path.isEmpty())
@@ -1891,6 +1955,115 @@ void SamAnnotatorDialog::onImportModel() {
         m_samClient->stopServerProcess();
         prepareBackendImage();
     }
+}
+
+void SamAnnotatorDialog::showNativeModelSettings() {
+    const SamNativeConfig current = SamNativeSettings::snapshot();
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("SamNativeModelSettingsDialog"));
+    dialog.setWindowTitle(tr("本机 ONNX 模型设置"));
+    dialog.setMinimumWidth(480);
+    const ThemePalette palette = ThemeManager::palette(m_isDarkTheme);
+    const QString inputBg = m_isDarkTheme ? QStringLiteral("#333333") : QStringLiteral("#ffffff");
+    const QString cancelBg = m_isDarkTheme ? QStringLiteral("#3a3a3a") : QStringLiteral("#f1f5f9");
+    dialog.setStyleSheet(QStringLiteral("QDialog#SamNativeModelSettingsDialog { background-color: %1; color: %2; }"
+                                        "QLabel { background: transparent; color: %2; }"
+                                        "QLineEdit, QComboBox { background-color: %3; color: %2; border: 1px solid %4; "
+                                        "min-height: 26px; padding: 0 5px; }"
+                                        "QPushButton { background-color: %5; color: %6; border: 1px solid %4; "
+                                        "min-height: 28px; padding: 2px 10px; }"
+                                        "QPushButton:hover { background-color: %7; }"
+                                        "QPushButton#SamNativeCancelSettings { background-color: %8; color: %2; }")
+                             .arg(m_isDarkTheme ? QStringLiteral("#252525") : QStringLiteral("#ffffff"),
+                                  palette.textColor, inputBg, palette.borderColor, palette.btnBgColor,
+                                  palette.btnTextColor, palette.btnHoverColor, cancelBg));
+
+    auto* form = new QFormLayout(&dialog);
+    form->setContentsMargins(16, 16, 16, 12);
+    form->setSpacing(10);
+
+    auto* pathRow = new QWidget(&dialog);
+    auto* pathLayout = new QHBoxLayout(pathRow);
+    pathLayout->setContentsMargins(0, 0, 0, 0);
+    pathLayout->setSpacing(6);
+    auto* pathEdit = new QLineEdit(current.packageDir, pathRow);
+    pathEdit->setObjectName(QStringLiteral("SamNativePackagePath"));
+    pathEdit->setReadOnly(true);
+    pathEdit->setToolTip(current.packageDir);
+    auto* browseButton = new QToolButton(pathRow);
+    browseButton->setObjectName(QStringLiteral("SamNativeBrowseButton"));
+    browseButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::OpenFolder, 16, QColor(palette.textColor)));
+    browseButton->setToolTip(tr("选择包含 manifest.json 的 SAM ONNX 模型包目录"));
+    pathLayout->addWidget(pathEdit, 1);
+    pathLayout->addWidget(browseButton);
+    form->addRow(tr("模型包目录"), pathRow);
+
+    auto* deviceCombo = new QComboBox(&dialog);
+    deviceCombo->setObjectName(QStringLiteral("SamNativeDevice"));
+    deviceCombo->addItem(tr("自动（优先 CUDA）"), QStringLiteral("auto"));
+    deviceCombo->addItem(tr("CPU"), QStringLiteral("cpu"));
+    deviceCombo->addItem(tr("CUDA（不可用时失败）"), QStringLiteral("cuda"));
+    deviceCombo->setCurrentIndex(qMax(0, deviceCombo->findData(current.device)));
+    form->addRow(tr("推理设备"), deviceCombo);
+
+    auto* status = new QLabel(&dialog);
+    status->setObjectName(QStringLiteral("SamNativePackageStatus"));
+    status->setWordWrap(true);
+    form->addRow(tr("状态"), status);
+
+    const bool environmentOverride = current.packageFromEnvironment || current.deviceFromEnvironment;
+    if (environmentOverride) {
+        browseButton->setEnabled(false);
+        deviceCombo->setEnabled(false);
+        status->setText(tr("模型或设备由启动环境变量指定；请移除覆盖项并重启后在此保存设置。"));
+    }
+    auto refreshStatus = [pathEdit, status, environmentOverride]() {
+        if (environmentOverride)
+            return;
+        QString summary;
+        inspectSamModelPackage(pathEdit->text(), &summary);
+        status->setText(summary);
+    };
+    refreshStatus();
+    connect(pathEdit, &QLineEdit::textChanged, &dialog, [refreshStatus]() { refreshStatus(); });
+    connect(browseButton, &QToolButton::clicked, &dialog, [&dialog, pathEdit, refreshStatus]() {
+        const QString selected =
+            QFileDialog::getExistingDirectory(&dialog, QObject::tr("选择 SAM ONNX 模型包"), pathEdit->text());
+        if (!selected.isEmpty()) {
+            pathEdit->setText(QFileInfo(selected).canonicalFilePath());
+            pathEdit->setToolTip(pathEdit->text());
+            refreshStatus();
+        }
+    });
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel, &dialog);
+    form->addRow(buttons);
+    auto* applyButton = buttons->button(QDialogButtonBox::Apply);
+    auto* cancelButton = buttons->button(QDialogButtonBox::Cancel);
+    applyButton->setObjectName(QStringLiteral("SamNativeApplySettings"));
+    cancelButton->setObjectName(QStringLiteral("SamNativeCancelSettings"));
+    applyButton->setText(tr("应用"));
+    cancelButton->setText(tr("取消"));
+    applyButton->setEnabled(!environmentOverride);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(applyButton, &QPushButton::clicked, &dialog, [&]() {
+        QString summary;
+        if (!inspectSamModelPackage(pathEdit->text(), &summary)) {
+            status->setText(summary);
+            return;
+        }
+        QString error;
+        if (!SamNativeSettings::saveUserSettings(pathEdit->text(), deviceCombo->currentData().toString(), &error)) {
+            status->setText(error);
+            return;
+        }
+        dialog.accept();
+    });
+
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    m_samClient->cancelPendingPrediction();
+    prepareBackendImage();
 }
 
 void SamAnnotatorDialog::onInitializeEnvironment() {

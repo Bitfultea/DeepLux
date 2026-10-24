@@ -88,7 +88,7 @@ flowchart LR
 
 ## SAM 快速标注
 
-1. 在“推理后端”选择 Python 服务（默认）或本机 ONNX。Python 服务可在面板中初始化环境并导入兼容权重；本机 ONNX 需先设置 `DEEPLUX_SAM_PACKAGE`，运行时不需要 Python。需要 CUDA 时还需使用带 CUDA Provider 的 ONNX Runtime 包并设置 `DEEPLUX_SAM_DEVICE=cuda`，详见[安装说明](sam_native/stage5_packaging.md)。
+1. 在“推理后端”选择 Python 服务（默认）或本机 ONNX。Python 服务可在面板中初始化环境并导入兼容权重；本机 ONNX 点击“模型设置…”选择包含 `manifest.json`、encoder 和 decoder 的模型包，运行时不需要 Python。默认设备为“自动（优先 CUDA）”，没有可用 CUDA 时使用 CPU；也可显式选择 CPU 或 CUDA。环境变量覆盖方式仅供部署配置，详见[安装说明](sam_native/stage5_packaging.md)。
 2. 在类别下拉框选择现有类别，或输入名称后点“+”添加；用“-”删除当前类别。在主视图选择正点、负点或框选并点击图像，预览生成后可切换候选，再点“确认”写入对象；“取消当前”会清除当前提示、预览和撤销历史。
 3. 选中已确认对象后，从“掩膜编辑”菜单使用膨胀、腐蚀、合并、拆分或橡皮擦；编辑可撤销。完成后保存会话，或按需要导出 LabelMe、YOLO 分割、COCO。
 

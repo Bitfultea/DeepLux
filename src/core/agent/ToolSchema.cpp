@@ -228,7 +228,7 @@ void ToolSchema::registerDefaultTools() {
                     "Pick among SAM multi-mask candidates sorted by score desc (0=best, default); "
                     "fails closed if the server returned no candidates or the index is out of range",
                     false, QJsonValue(0)},
-                   {"serverUrl", "string", "SAM server URL, or 'native' with DEEPLUX_SAM_PACKAGE", false,
+                   {"serverUrl", "string", "SAM server URL, or 'native' using saved native model settings", false,
                     QJsonValue("http://127.0.0.1:8990")},
                    {"timeoutMs", "integer", "Per-request timeout in ms, [100,120000]", false, QJsonValue(30000)}}});
 
@@ -251,7 +251,7 @@ void ToolSchema::registerDefaultTools() {
                     "(1-16 usable rectangles; non-rectangles skipped and reported; "
                     "mutually exclusive with items)",
                     false},
-                   {"serverUrl", "string", "SAM server URL, or 'native' with DEEPLUX_SAM_PACKAGE", false,
+                   {"serverUrl", "string", "SAM server URL, or 'native' using saved native model settings", false,
                     QJsonValue("http://127.0.0.1:8990")},
                    {"timeoutMs", "integer", "Per-request timeout in ms, [100,120000]", false, QJsonValue(30000)}},
                   true}); // dangerous（写文件）

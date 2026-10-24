@@ -238,6 +238,7 @@ private slots:
     void onExportYoloSeg();
     void onExportCoco(); // SAM 批4：COCO 导出
     void onImportModel();
+    void showNativeModelSettings();
     void onInitializeEnvironment();
     void onRestartSam();
     void onConfirm();
@@ -359,6 +360,7 @@ private:
     QBoxLayout* m_exportRowLayout = nullptr;
     QScrollArea* m_controlScroll = nullptr;
     bool m_scrollResizeQueued = false;
+    bool m_isDarkTheme = false;
     QWidget* m_centerContainer = nullptr;
 
     // 快捷键

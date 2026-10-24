@@ -43,7 +43,7 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
     QString imageDisplayBg, imageDisplayLeftBorder;
     QString logDockBorderTop;
     QString labelFg, scrollAreaBg, frameBg;
-    QString dialogBg, groupBoxBorder, comboArrow, tableAltBg;
+    QString dialogBg, groupBoxBorder, tableAltBg;
     QString tabPaneBg, tabBarBg;
     QString tabBarTabBg, tabBarTabFg, tabBarTabSelBg, tabBarTabHoverBg;
     QString inspectorPanelBg, inspectorHeaderBg, inspectorHeaderFg, inspectorHeaderBorder;
@@ -110,7 +110,6 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
         frameBg = "transparent";
         dialogBg = "#252525";
         groupBoxBorder = "#444444";
-        comboArrow = "#a0a0a0";
         tableAltBg = "#2d2d2d";
         tabPaneBg = "#252525";
         tabBarBg = "#252525";
@@ -185,7 +184,6 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
         frameBg = "transparent";
         dialogBg = "#ffffff";
         groupBoxBorder = "#cccccc";
-        comboArrow = "#6b7280";
         tableAltBg = "#f8f8f8";
         tabPaneBg = "#ffffff";
         tabBarBg = "#ffffff";
@@ -361,10 +359,6 @@ QString buildBaseStyleSheet(bool isDark, const LayoutMetrics& m) {
              .arg(borderW, groupBoxBorder, labelFg);
     s += "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }";
     s += QString("QCheckBox, QRadioButton { color: %1; background-color: transparent; spacing: 6px; }").arg(labelFg);
-    s += "QComboBox::drop-down { border: none; width: 20px; }";
-    s += QString("QComboBox::down-arrow { image: none; border-left: 5px solid transparent; "
-                 "border-right: 5px solid transparent; border-top: 5px solid %1; }")
-             .arg(comboArrow);
     s += QString("QComboBox QAbstractItemView { background-color: %1; color: %2; border: %3 solid %4; "
                  "selection-background-color: %5; selection-color: %6; }")
              .arg(inputBg, inputFg, borderW, inputBorder, menuSelBg, menuSelFg);

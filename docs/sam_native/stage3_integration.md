@@ -8,8 +8,8 @@
 ## 启用
 
 1. 原生 SAM 默认参与构建；配置时提供 `ONNXRUNTIME_DIR`。不构建原生推理时显式设置 `-DDEEPLUX_NATIVE_SAM=OFF`。
-2. 启动前设置 `DEEPLUX_SAM_PACKAGE=/path/to/sam1_vit_b_onnx`。
-3. 在工具调用或插件参数中设置 `serverUrl=native`，或在标注对话框中选择“本机 ONNX”。
+2. 在标注对话框切换到“本机 ONNX”，点击“模型设置…”选择 SAM1 ViT-B 模型包；选择“自动”设备可优先使用 CUDA 并在 CUDA 初始化失败时回退 CPU。
+3. 工具调用或插件参数设置 `serverUrl=native` 时，读取相同的应用级模型设置。自动化部署可用 `DEEPLUX_SAM_PACKAGE` 与 `DEEPLUX_SAM_DEVICE` 覆盖应用设置。
 
 未启用原生构建、未配置模型包或模型包校验失败时明确报错，不回退到 HTTP。
 同一工作线程复用模型会话与图像 embedding；换图或换模型由推理核心使缓存失效。

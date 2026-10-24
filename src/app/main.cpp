@@ -1,3 +1,4 @@
+#include "core/agent/SamNativeSettings.h"
 #include "core/common/CLIHandler.h"
 #include "core/manager/ConfigManager.h"
 #include "core/manager/PluginManager.h"
@@ -205,6 +206,7 @@ int main(int argc, char* argv[]) {
 
     // 初始化管理器
     DeepLux::ConfigManager::instance().initialize();
+    DeepLux::SamNativeSettings::initialize();
     DeepLux::ProjectManager::instance();
 
     if (!checkOpenCV()) {

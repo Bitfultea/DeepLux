@@ -1,3 +1,4 @@
+#include "core/agent/SamNativeSettings.h"
 #include "core/agent/SamPredictor.h"
 #include "core/io/YoloSegExporter.h"
 #include "core/model/Annotation.h"
@@ -11,6 +12,8 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
@@ -33,6 +36,7 @@
 #include <QTemporaryFile>
 #include <QTest>
 #include <QThreadPool>
+#include <QTimer>
 #include <QToolButton>
 #include <QtTest/QtTest>
 #include <atomic>
@@ -47,6 +51,7 @@ class TestSamAnnotatorDialog : public QObject {
 
 private slots:
     void initTestCase();
+    void cleanupTestCase();
     void cleanup();
 
     void modeButtonsExist();
@@ -121,12 +126,21 @@ private slots:
     void candidateCyclingSelectsAlternateRegion();
     void standaloneImageViewportRemainsVisible();
 #ifdef DEEPLUX_HAS_ONNXRUNTIME
+    void nativeModelSettingsDialogSavesSelection();
+    void nativeSettingsHonorsEnvironmentOverride();
     void nativeBackendPredictsAndConfirmsSelectedCandidate();
     void nativeBackendAcceptsNegativePointOnly();
     void closingWithNativeRequestQueuedDoesNotBlockUi();
 #endif
 
 private:
+    QTemporaryDir m_testConfigDir;
+    QByteArray m_previousAppDataDir;
+    QByteArray m_previousNativePackage;
+    QByteArray m_previousNativeDevice;
+    bool m_hadAppDataDir = false;
+    bool m_hadNativePackage = false;
+    bool m_hadNativeDevice = false;
     QImage makeTestImage();
     // 整图大小 RGBA 显示掩膜（sam_server 配色），绘制像素矩形（QRect 闭区间语义）
     static QImage makeDisplayMask(int w, int h, const QList<QRect>& rects);
@@ -136,7 +150,31 @@ private:
     static QList<QPointF> squarePolygon(double x, double y, double size);
 };
 
-void TestSamAnnotatorDialog::initTestCase() {}
+void TestSamAnnotatorDialog::initTestCase() {
+    QVERIFY(m_testConfigDir.isValid());
+    m_hadAppDataDir = qEnvironmentVariableIsSet("DEEPLUX_APP_DATA_DIR");
+    m_hadNativePackage = qEnvironmentVariableIsSet("DEEPLUX_SAM_PACKAGE");
+    m_hadNativeDevice = qEnvironmentVariableIsSet("DEEPLUX_SAM_DEVICE");
+    m_previousAppDataDir = qgetenv("DEEPLUX_APP_DATA_DIR");
+    m_previousNativePackage = qgetenv("DEEPLUX_SAM_PACKAGE");
+    m_previousNativeDevice = qgetenv("DEEPLUX_SAM_DEVICE");
+    qputenv("DEEPLUX_APP_DATA_DIR", QFile::encodeName(m_testConfigDir.path()));
+    qunsetenv("DEEPLUX_SAM_PACKAGE");
+    qunsetenv("DEEPLUX_SAM_DEVICE");
+    SamNativeSettings::initialize();
+}
+
+void TestSamAnnotatorDialog::cleanupTestCase() {
+    auto restore = [](const char* name, bool wasSet, const QByteArray& value) {
+        if (wasSet)
+            qputenv(name, value);
+        else
+            qunsetenv(name);
+    };
+    restore("DEEPLUX_APP_DATA_DIR", m_hadAppDataDir, m_previousAppDataDir);
+    restore("DEEPLUX_SAM_PACKAGE", m_hadNativePackage, m_previousNativePackage);
+    restore("DEEPLUX_SAM_DEVICE", m_hadNativeDevice, m_previousNativeDevice);
+}
 void TestSamAnnotatorDialog::cleanup() {}
 
 QImage TestSamAnnotatorDialog::makeTestImage() {
@@ -477,6 +515,9 @@ void TestSamAnnotatorDialog::categoryAndBackendRowsShareCompactSizing() {
         }
     } restore;
     qApp->setStyleSheet(ThemeManager::styleSheet(false));
+    QVERIFY2(!qApp->styleSheet().contains(QStringLiteral("QComboBox::down-arrow")) &&
+                 !qApp->styleSheet().contains(QStringLiteral("QComboBox::drop-down")),
+             "Leave combo arrow painting to the Qt style; stylesheet border triangles render as blocks");
 
     HImageWidget mainView;
     mainView.resize(320, 240);
@@ -1737,6 +1778,77 @@ void TestSamAnnotatorDialog::candidateCyclingSelectsAlternateRegion() {
 }
 
 #ifdef DEEPLUX_HAS_ONNXRUNTIME
+void TestSamAnnotatorDialog::nativeModelSettingsDialogSavesSelection() {
+    const QString packagePath = QStringLiteral(TEST_SAM_PACKAGE_DIR);
+    QVERIFY2(QFile::exists(packagePath + QStringLiteral("/manifest.json")), qPrintable(packagePath));
+
+    SamAnnotatorDialog dlg;
+    auto* backend = dlg.findChild<QComboBox*>(QStringLiteral("SamBackendMode"));
+    auto* settingsButton = dlg.findChild<QPushButton*>(QStringLiteral("SamModelActionButton"));
+    QVERIFY(backend);
+    QVERIFY(settingsButton);
+    backend->setCurrentIndex(backend->findData(QStringLiteral("native")));
+    QVERIFY(!settingsButton->isHidden());
+    QCOMPARE(settingsButton->text(), QStringLiteral("模型设置…"));
+
+    bool dialogCompleted = false;
+    QTimer::singleShot(0, &dlg, [&]() {
+        auto* settingsDialog = dlg.findChild<QDialog*>(QStringLiteral("SamNativeModelSettingsDialog"));
+        if (!settingsDialog)
+            return;
+        auto* path = settingsDialog->findChild<QLineEdit*>(QStringLiteral("SamNativePackagePath"));
+        auto* device = settingsDialog->findChild<QComboBox*>(QStringLiteral("SamNativeDevice"));
+        auto* apply = settingsDialog->findChild<QPushButton*>(QStringLiteral("SamNativeApplySettings"));
+        if (!path || !device || !apply)
+            return;
+        path->setText(packagePath);
+        device->setCurrentIndex(device->findData(QStringLiteral("cpu")));
+        const QString capture = qEnvironmentVariable("DEEPLUX_TEST_SAM_NATIVE_SETTINGS_CAPTURE");
+        if (!capture.isEmpty())
+            settingsDialog->grab().save(capture);
+        apply->click();
+        dialogCompleted = settingsDialog->result() == QDialog::Accepted;
+    });
+    settingsButton->click();
+    QVERIFY(dialogCompleted);
+    const SamNativeConfig saved = SamNativeSettings::snapshot();
+    QCOMPARE(saved.packageDir, QFileInfo(packagePath).canonicalFilePath());
+    QCOMPARE(saved.device, QStringLiteral("cpu"));
+    QVERIFY(saved.error.isEmpty());
+
+    dlg.applyTheme(true);
+    bool darkDialogCancelled = false;
+    QTimer::singleShot(0, &dlg, [&]() {
+        auto* settingsDialog = dlg.findChild<QDialog*>(QStringLiteral("SamNativeModelSettingsDialog"));
+        if (!settingsDialog)
+            return;
+        const QString capture = qEnvironmentVariable("DEEPLUX_TEST_SAM_NATIVE_SETTINGS_CAPTURE");
+        if (!capture.isEmpty())
+            settingsDialog->grab().save(capture + QStringLiteral(".dark.png"));
+        auto* cancel = settingsDialog->findChild<QPushButton*>(QStringLiteral("SamNativeCancelSettings"));
+        if (!cancel)
+            return;
+        cancel->click();
+        darkDialogCancelled = settingsDialog->result() == QDialog::Rejected;
+    });
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "showNativeModelSettings", Qt::DirectConnection));
+    QVERIFY(darkDialogCancelled);
+}
+
+void TestSamAnnotatorDialog::nativeSettingsHonorsEnvironmentOverride() {
+    QTemporaryDir invalidOverride;
+    QVERIFY(invalidOverride.isValid());
+    qputenv("DEEPLUX_SAM_PACKAGE", QFile::encodeName(invalidOverride.filePath(QStringLiteral("missing"))));
+    const SamNativeConfig overridden = SamNativeSettings::snapshot();
+    QVERIFY(overridden.packageFromEnvironment);
+    QVERIFY(!overridden.error.isEmpty());
+    QVERIFY(overridden.error.contains(QStringLiteral("目录不存在")));
+    qunsetenv("DEEPLUX_SAM_PACKAGE");
+    const SamNativeConfig restored = SamNativeSettings::snapshot();
+    QVERIFY(restored.error.isEmpty());
+    QVERIFY(!restored.packageFromEnvironment);
+}
+
 void TestSamAnnotatorDialog::nativeBackendPredictsAndConfirmsSelectedCandidate() {
     const QString packageDir = QStringLiteral(TEST_SAM_PACKAGE_DIR);
     QVERIFY2(QFile::exists(packageDir + QStringLiteral("/manifest.json")), qPrintable(packageDir));

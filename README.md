@@ -115,7 +115,7 @@ flowchart LR
 ## Agent 与 SAM 标注
 
 - **Agent**：主入口位于底部“Agent 对话”页。Agent 仅能调用已声明的内部工具，写操作经过权限、确认和撤销链路，不具备任意 shell 执行权限。详见 [终端与 Agent 设计](docs/Terminal_Agent_Design.md)。
-- **SAM 标注**：从顶部“快速标注”打开面板，先在类别下拉框选择或输入类别，再用正点、负点或框选生成预览；有多个候选时切换后确认。已确认对象的膨胀、腐蚀、合并等操作收在“掩膜编辑”菜单，最后可保存会话或导出 LabelMe/YOLO/COCO。推理后端默认是 Python 服务；选择“本机 ONNX”需设置 `DEEPLUX_SAM_PACKAGE` 模型包，原生路径运行时不依赖 Python。操作见[快速上手](docs/quick-start.md)，部署边界见[原生 SAM 安装说明](docs/sam_native/stage5_packaging.md)。
+- **SAM 标注**：从顶部“快速标注”打开面板，先在类别下拉框选择或输入类别，再用正点、负点或框选生成预览；有多个候选时切换后确认。已确认对象的膨胀、腐蚀、合并等操作收在“掩膜编辑”菜单，最后可保存会话或导出 LabelMe/YOLO/COCO。推理后端默认是 Python 服务；切换到“本机 ONNX”后可在“模型设置…”中选择模型包和 CPU/CUDA 设备，设置会保存到本机，日常启动无需命令行环境变量。操作见[快速上手](docs/quick-start.md)，部署边界见[原生 SAM 安装说明](docs/sam_native/stage5_packaging.md)。
 
 ## 项目结构
 

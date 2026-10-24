@@ -80,6 +80,14 @@ private slots:
         QVERIFY(!inf.isLoaded());
     }
 
+    void automaticDeviceSelection() {
+        SamOnnxInference inf;
+        QVERIFY2(inf.loadPackage(m_packageDir, QStringLiteral("auto")), qPrintable(inf.lastError()));
+        QVERIFY(inf.isLoaded());
+        QVERIFY(inf.device() == QLatin1String("cpu") || inf.device() == QLatin1String("cuda"));
+        QCOMPARE(inf.requestedDevice(), QStringLiteral("auto"));
+    }
+
     void cudaProvider() {
         if (qEnvironmentVariable("DEEPLUX_TEST_CUDA") != QLatin1String("1"))
             QSKIP("设置 DEEPLUX_TEST_CUDA=1 后，在 CUDA 版 ONNX Runtime 构建中运行");
@@ -646,10 +654,10 @@ private slots:
         QVERIFY(!interrupted.ok);
         QVERIFY(interrupted.error.contains("取消"));
 
-        qunsetenv("DEEPLUX_SAM_PACKAGE");
+        qputenv("DEEPLUX_SAM_PACKAGE", QByteArray());
         const SamPredictOutcome unconfigured = runSamPredictBatch("native", imagePath, {item}, 30000);
         QVERIFY(!unconfigured.ok);
-        QVERIFY(unconfigured.error.contains("DEEPLUX_SAM_PACKAGE"));
+        QVERIFY(unconfigured.error.contains("尚未配置"));
         qputenv("DEEPLUX_SAM_PACKAGE", QFile::encodeName(m_packageDir));
     }
 

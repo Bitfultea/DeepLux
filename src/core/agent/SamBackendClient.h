@@ -121,6 +121,9 @@ public:
     QString modelName() const {
         return m_modelName;
     }
+    QString nativeDevice() const {
+        return m_nativeDevice;
+    }
     // SAM 批4：最近一次成功 predict 的多掩膜候选（按 score 降序；无候选为空）。
     // 在 predictionReady 发出前就绪，回调内读取即为本次结果。
     const QList<SamCandidate>& lastCandidates() const {
@@ -198,6 +201,7 @@ private:
     QString m_scriptPath;
     QString m_embeddingId;
     QString m_modelName;
+    QString m_nativeDevice;
     QString m_modelPath;
 
     // 记录最近一次预测参数，用于 invalid_embedding 重试

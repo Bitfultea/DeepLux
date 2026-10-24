@@ -49,10 +49,12 @@ CUDA 安装验收须用含 `libonnxruntime_providers_cuda.so` 的 GPU SDK 单独
 自动选中本机另一套不兼容 OpenSSL 3 的 Qt 5.15.2。安装后将整个前缀复制到新路径，
 在可访问 GPU 的环境执行包内脚本并选择 `cuda`；脚本的负对照仍必须先通过。
 
-模型包独立迁移并保持 `manifest.json`、`encoder.onnx`、`decoder.onnx` 原样；运行时设置
-`DEEPLUX_SAM_PACKAGE=/path/to/sam1_vit_b_onnx`，选用 CUDA 时另设
-`DEEPLUX_SAM_DEVICE=cuda`。复制模型包后需重新校验 manifest 内的大小与 SHA-256，
-不能只凭文件名确认模型身份。
+模型包独立迁移并保持 `manifest.json`、`encoder.onnx`、`decoder.onnx` 原样；GUI 用户在
+SAM 标注页选择“本机 ONNX”后通过“模型设置…”选择模型包和设备，路径保存在应用配置中。
+安装包若包含 `models/sam1_vit_b_onnx`，程序会自动发现；外置模型需用户首次选择。
+自动设备优先尝试 CUDA，失败后使用 CPU；显式选择 CUDA 时不回退。自动化部署仍可用
+`DEEPLUX_SAM_PACKAGE` 和 `DEEPLUX_SAM_DEVICE` 覆盖 GUI 配置。模型目录选择后会先检查清单和
+文件结构；完整 SHA-256 与模型契约在首次推理加载时校验。模型文件不应提交到仓库。
 
 ## 本机证据与剩余门禁
 

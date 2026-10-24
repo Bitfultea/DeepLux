@@ -47,6 +47,7 @@ public:
     QString lastError() const;
     QString packageDir() const;
     QString device() const;
+    QString requestedDevice() const;
     // 仅在加载时传入 profilePrefix 后可用；返回 encoder/decoder 的 ORT profiling 文件。
     QStringList endProfiling();
 

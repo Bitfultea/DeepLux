@@ -189,7 +189,7 @@ bool parseSamBoxJson(const QJsonValue& value, QRectF& out, QString& error) {
 
 SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& imagePath,
                                      const QList<SamPromptItem>& items, int timeoutMs, const CancellationToken* cancel,
-                                     bool includeCandidates) {
+                                     bool includeCandidates, const SamNativeConfig& nativeConfig) {
     SamPredictOutcome outcome;
     auto fail = [&outcome](const QString& error, int index) {
         outcome.ok = false;
@@ -236,11 +236,15 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
         Q_UNUSED(includeCandidates);
         return fail(QStringLiteral("此构建未启用原生 SAM 推理"), -1);
 #else
+        const SamNativeConfig effectiveConfig = nativeConfig.packageDir.isEmpty() && nativeConfig.error.isEmpty()
+                                                    ? SamNativeSettings::snapshot()
+                                                    : nativeConfig;
         if (QCoreApplication::instance() && QThread::currentThread() == QCoreApplication::instance()->thread()) {
             QThreadPool* pool = samNativeThreadPool();
             auto work = std::make_shared<std::packaged_task<SamPredictOutcome()>>(
-                [serverUrl, imagePath, items, timeoutMs, cancel, includeCandidates] {
-                    return runSamPredictBatch(serverUrl, imagePath, items, timeoutMs, cancel, includeCandidates);
+                [serverUrl, imagePath, items, timeoutMs, cancel, includeCandidates, effectiveConfig] {
+                    return runSamPredictBatch(serverUrl, imagePath, items, timeoutMs, cancel, includeCandidates,
+                                              effectiveConfig);
                 });
             auto future = work->get_future();
             pool->start([work] { (*work)(); });
@@ -262,12 +266,10 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
             }
         }
 
-        const QString packageDir = qEnvironmentVariable("DEEPLUX_SAM_PACKAGE");
-        if (packageDir.isEmpty())
-            return fail(QStringLiteral("未设置 DEEPLUX_SAM_PACKAGE 模型包路径"), -1);
-        const QString device = qEnvironmentVariable("DEEPLUX_SAM_DEVICE", "cpu").trimmed().toLower();
-        if (device != QLatin1String("cpu") && device != QLatin1String("cuda"))
-            return fail(QStringLiteral("DEEPLUX_SAM_DEVICE 仅支持 cpu 或 cuda：%1").arg(device), -1);
+        if (!effectiveConfig.error.isEmpty())
+            return fail(effectiveConfig.error, -1);
+        const QString packageDir = effectiveConfig.packageDir;
+        const QString device = effectiveConfig.device;
         if (cancel && cancel->isCancelledFast())
             return fail(QStringLiteral("SAM 预测已取消"), -1);
 
@@ -275,7 +277,7 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
         thread_local SamOnnxInference inference;
         QElapsedTimer timer;
         timer.start();
-        if ((!inference.isLoaded() || inference.packageDir() != packageDir || inference.device() != device) &&
+        if ((!inference.isLoaded() || inference.packageDir() != packageDir || inference.requestedDevice() != device) &&
             !inference.loadPackage(packageDir, device))
             return fail(QStringLiteral("原生 SAM 模型包加载失败：%1").arg(inference.lastError()), -1);
         if (timer.elapsed() > timeoutMs)
@@ -318,6 +320,7 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
             if (includeCandidates)
                 outcome.previewCandidates.append(converted.previewCandidates.first());
             outcome.modelName = converted.modelName;
+            outcome.nativeDevice = inference.device();
         }
         outcome.ok = true;
         return outcome;

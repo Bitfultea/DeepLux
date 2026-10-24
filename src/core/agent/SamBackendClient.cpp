@@ -3,6 +3,7 @@
 #include "core/common/Logger.h"
 #include "core/platform/PathUtils.h"
 #ifdef DEEPLUX_HAS_ONNXRUNTIME
+#include "SamNativeSettings.h"
 #include "SamPredictor.h"
 #include "core/common/CancellationToken.h"
 
@@ -96,6 +97,7 @@ SamBackendClient::SamBackendClient(QObject* parent) : QObject(parent), m_nam(new
         }
         m_lastCandidates = result.previewCandidates.first();
         m_modelName = result.modelName;
+        m_nativeDevice = result.nativeDevice;
         setState(State::Ready);
         const SamCandidate& best = m_lastCandidates.first();
         emit predictionReady(best.polygon, best.bbox, best.score, best.maskRle, best.maskImage);
@@ -270,10 +272,10 @@ void SamBackendClient::abortPendingReply(QPointer<QNetworkReply>& reply) {
 void SamBackendClient::startServerProcess() {
     if (m_serverUrl == QLatin1String("native")) {
 #ifdef DEEPLUX_HAS_ONNXRUNTIME
-        const QString packageDir = qEnvironmentVariable("DEEPLUX_SAM_PACKAGE");
-        if (!QFileInfo(packageDir).isDir()) {
+        const SamNativeConfig config = SamNativeSettings::snapshot();
+        if (!config.error.isEmpty()) {
             setState(State::Error);
-            emit errorOccurred(tr("原生 SAM 模型包目录不存在：%1").arg(packageDir));
+            emit errorOccurred(config.error);
             return;
         }
         m_modelName = QStringLiteral("sam1_vit_b");
@@ -602,10 +604,13 @@ void SamBackendClient::predict(const QList<QPointF>& positive, const QList<QPoin
         item.box = box;
         const QString imagePath = m_lastImagePath;
         const int timeoutMs = m_timeoutMs;
+        const SamNativeConfig nativeConfig = SamNativeSettings::snapshot();
         const auto token = request->cancel;
-        auto work = std::make_shared<std::packaged_task<SamPredictOutcome()>>([imagePath, item, timeoutMs, token] {
-            return runSamPredictBatch(QStringLiteral("native"), imagePath, {item}, timeoutMs, token.get(), true);
-        });
+        auto work = std::make_shared<std::packaged_task<SamPredictOutcome()>>(
+            [imagePath, item, timeoutMs, token, nativeConfig] {
+                return runSamPredictBatch(QStringLiteral("native"), imagePath, {item}, timeoutMs, token.get(), true,
+                                          nativeConfig);
+            });
         request->future = work->get_future();
         m_nativeRequest = std::move(request);
         QThreadPool* pool = samNativeThreadPool();
