@@ -4,7 +4,7 @@
 
 namespace DeepLux {
 
-class IfModule : public ModuleBase {
+class DEEPLUX_PLUGIN_API IfModule : public ModuleBase {
     Q_OBJECT
 
 public:

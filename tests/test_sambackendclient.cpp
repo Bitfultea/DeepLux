@@ -140,8 +140,13 @@ void TestSamBackendClient::managedEnvironmentPathUsesAppDataDir() {
 
     SamBackendClient client;
     QCOMPARE(client.managedEnvironmentPath(), QDir(temp.path()).filePath(QStringLiteral("sam_env")));
+#ifdef Q_OS_WIN
+    QVERIFY2(client.managedPythonPath().endsWith(QStringLiteral("sam_env/Scripts/python.exe")),
+             qPrintable(client.managedPythonPath()));
+#else
     QVERIFY2(client.managedPythonPath().endsWith(QStringLiteral("sam_env/bin/python")),
              qPrintable(client.managedPythonPath()));
+#endif
 
     if (oldAppData.isEmpty())
         qunsetenv("DEEPLUX_APP_DATA_DIR");
@@ -518,10 +523,10 @@ void TestSamBackendClient::predictResponseStrictParsing() {
     r["polygon"] = QStringLiteral("abc");
     driveExpectError(r, QStringLiteral("polygon"));
     r = valid;
-    r["polygon"] = QJsonArray{QJsonArray{QStringLiteral("a"), QStringLiteral("b")}};
+    r["polygon"] = QJsonArray{QJsonValue(QJsonArray{QStringLiteral("a"), QStringLiteral("b")})};
     driveExpectError(r, QStringLiteral("polygon"));
     r = valid;
-    r["polygon"] = QJsonArray{QJsonArray{1.0, 2.0, 3.0}};
+    r["polygon"] = QJsonArray{QJsonValue(QJsonArray{1.0, 2.0, 3.0})};
     driveExpectError(r, QStringLiteral("polygon"));
     // bbox 长度错 / 非数组 → 拒绝
     r = valid;

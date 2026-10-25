@@ -1,3 +1,5 @@
+#include "TestPluginRegistry.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QDirIterator>
@@ -72,9 +74,9 @@ private slots:
 private:
     struct PluginEntry {
         QString name;         // metadata "name" field
-        QString dirName;      // source directory name
+        QString dirName;      // source directory name (install directory)
         QString metadataPath; // absolute path to metadata.json
-        QString soPath;       // absolute path to .so
+        QString libraryPath;  // CMake-injected plugin library (dll/so/dylib)
     };
 
     QList<PluginEntry> m_entries;
@@ -110,64 +112,49 @@ void TestPluginParameterContracts::cleanupTestCase() {
 }
 
 bool TestPluginParameterContracts::installAllPlugins() {
-    const QString srcRoot = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../src/plugins");
-    const QString libDir = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../lib");
     const QString pluginRoot = m_tempDir.filePath("plugins");
 
-    // Scan for all metadata.json under src/plugins
-    QDirIterator it(srcRoot, QStringList() << "metadata.json", QDir::Files, QDirIterator::Subdirectories);
-    QList<QFileInfo> metas;
-    while (it.hasNext()) {
-        it.next();
-        metas << it.fileInfo();
+    for (const DeepLuxTest::PluginEntry& plugin : DeepLuxTest::pluginRegistry()) {
+        QFile metaFile(plugin.metadataPath);
+        if (!metaFile.open(QIODevice::ReadOnly)) {
+            continue;
+        }
+        const QJsonDocument doc = QJsonDocument::fromJson(metaFile.readAll());
+        metaFile.close();
+        if (!doc.isObject()) {
+            continue;
+        }
+        const QJsonObject json = doc.object();
+        const QString name = json.value("name").toString();
+        if (name.isEmpty()) {
+            continue;
+        }
+        // 相机插件实现 ICameraPlugin 而非 IModule，不参与参数契约校验。
+        if (json.value("category").toString().compare(QLatin1String("camera"), Qt::CaseInsensitive) == 0) {
+            continue;
+        }
+
+        const QString dirName = DeepLuxTest::pluginInstallDir(plugin);
+        const QString targetDir = QDir(pluginRoot).filePath(dirName);
+        if (!QDir().mkpath(targetDir)) {
+            continue;
+        }
+        const QString libName = QFileInfo(plugin.libraryPath).fileName();
+        QFile::remove(QDir(targetDir).filePath("metadata.json"));
+        QFile::remove(QDir(targetDir).filePath(libName));
+        if (!QFile::copy(plugin.metadataPath, QDir(targetDir).filePath("metadata.json")) ||
+            !QFile::copy(plugin.libraryPath, QDir(targetDir).filePath(libName))) {
+            continue;
+        }
+
+        m_entries.append({name, dirName, plugin.metadataPath, plugin.libraryPath});
     }
 
-    if (metas.isEmpty()) {
-        qWarning() << "No metadata.json files found under" << srcRoot;
+    if (m_entries.isEmpty()) {
+        qWarning() << "No plugin libraries/metadata found via CMake-injected plugin manifest";
         return false;
     }
-
-    for (const QFileInfo& meta : metas) {
-        QFile f(meta.filePath());
-        if (!f.open(QIODevice::ReadOnly))
-            continue;
-        QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
-        f.close();
-        if (!doc.isObject())
-            continue;
-        QJsonObject json = doc.object();
-        QString name = json.value("name").toString();
-        if (name.isEmpty())
-            continue;
-
-        // Try to find matching .so: lib<name>Plugin.so or lib<dirName>Plugin.so
-        const QString dirName = meta.dir().dirName();
-        const QString shortDir = dirName.endsWith("Plugin") ? dirName.left(dirName.length() - 6) : dirName;
-
-        QString soName;
-        // Try name match first, then dirName match, then shortDir match
-        for (const QString& candidate : {name, dirName, shortDir}) {
-            QString p = QDir(libDir).filePath(QString("lib%1Plugin.so").arg(candidate));
-            if (QFileInfo::exists(p)) {
-                soName = p;
-                break;
-            }
-        }
-        if (soName.isEmpty()) {
-            // Skip camera plugins and other platform-specific plugins that may not build
-            continue;
-        }
-
-        // Install: copy metadata.json and .so to temp/plugins/<dirName>/
-        const QString targetDir = QDir(pluginRoot).filePath(dirName);
-        QDir::root().mkpath(targetDir);
-        QFile::copy(meta.filePath(), QDir(targetDir).filePath("metadata.json"));
-        QFile::copy(soName, QDir(targetDir).filePath(QFileInfo(soName).fileName()));
-
-        m_entries.append({name, dirName, meta.filePath(), soName});
-    }
-
-    return !m_entries.isEmpty();
+    return true;
 }
 
 QVariant TestPluginParameterContracts::replacementValue(const QString& key, const QJsonValue& value) const {

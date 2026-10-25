@@ -12,7 +12,7 @@ namespace DeepLux {
 // ImageData 子图）与 crop_count；outputFirstAsImage（旧版 IsOutputCropImage
 // 对应物）为真时 image 输出端口替换为首个有效裁剪图供下游直接消费，
 // 否则原样透传。
-class CropImagePlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API CropImagePlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)

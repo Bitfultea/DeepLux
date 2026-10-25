@@ -1214,7 +1214,7 @@ void MainWindow::setupMainLayout() {
     processControlBar->setObjectName("ProcessControlBar");
     auto* processControlLayout = new QHBoxLayout(processControlBar);
     processControlLayout->setContentsMargins(0, 0, 0, 0);
-    processControlLayout->setSpacing(2);
+    processControlLayout->setSpacing(0);
     auto addProcessControl = [this, processControlBar, processControlLayout](
                                  const QString& objectName, AppIconProvider::Icon icon, const QColor& color,
                                  const QString& text, const QString& toolTip, auto slot) {
@@ -1225,6 +1225,9 @@ void MainWindow::setupMainLayout() {
         button->setIconSize(QSize(16, 16));
         button->setText(text);
         button->setToolTip(toolTip);
+        // 固定水平尺寸，避免紧凑布局按像素压缩按钮导致文字被裁切
+        // （不同平台/字体下 sizeHint 与布局取整差异会放大该问题）。
+        button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
         connect(button, &QToolButton::clicked, this, slot);
         processControlLayout->addWidget(button);
     };
@@ -2106,29 +2109,29 @@ void MainWindow::onViewportCreated(const QString& /*viewportId*/, ViewportWidget
     connect(viewport, &ViewportWidget::point2DClicked, this, &MainWindow::onPoint2DPicked, Qt::UniqueConnection);
     connect(viewport, &ViewportWidget::point3DClicked, this, &MainWindow::onPoint3DPicked, Qt::UniqueConnection);
     // 关闭按钮：清空视口内容（单视口时不销毁）
-    connect(
-        viewport, &ViewportWidget::viewportClosed, this,
-        [this](const QString& id) {
-            if (m_displayManager) {
-                for (auto it = m_dataSourceViewportIds.begin(); it != m_dataSourceViewportIds.end();) {
-                    if (it.value() == id) {
-                        it = m_dataSourceViewportIds.erase(it);
-                    } else {
-                        ++it;
-                    }
-                }
-                if (id == m_primaryDataSourceViewportId || m_displayManager->viewportCount() <= 1) {
-                    ViewportWidget* vp = m_displayManager->viewport(id);
-                    if (vp) {
-                        vp->clearDisplay();
-                        vp->setTitle(tr("主视图"));
-                    }
+    // Qt 的 lambda connect 不支持 Qt::UniqueConnection（会产生运行时警告），
+    // 先用显式 disconnect 保证同一 viewport 只连接一次。
+    disconnect(viewport, &ViewportWidget::viewportClosed, this, nullptr);
+    connect(viewport, &ViewportWidget::viewportClosed, this, [this](const QString& id) {
+        if (m_displayManager) {
+            for (auto it = m_dataSourceViewportIds.begin(); it != m_dataSourceViewportIds.end();) {
+                if (it.value() == id) {
+                    it = m_dataSourceViewportIds.erase(it);
                 } else {
-                    m_displayManager->destroyViewport(id);
+                    ++it;
                 }
             }
-        },
-        Qt::UniqueConnection);
+            if (id == m_primaryDataSourceViewportId || m_displayManager->viewportCount() <= 1) {
+                ViewportWidget* vp = m_displayManager->viewport(id);
+                if (vp) {
+                    vp->clearDisplay();
+                    vp->setTitle(tr("主视图"));
+                }
+            } else {
+                m_displayManager->destroyViewport(id);
+            }
+        }
+    });
     // 高: 视口及其子控件也需要事件过滤器，双击进入焦点模式
     viewport->installEventFilter(this);
     if (viewport->imageWidget())
@@ -5525,44 +5528,43 @@ void MainWindow::onQuickMeasure() {
             if (HImageWidget* iw = vp->imageWidget()) {
                 iw->clearRois();
                 iw->setRoiMode(RoiType::Rectangle1);
-                // 连接 roiCreated 信号（UniqueConnection 防重复）
-                connect(
-                    iw, &HImageWidget::roiCreated, this,
-                    [this](const RoiData& roi) {
-                        if (!m_quickMeasureActive || m_quickMeasureType != 5)
-                            return;
-                        QPointF a(roi.x1, roi.y1);
-                        QPointF b(roi.x2, roi.y2);
-                        double w = std::abs(b.x() - a.x());
-                        double h = std::abs(b.y() - a.y());
-                        double area = w * h;
-                        QPointF tl(qMin(a.x(), b.x()), qMin(a.y(), b.y()));
-                        QPointF br(qMax(a.x(), b.x()), qMax(a.y(), b.y()));
-                        QPointF topRight(br.x(), tl.y());
-                        QPointF botLeft(tl.x(), br.y());
-                        QString label = tr("W=%1, H=%2, A=%3").arg(w, 0, 'f', 2).arg(h, 0, 'f', 2).arg(area, 0, 'f', 2);
-                        Logger::instance().info(tr("快速测量: 矩形 宽=%1, 高=%2, 面积=%3")
-                                                    .arg(w, 0, 'f', 3)
-                                                    .arg(h, 0, 'f', 3)
-                                                    .arg(area, 0, 'f', 3),
-                                                "Measurement");
-                        // 清除 ROI 绘制，改用测量 overlay 显示
-                        if (HImageWidget* iw2 = qobject_cast<HImageWidget*>(sender())) {
-                            iw2->clearRois();
-                        }
-                        for (ViewportWidget* vp2 : m_displayManager->allViewports()) {
-                            if (HImageWidget* iw3 = vp2 ? vp2->imageWidget() : nullptr) {
-                                if (iw3->hasImage()) {
-                                    iw3->setMeasurementOverlay({{tl, QStringLiteral("TL")}, {br, QStringLiteral("BR")}},
-                                                               {{tl, topRight, QString()},
-                                                                {topRight, br, QString()},
-                                                                {br, botLeft, QString()},
-                                                                {botLeft, tl, label}});
-                                }
+                // 连接 roiCreated 信号（lambda connect 不能使用 UniqueConnection，
+                // 先显式断开再连接以保持单次连接）
+                disconnect(iw, &HImageWidget::roiCreated, this, nullptr);
+                connect(iw, &HImageWidget::roiCreated, this, [this](const RoiData& roi) {
+                    if (!m_quickMeasureActive || m_quickMeasureType != 5)
+                        return;
+                    QPointF a(roi.x1, roi.y1);
+                    QPointF b(roi.x2, roi.y2);
+                    double w = std::abs(b.x() - a.x());
+                    double h = std::abs(b.y() - a.y());
+                    double area = w * h;
+                    QPointF tl(qMin(a.x(), b.x()), qMin(a.y(), b.y()));
+                    QPointF br(qMax(a.x(), b.x()), qMax(a.y(), b.y()));
+                    QPointF topRight(br.x(), tl.y());
+                    QPointF botLeft(tl.x(), br.y());
+                    QString label = tr("W=%1, H=%2, A=%3").arg(w, 0, 'f', 2).arg(h, 0, 'f', 2).arg(area, 0, 'f', 2);
+                    Logger::instance().info(tr("快速测量: 矩形 宽=%1, 高=%2, 面积=%3")
+                                                .arg(w, 0, 'f', 3)
+                                                .arg(h, 0, 'f', 3)
+                                                .arg(area, 0, 'f', 3),
+                                            "Measurement");
+                    // 清除 ROI 绘制，改用测量 overlay 显示
+                    if (HImageWidget* iw2 = qobject_cast<HImageWidget*>(sender())) {
+                        iw2->clearRois();
+                    }
+                    for (ViewportWidget* vp2 : m_displayManager->allViewports()) {
+                        if (HImageWidget* iw3 = vp2 ? vp2->imageWidget() : nullptr) {
+                            if (iw3->hasImage()) {
+                                iw3->setMeasurementOverlay({{tl, QStringLiteral("TL")}, {br, QStringLiteral("BR")}},
+                                                           {{tl, topRight, QString()},
+                                                            {topRight, br, QString()},
+                                                            {br, botLeft, QString()},
+                                                            {botLeft, tl, label}});
                             }
                         }
-                    },
-                    Qt::UniqueConnection);
+                    }
+                });
             }
         } else {
             // 其他类型：点击拾取模式

@@ -142,6 +142,10 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 # ========== 全局定义 ==========
 # Platform and OpenCV defines are set on deeplux_core target (see src/core/CMakeLists.txt)
 
+# ========== 测试开关 ==========
+# 必须在 src/core 之前声明：core 在测试构建中需要导出测试可见性宏。
+option(BUILD_TESTS "Build unit tests" ON)
+
 # ========== 子目录 ==========
 add_subdirectory(src/core)
 add_subdirectory(src/ui)
@@ -149,6 +153,11 @@ add_subdirectory(src/app)
 
 # ========== 插件 ==========
 option(ENABLE_CAMERA_HIKVISION "Enable HikVision camera support (requires HikVision MVS SDK)" OFF)
+
+# 插件类需要显式导出（Windows）：MSVC 的 WINDOWS_EXPORT_ALL_SYMBOLS 不导出全局
+# 数据符号，而 Qt 的 staticMetaObject 是数据符号。只给插件目录定义
+# DEEPLUX_PLUGIN_EXPORTS，主程序/测试包含插件头文件时看到的是 dllimport。
+add_compile_definitions(DEEPLUX_PLUGIN_EXPORTS)
 
 add_subdirectory(src/plugins/image_processing)
 add_subdirectory(src/plugins/detection)
@@ -176,6 +185,39 @@ if(ENABLE_CAMERA_BASLER)
     endif()
 endif()
 
+remove_definitions(-DDEEPLUX_PLUGIN_EXPORTS)
+
+# ========== 插件 target 清单（供测试注入跨平台路径）==========
+# tests/CMakeLists.txt 需要每个插件 target 的 $<TARGET_FILE:...> 与 metadata.json，
+# 用于在 Windows/Linux/macOS 以及多配置生成器下安装真实插件到临时目录。
+function(deeplux_collect_plugin_targets directory)
+    get_property(plugin_targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(plugin_target IN LISTS plugin_targets)
+        if(NOT plugin_target MATCHES "Plugin$")
+            continue()
+        endif()
+        get_target_property(plugin_type ${plugin_target} TYPE)
+        if(NOT plugin_type STREQUAL "SHARED_LIBRARY" AND NOT plugin_type STREQUAL "MODULE_LIBRARY")
+            continue()
+        endif()
+        if(EXISTS "${directory}/metadata.json")
+            set_property(GLOBAL APPEND PROPERTY DEEPLUX_PLUGIN_TARGET_ENTRIES
+                "${plugin_target}|${directory}/metadata.json")
+        endif()
+    endforeach()
+    get_property(plugin_subdirs DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
+    foreach(plugin_subdir IN LISTS plugin_subdirs)
+        deeplux_collect_plugin_targets("${plugin_subdir}")
+    endforeach()
+endfunction()
+
+get_property(plugin_domains DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY SUBDIRECTORIES)
+foreach(plugin_domain IN LISTS plugin_domains)
+    if(plugin_domain MATCHES "^${CMAKE_SOURCE_DIR}/src/plugins/")
+        deeplux_collect_plugin_targets("${plugin_domain}")
+    endif()
+endforeach()
+
 # ========== SAM server runtime files ==========
 set(DEEPLUX_SAM_SERVER_SOURCE_DIR ${CMAKE_SOURCE_DIR}/tools/sam_server)
 set(DEEPLUX_SAM_SERVER_BUILD_DIR ${CMAKE_BINARY_DIR}/tools/sam_server)
@@ -193,7 +235,6 @@ add_dependencies(DeepLux stage-sam-server)
 add_subdirectory(tools/sam_bench)
 
 # ========== 测试 ==========
-option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
@@ -204,14 +245,30 @@ endif()
 # 解决因插件库与主程序不同步导致的跨 DLL 虚表不匹配问题。
 if(WIN32)
     add_custom_target(sync-plugins
-        COMMAND powershell -ExecutionPolicy Bypass -File ${CMAKE_SOURCE_DIR}/scripts/sync-plugins.ps1 ${CMAKE_BINARY_DIR}
+        COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/scripts/sync-plugins.ps1"
+                "${CMAKE_BINARY_DIR}" "${CMAKE_SOURCE_DIR}"
         COMMENT "Synchronizing built plugins to ~/.deeplux/plugins/"
         VERBATIM
     )
 else()
     add_custom_target(sync-plugins
-        COMMAND ${CMAKE_SOURCE_DIR}/scripts/sync-plugins.sh ${CMAKE_BINARY_DIR}
+        COMMAND "${CMAKE_SOURCE_DIR}/scripts/sync-plugins.sh" "${CMAKE_BINARY_DIR}"
         COMMENT "Synchronizing built plugins to ~/.deeplux/plugins/"
+        VERBATIM
+    )
+endif()
+
+# ========== Windows 部署 ==========
+# 生成可分发目录：<build>/deploy/DeepLux-win64（bin + plugins + tools），
+# 并调用 windeployqt / 复制 OpenCV 运行库 / 执行 CLI 冒烟测试。
+if(WIN32)
+    add_custom_target(deploy-windows
+        COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/scripts/deploy-windows.ps1"
+                -BuildDir "${CMAKE_BINARY_DIR}"
+                -Prefix "${CMAKE_BINARY_DIR}/deploy/DeepLux-win64"
+                -CMake "${CMAKE_COMMAND}"
+                -Config "$<CONFIG>"
+        COMMENT "Deploying DeepLux Windows runtime tree"
         VERBATIM
     )
 endif()
@@ -221,26 +278,34 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/resources")
     install(DIRECTORY resources/ DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/deeplux)
 endif()
 install(DIRECTORY tools/sam_server DESTINATION tools)
+
 if(UNIX AND NOT APPLE)
     if(NOT CMAKE_INSTALL_BINDIR STREQUAL "bin")
         message(FATAL_ERROR "Linux plugin layout requires CMAKE_INSTALL_BINDIR=bin for relocatable installation")
     endif()
-    function(deeplux_install_plugins directory)
-        get_property(plugin_targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
-        foreach(plugin_target IN LISTS plugin_targets)
-            if(NOT plugin_target MATCHES "Plugin$")
-                continue()
-            endif()
-            get_target_property(plugin_type ${plugin_target} TYPE)
-            if(NOT plugin_type STREQUAL "SHARED_LIBRARY" AND NOT plugin_type STREQUAL "MODULE_LIBRARY")
-                continue()
-            endif()
-            if(NOT EXISTS "${directory}/metadata.json")
-                message(FATAL_ERROR "Built plugin ${plugin_target} has no metadata.json in ${directory}")
-            endif()
-            get_filename_component(plugin_directory "${directory}" NAME)
-            set_property(GLOBAL APPEND PROPERTY DEEPLUX_PACKAGED_PLUGIN_DIRS "${plugin_directory}")
-            set(plugin_destination "plugins/${plugin_directory}")
+endif()
+
+# 插件安装规则（Windows 与 Linux 共用）：
+# 安装后的布局为 <prefix>/bin/DeepLux[.exe] + <prefix>/plugins/<PluginName>/。
+# PluginManager 会把 <exe>/../plugins 作为随包插件目录扫描，因此该布局在
+# Windows 上同样可直接运行，无需再依赖 ~/.deeplux。
+function(deeplux_install_plugins directory)
+    get_property(plugin_targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(plugin_target IN LISTS plugin_targets)
+        if(NOT plugin_target MATCHES "Plugin$")
+            continue()
+        endif()
+        get_target_property(plugin_type ${plugin_target} TYPE)
+        if(NOT plugin_type STREQUAL "SHARED_LIBRARY" AND NOT plugin_type STREQUAL "MODULE_LIBRARY")
+            continue()
+        endif()
+        if(NOT EXISTS "${directory}/metadata.json")
+            message(FATAL_ERROR "Built plugin ${plugin_target} has no metadata.json in ${directory}")
+        endif()
+        get_filename_component(plugin_directory "${directory}" NAME)
+        set_property(GLOBAL APPEND PROPERTY DEEPLUX_PACKAGED_PLUGIN_DIRS "${plugin_directory}")
+        set(plugin_destination "plugins/${plugin_directory}")
+        if(UNIX AND NOT APPLE)
             get_target_property(plugin_existing_rpath ${plugin_target} INSTALL_RPATH)
             set(plugin_install_rpath "\$ORIGIN/../../${CMAKE_INSTALL_LIBDIR}")
             if(plugin_existing_rpath)
@@ -248,36 +313,73 @@ if(UNIX AND NOT APPLE)
             endif()
             set_target_properties(${plugin_target} PROPERTIES
                 INSTALL_RPATH "${plugin_install_rpath}")
-            install(TARGETS ${plugin_target} LIBRARY DESTINATION "${plugin_destination}")
-            install(FILES "${directory}/metadata.json" DESTINATION "${plugin_destination}")
-            file(GLOB plugin_icons "${directory}/*.png" "${directory}/*.svg" "${directory}/*.ico")
-            if(plugin_icons)
-                install(FILES ${plugin_icons} DESTINATION "${plugin_destination}")
-            endif()
-        endforeach()
-        get_property(plugin_subdirs DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
-        foreach(plugin_subdir IN LISTS plugin_subdirs)
-            deeplux_install_plugins("${plugin_subdir}")
-        endforeach()
-    endfunction()
-    get_property(plugin_domains DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY SUBDIRECTORIES)
-    foreach(plugin_domain IN LISTS plugin_domains)
-        if(plugin_domain MATCHES "^${CMAKE_SOURCE_DIR}/src/plugins/")
-            deeplux_install_plugins("${plugin_domain}")
+        endif()
+        install(TARGETS ${plugin_target}
+            LIBRARY DESTINATION "${plugin_destination}"
+            RUNTIME DESTINATION "${plugin_destination}")
+        install(FILES "${directory}/metadata.json" DESTINATION "${plugin_destination}")
+        file(GLOB plugin_icons "${directory}/*.png" "${directory}/*.svg" "${directory}/*.ico")
+        if(plugin_icons)
+            install(FILES ${plugin_icons} DESTINATION "${plugin_destination}")
         endif()
     endforeach()
-    get_property(packaged_plugin_dirs GLOBAL PROPERTY DEEPLUX_PACKAGED_PLUGIN_DIRS)
-    list(SORT packaged_plugin_dirs)
-    string(REPLACE ";" "\n" packaged_plugin_manifest "${packaged_plugin_dirs}")
-    file(WRITE "${CMAKE_BINARY_DIR}/plugins.manifest" "${packaged_plugin_manifest}\n")
-    install(FILES "${CMAKE_BINARY_DIR}/plugins.manifest"
-        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/deeplux")
-    if(DEEPLUX_NATIVE_SAM)
-        configure_file(scripts/verify-sam-native-runtime.sh.in
-            "${CMAKE_BINARY_DIR}/verify-sam-native-runtime.sh" @ONLY)
-        install(PROGRAMS "${CMAKE_BINARY_DIR}/verify-sam-native-runtime.sh"
-            DESTINATION "${CMAKE_INSTALL_BINDIR}")
-        install(FILES tests/acceptance/projects/accept_sam_native_demo.json
-            DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/deeplux")
+    get_property(plugin_subdirs DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
+    foreach(plugin_subdir IN LISTS plugin_subdirs)
+        deeplux_install_plugins("${plugin_subdir}")
+    endforeach()
+endfunction()
+
+get_property(plugin_domains DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY SUBDIRECTORIES)
+foreach(plugin_domain IN LISTS plugin_domains)
+    if(plugin_domain MATCHES "^${CMAKE_SOURCE_DIR}/src/plugins/")
+        deeplux_install_plugins("${plugin_domain}")
     endif()
+endforeach()
+get_property(packaged_plugin_dirs GLOBAL PROPERTY DEEPLUX_PACKAGED_PLUGIN_DIRS)
+list(SORT packaged_plugin_dirs)
+string(REPLACE ";" "\n" packaged_plugin_manifest "${packaged_plugin_dirs}")
+file(WRITE "${CMAKE_BINARY_DIR}/plugins.manifest" "${packaged_plugin_manifest}\n")
+install(FILES "${CMAKE_BINARY_DIR}/plugins.manifest"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/deeplux")
+
+# Windows 安装树自带 OpenCV 运行库；Qt 运行库由 scripts/deploy-windows.ps1
+# 调用 windeployqt 复制（或打包机自行安装 Qt）。
+if(WIN32)
+    set(_opencv_runtime_dirs "")
+    if(OpenCV_LIB_PATH)
+        list(APPEND _opencv_runtime_dirs "${OpenCV_LIB_PATH}/../bin")
+    endif()
+    if(OpenCV_DIR)
+        # Official Windows pack (build/x64/vc16/bin) and vcpkg
+        # (share/opencv4/../../bin) layouts.
+        list(APPEND _opencv_runtime_dirs
+            "${OpenCV_DIR}/bin"
+            "${OpenCV_DIR}/x64/vc16/bin"
+            "${OpenCV_DIR}/../../bin")
+    endif()
+    set(_opencv_runtime_dlls "")
+    foreach(_dir IN LISTS _opencv_runtime_dirs)
+        if(EXISTS "${_dir}")
+            file(GLOB _dir_dlls "${_dir}/opencv*.dll")
+            foreach(_dll IN LISTS _dir_dlls)
+                # Release install: skip debug variants such as opencv_world4120d.dll.
+                if(NOT _dll MATCHES "d\\.dll$")
+                    list(APPEND _opencv_runtime_dlls "${_dll}")
+                endif()
+            endforeach()
+        endif()
+    endforeach()
+    if(_opencv_runtime_dlls)
+        list(REMOVE_DUPLICATES _opencv_runtime_dlls)
+        install(FILES ${_opencv_runtime_dlls} DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
+endif()
+
+if(UNIX AND NOT APPLE AND DEEPLUX_NATIVE_SAM)
+    configure_file(scripts/verify-sam-native-runtime.sh.in
+        "${CMAKE_BINARY_DIR}/verify-sam-native-runtime.sh" @ONLY)
+    install(PROGRAMS "${CMAKE_BINARY_DIR}/verify-sam-native-runtime.sh"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    install(FILES tests/acceptance/projects/accept_sam_native_demo.json
+        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/deeplux")
 endif()

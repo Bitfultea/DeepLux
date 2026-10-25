@@ -2,6 +2,15 @@
 
 set(DEEPLUX_TEST_QPA_PLATFORM "offscreen" CACHE STRING "Qt platform plugin used by GUI tests")
 
+# 原生 SAM 模型包默认位置：Linux/macOS 用 $HOME，Windows 用 %USERPROFILE%。
+if(DEFINED ENV{HOME})
+    set(DEEPLUX_TEST_HOME "$ENV{HOME}")
+elseif(DEFINED ENV{USERPROFILE})
+    file(TO_CMAKE_PATH "$ENV{USERPROFILE}" DEEPLUX_TEST_HOME)
+else()
+    set(DEEPLUX_TEST_HOME "")
+endif()
+
 set(TEST_SOURCES
     test_pathtutils.cpp
     test_modulebase.cpp
@@ -81,10 +90,42 @@ set(TEST_SOURCES
     test_finalplugins.cpp
 )
 
+# ========== 插件路径清单 ==========
+# 顶层 CMake 在测试之前收集了所有插件 target 及其 metadata.json。
+# 这里展开为一条编译期清单：<target>|<dll-or-so>|<metadata>@@...
+# 测试通过 tests/TestPluginRegistry.h 解析，避免在测试代码里硬编码
+# lib*.so/*.dll 名称，并天然支持 MSVC 多配置输出目录（bin/Release 等）。
+get_property(DEEPLUX_PLUGIN_TARGET_ENTRIES GLOBAL PROPERTY DEEPLUX_PLUGIN_TARGET_ENTRIES)
+set(DEEPLUX_TEST_PLUGIN_MANIFEST "")
+foreach(_plugin_entry IN LISTS DEEPLUX_PLUGIN_TARGET_ENTRIES)
+    string(REPLACE "|" ";" _plugin_parts "${_plugin_entry}")
+    list(LENGTH _plugin_parts _plugin_part_count)
+    if(_plugin_part_count LESS 2)
+        continue()
+    endif()
+    list(GET _plugin_parts 0 _plugin_target)
+    list(GET _plugin_parts 1 _plugin_metadata)
+    if(TARGET ${_plugin_target})
+        string(APPEND DEEPLUX_TEST_PLUGIN_MANIFEST
+            "${_plugin_target}|$<TARGET_FILE:${_plugin_target}>|${_plugin_metadata}@@")
+    endif()
+endforeach()
+
+function(deeplux_add_test_plugin_defs test_target)
+    if(NOT DEEPLUX_TEST_PLUGIN_MANIFEST)
+        return()
+    endif()
+    target_compile_definitions(${test_target} PRIVATE
+        DEEPLUX_TEST_PLUGIN_MANIFEST="${DEEPLUX_TEST_PLUGIN_MANIFEST}")
+endfunction()
+
 foreach(TEST_FILE ${TEST_SOURCES})
     get_filename_component(TEST_NAME ${TEST_FILE} NAME_WE)
 
     add_executable(${TEST_NAME} ${TEST_FILE})
+
+    target_compile_definitions(${TEST_NAME} PRIVATE
+        DEEPLUX_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
     target_link_libraries(${TEST_NAME}
         PRIVATE
@@ -101,6 +142,20 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(OpenCV_FOUND)
         target_link_libraries(${TEST_NAME} PRIVATE ${OpenCV_LIBS})
         target_include_directories(${TEST_NAME} PRIVATE ${OpenCV_INCLUDE_DIRS})
+    endif()
+
+    if(TEST_NAME MATCHES "^(test_acceptance_flows|test_mainwindow|test_plugincontracts|test_pluginparametercontracts)$")
+        deeplux_add_test_plugin_defs(${TEST_NAME})
+        if(TEST_NAME STREQUAL "test_pluginparametercontracts")
+            # 该测试会安装并校验全部插件，必须确保所有插件库先于测试构建完成。
+            foreach(_plugin_entry IN LISTS DEEPLUX_PLUGIN_TARGET_ENTRIES)
+                string(REPLACE "|" ";" _plugin_parts "${_plugin_entry}")
+                list(GET _plugin_parts 0 _plugin_target)
+                if(TARGET ${_plugin_target})
+                    add_dependencies(${TEST_NAME} ${_plugin_target})
+                endif()
+            endforeach()
+        endif()
     endif()
 
     if(TEST_NAME STREQUAL "test_fitline" OR TEST_NAME STREQUAL "test_plugincontracts")
@@ -282,6 +337,12 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_clihandler" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE SystemTimePlugin)
     endif()
+    if(TEST_NAME STREQUAL "test_clihandler")
+        add_dependencies(${TEST_NAME} SystemTimePlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_CLIHANDLER_PLUGIN_SystemTime="$<TARGET_FILE:SystemTimePlugin>"
+            TEST_CLIHANDLER_META_SystemTime="${CMAKE_SOURCE_DIR}/src/plugins/system/SystemTime/metadata.json")
+    endif()
     if(TEST_NAME STREQUAL "test_logicplugins")
         target_link_libraries(${TEST_NAME}
             PRIVATE
@@ -362,7 +423,9 @@ foreach(TEST_FILE ${TEST_SOURCES})
             AGENTE2E_PLUGIN_FindCircle="$<TARGET_FILE:FindCirclePlugin>")
     endif()
 
-    add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+    # GUI 测试在扫描插件/换肤时会输出大量 qDebug，Qt 6 的默认 -maxwarnings
+    # 上限会把它当成失败；显式放宽，行为断言仍由 QVERIFY/QCOMPARE 负责。
+    add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME} -maxwarnings 100000)
     set_tests_properties(${TEST_NAME} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}")
     if(TEST_NAME STREQUAL "test_pluginmanager")
         set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
@@ -418,6 +481,7 @@ if(OpenCV_FOUND)
 endif()
 # 阶段 5 复核：插件库路径以 $<TARGET_FILE:...> 注入，测试不再拼接 .so 库名（跨平台）
 target_compile_definitions(ui_capture_mainwindow PRIVATE
+    DEEPLUX_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     UICAP_PLUGIN_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
     UICAP_PLUGIN_FindCircle="$<TARGET_FILE:FindCirclePlugin>"
     UICAP_PLUGIN_LoadPointCloud="$<TARGET_FILE:LoadPointCloudPlugin>"
@@ -437,7 +501,7 @@ set_tests_properties(ui_capture_mainwindow PROPERTIES
 # ========== 阶段2：原生 SAM ONNX 推理测试（条件编译）==========
 if(DEEPLUX_NATIVE_SAM)
     target_compile_definitions(test_samannotatordialog PRIVATE
-        TEST_SAM_PACKAGE_DIR="$ENV{HOME}/Data/Models/sam1_vit_b_onnx")
+        TEST_SAM_PACKAGE_DIR="${DEEPLUX_TEST_HOME}/Data/Models/sam1_vit_b_onnx")
     set_tests_properties(test_samannotatordialog PROPERTIES TIMEOUT 120)
     add_executable(test_sam_onnx_inference test_sam_onnx_inference.cpp)
     target_link_libraries(test_sam_onnx_inference PRIVATE deeplux_core SamPredictPlugin)
@@ -447,7 +511,7 @@ if(DEEPLUX_NATIVE_SAM)
         target_link_libraries(test_sam_onnx_inference PRIVATE Qt5::Core Qt5::Test)
     endif()
     target_compile_definitions(test_sam_onnx_inference PRIVATE
-        TEST_SAM_PACKAGE_DIR="$ENV{HOME}/Data/Models/sam1_vit_b_onnx"
+        TEST_SAM_PACKAGE_DIR="${DEEPLUX_TEST_HOME}/Data/Models/sam1_vit_b_onnx"
         TEST_SAM_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/acceptance/data/sam_native_golden"
         TEST_SAM_REAL_REPORT="${CMAKE_SOURCE_DIR}/docs/sam_native/stage1/compare_real_report.json")
     add_test(NAME test_sam_onnx_inference COMMAND test_sam_onnx_inference)

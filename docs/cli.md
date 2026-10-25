@@ -22,6 +22,15 @@ CLI 模式会在检测到命令参数时自动启用，也可用 `--cli` 强制�
 ./DeepLux --cli info
 ```
 
+Windows：
+
+```bat
+rem DeepLux.exe 是 GUI 子系统程序；用安装目录内的包装脚本调用 CLI，
+rem 以便 cmd/PowerShell 等待进程并接收输出
+bin\deeplux.cmd --cli info
+bin\deeplux.cmd --cli list-plugins
+```
+
 ## 全局选项
 
 | 选项 | 说明 |

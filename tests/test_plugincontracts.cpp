@@ -1,3 +1,5 @@
+#include "TestPluginRegistry.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -21,10 +23,8 @@ private slots:
 
 private:
     struct PluginFixture {
-        QString installDir;
         QString moduleName;
-        QString metadataRelPath;
-        QString libraryName;
+        QString targetName;
     };
 
     bool installPlugin(const QString& pluginRoot, const PluginFixture& fixture) const;
@@ -42,25 +42,24 @@ void TestPluginContracts::cleanup() {
 }
 
 bool TestPluginContracts::installPlugin(const QString& pluginRoot, const PluginFixture& fixture) const {
+    const DeepLuxTest::PluginEntry entry = DeepLuxTest::pluginEntry(fixture.targetName);
+    if (entry.libraryPath.isEmpty() || entry.metadataPath.isEmpty()) {
+        return false;
+    }
+
+    const QString dirName = DeepLuxTest::pluginInstallDir(entry);
     QDir root(pluginRoot);
-    if (!root.mkpath(fixture.installDir)) {
+    if (!root.mkpath(dirName)) {
         return false;
     }
 
-    QDir pluginDir(root.filePath(fixture.installDir));
-    const QString metadataSrc =
-        QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../" + fixture.metadataRelPath);
-    const QString libSrc = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../lib/" + fixture.libraryName);
-
-    if (!QFileInfo::exists(metadataSrc) || !QFileInfo::exists(libSrc)) {
-        return false;
-    }
-
+    QDir pluginDir(root.filePath(dirName));
+    const QString libName = QFileInfo(entry.libraryPath).fileName();
     QFile::remove(pluginDir.filePath("metadata.json"));
-    QFile::remove(pluginDir.filePath(fixture.libraryName));
+    QFile::remove(pluginDir.filePath(libName));
 
-    return QFile::copy(metadataSrc, pluginDir.filePath("metadata.json")) &&
-           QFile::copy(libSrc, pluginDir.filePath(fixture.libraryName));
+    return QFile::copy(entry.metadataPath, pluginDir.filePath("metadata.json")) &&
+           QFile::copy(entry.libraryPath, pluginDir.filePath(libName));
 }
 
 QVariant TestPluginContracts::replacementValueFor(const QString& key, const QJsonValue& value) const {
@@ -100,31 +99,28 @@ void TestPluginContracts::testRepresentativePluginsHaveIndependentParamPreservin
     const QString pluginRoot = dir.filePath("plugins");
 
     const QList<PluginFixture> fixtures = {
-        {"FitLine", "FitLine", "src/plugins/geometry/FitLine/metadata.json", "libFitLinePlugin.so"},
-        {"FitCircle", "FitCircle", "src/plugins/geometry/FitCircle/metadata.json", "libFitCirclePlugin.so"},
-        {"MeasureLine", "MeasureLine", "src/plugins/detection/MeasureLine/metadata.json", "libMeasureLinePlugin.so"},
-        {"DistancePP", "DistancePP", "src/plugins/geometry/DistancePP/metadata.json", "libDistancePPPlugin.so"},
-        {"PointSurfaceDistance", "PointSurfaceDistance", "src/plugins/geometry/PointSurfaceDistance/metadata.json",
-         "libPointSurfaceDistancePlugin.so"},
-        {"MeasurementInput", "MeasurementInput", "src/plugins/geometry/MeasurementInput/metadata.json",
-         "libMeasurementInputPlugin.so"},
-        {"Loop", "循环", "src/plugins/logic/Loop/metadata.json", "libLoopPlugin.so"},
-        {"Parallel", "Parallel", "src/plugins/logic/Parallel/metadata.json", "libParallelPlugin.so"},
-        {"SystemTime", "SystemTime", "src/plugins/system/SystemTime/metadata.json", "libSystemTimePlugin.so"},
-        {"Blob", "Blob", "src/plugins/image_processing/Blob/metadata.json", "libBlobPlugin.so"},
-        {"PerProcessing", "PerProcessing", "src/plugins/image_processing/PerProcessing/metadata.json",
-         "libPerProcessingPlugin.so"},
-        {"Matching", "Matching", "src/plugins/detection/Matching/metadata.json", "libMatchingPlugin.so"},
-        {"MeasureRect", "MeasureRect", "src/plugins/detection/MeasureRect/metadata.json", "libMeasureRectPlugin.so"},
-        {"Folder", "Folder", "src/plugins/system/Folder/metadata.json", "libFolderPlugin.so"},
-        {"SaveData", "SaveData", "src/plugins/system/SaveData/metadata.json", "libSaveDataPlugin.so"},
-        {"CreateString", "创建字符串", "src/plugins/variable/CreateString/metadata.json", "libCreateStringPlugin.so"},
-        {"SplitString", "分割字符串", "src/plugins/variable/SplitString/metadata.json", "libSplitStringPlugin.so"},
-        {"MathPlugin", "数学运算", "src/plugins/variable/MathPlugin/metadata.json", "libMathPlugin.so"},
+        {"FitLine", "FitLinePlugin"},
+        {"FitCircle", "FitCirclePlugin"},
+        {"MeasureLine", "MeasureLinePlugin"},
+        {"DistancePP", "DistancePPPlugin"},
+        {"PointSurfaceDistance", "PointSurfaceDistancePlugin"},
+        {"MeasurementInput", "MeasurementInputPlugin"},
+        {"循环", "LoopPlugin"},
+        {"Parallel", "ParallelPlugin"},
+        {"SystemTime", "SystemTimePlugin"},
+        {"Blob", "BlobPlugin"},
+        {"PerProcessing", "PerProcessingPlugin"},
+        {"Matching", "MatchingPlugin"},
+        {"MeasureRect", "MeasureRectPlugin"},
+        {"Folder", "FolderPlugin"},
+        {"SaveData", "SaveDataPlugin"},
+        {"创建字符串", "CreateStringPlugin"},
+        {"分割字符串", "SplitStringPlugin"},
+        {"数学运算", "MathPlugin"},
     };
 
     for (const PluginFixture& fixture : fixtures) {
-        QVERIFY2(installPlugin(pluginRoot, fixture), qPrintable(QString("install %1").arg(fixture.installDir)));
+        QVERIFY2(installPlugin(pluginRoot, fixture), qPrintable(QString("install %1").arg(fixture.targetName)));
     }
 
     PluginManager::instance().addPluginPath(pluginRoot);

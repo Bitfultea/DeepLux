@@ -600,7 +600,7 @@ private slots:
         const QJsonObject toolResult =
             actor.executeTool("sam_predict", QJsonObject{{"imagePath", imagePath},
                                                          {"serverUrl", "native"},
-                                                         {"points", QJsonArray{QJsonArray{240, 180}}},
+                                                         {"points", QJsonArray{QJsonValue(QJsonArray{240, 180})}},
                                                          {"label", "defect"},
                                                          {"timeoutMs", 30000}});
         QVERIFY2(!toolResult.contains("error"), qPrintable(toolResult.value("error").toString()));
@@ -612,7 +612,7 @@ private slots:
         QJsonObject params = plugin.defaultParams();
         params.insert("serverUrl", "native");
         params.insert("label", "defect");
-        params.insert("points", QJsonArray{QJsonArray{240, 180}});
+        params.insert("points", QJsonArray{QJsonValue(QJsonArray{240, 180})});
         params.insert("timeoutMs", 30000);
         QString paramError;
         QVERIFY2(plugin.validateParams(params, paramError), qPrintable(paramError));

@@ -4,7 +4,7 @@
 
 namespace DeepLux {
 
-class IfPlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API IfPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -54,7 +54,7 @@ private:
     bool m_boolInversion = false;
 };
 
-class IfEndPlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API IfEndPlugin : public ModuleBase {
     Q_OBJECT
 
 public:

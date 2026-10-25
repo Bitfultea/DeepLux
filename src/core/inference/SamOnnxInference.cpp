@@ -659,8 +659,19 @@ bool SamOnnxInference::loadPackage(const QString& packageDir, const QString& dev
             OrtSessionOptionsRAII encoderOpts, decoderOpts;
             configure(encoderOpts, QStringLiteral("_encoder"));
             configure(decoderOpts, QStringLiteral("_decoder"));
-            ORT_CK(g_ort->CreateSession(env->env, encPath.toUtf8().constData(), encoderOpts.opts, &newEncoder.sess));
-            ORT_CK(g_ort->CreateSession(env->env, decPath.toUtf8().constData(), decoderOpts.opts, &newDecoder.sess));
+            // ORTCHAR_T is wchar_t on Windows and char elsewhere; CreateSession
+            // does not accept UTF-8 on Windows.
+#ifdef _WIN32
+            const std::wstring encoderPath = encPath.toStdWString();
+            const std::wstring decoderPath = decPath.toStdWString();
+            ORT_CK(g_ort->CreateSession(env->env, encoderPath.c_str(), encoderOpts.opts, &newEncoder.sess));
+            ORT_CK(g_ort->CreateSession(env->env, decoderPath.c_str(), decoderOpts.opts, &newDecoder.sess));
+#else
+            const QByteArray encoderPath = encPath.toUtf8();
+            const QByteArray decoderPath = decPath.toUtf8();
+            ORT_CK(g_ort->CreateSession(env->env, encoderPath.constData(), encoderOpts.opts, &newEncoder.sess));
+            ORT_CK(g_ort->CreateSession(env->env, decoderPath.constData(), decoderOpts.opts, &newDecoder.sess));
+#endif
         };
         OrtSessionRAII newEncoder, newDecoder;
         QString activeDevice = device;

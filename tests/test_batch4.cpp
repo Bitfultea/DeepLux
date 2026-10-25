@@ -124,7 +124,7 @@ private slots:
         QVERIFY(plugin.initialize()); // 默认参数：中心 100×100 矩形
         // 阶7 批4复核三轮（P1-3）：l1/l2 为半长（旧版 HALCON Length1/2 口径）——
         // 半长 100/50 → 裁剪 200×100
-        plugin.setParams(cropParams(QJsonArray{rect(320, 240, 100, 50, 0)}));
+        plugin.setParams(cropParams(QJsonArray{QJsonValue(rect(320, 240, 100, 50, 0))}));
         ImageData input(makePatternImage(640, 480));
         ImageData out;
         QVERIFY2(plugin.execute(input, out), "axis-aligned crop must succeed");
@@ -151,7 +151,7 @@ private slots:
 
     void testCropRotated45() {
         CropImagePlugin plugin;
-        plugin.setParams(cropParams(QJsonArray{rect(320, 240, 70, 10, 45)})); // 半长 70/10
+        plugin.setParams(cropParams(QJsonArray{QJsonValue(rect(320, 240, 70, 10, 45))})); // 半长 70/10
         QVERIFY(plugin.initialize());
         ImageData input(makePatternImage(640, 480));
         ImageData out;
@@ -213,7 +213,7 @@ private slots:
 
     void testCropClampedToImage() {
         CropImagePlugin plugin;
-        plugin.setParams(cropParams(QJsonArray{rect(10, 10, 50, 50, 0)})); // 半长 50，越出左上边界
+        plugin.setParams(cropParams(QJsonArray{QJsonValue(rect(10, 10, 50, 50, 0))})); // 半长 50，越出左上边界
         QVERIFY(plugin.initialize());
         ImageData input(makePatternImage(640, 480));
         ImageData out;
@@ -229,7 +229,7 @@ private slots:
     // （旧 qRound：220.5→221、420.5→421 得宽 200 且丢失 x=420 列）
     void testCropFractionalCenter() {
         CropImagePlugin plugin;
-        plugin.setParams(cropParams(QJsonArray{rect(320.5, 240.5, 100, 50, 0)})); // 半长 100/50
+        plugin.setParams(cropParams(QJsonArray{QJsonValue(rect(320.5, 240.5, 100, 50, 0))})); // 半长 100/50
         QVERIFY(plugin.initialize());
         ImageData input(makePatternImage(640, 480));
         ImageData out;
@@ -244,7 +244,7 @@ private slots:
     // 阶7 批4复核（P1-3）：小尺寸矩形不得因取整产生零宽/零高被误判无效
     void testCropTinyRectStillValid() {
         CropImagePlugin plugin;
-        plugin.setParams(cropParams(QJsonArray{rect(320, 240, 0.5, 0.5, 0)}));
+        plugin.setParams(cropParams(QJsonArray{QJsonValue(rect(320, 240, 0.5, 0.5, 0))}));
         QVERIFY(plugin.initialize());
         ImageData input(makePatternImage(640, 480));
         ImageData out;
@@ -258,7 +258,7 @@ private slots:
     // 阶7 批4复核（P1-3）：贴边 ROI——原点处 1×1 矩形钳制后仍有效
     void testCropEdgeTouching() {
         CropImagePlugin plugin;
-        plugin.setParams(cropParams(QJsonArray{rect(0, 0, 1, 1, 0)}));
+        plugin.setParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, 1, 1, 0))}));
         QVERIFY(plugin.initialize());
         ImageData input(makePatternImage(640, 480));
         ImageData out;
@@ -318,7 +318,7 @@ private slots:
 
     void testCropOutputFirstAsImageFalse() {
         CropImagePlugin plugin;
-        plugin.setParams(cropParams(QJsonArray{rect(320, 240, 200, 100, 0)}, false));
+        plugin.setParams(cropParams(QJsonArray{QJsonValue(rect(320, 240, 200, 100, 0))}, false));
         QVERIFY(plugin.initialize());
         ImageData input(makePatternImage(640, 480));
         ImageData out;
@@ -332,36 +332,40 @@ private slots:
     void testCropValidation() {
         CropImagePlugin plugin;
         QString error;
-        QVERIFY(plugin.validateParams(cropParams(QJsonArray{rect(0, 0, 10, 10, 0)}), error));
+        QVERIFY(plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, 10, 10, 0))}), error));
         QVERIFY(!plugin.validateParams(QJsonObject{{"rectangles", 42}, {"outputFirstAsImage", true}}, error)); // 非数组
-        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{}), error)); // 空数组
+        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{}), error));                                      // 空数组
         QJsonArray tooMany;
         for (int i = 0; i < 65; ++i) {
             tooMany.append(rect(0, 0, 10, 10, 0));
         }
-        QVERIFY(!plugin.validateParams(cropParams(tooMany), error));                                    // 超上限 64
-        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonArray{1.0, 2.0, 3.0, 4.0}}), error)); // 4 元
-        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonArray{1.0, 2.0, 3.0, 4.0, QStringLiteral("0")}}),
-                                       error));                                                  // 字符串元素
-        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{rect(0, 0, 0, 10, 0)}), error));    // l1=0
-        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{rect(0, 0, -5, 10, 0)}), error));   // l1<0
-        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{rect(0, 0, 10, 10, 400)}), error)); // deg 超界
-        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{rect(1000000.5, 0, 10, 10, 0)}), error)); // cx 超界
-        QVERIFY(!plugin.validateParams(QJsonObject{{"rectangles", QJsonArray{rect(0, 0, 10, 10, 0)}},
+        QVERIFY(!plugin.validateParams(cropParams(tooMany), error)); // 超上限 64
+        QVERIFY(
+            !plugin.validateParams(cropParams(QJsonArray{QJsonValue(QJsonArray{1.0, 2.0, 3.0, 4.0})}), error)); // 4 元
+        QVERIFY(!plugin.validateParams(
+            cropParams(QJsonArray{QJsonValue(QJsonArray{1.0, 2.0, 3.0, 4.0, QStringLiteral("0")})}),
+            error));                                                                                       // 字符串元素
+        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, 0, 10, 0))}), error));  // l1=0
+        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, -5, 10, 0))}), error)); // l1<0
+        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, 10, 10, 400))}), error)); // deg 超界
+        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(1000000.5, 0, 10, 10, 0))}),
+                                       error)); // cx 超界
+        QVERIFY(!plugin.validateParams(QJsonObject{{"rectangles", QJsonArray{QJsonValue(rect(0, 0, 10, 10, 0))}},
                                                    {"outputFirstAsImage", QStringLiteral("yes")}},
-                                       error));                                                   // 布尔严格
-        QVERIFY(plugin.validateParams(cropParams(QJsonArray{rect(0, 0, 1e6, 1e6, 360)}), error)); // 边界合法
+                                       error)); // 布尔严格
+        QVERIFY(
+            plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, 1e6, 1e6, 360))}), error)); // 边界合法
     }
 
     void testCropClone() {
         CropImagePlugin plugin;
-        plugin.setParams(cropParams(QJsonArray{rect(50, 50, 40, 30, 15)}, false));
+        plugin.setParams(cropParams(QJsonArray{QJsonValue(rect(50, 50, 40, 30, 15))}, false));
         IModule* clone = plugin.clone();
         QVERIFY(clone != nullptr);
         auto* cloneCrop = qobject_cast<CropImagePlugin*>(clone);
         QVERIFY(cloneCrop != nullptr);
         QCOMPARE(cloneCrop->currentParams()["outputFirstAsImage"].toBool(), false);
-        cloneCrop->setParams(cropParams(QJsonArray{rect(0, 0, 10, 10, 0)}));
+        cloneCrop->setParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, 10, 10, 0))}));
         QCOMPARE(plugin.currentParams()["outputFirstAsImage"].toBool(), false); // 原体不受影响
         delete clone;
     }

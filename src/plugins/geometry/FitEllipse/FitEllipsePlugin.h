@@ -10,7 +10,7 @@ namespace DeepLux {
 
 // 阶7 批1：椭圆拟合。对输入点集做直接最小二乘圆锥拟合（Fitzgibbon），
 // 按离群阈值迭代剔除后重拟合，输出中心/角度/长短半轴/椭圆度/误差。
-class FitEllipsePlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API FitEllipsePlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)

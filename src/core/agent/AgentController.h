@@ -91,13 +91,11 @@ signals:
     void toolsPendingConfirmation(const QJsonArray& toolCalls);
     void agentLoopIterating();
 
-private slots:
-    void onLLMResponse(const struct AgentResponse& resp);
+DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& resp);
     void onLLMError(const QString& error);
     void doConfirmPendingTools(QJsonArray calls);
 
-private:
-    explicit AgentController(QObject* parent = nullptr);
+    DEEPLUX_TEST_VISIBILITY : explicit AgentController(QObject* parent = nullptr);
     ~AgentController() override;
 
     QString buildContext();

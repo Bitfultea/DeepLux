@@ -53,3 +53,10 @@ if(LINUX)
             DESTINATION ${CMAKE_INSTALL_BINDIR}
             RENAME deeplux.sh)
 endif()
+
+# Windows CLI wrapper: DeepLux.exe is GUI-subsystem, cmd.exe is needed so that
+# shells wait for the process and receive its stdout/stderr.
+if(WIN32)
+    install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/deeplux.cmd
+            DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()

@@ -7,7 +7,7 @@ namespace DeepLux {
 /**
  * @brief DirectShow 相机插件 (Windows)
  */
-class DirectShowCameraPlugin : public ICameraPlugin {
+class DEEPLUX_PLUGIN_API DirectShowCameraPlugin : public ICameraPlugin {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.ICameraPlugin" FILE "metadata.json")
     Q_INTERFACES(DeepLux::ICameraPlugin)

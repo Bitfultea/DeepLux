@@ -12,7 +12,7 @@ namespace DeepLux {
 // 角度可经 Number 端口 current_angle 逐帧覆盖（旧版 DegLink 对应物）；类型
 // 错误/非有限失败关闭。旧版 Hommat2DTrans 仿射变换与 EnableRotateCenter
 // 旋转中心补正未实现（台账 partial），坐标按参数单位直接作差。
-class CalculateOffsetPlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API CalculateOffsetPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)

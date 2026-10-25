@@ -71,14 +71,12 @@ signals:
     void agentDisconnected(const QString& clientId);
     void agentConnectionLost(const QString& clientId);
 
-private slots:
-    void onNewConnection();
+DEEPLUX_TEST_VISIBILITY slots : void onNewConnection();
     void onClientMessage(const QString& clientId, const QJsonObject& msg);
     void onClientDisconnected(const QString& clientId);
     void onHeartbeatTimeout();
 
-private:
-    struct ProtocolResponse {
+    DEEPLUX_TEST_VISIBILITY : struct ProtocolResponse {
         QString reqId;
         bool error = false;
         QString errorMessage;

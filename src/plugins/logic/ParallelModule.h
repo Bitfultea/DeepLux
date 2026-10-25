@@ -4,7 +4,7 @@
 
 namespace DeepLux {
 
-class ParallelModule : public ModuleBase {
+class DEEPLUX_PLUGIN_API ParallelModule : public ModuleBase {
     Q_OBJECT
 
 public:
@@ -38,7 +38,7 @@ private:
     int m_parallelCount = 1;
 };
 
-class ParallelEndModule : public ModuleBase {
+class DEEPLUX_PLUGIN_API ParallelEndModule : public ModuleBase {
     Q_OBJECT
 
 public:

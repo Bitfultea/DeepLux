@@ -7,7 +7,7 @@
 
 namespace DeepLux {
 
-class WhilePlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API WhilePlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -59,7 +59,7 @@ private:
     int m_currentIteration = 0;
 };
 
-class WhileEndPlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API WhileEndPlugin : public ModuleBase {
     Q_OBJECT
 
 public:

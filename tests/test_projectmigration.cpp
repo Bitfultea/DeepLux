@@ -37,7 +37,11 @@ private:
 };
 
 void TestProjectMigration::testMappingConclusionConsistency() {
+#ifdef DEEPLUX_TEST_SOURCE_DIR
+    const QString root = QString::fromUtf8(DEEPLUX_TEST_SOURCE_DIR);
+#else
     const QString root = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../..");
+#endif
     QFile jf(root + "/docs/baseline/hotfix-plugin-mapping.json");
     QFile mf(root + "/docs/baseline/legacy-comparison.md");
     QFile generatedMf(root + "/docs/baseline/hotfix-plugin-mapping.md");
@@ -84,7 +88,11 @@ void TestProjectMigration::testMappingConclusionConsistency() {
 
 void TestProjectMigration::testMigrationDecisionConsistency() {
     // 阶1: 53 个 missing 全部得到决策；枚举合法；JSON 与 mapping.md 统计一致
+#ifdef DEEPLUX_TEST_SOURCE_DIR
+    const QString root = QString::fromUtf8(DEEPLUX_TEST_SOURCE_DIR);
+#else
     const QString root = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../..");
+#endif
     QFile jf(root + "/docs/baseline/hotfix-plugin-mapping.json");
     QFile mf(root + "/docs/baseline/hotfix-plugin-mapping.md");
     QVERIFY(jf.open(QIODevice::ReadOnly));

@@ -16,7 +16,7 @@ namespace DeepLux {
 // 拒绝共线/秩亏/严重病态（对平移/尺度不变，与批2五轮 SVD 门禁同一判据），
 // 每行响应取消令牌。输出法向量/平面距离/平面度（最大-最小偏差）/偏差极值/
 // RMS/有效点数，以及 Plane3D 契约（9 数值 = 平面上 3 个非共线点）供下游组合。
-class FitPlanePlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API FitPlanePlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)

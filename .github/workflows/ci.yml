@@ -75,6 +75,10 @@ jobs:
         run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DBUILD_TESTS=OFF -DDEEPLUX_NATIVE_SAM=OFF
       - name: Build
         run: cmake --build build --config Release -j
+      - name: Sync plugins
+        run: cmake --build build --config Release --target sync-plugins
+      - name: Deploy runtime and run CLI smoke test
+        run: cmake --build build --config Release --target deploy-windows
 
   ubuntu-qt6:
     runs-on: ubuntu-24.04

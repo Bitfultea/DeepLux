@@ -187,6 +187,11 @@ target_include_directories(deeplux_core
 # Platform define propagated to all downstream targets
 target_compile_definitions(deeplux_core PUBLIC ${DEEPLUX_PLATFORM_DEFINE})
 
+# 测试构建：核心库与测试共享 private→public 的符号修饰（见 Platform.h）
+if(BUILD_TESTS)
+    target_compile_definitions(deeplux_core PUBLIC DEEPLUX_BUILD_TESTS)
+endif()
+
 if(Qt6_FOUND)
     target_link_libraries(deeplux_agent_resources PRIVATE Qt6::Core)
     target_link_libraries(deeplux_core PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::SerialPort Qt6::Concurrent)

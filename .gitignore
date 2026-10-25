@@ -2,6 +2,7 @@
 build/
 build_*/
 build-*/
+dist/
 claude/
 cmake-build-*/
 out/

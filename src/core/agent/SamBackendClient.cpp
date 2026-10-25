@@ -481,9 +481,14 @@ void SamBackendClient::startEnvironmentStep() {
             startEnvironmentStep();
             return;
         }
-        m_envProcess->start(resolvedPythonPath(),
-                            QStringList{QStringLiteral("-m"), QStringLiteral("venv"), QStringLiteral("--without-pip"),
-                                        managedEnvironmentPath()});
+#ifdef DEEPLUX_PLATFORM_WINDOWS
+        const QStringList venvArgs{QStringLiteral("-m"), QStringLiteral("venv"), managedEnvironmentPath()};
+#else
+        // Linux/macOS 沿用无 pip 的 venv，随后由系统 pip3 安装依赖。
+        const QStringList venvArgs{QStringLiteral("-m"), QStringLiteral("venv"), QStringLiteral("--without-pip"),
+                                   managedEnvironmentPath()};
+#endif
+        m_envProcess->start(resolvedPythonPath(), venvArgs);
         return;
     }
 
@@ -502,7 +507,21 @@ void SamBackendClient::startEnvironmentStep() {
 
     const QString pip3 = QStandardPaths::findExecutable(QStringLiteral("pip3"));
     if (pip3.isEmpty()) {
+#ifdef DEEPLUX_PLATFORM_WINDOWS
+        // Windows 通常没有 pip3，也没有独立的 pip 可执行文件；退回 `python -m pip`。
+        const QString python = resolvedPythonPath();
+        if (python.isEmpty() || QStandardPaths::findExecutable(python).isEmpty()) {
+            finishEnvironmentInitialization(false, tr("系统缺少 Python/pip，无法安装 SAM 依赖"));
+            return;
+        }
+        PathUtils::ensureDirExists(managedSitePackagesPath());
+        emit environmentInitializationProgress(tr("SAM 环境：正在安装依赖，首次安装可能需要几分钟"));
+        m_envProcess->start(python, QStringList{QStringLiteral("-m"), QStringLiteral("pip"), QStringLiteral("install"),
+                                                QStringLiteral("--target"), managedSitePackagesPath(),
+                                                QStringLiteral("-r"), requirementsPath()});
+#else
         finishEnvironmentInitialization(false, tr("系统缺少 pip3，无法安装 SAM 依赖"));
+#endif
         return;
     }
     PathUtils::ensureDirExists(managedSitePackagesPath());

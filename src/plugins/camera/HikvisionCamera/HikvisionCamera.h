@@ -20,7 +20,7 @@ namespace DeepLux {
 /**
  * @brief Hikvision GigE/USB3 相机
  */
-class HikvisionCamera : public ICamera {
+class DEEPLUX_PLUGIN_API HikvisionCamera : public ICamera {
     Q_OBJECT
     Q_INTERFACES(DeepLux::ICamera)
 

@@ -32,12 +32,11 @@ public:
 
     void sendRequest(const AgentConversation& ctx, const QList<ToolDefinition>& tools) override;
 
-private slots:
-    void onReplyFinished();
+DEEPLUX_TEST_VISIBILITY slots : void onReplyFinished();
     void onNetworkError(QNetworkReply::NetworkError error);
 
-private:
-    QJsonObject buildRequestBody(const AgentConversation& ctx, const QList<ToolDefinition>& tools) const;
+    DEEPLUX_TEST_VISIBILITY : QJsonObject buildRequestBody(const AgentConversation& ctx,
+                                                           const QList<ToolDefinition>& tools) const;
     void parseResponse(const QByteArray& data);
 
     QString m_apiKey;

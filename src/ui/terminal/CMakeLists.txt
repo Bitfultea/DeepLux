@@ -14,6 +14,8 @@ set(TERMINAL_HEADERS
 )
 
 add_library(deeplux_terminal STATIC ${TERMINAL_SOURCES} ${TERMINAL_HEADERS})
+# Linux 上 deeplux_terminal 会链入共享库 deeplux_ui，静态库必须编译为 PIC。
+set_target_properties(deeplux_terminal PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(deeplux_terminal
     PUBLIC

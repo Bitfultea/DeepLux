@@ -10,7 +10,7 @@
 
 namespace DeepLux {
 
-class ShowImagePlugin : public ModuleBase, public IDisplayPort {
+class DEEPLUX_PLUGIN_API ShowImagePlugin : public ModuleBase, public IDisplayPort {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)

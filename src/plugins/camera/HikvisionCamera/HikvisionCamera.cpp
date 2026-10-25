@@ -3,6 +3,7 @@
 #include "core/common/Logger.h"
 
 #include <QDateTime>
+#include <QDir>
 #include <QJsonObject>
 #include <QLabel>
 #include <QVBoxLayout>
@@ -379,7 +380,7 @@ bool HikvisionCamera::processFrame(unsigned char* pData, MV_FRAME_OUT_INFO* pFra
     static bool s_debugSaved = false;
     if (!s_debugSaved) {
         s_debugSaved = true;
-        QString debugPath = "/tmp/deeplux_debug_frame.png";
+        QString debugPath = QDir(QDir::tempPath()).filePath("deeplux_debug_frame.png");
         if (m_lastImage.save(debugPath)) {
             Logger::instance().debug(QString("Saved debug frame to %1, format=0x%2, size=%3x%4")
                                          .arg(debugPath)

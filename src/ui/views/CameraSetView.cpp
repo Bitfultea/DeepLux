@@ -119,14 +119,13 @@ void CameraSetView::setupUI() {
 void CameraSetView::loadCameras() {
     m_cameraTable->setRowCount(0);
 
-    // 等待插件加载完成后再发现相机
-    connect(
-        &PluginManager::instance(), &PluginManager::allPluginsLoaded, this,
-        [this]() {
-            disconnect(&PluginManager::instance(), &PluginManager::allPluginsLoaded, this, nullptr);
-            loadCamerasInternal();
-        },
-        Qt::UniqueConnection);
+    // 等待插件加载完成后再发现相机（lambda connect 不能用 UniqueConnection，
+    // 先显式断开再连接以保持单次连接）
+    disconnect(&PluginManager::instance(), &PluginManager::allPluginsLoaded, this, nullptr);
+    connect(&PluginManager::instance(), &PluginManager::allPluginsLoaded, this, [this]() {
+        disconnect(&PluginManager::instance(), &PluginManager::allPluginsLoaded, this, nullptr);
+        loadCamerasInternal();
+    });
 
     // 如果插件已经加载完成，立即加载
     if (PluginManager::instance().isInitialized()) {

@@ -1,3 +1,5 @@
+#include "TestPluginRegistry.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
@@ -62,7 +64,7 @@ private:
     QTemporaryDir m_tempDir;
     QString m_acceptanceRoot; // tests/acceptance 绝对路径
 
-    bool installPlugin(const QString& dirName, const QString& metadataRel, const QString& libName);
+    bool installPlugin(const QString& targetOrName);
     QString loadProjectWithPlaceholder(const QString& projectRel, const QString& dataDir, Project& out);
 };
 
@@ -70,46 +72,31 @@ void TestAcceptanceFlows::initTestCase() {
     QVERIFY(m_tempDir.isValid());
     qputenv("DEEPLUX_APP_DATA_DIR", m_tempDir.filePath("appdata").toLocal8Bit());
 
-    // build/bin -> 仓库根/tests/acceptance
-    m_acceptanceRoot = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../tests/acceptance");
+    // 验收资产按源码目录定位；由 CMake 注入 DEEPLUX_TEST_SOURCE_DIR，
+    // 兼容 MSVC 多配置生成器（bin/Release 等）与 Windows 路径。
+    m_acceptanceRoot = QDir(DeepLuxTest::testSourceDir()).filePath(QStringLiteral("tests/acceptance"));
     QVERIFY2(QFileInfo::exists(m_acceptanceRoot), qPrintable("missing acceptance root: " + m_acceptanceRoot));
 
     PluginManager::instance().shutdown();
     PluginManager::instance().addPluginPath(m_tempDir.filePath("plugins"));
 
-    QVERIFY2(
-        installPlugin("GrabImage", "src/plugins/image_processing/GrabImage/metadata.json", "libGrabImagePlugin.so"),
-        "install GrabImage");
-    QVERIFY2(installPlugin("FindCircle", "src/plugins/detection/FindCircle/metadata.json", "libFindCirclePlugin.so"),
-             "install FindCircle");
-    QVERIFY2(installPlugin("MeasurementInput", "src/plugins/geometry/MeasurementInput/metadata.json",
-                           "libMeasurementInputPlugin.so"),
-             "install MeasurementInput");
-    QVERIFY2(installPlugin("DistancePP", "src/plugins/geometry/DistancePP/metadata.json", "libDistancePPPlugin.so"),
-             "install DistancePP");
-    QVERIFY2(installPlugin("LoadPointCloud", "src/plugins/image_processing/LoadPointCloud/metadata.json",
-                           "libLoadPointCloudPlugin.so"),
-             "install LoadPointCloud");
-    QVERIFY2(installPlugin("PointSurfaceDistance", "src/plugins/geometry/PointSurfaceDistance/metadata.json",
-                           "libPointSurfaceDistancePlugin.so"),
-             "install PointSurfaceDistance");
-    QVERIFY2(installPlugin("FitLine", "src/plugins/geometry/FitLine/metadata.json", "libFitLinePlugin.so"),
-             "install FitLine");
-    QVERIFY2(installPlugin("If", "src/plugins/logic/If/metadata.json", "libIfPlugin.so"), "install If");
-    QVERIFY2(installPlugin("Delay", "src/plugins/logic/Delay/metadata.json", "libDelayPlugin.so"), "install Delay");
+    QVERIFY2(installPlugin("GrabImage"), "install GrabImage");
+    QVERIFY2(installPlugin("FindCircle"), "install FindCircle");
+    QVERIFY2(installPlugin("MeasurementInput"), "install MeasurementInput");
+    QVERIFY2(installPlugin("DistancePP"), "install DistancePP");
+    QVERIFY2(installPlugin("LoadPointCloud"), "install LoadPointCloud");
+    QVERIFY2(installPlugin("PointSurfaceDistance"), "install PointSurfaceDistance");
+    QVERIFY2(installPlugin("FitLine"), "install FitLine");
+    QVERIFY2(installPlugin("If"), "install If");
+    QVERIFY2(installPlugin("Delay"), "install Delay");
     // 阶段 4: 循环/条件循环/停止循环/并行/数学/保存/圆拟合
-    QVERIFY2(installPlugin("Loop", "src/plugins/logic/Loop/metadata.json", "libLoopPlugin.so"), "install Loop");
-    QVERIFY2(installPlugin("While", "src/plugins/logic/While/metadata.json", "libWhilePlugin.so"), "install While");
-    QVERIFY2(installPlugin("StopWhile", "src/plugins/logic/StopWhile/metadata.json", "libStopWhilePlugin.so"),
-             "install StopWhile");
-    QVERIFY2(installPlugin("Parallel", "src/plugins/logic/Parallel/metadata.json", "libParallelPlugin.so"),
-             "install Parallel");
-    QVERIFY2(installPlugin("MathPlugin", "src/plugins/variable/MathPlugin/metadata.json", "libMathPlugin.so"),
-             "install Math");
-    QVERIFY2(installPlugin("SaveData", "src/plugins/system/SaveData/metadata.json", "libSaveDataPlugin.so"),
-             "install SaveData");
-    QVERIFY2(installPlugin("FitCircle", "src/plugins/geometry/FitCircle/metadata.json", "libFitCirclePlugin.so"),
-             "install FitCircle");
+    QVERIFY2(installPlugin("Loop"), "install Loop");
+    QVERIFY2(installPlugin("While"), "install While");
+    QVERIFY2(installPlugin("StopWhile"), "install StopWhile");
+    QVERIFY2(installPlugin("Parallel"), "install Parallel");
+    QVERIFY2(installPlugin("MathPlugin"), "install Math");
+    QVERIFY2(installPlugin("SaveData"), "install SaveData");
+    QVERIFY2(installPlugin("FitCircle"), "install FitCircle");
 
     QVERIFY(PluginManager::instance().initialize());
     QVERIFY(PluginManager::instance().loadPlugin("GrabImage"));
@@ -137,20 +124,20 @@ void TestAcceptanceFlows::cleanup() {
     RunEngine::instance().clearOutputs();
 }
 
-bool TestAcceptanceFlows::installPlugin(const QString& dirName, const QString& metadataRel, const QString& libName) {
-    const QString repoRoot = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../..");
-    const QString pluginDir = m_tempDir.filePath("plugins/" + dirName);
+bool TestAcceptanceFlows::installPlugin(const QString& targetOrName) {
+    const DeepLuxTest::PluginEntry entry = DeepLuxTest::pluginEntry(targetOrName);
+    if (entry.libraryPath.isEmpty() || entry.metadataPath.isEmpty())
+        return false;
+
+    const QString pluginDir = m_tempDir.filePath("plugins/" + DeepLuxTest::pluginInstallDir(entry));
     if (!QDir().mkpath(pluginDir))
         return false;
 
-    const QString metaSrc = QDir(repoRoot).filePath(metadataRel);
-    const QString libSrc = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../lib/" + libName);
-    if (!QFileInfo::exists(metaSrc) || !QFileInfo::exists(libSrc))
-        return false;
-
+    const QString libName = QFileInfo(entry.libraryPath).fileName();
     QFile::remove(pluginDir + "/metadata.json");
     QFile::remove(pluginDir + "/" + libName);
-    return QFile::copy(metaSrc, pluginDir + "/metadata.json") && QFile::copy(libSrc, pluginDir + "/" + libName);
+    return QFile::copy(entry.metadataPath, pluginDir + "/metadata.json") &&
+           QFile::copy(entry.libraryPath, pluginDir + "/" + libName);
 }
 
 QString TestAcceptanceFlows::loadProjectWithPlaceholder(const QString& projectRel, const QString& dataDir,

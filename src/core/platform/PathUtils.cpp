@@ -15,12 +15,12 @@ QString PathUtils::appDataPath() {
         return path;
     }
 
-#ifdef DEEPLUX_PLATFORM_WINDOWS
-    QString path = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-#else
-    QString home = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
-    QString path = home + "/.deeplux";
-#endif
+    // 跨平台统一使用用户主目录下的 .deeplux，与 scripts/sync-plugins.* 保持一致。
+    // Windows 上不再使用 QStandardPaths::AppLocalDataLocation：该路径会随
+    // applicationName/organizationName 变化（CLI 与 GUI 因此曾落到不同目录），
+    // 且仓库脚本与文档约定用户插件位于 ~/.deeplux/plugins。
+    const QString home = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
+    QString path = home + QStringLiteral("/.deeplux");
     ensureDirExists(path);
     return path;
 }

@@ -274,44 +274,45 @@ void SamAnnotatorDialog::applyTheme(bool isDark) {
     const QString modeCheckedBorder = isDark ? QStringLiteral("#06b6d4") : QStringLiteral("#0f172a");
     const QString modeCheckedText = isDark ? QStringLiteral("#ffffff") : QStringLiteral("#0f172a");
 
-    setStyleSheet(QStringLiteral("QDialog#SamAnnotatorDialog { background-color: %1; color: %2; }"
-                                 "QWidget#SamControlPanel { background-color: %3; color: %2; }"
-                                 "QScrollArea#SamControlScroll { background-color: %3; border: 0; }"
-                                 "QWidget#SamControlViewport, QWidget#SamControlScrollContent { background-color: %3; }"
-                                 "QLabel { background-color: transparent; color: %2; }"
-                                 "QLabel#SamStatusLabel, QLabel#SamShortcutHintLabel { color: %4; font-size: 12px; }"
-                                 "QLineEdit, QComboBox { background-color: %5; color: %2; border: 1px solid %6; "
-                                 "min-height: 0px; padding: 0 4px; }"
-                                 "QComboBox { min-height: 24px; font-size: 9pt; }"
-                                 "QComboBox QAbstractItemView { font-size: 9pt; }"
-                                 "QLineEdit:focus, QComboBox:focus { border: 1px solid #0078d7; }"
-                                 "QSpinBox { background-color: %5; color: %2; border: 1px solid %6; padding: 2px 4px; }"
-                                 "QListWidget { background-color: %5; color: %2; border: 1px solid %6; }"
-                                 "QListWidget::item:selected { background-color: #0078d7; color: #ffffff; }"
-                                 "QMenu#SamMaskEditMenu { background-color: %3; color: %2; border: 1px solid %6; }"
-                                 "QWidget#SamMaskEditMenuContent { background-color: %3; color: %2; }"
-                                 "QPushButton { background-color: #0078d7; color: #ffffff; min-height: 0px; "
-                                 "border: 1px solid #005a9e; "
-                                 "padding: 2px 6px; font-weight: 600; }"
-                                 "QPushButton:hover { background-color: #1e8ad6; }"
-                                 "QPushButton:disabled { background-color: %7; color: #999999; border-color: %6; }"
-                                 "QToolButton { border: 1px solid %6; border-radius: 4px; padding: 2px 6px; "
-                                 "background-color: %8; color: %2; }"
-                                 "QToolButton:hover { background-color: %9; }"
-                                 "QToolButton:checked { border: 2px solid %10; background-color: %11; color: %12; "
-                                 "font-weight: 700; }")
-                      .arg(pal.bgColor)
-                      .arg(pal.textColor)
-                      .arg(panelBg)
-                      .arg(subtleText)
-                      .arg(inputBg)
-                      .arg(pal.borderColor)
-                      .arg(disabledBg)
-                      .arg(modeBg)
-                      .arg(modeHoverBg)
-                      .arg(modeCheckedBorder)
-                      .arg(modeCheckedBg)
-                      .arg(modeCheckedText));
+    setStyleSheet(
+        QStringLiteral("QDialog#SamAnnotatorDialog { background-color: %1; color: %2; }"
+                       "QWidget#SamControlPanel { background-color: %3; color: %2; }"
+                       "QScrollArea#SamControlScroll { background-color: %3; border: 0; }"
+                       "QWidget#SamControlViewport, QWidget#SamControlScrollContent { background-color: %3; }"
+                       "QLabel { background-color: transparent; color: %2; }"
+                       "QLabel#SamStatusLabel, QLabel#SamShortcutHintLabel { color: %4; font-size: 12px; }"
+                       "QLineEdit, QComboBox { background-color: %5; color: %2; border: 1px solid %6; "
+                       "min-height: 0px; padding: 0 4px; }"
+                       "QComboBox { min-height: 24px; font-size: 9pt; }"
+                       "QComboBox QAbstractItemView { font-size: 9pt; }"
+                       "QLineEdit:focus, QComboBox:focus { border: 1px solid #0078d7; }"
+                       "QSpinBox { background-color: %5; color: %2; border: 1px solid %6; padding: 2px 4px; }"
+                       "QListWidget { background-color: %5; color: %2; border: 1px solid %6; }"
+                       "QListWidget::item:selected { background-color: #0078d7; color: #ffffff; }"
+                       "QMenu#SamMaskEditMenu { background-color: %3; color: %2; border: 1px solid %6; }"
+                       "QWidget#SamMaskEditMenuContent { background-color: %3; color: %2; }"
+                       "QPushButton { background-color: #0078d7; color: #ffffff; min-height: 20px; max-height: 20px; "
+                       "border: 1px solid #005a9e; "
+                       "padding: 2px 6px; font-weight: 600; }"
+                       "QPushButton:hover { background-color: #1e8ad6; }"
+                       "QPushButton:disabled { background-color: %7; color: #999999; border-color: %6; }"
+                       "QToolButton { border: 1px solid %6; border-radius: 4px; padding: 2px 6px; "
+                       "background-color: %8; color: %2; }"
+                       "QToolButton:hover { background-color: %9; }"
+                       "QToolButton:checked { border: 2px solid %10; background-color: %11; color: %12; "
+                       "font-weight: 700; }")
+            .arg(pal.bgColor)
+            .arg(pal.textColor)
+            .arg(panelBg)
+            .arg(subtleText)
+            .arg(inputBg)
+            .arg(pal.borderColor)
+            .arg(disabledBg)
+            .arg(modeBg)
+            .arg(modeHoverBg)
+            .arg(modeCheckedBorder)
+            .arg(modeCheckedBg)
+            .arg(modeCheckedText));
 
     // QScrollArea reparents its content under a viewport; the application-level QWidget rule can
     // otherwise override the dialog background and leave dark labels on a dark panel.

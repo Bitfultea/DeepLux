@@ -782,16 +782,16 @@ void TestSamAnnotatorDialog::openAnnotationReloadsSession() {
     QVERIFY(QMetaObject::invokeMethod(&srcDlg, "onConfirm", Qt::DirectConnection));
     QCOMPARE(srcDlg.objectList()->count(), 1);
 
-    QTemporaryFile tmp("anno_XXXXXX.deeplux-anno.json");
-    QVERIFY(tmp.open());
-    tmp.close();
+    QTemporaryDir sessionDir;
+    QVERIFY(sessionDir.isValid());
+    const QString sessionPath = sessionDir.filePath(QStringLiteral("anno.deeplux-anno.json"));
     QString err;
-    QVERIFY(srcDlg.session().save(tmp.fileName(), &err));
+    QVERIFY2(srcDlg.session().save(sessionPath, &err), qPrintable(err));
 
     // Now open the saved session in a fresh dialog via onOpenAnnotation (we invoke directly with a path)
     SamAnnotatorDialog dlg;
     QString loadErr;
-    AnnotationSession loaded = AnnotationSession::load(tmp.fileName(), &loadErr);
+    AnnotationSession loaded = AnnotationSession::load(sessionPath, &loadErr);
     QVERIFY2(loadErr.isEmpty(), qPrintable(loadErr));
     QCOMPARE(loaded.annotations.size(), 1);
 }
@@ -1317,12 +1317,13 @@ void TestSamAnnotatorDialog::undoAfterOpenAnnotationDoesNotCorruptSession() {
     srcDlg.setImageSnapshot(makeTestImage(), srcImagePath);
     QVERIFY(!confirmObject(srcDlg, squarePolygon(10, 10, 10), QRectF(10, 10, 10, 10), QImage()).isEmpty());
     QVERIFY(!confirmObject(srcDlg, squarePolygon(100, 100, 10), QRectF(100, 100, 10, 10), QImage()).isEmpty());
-    QTemporaryFile tmp("undo_open_XXXXXX.deeplux-anno.json");
-    QVERIFY(tmp.open());
-    const QString sessionPath = tmp.fileName();
-    tmp.close();
+    // Windows: QSaveFile 无法原子替换一个仍由 QTemporaryFile 管理/占用的
+    // 路径（commit 报 Access denied），使用 QTemporaryDir 下的新路径。
+    QTemporaryDir sessionDir;
+    QVERIFY(sessionDir.isValid());
+    const QString sessionPath = sessionDir.filePath(QStringLiteral("undo_open.deeplux-anno.json"));
     QString saveErr;
-    QVERIFY(srcDlg.session().save(sessionPath, &saveErr));
+    QVERIFY2(srcDlg.session().save(sessionPath, &saveErr), qPrintable(saveErr));
 
     // 换载会话 B
     QVERIFY(dlg.openAnnotationFile(sessionPath));

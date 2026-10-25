@@ -4,7 +4,7 @@
 
 namespace DeepLux {
 
-class LoopModule : public ModuleBase {
+class DEEPLUX_PLUGIN_API LoopModule : public ModuleBase {
     Q_OBJECT
 
 public:
@@ -47,7 +47,7 @@ private:
     int m_currentIndex = -1;
 };
 
-class LoopEndModule : public ModuleBase {
+class DEEPLUX_PLUGIN_API LoopEndModule : public ModuleBase {
     Q_OBJECT
 
 public:

@@ -59,7 +59,7 @@ private:
     static QJsonObject samParams(const QString& url, const QString& label, int timeoutMs = 5000) {
         return QJsonObject{{"serverUrl", url},
                            {"label", label},
-                           {"points", QJsonArray{QJsonArray{320, 240}}},
+                           {"points", QJsonArray{QJsonValue(QJsonArray{320, 240})}},
                            {"negativePoints", QJsonArray{}},
                            {"box", QJsonValue::Null},
                            {"timeoutMs", timeoutMs}};
@@ -256,15 +256,15 @@ private slots:
         QVERIFY(!plugin.validateParams(p, error));
 
         p = base;
-        p["points"] = QJsonArray{QJsonArray{QStringLiteral("a"), 2}};
+        p["points"] = QJsonArray{QJsonValue(QJsonArray{QStringLiteral("a"), 2})};
         QVERIFY(!plugin.validateParams(p, error));
 
         p = base;
-        p["points"] = QJsonArray{QJsonArray{1, 2, 3}};
+        p["points"] = QJsonArray{QJsonValue(QJsonArray{1, 2, 3})};
         QVERIFY(!plugin.validateParams(p, error));
 
         p = base;
-        p["negativePoints"] = QJsonArray{QJsonArray{1}};
+        p["negativePoints"] = QJsonArray{QJsonValue(QJsonArray{1})};
         QVERIFY(!plugin.validateParams(p, error));
 
         p = base;
@@ -644,7 +644,7 @@ private slots:
         sam.moduleId = QStringLiteral("SamPredict");
         sam.params["serverUrl"] = server.url();
         sam.params["label"] = QStringLiteral("circle");
-        sam.params["points"] = QJsonArray{QJsonArray{320, 240}};
+        sam.params["points"] = QJsonArray{QJsonValue(QJsonArray{320, 240})};
         sam.params["timeoutMs"] = 5000;
         project->addModule(sam);
 

@@ -1,3 +1,4 @@
+#include "TestPluginRegistry.h"
 #include "core/agent/AgentController.h"
 #include "core/agent/GuiEvent.h"
 #include "core/agent/ILLMClient.h"
@@ -153,7 +154,7 @@ bool TestAgentEndToEnd::installPlugin(const QString& pluginRoot, const QString& 
         return false;
 
     QDir pluginDir(root.filePath(pluginName));
-    const QString srcRoot = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../src/plugins");
+    const QString srcRoot = QDir(DeepLuxTest::testSourceDir()).filePath(QStringLiteral("src/plugins"));
     const QStringList pluginDomains = {
         QStringLiteral("geometry"), QStringLiteral("image_processing"), QStringLiteral("detection"),
         QStringLiteral("logic"),    QStringLiteral("system"),           QStringLiteral("communication"),
@@ -184,8 +185,7 @@ void TestAgentEndToEnd::testFakeLlmBuildsConnectsRunsAndReadsResult() {
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project != nullptr);
 
-    const QString imagePath =
-        QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../tests/acceptance/data/circle_640x480.png");
+    const QString imagePath = DeepLuxTest::testDataPath(QStringLiteral("circle_640x480.png"));
     QVERIFY2(QFileInfo::exists(imagePath), qPrintable(imagePath));
 
     ScriptedLLMClient fake;

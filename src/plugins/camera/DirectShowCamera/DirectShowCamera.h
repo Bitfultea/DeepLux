@@ -17,7 +17,7 @@ namespace DeepLux {
 /**
  * @brief DirectShow 相机设备 (Windows)
  */
-class DirectShowCamera : public ICamera {
+class DEEPLUX_PLUGIN_API DirectShowCamera : public ICamera {
     Q_OBJECT
     Q_INTERFACES(DeepLux::ICamera)
 

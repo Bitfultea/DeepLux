@@ -25,10 +25,9 @@ add_library(DirectShowCameraPlugin SHARED
     metadata.json
 )
 
-# Set plugin binary output directory
-set_target_properties(DirectShowCameraPlugin PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/plugins/camera
-)
+# Plugin DLLs are written to the global RUNTIME output directory (<build>/bin)
+# on Windows, together with the other plugins. Installation (DLL + metadata)
+# is handled by deeplux_install_plugins() in the top-level CMakeLists.txt.
 
 # Include directories
 target_include_directories(DirectShowCameraPlugin PRIVATE
@@ -46,8 +45,3 @@ target_link_libraries(DirectShowCameraPlugin PRIVATE
 
 # Windows-specific definitions
 target_compile_definitions(DirectShowCameraPlugin PRIVATE _WIN32)
-
-# Install rule
-install(TARGETS DirectShowCameraPlugin
-    LIBRARY DESTINATION plugins/camera
-)

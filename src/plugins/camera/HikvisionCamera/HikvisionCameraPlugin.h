@@ -9,7 +9,7 @@ class HikvisionCamera;
 /**
  * @brief Hikvision 相机插件
  */
-class HikvisionCameraPlugin : public ICameraPlugin {
+class DEEPLUX_PLUGIN_API HikvisionCameraPlugin : public ICameraPlugin {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.ICameraPlugin" FILE "metadata.json")
     Q_INTERFACES(DeepLux::ICameraPlugin)
