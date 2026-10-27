@@ -7,6 +7,7 @@
 #include <QJsonObject>
 #include <QMutex>
 #include <QObject>
+#include <QPointer>
 #include <memory>
 
 namespace DeepLux {
@@ -138,7 +139,7 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
 
     AgentObserver* m_observer = nullptr;
     AgentActor* m_actor = nullptr;
-    ILLMClient* m_llmClient = nullptr;
+    QPointer<ILLMClient> m_llmClient;
 
     QString m_systemPrompt;
     QList<AgentMessage> m_conversationHistory;

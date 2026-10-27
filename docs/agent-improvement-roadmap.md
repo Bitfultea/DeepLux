@@ -330,7 +330,7 @@ cmd /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary
 
 - 交付日期：**2026-10-27**（实现 2026-10-26 ~ 27，含 2 轮修复与 2 轮审核）
 - 质量门：t6 review `needs_revision`（7 findings）→ t8 修复 → t9 review **pass** → t10 复验通过 → 本集成（t7）
-- 提交状态：**未提交 git**（工作树 22 个修改 + 9 个新增文件待提交：7 个源码/测试 + 本文与设计文档；`.agent-teams/` 为团队运行时状态，不应提交）
+- 提交状态：Windows 交付已提交为 `af56b5b`；Linux 集成复验发现的客户端生命周期问题及修复见 §11.4。`.agent-teams/` 为团队运行时状态，不应提交。
 
 ### 11.1 交付项（对照 §1 的三件事）
 
@@ -415,6 +415,15 @@ ctest（全量）           → 100% passed, 0 failed out of 80（78.79 s），E
 
 **格式门禁**：t4/t8 分别对 12 / 8 个改动或新增 C++ 文件执行 `clang-format --dry-run --Werror`，0 violations。
 
+**Linux 集成复验（2026-10-27，`af56b5b` 加客户端生命周期修复）**
+
+- 独立工作树从零构建：GCC 11.4、Qt 5.15.3、OpenCV 4.8.1，`DEEPLUX_NATIVE_SAM=ON`，ONNX Runtime CPU SDK；完整构建退出码 0。
+- 首次重点回归 17/18：`test_agentclosedloop` 的视觉关闭用例发生 SIGSEGV。GDB 定位到 `cleanup → setLLMClient(nullptr) → QObject::disconnect`：栈上客户端先析构，控制器的非拥有裸指针仍指向已释放对象。
+- 控制器改用 `QPointer<ILLMClient>`，保持外部所有权不变；新增 `testDestroyedLLMClientIsCleared`，已验证修复前失败、修复后通过。原闭环套件 8/8 通过。
+- 测试用独立临时 HOME，先用 `scripts/sync-plugins.sh build` 同步本次构建的 66 个插件，再清除 `DEEPLUX_APP_DATA_DIR` 覆盖并运行全量 CTest：**82/82 通过，48.62s**，包含 Agent、RunEngine、SAM CPU 数值对照和 GUI 截图自校验。
+- 测试环境注意：默认路径测试断言 `~/.deeplux`；插件克隆与截图测试需要部署插件。直接指向空的应用数据目录会导致测试前置条件失败，不代表产品回归。
+- 本次修改的 C++ 文件 `clang-format --dry-run --Werror` 和 `git diff --check` 通过。CUDA 专项、真实 LLM 服务及 Windows 修复后重测未在本轮执行；82/82 不代表这些门禁通过。
+
 ### 11.5 构建环境坑（已同步写入 §8.1，此处为执行摘要）
 
 1. **vcvars64 必须**：本机 `INCLUDE`/`LIB` 为空，裸 PowerShell 调 `cmake --build` 会找不到 `cl`/系统头文件。
@@ -431,7 +440,7 @@ ctest（全量）           → 100% passed, 0 failed out of 80（78.79 s），E
 | L3 | 未完成（功能） | 模型名视觉启发式（`§6.6` 第 2 档）未实现 | 未显式配置且模型无视觉能力时，只能靠 400 自动降级兜底（多一次失败往返） | 在 `OpenAILLMClient` 增 `static bool heuristicSupportsVision(model)`，`MainWindow` 仅在配置键缺失时使用 |
 | L4 | 已知限制 | `create_project` 失败分支生产路径不可达（`mutatesProject` 门禁先返回 `engine_busy`） | 防御性代码，测试经 `DEEPLUX_TEST_VISIBILITY` 覆盖 | 保持现状；若未来放开"运行中建工程"，该分支自然可达 |
 | L5 | 已知风险 | `RunEngine::nodePortOutputs` 等快照 API 前置条件 `!isBusy()`，`m_nodeOutputs` 本身无锁保护 | 越过前置条件会产生数据竞争 | 加锁或改为"运行中禁止读取"断言；TSan 门禁纳入 CI |
-| L6 | 流程 | 全部改动**未提交 git**（22 改 + 9 新增：7 源码/测试 + 2 文档） | 需要人工提交与 PR | 按 `feat:`/`refactor:` 拆分为契约、工具、异步/图像、测试四个提交；排除 `.agent-teams/`、`build*` |
+| L6 | 流程（已完成） | Windows 交付已提交为 `af56b5b`；Linux 集成复验记录见 §11.4 | 不再是未提交工作树 | 保留平台验收边界；排除 `.agent-teams/`、`build*` |
 | L7 | 环境 | `build-win-tests` 头依赖追踪损坏（本机 CMake 本地化问题） | 易产生假通过 | CI/本地统一"改头文件先清 obj"；或修复 VS 本地化（英文语言包 / 设 `VSLANG=1033`）后重配构建目录 |
 | L8 | 已知限制 | `AgentBridge` 外部 IPC 调 `wait=true` 工具会阻塞整次请求直到运行结束 | 外部客户端可能超时 | 外部调用默认强制 `wait=false`，或桥接层加"异步 tool_call + 轮询"（设计文档附录 D 第 5 条） |
 | L9 | 已知风险 | 单轮墙钟上界 = Σ 等待超时（理论 20 轮 × 2×300s） | 极端配置下会话可长达数小时 | 已有停止按钮；第二迭代加单轮/单消息全局 deadline |

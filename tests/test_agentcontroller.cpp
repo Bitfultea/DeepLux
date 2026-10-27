@@ -137,6 +137,19 @@ private slots:
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
     }
 
+    void testDestroyedLLMClientIsCleared() {
+        AgentController controller;
+        {
+            MockLLMClient client;
+            controller.setLLMClient(&client);
+            QCOMPARE(controller.llmClient(), static_cast<ILLMClient*>(&client));
+        }
+        QVERIFY(controller.llmClient() == nullptr);
+        controller.setLLMClient(m_mock);
+        QCOMPARE(controller.llmClient(), static_cast<ILLMClient*>(m_mock));
+        controller.setLLMClient(nullptr);
+    }
+
     void testSendMessageTransitionsToThinking() {
         AgentController::instance().sendUserMessage("Hello");
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Thinking);
