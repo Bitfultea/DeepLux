@@ -35,6 +35,14 @@ struct AgentMessage {
 };
 
 /**
+ * @brief reasoning 回传策略（设计 §3.7）
+ *
+ * None（默认）= 不回传；CurrentTurn = 只回传最后一个 user 之后 assistant 的 reasoning；
+ * Full = 全部 assistant 历史 reasoning 都回传（第一迭代基线行为）。
+ */
+enum class ReasoningEcho { None, CurrentTurn, Full };
+
+/**
  * @brief 对话上下文
  */
 struct AgentConversation {
@@ -42,6 +50,7 @@ struct AgentConversation {
     QString systemPrompt;
 
     QJsonArray toOpenAIMessages() const;
+    QJsonArray toOpenAIMessages(ReasoningEcho echo) const;
 };
 
 /**
@@ -105,6 +114,7 @@ struct AgentResponse {
     QString reasoningContent;                                // DeepSeek thinking mode 推理内容
     int promptTokens = 0;
     int completionTokens = 0;
+    bool truncatedByMaxTokens = false; // finish_reason == "length"（内容被模型截断）
 };
 
 /**
@@ -138,6 +148,14 @@ public:
     // 中止当前请求并取消待触发的重试（非纯虚：既有 Mock/Scripted 客户端无需改动）
     virtual void abortRequest() {}
 
+    // 流式开关（非纯虚；默认 true，既有 Mock/Scripted 客户端无需改动）
+    virtual void setStreamEnabled(bool enabled) {
+        m_streamEnabled = enabled;
+    }
+    virtual bool isStreamEnabled() const {
+        return m_streamEnabled;
+    }
+
 signals:
     void responseReceived(const AgentResponse& resp);
     void errorOccurred(const QString& error);
@@ -145,6 +163,18 @@ signals:
     void errorOccurredClassified(const LLMErrorInfo& info);
     // 已安排一次退避重试：attempt 从 1 开始，delayMs 为本次退避时长
     void retryScheduled(const LLMErrorInfo& info, int attempt, int delayMs);
+
+    // ---- 流式信号（设计 §5.1；只增不改）----
+    void streamStarted(); // 收到首个有效 SSE 事件（含仅 role 的首块）
+    void streamContentDelta(const QString& text);
+    void streamReasoningDelta(const QString& text);
+    void streamToolCallsUpdated(int count);     // 仅计数，不含参数
+    void streamFinished();                      // 聚合成功，responseReceived 即将发出
+    void streamFailed();                        // 已收 delta 后失败（随后仍发错误信号）
+    void streamFallback(const QString& reason); // 已切非流式
+
+protected:
+    bool m_streamEnabled = true; // 默认开启流式（设计 §4.1）
 };
 
 } // namespace DeepLux

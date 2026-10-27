@@ -53,6 +53,9 @@ set(CORE_SOURCES
     agent/ToolSchema.cpp
     agent/ILLMClient.cpp
     agent/OpenAILLMClient.cpp
+    agent/SseStreamParser.cpp
+    agent/AgentAuditLog.cpp
+    agent/FailedRequestLog.cpp
     agent/GuiEvent.cpp
     agent/SamBackendClient.cpp
     agent/SamNativeSettings.cpp
@@ -100,6 +103,9 @@ set(CORE_HEADERS
     agent/ToolSchema.h
     agent/ILLMClient.h
     agent/OpenAILLMClient.h
+    agent/SseStreamParser.h
+    agent/AgentAuditLog.h
+    agent/FailedRequestLog.h
     agent/GuiEvent.h
     agent/SamBackendClient.h
     agent/SamNativeSettings.h

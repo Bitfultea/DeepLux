@@ -227,7 +227,10 @@ bool RunEngine::stepOnce() {
 
     if (m_stepCurrentModuleName.isEmpty()) {
         clearModuleOutputs();
-        m_nodeOutputs.clear();
+        {
+            QMutexLocker nodeOutputsLocker(&m_lifecycleMutex);
+            m_nodeOutputs.clear();
+        }
         buildModuleTree();
         if (!m_controlEdges.isEmpty()) {
             initializeControlQueue();
@@ -758,6 +761,8 @@ void RunEngine::removeModule(const QString& moduleId) {
         return;
     }
     QString removedName;
+    // L5-I1/I3：先取 lifecycle 再取 moduleLock（全局锁序），保证 m_nodeOutputs 写受保护
+    QMutexLocker lifecycleLocker(&m_lifecycleMutex);
     QWriteLocker locker(&m_moduleLock);
     for (int i = 0; i < m_modules.size(); ++i) {
         ModuleBase* module = m_modules[i];
@@ -811,6 +816,7 @@ void RunEngine::removeModule(const QString& moduleId) {
 }
 
 void RunEngine::clearModulesLocked() {
+    QMutexLocker lifecycleLocker(&m_lifecycleMutex);
     QWriteLocker locker(&m_moduleLock);
     qDeleteAll(m_ownedModules);
     m_ownedModules.clear();
@@ -1037,7 +1043,10 @@ void RunEngine::executeAcquiredRun(bool resuming, const QString& resumeModule, c
 
         clearBreakpointPauseState();
         clearModuleOutputs();
-        m_nodeOutputs.clear();
+        {
+            QMutexLocker nodeOutputsLocker(&m_lifecycleMutex);
+            m_nodeOutputs.clear();
+        }
         buildModuleTree();
     } else {
         // 阶6 七轮：恢复分支的暂停数据已由 tryBeginForRun 在锁内转移，此处仅通知。
@@ -1352,7 +1361,10 @@ void RunEngine::executeBatchParallel(const QStringList& batch, ImageData& pipeli
         m_controlProcessed.insert(mod);
 
         if (pr.success) {
-            m_nodeOutputs[mod] = pr.outputs;
+            {
+                QMutexLocker nodeOutputsLocker(&m_lifecycleMutex);
+                m_nodeOutputs[mod] = pr.outputs;
+            }
             if (pr.outputs.contains(QStringLiteral("image"))) {
                 ImageData out = pr.outputs.value(QStringLiteral("image")).value<ImageData>();
                 pipelineData = out;
@@ -1579,6 +1591,7 @@ bool RunEngine::dataInputsReady(const QString& moduleName) const {
 }
 
 void RunEngine::clearLoopIterationOutputs(const QString& loopModule) {
+    QMutexLocker nodeOutputsLocker(&m_lifecycleMutex);
     for (const QString& moduleName : m_loopRegions.value(loopModule)) {
         m_nodeOutputs.remove(moduleName);
         m_triggeredControlEdges.remove(moduleName);
@@ -1718,6 +1731,7 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     const ExecutionResult execResult = module->execute(portInputs, portOutputs, execCtx);
     bool success = execResult.success;
     if (success) {
+        QMutexLocker nodeOutputsLocker(&m_lifecycleMutex);
         m_nodeOutputs[moduleName] = portOutputs; // 缓存每端口输出供下游/单步使用
     }
     if (success && portOutputs.contains(QStringLiteral("image"))) {
@@ -1838,7 +1852,10 @@ void RunEngine::executeOrBypassModule(const QString& moduleName, ImageData& pipe
     if (isModuleDisabled(moduleName)) {
         // 禁用节点不执行、不产生旧结果；可旁路端口原样传递
         const PortValueMap bypass = collectBypass(moduleName);
-        m_nodeOutputs[moduleName] = bypass;
+        {
+            QMutexLocker nodeOutputsLocker(&m_lifecycleMutex);
+            m_nodeOutputs[moduleName] = bypass;
+        }
         if (bypass.contains(QStringLiteral("image"))) {
             QMutexLocker locker(&m_lastOutputMutex);
             m_moduleOutputs[moduleName] = bypass.value(QStringLiteral("image")).value<ImageData>();
@@ -1922,6 +1939,11 @@ QMap<QString, RunEngine::ModuleRuntimeInfo> RunEngine::moduleRuntimeSnapshot() c
     }
     QMutexLocker locker(&m_runtimeInfoMutex);
     return m_moduleRuntimeInfo;
+}
+
+void RunEngine::setNodePortOutputsForTest(const QString& moduleName, const PortValueMap& outputs) {
+    QMutexLocker locker(&m_lifecycleMutex);
+    m_nodeOutputs[moduleName] = outputs;
 }
 
 PortValueMap RunEngine::nodePortOutputs(const QString& moduleName) const {

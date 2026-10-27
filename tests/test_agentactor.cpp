@@ -1,4 +1,6 @@
+#define DEEPLUX_BUILD_TESTS 1
 #include "core/agent/AgentActor.h"
+#include "core/agent/AgentRunWaiter.h"
 #include "core/agent/AgentToolImage.h"
 #include "core/agent/ToolSchema.h"
 #include "core/base/ModuleBase.h"
@@ -14,6 +16,7 @@
 #include <QFileInfo>
 #include <QImage>
 #include <QJsonDocument>
+#include <QRect>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
@@ -23,6 +26,34 @@
 using namespace DeepLux;
 
 namespace {
+/// L2：只负责产出一个引擎不支持序列化的自定义端口类型（QRect）
+class UnsupportedPortModule final : public ModuleBase {
+public:
+    UnsupportedPortModule() {
+        m_moduleId = QStringLiteral("com.deeplux.test.unsupportedport");
+        m_name = QStringLiteral("UnsupportedPort");
+        m_category = QStringLiteral("test");
+        setInstanceName(QStringLiteral("unsupported_port"));
+    }
+
+    PortValueMap customOutputs() const {
+        PortValueMap outputs;
+        outputs.insert(QStringLiteral("rect"), QVariant::fromValue(QRect(1, 2, 3, 4)));
+        outputs.insert(QStringLiteral("count"), 7);
+        return outputs;
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        output = input;
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
+
 class BlockingAgentModule final : public ModuleBase {
 public:
     explicit BlockingAgentModule(int sleepMs = 900) : m_sleepMs(sleepMs) {
@@ -965,6 +996,106 @@ private slots:
         QCOMPARE(result.value("code").toString(), QStringLiteral("engine_busy"));
         RunEngine::instance().stop();
         QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
+    }
+
+    // ---------- L1/L2 遗留收口 ----------
+
+    void testTuneTimeoutReturnsStructuredError() {
+        AgentActor actor;
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "tune-timeout"}}).contains("error"));
+        QVERIFY(addDemoGrab(actor, QStringLiteral("grab")));
+        AgentRunWaiter::Outcome outcome;
+        outcome.timedOut = true;
+        AgentRunWaiter::setNextOutcomeForTest(outcome);
+        const QJsonObject result = actor.executeTool(
+            "tune_node_and_verify",
+            QJsonObject{{"nodeName", "grab"}, {"parameters", QJsonObject{{"gain", 3.0}}}, {"runMode", "flow"}});
+        AgentRunWaiter::clearOutcomeForTest();
+        QCOMPARE(result.value("success").toBool(), false);
+        QCOMPARE(result.value("code").toString(), QStringLiteral("timeout"));
+        QVERIFY(result.contains("before"));
+        QVERIFY(result.contains("after"));
+        QCOMPARE(result.value("parametersRolledBack").toBool(), false);
+        QVERIFY2(result.value("error").toString().contains(QStringLiteral("did not finish")),
+                 qPrintable(result.value("error").toString()));
+    }
+
+    void testTuneAbortedReturnsCancelled() {
+        AgentActor actor;
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "tune-abort"}}).contains("error"));
+        QVERIFY(addDemoGrab(actor, QStringLiteral("grab")));
+        AgentRunWaiter::Outcome outcome;
+        outcome.aborted = true;
+        AgentRunWaiter::setNextOutcomeForTest(outcome);
+        const QJsonObject result = actor.executeTool(
+            "tune_node_and_verify",
+            QJsonObject{{"nodeName", "grab"}, {"parameters", QJsonObject{{"gain", 3.0}}}, {"runMode", "flow"}});
+        AgentRunWaiter::clearOutcomeForTest();
+        QCOMPARE(result.value("code").toString(), QStringLiteral("cancelled"));
+    }
+
+    void testTuneReentrantReturnsReentrantWait() {
+        AgentActor actor;
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "tune-reentrant"}}).contains("error"));
+        QVERIFY(addDemoGrab(actor, QStringLiteral("grab")));
+        AgentRunWaiter::Outcome outcome;
+        outcome.reentrantRejected = true;
+        AgentRunWaiter::setNextOutcomeForTest(outcome);
+        const QJsonObject result = actor.executeTool(
+            "tune_node_and_verify",
+            QJsonObject{{"nodeName", "grab"}, {"parameters", QJsonObject{{"gain", 3.0}}}, {"runMode", "flow"}});
+        AgentRunWaiter::clearOutcomeForTest();
+        QCOMPARE(result.value("code").toString(), QStringLiteral("reentrant_wait"));
+    }
+
+    void testTunePausedAtBreakpoint() {
+        AgentActor actor;
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "tune-breakpoint"}}).contains("error"));
+        QVERIFY(addDemoGrab(actor, QStringLiteral("grab")));
+        AgentRunWaiter::Outcome outcome;
+        outcome.pausedAtBreakpoint = true;
+        AgentRunWaiter::setNextOutcomeForTest(outcome);
+        const QJsonObject result = actor.executeTool(
+            "tune_node_and_verify",
+            QJsonObject{{"nodeName", "grab"}, {"parameters", QJsonObject{{"gain", 3.0}}}, {"runMode", "flow"}});
+        AgentRunWaiter::clearOutcomeForTest();
+        QCOMPARE(result.value("code").toString(), QStringLiteral("paused_at_breakpoint"));
+    }
+
+    void testTuneRunFailedCarriesFailedModule() {
+        AgentActor actor;
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "tune-failed"}}).contains("error"));
+        QVERIFY(addDemoGrab(actor, QStringLiteral("grab")));
+        AgentRunWaiter::Outcome outcome;
+        outcome.finished = true;
+        outcome.result.success = false;
+        outcome.result.errorMessage = QStringLiteral("module exploded");
+        outcome.failedModule = QStringLiteral("MeasureCircle_1");
+        AgentRunWaiter::setNextOutcomeForTest(outcome);
+        const QJsonObject result = actor.executeTool(
+            "tune_node_and_verify",
+            QJsonObject{{"nodeName", "grab"}, {"parameters", QJsonObject{{"gain", 3.0}}}, {"runMode", "flow"}});
+        AgentRunWaiter::clearOutcomeForTest();
+        QCOMPARE(result.value("code").toString(), QStringLiteral("run_failed"));
+        QCOMPARE(result.value("failedModule").toString(), QStringLiteral("MeasureCircle_1"));
+    }
+
+    void testGetNodeRuntimeOutputsUnsupportedPorts() {
+        AgentActor actor;
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "unsupported-ports"}}).contains("error"));
+        QVERIFY(addDemoGrab(actor, QStringLiteral("grab")));
+        const QJsonObject run = actor.executeTool("run_flow", QJsonObject{{"wait", true}});
+        QVERIFY2(!run.contains("error"), qPrintable(run.value("error").toString()));
+
+        UnsupportedPortModule module;
+        QVERIFY(module.initialize());
+        RunEngine::instance().setNodePortOutputsForTest(QStringLiteral("grab"), module.customOutputs());
+        const QJsonObject result = actor.executeTool("get_node_runtime_outputs", QJsonObject{{"nodeName", "grab"}});
+        QVERIFY2(!result.contains("error"), qPrintable(result.value("error").toString()));
+        QVERIFY(result.contains("unsupportedPorts"));
+        const QJsonArray unsupported = result.value("unsupportedPorts").toArray();
+        QVERIFY2(unsupported.contains(QJsonValue(QStringLiteral("rect"))),
+                 qPrintable(QString::fromUtf8(QJsonDocument(unsupported).toJson(QJsonDocument::Compact))));
     }
 };
 

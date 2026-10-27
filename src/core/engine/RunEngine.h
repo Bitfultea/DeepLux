@@ -178,6 +178,10 @@ public:
     PortValueMap nodePortOutputs(const QString& moduleName) const;
     qint64 lastFrameId() const;
 
+    // L2 测试注入：向 m_nodeOutputs 写入自定义端口值（生产构建不可见）
+    DEEPLUX_TEST_VISIBILITY : void setNodePortOutputsForTest(const QString& moduleName, const PortValueMap& outputs);
+
+public:
     // 运行统计
     int totalRuns() const;
     int successRuns() const;

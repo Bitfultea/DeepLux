@@ -837,6 +837,8 @@ void MainWindow::setupMenuBar() {
             client->setMaxTokens(dlg.maxTokens());
             client->setToolsEnabled(dlg.toolsEnabled());
             client->setVisionEnabled(dlg.visionEnabled());
+            // 第二迭代：流式开/关即时生效（agent/streamEnabled 已由对话框保存）
+            client->setStreamEnabled(dlg.streamEnabled());
             client->setThinkingEnabled(dlg.thinkingEnabled());
             ctrl.setSystemPrompt(dlg.systemPrompt());
         }
@@ -1719,11 +1721,20 @@ void MainWindow::setupMainLayout() {
                 setAgentTabStatus(tr("Agent"), false);
                 m_agentChatPanel->setThinking(false);
                 m_agentChatPanel->clearToolPreview();
-                m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Agent, content);
+                // 流式：用终态文本对齐已有气泡；非流式/回退：新建气泡（设计 §5.5）
+                if (m_agentChatPanel->isStreamActive()) {
+                    m_agentChatPanel->finalizeStreamedMessage(content);
+                } else {
+                    m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Agent, content);
+                    // R1：非流式/回退响应也要展示 reasoning（折叠块，正文不含 reasoning）
+                    m_agentChatPanel->setLastAgentReasoning(AgentController::instance().lastResponseReasoning());
+                }
             });
     connect(&AgentController::instance(), &AgentController::llmErrorOccurred, this,
             [this, setAgentTabStatus](const QString& error) {
                 setAgentTabStatus(tr("Agent 出错"), false);
+                if (m_agentChatPanel->isStreamActive())
+                    m_agentChatPanel->failStreamedMessage(tr("已中断"));
                 m_agentChatPanel->setError(error);
                 m_agentChatPanel->clearToolPreview();
                 m_agentChatPanel->addMessage(AgentMessageBubble::Sender::System, QString("Error: %1").arg(error));
@@ -1820,6 +1831,25 @@ void MainWindow::setupMainLayout() {
         setAgentTabStatus(tr("Agent 正在思考"), false);
         m_agentChatPanel->setThinking(true);
     });
+
+    // ===== 流式接线（设计 §5/§4.4）=====
+    connect(&AgentController::instance(), &AgentController::agentStreamStarted, this,
+            [this]() { m_agentChatPanel->beginAgentStream(); });
+    connect(&AgentController::instance(), &AgentController::agentStreamContentDelta, this,
+            [this](const QString& text) { m_agentChatPanel->appendStreamContent(text); });
+    connect(&AgentController::instance(), &AgentController::agentStreamReasoningDelta, this,
+            [this](const QString& text) { m_agentChatPanel->appendStreamReasoning(text); });
+    connect(&AgentController::instance(), &AgentController::agentStreamAborted, this,
+            [this]() { m_agentChatPanel->abortStreamedMessage(tr("已停止")); });
+    connect(&AgentController::instance(), &AgentController::agentStreamFallback, this,
+            [this, setAgentTabStatus](const QString& reason) {
+                setAgentTabStatus(tr("流式不可用，已回退整包响应"), false);
+                m_agentChatPanel->abortStreamedMessage(tr("已回退"));
+                m_agentChatPanel->addMessage(AgentMessageBubble::Sender::System,
+                                             tr("流式不可用（%1），已回退为整包响应。").arg(reason));
+            });
+    connect(&AgentController::instance(), &AgentController::agentStreamTruncated, this,
+            [setAgentTabStatus]() { setAgentTabStatus(tr("输出达到 max_tokens 上限"), false); });
 
     m_logDock->setWidget(m_logTerminalTabs);
     m_logDock->setMinimumHeight(220);
@@ -6176,13 +6206,31 @@ void MainWindow::loadAgentSettings() {
         OpenAILLMClient* client = new OpenAILLMClient(&ctrl);
         client->setEndpoint(cfg.groupString("agent", "endpoint", "https://api.openai.com/v1/chat/completions"));
         client->setApiKey(apiKey);
-        client->setModel(cfg.groupString("agent", "model", "gpt-4o"));
+        const QString configuredModel = cfg.groupString("agent", "model", "gpt-4o");
+        client->setModel(configuredModel);
         client->setTemperature(cfg.groupDouble("agent", "temperature", 0.3));
         client->setMaxTokens(cfg.groupInt("agent", "maxTokens", 4096));
         client->setToolsEnabled(cfg.groupBool("agent", "toolsEnabled", true));
-        client->setVisionEnabled(cfg.groupBool("agent", "visionEnabled", true));
+        // L3：visionEnabled 缺省时用模型名启发式（不写回配置，避免把猜测变成用户设置）
+        if (cfg.containsGroupKey("agent", "visionEnabled"))
+            client->setVisionEnabled(cfg.groupBool("agent", "visionEnabled", true));
+        else
+            client->setVisionEnabled(OpenAILLMClient::heuristicSupportsVision(configuredModel));
         client->setReasoningEffort(cfg.groupString("agent", "reasoningEffort", ""));
         client->setThinkingEnabled(cfg.groupBool("agent", "thinkingEnabled", false));
+        // 第二迭代：流式开关与 reasoning 回传策略（设计 §4.1/§3.7）
+        client->setStreamEnabled(cfg.groupBool("agent", "streamEnabled", true));
+        // R3：三个流式配置键注入（client setter 内部按 §3.6 clamp）
+        client->setStreamIncludeUsage(cfg.groupBool("agent", "streamIncludeUsage", false));
+        client->setStreamIdleTimeoutMs(cfg.groupInt("agent", "streamIdleTimeoutMs", 60000));
+        client->setStreamMaxDurationMs(cfg.groupInt("agent", "streamMaxDurationMs", 600000));
+        const QString reasoningEcho = cfg.groupString("agent", "reasoningEcho", "none").trimmed().toLower();
+        if (reasoningEcho == QStringLiteral("full"))
+            client->setReasoningEcho(ReasoningEcho::Full);
+        else if (reasoningEcho == QStringLiteral("current-turn"))
+            client->setReasoningEcho(ReasoningEcho::CurrentTurn);
+        else
+            client->setReasoningEcho(ReasoningEcho::None);
         ctrl.setLLMClient(client);
     }
 

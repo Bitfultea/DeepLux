@@ -8,12 +8,16 @@
 #include <QSet>
 #include <QThread>
 #include <QTimer>
+#include <optional>
 
 namespace DeepLux {
 
 namespace {
 QMutex g_waiterMutex;
 QSet<const QThread*> g_waitingThreads;
+
+// 测试注入：仅测试构建可写；生产构建该符号不可达（DEEPLUX_TEST_VISIBILITY=private）
+std::optional<AgentRunWaiter::Outcome> g_nextOutcomeForTest;
 
 /// waitForRun 退出时（含异常路径）把当前线程移出等待表
 class WaitingThreadGuard {
@@ -30,6 +34,14 @@ public:
     WaitingThreadGuard& operator=(const WaitingThreadGuard&) = delete;
 };
 } // namespace
+
+void AgentRunWaiter::setNextOutcomeForTest(const Outcome& outcome) {
+    g_nextOutcomeForTest = outcome;
+}
+
+void AgentRunWaiter::clearOutcomeForTest() {
+    g_nextOutcomeForTest.reset();
+}
 
 AgentRunWaiter::AgentRunWaiter(QObject* parent) : QObject(parent) {}
 
@@ -57,6 +69,24 @@ void AgentRunWaiter::quitLoop() {
 AgentRunWaiter::Outcome AgentRunWaiter::waitForRun(RunEngine& engine, int timeoutMs,
                                                    const std::function<bool()>& start) {
     Outcome outcome;
+    // L1 测试注入：直接返回调用方指定的 OutCome，不启动/等待运行
+    if (g_nextOutcomeForTest) {
+        outcome = *g_nextOutcomeForTest;
+        g_nextOutcomeForTest.reset();
+        if (outcome.timedOut)
+            m_lastReason = QStringLiteral("timeout");
+        else if (outcome.aborted)
+            m_lastReason = QStringLiteral("aborted");
+        else if (outcome.reentrantRejected)
+            m_lastReason = QStringLiteral("reentrant");
+        else if (outcome.pausedAtBreakpoint)
+            m_lastReason = QStringLiteral("breakpoint");
+        else if (outcome.rejectedStart)
+            m_lastReason = QStringLiteral("rejected");
+        else if (outcome.finished)
+            m_lastReason = QStringLiteral("finished");
+        return outcome;
+    }
     if (!start) {
         outcome.rejectedStart = true;
         m_lastReason = QStringLiteral("rejected");

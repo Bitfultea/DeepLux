@@ -3,12 +3,15 @@
 
 #include "ILLMClient.h"
 
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QMutex>
 #include <QObject>
 #include <QPointer>
 #include <memory>
+
+class QTimer;
 
 namespace DeepLux {
 
@@ -113,11 +116,26 @@ signals:
     /// 本轮被用户中止（UI 复位状态条与思考态）
     void agentTurnAborted();
 
+    // ---- 流式（设计 §5.1；只增不改）----
+    void agentStreamStarted();
+    void agentStreamContentDelta(const QString& text);   // 已按 50ms 合批
+    void agentStreamReasoningDelta(const QString& text); // 已按 50ms 合批
+    void agentStreamFinished();
+    void agentStreamAborted();
+    void agentStreamFallback(const QString& reason);
+    void agentStreamTruncated(); // finish_reason=length（UI 状态条提示）
+
 DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& resp);
     void onLLMError(const QString& error);
     // 分类错误（最终失败）：只落审计日志，状态机仍由 onLLMError 收口
     void onLLMErrorClassified(const struct LLMErrorInfo& info);
     void doConfirmPendingTools(QJsonArray calls);
+    void onStreamStarted();
+    void onStreamContentDelta(const QString& text);
+    void onStreamReasoningDelta(const QString& text);
+    void onStreamFinished();
+    void onStreamFailed();
+    void onStreamFallback(const QString& reason);
 
     DEEPLUX_TEST_VISIBILITY : explicit AgentController(QObject* parent = nullptr);
     ~AgentController() override;
@@ -131,8 +149,34 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
     /// 视觉降级重发：去掉最近一条带图 user 消息的 images（无带图消息返回 false）
     bool stripImagesFromLastUserMessage();
 
+    // ---- 流式合批（设计 §5.2；唯一合批点）----
+    void flushStreamPending();
+    void resetStreamBuffer();
+
     // 权限矩阵的测试入口：转调唯一的 requiresConfirmation 实现（设计 §3.5 第 10 条）
     static bool toolRequiresConfirmation(PermissionLevel level, const QString& toolName);
+
+    // ---- 上下文治理（设计 §7/§8）：唯一配置读取点 + 预算/阈值访问器 ----
+    int contextBudgetTokens() const;     // agent/contextBudgetTokens 默认 128000，clamp [16000,1000000]
+    int toolResultMaxChars() const;      // agent/toolResultMaxChars 默认 6000，clamp [1000,64000]
+    int flowSummaryThreshold() const;    // agent/flowSummaryThreshold 默认 24，clamp [1,1000]
+    int flowSummaryPreviewCount() const; // agent/flowSummaryPreviewCount 默认 24，clamp [1,200]
+    /// 测试用固定上限（-1 = 沿用配置；避免依赖 ConfigManager 初始化时序）
+    DEEPLUX_TEST_VISIBILITY : void setContextLimitsForTest(int budgetTokens, int toolResultMaxChars,
+                                                           int summaryThreshold, int summaryPreviewCount);
+
+    /// 保首尾的 tool 结果截断（设计 §7.4；maxChars 会 clamp 到 [1000,64000]）
+    static QString truncateToolResult(const QString& json, int maxChars);
+
+    // ---- R1/L9：非流式 reasoning 只读访问器 + 单轮全局 deadline ----
+    QString lastResponseReasoning() const {
+        return m_lastResponseReasoning;
+    }
+    int turnDeadlineMs() const; // agent/turnDeadlineMs 默认 600000，clamp [10000,3600000]
+    DEEPLUX_TEST_VISIBILITY : void setTurnDeadlineMsForTest(int ms); // 绕过 clamp，仅用于触发超时
+    void setTurnDeadlineConfigForTest(int ms);                       // 模拟配置值（走 clamp）
+    bool turnDeadlineExceeded() const;
+    void endTurnWithReason(const QString& responseText, const QString& errorText, bool suppressClientError);
 
     bool m_initialized = false;
     PermissionLevel m_permissionLevel = PermissionLevel::Advisor;
@@ -158,6 +202,31 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
     bool m_visionDisabledForSession = false;
     bool m_suppressNextLlmError = false;
     QString m_lastErrorCategory;
+
+    // ---- 流式合批状态（设计 §5.2/§5.6）：唯一合批点在控制器
+    QTimer* m_streamFlushTimer = nullptr;
+    QString m_pendingContent;
+    QString m_pendingReasoning;
+    bool m_streamActive = false;
+
+    // ---- R1/L9：最近一次响应 reasoning + 单轮 deadline 状态 ----
+    QString m_lastResponseReasoning;
+    QElapsedTimer m_turnTimer;
+    int m_turnDeadlineOverride = -1;       // 测试触发值（绕过 clamp）
+    int m_turnDeadlineConfigOverride = -1; // 模拟配置值（走 clamp）
+
+    // ---- 上下文治理（设计 §7）：测试覆盖值（-1 = 沿用配置）----
+    int m_contextBudgetOverride = -1;
+    int m_toolResultMaxCharsOverride = -1;
+    int m_summaryThresholdOverride = -1;
+    int m_summaryPreviewOverride = -1;
+
+    // 工具组原子裁剪辅助（设计 §7.3；全部只在 trimHistoryIfNeeded 内使用）
+    void repairOrphanToolGroups();
+    bool dropOldestUserTurn();
+    bool dropOldestToolGroup();
+    qint64 estimateHistoryTokens() const;
+    bool echoesReasoning() const; // reasoning 仅在回传时计入 token 预算（§7.1）
 
     void transitionTo(AgentState newState);
     bool tryTransitionTo(AgentState expected, AgentState newState);

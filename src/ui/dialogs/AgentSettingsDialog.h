@@ -34,7 +34,10 @@ public:
     QString systemPrompt() const;
     bool toolsEnabled() const;
     bool visionEnabled() const;
+    bool streamEnabled() const; // 第二迭代：agent/streamEnabled（默认 true）
     bool thinkingEnabled() const;
+    int contextBudgetTokens() const; // agent/contextBudgetTokens（默认 128000）
+    int toolResultMaxChars() const;  // agent/toolResultMaxChars（默认 6000）
 
 private:
     void setupUi();
@@ -50,7 +53,10 @@ private:
     QTextEdit* m_systemPromptEdit = nullptr;
     QCheckBox* m_toolsCheck = nullptr;
     QCheckBox* m_visionCheck = nullptr;
+    QCheckBox* m_streamCheck = nullptr;
     QCheckBox* m_thinkingCheck = nullptr;
+    QSpinBox* m_contextBudgetSpin = nullptr;
+    QSpinBox* m_toolResultMaxCharsSpin = nullptr;
 };
 
 } // namespace DeepLux
