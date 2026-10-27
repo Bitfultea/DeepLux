@@ -184,6 +184,7 @@ protected:
     QLabel* m_projectLabel = nullptr;
     QWidget* m_processTabContent = nullptr;
     QLabel* m_runStatusLabel = nullptr;
+    QLabel* m_agentTokenLabel = nullptr; // §3.7 Agent token 用量
     QLabel* m_timeLabel = nullptr;
     // 最后导入的图像路径
     QString m_lastImportedImagePath;

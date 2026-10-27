@@ -23,6 +23,7 @@
 #include "GlobalVarView.h"
 #include "SplashScreen.h"
 #include "SystemParamView.h"
+#include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
 #include "core/agent/OpenAILLMClient.h"
 #include "core/agent/ToolSchema.h"
@@ -85,6 +86,7 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QResizeEvent>
@@ -946,6 +948,13 @@ void MainWindow::setupStatusBar() {
     m_runStatusLabel->setMinimumWidth(140);
     status->addPermanentWidget(m_runStatusLabel);
 
+    // §3.7：Agent token 用量（llmUsageReported 写入；无用量时隐藏）
+    m_agentTokenLabel = new QLabel();
+    m_agentTokenLabel->setObjectName("AgentTokenStatusLabel");
+    m_agentTokenLabel->setMinimumWidth(120);
+    m_agentTokenLabel->hide();
+    status->addPermanentWidget(m_agentTokenLabel);
+
     m_userLabel = new QLabel(tr("用户：未登录"));
     m_userLabel->setObjectName("UserStatusLabel");
     m_userLabel->setMinimumWidth(150);
@@ -1725,6 +1734,7 @@ void MainWindow::setupMainLayout() {
                 entry.params = error;
                 entry.result = "error";
                 entry.undoable = false;
+                entry.errorCategory = AgentController::instance().lastLLMErrorCategory();
                 m_agentActionLogWidget->addEntry(entry);
             });
     connect(&AgentController::instance(), &AgentController::toolsPendingConfirmation, this,
@@ -1763,6 +1773,40 @@ void MainWindow::setupMainLayout() {
             &AgentController::confirmPendingTools);
     connect(m_agentChatPanel, &AgentChatPanel::toolPreviewCancelled, &AgentController::instance(),
             &AgentController::rejectPendingTools);
+    // 停止按钮 → 中止当前轮（设计 §5.6）
+    connect(m_agentChatPanel, &AgentChatPanel::stopRequested, &AgentController::instance(),
+            &AgentController::abortCurrentTurn);
+    connect(&AgentController::instance(), &AgentController::agentTurnAborted, this, [this, setAgentTabStatus]() {
+        setAgentTabStatus(tr("已停止"), false);
+        m_agentChatPanel->setStopped();
+    });
+    connect(&AgentController::instance(), &AgentController::agentStateChanged, this,
+            [this, setAgentTabStatus](AgentController::AgentState state) {
+                switch (state) {
+                case AgentController::AgentState::Thinking:
+                    setAgentTabStatus(tr("Agent 正在思考"), false);
+                    m_agentChatPanel->setThinking(true);
+                    break;
+                case AgentController::AgentState::Confirming:
+                    setAgentTabStatus(tr("等待确认"), true);
+                    break;
+                case AgentController::AgentState::Executing:
+                    setAgentTabStatus(tr("执行中（可停止）"), false);
+                    m_agentChatPanel->setExecuting(true);
+                    break;
+                case AgentController::AgentState::Idle:
+                    m_agentChatPanel->setExecuting(false);
+                    break;
+                }
+            });
+    // §3.7：token 用量显示
+    connect(&AgentController::instance(), &AgentController::llmUsageReported, this,
+            [this](int promptTokens, int completionTokens) {
+                if (!m_agentTokenLabel)
+                    return;
+                m_agentTokenLabel->setText(tr("tokens: %1+%2").arg(promptTokens).arg(completionTokens));
+                m_agentTokenLabel->show();
+            });
 
     // ===== Tab 4: Agent 操作日志 =====
     m_agentActionLogWidget = new AgentActionLogWidget(m_logTerminalTabs);
@@ -6095,6 +6139,27 @@ QIcon MainWindow::createIcon(const QString& name) {
 
 void MainWindow::loadAgentSettings() {
     ConfigManager& cfg = ConfigManager::instance();
+    // 视口图像提供者（设计 §4.5）：优先主数据源视口当前图，回退上次流程输出。
+    // 回调在 capture_viewport_image 调用时才求值；即使配置未初始化也必须注入。
+    if (AgentActor* actor = AgentController::instance().actor()) {
+        // QPointer 守卫：AgentController 是进程级单例，MainWindow 可能先于它析构
+        QPointer<MainWindow> guard(this);
+        actor->setViewportImageProvider([guard](QString* error) -> QImage {
+            if (guard) {
+                if (ViewportWidget* viewport = guard->primaryDataSourceViewport()) {
+                    const QImage image = viewport->currentImage();
+                    if (!image.isNull())
+                        return image;
+                }
+            }
+            const ImageData lastOutput = RunEngine::instance().lastOutput();
+            if (lastOutput.isValid())
+                return lastOutput.toQImage();
+            if (error)
+                *error = QStringLiteral("No image available in the viewport");
+            return {};
+        });
+    }
     if (!cfg.isInitialized())
         return;
 

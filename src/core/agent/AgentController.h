@@ -62,6 +62,22 @@ public:
     void clearConversation();
     bool undoLastAgentAction();
 
+    /**
+     * @brief 中止当前轮（UI 停止按钮 / 外部 IPC）
+     *
+     * 幂等：Idle 下只记 warning；非 Idle 时作废排队任务与后续续跑、
+     * 中止 LLM 请求与运行等待，回到 Idle 并发出 agentTurnAborted()。
+     */
+    void abortCurrentTurn();
+    /// 中止代号（每次用户消息/中止 +1；测试断言用）
+    quint64 turnGeneration() const {
+        return m_turnGeneration;
+    }
+    /// 最近一次 LLM 分类错误的类别名（"Auth"/"RateLimit"/...；空 = 无）；UI 审计用
+    QString lastLLMErrorCategory() const {
+        return m_lastErrorCategory;
+    }
+
     void logAction(const AgentActionLogEntry& entry);
     AgentActor* actor() const {
         return m_actor;
@@ -88,11 +104,18 @@ signals:
     void agentActionCompleted(const QString& action, const QJsonObject& result);
     void llmResponseReceived(const QString& content, const QJsonArray& toolCalls);
     void llmErrorOccurred(const QString& error);
+    void llmUsageReported(int promptTokens, int completionTokens);
     void toolsPendingConfirmation(const QJsonArray& toolCalls);
     void agentLoopIterating();
+    /// 状态机迁移（UI：状态条文案 / 停止按钮可见性 / 面板执行态）
+    void agentStateChanged(AgentState state);
+    /// 本轮被用户中止（UI 复位状态条与思考态）
+    void agentTurnAborted();
 
 DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& resp);
     void onLLMError(const QString& error);
+    // 分类错误（最终失败）：只落审计日志，状态机仍由 onLLMError 收口
+    void onLLMErrorClassified(const struct LLMErrorInfo& info);
     void doConfirmPendingTools(QJsonArray calls);
 
     DEEPLUX_TEST_VISIBILITY : explicit AgentController(QObject* parent = nullptr);
@@ -101,6 +124,14 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
     QString buildContext();
     void extendAgentLoop(const QJsonArray& toolCalls);
     void trimHistoryIfNeeded();
+
+    /// 把本批工具结果里的 imagePath 转成下一轮多模态输入或文本降级说明（设计 §6.4）
+    void attachToolImages(const QJsonArray& results);
+    /// 视觉降级重发：去掉最近一条带图 user 消息的 images（无带图消息返回 false）
+    bool stripImagesFromLastUserMessage();
+
+    // 权限矩阵的测试入口：转调唯一的 requiresConfirmation 实现（设计 §3.5 第 10 条）
+    static bool toolRequiresConfirmation(PermissionLevel level, const QString& toolName);
 
     bool m_initialized = false;
     PermissionLevel m_permissionLevel = PermissionLevel::Advisor;
@@ -117,6 +148,15 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
     int m_agentTurnCount = 0;
     AgentState m_state = AgentState::Idle;
     mutable QMutex m_stateMutex;
+
+    // 异步执行与取消（设计 §5）：中止代号 + 排队连点保护 + 视觉降级状态
+    quint64 m_turnGeneration = 0;
+    bool m_dispatchQueued = false;
+    bool m_queuedContinueAfterPending = true;
+    bool m_visionRetryDone = false;
+    bool m_visionDisabledForSession = false;
+    bool m_suppressNextLlmError = false;
+    QString m_lastErrorCategory;
 
     void transitionTo(AgentState newState);
     bool tryTransitionTo(AgentState expected, AgentState newState);

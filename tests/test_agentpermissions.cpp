@@ -108,6 +108,45 @@ private slots:
         QVERIFY(!QFileInfo::exists(QStringLiteral("/tmp/deeplux_never_written_sam_gate.json")));
         AgentController::instance().rejectPendingTools();
     }
+
+    // 第一迭代：新增只读工具在 Observer 下直接执行（不进入待确认、不被拒绝）
+    void testNewReadOnlyToolsExecuteInObserverMode() {
+        AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Observer);
+        const QJsonObject withNode{{"nodeName", "missing_node"}};
+        const QList<QPair<QString, QJsonObject>> calls = {
+            {QStringLiteral("validate_workflow"), QJsonObject()},
+            {QStringLiteral("get_node_runtime_outputs"), withNode},
+            {QStringLiteral("get_execution_logs"), QJsonObject()},
+            {QStringLiteral("capture_viewport_image"), QJsonObject()},
+            {QStringLiteral("export_node_output"), withNode},
+        };
+        for (const auto& call : calls) {
+            const QJsonObject result = AgentController::instance().handleToolCall(call.first, call.second);
+            QVERIFY2(result["status"].toString() != QStringLiteral("pending_confirmation"),
+                     qPrintable(QStringLiteral("%1 must not require confirmation in Observer mode").arg(call.first)));
+            QVERIFY2(!result["error"].toString().contains(QStringLiteral("Observer")),
+                     qPrintable(QStringLiteral("%1 must be allowed in Observer mode").arg(call.first)));
+            QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
+        }
+    }
+
+    // 第一迭代：tune_node_and_verify 是写工具但非 dangerous —— Advisor 待确认、Autopilot 直接执行
+    void testTuneToolRequiresAdvisorConfirmationButAutopilotExecutes() {
+        const QJsonObject params{{"nodeName", "missing_node"}, {"parameters", QJsonObject{{"threshold", 10}}}};
+
+        AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        const QJsonObject pending = AgentController::instance().handleToolCall("tune_node_and_verify", params);
+        QCOMPARE(pending["status"].toString(), QString("pending_confirmation"));
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Confirming);
+        AgentController::instance().rejectPendingTools();
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
+
+        AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+        const QJsonObject executed = AgentController::instance().handleToolCall("tune_node_and_verify", params);
+        QVERIFY(executed["status"].toString() != QString("pending_confirmation"));
+        // 无工程/节点不存在 → 业务错误，但绝不是"待确认"
+        QVERIFY(executed.contains("error"));
+    }
 };
 
 QTEST_MAIN(TestAgentPermissions)

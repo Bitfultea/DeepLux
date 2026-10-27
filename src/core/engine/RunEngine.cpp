@@ -824,6 +824,10 @@ void RunEngine::clearModulesLocked() {
     m_reentrantModules.clear();
     m_loopRegions.clear();
     m_nodeOutputs.clear();
+    {
+        QMutexLocker runtimeLocker(&m_runtimeInfoMutex);
+        m_moduleRuntimeInfo.clear();
+    }
     clearBreakpointPauseState();
     locker.unlock();
     {
@@ -1361,6 +1365,8 @@ void RunEngine::executeBatchParallel(const QStringList& batch, ImageData& pipeli
             }
             m_lastExecuteResult = true;
             m_lastControlResult = pr.controlResult;
+            recordModuleRuntime(
+                mod, ModuleRuntimeInfo{true, true, false, pr.elapsedMs, QString(), QDateTime::currentDateTime()});
             emit moduleFinished(mod, true, pr.elapsedMs);
             activateControlSuccessors(mod);
         } else {
@@ -1369,6 +1375,8 @@ void RunEngine::executeBatchParallel(const QStringList& batch, ImageData& pipeli
             m_runAllSuccess = false;
             if (m_runFirstError.isEmpty())
                 m_runFirstError = m_lastModuleError;
+            recordModuleRuntime(mod, ModuleRuntimeInfo{true, false, false, pr.elapsedMs, m_lastModuleError,
+                                                       QDateTime::currentDateTime()});
             emit moduleFinished(mod, false, pr.elapsedMs);
         }
     }
@@ -1585,8 +1593,11 @@ void RunEngine::emitInactiveControlModules() {
             moduleNames.append(runtimeModuleName(module));
     }
     for (const QString& moduleName : moduleNames) {
-        if (!m_controlProcessed.contains(moduleName))
+        if (!m_controlProcessed.contains(moduleName)) {
             emit moduleSkipped(moduleName);
+            recordModuleRuntime(moduleName,
+                                ModuleRuntimeInfo{true, true, true, 0, QString(), QDateTime::currentDateTime()});
+        }
     }
 }
 
@@ -1643,8 +1654,11 @@ void RunEngine::executeRunLegacy(ImageData& pipelineData, bool& allSuccess, QStr
             const int curIdx = order.indexOf(currentModule);
             const int nextIdx = order.indexOf(nextModule);
             if (curIdx >= 0 && nextIdx > curIdx + 1) {
-                for (int i = curIdx + 1; i < nextIdx; ++i)
+                for (int i = curIdx + 1; i < nextIdx; ++i) {
                     emit moduleSkipped(order[i]);
+                    recordModuleRuntime(
+                        order[i], ModuleRuntimeInfo{true, true, true, 0, QString(), QDateTime::currentDateTime()});
+                }
             }
         }
         currentModule = nextModule;
@@ -1760,6 +1774,17 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
 
     m_lastExecuteResult = success;
 
+    {
+        ModuleRuntimeInfo runtimeInfo;
+        runtimeInfo.valid = true;
+        runtimeInfo.success = success;
+        runtimeInfo.skipped = false;
+        runtimeInfo.elapsedMs = static_cast<int>(elapsedMs);
+        runtimeInfo.errorMessage = success ? QString() : m_lastModuleError;
+        runtimeInfo.finishedAt = QDateTime::currentDateTime();
+        recordModuleRuntime(moduleName, runtimeInfo);
+    }
+
     emit moduleFinished(moduleName, success, static_cast<int>(elapsedMs));
 
     if (!success) {
@@ -1819,6 +1844,8 @@ void RunEngine::executeOrBypassModule(const QString& moduleName, ImageData& pipe
             m_moduleOutputs[moduleName] = bypass.value(QStringLiteral("image")).value<ImageData>();
         }
         emit moduleSkipped(moduleName);
+        recordModuleRuntime(moduleName,
+                            ModuleRuntimeInfo{true, true, true, 0, QString(), QDateTime::currentDateTime()});
         m_lastExecuteResult = true; // 旁路不算失败
         m_lastControlResult = true;
         return;
@@ -1827,8 +1854,8 @@ void RunEngine::executeOrBypassModule(const QString& moduleName, ImageData& pipe
     executeModule(moduleName, pipelineData);
 }
 
-QStringList RunEngine::validateFlow() const {
-    QStringList errors;
+QList<RunEngine::FlowIssue> RunEngine::validateFlowIssues() const {
+    QList<FlowIssue> issues;
     QReadLocker locker(&m_moduleLock);
     for (ModuleBase* module : m_modules) {
         const QString id = runtimeModuleName(module);
@@ -1845,7 +1872,12 @@ QStringList RunEngine::validateFlow() const {
                 break;
             }
             if (!supplied) {
-                errors << tr("节点 %1 的必需输入端口 %2 无上游连接").arg(id, in.id);
+                FlowIssue issue;
+                issue.code = QStringLiteral("missing_required_input");
+                issue.node = id;
+                issue.port = in.id;
+                issue.message = tr("节点 %1 的必需输入端口 %2 无上游连接").arg(id, in.id);
+                issues.append(issue);
             }
         }
 
@@ -1856,12 +1888,58 @@ QStringList RunEngine::validateFlow() const {
                 if (conn.fromModuleId != id || conn.edgeType == QLatin1String("control"))
                     continue;
                 if (!bypassable.contains(conn.fromPort)) {
-                    errors << tr("禁用节点 %1 无法旁路输出端口 %2，但被下游依赖").arg(id, conn.fromPort);
+                    FlowIssue issue;
+                    issue.code = QStringLiteral("disabled_output_bypass_conflict");
+                    issue.node = id;
+                    issue.port = conn.fromPort;
+                    issue.message = tr("禁用节点 %1 无法旁路输出端口 %2，但被下游依赖").arg(id, conn.fromPort);
+                    issues.append(issue);
                 }
             }
         }
     }
+    return issues;
+}
+
+QStringList RunEngine::validateFlow() const {
+    // 4.8：结构化校验是唯一实现来源，本函数只做格式化（文案与基线逐字一致）
+    QStringList errors;
+    const QList<FlowIssue> issues = validateFlowIssues();
+    for (const FlowIssue& issue : issues)
+        errors << issue.message;
     return errors;
+}
+
+void RunEngine::recordModuleRuntime(const QString& moduleName, const ModuleRuntimeInfo& info) {
+    QMutexLocker locker(&m_runtimeInfoMutex);
+    m_moduleRuntimeInfo.insert(moduleName, info);
+}
+
+QMap<QString, RunEngine::ModuleRuntimeInfo> RunEngine::moduleRuntimeSnapshot() const {
+    if (isBusy()) {
+        qWarning() << "[RunEngine] moduleRuntimeSnapshot called while the engine is busy; returning empty snapshot";
+        return QMap<QString, ModuleRuntimeInfo>();
+    }
+    QMutexLocker locker(&m_runtimeInfoMutex);
+    return m_moduleRuntimeInfo;
+}
+
+PortValueMap RunEngine::nodePortOutputs(const QString& moduleName) const {
+    if (isBusy()) {
+        qWarning() << "[RunEngine] nodePortOutputs called while the engine is busy; returning empty map";
+        return PortValueMap();
+    }
+    QMutexLocker locker(&m_lifecycleMutex);
+    return m_nodeOutputs.value(moduleName);
+}
+
+qint64 RunEngine::lastFrameId() const {
+    if (isBusy()) {
+        qWarning() << "[RunEngine] lastFrameId called while the engine is busy; returning 0";
+        return 0;
+    }
+    QMutexLocker locker(&m_lifecycleMutex);
+    return m_frameId.load(std::memory_order_acquire);
 }
 
 QString RunEngine::getNextModule(const QString& currentModule, bool lastResult) {

@@ -142,6 +142,15 @@ public:
     // 阶段 3.1：运行前校验（必需输入/连接类型），返回错误列表（含节点+端口定位）
     QStringList validateFlow() const;
 
+    // 阶段 4.8：结构化运行前校验（validateFlow 的唯一实现来源，消息文案逐字保持）
+    struct FlowIssue {
+        QString code;    // "missing_required_input" | "disabled_output_bypass_conflict"
+        QString node;    // 运行名
+        QString port;    // 可为空
+        QString message; // 与 validateFlow() 完全一致的中文文案
+    };
+    QList<FlowIssue> validateFlowIssues() const;
+
     // 输出管理
     void setOutput(const QString& moduleName, const QString& varName, const QVariant& value);
     QVariant getOutput(const QString& moduleName, const QString& varName) const;
@@ -154,6 +163,20 @@ public:
     QString lastOutputModuleName() const;
     ImageData moduleOutput(const QString& moduleName) const;
     void invalidateModuleOutput(const QString& moduleName);
+
+    // 阶段 4.8：只读快照（前置条件：!isBusy()；GUI 线程调用）。
+    // isBusy() 为真时返回空/默认值并 qWarning，禁止与工作线程写 m_nodeOutputs 竞争。
+    struct ModuleRuntimeInfo {
+        bool valid = false;
+        bool success = false;
+        bool skipped = false;
+        int elapsedMs = 0;
+        QString errorMessage;
+        QDateTime finishedAt;
+    };
+    QMap<QString, ModuleRuntimeInfo> moduleRuntimeSnapshot() const;
+    PortValueMap nodePortOutputs(const QString& moduleName) const;
+    qint64 lastFrameId() const;
 
     // 运行统计
     int totalRuns() const;
@@ -226,6 +249,8 @@ private:
     void clearModuleOutputs();
     void clearBreakpointPauseState();
     void updateStatistics(bool success, int elapsedMs);
+    // 阶段 4.8：记录/清理模块运行快照（写入点集中在模块执行结束与旁路分支）
+    void recordModuleRuntime(const QString& moduleName, const ModuleRuntimeInfo& info);
     void reset();
     void stopCycleTimer();
 
@@ -284,6 +309,9 @@ private:
     QMap<QString, QSet<QString>> m_loopRegions;
     // 当前帧每节点端口输出缓存（flowId 现阶段为 main）；新帧清除
     QMap<QString, PortValueMap> m_nodeOutputs;
+    // 阶段 4.8：最近一次运行的模块状态快照（m_runtimeInfoMutex 保护）
+    QMap<QString, ModuleRuntimeInfo> m_moduleRuntimeInfo;
+    mutable QMutex m_runtimeInfoMutex;
     QSet<QString> m_disabledModules; // 阶段 B: 禁用节点（旁路/Skipped）
     mutable QReadWriteLock m_moduleLock;
 

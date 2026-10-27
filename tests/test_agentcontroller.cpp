@@ -1,3 +1,4 @@
+#include <QJsonDocument>
 #include <QSignalSpy>
 #include <QtTest/QtTest>
 
@@ -9,10 +10,12 @@
 #undef private
 
 #include "core/agent/AgentActor.h"
+#include "core/agent/GuiEvent.h"
 #include "core/agent/ILLMClient.h"
 #include "core/agent/ToolSchema.h"
 #include "core/base/ModuleBase.h"
 #include "core/engine/RunEngine.h"
+#include "core/manager/ProjectManager.h"
 
 using namespace DeepLux;
 
@@ -65,10 +68,12 @@ public:
     AgentConversation lastCtx;
     QList<ToolDefinition> lastTools;
     bool imageInputSupported = true;
+    int requestCount = 0;
 
     void sendRequest(const AgentConversation& ctx, const QList<ToolDefinition>& tools) override {
         lastCtx = ctx;
         lastTools = tools;
+        ++requestCount;
     }
 
     void emitResponse(const AgentResponse& resp) {
@@ -78,6 +83,13 @@ public:
 
     void emitError(const QString& error) {
         emit errorOccurred(error);
+        QCoreApplication::processEvents();
+    }
+
+    // 模拟 OpenAILLMClient 的最终失败链路：先分类、后 errorOccurred
+    void emitClassifiedError(const LLMErrorInfo& info) {
+        emit errorOccurredClassified(info);
+        emit errorOccurred(info.message);
         QCoreApplication::processEvents();
     }
 };
@@ -623,6 +635,255 @@ private slots:
         // Observer 模式：直接回到 Idle，不进入 Confirming
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
         QCOMPARE(responseSpy.count(), 1);
+    }
+
+    // ---------- 第一迭代：排队执行 / 中止 / 视觉降级 ----------
+
+    void testConfirmDispatchesQueuedExactlyOnce() {
+        AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        AgentController::instance().sendUserMessage(QStringLiteral("Create project"));
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Thinking);
+
+        AgentResponse resp;
+        resp.success = true;
+        resp.content = QStringLiteral("Creating...");
+        QJsonObject tc;
+        tc["id"] = "call_queued";
+        tc["type"] = "function";
+        tc["name"] = "create_project";
+        tc["arguments"] = QJsonObject{{"name", "QueuedProject"}};
+        resp.toolCalls.append(tc);
+        m_mock->emitResponse(resp);
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Confirming);
+
+        QSignalSpy logSpy(&AgentController::instance(), &AgentController::actionLogEntryAdded);
+        AgentController::instance().confirmPendingTools();
+        // 连点保护：第二次确认不得重复排队或重复执行
+        AgentController::instance().confirmPendingTools();
+        // 排队 tick 尚未处理：状态不得提前回到 Idle（仍为 Confirming/Executing）
+        QVERIFY(AgentController::instance().state() != AgentController::AgentState::Idle);
+
+        QTRY_COMPARE_WITH_TIMEOUT(AgentController::instance().state(), AgentController::AgentState::Thinking, 5000);
+        QCOMPARE(logSpy.count(), 1); // create_project 只执行一次
+        QVERIFY(ProjectManager::instance().currentProject() != nullptr);
+    }
+
+    void testAbortWhileThinkingIsIdempotent() {
+        AgentController::instance().sendUserMessage(QStringLiteral("Hello"));
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Thinking);
+
+        QSignalSpy abortSpy(&AgentController::instance(), &AgentController::agentTurnAborted);
+        QSignalSpy responseSpy(&AgentController::instance(), &AgentController::llmResponseReceived);
+
+        AgentController::instance().abortCurrentTurn();
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
+        QCOMPARE(abortSpy.count(), 1);
+        QCOMPARE(responseSpy.count(), 1);
+        QCOMPARE(responseSpy.takeFirst().at(0).toString(), QStringLiteral("Stopped by user."));
+
+        const quint64 generation = AgentController::instance().turnGeneration();
+        AgentController::instance().abortCurrentTurn(); // Idle → no-op（幂等）
+        QCOMPARE(abortSpy.count(), 1);
+        QCOMPARE(AgentController::instance().turnGeneration(), generation);
+    }
+
+    void testAbortCancelsQueuedDispatch() {
+        ProjectManager::instance().closeProject(); // 隔离：本用例断言"未执行建工程"
+        AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        AgentController::instance().sendUserMessage(QStringLiteral("Create project"));
+
+        AgentResponse resp;
+        resp.success = true;
+        resp.content = QStringLiteral("Creating...");
+        QJsonObject tc;
+        tc["id"] = "call_cancel";
+        tc["type"] = "function";
+        tc["name"] = "create_project";
+        tc["arguments"] = QJsonObject{{"name", "CancelledProject"}};
+        resp.toolCalls.append(tc);
+        m_mock->emitResponse(resp);
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Confirming);
+
+        QSignalSpy logSpy(&AgentController::instance(), &AgentController::actionLogEntryAdded);
+        AgentController::instance().confirmPendingTools(); // 入队
+        AgentController::instance().abortCurrentTurn();    // 在 tick 之前中止
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
+
+        for (int i = 0; i < 10; ++i)
+            QCoreApplication::processEvents();
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
+        QCOMPARE(logSpy.count(), 0); // 排队任务被中止代号作废，未执行
+        QVERIFY(ProjectManager::instance().currentProject() == nullptr);
+    }
+
+    void testUserMessageRejectedWhileExecuting() {
+        AgentController::instance().transitionTo(AgentController::AgentState::Executing);
+        QSignalSpy responseSpy(&AgentController::instance(), &AgentController::llmResponseReceived);
+
+        AgentController::instance().sendUserMessage(QStringLiteral("Second"));
+
+        QCOMPARE(responseSpy.count(), 1);
+        QVERIFY(responseSpy.takeFirst().at(0).toString().contains(QStringLiteral("busy")));
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Executing);
+        AgentController::instance().transitionTo(AgentController::AgentState::Idle);
+    }
+
+    void testVisionRejectionRetriesWithoutImagesOnce() {
+        m_mock->imageInputSupported = true;
+        QPixmap image(8, 8);
+        image.fill(Qt::blue);
+        AgentController::instance().sendUserMessageWithImages(QStringLiteral("Inspect"), {image});
+        QCOMPARE(m_mock->requestCount, 1);
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Thinking);
+
+        LLMErrorInfo info;
+        info.category = LLMErrorCategory::BadRequest;
+        info.httpStatus = 400;
+        info.retryable = false;
+        info.visionDowngradeHint = true;
+        info.message = QStringLiteral("The model may not support image input.");
+        m_mock->emitClassifiedError(info);
+
+        // 自动去图重发一次：仍处 Thinking，第二次请求里的图片已被剥离
+        QCOMPARE(m_mock->requestCount, 2);
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Thinking);
+        bool foundImageRequest = false;
+        for (const AgentMessage& message : m_mock->lastCtx.messages) {
+            if (message.role == QStringLiteral("user") && message.content == QStringLiteral("Inspect")) {
+                foundImageRequest = true;
+                QVERIFY(message.images.isEmpty());
+            }
+        }
+        QVERIFY(foundImageRequest);
+
+        // 第二次仍被拒：不再重发，正常报错回 Idle（只上报一次）
+        QSignalSpy errorSpy(&AgentController::instance(), &AgentController::llmErrorOccurred);
+        // R6：UI 审计在 llmErrorOccurred 直连槽内能读到本次分类；随后控制器复位
+        QString categoryDuringEmit;
+        const QMetaObject::Connection categoryConnection =
+            connect(&AgentController::instance(), &AgentController::llmErrorOccurred, this, [&categoryDuringEmit]() {
+                categoryDuringEmit = AgentController::instance().lastLLMErrorCategory();
+            });
+        m_mock->emitClassifiedError(info);
+        disconnect(categoryConnection);
+        QCOMPARE(m_mock->requestCount, 2);
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
+        QCOMPARE(errorSpy.count(), 1);
+        QCOMPARE(categoryDuringEmit, QStringLiteral("BadRequest"));
+        QVERIFY2(AgentController::instance().lastLLMErrorCategory().isEmpty(),
+                 "error category must be reset once the failed turn is closed");
+    }
+
+    void testAbortWhileExecutingReturnsToIdleAndRecovers() {
+        AgentController::instance().transitionTo(AgentController::AgentState::Executing);
+        QSignalSpy abortSpy(&AgentController::instance(), &AgentController::agentTurnAborted);
+
+        AgentController::instance().abortCurrentTurn();
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
+        QCOMPARE(abortSpy.count(), 1);
+
+        // 状态机未被破坏：中止后可立即开始新一轮
+        AgentController::instance().sendUserMessage(QStringLiteral("after abort"));
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Thinking);
+        AgentController::instance().abortCurrentTurn();
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
+    }
+
+    void testHandleToolCallStripsElapsedMsAndAuditsDuration() {
+        AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+        QSignalSpy logSpy(&AgentController::instance(), &AgentController::actionLogEntryAdded);
+
+        const QJsonObject result =
+            AgentController::instance().handleToolCall(QStringLiteral("get_available_plugins"), {});
+        QVERIFY2(!result.contains(QStringLiteral("_elapsedMs")), "_elapsedMs must not leak into IPC responses");
+        QVERIFY(!result.contains("error"));
+
+        QCOMPARE(logSpy.count(), 1);
+        const AgentActionLogEntry entry = logSpy.takeFirst().at(0).value<AgentActionLogEntry>();
+        QVERIFY2(entry.durationMs >= 0, "audit durationMs must be collected from _elapsedMs");
+        QCOMPARE(entry.action, QStringLiteral("get_available_plugins"));
+    }
+
+    void testDefaultPromptIncludesClosedLoopRules() {
+        const QString prompt = AgentController::defaultSystemPrompt();
+        QVERIFY2(prompt.contains(QStringLiteral("validate_workflow")), qPrintable(prompt));
+        QVERIFY2(prompt.contains(QStringLiteral("wait defaults to true")), qPrintable(prompt));
+        QVERIFY2(prompt.contains(QStringLiteral("get_node_runtime_outputs")), qPrintable(prompt));
+        QVERIFY2(prompt.contains(QStringLiteral("capture_viewport_image")), qPrintable(prompt));
+        QVERIFY2(prompt.contains(QStringLiteral("At most 2 tool images are attached per turn")), qPrintable(prompt));
+        QVERIFY2(prompt.contains(QStringLiteral("do not repeat the same failing call")), qPrintable(prompt));
+    }
+
+    // R1：失败的写工具不得在审计里被标成 undoable（实际没有压入撤销栈）
+    void testFailedRemoveModuleIsAuditedAsNotUndoable() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+        QVERIFY(!controller.handleToolCall(QStringLiteral("create_project"), QJsonObject{{"name", "r1-audit"}})
+                     .contains("error"));
+
+        QSignalSpy logSpy(&controller, &AgentController::actionLogEntryAdded);
+        controller.transitionTo(AgentController::AgentState::Executing);
+        QJsonObject call;
+        call["id"] = "call_r1";
+        call["type"] = "function";
+        call["name"] = "remove_module";
+        call["arguments"] = QJsonObject{{"instanceId", "missing_node"}};
+        controller.extendAgentLoop(QJsonArray{call});
+
+        QCOMPARE(logSpy.count(), 1);
+        const AgentActionLogEntry entry = logSpy.takeFirst().at(0).value<AgentActionLogEntry>();
+        QCOMPARE(entry.action, QStringLiteral("remove_module"));
+        QCOMPARE(entry.result, QStringLiteral("error"));
+        QVERIFY2(!entry.undoable, "failed remove_module must not be audited as undoable");
+        controller.abortCurrentTurn();
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    }
+
+    // R6：最近错误类别不得串用——未分类错误与成功响应都必须清空
+    void testLastErrorCategoryDoesNotLeakBetweenTurns() {
+        AgentController& controller = AgentController::instance();
+        controller.sendUserMessage(QStringLiteral("first"));
+        LLMErrorInfo auth;
+        auth.category = LLMErrorCategory::Auth;
+        auth.message = QStringLiteral("auth failed");
+        m_mock->emitClassifiedError(auth); // 最终失败（非视觉降级）
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QVERIFY2(controller.lastLLMErrorCategory().isEmpty(), "error category must reset after a failed turn");
+
+        controller.sendUserMessage(QStringLiteral("second"));
+        m_mock->emitError(QStringLiteral("unclassified failure"));
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QVERIFY2(controller.lastLLMErrorCategory().isEmpty(),
+                 "unclassified llmErrorOccurred must not inherit a stale category");
+
+        // 分类错误后成功响应同样复位
+        controller.sendUserMessage(QStringLiteral("third"));
+        m_mock->emitClassifiedError(auth);
+        controller.sendUserMessage(QStringLiteral("fourth"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.content = QStringLiteral("ok");
+        m_mock->emitResponse(resp);
+        QVERIFY(controller.lastLLMErrorCategory().isEmpty());
+    }
+
+    // R7：未注册工具的早退分支也不得泄漏内部字段 _elapsedMs
+    void testUnknownToolEarlyReturnStripsElapsedMs() {
+        const QJsonObject result =
+            AgentController::instance().handleToolCall(QStringLiteral("not_a_registered_tool"), {});
+        QVERIFY(result.contains("error"));
+        QVERIFY2(!result.contains(QStringLiteral("_elapsedMs")),
+                 "IPC responses must never expose the internal _elapsedMs field");
+    }
+
+    // §9.5 第 11 条：执行/等待期间外部 handleToolCall 必须返回 busy
+    void testHandleToolCallBusyDuringExecution() {
+        AgentController& controller = AgentController::instance();
+        controller.transitionTo(AgentController::AgentState::Executing);
+        const QJsonObject result = controller.handleToolCall(QStringLiteral("get_flow_state"), {});
+        QVERIFY2(result.value("error").toString().contains(QStringLiteral("busy")),
+                 qPrintable(QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact))));
+        controller.transitionTo(AgentController::AgentState::Idle);
     }
 };
 

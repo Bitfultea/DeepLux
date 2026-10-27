@@ -55,6 +55,10 @@ public:
     }
 
     void setThinking(bool thinking);
+    /// 工具执行中：状态条显示"执行中（可停止）"，发送/停止按钮联动
+    void setExecuting(bool executing);
+    /// 本轮被用户停止：状态条显示"已停止"（下一次活动自动复位）
+    void setStopped();
     void setError(const QString& error);
 
     void applyTheme(bool isDark);
@@ -64,6 +68,8 @@ signals:
     void userMessageWithImagesSent(const QString& message, const QList<QPixmap>& images);
     void toolPreviewConfirmed();
     void toolPreviewCancelled();
+    /// 用户点击停止按钮：MainWindow 接到 AgentController::abortCurrentTurn
+    void stopRequested();
 
 private slots:
     void onSendClicked();
@@ -75,6 +81,7 @@ private:
     void scrollToBottom();
     void updateInputHeight();
     void updateStatusStrip();
+    void updateStopButton();
     void insertMessage(AgentMessageBubble* bubble);
     void rebuildAttachments();
     void updateSendButton();
@@ -96,6 +103,7 @@ private:
     QLabel* m_attachmentCountLabel = nullptr;
     QTimer* m_thinkingTimer = nullptr;
     QToolButton* m_sendButton = nullptr;
+    QToolButton* m_stopButton = nullptr;
     QToolButton* m_attachButton = nullptr;
     QToolButton* m_latestButton = nullptr;
     QLabel* m_emptyLabel = nullptr;
@@ -107,6 +115,8 @@ private:
     bool m_isDark = false;
     bool m_isThinkingTimeout = false;
     bool m_isThinking = false;
+    bool m_isExecuting = false;
+    bool m_stopped = false;
     int m_messageCount = 0;
     int m_pendingToolCount = 0;
 

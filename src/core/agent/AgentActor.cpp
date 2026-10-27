@@ -1,5 +1,7 @@
 #include "AgentActor.h"
 
+#include "AgentRunWaiter.h"
+#include "AgentToolImage.h"
 #include "SamPredictor.h"
 #include "ToolSchema.h"
 #include "base/ModuleBase.h"
@@ -13,13 +15,16 @@
 #include "platform/PathUtils.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDebug>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QSet>
 #include <QUndoCommand>
 #include <QUuid>
 #include <memory>
@@ -65,6 +70,225 @@ const PortSpec* findPort(const QList<PortSpec>& ports, const QString& id) {
 bool portTypesCompatible(const PortSpec& output, const PortSpec& input) {
     return output.control == input.control &&
            (output.type == DataType::Any || input.type == DataType::Any || output.type == input.type);
+}
+
+QJsonObject errorObject(const QString& error, const QString& code) {
+    QJsonObject result{{"error", error}};
+    if (!code.isEmpty())
+        result.insert(QStringLiteral("code"), code);
+    return result;
+}
+
+/// tune_node_and_verify 的参数级失败（success:false + code:invalid_parameter）
+QJsonObject invalidParameter(const QString& error, const QString& parameter) {
+    QJsonObject result{{"success", false}, {"error", error}, {"code", QStringLiteral("invalid_parameter")}};
+    if (!parameter.isEmpty())
+        result.insert(QStringLiteral("parameter"), parameter);
+    return result;
+}
+
+QString scalarToString(const QJsonValue& value) {
+    if (value.isString())
+        return value.toString();
+    if (value.isBool())
+        return value.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+    if (value.isDouble()) {
+        const double d = value.toDouble();
+        if (d == static_cast<double>(qRound64(d)) && qAbs(d) < 1.0e15)
+            return QString::number(qRound64(d));
+        return QString::number(d);
+    }
+    if (value.isNull() || value.isUndefined())
+        return QString();
+    return QString::fromUtf8(QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact));
+}
+
+/// 运行期语义的完整参数：插件默认值 + 工程参数覆盖
+QJsonObject mergedParams(IModule* mod, const ModuleInstance& inst) {
+    QJsonObject merged = mod->defaultParams();
+    for (auto it = inst.params.constBegin(); it != inst.params.constEnd(); ++it)
+        merged.insert(it.key(), it.value());
+    return merged;
+}
+
+struct ParamNormalizeResult {
+    bool ok = false;
+    QJsonValue value;
+    QString error;
+};
+
+/**
+ * @brief set_param / tune_node_and_verify 共用的参数值归一化
+ *
+ * 键必须存在于插件默认参数或 ui.parameters；字符串按目标类型（既有值或默认值类型）
+ * 转换；类型/范围校验由调用方对完整 merged 参数调用 validateParams 完成。
+ */
+ParamNormalizeResult normalizeParamValue(IModule* mod, const ModuleInstance& inst, const QString& key,
+                                         const QJsonValue& raw) {
+    ParamNormalizeResult result;
+    const QJsonObject defaults = mod->defaultParams();
+    const QJsonObject uiParams =
+        PluginManager::instance().pluginInfo(inst.moduleId).ui.value(QStringLiteral("parameters")).toObject();
+    if (!defaults.contains(key) && !uiParams.contains(key)) {
+        result.error = QString("Unknown parameter '%1' for module %2").arg(key, inst.moduleId);
+        return result;
+    }
+    QJsonValue newVal = raw;
+    if (newVal.isString()) {
+        const QString s = newVal.toString().trimmed();
+        const QJsonValue ref = inst.params.contains(key) ? inst.params.value(key) : defaults.value(key);
+        if (ref.isDouble()) {
+            bool ok = false;
+            const double d = s.toDouble(&ok);
+            if (!ok) {
+                result.error = QString("Value '%1' is not a number for key %2").arg(s, key);
+                return result;
+            }
+            newVal = d;
+        } else if (ref.isBool()) {
+            if (s.compare(QLatin1String("true"), Qt::CaseInsensitive) == 0) {
+                newVal = true;
+            } else if (s.compare(QLatin1String("false"), Qt::CaseInsensitive) == 0) {
+                newVal = false;
+            } else {
+                result.error = QString("Value '%1' is not a boolean for key %2").arg(s, key);
+                return result;
+            }
+        }
+    }
+    result.ok = true;
+    result.value = newVal;
+    return result;
+}
+
+struct NodeRef {
+    QString runtimeName; // 引擎侧运行名（§4.0 解析规则）
+    QString instanceId;  // 工程实例 id
+    QString nodeName;    // 工程显示名
+    QString moduleId;
+};
+
+bool resolveProjectModule(const Project* project, const QString& nodeName, ModuleInstance* out) {
+    if (!project || nodeName.trimmed().isEmpty())
+        return false;
+    for (const ModuleInstance& inst : project->modules()) {
+        if (inst.name == nodeName) {
+            *out = inst;
+            return true;
+        }
+    }
+    for (const ModuleInstance& inst : project->modules()) {
+        if (inst.id == nodeName) {
+            *out = inst;
+            return true;
+        }
+    }
+    return false;
+}
+
+/// 解析节点（名称优先、其次实例 id），并要求引擎已加载该模块
+bool resolveNodeRef(const Project* project, const QString& nodeName, NodeRef* ref) {
+    ModuleInstance inst;
+    if (!resolveProjectModule(project, nodeName, &inst))
+        return false;
+    RunEngine& engine = RunEngine::instance();
+    QString runtimeName;
+    if (engine.getModule(inst.name))
+        runtimeName = inst.name;
+    else if (engine.getModule(inst.id))
+        runtimeName = inst.id;
+    else
+        return false;
+    ref->runtimeName = runtimeName;
+    ref->instanceId = inst.id;
+    ref->nodeName = inst.name;
+    ref->moduleId = inst.moduleId;
+    return true;
+}
+
+bool serializePortValue(const QVariant& value, QJsonValue* out) {
+    const int typeId = value.userType();
+    if (typeId == qMetaTypeId<ImageData>()) {
+        const ImageData image = value.value<ImageData>();
+        *out = QJsonObject{{QStringLiteral("type"), QStringLiteral("image")},
+                           {QStringLiteral("width"), image.width()},
+                           {QStringLiteral("height"), image.height()},
+                           {QStringLiteral("present"), image.isValid()}};
+        return true;
+    }
+    switch (typeId) {
+    case QMetaType::Bool:
+        *out = value.toBool();
+        return true;
+    case QMetaType::Int:
+    case QMetaType::UInt:
+    case QMetaType::LongLong:
+    case QMetaType::ULongLong:
+        *out = static_cast<double>(value.toLongLong());
+        return true;
+    case QMetaType::Double:
+    case QMetaType::Float:
+        *out = value.toDouble();
+        return true;
+    case QMetaType::QString: {
+        const QString s = value.toString();
+        if (s.size() <= 512) {
+            *out = s;
+        } else {
+            *out = QJsonObject{{QStringLiteral("type"), QStringLiteral("string")},
+                               {QStringLiteral("value"), s.left(512)},
+                               {QStringLiteral("truncated"), true}};
+        }
+        return true;
+    }
+    case QMetaType::QVariantList: {
+        const QVariantList list = value.toList();
+        QJsonObject obj{{QStringLiteral("type"), QStringLiteral("list")}, {QStringLiteral("count"), list.size()}};
+        if (!list.isEmpty()) {
+            QJsonValue first;
+            if (serializePortValue(list.first(), &first))
+                obj.insert(QStringLiteral("first"), first);
+        }
+        *out = obj;
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+struct PortOutputsPayload {
+    QJsonObject outputs;
+    QStringList unsupported;
+};
+
+PortOutputsPayload serializePortOutputs(const PortValueMap& ports) {
+    PortOutputsPayload payload;
+    for (auto it = ports.constBegin(); it != ports.constEnd(); ++it) {
+        QJsonValue serialized;
+        if (serializePortValue(it.value(), &serialized))
+            payload.outputs.insert(it.key(), serialized);
+        else
+            payload.unsupported.append(it.key());
+    }
+    payload.unsupported.sort();
+    return payload;
+}
+
+QString logLevelName(LogLevel level) {
+    switch (level) {
+    case LogLevel::Debug:
+        return QStringLiteral("debug");
+    case LogLevel::Info:
+        return QStringLiteral("info");
+    case LogLevel::Warning:
+        return QStringLiteral("warning");
+    case LogLevel::Error:
+        return QStringLiteral("error");
+    case LogLevel::Success:
+        return QStringLiteral("success");
+    }
+    return QStringLiteral("info");
 }
 } // namespace
 
@@ -231,19 +455,94 @@ private:
 
 // --- AgentActor ---
 
-AgentActor::AgentActor(QObject* parent) : QObject(parent), m_undoStack(new QUndoStack(this)) {
+AgentActor::AgentActor(QObject* parent)
+    : QObject(parent), m_undoStack(new QUndoStack(this)), m_runWaiter(std::make_unique<AgentRunWaiter>()) {
     ensureAgentResources();
+    buildHandlers();
     // 阶7 Agent 评审修复（P2-7）：schema 成员缓存在插件加载/卸载时失效
     connect(&PluginManager::instance(), &PluginManager::pluginLoaded, this,
             [this](const QString&) { m_schemaCache.clear(); });
     connect(&PluginManager::instance(), &PluginManager::pluginUnloaded, this,
             [this](const QString&) { m_schemaCache.clear(); });
     connect(&ProjectManager::instance(), &ProjectManager::projectClosed, m_undoStack, &QUndoStack::clear);
+    connect(&ProjectManager::instance(), &ProjectManager::projectClosed, this,
+            [this]() { m_engineProjectDirty = true; });
 }
 
 AgentActor::~AgentActor() = default;
 
+void AgentActor::buildHandlers() {
+    m_handlers.clear();
+    const auto add = [this](const QString& name, QJsonObject (AgentActor::*handler)(const QJsonObject&),
+                            bool mutatesProject, bool undoable) {
+        ToolHandler entry;
+        entry.fn = [this, handler](const QJsonObject& params) { return (this->*handler)(params); };
+        entry.mutatesProject = mutatesProject;
+        entry.undoable = undoable;
+        m_handlers.insert(name, entry);
+    };
+
+    add(QStringLiteral("create_project"), &AgentActor::createProject, true, false);
+    add(QStringLiteral("add_module"), &AgentActor::addModule, true, true);
+    add(QStringLiteral("remove_module"), &AgentActor::removeModule, true, true);
+    add(QStringLiteral("set_param"), &AgentActor::setParam, true, true);
+    add(QStringLiteral("connect_modules"), &AgentActor::connectModules, true, true);
+    add(QStringLiteral("disconnect_modules"), &AgentActor::disconnectModules, true, true);
+    add(QStringLiteral("run_flow"), &AgentActor::runFlow, false, false);
+    add(QStringLiteral("stop_flow"), &AgentActor::stopFlow, false, false);
+    add(QStringLiteral("get_flow_state"), &AgentActor::getFlowState, false, false);
+    add(QStringLiteral("get_available_plugins"), &AgentActor::getAvailablePlugins, false, false);
+    add(QStringLiteral("save_project"), &AgentActor::saveProject, false, false);
+    add(QStringLiteral("get_module_params_schema"), &AgentActor::getModuleParamsSchema, false, false);
+    add(QStringLiteral("get_run_results"), &AgentActor::getRunResults, false, false);
+    add(QStringLiteral("open_project"), &AgentActor::openProject, true, false);
+    add(QStringLiteral("pause_flow"), &AgentActor::pauseFlow, false, false);
+    add(QStringLiteral("resume_flow"), &AgentActor::resumeFlow, false, false);
+    add(QStringLiteral("read_documentation"), &AgentActor::readDocumentation, false, false);
+    add(QStringLiteral("sam_predict"), &AgentActor::samPredict, false, false);
+    add(QStringLiteral("sam_annotate"), &AgentActor::samAnnotate, false, false);
+    // 第一迭代：闭环 / 观测工具
+    add(QStringLiteral("validate_workflow"), &AgentActor::validateWorkflow, false, false);
+    add(QStringLiteral("get_node_runtime_outputs"), &AgentActor::getNodeRuntimeOutputs, false, false);
+    add(QStringLiteral("get_execution_logs"), &AgentActor::getExecutionLogs, false, false);
+    add(QStringLiteral("tune_node_and_verify"), &AgentActor::tuneNodeAndVerify, true, true);
+    add(QStringLiteral("capture_viewport_image"), &AgentActor::captureViewportImage, false, false);
+    add(QStringLiteral("export_node_output"), &AgentActor::exportNodeOutput, false, false);
+}
+
+QStringList AgentActor::supportedTools() const {
+    QStringList names = m_handlers.keys();
+    names.sort();
+    return names;
+}
+
+bool AgentActor::toolUndoable(const QString& toolName) const {
+    const auto it = m_handlers.constFind(toolName);
+    return it != m_handlers.constEnd() && it->undoable;
+}
+
+void AgentActor::setViewportImageProvider(ViewportImageProvider provider) {
+    m_viewportImageProvider = std::move(provider);
+}
+
+void AgentActor::abortRunningTool() {
+    if (m_runWaiter && m_runWaiter->isActive())
+        m_runWaiter->abort();
+    if (RunEngine::instance().isBusy())
+        RunEngine::instance().stop();
+}
+
 QJsonObject AgentActor::executeTool(const QString& toolName, const QJsonObject& params) {
+    QElapsedTimer timer;
+    timer.start();
+    QJsonObject result = executeToolInternal(toolName, params);
+    // 内部字段（设计 §3.7）：消费方读取后必须立即剥离，不得进入模型上下文或 IPC 响应体。
+    // toolExecuted 信号在 executeToolInternal 内发出，因此不含该字段。
+    result.insert(QStringLiteral("_elapsedMs"), static_cast<int>(timer.elapsed()));
+    return result;
+}
+
+QJsonObject AgentActor::executeToolInternal(const QString& toolName, const QJsonObject& params) {
     ToolSchema& schema = ToolSchema::instance();
     if (!schema.hasTool(toolName)) {
         QString err = QString("Unknown tool: %1").arg(toolName);
@@ -257,60 +556,23 @@ QJsonObject AgentActor::executeTool(const QString& toolName, const QJsonObject& 
         return QJsonObject{{"error", invalid}};
     }
 
-    const bool mutatesFlow = toolName == "create_project" || toolName == "open_project" || toolName == "add_module" ||
-                             toolName == "remove_module" || toolName == "set_param" || toolName == "connect_modules" ||
-                             toolName == "disconnect_modules";
-    if (mutatesFlow && RunEngine::instance().isBusy()) {
+    const auto it = m_handlers.constFind(toolName);
+    if (it == m_handlers.constEnd()) {
+        // schema 有、实现无的漂移必须显式失败，不得静默
+        const QString error = QString("Tool not registered: %1").arg(toolName);
+        emit toolError(toolName, error);
+        return QJsonObject{{"error", error}, {"code", QStringLiteral("tool_not_registered")}};
+    }
+
+    if (it->mutatesProject && RunEngine::instance().isBusy()) {
         const QString error = QStringLiteral("Flow is running; stop it before changing the project");
         emit toolError(toolName, error);
-        return QJsonObject{{"error", error}};
+        return QJsonObject{{"error", error}, {"code", QStringLiteral("engine_busy")}};
     }
 
-    QJsonObject result;
-    if (toolName == "create_project")
-        result = createProject(params);
-    else if (toolName == "add_module")
-        result = addModule(params);
-    else if (toolName == "remove_module")
-        result = removeModule(params);
-    else if (toolName == "set_param")
-        result = setParam(params);
-    else if (toolName == "connect_modules")
-        result = connectModules(params);
-    else if (toolName == "disconnect_modules")
-        result = disconnectModules(params);
-    else if (toolName == "run_flow")
-        result = runFlow(params);
-    else if (toolName == "stop_flow")
-        result = stopFlow(params);
-    else if (toolName == "get_flow_state")
-        result = getFlowState(params);
-    else if (toolName == "get_available_plugins")
-        result = getAvailablePlugins(params);
-    else if (toolName == "save_project")
-        result = saveProject(params);
-    else if (toolName == "get_module_params_schema")
-        result = getModuleParamsSchema(params);
-    else if (toolName == "get_run_results")
-        result = getRunResults(params);
-    else if (toolName == "open_project")
-        result = openProject(params);
-    else if (toolName == "pause_flow")
-        result = pauseFlow(params);
-    else if (toolName == "resume_flow")
-        result = resumeFlow(params);
-    else if (toolName == "read_documentation")
-        result = readDocumentation(params);
-    else if (toolName == "sam_predict")
-        result = samPredict(params);
-    else if (toolName == "sam_annotate")
-        result = samAnnotate(params);
-    else {
-        QString err = QString("Tool not yet implemented: %1").arg(toolName);
-        emit toolError(toolName, err);
-        return QJsonObject{{"error", err}};
-    }
-
+    const QJsonObject result = it->fn(params);
+    if (it->mutatesProject && !result.contains(QStringLiteral("error")))
+        m_engineProjectDirty = true;
     emit toolExecuted(toolName, result);
     return result;
 }
@@ -374,8 +636,12 @@ QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& t
 QJsonObject AgentActor::createProject(const QJsonObject& params) {
     QString name = params.value("name").toString("unnamed");
     Project* project = ProjectManager::instance().newProject();
-    if (!project)
-        return QJsonObject{{"error", "Failed to create project"}};
+    if (!project) {
+        // R2：保留既有 error 文案，仅追加机器可读 code 与诊断 message
+        return QJsonObject{{"error", "Failed to create project"},
+                           {"code", QStringLiteral("project_create_failed")},
+                           {"message", QStringLiteral("ProjectManager::newProject returned null")}};
+    }
     project->setName(name);
     return QJsonObject{{"status", "created"}, {"name", name}};
 }
@@ -412,6 +678,13 @@ QJsonObject AgentActor::removeModule(const QJsonObject& params) {
     QString instanceId = params.value("instanceId").toString();
     if (instanceId.isEmpty())
         return QJsonObject{{"error", "Missing 'instanceId' parameter"}};
+    // R1：先校验实例存在——对不存在的实例不得压入撤销栈（否则会假成功，且审计
+    // 会记录"可撤销但什么都没删"）。error 文案与既有 set_param 保持一致，仅追加 code。
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project || !project->moduleById(instanceId)) {
+        return QJsonObject{{"error", QString("Module not found: %1").arg(instanceId)},
+                           {"code", QStringLiteral("node_not_found")}};
+    }
     m_undoStack->push(new AgentRemoveModuleCmd(instanceId));
     return QJsonObject{{"status", "removed"}, {"instanceId", instanceId}};
 }
@@ -432,56 +705,27 @@ QJsonObject AgentActor::setParam(const QJsonObject& params) {
     // 阶7 Agent 评审修复（P1-1）：schema 声明 value 为字符串且承诺转换——在此按
     // 目标类型（既有值或插件默认值类型）转换字符串，并经插件 validateParams
     // 校验通过后才写入 undo 栈；工具层不再对非法值假成功
-    QJsonValue newVal = value;
     PluginManager& pm = PluginManager::instance();
-    IModule* mod = pm.createModule(inst->moduleId);
+    std::unique_ptr<IModule> mod(pm.createModule(inst->moduleId));
     if (!mod) {
         return QJsonObject{{"error", QString("Cannot create module for validation: %1").arg(inst->moduleId)}};
     }
-    const QJsonObject defaults = mod->defaultParams();
-    const QJsonObject uiParams = pm.pluginInfo(inst->moduleId).ui.value(QStringLiteral("parameters")).toObject();
-    if (!defaults.contains(key) && !uiParams.contains(key)) {
-        delete mod;
-        return QJsonObject{{"error", QString("Unknown parameter '%1' for module %2").arg(key, inst->moduleId)}};
-    }
-    if (newVal.isString()) {
-        const QString s = newVal.toString().trimmed();
-        const QJsonValue ref = inst->params.contains(key) ? inst->params.value(key) : defaults.value(key);
-        if (ref.isDouble()) {
-            bool ok = false;
-            const double d = s.toDouble(&ok);
-            if (!ok) {
-                delete mod;
-                return QJsonObject{{"error", QString("Value '%1' is not a number for key %2").arg(s, key)}};
-            }
-            newVal = d;
-        } else if (ref.isBool()) {
-            if (s.compare(QLatin1String("true"), Qt::CaseInsensitive) == 0)
-                newVal = true;
-            else if (s.compare(QLatin1String("false"), Qt::CaseInsensitive) == 0)
-                newVal = false;
-            else {
-                delete mod;
-                return QJsonObject{{"error", QString("Value '%1' is not a boolean for key %2").arg(s, key)}};
-            }
-        }
-    }
+    const ParamNormalizeResult normalized = normalizeParamValue(mod.get(), *inst, key, value);
+    if (!normalized.ok)
+        return QJsonObject{{"error", normalized.error}};
+
     // 镜像运行期语义：模块运行期参数 = 插件默认值 + 工程参数覆盖 + 本次新值
-    QJsonObject merged = defaults;
-    for (auto it = inst->params.constBegin(); it != inst->params.constEnd(); ++it)
-        merged.insert(it.key(), it.value());
-    merged.insert(key, newVal);
+    QJsonObject merged = mergedParams(mod.get(), *inst);
+    merged.insert(key, normalized.value);
     QString verr;
     if (!mod->validateParams(merged, verr)) {
-        delete mod;
         emit toolError("set_param", verr);
         return QJsonObject{{"error", verr}};
     }
     const bool hadOldValue = inst->params.contains(key);
     const QJsonValue oldVal = inst->params.value(key);
-    delete mod;
 
-    m_undoStack->push(new AgentSetParamCmd(instanceId, key, hadOldValue, oldVal, newVal));
+    m_undoStack->push(new AgentSetParamCmd(instanceId, key, hadOldValue, oldVal, normalized.value));
 
     return QJsonObject{{"status", "param_set"}, {"instanceId", instanceId}, {"key", key}};
 }
@@ -580,29 +824,120 @@ QJsonObject AgentActor::disconnectModules(const QJsonObject& params) {
 }
 
 QJsonObject AgentActor::runFlow(const QJsonObject& params) {
-    QString mode = params.value("mode").toString("once");
+    const QString mode = params.value("mode").toString("once");
+    const bool wait = params.value("wait").toBool(true);
+    const int timeoutMs = qBound(1000, params.value("timeoutMs").toInt(60000), 300000);
     RunEngine& engine = RunEngine::instance();
-    Project* project = ProjectManager::instance().currentProject();
-    if (project && !engine.isRunning()) {
-        QString loadError;
-        QMetaObject::Connection errorConn = QObject::connect(&engine, &RunEngine::errorOccurred, &engine,
-                                                             [&loadError](const QString& error) { loadError = error; });
-        bool loaded = engine.loadProject(project);
-        QObject::disconnect(errorConn);
-        if (!loaded) {
-            return QJsonObject{{"error", loadError.isEmpty() ? QString("Failed to load project") : loadError}};
+
+    if (mode == QStringLiteral("cycle")) {
+        // 连续运行没有"完成"概念：保持旧启动语义，wait 只追加说明
+        Project* project = ProjectManager::instance().currentProject();
+        if (project && !engine.isRunning()) {
+            QString loadError;
+            QMetaObject::Connection errorConn = QObject::connect(
+                &engine, &RunEngine::errorOccurred, &engine, [&loadError](const QString& error) { loadError = error; });
+            const bool loaded = engine.loadProject(project);
+            QObject::disconnect(errorConn);
+            if (!loaded) {
+                return QJsonObject{{"error", loadError.isEmpty() ? QString("Failed to load project") : loadError},
+                                   {"code", QStringLiteral("engine_load_failed")}};
+            }
         }
-    }
-    if (engine.modules().isEmpty()) {
-        return QJsonObject{{"error", "No modules to run"}};
-    }
-    if (mode == "cycle") {
+        if (engine.modules().isEmpty())
+            return QJsonObject{{"error", "No modules to run"}};
         engine.start();
-    } else {
-        if (!engine.runOnceAsync())
-            return QJsonObject{{"error", "Flow is already running"}};
+        QJsonObject result{{"status", "started"}, {"mode", mode}, {"async", true}};
+        if (wait)
+            result.insert(QStringLiteral("note"), QStringLiteral("cycle mode ignores wait"));
+        return result;
     }
-    return QJsonObject{{"status", "started"}, {"mode", mode}, {"async", true}};
+
+    if (!wait) {
+        // 旧语义逐字保留（提示词与既有测试依赖）
+        Project* project = ProjectManager::instance().currentProject();
+        if (project && !engine.isRunning()) {
+            QString loadError;
+            QMetaObject::Connection errorConn = QObject::connect(
+                &engine, &RunEngine::errorOccurred, &engine, [&loadError](const QString& error) { loadError = error; });
+            const bool loaded = engine.loadProject(project);
+            QObject::disconnect(errorConn);
+            if (!loaded) {
+                return QJsonObject{{"error", loadError.isEmpty() ? QString("Failed to load project") : loadError}};
+            }
+        }
+        if (engine.modules().isEmpty())
+            return QJsonObject{{"error", "No modules to run"}};
+        if (!engine.runOnceAsync())
+            return QJsonObject{{"error", "Flow is already running"}, {"code", QStringLiteral("already_running")}};
+        return QJsonObject{{"status", "started"}, {"mode", mode}, {"async", true}};
+    }
+
+    // wait=true：等待真实执行完成（嵌套事件循环，不阻塞 GUI）
+    if (engine.isBusy())
+        return QJsonObject{{"success", false},
+                           {"code", QStringLiteral("already_running")},
+                           {"error", QStringLiteral("Flow is already running")}};
+
+    const RunWaitResult run = runAndWait(QStringLiteral("once"), timeoutMs, true);
+    if (run.reentrant) {
+        return QJsonObject{{"success", false},
+                           {"code", QStringLiteral("reentrant_wait")},
+                           {"error", QStringLiteral("Another run wait is already active on this thread")}};
+    }
+    if (run.rejectedStart) {
+        return QJsonObject{{"success", false},
+                           {"code", QStringLiteral("already_running")},
+                           {"error", QStringLiteral("Flow is already running")}};
+    }
+    if (!run.started) {
+        return QJsonObject{{"success", false},
+                           {"mode", mode},
+                           {"code", QStringLiteral("run_failed")},
+                           {"failedModule", run.failedModule},
+                           {"errorMessage", run.error},
+                           {"error", run.error},
+                           {"elapsedMs", run.elapsedMs},
+                           {"waitTimedOut", false}};
+    }
+    if (run.timedOut) {
+        return QJsonObject{
+            {"success", false},
+            {"mode", mode},
+            {"code", QStringLiteral("timeout")},
+            {"waitTimedOut", true},
+            {"error", QStringLiteral("Flow did not finish within %1 ms; a stop was requested").arg(timeoutMs)}};
+    }
+    if (run.aborted) {
+        return QJsonObject{{"success", false},
+                           {"mode", mode},
+                           {"code", QStringLiteral("cancelled")},
+                           {"error", QStringLiteral("Run aborted by user")},
+                           {"waitTimedOut", false}};
+    }
+    if (run.pausedAtBreakpoint) {
+        return QJsonObject{{"success", false},
+                           {"mode", mode},
+                           {"code", QStringLiteral("paused_at_breakpoint")},
+                           {"error", QStringLiteral("Flow paused at a breakpoint; continue or stop it from the UI")},
+                           {"waitTimedOut", false}};
+    }
+    if (run.finished && run.ok) {
+        return QJsonObject{{"success", true},
+                           {"mode", mode},
+                           {"elapsedMs", run.elapsedMs},
+                           {"failedModule", QString()},
+                           {"errorMessage", QString()},
+                           {"waitTimedOut", false},
+                           {"totalRuns", run.totalRuns},
+                           {"successRuns", run.successRuns}};
+    }
+    return QJsonObject{{"success", false},
+                       {"mode", mode},
+                       {"code", QStringLiteral("run_failed")},
+                       {"failedModule", run.failedModule},
+                       {"errorMessage", run.error},
+                       {"elapsedMs", run.elapsedMs},
+                       {"waitTimedOut", false}};
 }
 
 QJsonObject AgentActor::stopFlow(const QJsonObject& params) {
@@ -1019,6 +1354,457 @@ QJsonObject AgentActor::samAnnotate(const QJsonObject& params) {
         result.insert(QStringLiteral("skippedShapes"), skippedShapes);
     }
     return result;
+}
+
+// --- 第一迭代：闭环 / 观测工具 ---
+
+bool AgentActor::engineMatchesProject(const Project* project) const {
+    if (!project)
+        return false;
+    RunEngine& engine = RunEngine::instance();
+    const QList<ModuleInstance> modules = project->modules();
+    const QList<ModuleBase*> engineModules = engine.modules();
+    if (modules.size() != engineModules.size())
+        return false;
+    QSet<QString> expected;
+    for (const ModuleInstance& inst : modules)
+        expected.insert(inst.id);
+    QSet<QString> actual;
+    for (const ModuleBase* module : engineModules) {
+        const QString name = module->instanceName().isEmpty() ? module->name() : module->instanceName();
+        actual.insert(name);
+    }
+    return expected == actual;
+}
+
+bool AgentActor::ensureEngineLoaded(QString* error, bool forceReload) {
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project) {
+        if (error)
+            *error = QStringLiteral("No project opened");
+        return false;
+    }
+    RunEngine& engine = RunEngine::instance();
+    if (!forceReload && !m_engineProjectDirty && engineMatchesProject(project))
+        return true;
+    if (engine.isBusy()) {
+        if (error)
+            *error = QStringLiteral("Flow is running");
+        return false;
+    }
+    QString loadError;
+    QMetaObject::Connection errorConn = QObject::connect(&engine, &RunEngine::errorOccurred, &engine,
+                                                         [&loadError](const QString& err) { loadError = err; });
+    const bool loaded = engine.loadProject(project);
+    QObject::disconnect(errorConn);
+    if (!loaded) {
+        if (error)
+            *error = loadError.isEmpty() ? QStringLiteral("Failed to load project") : loadError;
+        return false;
+    }
+    m_engineProjectDirty = false;
+    return true;
+}
+
+AgentActor::RunWaitResult AgentActor::runAndWait(const QString& mode, int timeoutMs, bool forceReload) {
+    Q_UNUSED(mode)
+    RunWaitResult out;
+    RunEngine& engine = RunEngine::instance();
+    Project* project = ProjectManager::instance().currentProject();
+    if (project) {
+        QString loadError;
+        if (!ensureEngineLoaded(&loadError, forceReload)) {
+            out.error = loadError;
+            return out;
+        }
+    }
+    // 无工程时保持 run_flow 既有语义：直接使用引擎里已手动加载的模块
+    if (engine.modules().isEmpty()) {
+        out.error = project ? QStringLiteral("No modules to run") : QStringLiteral("No project opened");
+        return out;
+    }
+    const AgentRunWaiter::Outcome outcome =
+        m_runWaiter->waitForRun(engine, timeoutMs, [&engine]() { return engine.runOnceAsync(); });
+    out.started = !outcome.rejectedStart && !outcome.reentrantRejected;
+    out.finished = outcome.finished;
+    out.timedOut = outcome.timedOut;
+    out.aborted = outcome.aborted;
+    out.pausedAtBreakpoint = outcome.pausedAtBreakpoint;
+    out.reentrant = outcome.reentrantRejected;
+    out.rejectedStart = outcome.rejectedStart;
+    out.failedModule = outcome.failedModule;
+    out.elapsedMs = outcome.result.elapsedMs;
+    out.ok = outcome.finished && outcome.result.success;
+    if (outcome.finished && !outcome.result.success)
+        out.error = outcome.result.errorMessage;
+    out.totalRuns = engine.totalRuns();
+    out.successRuns = engine.successRuns();
+    if (outcome.timedOut || outcome.aborted)
+        engine.stop();
+    return out;
+}
+
+QJsonObject AgentActor::validateWorkflow(const QJsonObject& params) {
+    Q_UNUSED(params)
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project)
+        return errorObject(QStringLiteral("No project opened"), QStringLiteral("no_project"));
+    RunEngine& engine = RunEngine::instance();
+    if (engine.isBusy())
+        return errorObject(QStringLiteral("Flow is running; stop it before validating"), QStringLiteral("engine_busy"));
+    QString loadError;
+    if (!ensureEngineLoaded(&loadError))
+        return errorObject(loadError, QStringLiteral("engine_load_failed"));
+
+    const int moduleCount = project->modules().size();
+    QJsonArray issues;
+    if (moduleCount == 0) {
+        issues.append(QJsonObject{{QStringLiteral("code"), QStringLiteral("no_modules")},
+                                  {QStringLiteral("node"), QString()},
+                                  {QStringLiteral("message"), QStringLiteral("Project has no modules")}});
+        return QJsonObject{
+            {QStringLiteral("ok"), false}, {QStringLiteral("issues"), issues}, {QStringLiteral("moduleCount"), 0}};
+    }
+    for (const RunEngine::FlowIssue& issue : engine.validateFlowIssues()) {
+        issues.append(QJsonObject{{QStringLiteral("code"), issue.code},
+                                  {QStringLiteral("node"), issue.node},
+                                  {QStringLiteral("port"), issue.port},
+                                  {QStringLiteral("message"), issue.message}});
+    }
+    return QJsonObject{{QStringLiteral("ok"), issues.isEmpty()},
+                       {QStringLiteral("issues"), issues},
+                       {QStringLiteral("moduleCount"), moduleCount}};
+}
+
+QJsonObject AgentActor::getNodeRuntimeOutputs(const QJsonObject& params) {
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project)
+        return errorObject(QStringLiteral("No project opened"), QStringLiteral("no_project"));
+    RunEngine& engine = RunEngine::instance();
+    if (engine.isBusy()) {
+        return errorObject(QStringLiteral("Flow is running; stop it before reading node outputs"),
+                           QStringLiteral("engine_busy"));
+    }
+    QString loadError;
+    if (!ensureEngineLoaded(&loadError))
+        return errorObject(loadError, QStringLiteral("engine_load_failed"));
+
+    const QString nodeName = params.value("nodeName").toString();
+    NodeRef ref;
+    if (!resolveNodeRef(project, nodeName, &ref))
+        return errorObject(QString("Module not found: %1").arg(nodeName), QStringLiteral("node_not_found"));
+
+    const QMap<QString, RunEngine::ModuleRuntimeInfo> snapshot = engine.moduleRuntimeSnapshot();
+    const RunEngine::ModuleRuntimeInfo info = snapshot.value(ref.runtimeName);
+    const PortOutputsPayload payload = serializePortOutputs(engine.nodePortOutputs(ref.runtimeName));
+
+    QJsonObject result{{QStringLiteral("node"), ref.runtimeName},
+                       {QStringLiteral("instanceId"), ref.instanceId},
+                       {QStringLiteral("frameId"), static_cast<double>(engine.lastFrameId())},
+                       {QStringLiteral("outputs"), payload.outputs}};
+    if (!payload.unsupported.isEmpty()) {
+        QJsonArray unsupported;
+        for (const QString& port : payload.unsupported)
+            unsupported.append(port);
+        result.insert(QStringLiteral("unsupportedPorts"), unsupported);
+    }
+    if (!info.valid) {
+        result.insert(QStringLiteral("lastStatus"), QStringLiteral("unknown"));
+        result.insert(QStringLiteral("note"), QStringLiteral("node has no runtime output yet; run the flow first"));
+        return result;
+    }
+    QString status = QStringLiteral("success");
+    if (info.skipped)
+        status = QStringLiteral("skipped");
+    else if (!info.success)
+        status = QStringLiteral("failed");
+    result.insert(QStringLiteral("lastStatus"), status);
+    result.insert(QStringLiteral("elapsedMs"), info.elapsedMs);
+    result.insert(QStringLiteral("finishedAt"), info.finishedAt.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz")));
+    if (status == QStringLiteral("failed"))
+        result.insert(QStringLiteral("errorMessage"), info.errorMessage);
+    return result;
+}
+
+QJsonObject AgentActor::getExecutionLogs(const QJsonObject& params) {
+    const QString category = params.value("category").toString().trimmed();
+    const QString levelName = params.value("level").toString(QStringLiteral("debug")).trimmed().toLower();
+    const QString keyword = params.value("keyword").toString();
+    const int limit = qBound(1, params.value("limit").toInt(50), 200);
+
+    LogLevel minLevel = LogLevel::Debug;
+    if (levelName == QStringLiteral("info"))
+        minLevel = LogLevel::Info;
+    else if (levelName == QStringLiteral("warning"))
+        minLevel = LogLevel::Warning;
+    else if (levelName == QStringLiteral("error"))
+        minLevel = LogLevel::Error;
+    else if (levelName == QStringLiteral("success"))
+        minLevel = LogLevel::Success;
+
+    QList<LogEntry> matched;
+    const QList<LogEntry> all = Logger::instance().logs();
+    for (const LogEntry& entry : all) {
+        if (!category.isEmpty() && entry.category != category)
+            continue;
+        if (static_cast<int>(entry.level) < static_cast<int>(minLevel))
+            continue;
+        if (!keyword.isEmpty() && !entry.message.contains(keyword, Qt::CaseInsensitive))
+            continue;
+        matched.append(entry);
+    }
+
+    QJsonArray entries;
+    const int first = qMax(0, matched.size() - limit);
+    for (int i = first; i < matched.size(); ++i) {
+        entries.append(QJsonObject{
+            {QStringLiteral("time"), matched[i].timestamp.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"))},
+            {QStringLiteral("level"), logLevelName(matched[i].level)},
+            {QStringLiteral("category"), matched[i].category},
+            {QStringLiteral("message"), matched[i].message}});
+    }
+    return QJsonObject{{QStringLiteral("entries"), entries},
+                       {QStringLiteral("total"), matched.size()},
+                       {QStringLiteral("truncated"), matched.size() > entries.size()},
+                       {QStringLiteral("source"), QStringLiteral("Logger::memory")}};
+}
+
+QJsonObject AgentActor::tuneNodeAndVerify(const QJsonObject& params) {
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project)
+        return QJsonObject{{"success", false}, {"error", "No project opened"}, {"code", "no_project"}};
+
+    const QString nodeName = params.value("nodeName").toString();
+    RunEngine& engine = RunEngine::instance();
+    if (engine.isBusy()) {
+        return QJsonObject{
+            {"success", false}, {"error", "Flow is running; stop it before tuning"}, {"code", "engine_busy"}};
+    }
+
+    QString loadError;
+    if (!ensureEngineLoaded(&loadError))
+        return QJsonObject{{"success", false}, {"error", loadError}, {"code", "engine_load_failed"}};
+
+    NodeRef ref;
+    if (!resolveNodeRef(project, nodeName, &ref)) {
+        return QJsonObject{
+            {"success", false}, {"error", QString("Module not found: %1").arg(nodeName)}, {"code", "node_not_found"}};
+    }
+
+    const QJsonValue parametersValue = params.value("parameters");
+    const QJsonObject patch = parametersValue.toObject();
+    if (!parametersValue.isObject() || patch.isEmpty() || patch.size() > 32)
+        return invalidParameter(QStringLiteral("'parameters' must be a non-empty object with 1..32 keys"), QString());
+
+    const QString runMode = params.value("runMode").toString(QStringLiteral("flow"));
+    if (runMode != QStringLiteral("flow") && runMode != QStringLiteral("node"))
+        return invalidParameter(QString("Invalid runMode: %1").arg(runMode), QString());
+    const int timeoutMs = qBound(1000, params.value("timeoutMs").toInt(60000), 300000);
+
+    const std::optional<ModuleInstance> instOpt = project->moduleById(ref.instanceId);
+    if (!instOpt) {
+        return QJsonObject{
+            {"success", false}, {"error", QString("Module not found: %1").arg(nodeName)}, {"code", "node_not_found"}};
+    }
+    std::unique_ptr<IModule> mod(PluginManager::instance().createModule(instOpt->moduleId));
+    if (!mod) {
+        return QJsonObject{{"success", false},
+                           {"error", QString("Cannot create module for validation: %1").arg(instOpt->moduleId)},
+                           {"code", "invalid_parameter"}};
+    }
+
+    // 预校验全部键：任一键失败 → 工程参数零修改
+    const QJsonObject currentParams = mergedParams(mod.get(), *instOpt);
+    QJsonObject normalized;
+    QJsonObject merged = currentParams;
+    for (auto it = patch.constBegin(); it != patch.constEnd(); ++it) {
+        const ParamNormalizeResult conversion = normalizeParamValue(mod.get(), *instOpt, it.key(), it.value());
+        if (!conversion.ok)
+            return invalidParameter(conversion.error, it.key());
+        normalized.insert(it.key(), conversion.value);
+        merged.insert(it.key(), conversion.value);
+        QString verr;
+        if (!mod->validateParams(merged, verr))
+            return invalidParameter(verr, it.key());
+    }
+
+    QJsonObject beforeValues;
+    QJsonObject afterValues;
+    for (auto it = normalized.constBegin(); it != normalized.constEnd(); ++it) {
+        beforeValues.insert(it.key(), scalarToString(currentParams.value(it.key())));
+        afterValues.insert(it.key(), scalarToString(merged.value(it.key())));
+    }
+
+    // 原子写入：宏内多条 set 命令，一次撤销回滚整组
+    m_undoStack->beginMacro(QStringLiteral("Agent tune %1").arg(ref.runtimeName));
+    for (auto it = normalized.constBegin(); it != normalized.constEnd(); ++it) {
+        const bool hadOldValue = instOpt->params.contains(it.key());
+        const QJsonValue oldVal = instOpt->params.value(it.key());
+        m_undoStack->push(new AgentSetParamCmd(ref.instanceId, it.key(), hadOldValue, oldVal, it.value()));
+    }
+    m_undoStack->endMacro();
+    m_engineProjectDirty = true;
+
+    QJsonObject result{{QStringLiteral("node"), ref.runtimeName}, {QStringLiteral("instanceId"), ref.instanceId},
+                       {QStringLiteral("runMode"), runMode},      {QStringLiteral("applied"), normalized.size()},
+                       {QStringLiteral("before"), beforeValues},  {QStringLiteral("after"), afterValues},
+                       {QStringLiteral("undoable"), true}};
+
+    if (runMode == QStringLiteral("node")) {
+        // 零副作用改参核对：不执行节点、不触发运行，返回上一帧输出
+        const PortOutputsPayload payload = serializePortOutputs(engine.nodePortOutputs(ref.runtimeName));
+        const RunEngine::ModuleRuntimeInfo info = engine.moduleRuntimeSnapshot().value(ref.runtimeName);
+        QString status = QStringLiteral("unknown");
+        if (info.valid)
+            status = info.skipped ? QStringLiteral("skipped")
+                                  : (info.success ? QStringLiteral("success") : QStringLiteral("failed"));
+        result.insert(QStringLiteral("success"), true);
+        result.insert(QStringLiteral("executed"), false);
+        result.insert(QStringLiteral("staleOutputs"), payload.outputs);
+        result.insert(QStringLiteral("lastStatus"), status);
+        result.insert(QStringLiteral("note"), QStringLiteral("runMode=node does not execute the flow; outputs are from "
+                                                             "the previous run. Use runMode=flow to verify."));
+        return result;
+    }
+
+    const auto tuneFailure = [&](const QString& code, const QString& error, const QString& failedModule) {
+        QJsonObject failure{
+            {"success", false},
+            {"code", code},
+            {"error", error},
+            {"node", ref.runtimeName},
+            {"runMode", runMode},
+            {"applied", normalized.size()},
+            {"parametersRolledBack", false},
+            {"note", QStringLiteral("Parameters were applied and kept; undo one step to roll back the whole patch.")},
+            {"before", beforeValues},
+            {"after", afterValues}};
+        if (!failedModule.isEmpty())
+            failure.insert(QStringLiteral("failedModule"), failedModule);
+        return failure;
+    };
+
+    const RunWaitResult run = runAndWait(QStringLiteral("once"), timeoutMs, true);
+    if (run.timedOut)
+        return tuneFailure(QStringLiteral("timeout"), QString("Flow did not finish within %1 ms").arg(timeoutMs),
+                           QString());
+    if (run.aborted)
+        return tuneFailure(QStringLiteral("cancelled"), QStringLiteral("Run aborted by user"), QString());
+    if (run.reentrant) {
+        return tuneFailure(QStringLiteral("reentrant_wait"),
+                           QStringLiteral("Another run wait is already active on this thread"), QString());
+    }
+    if (run.pausedAtBreakpoint) {
+        return tuneFailure(QStringLiteral("paused_at_breakpoint"),
+                           QStringLiteral("Flow paused at a breakpoint; continue or stop it from the UI"), QString());
+    }
+    if (!run.started)
+        return tuneFailure(QStringLiteral("run_failed"), run.error, run.failedModule);
+
+    const PortOutputsPayload payload = serializePortOutputs(engine.nodePortOutputs(ref.runtimeName));
+    const RunEngine::ModuleRuntimeInfo info = engine.moduleRuntimeSnapshot().value(ref.runtimeName);
+    QString status = QStringLiteral("unknown");
+    if (info.valid)
+        status = info.skipped ? QStringLiteral("skipped")
+                              : (info.success ? QStringLiteral("success") : QStringLiteral("failed"));
+    result.insert(QStringLiteral("success"), run.ok);
+    result.insert(QStringLiteral("elapsedMs"), run.elapsedMs);
+    result.insert(QStringLiteral("outputs"), payload.outputs);
+    result.insert(QStringLiteral("lastStatus"), status);
+    if (!run.ok) {
+        result.insert(QStringLiteral("code"), QStringLiteral("run_failed"));
+        result.insert(QStringLiteral("failedModule"), run.failedModule);
+        result.insert(QStringLiteral("errorMessage"), run.error);
+        result.insert(QStringLiteral("error"), run.error);
+        // 设计取舍：参数保留（不静默回滚），一次撤销可回滚整组；用显式字段告知模型
+        result.insert(QStringLiteral("parametersRolledBack"), false);
+        result.insert(QStringLiteral("note"),
+                      QStringLiteral("Parameters were applied and kept; undo one step to roll back the whole patch."));
+    }
+    return result;
+}
+
+QJsonObject AgentActor::captureViewportImage(const QJsonObject& params) {
+    Q_UNUSED(params)
+    QImage image;
+    QString source;
+    QString providerError;
+    if (m_viewportImageProvider) {
+        image = m_viewportImageProvider(&providerError);
+        if (!image.isNull())
+            source = QStringLiteral("viewport");
+    }
+    if (image.isNull()) {
+        const ImageData last = RunEngine::instance().lastOutput();
+        if (last.isValid()) {
+            image = last.toQImage();
+            source = QStringLiteral("last_output");
+        }
+    }
+    if (image.isNull()) {
+        return errorObject(providerError.isEmpty() ? QStringLiteral("No image available in the viewport")
+                                                   : providerError,
+                           QStringLiteral("no_image"));
+    }
+    const QString path = AgentToolImage::writeImage(image, QStringLiteral("capture_viewport_image"));
+    if (path.isEmpty())
+        return errorObject(QStringLiteral("Failed to write image: cannot save PNG"),
+                           QStringLiteral("image_write_failed"));
+    return QJsonObject{{QStringLiteral("imagePath"), path},
+                       {QStringLiteral("width"), image.width()},
+                       {QStringLiteral("height"), image.height()},
+                       {QStringLiteral("source"), source},
+                       {QStringLiteral("bytes"), static_cast<double>(QFileInfo(path).size())}};
+}
+
+QJsonObject AgentActor::exportNodeOutput(const QJsonObject& params) {
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project)
+        return errorObject(QStringLiteral("No project opened"), QStringLiteral("no_project"));
+    RunEngine& engine = RunEngine::instance();
+    if (engine.isBusy()) {
+        return errorObject(QStringLiteral("Flow is running; stop it before exporting node output"),
+                           QStringLiteral("engine_busy"));
+    }
+    QString loadError;
+    if (!ensureEngineLoaded(&loadError))
+        return errorObject(loadError, QStringLiteral("engine_load_failed"));
+
+    const QString nodeName = params.value("nodeName").toString();
+    NodeRef ref;
+    if (!resolveNodeRef(project, nodeName, &ref))
+        return errorObject(QString("Module not found: %1").arg(nodeName), QStringLiteral("node_not_found"));
+
+    const QString format = params.value("format").toString(QStringLiteral("png")).toLower();
+    QImage image;
+    QString source = QStringLiteral("module_output");
+    const PortValueMap ports = engine.nodePortOutputs(ref.runtimeName);
+    const QVariant imageValue = ports.value(QStringLiteral("image"));
+    if (imageValue.userType() == qMetaTypeId<ImageData>()) {
+        const ImageData data = imageValue.value<ImageData>();
+        if (data.isValid())
+            image = data.toQImage();
+    }
+    if (image.isNull()) {
+        const ImageData moduleImage = engine.moduleOutput(ref.runtimeName);
+        if (moduleImage.isValid())
+            image = moduleImage.toQImage();
+    }
+    // R3（设计 §4.6）：本工具只接受节点运行输出，禁止回退到视口/上一帧——
+    // 回退会把"节点无图像"变成假成功，且与 capture_viewport_image 的职责混淆。
+    if (image.isNull())
+        return errorObject(QString("Node '%1' produced no image output").arg(ref.runtimeName),
+                           QStringLiteral("no_image_output"));
+
+    const QString path = AgentToolImage::writeImage(image, QStringLiteral("export_node_output"), format);
+    if (path.isEmpty())
+        return errorObject(QStringLiteral("Failed to write image"), QStringLiteral("image_write_failed"));
+    return QJsonObject{{QStringLiteral("imagePath"), path},
+                       {QStringLiteral("width"), image.width()},
+                       {QStringLiteral("height"), image.height()},
+                       {QStringLiteral("source"), source},
+                       {QStringLiteral("format"), format},
+                       {QStringLiteral("bytes"), static_cast<double>(QFileInfo(path).size())}};
 }
 
 } // namespace DeepLux

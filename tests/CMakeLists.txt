@@ -49,11 +49,14 @@ set(TEST_SOURCES
     test_agentobserver.cpp
     test_agentactor.cpp
     test_agentpermissions.cpp
+    test_agenttoolcontract.cpp
+    test_agentretry.cpp
     test_agentundo.cpp
     test_agentcontroller.cpp
     test_agentbridge.cpp
     test_agente2e.cpp
     test_agent_draft_restore.cpp
+    test_agentclosedloop.cpp
     test_variable_system_plugins.cpp
     test_measurementdata.cpp
     test_measuregap.cpp
@@ -312,6 +315,13 @@ foreach(TEST_FILE ${TEST_SOURCES})
             TEST_AGENTACTOR_LIB_FitCircle="$<TARGET_FILE:FitCirclePlugin>"
             TEST_AGENTACTOR_META_FitCircle="${CMAKE_SOURCE_DIR}/src/plugins/geometry/FitCircle/metadata.json")
     endif()
+    # 第一迭代闭环测试：安装真实 GrabImage 插件（Path 源）后跑 建流程→校验→运行→读输出→调参→截图
+    if(TEST_NAME STREQUAL "test_agentclosedloop")
+        target_link_libraries(${TEST_NAME} PRIVATE GrabImagePlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_CLOSEDLOOP_LIB_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+            TEST_CLOSEDLOOP_META_GrabImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json")
+    endif()
     if(TEST_NAME STREQUAL "test_loadpointcloud" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE LoadPointCloudPlugin)
     endif()
@@ -450,6 +460,10 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
     # SAM 批3：Agent SAM 工具 × 测试内 HTTP 服务，同设 TIMEOUT
     if(TEST_NAME STREQUAL "test_agent_sam_tools")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
+    endif()
+    # 第一迭代：LLM 重试测试包含真实指数退避等待（最长 4s）与本地假端点，设 TIMEOUT 防挂死
+    if(TEST_NAME STREQUAL "test_agentretry")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
     endif()
 endforeach()

@@ -1,6 +1,8 @@
 #include "core/agent/AgentActor.h"
+#include "core/agent/AgentToolImage.h"
 #include "core/agent/ToolSchema.h"
 #include "core/base/ModuleBase.h"
+#include "core/common/Logger.h"
 #include "core/engine/RunEngine.h"
 #include "core/model/Project.h"
 #include "manager/PluginManager.h"
@@ -10,6 +12,8 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QImage>
+#include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
@@ -21,7 +25,7 @@ using namespace DeepLux;
 namespace {
 class BlockingAgentModule final : public ModuleBase {
 public:
-    BlockingAgentModule() {
+    explicit BlockingAgentModule(int sleepMs = 900) : m_sleepMs(sleepMs) {
         m_moduleId = QStringLiteral("com.deeplux.test.agentblocking");
         m_name = QStringLiteral("AgentBlocking");
         m_category = QStringLiteral("test");
@@ -33,7 +37,7 @@ protected:
         m_entered.store(true, std::memory_order_release);
         QElapsedTimer timer;
         timer.start();
-        while (!isCancellationRequested() && timer.elapsed() < 900)
+        while (!isCancellationRequested() && timer.elapsed() < m_sleepMs)
             QThread::msleep(5);
         output = input;
         return true;
@@ -45,6 +49,9 @@ protected:
 
 public:
     std::atomic_bool m_entered{false};
+
+private:
+    int m_sleepMs = 900;
 };
 } // namespace
 
@@ -66,6 +73,16 @@ private:
         QFile::remove(dir.filePath("metadata.json"));
         QFile::remove(destLib);
         return QFile::copy(metaSrc, dir.filePath("metadata.json")) && QFile::copy(libSrc, destLib);
+    }
+
+    // GrabImage 默认 grabSource=Camera（无相机环境必然失败）——测试统一切到 Demo 演示图
+    bool addDemoGrab(AgentActor& actor, const QString& instanceName) const {
+        const QJsonObject added =
+            actor.executeTool("add_module", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", instanceName}});
+        if (added.contains("error"))
+            return false;
+        Project* project = ProjectManager::instance().currentProject();
+        return project && project->setModuleParam(instanceName, QStringLiteral("grabSource"), QStringLiteral("Demo"));
     }
 
     QTemporaryDir m_appDataDir;
@@ -439,10 +456,10 @@ private slots:
             RunEngine::instance().stop();
         });
 
-        QJsonObject result = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}});
+        QJsonObject result = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
         QCOMPARE(result.value("status").toString(), QStringLiteral("started"));
         QVERIFY(RunEngine::instance().isBusy());
-        QVERIFY(actor.executeTool("run_flow", QJsonObject{{"mode", "once"}}).contains("error"));
+        QVERIFY(actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}}).contains("error"));
         QTRY_VERIFY_WITH_TIMEOUT(stopCalled, 2000);
         QVERIFY2(elapsed.elapsed() < 500,
                  qPrintable(QStringLiteral("Agent run blocked the event loop for %1 ms").arg(elapsed.elapsed())));
@@ -481,6 +498,473 @@ private slots:
         actor.undoStack()->redo(); // 重做 connect：id 固定，连接恢复
         QCOMPARE(project->connections().size(), 1);
         QVERIFY(project->moduleById(QStringLiteral("m")).has_value());
+    }
+
+    // R1：remove_module 必须先在工程里校验实例存在；不存在时失败关闭——
+    // 不得压撤销栈、不得改工程（否则 Agent 会误以为删除成功）
+    void testRemoveModuleMissingInstanceFailsClosedWithoutUndoPush() {
+        AgentActor actor;
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        QVERIFY(addDemoGrab(actor, QStringLiteral("keep")));
+
+        const int undoIndexBefore = actor.undoStack()->index();
+        const int moduleCountBefore = project->modules().size();
+
+        const QJsonObject missing = actor.executeTool("remove_module", QJsonObject{{"instanceId", "does_not_exist"}});
+        QCOMPARE(missing.value("code").toString(), QStringLiteral("node_not_found"));
+        QCOMPARE(missing.value("error").toString(), QStringLiteral("Module not found: does_not_exist"));
+        QCOMPARE(actor.undoStack()->index(), undoIndexBefore);  // 未压栈
+        QCOMPARE(project->modules().size(), moduleCountBefore); // 工程零修改
+        QVERIFY(project->moduleById(QStringLiteral("keep")).has_value());
+
+        // 无工程时同样失败关闭（不压栈）
+        ProjectManager::instance().closeProject();
+        const int undoIndexNoProject = actor.undoStack()->index();
+        const QJsonObject noProject = actor.executeTool("remove_module", QJsonObject{{"instanceId", "keep"}});
+        QCOMPARE(noProject.value("code").toString(), QStringLiteral("node_not_found"));
+        QCOMPARE(actor.undoStack()->index(), undoIndexNoProject);
+    }
+
+    // R2：create_project 失败路径必须保留既有 error 文案并追加 code + message。
+    // executeTool 的 mutatesProject 门禁会先返回 engine_busy，故直接调用 handler
+    // 触发 ProjectManager::newProject() 的引擎忙失败分支（测试构建下可见）。
+    void testCreateProjectFailureCarriesCode() {
+        AgentActor actor;
+        BlockingAgentModule blocking(1200);
+        QVERIFY(blocking.initialize());
+        RunEngine::instance().addModule(&blocking);
+        QVERIFY(RunEngine::instance().runOnceAsync());
+        QVERIFY(RunEngine::instance().isBusy());
+
+        const QJsonObject failed = actor.createProject(QJsonObject{{"name", "busy-create"}});
+        QCOMPARE(failed.value("error").toString(), QStringLiteral("Failed to create project"));
+        QCOMPARE(failed.value("code").toString(), QStringLiteral("project_create_failed"));
+        QVERIFY2(failed.contains("message"), "project_create_failed must carry a diagnostic message");
+
+        RunEngine::instance().stop();
+        QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
+    }
+
+    // --- 第一迭代：派发注册表 / 闭环 / 观测工具 ---
+
+    void testSupportedToolsRegistryAndUnknownTool() {
+        AgentActor actor;
+        const QStringList supported = actor.supportedTools();
+        QCOMPARE(supported.size(), 25);
+
+        const QStringList newTools = {
+            QStringLiteral("validate_workflow"),      QStringLiteral("get_node_runtime_outputs"),
+            QStringLiteral("get_execution_logs"),     QStringLiteral("tune_node_and_verify"),
+            QStringLiteral("capture_viewport_image"), QStringLiteral("export_node_output")};
+        for (const QString& name : newTools)
+            QVERIFY2(supported.contains(name), qPrintable(name));
+
+        // schema ↔ 注册表双向一致（工具契约单源化）
+        QStringList schemaNames;
+        for (const ToolDefinition& def : ToolSchema::instance().allTools())
+            schemaNames.append(def.name);
+        schemaNames.sort();
+        QCOMPARE(supported, schemaNames);
+
+        // undoable 事实来源：写工程的工具为 true，其余 false
+        QVERIFY(actor.toolUndoable(QStringLiteral("add_module")));
+        QVERIFY(actor.toolUndoable(QStringLiteral("tune_node_and_verify")));
+        QVERIFY(!actor.toolUndoable(QStringLiteral("run_flow")));
+        QVERIFY(!actor.toolUndoable(QStringLiteral("create_project")));
+        QVERIFY(!actor.toolUndoable(QStringLiteral("save_project")));
+        QVERIFY(!actor.toolUndoable(QStringLiteral("no_such_tool")));
+
+        // 未知工具保持既有错误文案
+        QJsonObject unknown = actor.executeTool("definitely_unknown_tool", QJsonObject());
+        QCOMPARE(unknown.value("error").toString(), QStringLiteral("Unknown tool: definitely_unknown_tool"));
+    }
+
+    void testValidateWorkflow() {
+        AgentActor actor;
+        QCOMPARE(actor.executeTool("validate_workflow", QJsonObject()).value("code").toString(),
+                 QStringLiteral("no_project"));
+
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "validate"}}).contains("error"));
+        QJsonObject empty = actor.executeTool("validate_workflow", QJsonObject());
+        QCOMPARE(empty.value("ok").toBool(), false);
+        QCOMPARE(empty.value("moduleCount").toInt(), 0);
+        QCOMPARE(empty.value("issues").toArray().first().toObject().value("code").toString(),
+                 QStringLiteral("no_modules"));
+
+        QVERIFY(addDemoGrab(actor, QStringLiteral("grab")));
+        QJsonObject ok = actor.executeTool("validate_workflow", QJsonObject());
+        QCOMPARE(ok.value("ok").toBool(), true);
+        QCOMPARE(ok.value("moduleCount").toInt(), 1);
+        QVERIFY(ok.value("issues").toArray().isEmpty());
+
+        // FitCircle 的必需输入 fit_points 未连接 → 结构化 issue
+        QVERIFY(!actor.executeTool("add_module", QJsonObject{{"plugin", "FitCircle"}, {"instanceName", "fit"}})
+                     .contains("error"));
+        QJsonObject missing = actor.executeTool("validate_workflow", QJsonObject());
+        QCOMPARE(missing.value("ok").toBool(), false);
+        bool found = false;
+        for (const QJsonValue& value : missing.value("issues").toArray()) {
+            const QJsonObject issue = value.toObject();
+            if (issue.value("code").toString() == QStringLiteral("missing_required_input")) {
+                QCOMPARE(issue.value("node").toString(), QStringLiteral("fit"));
+                QCOMPARE(issue.value("port").toString(), QStringLiteral("fit_points"));
+                found = true;
+            }
+        }
+        QVERIFY2(found, "missing_required_input issue expected");
+
+        // 引擎忙 → engine_busy（直接启动引擎，绕开工具的工程重载）
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        ModuleInstance grab;
+        grab.id = QStringLiteral("grab");
+        grab.moduleId = QStringLiteral("GrabImage");
+        grab.params.insert(QStringLiteral("grabSource"), QStringLiteral("Demo"));
+        project->addModule(grab);
+        QCOMPARE(actor.executeTool("validate_workflow", QJsonObject()).value("ok").toBool(), true);
+
+        BlockingAgentModule blocking(1500);
+        QVERIFY(blocking.initialize());
+        RunEngine::instance().addModule(&blocking);
+        QVERIFY(RunEngine::instance().runOnceAsync());
+        QCOMPARE(actor.executeTool("validate_workflow", QJsonObject()).value("code").toString(),
+                 QStringLiteral("engine_busy"));
+        RunEngine::instance().stop();
+        QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
+    }
+
+    void testGetNodeRuntimeOutputs() {
+        AgentActor actor;
+        QCOMPARE(actor.executeTool("get_node_runtime_outputs", QJsonObject{{"nodeName", "x"}}).value("code").toString(),
+                 QStringLiteral("no_project"));
+
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "outputs"}}).contains("error"));
+        QVERIFY(addDemoGrab(actor, QStringLiteral("grab")));
+
+        QCOMPARE(
+            actor.executeTool("get_node_runtime_outputs", QJsonObject{{"nodeName", "nope"}}).value("code").toString(),
+            QStringLiteral("node_not_found"));
+
+        QJsonObject never = actor.executeTool("get_node_runtime_outputs", QJsonObject{{"nodeName", "grab"}});
+        QCOMPARE(never.value("lastStatus").toString(), QStringLiteral("unknown"));
+        QVERIFY(never.value("outputs").toObject().isEmpty());
+        QVERIFY(never.contains("note"));
+
+        QJsonObject run = actor.executeTool("run_flow", QJsonObject());
+        QVERIFY2(run.value("success").toBool(),
+                 qPrintable(QString::fromUtf8(QJsonDocument(run).toJson(QJsonDocument::Compact))));
+
+        QJsonObject after = actor.executeTool("get_node_runtime_outputs", QJsonObject{{"nodeName", "grab"}});
+        QCOMPARE(after.value("lastStatus").toString(), QStringLiteral("success"));
+        QVERIFY(after.value("elapsedMs").toInt() >= 0);
+        QVERIFY(after.value("frameId").toDouble() > 0);
+        const QJsonObject imagePort = after.value("outputs").toObject().value("image").toObject();
+        QCOMPARE(imagePort.value("type").toString(), QStringLiteral("image"));
+        QCOMPARE(imagePort.value("present").toBool(), true);
+        QVERIFY(imagePort.value("width").toInt() > 0);
+        QVERIFY(imagePort.value("height").toInt() > 0);
+
+        // 名称优先、其次实例 id：显示名与实例 id 不同也能解析
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+        ModuleInstance second;
+        second.id = QStringLiteral("grab-instance-1");
+        second.moduleId = QStringLiteral("GrabImage");
+        second.name = QStringLiteral("DisplayGrab");
+        second.params.insert(QStringLiteral("grabSource"), QStringLiteral("Demo"));
+        project->addModule(second);
+
+        const QJsonObject byName =
+            actor.executeTool("get_node_runtime_outputs", QJsonObject{{"nodeName", "DisplayGrab"}});
+        QVERIFY2(byName.value("instanceId").toString() == QStringLiteral("grab-instance-1"),
+                 qPrintable(QString::fromUtf8(QJsonDocument(byName).toJson(QJsonDocument::Compact))));
+        QCOMPARE(byName.value("node").toString(), QStringLiteral("grab-instance-1"));
+        QCOMPARE(actor.executeTool("get_node_runtime_outputs", QJsonObject{{"nodeName", "grab-instance-1"}})
+                     .value("instanceId")
+                     .toString(),
+                 QStringLiteral("grab-instance-1"));
+
+        // 端口值序列化：列表型端口（MeasurementInput 的 point1/point2 是数值列表）
+        ModuleInstance measure;
+        measure.id = QStringLiteral("measure-input");
+        measure.moduleId = QStringLiteral("MeasurementInput");
+        project->addModule(measure);
+        QJsonObject runWithMeasure = actor.executeTool("run_flow", QJsonObject());
+        QVERIFY2(runWithMeasure.value("success").toBool(),
+                 qPrintable(QString::fromUtf8(QJsonDocument(runWithMeasure).toJson(QJsonDocument::Compact))));
+        QJsonObject listOutputs =
+            actor.executeTool("get_node_runtime_outputs", QJsonObject{{"nodeName", "measure-input"}});
+        QCOMPARE(listOutputs.value("lastStatus").toString(), QStringLiteral("success"));
+        const QJsonObject point1 = listOutputs.value("outputs").toObject().value("point1").toObject();
+        QCOMPARE(point1.value("type").toString(), QStringLiteral("list"));
+        QCOMPARE(point1.value("count").toInt(), 2);
+        QCOMPARE(point1.value("first").toDouble(), 0.0);
+    }
+
+    void testGetNodeRuntimeOutputsFailureStatus() {
+        AgentActor actor;
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "failure"}}).contains("error"));
+        // MeasureCircle 的必需输入 image 无上游 → 运行期失败（validateFlow 对 image 端口不做前置拦截）
+        QVERIFY(!actor.executeTool("add_module", QJsonObject{{"plugin", "MeasureCircle"}, {"instanceName", "mc"}})
+                     .contains("error"));
+
+        QJsonObject run = actor.executeTool("run_flow", QJsonObject());
+        QCOMPARE(run.value("success").toBool(), false);
+        QCOMPARE(run.value("code").toString(), QStringLiteral("run_failed"));
+        QCOMPARE(run.value("failedModule").toString(), QStringLiteral("mc"));
+        QVERIFY(!run.value("errorMessage").toString().isEmpty());
+
+        QJsonObject outputs = actor.executeTool("get_node_runtime_outputs", QJsonObject{{"nodeName", "mc"}});
+        QCOMPARE(outputs.value("lastStatus").toString(), QStringLiteral("failed"));
+        QVERIFY(!outputs.value("errorMessage").toString().isEmpty());
+    }
+
+    void testGetExecutionLogsFilters() {
+        AgentActor actor;
+        Logger::instance().clearLogs();
+        Logger::instance().info(QStringLiteral("alpha match"), QStringLiteral("Run"));
+        Logger::instance().warning(QStringLiteral("BETA thing"), QStringLiteral("Run"));
+        Logger::instance().error(QStringLiteral("gamma"), QStringLiteral("Run"));
+        Logger::instance().debug(QStringLiteral("delta"), QStringLiteral("Run"));
+        Logger::instance().info(QStringLiteral("epsilon"), QStringLiteral("Agent"));
+
+        QJsonObject category = actor.executeTool("get_execution_logs", QJsonObject{{"category", "Run"}});
+        QCOMPARE(category.value("total").toInt(), 4);
+        QCOMPARE(category.value("entries").toArray().size(), 4);
+        QCOMPARE(category.value("truncated").toBool(), false);
+        for (const QJsonValue& value : category.value("entries").toArray())
+            QCOMPARE(value.toObject().value("category").toString(), QStringLiteral("Run"));
+
+        QJsonObject errors =
+            actor.executeTool("get_execution_logs", QJsonObject{{"category", "Run"}, {"level", "error"}});
+        QCOMPARE(errors.value("total").toInt(), 1);
+        QCOMPARE(errors.value("entries").toArray().first().toObject().value("level").toString(),
+                 QStringLiteral("error"));
+
+        QJsonObject keyword = actor.executeTool("get_execution_logs", QJsonObject{{"keyword", "beta"}});
+        QCOMPARE(keyword.value("total").toInt(), 1);
+        QCOMPARE(keyword.value("entries").toArray().first().toObject().value("message").toString(),
+                 QStringLiteral("BETA thing"));
+
+        QJsonObject limited = actor.executeTool("get_execution_logs", QJsonObject{{"category", "Run"}, {"limit", 2}});
+        QCOMPARE(limited.value("total").toInt(), 4);
+        QCOMPARE(limited.value("truncated").toBool(), true);
+        const QJsonArray limitedEntries = limited.value("entries").toArray();
+        QCOMPARE(limitedEntries.size(), 2);
+        QCOMPARE(limitedEntries.last().toObject().value("message").toString(), QStringLiteral("delta"));
+
+        QJsonObject none = actor.executeTool("get_execution_logs", QJsonObject{{"keyword", "no-such-zzz"}});
+        QCOMPARE(none.value("total").toInt(), 0);
+        QVERIFY(none.value("entries").toArray().isEmpty());
+        QCOMPARE(none.value("truncated").toBool(), false);
+        Logger::instance().clearLogs();
+    }
+
+    void testRunFlowWaitCompletes() {
+        AgentActor actor;
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "wait"}}).contains("error"));
+        QVERIFY(addDemoGrab(actor, QStringLiteral("grab")));
+
+        QJsonObject result = actor.executeTool("run_flow", QJsonObject());
+        QVERIFY2(result.value("success").toBool(),
+                 qPrintable(QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact))));
+        QVERIFY(result.value("elapsedMs").toInt() >= 0);
+        QCOMPARE(result.value("failedModule").toString(), QString());
+        QCOMPARE(result.value("errorMessage").toString(), QString());
+        QCOMPARE(result.value("waitTimedOut").toBool(), false);
+        QVERIFY(!RunEngine::instance().isBusy());
+
+        // wait=false 保持旧语义
+        QJsonObject async = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
+        QCOMPARE(async.value("status").toString(), QStringLiteral("started"));
+        QCOMPARE(async.value("async").toBool(), true);
+        QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
+
+        // cycle 没有"完成"概念：wait 被忽略并给出说明
+        QJsonObject cycle = actor.executeTool("run_flow", QJsonObject{{"mode", "cycle"}});
+        QCOMPARE(cycle.value("status").toString(), QStringLiteral("started"));
+        QVERIFY(cycle.value("note").toString().contains(QStringLiteral("cycle")));
+        RunEngine::instance().stop();
+        QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
+    }
+
+    void testRunFlowWaitTimeoutStopsFlow() {
+        AgentActor actor;
+        BlockingAgentModule blocking(3000);
+        QVERIFY(blocking.initialize());
+        RunEngine::instance().addModule(&blocking);
+
+        QElapsedTimer timer;
+        timer.start();
+        QJsonObject result = actor.executeTool("run_flow", QJsonObject{{"timeoutMs", 1000}});
+        QCOMPARE(result.value("code").toString(), QStringLiteral("timeout"));
+        QCOMPARE(result.value("waitTimedOut").toBool(), true);
+        QVERIFY(result.value("error").toString().contains(QStringLiteral("1000")));
+        QVERIFY(timer.elapsed() >= 900);
+        QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 8000);
+    }
+
+    void testTuneNodeAndVerify() {
+        AgentActor actor;
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "tune"}}).contains("error"));
+        QVERIFY(addDemoGrab(actor, QStringLiteral("grab")));
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+        QVERIFY(project->setModuleParam(QStringLiteral("grab"), QStringLiteral("gain"), 2.0));
+
+        // 非法值：invalid_parameter + 工程参数零修改
+        QJsonObject invalid = actor.executeTool(
+            "tune_node_and_verify",
+            QJsonObject{{"nodeName", "grab"}, {"parameters", QJsonObject{{"gain", "abc"}}}, {"runMode", "node"}});
+        QCOMPARE(invalid.value("success").toBool(), false);
+        QCOMPARE(invalid.value("code").toString(), QStringLiteral("invalid_parameter"));
+        QCOMPARE(invalid.value("parameter").toString(), QStringLiteral("gain"));
+        QCOMPARE(project->moduleById(QStringLiteral("grab"))->params.value(QStringLiteral("gain")).toDouble(), 2.0);
+
+        // runMode=node：零副作用改参核对，不触发运行
+        const int runsBefore = RunEngine::instance().totalRuns();
+        QJsonObject nodeMode = actor.executeTool(
+            "tune_node_and_verify",
+            QJsonObject{{"nodeName", "grab"}, {"parameters", QJsonObject{{"gain", 3.0}}}, {"runMode", "node"}});
+        QCOMPARE(nodeMode.value("success").toBool(), true);
+        QCOMPARE(nodeMode.value("executed").toBool(), false);
+        QCOMPARE(nodeMode.value("applied").toInt(), 1);
+        QCOMPARE(nodeMode.value("before").toObject().value("gain").toString(), QStringLiteral("2"));
+        QCOMPARE(nodeMode.value("after").toObject().value("gain").toString(), QStringLiteral("3"));
+        QVERIFY(nodeMode.contains("note"));
+        QCOMPARE(RunEngine::instance().totalRuns(), runsBefore);
+
+        // 一次撤销回滚整组（宏）
+        QVERIFY(actor.undoStack()->canUndo());
+        actor.undoStack()->undo();
+        QCOMPARE(project->moduleById(QStringLiteral("grab"))->params.value(QStringLiteral("gain")).toDouble(), 2.0);
+
+        // runMode=flow：改 2 个键 → 执行 → 返回 before/after/outputs/success/elapsedMs
+        QJsonObject flow = actor.executeTool(
+            "tune_node_and_verify", QJsonObject{{"nodeName", "grab"},
+                                                {"parameters", QJsonObject{{"gain", 3.0}, {"grabTimeout", 2000}}},
+                                                {"runMode", "flow"}});
+        QCOMPARE(flow.value("success").toBool(), true);
+        QCOMPARE(flow.value("applied").toInt(), 2);
+        QCOMPARE(flow.value("before").toObject().value("gain").toString(), QStringLiteral("2"));
+        QCOMPARE(flow.value("after").toObject().value("gain").toString(), QStringLiteral("3"));
+        QCOMPARE(flow.value("after").toObject().value("grabTimeout").toString(), QStringLiteral("2000"));
+        QVERIFY(flow.value("elapsedMs").toInt() >= 0);
+        QVERIFY(!flow.value("outputs").toObject().isEmpty());
+        QCOMPARE(flow.value("lastStatus").toString(), QStringLiteral("success"));
+        QCOMPARE(flow.value("undoable").toBool(), true);
+        QCOMPARE(project->moduleById(QStringLiteral("grab"))->params.value(QStringLiteral("gain")).toDouble(), 3.0);
+
+        // 一次撤销回滚两个键
+        actor.undoStack()->undo();
+        QCOMPARE(project->moduleById(QStringLiteral("grab"))->params.value(QStringLiteral("gain")).toDouble(), 2.0);
+        QVERIFY(!project->moduleById(QStringLiteral("grab"))->params.contains(QStringLiteral("grabTimeout")));
+    }
+
+    void testTuneRejectsWhileEngineBusy() {
+        AgentActor actor;
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "busy-tune"}}).contains("error"));
+        QVERIFY(addDemoGrab(actor, QStringLiteral("grab")));
+        BlockingAgentModule blocking(1500);
+        QVERIFY(blocking.initialize());
+        RunEngine::instance().addModule(&blocking);
+        QVERIFY(RunEngine::instance().runOnceAsync());
+
+        QJsonObject result = actor.executeTool(
+            "tune_node_and_verify",
+            QJsonObject{{"nodeName", "grab"}, {"parameters", QJsonObject{{"gain", 1.0}}}, {"runMode", "node"}});
+        QCOMPARE(result.value("code").toString(), QStringLiteral("engine_busy"));
+        RunEngine::instance().stop();
+        QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
+    }
+
+    void testCaptureViewportImage() {
+        AgentActor actor;
+        QCOMPARE(actor.executeTool("capture_viewport_image", QJsonObject()).value("code").toString(),
+                 QStringLiteral("no_image"));
+
+        actor.setViewportImageProvider([](QString*) {
+            QImage image(100, 80, QImage::Format_RGB32);
+            image.fill(Qt::red);
+            return image;
+        });
+        QJsonObject captured = actor.executeTool("capture_viewport_image", QJsonObject());
+        QVERIFY2(!captured.contains("error"), qPrintable(captured.value("error").toString()));
+        QCOMPARE(captured.value("width").toInt(), 100);
+        QCOMPARE(captured.value("height").toInt(), 80);
+        QCOMPARE(captured.value("source").toString(), QStringLiteral("viewport"));
+        const QString path = captured.value("imagePath").toString();
+        QVERIFY(path.startsWith(QDir(AgentToolImage::imageDir()).absolutePath()));
+        QVERIFY(QFileInfo::exists(path));
+        QVERIFY(captured.value("bytes").toDouble() > 0);
+
+        QJsonObject second = actor.executeTool("capture_viewport_image", QJsonObject());
+        QVERIFY(second.value("imagePath").toString() != path);
+
+        // 未注入 provider 时回退到上一帧输出
+        actor.setViewportImageProvider(AgentActor::ViewportImageProvider());
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "capture"}}).contains("error"));
+        QVERIFY(addDemoGrab(actor, QStringLiteral("grab")));
+        QCOMPARE(actor.executeTool("run_flow", QJsonObject()).value("success").toBool(), true);
+        QJsonObject fallback = actor.executeTool("capture_viewport_image", QJsonObject());
+        QCOMPARE(fallback.value("source").toString(), QStringLiteral("last_output"));
+        QVERIFY(QFileInfo::exists(fallback.value("imagePath").toString()));
+    }
+
+    void testExportNodeOutput() {
+        AgentActor actor;
+        QCOMPARE(actor.executeTool("export_node_output", QJsonObject{{"nodeName", "x"}}).value("code").toString(),
+                 QStringLiteral("no_project"));
+
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "export"}}).contains("error"));
+        QVERIFY(addDemoGrab(actor, QStringLiteral("grab")));
+        QCOMPARE(actor.executeTool("export_node_output", QJsonObject{{"nodeName", "nope"}}).value("code").toString(),
+                 QStringLiteral("node_not_found"));
+        QCOMPARE(actor.executeTool("export_node_output", QJsonObject{{"nodeName", "grab"}}).value("code").toString(),
+                 QStringLiteral("no_image_output"));
+
+        // R3（设计 §4.6）：export_node_output 只接受节点运行输出，不得回退视口——
+        // 即使宿主注入了 provider，无节点图像输出也必须失败关闭
+        actor.setViewportImageProvider([](QString*) {
+            QImage image(64, 48, QImage::Format_RGB32);
+            image.fill(Qt::blue);
+            return image;
+        });
+        const QJsonObject viaProvider = actor.executeTool("export_node_output", QJsonObject{{"nodeName", "grab"}});
+        QCOMPARE(viaProvider.value("code").toString(), QStringLiteral("no_image_output"));
+        QVERIFY(viaProvider.contains("error"));
+        QVERIFY(!viaProvider.contains("imagePath"));
+        actor.setViewportImageProvider(AgentActor::ViewportImageProvider());
+
+        QCOMPARE(actor.executeTool("run_flow", QJsonObject()).value("success").toBool(), true);
+        QJsonObject png = actor.executeTool("export_node_output", QJsonObject{{"nodeName", "grab"}});
+        QVERIFY2(!png.contains("error"), qPrintable(png.value("error").toString()));
+        QCOMPARE(png.value("source").toString(), QStringLiteral("module_output"));
+        QCOMPARE(png.value("format").toString(), QStringLiteral("png"));
+        QVERIFY(png.value("imagePath").toString().endsWith(QStringLiteral(".png")));
+        QVERIFY(png.value("width").toInt() > 0);
+        QVERIFY(png.value("height").toInt() > 0);
+        QVERIFY(QFileInfo::exists(png.value("imagePath").toString()));
+
+        QJsonObject jpg = actor.executeTool("export_node_output", QJsonObject{{"nodeName", "grab"}, {"format", "jpg"}});
+        QVERIFY2(!jpg.contains("error"), qPrintable(jpg.value("error").toString()));
+        QVERIFY(jpg.value("imagePath").toString().endsWith(QStringLiteral(".jpg")));
+    }
+
+    void testExportNodeOutputRejectsWhileEngineBusy() {
+        AgentActor actor;
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "busy-export"}}).contains("error"));
+        QVERIFY(addDemoGrab(actor, QStringLiteral("grab")));
+        BlockingAgentModule blocking(1500);
+        QVERIFY(blocking.initialize());
+        RunEngine::instance().addModule(&blocking);
+        QVERIFY(RunEngine::instance().runOnceAsync());
+
+        QJsonObject result = actor.executeTool("export_node_output", QJsonObject{{"nodeName", "grab"}});
+        QCOMPARE(result.value("code").toString(), QStringLiteral("engine_busy"));
+        RunEngine::instance().stop();
+        QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
     }
 };
 

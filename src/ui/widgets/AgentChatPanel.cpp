@@ -145,6 +145,18 @@ void AgentChatPanel::setupUi() {
     m_sendButton->setAccessibleName(tr("发送消息"));
     connect(m_sendButton, &QToolButton::clicked, this, &AgentChatPanel::onSendClicked);
     inputLayout->addWidget(m_sendButton, 0, Qt::AlignBottom);
+    // 停止按钮（设计 §5.6）：仅在思考/执行中可见，点击请求控制器中止当前轮
+    m_stopButton = new QToolButton(composer);
+    m_stopButton->setObjectName("AgentStopMessage");
+    m_stopButton->setFixedSize(30, 30);
+    m_stopButton->setToolTip(tr("停止当前轮"));
+    m_stopButton->setAccessibleName(tr("停止当前轮"));
+    connect(m_stopButton, &QToolButton::clicked, this, [this]() {
+        m_stopButton->setEnabled(false); // 连点保护：等待控制器回 agentTurnAborted
+        emit stopRequested();
+    });
+    m_stopButton->hide();
+    inputLayout->addWidget(m_stopButton, 0, Qt::AlignBottom);
     main->addWidget(composer);
 
     m_thinkingTimer = new QTimer(this);
@@ -259,6 +271,7 @@ void AgentChatPanel::clearImageAttachments() {
 void AgentChatPanel::showToolPreview(const QList<AgentToolPreviewCard::ToolItem>& tools) {
     clearToolPreview();
     m_emptyLabel->hide();
+    m_stopped = false;
     m_pendingToolCount = tools.size();
     m_previewCard = new AgentToolPreviewCard(tools, m_isDark, m_messagesContainer);
     m_messagesLayout->insertWidget(m_messagesLayout->count() - 1, m_previewCard);
@@ -289,11 +302,44 @@ void AgentChatPanel::setThinking(bool thinking) {
     m_isThinking = thinking;
     m_isThinkingTimeout = false;
     m_error.clear();
-    if (thinking)
+    if (thinking) {
+        m_stopped = false;
+        m_isExecuting = false;
         m_thinkingTimer->start(60000);
-    else
+    } else {
         m_thinkingTimer->stop();
+    }
     updateStatusStrip();
+}
+
+void AgentChatPanel::setExecuting(bool executing) {
+    m_isExecuting = executing;
+    if (executing) {
+        m_stopped = false;
+        m_isThinking = false;
+        m_error.clear();
+        m_thinkingTimer->stop();
+    }
+    updateStatusStrip();
+}
+
+void AgentChatPanel::setStopped() {
+    m_stopped = true;
+    m_isThinking = false;
+    m_isExecuting = false;
+    m_isThinkingTimeout = false;
+    m_error.clear();
+    m_thinkingTimer->stop();
+    updateStatusStrip();
+}
+
+void AgentChatPanel::updateStopButton() {
+    if (!m_stopButton)
+        return;
+    const bool stoppable = m_isThinking || m_isExecuting || m_pendingToolCount > 0;
+    m_stopButton->setVisible(stoppable);
+    m_stopButton->setEnabled(stoppable);
+    m_stopButton->setToolTip(tr("停止当前轮"));
 }
 
 void AgentChatPanel::setError(const QString& error) {
@@ -308,7 +354,7 @@ void AgentChatPanel::onThinkingTimeout() {
 }
 
 void AgentChatPanel::updateSendButton() {
-    const bool busy = m_isThinking || m_pendingToolCount > 0;
+    const bool busy = m_isThinking || m_isExecuting || m_pendingToolCount > 0;
     m_sendButton->setEnabled(!busy &&
                              (!m_inputEdit->toPlainText().trimmed().isEmpty() || !m_imageAttachments.isEmpty()));
     m_sendButton->setToolTip(busy ? tr("等待当前操作完成") : tr("发送消息"));
@@ -318,7 +364,7 @@ void AgentChatPanel::onSendClicked() {
     // 批3 复核五轮（P1-1）：忙碌守卫——上一请求仍在进行（Thinking）时直接
     // 返回、输入原样保留；不得先清空再依赖控制器全局状态反推"本次发送是否
     // 成功"——忙碌拒绝会保留上一请求的 Thinking 状态，反推将误判为成功
-    if (m_isThinking || m_pendingToolCount > 0 || m_composing)
+    if (m_isThinking || m_isExecuting || m_pendingToolCount > 0 || m_composing)
         return;
     const QString text = m_inputEdit->toPlainText().trimmed();
     const QList<QPixmap> images = m_imageAttachments; // 清空前快照
@@ -403,6 +449,8 @@ void AgentChatPanel::applyTheme(bool isDark) {
                       .arg(theme.windowBg.name(), theme.inputBorder.name(), theme.inlineCodeBg.name(),
                            theme.timestampColor.name(), theme.userFg.name(), theme.userName.name()));
     m_sendButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Execute, 18, Qt::white));
+    if (m_stopButton)
+        m_stopButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Stop, 16, theme.errorColor));
     m_attachButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::LoadImage, 18, theme.timestampColor));
     m_latestButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::MoveDown, 16, theme.userName));
     for (auto* message : m_messagesContainer->findChildren<AgentMessageBubble*>())
@@ -420,11 +468,15 @@ void AgentChatPanel::updateStatusStrip() {
         QColor statusColor = error ? theme.errorColor : theme.statusColor;
         if (error) {
             m_statusLabel->setText(tr("请求失败"));
+        } else if (m_stopped) {
+            m_statusLabel->setText(tr("已停止"));
         } else if (m_pendingToolCount > 0) {
             m_statusLabel->setText(tr("等待确认"));
         } else if (m_isThinkingTimeout) {
             m_statusLabel->setText(tr("请求超时"));
             statusColor = theme.errorColor;
+        } else if (m_isExecuting) {
+            m_statusLabel->setText(tr("执行中（可停止）"));
         } else if (m_isThinking) {
             m_statusLabel->setText(tr("● Agent 正在思考"));
         } else if (!m_attachmentNotice.isEmpty()) {
@@ -455,6 +507,7 @@ void AgentChatPanel::updateStatusStrip() {
             m_attachmentCountLabel->setText(tr("附件 %1").arg(m_imageAttachments.size()));
         m_attachmentCountLabel->setVisible(!m_imageAttachments.isEmpty() || !m_attachmentNotice.isEmpty());
     }
+    updateStopButton();
     updateSendButton();
 }
 

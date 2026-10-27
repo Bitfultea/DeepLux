@@ -1,6 +1,40 @@
 #include "ToolSchema.h"
 
+#include <QtGlobal>
+
 namespace DeepLux {
+
+namespace {
+// 工厂共用的唯一构造路径：三个访问级工厂只决定 readOnly/dangerous 两个布尔量，
+// 这里集中断言 §3.1 的不变式（dangerous ⇒ !readOnly）。
+ToolDefinition makeTool(const QString& name, const QString& description, const QList<ToolParam>& params, int timeoutMs,
+                        bool readOnly, bool dangerous) {
+    ToolDefinition tool;
+    tool.name = name;
+    tool.description = description;
+    tool.params = params;
+    tool.dangerous = dangerous;
+    tool.readOnly = readOnly;
+    tool.timeoutMs = timeoutMs;
+    Q_ASSERT(!(tool.readOnly && tool.dangerous));
+    return tool;
+}
+} // namespace
+
+ToolDefinition makeReadOnlyTool(const QString& name, const QString& description, const QList<ToolParam>& params,
+                                int timeoutMs) {
+    return makeTool(name, description, params, timeoutMs, /*readOnly=*/true, /*dangerous=*/false);
+}
+
+ToolDefinition makeWriteTool(const QString& name, const QString& description, const QList<ToolParam>& params,
+                             int timeoutMs) {
+    return makeTool(name, description, params, timeoutMs, /*readOnly=*/false, /*dangerous=*/false);
+}
+
+ToolDefinition makeDangerousTool(const QString& name, const QString& description, const QList<ToolParam>& params,
+                                 int timeoutMs) {
+    return makeTool(name, description, params, timeoutMs, /*readOnly=*/false, /*dangerous=*/true);
+}
 
 QJsonObject ToolParam::toJson() const {
     QJsonObject obj;
@@ -62,6 +96,8 @@ QJsonObject ToolDefinition::toJsonSchema() const {
     schema["name"] = name;
     schema["description"] = description;
     schema["dangerous"] = dangerous;
+    schema["readOnly"] = readOnly;
+    schema["timeoutMs"] = timeoutMs;
 
     QJsonArray paramArray;
     for (const ToolParam& p : params) {
@@ -72,6 +108,10 @@ QJsonObject ToolDefinition::toJsonSchema() const {
     }
     schema["params"] = paramArray;
     return schema;
+}
+
+int ToolSchema::effectiveTimeoutMs(const ToolDefinition& tool) {
+    return tool.timeoutMs > 0 ? tool.timeoutMs : kDefaultToolTimeoutMs;
 }
 
 ToolSchema& ToolSchema::instance() {
@@ -167,19 +207,28 @@ void ToolSchema::registerDefaultTools() {
                    {"fromPort", "string", "Source output port name", false},
                    {"toPort", "string", "Target input port name", false}}});
 
-    // run_flow
-    registerTool({"run_flow",
-                  "Run the current flow once",
-                  {{"mode", "enum", "Run mode: once or cycle", false, QJsonValue("once"), {"once", "cycle"}}}});
+    // run_flow（就地扩展：wait/timeoutMs 追加在参数末尾，保持既有提示词兼容；
+    // 第 4/5/6 位分别为 dangerous/readOnly/timeoutMs——见设计 §4.7）
+    registerTool(
+        ToolDefinition{"run_flow",
+                       "Run the current flow. wait=true (default) waits for completion and reports success/elapsed/"
+                       "failed node; wait=false returns immediately.",
+                       {{"mode", "enum", "Run mode: once or cycle", false, QJsonValue("once"), {"once", "cycle"}},
+                        {"wait", "boolean", "Wait for completion before returning", false, QJsonValue(true)},
+                        {"timeoutMs", "integer", "Wait timeout in ms (wait=true), clamped to [1000,300000]", false,
+                         QJsonValue(60000)}},
+                       false,
+                       false,
+                       60000});
 
     // stop_flow
     registerTool({"stop_flow", "Stop the current running flow", {}});
 
-    // get_flow_state
-    registerTool({"get_flow_state", "Get the current flow state (modules, connections, params)", {}});
+    // get_flow_state（readOnly：只读观察）
+    registerTool(makeReadOnlyTool("get_flow_state", "Get the current flow state (modules, connections, params)", {}));
 
-    // get_available_plugins
-    registerTool({"get_available_plugins", "List all available plugin modules", {}});
+    // get_available_plugins（readOnly）
+    registerTool(makeReadOnlyTool("get_available_plugins", "List all available plugin modules", {}));
 
     // save_project
     registerTool({"save_project",
@@ -187,13 +236,12 @@ void ToolSchema::registerDefaultTools() {
                   {{"path", "string", "Optional save path", false}},
                   true}); // dangerous
 
-    // get_module_params_schema
-    registerTool({"get_module_params_schema",
-                  "Get the parameter schema for a specific module instance",
-                  {{"instanceId", "string", "Module instance ID", true}}});
+    // get_module_params_schema（readOnly）
+    registerTool(makeReadOnlyTool("get_module_params_schema", "Get the parameter schema for a specific module instance",
+                                  {{"instanceId", "string", "Module instance ID", true}}));
 
-    // get_run_results
-    registerTool({"get_run_results", "Get the run engine statistics and results", {}});
+    // get_run_results（readOnly）
+    registerTool(makeReadOnlyTool("get_run_results", "Get the run engine statistics and results", {}));
 
     // open_project
     registerTool({"open_project",
@@ -206,12 +254,13 @@ void ToolSchema::registerDefaultTools() {
     // resume_flow
     registerTool({"resume_flow", "Resume a paused flow", {}});
 
-    // read_documentation
-    registerTool({"read_documentation",
-                  "Read DeepLux module/usage documentation, including the built-in knowledge base and "
-                  "user-added documents (managed via Agent Settings -> Knowledge Base). Use this to learn "
-                  "about module parameters, workflows, and best practices when you're unsure.",
-                  {{"topic", "string", "Topic to look up (e.g. 'FindCircle', 'workflow', 'GrabImage params')", true}}});
+    // read_documentation（readOnly）
+    registerTool(makeReadOnlyTool(
+        "read_documentation",
+        "Read DeepLux module/usage documentation, including the built-in knowledge base and "
+        "user-added documents (managed via Agent Settings -> Knowledge Base). Use this to learn "
+        "about module parameters, workflows, and best practices when you're unsure.",
+        {{"topic", "string", "Topic to look up (e.g. 'FindCircle', 'workflow', 'GrabImage params')", true}}));
 
     // sam_predict（SAM 批3）：对磁盘图像做单次 prompt 分割。
     // 非 readOnly（触发外部推理而非观察应用状态）、非 dangerous（不写任何文件）
@@ -255,6 +304,67 @@ void ToolSchema::registerDefaultTools() {
                     QJsonValue("http://127.0.0.1:8990")},
                    {"timeoutMs", "integer", "Per-request timeout in ms, [100,120000]", false, QJsonValue(30000)}},
                   true}); // dangerous（写文件）
+
+    // ---- 第一迭代新增 6 个工具（设计 §4.9；顺序固定以保证 toOpenAIFunctions 输出稳定）----
+    // 全部经工厂注册：契约单源化后禁止裸聚合初始化。
+
+    // validate_workflow（readOnly：只读工程 + 结构化校验结论）
+    registerTool(makeReadOnlyTool(
+        "validate_workflow",
+        "Validate the current flow without running it: missing required input ports, connection/type conflicts "
+        "for disabled nodes, and empty projects. Returns structured issues with code/node/message.",
+        {}, 30000));
+
+    // get_node_runtime_outputs（readOnly）
+    registerTool(makeReadOnlyTool(
+        "get_node_runtime_outputs",
+        "Read the last runtime port outputs and status of one module node: named output ports, elapsed time, "
+        "success/failure and frame id. Requires a finished run; returns engine_busy while the flow is running.",
+        {{"nodeName", "string", "Module instance name (preferred) or instance id", true}}));
+
+    // get_execution_logs（readOnly：只读 Logger 内存副本）
+    registerTool(makeReadOnlyTool(
+        "get_execution_logs",
+        "Read recent in-memory application/run logs with filters. Use category 'Run' for run-engine events, "
+        "'Agent' for agent actions. Returns the newest matching entries, truncated flag when older entries exist.",
+        {{"category", "string", "Exact log category, e.g. 'Run', 'Agent', 'Camera'", false},
+         {"level",
+          "enum",
+          "Minimum level filter",
+          false,
+          QJsonValue("debug"),
+          {"debug", "info", "warning", "error", "success"}},
+         {"keyword", "string", "Case-insensitive substring match on message", false},
+         {"limit", "integer", "Max entries to return, clamped to [1,200]", false, QJsonValue(50)}}));
+
+    // tune_node_and_verify（写，非 dangerous：改工程参数可撤销；验证运行不写外部资源）
+    registerTool(makeWriteTool(
+        "tune_node_and_verify",
+        "Apply a parameter patch to one node atomically and verify the effect. runMode=flow (default) writes the "
+        "parameters, runs the whole flow once waiting for completion, and returns before/after plus this node's "
+        "runtime outputs. runMode=node only applies the patch and reports the previous frame's outputs without "
+        "running anything (no side effects).",
+        {{"nodeName", "string", "Module instance name (preferred) or instance id", true},
+         {"parameters", "object", "Parameter patch: key -> value (string/number/bool), 1..32 keys", true},
+         {"runMode", "enum", "Verification mode", false, QJsonValue("flow"), {"flow", "node"}},
+         {"timeoutMs", "integer", "Wait timeout for runMode=flow, clamped to [1000,300000]", false, QJsonValue(60000)}},
+        300000));
+
+    // capture_viewport_image（readOnly：只写工具自命名的 temp 产物）
+    registerTool(makeReadOnlyTool(
+        "capture_viewport_image",
+        "Capture the image currently shown in the main data-source viewport (falls back to the last flow output) "
+        "into a temporary PNG. The returned imagePath is attached to the next model turn automatically when the "
+        "model supports images.",
+        {}));
+
+    // export_node_output（readOnly：只写工具自命名的 temp 产物）
+    registerTool(makeReadOnlyTool(
+        "export_node_output",
+        "Export one node's last runtime image output (named output port 'image', or the module's recorded output) "
+        "to a temporary PNG/JPG. The returned imagePath is attached to the next model turn automatically.",
+        {{"nodeName", "string", "Module instance name (preferred) or instance id", true},
+         {"format", "enum", "Image format", false, QJsonValue("png"), {"png", "jpg"}}}));
 }
 
 } // namespace DeepLux

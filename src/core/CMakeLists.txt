@@ -48,6 +48,8 @@ set(CORE_SOURCES
     agent/AgentController.cpp
     agent/AgentObserver.cpp
     agent/AgentActor.cpp
+    agent/AgentRunWaiter.cpp
+    agent/AgentToolImage.cpp
     agent/ToolSchema.cpp
     agent/ILLMClient.cpp
     agent/OpenAILLMClient.cpp
@@ -93,6 +95,8 @@ set(CORE_HEADERS
     agent/AgentController.h
     agent/AgentObserver.h
     agent/AgentActor.h
+    agent/AgentRunWaiter.h
+    agent/AgentToolImage.h
     agent/ToolSchema.h
     agent/ILLMClient.h
     agent/OpenAILLMClient.h
