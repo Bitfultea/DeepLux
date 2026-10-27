@@ -115,6 +115,36 @@ void AgentMessageBubble::setupUi() {
     column->addLayout(header);
 
     m_bodyLabel = new MessageBody(this);
+
+    // reasoning 折叠块（设计 §5.3）：位于正文上方、默认折叠
+    m_reasoningToggle = new QToolButton(this);
+    m_reasoningToggle->setObjectName("AgentReasoningToggle");
+    m_reasoningToggle->setCheckable(true);
+    m_reasoningToggle->setChecked(false);
+    m_reasoningToggle->setAutoRaise(true);
+    m_reasoningToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_reasoningToggle->setVisible(false);
+    connect(m_reasoningToggle, &QToolButton::toggled, this, [this](bool expanded) {
+        if (m_reasoningLabel)
+            m_reasoningLabel->setVisible(expanded && !m_reasoningText.isEmpty());
+        renderReasoning();
+    });
+    column->addWidget(m_reasoningToggle);
+
+    m_reasoningLabel = new QLabel(this);
+    m_reasoningLabel->setObjectName("AgentReasoningBody");
+    m_reasoningLabel->setWordWrap(true);
+    m_reasoningLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_reasoningLabel->setVisible(false);
+    {
+        QFont mono = QApplication::font();
+        mono.setStyleHint(QFont::Monospace);
+        mono.setFamily(QStringLiteral("Consolas"));
+        mono.setPixelSize(12);
+        m_reasoningLabel->setFont(mono);
+    }
+    column->addWidget(m_reasoningLabel);
+
     column->addWidget(m_bodyLabel);
     m_imageGallery = new QWidget(this);
     auto* images = new QGridLayout(m_imageGallery);
@@ -140,6 +170,41 @@ void AgentMessageBubble::appendText(const QString& text) {
 
 QString AgentMessageBubble::text() const {
     return m_rawText;
+}
+
+void AgentMessageBubble::appendReasoning(const QString& text) {
+    if (text.isEmpty())
+        return;
+    m_reasoningText += text;
+    renderReasoning();
+}
+
+void AgentMessageBubble::setReasoning(const QString& text) {
+    m_reasoningText = text;
+    renderReasoning();
+}
+
+void AgentMessageBubble::setReasoningStreaming(bool streaming) {
+    m_reasoningStreaming = streaming;
+    renderReasoning();
+}
+
+QString AgentMessageBubble::reasoningText() const {
+    return m_reasoningText;
+}
+
+void AgentMessageBubble::renderReasoning() {
+    if (!m_reasoningToggle || !m_reasoningLabel)
+        return;
+    const bool hasText = !m_reasoningText.isEmpty();
+    m_reasoningToggle->setVisible(hasText);
+    m_reasoningLabel->setVisible(hasText && m_reasoningToggle->isChecked());
+    if (!hasText)
+        return;
+    const QString title = m_reasoningStreaming ? tr("思考中…") : tr("已思考（%1 字）").arg(m_reasoningText.size());
+    m_reasoningToggle->setText(title);
+    m_reasoningToggle->setToolTip(tr("展开/收起推理过程"));
+    m_reasoningLabel->setText(m_reasoningText);
 }
 
 void AgentMessageBubble::setImages(const QList<QPixmap>& images) {
@@ -175,8 +240,22 @@ void AgentMessageBubble::applyTheme(bool isDark) {
                                     .arg(theme.inlineCodeBg.name()));
     m_bodyLabel->setStyleSheet(QString("QTextBrowser { border:0; background:transparent; color:%1; font-size:14px; }")
                                    .arg(senderFg(theme).name()));
+    if (m_reasoningToggle) {
+        m_reasoningToggle->setIcon(AppIconProvider::icon(
+            m_reasoningToggle->isChecked() ? AppIconProvider::Icon::MoveUp : AppIconProvider::Icon::MoveDown, 14,
+            theme.timestampColor));
+        m_reasoningToggle->setStyleSheet(
+            QString("QToolButton { border:0; background:transparent; color:%1; font-size:12px; font-weight:600; }"
+                    "QToolButton:hover,QToolButton:focus { background:%2; border-radius:4px; }")
+                .arg(theme.timestampColor.name(), theme.inlineCodeBg.name()));
+    }
+    if (m_reasoningLabel) {
+        m_reasoningLabel->setStyleSheet(QString("QLabel { color:%1; background:%2; padding:6px; border-radius:4px; }")
+                                            .arg(theme.timestampColor.name(), theme.codeBlockBg.name()));
+    }
     renderHeader(theme);
     setText(m_rawText);
+    renderReasoning();
 }
 
 void AgentMessageBubble::renderHeader(const ChatTheme& theme) {

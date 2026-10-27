@@ -204,8 +204,134 @@ void AgentChatPanel::addMessage(AgentMessageBubble::Sender sender, const QString
 }
 
 void AgentChatPanel::appendToLastMessage(const QString& text) {
+    // 流式期间内部转向 appendStreamContent，避免两条追加路径打架（设计 §5.5）
+    if (m_streamActive) {
+        appendStreamContent(text);
+        return;
+    }
     if (m_lastAgentBubble)
         m_lastAgentBubble->appendText(text);
+}
+
+// ---------- 流式气泡（设计 §5.5） ----------
+
+void AgentChatPanel::beginAgentStream() {
+    if (m_streamActive && m_streamBubble)
+        return;
+    m_streamBubble =
+        new AgentMessageBubble(AgentMessageBubble::Sender::Agent, QString(), m_isDark, m_messagesContainer);
+    m_streamBubble->setReasoningStreaming(true);
+    insertMessage(m_streamBubble);
+    m_streamActive = true;
+    m_stopped = false;
+    updateStatusStrip();
+    if (m_followTail) {
+        QTimer::singleShot(0, this, [this]() { scrollToBottom(); });
+    }
+}
+
+void AgentChatPanel::appendStreamContent(const QString& text) {
+    if (!m_streamActive || !m_streamBubble)
+        beginAgentStream();
+    if (!m_streamBubble)
+        return;
+    m_streamBubble->appendText(text);
+    m_lastAgentBubble = m_streamBubble;
+    if (m_followTail) {
+        QTimer::singleShot(0, this, [this]() { scrollToBottom(); });
+    }
+}
+
+void AgentChatPanel::appendStreamReasoning(const QString& text) {
+    if (!m_streamActive || !m_streamBubble)
+        beginAgentStream();
+    if (!m_streamBubble)
+        return;
+    m_streamBubble->appendReasoning(text);
+    if (m_followTail) {
+        QTimer::singleShot(0, this, [this]() { scrollToBottom(); });
+    }
+}
+
+void AgentChatPanel::finalizeStreamedMessage(const QString& finalContent) {
+    if (!m_streamBubble) {
+        m_streamActive = false;
+        return;
+    }
+    m_streamBubble->setReasoningStreaming(false);
+    const bool hasReasoning = !m_streamBubble->reasoningText().isEmpty();
+    if (finalContent.trimmed().isEmpty() && !hasReasoning) {
+        // 仅 tool_calls / 无正文：移除空气泡，不增加消息计数（设计 §5.4/§9.1 #19）
+        m_messagesLayout->removeWidget(m_streamBubble);
+        if (m_lastAgentBubble == m_streamBubble)
+            m_lastAgentBubble = nullptr;
+        m_streamBubble->deleteLater();
+    } else {
+        if (!finalContent.isEmpty())
+            m_streamBubble->setText(finalContent); // 以终态文本为准（§5.5 U5）
+        ++m_messageCount;
+        m_lastAgentBubble = m_streamBubble;
+    }
+    m_streamBubble = nullptr;
+    m_streamActive = false;
+    if (m_followTail) {
+        QTimer::singleShot(0, this, [this]() { scrollToBottom(); });
+    }
+    updateStatusStrip();
+}
+
+void AgentChatPanel::failStreamedMessage(const QString& note) {
+    if (!m_streamBubble) {
+        m_streamActive = false;
+        return;
+    }
+    m_streamBubble->setReasoningStreaming(false);
+    const bool hasContent = !m_streamBubble->text().isEmpty() || !m_streamBubble->reasoningText().isEmpty();
+    if (!hasContent) {
+        m_messagesLayout->removeWidget(m_streamBubble);
+        if (m_lastAgentBubble == m_streamBubble)
+            m_lastAgentBubble = nullptr;
+        m_streamBubble->deleteLater();
+    } else {
+        m_streamBubble->appendText(QStringLiteral("\n\n_%1_").arg(note));
+        ++m_messageCount;
+        m_lastAgentBubble = m_streamBubble;
+    }
+    m_streamBubble = nullptr;
+    m_streamActive = false;
+    setThinking(false);
+    updateStatusStrip();
+}
+
+void AgentChatPanel::abortStreamedMessage(const QString& note) {
+    if (!m_streamBubble) {
+        m_streamActive = false;
+        return;
+    }
+    m_streamBubble->setReasoningStreaming(false);
+    const bool hasContent = !m_streamBubble->text().isEmpty() || !m_streamBubble->reasoningText().isEmpty();
+    if (hasContent) {
+        // 保留已收内容 + 追加"已停止"标记（设计 §5.4/§6.1）
+        m_streamBubble->appendText(QStringLiteral("\n\n_%1_").arg(note));
+        ++m_messageCount;
+        m_lastAgentBubble = m_streamBubble;
+    } else {
+        m_messagesLayout->removeWidget(m_streamBubble);
+        if (m_lastAgentBubble == m_streamBubble)
+            m_lastAgentBubble = nullptr;
+        m_streamBubble->deleteLater();
+    }
+    m_streamBubble = nullptr;
+    m_streamActive = false;
+    updateStatusStrip();
+}
+
+void AgentChatPanel::setLastAgentReasoning(const QString& reasoning) {
+    if (!m_lastAgentBubble || reasoning.isEmpty())
+        return;
+    // R1：非流式/回退响应的 reasoning 也进折叠块；正文保持不含 reasoning
+    m_lastAgentBubble->setReasoning(reasoning);
+    m_lastAgentBubble->setReasoningStreaming(false);
 }
 
 void AgentChatPanel::addImageAttachment(const QPixmap& pixmap) {
@@ -457,6 +583,8 @@ void AgentChatPanel::applyTheme(bool isDark) {
         message->applyTheme(isDark);
     if (m_previewCard)
         m_previewCard->applyTheme(isDark);
+    if (m_streamBubble)
+        m_streamBubble->applyTheme(isDark);
     rebuildAttachments();
     updateInputHeight();
 }

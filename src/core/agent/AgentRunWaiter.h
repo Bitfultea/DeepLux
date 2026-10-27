@@ -58,6 +58,11 @@ public:
         return m_lastReason;
     }
 
+    // 测试注入：让下一次 waitForRun 直接返回指定 Outcome（生产为空，永不生效）
+    DEEPLUX_TEST_VISIBILITY : static void setNextOutcomeForTest(const Outcome& outcome);
+    static void clearOutcomeForTest();
+
+public:
     static int clampTimeoutMs(int timeoutMs);
 
 private:

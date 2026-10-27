@@ -2,8 +2,10 @@
 #define DEEPLUX_OPENAI_LLM_CLIENT_H
 
 #include "ILLMClient.h"
+#include "SseStreamParser.h"
 
 #include <QByteArray>
+#include <QMap>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 
@@ -29,8 +31,23 @@ public:
         return m_visionEnabled && !m_visionDowngraded;
     }
     void setVisionEnabled(bool enabled);
+    /// L3：配置缺省时的模型名视觉能力启发式（纯函数；其它模型保守返回 true）
+    static bool heuristicSupportsVision(const QString& model);
     void setReasoningEffort(const QString& effort);
     void setThinkingEnabled(bool enabled);
+
+    // ---- 第二迭代：流式 / reasoning 回传 / 看门狗（设计 §3/§4/§6）----
+    void setStreamIncludeUsage(bool include) {
+        m_streamIncludeUsage = include;
+    }
+    void setReasoningEcho(ReasoningEcho echo) {
+        m_reasoningEcho = echo;
+    }
+    ReasoningEcho reasoningEcho() const {
+        return m_reasoningEcho;
+    }
+    void setStreamIdleTimeoutMs(int ms);
+    void setStreamMaxDurationMs(int ms);
 
     static QString normalizeEndpoint(const QString& endpoint);
 
@@ -56,13 +73,42 @@ public:
 
 DEEPLUX_TEST_VISIBILITY slots : void onReplyFinished();
     void onNetworkError(QNetworkReply::NetworkError error);
+    void onStreamReadyRead();
+    void onStreamIdleTimeout();
+    void onStreamDeadlineTimeout();
 
     DEEPLUX_TEST_VISIBILITY : QJsonObject buildRequestBody(const AgentConversation& ctx,
                                                            const QList<ToolDefinition>& tools) const;
     void parseResponse(const QByteArray& data);
 
-    void postRequestBody();
+    void postRequestBody(bool streaming);
     void handleFailure(const LLMErrorInfo& info);
+
+    // ---- 流式内部实现 ----
+    struct ToolCallAcc {
+        QString id;
+        QString type = QStringLiteral("function");
+        QString name;
+        QString arguments;
+    };
+
+    void resetStreamStateForRequest();
+    void resetStreamAccumulators();
+    void processStreamBytes(const QByteArray& bytes);
+    void handleStreamEvent(const SseStreamParser::Event& event);
+    void handleStreamJson(const QJsonObject& obj);
+    void accumulateToolCalls(const QJsonArray& toolCalls);
+    QJsonArray buildStreamedToolCalls();
+    void finalizeStream();
+    void failStream(const LLMErrorInfo& info);
+    void recordFailedRequestIfNeeded(const LLMErrorInfo& info);
+    bool tryStreamFallback(const QString& reason);
+    void releaseCurrentReply();
+    void startStreamTimers();
+    void stopStreamTimers();
+    void refreshStreamIdleTimer();
+    bool isStreamUnsupportedResponse(int httpStatus, const QByteArray& body) const;
+    bool looksLikeJsonBody(const QByteArray& body) const;
 
     QString m_apiKey;
     QString m_endpoint = "https://api.openai.com/v1/chat/completions";
@@ -81,10 +127,41 @@ DEEPLUX_TEST_VISIBILITY slots : void onReplyFinished();
     // 重试状态：只重发上一次请求体，不重放对话副作用（§7.3 第 8 条）
     QTimer* m_retryTimer = nullptr;
     QByteArray m_lastBody;
+    QList<AgentMessage> m_lastRequestMessages; // 失败报文脱敏落盘用（设计 §4.5；只加不改）
     QList<ToolDefinition> m_lastTools;
     int m_retryAttempt = 0; // 已安排的重试次数
     LLMErrorCategory m_retryCategory = LLMErrorCategory::None;
     bool m_aborted = false; // 用户主动中止：不分类、不重试
+
+    // ---- 流式状态（设计 §3/§4/§6）----
+    bool m_streamIncludeUsage = false;
+    ReasoningEcho m_reasoningEcho = ReasoningEcho::None;
+    int m_streamIdleTimeoutMs = 60000;
+    int m_streamMaxDurationMs = 600000;
+
+    bool m_requestStreaming = false;   // 本请求以 SSE 模式发送
+    bool m_streamFallbackUsed = false; // 本次 sendRequest 已回退过（只允许一次）
+    bool m_streamFinalized = false;    // 终态幂等（readyRead/finished 双触发）
+    bool m_streamStartedEmitted = false;
+    bool m_sawDelta = false; // 已收到任意有效 delta（决定重试/回退边界）
+    int m_streamParseErrors = 0;
+    int m_streamEventCount = 0;
+    QString m_streamContent;
+    QString m_streamReasoning;
+    QString m_finishReason;
+    int m_streamPromptTokens = 0;
+    int m_streamCompletionTokens = 0;
+    QMap<int, ToolCallAcc> m_toolCallAcc;
+    int m_droppedToolCalls = 0;
+    SseStreamParser m_sseParser;
+
+    bool m_contentTypeKnown = false;
+    bool m_contentTypeIsSse = false;
+    QByteArray m_pendingStreamBytes; // Content-Type 判定前的缓存
+    QByteArray m_jsonBody;           // F2：JSON 整包累积
+
+    QTimer* m_streamIdleTimer = nullptr;
+    QTimer* m_streamDeadlineTimer = nullptr;
 };
 
 } // namespace DeepLux

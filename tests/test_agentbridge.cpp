@@ -7,6 +7,7 @@
 #include "core/agent/AgentConnection.h"
 #include "core/agent/AgentController.h"
 #include "core/agent/ToolSchema.h"
+#include "manager/ConfigManager.h"
 #include "manager/ProjectManager.h"
 
 #include <QLocalSocket>
@@ -24,6 +25,8 @@ private slots:
         QVERIFY(m_appDataDir.isValid());
         qputenv("DEEPLUX_APP_DATA_DIR", m_appDataDir.path().toLocal8Bit());
         ToolSchema::instance().registerDefaultTools();
+        // L8 回滚开关需要真实 ConfigManager（临时 app data，不污染用户配置）
+        ConfigManager::instance().initialize();
     }
 
     void init() {
@@ -102,6 +105,71 @@ private slots:
         QVERIFY(!response.error);
         QCOMPARE(response.payload["tool"].toString(), QString("add_module"));
         QCOMPARE(response.payload["plugin"].toString(), QString("GrabImage"));
+    }
+
+    // ---------- L8：外部 tool_call 等待类工具强制异步 ----------
+
+    void testBridgeForcesRunFlowAsync() {
+        AgentBridge& bridge = AgentBridge::instance();
+        QJsonObject captured;
+        bridge.setToolCallCallback([&captured](const QString&, const QJsonObject& params) {
+            captured = params;
+            return QJsonObject{{"status", "started"}};
+        });
+        const QJsonObject result = bridge.handleToolCall(
+            QStringLiteral("l8-1"),
+            QJsonObject{{"tool", "run_flow"}, {"params", QJsonObject{{"wait", true}, {"mode", "once"}}}});
+        QVERIFY(!captured.value("wait").toBool()); // 外部传入 true，被桥改写为 false
+        QCOMPARE(captured.value("mode").toString(), QStringLiteral("once"));
+        QCOMPARE(result.value("status").toString(), QStringLiteral("started"));
+        QCOMPARE(result.value("forced").toBool(), true);
+    }
+
+    void testBridgeForcesTuneNodeMode() {
+        AgentBridge& bridge = AgentBridge::instance();
+        QJsonObject captured;
+        bridge.setToolCallCallback([&captured](const QString&, const QJsonObject& params) {
+            captured = params;
+            return QJsonObject{{"success", true}};
+        });
+        const QJsonObject result = bridge.handleToolCall(
+            QStringLiteral("l8-2"), QJsonObject{{"tool", "tune_node_and_verify"},
+                                                {"params", QJsonObject{{"nodeName", "grab"}, {"runMode", "flow"}}}});
+        QCOMPARE(captured.value("runMode").toString(), QStringLiteral("node"));
+        QCOMPARE(result.value("forced").toBool(), true);
+    }
+
+    void testBridgeForceAsyncCanBeDisabled() {
+        AgentBridge& bridge = AgentBridge::instance();
+        ConfigManager& cfg = ConfigManager::instance();
+        QVERIFY(cfg.isInitialized());
+        cfg.setGroupValue("agent", "bridgeForceAsyncWaitTools", false);
+        QJsonObject captured;
+        bridge.setToolCallCallback([&captured](const QString&, const QJsonObject& params) {
+            captured = params;
+            return QJsonObject{{"status", "started"}};
+        });
+        const QJsonObject result = bridge.handleToolCall(
+            QStringLiteral("l8-3"), QJsonObject{{"tool", "run_flow"}, {"params", QJsonObject{{"wait", true}}}});
+        QCOMPARE(captured.value("wait").toBool(), true); // 回滚后参数原样
+        QVERIFY(!result.contains("forced"));
+        cfg.setGroupValue("agent", "bridgeForceAsyncWaitTools", true);
+    }
+
+    void testBridgeOtherToolsUntouched() {
+        AgentBridge& bridge = AgentBridge::instance();
+        QJsonObject captured;
+        bridge.setToolCallCallback([&captured](const QString&, const QJsonObject& params) {
+            captured = params;
+            return QJsonObject{{"ok", true}};
+        });
+        const QJsonObject result =
+            bridge.handleToolCall(QStringLiteral("l8-4"), QJsonObject{{"tool", "get_flow_state"},
+                                                                      {"params", QJsonObject{{"nodeName", "grab"}}}});
+        QCOMPARE(captured.value("nodeName").toString(), QStringLiteral("grab"));
+        QVERIFY(!captured.contains("wait"));
+        QVERIFY(!captured.contains("runMode"));
+        QVERIFY(!result.contains("forced"));
     }
 
     void testToolCallCanUseControllerPermissions() {

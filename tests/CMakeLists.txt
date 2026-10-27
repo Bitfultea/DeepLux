@@ -57,6 +57,10 @@ set(TEST_SOURCES
     test_agente2e.cpp
     test_agent_draft_restore.cpp
     test_agentclosedloop.cpp
+    test_agentstream.cpp
+    test_agentstreamui.cpp
+    test_agentaudit.cpp
+    test_mcpbridge.cpp
     test_variable_system_plugins.cpp
     test_measurementdata.cpp
     test_measuregap.cpp
@@ -433,6 +437,11 @@ foreach(TEST_FILE ${TEST_SOURCES})
             AGENTE2E_PLUGIN_FindCircle="$<TARGET_FILE:FindCirclePlugin>")
     endif()
 
+    # 第二迭代下半：MCP 桥直接复用 src/app 的静态库 deeplux_mcp（协议/权限在同一实现上测试）
+    if(TEST_NAME STREQUAL "test_mcpbridge")
+        target_link_libraries(${TEST_NAME} PRIVATE deeplux_mcp)
+    endif()
+
     # GUI 测试在扫描插件/换肤时会输出大量 qDebug，Qt 6 的默认 -maxwarnings
     # 上限会把它当成失败；显式放宽，行为断言仍由 QVERIFY/QCOMPARE 负责。
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME} -maxwarnings 100000)
@@ -464,6 +473,10 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
     # 第一迭代：LLM 重试测试包含真实指数退避等待（最长 4s）与本地假端点，设 TIMEOUT 防挂死
     if(TEST_NAME STREQUAL "test_agentretry")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
+    endif()
+    # 第二迭代下半：MCP 桥测试启动线程化假桥（QLocalServer），设 TIMEOUT 防挂死 CI
+    if(TEST_NAME STREQUAL "test_mcpbridge")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
     endif()
 endforeach()

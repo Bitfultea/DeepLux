@@ -1,6 +1,7 @@
 #include "AgentController.h"
 
 #include "AgentActor.h"
+#include "AgentAuditLog.h"
 #include "AgentBridge.h"
 #include "AgentObserver.h"
 #include "AgentToolImage.h"
@@ -21,6 +22,7 @@
 #include <QJsonDocument>
 #include <QPixmap>
 #include <QSet>
+#include <QTimer>
 
 namespace DeepLux {
 
@@ -29,6 +31,8 @@ constexpr int kMaxAgentToolTurns = 20;
 constexpr int kMaxToolCallsPerTurn = 10;
 constexpr int kMaxImageAttachments = 4;
 constexpr qint64 kMaxImageAttachmentBytes = 8LL * 1024 * 1024;
+// 流式增量合批间隔（设计 §5.2：唯一合批点在控制器）
+constexpr int kStreamFlushIntervalMs = 50;
 
 // 图像回灌预算（设计 §6.3）：每轮 ≤2 张、长边 ≤1280、单张 ≤4MB、单轮总量复用 8MB 预算
 constexpr int kMaxToolImagesPerTurn = 2;
@@ -132,7 +136,14 @@ QJsonObject makeToolCall(const QString& toolName, const QJsonObject& params) {
 } // namespace
 
 AgentController::AgentController(QObject* parent)
-    : QObject(parent), m_observer(new AgentObserver(this)), m_actor(new AgentActor(this)) {}
+    : QObject(parent), m_observer(new AgentObserver(this)), m_actor(new AgentActor(this)),
+      m_streamFlushTimer(new QTimer(this)) {
+    // 唯一的流式合批点（设计 §5.2）：约 50ms 一批，禁止 UI 层再叠一层定时器
+    m_streamFlushTimer->setSingleShot(true);
+    m_streamFlushTimer->setTimerType(Qt::CoarseTimer);
+    m_streamFlushTimer->setInterval(kStreamFlushIntervalMs);
+    connect(m_streamFlushTimer, &QTimer::timeout, this, &AgentController::flushStreamPending);
+}
 
 AgentController::~AgentController() = default;
 
@@ -164,6 +175,8 @@ bool AgentController::initialize() {
             [this](const QString& t, const QString& e) { emit agentActionCompleted(t, {{"error", e}}); });
     m_systemPrompt = ConfigManager::instance().groupString("agent", "systemPrompt", defaultSystemPrompt());
     m_initialized = true;
+    // 第二迭代：审计 JSONL 落盘（设计 §3.3）——通过信号接线，覆盖所有审计发射点
+    AgentAuditLog::instance().initialize(this);
     // R4（设计 §6.8）：启动时清理 7 天前的工具图像产物；best-effort，失败不阻塞对话
     const int removedImages = AgentToolImage::cleanupOlderThanDays(7);
     qDebug() << "[AgentController] tool image cleanup removed" << removedImages << "old file(s)";
@@ -185,6 +198,7 @@ void AgentController::shutdown() {
     m_llmClient = nullptr;
     m_pendingToolCalls = QJsonArray();
     m_initialized = false;
+    AgentAuditLog::instance().shutdown();
     transitionTo(AgentState::Idle);
 }
 
@@ -200,11 +214,27 @@ void AgentController::setLLMClient(ILLMClient* client) {
         disconnect(m_llmClient, nullptr, this, nullptr);
     m_llmClient = client;
     if (m_llmClient) {
+        // 配置级流式开关（agent/streamEnabled，默认 true；设计 §4.1）
+        if (ConfigManager::instance().isInitialized())
+            m_llmClient->setStreamEnabled(ConfigManager::instance().groupBool("agent", "streamEnabled", true));
         connect(m_llmClient, &ILLMClient::responseReceived, this, &AgentController::onLLMResponse,
                 Qt::QueuedConnection);
         connect(m_llmClient, &ILLMClient::errorOccurred, this, &AgentController::onLLMError, Qt::QueuedConnection);
         connect(m_llmClient, &ILLMClient::errorOccurredClassified, this, &AgentController::onLLMErrorClassified,
                 Qt::QueuedConnection);
+        // 流式信号（设计 §5.1）：UI 只与控制器交互
+        connect(m_llmClient, &ILLMClient::streamStarted, this, &AgentController::onStreamStarted, Qt::QueuedConnection);
+        connect(m_llmClient, &ILLMClient::streamContentDelta, this, &AgentController::onStreamContentDelta,
+                Qt::QueuedConnection);
+        connect(m_llmClient, &ILLMClient::streamReasoningDelta, this, &AgentController::onStreamReasoningDelta,
+                Qt::QueuedConnection);
+        connect(m_llmClient, &ILLMClient::streamFinished, this, &AgentController::onStreamFinished,
+                Qt::QueuedConnection);
+        connect(m_llmClient, &ILLMClient::streamFailed, this, &AgentController::onStreamFailed, Qt::QueuedConnection);
+        connect(m_llmClient, &ILLMClient::streamFallback, this, &AgentController::onStreamFallback,
+                Qt::QueuedConnection);
+        // 客户端可能先于控制器单例析构（测试/切换设置）：清空悬空指针，setLLMClient(nullptr) 安全
+        connect(m_llmClient, &QObject::destroyed, this, [this]() { m_llmClient = nullptr; });
     }
 }
 
@@ -226,31 +256,74 @@ void AgentController::clearConversation() {
     m_dispatchQueued = false;
     m_visionRetryDone = false;
     m_suppressNextLlmError = false;
+    m_lastResponseReasoning.clear();
+    m_turnTimer.invalidate();
+    resetStreamBuffer();
     transitionTo(AgentState::Idle);
 }
 
-void AgentController::abortCurrentTurn() {
-    const AgentState currentState = state();
-    if (currentState == AgentState::Idle) {
-        // 幂等：Idle 下不做任何事（不报错、不发信号）
-        qWarning() << "[AgentController] abortCurrentTurn ignored in Idle state";
+void AgentController::endTurnWithReason(const QString& responseText, const QString& errorText,
+                                        bool suppressClientError) {
+    if (state() == AgentState::Idle)
         return;
-    }
-    // 1) 作废排队任务与索引：turnGeneration 让已入队的 dispatch/续跑全部失效
+    // 作废排队任务与索引：turnGeneration 让已入队的 dispatch/续跑全部失效
     ++m_turnGeneration;
     m_pendingToolCalls = QJsonArray();
     m_continueAfterPendingTools = true;
     m_dispatchQueued = false;
-    m_suppressNextLlmError = false;
-    // 2) 中止 LLM 请求（客户端保证被主动 abort 的错误不分类、不重试）
+    m_suppressNextLlmError = suppressClientError;
+    // 先把已收到的流式内容 flush 给 UI（设计 §6.1：保留已收内容）
+    flushStreamPending();
     if (m_llmClient)
         m_llmClient->abortRequest();
-    // 3) 中止等待中的运行（run_flow(wait)/tune 的嵌套事件循环）
     if (m_actor)
         m_actor->abortRunningTool();
     transitionTo(AgentState::Idle);
-    emit llmResponseReceived(QStringLiteral("Stopped by user."), {});
+    // 流式中止信号必须先于 agentTurnAborted（UI 先标记气泡，再复位状态条）
+    if (m_streamActive) {
+        m_streamActive = false;
+        emit agentStreamAborted();
+    }
+    emit llmResponseReceived(responseText, {});
+    if (!errorText.isEmpty()) {
+        m_lastErrorCategory = llmErrorCategoryName(LLMErrorCategory::Timeout);
+        emit llmErrorOccurred(errorText);
+    }
+    m_turnTimer.invalidate();
     emit agentTurnAborted();
+}
+
+void AgentController::abortCurrentTurn() {
+    if (state() == AgentState::Idle) {
+        // 幂等：Idle 下不做任何事（不报错、不发信号）
+        qWarning() << "[AgentController] abortCurrentTurn ignored in Idle state";
+        return;
+    }
+    endTurnWithReason(QStringLiteral("Stopped by user."), QString(), true);
+}
+
+int AgentController::turnDeadlineMs() const {
+    const int configured = m_turnDeadlineConfigOverride >= 0
+                               ? m_turnDeadlineConfigOverride
+                               : (ConfigManager::instance().isInitialized()
+                                      ? ConfigManager::instance().groupInt("agent", "turnDeadlineMs", 600000)
+                                      : 600000);
+    return qBound(10000, configured, 3600000);
+}
+
+void AgentController::setTurnDeadlineMsForTest(int ms) {
+    m_turnDeadlineOverride = ms;
+}
+
+void AgentController::setTurnDeadlineConfigForTest(int ms) {
+    m_turnDeadlineConfigOverride = ms;
+}
+
+bool AgentController::turnDeadlineExceeded() const {
+    if (!m_turnTimer.isValid())
+        return false;
+    const int deadline = m_turnDeadlineOverride >= 0 ? m_turnDeadlineOverride : turnDeadlineMs();
+    return deadline > 0 && m_turnTimer.elapsed() >= deadline;
 }
 
 bool AgentController::undoLastAgentAction() {
@@ -314,27 +387,62 @@ QString AgentController::stateName(AgentState state) {
 // ========== Context ==========
 
 QString AgentController::buildContext() {
-    QString ctx = m_systemPrompt;
+    constexpr int kMaxBuildContextChars = 16384;
     Project* proj = ProjectManager::instance().currentProject();
-    if (proj) {
-        ctx += QString("\n\n## Current State\n- Project: %1\n- Modules (%2): ")
-                   .arg(proj->name())
-                   .arg(proj->modules().size());
-        QStringList modNames;
-        for (const ModuleInstance& m : proj->modules())
-            modNames.append(QString("%1(id=%2)").arg(m.moduleId).arg(m.id));
-        ctx += modNames.join(", ");
-        ctx += QString("\n- Connections: %1\n- RunEngine: %2\n")
-                   .arg(proj->connections().size())
-                   .arg(RunEngine::instance().isRunning() ? "Running" : "Idle");
-    } else {
-        ctx += "\n\n## Current State\n- No project opened.\n";
-    }
-    QList<GuiEvent> recent = m_observer->recentEvents(5);
-    if (!recent.isEmpty()) {
-        ctx += "\n## Recent Events\n";
-        for (const GuiEvent& e : recent)
-            ctx += QString("[%1] %2\n").arg(e.timestamp.toString("hh:mm:ss")).arg(e.typeString());
+    const int threshold = flowSummaryThreshold();
+    const int previewCount = flowSummaryPreviewCount();
+
+    auto moduleLine = [proj, threshold, previewCount](bool forceSummary) -> QString {
+        const int count = proj->modules().size();
+        const bool summarize = forceSummary || count > threshold;
+        if (!summarize) {
+            QStringList modNames;
+            for (const ModuleInstance& m : proj->modules())
+                modNames.append(QString("%1(id=%2)").arg(m.moduleId).arg(m.id));
+            return QStringLiteral("- Modules (%1): %2").arg(count).arg(modNames.join(", "));
+        }
+        QStringList preview;
+        int listed = 0;
+        for (const ModuleInstance& m : proj->modules()) {
+            if (listed++ >= previewCount)
+                break;
+            preview.append(QString("%1(id=%2)").arg(m.moduleId).arg(m.id));
+        }
+        return QStringLiteral("- Modules (%1): %2, … (+%3 more; call get_flow_state for the full list)")
+            .arg(count)
+            .arg(preview.join(", "))
+            .arg(qMax(0, count - previewCount));
+    };
+
+    auto build = [this, proj, &moduleLine](bool forceSummary) -> QString {
+        QString text = m_systemPrompt;
+        if (proj) {
+            text += QStringLiteral("\n\n## Current State\n- Project: %1\n").arg(proj->name());
+            text += moduleLine(forceSummary);
+            text += QStringLiteral("\n- Connections: %1\n- RunEngine: %2\n")
+                        .arg(proj->connections().size())
+                        .arg(RunEngine::instance().isRunning() ? QStringLiteral("Running") : QStringLiteral("Idle"));
+        } else {
+            text += QStringLiteral("\n\n## Current State\n- No project opened.\n");
+        }
+        const QList<GuiEvent> recent = m_observer->recentEvents(5); // 保持 ≤5 条（设计 §8.1）
+        if (!recent.isEmpty()) {
+            text += QStringLiteral("\n## Recent Events\n");
+            for (const GuiEvent& e : recent)
+                text += QStringLiteral("[%1] %2\n").arg(e.timestamp.toString("hh:mm:ss")).arg(e.typeString());
+        }
+        return text;
+    };
+
+    QString ctx = build(false);
+    if (proj && ctx.size() > kMaxBuildContextChars) {
+        // 超长工程：先把模块行替换为摘要（即使未过阈值），并标注上下文已被裁剪
+        ctx = build(true);
+        ctx += QStringLiteral("\n…[context truncated]\n");
+        if (ctx.size() > kMaxBuildContextChars) {
+            const QString marker = QStringLiteral("…[context truncated]");
+            ctx = ctx.left(kMaxBuildContextChars - marker.size() - 1) + QLatin1Char('\n') + marker;
+        }
     }
     return ctx;
 }
@@ -360,7 +468,8 @@ void AgentController::sendUserMessage(const QString& message) {
     m_conversationHistory.append(m);
     trimHistoryIfNeeded();
     m_agentTurnCount = 0;
-    ++m_turnGeneration; // 新的用户轮次：作废上一轮残留的排队/续跑
+    m_turnTimer.start(); // L9：单轮 deadline 起点
+    ++m_turnGeneration;  // 新的用户轮次：作废上一轮残留的排队/续跑
     m_visionRetryDone = false;
     m_suppressNextLlmError = false;
     m_lastErrorCategory.clear(); // R6：每轮开始清空，避免 category 串用旧错误
@@ -428,6 +537,7 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
     m_conversationHistory.append(msg);
     trimHistoryIfNeeded();
     m_agentTurnCount = 0;
+    m_turnTimer.start(); // L9：单轮 deadline 起点
     ++m_turnGeneration;
     m_visionRetryDone = false;
     m_suppressNextLlmError = false;
@@ -448,8 +558,27 @@ void AgentController::onLLMResponse(const AgentResponse& resp) {
         qWarning() << "[AgentController] Unexpected onLLMResponse in state" << stateName(currentState);
         return;
     }
+    // 流式：先 flush 残留缓冲，保证 UI 收到的文本 = 写入历史的文本（§5.1 顺序约定）
+    flushStreamPending();
+    m_streamActive = false;
+    // R1：暴露最近一次响应 reasoning（只读访问器），供非流式/回退分支展示
+    m_lastResponseReasoning = resp.reasoningContent;
     // R6：成功响应后复位最近错误类别，保证每轮审计只反映本轮错误
     m_lastErrorCategory.clear();
+
+    // 输出被 max_tokens 截断：状态条提示（§3.4 / §5.4）+ 审计 result="truncated"（R2）
+    if (resp.truncatedByMaxTokens) {
+        Logger::instance().addLog(QStringLiteral("[LLM] response truncated by max_tokens"), LogLevel::Warning, "Agent");
+        AgentActionLogEntry truncatedEntry;
+        truncatedEntry.timestamp = QDateTime::currentDateTime();
+        truncatedEntry.actor = QStringLiteral("Agent");
+        truncatedEntry.action = QStringLiteral("LLM response truncated");
+        truncatedEntry.result = QStringLiteral("truncated");
+        truncatedEntry.undoable = false;
+        truncatedEntry.errorCategory = llmErrorCategoryName(LLMErrorCategory::None);
+        emit actionLogEntryAdded(truncatedEntry);
+        emit agentStreamTruncated();
+    }
 
     AgentMessage am;
     am.role = "assistant";
@@ -591,6 +720,13 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
     }
     // 中止代号：工具执行（可能含嵌套运行等待）返回后据此判定本轮是否已被用户中止
     const quint64 turn = m_turnGeneration;
+    // L9 检查点 1：执行工具批之前
+    if (turnDeadlineExceeded()) {
+        const int deadline = m_turnDeadlineOverride >= 0 ? m_turnDeadlineOverride : turnDeadlineMs();
+        const QString message = QStringLiteral("已超过单轮总时长上限（%1 ms），本轮已中止").arg(deadline);
+        endTurnWithReason(message, message, false);
+        return;
+    }
     if (toolCalls.size() > kMaxToolCallsPerTurn) {
         transitionTo(AgentState::Idle);
         emit llmErrorOccurred("已达到单轮工具数量上限");
@@ -635,13 +771,22 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
         AgentMessage tm;
         tm.role = "tool";
         tm.toolCallId = ids[i];
-        tm.content = QString(QJsonDocument(result).toJson(QJsonDocument::Compact));
+        // 设计 §7.4：唯一截断点——只影响回传模型的上下文，审计/UI 仍用完整结果
+        tm.content =
+            truncateToolResult(QString(QJsonDocument(result).toJson(QJsonDocument::Compact)), toolResultMaxChars());
         m_conversationHistory.append(tm);
     }
 
     // 中止后仍保留审计与 tool 消息（保持 assistant.tool_calls 配对），但不续跑 LLM
     if (turn != m_turnGeneration || state() != AgentState::Executing) {
         qWarning() << "[AgentController] tool batch finished after abort; dropping continuation";
+        return;
+    }
+    // L9 检查点 2：等待类工具可能跨过 deadline
+    if (turnDeadlineExceeded()) {
+        const int deadline = m_turnDeadlineOverride >= 0 ? m_turnDeadlineOverride : turnDeadlineMs();
+        const QString message = QStringLiteral("已超过单轮总时长上限（%1 ms），本轮已中止").arg(deadline);
+        endTurnWithReason(message, message, false);
         return;
     }
     trimHistoryIfNeeded();
@@ -657,6 +802,14 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
 
     Logger::instance().addLog(QString("[AgentLoop] Executed %1 tool(s)").arg(resultsArray.size()), LogLevel::Debug,
                               "Agent");
+
+    // L9 检查点 3：续跑 LLM 请求之前
+    if (turnDeadlineExceeded()) {
+        const int deadline = m_turnDeadlineOverride >= 0 ? m_turnDeadlineOverride : turnDeadlineMs();
+        const QString message = QStringLiteral("已超过单轮总时长上限（%1 ms），本轮已中止").arg(deadline);
+        endTurnWithReason(message, message, false);
+        return;
+    }
 
     // 🔁 继续 LLM 请求
     emit agentLoopIterating();
@@ -797,61 +950,213 @@ bool AgentController::stripImagesFromLastUserMessage() {
     return false;
 }
 
-void AgentController::trimHistoryIfNeeded() {
-    // 仅靠 token 估计裁剪，不设硬消息数上限
-    // 每字符 ≈ 0.3 token，每消息 overhead ≈ 20 tokens
-    constexpr int maxEstTokens = 256000;
+// ========== 上下文治理（设计 §7/§8） ==========
 
-    auto estimateHistoryTokens = [this]() {
-        qint64 estimated = m_systemPrompt.length() * 3 / 10;
-        for (const auto& m : m_conversationHistory) {
-            estimated += m.content.length() * 3 / 10 + 20;
-            if (!m.reasoningContent.isEmpty())
-                estimated += m.reasoningContent.length() * 3 / 10;
-            for (const AgentImageAttachment& image : m.images)
-                estimated += (image.data.size() + 2) / 3;
+int AgentController::contextBudgetTokens() const {
+    if (m_contextBudgetOverride >= 0)
+        return m_contextBudgetOverride;
+    const int configured = ConfigManager::instance().isInitialized()
+                               ? ConfigManager::instance().groupInt("agent", "contextBudgetTokens", 128000)
+                               : 128000;
+    return qBound(16000, configured, 1000000);
+}
+
+int AgentController::toolResultMaxChars() const {
+    if (m_toolResultMaxCharsOverride >= 0)
+        return m_toolResultMaxCharsOverride;
+    const int configured = ConfigManager::instance().isInitialized()
+                               ? ConfigManager::instance().groupInt("agent", "toolResultMaxChars", 6000)
+                               : 6000;
+    return qBound(1000, configured, 64000);
+}
+
+int AgentController::flowSummaryThreshold() const {
+    if (m_summaryThresholdOverride >= 0)
+        return m_summaryThresholdOverride;
+    const int configured = ConfigManager::instance().isInitialized()
+                               ? ConfigManager::instance().groupInt("agent", "flowSummaryThreshold", 24)
+                               : 24;
+    return qBound(1, configured, 1000);
+}
+
+int AgentController::flowSummaryPreviewCount() const {
+    if (m_summaryPreviewOverride >= 0)
+        return m_summaryPreviewOverride;
+    const int configured = ConfigManager::instance().isInitialized()
+                               ? ConfigManager::instance().groupInt("agent", "flowSummaryPreviewCount", 24)
+                               : 24;
+    return qBound(1, configured, 200);
+}
+
+void AgentController::setContextLimitsForTest(int budgetTokens, int toolResultMaxChars, int summaryThreshold,
+                                              int summaryPreviewCount) {
+    if (budgetTokens >= 0)
+        m_contextBudgetOverride = qBound(16000, budgetTokens, 1000000);
+    if (toolResultMaxChars >= 0)
+        m_toolResultMaxCharsOverride = qBound(1000, toolResultMaxChars, 64000);
+    if (summaryThreshold >= 0)
+        m_summaryThresholdOverride = qBound(1, summaryThreshold, 1000);
+    if (summaryPreviewCount >= 0)
+        m_summaryPreviewOverride = qBound(1, summaryPreviewCount, 200);
+}
+
+QString AgentController::truncateToolResult(const QString& json, int maxChars) {
+    maxChars = qBound(1000, maxChars, 64000);
+    if (json.size() <= maxChars)
+        return json;
+    const int head = maxChars * 2 / 3;
+    const int tail = maxChars - head;
+    return json.left(head) + QStringLiteral("\n…[truncated %1 chars]…\n").arg(json.size() - maxChars) +
+           json.right(tail);
+}
+
+bool AgentController::echoesReasoning() const {
+    if (!ConfigManager::instance().isInitialized())
+        return false;
+    return ConfigManager::instance().groupString("agent", "reasoningEcho", "none").trimmed().toLower() !=
+           QStringLiteral("none");
+}
+
+qint64 AgentController::estimateHistoryTokens() const {
+    // 每字符 ≈0.3 token，每消息 +20；reasoning 仅在回传时计入；图片按字节估算
+    qint64 estimated = static_cast<qint64>(m_systemPrompt.length()) * 3 / 10;
+    const bool countReasoning = echoesReasoning();
+    for (const AgentMessage& message : m_conversationHistory) {
+        estimated += static_cast<qint64>(message.content.length()) * 3 / 10 + 20;
+        if (!message.toolCalls.isEmpty()) {
+            // tool_calls 的参数同样回传模型，必须计入预算
+            estimated +=
+                static_cast<qint64>(QJsonDocument(message.toolCalls).toJson(QJsonDocument::Compact).size()) * 3 / 10;
         }
-        return estimated;
-    };
+        if (countReasoning && !message.reasoningContent.isEmpty())
+            estimated += static_cast<qint64>(message.reasoningContent.length()) * 3 / 10;
+        for (const AgentImageAttachment& image : message.images)
+            estimated += (image.data.size() + 2) / 3;
+    }
+    return estimated;
+}
 
-    auto trimLeadingPartialTurn = [this]() {
-        while (!m_conversationHistory.isEmpty() && m_conversationHistory.first().role != "user")
-            m_conversationHistory.removeFirst();
-    };
-
-    trimLeadingPartialTurn();
-    auto dropOldestTurn = [this, &trimLeadingPartialTurn]() {
-        int secondUserIdx = -1, userCount = 0;
-        for (int i = 0; i < m_conversationHistory.size(); ++i)
-            if (m_conversationHistory[i].role == "user" && ++userCount == 2) {
-                secondUserIdx = i;
-                break;
+void AgentController::repairOrphanToolGroups() {
+    QList<AgentMessage> repaired;
+    repaired.reserve(m_conversationHistory.size());
+    for (int i = 0; i < m_conversationHistory.size(); ++i) {
+        const AgentMessage& message = m_conversationHistory.at(i);
+        if (message.role == QStringLiteral("tool")) {
+            // I1：tool 必须属于前一条 assistant(tool_calls) 的某个 id
+            if (repaired.isEmpty() || repaired.constLast().role != QStringLiteral("assistant") ||
+                repaired.constLast().toolCalls.isEmpty()) {
+                qWarning() << "[AgentController] dropping orphan tool message" << message.toolCallId;
+                continue;
             }
-        if (secondUserIdx < 0)
-            return false;
-        m_conversationHistory = m_conversationHistory.mid(secondUserIdx);
-        trimLeadingPartialTurn();
-        return true;
-    };
-
-    while (estimateHistoryTokens() > maxEstTokens) {
-        if (!dropOldestTurn())
-            break;
-    }
-
-    constexpr int kMaxMessages = 64;
-    while (m_conversationHistory.size() > kMaxMessages) {
-        if (dropOldestTurn())
+            QSet<QString> ids;
+            for (const QJsonValue& call : repaired.constLast().toolCalls)
+                ids.insert(call.toObject().value(QStringLiteral("id")).toString());
+            if (!ids.contains(message.toolCallId)) {
+                qWarning() << "[AgentController] dropping unmatched tool message" << message.toolCallId;
+                continue;
+            }
+            repaired.append(message);
             continue;
-        if (m_conversationHistory.size() <= 1)
-            break;
-
-        // A single user turn can contain many assistant/tool exchanges. Remove
-        // the oldest complete exchange so tool results never become orphaned.
-        m_conversationHistory.removeAt(1);
-        while (m_conversationHistory.size() > 1 && m_conversationHistory[1].role == QStringLiteral("tool"))
-            m_conversationHistory.removeAt(1);
+        }
+        if (message.role == QStringLiteral("assistant") && !message.toolCalls.isEmpty()) {
+            // 末尾的 assistant(tool_calls) 是"待执行"的合法状态（onLLMResponse 在工具
+            // 执行前会 trim）：保留，等工具结果写入后下一次裁剪再校验完整性。
+            if (i + 1 >= m_conversationHistory.size()) {
+                repaired.append(message);
+                continue;
+            }
+            // I2：assistant(tool_calls) 的每个 id 都必须有紧邻的 tool 响应，否则整组移除
+            QSet<QString> ids;
+            for (const QJsonValue& call : message.toolCalls) {
+                const QString id = call.toObject().value(QStringLiteral("id")).toString();
+                if (!id.isEmpty())
+                    ids.insert(id);
+            }
+            QSet<QString> found;
+            int j = i + 1;
+            for (; j < m_conversationHistory.size() && m_conversationHistory.at(j).role == QStringLiteral("tool");
+                 ++j) {
+                found.insert(m_conversationHistory.at(j).toolCallId);
+            }
+            if (!ids.isEmpty() && !(ids - found).isEmpty()) {
+                qWarning() << "[AgentController] dropping incomplete tool group at index" << i;
+                i = j - 1; // 跳过该 assistant 及其全部 tool 响应
+                continue;
+            }
+            repaired.append(message);
+            continue;
+        }
+        repaired.append(message);
     }
+    m_conversationHistory = repaired;
+}
+
+bool AgentController::dropOldestUserTurn() {
+    int secondUserIndex = -1;
+    int userCount = 0;
+    for (int i = 0; i < m_conversationHistory.size(); ++i) {
+        if (m_conversationHistory.at(i).role == QStringLiteral("user") && ++userCount == 2) {
+            secondUserIndex = i;
+            break;
+        }
+    }
+    if (secondUserIndex < 0)
+        return false;
+    m_conversationHistory = m_conversationHistory.mid(secondUserIndex);
+    while (!m_conversationHistory.isEmpty() && m_conversationHistory.constFirst().role != QStringLiteral("user"))
+        m_conversationHistory.removeFirst();
+    return true;
+}
+
+bool AgentController::dropOldestToolGroup() {
+    // 从 index=1 起（最新 user turn 永不裁剪，I4）
+    for (int i = 1; i < m_conversationHistory.size(); ++i) {
+        const AgentMessage& message = m_conversationHistory.at(i);
+        if (message.role != QStringLiteral("assistant") || message.toolCalls.isEmpty())
+            continue;
+        int end = i + 1;
+        QSet<QString> ids;
+        for (const QJsonValue& call : message.toolCalls) {
+            const QString id = call.toObject().value(QStringLiteral("id")).toString();
+            if (!id.isEmpty())
+                ids.insert(id);
+        }
+        while (end < m_conversationHistory.size() && m_conversationHistory.at(end).role == QStringLiteral("tool")) {
+            if (!ids.contains(m_conversationHistory.at(end).toolCallId))
+                qWarning() << "[AgentController] tool group contains unmatched tool while dropping group";
+            ++end;
+        }
+        for (int k = end - 1; k >= i; --k)
+            m_conversationHistory.removeAt(k);
+        return true;
+    }
+    return false;
+}
+
+void AgentController::trimHistoryIfNeeded() {
+    constexpr int kMaxHistoryMessages = 64; // 既有硬上限（设计 §7.6）
+    if (m_conversationHistory.isEmpty())
+        return;
+
+    repairOrphanToolGroups();
+
+    // I5：首条非 system 消息必须是 user（system 由 systemPrompt 单独承载）
+    while (!m_conversationHistory.isEmpty() && m_conversationHistory.constFirst().role != QStringLiteral("user"))
+        m_conversationHistory.removeFirst();
+
+    const int budget = contextBudgetTokens();
+    int guard = 0;
+    while ((estimateHistoryTokens() > budget || m_conversationHistory.size() > kMaxHistoryMessages) &&
+           guard++ < 100000) {
+        if (dropOldestUserTurn())
+            continue;
+        if (dropOldestToolGroup())
+            continue;
+        break; // 只剩最新 user turn：不再裁剪
+    }
+
+    while (!m_conversationHistory.isEmpty() && m_conversationHistory.constFirst().role != QStringLiteral("user"))
+        m_conversationHistory.removeFirst();
 }
 
 void AgentController::onGuiEvent(const GuiEvent& event) {
@@ -940,6 +1245,84 @@ void AgentController::onLLMError(const QString& error) {
     m_lastErrorCategory.clear();
 }
 
+// ========== Streaming (设计 §5.1/§5.2/§6.1) ==========
+
+void AgentController::onStreamStarted() {
+    m_streamActive = true;
+    m_pendingContent.clear();
+    m_pendingReasoning.clear();
+    emit agentStreamStarted();
+}
+
+void AgentController::onStreamContentDelta(const QString& text) {
+    if (text.isEmpty())
+        return;
+    m_pendingContent += text;
+    if (!m_streamFlushTimer->isActive())
+        m_streamFlushTimer->start();
+}
+
+void AgentController::onStreamReasoningDelta(const QString& text) {
+    if (text.isEmpty())
+        return;
+    m_pendingReasoning += text;
+    if (!m_streamFlushTimer->isActive())
+        m_streamFlushTimer->start();
+}
+
+void AgentController::flushStreamPending() {
+    if (m_streamFlushTimer)
+        m_streamFlushTimer->stop();
+    if (!m_pendingContent.isEmpty()) {
+        const QString text = m_pendingContent;
+        m_pendingContent.clear();
+        emit agentStreamContentDelta(text);
+    }
+    if (!m_pendingReasoning.isEmpty()) {
+        const QString text = m_pendingReasoning;
+        m_pendingReasoning.clear();
+        emit agentStreamReasoningDelta(text);
+    }
+}
+
+void AgentController::resetStreamBuffer() {
+    if (m_streamFlushTimer)
+        m_streamFlushTimer->stop();
+    m_pendingContent.clear();
+    m_pendingReasoning.clear();
+    m_streamActive = false;
+}
+
+void AgentController::onStreamFinished() {
+    flushStreamPending();
+    // 双终态去重（§5.6）：重复的 streamFinished 直接忽略
+    if (!m_streamActive)
+        return;
+    m_streamActive = false;
+    emit agentStreamFinished();
+}
+
+void AgentController::onStreamFailed() {
+    flushStreamPending();
+    m_streamActive = false;
+    // 收口由随后 errorOccurred/Classified 完成；UI 用 llmErrorOccurred 标记已中断气泡
+}
+
+void AgentController::onStreamFallback(const QString& reason) {
+    flushStreamPending();
+    m_streamActive = false;
+    Logger::instance().addLog(QString("[AgentStream] fallback: %1").arg(reason), LogLevel::Info, "Agent");
+    AgentActionLogEntry entry;
+    entry.timestamp = QDateTime::currentDateTime();
+    entry.actor = "System";
+    entry.action = "LLM stream fallback";
+    entry.params = reason;
+    entry.result = "success";
+    entry.undoable = false;
+    emit actionLogEntryAdded(entry);
+    emit agentStreamFallback(reason);
+}
+
 QString AgentController::defaultSystemPrompt() {
     return QString(
         "You are DeepLux Agent, an AI assistant embedded in DeepLux Vision "
@@ -968,7 +1351,9 @@ QString AgentController::defaultSystemPrompt() {
         "10. When the user asks about image quality/content, call capture_viewport_image or export_node_output and "
         "look at the returned image. At most 2 tool images are attached per turn.\n"
         "11. If a tool returns an error with a \"code\", read the code and adapt; do not repeat the same failing "
-        "call.\n");
+        "call.\n"
+        "12. If the project summary says \"(+M more; call get_flow_state for the full list)\", the module list is "
+        "partial — call get_flow_state before assuming a module does not exist.\n");
 }
 
 } // namespace DeepLux

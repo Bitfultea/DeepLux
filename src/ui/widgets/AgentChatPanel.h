@@ -61,6 +61,19 @@ public:
     void setStopped();
     void setError(const QString& error);
 
+    // ---- 流式气泡（设计 §5.5；t13 可在此基础上继续，方法签名冻结）----
+    void beginAgentStream(); // 创建空 Agent 气泡，标记 streaming
+    bool isStreamActive() const {
+        return m_streamActive;
+    }
+    void appendStreamContent(const QString& text);             // 每 50ms 一批追加正文
+    void appendStreamReasoning(const QString& text);           // 追加 reasoning
+    void finalizeStreamedMessage(const QString& finalContent); // 终态对齐（以最终文本为准）
+    void failStreamedMessage(const QString& note);             // 失败：保留已收 + 标记
+    void abortStreamedMessage(const QString& note);            // 中止：保留已收 + 标记
+    /// R1：给最后一条 Agent 气泡设置 reasoning（非流式/回退响应展示，折叠块）
+    void setLastAgentReasoning(const QString& reasoning);
+
     void applyTheme(bool isDark);
 
 signals:
@@ -112,6 +125,8 @@ private:
     QString m_error;
 
     AgentMessageBubble* m_lastAgentBubble = nullptr;
+    AgentMessageBubble* m_streamBubble = nullptr; // 流式中的 Agent 气泡（空文本终态会被移除）
+    bool m_streamActive = false;
     bool m_isDark = false;
     bool m_isThinkingTimeout = false;
     bool m_isThinking = false;

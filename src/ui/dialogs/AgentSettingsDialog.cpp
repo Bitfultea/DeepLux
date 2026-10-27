@@ -64,6 +64,23 @@ void AgentSettingsDialog::setupUi() {
     m_maxTokensSpin->setValue(4096);
     formLayout->addRow("Max Tokens:", m_maxTokensSpin);
 
+    // 第二迭代上下文治理：预算与单条 tool 结果上限（越界由 QSpinBox range 即时纠正）
+    m_contextBudgetSpin = new QSpinBox(this);
+    m_contextBudgetSpin->setObjectName(QStringLiteral("AgentContextBudgetSpin"));
+    m_contextBudgetSpin->setRange(16000, 1000000);
+    m_contextBudgetSpin->setSingleStep(1000);
+    m_contextBudgetSpin->setValue(128000);
+    m_contextBudgetSpin->setToolTip("Context token budget (16000..1000000); older turns are trimmed when exceeded");
+    formLayout->addRow("Context Budget (tokens):", m_contextBudgetSpin);
+
+    m_toolResultMaxCharsSpin = new QSpinBox(this);
+    m_toolResultMaxCharsSpin->setObjectName(QStringLiteral("AgentToolResultMaxCharsSpin"));
+    m_toolResultMaxCharsSpin->setRange(1000, 64000);
+    m_toolResultMaxCharsSpin->setSingleStep(1000);
+    m_toolResultMaxCharsSpin->setValue(6000);
+    m_toolResultMaxCharsSpin->setToolTip("Tool results above this size are truncated head/tail before being sent back");
+    formLayout->addRow("Tool Result Max Chars:", m_toolResultMaxCharsSpin);
+
     m_permissionCombo = new QComboBox(this);
     m_permissionCombo->addItem("Observer (read-only)", static_cast<int>(AgentController::PermissionLevel::Observer));
     m_permissionCombo->addItem("Advisor (confirm required)",
@@ -88,6 +105,13 @@ void AgentSettingsDialog::setupUi() {
     m_visionCheck->setChecked(true);
     m_visionCheck->setToolTip("Disable when the configured model accepts text only");
     formLayout->addRow(m_visionCheck);
+
+    // 第二迭代：流式响应开关（agent/streamEnabled，默认 true）
+    m_streamCheck = new QCheckBox("Enable streaming responses (live generation)", this);
+    m_streamCheck->setChecked(true);
+    m_streamCheck->setToolTip(
+        "Disable if the gateway does not support server-sent events; requests fall back to one-shot responses");
+    formLayout->addRow(m_streamCheck);
 
     m_thinkingCheck = new QCheckBox("Enable provider thinking extension", this);
     m_thinkingCheck->setToolTip("Enable only for providers that support the DeepSeek-compatible thinking field");
@@ -196,6 +220,9 @@ void AgentSettingsDialog::loadSettings() {
     m_modelEdit->setText(cfg.groupString("agent", "model", "gpt-4o"));
     m_toolsCheck->setChecked(cfg.groupBool("agent", "toolsEnabled", true));
     m_visionCheck->setChecked(cfg.groupBool("agent", "visionEnabled", true));
+    m_streamCheck->setChecked(cfg.groupBool("agent", "streamEnabled", true));
+    m_contextBudgetSpin->setValue(cfg.groupInt("agent", "contextBudgetTokens", 128000));
+    m_toolResultMaxCharsSpin->setValue(cfg.groupInt("agent", "toolResultMaxChars", 6000));
     m_thinkingCheck->setChecked(cfg.groupBool("agent", "thinkingEnabled", false));
     m_tempSpin->setValue(cfg.groupDouble("agent", "temperature", 0.3));
     m_maxTokensSpin->setValue(cfg.groupInt("agent", "maxTokens", 4096));
@@ -215,6 +242,9 @@ void AgentSettingsDialog::saveSettings() {
     cfg.setGroupValue("agent", "systemPrompt", m_systemPromptEdit->toPlainText());
     cfg.setGroupValue("agent", "toolsEnabled", m_toolsCheck->isChecked());
     cfg.setGroupValue("agent", "visionEnabled", m_visionCheck->isChecked());
+    cfg.setGroupValue("agent", "streamEnabled", m_streamCheck->isChecked());
+    cfg.setGroupValue("agent", "contextBudgetTokens", m_contextBudgetSpin->value());
+    cfg.setGroupValue("agent", "toolResultMaxChars", m_toolResultMaxCharsSpin->value());
     cfg.setGroupValue("agent", "thinkingEnabled", m_thinkingCheck->isChecked());
     cfg.save();
 }
@@ -253,6 +283,18 @@ bool AgentSettingsDialog::toolsEnabled() const {
 
 bool AgentSettingsDialog::visionEnabled() const {
     return m_visionCheck->isChecked();
+}
+
+bool AgentSettingsDialog::streamEnabled() const {
+    return m_streamCheck->isChecked();
+}
+
+int AgentSettingsDialog::contextBudgetTokens() const {
+    return m_contextBudgetSpin->value();
+}
+
+int AgentSettingsDialog::toolResultMaxChars() const {
+    return m_toolResultMaxCharsSpin->value();
 }
 
 bool AgentSettingsDialog::thinkingEnabled() const {

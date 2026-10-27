@@ -1,5 +1,7 @@
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QSignalSpy>
+#include <QThread>
 #include <QtTest/QtTest>
 
 // 测试需要访问 AgentController 的私有成员（m_conversationHistory, trimHistory）
@@ -16,6 +18,7 @@
 #include "core/base/ModuleBase.h"
 #include "core/engine/RunEngine.h"
 #include "core/manager/ProjectManager.h"
+#include "core/model/Project.h"
 
 using namespace DeepLux;
 
@@ -119,6 +122,10 @@ private slots:
         AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Advisor);
         // 强制回到 Idle（前一个测试可能留下非 Idle 状态）
         AgentController::instance().transitionTo(AgentController::AgentState::Idle);
+        // 上下文治理：每例恢复默认上限，避免上例的测试覆盖值泄漏
+        AgentController::instance().setContextLimitsForTest(128000, 6000, 24, 24);
+        AgentController::instance().setTurnDeadlineMsForTest(-1);
+        AgentController::instance().setTurnDeadlineConfigForTest(-1);
 
         m_mock = new MockLLMClient(&AgentController::instance());
         m_oldClient = AgentController::instance().llmClient();
@@ -884,6 +891,274 @@ private slots:
         QVERIFY2(result.value("error").toString().contains(QStringLiteral("busy")),
                  qPrintable(QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact))));
         controller.transitionTo(AgentController::AgentState::Idle);
+    }
+
+    // ---------- 第二迭代：上下文治理（设计 §7/§8） ----------
+
+    // I1/I2/I3：工具组原子裁剪——不存在孤立 tool，assistant(tool_calls) 与响应同生共死
+    void testToolGroupTrimIsAtomic() {
+        AgentController& controller = AgentController::instance();
+        controller.setContextLimitsForTest(16000, 6000, 24, 24);
+        controller.clearConversation();
+
+        AgentMessage user;
+        user.role = QStringLiteral("user");
+        user.content = QString(20000, QLatin1Char('u'));
+        controller.m_conversationHistory.append(user);
+
+        for (int i = 0; i < 40; ++i) {
+            AgentMessage assistant;
+            assistant.role = QStringLiteral("assistant");
+            assistant.toolCalls = QJsonArray{QJsonObject{{"id", QStringLiteral("call-%1").arg(i)}}};
+            controller.m_conversationHistory.append(assistant);
+            AgentMessage tool;
+            tool.role = QStringLiteral("tool");
+            tool.toolCallId = QStringLiteral("call-%1").arg(i);
+            tool.content = QString(2000, QLatin1Char('t'));
+            controller.m_conversationHistory.append(tool);
+        }
+        const int sizeBefore = controller.m_conversationHistory.size();
+        controller.trimHistoryIfNeeded();
+        QVERIFY(controller.m_conversationHistory.size() < sizeBefore);
+        QVERIFY(controller.m_conversationHistory.size() <= 64);
+        QCOMPARE(controller.m_conversationHistory.first().role, QStringLiteral("user"));
+
+        // I1/I2：每个 tool 必须紧邻其 assistant，且 assistant 的所有 id 都有响应
+        const QList<AgentMessage>& history = controller.m_conversationHistory;
+        for (int i = 0; i < history.size(); ++i) {
+            if (history.at(i).role == QStringLiteral("tool")) {
+                QVERIFY2(i > 0 && history.at(i - 1).role == QStringLiteral("assistant"),
+                         "tool message must directly follow its assistant(tool_calls)");
+                bool idMatched = false;
+                for (const QJsonValue& call : history.at(i - 1).toolCalls) {
+                    if (call.toObject().value(QStringLiteral("id")).toString() == history.at(i).toolCallId) {
+                        idMatched = true;
+                        break;
+                    }
+                }
+                QVERIFY2(idMatched, "tool message must match an id of the previous assistant");
+            }
+            if (history.at(i).role != QStringLiteral("assistant") || history.at(i).toolCalls.isEmpty())
+                continue;
+            QSet<QString> ids;
+            for (const QJsonValue& call : history.at(i).toolCalls)
+                ids.insert(call.toObject().value(QStringLiteral("id")).toString());
+            int j = i + 1;
+            QSet<QString> found;
+            while (j < history.size() && history.at(j).role == QStringLiteral("tool")) {
+                found.insert(history.at(j).toolCallId);
+                ++j;
+            }
+            QVERIFY2((ids - found).isEmpty(), "assistant(tool_calls) lost part of its tool responses");
+        }
+    }
+
+    // I1/I2 防御性修复：孤立 tool 与不完整组在裁剪入口被整组移除
+    void testTrimRepairsOrphanAndIncompleteToolGroups() {
+        AgentController& controller = AgentController::instance();
+        controller.setContextLimitsForTest(16000, 6000, 24, 24);
+        controller.clearConversation();
+
+        AgentMessage user;
+        user.role = QStringLiteral("user");
+        user.content = QStringLiteral("u");
+        controller.m_conversationHistory.append(user);
+
+        AgentMessage orphanTool;
+        orphanTool.role = QStringLiteral("tool");
+        orphanTool.toolCallId = QStringLiteral("orphan");
+        controller.m_conversationHistory.append(orphanTool);
+
+        AgentMessage assistant;
+        assistant.role = QStringLiteral("assistant");
+        assistant.toolCalls = QJsonArray{QJsonObject{{"id", "a"}}, QJsonObject{{"id", "b"}}};
+        controller.m_conversationHistory.append(assistant);
+        AgentMessage partialTool;
+        partialTool.role = QStringLiteral("tool");
+        partialTool.toolCallId = QStringLiteral("a");
+        controller.m_conversationHistory.append(partialTool);
+
+        controller.trimHistoryIfNeeded();
+
+        QCOMPARE(controller.m_conversationHistory.size(), 1);
+        QCOMPARE(controller.m_conversationHistory.first().role, QStringLiteral("user"));
+        QVERIFY(controller.m_conversationHistory.first().content == QStringLiteral("u"));
+    }
+
+    // §7.4：tool 结果 6k 保首尾截断，中间标注省略字符数（clamp 生效）
+    void testToolResultTruncationKeepsHeadAndTail() {
+        const QString big = QString(10000, QLatin1Char('x'));
+        const QString truncated = AgentController::truncateToolResult(big, 6000);
+        QCOMPARE(truncated.size(), 6000 + QStringLiteral("\n…[truncated 4000 chars]…\n").size());
+        QVERIFY2(truncated.startsWith(QString(4000, QLatin1Char('x'))), "head must be preserved");
+        QVERIFY2(truncated.endsWith(QString(2000, QLatin1Char('x'))), "tail must be preserved");
+        QVERIFY2(truncated.contains(QStringLiteral("…[truncated 4000 chars]…")), qPrintable(truncated.mid(3900, 200)));
+
+        // 短结果不截断
+        const QString small = QStringLiteral("{\"status\":\"ok\"}");
+        QCOMPARE(AgentController::truncateToolResult(small, 6000), small);
+
+        // clamp：maxChars 下限 1000
+        const QString clamped = AgentController::truncateToolResult(big, 500);
+        QVERIFY2(clamped.contains(QStringLiteral("…[truncated 9000 chars]…")), qPrintable(clamped.mid(600, 120)));
+    }
+
+    // §7.1：预算/阈值可配且 clamp；预算内不裁剪
+    void testContextBudgetConfigAndNoTrimWithinBudget() {
+        AgentController& controller = AgentController::instance();
+        controller.setContextLimitsForTest(1, 1, 0, 0);
+        QCOMPARE(controller.contextBudgetTokens(), 16000); // clamp 下限
+        QCOMPARE(controller.toolResultMaxChars(), 1000);
+        QCOMPARE(controller.flowSummaryThreshold(), 1);
+        QCOMPARE(controller.flowSummaryPreviewCount(), 1);
+
+        controller.setContextLimitsForTest(2000000, 100000, 5000, 5000);
+        QCOMPARE(controller.contextBudgetTokens(), 1000000); // clamp 上限
+        QCOMPARE(controller.toolResultMaxChars(), 64000);
+        QCOMPARE(controller.flowSummaryThreshold(), 1000);
+        QCOMPARE(controller.flowSummaryPreviewCount(), 200);
+
+        // 预算内不裁剪
+        controller.setContextLimitsForTest(1000000, 6000, 24, 24);
+        controller.clearConversation();
+        AgentMessage user;
+        user.role = QStringLiteral("user");
+        user.content = QStringLiteral("small");
+        controller.m_conversationHistory.append(user);
+        AgentMessage assistant;
+        assistant.role = QStringLiteral("assistant");
+        assistant.content = QStringLiteral("reply");
+        controller.m_conversationHistory.append(assistant);
+        controller.trimHistoryIfNeeded();
+        QCOMPARE(controller.m_conversationHistory.size(), 2);
+    }
+
+    // §8：buildContext 摘要化阈值两侧 + 大工程 16k 硬上限
+    void testBuildContextSummarizesLargeProject() {
+        AgentController& controller = AgentController::instance();
+        controller.setContextLimitsForTest(128000, 6000, 24, 24);
+
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        for (int i = 0; i < 3; ++i) {
+            ModuleInstance instance;
+            instance.id = QStringLiteral("inst-%1").arg(i);
+            instance.moduleId = QStringLiteral("plugin-%1").arg(i);
+            instance.name = instance.id;
+            project->addModule(instance);
+        }
+        QString smallContext = controller.buildContext();
+        for (int i = 0; i < 3; ++i)
+            QVERIFY2(smallContext.contains(QStringLiteral("inst-%1").arg(i)), qPrintable(smallContext));
+        QVERIFY(!smallContext.contains(QStringLiteral("… (+"))); // 小工程不加摘要后缀（提示词里的 (+M) 除外）
+
+        for (int i = 3; i < 25; ++i) {
+            ModuleInstance instance;
+            instance.id = QStringLiteral("inst-%1").arg(i);
+            instance.moduleId = QStringLiteral("plugin-%1").arg(i);
+            instance.name = instance.id;
+            project->addModule(instance);
+        }
+        const QString largeContext = controller.buildContext();
+        QVERIFY2(largeContext.contains(QStringLiteral("(25)")), qPrintable(largeContext));
+        for (int i = 0; i < 24; ++i)
+            QVERIFY2(largeContext.contains(QStringLiteral("inst-%1").arg(i)), qPrintable(largeContext));
+        QVERIFY2(!largeContext.contains(QStringLiteral("inst-24")), "第 25 个模块名应被摘要省略");
+        QVERIFY2(largeContext.contains(QStringLiteral("(+1 more; call get_flow_state for the full list)")),
+                 qPrintable(largeContext));
+        // Recent Events 仍 ≤5 条（用时间戳行计数；无事件时 0 条）
+        static const QRegularExpression eventLine(QStringLiteral("\\[\\d{2}:\\d{2}:\\d{2}\\]"));
+        QVERIFY(largeContext.count(eventLine) <= 5);
+
+        // 16k 硬上限：阈值放大到 1000 且 200 个超长模块 → 强制摘要 + 截断标记 + 长度受限
+        ProjectManager::instance().closeProject();
+        Project* huge = ProjectManager::instance().newProject();
+        QVERIFY(huge != nullptr);
+        for (int i = 0; i < 200; ++i) {
+            ModuleInstance instance;
+            instance.id = QStringLiteral("huge-instance-with-a-quite-long-name-%1").arg(i);
+            instance.moduleId =
+                QStringLiteral("com.deeplux.huge.plugin.with.a.very.long.module.identifier.number-%1").arg(i);
+            instance.name = instance.id;
+            huge->addModule(instance);
+        }
+        controller.setContextLimitsForTest(-1, -1, 1000, 200);
+        const QString hugeContext = controller.buildContext();
+        QVERIFY2(hugeContext.size() <= 16384,
+                 qPrintable(QStringLiteral("buildContext size=%1").arg(hugeContext.size())));
+        QVERIFY2(hugeContext.contains(QStringLiteral("…[context truncated]")), qPrintable(hugeContext.right(200)));
+        ProjectManager::instance().closeProject();
+    }
+
+    // ---------- L3：视觉能力模型名启发式 ----------
+
+    void testVisionHeuristicCommonModels() {
+        QVERIFY(OpenAILLMClient::heuristicSupportsVision(QStringLiteral("gpt-4o")));
+        QVERIFY(OpenAILLMClient::heuristicSupportsVision(QStringLiteral("claude-3-5-sonnet")));
+        QVERIFY(OpenAILLMClient::heuristicSupportsVision(QStringLiteral("qwen2.5-vl-72b")));
+        QVERIFY(!OpenAILLMClient::heuristicSupportsVision(QStringLiteral("deepseek-reasoner")));
+        QVERIFY(!OpenAILLMClient::heuristicSupportsVision(QStringLiteral("deepseek-chat")));
+        QVERIFY(!OpenAILLMClient::heuristicSupportsVision(QStringLiteral("o1-mini")));
+        QVERIFY(OpenAILLMClient::heuristicSupportsVision(QStringLiteral("unknown-model-x")));
+    }
+
+    // ---------- L9：单轮全局 deadline ----------
+
+    void testTurnDeadlineAbortsContinuation() {
+        AgentController& controller = AgentController::instance();
+        controller.setTurnDeadlineMsForTest(1); // 绕过 clamp，仅测试触发
+        QSignalSpy errorSpy(&controller, &AgentController::llmErrorOccurred);
+        QSignalSpy abortSpy(&controller, &AgentController::agentTurnAborted);
+
+        controller.sendUserMessage(QStringLiteral("deadline"));
+        QCOMPARE(controller.state(), AgentController::AgentState::Thinking);
+        QThread::msleep(8);
+        controller.transitionTo(AgentController::AgentState::Executing);
+        const int requestsBefore = m_mock->requestCount;
+        controller.extendAgentLoop(
+            QJsonArray{QJsonObject{{"id", "call_deadline"}, {"name", "get_flow_state"}, {"arguments", "{}"}}});
+
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QCOMPARE(errorSpy.count(), 1);
+        QVERIFY2(errorSpy.at(0).at(0).toString().contains(QStringLiteral("单轮总时长")),
+                 qPrintable(errorSpy.at(0).at(0).toString()));
+        QCOMPARE(abortSpy.count(), 1);
+        QCOMPARE(m_mock->requestCount, requestsBefore); // 超时后不得续跑
+    }
+
+    void testTurnDeadlineResetsPerUserMessage() {
+        AgentController& controller = AgentController::instance();
+        controller.setTurnDeadlineMsForTest(1);
+        controller.sendUserMessage(QStringLiteral("first"));
+        QThread::msleep(8);
+        QVERIFY(controller.turnDeadlineExceeded());
+        controller.endTurnWithReason(QStringLiteral("deadline"), QString(), false);
+
+        controller.setTurnDeadlineMsForTest(-1); // 恢复配置默认
+        controller.sendUserMessage(QStringLiteral("second"));
+        QCOMPARE(controller.state(), AgentController::AgentState::Thinking);
+        QVERIFY2(!controller.turnDeadlineExceeded(), "新用户消息必须重置计时");
+        controller.abortCurrentTurn();
+    }
+
+    void testTurnDeadlineClamp() {
+        AgentController& controller = AgentController::instance();
+        controller.setTurnDeadlineConfigForTest(1);
+        QCOMPARE(controller.turnDeadlineMs(), 10000);
+        controller.setTurnDeadlineConfigForTest(1000000000);
+        QCOMPARE(controller.turnDeadlineMs(), 3600000);
+        controller.setTurnDeadlineConfigForTest(-1);
+        QCOMPARE(controller.turnDeadlineMs(), 600000); // 默认配置
+    }
+
+    void testTurnDeadlineDoesNotFireEarly() {
+        AgentController& controller = AgentController::instance();
+        controller.setTurnDeadlineConfigForTest(600000);
+        controller.sendUserMessage(QStringLiteral("quick"));
+        QTest::qWait(5);
+        QVERIFY(!controller.turnDeadlineExceeded());
+        QCOMPARE(controller.state(), AgentController::AgentState::Thinking);
+        controller.abortCurrentTurn();
     }
 };
 

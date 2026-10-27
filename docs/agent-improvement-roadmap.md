@@ -1,11 +1,11 @@
 # DeepLux Agent 能力改进路线图（对标 visionflow-studio）
 
-- 状态：**第一迭代已交付**（2026-10-27；实现/两轮审核/复验均通过，审核结论 pass）
-- 第一迭代设计冻结：[agent-iteration1-design.md](agent-iteration1-design.md)（实现依据：契约、权限表、所有权、测试断言）
-- 基线提交：`d381129`（分支 `Windows_work`）
+- 状态：**第二迭代已交付**（2026-10-28；t22 审核 pass、t21 复验全绿）；第一迭代交付于 2026-10-27
+- 设计文档：[agent-iteration1-design.md](agent-iteration1-design.md)（第一迭代）、[agent-iteration2-design.md](agent-iteration2-design.md)（2A 流式+上下文）、[agent-iteration2b-design.md](agent-iteration2b-design.md)（2B 审计/2C MCP/2D 遗留）
+- 基线提交：第二迭代基线 `af56b5b`（第一迭代交付提交）；第一迭代基线 `d381129`（分支 `Windows_work`）
 - 对标对象：<https://github.com/agentthink/visionflow-studio>（Halcon Vision Studio，WPF/.NET 10 + Halcon）
-- 适用范围：`src/core/agent/**`、`src/core/engine/RunEngine`、`src/ui` 中 Agent 相关部件
-- 本文用途：①现状与差距的事实基线；②第一迭代的可执行设计契约；③后续迭代的优先级依据；④第一迭代交付记录（见 §11）
+- 适用范围：`src/core/agent/**`、`src/core/engine/RunEngine`、`src/ui` 中 Agent 相关部件、`src/app/mcp/**`（第二迭代新增）
+- 本文用途：①现状与差距的事实基线；②第一迭代的可执行设计契约；③后续迭代的优先级依据；④第一迭代交付记录（§11）；⑤第二迭代交付记录与第三迭代入口（§12）
 
 ---
 
@@ -31,6 +31,8 @@ DeepLux 的 Agent 与 visionflow 的 Agent 是两种产品形态：
 3. **图像闭环**（`capture_viewport_image`、`export_node_output` + 工具产图自动回灌）+ **LLM 错误分类与重试**。
 
 **第一迭代已于 2026-10-27 交付**：上述三项全部落地，`test_agent*` 12/12、全量 ctest 80/80 通过，两轮审核结论均为 pass。实际契约以 [agent-iteration1-design.md](agent-iteration1-design.md) 为准；与本文原计划的偏差、验证证据、变更摘要、遗留问题与第二迭代入口见 **§11**。
+
+**第二迭代已于 2026-10-28 交付**：流式对话 + 上下文治理（2A）、审计落盘 + 失败报文（2B）、MCP stdio 桥（2C）、L1/L2/L3/L5/L8/L9 六项遗留收口（2D）全部落地；`test_agent*` 15/15、`test_mcpbridge` 1/1、全量 ctest 84/84，t22 审核 pass。交付记录、偏差、MCP 使用方式、审计格式与第三迭代入口见 **§12**。
 
 ---
 
@@ -439,6 +441,8 @@ ctest（全量）           → 100% passed, 0 failed out of 80（78.79 s），E
 
 ### 11.7 第二迭代入口（建议顺序）
 
+> 第二迭代已于 2026-10-28 交付；实际执行以 [agent-execution-plan-v2.md](agent-execution-plan-v2.md) 为准，结果与偏差见 §12。以下为当时的建议顺序，保留作历史记录。
+
 1. **对话质量**：流式 SSE + reasoning 折叠 + 增量渲染（`appendToLastMessage` 已存在未接线）；token/单工具耗时面板完善（当前已有 `llmUsageReported` 与 7 列审计，缺聚合视图）。
 2. **上下文治理**：按"工具调用组"原子裁剪 + 单结果 6k 截断留首尾 + 预算可配（替换现有 turn 级裁剪，`trimHistoryIfNeeded` 已按图片字节计费，可直接扩展）。
 3. **审计落盘**：JSONL 按天轮转 + 失败请求报文落盘（`AgentActionLogEntry` 字段已就绪）。
@@ -446,3 +450,215 @@ ctest（全量）           → 100% passed, 0 failed out of 80（78.79 s），E
 5. **视觉启发式 + 目录配额**：L3、图片临时目录配额/LRU（设计文档附录 D 第 4 条）。
 6. **对外与配置**：`DeepLux --mcp-stdio`（工具来自 `ToolSchema`，外部默认 Observer 或强制确认）；多服务商预设 + 每 provider 独立 Key（系统凭据存储）+ 连接测试。
 7. **治理强化**：`AgentBridge` 外部 `wait` 类工具默认 `wait=false`（L8）；单轮全局 deadline（L9）。
+
+---
+
+## 12. 第二迭代交付记录（2026-10-28）
+
+- 交付日期：**2026-10-28**（实现 2026-10-27 ~ 28；含 t23 修复、t24 复审两个补轮）
+- 质量门：t15 2A 审查 pass → t22 全量审查 **pass（无 findings）** → t21 复验全绿（清 obj 全量重建） → 本集成（t16）
+- 基线：`af56b5b`（第一迭代交付提交）；工作区**未提交 git**（由队长在集成后统一提交推送）
+- 设计依据：[agent-iteration2-design.md](agent-iteration2-design.md)（2A）、[agent-iteration2b-design.md](agent-iteration2b-design.md)（2B/2C/2D）、[agent-execution-plan-v2.md](agent-execution-plan-v2.md)（任务清单）
+
+### 12.1 交付项（对照执行计划 2A/2B/2C/2D）
+
+| 阶段 | 交付内容 | 关键文件 | 状态 |
+|---|---|---|---|
+| **2A 对话质量** | SSE 流式解析（`SseStreamParser`：半包/多包/CRLF/注释/多行 data/`[DONE]`/1MiB 丢行）、`delta.content`/`reasoning_content`/`tool_calls[index]` 累加、首 delta 前重试 + 已有 delta 不重试不回退、F1~F5 非流式回退、50ms 合批、reasoning 折叠块（默认不回传，`agent/reasoningEcho=none`）、六终态映射、abort 保留已收内容 | `SseStreamParser.{h,cpp}`、`OpenAILLMClient.{h,cpp}`、`ILLMClient.{h,cpp}`、`AgentController.{h,cpp}`、`AgentChatPanel.{h,cpp}`、`AgentMessageBubble.{h,cpp}`、`MainWindow.cpp`、`tests/test_agentstream.cpp`、`tests/test_agentstreamui.cpp` | ✅ |
+| **2A 上下文治理** | 工具组原子裁剪（I1~I5，禁止孤儿 tool）、单条 tool 结果 6k 首尾截断+省略量、预算可配（`contextBudgetTokens` 默认 128000/[16000,1000000]）、裁剪后首条非 system 为 user、`buildContext` 摘要化（阈值 24/前 24/提示 `get_flow_state`/事件≤5/16384 硬上限）、设置页两个数值框 | `AgentController.{h,cpp}`、`AgentSettingsDialog.{h,cpp}`、`MainWindow.cpp`、`tests/test_agentcontroller.cpp`（+275 行） | ✅ |
+| **2B 审计** | 审计 JSONL（`agent-audit-YYYYMMDD[-NN].jsonl`、按天轮转、10MB 分片、14 天保留、v=1 全字段、写失败 3 次自禁用）+ LLM 失败报文（`llm-failed-YYYYMMDD.json`、仅 BadRequest/Malformed、QSaveFile 原子写、单条 256KiB/单日 1MiB、R1~R5 脱敏+自检丢弃） | `AgentAuditLog.{h,cpp}`、`FailedRequestLog.{h,cpp}`、`AgentController.cpp`（挂接 4 行）、`OpenAILLMClient.{h,cpp}`（钩子）、`tests/test_agentaudit.cpp` | ✅ |
+| **2C MCP** | `deeplux-mcp-bridge`（stdio JSON-RPC 2.0：initialize/ping/tools/list/tools/call/notifications；25 工具来自 `ToolSchema`+annotations；转发 AgentBridge v1.0；token 认证；错误码 -32001/-32002/-32003；外部只读，写工具 `permission_denied` + GUI 提示且不转发） | `src/app/mcp/**`（4 文件 5 源）、`src/app/CMakeLists.txt`（+27 行）、`tests/test_mcpbridge.cpp`（15 槽≈90 断言） | ✅ |
+| **2D 遗留收口** | L1 tune 五分支测试（AgentRunWaiter 注入）、L2 `unsupportedPorts`（测试 ModuleBase + RunEngine 锁内注入钩子）、L3 视觉启发式（7 模型单测、仅配置缺省时使用）、L5 `m_nodeOutputs` 全部 9 处写加 `m_lifecycleMutex` + 并发快照用例、L8 外部 `run_flow` 强制 `wait=false`/`tune` 强制 `runMode=node`（含回滚配置）、L9 单轮 deadline（默认 600000 clamp[10000,3600000]）；另补 R1（reasoning 展示）、R3（流参数注入） | `AgentRunWaiter.{h,cpp}`、`RunEngine.{h,cpp}`、`AgentBridge.cpp`、`AgentController.{h,cpp}`、`OpenAILLMClient.{h,cpp}`、`MainWindow.cpp`、`tests/*`（20 个新槽） | ✅ |
+
+### 12.2 与执行计划/设计的偏差（逐条）
+
+| # | 计划/设计 | 实际实现 | 理由与影响 |
+|---|---|---|---|
+| 1 | `reasoning` 是否回传未定 | `agent/reasoningEcho` 默认 **none**（不回流请求），可设 current-turn/full | **明示行为变更**（第一迭代是回传）；DeepSeek 思考模式回传有 400 风险，队长批准保守默认；附录 B 文案与开关兜底 |
+| 2 | 6k 截断时机未定 | 在**写入历史时**截断（审计/UI 保留全文） | 队长批准；等价"只影响回传模型"且省内存 |
+| 3 | 摘要阈值初稿 40/前 12 | **24/24** | 队长批准（执行计划口径） |
+| 4 | MCP 契约文本写 `-32002/-32003` 与"默认 120s" | 按冻结设计：**-32002=超时、-32003=鉴权失败、默认 30000ms clamp[1000,300000]** | t20 契约文本笔误；t22 审查确认按设计为准、不判 failed |
+| 5 | MCP 权限"不得绕过控制器" | 只读在 **MCP 桥内预检**（未改 core），只读调用仍经 AgentBridge→`AgentController::handleToolCall` 权威判定 | 与计划"t20 与 t18/t19 文件不相交"一致；写工具不建连接不转发（假桥断言 0 请求），不存在绕过路径 |
+| 6 | L1 计划用 `AgentActor` 注入钩子 | 实际用 **`AgentRunWaiter` Outcome 注入**（生产 private、默认空） | 等价覆盖 tune 五分支，生产零行为变化；未改 out-of-scope 的 `AgentActor` 派发 |
+| 7 | L2 计划"测试专用 ModuleBase 产出端口" | 实际 `UnsupportedPortModule` + `RunEngine::setNodePortOutputsForTest`（锁内写） | 真实覆盖 `unsupportedPorts` 分支 |
+| 8 | L5 设计列 7 处写点 | 实际 **9 处**（+stepOnce clear +测试钩子） | 全量清点后补齐，避免遗漏 |
+| 9 | 失败报文"完整报文" | 按验收做脱敏+上限：不存完整历史（逐条 head≤2KB、图片只记数量、响应头≤64KB） | "完整"与"Authorization/Key/图片 base64 不得入盘"冲突，安全优先；见 §12.7 |
+| 10 | 计划任务表 t11~t22 | 实际增加 **t23（repair round 2）/ t24（review round 2）** | R2/R4/R5 修复与三项测试缺口补齐；不改变交付范围 |
+| 11 | 设置页只列预算 | 同时加了 `AgentToolResultMaxChars` 数值框 | 与 6k 截断可配置对齐，避免只改配置文件 |
+| 12 | 审计为"按天单文件" | 单文件 10MB 后分片 `-01/-02…`（单日≤99） | 防单日爆量写满磁盘 |
+
+### 12.3 变更摘要（按文件/功能）
+
+**修改文件**：`git diff --stat af56b5b -- src tests` = **25 files changed, 2201 insertions(+), 118 deletions(-)**
+
+| 功能组 | 文件（改动行数） |
+|---|---|
+| 流式/LLM | `OpenAILLMClient.cpp`(580)、`OpenAILLMClient.h`(79)、`ILLMClient.h`(30)、`ILLMClient.cpp`(25) |
+| 控制器/上下文/审计挂接 | `AgentController.cpp`(545)、`AgentController.h`(69)、`AgentRunWaiter.cpp`(30)、`AgentRunWaiter.h`(5) |
+| 引擎/桥接（遗留） | `RunEngine.cpp`(30)、`RunEngine.h`(4)、`AgentBridge.cpp`(24) |
+| UI | `AgentChatPanel.cpp`(128)、`AgentChatPanel.h`(15)、`AgentMessageBubble.cpp`(79)、`AgentMessageBubble.h`(15)、`MainWindow.cpp`(54)、`AgentSettingsDialog.cpp`(42)、`AgentSettingsDialog.h`(6) |
+| 构建 | `src/app/CMakeLists.txt`(+27)、`src/core/CMakeLists.txt`(+6)、`tests/CMakeLists.txt`(+13) |
+| 测试（追加） | `test_agentcontroller.cpp`(275)、`test_agentactor.cpp`(131)、`test_agentbridge.cpp`(68)、`test_runengine.cpp`(39) |
+
+**新增文件（行数）**
+
+| 文件 | 行数 | 功能 |
+|---|---|---|
+| `src/core/agent/SseStreamParser.{h,cpp}` | 56 / 115 | SSE 解析（纯逻辑，P1~P10） |
+| `src/core/agent/AgentAuditLog.{h,cpp}` | 89 / 352 | 审计 JSONL 落盘/轮转/保留/脱敏 |
+| `src/core/agent/FailedRequestLog.{h,cpp}` | 86 / 368 | 失败请求报文/脱敏/上限 |
+| `src/app/mcp/main.cpp`、`McpStdioServer.{h,cpp}`、`AgentBridgeClient.{h,cpp}` | 89 / 71+229 / 74+267 | MCP stdio 桥与 AgentBridge 客户端 |
+| `tests/test_agentstream.cpp` / `test_agentstreamui.cpp` | 713 / 423 | 客户端流式 / 控制器·面板流式 |
+| `tests/test_agentaudit.cpp` / `test_mcpbridge.cpp` | 607 / 567 | 审计+失败报文 / MCP 协议 |
+| `docs/agent-iteration2-design.md` / `iteration2b-design.md` | 843 / 840 | 第二迭代契约冻结（2A / 2B+2C+2D） |
+
+### 12.4 最终构建与测试（原始输出摘要）
+
+**t16 集成复跑（本机 Windows + vcvars64；构建为增量，mtime 证明无待编译 TU）**
+
+```text
+# cmd /c 'call vcvars64.bat && cmake --build build-win-tests -j 8'
+[1/1] Staging SAM server runtime files
+EXIT=0
+# 证据：最新源文件 test_runengine.cpp 00:10:19 < 最旧 obj 00:15:12 < deeplux_core.dll 00:15:37 < deeplux-mcp-bridge.exe 00:18:03
+
+# ctest --test-dir build-win-tests -R "test_agent" --output-on-failure
+ 1/15 test_agentobserver       Passed  0.10 sec
+ 2/15 test_agentactor          Passed  1.65 sec
+ 3/15 test_agentpermissions    Passed  0.04 sec
+ 4/15 test_agenttoolcontract   Passed  0.04 sec
+ 5/15 test_agentretry          Passed 24.80 sec
+ 6/15 test_agentundo           Passed  0.04 sec
+ 7/15 test_agentcontroller     Passed  0.12 sec
+ 8/15 test_agentbridge         Passed  0.26 sec
+ 9/15 test_agente2e            Passed  0.18 sec
+10/15 test_agent_draft_restore Passed  0.27 sec
+11/15 test_agentclosedloop     Passed  0.31 sec
+12/15 test_agentstream         Passed  2.03 sec
+13/15 test_agentstreamui       Passed  0.39 sec
+14/15 test_agentaudit          Passed  0.40 sec
+15/15 test_agent_sam_tools     Passed  0.78 sec
+
+100% tests passed, 0 tests failed out of 15
+Total Test time (real) =  31.41 sec
+EXIT=0
+```
+
+**t21 复验（清 obj 全量重建；证据链见 `build-win-tests/verify-t21-report.md`）**
+
+```text
+删 414 个 *.obj → vcvars64 全量重编 [573/573]，414 TU，0 error，exit 0（2.98 min）
+头文件 mtime ≤00:10:19 < obj 00:15:28–00:17:41 < 二进制 00:15:37–00:18:05（无假通过；SHA256 守卫 88 个二进制 0 变化）
+ctest -R test_agent     → 15/15 Passed（含 stream 2.09s / streamui 0.41s / audit 0.44s），exit 0
+ctest -R test_mcpbridge → 1/1 Passed 0.18s，exit 0
+ctest -R test_runengine → 1/1 Passed 10.54s，exit 0
+ctest（全量）           → 84/84 Passed，0 skipped/disabled，exit 0
+特性 -V 45 项点名全 PASS：8 套 Totals = runengine 116 / controller 48 / actor 39 / audit 18 / mcp 17 / stream 26 / streamui 15 / bridge 14，0 failed
+```
+
+- 测试总数：80（第一迭代）→ **84**（新增 `test_agentstream`、`test_agentstreamui`、`test_agentaudit`、`test_mcpbridge`；`test_agent*` 12 → 15）。
+- 验收条目：t12 9 + t13 6 + t18 7 + t19 10 + t20 7 + t23 6 = **45 条全部 passed**；t22 审查 pass、t24 复审 pass。
+- 插件 ABI 未改动 ⇒ 无需 `sync-plugins`；格式门禁：各任务累计对 19+8 个改动 C++ 文件执行 `clang-format --dry-run --Werror`，0 violations。
+
+### 12.5 遗留状态更新（对照 §11.6 L1~L10）
+
+| ID | 第一迭代状态 | 第二迭代结果 |
+|---|---|---|
+| L1 | tune 超时/中止无断言 | ✅ **关闭**：AgentRunWaiter Outcome 注入，5 个分支用例（timeout/cancelled/reentrant_wait/paused_at_breakpoint/run_failed） |
+| L2 | `unsupportedPorts` 无生产者 | ✅ **关闭**：测试 ModuleBase 产 QRect 端口 + RunEngine 测试钩子，断言 `unsupportedPorts` 含 `rect` |
+| L3 | 视觉启发式未实现 | ✅ **关闭**：`heuristicSupportsVision` 纯函数 + 仅配置缺省时使用（7 模型单测） |
+| L4 | create_project 死分支 | ⏸ 保持现状（防御性代码，`DEEPLUX_TEST_VISIBILITY` 覆盖） |
+| L5 | `m_nodeOutputs` 无锁 | ✅ **代码层关闭**：9 处写统一 `m_lifecycleMutex` + 快照锁内深拷贝 + 并发用例；**TSan 门禁仍延后**（第三迭代） |
+| L6 | 未提交 git | ⏳ 待队长在 t16 后统一提交/推送 |
+| L7 | 构建头依赖追踪损坏 | ⏸ 保留纪律（改 `.h` 先删 obj）；CI 根治另立 |
+| L8 | 外部 wait 阻塞 | ✅ **关闭**：`run_flow` 强制 `wait=false`、`tune` 强制 `runMode=node`（`agent/bridgeForceAsyncWaitTools` 可回滚） |
+| L9 | 单轮无全局 deadline | ✅ **关闭**：`agent/turnDeadlineMs` 默认 600000 clamp[10000,3600000] + 三检查点 + 统一收口 |
+| L10 | 审计无落盘/裁剪 turn 级 | ✅ **关闭**：审计 JSONL + 失败报文落盘；上下文改为工具组原子裁剪 + 6k 截断 + 预算可配 + 摘要化 |
+
+**第二迭代新增遗留（第三迭代候选）**
+
+| # | 类型 | 问题 | 建议 |
+|---|---|---|---|
+| N1 | 功能 | MCP 写工具无 GUI 确认通道（`-32004` 预留未返回） | 第三迭代实现"外部请求 → GUI 弹窗确认" |
+| N2 | 测试缺口 | GUI 流式回退提示无自动化断言（仅 controller 级） | test_mainwindow 增加面板提示断言 |
+| N3 | 测试缺口 | 流空闲看门狗 60s 未测（仅回退/超时分支） | 注入可调看门狗时间做单测 |
+| N4 | 测试缺口 | MCP `-32603` 无稳定触发场景、单行 >4MiB 处理未单独断言 | 增加故障注入用例 |
+| N5 | 治理 | TSan 未纳入 CI（L5 仅代码层） | 独立 TSan 环境 + 门禁 |
+| N6 | 性能 | MCP 桥链接 `deeplux_core` 会拉起 Qt Widgets/OpenCV DLL | 第三迭代抽轻量 `deeplux_agent_api` |
+| N7 | 观测 | 审计为同步小写入、无聚合视图；失败报文按 14 天清理无配额面板 | 异步队列 + 设置页查看/导出 |
+| N8 | 功能 | 多服务商预设 + 每 provider 独立 Key（系统凭据）+ 连接测试未做 | 第三迭代（执行计划 §5 明确不做） |
+
+### 12.6 MCP 使用方式（客户端挂载配置）
+
+**前置条件**
+
+1. 本机正在运行 **DeepLux GUI**（`AgentBridge` 由 GUI 启动；GUI 未运行 → MCP 返回 `-32001`，不重试挂死）。
+2. 产物位置：构建目录 `build-win-tests/bin/deeplux-mcp-bridge.exe`（安装后为 `<install>/bin/deeplux-mcp-bridge`）。
+3. 可选鉴权：在配置文件 `<appData>/config/config.json` 的 `agent` 组设置 `bridgeToken`（GUI 与 MCP 桥读同一配置）；未设置则跳过握手。
+
+**Claude Desktop（Windows）**：编辑 `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "deeplux": {
+      "command": "C:\\path\\to\\DeepLux\\bin\\deeplux-mcp-bridge.exe",
+      "args": []
+    }
+  }
+}
+```
+
+**Cursor**：编辑 `~/.cursor/mcp.json`（或项目 `.cursor/mcp.json`），结构同上。
+
+**Linux**
+
+```json
+{
+  "mcpServers": {
+    "deeplux": {
+      "command": "/opt/deeplux/bin/deeplux-mcp-bridge"
+    }
+  }
+}
+```
+
+**能力与限制**：`tools/list` 列出全部 **25** 个工具（含 `readOnlyHint`/`destructiveHint`）；**只有 `readOnly==true` 的工具可调用**；写/危险工具在桥内直接返回 `isError=true` + `{"code":"permission_denied","hint":"…inside the DeepLux GUI…"}`，**不建立连接、不转发**。`tools/call` 示例（只读）：
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_flow_state","arguments":{}}}
+{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"modules\":[...]}"}],"isError":false}}
+```
+
+错误码：`-32001` GUI 未运行、`-32002` 桥超时（默认 30000ms，`agent/mcpBridgeTimeoutMs` clamp[1000,300000]）、`-32003` 认证失败、`-32700`/`-32600`/`-32601`/`-32602`/`-32603` 标准 JSON-RPC。
+
+### 12.7 审计文件格式与脱敏说明
+
+**审计（每次工具/撤销/错误动作一条）**
+
+- 位置：`~/.deeplux/logs/agent-audit-YYYYMMDD.jsonl`（Windows `C:\Users\<user>\.deeplux\logs\`；`DEEPLUX_APP_DATA_DIR` 可覆盖）。
+- 轮转/保留：按天切换；当日 ≥10MB 换 `-01/-02…` 分片（单日≤99）；保留 **14 天**。
+- 单行示例：
+
+```json
+{"v":1,"ts":"2026-10-28T00:31:02.123+08:00","actor":"Agent","action":"run_flow","params":{"mode":"once","wait":true},"result":"success","undoable":false,"durationMs":132,"toolCallId":"call_1"}
+```
+
+- 字段与 `AgentActionLogEntry` 一一映射（`durationMs=-1` / 空 `errorCategory` / 空 `toolCallId` 时省略键）；单条 ≤16KiB；写盘失败只写 `Logger`、连续 3 次自禁用（跨天或重启恢复），**不影响对话**。
+- 脱敏：`apiKey/authorization/token/secret/password` 值替换 `***`；`data:image/...;base64,...` 替换为 `data:image/…;base64,[omitted]`；审计从不写入图片字节。
+
+**失败请求报文（仅 BadRequest / Malformed）**
+
+- 位置：`~/.deeplux/logs/llm-failed-YYYYMMDD.json`，结构 `{"v":1,"records":[...]}`；单条 ≤256KiB、单日 ≤1MiB、保留 14 天；`QSaveFile` 原子重写。
+- 记录内容：`ts/category/httpStatus/attempts/endpoint(去 query)/model/contextLimitSuspected/visionDowngradeHint/request(逐条 role+chars+head≤2KB+图片数量)/response(head≤64KB)/detail(≤2KB)/redactionApplied`。
+- 脱敏硬规则：`Authorization`/API Key 永不写入；`Bearer <token>` → `Bearer ***`；`data:image/...;base64,...` → `[omitted]`；无空格且 ≥4096 的疑似 base64 串 → `[omitted-base64]`；落盘前自检命中任一规则则整条丢弃。Auth 类别**不落盘**（避免密钥回显）。
+
+### 12.8 第三迭代入口（建议顺序）
+
+1. **MCP 写能力 + GUI 确认**：实现 `-32004` 预留通道（外部请求 → GUI 确认 → 执行 → 回传），仍不放开"无确认直执行"。
+2. **多服务商与凭据**：provider 预设、每 provider 独立 Key（系统凭据存储，不明文落盘）、模型列表拉取与连接测试。
+3. **可取消的单节点执行原语**：解锁 `tune_node_and_verify(runMode=node)` 真执行与 `sweep_node_parameter`（RunEngine 异步节点作业 + 取消协议；与 TSan 一起收口）。
+4. **TSan 门禁 + 并发加固**：L5 已做代码层加锁，第三迭代把 TSan 纳入 CI（`docs/baseline/tsan-report.md` 的误报基线需先收敛）。
+5. **可观测增强**：审计异步队列/批量刷盘、失败报文与审计的配额/导出面板、流看门狗与 MCP 异常注入测试（N2~N4）。
+6. **MCP 依赖拆分与扩展**：抽 `deeplux_agent_api` 轻量库（避免拉起 Widgets/OpenCV）；如需支持 MCP 流式/分页再扩展。
+7. **对话质量继续**：上下文摘要/记忆（替代纯裁剪）、reasoning 回传策略按 provider 自适应（当前默认 none + 手动开关）。

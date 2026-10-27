@@ -1,6 +1,7 @@
 #include "AgentBridge.h"
 
 #include "AgentConnection.h"
+#include "common/Logger.h"
 #include "config/SystemConfig.h"
 #include "engine/RunEngine.h"
 #include "manager/ConfigManager.h"
@@ -431,11 +432,28 @@ QJsonObject AgentBridge::handleToolCall(const QString& reqId, const QJsonObject&
         return QJsonObject{{"error", "Missing 'tool' field in tool_call"}};
     }
 
-    if (m_toolCallCallback) {
-        return m_toolCallCallback(toolName, params);
+    // L8（设计 §7.5）：外部 IPC 调用等待类工具一律强制异步，避免阻塞到运行结束；
+    // agent/bridgeForceAsyncWaitTools=false 可回滚（排障用，默认安全）。
+    const bool forceAsync = !ConfigManager::instance().isInitialized() ||
+                            ConfigManager::instance().groupBool("agent", "bridgeForceAsyncWaitTools", true);
+    bool forced = false;
+    if (forceAsync && toolName == QStringLiteral("run_flow")) {
+        params.insert(QStringLiteral("wait"), false);
+        forced = true;
+    } else if (forceAsync && toolName == QStringLiteral("tune_node_and_verify")) {
+        params.insert(QStringLiteral("runMode"), QStringLiteral("node"));
+        forced = true;
     }
+    if (forced)
+        Logger::instance().info(QStringLiteral("bridge forced async: %1").arg(toolName), QStringLiteral("Agent"));
 
-    return QJsonObject{{"error", "Tool call callback not set"}};
+    if (!m_toolCallCallback)
+        return QJsonObject{{"error", "Tool call callback not set"}};
+
+    QJsonObject result = m_toolCallCallback(toolName, params);
+    if (forced)
+        result.insert(QStringLiteral("forced"), true);
+    return result;
 }
 
 QJsonObject AgentBridge::handleQuery(const QString& reqId, const QJsonObject& payload) {

@@ -1,3 +1,4 @@
+#define DEEPLUX_BUILD_TESTS 1
 #include <QMutex>
 #include <QSemaphore>
 #include <QSet>
@@ -420,6 +421,7 @@ private slots:
     // 阶段 6 复核（三轮）并发生命周期回归
     void testConcurrentStopDuringRunKeepsStoppedState();
     void testConcurrentMaintenanceDuringRunStart();
+    void testSnapshotConcurrentWithRun();
     void testStopSimultaneousWithBreakpointHit();
     void testClearAndLoadRejectedWhileRunning();
     // 阶6 八轮回归：恢复/tick/循环断点/校验收尾/维护停止
@@ -5460,6 +5462,43 @@ void TestRunEngine::testStopStability50Repeats() {
         QVERIFY2(!log.contains("after"), qPrintable(QString("rep %1: after must not run after stop").arg(rep)));
         QVERIFY(engine.state() != RunState::Running);
     }
+    engine.clearModules();
+}
+
+// L5：并发快照替代 TSan——运行期间多线程读取快照不崩溃；忙时返回空；停止后非空
+void TestRunEngine::testSnapshotConcurrentWithRun() {
+    RunEngine& engine = RunEngine::instance();
+    engine.stop();
+    engine.clearModules();
+
+    auto* source = new TypedPortModule(QStringLiteral("SnapSource"), DataType::Point2D, true);
+    QVERIFY(source->initialize());
+    engine.addModule(source);
+    std::atomic<int> running{0};
+    std::atomic<int> maxConc{0};
+    auto* slow = new ParallelSleepModule(QStringLiteral("SnapSlow"), &running, &maxConc, 80);
+    QVERIFY(slow->initialize());
+    engine.addModule(slow);
+
+    std::atomic<int> reads{0};
+    std::thread reader([&engine, &reads]() {
+        for (int i = 0; i < 1000; ++i) {
+            (void) engine.nodePortOutputs(QStringLiteral("SnapSource"));
+            ++reads;
+        }
+    });
+    for (int i = 0; i < 50; ++i)
+        engine.runOnce();
+    reader.join();
+    QCOMPARE(reads.load(), 1000);
+    QVERIFY2(!engine.nodePortOutputs(QStringLiteral("SnapSource")).isEmpty(), "停止后快照必须非空（锁内深拷贝）");
+
+    // 忙时返回空（L5-I2 防御分支）
+    QVERIFY(engine.runOnceAsync());
+    QVERIFY(engine.isBusy());
+    QVERIFY2(engine.nodePortOutputs(QStringLiteral("SnapSource")).isEmpty(), "忙时快照必须返回空");
+    QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 10000);
+    QVERIFY(!engine.nodePortOutputs(QStringLiteral("SnapSource")).isEmpty());
     engine.clearModules();
 }
 
