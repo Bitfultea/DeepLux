@@ -603,12 +603,21 @@ QJsonObject skippedAfterFailure(const QString& failedTool, const QString& failed
         {QStringLiteral("failedCode"), failedCode}};
 }
 
+QJsonObject blockedResult(const QString& tool, const QString& code) {
+    return QJsonObject{{QStringLiteral("success"), false},
+                       {QStringLiteral("error"), QStringLiteral("Tool was not executed: %1").arg(code)},
+                       {QStringLiteral("code"), code},
+                       {QStringLiteral("blocked"), true},
+                       {QStringLiteral("tool"), tool}};
+}
+
 QJsonObject resultEntry(const QString& tool, const QJsonObject& result) {
     return QJsonObject{{QStringLiteral("tool"), tool}, {QStringLiteral("result"), result}};
 }
 } // namespace
 
-QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& tools, const QString& macroName) {
+QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& tools, const QString& macroName,
+                                     const BatchGate& gate) {
     if (tools.isEmpty())
         return QJsonObject{{"error", "No tools to execute"}};
 
@@ -651,12 +660,25 @@ QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& t
     QString failedCode;
     QString error;
     bool macroOpen = false;
-    for (const auto& pair : tools) {
+    for (int i = 0; i < tools.size(); ++i) {
+        const auto& pair = tools.at(i);
         if (failed) {
             // 首次失败后不再执行，但必须补齐结果（跳过不算执行成功）
             results.append(resultEntry(pair.first, skippedAfterFailure(failedTool, failedCode)));
             continue;
         }
+
+        // 执行前逐项门禁：中止/工程切换/权限降级后不得继续旧批次
+        const QString gateCode = gate ? gate(i, pair.first, pair.second) : QString();
+        if (!gateCode.isEmpty()) {
+            results.append(resultEntry(pair.first, blockedResult(pair.first, gateCode)));
+            failed = true;
+            failedTool = pair.first;
+            failedCode = gateCode;
+            error = QStringLiteral("Tool execution blocked: %1").arg(gateCode);
+            continue;
+        }
+
         const bool switchesProject =
             pair.first == QStringLiteral("create_project") || pair.first == QStringLiteral("open_project");
         if (switchesProject && macroOpen) {
@@ -678,6 +700,14 @@ QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& t
             continue;
         }
         ++executed;
+
+        // create/open 成功后工程身份已变化：保守终止旧批次，让模型读取新工程再规划
+        if (switchesProject && i + 1 < tools.size()) {
+            failed = true;
+            failedTool = pair.first;
+            failedCode = QStringLiteral("project_switched");
+            error = QStringLiteral("Project changed by %1; remaining tools were skipped").arg(pair.first);
+        }
     }
     if (macroOpen)
         m_undoStack->endMacro();

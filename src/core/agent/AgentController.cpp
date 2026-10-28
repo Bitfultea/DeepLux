@@ -99,6 +99,8 @@ QString auditOutcome(const QJsonObject& result) {
     if (code == QStringLiteral("PERMISSION_DENIED") || code == QStringLiteral("USER_REJECTED") ||
         code == QStringLiteral("USER_CANCELLED") || code == QStringLiteral("confirmation_expired"))
         return QStringLiteral("rejected");
+    if (code == QStringLiteral("cancelled") || code == QStringLiteral("project_changed"))
+        return QStringLiteral("skipped");
     return AgentActor::resultSucceeded(result) ? QStringLiteral("success") : QStringLiteral("error");
 }
 
@@ -167,6 +169,28 @@ AgentController::AgentController(QObject* parent)
     m_streamFlushTimer->setTimerType(Qt::CoarseTimer);
     m_streamFlushTimer->setInterval(kStreamFlushIntervalMs);
     connect(m_streamFlushTimer, &QTimer::timeout, this, &AgentController::flushStreamPending);
+
+    // B2：工程会话身份/版本。任何切换/关闭都使旧确认失效；结构变化递增版本。
+    ProjectManager& projects = ProjectManager::instance();
+    connect(&projects, &ProjectManager::projectCreated, this, [this](Project* project) {
+        ++m_projectSessionId;
+        ++m_projectRevision;
+        bindProjectSignals(project);
+        onProjectStructureChanged();
+    });
+    connect(&projects, &ProjectManager::projectOpened, this, [this](Project* project) {
+        ++m_projectSessionId;
+        ++m_projectRevision;
+        bindProjectSignals(project);
+        onProjectStructureChanged();
+    });
+    connect(&projects, &ProjectManager::projectClosed, this, [this]() {
+        ++m_projectSessionId;
+        ++m_projectRevision;
+        bindProjectSignals(nullptr);
+        onProjectStructureChanged();
+    });
+    bindProjectSignals(projects.currentProject());
 }
 
 AgentController::~AgentController() = default;
@@ -582,6 +606,113 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
     m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
 }
 
+// ========== 工程会话身份 / 确认有效期（B2） ==========
+
+void AgentController::bindProjectSignals(Project* project) {
+    for (const QMetaObject::Connection& connection : m_projectConnections)
+        QObject::disconnect(connection);
+    m_projectConnections.clear();
+    if (!project)
+        return;
+
+    const auto bump = [this]() {
+        ++m_projectRevision;
+        onProjectStructureChanged();
+    };
+    m_projectConnections << connect(project, &Project::nameChanged, this, [bump](const QString&) { bump(); })
+                         << connect(project, &Project::moduleAdded, this, [bump](const ModuleInstance&) { bump(); })
+                         << connect(project, &Project::moduleUpdated, this, [bump](const ModuleInstance&) { bump(); })
+                         << connect(project, &Project::moduleRemoved, this, [bump](const QString&) { bump(); })
+                         << connect(project, &Project::connectionAdded, this,
+                                    [bump](const ModuleConnection&) { bump(); })
+                         << connect(project, &Project::connectionRemoved, this,
+                                    [bump](const QString&, const QString&) { bump(); })
+                         << connect(project, &Project::connectionRemovedWithPorts, this,
+                                    [bump](const QString&, const QString&, const QString&, const QString&) { bump(); })
+                         << connect(project, &Project::dataSourceAdded, this, [bump](const DataSource&) { bump(); })
+                         << connect(project, &Project::dataSourceRemoved, this, [bump](const QString&) { bump(); });
+}
+
+void AgentController::onProjectStructureChanged() {
+    // 确认期间工程被切换/关闭/外部修改：旧确认立即失效，且不执行任何工程编辑。
+    if (state() == AgentState::Confirming)
+        expirePendingConfirmation(QStringLiteral("project_changed"));
+}
+
+void AgentController::snapshotConfirmation() {
+    m_confirmationSessionId = m_projectSessionId;
+    m_confirmationRevision = m_projectRevision;
+}
+
+bool AgentController::confirmationExpired() const {
+    return m_confirmationSessionId != m_projectSessionId || m_confirmationRevision != m_projectRevision;
+}
+
+void AgentController::expirePendingConfirmation(const QString& reason) {
+    QJsonArray calls = m_pendingToolCalls;
+    if (calls.isEmpty() && !m_conversationHistory.isEmpty() &&
+        m_conversationHistory.constLast().role == QLatin1String("assistant"))
+        calls = m_conversationHistory.constLast().toolCalls;
+
+    const bool continueAfter = m_dispatchQueued ? m_queuedContinueAfterPending : m_continueAfterPendingTools;
+    if (continueAfter) {
+        for (const QJsonValue& value : calls) {
+            const QJsonObject call = value.toObject();
+            const QString id = call.value(QStringLiteral("id")).toString();
+            if (id.isEmpty())
+                continue;
+            const QJsonObject denied{{QStringLiteral("success"), false},
+                                     {QStringLiteral("error"), QStringLiteral("Confirmation expired: %1").arg(reason)},
+                                     {QStringLiteral("code"), QStringLiteral("confirmation_expired")}};
+            AgentMessage message;
+            message.role = QStringLiteral("tool");
+            message.toolCallId = id;
+            message.content = QString(QJsonDocument(denied).toJson(QJsonDocument::Compact));
+            m_conversationHistory.append(message);
+        }
+    }
+
+    ++m_turnGeneration; // 作废已排队的确认/续跑
+    m_pendingToolCalls = QJsonArray();
+    m_dispatchQueued = false;
+    m_continueAfterPendingTools = true;
+    transitionTo(AgentState::Idle);
+    emit llmErrorOccurred(QStringLiteral("Confirmation expired: %1; no project changes were made").arg(reason));
+}
+
+bool AgentController::executeObserverCalls(const QJsonArray& calls, bool continueAfter) {
+    bool denied = false;
+    for (const QJsonValue& value : calls) {
+        const QJsonObject call = value.toObject();
+        const QString name = toolCallName(call);
+        if (name.isEmpty())
+            continue;
+        const QString id = call.value(QStringLiteral("id")).toString();
+        const QJsonObject params = toolCallParams(call);
+
+        QJsonObject result;
+        if (!toolAccess(name).readOnly) {
+            denied = true;
+            result = QJsonObject{{QStringLiteral("success"), false},
+                                 {QStringLiteral("error"), QStringLiteral("Permission denied: Observer mode")},
+                                 {QStringLiteral("code"), QStringLiteral("PERMISSION_DENIED")}};
+        } else {
+            result = m_actor->executeTool(name, params);
+        }
+
+        emit actionLogEntryAdded(makeAuditEntry(m_actor, name, params, id, result));
+        if (continueAfter && !id.isEmpty()) {
+            AgentMessage message;
+            message.role = QStringLiteral("tool");
+            message.toolCallId = id;
+            message.content =
+                truncateToolResult(QString(QJsonDocument(result).toJson(QJsonDocument::Compact)), toolResultMaxChars());
+            m_conversationHistory.append(message);
+        }
+    }
+    return denied;
+}
+
 // ========== LLM Response ==========
 
 void AgentController::onLLMResponse(const AgentResponse& resp) {
@@ -628,9 +759,27 @@ void AgentController::onLLMResponse(const AgentResponse& resp) {
 
     if (!resp.toolCalls.isEmpty()) {
         if (m_permissionLevel == PermissionLevel::Observer) {
-            appendToolResultsForCalls(m_conversationHistory, resp.toolCalls, QStringLiteral("PERMISSION_DENIED"));
-            transitionTo(AgentState::Idle);
+            bool hasWrite = false;
+            for (const QJsonValue& v : resp.toolCalls) {
+                if (!toolAccess(toolCallName(v.toObject())).readOnly) {
+                    hasWrite = true;
+                    break;
+                }
+            }
+            if (!hasWrite) {
+                // 纯只读批次：正常执行并续跑，Observer 仍可完成查询型任务
+                transitionTo(AgentState::Executing);
+                extendAgentLoop(resp.toolCalls);
+                return;
+            }
+            // 混合批次：允许的只读调用逐项执行，写入项生成结构化拒绝结果；
+            // 任何拒绝都结束本轮（不续跑）。
+            transitionTo(AgentState::Executing);
             emit llmResponseReceived(resp.content, resp.toolCalls);
+            executeObserverCalls(resp.toolCalls, true);
+            trimHistoryIfNeeded();
+            transitionTo(AgentState::Idle);
+            emit llmErrorOccurred(QStringLiteral("Permission denied: Observer mode"));
             return;
         }
 
@@ -645,6 +794,7 @@ void AgentController::onLLMResponse(const AgentResponse& resp) {
         if (needsConfirmation) {
             m_pendingToolCalls = resp.toolCalls;
             m_continueAfterPendingTools = true;
+            snapshotConfirmation();
             transitionTo(AgentState::Confirming);
             emit llmResponseReceived(resp.content, resp.toolCalls);
             emit toolsPendingConfirmation(resp.toolCalls);
@@ -696,6 +846,10 @@ void AgentController::confirmPendingTools() {
                 return;
             }
             m_continueAfterPendingTools = m_queuedContinueAfterPending;
+            if (confirmationExpired()) {
+                expirePendingConfirmation(QStringLiteral("project_changed"));
+                return;
+            }
             doConfirmPendingTools(calls);
         },
         Qt::QueuedConnection);
@@ -707,17 +861,20 @@ void AgentController::doConfirmPendingTools(QJsonArray calls) {
         qWarning() << "[AgentController] doConfirmPendingTools: state changed to" << stateName(currentState);
         return;
     }
+    // 确认按钮最终复核：工程会话/版本变化则整批失效，零工程修改
+    if (confirmationExpired()) {
+        expirePendingConfirmation(QStringLiteral("project_changed"));
+        return;
+    }
     if (m_permissionLevel == PermissionLevel::Observer) {
-        for (const QJsonValue& value : calls) {
-            if (!toolAccess(toolCallName(value.toObject())).readOnly) {
-                if (m_continueAfterPendingTools)
-                    appendToolResultsForCalls(m_conversationHistory, calls, QStringLiteral("PERMISSION_DENIED"));
-                m_continueAfterPendingTools = true;
-                transitionTo(AgentState::Idle);
-                emit llmErrorOccurred(QStringLiteral("Permission denied: Observer mode"));
-                return;
-            }
-        }
+        // 等待期间降权：只读项仍可执行，写入项全部拒绝（不因批次含读工具放行写工具）
+        transitionTo(AgentState::Executing);
+        const bool denied = executeObserverCalls(calls, m_continueAfterPendingTools);
+        m_continueAfterPendingTools = true;
+        transitionTo(AgentState::Idle);
+        if (denied)
+            emit llmErrorOccurred(QStringLiteral("Permission denied: Observer mode"));
+        return;
     }
     transitionTo(AgentState::Executing);
     if (m_continueAfterPendingTools) {
@@ -807,8 +964,24 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
         return;
     }
 
-    // 批量执行（等待类工具可能进入嵌套事件循环；期间用户可能按停止）
-    QJsonObject batchResult = m_actor->executeTools(tools, QString("Agent turn %1").arg(m_agentTurnCount));
+    // 批量执行（等待类工具可能进入嵌套事件循环；期间用户可能按停止/切换工程/降权）。
+    // 每项执行前复核取消、工程会话与权限，旧批次不得继续写入。
+    const quint64 session = m_projectSessionId;
+    const PermissionLevel batchPermission = m_permissionLevel;
+    const auto gate = [this, turn, session, batchPermission](int, const QString& name, const QJsonObject&) -> QString {
+        if (turn != m_turnGeneration)
+            return QStringLiteral("cancelled");
+        if (session != m_projectSessionId)
+            return QStringLiteral("project_changed");
+        const ToolAccess access = toolAccess(name);
+        if (m_permissionLevel == PermissionLevel::Observer && !access.readOnly)
+            return QStringLiteral("PERMISSION_DENIED");
+        if (m_permissionLevel != batchPermission && requiresConfirmation(m_permissionLevel, access) &&
+            !requiresConfirmation(batchPermission, access))
+            return QStringLiteral("PERMISSION_DENIED");
+        return QString();
+    };
+    QJsonObject batchResult = m_actor->executeTools(tools, QString("Agent turn %1").arg(m_agentTurnCount), gate);
 
     // 拆分每个 tool 结果，每条 tool call 对应一条独立的 tool role message（OpenAI 要求）。
     // executeTools 保证 results 与 tools 一一对应；未执行项以 skipped_after_failure 补齐。
@@ -841,10 +1014,12 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
     }
     trimHistoryIfNeeded();
 
-    // B1：只有 run_failed 允许把失败回灌模型并重新规划；其余失败结束本轮。
+    // B1/B2：run_failed 允许重新规划；create/open 成功切换工程后保守终止旧批次，
+    // 同样回灌结果让模型读取新工程再规划。其余失败结束本轮。
     const bool batchFailed = batchResult.value(QStringLiteral("status")).toString() == QLatin1String("partial_failed");
     const QString failedCode = batchResult.value(QStringLiteral("failedCode")).toString();
-    const bool canReplan = batchFailed && failedCode == QLatin1String("run_failed");
+    const bool canReplan =
+        batchFailed && (failedCode == QLatin1String("run_failed") || failedCode == QLatin1String("project_switched"));
     if (batchFailed && !canReplan) {
         transitionTo(AgentState::Idle);
         emit llmErrorOccurred(
@@ -1237,12 +1412,13 @@ QJsonObject AgentController::handleToolCall(const QString& toolName, const QJson
 
     const ToolAccess access = toolAccess(toolName);
     if (m_permissionLevel == PermissionLevel::Observer && !access.readOnly)
-        return {{"error", "Permission denied: Observer mode"}};
+        return {{"success", false}, {"error", "Permission denied: Observer mode"}, {"code", "PERMISSION_DENIED"}};
     if (requiresConfirmation(m_permissionLevel, access)) {
         QJsonArray calls;
         calls.append(makeToolCall(toolName, params));
         m_pendingToolCalls = calls;
         m_continueAfterPendingTools = false;
+        snapshotConfirmation();
         transitionTo(AgentState::Confirming);
         emit toolsPendingConfirmation(calls);
         return QJsonObject{{"status", "pending_confirmation"}, {"tools", calls}};

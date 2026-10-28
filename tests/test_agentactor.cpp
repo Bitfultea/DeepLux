@@ -329,6 +329,36 @@ private slots:
         QCOMPARE(AgentActor::resultSucceeded(skipped), false);
     }
 
+    // B2：批量执行前的逐项门禁（用于中止/工程切换/等待期间降权）
+    void testBatchGateStopsBeforeExecution() {
+        AgentActor actor;
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+
+        QList<QPair<QString, QJsonObject>> tools;
+        tools.append(
+            qMakePair(QString("add_module"), QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "gate_first"}}));
+        tools.append(
+            qMakePair(QString("add_module"), QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "gate_second"}}));
+
+        int gateCalls = 0;
+        const auto gate = [&gateCalls](int index, const QString&, const QJsonObject&) -> QString {
+            ++gateCalls;
+            return index == 1 ? QStringLiteral("PERMISSION_DENIED") : QString();
+        };
+        const QJsonObject result = actor.executeTools(tools, "Gate", gate);
+
+        QCOMPARE(result["status"].toString(), QStringLiteral("partial_failed"));
+        QCOMPARE(result["executed"].toInt(), 1);
+        QCOMPARE(result["failedCode"].toString(), QStringLiteral("PERMISSION_DENIED"));
+        QCOMPARE(gateCalls, 2);
+        QCOMPARE(project->modules().size(), 1);
+        const QJsonObject blocked = result["results"].toArray()[1].toObject()["result"].toObject();
+        QCOMPARE(blocked["blocked"].toBool(), true);
+        QCOMPARE(blocked["code"].toString(), QStringLiteral("PERMISSION_DENIED"));
+        QCOMPARE(AgentActor::resultSucceeded(blocked), false);
+    }
+
     void testExecuteToolsPrevalidationFailsClosedForAllCalls() {
         AgentActor actor;
         Project* project = ProjectManager::instance().newProject();

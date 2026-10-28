@@ -769,6 +769,259 @@ private slots:
         QCOMPARE(responseSpy.count(), 1);
     }
 
+    // B2：Observer 纯只读批次正常执行并续跑（查询能力不被降权破坏）
+    void testObserverReadOnlyBatchExecutesAndContinues() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+        controller.sendUserMessage(QStringLiteral("list plugins"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.content = QStringLiteral("checking");
+        resp.toolCalls.append(QJsonObject{
+            {"id", "read-1"}, {"type", "function"}, {"name", "get_available_plugins"}, {"arguments", QJsonObject()}});
+        m_mock->emitResponse(resp);
+
+        QCOMPARE(controller.state(), AgentController::AgentState::Thinking);
+        QCOMPARE(m_mock->requestCount, 2);
+        bool readOk = false;
+        for (const AgentMessage& message : m_mock->lastCtx.messages) {
+            if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("read-1"))
+                readOk = !message.content.contains(QStringLiteral("\"error\""));
+        }
+        QVERIFY(readOk);
+
+        AgentResponse done;
+        done.success = true;
+        done.content = QStringLiteral("done");
+        m_mock->emitResponse(done);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    }
+
+    // B2：Observer 混合批次逐项判定——只读执行、写入拒绝，且不因含读工具放行写工具
+    void testObserverMixedBatchExecutesReadsAndDeniesWrites() {
+        AgentController& controller = AgentController::instance();
+        ProjectManager::instance().newProject();
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+        controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+        controller.sendUserMessage(QStringLiteral("read and write"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.content = QStringLiteral("working");
+        resp.toolCalls.append(QJsonObject{
+            {"id", "read-1"}, {"type", "function"}, {"name", "get_available_plugins"}, {"arguments", QJsonObject()}});
+        resp.toolCalls.append(QJsonObject{{"id", "write-1"},
+                                          {"type", "function"},
+                                          {"name", "add_module"},
+                                          {"arguments", QJsonObject{{"plugin", "GrabImage"}}}});
+        m_mock->emitResponse(resp);
+
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QCOMPARE(m_mock->requestCount, 1); // 拒绝项结束本轮，不续跑
+        QCOMPARE(project->modules().size(), 0);
+
+        bool readSeen = false;
+        bool writeDenied = false;
+        for (const AgentMessage& message : controller.m_conversationHistory) {
+            if (message.role != QLatin1String("tool"))
+                continue;
+            if (message.toolCallId == QLatin1String("read-1"))
+                readSeen = !message.content.contains(QStringLiteral("PERMISSION_DENIED"));
+            if (message.toolCallId == QLatin1String("write-1"))
+                writeDenied = message.content.contains(QStringLiteral("PERMISSION_DENIED"));
+        }
+        QVERIFY(readSeen);
+        QVERIFY(writeDenied);
+    }
+
+    // B2：确认前切换工程（含同 ID 模块）——旧确认失效，新工程零修改
+    void testConfirmationExpiresOnProjectSwitch() {
+        AgentController& controller = AgentController::instance();
+        Project* first = ProjectManager::instance().newProject();
+        QVERIFY(first != nullptr);
+        ModuleInstance sameId;
+        sameId.id = QStringLiteral("same_id");
+        sameId.moduleId = QStringLiteral("GrabImage");
+        first->addModule(sameId);
+
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("remove it"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.toolCalls.append(QJsonObject{{"id", "remove-old"},
+                                          {"type", "function"},
+                                          {"name", "remove_module"},
+                                          {"arguments", QJsonObject{{"instanceId", "same_id"}}}});
+        m_mock->emitResponse(resp);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+
+        Project* second = ProjectManager::instance().newProject();
+        QVERIFY(second != nullptr);
+        ModuleInstance sameIdInSecond;
+        sameIdInSecond.id = QStringLiteral("same_id");
+        sameIdInSecond.moduleId = QStringLiteral("GrabImage");
+        second->addModule(sameIdInSecond);
+
+        // 工程切换使旧确认立即失效，且不会执行旧批次
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QVERIFY(controller.pendingToolCalls().isEmpty());
+        controller.confirmPendingTools();
+        QCoreApplication::processEvents();
+        QCOMPARE(second->modules().size(), 1);
+
+        bool expired = false;
+        for (const AgentMessage& message : controller.m_conversationHistory) {
+            if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("remove-old"))
+                expired = message.content.contains(QStringLiteral("confirmation_expired"));
+        }
+        QVERIFY(expired);
+    }
+
+    // B2：确认入队后切工程——排队 lambda 复核并拒绝
+    void testQueuedConfirmationRejectedAfterProjectSwitch() {
+        AgentController& controller = AgentController::instance();
+        QVERIFY(ProjectManager::instance().newProject() != nullptr);
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("add"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.toolCalls.append(
+            QJsonObject{{"id", "add-old"},
+                        {"type", "function"},
+                        {"name", "add_module"},
+                        {"arguments", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "must_not_add"}}}});
+        m_mock->emitResponse(resp);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+
+        controller.confirmPendingTools(); // 入队
+        Project* second = ProjectManager::instance().newProject();
+        QVERIFY(second != nullptr);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QCOMPARE(second->modules().size(), 0);
+    }
+
+    // B2：外部参数修改使确认失效，确认不得覆盖外部值
+    void testExternalParamChangeExpiresConfirmation() {
+        AgentController& controller = AgentController::instance();
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        ModuleInstance inst;
+        inst.id = QStringLiteral("mc1");
+        inst.moduleId = QStringLiteral("MeasureCircle");
+        project->addModule(inst);
+
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("set radius"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.toolCalls.append(
+            QJsonObject{{"id", "param-old"},
+                        {"type", "function"},
+                        {"name", "set_param"},
+                        {"arguments", QJsonObject{{"instanceId", "mc1"}, {"key", "initialRadius"}, {"value", 222}}}});
+        m_mock->emitResponse(resp);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+
+        // 用户在界面上改了同一参数
+        project->setModuleParam(QStringLiteral("mc1"), QStringLiteral("initialRadius"), 111);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+
+        controller.confirmPendingTools();
+        QCoreApplication::processEvents();
+        QCOMPARE(project->moduleById(QStringLiteral("mc1"))->params.value("initialRadius"), QJsonValue(111));
+    }
+
+    // B2：目标删除同样使旧确认失效（不得在删除后的工程上执行旧写操作）
+    void testTargetRemovalExpiresConfirmation() {
+        AgentController& controller = AgentController::instance();
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        ModuleInstance inst;
+        inst.id = QStringLiteral("target-1");
+        inst.moduleId = QStringLiteral("GrabImage");
+        project->addModule(inst);
+
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("add another module"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.toolCalls.append(
+            QJsonObject{{"id", "add-after-removal"},
+                        {"type", "function"},
+                        {"name", "add_module"},
+                        {"arguments", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "must_not_add"}}}});
+        m_mock->emitResponse(resp);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+
+        project->removeModule(QStringLiteral("target-1"));
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        controller.confirmPendingTools();
+        QCoreApplication::processEvents();
+        QCOMPARE(project->modules().size(), 0);
+    }
+
+    // B2：Autopilot 下 create_project 成功后保守终止旧批次，让模型读取新工程再规划
+    void testProjectSwitchStopsRemainingBatch() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+        controller.sendUserMessage(QStringLiteral("create and add"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.content = QStringLiteral("working");
+        resp.toolCalls.append(QJsonObject{{"id", "create-1"},
+                                          {"type", "function"},
+                                          {"name", "create_project"},
+                                          {"arguments", QJsonObject{{"name", "BatchSwitch"}}}});
+        resp.toolCalls.append(
+            QJsonObject{{"id", "add-after"},
+                        {"type", "function"},
+                        {"name", "add_module"},
+                        {"arguments", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "stale"}}}});
+        m_mock->emitResponse(resp);
+
+        QCOMPARE(controller.state(), AgentController::AgentState::Thinking);
+        QCOMPARE(m_mock->requestCount, 2); // project_switched 允许重新规划
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+        QCOMPARE(project->modules().size(), 0);
+
+        bool addSkipped = false;
+        for (const AgentMessage& message : controller.m_conversationHistory) {
+            if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("add-after"))
+                addSkipped = message.content.contains(QStringLiteral("skipped_after_failure"));
+        }
+        QVERIFY(addSkipped);
+    }
+
+    // B2：合法确认只执行一次（双击不重复执行）
+    void testConfirmationExecutesOnlyOnce() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("add one"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.toolCalls.append(QJsonObject{{"id", "create-once"},
+                                          {"type", "function"},
+                                          {"name", "create_project"},
+                                          {"arguments", QJsonObject{{"name", "OnlyOnce"}}}});
+        m_mock->emitResponse(resp);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+
+        controller.confirmPendingTools();
+        controller.confirmPendingTools(); // 连点
+        QCoreApplication::processEvents();
+
+        int results = 0;
+        for (const AgentMessage& message : controller.m_conversationHistory) {
+            if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("create-once"))
+                ++results;
+        }
+        QCOMPARE(results, 1);
+        QCOMPARE(m_mock->requestCount, 2); // 执行后正常续跑一次
+    }
+
     // ---------- 第一迭代：排队执行 / 中止 / 视觉降级 ----------
 
     void testConfirmDispatchesQueuedExactlyOnce() {
