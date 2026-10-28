@@ -671,7 +671,7 @@ ctest（全量）           → 84/84 Passed，0 skipped/disabled，exit 0
 - 记录内容：`ts/category/httpStatus/attempts/endpoint(去 query)/model/contextLimitSuspected/visionDowngradeHint/request(逐条 role+chars+head≤2KB+图片数量)/response(head≤64KB)/detail(≤2KB)/redactionApplied`。
 - 脱敏规则覆盖常见 `Authorization`、API Key、access/refresh/id token、client secret、密码赋值、Bearer 和图片数据；落盘前另有模式自检。Auth 类别**不落盘**。这些模式不能识别任意自由文本中的凭据、客户数据或业务机密，不应视为完全脱敏。
 
-**生产隐私注意**：审计日志和失败请求日志默认开启。前者可包含工具参数，后者在 BadRequest/Malformed 时可包含每条消息的前 2048 字符及错误详情；即使匹配规则已脱敏，普通业务内容仍可能留在磁盘 14 天。敏感机台应先评估目录访问权限和保留策略；不需要时可在现有 `<appData>/config/config.json` 的 `agent` 对象中分别设置 `auditEnabled: false`、`failedRequestLogEnabled: false`，并重启应用。修改时保留该对象的其他配置。
+**生产隐私注意**：审计日志默认开启，失败请求日志对未显式配置的用户默认**关闭**（集成收口 B5；显式已有配置值继续尊重）。审计可包含工具参数；失败请求日志开启时，BadRequest/Malformed 可包含每条消息的前 2048 字符及错误详情，即使匹配规则已脱敏，普通业务内容仍可能留在磁盘 14 天。敏感机台应先评估目录访问权限和保留策略；可在 Agent 设置页或 `<appData>/config/config.json` 的 `agent` 对象中分别设置 `auditEnabled`、`failedRequestLogEnabled`，并重启应用。关闭只停止写入新正文，不自动删除已有文件。修改时保留该对象的其他配置。详见 [agent-integration-hardening-plan.md](agent-integration-hardening-plan.md) B5。
 
 ### 12.8 第三迭代入口（建议顺序）
 
@@ -682,4 +682,4 @@ ctest（全量）           → 84/84 Passed，0 skipped/disabled，exit 0
 5. **可观测增强**：审计异步队列/批量刷盘、失败报文与审计的配额/导出面板、流看门狗与 MCP 异常注入测试（N2~N4）。
 6. **MCP 依赖拆分与扩展**：抽 `deeplux_agent_api` 轻量库（避免拉起 Widgets/OpenCV）；如需支持 MCP 流式/分页再扩展。
 7. **对话质量继续**：上下文摘要/记忆（替代纯裁剪）、reasoning 回传策略按 provider 自适应（当前默认 none + 手动开关）。
-8. **隐私与现场验收**：考虑将失败请求正文落盘改为用户显式启用，并提供设置页开关；在真实供应商、Windows 和带 CUDA 的 Linux 构建上分别验收，不能用离线 stub 或另一平台结果替代。
+8. **隐私与现场验收**：失败请求正文默认关闭与设置页开关已并入集成收口 B5；真实供应商、Windows 和带 CUDA 的 Linux 构建的现场验收仍未完成，不能用离线 stub 或另一平台结果替代。

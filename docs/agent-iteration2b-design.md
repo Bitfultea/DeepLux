@@ -356,9 +356,12 @@ public:
 ### 5.2 进程与 IO 协议
 
 - 运行模型：由 MCP 客户端（Claude Desktop / Cursor 等）以 stdio 启动；`stdin` 读请求、`stdout` 写响应；**stderr 只用于日志**（严禁污染 stdout）。
-- 帧格式：一行一个 JSON-RPC 2.0 对象（`\n` 结尾，UTF-8）；忽略空行；单行上限 **4 MiB**，超限回 `-32700` 并继续（不崩溃）。
-- 并发：单线程事件循环；同一时刻最多一个在途到 AgentBridge 的请求队列（见 §5.5）；支持请求 id 为 string/number/null。
-- 退出：stdin EOF → `BridgeClient` 断开 → 进程退出码 0；SIGINT/终止 → 立即退出（不做半写）。
+- 帧格式：一行一个 JSON-RPC 2.0 对象（`\n` 结尾，UTF-8）；忽略空行；单行上限 **4 MiB**，超限回 `-32700` 并**丢弃到下一个换行**，下一帧仍可解析（不崩溃）。
+- 并发（集成收口 B4 修订）：输入侧必须持续可接收；到 AgentBridge 的业务仍**单请求在途**。stdin 读取使用独立读取线程 + 有界增量分帧（Windows 管道与 Linux 均适用），主线程事件循环处理取消与后续请求。
+- 队列（B0 冻结常量）：待处理 `tools/call` 最多 **8** 条、累计参数序列化字节最多 **8 MiB**；超限立即以 JSON-RPC error `-32009` 拒绝，不建立 IPC 连接、不静默丢弃。
+- 取消：`notifications/cancelled` 按 `params.requestId` 只抑制**本地迟到响应**，不声称能中止 GUI 内已开始的操作；不得误取消下一个请求。未知/重复/过期 id 只记 stderr，不影响其他请求。
+- 退出：stdin EOF（含半帧）→ 丢弃未完成输入 → `BridgeClient` 断开 → 进程退出码 0；SIGINT/终止 → 立即退出（不做半写）。
+- `id` 区分：无 `id` 字段是通知（不回包）；显式 `"id":null` 仍按请求处理并回 `id:null`（保持既有兼容承诺）。
 - 生命周期：**不常驻、不自启 GUI、不重试启动 GUI**。
 
 ### 5.3 方法集（JSON-RPC 2.0）
@@ -415,7 +418,8 @@ public:
 | 超过 `agent/mcpBridgeTimeoutMs` | JSON-RPC error `-32002`（见 §5.6） |
 
 - 每行响应必须匹配在途请求 id；迟到/未知 id 丢弃并 `qWarning`。
-- 一个进程内**串行**转发（同一时刻仅一个在途请求）；`notifications/cancelled` 只本地丢弃，不额外发取消帧（v1.0 无取消语义）。
+- 一个进程内**串行**转发（同一时刻仅一个在途请求）；`notifications/cancelled` 只本地丢弃迟到响应，不额外发取消帧（v1.0 无取消语义）。
+- 取消记录必须保存"当前请求 id + 已取消 id 集合"；当前请求完成/超时后即失效，不能掩盖下一请求。被取消请求不输出结果行（若实现选择回 `-32800 Request cancelled`，必须作为协议变更单独记录；本轮采用静默抑制）。
 - 不使用 `query`/`subscribe`（MCP 本轮只需 tool 能力）。
 
 ### 5.6 错误码表（必须逐条实现）
@@ -431,6 +435,7 @@ public:
 | `-32002` | Bridge timeout | 连接成功但 `agent/mcpBridgeTimeoutMs` 内无匹配响应 |
 | `-32003` | Bridge auth failed | 令牌缺失/错误/认证超时 |
 | `-32004` | Permission denied | **保留码**：仅当未来放开 MCP 写工具时使用；本轮写工具按 §6 返回工具级 `isError`（见下） |
+| `-32009` | Queue full | 待处理 `tools/call` 超过 8 条或累计参数超过 8 MiB；请求未被转发 |
 
 - **写工具拒绝的形状**（与验收一致）：`tools/call` 返回成功 JSON-RPC 结果，但 `isError=true`、`content[0].text = {"error":"Permission denied: MCP calls are read-only","code":"permission_denied","hint":"Write tools must be executed inside the DeepLux GUI where the user can confirm."}`；**不得**发 JSON-RPC error（保持 MCP 工具错误语义）。
 - `-32004` 预留给"未来允许写工具但需要 GUI 确认"的场景，本轮不返回。
@@ -448,7 +453,7 @@ public:
 
 - stdout 只输出协议帧；所有诊断走 stderr（`qInstallMessageHandler` 或直接 `fprintf(stderr, ...)`），**不得**输出令牌/API Key/图片。
 - 不实现任意文件读写、shell、HTTP；除本机 `QLocalSocket` 外无网络出口。
-- 单帧/队列上限：入站 4 MiB；在途队列长度 1（串行）。
+- 单帧/队列上限：入站帧 4 MiB；待处理 `tools/call` 8 条且累计参数 8 MiB；到 AgentBridge 在途请求 1（串行）。超限拒绝而不是无限排队。
 - 连接断开（GUI 退出）→ 在途请求返回 `-32001`；进程不退出（继续等下一个请求）。
 
 ### 5.9 测试（`tests/test_mcpbridge.cpp`，t20 新建，链接 `deeplux_mcp`）
@@ -468,6 +473,11 @@ public:
 11. `testParseErrorAndMethodNotFound`：坏 JSON → `-32700`；未知方法 → `-32601`。
 12. `testSocketCandidatesMatchBridge`：启动真实 `AgentBridge` 后桥的候选路径包含 `serverName()`（防路径算法漂移）。
 13. `testStdoutPurity`：处理一条请求期间 stdout 只出现 1 行合法 JSON-RPC（日志未污染）。
+14. `testCancelWhileBridgeHangs`（集成收口 B4）：假桥挂起时发送取消 → 在假桥释放前已消费取消；释放后原结果不输出；随后 ping 正常。用屏障/信号证明消费顺序，不用固定 sleep 碰撞窗口。
+15. `testCancelledDoesNotAffectNextRequest`：未知/重复/过期取消不影响其他 id；取消后的下一请求正常返回。
+16. `testFramingBoundsAndRecovery`：超长无换行输入缓冲有界并返回 `-32700`；错误帧后合法 `ping` 正常；EOF 半帧安全退出；`id:null` 回包、无 `id` 通知不回包。
+17. `testQueueBounded`：注入较小限额，队列满返回 `-32009`，不建立 IPC 连接。
+18. `testRealBridgeSubprocess`：启动真实 `deeplux-mcp-bridge` 子进程（非只调用 `processLine`），验证 initialize/ping/只读转发/写拒绝/取消；Linux 与 Windows 分别执行。取消用屏障证明顺序，测试超时只作防挂死保护。
 
 ---
 
