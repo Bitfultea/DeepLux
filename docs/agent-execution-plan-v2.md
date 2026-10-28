@@ -165,5 +165,5 @@ t20 隔离目录：build-win-mcp 全量 619 目标 exit 0；test_mcpbridge 1/1
 ### 8.4 收尾状态
 
 - ✅ 文档：本文档状态更新、roadmap §12 交付记录、两份设计文档（iteration2/2b）已入库（`docs/`）。
-- ✅ 代码/测试：工作区 25 个修改 + 15 个新增（含 `src/app/mcp/**`、`SseStreamParser`、`AgentAuditLog`、`FailedRequestLog` 与 4 个新测试）；**未提交 git**（`HEAD=af56b5b`）。
-- ⏳ 下一步（队长）：`git add src tests docs`（排除 `.agent-teams/`、`build*`）→ 单个 `feat:` 提交 → `git push origin Windows_work` → 归档团队；第三迭代入口见 roadmap §12.8。
+- ✅ 代码/测试已在 `Windows_work` 提交为 `860523b`；该提交以 `af56b5b` 为基线，Linux 集成时还需保留 `7e9ee05` 的客户端生命周期修复。
+- 后续工作见 roadmap §12.8；`.agent-teams/` 和 `build*` 不属于交付物。

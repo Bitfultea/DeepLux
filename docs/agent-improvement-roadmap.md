@@ -465,8 +465,8 @@ ctest（全量）           → 100% passed, 0 failed out of 80（78.79 s），E
 ## 12. 第二迭代交付记录（2026-10-28）
 
 - 交付日期：**2026-10-28**（实现 2026-10-27 ~ 28；含 t23 修复、t24 复审两个补轮）
-- 质量门：t15 2A 审查 pass → t22 全量审查 **pass（无 findings）** → t21 复验全绿（清 obj 全量重建） → 本集成（t16）
-- 基线：`af56b5b`（第一迭代交付提交）；工作区**未提交 git**（由队长在集成后统一提交推送）
+- 质量门：t15 2A 审查 needs_revision → t23 修复、t24 复审 pass；t22 全量审查 pass，t21 清 obj 全量复验通过。
+- 基线：`af56b5b`（第一迭代交付提交）；第二迭代已在 `Windows_work` 提交为 `860523b`。
 - 设计依据：[agent-iteration2-design.md](agent-iteration2-design.md)（2A）、[agent-iteration2b-design.md](agent-iteration2b-design.md)（2B/2C/2D）、[agent-execution-plan-v2.md](agent-execution-plan-v2.md)（任务清单）
 
 ### 12.1 交付项（对照执行计划 2A/2B/2C/2D）
@@ -569,6 +569,15 @@ ctest（全量）           → 84/84 Passed，0 skipped/disabled，exit 0
 - 验收条目：t12 9 + t13 6 + t18 7 + t19 10 + t20 7 + t23 6 = **45 条全部 passed**；t22 审查 pass、t24 复审 pass。
 - 插件 ABI 未改动 ⇒ 无需 `sync-plugins`；格式门禁：各任务累计对 19+8 个改动 C++ 文件执行 `clang-format --dry-run --Werror`，0 violations。
 
+**Linux 集成复验（2026-10-28）**
+
+- 将 `860523b` 在隔离工作树 rebase 到含 `7e9ee05` 的本地基线，确认 `QPointer<ILLMClient>` 和析构回归仍存在。
+- 首轮全量测试在 `AgentAuditLog` 遍历临时 JSON 对象时 SIGSEGV；改为持有对象副本后，审计用例通过。
+- 补齐多工具结果配对、聊天拒绝/排队中止的结果、确认前权限降级拒绝，以及 Bridge 拒绝不污染聊天历史的回归；修复对应问题。
+- 扩展常见 access/refresh/id token、client secret、带空格的密码及小写 bearer 脱敏；请求终端日志不再打印服务响应正文或 URL 的用户信息/查询参数/片段。合成凭据测试均先失败后通过；脱敏仍不能识别任意业务文本，见 §12.7。
+- 系统 Qt 5.15.3、OpenCV 4.8.1、GCC 11.4、原生 SAM ONNX Runtime CPU；插件部署在临时 HOME，完整构建成功，全量 CTest **86/86 通过（49.05s）**，含 Agent、MCP、RunEngine、SAM CPU 和 GUI 截图自校验。
+- 未复验修复后的 Windows 构建、CUDA 专项、真实 LLM 服务或真实工业数据；历史 Windows 84/84 不等于本次跨平台验收。
+
 ### 12.5 遗留状态更新（对照 §11.6 L1~L10）
 
 | ID | 第一迭代状态 | 第二迭代结果 |
@@ -578,7 +587,7 @@ ctest（全量）           → 84/84 Passed，0 skipped/disabled，exit 0
 | L3 | 视觉启发式未实现 | ✅ **关闭**：`heuristicSupportsVision` 纯函数 + 仅配置缺省时使用（7 模型单测） |
 | L4 | create_project 死分支 | ⏸ 保持现状（防御性代码，`DEEPLUX_TEST_VISIBILITY` 覆盖） |
 | L5 | `m_nodeOutputs` 无锁 | ✅ **代码层关闭**：9 处写统一 `m_lifecycleMutex` + 快照锁内深拷贝 + 并发用例；**TSan 门禁仍延后**（第三迭代） |
-| L6 | 未提交 git | ⏳ 待队长在 t16 后统一提交/推送 |
+| L6 | 未提交 git | ✅ Windows 交付提交为 `860523b`；Linux 集成状态以本地实际提交为准 |
 | L7 | 构建头依赖追踪损坏 | ⏸ 保留纪律（改 `.h` 先删 obj）；CI 根治另立 |
 | L8 | 外部 wait 阻塞 | ✅ **关闭**：`run_flow` 强制 `wait=false`、`tune` 强制 `runMode=node`（`agent/bridgeForceAsyncWaitTools` 可回滚） |
 | L9 | 单轮无全局 deadline | ✅ **关闭**：`agent/turnDeadlineMs` 默认 600000 clamp[10000,3600000] + 三检查点 + 统一收口 |
@@ -660,7 +669,9 @@ ctest（全量）           → 84/84 Passed，0 skipped/disabled，exit 0
 
 - 位置：`~/.deeplux/logs/llm-failed-YYYYMMDD.json`，结构 `{"v":1,"records":[...]}`；单条 ≤256KiB、单日 ≤1MiB、保留 14 天；`QSaveFile` 原子重写。
 - 记录内容：`ts/category/httpStatus/attempts/endpoint(去 query)/model/contextLimitSuspected/visionDowngradeHint/request(逐条 role+chars+head≤2KB+图片数量)/response(head≤64KB)/detail(≤2KB)/redactionApplied`。
-- 脱敏硬规则：`Authorization`/API Key 永不写入；`Bearer <token>` → `Bearer ***`；`data:image/...;base64,...` → `[omitted]`；无空格且 ≥4096 的疑似 base64 串 → `[omitted-base64]`；落盘前自检命中任一规则则整条丢弃。Auth 类别**不落盘**（避免密钥回显）。
+- 脱敏规则覆盖常见 `Authorization`、API Key、access/refresh/id token、client secret、密码赋值、Bearer 和图片数据；落盘前另有模式自检。Auth 类别**不落盘**。这些模式不能识别任意自由文本中的凭据、客户数据或业务机密，不应视为完全脱敏。
+
+**生产隐私注意**：审计日志和失败请求日志默认开启。前者可包含工具参数，后者在 BadRequest/Malformed 时可包含每条消息的前 2048 字符及错误详情；即使匹配规则已脱敏，普通业务内容仍可能留在磁盘 14 天。敏感机台应先评估目录访问权限和保留策略；不需要时可在现有 `<appData>/config/config.json` 的 `agent` 对象中分别设置 `auditEnabled: false`、`failedRequestLogEnabled: false`，并重启应用。修改时保留该对象的其他配置。
 
 ### 12.8 第三迭代入口（建议顺序）
 
@@ -671,3 +682,4 @@ ctest（全量）           → 84/84 Passed，0 skipped/disabled，exit 0
 5. **可观测增强**：审计异步队列/批量刷盘、失败报文与审计的配额/导出面板、流看门狗与 MCP 异常注入测试（N2~N4）。
 6. **MCP 依赖拆分与扩展**：抽 `deeplux_agent_api` 轻量库（避免拉起 Widgets/OpenCV）；如需支持 MCP 流式/分页再扩展。
 7. **对话质量继续**：上下文摘要/记忆（替代纯裁剪）、reasoning 回传策略按 provider 自适应（当前默认 none + 手动开关）。
+8. **隐私与现场验收**：考虑将失败请求正文落盘改为用户显式启用，并提供设置页开关；在真实供应商、Windows 和带 CUDA 的 Linux 构建上分别验收，不能用离线 stub 或另一平台结果替代。

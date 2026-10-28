@@ -26,13 +26,14 @@ QString applyRedaction(const QString& input, QStringList* applied) {
     const bool hadImage = value.contains(QStringLiteral("data:image/"));
     value.replace(QRegularExpression(QStringLiteral("data:image/[^;]+;base64,[A-Za-z0-9+/=\\s]+")),
                   QStringLiteral("data:image/…;base64,[omitted]"));
-    const bool hadBearer = value.contains(QRegularExpression(QStringLiteral("Bearer\\s+[A-Za-z0-9._\\-]{4,}")));
-    value.replace(QRegularExpression(QStringLiteral("Bearer\\s+[A-Za-z0-9._\\-]+")), QStringLiteral("Bearer ***"));
-    const bool hadKey = value.contains(
-        QRegularExpression(QStringLiteral("(?i)\\b(authorization|api[_-]?key|token|secret|password)\\b\"?\\s*[:=]")));
-    value.replace(QRegularExpression(QStringLiteral("(?i)\\b(authorization|api[_-]?key|token|secret|password)\\b\"?"
-                                                    "\\s*[:=]\\s*\"?[^\",\\s}]+")),
-                  QStringLiteral("\\1: \"***\""));
+    const QRegularExpression bearer(QStringLiteral("Bearer\\s+[A-Za-z0-9._\\-]+"),
+                                    QRegularExpression::CaseInsensitiveOption);
+    const bool hadBearer = value.contains(bearer);
+    value.replace(bearer, QStringLiteral("Bearer ***"));
+    const QRegularExpression assignment(QStringLiteral(
+        R"rx((?i)\b(authorization|api[_-]?key|(?:access|refresh|id)[_-]?token|client[_-]?secret|token|secret|password)\b"?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,\s}]+))rx"));
+    const bool hadKey = value.contains(assignment);
+    value.replace(assignment, QStringLiteral("\\1: \"***\""));
     const bool hadLongBase64 = value.contains(QRegularExpression(QStringLiteral("[A-Za-z0-9+/=]{4096,}")));
     value.replace(QRegularExpression(QStringLiteral("[A-Za-z0-9+/=]{4096,}")), QStringLiteral("[omitted-base64]"));
     if (applied) {
@@ -49,9 +50,11 @@ QString applyRedaction(const QString& input, QStringList* applied) {
 bool containsUnredactedSecret(const QString& text) {
     // 值长度 >=4 且不是 *** 才视为未脱敏（避免把 `apiKey: \"***\"` 自身当成泄漏）
     static const QRegularExpression keyPattern(
-        QStringLiteral("(?i)\\b(authorization|api[_-]?key|token|secret|password)\\b\"?\\s*[:=]\\s*"
+        QStringLiteral("(?i)\\b(authorization|api[_-]?key|(?:access|refresh|id)[_-]?token|client[_-]?secret|token|"
+                       "secret|password)\\b\"?\\s*[:=]\\s*"
                        "(?!\\\\?\"?\\*\\*\\*)[^\"\\s,}]{4,}"));
-    static const QRegularExpression bearerPattern(QStringLiteral("Bearer\\s+[A-Za-z0-9._\\-]{4,}"));
+    static const QRegularExpression bearerPattern(QStringLiteral("Bearer\\s+[A-Za-z0-9._\\-]{4,}"),
+                                                  QRegularExpression::CaseInsensitiveOption);
     static const QRegularExpression imagePattern(QStringLiteral("data:image/[^;]+;base64,[A-Za-z0-9+/=\\s]{16,}"));
     static const QRegularExpression longBase64Pattern(QStringLiteral("[A-Za-z0-9+/=]{4096,}"));
     return keyPattern.match(text).hasMatch() || bearerPattern.match(text).hasMatch() ||

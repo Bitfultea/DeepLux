@@ -342,7 +342,8 @@ void OpenAILLMClient::postRequestBody(bool streaming) {
         request.setTransferTimeout(30000); // 非流式保持第一迭代行为
     }
 
-    qDebug() << "OpenAILLMClient: Sending request to" << m_endpoint << "model=" << m_model
+    qDebug() << "OpenAILLMClient: Sending request to"
+             << url.toString(QUrl::RemoveUserInfo | QUrl::RemoveQuery | QUrl::RemoveFragment) << "model=" << m_model
              << "bytes=" << m_lastBody.size() << "tools=" << m_lastTools.size() << "stream=" << streaming;
 
     m_currentReply = m_networkManager->post(request, m_lastBody);
@@ -537,7 +538,7 @@ void OpenAILLMClient::handleFailure(const LLMErrorInfo& info) {
     }
 
     qWarning() << "[OpenAILLMClient] request failed" << llmErrorCategoryName(info.category)
-               << "httpStatus=" << info.httpStatus << "attempts=" << failure.attempts << info.detail;
+               << "httpStatus=" << info.httpStatus << "attempts=" << failure.attempts;
     // R5：流式请求在首 delta 前的最终失败必须终止流，避免后续 readyRead/finished
     // 再产出 responseReceived（首个事件即顶层 error 的场景）。
     if (m_requestStreaming) {
@@ -654,8 +655,7 @@ void OpenAILLMClient::handleStreamEvent(const SseStreamParser::Event& event) {
     if (!doc.isObject()) {
         if (!m_sawDelta) {
             ++m_streamParseErrors;
-            qWarning() << "[OpenAILLMClient] malformed stream event (no delta yet), count=" << m_streamParseErrors
-                       << "data=" << data.left(200);
+            qWarning() << "[OpenAILLMClient] malformed stream event (no delta yet), count=" << m_streamParseErrors;
             if (m_streamParseErrors >= 3)
                 tryStreamFallback(QStringLiteral("invalid stream data"));
         } else {
@@ -840,7 +840,8 @@ void OpenAILLMClient::failStream(const LLMErrorInfo& info) {
 
     LLMErrorInfo failure = info;
     failure.attempts = m_retryAttempt + 1;
-    qWarning() << "[OpenAILLMClient] stream failed after delta:" << llmErrorCategoryName(info.category) << info.detail;
+    qWarning() << "[OpenAILLMClient] stream failed after delta:" << llmErrorCategoryName(info.category)
+               << "httpStatus=" << info.httpStatus;
     recordFailedRequestIfNeeded(failure);
     emit streamFailed();
     emit errorOccurredClassified(failure);

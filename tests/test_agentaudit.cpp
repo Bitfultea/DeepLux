@@ -327,6 +327,24 @@ private slots:
                  QStringLiteral("***"));
     }
 
+    void testAuditRedactsCredentialVariants() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        AgentAuditLog& log = AgentAuditLog::instance();
+        log.setEnabledForTest(true);
+        log.setLogDirForTest(temp.path());
+        log.setNowForTest(QDateTime(QDate(2026, 10, 27), QTime(12, 0, 0)));
+        log.append(makeEntry(QStringLiteral("{\"nested\":{\"access_token\":\"audit-access-123\","
+                                            "\"clientSecret\":\"audit-client-456\"},"
+                                            "\"text\":\"password='audit phrase secret'\"}")));
+        log.flush();
+        const QByteArray text = readAll(log.currentFilePath());
+        QVERIFY(!text.isEmpty());
+        QVERIFY(!text.contains("audit-access-123"));
+        QVERIFY(!text.contains("audit-client-456"));
+        QVERIFY(!text.contains("audit phrase secret"));
+    }
+
     void testAuditRecordSizeCap() {
         QTemporaryDir temp;
         QVERIFY(temp.isValid());
@@ -427,8 +445,20 @@ private slots:
         HttpStub stub("HTTP/1.1 401 Unauthorized", "application/json",
                       "{\"error\":{\"message\":\"invalid api key sk-auth-should-not-persist\"}}");
         QVERIFY(stub.listen());
+#ifndef QT_NO_DEBUG_OUTPUT
+        QTest::ignoreMessage(
+            QtDebugMsg,
+            QRegularExpression(QStringLiteral(
+                "^OpenAILLMClient: Sending request to \"http://127\\.0\\.0\\.1:[0-9]+/v1/chat/completions\" "
+                "model= \"gpt-4o\" bytes= [0-9]+ tools= 0 stream= true$")));
+#endif
+#ifndef QT_NO_WARNING_OUTPUT
+        QTest::ignoreMessage(QtWarningMsg,
+                             QRegularExpression(QStringLiteral(
+                                 "^\\[OpenAILLMClient\\] request failed \"Auth\" httpStatus= 401 attempts= 1$")));
+#endif
         OpenAILLMClient client;
-        client.setEndpoint(stub.endpoint());
+        client.setEndpoint(stub.endpoint() + QStringLiteral("?api_key=sk-url-should-not-persist"));
         bool errored = false;
         connect(&client, &ILLMClient::errorOccurred, this, [&errored](const QString&) { errored = true; });
         client.sendRequest(simpleConversation(), {});
@@ -504,6 +534,30 @@ private slots:
         QVERIFY(applied.contains(QStringLiteral("authorization")));
         QVERIFY(applied.contains(QStringLiteral("apiKey")));
         QVERIFY(applied.contains(QStringLiteral("imageBase64")));
+    }
+
+    void testFailedRequestRedactsCredentialVariants() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        FailedRequestLog& log = FailedRequestLog::instance();
+        log.setEnabledForTest(true);
+        log.setLogDirForTest(temp.path());
+        log.setNowForTest(QDateTime(QDate(2026, 10, 27), QTime(12, 0, 0)));
+        LLMErrorInfo info;
+        info.category = LLMErrorCategory::BadRequest;
+        info.httpStatus = 400;
+        info.detail = QStringLiteral("refresh_token=failed-refresh-123 password='failed phrase secret' "
+                                     "bearer failed-bearer-789");
+        AgentMessage user;
+        user.role = QStringLiteral("user");
+        user.content = QStringLiteral("access_token=failed-access-456");
+        log.record(info, QByteArray(), QStringLiteral("https://example.invalid"), QStringLiteral("model"), {user});
+        const QByteArray text = readAll(log.currentFilePath());
+        QVERIFY(!text.isEmpty());
+        QVERIFY(!text.contains("failed-refresh-123"));
+        QVERIFY(!text.contains("failed-access-456"));
+        QVERIFY(!text.contains("failed phrase secret"));
+        QVERIFY(!text.contains("failed-bearer-789"));
     }
 
     void testSizeCapsAndDailyCap() {

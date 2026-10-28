@@ -376,6 +376,116 @@ private slots:
         QVERIFY(AgentController::instance().pendingToolCalls().isEmpty());
     }
 
+    void testMultipleToolResultsRemainPairedInNextRequest() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+        controller.sendUserMessage(QStringLiteral("Inspect workflow"));
+        AgentResponse response;
+        response.success = true;
+        response.toolCalls =
+            QJsonArray{QJsonObject{{"id", "call-a"}, {"type", "function"}, {"name", "get_available_plugins"}},
+                       QJsonObject{{"id", "call-b"}, {"type", "function"}, {"name", "get_available_plugins"}}};
+        m_mock->emitResponse(response);
+        QTRY_COMPARE(m_mock->requestCount, 2);
+        const QJsonArray messages = m_mock->lastCtx.toOpenAIMessages();
+        int assistantIndex = -1;
+        for (int i = 0; i < messages.size(); ++i) {
+            if (messages.at(i).toObject().value("tool_calls").toArray().size() == 2)
+                assistantIndex = i;
+        }
+        QVERIFY(assistantIndex >= 0);
+        QVERIFY(assistantIndex + 2 < messages.size());
+        QCOMPARE(messages.at(assistantIndex + 1).toObject().value("tool_call_id").toString(), QStringLiteral("call-a"));
+        QCOMPARE(messages.at(assistantIndex + 2).toObject().value("tool_call_id").toString(), QStringLiteral("call-b"));
+        QCOMPARE(messages.at(assistantIndex + 2).toObject().value("role").toString(), QStringLiteral("tool"));
+    }
+
+    void testRejectedChatToolsKeepResultsInNextRequest() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("Modify workflow"));
+        AgentResponse response;
+        response.success = true;
+        response.toolCalls =
+            QJsonArray{QJsonObject{{"id", "reject-a"}, {"type", "function"}, {"name", "add_module"}},
+                       QJsonObject{{"id", "reject-b"}, {"type", "function"}, {"name", "remove_module"}}};
+        m_mock->emitResponse(response);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+        controller.rejectPendingTools();
+        controller.sendUserMessage(QStringLiteral("Continue"));
+        const QJsonArray messages = m_mock->lastCtx.toOpenAIMessages();
+        int assistantIndex = -1;
+        for (int i = 0; i < messages.size(); ++i)
+            if (messages.at(i).toObject().value("tool_calls").toArray().size() == 2)
+                assistantIndex = i;
+        QVERIFY(assistantIndex >= 0);
+        QCOMPARE(messages.at(assistantIndex + 1).toObject().value("tool_call_id").toString(),
+                 QStringLiteral("reject-a"));
+        QCOMPARE(messages.at(assistantIndex + 2).toObject().value("tool_call_id").toString(),
+                 QStringLiteral("reject-b"));
+        QVERIFY(messages.at(assistantIndex + 1).toObject().value("content").toString().contains("USER_REJECTED"));
+    }
+
+    void testBridgeRejectionDoesNotCreateToolHistory() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        const int before = controller.conversationHistorySize();
+        const QJsonObject result = controller.handleToolCall(QStringLiteral("add_module"), {{"plugin", "GrabImage"}});
+        QCOMPARE(result.value("status").toString(), QStringLiteral("pending_confirmation"));
+        controller.rejectPendingTools();
+        QCOMPARE(controller.conversationHistorySize(), before);
+    }
+
+    void testAbortQueuedConfirmationKeepsToolResult() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("Modify workflow"));
+        AgentResponse response;
+        response.success = true;
+        response.toolCalls = QJsonArray{QJsonObject{{"id", "cancel-a"}, {"type", "function"}, {"name", "add_module"}}};
+        m_mock->emitResponse(response);
+        controller.confirmPendingTools();
+        controller.abortCurrentTurn();
+        QCoreApplication::processEvents();
+        controller.sendUserMessage(QStringLiteral("Continue"));
+        bool found = false;
+        for (const QJsonValue& value : m_mock->lastCtx.toOpenAIMessages()) {
+            const QJsonObject message = value.toObject();
+            if (message.value("tool_call_id").toString() == QLatin1String("cancel-a"))
+                found = message.value("content").toString().contains("USER_CANCELLED");
+        }
+        QVERIFY(found);
+    }
+
+    void testPermissionDowngradeBeforeConfirmationDeniesExecution() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("Create project"));
+        AgentResponse response;
+        response.success = true;
+        response.toolCalls = QJsonArray{QJsonObject{{"id", "denied-a"},
+                                                    {"type", "function"},
+                                                    {"name", "create_project"},
+                                                    {"arguments", QJsonObject{{"name", "MustNotCreate"}}}}};
+        m_mock->emitResponse(response);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+        QSignalSpy actions(&controller, &AgentController::agentActionCompleted);
+        controller.confirmPendingTools();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+        QCoreApplication::processEvents();
+        QCOMPARE(actions.count(), 0);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        controller.sendUserMessage(QStringLiteral("Continue"));
+        const QJsonArray messages = m_mock->lastCtx.toOpenAIMessages();
+        bool found = false;
+        for (const QJsonValue& value : messages) {
+            const QJsonObject message = value.toObject();
+            if (message.value("tool_call_id").toString() == QLatin1String("denied-a"))
+                found = message.value("content").toString().contains("PERMISSION_DENIED");
+        }
+        QVERIFY(found);
+    }
+
     // ---------- 并发防护 ----------
 
     void testBusyStateRejectsNewMessage() {
