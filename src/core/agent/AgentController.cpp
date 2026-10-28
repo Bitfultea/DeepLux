@@ -531,10 +531,7 @@ void AgentController::sendUserMessage(const QString& message) {
     m_visionRetryDone = false;
     m_suppressNextLlmError = false;
     m_lastErrorCategory.clear(); // R6：每轮开始清空，避免 category 串用旧错误
-    AgentConversation ctx;
-    ctx.messages = m_conversationHistory;
-    ctx.systemPrompt = buildContext();
-    m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
+    sendPreparedContext();
 }
 
 void AgentController::sendUserMessageWithImages(const QString& message, const QList<QPixmap>& images) {
@@ -600,10 +597,7 @@ void AgentController::sendUserMessageWithImages(const QString& message, const QL
     m_visionRetryDone = false;
     m_suppressNextLlmError = false;
     m_lastErrorCategory.clear(); // R6：每轮开始清空，避免 category 串用旧错误
-    AgentConversation ctx;
-    ctx.messages = m_conversationHistory;
-    ctx.systemPrompt = buildContext();
-    m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
+    sendPreparedContext();
 }
 
 // ========== 工程会话身份 / 确认有效期（B2） ==========
@@ -1049,10 +1043,7 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
         return;
     }
     transitionTo(AgentState::Thinking);
-    AgentConversation ctx;
-    ctx.messages = m_conversationHistory;
-    ctx.systemPrompt = buildContext();
-    m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
+    sendPreparedContext();
 }
 
 // ========== Helpers ==========
@@ -1140,6 +1131,7 @@ void AgentController::attachToolImages(const QJsonArray& results) {
 
     AgentMessage message;
     message.role = QStringLiteral("user");
+    message.internalAutoInjected = true; // 属于原用户任务，不产生新的任务边界
     if (visionAvailable && !attachments.isEmpty()) {
         QStringList lines;
         for (const QString& line : imageLines)
@@ -1247,11 +1239,11 @@ bool AgentController::echoesReasoning() const {
            QStringLiteral("none");
 }
 
-qint64 AgentController::estimateHistoryTokens() const {
+qint64 AgentController::estimateTokensFor(const QList<AgentMessage>& messages, const QString& systemPrompt,
+                                          bool countReasoning) const {
     // 每字符 ≈0.3 token，每消息 +20；reasoning 仅在回传时计入；图片按字节估算
-    qint64 estimated = static_cast<qint64>(m_systemPrompt.length()) * 3 / 10;
-    const bool countReasoning = echoesReasoning();
-    for (const AgentMessage& message : m_conversationHistory) {
+    qint64 estimated = static_cast<qint64>(systemPrompt.length()) * 3 / 10;
+    for (const AgentMessage& message : messages) {
         estimated += static_cast<qint64>(message.content.length()) * 3 / 10 + 20;
         if (!message.toolCalls.isEmpty()) {
             // tool_calls 的参数同样回传模型，必须计入预算
@@ -1264,6 +1256,11 @@ qint64 AgentController::estimateHistoryTokens() const {
             estimated += (image.data.size() + 2) / 3;
     }
     return estimated;
+}
+
+qint64 AgentController::estimateHistoryTokens() {
+    // 真实发送的系统提示是 buildContext()（包含 m_systemPrompt 与当前工程摘要）
+    return estimateTokensFor(m_conversationHistory, buildContext(), echoesReasoning());
 }
 
 void AgentController::repairOrphanToolGroups() {
@@ -1327,25 +1324,87 @@ void AgentController::repairOrphanToolGroups() {
     m_conversationHistory = repaired;
 }
 
-bool AgentController::dropOldestUserTurn() {
-    int secondUserIndex = -1;
-    int userCount = 0;
+QSet<int> AgentController::protectedHistoryIndices() const {
+    QSet<int> protectedIndices;
+    int lastRealUser = -1;
     for (int i = 0; i < m_conversationHistory.size(); ++i) {
-        if (m_conversationHistory.at(i).role == QStringLiteral("user") && ++userCount == 2) {
-            secondUserIndex = i;
+        const AgentMessage& message = m_conversationHistory.at(i);
+        if (message.role == QStringLiteral("user") && !message.internalAutoInjected)
+            lastRealUser = i;
+    }
+    if (lastRealUser >= 0)
+        protectedIndices.insert(lastRealUser);
+
+    // 从尾部向前：保护在途组（缺结果）与最近一个完整工具组；后者连同其后的自动回灌消息
+    bool completeGroupProtected = false;
+    for (int i = m_conversationHistory.size() - 1; i >= 0; --i) {
+        const AgentMessage& message = m_conversationHistory.at(i);
+        if (message.role != QStringLiteral("assistant") || message.toolCalls.isEmpty())
+            continue;
+        QSet<QString> ids;
+        for (const QJsonValue& call : message.toolCalls) {
+            const QString id = call.toObject().value(QStringLiteral("id")).toString();
+            if (!id.isEmpty())
+                ids.insert(id);
+        }
+        QSet<QString> found;
+        int end = i + 1;
+        while (end < m_conversationHistory.size() && m_conversationHistory.at(end).role == QStringLiteral("tool")) {
+            found.insert(m_conversationHistory.at(end).toolCallId);
+            ++end;
+        }
+        if (!(ids - found).isEmpty()) {
+            // 在途/不完整组：不得当作历史损坏删除
+            for (int k = i; k < end; ++k)
+                protectedIndices.insert(k);
+            continue;
+        }
+        if (completeGroupProtected)
+            continue;
+        for (int k = i; k < end; ++k)
+            protectedIndices.insert(k);
+        while (end < m_conversationHistory.size() && m_conversationHistory.at(end).role == QStringLiteral("user") &&
+               m_conversationHistory.at(end).internalAutoInjected) {
+            protectedIndices.insert(end);
+            ++end;
+        }
+        completeGroupProtected = true;
+    }
+    return protectedIndices;
+}
+
+bool AgentController::dropOldestUserTurn() {
+    int firstRealUser = -1;
+    int secondRealUser = -1;
+    for (int i = 0; i < m_conversationHistory.size(); ++i) {
+        const AgentMessage& message = m_conversationHistory.at(i);
+        if (message.role != QStringLiteral("user") || message.internalAutoInjected)
+            continue;
+        if (firstRealUser < 0) {
+            firstRealUser = i;
+        } else {
+            secondRealUser = i;
             break;
         }
     }
-    if (secondUserIndex < 0)
+    if (secondRealUser < 0)
         return false;
-    m_conversationHistory = m_conversationHistory.mid(secondUserIndex);
-    while (!m_conversationHistory.isEmpty() && m_conversationHistory.constFirst().role != QStringLiteral("user"))
+
+    const QSet<int> protectedIndices = protectedHistoryIndices();
+    for (int i = 0; i < secondRealUser; ++i) {
+        if (protectedIndices.contains(i))
+            return false;
+    }
+    m_conversationHistory = m_conversationHistory.mid(secondRealUser);
+    while (!m_conversationHistory.isEmpty() && (m_conversationHistory.constFirst().role != QStringLiteral("user") ||
+                                                m_conversationHistory.constFirst().internalAutoInjected))
         m_conversationHistory.removeFirst();
     return true;
 }
 
 bool AgentController::dropOldestToolGroup() {
-    // 从 index=1 起（最新 user turn 永不裁剪，I4）
+    // 从 index=1 起，只删保护集合之外的完整工具组（含其后的自动回灌消息）
+    const QSet<int> protectedIndices = protectedHistoryIndices();
     for (int i = 1; i < m_conversationHistory.size(); ++i) {
         const AgentMessage& message = m_conversationHistory.at(i);
         if (message.role != QStringLiteral("assistant") || message.toolCalls.isEmpty())
@@ -1362,6 +1421,20 @@ bool AgentController::dropOldestToolGroup() {
                 qWarning() << "[AgentController] tool group contains unmatched tool while dropping group";
             ++end;
         }
+        while (end < m_conversationHistory.size() && m_conversationHistory.at(end).role == QStringLiteral("user") &&
+               m_conversationHistory.at(end).internalAutoInjected)
+            ++end;
+
+        bool overlapsProtected = false;
+        for (int k = i; k < end; ++k) {
+            if (protectedIndices.contains(k)) {
+                overlapsProtected = true;
+                break;
+            }
+        }
+        if (overlapsProtected)
+            continue;
+
         for (int k = end - 1; k >= i; --k)
             m_conversationHistory.removeAt(k);
         return true;
@@ -1376,8 +1449,9 @@ void AgentController::trimHistoryIfNeeded() {
 
     repairOrphanToolGroups();
 
-    // I5：首条非 system 消息必须是 user（system 由 systemPrompt 单独承载）
-    while (!m_conversationHistory.isEmpty() && m_conversationHistory.constFirst().role != QStringLiteral("user"))
+    // I5：首条必须为真实 user（system 由 systemPrompt 单独承载；自动回灌不构成边界）
+    while (!m_conversationHistory.isEmpty() && (m_conversationHistory.constFirst().role != QStringLiteral("user") ||
+                                                m_conversationHistory.constFirst().internalAutoInjected))
         m_conversationHistory.removeFirst();
 
     const int budget = contextBudgetTokens();
@@ -1388,11 +1462,116 @@ void AgentController::trimHistoryIfNeeded() {
             continue;
         if (dropOldestToolGroup())
             continue;
-        break; // 只剩最新 user turn：不再裁剪
+        break; // 只剩保护集合：由发送前校验失败关闭（context_budget_exceeded）
     }
 
-    while (!m_conversationHistory.isEmpty() && m_conversationHistory.constFirst().role != QStringLiteral("user"))
+    while (!m_conversationHistory.isEmpty() && (m_conversationHistory.constFirst().role != QStringLiteral("user") ||
+                                                m_conversationHistory.constFirst().internalAutoInjected))
         m_conversationHistory.removeFirst();
+}
+
+bool AgentController::historyPairsValid(QString* error) const {
+    QSet<QString> pending;
+    bool inGroup = false;
+    for (int i = 0; i < m_conversationHistory.size(); ++i) {
+        const AgentMessage& message = m_conversationHistory.at(i);
+        if (message.role == QStringLiteral("assistant") && !message.toolCalls.isEmpty()) {
+            if (inGroup) {
+                if (error)
+                    *error = QStringLiteral("tool group at message %1 is missing results").arg(i - 1);
+                return false;
+            }
+            pending.clear();
+            for (const QJsonValue& call : message.toolCalls) {
+                const QString id = call.toObject().value(QStringLiteral("id")).toString();
+                if (id.isEmpty()) {
+                    if (error)
+                        *error = QStringLiteral("assistant tool_call without id at message %1").arg(i);
+                    return false;
+                }
+                pending.insert(id);
+            }
+            if (pending.isEmpty()) {
+                if (error)
+                    *error = QStringLiteral("empty tool_calls at message %1").arg(i);
+                return false;
+            }
+            inGroup = true;
+            continue;
+        }
+        if (message.role == QStringLiteral("tool")) {
+            if (!inGroup || !pending.contains(message.toolCallId)) {
+                if (error)
+                    *error = QStringLiteral("unexpected tool result '%1' at message %2").arg(message.toolCallId).arg(i);
+                return false;
+            }
+            pending.remove(message.toolCallId);
+            if (pending.isEmpty())
+                inGroup = false;
+            continue;
+        }
+        if (inGroup) {
+            if (error)
+                *error = QStringLiteral("tool group interrupted at message %1").arg(i);
+            return false;
+        }
+    }
+    if (inGroup) {
+        if (error)
+            *error = QStringLiteral("in-flight tool group is missing results");
+        return false;
+    }
+    return true;
+}
+
+void AgentController::failContextSend(const QString& code, const QString& detail) {
+    const QString message = QStringLiteral("Context send refused (%1); no request was sent: %2").arg(code, detail);
+    Logger::instance().addLog(QStringLiteral("[Context] %1").arg(message), LogLevel::Warning, "Agent");
+    AgentActionLogEntry entry;
+    entry.timestamp = QDateTime::currentDateTime();
+    entry.actor = QStringLiteral("Agent");
+    entry.action = code;
+    entry.result = QStringLiteral("error");
+    entry.undoable = false;
+    emit actionLogEntryAdded(entry);
+    transitionTo(AgentState::Idle);
+    emit llmErrorOccurred(message);
+}
+
+bool AgentController::sendPreparedContext() {
+    trimHistoryIfNeeded();
+
+    QString pairError;
+    if (!historyPairsValid(&pairError)) {
+        failContextSend(QStringLiteral("context_invalid_history"), pairError);
+        return false;
+    }
+
+    AgentConversation ctx;
+    ctx.messages = m_conversationHistory;
+    ctx.systemPrompt = buildContext();
+
+    // buildContext 会把超长系统提示截断到 16KB；预算校验仍以"用户配置的完整系统提示"
+    // 为准，避免截断掩盖系统提示本身超限（B0/B3 契约）。
+    const QString budgetPrompt = m_systemPrompt.size() > ctx.systemPrompt.size() ? m_systemPrompt : ctx.systemPrompt;
+    const qint64 estimated = estimateTokensFor(ctx.messages, budgetPrompt, echoesReasoning());
+    constexpr int kMaxHistoryMessages = 64;
+    if (estimated > contextBudgetTokens() || ctx.messages.size() > kMaxHistoryMessages) {
+        failContextSend(QStringLiteral("context_budget_exceeded"),
+                        QStringLiteral("estimated %1 tokens / %2 messages, budget %3 tokens")
+                            .arg(estimated)
+                            .arg(ctx.messages.size())
+                            .arg(contextBudgetTokens()));
+        return false;
+    }
+
+    if (!m_llmClient) {
+        transitionTo(AgentState::Idle);
+        emit llmErrorOccurred(QStringLiteral("LLM client not configured"));
+        return false;
+    }
+    m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
+    return true;
 }
 
 void AgentController::onGuiEvent(const GuiEvent& event) {
@@ -1461,10 +1640,7 @@ void AgentController::onLLMErrorClassified(const LLMErrorInfo& info) {
     m_suppressNextLlmError = true;
     Logger::instance().addLog("[AgentController] model rejected image input; retrying without images",
                               LogLevel::Warning, "Agent");
-    AgentConversation ctx;
-    ctx.messages = m_conversationHistory;
-    ctx.systemPrompt = buildContext();
-    m_llmClient->sendRequest(ctx, ToolSchema::instance().allTools());
+    sendPreparedContext();
 }
 
 void AgentController::onLLMError(const QString& error) {

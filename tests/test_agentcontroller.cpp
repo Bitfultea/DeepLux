@@ -691,6 +691,161 @@ private slots:
         QCOMPARE(AgentController::instance().m_conversationHistory.first().content, QStringLiteral("latest"));
     }
 
+    // ---------- B3：上下文保护 / 预算失败关闭 ----------
+
+    void testContextBudgetExceededFailsClosed() {
+        AgentController& controller = AgentController::instance();
+        controller.setContextLimitsForTest(16000, 6000, 24, 24);
+        QSignalSpy errorSpy(&controller, &AgentController::llmErrorOccurred);
+
+        controller.sendUserMessage(QString(200000, QLatin1Char('x')));
+
+        QCOMPARE(m_mock->requestCount, 0);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QCOMPARE(controller.m_conversationHistory.size(), 1); // 保留可诊断的用户请求
+        QVERIFY(!errorSpy.isEmpty());
+        QVERIFY2(errorSpy.last().at(0).toString().contains(QStringLiteral("context_budget_exceeded")),
+                 qPrintable(errorSpy.last().at(0).toString()));
+    }
+
+    void testSystemPromptOverBudgetFailsClosed() {
+        AgentController& controller = AgentController::instance();
+        controller.setContextLimitsForTest(16000, 6000, 24, 24);
+        const QString original = controller.systemPrompt();
+        controller.setSystemPrompt(QString(200000, QLatin1Char('s')));
+
+        controller.sendUserMessage(QStringLiteral("hello"));
+
+        const int requests = m_mock->requestCount;
+        const AgentController::AgentState finalState = controller.state();
+        controller.setSystemPrompt(original); // 先恢复，避免失败提前 return 污染后续用例
+        QCOMPARE(requests, 0);
+        QCOMPARE(finalState, AgentController::AgentState::Idle);
+    }
+
+    void testImageAttachmentOverBudgetFailsClosed() {
+        AgentController& controller = AgentController::instance();
+        controller.setContextLimitsForTest(16000, 6000, 24, 24);
+
+        QImage noise(700, 700, QImage::Format_RGB32);
+        quint32 seed = 0x12345678u;
+        for (int y = 0; y < noise.height(); ++y) {
+            auto* line = reinterpret_cast<QRgb*>(noise.scanLine(y));
+            for (int x = 0; x < noise.width(); ++x) {
+                seed = seed * 1664525u + 1013904223u;
+                const quint32 value = seed;
+                line[x] = qRgb(value & 0xff, (value >> 8) & 0xff, (value >> 16) & 0xff);
+            }
+        }
+        controller.sendUserMessageWithImages(QStringLiteral("inspect"), {QPixmap::fromImage(noise)});
+
+        QCOMPARE(m_mock->requestCount, 0);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    }
+
+    void testInFlightToolCallIsProtected() {
+        AgentController& controller = AgentController::instance();
+        controller.setContextLimitsForTest(16000, 6000, 24, 24);
+        controller.m_conversationHistory.clear();
+
+        AgentMessage user;
+        user.role = QStringLiteral("user");
+        user.content = QStringLiteral("current request");
+        controller.m_conversationHistory.append(user);
+
+        AgentMessage inFlight;
+        inFlight.role = QStringLiteral("assistant");
+        inFlight.toolCalls = QJsonArray{QJsonObject{{"id", "pending-call"}}};
+        inFlight.content = QString(200000, QLatin1Char('a'));
+        controller.m_conversationHistory.append(inFlight);
+
+        controller.trimHistoryIfNeeded();
+
+        QVERIFY(!controller.m_conversationHistory.isEmpty());
+        QCOMPARE(controller.m_conversationHistory.constFirst().content, QStringLiteral("current request"));
+        const QJsonArray expectedGroup{QJsonObject{{"id", "pending-call"}}};
+        QVERIFY(controller.m_conversationHistory.constLast().toolCalls == expectedGroup);
+    }
+
+    void testAutoInjectedImageDoesNotCreateTaskBoundary() {
+        AgentController& controller = AgentController::instance();
+        controller.setContextLimitsForTest(16000, 6000, 24, 24);
+        controller.m_conversationHistory.clear();
+
+        AgentMessage original;
+        original.role = QStringLiteral("user");
+        original.content = QStringLiteral("original task");
+        controller.m_conversationHistory.append(original);
+
+        AgentMessage oldGroup;
+        oldGroup.role = QStringLiteral("assistant");
+        oldGroup.toolCalls = QJsonArray{QJsonObject{{"id", "old-call"}}};
+        controller.m_conversationHistory.append(oldGroup);
+        AgentMessage oldResult;
+        oldResult.role = QStringLiteral("tool");
+        oldResult.toolCallId = QStringLiteral("old-call");
+        oldResult.content = QString(200000, QLatin1Char('o'));
+        controller.m_conversationHistory.append(oldResult);
+
+        AgentMessage recentGroup;
+        recentGroup.role = QStringLiteral("assistant");
+        recentGroup.toolCalls = QJsonArray{QJsonObject{{"id", "recent-call"}}};
+        controller.m_conversationHistory.append(recentGroup);
+        AgentMessage recentResult;
+        recentResult.role = QStringLiteral("tool");
+        recentResult.toolCallId = QStringLiteral("recent-call");
+        recentResult.content = QStringLiteral("recent result");
+        controller.m_conversationHistory.append(recentResult);
+
+        AgentMessage injected;
+        injected.role = QStringLiteral("user");
+        injected.content = QStringLiteral("Images produced by the tool calls above");
+        injected.internalAutoInjected = true;
+        controller.m_conversationHistory.append(injected);
+
+        controller.trimHistoryIfNeeded();
+
+        QCOMPARE(controller.m_conversationHistory.constFirst().role, QStringLiteral("user"));
+        QCOMPARE(controller.m_conversationHistory.constFirst().content, QStringLiteral("original task"));
+        bool oldGone = true;
+        bool recentKept = false;
+        bool injectedKept = false;
+        for (const AgentMessage& message : controller.m_conversationHistory) {
+            if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("old-call"))
+                oldGone = false;
+            if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("recent-call"))
+                recentKept = true;
+            if (message.internalAutoInjected)
+                injectedKept = true;
+        }
+        QVERIFY2(oldGone, "the older complete tool group must be trimmed first");
+        QVERIFY2(recentKept, "the latest complete tool group is protected");
+        QVERIFY2(injectedKept, "the auto-injected image message belongs to the protected recent group");
+    }
+
+    void testInvalidToolPairingBlocksSend() {
+        AgentController& controller = AgentController::instance();
+        controller.m_conversationHistory.clear();
+        AgentMessage user;
+        user.role = QStringLiteral("user");
+        user.content = QStringLiteral("request");
+        controller.m_conversationHistory.append(user);
+        AgentMessage assistant;
+        assistant.role = QStringLiteral("assistant");
+        assistant.toolCalls = QJsonArray{QJsonObject{{"id", "missing-result"}}};
+        controller.m_conversationHistory.append(assistant);
+
+        QString error;
+        QVERIFY(!controller.historyPairsValid(&error));
+        QVERIFY2(error.contains(QStringLiteral("missing")), qPrintable(error));
+
+        QSignalSpy errorSpy(&controller, &AgentController::llmErrorOccurred);
+        QVERIFY(!controller.sendPreparedContext());
+        QCOMPARE(m_mock->requestCount, 0);
+        QVERIFY(!errorSpy.isEmpty());
+        QVERIFY(errorSpy.last().at(0).toString().contains(QStringLiteral("context_invalid_history")));
+    }
+
     // ---------- 最大轮数限制 ----------
 
     void testAutopilotStopsAtTurnLimit() {
