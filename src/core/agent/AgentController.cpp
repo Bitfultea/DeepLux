@@ -91,6 +91,17 @@ int takeElapsedMs(QJsonObject& result) {
     return elapsedMs;
 }
 
+// 审计结果单源：跳过/拒绝与成功/失败可区分，且绝不用 contains("error") 猜测。
+QString auditOutcome(const QJsonObject& result) {
+    if (result.value(QStringLiteral("skipped")).toBool())
+        return QStringLiteral("skipped");
+    const QString code = result.value(QStringLiteral("code")).toString();
+    if (code == QStringLiteral("PERMISSION_DENIED") || code == QStringLiteral("USER_REJECTED") ||
+        code == QStringLiteral("USER_CANCELLED") || code == QStringLiteral("confirmation_expired"))
+        return QStringLiteral("rejected");
+    return AgentActor::resultSucceeded(result) ? QStringLiteral("success") : QStringLiteral("error");
+}
+
 AgentActionLogEntry makeAuditEntry(const AgentActor* actor, const QString& toolName, const QJsonObject& params,
                                    const QString& toolCallId, QJsonObject& result) {
     AgentActionLogEntry entry;
@@ -99,9 +110,9 @@ AgentActionLogEntry makeAuditEntry(const AgentActor* actor, const QString& toolN
     entry.action = toolName;
     entry.params = QString(QJsonDocument(params).toJson(QJsonDocument::Compact));
     entry.durationMs = takeElapsedMs(result);
-    entry.result = result.contains("error") ? "error" : "success";
-    // R1：失败的工具不会压入 QUndoStack，审计 undoable 必须同步为 false
-    entry.undoable = isAgentUndoable(actor, toolName) && !result.contains("error");
+    entry.result = auditOutcome(result);
+    // R1：失败/跳过的工具不会压入 QUndoStack，审计 undoable 必须同步为 false
+    entry.undoable = isAgentUndoable(actor, toolName) && AgentActor::resultSucceeded(result);
     entry.toolCallId = toolCallId;
     return entry;
 }
@@ -799,7 +810,8 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
     // 批量执行（等待类工具可能进入嵌套事件循环；期间用户可能按停止）
     QJsonObject batchResult = m_actor->executeTools(tools, QString("Agent turn %1").arg(m_agentTurnCount));
 
-    // 拆分每个 tool 结果，每条 tool call 对应一条独立的 tool role message（OpenAI 要求）
+    // 拆分每个 tool 结果，每条 tool call 对应一条独立的 tool role message（OpenAI 要求）。
+    // executeTools 保证 results 与 tools 一一对应；未执行项以 skipped_after_failure 补齐。
     QJsonArray resultsArray = batchResult["results"].toArray();
     for (int i = 0; i < resultsArray.size() && i < ids.size(); ++i) {
         QJsonObject result = resultsArray[i].toObject()["result"].toObject();
@@ -829,13 +841,18 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
     }
     trimHistoryIfNeeded();
 
-    if (batchResult["status"].toString() == "partial_failed") {
+    // B1：只有 run_failed 允许把失败回灌模型并重新规划；其余失败结束本轮。
+    const bool batchFailed = batchResult.value(QStringLiteral("status")).toString() == QLatin1String("partial_failed");
+    const QString failedCode = batchResult.value(QStringLiteral("failedCode")).toString();
+    const bool canReplan = batchFailed && failedCode == QLatin1String("run_failed");
+    if (batchFailed && !canReplan) {
         transitionTo(AgentState::Idle);
-        emit llmErrorOccurred(batchResult["error"].toString("Agent tool execution failed"));
+        emit llmErrorOccurred(
+            batchResult.value(QStringLiteral("error")).toString(QStringLiteral("Agent tool execution failed")));
         return;
     }
 
-    // 图像回灌（设计 §6.4）：必须在 partial_failed 早退之后、续跑请求之前
+    // 图像回灌（设计 §6.4）：正常续跑与 run_failed 重规划前都保留可诊断产物
     attachToolImages(resultsArray);
 
     Logger::instance().addLog(QString("[AgentLoop] Executed %1 tool(s)").arg(resultsArray.size()), LogLevel::Debug,
@@ -1236,7 +1253,6 @@ QJsonObject AgentController::handleToolCall(const QString& toolName, const QJson
     QJsonObject result = m_actor->executeTool(toolName, params);
     // makeAuditEntry 读取并剥离 _elapsedMs，返回给 IPC/调用方的 result 不再含内部字段
     AgentActionLogEntry entry = makeAuditEntry(m_actor, toolName, params, QString(), result);
-    entry.undoable = entry.undoable && !result.contains("error");
     emit actionLogEntryAdded(entry);
     return result;
 }

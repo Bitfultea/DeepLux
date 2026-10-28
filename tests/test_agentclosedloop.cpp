@@ -222,6 +222,175 @@ private slots:
                  qPrintable(QStringLiteral("handlers without schema: %1").arg(orphanHandlers.join(", "))));
     }
 
+    // ---------- B1：失败闭环 ----------
+
+    // run_flow 运行失败后，本批剩余写操作零执行，失败与跳过结果都回灌模型，
+    // 模型获得一次重新规划机会；参数保持失败时的值（不静默回滚）。
+    void testRunFailureSkipsRemainingBatchAndReplans() {
+        AgentController& controller = AgentController::instance();
+        QVERIFY(controller.initialize());
+        AgentActor* actor = controller.actor();
+        QVERIFY(actor != nullptr);
+
+        QVERIFY2(!actor->executeTool(QStringLiteral("create_project"), {{"name", "FailureLoop"}}).contains("error"),
+                 "create_project failed");
+        QVERIFY2(
+            !actor->executeTool(QStringLiteral("add_module"), {{"plugin", "GrabImage"}, {"instanceName", "grab_fail"}})
+                 .contains("error"),
+            "add_module failed");
+        QVERIFY2(!actor
+                      ->executeTool(QStringLiteral("set_param"),
+                                    {{"instanceId", "grab_fail"}, {"key", "grabSource"}, {"value", "Path"}})
+                      .contains("error"),
+                 "set grabSource failed");
+        QVERIFY2(!actor
+                      ->executeTool(QStringLiteral("set_param"), {{"instanceId", "grab_fail"},
+                                                                  {"key", "filePath"},
+                                                                  {"value", "/nonexistent/deeplux-missing.png"}})
+                      .contains("error"),
+                 "set filePath failed");
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+        const QJsonValue beforeTimeout = project->moduleById(QStringLiteral("grab_fail"))->params.value("grabTimeout");
+
+        controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+        ClosedLoopLLMClient client;
+        controller.setLLMClient(&client);
+        QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+
+        controller.sendUserMessage(QStringLiteral("run the flow, then tweak the timeout"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.content = QStringLiteral("running");
+        resp.toolCalls.append(makeToolCallJson(QStringLiteral("call-run"), QStringLiteral("run_flow"), {}));
+        resp.toolCalls.append(
+            makeToolCallJson(QStringLiteral("call-tune"), QStringLiteral("set_param"),
+                             QJsonObject{{"instanceId", "grab_fail"}, {"key", "grabTimeout"}, {"value", 12345}}));
+        client.reply(resp);
+
+        // run_failed 允许续跑：模型收到一条新的请求（不是直接归零到 Idle）
+        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 2, 10000);
+        QCOMPARE(controller.state(), AgentController::AgentState::Thinking);
+
+        bool sawRunFailure = false;
+        bool sawSkippedTune = false;
+        for (const AgentMessage& message : client.lastCtx.messages) {
+            if (message.role != QStringLiteral("tool"))
+                continue;
+            const QJsonObject payload = QJsonDocument::fromJson(message.content.toUtf8()).object();
+            if (message.toolCallId == QLatin1String("call-run")) {
+                sawRunFailure = payload.value("code").toString() == QLatin1String("run_failed");
+            } else if (message.toolCallId == QLatin1String("call-tune")) {
+                sawSkippedTune = payload.value("skipped").toBool() &&
+                                 payload.value("code").toString() == QLatin1String("skipped_after_failure");
+            }
+        }
+        QVERIFY2(sawRunFailure, "run failure must be fed back to the model");
+        QVERIFY2(sawSkippedTune, "the remaining write must be reported as skipped");
+
+        // 跳过项零执行：参数保持失败时的值
+        QCOMPARE(project->moduleById(QStringLiteral("grab_fail"))->params.value("grabTimeout"), beforeTimeout);
+
+        QStringList auditResults;
+        for (const QList<QVariant>& args : auditSpy) {
+            const AgentActionLogEntry entry = args.at(0).value<AgentActionLogEntry>();
+            if (entry.action == QLatin1String("run_flow") || entry.action == QLatin1String("set_param"))
+                auditResults << entry.result;
+        }
+        QVERIFY2(auditResults.contains(QStringLiteral("error")), qPrintable(auditResults.join(",")));
+        QVERIFY2(auditResults.contains(QStringLiteral("skipped")), qPrintable(auditResults.join(",")));
+
+        AgentResponse done;
+        done.success = true;
+        done.content = QStringLiteral("replanned");
+        client.reply(done);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    }
+
+    // 连续 run_failed 允许重规划，但不得突破既有轮数上限。
+    void testRepeatedRunFailuresStopAtTurnLimit() {
+        AgentController& controller = AgentController::instance();
+        QVERIFY(controller.initialize());
+        AgentActor* actor = controller.actor();
+        QVERIFY(actor != nullptr);
+        QVERIFY(!actor->executeTool(QStringLiteral("create_project"), {{"name", "RetryLoop"}}).contains("error"));
+        QVERIFY(
+            !actor->executeTool(QStringLiteral("add_module"), {{"plugin", "GrabImage"}, {"instanceName", "grab_retry"}})
+                 .contains("error"));
+        QVERIFY(!actor
+                     ->executeTool(QStringLiteral("set_param"),
+                                   {{"instanceId", "grab_retry"}, {"key", "grabSource"}, {"value", "Path"}})
+                     .contains("error"));
+        QVERIFY(!actor
+                     ->executeTool(QStringLiteral("set_param"), {{"instanceId", "grab_retry"},
+                                                                 {"key", "filePath"},
+                                                                 {"value", "/nonexistent/deeplux-retry.png"}})
+                     .contains("error"));
+
+        controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+        ClosedLoopLLMClient client;
+        controller.setLLMClient(&client);
+        QSignalSpy errorSpy(&controller, &AgentController::llmErrorOccurred);
+
+        controller.sendUserMessage(QStringLiteral("keep retrying"));
+        for (int i = 0; i < 25 && controller.state() != AgentController::AgentState::Idle; ++i) {
+            AgentResponse resp;
+            resp.success = true;
+            resp.content = QStringLiteral("retry");
+            resp.toolCalls.append(makeToolCallJson(QStringLiteral("retry_%1").arg(i), QStringLiteral("run_flow"), {}));
+            client.reply(resp);
+        }
+
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QVERIFY2(client.requestCount <= 21, qPrintable(QString::number(client.requestCount)));
+        QVERIFY(!errorSpy.isEmpty());
+        QVERIFY(errorSpy.last().at(0).toString().contains(QStringLiteral("轮数")));
+    }
+
+    // 非 run_failed 失败（参数错误等）默认结束本轮：不再请求模型，后续写操作不执行，
+    // 但仍为每个 tool_call 写入配对结果。
+    void testNonRunFailureEndsTurnWithoutReplan() {
+        AgentController& controller = AgentController::instance();
+        QVERIFY(controller.initialize());
+        AgentActor* actor = controller.actor();
+        QVERIFY(actor != nullptr);
+        QVERIFY(!actor->executeTool(QStringLiteral("create_project"), {{"name", "ParamFailure"}}).contains("error"));
+        QVERIFY(
+            !actor->executeTool(QStringLiteral("add_module"), {{"plugin", "GrabImage"}, {"instanceName", "grab_param"}})
+                 .contains("error"));
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+        const int beforeModules = project->modules().size();
+
+        controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+        ClosedLoopLLMClient client;
+        controller.setLLMClient(&client);
+
+        controller.sendUserMessage(QStringLiteral("change a missing node then add another"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.content = QStringLiteral("working");
+        resp.toolCalls.append(makeToolCallJson(QStringLiteral("call-bad"), QStringLiteral("set_param"),
+                                               QJsonObject{{"instanceId", "missing"}, {"key", "x"}, {"value", 1}}));
+        resp.toolCalls.append(
+            makeToolCallJson(QStringLiteral("call-add"), QStringLiteral("add_module"),
+                             QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "must_not_exist"}}));
+        client.reply(resp);
+
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QCOMPARE(client.requestCount, 1); // 未续跑
+        QCOMPARE(project->modules().size(), beforeModules);
+
+        // 配对：assistant 的两个 tool_call 都至少有一个 tool 结果（历史中可见）
+        int toolResults = 0;
+        for (const AgentMessage& message : controller.m_conversationHistory) {
+            if (message.role == QStringLiteral("tool") &&
+                (message.toolCallId == QLatin1String("call-bad") || message.toolCallId == QLatin1String("call-add")))
+                ++toolResults;
+        }
+        QCOMPARE(toolResults, 2);
+    }
+
     // ---------- 控制器级图像回灌 ----------
 
     void testToolImageReflowsIntoNextTurn() {

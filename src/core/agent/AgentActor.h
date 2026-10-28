@@ -42,7 +42,20 @@ public:
     QJsonObject executeTool(const QString& toolName, const QJsonObject& params);
 
     // 批量执行（支持 macro undo）
+    // 失败后停止本批：results 与 tools 严格一一对应，未执行项为
+    // {"success":false,"code":"skipped_after_failure","skipped":true,...}。
     QJsonObject executeTools(const QList<QPair<QString, QJsonObject>>& tools, const QString& macroName);
+
+    /**
+     * @brief 工具结果成功判定（唯一事实来源）
+     *
+     * 布尔 success 优先；否则存在 error 即失败；否则成功。
+     * 所有消费方（批量执行/历史/IPC/MCP/审计/UI）必须使用本函数。
+     */
+    static bool resultSucceeded(const QJsonObject& result);
+
+    /// 失败结果的机器可读错误码（成功返回空；无 code 时返回 "tool_error"）
+    static QString resultFailureCode(const QJsonObject& result);
 
     QUndoStack* undoStack() const {
         return m_undoStack;

@@ -571,31 +571,92 @@ QJsonObject AgentActor::executeToolInternal(const QString& toolName, const QJson
     }
 
     const QJsonObject result = it->fn(params);
-    if (it->mutatesProject && !result.contains(QStringLiteral("error")))
+    if (it->mutatesProject && resultSucceeded(result))
         m_engineProjectDirty = true;
     emit toolExecuted(toolName, result);
     return result;
 }
 
+bool AgentActor::resultSucceeded(const QJsonObject& result) {
+    const QJsonValue success = result.value(QStringLiteral("success"));
+    if (success.isBool())
+        return success.toBool();
+    return !result.contains(QStringLiteral("error"));
+}
+
+QString AgentActor::resultFailureCode(const QJsonObject& result) {
+    if (resultSucceeded(result))
+        return QString();
+    const QString code = result.value(QStringLiteral("code")).toString();
+    return code.isEmpty() ? QStringLiteral("tool_error") : code;
+}
+
+namespace {
+/// 本批已有调用失败后为未执行调用补齐的结构化结果（不得记为执行成功）
+QJsonObject skippedAfterFailure(const QString& failedTool, const QString& failedCode) {
+    return QJsonObject{
+        {QStringLiteral("success"), false},
+        {QStringLiteral("error"), QStringLiteral("Skipped because %1 failed (%2)").arg(failedTool, failedCode)},
+        {QStringLiteral("code"), QStringLiteral("skipped_after_failure")},
+        {QStringLiteral("skipped"), true},
+        {QStringLiteral("failedTool"), failedTool},
+        {QStringLiteral("failedCode"), failedCode}};
+}
+
+QJsonObject resultEntry(const QString& tool, const QJsonObject& result) {
+    return QJsonObject{{QStringLiteral("tool"), tool}, {QStringLiteral("result"), result}};
+}
+} // namespace
+
 QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& tools, const QString& macroName) {
     if (tools.isEmpty())
         return QJsonObject{{"error", "No tools to execute"}};
 
-    for (const auto& pair : tools) {
-        QString invalid = validationError(pair.first, pair.second);
+    // 参数预校验失败时本批零执行，但仍为每个调用生成结果，保证 tool_call 配对。
+    int firstInvalid = -1;
+    QString invalid;
+    for (int i = 0; i < tools.size(); ++i) {
+        invalid = validationError(tools.at(i).first, tools.at(i).second);
         if (!invalid.isEmpty()) {
-            return QJsonObject{
-                {"status", "partial_failed"}, {"executed", 0}, {"failedTool", pair.first}, {"error", invalid}};
+            firstInvalid = i;
+            break;
         }
+    }
+    if (firstInvalid >= 0) {
+        const QString failedTool = tools.at(firstInvalid).first;
+        QJsonArray results;
+        for (int i = 0; i < tools.size(); ++i) {
+            if (i == firstInvalid) {
+                results.append(resultEntry(tools.at(i).first,
+                                           QJsonObject{{QStringLiteral("success"), false},
+                                                       {QStringLiteral("error"), invalid},
+                                                       {QStringLiteral("code"), QStringLiteral("invalid_parameter")}}));
+            } else {
+                results.append(resultEntry(tools.at(i).first,
+                                           skippedAfterFailure(failedTool, QStringLiteral("invalid_parameter"))));
+            }
+        }
+        return QJsonObject{{"status", "partial_failed"},
+                           {"results", results},
+                           {"executed", 0},
+                           {"failedTool", failedTool},
+                           {"failedCode", QStringLiteral("invalid_parameter")},
+                           {"error", invalid}};
     }
 
     QJsonArray results;
     int executed = 0;
     bool failed = false;
     QString failedTool;
+    QString failedCode;
     QString error;
     bool macroOpen = false;
     for (const auto& pair : tools) {
+        if (failed) {
+            // 首次失败后不再执行，但必须补齐结果（跳过不算执行成功）
+            results.append(resultEntry(pair.first, skippedAfterFailure(failedTool, failedCode)));
+            continue;
+        }
         const bool switchesProject =
             pair.first == QStringLiteral("create_project") || pair.first == QStringLiteral("open_project");
         if (switchesProject && macroOpen) {
@@ -606,15 +667,15 @@ QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& t
             macroOpen = true;
         }
         QJsonObject result = executeTool(pair.first, pair.second);
-        QJsonObject entry;
-        entry["tool"] = pair.first;
-        entry["result"] = result;
-        results.append(entry);
-        if (result.contains("error")) {
+        results.append(resultEntry(pair.first, result));
+        if (!resultSucceeded(result)) {
             failed = true;
             failedTool = pair.first;
-            error = result["error"].toString();
-            break;
+            failedCode = resultFailureCode(result);
+            error = result.value(QStringLiteral("error")).toString();
+            if (error.isEmpty())
+                error = QStringLiteral("%1 failed (%2)").arg(failedTool, failedCode);
+            continue;
         }
         ++executed;
     }
@@ -622,11 +683,8 @@ QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& t
         m_undoStack->endMacro();
 
     if (failed) {
-        return QJsonObject{{"status", "partial_failed"},
-                           {"results", results},
-                           {"executed", executed},
-                           {"failedTool", failedTool},
-                           {"error", error}};
+        return QJsonObject{{"status", "partial_failed"}, {"results", results},       {"executed", executed},
+                           {"failedTool", failedTool},   {"failedCode", failedCode}, {"error", error}};
     }
     return QJsonObject{{"status", "completed"}, {"results", results}, {"executed", executed}};
 }

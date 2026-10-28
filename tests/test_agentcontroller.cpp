@@ -447,6 +447,8 @@ private slots:
         controller.confirmPendingTools();
         controller.abortCurrentTurn();
         QCoreApplication::processEvents();
+        // B1：中止后不得续跑，模型请求计数保持为首次请求
+        QCOMPARE(m_mock->requestCount, 1);
         controller.sendUserMessage(QStringLiteral("Continue"));
         bool found = false;
         for (const QJsonValue& value : m_mock->lastCtx.toOpenAIMessages()) {
