@@ -321,7 +321,7 @@ public:
 
 | 键 | 默认 | clamp |
 |---|---|---|
-| `agent/failedRequestLogEnabled` | true | —— |
+| `agent/failedRequestLogEnabled` | **false**（集成收口 B5：未显式配置默认关闭；已有显式值继续尊重） | —— |
 | `agent/failedRequestMaxBytes` | 1048576（1 MiB/日） | [65536, 16777216] |
 | `agent/failedRequestRecordMaxBytes` | 262144（256 KiB/条） | [16384, 1048576] |
 
@@ -795,7 +795,7 @@ t16    文档回填 + 提交推送（队长）
 | `agent/auditEnabled` | bool | true | — | §3.7 |
 | `agent/auditMaxFileBytes` | int | 10485760 | [1048576, 104857600] | §3.7 |
 | `agent/auditRetentionDays` | int | 14 | [1, 365] | §3.7 |
-| `agent/failedRequestLogEnabled` | bool | true | — | §4.5 |
+| `agent/failedRequestLogEnabled` | bool | false | — | §4.5（B5 改为默认关闭） |
 | `agent/failedRequestMaxBytes` | int | 1048576 | [65536, 16777216] | §4.5 |
 | `agent/failedRequestRecordMaxBytes` | int | 262144 | [16384, 1048576] | §4.5 |
 | `agent/mcpBridgeTimeoutMs` | int | 30000 | [1000, 300000] | §5.7 |
