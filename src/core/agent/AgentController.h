@@ -9,6 +9,7 @@
 #include <QMutex>
 #include <QObject>
 #include <QPointer>
+#include <QSet>
 #include <memory>
 
 class QTimer;
@@ -17,6 +18,7 @@ namespace DeepLux {
 
 class AgentObserver;
 class AgentActor;
+class Project;
 struct GuiEvent;
 struct AgentActionLogEntry;
 
@@ -215,17 +217,44 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
     int m_turnDeadlineOverride = -1;       // 测试触发值（绕过 clamp）
     int m_turnDeadlineConfigOverride = -1; // 模拟配置值（走 clamp）
 
+    // ---- 工程会话身份/版本（B2：确认有效期；内部递增，不以指针/路径为唯一身份）----
+    quint64 m_projectSessionId = 0;
+    quint64 m_projectRevision = 0;
+    quint64 m_confirmationSessionId = 0;
+    quint64 m_confirmationRevision = 0;
+    QList<QMetaObject::Connection> m_projectConnections;
+
     // ---- 上下文治理（设计 §7）：测试覆盖值（-1 = 沿用配置）----
     int m_contextBudgetOverride = -1;
     int m_toolResultMaxCharsOverride = -1;
     int m_summaryThresholdOverride = -1;
     int m_summaryPreviewOverride = -1;
 
+    // ---- 权限/确认有效期（集成收口 B2）----
+    void bindProjectSignals(Project* project);
+    void onProjectStructureChanged();
+    void snapshotConfirmation();
+    bool confirmationExpired() const;
+    void expirePendingConfirmation(const QString& reason);
+    /// Observer 混合批次：只读逐项执行、写入拒绝；返回 true 表示存在拒绝项
+    bool executeObserverCalls(const QJsonArray& calls, bool continueAfter);
+
+    // ---- 上下文保护与发送前校验（集成收口 B3）----
+    /// 保护集合：当前真实用户请求、在途调用组、最近完整工具组（含其后的自动回灌消息）
+    QSet<int> protectedHistoryIndices() const;
+    /// 发送前配对校验：每个 assistant(tool_calls) 与 tool 结果恰好一一配对
+    bool historyPairsValid(QString* error) const;
+    /// 唯一的发送入口：裁剪→配对校验→预算校验→sendRequest
+    bool sendPreparedContext();
+    void failContextSend(const QString& code, const QString& detail);
+    qint64 estimateTokensFor(const QList<AgentMessage>& messages, const QString& systemPrompt,
+                             bool countReasoning) const;
+
     // 工具组原子裁剪辅助（设计 §7.3；全部只在 trimHistoryIfNeeded 内使用）
     void repairOrphanToolGroups();
     bool dropOldestUserTurn();
     bool dropOldestToolGroup();
-    qint64 estimateHistoryTokens() const;
+    qint64 estimateHistoryTokens();
     bool echoesReasoning() const; // reasoning 仅在回传时计入 token 预算（§7.1）
 
     void transitionTo(AgentState newState);

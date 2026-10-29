@@ -314,7 +314,91 @@ private slots:
         QJsonObject result = actor.executeTools(tools, "Partial failure");
         QCOMPARE(result["status"].toString(), QString("partial_failed"));
         QCOMPARE(result["executed"].toInt(), 1);
+        QCOMPARE(result["failedTool"].toString(), QStringLiteral("set_param"));
+        QCOMPARE(result["failedCode"].toString(), QStringLiteral("tool_error"));
         QCOMPARE(project->modules().size(), 1);
+
+        // B1：未执行调用必须补齐跳过结果，且每个 tool_call 恰好一条结果
+        const QJsonArray results = result["results"].toArray();
+        QCOMPARE(results.size(), tools.size());
+        QCOMPARE(AgentActor::resultSucceeded(results[0].toObject()["result"].toObject()), true);
+        QCOMPARE(AgentActor::resultSucceeded(results[1].toObject()["result"].toObject()), false);
+        const QJsonObject skipped = results[2].toObject()["result"].toObject();
+        QCOMPARE(skipped["skipped"].toBool(), true);
+        QCOMPARE(skipped["code"].toString(), QStringLiteral("skipped_after_failure"));
+        QCOMPARE(AgentActor::resultSucceeded(skipped), false);
+    }
+
+    // B2：批量执行前的逐项门禁（用于中止/工程切换/等待期间降权）
+    void testBatchGateStopsBeforeExecution() {
+        AgentActor actor;
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+
+        QList<QPair<QString, QJsonObject>> tools;
+        tools.append(
+            qMakePair(QString("add_module"), QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "gate_first"}}));
+        tools.append(
+            qMakePair(QString("add_module"), QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "gate_second"}}));
+
+        int gateCalls = 0;
+        const auto gate = [&gateCalls](int index, const QString&, const QJsonObject&) -> QString {
+            ++gateCalls;
+            return index == 1 ? QStringLiteral("PERMISSION_DENIED") : QString();
+        };
+        const QJsonObject result = actor.executeTools(tools, "Gate", gate);
+
+        QCOMPARE(result["status"].toString(), QStringLiteral("partial_failed"));
+        QCOMPARE(result["executed"].toInt(), 1);
+        QCOMPARE(result["failedCode"].toString(), QStringLiteral("PERMISSION_DENIED"));
+        QCOMPARE(gateCalls, 2);
+        QCOMPARE(project->modules().size(), 1);
+        const QJsonObject blocked = result["results"].toArray()[1].toObject()["result"].toObject();
+        QCOMPARE(blocked["blocked"].toBool(), true);
+        QCOMPARE(blocked["code"].toString(), QStringLiteral("PERMISSION_DENIED"));
+        QCOMPARE(AgentActor::resultSucceeded(blocked), false);
+    }
+
+    void testExecuteToolsPrevalidationFailsClosedForAllCalls() {
+        AgentActor actor;
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+
+        QList<QPair<QString, QJsonObject>> tools;
+        tools.append(
+            qMakePair(QString("add_module"), QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "must_not_add"}}));
+        // 非法 enum：参数预校验在本批任何调用执行前失败
+        tools.append(qMakePair(QString("get_execution_logs"), QJsonObject{{"level", "not-a-level"}}));
+        tools.append(
+            qMakePair(QString("add_module"), QJsonObject{{"plugin", "SaveImage"}, {"instanceName", "must_not_add_2"}}));
+
+        const QJsonObject result = actor.executeTools(tools, "Prevalidation failure");
+        QCOMPARE(result["status"].toString(), QStringLiteral("partial_failed"));
+        QCOMPARE(result["executed"].toInt(), 0);
+        QCOMPARE(project->modules().size(), 0);
+
+        const QJsonArray results = result["results"].toArray();
+        QCOMPARE(results.size(), tools.size());
+        for (int i = 0; i < results.size(); ++i) {
+            QCOMPARE(results[i].toObject()["tool"].toString(), tools[i].first);
+            QCOMPARE(AgentActor::resultSucceeded(results[i].toObject()["result"].toObject()), false);
+        }
+        QCOMPARE(results[1].toObject()["result"].toObject()["code"].toString(), QStringLiteral("invalid_parameter"));
+        QCOMPARE(results[0].toObject()["result"].toObject()["code"].toString(),
+                 QStringLiteral("skipped_after_failure"));
+        QCOMPARE(results[2].toObject()["result"].toObject()["code"].toString(),
+                 QStringLiteral("skipped_after_failure"));
+    }
+
+    void testResultSucceededUsesSuccessField() {
+        // B1 单源判定：success=false 即使没有 error 也不能算成功
+        QCOMPARE(AgentActor::resultSucceeded(QJsonObject{{"success", false}}), false);
+        QCOMPARE(AgentActor::resultSucceeded(QJsonObject{{"success", true}, {"error", "diagnostic only"}}), true);
+        QCOMPARE(AgentActor::resultSucceeded(QJsonObject{{"error", "boom"}}), false);
+        QCOMPARE(AgentActor::resultSucceeded(QJsonObject{{"modules", QJsonArray()}}), true);
+        QCOMPARE(AgentActor::resultFailureCode(QJsonObject{{"success", false}, {"code", "run_failed"}}),
+                 QStringLiteral("run_failed"));
+        QCOMPARE(AgentActor::resultFailureCode(QJsonObject{{"error", "boom"}}), QStringLiteral("tool_error"));
     }
 
     // 阶7 Agent 评审修复（P1-1）：schema 声明 value 为字符串且承诺转换——

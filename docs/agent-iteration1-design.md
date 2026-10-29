@@ -346,7 +346,11 @@ public:
 - **读工具成功**：不强制 `success`；按各自契约返回字段（与既有 `get_flow_state` 一致）。
 - **写/执行工具**：必须含 `"success": true|false`。`success:false` 时**同时**给 `error` + `code`（可另带诊断字段）。
 - **既有 19 个工具保持原形状**（只有 `error`，无 `code`），避免破坏既有测试与提示词；D1/D3 修复时**追加** `code` 而不是替换 `error`。
-- `partial_failed` 批量语义保持不变（`AgentActor.cpp:362-369`）。
+- **成功判定单源（集成收口 B1 修订）**：所有消费方（批量执行、对话历史、直接 IPC、MCP、审计、UI）必须调用同一个判定入口，不得各自 `contains("error")`。判定顺序：存在布尔 `success` → 以 `success` 为准；否则存在 `error` → 失败；否则成功。由此 `{"success":false,...}` 永远不会被记成成功。
+- **批量执行语义（集成收口 B1 修订，替代原 `partial_failed` 提前返回）**：
+  - 参数预校验失败时，本批**零执行**，但必须为每个 tool_call 生成结构化结果（`code:"skipped_after_failure"`），保证 assistant tool_call 与 tool 结果一一配对。
+  - 执行中首次失败后停止本批剩余调用，并为剩余每个调用生成同一个跳过结果；返回的 `results` 与输入 `tools` 一一对应，附带 `executed`（只计真实执行数）、`failedTool`、`error`、`failedCode`。
+  - 跳过不记为执行成功；审计必须为每个调用留一条记录（成功/失败/跳过/拒绝分别可区分）。
 
 ### 3.7 审计与用量（D2/D4）
 
@@ -653,6 +657,8 @@ registerTool(makeWriteTool(
 
 **参数不回滚的理由**：模型需要看到"改了参数后效果变差"这一事实，才能自己反驳并改回；静默回滚会让模型误以为参数没生效（visionflow 的 `tune` 也是保留改动的口径）。用户仍可一键撤销（宏）。
 
+> **失败续跑（集成收口 B1 冻结）**：`code=="run_failed"` 时保留已应用参数，把失败结果（`before/after/failedModule/error`）回灌模型，允许下一轮修正；新的修正写操作必须重新授权。`timeout/cancelled/paused_at_breakpoint/reentrant_wait` 结束本轮。撤销只覆盖工程编辑，不承诺撤销已发生的文件或设备副作用。
+
 > 并发保护：本工具在宏未关闭时进入嵌套等待，其间用户若触发撤销，`AgentController::undoLastAgentAction()` 会因 `RunEngine::isBusy()` 为真而拒绝（`AgentController.cpp:156-170`），不会出现"运行中撤销"的中间态。
 
 **权限**：`readOnly=false, dangerous=false` → Advisor 需确认；Autopilot 直接执行（属于"修改参数"，不是破坏性操作）。`mutatesProject=true`（引擎忙时在入口即被拒）。
@@ -801,9 +807,11 @@ registerTool({"run_flow",
  "waitTimedOut": false, "totalRuns": 12, "successRuns": 11}
 ```
 
-失败：`{"success": false, "mode": "once", "failedModule": "MeasureCircle_1", "errorMessage": "...", "elapsedMs": 96, "code": "run_failed"}`。
+失败：`{"success": false, "mode": "once", "failedModule": "MeasureCircle_1", "errorMessage": "...", "error": "...", "elapsedMs": 96, "code": "run_failed"}`。
 
-超时：`{"success": false, "code": "timeout", "waitTimedOut": true, "error": "Flow did not finish within 60000 ms; a stop was requested"}`（并已调用 `RunEngine::stop()`）。
+> **失败续跑（集成收口 B1 冻结）**：只有 `code=="run_failed"` 允许把失败结果回灌模型并继续下一轮重新规划；`already_running/reentrant_wait/timeout/cancelled/paused_at_breakpoint` 以及参数/权限/工程上下文类失败一律结束本轮，不自动重试、不恢复运行。重规划中的每次写操作仍按当前权限重新确认，且不得重置既有轮数、工具数量与全局 deadline。
+
+超时：`{"success": false, "code": "timeout", "waitTimedOut": true, "error": "Flow did not finish within 60000 ms; a stop was requested"}`（并已调用 `RunEngine::stop()`；不声称同步执行已立即停止）。
 
 断点/重入：等待被断点中断 → `{"success": false, "code": "paused_at_breakpoint", "error": "Flow paused at a breakpoint; continue or stop it from the UI"}`；同线程已在等待（嵌套等待）→ `{"success": false, "code": "reentrant_wait", "error": "Another run wait is already active on this thread"}`。
 
@@ -948,7 +956,8 @@ Thinking --(tool_calls, Autopilot 免确认)--> Executing（同步执行工具�
 Confirming --confirmPendingTools(排队 tick)--> Executing
 Confirming --rejectPendingTools--> Idle             （同步，不排队）
 Executing --(工具批次结束, 继续循环)--> Thinking
-Executing --(工具失败/上限/中止)--> Idle
+Executing --(仅 run_failed 且预算/取消/工程检查通过)--> Thinking（失败结果回灌，允许重新规划）
+Executing --(其他工具失败/上限/中止/权限拒绝/工程失效)--> Idle
 任何非 Idle 状态 --abortCurrentTurn()--> Idle
 ```
 

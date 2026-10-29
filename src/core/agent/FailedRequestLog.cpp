@@ -120,8 +120,9 @@ bool FailedRequestLog::enabled() const {
     if (m_enabledOverride >= 0)
         return m_enabledOverride == 1;
     if (!ConfigManager::instance().isInitialized())
-        return true;
-    return ConfigManager::instance().groupBool("agent", "failedRequestLogEnabled", true);
+        return false;
+    // B5：未显式配置的用户默认不保存失败请求正文；已有显式值继续尊重
+    return ConfigManager::instance().groupBool("agent", "failedRequestLogEnabled", false);
 }
 
 int FailedRequestLog::maxFileBytes() const {

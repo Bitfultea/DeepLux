@@ -41,8 +41,30 @@ public:
     // 执行单个 tool call（对外唯一入口：结果附带内部字段 _elapsedMs）
     QJsonObject executeTool(const QString& toolName, const QJsonObject& params);
 
+    /**
+     * @brief 执行前逐项门禁（返回值 = 拒绝码；空 = 允许）
+     *
+     * 控制器用它在中止/工程切换/权限降级后阻止后续工具执行。
+     */
+    using BatchGate = std::function<QString(int index, const QString& toolName, const QJsonObject& params)>;
+
     // 批量执行（支持 macro undo）
-    QJsonObject executeTools(const QList<QPair<QString, QJsonObject>>& tools, const QString& macroName);
+    // 失败后停止本批：results 与 tools 严格一一对应，未执行项为
+    // {"success":false,"code":"skipped_after_failure","skipped":true,...}。
+    // create_project/open_project 成功后同样终止本批剩余操作（project_switched）。
+    QJsonObject executeTools(const QList<QPair<QString, QJsonObject>>& tools, const QString& macroName,
+                             const BatchGate& gate = BatchGate());
+
+    /**
+     * @brief 工具结果成功判定（唯一事实来源）
+     *
+     * 布尔 success 优先；否则存在 error 即失败；否则成功。
+     * 所有消费方（批量执行/历史/IPC/MCP/审计/UI）必须使用本函数。
+     */
+    static bool resultSucceeded(const QJsonObject& result);
+
+    /// 失败结果的机器可读错误码（成功返回空；无 code 时返回 "tool_error"）
+    static QString resultFailureCode(const QJsonObject& result);
 
     QUndoStack* undoStack() const {
         return m_undoStack;

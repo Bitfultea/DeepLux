@@ -117,6 +117,29 @@ void AgentSettingsDialog::setupUi() {
     m_thinkingCheck->setToolTip("Enable only for providers that support the DeepSeek-compatible thinking field");
     formLayout->addRow(m_thinkingCheck);
 
+    // B5：隐私开关。审计可含工具参数；失败正文默认关闭，关闭不等于清除已有文件。
+    m_auditCheck = new QCheckBox("Write Agent audit log (JSONL)", this);
+    m_auditCheck->setObjectName(QStringLiteral("AgentAuditEnabledCheck"));
+    m_auditCheck->setToolTip(
+        "Audit entries can include tool parameters containing business data; masking cannot guarantee every secret "
+        "is detected.");
+    formLayout->addRow(m_auditCheck);
+
+    m_failedRequestLogCheck = new QCheckBox("Save failed LLM request bodies (sensitive)", this);
+    m_failedRequestLogCheck->setObjectName(QStringLiteral("AgentFailedRequestLogCheck"));
+    m_failedRequestLogCheck->setToolTip(
+        "Records message text and error details for BadRequest/Malformed responses (14-day retention). "
+        "Off by default. Turning it off stops new records but does not delete existing files.");
+    formLayout->addRow(m_failedRequestLogCheck);
+
+    auto* privacyNote = new QLabel(
+        tr("Privacy: audit entries may contain tool parameters and failed request bodies may contain business "
+           "text. Turning logging off stops new writes; existing files are not deleted."),
+        this);
+    privacyNote->setObjectName(QStringLiteral("AgentPrivacyNote"));
+    privacyNote->setWordWrap(true);
+    formLayout->addRow(privacyNote);
+
     mainLayout->addLayout(formLayout);
 
     auto* btnLayout = new QHBoxLayout();
@@ -224,6 +247,8 @@ void AgentSettingsDialog::loadSettings() {
     m_contextBudgetSpin->setValue(cfg.groupInt("agent", "contextBudgetTokens", 128000));
     m_toolResultMaxCharsSpin->setValue(cfg.groupInt("agent", "toolResultMaxChars", 6000));
     m_thinkingCheck->setChecked(cfg.groupBool("agent", "thinkingEnabled", false));
+    m_auditCheck->setChecked(cfg.groupBool("agent", "auditEnabled", true));
+    m_failedRequestLogCheck->setChecked(cfg.groupBool("agent", "failedRequestLogEnabled", false));
     m_tempSpin->setValue(cfg.groupDouble("agent", "temperature", 0.3));
     m_maxTokensSpin->setValue(cfg.groupInt("agent", "maxTokens", 4096));
     m_permissionCombo->setCurrentIndex(cfg.groupInt("agent", "permissionLevel", 1));
@@ -246,6 +271,8 @@ void AgentSettingsDialog::saveSettings() {
     cfg.setGroupValue("agent", "contextBudgetTokens", m_contextBudgetSpin->value());
     cfg.setGroupValue("agent", "toolResultMaxChars", m_toolResultMaxCharsSpin->value());
     cfg.setGroupValue("agent", "thinkingEnabled", m_thinkingCheck->isChecked());
+    cfg.setGroupValue("agent", "auditEnabled", m_auditCheck->isChecked());
+    cfg.setGroupValue("agent", "failedRequestLogEnabled", m_failedRequestLogCheck->isChecked());
     cfg.save();
 }
 
@@ -299,6 +326,14 @@ int AgentSettingsDialog::toolResultMaxChars() const {
 
 bool AgentSettingsDialog::thinkingEnabled() const {
     return m_thinkingCheck->isChecked();
+}
+
+bool AgentSettingsDialog::auditEnabled() const {
+    return m_auditCheck->isChecked();
+}
+
+bool AgentSettingsDialog::failedRequestLogEnabled() const {
+    return m_failedRequestLogCheck->isChecked();
 }
 
 } // namespace DeepLux

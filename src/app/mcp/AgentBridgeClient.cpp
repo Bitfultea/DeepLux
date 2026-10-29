@@ -3,9 +3,11 @@
 #include "core/platform/PathUtils.h"
 
 #include <QDebug>
-#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QJsonDocument>
+#include <QJsonParseError>
 #include <QLocalSocket>
+#include <QTimer>
 
 namespace DeepLux {
 namespace Mcp {
@@ -13,6 +15,7 @@ namespace Mcp {
 namespace {
 // AgentConnection 的入站上限是 1MiB；桥侧对超限行按错误处理，不静默卡死
 constexpr qint64 kMaxBridgeLineBytes = 1 * 1024 * 1024;
+constexpr int kMaxConnectTimeoutMs = 30000;
 
 QByteArray encodeFrame(const QJsonObject& frame) {
     return QJsonDocument(frame).toJson(QJsonDocument::Compact) + '\n';
@@ -25,38 +28,19 @@ bool writeFrame(QLocalSocket& socket, const QJsonObject& frame) {
     socket.flush();
     return true;
 }
-
-enum class ReadLineStatus { Ok, Timeout, Disconnected, TooLarge };
-
-ReadLineStatus readLine(QLocalSocket& socket, QByteArray& buffer, QByteArray& line, int remainingMs) {
-    QElapsedTimer timer;
-    timer.start();
-    while (true) {
-        const int index = buffer.indexOf('\n');
-        if (index >= 0) {
-            line = buffer.left(index);
-            buffer.remove(0, index + 1);
-            if (line.endsWith('\r'))
-                line.chop(1);
-            return ReadLineStatus::Ok;
-        }
-        if (buffer.size() > kMaxBridgeLineBytes)
-            return ReadLineStatus::TooLarge;
-        const int waitMs = remainingMs - static_cast<int>(timer.elapsed());
-        if (waitMs <= 0)
-            return ReadLineStatus::Timeout;
-        if (socket.state() != QLocalSocket::ConnectedState)
-            return ReadLineStatus::Disconnected;
-        if (socket.waitForReadyRead(waitMs)) {
-            buffer.append(socket.readAll());
-        } else if (socket.state() != QLocalSocket::ConnectedState) {
-            return ReadLineStatus::Disconnected;
-        }
-    }
-}
 } // namespace
 
-AgentBridgeClient::AgentBridgeClient(QObject* parent) : QObject(parent), m_candidates(defaultSocketCandidates()) {}
+AgentBridgeClient::AgentBridgeClient(QObject* parent) : QObject(parent), m_candidates(defaultSocketCandidates()) {
+    m_connectTimer = new QTimer(this);
+    m_connectTimer->setSingleShot(true);
+    connect(m_connectTimer, &QTimer::timeout, this, [this]() {
+        if (m_phase == Phase::Connecting)
+            tryNextCandidate();
+    });
+    m_operationTimer = new QTimer(this);
+    m_operationTimer->setSingleShot(true);
+    connect(m_operationTimer, &QTimer::timeout, this, [this]() { finish(Status::Timeout); });
+}
 
 QStringList AgentBridgeClient::defaultSocketCandidates() {
     QStringList candidates;
@@ -109,117 +93,132 @@ QString AgentBridgeClient::lastRequestId() const {
     return m_lastRequestId;
 }
 
-AgentBridgeClient::CallResult AgentBridgeClient::callTool(const QString& toolName, const QJsonObject& params) {
-    CallResult result;
-    if (m_candidates.isEmpty()) {
-        result.status = Status::GuiNotRunning;
-        result.errorMessage = QStringLiteral("DeepLux GUI is not running; start DeepLux first");
-        return result;
+bool AgentBridgeClient::isCallActive() const {
+    return m_phase != Phase::Idle;
+}
+
+void AgentBridgeClient::startCall(const QString& toolName, const QJsonObject& params) {
+    if (m_phase != Phase::Idle) {
+        finish(Status::BridgeError, QStringLiteral("Bridge client already has an in-flight call"));
+        return;
     }
 
-    const int totalMs = qMax(1, m_operationTimeoutMs);
-    QElapsedTimer timer;
-    timer.start();
-    const auto remaining = [&timer, totalMs]() { return totalMs - static_cast<int>(timer.elapsed()); };
-
-    QLocalSocket socket;
-    bool connected = false;
-    const int configuredConnect = m_connectTimeoutMs > 0 ? m_connectTimeoutMs : 3000;
-    const int connectTimeout = qBound(1, qMin(configuredConnect, totalMs), 30000);
-    for (const QString& candidate : m_candidates) {
-        socket.connectToServer(candidate);
-        if (socket.waitForConnected(connectTimeout)) {
-            connected = true;
-            break;
-        }
-        socket.abort();
-    }
-    if (!connected) {
-        result.status = Status::GuiNotRunning;
-        result.errorMessage = QStringLiteral("DeepLux GUI is not running; start DeepLux first");
-        return result;
-    }
-
-    QByteArray buffer;
-
-    // 可选认证握手：配置了 agent/bridgeToken 时，首帧必须是 auth
-    if (!m_authToken.isEmpty()) {
-        const QJsonObject authFrame{{QStringLiteral("version"), QStringLiteral("1.0")},
-                                    {QStringLiteral("type"), QStringLiteral("auth")},
-                                    {QStringLiteral("id"), QStringLiteral("mcp-auth")},
-                                    {QStringLiteral("payload"), QJsonObject{{QStringLiteral("token"), m_authToken}}}};
-        if (!writeFrame(socket, authFrame)) {
-            result.status = Status::GuiNotRunning;
-            result.errorMessage = QStringLiteral("DeepLux GUI is not running; start DeepLux first");
-            socket.abort();
-            return result;
-        }
-        QByteArray line;
-        const ReadLineStatus status = readLine(socket, buffer, line, qMax(1, remaining()));
-        if (status == ReadLineStatus::Disconnected) {
-            result.status = Status::GuiNotRunning;
-            result.errorMessage = QStringLiteral("DeepLux GUI is not running; start DeepLux first");
-            socket.abort();
-            return result;
-        }
-        bool authenticated = false;
-        if (status == ReadLineStatus::Ok) {
-            QJsonParseError parseError;
-            const QJsonDocument doc = QJsonDocument::fromJson(line, &parseError);
-            const QJsonObject response = doc.object();
-            authenticated =
-                parseError.error == QJsonParseError::NoError &&
-                response.value(QStringLiteral("type")).toString() == QStringLiteral("result") &&
-                response.value(QStringLiteral("payload")).toObject().value(QStringLiteral("status")).toString() ==
-                    QStringLiteral("authenticated");
-        }
-        if (!authenticated) {
-            // 令牌缺失/错误/认证超时统一 -32003；不回显令牌
-            result.status = Status::AuthFailed;
-            result.errorMessage = QStringLiteral("Bridge authentication failed");
-            socket.abort();
-            return result;
-        }
-    }
-
-    const QString requestId = QStringLiteral("mcp-%1").arg(m_nextRequestId++);
-    m_lastRequestId = requestId;
+    m_remainingCandidates = m_candidates;
+    m_buffer.clear();
+    m_requestId = QStringLiteral("mcp-%1").arg(m_nextRequestId++);
+    m_lastRequestId = m_requestId;
     const QJsonObject payload{{QStringLiteral("tool"), toolName},
                               {QStringLiteral("params"), params},
                               {QStringLiteral("origin"), QStringLiteral("mcp")}};
-    const QJsonObject frame{{QStringLiteral("version"), QStringLiteral("1.0")},
-                            {QStringLiteral("type"), QStringLiteral("tool_call")},
-                            {QStringLiteral("id"), requestId},
-                            {QStringLiteral("payload"), payload}};
-    if (!writeFrame(socket, frame)) {
-        result.status = Status::GuiNotRunning;
-        result.errorMessage = QStringLiteral("DeepLux GUI is not running; start DeepLux first");
-        socket.abort();
-        return result;
+    m_toolFrame = QJsonObject{{QStringLiteral("version"), QStringLiteral("1.0")},
+                              {QStringLiteral("type"), QStringLiteral("tool_call")},
+                              {QStringLiteral("id"), m_requestId},
+                              {QStringLiteral("payload"), payload}};
+
+    m_phase = Phase::Connecting;
+    restartTimeout(qMax(1, m_operationTimeoutMs));
+
+    if (m_remainingCandidates.isEmpty()) {
+        finish(Status::GuiNotRunning);
+        return;
+    }
+    tryNextCandidate();
+}
+
+void AgentBridgeClient::cancelCall() {
+    if (m_phase == Phase::Idle)
+        return;
+    // 取消只断开本地连接并抑制后续回调；不声称能中止 GUI 内已开始的操作。
+    resetTransport();
+}
+
+void AgentBridgeClient::tryNextCandidate() {
+    m_connectTimer->stop();
+    if (m_phase != Phase::Connecting)
+        return;
+    if (m_remainingCandidates.isEmpty()) {
+        finish(Status::GuiNotRunning);
+        return;
     }
 
-    while (true) {
-        const int remain = remaining();
-        if (remain <= 0) {
-            result.status = Status::Timeout;
-            break;
-        }
-        QByteArray line;
-        const ReadLineStatus status = readLine(socket, buffer, line, remain);
-        if (status == ReadLineStatus::Timeout) {
-            result.status = Status::Timeout;
-            break;
-        }
-        if (status == ReadLineStatus::Disconnected) {
-            result.status = Status::GuiNotRunning;
-            result.errorMessage = QStringLiteral("DeepLux GUI is not running; start DeepLux first");
-            break;
-        }
-        if (status == ReadLineStatus::TooLarge) {
-            result.status = Status::BridgeError;
-            result.errorMessage = QStringLiteral("Bridge response exceeded the frame limit");
-            break;
-        }
+    const QString candidate = m_remainingCandidates.takeFirst();
+    if (m_socket) {
+        m_socket->disconnect(this);
+        m_socket->abort();
+        m_socket->deleteLater();
+        m_socket = nullptr;
+    }
+
+    auto* socket = new QLocalSocket(this);
+    m_socket = socket;
+    connect(socket, &QLocalSocket::connected, this, &AgentBridgeClient::onConnected);
+    connect(socket, &QLocalSocket::readyRead, this, &AgentBridgeClient::onReadyRead);
+    connect(socket, &QLocalSocket::disconnected, this, &AgentBridgeClient::onDisconnected);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+    connect(socket, &QLocalSocket::errorOccurred, this, &AgentBridgeClient::onSocketError);
+#else
+    connect(socket, QOverload<QLocalSocket::LocalSocketError>::of(&QLocalSocket::error), this,
+            &AgentBridgeClient::onSocketError);
+#endif
+
+    const int configuredConnect = m_connectTimeoutMs > 0 ? m_connectTimeoutMs : 3000;
+    m_connectTimer->start(qBound(1, qMin(configuredConnect, m_operationTimeoutMs), kMaxConnectTimeoutMs));
+    socket->connectToServer(candidate);
+}
+
+void AgentBridgeClient::onConnected() {
+    m_connectTimer->stop();
+    if (m_phase != Phase::Connecting)
+        return;
+    if (!m_authToken.isEmpty()) {
+        sendAuth();
+    } else {
+        sendToolCall();
+    }
+}
+
+void AgentBridgeClient::sendAuth() {
+    const QJsonObject authFrame{{QStringLiteral("version"), QStringLiteral("1.0")},
+                                {QStringLiteral("type"), QStringLiteral("auth")},
+                                {QStringLiteral("id"), QStringLiteral("mcp-auth")},
+                                {QStringLiteral("payload"), QJsonObject{{QStringLiteral("token"), m_authToken}}}};
+    if (!m_socket || !writeFrame(*m_socket, authFrame)) {
+        finish(Status::GuiNotRunning);
+        return;
+    }
+    m_phase = Phase::Authenticating;
+}
+
+void AgentBridgeClient::sendToolCall() {
+    if (!m_socket || !writeFrame(*m_socket, m_toolFrame)) {
+        finish(Status::GuiNotRunning);
+        return;
+    }
+    m_phase = Phase::Waiting;
+}
+
+void AgentBridgeClient::onReadyRead() {
+    if (!m_socket || m_phase == Phase::Idle)
+        return;
+    m_buffer.append(m_socket->readAll());
+    if (m_buffer.size() > kMaxBridgeLineBytes) {
+        finish(Status::BridgeError, QStringLiteral("Bridge response exceeded the frame limit"));
+        return;
+    }
+    processBufferedLines();
+}
+
+void AgentBridgeClient::processBufferedLines() {
+    while (m_phase == Phase::Authenticating || m_phase == Phase::Waiting) {
+        const int index = m_buffer.indexOf('\n');
+        if (index < 0)
+            return;
+        QByteArray line = m_buffer.left(index);
+        m_buffer.remove(0, index + 1);
+        if (line.endsWith('\r'))
+            line.chop(1);
+        if (line.trimmed().isEmpty())
+            continue;
 
         QJsonParseError parseError;
         const QJsonDocument doc = QJsonDocument::fromJson(line, &parseError);
@@ -228,38 +227,130 @@ AgentBridgeClient::CallResult AgentBridgeClient::callTool(const QString& toolNam
             continue;
         }
         const QJsonObject response = doc.object();
-        if (response.value(QStringLiteral("id")).toString() != requestId) {
-            qWarning() << "[mcp-bridge] discarding late/unknown bridge response for id"
-                       << response.value(QStringLiteral("id")).toString();
+        const QString responseId = response.value(QStringLiteral("id")).toString();
+        const QString expectedId = (m_phase == Phase::Authenticating) ? QStringLiteral("mcp-auth") : m_requestId;
+        if (responseId != expectedId) {
+            qWarning() << "[mcp-bridge] discarding late/unknown bridge response for id" << responseId;
             continue;
         }
-        const QString type = response.value(QStringLiteral("type")).toString();
-        const QJsonObject responsePayload = response.value(QStringLiteral("payload")).toObject();
-        if (type == QStringLiteral("result")) {
-            result.ok = true;
-            result.status = Status::Ok;
-            result.payload = responsePayload;
-        } else if (type == QStringLiteral("error")) {
-            const QString message = responsePayload.value(QStringLiteral("message")).toString();
-            result.errorMessage = message;
-            const QString lower = message.toLower();
-            result.status = (lower.contains(QStringLiteral("auth")) || lower.contains(QStringLiteral("unauthorized")))
-                                ? Status::AuthFailed
-                                : Status::BridgeError;
-        } else {
-            qWarning() << "[mcp-bridge] discarding bridge frame with unknown type" << type;
-            continue;
-        }
-        break;
-    }
 
-    socket.disconnectFromServer();
-    if (result.status == Status::GuiNotRunning && result.errorMessage.isEmpty())
+        const QString type = response.value(QStringLiteral("type")).toString();
+        const QJsonObject payload = response.value(QStringLiteral("payload")).toObject();
+
+        if (m_phase == Phase::Authenticating) {
+            const bool ok = type == QStringLiteral("result") &&
+                            payload.value(QStringLiteral("status")).toString() == QStringLiteral("authenticated");
+            if (!ok) {
+                finish(Status::AuthFailed);
+                return;
+            }
+            sendToolCall();
+            continue;
+        }
+
+        if (type == QStringLiteral("result")) {
+            finish(Status::Ok, QString(), payload);
+            return;
+        }
+        if (type == QStringLiteral("error")) {
+            const QString message = payload.value(QStringLiteral("message")).toString();
+            const QString lower = message.toLower();
+            const Status status =
+                (lower.contains(QStringLiteral("auth")) || lower.contains(QStringLiteral("unauthorized")))
+                    ? Status::AuthFailed
+                    : Status::BridgeError;
+            finish(status, message);
+            return;
+        }
+        qWarning() << "[mcp-bridge] discarding bridge frame with unknown type" << type;
+    }
+}
+
+void AgentBridgeClient::onSocketError() {
+    if (m_phase == Phase::Connecting) {
+        // 当前候选不可用：尝试下一个
+        tryNextCandidate();
+        return;
+    }
+    if (m_phase == Phase::Authenticating || m_phase == Phase::Waiting)
+        finish(Status::GuiNotRunning);
+}
+
+void AgentBridgeClient::onDisconnected() {
+    if (m_phase == Phase::Connecting) {
+        tryNextCandidate();
+        return;
+    }
+    if (m_phase == Phase::Authenticating || m_phase == Phase::Waiting)
+        finish(Status::GuiNotRunning);
+}
+
+void AgentBridgeClient::restartTimeout(int ms) {
+    m_operationTimer->start(qMax(1, ms));
+}
+
+void AgentBridgeClient::finish(Status status, const QString& message, const QJsonObject& payload) {
+    if (m_phase == Phase::Idle && status == Status::Ok)
+        return;
+    resetTransport();
+
+    CallResult result;
+    result.status = status;
+    result.payload = payload;
+    result.errorMessage = message;
+    if (status == Status::Ok) {
+        result.ok = true;
+    } else if (status == Status::GuiNotRunning && result.errorMessage.isEmpty()) {
         result.errorMessage = QStringLiteral("DeepLux GUI is not running; start DeepLux first");
-    if (result.status == Status::Timeout && result.errorMessage.isEmpty())
-        result.errorMessage = QStringLiteral("Bridge request timed out after %1 ms").arg(totalMs);
-    if (result.status == Status::AuthFailed && result.errorMessage.isEmpty())
+    } else if (status == Status::Timeout && result.errorMessage.isEmpty()) {
+        result.errorMessage = QStringLiteral("Bridge request timed out after %1 ms").arg(m_operationTimeoutMs);
+    } else if (status == Status::AuthFailed && result.errorMessage.isEmpty()) {
         result.errorMessage = QStringLiteral("Bridge authentication failed");
+    }
+    emit callFinished(result);
+}
+
+void AgentBridgeClient::resetTransport() {
+    m_connectTimer->stop();
+    m_operationTimer->stop();
+    m_phase = Phase::Idle;
+    m_buffer.clear();
+    m_remainingCandidates.clear();
+    if (m_socket) {
+        m_socket->disconnect(this);
+        m_socket->abort();
+        m_socket->deleteLater();
+        m_socket = nullptr;
+    }
+}
+
+AgentBridgeClient::CallResult AgentBridgeClient::callTool(const QString& toolName, const QJsonObject& params) {
+    CallResult result;
+    bool completed = false;
+
+    QEventLoop loop;
+    const QMetaObject::Connection connection =
+        connect(this, &AgentBridgeClient::callFinished, &loop, [&](const CallResult& value) {
+            result = value;
+            completed = true;
+            loop.quit();
+        });
+    // 防御性兜底：异步层自身有超时；这里再加 1s 防止信号丢失导致挂死
+    QTimer guard;
+    guard.setSingleShot(true);
+    connect(&guard, &QTimer::timeout, &loop, &QEventLoop::quit);
+    guard.start(qMax(1, m_operationTimeoutMs) + 1000);
+
+    startCall(toolName, params);
+    if (!completed)
+        loop.exec();
+    disconnect(connection);
+
+    if (!completed) {
+        cancelCall();
+        result.status = Status::Timeout;
+        result.errorMessage = QStringLiteral("Bridge request timed out after %1 ms").arg(m_operationTimeoutMs);
+    }
     return result;
 }
 

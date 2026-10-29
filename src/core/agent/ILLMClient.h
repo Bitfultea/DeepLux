@@ -32,6 +32,9 @@ struct AgentMessage {
     QString toolCallId;                 // for tool role messages
     QList<AgentImageAttachment> images; // for multimodal user messages
     QString reasoningContent;           // DeepSeek thinking mode: 必须原样传回
+    // 内部来源标记：工具产图自动回灌的 user 消息属于原用户任务，不构成新任务边界。
+    // 不参与对外模型协议序列化。
+    bool internalAutoInjected = false;
 };
 
 /**

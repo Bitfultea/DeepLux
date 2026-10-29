@@ -35,6 +35,12 @@ public:
 
     // ---- 测试/诊断可见 ----
     DEEPLUX_TEST_VISIBILITY : void setEnabledForTest(bool enabled);
+    void clearEnabledOverrideForTest() {
+        m_enabledOverride = -1;
+    }
+    bool enabledForTest() const {
+        return enabled();
+    }
     void setLogDirForTest(const QString& dir);
     void setNowForTest(const QDateTime& now);
     void clearNowForTest();

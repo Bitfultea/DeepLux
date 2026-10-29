@@ -1,19 +1,25 @@
 #ifndef DEEPLUX_MCP_AGENTBRIDGECLIENT_H
 #define DEEPLUX_MCP_AGENTBRIDGECLIENT_H
 
+#include <QByteArray>
 #include <QJsonObject>
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <QStringList>
+
+class QLocalSocket;
+class QTimer;
 
 namespace DeepLux {
 namespace Mcp {
 
 /**
- * @brief MCP 桥到 DeepLux GUI 的 AgentBridge v1.0 同步客户端
+ * @brief MCP 桥到 DeepLux GUI 的 AgentBridge v1.0 客户端
  *
- * 只实现 tool_call 转发与可选认证握手（不做 query/subscribe）。
- * 每次调用建立一条短连接并串行等待响应；所有等待都有上限，不会挂死进程。
+ * 异步实现：连接/认证/等待全部由 QLocalSocket 信号驱动，调用期间不阻塞事件循环，
+ * 因此 MCP 服务端可以继续接收取消通知与后续请求。同一实例同一时刻只允许一个在途调用。
+ * `callTool()` 保留为同步便利封装（内部使用局部 QEventLoop），仅用于测试/诊断。
  */
 class AgentBridgeClient : public QObject {
     Q_OBJECT
@@ -53,19 +59,51 @@ public:
     void setConnectTimeoutMs(int ms);
     int connectTimeoutMs() const;
 
-    /// 转发一个只读工具调用（调用方负责权限预检）
+    /// 异步发起一个只读工具调用（调用方负责权限预检）
+    void startCall(const QString& toolName, const QJsonObject& params);
+    /// 取消在途调用：立即断开本地连接，不再发出 callFinished
+    void cancelCall();
+    bool isCallActive() const;
+
+    /// 同步封装：启动异步调用并等待 callFinished / 超时
     CallResult callTool(const QString& toolName, const QJsonObject& params);
 
-    /// 最近一次 callTool 的原始请求 id（测试/诊断用）
+    /// 最近一次 callTool/startCall 的原始请求 id（测试/诊断用）
     QString lastRequestId() const;
 
+signals:
+    void callFinished(const CallResult& result);
+
 private:
+    enum class Phase { Idle, Connecting, Authenticating, Waiting };
+
+    void tryNextCandidate();
+    void onConnected();
+    void onReadyRead();
+    void onSocketError();
+    void onDisconnected();
+    void sendAuth();
+    void sendToolCall();
+    void processBufferedLines();
+    void restartTimeout(int ms);
+    void finish(Status status, const QString& message = QString(), const QJsonObject& payload = QJsonObject());
+    void resetTransport();
+
     QStringList m_candidates;
     QString m_authToken;
     int m_operationTimeoutMs = 30000;
     int m_connectTimeoutMs = 0;
     quint64 m_nextRequestId = 1;
     QString m_lastRequestId;
+
+    QPointer<QLocalSocket> m_socket;
+    QTimer* m_connectTimer = nullptr;
+    QTimer* m_operationTimer = nullptr;
+    QByteArray m_buffer;
+    QStringList m_remainingCandidates;
+    Phase m_phase = Phase::Idle;
+    QString m_requestId;
+    QJsonObject m_toolFrame;
 };
 
 } // namespace Mcp

@@ -49,7 +49,8 @@
 8. **两处明示行为变更**（属第二迭代目标，必须在 roadmap/交付记录里写明）：
    - `agent/reasoningEcho` 默认 `none` ⇒ reasoning **不再回传请求**（第一迭代基线是"有则回传"，见 `ILLMClient.cpp:44-47`）；需要回传的服务商用配置恢复（§3.7）。
    - `agent/contextBudgetTokens` 默认 **128000**（第一迭代硬编码 256000，见 `AgentController.cpp:803`）；预算收紧会让修剪更早发生（§7.1）。
-   除这两条外，不配置任何新键时行为与第一迭代等价。
+   - **集成收口 B3 追加**：删除"最新 user turn 永不裁剪"的单条规则，改为保护集合（§7.3 I4）；保护集合超限时以 `context_budget_exceeded` 失败关闭。自动回灌图片消息不再产生新的用户任务边界。
+   除这些条目外，不配置任何新键时行为与第一迭代等价。
 9. **单一事实源**：错误分类与重试策略仍只在 `OpenAILLMClient::classifyError / maxRetriesFor / retryDelayMs`（`OpenAILLMClient.h:49-55`）；预算/阈值只经 `AgentController` 的配置读取函数；SSE 解析只经 `SseStreamParser`。
 
 ---
@@ -479,7 +480,8 @@ void abortStreamedMessage(const QString& note);           // 中止：保留 + �
 
 ### 7.2 消息单元定义
 
-- **user turn**：一条 `role=user` 消息，到**下一条** `role=user` 之前的全部消息（含带图 user）。
+- **user turn**：一条**真实用户请求**（`role=user` 且未被标记为自动回灌）到**下一条真实用户请求**之前的全部消息。
+- **自动回灌消息**：工具产图后由控制器追加的 `role=user` 消息（含图片或文本降级），通过 `AgentMessage` 的内部来源标记识别；它属于**原用户任务**，不构成新的用户任务边界，也不得出现在对外模型协议中（序列化仍只发 role/content/images）。
 - **tool group**：一条 `role=assistant` 且 `toolCalls` 非空的消息，加上其后**紧邻的、toolCallId ∈ 该 assistant 的 tool_call ids** 的全部 `role=tool` 消息。
 - 其它（无 toolCalls 的 assistant、孤立 user）各自成单元。
 
@@ -492,8 +494,10 @@ void abortStreamedMessage(const QString& note);           // 中止：保留 + �
 | I1 | 历史中**不存在**孤立 `tool` 消息：每条 `tool.toolCallId` 必须能在**前一条** assistant 的 `toolCalls[].id` 中找到 |
 | I2 | `assistant(tool_calls)` 的每个 id 必须有对应 `tool` 消息；缺失即视为不完整组 → **整组移除**（防御性修复，防上一轮中止留下的半组） |
 | I3 | 裁剪只能以"单元"为粒度删除；**禁止**单删 `tool` 或单删带 toolCalls 的 assistant |
-| I4 | 最新 user turn **永不裁剪**（只裁它之前的） |
+| I4 | **保护集合**（集成收口 B3 修订，替代"最新 user turn 永不裁剪"）：当前真实用户请求、在途 assistant/tool 调用组、最近一个完整工具结果组一律不得删除；自动回灌 user 消息并入其所属任务，不单独形成保护边界。 |
 | I5 | 裁剪结束后 `history.first().role == "user"`（system 由 `systemPrompt` 单独承载，不在列表里） |
+| I6 | 发送前必须校验：每个 assistant(tool_calls) 的 id 与 tool 结果**恰好一一配对**，且当前保护集合可完整发送；不满足则不发请求。 |
+| I7 | 保护集合自身超过 token/消息数/图片预算 → 本轮以 `context_budget_exceeded` 确定性结束，不裁剪保护集合、不发送超限请求。 |
 
 **算法（替换 `AgentController.cpp:800-855`）**
 
@@ -502,16 +506,18 @@ trimHistoryIfNeeded():
     budget = contextBudgetTokens()                     # clamp；toolResultMaxChars 只在 §7.4 的写入点用，不参与裁剪循环
     repairOrphanToolGroups()                           # I1/I2：删除不完整组（含孤立 tool）
     while (!history.isEmpty() && history.first().role != "user"): removeFirst()   # I5
-    while (estimateTokens() > budget || history.size() > kMaxHistoryMessages):
-        if (dropOldestUserTurn()): continue            # 删 [0, 第二条 user 之前)
-        if (dropOldestToolGroup()): continue           # 删单个 tool group（从 index 1 起）
-        break                                          # 只剩最新 user turn：不再裁
+    protected = computeProtectedUnits()                # I4：当前真实请求 + 在途组 + 最近完整工具组
+    while ((estimateTokens() > budget || history.size() > kMaxHistoryMessages) && protectedOverBudget() == false):
+        if (dropOldestUserTurnOutsideProtected()): continue   # 只删完整旧任务
+        if (dropOldestToolGroupOutsideProtected()): continue  # 只删当前任务内更早的完整组
+        break                                          # 无可删单元：保护集合超限由发送前检查收口
     while (!history.isEmpty() && history.first().role != "user"): removeFirst()   # 最终保证
 ```
 
-- `dropOldestUserTurn()`：找第 2 条 `user` 的下标 `i2`，删除 `[0, i2)`；无第 2 条 user → 返回 false。
-- `dropOldestToolGroup()`：从 `index=1` 起找第一条 `assistant && !toolCalls.isEmpty()`，删除它 + 紧随的匹配 tool 消息（按 I1 匹配，遇到不匹配的 tool 也一并删并记 `qWarning`）；找不到 → false。
-- `repairOrphanToolGroups()`：单趟扫描，遇到 `tool` 且前一条不是匹配的 assistant（或 id 不在其 toolCalls）→ 删除该 tool；遇到 assistant(toolCalls) 但后续缺 id → 整组删除。只在裁剪入口执行一次。
+- `dropOldestUserTurnOutsideProtected()`：找保护集合之前的**真实用户请求**边界，整段删除；自动回灌 user 消息不作为边界。没有可删旧任务 → false。
+- `dropOldestToolGroupOutsideProtected()`：从 `index=1` 起找第一个不在保护集合内的完整 tool group 删除；不得拆组、不得删除在途组或最近完整组。
+- `repairOrphanToolGroups()`：单趟扫描，遇到 `tool` 且前一条不是匹配的 assistant（或 id 不在其 toolCalls）→ 删除该 tool；遇到 assistant(toolCalls) 但后续缺 id → 整组删除。只在裁剪入口执行一次；**在途** assistant/tool 组不得当作历史损坏删除。
+- `sendRequest` 前的唯一检查入口：先 `repairOrphanToolGroups()` + 配对校验（I6），再计算保护集合预算；超限发 `context_budget_exceeded`（I7），记录本地可诊断日志并结束本轮。
 - 复杂度 O(n²) 可接受（n ≤ 数百）；**禁止**为了性能改变单元语义。
 - 日志：每次裁剪 `Logger::instance().addLog("history trimmed: -N msgs (-M tokens), budget=…", Debug, "Agent")`（便于现场核账）。
 
@@ -543,6 +549,7 @@ QString truncateToolResult(const QString& json, int maxChars /* default 6000, cl
 
 - `AgentConversation.toOpenAIMessages()` 把 `systemPrompt` 放在 `messages` 之前（`ILLMClient.cpp:8-13`），因此消息列表本身**没有 system 角色**；"首条非 system 为 user" 等价于 `m_conversationHistory.first().role == "user"`。
 - 三个裁剪入口（`sendUserMessage` 后、`onLLMResponse` 后、`extendAgentLoop` 后，`AgentController.cpp:361`/`:460`/`:647`）都必须满足；算法最后一步强制保证（I5）。
+- 所有 `sendRequest` 调用点（用户消息、工具续跑、流式回退重发）之前必须经过同一个上下文发送检查：配对合法（I6）且保护集合在预算内；否则不发请求并以 `context_budget_exceeded` 结束本轮。
 - 新增测试断言直接检查：`history.isEmpty() || history.first().role == "user"`。
 
 ### 7.6 硬消息上限
@@ -562,8 +569,8 @@ QString truncateToolResult(const QString& json, int maxChars /* default 6000, cl
 |---|---|---|
 | `testTrimHistoryPreservesMessagePairs`（`:427-493`） | 7 轮 × ~100k 字符 ≈ 210k token > 128k → 丢弃若干最老 user turn；pair 关系保持；首条 user | **保持绿**（断言不变） |
 | `testTrimHistoryEnforcesHardMessageLimit`（`:495-513`） | 80 条 ≤64 → 逐对删除至 64，末条 assistant-39 | **保持绿** |
-| `testTrimHistoryEnforcesHardLimitWithinSingleUserTurn`（`:515-538`） | 单 turn 71 条 → 逐组删 4 组至 63，`[1]` assistant | **保持绿** |
-| `testTrimHistoryAccountsForImageBytes`（`:540-560`） | 旧轮整体丢弃，仅剩 latest | **保持绿** |
+| `testTrimHistoryEnforcesHardLimitWithinSingleUserTurn`（`:515-538`） | 单 turn 71 条 → 逐组删 4 组至 63，`[1]` assistant | **保持绿**（B3 只额外保护最后 1 组；删的是更早的完整组） |
+| `testTrimHistoryAccountsForImageBytes`（`:540-560`） | 旧轮整体丢弃，仅剩 latest | **保持绿**（latest 是当前真实请求） |
 | 6k 截断 | 既有 tool 消息都远小于 6k → 内容不变 | **保持绿** |
 
 > 若实现后发现某条既有断言与新不变量冲突，**不得**改既有断言来迁就实现；必须先报 architect 更新本文（这是契约冻结的意义）。
@@ -684,7 +691,9 @@ struct SseScript {
 | 6 | `testToolResultTruncatedAt6k` | 8000 字符 tool 结果 → `content.size() < 8000`、含 `…[truncated 2000 chars]…`、首 4000 与末 2000 字符保留 |
 | 7 | `testTruncationOnlyForToolRole` | 8000 字符 user/assistant 不截断 |
 | 8 | `testTruncationMarkerCount` | 恰好 6000 字符 → 不截断；6001 → 标记 `[truncated 1 chars]` |
-| 9 | `testLatestTurnNeverTrimmed` | 极端预算（16000）+ 巨大最新 turn → 最新 user turn 及其后续消息完整保留 |
+| 9 | `testProtectedSetNeverTrimmed` | 极端预算（16000）+ 巨大当前任务 → 当前真实用户请求、在途调用组、最近完整工具组完整保留；旧任务整段丢弃 |
+| 9b | `testProtectedSetOverBudgetFailsClosed` | 保护集合自身超预算 → 无模型请求，终态 `context_budget_exceeded`，本地有诊断记录 |
+| 9c | `testAutoInjectedImageKeepsTaskBoundary` | 自动回灌图片 user 消息不产生新任务边界；原任务意图仍保留 |
 | 10 | `testImageBytesCounted` | 2MB 图片轮在超预算时被整体丢弃（沿用 `:540-560` 的构造） |
 | 11 | `testBuildContextSummary` | 25 模块 → 含 `(25)`、前 24 个、`(+1 more; call get_flow_state for the full list)`，不含第 25 个 |
 | 12 | `testBuildContextFullForSmallProject` | 3 模块 → 全量、无摘要、无 `get_flow_state` 提示 |
