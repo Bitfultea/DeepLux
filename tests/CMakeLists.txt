@@ -438,8 +438,11 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
 
     # 第二迭代下半：MCP 桥直接复用 src/app 的静态库 deeplux_mcp（协议/权限在同一实现上测试）
+    # 集成收口 B4：黑盒测试启动真实 deeplux-mcp-bridge 子进程
     if(TEST_NAME STREQUAL "test_mcpbridge")
         target_link_libraries(${TEST_NAME} PRIVATE deeplux_mcp)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            DEEPLUX_MCP_BRIDGE_PATH="$<TARGET_FILE:deeplux-mcp-bridge>")
     endif()
 
     # GUI 测试在扫描插件/换肤时会输出大量 qDebug，Qt 6 的默认 -maxwarnings
