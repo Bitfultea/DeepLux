@@ -414,17 +414,30 @@ private slots:
         QVERIFY(budget != nullptr);
         QVERIFY(toolChars != nullptr);
         QCOMPARE(budget->minimum(), 16000);
-        QCOMPARE(budget->maximum(), 1000000);
+        QCOMPARE(budget->maximum(), 1048576);
         budget->setValue(1);
         QCOMPARE(budget->value(), 16000);
         budget->setValue(1000000000);
-        QCOMPARE(budget->value(), 1000000);
-        QCOMPARE(dialog.contextBudgetTokens(), 1000000);
+        QCOMPARE(budget->value(), 1048576);
+        QCOMPARE(dialog.contextBudgetTokens(), 1048576);
         toolChars->setValue(1);
         QCOMPARE(toolChars->value(), 1000);
         toolChars->setValue(999999);
         QCOMPARE(toolChars->value(), 64000);
         QCOMPARE(dialog.toolResultMaxChars(), 64000);
+    }
+
+    void testDeepSeekFlashSettingsPreset() {
+        AgentSettingsDialog dialog;
+        auto* preset = dialog.findChild<QPushButton*>(QStringLiteral("DeepSeekFlashPresetButton"));
+        QVERIFY(preset != nullptr);
+        preset->click();
+        QCOMPARE(dialog.endpoint(), QStringLiteral("https://api.deepseek.com"));
+        QCOMPARE(dialog.model(), QStringLiteral("deepseek-flash"));
+        QVERIFY(dialog.visionEnabled());
+        QVERIFY(dialog.thinkingEnabled());
+        QCOMPARE(dialog.reasoningEffort(), QStringLiteral("high"));
+        QCOMPARE(dialog.imageDetail(), QStringLiteral("original"));
     }
 
     // B5：隐私开关的默认值、显式值加载、保存绑定与窄窗口可见性

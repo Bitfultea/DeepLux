@@ -53,7 +53,7 @@ struct AgentConversation {
     QString systemPrompt;
 
     QJsonArray toOpenAIMessages() const;
-    QJsonArray toOpenAIMessages(ReasoningEcho echo) const;
+    QJsonArray toOpenAIMessages(ReasoningEcho echo, const QString& imageDetail = QString()) const;
 };
 
 /**
@@ -143,6 +143,12 @@ public:
     virtual void setToolsEnabled(bool enabled) = 0;
     virtual bool supportsImageInput() const {
         return false;
+    }
+    virtual qint64 estimateImageTokens(const AgentImageAttachment& image) const {
+        return (image.data.size() + 2) / 3;
+    }
+    virtual int preferredImageLongEdge() const {
+        return 1280;
     }
 
     // 发送请求（异步）

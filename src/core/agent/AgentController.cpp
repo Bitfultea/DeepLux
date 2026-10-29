@@ -1091,9 +1091,9 @@ void AgentController::attachToolImages(const QJsonArray& results) {
             continue;
         }
         QImage scaled = image;
-        if (qMax(width, height) > kMaxToolImageLongEdge) {
-            scaled = image.scaled(kMaxToolImageLongEdge, kMaxToolImageLongEdge, Qt::KeepAspectRatio,
-                                  Qt::SmoothTransformation);
+        const int maxLongEdge = m_llmClient ? m_llmClient->preferredImageLongEdge() : kMaxToolImageLongEdge;
+        if (qMax(width, height) > maxLongEdge) {
+            scaled = image.scaled(maxLongEdge, maxLongEdge, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         }
         QByteArray data;
         QBuffer pngBuffer(&data);
@@ -1180,7 +1180,7 @@ int AgentController::contextBudgetTokens() const {
     const int configured = ConfigManager::instance().isInitialized()
                                ? ConfigManager::instance().groupInt("agent", "contextBudgetTokens", 128000)
                                : 128000;
-    return qBound(16000, configured, 1000000);
+    return qBound(16000, configured, 1048576);
 }
 
 int AgentController::toolResultMaxChars() const {
@@ -1213,7 +1213,7 @@ int AgentController::flowSummaryPreviewCount() const {
 void AgentController::setContextLimitsForTest(int budgetTokens, int toolResultMaxChars, int summaryThreshold,
                                               int summaryPreviewCount) {
     if (budgetTokens >= 0)
-        m_contextBudgetOverride = qBound(16000, budgetTokens, 1000000);
+        m_contextBudgetOverride = qBound(16000, budgetTokens, 1048576);
     if (toolResultMaxChars >= 0)
         m_toolResultMaxCharsOverride = qBound(1000, toolResultMaxChars, 64000);
     if (summaryThreshold >= 0)
@@ -1253,7 +1253,7 @@ qint64 AgentController::estimateTokensFor(const QList<AgentMessage>& messages, c
         if (countReasoning && !message.reasoningContent.isEmpty())
             estimated += static_cast<qint64>(message.reasoningContent.length()) * 3 / 10;
         for (const AgentImageAttachment& image : message.images)
-            estimated += (image.data.size() + 2) / 3;
+            estimated += m_llmClient ? m_llmClient->estimateImageTokens(image) : (image.data.size() + 2) / 3;
     }
     return estimated;
 }

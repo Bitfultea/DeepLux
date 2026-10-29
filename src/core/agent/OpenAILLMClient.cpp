@@ -130,7 +130,7 @@ bool OpenAILLMClient::heuristicSupportsVision(const QString& model) {
     // 设计 §7.3：显式配置优先；本启发式只在配置缺省时使用
     static const QRegularExpression visionPattern(
         QStringLiteral("gpt-4o|gpt-4\\.1|claude-3|claude-4|gemini|qwen-vl|qwen2\\.5-vl|glm-4v|internvl|llava|"
-                       "pixtral"),
+                       "pixtral|deepseek-(v4-)?flash(-vision-exp)?"),
         QRegularExpression::CaseInsensitiveOption);
     static const QRegularExpression textOnlyPattern(QStringLiteral("deepseek-(chat|reasoner)|o1-mini|text-davinci"),
                                                     QRegularExpression::CaseInsensitiveOption);
@@ -146,6 +146,27 @@ void OpenAILLMClient::setReasoningEffort(const QString& effort) {
 }
 void OpenAILLMClient::setThinkingEnabled(bool enabled) {
     m_thinkingEnabled = enabled;
+}
+bool OpenAILLMClient::isDeepSeekFlashModel(const QString& model) {
+    static const QRegularExpression pattern(QStringLiteral("^deepseek-(v4-)?flash(-vision-exp)?$"),
+                                            QRegularExpression::CaseInsensitiveOption);
+    return pattern.match(model.trimmed()).hasMatch();
+}
+
+qint64 OpenAILLMClient::estimateImageTokens(const AgentImageAttachment& image) const {
+    return isDeepSeekFlashModel(m_model) ? 1024 : ILLMClient::estimateImageTokens(image);
+}
+
+int OpenAILLMClient::preferredImageLongEdge() const {
+    if (!isDeepSeekFlashModel(m_model))
+        return ILLMClient::preferredImageLongEdge();
+    return m_imageDetail == QLatin1String("low") ? 512 : 3000;
+}
+
+void OpenAILLMClient::setImageDetail(const QString& detail) {
+    static const QSet<QString> supported = {QStringLiteral("auto"), QStringLiteral("high"), QStringLiteral("low"),
+                                            QStringLiteral("original")};
+    m_imageDetail = supported.contains(detail) ? detail : QStringLiteral("original");
 }
 
 // ========== 错误分类与重试策略（唯一实现，§7.2/§7.3） ==========
@@ -276,9 +297,11 @@ int OpenAILLMClient::retryDelayMs(LLMErrorCategory category, int retryIndex) {
 QJsonObject OpenAILLMClient::buildRequestBody(const AgentConversation& ctx, const QList<ToolDefinition>& tools) const {
     QJsonObject body;
     body["model"] = m_model;
-    body["temperature"] = m_temperature;
+    const bool deepSeekFlash = isDeepSeekFlashModel(m_model);
+    if (!deepSeekFlash || !m_thinkingEnabled)
+        body["temperature"] = m_temperature;
     body["max_tokens"] = m_maxTokens;
-    body["messages"] = ctx.toOpenAIMessages(m_reasoningEcho);
+    body["messages"] = ctx.toOpenAIMessages(m_reasoningEcho, deepSeekFlash ? m_imageDetail : QString());
 
     if (m_toolsEnabled && !tools.isEmpty()) {
         QJsonArray toolsArray;
@@ -297,10 +320,13 @@ QJsonObject OpenAILLMClient::buildRequestBody(const AgentConversation& ctx, cons
     }
 
     // DeepSeek thinking mode
-    if (!m_reasoningEffort.isEmpty()) {
+    if (!m_reasoningEffort.isEmpty() && (!deepSeekFlash || m_thinkingEnabled)) {
         body["reasoning_effort"] = m_reasoningEffort;
     }
-    if (m_thinkingEnabled) {
+    if (deepSeekFlash) {
+        body["thinking"] =
+            QJsonObject{{"type", m_thinkingEnabled ? QStringLiteral("enabled") : QStringLiteral("disabled")}};
+    } else if (m_thinkingEnabled) {
         body["thinking"] = QJsonObject{{"type", "enabled"}};
     }
 

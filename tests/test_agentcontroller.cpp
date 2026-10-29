@@ -1,6 +1,8 @@
 #include <QJsonDocument>
+#include <QImage>
 #include <QRegularExpression>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QThread>
 #include <QtTest/QtTest>
 
@@ -287,6 +289,101 @@ private slots:
                  QStringLiteral("https://api.example.test/v1/chat/completions"));
         QCOMPARE(OpenAILLMClient::normalizeEndpoint(QStringLiteral("http://localhost:8080/custom")),
                  QStringLiteral("http://localhost:8080/custom"));
+    }
+
+    void testDeepSeekFlashImagePayloadAndBudget() {
+        OpenAILLMClient client;
+        client.setModel(QStringLiteral("deepseek-flash"));
+        client.setThinkingEnabled(true);
+        client.setReasoningEffort(QStringLiteral("high"));
+        client.setImageDetail(QStringLiteral("low"));
+
+        AgentConversation context;
+        AgentMessage message;
+        message.role = QStringLiteral("user");
+        AgentImageAttachment image;
+        image.data = QByteArray(3 * 1024 * 1024, '\0');
+        image.mimeType = QStringLiteral("image/jpeg");
+        message.images.append(image);
+        context.messages.append(message);
+
+        AgentController& controller = AgentController::instance();
+        controller.setLLMClient(&client);
+        const qint64 contextEstimate = controller.estimateTokensFor(context.messages, QString(), false);
+        controller.setLLMClient(m_mock);
+
+        const QJsonObject body = client.buildRequestBody(context, {});
+        QVERIFY(!body.contains(QStringLiteral("temperature")));
+        QCOMPARE(body.value(QStringLiteral("thinking")).toObject().value(QStringLiteral("type")).toString(),
+                 QStringLiteral("enabled"));
+        QCOMPARE(body.value(QStringLiteral("reasoning_effort")).toString(), QStringLiteral("high"));
+        const QJsonObject imageUrl = body.value(QStringLiteral("messages"))
+                                         .toArray()
+                                         .last()
+                                         .toObject()
+                                         .value(QStringLiteral("content"))
+                                         .toArray()
+                                         .last()
+                                         .toObject()
+                                         .value(QStringLiteral("image_url"))
+                                         .toObject();
+        QCOMPARE(imageUrl.value(QStringLiteral("detail")).toString(), QStringLiteral("low"));
+        QVERIFY(imageUrl.value(QStringLiteral("url")).toString().startsWith(QStringLiteral("data:image/jpeg;base64,")));
+        QCOMPARE(client.estimateImageTokens(image), qint64(1024));
+        QCOMPARE(client.preferredImageLongEdge(), 512);
+        QVERIFY(OpenAILLMClient::heuristicSupportsVision(QStringLiteral("deepseek-flash")));
+        QVERIFY(OpenAILLMClient::isDeepSeekFlashModel(QStringLiteral("deepseek-v4-flash-vision-exp")));
+
+        QCOMPARE(contextEstimate, qint64(1044));
+
+        client.setThinkingEnabled(false);
+        const QJsonObject disabledBody = client.buildRequestBody(context, {});
+        QCOMPARE(disabledBody.value(QStringLiteral("thinking")).toObject().value(QStringLiteral("type")).toString(),
+                 QStringLiteral("disabled"));
+        QVERIFY(disabledBody.contains(QStringLiteral("temperature")));
+        QVERIFY(!disabledBody.contains(QStringLiteral("reasoning_effort")));
+
+        client.setModel(QStringLiteral("gpt-4o"));
+        const QJsonObject genericBody = client.buildRequestBody(context, {});
+        const QJsonObject genericImageUrl = genericBody.value(QStringLiteral("messages"))
+                                                .toArray()
+                                                .last()
+                                                .toObject()
+                                                .value(QStringLiteral("content"))
+                                                .toArray()
+                                                .last()
+                                                .toObject()
+                                                .value(QStringLiteral("image_url"))
+                                                .toObject();
+        QVERIFY(!genericImageUrl.contains(QStringLiteral("detail")));
+        QCOMPARE(client.preferredImageLongEdge(), 1280);
+        QCOMPARE(client.estimateImageTokens(image), qint64((image.data.size() + 2) / 3));
+    }
+
+    void testDeepSeekToolImageKeepsIndustrialResolution() {
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString imagePath = tempDir.filePath(QStringLiteral("inspection.png"));
+        QImage source(1800, 1200, QImage::Format_RGB32);
+        source.fill(QColor(220, 210, 180));
+        QVERIFY(source.save(imagePath));
+
+        AgentController& controller = AgentController::instance();
+        OpenAILLMClient client;
+        client.setModel(QStringLiteral("deepseek-flash"));
+        controller.setLLMClient(&client);
+        const QJsonArray results{
+            QJsonObject{{QStringLiteral("tool"), QStringLiteral("capture_viewport_image")},
+                        {QStringLiteral("result"), QJsonObject{{QStringLiteral("imagePath"), imagePath}}}}};
+        controller.attachToolImages(results);
+        const QList<AgentImageAttachment> attachments = controller.m_conversationHistory.isEmpty()
+                                                            ? QList<AgentImageAttachment>()
+                                                            : controller.m_conversationHistory.constLast().images;
+        controller.clearConversation();
+        controller.setLLMClient(m_mock);
+        QCOMPARE(attachments.size(), 1);
+        const QImage transmitted = QImage::fromData(attachments.constFirst().data);
+        QCOMPARE(transmitted.size(), QSize(1800, 1200));
     }
 
     // ---------- Advisor 模式确认流程 ----------
@@ -1579,7 +1676,7 @@ private slots:
         QCOMPARE(controller.flowSummaryPreviewCount(), 1);
 
         controller.setContextLimitsForTest(2000000, 100000, 5000, 5000);
-        QCOMPARE(controller.contextBudgetTokens(), 1000000); // clamp 上限
+        QCOMPARE(controller.contextBudgetTokens(), 1048576); // 对齐 DeepSeek Flash 上下文上限
         QCOMPARE(controller.toolResultMaxChars(), 64000);
         QCOMPARE(controller.flowSummaryThreshold(), 1000);
         QCOMPARE(controller.flowSummaryPreviewCount(), 200);

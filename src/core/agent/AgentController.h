@@ -159,7 +159,7 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
     static bool toolRequiresConfirmation(PermissionLevel level, const QString& toolName);
 
     // ---- 上下文治理（设计 §7/§8）：唯一配置读取点 + 预算/阈值访问器 ----
-    int contextBudgetTokens() const;     // agent/contextBudgetTokens 默认 128000，clamp [16000,1000000]
+    int contextBudgetTokens() const;     // agent/contextBudgetTokens 默认 128000，clamp [16000,1048576]
     int toolResultMaxChars() const;      // agent/toolResultMaxChars 默认 6000，clamp [1000,64000]
     int flowSummaryThreshold() const;    // agent/flowSummaryThreshold 默认 24，clamp [1,1000]
     int flowSummaryPreviewCount() const; // agent/flowSummaryPreviewCount 默认 24，clamp [1,200]
