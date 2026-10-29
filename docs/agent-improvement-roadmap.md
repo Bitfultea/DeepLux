@@ -683,3 +683,7 @@ ctest（全量）           → 84/84 Passed，0 skipped/disabled，exit 0
 6. **MCP 依赖拆分与扩展**：抽 `deeplux_agent_api` 轻量库（避免拉起 Widgets/OpenCV）；如需支持 MCP 流式/分页再扩展。
 7. **对话质量继续**：上下文摘要/记忆（替代纯裁剪）、reasoning 回传策略按 provider 自适应（当前默认 none + 手动开关）。
 8. **隐私与现场验收**：失败请求正文默认关闭与设置页开关已并入集成收口 B5；真实供应商、Windows 和带 CUDA 的 Linux 构建的现场验收仍未完成，不能用离线 stub 或另一平台结果替代。
+
+### 12.9 集成收口（2026-10-29）
+
+两轮迭代后的集成更新已按 [agent-integration-hardening-plan.md](agent-integration-hardening-plan.md) 完成 B0~B6 工程验收：失败闭环、权限/确认有效期、上下文保护、MCP 取消与输入边界、隐私开关均已落地；全量 CTest 86/86 通过（隔离 HOME），B1~B4 关键边界定向重复 20/20。Windows、真实模型供应商、实际 MCP 客户端与真实 GUI 手工场景仍未验证，详见 [验收记录](reports/agent-integration-hardening-acceptance.md)，不得据此宣称使用验收通过。

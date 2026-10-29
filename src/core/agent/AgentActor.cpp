@@ -681,10 +681,12 @@ QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& t
 
         const bool switchesProject =
             pair.first == QStringLiteral("create_project") || pair.first == QStringLiteral("open_project");
-        if (switchesProject && macroOpen) {
+        const bool undoable = toolUndoable(pair.first);
+        if ((switchesProject || !undoable) && macroOpen) {
             m_undoStack->endMacro();
             macroOpen = false;
-        } else if (!switchesProject && !macroOpen) {
+        }
+        if (!switchesProject && undoable && !macroOpen) {
             m_undoStack->beginMacro(macroName);
             macroOpen = true;
         }

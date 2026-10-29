@@ -347,6 +347,102 @@ private slots:
         QVERIFY(errorSpy.last().at(0).toString().contains(QStringLiteral("轮数")));
     }
 
+    // B6 确定性闭环：运行失败 → 诊断被跳过 → 改参 → 再运行成功 → 模型总结；参数可撤销
+    void testDiagnoseTuneRerunClosedLoop() {
+        AgentController& controller = AgentController::instance();
+        QVERIFY(controller.initialize());
+        AgentActor* actor = controller.actor();
+        QVERIFY(actor != nullptr);
+        QVERIFY(!actor->executeTool(QStringLiteral("create_project"), {{"name", "DiagnoseLoop"}}).contains("error"));
+        QVERIFY(
+            !actor->executeTool(QStringLiteral("add_module"), {{"plugin", "GrabImage"}, {"instanceName", "grab_fix"}})
+                 .contains("error"));
+        QVERIFY(!actor
+                     ->executeTool(QStringLiteral("set_param"),
+                                   {{"instanceId", "grab_fix"}, {"key", "grabSource"}, {"value", "Path"}})
+                     .contains("error"));
+        const QString missingPath = QStringLiteral("/nonexistent/deeplux-diagnose.png");
+        QVERIFY(!actor
+                     ->executeTool(QStringLiteral("set_param"),
+                                   {{"instanceId", "grab_fix"}, {"key", "filePath"}, {"value", missingPath}})
+                     .contains("error"));
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+
+        controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+        ClosedLoopLLMClient client;
+        controller.setLLMClient(&client);
+        QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+
+        controller.sendUserMessage(QStringLiteral("the flow fails, diagnose and fix it"));
+        AgentResponse runFail;
+        runFail.success = true;
+        runFail.toolCalls.append(makeToolCallJson(QStringLiteral("run-1"), QStringLiteral("run_flow"), {}));
+        runFail.toolCalls.append(makeToolCallJson(QStringLiteral("diag-1"), QStringLiteral("get_node_runtime_outputs"),
+                                                  QJsonObject{{"nodeName", "grab_fix"}}));
+        client.reply(runFail);
+
+        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 2, 10000);
+        bool runFailed = false;
+        bool diagnoseSkipped = false;
+        for (const AgentMessage& message : client.lastCtx.messages) {
+            if (message.role != QLatin1String("tool"))
+                continue;
+            const QJsonObject payload = QJsonDocument::fromJson(message.content.toUtf8()).object();
+            if (message.toolCallId == QLatin1String("run-1"))
+                runFailed = payload.value("code").toString() == QLatin1String("run_failed");
+            if (message.toolCallId == QLatin1String("diag-1"))
+                diagnoseSkipped = payload.value("skipped").toBool();
+        }
+        QVERIFY(runFailed);
+        QVERIFY(diagnoseSkipped);
+
+        AgentResponse tune;
+        tune.success = true;
+        tune.toolCalls.append(
+            makeToolCallJson(QStringLiteral("tune-1"), QStringLiteral("set_param"),
+                             QJsonObject{{"instanceId", "grab_fix"}, {"key", "filePath"}, {"value", dataImagePath()}}));
+        client.reply(tune);
+        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 3, 10000);
+        QCOMPARE(project->moduleById(QStringLiteral("grab_fix"))->params.value("filePath").toString(), dataImagePath());
+
+        AgentResponse rerun;
+        rerun.success = true;
+        rerun.toolCalls.append(makeToolCallJson(QStringLiteral("run-2"), QStringLiteral("run_flow"), {}));
+        client.reply(rerun);
+        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 4, 10000);
+
+        bool rerunSucceeded = false;
+        for (const AgentMessage& message : client.lastCtx.messages) {
+            if (message.role != QLatin1String("tool") || message.toolCallId != QLatin1String("run-2"))
+                continue;
+            const QJsonObject payload = QJsonDocument::fromJson(message.content.toUtf8()).object();
+            rerunSucceeded = payload.value("success").toBool();
+        }
+        QVERIFY2(rerunSucceeded, "the corrected flow must report success to the model");
+
+        AgentResponse done;
+        done.success = true;
+        done.content = QStringLiteral("fixed and verified");
+        client.reply(done);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+
+        QStringList outcomes;
+        for (const QList<QVariant>& args : auditSpy) {
+            const AgentActionLogEntry entry = args.at(0).value<AgentActionLogEntry>();
+            if (entry.action == QLatin1String("run_flow") || entry.action == QLatin1String("set_param") ||
+                entry.action == QLatin1String("get_node_runtime_outputs"))
+                outcomes << entry.result;
+        }
+        QVERIFY2(outcomes.contains(QStringLiteral("error")), qPrintable(outcomes.join(QStringLiteral(","))));
+        QVERIFY2(outcomes.contains(QStringLiteral("skipped")), qPrintable(outcomes.join(QStringLiteral(","))));
+        QVERIFY2(outcomes.contains(QStringLiteral("success")), qPrintable(outcomes.join(QStringLiteral(","))));
+
+        // 撤销只覆盖工程编辑：改参可回滚，运行副作用不在撤销承诺内
+        QVERIFY(controller.undoLastAgentAction());
+        QCOMPARE(project->moduleById(QStringLiteral("grab_fix"))->params.value("filePath").toString(), missingPath);
+    }
+
     // 非 run_failed 失败（参数错误等）默认结束本轮：不再请求模型，后续写操作不执行，
     // 但仍为每个 tool_call 写入配对结果。
     void testNonRunFailureEndsTurnWithoutReplan() {

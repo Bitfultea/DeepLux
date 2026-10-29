@@ -1,6 +1,6 @@
 # Agent 两轮集成更新收口实施计划
 
-- 状态：执行中（B0 已完成）；本文不是已完成报告。
+- 状态：工程验收完成（B0~B6）；使用验收（真实模型/Windows/实际 MCP 客户端）仍未验证，见验收记录。
 - 编制日期：2026-10-28。
 - 评审基线：`9cf9aa7`，包含第一迭代 `af56b5b`、第二迭代 `0fd1aa2` 及集成修正。
 - 对标源码：[visionflow-studio，dcbccb3](https://github.com/agentthink/visionflow-studio/tree/dcbccb3d961f446e8127e74bb7feb42d20dbdac1)。借鉴机制，不以工具数量或功能完全相同为验收目标。
@@ -221,12 +221,14 @@ Windows 按 [windows-build.md](windows-build.md) 执行构建、插件同步与 
 ## 13. 当前进度
 
 - [x] 复审问题与执行计划整理。
-- [x] B0 契约与基线冻结。
-- [ ] B1 失败闭环。
-- [ ] B2 权限与确认。
-- [ ] B3 上下文保护。
-- [ ] B4 MCP 边界。
-- [ ] B5 隐私设置。
-- [ ] B6 综合验收与批准。
+- [x] B0 契约与基线冻结（`3fe85a0`）。
+- [x] B1 失败闭环（`0b30827`）。
+- [x] B2 权限与确认（`0240448`）。
+- [x] B3 上下文保护（`c99d833`）。
+- [x] B4 MCP 边界（`3de03a6`）。
+- [x] B5 隐私设置（`2f12592`）。
+- [x] B6 综合验收与批准（本记录提交；详见 [验收记录](reports/agent-integration-hardening-acceptance.md)）。
+
+工程验收结论：全量 CTest 86/86 通过（隔离 HOME），B1~B4 与撤销边界定向重复 20/20。使用验收未完成：Windows、真实模型供应商、实际 MCP 客户端与真实 GUI 手工场景均无证据，已逐项记录为未验证，不写成已通过。
 
 基线记录（B0，2026-10-28）：HEAD `9cf9aa7`，工作区除本计划外干净；`build/CMakeCache.txt` 的 `CMAKE_HOME_DIRECTORY=/home/charles/Data/Repo/DeepLux`、`CMAKE_BUILD_TYPE=Debug`、Qt 5.15.2；基线 `cmake --build build -j4` 与 `ctest -R "test_agentactor|test_agentcontroller|test_agentclosedloop|test_agentaudit|test_agentpermissions|test_mcpbridge"` 全部通过（6/6）。本文件创建时未实施上述代码修改；上一轮定向测试结果仅是评审基线，不是本计划验收结果。
