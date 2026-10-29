@@ -49,8 +49,15 @@ void AgentSettingsDialog::setupUi() {
     formLayout->addRow("API Key:", m_apiKeyEdit);
 
     m_modelEdit = new QLineEdit(this);
-    m_modelEdit->setPlaceholderText("e.g. gpt-4o, deepseek-chat, claude-3-5-sonnet");
-    formLayout->addRow("Model:", m_modelEdit);
+    m_modelEdit->setPlaceholderText("e.g. gpt-4o, deepseek-flash, claude-3-5-sonnet");
+    auto* modelRow = new QWidget(this);
+    auto* modelLayout = new QHBoxLayout(modelRow);
+    modelLayout->setContentsMargins(0, 0, 0, 0);
+    auto* deepSeekPreset = new QPushButton(tr("DeepSeek Flash 1017 preset"), modelRow);
+    deepSeekPreset->setObjectName(QStringLiteral("DeepSeekFlashPresetButton"));
+    modelLayout->addWidget(m_modelEdit, 1);
+    modelLayout->addWidget(deepSeekPreset);
+    formLayout->addRow("Model:", modelRow);
 
     m_tempSpin = new QDoubleSpinBox(this);
     m_tempSpin->setRange(0.0, 2.0);
@@ -59,7 +66,7 @@ void AgentSettingsDialog::setupUi() {
     formLayout->addRow("Temperature:", m_tempSpin);
 
     m_maxTokensSpin = new QSpinBox(this);
-    m_maxTokensSpin->setRange(256, 16384);
+    m_maxTokensSpin->setRange(256, 393216);
     m_maxTokensSpin->setSingleStep(256);
     m_maxTokensSpin->setValue(4096);
     formLayout->addRow("Max Tokens:", m_maxTokensSpin);
@@ -67,10 +74,11 @@ void AgentSettingsDialog::setupUi() {
     // 第二迭代上下文治理：预算与单条 tool 结果上限（越界由 QSpinBox range 即时纠正）
     m_contextBudgetSpin = new QSpinBox(this);
     m_contextBudgetSpin->setObjectName(QStringLiteral("AgentContextBudgetSpin"));
-    m_contextBudgetSpin->setRange(16000, 1000000);
+    m_contextBudgetSpin->setRange(16000, 1048576);
     m_contextBudgetSpin->setSingleStep(1000);
     m_contextBudgetSpin->setValue(128000);
-    m_contextBudgetSpin->setToolTip("Context token budget (16000..1000000); older turns are trimmed when exceeded");
+    m_contextBudgetSpin->setToolTip(
+        "Local context cap (16000..1048576); older turns are trimmed when exceeded. Provider limits still apply.");
     formLayout->addRow("Context Budget (tokens):", m_contextBudgetSpin);
 
     m_toolResultMaxCharsSpin = new QSpinBox(this);
@@ -117,6 +125,48 @@ void AgentSettingsDialog::setupUi() {
     m_thinkingCheck->setToolTip("Enable only for providers that support the DeepSeek-compatible thinking field");
     formLayout->addRow(m_thinkingCheck);
 
+    m_reasoningEffortCombo = new QComboBox(this);
+    m_reasoningEffortCombo->setObjectName(QStringLiteral("AgentReasoningEffortCombo"));
+    m_reasoningEffortCombo->addItem(tr("Provider default"), QString());
+    m_reasoningEffortCombo->addItem(QStringLiteral("Low"), QStringLiteral("low"));
+    m_reasoningEffortCombo->addItem(QStringLiteral("High"), QStringLiteral("high"));
+    m_reasoningEffortCombo->addItem(QStringLiteral("Max"), QStringLiteral("max"));
+    m_reasoningEffortCombo->setToolTip(tr("DeepSeek Flash thinking effort; applies only to compatible providers."));
+    formLayout->addRow(tr("Reasoning effort:"), m_reasoningEffortCombo);
+
+    m_imageDetailCombo = new QComboBox(this);
+    m_imageDetailCombo->setObjectName(QStringLiteral("AgentImageDetailCombo"));
+    m_imageDetailCombo->addItem(tr("Original (preserve fine detail)"), QStringLiteral("original"));
+    m_imageDetailCombo->addItem(tr("High"), QStringLiteral("high"));
+    m_imageDetailCombo->addItem(tr("Auto"), QStringLiteral("auto"));
+    m_imageDetailCombo->addItem(tr("Low (faster, 512px)"), QStringLiteral("low"));
+    m_imageDetailCombo->setToolTip(
+        tr("Image detail is sent only to DeepSeek Flash; original is recommended for defects."));
+    formLayout->addRow(tr("Image detail:"), m_imageDetailCombo);
+
+    // B5：隐私开关。审计可含工具参数；失败正文默认关闭，关闭不等于清除已有文件。
+    m_auditCheck = new QCheckBox("Write Agent audit log (JSONL)", this);
+    m_auditCheck->setObjectName(QStringLiteral("AgentAuditEnabledCheck"));
+    m_auditCheck->setToolTip(
+        "Audit entries can include tool parameters containing business data; masking cannot guarantee every secret "
+        "is detected.");
+    formLayout->addRow(m_auditCheck);
+
+    m_failedRequestLogCheck = new QCheckBox("Save failed LLM request bodies (sensitive)", this);
+    m_failedRequestLogCheck->setObjectName(QStringLiteral("AgentFailedRequestLogCheck"));
+    m_failedRequestLogCheck->setToolTip(
+        "Records message text and error details for BadRequest/Malformed responses (14-day retention). "
+        "Off by default. Turning it off stops new records but does not delete existing files.");
+    formLayout->addRow(m_failedRequestLogCheck);
+
+    auto* privacyNote = new QLabel(
+        tr("Privacy: audit entries may contain tool parameters and failed request bodies may contain business "
+           "text. Turning logging off stops new writes; existing files are not deleted."),
+        this);
+    privacyNote->setObjectName(QStringLiteral("AgentPrivacyNote"));
+    privacyNote->setWordWrap(true);
+    formLayout->addRow(privacyNote);
+
     mainLayout->addLayout(formLayout);
 
     auto* btnLayout = new QHBoxLayout();
@@ -144,6 +194,15 @@ void AgentSettingsDialog::setupUi() {
         KnowledgeBaseDialog dlg(this);
         dlg.exec();
     });
+    connect(deepSeekPreset, &QPushButton::clicked, this, [this]() {
+        m_endpointEdit->setText(QStringLiteral("https://api.deepseek.com"));
+        m_modelEdit->setText(QStringLiteral("deepseek-flash"));
+        m_toolsCheck->setChecked(true);
+        m_visionCheck->setChecked(true);
+        m_thinkingCheck->setChecked(true);
+        m_reasoningEffortCombo->setCurrentIndex(m_reasoningEffortCombo->findData(QStringLiteral("high")));
+        m_imageDetailCombo->setCurrentIndex(m_imageDetailCombo->findData(QStringLiteral("original")));
+    });
     connect(testBtn, &QPushButton::clicked, this, [this, testBtn]() {
         // P1-7: 实际测试连接 — 发送一个简单请求到 API
         const QString endpoint = m_endpointEdit->text().trimmed();
@@ -170,13 +229,22 @@ void AgentSettingsDialog::setupUi() {
         QJsonObject body;
         body["model"] = model;
         body["max_tokens"] = 5;
+        const bool deepSeekFlash = OpenAILLMClient::isDeepSeekFlashModel(model);
+        if (deepSeekFlash && m_thinkingCheck->isChecked()) {
+            const QString effort = m_reasoningEffortCombo->currentData().toString();
+            if (!effort.isEmpty())
+                body["reasoning_effort"] = effort;
+        }
         QJsonArray messages;
         QJsonObject msg;
         msg["role"] = "user";
         msg["content"] = "Hi";
         messages.append(msg);
         body["messages"] = messages;
-        if (m_thinkingCheck->isChecked())
+        if (deepSeekFlash)
+            body["thinking"] = QJsonObject{
+                {"type", m_thinkingCheck->isChecked() ? QStringLiteral("enabled") : QStringLiteral("disabled")}};
+        else if (m_thinkingCheck->isChecked())
             body["thinking"] = QJsonObject{{"type", "enabled"}};
 
         QNetworkReply* reply = nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
@@ -223,7 +291,16 @@ void AgentSettingsDialog::loadSettings() {
     m_streamCheck->setChecked(cfg.groupBool("agent", "streamEnabled", true));
     m_contextBudgetSpin->setValue(cfg.groupInt("agent", "contextBudgetTokens", 128000));
     m_toolResultMaxCharsSpin->setValue(cfg.groupInt("agent", "toolResultMaxChars", 6000));
-    m_thinkingCheck->setChecked(cfg.groupBool("agent", "thinkingEnabled", false));
+    const QString configuredModel = m_modelEdit->text().trimmed();
+    const bool deepSeekFlash = OpenAILLMClient::isDeepSeekFlashModel(configuredModel);
+    m_thinkingCheck->setChecked(cfg.groupBool("agent", "thinkingEnabled", deepSeekFlash));
+    const QString defaultEffort = deepSeekFlash ? QStringLiteral("high") : QString();
+    const QString effort = cfg.groupString("agent", "reasoningEffort", defaultEffort);
+    m_reasoningEffortCombo->setCurrentIndex(m_reasoningEffortCombo->findData(effort));
+    const QString imageDetail = cfg.groupString("agent", "imageDetail", QStringLiteral("original"));
+    m_imageDetailCombo->setCurrentIndex(qMax(0, m_imageDetailCombo->findData(imageDetail)));
+    m_auditCheck->setChecked(cfg.groupBool("agent", "auditEnabled", true));
+    m_failedRequestLogCheck->setChecked(cfg.groupBool("agent", "failedRequestLogEnabled", false));
     m_tempSpin->setValue(cfg.groupDouble("agent", "temperature", 0.3));
     m_maxTokensSpin->setValue(cfg.groupInt("agent", "maxTokens", 4096));
     m_permissionCombo->setCurrentIndex(cfg.groupInt("agent", "permissionLevel", 1));
@@ -246,6 +323,10 @@ void AgentSettingsDialog::saveSettings() {
     cfg.setGroupValue("agent", "contextBudgetTokens", m_contextBudgetSpin->value());
     cfg.setGroupValue("agent", "toolResultMaxChars", m_toolResultMaxCharsSpin->value());
     cfg.setGroupValue("agent", "thinkingEnabled", m_thinkingCheck->isChecked());
+    cfg.setGroupValue("agent", "reasoningEffort", m_reasoningEffortCombo->currentData().toString());
+    cfg.setGroupValue("agent", "imageDetail", m_imageDetailCombo->currentData().toString());
+    cfg.setGroupValue("agent", "auditEnabled", m_auditCheck->isChecked());
+    cfg.setGroupValue("agent", "failedRequestLogEnabled", m_failedRequestLogCheck->isChecked());
     cfg.save();
 }
 
@@ -299,6 +380,22 @@ int AgentSettingsDialog::toolResultMaxChars() const {
 
 bool AgentSettingsDialog::thinkingEnabled() const {
     return m_thinkingCheck->isChecked();
+}
+
+QString AgentSettingsDialog::reasoningEffort() const {
+    return m_reasoningEffortCombo->currentData().toString();
+}
+
+QString AgentSettingsDialog::imageDetail() const {
+    return m_imageDetailCombo->currentData().toString();
+}
+
+bool AgentSettingsDialog::auditEnabled() const {
+    return m_auditCheck->isChecked();
+}
+
+bool AgentSettingsDialog::failedRequestLogEnabled() const {
+    return m_failedRequestLogCheck->isChecked();
 }
 
 } // namespace DeepLux

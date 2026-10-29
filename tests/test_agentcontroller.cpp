@@ -1,6 +1,8 @@
 #include <QJsonDocument>
+#include <QImage>
 #include <QRegularExpression>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QThread>
 #include <QtTest/QtTest>
 
@@ -144,6 +146,19 @@ private slots:
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
     }
 
+    void testDestroyedLLMClientIsCleared() {
+        AgentController controller;
+        {
+            MockLLMClient client;
+            controller.setLLMClient(&client);
+            QCOMPARE(controller.llmClient(), static_cast<ILLMClient*>(&client));
+        }
+        QVERIFY(controller.llmClient() == nullptr);
+        controller.setLLMClient(m_mock);
+        QCOMPARE(controller.llmClient(), static_cast<ILLMClient*>(m_mock));
+        controller.setLLMClient(nullptr);
+    }
+
     void testSendMessageTransitionsToThinking() {
         AgentController::instance().sendUserMessage("Hello");
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Thinking);
@@ -276,6 +291,101 @@ private slots:
                  QStringLiteral("http://localhost:8080/custom"));
     }
 
+    void testDeepSeekFlashImagePayloadAndBudget() {
+        OpenAILLMClient client;
+        client.setModel(QStringLiteral("deepseek-flash"));
+        client.setThinkingEnabled(true);
+        client.setReasoningEffort(QStringLiteral("high"));
+        client.setImageDetail(QStringLiteral("low"));
+
+        AgentConversation context;
+        AgentMessage message;
+        message.role = QStringLiteral("user");
+        AgentImageAttachment image;
+        image.data = QByteArray(3 * 1024 * 1024, '\0');
+        image.mimeType = QStringLiteral("image/jpeg");
+        message.images.append(image);
+        context.messages.append(message);
+
+        AgentController& controller = AgentController::instance();
+        controller.setLLMClient(&client);
+        const qint64 contextEstimate = controller.estimateTokensFor(context.messages, QString(), false);
+        controller.setLLMClient(m_mock);
+
+        const QJsonObject body = client.buildRequestBody(context, {});
+        QVERIFY(!body.contains(QStringLiteral("temperature")));
+        QCOMPARE(body.value(QStringLiteral("thinking")).toObject().value(QStringLiteral("type")).toString(),
+                 QStringLiteral("enabled"));
+        QCOMPARE(body.value(QStringLiteral("reasoning_effort")).toString(), QStringLiteral("high"));
+        const QJsonObject imageUrl = body.value(QStringLiteral("messages"))
+                                         .toArray()
+                                         .last()
+                                         .toObject()
+                                         .value(QStringLiteral("content"))
+                                         .toArray()
+                                         .last()
+                                         .toObject()
+                                         .value(QStringLiteral("image_url"))
+                                         .toObject();
+        QCOMPARE(imageUrl.value(QStringLiteral("detail")).toString(), QStringLiteral("low"));
+        QVERIFY(imageUrl.value(QStringLiteral("url")).toString().startsWith(QStringLiteral("data:image/jpeg;base64,")));
+        QCOMPARE(client.estimateImageTokens(image), qint64(1024));
+        QCOMPARE(client.preferredImageLongEdge(), 512);
+        QVERIFY(OpenAILLMClient::heuristicSupportsVision(QStringLiteral("deepseek-flash")));
+        QVERIFY(OpenAILLMClient::isDeepSeekFlashModel(QStringLiteral("deepseek-v4-flash-vision-exp")));
+
+        QCOMPARE(contextEstimate, qint64(1044));
+
+        client.setThinkingEnabled(false);
+        const QJsonObject disabledBody = client.buildRequestBody(context, {});
+        QCOMPARE(disabledBody.value(QStringLiteral("thinking")).toObject().value(QStringLiteral("type")).toString(),
+                 QStringLiteral("disabled"));
+        QVERIFY(disabledBody.contains(QStringLiteral("temperature")));
+        QVERIFY(!disabledBody.contains(QStringLiteral("reasoning_effort")));
+
+        client.setModel(QStringLiteral("gpt-4o"));
+        const QJsonObject genericBody = client.buildRequestBody(context, {});
+        const QJsonObject genericImageUrl = genericBody.value(QStringLiteral("messages"))
+                                                .toArray()
+                                                .last()
+                                                .toObject()
+                                                .value(QStringLiteral("content"))
+                                                .toArray()
+                                                .last()
+                                                .toObject()
+                                                .value(QStringLiteral("image_url"))
+                                                .toObject();
+        QVERIFY(!genericImageUrl.contains(QStringLiteral("detail")));
+        QCOMPARE(client.preferredImageLongEdge(), 1280);
+        QCOMPARE(client.estimateImageTokens(image), qint64((image.data.size() + 2) / 3));
+    }
+
+    void testDeepSeekToolImageKeepsIndustrialResolution() {
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString imagePath = tempDir.filePath(QStringLiteral("inspection.png"));
+        QImage source(1800, 1200, QImage::Format_RGB32);
+        source.fill(QColor(220, 210, 180));
+        QVERIFY(source.save(imagePath));
+
+        AgentController& controller = AgentController::instance();
+        OpenAILLMClient client;
+        client.setModel(QStringLiteral("deepseek-flash"));
+        controller.setLLMClient(&client);
+        const QJsonArray results{
+            QJsonObject{{QStringLiteral("tool"), QStringLiteral("capture_viewport_image")},
+                        {QStringLiteral("result"), QJsonObject{{QStringLiteral("imagePath"), imagePath}}}}};
+        controller.attachToolImages(results);
+        const QList<AgentImageAttachment> attachments = controller.m_conversationHistory.isEmpty()
+                                                            ? QList<AgentImageAttachment>()
+                                                            : controller.m_conversationHistory.constLast().images;
+        controller.clearConversation();
+        controller.setLLMClient(m_mock);
+        QCOMPARE(attachments.size(), 1);
+        const QImage transmitted = QImage::fromData(attachments.constFirst().data);
+        QCOMPARE(transmitted.size(), QSize(1800, 1200));
+    }
+
     // ---------- Advisor 模式确认流程 ----------
 
     void testAdvisorToolCallsTransitionToConfirming() {
@@ -361,6 +471,118 @@ private slots:
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
         QCOMPARE(responseSpy.count(), 1);
         QVERIFY(AgentController::instance().pendingToolCalls().isEmpty());
+    }
+
+    void testMultipleToolResultsRemainPairedInNextRequest() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+        controller.sendUserMessage(QStringLiteral("Inspect workflow"));
+        AgentResponse response;
+        response.success = true;
+        response.toolCalls =
+            QJsonArray{QJsonObject{{"id", "call-a"}, {"type", "function"}, {"name", "get_available_plugins"}},
+                       QJsonObject{{"id", "call-b"}, {"type", "function"}, {"name", "get_available_plugins"}}};
+        m_mock->emitResponse(response);
+        QTRY_COMPARE(m_mock->requestCount, 2);
+        const QJsonArray messages = m_mock->lastCtx.toOpenAIMessages();
+        int assistantIndex = -1;
+        for (int i = 0; i < messages.size(); ++i) {
+            if (messages.at(i).toObject().value("tool_calls").toArray().size() == 2)
+                assistantIndex = i;
+        }
+        QVERIFY(assistantIndex >= 0);
+        QVERIFY(assistantIndex + 2 < messages.size());
+        QCOMPARE(messages.at(assistantIndex + 1).toObject().value("tool_call_id").toString(), QStringLiteral("call-a"));
+        QCOMPARE(messages.at(assistantIndex + 2).toObject().value("tool_call_id").toString(), QStringLiteral("call-b"));
+        QCOMPARE(messages.at(assistantIndex + 2).toObject().value("role").toString(), QStringLiteral("tool"));
+    }
+
+    void testRejectedChatToolsKeepResultsInNextRequest() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("Modify workflow"));
+        AgentResponse response;
+        response.success = true;
+        response.toolCalls =
+            QJsonArray{QJsonObject{{"id", "reject-a"}, {"type", "function"}, {"name", "add_module"}},
+                       QJsonObject{{"id", "reject-b"}, {"type", "function"}, {"name", "remove_module"}}};
+        m_mock->emitResponse(response);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+        controller.rejectPendingTools();
+        controller.sendUserMessage(QStringLiteral("Continue"));
+        const QJsonArray messages = m_mock->lastCtx.toOpenAIMessages();
+        int assistantIndex = -1;
+        for (int i = 0; i < messages.size(); ++i)
+            if (messages.at(i).toObject().value("tool_calls").toArray().size() == 2)
+                assistantIndex = i;
+        QVERIFY(assistantIndex >= 0);
+        QCOMPARE(messages.at(assistantIndex + 1).toObject().value("tool_call_id").toString(),
+                 QStringLiteral("reject-a"));
+        QCOMPARE(messages.at(assistantIndex + 2).toObject().value("tool_call_id").toString(),
+                 QStringLiteral("reject-b"));
+        QVERIFY(messages.at(assistantIndex + 1).toObject().value("content").toString().contains("USER_REJECTED"));
+    }
+
+    void testBridgeRejectionDoesNotCreateToolHistory() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        const int before = controller.conversationHistorySize();
+        const QJsonObject result = controller.handleToolCall(QStringLiteral("add_module"), {{"plugin", "GrabImage"}});
+        QCOMPARE(result.value("status").toString(), QStringLiteral("pending_confirmation"));
+        controller.rejectPendingTools();
+        QCOMPARE(controller.conversationHistorySize(), before);
+    }
+
+    void testAbortQueuedConfirmationKeepsToolResult() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("Modify workflow"));
+        AgentResponse response;
+        response.success = true;
+        response.toolCalls = QJsonArray{QJsonObject{{"id", "cancel-a"}, {"type", "function"}, {"name", "add_module"}}};
+        m_mock->emitResponse(response);
+        controller.confirmPendingTools();
+        controller.abortCurrentTurn();
+        QCoreApplication::processEvents();
+        // B1：中止后不得续跑，模型请求计数保持为首次请求
+        QCOMPARE(m_mock->requestCount, 1);
+        controller.sendUserMessage(QStringLiteral("Continue"));
+        bool found = false;
+        for (const QJsonValue& value : m_mock->lastCtx.toOpenAIMessages()) {
+            const QJsonObject message = value.toObject();
+            if (message.value("tool_call_id").toString() == QLatin1String("cancel-a"))
+                found = message.value("content").toString().contains("USER_CANCELLED");
+        }
+        QVERIFY(found);
+    }
+
+    void testPermissionDowngradeBeforeConfirmationDeniesExecution() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("Create project"));
+        AgentResponse response;
+        response.success = true;
+        response.toolCalls = QJsonArray{QJsonObject{{"id", "denied-a"},
+                                                    {"type", "function"},
+                                                    {"name", "create_project"},
+                                                    {"arguments", QJsonObject{{"name", "MustNotCreate"}}}}};
+        m_mock->emitResponse(response);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+        QSignalSpy actions(&controller, &AgentController::agentActionCompleted);
+        controller.confirmPendingTools();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+        QCoreApplication::processEvents();
+        QCOMPARE(actions.count(), 0);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        controller.sendUserMessage(QStringLiteral("Continue"));
+        const QJsonArray messages = m_mock->lastCtx.toOpenAIMessages();
+        bool found = false;
+        for (const QJsonValue& value : messages) {
+            const QJsonObject message = value.toObject();
+            if (message.value("tool_call_id").toString() == QLatin1String("denied-a"))
+                found = message.value("content").toString().contains("PERMISSION_DENIED");
+        }
+        QVERIFY(found);
     }
 
     // ---------- 并发防护 ----------
@@ -566,6 +788,194 @@ private slots:
         QCOMPARE(AgentController::instance().m_conversationHistory.first().content, QStringLiteral("latest"));
     }
 
+    // ---------- B3：上下文保护 / 预算失败关闭 ----------
+
+    void testContextBudgetExceededFailsClosed() {
+        AgentController& controller = AgentController::instance();
+        controller.setContextLimitsForTest(16000, 6000, 24, 24);
+        QSignalSpy errorSpy(&controller, &AgentController::llmErrorOccurred);
+
+        controller.sendUserMessage(QString(200000, QLatin1Char('x')));
+
+        QCOMPARE(m_mock->requestCount, 0);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QCOMPARE(controller.m_conversationHistory.size(), 1); // 保留可诊断的用户请求
+        QVERIFY(!errorSpy.isEmpty());
+        QVERIFY2(errorSpy.last().at(0).toString().contains(QStringLiteral("context_budget_exceeded")),
+                 qPrintable(errorSpy.last().at(0).toString()));
+    }
+
+    void testSystemPromptOverBudgetFailsClosed() {
+        AgentController& controller = AgentController::instance();
+        controller.setContextLimitsForTest(16000, 6000, 24, 24);
+        const QString original = controller.systemPrompt();
+        controller.setSystemPrompt(QString(200000, QLatin1Char('s')));
+
+        controller.sendUserMessage(QStringLiteral("hello"));
+
+        const int requests = m_mock->requestCount;
+        const AgentController::AgentState finalState = controller.state();
+        controller.setSystemPrompt(original); // 先恢复，避免失败提前 return 污染后续用例
+        QCOMPARE(requests, 0);
+        QCOMPARE(finalState, AgentController::AgentState::Idle);
+    }
+
+    void testImageAttachmentOverBudgetFailsClosed() {
+        AgentController& controller = AgentController::instance();
+        controller.setContextLimitsForTest(16000, 6000, 24, 24);
+
+        QImage noise(700, 700, QImage::Format_RGB32);
+        quint32 seed = 0x12345678u;
+        for (int y = 0; y < noise.height(); ++y) {
+            auto* line = reinterpret_cast<QRgb*>(noise.scanLine(y));
+            for (int x = 0; x < noise.width(); ++x) {
+                seed = seed * 1664525u + 1013904223u;
+                const quint32 value = seed;
+                line[x] = qRgb(value & 0xff, (value >> 8) & 0xff, (value >> 16) & 0xff);
+            }
+        }
+        controller.sendUserMessageWithImages(QStringLiteral("inspect"), {QPixmap::fromImage(noise)});
+
+        QCOMPARE(m_mock->requestCount, 0);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    }
+
+    void testInFlightToolCallIsProtected() {
+        AgentController& controller = AgentController::instance();
+        controller.setContextLimitsForTest(16000, 6000, 24, 24);
+        controller.m_conversationHistory.clear();
+
+        AgentMessage user;
+        user.role = QStringLiteral("user");
+        user.content = QStringLiteral("current request");
+        controller.m_conversationHistory.append(user);
+
+        AgentMessage inFlight;
+        inFlight.role = QStringLiteral("assistant");
+        inFlight.toolCalls = QJsonArray{QJsonObject{{"id", "pending-call"}}};
+        inFlight.content = QString(200000, QLatin1Char('a'));
+        controller.m_conversationHistory.append(inFlight);
+
+        controller.trimHistoryIfNeeded();
+
+        QVERIFY(!controller.m_conversationHistory.isEmpty());
+        QCOMPARE(controller.m_conversationHistory.constFirst().content, QStringLiteral("current request"));
+        const QJsonArray expectedGroup{QJsonObject{{"id", "pending-call"}}};
+        QVERIFY(controller.m_conversationHistory.constLast().toolCalls == expectedGroup);
+    }
+
+    void testAutoInjectedImageDoesNotCreateTaskBoundary() {
+        AgentController& controller = AgentController::instance();
+        controller.setContextLimitsForTest(16000, 6000, 24, 24);
+        controller.m_conversationHistory.clear();
+
+        AgentMessage original;
+        original.role = QStringLiteral("user");
+        original.content = QStringLiteral("original task");
+        controller.m_conversationHistory.append(original);
+
+        AgentMessage oldGroup;
+        oldGroup.role = QStringLiteral("assistant");
+        oldGroup.toolCalls = QJsonArray{QJsonObject{{"id", "old-call"}}};
+        controller.m_conversationHistory.append(oldGroup);
+        AgentMessage oldResult;
+        oldResult.role = QStringLiteral("tool");
+        oldResult.toolCallId = QStringLiteral("old-call");
+        oldResult.content = QString(200000, QLatin1Char('o'));
+        controller.m_conversationHistory.append(oldResult);
+
+        AgentMessage recentGroup;
+        recentGroup.role = QStringLiteral("assistant");
+        recentGroup.toolCalls = QJsonArray{QJsonObject{{"id", "recent-call"}}};
+        controller.m_conversationHistory.append(recentGroup);
+        AgentMessage recentResult;
+        recentResult.role = QStringLiteral("tool");
+        recentResult.toolCallId = QStringLiteral("recent-call");
+        recentResult.content = QStringLiteral("recent result");
+        controller.m_conversationHistory.append(recentResult);
+
+        AgentMessage injected;
+        injected.role = QStringLiteral("user");
+        injected.content = QStringLiteral("Images produced by the tool calls above");
+        injected.internalAutoInjected = true;
+        controller.m_conversationHistory.append(injected);
+
+        controller.trimHistoryIfNeeded();
+
+        QCOMPARE(controller.m_conversationHistory.constFirst().role, QStringLiteral("user"));
+        QCOMPARE(controller.m_conversationHistory.constFirst().content, QStringLiteral("original task"));
+        bool oldGone = true;
+        bool recentKept = false;
+        bool injectedKept = false;
+        for (const AgentMessage& message : controller.m_conversationHistory) {
+            if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("old-call"))
+                oldGone = false;
+            if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("recent-call"))
+                recentKept = true;
+            if (message.internalAutoInjected)
+                injectedKept = true;
+        }
+        QVERIFY2(oldGone, "the older complete tool group must be trimmed first");
+        QVERIFY2(recentKept, "the latest complete tool group is protected");
+        QVERIFY2(injectedKept, "the auto-injected image message belongs to the protected recent group");
+    }
+
+    // B3：保护集合自身超过消息数硬上限时确定性停止（不放宽到 65+ 条）
+    void testProtectedMessageLimitFailsClosed() {
+        AgentController& controller = AgentController::instance();
+        controller.m_conversationHistory.clear();
+
+        AgentMessage user;
+        user.role = QStringLiteral("user");
+        user.content = QStringLiteral("one request with many tool results");
+        controller.m_conversationHistory.append(user);
+
+        AgentMessage assistant;
+        assistant.role = QStringLiteral("assistant");
+        QJsonArray calls;
+        for (int i = 0; i < 64; ++i)
+            calls.append(QJsonObject{{"id", QStringLiteral("bulk-%1").arg(i)}});
+        assistant.toolCalls = calls;
+        controller.m_conversationHistory.append(assistant);
+        for (int i = 0; i < 64; ++i) {
+            AgentMessage tool;
+            tool.role = QStringLiteral("tool");
+            tool.toolCallId = QStringLiteral("bulk-%1").arg(i);
+            tool.content = QStringLiteral("{}");
+            controller.m_conversationHistory.append(tool);
+        }
+        QVERIFY(controller.m_conversationHistory.size() > 64);
+
+        QSignalSpy errorSpy(&controller, &AgentController::llmErrorOccurred);
+        QVERIFY(!controller.sendPreparedContext());
+        QCOMPARE(m_mock->requestCount, 0);
+        QVERIFY(!errorSpy.isEmpty());
+        QVERIFY(errorSpy.last().at(0).toString().contains(QStringLiteral("context_budget_exceeded")));
+    }
+
+    void testInvalidToolPairingBlocksSend() {
+        AgentController& controller = AgentController::instance();
+        controller.m_conversationHistory.clear();
+        AgentMessage user;
+        user.role = QStringLiteral("user");
+        user.content = QStringLiteral("request");
+        controller.m_conversationHistory.append(user);
+        AgentMessage assistant;
+        assistant.role = QStringLiteral("assistant");
+        assistant.toolCalls = QJsonArray{QJsonObject{{"id", "missing-result"}}};
+        controller.m_conversationHistory.append(assistant);
+
+        QString error;
+        QVERIFY(!controller.historyPairsValid(&error));
+        QVERIFY2(error.contains(QStringLiteral("missing")), qPrintable(error));
+
+        QSignalSpy errorSpy(&controller, &AgentController::llmErrorOccurred);
+        QVERIFY(!controller.sendPreparedContext());
+        QCOMPARE(m_mock->requestCount, 0);
+        QVERIFY(!errorSpy.isEmpty());
+        QVERIFY(errorSpy.last().at(0).toString().contains(QStringLiteral("context_invalid_history")));
+    }
+
     // ---------- 最大轮数限制 ----------
 
     void testAutopilotStopsAtTurnLimit() {
@@ -642,6 +1052,259 @@ private slots:
         // Observer 模式：直接回到 Idle，不进入 Confirming
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
         QCOMPARE(responseSpy.count(), 1);
+    }
+
+    // B2：Observer 纯只读批次正常执行并续跑（查询能力不被降权破坏）
+    void testObserverReadOnlyBatchExecutesAndContinues() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+        controller.sendUserMessage(QStringLiteral("list plugins"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.content = QStringLiteral("checking");
+        resp.toolCalls.append(QJsonObject{
+            {"id", "read-1"}, {"type", "function"}, {"name", "get_available_plugins"}, {"arguments", QJsonObject()}});
+        m_mock->emitResponse(resp);
+
+        QCOMPARE(controller.state(), AgentController::AgentState::Thinking);
+        QCOMPARE(m_mock->requestCount, 2);
+        bool readOk = false;
+        for (const AgentMessage& message : m_mock->lastCtx.messages) {
+            if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("read-1"))
+                readOk = !message.content.contains(QStringLiteral("\"error\""));
+        }
+        QVERIFY(readOk);
+
+        AgentResponse done;
+        done.success = true;
+        done.content = QStringLiteral("done");
+        m_mock->emitResponse(done);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    }
+
+    // B2：Observer 混合批次逐项判定——只读执行、写入拒绝，且不因含读工具放行写工具
+    void testObserverMixedBatchExecutesReadsAndDeniesWrites() {
+        AgentController& controller = AgentController::instance();
+        ProjectManager::instance().newProject();
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+        controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+        controller.sendUserMessage(QStringLiteral("read and write"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.content = QStringLiteral("working");
+        resp.toolCalls.append(QJsonObject{
+            {"id", "read-1"}, {"type", "function"}, {"name", "get_available_plugins"}, {"arguments", QJsonObject()}});
+        resp.toolCalls.append(QJsonObject{{"id", "write-1"},
+                                          {"type", "function"},
+                                          {"name", "add_module"},
+                                          {"arguments", QJsonObject{{"plugin", "GrabImage"}}}});
+        m_mock->emitResponse(resp);
+
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QCOMPARE(m_mock->requestCount, 1); // 拒绝项结束本轮，不续跑
+        QCOMPARE(project->modules().size(), 0);
+
+        bool readSeen = false;
+        bool writeDenied = false;
+        for (const AgentMessage& message : controller.m_conversationHistory) {
+            if (message.role != QLatin1String("tool"))
+                continue;
+            if (message.toolCallId == QLatin1String("read-1"))
+                readSeen = !message.content.contains(QStringLiteral("PERMISSION_DENIED"));
+            if (message.toolCallId == QLatin1String("write-1"))
+                writeDenied = message.content.contains(QStringLiteral("PERMISSION_DENIED"));
+        }
+        QVERIFY(readSeen);
+        QVERIFY(writeDenied);
+    }
+
+    // B2：确认前切换工程（含同 ID 模块）——旧确认失效，新工程零修改
+    void testConfirmationExpiresOnProjectSwitch() {
+        AgentController& controller = AgentController::instance();
+        Project* first = ProjectManager::instance().newProject();
+        QVERIFY(first != nullptr);
+        ModuleInstance sameId;
+        sameId.id = QStringLiteral("same_id");
+        sameId.moduleId = QStringLiteral("GrabImage");
+        first->addModule(sameId);
+
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("remove it"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.toolCalls.append(QJsonObject{{"id", "remove-old"},
+                                          {"type", "function"},
+                                          {"name", "remove_module"},
+                                          {"arguments", QJsonObject{{"instanceId", "same_id"}}}});
+        m_mock->emitResponse(resp);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+
+        Project* second = ProjectManager::instance().newProject();
+        QVERIFY(second != nullptr);
+        ModuleInstance sameIdInSecond;
+        sameIdInSecond.id = QStringLiteral("same_id");
+        sameIdInSecond.moduleId = QStringLiteral("GrabImage");
+        second->addModule(sameIdInSecond);
+
+        // 工程切换使旧确认立即失效，且不会执行旧批次
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QVERIFY(controller.pendingToolCalls().isEmpty());
+        controller.confirmPendingTools();
+        QCoreApplication::processEvents();
+        QCOMPARE(second->modules().size(), 1);
+
+        bool expired = false;
+        for (const AgentMessage& message : controller.m_conversationHistory) {
+            if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("remove-old"))
+                expired = message.content.contains(QStringLiteral("confirmation_expired"));
+        }
+        QVERIFY(expired);
+    }
+
+    // B2：确认入队后切工程——排队 lambda 复核并拒绝
+    void testQueuedConfirmationRejectedAfterProjectSwitch() {
+        AgentController& controller = AgentController::instance();
+        QVERIFY(ProjectManager::instance().newProject() != nullptr);
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("add"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.toolCalls.append(
+            QJsonObject{{"id", "add-old"},
+                        {"type", "function"},
+                        {"name", "add_module"},
+                        {"arguments", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "must_not_add"}}}});
+        m_mock->emitResponse(resp);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+
+        controller.confirmPendingTools(); // 入队
+        Project* second = ProjectManager::instance().newProject();
+        QVERIFY(second != nullptr);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QCOMPARE(second->modules().size(), 0);
+    }
+
+    // B2：外部参数修改使确认失效，确认不得覆盖外部值
+    void testExternalParamChangeExpiresConfirmation() {
+        AgentController& controller = AgentController::instance();
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        ModuleInstance inst;
+        inst.id = QStringLiteral("mc1");
+        inst.moduleId = QStringLiteral("MeasureCircle");
+        project->addModule(inst);
+
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("set radius"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.toolCalls.append(
+            QJsonObject{{"id", "param-old"},
+                        {"type", "function"},
+                        {"name", "set_param"},
+                        {"arguments", QJsonObject{{"instanceId", "mc1"}, {"key", "initialRadius"}, {"value", 222}}}});
+        m_mock->emitResponse(resp);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+
+        // 用户在界面上改了同一参数
+        project->setModuleParam(QStringLiteral("mc1"), QStringLiteral("initialRadius"), 111);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+
+        controller.confirmPendingTools();
+        QCoreApplication::processEvents();
+        QCOMPARE(project->moduleById(QStringLiteral("mc1"))->params.value("initialRadius"), QJsonValue(111));
+    }
+
+    // B2：目标删除同样使旧确认失效（不得在删除后的工程上执行旧写操作）
+    void testTargetRemovalExpiresConfirmation() {
+        AgentController& controller = AgentController::instance();
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        ModuleInstance inst;
+        inst.id = QStringLiteral("target-1");
+        inst.moduleId = QStringLiteral("GrabImage");
+        project->addModule(inst);
+
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("add another module"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.toolCalls.append(
+            QJsonObject{{"id", "add-after-removal"},
+                        {"type", "function"},
+                        {"name", "add_module"},
+                        {"arguments", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "must_not_add"}}}});
+        m_mock->emitResponse(resp);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+
+        project->removeModule(QStringLiteral("target-1"));
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        controller.confirmPendingTools();
+        QCoreApplication::processEvents();
+        QCOMPARE(project->modules().size(), 0);
+    }
+
+    // B2：Autopilot 下 create_project 成功后保守终止旧批次，让模型读取新工程再规划
+    void testProjectSwitchStopsRemainingBatch() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+        controller.sendUserMessage(QStringLiteral("create and add"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.content = QStringLiteral("working");
+        resp.toolCalls.append(QJsonObject{{"id", "create-1"},
+                                          {"type", "function"},
+                                          {"name", "create_project"},
+                                          {"arguments", QJsonObject{{"name", "BatchSwitch"}}}});
+        resp.toolCalls.append(
+            QJsonObject{{"id", "add-after"},
+                        {"type", "function"},
+                        {"name", "add_module"},
+                        {"arguments", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "stale"}}}});
+        m_mock->emitResponse(resp);
+
+        QCOMPARE(controller.state(), AgentController::AgentState::Thinking);
+        QCOMPARE(m_mock->requestCount, 2); // project_switched 允许重新规划
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+        QCOMPARE(project->modules().size(), 0);
+
+        bool addSkipped = false;
+        for (const AgentMessage& message : controller.m_conversationHistory) {
+            if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("add-after"))
+                addSkipped = message.content.contains(QStringLiteral("skipped_after_failure"));
+        }
+        QVERIFY(addSkipped);
+    }
+
+    // B2：合法确认只执行一次（双击不重复执行）
+    void testConfirmationExecutesOnlyOnce() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+        controller.sendUserMessage(QStringLiteral("add one"));
+        AgentResponse resp;
+        resp.success = true;
+        resp.toolCalls.append(QJsonObject{{"id", "create-once"},
+                                          {"type", "function"},
+                                          {"name", "create_project"},
+                                          {"arguments", QJsonObject{{"name", "OnlyOnce"}}}});
+        m_mock->emitResponse(resp);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+
+        controller.confirmPendingTools();
+        controller.confirmPendingTools(); // 连点
+        QCoreApplication::processEvents();
+
+        int results = 0;
+        for (const AgentMessage& message : controller.m_conversationHistory) {
+            if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("create-once"))
+                ++results;
+        }
+        QCOMPARE(results, 1);
+        QCOMPARE(m_mock->requestCount, 2); // 执行后正常续跑一次
     }
 
     // ---------- 第一迭代：排队执行 / 中止 / 视觉降级 ----------
@@ -1013,7 +1676,7 @@ private slots:
         QCOMPARE(controller.flowSummaryPreviewCount(), 1);
 
         controller.setContextLimitsForTest(2000000, 100000, 5000, 5000);
-        QCOMPARE(controller.contextBudgetTokens(), 1000000); // clamp 上限
+        QCOMPARE(controller.contextBudgetTokens(), 1048576); // 对齐 DeepSeek Flash 上下文上限
         QCOMPARE(controller.toolResultMaxChars(), 64000);
         QCOMPARE(controller.flowSummaryThreshold(), 1000);
         QCOMPARE(controller.flowSummaryPreviewCount(), 200);

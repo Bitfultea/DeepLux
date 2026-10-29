@@ -7,7 +7,7 @@ QJsonArray AgentConversation::toOpenAIMessages() const {
     return toOpenAIMessages(ReasoningEcho::None);
 }
 
-QJsonArray AgentConversation::toOpenAIMessages(ReasoningEcho echo) const {
+QJsonArray AgentConversation::toOpenAIMessages(ReasoningEcho echo, const QString& imageDetail) const {
     QJsonArray arr;
 
     if (!systemPrompt.isEmpty()) {
@@ -44,8 +44,10 @@ QJsonArray AgentConversation::toOpenAIMessages(ReasoningEcho echo) const {
                 QJsonObject imageObj;
                 imageObj["type"] = "image_url";
                 QString base64 = img.data.toBase64();
-                imageObj["image_url"] =
-                    QJsonObject{{"url", QString("data:%1;base64,%2").arg(img.mimeType).arg(base64)}};
+                QJsonObject imageUrl{{"url", QString("data:%1;base64,%2").arg(img.mimeType).arg(base64)}};
+                if (!imageDetail.isEmpty())
+                    imageUrl["detail"] = imageDetail;
+                imageObj["image_url"] = imageUrl;
                 contentArray.append(imageObj);
             }
             obj["content"] = contentArray;

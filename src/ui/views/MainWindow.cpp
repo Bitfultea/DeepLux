@@ -840,6 +840,8 @@ void MainWindow::setupMenuBar() {
             // 第二迭代：流式开/关即时生效（agent/streamEnabled 已由对话框保存）
             client->setStreamEnabled(dlg.streamEnabled());
             client->setThinkingEnabled(dlg.thinkingEnabled());
+            client->setReasoningEffort(dlg.reasoningEffort());
+            client->setImageDetail(dlg.imageDetail());
             ctrl.setSystemPrompt(dlg.systemPrompt());
         }
     });
@@ -6216,8 +6218,11 @@ void MainWindow::loadAgentSettings() {
             client->setVisionEnabled(cfg.groupBool("agent", "visionEnabled", true));
         else
             client->setVisionEnabled(OpenAILLMClient::heuristicSupportsVision(configuredModel));
-        client->setReasoningEffort(cfg.groupString("agent", "reasoningEffort", ""));
-        client->setThinkingEnabled(cfg.groupBool("agent", "thinkingEnabled", false));
+        const bool deepSeekFlash = OpenAILLMClient::isDeepSeekFlashModel(configuredModel);
+        client->setReasoningEffort(
+            cfg.groupString("agent", "reasoningEffort", deepSeekFlash ? QStringLiteral("high") : QString()));
+        client->setThinkingEnabled(cfg.groupBool("agent", "thinkingEnabled", deepSeekFlash));
+        client->setImageDetail(cfg.groupString("agent", "imageDetail", QStringLiteral("original")));
         // 第二迭代：流式开关与 reasoning 回传策略（设计 §4.1/§3.7）
         client->setStreamEnabled(cfg.groupBool("agent", "streamEnabled", true));
         // R3：三个流式配置键注入（client setter 内部按 §3.6 clamp）

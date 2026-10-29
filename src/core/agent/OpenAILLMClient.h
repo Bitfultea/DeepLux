@@ -30,11 +30,15 @@ public:
         // R5：一旦服务端以"不支持图片"拒绝过，本客户端会话内不再附图
         return m_visionEnabled && !m_visionDowngraded;
     }
+    qint64 estimateImageTokens(const AgentImageAttachment& image) const override;
+    int preferredImageLongEdge() const override;
     void setVisionEnabled(bool enabled);
     /// L3：配置缺省时的模型名视觉能力启发式（纯函数；其它模型保守返回 true）
     static bool heuristicSupportsVision(const QString& model);
+    static bool isDeepSeekFlashModel(const QString& model);
     void setReasoningEffort(const QString& effort);
     void setThinkingEnabled(bool enabled);
+    void setImageDetail(const QString& detail);
 
     // ---- 第二迭代：流式 / reasoning 回传 / 看门狗（设计 §3/§4/§6）----
     void setStreamIncludeUsage(bool include) {
@@ -120,6 +124,7 @@ DEEPLUX_TEST_VISIBILITY slots : void onReplyFinished();
     bool m_visionDowngraded = false; // 服务端拒绝过图片输入（本客户端会话内不再附图）
     QString m_reasoningEffort;       // "high" or "max" (DeepSeek thinking mode)
     bool m_thinkingEnabled = false;
+    QString m_imageDetail = QStringLiteral("original");
 
     QNetworkAccessManager* m_networkManager = nullptr;
     QNetworkReply* m_currentReply = nullptr;

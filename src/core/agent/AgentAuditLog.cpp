@@ -23,7 +23,8 @@ constexpr int kParamsRawMaxChars = 8 * 1024;
 constexpr int kMaxPartsPerDay = 99;
 
 const QRegularExpression& sensitiveKeyPattern() {
-    static const QRegularExpression re(QStringLiteral("^(api[_-]?key|authorization|token|secret|password|bearer)$"),
+    static const QRegularExpression re(QStringLiteral("^(api[_-]?key|authorization|(?:access|refresh|id)[_-]?token|"
+                                                      "client[_-]?secret|token|secret|password|bearer)$"),
                                        QRegularExpression::CaseInsensitiveOption);
     return re;
 }
@@ -36,13 +37,21 @@ const QRegularExpression& dataImagePattern() {
 QString redactString(const QString& value) {
     QString result = value;
     result.replace(dataImagePattern(), QStringLiteral("data:image/…;base64,[omitted]"));
+    result.replace(
+        QRegularExpression(QStringLiteral("Bearer\\s+[A-Za-z0-9._\\-]+"), QRegularExpression::CaseInsensitiveOption),
+        QStringLiteral("Bearer ***"));
+    result.replace(
+        QRegularExpression(QStringLiteral(
+            R"rx((?i)\b(authorization|api[_-]?key|(?:access|refresh|id)[_-]?token|client[_-]?secret|token|secret|password)\b"?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,\s}]+))rx")),
+        QStringLiteral("\\1: \"***\""));
     return result;
 }
 
 QJsonValue redactValue(const QJsonValue& value) {
     if (value.isObject()) {
         QJsonObject out;
-        for (auto it = value.toObject().constBegin(); it != value.toObject().constEnd(); ++it) {
+        const QJsonObject object = value.toObject();
+        for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
             if (sensitiveKeyPattern().match(it.key()).hasMatch())
                 out.insert(it.key(), QStringLiteral("***"));
             else

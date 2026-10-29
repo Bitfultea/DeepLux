@@ -3,20 +3,24 @@
 #include "core/agent/ILLMClient.h"
 #include "core/agent/OpenAILLMClient.h"
 #include "core/agent/ToolSchema.h"
+#include "core/manager/ConfigManager.h"
 #include "ui/dialogs/AgentSettingsDialog.h"
 #include "ui/widgets/AgentChatPanel.h"
 #include "ui/widgets/AgentMessageBubble.h"
 
+#include <QCheckBox>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QHostAddress>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QPushButton>
 #include <QSignalSpy>
 #include <QSpinBox>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTemporaryDir>
 #include <QToolButton>
 #include <QtTest/QtTest>
 #include <functional>
@@ -140,16 +144,21 @@ class TestAgentStreamUi : public QObject {
 
 private:
     MockStreamingClient* m_client = nullptr;
+    QTemporaryDir m_configDir;
 
 private slots:
     void initTestCase() {
         ToolSchema::instance().registerDefaultTools();
+        QVERIFY(m_configDir.isValid());
+        qputenv("DEEPLUX_APP_DATA_DIR", m_configDir.path().toLocal8Bit());
+        QVERIFY(ConfigManager::instance().initialize());
         QVERIFY(AgentController::instance().initialize());
     }
 
     void cleanupTestCase() {
         AgentController::instance().setLLMClient(nullptr);
         AgentController::instance().shutdown();
+        qunsetenv("DEEPLUX_APP_DATA_DIR");
     }
 
     void init() {
@@ -405,17 +414,75 @@ private slots:
         QVERIFY(budget != nullptr);
         QVERIFY(toolChars != nullptr);
         QCOMPARE(budget->minimum(), 16000);
-        QCOMPARE(budget->maximum(), 1000000);
+        QCOMPARE(budget->maximum(), 1048576);
         budget->setValue(1);
         QCOMPARE(budget->value(), 16000);
         budget->setValue(1000000000);
-        QCOMPARE(budget->value(), 1000000);
-        QCOMPARE(dialog.contextBudgetTokens(), 1000000);
+        QCOMPARE(budget->value(), 1048576);
+        QCOMPARE(dialog.contextBudgetTokens(), 1048576);
         toolChars->setValue(1);
         QCOMPARE(toolChars->value(), 1000);
         toolChars->setValue(999999);
         QCOMPARE(toolChars->value(), 64000);
         QCOMPARE(dialog.toolResultMaxChars(), 64000);
+    }
+
+    void testDeepSeekFlashSettingsPreset() {
+        AgentSettingsDialog dialog;
+        auto* preset = dialog.findChild<QPushButton*>(QStringLiteral("DeepSeekFlashPresetButton"));
+        QVERIFY(preset != nullptr);
+        preset->click();
+        QCOMPARE(dialog.endpoint(), QStringLiteral("https://api.deepseek.com"));
+        QCOMPARE(dialog.model(), QStringLiteral("deepseek-flash"));
+        QVERIFY(dialog.visionEnabled());
+        QVERIFY(dialog.thinkingEnabled());
+        QCOMPARE(dialog.reasoningEffort(), QStringLiteral("high"));
+        QCOMPARE(dialog.imageDetail(), QStringLiteral("original"));
+    }
+
+    // B5：隐私开关的默认值、显式值加载、保存绑定与窄窗口可见性
+    void testSettingsPrivacyToggles() {
+        ConfigManager& cfg = ConfigManager::instance();
+        cfg.removeGroupKey(QStringLiteral("agent"), QStringLiteral("auditEnabled"));
+        cfg.removeGroupKey(QStringLiteral("agent"), QStringLiteral("failedRequestLogEnabled"));
+
+        {
+            AgentSettingsDialog dialog;
+            auto* audit = dialog.findChild<QCheckBox*>(QStringLiteral("AgentAuditEnabledCheck"));
+            auto* failed = dialog.findChild<QCheckBox*>(QStringLiteral("AgentFailedRequestLogCheck"));
+            QVERIFY(audit != nullptr);
+            QVERIFY(failed != nullptr);
+            QCOMPARE(audit->isChecked(), true);   // 审计默认保持开启（兼容）
+            QCOMPARE(failed->isChecked(), false); // 失败正文默认关闭
+            QCOMPARE(dialog.auditEnabled(), true);
+            QCOMPARE(dialog.failedRequestLogEnabled(), false);
+
+            dialog.resize(500, dialog.sizeHint().height());
+            QVERIFY(audit->isVisibleTo(&dialog));
+            QVERIFY(failed->isVisibleTo(&dialog));
+            QVERIFY(dialog.findChild<QLabel*>(QStringLiteral("AgentPrivacyNote")) != nullptr);
+        }
+
+        cfg.setGroupValue(QStringLiteral("agent"), QStringLiteral("auditEnabled"), false);
+        cfg.setGroupValue(QStringLiteral("agent"), QStringLiteral("failedRequestLogEnabled"), true);
+        {
+            AgentSettingsDialog dialog;
+            QCOMPARE(dialog.auditEnabled(), false);
+            QCOMPARE(dialog.failedRequestLogEnabled(), true);
+
+            auto* audit = dialog.findChild<QCheckBox*>(QStringLiteral("AgentAuditEnabledCheck"));
+            auto* failed = dialog.findChild<QCheckBox*>(QStringLiteral("AgentFailedRequestLogCheck"));
+            audit->setChecked(true);
+            failed->setChecked(false);
+            for (QPushButton* button : dialog.findChildren<QPushButton*>()) {
+                if (button->text() == QStringLiteral("OK")) {
+                    button->click();
+                    break;
+                }
+            }
+            QCOMPARE(cfg.groupBool(QStringLiteral("agent"), QStringLiteral("auditEnabled"), false), true);
+            QCOMPARE(cfg.groupBool(QStringLiteral("agent"), QStringLiteral("failedRequestLogEnabled"), true), false);
+        }
     }
 };
 

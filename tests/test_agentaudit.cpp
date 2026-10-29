@@ -9,6 +9,7 @@
 #include "core/agent/ILLMClient.h"
 #include "core/agent/OpenAILLMClient.h"
 #include "core/agent/ToolSchema.h"
+#include "core/manager/ConfigManager.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -162,6 +163,8 @@ private slots:
     void init() {
         AgentAuditLog::instance().resetForTest();
         FailedRequestLog::instance().resetForTest();
+        // B5：既有用例验证"记录能力"，显式开启；默认关闭由独立用例覆盖
+        FailedRequestLog::instance().setEnabledForTest(true);
     }
 
     // ---------------- 审计 JSONL（设计 §3） ----------------
@@ -327,6 +330,24 @@ private slots:
                  QStringLiteral("***"));
     }
 
+    void testAuditRedactsCredentialVariants() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        AgentAuditLog& log = AgentAuditLog::instance();
+        log.setEnabledForTest(true);
+        log.setLogDirForTest(temp.path());
+        log.setNowForTest(QDateTime(QDate(2026, 10, 27), QTime(12, 0, 0)));
+        log.append(makeEntry(QStringLiteral("{\"nested\":{\"access_token\":\"audit-access-123\","
+                                            "\"clientSecret\":\"audit-client-456\"},"
+                                            "\"text\":\"password='audit phrase secret'\"}")));
+        log.flush();
+        const QByteArray text = readAll(log.currentFilePath());
+        QVERIFY(!text.isEmpty());
+        QVERIFY(!text.contains("audit-access-123"));
+        QVERIFY(!text.contains("audit-client-456"));
+        QVERIFY(!text.contains("audit phrase secret"));
+    }
+
     void testAuditRecordSizeCap() {
         QTemporaryDir temp;
         QVERIFY(temp.isValid());
@@ -427,8 +448,20 @@ private slots:
         HttpStub stub("HTTP/1.1 401 Unauthorized", "application/json",
                       "{\"error\":{\"message\":\"invalid api key sk-auth-should-not-persist\"}}");
         QVERIFY(stub.listen());
+#ifndef QT_NO_DEBUG_OUTPUT
+        QTest::ignoreMessage(
+            QtDebugMsg,
+            QRegularExpression(QStringLiteral(
+                "^OpenAILLMClient: Sending request to \"http://127\\.0\\.0\\.1:[0-9]+/v1/chat/completions\" "
+                "model= \"gpt-4o\" bytes= [0-9]+ tools= 0 stream= true$")));
+#endif
+#ifndef QT_NO_WARNING_OUTPUT
+        QTest::ignoreMessage(QtWarningMsg,
+                             QRegularExpression(QStringLiteral(
+                                 "^\\[OpenAILLMClient\\] request failed \"Auth\" httpStatus= 401 attempts= 1$")));
+#endif
         OpenAILLMClient client;
-        client.setEndpoint(stub.endpoint());
+        client.setEndpoint(stub.endpoint() + QStringLiteral("?api_key=sk-url-should-not-persist"));
         bool errored = false;
         connect(&client, &ILLMClient::errorOccurred, this, [&errored](const QString&) { errored = true; });
         client.sendRequest(simpleConversation(), {});
@@ -504,6 +537,30 @@ private slots:
         QVERIFY(applied.contains(QStringLiteral("authorization")));
         QVERIFY(applied.contains(QStringLiteral("apiKey")));
         QVERIFY(applied.contains(QStringLiteral("imageBase64")));
+    }
+
+    void testFailedRequestRedactsCredentialVariants() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        FailedRequestLog& log = FailedRequestLog::instance();
+        log.setEnabledForTest(true);
+        log.setLogDirForTest(temp.path());
+        log.setNowForTest(QDateTime(QDate(2026, 10, 27), QTime(12, 0, 0)));
+        LLMErrorInfo info;
+        info.category = LLMErrorCategory::BadRequest;
+        info.httpStatus = 400;
+        info.detail = QStringLiteral("refresh_token=failed-refresh-123 password='failed phrase secret' "
+                                     "bearer failed-bearer-789");
+        AgentMessage user;
+        user.role = QStringLiteral("user");
+        user.content = QStringLiteral("access_token=failed-access-456");
+        log.record(info, QByteArray(), QStringLiteral("https://example.invalid"), QStringLiteral("model"), {user});
+        const QByteArray text = readAll(log.currentFilePath());
+        QVERIFY(!text.isEmpty());
+        QVERIFY(!text.contains("failed-refresh-123"));
+        QVERIFY(!text.contains("failed-access-456"));
+        QVERIFY(!text.contains("failed phrase secret"));
+        QVERIFY(!text.contains("failed-bearer-789"));
     }
 
     void testSizeCapsAndDailyCap() {
@@ -600,6 +657,68 @@ private slots:
                    QStringLiteral("gpt-4o"), {});
         QVERIFY2(!QFileInfo::exists(oldPath), "15 天前的失败报文文件必须被清理");
         QVERIFY(QFileInfo::exists(log.currentFilePath()));
+    }
+
+    // B5：失败正文默认关闭；显式 true/false 均被尊重；显式值可持久化
+    void testFailedRequestPrivacyDefaultsAndExplicitConfig() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        qputenv("DEEPLUX_APP_DATA_DIR", temp.path().toLocal8Bit());
+        ConfigManager& cfg = ConfigManager::instance();
+        QVERIFY(cfg.initialize());
+
+        FailedRequestLog& log = FailedRequestLog::instance();
+        log.clearEnabledOverrideForTest();
+        log.resetForTest();
+
+        cfg.removeGroupKey(QStringLiteral("agent"), QStringLiteral("failedRequestLogEnabled"));
+        QCOMPARE(log.enabledForTest(), false); // 未显式配置 → 默认关闭
+
+        cfg.setGroupValue(QStringLiteral("agent"), QStringLiteral("failedRequestLogEnabled"), true);
+        QCOMPARE(log.enabledForTest(), true);
+
+        cfg.setGroupValue(QStringLiteral("agent"), QStringLiteral("failedRequestLogEnabled"), false);
+        QCOMPARE(log.enabledForTest(), false);
+
+        QVERIFY(cfg.save());
+        const QJsonObject saved = QJsonDocument::fromJson(readAll(cfg.configFilePath())).object();
+        QCOMPARE(
+            saved.value(QStringLiteral("agent")).toObject().value(QStringLiteral("failedRequestLogEnabled")).toBool(),
+            false);
+
+        // 显式开启后持久化（"重启"读取同一键仍为 true）
+        cfg.setGroupValue(QStringLiteral("agent"), QStringLiteral("failedRequestLogEnabled"), true);
+        QVERIFY(cfg.save());
+        const QJsonObject reopened = QJsonDocument::fromJson(readAll(cfg.configFilePath())).object();
+        QCOMPARE(reopened.value(QStringLiteral("agent"))
+                     .toObject()
+                     .value(QStringLiteral("failedRequestLogEnabled"))
+                     .toBool(),
+                 true);
+    }
+
+    // B5：关闭后模拟 BadRequest，磁盘不得新增正文
+    void testFailedRequestDisabledWritesNoBody() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        FailedRequestLog& log = FailedRequestLog::instance();
+        log.setEnabledForTest(false);
+        log.setLogDirForTest(temp.path());
+        log.setNowForTest(QDateTime(QDate(2026, 10, 27), QTime(12, 0, 0)));
+
+        AgentMessage message;
+        message.role = QStringLiteral("user");
+        message.content = QStringLiteral("sensitive customer payload");
+        LLMErrorInfo info;
+        info.category = LLMErrorCategory::BadRequest;
+        info.httpStatus = 400;
+        info.detail = QStringLiteral("bad request detail");
+        log.record(info, QByteArrayLiteral("{}"), QStringLiteral("https://api.example.com/v1/chat/completions"),
+                   QStringLiteral("gpt-4o"), {message});
+
+        const QStringList files = QDir(temp.path()).entryList(QStringList{QStringLiteral("llm-failed-*")}, QDir::Files);
+        QVERIFY2(files.isEmpty(), qPrintable(files.join(QStringLiteral(","))));
+        QVERIFY(readAll(log.currentFilePath()).isEmpty());
     }
 };
 

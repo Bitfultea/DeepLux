@@ -130,7 +130,7 @@ bool OpenAILLMClient::heuristicSupportsVision(const QString& model) {
     // 设计 §7.3：显式配置优先；本启发式只在配置缺省时使用
     static const QRegularExpression visionPattern(
         QStringLiteral("gpt-4o|gpt-4\\.1|claude-3|claude-4|gemini|qwen-vl|qwen2\\.5-vl|glm-4v|internvl|llava|"
-                       "pixtral"),
+                       "pixtral|deepseek-(v4-)?flash(-vision-exp)?"),
         QRegularExpression::CaseInsensitiveOption);
     static const QRegularExpression textOnlyPattern(QStringLiteral("deepseek-(chat|reasoner)|o1-mini|text-davinci"),
                                                     QRegularExpression::CaseInsensitiveOption);
@@ -146,6 +146,27 @@ void OpenAILLMClient::setReasoningEffort(const QString& effort) {
 }
 void OpenAILLMClient::setThinkingEnabled(bool enabled) {
     m_thinkingEnabled = enabled;
+}
+bool OpenAILLMClient::isDeepSeekFlashModel(const QString& model) {
+    static const QRegularExpression pattern(QStringLiteral("^deepseek-(v4-)?flash(-vision-exp)?$"),
+                                            QRegularExpression::CaseInsensitiveOption);
+    return pattern.match(model.trimmed()).hasMatch();
+}
+
+qint64 OpenAILLMClient::estimateImageTokens(const AgentImageAttachment& image) const {
+    return isDeepSeekFlashModel(m_model) ? 1024 : ILLMClient::estimateImageTokens(image);
+}
+
+int OpenAILLMClient::preferredImageLongEdge() const {
+    if (!isDeepSeekFlashModel(m_model))
+        return ILLMClient::preferredImageLongEdge();
+    return m_imageDetail == QLatin1String("low") ? 512 : 3000;
+}
+
+void OpenAILLMClient::setImageDetail(const QString& detail) {
+    static const QSet<QString> supported = {QStringLiteral("auto"), QStringLiteral("high"), QStringLiteral("low"),
+                                            QStringLiteral("original")};
+    m_imageDetail = supported.contains(detail) ? detail : QStringLiteral("original");
 }
 
 // ========== 错误分类与重试策略（唯一实现，§7.2/§7.3） ==========
@@ -276,9 +297,11 @@ int OpenAILLMClient::retryDelayMs(LLMErrorCategory category, int retryIndex) {
 QJsonObject OpenAILLMClient::buildRequestBody(const AgentConversation& ctx, const QList<ToolDefinition>& tools) const {
     QJsonObject body;
     body["model"] = m_model;
-    body["temperature"] = m_temperature;
+    const bool deepSeekFlash = isDeepSeekFlashModel(m_model);
+    if (!deepSeekFlash || !m_thinkingEnabled)
+        body["temperature"] = m_temperature;
     body["max_tokens"] = m_maxTokens;
-    body["messages"] = ctx.toOpenAIMessages(m_reasoningEcho);
+    body["messages"] = ctx.toOpenAIMessages(m_reasoningEcho, deepSeekFlash ? m_imageDetail : QString());
 
     if (m_toolsEnabled && !tools.isEmpty()) {
         QJsonArray toolsArray;
@@ -297,10 +320,13 @@ QJsonObject OpenAILLMClient::buildRequestBody(const AgentConversation& ctx, cons
     }
 
     // DeepSeek thinking mode
-    if (!m_reasoningEffort.isEmpty()) {
+    if (!m_reasoningEffort.isEmpty() && (!deepSeekFlash || m_thinkingEnabled)) {
         body["reasoning_effort"] = m_reasoningEffort;
     }
-    if (m_thinkingEnabled) {
+    if (deepSeekFlash) {
+        body["thinking"] =
+            QJsonObject{{"type", m_thinkingEnabled ? QStringLiteral("enabled") : QStringLiteral("disabled")}};
+    } else if (m_thinkingEnabled) {
         body["thinking"] = QJsonObject{{"type", "enabled"}};
     }
 
@@ -342,7 +368,8 @@ void OpenAILLMClient::postRequestBody(bool streaming) {
         request.setTransferTimeout(30000); // 非流式保持第一迭代行为
     }
 
-    qDebug() << "OpenAILLMClient: Sending request to" << m_endpoint << "model=" << m_model
+    qDebug() << "OpenAILLMClient: Sending request to"
+             << url.toString(QUrl::RemoveUserInfo | QUrl::RemoveQuery | QUrl::RemoveFragment) << "model=" << m_model
              << "bytes=" << m_lastBody.size() << "tools=" << m_lastTools.size() << "stream=" << streaming;
 
     m_currentReply = m_networkManager->post(request, m_lastBody);
@@ -537,7 +564,7 @@ void OpenAILLMClient::handleFailure(const LLMErrorInfo& info) {
     }
 
     qWarning() << "[OpenAILLMClient] request failed" << llmErrorCategoryName(info.category)
-               << "httpStatus=" << info.httpStatus << "attempts=" << failure.attempts << info.detail;
+               << "httpStatus=" << info.httpStatus << "attempts=" << failure.attempts;
     // R5：流式请求在首 delta 前的最终失败必须终止流，避免后续 readyRead/finished
     // 再产出 responseReceived（首个事件即顶层 error 的场景）。
     if (m_requestStreaming) {
@@ -654,8 +681,7 @@ void OpenAILLMClient::handleStreamEvent(const SseStreamParser::Event& event) {
     if (!doc.isObject()) {
         if (!m_sawDelta) {
             ++m_streamParseErrors;
-            qWarning() << "[OpenAILLMClient] malformed stream event (no delta yet), count=" << m_streamParseErrors
-                       << "data=" << data.left(200);
+            qWarning() << "[OpenAILLMClient] malformed stream event (no delta yet), count=" << m_streamParseErrors;
             if (m_streamParseErrors >= 3)
                 tryStreamFallback(QStringLiteral("invalid stream data"));
         } else {
@@ -840,7 +866,8 @@ void OpenAILLMClient::failStream(const LLMErrorInfo& info) {
 
     LLMErrorInfo failure = info;
     failure.attempts = m_retryAttempt + 1;
-    qWarning() << "[OpenAILLMClient] stream failed after delta:" << llmErrorCategoryName(info.category) << info.detail;
+    qWarning() << "[OpenAILLMClient] stream failed after delta:" << llmErrorCategoryName(info.category)
+               << "httpStatus=" << info.httpStatus;
     recordFailedRequestIfNeeded(failure);
     emit streamFailed();
     emit errorOccurredClassified(failure);

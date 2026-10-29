@@ -86,4 +86,3 @@ target_link_libraries(deeplux-mcp-bridge PRIVATE deeplux_mcp)
 install(TARGETS deeplux-mcp-bridge
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
-

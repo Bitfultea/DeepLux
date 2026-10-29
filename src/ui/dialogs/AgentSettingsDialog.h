@@ -36,8 +36,12 @@ public:
     bool visionEnabled() const;
     bool streamEnabled() const; // 第二迭代：agent/streamEnabled（默认 true）
     bool thinkingEnabled() const;
-    int contextBudgetTokens() const; // agent/contextBudgetTokens（默认 128000）
-    int toolResultMaxChars() const;  // agent/toolResultMaxChars（默认 6000）
+    QString reasoningEffort() const;
+    QString imageDetail() const;
+    int contextBudgetTokens() const;      // agent/contextBudgetTokens（默认 128000）
+    int toolResultMaxChars() const;       // agent/toolResultMaxChars（默认 6000）
+    bool auditEnabled() const;            // agent/auditEnabled（默认 true）
+    bool failedRequestLogEnabled() const; // agent/failedRequestLogEnabled（默认 false）
 
 private:
     void setupUi();
@@ -55,8 +59,12 @@ private:
     QCheckBox* m_visionCheck = nullptr;
     QCheckBox* m_streamCheck = nullptr;
     QCheckBox* m_thinkingCheck = nullptr;
+    QComboBox* m_reasoningEffortCombo = nullptr;
+    QComboBox* m_imageDetailCombo = nullptr;
     QSpinBox* m_contextBudgetSpin = nullptr;
     QSpinBox* m_toolResultMaxCharsSpin = nullptr;
+    QCheckBox* m_auditCheck = nullptr;
+    QCheckBox* m_failedRequestLogCheck = nullptr;
 };
 
 } // namespace DeepLux

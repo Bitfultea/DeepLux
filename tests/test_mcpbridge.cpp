@@ -13,11 +13,16 @@
 #include <QLocalSocket>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QSemaphore>
+#include <QTemporaryDir>
 #include <QThread>
 #include <QUuid>
 #include <QtTest/QtTest>
 #include <atomic>
+#include <csignal>
+#include <memory>
 
 using namespace DeepLux;
 using namespace DeepLux::Mcp;
@@ -49,6 +54,12 @@ public:
 
     void setSilent(bool silent) {
         m_silent.store(silent);
+    }
+    void setHoldResponses(bool hold) {
+        m_hold.store(hold);
+    }
+    void releaseHeldResponse() {
+        m_release.release();
     }
     void setErrorResponse(const QString& message) {
         QMutexLocker locker(&m_mutex);
@@ -93,8 +104,8 @@ protected:
         connect(&server, &QLocalServer::newConnection, &server, [this, &server]() {
             while (QLocalSocket* socket = server.nextPendingConnection()) {
                 m_connections.fetch_add(1);
-                auto* buffer = new QByteArray();
-                auto* authenticated = new bool(m_token.isEmpty());
+                auto buffer = std::make_shared<QByteArray>();
+                auto authenticated = std::make_shared<bool>(m_token.isEmpty());
                 connect(socket, &QLocalSocket::readyRead, socket, [this, socket, buffer, authenticated]() {
                     buffer->append(socket->readAll());
                     int index = -1;
@@ -104,14 +115,10 @@ protected:
                         if (line.trimmed().isEmpty())
                             continue;
                         m_requests.fetch_add(1);
-                        handleFrame(socket, QJsonDocument::fromJson(line).object(), authenticated);
+                        handleFrame(socket, QJsonDocument::fromJson(line).object(), authenticated.get());
                     }
                 });
-                connect(socket, &QLocalSocket::disconnected, socket, [socket, buffer, authenticated]() {
-                    delete buffer;
-                    delete authenticated;
-                    socket->deleteLater();
-                });
+                connect(socket, &QLocalSocket::disconnected, socket, [socket]() { socket->deleteLater(); });
             }
         });
 
@@ -121,6 +128,9 @@ protected:
 
 private:
     void sendFrame(QLocalSocket* socket, const QString& type, const QJsonValue& id, const QJsonObject& payload) {
+        // 取消测试会在假桥持有期间关闭客户端连接；不要向已断开套接字写入
+        if (!socket || socket->state() != QLocalSocket::ConnectedState)
+            return;
         const QJsonObject frame{{QStringLiteral("version"), QStringLiteral("1.0")},
                                 {QStringLiteral("type"), type},
                                 {QStringLiteral("id"), id},
@@ -162,6 +172,9 @@ private:
         }
         if (m_silent.load())
             return;
+        // 取消测试：挂起响应，直到测试显式释放（最多 5s 防挂死）
+        if (m_hold.load())
+            m_release.tryAcquire(1, 5000);
 
         QString error;
         QJsonObject resultPayload;
@@ -183,6 +196,8 @@ private:
     QSemaphore m_started;
     std::atomic_bool m_listening{false};
     std::atomic_bool m_silent{false};
+    std::atomic_bool m_hold{false};
+    QSemaphore m_release;
     std::atomic_int m_connections{0};
     std::atomic_int m_requests{0};
     mutable QMutex m_mutex;
@@ -251,6 +266,10 @@ private:
 private slots:
     void initTestCase() {
         ToolSchema::instance().registerDefaultTools();
+#ifndef Q_OS_WIN
+        // 取消测试中假桥可能向已关闭套接字写入；测试进程忽略 SIGPIPE
+        std::signal(SIGPIPE, SIG_IGN);
+#endif
     }
 
     void testInitializeAndNotification() {
@@ -550,6 +569,265 @@ private slots:
         QCOMPARE(parseError.error, QJsonParseError::NoError);
         QVERIFY(document.isObject());
         QCOMPARE(document.object().value(QStringLiteral("id")).toString(), QStringLiteral("p"));
+    }
+
+    // ---------- B4：异步取消 / 分帧边界 / 队列上限 ----------
+
+    void testAsyncCancelSuppressesLateResponse() {
+        const QString name = uniqueBridgeName();
+        FakeBridge bridge(name);
+        bridge.setResultPayload(QJsonObject{{QStringLiteral("status"), QStringLiteral("ok")}});
+        bridge.setHoldResponses(true);
+        QVERIFY(bridge.startServer());
+
+        McpStdioServer server;
+        configureBridge(server, name, QString(), 3000);
+        QSignalSpy responses(&server, &McpStdioServer::responseReady);
+
+        server.ingestLine(frame(QJsonObject{
+            {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+            {QStringLiteral("id"), QStringLiteral("held-1")},
+            {QStringLiteral("method"), QStringLiteral("tools/call")},
+            {QStringLiteral("params"), QJsonObject{{QStringLiteral("name"), QStringLiteral("get_flow_state")},
+                                                   {QStringLiteral("arguments"), QJsonObject()}}}}));
+        QTRY_COMPARE_WITH_TIMEOUT(bridge.requestCount(), 1, 3000);
+        QCOMPARE(responses.count(), 0);
+
+        // 取消必须在假桥释放前被消费；随后的 ping 证明事件循环仍在处理输入
+        server.ingestLine("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\","
+                          "\"params\":{\"requestId\":\"held-1\"}}");
+        server.ingestLine("{\"jsonrpc\":\"2.0\",\"id\":\"ping-1\",\"method\":\"ping\"}");
+        QTRY_COMPARE_WITH_TIMEOUT(responses.count(), 1, 3000);
+        QCOMPARE(parse(responses.at(0).at(0).toByteArray()).value(QStringLiteral("id")).toString(),
+                 QStringLiteral("ping-1"));
+
+        // 释放迟到结果：不得输出
+        bridge.setHoldResponses(false);
+        bridge.releaseHeldResponse();
+        QTest::qWait(300);
+        QCOMPARE(responses.count(), 1);
+
+        // 下一请求不受影响
+        bridge.setResultPayload(QJsonObject{{QStringLiteral("status"), QStringLiteral("next")}});
+        server.ingestLine(frame(QJsonObject{
+            {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+            {QStringLiteral("id"), QStringLiteral("next-1")},
+            {QStringLiteral("method"), QStringLiteral("tools/call")},
+            {QStringLiteral("params"), QJsonObject{{QStringLiteral("name"), QStringLiteral("get_flow_state")},
+                                                   {QStringLiteral("arguments"), QJsonObject()}}}}));
+        QTRY_COMPARE_WITH_TIMEOUT(responses.count(), 2, 3000);
+        QCOMPARE(parse(responses.at(1).at(0).toByteArray()).value(QStringLiteral("id")).toString(),
+                 QStringLiteral("next-1"));
+        bridge.stopServer();
+    }
+
+    void testFramingRecoveryAndBounds() {
+        McpStdioServer server;
+        QSignalSpy responses(&server, &McpStdioServer::responseReady);
+
+        // 错误帧后同一 chunk 中的合法 ping 仍可解析
+        server.ingestChunk("{not-json}\n{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"ping\"}\n");
+        QCOMPARE(responses.count(), 2);
+        QCOMPARE(parse(responses.at(0).at(0).toByteArray())
+                     .value(QStringLiteral("error"))
+                     .toObject()
+                     .value(QStringLiteral("code"))
+                     .toInt(),
+                 -32700);
+        QCOMPARE(parse(responses.at(1).at(0).toByteArray()).value(QStringLiteral("id")).toInt(), 9);
+
+        // 超长无换行帧：有界丢弃，随后恢复
+        responses.clear();
+        server.ingestChunk(QByteArray(McpStdioServer::kMaxFrameBytes + 16, 'x'));
+        QCOMPARE(responses.count(), 1);
+        server.ingestChunk("\n");
+        QCOMPARE(responses.count(), 1);
+        server.ingestChunk("{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"ping\"}\n");
+        QCOMPARE(responses.count(), 2);
+        QCOMPARE(parse(responses.at(1).at(0).toByteArray()).value(QStringLiteral("id")).toInt(), 10);
+
+        // EOF 半帧：不产生响应
+        responses.clear();
+        server.ingestChunk("{\"jsonrpc\":\"2.0\",\"id\":11,");
+        server.finishInput();
+        QCOMPARE(responses.count(), 0);
+
+        // id:null 是请求；无 id 是通知
+        server.ingestChunk("{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"ping\"}\n");
+        QCOMPARE(responses.count(), 1);
+        const QJsonObject nullId = parse(responses.at(0).at(0).toByteArray());
+        QVERIFY(nullId.contains(QStringLiteral("id")));
+        QVERIFY(nullId.value(QStringLiteral("id")).isNull());
+        server.ingestChunk("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n");
+        QCOMPARE(responses.count(), 1);
+    }
+
+    void testQueueIsBounded() {
+        const QString name = uniqueBridgeName();
+        FakeBridge bridge(name);
+        bridge.setResultPayload(QJsonObject{{QStringLiteral("status"), QStringLiteral("ok")}});
+        bridge.setHoldResponses(true);
+        QVERIFY(bridge.startServer());
+
+        McpStdioServer server;
+        configureBridge(server, name, QString(), 3000);
+        server.setQueueLimitsForTest(1, 1024 * 1024);
+        QSignalSpy responses(&server, &McpStdioServer::responseReady);
+
+        const auto call = [&server](const QString& id) {
+            server.ingestLine(frame(QJsonObject{
+                {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                {QStringLiteral("id"), id},
+                {QStringLiteral("method"), QStringLiteral("tools/call")},
+                {QStringLiteral("params"), QJsonObject{{QStringLiteral("name"), QStringLiteral("get_flow_state")},
+                                                       {QStringLiteral("arguments"), QJsonObject()}}}}));
+        };
+        call(QStringLiteral("in-flight"));
+        QTRY_COMPARE_WITH_TIMEOUT(bridge.requestCount(), 1, 3000);
+        call(QStringLiteral("queued"));
+        call(QStringLiteral("overflow"));
+
+        QTRY_COMPARE_WITH_TIMEOUT(responses.count(), 1, 3000);
+        const QJsonObject overflow = parse(responses.at(0).at(0).toByteArray());
+        QCOMPARE(overflow.value(QStringLiteral("id")).toString(), QStringLiteral("overflow"));
+        QCOMPARE(overflow.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toInt(), -32009);
+
+        bridge.setHoldResponses(false);
+        bridge.releaseHeldResponse();
+        QTRY_COMPARE_WITH_TIMEOUT(responses.count(), 3, 5000);
+        bridge.stopServer();
+    }
+
+    // 真实子进程黑盒：stdin 分帧、stdout 协议纯度、只读转发、写拒绝、取消
+    void testRealBridgeSubprocess() {
+#if defined(Q_OS_WIN)
+        QSKIP("Windows named-pipe subprocess test requires an isolated pipe name");
+#else
+        QTemporaryDir dataDir;
+        QVERIFY(dataDir.isValid());
+        const QString socketPath = dataDir.filePath(QStringLiteral("agent.sock"));
+
+        FakeBridge bridge(socketPath);
+        bridge.setResultPayload(QJsonObject{{QStringLiteral("status"), QStringLiteral("ok")}});
+        QVERIFY(bridge.startServer());
+        struct StopOnExit {
+            FakeBridge& bridge;
+            ~StopOnExit() {
+                bridge.stopServer();
+            }
+        } stopOnExit{bridge};
+
+        QProcess process;
+        QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+        environment.insert(QStringLiteral("DEEPLUX_APP_DATA_DIR"), dataDir.path());
+        process.setProcessEnvironment(environment);
+        process.start(QStringLiteral(DEEPLUX_MCP_BRIDGE_PATH), QStringList());
+        QVERIFY2(process.waitForStarted(5000), qPrintable(process.errorString()));
+
+        const auto send = [&process](const QJsonObject& request) {
+            process.write(frame(request) + '\n');
+            process.waitForBytesWritten(2000);
+        };
+        const auto readResponse = [&process]() -> QJsonObject {
+            QElapsedTimer timer;
+            timer.start();
+            while (!process.canReadLine() && timer.elapsed() < 5000) {
+                if (!process.waitForReadyRead(200) && process.state() == QProcess::NotRunning)
+                    break;
+            }
+            const QByteArray line = process.readLine();
+            if (line.trimmed().isEmpty()) {
+                qWarning() << "[subprocess-test] no response; state" << process.state() << "error"
+                           << process.errorString() << "stderr" << QString::fromUtf8(process.readAllStandardError());
+                return QJsonObject();
+            }
+            QJsonParseError error;
+            const QJsonDocument doc = QJsonDocument::fromJson(line.trimmed(), &error);
+            return error.error == QJsonParseError::NoError ? doc.object() : QJsonObject();
+        };
+
+        send(QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                         {QStringLiteral("id"), 1},
+                         {QStringLiteral("method"), QStringLiteral("initialize")},
+                         {QStringLiteral("params"), QJsonObject()}});
+        QCOMPARE(readResponse().value(QStringLiteral("id")).toInt(), 1);
+
+        send(QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                         {QStringLiteral("id"), 2},
+                         {QStringLiteral("method"), QStringLiteral("ping")}});
+        QCOMPARE(readResponse().value(QStringLiteral("id")).toInt(), 2);
+
+        send(QJsonObject{
+            {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+            {QStringLiteral("id"), 3},
+            {QStringLiteral("method"), QStringLiteral("tools/call")},
+            {QStringLiteral("params"), QJsonObject{{QStringLiteral("name"), QStringLiteral("get_flow_state")},
+                                                   {QStringLiteral("arguments"), QJsonObject()}}}});
+        const QJsonObject readResult = parse(readResponse()
+                                                 .value(QStringLiteral("result"))
+                                                 .toObject()
+                                                 .value(QStringLiteral("content"))
+                                                 .toArray()
+                                                 .first()
+                                                 .toObject()
+                                                 .value(QStringLiteral("text"))
+                                                 .toString()
+                                                 .toUtf8());
+        QCOMPARE(readResult.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+
+        send(QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                         {QStringLiteral("id"), 4},
+                         {QStringLiteral("method"), QStringLiteral("tools/call")},
+                         {QStringLiteral("params"), QJsonObject{{QStringLiteral("name"), QStringLiteral("add_module")},
+                                                                {QStringLiteral("arguments"), QJsonObject()}}}});
+        const QJsonObject denied = readResponse().value(QStringLiteral("result")).toObject();
+        QCOMPARE(denied.value(QStringLiteral("isError")).toBool(), true);
+        QCOMPARE(bridge.requestCount(), 1); // 写工具未转发
+
+        // 挂起 + 取消：ping 先返回，迟到结果不得输出
+        bridge.setHoldResponses(true);
+        send(QJsonObject{
+            {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+            {QStringLiteral("id"), 5},
+            {QStringLiteral("method"), QStringLiteral("tools/call")},
+            {QStringLiteral("params"), QJsonObject{{QStringLiteral("name"), QStringLiteral("get_flow_state")},
+                                                   {QStringLiteral("arguments"), QJsonObject()}}}});
+        QTRY_COMPARE_WITH_TIMEOUT(bridge.requestCount(), 2, 3000);
+
+        send(QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                         {QStringLiteral("method"), QStringLiteral("notifications/cancelled")},
+                         {QStringLiteral("params"), QJsonObject{{QStringLiteral("requestId"), 5}}}});
+        send(QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                         {QStringLiteral("id"), 6},
+                         {QStringLiteral("method"), QStringLiteral("ping")}});
+        QCOMPARE(readResponse().value(QStringLiteral("id")).toInt(), 6);
+
+        bridge.setHoldResponses(false);
+        bridge.releaseHeldResponse();
+        bool lateSeen = false;
+        QElapsedTimer wait;
+        wait.start();
+        while (wait.elapsed() < 400) {
+            if (!process.waitForReadyRead(100))
+                continue;
+            const QList<QByteArray> lines = process.readAll().split('\n');
+            for (const QByteArray& line : lines) {
+                if (line.trimmed().isEmpty())
+                    continue;
+                const QJsonObject object = parse(line);
+                if (object.value(QStringLiteral("id")).toInt() == 5)
+                    lateSeen = true;
+            }
+        }
+        QVERIFY2(!lateSeen, "cancelled MCP request must not emit a late response");
+        QCOMPARE(bridge.requestCount(), 2);
+
+        process.closeWriteChannel();
+        QVERIFY(process.waitForFinished(5000));
+        QCOMPARE(process.exitStatus(), QProcess::NormalExit);
+        QCOMPARE(process.exitCode(), 0);
+        bridge.stopServer();
+#endif
     }
 
     void testSocketCandidatesMatchBridge() {
