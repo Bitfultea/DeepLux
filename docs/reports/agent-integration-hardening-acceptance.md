@@ -70,6 +70,7 @@ env -u DEEPLUX_APP_DATA_DIR HOME="$TEST_HOME" QT_QPA_PLATFORM=offscreen \
 | 真实视觉模型图像进入请求、纯文本模型降级 | 未验证 | 同上（离线用例已覆盖回灌与文本降级路径） |
 | 实际 MCP 客户端（Claude Desktop/Cursor 等） | 未验证 | 无客户端环境；子进程测试使用真实 bridge 进程但假 GUI 桥 |
 | 真实 GUI 手工“确认前切工程”提示 | 未验证 | 仅 headless QtTest 覆盖状态与参数不变 |
+| 深浅主题下设置页视觉遮挡 | 未验证 | 仅 headless 最小宽度可见性检查，未做截图对比 |
 | TSan / 长期并发 | 未运行 | 计划明确不以重复测试替代 TSan |
 | CUDA 推理 | 未改动 | 本轮不涉及 CUDA，既有证据只能标注沿用 |
 

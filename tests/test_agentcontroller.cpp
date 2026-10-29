@@ -823,6 +823,39 @@ private slots:
         QVERIFY2(injectedKept, "the auto-injected image message belongs to the protected recent group");
     }
 
+    // B3：保护集合自身超过消息数硬上限时确定性停止（不放宽到 65+ 条）
+    void testProtectedMessageLimitFailsClosed() {
+        AgentController& controller = AgentController::instance();
+        controller.m_conversationHistory.clear();
+
+        AgentMessage user;
+        user.role = QStringLiteral("user");
+        user.content = QStringLiteral("one request with many tool results");
+        controller.m_conversationHistory.append(user);
+
+        AgentMessage assistant;
+        assistant.role = QStringLiteral("assistant");
+        QJsonArray calls;
+        for (int i = 0; i < 64; ++i)
+            calls.append(QJsonObject{{"id", QStringLiteral("bulk-%1").arg(i)}});
+        assistant.toolCalls = calls;
+        controller.m_conversationHistory.append(assistant);
+        for (int i = 0; i < 64; ++i) {
+            AgentMessage tool;
+            tool.role = QStringLiteral("tool");
+            tool.toolCallId = QStringLiteral("bulk-%1").arg(i);
+            tool.content = QStringLiteral("{}");
+            controller.m_conversationHistory.append(tool);
+        }
+        QVERIFY(controller.m_conversationHistory.size() > 64);
+
+        QSignalSpy errorSpy(&controller, &AgentController::llmErrorOccurred);
+        QVERIFY(!controller.sendPreparedContext());
+        QCOMPARE(m_mock->requestCount, 0);
+        QVERIFY(!errorSpy.isEmpty());
+        QVERIFY(errorSpy.last().at(0).toString().contains(QStringLiteral("context_budget_exceeded")));
+    }
+
     void testInvalidToolPairingBlocksSend() {
         AgentController& controller = AgentController::instance();
         controller.m_conversationHistory.clear();
