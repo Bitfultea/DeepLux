@@ -148,8 +148,11 @@ signals:
   - **所有者入口**：`runOnceForJob(token, reason)`、`stepOnceForJob(token, reason)`、`resumeForJob(token, reason)`、`pauseForJob(token)` 在启动协议内校验 token；只有所有者可绕过“external job active”的忙检查并执行。
   - **非所有者入口**：公开 `runOnce/runOnceChecked/stepOnce/runOnceAsync/start/pause/resume` 在 external job 活跃时一律拒绝（忙或 `external_job_active`），不得绕过所有者检查。
   - **`stop()` 例外**：任何线程/入口都可调用，作为安全阀；它只置取消并唤醒，不执行新工作。
+  - **job 级取消标志**：`stop()` 在 `m_lifecycleMutex` 内设置 `m_externalJobCancelRequested=true`（仅在 external job 活跃时），并取消当前 token。所有 `*ForJob` 启动入口在同一锁内检查该标志；**旧 job 不能清除它**。只有 `endExternalJob(token)` 成功结束旧租约后，新的 `beginExternalJob()` 才能复位该标志并重置 token。
+  - 因此不存在“Service 检查完停止 → 调用 engine.stop() → 同一 token 又启动下一轮”的窗口：`runOnceForJob` 会因 job 取消标志拒绝启动；Service 将本轮结束视为 stopped，不再发起下一轮。
+  - `stop_flow` 工具接入 Service：Service job 活跃时调用 `FlowExecutionService::stop()`；无 Service job 时保留直接 `RunEngine::stop()` 兼容路径。
   - 租约期间 `loadProject/addModule/removeModule/clearModules` 与 `tryAcquireMaintenance` 一律拒绝；ProjectManager 的工程切换也因此被挡。
-  - `beginExternalJob()` 在引擎已执行/维护时失败；Service 启动失败必须显式上报。`endExternalJob` 只接受匹配 token，重复/过期 token 无效。
+  - `beginExternalJob()` 在引擎已执行/维护时失败；Service 启动失败必须显式上报。`endExternalJob` 只接受匹配 token，重复/过期 token 无效；结束时在锁内清理取消标志，下一次 begin 才允许复位。
 - 保留 `void runOnce()` 兼容 CLI/测试；Service 不使用它，而使用 `runOnceForJob`（内部走 `tryBeginForRun(Single)` 并返回失败原因）。
 - 用户暂停复用引擎的“模块边界暂停上下文”（见 5.3）；断点/用户恢复都走 `RunIntent::Resume`，该路径不触碰 `m_cycleTimer`。
 - 单步/恢复同理：Service 内使用 `stepOnceForJob/resumeForJob`，避免 `stepOnce()` 在入口被 `isBusy()` 拒绝。`stepOnceForJob` 的实际推进复用一个内部 `stepOnceImpl(token)`，公开 `stepOnce()` 只是无 token 的包装。
@@ -214,17 +217,21 @@ Paused ──stop──> Stopping ──> Idle
    - Cycle 轮与轮之间的暂停由 Service 自己的等待状态处理：若引擎已是 Idle，Service 在下一轮启动前等待；若引擎正在一轮中，则走上述边界暂停。
    - `stop()` 同时清除用户暂停请求与暂停上下文，防止旧 resume 重启。
    - 必测：A→B→C，A 执行中请求暂停，A 结束后停在 B 前；继续后 B、C 各执行一次，最终输出正确；暂停期间 `runFinished` 不触发。
-5. **停止**：`stop()` 置取消并 `wakeAll()`，覆盖空闲/暂停/循环间隔等待；`Stopping` 期间拒绝新 job。
+5. **停止**：`stop()` 在生命周期锁内取消当前 token、设置 job 级取消标志并 `wakeAll()`，覆盖空闲/暂停/循环间隔等待；标志持续到旧 job 租约结束，`*ForJob` 不能启动下一轮。`Stopping` 期间拒绝新 job。
 6. **执行收尾（必须区分结果）**：
    - `executeAcquiredRun/stepOnce` 使用 `ExecutionFinalizer(outcome)`，outcome 显式区分：
-     - `Completed`：清理暂停上下文、状态 Idle、释放执行权、发 `runFinished/stateChanged`；
+     - `Completed`：清理暂停上下文、释放执行权、发 `runFinished/stateChanged`。终态按运行模式决定：
+       - `RunMode::RunOnce`（单次/单步，以及 Service 的每轮 Single）→ `Idle`；
+       - `RunMode::RunCycle`（兼容路径 `RunEngine::start()` 的原生定时器循环）→ **保持 `Running`**，否则后续 tick 会被 `tryBeginForRun(CycleTick)` 拒绝；
+       - 若 `m_stopPending` 或状态已是 `Stopped`，**stop 优先** → `Stopped`，不得被 Completed 覆盖为 Running/Idle。
      - `Paused`：**只释放本段执行权**，状态 Paused；保留 `m_pauseResumeModule/m_pausePipelineData/控制队列/循环索引/runMode` 与 job 租约；**不发 runFinished**；
      - `Stopped`：清理暂停上下文、状态 Stopped、释放执行权、发停止结果；
      - `Failed`：清理暂停上下文、记录失败、释放执行权、发失败结果。
-   - finalizer 是 RAII：正常返回、提前 return、异常都会执行一次收尾；异常路径默认 outcome=`Failed`。`Paused` 必须显式提交，不能被析构函数误判为 Completed/Failed。
+   - finalizer 是 RAII：正常返回、提前 return、异常都会执行一次收尾；异常路径默认 outcome=`Failed`。`Paused` 必须显式提交，不能被析构函数误判为 Completed/Failed。终态提交与 `m_stopPending` 判定在同一 `m_lifecycleMutex` 临界区，保证并发 stop 优先。
+   - Service Cycle 不使用 `RunMode::RunCycle` 的原生定时器路径；它每轮执行 Single（Completed→Idle），由 Service 循环下一轮，job 租约维持 busy。
    - 单模块 `module->execute()` 的异常仍由 `ModuleBase::execute` 捕获；引擎 finalizer 负责其余异常（容器/回调/内存）并保证租约释放。
    - Service 的 `try/catch` 只作最后兜底与诊断，不承担引擎租约清理。
-   - 必测：引擎层故障注入（测试钩子从 `executeAcquiredRun` 内部抛异常，而非仅插件 `process()`）验证租约释放、状态回落、后续 run 可启动；`Paused` 收尾不触发 `runFinished` 且保留续跑上下文。
+   - 必测：引擎层故障注入（测试钩子从 `executeAcquiredRun` 内部抛异常，而非仅插件 `process()`）验证租约释放、状态回落、后续 run 可启动；`Paused` 收尾不触发 `runFinished` 且保留续跑上下文；**原生 `start()` 循环至少执行两轮**；**收尾窗口内并发 stop 必须获胜（终态 Stopped，不回到 Running/Idle）**。
 7. **关闭与生命周期**：
    - `closeEvent` 以 **Service 状态**（非仅 `engine.isBusy()`）判断是否有 job；Cycle 两轮之间引擎可能 Idle，但 Service 仍 Running。
    - 有 job 时：`service.stop()` 后 `ignore()` 关闭，设置 `m_closeWhenRunFinishes`，**不得在 GUI 同步 wait**；由 `jobFinished` 再次触发 close。
@@ -379,7 +386,7 @@ struct DisplayFrame {
   - `mode=once, wait=false`：服务启动 Single。
   - `mode=cycle`：保持现有兼容语义——立即返回 `{"status":"started","mode":"cycle","async":true,"note":"cycle mode ignores wait"}`，`wait` 仍被忽略；Cycle 由服务后台驱动，`timeoutMs` 不约束它，停止通过 `stop_flow`/abort。不得把 Cycle 改成阻塞等待。
 - `pause_flow/resume_flow` 改为服务暂停/继续；暂停原因与断点暂停在返回中可区分（如增加 `pauseReason` 字段，保持既有字段兼容）。
-- `abortRunningTool()` 优先服务停止。
+- `abortRunningTool()`/`stop_flow` 优先调用 `FlowExecutionService::stop()`；仅当没有 Service job 时才回退到 `RunEngine::stop()`，不得绕过 job 级取消标志。
 
 ## 9. 兼容性
 
@@ -396,6 +403,8 @@ struct DisplayFrame {
 | 服务 | 单次/循环/单步/继续；并发启动被拒；停止立即返回；异常后状态复位；shutdown 非 Idle 拒绝销毁；state/currentJob 跨线程可见 |
 | 启动判定 | `runOnceForJob` 忙/租约不匹配时返回 false+原因；Service 不把未启动轮次报告为完成 |
 | job 租约 | 所有者 `runOnceForJob/stepOnceForJob/resumeForJob` 成功；非所有者公开入口被拒；Cycle 两轮之间 `isBusy()==true`；load/clear/remove/add 与工程切换被拒绝；jobFinished 后释放；错误/过期 token 无效 |
+| Job 取消 | “Service 检查停止后、启动下一轮前”窗口内调用 `engine.stop()`：同 token 的 `runOnceForJob` 必须失败，Service 不发起下一轮；仅 endExternalJob 后新 job 可复位 |
+| 原生循环 | `RunEngine::start()` 正常完成一轮后仍为 Running，至少执行两轮；收尾窗口并发 stop 获胜，终态 Stopped |
 | 线程 | worker 模块在执行线程；gui 模块在 GUI 线程；无 worker→QWidget 调用 |
 | 并行入口 | `executeParallel` 含 gui 模块返回 `gui_affinity_not_parallelizable` 且不阻塞；`executeBatchParallel` 不把 gui 模块入池；worker 并行结果与串行一致 |
 | 故障注入 | 引擎层注入异常（非插件 process）后租约释放、状态回落、后续 run 可启动；Paused 收尾保留上下文且不发 runFinished |
@@ -428,6 +437,8 @@ struct DisplayFrame {
 | 用户暂停无法恢复 | 复用并扩展断点暂停上下文（模块/流水/控制队列/runMode），A→B→C 语义测试锁定 |
 | 异常跳过租约释放 | 引擎内按 Completed/Paused/Stopped/Failed 区分的 RAII finalizer；引擎层故障注入测试 |
 | job 租约阻止自身单步/被旁路绕过 | 所有者 `JobToken` + `*ForJob` 内部入口；公开入口统一拒绝 |
+| Completed 误把原生循环置 Idle | finalizer 按 `RunMode` 决定终态：RunOnce→Idle，RunCycle→Running；锁内 stop 优先 |
+| stop 被下一轮启动覆盖 | job 级取消标志持续到租约结束；`*ForJob` 锁内检查；只有新 job 复位 |
 | 并行池执行 gui 模块导致死锁 | 并行资格含 `affinity=worker`；gui 模块拒绝入池并回退串行，禁止池内阻塞回 GUI |
 | 快照与下一轮输出共享缓冲 | 执行线程深拷贝 QImage；单槽 latest-wins；本轮仅 2D |
 | 图像与测量结果跨轮错配 | DisplayFrame 携带 `jobId/runId/frameId/moduleId/moduleDataSnapshot`；叠加只读帧内快照；旧帧按身份丢弃 |
@@ -472,3 +483,8 @@ struct DisplayFrame {
 3. **异常与暂停收尾**：`ExecutionFinalizer` 区分 `Completed/Paused/Stopped/Failed`；`Paused` 只释放本段执行权、保留上下文与 job 租约、不发 `runFinished`；增加引擎层故障注入测试。
 4. **帧与结果一致性**：`DisplayFrame` 携带 `jobId/runId/frameId/moduleId` 与不可变 `moduleDataSnapshot`；测量叠加只读帧内快照，禁止回读实时 `moduleOutput`；旧 job/旧轮帧按身份丢弃；补充 A/B 延迟消费一致性测试。
 5. **P2 一致性**：`shutdown()` 统一为 `bool`；动作表与测试矩阵统一使用 `runOnceForJob` 系列，不再混用 `runOnce()`/`runOnceChecked`。
+
+## 16. 第三轮评审修订（2026-10-30，版本 51bc0d7）
+
+1. **Completed 终态按运行模式区分**：`RunMode::RunOnce`（单次/单步/Service 每轮 Single）→ Idle；`RunMode::RunCycle`（兼容的 `RunEngine::start()` 原生定时器循环）→ 保持 Running；`m_stopPending` 或已 Stopped 时 stop 优先 → Stopped，且终态提交与 stop 判定在同一生命周期锁内。新增“原生循环至少两轮”和“收尾窗口 stop 获胜”测试。
+2. **job 级取消标志**：`stop()` 在生命周期锁内取消 token 并置 `m_externalJobCancelRequested`；所有 `*ForJob` 启动入口同锁检查，旧 job 不能清除，只有结束旧租约后的新 `beginExternalJob` 可复位。`stop_flow`/`abortRunningTool` 接入 Service。新增“检查停止后、启动下一轮前”窗口的屏障测试，确保同 token 无法启动下一轮。
