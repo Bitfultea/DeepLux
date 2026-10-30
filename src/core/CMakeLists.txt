@@ -88,6 +88,7 @@ set(CORE_HEADERS
     model/ImageData.h
     model/DataSource.h
     engine/RunEngine.h
+    engine/ExecutionAffinity.h
     device/CameraManager.h
     communication/CommunicationManager.h
     config/SystemConfig.h
