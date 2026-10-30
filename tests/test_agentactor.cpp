@@ -562,6 +562,10 @@ private slots:
         BlockingAgentModule module;
         QVERIFY(module.initialize());
         RunEngine::instance().addModule(&module);
+        // 后台执行（设计 §6.2）：未注册探针默认 gui，会经 BlockingQueuedConnection 回到 GUI
+        // 线程并阻塞事件循环；本用例验证 Agent 非阻塞返回语义，故显式标记 worker 亲和。
+        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
+                                                                ExecutionAffinity::Worker);
 
         QElapsedTimer elapsed;
         elapsed.start();

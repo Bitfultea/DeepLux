@@ -488,6 +488,10 @@ void TestAcceptanceFlows::testParallelAllJoinFlow() {
 
     RunEngine& engine = RunEngine::instance();
     QVERIFY2(engine.loadProject(&project), "loadProject parallel-all flow");
+    // 后台执行（设计 §6.3）：并行池只接受 worker 亲和模块；验收用 Delay 插件尚未审计
+    // （metadata 仍为 gui 默认），测试侧显式标记 worker 以验证真实并发，不放宽产品判定。
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("b1"), ExecutionAffinity::Worker);
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("b2"), ExecutionAffinity::Worker);
 
     FlowTrace trace;
     std::vector<QMetaObject::Connection> conns;
@@ -541,6 +545,9 @@ void TestAcceptanceFlows::testParallelFailureCancelsSiblingFlow() {
 
     RunEngine& engine = RunEngine::instance();
     QVERIFY2(engine.loadProject(&project), "loadProject parallel-failure flow");
+    // 后台执行（设计 §6.3）：失败取消同组需要真实并行批次，故测试侧标记 worker 亲和。
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("bad"), ExecutionAffinity::Worker);
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("slow"), ExecutionAffinity::Worker);
 
     FlowTrace trace;
     std::vector<QMetaObject::Connection> conns;

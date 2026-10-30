@@ -7,6 +7,7 @@
 #include "manager/PluginManager.h"
 #include "model/Project.h"
 
+#include <QCoreApplication>
 #include <QDebug>
 #include <QElapsedTimer>
 #include <QMutexLocker>
@@ -35,6 +36,15 @@ const PortSpec* findPort(const QList<PortSpec>& ports, const QString& id) {
 
 bool portTypesCompatible(DataType outputType, DataType inputType) {
     return outputType == DataType::Any || inputType == DataType::Any || outputType == inputType;
+}
+
+// 后台执行（设计 §6.1）：未注册/测试模块默认 gui；已注册模块读 metadata 解析结果。
+ExecutionAffinity affinityForModule(ModuleBase* module) {
+    if (!module) {
+        return ExecutionAffinity::Gui;
+    }
+    const PluginInfo info = PluginManager::instance().pluginInfo(module->moduleId());
+    return info.executionAffinity;
 }
 
 QString connectionKey(const ModuleConnection& connection) {
@@ -119,6 +129,17 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
     for (const QString& name : names)
         if (getModule(name))
             validNames.append(name);
+
+    // 后台执行（设计 §6.3）：并行池只允许 worker 亲和模块。GUI 线程可能正同步等待线程池，
+    // 池线程统一 BlockingQueuedConnection 回 GUI 会互等死锁；因此进入池前过滤，存在 gui
+    // 亲和时直接返回结构化错误，由调用方（如 Parallel 插件）回退串行。
+    for (const QString& name : validNames) {
+        if (executionAffinityFor(name, getModule(name)) != ExecutionAffinity::Worker) {
+            releaseLease();
+            return ExecutionResult::fail(ExecError::Processing, tr("gui_affinity_not_parallelizable: %1").arg(name),
+                                         QStringLiteral("gui_affinity_not_parallelizable"));
+        }
+    }
 
     for (const QString& name : validNames) {
         ModuleBase* mod = getModule(name);
@@ -665,6 +686,7 @@ void RunEngine::addModuleLocked(ModuleBase* module) {
         m_modules.append(module);
         QString key = runtimeModuleName(module);
         m_moduleMap[key] = module;
+        cacheExecutionAffinity(module); // 后台执行（设计 §6.1）：随模块加入缓存亲和性
         Logger::instance().debug(QString("Module added to engine: %1").arg(key), "Run");
     }
 }
@@ -771,6 +793,7 @@ void RunEngine::removeModule(const QString& moduleId) {
             m_moduleMap.remove(removedName);
             m_modules.removeAt(i);
             m_disabledModules.remove(removedName);
+            forgetExecutionAffinity(removedName); // 后台执行（设计 §6.1）：热替换不沿用旧亲和性
             m_nodeOutputs.remove(removedName);
             m_executionOrder.removeAll(removedName); // 从拓扑序移除，不清空剩余 DAG
             {
@@ -831,6 +854,11 @@ void RunEngine::clearModulesLocked() {
     m_loopRegions.clear();
     m_nodeOutputs.clear();
     {
+        // 后台执行（设计 §6.1）：清空模块时同步清空亲和性缓存，避免重载工程沿用旧值。
+        QMutexLocker affinityLocker(&m_affinityMutex);
+        m_executionAffinity.clear();
+    }
+    {
         QMutexLocker runtimeLocker(&m_runtimeInfoMutex);
         m_moduleRuntimeInfo.clear();
     }
@@ -857,6 +885,56 @@ void RunEngine::clearModules() {
 QList<ModuleBase*> RunEngine::modules() const {
     QReadLocker locker(&m_moduleLock);
     return m_modules;
+}
+
+ExecutionAffinity RunEngine::executionAffinityFor(const QString& moduleName, ModuleBase* module) const {
+    {
+        QMutexLocker locker(&m_affinityMutex);
+        const auto it = m_executionAffinity.constFind(moduleName);
+        if (it != m_executionAffinity.constEnd()) {
+            return it.value();
+        }
+    }
+    return affinityForModule(module);
+}
+
+void RunEngine::cacheExecutionAffinity(ModuleBase* module) {
+    if (!module) {
+        return;
+    }
+    const QString key = runtimeModuleName(module);
+    if (key.isEmpty()) {
+        return;
+    }
+    const ExecutionAffinity affinity = affinityForModule(module);
+    QMutexLocker locker(&m_affinityMutex);
+    m_executionAffinity.insert(key, affinity);
+}
+
+void RunEngine::forgetExecutionAffinity(const QString& moduleName) {
+    QMutexLocker locker(&m_affinityMutex);
+    m_executionAffinity.remove(moduleName);
+}
+
+void RunEngine::setModuleExecutionAffinityForTest(const QString& moduleName, ExecutionAffinity affinity) {
+    QMutexLocker locker(&m_affinityMutex);
+    m_executionAffinity.insert(moduleName, affinity);
+}
+
+bool RunEngine::isParallelEligibleForTest(const QString& moduleName) const {
+    ModuleBase* module = getModule(moduleName);
+    return module && isParallelEligible(module);
+}
+
+bool RunEngine::isParallelEligible(ModuleBase* module) const {
+    if (!module) {
+        return false;
+    }
+    // 后台执行（设计 §6.3）：worker 亲和 + 线程安全 + 非阻塞 + 无断点才可进入并行池。
+    if (executionAffinityFor(runtimeModuleName(module), module) != ExecutionAffinity::Worker) {
+        return false;
+    }
+    return module->isThreadSafe() && !module->isBlocking() && !hasBreakpoint(runtimeModuleName(module));
 }
 
 ModuleBase* RunEngine::getModule(const QString& moduleName) const {
@@ -1168,18 +1246,19 @@ void RunEngine::executeRunWithControlGraph(ImageData& pipelineData) {
 
         // 仅并发执行明确声明线程安全、非阻塞、启用且没有断点的就绪模块。
         // G-fix4: blocking 模块（文件 I/O 等）不进并行批次，避免占满线程池。
+        // 后台执行（设计 §6.3）：并行批次资格额外要求执行亲和性为 worker（gui 模块留在
+        // 串行路径，由 executeModule 的亲和性分流处理）。
         QStringList batch;
         batch.append(m_controlQueue.takeFirst());
         if (m_reentrantModules.contains(mod))
             m_controlActivated.remove(mod);
         ModuleBase* firstModule = getModule(mod);
-        const bool canBuildParallelBatch = parallelThreadCount() > 1 && firstModule && firstModule->isThreadSafe() &&
-                                           !firstModule->isBlocking() && !isModuleDisabled(mod);
+        const bool canBuildParallelBatch =
+            parallelThreadCount() > 1 && isParallelEligible(firstModule) && !isModuleDisabled(mod);
         while (canBuildParallelBatch && !m_controlQueue.isEmpty()) {
             const QString nextMod = m_controlQueue.first();
             ModuleBase* nextModule = getModule(nextMod);
-            if (!nextModule || !nextModule->isThreadSafe() || nextModule->isBlocking() || isModuleDisabled(nextMod) ||
-                hasBreakpoint(nextMod))
+            if (!nextModule || isModuleDisabled(nextMod) || !isParallelEligible(nextModule))
                 break;
             batch.append(m_controlQueue.takeFirst());
             if (m_reentrantModules.contains(nextMod))
@@ -1728,7 +1807,22 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     execCtx.timestampMs = QDateTime::currentMSecsSinceEpoch();
     execCtx.runMode = module->flowControlType();
     execCtx.cancellationToken = m_cancellationToken;
-    const ExecutionResult execResult = module->execute(portInputs, portOutputs, execCtx);
+    // 后台执行（设计 §6.2）：worker 亲和或当前已在 GUI 线程时内联执行；否则用
+    // BlockingQueuedConnection 回到 GUI 线程执行，避免 gui 模块跨线程使用 QObject 亲和资源。
+    // 已在 GUI 线程时直接执行可避免自等待死锁（CLI/测试同步路径）。
+    ExecutionResult execResult;
+    const ExecutionAffinity affinity = executionAffinityFor(moduleName, module);
+    auto executeInline = [&]() { execResult = module->execute(portInputs, portOutputs, execCtx); };
+    QCoreApplication* app = QCoreApplication::instance();
+    if (affinity == ExecutionAffinity::Worker || !app || QThread::currentThread() == app->thread()) {
+        executeInline();
+    } else if (!QMetaObject::invokeMethod(app, executeInline, Qt::BlockingQueuedConnection)) {
+        // 无事件循环/正在退出时不得静默跳过：模块按失败处理并记录（设计 §6.2）。
+        const QString dispatchError = tr("GUI-thread module dispatch failed: %1").arg(moduleName);
+        Logger::instance().warning(dispatchError, "Run");
+        execResult =
+            ExecutionResult::fail(ExecError::Processing, dispatchError, QStringLiteral("affinity_dispatch_failed"));
+    }
     bool success = execResult.success;
     if (success) {
         QMutexLocker nodeOutputsLocker(&m_lifecycleMutex);

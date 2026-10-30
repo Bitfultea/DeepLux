@@ -1321,6 +1321,9 @@ void TestRunEngine::testParallelExecutesConcurrently() {
         auto* mod = new ParallelSleepModule(name, &running, &maxConc, 60);
         mod->initialize();
         engine.addModule(mod);
+        // 后台执行（设计 §6.3）：并行池只接受 worker 亲和模块；探针模块未注册插件，
+        // 默认 gui，因此测试侧显式标记 worker（不放宽产品代码）。
+        engine.setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
         names << name;
     }
 
@@ -1350,6 +1353,9 @@ void TestRunEngine::testParallelFailureCancelsGroup() {
     auto* slow = new ParallelSleepModule("slow", &running, &maxConc, 200);
     slow->initialize();
     engine.addModule(slow);
+    // 后台执行（设计 §6.3）：并行池只接受 worker 亲和模块，探针默认 gui → 测试显式标记。
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("fail"), ExecutionAffinity::Worker);
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("slow"), ExecutionAffinity::Worker);
 
     PortValueMap input;
     const ExecutionResult result = engine.executeParallel(QStringList{"fail", "slow"}, input);
@@ -1360,6 +1366,14 @@ void TestRunEngine::testParallelFailureCancelsGroup() {
 }
 
 namespace {
+// 后台执行（设计 §6.3）：并行批次资格要求 worker 亲和；探针模块未注册插件（默认 gui），
+// 故测试侧显式标记 worker 亲和，不改动产品判定。
+void markWorkerAffinity(int fanout, const QString& prefix = QStringLiteral("par")) {
+    for (int i = 0; i < fanout; ++i)
+        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("%1%2").arg(prefix).arg(i),
+                                                                ExecutionAffinity::Worker);
+}
+
 // 阶段 6 辅助：entry(非线程安全,单独执行) 经隐式控制边 next→control 扇出到
 // 多个线程安全模块，迫使控制图路径将其合入同一并行批次。
 void buildParallelBatchProject(Project& project, int fanout) {
@@ -1422,6 +1436,7 @@ void TestRunEngine::testParallelSignalsDeliveredOnReceiverThread() {
                                     return mod;
                                 }),
              "parallel batch project must load");
+    markWorkerAffinity(4);
 
     engine.runOnce();
     QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
@@ -1455,6 +1470,7 @@ void TestRunEngine::testParallelTasksSeeStableRunId() {
         mod->setThreadSafe(inst.id != QLatin1String("entry"));
         return mod;
     }));
+    markWorkerAffinity(4);
 
     engine.runOnce();
     QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
@@ -1483,6 +1499,7 @@ void TestRunEngine::testExecuteParallelPrimitiveStableRunId() {
         auto* mod = new RunIdRecordingModule(name, &mutex, &sink);
         mod->initialize();
         engine.addModule(mod);
+        engine.setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
         names << name;
     }
 
@@ -1512,6 +1529,7 @@ void TestRunEngine::testExecuteParallelPrimitiveStableRunId() {
         auto* mod = new RunIdRecordingModule(name, &mutex2, &sink2);
         mod->initialize();
         engine.addModule(mod);
+        engine.setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
         names2 << name;
     }
     QVERIFY(engine.executeParallel(names2, input).success);
@@ -1551,6 +1569,7 @@ void TestRunEngine::testParallelStressFiftyRunsNoPollution() {
             mod->setThreadSafe(inst.id != QLatin1String("entry"));
             return mod;
         }));
+        markWorkerAffinity(3);
 
         engine.runOnce();
         QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
@@ -1613,6 +1632,10 @@ void TestRunEngine::testConcurrentStopDuringRunKeepsStoppedState() {
         m->executionLog = &log;
         return m;
     }));
+    // 后台执行（设计 §6.2）：探针默认 gui，但基线语义要求模块在后台执行线程内联执行
+    // （主线程此时阻塞在信号量上，无法服务 BlockingQueuedConnection），故标记 worker。
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("gate"), ExecutionAffinity::Worker);
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("after"), ExecutionAffinity::Worker);
 
     std::thread runner([&engine]() { engine.runOnce(); });
     QVERIFY2(entered.tryAcquire(1, 5000), "gate module must enter execution");
@@ -1731,6 +1754,9 @@ void TestRunEngine::testClearAndLoadRejectedWhileRunning() {
     QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) {
         return new ParallelSleepModule(inst.id, &running, &maxConc, 300);
     }));
+    // 后台执行（设计 §6.2）：后台线程运行探针时必须 worker 亲和，才能内联执行而不依赖
+    // 主线程事件循环（主线程随后用 msleep 等待，不处理事件）。
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("s"), ExecutionAffinity::Worker);
 
     std::thread runner([&engine]() { engine.runOnce(); });
     QThread::msleep(20);
@@ -4480,6 +4506,9 @@ void TestRunEngine::testParallelBatchExecutesConcurrently() {
             return new ControlJoinAllModule(inst.id);
         return new ThreadSafeSleepModule(inst.id, 100);
     }));
+    // 后台执行（设计 §6.3）：并行分支 A/B 必须 worker 亲和才可进入并行批次。
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("A"), ExecutionAffinity::Worker);
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("B"), ExecutionAffinity::Worker);
 
     RunResult result;
     QMetaObject::Connection conn =
@@ -4615,6 +4644,9 @@ void TestRunEngine::testParallelFailureCancelsRemaining() {
             return new ThreadSafeSleepModule("B", 200);
         return new ThreadSafeSleepModule("C", 10);
     }));
+    // 后台执行（设计 §6.3）：A/B 需要进入并行批次才能验证失败取消同组。
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("A"), ExecutionAffinity::Worker);
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("B"), ExecutionAffinity::Worker);
 
     RunResult result;
     QMetaObject::Connection conn =
@@ -5356,6 +5388,10 @@ void TestRunEngine::testStopDuringLoopRun() {
         // body 每次睡 2ms，5000 次约 10s，保证 stop 能在中途触发
         return new ThreadSafeSleepModule(inst.id, 2, &log);
     }));
+    // 后台执行（设计 §6.2）：后台线程运行期间主线程只做 msleep/stop，不服务
+    // BlockingQueuedConnection，故探针模块标记 worker 以保持内联执行语义。
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("loop"), ExecutionAffinity::Worker);
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("body"), ExecutionAffinity::Worker);
 
     // runOnce 同步阻塞事件循环，故在后台线程运行，主线程延迟 stop
     std::thread runner([&engine]() { engine.runOnce(); });
@@ -5394,6 +5430,9 @@ void TestRunEngine::testCancelDuringParallelBatch() {
         // 模块睡 300ms 且支持协作取消
         return new ThreadSafeSleepModule(inst.id, 300);
     }));
+    // 后台执行（设计 §6.2/§6.3）：后台线程运行 + 并行分支，全部需要 worker 亲和。
+    for (const QString& name : {QStringLiteral("Fork"), QStringLiteral("A"), QStringLiteral("B")})
+        engine.setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
 
     // runOnce 同步阻塞事件循环，QTimer 不会按时触发。
     // 故在后台线程运行，主线程 30ms 后 stop()（取消令牌），验证协作取消真实中止。
@@ -5451,6 +5490,9 @@ void TestRunEngine::testStopStability50Repeats() {
             // 可取消短间隔循环（1ms 分片检查令牌），非一次长睡
             return new ThreadSafeSleepModule(inst.id, 1, &log);
         }));
+        // 后台执行（设计 §6.2）：后台线程运行，主线程仅 msleep/stop，故标记 worker。
+        for (const QString& name : {QStringLiteral("loop"), QStringLiteral("body"), QStringLiteral("after")})
+            engine.setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
 
         std::thread runner([&engine]() { engine.runOnce(); });
         QThread::msleep(5);
@@ -5479,6 +5521,9 @@ void TestRunEngine::testSnapshotConcurrentWithRun() {
     auto* slow = new ParallelSleepModule(QStringLiteral("SnapSlow"), &running, &maxConc, 80);
     QVERIFY(slow->initialize());
     engine.addModule(slow);
+    // 后台执行（设计 §6.2）：runOnceAsync 在运行池线程执行，探针标记 worker 保持内联语义。
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("SnapSource"), ExecutionAffinity::Worker);
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("SnapSlow"), ExecutionAffinity::Worker);
 
     std::atomic<int> reads{0};
     std::thread reader([&engine, &reads]() {

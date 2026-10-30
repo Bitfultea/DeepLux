@@ -24,6 +24,7 @@ set(TEST_SOURCES
     test_logger.cpp
     test_imagedata.cpp
     test_runengine.cpp
+    test_executionaffinity.cpp
     test_fitline.cpp
     test_findcircle.cpp
     test_measureline.cpp

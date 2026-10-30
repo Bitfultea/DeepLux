@@ -274,6 +274,17 @@ bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info) {
     info.threadSafe = execution["threadSafe"].toBool(false);
     info.blocking = execution["blocking"].toBool(false);
 
+    // 后台执行（设计 §6.1）：execution.affinity 解析，默认 gui，非法值回退 gui 并告警。
+    const QString affinity = execution.value("affinity").toString("gui").trimmed().toLower();
+    if (affinity == QStringLiteral("worker")) {
+        info.executionAffinity = ExecutionAffinity::Worker;
+    } else {
+        if (!affinity.isEmpty() && affinity != QStringLiteral("gui")) {
+            qWarning() << "Unknown execution.affinity, defaulting to gui:" << affinity << info.name;
+        }
+        info.executionAffinity = ExecutionAffinity::Gui;
+    }
+
     return !info.name.isEmpty();
 }
 

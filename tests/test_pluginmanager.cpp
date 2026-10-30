@@ -26,6 +26,9 @@ private slots:
     void testCreateModuleClone();
     void testExecutionMetadataValidation();
     void testBlockingMetadataParsedAndInjected();
+    void testExecutionAffinityDefaultsToGui();
+    void testExecutionAffinityParsesWorker();
+    void testExecutionAffinityUnknownFallsBackToGui();
     void testBrokenUserPluginFallsBackToBundle();
     void testNonCameraUserPluginFallsBackToBundledCamera();
 
@@ -207,6 +210,53 @@ void TestPluginManager::testBlockingMetadataParsedAndInjected() {
     QVERIFY(!nonBlockingInfo.blocking);
     // createModule 注入 isBlocking() 的验证见 test_pluginparametercontracts
     // （该测试通过 installAllPlugins 可靠加载真实插件）
+}
+
+void TestPluginManager::testExecutionAffinityDefaultsToGui() {
+    PluginInfo info;
+    QCOMPARE(info.executionAffinity, ExecutionAffinity::Gui);
+}
+
+void TestPluginManager::testExecutionAffinityParsesWorker() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pluginDir = dir.filePath(QStringLiteral("AffinityProbe"));
+    QVERIFY(QDir().mkpath(pluginDir));
+    QFile meta(QDir(pluginDir).filePath(QStringLiteral("metadata.json")));
+    QVERIFY(meta.open(QIODevice::WriteOnly));
+    meta.write(R"({
+        "id":"com.deeplux.test.affinity","name":"AffinityProbe","version":"1.0.0",
+        "category":"test","description":"affinity probe","author":"tests",
+        "execution":{"threadSafe":false,"blocking":false,"affinity":"worker"},
+        "ports":{"inputs":[],"outputs":[]}
+    })");
+    meta.close();
+
+    PluginInfo info;
+    QVERIFY(
+        PluginManager::instance().loadPluginMetadata(QDir(pluginDir).filePath(QStringLiteral("metadata.json")), info));
+    QCOMPARE(info.executionAffinity, ExecutionAffinity::Worker);
+}
+
+void TestPluginManager::testExecutionAffinityUnknownFallsBackToGui() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pluginDir = dir.filePath(QStringLiteral("AffinityUnknown"));
+    QVERIFY(QDir().mkpath(pluginDir));
+    QFile meta(QDir(pluginDir).filePath(QStringLiteral("metadata.json")));
+    QVERIFY(meta.open(QIODevice::WriteOnly));
+    meta.write(R"({
+        "id":"com.deeplux.test.affinityunknown","name":"AffinityUnknown","version":"1.0.0",
+        "category":"test","description":"unknown affinity probe","author":"tests",
+        "execution":{"threadSafe":false,"blocking":false,"affinity":"future-mode"},
+        "ports":{"inputs":[],"outputs":[]}
+    })");
+    meta.close();
+
+    PluginInfo info;
+    QVERIFY(
+        PluginManager::instance().loadPluginMetadata(QDir(pluginDir).filePath(QStringLiteral("metadata.json")), info));
+    QCOMPARE(info.executionAffinity, ExecutionAffinity::Gui);
 }
 
 void TestPluginManager::testBrokenUserPluginFallsBackToBundle() {

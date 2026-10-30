@@ -1,11 +1,13 @@
 #pragma once
 
 #include "../platform/Platform.h"
+#include "ExecutionAffinity.h"
 #include "deeplux/ControlFlowType.h"
 #include "deeplux/DataContract.h"
 #include "model/ImageData.h"
 
 #include <QDateTime>
+#include <QHash>
 #include <QList>
 #include <QMap>
 #include <QMutex>
@@ -180,6 +182,11 @@ public:
 
     // L2 测试注入：向 m_nodeOutputs 写入自定义端口值（生产构建不可见）
     DEEPLUX_TEST_VISIBILITY : void setNodePortOutputsForTest(const QString& moduleName, const PortValueMap& outputs);
+    // 后台执行（设计 §6.1/§6.3）测试注入：覆盖某运行名的执行亲和性与并行资格判定；
+    // 亲和性缓存本身由 addModule/removeModule/loadProject/clearModules 维护（生产构建不可见）。
+    DEEPLUX_TEST_VISIBILITY : void setModuleExecutionAffinityForTest(const QString& moduleName,
+                                                                     ExecutionAffinity affinity);
+    DEEPLUX_TEST_VISIBILITY : bool isParallelEligibleForTest(const QString& moduleName) const;
 
 public:
     // 运行统计
@@ -295,6 +302,12 @@ private:
     void addModuleLocked(ModuleBase* module);
     void finalizeAbortedRun(RunMode mode);
     bool lifecycleBusyLocked();
+    // 后台执行（设计 §6.1）：运行名 -> 执行亲和性缓存；缓存项随模块增删/工程加载同步维护。
+    ExecutionAffinity executionAffinityFor(const QString& moduleName, ModuleBase* module) const;
+    void cacheExecutionAffinity(ModuleBase* module);
+    void forgetExecutionAffinity(const QString& moduleName);
+    // 后台执行（设计 §6.3）：worker 亲和 + 线程安全 + 非阻塞 + 无断点才允许进入并行池。
+    bool isParallelEligible(ModuleBase* module) const;
     // 阶6 五轮：内层断点命中在生命周期锁内写暂停态（stop() 同锁清理，无 UB）。
     void setInnerPauseLocked(const QString& mod, const ImageData& data);
     QTimer* m_cycleTimer = nullptr;
@@ -318,6 +331,9 @@ private:
     mutable QMutex m_runtimeInfoMutex;
     QSet<QString> m_disabledModules; // 阶段 B: 禁用节点（旁路/Skipped）
     mutable QReadWriteLock m_moduleLock;
+    // 后台执行（设计 §6.1）：execution.affinity 缓存（m_affinityMutex 保护）
+    mutable QMutex m_affinityMutex;
+    QHash<QString, ExecutionAffinity> m_executionAffinity;
 
     // 模块树结构
     QMap<QString, ModuleTreeNode*> m_moduleTreeNodes;
