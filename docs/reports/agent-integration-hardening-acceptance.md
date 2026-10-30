@@ -61,11 +61,31 @@ env -u DEEPLUX_APP_DATA_DIR HOME="$TEST_HOME" QT_QPA_PLATFORM=offscreen \
 - `test_agentstreamui`：隐私开关默认值、显式值加载、保存绑定、最小宽度可见性。
 - `test_mcpbridge`：异步取消抑制迟到响应、取消不影响下一请求、超长/错误帧恢复、EOF 半帧、`id:null` 与通知区分、队列上限、真实 `deeplux-mcp-bridge` 子进程黑盒。
 
+### 3.1 Windows 复验（2026-10-29，本机）
+
+环境：Windows + MSVC 14.50 / Qt 6（`D:/deps/Qt`）/ OpenCV 4.12；`build-win-tests`（Ninja，`BUILD_TESTS=ON`，`DEEPLUX_NATIVE_SAM=OFF`），提交 `3e35c5b`。
+
+```powershell
+# 1) 清 obj：本机 CMake 中文 showIncludes 前缀损坏导致头依赖失效，合并后必须清
+Get-ChildItem build-win-tests -Recurse -Include *.obj | Remove-Item -Force   # 414 个
+# 2) vcvars64 包装构建
+cmake --build build-win-tests -j 8
+# [573/573] Linking CXX executable bin\ui_capture_mainwindow.exe   exit 0
+# 3) 全量测试
+ctest --test-dir build-win-tests --output-on-failure
+# 100% tests passed, 0 tests failed out of 84 (91.78s)
+```
+
+- 关键子集：`test_agent` **15/15**、`test_mcpbridge` **1/1**、`test_runengine` **1/1**。
+- 与 Linux 86 个测试的差异：本机 `DEEPLUX_NATIVE_SAM=OFF`，2 个条件注册测试未纳入，属配置差异，不是回归。
+- 结论：Windows 构建 + CTest 已验证；Windows 命名管道路径的 stdin/取消/退出由 `test_mcpbridge` 在本次 84/84 中实际执行并通过。
+
 ## 4. 未验证项（不得写成已通过）
 
 | 项 | 状态 | 原因 |
 |---|---|---|
-| Windows 构建 + CTest + stdin/取消/退出 | 未验证 | 当前环境为 Linux；Windows 命名管道黑盒测试以 `QSKIP` 跳过 |
+| Windows 构建 + CTest | ✅ 已验证（2026-10-29，84/84，91.78s，commit `3e35c5b`） | 见 §3.1 |
+| Windows stdin/取消/退出 | ✅ 自动化已覆盖（`test_mcpbridge` Windows 命名管道路径） | 见 §3.1；真实 MCP 客户端手工验证仍见下条 |
 | 真实模型服务闭环/失败修正/用户拒绝/中途取消各 3 次 | 未验证 | 无可用真实供应商凭据与计费环境；本轮仅使用脚本化/假 HTTP |
 | 真实视觉模型图像进入请求、纯文本模型降级 | 未验证 | 同上（离线用例已覆盖回灌与文本降级路径） |
 | 实际 MCP 客户端（Claude Desktop/Cursor 等） | 未验证 | 无客户端环境；子进程测试使用真实 bridge 进程但假 GUI 桥 |

@@ -73,3 +73,6 @@ make_debug/*
 make_debug/
 __pycache__/
 *.pyc
+
+# Agent team runtime state (local only)
+.agent-teams/
