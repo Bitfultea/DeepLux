@@ -24,6 +24,7 @@
 #include "SplashScreen.h"
 #include "SystemParamView.h"
 #include "core/agent/AgentActor.h"
+#include "core/agent/AgentAuditLog.h"
 #include "core/agent/AgentController.h"
 #include "core/agent/OpenAILLMClient.h"
 #include "core/agent/ToolSchema.h"
@@ -44,6 +45,7 @@
 #include "core/model/DataSource.h"
 #include "core/model/ImageData.h"
 #include "core/model/Project.h"
+#include "core/platform/PathUtils.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -65,6 +67,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGroupBox>
@@ -1630,11 +1633,11 @@ void MainWindow::setupMainLayout() {
     logActionsLayout->addWidget(collapseLogButton);
     m_logTerminalTabs->setCornerWidget(logActions, Qt::TopRightCorner);
 
-    // Tab "日志" 再次点击时打开日志文件（第一次点击切换，第二次点击打开）
-    connect(m_logTerminalTabs, &QTabWidget::tabBarClicked, this, [this, logTabIndex](int index) {
-        if (index == logTabIndex && m_logTerminalTabs->currentIndex() == logTabIndex) {
-            QString logPath = Logger::instance().logFilePath();
-            QDesktopServices::openUrl(QUrl::fromLocalFile(logPath));
+    // 双击日志标签打开落盘文件；单击只切换面板，避免抢焦点。
+    m_logTerminalTabs->setTabToolTip(logTabIndex, tr("运行日志；双击打开日志文件"));
+    connect(m_logTerminalTabs->tabBar(), &QTabBar::tabBarDoubleClicked, this, [this, logTabIndex](int index) {
+        if (index == logTabIndex) {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(Logger::instance().logFilePath()));
         }
     });
 
@@ -1824,7 +1827,15 @@ void MainWindow::setupMainLayout() {
     // ===== Tab 4: Agent 操作日志 =====
     m_agentActionLogWidget = new AgentActionLogWidget(m_logTerminalTabs);
     const int agentLogTabIndex = m_logTerminalTabs->addTab(m_agentActionLogWidget, tr("Agent 日志"));
-    m_logTerminalTabs->setTabToolTip(agentLogTabIndex, tr("Agent 操作日志"));
+    m_logTerminalTabs->setTabToolTip(agentLogTabIndex, tr("Agent 操作日志；双击打开审计日志文件"));
+    connect(m_logTerminalTabs->tabBar(), &QTabBar::tabBarDoubleClicked, this, [this, agentLogTabIndex](int index) {
+        if (index != agentLogTabIndex)
+            return;
+
+        const QString auditPath = AgentAuditLog::instance().currentFilePath();
+        const QString targetPath = QFileInfo::exists(auditPath) ? auditPath : PathUtils::logPath();
+        QDesktopServices::openUrl(QUrl::fromLocalFile(targetPath));
+    });
     connect(&AgentController::instance(), &AgentController::actionLogEntryAdded, m_agentActionLogWidget,
             &AgentActionLogWidget::addEntry);
     connect(m_agentActionLogWidget, &AgentActionLogWidget::undoRequested, this,

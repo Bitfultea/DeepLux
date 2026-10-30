@@ -2619,15 +2619,22 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
 
     int agentChatIndex = -1;
     int agentLogIndex = -1;
+    int runLogIndex = -1;
     for (int i = 0; i < logTabs->count(); ++i) {
         if (logTabs->tabText(i) == QStringLiteral("Agent 对话")) {
             agentChatIndex = i;
         } else if (logTabs->tabText(i) == QStringLiteral("Agent 日志")) {
             agentLogIndex = i;
+        } else if (logTabs->tabText(i) == QStringLiteral("运行日志")) {
+            runLogIndex = i;
         }
     }
     QVERIFY2(agentChatIndex >= 0, "Agent chat should be a direct bottom tab");
     QVERIFY2(agentLogIndex >= 0, "Agent action log should be a direct bottom tab");
+    QVERIFY2(logTabs->tabToolTip(agentLogIndex).contains(QStringLiteral("双击")),
+             "Agent log tab should advertise the quick-open audit log gesture");
+    QVERIFY2(runLogIndex >= 0 && logTabs->tabToolTip(runLogIndex).contains(QStringLiteral("双击")),
+             "Run log tab should advertise the quick-open log gesture");
     QVERIFY(window.findChild<QTabWidget*>("AgentInnerTabs") == nullptr);
     QCOMPARE(logTabs->widget(agentChatIndex), static_cast<QWidget*>(agentPanel));
     QVERIFY(logTabs->widget(agentLogIndex)->findChild<QTableWidget*>("AgentActionLogTable") != nullptr);
