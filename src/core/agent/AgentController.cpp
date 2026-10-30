@@ -1008,20 +1008,23 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls) {
     }
     trimHistoryIfNeeded();
 
-    // B1/B2：run_failed 允许重新规划；create/open 成功切换工程后保守终止旧批次，
-    // 同样回灌结果让模型读取新工程再规划。其余失败结束本轮。
+    // Ordinary tool failures are diagnostic input for the next model turn. Keep
+    // run-control terminal states and security/session boundaries non-retriable.
     const bool batchFailed = batchResult.value(QStringLiteral("status")).toString() == QLatin1String("partial_failed");
     const QString failedCode = batchResult.value(QStringLiteral("failedCode")).toString();
-    const bool canReplan =
-        batchFailed && (failedCode == QLatin1String("run_failed") || failedCode == QLatin1String("project_switched"));
-    if (batchFailed && !canReplan) {
+    const bool terminalFailure =
+        failedCode == QLatin1String("cancelled") || failedCode == QLatin1String("project_changed") ||
+        failedCode == QLatin1String("PERMISSION_DENIED") || failedCode == QLatin1String("timeout") ||
+        failedCode == QLatin1String("paused_at_breakpoint") || failedCode == QLatin1String("reentrant_wait") ||
+        failedCode == QLatin1String("already_running");
+    if (batchFailed && terminalFailure) {
         transitionTo(AgentState::Idle);
         emit llmErrorOccurred(
             batchResult.value(QStringLiteral("error")).toString(QStringLiteral("Agent tool execution failed")));
         return;
     }
 
-    // 图像回灌（设计 §6.4）：正常续跑与 run_failed 重规划前都保留可诊断产物
+    // 图像回灌（设计 §6.4）：正常续跑与失败诊断回合前都保留可诊断产物
     attachToolImages(resultsArray);
 
     Logger::instance().addLog(QString("[AgentLoop] Executed %1 tool(s)").arg(resultsArray.size()), LogLevel::Debug,
@@ -1762,9 +1765,13 @@ QString AgentController::defaultSystemPrompt() {
         "outputs).\n"
         "10. When the user asks about image quality/content, call capture_viewport_image or export_node_output and "
         "look at the returned image. At most 2 tool images are attached per turn.\n"
-        "11. If a tool returns an error with a \"code\", read the code and adapt; do not repeat the same failing "
-        "call.\n"
-        "12. If the project summary says \"(+M more; call get_flow_state for the full list)\", the module list is "
+        "11. If a tool returns an ordinary execution error, diagnose it from the error and current project state; use "
+        "read-only tools or documentation when needed, then make a corrected plan. Do not repeat the same failing "
+        "call unchanged. User cancellation, permission denial, project changes, and terminal run-control errors are "
+        "not retry instructions.\n"
+        "12. Treat skipped tool calls as unexecuted; re-issue only the still-needed operations after correcting the "
+        "cause.\n"
+        "13. If the project summary says \"(+M more; call get_flow_state for the full list)\", the module list is "
         "partial — call get_flow_state before assuming a module does not exist.\n");
 }
 

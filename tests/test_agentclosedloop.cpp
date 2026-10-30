@@ -113,9 +113,12 @@ private slots:
         const QString pluginRoot = QDir(m_appDataDir.path()).filePath("plugins");
         QVERIFY(installPlugin(pluginRoot, QStringLiteral("GrabImage"), QStringLiteral(TEST_CLOSEDLOOP_META_GrabImage),
                               QStringLiteral(TEST_CLOSEDLOOP_LIB_GrabImage)));
+        QVERIFY(installPlugin(pluginRoot, QStringLiteral("ShowImage"), QStringLiteral(TEST_CLOSEDLOOP_META_ShowImage),
+                              QStringLiteral(TEST_CLOSEDLOOP_LIB_ShowImage)));
         PluginManager::instance().addPluginPath(pluginRoot);
         QVERIFY(PluginManager::instance().initialize());
         QVERIFY(PluginManager::instance().loadPlugin(QStringLiteral("GrabImage")));
+        QVERIFY(PluginManager::instance().loadPlugin(QStringLiteral("ShowImage")));
         QVERIFY(QFileInfo::exists(dataImagePath()));
     }
 
@@ -443,9 +446,8 @@ private slots:
         QCOMPARE(project->moduleById(QStringLiteral("grab_fix"))->params.value("filePath").toString(), missingPath);
     }
 
-    // 非 run_failed 失败（参数错误等）默认结束本轮：不再请求模型，后续写操作不执行，
-    // 但仍为每个 tool_call 写入配对结果。
-    void testNonRunFailureEndsTurnWithoutReplan() {
+    // 参数错误反馈给模型后允许重新规划；原批次剩余写操作仍必须跳过。
+    void testInvalidPluginParameterReplansWithoutRunningRemainingBatch() {
         AgentController& controller = AgentController::instance();
         QVERIFY(controller.initialize());
         AgentActor* actor = controller.actor();
@@ -462,29 +464,123 @@ private slots:
         ClosedLoopLLMClient client;
         controller.setLLMClient(&client);
 
-        controller.sendUserMessage(QStringLiteral("change a missing node then add another"));
+        controller.sendUserMessage(QStringLiteral("set a valid plugin parameter"));
         AgentResponse resp;
         resp.success = true;
-        resp.content = QStringLiteral("working");
-        resp.toolCalls.append(makeToolCallJson(QStringLiteral("call-bad"), QStringLiteral("set_param"),
-                                               QJsonObject{{"instanceId", "missing"}, {"key", "x"}, {"value", 1}}));
+        resp.content = QStringLiteral("try a parameter, then continue only if valid");
+        resp.toolCalls.append(makeToolCallJson(
+            QStringLiteral("call-bad"), QStringLiteral("set_param"),
+            QJsonObject{{"instanceId", "grab_param"}, {"key", "notAPluginParameter"}, {"value", "value"}}));
         resp.toolCalls.append(
             makeToolCallJson(QStringLiteral("call-add"), QStringLiteral("add_module"),
                              QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "must_not_exist"}}));
         client.reply(resp);
 
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
-        QCOMPARE(client.requestCount, 1); // 未续跑
+        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 2, 5000);
         QCOMPARE(project->modules().size(), beforeModules);
 
-        // 配对：assistant 的两个 tool_call 都至少有一个 tool 结果（历史中可见）
-        int toolResults = 0;
-        for (const AgentMessage& message : controller.m_conversationHistory) {
-            if (message.role == QStringLiteral("tool") &&
-                (message.toolCallId == QLatin1String("call-bad") || message.toolCallId == QLatin1String("call-add")))
-                ++toolResults;
+        // 模型收到明确参数错误和批次跳过结果，且两条 tool_call 均配对。
+        bool sawInvalidParameter = false;
+        bool sawSkippedWrite = false;
+        for (const AgentMessage& message : client.lastCtx.messages) {
+            if (message.role != QLatin1String("tool"))
+                continue;
+            const QJsonObject payload = QJsonDocument::fromJson(message.content.toUtf8()).object();
+            if (message.toolCallId == QLatin1String("call-bad"))
+                sawInvalidParameter = payload.value("code").toString() == QLatin1String("invalid_parameter");
+            if (message.toolCallId == QLatin1String("call-add"))
+                sawSkippedWrite = payload.value("code").toString() == QLatin1String("skipped_after_failure") &&
+                                  payload.value("skipped").toBool();
         }
-        QCOMPARE(toolResults, 2);
+        QVERIFY(sawInvalidParameter);
+        QVERIFY(sawSkippedWrite);
+
+        // 修正调用是新一轮独立授权的写操作，并且预算/轮次仍沿用同一 Agent turn。
+        AgentResponse correction;
+        correction.success = true;
+        correction.toolCalls.append(
+            makeToolCallJson(QStringLiteral("call-fixed"), QStringLiteral("set_param"),
+                             QJsonObject{{"instanceId", "grab_param"}, {"key", "grabSource"}, {"value", "Path"}}));
+        client.reply(correction);
+        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 3, 5000);
+        QCOMPARE(project->moduleById(QStringLiteral("grab_param"))->params.value("grabSource").toString(),
+                 QStringLiteral("Path"));
+
+        AgentResponse done;
+        done.success = true;
+        done.content = QStringLiteral("corrected");
+        client.reply(done);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    }
+
+    void testGenericToolErrorReplansAndRepairsOccupiedInput() {
+        AgentController& controller = AgentController::instance();
+        QVERIFY(controller.initialize());
+        AgentActor* actor = controller.actor();
+        QVERIFY(actor != nullptr);
+        QVERIFY(
+            !actor->executeTool(QStringLiteral("create_project"), {{"name", "ConnectionRepair"}}).contains("error"));
+        for (const QString& name : {QStringLiteral("grab_old"), QStringLiteral("grab_new")}) {
+            QVERIFY(!actor->executeTool(QStringLiteral("add_module"), {{"plugin", "GrabImage"}, {"instanceName", name}})
+                         .contains("error"));
+        }
+        QVERIFY(!actor->executeTool(QStringLiteral("add_module"), {{"plugin", "ShowImage"}, {"instanceName", "show"}})
+                     .contains("error"));
+        QVERIFY(!actor->executeTool(QStringLiteral("connect_modules"), {{"fromId", "grab_old"}, {"toId", "show"}})
+                     .contains("error"));
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+
+        controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+        ClosedLoopLLMClient client;
+        controller.setLLMClient(&client);
+        controller.sendUserMessage(QStringLiteral("connect the new image source"));
+
+        AgentResponse failedPlan;
+        failedPlan.success = true;
+        failedPlan.toolCalls.append(makeToolCallJson(QStringLiteral("connect-conflict"),
+                                                     QStringLiteral("connect_modules"),
+                                                     QJsonObject{{"fromId", "grab_new"}, {"toId", "show"}}));
+        failedPlan.toolCalls.append(
+            makeToolCallJson(QStringLiteral("must-be-skipped"), QStringLiteral("add_module"),
+                             QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "must_not_be_added"}}));
+        client.reply(failedPlan);
+
+        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 2, 5000);
+        QVERIFY(!project->moduleById(QStringLiteral("must_not_be_added")));
+        bool sawOccupiedInputError = false;
+        bool sawSkippedCall = false;
+        for (const AgentMessage& message : client.lastCtx.messages) {
+            if (message.role != QLatin1String("tool"))
+                continue;
+            const QJsonObject payload = QJsonDocument::fromJson(message.content.toUtf8()).object();
+            if (message.toolCallId == QLatin1String("connect-conflict"))
+                sawOccupiedInputError = payload.value("error").toString().contains("Input port already connected");
+            if (message.toolCallId == QLatin1String("must-be-skipped"))
+                sawSkippedCall = payload.value("skipped").toBool();
+        }
+        QVERIFY(sawOccupiedInputError);
+        QVERIFY(sawSkippedCall);
+
+        AgentResponse repairPlan;
+        repairPlan.success = true;
+        repairPlan.toolCalls.append(makeToolCallJson(QStringLiteral("disconnect-old"),
+                                                     QStringLiteral("disconnect_modules"),
+                                                     QJsonObject{{"fromId", "grab_old"}, {"toId", "show"}}));
+        repairPlan.toolCalls.append(makeToolCallJson(QStringLiteral("connect-new"), QStringLiteral("connect_modules"),
+                                                     QJsonObject{{"fromId", "grab_new"}, {"toId", "show"}}));
+        client.reply(repairPlan);
+
+        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 3, 5000);
+        QCOMPARE(project->connections().size(), 1);
+        QCOMPARE(project->connections().first().fromModuleId, QStringLiteral("grab_new"));
+        QCOMPARE(project->connections().first().toModuleId, QStringLiteral("show"));
+
+        AgentResponse done;
+        done.success = true;
+        done.content = QStringLiteral("Connection repaired");
+        client.reply(done);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
     }
 
     // ---------- 控制器级图像回灌 ----------

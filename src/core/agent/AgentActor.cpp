@@ -786,11 +786,11 @@ QJsonObject AgentActor::setParam(const QJsonObject& params) {
 
     Project* proj = ProjectManager::instance().currentProject();
     if (!proj)
-        return QJsonObject{{"error", "No project opened"}};
+        return errorObject(QStringLiteral("No project opened"), QStringLiteral("no_project"));
 
     const std::optional<ModuleInstance> inst = proj->moduleById(instanceId);
     if (!inst)
-        return QJsonObject{{"error", QString("Module not found: %1").arg(instanceId)}};
+        return errorObject(QString("Module not found: %1").arg(instanceId), QStringLiteral("node_not_found"));
 
     // 阶7 Agent 评审修复（P1-1）：schema 声明 value 为字符串且承诺转换——在此按
     // 目标类型（既有值或插件默认值类型）转换字符串，并经插件 validateParams
@@ -798,11 +798,12 @@ QJsonObject AgentActor::setParam(const QJsonObject& params) {
     PluginManager& pm = PluginManager::instance();
     std::unique_ptr<IModule> mod(pm.createModule(inst->moduleId));
     if (!mod) {
-        return QJsonObject{{"error", QString("Cannot create module for validation: %1").arg(inst->moduleId)}};
+        return errorObject(QString("Cannot create module for validation: %1").arg(inst->moduleId),
+                           QStringLiteral("module_unavailable"));
     }
     const ParamNormalizeResult normalized = normalizeParamValue(mod.get(), *inst, key, value);
     if (!normalized.ok)
-        return QJsonObject{{"error", normalized.error}};
+        return errorObject(normalized.error, QStringLiteral("invalid_parameter"));
 
     // 镜像运行期语义：模块运行期参数 = 插件默认值 + 工程参数覆盖 + 本次新值
     QJsonObject merged = mergedParams(mod.get(), *inst);
@@ -810,7 +811,7 @@ QJsonObject AgentActor::setParam(const QJsonObject& params) {
     QString verr;
     if (!mod->validateParams(merged, verr)) {
         emit toolError("set_param", verr);
-        return QJsonObject{{"error", verr}};
+        return errorObject(verr, QStringLiteral("invalid_parameter"));
     }
     const bool hadOldValue = inst->params.contains(key);
     const QJsonValue oldVal = inst->params.value(key);

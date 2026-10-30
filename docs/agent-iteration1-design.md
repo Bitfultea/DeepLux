@@ -657,7 +657,7 @@ registerTool(makeWriteTool(
 
 **参数不回滚的理由**：模型需要看到"改了参数后效果变差"这一事实，才能自己反驳并改回；静默回滚会让模型误以为参数没生效（visionflow 的 `tune` 也是保留改动的口径）。用户仍可一键撤销（宏）。
 
-> **失败续跑（集成收口 B1 冻结）**：`code=="run_failed"` 时保留已应用参数，把失败结果（`before/after/failedModule/error`）回灌模型，允许下一轮修正；新的修正写操作必须重新授权。`timeout/cancelled/paused_at_breakpoint/reentrant_wait` 结束本轮。撤销只覆盖工程编辑，不承诺撤销已发生的文件或设备副作用。
+> **失败续跑（集成收口 B1）**：所有普通工具失败（包括流程失败、参数/节点错误及通用工具错误）停止旧批次余项并补齐 `skipped_after_failure`，将具体结果回灌模型诊断和重新规划；不自动重放失败调用。已应用参数不会因流程失败回滚。恢复轮次重新经过权限/确认，并共享原轮数、调用数和 deadline。`timeout/cancelled/paused_at_breakpoint/reentrant_wait/already_running`、权限拒绝及工程上下文失效结束本轮。撤销只覆盖工程编辑，不承诺撤销已发生的文件或设备副作用。
 
 > 并发保护：本工具在宏未关闭时进入嵌套等待，其间用户若触发撤销，`AgentController::undoLastAgentAction()` 会因 `RunEngine::isBusy()` 为真而拒绝（`AgentController.cpp:156-170`），不会出现"运行中撤销"的中间态。
 
@@ -809,7 +809,7 @@ registerTool({"run_flow",
 
 失败：`{"success": false, "mode": "once", "failedModule": "MeasureCircle_1", "errorMessage": "...", "error": "...", "elapsedMs": 96, "code": "run_failed"}`。
 
-> **失败续跑（集成收口 B1 冻结）**：只有 `code=="run_failed"` 允许把失败结果回灌模型并继续下一轮重新规划；`already_running/reentrant_wait/timeout/cancelled/paused_at_breakpoint` 以及参数/权限/工程上下文类失败一律结束本轮，不自动重试、不恢复运行。重规划中的每次写操作仍按当前权限重新确认，且不得重置既有轮数、工具数量与全局 deadline。
+> **失败续跑（集成收口 B1）**：任意普通工具失败都将失败结果回灌模型继续诊断和重新规划；失败批次余项跳过，不自动重放。流程失败可能已有外部副作用，新的写操作仍按当前权限重新确认，且不得重置既有轮数、工具数量与全局 deadline。`already_running/reentrant_wait/timeout/cancelled/paused_at_breakpoint`、权限拒绝及工程上下文失效一律结束本轮，不续跑。
 
 超时：`{"success": false, "code": "timeout", "waitTimedOut": true, "error": "Flow did not finish within 60000 ms; a stop was requested"}`（并已调用 `RunEngine::stop()`；不声称同步执行已立即停止）。
 
@@ -956,8 +956,8 @@ Thinking --(tool_calls, Autopilot 免确认)--> Executing（同步执行工具�
 Confirming --confirmPendingTools(排队 tick)--> Executing
 Confirming --rejectPendingTools--> Idle             （同步，不排队）
 Executing --(工具批次结束, 继续循环)--> Thinking
-Executing --(仅 run_failed 且预算/取消/工程检查通过)--> Thinking（失败结果回灌，允许重新规划）
-Executing --(其他工具失败/上限/中止/权限拒绝/工程失效)--> Idle
+Executing --(普通工具失败且预算/取消/工程检查通过)--> Thinking（失败结果回灌，允许诊断和重新规划）
+Executing --(运行控制终态/上限/中止/权限拒绝/工程失效)--> Idle
 任何非 Idle 状态 --abortCurrentTurn()--> Idle
 ```
 

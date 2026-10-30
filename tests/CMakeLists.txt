@@ -321,10 +321,12 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
     # 第一迭代闭环测试：安装真实 GrabImage 插件（Path 源）后跑 建流程→校验→运行→读输出→调参→截图
     if(TEST_NAME STREQUAL "test_agentclosedloop")
-        target_link_libraries(${TEST_NAME} PRIVATE GrabImagePlugin)
+        target_link_libraries(${TEST_NAME} PRIVATE GrabImagePlugin ShowImagePlugin)
         target_compile_definitions(${TEST_NAME} PRIVATE
             TEST_CLOSEDLOOP_LIB_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
-            TEST_CLOSEDLOOP_META_GrabImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json")
+            TEST_CLOSEDLOOP_META_GrabImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+            TEST_CLOSEDLOOP_LIB_ShowImage="$<TARGET_FILE:ShowImagePlugin>"
+            TEST_CLOSEDLOOP_META_ShowImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/ShowImage/metadata.json")
     endif()
     if(TEST_NAME STREQUAL "test_loadpointcloud" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE LoadPointCloudPlugin)

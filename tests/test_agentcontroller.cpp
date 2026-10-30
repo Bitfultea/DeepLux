@@ -1481,7 +1481,7 @@ private slots:
         QVERIFY2(prompt.contains(QStringLiteral("get_node_runtime_outputs")), qPrintable(prompt));
         QVERIFY2(prompt.contains(QStringLiteral("capture_viewport_image")), qPrintable(prompt));
         QVERIFY2(prompt.contains(QStringLiteral("At most 2 tool images are attached per turn")), qPrintable(prompt));
-        QVERIFY2(prompt.contains(QStringLiteral("do not repeat the same failing call")), qPrintable(prompt));
+        QVERIFY2(prompt.contains(QStringLiteral("Do not repeat the same failing call unchanged")), qPrintable(prompt));
     }
 
     // R1：失败的写工具不得在审计里被标成 undoable（实际没有压入撤销栈）

@@ -315,7 +315,7 @@ private slots:
         QCOMPARE(result["status"].toString(), QString("partial_failed"));
         QCOMPARE(result["executed"].toInt(), 1);
         QCOMPARE(result["failedTool"].toString(), QStringLiteral("set_param"));
-        QCOMPARE(result["failedCode"].toString(), QStringLiteral("tool_error"));
+        QCOMPARE(result["failedCode"].toString(), QStringLiteral("node_not_found"));
         QCOMPARE(project->modules().size(), 1);
 
         // B1：未执行调用必须补齐跳过结果，且每个 tool_call 恰好一条结果
