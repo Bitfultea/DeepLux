@@ -51,6 +51,16 @@ enum class RunMode {
 };
 
 /**
+ * @brief 单次执行段收尾结果（后台执行设计 §5.3）
+ *
+ * - Completed：正常完成；终态按 RunMode 决定（RunOnce→Idle，原生 RunCycle→保持 Running）。
+ * - Paused：模块边界暂停，只释放本段执行权并保留续跑上下文，不发 runFinished。
+ * - Stopped：stop 优先（并发 stop 不得被 Completed 覆盖）。
+ * - Failed：失败/异常，清理暂停上下文并发出失败结果。
+ */
+enum class ExecutionOutcome { Completed, Paused, Stopped, Failed };
+
+/**
  * @brief 运行结果
  */
 struct RunResult {
@@ -88,6 +98,33 @@ public:
     // Step：单步，fresh 由 m_stepCurrentModuleName 是否为空在锁内判定，连续单步
     // 共享同一 runId/累计状态（不每步重置）。
     enum class RunIntent { Single, CycleTick, Resume, Step };
+
+    /**
+     * @brief 执行段 RAII 收尾器（后台执行设计 §5.3）
+     *
+     * 正常返回、提前 return、异常都会收尾恰好一次；默认 outcome=Failed（异常安全）。
+     * Paused 必须显式 finish 提交，不能被析构默认结果覆盖；终态提交与 stop 判定在
+     * 同一 m_lifecycleMutex 临界区内完成，保证并发 stop 优先。
+     */
+    class ExecutionFinalizer {
+    public:
+        // clearControlGraph：完整运行收尾清理控制图/循环索引；单步收尾必须保留跨步状态。
+        ExecutionFinalizer(RunEngine* engine, ExecutionOutcome outcome, bool clearControlGraph = true);
+        ~ExecutionFinalizer();
+        ExecutionFinalizer(const ExecutionFinalizer&) = delete;
+        ExecutionFinalizer& operator=(const ExecutionFinalizer&) = delete;
+
+        void setOutcome(ExecutionOutcome outcome) {
+            m_outcome = outcome;
+        }
+        void finish(ExecutionOutcome outcome);
+
+    private:
+        RunEngine* m_engine = nullptr;
+        ExecutionOutcome m_outcome = ExecutionOutcome::Failed;
+        bool m_clearControlGraph = true;
+        bool m_done = false;
+    };
 
     // 运行状态
     RunState state() const {
@@ -187,6 +224,12 @@ public:
     DEEPLUX_TEST_VISIBILITY : void setModuleExecutionAffinityForTest(const QString& moduleName,
                                                                      ExecutionAffinity affinity);
     DEEPLUX_TEST_VISIBILITY : bool isParallelEligibleForTest(const QString& moduleName) const;
+    // 后台执行（设计 §5.3）测试注入：收尾窗口并发 stop 的确定性钩子（生产构建不可见）。
+    DEEPLUX_TEST_VISIBILITY : void setFinalizeHookForTest(std::function<void()> hook);
+    DEEPLUX_TEST_VISIBILITY : void clearFinalizeHookForTest();
+    // 后台执行（设计 §5.3）测试注入：执行段故障注入（验证异常路径 finalizer 释放租约）。
+    DEEPLUX_TEST_VISIBILITY : void setExecutionFaultInjectionForTest(std::function<void()> hook);
+    DEEPLUX_TEST_VISIBILITY : void clearExecutionFaultInjectionForTest();
 
 public:
     // 运行统计
@@ -240,6 +283,10 @@ private:
     void executeRun(RunIntent intent);
     bool executeRunAsync(RunIntent intent);
     void executeAcquiredRun(bool resuming, const QString& resumeModule, const ImageData& resumeData, RunMode mode);
+    // 后台执行（设计 §5.3）：执行主体与异常兜底分离；finalizer 在所有路径上收尾恰好一次。
+    void executeAcquiredRunImpl(bool resuming, const QString& resumeModule, const ImageData& resumeData, RunMode mode,
+                                ExecutionFinalizer& finalizer);
+    void reportExecutionFault(ExecutionFinalizer& finalizer, const QString& message);
     // 阶段 D1: 显式控制图执行（激活队列）
     void executeRunWithControlGraph(ImageData& pipelineData);
     void executeBatchParallel(const QStringList& batch, ImageData& pipelineData);
@@ -281,26 +328,31 @@ private:
     // 重置+每运行重置"，消除启动窗口；stop() 同锁发布停止。m_stopPending/m_maintenance
     // 仅在 m_lifecycleMutex 内读写。
     // 阶6 五轮：递归锁——clearBreakpointPauseState() 自身加锁，而 stop()/
-    // endExecutionCleanup()/finalizeAbortedRun() 等已在锁内调用它，需可重入。
+    // finalizeExecution() 等已在锁内调用它，需可重入。
     mutable QRecursiveMutex m_lifecycleMutex;
     bool m_stopPending = false;
     std::atomic_bool m_maintenance{false};
     // 阶6 十一轮：生命周期序号，每次状态转换（stop/pause/取权/收尾）自增；
     // start/resume 提交时记录 gen，发通知前重验证 gen+状态，stop 介入则跳过通知。
     std::atomic<int> m_lifecycleGeneration{0};
+    // 后台执行（设计 §5.3）：最近一次收尾的生命周期世代，防御重复收尾。
+    int m_finalizedGeneration = -1;
+    // 后台执行（设计 §5.3）测试注入：收尾窗口钩子/执行段故障注入（生产构建不可达）。
+    std::function<void()> m_testFinalizeHook;
+    std::function<void()> m_testFaultInjection;
     RunMode m_pauseRunMode = RunMode::RunOnce; // 暂停前模式，恢复时还原（P1-2 八轮）
     // 阶6 八轮：恢复判定+暂停数据转移+取执行权+意图校验在同一临界区原子完成。
     bool tryBeginForRun(RunIntent intent, bool& resuming, QString& resumeModule, ImageData& resumeData,
                         RunMode& outMode);
     // 阶6 七轮：正常结束在单一临界区内完成清理+最终状态提交+执行权释放。
-    void finalizeRunTail();
+    // 后台执行（设计 §5.3）：唯一收尾提交点；Completed 终态按 RunMode 决定，stop 优先。
+    void finalizeExecution(ExecutionOutcome outcome, bool clearControlGraph = true);
     bool tryAcquireLease();
     void releaseLease();
     bool tryAcquireMaintenance();
     void releaseMaintenance();
     void clearModulesLocked();
     void addModuleLocked(ModuleBase* module);
-    void finalizeAbortedRun(RunMode mode);
     bool lifecycleBusyLocked();
     // 后台执行（设计 §6.1）：运行名 -> 执行亲和性缓存；缓存项随模块增删/工程加载同步维护。
     ExecutionAffinity executionAffinityFor(const QString& moduleName, ModuleBase* module) const;

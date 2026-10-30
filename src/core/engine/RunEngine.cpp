@@ -14,6 +14,7 @@
 #include <QThread>
 #include <QWaitCondition>
 #include <algorithm>
+#include <exception>
 #include <limits>
 
 namespace DeepLux {
@@ -243,6 +244,9 @@ bool RunEngine::stepOnce() {
     if (!tryBeginForRun(RunIntent::Step, ignResuming, ignModule, ignData, ignMode)) {
         return false;
     }
+    // 后台执行（设计 §5.3）：单步与完整运行共用同一 RAII 收尾器（终态 Idle/Stopped，
+    // Paused 不适用于单步），保证提前返回/异常也释放执行权；单步必须保留跨步控制图状态。
+    ExecutionFinalizer finalizer(this, ExecutionOutcome::Failed, /*clearControlGraph=*/false);
     emit stateChanged(state());
     emit runStarted();
 
@@ -266,7 +270,7 @@ bool RunEngine::stepOnce() {
 
     if (m_stepCurrentModuleName.isEmpty()) {
         resetStepState();
-        releaseLease();
+        finalizer.finish(ExecutionOutcome::Failed);
         return false;
     }
 
@@ -315,19 +319,16 @@ bool RunEngine::stepOnce() {
     // 阶6 复核（五轮 P1-3）：单步收尾在锁内判定 stop——若停止发生在单步期间，
     // 重置单步状态（下次从流程起点开始）并保持 Stopped；否则保留跨步位置并置 Idle。
     // 阶6 七轮（P1-5）：清理单步态与释放执行权在同一临界区（递归锁），
-    // 不留"先释放执行权再清理"的交错窗口。
+    // 不留"先释放执行权再清理"的交错窗口；后台执行（设计 §5.3）由 finalizer 提交终态。
+    bool stopWins;
     {
         QMutexLocker locker(&m_lifecycleMutex);
-        const bool stopped = m_stopPending || state() == RunState::Stopped;
-        m_stopPending = false;
-        if (stopped) {
+        stopWins = m_stopPending || state() == RunState::Stopped;
+        if (stopWins) {
             resetStepState();
-            m_state.store(static_cast<int>(RunState::Stopped), std::memory_order_release);
-        } else {
-            m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
         }
-        m_executing.store(false, std::memory_order_release);
     }
+    finalizer.finish(stopWins ? ExecutionOutcome::Stopped : ExecutionOutcome::Completed);
     emit runFinished(result);
     emit stateChanged(state());
     return true;
@@ -537,19 +538,93 @@ bool RunEngine::tryBeginForRun(RunIntent intent, bool& resuming, QString& resume
     return true;
 }
 
-void RunEngine::finalizeRunTail() {
+RunEngine::ExecutionFinalizer::ExecutionFinalizer(RunEngine* engine, ExecutionOutcome outcome, bool clearControlGraph)
+    : m_engine(engine), m_outcome(outcome), m_clearControlGraph(clearControlGraph) {}
+
+RunEngine::ExecutionFinalizer::~ExecutionFinalizer() {
+    // 正常返回、提前 return、异常都会走到这里；已显式 finish 时不再重复收尾。
+    finish(m_outcome);
+}
+
+void RunEngine::ExecutionFinalizer::finish(ExecutionOutcome outcome) {
+    m_outcome = outcome;
+    if (m_done) {
+        return;
+    }
+    m_done = true;
+    if (m_engine) {
+        m_engine->finalizeExecution(outcome, m_clearControlGraph);
+    }
+}
+
+void RunEngine::finalizeExecution(ExecutionOutcome outcome, bool clearControlGraph) {
+    // 后台执行（设计 §5.3）：收尾前先跑测试钩子（用于把 stop 落在收尾窗口内的确定性用例），
+    // 钩子在锁外执行，stop() 可正常获取生命周期锁。
+    if (m_testFinalizeHook) {
+        m_testFinalizeHook();
+    }
     // 阶6 七轮（P0-1）：清理+最终状态提交+执行权释放同一临界区，避免"先释放执行权
-    // 再设 Idle"窗口被新一轮运行插入后覆盖。
+    // 再设 Idle"窗口被新一轮运行插入后覆盖；stop 判定与终态提交同锁，保证 stop 优先。
     QMutexLocker locker(&m_lifecycleMutex);
-    ++m_lifecycleGeneration; // 阶6 十一轮：运行收尾是一次生命周期转换
-    clearControlQueue();
+    if (m_finalizedGeneration == m_lifecycleGeneration) {
+        return; // 防御重复收尾：同一生命周期世代只提交一次终态
+    }
+    ++m_lifecycleGeneration;
+    m_finalizedGeneration = m_lifecycleGeneration;
+    if (outcome == ExecutionOutcome::Paused) {
+        // Paused 只释放本段执行权，保留暂停模块/流水线/控制队列/循环索引/暂停前 RunMode；
+        // 若 stop() 已在收尾窗口内到达，停止优先，不得把已停止的运行提交为 Paused。
+        if (m_stopPending || state() == RunState::Stopped) {
+            m_stopPending = false;
+            clearBreakpointPauseState();
+            m_executing.store(false, std::memory_order_release);
+            m_state.store(static_cast<int>(RunState::Stopped), std::memory_order_release);
+            return;
+        }
+        m_pauseRunMode = runMode();
+        m_executing.store(false, std::memory_order_release);
+        m_state.store(static_cast<int>(RunState::Paused), std::memory_order_release);
+        return;
+    }
+
+    if (clearControlGraph) {
+        clearControlQueue();
+    }
     clearBreakpointPauseState();
+    const bool stopped = m_stopPending || state() == RunState::Stopped;
     m_stopPending = false;
-    const bool setToIdle = (runMode() == RunMode::RunOnce) && (state() != RunState::Stopped);
     m_executing.store(false, std::memory_order_release);
-    if (setToIdle) {
+    if (outcome == ExecutionOutcome::Stopped || stopped) {
+        // 并发 stop 必须获胜：不得被 Completed 覆盖为 Running/Idle（设计 §5.3）。
+        m_state.store(static_cast<int>(RunState::Stopped), std::memory_order_release);
+    } else if (outcome == ExecutionOutcome::Completed && runMode() == RunMode::RunCycle) {
+        // 兼容路径 start() 的原生定时器循环：每轮 Completed 后保持 Running，
+        // 否则后续 tick 会被 tryBeginForRun(CycleTick) 拒绝。
+        m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
+    } else {
+        if (outcome == ExecutionOutcome::Failed && runMode() == RunMode::RunCycle) {
+            // 失败中止的循环不得继续定时器 tick（与旧 finalizeAbortedRun 一致）。
+            stopCycleTimer();
+            m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
+        }
         m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
     }
+}
+
+void RunEngine::setFinalizeHookForTest(std::function<void()> hook) {
+    m_testFinalizeHook = std::move(hook);
+}
+
+void RunEngine::clearFinalizeHookForTest() {
+    m_testFinalizeHook = nullptr;
+}
+
+void RunEngine::setExecutionFaultInjectionForTest(std::function<void()> hook) {
+    m_testFaultInjection = std::move(hook);
+}
+
+void RunEngine::clearExecutionFaultInjectionForTest() {
+    m_testFaultInjection = nullptr;
 }
 
 bool RunEngine::tryAcquireLease() {
@@ -609,24 +684,6 @@ void RunEngine::setInnerPauseLocked(const QString& mod, const ImageData& data) {
     m_pausePipelineData = data;
     m_breakpointPausedAt = QDateTime::currentDateTime();
     m_pausedAtBreakpoint = true;
-}
-
-void RunEngine::finalizeAbortedRun(RunMode mode) {
-    // 阶6 五轮：空模块/校验失败早退的原子收尾——在锁内判定是否已有 stop()，
-    // 不覆盖 Stopped；仅无停止时复位 Idle，防状态卡死/停止丢失。
-    QMutexLocker locker(&m_lifecycleMutex);
-    ++m_lifecycleGeneration; // 阶6 十一轮：中止收尾是一次生命周期转换
-    const bool wasStopped = (state() == RunState::Stopped) || m_stopPending;
-    clearControlQueue();
-    clearBreakpointPauseState();
-    m_stopPending = false;
-    m_executing.store(false, std::memory_order_release);
-    if (mode == RunMode::RunCycle) {
-        stopCycleTimer();
-        m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
-    }
-    m_state.store(wasStopped ? static_cast<int>(RunState::Stopped) : static_cast<int>(RunState::Idle),
-                  std::memory_order_release);
 }
 
 bool RunEngine::lifecycleBusyLocked() {
@@ -1077,6 +1134,41 @@ bool RunEngine::executeRunAsync(RunIntent intent) {
 
 void RunEngine::executeAcquiredRun(bool resuming, const QString& resumeModule, const ImageData& resumeData,
                                    RunMode mode) {
+    // 后台执行（设计 §5.3）：RAII finalizer 保证每个执行段恰好收尾一次；异常路径默认 Failed，
+    // 成功/暂停/停止在主体内显式提交，Paused 不会被析构默认结果覆盖。
+    ExecutionFinalizer finalizer(this, ExecutionOutcome::Failed);
+    try {
+        executeAcquiredRunImpl(resuming, resumeModule, resumeData, mode, finalizer);
+    } catch (const std::exception& e) {
+        reportExecutionFault(finalizer, QString::fromUtf8(e.what()));
+    } catch (...) {
+        reportExecutionFault(finalizer, tr("Unknown engine exception"));
+    }
+}
+
+void RunEngine::reportExecutionFault(ExecutionFinalizer& finalizer, const QString& message) {
+    const QString reason = message.trimmed().isEmpty() ? tr("Unknown engine exception") : message.trimmed();
+    Logger::instance().error(reason, "Run");
+    RunResult result;
+    result.success = false;
+    result.errorCode = -1;
+    result.errorMessage = reason;
+    result.elapsedMs = m_runStartTime.isValid() ? m_runStartTime.msecsTo(QDateTime::currentDateTime()) : 0;
+    result.finishedTime = QDateTime::currentDateTime();
+    // 故障路径同样只收尾一次：先提交 Failed（释放租约/状态回落），再发失败结果。
+    finalizer.finish(ExecutionOutcome::Failed);
+    emit errorOccurred(reason);
+    emit runFinished(result);
+    emit stateChanged(state());
+}
+
+void RunEngine::executeAcquiredRunImpl(bool resuming, const QString& resumeModule, const ImageData& resumeData,
+                                       RunMode mode, ExecutionFinalizer& finalizer) {
+    // 后台执行（设计 §5.3）：测试构建可注入执行段故障（容器/回调/内存级异常由外层捕获，
+    // 插件自身异常仍由 ModuleBase::execute 捕获）；生产构建该钩子恒为空。
+    if (m_testFaultInjection) {
+        m_testFaultInjection();
+    }
     if (!resuming) {
         {
             QReadLocker locker(&m_moduleLock);
@@ -1088,7 +1180,7 @@ void RunEngine::executeAcquiredRun(bool resuming, const QString& resumeModule, c
                 result.elapsedMs = 0;
                 result.finishedTime = QDateTime::currentDateTime();
                 // 阶6 五轮：原子收尾，不覆盖 stop() 的 Stopped。
-                finalizeAbortedRun(mode);
+                finalizer.finish(ExecutionOutcome::Failed);
                 if (mode == RunMode::RunCycle) {
                     emit cycleStopped();
                 }
@@ -1107,7 +1199,7 @@ void RunEngine::executeAcquiredRun(bool resuming, const QString& resumeModule, c
             result.finishedTime = QDateTime::currentDateTime();
             emit errorOccurred(result.errorMessage);
             // 阶6 七轮（P0-2）：仅一次原子终结（不再先 endExecutionCleanup 重复释放）。
-            finalizeAbortedRun(mode);
+            finalizer.finish(ExecutionOutcome::Failed);
             if (mode == RunMode::RunCycle) {
                 emit cycleStopped();
             }
@@ -1156,7 +1248,7 @@ void RunEngine::executeAcquiredRun(bool resuming, const QString& resumeModule, c
         result.errorMessage = tr("Resume target module no longer exists");
         result.elapsedMs = 0;
         result.finishedTime = QDateTime::currentDateTime();
-        finalizeAbortedRun(mode);
+        finalizer.finish(ExecutionOutcome::Failed);
         emit stateChanged(state());
         emit runFinished(result);
         return;
@@ -1180,9 +1272,6 @@ void RunEngine::executeAcquiredRun(bool resuming, const QString& resumeModule, c
             commitPause = !m_stopPending;
             if (commitPause) {
                 bpModule = m_pauseResumeModule; // 阶6 七轮（P1-4）：锁内复制模块 ID
-                m_pauseRunMode = runMode();     // 阶6 八轮（P1-2）：保存暂停前模式
-                m_state.store(static_cast<int>(RunState::Paused), std::memory_order_release);
-                m_executing.store(false, std::memory_order_release);
             } else {
                 m_stopPending = false;
                 m_pausedAtBreakpoint = false;
@@ -1192,8 +1281,9 @@ void RunEngine::executeAcquiredRun(bool resuming, const QString& resumeModule, c
             }
         }
         if (commitPause) {
-            // 先提交 Paused 再发 breakpointHit（用局部副本），保证回调观察到 Paused
-            // 且不会在释放执行权后读可变成员。
+            // 后台执行（设计 §5.3）：Paused 显式提交（只释放本段执行权、保留续跑上下文，
+            // 并保存暂停前 RunMode）；先提交 Paused 再发 breakpointHit，保证回调观察到 Paused。
+            finalizer.finish(ExecutionOutcome::Paused);
             emit stateChanged(state());
             emit breakpointHit(bpModule);
             return; // 暂停：不发射 runFinished（运行未结束）
@@ -1213,7 +1303,8 @@ void RunEngine::executeAcquiredRun(bool resuming, const QString& resumeModule, c
     result.finishedTime = QDateTime::currentDateTime();
 
     // 阶6 七轮（P0-1）：清理+最终状态+释放执行权同一临界区。
-    finalizeRunTail();
+    // 后台执行（设计 §5.3）：Completed 终态按 RunMode 决定，收尾窗口内并发 stop 优先。
+    finalizer.finish(ExecutionOutcome::Completed);
     emit runFinished(result);
     emit stateChanged(state());
 }

@@ -25,6 +25,7 @@ set(TEST_SOURCES
     test_imagedata.cpp
     test_runengine.cpp
     test_executionaffinity.cpp
+    test_runenginefinalizer.cpp
     test_fitline.cpp
     test_findcircle.cpp
     test_measureline.cpp
