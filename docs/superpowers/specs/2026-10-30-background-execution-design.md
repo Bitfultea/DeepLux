@@ -145,8 +145,9 @@ signals:
 - 为整个 Service job 增加 **job 租约**：`beginExternalJob(JobToken*)/endExternalJob(JobToken)`（RAII）。
   - 租约持有者是 `FlowExecutionService` 的当前 job，用不可伪造的 `JobToken`（单调递增 id + 进程内随机盐）标识；Service 在工作线程内持有。
   - `m_externalJobActive + m_externalJobOwner` 纳入 `isBusy()`；从 job 启动到 job 结束（含 Cycle 两轮之间）始终为真。
-  - **所有者入口**：`runOnceForJob(token, reason)`、`stepOnceForJob(token, reason)`、`resumeForJob(token, reason)` 在启动协议内校验 token；只有所有者可绕过“external job active”的忙检查并执行。
+  - **所有者入口**：`runOnceForJob(token, reason)`、`stepOnceForJob(token, reason)`、`resumeForJob(token, reason)`、`pauseForJob(token)` 在启动协议内校验 token；只有所有者可绕过“external job active”的忙检查并执行。
   - **非所有者入口**：公开 `runOnce/runOnceChecked/stepOnce/runOnceAsync/start/pause/resume` 在 external job 活跃时一律拒绝（忙或 `external_job_active`），不得绕过所有者检查。
+  - **`stop()` 例外**：任何线程/入口都可调用，作为安全阀；它只置取消并唤醒，不执行新工作。
   - 租约期间 `loadProject/addModule/removeModule/clearModules` 与 `tryAcquireMaintenance` 一律拒绝；ProjectManager 的工程切换也因此被挡。
   - `beginExternalJob()` 在引擎已执行/维护时失败；Service 启动失败必须显式上报。`endExternalJob` 只接受匹配 token，重复/过期 token 无效。
 - 保留 `void runOnce()` 兼容 CLI/测试；Service 不使用它，而使用 `runOnceForJob`（内部走 `tryBeginForRun(Single)` 并返回失败原因）。
@@ -206,7 +207,7 @@ Paused ──stop──> Stopping ──> Idle
 2. **断点**：`runOnceForJob()` 命中内层断点返回 `Paused` 且不发 `runFinished`；服务记录“暂停前 job 类型”，继续后按原类型恢复。
 3. **单步**：从 Idle 开始；暂停态不提供“单步越过断点”，保持现有“继续”语义。
 4. **用户暂停（模块边界协议，复用断点暂停上下文）**：
-   - `RunEngine::pause()` 不再只改状态；它设置 `m_userPauseRequested`。执行循环在每个模块边界检查该标志，命中后调用现有 `setInnerPauseLocked(currentModule, pipelineData)` 保存**下一待执行模块、流水线数据、控制队列/循环索引、runId/frameId、暂停前 RunMode**，把暂停原因标为 `User`，然后返回。
+   - `pauseForJob(token)`（公开 `pause()` 在 external job 活跃时拒绝）不再只改状态；它设置 `m_userPauseRequested`。执行循环在每个模块边界检查该标志，命中后调用现有 `setInnerPauseLocked(currentModule, pipelineData)` 保存**下一待执行模块、流水线数据、控制队列/循环索引、runId/frameId、暂停前 RunMode**，把暂停原因标为 `User`，然后返回。
    - 外层 `executeAcquiredRun` 在生命周期锁内提交 `Paused`，保留 `m_pauseResumeModule/m_pausePipelineData`，**不发 `runFinished`、不调用 `finalizeRunTail()`**；仅发 `pauseHit(module, reason)` 与 `stateChanged(Paused)`。
    - `tryBeginForRun(Resume)` 接受 `m_pauseResumeModule` 非空且暂停原因为 `User` 或 `Breakpoint`；恢复后从保存的模块继续，`m_skipBreakpointOnce` 只对断点原因设置，确保下游模块恰执行一次。
    - 区分 `pauseReason`（None/Breakpoint/User），`isPausedAtBreakpoint()` 仍只在 Breakpoint 时为真；UI/Service 用原因决定提示。
@@ -320,6 +321,7 @@ struct DisplayFrame {
 ```
 
 - `moduleDataSnapshot` 在**该 run 结束时**（`runFinished` 前）由执行线程一次性抓取；中间帧可只带图像、`moduleDataSnapshot` 为空（UI 此时不绘制测量叠加）。
+- Service 在 job 启动时把 `jobId` 注入 RunEngine 的显示帧上下文（`setDisplayJobId`），job 结束/停止时清空；帧的身份不依赖每轮会重置的全局 `frameId`。
 - 快照写入受锁保护的“每视口最新帧槽位”，只保留最新一帧。初始实现只覆盖主视口；`viewportId` 作为键保留。
 - 发出轻量 `displayFrameReady(viewportId, jobId, runId)`；不把大图作为信号参数反复排队。
 - 本轮只覆盖 2D `image`；仅点云的 3D 输出保持现有路径。
