@@ -185,6 +185,54 @@ private slots:
         QCOMPARE(probe.calls.load(), 1);
         QVERIFY(engine.endExternalJob(next));
     }
+
+    // t6 F1：stop 落在"tryBeginForRun 完成 owner/取消标志校验之后、状态提交之前"的残留窗口时，
+    // 必须拒绝本次启动且不执行任何模块（校验、钩子、复核与状态提交在同一临界区）。
+    void testStopInRunStartCommitWindowRejectsOwnedStart() {
+        RunEngine& engine = RunEngine::instance();
+        LeaseProbeModule probe;
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+
+        // 屏障 1：信号量只证明钩子在启动临界区内被执行；断言依赖同锁复核的结果。
+        QSemaphore runWindowReached;
+        engine.setBeforeJobStartHookForTest([&]() {
+            runWindowReached.release();
+            RunEngine::instance().stop();
+        });
+
+        RunEngine::JobToken token;
+        QVERIFY(engine.beginExternalJob(&token, nullptr));
+        QString reason;
+        const bool started = engine.runOnceForJob(token, &reason);
+        QVERIFY2(runWindowReached.tryAcquire(1, 2000), "run-start hook must fire inside the start critical section");
+        QVERIFY2(!started, "stop after job validation must reject this run");
+        QCOMPARE(reason, QStringLiteral("external_job_cancelled"));
+        QCOMPARE(probe.calls.load(), 0);
+        QCOMPARE(engine.state(), RunState::Stopped);
+
+        engine.clearBeforeJobStartHookForTest();
+        QVERIFY(engine.endExternalJob(token));
+
+        // 单步所有者入口同样覆盖该窗口。
+        RunEngine::JobToken stepToken;
+        QVERIFY(engine.beginExternalJob(&stepToken, nullptr));
+        QSemaphore stepWindowReached;
+        engine.setBeforeJobStartHookForTest([&]() {
+            stepWindowReached.release();
+            RunEngine::instance().stop();
+        });
+        QString stepReason;
+        const bool stepped = engine.stepOnceForJob(stepToken, &stepReason);
+        QVERIFY2(stepWindowReached.tryAcquire(1, 2000), "step-start hook must fire inside the start critical section");
+        QVERIFY2(!stepped, "stop after job validation must reject this step");
+        QCOMPARE(stepReason, QStringLiteral("external_job_cancelled"));
+        QCOMPARE(probe.calls.load(), 0);
+        QCOMPARE(engine.state(), RunState::Stopped);
+
+        engine.clearBeforeJobStartHookForTest();
+        QVERIFY(engine.endExternalJob(stepToken));
+    }
 };
 
 QTEST_MAIN(TestRunEngineJobLease)

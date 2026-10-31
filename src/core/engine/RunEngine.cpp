@@ -254,15 +254,12 @@ bool RunEngine::stepOnce() {
 }
 
 bool RunEngine::stepOnceForJob(const JobToken& token, QString* reason) {
-    // 后台执行（设计 §4.2）：所有者单步入口；推进复用 stepOnceImpl，避免 stepOnce()
-    // 在入口被 external job 忙检查拒绝。
-    if (!beginOwnedJobStart(token, reason)) {
-        return false;
-    }
-    return stepOnceImpl(&token);
+    // 后台执行（设计 §4.2）：所有者单步入口；owner/job 级取消标志校验由 tryBeginForRun
+    // 在取执行权的同一临界区内完成，避免"校验后、取权前"落入 stop 的窗口。
+    return stepOnceImpl(&token, reason);
 }
 
-bool RunEngine::stepOnceImpl(const JobToken* token) {
+bool RunEngine::stepOnceImpl(const JobToken* token, QString* rejectReason) {
     if (!token && (m_externalJobActive.load(std::memory_order_acquire) || isBusy())) {
         return false;
     }
@@ -294,7 +291,10 @@ bool RunEngine::stepOnceImpl(const JobToken* token) {
     QString ignModule;
     ImageData ignData;
     RunMode ignMode = RunMode::RunOnce;
-    if (!tryBeginForRun(RunIntent::Step, ignResuming, ignModule, ignData, ignMode)) {
+    if (!tryBeginForRun(RunIntent::Step, ignResuming, ignModule, ignData, ignMode, token, rejectReason)) {
+        if (rejectReason && rejectReason->isEmpty()) {
+            *rejectReason = QStringLiteral("start_rejected");
+        }
         return false;
     }
     // 后台执行（设计 §5.3）：单步与完整运行共用同一 RAII 收尾器（终态 Idle/Stopped，
@@ -515,15 +515,40 @@ void RunEngine::resume() {
 }
 
 bool RunEngine::tryBeginForRun(RunIntent intent, bool& resuming, QString& resumeModule, ImageData& resumeData,
-                               RunMode& outMode) {
+                               RunMode& outMode, const JobToken* jobToken, QString* rejectReason) {
     // 阶6 八轮（P1-1）：意图+预期状态校验、恢复判定、暂停数据转移、取执行权全部在
     // 同一临界区。stop() 后旧 resume/旧 tick 因预期状态不再满足而被拒绝，不会重启。
+    // 后台执行（设计 §4.2/§5.3，t6 F1）：job 所有权/job 级取消标志校验、启动窗口钩子、
+    // 复核与状态提交全部在本临界区内（递归锁允许钩子内 stop() 重入），不再存在
+    // "复检解锁 → 另锁启动"的两段窗口：stop() 与该次启动严格串行。
+    if (rejectReason) {
+        rejectReason->clear();
+    }
     QMutexLocker locker(&m_lifecycleMutex);
+    if (jobToken) {
+        if (!validateJobStartLocked(*jobToken, rejectReason)) {
+            return false;
+        }
+        // 设计 §5.3 窗口屏障：钩子在"完成停止/owner/取消标志校验之后、状态提交之前"执行。
+        // 钩子内 stop() 经递归锁重入并置 job 级取消标志；随后的同锁复核拒绝本次启动。
+        if (m_testBeforeJobStartHook) {
+            m_testBeforeJobStartHook();
+        }
+        if (!validateJobStartLocked(*jobToken, rejectReason)) {
+            return false;
+        }
+    }
     if (m_executing.load(std::memory_order_acquire) || m_maintenance.load(std::memory_order_acquire)) {
+        if (rejectReason) {
+            *rejectReason = QStringLiteral("engine_busy");
+        }
         return false;
     }
     if (m_stopPending) {
         m_stopPending = false;
+        if (rejectReason) {
+            *rejectReason = jobToken ? QStringLiteral("external_job_cancelled") : QStringLiteral("stopped");
+        }
         return false;
     }
     const RunState st = state();
@@ -885,60 +910,37 @@ bool RunEngine::endExternalJob(const JobToken& token) {
     return true;
 }
 
-bool RunEngine::beginOwnedJobStart(const JobToken& token, QString* reason) {
-    if (reason) {
-        reason->clear();
+bool RunEngine::validateJobStartLocked(const JobToken& token, QString* reason) {
+    // 调用方必须持有 m_lifecycleMutex（tryBeginForRun 在状态提交的同一临界区内调用）。
+    if (!m_externalJobActive.load(std::memory_order_acquire)) {
+        if (reason) {
+            *reason = QStringLiteral("external_job_inactive");
+        }
+        return false;
     }
-    {
-        QMutexLocker locker(&m_lifecycleMutex);
-        if (!m_externalJobActive.load(std::memory_order_acquire)) {
-            if (reason) {
-                *reason = QStringLiteral("external_job_inactive");
-            }
-            return false;
+    if (!token.isValid() || !(token == m_externalJobOwner)) {
+        if (reason) {
+            *reason = QStringLiteral("external_job_owner_mismatch");
         }
-        if (!token.isValid() || !(token == m_externalJobOwner)) {
-            if (reason) {
-                *reason = QStringLiteral("external_job_owner_mismatch");
-            }
-            return false;
-        }
-        if (m_externalJobCancelRequested || m_stopPending) {
-            // job 级取消标志：旧 job 不能清除它，必须等 endExternalJob 后才能重新 begin。
-            if (reason) {
-                *reason = QStringLiteral("external_job_cancelled");
-            }
-            return false;
-        }
+        return false;
     }
-
-    // 设计 §5.3 窗口屏障：钩子在"完成停止检查之后、真正取执行权之前"执行；生产构建为空。
-    // 钩子内 stop() 会置 job 级取消标志，必须复检，消除"检查完停止又启动下一轮"的窗口。
-    if (m_testBeforeJobStartHook) {
-        m_testBeforeJobStartHook();
-    }
-    {
-        QMutexLocker locker(&m_lifecycleMutex);
-        if (m_externalJobCancelRequested || m_stopPending) {
-            if (reason) {
-                *reason = QStringLiteral("external_job_cancelled");
-            }
-            return false;
+    if (m_externalJobCancelRequested || m_stopPending) {
+        // job 级取消标志：旧 job 不能清除它，必须等 endExternalJob 后重新 begin 才能复位。
+        if (reason) {
+            *reason = QStringLiteral("external_job_cancelled");
         }
+        return false;
     }
     return true;
 }
 
 bool RunEngine::runOnceForJob(const JobToken& token, QString* reason) {
-    if (!beginOwnedJobStart(token, reason)) {
-        return false;
-    }
     bool resuming = false;
     QString resumeModule;
     ImageData resumeData;
     RunMode mode = RunMode::RunOnce;
-    if (!tryBeginForRun(RunIntent::Single, resuming, resumeModule, resumeData, mode)) {
-        if (reason) {
+    if (!tryBeginForRun(RunIntent::Single, resuming, resumeModule, resumeData, mode, &token, reason)) {
+        if (reason && reason->isEmpty()) {
             *reason = QStringLiteral("start_rejected");
         }
         return false;
@@ -948,15 +950,12 @@ bool RunEngine::runOnceForJob(const JobToken& token, QString* reason) {
 }
 
 bool RunEngine::resumeForJob(const JobToken& token, QString* reason) {
-    if (!beginOwnedJobStart(token, reason)) {
-        return false;
-    }
     bool resuming = false;
     QString resumeModule;
     ImageData resumeData;
     RunMode mode = RunMode::RunOnce;
-    if (!tryBeginForRun(RunIntent::Resume, resuming, resumeModule, resumeData, mode)) {
-        if (reason) {
+    if (!tryBeginForRun(RunIntent::Resume, resuming, resumeModule, resumeData, mode, &token, reason)) {
+        if (reason && reason->isEmpty()) {
             *reason = QStringLiteral("not_paused");
         }
         return false;

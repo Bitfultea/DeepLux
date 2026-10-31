@@ -335,9 +335,10 @@ private:
     bool executeRunAsync(RunIntent intent);
     // 后台执行（设计 §4.2）：公开 stepOnce() 是无 token 包装；stepOnceForJob 走 owner 校验后
     // 复用同一推进实现（token=null 表示公开入口，需拒绝 external job 活跃时的调用）。
-    bool stepOnceImpl(const JobToken* token);
-    // 后台执行（设计 §4.2/§5.3）：校验 job 所有者与 job 级取消标志，调用启动前窗口钩子并复检。
-    bool beginOwnedJobStart(const JobToken& token, QString* reason);
+    bool stepOnceImpl(const JobToken* token, QString* rejectReason = nullptr);
+    // 后台执行（设计 §4.2/§5.3）：校验 job 所有权与 job 级取消标志。调用方必须持有
+    // m_lifecycleMutex（tryBeginForRun 在状态提交的同一临界区内调用，与 stop() 严格串行）。
+    bool validateJobStartLocked(const JobToken& token, QString* reason);
     void executeAcquiredRun(bool resuming, const QString& resumeModule, const ImageData& resumeData, RunMode mode);
     // 后台执行（设计 §5.3）：执行主体与异常兜底分离；finalizer 在所有路径上收尾恰好一次。
     void executeAcquiredRunImpl(bool resuming, const QString& resumeModule, const ImageData& resumeData, RunMode mode,
@@ -411,8 +412,11 @@ private:
     PauseReason m_pauseReason = PauseReason::None;
     RunMode m_pauseRunMode = RunMode::RunOnce; // 暂停前模式，恢复时还原（P1-2 八轮）
     // 阶6 八轮：恢复判定+暂停数据转移+取执行权+意图校验在同一临界区原子完成。
+    // 后台执行（设计 §4.2/§5.3）：jobToken 非空时，owner/job 级取消标志校验与状态提交
+    // 在同一把 m_lifecycleMutex 临界区完成（窗口钩子亦在其中），使 stop() 与本次启动严格
+    // 串行：stop 先到 → 取消标志拒绝；启动先提交 → stop 置 m_stopPending 取消本轮。
     bool tryBeginForRun(RunIntent intent, bool& resuming, QString& resumeModule, ImageData& resumeData,
-                        RunMode& outMode);
+                        RunMode& outMode, const JobToken* jobToken = nullptr, QString* rejectReason = nullptr);
     // 阶6 七轮：正常结束在单一临界区内完成清理+最终状态提交+执行权释放。
     // 后台执行（设计 §5.3）：唯一收尾提交点；Completed 终态按 RunMode 决定，stop 优先。
     void finalizeExecution(ExecutionOutcome outcome, bool clearControlGraph = true, bool resetStepStateOnStop = false);
