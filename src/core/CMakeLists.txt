@@ -29,6 +29,7 @@ set(CORE_SOURCES
     common/CancellationToken.cpp
     common/CLIHandler.cpp
     engine/RunEngine.cpp
+    engine/FlowExecutionService.cpp
     device/CameraManager.cpp
     communication/CommunicationManager.cpp
     config/SystemConfig.cpp
@@ -88,6 +89,7 @@ set(CORE_HEADERS
     model/ImageData.h
     model/DataSource.h
     engine/RunEngine.h
+    engine/FlowExecutionService.h
     engine/ExecutionAffinity.h
     device/CameraManager.h
     communication/CommunicationManager.h

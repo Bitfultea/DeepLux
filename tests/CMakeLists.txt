@@ -28,6 +28,7 @@ set(TEST_SOURCES
     test_runenginefinalizer.cpp
     test_runenginejoblease.cpp
     test_runengineuserpause.cpp
+    test_flowexecutionservice.cpp
     test_fitline.cpp
     test_findcircle.cpp
     test_measureline.cpp

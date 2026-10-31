@@ -907,6 +907,12 @@ bool RunEngine::endExternalJob(const JobToken& token) {
     m_externalJobOwner = JobToken{};
     m_externalJobCancelRequested = false;
     m_userPauseRequested.store(false, std::memory_order_release);
+    // t6 O1：租约结束不得留下“无恢复上下文、无法再 resume”的 Paused 引擎；
+    // 正常路径下 Service 会在结束租约前恢复/停止，此分支只做防御性清理。
+    if (state() == RunState::Paused) {
+        clearBreakpointPauseState();
+        m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
+    }
     return true;
 }
 
@@ -974,8 +980,9 @@ bool RunEngine::pauseForJob(const JobToken& token) {
         return false; // 无运行可暂停
     }
     // 设计 §5.3：不在此改状态，只登记请求；执行循环在模块边界响应。
+    // t6 O3：这里不是生命周期状态提交（状态由执行循环在模块边界/收尾时提交），
+    // 不递增 m_lifecycleGeneration。
     m_userPauseRequested.store(true, std::memory_order_release);
-    ++m_lifecycleGeneration;
     return true;
 }
 
