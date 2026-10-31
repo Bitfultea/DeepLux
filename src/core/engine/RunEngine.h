@@ -61,6 +61,14 @@ enum class RunMode {
 enum class ExecutionOutcome { Completed, Paused, Stopped, Failed };
 
 /**
+ * @brief 模块边界暂停原因（后台执行设计 §5.3）
+ *
+ * - None：未暂停；Breakpoint：内层断点命中；User：pauseForJob 的用户暂停请求。
+ *   isPausedAtBreakpoint() 仍只在 Breakpoint 时为真；UI/Service 用 pauseReason() 决定提示。
+ */
+enum class PauseReason { None, Breakpoint, User };
+
+/**
  * @brief 运行结果
  */
 struct RunResult {
@@ -138,7 +146,9 @@ public:
     class ExecutionFinalizer {
     public:
         // clearControlGraph：完整运行收尾清理控制图/循环索引；单步收尾必须保留跨步状态。
-        ExecutionFinalizer(RunEngine* engine, ExecutionOutcome outcome, bool clearControlGraph = true);
+        // resetStepStateOnStop：单步收尾在 stop 获胜时重置单步态（与 stop 判定同一临界区）。
+        ExecutionFinalizer(RunEngine* engine, ExecutionOutcome outcome, bool clearControlGraph = true,
+                           bool resetStepStateOnStop = false);
         ~ExecutionFinalizer();
         ExecutionFinalizer(const ExecutionFinalizer&) = delete;
         ExecutionFinalizer& operator=(const ExecutionFinalizer&) = delete;
@@ -152,6 +162,7 @@ public:
         RunEngine* m_engine = nullptr;
         ExecutionOutcome m_outcome = ExecutionOutcome::Failed;
         bool m_clearControlGraph = true;
+        bool m_resetStepStateOnStop = false;
         bool m_done = false;
     };
 
@@ -199,6 +210,8 @@ public:
     Q_INVOKABLE void resume();
     Q_INVOKABLE void stop();
     bool isPausedAtBreakpoint() const;
+    // 后台执行（设计 §5.3）：暂停原因（None/Breakpoint/User），UI/Service 用其决定提示。
+    PauseReason pauseReason() const;
 
     // 模块管理
     void addModule(ModuleBase* module);
@@ -306,6 +319,8 @@ signals:
     void moduleFinished(const QString& moduleId, bool success, int elapsedMs);
     void moduleSkipped(const QString& moduleId); // 未激活分支，显示 Skipped 非失败
     void breakpointHit(const QString& moduleId); // 阶段 B 复核: 断点真实命中
+    // 后台执行（设计 §5.3）：模块边界暂停（断点/用户）提交后发出，附暂停原因。
+    void pauseHit(const QString& moduleId, PauseReason reason);
     void errorOccurred(const QString& error);
     void outputChanged(const QString& moduleName, const QString& varName, const QVariant& value);
 
@@ -392,13 +407,15 @@ private:
     bool m_externalJobCancelRequested = false;
     // 后台执行（设计 §5.3）：用户暂停请求（模块边界生效）。
     std::atomic_bool m_userPauseRequested{false};
+    // 后台执行（设计 §5.3）：暂停原因（None/Breakpoint/User），与暂停上下文同锁维护。
+    PauseReason m_pauseReason = PauseReason::None;
     RunMode m_pauseRunMode = RunMode::RunOnce; // 暂停前模式，恢复时还原（P1-2 八轮）
     // 阶6 八轮：恢复判定+暂停数据转移+取执行权+意图校验在同一临界区原子完成。
     bool tryBeginForRun(RunIntent intent, bool& resuming, QString& resumeModule, ImageData& resumeData,
                         RunMode& outMode);
     // 阶6 七轮：正常结束在单一临界区内完成清理+最终状态提交+执行权释放。
     // 后台执行（设计 §5.3）：唯一收尾提交点；Completed 终态按 RunMode 决定，stop 优先。
-    void finalizeExecution(ExecutionOutcome outcome, bool clearControlGraph = true);
+    void finalizeExecution(ExecutionOutcome outcome, bool clearControlGraph = true, bool resetStepStateOnStop = false);
     bool tryAcquireLease();
     void releaseLease();
     bool tryAcquireMaintenance();
@@ -413,7 +430,10 @@ private:
     // 后台执行（设计 §6.3）：worker 亲和 + 线程安全 + 非阻塞 + 无断点才允许进入并行池。
     bool isParallelEligible(ModuleBase* module) const;
     // 阶6 五轮：内层断点命中在生命周期锁内写暂停态（stop() 同锁清理，无 UB）。
-    void setInnerPauseLocked(const QString& mod, const ImageData& data);
+    // 后台执行（设计 §5.3）：用户暂停复用同一暂停上下文，用 PauseReason 区分原因。
+    void setInnerPauseLocked(const QString& mod, const ImageData& data, PauseReason reason);
+    // 后台执行（设计 §5.3）：模块边界检查并消费用户暂停请求（锁内 check-then-act）。
+    bool takeUserPauseRequest(const QString& moduleName, const ImageData& data);
     QTimer* m_cycleTimer = nullptr;
     QList<ModuleBase*> m_modules;
     QList<ModuleBase*> m_ownedModules;
@@ -502,3 +522,4 @@ private:
 } // namespace DeepLux
 
 Q_DECLARE_METATYPE(DeepLux::RunResult)
+Q_DECLARE_METATYPE(DeepLux::PauseReason)

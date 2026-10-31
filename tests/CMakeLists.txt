@@ -27,6 +27,7 @@ set(TEST_SOURCES
     test_executionaffinity.cpp
     test_runenginefinalizer.cpp
     test_runenginejoblease.cpp
+    test_runengineuserpause.cpp
     test_fitline.cpp
     test_findcircle.cpp
     test_measureline.cpp

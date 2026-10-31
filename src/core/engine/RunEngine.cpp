@@ -299,7 +299,8 @@ bool RunEngine::stepOnceImpl(const JobToken* token) {
     }
     // 后台执行（设计 §5.3）：单步与完整运行共用同一 RAII 收尾器（终态 Idle/Stopped，
     // Paused 不适用于单步），保证提前返回/异常也释放执行权；单步必须保留跨步控制图状态。
-    ExecutionFinalizer finalizer(this, ExecutionOutcome::Failed, /*clearControlGraph=*/false);
+    ExecutionFinalizer finalizer(this, ExecutionOutcome::Failed, /*clearControlGraph=*/false,
+                                 /*resetStepStateOnStop=*/true);
     emit stateChanged(state());
     emit runStarted();
 
@@ -369,19 +370,11 @@ bool RunEngine::stepOnceImpl(const JobToken* token) {
                 : (m_lastModuleError.isEmpty() ? tr("Step execution failed: %1").arg(moduleToRun) : m_lastModuleError);
     result.elapsedMs = elapsedMs;
     result.finishedTime = QDateTime::currentDateTime();
-    // 阶6 复核（五轮 P1-3）：单步收尾在锁内判定 stop——若停止发生在单步期间，
-    // 重置单步状态（下次从流程起点开始）并保持 Stopped；否则保留跨步位置并置 Idle。
-    // 阶6 七轮（P1-5）：清理单步态与释放执行权在同一临界区（递归锁），
-    // 不留"先释放执行权再清理"的交错窗口；后台执行（设计 §5.3）由 finalizer 提交终态。
-    bool stopWins;
-    {
-        QMutexLocker locker(&m_lifecycleMutex);
-        stopWins = m_stopPending || state() == RunState::Stopped;
-        if (stopWins) {
-            resetStepState();
-        }
-    }
-    finalizer.finish(stopWins ? ExecutionOutcome::Stopped : ExecutionOutcome::Completed);
+    // 阶6 复核（五轮 P1-3）：若停止发生在单步期间，终态保持 Stopped 并重置单步状态
+    // （下次从流程起点开始）；否则保留跨步位置并置 Idle。
+    // 后台执行（设计 §5.3）：stop 判定与单步态重置统一在 finalizeExecution 同一临界区完成
+    // （t3 审查 O6，resetStepStateOnStop），不再在调用侧预先判定，消除检查后 stop 的窗口。
+    finalizer.finish(ExecutionOutcome::Completed);
     emit runFinished(result);
     emit stateChanged(state());
     return true;
@@ -534,7 +527,10 @@ bool RunEngine::tryBeginForRun(RunIntent intent, bool& resuming, QString& resume
         return false;
     }
     const RunState st = state();
-    const bool paused = m_pausedAtBreakpoint && !m_pauseResumeModule.isEmpty();
+    // 后台执行（设计 §5.3）：暂停上下文可由断点或用户暂停建立；恢复时按原因决定是否
+    // 跳过一次断点（m_skipBreakpointOnce 只对 Breakpoint 设置，保证下游模块恰执行一次）。
+    const bool paused = !m_pauseResumeModule.isEmpty() &&
+                        (m_pauseReason == PauseReason::Breakpoint || m_pauseReason == PauseReason::User);
     bool fresh = false;
     switch (intent) {
     case RunIntent::Single:
@@ -581,7 +577,9 @@ bool RunEngine::tryBeginForRun(RunIntent intent, bool& resuming, QString& resume
         m_pausePipelineData = ImageData();
         m_breakpointPausedAt = QDateTime();
         m_pausedAtBreakpoint = false;
-        m_skipBreakpointOnce = true;
+        m_skipBreakpointOnce = (m_pauseReason == PauseReason::Breakpoint);
+        m_pauseReason = PauseReason::None;
+        m_userPauseRequested.store(false, std::memory_order_release);
         break;
     }
     ++m_lifecycleGeneration; // 阶6 十一轮：取权是一次生命周期转换
@@ -603,8 +601,10 @@ bool RunEngine::tryBeginForRun(RunIntent intent, bool& resuming, QString& resume
     return true;
 }
 
-RunEngine::ExecutionFinalizer::ExecutionFinalizer(RunEngine* engine, ExecutionOutcome outcome, bool clearControlGraph)
-    : m_engine(engine), m_outcome(outcome), m_clearControlGraph(clearControlGraph) {}
+RunEngine::ExecutionFinalizer::ExecutionFinalizer(RunEngine* engine, ExecutionOutcome outcome, bool clearControlGraph,
+                                                  bool resetStepStateOnStop)
+    : m_engine(engine), m_outcome(outcome), m_clearControlGraph(clearControlGraph),
+      m_resetStepStateOnStop(resetStepStateOnStop) {}
 
 RunEngine::ExecutionFinalizer::~ExecutionFinalizer() {
     // 正常返回、提前 return、异常都会走到这里；已显式 finish 时不再重复收尾。
@@ -618,11 +618,11 @@ void RunEngine::ExecutionFinalizer::finish(ExecutionOutcome outcome) {
     }
     m_done = true;
     if (m_engine) {
-        m_engine->finalizeExecution(outcome, m_clearControlGraph);
+        m_engine->finalizeExecution(outcome, m_clearControlGraph, m_resetStepStateOnStop);
     }
 }
 
-void RunEngine::finalizeExecution(ExecutionOutcome outcome, bool clearControlGraph) {
+void RunEngine::finalizeExecution(ExecutionOutcome outcome, bool clearControlGraph, bool resetStepStateOnStop) {
     // 后台执行（设计 §5.3）：收尾前先跑测试钩子（用于把 stop 落在收尾窗口内的确定性用例），
     // 钩子在锁外执行，stop() 可正常获取生命周期锁。
     if (m_testFinalizeHook) {
@@ -647,6 +647,7 @@ void RunEngine::finalizeExecution(ExecutionOutcome outcome, bool clearControlGra
             return;
         }
         m_pauseRunMode = runMode();
+        m_userPauseRequested.store(false, std::memory_order_release); // 请求已被消费
         m_executing.store(false, std::memory_order_release);
         m_state.store(static_cast<int>(RunState::Paused), std::memory_order_release);
         return;
@@ -661,6 +662,11 @@ void RunEngine::finalizeExecution(ExecutionOutcome outcome, bool clearControlGra
     m_executing.store(false, std::memory_order_release);
     if (outcome == ExecutionOutcome::Stopped || stopped) {
         // 并发 stop 必须获胜：不得被 Completed 覆盖为 Running/Idle（设计 §5.3）。
+        // 单步收尾：stop 判定与单步态重置在同一临界区（t3 审查 O6），不留
+        // "判定未停止→随后 stop 到达→未重置单步态"的窗口。
+        if (resetStepStateOnStop) {
+            resetStepState();
+        }
         m_state.store(static_cast<int>(RunState::Stopped), std::memory_order_release);
     } else if (outcome == ExecutionOutcome::Completed && runMode() == RunMode::RunCycle) {
         // 兼容路径 start() 的原生定时器循环：每轮 Completed 后保持 Running，
@@ -744,14 +750,29 @@ void RunEngine::releaseMaintenance() {
     m_maintenance = false;
 }
 
-void RunEngine::setInnerPauseLocked(const QString& mod, const ImageData& data) {
+void RunEngine::setInnerPauseLocked(const QString& mod, const ImageData& data, PauseReason reason) {
     // 阶6 五轮：内层只在此锁内写暂停态；stop() 同锁清理，消除 QString/ImageData
-    // 并发读清空 UB。
+    // 并发读清空 UB。后台执行（设计 §5.3）：用户暂停复用同一暂停上下文，用 reason 区分。
     QMutexLocker locker(&m_lifecycleMutex);
     m_pauseResumeModule = mod;
     m_pausePipelineData = data;
     m_breakpointPausedAt = QDateTime::currentDateTime();
-    m_pausedAtBreakpoint = true;
+    m_pauseReason = reason;
+    // isPausedAtBreakpoint() 仍只在断点原因时为真（UI/Service 用 pauseReason 判提示）。
+    m_pausedAtBreakpoint = (reason == PauseReason::Breakpoint);
+    if (reason == PauseReason::User) {
+        m_userPauseRequested.store(false, std::memory_order_release);
+    }
+}
+
+bool RunEngine::takeUserPauseRequest(const QString& moduleName, const ImageData& data) {
+    // 设计 §5.3：模块边界检查并消费用户暂停请求（check-then-act 在同一临界区）。
+    QMutexLocker locker(&m_lifecycleMutex);
+    if (!m_userPauseRequested.load(std::memory_order_acquire)) {
+        return false;
+    }
+    setInnerPauseLocked(moduleName, data, PauseReason::User);
+    return true;
 }
 
 bool RunEngine::lifecycleBusyLocked() {
@@ -802,6 +823,11 @@ void RunEngine::stop() {
 bool RunEngine::isPausedAtBreakpoint() const {
     QMutexLocker locker(&m_lifecycleMutex);
     return m_pausedAtBreakpoint;
+}
+
+PauseReason RunEngine::pauseReason() const {
+    QMutexLocker locker(&m_lifecycleMutex);
+    return m_pauseReason;
 }
 
 void RunEngine::requestCancellation() {
@@ -1283,6 +1309,9 @@ void RunEngine::clearBreakpointPauseState() {
     m_breakpointPausedAt = QDateTime();
     m_pausedAtBreakpoint = false;
     m_skipBreakpointOnce = false;
+    // 后台执行（设计 §5.3）：清理暂停原因与用户暂停请求，防止旧 resume 重启。
+    m_pauseReason = PauseReason::None;
+    m_userPauseRequested.store(false, std::memory_order_release);
 }
 
 ImageData RunEngine::lastOutput() const {
@@ -1490,32 +1519,45 @@ void RunEngine::executeAcquiredRunImpl(bool resuming, const QString& resumeModul
         executeRunLegacy(pipelineData, m_runAllSuccess, m_runFirstError);
     }
 
-    // 阶6 复核（二轮）：内层只报告"命中断点"，暂停态在此于生命周期锁内提交；
-    // 内层不提前暴露 m_executing=false。若命中断点同时 stop() 并发到达
+    // 阶6 复核（二轮）：内层只报告"命中断点/用户暂停"，暂停态在此于生命周期锁内提交；
+    // 内层不提前暴露 m_executing=false。若暂停同时 stop() 并发到达
     // （m_stopPending），放弃暂停、走正常结束路径，避免数据竞争与错误恢复。
-    if (m_pausedAtBreakpoint) {
+    PauseReason pendingPause = PauseReason::None;
+    {
+        QMutexLocker locker(&m_lifecycleMutex);
+        pendingPause = m_pauseReason;
+    }
+    if (pendingPause != PauseReason::None) {
         bool commitPause;
-        QString bpModule;
+        QString pauseModule;
         {
             QMutexLocker locker(&m_lifecycleMutex);
             commitPause = !m_stopPending;
             if (commitPause) {
-                bpModule = m_pauseResumeModule; // 阶6 七轮（P1-4）：锁内复制模块 ID
+                pauseModule = m_pauseResumeModule; // 阶6 七轮（P1-4）：锁内复制模块 ID
             } else {
                 m_stopPending = false;
                 m_pausedAtBreakpoint = false;
                 m_pauseResumeModule.clear();
                 m_pausePipelineData = ImageData();
                 m_breakpointPausedAt = QDateTime();
+                m_pauseReason = PauseReason::None;
             }
         }
         if (commitPause) {
             // 后台执行（设计 §5.3）：Paused 显式提交（只释放本段执行权、保留续跑上下文，
-            // 并保存暂停前 RunMode）；先提交 Paused 再发 breakpointHit，保证回调观察到 Paused。
+            // 并保存暂停前 RunMode）；提交成功后才发 pauseHit/breakpointHit。
             finalizer.finish(ExecutionOutcome::Paused);
-            emit stateChanged(state());
-            emit breakpointHit(bpModule);
-            return; // 暂停：不发射 runFinished（运行未结束）
+            // t3 审查 O4：收尾窗口内被 stop 抢先时暂停被放弃（终态 Stopped），
+            // 不得再发 pauseHit/breakpointHit；按停止路径继续正常收尾并发出停止结果。
+            if (state() == RunState::Paused) {
+                emit stateChanged(state());
+                emit pauseHit(pauseModule, pendingPause);
+                if (pendingPause == PauseReason::Breakpoint) {
+                    emit breakpointHit(pauseModule);
+                }
+                return; // 暂停：不发射 runFinished（运行未结束）
+            }
         }
     }
 
@@ -1560,7 +1602,13 @@ void RunEngine::executeRunWithControlGraph(ImageData& pipelineData) {
             // 阶6 复核（二轮）：内层只记录"命中断点"数据，不提前释放执行权、
             // 不置 Paused；由外层 executeRun 在生命周期锁内统一提交，
             // 避免 stop() 在内外层之间并发清除暂停数据。
-            setInnerPauseLocked(mod, pipelineData);
+            setInnerPauseLocked(mod, pipelineData, PauseReason::Breakpoint);
+            return;
+        }
+
+        // 后台执行（设计 §5.3）：用户暂停请求在模块边界生效——保存下一待执行模块与
+        // 流水线数据，由外层统一提交 Paused；不得在模块执行中途打断。
+        if (takeUserPauseRequest(mod, pipelineData)) {
             return;
         }
 
@@ -2038,7 +2086,12 @@ void RunEngine::executeRunLegacy(ImageData& pipelineData, bool& allSuccess, QStr
         } else if (hasBreakpoint(currentModule)) {
             // 阶6 复核（二轮）：内层只记录"命中断点"，不提前置 Paused/释放执行权；
             // 由外层 executeRun 在生命周期锁内提交。
-            setInnerPauseLocked(currentModule, pipelineData);
+            setInnerPauseLocked(currentModule, pipelineData, PauseReason::Breakpoint);
+            return;
+        }
+
+        // 后台执行（设计 §5.3）：用户暂停请求在模块边界生效（见控制图路径同款协议）。
+        if (takeUserPauseRequest(currentModule, pipelineData)) {
             return;
         }
 
