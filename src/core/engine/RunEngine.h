@@ -100,6 +100,35 @@ public:
     enum class RunIntent { Single, CycleTick, Resume, Step };
 
     /**
+     * @brief 外部 job 租约 token（后台执行设计 §4.2/§5.3）
+     *
+     * 单调 id + 进程内随机盐，不可伪造；FlowExecutionService 的 job 在工作线程内持有，
+     * 只有 token 匹配的 *ForJob 入口可绕过 external job 活跃的忙检查。
+     */
+    struct JobToken {
+        quint64 id = 0;
+        quint64 salt = 0;
+        bool isValid() const {
+            return id != 0;
+        }
+        bool operator==(const JobToken& other) const {
+            return id == other.id && salt == other.salt;
+        }
+        bool operator!=(const JobToken& other) const {
+            return !(*this == other);
+        }
+    };
+
+    // job 租约与所有者入口（后台执行设计 §4.2/§5.3）
+    bool beginExternalJob(JobToken* token, QString* reason = nullptr);
+    bool endExternalJob(const JobToken& token);
+    bool runOnceForJob(const JobToken& token, QString* reason = nullptr);
+    bool stepOnceForJob(const JobToken& token, QString* reason = nullptr);
+    bool resumeForJob(const JobToken& token, QString* reason = nullptr);
+    bool pauseForJob(const JobToken& token);
+    bool runOnceChecked(QString* reason = nullptr);
+
+    /**
      * @brief 执行段 RAII 收尾器（后台执行设计 §5.3）
      *
      * 正常返回、提前 return、异常都会收尾恰好一次；默认 outcome=Failed（异常安全）。
@@ -144,7 +173,10 @@ public:
     }
     bool isBusy() const {
         // 阶6 五轮：维护租约期间也视为 busy，使外部能观察到维护占用。
-        return isExecuting() || m_maintenance.load(std::memory_order_acquire) || state() == RunState::Running ||
+        // 后台执行（设计 §4.2）：external job 租约从 job 启动到结束（含 Cycle 两轮之间）
+        // 始终为 busy，工程加载/清空/切换被拒绝。
+        return isExecuting() || m_maintenance.load(std::memory_order_acquire) ||
+               m_externalJobActive.load(std::memory_order_acquire) || state() == RunState::Running ||
                state() == RunState::Paused;
     }
 
@@ -230,6 +262,10 @@ public:
     // 后台执行（设计 §5.3）测试注入：执行段故障注入（验证异常路径 finalizer 释放租约）。
     DEEPLUX_TEST_VISIBILITY : void setExecutionFaultInjectionForTest(std::function<void()> hook);
     DEEPLUX_TEST_VISIBILITY : void clearExecutionFaultInjectionForTest();
+    // 后台执行（设计 §4.2/§5.3）测试注入：job 租约活跃查询与 *ForJob 窗口屏障钩子。
+    DEEPLUX_TEST_VISIBILITY : bool isExternalJobActiveForTest() const;
+    DEEPLUX_TEST_VISIBILITY : void setBeforeJobStartHookForTest(std::function<void()> hook);
+    DEEPLUX_TEST_VISIBILITY : void clearBeforeJobStartHookForTest();
 
 public:
     // 运行统计
@@ -282,6 +318,11 @@ private:
 
     void executeRun(RunIntent intent);
     bool executeRunAsync(RunIntent intent);
+    // 后台执行（设计 §4.2）：公开 stepOnce() 是无 token 包装；stepOnceForJob 走 owner 校验后
+    // 复用同一推进实现（token=null 表示公开入口，需拒绝 external job 活跃时的调用）。
+    bool stepOnceImpl(const JobToken* token);
+    // 后台执行（设计 §4.2/§5.3）：校验 job 所有者与 job 级取消标志，调用启动前窗口钩子并复检。
+    bool beginOwnedJobStart(const JobToken& token, QString* reason);
     void executeAcquiredRun(bool resuming, const QString& resumeModule, const ImageData& resumeData, RunMode mode);
     // 后台执行（设计 §5.3）：执行主体与异常兜底分离；finalizer 在所有路径上收尾恰好一次。
     void executeAcquiredRunImpl(bool resuming, const QString& resumeModule, const ImageData& resumeData, RunMode mode,
@@ -340,6 +381,17 @@ private:
     // 后台执行（设计 §5.3）测试注入：收尾窗口钩子/执行段故障注入（生产构建不可达）。
     std::function<void()> m_testFinalizeHook;
     std::function<void()> m_testFaultInjection;
+    // 后台执行（设计 §4.2/§5.3）测试注入：*ForJob 启动协议内的窗口屏障钩子（生产构建不可达）。
+    std::function<void()> m_testBeforeJobStartHook;
+    // 后台执行（设计 §4.2/§5.3）：external job 租约、owner token 与 job 级取消标志。
+    // m_externalJobActive 供 isBusy() 无锁快照；其余字段仅在 m_lifecycleMutex 内读写。
+    std::atomic_bool m_externalJobActive{false};
+    JobToken m_externalJobOwner;
+    quint64 m_externalJobSeq = 0;
+    quint64 m_jobSalt = 0;
+    bool m_externalJobCancelRequested = false;
+    // 后台执行（设计 §5.3）：用户暂停请求（模块边界生效）。
+    std::atomic_bool m_userPauseRequested{false};
     RunMode m_pauseRunMode = RunMode::RunOnce; // 暂停前模式，恢复时还原（P1-2 八轮）
     // 阶6 八轮：恢复判定+暂停数据转移+取执行权+意图校验在同一临界区原子完成。
     bool tryBeginForRun(RunIntent intent, bool& resuming, QString& resumeModule, ImageData& resumeData,

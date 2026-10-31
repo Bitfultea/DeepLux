@@ -11,6 +11,7 @@
 #include <QDebug>
 #include <QElapsedTimer>
 #include <QMutexLocker>
+#include <QRandomGenerator>
 #include <QThread>
 #include <QWaitCondition>
 #include <algorithm>
@@ -63,6 +64,8 @@ RunEngine::RunEngine()
     : QObject(nullptr), m_cycleTimer(new QTimer(this)), m_cancellationToken(new CancellationToken(this)) {
     qRegisterMetaType<RunResult>("RunResult");
     qRegisterMetaType<RunResult>("DeepLux::RunResult");
+    // 后台执行（设计 §4.2）：进程内随机盐，使 job token 不可伪造。
+    m_jobSalt = QRandomGenerator::global()->generate64();
     m_cycleTimer->setInterval(100);
     connect(m_cycleTimer, &QTimer::timeout, this, &RunEngine::onTimerTick);
     m_runPool.setMaxThreadCount(1);
@@ -197,12 +200,49 @@ void RunEngine::runOnce() {
         return;
     }
 
+    QString reason;
+    runOnceChecked(&reason);
+}
+
+bool RunEngine::runOnceChecked(QString* reason) {
+    // 后台执行（设计 §4.2）：非所有者入口——external job 活跃时一律拒绝并给出原因。
+    if (reason) {
+        reason->clear();
+    }
+    if (m_externalJobActive.load(std::memory_order_acquire)) {
+        if (reason) {
+            *reason = QStringLiteral("external_job_active");
+        }
+        return false;
+    }
+    if (isBusy()) {
+        if (reason) {
+            *reason = QStringLiteral("engine_busy");
+        }
+        return false;
+    }
+
     Logger::instance().info(tr("Starting single run"), "Run");
     // 阶6 八轮：Single 意图在锁内校验 Idle/Stopped。
-    executeRun(RunIntent::Single);
+    bool resuming = false;
+    QString resumeModule;
+    ImageData resumeData;
+    RunMode mode = RunMode::RunOnce;
+    if (!tryBeginForRun(RunIntent::Single, resuming, resumeModule, resumeData, mode)) {
+        if (reason) {
+            *reason = QStringLiteral("start_rejected");
+        }
+        return false;
+    }
+    executeAcquiredRun(resuming, resumeModule, resumeData, mode);
+    return true;
 }
 
 bool RunEngine::runOnceAsync() {
+    // 后台执行（设计 §4.2）：非所有者入口在 external job 活跃时拒绝，避免与 job 并行执行。
+    if (m_externalJobActive.load(std::memory_order_acquire) || isBusy()) {
+        return false;
+    }
     if (!executeRunAsync(RunIntent::Single))
         return false;
     Logger::instance().info(tr("Starting single run"), "Run");
@@ -210,7 +250,20 @@ bool RunEngine::runOnceAsync() {
 }
 
 bool RunEngine::stepOnce() {
-    if (isBusy()) {
+    return stepOnceImpl(nullptr);
+}
+
+bool RunEngine::stepOnceForJob(const JobToken& token, QString* reason) {
+    // 后台执行（设计 §4.2）：所有者单步入口；推进复用 stepOnceImpl，避免 stepOnce()
+    // 在入口被 external job 忙检查拒绝。
+    if (!beginOwnedJobStart(token, reason)) {
+        return false;
+    }
+    return stepOnceImpl(&token);
+}
+
+bool RunEngine::stepOnceImpl(const JobToken* token) {
+    if (!token && (m_externalJobActive.load(std::memory_order_acquire) || isBusy())) {
         return false;
     }
 
@@ -362,8 +415,10 @@ void RunEngine::start() {
     // stop() 无法与清理交错；定时器仅在提交后仍为 Running 时启动（stop 介入则不启）。
     {
         QMutexLocker locker(&m_lifecycleMutex);
-        if (m_executing.load(std::memory_order_acquire) || m_maintenance.load(std::memory_order_acquire) ||
-            m_stopPending || state() == RunState::Running || state() == RunState::Paused) {
+        // 后台执行（设计 §4.2）：external job 活跃时非所有者入口 start() 一律拒绝。
+        if (m_externalJobActive.load(std::memory_order_acquire) || m_executing.load(std::memory_order_acquire) ||
+            m_maintenance.load(std::memory_order_acquire) || m_stopPending || state() == RunState::Running ||
+            state() == RunState::Paused) {
             return;
         }
         m_runMode.store(static_cast<int>(RunMode::RunCycle), std::memory_order_release);
@@ -401,6 +456,11 @@ void RunEngine::pause() {
     // 阶6 复核（四轮）：Running→Paused 检查+提交在同一临界区。
     {
         QMutexLocker locker(&m_lifecycleMutex);
+        // 后台执行（设计 §4.2/§5.3）：external job 活跃时公开 pause() 拒绝；用户暂停走
+        // pauseForJob() 的模块边界协议。
+        if (m_externalJobActive.load(std::memory_order_acquire)) {
+            return;
+        }
         if (state() != RunState::Running) {
             return;
         }
@@ -414,6 +474,11 @@ void RunEngine::pause() {
 }
 
 void RunEngine::resume() {
+    // 后台执行（设计 §4.2）：external job 活跃时非所有者入口 resume() 一律拒绝；
+    // 所有者恢复走 resumeForJob()。
+    if (m_externalJobActive.load(std::memory_order_acquire)) {
+        return;
+    }
     if (state() != RunState::Paused) {
         return;
     }
@@ -630,9 +695,10 @@ void RunEngine::clearExecutionFaultInjectionForTest() {
 bool RunEngine::tryAcquireLease() {
     // 公开并行原语 executeParallel 的排他租约：与执行/维护互斥，且**循环运行/
     // 断点暂停期间拒绝**（P1-4 隔离语义）；取租约时重置 token（此时无其它运行）。
+    // 后台执行（设计 §4.2）：external job 活跃时公开并行原语同样拒绝（只有所有者可执行）。
     QMutexLocker locker(&m_lifecycleMutex);
-    if (m_executing.load(std::memory_order_acquire) || m_maintenance.load(std::memory_order_acquire) ||
-        state() == RunState::Running || state() == RunState::Paused) {
+    if (m_externalJobActive.load(std::memory_order_acquire) || m_executing.load(std::memory_order_acquire) ||
+        m_maintenance.load(std::memory_order_acquire) || state() == RunState::Running || state() == RunState::Paused) {
         return false;
     }
     if (m_stopPending) {
@@ -655,9 +721,11 @@ void RunEngine::releaseLease() {
 bool RunEngine::tryAcquireMaintenance() {
     // 模块维护租约：与执行/其它维护互斥；持有期间 tryBeginExecution 拒绝，
     // 保证维护期间无运行启动（消除 check-then-act 悬空指针/混合工程）。
+    // 后台执行（设计 §4.2）：external job 租约期间 loadProject/addModule/removeModule/
+    // clearModules 一律拒绝（ProjectManager 的工程切换因此被挡）。
     QMutexLocker locker(&m_lifecycleMutex);
-    if (m_executing.load(std::memory_order_acquire) || m_maintenance.load(std::memory_order_acquire) ||
-        state() == RunState::Running || state() == RunState::Paused) {
+    if (m_externalJobActive.load(std::memory_order_acquire) || m_executing.load(std::memory_order_acquire) ||
+        m_maintenance.load(std::memory_order_acquire) || state() == RunState::Running || state() == RunState::Paused) {
         return false;
     }
     m_maintenance = true;
@@ -706,6 +774,12 @@ void RunEngine::stop() {
         if (m_cancellationToken) {
             m_cancellationToken->cancel();
         }
+        // 后台执行（设计 §5.3）：job 级取消标志覆盖 Cycle 两轮之间的窗口，旧 job 不能清除它；
+        // 同时清除用户暂停请求，防止旧 resume 重启。
+        if (m_externalJobActive.load(std::memory_order_acquire)) {
+            m_externalJobCancelRequested = true;
+        }
+        m_userPauseRequested.store(false, std::memory_order_release);
         if (m_executing.load(std::memory_order_acquire)) {
             m_stopPending = true;
         } else if (m_maintenance.load(std::memory_order_acquire)) {
@@ -735,6 +809,161 @@ void RunEngine::requestCancellation() {
         m_cancellationToken->cancel();
     }
     stop();
+}
+
+// ---------------------------------------------------------------------------
+// 后台执行（设计 §4.2/§5.3）：external job 租约、所有者入口与 job 级取消标志
+// ---------------------------------------------------------------------------
+
+bool RunEngine::beginExternalJob(JobToken* token, QString* reason) {
+    if (reason) {
+        reason->clear();
+    }
+    QMutexLocker locker(&m_lifecycleMutex);
+    if (m_externalJobActive.load(std::memory_order_acquire)) {
+        if (reason) {
+            *reason = QStringLiteral("external_job_active");
+        }
+        return false;
+    }
+    // 设计 §4.2：beginExternalJob() 在引擎已执行/维护时失败；由 Service 显式上报。
+    if (m_executing.load(std::memory_order_acquire) || m_maintenance.load(std::memory_order_acquire) ||
+        state() == RunState::Running || state() == RunState::Paused) {
+        if (reason) {
+            *reason = QStringLiteral("engine_busy");
+        }
+        return false;
+    }
+
+    JobToken fresh;
+    fresh.id = ++m_externalJobSeq;
+    fresh.salt = m_jobSalt;
+    m_externalJobOwner = fresh;
+    m_externalJobCancelRequested = false; // 新 job 才允许复位 job 级取消标志
+    m_externalJobActive.store(true, std::memory_order_release);
+    if (token) {
+        *token = fresh;
+    }
+    return true;
+}
+
+bool RunEngine::endExternalJob(const JobToken& token) {
+    QMutexLocker locker(&m_lifecycleMutex);
+    if (!m_externalJobActive.load(std::memory_order_acquire) || !token.isValid() || !(token == m_externalJobOwner)) {
+        return false; // 重复/过期/伪造 token 无效
+    }
+    m_externalJobActive.store(false, std::memory_order_release);
+    m_externalJobOwner = JobToken{};
+    m_externalJobCancelRequested = false;
+    m_userPauseRequested.store(false, std::memory_order_release);
+    return true;
+}
+
+bool RunEngine::beginOwnedJobStart(const JobToken& token, QString* reason) {
+    if (reason) {
+        reason->clear();
+    }
+    {
+        QMutexLocker locker(&m_lifecycleMutex);
+        if (!m_externalJobActive.load(std::memory_order_acquire)) {
+            if (reason) {
+                *reason = QStringLiteral("external_job_inactive");
+            }
+            return false;
+        }
+        if (!token.isValid() || !(token == m_externalJobOwner)) {
+            if (reason) {
+                *reason = QStringLiteral("external_job_owner_mismatch");
+            }
+            return false;
+        }
+        if (m_externalJobCancelRequested || m_stopPending) {
+            // job 级取消标志：旧 job 不能清除它，必须等 endExternalJob 后才能重新 begin。
+            if (reason) {
+                *reason = QStringLiteral("external_job_cancelled");
+            }
+            return false;
+        }
+    }
+
+    // 设计 §5.3 窗口屏障：钩子在"完成停止检查之后、真正取执行权之前"执行；生产构建为空。
+    // 钩子内 stop() 会置 job 级取消标志，必须复检，消除"检查完停止又启动下一轮"的窗口。
+    if (m_testBeforeJobStartHook) {
+        m_testBeforeJobStartHook();
+    }
+    {
+        QMutexLocker locker(&m_lifecycleMutex);
+        if (m_externalJobCancelRequested || m_stopPending) {
+            if (reason) {
+                *reason = QStringLiteral("external_job_cancelled");
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+bool RunEngine::runOnceForJob(const JobToken& token, QString* reason) {
+    if (!beginOwnedJobStart(token, reason)) {
+        return false;
+    }
+    bool resuming = false;
+    QString resumeModule;
+    ImageData resumeData;
+    RunMode mode = RunMode::RunOnce;
+    if (!tryBeginForRun(RunIntent::Single, resuming, resumeModule, resumeData, mode)) {
+        if (reason) {
+            *reason = QStringLiteral("start_rejected");
+        }
+        return false;
+    }
+    executeAcquiredRun(resuming, resumeModule, resumeData, mode);
+    return true;
+}
+
+bool RunEngine::resumeForJob(const JobToken& token, QString* reason) {
+    if (!beginOwnedJobStart(token, reason)) {
+        return false;
+    }
+    bool resuming = false;
+    QString resumeModule;
+    ImageData resumeData;
+    RunMode mode = RunMode::RunOnce;
+    if (!tryBeginForRun(RunIntent::Resume, resuming, resumeModule, resumeData, mode)) {
+        if (reason) {
+            *reason = QStringLiteral("not_paused");
+        }
+        return false;
+    }
+    executeAcquiredRun(resuming, resumeModule, resumeData, mode);
+    return true;
+}
+
+bool RunEngine::pauseForJob(const JobToken& token) {
+    QMutexLocker locker(&m_lifecycleMutex);
+    if (!m_externalJobActive.load(std::memory_order_acquire) || !token.isValid() || !(token == m_externalJobOwner) ||
+        m_externalJobCancelRequested) {
+        return false;
+    }
+    if (!m_executing.load(std::memory_order_acquire) && state() != RunState::Running) {
+        return false; // 无运行可暂停
+    }
+    // 设计 §5.3：不在此改状态，只登记请求；执行循环在模块边界响应。
+    m_userPauseRequested.store(true, std::memory_order_release);
+    ++m_lifecycleGeneration;
+    return true;
+}
+
+bool RunEngine::isExternalJobActiveForTest() const {
+    return m_externalJobActive.load(std::memory_order_acquire);
+}
+
+void RunEngine::setBeforeJobStartHookForTest(std::function<void()> hook) {
+    m_testBeforeJobStartHook = std::move(hook);
+}
+
+void RunEngine::clearBeforeJobStartHookForTest() {
+    m_testBeforeJobStartHook = nullptr;
 }
 
 void RunEngine::addModuleLocked(ModuleBase* module) {
