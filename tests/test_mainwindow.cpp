@@ -48,6 +48,7 @@
 #include <core/agent/AgentActor.h>
 #include <core/agent/AgentController.h>
 #include <core/base/ModuleBase.h>
+#include <core/deeplux/PayloadTypes.h>
 #include <core/engine/FlowExecutionService.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/PluginManager.h>
@@ -261,6 +262,8 @@ private slots:
     void testStepRunFollowsExecution();
     // B7：UI 运行/循环/单步/关闭接入 FlowExecutionService（设计 §8.1）
     void testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns();
+    // B10：已审计 worker 流程（FindCircle 验收工程）运行期间 GUI 保持响应
+    void testBackgroundExecutionKeepsUiResponsive();
     void testStepRunExecutesExactlyOneModulePerClick();
     void testCycleRunStopsWithoutExtraRound();
     void testCloseDeferredUntilRunningJobFinishes();
@@ -2045,7 +2048,9 @@ void TestMainWindow::testBreakpointPauseAndContinueFromRunButton() {
 
     QTest::mouseClick(runButton, Qt::LeftButton);
     QTRY_VERIFY_WITH_TIMEOUT(RunEngine::instance().isPausedAtBreakpoint(), 5000);
-    QCOMPARE(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused);
+    // B10：断点先命中引擎、随后由服务工作线程提交 Paused；两者之间存在窗口，
+    // 必须等 Service 状态真正到达 Paused，不能读到紧随 QTRY 的 Running 瞬态。
+    QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused, 5000);
     QCOMPARE(executionLog.size(), 0);
     QCOMPARE(finishedSpy.count(), 0);
     QTRY_COMPARE(runButton->text(), QStringLiteral("继续"));
@@ -2053,7 +2058,7 @@ void TestMainWindow::testBreakpointPauseAndContinueFromRunButton() {
     QTRY_COMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 5).toString(), QStringLiteral("paused"));
 
     // B7：继续必须走 Service（onRunOnce → continueRun），不得绕过 job 租约直接调 RunEngine::resume()。
-    QCOMPARE(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused);
+    QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused, 5000);
     QTest::mouseClick(runButton, Qt::LeftButton);
     QTRY_COMPARE_WITH_TIMEOUT(executionLog, QStringList({first.id, second.id}), 5000);
     QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
@@ -3709,6 +3714,101 @@ void TestMainWindow::testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns() {
     project->removeModule(cheap.id);
     project->removeModule(blocking.id);
     QCoreApplication::processEvents();
+}
+
+// B10 Step1：性能验收只覆盖已审计 worker 流程（至少 FindCircle）。
+// 载入验收工程 accept_findcircle.json（GrabImage→FindCircle，FindCircle 已标记 worker），
+// 点击运行后等待 findcircle 的 moduleStarted 屏障（QSemaphore，DirectConnection 在工作者
+// 线程释放），运行期间用 16ms QTimer 计数证明 GUI 事件循环未被阻塞；不使用 sleep 构造顺序。
+void TestMainWindow::testBackgroundExecutionKeepsUiResponsive() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath(QStringLiteral("plugins"));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("FindCircle")));
+
+    // 验收工程以 @ACCEPTANCE_DATA@ 占位；替换为源码树内的验收数据目录后落盘为 .dproj。
+    const QString sourceRoot = DeepLuxTest::testSourceDir();
+    const QString acceptanceDataDir = QDir(sourceRoot).filePath(QStringLiteral("tests/acceptance/data"));
+    const QString projectPath = QDir(appDir.path()).filePath(QStringLiteral("accept_findcircle.dproj"));
+    {
+        QFile source(QDir(sourceRoot).filePath(QStringLiteral("tests/acceptance/projects/accept_findcircle.json")));
+        QVERIFY2(source.open(QIODevice::ReadOnly), qPrintable(source.fileName()));
+        QByteArray content = source.readAll();
+        QVERIFY(content.contains("@ACCEPTANCE_DATA@"));
+        content.replace("@ACCEPTANCE_DATA@", acceptanceDataDir.toUtf8());
+        QFile target(projectPath);
+        QVERIFY2(target.open(QIODevice::WriteOnly | QIODevice::Truncate), qPrintable(projectPath));
+        QCOMPARE(target.write(content), content.size());
+    }
+
+    MainWindow window;
+    window.resize(1024, 700);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(PluginManager::instance().isPluginLoaded(QStringLiteral("GrabImage")), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(PluginManager::instance().isPluginLoaded(QStringLiteral("FindCircle")), 10000);
+
+    Project* project = ProjectManager::instance().openProject(projectPath);
+    QVERIFY2(project != nullptr, qPrintable(projectPath));
+    QCoreApplication::processEvents();
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree != nullptr);
+    QTRY_COMPARE_WITH_TIMEOUT(processTree->topLevelItemCount(), 2, 5000);
+
+    RunEngine& engine = RunEngine::instance();
+    FlowExecutionService& service = FlowExecutionService::instance();
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+    QVERIFY(!engine.isBusy());
+
+    // 确定性屏障：FindCircle 进入执行时由工作者线程释放（DirectConnection，不经过 GUI）。
+    QSemaphore findCircleEntered;
+    const QMetaObject::Connection enteredConn = QObject::connect(
+        &engine, &RunEngine::moduleStarted, &window,
+        [&findCircleEntered](const QString& moduleName) {
+            if (moduleName == QStringLiteral("findcircle"))
+                findCircleEntered.release();
+        },
+        Qt::DirectConnection);
+
+    // 16ms 定时器：运行期间 GUI 事件循环若被阻塞，tick 数不会增长。
+    int ticks = 0;
+    QTimer ticker;
+    ticker.setInterval(16);
+    const QMetaObject::Connection tickConn =
+        QObject::connect(&ticker, &QTimer::timeout, &window, [&ticks]() { ++ticks; });
+    ticker.start();
+
+    QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
+    QTest::mouseClick(runButton, Qt::LeftButton);
+
+    QTRY_VERIFY_WITH_TIMEOUT(findCircleEntered.available() > 0, 15000);
+    QTRY_VERIFY_WITH_TIMEOUT(ticks > 0, 5000); // 16ms 定时器在 worker 执行窗口内触发
+    QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 30000);
+    ticker.stop();
+    QObject::disconnect(tickConn);
+
+    QCOMPARE(finishedSpy.first().at(1).toBool(), false); // 正常完成，不是被停止
+    QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
+    QCOMPARE(service.state(), FlowExecutionService::State::Idle);
+    QTRY_COMPARE(runButton->text(), QStringLiteral("运行"));
+
+    // 最终结果正确（验收期望：center≈320,240，radius≈100，容差 3px）。
+    const ImageData output = engine.moduleOutput(QStringLiteral("findcircle"));
+    QVERIFY2(output.isValid(), "FindCircle produced no output");
+    QVERIFY2(output.data(QStringLiteral("circle")).canConvert<Circle2D>(), "FindCircle must emit typed Circle2D");
+    const Circle2D circle = output.data(QStringLiteral("circle")).value<Circle2D>();
+    QVERIFY2(qAbs(circle.centerX - 320.0) <= 3.0, qPrintable(QStringLiteral("circle centerX=%1").arg(circle.centerX)));
+    QVERIFY2(qAbs(circle.centerY - 240.0) <= 3.0, qPrintable(QStringLiteral("circle centerY=%1").arg(circle.centerY)));
+    QVERIFY2(qAbs(circle.radius - 100.0) <= 3.0, qPrintable(QStringLiteral("circle radius=%1").arg(circle.radius)));
+    QVERIFY2(ticks > 0, "GUI 16ms timer must tick while the audited worker flow runs");
+
+    QObject::disconnect(enteredConn);
+    ProjectManager::instance().closeProject();
+    QCoreApplication::processEvents();
+    QVERIFY(waitForServiceIdle());
 }
 
 void TestMainWindow::testStepRunExecutesExactlyOneModulePerClick() {

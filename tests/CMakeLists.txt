@@ -461,6 +461,12 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_pluginmanager")
         set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
     endif()
+    # B10 Step3：test_agentbridge 与 test_mainwindow 会探测全局插件目录/窗口状态，
+    # 并行运行时与同进程组其他用例互相抢占会造成管道/全局状态隔离缺陷（历史 -j4 失败）。
+    # 对两者设 RUN_SERIAL，使 ctest -j4 全量可稳定通过（串行于其他测试执行）。
+    if(TEST_NAME STREQUAL "test_agentbridge" OR TEST_NAME STREQUAL "test_mainwindow")
+        set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
+    endif()
     if(TEST_NAME STREQUAL "test_acceptance_flows")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 10)
     endif()
