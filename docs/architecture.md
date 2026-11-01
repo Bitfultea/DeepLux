@@ -104,7 +104,7 @@ sequenceDiagram
   - `worker`：模块直接在服务工作线程内联执行；满足 `threadSafe && !blocking` 时也可进入并行批次。
   - 串行与并行入口共用同一亲和性判定；`worker` 亲和模块不得触碰 QWidget/QPixmap/QPainter/OpenGL/相机/事件循环或创建跨线程 QObject。只有通过 B9 审计（静态 + GUI/worker 双实例一致性）的插件才标记 `worker`，当前名单与限制见 [插件手册](plugins.md#执行亲和性executionaffinity与审计状态)。
 - **暂停、停止与收尾**：用户暂停在模块边界生效（`pauseForJob`），保留已完成的流水线、控制队列与运行模式且**不**发 `runFinished`；`continueRun()` 提交一个 `Resume` 段恢复执行。`stop()` 设置 job 级取消标志并立即返回，状态 `Stopping→Idle`，`jobFinished(stopped=true)`。断点暂停与用户暂停在 Agent 侧分别以 `pauseReason=breakpoint/user` 区分。
-- **结果回传与刷新链路**：`moduleFinished` → `DisplayManager::dataDisplayed(DisplayFrame)` → `ImageRefreshCoalescer`（约 50ms 频率上限 + latest-wins）→ 主视图；`DisplayFrame` 携带 `(jobId, runId)`，工程切换或旧 job 的迟到帧会被丢弃；测量叠加只读同帧快照，不读引擎实时输出。Agent 的 `run_flow/pause_flow/resume_flow/stop_flow` 同样经服务执行，`run_flow(wait=true)` 在 job 真正回到 Idle 后才返回。
+- **结果回传与刷新链路**：`RunEngine::displayFrameReady`（工作线程发出）→ MainWindow 按 `(jobId, runId)` 取 `latestDisplayFrame(viewportId)` 并做身份校验（`DisplayFrame::matchesIdentity`，旧 job/旧轮迟到帧直接丢弃）→ `ImageRefreshCoalescer`（约 50ms 频率上限 + latest-wins）→ `DisplayManager::displayImage(..., preserveView=true)` → 视口；`dataDisplayed(viewportId)` 在渲染后发出，仅用于视口绑定（测量叠加归属）。`moduleFinished` 只更新节点状态、耗时与检查器（点云 3D 专用路径例外），不再直接刷新大图。测量叠加只读同帧快照，不读引擎实时输出。Agent 的 `run_flow/pause_flow/resume_flow/stop_flow` 同样经服务执行，`run_flow(wait=true)` 在 job 真正回到 Idle 后才返回。
 - **Stopping 语义备注**：设计文档 §5.1 的状态转换列表包含 `Stopping`；实现只在停止请求实际胜出时短暂提交 `Stopping` 后立即 `Idle`（正常/失败收尾不经过 `Stopping`）。该措辞差异的取舍与理由见 [后台执行验收报告](reports/background-execution-acceptance.md)。
 
 ## 插件契约

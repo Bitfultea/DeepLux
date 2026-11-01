@@ -2231,6 +2231,12 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
                                 .arg(success ? "true" : "false")
                                 .arg(elapsedMs),
                             "Run");
+    // design §13 #3（t26 F2）：gui 亲和模块单次执行超过 100ms 时告警，
+    // 提示按审计流程将该模块迁移到 worker（不阻断执行，仅让现场可定位）。
+    if (affinity == ExecutionAffinity::Gui && elapsedMs > 100) {
+        Logger::instance().warning(
+            QStringLiteral("gui 模块 %1 耗时 %2 ms，建议审计迁移到 worker").arg(moduleName).arg(elapsedMs), "Run");
+    }
 
     // 如果执行成功，将当前输出传递为下一个模块的输入
     if (success) {

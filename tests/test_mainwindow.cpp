@@ -17,12 +17,17 @@
 #include <QHeaderView>
 #include <QImage>
 #include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 #include <QLabel>
 #include <QLayout>
 #include <QLineEdit>
 #include <QLineF>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPainter>
+#include <QPen>
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
@@ -45,6 +50,7 @@
 #include <QTreeWidgetItemIterator>
 #include <QVector3D>
 #include <QtTest/QtTest>
+#include <atomic>
 #include <core/agent/AgentActor.h>
 #include <core/agent/AgentController.h>
 #include <core/base/ModuleBase.h>
@@ -264,6 +270,8 @@ private slots:
     void testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns();
     // B10：已审计 worker 流程（FindCircle 验收工程）运行期间 GUI 保持响应
     void testBackgroundExecutionKeepsUiResponsive();
+    // B10 Step1（t26 F2 / design §13 #3）：gui 亲和慢模块 >100ms 写迁移告警
+    void testSlowGuiModuleWarnsToAuditWorker();
     void testStepRunExecutesExactlyOneModulePerClick();
     void testCycleRunStopsWithoutExtraRound();
     void testCloseDeferredUntilRunningJobFinishes();
@@ -3716,10 +3724,12 @@ void TestMainWindow::testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns() {
     QCoreApplication::processEvents();
 }
 
-// B10 Step1：性能验收只覆盖已审计 worker 流程（至少 FindCircle）。
+// B10 Step1（t26 F1）：性能验收只覆盖已审计 worker 流程（至少 FindCircle）。
 // 载入验收工程 accept_findcircle.json（GrabImage→FindCircle，FindCircle 已标记 worker），
-// 点击运行后等待 findcircle 的 moduleStarted 屏障（QSemaphore，DirectConnection 在工作者
-// 线程释放），运行期间用 16ms QTimer 计数证明 GUI 事件循环未被阻塞；不使用 sleep 构造顺序。
+// 串联复制 FindCircle 构造 >500ms 计算窗口；点击运行后等待首个 findcircle 的 moduleStarted
+// （DirectConnection 在工作者线程释放 QSemaphore 并记录线程 id）；**屏障之后**才启动 16ms
+// ticker，在 job 仍 Running 的窗口内断言 tick 持续增长、停止按钮可点击、GUI 槽可执行；
+// 不使用 sleep 构造执行顺序。
 void TestMainWindow::testBackgroundExecutionKeepsUiResponsive() {
     QTemporaryDir appDir;
     QVERIFY(appDir.isValid());
@@ -3729,18 +3739,61 @@ void TestMainWindow::testBackgroundExecutionKeepsUiResponsive() {
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("FindCircle")));
 
     // 验收工程以 @ACCEPTANCE_DATA@ 占位；替换为源码树内的验收数据目录后落盘为 .dproj。
+    // >500ms 计算窗口（design §13 #2）：本机 640×480 验收图默认参数下 FindCircle 仅约
+    // 10ms 量级；这里用同一验收几何（圆心/半径按 6× 放大）生成更大的合成验收输入，并
+    // 放大 Hough 半径搜索范围，以真实计算成本构造 >500ms 的 worker 执行窗口。
     const QString sourceRoot = DeepLuxTest::testSourceDir();
     const QString acceptanceDataDir = QDir(sourceRoot).filePath(QStringLiteral("tests/acceptance/data"));
     const QString projectPath = QDir(appDir.path()).filePath(QStringLiteral("accept_findcircle.dproj"));
+    constexpr int kScale = 6;
+    const QString scaledImagePath = QDir(appDir.path()).filePath(QStringLiteral("circle_acceptance_scaled.png"));
     {
+        QImage large(640 * kScale, 480 * kScale, QImage::Format_RGB32);
+        large.fill(Qt::black);
+        QPainter painter(&large);
+        painter.setRenderHint(QPainter::Antialiasing, false); // 保持边缘清晰，便于 Hough 稳定检测
+        painter.setPen(QPen(Qt::white, 2 * kScale));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(QPointF(320.0 * kScale, 240.0 * kScale), 100.0 * kScale, 100.0 * kScale);
+        painter.end();
+        QVERIFY2(large.save(scaledImagePath, "PNG"), qPrintable(scaledImagePath));
+
         QFile source(QDir(sourceRoot).filePath(QStringLiteral("tests/acceptance/projects/accept_findcircle.json")));
         QVERIFY2(source.open(QIODevice::ReadOnly), qPrintable(source.fileName()));
         QByteArray content = source.readAll();
         QVERIFY(content.contains("@ACCEPTANCE_DATA@"));
         content.replace("@ACCEPTANCE_DATA@", acceptanceDataDir.toUtf8());
+        QJsonParseError parseError{};
+        const QJsonDocument document = QJsonDocument::fromJson(content, &parseError);
+        QVERIFY2(parseError.error == QJsonParseError::NoError && document.isObject(),
+                 qPrintable(parseError.errorString()));
+        QJsonObject root = document.object();
+        QJsonArray modules = root.value(QStringLiteral("modules")).toArray();
+        bool patchedGrab = false;
+        bool patchedFindCircle = false;
+        for (int i = 0; i < modules.size(); ++i) {
+            QJsonObject module = modules.at(i).toObject();
+            const QString moduleId = module.value(QStringLiteral("moduleId")).toString();
+            if (moduleId == QStringLiteral("GrabImage")) {
+                QJsonObject params = module.value(QStringLiteral("params")).toObject();
+                params[QStringLiteral("filePath")] = scaledImagePath;
+                module[QStringLiteral("params")] = params;
+                patchedGrab = true;
+            } else if (moduleId == QStringLiteral("FindCircle")) {
+                QJsonObject params = module.value(QStringLiteral("params")).toObject();
+                params[QStringLiteral("minRadius")] = 50.0 * kScale;
+                params[QStringLiteral("maxRadius")] = 300.0 * kScale; // 扩大半径搜索以构造计算窗口
+                module[QStringLiteral("params")] = params;
+                patchedFindCircle = true;
+            }
+            modules[i] = module;
+        }
+        QVERIFY2(patchedGrab && patchedFindCircle, "acceptance project must contain GrabImage and FindCircle");
+        root[QStringLiteral("modules")] = modules;
         QFile target(projectPath);
         QVERIFY2(target.open(QIODevice::WriteOnly | QIODevice::Truncate), qPrintable(projectPath));
-        QCOMPARE(target.write(content), content.size());
+        const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Indented);
+        QCOMPARE(target.write(payload), payload.size());
     }
 
     MainWindow window;
@@ -3760,55 +3813,146 @@ void TestMainWindow::testBackgroundExecutionKeepsUiResponsive() {
     RunEngine& engine = RunEngine::instance();
     FlowExecutionService& service = FlowExecutionService::instance();
     QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QToolButton* stopButton = window.findChild<QToolButton*>(QStringLiteral("FlowStopButton"));
     QVERIFY(runButton != nullptr);
+    QVERIFY(stopButton != nullptr);
     QVERIFY(!engine.isBusy());
 
-    // 确定性屏障：FindCircle 进入执行时由工作者线程释放（DirectConnection，不经过 GUI）。
+    // 确定性屏障：首个 findcircle 进入执行时由工作者线程释放（DirectConnection，不经过 GUI）。
     QSemaphore findCircleEntered;
+    std::atomic<Qt::HANDLE> findCircleThread{nullptr};
+    std::atomic_bool firstEntryRecorded{false};
     const QMetaObject::Connection enteredConn = QObject::connect(
         &engine, &RunEngine::moduleStarted, &window,
-        [&findCircleEntered](const QString& moduleName) {
-            if (moduleName == QStringLiteral("findcircle"))
+        [&findCircleEntered, &findCircleThread, &firstEntryRecorded](const QString& moduleName) {
+            if (!firstEntryRecorded.load() && moduleName.startsWith(QStringLiteral("findcircle"))) {
+                findCircleThread.store(QThread::currentThreadId());
+                firstEntryRecorded.store(true);
                 findCircleEntered.release();
+            }
         },
         Qt::DirectConnection);
 
-    // 16ms 定时器：运行期间 GUI 事件循环若被阻塞，tick 数不会增长。
+    // 16ms ticker 在屏障之后才启动（t26 F1）：避免 QTRY 的 processEvents 把 ticker 推起来
+    // 让“真阻塞”也能蒙混过关。
     int ticks = 0;
     QTimer ticker;
     ticker.setInterval(16);
     const QMetaObject::Connection tickConn =
         QObject::connect(&ticker, &QTimer::timeout, &window, [&ticks]() { ++ticks; });
-    ticker.start();
 
     QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
     QTest::mouseClick(runButton, Qt::LeftButton);
 
     QTRY_VERIFY_WITH_TIMEOUT(findCircleEntered.available() > 0, 15000);
-    QTRY_VERIFY_WITH_TIMEOUT(ticks > 0, 5000); // 16ms 定时器在 worker 执行窗口内触发
+    QVERIFY2(findCircleThread.load() != QThread::currentThreadId(),
+             "FindCircle must execute on the FlowExecutionService worker thread");
+    QCOMPARE(service.state(), FlowExecutionService::State::Running);
+    QVERIFY2(stopButton->isEnabled(), "stop button must stay clickable during a worker flow");
+
+    const int ticksAtBarrier = ticks;
+    ticker.start();
+    // job 仍 Running 的窗口内 tick 必须持续增长（GUI 事件循环未被 worker 阻塞）。
+    QTRY_VERIFY_WITH_TIMEOUT(ticks > ticksAtBarrier, 5000);
+    QVERIFY2(service.state() == FlowExecutionService::State::Running,
+             "first tick growth must be observed while the job is still running");
+    QTRY_VERIFY_WITH_TIMEOUT(ticks > ticksAtBarrier + 2, 5000);
+    QVERIFY2(service.state() == FlowExecutionService::State::Running,
+             "sustained tick growth must be observed while the job is still running");
+    // GUI 槽可执行：投递到 GUI 线程的 queued 调用在 job 运行期间被处理。
+    std::atomic_bool slotExecuted{false};
+    QMetaObject::invokeMethod(&window, [&slotExecuted]() { slotExecuted.store(true); }, Qt::QueuedConnection);
+    QTRY_VERIFY_WITH_TIMEOUT(slotExecuted.load(), 2000);
+
+    // >500ms 计算窗口（design §13 #2）：从屏障到 jobFinished 的实际耗时即 worker 计算窗口；
+    // 期间 16ms tick 必须持续增长（GUI 事件循环未被阻塞）。
+    QElapsedTimer barrierTimer;
+    barrierTimer.start();
     QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 30000);
     ticker.stop();
     QObject::disconnect(tickConn);
+    const qint64 barrierToFinishMs = barrierTimer.elapsed();
 
     QCOMPARE(finishedSpy.first().at(1).toBool(), false); // 正常完成，不是被停止
     QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
     QCOMPARE(service.state(), FlowExecutionService::State::Idle);
     QTRY_COMPARE(runButton->text(), QStringLiteral("运行"));
 
-    // 最终结果正确（验收期望：center≈320,240，radius≈100，容差 3px）。
+    // 最终结果正确（6× 合成验收输入：center≈1920,1440，radius≈600，容差 18px）。
     const ImageData output = engine.moduleOutput(QStringLiteral("findcircle"));
     QVERIFY2(output.isValid(), "FindCircle produced no output");
     QVERIFY2(output.data(QStringLiteral("circle")).canConvert<Circle2D>(), "FindCircle must emit typed Circle2D");
     const Circle2D circle = output.data(QStringLiteral("circle")).value<Circle2D>();
-    QVERIFY2(qAbs(circle.centerX - 320.0) <= 3.0, qPrintable(QStringLiteral("circle centerX=%1").arg(circle.centerX)));
-    QVERIFY2(qAbs(circle.centerY - 240.0) <= 3.0, qPrintable(QStringLiteral("circle centerY=%1").arg(circle.centerY)));
-    QVERIFY2(qAbs(circle.radius - 100.0) <= 3.0, qPrintable(QStringLiteral("circle radius=%1").arg(circle.radius)));
-    QVERIFY2(ticks > 0, "GUI 16ms timer must tick while the audited worker flow runs");
+    const double expectedCenterX = 320.0 * kScale;
+    const double expectedCenterY = 240.0 * kScale;
+    const double expectedRadius = 100.0 * kScale;
+    const double tolerance = 3.0 * kScale;
+    QVERIFY2(qAbs(circle.centerX - expectedCenterX) <= tolerance,
+             qPrintable(QStringLiteral("circle centerX=%1 expected=%2").arg(circle.centerX).arg(expectedCenterX)));
+    QVERIFY2(qAbs(circle.centerY - expectedCenterY) <= tolerance,
+             qPrintable(QStringLiteral("circle centerY=%1 expected=%2").arg(circle.centerY).arg(expectedCenterY)));
+    QVERIFY2(qAbs(circle.radius - expectedRadius) <= tolerance,
+             qPrintable(QStringLiteral("circle radius=%1 expected=%2").arg(circle.radius).arg(expectedRadius)));
+    QVERIFY2(ticks > ticksAtBarrier,
+             qPrintable(QStringLiteral("GUI ticks must grow after the barrier, ticks=%1").arg(ticks - ticksAtBarrier)));
+    qInfo().noquote() << QStringLiteral("responsiveness evidence: ticksAtBarrier=%1 ticks=%2 "
+                                        "barrierToFinish=%3ms")
+                             .arg(ticksAtBarrier)
+                             .arg(ticks)
+                             .arg(barrierToFinishMs);
 
     QObject::disconnect(enteredConn);
     ProjectManager::instance().closeProject();
     QCoreApplication::processEvents();
     QVERIFY(waitForServiceIdle());
+}
+
+// B10 Step1（t26 F2 / design §13 #3）：gui 亲和模块单次耗时超过 100ms 时应写迁移告警
+// （模块名 + 耗时 + 建议审计迁移到 worker），供现场定位必须 GUI 亲和的长任务。
+void TestMainWindow::testSlowGuiModuleWarnsToAuditWorker() {
+    MainWindow window;
+    window.resize(800, 600);
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance slow;
+    slow.id = QStringLiteral("slow_gui");
+    slow.moduleId = QStringLiteral("OutputProbe");
+    slow.name = QStringLiteral("慢 GUI 模块");
+    project->addModule(slow);
+
+    auto* probe = new MainWindowOutputProbeModule(slow.id);
+    probe->duringProcess = []() { QThread::msleep(150); }; // 超过 100ms 阈值
+    QVERIFY(probe->initialize());
+    window.registerFlowModule(slow.id, probe);
+    QCoreApplication::processEvents();
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+    Logger::instance().clearLogs();
+    QSignalSpy finishedSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 15000);
+    QVERIFY(waitForServiceIdle());
+    QCOMPARE(finishedSpy.first().at(1).toBool(), false);
+
+    bool migrationWarning = false;
+    QString warningMessage;
+    for (const LogEntry& entry : Logger::instance().logs(QStringLiteral("Run"))) {
+        if (entry.message.contains(QStringLiteral("建议审计迁移到 worker")) && entry.message.contains(slow.id)) {
+            migrationWarning = true;
+            warningMessage = entry.message;
+            break;
+        }
+    }
+    QVERIFY2(migrationWarning,
+             qPrintable(QStringLiteral("gui module slower than 100ms must emit migration warning; logs=%1")
+                            .arg(Logger::instance().logs(QStringLiteral("Run")).size())));
+    qInfo().noquote() << QStringLiteral("gui slow-module warning evidence: %1").arg(warningMessage);
+
+    RunEngine::instance().clearModules();
+    QCoreApplication::processEvents();
 }
 
 void TestMainWindow::testStepRunExecutesExactlyOneModulePerClick() {

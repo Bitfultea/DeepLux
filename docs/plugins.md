@@ -46,7 +46,7 @@ flowchart LR
 - 一致性冒烟未通过（需真实数据/工程参数）：SaveImage、3DPreProcessing、ColorRecognition、QRCode、MeasureCircle、MeasureGap、FitPlane、PointSurfaceDistance、N点标定、GapMeasure3D、FreeformSurface、SplitString、VarDefinePlugin、VarSetPlugin、Condition。
 - `DefectDetection`：本构建 `ENABLE_HYMSON3D=OFF`，插件未构建，无法执行一致性冒烟，保持 `gui`。
 - **StrFormatPlugin**（t21 复核移出 worker）：`process()` 在 worker 线程写全局 `GlobalVarManager` 并 `new VarModel`（QObject），GUI 侧 `GlobalVarView` 会读写并 `delete` 这些 QObject，且 `count()/isEmpty()` 为无锁读者——属 UI 绑定未拆分，保持 `gui`，与 QueueIn/QueueOut 按共享状态延后同类。
-- **Matching** 为 design §6.4 的补审项（plan B9 候选清单未列），经一致性冒烟通过后标记 `worker`。
+- **Matching** 为 design §6.3（审计与标记，第二处 6.3 编号）的补审项（plan B9 候选清单未列），经一致性冒烟通过后标记 `worker`。
 
 复跑一致性冒烟：
 

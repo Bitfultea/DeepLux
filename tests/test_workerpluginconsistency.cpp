@@ -38,7 +38,7 @@ using DeepLuxTest::PluginEntry;
 //    PluginManager/RunEngine 等）与未加锁的可变全局/静态状态，不能只查文件级 static 变量。
 namespace {
 
-/// B9 审计候选：只登记 plan B9 明确列出的插件（外加 design §6.3/§6.4 点名的 Matching）。
+/// B9 审计候选：只登记 plan B9 明确列出的插件（外加 design §6.3（审计与标记，第二处 6.3 编号）点名的 Matching）。
 struct Candidate {
     const char* dir;                 // 源码目录/CMake target 基名（TestPluginRegistry 查找键）
     const char* name;                // metadata.json 的 "name"
