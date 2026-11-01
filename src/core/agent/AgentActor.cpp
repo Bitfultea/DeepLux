@@ -20,12 +20,14 @@
 #include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSet>
+#include <QTimer>
 #include <QUndoCommand>
 #include <QUuid>
 #include <memory>
@@ -41,6 +43,32 @@ static void ensureAgentResources() {
 namespace DeepLux {
 
 namespace {
+
+// 后台执行（t13 观察）：在 GUI 线程用事件循环等待 Service job 真正收尾。
+// 不得用 QWaitCondition/waitForIdle 同步阻塞 GUI——worker 可能正在通过
+// BlockingQueuedConnection 等 GUI 线程执行 gui 亲和模块，同步等待会与它互等至超时。
+bool waitForServiceIdleViaEvents(FlowExecutionService& service, int timeoutMs) {
+    if (!service.isActive()) {
+        return true;
+    }
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    const QMetaObject::Connection finishedConn =
+        QObject::connect(&service, &FlowExecutionService::jobFinished, &loop, [&loop]() { loop.quit(); });
+    const QMetaObject::Connection failedConn =
+        QObject::connect(&service, &FlowExecutionService::jobFailed, &loop, [&loop]() { loop.quit(); });
+    timer.start(qMax(1, timeoutMs));
+    // 连接建立后重新检查：收尾可能发生在“isActive() 检查”和“连接建立”之间。
+    if (service.isActive()) {
+        loop.exec();
+    }
+    QObject::disconnect(finishedConn);
+    QObject::disconnect(failedConn);
+    return !service.isActive();
+}
+
 QString validationError(const QString& toolName, const QJsonObject& params) {
     ToolDefinition def = ToolSchema::instance().findTool(toolName);
     if (def.name.isEmpty())
@@ -1593,13 +1621,16 @@ AgentActor::RunWaitResult AgentActor::runAndWait(const QString& mode, int timeou
         // 后台执行（设计 §8.2）：引擎 runFinished 早于 Service job 收尾（endExternalJob），
         // 返回前等待 job 真正结束，保持 wait=true“返回即引擎空闲”的既有语义
         // （否则紧随其后的 get_node_runtime_outputs 等工具会读到 engine_busy）。
-        (void) FlowExecutionService::instance().waitForIdle(5000);
+        // t13：收尾确认同样走事件循环；此时 worker 只做 endExternalJob，等待通常瞬间完成。
+        (void) waitForServiceIdleViaEvents(FlowExecutionService::instance(), 5000);
     }
     if (outcome.timedOut || outcome.aborted) {
         // 超时/中止：优先 Service::stop()（job 级取消标志；无 Service job 时它内部回退引擎停止），
         // 并等待停止收尾，避免调用方紧接着读到忙状态。
+        // t13 观察：这里必须在 GUI 事件循环内等待 jobFinished——同步 waitForIdle 会阻塞 GUI，
+        // 而 worker 可能正阻塞在 BlockingQueuedConnection 等待 GUI 执行 gui 亲和模块（互等死锁）。
         FlowExecutionService::instance().stop();
-        (void) FlowExecutionService::instance().waitForIdle(5000);
+        (void) waitForServiceIdleViaEvents(FlowExecutionService::instance(), 5000);
     }
     return out;
 }
