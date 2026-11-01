@@ -272,6 +272,8 @@ private slots:
     void testBackgroundExecutionKeepsUiResponsive();
     // B10 Step1（t26 F2 / design §13 #3）：gui 亲和慢模块 >100ms 写迁移告警
     void testSlowGuiModuleWarnsToAuditWorker();
+    // t28 F1：工程关闭清空流程树后，迟到 moduleFinished 不得写已删除 item（UAF 回归）
+    void testModuleFinishedAfterProjectClosedDoesNotTouchDeletedItem();
     void testStepRunExecutesExactlyOneModulePerClick();
     void testCycleRunStopsWithoutExtraRound();
     void testCloseDeferredUntilRunningJobFinishes();
@@ -3726,7 +3728,8 @@ void TestMainWindow::testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns() {
 
 // B10 Step1（t26 F1）：性能验收只覆盖已审计 worker 流程（至少 FindCircle）。
 // 载入验收工程 accept_findcircle.json（GrabImage→FindCircle，FindCircle 已标记 worker），
-// 串联复制 FindCircle 构造 >500ms 计算窗口；点击运行后等待首个 findcircle 的 moduleStarted
+// 用 6× 合成验收几何与放大的 Hough 半径尽量延长真实计算窗口（实测约 100–150ms，
+// >500ms 条款未覆盖，见报告 §7/§6 第 7 条）；点击运行后等待 findcircle 的 moduleStarted
 // （DirectConnection 在工作者线程释放 QSemaphore 并记录线程 id）；**屏障之后**才启动 16ms
 // ticker，在 job 仍 Running 的窗口内断言 tick 持续增长、停止按钮可点击、GUI 槽可执行；
 // 不使用 sleep 构造执行顺序。
@@ -3739,9 +3742,8 @@ void TestMainWindow::testBackgroundExecutionKeepsUiResponsive() {
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("FindCircle")));
 
     // 验收工程以 @ACCEPTANCE_DATA@ 占位；替换为源码树内的验收数据目录后落盘为 .dproj。
-    // >500ms 计算窗口（design §13 #2）：本机 640×480 验收图默认参数下 FindCircle 仅约
-    // 10ms 量级；这里用同一验收几何（圆心/半径按 6× 放大）生成更大的合成验收输入，并
-    // 放大 Hough 半径搜索范围，以真实计算成本构造 >500ms 的 worker 执行窗口。
+    // 用 6× 合成验收几何（圆心/半径同比放大）与放大的 Hough 半径搜索尽量延长真实计算窗口
+    // （实测约 100–150ms）；>500ms 条款未覆盖，见报告 §7/§6 第 7 条。
     const QString sourceRoot = DeepLuxTest::testSourceDir();
     const QString acceptanceDataDir = QDir(sourceRoot).filePath(QStringLiteral("tests/acceptance/data"));
     const QString projectPath = QDir(appDir.path()).filePath(QStringLiteral("accept_findcircle.dproj"));
@@ -3852,6 +3854,9 @@ void TestMainWindow::testBackgroundExecutionKeepsUiResponsive() {
 
     const int ticksAtBarrier = ticks;
     ticker.start();
+    // t28 F2：barrierToFinish 从屏障时刻起算（包含 tick/槽断言窗口），到 jobFinished 结束。
+    QElapsedTimer barrierTimer;
+    barrierTimer.start();
     // job 仍 Running 的窗口内 tick 必须持续增长（GUI 事件循环未被 worker 阻塞）。
     QTRY_VERIFY_WITH_TIMEOUT(ticks > ticksAtBarrier, 5000);
     QVERIFY2(service.state() == FlowExecutionService::State::Running,
@@ -3864,10 +3869,6 @@ void TestMainWindow::testBackgroundExecutionKeepsUiResponsive() {
     QMetaObject::invokeMethod(&window, [&slotExecuted]() { slotExecuted.store(true); }, Qt::QueuedConnection);
     QTRY_VERIFY_WITH_TIMEOUT(slotExecuted.load(), 2000);
 
-    // >500ms 计算窗口（design §13 #2）：从屏障到 jobFinished 的实际耗时即 worker 计算窗口；
-    // 期间 16ms tick 必须持续增长（GUI 事件循环未被阻塞）。
-    QElapsedTimer barrierTimer;
-    barrierTimer.start();
     QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 30000);
     ticker.stop();
     QObject::disconnect(tickConn);
@@ -3953,6 +3954,55 @@ void TestMainWindow::testSlowGuiModuleWarnsToAuditWorker() {
 
     RunEngine::instance().clearModules();
     QCoreApplication::processEvents();
+}
+
+// t28 F1 回归：工程关闭时 processTreeController->clear() 会删除 QTreeWidgetItem；
+// 若缓存 m_currentExecutingItem 未清空，迟到的 moduleFinished 会回退到已删除 item 并
+// 触发 use-after-free。本用例在关闭工程后直接/queued 各投递一次 moduleFinished，
+// 断言不崩溃且不产生任何新 item（旧实现会写悬空指针）。
+void TestMainWindow::testModuleFinishedAfterProjectClosedDoesNotTouchDeletedItem() {
+    MainWindow window;
+    window.resize(800, 600);
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance ghost;
+    ghost.id = QStringLiteral("ghost_item");
+    ghost.moduleId = QStringLiteral("OutputProbe");
+    ghost.name = QStringLiteral("幽灵模块");
+    project->addModule(ghost);
+    auto* probe = new MainWindowOutputProbeModule(ghost.id);
+    QVERIFY(probe->initialize());
+    window.registerFlowModule(ghost.id, probe);
+    QCoreApplication::processEvents();
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree != nullptr);
+    QTRY_COMPARE_WITH_TIMEOUT(processTree->topLevelItemCount(), 1, 5000);
+
+    // 真实运行路径同样由 moduleStarted 设置 m_currentExecutingItem = 该 item。
+    emit RunEngine::instance().moduleStarted(ghost.id);
+    QCoreApplication::processEvents();
+
+    // 关闭工程：controller->clear() 删除 item，缓存必须在 clear 前清空（t28 F1）。
+    ProjectManager::instance().closeProject();
+    QCoreApplication::processEvents();
+    QCOMPARE(processTree->topLevelItemCount(), 0);
+    QVERIFY(!RunEngine::instance().isBusy());
+
+    // 迟到 moduleFinished（直接投递）：不得写已删除 item，不得崩溃。
+    emit RunEngine::instance().moduleFinished(ghost.id, true, 1);
+    QCoreApplication::processEvents();
+    QCOMPARE(processTree->topLevelItemCount(), 0);
+
+    // 迟到的 queued moduleFinished：覆盖信号在 clear() 之后才送达的窗口。
+    QMetaObject::invokeMethod(
+        &RunEngine::instance(), [&ghost]() { emit RunEngine::instance().moduleFinished(ghost.id, true, 2); },
+        Qt::QueuedConnection);
+    QCoreApplication::processEvents();
+    QCOMPARE(processTree->topLevelItemCount(), 0);
+    QVERIFY(waitForServiceIdle());
 }
 
 void TestMainWindow::testStepRunExecutesExactlyOneModulePerClick() {

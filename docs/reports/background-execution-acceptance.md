@@ -101,9 +101,11 @@ B10 回归期间 `test_mainwindow` 曾在 `-j4` 全量中出现一次失败（`t
 4. **审计规则以注释沉淀（非自动检查）**：t21 复核新增的“process() 不得创建/移交 QObject”“审计须扫描单例/全局状态”两条规则写在 `tests/test_workerpluginconsistency.cpp` 注释中，未实现自动静态检查；后续可考虑独立 lint/CI 规则。
 5. **StrFormatPlugin 限制（不进入 worker）**：`process()` 在 worker 写 `GlobalVarManager` 并 `new VarModel(QObject)`，GUI 侧 `GlobalVarView` 读写/删除这些 QObject 且 `count()/isEmpty()` 无锁。保持 `gui`，与 QueueIn/QueueOut 按共享状态延后同类；若需迁 worker，应按“process 只做格式化 + queued 写入 GUI”或“GlobalVarManager/VarModel 线程安全化（另立专项）”处理。
 6. **B10 回归发现并修复的测试竞态**：`test_mainwindow::testBreakpointPauseAndContinueFromRunButton` 原先在引擎断点命中后立即断言 Service 为 `Paused`；引擎先暂停、Service 工作线程随后才提交 `Paused`，存在短暂窗口（`-j4` 全量中偶发一次失败，实际读到 `Running`）。已改为等待 Service 状态到达 `Paused`（`QTRY_COMPARE_WITH_TIMEOUT`），随后 `ctest -j 4` 压力复跑 10/10 通过。该修复属测试等待方式的确定性修正，未改变产品行为。
-7. **性能基准边界**：本轮响应性验收使用合成 6× 验收几何输入与 offscreen 环境，FindCircle 已 `worker`；未在产线相机图像/硬件上做吞吐或端到端时延基准。
+7. **性能基准边界**：本轮响应性验收使用合成 6× 验收几何输入与 offscreen 环境，FindCircle 已 `worker`；未在产线相机图像/硬件上做吞吐或端到端时延基准。design §13 #2 的 **>500ms 单模块计算窗口未覆盖**（实测约 100–150ms，见 §7）。
 8. **design §13 #3 gui 慢模块告警已实现**：`RunEngine::executeModule` 在模块耗时测量后，若 `execution.affinity=gui` 且 `elapsed > 100ms`，写 `Logger` warning：`gui 模块 <name> 耗时 <elapsed> ms，建议审计迁移到 worker`（category `Run`，不阻断执行）。测试 `test_mainwindow::testSlowGuiModuleWarnsToAuditWorker` 用 150ms gui 亲和探针实测命中该日志（证据：`gui 模块 slow_gui 耗时 152 ms，建议审计迁移到 worker`）。
-9. **API/ABI 结论**：本轮无公共 API/ABI 变更。公开 API 变化清单：无新增/删除——`FlowExecutionService::waitForIdle` 在 t12 引入、t13 已移除（增删净零，当前代码不再暴露该同步等待 API）；其余 Service/RunEngine 公共入口与本轮交付基线一致。插件 ABI 版本保持 `DEEPLUX_MODULE_INTERFACE_VERSION = 2`，metadata 仅新增 `execution.affinity` 字段（缺省 `gui`，向后兼容）。
+9. **API/ABI 结论**：本分支公共 API 为增量新增，无删除/破坏性变更。公开 API 变化清单：新增 `FlowExecutionService`（含 start/step/continue/pause/stop/shutdown/state 等）与 `RunEngine` 的 `beginExternalJob`/`endExternalJob`/`runOnceForJob`/`stepOnceForJob`/`resumeForJob`/display 相关入口；`FlowExecutionService::waitForIdle` 于 t12（3ed2b2a）引入、t17（83a4911）移除（净零，当前不再暴露）。插件 ABI 版本仍为 `DEEPLUX_MODULE_INTERFACE_VERSION = 2`；metadata 仅新增 `execution.affinity` 字段（缺省 `gui`，向后兼容）。
+
+10. **t28 F1（high）MainWindow UAF 已修复**：`onProjectOpened`/`onProjectClosed` 在 `m_processTreeController->clear()` 前清空 `m_currentExecutingItem`；`moduleFinished` 处理器不再回退到缓存原始指针，`instanceItem(moduleName)` 为空时跳过 item UI 更新。新增确定性回归 `test_mainwindow::testModuleFinishedAfterProjectClosedDoesNotTouchDeletedItem`（运行→moduleStarted→closeProject→直接/queued 投递 moduleFinished，不崩溃且流程树保持 0 item）。
 
 ## 7. 未验证项（不得视为已通过）
 

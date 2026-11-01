@@ -503,11 +503,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
 
     connect(&RunEngine::instance(), &RunEngine::moduleFinished, this,
             [this](const QString& moduleName, bool success, int elapsedMs) {
+                // t28 F1：只按名称从当前 controller 查找；不得回退到 m_currentExecutingItem。
+                // 工程关闭/切换会 clear() 流程树并删除 item，迟到的 moduleFinished 若写原始
+                // 指针会触发 use-after-free。
                 QTreeWidgetItem* item =
                     m_processTreeController ? m_processTreeController->instanceItem(moduleName) : nullptr;
-                if (!item) {
-                    item = m_currentExecutingItem;
-                }
                 if (item) {
                     if (success) {
                         clearExecutionHighlight(item);
@@ -2175,6 +2175,8 @@ void MainWindow::onProjectOpened(Project* project) {
     clearDataSourceViewports();
 
     // 清空现有流程树
+    // t28 F1：流程树 clear() 会删除 QTreeWidgetItem；先清空缓存指针，避免迟到信号使用悬空指针。
+    m_currentExecutingItem = nullptr;
     m_processTreeController->clear();
     if (m_flowCanvas) {
         m_flowCanvas->loadFromProject(nullptr);
@@ -2310,6 +2312,8 @@ void MainWindow::onProjectClosed() {
     m_dirtyModuleIds.clear();
     clearDataSourceViewports();
 
+    // t28 F1：clear() 删除流程树 item；先清空执行项缓存，避免迟到 moduleFinished 写悬空指针。
+    m_currentExecutingItem = nullptr;
     m_processTreeController->clear();
     if (m_flowCanvas) {
         m_flowCanvas->loadFromProject(nullptr);
