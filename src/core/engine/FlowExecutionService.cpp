@@ -119,6 +119,8 @@ bool FlowExecutionService::continueRun() {
         return false;
     }
     m_resumeRequested = true;
+    // 防御（t11 F1）：恢复路径不得保留残留暂停请求，否则 Cycle 恢复后会立即再次进入 Paused。
+    m_pauseRequested = false;
     m_wake.wakeAll();
     return true;
 }
@@ -127,7 +129,11 @@ bool FlowExecutionService::pauseRun() {
     RunEngine::JobToken token;
     {
         QMutexLocker locker(&m_mutex);
-        if (state() != State::Running && currentJob() == JobType::None) {
+        // 设计 §4.1（t11 F1）：Paused/Stopping 不接受新的暂停请求（Paused 只接受
+        // continueRun()/stop()）；仅 Running，或启动窗口（Idle 且 currentJob()!=None）
+        // 接受，保证“启动即暂停”能力。
+        const bool startingWindow = state() == State::Idle && currentJob() != JobType::None;
+        if (state() != State::Running && !startingWindow) {
             return false;
         }
         m_pauseRequested = true;
@@ -161,10 +167,14 @@ void FlowExecutionService::stop() {
 
 bool FlowExecutionService::shutdown() {
     WorkerThread* thread = nullptr;
+    bool nonIdle = false;
     {
         QMutexLocker locker(&m_mutex);
-        if (state() != State::Idle || m_pendingJob != JobType::None || currentJob() != JobType::None) {
+        nonIdle = state() != State::Idle || m_pendingJob != JobType::None || currentJob() != JobType::None;
+        if (nonIdle) {
             // 非 Idle：只请求停止，不销毁仍可能访问 RunEngine 的工作线程（设计 §5.3 #7）。
+            // t11 F3：该分支无条件返回 false——不得在“检查后已变 Idle”时返回 true，
+            // 因为线程并未经过 wait()+delete（true 只在真实销毁路径返回）。
             m_stopRequested = true;
             m_pendingJob = JobType::None;
             m_wake.wakeAll();
@@ -175,15 +185,14 @@ bool FlowExecutionService::shutdown() {
             m_wake.wakeAll();
         }
     }
-    if (!thread) {
-        if (isActive()) {
-            RunEngine::instance().stop();
-            return false;
-        }
-        return true;
+    if (nonIdle) {
+        RunEngine::instance().stop();
+        return false;
     }
-    thread->wait();
-    delete thread;
+    if (thread) {
+        thread->wait();
+        delete thread;
+    }
     return true;
 }
 
@@ -289,12 +298,27 @@ void FlowExecutionService::runJob(JobType job) {
         commitState(State::Stopping, job);
     }
     commitState(State::Idle, JobType::None);
+    {
+        // 唤醒 waitForIdle()：job 已收尾（endExternalJob 已释放租约，引擎不再 busy）。
+        QMutexLocker locker(&m_mutex);
+        m_wake.wakeAll();
+    }
     if (failed) {
         Logger::instance().warning(QString("Flow job failed: %1").arg(error), "Service");
         emit jobFailed(job, error);
     } else {
         emit jobFinished(job, stopped);
     }
+}
+
+bool FlowExecutionService::waitForIdle(int timeoutMs) {
+    QMutexLocker locker(&m_mutex);
+    while (state() != State::Idle || m_pendingJob != JobType::None || currentJob() != JobType::None) {
+        if (!m_wake.wait(&m_mutex, qMax(0, timeoutMs))) {
+            return state() == State::Idle && m_pendingJob == JobType::None && currentJob() == JobType::None;
+        }
+    }
+    return true;
 }
 
 void FlowExecutionService::runSingleJob(const RunEngine::JobToken& token, bool& stopped, bool& failed, QString& error) {
@@ -430,6 +454,8 @@ FlowExecutionService::ResumeOutcome FlowExecutionService::waitForResumeOrStop(co
             return ResumeOutcome::Stopped;
         }
         m_resumeRequested = false;
+        // 防御（t11 F1）：恢复前清除任何残留暂停请求，保证恢复后不会立即再次暂停。
+        m_pauseRequested = false;
     }
 
     // 设计 §5.2：continueRun 提交一个 Resume 段；被暂停的执行段在此恢复。

@@ -353,6 +353,8 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
         QTRY_COMPARE_WITH_TIMEOUT(service.state(), FlowExecutionService::State::Idle, 5000);
         QVERIFY2(service.shutdown(), "shutdown must succeed when Idle");
+        // t11 F3：Idle 且无线程时重复 shutdown 仍为 true（幂等；true 只在真实销毁后返回）。
+        QVERIFY2(service.shutdown(), "shutdown must be idempotent when Idle");
 
         // 线程销毁后可按需重建。
         QSignalSpy nextSpy(&service, &FlowExecutionService::jobFinished);
@@ -462,13 +464,79 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(probe.runs.load() >= 2, 5000);
         QVERIFY(service.pauseRun());
         QTRY_COMPARE_WITH_TIMEOUT(service.state(), FlowExecutionService::State::Paused, 5000);
-        QVERIFY(runsAtPause.load() >= 2);
+        // t11 F2：state 的 QTRY 可能先于 Paused 信号的 DirectConnection 回调可见；
+        // 必须先在回调写入的屏障上等待，再做相等比较（不得读早于回调）。
+        QTRY_VERIFY_WITH_TIMEOUT(runsAtPause.load() >= 2, 5000);
         QCOMPARE(probe.runs.load(), runsAtPause.load()); // 暂停期间无新轮
         QVERIFY(service.continueRun());
         QTRY_VERIFY_WITH_TIMEOUT(probe.runs.load() > runsAtPause.load(), 5000);
         service.stop();
         QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
         QCOMPARE(finishedSpy.first().at(1).toBool(), true);
+        QCOMPARE(service.state(), FlowExecutionService::State::Idle);
+        disconnect(conn);
+    }
+
+    // t11 F1：Paused/Stopping 只接受 continueRun()/stop()，pauseRun 必须返回 false。
+    void testPauseRejectedWhenAlreadyPaused() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe;
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+
+        QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
+        QVERIFY(service.startCycle());
+        QTRY_VERIFY_WITH_TIMEOUT(probe.runs.load() >= 1, 5000);
+        QVERIFY(service.pauseRun());
+        QTRY_COMPARE_WITH_TIMEOUT(service.state(), FlowExecutionService::State::Paused, 5000);
+        QVERIFY2(!service.pauseRun(), "pauseRun must be rejected while Paused (only continueRun/stop)");
+        QVERIFY2(!service.pauseRun(), "repeated pauseRun must stay rejected while Paused");
+        service.stop(); // Paused 下只接受 continueRun()/stop()
+        QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+        QCOMPARE(service.state(), FlowExecutionService::State::Idle);
+        QVERIFY(!engine.isBusy());
+    }
+
+    // t11 F1：Cycle 暂停中重复 pauseRun 后 continueRun——不得因残留请求再次进入 Paused，
+    // 后续轮次必须正常执行。
+    void testRepeatedPauseWhilePausedDoesNotRePauseCycle() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe;
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+
+        std::atomic<int> runsAtPause{-1};
+        std::atomic<int> pausedCount{0};
+        const QMetaObject::Connection conn = connect(
+            &service, &FlowExecutionService::jobStateChanged, this,
+            [&runsAtPause, &pausedCount, &probe](FlowExecutionService::State state, FlowExecutionService::JobType) {
+                if (state == FlowExecutionService::State::Paused) {
+                    ++pausedCount;
+                    runsAtPause = probe.runs.load();
+                }
+            },
+            Qt::DirectConnection);
+        QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
+
+        QVERIFY(service.startCycle());
+        QTRY_VERIFY_WITH_TIMEOUT(probe.runs.load() >= 2, 5000);
+        QVERIFY(service.pauseRun());
+        QTRY_COMPARE_WITH_TIMEOUT(service.state(), FlowExecutionService::State::Paused, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(runsAtPause.load() >= 2, 5000);
+        // 暂停中重复 pauseRun 被拒绝，且不得登记残留请求。
+        QVERIFY(!service.pauseRun());
+        QVERIFY(!service.pauseRun());
+        QVERIFY(service.continueRun());
+        QTRY_VERIFY_WITH_TIMEOUT(probe.runs.load() > runsAtPause.load(), 5000); // 后续轮正常执行
+        QCOMPARE(pausedCount.load(), 1);                                        // 未再次进入 Paused
+        service.stop();
+        QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+        QCOMPARE(finishedSpy.first().at(1).toBool(), true);
+        QCOMPARE(pausedCount.load(), 1);
         QCOMPARE(service.state(), FlowExecutionService::State::Idle);
         disconnect(conn);
     }

@@ -1589,9 +1589,17 @@ AgentActor::RunWaitResult AgentActor::runAndWait(const QString& mode, int timeou
         out.error = outcome.result.errorMessage;
     out.totalRuns = engine.totalRuns();
     out.successRuns = engine.successRuns();
+    if (outcome.finished) {
+        // 后台执行（设计 §8.2）：引擎 runFinished 早于 Service job 收尾（endExternalJob），
+        // 返回前等待 job 真正结束，保持 wait=true“返回即引擎空闲”的既有语义
+        // （否则紧随其后的 get_node_runtime_outputs 等工具会读到 engine_busy）。
+        (void) FlowExecutionService::instance().waitForIdle(5000);
+    }
     if (outcome.timedOut || outcome.aborted) {
-        // 超时/中止：优先 Service::stop()（job 级取消标志；无 Service job 时它内部回退引擎停止）。
+        // 超时/中止：优先 Service::stop()（job 级取消标志；无 Service job 时它内部回退引擎停止），
+        // 并等待停止收尾，避免调用方紧接着读到忙状态。
         FlowExecutionService::instance().stop();
+        (void) FlowExecutionService::instance().waitForIdle(5000);
     }
     return out;
 }

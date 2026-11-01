@@ -1299,6 +1299,26 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
     }
 
+    // t11 F4：真实取消端到端——run_flow(wait=true) 等待中由定时器触发 abortRunningTool，
+    // 返回 cancelled 且服务回 Idle、引擎不再 busy（不再只覆盖注入式 waiter 分支）。
+    void testAbortRunningToolCancelsWaitedRun() {
+        AgentActor actor;
+        BlockingAgentModule blocking(3000);
+        QVERIFY(blocking.initialize());
+        RunEngine::instance().addModule(&blocking);
+        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
+                                                                ExecutionAffinity::Worker);
+
+        // 验收建议的定时器触发路径；等待本身由 AgentRunWaiter 的事件循环与信号屏障驱动。
+        QTimer::singleShot(100, this, [&actor]() { actor.abortRunningTool(); });
+        const QJsonObject run =
+            actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", true}, {"timeoutMs", 30000}});
+        QCOMPARE(run.value("code").toString(), QStringLiteral("cancelled"));
+        QCOMPARE(run.value("success").toBool(), false);
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
+    }
+
     // 兼容语义：cycle 立即 returned started 且 wait 说明保留；后台驱动由 Service 负责。
     void testRunFlowCycleThroughService() {
         AgentActor actor;
