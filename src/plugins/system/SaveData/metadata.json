@@ -44,8 +44,7 @@
     },
     "execution": {
         "threadSafe": false,
-        "blocking": true
-    ,
+        "blocking": true,
         "affinity": "worker"
     }
 }

@@ -31,6 +31,11 @@
 using namespace DeepLux;
 using DeepLuxTest::PluginEntry;
 
+// B9 审计规则（t21 F1 复盘，防止同类漏审）：
+// 1) process()（及其直接调用链）不得创建 QObject（如 VarModel），也不得把 QObject 移交/删除
+//    到 GUI 线程；跨线程 QObject 亲和性违反 Qt 规则，输出一致性冒烟不能替代该检查。
+// 2) 审计必须扫描 process() 及直接调用链中的单例/全局状态（GlobalVarManager/VarModel/
+//    PluginManager/RunEngine 等）与未加锁的可变全局/静态状态，不能只查文件级 static 变量。
 namespace {
 
 /// B9 审计候选：只登记 plan B9 明确列出的插件（外加 design §6.3/§6.4 点名的 Matching）。
@@ -80,7 +85,10 @@ const QVector<Candidate>& candidates() {
         // B9C：变量/逻辑/系统（Delay/Parallel/QueueIn/QueueOut/TableOutPut 按 plan 排除，保持 gui）
         {"CreateString", "CreateString", "variable", true},
         {"SplitString", "SplitString", "variable", false},
-        {"StrFormatPlugin", "StrFormatPlugin", "variable", true},
+        // t21 F1：process() 在 worker 线程写 GlobalVarManager 并 new VarModel(QObject)，
+        // GUI 侧 GlobalVarView 读写/delete 这些 QObject 且 count/isEmpty 无锁读者；
+        // UI 绑定未拆分 → 保持 gui（与 QueueIn/QueueOut 同类延后）。
+        {"StrFormatPlugin", "StrFormatPlugin", "variable", false},
         {"VarDefinePlugin", "VarDefinePlugin", "variable", false},
         {"VarSetPlugin", "VarSetPlugin", "variable", false},
         {"MathPlugin", "MathPlugin", "variable", true},
