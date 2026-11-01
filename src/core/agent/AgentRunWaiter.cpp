@@ -1,5 +1,7 @@
 #include "AgentRunWaiter.h"
 
+#include "../engine/FlowExecutionService.h"
+
 #include <QCoreApplication>
 #include <QDebug>
 #include <QEventLoop>
@@ -81,6 +83,10 @@ AgentRunWaiter::Outcome AgentRunWaiter::waitForRun(RunEngine& engine, int timeou
             m_lastReason = QStringLiteral("reentrant");
         else if (outcome.pausedAtBreakpoint)
             m_lastReason = QStringLiteral("breakpoint");
+        else if (outcome.pausedByUser)
+            m_lastReason = QStringLiteral("paused");
+        else if (outcome.startFailed)
+            m_lastReason = QStringLiteral("start_failed");
         else if (outcome.rejectedStart)
             m_lastReason = QStringLiteral("rejected");
         else if (outcome.finished)
@@ -125,6 +131,9 @@ AgentRunWaiter::Outcome AgentRunWaiter::waitForRun(RunEngine& engine, int timeou
     m_timedOut = false;
     m_finished = false;
     m_pausedAtBreakpoint = false;
+    m_pausedByUser = false;
+    m_startFailed = false;
+    m_startError.clear();
     m_result = RunResult{};
     m_failedModule.clear();
     m_moduleFailures = 0;
@@ -152,6 +161,47 @@ AgentRunWaiter::Outcome AgentRunWaiter::waitForRun(RunEngine& engine, int timeou
             quitLoop();
         });
 
+    // 后台执行（设计 §8.2）：job 由 FlowExecutionService 驱动时补充监听——
+    // jobFailed（引擎拒绝启动，不再有 runFinished）、jobFinished(Single)（无 runFinished 的
+    // 兜底收尾）、pauseHit(User)（用户暂停同样结束等待）。全部 Auto/Queued 投递到 GUI 线程。
+    // 用 job 序号过滤上一次 job 尚在队列中的信号，避免误认本次等待已完成。
+    FlowExecutionService& service = FlowExecutionService::instance();
+    quint64 expectedSerial = 0;
+    const QMetaObject::Connection serviceFinishedConn =
+        connect(&service, &FlowExecutionService::jobFinished, this,
+                [this, &expectedSerial, &service](FlowExecutionService::JobType job, bool stopped) {
+                    Q_UNUSED(stopped)
+                    if (job != FlowExecutionService::JobType::Single || !m_active || expectedSerial == 0 ||
+                        service.lastFinishedJobSerial() != expectedSerial) {
+                        return;
+                    }
+                    if (!m_finished) {
+                        // 没有 runFinished 的收尾（启动窗口内被停止等）：按失败运行处理。
+                        m_finished = true;
+                    }
+                    quitLoop();
+                });
+    const QMetaObject::Connection serviceFailedConn =
+        connect(&service, &FlowExecutionService::jobFailed, this,
+                [this, &expectedSerial, &service](FlowExecutionService::JobType job, const QString& error) {
+                    if (job != FlowExecutionService::JobType::Single || !m_active || expectedSerial == 0 ||
+                        service.lastFailedJobSerial() != expectedSerial) {
+                        return;
+                    }
+                    m_startFailed = true;
+                    m_startError = error;
+                    quitLoop();
+                });
+    const QMetaObject::Connection userPauseConn =
+        connect(&engine, &RunEngine::pauseHit, this, [this](const QString& moduleId, PauseReason reason) {
+            Q_UNUSED(moduleId)
+            if (reason != PauseReason::User || !m_active) {
+                return;
+            }
+            m_pausedByUser = true;
+            quitLoop();
+        });
+
     // 先连接、先装事件循环与超时，再启动运行：
     // 若 runFinished 在 start() 内/紧随其后同步到达，m_finished 已置位，exec() 前会跳过等待，
     // 不会出现"quit 已发生但事件循环还没启动 → 永久挂到超时"的丢失信号竞态。
@@ -167,25 +217,37 @@ AgentRunWaiter::Outcome AgentRunWaiter::waitForRun(RunEngine& engine, int timeou
         disconnect(finishedConn);
         disconnect(moduleConn);
         disconnect(breakpointConn);
+        disconnect(serviceFinishedConn);
+        disconnect(serviceFailedConn);
+        disconnect(userPauseConn);
         m_active = false;
         outcome.rejectedStart = true;
         m_lastReason = QStringLiteral("rejected");
         return outcome;
     }
 
-    if (!m_finished && !m_aborted && !m_pausedAtBreakpoint && !m_timedOut)
+    // 本次等待对应的 job 序号：仅接受该序号 job 的完成/失败信号（排队中的旧信号被忽略）。
+    expectedSerial = service.currentJobSerial();
+
+    if (!m_finished && !m_aborted && !m_pausedAtBreakpoint && !m_pausedByUser && !m_startFailed && !m_timedOut)
         loop.exec();
     m_loop = nullptr;
 
     disconnect(finishedConn);
     disconnect(moduleConn);
     disconnect(breakpointConn);
+    disconnect(serviceFinishedConn);
+    disconnect(serviceFailedConn);
+    disconnect(userPauseConn);
 
     m_active = false;
     outcome.finished = m_finished;
     outcome.timedOut = m_timedOut;
     outcome.aborted = m_aborted;
     outcome.pausedAtBreakpoint = m_pausedAtBreakpoint;
+    outcome.pausedByUser = m_pausedByUser;
+    outcome.startFailed = m_startFailed;
+    outcome.startError = m_startError;
     outcome.result = m_result;
     outcome.failedModule = m_failedModule;
     outcome.moduleFailures = m_moduleFailures;
@@ -196,6 +258,10 @@ AgentRunWaiter::Outcome AgentRunWaiter::waitForRun(RunEngine& engine, int timeou
         m_lastReason = QStringLiteral("aborted");
     else if (outcome.pausedAtBreakpoint)
         m_lastReason = QStringLiteral("breakpoint");
+    else if (outcome.pausedByUser)
+        m_lastReason = QStringLiteral("paused");
+    else if (outcome.startFailed)
+        m_lastReason = QStringLiteral("start_failed");
     else if (outcome.finished)
         m_lastReason = QStringLiteral("finished");
     return outcome;

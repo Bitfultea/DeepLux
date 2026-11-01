@@ -18,20 +18,24 @@ namespace DeepLux {
  * 只负责"等待"，不拥有运行、不修改 Agent 状态：
  * - 先连接 runFinished/moduleFinished/breakpointHit，再调用 start()，消除"运行在连接建立前
  *   就结束"的丢失信号竞态；
- * - 超时/中止/断点均以事件循环退出返回，绝不在内部调用 RunEngine::stop()（由调用方决定）；
- * - 同一线程重入或非 GUI 线程调用会被拒绝，避免嵌套等待/跨线程事件循环。
+ * - 后台执行（设计 §8.2）：同时监听 FlowExecutionService 的 jobFinished/jobFailed 与
+ *   pauseHit(User)，保证 job 启动失败或用户暂停时等待不会挂到超时；
+ * - 超时/中止/断点/用户暂停均以事件循环退出返回，绝不在内部调用 stop()（由调用方决定）。
  */
 class DEEPLUX_API AgentRunWaiter : public QObject {
     Q_OBJECT
 
 public:
     struct Outcome {
-        bool finished = false;          // runFinished 到达
+        bool finished = false;          // runFinished 到达（或 Service jobFinished 收尾）
         bool timedOut = false;          // 等待超时
         bool aborted = false;           // 被 abort() 打断
         bool reentrantRejected = false; // 同线程重入 / 非 GUI 线程
-        bool rejectedStart = false;     // start() 返回 false（引擎忙）
+        bool rejectedStart = false;     // start() 返回 false（服务/引擎忙）
         bool pausedAtBreakpoint = false;
+        bool pausedByUser = false; // 用户暂停（Service pause_flow）
+        bool startFailed = false;  // Service jobFailed（引擎拒绝启动）
+        QString startError;
         RunResult result{};
         QString failedModule; // 等待期间首个 moduleFinished(success=false)
         int moduleFailures = 0;
@@ -73,6 +77,9 @@ private:
     bool m_timedOut = false;
     bool m_finished = false;
     bool m_pausedAtBreakpoint = false;
+    bool m_pausedByUser = false;
+    bool m_startFailed = false;
+    QString m_startError;
     RunResult m_result{};
     QString m_failedModule;
     int m_moduleFailures = 0;

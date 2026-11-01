@@ -5,6 +5,7 @@
 #include "core/agent/ToolSchema.h"
 #include "core/base/ModuleBase.h"
 #include "core/common/Logger.h"
+#include "core/engine/FlowExecutionService.h"
 #include "core/engine/RunEngine.h"
 #include "core/model/Project.h"
 #include "manager/PluginManager.h"
@@ -66,6 +67,7 @@ public:
 protected:
     bool process(const ImageData& input, ImageData& output) override {
         m_entered.store(true, std::memory_order_release);
+        entered.release();
         QElapsedTimer timer;
         timer.start();
         while (!isCancellationRequested() && timer.elapsed() < m_sleepMs)
@@ -80,9 +82,34 @@ protected:
 
 public:
     std::atomic_bool m_entered{false};
+    QSemaphore entered; // 已进入执行的确定性屏障
 
 private:
     int m_sleepMs = 900;
+};
+
+/// 计数探针：验证后台服务驱动的 Cycle/暂停恢复中各模块执行次数与线程。
+class CountingAgentModule final : public ModuleBase {
+public:
+    explicit CountingAgentModule(const QString& name) {
+        m_moduleId = QStringLiteral("com.deeplux.test.agentcount.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+        setInstanceName(name);
+    }
+    std::atomic<int> runs{0};
+    std::atomic<Qt::HANDLE> executedOn{nullptr};
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        executedOn.store(QThread::currentThreadId());
+        ++runs;
+        output = input;
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
 };
 } // namespace
 
@@ -147,12 +174,18 @@ private slots:
     }
 
     void init() {
+        // 后台执行（设计 §8.2）：任意上一个用例遗留的 Service job 先停止并回到 Idle，
+        // 否则 clearModules 会被 job 租约拒绝。
+        FlowExecutionService::instance().stop();
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 5000);
         RunEngine::instance().stop();
         RunEngine::instance().clearModules();
         ProjectManager::instance().closeProject();
     }
 
     void cleanup() {
+        FlowExecutionService::instance().stop();
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 5000);
         RunEngine::instance().stop();
         RunEngine::instance().clearModules();
         ProjectManager::instance().closeProject();
@@ -913,6 +946,10 @@ private slots:
         BlockingAgentModule blocking(3000);
         QVERIFY(blocking.initialize());
         RunEngine::instance().addModule(&blocking);
+        // 后台执行（设计 §8.2）：服务工作者线程执行探针须 worker 亲和内联，
+        // 否则探针会阻塞 GUI 事件循环，等待超时无法按时触发。
+        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
+                                                                ExecutionAffinity::Worker);
 
         QElapsedTimer timer;
         timer.start();
@@ -1184,6 +1221,105 @@ private slots:
         const QJsonArray unsupported = result.value("unsupportedPorts").toArray();
         QVERIFY2(unsupported.contains(QJsonValue(QStringLiteral("rect"))),
                  qPrintable(QString::fromUtf8(QJsonDocument(unsupported).toJson(QJsonDocument::Compact))));
+    }
+
+    // 后台执行（设计 §8.2）：run_flow 的执行落在 FlowExecutionService 工作线程。
+    void testRunFlowUsesServiceWorkerThread() {
+        AgentActor actor;
+        CountingAgentModule probe(QStringLiteral("AgentWorker"));
+        QVERIFY(probe.initialize());
+        RunEngine::instance().addModule(&probe);
+        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("AgentWorker"),
+                                                                ExecutionAffinity::Worker);
+
+        const QJsonObject run = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", true}});
+        QVERIFY2(run.value("success").toBool(),
+                 qPrintable(QString::fromUtf8(QJsonDocument(run).toJson(QJsonDocument::Compact))));
+        QCOMPARE(probe.runs.load(), 1);
+        QVERIFY2(probe.executedOn.load() != QThread::currentThreadId(),
+                 "run_flow must execute on the service worker thread");
+        QVERIFY(!RunEngine::instance().isBusy());
+        QCOMPARE(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle);
+    }
+
+    // 后台执行（设计 §8.2）：pause_flow/resume_flow 走 Service，A→B→C 各执行一次。
+    void testPauseResumeFlowThroughService() {
+        AgentActor actor;
+        BlockingAgentModule blocking(800);
+        QVERIFY(blocking.initialize());
+        CountingAgentModule second(QStringLiteral("AgentB"));
+        CountingAgentModule third(QStringLiteral("AgentC"));
+        QVERIFY(second.initialize());
+        QVERIFY(third.initialize());
+        RunEngine& engine = RunEngine::instance();
+        engine.addModule(&blocking);
+        engine.addModule(&second);
+        engine.addModule(&third);
+        // 后台服务工作者线程执行探针须 worker 亲和内联（探针默认 gui）。
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("AgentB"), ExecutionAffinity::Worker);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("AgentC"), ExecutionAffinity::Worker);
+
+        const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
+        QCOMPARE(started.value("status").toString(), QStringLiteral("started"));
+        QVERIFY2(blocking.entered.tryAcquire(1, 5000), "blocking module must enter execution");
+        const QJsonObject paused = actor.executeTool("pause_flow", QJsonObject());
+        QCOMPARE(paused.value("status").toString(), QStringLiteral("paused"));
+        QVERIFY2(paused.value("applied").toBool(), "pause_flow must register the pause request");
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused, 5000);
+        QCOMPARE(second.runs.load(), 0);
+        QCOMPARE(third.runs.load(), 0);
+        // Paused 只接受 continueRun/stop：再次启动必须被拒绝。
+        QVERIFY(actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}}).contains("error"));
+
+        const QJsonObject resumed = actor.executeTool("resume_flow", QJsonObject());
+        QCOMPARE(resumed.value("status").toString(), QStringLiteral("resumed"));
+        QVERIFY2(resumed.value("applied").toBool(), "resume_flow must continue the paused job");
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 5000);
+        QCOMPARE(second.runs.load(), 1);
+        QCOMPARE(third.runs.load(), 1);
+        QVERIFY(!engine.isBusy());
+    }
+
+    // 后台执行（设计 §8.2）：stop_flow 对 Service job 走 Service::stop()，立即取消并回到 Idle。
+    void testStopFlowStopsServiceJob() {
+        AgentActor actor;
+        BlockingAgentModule blocking(3000);
+        QVERIFY(blocking.initialize());
+        RunEngine::instance().addModule(&blocking);
+        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
+                                                                ExecutionAffinity::Worker);
+
+        const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
+        QCOMPARE(started.value("status").toString(), QStringLiteral("started"));
+        QVERIFY(blocking.entered.tryAcquire(1, 5000));
+        const QJsonObject stopped = actor.executeTool("stop_flow", QJsonObject());
+        QCOMPARE(stopped.value("status").toString(), QStringLiteral("stopped"));
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
+    }
+
+    // 兼容语义：cycle 立即 returned started 且 wait 说明保留；后台驱动由 Service 负责。
+    void testRunFlowCycleThroughService() {
+        AgentActor actor;
+        CountingAgentModule probe(QStringLiteral("AgentCycle"));
+        QVERIFY(probe.initialize());
+        RunEngine::instance().addModule(&probe);
+        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("AgentCycle"),
+                                                                ExecutionAffinity::Worker);
+
+        const QJsonObject cycle = actor.executeTool("run_flow", QJsonObject{{"mode", "cycle"}});
+        QCOMPARE(cycle.value("status").toString(), QStringLiteral("started"));
+        QVERIFY(cycle.value("note").toString().contains(QStringLiteral("cycle mode ignores wait")));
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Running, 5000);
+        QCOMPARE(FlowExecutionService::instance().currentJob(), FlowExecutionService::JobType::Cycle);
+        QTRY_VERIFY_WITH_TIMEOUT(probe.runs.load() >= 2, 5000);
+        QVERIFY(RunEngine::instance().isBusy());
+
+        const QJsonObject stopped = actor.executeTool("stop_flow", QJsonObject());
+        QCOMPARE(stopped.value("status").toString(), QStringLiteral("stopped"));
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 5000);
+        QVERIFY(!RunEngine::instance().isBusy());
     }
 };
 

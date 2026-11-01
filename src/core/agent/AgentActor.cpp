@@ -6,6 +6,7 @@
 #include "ToolSchema.h"
 #include "base/ModuleBase.h"
 #include "common/Logger.h"
+#include "engine/FlowExecutionService.h"
 #include "engine/RunEngine.h"
 #include "io/LabelMeImporter.h"
 #include "manager/PluginManager.h"
@@ -528,8 +529,14 @@ void AgentActor::setViewportImageProvider(ViewportImageProvider provider) {
 void AgentActor::abortRunningTool() {
     if (m_runWaiter && m_runWaiter->isActive())
         m_runWaiter->abort();
-    if (RunEngine::instance().isBusy())
+    // 后台执行（设计 §8.2）：优先 Service::stop()（置 job 级取消标志，覆盖 Cycle 轮间）；
+    // 仅当没有 Service job 时才回退 RunEngine::stop()，不得绕过 job 级取消标志。
+    FlowExecutionService& service = FlowExecutionService::instance();
+    if (service.isActive()) {
+        service.stop();
+    } else if (RunEngine::instance().isBusy()) {
         RunEngine::instance().stop();
+    }
 }
 
 QJsonObject AgentActor::executeTool(const QString& toolName, const QJsonObject& params) {
@@ -919,9 +926,15 @@ QJsonObject AgentActor::runFlow(const QJsonObject& params) {
     const bool wait = params.value("wait").toBool(true);
     const int timeoutMs = qBound(1000, params.value("timeoutMs").toInt(60000), 300000);
     RunEngine& engine = RunEngine::instance();
+    FlowExecutionService& service = FlowExecutionService::instance();
 
     if (mode == QStringLiteral("cycle")) {
-        // 连续运行没有"完成"概念：保持旧启动语义，wait 只追加说明
+        // 连续运行没有"完成"概念：保持旧启动语义，wait 只追加说明（设计 §8.2）。
+        if (service.isActive()) {
+            return QJsonObject{{"success", false},
+                               {"code", QStringLiteral("already_running")},
+                               {"error", QStringLiteral("Flow is already running")}};
+        }
         Project* project = ProjectManager::instance().currentProject();
         if (project && !engine.isRunning()) {
             QString loadError;
@@ -936,7 +949,12 @@ QJsonObject AgentActor::runFlow(const QJsonObject& params) {
         }
         if (engine.modules().isEmpty())
             return QJsonObject{{"error", "No modules to run"}};
-        engine.start();
+        // Cycle 由服务后台驱动：立即返回 started，wait 被忽略，停止走 stop_flow/abort。
+        if (!service.startCycle()) {
+            return QJsonObject{{"success", false},
+                               {"code", QStringLiteral("already_running")},
+                               {"error", QStringLiteral("Flow is already running")}};
+        }
         QJsonObject result{{"status", "started"}, {"mode", mode}, {"async", true}};
         if (wait)
             result.insert(QStringLiteral("note"), QStringLiteral("cycle mode ignores wait"));
@@ -944,7 +962,10 @@ QJsonObject AgentActor::runFlow(const QJsonObject& params) {
     }
 
     if (!wait) {
-        // 旧语义逐字保留（提示词与既有测试依赖）
+        // 旧语义逐字保留（提示词与既有测试依赖）；执行由后台服务驱动。
+        if (service.isActive()) {
+            return QJsonObject{{"error", "Flow is already running"}, {"code", QStringLiteral("already_running")}};
+        }
         Project* project = ProjectManager::instance().currentProject();
         if (project && !engine.isRunning()) {
             QString loadError;
@@ -958,13 +979,13 @@ QJsonObject AgentActor::runFlow(const QJsonObject& params) {
         }
         if (engine.modules().isEmpty())
             return QJsonObject{{"error", "No modules to run"}};
-        if (!engine.runOnceAsync())
+        if (!service.startSingle())
             return QJsonObject{{"error", "Flow is already running"}, {"code", QStringLiteral("already_running")}};
         return QJsonObject{{"status", "started"}, {"mode", mode}, {"async", true}};
     }
 
-    // wait=true：等待真实执行完成（嵌套事件循环，不阻塞 GUI）
-    if (engine.isBusy())
+    // wait=true：通过后台服务启动 Single，等待服务/引擎完成信号（嵌套事件循环，不阻塞 GUI）。
+    if (service.isActive() || engine.isBusy())
         return QJsonObject{{"success", false},
                            {"code", QStringLiteral("already_running")},
                            {"error", QStringLiteral("Flow is already running")}};
@@ -1009,8 +1030,25 @@ QJsonObject AgentActor::runFlow(const QJsonObject& params) {
         return QJsonObject{{"success", false},
                            {"mode", mode},
                            {"code", QStringLiteral("paused_at_breakpoint")},
+                           {"pauseReason", QStringLiteral("breakpoint")},
                            {"error", QStringLiteral("Flow paused at a breakpoint; continue or stop it from the UI")},
                            {"waitTimedOut", false}};
+    }
+    if (run.pausedByUser) {
+        return QJsonObject{{"success", false},
+                           {"mode", mode},
+                           {"code", QStringLiteral("paused")},
+                           {"pauseReason", QStringLiteral("user")},
+                           {"error", QStringLiteral("Flow paused by user; continue or stop it")},
+                           {"waitTimedOut", false}};
+    }
+    if (run.startFailed) {
+        return QJsonObject{
+            {"success", false},
+            {"mode", mode},
+            {"code", QStringLiteral("start_failed")},
+            {"error", run.startError.isEmpty() ? QStringLiteral("Flow failed to start") : run.startError},
+            {"waitTimedOut", false}};
     }
     if (run.finished && run.ok) {
         return QJsonObject{{"success", true},
@@ -1033,7 +1071,14 @@ QJsonObject AgentActor::runFlow(const QJsonObject& params) {
 
 QJsonObject AgentActor::stopFlow(const QJsonObject& params) {
     Q_UNUSED(params);
-    RunEngine::instance().stop();
+    // 设计 §8.2：Service job 活跃时优先 Service::stop()（置 job 级取消标志，含 Cycle 轮间）；
+    // 无 Service job 时才保留 RunEngine::stop() 兼容路径。
+    FlowExecutionService& service = FlowExecutionService::instance();
+    if (service.isActive()) {
+        service.stop();
+    } else {
+        RunEngine::instance().stop();
+    }
     return QJsonObject{{"status", "stopped"}};
 }
 
@@ -1137,14 +1182,24 @@ QJsonObject AgentActor::openProject(const QJsonObject& params) {
 
 QJsonObject AgentActor::pauseFlow(const QJsonObject& params) {
     Q_UNUSED(params);
-    RunEngine::instance().pause();
-    return QJsonObject{{"status", "paused"}};
+    // 后台执行（设计 §8.2）：用户暂停走 Service 的模块边界协议；引擎空闲（Cycle 轮间/
+    // 启动窗口）时 pauseForJob 返回 false 属正常语义，Service 会在下一模块边界等待，
+    // applied=false 仅表示当前没有可暂停的 job。
+    const bool applied = FlowExecutionService::instance().pauseRun();
+    QJsonObject result{{"status", "paused"}, {"applied", applied}};
+    if (!applied)
+        result.insert(QStringLiteral("code"), QStringLiteral("not_running"));
+    return result;
 }
 
 QJsonObject AgentActor::resumeFlow(const QJsonObject& params) {
     Q_UNUSED(params);
-    RunEngine::instance().resume();
-    return QJsonObject{{"status", "resumed"}};
+    // 后台执行（设计 §8.2）：继续由 Service 走 Resume 段；断点与用户暂停都经 continueRun。
+    const bool applied = FlowExecutionService::instance().continueRun();
+    QJsonObject result{{"status", "resumed"}, {"applied", applied}};
+    if (!applied)
+        result.insert(QStringLiteral("code"), QStringLiteral("not_paused"));
+    return result;
 }
 
 QString AgentActor::userKnowledgeDir() {
@@ -1514,13 +1569,17 @@ AgentActor::RunWaitResult AgentActor::runAndWait(const QString& mode, int timeou
         out.error = project ? QStringLiteral("No modules to run") : QStringLiteral("No project opened");
         return out;
     }
+    // 后台执行（设计 §8.2）：run_flow(wait=true) 通过 FlowExecutionService 启动 Single。
     const AgentRunWaiter::Outcome outcome =
-        m_runWaiter->waitForRun(engine, timeoutMs, [&engine]() { return engine.runOnceAsync(); });
+        m_runWaiter->waitForRun(engine, timeoutMs, []() { return FlowExecutionService::instance().startSingle(); });
     out.started = !outcome.rejectedStart && !outcome.reentrantRejected;
     out.finished = outcome.finished;
     out.timedOut = outcome.timedOut;
     out.aborted = outcome.aborted;
     out.pausedAtBreakpoint = outcome.pausedAtBreakpoint;
+    out.pausedByUser = outcome.pausedByUser;
+    out.startFailed = outcome.startFailed;
+    out.startError = outcome.startError;
     out.reentrant = outcome.reentrantRejected;
     out.rejectedStart = outcome.rejectedStart;
     out.failedModule = outcome.failedModule;
@@ -1530,8 +1589,10 @@ AgentActor::RunWaitResult AgentActor::runAndWait(const QString& mode, int timeou
         out.error = outcome.result.errorMessage;
     out.totalRuns = engine.totalRuns();
     out.successRuns = engine.successRuns();
-    if (outcome.timedOut || outcome.aborted)
-        engine.stop();
+    if (outcome.timedOut || outcome.aborted) {
+        // 超时/中止：优先 Service::stop()（job 级取消标志；无 Service job 时它内部回退引擎停止）。
+        FlowExecutionService::instance().stop();
+    }
     return out;
 }
 

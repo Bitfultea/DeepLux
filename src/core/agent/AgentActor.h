@@ -128,6 +128,9 @@ private:
         bool timedOut = false;
         bool aborted = false;
         bool pausedAtBreakpoint = false;
+        bool pausedByUser = false; // 后台服务用户暂停（设计 §8.2）
+        bool startFailed = false;  // 后台服务拒绝启动（jobFailed）
+        QString startError;
         bool reentrant = false;
         bool rejectedStart = false;
         bool ok = false;

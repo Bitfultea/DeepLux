@@ -64,6 +64,10 @@ RunEngine::RunEngine()
     : QObject(nullptr), m_cycleTimer(new QTimer(this)), m_cancellationToken(new CancellationToken(this)) {
     qRegisterMetaType<RunResult>("RunResult");
     qRegisterMetaType<RunResult>("DeepLux::RunResult");
+    // 后台执行（设计 §5.3）：PauseReason 在首次跨线程 queued 连接（Service/UI 的 pauseHit）
+    // 之前完成注册，兼容 Qt5.15 的非自动注册行为。
+    qRegisterMetaType<PauseReason>("PauseReason");
+    qRegisterMetaType<PauseReason>("DeepLux::PauseReason");
     // 后台执行（设计 §4.2）：进程内随机盐，使 job token 不可伪造。
     m_jobSalt = QRandomGenerator::global()->generate64();
     m_cycleTimer->setInterval(100);
