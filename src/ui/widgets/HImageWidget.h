@@ -35,7 +35,12 @@ public:
     explicit HImageWidget(QWidget* parent = nullptr);
     ~HImageWidget() override;
 
-    void setImage(const QImage& image);
+    /**
+     * @brief 设置显示图像
+     * @param preserveView true 表示后台/周期刷新：保留用户缩放、平移与 ROI/叠加，
+     *        不重新适配窗口；首次显示、控件 resize、用户显式“适配”、点击模块选择传 false。
+     */
+    void setImage(const QImage& image, bool preserveView = false);
     void clearImage();
     bool hasImage() const {
         return m_hasImage;

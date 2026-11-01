@@ -25,6 +25,7 @@ set(UI_SOURCES
     bridge/TerminalBridge.cpp
     process/BashProcess.cpp
     display/DisplayManager.cpp
+    display/ImageRefreshCoalescer.cpp
     display/IViewportContent.cpp
     display/Viewport2DContent.cpp
     display/3d/Viewport3DContent.cpp
@@ -74,6 +75,7 @@ set(UI_HEADERS
     process/BashProcess.h
     process/PtyImpl.h
     display/DisplayManager.h
+    display/ImageRefreshCoalescer.h
     display/IViewportContent.h
     display/Viewport2DContent.h
     display/3d/Viewport3DContent.h

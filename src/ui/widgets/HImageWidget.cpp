@@ -20,14 +20,19 @@ HImageWidget::HImageWidget(QWidget* parent) : QWidget(parent) {
 
 HImageWidget::~HImageWidget() {}
 
-void HImageWidget::setImage(const QImage& image) {
+void HImageWidget::setImage(const QImage& image, bool preserveView) {
+    const bool hadImage = m_hasImage;
     m_image = image;
     m_hasImage = !image.isNull();
 
     if (m_hasImage) {
         m_imageWidth = image.width();
         m_imageHeight = image.height();
-        fitToWindow();
+        // 设计 §7.4：后台/周期刷新保留 zoom/offset（不重置 ROI/叠加）；
+        // 首次显示、resize、显式适配与模块选择仍走 fit（preserveView=false）。
+        if (!preserveView || !hadImage) {
+            fitToWindow();
+        }
         emit imageLoaded(image);
     } else {
         m_imageWidth = 0;

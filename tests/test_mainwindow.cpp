@@ -225,6 +225,8 @@ private slots:
     void testCycleRunStopsWithoutExtraRound();
     void testCloseDeferredUntilRunningJobFinishes();
     void testStartHandshakeTimeoutLeavesNoPendingJob();
+    // B8.3：测量叠加只读帧内快照（设计 §7.3）
+    void testMeasurementOverlayReadsFrameSnapshotNotLiveOutput();
     void testCloseInspectorDoesNotAutoExpand();
     void testDeleteModuleClearsInspector();
     void testOldAdvancedConfigDialogStillUsable();
@@ -3898,6 +3900,104 @@ void TestMainWindow::testStartHandshakeTimeoutLeavesNoPendingJob() {
     RunEngine::instance().clearModules();
     project->removeModule(instance.id);
     QCoreApplication::processEvents();
+}
+
+void TestMainWindow::testMeasurementOverlayReadsFrameSnapshotNotLiveOutput() {
+    // 设计 §7.3：测量叠加只读 DisplayFrame.moduleDataSnapshot，禁止在渲染路径回读实时
+    // moduleOutput()。运行结束后清空引擎实时输出，叠加仍必须由帧内快照重建。
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(1100, 760);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("GrabImage")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    const QString imagePath = DeepLuxTest::testDataPath(QStringLiteral("circle_640x480.png"));
+    QVERIFY2(QFileInfo::exists(imagePath), qPrintable(imagePath));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance grab;
+    grab.id = QStringLiteral("snapshot_grab");
+    grab.moduleId = QStringLiteral("GrabImage");
+    grab.name = QStringLiteral("取图");
+    grab.params["grabSource"] = QStringLiteral("Path");
+    grab.params["filePath"] = imagePath;
+    project->addModule(grab);
+
+    ModuleInstance input;
+    input.id = QStringLiteral("snapshot_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("测量输入");
+    input.params["mode"] = QStringLiteral("point_pair");
+    input.params["point1"] = QJsonArray{420.0, 240.0};
+    input.params["point2"] = QJsonArray{320.0, 340.0};
+    project->addModule(input);
+
+    ModuleInstance dist;
+    dist.id = QStringLiteral("snapshot_dist");
+    dist.moduleId = QStringLiteral("DistancePP");
+    dist.name = QStringLiteral("点点距离");
+    project->addModule(dist);
+
+    ModuleConnection grabToInput;
+    grabToInput.fromModuleId = grab.id;
+    grabToInput.toModuleId = input.id;
+    grabToInput.fromPort = QStringLiteral("image");
+    grabToInput.toPort = QStringLiteral("image");
+    grabToInput.edgeType = QStringLiteral("data");
+    project->addConnection(grabToInput);
+    ModuleConnection point1ToDist;
+    point1ToDist.fromModuleId = input.id;
+    point1ToDist.toModuleId = dist.id;
+    point1ToDist.fromPort = QStringLiteral("point1");
+    point1ToDist.toPort = QStringLiteral("point1");
+    point1ToDist.edgeType = QStringLiteral("data");
+    project->addConnection(point1ToDist);
+    ModuleConnection point2ToDist = point1ToDist;
+    point2ToDist.fromPort = QStringLiteral("point2");
+    point2ToDist.toPort = QStringLiteral("point2");
+    project->addConnection(point2ToDist);
+    QCoreApplication::processEvents();
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+
+    bool runFinished = false;
+    const QMetaObject::Connection runConnection = connect(&RunEngine::instance(), &RunEngine::runFinished, &window,
+                                                          [&](const RunResult&) { runFinished = true; });
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_VERIFY(runFinished);
+    disconnect(runConnection);
+    QVERIFY(waitForServiceIdle());
+    QTRY_VERIFY(imageWidget->hasImage());
+    QTRY_VERIFY(!imageWidget->measurementLines().isEmpty());
+    const int linesBefore = imageWidget->measurementLines().size();
+    const QString labelBefore = imageWidget->measurementLines().first().label;
+    QVERIFY(!labelBefore.isEmpty());
+
+    // 运行结束：清空引擎实时模块输出。若叠加仍回读 moduleOutput()，叠加会立刻消失。
+    RunEngine::instance().clearOutputs();
+    QVERIFY(!RunEngine::instance().moduleOutput(dist.id).isValid());
+    window.selectModuleForCapture(dist.id);
+    QCoreApplication::processEvents();
+
+    QCOMPARE(imageWidget->measurementLines().size(), linesBefore);
+    QCOMPARE(imageWidget->measurementLines().first().label, labelBefore);
 }
 
 void TestMainWindow::testCloseInspectorDoesNotAutoExpand() {

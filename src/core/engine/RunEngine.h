@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../platform/Platform.h"
+#include "DisplayFrame.h"
 #include "ExecutionAffinity.h"
 #include "deeplux/ControlFlowType.h"
 #include "deeplux/DataContract.h"
@@ -262,6 +263,23 @@ public:
     PortValueMap nodePortOutputs(const QString& moduleName) const;
     qint64 lastFrameId() const;
 
+    // 后台执行（设计 §7.1/§7.5）：显示帧捕获开关。由 UI 在窗口可见时开启、不可见/最小化时
+    // 关闭；关闭时工作线程不做快照与合并调度（零额外开销）。
+    void setDisplayCaptureEnabled(bool enabled);
+    bool isDisplayCaptureEnabled() const {
+        return m_displayCaptureEnabled.load(std::memory_order_acquire);
+    }
+    // Service 在 job 启动时注入 jobId、结束时清空（设计 §7.1）；注入同时清空旧帧槽位，
+    // 旧 job 的迟到帧不会再从槽位被取走。
+    void setDisplayJobId(quint64 jobId);
+    void clearDisplayJobId();
+    quint64 displayJobId() const {
+        return m_displayJobId.load(std::memory_order_acquire);
+    }
+    // 每视口最新帧槽位（只保留最新一帧；读出的帧是深拷贝后的不可变快照）。
+    DisplayFrame latestDisplayFrame(const QString& viewportId = QStringLiteral("main")) const;
+    void clearLatestDisplayFrames();
+
     // L2 测试注入：向 m_nodeOutputs 写入自定义端口值（生产构建不可见）
     DEEPLUX_TEST_VISIBILITY : void setNodePortOutputsForTest(const QString& moduleName, const PortValueMap& outputs);
     // 后台执行（设计 §6.1/§6.3）测试注入：覆盖某运行名的执行亲和性与并行资格判定；
@@ -321,6 +339,9 @@ signals:
     void breakpointHit(const QString& moduleId); // 阶段 B 复核: 断点真实命中
     // 后台执行（设计 §5.3）：模块边界暂停（断点/用户）提交后发出，附暂停原因。
     void pauseHit(const QString& moduleId, PauseReason reason);
+    // 后台执行（设计 §7.1）：轻量显示帧通知——不把大图作为信号参数排队；
+    // 接收方按 (viewportId, jobId, runId) 取 latestDisplayFrame() 并丢弃身份不匹配的迟到帧。
+    void displayFrameReady(const QString& viewportId, quint64 jobId, const QString& runId);
     void errorOccurred(const QString& error);
     void outputChanged(const QString& moduleName, const QString& varName, const QVariant& value);
 
@@ -363,6 +384,10 @@ private:
     PortValueMap collectBypass(const QString& moduleName);
     void clearModuleOutputs();
     void clearBreakpointPauseState();
+    // 后台执行（设计 §7.1）：在执行线程内发布显示帧（含 QImage 深拷贝与最终快照）。
+    void publishDisplayFrame(const QString& moduleId, const ImageData& image, quint64 frameId);
+    void publishFinalDisplayFrame();
+    QMap<QString, QVariantMap> displayModuleDataSnapshot() const;
     void updateStatistics(bool success, int elapsedMs);
     // 阶段 4.8：记录/清理模块运行快照（写入点集中在模块执行结束与旁路分支）
     void recordModuleRuntime(const QString& moduleName, const ModuleRuntimeInfo& info);
@@ -462,6 +487,13 @@ private:
     // 后台执行（设计 §6.1）：execution.affinity 缓存（m_affinityMutex 保护）
     mutable QMutex m_affinityMutex;
     QHash<QString, ExecutionAffinity> m_executionAffinity;
+
+    // 后台执行（设计 §7.1）：显示帧捕获上下文与每视口最新帧槽位（只保留最新一帧）。
+    // m_displayCaptureEnabled/m_displayJobId 供跨线程无锁快照；槽位由 m_displayFrameMutex 保护。
+    std::atomic_bool m_displayCaptureEnabled{false};
+    std::atomic<quint64> m_displayJobId{0};
+    mutable QMutex m_displayFrameMutex;
+    QMap<QString, DisplayFrame> m_latestDisplayFrames;
 
     // 模块树结构
     QMap<QString, ModuleTreeNode*> m_moduleTreeNodes;

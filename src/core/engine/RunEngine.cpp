@@ -379,6 +379,8 @@ bool RunEngine::stepOnceImpl(const JobToken* token, QString* rejectReason) {
     // 后台执行（设计 §5.3）：stop 判定与单步态重置统一在 finalizeExecution 同一临界区完成
     // （t3 审查 O6，resetStepStateOnStop），不再在调用侧预先判定，消除检查后 stop 的窗口。
     finalizer.finish(ExecutionOutcome::Completed);
+    // 后台执行（设计 §7.1）：单步收尾同样在 runFinished 前发布带快照的最终帧。
+    publishFinalDisplayFrame();
     emit runFinished(result);
     emit stateChanged(state());
     return true;
@@ -1586,6 +1588,8 @@ void RunEngine::executeAcquiredRunImpl(bool resuming, const QString& resumeModul
     // 阶6 七轮（P0-1）：清理+最终状态+释放执行权同一临界区。
     // 后台执行（设计 §5.3）：Completed 终态按 RunMode 决定，收尾窗口内并发 stop 优先。
     finalizer.finish(ExecutionOutcome::Completed);
+    // 后台执行（设计 §7.1）：runFinished 前发布带 moduleDataSnapshot 的最终帧。
+    publishFinalDisplayFrame();
     emit runFinished(result);
     emit stateChanged(state());
 }
@@ -2250,6 +2254,8 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
             m_lastOutputModuleName = moduleName;
             m_moduleOutputs[moduleName] = output;
         }
+        // 后台执行（设计 §7.1）：模块成功且输出含 image 端口时，在执行线程内发布深拷贝帧。
+        publishDisplayFrame(moduleName, output, static_cast<quint64>(execCtx.frameId));
     } else {
         {
             QMutexLocker locker(&moduleErrorMutex);
@@ -2439,6 +2445,97 @@ qint64 RunEngine::lastFrameId() const {
     }
     QMutexLocker locker(&m_lifecycleMutex);
     return m_frameId.load(std::memory_order_acquire);
+}
+
+// ---------------------------------------------------------------------------
+// 后台执行（设计 §7.1/§7.3/§7.5）：执行线程显示帧快照与每视口最新帧槽位
+// ---------------------------------------------------------------------------
+
+void RunEngine::setDisplayCaptureEnabled(bool enabled) {
+    m_displayCaptureEnabled.store(enabled, std::memory_order_release);
+}
+
+void RunEngine::setDisplayJobId(quint64 jobId) {
+    m_displayJobId.store(jobId, std::memory_order_release);
+    // 新 job：清空旧帧槽位，旧 job 的迟到通知不会再从槽位取到可渲染帧。
+    clearLatestDisplayFrames();
+}
+
+void RunEngine::clearDisplayJobId() {
+    m_displayJobId.store(0, std::memory_order_release);
+}
+
+DisplayFrame RunEngine::latestDisplayFrame(const QString& viewportId) const {
+    QMutexLocker locker(&m_displayFrameMutex);
+    return m_latestDisplayFrames.value(viewportId);
+}
+
+void RunEngine::clearLatestDisplayFrames() {
+    QMutexLocker locker(&m_displayFrameMutex);
+    m_latestDisplayFrames.clear();
+}
+
+QMap<QString, QVariantMap> RunEngine::displayModuleDataSnapshot() const {
+    // 设计 §7.1：run 结束时一次性抓取各模块 allData() 的不可变副本（不含大图）。
+    QMap<QString, QVariantMap> snapshot;
+    QMutexLocker locker(&m_lastOutputMutex);
+    for (auto it = m_moduleOutputs.constBegin(); it != m_moduleOutputs.constEnd(); ++it) {
+        const QVariantMap data = it.value().allData();
+        if (!data.isEmpty()) {
+            snapshot.insert(it.key(), data);
+        }
+    }
+    return snapshot;
+}
+
+void RunEngine::publishDisplayFrame(const QString& moduleId, const ImageData& image, quint64 frameId) {
+    if (!m_displayCaptureEnabled.load(std::memory_order_acquire)) {
+        return;
+    }
+    QImage frameImage = image.toQImage();
+    if (frameImage.isNull()) {
+        return;
+    }
+    // 设计 §7.1：在执行线程内完成深拷贝，帧脱离 ImageData/cv::Mat 的共享缓冲。
+    frameImage = frameImage.copy();
+
+    DisplayFrame frame;
+    frame.jobId = m_displayJobId.load(std::memory_order_acquire);
+    frame.runId = m_runId;
+    frame.frameId = frameId;
+    frame.moduleId = moduleId;
+    frame.viewportId = QStringLiteral("main"); // 本轮仅覆盖主视口（viewportId 作为键保留）
+    frame.image = frameImage;
+    {
+        QMutexLocker locker(&m_displayFrameMutex);
+        m_latestDisplayFrames.insert(frame.viewportId, frame);
+    }
+    emit displayFrameReady(frame.viewportId, frame.jobId, frame.runId);
+}
+
+void RunEngine::publishFinalDisplayFrame() {
+    if (!m_displayCaptureEnabled.load(std::memory_order_acquire)) {
+        return;
+    }
+    DisplayFrame frame;
+    frame.jobId = m_displayJobId.load(std::memory_order_acquire);
+    frame.runId = m_runId;
+    frame.viewportId = QStringLiteral("main");
+    frame.moduleDataSnapshot = displayModuleDataSnapshot();
+    {
+        QMutexLocker locker(&m_displayFrameMutex);
+        const auto it = m_latestDisplayFrames.constFind(frame.viewportId);
+        if (it != m_latestDisplayFrames.constEnd() && it.value().runId == frame.runId &&
+            it.value().jobId == frame.jobId) {
+            // 沿用本轮最后一帧的图像与身份；只补充 run 级结果快照。
+            frame.frameId = it.value().frameId;
+            frame.moduleId = it.value().moduleId;
+            frame.image = it.value().image;
+        }
+        m_latestDisplayFrames.insert(frame.viewportId, frame);
+    }
+    // 即使本轮没有 2D 图像，也发布带身份的快照帧：UI 据此只更新/清除叠加，不改变画面。
+    emit displayFrameReady(frame.viewportId, frame.jobId, frame.runId);
 }
 
 QString RunEngine::getNextModule(const QString& currentModule, bool lastResult) {

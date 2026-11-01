@@ -48,6 +48,7 @@ set(TEST_SOURCES
     test_plyloader.cpp
     test_tiffloader.cpp
     test_himagewidget.cpp
+    test_imagerefreshcoalescer.cpp
     test_flowcanvas.cpp
     test_propertypanel.cpp
     test_toolschema.cpp

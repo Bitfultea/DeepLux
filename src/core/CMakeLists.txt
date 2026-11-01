@@ -91,6 +91,7 @@ set(CORE_HEADERS
     engine/RunEngine.h
     engine/FlowExecutionService.h
     engine/ExecutionAffinity.h
+    engine/DisplayFrame.h
     device/CameraManager.h
     communication/CommunicationManager.h
     config/SystemConfig.h

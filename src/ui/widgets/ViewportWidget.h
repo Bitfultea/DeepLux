@@ -57,10 +57,11 @@ public:
     QImage currentImage() const;
 
     // Display unified data (auto-routes to appropriate renderer)
-    void displayData(const DisplayData& data);
+    // preserveView：后台/周期刷新保留用户视图；首次显示与显式操作传 false（设计 §7.4）。
+    void displayData(const DisplayData& data, bool preserveView = false);
 
     // Display image to this viewport (2D mode)
-    void displayImage(const QImage& image);
+    void displayImage(const QImage& image, bool preserveView = false);
 
     // Clear the display
     void clearDisplay();
@@ -91,7 +92,8 @@ public:
     void setPickMode(bool enabled);
 
     // 设置 2D/3D 双数据（用于 TIFF 等 depth-map 数据）
-    void setDualData(const QImage& image, const DisplayData& cloudData, DisplayMode initialMode = DisplayMode::Auto3D);
+    void setDualData(const QImage& image, const DisplayData& cloudData, DisplayMode initialMode = DisplayMode::Auto3D,
+                     bool preserveView = false);
 
 signals:
     void viewportClosed(const QString& viewportId);

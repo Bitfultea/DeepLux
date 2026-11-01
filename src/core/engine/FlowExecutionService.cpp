@@ -281,6 +281,9 @@ void FlowExecutionService::runJob(JobType job) {
         emit jobFailed(job, error);
         return;
     }
+    // 后台执行（设计 §7.1）：job 启动时把 jobId 注入 RunEngine 的显示帧上下文，
+    // 帧身份不依赖每轮会重置的全局 frameId；job 结束时清空。
+    engine.setDisplayJobId(jobSerial);
     {
         QMutexLocker locker(&m_mutex);
         m_leaseToken = token;
@@ -318,6 +321,8 @@ void FlowExecutionService::runJob(JobType job) {
 
     // 收尾：释放 job 租约（同时清理 job 级取消标志与暂停上下文），再提交 Idle。
     engine.endExternalJob(token);
+    // 后台执行（设计 §7.1）：job 结束/停止时清空显示帧上下文（帧槽位保留最后一帧供叠加使用）。
+    engine.clearDisplayJobId();
     {
         QMutexLocker locker(&m_mutex);
         m_leaseToken = RunEngine::JobToken{};

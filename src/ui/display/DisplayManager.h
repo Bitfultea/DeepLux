@@ -39,11 +39,16 @@ public:
     QVector<ViewportWidget*> allViewports() const;
 
     // Display data routing (delayMs = 0 means display immediately)
-    void displayData(const DisplayData& data, int delayMs = 0);
+    // preserveView：后台/周期刷新保留用户视图；首次显示与显式操作传 false（设计 §7.4）。
+    void displayData(const DisplayData& data, int delayMs = 0, bool preserveView = false);
     void displayData(IDisplayPort* source, int delayMs = 0);
 
     // Connect to a specific viewport
-    void displayToViewport(const DisplayData& data, const QString& viewportId, int delayMs = 0);
+    void displayToViewport(const DisplayData& data, const QString& viewportId, int delayMs = 0,
+                           bool preserveView = false);
+
+    // 直接显示已解码的 QImage（执行线程显示帧的深拷贝，经合并器调度后进入；仅转换一次）。
+    void displayImage(const QImage& image, const QString& viewportId, bool preserveView = true);
 
     // Access the central display widget containing all viewports
     QWidget* centralDisplay() const {

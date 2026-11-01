@@ -180,7 +180,7 @@ void ViewportWidget::setTitle(const QString& title) {
     }
 }
 
-void ViewportWidget::displayData(const DisplayData& data) {
+void ViewportWidget::displayData(const DisplayData& data, bool preserveView) {
     if (data.pointCloudData() && !data.pointCloudData()->isEmpty()) {
         m_cachedImage = QImage();
         m_hasCachedImage = false;
@@ -201,7 +201,7 @@ void ViewportWidget::displayData(const DisplayData& data) {
         m_cachedImage = data.imageData()->toQImage();
         m_hasCachedImage = true;
         switchTo2D();
-        m_imageWidget->setImage(m_cachedImage);
+        m_imageWidget->setImage(m_cachedImage, preserveView);
         m_contentInfoLabel->setText(tr("%1 × %2").arg(m_cachedImage.width()).arg(m_cachedImage.height()));
         emit imageDisplayed();
         QString dsName = data.metadata().value("dataSourceName").toString();
@@ -218,26 +218,27 @@ QImage ViewportWidget::currentImage() const {
     return m_imageWidget ? m_imageWidget->currentImage() : QImage();
 }
 
-void ViewportWidget::displayImage(const QImage& image) {
+void ViewportWidget::displayImage(const QImage& image, bool preserveView) {
     m_cachedCloudData = DisplayData();
     m_hasCachedCloud = false;
     m_cachedImage = image;
     m_hasCachedImage = true;
     switchTo2D();
-    m_imageWidget->setImage(image);
+    m_imageWidget->setImage(image, preserveView);
     m_contentInfoLabel->setText(tr("%1 × %2").arg(image.width()).arg(image.height()));
     emit imageDisplayed();
     updateToggleAction();
 }
 
-void ViewportWidget::setDualData(const QImage& image, const DisplayData& cloudData, DisplayMode initialMode) {
+void ViewportWidget::setDualData(const QImage& image, const DisplayData& cloudData, DisplayMode initialMode,
+                                 bool preserveView) {
     m_cachedImage = image;
     m_hasCachedImage = true;
     m_cachedCloudData = cloudData;
     m_hasCachedCloud = true;
     if (initialMode == DisplayMode::Auto2D) {
         switchTo2D();
-        m_imageWidget->setImage(image);
+        m_imageWidget->setImage(image, preserveView);
         m_contentInfoLabel->setText(tr("%1 × %2").arg(image.width()).arg(image.height()));
         emit imageDisplayed();
     } else {

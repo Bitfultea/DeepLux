@@ -8,6 +8,7 @@
 #include "../dialogs/SamAnnotatorDialog.h"
 #include "../display/3d/Viewport3DContent.h"
 #include "../display/DisplayManager.h"
+#include "../display/ImageRefreshCoalescer.h"
 #include "../panels/DataSourcePanel.h"
 #include "../widgets/AgentActionLogWidget.h"
 #include "../widgets/AgentChatPanel.h"
@@ -66,6 +67,7 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -522,12 +524,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
                 if (m_inspectorPanel && m_selectedModuleId == moduleName) {
                     m_inspectorPanel->setDirty(false);
                 }
-                // Display this module's output if available.
+                // 后台执行（设计 §7.2/§7.3）：删除 moduleFinished → displayImage 的大图刷新路径；
+                // 2D 大图只经合并器刷新，这里只更新节点状态/耗时/检查器，并保留 3D 点云的既有路径。
                 const ImageData out = RunEngine::instance().moduleOutput(moduleName);
-                if (out.isValid()) {
-                    // 只在没有选中特定模块或当前模块就是执行模块时显示
-                    if (m_selectedModuleId.isEmpty() || m_selectedModuleId == moduleName) {
-                        // 传入模块身份，记录模块→视口归属供测量叠加绑定
+                if (out.isValid() && (m_selectedModuleId.isEmpty() || m_selectedModuleId == moduleName)) {
+                    const auto cloud = MeasurementData::pointCloud(out, nullptr);
+                    if (cloud && !cloud->isEmpty()) {
                         displayImage(out, QString(), moduleName);
                     }
                 }
@@ -577,15 +579,18 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
             }
         }
 
-        // 延迟更新叠加层，确保 displayImage 完成后再设置 overlay
-        QTimer::singleShot(0, this, [this]() { updateMeasurementResultOnOverlay(); });
-
+        // 后台执行（设计 §7.2）：runFinished 不代表 job 结束，Cycle 每轮的发帧刷新继续由
+        // 50ms 合并器决定，不在此强制刷新；叠加统一在合并器渲染回调内消费帧内快照。
         // 后台执行（设计 §5.3 #8 / §8.1）：runFinished 只表示“一轮执行结束”（Cycle 每轮都会发），
         // 不得据此重启循环或做 job 级收尾；job 级收尾只走 FlowExecutionService::jobFinished。
         if (FlowExecutionService::instance().isActive()) {
             return;
         }
-        // 无 Service job 的同步引擎路径（CLI/测试兼容）：沿用既有 UI 收尾与延迟关闭。
+        // 无 Service job 的同步引擎路径（CLI/测试兼容）：强制 flush 一次（等价于 Single job 结束），
+        // 让最终快照帧与叠加立即生效，再沿用既有 UI 收尾与延迟关闭。
+        if (m_imageCoalescer) {
+            m_imageCoalescer->forceFlush();
+        }
         if (m_closeWhenRunFinishes) {
             m_closeWhenRunFinishes = false;
             setUiRunningState(false, false);
@@ -597,6 +602,23 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
         m_isStepMode = false;
     });
 
+    // 后台执行（设计 §7.2/§7.3/§7.4）：所有大图刷新经 50ms latest-wins 合并器，
+    // 渲染时保留用户视图；模块完成信号不再直接刷新大图。
+    m_imageCoalescer = new ImageRefreshCoalescer(this);
+    m_imageCoalescer->setRenderCallback([this](const DisplayFrame& frame) { renderDisplayFrame(frame); });
+    connect(&RunEngine::instance(), &RunEngine::displayFrameReady, this,
+            [this](const QString& viewportId, quint64 jobId, const QString& runId) {
+                if (!m_imageCoalescer) {
+                    return;
+                }
+                // 帧身份必须匹配：迟到通知不能把旧 job/旧轮的画面渲染到当前视图（设计 §7.3）。
+                const DisplayFrame frame = RunEngine::instance().latestDisplayFrame(viewportId);
+                if (!frame.matchesIdentity(jobId, runId)) {
+                    return;
+                }
+                m_imageCoalescer->schedule(frame);
+            });
+
     // 后台执行（设计 §8.1）：Service 驱动的按钮状态与 job 级收尾。
     // running/cycle/step 状态以 Service 的 job 类型为准；关闭请求只由 jobFinished 重试。
     {
@@ -607,11 +629,21 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
                     case FlowExecutionService::State::Running:
                         setUiRunningState(true, job == FlowExecutionService::JobType::Cycle);
                         m_isStepMode = (job == FlowExecutionService::JobType::Step);
+                        // 新 job：锁定显示帧身份并清空旧 job 的待渲染帧/叠加（设计 §7.3）。
+                        if (m_imageCoalescer) {
+                            m_imageCoalescer->clearPending();
+                            m_imageCoalescer->setExpectedIdentity(RunEngine::instance().displayJobId(), QString());
+                        }
+                        clearMeasurementOverlays();
                         break;
                     case FlowExecutionService::State::Paused:
                         // 暂停期间保持“运行中”语义：运行按钮变为“继续”，循环标志不变。
                         m_isRunning = true;
                         m_isStepMode = false;
+                        // 设计 §7.2：暂停是强制 flush 时点（中间帧无快照 → 清除叠加）。
+                        if (m_imageCoalescer) {
+                            m_imageCoalescer->forceFlush();
+                        }
                         break;
                     case FlowExecutionService::State::Stopping:
                     case FlowExecutionService::State::Idle:
@@ -624,6 +656,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
                     if (stopped) {
                         Logger::instance().info(tr("后台执行已停止"), "Run");
                     }
+                    // 设计 §7.2：job 结束/停止是唯一强制 flush 时点（Cycle 每轮不 flush）。
+                    if (m_imageCoalescer) {
+                        m_imageCoalescer->forceFlush();
+                    }
                     finishRunUi();
                 });
         connect(&service, &FlowExecutionService::jobFailed, this,
@@ -632,6 +668,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
                     Logger::instance().error(tr("后台执行失败：%1").arg(error), "Run");
                     if (m_runStatusLabel) {
                         m_runStatusLabel->setText(tr("运行失败：%1").arg(error));
+                    }
+                    if (m_imageCoalescer) {
+                        m_imageCoalescer->forceFlush();
                     }
                     finishRunUi();
                 });
@@ -2094,6 +2133,17 @@ void MainWindow::onProjectOpened(Project* project) {
     RunEngine::instance().stop();
     RunEngine::instance().clearModules();
 
+    // 后台执行（设计 §7.3）：工程切换清空合并器待处理帧、最近帧与叠加，避免旧工程残留。
+    if (m_imageCoalescer) {
+        m_imageCoalescer->clearPending();
+        m_imageCoalescer->clearExpectedIdentity();
+    }
+    m_hasDisplayFrame = false;
+    m_latestDisplayFrame = DisplayFrame();
+    if (m_displayManager) {
+        clearMeasurementOverlays();
+    }
+
     // 清空参数撤销栈和脏标记
     if (m_paramUndoStack) {
         m_paramUndoStack->clear();
@@ -2211,6 +2261,17 @@ void MainWindow::onProjectClosed() {
     // RunEngine borrows flow-module pointers; detach them before the controller deletes the modules.
     RunEngine::instance().stop();
     RunEngine::instance().clearModules();
+
+    // 后台执行（设计 §7.3）：工程切换清空合并器待处理帧、最近帧与叠加，迟到帧不得污染新工程。
+    if (m_imageCoalescer) {
+        m_imageCoalescer->clearPending();
+        m_imageCoalescer->clearExpectedIdentity();
+    }
+    m_hasDisplayFrame = false;
+    m_latestDisplayFrame = DisplayFrame();
+    if (m_displayManager) {
+        clearMeasurementOverlays();
+    }
 
     // P0: 先清空检查器，防止悬空模块指针
     m_selectedModuleId.clear();
@@ -2807,6 +2868,14 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         return;
     }
 
+    // 后台执行（设计 §7.3）：测量叠加只消费当前 DisplayFrame.moduleDataSnapshot，
+    // 禁止回读 RunEngine::moduleOutput() 的实时输出（避免 A 帧图像搭配 B 轮结果）。
+    if (!m_hasDisplayFrame || !m_latestDisplayFrame.hasSnapshot()) {
+        clearMeasurementOverlays();
+        return;
+    }
+    const QMap<QString, QVariantMap>& snapshot = m_latestDisplayFrame.moduleDataSnapshot;
+
     // 以项目模型为实例身份权威来源，插件运行实例的名称字段可能为空。
     // 无法归属/无测量时统一清除叠加（含 3D 视口），避免旧支路叠加残留。
     Project* currentProject = ProjectManager::instance().currentProject();
@@ -2882,7 +2951,7 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         }
     }
     if (!chosen) {
-        const QString lastOutputModule = RunEngine::instance().lastOutputModuleName();
+        const QString lastOutputModule = m_latestDisplayFrame.moduleId;
         const QList<const ModuleInstance*> owners = owningInputs(lastOutputModule);
         if (owners.size() > 1) {
             clearMeasurementOverlays();
@@ -2904,10 +2973,10 @@ void MainWindow::updateMeasurementResultOnOverlay() {
     const QJsonObject inputParams = chosen->params;
 
     const QString mode = inputParams["mode"].toString("point_pair");
-    auto resultMatches = [&mode](const ImageData& candidate) {
-        const bool matchesPointSet = mode == QStringLiteral("point_set") && candidate.hasData("circle_radius");
-        const bool matchesDistance =
-            mode != QStringLiteral("point_set") && (candidate.hasData("distance") || candidate.hasData("gap_distance"));
+    auto resultMatches = [&mode](const QVariantMap& candidate) {
+        const bool matchesPointSet = mode == QStringLiteral("point_set") && candidate.contains("circle_radius");
+        const bool matchesDistance = mode != QStringLiteral("point_set") &&
+                                     (candidate.contains("distance") || candidate.contains("gap_distance"));
         return matchesPointSet || matchesDistance;
     };
 
@@ -2919,13 +2988,13 @@ void MainWindow::updateMeasurementResultOnOverlay() {
     //    （选中/最近执行节点）自身输出，其次沿所选支路整个下游链搜索；
     //    不回退全局 lastOutput()（避免混入另一支路结果）；
     //    共享下游（同时属于其它测量输入支路）的结果归属不唯一，跳过不采用。
-    ImageData resultOutput;
+    QVariantMap results;
     QString resultModuleId;
 
     auto tryAdoptOwnOutput = [&](const QString& moduleId) {
-        const ImageData own = RunEngine::instance().moduleOutput(moduleId);
+        const QVariantMap own = snapshot.value(moduleId);
         if (resultMatches(own)) {
-            resultOutput = own;
+            results = own;
             resultModuleId = moduleId;
             return true;
         }
@@ -2942,17 +3011,16 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         }
     } else if (preferredModuleId.isEmpty() || !tryAdoptOwnOutput(preferredModuleId)) {
         for (const QString& moduleId : downstreamOf(chosen->id)) {
-            const ImageData candidate = RunEngine::instance().moduleOutput(moduleId);
+            const QVariantMap candidate = snapshot.value(moduleId);
             if (!resultMatches(candidate))
                 continue;
             if (owningInputs(moduleId).size() > 1)
                 continue; // 结果节点同时属于其它测量支路，归属不唯一，跳过
-            resultOutput = candidate;
+            results = candidate;
             resultModuleId = moduleId;
             break;
         }
     }
-    const QMap<QString, QVariant> results = resultOutput.allData();
 
     auto resultValue = [&](const QStringList& keys) -> double {
         for (const QString& key : keys) {
@@ -5482,6 +5550,31 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     QMainWindow::closeEvent(event);
 }
 
+void MainWindow::showEvent(QShowEvent* event) {
+    QMainWindow::showEvent(event);
+    // 设计 §7.5：窗口由不可见变为可见时恢复帧捕获并强制 flush 最新帧。
+    updateDisplayCaptureForVisibility();
+    if (m_imageCoalescer && FlowExecutionService::instance().isActive()) {
+        m_imageCoalescer->forceFlush();
+    }
+}
+
+void MainWindow::hideEvent(QHideEvent* event) {
+    // 设计 §7.5：无显示消费者（不可见/最小化）时关闭帧捕获。
+    RunEngine::instance().setDisplayCaptureEnabled(false);
+    QMainWindow::hideEvent(event);
+}
+
+void MainWindow::changeEvent(QEvent* event) {
+    QMainWindow::changeEvent(event);
+    if (event && event->type() == QEvent::WindowStateChange) {
+        updateDisplayCaptureForVisibility();
+        if (isVisible() && !isMinimized() && m_imageCoalescer && FlowExecutionService::instance().isActive()) {
+            m_imageCoalescer->forceFlush();
+        }
+    }
+}
+
 void MainWindow::resizeEvent(QResizeEvent* event) {
     QMainWindow::resizeEvent(event);
     if (QToolBar* toolbar = findChild<QToolBar*>(QStringLiteral("MainToolBar"))) {
@@ -5512,7 +5605,8 @@ void MainWindow::displayImage(const ImageData& image, const QString& label, cons
         }
         return;
     }
-    if (image.toQImage().isNull()) {
+    // 设计 §7.4：移除额外的 toQImage() 空判断，避免与 DisplayManager 内部的转换重复。
+    if (!image.isValid()) {
         m_displayingModuleId.clear();
         m_displayingImage2D = false;
         return;
@@ -5892,6 +5986,11 @@ bool MainWindow::startRunThroughService(bool cycleMode) {
         Logger::instance().warning(tr("流程同步失败，无法运行"), "Run");
         return false;
     }
+    // 后台执行（设计 §7.1/§7.5）：UI 是显示消费者，窗口可见时开启帧捕获（最小化/不可见关闭）。
+    updateDisplayCaptureForVisibility();
+    if (m_imageCoalescer) {
+        m_imageCoalescer->clearPending();
+    }
     FlowExecutionService& service = FlowExecutionService::instance();
     const bool started = cycleMode ? service.startCycle() : service.startSingle();
     if (!started) {
@@ -5902,6 +6001,11 @@ bool MainWindow::startRunThroughService(bool cycleMode) {
 }
 
 void MainWindow::finishRunUi() {
+    // 设计 §7.3：job 停止后不再接受迟到帧；待渲染帧在 jobFinished 前已 flush，这里清空残留。
+    if (m_imageCoalescer) {
+        m_imageCoalescer->clearPending();
+        m_imageCoalescer->clearExpectedIdentity();
+    }
     setUiRunningState(false, false);
     m_isStepMode = false;
     updateBreakpointRunControls(false);
@@ -5910,6 +6014,29 @@ void MainWindow::finishRunUi() {
         m_closeWhenRunFinishes = false;
         QTimer::singleShot(0, this, &QWidget::close);
     }
+}
+
+void MainWindow::renderDisplayFrame(const DisplayFrame& frame) {
+    // 设计 §7.2/§7.3：合并器是唯一的大图刷新入口；叠加只读帧内快照，禁止回读实时 moduleOutput。
+    m_latestDisplayFrame = frame;
+    m_hasDisplayFrame = true;
+    if (frame.hasImage() && m_displayManager) {
+        m_displayingModuleId = frame.moduleId;
+        m_displayingImage2D = true;
+        // 后台/周期刷新保留用户缩放与 ROI（设计 §7.4）。
+        m_displayManager->displayImage(frame.image, frame.viewportId, /*preserveView=*/true);
+    }
+    if (frame.hasSnapshot()) {
+        updateMeasurementResultOnOverlay();
+    } else {
+        // 中间帧无同轮快照：清除叠加，避免 A 帧图像搭配 B 轮结果（设计 §7.3）。
+        clearMeasurementOverlays();
+    }
+}
+
+void MainWindow::updateDisplayCaptureForVisibility() {
+    // 设计 §7.5：窗口不可见/最小化或没有显示消费者时关闭帧捕获，工作线程不做快照与合并调度。
+    RunEngine::instance().setDisplayCaptureEnabled(isVisible() && !isMinimized());
 }
 
 void MainWindow::executeFlowOnce() {
