@@ -23,6 +23,9 @@
             }
         }
     },
+    "execution": {
+        "affinity": "worker"
+    },
     "ports": {
         "inputs": [
             {

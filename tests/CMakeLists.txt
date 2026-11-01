@@ -93,6 +93,7 @@ set(TEST_SOURCES
     test_knowledgebasedialog.cpp
     test_moduleinspectorpanel.cpp
     test_pluginparametercontracts.cpp
+    test_workerpluginconsistency.cpp
     test_acceptance_flows.cpp
     test_projectmigration.cpp
     test_timeslice.cpp
@@ -157,10 +158,10 @@ foreach(TEST_FILE ${TEST_SOURCES})
         target_include_directories(${TEST_NAME} PRIVATE ${OpenCV_INCLUDE_DIRS})
     endif()
 
-    if(TEST_NAME MATCHES "^(test_acceptance_flows|test_mainwindow|test_plugincontracts|test_pluginparametercontracts)$")
+    if(TEST_NAME MATCHES "^(test_acceptance_flows|test_mainwindow|test_plugincontracts|test_pluginparametercontracts|test_workerpluginconsistency)$")
         deeplux_add_test_plugin_defs(${TEST_NAME})
-        if(TEST_NAME STREQUAL "test_pluginparametercontracts")
-            # 该测试会安装并校验全部插件，必须确保所有插件库先于测试构建完成。
+        if(TEST_NAME STREQUAL "test_pluginparametercontracts" OR TEST_NAME STREQUAL "test_workerpluginconsistency")
+            # 这些测试会安装并校验全部/候选插件，必须确保插件库先于测试构建完成。
             foreach(_plugin_entry IN LISTS DEEPLUX_PLUGIN_TARGET_ENTRIES)
                 string(REPLACE "|" ";" _plugin_parts "${_plugin_entry}")
                 list(GET _plugin_parts 0 _plugin_target)
