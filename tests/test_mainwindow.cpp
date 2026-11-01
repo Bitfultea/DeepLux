@@ -45,6 +45,7 @@
 #include <QTreeWidgetItemIterator>
 #include <QVector3D>
 #include <QtTest/QtTest>
+#include <core/agent/AgentActor.h>
 #include <core/agent/AgentController.h>
 #include <core/base/ModuleBase.h>
 #include <core/engine/FlowExecutionService.h>
@@ -147,6 +148,44 @@ protected:
     }
 };
 
+/// t13 回归：观察到取消后仍会慢速收尾的探针（模拟“取消后仍需返回”的模块）。
+/// 取消时从工作线程回调 onCancelObserved，用于验证 GUI 是否仍在事件循环内处理事件。
+class MainWindowSlowCancelProbe : public ModuleBase {
+    Q_OBJECT
+
+public:
+    explicit MainWindowSlowCancelProbe(int exitDelayMs = 250) : m_exitDelayMs(exitDelayMs) {
+        m_moduleId = QStringLiteral("com.deeplux.test.mainwindowslowcancel");
+        m_name = QStringLiteral("SlowCancelProbe");
+        m_category = QStringLiteral("test");
+        setInstanceName(QStringLiteral("slow_cancel_probe"));
+    }
+
+    std::function<void()> onCancelObserved;
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        QElapsedTimer timer;
+        timer.start();
+        while (!isCancellationRequested() && timer.elapsed() < 5000) {
+            QThread::msleep(2);
+        }
+        if (isCancellationRequested() && onCancelObserved) {
+            onCancelObserved();
+        }
+        QThread::msleep(m_exitDelayMs);
+        output = input;
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    int m_exitDelayMs = 250;
+};
+
 namespace {
 // B7：等待后台服务回到 Idle 的确定性辅助（只等待条件，不构造执行顺序）。
 bool waitForServiceIdle(int timeoutMs = 5000) {
@@ -225,6 +264,8 @@ private slots:
     void testCycleRunStopsWithoutExtraRound();
     void testCloseDeferredUntilRunningJobFinishes();
     void testStartHandshakeTimeoutLeavesNoPendingJob();
+    // t13：Agent 运行超时/中止的收尾等待不得阻塞 GUI 事件循环
+    void testAgentRunTimeoutDoesNotBlockGuiThread();
     // B8.3：测量叠加只读帧内快照（设计 §7.3）
     void testMeasurementOverlayReadsFrameSnapshotNotLiveOutput();
     void testCloseInspectorDoesNotAutoExpand();
@@ -3900,6 +3941,41 @@ void TestMainWindow::testStartHandshakeTimeoutLeavesNoPendingJob() {
     RunEngine::instance().clearModules();
     project->removeModule(instance.id);
     QCoreApplication::processEvents();
+}
+
+void TestMainWindow::testAgentRunTimeoutDoesNotBlockGuiThread() {
+    // t13 回归：run_flow(wait=true) 超时/中止后的收尾等待必须在 GUI 事件循环内完成。
+    // 旧的同步 waitForIdle 会阻塞 GUI，取消后从工作线程投递的 queued 调用只能等 run_flow
+    // 返回后才执行；本用例断言它在等待收尾期间就已被处理。
+    MainWindow window; // 初始化 Agent 工具注册（AgentController::initialize）
+    QVERIFY(window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree")) != nullptr);
+
+    AgentActor actor;
+    MainWindowSlowCancelProbe probe(250);
+    QVERIFY(probe.initialize());
+    RunEngine::instance().addModule(&probe);
+    RunEngine::instance().setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+
+    bool runFlowReturned = false;
+    bool queuedTaskRanDuringWait = false;
+    probe.onCancelObserved = [this, &runFlowReturned, &queuedTaskRanDuringWait]() {
+        QMetaObject::invokeMethod(
+            this, [&runFlowReturned, &queuedTaskRanDuringWait]() { queuedTaskRanDuringWait = !runFlowReturned; },
+            Qt::QueuedConnection);
+    };
+
+    const QJsonObject run =
+        actor.executeTool(QStringLiteral("run_flow"), QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
+                                                                  {QStringLiteral("wait"), true},
+                                                                  {QStringLiteral("timeoutMs"), 1000}});
+    QCOMPARE(run.value(QStringLiteral("code")).toString(), QStringLiteral("timeout"));
+    runFlowReturned = true;
+    QVERIFY2(queuedTaskRanDuringWait,
+             "GUI event loop must keep processing queued work while waiting for the job to stop (t13)");
+    QCOMPARE(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle);
+    QVERIFY(!RunEngine::instance().isBusy());
+
+    RunEngine::instance().clearModules();
 }
 
 void TestMainWindow::testMeasurementOverlayReadsFrameSnapshotNotLiveOutput() {

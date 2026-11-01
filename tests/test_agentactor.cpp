@@ -88,42 +88,6 @@ private:
     int m_sleepMs = 900;
 };
 
-/// t13 回归：观察到取消后仍会慢速收尾的探针（模拟“取消后仍需返回”的模块）。
-/// 取消时从工作线程回调 onCancelObserved，用于验证 GUI 是否仍在处理事件。
-class SlowCancelAgentModule final : public ModuleBase {
-public:
-    explicit SlowCancelAgentModule(int exitDelayMs = 250) : m_exitDelayMs(exitDelayMs) {
-        m_moduleId = QStringLiteral("com.deeplux.test.agentslowcancel");
-        m_name = QStringLiteral("AgentSlowCancel");
-        m_category = QStringLiteral("test");
-        setInstanceName(QStringLiteral("agent_slow_cancel"));
-    }
-
-    std::function<void()> onCancelObserved;
-
-protected:
-    bool process(const ImageData& input, ImageData& output) override {
-        QElapsedTimer timer;
-        timer.start();
-        while (!isCancellationRequested() && timer.elapsed() < 5000) {
-            QThread::msleep(2);
-        }
-        if (isCancellationRequested() && onCancelObserved) {
-            onCancelObserved();
-        }
-        QThread::msleep(m_exitDelayMs);
-        output = input;
-        return true;
-    }
-
-    QWidget* createConfigWidget() override {
-        return nullptr;
-    }
-
-private:
-    int m_exitDelayMs = 250;
-};
-
 /// 计数探针：验证后台服务驱动的 Cycle/暂停恢复中各模块执行次数与线程。
 class CountingAgentModule final : public ModuleBase {
 public:
@@ -1353,33 +1317,6 @@ private slots:
         QCOMPARE(run.value("success").toBool(), false);
         QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 5000);
         QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
-    }
-
-    // t13 观察回归：timeout/abort 后的收尾等待必须留在 GUI 事件循环内。
-    // 旧的同步 waitForIdle 会阻塞 GUI 线程，取消后投递的 queued 调用只能等 run_flow 返回后才执行。
-    void testTimedOutWaitKeepsGuiEventLoopRunning() {
-        AgentActor actor;
-        SlowCancelAgentModule probe(250);
-        QVERIFY(probe.initialize());
-        RunEngine::instance().addModule(&probe);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_slow_cancel"),
-                                                                ExecutionAffinity::Worker);
-        bool runFlowReturned = false;
-        bool queuedTaskRanDuringWait = false;
-        probe.onCancelObserved = [this, &runFlowReturned, &queuedTaskRanDuringWait]() {
-            QMetaObject::invokeMethod(
-                this, [&runFlowReturned, &queuedTaskRanDuringWait]() { queuedTaskRanDuringWait = !runFlowReturned; },
-                Qt::QueuedConnection);
-        };
-
-        const QJsonObject run =
-            actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", true}, {"timeoutMs", 1000}});
-        QCOMPARE(run.value("code").toString(), QStringLiteral("timeout"));
-        runFlowReturned = true;
-        QVERIFY2(queuedTaskRanDuringWait,
-                 "GUI event loop must process queued work while waiting for the job to stop (t13)");
-        QCOMPARE(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle);
-        QVERIFY(!RunEngine::instance().isBusy());
     }
 
     // 兼容语义：cycle 立即 returned started 且 wait 说明保留；后台驱动由 Service 负责。
