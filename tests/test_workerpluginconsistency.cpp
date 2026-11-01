@@ -52,6 +52,31 @@ const QVector<Candidate>& candidates() {
         {"SaveImage", "SaveImage", "image", false},
         {"LoadPointCloud", "LoadPointCloud", "image", true},
         {"PreProcessing3D", "3DPreProcessing", "image", false},
+        // B9B：检测/几何/标定（含 design §6.3 点名的 Matching）
+        {"FindCircle", "FindCircle", "detection", true},
+        {"Matching", "Matching", "detection", true},
+        {"ColorRecognition", "ColorRecognition", "detection", false},
+        {"QRCode", "QRCode", "detection", false},
+        {"RegionStats", "RegionStats", "geometry", true},
+        {"EdgeDefectDetection", "EdgeDefectDetection", "detection", true},
+        {"JiErHanDefectsDet", "JiErHanDefectsDet", "detection", true},
+        // hymson3d/DefectDetection 在本构建 ENABLE_HYMSON3D=OFF 下不产出插件 target，
+        // 无法执行一致性冒烟，保持 gui（交付报告记录原因）。
+        {"MeasureCircle", "MeasureCircle", "detection", false},
+        {"MeasureRect", "MeasureRect", "detection", true},
+        {"MeasureLine", "MeasureLine", "detection", true},
+        {"MeasureGap", "MeasureGap", "geometry", false},
+        {"FitCircle", "FitCircle", "geometry", true},
+        {"FitLine", "FitLine", "geometry", true},
+        {"FitEllipse", "FitEllipse", "geometry", true},
+        {"FitPlane", "FitPlane", "geometry", false},
+        {"DistancePL", "DistancePL", "geometry", true},
+        {"DistancePP", "DistancePP", "geometry", true},
+        {"LinesDistance", "LinesDistance", "geometry", true},
+        {"PointSurfaceDistance", "PointSurfaceDistance", "geometry", false},
+        {"NPointCalibration", "N点标定", "calibration", false},
+        {"GapMeasure3D", "GapMeasure3D", "geometry", false},
+        {"FreeformSurface", "FreeformSurface", "geometry", false},
     };
     return list;
 }
@@ -146,6 +171,14 @@ QVariant valueForType(DataType type) {
                                                  {QStringLiteral("height"), 20.0},
                                                  {QStringLiteral("score"), 0.9},
                                                  {QStringLiteral("label"), QStringLiteral("defect")}}});
+    case DataType::Region2D: {
+        // 契约层接受 polygon+bbox 的 map 形态（Region2D 强类型亦可）。
+        const QVariantList polygon{QPointF(100.0, 100.0), QPointF(180.0, 100.0), QPointF(180.0, 160.0),
+                                   QPointF(100.0, 160.0)};
+        return QVariant(QVariantMap{{QStringLiteral("polygon"), polygon},
+                                    {QStringLiteral("bbox"), QVariantList{100.0, 100.0, 80.0, 60.0}},
+                                    {QStringLiteral("score"), 0.9}});
+    }
     default:
         return QVariant();
     }
@@ -260,6 +293,52 @@ bool valuesEqual(const QVariant& a, const QVariant& b, QString& reason) {
         }
         return true;
     }
+    // 强类型结果载荷：按字段逐一比较（QVariant == 对自定义类型不可靠）。
+    if (a.canConvert<Circle2D>() && b.canConvert<Circle2D>()) {
+        const Circle2D ca = a.value<Circle2D>();
+        const Circle2D cb = b.value<Circle2D>();
+        if (!fuzzyEqual(ca.centerX, cb.centerX) || !fuzzyEqual(ca.centerY, cb.centerY) ||
+            !fuzzyEqual(ca.radius, cb.radius) || !fuzzyEqual(ca.score, cb.score)) {
+            reason = QStringLiteral("Circle2D payload differs");
+            return false;
+        }
+        return true;
+    }
+    if (a.canConvert<DetectionList>() && b.canConvert<DetectionList>()) {
+        const DetectionList da = a.value<DetectionList>();
+        const DetectionList db = b.value<DetectionList>();
+        if (da.size() != db.size()) {
+            reason = QStringLiteral("detection count %1 != %2").arg(da.size()).arg(db.size());
+            return false;
+        }
+        for (int i = 0; i < da.size(); ++i) {
+            const Detection& x = da.items.at(i);
+            const Detection& y = db.items.at(i);
+            if (!fuzzyEqual(x.x, y.x) || !fuzzyEqual(x.y, y.y) || !fuzzyEqual(x.width, y.width) ||
+                !fuzzyEqual(x.height, y.height) || !fuzzyEqual(x.score, y.score) || x.label != y.label) {
+                reason = QStringLiteral("detection[%1] differs").arg(i);
+                return false;
+            }
+        }
+        return true;
+    }
+    if (a.canConvert<Region2D>() && b.canConvert<Region2D>()) {
+        const Region2D ra = a.value<Region2D>();
+        const Region2D rb = b.value<Region2D>();
+        if (ra.label != rb.label || ra.polygon.size() != rb.polygon.size() || ra.maskRle != rb.maskRle ||
+            !fuzzyEqual(ra.score, rb.score) || ra.bbox != rb.bbox) {
+            reason = QStringLiteral("Region2D payload differs");
+            return false;
+        }
+        for (int i = 0; i < ra.polygon.size(); ++i) {
+            if (!fuzzyEqual(ra.polygon.at(i).x(), rb.polygon.at(i).x()) ||
+                !fuzzyEqual(ra.polygon.at(i).y(), rb.polygon.at(i).y())) {
+                reason = QStringLiteral("Region2D polygon[%1] differs").arg(i);
+                return false;
+            }
+        }
+        return true;
+    }
     if (a.canConvert<QVector<QPointF>>() && b.canConvert<QVector<QPointF>>()) {
         const QVector<QPointF> pa = a.value<QVector<QPointF>>();
         const QVector<QPointF> pb = b.value<QVector<QPointF>>();
@@ -346,6 +425,7 @@ class TestWorkerPluginConsistency : public QObject {
 
 private:
     struct InstalledPlugin {
+        QString dir;
         QString name;
         QString metadataPath;
     };
@@ -379,9 +459,9 @@ private:
         return true;
     }
 
-    const Candidate* candidateFor(const QString& name) const {
+    const Candidate* candidateFor(const QString& dir) const {
         for (const Candidate& candidate : candidates()) {
-            if (name == QLatin1String(candidate.name)) {
+            if (dir == QLatin1String(candidate.dir)) {
                 return &candidate;
             }
         }
@@ -415,6 +495,7 @@ private:
             !QFile::copy(entry.libraryPath, QDir(targetDir).filePath(libName))) {
             return false;
         }
+        installed.dir = dirName;
         installed.name = name;
         installed.metadataPath = entry.metadataPath;
         return true;
@@ -459,25 +540,35 @@ private slots:
     }
 
     void testCandidateConsistency_data() {
-        QTest::addColumn<QString>("name");
+        QTest::addColumn<QString>("dir");
         for (const Candidate& candidate : candidates()) {
-            QTest::newRow(candidate.name) << QString::fromLatin1(candidate.name);
+            // 行名用 ASCII 源码目录名，避免控制台编码影响；插件显示名从安装的 metadata 解析。
+            QTest::newRow(candidate.dir) << QString::fromLatin1(candidate.dir);
         }
     }
 
     void testCandidateConsistency() {
-        QFETCH(QString, name);
-        const Candidate* candidate = candidateFor(name);
+        QFETCH(QString, dir);
+        const Candidate* candidate = candidateFor(dir);
         QVERIFY2(candidate != nullptr, "candidate must be registered");
 
-        std::unique_ptr<IModule> first(PluginManager::instance().createModule(name));
-        QVERIFY2(first != nullptr, qPrintable(QStringLiteral("createModule failed: %1").arg(name)));
-        applyTestParams(first.get(), name, QStringLiteral("first"));
-        QVERIFY2(first->initialize(), qPrintable(QStringLiteral("initialize failed: %1").arg(name)));
-        std::unique_ptr<IModule> second(PluginManager::instance().createModule(name));
-        QVERIFY2(second != nullptr, qPrintable(QStringLiteral("createModule(second) failed: %1").arg(name)));
-        applyTestParams(second.get(), name, QStringLiteral("second"));
-        QVERIFY2(second->initialize(), qPrintable(QStringLiteral("second initialize failed: %1").arg(name)));
+        QString pluginName;
+        for (const InstalledPlugin& plugin : m_installed) {
+            if (plugin.dir == dir) {
+                pluginName = plugin.name;
+                break;
+            }
+        }
+        QVERIFY2(!pluginName.isEmpty(), qPrintable(QStringLiteral("plugin not installed: %1").arg(dir)));
+
+        std::unique_ptr<IModule> first(PluginManager::instance().createModule(pluginName));
+        QVERIFY2(first != nullptr, qPrintable(QStringLiteral("createModule failed: %1").arg(pluginName)));
+        applyTestParams(first.get(), pluginName, QStringLiteral("first"));
+        QVERIFY2(first->initialize(), qPrintable(QStringLiteral("initialize failed: %1").arg(pluginName)));
+        std::unique_ptr<IModule> second(PluginManager::instance().createModule(pluginName));
+        QVERIFY2(second != nullptr, qPrintable(QStringLiteral("createModule(second) failed: %1").arg(pluginName)));
+        applyTestParams(second.get(), pluginName, QStringLiteral("second"));
+        QVERIFY2(second->initialize(), qPrintable(QStringLiteral("second initialize failed: %1").arg(pluginName)));
 
         const PortValueMap inputs = buildInputs(first.get());
         const Snapshot guiSnapshot = snapshotOf(first.get(), inputs, 1);
@@ -504,15 +595,14 @@ private slots:
 
         // 已标记 worker 的插件必须真正跑到计算路径并产出端口（一致性失败分支不足以通过审计）。
         if (candidate->auditedWorker) {
-            QVERIFY2(guiSnapshot.success,
-                     qPrintable(
-                         QStringLiteral("%1 audited as worker but run failed: %2").arg(name, guiSnapshot.userMessage)));
+            QVERIFY2(guiSnapshot.success, qPrintable(QStringLiteral("%1 audited as worker but run failed: %2")
+                                                         .arg(pluginName, guiSnapshot.userMessage)));
             QVERIFY2(!guiSnapshot.outputs.isEmpty(),
-                     qPrintable(QStringLiteral("%1 audited as worker but produced no output port").arg(name)));
+                     qPrintable(QStringLiteral("%1 audited as worker but produced no output port").arg(pluginName)));
         }
 
         qInfo().noquote() << QStringLiteral("[audit] %1 (%2): success=%3 errorCode=%4 outputs=%5 message=%6")
-                                 .arg(name, QString::fromLatin1(candidate->category))
+                                 .arg(pluginName, QString::fromLatin1(candidate->category))
                                  .arg(guiSnapshot.success ? QStringLiteral("true") : QStringLiteral("false"))
                                  .arg(guiSnapshot.errorCode)
                                  .arg(QStringList(guiSnapshot.outputs.keys()).join(QLatin1Char(',')))

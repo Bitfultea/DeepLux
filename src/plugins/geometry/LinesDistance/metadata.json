@@ -5,6 +5,9 @@
     "version": "1.0.0",
     "author": "DeepLux Team",
     "description": "计算两条线段之间的最短距离",
+    "execution": {
+        "affinity": "worker"
+    },
     "ports": {
         "inputs": [
             {

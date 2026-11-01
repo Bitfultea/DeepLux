@@ -26,6 +26,8 @@
     "execution": {
         "threadSafe": false,
         "blocking": false
+    ,
+        "affinity": "worker"
     },
     "ports": {
         "inputs": [
