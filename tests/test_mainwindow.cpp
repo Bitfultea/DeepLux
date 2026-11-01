@@ -58,6 +58,7 @@
 #include <ui/ThemeManager.h>
 #include <ui/dialogs/SamAnnotatorDialog.h>
 #include <ui/display/3d/Viewport3DContent.h>
+#include <ui/display/ImageRefreshCoalescer.h>
 #include <ui/views/MainWindow.h>
 #include <ui/widgets/AgentChatPanel.h>
 #include <ui/widgets/AgentMessageBubble.h>
@@ -266,6 +267,12 @@ private slots:
     void testStartHandshakeTimeoutLeavesNoPendingJob();
     // t13：Agent 运行超时/中止的收尾等待不得阻塞 GUI 事件循环
     void testAgentRunTimeoutDoesNotBlockGuiThread();
+    // t17/F1：用户暂停（pauseRun/pause_flow）的 UI 状态与原因标识（设计 §8.1）
+    void testServiceUserPauseUpdatesRunControls();
+    // t17/F2：工程切换后旧 (jobId,runId) 迟到帧不得改写画面/叠加（设计 §7.3）
+    void testProjectSwitchDropsLateDisplayFrames();
+    // t17/O1：窗口可见性驱动帧捕获开关（设计 §7.5）
+    void testDisplayCaptureFollowsVisibility();
     // B8.3：测量叠加只读帧内快照（设计 §7.3）
     void testMeasurementOverlayReadsFrameSnapshotNotLiveOutput();
     void testCloseInspectorDoesNotAutoExpand();
@@ -3976,6 +3983,236 @@ void TestMainWindow::testAgentRunTimeoutDoesNotBlockGuiThread() {
     QVERIFY(!RunEngine::instance().isBusy());
 
     RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testServiceUserPauseUpdatesRunControls() {
+    // 设计 §8.1：用户暂停（Agent pause_flow / Service::pauseRun）与断点暂停使用同一
+    // pauseHit 信号；MainWindow 只在 reason==User 时更新“继续”按钮/状态栏/流程树状态，
+    // 且不得覆盖断点暂停的“断点暂停”文案。
+    MainWindow window;
+    window.resize(1100, 760);
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance cheap;
+    cheap.id = QStringLiteral("t17_pause_cheap");
+    cheap.moduleId = QStringLiteral("OutputProbe");
+    cheap.name = QStringLiteral("T17 前置");
+    project->addModule(cheap);
+
+    ModuleInstance blocking;
+    blocking.id = QStringLiteral("t17_pause_blocking");
+    blocking.moduleId = QStringLiteral("BlockingProbe");
+    blocking.name = QStringLiteral("T17 阻塞");
+    project->addModule(blocking);
+
+    ModuleInstance after;
+    after.id = QStringLiteral("t17_pause_after");
+    after.moduleId = QStringLiteral("OutputProbe");
+    after.name = QStringLiteral("T17 暂停后模块");
+    project->addModule(after);
+    QCoreApplication::processEvents();
+
+    auto* cheapProbe = new MainWindowOutputProbeModule(cheap.id);
+    cheapProbe->initialize();
+    window.registerFlowModule(cheap.id, cheapProbe);
+    auto* blockingProbe = new MainWindowBlockingWorkerProbe(blocking.id);
+    blockingProbe->initialize();
+    window.registerFlowModule(blocking.id, blockingProbe);
+    QStringList afterLog;
+    auto* afterProbe = new MainWindowOutputProbeModule(after.id);
+    afterProbe->executionLog = &afterLog;
+    afterProbe->initialize();
+    window.registerFlowModule(after.id, afterProbe);
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QAction* runAction = window.findChild<QAction*>(QStringLiteral("RunOnceAction"));
+    QLabel* runStatusLabel = window.findChild<QLabel*>(QStringLiteral("RunStatusLabel"));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(runButton != nullptr);
+    QVERIFY(runAction != nullptr);
+    QVERIFY(runStatusLabel != nullptr);
+    QVERIFY(processTree != nullptr);
+
+    // 先用单步完成 UI→引擎模块同步；随后把前置模块与阻塞模块标记为 worker 亲和
+    // （断言会阻塞 GUI 线程等待 entered，gui 亲和模块的 BlockingQueuedConnection 无法被服务）。
+    QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QVERIFY(waitForServiceIdle());
+    RunEngine::instance().setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
+    RunEngine::instance().setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
+
+    QSignalSpy jobSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QVERIFY2(blockingProbe->entered.tryAcquire(1, 5000), "blocking module must enter execution");
+
+    // Service 运行中请求用户暂停（与 Agent pause_flow 同一入口）。
+    QVERIFY(FlowExecutionService::instance().pauseRun());
+    blockingProbe->release.release();
+    QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused, 5000);
+
+    auto treeItemFor = [processTree](const QString& instanceId) -> QTreeWidgetItem* {
+        for (int i = 0; i < processTree->topLevelItemCount(); ++i) {
+            QTreeWidgetItem* item = processTree->topLevelItem(i);
+            if (item && item->data(0, Qt::UserRole + 1).toString() == instanceId) {
+                return item;
+            }
+        }
+        return nullptr;
+    };
+
+    // 暂停后：按钮变“继续”，状态栏/流程树标识为用户暂停（而非断点暂停）。
+    QTRY_COMPARE(runButton->text(), QStringLiteral("继续"));
+    QTRY_COMPARE(runAction->text(), QStringLiteral("继续"));
+    QTRY_VERIFY(runStatusLabel->text().contains(QStringLiteral("用户暂停")));
+    QTRY_VERIFY(runStatusLabel->text().contains(after.id));
+    QTreeWidgetItem* pausedItem = treeItemFor(after.id);
+    QVERIFY(pausedItem != nullptr);
+    QTRY_COMPARE(pausedItem->data(0, Qt::UserRole + 5).toString(), QStringLiteral("paused"));
+    QTRY_COMPARE(pausedItem->text(1), QStringLiteral("用户暂停"));
+    QCOMPARE(afterLog.size(), 0); // 暂停发生在该模块执行前
+
+    // 继续：恢复“运行”文案并完成 job；暂停后的模块各执行一次。
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_COMPARE_WITH_TIMEOUT(afterLog.size(), 1, 5000);
+    QVERIFY(waitForServiceIdle());
+    QTRY_COMPARE(jobSpy.count(), 1);
+    QTRY_COMPARE(runButton->text(), QStringLiteral("运行"));
+    QTRY_COMPARE(runAction->text(), QStringLiteral("单次运行"));
+    QVERIFY(!RunEngine::instance().isBusy());
+
+    RunEngine::instance().clearModules();
+    project->removeModule(cheap.id);
+    project->removeModule(blocking.id);
+    project->removeModule(after.id);
+    QCoreApplication::processEvents();
+}
+
+void TestMainWindow::testProjectSwitchDropsLateDisplayFrames() {
+    // 设计 §7.3：工程切换清空合并器待处理帧/最近帧槽位与叠加；旧 (jobId,runId) 的
+    // displayFrameReady 迟到通知不得改写新工程的画面或叠加。
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(1100, 760);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("GrabImage")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    const QString imagePath = DeepLuxTest::testDataPath(QStringLiteral("circle_640x480.png"));
+    QVERIFY2(QFileInfo::exists(imagePath), qPrintable(imagePath));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance grab;
+    grab.id = QStringLiteral("t17_grab");
+    grab.moduleId = QStringLiteral("GrabImage");
+    grab.name = QStringLiteral("取图");
+    grab.params["grabSource"] = QStringLiteral("Path");
+    grab.params["filePath"] = imagePath;
+    project->addModule(grab);
+
+    ModuleInstance input;
+    input.id = QStringLiteral("t17_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("测量输入");
+    input.params["mode"] = QStringLiteral("point_pair");
+    input.params["point1"] = QJsonArray{420.0, 240.0};
+    input.params["point2"] = QJsonArray{320.0, 340.0};
+    project->addModule(input);
+
+    ModuleInstance dist;
+    dist.id = QStringLiteral("t17_dist");
+    dist.moduleId = QStringLiteral("DistancePP");
+    dist.name = QStringLiteral("点点距离");
+    project->addModule(dist);
+
+    ModuleConnection grabToInput;
+    grabToInput.fromModuleId = grab.id;
+    grabToInput.toModuleId = input.id;
+    grabToInput.fromPort = QStringLiteral("image");
+    grabToInput.toPort = QStringLiteral("image");
+    grabToInput.edgeType = QStringLiteral("data");
+    project->addConnection(grabToInput);
+    ModuleConnection point1ToDist;
+    point1ToDist.fromModuleId = input.id;
+    point1ToDist.toModuleId = dist.id;
+    point1ToDist.fromPort = QStringLiteral("point1");
+    point1ToDist.toPort = QStringLiteral("point1");
+    point1ToDist.edgeType = QStringLiteral("data");
+    project->addConnection(point1ToDist);
+    ModuleConnection point2ToDist = point1ToDist;
+    point2ToDist.fromPort = QStringLiteral("point2");
+    point2ToDist.toPort = QStringLiteral("point2");
+    project->addConnection(point2ToDist);
+    QCoreApplication::processEvents();
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+
+    bool runFinished = false;
+    const QMetaObject::Connection runConnection = connect(&RunEngine::instance(), &RunEngine::runFinished, &window,
+                                                          [&](const RunResult&) { runFinished = true; });
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_VERIFY(runFinished);
+    disconnect(runConnection);
+    QVERIFY(waitForServiceIdle());
+    QTRY_VERIFY(imageWidget->hasImage());
+    QTRY_VERIFY(!imageWidget->measurementLines().isEmpty());
+
+    const DisplayFrame staleFrame = RunEngine::instance().latestDisplayFrame(QStringLiteral("main"));
+    QVERIFY2(staleFrame.jobId > 0, "run through the service must stamp a jobId on the display frame");
+    QVERIFY(!staleFrame.runId.isEmpty());
+
+    // 切换到新工程：必须清空 RunEngine 最新帧槽位（以及合并器 pending/identity/叠加）。
+    Project* next = ProjectManager::instance().newProject();
+    QVERIFY(next != nullptr);
+    QCoreApplication::processEvents();
+    QVERIFY2(RunEngine::instance().latestDisplayFrame(QStringLiteral("main")).image.isNull(),
+             "project switch must clear the engine latest display frame slot");
+
+    const QImage imageAfterSwitch = imageWidget->currentImage();
+    const int pointsAfterSwitch = imageWidget->measurementPoints().size();
+    const int linesAfterSwitch = imageWidget->measurementLines().size();
+
+    // 注入旧 job/run 的迟到通知：身份不匹配 → 合并器不得渲染、叠加不得被旧帧改写。
+    RunEngine::instance().displayFrameReady(QStringLiteral("main"), staleFrame.jobId, staleFrame.runId);
+    QTest::qWait(ImageRefreshCoalescer::ThrottleMs * 2); // 超过刷新窗口：任何被调度的帧都会渲染
+
+    QCOMPARE(imageWidget->currentImage(), imageAfterSwitch);
+    QCOMPARE(imageWidget->measurementPoints().size(), pointsAfterSwitch);
+    QCOMPARE(imageWidget->measurementLines().size(), linesAfterSwitch);
+    QVERIFY(imageWidget->measurementLines().isEmpty());
+}
+
+void TestMainWindow::testDisplayCaptureFollowsVisibility() {
+    // 设计 §7.5：窗口可见时开启帧捕获；不可见/最小化时关闭，恢复可见后重新开启。
+    MainWindow window;
+    window.resize(900, 640);
+    window.show();
+    QCoreApplication::processEvents();
+    QVERIFY(RunEngine::instance().isDisplayCaptureEnabled());
+
+    window.hide();
+    QCoreApplication::processEvents();
+    QVERIFY2(!RunEngine::instance().isDisplayCaptureEnabled(), "hidden window must disable display capture");
+
+    window.show();
+    QCoreApplication::processEvents();
+    QVERIFY2(RunEngine::instance().isDisplayCaptureEnabled(), "visible window must enable display capture");
 }
 
 void TestMainWindow::testMeasurementOverlayReadsFrameSnapshotNotLiveOutput() {

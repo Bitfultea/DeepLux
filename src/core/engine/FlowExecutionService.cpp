@@ -345,7 +345,7 @@ void FlowExecutionService::runJob(JobType job) {
     }
     commitState(State::Idle, JobType::None);
     {
-        // 唤醒 waitForIdle()：job 已收尾（endExternalJob 已释放租约，引擎不再 busy）。
+        // 唤醒仍在等待命令/暂停/继续的工作线程或锁内等待者（job 已收尾）。
         QMutexLocker locker(&m_mutex);
         m_wake.wakeAll();
     }
@@ -355,16 +355,6 @@ void FlowExecutionService::runJob(JobType job) {
     } else {
         emit jobFinished(job, stopped);
     }
-}
-
-bool FlowExecutionService::waitForIdle(int timeoutMs) {
-    QMutexLocker locker(&m_mutex);
-    while (state() != State::Idle || m_pendingJob != JobType::None || currentJob() != JobType::None) {
-        if (!m_wake.wait(&m_mutex, qMax(0, timeoutMs))) {
-            return state() == State::Idle && m_pendingJob == JobType::None && currentJob() == JobType::None;
-        }
-    }
-    return true;
 }
 
 void FlowExecutionService::runSingleJob(const RunEngine::JobToken& token, bool& stopped, bool& failed, QString& error) {

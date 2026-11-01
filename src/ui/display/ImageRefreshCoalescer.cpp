@@ -21,13 +21,12 @@ void ImageRefreshCoalescer::setExpectedIdentity(quint64 jobId, const QString& ru
     }
     m_jobId = jobId;
     m_expectedRunId = runId;
-    m_identityPinned = (jobId != 0);
 }
 
 void ImageRefreshCoalescer::clearExpectedIdentity() {
-    m_jobId = 0;
+    // 保留 m_jobId 作为“最近 job”高水位（设计 §7.3 加固）：即使解除身份锁定，
+    // 更旧 job 的迟到帧仍会被 accepts() 丢弃；新 job（jobId 更大）照常接管。
     m_expectedRunId.clear();
-    m_identityPinned = false;
 }
 
 bool ImageRefreshCoalescer::accepts(const DisplayFrame& frame) const {
@@ -35,8 +34,8 @@ bool ImageRefreshCoalescer::accepts(const DisplayFrame& frame) const {
         // 无 Service job 的同步运行（CLI/测试兼容路径）：不受 job 身份限制。
         return true;
     }
-    if (m_identityPinned && frame.jobId < m_jobId) {
-        return false; // 旧 job 的迟到帧
+    if (m_jobId != 0 && frame.jobId < m_jobId) {
+        return false; // 更旧 job 的迟到帧：无活动 job 时同样丢弃，避免污染当前画面
     }
     if (!m_expectedRunId.isEmpty() && frame.jobId == m_jobId && frame.runId != m_expectedRunId) {
         return false; // 同一 job 下身份不匹配的帧

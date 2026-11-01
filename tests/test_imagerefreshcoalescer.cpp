@@ -108,6 +108,8 @@ private slots:
     void testDropsMismatchedIdentity();
     void testNewJobClearsPending();
     void testClearPendingDiscardsFrames();
+    // t17/F2 加固：解除身份锁定后仍按“最近 job”高水位丢弃更旧 job 的迟到帧（设计 §7.3）
+    void testDropsOldJobFramesAfterIdentityCleared();
 
     // B8.3 视图保持（设计 §7.4）
     void testPreserveViewKeepsZoomAndOffset();
@@ -432,6 +434,44 @@ void TestImageRefreshCoalescer::testClearPendingDiscardsFrames() {
     coalescer.schedule(frameWith(2));
     QVERIFY(waitForCondition([&renders]() { return renders == 1; }, 1000));
     QCOMPARE(lastRenderedFrameId, quint64(2));
+}
+
+void TestImageRefreshCoalescer::testDropsOldJobFramesAfterIdentityCleared() {
+    // 设计 §7.3：解除身份锁定（如 job 结束/工程切换）后仍保留“最近 job”高水位——
+    // 更旧 job 的迟到帧必须丢弃，不得渲染到当前画面；新 job（jobId 更大）照常接管。
+    int renders = 0;
+    quint64 lastRenderedFrameId = 0;
+    ImageRefreshCoalescer coalescer;
+    coalescer.setRenderCallback([&](const DisplayFrame& frame) {
+        ++renders;
+        lastRenderedFrameId = frame.frameId;
+    });
+
+    coalescer.setExpectedIdentity(5, QStringLiteral("run-5"));
+    coalescer.schedule(frameWith(1, 5, QStringLiteral("run-5")));
+    QVERIFY(coalescer.hasPending());
+
+    coalescer.clearExpectedIdentity();
+    QCOMPARE(coalescer.currentJobId(), quint64(5)); // 高水位保留
+    coalescer.clearPending();
+
+    // 更旧 job 的迟到帧：无身份锁定时也必须丢弃。
+    coalescer.schedule(frameWith(2, 4, QStringLiteral("run-4")));
+    QVERIFY(!coalescer.hasPending());
+    coalescer.clearPending();
+
+    // 同一最近 job 的帧：不锁定 runId 时接受。
+    coalescer.schedule(frameWith(4, 5, QStringLiteral("run-5-b")));
+    QCOMPARE(coalescer.pendingFrameId(), quint64(4));
+
+    // 新 job：接管并清空旧 pending。
+    coalescer.schedule(frameWith(5, 6, QStringLiteral("run-6")));
+    QCOMPARE(coalescer.pendingFrameId(), quint64(5));
+    QCOMPARE(coalescer.currentJobId(), quint64(6));
+
+    coalescer.forceFlush();
+    QCOMPARE(renders, 1);
+    QCOMPARE(lastRenderedFrameId, quint64(5));
 }
 
 // ---------------------------------------------------------------------------

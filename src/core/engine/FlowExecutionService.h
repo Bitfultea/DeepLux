@@ -43,9 +43,6 @@ public:
     // 仅 Idle 时销毁线程并返回 true；非 Idle 时先 stop 并返回 false（调用方在
     // jobFinished 后重试，见设计 §5.3 #7）。
     bool shutdown();
-    // 等待 job 真正收尾（Idle 且无 pending/currentJob）。runFinished 早于 Service
-    // endExternalJob，wait=true 的调用方用它在返回前恢复“引擎已空闲”语义。
-    bool waitForIdle(int timeoutMs);
 
     State state() const {
         return static_cast<State>(m_state.load(std::memory_order_acquire));

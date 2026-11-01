@@ -40,10 +40,12 @@ public:
 
     /**
      * @brief 锁定当前 job/run 身份（MainWindow 在 job 启动时调用）。
-     * @param jobId 允许为 0 表示不限制 job；非 0 时丢弃 jobId 更小的迟到帧。
+     * @param jobId 最近 job 代号（单调递增）；0 表示清除高水位、不限制 job。
+     *        非 0 时丢弃 jobId 更小的迟到帧（解除锁定后仍保留高水位，见 clearExpectedIdentity）。
      * @param runId 空表示接受该 job 的任意轮；非空时丢弃 runId 失配的帧。
      */
     void setExpectedIdentity(quint64 jobId, const QString& runId);
+    /// 解除 run 身份锁定，但保留“最近 job”高水位：更旧 job 的迟到帧仍被丢弃。
     void clearExpectedIdentity();
 
     /// 提交一帧（latest-wins：只保留最新一帧，按身份过滤迟到帧）。
@@ -79,9 +81,10 @@ private:
     RenderCallback m_renderCallback;
     QMap<QString, Slot> m_slots;
     QElapsedTimer m_clock;
+    // 最近 job 高水位（jobId 单调递增）：更旧 job 的迟到帧一律丢弃（设计 §7.3）。
     quint64 m_jobId = 0;
+    // 可选的 run 身份锁定：非空时同一 job 下 runId 失配的帧被丢弃。
     QString m_expectedRunId;
-    bool m_identityPinned = false;
 };
 
 } // namespace DeepLux

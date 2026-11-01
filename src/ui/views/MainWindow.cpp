@@ -561,6 +561,25 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
         Logger::instance().info(tr("断点暂停：%1，点击运行继续").arg(moduleName), "Run");
     });
 
+    // 后台执行（设计 §8.1）：pauseHit 对 Breakpoint 与 User 都会发。断点已有 breakpointHit
+    // 专门处理（断点文案），这里只处理用户暂停（Agent pause_flow / Service::pauseRun），
+    // 做与断点同等的 UI 更新并区分原因，避免 Breakpoint 重复触发或状态被覆盖。
+    connect(&RunEngine::instance(), &RunEngine::pauseHit, this, [this](const QString& moduleName, PauseReason reason) {
+        if (reason != PauseReason::User) {
+            return;
+        }
+        QTreeWidgetItem* item = m_processTreeController ? m_processTreeController->instanceItem(moduleName) : nullptr;
+        if (item) {
+            m_currentExecutingItem = item;
+            setProcessItemStatus(item, QStringLiteral("paused"), tr("用户暂停"));
+        }
+        updateBreakpointRunControls(true);
+        if (m_runStatusLabel) {
+            m_runStatusLabel->setText(tr("用户暂停：%1").arg(moduleName));
+        }
+        Logger::instance().info(tr("用户暂停：%1，点击运行继续").arg(moduleName), "Run");
+    });
+
     connect(&RunEngine::instance(), &RunEngine::runFinished, this, [this](const RunResult& result) {
         if (m_processTimeLabel) {
             m_processTimeLabel->setText(tr("总耗时：%1 ms").arg(result.elapsedMs));
@@ -2134,10 +2153,12 @@ void MainWindow::onProjectOpened(Project* project) {
     RunEngine::instance().clearModules();
 
     // 后台执行（设计 §7.3）：工程切换清空合并器待处理帧、最近帧与叠加，避免旧工程残留。
+    // 同时清空 RunEngine 的最新帧槽位：迟到通知按 (jobId,runId) 取帧时必须取不到旧工程帧。
     if (m_imageCoalescer) {
         m_imageCoalescer->clearPending();
         m_imageCoalescer->clearExpectedIdentity();
     }
+    RunEngine::instance().clearLatestDisplayFrames();
     m_hasDisplayFrame = false;
     m_latestDisplayFrame = DisplayFrame();
     if (m_displayManager) {
@@ -2263,10 +2284,12 @@ void MainWindow::onProjectClosed() {
     RunEngine::instance().clearModules();
 
     // 后台执行（设计 §7.3）：工程切换清空合并器待处理帧、最近帧与叠加，迟到帧不得污染新工程。
+    // 同时清空 RunEngine 的最新帧槽位（旧 (jobId,runId) 的迟到通知必须取不到可渲染帧）。
     if (m_imageCoalescer) {
         m_imageCoalescer->clearPending();
         m_imageCoalescer->clearExpectedIdentity();
     }
+    RunEngine::instance().clearLatestDisplayFrames();
     m_hasDisplayFrame = false;
     m_latestDisplayFrame = DisplayFrame();
     if (m_displayManager) {
