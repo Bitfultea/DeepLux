@@ -45,5 +45,7 @@
     "execution": {
         "threadSafe": false,
         "blocking": true
+    ,
+        "affinity": "worker"
     }
 }

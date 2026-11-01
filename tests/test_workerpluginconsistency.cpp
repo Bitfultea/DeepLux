@@ -77,6 +77,24 @@ const QVector<Candidate>& candidates() {
         {"NPointCalibration", "N点标定", "calibration", false},
         {"GapMeasure3D", "GapMeasure3D", "geometry", false},
         {"FreeformSurface", "FreeformSurface", "geometry", false},
+        // B9C：变量/逻辑/系统（Delay/Parallel/QueueIn/QueueOut/TableOutPut 按 plan 排除，保持 gui）
+        {"CreateString", "CreateString", "variable", true},
+        {"SplitString", "SplitString", "variable", false},
+        {"StrFormatPlugin", "StrFormatPlugin", "variable", true},
+        {"VarDefinePlugin", "VarDefinePlugin", "variable", false},
+        {"VarSetPlugin", "VarSetPlugin", "variable", false},
+        {"MathPlugin", "MathPlugin", "variable", true},
+        {"Condition", "Condition", "logic", false},
+        {"If", "If", "logic", true},
+        {"Loop", "Loop", "logic", true},
+        {"While", "While", "logic", true},
+        {"StopWhile", "StopWhile", "logic", true},
+        {"TimeSlice", "TimeSlice", "system", true},
+        {"DataCheck", "DataCheck", "system", true},
+        {"SystemTime", "SystemTime", "system", true, false}, // 输出含时间戳：只比较端口/类型
+        {"WriteText", "WriteText", "system", true},
+        {"Folder", "Folder", "system", true},
+        {"SaveData", "SaveData", "system", true},
     };
     return list;
 }
@@ -191,9 +209,11 @@ PortValueMap buildInputs(IModule* module) {
         if (spec.control) {
             continue;
         }
-        // 必需输入必须提供；图像/点云/点集即使可选也提供，便于真正跑到计算路径。
+        // 必需输入必须提供；图像/点云/点集（以及 Any 载体端口）即使可选也提供，
+        // 便于真正跑到计算路径（旧式插件从 ImageData 载体读隐藏数据键）。
         const bool alwaysProvide = spec.type == DataType::Image2D || spec.type == DataType::HeightMap2D ||
-                                   spec.type == DataType::PointCloud3D || spec.type == DataType::PointSet2D;
+                                   spec.type == DataType::PointCloud3D || spec.type == DataType::PointSet2D ||
+                                   spec.type == DataType::Any;
         if (!spec.required && !alwaysProvide) {
             continue;
         }
@@ -400,15 +420,27 @@ SnapshotComparisonResult compareSnapshots(const Snapshot& reference, const Snaps
     } else if (!reference.success) {
         // 失败分支：只要求结构化错误一致（同一输入下不得出现跨线程差异）。
     }
-    if (reason.isEmpty() && candidate.deterministicOutput) {
+    if (reason.isEmpty()) {
         if (reference.outputs.keys() != actual.outputs.keys()) {
             reason =
                 QStringLiteral("output ports differ: %1 vs %2")
                     .arg(reference.outputs.keys().join(QLatin1Char(',')), actual.outputs.keys().join(QLatin1Char(',')));
-        } else {
+        } else if (candidate.deterministicOutput) {
             for (auto it = reference.outputs.constBegin(); it != reference.outputs.constEnd(); ++it) {
                 if (!valuesEqual(it.value(), actual.outputs.value(it.key()), reason)) {
                     reason = QStringLiteral("port '%1': %2").arg(it.key(), reason);
+                    break;
+                }
+            }
+        } else {
+            // 非确定性输出（如系统时间）：只要求端口集合与载荷类型一致。
+            for (auto it = reference.outputs.constBegin(); it != reference.outputs.constEnd(); ++it) {
+                const QVariant other = actual.outputs.value(it.key());
+                const QString refType = QString::fromLatin1(it.value().typeName());
+                const QString otherType = QString::fromLatin1(other.typeName());
+                if (refType != otherType) {
+                    reason =
+                        QStringLiteral("port '%1' payload type differs: %2 vs %3").arg(it.key(), refType, otherType);
                     break;
                 }
             }
@@ -434,7 +466,7 @@ private:
     QTemporaryDir m_tempDir;
     QString m_cloudPath;
 
-    /// 每插件运行期参数：仅 IO 类候选需要真实文件路径；其余保持 metadata 默认值。
+    /// 每插件运行期参数：IO/变量类候选需要真实文件路径或非空参数；其余保持 metadata 默认值。
     void applyTestParams(IModule* module, const QString& name, const QString& tag) const {
         QJsonObject params = module->defaultParams();
         if (name == QStringLiteral("SaveImage")) {
@@ -443,8 +475,46 @@ private:
             params.insert(QStringLiteral("format"), QStringLiteral("png"));
         } else if (name == QStringLiteral("LoadPointCloud")) {
             params.insert(QStringLiteral("filePath"), m_cloudPath);
+        } else if (name == QStringLiteral("SplitString")) {
+            params.insert(QStringLiteral("inputString"), QStringLiteral("alpha,beta,gamma"));
+        } else if (name == QStringLiteral("VarDefinePlugin")) {
+            params.insert(QStringLiteral("variableName"), QStringLiteral("worker_var"));
+            params.insert(QStringLiteral("variableType"), QStringLiteral("double"));
+            params.insert(QStringLiteral("initialValue"), 1);
+        } else if (name == QStringLiteral("VarSetPlugin")) {
+            params.insert(QStringLiteral("variableName"), QStringLiteral("worker_var"));
+            params.insert(QStringLiteral("value"), QStringLiteral("1"));
+        } else if (name == QStringLiteral("Condition")) {
+            params.insert(QStringLiteral("variableName"), QStringLiteral("worker_var"));
+            params.insert(QStringLiteral("operator"), QStringLiteral("NotEmpty"));
+        } else if (name == QStringLiteral("WriteText")) {
+            params.insert(QStringLiteral("filePath"),
+                          QDir(m_tempDir.path()).filePath(QStringLiteral("text_%1.txt").arg(tag)));
+            params.insert(QStringLiteral("textContent"), QStringLiteral("worker consistency"));
+        } else if (name == QStringLiteral("Folder")) {
+            params.insert(QStringLiteral("folderPath"), m_tempDir.path());
+            params.insert(QStringLiteral("operation"), QStringLiteral("Exists"));
+        } else if (name == QStringLiteral("SaveData")) {
+            params.insert(QStringLiteral("filePath"),
+                          QDir(m_tempDir.path()).filePath(QStringLiteral("data_%1.json").arg(tag)));
+            params.insert(QStringLiteral("fileFormat"), QStringLiteral("json"));
         }
         module->setParams(params);
+    }
+
+    /// 旧式 ImageData 数据键（非端口）由插件直接读取；为这些候选补充确定性载荷。
+    void decorateInputs(const QString& name, PortValueMap& inputs) const {
+        if (name != QStringLiteral("DataCheck") && name != QStringLiteral("Condition"))
+            return;
+        auto it = inputs.find(QStringLiteral("image"));
+        if (it == inputs.end() || !it->canConvert<ImageData>())
+            return;
+        ImageData image = it->value<ImageData>();
+        if (name == QStringLiteral("DataCheck"))
+            image.setData(QStringLiteral("check_data"), 50.0);
+        else
+            image.setData(QStringLiteral("worker_var"), QStringLiteral("value"));
+        it->setValue(image);
     }
 
     bool writePointCloudFile() {
@@ -570,7 +640,8 @@ private slots:
         applyTestParams(second.get(), pluginName, QStringLiteral("second"));
         QVERIFY2(second->initialize(), qPrintable(QStringLiteral("second initialize failed: %1").arg(pluginName)));
 
-        const PortValueMap inputs = buildInputs(first.get());
+        PortValueMap inputs = buildInputs(first.get());
+        decorateInputs(pluginName, inputs);
         const Snapshot guiSnapshot = snapshotOf(first.get(), inputs, 1);
 
         Snapshot sameInstanceWorker;

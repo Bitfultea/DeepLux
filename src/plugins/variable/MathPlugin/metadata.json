@@ -7,6 +7,8 @@
     "description": "基本数学运算",
     "execution": {
         "threadSafe": true
+    ,
+        "affinity": "worker"
     },
     "ui": {
         "parameters": {

@@ -5,6 +5,9 @@
     "version": "1.0.0",
     "author": "DeepLux Team",
     "description": "放在循环内用于提前退出",
+    "execution": {
+        "affinity": "worker"
+    },
     "ports": {
         "inputs": [
             {
