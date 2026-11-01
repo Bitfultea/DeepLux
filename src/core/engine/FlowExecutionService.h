@@ -8,6 +8,7 @@
 #include <QThread>
 #include <QWaitCondition>
 #include <atomic>
+#include <functional>
 
 namespace DeepLux {
 
@@ -69,6 +70,15 @@ public:
         return m_failedJobSerial.load(std::memory_order_acquire);
     }
 
+    // B7：启动握手在 GUI 线程上的最长等待。超时后撤回尚未出队的命令（已出队则请求停止），
+    // 保证 closeEvent/启动路径不被拖住，且不会留下“稍后执行”的 pending job。
+    static constexpr int StartHandshakeTimeoutMs = 100;
+
+    // 后台执行（B7）测试注入：worker 在 beginExternalJob 之前的启动协议内执行该钩子，
+    // 用于确定性验证启动握手的等待上限与超时语义（生产构建该钩子恒为空）。
+    DEEPLUX_TEST_VISIBILITY : void setStartHandshakeHookForTest(std::function<void()> hook);
+    DEEPLUX_TEST_VISIBILITY : void clearStartHandshakeHookForTest();
+
 signals:
     void jobStateChanged(FlowExecutionService::State state, FlowExecutionService::JobType job);
     void jobFinished(FlowExecutionService::JobType job, bool stopped);
@@ -111,6 +121,8 @@ private:
     bool m_resumeRequested = false;
     bool m_startSettled = true;
     bool m_startOk = false;
+    // B7：启动握手超时诊断/测试钩子（钩子仅在持有本地副本时于工作线程执行）。
+    std::function<void()> m_testStartHook;
     JobType m_pendingJob = JobType::None;
     RunEngine::JobToken m_leaseToken;
     std::atomic<int> m_state{static_cast<int>(State::Idle)};

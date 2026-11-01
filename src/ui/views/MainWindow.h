@@ -203,6 +203,10 @@ protected:
     void setUiRunningState(bool running, bool cycleMode);
     void updateBreakpointRunControls(bool paused);
     bool syncModulesToRunEngine();
+    // 后台执行（设计 §8.1）：运行控制统一走 FlowExecutionService，
+    // MainWindow 只负责同步模块、更新按钮状态与 job 级收尾。
+    bool startRunThroughService(bool cycleMode);
+    void finishRunUi();
     void clearExecutionHighlight(QTreeWidgetItem* item);
     void showProcessModuleOutput(QTreeWidgetItem* item, bool userInitiated = false);
     void displayImage(const ImageData& image, const QString& label = QString(), const QString& moduleId = QString());

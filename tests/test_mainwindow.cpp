@@ -28,6 +28,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSemaphore>
 #include <QSignalSpy>
 #include <QSplitter>
 #include <QTabBar>
@@ -46,6 +47,7 @@
 #include <QtTest/QtTest>
 #include <core/agent/AgentController.h>
 #include <core/base/ModuleBase.h>
+#include <core/engine/FlowExecutionService.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>
@@ -104,6 +106,67 @@ protected:
     }
 };
 
+/// B7 异步 UI 用例的阻塞探针：测试通过引擎把该实例标记为 worker 亲和后，
+/// process() 在服务工作线程阻塞到 release 或被取消，用于证明 GUI 线程不被阻塞。
+class MainWindowBlockingWorkerProbe : public ModuleBase {
+    Q_OBJECT
+
+public:
+    explicit MainWindowBlockingWorkerProbe(const QString& instanceId) {
+        m_moduleId = QStringLiteral("com.deeplux.test.mainwindowblockingprobe");
+        m_name = QStringLiteral("BlockingProbe");
+        m_category = QStringLiteral("test");
+        setInstanceName(instanceId);
+    }
+
+    QSemaphore entered; // 已进入执行
+    QSemaphore release; // 测试放行
+    std::atomic_int runs{0};
+    std::atomic<Qt::HANDLE> executedOn{nullptr};
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        Q_UNUSED(input)
+        executedOn.store(QThread::currentThreadId());
+        ++runs;
+        entered.release();
+        QElapsedTimer timer;
+        timer.start();
+        while (!release.tryAcquire(1) && !isCancellationRequested() && timer.elapsed() < 5000) {
+            QThread::msleep(2);
+        }
+        QImage image(16, 12, QImage::Format_RGB32);
+        image.fill(QColor("#2563EB"));
+        output = ImageData(image);
+        output.setData(QStringLiteral("tag"), QStringLiteral("blocking"));
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
+
+namespace {
+// B7：等待后台服务回到 Idle 的确定性辅助（只等待条件，不构造执行顺序）。
+bool waitForServiceIdle(int timeoutMs = 5000) {
+    FlowExecutionService& service = FlowExecutionService::instance();
+    QElapsedTimer timer;
+    timer.start();
+    for (;;) {
+        if (service.state() == FlowExecutionService::State::Idle && !service.isActive()) {
+            // 让排队的 jobFinished/jobFailed 送达：UI 的按钮/关闭收尾依赖该信号。
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+            return service.state() == FlowExecutionService::State::Idle && !service.isActive();
+        }
+        if (timer.elapsed() > timeoutMs)
+            return false;
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        QTest::qWait(2);
+    }
+}
+} // namespace
+
 class TestMainWindow : public QObject {
     Q_OBJECT
 
@@ -156,6 +219,12 @@ private slots:
     void testBreakpointPauseAndContinueFromRunButton();
     void testCycleRunDoesNotStealSelection();
     void testStepRunFollowsExecution();
+    // B7：UI 运行/循环/单步/关闭接入 FlowExecutionService（设计 §8.1）
+    void testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns();
+    void testStepRunExecutesExactlyOneModulePerClick();
+    void testCycleRunStopsWithoutExtraRound();
+    void testCloseDeferredUntilRunningJobFinishes();
+    void testStartHandshakeTimeoutLeavesNoPendingJob();
     void testCloseInspectorDoesNotAutoExpand();
     void testDeleteModuleClearsInspector();
     void testOldAdvancedConfigDialogStillUsable();
@@ -205,6 +274,10 @@ void TestMainWindow::init() {
     RunEngine::instance().stop();
     RunEngine::instance().clearModules();
     RunEngine::instance().clearOutputs();
+    // B7：上一个用例可能留下后台 job；先停再等收尾，保证每个用例从 Service Idle 开始。
+    FlowExecutionService::instance().clearStartHandshakeHookForTest();
+    FlowExecutionService::instance().stop();
+    QVERIFY(waitForServiceIdle());
     // 默认插件目录重定向到临时目录，避免每个 MainWindow 实例都扫描
     // ~/.deeplux/plugins（会刷出大量 qDebug 并触发 QtTest 警告上限）。
     qputenv("DEEPLUX_APP_DATA_DIR", m_appDataDir.filePath("appdata").toLocal8Bit());
@@ -214,6 +287,9 @@ void TestMainWindow::init() {
 void TestMainWindow::cleanup() {
     ProjectManager::instance().closeProject();
     PluginManager::instance().shutdown();
+    FlowExecutionService::instance().clearStartHandshakeHookForTest();
+    FlowExecutionService::instance().stop();
+    QVERIFY(waitForServiceIdle());
     RunEngine::instance().stop();
     RunEngine::instance().clearModules();
     RunEngine::instance().clearOutputs();
@@ -335,16 +411,16 @@ void TestMainWindow::testStepRunHighlightMovesBetweenModules() {
     QVERIFY(stepInspector != nullptr);
     stepInspector->setPinned(false);
 
-    // Step run via onStepRun() to test the full UI path
+    // Step run via onStepRun() to test the full UI path（B7：单步异步，等 job 收尾）
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
-    QCoreApplication::processEvents();
-    QCOMPARE(processTree->currentItem(), firstItem);
-    QVERIFY(firstItem->text(1).endsWith(QStringLiteral(" ms")));
+    QTRY_COMPARE(processTree->currentItem(), firstItem);
+    QTRY_VERIFY(firstItem->text(1).endsWith(QStringLiteral(" ms")));
+    QVERIFY(waitForServiceIdle());
 
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
-    QCoreApplication::processEvents();
-    QCOMPARE(processTree->currentItem(), secondItem);
-    QVERIFY(secondItem->text(1).endsWith(QStringLiteral(" ms")));
+    QTRY_COMPARE(processTree->currentItem(), secondItem);
+    QTRY_VERIFY(secondItem->text(1).endsWith(QStringLiteral(" ms")));
+    QVERIFY(waitForServiceIdle());
 
     engine.clearModules();
     delete first;
@@ -564,6 +640,7 @@ void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
     const QPointF pickedPoint2 = imageWidget->widgetToImage(widgetPoint2);
     QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, widgetPoint2);
     QTRY_VERIFY(RunEngine::instance().moduleOutput(QStringLiteral("distance_1")).data("distance").isValid());
+    QVERIFY(waitForServiceIdle());
 
     input = project->findModule(inputId);
     QVERIFY(input != nullptr);
@@ -573,11 +650,11 @@ void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
     QCOMPARE(input->params["point2"].toArray().at(1).toDouble(), pickedPoint2.y());
     QVERIFY(!input->params["awaitUserPick"].toBool());
 
-    // 单步执行会清空流程树选择，但不应丢失测量输入目标。
+    // 单步执行会清空流程树选择，但不应丢失测量输入目标。（B7：单步异步，逐次等待收尾）
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
-    QCoreApplication::processEvents();
+    QVERIFY(waitForServiceIdle());
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
-    QCoreApplication::processEvents();
+    QVERIFY(waitForServiceIdle());
     const ImageData output = RunEngine::instance().moduleOutput(QStringLiteral("distance_1"));
     QVERIFY(output.data("distance").isValid());
     QCOMPARE(output.data("distance").toDouble(), QLineF(pickedPoint1, pickedPoint2).length());
@@ -1857,7 +1934,8 @@ void TestMainWindow::testConnectionChangeRebuildsExecutionTopology() {
     QCoreApplication::processEvents();
 
     QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
-    QCOMPARE(executionLog, QStringList({QStringLiteral("A"), QStringLiteral("C"), QStringLiteral("B")}));
+    QTRY_COMPARE(executionLog, QStringList({QStringLiteral("A"), QStringLiteral("C"), QStringLiteral("B")}));
+    QVERIFY(waitForServiceIdle());
 
     executionLog.clear();
     ModuleConnection connection;
@@ -1867,7 +1945,8 @@ void TestMainWindow::testConnectionChangeRebuildsExecutionTopology() {
     QCoreApplication::processEvents();
 
     QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
-    QCOMPARE(executionLog, QStringList({QStringLiteral("A"), QStringLiteral("C"), QStringLiteral("B")}));
+    QTRY_COMPARE(executionLog, QStringList({QStringLiteral("A"), QStringLiteral("C"), QStringLiteral("B")}));
+    QVERIFY(waitForServiceIdle());
     QVERIFY(RunEngine::instance().moduleOutput(QStringLiteral("C")).isValid());
 
     RunEngine::instance().clearModules();
@@ -1912,22 +1991,27 @@ void TestMainWindow::testBreakpointPauseAndContinueFromRunButton() {
     QVERIFY(runAction != nullptr);
     QVERIFY(processTree != nullptr);
     QSignalSpy finishedSpy(&RunEngine::instance(), &RunEngine::runFinished);
+    QSignalSpy jobSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
 
     QTest::mouseClick(runButton, Qt::LeftButton);
-    QVERIFY(RunEngine::instance().isPausedAtBreakpoint());
+    QTRY_VERIFY_WITH_TIMEOUT(RunEngine::instance().isPausedAtBreakpoint(), 5000);
+    QCOMPARE(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused);
     QCOMPARE(executionLog.size(), 0);
     QCOMPARE(finishedSpy.count(), 0);
-    QCOMPARE(runButton->text(), QStringLiteral("继续"));
-    QCOMPARE(runAction->text(), QStringLiteral("继续"));
-    QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 5).toString(), QStringLiteral("paused"));
+    QTRY_COMPARE(runButton->text(), QStringLiteral("继续"));
+    QTRY_COMPARE(runAction->text(), QStringLiteral("继续"));
+    QTRY_COMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 5).toString(), QStringLiteral("paused"));
 
-    QCoreApplication::processEvents();
+    // B7：继续必须走 Service（onRunOnce → continueRun），不得绕过 job 租约直接调 RunEngine::resume()。
+    QCOMPARE(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused);
     QTest::mouseClick(runButton, Qt::LeftButton);
-    QCOMPARE(executionLog, QStringList({first.id, second.id}));
-    QCOMPARE(finishedSpy.count(), 1);
+    QTRY_COMPARE_WITH_TIMEOUT(executionLog, QStringList({first.id, second.id}), 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+    QVERIFY(waitForServiceIdle());
+    QCOMPARE(jobSpy.count(), 1);
     QVERIFY(!RunEngine::instance().isPausedAtBreakpoint());
-    QCOMPARE(runButton->text(), QStringLiteral("运行"));
-    QCOMPARE(runAction->text(), QStringLiteral("单次运行"));
+    QTRY_COMPARE(runButton->text(), QStringLiteral("运行"));
+    QTRY_COMPARE(runAction->text(), QStringLiteral("单次运行"));
 
     RunEngine::instance().clearModules();
     project->removeModule(first.id);
@@ -1959,8 +2043,9 @@ void TestMainWindow::testDirtyStateInvalidatesDownstreamResults() {
 
     QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
     RunEngine& engine = RunEngine::instance();
-    QVERIFY(engine.moduleOutput(QStringLiteral("source")).isValid());
-    QVERIFY(engine.moduleOutput(QStringLiteral("downstream")).isValid());
+    QTRY_VERIFY(engine.moduleOutput(QStringLiteral("source")).isValid());
+    QTRY_VERIFY(engine.moduleOutput(QStringLiteral("downstream")).isValid());
+    QVERIFY(waitForServiceIdle());
 
     QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
     QVERIFY(processTree != nullptr);
@@ -1976,6 +2061,8 @@ void TestMainWindow::testDirtyStateInvalidatesDownstreamResults() {
     QVERIFY(imageWidget->hasImage());
 
     QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTRY_VERIFY(engine.moduleOutput(QStringLiteral("source")).isValid());
+    QVERIFY(waitForServiceIdle());
     processTree->setCurrentItem(processTree->topLevelItem(1));
     QCoreApplication::processEvents();
     QVERIFY(imageWidget->hasImage());
@@ -3484,7 +3571,7 @@ void TestMainWindow::testStepRunFollowsExecution() {
     // Step run should follow the executing module (since not pinned)
     // Use onStepRun() call instead of engine.runOnce()
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
-    QCoreApplication::processEvents();
+    QVERIFY(waitForServiceIdle());
 
     // After step run, selection should follow (when not pinned)
     QVERIFY(processTree->topLevelItemCount() >= 2);
@@ -3492,6 +3579,325 @@ void TestMainWindow::testStepRunFollowsExecution() {
     engine.clearModules();
     delete mod1;
     delete mod2;
+}
+
+void TestMainWindow::testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns() {
+    MainWindow window;
+    window.resize(1024, 700);
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance cheap;
+    cheap.id = QStringLiteral("b7_async_cheap");
+    cheap.moduleId = QStringLiteral("OutputProbe");
+    cheap.name = QStringLiteral("B7 前置模块");
+    project->addModule(cheap);
+
+    ModuleInstance blocking;
+    blocking.id = QStringLiteral("b7_async_blocking");
+    blocking.moduleId = QStringLiteral("BlockingProbe");
+    blocking.name = QStringLiteral("B7 阻塞模块");
+    project->addModule(blocking);
+    QCoreApplication::processEvents();
+
+    auto* cheapProbe = new MainWindowOutputProbeModule(cheap.id);
+    cheapProbe->initialize();
+    window.registerFlowModule(cheap.id, cheapProbe);
+    auto* blockingProbe = new MainWindowBlockingWorkerProbe(blocking.id);
+    blockingProbe->initialize();
+    window.registerFlowModule(blocking.id, blockingProbe);
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QToolButton* stopButton = window.findChild<QToolButton*>(QStringLiteral("FlowStopButton"));
+    QVERIFY(runButton != nullptr);
+    QVERIFY(stopButton != nullptr);
+
+    // 先用一次单步完成 UI→引擎模块同步；syncModulesToRunEngine() 会清空亲和性缓存，
+    // 因此把两个探针都标记为 worker 亲和必须发生在这之后（确定性注入，不依赖执行时序）。
+    // 两个模块都必须 worker 亲和：断言会阻塞 GUI 线程等待 entered，gui 亲和模块的
+    // BlockingQueuedConnection 无法被服务，会让运行卡在第一个模块上。
+    QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QVERIFY(waitForServiceIdle());
+    RunEngine::instance().setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
+    RunEngine::instance().setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
+
+    QSignalSpy jobSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QVERIFY2(blockingProbe->entered.tryAcquire(1, 5000), "worker module must enter execution");
+    QCOMPARE(FlowExecutionService::instance().state(), FlowExecutionService::State::Running);
+    QCOMPARE(FlowExecutionService::instance().currentJob(), FlowExecutionService::JobType::Single);
+    QVERIFY2(blockingProbe->executedOn.load() != QThread::currentThreadId(),
+             "worker-affinity module must not execute on the GUI thread");
+
+    // 长模块执行期间 GUI 定时器仍触发（16ms 计数；等待条件而不是睡眠构造顺序）。
+    QTimer ticker;
+    ticker.setInterval(16);
+    int ticks = 0;
+    QObject::connect(&ticker, &QTimer::timeout, &window, [&ticks]() { ++ticks; });
+    ticker.start();
+    QElapsedTimer responsiveTimer;
+    responsiveTimer.start();
+    while (responsiveTimer.elapsed() < 150) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        QTest::qWait(2);
+    }
+    ticker.stop();
+    QVERIFY2(ticks >= 3, qPrintable(QString("GUI timer must keep ticking during worker module, ticks=%1").arg(ticks)));
+    QVERIFY2(stopButton->isEnabled(), "stop button must stay clickable during a worker module");
+
+    // 停止按钮在长模块执行期间可用：停止后协作退出并回 Idle。
+    QTest::mouseClick(stopButton, Qt::LeftButton);
+    blockingProbe->release.release();
+    QVERIFY(waitForServiceIdle());
+    QTRY_COMPARE(jobSpy.count(), 1);
+    QCOMPARE(jobSpy.first().at(1).toBool(), true); // stopped
+    QVERIFY(!RunEngine::instance().isBusy());
+    QTRY_COMPARE(runButton->text(), QStringLiteral("运行"));
+
+    RunEngine::instance().clearModules();
+    project->removeModule(cheap.id);
+    project->removeModule(blocking.id);
+    QCoreApplication::processEvents();
+}
+
+void TestMainWindow::testStepRunExecutesExactlyOneModulePerClick() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance cheap;
+    cheap.id = QStringLiteral("b7_step_cheap");
+    cheap.moduleId = QStringLiteral("OutputProbe");
+    cheap.name = QStringLiteral("B7 单步前置");
+    project->addModule(cheap);
+
+    ModuleInstance blocking;
+    blocking.id = QStringLiteral("b7_step_blocking");
+    blocking.moduleId = QStringLiteral("BlockingProbe");
+    blocking.name = QStringLiteral("B7 单步阻塞");
+    project->addModule(blocking);
+    QCoreApplication::processEvents();
+
+    QStringList executionLog;
+    auto* cheapProbe = new MainWindowOutputProbeModule(cheap.id);
+    cheapProbe->executionLog = &executionLog;
+    cheapProbe->initialize();
+    window.registerFlowModule(cheap.id, cheapProbe);
+    auto* blockingProbe = new MainWindowBlockingWorkerProbe(blocking.id);
+    blockingProbe->initialize();
+    window.registerFlowModule(blocking.id, blockingProbe);
+
+    QToolButton* stepButton = window.findChild<QToolButton*>(QStringLiteral("FlowStepButton"));
+    QVERIFY(stepButton != nullptr);
+
+    // 首次单步完成 UI→引擎同步并执行第一个模块（每次点击只推进一个模块）。
+    QSignalSpy jobSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
+    QTest::mouseClick(stepButton, Qt::LeftButton);
+    QTRY_COMPARE_WITH_TIMEOUT(executionLog.size(), 1, 5000);
+    QVERIFY(waitForServiceIdle());
+    QCOMPARE(executionLog.size(), 1);
+
+    RunEngine::instance().setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
+    QTest::mouseClick(stepButton, Qt::LeftButton);
+    QVERIFY2(blockingProbe->entered.tryAcquire(1, 5000), "second step must run the blocking module");
+    QCOMPARE(FlowExecutionService::instance().state(), FlowExecutionService::State::Running);
+    const int runsWhileBlocked = blockingProbe->runs.load();
+    QCOMPARE(runsWhileBlocked, 1);
+
+    // 运行中连点：被服务拒绝，不得排队第二次单步。
+    QTest::mouseClick(stepButton, Qt::LeftButton);
+    QTest::mouseClick(stepButton, Qt::LeftButton);
+    QTest::qWait(20);
+    QCOMPARE(FlowExecutionService::instance().state(), FlowExecutionService::State::Running);
+    QCOMPARE(blockingProbe->runs.load(), runsWhileBlocked);
+    QCOMPARE(executionLog.size(), 1);
+
+    blockingProbe->release.release();
+    QVERIFY(waitForServiceIdle());
+    QTRY_COMPARE(jobSpy.count(), 2);
+    QCOMPARE(executionLog.size(), 1); // 阻塞模块本身不写日志；本次单步只执行了它
+
+    // 第三步重新从流程起点单步，仍然一次只执行一个模块。
+    QTest::mouseClick(stepButton, Qt::LeftButton);
+    QTRY_COMPARE_WITH_TIMEOUT(executionLog.size(), 2, 5000);
+    QVERIFY(waitForServiceIdle());
+    QCOMPARE(executionLog.size(), 2);
+
+    RunEngine::instance().clearModules();
+    project->removeModule(cheap.id);
+    project->removeModule(blocking.id);
+    QCoreApplication::processEvents();
+}
+
+void TestMainWindow::testCycleRunStopsWithoutExtraRound() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance instance;
+    instance.id = QStringLiteral("b7_cycle_probe");
+    instance.moduleId = QStringLiteral("OutputProbe");
+    instance.name = QStringLiteral("B7 循环模块");
+    project->addModule(instance);
+    QCoreApplication::processEvents();
+
+    QStringList executionLog;
+    auto* probe = new MainWindowOutputProbeModule(instance.id);
+    probe->executionLog = &executionLog;
+    probe->initialize();
+    window.registerFlowModule(instance.id, probe);
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QToolButton* cycleButton = window.findChild<QToolButton*>(QStringLiteral("FlowCycleButton"));
+    QToolButton* stopButton = window.findChild<QToolButton*>(QStringLiteral("FlowStopButton"));
+    QVERIFY(runButton != nullptr);
+    QVERIFY(cycleButton != nullptr);
+    QVERIFY(stopButton != nullptr);
+
+    QSignalSpy runSpy(&RunEngine::instance(), &RunEngine::runFinished);
+    QSignalSpy jobSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
+    QTest::mouseClick(cycleButton, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(executionLog.size() >= 2, 5000);
+    QCOMPARE(FlowExecutionService::instance().currentJob(), FlowExecutionService::JobType::Cycle);
+    QVERIFY(RunEngine::instance().isBusy());
+    QTRY_VERIFY(runSpy.count() >= 2); // Cycle 每轮都发 runFinished，但它不代表 job 结束
+
+    QTest::mouseClick(stopButton, Qt::LeftButton);
+    QVERIFY(waitForServiceIdle());
+    QTRY_COMPARE(jobSpy.count(), 1);
+    QVERIFY(!RunEngine::instance().isBusy());
+    const int roundsAtStop = executionLog.size();
+
+    // 停止后不得再有新轮（删除 runFinished → singleShot 重启路径的回归）。
+    QElapsedTimer idleTimer;
+    idleTimer.start();
+    while (idleTimer.elapsed() < 150) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        QTest::qWait(2);
+    }
+    QCOMPARE(executionLog.size(), roundsAtStop);
+    QVERIFY(!FlowExecutionService::instance().isActive());
+    QTRY_COMPARE(runButton->text(), QStringLiteral("运行"));
+
+    RunEngine::instance().clearModules();
+    project->removeModule(instance.id);
+    QCoreApplication::processEvents();
+}
+
+void TestMainWindow::testCloseDeferredUntilRunningJobFinishes() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance cheap;
+    cheap.id = QStringLiteral("b7_close_cheap");
+    cheap.moduleId = QStringLiteral("OutputProbe");
+    cheap.name = QStringLiteral("B7 关闭前置");
+    project->addModule(cheap);
+
+    ModuleInstance blocking;
+    blocking.id = QStringLiteral("b7_close_blocking");
+    blocking.moduleId = QStringLiteral("BlockingProbe");
+    blocking.name = QStringLiteral("B7 关闭阻塞");
+    project->addModule(blocking);
+    QCoreApplication::processEvents();
+
+    auto* cheapProbe = new MainWindowOutputProbeModule(cheap.id);
+    cheapProbe->initialize();
+    window.registerFlowModule(cheap.id, cheapProbe);
+    auto* blockingProbe = new MainWindowBlockingWorkerProbe(blocking.id);
+    blockingProbe->initialize();
+    window.registerFlowModule(blocking.id, blockingProbe);
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+
+    // 断言会阻塞 GUI 线程等待 entered：两个模块都必须 worker 亲和，否则 gui 亲和模块的
+    // BlockingQueuedConnection 无法被服务，运行会卡在第一个模块上。
+    QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QVERIFY(waitForServiceIdle());
+    RunEngine::instance().setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
+    RunEngine::instance().setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
+
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QVERIFY2(blockingProbe->entered.tryAcquire(1, 5000), "worker module must enter execution");
+    QVERIFY(window.isVisible());
+
+    // closeEvent 在 Service 非 Idle 时必须 stop + ignore，且不得同步等待 GUI/工作线程。
+    QElapsedTimer closeTimer;
+    closeTimer.start();
+    window.close();
+    const qint64 closeElapsed = closeTimer.elapsed();
+    QVERIFY2(closeElapsed < 100, qPrintable(QString("closeEvent must not block, took %1 ms").arg(closeElapsed)));
+    QVERIFY2(window.isVisible(), "close must be ignored while a job is running");
+    QVERIFY(FlowExecutionService::instance().isActive());
+
+    blockingProbe->release.release();
+    // jobFinished 后重试关闭。
+    QTRY_VERIFY_WITH_TIMEOUT(!window.isVisible(), 5000);
+    QVERIFY(waitForServiceIdle());
+
+    RunEngine::instance().clearModules();
+    project->removeModule(cheap.id);
+    project->removeModule(blocking.id);
+    QCoreApplication::processEvents();
+}
+
+void TestMainWindow::testStartHandshakeTimeoutLeavesNoPendingJob() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance instance;
+    instance.id = QStringLiteral("b7_handshake_probe");
+    instance.moduleId = QStringLiteral("OutputProbe");
+    instance.name = QStringLiteral("B7 握手模块");
+    project->addModule(instance);
+    QCoreApplication::processEvents();
+
+    QStringList executionLog;
+    auto* probe = new MainWindowOutputProbeModule(instance.id);
+    probe->executionLog = &executionLog;
+    probe->initialize();
+    window.registerFlowModule(instance.id, probe);
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QVERIFY(runButton != nullptr);
+
+    // 确定性延迟 worker 的启动协议：握手等待上限被压到 100ms，不能被 5s 阻塞。
+    QSemaphore neverReleased;
+    FlowExecutionService::instance().setStartHandshakeHookForTest(
+        [&neverReleased]() { neverReleased.tryAcquire(1, 400); });
+
+    QElapsedTimer startTimer;
+    startTimer.start();
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    const qint64 startElapsed = startTimer.elapsed();
+    QVERIFY2(startElapsed < 300,
+             qPrintable(QString("UI start must not block on handshake, took %1 ms").arg(startElapsed)));
+    QVERIFY2(!FlowExecutionService::instance().isActive() ||
+                 FlowExecutionService::instance().state() != FlowExecutionService::State::Running,
+             "timed-out handshake must not leave a running job");
+    QTRY_COMPARE(runButton->text(), QStringLiteral("运行"));
+
+    FlowExecutionService::instance().clearStartHandshakeHookForTest();
+    QVERIFY(waitForServiceIdle());
+    // 握手超时不得留下“将执行的 pending”：启动即被停止，模块一次都没执行。
+    QVERIFY2(executionLog.isEmpty(), "timed-out start must not execute modules");
+
+    // 清理后 UI 仍可正常再次启动。
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_COMPARE_WITH_TIMEOUT(executionLog.size(), 1, 5000);
+    QVERIFY(waitForServiceIdle());
+
+    RunEngine::instance().clearModules();
+    project->removeModule(instance.id);
+    QCoreApplication::processEvents();
 }
 
 void TestMainWindow::testCloseInspectorDoesNotAutoExpand() {

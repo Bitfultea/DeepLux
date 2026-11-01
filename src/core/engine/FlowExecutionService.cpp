@@ -2,6 +2,7 @@
 
 #include "common/Logger.h"
 
+#include <QElapsedTimer>
 #include <QMutexLocker>
 #include <QThread>
 #include <exception>
@@ -86,13 +87,43 @@ bool FlowExecutionService::enqueue(JobType job) {
 
     // 启动握手：工作者取得 job 租约并提交 Running（或显式失败）后返回，保证
     // startX() 返回 true 时引擎 isBusy() 已为真（兼容 Agent/UI 的“started 即忙”语义）。
-    // 5s 仅防挂死，正常路径由工作者立即唤醒。
+    // B7：GUI 线程等待上限固定为 StartHandshakeTimeoutMs——启动路径（含 closeEvent 期间
+    // 的重试）不得被 5s 阻塞；超时后必须撤回/停止该次启动，不能留下稍后执行的 pending。
+    QElapsedTimer handshakeTimer;
+    handshakeTimer.start();
     while (!m_startSettled) {
-        if (!m_wake.wait(&m_mutex, 5000)) {
-            break;
+        const int remaining = StartHandshakeTimeoutMs - static_cast<int>(handshakeTimer.elapsed());
+        if (remaining <= 0) {
+            const bool withdrawn = (m_pendingJob == job);
+            if (withdrawn) {
+                // 工作者尚未取走命令：直接撤回，任何模块都不会执行。
+                m_pendingJob = JobType::None;
+            } else {
+                // 命令已被取走：请求停止，保证该 job 启动后在第一轮之前协作退出。
+                m_stopRequested = true;
+            }
+            m_wake.wakeAll();
+            Logger::instance().warning(QString("Flow start handshake timed out after %1 ms (%2)")
+                                           .arg(StartHandshakeTimeoutMs)
+                                           .arg(withdrawn ? "pending withdrawn" : "stop requested"),
+                                       "Service");
+            return false;
+        }
+        if (!m_wake.wait(&m_mutex, static_cast<unsigned long>(remaining))) {
+            // wait 超时后回到循环顶部重新判定；剩余时间耗尽时走上面的撤回/停止分支。
         }
     }
     return m_startSettled && m_startOk;
+}
+
+void FlowExecutionService::setStartHandshakeHookForTest(std::function<void()> hook) {
+    QMutexLocker locker(&m_mutex);
+    m_testStartHook = std::move(hook);
+}
+
+void FlowExecutionService::clearStartHandshakeHookForTest() {
+    QMutexLocker locker(&m_mutex);
+    m_testStartHook = nullptr;
 }
 
 void FlowExecutionService::settleStart(bool ok) {
@@ -228,6 +259,16 @@ void FlowExecutionService::runJob(JobType job) {
     const quint64 jobSerial = m_jobSerialSeq.fetch_add(1, std::memory_order_relaxed) + 1;
     m_currentJobSerial.store(jobSerial, std::memory_order_release);
     m_job.store(static_cast<int>(job), std::memory_order_release);
+
+    // B7 测试注入：在启动协议最前面执行（生产构建恒为空），用于确定性验证 GUI 侧握手超时。
+    std::function<void()> startHook;
+    {
+        QMutexLocker locker(&m_mutex);
+        startHook = m_testStartHook;
+    }
+    if (startHook) {
+        startHook();
+    }
 
     RunEngine::JobToken token;
     QString reason;

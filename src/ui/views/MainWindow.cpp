@@ -34,6 +34,7 @@
 #include "core/common/ModuleIconProvider.h"
 #include "core/display/DisplayData.h"
 #include "core/display/IDisplayPort.h"
+#include "core/engine/FlowExecutionService.h"
 #include "core/engine/RunEngine.h"
 #include "core/geometry/MeasurementData.h"
 #include "core/interface/IModule.h"
@@ -579,17 +580,62 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
         // 延迟更新叠加层，确保 displayImage 完成后再设置 overlay
         QTimer::singleShot(0, this, [this]() { updateMeasurementResultOnOverlay(); });
 
+        // 后台执行（设计 §5.3 #8 / §8.1）：runFinished 只表示“一轮执行结束”（Cycle 每轮都会发），
+        // 不得据此重启循环或做 job 级收尾；job 级收尾只走 FlowExecutionService::jobFinished。
+        if (FlowExecutionService::instance().isActive()) {
+            return;
+        }
+        // 无 Service job 的同步引擎路径（CLI/测试兼容）：沿用既有 UI 收尾与延迟关闭。
         if (m_closeWhenRunFinishes) {
             m_closeWhenRunFinishes = false;
             setUiRunningState(false, false);
-            QTimer::singleShot(0, this, &QWidget::close);
-        } else if (m_isCycleMode && m_isRunning) {
-            QTimer::singleShot(1, this, &MainWindow::executeFlowOnce);
-        } else {
-            setUiRunningState(false, false);
             m_isStepMode = false;
+            QTimer::singleShot(0, this, &QWidget::close);
+            return;
         }
+        setUiRunningState(false, false);
+        m_isStepMode = false;
     });
+
+    // 后台执行（设计 §8.1）：Service 驱动的按钮状态与 job 级收尾。
+    // running/cycle/step 状态以 Service 的 job 类型为准；关闭请求只由 jobFinished 重试。
+    {
+        FlowExecutionService& service = FlowExecutionService::instance();
+        connect(&service, &FlowExecutionService::jobStateChanged, this,
+                [this](FlowExecutionService::State state, FlowExecutionService::JobType job) {
+                    switch (state) {
+                    case FlowExecutionService::State::Running:
+                        setUiRunningState(true, job == FlowExecutionService::JobType::Cycle);
+                        m_isStepMode = (job == FlowExecutionService::JobType::Step);
+                        break;
+                    case FlowExecutionService::State::Paused:
+                        // 暂停期间保持“运行中”语义：运行按钮变为“继续”，循环标志不变。
+                        m_isRunning = true;
+                        m_isStepMode = false;
+                        break;
+                    case FlowExecutionService::State::Stopping:
+                    case FlowExecutionService::State::Idle:
+                        break;
+                    }
+                });
+        connect(&service, &FlowExecutionService::jobFinished, this,
+                [this](FlowExecutionService::JobType job, bool stopped) {
+                    Q_UNUSED(job)
+                    if (stopped) {
+                        Logger::instance().info(tr("后台执行已停止"), "Run");
+                    }
+                    finishRunUi();
+                });
+        connect(&service, &FlowExecutionService::jobFailed, this,
+                [this](FlowExecutionService::JobType job, const QString& error) {
+                    Q_UNUSED(job)
+                    Logger::instance().error(tr("后台执行失败：%1").arg(error), "Run");
+                    if (m_runStatusLabel) {
+                        m_runStatusLabel->setText(tr("运行失败：%1").arg(error));
+                    }
+                    finishRunUi();
+                });
+    }
 
     // Initialize AgentController (Phase 1)
     AgentController::instance().initialize();
@@ -5417,14 +5463,19 @@ void MainWindow::adaptInspectorLayout() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-    RunEngine& engine = RunEngine::instance();
-    if (engine.isBusy()) {
+    FlowExecutionService& service = FlowExecutionService::instance();
+    // 后台执行（设计 §5.3 #7 / §8.1）：以 Service 状态判断是否有 job——Cycle 两轮之间
+    // 引擎可能已 Idle，但 Service 仍 Running。有 job 时只请求停止并忽略本次关闭，
+    // 由 jobFinished 再次触发 close；不得在 GUI 线程同步等待（gui 模块可能正阻塞回 GUI）。
+    if (service.isActive() || RunEngine::instance().isBusy()) {
         m_closeWhenRunFinishes = true;
-        engine.requestCancellation();
-        event->ignore();
-        if (!engine.isExecuting()) {
-            QTimer::singleShot(0, this, &QWidget::close);
+        if (service.isActive()) {
+            service.stop();
+        } else {
+            // 无 Service job 的同步引擎运行（CLI/测试兼容路径）：沿用取消请求。
+            RunEngine::instance().requestCancellation();
         }
+        event->ignore();
         return;
     }
     saveSettings();
@@ -5722,56 +5773,76 @@ void MainWindow::updateBreakpointRunControls(bool paused) {
 }
 
 void MainWindow::onRunOnce() {
-    if (RunEngine::instance().isPausedAtBreakpoint()) {
-        updateBreakpointRunControls(false);
-        RunEngine::instance().resume();
+    FlowExecutionService& service = FlowExecutionService::instance();
+    // 后台执行（设计 §8.1）：断点/用户暂停后的继续必须走 Service::continueRun()，
+    // 不得绕过 job 租约直接调 RunEngine::resume()。
+    if (service.state() == FlowExecutionService::State::Paused) {
+        if (service.continueRun()) {
+            updateBreakpointRunControls(false);
+        } else {
+            Logger::instance().warning(tr("继续请求被拒绝：没有可恢复的后台 job"), "Run");
+        }
         return;
     }
-    if (!m_isRunning) {
-        if (m_processTree->topLevelItemCount() == 0) {
-            if (m_processTimeLabel) {
-                m_processTimeLabel->setText(tr("总耗时：0 ms"));
-            }
-            Logger::instance().warning(tr("流程为空，无法运行"), "System");
-            return;
-        }
-        setUiRunningState(true, false);
-        Logger::instance().info(tr("运行一次"), "System");
-        if (requestMeasurementInputForRun()) {
-            return;
-        }
-        executeFlowOnce();
-    } else {
+    if (m_isRunning || service.isActive()) {
+        // 运行中再次点击“运行/停止”沿用既有交互：停止当前 job。
         onStop();
+        return;
+    }
+    if (m_processTree->topLevelItemCount() == 0) {
+        if (m_processTimeLabel) {
+            m_processTimeLabel->setText(tr("总耗时：0 ms"));
+        }
+        Logger::instance().warning(tr("流程为空，无法运行"), "System");
+        return;
+    }
+    setUiRunningState(true, false);
+    m_isStepMode = false;
+    Logger::instance().info(tr("运行一次"), "System");
+    if (requestMeasurementInputForRun()) {
+        return;
+    }
+    if (!startRunThroughService(false)) {
+        setUiRunningState(false, false);
     }
 }
 
 void MainWindow::onRunCycle() {
-    if (RunEngine::instance().isPausedAtBreakpoint()) {
-        updateBreakpointRunControls(false);
-        RunEngine::instance().resume();
+    FlowExecutionService& service = FlowExecutionService::instance();
+    if (service.state() == FlowExecutionService::State::Paused) {
+        if (service.continueRun()) {
+            updateBreakpointRunControls(false);
+        } else {
+            Logger::instance().warning(tr("继续请求被拒绝：没有可恢复的后台 job"), "Run");
+        }
         return;
     }
-    if (!m_isRunning) {
-        if (m_processTree->topLevelItemCount() == 0) {
-            if (m_processTimeLabel) {
-                m_processTimeLabel->setText(tr("总耗时：0 ms"));
-            }
-            Logger::instance().warning(tr("流程为空，无法循环运行"), "System");
-            return;
-        }
-        setUiRunningState(true, true);
-        Logger::instance().info(tr("循环运行"), "System");
-        if (requestMeasurementInputForRun()) {
-            return;
-        }
-        executeFlowOnce();
+    if (m_isRunning || service.isActive()) {
+        // 已经在运行时，不做操作，保持循环模式
+        return;
     }
-    // 已经在运行时，不做操作，保持循环模式
+    if (m_processTree->topLevelItemCount() == 0) {
+        if (m_processTimeLabel) {
+            m_processTimeLabel->setText(tr("总耗时：0 ms"));
+        }
+        Logger::instance().warning(tr("流程为空，无法循环运行"), "System");
+        return;
+    }
+    setUiRunningState(true, true);
+    Logger::instance().info(tr("循环运行"), "System");
+    if (requestMeasurementInputForRun()) {
+        return;
+    }
+    if (!startRunThroughService(true)) {
+        setUiRunningState(false, false);
+    }
 }
 
 void MainWindow::onStepRun() {
-    if (m_isRunning) {
+    FlowExecutionService& service = FlowExecutionService::instance();
+    // 后台执行（设计 §8.1）：单步异步后由 Service 拒绝非 Idle 的重入；
+    // 快速连点只保持按钮状态，不排队第二次单步。
+    if (m_isRunning || service.isActive()) {
         return;
     }
     if (m_processTree->topLevelItemCount() == 0) {
@@ -5789,9 +5860,10 @@ void MainWindow::onStepRun() {
     setUiRunningState(true, false);
     m_isStepMode = true;
     Logger::instance().info(tr("单步执行"), "System");
-    if (!RunEngine::instance().stepOnce()) {
+    if (!service.stepOnce()) {
         setUiRunningState(false, false);
         m_isStepMode = false;
+        Logger::instance().warning(tr("单步请求被拒绝：后台已有 job"), "Run");
     }
 }
 
@@ -5805,11 +5877,46 @@ void MainWindow::onStop() {
     }
     setUiRunningState(false, false);
     m_isStepMode = false;
-    RunEngine::instance().stop();
+    // 后台执行（设计 §5.2/§8.1）：有 Service job 时走 job 级取消；否则回退引擎停止。
+    FlowExecutionService& service = FlowExecutionService::instance();
+    if (service.isActive()) {
+        service.stop();
+    } else {
+        RunEngine::instance().stop();
+    }
     Logger::instance().info(tr("停止"), "System");
 }
 
+bool MainWindow::startRunThroughService(bool cycleMode) {
+    if (!syncModulesToRunEngine()) {
+        Logger::instance().warning(tr("流程同步失败，无法运行"), "Run");
+        return false;
+    }
+    FlowExecutionService& service = FlowExecutionService::instance();
+    const bool started = cycleMode ? service.startCycle() : service.startSingle();
+    if (!started) {
+        Logger::instance().warning(tr("启动请求被拒绝：后台已有 job 或引擎忙"), "Run");
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::finishRunUi() {
+    setUiRunningState(false, false);
+    m_isStepMode = false;
+    updateBreakpointRunControls(false);
+    if (m_closeWhenRunFinishes) {
+        // jobFinished 到达时 Service 已提交 Idle：此时重试关闭不会再次被 ignore。
+        m_closeWhenRunFinishes = false;
+        QTimer::singleShot(0, this, &QWidget::close);
+    }
+}
+
 void MainWindow::executeFlowOnce() {
+    FlowExecutionService& service = FlowExecutionService::instance();
+    if (service.isActive()) {
+        return; // 已有 job：重新运行/拾取完成后的启动请求不得重入
+    }
     // 清空之前的执行时间和所有高亮
     m_moduleExecutionTimes.clear();
     m_flowTotalTime = 0;
@@ -5839,12 +5946,10 @@ void MainWindow::executeFlowOnce() {
         return;
     }
 
-    if (!syncModulesToRunEngine()) {
-        return;
+    // 后台执行（设计 §8.1）：统一经 Service 启动单次运行。
+    if (!startRunThroughService(false)) {
+        setUiRunningState(false, false);
     }
-
-    // 委托给 RunEngine 执行
-    RunEngine::instance().runOnce();
 }
 
 void MainWindow::onUserLogin() {
