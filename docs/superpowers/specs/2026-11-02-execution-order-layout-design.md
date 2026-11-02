@@ -26,7 +26,7 @@
 
 1. 建立**单一执行计划事实源**：`RunEngine`、流程树、画布使用同一份 `FlowOrderPlan`。
 2. 主数据链按依赖层级自上而下排列，每层一个节点；同层仅用于控制流分支/独立入口。
-3. 流程树按控制流深度优先展开，保持扁平列表。
+3. 流程树保持扁平列表，使用**依赖约束下的稳定拓扑序**：纯数据流程与引擎 `dataOrder` 完全一致；含控制流时保证所有前向依赖，并在依赖允许范围内分组控制分支。
 4. 用户自由拖动保留；结构变化后自动按执行层级归位。
 5. 流程树跨层拖动在简单线性链上自动重连；其他情况明确拒绝并提示。
 6. Agent 构建的流程与手动搭建的流程得到相同的规范化布局。
@@ -94,8 +94,8 @@ struct FlowOrderNode {
 struct FlowOrderPlan {
     bool valid = false;
     QString error;
-    QStringList dataOrder;      // 数据 DAG 拓扑序（引擎静态顺序）
-    QStringList displayOrder;   // 控制流深度优先的扁平展示顺序
+    QStringList dataOrder;      // 与旧引擎完全一致的 FIFO 数据拓扑序
+    QStringList displayOrder;   // 依赖约束下的稳定拓扑展示序（纯数据时与 dataOrder 相等）
     QList<FlowOrderNode> nodes;
     QSet<QString> loopBackEdges;
     QSet<QString> reentrantModules;
@@ -145,37 +145,38 @@ forwardEdges = 所有 data 边 + 所有 control 前向边 - 已识别的循环�
 - `While/WhileEnd`
 - `Parallel`
 
-### 5.4 displayOrder：依赖约束下的稳定拓扑遍历
+### 5.4 两种顺序：运行期旧排序与展示优先级
 
-**不能使用纯 DFS**：菱形 A→B、A→C、B→D、C→D 若 DFS 得到 A,B,D,C，会违反“C 在 D 前”的数据依赖。
+明确选择：**运行期保留现有 FIFO 排序，展示层另设控制分组优先级**。不承诺两者在所有控制图中完全相等。
 
-算法：
+**dataOrder（运行期兼容）**
 
-1. 在 `forwardEdges` 上计算 DFS 优先序 `preferredIndex`：
-   - 控制边优先于数据边，按 If true/false、Loop body/done、Parallel 声明顺序；
-   - 回边跳过；循环体只遍历一次。
-2. 在 `forwardEdges` 上做 Kahn 拓扑排序；ready 队列按 `preferredIndex` 升序取节点。
-3. 由此得到 `displayOrder`：
-   - 所有前向依赖（数据+控制）都满足 `u` 在 `v` 前；
-   - 在依赖允许的范围内尽量保持控制分支分组；
-   - 菱形图稳定得到 A,B,C,D（B/C 按 preferredIndex），D 一定在 B、C 之后。
-4. 同时生成 `dataOrder`：仅用数据边做 Kahn，使用同一 `preferredIndex` 作为 tie-break。
-5. 一致性要求（测试断言）：
-   - 对每个数据边 `u→v`，`indexOf(dataOrder,u) < indexOf(dataOrder,v)` 且 `indexOf(displayOrder,u) < indexOf(displayOrder,v)`；
-   - 纯数据图（无控制边）`dataOrder == displayOrder`；
-   - 控制图中 `displayOrder` 是前向依赖图的合法拓扑序，流程树不会出现“下游先于上游”。
-6. `displayIndex` 按 `displayOrder` 赋值。
+- 使用现有引擎算法：数据边 Kahn，ready 队列 FIFO，初始顺序为规范模块顺序，邻接顺序为连接声明顺序。
+- 规范模块顺序由 `Project::modules()` 提供；`syncModulesToRunEngine()` 也按该顺序加入引擎，保证引擎 `m_modules` 与 Project 一致。
+- 例：Project [A,B,C]，仅 A→B：ready=[A,C] → A,C,B；`dataOrder` 必须同样是 A,C,B。
+- 差分测试：同一模块顺序与连接集合下，分析器 `dataOrder` 与旧 `buildExecutionOrder` 逐项一致。
 
-`RunEngine` 仍使用 `dataOrder` 作为静态执行顺序；控制分支的动态路径由控制边和运行结果决定。页面/树使用 `displayOrder`，两者对数据依赖的先后一致；控制分支只影响分组，不伪造数据顺序。
+**displayOrder（展示层）**
 
-### 5.5 与 RunEngine 的关系
+1. 构造 `forwardEdges`（data + 控制前向边 − 回边）。
+2. 在 `forwardEdges` 上做 Kahn 拓扑排序，ready 节点按以下优先级取：
+   - 控制分支分组键：控制区域路径 + 分支顺序（If true<false、Loop/While body<done、Parallel 声明顺序）；主链/普通数据节点该键为空；
+   - `dataOrderIndex`（运行期兼容序的位置）作为同组 tie-break。
+3. 约束：
+   - 所有前向依赖（数据+控制）都满足 `u` 在 `v` 前；菱形 A→B/A→C/B→D/C→D 中 D 必在 B、C 之后；
+   - **纯数据图（无控制边）`displayOrder == dataOrder`**；
+   - 含控制边时允许 displayOrder 与 dataOrder 不同，但必须是前向依赖图合法拓扑序，并在依赖允许范围内分组控制分支。
+4. 不使用纯 DFS 作为最终顺序；DFS 不参与该算法。
+5. `displayIndex` 按 `displayOrder` 赋值。
+
+**RunEngine**
 
 - `RunEngine::buildExecutionOrder()` 改为调用 `FlowGraphAnalyzer`：
-  - 使用 `dataOrder` 作为 `m_executionOrder`；
+  - 使用 `dataOrder` 作为 `m_executionOrder`（与旧 FIFO 完全一致）；
   - 使用分析器给出的控制边、回边、loop region、reentrant 集合；
   - 端口兼容、断点、并行批次、运行期控制逻辑保持原有实现。
-- 现有 `buildExecutionOrder` 的旧结果用于差分测试；新的分析器必须逐项匹配。
-- 运行期动态路径不变：If 只执行一支、Loop 重复 body；静态计划展示完整结构。
+- 旧 If/Loop 的静态序列查找逻辑不变；分析器不得改变控制语义。
+- 运行期动态路径不变：If 只执行一支、Loop 重复 body；控制图展示完整静态结构，但不声称 displayOrder 等于动态分支轨迹。
 
 ## 6. 画布布局
 
@@ -209,16 +210,20 @@ struct FlowGraphCandidate {
     QList<ModuleConnection> connections;
 };
 
+enum class StructureEditOrigin { Gui, Agent, System };
+
 void Project::setModulePosition(const QString& instanceId, int x, int y);
 void Project::reorderModules(const QStringList& orderedIds);
-bool Project::applyStructureTransaction(const FlowGraphCandidate& candidate, QString* error);
-quint64 Project::structureRevision() const; // 结构变更单调递增
-bool Project::layoutInitialized() const;    // 持久化字段
+bool Project::applyStructureTransaction(const FlowGraphCandidate& candidate,
+                                        StructureEditOrigin origin, QString* error);
+QString Project::structureFingerprint() const; // 模块顺序+连接集合的稳定指纹
+QUuid Project::sessionToken() const;           // 每次新建/加载唯一，不持久化
+bool Project::layoutInitialized() const;       // 持久化字段
 void Project::setLayoutInitialized(bool);
 signals:
     void modulePositionChanged(const QString& instanceId, int x, int y);
     void modulesReordered();
-    void structureRevisionChanged(quint64 revision);
+    void structureChanged(StructureEditOrigin origin);
 ```
 
 - `setModulePosition`：更新 `posX/posY`、`touch()`，发专用信号，不发 `moduleUpdated`（避免参数/引擎同步噪声）。
@@ -297,20 +302,22 @@ void ProcessTreeController::applyExecutionOrder(const QStringList& displayOrder)
 4. 校验失败：不调用任何 Project 修改 API，不改变 `modified`、不发结构信号、不压撤销命令；树/画布复位并提示 `error`。
 5. 自动布局在事务成功后由协调器执行；事务本身不直接移动 UI。
 
-### 7.5 撤销/重做与跨历史失效
+### 7.5 撤销/重做与跨历史失效（状态指纹）
 
 新增 `ReorderLinearChainCommand : QUndoCommand`，推入 MainWindow 现有 `m_paramUndoStack`：
 
-- 保存旧/新模块顺序、旧/新连接、旧/新位置，以及 `projectId` 和 `structureRevision`。
+- 保存旧/新模块顺序、旧/新连接、旧/新位置。
+- 保存 `projectSessionToken`、`beforeFingerprint`、`afterFingerprint`、`origin=Gui`。
+- 指纹内容：模块 id 顺序 + 排序后的连接四元组（from/fromPort/to/toPort/edgeType），不含参数和位置。
 - 命令应用期间设置布局抑制标志；成功提交后刷新树/连线，不重新计算布局。
-- `Project` 增加单调递增 `structureRevision`，在所有结构变更（模块/连接/顺序）时 +1；参数修改不增加该版本。
-- 命令保存 `m_expectedRevision` = 上次应用后 Project 的版本。
-- `undo()/redo()` 前检查：
-  - 当前 Project 身份（id/session）与命令保存的一致；
-  - 当前 `structureRevision == m_expectedRevision`。
-  - 任一不满足 → 命令失效：不执行、不修改工程，提示“结构已被其他操作修改，无法撤销此重排”，并从可用历史中跳过。
-- 成功 undo/redo 后更新 `m_expectedRevision` 为新的结构版本。
-- 因此 GUI 重排后 Agent 新增节点/连接，再执行 GUI Undo 会被拒绝，不会覆盖 Agent 的后续编辑；反之亦然。
+- `undo()` 只在 `currentFingerprint == afterFingerprint` 且 session 匹配时执行；`redo()` 只在 `currentFingerprint == beforeFingerprint` 且 session 匹配时执行。状态指纹是内容比较，不是单调版本号，因此：
+  - C1（before F0 / after F1）、C2（before F1 / after F2）连续两次 Undo 正常；
+  - 两次 Redo 也正常。
+- 跨栈外部编辑：`Project::applyStructureTransaction(candidate, origin)` 发出 `structureChanged(origin)`；MainWindow 在 `origin != Gui` 时检查自己的命令：
+  - 若 `currentFingerprint` 既不是该命令的 `before` 也不是 `after`，调用 `QUndoCommand::setObsolete(true)`，让 `QUndoStack` 跳过并删除该失效命令；
+  - 不修改工程、不覆盖后续 Agent 编辑。
+- Agent 的撤销栈做对称处理：`origin != Agent` 时使其失效命令 obsolete。
+- 若外部编辑后当前结构恰好等于命令的 before/after，命令仍可安全执行（状态一致），不误拒绝。
 - 自动布局本身不进入撤销栈。
 
 ## 8. FlowLayoutCoordinator
@@ -359,7 +366,7 @@ void ProcessTreeController::applyExecutionOrder(const QStringList& displayOrder)
 - 用户自由拖动只改位置；下一次结构变化按执行层级归位。
 - 工程加载默认恢复已保存的自由布局；只有 `layoutInitialized==false` 或位置非法的旧工程才 Full 初始化。结构变更/显式整理仍会重排。
 - 自动布局写回位置并标记工程 modified，但不进入撤销栈。
-- GUI 与 Agent 仍可使用各自撤销栈，但结构命令通过 `Project::structureRevision` 做跨栈失效：任一结构编辑交错后，旧重排命令拒绝 undo/redo，不覆盖后续编辑。
+- GUI 与 Agent 仍可使用各自撤销栈；结构命令用 `sessionToken + before/after 指纹` 校验，外部结构编辑后失效命令通过 `setObsolete` 从栈中剔除，不覆盖后续编辑；同一栈连续 undo/redo 不受影响。
 - 不改 `IModule`/`ModuleBase` ABI，不要求重建插件。
 - If/Loop/While 的动态路径不变；静态计划展示完整分支，运行高亮显示实际路径。
 
@@ -369,7 +376,8 @@ void ProcessTreeController::applyExecutionOrder(const QStringList& displayOrder)
 |---|---|
 | 分析器 | 线性数据链 rank=0,1,2；**纯控制链 A.next→B.control→C.control rank=0,1,2**；无连接回退；多入口；**菱形 A→B/A→C/B→D/C→D 的 displayOrder 必须 A,B,C,D，D 在 B/C 后**；数据 fan-out 同层 lane 唯一；If true/false 同层分栏；**嵌套 If/Loop 分支**；ConditionalEnd；Loop/While body 与回边；Parallel；禁用节点；环/非结构化控制流报错 |
 | 顺序一致性 | 对每个数据边 u→v，`dataOrder` 与 `displayOrder` 都满足 u 在 v 前；纯数据图两者完全相等；displayOrder 是前向依赖图合法拓扑序 |
-| 差分回归 | 现有控制流/循环/并行测试工程：`plan.dataOrder` 与旧 `buildExecutionOrder` 逐项一致；控制边/loop region/reentrant 一致 |
+| 差分回归 | 现有控制流/循环/并行测试工程：`plan.dataOrder` 与旧 `buildExecutionOrder` 逐项一致；控制边/loop region/reentrant 一致；Project [A,B,C] 仅有 A→B 时 dataOrder 必须为 A,C,B |
+| 连续撤销 | 两次重排 C1/C2 后两次 Undo 回到初始，再两次 Redo 回到 C2 终态；全程无外部编辑 |
 | 画布 | rank 递增则 Y 递增；同 rank 同 Y；**所有同层节点 lane 唯一不重叠**；分支标签；回边；Normalize 保留 X；Full 重排；100/200 节点布局耗时有上限 |
 | 位置 | 拖动写回；`layoutInitialized=true` 保存/重载原样恢复；未初始化/非法位置才 Full；modified 状态 |
 | 流程树 | 顺序等于 displayOrder；选中/滚动保持；同层独立换序；分支换序拒绝；跨层非线性拒绝 |
@@ -387,7 +395,7 @@ void ProcessTreeController::applyExecutionOrder(const QStringList& displayOrder)
 |---|---|---|
 | B0 | 基线、分支、现有测试 | 无代码提交 |
 | B1 | `FlowGraphAnalyzer` + RunEngine 接入 + 差分测试 | `feat(flow): add canonical execution plan analyzer` |
-| B2 | Project 位置/排序信号 + `layoutInitialized` + `structureRevision` + `applyStructureTransaction` + FlowCanvas 布局 + FlowLayoutCoordinator | `feat(ui): lay out flows by execution plan` |
+| B2 | Project 位置/排序信号 + `layoutInitialized` + `sessionToken` + `structureFingerprint` + `applyStructureTransaction` + FlowCanvas 布局 + FlowLayoutCoordinator | `feat(ui): lay out flows by execution plan` |
 | B3 | 流程树排序 + 拖动规则 + 候选图校验 + ReorderLinearChainCommand（含跨栈失效） | `feat(ui): reorder linear chains from the process tree` |
 | B4 | Agent 集成 + get_flow_state 字段 + 合并触发 | `feat(agent): expose and maintain execution order` |
 | B5 | 控制分支视觉 + 截图门禁 + 文档 + 全量回归 | `docs: document execution-order layout` |
@@ -435,7 +443,10 @@ git diff --check
 
 ## 14. 验收标准
 
-1. 对线性、If、Loop、Agent 构建、手动拖动后修改的代表流程，画布层级、流程树顺序、`FlowOrderPlan.dataOrder` 与引擎静态执行顺序一致。
+1. 顺序约束可直接测试：
+   - 纯数据流程：`displayOrder == dataOrder`，且 `dataOrder` 与旧引擎 FIFO 结果逐项一致；
+   - 含控制流：`displayOrder` 是 data+控制前向图的合法拓扑序，所有数据边 u→v 在 `dataOrder` 与 `displayOrder` 中都满足 u 在 v 前；控制分支按区域分组，但不声称等于动态分支轨迹；
+   - 画布 rank 与 `displayOrder`/前向依赖一致，流程树顺序等于 `displayOrder`。
 2. 主链每层一个节点；同层只出现在控制分支/独立入口，并用 lane 区分。
 3. 用户自由拖动可保存；结构变更后自动归位；无节点重叠。
 4. 线性链跨层拖动可重连或明确拒绝；撤销/重做恢复顺序、连接和位置。
@@ -447,9 +458,15 @@ git diff --check
 
 针对提交 `e1663d4` 的 P1/P2 复核：
 
-1. **displayOrder 依赖约束**：取消纯 DFS；改为“DFS preferredIndex + Kahn 拓扑”的稳定拓扑遍历，保证菱形图 A,B,C,D 且 D 在所有前驱之后；明确 dataOrder/displayOrder 对数据边的一致性与测试。
+1. **displayOrder 依赖约束**：取消纯 DFS；改为依赖约束下的稳定拓扑遍历，保证菱形图 D 在所有前驱之后；同时明确 `dataOrder` 保留旧 FIFO 排序，展示层另设控制分组优先级。
 2. **层级覆盖控制链**：前向依赖图包含数据边与去回边后的控制边，普通控制链获得 rank 0,1,2；所有同层节点统一分配唯一 lane，覆盖数据 fan-out 与嵌套分支。
-3. **撤销跨历史失效**：保留两套撤销栈，但引入 `Project::structureRevision` 与 `projectId`；重排命令在 revision 不匹配时失效，绝不覆盖 Agent/GUI 的后续结构编辑；补充交错测试。
+3. **撤销跨历史失效**：保留两套撤销栈，但使用 `sessionToken + before/after 结构指纹` 与 `origin`；外部编辑后通过 `setObsolete` 剔除失效命令，同一栈连续 undo/redo 正常。
 4. **失败零修改**：先构造 `FlowGraphCandidate` 并完成端口/图/计划校验，再通过 `Project::applyStructureTransaction` 一次提交；失败时不改 modified、不发结构信号、不压撤销栈。
 5. **加载位置恢复**：新增持久化 `layoutInitialized`；已保存布局默认原样恢复，只有未初始化/非法位置才 Full 布局，避免保存重载覆盖自由拖动。
 6. **无连接拖动分支**：拆分为“无连接顺序列表”和“已连接简单线性链”，解决连通分量条件自相矛盾。
+
+## 16. 第二轮评审修订（2026-11-02，版本 a0dfc9a）
+
+1. **撤销误拒绝**：取消单调 revision 校验，改为 `sessionToken + before/after 结构指纹`。同一撤销栈 C1/C2 连续两次 Undo/Redo 正常；仅当当前结构既非命令 before 也非 after 时，才通过 `setObsolete` 使外部交错后的命令失效。
+2. **运行期排序与展示排序分离**：`RunEngine` 保留旧 FIFO `dataOrder` 并逐项差分；展示层另设控制分组优先级。纯数据图 `displayOrder == dataOrder`；控制图只保证前向依赖与新展示分组，不承诺与运行期 FIFO 完全相等。旧 If/Loop 静态序列查找逻辑不变。
+3. **目标/验收措辞统一**：删除“DFS 展开”和“流程树与 dataOrder 一律一致”的旧定义；验收改为可直接测试的三条约束（纯数据完全相等、控制图合法拓扑且数据边有序、画布/树与 displayOrder 一致）。
