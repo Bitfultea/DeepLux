@@ -105,54 +105,68 @@ struct FlowOrderPlan {
 
 身份统一使用 `ModuleInstance.id`。若引擎内部使用 runtime name，分析器提供 `instanceId <-> runtimeName` 映射；禁止 UI 和引擎各自使用不同身份排序。
 
-### 5.2 数据层级
+### 5.2 前向依赖图层级（data + 控制）
 
-1. 收集所有模块，初始化 `rank=0`、`indegree=0`。
-2. 数据边（`edgeType="data"`）参与 DAG；控制边和已识别的回边不参与层级。
-3. 拓扑排序；`rank(v) = max(rank(pred)+1)`。
-4. 无数据前驱的节点 rank=0；无连接流程按 Project 模块稳定顺序形成单链 rank=0..N-1。
-5. 环或端口映射错误 → `valid=false`，不生成布局，不运行新顺序。
-
-### 5.3 控制区域与 lane
-
-先识别打开/关闭节点：
-
-- `Conditional` / `ConditionalElse` / `ConditionalEnd`
-- `Loop` / `LoopEnd`
-- `While` / `WhileEnd`
-- `Parallel`
-
-按控制边端口：
-
-- If：`true` 分支 lane=-1，`false` 分支 lane=+1；无 else 时 end 回到主列。
-- Loop/While：`body` 分支 lane=0（主列右侧为回边留空间），`done` 后继回到主列；LoopEnd/WhileEnd 位于 body 最大 rank 之后。
-- Parallel：各分支按控制边顺序分配 lane。
-- 分支节点 `branchLabel` 取端口 id；`controlParent` 指向 opener。
-
-控制区域内的节点层级：
+层级不能只看数据边，否则普通控制链会全部落在 rank 0。分析器先构造**前向依赖图**：
 
 ```text
-displayRank(v) = max(dataRank(v), opener.rank + 1 + depthWithinBranch(v))
+forwardEdges = 所有 data 边 + 所有 control 前向边 - 已识别的循环回边
 ```
 
-- 分支兄弟共享同一 rank，通过 lane 区分。
-- ConditionalEnd/LoopEnd/WhileEnd 位于其分支最大 rank + 1。
-- 回边只标注，不参与 rank，不制造同层。
-- 数据主链节点不因控制区域被压到同层。
+1. 收集所有模块，初始化 `rank=0`、`indegree=0`。
+2. 对 `forwardEdges` 做拓扑排序。
+3. `rank(v) = max(rank(pred)+1)`，因此：
+   - 普通数据链 A→B→C：0,1,2；
+   - 普通控制链 A.next→B.control→C.control：0,1,2；
+   - If 的 true/false 分支入口都位于 opener.rank+1；
+   - Loop/While 的 body 入口位于 opener.rank+1，LoopEnd/WhileEnd 不低于 body 最大 rank+1；
+   - 回边不参与 rank，避免无限层级。
+4. 无任何连接的节点：按 Project 稳定顺序形成 rank=0..N-1 的初始化链（仅用于展示；见 7.3 的无连接顺序列表）。
+5. 环、非结构化控制流、端口映射错误 → `valid=false`，不生成布局、不运行新顺序。
 
-### 5.4 displayOrder（流程树顺序）
+### 5.3 统一 lane 分配
 
-从根节点开始深度优先展开：
+同层节点必须统一分配槽位，不能只处理 If/Loop：
 
-- 普通链：按数据/控制后继顺序。
-- If：opener → true 分支 DFS → false 分支 DFS → end。
-- Loop/While：opener → body DFS → end → done 后续。
-- Parallel：各分支按控制边顺序 DFS。
-- 回边不重复展开；循环体只出现一次。
-- 无明显根节点时按 Project 稳定顺序追加，避免丢节点。
-- 同层独立节点按 Project 顺序打破平局。
+1. 按 `rank` 分组。
+2. 每组先确定“主链节点”（无控制分支标签且属于主要前向路径），lane=0。
+3. 其余节点按以下键排序后分配 lane：
+   - 控制区域路径（opener 的 displayIndex，嵌套时按路径字典序）；
+   - 分支端口顺序：If 的 true 在 false 前；Loop/While 的 body 在 done 前；Parallel 按控制边声明顺序；
+   - Project 稳定顺序。
+4. lane 采用居中式分配：`0, -1, +1, -2, +2...`，或按组内数量整体平移到以 0 为中心。
+5. 每个同层节点获得唯一 lane；即使数据 fan-out 产生多个同层节点，也不会重叠。
+6. `branchLabel` 取控制端口 id（true/false/body/done）；`controlParent` 指向 opener；纯数据 fan-out 的 `branchLabel` 为空。
 
-`displayIndex` 按 `displayOrder` 赋值。
+控制区域仍用于分组/标签：
+
+- `Conditional/ConditionalElse/ConditionalEnd`
+- `Loop/LoopEnd`
+- `While/WhileEnd`
+- `Parallel`
+
+### 5.4 displayOrder：依赖约束下的稳定拓扑遍历
+
+**不能使用纯 DFS**：菱形 A→B、A→C、B→D、C→D 若 DFS 得到 A,B,D,C，会违反“C 在 D 前”的数据依赖。
+
+算法：
+
+1. 在 `forwardEdges` 上计算 DFS 优先序 `preferredIndex`：
+   - 控制边优先于数据边，按 If true/false、Loop body/done、Parallel 声明顺序；
+   - 回边跳过；循环体只遍历一次。
+2. 在 `forwardEdges` 上做 Kahn 拓扑排序；ready 队列按 `preferredIndex` 升序取节点。
+3. 由此得到 `displayOrder`：
+   - 所有前向依赖（数据+控制）都满足 `u` 在 `v` 前；
+   - 在依赖允许的范围内尽量保持控制分支分组；
+   - 菱形图稳定得到 A,B,C,D（B/C 按 preferredIndex），D 一定在 B、C 之后。
+4. 同时生成 `dataOrder`：仅用数据边做 Kahn，使用同一 `preferredIndex` 作为 tie-break。
+5. 一致性要求（测试断言）：
+   - 对每个数据边 `u→v`，`indexOf(dataOrder,u) < indexOf(dataOrder,v)` 且 `indexOf(displayOrder,u) < indexOf(displayOrder,v)`；
+   - 纯数据图（无控制边）`dataOrder == displayOrder`；
+   - 控制图中 `displayOrder` 是前向依赖图的合法拓扑序，流程树不会出现“下游先于上游”。
+6. `displayIndex` 按 `displayOrder` 赋值。
+
+`RunEngine` 仍使用 `dataOrder` 作为静态执行顺序；控制分支的动态路径由控制边和运行结果决定。页面/树使用 `displayOrder`，两者对数据依赖的先后一致；控制分支只影响分组，不伪造数据顺序。
 
 ### 5.5 与 RunEngine 的关系
 
@@ -190,17 +204,37 @@ void FlowCanvas::applyExecutionLayout(const FlowOrderPlan& plan, LayoutMode mode
 新增 Project API：
 
 ```cpp
+struct FlowGraphCandidate {
+    QStringList orderedIds;
+    QList<ModuleConnection> connections;
+};
+
 void Project::setModulePosition(const QString& instanceId, int x, int y);
 void Project::reorderModules(const QStringList& orderedIds);
+bool Project::applyStructureTransaction(const FlowGraphCandidate& candidate, QString* error);
+quint64 Project::structureRevision() const; // 结构变更单调递增
+bool Project::layoutInitialized() const;    // 持久化字段
+void Project::setLayoutInitialized(bool);
 signals:
     void modulePositionChanged(const QString& instanceId, int x, int y);
     void modulesReordered();
+    void structureRevisionChanged(quint64 revision);
 ```
 
 - `setModulePosition`：更新 `posX/posY`、`touch()`，发专用信号，不发 `moduleUpdated`（避免参数/引擎同步噪声）。
 - `FlowNodeItem` 拖动结束写回 Project；自动布局也走该 API。
 - `reorderModules`：一次性更新模块顺序并发 `modulesReordered()`；当前 `moveModule` 不发信号，不能支撑批量重排/撤销刷新。
 - 自动布局的位置变更不进入撤销栈，但随工程保存并标记 modified。
+
+**加载规则（保证自由布局可恢复）**
+
+新增 Project 持久化字段 `layoutInitialized`（默认 false，`fromJson` 缺省 false）：
+
+- `layoutInitialized == true` 且存在有效位置：**原样恢复保存的位置，不 Normalize、不 Full**；只有结构变更或用户显式“按执行顺序整理”才重排。
+- `layoutInitialized == false`（新工程、Agent 初始工程、旧工程未初始化布局）：执行一次 `Full`，然后置 true。
+- 位置缺失/非法（例如全部为 (0,0) 且节点数 > 1）：视为未初始化，执行 `Full`。
+- 用户自由拖动后写回位置，保持 `layoutInitialized == true`。
+- 结构变更自动布局后也置 true。
 
 ## 7. 流程树排序与拖动
 
@@ -221,38 +255,62 @@ void ProcessTreeController::applyExecutionOrder(const QStringList& displayOrder)
 
 1. **同层且相互独立**：允许交换稳定序；更新 Project 模块顺序，重算计划并刷新。
 2. **同层但属于控制分支**（branchLabel 非空）：拒绝并复位；提示“分支顺序由控制边决定，请调整连线”。
-3. **跨层且整图是简单线性链**：执行自动重连（见 7.3）。
-4. **其他跨层拖动**：拒绝并复位；提示“执行顺序由连接决定，请调整连线”。
+3. **跨层且属于无连接顺序列表（7.3 A）**：只调整模块顺序。
+4. **跨层且属于已连接简单线性链（7.3 B）**：执行候选图校验与自动重连。
+5. **其他跨层拖动**：拒绝并复位；提示“执行顺序由连接决定，请调整连线”。
 
-### 7.3 简单线性链定义
+### 7.3 两种可拖动情形
 
-同时满足：
+**A. 无连接顺序列表**
+
+- 条件：当前 Project 没有任何连接（`connections().isEmpty()`）。
+- 所有节点按 Project 模块顺序作为隐式单链；允许任意跨层重排。
+- 只修改模块顺序，不创建连接；引擎回退顺序与页面按同一 Project 顺序。
+- 不需要“单一连通分量”条件。
+
+**B. 已连接简单线性链**
 
 - 所有节点属于一个连通分量，数量 ≥ 2；
 - 数据/控制边的入度、出度均 ≤ 1；
 - 不含 `Conditional/Loop/While/StopLoop/Parallel` 控制流节点；
-- 所有边均为数据边，且所有相邻边使用同一组端口模式 `(fromPort, toPort)`；或无连接；
+- 所有边均为数据边，且所有相邻边使用同一组端口模式 `(fromPort, toPort)`；
 - 无分支、汇合、环、未连接的多余节点。
 
-### 7.4 自动重连
+两种情形互斥；判定顺序先 A 后 B。
 
-- 无连接线性链：只调整 Project 模块顺序，不创建连接。
-- 有连接线性链：
-  1. 保存旧模块顺序、旧连接、旧位置；
-  2. 删除链内旧连接；
-  3. 按新顺序和原端口模式重建相邻连接；
-  4. 用分析器和端口兼容校验验证新图；
-  5. 更新顺序、重算计划、`Full` 布局。
-- 任一步失败：零修改，树/画布复位并提示具体原因。
+### 7.4 候选图校验与事务提交（失败零修改）
 
-### 7.5 撤销/重做
+禁止“先删除/重建真实连接，再校验”。流程：
 
-新增 `ReorderLinearChainCommand : QUndoCommand`：
+1. 在内存构造候选图 `FlowGraphCandidate`：
+   - `QStringList orderedIds`；
+   - `QList<ModuleConnection> candidateConnections`。
+2. 用 `FlowGraphAnalyzer::validateCandidate(project, candidate, &plan, &error)` 校验：
+   - 模块存在、顺序是完整排列；
+   - 端口存在、类型兼容、无重复边；
+   - 前向图无环、控制流结构化；
+   - 线性链端口模式无歧义。
+3. 校验通过后调用一次 `Project::applyStructureTransaction(candidate)`：
+   - 在同一事务内更新模块顺序与连接增删；
+   - 只触发一次结构变更批次（现有 `moduleAdded/Removed/connectionAdded/Removed` 可由事务统一发出，或增加 `structureChanged` 汇总信号）；
+   - 结构版本 +1；`modified` 只在该提交点改变。
+4. 校验失败：不调用任何 Project 修改 API，不改变 `modified`、不发结构信号、不压撤销命令；树/画布复位并提示 `error`。
+5. 自动布局在事务成功后由协调器执行；事务本身不直接移动 UI。
 
-- 保存旧/新模块顺序、旧/新连接、旧/新位置。
-- `redo()` 应用新状态；`undo()` 恢复旧状态。
-- 推入 MainWindow 现有 `m_paramUndoStack`，复用撤销/重做动作。
-- 命令应用期间设置布局抑制标志，避免自动布局覆盖命令保存的位置；命令结束后只刷新连线/树，不重新计算布局。
+### 7.5 撤销/重做与跨历史失效
+
+新增 `ReorderLinearChainCommand : QUndoCommand`，推入 MainWindow 现有 `m_paramUndoStack`：
+
+- 保存旧/新模块顺序、旧/新连接、旧/新位置，以及 `projectId` 和 `structureRevision`。
+- 命令应用期间设置布局抑制标志；成功提交后刷新树/连线，不重新计算布局。
+- `Project` 增加单调递增 `structureRevision`，在所有结构变更（模块/连接/顺序）时 +1；参数修改不增加该版本。
+- 命令保存 `m_expectedRevision` = 上次应用后 Project 的版本。
+- `undo()/redo()` 前检查：
+  - 当前 Project 身份（id/session）与命令保存的一致；
+  - 当前 `structureRevision == m_expectedRevision`。
+  - 任一不满足 → 命令失效：不执行、不修改工程，提示“结构已被其他操作修改，无法撤销此重排”，并从可用历史中跳过。
+- 成功 undo/redo 后更新 `m_expectedRevision` 为新的结构版本。
+- 因此 GUI 重排后 Agent 新增节点/连接，再执行 GUI Undo 会被拒绝，不会覆盖 Agent 的后续编辑；反之亦然。
 - 自动布局本身不进入撤销栈。
 
 ## 8. FlowLayoutCoordinator
@@ -274,7 +332,7 @@ void ProcessTreeController::applyExecutionOrder(const QStringList& displayOrder)
 
 | 事件 | 行为 |
 |---|---|
-| 工程加载 | 位置与计划一致 → Normalize；否则 Full |
+| 工程加载 | `layoutInitialized==true` 且有有效位置 → 原样恢复；否则 Full 并置 true |
 | 模块新增/删除 | Full |
 | 连接新增/删除 | Full |
 | 模块顺序变化 | Full |
@@ -299,8 +357,9 @@ void ProcessTreeController::applyExecutionOrder(const QStringList& displayOrder)
 - 引擎同层 tie-break 从“流程树/插入顺序”改为 Project 规范顺序；只在多入口/同层独立节点时可能改变顺序。
 - 跨层流程树拖动：线性链自动重连，其他图拒绝；不再允许“拖了但执行不变”。
 - 用户自由拖动只改位置；下一次结构变化按执行层级归位。
-- 工程加载时可能 Normalize 或 Full 重排；旧工程外观变化，连接和参数不变。
+- 工程加载默认恢复已保存的自由布局；只有 `layoutInitialized==false` 或位置非法的旧工程才 Full 初始化。结构变更/显式整理仍会重排。
 - 自动布局写回位置并标记工程 modified，但不进入撤销栈。
+- GUI 与 Agent 仍可使用各自撤销栈，但结构命令通过 `Project::structureRevision` 做跨栈失效：任一结构编辑交错后，旧重排命令拒绝 undo/redo，不覆盖后续编辑。
 - 不改 `IModule`/`ModuleBase` ABI，不要求重建插件。
 - If/Loop/While 的动态路径不变；静态计划展示完整分支，运行高亮显示实际路径。
 
@@ -308,13 +367,14 @@ void ProcessTreeController::applyExecutionOrder(const QStringList& displayOrder)
 
 | 层 | 用例 |
 |---|---|
-| 分析器 | 线性链 rank=0,1,2；无连接回退；多入口；fan-out/fan-in；If true/false 同层分栏；ConditionalEnd；Loop/While body 与回边；Parallel；禁用节点；环/非结构化控制流报错 |
+| 分析器 | 线性数据链 rank=0,1,2；**纯控制链 A.next→B.control→C.control rank=0,1,2**；无连接回退；多入口；**菱形 A→B/A→C/B→D/C→D 的 displayOrder 必须 A,B,C,D，D 在 B/C 后**；数据 fan-out 同层 lane 唯一；If true/false 同层分栏；**嵌套 If/Loop 分支**；ConditionalEnd；Loop/While body 与回边；Parallel；禁用节点；环/非结构化控制流报错 |
+| 顺序一致性 | 对每个数据边 u→v，`dataOrder` 与 `displayOrder` 都满足 u 在 v 前；纯数据图两者完全相等；displayOrder 是前向依赖图合法拓扑序 |
 | 差分回归 | 现有控制流/循环/并行测试工程：`plan.dataOrder` 与旧 `buildExecutionOrder` 逐项一致；控制边/loop region/reentrant 一致 |
-| 画布 | rank 递增则 Y 递增；同 rank 同 Y；lane 不重叠；分支标签；回边；Normalize 保留 X；Full 重排；100/200 节点布局耗时有上限 |
-| 位置 | 拖动写回；保存/重载规则；modified 状态 |
+| 画布 | rank 递增则 Y 递增；同 rank 同 Y；**所有同层节点 lane 唯一不重叠**；分支标签；回边；Normalize 保留 X；Full 重排；100/200 节点布局耗时有上限 |
+| 位置 | 拖动写回；`layoutInitialized=true` 保存/重载原样恢复；未初始化/非法位置才 Full；modified 状态 |
 | 流程树 | 顺序等于 displayOrder；选中/滚动保持；同层独立换序；分支换序拒绝；跨层非线性拒绝 |
-| 线性链重连 | 有/无连接；端口唯一模式成功；多端口歧义拒绝；失败零修改 |
-| 撤销/重做 | 顺序、连接、位置完整恢复；多次 undo/redo 后计划与引擎一致 |
+| 线性链重连 | **无连接顺序列表**与**已连接简单线性链**分别覆盖；端口唯一模式成功；多端口歧义拒绝；失败时工程数据/modified/结构信号/撤销栈均未改变 |
+| 撤销/重做 | 顺序、连接、位置完整恢复；多次 undo/redo 后计划与引擎一致；**GUI 重排后 Agent 新增节点/连接，再 GUI Undo 必须失效且不覆盖 Agent 编辑；反向交错同样** |
 | Agent | 脚本化构建线性链/分支；计划、树、画布、引擎一致；`get_flow_state` 含 rank/displayIndex |
 | UI | 线性、If、Loop、拖动后结构变更、显式整理截图门禁 |
 | 回归 | `test_runengine`、`test_mainwindow`、`test_flowexecutionservice`、Agent 全套、全量 CTest |
@@ -327,8 +387,8 @@ void ProcessTreeController::applyExecutionOrder(const QStringList& displayOrder)
 |---|---|---|
 | B0 | 基线、分支、现有测试 | 无代码提交 |
 | B1 | `FlowGraphAnalyzer` + RunEngine 接入 + 差分测试 | `feat(flow): add canonical execution plan analyzer` |
-| B2 | Project 位置/排序信号 + FlowCanvas 布局 + FlowLayoutCoordinator | `feat(ui): lay out flows by execution plan` |
-| B3 | 流程树排序 + 拖动规则 + ReorderLinearChainCommand | `feat(ui): reorder linear chains from the process tree` |
+| B2 | Project 位置/排序信号 + `layoutInitialized` + `structureRevision` + `applyStructureTransaction` + FlowCanvas 布局 + FlowLayoutCoordinator | `feat(ui): lay out flows by execution plan` |
+| B3 | 流程树排序 + 拖动规则 + 候选图校验 + ReorderLinearChainCommand（含跨栈失效） | `feat(ui): reorder linear chains from the process tree` |
 | B4 | Agent 集成 + get_flow_state 字段 + 合并触发 | `feat(agent): expose and maintain execution order` |
 | B5 | 控制分支视觉 + 截图门禁 + 文档 + 全量回归 | `docs: document execution-order layout` |
 
@@ -371,7 +431,7 @@ git diff --check
 | 拖动与自动布局冲突 | 拖动只写位置；结构变化后归位；显式整理按钮 |
 | 撤销栈混乱 | 命令保存完整旧/新状态；布局本身不入栈 |
 | 大图性能 | O(V+E) 分析；100/200 节点基准；避免逐节点信号风暴 |
-| 旧工程外观变化 | 加载时 Normalize 优先；无法规范化才 Full；文档说明 |
+| 旧工程外观变化 | `layoutInitialized` 已保存的布局原样恢复；仅未初始化/非法位置执行 Full；文档说明 |
 
 ## 14. 验收标准
 
@@ -382,3 +442,14 @@ git diff --check
 5. Agent 构建完成后无需手动整理，页面顺序即引擎顺序；`get_flow_state` 可读取 rank/displayIndex。
 6. 控制流动态路径不受影响；现有控制流、循环、并行、断点、后台执行测试全绿。
 7. 全量 CTest、截图门禁通过；Windows/真实工程未验证项单独记录。
+
+## 15. 评审修订记录（2026-11-02）
+
+针对提交 `e1663d4` 的 P1/P2 复核：
+
+1. **displayOrder 依赖约束**：取消纯 DFS；改为“DFS preferredIndex + Kahn 拓扑”的稳定拓扑遍历，保证菱形图 A,B,C,D 且 D 在所有前驱之后；明确 dataOrder/displayOrder 对数据边的一致性与测试。
+2. **层级覆盖控制链**：前向依赖图包含数据边与去回边后的控制边，普通控制链获得 rank 0,1,2；所有同层节点统一分配唯一 lane，覆盖数据 fan-out 与嵌套分支。
+3. **撤销跨历史失效**：保留两套撤销栈，但引入 `Project::structureRevision` 与 `projectId`；重排命令在 revision 不匹配时失效，绝不覆盖 Agent/GUI 的后续结构编辑；补充交错测试。
+4. **失败零修改**：先构造 `FlowGraphCandidate` 并完成端口/图/计划校验，再通过 `Project::applyStructureTransaction` 一次提交；失败时不改 modified、不发结构信号、不压撤销栈。
+5. **加载位置恢复**：新增持久化 `layoutInitialized`；已保存布局默认原样恢复，只有未初始化/非法位置才 Full 布局，避免保存重载覆盖自由拖动。
+6. **无连接拖动分支**：拆分为“无连接顺序列表”和“已连接简单线性链”，解决连通分量条件自相矛盾。
