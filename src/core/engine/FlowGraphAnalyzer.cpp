@@ -314,33 +314,12 @@ FlowOrderPlan FlowGraphAnalyzer::analyze(const FlowGraphCatalog& catalog,
         }
     }
 
-    // ---------- 无连接节点：按 Project 稳定顺序形成展示用初始化链 ----------
-    QSet<QString> incidentNodes;
-    for (const ModuleConnection& connection : normalizedConnections) {
-        incidentNodes.insert(connection.fromModuleId);
-        incidentNodes.insert(connection.toModuleId);
-    }
-    QStringList isolatedIds;
-    for (const QString& id : nodeIds) {
-        if (!incidentNodes.contains(id))
-            isolatedIds.append(id);
-    }
-    if (!isolatedIds.isEmpty()) {
-        if (normalizedConnections.isEmpty()) {
-            // 整图无任何连接：rank=0..N-1，仅用于展示。
-            for (int i = 0; i < nodeIds.size(); ++i)
-                rank[nodeIds.at(i)] = i;
-        } else {
-            // 混合图：无连接节点接在已连接子图最大 rank 之后，保持 Project 稳定顺序。
-            int maxConnectedRank = -1;
-            for (const QString& id : nodeIds) {
-                if (incidentNodes.contains(id))
-                    maxConnectedRank = std::max(maxConnectedRank, rank.value(id));
-            }
-            int nextRank = maxConnectedRank + 1;
-            for (const QString& id : isolatedIds)
-                rank[id] = nextRank++;
-        }
+    // ---------- 整图无任何连接：按 Project 稳定顺序形成展示用初始化链 ----------
+    // 仅用于全无连接工程（§7.3 的无连接顺序列表）；混合图中的孤立节点保持默认 rank 0，
+    // 避免 rank 在 displayOrder 上非单调。
+    if (normalizedConnections.isEmpty()) {
+        for (int i = 0; i < nodeIds.size(); ++i)
+            rank[nodeIds.at(i)] = i;
     }
 
     QMap<QString, int> dataOrderIndex;

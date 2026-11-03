@@ -219,7 +219,7 @@ private slots:
         QCOMPARE(plan.laneOf("B"), 0);
         QCOMPARE(plan.laneOf("C"), 0);
     }
-    void testMixedGraphAppendsUnconnectedModulesAfterConnectedRanks() {
+    void testMixedGraphIsolatedModulesKeepDefaultRank() {
         const QList<FlowGraphModule> modules{mod("A"), mod("B"), mod("C"), mod("D")};
         const QList<ModuleConnection> edges{edge("A", "B")};
         const FlowOrderPlan plan = planFor(modules, edges, {"A", "B", "C", "D"});
@@ -227,20 +227,16 @@ private slots:
         // 已连接节点的 rank 不受影响
         QCOMPARE(plan.rankOf("A"), 0);
         QCOMPARE(plan.rankOf("B"), 1);
-        // 无连接节点按 Project 稳定顺序接在最大已连接 rank 之后
-        QCOMPARE(plan.rankOf("C"), 2);
-        QCOMPARE(plan.rankOf("D"), 3);
-        // dataOrder 的 FIFO 语义保持不变
+        // 混合图中的孤立节点保持默认 rank 0（初始化链仅用于全无连接工程）
+        QCOMPARE(plan.rankOf("C"), 0);
+        QCOMPARE(plan.rankOf("D"), 0);
+        // dataOrder 与 displayOrder 均保持 FIFO 语义
         QCOMPARE(plan.dataOrder, (QStringList{"A", "C", "D", "B"}));
-        // displayOrder 仍是包含全部节点的合法前向拓扑序
-        QCOMPARE(plan.displayOrder.size(), 4);
-        QVERIFY(plan.displayOrder.indexOf("A") < plan.displayOrder.indexOf("B"));
-        QSet<QString> seen;
-        for (const QString& id : plan.displayOrder)
-            seen.insert(id);
-        QCOMPARE(seen.size(), 4);
-        QVERIFY(seen.contains("C"));
-        QVERIFY(seen.contains("D"));
+        QCOMPARE(plan.displayOrder, plan.dataOrder);
+        // rank 沿 displayOrder 单调不减
+        for (int i = 1; i < plan.displayOrder.size(); ++i) {
+            QVERIFY(plan.rankOf(plan.displayOrder.at(i - 1)) <= plan.rankOf(plan.displayOrder.at(i)));
+        }
     }
 
     // normalizeConnections 规则
