@@ -282,6 +282,10 @@ public:
 
     // L2 测试注入：向 m_nodeOutputs 写入自定义端口值（生产构建不可见）
     DEEPLUX_TEST_VISIBILITY : void setNodePortOutputsForTest(const QString& moduleName, const PortValueMap& outputs);
+    // B1 测试观察：排序分析与控制图元数据（生产构建不可见）。
+    DEEPLUX_TEST_VISIBILITY : QStringList executionOrderForTest() const;
+    DEEPLUX_TEST_VISIBILITY : QList<ModuleConnection> controlEdgesForTest() const;
+    DEEPLUX_TEST_VISIBILITY : QVariantMap loopMetadataForTest() const; // back/reentrant/regions
     // 后台执行（设计 §6.1/§6.3）测试注入：覆盖某运行名的执行亲和性与并行资格判定；
     // 亲和性缓存本身由 addModule/removeModule/loadProject/clearModules 维护（生产构建不可见）。
     DEEPLUX_TEST_VISIBILITY : void setModuleExecutionAffinityForTest(const QString& moduleName,

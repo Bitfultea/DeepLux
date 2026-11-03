@@ -1,5 +1,6 @@
 #include "RunEngine.h"
 
+#include "FlowGraphAnalyzer.h"
 #include "base/ModuleBase.h"
 #include "common/CancellationToken.h"
 #include "common/Logger.h"
@@ -2686,63 +2687,48 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
     }
 
     QStringList moduleIds;
-    QSet<QString> moduleIdSet;
+    QList<FlowGraphModule> catalogModules;
+    QMap<QString, ModuleBase*> modulesById;
     for (ModuleBase* module : m_modules) {
-        QString id = runtimeModuleName(module);
+        const QString id = runtimeModuleName(module);
         moduleIds.append(id);
-        moduleIdSet.insert(id);
+        modulesById.insert(id, module);
+        FlowGraphModule graphModule;
+        graphModule.instanceId = id;
+        graphModule.flowType = module->flowControlType();
+        graphModule.inputPorts = module->inputPorts();
+        graphModule.outputPorts = module->outputPorts();
+        catalogModules.append(graphModule);
+    }
+    const FlowGraphCatalog catalog{catalogModules};
+
+    QString normalizeError;
+    m_connections = FlowGraphAnalyzer::normalizeConnections(catalog, project->connections(), &normalizeError);
+    if (!normalizeError.isEmpty()) {
+        error = normalizeError;
+        return false;
     }
 
-    QMap<QString, ModuleBase*> modulesById;
-    QMap<QString, int> indegree;
-    for (const QString& id : moduleIds) {
-        indegree[id] = 0;
-        modulesById.insert(id, m_moduleMap.value(id));
-    }
-    QMap<QString, QStringList> adjacency;
     QMap<QString, int> inputCounts;
     QSet<QString> uniqueEdges;
 
-    for (ModuleConnection& conn : m_connections) {
-        if (!moduleIdSet.contains(conn.fromModuleId)) {
-            error = tr("Connection references missing source module: %1").arg(conn.fromModuleId);
-            return false;
-        }
-        if (!moduleIdSet.contains(conn.toModuleId)) {
-            error = tr("Connection references missing target module: %1").arg(conn.toModuleId);
-            return false;
-        }
-        if (conn.edgeType == QLatin1String("pending")) {
-            error = tr("Connection %1 -> %2 requires manual port mapping").arg(conn.fromModuleId, conn.toModuleId);
-            return false;
-        }
-
-        // 阶段 C: 显式控制边契约——推断边类型并校验端口兼容
-        if (conn.fromPort.isEmpty())
-            conn.fromPort = QStringLiteral("image");
-        if (conn.toPort.isEmpty())
-            conn.toPort = QStringLiteral("image");
-
+    for (const ModuleConnection& conn : m_connections) {
         ModuleBase* source = modulesById.value(conn.fromModuleId);
         ModuleBase* target = modulesById.value(conn.toModuleId);
-        const QList<PortSpec> sourcePorts = source ? source->outputPorts() : QList<PortSpec>{};
-        const QList<PortSpec> targetPorts = target ? target->inputPorts() : QList<PortSpec>{};
-        const PortSpec* output = findPort(sourcePorts, conn.fromPort);
-        const PortSpec* input = findPort(targetPorts, conn.toPort);
         if (!source || !target) {
             error = tr("Connection references an unavailable runtime module");
             return false;
         }
+
+        const QList<PortSpec> sourcePorts = source->outputPorts();
+        const QList<PortSpec> targetPorts = target->inputPorts();
+        const PortSpec* output = findPort(sourcePorts, conn.fromPort);
+        const PortSpec* input = findPort(targetPorts, conn.toPort);
         // 隐式控制端口：next（所有节点的隐式控制输出）和 control（隐式控制输入）
         const bool fromIsImplicitControl = (conn.fromPort == QLatin1String("next"));
         const bool toIsImplicitControl = (conn.toPort == QLatin1String("control"));
         const bool fromIsControl = fromIsImplicitControl || (output && output->control);
         const bool toIsControl = toIsImplicitControl || (input && input->control);
-
-        // 推断边类型
-        if (conn.edgeType.isEmpty()) {
-            conn.edgeType = (fromIsControl || toIsControl) ? QStringLiteral("control") : QStringLiteral("data");
-        }
 
         if (conn.edgeType == QLatin1String("data")) {
             // 数据边：两端必须是非控制端口
@@ -2754,7 +2740,7 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
                 error = tr("Data edge targets control port %1.%2").arg(conn.toModuleId, conn.toPort);
                 return false;
             }
-        } else if (conn.edgeType == QLatin1String("control")) {
+        } else {
             // 控制边：源必须是控制输出，目标必须是控制输入
             if (!fromIsControl) {
                 error = tr("Control edge source %1.%2 is not a control port").arg(conn.fromModuleId, conn.fromPort);
@@ -2764,10 +2750,6 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
                 error = tr("Control edge target %1.%2 is not a control port").arg(conn.toModuleId, conn.toPort);
                 return false;
             }
-        } else {
-            error = tr("Unknown edge type '%1' on connection %3.%4 -> %5.%6")
-                        .arg(conn.edgeType, conn.fromModuleId, conn.fromPort, conn.toModuleId, conn.toPort);
-            return false;
         }
 
         // 端口存在性校验（隐式端口跳过）
@@ -2797,8 +2779,6 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
         uniqueEdges.insert(edgeKey);
 
         if (conn.edgeType == QLatin1String("control")) {
-            // 控制边不参与数据 DAG 拓扑排序，只记录
-            m_controlEdges.append(conn);
             continue;
         }
 
@@ -2809,149 +2789,45 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
                 tr("Input port %1.%2 does not accept multiple upstream connections").arg(conn.toModuleId, conn.toPort);
             return false;
         }
-        adjacency[conn.fromModuleId].append(conn.toModuleId);
-        ++indegree[conn.toModuleId];
     }
 
-    QStringList ready;
-    for (const QString& id : moduleIds) {
-        if (indegree.value(id) == 0) {
-            ready.append(id);
-        }
-    }
-
-    while (!ready.isEmpty()) {
-        const QString current = ready.takeFirst();
-        m_executionOrder.append(current);
-        for (const QString& downstream : adjacency.value(current)) {
-            if (--indegree[downstream] == 0)
-                ready.append(downstream);
-        }
-    }
-
-    if (m_executionOrder.size() != moduleIds.size()) {
-        m_executionOrder.clear();
-        error = tr("Data-flow graph contains a cycle");
+    const FlowOrderPlan plan = FlowGraphAnalyzer::analyze(catalog, m_connections, moduleIds);
+    if (!plan.valid) {
+        error = plan.error;
         return false;
     }
-
-    struct CombinedEdge {
-        QString target;
-        bool control = false;
-    };
-    QMap<QString, QList<CombinedEdge>> combinedAdj;
-    for (const ModuleConnection& connection : m_connections) {
-        combinedAdj[connection.fromModuleId].append(
-            {connection.toModuleId, connection.edgeType == QLatin1String("control")});
-    }
-
-    const auto reachable = [&combinedAdj](QStringList pending, const QString& excludedLoopTarget) {
-        QSet<QString> reached;
-        while (!pending.isEmpty()) {
-            const QString current = pending.takeFirst();
-            if (reached.contains(current))
-                continue;
-            reached.insert(current);
-            for (const CombinedEdge& edge : combinedAdj.value(current)) {
-                if (edge.control && edge.target == excludedLoopTarget)
-                    continue;
-                pending.append(edge.target);
-            }
-        }
-        return reached;
-    };
-
-    QMap<QString, ControlFlowType> flowTypes;
-    for (ModuleBase* module : m_modules)
-        flowTypes.insert(runtimeModuleName(module), module->flowControlType());
-
-    // 回边必须回到 Loop/While，且源节点只能从该循环的 body 分支到达。
-    for (const ModuleConnection& candidate : m_controlEdges) {
-        const ControlFlowType targetType = flowTypes.value(candidate.toModuleId, ControlFlowType::Sequential);
-        if (candidate.fromModuleId == candidate.toModuleId ||
-            (targetType != ControlFlowType::Loop && targetType != ControlFlowType::While)) {
-            continue;
-        }
-
-        QStringList bodyStarts;
-        QStringList doneStarts;
-        for (const ModuleConnection& edge : m_controlEdges) {
-            if (edge.fromModuleId != candidate.toModuleId)
-                continue;
-            if (edge.fromPort == QLatin1String("body"))
-                bodyStarts.append(edge.toModuleId);
-            else if (edge.fromPort == QLatin1String("done"))
-                doneStarts.append(edge.toModuleId);
-        }
-        if (reachable(bodyStarts, candidate.toModuleId).contains(candidate.fromModuleId) &&
-            !reachable(doneStarts, candidate.toModuleId).contains(candidate.fromModuleId)) {
-            m_loopBackEdges.insert(connectionKey(candidate));
-        }
-    }
-
-    QMap<QString, QStringList> reducedAdj;
-    QMap<QString, QStringList> reducedReverse;
-    QMap<QString, int> combinedIndegree;
-    for (const QString& moduleId : moduleIds)
-        combinedIndegree.insert(moduleId, 0);
-    for (const ModuleConnection& connection : m_connections) {
-        if (m_loopBackEdges.contains(connectionKey(connection)))
-            continue;
-        reducedAdj[connection.fromModuleId].append(connection.toModuleId);
-        reducedReverse[connection.toModuleId].append(connection.fromModuleId);
-        ++combinedIndegree[connection.toModuleId];
-    }
-
-    ready.clear();
-    for (const QString& moduleId : moduleIds) {
-        if (combinedIndegree.value(moduleId) == 0)
-            ready.append(moduleId);
-    }
-    int visitedCount = 0;
-    while (!ready.isEmpty()) {
-        const QString current = ready.takeFirst();
-        ++visitedCount;
-        for (const QString& downstream : reducedAdj.value(current)) {
-            if (--combinedIndegree[downstream] == 0)
-                ready.append(downstream);
-        }
-    }
-    if (visitedCount != moduleIds.size()) {
-        error = tr("Control or combined graph contains an unstructured cycle");
-        return false;
-    }
-
-    const auto reachableIn = [](const QMap<QString, QStringList>& graph, QStringList pending) {
-        QSet<QString> reached;
-        while (!pending.isEmpty()) {
-            const QString current = pending.takeFirst();
-            if (reached.contains(current))
-                continue;
-            reached.insert(current);
-            pending.append(graph.value(current));
-        }
-        return reached;
-    };
-    for (const ModuleConnection& backEdge : m_controlEdges) {
-        if (!m_loopBackEdges.contains(connectionKey(backEdge)))
-            continue;
-        QStringList bodyStarts;
-        for (const ModuleConnection& edge : m_controlEdges) {
-            if (edge.fromModuleId == backEdge.toModuleId && edge.fromPort == QLatin1String("body"))
-                bodyStarts.append(edge.toModuleId);
-        }
-        const QSet<QString> bodyReach = reachableIn(reducedAdj, bodyStarts);
-        const QSet<QString> reachesBackSource = reachableIn(reducedReverse, {backEdge.fromModuleId});
-        m_reentrantModules.insert(backEdge.toModuleId);
-        for (const QString& moduleId : bodyReach) {
-            if (reachesBackSource.contains(moduleId)) {
-                m_reentrantModules.insert(moduleId);
-                m_loopRegions[backEdge.toModuleId].insert(moduleId);
-            }
-        }
-    }
-
+    m_executionOrder = plan.dataOrder;
+    m_controlEdges = plan.controlEdges;
+    m_loopBackEdges = plan.loopBackEdges;
+    m_reentrantModules = plan.reentrantModules;
+    m_loopRegions = plan.loopRegions;
     return true;
+}
+
+QStringList RunEngine::executionOrderForTest() const {
+    return m_executionOrder;
+}
+
+QList<ModuleConnection> RunEngine::controlEdgesForTest() const {
+    return m_controlEdges;
+}
+
+QVariantMap RunEngine::loopMetadataForTest() const {
+    QStringList backEdges = m_loopBackEdges.values();
+    backEdges.sort();
+    QStringList reentrant = m_reentrantModules.values();
+    reentrant.sort();
+    QVariantMap regions;
+    for (auto it = m_loopRegions.constBegin(); it != m_loopRegions.constEnd(); ++it) {
+        QStringList members = it.value().values();
+        members.sort();
+        regions.insert(it.key(), members);
+    }
+    QVariantMap metadata;
+    metadata.insert(QStringLiteral("loopBackEdges"), backEdges);
+    metadata.insert(QStringLiteral("reentrantModules"), reentrant);
+    metadata.insert(QStringLiteral("loopRegions"), regions);
+    return metadata;
 }
 
 QString RunEngine::findSiblingByFlowType(const QString& currentModule, ControlFlowType targetType) {

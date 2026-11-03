@@ -405,6 +405,376 @@ private:
     QStringList* m_log;
 };
 
+// ========== B1：冻结旧 buildExecutionOrder 行为的差分基准 ==========
+// 该基准逐行复刻接入 FlowGraphAnalyzer 之前的引擎排序/回边/重入逻辑，
+// 作为兼容性门禁：分析器接入后这些期望值不得变化。测试夹具显式声明端口
+// 与 edgeType，因此不依赖 normalizeConnections 的推断结果。
+struct LegacyFlowPlan {
+    bool valid = false;
+    QString error;
+    QStringList executionOrder;
+    QList<ModuleConnection> controlEdges;
+    QStringList loopBackEdges;
+    QStringList reentrantModules;
+    QMap<QString, QStringList> loopRegions;
+};
+
+struct LegacyFixture {
+    QString name;
+    QStringList moduleOrder;
+    QMap<QString, ControlFlowType> flowTypes;
+    QList<ModuleConnection> connections;
+    QStringList expectedExecutionOrder;
+    QStringList expectedControlEdges;
+    QStringList expectedLoopBackEdges;
+    QStringList expectedReentrantModules;
+    QMap<QString, QStringList> expectedLoopRegions;
+};
+
+static QString legacyConnectionKey(const ModuleConnection& connection) {
+    return connection.fromModuleId + QLatin1Char('\x1f') + connection.toModuleId + QLatin1Char('\x1f') +
+           connection.fromPort + QLatin1Char('\x1f') + connection.toPort;
+}
+
+static ModuleConnection legacyEdge(const QString& from, const QString& to,
+                                   const QString& fromPort = QStringLiteral("image"),
+                                   const QString& toPort = QStringLiteral("image"),
+                                   const QString& type = QStringLiteral("data")) {
+    ModuleConnection connection;
+    connection.fromModuleId = from;
+    connection.toModuleId = to;
+    connection.fromPort = fromPort;
+    connection.toPort = toPort;
+    connection.edgeType = type;
+    return connection;
+}
+
+static LegacyFlowPlan legacyExecutionOrder(const QStringList& moduleOrder,
+                                           const QMap<QString, ControlFlowType>& flowTypes,
+                                           QList<ModuleConnection> connections) {
+    LegacyFlowPlan plan;
+    if (connections.isEmpty()) {
+        plan.valid = true;
+        return plan;
+    }
+
+    QStringList moduleIds = moduleOrder;
+    QSet<QString> moduleIdSet;
+    for (const QString& id : moduleIds)
+        moduleIdSet.insert(id);
+
+    QMap<QString, int> indegree;
+    QSet<QString> uniqueEdges;
+    for (const QString& id : moduleIds)
+        indegree[id] = 0;
+    QMap<QString, QStringList> adjacency;
+    QList<ModuleConnection> normalized;
+
+    for (ModuleConnection conn : connections) {
+        if (!moduleIdSet.contains(conn.fromModuleId)) {
+            plan.error = QStringLiteral("missing source");
+            return plan;
+        }
+        if (!moduleIdSet.contains(conn.toModuleId)) {
+            plan.error = QStringLiteral("missing target");
+            return plan;
+        }
+        if (conn.edgeType == QLatin1String("pending")) {
+            plan.error = QStringLiteral("pending");
+            return plan;
+        }
+        if (conn.fromPort.isEmpty())
+            conn.fromPort = QStringLiteral("image");
+        if (conn.toPort.isEmpty())
+            conn.toPort = QStringLiteral("image");
+        if (conn.edgeType != QLatin1String("data") && conn.edgeType != QLatin1String("control")) {
+            plan.error = QStringLiteral("unknown edge type");
+            return plan;
+        }
+        const QString edgeKey = legacyConnectionKey(conn);
+        if (uniqueEdges.contains(edgeKey)) {
+            plan.error = QStringLiteral("duplicate connection");
+            return plan;
+        }
+        uniqueEdges.insert(edgeKey);
+        normalized.append(conn);
+        if (conn.edgeType == QLatin1String("control")) {
+            plan.controlEdges.append(conn);
+            continue;
+        }
+        adjacency[conn.fromModuleId].append(conn.toModuleId);
+        ++indegree[conn.toModuleId];
+    }
+
+    QStringList ready;
+    for (const QString& id : moduleIds) {
+        if (indegree.value(id) == 0)
+            ready.append(id);
+    }
+    while (!ready.isEmpty()) {
+        const QString current = ready.takeFirst();
+        plan.executionOrder.append(current);
+        for (const QString& downstream : adjacency.value(current)) {
+            if (--indegree[downstream] == 0)
+                ready.append(downstream);
+        }
+    }
+    if (plan.executionOrder.size() != moduleIds.size()) {
+        plan.executionOrder.clear();
+        plan.error = QStringLiteral("data cycle");
+        return plan;
+    }
+
+    struct CombinedEdge {
+        QString target;
+        bool control = false;
+    };
+    QMap<QString, QList<CombinedEdge>> combinedAdj;
+    for (const ModuleConnection& connection : normalized) {
+        combinedAdj[connection.fromModuleId].append(
+            {connection.toModuleId, connection.edgeType == QLatin1String("control")});
+    }
+
+    const auto reachable = [&combinedAdj](QStringList pending, const QString& excludedLoopTarget) {
+        QSet<QString> reached;
+        while (!pending.isEmpty()) {
+            const QString current = pending.takeFirst();
+            if (reached.contains(current))
+                continue;
+            reached.insert(current);
+            for (const CombinedEdge& edge : combinedAdj.value(current)) {
+                if (edge.control && edge.target == excludedLoopTarget)
+                    continue;
+                pending.append(edge.target);
+            }
+        }
+        return reached;
+    };
+
+    for (const ModuleConnection& candidate : plan.controlEdges) {
+        const ControlFlowType targetType = flowTypes.value(candidate.toModuleId, ControlFlowType::Sequential);
+        if (candidate.fromModuleId == candidate.toModuleId ||
+            (targetType != ControlFlowType::Loop && targetType != ControlFlowType::While)) {
+            continue;
+        }
+        QStringList bodyStarts;
+        QStringList doneStarts;
+        for (const ModuleConnection& edge : plan.controlEdges) {
+            if (edge.fromModuleId != candidate.toModuleId)
+                continue;
+            if (edge.fromPort == QLatin1String("body"))
+                bodyStarts.append(edge.toModuleId);
+            else if (edge.fromPort == QLatin1String("done"))
+                doneStarts.append(edge.toModuleId);
+        }
+        if (reachable(bodyStarts, candidate.toModuleId).contains(candidate.fromModuleId) &&
+            !reachable(doneStarts, candidate.toModuleId).contains(candidate.fromModuleId)) {
+            plan.loopBackEdges.append(legacyConnectionKey(candidate));
+        }
+    }
+    plan.loopBackEdges.sort();
+
+    QMap<QString, QStringList> reducedAdj;
+    QMap<QString, QStringList> reducedReverse;
+    QMap<QString, int> combinedIndegree;
+    for (const QString& moduleId : moduleIds)
+        combinedIndegree.insert(moduleId, 0);
+    for (const ModuleConnection& connection : normalized) {
+        if (plan.loopBackEdges.contains(legacyConnectionKey(connection)))
+            continue;
+        reducedAdj[connection.fromModuleId].append(connection.toModuleId);
+        reducedReverse[connection.toModuleId].append(connection.fromModuleId);
+        ++combinedIndegree[connection.toModuleId];
+    }
+
+    ready.clear();
+    for (const QString& moduleId : moduleIds) {
+        if (combinedIndegree.value(moduleId) == 0)
+            ready.append(moduleId);
+    }
+    int visitedCount = 0;
+    while (!ready.isEmpty()) {
+        const QString current = ready.takeFirst();
+        ++visitedCount;
+        for (const QString& downstream : reducedAdj.value(current)) {
+            if (--combinedIndegree[downstream] == 0)
+                ready.append(downstream);
+        }
+    }
+    if (visitedCount != moduleIds.size()) {
+        plan.error = QStringLiteral("unstructured cycle");
+        return plan;
+    }
+
+    const auto reachableIn = [](const QMap<QString, QStringList>& graph, QStringList pending) {
+        QSet<QString> reached;
+        while (!pending.isEmpty()) {
+            const QString current = pending.takeFirst();
+            if (reached.contains(current))
+                continue;
+            reached.insert(current);
+            pending.append(graph.value(current));
+        }
+        return reached;
+    };
+    QSet<QString> reentrant;
+    QMap<QString, QSet<QString>> loopRegions;
+    for (const ModuleConnection& backEdge : plan.controlEdges) {
+        if (!plan.loopBackEdges.contains(legacyConnectionKey(backEdge)))
+            continue;
+        QStringList bodyStarts;
+        for (const ModuleConnection& edge : plan.controlEdges) {
+            if (edge.fromModuleId == backEdge.toModuleId && edge.fromPort == QLatin1String("body"))
+                bodyStarts.append(edge.toModuleId);
+        }
+        const QSet<QString> bodyReach = reachableIn(reducedAdj, bodyStarts);
+        const QSet<QString> reachesBackSource = reachableIn(reducedReverse, {backEdge.fromModuleId});
+        reentrant.insert(backEdge.toModuleId);
+        for (const QString& moduleId : bodyReach) {
+            if (reachesBackSource.contains(moduleId)) {
+                reentrant.insert(moduleId);
+                loopRegions[backEdge.toModuleId].insert(moduleId);
+            }
+        }
+    }
+    plan.reentrantModules = reentrant.values();
+    plan.reentrantModules.sort();
+    for (auto it = loopRegions.constBegin(); it != loopRegions.constEnd(); ++it) {
+        plan.loopRegions.insert(it.key(), it.value().values());
+        plan.loopRegions[it.key()].sort();
+    }
+    plan.valid = true;
+    return plan;
+}
+
+static QList<LegacyFixture> legacyFixtures() {
+    QList<LegacyFixture> fixtures;
+
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("pure data chain");
+        f.moduleOrder = QStringList{QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")};
+        for (const QString& id : f.moduleOrder)
+            f.flowTypes.insert(id, ControlFlowType::Sequential);
+        f.connections = {legacyEdge("A", "B"), legacyEdge("B", "C")};
+        f.expectedExecutionOrder = QStringList{QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")};
+        fixtures.append(f);
+    }
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("diamond");
+        f.moduleOrder = QStringList{QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C"), QStringLiteral("D")};
+        for (const QString& id : f.moduleOrder)
+            f.flowTypes.insert(id, ControlFlowType::Sequential);
+        f.connections = {legacyEdge("A", "B"), legacyEdge("A", "C"), legacyEdge("B", "D"), legacyEdge("C", "D")};
+        f.expectedExecutionOrder =
+            QStringList{QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C"), QStringLiteral("D")};
+        fixtures.append(f);
+    }
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("if true/false");
+        f.moduleOrder = QStringList{QStringLiteral("cond"), QStringLiteral("bodyTrue"), QStringLiteral("bodyFalse")};
+        f.flowTypes.insert(QStringLiteral("cond"), ControlFlowType::Conditional);
+        f.flowTypes.insert(QStringLiteral("bodyTrue"), ControlFlowType::Sequential);
+        f.flowTypes.insert(QStringLiteral("bodyFalse"), ControlFlowType::Sequential);
+        f.connections = {legacyEdge("cond", "bodyTrue"), legacyEdge("cond", "bodyFalse"),
+                         legacyEdge("cond", "bodyTrue", "true", "control", "control"),
+                         legacyEdge("cond", "bodyFalse", "false", "control", "control")};
+        f.expectedExecutionOrder =
+            QStringList{QStringLiteral("cond"), QStringLiteral("bodyTrue"), QStringLiteral("bodyFalse")};
+        f.expectedControlEdges =
+            QStringList{legacyConnectionKey(f.connections.at(2)), legacyConnectionKey(f.connections.at(3))};
+        fixtures.append(f);
+    }
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("loop back edge");
+        f.moduleOrder = QStringList{QStringLiteral("loop"), QStringLiteral("body"), QStringLiteral("after")};
+        f.flowTypes.insert(QStringLiteral("loop"), ControlFlowType::Loop);
+        f.flowTypes.insert(QStringLiteral("body"), ControlFlowType::Sequential);
+        f.flowTypes.insert(QStringLiteral("after"), ControlFlowType::Sequential);
+        f.connections = {legacyEdge("loop", "body"), legacyEdge("loop", "after"),
+                         legacyEdge("loop", "body", "body", "control", "control"),
+                         legacyEdge("body", "loop", "next", "control", "control"),
+                         legacyEdge("loop", "after", "done", "control", "control")};
+        f.expectedExecutionOrder = QStringList{QStringLiteral("loop"), QStringLiteral("body"), QStringLiteral("after")};
+        f.expectedControlEdges =
+            QStringList{legacyConnectionKey(f.connections.at(2)), legacyConnectionKey(f.connections.at(3)),
+                        legacyConnectionKey(f.connections.at(4))};
+        f.expectedLoopBackEdges = QStringList{legacyConnectionKey(f.connections.at(3))};
+        f.expectedReentrantModules = QStringList{QStringLiteral("body"), QStringLiteral("loop")};
+        f.expectedLoopRegions.insert(QStringLiteral("loop"), {QStringLiteral("body")});
+        fixtures.append(f);
+    }
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("while back edge");
+        f.moduleOrder = QStringList{QStringLiteral("while"), QStringLiteral("body"), QStringLiteral("after")};
+        f.flowTypes.insert(QStringLiteral("while"), ControlFlowType::While);
+        f.flowTypes.insert(QStringLiteral("body"), ControlFlowType::Sequential);
+        f.flowTypes.insert(QStringLiteral("after"), ControlFlowType::Sequential);
+        f.connections = {legacyEdge("while", "body"), legacyEdge("while", "after"),
+                         legacyEdge("while", "body", "body", "control", "control"),
+                         legacyEdge("body", "while", "next", "control", "control"),
+                         legacyEdge("while", "after", "done", "control", "control")};
+        f.expectedExecutionOrder =
+            QStringList{QStringLiteral("while"), QStringLiteral("body"), QStringLiteral("after")};
+        f.expectedControlEdges =
+            QStringList{legacyConnectionKey(f.connections.at(2)), legacyConnectionKey(f.connections.at(3)),
+                        legacyConnectionKey(f.connections.at(4))};
+        f.expectedLoopBackEdges = QStringList{legacyConnectionKey(f.connections.at(3))};
+        f.expectedReentrantModules = QStringList{QStringLiteral("body"), QStringLiteral("while")};
+        f.expectedLoopRegions.insert(QStringLiteral("while"), {QStringLiteral("body")});
+        fixtures.append(f);
+    }
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("parallel");
+        f.moduleOrder = QStringList{QStringLiteral("fork"), QStringLiteral("left"), QStringLiteral("right")};
+        f.flowTypes.insert(QStringLiteral("fork"), ControlFlowType::Parallel);
+        f.flowTypes.insert(QStringLiteral("left"), ControlFlowType::Sequential);
+        f.flowTypes.insert(QStringLiteral("right"), ControlFlowType::Sequential);
+        f.connections = {legacyEdge("fork", "left", "branch", "control", "control"),
+                         legacyEdge("fork", "right", "branch", "control", "control")};
+        f.expectedExecutionOrder = QStringList{QStringLiteral("fork"), QStringLiteral("left"), QStringLiteral("right")};
+        f.expectedControlEdges =
+            QStringList{legacyConnectionKey(f.connections.at(0)), legacyConnectionKey(f.connections.at(1))};
+        fixtures.append(f);
+    }
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("nested control");
+        f.moduleOrder =
+            QStringList{QStringLiteral("outer"),     QStringLiteral("outerTrue"),  QStringLiteral("inner"),
+                        QStringLiteral("innerTrue"), QStringLiteral("innerFalse"), QStringLiteral("outerFalse")};
+        f.flowTypes.insert(QStringLiteral("outer"), ControlFlowType::Conditional);
+        f.flowTypes.insert(QStringLiteral("outerTrue"), ControlFlowType::Sequential);
+        f.flowTypes.insert(QStringLiteral("inner"), ControlFlowType::Conditional);
+        f.flowTypes.insert(QStringLiteral("innerTrue"), ControlFlowType::Sequential);
+        f.flowTypes.insert(QStringLiteral("innerFalse"), ControlFlowType::Sequential);
+        f.flowTypes.insert(QStringLiteral("outerFalse"), ControlFlowType::Sequential);
+        f.connections = {legacyEdge("outer", "outerTrue", "true", "control", "control"),
+                         legacyEdge("outer", "outerFalse", "false", "control", "control"),
+                         legacyEdge("outerTrue", "inner", "next", "control", "control"),
+                         legacyEdge("inner", "innerTrue", "true", "control", "control"),
+                         legacyEdge("inner", "innerFalse", "false", "control", "control")};
+        f.expectedExecutionOrder = f.moduleOrder;
+        for (const ModuleConnection& connection : f.connections)
+            f.expectedControlEdges.append(legacyConnectionKey(connection));
+        fixtures.append(f);
+    }
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("no connections");
+        f.moduleOrder = QStringList{QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")};
+        for (const QString& id : f.moduleOrder)
+            f.flowTypes.insert(id, ControlFlowType::Sequential);
+        fixtures.append(f);
+    }
+    return fixtures;
+}
+
 class TestRunEngine : public QObject {
     Q_OBJECT
 
@@ -534,6 +904,8 @@ private slots:
     void testGraphExecutesIsolatedModulesIndependently();
     void testLoadProjectSupportsDisconnectedChains();
     void testLoadProjectSupportsFanOutAndMerge();
+    void testExecutionOrderFifoMatchesLegacy();
+    void testLegacyFixturesFreezeEngineBehavior();
     void testLoadProjectRejectsIncompatiblePortTypes();
     void testLoadProjectRejectsConnectionWithMissingModule();
     void testLoadProjectRejectsConnectionCycle();
@@ -5545,6 +5917,87 @@ void TestRunEngine::testSnapshotConcurrentWithRun() {
     QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 10000);
     QVERIFY(!engine.nodePortOutputs(QStringLiteral("SnapSource")).isEmpty());
     engine.clearModules();
+}
+
+static ModuleBase* createLegacyFixtureModule(const ModuleInstance& instance) {
+    const QString id = instance.id;
+    if (id == QLatin1String("cond") || id == QLatin1String("outer") || id == QLatin1String("inner"))
+        return new IfControlModule(id, true);
+    if (id == QLatin1String("loop"))
+        return new LoopControlModule(id, 3);
+    if (id == QLatin1String("while"))
+        return new WhileControlModule(id, true);
+    if (id == QLatin1String("fork"))
+        return new ParallelForkModule(id);
+    return new TestExecutionModule(id);
+}
+
+void TestRunEngine::testExecutionOrderFifoMatchesLegacy() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    for (const QString& id : {QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        instance.name = id;
+        project.addModule(instance);
+    }
+    project.addConnection(legacyEdge("A", "B"));
+    QVERIFY2(engine.loadProject(&project, createLegacyFixtureModule), "load should succeed");
+    QCOMPARE(engine.executionOrderForTest(), (QStringList{"A", "C", "B"}));
+    engine.clearModules();
+}
+
+void TestRunEngine::testLegacyFixturesFreezeEngineBehavior() {
+    const QList<LegacyFixture> fixtures = legacyFixtures();
+    QVERIFY(!fixtures.isEmpty());
+    for (const LegacyFixture& fixture : fixtures) {
+        const QString context = QStringLiteral("fixture: %1").arg(fixture.name);
+
+        const LegacyFlowPlan legacy = legacyExecutionOrder(fixture.moduleOrder, fixture.flowTypes, fixture.connections);
+        QVERIFY2(legacy.valid, qPrintable(context + QStringLiteral(" legacy invalid: ") + legacy.error));
+        QCOMPARE(legacy.executionOrder, fixture.expectedExecutionOrder);
+        QStringList legacyControlKeys;
+        for (const ModuleConnection& connection : legacy.controlEdges)
+            legacyControlKeys.append(legacyConnectionKey(connection));
+        QCOMPARE(legacyControlKeys, fixture.expectedControlEdges);
+        QCOMPARE(legacy.loopBackEdges, fixture.expectedLoopBackEdges);
+        QCOMPARE(legacy.reentrantModules, fixture.expectedReentrantModules);
+        QCOMPARE(legacy.loopRegions, fixture.expectedLoopRegions);
+
+        RunEngine& engine = RunEngine::instance();
+        engine.clearModules();
+        Project project;
+        for (const QString& id : fixture.moduleOrder) {
+            ModuleInstance instance;
+            instance.id = id;
+            instance.moduleId = id;
+            instance.name = id;
+            project.addModule(instance);
+        }
+        for (const ModuleConnection& connection : fixture.connections)
+            project.addConnection(connection);
+
+        QVERIFY2(engine.loadProject(&project, createLegacyFixtureModule), qPrintable(context + ": load failed"));
+
+        QCOMPARE(engine.executionOrderForTest(), fixture.expectedExecutionOrder);
+        QStringList engineControlKeys;
+        for (const ModuleConnection& connection : engine.controlEdgesForTest())
+            engineControlKeys.append(legacyConnectionKey(connection));
+        QCOMPARE(engineControlKeys, fixture.expectedControlEdges);
+
+        const QVariantMap metadata = engine.loopMetadataForTest();
+        QCOMPARE(metadata.value(QStringLiteral("loopBackEdges")).toStringList(), fixture.expectedLoopBackEdges);
+        QCOMPARE(metadata.value(QStringLiteral("reentrantModules")).toStringList(), fixture.expectedReentrantModules);
+        const QVariantMap regions = metadata.value(QStringLiteral("loopRegions")).toMap();
+        QMap<QString, QStringList> engineRegions;
+        for (auto it = regions.constBegin(); it != regions.constEnd(); ++it)
+            engineRegions.insert(it.key(), it.value().toStringList());
+        QCOMPARE(engineRegions, fixture.expectedLoopRegions);
+
+        engine.clearModules();
+    }
 }
 
 QTEST_MAIN(TestRunEngine)

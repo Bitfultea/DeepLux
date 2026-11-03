@@ -24,6 +24,7 @@ set(TEST_SOURCES
     test_logger.cpp
     test_imagedata.cpp
     test_runengine.cpp
+    test_flowgraphanalyzer.cpp
     test_executionaffinity.cpp
     test_runenginefinalizer.cpp
     test_runenginejoblease.cpp

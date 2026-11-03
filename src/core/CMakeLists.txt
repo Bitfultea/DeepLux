@@ -29,6 +29,7 @@ set(CORE_SOURCES
     common/CancellationToken.cpp
     common/CLIHandler.cpp
     engine/RunEngine.cpp
+    engine/FlowGraphAnalyzer.cpp
     engine/FlowExecutionService.cpp
     device/CameraManager.cpp
     communication/CommunicationManager.cpp
@@ -89,6 +90,7 @@ set(CORE_HEADERS
     model/ImageData.h
     model/DataSource.h
     engine/RunEngine.h
+    engine/FlowGraphAnalyzer.h
     engine/FlowExecutionService.h
     engine/ExecutionAffinity.h
     engine/DisplayFrame.h
