@@ -308,7 +308,7 @@ void ProcessTreeController::applyExecutionOrder(const QStringList& displayOrder)
 
 - 保存旧/新模块顺序、旧/新连接、旧/新位置。
 - 保存 `projectSessionToken`、`beforeFingerprint`、`afterFingerprint`、`origin=Gui`。
-- 指纹内容：模块 id 顺序 + 排序后的连接四元组（from/fromPort/to/toPort/edgeType），不含参数和位置。
+- 指纹内容：模块 id 顺序 + **按声明顺序**的连接列表（每条包含声明序号及 from/fromPort/to/toPort/edgeType），不含参数和位置。连接顺序是运行期 FIFO 语义的一部分，禁止排序后计算指纹。
 - 命令应用期间设置布局抑制标志；成功提交后刷新树/连线，不重新计算布局。
 - `undo()` 只在 `currentFingerprint == afterFingerprint` 且 session 匹配时执行；`redo()` 只在 `currentFingerprint == beforeFingerprint` 且 session 匹配时执行。状态指纹是内容比较，不是单调版本号，因此：
   - C1（before F0 / after F1）、C2（before F1 / after F2）连续两次 Undo 正常；
@@ -352,7 +352,7 @@ void ProcessTreeController::applyExecutionOrder(const QStringList& displayOrder)
 ## 9. Agent 集成
 
 - Agent 继续通过 `add_module/connect_modules/disconnect_modules` 操作 Project；不计算坐标。
-- 布局协调器通过 Project 信号自动整理，Agent 构建结束后页面与引擎顺序一致。
+- 布局协调器通过 Project 信号自动整理；Agent 构建结束后流程树使用 `displayOrder`，纯数据流程与运行期顺序完全一致，控制流流程满足前向依赖与分支分组约束。
 - `get_flow_state` 增加只读字段：
   - `executionRank`：数据/控制层级；
   - `displayIndex`：扁平展示顺序。
@@ -382,7 +382,7 @@ void ProcessTreeController::applyExecutionOrder(const QStringList& displayOrder)
 | 位置 | 拖动写回；`layoutInitialized=true` 保存/重载原样恢复；未初始化/非法位置才 Full；modified 状态 |
 | 流程树 | 顺序等于 displayOrder；选中/滚动保持；同层独立换序；分支换序拒绝；跨层非线性拒绝 |
 | 线性链重连 | **无连接顺序列表**与**已连接简单线性链**分别覆盖；端口唯一模式成功；多端口歧义拒绝；失败时工程数据/modified/结构信号/撤销栈均未改变 |
-| 撤销/重做 | 顺序、连接、位置完整恢复；多次 undo/redo 后计划与引擎一致；**GUI 重排后 Agent 新增节点/连接，再 GUI Undo 必须失效且不覆盖 Agent 编辑；反向交错同样** |
+| 撤销/重做 | 顺序、连接、位置完整恢复；多次 undo/redo 后计划与引擎一致；**GUI 重排后 Agent 新增节点/连接，再 GUI Undo 必须失效且不覆盖 Agent 编辑；反向交错同样**；**仅交换两条连接的声明顺序时，结构指纹必须变化，撤销校验不得把两种顺序误判为同状态** |
 | Agent | 脚本化构建线性链/分支；计划、树、画布、引擎一致；`get_flow_state` 含 rank/displayIndex |
 | UI | 线性、If、Loop、拖动后结构变更、显式整理截图门禁 |
 | 回归 | `test_runengine`、`test_mainwindow`、`test_flowexecutionservice`、Agent 全套、全量 CTest |
@@ -450,7 +450,7 @@ git diff --check
 2. 主链每层一个节点；同层只出现在控制分支/独立入口，并用 lane 区分。
 3. 用户自由拖动可保存；结构变更后自动归位；无节点重叠。
 4. 线性链跨层拖动可重连或明确拒绝；撤销/重做恢复顺序、连接和位置。
-5. Agent 构建完成后无需手动整理，页面顺序即引擎顺序；`get_flow_state` 可读取 rank/displayIndex。
+5. Agent 构建完成后无需手动整理；流程树使用 `displayOrder`，纯数据流程与运行期顺序完全一致，控制流流程满足前向依赖与分支分组约束（不承诺等于动态执行轨迹）；`get_flow_state` 可读取 rank/displayIndex。
 6. 控制流动态路径不受影响；现有控制流、循环、并行、断点、后台执行测试全绿。
 7. 全量 CTest、截图门禁通过；Windows/真实工程未验证项单独记录。
 
@@ -470,3 +470,8 @@ git diff --check
 1. **撤销误拒绝**：取消单调 revision 校验，改为 `sessionToken + before/after 结构指纹`。同一撤销栈 C1/C2 连续两次 Undo/Redo 正常；仅当当前结构既非命令 before 也非 after 时，才通过 `setObsolete` 使外部交错后的命令失效。
 2. **运行期排序与展示排序分离**：`RunEngine` 保留旧 FIFO `dataOrder` 并逐项差分；展示层另设控制分组优先级。纯数据图 `displayOrder == dataOrder`；控制图只保证前向依赖与新展示分组，不承诺与运行期 FIFO 完全相等。旧 If/Loop 静态序列查找逻辑不变。
 3. **目标/验收措辞统一**：删除“DFS 展开”和“流程树与 dataOrder 一律一致”的旧定义；验收改为可直接测试的三条约束（纯数据完全相等、控制图合法拓扑且数据边有序、画布/树与 displayOrder 一致）。
+
+## 17. 第三轮评审修订（2026-11-03，版本 bcf9bab）
+
+1. **结构指纹包含连接声明顺序**：指纹按连接列表声明顺序计算，并纳入声明序号；不再“排序后”计算。仅交换 A→B/A→C 的声明顺序也会改变指纹，避免撤销校验误判同状态。新增对应测试。
+2. **验收措辞统一**：删除“页面顺序即引擎顺序”的笼统承诺；Agent/UI 统一为：流程树使用 `displayOrder`，纯数据流程与运行期顺序完全一致，控制流流程满足前向依赖与分支分组约束，不承诺等于动态执行轨迹。
