@@ -207,6 +207,41 @@ private slots:
         QCOMPARE(plan.dataOrder, (QStringList{"A", "B", "C"}));
         QCOMPARE(plan.displayOrder, plan.dataOrder);
     }
+    void testUnconnectedModulesFormInitializationChain() {
+        const QList<FlowGraphModule> modules{mod("A"), mod("B"), mod("C")};
+        const FlowOrderPlan plan = planFor(modules, {}, {"A", "B", "C"});
+        QVERIFY2(plan.valid, qPrintable(plan.error));
+        QCOMPARE(plan.rankOf("A"), 0);
+        QCOMPARE(plan.rankOf("B"), 1);
+        QCOMPARE(plan.rankOf("C"), 2);
+        QCOMPARE(plan.displayOrder, (QStringList{"A", "B", "C"}));
+        QCOMPARE(plan.laneOf("A"), 0);
+        QCOMPARE(plan.laneOf("B"), 0);
+        QCOMPARE(plan.laneOf("C"), 0);
+    }
+    void testMixedGraphAppendsUnconnectedModulesAfterConnectedRanks() {
+        const QList<FlowGraphModule> modules{mod("A"), mod("B"), mod("C"), mod("D")};
+        const QList<ModuleConnection> edges{edge("A", "B")};
+        const FlowOrderPlan plan = planFor(modules, edges, {"A", "B", "C", "D"});
+        QVERIFY2(plan.valid, qPrintable(plan.error));
+        // 已连接节点的 rank 不受影响
+        QCOMPARE(plan.rankOf("A"), 0);
+        QCOMPARE(plan.rankOf("B"), 1);
+        // 无连接节点按 Project 稳定顺序接在最大已连接 rank 之后
+        QCOMPARE(plan.rankOf("C"), 2);
+        QCOMPARE(plan.rankOf("D"), 3);
+        // dataOrder 的 FIFO 语义保持不变
+        QCOMPARE(plan.dataOrder, (QStringList{"A", "C", "D", "B"}));
+        // displayOrder 仍是包含全部节点的合法前向拓扑序
+        QCOMPARE(plan.displayOrder.size(), 4);
+        QVERIFY(plan.displayOrder.indexOf("A") < plan.displayOrder.indexOf("B"));
+        QSet<QString> seen;
+        for (const QString& id : plan.displayOrder)
+            seen.insert(id);
+        QCOMPARE(seen.size(), 4);
+        QVERIFY(seen.contains("C"));
+        QVERIFY(seen.contains("D"));
+    }
 
     // normalizeConnections 规则
     void testNormalizeInfersControlFromImplicitAndDeclaredPorts() {
