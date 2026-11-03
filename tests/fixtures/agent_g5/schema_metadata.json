@@ -1,0 +1,12 @@
+{
+    "id": "com.deeplux.test.agent_schema_cache",
+    "name": "AgentSchemaCacheFixture",
+    "version": "1.0.0",
+    "author": "DeepLux Test",
+    "description": "Schema cache invalidation fixture",
+    "category": "test",
+    "ports": {
+        "inputs": [],
+        "outputs": []
+    }
+}

@@ -109,6 +109,7 @@ bool isSupportedPortType(DataType type) {
     case DataType::PointSet2D:
     case DataType::Line2D:
     case DataType::Circle2D:
+    case DataType::Ellipse2D:
     case DataType::Plane3D:
     case DataType::DetectionList:
     case DataType::Region2D: // SAM 批1：Region2D 载荷契约 + SamPredict 生产者落地
@@ -121,7 +122,6 @@ bool isSupportedPortType(DataType type) {
     case DataType::Any:
         return true;
     case DataType::Mask2D:
-    case DataType::Ellipse2D:
     case DataType::Transform2D:
     case DataType::ClassScores:
     default:
@@ -337,8 +337,9 @@ bool portValueMatchesType(const QVariant& value, DataType type) {
     case DataType::Region2D:
         // SAM 批1: 强类型 Region2D 或 polygon+bbox 完整 map
         return isRegion2D(value);
-    case DataType::Mask2D:
     case DataType::Ellipse2D:
+        return value.userType() == qMetaTypeId<Ellipse2D>() && value.value<Ellipse2D>().isValid();
+    case DataType::Mask2D:
     case DataType::Transform2D:
     case DataType::ClassScores:
         return false; // No producing plugin or dedicated payload contract exists yet.
@@ -363,6 +364,7 @@ void registerDataContractMetaTypes() {
     qRegisterMetaType<ExecutionResult>("DeepLux::ExecutionResult");
     qRegisterMetaType<QVector<QPointF>>("QVector<QPointF>");
     qRegisterMetaType<Circle2D>("DeepLux::Circle2D");
+    qRegisterMetaType<Ellipse2D>("DeepLux::Ellipse2D");
     qRegisterMetaType<Detection>("DeepLux::Detection");
     qRegisterMetaType<DetectionList>("DeepLux::DetectionList");
     qRegisterMetaType<Region2D>("DeepLux::Region2D");

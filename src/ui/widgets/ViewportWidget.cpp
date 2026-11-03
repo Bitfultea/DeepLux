@@ -7,12 +7,16 @@
 #include <QCloseEvent>
 #include <QDateTime>
 #include <QDir>
+#include <QEventLoop>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QMessageBox>
 #include <QPalette>
+#include <QScopedValueRollback>
 #include <QStandardPaths>
 #include <QToolButton>
+#include <QUuid>
 #include <QVBoxLayout>
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -23,6 +27,17 @@
 #include "ui/display/3d/Viewport3DContent.h"
 
 namespace DeepLux {
+
+namespace {
+ImageCoordinateProvenance newImageCoordinateSource(const QSize& size) {
+    ImageCoordinateProvenance provenance;
+    if (size.width() > 0 && size.height() > 0) {
+        provenance.sourceImageId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        provenance.sourceSize = size;
+    }
+    return provenance;
+}
+} // namespace
 
 ViewportWidget::ViewportWidget(const QString& id, QWidget* parent)
     : QFrame(parent), m_viewportId(id), m_title(tr("Viewport")), m_imageWidget(nullptr), m_3dContent(nullptr),
@@ -163,7 +178,38 @@ void ViewportWidget::setupUi() {
     mainLayout->setStretch(1, 1);
 
     // Forward 2D image clicks for coordinate picking
-    connect(m_imageWidget, &HImageWidget::imageClicked, this, &ViewportWidget::point2DClicked);
+    connect(m_imageWidget, &HImageWidget::imageClicked, this, [this](const QPointF& point) {
+        emit point2DClicked(point);
+        const auto sourcePoint = m_imageCoordinateProvenance.mapLocalToSource(point);
+        emit point2DSourceClicked(point, sourcePoint.value_or(QPointF()), m_imageCoordinateProvenance.sourceImageId,
+                                  sourcePoint.has_value());
+    });
+    connect(m_imageWidget, &HImageWidget::imageLoaded, this, [this](const QImage& image) {
+        if (m_synchronizingImageWidget)
+            return;
+        advanceContentGeneration();
+        m_cachedImage = image;
+        m_hasCachedImage = !image.isNull();
+        m_cachedCloudData = DisplayData();
+        m_hasCachedCloud = false;
+        m_imageCoordinateProvenance = m_imageWidget->coordinateProvenance();
+        switchTo2D();
+        m_contentInfoLabel->setText(tr("%1 × %2").arg(image.width()).arg(image.height()));
+        emit imageDisplayed();
+        updateToggleAction();
+    });
+    connect(m_imageWidget, &HImageWidget::imageCleared, this, [this]() {
+        if (m_synchronizingImageWidget)
+            return;
+        advanceContentGeneration();
+        m_cachedImage = QImage();
+        m_hasCachedImage = false;
+        m_cachedCloudData = DisplayData();
+        m_hasCachedCloud = false;
+        m_imageCoordinateProvenance = ImageCoordinateProvenance();
+        m_contentInfoLabel->clear();
+        updateToggleAction();
+    });
     connect(m_imageWidget, &HImageWidget::zoomChanged, this, &ViewportWidget::updateZoomLabel);
     updateToolbarState();
 }
@@ -180,10 +226,17 @@ void ViewportWidget::setTitle(const QString& title) {
     }
 }
 
+void ViewportWidget::advanceContentGeneration() {
+    ++m_contentGeneration;
+    emit contentGenerationChanged(m_contentGeneration);
+}
+
 void ViewportWidget::displayData(const DisplayData& data) {
     if (data.pointCloudData() && !data.pointCloudData()->isEmpty()) {
+        advanceContentGeneration();
         m_cachedImage = QImage();
         m_hasCachedImage = false;
+        m_imageCoordinateProvenance = ImageCoordinateProvenance();
         m_cachedCloudData = data;
         m_hasCachedCloud = true;
         switchTo3D();
@@ -196,12 +249,14 @@ void ViewportWidget::displayData(const DisplayData& data) {
             setTitle(dsName);
         }
     } else if (data.imageData()) {
+        advanceContentGeneration();
         m_cachedCloudData = DisplayData();
         m_hasCachedCloud = false;
         m_cachedImage = data.imageData()->toQImage();
         m_hasCachedImage = true;
+        m_imageCoordinateProvenance = data.imageData()->coordinateProvenance();
         switchTo2D();
-        m_imageWidget->setImage(m_cachedImage);
+        setImageWidgetImage(m_cachedImage);
         m_contentInfoLabel->setText(tr("%1 × %2").arg(m_cachedImage.width()).arg(m_cachedImage.height()));
         emit imageDisplayed();
         QString dsName = data.metadata().value("dataSourceName").toString();
@@ -219,25 +274,29 @@ QImage ViewportWidget::currentImage() const {
 }
 
 void ViewportWidget::displayImage(const QImage& image) {
+    advanceContentGeneration();
     m_cachedCloudData = DisplayData();
     m_hasCachedCloud = false;
     m_cachedImage = image;
     m_hasCachedImage = true;
+    m_imageCoordinateProvenance = newImageCoordinateSource(image.size());
     switchTo2D();
-    m_imageWidget->setImage(image);
+    setImageWidgetImage(image);
     m_contentInfoLabel->setText(tr("%1 × %2").arg(image.width()).arg(image.height()));
     emit imageDisplayed();
     updateToggleAction();
 }
 
 void ViewportWidget::setDualData(const QImage& image, const DisplayData& cloudData, DisplayMode initialMode) {
+    advanceContentGeneration();
     m_cachedImage = image;
     m_hasCachedImage = true;
+    m_imageCoordinateProvenance = newImageCoordinateSource(image.size());
     m_cachedCloudData = cloudData;
     m_hasCachedCloud = true;
     if (initialMode == DisplayMode::Auto2D) {
         switchTo2D();
-        m_imageWidget->setImage(image);
+        setImageWidgetImage(image);
         m_contentInfoLabel->setText(tr("%1 × %2").arg(image.width()).arg(image.height()));
         emit imageDisplayed();
     } else {
@@ -257,22 +316,33 @@ void ViewportWidget::setDualData(const QImage& image, const DisplayData& cloudDa
 }
 
 void ViewportWidget::onToggleView() {
-    if (m_displayMode == DisplayMode::Auto3D && m_hasCachedImage) {
+    setDisplayMode(m_displayMode == DisplayMode::Auto3D ? DisplayMode::Auto2D : DisplayMode::Auto3D);
+}
+
+bool ViewportWidget::setDisplayMode(DisplayMode mode) {
+    if (mode == m_displayMode)
+        return mode == DisplayMode::Auto2D ? hasCachedImage() : hasCachedPointCloud();
+    if (!hasCachedImage() || !hasCachedPointCloud())
+        return false;
+
+    advanceContentGeneration();
+
+    if (mode == DisplayMode::Auto2D) {
         switchTo2D();
-        m_imageWidget->setImage(m_cachedImage);
+        setImageWidgetImage(m_cachedImage);
         emit imageDisplayed();
-    } else if (m_displayMode == DisplayMode::Auto2D && m_hasCachedCloud) {
+    } else {
         switchTo3D();
-        if (m_3dContent) {
+        if (m_3dContent)
             m_3dContent->displayData(m_cachedCloudData);
-        }
     }
     updateToggleAction();
+    return true;
 }
 
 void ViewportWidget::updateToggleAction() {
     if (m_toggleViewAction) {
-        m_toggleViewAction->setVisible(m_hasCachedImage && m_hasCachedCloud);
+        m_toggleViewAction->setVisible(hasCachedImage() && hasCachedPointCloud());
         if (m_displayMode == DisplayMode::Auto3D) {
             m_toggleViewAction->setText(QStringLiteral("2D"));
             m_toggleViewAction->setToolTip(QStringLiteral("切换到 2D 视图"));
@@ -285,17 +355,29 @@ void ViewportWidget::updateToggleAction() {
 }
 
 void ViewportWidget::clearDisplay() {
+    advanceContentGeneration();
     if (m_3dContent) {
         m_3dContent->clearDisplay();
     }
-    m_imageWidget->clearImage();
+    clearImageWidget();
     m_cachedImage = QImage();
     m_cachedCloudData = DisplayData();
     m_hasCachedImage = false;
     m_hasCachedCloud = false;
+    m_imageCoordinateProvenance = ImageCoordinateProvenance();
     m_contentInfoLabel->clear();
     updateZoomLabel(1.0);
     updateToggleAction();
+}
+
+void ViewportWidget::setImageWidgetImage(const QImage& image) {
+    const QScopedValueRollback<bool> guard(m_synchronizingImageWidget, true);
+    m_imageWidget->setImage(image, m_imageCoordinateProvenance);
+}
+
+void ViewportWidget::clearImageWidget() {
+    const QScopedValueRollback<bool> guard(m_synchronizingImageWidget, true);
+    m_imageWidget->clearImage();
 }
 
 void ViewportWidget::ensure3DContent() {
@@ -303,12 +385,14 @@ void ViewportWidget::ensure3DContent() {
         return;
 
     m_3dContent = new Viewport3DContent(this);
+    m_3dContent->setRenderMode(static_cast<ColorMode>(m_renderMode));
     m_3dContent->setPointSize(static_cast<float>(m_pointSizeSpinBox->value()));
     m_3dContent->applyTheme(m_isDarkTheme);
     m_3dContent->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_3dContent->setMinimumSize(100, 100);
 
     connect(m_3dContent, &Viewport3DContent::point3DClicked, this, &ViewportWidget::point3DClicked);
+    connect(m_3dContent, &Viewport3DContent::point3DWorldClicked, this, &ViewportWidget::point3DWorldClicked);
 
     // 高: 通知外部安装事件过滤器
     emit contentWidgetCreated(m_3dContent);
@@ -435,41 +519,92 @@ void ViewportWidget::updateZoomLabel(double factor) {
 }
 
 void ViewportWidget::onSaveSnapshot() {
+    saveSnapshotForUser({}, true, {}, {}, true);
+}
+
+QJsonObject
+ViewportWidget::saveSnapshotForUser(const std::function<QImage()>& framebufferCaptureOverride, bool showFailureDialogs,
+                                    const std::function<QString()>& savePathProvider,
+                                    const std::function<bool(const QString&)>& overwriteConfirmationProvider,
+                                    bool fallbackToImageWhenFramebufferUnavailable) {
     QImage snapshot;
-    if (m_displayMode == DisplayMode::Auto3D && m_3dContent && m_3dContent->isValid()) {
-        snapshot = m_3dContent->grabFramebuffer();
+    if (m_displayMode == DisplayMode::Auto3D) {
+        if (framebufferCaptureOverride)
+            snapshot = framebufferCaptureOverride();
+        else if (m_3dContent && m_3dContent->isValid())
+            snapshot = m_3dContent->grabFramebuffer();
+        if (snapshot.isNull() && fallbackToImageWhenFramebufferUnavailable && m_imageWidget &&
+            m_imageWidget->hasImage())
+            snapshot = m_imageWidget->grab().toImage();
     } else if (m_imageWidget && m_imageWidget->hasImage()) {
         snapshot = m_imageWidget->grab().toImage();
     }
     if (snapshot.isNull()) {
-        QMessageBox::information(this, tr("保存快照"), tr("当前视口没有可保存的内容"));
-        return;
+        if (showFailureDialogs)
+            QMessageBox::information(this, tr("保存快照"), tr("当前视口没有可保存的内容"));
+        return {{QStringLiteral("error"), QStringLiteral("The viewport has no capturable content")},
+                {QStringLiteral("errorCode"), QStringLiteral("NO_SNAPSHOT")},
+                {QStringLiteral("retryable"), false}};
     }
 
     const QString picturesDir = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
     const QString defaultPath =
         QDir(picturesDir)
             .filePath(QStringLiteral("DeepLux_%1.png").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")));
-    QString filePath = QFileDialog::getSaveFileName(this, tr("保存视图快照"), defaultPath, tr("PNG 图像 (*.png)"));
-    if (filePath.isEmpty()) {
-        return;
+    QString filePath;
+    if (savePathProvider) {
+        filePath = savePathProvider();
+    } else {
+        QFileDialog dialog(this, tr("保存视图快照"), defaultPath, tr("PNG 图像 (*.png)"));
+        dialog.setAcceptMode(QFileDialog::AcceptSave);
+        // Let QFileDialog keep its native overwrite prompt, and apply the PNG suffix before that check.
+        dialog.setDefaultSuffix(QStringLiteral("png"));
+        dialog.setWindowModality(Qt::ApplicationModal);
+        QEventLoop dialogLoop;
+        connect(&dialog, &QDialog::finished, &dialogLoop, &QEventLoop::quit);
+        dialog.open();
+        dialogLoop.exec();
+        if (dialog.result() == QDialog::Accepted && !dialog.selectedFiles().isEmpty())
+            filePath = dialog.selectedFiles().first();
     }
+    if (filePath.isEmpty())
+        return {{QStringLiteral("status"), QStringLiteral("cancelled")}, {QStringLiteral("userActionRequired"), false}};
     if (!filePath.endsWith(QStringLiteral(".png"), Qt::CaseInsensitive)) {
         filePath += QStringLiteral(".png");
     }
-    if (!snapshot.save(filePath, "PNG")) {
-        QMessageBox::warning(this, tr("保存视图快照"), tr("无法保存到：%1").arg(filePath));
+    const bool finalTargetExists = QFileInfo::exists(filePath);
+    // Production QFileDialog has already obtained explicit overwrite approval for this suffixed path.
+    // The injectable path seam mirrors that decision so the exact post-suffix target can be tested.
+    if (savePathProvider && finalTargetExists) {
+        const bool overwrite =
+            overwriteConfirmationProvider
+                ? overwriteConfirmationProvider(filePath)
+                : QMessageBox::question(this, tr("覆盖文件"), tr("文件已存在，是否覆盖？\n%1").arg(filePath),
+                                        QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+        if (!overwrite)
+            return {{QStringLiteral("status"), QStringLiteral("cancelled")},
+                    {QStringLiteral("userActionRequired"), false}};
     }
+    if (!snapshot.save(filePath, "PNG")) {
+        if (showFailureDialogs)
+            QMessageBox::warning(this, tr("保存视图快照"), tr("无法保存到：%1").arg(filePath));
+        return {{QStringLiteral("error"), QStringLiteral("Could not save the viewport snapshot")},
+                {QStringLiteral("errorCode"), QStringLiteral("SAVE_FAILED")},
+                {QStringLiteral("retryable"), false}};
+    }
+    return {{QStringLiteral("status"), QStringLiteral("saved")}, {QStringLiteral("userActionRequired"), false}};
 }
 
 void ViewportWidget::setRenderMode(int mode) {
-    if (m_3dContent) {
+    if (mode < static_cast<int>(ColorMode::Uniform) || mode > static_cast<int>(ColorMode::BlinnPhong))
+        return;
+    m_renderMode = mode;
+    if (m_3dContent)
         m_3dContent->setRenderMode(static_cast<ColorMode>(mode));
-    }
 }
 
 int ViewportWidget::renderMode() const {
-    return m_3dContent ? static_cast<int>(m_3dContent->renderMode()) : 5;
+    return m_renderMode;
 }
 
 void ViewportWidget::setPickMode(bool enabled) {

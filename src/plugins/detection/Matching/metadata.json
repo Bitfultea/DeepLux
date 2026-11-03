@@ -21,6 +21,12 @@
                 "order": 20,
                 "label": "最大匹配数"
             }
+        },
+        "results": {
+            "match_x": {"label": "匹配X", "unit": "px", "precision": 3, "order": 10},
+            "match_y": {"label": "匹配Y", "unit": "px", "precision": 3, "order": 20},
+            "match_width": {"label": "匹配宽", "unit": "px", "precision": 3, "order": 30},
+            "match_height": {"label": "匹配高", "unit": "px", "precision": 3, "order": 40}
         }
     },
     "execution": {

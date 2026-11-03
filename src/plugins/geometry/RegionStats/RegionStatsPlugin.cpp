@@ -96,6 +96,7 @@ bool RegionStatsPlugin::process(const ImageData& input, ImageData& output) {
     // 整体拷贝透传承载与全部数据键：maskRle 等不参与统计的字段依赖此行保留
     // （批1 复核二轮 P3-2：勿改为按键拷贝，否则透传字段会静默丢失）
     output = input;
+    output.removeData(QStringLiteral("centroid"));
 
     const QVariant regionVar = input.data(QStringLiteral("region"));
     if (!regionVar.isValid()) {
@@ -166,6 +167,7 @@ bool RegionStatsPlugin::process(const ImageData& input, ImageData& output) {
     output.setData(QStringLiteral("point_count"), region.polygon.size());
     output.setData(QStringLiteral("centroid_x"), centroid.x());
     output.setData(QStringLiteral("centroid_y"), centroid.y());
+    output.setData(QStringLiteral("centroid"), centroid);
     output.setData(QStringLiteral("score"), region.score);
     output.setData(QStringLiteral("label"), region.label);
 

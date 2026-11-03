@@ -1,5 +1,8 @@
 #pragma once
 
+#include "ImageData.h"
+
+#include <QByteArray>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
@@ -9,6 +12,7 @@
 #include <optional>
 
 class QImage;
+class QIODevice;
 
 namespace DeepLux {
 
@@ -36,12 +40,15 @@ struct AnnotationObject {
 };
 
 struct AnnotationSession {
+    enum class LoadResult { Success, IoError, SizeLimitExceeded, InvalidSession };
+
     QString imagePath;   // 原图路径
     int imageWidth = 0;  // 原图宽度
     int imageHeight = 0; // 原图高度
     QString imageDigest; // 原图像素内容 SHA-256（批3 复核二轮 P1-4：同路径≠同图，
                          // 追加前校验图像未被替换；旧会话文件可为空=仅尺寸校验）
-    QString modelName;   // SAM 模型名
+    ImageCoordinateProvenance sourceCoordinateProvenance;
+    QString modelName; // SAM 模型名
     QList<AnnotationObject> annotations;
 
     // 序列化/反序列化
@@ -51,6 +58,10 @@ struct AnnotationSession {
     // 文件读写（load 严格 schema 校验失败关闭；save 为 QSaveFile 原子替换，
     // 中途失败不损坏既有文件——批3 复核二轮 P1-5）
     static AnnotationSession load(const QString& filePath, QString* error = nullptr);
+    static AnnotationSession loadFromDevice(QIODevice& device, qint64 maxBytes, LoadResult* result,
+                                            QString* error = nullptr, const QString& context = {});
+    static AnnotationSession loadFromBytes(const QByteArray& data, LoadResult* result, QString* error = nullptr,
+                                           const QString& context = {});
     bool save(const QString& filePath, QString* error = nullptr) const;
 
     /// 图像像素内容摘要（ARGB32 规范化后 SHA-256，逐行仅哈希有效字节，确定性）；空图返回空串

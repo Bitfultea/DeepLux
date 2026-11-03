@@ -58,9 +58,11 @@ private slots:
     // 阶段 5：测试内 HTTP 服务覆盖四端点——成功路径/超时/崩溃恢复
     void httpServiceFullSuccessPath();
     void httpServiceHangTriggersRealTimeout();
+    void cancelledInvalidEmbeddingRetryTimeoutIsIgnored();
     void httpServiceCrashAndRecovery();
     void httpServiceConcurrentUnloadSetImageKeepsTimeout();
     void httpServiceConsecutiveSetImageLatestWins();
+    void changingImageInvalidatesOldEmbeddingUntilSetImageSucceeds();
     void oversizedDeclaredResponseIsAbortedBeforeBuffering();
     // 批3 复核二轮（P1-3）：predict 响应严格解析失败关闭
     void predictResponseStrictParsing();
@@ -363,6 +365,41 @@ void TestSamBackendClient::httpServiceHangTriggersRealTimeout() {
     QVERIFY2(errorSpy.takeFirst().at(0).toString().contains(QStringLiteral("超时")), "error must report timeout");
 }
 
+void TestSamBackendClient::cancelledInvalidEmbeddingRetryTimeoutIsIgnored() {
+    SamTestServer server;
+    QVERIFY(server.listen());
+    server.predictStatus = QStringLiteral("invalid_embedding");
+    server.withholdResponseAtRequestCount.insert(QStringLiteral("/set_image"), 2);
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString imagePath = directory.filePath(QStringLiteral("retry-timeout.png"));
+    QImage image(8, 8, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    QVERIFY(image.save(imagePath));
+
+    SamBackendClient client;
+    client.setServerUrl(server.url());
+    client.setTimeoutMs(3000);
+    client.setImage(imagePath);
+    QTRY_VERIFY_WITH_TIMEOUT(!client.currentEmbeddingId().isEmpty(), 3000);
+
+    QSignalSpy embeddingReadySpy(&client, &SamBackendClient::embeddingReady);
+    QSignalSpy errorSpy(&client, &SamBackendClient::errorOccurred);
+    client.setTimeoutMs(300);
+    client.predict({QPointF(10, 10)}, {}, QRectF());
+    QTRY_COMPARE_WITH_TIMEOUT(server.requestLog.count(QStringLiteral("POST /set_image")), 2, 3000);
+    QCOMPARE(server.requestLog.count(QStringLiteral("POST /predict")), 1);
+    client.cancelPendingPrediction();
+
+    QTRY_VERIFY_WITH_TIMEOUT(!client.hasPendingSetImageRequest(), 3000);
+    QCOMPARE(errorSpy.count(), 0);
+    QCOMPARE(embeddingReadySpy.count(), 0);
+    QCOMPARE(server.requestLog.count(QStringLiteral("POST /predict")), 1);
+    QVERIFY(client.currentEmbeddingId().isEmpty());
+    QCOMPARE(client.state(), SamBackendClient::State::NotStarted);
+}
+
 void TestSamBackendClient::httpServiceCrashAndRecovery() {
     SamTestServer server;
     QVERIFY2(server.listen(), "test HTTP server must listen");
@@ -453,6 +490,55 @@ void TestSamBackendClient::httpServiceConsecutiveSetImageLatestWins() {
     QCOMPARE(errorSpy.count(), 0);
     QCOMPARE(embeddingSpy.count(), 1); // 被取消的第一个不应产生 embedding
     QCOMPARE(embeddingSpy.takeFirst().at(0).toString(), QString("emb-2"));
+}
+
+void TestSamBackendClient::changingImageInvalidatesOldEmbeddingUntilSetImageSucceeds() {
+    {
+        SamTestServer server;
+        QVERIFY2(server.listen(), "test HTTP server must listen");
+        SamBackendClient client;
+        client.setServerUrl(server.url());
+        client.setTimeoutMs(3000);
+        client.setImage(QStringLiteral("/img/a.png"));
+        QVERIFY2(waitFor([&] { return client.currentEmbeddingId() == QStringLiteral("emb-1"); }),
+                 "initial image embedding must load");
+
+        server.delayMs.insert(QStringLiteral("/set_image"), 300);
+        client.setImage(QStringLiteral("/img/b.png"));
+        QVERIFY(client.currentEmbeddingId().isEmpty());
+        QCOMPARE(client.state(), SamBackendClient::State::LoadingModel);
+        const qint64 rejectedRequest = client.predict({QPointF(10, 10)}, {}, QRectF());
+        QVERIFY(rejectedRequest > 0);
+        QCOMPARE(client.pendingPredictionRequestId(), qint64(0));
+        QCOMPARE(server.requestLog.count(QStringLiteral("POST /predict")), 0);
+        QVERIFY2(waitFor([&] { return client.currentEmbeddingId() == QStringLiteral("emb-2"); }),
+                 "new image embedding must load after its delayed set_image succeeds");
+        QCOMPARE(client.state(), SamBackendClient::State::Ready);
+        QCOMPARE(server.requestLog.count(QStringLiteral("POST /predict")), 0);
+    }
+
+    {
+        SamTestServer server;
+        QVERIFY2(server.listen(), "test HTTP server must listen");
+        SamBackendClient client;
+        client.setServerUrl(server.url());
+        client.setTimeoutMs(3000);
+        client.setImage(QStringLiteral("/img/a.png"));
+        QVERIFY2(waitFor([&] { return client.currentEmbeddingId() == QStringLiteral("emb-1"); }),
+                 "initial image embedding must load");
+
+        server.failSetImageRequests.insert(2);
+        client.setImage(QStringLiteral("/img/b.png"));
+        QVERIFY(client.currentEmbeddingId().isEmpty());
+        QCOMPARE(client.state(), SamBackendClient::State::LoadingModel);
+        QVERIFY2(waitFor([&] { return client.state() == SamBackendClient::State::Error; }),
+                 "failed set_image must leave the client without a usable embedding");
+        QVERIFY(client.currentEmbeddingId().isEmpty());
+        const qint64 rejectedRequest = client.predict({QPointF(10, 10)}, {}, QRectF());
+        QVERIFY(rejectedRequest > 0);
+        QCOMPARE(client.pendingPredictionRequestId(), qint64(0));
+        QCOMPARE(server.requestLog.count(QStringLiteral("POST /predict")), 0);
+    }
 }
 
 void TestSamBackendClient::oversizedDeclaredResponseIsAbortedBeforeBuffering() {

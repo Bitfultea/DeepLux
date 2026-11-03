@@ -95,6 +95,20 @@
                 "type": "Integer",
                 "required": false,
                 "multiple": false
+            },
+            {
+                "id": "largest_blob",
+                "displayName": "最大斑点检测框",
+                "type": "DetectionList",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "largest_blob_center",
+                "displayName": "最大斑点质心",
+                "type": "Point2D",
+                "required": false,
+                "multiple": false
             }
         ]
     }

@@ -1,7 +1,9 @@
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
 #include "core/agent/ToolSchema.h"
+#include "core/common/UserManager.h"
 #include "manager/ProjectManager.h"
+#include "model/Project.h"
 
 #include <QtTest/QtTest>
 
@@ -12,6 +14,7 @@ class TestAgentUndo : public QObject {
 
 private slots:
     void initTestCase() {
+        UserManager::instance().login(QStringLiteral("developer"), QString());
         ToolSchema::instance().registerDefaultTools();
     }
 
@@ -41,12 +44,37 @@ private slots:
 
     void testBatchExecutionMacro() {
         AgentActor actor;
-        QList<QPair<QString, QJsonObject>> tools;
-        tools.append(qMakePair(QString("create_project"), QJsonObject{{"name", "BatchTest"}}));
-        tools.append(qMakePair(QString("add_module"), QJsonObject{{"plugin", "GrabImage"}}));
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project);
+        ModuleInstance instance;
+        instance.id = QStringLiteral("batch_macro_instance");
+        instance.moduleId = QStringLiteral("GrabImage");
+        instance.name = QStringLiteral("Before");
+        instance.note = QStringLiteral("original note");
+        project->addModule(instance);
 
-        actor.executeTools(tools, "Test macro");
-        QVERIFY(actor.undoStack()->count() > 0);
+        QList<QPair<QString, QJsonObject>> tools;
+        tools.append(
+            qMakePair(QString("rename_module"), QJsonObject{{"instanceId", instance.id}, {"name", "Renamed"}}));
+        tools.append(
+            qMakePair(QString("set_module_note"), QJsonObject{{"instanceId", instance.id}, {"note", "updated note"}}));
+
+        const int initialCount = actor.undoStack()->count();
+        const int initialIndex = actor.undoStack()->index();
+        const QJsonObject result = actor.executeTools(tools, "Test macro");
+        QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+        QCOMPARE(actor.undoStack()->count(), initialCount + 2);
+        QCOMPARE(actor.undoStack()->index(), initialIndex + 2);
+        QCOMPARE(project->moduleById(instance.id)->name, QStringLiteral("Renamed"));
+        QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("updated note"));
+        actor.undoStack()->undo();
+        QCOMPARE(actor.undoStack()->index(), initialIndex + 1);
+        QCOMPARE(project->moduleById(instance.id)->name, QStringLiteral("Renamed"));
+        QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("original note"));
+        actor.undoStack()->undo();
+        QCOMPARE(actor.undoStack()->index(), initialIndex);
+        QCOMPARE(project->moduleById(instance.id)->name, QStringLiteral("Before"));
+        QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("original note"));
     }
 
     void testControllerUndoLastAgentAction() {

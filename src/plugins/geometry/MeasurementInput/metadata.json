@@ -37,9 +37,18 @@
                     }
                 ]
             },
+            "pick_coordinate_frame": {
+                "label": "拾取坐标框架（内部）",
+                "type": "string",
+                "hidden": true,
+                "readOnly": true,
+                "order": 5
+            },
             "points": {
                 "label": "点集 [[x,y],...]",
-                "order": 90
+                "order": 90,
+                "maxItems": 1024,
+                "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}}
             },
             "point1": {
                 "label": "点1",
@@ -125,14 +134,14 @@
             {
                 "id": "point1",
                 "displayName": "点1",
-                "type": "Point2D",
+                "type": "Any",
                 "required": false,
                 "multiple": false
             },
             {
                 "id": "point2",
                 "displayName": "点2",
-                "type": "Point2D",
+                "type": "Any",
                 "required": false,
                 "multiple": false
             },

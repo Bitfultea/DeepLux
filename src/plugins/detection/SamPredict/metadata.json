@@ -17,15 +17,22 @@
             },
             "points": {
                 "order": 30,
-                "label": "正点 [[x,y],...]"
+                "label": "正点 [[x,y],...]",
+                "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}}
             },
             "negativePoints": {
                 "order": 40,
-                "label": "负点 [[x,y],...]"
+                "label": "负点 [[x,y],...]",
+                "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}}
             },
             "box": {
                 "order": 50,
-                "label": "框 [x,y,w,h]（可空）"
+                "label": "框 [x,y,w,h]（可空）",
+                "type": "array",
+                "acceptedTypes": ["array", "null"],
+                "minItems": 4,
+                "maxItems": 4,
+                "items": {"type": "number"}
             },
             "timeoutMs": {
                 "min": 100,
@@ -35,6 +42,10 @@
                 "order": 60,
                 "label": "超时(ms)"
             }
+        },
+        "results": {
+            "region": {"label": "分割区域", "type": "Region2D", "order": 10},
+            "score": {"label": "分割置信度", "type": "number", "order": 20}
         }
     },
     "ports": {

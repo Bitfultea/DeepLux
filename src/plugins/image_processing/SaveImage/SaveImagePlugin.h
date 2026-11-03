@@ -38,6 +38,8 @@ public:
 
     bool initialize() override;
     void shutdown() override;
+    using ModuleBase::execute;
+    ExecutionResult execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) override;
     QWidget* createConfigWidget() override;
 
 protected:
@@ -46,15 +48,11 @@ protected:
     IModule* cloneImpl() const override;
 
 private:
-    bool saveImage(const QString& filePath, const QString& format, int quality);
-
     QString m_filePath;
     QString m_format;
     int m_quality;
-
-#ifdef DEEPLUX_HAS_OPENCV
-    cv::Mat m_mat;
-#endif
+    bool m_writeUnconfirmed = false;
+    QString m_writeDiagnostics;
 };
 
 } // namespace DeepLux

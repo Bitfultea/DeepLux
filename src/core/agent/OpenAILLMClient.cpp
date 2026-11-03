@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QUrl>
 
 namespace DeepLux {
@@ -15,10 +16,7 @@ OpenAILLMClient::OpenAILLMClient(QObject* parent)
     : ILLMClient(parent), m_networkManager(new QNetworkAccessManager(this)) {}
 
 OpenAILLMClient::~OpenAILLMClient() {
-    if (m_currentReply) {
-        m_currentReply->abort();
-        m_currentReply->deleteLater();
-    }
+    cancelRequest();
 }
 
 void OpenAILLMClient::setApiKey(const QString& key) {
@@ -101,6 +99,7 @@ void OpenAILLMClient::sendRequest(const AgentConversation& ctx, const QList<Tool
         m_currentReply->deleteLater();
         m_currentReply = nullptr;
     }
+    m_activeRequestId = ctx.requestId;
 
     QJsonDocument doc(buildRequestBody(ctx, tools));
     QByteArray data = doc.toJson();
@@ -116,30 +115,52 @@ void OpenAILLMClient::sendRequest(const AgentConversation& ctx, const QList<Tool
              << "msgs=" << ctx.messages.size();
 
     m_currentReply = m_networkManager->post(request, data);
-    connect(m_currentReply, &QNetworkReply::finished, this, &OpenAILLMClient::onReplyFinished);
-    connect(m_currentReply, &QNetworkReply::errorOccurred, this, &OpenAILLMClient::onNetworkError);
+    const QPointer<QNetworkReply> reply = m_currentReply;
+    const QString requestId = m_activeRequestId;
+    connect(m_currentReply, &QNetworkReply::finished, this, [this, reply, requestId]() {
+        if (reply)
+            onReplyFinished(reply, requestId);
+    });
+    connect(m_currentReply, &QNetworkReply::errorOccurred, this,
+            [this, reply, requestId](QNetworkReply::NetworkError error) {
+                if (reply)
+                    onNetworkError(reply, requestId, error);
+            });
 }
 
-void OpenAILLMClient::onReplyFinished() {
-    if (!m_currentReply) {
+void OpenAILLMClient::cancelRequest() {
+    if (m_currentReply) {
+        disconnect(m_currentReply, nullptr, this, nullptr);
+        m_currentReply->abort();
+        m_currentReply->deleteLater();
+        m_currentReply = nullptr;
+    }
+    m_activeRequestId.clear();
+}
+
+void OpenAILLMClient::onReplyFinished(QNetworkReply* reply, const QString& requestId) {
+    if (!reply || reply != m_currentReply) {
         return;
     }
 
-    QByteArray data = m_currentReply->readAll();
-    m_currentReply->deleteLater();
+    QByteArray data = reply->readAll();
+    m_activeRequestId.clear();
+    reply->deleteLater();
     m_currentReply = nullptr;
 
     if (data.isEmpty()) {
+        emit requestFailed(requestId, "Empty response from LLM");
         emit errorOccurred("Empty response from LLM");
         return;
     }
 
-    parseResponse(data);
+    parseResponse(data, requestId);
 }
 
-void OpenAILLMClient::parseResponse(const QByteArray& data) {
+void OpenAILLMClient::parseResponse(const QByteArray& data, const QString& requestId) {
     QJsonDocument doc = QJsonDocument::fromJson(data);
     if (!doc.isObject()) {
+        emit requestFailed(requestId, "Invalid JSON response");
         emit errorOccurred("Invalid JSON response");
         return;
     }
@@ -147,18 +168,21 @@ void OpenAILLMClient::parseResponse(const QByteArray& data) {
     QJsonObject obj = doc.object();
     if (obj.contains("error")) {
         QString errMsg = obj["error"].toObject()["message"].toString("Unknown error");
+        emit requestFailed(requestId, errMsg);
         emit errorOccurred(errMsg);
         return;
     }
 
     QJsonArray choices = obj["choices"].toArray();
     if (choices.isEmpty()) {
+        emit requestFailed(requestId, "No choices in LLM response");
         emit errorOccurred("No choices in LLM response");
         return;
     }
 
     QJsonObject message = choices[0].toObject()["message"].toObject();
     AgentResponse resp;
+    resp.requestId = requestId;
     resp.success = true;
     resp.content = message["content"].toString();
     resp.reasoningContent = message["reasoning_content"].toString();
@@ -182,18 +206,23 @@ void OpenAILLMClient::parseResponse(const QByteArray& data) {
     emit responseReceived(resp);
 }
 
-void OpenAILLMClient::onNetworkError(QNetworkReply::NetworkError error) {
+void OpenAILLMClient::onNetworkError(QNetworkReply* reply, const QString& requestId,
+                                     QNetworkReply::NetworkError error) {
     Q_UNUSED(error);
-    if (!m_currentReply) {
+    if (!reply || reply != m_currentReply) {
         return;
     }
-    QString msg = m_currentReply->errorString();
-    QByteArray body = m_currentReply->readAll();
+    QString msg = reply->errorString();
+    QByteArray body = reply->readAll();
     if (!body.isEmpty()) {
         msg += " | Response: " + QString::fromUtf8(body);
     }
-    m_currentReply->deleteLater();
+    disconnect(reply, nullptr, this, nullptr);
+    reply->abort();
+    reply->deleteLater();
     m_currentReply = nullptr;
+    m_activeRequestId.clear();
+    emit requestFailed(requestId, msg);
     emit errorOccurred(msg);
 }
 

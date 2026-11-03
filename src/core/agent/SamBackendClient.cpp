@@ -75,6 +75,12 @@ QString SamBackendClient::inferredModelType() const {
     return QStringLiteral("vit_b");
 }
 
+bool SamBackendClient::healthCheckInFlight() const {
+    // QNetworkReply::finished is emitted before the reply slot clears this
+    // pointer. A finished reply is no longer an in-flight health check.
+    return m_pendingHealthReply && !m_pendingHealthReply->isFinished();
+}
+
 QString SamBackendClient::unsupportedModelReason() const {
     const QString fileName = QFileInfo(m_modelPath).fileName().toLower();
     if (fileName.contains(QStringLiteral("sam3")) || fileName.contains(QStringLiteral("sam_3")) ||
@@ -130,7 +136,7 @@ QStringList SamBackendClient::requiredPythonModules() const {
     QStringList base = {QStringLiteral("fastapi"), QStringLiteral("uvicorn"), QStringLiteral("numpy"),
                         QStringLiteral("PIL")};
     // SAM model modules only required when a real model path is set (not stub mode)
-    if (!m_modelPath.isEmpty()) {
+    if (!m_modelPath.isEmpty() || !qgetenv("DEEPLUX_SAM_MODEL").isEmpty()) {
         base << QStringLiteral("torch") << QStringLiteral("segment_anything") << QStringLiteral("cv2");
     }
     return base;
@@ -334,6 +340,7 @@ void SamBackendClient::stopServerProcess() {
         m_process = nullptr;
     }
     m_embeddingId.clear();
+    m_serverMode = QStringLiteral("unknown");
     m_imageRetryPending = false;
     m_healthPollsRemaining = 0;
     stopTimeout();
@@ -480,9 +487,11 @@ void SamBackendClient::setImage(const QString& imagePath) {
     // 避免旧响应覆盖新图的 embedding 或误删新请求。
     abortPendingReply(m_pendingSetImageReply);
     const qint64 thisSeq = ++m_setImageSeq;
-    if (m_state == State::NotStarted || m_state == State::Error) {
-        setState(State::LoadingModel);
-    }
+    const qint64 retryPredictionId = m_imageRetryPending ? m_imageRetryPredictionId : 0;
+    // 一旦开始加载候选图，旧 embedding 就不能再代表当前图像：失败期间
+    // 也必须拒绝预测，不能把新画面上的提示发给旧图 embedding。
+    m_embeddingId.clear();
+    setState(State::LoadingModel);
     m_lastImagePath = imagePath;
 
     QUrl url(m_serverUrl + "/set_image");
@@ -493,20 +502,35 @@ void SamBackendClient::setImage(const QString& imagePath) {
     body["image_path"] = imagePath;
     QNetworkReply* reply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
     guardSamReplySize(reply);
+    connect(reply, &QNetworkReply::uploadProgress, this,
+            [this, uploadStarted = false](qint64 bytesSent, qint64) mutable {
+                if (!uploadStarted && bytesSent > 0) {
+                    uploadStarted = true;
+                    emit requestBodyUploadStarted(QStringLiteral("set_image"));
+                }
+            });
     m_pendingSetImageReply = reply;
     reply->setProperty("setImageSeq", thisSeq);
+    reply->setProperty("predictionRetryId", retryPredictionId);
     connect(reply, &QNetworkReply::finished, this, &SamBackendClient::onSetImageReply);
     startTimeout();
 }
 
-void SamBackendClient::predict(const QList<QPointF>& positive, const QList<QPointF>& negative, const QRectF& box) {
+qint64 SamBackendClient::pendingPredictionRequestId() const {
+    return m_pendingPredictReply ? m_pendingPredictReply->property("predictSeq").toLongLong() : 0;
+}
+
+qint64 SamBackendClient::predict(const QList<QPointF>& positive, const QList<QPointF>& negative, const QRectF& box) {
+    cancelPendingPrediction();
+    const qint64 thisSeq = ++m_predictSeq;
+    emit predictionRequestStarted(thisSeq);
     if (m_embeddingId.isEmpty()) {
         setState(State::Error);
+        emit predictionErrorForRequest(thisSeq, tr("尚无 embedding，无法预测"));
         emit errorOccurred(tr("尚无 embedding，无法预测"));
-        return;
+        return thisSeq;
     }
 
-    cancelPendingPrediction();
     m_lastCandidates.clear(); // 批4（C）：候选与本次 predict 绑定，发起即清空
 
     m_lastPositive = positive;
@@ -514,8 +538,6 @@ void SamBackendClient::predict(const QList<QPointF>& positive, const QList<QPoin
     m_lastBox = box;
 
     // Fix 4: 分配递增序号，用于在回调中忽略过期结果
-    const qint64 thisSeq = ++m_predictSeq;
-
     setState(State::Busy);
     QUrl url(m_serverUrl + "/predict");
     QNetworkRequest req(url);
@@ -542,14 +564,30 @@ void SamBackendClient::predict(const QList<QPointF>& positive, const QList<QPoin
 
     m_pendingPredictReply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
     guardSamReplySize(m_pendingPredictReply);
+    connect(m_pendingPredictReply, &QNetworkReply::uploadProgress, this,
+            [this, uploadStarted = false](qint64 bytesSent, qint64) mutable {
+                if (!uploadStarted && bytesSent > 0) {
+                    uploadStarted = true;
+                    emit requestBodyUploadStarted(QStringLiteral("predict"));
+                }
+            });
     m_pendingPredictReply->setProperty("predictSeq", thisSeq);
     connect(m_pendingPredictReply, &QNetworkReply::finished, this, &SamBackendClient::onPredictReply);
     startTimeout();
+    return thisSeq;
 }
 
 void SamBackendClient::cancelPendingPrediction() {
-    if (!m_pendingPredictReply)
+    const bool cancelledRetry = m_imageRetryPending;
+    m_imageRetryPending = false;
+    if (!m_pendingPredictReply) {
+        if (cancelledRetry)
+            setState(m_embeddingId.isEmpty() ? State::NotStarted : State::Ready);
         return;
+    }
+    // A cancelled request is final too: if its finished callback was already queued,
+    // it must not be mistaken for a later reply after QNetworkReply storage is reused.
+    m_lastCompletedSeq = qMax(m_lastCompletedSeq, m_pendingPredictReply->property("predictSeq").toLongLong());
     disconnect(m_pendingPredictReply, nullptr, this, nullptr);
     m_pendingPredictReply->abort();
     m_pendingPredictReply->deleteLater();
@@ -715,6 +753,8 @@ void SamBackendClient::onHealthReply() {
 
     const QString status = obj.value("status").toString();
     const QString model = obj.value("model_name").toString();
+    const QString mode = obj.value("mode").toString();
+    m_serverMode = mode.isEmpty() ? QStringLiteral("unknown") : mode;
     if (!model.isEmpty())
         m_modelName = model;
 
@@ -742,9 +782,19 @@ void SamBackendClient::onSetImageReply() {
         reply->deleteLater();
         return;
     }
+    const qint64 retryPredictionId = reply->property("predictionRetryId").toLongLong();
+    const bool retryStillCurrent =
+        retryPredictionId > 0 && m_imageRetryPending && m_imageRetryPredictionId == retryPredictionId;
+    // 如果用户只取消了提示，请求仍是当前图像的最新 set_image：成功结果可建立
+    // 新 embedding，但不得重放已取消的预测。图像已切换时旧 set_image 会先被
+    // latest-wins 取消，不能走到这里。
     QString err;
     QJsonObject obj = parseReply(reply, &err);
     if (!err.isEmpty()) {
+        if (retryStillCurrent) {
+            m_imageRetryPending = false;
+            m_imageRetryPredictionId = 0;
+        }
         setState(State::Error);
         emit errorOccurred(tr("setImage 失败：%1").arg(err));
         settleReply(m_pendingSetImageReply);
@@ -752,6 +802,10 @@ void SamBackendClient::onSetImageReply() {
     }
 
     if (obj.value("status").toString() == "error") {
+        if (retryStillCurrent) {
+            m_imageRetryPending = false;
+            m_imageRetryPredictionId = 0;
+        }
         setState(State::Error);
         emit errorOccurred(obj.value("error").toString(tr("setImage 失败")));
         settleReply(m_pendingSetImageReply);
@@ -760,6 +814,10 @@ void SamBackendClient::onSetImageReply() {
 
     QString id = obj.value("embedding_id").toString();
     if (id.isEmpty()) {
+        if (retryStillCurrent) {
+            m_imageRetryPending = false;
+            m_imageRetryPredictionId = 0;
+        }
         setState(State::Error);
         emit errorOccurred(tr("setImage 响应缺少 embedding_id"));
         settleReply(m_pendingSetImageReply);
@@ -772,13 +830,14 @@ void SamBackendClient::onSetImageReply() {
     if (!model.isEmpty())
         m_modelName = model;
     m_imageRetryPending = false;
+    m_imageRetryPredictionId = 0;
     setState(State::Ready);
-    emit embeddingReady(id);
     settleReply(m_pendingSetImageReply);
 
     if (retryPrediction) {
         predict(m_lastPositive, m_lastNegative, m_lastBox);
     }
+    emit embeddingReady(id);
 }
 
 void SamBackendClient::onPredictReply() {
@@ -799,6 +858,7 @@ void SamBackendClient::onPredictReply() {
     QJsonObject obj = parseReply(reply, &err);
     if (!err.isEmpty()) {
         setState(State::Error);
+        emit predictionErrorForRequest(replySeq, tr("预测失败：%1").arg(err));
         emit errorOccurred(tr("预测失败：%1").arg(err));
         settleReply(m_pendingPredictReply);
         return;
@@ -809,8 +869,9 @@ void SamBackendClient::onPredictReply() {
     // （status=error / ok=false / 非空 error 字段）与未知 status 均按错误处理，
     // 字段类型/长度/有限值/score 范围逐项校验，杜绝 toArray()/toDouble() 把
     // 字符串、布尔值或缺失字段静默转零后"三个错误坐标成为有效多边形"。
-    const auto reject = [this](const QString& message) {
+    const auto reject = [this, replySeq](const QString& message) {
         setState(State::Error);
+        emit predictionErrorForRequest(replySeq, message);
         emit errorOccurred(message);
         settleReply(m_pendingPredictReply);
     };
@@ -831,6 +892,7 @@ void SamBackendClient::onPredictReply() {
     }
     if (status == QLatin1String("invalid_embedding") && !m_imageRetryPending && !m_lastImagePath.isEmpty()) {
         m_imageRetryPending = true;
+        m_imageRetryPredictionId = replySeq;
         Logger::instance().info(tr("收到 invalid_embedding，自动重新 setImage 并重试"), "SamBackend");
         setState(State::LoadingModel);
         settleReply(m_pendingPredictReply);
@@ -987,6 +1049,7 @@ void SamBackendClient::onPredictReply() {
     }
 
     setState(State::Ready);
+    emit predictionReadyForRequest(replySeq, polygon, bbox, score, maskRle, maskImage);
     emit predictionReady(polygon, bbox, score, maskRle, maskImage);
     settleReply(m_pendingPredictReply);
 }
@@ -1027,11 +1090,30 @@ void SamBackendClient::onTimeout() {
         reply->deleteLater();
         reply = nullptr;
     };
+    const bool staleCancelledRetry =
+        m_pendingSetImageReply && m_pendingSetImageReply->property("predictionRetryId").toLongLong() > 0 &&
+        (!m_imageRetryPending ||
+         m_pendingSetImageReply->property("predictionRetryId").toLongLong() != m_imageRetryPredictionId);
+    if (staleCancelledRetry) {
+        abortPending(m_pendingSetImageReply);
+        m_imageRetryPredictionId = 0;
+        if (m_pendingHealthReply || m_pendingPredictReply || m_pendingUnloadReply) {
+            // The shared deadline may also cover unrelated work. Drop only the stale retry and give
+            // the remaining requests their own full interval before reporting their timeout.
+            startTimeout();
+            return;
+        }
+        setState(m_embeddingId.isEmpty() ? State::NotStarted : State::Ready);
+        return;
+    }
+    const qint64 timedOutPredictionId = pendingPredictionRequestId();
     abortPending(m_pendingHealthReply);
     abortPending(m_pendingSetImageReply);
     abortPending(m_pendingPredictReply);
     abortPending(m_pendingUnloadReply);
     setState(State::Error);
+    if (timedOutPredictionId > 0)
+        emit predictionErrorForRequest(timedOutPredictionId, tr("SAM 请求超时（%1ms）").arg(m_timeoutMs));
     emit errorOccurred(tr("SAM 请求超时（%1ms）").arg(m_timeoutMs));
 }
 

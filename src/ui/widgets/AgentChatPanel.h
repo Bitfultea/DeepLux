@@ -3,6 +3,7 @@
 
 #include <QList>
 #include <QPixmap>
+#include <QPointer>
 #include <QWidget>
 
 class QPlainTextEdit;
@@ -37,7 +38,9 @@ public:
     static constexpr int kMaxImageAttachments = 4;
 
     void addImageAttachment(const QPixmap& pixmap);
-    void showToolPreview(const QList<AgentToolPreviewCard::ToolItem>& tools);
+    // 阶段1 审核整改 R2：确认卡携带载荷上下文（工程/摘要/副作用/confirmationId）
+    void showToolPreview(const QList<AgentToolPreviewCard::ToolItem>& tools,
+                         const AgentToolPreviewCard::ConfirmationContext& context = {});
     void clearToolPreview();
     void clearImageAttachments();
     QList<QPixmap> imageAttachments() const {
@@ -57,22 +60,29 @@ public:
     void setThinking(bool thinking);
     void setError(const QString& error);
 
+    // Shared by the latest-message button and GUI-only Agent navigation tool.
+    bool canScrollToLatest() const;
+    bool scrollToLatest(int& scrollValue, int& scrollMaximum);
+
     void applyTheme(bool isDark);
 
 signals:
     void userMessageSent(const QString& message);
     void userMessageWithImagesSent(const QString& message, const QList<QPixmap>& images);
-    void toolPreviewConfirmed();
-    void toolPreviewCancelled();
+    void cancelRequested();
+    // 阶段1 审核整改 R2：批准/拒绝携带展示时的 confirmationId——
+    // 控制器校验其与当前待确认批次一致,旧批次迟到事件被拒绝（零副作用）
+    void toolPreviewConfirmed(const QString& confirmationId);
+    void toolPreviewCancelled(const QString& confirmationId);
 
 private slots:
     void onSendClicked();
     void onInputChanged();
     void onThinkingTimeout();
+    void scrollToBottom();
 
 private:
     void setupUi();
-    void scrollToBottom();
     void updateInputHeight();
     void updateStatusStrip();
     void insertMessage(AgentMessageBubble* bubble);
@@ -82,11 +92,11 @@ private:
     bool eventFilter(QObject* obj, QEvent* event) override;
 
     QWidget* m_statusStrip = nullptr;
-    QScrollArea* m_scrollArea = nullptr;
-    QWidget* m_messagesContainer = nullptr;
-    QVBoxLayout* m_messagesLayout = nullptr;
+    QPointer<QScrollArea> m_scrollArea;
+    QPointer<QWidget> m_messagesContainer;
+    QPointer<QVBoxLayout> m_messagesLayout;
     QPlainTextEdit* m_inputEdit = nullptr;
-    AgentToolPreviewCard* m_previewCard = nullptr;
+    QPointer<AgentToolPreviewCard> m_previewCard;
     QList<QPixmap> m_imageAttachments;
     QString m_attachmentNotice; // 批3 复核六轮（P2）：附件超限提示（空=无提示）
     QWidget* m_attachmentBar = nullptr;
@@ -97,13 +107,13 @@ private:
     QTimer* m_thinkingTimer = nullptr;
     QToolButton* m_sendButton = nullptr;
     QToolButton* m_attachButton = nullptr;
-    QToolButton* m_latestButton = nullptr;
-    QLabel* m_emptyLabel = nullptr;
+    QPointer<QToolButton> m_latestButton;
+    QPointer<QLabel> m_emptyLabel;
     bool m_followTail = true;
     bool m_composing = false;
     QString m_error;
 
-    AgentMessageBubble* m_lastAgentBubble = nullptr;
+    QPointer<AgentMessageBubble> m_lastAgentBubble;
     bool m_isDark = false;
     bool m_isThinkingTimeout = false;
     bool m_isThinking = false;

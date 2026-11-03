@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QLabel>
 #include <QPointF>
 #include <QSet>
 #include <QTemporaryDir>
@@ -14,12 +15,17 @@
 #include <QVector>
 #include <QWidget>
 #include <QtTest/QtTest>
+#include <core/agent/AgentActor.h>
+#include <core/agent/ToolSchema.h>
 #include <core/base/ModuleBase.h>
+#include <core/common/UserManager.h>
 #include <core/deeplux/DataContract.h>
 #include <core/display/DisplayData.h>
 #include <core/interface/IModule.h>
 #include <core/manager/PluginManager.h>
+#include <core/manager/ProjectManager.h>
 #include <core/model/ImageData.h>
+#include <core/model/Project.h>
 #include <limits>
 
 using namespace DeepLux;
@@ -64,10 +70,17 @@ private slots:
 
     // 阶段 3：数据与构建契约收口
     void testUnsupportedPortTypesClassified();
-    void testMetadataDeclaringUnsupportedTypeRejectedAtLoad();
+    void testMetadataTypeSupportGate();
     void testPortsFieldsMustBeJsonArrays();
     void testWrongPayloadRejected();
     void testDetectionListBoundary();
+    void testG2MeasurementModesThroughAgent();
+    void testG2ComplexConfigRoundTrip();
+    void testGapMeasure3DRoiCentersDescribeInputPixelGrid();
+    void testGapMeasure3DZOutputsDoNotClaimMillimeters();
+    void testHeightMapRoiMetadataMatchesAgentSchema();
+    void testMeasureCirclePixelParametersDescribeInputGrid();
+    void testCropImageRoiMetadataSchemaAndGuiDescribePixels();
 
 private:
     struct PluginEntry {
@@ -90,6 +103,7 @@ private:
 
 void TestPluginParameterContracts::initTestCase() {
     QVERIFY2(installAllPlugins(), "Failed to install plugins for testing");
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
 
     // Redirect default app data dir to temp to avoid loading stale ~/.deeplux/plugins
     qputenv("DEEPLUX_APP_DATA_DIR", m_tempDir.filePath("appdata").toLocal8Bit());
@@ -107,6 +121,7 @@ void TestPluginParameterContracts::initTestCase() {
 
 void TestPluginParameterContracts::cleanupTestCase() {
     PluginManager::instance().shutdown();
+    QVERIFY(UserManager::instance().login(QStringLiteral("operator"), QString()));
 }
 
 bool TestPluginParameterContracts::installAllPlugins() {
@@ -205,7 +220,7 @@ QVariant TestPluginParameterContracts::replacementValue(const QString& key, cons
 void TestPluginParameterContracts::testDefaultParamsValidate() {
     QStringList failures;
     for (const auto& entry : m_entries) {
-        IModule* module = PluginManager::instance().createModule(entry.name);
+        auto module = PluginManager::instance().createManagedModule(entry.name);
         if (!module) {
             // Some plugins may fail to create (e.g. camera plugins without hardware)
             continue;
@@ -216,7 +231,6 @@ void TestPluginParameterContracts::testDefaultParamsValidate() {
         if (!module->validateParams(params, error)) {
             failures << QString("%1: validateParams failed for defaults: %2").arg(entry.name, error);
         }
-        delete module;
     }
 
     if (!failures.isEmpty()) {
@@ -231,13 +245,12 @@ void TestPluginParameterContracts::testDefaultParamsValidate() {
 void TestPluginParameterContracts::testClonePreservesParams() {
     QStringList failures;
     for (const auto& entry : m_entries) {
-        IModule* original = PluginManager::instance().createModule(entry.name);
+        auto original = PluginManager::instance().createManagedModule(entry.name);
         if (!original)
             continue;
 
         const QJsonObject defaults = original->currentParams();
         if (defaults.isEmpty()) {
-            delete original;
             continue;
         }
 
@@ -245,12 +258,10 @@ void TestPluginParameterContracts::testClonePreservesParams() {
         IModule* clone = original->clone();
         if (!clone) {
             // Some plugins may not support cloning yet
-            delete original;
             continue;
         }
-        if (clone == original) {
+        if (clone == original.get()) {
             failures << QString("%1: clone returned same instance").arg(entry.name);
-            delete original;
             continue;
         }
 
@@ -274,7 +285,6 @@ void TestPluginParameterContracts::testClonePreservesParams() {
         }
 
         delete clone;
-        delete original;
     }
 
     if (!failures.isEmpty()) {
@@ -295,7 +305,7 @@ void TestPluginParameterContracts::testSchemaKeysExistInDefaultParams() {
         if (paramsSchema.isEmpty())
             continue; // No schema = uses createConfigWidget()
 
-        IModule* module = PluginManager::instance().createModule(entry.name);
+        auto module = PluginManager::instance().createManagedModule(entry.name);
         if (!module)
             continue;
         const QJsonObject defaults = module->defaultParams();
@@ -306,7 +316,6 @@ void TestPluginParameterContracts::testSchemaKeysExistInDefaultParams() {
                 failures << QString("%1: schema key '%2' not in defaultParams()").arg(entry.name, schemaKey);
             }
         }
-        delete module;
     }
 
     if (!failures.isEmpty()) {
@@ -327,7 +336,7 @@ void TestPluginParameterContracts::testNonInternalParamsHaveSchema() {
         QJsonObject paramsSchema = ui.value("parameters").toObject();
         if (paramsSchema.isEmpty()) {
             // Check if the plugin actually has any non-internal params
-            IModule* mod = PluginManager::instance().createModule(entry.name);
+            auto mod = PluginManager::instance().createManagedModule(entry.name);
             if (mod) {
                 QJsonObject defaults = mod->defaultParams();
                 bool hasVisibleParams = false;
@@ -337,7 +346,6 @@ void TestPluginParameterContracts::testNonInternalParamsHaveSchema() {
                         break;
                     }
                 }
-                delete mod;
                 if (!hasVisibleParams) {
                     continue; // No params = no schema needed
                 }
@@ -346,7 +354,7 @@ void TestPluginParameterContracts::testNonInternalParamsHaveSchema() {
             continue;
         }
 
-        IModule* module = PluginManager::instance().createModule(entry.name);
+        auto module = PluginManager::instance().createManagedModule(entry.name);
         if (!module)
             continue;
         const QJsonObject defaults = module->defaultParams();
@@ -360,7 +368,6 @@ void TestPluginParameterContracts::testNonInternalParamsHaveSchema() {
                 failures << QString("%1: param '%2' missing from ui.parameters schema").arg(entry.name, key);
             }
         }
-        delete module;
     }
 
     if (!failures.isEmpty()) {
@@ -380,7 +387,7 @@ void TestPluginParameterContracts::testEnumDefaultsValid() {
         if (paramsSchema.isEmpty())
             continue;
 
-        IModule* module = PluginManager::instance().createModule(entry.name);
+        auto module = PluginManager::instance().createManagedModule(entry.name);
         if (!module)
             continue;
         const QJsonObject defaults = module->defaultParams();
@@ -410,7 +417,6 @@ void TestPluginParameterContracts::testEnumDefaultsValid() {
                                 .arg(entry.name, defaultVal.toVariant().toString(), key);
             }
         }
-        delete module;
     }
 
     if (!failures.isEmpty()) {
@@ -430,7 +436,7 @@ void TestPluginParameterContracts::testNumericDefaultsInRange() {
         if (paramsSchema.isEmpty())
             continue;
 
-        IModule* module = PluginManager::instance().createModule(entry.name);
+        auto module = PluginManager::instance().createManagedModule(entry.name);
         if (!module)
             continue;
         const QJsonObject defaults = module->defaultParams();
@@ -477,7 +483,6 @@ void TestPluginParameterContracts::testNumericDefaultsInRange() {
                 }
             }
         }
-        delete module;
     }
 
     if (!failures.isEmpty()) {
@@ -492,7 +497,7 @@ void TestPluginParameterContracts::testNumericDefaultsInRange() {
 void TestPluginParameterContracts::testAllPluginsAbiV2() {
     QStringList failures;
     for (const auto& entry : m_entries) {
-        IModule* module = PluginManager::instance().createModule(entry.name);
+        auto module = PluginManager::instance().createManagedModule(entry.name);
         if (!module) {
             failures << QString("%1: createModule returned null").arg(entry.name);
             continue;
@@ -503,7 +508,6 @@ void TestPluginParameterContracts::testAllPluginsAbiV2() {
                             .arg(module->interfaceVersion())
                             .arg(DEEPLUX_MODULE_INTERFACE_VERSION);
         }
-        delete module;
     }
     if (!failures.isEmpty()) {
         QFAIL(qPrintable(QString("ABI v2 failures:\n  - %1").arg(failures.join("\n  - "))));
@@ -546,7 +550,7 @@ void TestPluginParameterContracts::testPortsWellFormed() {
 
 void TestPluginParameterContracts::testMissingRequiredInputReturnsStructuredError() {
     // FitLine 声明必需输入 fit_points；空输入应返回结构化错误而非崩溃
-    IModule* module = PluginManager::instance().createModule(QStringLiteral("FitLine"));
+    auto module = PluginManager::instance().createManagedModule(QStringLiteral("FitLine"));
     QVERIFY(module != nullptr);
 
     PortValueMap inputs; // 空：缺少必需 fit_points
@@ -557,11 +561,10 @@ void TestPluginParameterContracts::testMissingRequiredInputReturnsStructuredErro
     QVERIFY2(!result.success, "expected failure for missing required input");
     QCOMPARE(result.errorCode, ExecError::MissingRequiredInput);
     QVERIFY(!result.userMessage.isEmpty());
-    delete module;
 }
 
 void TestPluginParameterContracts::testWrongPortTypeReturnsStructuredError() {
-    IModule* module = PluginManager::instance().createModule(QStringLiteral("FitLine"));
+    auto module = PluginManager::instance().createManagedModule(QStringLiteral("FitLine"));
     QVERIFY(module != nullptr);
 
     PortValueMap inputs;
@@ -573,11 +576,10 @@ void TestPluginParameterContracts::testWrongPortTypeReturnsStructuredError() {
     QVERIFY(!result.success);
     QCOMPARE(result.errorCode, ExecError::TypeMismatch);
     QVERIFY(result.diagnostics.contains(QStringLiteral("fit_points")));
-    delete module;
 }
 
 void TestPluginParameterContracts::testDeclaredOutputsAreExported() {
-    IModule* module = PluginManager::instance().createModule(QStringLiteral("DistancePP"));
+    auto module = PluginManager::instance().createManagedModule(QStringLiteral("DistancePP"));
     QVERIFY(module != nullptr);
     QVERIFY(module->initialize());
 
@@ -592,7 +594,6 @@ void TestPluginParameterContracts::testDeclaredOutputsAreExported() {
     QVERIFY(outputs.contains(QStringLiteral("image")));
     QVERIFY(outputs.contains(QStringLiteral("distance")));
     QVERIFY(qAbs(outputs.value(QStringLiteral("distance")).toDouble() - 268.3281573) < 0.001);
-    delete module;
 }
 
 void TestPluginParameterContracts::testBlockingInjectedIntoCreatedModule() {
@@ -610,24 +611,22 @@ void TestPluginParameterContracts::testBlockingInjectedIntoCreatedModule() {
     }
 
     QVERIFY2(!blockingPlugin.isEmpty(), "at least one plugin must declare execution.blocking=true (e.g. SaveData)");
-    IModule* bmod = PluginManager::instance().createModule(blockingPlugin);
+    auto bmod = PluginManager::instance().createManagedModule(blockingPlugin);
     QVERIFY2(bmod != nullptr, qPrintable(QString("createModule(%1) must succeed").arg(blockingPlugin)));
-    auto* bbase = qobject_cast<ModuleBase*>(bmod);
+    auto* bbase = qobject_cast<ModuleBase*>(bmod.get());
     QVERIFY(bbase != nullptr);
     QVERIFY2(bbase->isBlocking(),
              qPrintable(QString("createModule(%1) must inject blocking=true").arg(blockingPlugin)));
-    delete bmod;
 
     // G4-fix1: blocking=false 反向验证也必须是强制断言，防止全部插件误标 blocking 时静默跳过
     QVERIFY2(!nonBlockingPlugin.isEmpty(),
              "at least one plugin must declare execution.blocking=false for reverse verification");
-    IModule* nmod = PluginManager::instance().createModule(nonBlockingPlugin);
+    auto nmod = PluginManager::instance().createManagedModule(nonBlockingPlugin);
     QVERIFY2(nmod != nullptr, qPrintable(QString("createModule(%1) must succeed").arg(nonBlockingPlugin)));
-    auto* nbase = qobject_cast<ModuleBase*>(nmod);
+    auto* nbase = qobject_cast<ModuleBase*>(nmod.get());
     QVERIFY(nbase != nullptr);
     QVERIFY2(!nbase->isBlocking(),
              qPrintable(QString("createModule(%1) must inject blocking=false").arg(nonBlockingPlugin)));
-    delete nmod;
 }
 
 void TestPluginParameterContracts::testPayloadTypeTightening() {
@@ -684,7 +683,7 @@ void TestPluginParameterContracts::testPayloadTypeTightening() {
     QVERIFY(!portValueMatchesType(QVariant(1), DataType::Region2D));
 
     // 尚无专用载荷和生产者的复杂类型必须失败关闭，不能接受任意 QVariant。
-    for (DataType type : {DataType::Mask2D, DataType::Ellipse2D, DataType::Transform2D, DataType::ClassScores}) {
+    for (DataType type : {DataType::Mask2D, DataType::Transform2D, DataType::ClassScores}) {
         QVERIFY(!portValueMatchesType(QVariant(1), type));
     }
 }
@@ -697,17 +696,17 @@ void TestPluginParameterContracts::testUnsupportedPortTypesClassified() {
     using DeepLux::DataType;
     using DeepLux::isSupportedPortType;
 
-    // 保留枚举 ABI，但以下 4 类尚无载荷契约与生产者插件，不得作为可运行端口类型
+    // 保留枚举 ABI，但以下未实现类型尚无载荷契约与生产者插件，不得作为可运行端口类型
     // （SAM 批1：Region2D 已有载荷契约与 SamPredict 生产者，升级为受支持）
-    for (DataType type : {DataType::Mask2D, DataType::Ellipse2D, DataType::Transform2D, DataType::ClassScores}) {
+    for (DataType type : {DataType::Mask2D, DataType::Transform2D, DataType::ClassScores}) {
         QVERIFY2(!isSupportedPortType(type), qPrintable(dataTypeName(type) + " must be unsupported"));
     }
     // 已实现的类型不受影响
     for (DataType type :
          {DataType::Image2D, DataType::HeightMap2D, DataType::PointCloud3D, DataType::Point2D, DataType::Point3D,
-          DataType::PointSet2D, DataType::Line2D, DataType::Circle2D, DataType::Plane3D, DataType::DetectionList,
-          DataType::Region2D, DataType::Number, DataType::Integer, DataType::Boolean, DataType::String,
-          DataType::Binary, DataType::Table, DataType::Any}) {
+          DataType::PointSet2D, DataType::Line2D, DataType::Circle2D, DataType::Ellipse2D, DataType::Plane3D,
+          DataType::DetectionList, DataType::Region2D, DataType::Number, DataType::Integer, DataType::Boolean,
+          DataType::String, DataType::Binary, DataType::Table, DataType::Any}) {
         QVERIFY2(isSupportedPortType(type), qPrintable(dataTypeName(type) + " must be supported"));
     }
     // 失败关闭：非法枚举值不得被判定为支持（防止未来新增未实现类型自动放行）
@@ -728,7 +727,7 @@ static void writeMetadataAndLoad(const QTemporaryDir& dir, const QByteArray& con
     loadError = info.error;
 }
 
-void TestPluginParameterContracts::testMetadataDeclaringUnsupportedTypeRejectedAtLoad() {
+void TestPluginParameterContracts::testMetadataTypeSupportGate() {
     // metadata 声明未实现类型必须在加载阶段明确拒绝，
     // 不能放行后再让运行期"连接合法但永远拒绝"。
     const QByteArray unsupportedInput = R"({
@@ -741,9 +740,9 @@ void TestPluginParameterContracts::testMetadataDeclaringUnsupportedTypeRejectedA
             "outputs": [{"id": "image", "displayName": "输出", "type": "Image2D"}]
         }
     })";
-    const QByteArray unsupportedOutput = R"({
-        "id": "com.test.unsupportedout",
-        "name": "UnsupportedTypeProbeOut",
+    const QByteArray ellipseOutput = R"({
+        "id": "com.test.ellipseprobe",
+        "name": "Ellipse2DProbe",
         "category": "test",
         "version": "1.0.0",
         "ports": {
@@ -773,10 +772,8 @@ void TestPluginParameterContracts::testMetadataDeclaringUnsupportedTypeRejectedA
     QVERIFY2(loadError.contains(QStringLiteral("Mask2D")),
              qPrintable("rejection must name the unsupported type, got: " + loadError));
 
-    writeMetadataAndLoad(dir, unsupportedOutput, "unsupported_out.json", loaded, loadError);
-    QVERIFY2(!loaded, "metadata declaring Ellipse2D output must be rejected at load");
-    QVERIFY2(loadError.contains(QStringLiteral("Ellipse2D")),
-             qPrintable("rejection must name the unsupported type, got: " + loadError));
+    writeMetadataAndLoad(dir, ellipseOutput, "ellipse_probe.json", loaded, loadError);
+    QVERIFY2(loaded, qPrintable("metadata declaring Ellipse2D output must load, got: " + loadError));
 
     writeMetadataAndLoad(dir, regionOutput, "region_probe.json", loaded, loadError);
     QVERIFY2(loaded, qPrintable("metadata declaring Region2D output must load, got: " + loadError));
@@ -909,6 +906,411 @@ void TestPluginParameterContracts::testDetectionListBoundary() {
     d.width = -1;
     dl.items[0] = d;
     QVERIFY(!portValueMatchesType(QVariant::fromValue(dl), DataType::DetectionList));
+}
+
+void TestPluginParameterContracts::testG2MeasurementModesThroughAgent() {
+    ToolSchema::instance().registerDefaultTools();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance instance;
+    instance.id = QStringLiteral("measurement_modes");
+    instance.moduleId = QStringLiteral("MeasurementInput");
+    project->addModule(instance);
+    AgentActor actor;
+    const QList<QJsonObject> modes{
+        QJsonObject{{"mode", "point_pair"}, {"point1", QJsonArray{1, 2}}, {"point2", QJsonArray{3, 4}}},
+        QJsonObject{{"mode", "point_line"}, {"point", QJsonArray{1, 2, 3}}, {"line", QJsonArray{0, 0, 4, 5}}},
+        QJsonObject{{"mode", "line_pair"}, {"line1", QJsonArray{0, 0, 1, 1}}, {"line2", QJsonArray{2, 2, 3, 3}}},
+        QJsonObject{
+            {"mode", "point_plane"}, {"point", QJsonArray{1, 2, 3}}, {"plane", QJsonArray{0, 0, 0, 1, 0, 0, 0, 1, 0}}},
+        QJsonObject{{"mode", "point_set"}, {"points", QJsonArray{QJsonArray{1, 2}, QJsonArray{3, 4}}}}};
+    for (const QJsonObject& values : modes) {
+        const QJsonObject result =
+            actor.executeTool("set_module_params", QJsonObject{{"instanceId", instance.id}, {"values", values}});
+        QVERIFY2(!result.contains("error"), qPrintable(result.value("error").toString()));
+        const QJsonObject current =
+            actor.executeTool("get_module_params_schema", QJsonObject{{"instanceId", instance.id}})
+                .value("currentParams")
+                .toObject();
+        for (auto it = values.begin(); it != values.end(); ++it)
+            QCOMPARE(current.value(it.key()), it.value());
+    }
+    ProjectManager::instance().closeProject();
+}
+
+void TestPluginParameterContracts::testG2ComplexConfigRoundTrip() {
+    ToolSchema::instance().registerDefaultTools();
+    const QList<QPair<QString, QJsonObject>> cases{
+        {QStringLiteral("MeasurementInput"),
+         QJsonObject{{"mode", "point_set"}, {"points", QJsonArray{QJsonArray{12.0, 34.0}, QJsonArray{56.0, 78.0}}}}},
+        {QStringLiteral("CropImage"), QJsonObject{{"rectangles", QJsonArray{QJsonArray{10.0, 20.0, 3.0, 4.0, 15.0},
+                                                                            QJsonArray{50.0, 60.0, 5.0, 6.0, -30.0}}}}},
+        {QStringLiteral("StrFormatPlugin"), QJsonObject{{"format", "%s:%d"},
+                                                        {"inputVariables", QJsonArray{"${batch}", "001"}},
+                                                        {"outputVariable", "formatted_report"}}},
+        {QStringLiteral("PLCWritePlugin"), QJsonObject{{"startAddress", 42}, {"values", QJsonArray{0, 65535}}}},
+        {QStringLiteral("SamPredict"), QJsonObject{{"points", QJsonArray{QJsonArray{1.0, 2.0}}},
+                                                   {"negativePoints", QJsonArray{QJsonArray{3.0, 4.0}}},
+                                                   {"box", QJsonArray{0.0, 0.0, 20.0, 30.0}}}}};
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    AgentActor actor;
+    for (const auto& item : cases) {
+        QString pluginName;
+        QString metadataPath;
+        for (const PluginEntry& entry : m_entries) {
+            if (entry.dirName == item.first) {
+                pluginName = entry.name;
+                metadataPath = entry.metadataPath;
+                break;
+            }
+        }
+        QVERIFY2(!pluginName.isEmpty(), qPrintable(item.first + " plugin not installed"));
+        QFile metadataFile(metadataPath);
+        QVERIFY(metadataFile.open(QIODevice::ReadOnly));
+        const QJsonObject metadata = QJsonDocument::fromJson(metadataFile.readAll()).object();
+        const QJsonObject schema = actor.executeTool("get_module_params_schema", QJsonObject{{"plugin", pluginName}});
+        QCOMPARE(schema.value("pluginId"), metadata.value("id"));
+        if (item.first == QStringLiteral("SamPredict")) {
+            const QJsonObject box = schema.value("parameters").toObject().value("box").toObject();
+            QCOMPARE(box.value("type").toString(), QStringLiteral("array"));
+            QVERIFY(box.value("nullable").toBool());
+            QCOMPARE(box.value("items").toObject().value("type").toString(), QStringLiteral("number"));
+        }
+        if (item.first == QStringLiteral("PLCWritePlugin")) {
+            const QJsonObject parameters = schema.value("parameters").toObject();
+            for (const QString& key : {QStringLiteral("port"), QStringLiteral("slaveId"), QStringLiteral("timeout")})
+                QCOMPARE(parameters.value(key).toObject().value("min"), QJsonValue(1));
+        }
+        const QJsonObject declaredResults = metadata.value("ui").toObject().value("results").toObject();
+        QVERIFY2(!declaredResults.isEmpty(), qPrintable(item.first + " has no result description"));
+        const QJsonObject describedResults = schema.value("results").toObject();
+        const QJsonObject expectedResults{
+            {"MeasurementInput", QJsonArray{"point1", "point2", "measurement_input_mode"}},
+            {"CropImage", QJsonArray{"crop_count", "crop_images"}},
+            {"StrFormatPlugin", QJsonArray{"formattedString"}},
+            {"PLCWritePlugin", QJsonArray{"plc_write_success", "plc_write_count"}},
+            {"SamPredict", QJsonArray{"region", "score"}}};
+        for (const QJsonValue& key : expectedResults.value(item.first).toArray()) {
+            const QJsonObject field = describedResults.value(key.toString()).toObject();
+            QVERIFY2(!field.value("label").toString().isEmpty(), qPrintable(item.first + ": " + key.toString()));
+        }
+        const QJsonObject sourcePorts = metadata.value("ports").toObject();
+        const QJsonObject exposedPorts = schema.value("ports").toObject();
+        for (const QString& direction : {QStringLiteral("inputs"), QStringLiteral("outputs")}) {
+            const QJsonArray source = sourcePorts.value(direction).toArray();
+            const QJsonArray exposed = exposedPorts.value(direction).toArray();
+            QCOMPARE(exposed.size(), source.size());
+            for (int i = 0; i < source.size(); ++i) {
+                const QJsonObject declared = source[i].toObject();
+                const QJsonObject described = exposed[i].toObject();
+                for (const QString& field : {QStringLiteral("id"), QStringLiteral("type"), QStringLiteral("required"),
+                                             QStringLiteral("multiple")})
+                    QCOMPARE(described.value(field), declared.value(field));
+                QCOMPARE(described.value("control").toBool(), declared.value("control").toBool());
+            }
+        }
+        ModuleInstance instance;
+        instance.id = item.first;
+        instance.moduleId = pluginName;
+        project->addModule(instance);
+        const int undoBefore = actor.undoStack()->count();
+        const QJsonObject result =
+            actor.executeTool("set_module_params", QJsonObject{{"instanceId", instance.id}, {"values", item.second}});
+        QVERIFY2(!result.contains("error"), qPrintable(item.first + ": " + result.value("error").toString()));
+        QCOMPARE(actor.undoStack()->count(), undoBefore + 1);
+        QCOMPARE(project->moduleById(instance.id)->params, item.second);
+        QCOMPARE(actor.executeTool("get_module_params_schema", QJsonObject{{"instanceId", instance.id}})
+                     .value("currentParams")
+                     .toObject(),
+                 item.second);
+        if (item.first == QStringLiteral("StrFormatPlugin")) {
+            const QJsonObject liveResults =
+                actor.executeTool("get_module_params_schema", QJsonObject{{"instanceId", instance.id}})
+                    .value("results")
+                    .toObject();
+            QVERIFY(liveResults.contains(QStringLiteral("formatted_report")));
+            QVERIFY(!liveResults.contains(QStringLiteral("formattedString")));
+        }
+        actor.undoStack()->undo();
+        QVERIFY(project->moduleById(instance.id)->params.isEmpty());
+        QVERIFY(actor.executeTool("get_module_params_schema", QJsonObject{{"instanceId", instance.id}})
+                    .value("currentParams")
+                    .toObject()
+                    .isEmpty());
+        if (item.first == QStringLiteral("StrFormatPlugin"))
+            QVERIFY(actor.executeTool("get_module_params_schema", QJsonObject{{"instanceId", instance.id}})
+                        .value("results")
+                        .toObject()
+                        .contains(QStringLiteral("formattedString")));
+        actor.undoStack()->redo();
+        QCOMPARE(project->moduleById(instance.id)->params, item.second);
+        QCOMPARE(actor.executeTool("get_module_params_schema", QJsonObject{{"instanceId", instance.id}})
+                     .value("currentParams")
+                     .toObject(),
+                 item.second);
+    }
+
+    const QList<QPair<QString, QJsonObject>> invalidCases{
+        {QStringLiteral("MeasurementInput"), QJsonObject{{"points", QJsonArray{QJsonArray{1.0, "bad"}}}}},
+        {QStringLiteral("CropImage"), QJsonObject{{"rectangles", QJsonArray{QJsonArray{10, 20, -1, 4, 0}}}}},
+        {QStringLiteral("StrFormatPlugin"), QJsonObject{{"inputVariables", QJsonArray{1, "valid"}}}},
+        {QStringLiteral("PLCWritePlugin"), QJsonObject{{"values", QJsonArray{-1, 2}}}},
+        {QStringLiteral("PLCWritePlugin"), QJsonObject{{"port", 0}}},
+        {QStringLiteral("SamPredict"), QJsonObject{{"box", QJsonArray{0, 0, -1, 20}}}}};
+    for (const auto& item : invalidCases) {
+        const QJsonObject before = project->moduleById(item.first)->params;
+        const int undoBefore = actor.undoStack()->count();
+        const QJsonObject rejected =
+            actor.executeTool("set_module_params", QJsonObject{{"instanceId", item.first}, {"values", item.second}});
+        QCOMPARE(rejected.value("errorCode").toString(), QStringLiteral("VALIDATION_FAILED"));
+        QCOMPARE(project->moduleById(item.first)->params, before);
+        QCOMPARE(actor.undoStack()->count(), undoBefore);
+    }
+
+    const QString path = m_tempDir.filePath(QStringLiteral("g2_complex_params.dproj"));
+    QVERIFY(project->save(path));
+    Project reopened;
+    QVERIFY(reopened.load(path));
+    for (const auto& item : cases)
+        QCOMPARE(reopened.moduleById(item.first)->params, item.second);
+    project = ProjectManager::instance().openProject(path);
+    QVERIFY(project);
+    for (const auto& item : cases)
+        QCOMPARE(actor.executeTool("get_module_params_schema", QJsonObject{{"instanceId", item.first}})
+                     .value("currentParams")
+                     .toObject(),
+                 item.second);
+    QVERIFY(actor.executeTool("get_module_params_schema", QJsonObject{{"instanceId", "StrFormatPlugin"}})
+                .value("results")
+                .toObject()
+                .contains(QStringLiteral("formatted_report")));
+    ProjectManager::instance().closeProject();
+}
+
+void TestPluginParameterContracts::testGapMeasure3DRoiCentersDescribeInputPixelGrid() {
+    QString metadataPath;
+    for (const PluginEntry& entry : m_entries) {
+        if (entry.name == QStringLiteral("GapMeasure3D")) {
+            metadataPath = entry.metadataPath;
+            break;
+        }
+    }
+    QVERIFY(!metadataPath.isEmpty());
+
+    QFile metadataFile(metadataPath);
+    QVERIFY(metadataFile.open(QIODevice::ReadOnly));
+    const QJsonObject parameters = QJsonDocument::fromJson(metadataFile.readAll())
+                                       .object()
+                                       .value(QStringLiteral("ui"))
+                                       .toObject()
+                                       .value(QStringLiteral("parameters"))
+                                       .toObject();
+
+    ToolSchema::instance().registerDefaultTools();
+    AgentActor actor;
+    const QJsonObject schema =
+        actor.executeTool(QStringLiteral("get_module_params_schema"),
+                          QJsonObject{{QStringLiteral("plugin"), QStringLiteral("GapMeasure3D")}});
+    QVERIFY2(!schema.contains(QStringLiteral("error")), qPrintable(schema.value(QStringLiteral("error")).toString()));
+    const QJsonObject agentParameters = schema.value(QStringLiteral("parameters")).toObject();
+    const QString semantic = QStringLiteral("当前输入高度图局部像素");
+    for (const QString& key : {QStringLiteral("roiCenterX"), QStringLiteral("roiCenterY")}) {
+        const QString metadataLabel = parameters.value(key).toObject().value(QStringLiteral("label")).toString();
+        const QString agentLabel = agentParameters.value(key).toObject().value(QStringLiteral("label")).toString();
+        QVERIFY2(metadataLabel.contains(semantic),
+                 qPrintable(key + QStringLiteral(" metadata label: ") + metadataLabel));
+        QCOMPARE(agentLabel, metadataLabel);
+    }
+}
+
+void TestPluginParameterContracts::testGapMeasure3DZOutputsDoNotClaimMillimeters() {
+    QString metadataPath;
+    for (const PluginEntry& entry : m_entries) {
+        if (entry.name == QStringLiteral("GapMeasure3D")) {
+            metadataPath = entry.metadataPath;
+            break;
+        }
+    }
+    QVERIFY(!metadataPath.isEmpty());
+
+    QFile metadataFile(metadataPath);
+    QVERIFY(metadataFile.open(QIODevice::ReadOnly));
+    const QJsonObject metadata = QJsonDocument::fromJson(metadataFile.readAll()).object();
+    const QJsonObject parameter = metadata.value(QStringLiteral("ui"))
+                                      .toObject()
+                                      .value(QStringLiteral("parameters"))
+                                      .toObject()
+                                      .value(QStringLiteral("zScale"))
+                                      .toObject();
+    const QString zScaleLabel = parameter.value(QStringLiteral("label")).toString();
+    QVERIFY(zScaleLabel.contains(QStringLiteral("单位取决于输入高度值和标定")));
+    QVERIFY(!zScaleLabel.contains(QStringLiteral("mm"), Qt::CaseInsensitive));
+
+    const QJsonArray outputs =
+        metadata.value(QStringLiteral("ports")).toObject().value(QStringLiteral("outputs")).toArray();
+    for (const QString& key : {QStringLiteral("corner_dz_mm"), QStringLiteral("corner_dist_mm")}) {
+        const auto it = std::find_if(outputs.cbegin(), outputs.cend(), [&key](const QJsonValue& value) {
+            return value.toObject().value(QStringLiteral("id")).toString() == key;
+        });
+        QVERIFY(it != outputs.cend());
+        const QString displayName = it->toObject().value(QStringLiteral("displayName")).toString();
+        QVERIFY(!displayName.contains(QStringLiteral("mm"), Qt::CaseInsensitive));
+    }
+}
+
+void TestPluginParameterContracts::testHeightMapRoiMetadataMatchesAgentSchema() {
+    const QMap<QString, QMap<QString, QStringList>> expected{
+        {QStringLiteral("3DPreProcessing"),
+         {{QStringLiteral("roiCenterX"), {QStringLiteral("当前输入深度/高度图局部像素")}},
+          {QStringLiteral("roiCenterY"), {QStringLiteral("当前输入深度/高度图局部像素")}},
+          {QStringLiteral("roiWidth"), {QStringLiteral("像素"), QStringLiteral("0=全图")}},
+          {QStringLiteral("roiHeight"), {QStringLiteral("像素"), QStringLiteral("0=全图")}}}},
+        {QStringLiteral("FitPlane"),
+         {{QStringLiteral("roiCenterX"), {QStringLiteral("当前输入高度图局部像素")}},
+          {QStringLiteral("roiCenterY"), {QStringLiteral("当前输入高度图局部像素")}},
+          {QStringLiteral("roiLength1"), {QStringLiteral("像素"), QStringLiteral("0=全图")}},
+          {QStringLiteral("roiLength2"), {QStringLiteral("像素"), QStringLiteral("0=全图")}}}}};
+
+    ToolSchema::instance().registerDefaultTools();
+    AgentActor actor;
+    for (auto plugin = expected.cbegin(); plugin != expected.cend(); ++plugin) {
+        QString metadataPath;
+        for (const PluginEntry& entry : m_entries) {
+            if (entry.name == plugin.key()) {
+                metadataPath = entry.metadataPath;
+                break;
+            }
+        }
+        QVERIFY(!metadataPath.isEmpty());
+        QFile metadataFile(metadataPath);
+        QVERIFY(metadataFile.open(QIODevice::ReadOnly));
+        const QJsonObject metadataParameters = QJsonDocument::fromJson(metadataFile.readAll())
+                                                   .object()
+                                                   .value(QStringLiteral("ui"))
+                                                   .toObject()
+                                                   .value(QStringLiteral("parameters"))
+                                                   .toObject();
+        const QJsonObject schema = actor.executeTool(QStringLiteral("get_module_params_schema"),
+                                                     QJsonObject{{QStringLiteral("plugin"), plugin.key()}});
+        QVERIFY2(!schema.contains(QStringLiteral("error")),
+                 qPrintable(plugin.key() + QStringLiteral(": ") + schema.value(QStringLiteral("error")).toString()));
+        const QJsonObject agentParameters = schema.value(QStringLiteral("parameters")).toObject();
+        for (auto parameter = plugin->cbegin(); parameter != plugin->cend(); ++parameter) {
+            const QString metadataLabel =
+                metadataParameters.value(parameter.key()).toObject().value(QStringLiteral("label")).toString();
+            const QString agentLabel =
+                agentParameters.value(parameter.key()).toObject().value(QStringLiteral("label")).toString();
+            QCOMPARE(agentLabel, metadataLabel);
+            for (const QString& fragment : parameter.value())
+                QVERIFY2(metadataLabel.contains(fragment),
+                         qPrintable(plugin.key() + QLatin1Char('.') + parameter.key() + QStringLiteral(": ") +
+                                    metadataLabel));
+        }
+    }
+}
+
+void TestPluginParameterContracts::testMeasureCirclePixelParametersDescribeInputGrid() {
+    QString metadataPath;
+    for (const PluginEntry& entry : m_entries) {
+        if (entry.name == QStringLiteral("MeasureCircle")) {
+            metadataPath = entry.metadataPath;
+            break;
+        }
+    }
+    QVERIFY(!metadataPath.isEmpty());
+
+    QFile metadataFile(metadataPath);
+    QVERIFY(metadataFile.open(QIODevice::ReadOnly));
+    const QJsonObject metadataParameters = QJsonDocument::fromJson(metadataFile.readAll())
+                                               .object()
+                                               .value(QStringLiteral("ui"))
+                                               .toObject()
+                                               .value(QStringLiteral("parameters"))
+                                               .toObject();
+    ToolSchema::instance().registerDefaultTools();
+    AgentActor actor;
+    const QJsonObject schema =
+        actor.executeTool(QStringLiteral("get_module_params_schema"),
+                          QJsonObject{{QStringLiteral("plugin"), QStringLiteral("MeasureCircle")}});
+    QVERIFY2(!schema.contains(QStringLiteral("error")), qPrintable(schema.value(QStringLiteral("error")).toString()));
+    const QJsonObject agentParameters = schema.value(QStringLiteral("parameters")).toObject();
+    const QList<QPair<QString, QString>> fields{{QStringLiteral("initialCenterX"), QStringLiteral("初始圆心X")},
+                                                {QStringLiteral("initialCenterY"), QStringLiteral("初始圆心Y")},
+                                                {QStringLiteral("initialRadius"), QStringLiteral("初始半径")},
+                                                {QStringLiteral("searchLength"), QStringLiteral("搜索半长")},
+                                                {QStringLiteral("exclusionRadius"), QStringLiteral("残差剔除半径")}};
+    for (const auto& field : fields) {
+        const QString metadataLabel =
+            metadataParameters.value(field.first).toObject().value(QStringLiteral("label")).toString();
+        const QString agentLabel =
+            agentParameters.value(field.first).toObject().value(QStringLiteral("label")).toString();
+        QCOMPARE(agentLabel, metadataLabel);
+        QVERIFY(metadataLabel.contains(field.second));
+        QVERIFY(metadataLabel.contains(QStringLiteral("当前输入图像局部像素")));
+        for (const QString& forbidden : {QStringLiteral("来源"), QStringLiteral("物理"), QStringLiteral("毫米"),
+                                         QStringLiteral("World3D"), QStringLiteral("mm")})
+            QVERIFY2(!metadataLabel.contains(forbidden),
+                     qPrintable(field.first + QStringLiteral(" contains forbidden claim: ") + metadataLabel));
+    }
+}
+
+void TestPluginParameterContracts::testCropImageRoiMetadataSchemaAndGuiDescribePixels() {
+    QString metadataPath;
+    for (const PluginEntry& entry : m_entries) {
+        if (entry.name == QStringLiteral("CropImage")) {
+            metadataPath = entry.metadataPath;
+            break;
+        }
+    }
+    QVERIFY(!metadataPath.isEmpty());
+
+    QFile metadataFile(metadataPath);
+    QVERIFY(metadataFile.open(QIODevice::ReadOnly));
+    const QJsonObject metadataParameters = QJsonDocument::fromJson(metadataFile.readAll())
+                                               .object()
+                                               .value(QStringLiteral("ui"))
+                                               .toObject()
+                                               .value(QStringLiteral("parameters"))
+                                               .toObject();
+    const QString metadataLabel =
+        metadataParameters.value(QStringLiteral("rectangles")).toObject().value(QStringLiteral("label")).toString();
+    ToolSchema::instance().registerDefaultTools();
+    AgentActor actor;
+    const QJsonObject schema = actor.executeTool(QStringLiteral("get_module_params_schema"),
+                                                 QJsonObject{{QStringLiteral("plugin"), QStringLiteral("CropImage")}});
+    QVERIFY2(!schema.contains(QStringLiteral("error")), qPrintable(schema.value(QStringLiteral("error")).toString()));
+    const QString agentLabel = schema.value(QStringLiteral("parameters"))
+                                   .toObject()
+                                   .value(QStringLiteral("rectangles"))
+                                   .toObject()
+                                   .value(QStringLiteral("label"))
+                                   .toString();
+    QCOMPARE(agentLabel, metadataLabel);
+    for (const QString& fragment :
+         {QStringLiteral("当前输入图像局部像素中心"), QStringLiteral("l1/l2 为像素半长"), QStringLiteral("deg 为度")})
+        QVERIFY2(metadataLabel.contains(fragment), qPrintable(metadataLabel));
+    for (const QString& forbidden : {QStringLiteral("来源图"), QStringLiteral("物理"), QStringLiteral("毫米"),
+                                     QStringLiteral("World3D"), QStringLiteral("mm")})
+        QVERIFY2(!metadataLabel.contains(forbidden), qPrintable(metadataLabel));
+
+    auto module = PluginManager::instance().createManagedModule(QStringLiteral("CropImage"));
+    QVERIFY(module);
+    std::unique_ptr<QWidget> config(module->createConfigWidget());
+    QVERIFY(config);
+    QString guiLabels;
+    bool foundFormLabel = false;
+    for (QLabel* label : config->findChildren<QLabel*>()) {
+        guiLabels += label->text() + QLatin1Char('\n');
+        foundFormLabel = foundFormLabel || label->text() == QStringLiteral("矩形数组（输入图像局部像素，半长为像素）");
+    }
+    for (const QString& fragment :
+         {QStringLiteral("当前输入图像局部像素中心"), QStringLiteral("半长1/2 为像素"), QStringLiteral("deg 为度"),
+          QStringLiteral("HALCON Length1/Length2"), QStringLiteral("整边长 = 2×半长")})
+        QVERIFY2(guiLabels.contains(fragment), qPrintable(guiLabels));
+    QVERIFY(foundFormLabel);
+    QVERIFY(guiLabels.contains(QStringLiteral("输入图像局部像素")));
 }
 
 QTEST_MAIN(TestPluginParameterContracts)

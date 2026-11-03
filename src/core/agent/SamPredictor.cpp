@@ -134,6 +134,7 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
     QString error;
     bool done = false;
     bool embeddingAcquired = false;
+    QString uploadedRequestStage;
     int nextIndex = 0;
     QEventLoop loop;
 
@@ -145,6 +146,7 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
     deadline.setInterval(deadlineMs);
     QObject::connect(&deadline, &QTimer::timeout, &loop, [&]() {
         error = QStringLiteral("SAM 请求超时（本地等待上限 %1ms）").arg(deadlineMs);
+        outcome.uncertainStage = uploadedRequestStage;
         done = true;
         loop.quit();
     });
@@ -154,6 +156,7 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
     QObject::connect(&cancelPoll, &QTimer::timeout, &loop, [&]() {
         if (cancel && cancel->isCancelledFast()) {
             error = QStringLiteral("SAM 预测已取消");
+            outcome.uncertainStage = uploadedRequestStage;
             done = true;
             loop.quit();
         }
@@ -162,6 +165,7 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
     QObject::connect(
         &client, &SamBackendClient::predictionReady, &loop,
         [&](const QList<QPointF>& polygon, const QRectF& bbox, double score, const QString& maskRle, const QImage&) {
+            uploadedRequestStage.clear(); // 响应已收，上一项的上传不能归因到下一项请求
             // 批4（C）：多掩膜候选选择——candidates 按 score 降序，index 0 与
             // 顶层 best 字段一致；越界或无候选却指定 index>0 均失败关闭
             const QList<SamCandidate> candidates = client.lastCandidates();
@@ -232,13 +236,18 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
     QObject::connect(&client, &SamBackendClient::errorOccurred, &loop, [&](const QString& msg) {
         if (!done) {
             error = msg;
+            if (msg.contains(QStringLiteral("超时")))
+                outcome.uncertainStage = uploadedRequestStage;
             outcome.failedIndex = embeddingAcquired ? qMin(nextIndex, items.size() - 1) : -1;
             done = true;
             loop.quit();
         }
     });
+    QObject::connect(&client, &SamBackendClient::requestBodyUploadStarted, &loop,
+                     [&](const QString& endpoint) { uploadedRequestStage = endpoint; });
     QObject::connect(&client, &SamBackendClient::embeddingReady, &loop, [&](const QString&) {
         embeddingAcquired = true;
+        uploadedRequestStage.clear();
         deadline.start();
         client.predict(items[0].positivePoints, items[0].negativePoints, items[0].box);
     });

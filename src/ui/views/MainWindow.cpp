@@ -4,6 +4,7 @@
 #include "../bridge/TerminalBridge.h"
 #include "../controllers/ProcessTreeController.h"
 #include "../dialogs/AgentSettingsDialog.h"
+#include "../dialogs/KnowledgeBaseDialog.h"
 #include "../dialogs/LoginDialog.h"
 #include "../dialogs/SamAnnotatorDialog.h"
 #include "../display/3d/Viewport3DContent.h"
@@ -23,13 +24,19 @@
 #include "GlobalVarView.h"
 #include "SplashScreen.h"
 #include "SystemParamView.h"
+#include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
+#include "core/agent/AnnotationSessionExport.h"
+#include "core/agent/AnnotationSessionOpen.h"
 #include "core/agent/OpenAILLMClient.h"
 #include "core/agent/ToolSchema.h"
 #include "core/base/ModuleBase.h"
 #include "core/common/ConfigWidgetHelper.h"
 #include "core/common/Logger.h"
 #include "core/common/ModuleIconProvider.h"
+#include "core/common/UserManager.h"
+#include "core/config/SystemConfig.h"
+#include "core/device/CameraManager.h"
 #include "core/display/DisplayData.h"
 #include "core/display/IDisplayPort.h"
 #include "core/engine/RunEngine.h"
@@ -40,10 +47,12 @@
 #include "core/manager/ConfigManager.h"
 #include "core/manager/PluginManager.h"
 #include "core/manager/ProjectManager.h"
+#include "core/model/Annotation.h"
 #include "core/model/DataSource.h"
 #include "core/model/ImageData.h"
 #include "core/model/Project.h"
 
+#include <Eigen/Geometry>
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
@@ -52,12 +61,14 @@
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QCursor>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDir>
 #include <QDockWidget>
+#include <QDoubleSpinBox>
 #include <QDrag>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -105,6 +116,7 @@
 #include <QTableWidget>
 #include <QTextEdit>
 #include <QTextStream>
+#include <QThread>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -116,10 +128,17 @@
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QWidgetAction>
+#include <QtMath>
+#include <algorithm>
 #include <cmath>
 #include <functional>
+#include <memory>
 
 namespace DeepLux {
+
+AgentChatPanel* MainWindow::agentChatPanel() const {
+    return m_agentChatPanel.data();
+}
 
 // 前向声明
 class FlowCanvas;
@@ -133,44 +152,123 @@ class ModuleInspectorPanel;
  */
 class SetModuleParamCommand : public QUndoCommand {
 public:
-    SetModuleParamCommand(IModule* module, Project* project, const QString& instanceId, const QString& key,
-                          const QVariant& newValue, const QVariant& oldValue, ModuleInspectorPanel* inspector = nullptr,
+    SetModuleParamCommand(IModule* module, Project* project, const QString& instanceId, const QJsonObject& before,
+                          const QJsonObject& after, ModuleInspectorPanel* inspector, std::function<void(bool)> result,
                           QUndoCommand* parent = nullptr)
         : QUndoCommand(parent), m_module(module), m_project(project), m_inspector(inspector), m_instanceId(instanceId),
-          m_key(key), m_newValue(newValue), m_oldValue(oldValue) {
-        setText(QCoreApplication::translate("MainWindow", "修改参数 %1.%2").arg(instanceId, key));
+          m_before(before), m_after(after), m_result(std::move(result)),
+          m_expectedInstanceGeneration(project->parameterInstanceGeneration(instanceId)) {
+        for (const QString& key : changedKeys(before, after)) {
+            m_expected.insert(key, state(before, key));
+            m_expectedAgentGenerations.insert(key, project->parameterGenerations(instanceId, key).agent);
+        }
+        setText(QCoreApplication::translate("MainWindow", "修改参数 %1").arg(instanceId));
     }
 
     void undo() override {
-        applyValue(m_oldValue);
+        apply(m_before);
     }
     void redo() override {
-        applyValue(m_newValue);
+        apply(m_after);
     }
 
 private:
-    void applyValue(const QVariant& value) {
-        if (m_module) {
-            m_module->setParam(m_key, value);
+    struct ValueState {
+        bool present = false;
+        QJsonValue value;
+    };
+
+    static QSet<QString> changedKeys(const QJsonObject& before, const QJsonObject& after) {
+        QSet<QString> keys;
+        for (auto it = before.constBegin(); it != before.constEnd(); ++it) {
+            if (!after.contains(it.key()) || after.value(it.key()) != it.value())
+                keys.insert(it.key());
         }
-        if (m_project) {
-            // QVariant -> QJsonValue
-            // 注意：canConvert<double>() 对字符串也返回 true（结果为 0），
-            // 因此必须用 userType() 严格判断类型，避免把字符串误转为数值。
-            QJsonValue jsonVal;
-            const int typeId = value.userType();
-            if (typeId == QMetaType::Bool) {
-                jsonVal = value.toBool();
-            } else if (typeId == QMetaType::Double || typeId == QMetaType::Int || typeId == QMetaType::LongLong ||
-                       typeId == QMetaType::UInt || typeId == QMetaType::ULongLong || typeId == QMetaType::Float) {
-                jsonVal = value.toDouble();
-            } else if (typeId == QMetaType::QString) {
-                jsonVal = value.toString();
-            } else {
-                jsonVal = QJsonValue::fromVariant(value);
+        for (auto it = after.constBegin(); it != after.constEnd(); ++it) {
+            if (!before.contains(it.key()))
+                keys.insert(it.key());
+        }
+        return keys;
+    }
+
+    static ValueState state(const QJsonObject& object, const QString& key) {
+        return ValueState{object.contains(key), object.value(key)};
+    }
+
+    void expire() {
+        if (m_invalid)
+            return;
+        m_invalid = true;
+        if (m_result)
+            m_result(false);
+    }
+
+    void apply(const QJsonObject& target) {
+        if (m_invalid) {
+            if (m_result)
+                m_result(false);
+            return;
+        }
+        Project* project = m_project.data();
+        IModule* module = m_module.data();
+        if (!project || ProjectManager::instance().currentProject() != project || !module ||
+            project->parameterInstanceGeneration(m_instanceId) != m_expectedInstanceGeneration) {
+            expire();
+            return;
+        }
+        const std::optional<ModuleInstance> current = project->moduleById(m_instanceId);
+        if (!current) {
+            expire();
+            return;
+        }
+
+        QJsonObject candidate = current->params;
+        const QList<QString> keys = m_expectedAgentGenerations.keys();
+        for (const QString& key : keys) {
+            const ValueState expected = m_expected.value(key);
+            const ValueState actual = state(current->params, key);
+            const Project::ParameterGenerations generations = project->parameterGenerations(m_instanceId, key);
+            if (generations.agent != m_expectedAgentGenerations.value(key) || actual.present != expected.present ||
+                (actual.present && actual.value != expected.value)) {
+                expire();
+                return;
             }
-            m_project->setModuleParam(m_instanceId, m_key, jsonVal);
+            const ValueState desired = state(target, key);
+            if (desired.present)
+                candidate.insert(key, desired.value);
+            else
+                candidate.remove(key);
         }
+
+        QJsonObject effective = module->defaultParams();
+        for (auto it = candidate.constBegin(); it != candidate.constEnd(); ++it)
+            effective.insert(it.key(), it.value());
+        QString validationError;
+        if (!module->validateParams(effective, validationError)) {
+            expire();
+            return;
+        }
+
+        QJsonObject runtimeParams = module->currentParams();
+        const QJsonObject defaults = module->defaultParams();
+        for (const QString& key : keys) {
+            if (candidate.contains(key))
+                runtimeParams.insert(key, candidate.value(key));
+            else if (defaults.contains(key))
+                runtimeParams.insert(key, defaults.value(key));
+            else
+                runtimeParams.remove(key);
+        }
+        module->setParams(runtimeParams);
+        ModuleInstance updated = *current;
+        updated.params = candidate;
+        project->updateModule(m_instanceId, updated, Project::PositionChangeSource::Unspecified,
+                              Project::ParameterChangeSource::Gui);
+        for (const QString& key : keys)
+            m_expected.insert(key, state(candidate, key));
+        if (m_result)
+            m_result(true);
+
         // 撤销/重做后延迟刷新检查器
         if (m_inspector && m_inspector->currentInstanceId() == m_instanceId) {
             QPointer<ModuleInspectorPanel> inspector = m_inspector;
@@ -188,12 +286,83 @@ private:
     QPointer<Project> m_project;
     QPointer<ModuleInspectorPanel> m_inspector;
     QString m_instanceId;
-    QString m_key;
-    QVariant m_newValue;
-    QVariant m_oldValue;
+    QJsonObject m_before;
+    QJsonObject m_after;
+    QHash<QString, ValueState> m_expected;
+    QHash<QString, quint64> m_expectedAgentGenerations;
+    std::function<void(bool)> m_result;
+    quint64 m_expectedInstanceGeneration = 0;
+    bool m_invalid = false;
 };
 
 namespace {
+class SetModulePositionCommand final : public QUndoCommand {
+public:
+    SetModulePositionCommand(Project* project, QString instanceId, int oldX, int oldY, int newX, int newY,
+                             quint64 expectedGuiGeneration, std::function<void()> expired)
+        : m_project(project), m_instanceId(std::move(instanceId)), m_expectedX(oldX), m_expectedY(oldY), m_oldX(oldX),
+          m_oldY(oldY), m_newX(newX), m_newY(newY), m_expectedGuiGeneration(expectedGuiGeneration),
+          m_expired(std::move(expired)) {
+        setText(QCoreApplication::translate("MainWindow", "移动模块 %1").arg(m_instanceId));
+    }
+
+    void undo() override {
+        apply(m_oldX, m_oldY);
+    }
+    void redo() override {
+        apply(m_newX, m_newY);
+    }
+
+private:
+    void apply(int x, int y) {
+        if (m_invalid) {
+            if (m_expired)
+                m_expired();
+            return;
+        }
+        Project* project = m_project.data();
+        if (!project || ProjectManager::instance().currentProject() != project) {
+            expire();
+            return;
+        }
+        const std::optional<ModuleInstance> current = project->moduleById(m_instanceId);
+        const Project::PositionGenerations generations = project->positionGenerations(m_instanceId);
+        if (!current || current->posX != m_expectedX || current->posY != m_expectedY ||
+            generations.gui != m_expectedGuiGeneration) {
+            expire();
+            return;
+        }
+        if (current->posX == x && current->posY == y)
+            return;
+        ModuleInstance updated = *current;
+        updated.posX = x;
+        updated.posY = y;
+        project->updateModule(m_instanceId, updated, Project::PositionChangeSource::Gui);
+        m_expectedX = x;
+        m_expectedY = y;
+    }
+
+    void expire() {
+        if (m_invalid)
+            return;
+        m_invalid = true;
+        if (m_expired)
+            m_expired();
+    }
+
+    QPointer<Project> m_project;
+    QString m_instanceId;
+    int m_expectedX;
+    int m_expectedY;
+    int m_oldX;
+    int m_oldY;
+    int m_newX;
+    int m_newY;
+    quint64 m_expectedGuiGeneration;
+    std::function<void()> m_expired;
+    bool m_invalid = false;
+};
+
 QString cleanToolDisplayName(const QString& displayName) {
     const QString text = displayName.trimmed();
     const int firstSpace = text.indexOf(' ');
@@ -302,7 +471,7 @@ QString pointText2D(const QPointF& point) {
     return QString("%1,%2").arg(point.x(), 0, 'f', 2).arg(point.y(), 0, 'f', 2);
 }
 
-QString pointText3D(const QVector3D& point) {
+QString pointText3D(const Eigen::Vector3d& point) {
     return QString("%1,%2,%3").arg(point.x(), 0, 'f', 3).arg(point.y(), 0, 'f', 3).arg(point.z(), 0, 'f', 3);
 }
 
@@ -310,15 +479,13 @@ QPointF pointFromArray2D(const QJsonArray& arr, int offset = 0) {
     return QPointF(arr.at(offset).toDouble(), arr.at(offset + 1).toDouble());
 }
 
-QVector3D pointFromArray3D(const QJsonArray& arr, int offset = 0) {
+Eigen::Vector3d pointFromArray3D(const QJsonArray& arr, int offset = 0) {
     const double z = arr.size() > offset + 2 ? arr.at(offset + 2).toDouble() : 0.0;
-    return QVector3D(static_cast<float>(arr.at(offset).toDouble()), static_cast<float>(arr.at(offset + 1).toDouble()),
-                     static_cast<float>(z));
+    return Eigen::Vector3d(arr.at(offset).toDouble(), arr.at(offset + 1).toDouble(), z);
 }
 
-QVector3D linePointFromArray3D(const QJsonArray& arr, int offset = 0) {
-    return QVector3D(static_cast<float>(arr.at(offset).toDouble()), static_cast<float>(arr.at(offset + 1).toDouble()),
-                     0.0f);
+Eigen::Vector3d linePointFromArray3D(const QJsonArray& arr, int offset = 0) {
+    return Eigen::Vector3d(arr.at(offset).toDouble(), arr.at(offset + 1).toDouble(), 0.0);
 }
 
 QJsonArray updatedLineArray(const QJsonArray& existing, const QPointF& point, bool firstPoint) {
@@ -393,6 +560,8 @@ void applyPluginConfigTheme(QWidget* root, bool isDark) {
                        "QDoubleSpinBox::down-button { background-color: %5; border-radius: 2px; }"
                        "QSpinBox::up-button:hover, QSpinBox::down-button:hover, QDoubleSpinBox::up-button:hover, "
                        "QDoubleSpinBox::down-button:hover { background-color: %6; }"
+                       "QComboBox QAbstractItemView { background-color: %1; color: %2; border: 1px solid %3; "
+                       "selection-background-color: %4; selection-color: #ffffff; outline: 0; }"
                        "QComboBox::drop-down { border: none; width: 20px; }"
                        "QComboBox::down-arrow { image: none; border-left: 5px solid transparent; "
                        "border-right: 5px solid transparent; border-top: 5px solid %2; }")
@@ -553,6 +722,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
         Logger::instance().info(tr("断点暂停：%1，点击运行继续").arg(moduleName), "Run");
     });
 
+    connect(&RunEngine::instance(), &RunEngine::runStarted, this, [this]() {
+        if (m_isCycleMode && m_isRunning && RunEngine::instance().runMode() == RunMode::RunCycle)
+            resetFlowRunPresentation();
+    });
     connect(&RunEngine::instance(), &RunEngine::runFinished, this, [this](const RunResult& result) {
         if (m_processTimeLabel) {
             m_processTimeLabel->setText(tr("总耗时：%1 ms").arg(result.elapsedMs));
@@ -578,16 +751,130 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
             m_closeWhenRunFinishes = false;
             setUiRunningState(false, false);
             QTimer::singleShot(0, this, &QWidget::close);
-        } else if (m_isCycleMode && m_isRunning) {
-            QTimer::singleShot(1, this, &MainWindow::executeFlowOnce);
+        } else if (m_isCycleMode && m_isRunning && RunEngine::instance().runMode() == RunMode::RunCycle &&
+                   RunEngine::instance().isBusy()) {
+            // RunEngine owns the shared cycle session and schedules the next tick.
         } else {
             setUiRunningState(false, false);
             m_isStepMode = false;
         }
     });
+    connect(&RunEngine::instance(), &RunEngine::cycleStopped, this, [this]() {
+        const bool stoppedWhileWaitingForPick = !m_pendingMeasurementCycleSessionId.isEmpty();
+        m_pendingMeasurementCycleSessionId.clear();
+        if (stoppedWhileWaitingForPick) {
+            ++m_measurementPickContinuationGeneration;
+            clearPendingMeasurementPick();
+            setUiRunningState(false, false);
+        }
+        if (m_isCycleMode)
+            setUiRunningState(false, false);
+    });
 
     // Initialize AgentController (Phase 1)
     AgentController::instance().initialize();
+    AgentController::instance().registerDataSourceViewHandler(
+        this, [this](const QString& toolName, const QJsonObject& params) {
+            return executeAgentDataSourceViewAction(toolName, params);
+        });
+    AgentActor* agentActor = AgentController::instance().actor();
+    connect(agentActor, &AgentActor::runEngineSyncRequested, this, [this, agentActor]() {
+        if (syncModulesToRunEngine())
+            agentActor->noteRunEngineSynchronized(ProjectManager::instance().currentProject());
+    });
+    connect(agentActor, &AgentActor::modulePositionSyncRequested, this, [this](const QString& instanceId) {
+        const Project* project = ProjectManager::instance().currentProject();
+        const std::optional<ModuleInstance> instance = project ? project->moduleById(instanceId) : std::nullopt;
+        FlowNodeItem* node = m_flowCanvas ? m_flowCanvas->nodeItem(instanceId) : nullptr;
+        if (instance && node)
+            node->setPos(instance->posX, instance->posY);
+    });
+    connect(agentActor, &AgentActor::positionUndoExpired, this, [this](const QString& instanceId, bool redo) {
+        statusBar()->showMessage(
+            tr("模块 %1 的位置撤销记录已失效（%2），未修改工程").arg(instanceId, redo ? tr("重做") : tr("撤销")), 5000);
+    });
+    if (m_flowCanvas) {
+        connect(m_flowCanvas, &FlowCanvas::nodeMoveStarted, this, [this](const QString& instanceId, const QPointF&) {
+            m_positionDragActive = true;
+            m_positionDragProject = ProjectManager::instance().currentProject();
+            m_positionDragInstanceId = instanceId;
+            m_positionDragStartX = 0;
+            m_positionDragStartY = 0;
+            m_positionDragGuiGeneration = 0;
+            if (!m_positionDragProject)
+                return;
+            const auto instance = m_positionDragProject->moduleById(instanceId);
+            if (!instance)
+                return;
+            m_positionDragStartX = instance->posX;
+            m_positionDragStartY = instance->posY;
+            m_positionDragGuiGeneration = m_positionDragProject->positionGenerations(instanceId).gui;
+        });
+        connect(m_flowCanvas, &FlowCanvas::nodeMoveFinished, this,
+                [this](const QString& instanceId, const QPointF& startVisual, const QPointF& finalVisual,
+                       bool crossedThreshold, bool canceled) {
+                    if (!m_positionDragActive || m_positionDragInstanceId != instanceId)
+                        return;
+                    m_positionDragActive = false;
+                    Project* project = m_positionDragProject.data();
+                    const QString capturedId = m_positionDragInstanceId;
+                    const int oldX = m_positionDragStartX;
+                    const int oldY = m_positionDragStartY;
+                    const quint64 guiGeneration = m_positionDragGuiGeneration;
+                    m_positionDragProject.clear();
+                    m_positionDragInstanceId.clear();
+
+                    FlowNodeItem* node = m_flowCanvas ? m_flowCanvas->nodeItem(capturedId) : nullptr;
+                    Project* currentProject = ProjectManager::instance().currentProject();
+                    const auto current = currentProject ? currentProject->moduleById(capturedId) : std::nullopt;
+                    if (!node)
+                        return;
+                    const auto alignToModel = [node, current]() {
+                        if (current)
+                            node->setPos(current->posX, current->posY);
+                    };
+                    if (!project || project != currentProject || !current) {
+                        alignToModel();
+                        statusBar()->showMessage(tr("工程已切换，节点位置未提交"), 4000);
+                        return;
+                    }
+                    if (canceled || RunEngine::instance().isBusy()) {
+                        alignToModel();
+                        statusBar()->showMessage(tr("运行或维护期间取消节点移动"), 4000);
+                        return;
+                    }
+                    if (project->positionGenerations(capturedId).gui != guiGeneration) {
+                        alignToModel();
+                        statusBar()->showMessage(tr("节点位置已被其他操作更新，未覆盖新位置"), 5000);
+                        return;
+                    }
+                    if (!crossedThreshold) {
+                        node->setPos(startVisual);
+                        return;
+                    }
+
+                    QPoint quantized;
+                    if (!FlowCanvas::quantizeNodePosition(finalVisual, &quantized)) {
+                        alignToModel();
+                        statusBar()->showMessage(tr("节点坐标超出有效范围，移动已取消"), 5000);
+                        return;
+                    }
+                    const int newX = quantized.x();
+                    const int newY = quantized.y();
+                    if (current->posX == newX && current->posY == newY) {
+                        node->setPos(newX, newY);
+                        return;
+                    }
+                    if (RunEngine::instance().isBusy()) {
+                        alignToModel();
+                        statusBar()->showMessage(tr("运行或维护期间取消节点移动"), 4000);
+                        return;
+                    }
+                    m_paramUndoStack->push(new SetModulePositionCommand(
+                        project, capturedId, oldX, oldY, newX, newY, guiGeneration,
+                        [this]() { statusBar()->showMessage(tr("该节点撤销记录已失效，未修改工程"), 5000); }));
+                });
+    }
 
     // Load Agent settings from ConfigManager (Phase 3)
     loadAgentSettings();
@@ -617,6 +904,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
 }
 
 MainWindow::~MainWindow() {
+    AgentController::instance().unregisterDataSourceViewHandler(this);
     if (m_samAnnotatorDialog) {
         delete m_samAnnotatorDialog.data();
         m_samAnnotatorDialog.clear();
@@ -739,17 +1027,25 @@ void MainWindow::setupMenuBar() {
     fileMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Save, 24, QColor("#2563EB")), tr("保存"), this,
                         &MainWindow::onSaveProject);
     fileMenu->addSeparator();
-    fileMenu->addAction(tr("退出"), qApp, &QApplication::quit);
+    fileMenu->addAction(tr("退出"), this, &QWidget::close);
 
     // 参数菜单
     QMenu* paramMenu = menuBar()->addMenu(tr("参数 (&P)"));
     m_undoAction = paramMenu->addAction(tr("撤销"), this, [this]() {
+        if (RunEngine::instance().isBusy()) {
+            statusBar()->showMessage(tr("运行或维护期间不能撤销"), 4000);
+            return;
+        }
         if (m_paramUndoStack)
             m_paramUndoStack->undo();
     });
     m_undoAction->setShortcut(QKeySequence("Ctrl+Z"));
     m_undoAction->setEnabled(false);
     m_redoAction = paramMenu->addAction(tr("重做"), this, [this]() {
+        if (RunEngine::instance().isBusy()) {
+            statusBar()->showMessage(tr("运行或维护期间不能重做"), 4000);
+            return;
+        }
         if (m_paramUndoStack)
             m_paramUndoStack->redo();
     });
@@ -764,18 +1060,21 @@ void MainWindow::setupMenuBar() {
     // 视图菜单
     QMenu* viewMenu = menuBar()->addMenu(tr("视图 (&V)"));
     m_viewToolPanelAction = new QAction(tr("工具"), this);
+    m_viewToolPanelAction->setObjectName(QStringLiteral("WorkspaceToolsPanelAction"));
     m_viewToolPanelAction->setCheckable(true);
     m_viewToolPanelAction->setChecked(true);
     connect(m_viewToolPanelAction, &QAction::toggled, this, &MainWindow::onToggleToolPanel);
     viewMenu->addAction(m_viewToolPanelAction);
 
     m_viewProcessPanelAction = new QAction(tr("流程"), this);
+    m_viewProcessPanelAction->setObjectName(QStringLiteral("WorkspaceProcessPanelAction"));
     m_viewProcessPanelAction->setCheckable(true);
     m_viewProcessPanelAction->setChecked(true);
     connect(m_viewProcessPanelAction, &QAction::toggled, this, &MainWindow::onToggleProcessPanel);
     viewMenu->addAction(m_viewProcessPanelAction);
 
     m_viewBottomPanelAction = new QAction(tr("底部面板"), this);
+    m_viewBottomPanelAction->setObjectName(QStringLiteral("WorkspaceBottomPanelAction"));
     m_viewBottomPanelAction->setCheckable(true);
     m_viewBottomPanelAction->setChecked(true);
     connect(m_viewBottomPanelAction, &QAction::toggled, this, &MainWindow::onToggleBottomPanel);
@@ -818,27 +1117,12 @@ void MainWindow::setupMenuBar() {
                         tr("通讯设置"), this, &MainWindow::onCommSettings);
     toolMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::Hardware, 24, QColor("#D1D5DB")), tr("硬件配置"),
                         this, &MainWindow::onHardwareConfig);
-    toolMenu->addAction(tr("Agent 设置"), this, [this]() {
+    QAction* agentSettingsAction = toolMenu->addAction(tr("Agent 设置"), this, [this]() {
         AgentSettingsDialog dlg(this);
-        if (dlg.exec() == QDialog::Accepted) {
-            AgentController& ctrl = AgentController::instance();
-            ctrl.setPermissionLevel(dlg.permissionLevel());
-            OpenAILLMClient* client = qobject_cast<OpenAILLMClient*>(ctrl.llmClient());
-            if (!client) {
-                client = new OpenAILLMClient(&ctrl);
-                ctrl.setLLMClient(client);
-            }
-            client->setEndpoint(dlg.endpoint());
-            client->setApiKey(dlg.apiKey());
-            client->setModel(dlg.model());
-            client->setTemperature(dlg.temperature());
-            client->setMaxTokens(dlg.maxTokens());
-            client->setToolsEnabled(dlg.toolsEnabled());
-            client->setVisionEnabled(dlg.visionEnabled());
-            client->setThinkingEnabled(dlg.thinkingEnabled());
-            ctrl.setSystemPrompt(dlg.systemPrompt());
-        }
+        if (dlg.exec() == QDialog::Accepted)
+            applyAgentSettings(dlg);
     });
+    agentSettingsAction->setObjectName(QStringLiteral("AgentSettingsMenuAction"));
 
     // 调试入口默认不进入生产界面，需要时通过环境变量显式开启。
     if (qEnvironmentVariableIntValue("DEEPLUX_SHOW_DEBUG_MENU") > 0) {
@@ -849,7 +1133,8 @@ void MainWindow::setupMenuBar() {
 
     // 帮助菜单
     QMenu* helpMenu = menuBar()->addMenu(tr("帮助 (&H)"));
-    helpMenu->addAction(tr("关于"), this, &MainWindow::onAbout);
+    QAction* aboutAction = helpMenu->addAction(tr("关于"), this, &MainWindow::onAbout);
+    aboutAction->setObjectName(QStringLiteral("AboutMenuAction"));
 
     auto* appHeader = new QWidget(menuBar());
     appHeader->setObjectName("AppBrandHeader");
@@ -1282,7 +1567,9 @@ void MainWindow::setupMainLayout() {
                 const int nodeCount = m_flowCanvas->nodeIds().size();
                 pos = QPointF(-110, -220 + nodeCount * 96);
             }
-            m_flowCanvas->addNode(module.moduleId, toolDisplayName(module.moduleId, module.name), pos, module.id);
+            const QString displayName =
+                module.name.trimmed().isEmpty() ? toolDisplayName(module.moduleId, module.name) : module.name;
+            m_flowCanvas->addNode(module.moduleId, displayName, pos, module.id);
         }
     });
     connect(m_processTreeController, &ProcessTreeController::moduleRemoved, this, [this](const QString& instanceId) {
@@ -1406,15 +1693,27 @@ void MainWindow::setupMainLayout() {
     // 连接检查器信号
     connect(m_inspectorPanel, &ModuleInspectorPanel::paramsChanged, this,
             [this](const QString& instanceId, const QString& key, const QVariant& value) {
+                if (rejectBusyFlowEdit(tr("修改模块参数"))) {
+                    m_inspectorPanel->refreshFromModule();
+                    return;
+                }
                 // 推入参数撤销栈（同时更新运行时模块和工程）
                 pushParamCommand(instanceId, key, value);
                 m_modulesNeedSync = true;
             });
     // 阶段 B 复核: 检查器启用/断点/备注编辑写回 Project 并同步 RunEngine
-    auto applyRuntimeField = [this](const QString& instanceId, std::function<void(ModuleInstance&)> mut) {
+    auto applyRuntimeField = [this](const QString& instanceId, const QString& action,
+                                    std::function<void(ModuleInstance&)> mut,
+                                    std::function<void(const ModuleInstance&)> restore) {
         Project* project = ProjectManager::instance().currentProject();
         if (!project)
             return;
+        if (rejectBusyFlowEdit(action)) {
+            const auto current = project->moduleById(instanceId);
+            if (current && m_inspectorPanel)
+                restore(*current);
+            return;
+        }
         if (auto inst = project->moduleById(instanceId)) {
             ModuleInstance updated = *inst;
             mut(updated);
@@ -1426,41 +1725,59 @@ void MainWindow::setupMainLayout() {
         }
     };
     connect(m_inspectorPanel, &ModuleInspectorPanel::enabledToggled, this,
-            [applyRuntimeField](const QString& id, bool enabled) {
-                applyRuntimeField(id, [enabled](ModuleInstance& m) { m.enabled = enabled; });
+            [this, applyRuntimeField](const QString& id, bool enabled) {
+                applyRuntimeField(
+                    id, QObject::tr("修改模块启用状态"), [enabled](ModuleInstance& m) { m.enabled = enabled; },
+                    [this](const ModuleInstance& current) {
+                        if (m_inspectorPanel)
+                            m_inspectorPanel->setEnabledState(current.enabled);
+                    });
             });
     connect(m_inspectorPanel, &ModuleInspectorPanel::breakpointToggled, this,
-            [applyRuntimeField](const QString& id, bool bp) {
-                applyRuntimeField(id, [bp](ModuleInstance& m) { m.breakpoint = bp; });
+            [this, applyRuntimeField](const QString& id, bool bp) {
+                applyRuntimeField(
+                    id, QObject::tr("修改模块断点"), [bp](ModuleInstance& m) { m.breakpoint = bp; },
+                    [this](const ModuleInstance& current) {
+                        if (m_inspectorPanel)
+                            m_inspectorPanel->setBreakpointState(current.breakpoint);
+                    });
             });
     connect(m_inspectorPanel, &ModuleInspectorPanel::noteChanged, this,
-            [applyRuntimeField](const QString& id, const QString& note) {
-                applyRuntimeField(id, [note](ModuleInstance& m) { m.note = note; });
+            [this, applyRuntimeField](const QString& id, const QString& note) {
+                applyRuntimeField(
+                    id, QObject::tr("修改模块备注"), [note](ModuleInstance& m) { m.note = note; },
+                    [this](const ModuleInstance& current) {
+                        if (m_inspectorPanel)
+                            m_inspectorPanel->setNoteState(current.note);
+                    });
             });
-    // P1-7: 恢复默认值用 beginMacro 批量为单条撤销记录
+    // 恢复默认值作为一个多键命令，保证 stale/验证失败时整组原子失效。
     connect(m_inspectorPanel, &ModuleInspectorPanel::resetDefaultsRequested, this, [this](const QString& instanceId) {
-        IModule* module = m_flowModules.value(instanceId, nullptr);
-        if (!module || !m_paramUndoStack)
+        if (rejectBusyFlowEdit(tr("恢复模块默认参数"))) {
+            m_inspectorPanel->refreshFromModule();
             return;
-        QJsonObject defaults = module->defaultParams();
-        m_paramUndoStack->beginMacro(tr("恢复默认参数"));
-        for (auto it = defaults.begin(); it != defaults.end(); ++it) {
-            const QString& key = it.key();
-            if (key.endsWith("_options"))
-                continue;
-            QJsonValue val = it.value();
-            QVariant variantValue;
-            if (val.isBool())
-                variantValue = val.toBool();
-            else if (val.isDouble())
-                variantValue = val.toDouble();
-            else if (val.isString())
-                variantValue = val.toString();
-            else
-                variantValue = val.toVariant();
-            pushParamCommand(instanceId, key, variantValue);
         }
-        m_paramUndoStack->endMacro();
+        IModule* module = m_flowModules.value(instanceId, nullptr);
+        Project* project = ProjectManager::instance().currentProject();
+        const auto instance = project ? project->moduleById(instanceId) : std::nullopt;
+        if (!module || !project || !instance || !m_paramUndoStack)
+            return;
+        const QJsonObject before = instance->params;
+        QJsonObject after = before;
+        const QJsonObject defaults = module->defaultParams();
+        for (auto it = defaults.begin(); it != defaults.end(); ++it) {
+            if (it.key().endsWith("_options"))
+                continue;
+            after.insert(it.key(), it.value());
+        }
+        if (after == before)
+            return;
+        auto* command = new SetModuleParamCommand(
+            module, project, instanceId, before, after, m_inspectorPanel, [this](bool succeeded) {
+                if (!succeeded)
+                    statusBar()->showMessage(tr("恢复默认参数已过期，未应用任何更改"), 5000);
+            });
+        m_paramUndoStack->push(command);
     });
     connect(m_inspectorPanel, &ModuleInspectorPanel::rerunRequested, this, [this]() {
         if (!m_selectedModuleId.isEmpty()) {
@@ -1493,19 +1810,17 @@ void MainWindow::setupMainLayout() {
         }
         m_rightTopSplitter->setSizes(sizes);
     });
-    connect(m_inspectorPanel, &ModuleInspectorPanel::closeRequested, this, [this]() {
-        m_inspectorClosed = true;
-        if (m_inspectorPanel) {
-            m_inspectorPanel->setVisible(false);
-        }
-        selectModule(QString(), false);
-    });
+    connect(m_inspectorPanel, &ModuleInspectorPanel::closeRequested, this, [this]() { setInspectorVisibility(false); });
 
     // 连接流程树选择信号到检查器
+    connect(m_flowCanvas, &FlowCanvas::editRejected, this,
+            [this](const QString& reason) { statusBar()->showMessage(reason, 5000); });
     connect(m_flowCanvas, &FlowCanvas::nodeSelected, this,
             [this](const QString& nodeId) { selectModule(nodeId, true); });
     connect(m_flowCanvas, &FlowCanvas::connectionRequest, this,
             [this](const QString& fromId, const QString& fromPort, const QString& toId, const QString& toPort) {
+                if (rejectBusyFlowEdit(tr("创建流程连线")))
+                    return;
                 Project* project = ProjectManager::instance().currentProject();
                 if (!project)
                     return;
@@ -1553,6 +1868,7 @@ void MainWindow::setupMainLayout() {
 
     // ===== Tab 1: 日志面板 =====
     QWidget* logWidget = new QWidget();
+    logWidget->setObjectName(QStringLiteral("RuntimeLogTab"));
     logWidget->setStyleSheet("background-color: transparent;");
     QVBoxLayout* logLayout = new QVBoxLayout(logWidget);
     logLayout->setContentsMargins(0, 0, 0, 0);
@@ -1624,6 +1940,7 @@ void MainWindow::setupMainLayout() {
 
     // ===== Tab 2: 终端 =====
     m_terminalWidget = new TerminalWidget();
+    m_terminalWidget->setObjectName(QStringLiteral("TerminalLogTab"));
     TerminalBridge::instance().initialize(m_terminalWidget);
     m_logTerminalTabs->addTab(m_terminalWidget, tr("终端"));
 
@@ -1678,6 +1995,8 @@ void MainWindow::setupMainLayout() {
         }
     };
     connect(m_agentChatPanel, &AgentChatPanel::userMessageSent, this, [this, setAgentTabStatus](const QString& msg) {
+        if (!m_agentChatPanel)
+            return;
         setAgentTabStatus(tr("Agent 正在思考"), false);
         m_agentChatPanel->setThinking(true);
         AgentController::instance().sendUserMessage(msg);
@@ -1691,6 +2010,8 @@ void MainWindow::setupMainLayout() {
     });
     connect(m_agentChatPanel, &AgentChatPanel::userMessageWithImagesSent, this,
             [this, setAgentTabStatus](const QString& msg, const QList<QPixmap>& images) {
+                if (!m_agentChatPanel)
+                    return;
                 setAgentTabStatus(tr("Agent 正在思考"), false);
                 m_agentChatPanel->setThinking(true);
                 AgentController::instance().sendUserMessageWithImages(msg, images);
@@ -1701,8 +2022,12 @@ void MainWindow::setupMainLayout() {
                     m_agentChatPanel->restoreDraft(msg, images);
                 }
             });
+    connect(m_agentChatPanel, &AgentChatPanel::cancelRequested, this,
+            []() { AgentController::instance().cancelCurrentRequest(); });
     connect(&AgentController::instance(), &AgentController::llmResponseReceived, this,
             [this, setAgentTabStatus](const QString& content, const QJsonArray& toolCalls) {
+                if (!m_agentChatPanel)
+                    return;
                 Q_UNUSED(toolCalls);
                 setAgentTabStatus(tr("Agent"), false);
                 m_agentChatPanel->setThinking(false);
@@ -1711,6 +2036,8 @@ void MainWindow::setupMainLayout() {
             });
     connect(&AgentController::instance(), &AgentController::llmErrorOccurred, this,
             [this, setAgentTabStatus](const QString& error) {
+                if (!m_agentChatPanel)
+                    return;
                 setAgentTabStatus(tr("Agent 出错"), false);
                 m_agentChatPanel->setError(error);
                 m_agentChatPanel->clearToolPreview();
@@ -1726,6 +2053,8 @@ void MainWindow::setupMainLayout() {
             });
     connect(&AgentController::instance(), &AgentController::toolsPendingConfirmation, this,
             [this, setAgentTabStatus](const QJsonArray& toolCalls) {
+                if (!m_agentChatPanel)
+                    return;
                 setAgentTabStatus(tr("等待确认"), true);
                 m_agentChatPanel->setThinking(false);
                 QList<AgentToolPreviewCard::ToolItem> items;
@@ -1746,6 +2075,25 @@ void MainWindow::setupMainLayout() {
                     } else {
                         item.params = tc["arguments"].toObject();
                     }
+                    if (item.name == QLatin1String("edit_active_annotation_masks")) {
+                        const QJsonObject raw = item.params;
+                        QJsonObject safe{{QStringLiteral("operation"), raw.value(QStringLiteral("operation"))},
+                                         {QStringLiteral("objectIds"), raw.value(QStringLiteral("objectIds"))},
+                                         {QStringLiteral("strokePointCount"),
+                                          raw.value(QStringLiteral("strokePoints")).toArray().size()}};
+                        if (raw.contains(QStringLiteral("radiusPx")))
+                            safe.insert(QStringLiteral("radiusPx"), raw.value(QStringLiteral("radiusPx")));
+                        item.params = safe;
+                    } else if (item.name == QLatin1String("edit_active_annotation_categories")) {
+                        const QJsonObject raw = item.params;
+                        QJsonObject safe{{QStringLiteral("operation"), raw.value(QStringLiteral("operation"))}};
+                        for (const QString& key :
+                             {QStringLiteral("category"), QStringLiteral("objectIds"), QStringLiteral("label")}) {
+                            if (raw.contains(key))
+                                safe.insert(key, raw.value(key));
+                        }
+                        item.params = safe;
+                    }
                     const bool dangerous = ToolSchema::instance().findTool(item.name).dangerous;
                     toolSummary.append(QString("%1%2").arg(item.name, dangerous ? tr(" [高风险]") : QString()));
                     items.append(item);
@@ -1754,22 +2102,52 @@ void MainWindow::setupMainLayout() {
                     m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Tool,
                                                  tr("待确认工具：%1").arg(toolSummary.join(", ")));
                 }
-                m_agentChatPanel->showToolPreview(items);
+                // 阶段1 §4（审核整改 R2）：确认卡展示工程/摘要/副作用,并绑定 confirmationId
+                AgentToolPreviewCard::ConfirmationContext context;
+                const QJsonObject payload = AgentController::instance().pendingConfirmationPayload();
+                context.confirmationId = payload.value(QStringLiteral("confirmationId")).toString();
+                const QJsonObject ctx = payload.value(QStringLiteral("context")).toObject();
+                context.summary = ctx.value(QStringLiteral("summary")).toString();
+                context.reversibilityLabel = ctx.value(QStringLiteral("reversibilityLabel")).toString();
+                context.projectName = ctx.value(QStringLiteral("projectName")).toString();
+                context.projectPath = ctx.value(QStringLiteral("projectPath")).toString();
+                for (const QJsonValue& sv : ctx.value(QStringLiteral("sideEffects")).toArray())
+                    context.sideEffects.append(sv.toString());
+                m_agentChatPanel->showToolPreview(items, context);
             });
-    connect(m_agentChatPanel, &AgentChatPanel::toolPreviewConfirmed, &AgentController::instance(),
-            &AgentController::confirmPendingTools);
-    connect(m_agentChatPanel, &AgentChatPanel::toolPreviewCancelled, &AgentController::instance(),
-            &AgentController::rejectPendingTools);
+    // 阶段1 审核整改 R2：批准/拒绝携带展示时绑定的 confirmationId；
+    // 错配（旧批次迟到事件）返回 false——零副作用,给用户可见反馈
+    connect(m_agentChatPanel, &AgentChatPanel::toolPreviewConfirmed, this, [this](const QString& confirmationId) {
+        if (!m_agentChatPanel)
+            return;
+        if (!AgentController::instance().confirmPendingTools(confirmationId)) {
+            m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Tool,
+                                         tr("该确认已失效或已被新批次取代，未执行任何操作"));
+        }
+    });
+    connect(m_agentChatPanel, &AgentChatPanel::toolPreviewCancelled, this, [this](const QString& confirmationId) {
+        if (!m_agentChatPanel)
+            return;
+        if (!AgentController::instance().rejectPendingTools(confirmationId)) {
+            m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Tool,
+                                         tr("该取消请求对应已失效的确认批次，已忽略"));
+        }
+    });
 
     // ===== Tab 4: Agent 操作日志 =====
     m_agentActionLogWidget = new AgentActionLogWidget(m_logTerminalTabs);
+    m_agentActionLogWidget->setObjectName(QStringLiteral("AgentLogTab"));
     const int agentLogTabIndex = m_logTerminalTabs->addTab(m_agentActionLogWidget, tr("Agent 日志"));
     m_logTerminalTabs->setTabToolTip(agentLogTabIndex, tr("Agent 操作日志"));
     connect(&AgentController::instance(), &AgentController::actionLogEntryAdded, m_agentActionLogWidget,
             &AgentActionLogWidget::addEntry);
     connect(m_agentActionLogWidget, &AgentActionLogWidget::undoRequested, this,
             [](int) { AgentController::instance().undoLastAgentAction(); });
+    connect(&AgentController::instance(), &AgentController::undoRejected, this,
+            [this](const QString& reason) { statusBar()->showMessage(reason, 5000); });
     connect(&AgentController::instance(), &AgentController::agentLoopIterating, this, [this, setAgentTabStatus]() {
+        if (!m_agentChatPanel)
+            return;
         setAgentTabStatus(tr("Agent 正在思考"), false);
         m_agentChatPanel->setThinking(true);
     });
@@ -1799,15 +2177,15 @@ void MainWindow::setupMainLayout() {
     // 高: setChecked 会触发 toggled → onToggleToolPanel → 设 userClosed，
     //     用 blockSignals 阻止 toggled 回调
     connect(m_toolBoxDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
-        if (m_viewToolPanelAction) {
+        if (m_viewToolPanelAction && !m_focusMode) {
             const QSignalBlocker blocker(m_viewToolPanelAction);
             m_viewToolPanelAction->setChecked(visible);
         }
-        if (!visible && !m_toolPanelSuppressSignal)
+        if (!visible && !m_toolPanelSuppressSignal && !m_focusMode)
             m_toolPanelUserClosed = true;
     });
     connect(m_logDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
-        if (m_viewBottomPanelAction)
+        if (m_viewBottomPanelAction && !m_focusMode)
             m_viewBottomPanelAction->setChecked(visible);
     });
 
@@ -1957,6 +2335,8 @@ void MainWindow::onProjectOpened(Project* project) {
 
     RunEngine::instance().stop();
     RunEngine::instance().clearModules();
+    setUiRunningState(false, false);
+    m_isStepMode = false;
 
     // 清空参数撤销栈和脏标记
     if (m_paramUndoStack) {
@@ -1965,6 +2345,8 @@ void MainWindow::onProjectOpened(Project* project) {
     m_dirtyModuleIds.clear();
     m_activeMeasurementInputId.clear();
     m_pendingMeasurementInputId.clear();
+    m_pendingMeasurementViewportId.clear();
+    m_pendingMeasurementViewports.clear();
     clearDataSourceViewports();
 
     // 清空现有流程树
@@ -1979,6 +2361,12 @@ void MainWindow::onProjectOpened(Project* project) {
     }
     if (m_flowCanvas) {
         m_flowCanvas->loadFromProject(project);
+        for (const ModuleInstance& inst : project->modules()) {
+            if (inst.name.trimmed().isEmpty()) {
+                if (FlowNodeItem* node = m_flowCanvas->nodeItem(inst.id))
+                    node->setName(toolDisplayName(inst.moduleId, inst.name));
+            }
+        }
     }
 
     // 刷新数据源面板
@@ -1993,16 +2381,34 @@ void MainWindow::onProjectOpened(Project* project) {
     connect(project, &Project::moduleAdded, m_processTreeController, &ProcessTreeController::onModuleAddedFromProject);
     connect(project, &Project::moduleRemoved, m_processTreeController,
             &ProcessTreeController::onModuleRemovedFromProject);
+    connect(project, &Project::moduleMoved, m_processTreeController, &ProcessTreeController::onModuleMovedFromProject);
+    connect(project, &Project::modulePositionChanged, this, [this, project](const QString& instanceId, int x, int y) {
+        if (ProjectManager::instance().currentProject() != project || !m_flowCanvas)
+            return;
+        if (FlowNodeItem* node = m_flowCanvas->nodeItem(instanceId))
+            node->setPos(x, y);
+    });
     connect(project, &Project::moduleUpdated, this, [this, project](const ModuleInstance& instance) {
         if (ProjectManager::instance().currentProject() != project) {
             return;
+        }
+        const QString displayName =
+            instance.name.trimmed().isEmpty() ? toolDisplayName(instance.moduleId, instance.name) : instance.name;
+        if (QTreeWidgetItem* item = m_processTreeController->instanceItem(instance.id))
+            item->setText(0, displayName);
+        if (m_flowCanvas) {
+            if (FlowNodeItem* node = m_flowCanvas->nodeItem(instance.id))
+                node->setName(displayName);
         }
         if (IModule* module = m_flowModules.value(instance.id, nullptr)) {
             module->setParams(instance.params);
         }
         m_modulesNeedSync = true;
         markModuleDirty(instance.id);
-        if (m_inspectorPanel && m_selectedModuleId == instance.id) {
+        if (m_inspectorPanel && m_inspectorPanel->currentInstanceId() == instance.id) {
+            m_inspectorPanel->setEnabledState(instance.enabled);
+            m_inspectorPanel->setBreakpointState(instance.breakpoint);
+            m_inspectorPanel->setNoteState(instance.note);
             QPointer<ModuleInspectorPanel> inspector = m_inspectorPanel;
             const QString instanceId = instance.id;
             QMetaObject::invokeMethod(
@@ -2024,7 +2430,7 @@ void MainWindow::onProjectOpened(Project* project) {
         if (m_flowCanvas && m_flowCanvas->nodeItem(conn.fromModuleId) && m_flowCanvas->nodeItem(conn.toModuleId)) {
             const QString fromPort = conn.fromPort.isEmpty() ? QStringLiteral("image") : conn.fromPort;
             const QString toPort = conn.toPort.isEmpty() ? QStringLiteral("image") : conn.toPort;
-            const QString edgeType = conn.edgeType.isEmpty() ? QStringLiteral("data") : conn.edgeType;
+            const QString edgeType = m_flowCanvas->resolveConnectionEdgeType(conn);
             // P0-fix: 防止 Project→Canvas→Project 回写循环
             m_flowCanvas->m_syncingFromProject = true;
             m_flowCanvas->addConnection(conn.fromModuleId, fromPort, conn.toModuleId, toPort, edgeType);
@@ -2075,11 +2481,15 @@ void MainWindow::onProjectClosed() {
     // RunEngine borrows flow-module pointers; detach them before the controller deletes the modules.
     RunEngine::instance().stop();
     RunEngine::instance().clearModules();
+    setUiRunningState(false, false);
+    m_isStepMode = false;
 
     // P0: 先清空检查器，防止悬空模块指针
     m_selectedModuleId.clear();
     m_activeMeasurementInputId.clear();
     m_pendingMeasurementInputId.clear();
+    m_pendingMeasurementViewportId.clear();
+    m_pendingMeasurementViewports.clear();
     if (m_inspectorPanel) {
         m_inspectorPanel->clear();
     }
@@ -2103,31 +2513,79 @@ void MainWindow::onProjectClosed() {
 void MainWindow::onViewportCreated(const QString& /*viewportId*/, ViewportWidget* viewport) {
     if (!viewport)
         return;
-    connect(viewport, &ViewportWidget::point2DClicked, this, &MainWindow::onPoint2DPicked, Qt::UniqueConnection);
-    connect(viewport, &ViewportWidget::point3DClicked, this, &MainWindow::onPoint3DPicked, Qt::UniqueConnection);
+    const QString viewportId = viewport->viewportId();
+    connect(viewport, &ViewportWidget::contentGenerationChanged, this, [this, viewportId](quint64 generation) {
+        if (m_pendingMeasurementInputId.isEmpty() ||
+            (!m_pendingMeasurementViewportId.isEmpty() && m_pendingMeasurementViewportId != viewportId))
+            return;
+        const auto snapshot = m_pendingMeasurementViewports.constFind(viewportId);
+        if (snapshot == m_pendingMeasurementViewports.cend() || snapshot->contentGeneration == generation)
+            return;
+
+        Logger::instance().warning(tr("等待测量输入期间视口内容已改变，已取消本轮运行"), "Measurement");
+        onStop();
+    });
+    connect(viewport, &ViewportWidget::point2DSourceClicked, this,
+            [this, viewportId](const QPointF& point, const QPointF& sourcePoint, const QString& sourceImageId,
+                               bool sourceCoordinateAvailable) {
+                if (m_agentQuickMeasurement.status == QLatin1String("awaiting_user_input")) {
+                    if (viewportId != m_agentQuickMeasurement.viewportId ||
+                        m_agentQuickMeasurement.dimension != QLatin1String("2d"))
+                        return;
+                    QString reason;
+                    if (!agentQuickMeasurementTargetStillValid(&reason)) {
+                        cancelAgentQuickMeasurement(QStringLiteral("expired"), reason);
+                        return;
+                    }
+                    QJsonObject picked{{QStringLiteral("imageLocal"), QJsonArray{point.x(), point.y()}},
+                                       {QStringLiteral("coordinateFrame"), QStringLiteral("ImageLocalPixel")},
+                                       {QStringLiteral("sourceCoordinateAvailable"), sourceCoordinateAvailable}};
+                    if (sourceCoordinateAvailable) {
+                        picked.insert(QStringLiteral("sourceImage"), sourceImageId);
+                        if (ViewportWidget* viewport = m_displayManager->viewport(viewportId)) {
+                            const QSize sourceSize = viewport->imageCoordinateProvenance().sourceSize;
+                            picked.insert(QStringLiteral("sourceImageSize"),
+                                          QJsonArray{sourceSize.width(), sourceSize.height()});
+                        }
+                        picked.insert(QStringLiteral("sourceImagePixel"), QJsonArray{sourcePoint.x(), sourcePoint.y()});
+                    }
+                    m_agentQuickMeasurement.pickedCoordinates.append(picked);
+                    ++m_agentQuickMeasurement.completedSteps;
+                    onPoint2DPicked(point);
+                    if (m_agentQuickMeasurement.completedSteps >= m_agentQuickMeasurement.steps.size())
+                        completeAgentQuickMeasurement();
+                    return;
+                }
+                if (!bindMeasurementPickViewport(viewportId))
+                    return;
+                onPoint2DPicked(point);
+            });
+    connect(viewport, &ViewportWidget::point3DWorldClicked, this, [this, viewportId](double x, double y, double z) {
+        if (m_agentQuickMeasurement.status != QLatin1String("awaiting_user_input")) {
+            if (!bindMeasurementPickViewport(viewportId))
+                return;
+            handlePoint3DPicked(x, y, z);
+            return;
+        }
+        if (viewportId != m_agentQuickMeasurement.viewportId ||
+            m_agentQuickMeasurement.dimension != QLatin1String("3d"))
+            return;
+        QString reason;
+        if (!agentQuickMeasurementTargetStillValid(&reason)) {
+            cancelAgentQuickMeasurement(QStringLiteral("expired"), reason);
+            return;
+        }
+        m_agentQuickMeasurement.pickedCoordinates.append(
+            QJsonObject{{QStringLiteral("coordinateFrame"), QStringLiteral("World3D")},
+                        {QStringLiteral("pointCloudWorld"), QJsonArray{x, y, z}}});
+        ++m_agentQuickMeasurement.completedSteps;
+        handlePoint3DPicked(x, y, z);
+        if (m_agentQuickMeasurement.completedSteps >= m_agentQuickMeasurement.steps.size())
+            completeAgentQuickMeasurement();
+    });
     // 关闭按钮：清空视口内容（单视口时不销毁）
     connect(
-        viewport, &ViewportWidget::viewportClosed, this,
-        [this](const QString& id) {
-            if (m_displayManager) {
-                for (auto it = m_dataSourceViewportIds.begin(); it != m_dataSourceViewportIds.end();) {
-                    if (it.value() == id) {
-                        it = m_dataSourceViewportIds.erase(it);
-                    } else {
-                        ++it;
-                    }
-                }
-                if (id == m_primaryDataSourceViewportId || m_displayManager->viewportCount() <= 1) {
-                    ViewportWidget* vp = m_displayManager->viewport(id);
-                    if (vp) {
-                        vp->clearDisplay();
-                        vp->setTitle(tr("主视图"));
-                    }
-                } else {
-                    m_displayManager->destroyViewport(id);
-                }
-            }
-        },
+        viewport, &ViewportWidget::viewportClosed, this, [this](const QString& id) { closeViewportById(id); },
         Qt::UniqueConnection);
     // 高: 视口及其子控件也需要事件过滤器，双击进入焦点模式
     viewport->installEventFilter(this);
@@ -2135,6 +2593,697 @@ void MainWindow::onViewportCreated(const QString& /*viewportId*/, ViewportWidget
         viewport->imageWidget()->installEventFilter(this);
     // 高: 延迟创建的 3D 控件也需要安装
     connect(viewport, &ViewportWidget::contentWidgetCreated, this, [this](QWidget* w) { w->installEventFilter(this); });
+}
+
+QJsonObject MainWindow::quickMeasurementConfirmationSnapshot(const QJsonObject& params) const {
+    const QString viewportId = params.value(QStringLiteral("viewportId")).toString();
+    const QString dimension = params.value(QStringLiteral("dimension")).toString();
+    const QString measurementType = params.value(QStringLiteral("measurementType")).toString();
+    ViewportWidget* viewport = m_displayManager ? m_displayManager->viewport(viewportId) : nullptr;
+    const bool is2D = dimension == QLatin1String("2d");
+    const bool is3D = dimension == QLatin1String("3d");
+    const bool typeValid =
+        measurementType == QLatin1String("distance_2_points") || measurementType == QLatin1String("point_to_line") ||
+        measurementType == QLatin1String("segment_gap") || measurementType == QLatin1String("angle_3_points") ||
+        measurementType == QLatin1String("circle_3_points") || measurementType == QLatin1String("rectangle_area");
+    const bool dimensionSupported = is2D || (is3D && measurementType != QLatin1String("rectangle_area"));
+    const bool modeMatches =
+        viewport &&
+        ((is2D && viewport->displayMode() == ViewportWidget::DisplayMode::Auto2D && viewport->imageWidget() &&
+          viewport->imageWidget()->hasImage()) ||
+         (is3D && viewport->displayMode() == ViewportWidget::DisplayMode::Auto3D && viewport->hasCachedPointCloud()));
+    const Project* project = ProjectManager::instance().currentProject();
+    return {{QStringLiteral("viewportId"), viewportId},
+            {QStringLiteral("viewportIdentity"),
+             viewport ? QString::number(reinterpret_cast<quintptr>(viewport)) : QString()},
+            {QStringLiteral("viewportContentGeneration"),
+             viewport ? QString::number(viewport->contentGeneration()) : QStringLiteral("missing")},
+            {QStringLiteral("projectRuntimeIdentity"),
+             project ? QString::number(project->runtimeIdentity()) : QStringLiteral("0")},
+            {QStringLiteral("dimension"), dimension},
+            {QStringLiteral("measurementType"), measurementType},
+            {QStringLiteral("targetAvailable"),
+             viewport && typeValid && dimensionSupported && modeMatches && !m_quickMeasureActive &&
+                 m_agentQuickMeasurement.status != QLatin1String("awaiting_user_input")}};
+}
+
+bool MainWindow::agentQuickMeasurementTargetStillValid(QString* reason) const {
+    auto invalidate = [reason](const QString& message) {
+        if (reason)
+            *reason = message;
+        return false;
+    };
+    const AgentQuickMeasurementRequest& request = m_agentQuickMeasurement;
+    if (request.status != QLatin1String("awaiting_user_input"))
+        return invalidate(QStringLiteral("Measurement request is no longer waiting"));
+    ViewportWidget* viewport = m_displayManager ? m_displayManager->viewport(request.viewportId) : nullptr;
+    if (!viewport)
+        return invalidate(QStringLiteral("Target viewport was closed"));
+    if (reinterpret_cast<quintptr>(viewport) != request.viewportIdentity)
+        return invalidate(QStringLiteral("Target viewport identity changed"));
+    if (viewport->contentGeneration() != request.viewportContentGeneration)
+        return invalidate(QStringLiteral("Target viewport content or display mode changed"));
+    const Project* project = ProjectManager::instance().currentProject();
+    const quint64 currentProjectIdentity = project ? project->runtimeIdentity() : 0;
+    if (currentProjectIdentity != request.projectRuntimeIdentity)
+        return invalidate(QStringLiteral("The active project changed"));
+    const bool compatible = request.dimension == QLatin1String("2d")
+                                ? viewport->displayMode() == ViewportWidget::DisplayMode::Auto2D &&
+                                      viewport->imageWidget() && viewport->imageWidget()->hasImage()
+                                : request.dimension == QLatin1String("3d") &&
+                                      viewport->displayMode() == ViewportWidget::DisplayMode::Auto3D &&
+                                      viewport->hasCachedPointCloud();
+    if (!compatible)
+        return invalidate(QStringLiteral("Target viewport no longer has compatible measurement content"));
+    return true;
+}
+
+QJsonObject MainWindow::currentAgentQuickMeasurementStatus() const {
+    const AgentQuickMeasurementRequest& request = m_agentQuickMeasurement;
+    if (request.requestId.isEmpty())
+        return {{QStringLiteral("error"), QStringLiteral("No quick measurement request exists")},
+                {QStringLiteral("errorCode"), QStringLiteral("QUICK_MEASURE_REQUEST_NOT_FOUND")},
+                {QStringLiteral("retryable"), false}};
+    if (request.status == QLatin1String("awaiting_user_input")) {
+        QString reason;
+        if (!agentQuickMeasurementTargetStillValid(&reason))
+            const_cast<MainWindow*>(this)->cancelAgentQuickMeasurement(QStringLiteral("expired"), reason);
+    }
+    const AgentQuickMeasurementRequest& current = m_agentQuickMeasurement;
+    const int remaining = qMax(0, current.steps.size() - current.completedSteps);
+    QJsonArray steps;
+    for (const QString& step : current.steps)
+        steps.append(step);
+    QJsonObject response{{QStringLiteral("requestId"), current.requestId},
+                         {QStringLiteral("status"), current.status},
+                         {QStringLiteral("viewportId"), current.viewportId},
+                         {QStringLiteral("dimension"), current.dimension},
+                         {QStringLiteral("measurementType"), current.measurementType},
+                         {QStringLiteral("coordinateSystem"), current.coordinateSystem},
+                         {QStringLiteral("pickedCoordinates"), current.pickedCoordinates},
+                         {QStringLiteral("steps"), steps},
+                         {QStringLiteral("completedSteps"), current.completedSteps},
+                         {QStringLiteral("remainingSteps"), remaining}};
+    if (!current.reason.isEmpty())
+        response.insert(QStringLiteral("reason"), current.reason);
+    if (current.status == QLatin1String("awaiting_user_input") && remaining > 0)
+        response.insert(QStringLiteral("nextStep"), current.steps.at(current.completedSteps));
+    return response;
+}
+
+void MainWindow::cancelAgentQuickMeasurement(const QString& status, const QString& reason) {
+    if (m_agentQuickMeasurement.status != QLatin1String("awaiting_user_input"))
+        return;
+    QObject::disconnect(m_agentQuickMeasureRoiConnection);
+    m_agentQuickMeasureRoiConnection = {};
+    if (m_displayManager) {
+        if (ViewportWidget* viewport = m_displayManager->viewport(m_agentQuickMeasurement.viewportId)) {
+            viewport->setPickMode(false);
+            viewport->unsetCursor();
+            if (HImageWidget* image = viewport->imageWidget()) {
+                image->cancelPendingPointerInput();
+                if (m_agentQuickMeasurement.measurementTypeIndex == 5) {
+                    image->setRoiMode(RoiType::None);
+                    image->clearRois();
+                }
+                // A request that has not accepted a pick has not created a measurement overlay.
+                // Preserve any result the user already had in this viewport.
+                if (m_agentQuickMeasurement.completedSteps > 0)
+                    image->clearMeasurementOverlay();
+            }
+            if (m_agentQuickMeasurement.completedSteps > 0) {
+                if (Viewport3DContent* content = viewport->viewport3D()) {
+                    content->clearMeasurementOverlay();
+                    content->clearMeasurementInfoPanel();
+                }
+            }
+        }
+    }
+    m_quickMeasureActive = false;
+    m_quickMeasurePoints.clear();
+    m_quickMeasurePoints3D.clear();
+    if (m_quickMeasureAction)
+        m_quickMeasureAction->setChecked(false);
+    m_agentQuickMeasurement.status = status;
+    m_agentQuickMeasurement.reason = reason;
+}
+
+void MainWindow::completeAgentQuickMeasurement() {
+    if (m_agentQuickMeasurement.status != QLatin1String("awaiting_user_input"))
+        return;
+    QObject::disconnect(m_agentQuickMeasureRoiConnection);
+    m_agentQuickMeasureRoiConnection = {};
+    if (ViewportWidget* viewport = m_displayManager->viewport(m_agentQuickMeasurement.viewportId)) {
+        viewport->setPickMode(false);
+        viewport->unsetCursor();
+        if (HImageWidget* image = viewport->imageWidget())
+            image->setRoiMode(RoiType::None);
+    }
+    m_quickMeasureActive = false;
+    if (m_quickMeasureAction)
+        m_quickMeasureAction->setChecked(false);
+    m_agentQuickMeasurement.status = QStringLiteral("completed");
+    m_agentQuickMeasurement.reason.clear();
+}
+
+QJsonObject MainWindow::activeAnnotationMaskConfirmationSnapshot(const QJsonObject& params) const {
+    if (!m_samAnnotatorDialog || !m_samAnnotatorDialog->isVisible())
+        return {{QStringLiteral("available"), false}, {QStringLiteral("params"), params}};
+    const QImage image = m_samAnnotatorDialog->imageSnapshot();
+    const QJsonObject sessionJson = m_samAnnotatorDialog->session().toJson();
+    const QByteArray sessionBytes = QJsonDocument(sessionJson).toJson(QJsonDocument::Compact);
+    const QString sessionDigest =
+        QString::fromLatin1(QCryptographicHash::hash(sessionBytes, QCryptographicHash::Sha256).toHex());
+    return {{QStringLiteral("available"), !image.isNull()},
+            {QStringLiteral("ownerIdentity"), QString::number(reinterpret_cast<quintptr>(this))},
+            {QStringLiteral("dialogIdentity"), QString::number(m_samAnnotatorDialog->instanceId())},
+            {QStringLiteral("imageWidth"), image.width()},
+            {QStringLiteral("imageHeight"), image.height()},
+            {QStringLiteral("imageDigest"), AnnotationSession::computeImageDigest(image)},
+            {QStringLiteral("sessionDigest"), sessionDigest},
+            {QStringLiteral("params"), params}};
+}
+
+QJsonObject MainWindow::activeAnnotationCategoryConfirmationSnapshot(const QJsonObject& params) const {
+    if (!m_samAnnotatorDialog || !m_samAnnotatorDialog->isVisible())
+        return {{QStringLiteral("available"), false}, {QStringLiteral("params"), params}};
+    const QByteArray sessionBytes =
+        QJsonDocument(m_samAnnotatorDialog->session().toJson()).toJson(QJsonDocument::Compact);
+    const QByteArray categoriesBytes =
+        QJsonDocument(QJsonArray::fromStringList(m_samAnnotatorDialog->categories())).toJson(QJsonDocument::Compact);
+    return {{QStringLiteral("available"), true},
+            {QStringLiteral("ownerIdentity"), QString::number(reinterpret_cast<quintptr>(this))},
+            {QStringLiteral("dialogIdentity"), QString::number(m_samAnnotatorDialog->instanceId())},
+            {QStringLiteral("sessionDigest"),
+             QString::fromLatin1(QCryptographicHash::hash(sessionBytes, QCryptographicHash::Sha256).toHex())},
+            {QStringLiteral("categoriesDigest"),
+             QString::fromLatin1(QCryptographicHash::hash(categoriesBytes, QCryptographicHash::Sha256).toHex())},
+            {QStringLiteral("params"), params}};
+}
+
+QJsonObject MainWindow::activeAnnotationPromptCancelConfirmationSnapshot(const QJsonObject& params) const {
+    if (!m_samAnnotatorDialog || !m_samAnnotatorDialog->isVisible())
+        return {{QStringLiteral("available"), false}, {QStringLiteral("params"), params}};
+    const QByteArray sessionBytes =
+        QJsonDocument(m_samAnnotatorDialog->session().toJson()).toJson(QJsonDocument::Compact);
+    QJsonObject snapshot{
+        {QStringLiteral("available"), true},
+        {QStringLiteral("ownerIdentity"), QString::number(reinterpret_cast<quintptr>(this))},
+        {QStringLiteral("dialogIdentity"), QString::number(m_samAnnotatorDialog->instanceId())},
+        {QStringLiteral("sessionDigest"),
+         QString::fromLatin1(QCryptographicHash::hash(sessionBytes, QCryptographicHash::Sha256).toHex())},
+        {QStringLiteral("params"), params}};
+    const QJsonObject promptState = m_samAnnotatorDialog->agentPromptStateSnapshot();
+    for (const QString& key : {QStringLiteral("promptGeneration"), QStringLiteral("requestId"),
+                               QStringLiteral("predictionInFlight"), QStringLiteral("stateDigest")})
+        snapshot.insert(key, promptState.value(key));
+    return snapshot;
+}
+
+QJsonObject MainWindow::activeAnnotationSessionSaveConfirmationSnapshot(const QJsonObject& params) const {
+    if (!m_samAnnotatorDialog || !m_samAnnotatorDialog->isVisible())
+        return {{QStringLiteral("available"), false}, {QStringLiteral("params"), params}};
+    const AnnotationSession currentSession = m_samAnnotatorDialog->session();
+    const QByteArray sessionBytes = QJsonDocument(currentSession.toJson()).toJson(QJsonDocument::Compact);
+    const QImage image = m_samAnnotatorDialog->imageSnapshot();
+    const QString outputPath = params.value(QStringLiteral("outputPath")).toString();
+    return {{QStringLiteral("available"), true},
+            {QStringLiteral("ownerIdentity"), QString::number(reinterpret_cast<quintptr>(this))},
+            {QStringLiteral("dialogIdentity"), QString::number(m_samAnnotatorDialog->instanceId())},
+            {QStringLiteral("sessionDigest"),
+             QString::fromLatin1(QCryptographicHash::hash(sessionBytes, QCryptographicHash::Sha256).toHex())},
+            {QStringLiteral("imageDigest"), AnnotationSession::computeImageDigest(image)},
+            {QStringLiteral("objectCount"), currentSession.annotations.size()},
+            {QStringLiteral("outputTarget"),
+             AnnotationSessionExport::newOutputTargetSnapshot(outputPath, QStringLiteral(".deeplux-anno.json"))},
+            {QStringLiteral("params"), params}};
+}
+
+QJsonObject MainWindow::activeAnnotationSessionOpenConfirmationSnapshot(const QJsonObject& params) const {
+    if (!m_samAnnotatorDialog || !m_samAnnotatorDialog->isVisible())
+        return {{QStringLiteral("error"), QStringLiteral("The SAM annotation dialog is not open")},
+                {QStringLiteral("errorCode"), QStringLiteral("SAM_DIALOG_NOT_OPEN")},
+                {QStringLiteral("retryable"), false}};
+    const QString sessionPath = params.value(QStringLiteral("sessionPath")).toString();
+    AnnotationSessionOpenCandidate candidate;
+    QString errorCode;
+    QString errorMessage;
+    if (!AnnotationSessionOpen::capture(sessionPath, &candidate, &errorCode, &errorMessage))
+        return {{QStringLiteral("error"), errorMessage},
+                {QStringLiteral("errorCode"), errorCode},
+                {QStringLiteral("retryable"), false}};
+
+    const QByteArray currentSession =
+        QJsonDocument(m_samAnnotatorDialog->session().toJson()).toJson(QJsonDocument::Compact);
+    const QImage currentImage = m_samAnnotatorDialog->imageSnapshot();
+    QJsonObject snapshot = candidate.snapshot;
+    snapshot.insert(QStringLiteral("available"), true);
+    snapshot.insert(QStringLiteral("ownerIdentity"), QString::number(reinterpret_cast<quintptr>(this)));
+    snapshot.insert(QStringLiteral("dialogIdentity"), QString::number(m_samAnnotatorDialog->instanceId()));
+    snapshot.insert(QStringLiteral("activeSessionDigest"),
+                    QString::fromLatin1(QCryptographicHash::hash(currentSession, QCryptographicHash::Sha256).toHex()));
+    snapshot.insert(QStringLiteral("activeImageDigest"), AnnotationSession::computeImageDigest(currentImage));
+    snapshot.insert(QStringLiteral("params"), params);
+    return snapshot;
+}
+
+QJsonObject MainWindow::executeAgentActiveAnnotationAction(const QString& toolName, const QJsonObject& params) {
+    auto error = [](const QString& message, const QString& code) {
+        return QJsonObject{{QStringLiteral("error"), message},
+                           {QStringLiteral("errorCode"), code},
+                           {QStringLiteral("retryable"), false}};
+    };
+    if (QThread::currentThread() != thread())
+        return error(QStringLiteral("SAM annotation GUI action must run on the owner thread"),
+                     QStringLiteral("THREAD_AFFINITY"));
+    if (toolName == QLatin1String("__sam_mask_edit_confirmation_snapshot"))
+        return activeAnnotationMaskConfirmationSnapshot(params);
+    if (toolName == QLatin1String("__sam_category_edit_confirmation_snapshot"))
+        return activeAnnotationCategoryConfirmationSnapshot(params);
+    if (toolName == QLatin1String("__sam_prompt_cancel_confirmation_snapshot"))
+        return activeAnnotationPromptCancelConfirmationSnapshot(params);
+    if (toolName == QLatin1String("__sam_session_save_confirmation_snapshot"))
+        return activeAnnotationSessionSaveConfirmationSnapshot(params);
+    if (toolName == QLatin1String("__sam_session_open_confirmation_snapshot"))
+        return activeAnnotationSessionOpenConfirmationSnapshot(params);
+    if (!m_samAnnotatorDialog || !m_samAnnotatorDialog->isVisible())
+        return error(QStringLiteral("The SAM annotation dialog is not open"), QStringLiteral("SAM_DIALOG_NOT_OPEN"));
+    if (toolName == QLatin1String("__sam_session_save_preflight") ||
+        toolName == QLatin1String("save_active_annotation_session")) {
+        if (params.keys() != QStringList{QStringLiteral("outputPath")})
+            return error(QStringLiteral("Expected only an absolute outputPath"), QStringLiteral("INVALID_PARAM"));
+        const QJsonValue outputPathValue = params.value(QStringLiteral("outputPath"));
+        const QString outputPath = outputPathValue.toString();
+        if (!outputPathValue.isString() || outputPath.trimmed().isEmpty() || outputPath.toUtf8().size() > 4096 ||
+            !QFileInfo(outputPath).isAbsolute())
+            return error(QStringLiteral("outputPath must be an absolute path of at most 4096 UTF-8 bytes"),
+                         QStringLiteral("INVALID_PARAM"));
+        const AnnotationSession currentSession = m_samAnnotatorDialog->session();
+        if (m_samAnnotatorDialog->imageSnapshot().isNull())
+            return error(QStringLiteral("The active SAM dialog has no valid image"), QStringLiteral("NO_IMAGE"));
+        if (currentSession.annotations.isEmpty())
+            return error(QStringLiteral("The active SAM session has no confirmed annotations"),
+                         QStringLiteral("NO_ANNOTATIONS"));
+        const QJsonObject snapshot = activeAnnotationSessionSaveConfirmationSnapshot(params);
+        QJsonObject target = snapshot.value(QStringLiteral("outputTarget")).toObject();
+        if (!target.value(QStringLiteral("suffixValid")).toBool())
+            return error(QStringLiteral("outputPath must end in .deeplux-anno.json"), QStringLiteral("INVALID_PARAM"));
+        if (target.value(QStringLiteral("pathBytes")).toInt() > 4096 ||
+            !target.value(QStringLiteral("parentIdentityAvailable")).toBool() ||
+            !target.value(QStringLiteral("parentWritable")).toBool())
+            return error(QStringLiteral("The output parent must exist and be writable"),
+                         QStringLiteral("PRECONDITION_FAILED"));
+        if (target.value(QStringLiteral("targetState")).toString() != QLatin1String("absent") ||
+            target.value(QStringLiteral("outputIsSymlink")).toBool())
+            return error(QStringLiteral("The output target already exists"), QStringLiteral("OUTPUT_EXISTS"));
+        if (toolName == QLatin1String("__sam_session_save_preflight"))
+            return {};
+
+        const QByteArray bytes = QJsonDocument(currentSession.toJson()).toJson(QJsonDocument::Indented);
+        if (bytes.isEmpty() || bytes.size() > 64LL * 1024 * 1024)
+            return error(QStringLiteral("The active annotation session exceeds the 64 MiB output limit"),
+                         QStringLiteral("OUTPUT_LIMIT_EXCEEDED"));
+        const QJsonObject approvedSnapshot =
+            AgentController::instance().confirmedActiveAnnotationSessionSaveSnapshot(outputPath);
+        if (approvedSnapshot.isEmpty() || approvedSnapshot != snapshot)
+            return error(QStringLiteral("The approved active session or output target changed"),
+                         QStringLiteral("CONFIRMATION_EXPIRED"));
+        target = approvedSnapshot.value(QStringLiteral("outputTarget")).toObject();
+        QString errorCode;
+        if (!AnnotationSessionExport::publishSessionBytesNoReplace(outputPath, QStringLiteral(".deeplux-anno.json"),
+                                                                   target, bytes, &errorCode)) {
+            const QString code = errorCode.isEmpty() ? QStringLiteral("FILE_WRITE_FAILED") : errorCode;
+            return error(QStringLiteral("The active annotation session could not be saved"), code);
+        }
+        const QString savedPath = target.value(QStringLiteral("outputCanonicalParent")).toString() + QLatin1Char('/') +
+                                  target.value(QStringLiteral("outputFileName")).toString();
+        return {{QStringLiteral("status"), QStringLiteral("saved")},
+                {QStringLiteral("outputPath"), QDir::cleanPath(savedPath)},
+                {QStringLiteral("bytes"), bytes.size()},
+                {QStringLiteral("sha256"),
+                 QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())},
+                {QStringLiteral("objectCount"), currentSession.annotations.size()}};
+    }
+    if (toolName == QLatin1String("__sam_session_open_preflight") ||
+        toolName == QLatin1String("open_active_annotation_session")) {
+        if (params.keys() != QStringList{QStringLiteral("sessionPath")})
+            return error(QStringLiteral("Expected only an absolute sessionPath"), QStringLiteral("INVALID_PARAM"));
+        const QJsonValue pathValue = params.value(QStringLiteral("sessionPath"));
+        const QString sessionPath = pathValue.toString();
+        if (!pathValue.isString() || sessionPath.trimmed().isEmpty() || sessionPath.toUtf8().size() > 4096 ||
+            !QFileInfo(sessionPath).isAbsolute() ||
+            !sessionPath.endsWith(QStringLiteral(".deeplux-anno.json"), Qt::CaseInsensitive))
+            return error(
+                QStringLiteral("sessionPath must be an absolute .deeplux-anno.json path of at most 4096 bytes"),
+                QStringLiteral("INVALID_PARAM"));
+
+        AnnotationSessionOpenCandidate candidate;
+        QString errorCode;
+        QString errorMessage;
+        if (!AnnotationSessionOpen::capture(sessionPath, &candidate, &errorCode, &errorMessage))
+            return error(errorMessage, errorCode);
+        if (toolName == QLatin1String("__sam_session_open_preflight"))
+            return {};
+
+        const QByteArray currentSession =
+            QJsonDocument(m_samAnnotatorDialog->session().toJson()).toJson(QJsonDocument::Compact);
+        const QImage visibleImage = m_samAnnotatorDialog->imageSnapshot();
+        QJsonObject currentSnapshot = candidate.snapshot;
+        currentSnapshot.insert(QStringLiteral("available"), true);
+        currentSnapshot.insert(QStringLiteral("ownerIdentity"), QString::number(reinterpret_cast<quintptr>(this)));
+        currentSnapshot.insert(QStringLiteral("dialogIdentity"), QString::number(m_samAnnotatorDialog->instanceId()));
+        currentSnapshot.insert(
+            QStringLiteral("activeSessionDigest"),
+            QString::fromLatin1(QCryptographicHash::hash(currentSession, QCryptographicHash::Sha256).toHex()));
+        currentSnapshot.insert(QStringLiteral("activeImageDigest"),
+                               AnnotationSession::computeImageDigest(visibleImage));
+        currentSnapshot.insert(QStringLiteral("params"), params);
+        const QJsonObject approvedSnapshot =
+            AgentController::instance().confirmedActiveAnnotationSessionOpenSnapshot(sessionPath);
+        if (approvedSnapshot.isEmpty() || approvedSnapshot != currentSnapshot)
+            return error(QStringLiteral("The approved session, image, or SAM dialog changed"),
+                         QStringLiteral("CONFIRMATION_EXPIRED"));
+
+        const QImage imageCandidate = candidate.imageBound ? candidate.boundImage : visibleImage;
+        if (!m_samAnnotatorDialog->openAgentAnnotationSessionSnapshot(
+                candidate.session, imageCandidate, candidate.imageBound, candidate.legacyImageBindingUnverified,
+                candidate.sessionPath, &errorMessage))
+            return error(errorMessage.isEmpty() ? QStringLiteral("The SAM session could not be opened") : errorMessage,
+                         QStringLiteral("SESSION_OPEN_FAILED"));
+        return {{QStringLiteral("status"), QStringLiteral("opened")},
+                {QStringLiteral("sessionPath"), candidate.sessionPath},
+                {QStringLiteral("objectCount"), candidate.session.annotations.size()},
+                {QStringLiteral("imageWidth"), candidate.session.imageWidth},
+                {QStringLiteral("imageHeight"), candidate.session.imageHeight},
+                {QStringLiteral("imageBound"), candidate.imageBound},
+                {QStringLiteral("legacyImageBindingUnverified"), candidate.legacyImageBindingUnverified}};
+    }
+    const bool requiresImage = toolName == QLatin1String("list_active_annotation_objects") ||
+                               toolName == QLatin1String("__sam_mask_edit_preflight") ||
+                               toolName == QLatin1String("edit_active_annotation_masks");
+    if (requiresImage && m_samAnnotatorDialog->imageSnapshot().isNull())
+        return error(QStringLiteral("The active SAM dialog has no image"), QStringLiteral("NO_IMAGE"));
+
+    if (toolName == QLatin1String("list_active_annotation_objects")) {
+        for (const QString& key : params.keys()) {
+            if (key != QLatin1String("offset") && key != QLatin1String("limit"))
+                return error(QStringLiteral("Unknown parameter: %1").arg(key), QStringLiteral("INVALID_PARAM"));
+        }
+        const QJsonValue offsetValue = params.value(QStringLiteral("offset"));
+        const QJsonValue limitValue = params.value(QStringLiteral("limit"));
+        const int offset = offsetValue.isUndefined() ? 0 : offsetValue.toInt(-1);
+        const int limit = limitValue.isUndefined() ? 20 : limitValue.toInt(-1);
+        if ((!offsetValue.isUndefined() &&
+             (!offsetValue.isDouble() || offsetValue.toDouble() != offset || offset < 0)) ||
+            (!limitValue.isUndefined() &&
+             (!limitValue.isDouble() || limitValue.toDouble() != limit || limit < 1 || limit > 50)))
+            return error(QStringLiteral("offset or limit is outside the allowed range"),
+                         QStringLiteral("INVALID_PARAM"));
+        return m_samAnnotatorDialog->listAgentAnnotationObjects(offset, limit);
+    }
+    if (toolName == QLatin1String("__sam_mask_edit_preflight")) {
+        const QJsonObject preflight = m_samAnnotatorDialog->applyAgentMaskEdit(params, true);
+        const QString status = preflight.value(QStringLiteral("status")).toString();
+        if (status == QLatin1String("ready") || status == QLatin1String("unchanged"))
+            return {};
+        return preflight;
+    }
+    if (toolName == QLatin1String("edit_active_annotation_masks"))
+        return m_samAnnotatorDialog->applyAgentMaskEdit(params);
+    if (toolName == QLatin1String("list_active_annotation_categories")) {
+        for (const QString& key : params.keys()) {
+            if (key != QLatin1String("offset") && key != QLatin1String("limit"))
+                return error(QStringLiteral("Unknown parameter: %1").arg(key), QStringLiteral("INVALID_PARAM"));
+        }
+        const QJsonValue offsetValue = params.value(QStringLiteral("offset"));
+        const QJsonValue limitValue = params.value(QStringLiteral("limit"));
+        const int offset = offsetValue.isUndefined() ? 0 : offsetValue.toInt(-1);
+        const int limit = limitValue.isUndefined() ? 20 : limitValue.toInt(-1);
+        if ((!offsetValue.isUndefined() &&
+             (!offsetValue.isDouble() || offsetValue.toDouble() != offset || offset < 0)) ||
+            (!limitValue.isUndefined() &&
+             (!limitValue.isDouble() || limitValue.toDouble() != limit || limit < 1 || limit > 50)))
+            return error(QStringLiteral("offset or limit is outside the allowed range"),
+                         QStringLiteral("INVALID_PARAM"));
+        return m_samAnnotatorDialog->listAgentAnnotationCategories(offset, limit);
+    }
+    if (toolName == QLatin1String("get_active_annotation_prompt_status") ||
+        toolName == QLatin1String("cancel_active_annotation_prompt") ||
+        toolName == QLatin1String("__sam_prompt_cancel_preflight")) {
+        if (!params.isEmpty())
+            return error(QStringLiteral("This SAM prompt action does not accept parameters"),
+                         QStringLiteral("INVALID_PARAM"));
+        if (toolName == QLatin1String("get_active_annotation_prompt_status"))
+            return m_samAnnotatorDialog->agentPromptStatus();
+        if (toolName == QLatin1String("__sam_prompt_cancel_preflight"))
+            return {};
+        return m_samAnnotatorDialog->cancelAgentPrompt();
+    }
+    if (toolName == QLatin1String("__sam_category_edit_preflight")) {
+        const QJsonObject preflight = m_samAnnotatorDialog->applyAgentCategoryEdit(params, true);
+        const QString status = preflight.value(QStringLiteral("status")).toString();
+        if (status == QLatin1String("ready") || status == QLatin1String("unchanged"))
+            return {};
+        return preflight;
+    }
+    if (toolName == QLatin1String("edit_active_annotation_categories"))
+        return m_samAnnotatorDialog->applyAgentCategoryEdit(params);
+    return error(QStringLiteral("Unsupported active annotation action"), QStringLiteral("UNKNOWN_TOOL"));
+}
+
+QJsonObject MainWindow::executeAgentQuickMeasurementAction(const QString& toolName, const QJsonObject& params) {
+    auto error = [](const QString& message, const QString& code) {
+        return QJsonObject{{QStringLiteral("error"), message},
+                           {QStringLiteral("errorCode"), code},
+                           {QStringLiteral("retryable"), false}};
+    };
+    if (QThread::currentThread() != thread())
+        return error(QStringLiteral("Quick measurement GUI action must run on the owner thread"),
+                     QStringLiteral("THREAD_AFFINITY"));
+    if (toolName == QLatin1String("__quick_measurement_confirmation_snapshot"))
+        return quickMeasurementConfirmationSnapshot(params);
+    if (toolName == QLatin1String("__quick_measurement_owner_destroyed")) {
+        cancelAgentQuickMeasurement(QStringLiteral("expired"), QStringLiteral("OWNER_DESTROYED"));
+        return currentAgentQuickMeasurementStatus();
+    }
+    if (toolName == QLatin1String("list_viewports")) {
+        if (!m_displayManager)
+            return error(QStringLiteral("Viewport manager is unavailable"), QStringLiteral("GUI_UNAVAILABLE"));
+        QJsonArray viewports;
+        for (ViewportWidget* viewport : m_displayManager->allViewports()) {
+            if (!viewport)
+                continue;
+            const bool hasImage =
+                viewport->hasCachedImage() || (viewport->imageWidget() && viewport->imageWidget()->hasImage());
+            const bool hasPointCloud = viewport->hasCachedPointCloud();
+            const QString mode = viewport->displayMode() == ViewportWidget::DisplayMode::Auto2D ? QStringLiteral("2d")
+                                                                                                : QStringLiteral("3d");
+            viewports.append(QJsonObject{{QStringLiteral("viewportId"), viewport->viewportId()},
+                                         {QStringLiteral("title"), viewport->title()},
+                                         {QStringLiteral("visible"), viewport->isVisible()},
+                                         {QStringLiteral("mode"), mode},
+                                         {QStringLiteral("hasImage"), hasImage},
+                                         {QStringLiteral("hasPointCloud"), hasPointCloud}});
+        }
+        return {{QStringLiteral("status"), QStringLiteral("ok")},
+                {QStringLiteral("viewports"), viewports},
+                {QStringLiteral("total"), viewports.size()}};
+    }
+    if (toolName == QLatin1String("get_quick_measurement_status")) {
+        const QString requestId = params.value(QStringLiteral("requestId")).toString();
+        if (requestId.isEmpty() || requestId != m_agentQuickMeasurement.requestId)
+            return error(QStringLiteral("Unknown or replaced quick measurement request"),
+                         QStringLiteral("QUICK_MEASURE_REQUEST_NOT_FOUND"));
+        return currentAgentQuickMeasurementStatus();
+    }
+    if (toolName == QLatin1String("cancel_quick_measurement")) {
+        const QString requestId = params.value(QStringLiteral("requestId")).toString();
+        if (requestId.isEmpty() || requestId != m_agentQuickMeasurement.requestId)
+            return error(QStringLiteral("Unknown or replaced quick measurement request"),
+                         QStringLiteral("QUICK_MEASURE_REQUEST_NOT_FOUND"));
+        const QJsonObject current = currentAgentQuickMeasurementStatus();
+        if (current.value(QStringLiteral("status")) != QLatin1String("awaiting_user_input"))
+            return current;
+        cancelAgentQuickMeasurement(QStringLiteral("cancelled"), QStringLiteral("CANCELLED_BY_AGENT"));
+        return currentAgentQuickMeasurementStatus();
+    }
+    if (toolName != QLatin1String("begin_quick_measurement"))
+        return error(QStringLiteral("Unsupported quick measurement action"), QStringLiteral("UNKNOWN_TOOL"));
+    if (m_quickMeasureActive || m_agentQuickMeasurement.status == QLatin1String("awaiting_user_input"))
+        return error(QStringLiteral("Another quick measurement is already active"),
+                     QStringLiteral("QUICK_MEASURE_BUSY"));
+
+    const QString viewportId = params.value(QStringLiteral("viewportId")).toString();
+    const QString dimension = params.value(QStringLiteral("dimension")).toString();
+    const QString measurementType = params.value(QStringLiteral("measurementType")).toString();
+    const QMap<QString, int> typeIndices{
+        {QStringLiteral("distance_2_points"), 0}, {QStringLiteral("point_to_line"), 1},
+        {QStringLiteral("segment_gap"), 2},       {QStringLiteral("angle_3_points"), 3},
+        {QStringLiteral("circle_3_points"), 4},   {QStringLiteral("rectangle_area"), 5}};
+    if (viewportId.trimmed().isEmpty() || (dimension != QLatin1String("2d") && dimension != QLatin1String("3d")) ||
+        !typeIndices.contains(measurementType))
+        return error(QStringLiteral("viewportId, dimension, or measurementType is invalid"),
+                     QStringLiteral("INVALID_PARAM"));
+    if (dimension == QLatin1String("3d") && measurementType == QLatin1String("rectangle_area"))
+        return error(QStringLiteral("Rectangle area quick measurement is only supported in 2D"),
+                     QStringLiteral("UNSUPPORTED_MEASUREMENT_DIMENSION"));
+    ViewportWidget* viewport = m_displayManager ? m_displayManager->viewport(viewportId) : nullptr;
+    if (!viewport)
+        return error(QStringLiteral("The exact viewport was not found"), QStringLiteral("VIEWPORT_NOT_FOUND"));
+    const QJsonObject snapshot = quickMeasurementConfirmationSnapshot(params);
+    if (!snapshot.value(QStringLiteral("targetAvailable")).toBool())
+        return error(QStringLiteral("The target viewport has no compatible visible measurement content"),
+                     QStringLiteral("VIEWPORT_CONTENT_UNAVAILABLE"));
+
+    QStringList steps;
+    if (measurementType == QLatin1String("distance_2_points"))
+        steps = QStringList{QStringLiteral("点击第一个端点"), QStringLiteral("点击第二个端点")};
+    else if (measurementType == QLatin1String("point_to_line"))
+        steps =
+            QStringList{QStringLiteral("点击待测点"), QStringLiteral("点击直线起点"), QStringLiteral("点击直线终点")};
+    else if (measurementType == QLatin1String("segment_gap"))
+        steps = QStringList{QStringLiteral("点击第一条线段起点"), QStringLiteral("点击第一条线段终点"),
+                            QStringLiteral("点击第二条线段起点"), QStringLiteral("点击第二条线段终点")};
+    else if (measurementType == QLatin1String("angle_3_points"))
+        steps = QStringList{QStringLiteral("点击角顶点"), QStringLiteral("点击第一条边上的点"),
+                            QStringLiteral("点击第二条边上的点")};
+    else if (measurementType == QLatin1String("circle_3_points"))
+        steps = QStringList{QStringLiteral("点击圆周第一点"), QStringLiteral("点击圆周第二点"),
+                            QStringLiteral("点击圆周第三点")};
+    else
+        steps = QStringList{QStringLiteral("在图像中拖拽矩形 ROI")};
+
+    AgentQuickMeasurementRequest request;
+    request.requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    request.status = QStringLiteral("awaiting_user_input");
+    request.viewportId = viewportId;
+    request.dimension = dimension;
+    request.measurementType = measurementType;
+    request.coordinateSystem = dimension == QLatin1String("2d") ? QStringLiteral("image_pixels")
+                                                                : QStringLiteral("point_cloud_world_coordinates");
+    request.steps = steps;
+    request.measurementTypeIndex = typeIndices.value(measurementType);
+    request.viewportIdentity = reinterpret_cast<quintptr>(viewport);
+    const Project* project = ProjectManager::instance().currentProject();
+    request.projectRuntimeIdentity = project ? project->runtimeIdentity() : 0;
+    request.viewportContentGeneration = viewport->contentGeneration();
+    m_agentQuickMeasurement = request;
+    QObject::disconnect(m_agentQuickMeasureRoiConnection);
+    m_agentQuickMeasureRoiConnection = {};
+    m_quickMeasureActive = true;
+    m_quickMeasureType = request.measurementTypeIndex;
+    m_quickMeasurePoints.clear();
+    m_quickMeasurePoints3D.clear();
+    viewport->setPickMode(dimension == QLatin1String("3d"));
+    viewport->setCursor(Qt::CrossCursor);
+    if (dimension == QLatin1String("2d") && request.measurementTypeIndex == 5 && viewport->imageWidget()) {
+        viewport->imageWidget()->clearRois();
+        viewport->imageWidget()->setRoiMode(RoiType::Rectangle1);
+        m_agentQuickMeasureRoiConnection =
+            connect(viewport->imageWidget(), &HImageWidget::roiCreated, this, [this, viewportId](const RoiData& roi) {
+                if (m_agentQuickMeasurement.status != QLatin1String("awaiting_user_input") ||
+                    m_agentQuickMeasurement.viewportId != viewportId ||
+                    m_agentQuickMeasurement.dimension != QLatin1String("2d") ||
+                    m_agentQuickMeasurement.measurementTypeIndex != 5)
+                    return;
+                QString reason;
+                if (!agentQuickMeasurementTargetStillValid(&reason)) {
+                    cancelAgentQuickMeasurement(QStringLiteral("expired"), reason);
+                    return;
+                }
+                const QPointF a(roi.x1, roi.y1);
+                const QPointF b(roi.x2, roi.y2);
+                const QPointF tl(qMin(a.x(), b.x()), qMin(a.y(), b.y()));
+                const QPointF br(qMax(a.x(), b.x()), qMax(a.y(), b.y()));
+                const QPointF topRight(br.x(), tl.y());
+                const QPointF bl(tl.x(), br.y());
+                QJsonArray pickedCorners;
+                if (ViewportWidget* target = m_displayManager->viewport(viewportId)) {
+                    const ImageCoordinateProvenance provenance = target->imageCoordinateProvenance();
+                    for (const QPointF& corner : {tl, topRight, br, bl}) {
+                        const auto sourcePoint = provenance.mapLocalToSource(corner);
+                        QJsonObject picked{{QStringLiteral("imageLocal"), QJsonArray{corner.x(), corner.y()}},
+                                           {QStringLiteral("coordinateFrame"), QStringLiteral("ImageLocalPixel")},
+                                           {QStringLiteral("sourceCoordinateAvailable"), sourcePoint.has_value()}};
+                        if (sourcePoint) {
+                            picked.insert(QStringLiteral("sourceImage"), provenance.sourceImageId);
+                            picked.insert(QStringLiteral("sourceImageSize"),
+                                          QJsonArray{provenance.sourceSize.width(), provenance.sourceSize.height()});
+                            picked.insert(QStringLiteral("sourceImagePixel"),
+                                          QJsonArray{sourcePoint->x(), sourcePoint->y()});
+                        }
+                        pickedCorners.append(picked);
+                    }
+                }
+                m_agentQuickMeasurement.pickedCoordinates = pickedCorners;
+                const double width = std::abs(br.x() - tl.x());
+                const double height = std::abs(br.y() - tl.y());
+                const QString label =
+                    tr("W=%1, H=%2, A=%3").arg(width, 0, 'f', 2).arg(height, 0, 'f', 2).arg(width * height, 0, 'f', 2);
+                if (ViewportWidget* target = m_displayManager->viewport(viewportId)) {
+                    if (HImageWidget* image = target->imageWidget()) {
+                        image->clearRois();
+                        image->setMeasurementOverlay({{tl, QStringLiteral("TL")}, {br, QStringLiteral("BR")}},
+                                                     {{tl, topRight, QString()},
+                                                      {topRight, br, QString()},
+                                                      {br, bl, QString()},
+                                                      {bl, tl, label}});
+                    }
+                }
+                Logger::instance().info(tr("快速测量: 矩形 宽=%1, 高=%2, 面积=%3")
+                                            .arg(width, 0, 'f', 3)
+                                            .arg(height, 0, 'f', 3)
+                                            .arg(width * height, 0, 'f', 3),
+                                        "Measurement");
+                m_agentQuickMeasurement.completedSteps = 1;
+                completeAgentQuickMeasurement();
+            });
+    }
+    if (m_quickMeasureAction)
+        m_quickMeasureAction->setChecked(true);
+    return currentAgentQuickMeasurementStatus();
+}
+
+QJsonObject MainWindow::closeViewportById(const QString& viewportId) {
+    auto error = [](const QString& message, const QString& code) {
+        return QJsonObject{{QStringLiteral("error"), message},
+                           {QStringLiteral("errorCode"), code},
+                           {QStringLiteral("retryable"), false}};
+    };
+    if (!m_displayManager)
+        return error(QStringLiteral("Viewport manager is unavailable"), QStringLiteral("GUI_UNAVAILABLE"));
+
+    ViewportWidget* target = m_displayManager->viewport(viewportId);
+    if (!target)
+        return error(QStringLiteral("Viewport was not found"), QStringLiteral("VIEWPORT_NOT_FOUND"));
+
+    // Resolve the lazy primary ID before deciding whether this viewport may be destroyed.
+    ViewportWidget* primary = primaryDataSourceViewport();
+    if (!primary)
+        return error(QStringLiteral("Primary viewport is unavailable"), QStringLiteral("GUI_UNAVAILABLE"));
+
+    for (auto it = m_dataSourceViewportIds.begin(); it != m_dataSourceViewportIds.end();) {
+        if (it.value() == viewportId)
+            it = m_dataSourceViewportIds.erase(it);
+        else
+            ++it;
+    }
+
+    const bool keepViewport = target == primary || m_displayManager->viewportCount() <= 1;
+    if (keepViewport) {
+        target->clearDisplay();
+        target->setTitle(tr("主视图"));
+        return {{QStringLiteral("status"), QStringLiteral("closed")},
+                {QStringLiteral("viewportId"), viewportId},
+                {QStringLiteral("disposition"), QStringLiteral("cleared")},
+                {QStringLiteral("destroyed"), false}};
+    }
+
+    m_displayManager->destroyViewport(viewportId);
+    return {{QStringLiteral("status"), QStringLiteral("closed")},
+            {QStringLiteral("viewportId"), viewportId},
+            {QStringLiteral("disposition"), QStringLiteral("destroyed")},
+            {QStringLiteral("destroyed"), true}};
 }
 
 IModule* MainWindow::measurementInputForPicking(QString& instanceId) {
@@ -2191,11 +3340,25 @@ bool MainWindow::requestMeasurementInputForRun() {
 
         const bool explicitlyAwaitingPick = params["awaitUserPick"].toBool(false);
         const bool legacyActiveInput = !params.contains("awaitUserPick") && instanceId == m_activeMeasurementInputId;
-        if ((!explicitlyAwaitingPick && !legacyActiveInput) ||
-            m_measurementPickCount.value(instanceId, 0) >= requiredPickCount) {
+        if (!explicitlyAwaitingPick &&
+            (!legacyActiveInput || m_measurementPickCount.value(instanceId, 0) >= requiredPickCount)) {
             continue;
         }
 
+        if (explicitlyAwaitingPick) {
+            m_measurementPickCount[instanceId] = 0;
+            m_measurementPickCursor[instanceId] = 0;
+        }
+        m_pendingMeasurementViewportId.clear();
+        m_pendingMeasurementViewports.clear();
+        if (m_displayManager) {
+            for (ViewportWidget* viewport : m_displayManager->allViewports()) {
+                if (viewport) {
+                    m_pendingMeasurementViewports.insert(
+                        viewport->viewportId(), MeasurementViewportSnapshot{viewport, viewport->contentGeneration()});
+                }
+            }
+        }
         m_activeMeasurementInputId = instanceId;
         m_pendingMeasurementInputId = instanceId;
         selectModule(instanceId, true, true);
@@ -2227,6 +3390,57 @@ bool MainWindow::requestMeasurementInputForRun() {
     }
 
     return false;
+}
+
+bool MainWindow::bindMeasurementPickViewport(const QString& viewportId) {
+    if (m_pendingMeasurementInputId.isEmpty())
+        return true;
+
+    const auto boundViewport = m_pendingMeasurementViewports.constFind(m_pendingMeasurementViewportId);
+    if (!m_pendingMeasurementViewportId.isEmpty() &&
+        (boundViewport == m_pendingMeasurementViewports.cend() || !boundViewport->viewport || !m_displayManager ||
+         m_displayManager->viewport(m_pendingMeasurementViewportId) != boundViewport->viewport.data() ||
+         boundViewport->viewport->contentGeneration() != boundViewport->contentGeneration)) {
+        Logger::instance().warning(tr("等待测量输入期间视口内容已改变，已取消本轮运行"), "Measurement");
+        onStop();
+        return false;
+    }
+
+    const auto sourceViewport = m_pendingMeasurementViewports.constFind(viewportId);
+    if (sourceViewport == m_pendingMeasurementViewports.cend()) {
+        Logger::instance().warning(tr("该视口不属于当前测量输入等待上下文，已忽略采点"), "Measurement");
+        return false;
+    }
+    if (!sourceViewport->viewport || !m_displayManager ||
+        m_displayManager->viewport(viewportId) != sourceViewport->viewport.data() ||
+        sourceViewport->viewport->contentGeneration() != sourceViewport->contentGeneration) {
+        Logger::instance().warning(tr("等待测量输入期间视口内容已改变，已取消本轮运行"), "Measurement");
+        onStop();
+        return false;
+    }
+    if (!m_pendingMeasurementViewportId.isEmpty() && m_pendingMeasurementViewportId != viewportId) {
+        Logger::instance().warning(tr("本轮测量输入已绑定到其他视口，已忽略该采点"), "Measurement");
+        return false;
+    }
+
+    m_pendingMeasurementViewportId = viewportId;
+    return true;
+}
+
+void MainWindow::clearPendingMeasurementPick() {
+    const QString inputId =
+        m_pendingMeasurementInputId.isEmpty() ? m_activeMeasurementInputId : m_pendingMeasurementInputId;
+    if (!inputId.isEmpty()) {
+        if (QTreeWidgetItem* item = m_processTreeController->instanceItem(inputId)) {
+            clearExecutionHighlight(item);
+            item->setText(1, QString());
+        }
+    }
+    m_pendingMeasurementInputId.clear();
+    m_pendingMeasurementViewportId.clear();
+    m_pendingMeasurementViewports.clear();
+    if (m_activeMeasurementInputId == inputId)
+        m_activeMeasurementInputId.clear();
 }
 
 void MainWindow::finishMeasurementPick(const QString& instanceId, const QJsonObject& params, bool is3D) {
@@ -2264,15 +3478,64 @@ void MainWindow::finishMeasurementPick(const QString& instanceId, const QJsonObj
         setProcessItemStatus(item, QStringLiteral("success"), tr("拾取完成"));
     }
     Logger::instance().info(tr("测量输入完成，继续运行流程"), "Measurement");
-    QTimer::singleShot(0, this, [this]() {
-        if (!m_isRunning) {
-            return;
-        }
-        if (requestMeasurementInputForRun()) {
-            return;
-        }
-        executeFlowOnce();
-    });
+    Project* completedProject = ProjectManager::instance().currentProject();
+    const quint64 completedProjectIdentity = completedProject ? completedProject->runtimeIdentity() : 0;
+    const ModuleInstance* completedTarget = completedProject ? completedProject->findModule(instanceId) : nullptr;
+    const quint64 completedTargetGeneration =
+        completedProject ? completedProject->parameterInstanceGeneration(instanceId) : 0;
+    const QJsonObject completedTargetSnapshot = completedTarget ? completedTarget->toJson() : QJsonObject{};
+    const quint64 continuationGeneration = m_measurementPickContinuationGeneration;
+    const QString continuationViewportId = m_pendingMeasurementViewportId;
+    const auto viewportSnapshot = m_pendingMeasurementViewports.constFind(continuationViewportId);
+    const QPointer<ViewportWidget> continuationViewport = viewportSnapshot == m_pendingMeasurementViewports.cend()
+                                                              ? QPointer<ViewportWidget>()
+                                                              : viewportSnapshot->viewport;
+    const quint64 continuationViewportGeneration =
+        viewportSnapshot == m_pendingMeasurementViewports.cend() ? 0 : viewportSnapshot->contentGeneration;
+    QTimer::singleShot(
+        0, this,
+        [this, completedProjectIdentity, completedTargetGeneration, completedTargetSnapshot, continuationGeneration,
+         continuationViewport, continuationViewportId, continuationViewportGeneration, instanceId]() {
+            if (continuationGeneration != m_measurementPickContinuationGeneration) {
+                return;
+            }
+            if (!m_isRunning) {
+                return;
+            }
+            if (!continuationViewportId.isEmpty() &&
+                (!continuationViewport || !m_displayManager ||
+                 m_displayManager->viewport(continuationViewportId) != continuationViewport.data() ||
+                 continuationViewport->contentGeneration() != continuationViewportGeneration)) {
+                onStop();
+                return;
+            }
+            Project* currentProject = ProjectManager::instance().currentProject();
+            const ModuleInstance* currentTarget = currentProject ? currentProject->findModule(instanceId) : nullptr;
+            if (!currentProject || currentProject->runtimeIdentity() != completedProjectIdentity || !currentTarget ||
+                currentProject->parameterInstanceGeneration(instanceId) != completedTargetGeneration ||
+                currentTarget->toJson() != completedTargetSnapshot) {
+                onStop();
+                return;
+            }
+            m_pendingMeasurementViewportId.clear();
+            m_pendingMeasurementViewports.clear();
+            if (requestMeasurementInputForRun()) {
+                return;
+            }
+            if (m_isCycleMode && !m_pendingMeasurementCycleSessionId.isEmpty()) {
+                const QString sessionId = m_pendingMeasurementCycleSessionId;
+                m_pendingMeasurementCycleSessionId.clear();
+                RunEngine& engine = RunEngine::instance();
+                if (!engine.refreshCycleProjectSnapshot(sessionId, ProjectManager::instance().currentProject())) {
+                    Logger::instance().warning(tr("测量拾取后无法刷新循环工程快照，已停止循环"), "Run");
+                    engine.stop();
+                    return;
+                }
+                engine.continueDeferredCycle(sessionId);
+                return;
+            }
+            executeFlowOnce();
+        });
 }
 
 void MainWindow::onPoint2DPicked(const QPointF& point) {
@@ -2283,6 +3546,9 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
         // 构建当前已放置点的标签
         auto buildOverlay = [&](const QList<MeasurementOverlayPoint>& pts, const QList<MeasurementOverlayLine>& lines) {
             for (ViewportWidget* vp : m_displayManager->allViewports()) {
+                if (m_agentQuickMeasurement.status == QLatin1String("awaiting_user_input") && vp &&
+                    vp->viewportId() != m_agentQuickMeasurement.viewportId)
+                    continue;
                 if (HImageWidget* iw = vp ? vp->imageWidget() : nullptr) {
                     if (iw->hasImage())
                         iw->setMeasurementOverlay(pts, lines);
@@ -2474,6 +3740,10 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
                                 "Picking");
         return;
     }
+    if (RunEngine::instance().isBusy() && instanceId != m_pendingMeasurementInputId) {
+        rejectBusyFlowEdit(tr("拾取测量输入"));
+        return;
+    }
 
     QJsonObject params = mod->currentParams();
     const QString mode = params["mode"].toString("point_pair");
@@ -2514,6 +3784,9 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
                                     .arg(point.x(), 0, 'f', 2)
                                     .arg(point.y(), 0, 'f', 2),
                                 "Picking");
+        mod->setParam("pick_coordinate_frame", QStringLiteral("ImageLocalPixel"));
+        if (project)
+            project->setModuleParam(instanceId, "pick_coordinate_frame", QStringLiteral("ImageLocalPixel"));
         m_measurementPickCursor[instanceId] = (step + 1) % 4;
         finishPick();
         return;
@@ -2522,11 +3795,11 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
     if (mode == "point_line") {
         const int step = cursor % 3;
         if (step == 0) {
-            mod->setParam("point", newPoint3D);
+            mod->setParam("point", newPoint2D);
             if (project)
-                project->setModuleParam(instanceId, "point", newPoint3D);
+                project->setModuleParam(instanceId, "point", newPoint2D);
             Logger::instance().info(
-                QString("2D pick: point set to (%1, %2, 0)").arg(point.x(), 0, 'f', 2).arg(point.y(), 0, 'f', 2),
+                QString("2D pick: point set to (%1, %2)").arg(point.x(), 0, 'f', 2).arg(point.y(), 0, 'f', 2),
                 "Picking");
         } else {
             QJsonArray line = updatedLineArray(params["line"].toArray(), point, step == 1);
@@ -2539,6 +3812,9 @@ void MainWindow::onPoint2DPicked(const QPointF& point) {
                                         .arg(point.y(), 0, 'f', 2),
                                     "Picking");
         }
+        mod->setParam("pick_coordinate_frame", QStringLiteral("ImageLocalPixel"));
+        if (project)
+            project->setModuleParam(instanceId, "pick_coordinate_frame", QStringLiteral("ImageLocalPixel"));
         m_measurementPickCursor[instanceId] = (step + 1) % 3;
         finishPick();
         return;
@@ -2913,8 +4189,21 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         if (l1.size() >= 4 && l2.size() >= 4) {
             double dist = resultValue({"distance"});
             if (dist >= 0) {
-                lines.append({(pointFromArray2D(l1) + pointFromArray2D(l1, 2)) / 2.0,
-                              (pointFromArray2D(l2) + pointFromArray2D(l2, 2)) / 2.0, fmtDist(dist)});
+                const QVariant nearestSegmentValue = resultOutput.data(QStringLiteral("nearest_segment"));
+                const QVariantList nearestSegment = nearestSegmentValue.toList();
+                if (nearestSegmentValue.isValid()) {
+                    if (nearestSegment.size() == 4 &&
+                        std::all_of(nearestSegment.cbegin(), nearestSegment.cend(), [](const QVariant& value) {
+                            return value.canConvert<double>() && std::isfinite(value.toDouble());
+                        })) {
+                        lines.append({QPointF(nearestSegment[0].toDouble(), nearestSegment[1].toDouble()),
+                                      QPointF(nearestSegment[2].toDouble(), nearestSegment[3].toDouble()),
+                                      fmtDist(dist)});
+                    }
+                } else {
+                    lines.append({(pointFromArray2D(l1) + pointFromArray2D(l1, 2)) / 2.0,
+                                  (pointFromArray2D(l2) + pointFromArray2D(l2, 2)) / 2.0, fmtDist(dist)});
+                }
             }
         }
     } else if (mode == QStringLiteral("point_plane")) {
@@ -3059,13 +4348,28 @@ void MainWindow::clearMeasurementOverlays() {
 }
 
 void MainWindow::onPoint3DPicked(const QVector3D& point) {
+    handlePoint3DPicked(point.x(), point.y(), point.z());
+}
+
+void MainWindow::handlePoint3DPicked(double x, double y, double z) {
+    const Eigen::Vector3d point(x, y, z);
     // 3D 快速测量模式
     if (m_quickMeasureActive) {
         m_quickMeasurePoints3D.append(point);
 
+        const auto overlayPoint = [](const Eigen::Vector3d& p, const QString& label) {
+            return MeasurementOverlayPoint3D{p, label};
+        };
+        const auto overlayLine = [](const Eigen::Vector3d& p1, const Eigen::Vector3d& p2, const QString& label) {
+            return MeasurementOverlayLine3D{p1, p2, label};
+        };
+
         auto buildOverlay3D = [&](const QList<MeasurementOverlayPoint3D>& pts,
                                   const QList<MeasurementOverlayLine3D>& lines) {
             for (ViewportWidget* vp : m_displayManager->allViewports()) {
+                if (m_agentQuickMeasurement.status == QLatin1String("awaiting_user_input") && vp &&
+                    vp->viewportId() != m_agentQuickMeasurement.viewportId)
+                    continue;
                 if (Viewport3DContent* c = vp ? vp->viewport3D() : nullptr) {
                     c->setMeasurementOverlay(pts, lines);
                 }
@@ -3077,18 +4381,19 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
         if (m_quickMeasureType == 0) {
             // 两点距离 (3D)
             if (m_quickMeasurePoints3D.size() == 1) {
-                buildOverlay3D({{m_quickMeasurePoints3D[0], ptLabel(0)}}, {});
+                buildOverlay3D({overlayPoint(m_quickMeasurePoints3D[0], ptLabel(0))}, {});
             } else if (m_quickMeasurePoints3D.size() >= 2) {
-                const QVector3D& a = m_quickMeasurePoints3D[0];
-                const QVector3D& b = m_quickMeasurePoints3D[1];
-                double dist = a.distanceToPoint(b);
+                const Eigen::Vector3d& a = m_quickMeasurePoints3D[0];
+                const Eigen::Vector3d& b = m_quickMeasurePoints3D[1];
+                const double dist = (b - a).norm();
                 double dx = std::abs(b.x() - a.x());
                 double dy = std::abs(b.y() - a.y());
                 double dz = std::abs(b.z() - a.z());
                 QString label = tr("距离: %1").arg(dist, 0, 'f', 3);
                 Logger::instance().info(
                     tr("3D 快速测量: %1 → %2 = %3").arg(pointText3D(a)).arg(pointText3D(b)).arg(label), "Measurement");
-                buildOverlay3D({{a, QStringLiteral("P1")}, {b, QStringLiteral("P2")}}, {{a, b, label}});
+                buildOverlay3D({overlayPoint(a, QStringLiteral("P1")), overlayPoint(b, QStringLiteral("P2"))},
+                               {overlayLine(a, b, label)});
                 // 方案 A: 视口右上角信息面板，显示坐标与 ΔX/ΔY/ΔZ 分解
                 QStringList infoLines;
                 infoLines << tr("3D 距离测量");
@@ -3100,6 +4405,9 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                 infoLines << tr("ΔZ: %1").arg(dz, 0, 'f', 3);
                 infoLines << tr("距离: %1").arg(dist, 0, 'f', 3);
                 for (ViewportWidget* vp : m_displayManager->allViewports()) {
+                    if (m_agentQuickMeasurement.status == QLatin1String("awaiting_user_input") && vp &&
+                        vp->viewportId() != m_agentQuickMeasurement.viewportId)
+                        continue;
                     if (Viewport3DContent* c = vp ? vp->viewport3D() : nullptr) {
                         c->setMeasurementInfoPanel(infoLines);
                     }
@@ -3112,22 +4420,22 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
             if (n < 3) {
                 QList<MeasurementOverlayPoint3D> pts;
                 for (int i = 0; i < n; ++i)
-                    pts.append({m_quickMeasurePoints3D[i], ptLabel(i)});
+                    pts.append(overlayPoint(m_quickMeasurePoints3D[i], ptLabel(i)));
                 buildOverlay3D(pts, {});
             } else {
-                const QVector3D& p = m_quickMeasurePoints3D[0];
-                const QVector3D& a = m_quickMeasurePoints3D[1];
-                const QVector3D& b = m_quickMeasurePoints3D[2];
-                QVector3D ab = b - a;
-                QVector3D ap = p - a;
-                float t = QVector3D::dotProduct(ap, ab) / QVector3D::dotProduct(ab, ab);
-                t = qBound(0.0f, t, 1.0f);
-                QVector3D foot = a + t * ab;
-                double dist = p.distanceToPoint(foot);
+                const Eigen::Vector3d& p = m_quickMeasurePoints3D[0];
+                const Eigen::Vector3d& a = m_quickMeasurePoints3D[1];
+                const Eigen::Vector3d& b = m_quickMeasurePoints3D[2];
+                const Eigen::Vector3d ab = b - a;
+                const double abSquaredNorm = ab.squaredNorm();
+                const double t = abSquaredNorm > 0.0 ? std::clamp((p - a).dot(ab) / abSquaredNorm, 0.0, 1.0) : 0.0;
+                const Eigen::Vector3d foot = a + t * ab;
+                const double dist = (p - foot).norm();
                 QString label = tr("距离: %1").arg(dist, 0, 'f', 3);
                 Logger::instance().info(tr("3D 快速测量: 点到线 = %1").arg(label), "Measurement");
-                buildOverlay3D({{p, QStringLiteral("P")}, {a, QStringLiteral("L1")}, {b, QStringLiteral("L2")}},
-                               {{a, b, QString()}, {p, foot, label}});
+                buildOverlay3D({overlayPoint(p, QStringLiteral("P")), overlayPoint(a, QStringLiteral("L1")),
+                                overlayPoint(b, QStringLiteral("L2"))},
+                               {overlayLine(a, b, QString()), overlayLine(p, foot, label)});
                 m_quickMeasurePoints3D.clear();
             }
         } else if (m_quickMeasureType == 2) {
@@ -3138,40 +4446,39 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                 QList<MeasurementOverlayLine3D> lines;
                 for (int i = 0; i < n; ++i) {
                     QString lbl = (i < 2) ? QStringLiteral("L1-%1").arg(i + 1) : QStringLiteral("L2-%1").arg(i - 1);
-                    pts.append({m_quickMeasurePoints3D[i], lbl});
+                    pts.append(overlayPoint(m_quickMeasurePoints3D[i], lbl));
                 }
                 if (n >= 2)
-                    lines.append({m_quickMeasurePoints3D[0], m_quickMeasurePoints3D[1], QString()});
+                    lines.append(overlayLine(m_quickMeasurePoints3D[0], m_quickMeasurePoints3D[1], QString()));
                 if (n >= 4)
-                    lines.append({m_quickMeasurePoints3D[2], m_quickMeasurePoints3D[3], QString()});
+                    lines.append(overlayLine(m_quickMeasurePoints3D[2], m_quickMeasurePoints3D[3], QString()));
                 buildOverlay3D(pts, lines);
             } else {
-                const QVector3D& a1 = m_quickMeasurePoints3D[0];
-                const QVector3D& a2 = m_quickMeasurePoints3D[1];
-                const QVector3D& b1 = m_quickMeasurePoints3D[2];
-                const QVector3D& b2 = m_quickMeasurePoints3D[3];
-                double len1 = a1.distanceToPoint(a2);
-                double len2 = b1.distanceToPoint(b2);
+                const Eigen::Vector3d& a1 = m_quickMeasurePoints3D[0];
+                const Eigen::Vector3d& a2 = m_quickMeasurePoints3D[1];
+                const Eigen::Vector3d& b1 = m_quickMeasurePoints3D[2];
+                const Eigen::Vector3d& b2 = m_quickMeasurePoints3D[3];
+                const double len1 = (a2 - a1).norm();
+                const double len2 = (b2 - b1).norm();
                 const MeasurementSegmentDistance3D closest =
                     MeasurementData::closestPointsBetweenSegments({a1.x(), a1.y(), a1.z()}, {a2.x(), a2.y(), a2.z()},
                                                                   {b1.x(), b1.y(), b1.z()}, {b2.x(), b2.y(), b2.z()});
-                const QVector3D closestOnLine1(closest.pointOnFirst.x, closest.pointOnFirst.y, closest.pointOnFirst.z);
-                const QVector3D closestOnLine2(closest.pointOnSecond.x, closest.pointOnSecond.y,
-                                               closest.pointOnSecond.z);
-                double dist = closest.distance;
+                const Eigen::Vector3d closestOnLine1(closest.pointOnFirst.x, closest.pointOnFirst.y,
+                                                     closest.pointOnFirst.z);
+                const Eigen::Vector3d closestOnLine2(closest.pointOnSecond.x, closest.pointOnSecond.y,
+                                                     closest.pointOnSecond.z);
+                const double dist = closest.distance;
                 QString label = tr("间距: %1").arg(dist, 0, 'f', 3);
                 Logger::instance().info(tr("3D 快速测量: 两线段最近距离=%1 (线1=%2, 线2=%3)")
                                             .arg(dist, 0, 'f', 3)
                                             .arg(len1, 0, 'f', 3)
                                             .arg(len2, 0, 'f', 3),
                                         "Measurement");
-                buildOverlay3D({{a1, QStringLiteral("L1-1")},
-                                {a2, QStringLiteral("L1-2")},
-                                {b1, QStringLiteral("L2-1")},
-                                {b2, QStringLiteral("L2-2")}},
-                               {{a1, a2, tr("线1: %1").arg(len1, 0, 'f', 3)},
-                                {b1, b2, tr("线2: %1").arg(len2, 0, 'f', 3)},
-                                {closestOnLine1, closestOnLine2, label}});
+                buildOverlay3D({overlayPoint(a1, QStringLiteral("L1-1")), overlayPoint(a2, QStringLiteral("L1-2")),
+                                overlayPoint(b1, QStringLiteral("L2-1")), overlayPoint(b2, QStringLiteral("L2-2"))},
+                               {overlayLine(a1, a2, tr("线1: %1").arg(len1, 0, 'f', 3)),
+                                overlayLine(b1, b2, tr("线2: %1").arg(len2, 0, 'f', 3)),
+                                overlayLine(closestOnLine1, closestOnLine2, label)});
                 m_quickMeasurePoints3D.clear();
             }
         }
@@ -3181,23 +4488,24 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
             if (n < 3) {
                 QList<MeasurementOverlayPoint3D> pts;
                 for (int i = 0; i < n; ++i)
-                    pts.append({m_quickMeasurePoints3D[i], ptLabel(i)});
+                    pts.append(overlayPoint(m_quickMeasurePoints3D[i], ptLabel(i)));
                 buildOverlay3D(pts, {});
             } else {
-                const QVector3D& v = m_quickMeasurePoints3D[0];
-                const QVector3D& p2 = m_quickMeasurePoints3D[1];
-                const QVector3D& p3 = m_quickMeasurePoints3D[2];
-                QVector3D d1 = p2 - v;
-                QVector3D d2 = p3 - v;
-                float dot = QVector3D::dotProduct(d1, d2);
-                float len1 = d1.length();
-                float len2 = d2.length();
-                double angleRad = acos(qBound(-1.0, double(dot) / (len1 * len2 + 1e-12), 1.0));
+                const Eigen::Vector3d& v = m_quickMeasurePoints3D[0];
+                const Eigen::Vector3d& p2 = m_quickMeasurePoints3D[1];
+                const Eigen::Vector3d& p3 = m_quickMeasurePoints3D[2];
+                const Eigen::Vector3d d1 = p2 - v;
+                const Eigen::Vector3d d2 = p3 - v;
+                const double dot = d1.dot(d2);
+                const double len1 = d1.norm();
+                const double len2 = d2.norm();
+                const double angleRad = acos(qBound(-1.0, dot / (len1 * len2 + 1e-12), 1.0));
                 double angleDeg = angleRad * 180.0 / M_PI;
                 QString label = tr("角度: %1°").arg(angleDeg, 0, 'f', 2);
                 Logger::instance().info(tr("3D 快速测量: 三点角度 = %1°").arg(angleDeg, 0, 'f', 2), "Measurement");
-                buildOverlay3D({{v, QStringLiteral("V")}, {p2, QStringLiteral("P2")}, {p3, QStringLiteral("P3")}},
-                               {{v, p2, QString()}, {v, p3, label}});
+                buildOverlay3D({overlayPoint(v, QStringLiteral("V")), overlayPoint(p2, QStringLiteral("P2")),
+                                overlayPoint(p3, QStringLiteral("P3"))},
+                               {overlayLine(v, p2, QString()), overlayLine(v, p3, label)});
                 m_quickMeasurePoints3D.clear();
             }
         }
@@ -3207,28 +4515,29 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
             if (n < 3) {
                 QList<MeasurementOverlayPoint3D> pts;
                 for (int i = 0; i < n; ++i)
-                    pts.append({m_quickMeasurePoints3D[i], ptLabel(i)});
+                    pts.append(overlayPoint(m_quickMeasurePoints3D[i], ptLabel(i)));
                 buildOverlay3D(pts, {});
             } else {
-                const QVector3D& p1 = m_quickMeasurePoints3D[0];
-                const QVector3D& p2 = m_quickMeasurePoints3D[1];
-                const QVector3D& p3 = m_quickMeasurePoints3D[2];
+                const Eigen::Vector3d& p1 = m_quickMeasurePoints3D[0];
+                const Eigen::Vector3d& p2 = m_quickMeasurePoints3D[1];
+                const Eigen::Vector3d& p3 = m_quickMeasurePoints3D[2];
                 // 构建局部坐标系: normal = (p2-p1) × (p3-p1)
-                QVector3D u = p2 - p1;
-                QVector3D w = QVector3D::crossProduct(u, p3 - p1);
-                if (w.length() < 1e-6) {
+                Eigen::Vector3d u = p2 - p1;
+                const Eigen::Vector3d w = u.cross(p3 - p1);
+                if (w.norm() < 1e-6) {
                     Logger::instance().warning(tr("三点共线，无法拟合圆"), "Measurement");
-                    buildOverlay3D({{p1, QStringLiteral("P1")}, {p2, QStringLiteral("P2")}, {p3, QStringLiteral("P3")}},
+                    buildOverlay3D({overlayPoint(p1, QStringLiteral("P1")), overlayPoint(p2, QStringLiteral("P2")),
+                                    overlayPoint(p3, QStringLiteral("P3"))},
                                    {});
                     m_quickMeasurePoints3D.clear();
                 } else {
                     u.normalize();
-                    QVector3D normal = w.normalized();
-                    QVector3D vAxis = QVector3D::crossProduct(normal, u).normalized();
+                    const Eigen::Vector3d normal = w.normalized();
+                    const Eigen::Vector3d vAxis = normal.cross(u).normalized();
                     // 投影到局部 2D 坐标
-                    auto project = [&](const QVector3D& p) {
-                        QVector3D d = p - p1;
-                        return QPointF(QVector3D::dotProduct(d, u), QVector3D::dotProduct(d, vAxis));
+                    auto project = [&](const Eigen::Vector3d& p) {
+                        const Eigen::Vector3d d = p - p1;
+                        return QPointF(d.dot(u), d.dot(vAxis));
                     };
                     QPointF a2 = project(p1);
                     QPointF b2 = project(p2);
@@ -3245,7 +4554,7 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                                 d;
                     double radius = sqrt(ux * ux + uy * uy);
                     // 圆心在局部坐标系，转回世界坐标
-                    QVector3D center = p1 + u * ux + vAxis * uy;
+                    const Eigen::Vector3d center = p1 + u * ux + vAxis * uy;
                     double circumference = 2.0 * M_PI * radius;
                     QString label = tr("R=%1, C=%2").arg(radius, 0, 'f', 2).arg(circumference, 0, 'f', 2);
                     Logger::instance().info(
@@ -3257,14 +4566,12 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                     for (int i = 0; i < segments3D; ++i) {
                         double a1 = 2.0 * M_PI * i / segments3D;
                         double a2 = 2.0 * M_PI * (i + 1) / segments3D;
-                        QVector3D c1 = center + u * (radius * cos(a1)) + vAxis * (radius * sin(a1));
-                        QVector3D c2 = center + u * (radius * cos(a2)) + vAxis * (radius * sin(a2));
-                        circleLines3D.append({c1, c2, (i == 0) ? label : QString()});
+                        const Eigen::Vector3d c1 = center + u * (radius * cos(a1)) + vAxis * (radius * sin(a1));
+                        const Eigen::Vector3d c2 = center + u * (radius * cos(a2)) + vAxis * (radius * sin(a2));
+                        circleLines3D.append(overlayLine(c1, c2, (i == 0) ? label : QString()));
                     }
-                    buildOverlay3D({{p1, QStringLiteral("P1")},
-                                    {p2, QStringLiteral("P2")},
-                                    {p3, QStringLiteral("P3")},
-                                    {center, QStringLiteral("C")}},
+                    buildOverlay3D({overlayPoint(p1, QStringLiteral("P1")), overlayPoint(p2, QStringLiteral("P2")),
+                                    overlayPoint(p3, QStringLiteral("P3")), overlayPoint(center, QStringLiteral("C"))},
                                    circleLines3D);
                     m_quickMeasurePoints3D.clear();
                 }
@@ -3273,10 +4580,10 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
         // ---- 矩形面积 (3D: 2 clicks → 宽/高/面积, 用 X/Y 分量) ----
         else if (m_quickMeasureType == 5) {
             if (m_quickMeasurePoints3D.size() == 1) {
-                buildOverlay3D({{m_quickMeasurePoints3D[0], ptLabel(0)}}, {});
+                buildOverlay3D({overlayPoint(m_quickMeasurePoints3D[0], ptLabel(0))}, {});
             } else if (m_quickMeasurePoints3D.size() >= 2) {
-                const QVector3D& a = m_quickMeasurePoints3D[0];
-                const QVector3D& b = m_quickMeasurePoints3D[1];
+                const Eigen::Vector3d& a = m_quickMeasurePoints3D[0];
+                const Eigen::Vector3d& b = m_quickMeasurePoints3D[1];
                 double w = std::abs(b.x() - a.x());
                 double h = std::abs(b.y() - a.y());
                 double area = w * h;
@@ -3286,7 +4593,8 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                                             .arg(h, 0, 'f', 3)
                                             .arg(area, 0, 'f', 3),
                                         "Measurement");
-                buildOverlay3D({{a, QStringLiteral("P1")}, {b, QStringLiteral("P2")}}, {{a, b, label}});
+                buildOverlay3D({overlayPoint(a, QStringLiteral("P1")), overlayPoint(b, QStringLiteral("P2"))},
+                               {overlayLine(a, b, label)});
                 m_quickMeasurePoints3D.clear();
             }
         }
@@ -3296,12 +4604,17 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
     QString instanceId;
     IModule* mod = measurementInputForPicking(instanceId);
     if (!mod) {
-        QGuiApplication::clipboard()->setText(pointText3D(point));
+        QGuiApplication::clipboard()->setText(
+            QString("%1,%2,%3").arg(x, 0, 'f', 2).arg(y, 0, 'f', 2).arg(z, 0, 'f', 2));
         Logger::instance().info(QString("3D pick: (%1, %2, %3) — no active MeasurementInput")
-                                    .arg(point.x(), 0, 'f', 3)
-                                    .arg(point.y(), 0, 'f', 3)
-                                    .arg(point.z(), 0, 'f', 3),
+                                    .arg(x, 0, 'f', 3)
+                                    .arg(y, 0, 'f', 3)
+                                    .arg(z, 0, 'f', 3),
                                 "Picking");
+        return;
+    }
+    if (RunEngine::instance().isBusy() && instanceId != m_pendingMeasurementInputId) {
+        rejectBusyFlowEdit(tr("拾取测量输入"));
         return;
     }
 
@@ -3309,7 +4622,7 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
     const QString mode = params["mode"].toString("point_pair");
     const int cursor = m_measurementPickCursor.value(instanceId, 0);
     Project* project = ProjectManager::instance().currentProject();
-    const QJsonArray newPoint = pointArray3D(point.x(), point.y(), point.z());
+    const QJsonArray newPoint = pointArray3D(x, y, z);
     auto finishPick = [&]() { finishMeasurementPick(instanceId, mod->currentParams(), true); };
 
     if (mode == "point_plane") {
@@ -3318,11 +4631,9 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
             mod->setParam("point", newPoint);
             if (project)
                 project->setModuleParam(instanceId, "point", newPoint);
-            Logger::instance().info(QString("3D pick: point set to (%1, %2, %3)")
-                                        .arg(point.x(), 0, 'f', 3)
-                                        .arg(point.y(), 0, 'f', 3)
-                                        .arg(point.z(), 0, 'f', 3),
-                                    "Picking");
+            Logger::instance().info(
+                QString("3D pick: point set to (%1, %2, %3)").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3).arg(z, 0, 'f', 3),
+                "Picking");
         } else {
             QJsonArray plane = updatedPlaneArray(params["plane"].toArray(), newPoint, step - 1);
             mod->setParam("plane", plane);
@@ -3330,9 +4641,9 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
                 project->setModuleParam(instanceId, "plane", plane);
             Logger::instance().info(QString("3D pick: plane p%1 set to (%2, %3, %4)")
                                         .arg(step)
-                                        .arg(point.x(), 0, 'f', 3)
-                                        .arg(point.y(), 0, 'f', 3)
-                                        .arg(point.z(), 0, 'f', 3),
+                                        .arg(x, 0, 'f', 3)
+                                        .arg(y, 0, 'f', 3)
+                                        .arg(z, 0, 'f', 3),
                                     "Picking");
         }
         m_measurementPickCursor[instanceId] = (step + 1) % 4;
@@ -3344,17 +4655,20 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
         const int step = cursor % 4;
         const QString key = step < 2 ? QStringLiteral("line1") : QStringLiteral("line2");
         const bool firstPoint = (step % 2) == 0;
-        QJsonArray line = updatedLineArray(params[key].toArray(), QPointF(point.x(), point.y()), firstPoint);
+        QJsonArray line = updatedLineArray(params[key].toArray(), QPointF(x, y), firstPoint);
         mod->setParam(key, line);
         if (project)
             project->setModuleParam(instanceId, key, line);
         Logger::instance().info(QString("3D pick: %1 p%2 set to (%3, %4, z=0; input z %5 ignored)")
                                     .arg(key)
                                     .arg(firstPoint ? 1 : 2)
-                                    .arg(point.x(), 0, 'f', 3)
-                                    .arg(point.y(), 0, 'f', 3)
-                                    .arg(point.z(), 0, 'f', 3),
+                                    .arg(x, 0, 'f', 3)
+                                    .arg(y, 0, 'f', 3)
+                                    .arg(z, 0, 'f', 3),
                                 "Picking");
+        mod->setParam("pick_coordinate_frame", QStringLiteral("Unspecified"));
+        if (project)
+            project->setModuleParam(instanceId, "pick_coordinate_frame", QStringLiteral("Unspecified"));
         m_measurementPickCursor[instanceId] = (step + 1) % 4;
         finishPick();
         return;
@@ -3366,23 +4680,24 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
             mod->setParam("point", newPoint);
             if (project)
                 project->setModuleParam(instanceId, "point", newPoint);
-            Logger::instance().info(QString("3D pick: point set to (%1, %2, %3)")
-                                        .arg(point.x(), 0, 'f', 3)
-                                        .arg(point.y(), 0, 'f', 3)
-                                        .arg(point.z(), 0, 'f', 3),
-                                    "Picking");
+            Logger::instance().info(
+                QString("3D pick: point set to (%1, %2, %3)").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3).arg(z, 0, 'f', 3),
+                "Picking");
         } else {
-            QJsonArray line = updatedLineArray(params["line"].toArray(), QPointF(point.x(), point.y()), step == 1);
+            QJsonArray line = updatedLineArray(params["line"].toArray(), QPointF(x, y), step == 1);
             mod->setParam("line", line);
             if (project)
                 project->setModuleParam(instanceId, "line", line);
             Logger::instance().info(QString("3D pick: line p%1 set to (%2, %3, z=0; input z %4 ignored)")
                                         .arg(step)
-                                        .arg(point.x(), 0, 'f', 3)
-                                        .arg(point.y(), 0, 'f', 3)
-                                        .arg(point.z(), 0, 'f', 3),
+                                        .arg(x, 0, 'f', 3)
+                                        .arg(y, 0, 'f', 3)
+                                        .arg(z, 0, 'f', 3),
                                     "Picking");
         }
+        mod->setParam("pick_coordinate_frame", QStringLiteral("Unspecified"));
+        if (project)
+            project->setModuleParam(instanceId, "pick_coordinate_frame", QStringLiteral("Unspecified"));
         m_measurementPickCursor[instanceId] = (step + 1) % 3;
         finishPick();
         return;
@@ -3393,20 +4708,16 @@ void MainWindow::onPoint3DPicked(const QVector3D& point) {
         mod->setParam("point1", newPoint);
         if (project)
             project->setModuleParam(instanceId, "point1", newPoint);
-        Logger::instance().info(QString("3D pick: point1 set to (%1, %2, %3)")
-                                    .arg(point.x(), 0, 'f', 3)
-                                    .arg(point.y(), 0, 'f', 3)
-                                    .arg(point.z(), 0, 'f', 3),
-                                "Picking");
+        Logger::instance().info(
+            QString("3D pick: point1 set to (%1, %2, %3)").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3).arg(z, 0, 'f', 3),
+            "Picking");
     } else {
         mod->setParam("point2", newPoint);
         if (project)
             project->setModuleParam(instanceId, "point2", newPoint);
-        Logger::instance().info(QString("3D pick: point2 set to (%1, %2, %3)")
-                                    .arg(point.x(), 0, 'f', 3)
-                                    .arg(point.y(), 0, 'f', 3)
-                                    .arg(point.z(), 0, 'f', 3),
-                                "Picking");
+        Logger::instance().info(
+            QString("3D pick: point2 set to (%1, %2, %3)").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3).arg(z, 0, 'f', 3),
+            "Picking");
     }
     m_measurementPickCursor[instanceId] = (cursor + 1) % 2;
     finishPick();
@@ -3435,99 +4746,1140 @@ void MainWindow::onDataSourceRemoved(const QString& id) {
 }
 
 void MainWindow::onDataSourceVisibilityChanged(const QString& dataSourceId, bool visible) {
-    if (dataSourceId.isEmpty()) {
+    QString errorCode;
+    if (!setDataSourceVisibilityById(dataSourceId, visible, &errorCode)) {
+        Logger::instance().warning(tr("数据源可见性修改失败：%1 (%2)").arg(dataSourceId, errorCode), "Display");
         return;
-    }
-
-    if (visible) {
-        m_hiddenDataSourceIds.remove(dataSourceId);
-    } else {
-        m_hiddenDataSourceIds.insert(dataSourceId);
-    }
-
-    if (ViewportWidget* viewport =
-            m_displayManager ? m_displayManager->viewport(m_dataSourceViewportIds.value(dataSourceId)) : nullptr) {
-        viewport->setVisible(visible);
-    }
-    if (visible && !m_dataSourceDisplayData.contains(dataSourceId)) {
-        onDisplayDataSource(dataSourceId);
-    } else {
-        rebuildPrimaryDataSourceDisplay();
     }
 
     Logger::instance().info(tr("数据源%1：%2").arg(visible ? tr("显示") : tr("隐藏"), dataSourceId), "Display");
 }
 
 void MainWindow::onDisplayDataSource(const QString& dataSourceId) {
+    QString errorCode;
+    if (!displayDataSourceById(dataSourceId, &errorCode))
+        Logger::instance().warning(tr("数据源显示失败：%1 (%2)").arg(dataSourceId, errorCode), "Display");
+}
+
+bool MainWindow::displayDataSourceById(const QString& dataSourceId, QString* errorCode) {
+    auto fail = [errorCode](const QString& code) {
+        if (errorCode)
+            *errorCode = code;
+        return false;
+    };
+    if (dataSourceId.trimmed().isEmpty())
+        return fail(QStringLiteral("INVALID_ARGUMENT"));
+
     Project* project = ProjectManager::instance().currentProject();
     if (!project)
-        return;
+        return fail(QStringLiteral("NO_PROJECT"));
 
-    auto ds = project->findDataSource(dataSourceId);
-    if (!ds || !ds->isValid())
-        return;
+    std::optional<DataSource> target;
+    int matches = 0;
+    for (const DataSource& source : project->dataSources()) {
+        if (source.id == dataSourceId) {
+            ++matches;
+            if (matches == 1)
+                target = source;
+        }
+    }
+    if (matches == 0)
+        return fail(QStringLiteral("DATA_SOURCE_NOT_FOUND"));
+    if (matches != 1)
+        return fail(QStringLiteral("DATA_SOURCE_ID_AMBIGUOUS"));
+    if (!target->isValid())
+        return fail(QStringLiteral("DATA_SOURCE_LOAD_FAILED"));
+    if (m_hiddenDataSourceIds.contains(dataSourceId))
+        return fail(QStringLiteral("DATA_SOURCE_HIDDEN"));
 
-    if (m_hiddenDataSourceIds.contains(dataSourceId)) {
-        return;
+    if (!m_dataSourceDisplayData.contains(dataSourceId)) {
+        const QFileInfo fileInfo(target->filePath);
+        if (!fileInfo.exists() || !fileInfo.isFile())
+            return fail(QStringLiteral("DATA_SOURCE_LOAD_FAILED"));
+
+        if (target->isImage() && QImage(target->filePath).isNull())
+            return fail(QStringLiteral("DATA_SOURCE_LOAD_FAILED"));
+
+        bool imported = false;
+        if (target->isPointCloud())
+            imported = importPointCloudFile(target->filePath, dataSourceId);
+        else if (target->isImage())
+            imported = importImageFile(target->filePath, dataSourceId);
+        if (!imported || !m_dataSourceDisplayData.contains(dataSourceId))
+            return fail(QStringLiteral("DATA_SOURCE_LOAD_FAILED"));
     }
 
-    if (m_dataSourceDisplayData.contains(dataSourceId)) {
+    rebuildPrimaryDataSourceDisplay();
+    if (!m_dataSourceDisplayData.contains(dataSourceId) || !primaryDataSourceViewport())
+        return fail(QStringLiteral("DATA_SOURCE_LOAD_FAILED"));
+    if (errorCode)
+        errorCode->clear();
+    return true;
+}
+
+bool MainWindow::setDataSourceVisibilityById(const QString& dataSourceId, bool visible, QString* errorCode) {
+    auto fail = [errorCode](const QString& code) {
+        if (errorCode)
+            *errorCode = code;
+        return false;
+    };
+    if (dataSourceId.trimmed().isEmpty())
+        return fail(QStringLiteral("INVALID_ARGUMENT"));
+
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project)
+        return fail(QStringLiteral("NO_PROJECT"));
+    int matches = 0;
+    for (const DataSource& source : project->dataSources())
+        matches += source.id == dataSourceId ? 1 : 0;
+    if (matches == 0)
+        return fail(QStringLiteral("DATA_SOURCE_NOT_FOUND"));
+    if (matches != 1)
+        return fail(QStringLiteral("DATA_SOURCE_ID_AMBIGUOUS"));
+
+    if (!visible) {
+        m_hiddenDataSourceIds.insert(dataSourceId);
+        if (m_dataSourcePanel)
+            m_dataSourcePanel->setDataSourceVisibility(dataSourceId, false);
+        if (ViewportWidget* viewport =
+                m_displayManager ? m_displayManager->viewport(m_dataSourceViewportIds.value(dataSourceId)) : nullptr)
+            viewport->setVisible(false);
         rebuildPrimaryDataSourceDisplay();
-        return;
+    } else {
+        const bool wasHidden = m_hiddenDataSourceIds.contains(dataSourceId);
+        m_hiddenDataSourceIds.remove(dataSourceId);
+        if (!m_dataSourceDisplayData.contains(dataSourceId)) {
+            QString displayError;
+            if (!displayDataSourceById(dataSourceId, &displayError)) {
+                if (wasHidden)
+                    m_hiddenDataSourceIds.insert(dataSourceId);
+                if (ViewportWidget* viewport =
+                        m_displayManager ? m_displayManager->viewport(m_dataSourceViewportIds.value(dataSourceId))
+                                         : nullptr)
+                    viewport->setVisible(!m_hiddenDataSourceIds.contains(dataSourceId));
+                rebuildPrimaryDataSourceDisplay();
+                return fail(displayError.isEmpty() ? QStringLiteral("DATA_SOURCE_LOAD_FAILED") : displayError);
+            }
+        }
+        if (ViewportWidget* viewport =
+                m_displayManager ? m_displayManager->viewport(m_dataSourceViewportIds.value(dataSourceId)) : nullptr)
+            viewport->setVisible(true);
+        if (m_dataSourcePanel)
+            m_dataSourcePanel->setDataSourceVisibility(dataSourceId, true);
+        rebuildPrimaryDataSourceDisplay();
     }
 
-    QFileInfo fileInfo(ds->filePath);
-    if (!fileInfo.exists()) {
-        Logger::instance().warning(tr("数据源文件已丢失：%1").arg(ds->filePath), "System");
-        return;
+    if (errorCode)
+        errorCode->clear();
+    return true;
+}
+
+QJsonObject MainWindow::executeAgentDataSourceViewAction(const QString& toolName, const QJsonObject& params) {
+    auto error = [](const QString& message, const QString& code) {
+        return QJsonObject{{QStringLiteral("error"), message},
+                           {QStringLiteral("errorCode"), code},
+                           {QStringLiteral("retryable"), false}};
+    };
+    if (QThread::currentThread() != thread())
+        return error(QStringLiteral("Data source GUI action must run on the main window thread"),
+                     QStringLiteral("THREAD_AFFINITY"));
+
+    if (toolName == QLatin1String("save_viewport_snapshot_for_user")) {
+        if (params.size() != 1 || !params.value(QStringLiteral("viewportId")).isString() ||
+            params.value(QStringLiteral("viewportId")).toString().trimmed().isEmpty())
+            return error(QStringLiteral("A single non-empty viewportId is required"), QStringLiteral("INVALID_PARAM"));
+        const QString viewportId = params.value(QStringLiteral("viewportId")).toString();
+        ViewportWidget* viewport = m_displayManager ? m_displayManager->viewport(viewportId) : nullptr;
+        if (!viewport)
+            return error(QStringLiteral("The requested viewport is not available"),
+                         QStringLiteral("VIEWPORT_NOT_FOUND"));
+
+        const QJsonObject result = viewport->saveSnapshotForUser();
+        if (result.value(QStringLiteral("status")) == QLatin1String("saved"))
+            Logger::instance().info(QStringLiteral("Agent saved a viewport snapshot"), "Agent");
+        else if (result.value(QStringLiteral("status")) == QLatin1String("cancelled"))
+            Logger::instance().info(QStringLiteral("Agent viewport snapshot save was cancelled"), "Agent");
+        else if (result.contains(QStringLiteral("errorCode")))
+            Logger::instance().warning(QStringLiteral("Agent viewport snapshot save failed: %1")
+                                           .arg(result.value(QStringLiteral("errorCode")).toString()),
+                                       "Agent");
+        return result;
     }
 
-    if (ds->isPointCloud()) {
-        importPointCloudFile(ds->filePath, dataSourceId);
-    } else if (ds->isImage()) {
-        importImageFile(ds->filePath, dataSourceId);
+    if (toolName == QLatin1String("open_data_source_folder_for_user")) {
+        const QJsonValue idValue = params.value(QStringLiteral("dataSourceId"));
+        if (params.size() != 1 || !idValue.isString() || idValue.toString().trimmed().isEmpty())
+            return error(QStringLiteral("A single non-empty dataSourceId is required"),
+                         QStringLiteral("INVALID_PARAM"));
+        Project* project = ProjectManager::instance().currentProject();
+        if (!project)
+            return error(QStringLiteral("No project is open"), QStringLiteral("NO_PROJECT"));
+        const QString dataSourceId = idValue.toString();
+        const QList<DataSource> sources = project->dataSources();
+        const DataSource* match = nullptr;
+        int matches = 0;
+        for (const DataSource& source : sources) {
+            if (source.id != dataSourceId)
+                continue;
+            ++matches;
+            if (matches == 1)
+                match = &source;
+        }
+        if (matches == 0)
+            return error(QStringLiteral("Data source was not found"), QStringLiteral("DATA_SOURCE_NOT_FOUND"));
+        if (matches != 1)
+            return error(QStringLiteral("Data source ID is ambiguous"), QStringLiteral("DATA_SOURCE_ID_AMBIGUOUS"));
+        if (match->filePath.trimmed().isEmpty())
+            return error(QStringLiteral("Data source path is unavailable"),
+                         QStringLiteral("DATA_SOURCE_PATH_UNAVAILABLE"));
+
+        const QUrl folderUrl = QUrl::fromLocalFile(QFileInfo(match->filePath).absolutePath());
+        if (!openDesktopUrl(folderUrl))
+            return error(QStringLiteral("The desktop file manager rejected the open request"),
+                         QStringLiteral("DESKTOP_OPEN_FAILED"));
+        Logger::instance().info(QStringLiteral("Agent requested the data source folder in the desktop file manager"),
+                                "Agent");
+        return {{QStringLiteral("status"), QStringLiteral("open_requested")}};
     }
+
+    if (toolName == QLatin1String("open_user_knowledge_folder_for_user")) {
+        if (!params.isEmpty())
+            return error(QStringLiteral("This knowledge folder action does not accept parameters"),
+                         QStringLiteral("INVALID_PARAM"));
+        const QString knowledgeDir = AgentActor::userKnowledgeDir();
+        if (!QFileInfo(knowledgeDir).isDir())
+            return error(QStringLiteral("The user knowledge folder is unavailable"),
+                         QStringLiteral("KNOWLEDGE_FOLDER_UNAVAILABLE"));
+        if (!openDesktopUrl(QUrl::fromLocalFile(knowledgeDir)))
+            return error(QStringLiteral("The desktop file manager rejected the open request"),
+                         QStringLiteral("DESKTOP_OPEN_FAILED"));
+        Logger::instance().info(QStringLiteral("Agent requested the user knowledge folder in the desktop file manager"),
+                                "Agent");
+        return {{QStringLiteral("status"), QStringLiteral("open_requested")}};
+    }
+
+    if (toolName == QLatin1String("open_sam_image_picker_for_user")) {
+        if (!params.isEmpty())
+            return error(QStringLiteral("The SAM image picker action does not accept parameters"),
+                         QStringLiteral("INVALID_PARAM"));
+
+        SamAnnotatorDialog* dialog = m_samAnnotatorDialog.data();
+        const bool created = !dialog;
+        if (created) {
+            dialog = new SamAnnotatorDialog(this, true);
+            dialog->setAttribute(Qt::WA_DeleteOnClose);
+            m_samAnnotatorDialog = dialog;
+            dialog->applyTheme(m_isDarkTheme);
+            connect(dialog, &QDialog::finished, this, [this, dialog](int) {
+                if (m_samAnnotatorDialog == dialog)
+                    m_samAnnotatorDialog.clear();
+            });
+            connect(dialog, &QObject::destroyed, this, [this, dialog]() {
+                if (m_samAnnotatorDialog == dialog)
+                    m_samAnnotatorDialog.clear();
+            });
+        }
+
+        dialog->showImagePickerEntryForUser();
+        dialog->show();
+        dialog->raise();
+        dialog->activateWindow();
+        const bool imageAvailable = !dialog->imageSnapshot().isNull();
+        Logger::instance().info(QStringLiteral("Agent opened SAM image picker entry (%1)")
+                                    .arg(created ? QStringLiteral("opened") : QStringLiteral("reused")),
+                                "Agent");
+        return {{QStringLiteral("status"), QStringLiteral("opened")},
+                {QStringLiteral("dialogAction"), created ? QStringLiteral("opened") : QStringLiteral("reused")},
+                {QStringLiteral("userActionRequired"), true},
+                {QStringLiteral("imageAvailable"), imageAvailable}};
+    }
+
+    if (toolName == QLatin1String("open_sam_annotator_dialog")) {
+        if (!params.isEmpty())
+            return error(QStringLiteral("This SAM annotation action does not accept parameters"),
+                         QStringLiteral("INVALID_PARAM"));
+
+        SamAnnotatorDialog* dialog = m_samAnnotatorDialog.data();
+        const bool hasExistingImage = dialog && !dialog->imageSnapshot().isNull();
+        ViewportWidget* targetViewport = nullptr;
+        if (!hasExistingImage) {
+            ViewportWidget* fallbackViewport = nullptr;
+            const QVector<ViewportWidget*> viewports =
+                m_displayManager ? m_displayManager->allViewports() : QVector<ViewportWidget*>();
+            for (ViewportWidget* viewport : viewports) {
+                if (!viewport || !viewport->imageWidget() || !viewport->imageWidget()->hasImage())
+                    continue;
+                if (!fallbackViewport)
+                    fallbackViewport = viewport;
+                if (viewport->hasFocus() || viewport->imageWidget()->hasFocus()) {
+                    targetViewport = viewport;
+                    break;
+                }
+            }
+            if (!targetViewport)
+                targetViewport = fallbackViewport;
+            if (!targetViewport)
+                return error(tr("No SAM annotation image is available"), QStringLiteral("NO_IMAGE"));
+        }
+
+        const bool created = !dialog;
+        if (created) {
+            dialog = new SamAnnotatorDialog(this, true);
+            dialog->setAttribute(Qt::WA_DeleteOnClose);
+            m_samAnnotatorDialog = dialog;
+            dialog->applyTheme(m_isDarkTheme);
+            connect(dialog, &QDialog::finished, this, [this, dialog](int) {
+                if (m_samAnnotatorDialog == dialog)
+                    m_samAnnotatorDialog.clear();
+            });
+            connect(dialog, &QObject::destroyed, this, [this, dialog]() {
+                if (m_samAnnotatorDialog == dialog)
+                    m_samAnnotatorDialog.clear();
+            });
+        }
+        if (targetViewport && dialog->imageSnapshot().isNull()) {
+            // Safe attach updates the visible image/session binding without preparing the SAM backend.
+            dialog->attachToImageWidgetForEnvironmentSetup(targetViewport->imageWidget());
+        }
+
+        dialog->show();
+        dialog->raise();
+        dialog->activateWindow();
+        const bool imageAvailable = !dialog->imageSnapshot().isNull();
+        Logger::instance().info(QStringLiteral("Agent opened SAM annotation dialog (%1)")
+                                    .arg(created ? QStringLiteral("opened") : QStringLiteral("reused")),
+                                "Agent");
+        return {{QStringLiteral("status"), QStringLiteral("opened")},
+                {QStringLiteral("dialogAction"), created ? QStringLiteral("opened") : QStringLiteral("reused")},
+                {QStringLiteral("userActionRequired"), true},
+                {QStringLiteral("imageAvailable"), imageAvailable}};
+    }
+
+    if (toolName == QLatin1String("open_sam_environment_setup")) {
+        if (!params.isEmpty())
+            return error(QStringLiteral("This SAM environment action does not accept parameters"),
+                         QStringLiteral("INVALID_PARAM"));
+        const bool created = m_samAnnotatorDialog.isNull();
+        if (created) {
+            m_samAnnotatorDialog = new SamAnnotatorDialog(this, true);
+            m_samAnnotatorDialog->setAttribute(Qt::WA_DeleteOnClose);
+            SamAnnotatorDialog* createdDialog = m_samAnnotatorDialog;
+            connect(createdDialog, &QDialog::finished, this, [this, createdDialog](int) {
+                if (m_samAnnotatorDialog == createdDialog)
+                    m_samAnnotatorDialog.clear();
+            });
+            connect(createdDialog, &QObject::destroyed, this, [this, createdDialog]() {
+                if (m_samAnnotatorDialog == createdDialog)
+                    m_samAnnotatorDialog.clear();
+            });
+            m_samAnnotatorDialog->applyTheme(m_isDarkTheme);
+
+            ViewportWidget* targetViewport = nullptr;
+            const QVector<ViewportWidget*> viewports =
+                m_displayManager ? m_displayManager->allViewports() : QVector<ViewportWidget*>();
+            for (ViewportWidget* viewport : viewports) {
+                if (!viewport || !viewport->imageWidget() || !viewport->imageWidget()->hasImage())
+                    continue;
+                if (!targetViewport)
+                    targetViewport = viewport;
+                if (viewport->hasFocus() || viewport->imageWidget()->hasFocus()) {
+                    targetViewport = viewport;
+                    break;
+                }
+            }
+            if (targetViewport)
+                m_samAnnotatorDialog->attachToImageWidgetForEnvironmentSetup(targetViewport->imageWidget());
+        }
+
+        m_samAnnotatorDialog->show();
+        m_samAnnotatorDialog->raise();
+        m_samAnnotatorDialog->activateWindow();
+        QJsonObject status = m_samAnnotatorDialog->environmentHandoffStatus();
+        status.insert(QStringLiteral("dialogOpened"), true);
+        status.insert(QStringLiteral("dialogAction"), created ? QStringLiteral("opened") : QStringLiteral("reused"));
+        Logger::instance().info(QStringLiteral("Agent opened SAM environment setup"), "Agent");
+        return status;
+    }
+
+    if (toolName == QLatin1String("open_user_login_dialog")) {
+        if (!params.isEmpty())
+            return error(QStringLiteral("This login dialog action does not accept parameters"),
+                         QStringLiteral("INVALID_PARAM"));
+
+        LoginDialog* dialog = nullptr;
+        const QList<LoginDialog*> existingDialogs = findChildren<LoginDialog*>();
+        for (LoginDialog* existing : existingDialogs) {
+            if (existing && existing->isVisible()) {
+                dialog = existing;
+                break;
+            }
+        }
+        const bool reused = dialog != nullptr || !m_agentLoginDialog.isNull();
+        if (!dialog && m_agentLoginDialog)
+            dialog = m_agentLoginDialog;
+        if (!dialog) {
+            dialog = new LoginDialog(this);
+            dialog->setAttribute(Qt::WA_DeleteOnClose);
+            dialog->setWindowModality(Qt::NonModal);
+            m_agentLoginDialog = dialog;
+            connect(dialog, &QDialog::finished, this, [this, dialog](int) {
+                if (m_agentLoginDialog == dialog)
+                    m_agentLoginDialog.clear();
+            });
+        }
+        dialog->show();
+        dialog->raise();
+        dialog->activateWindow();
+        Logger::instance().info(QStringLiteral("Agent opened user login dialog"), "Agent");
+        return QJsonObject{
+            {QStringLiteral("status"), QStringLiteral("opened")},
+            {QStringLiteral("dialogAction"), reused ? QStringLiteral("reused") : QStringLiteral("opened")},
+            {QStringLiteral("userActionRequired"), true}};
+    }
+
+    if (toolName == QLatin1String("open_agent_settings_dialog")) {
+        if (!params.isEmpty())
+            return error(QStringLiteral("This Agent settings action does not accept parameters"),
+                         QStringLiteral("INVALID_PARAM"));
+
+        AgentSettingsDialog* dialog = nullptr;
+        for (AgentSettingsDialog* existing : findChildren<AgentSettingsDialog*>()) {
+            if (!existing || !existing->isVisible())
+                continue;
+            if (existing->isModal()) {
+                dialog = existing;
+                break;
+            }
+            if (!dialog)
+                dialog = existing;
+        }
+        const bool reused = dialog != nullptr || !m_agentPreferencesDialog.isNull();
+        if (!dialog && m_agentPreferencesDialog)
+            dialog = m_agentPreferencesDialog;
+        if (!dialog) {
+            dialog = new AgentSettingsDialog(this);
+            dialog->setAttribute(Qt::WA_DeleteOnClose);
+            dialog->setWindowModality(Qt::NonModal);
+            m_agentPreferencesDialog = dialog;
+            connect(dialog, &QDialog::finished, this, [this, dialog](int) {
+                if (m_agentPreferencesDialog == dialog)
+                    m_agentPreferencesDialog.clear();
+            });
+            connect(dialog, &QDialog::accepted, this, [this, dialog]() { applyAgentSettings(*dialog); });
+        }
+        dialog->show();
+        dialog->raise();
+        dialog->activateWindow();
+        Logger::instance().info(QStringLiteral("Agent opened Agent settings dialog"), "Agent");
+        return QJsonObject{
+            {QStringLiteral("status"), QStringLiteral("opened")},
+            {QStringLiteral("dialogAction"), reused ? QStringLiteral("reused") : QStringLiteral("opened")},
+            {QStringLiteral("userActionRequired"), true}};
+    }
+
+    if (toolName == QLatin1String("open_about_dialog")) {
+        if (!params.isEmpty())
+            return error(QStringLiteral("This About action does not accept parameters"),
+                         QStringLiteral("INVALID_PARAM"));
+
+        const QString title = tr("关于 DeepLux");
+        const QString message = tr("<h2>DeepLux Vision 1.0.0</h2>"
+                                   "<p>工业视觉检测软件</p>"
+                                   "<p>&copy; 2024 DeepLux. All rights reserved.</p>");
+        QMessageBox* dialog = nullptr;
+        for (QMessageBox* existing : findChildren<QMessageBox*>()) {
+            if (!existing || !existing->isVisible() || existing->windowTitle() != title || existing->text() != message)
+                continue;
+            if (existing->isModal()) {
+                dialog = existing;
+                break;
+            }
+            if (!dialog)
+                dialog = existing;
+        }
+        const bool reused = dialog != nullptr || !m_agentAboutDialog.isNull();
+        if (!dialog && m_agentAboutDialog)
+            dialog = m_agentAboutDialog;
+        if (!dialog) {
+            dialog = new QMessageBox(QMessageBox::Information, title, message, QMessageBox::Ok, this);
+            dialog->setObjectName(QStringLiteral("AgentAboutDialog"));
+            dialog->setAttribute(Qt::WA_DeleteOnClose);
+            dialog->setWindowModality(Qt::NonModal);
+            m_agentAboutDialog = dialog;
+            connect(dialog, &QMessageBox::finished, this, [this, dialog](int) {
+                if (m_agentAboutDialog == dialog)
+                    m_agentAboutDialog.clear();
+            });
+        }
+        dialog->show();
+        dialog->raise();
+        dialog->activateWindow();
+        Logger::instance().info(QStringLiteral("Agent opened About dialog"), "Agent");
+        return QJsonObject{
+            {QStringLiteral("status"), QStringLiteral("opened")},
+            {QStringLiteral("dialogAction"), reused ? QStringLiteral("reused") : QStringLiteral("opened")},
+            {QStringLiteral("userActionRequired"), true}};
+    }
+
+    if (toolName == QLatin1String("open_knowledge_base_dialog")) {
+        if (!params.isEmpty())
+            return error(QStringLiteral("This knowledge base action does not accept parameters"),
+                         QStringLiteral("INVALID_PARAM"));
+
+        KnowledgeBaseDialog* dialog = nullptr;
+        for (KnowledgeBaseDialog* existing : findChildren<KnowledgeBaseDialog*>()) {
+            if (!existing || !existing->isVisible())
+                continue;
+            if (existing->isModal()) {
+                dialog = existing;
+                break;
+            }
+            if (!dialog)
+                dialog = existing;
+        }
+        const bool reused = dialog != nullptr || !m_agentKnowledgeBaseDialog.isNull();
+        if (!dialog && m_agentKnowledgeBaseDialog)
+            dialog = m_agentKnowledgeBaseDialog;
+        if (!dialog) {
+            dialog = new KnowledgeBaseDialog(this);
+            dialog->setAttribute(Qt::WA_DeleteOnClose);
+            dialog->setWindowModality(Qt::NonModal);
+            m_agentKnowledgeBaseDialog = dialog;
+            connect(dialog, &QDialog::finished, this, [this, dialog](int) {
+                if (m_agentKnowledgeBaseDialog == dialog)
+                    m_agentKnowledgeBaseDialog.clear();
+            });
+        }
+        dialog->show();
+        dialog->raise();
+        dialog->activateWindow();
+        Logger::instance().info(QStringLiteral("Agent opened knowledge base dialog"), "Agent");
+        return QJsonObject{
+            {QStringLiteral("status"), QStringLiteral("opened")},
+            {QStringLiteral("dialogAction"), reused ? QStringLiteral("reused") : QStringLiteral("opened")},
+            {QStringLiteral("userActionRequired"), true}};
+    }
+
+    if (toolName.startsWith(QLatin1String("__quick_measurement_")) || toolName == QLatin1String("list_viewports") ||
+        toolName == QLatin1String("begin_quick_measurement") ||
+        toolName == QLatin1String("get_quick_measurement_status") ||
+        toolName == QLatin1String("cancel_quick_measurement"))
+        return executeAgentQuickMeasurementAction(toolName, params);
+    if (toolName == QLatin1String("__sam_mask_edit_confirmation_snapshot") ||
+        toolName == QLatin1String("__sam_category_edit_confirmation_snapshot") ||
+        toolName == QLatin1String("__sam_prompt_cancel_confirmation_snapshot") ||
+        toolName == QLatin1String("__sam_mask_edit_preflight") ||
+        toolName == QLatin1String("__sam_category_edit_preflight") ||
+        toolName == QLatin1String("__sam_prompt_cancel_preflight") ||
+        toolName == QLatin1String("list_active_annotation_objects") ||
+        toolName == QLatin1String("edit_active_annotation_masks") ||
+        toolName == QLatin1String("list_active_annotation_categories") ||
+        toolName == QLatin1String("edit_active_annotation_categories") ||
+        toolName == QLatin1String("get_active_annotation_prompt_status") ||
+        toolName == QLatin1String("cancel_active_annotation_prompt") ||
+        toolName == QLatin1String("save_active_annotation_session") ||
+        toolName == QLatin1String("open_active_annotation_session") ||
+        toolName.startsWith(QLatin1String("__sam_session_open_")) ||
+        toolName.startsWith(QLatin1String("__sam_session_save_")))
+        return executeAgentActiveAnnotationAction(toolName, params);
+
+    if (toolName == QLatin1String("list_recent_projects")) {
+        QJsonArray projects;
+        const QStringList recent = ProjectManager::instance().recentProjects();
+        for (int index = 0; index < recent.size(); ++index) {
+            const QString& path = recent.at(index);
+            const QFileInfo info(path);
+            projects.append(QJsonObject{{QStringLiteral("index"), index},
+                                        {QStringLiteral("path"), path},
+                                        {QStringLiteral("fileName"), info.fileName()},
+                                        {QStringLiteral("exists"), info.exists()},
+                                        {QStringLiteral("isFile"), info.isFile()}});
+        }
+        return {{QStringLiteral("status"), QStringLiteral("ok")}, {QStringLiteral("projects"), projects}};
+    }
+
+    if (toolName == QLatin1String("open_global_variables_dialog")) {
+        if (!params.isEmpty())
+            return error(QStringLiteral("This global variables action does not accept parameters"),
+                         QStringLiteral("INVALID_PARAM"));
+
+        GlobalVarView* dialog = nullptr;
+        for (GlobalVarView* existing : findChildren<GlobalVarView*>()) {
+            if (existing && existing->isVisible()) {
+                dialog = existing;
+                break;
+            }
+        }
+        if (!dialog && m_agentGlobalVarDialog)
+            dialog = m_agentGlobalVarDialog;
+        const bool reused = dialog != nullptr;
+        if (reused && !dialog->isVisible() && !dialog->refreshVariablesIfAuthorized())
+            return error(QStringLiteral("Global variable access requires a logged-in user with GlobalVar permission"),
+                         QStringLiteral("PERMISSION_DENIED"));
+        if (!dialog) {
+            dialog = new GlobalVarView(this);
+            dialog->setObjectName(QStringLiteral("AgentGlobalVarDialog"));
+            dialog->setWindowTitle(tr("全局变量"));
+            dialog->setWindowModality(Qt::NonModal);
+            m_agentGlobalVarDialog = dialog;
+        }
+        dialog->show();
+        dialog->raise();
+        dialog->activateWindow();
+        Logger::instance().info(QStringLiteral("Agent opened the global variables window for the user"), "Agent");
+        return {{QStringLiteral("status"), QStringLiteral("opened")},
+                {QStringLiteral("dialogAction"), reused ? QStringLiteral("reused") : QStringLiteral("opened")},
+                {QStringLiteral("userActionRequired"), true}};
+    }
+
+    if (toolName == QLatin1String("open_system_settings")) {
+        if (!m_agentSystemSettingsDialog) {
+            auto* dialog = new SystemParamView(this);
+            dialog->setObjectName(QStringLiteral("AgentSystemSettingsDialog"));
+            dialog->setWindowTitle(tr("系统设置"));
+            dialog->setAttribute(Qt::WA_DeleteOnClose);
+            m_agentSystemSettingsDialog = dialog;
+            connect(dialog, &QDialog::finished, this, [this](int) {
+                ConfigManager& config = ConfigManager::instance();
+                const bool darkTheme = config.isInitialized()
+                                           ? config.groupBool("appearance", "darkTheme", false)
+                                           : SystemConfig::instance().theme() == QLatin1String("dark");
+                if (m_isDarkTheme != darkTheme) {
+                    m_isDarkTheme = darkTheme;
+                    applyTheme();
+                }
+            });
+        }
+        m_agentSystemSettingsDialog->show();
+        m_agentSystemSettingsDialog->raise();
+        m_agentSystemSettingsDialog->activateWindow();
+        Logger::instance().info(QStringLiteral("Agent requested system settings window"), "Agent");
+        return {{QStringLiteral("status"), QStringLiteral("opened")},
+                {QStringLiteral("page"), QStringLiteral("system_settings")},
+                {QStringLiteral("userActionRequired"), true}};
+    }
+
+    if (toolName == QLatin1String("set_theme")) {
+        const QString theme = params.value(QStringLiteral("theme")).toString();
+        if (theme != QLatin1String("light") && theme != QLatin1String("dark"))
+            return error(QStringLiteral("Theme must be light or dark"), QStringLiteral("INVALID_PARAM"));
+
+        const bool darkTheme = theme == QLatin1String("dark");
+        m_isDarkTheme = darkTheme;
+        applyTheme();
+
+        ConfigManager& config = ConfigManager::instance();
+        if (!config.isInitialized())
+            return {{QStringLiteral("status"), QStringLiteral("applied")},
+                    {QStringLiteral("theme"), theme},
+                    {QStringLiteral("persisted"), false}};
+
+        config.setGroupValue(QStringLiteral("appearance"), QStringLiteral("darkTheme"), darkTheme);
+        if (!config.save()) {
+            return {{QStringLiteral("error"), QStringLiteral("Theme was applied but configuration could not be saved")},
+                    {QStringLiteral("errorCode"), QStringLiteral("CONFIG_SAVE_FAILED")},
+                    {QStringLiteral("retryable"), false},
+                    {QStringLiteral("details"), QJsonObject{{QStringLiteral("applied"), true},
+                                                            {QStringLiteral("theme"), theme},
+                                                            {QStringLiteral("persisted"), false}}}};
+        }
+        return {{QStringLiteral("status"), QStringLiteral("applied")},
+                {QStringLiteral("theme"), theme},
+                {QStringLiteral("persisted"), true}};
+    }
+
+    if (toolName == QLatin1String("close_viewport")) {
+        if (!params.contains(QStringLiteral("viewportId")))
+            return error(QStringLiteral("A viewport ID is required"), QStringLiteral("MISSING_PARAM"));
+        const QJsonValue viewportId = params.value(QStringLiteral("viewportId"));
+        if (!viewportId.isString() || viewportId.toString().trimmed().isEmpty())
+            return error(QStringLiteral("Viewport ID must be a non-empty string"), QStringLiteral("INVALID_PARAM"));
+        return closeViewportById(viewportId.toString());
+    }
+
+    if (toolName == QLatin1String("copy_data_source_path_to_clipboard")) {
+        if (!params.contains(QStringLiteral("dataSourceId")))
+            return error(QStringLiteral("A data source ID is required"), QStringLiteral("MISSING_PARAM"));
+        const QJsonValue dataSourceId = params.value(QStringLiteral("dataSourceId"));
+        if (!dataSourceId.isString())
+            return error(QStringLiteral("Data source ID must be a string"), QStringLiteral("INVALID_PARAM"));
+        return copyDataSourcePathById(dataSourceId.toString());
+    }
+
+    if (toolName == QLatin1String("set_inspector_pinned")) {
+        if (!params.contains(QStringLiteral("pinned")))
+            return error(QStringLiteral("Inspector pin state is required"), QStringLiteral("MISSING_PARAM"));
+        const QJsonValue pinnedValue = params.value(QStringLiteral("pinned"));
+        if (!pinnedValue.isBool())
+            return error(QStringLiteral("Inspector pin state must be a boolean"), QStringLiteral("INVALID_PARAM"));
+        if (!m_inspectorPanel)
+            return error(QStringLiteral("Module inspector is unavailable"), QStringLiteral("GUI_UNAVAILABLE"));
+
+        m_inspectorPanel->setPinned(pinnedValue.toBool());
+        return {{QStringLiteral("status"), QStringLiteral("ok")},
+                {QStringLiteral("pinned"), m_inspectorPanel->isPinned()}};
+    }
+
+    if (toolName == QLatin1String("set_inspector_collapsed")) {
+        if (!params.contains(QStringLiteral("collapsed")))
+            return error(QStringLiteral("Inspector collapsed state is required"), QStringLiteral("MISSING_PARAM"));
+        const QJsonValue collapsed = params.value(QStringLiteral("collapsed"));
+        if (!collapsed.isBool())
+            return error(QStringLiteral("Inspector collapsed state must be boolean"), QStringLiteral("INVALID_PARAM"));
+        if (!m_inspectorPanel)
+            return error(QStringLiteral("Module inspector is unavailable"), QStringLiteral("GUI_UNAVAILABLE"));
+        const bool changed = m_inspectorPanel->isCollapsed() != collapsed.toBool();
+        m_inspectorPanel->setCollapsed(collapsed.toBool());
+        return {{QStringLiteral("status"), QStringLiteral("ok")},
+                {QStringLiteral("collapsed"), m_inspectorPanel->isCollapsed()},
+                {QStringLiteral("changed"), changed}};
+    }
+
+    if (toolName == QLatin1String("set_inspector_visibility")) {
+        if (!params.contains(QStringLiteral("visible")))
+            return error(QStringLiteral("Inspector visibility is required"), QStringLiteral("MISSING_PARAM"));
+        const QJsonValue visible = params.value(QStringLiteral("visible"));
+        if (!visible.isBool())
+            return error(QStringLiteral("Inspector visibility must be boolean"), QStringLiteral("INVALID_PARAM"));
+        if (!m_inspectorPanel)
+            return error(QStringLiteral("Module inspector is unavailable"), QStringLiteral("GUI_UNAVAILABLE"));
+        const bool changed =
+            m_inspectorClosed != !visible.toBool() || m_inspectorPanel->isVisible() != visible.toBool();
+        setInspectorVisibility(visible.toBool());
+        return {{QStringLiteral("status"), QStringLiteral("ok")},
+                {QStringLiteral("visible"), m_inspectorPanel->isVisible()},
+                {QStringLiteral("changed"), changed}};
+    }
+
+    if (toolName == QLatin1String("set_primary_viewport_zoom")) {
+        if (!params.contains(QStringLiteral("action")))
+            return error(QStringLiteral("A zoom action is required"), QStringLiteral("MISSING_PARAM"));
+        const QJsonValue actionValue = params.value(QStringLiteral("action"));
+        if (!actionValue.isString())
+            return error(QStringLiteral("Zoom action must be a string"), QStringLiteral("INVALID_PARAM"));
+        const QString action = actionValue.toString();
+        if (action != QLatin1String("zoom_in") && action != QLatin1String("zoom_out") &&
+            action != QLatin1String("fit") && action != QLatin1String("actual"))
+            return error(QStringLiteral("Unsupported zoom action"), QStringLiteral("INVALID_PARAM"));
+
+        ViewportWidget* viewport = primaryDataSourceViewport();
+        if (!viewport)
+            return error(QStringLiteral("Primary image viewport is unavailable"), QStringLiteral("GUI_UNAVAILABLE"));
+        HImageWidget* imageWidget = viewport->imageWidget();
+        if (viewport->displayMode() != ViewportWidget::DisplayMode::Auto2D || !imageWidget || !imageWidget->hasImage())
+            return error(QStringLiteral("Primary viewport has no active 2D image"), QStringLiteral("NO_IMAGE"));
+
+        if (action == QLatin1String("zoom_in"))
+            viewport->zoomIn();
+        else if (action == QLatin1String("zoom_out"))
+            viewport->zoomOut();
+        else if (action == QLatin1String("fit"))
+            viewport->fitToWindow();
+        else
+            viewport->actualSize();
+        return {{QStringLiteral("status"), QStringLiteral("ok")},
+                {QStringLiteral("action"), action},
+                {QStringLiteral("zoomFactor"), imageWidget->zoom()}};
+    }
+
+    if (toolName == QLatin1String("set_primary_viewport_point_size")) {
+        if (!params.contains(QStringLiteral("size")))
+            return error(QStringLiteral("A point size is required"), QStringLiteral("MISSING_PARAM"));
+        const QJsonValue sizeValue = params.value(QStringLiteral("size"));
+        if (!sizeValue.isDouble())
+            return error(QStringLiteral("Point size must be a JSON number"), QStringLiteral("INVALID_PARAM"));
+        const double size = sizeValue.toDouble();
+        if (!std::isfinite(size) || size < 1.0 || size > 8.0 || std::abs(size * 10.0 - std::round(size * 10.0)) > 1e-8)
+            return error(QStringLiteral("Point size must be 1.0–8.0 with at most one decimal place"),
+                         QStringLiteral("INVALID_PARAM"));
+
+        ViewportWidget* viewport = primaryDataSourceViewport();
+        if (!viewport)
+            return error(QStringLiteral("Primary point cloud viewport is unavailable"),
+                         QStringLiteral("GUI_UNAVAILABLE"));
+        if (viewport->displayMode() != ViewportWidget::DisplayMode::Auto3D)
+            return error(QStringLiteral("Primary viewport is not displaying a point cloud"),
+                         QStringLiteral("NO_POINT_CLOUD_VIEW"));
+        auto* pointSize = viewport->findChild<QDoubleSpinBox*>(QStringLiteral("ViewportPointSizeSpinBox"));
+        if (!viewport->viewport3D() || !pointSize)
+            return error(QStringLiteral("Primary point size control is unavailable"),
+                         QStringLiteral("GUI_UNAVAILABLE"));
+
+        pointSize->setValue(size);
+        return {{QStringLiteral("status"), QStringLiteral("ok")}, {QStringLiteral("size"), pointSize->value()}};
+    }
+
+    if (toolName == QLatin1String("set_primary_viewport_display_mode")) {
+        if (!params.contains(QStringLiteral("mode")))
+            return error(QStringLiteral("A display mode is required"), QStringLiteral("MISSING_PARAM"));
+        const QJsonValue modeValue = params.value(QStringLiteral("mode"));
+        if (!modeValue.isString())
+            return error(QStringLiteral("Display mode must be a string"), QStringLiteral("INVALID_PARAM"));
+        const QString mode = modeValue.toString();
+        if (mode != QLatin1String("2d") && mode != QLatin1String("3d"))
+            return error(QStringLiteral("Display mode must be 2d or 3d"), QStringLiteral("INVALID_PARAM"));
+
+        ViewportWidget* viewport = primaryDataSourceViewport();
+        if (!viewport)
+            return error(QStringLiteral("Primary viewport is unavailable"), QStringLiteral("GUI_UNAVAILABLE"));
+        const ViewportWidget::DisplayMode targetMode =
+            mode == QLatin1String("2d") ? ViewportWidget::DisplayMode::Auto2D : ViewportWidget::DisplayMode::Auto3D;
+        const bool changed = viewport->displayMode() != targetMode;
+        if (changed) {
+            if (!viewport->hasCachedImage())
+                return error(QStringLiteral("Primary viewport has no cached image"), QStringLiteral("NO_IMAGE"));
+            if (!viewport->hasCachedPointCloud())
+                return error(QStringLiteral("Primary viewport has no cached point cloud"),
+                             QStringLiteral("NO_POINT_CLOUD"));
+        } else if (targetMode == ViewportWidget::DisplayMode::Auto2D && !viewport->hasCachedImage()) {
+            return error(QStringLiteral("Primary viewport has no cached image"), QStringLiteral("NO_IMAGE"));
+        } else if (targetMode == ViewportWidget::DisplayMode::Auto3D && !viewport->hasCachedPointCloud()) {
+            return error(QStringLiteral("Primary viewport has no cached point cloud"),
+                         QStringLiteral("NO_POINT_CLOUD"));
+        }
+        if (!viewport->setDisplayMode(targetMode))
+            return error(QStringLiteral("Requested display content is unavailable"),
+                         targetMode == ViewportWidget::DisplayMode::Auto2D ? QStringLiteral("NO_IMAGE")
+                                                                           : QStringLiteral("NO_POINT_CLOUD"));
+        return {{QStringLiteral("status"), QStringLiteral("ok")},
+                {QStringLiteral("mode"), mode},
+                {QStringLiteral("changed"), changed}};
+    }
+
+    if (toolName == QLatin1String("set_point_cloud_render_mode")) {
+        if (!params.contains(QStringLiteral("mode")))
+            return error(QStringLiteral("A render mode is required"), QStringLiteral("MISSING_PARAM"));
+        const QJsonValue modeValue = params.value(QStringLiteral("mode"));
+        if (!modeValue.isString())
+            return error(QStringLiteral("Render mode must be a string"), QStringLiteral("INVALID_PARAM"));
+        static const QStringList modes{QStringLiteral("uniform"), QStringLiteral("rgb"),
+                                       QStringLiteral("height"),  QStringLiteral("intensity"),
+                                       QStringLiteral("normal"),  QStringLiteral("blinn_phong")};
+        const int index = modes.indexOf(modeValue.toString());
+        if (index < 0)
+            return error(QStringLiteral("Unsupported render mode"), QStringLiteral("INVALID_PARAM"));
+
+        const bool anyPointCloudModeVisible =
+            std::any_of(std::begin(m_renderActions), std::end(m_renderActions),
+                        [](const QAction* action) { return action && action->isVisible(); });
+        if (!anyPointCloudModeVisible)
+            return error(QStringLiteral("No visible point cloud is available"), QStringLiteral("NO_POINT_CLOUD_VIEW"));
+        QAction* action = m_renderActions[index];
+        if (!action || !action->isVisible() || !action->isEnabled())
+            return error(QStringLiteral("The current point cloud does not support this render mode"),
+                         QStringLiteral("RENDER_MODE_UNAVAILABLE"));
+        const QVector<ViewportWidget*> viewports =
+            m_displayManager ? m_displayManager->allViewports() : QVector<ViewportWidget*>{};
+        const bool viewportMismatch =
+            std::any_of(viewports.cbegin(), viewports.cend(), [index](const ViewportWidget* viewport) {
+                return viewport && viewport->renderMode() != index;
+            });
+        if (!action->isChecked() || viewportMismatch)
+            action->trigger();
+        return {{QStringLiteral("status"), QStringLiteral("ok")}, {QStringLiteral("mode"), modeValue.toString()}};
+    }
+
+    if (toolName == QLatin1String("set_log_level_filter")) {
+        const QString minimumLevel = params.value(QStringLiteral("minimumLevel")).toString();
+        const QStringList levels{QStringLiteral("all"), QStringLiteral("debug"), QStringLiteral("info"),
+                                 QStringLiteral("warning"), QStringLiteral("error")};
+        const int index = levels.indexOf(minimumLevel);
+        if (index < 0)
+            return error(QStringLiteral("A supported minimum log level is required"), QStringLiteral("INVALID_PARAM"));
+        if (!m_logTable)
+            return error(QStringLiteral("Runtime log table is unavailable"), QStringLiteral("GUI_UNAVAILABLE"));
+
+        onLogFilterChanged(index);
+        int visibleRows = 0;
+        for (int row = 0; row < m_logTable->rowCount(); ++row) {
+            if (!m_logTable->isRowHidden(row))
+                ++visibleRows;
+        }
+        return {{QStringLiteral("status"), QStringLiteral("ok")},
+                {QStringLiteral("minimumLevel"), minimumLevel},
+                {QStringLiteral("visibleRows"), visibleRows}};
+    }
+
+    if (toolName == QLatin1String("select_log_panel_tab")) {
+        const QString tab = params.value(QStringLiteral("tab")).toString();
+        if (tab != QLatin1String("runtime") && tab != QLatin1String("agent") && tab != QLatin1String("terminal"))
+            return error(QStringLiteral("A supported log panel tab is required"), QStringLiteral("INVALID_PARAM"));
+        if (!m_logTerminalTabs)
+            return error(QStringLiteral("Log panel tabs are unavailable"), QStringLiteral("GUI_UNAVAILABLE"));
+
+        QWidget* target = nullptr;
+        if (tab == QLatin1String("runtime"))
+            target = m_logTable ? m_logTable->parentWidget() : nullptr;
+        else if (tab == QLatin1String("agent"))
+            target = m_agentActionLogWidget;
+        else
+            target = m_terminalWidget;
+        const int targetIndex = target ? m_logTerminalTabs->indexOf(target) : -1;
+        if (targetIndex < 0)
+            return error(QStringLiteral("Requested log panel tab is unavailable"), QStringLiteral("GUI_UNAVAILABLE"));
+
+        m_logTerminalTabs->setCurrentWidget(target);
+        if (m_logTerminalTabs->currentWidget() != target)
+            return error(QStringLiteral("Requested log panel tab did not become current"),
+                         QStringLiteral("TAB_SELECTION_FAILED"));
+        return {{QStringLiteral("status"), QStringLiteral("ok")},
+                {QStringLiteral("tab"), tab},
+                {QStringLiteral("tabIndex"), targetIndex},
+                {QStringLiteral("dockVisible"), m_logDock && m_logDock->isVisible()}};
+    }
+
+    if (toolName == QLatin1String("scroll_agent_chat_to_latest")) {
+        if (!m_agentChatPanel || !m_agentChatPanel->canScrollToLatest())
+            return error(QStringLiteral("Agent conversation panel is unavailable"), QStringLiteral("GUI_UNAVAILABLE"));
+        int scrollValue = 0;
+        int scrollMaximum = 0;
+        if (!m_agentChatPanel->scrollToLatest(scrollValue, scrollMaximum))
+            return error(QStringLiteral("Agent conversation did not reach its latest message"),
+                         QStringLiteral("SCROLL_FAILED"));
+        return {{QStringLiteral("status"), QStringLiteral("ok")},
+                {QStringLiteral("scrollValue"), scrollValue},
+                {QStringLiteral("scrollMaximum"), scrollMaximum},
+                {QStringLiteral("atLatest"), true}};
+    }
+
+    if (toolName == QLatin1String("clear_runtime_logs")) {
+        if (!m_logTable)
+            return error(QStringLiteral("Runtime log table is unavailable"), QStringLiteral("GUI_UNAVAILABLE"));
+
+        const int clearedRuntimeRows = m_logTable->rowCount();
+        const int clearedLoggerEntries = Logger::instance().clearLogsAndGetCount();
+        return {{QStringLiteral("status"), QStringLiteral("completed")},
+                {QStringLiteral("clearedLoggerEntries"), clearedLoggerEntries},
+                {QStringLiteral("clearedRuntimeRows"), clearedRuntimeRows}};
+    }
+
+    if (toolName == QLatin1String("set_workspace_panel_visibility")) {
+        const QString panel = params.value(QStringLiteral("panel")).toString();
+        if (!params.value(QStringLiteral("visible")).isBool() ||
+            (panel != QLatin1String("tools") && panel != QLatin1String("process") && panel != QLatin1String("bottom")))
+            return error(QStringLiteral("A supported panel and boolean visible value are required"),
+                         QStringLiteral("INVALID_PARAM"));
+
+        QAction* action = nullptr;
+        QWidget* panelWidget = nullptr;
+        if (panel == QLatin1String("tools")) {
+            action = m_viewToolPanelAction;
+            panelWidget = m_toolBoxDock;
+        } else if (panel == QLatin1String("process")) {
+            action = m_viewProcessPanelAction;
+            panelWidget = m_processTabWidget;
+        } else {
+            action = m_viewBottomPanelAction;
+            panelWidget = m_logDock;
+        }
+        if (!action || !panelWidget)
+            return {{QStringLiteral("error"), QStringLiteral("Workspace panel is unavailable")},
+                    {QStringLiteral("errorCode"), QStringLiteral("VISIBILITY_UPDATE_FAILED")},
+                    {QStringLiteral("retryable"), false},
+                    {QStringLiteral("panel"), panel},
+                    {QStringLiteral("visible"), QJsonValue::Null},
+                    {QStringLiteral("effectivelyVisible"), QJsonValue::Null},
+                    {QStringLiteral("suppressedByFocusMode"), false}};
+
+        const bool requestedVisible = params.value(QStringLiteral("visible")).toBool();
+        if (panel == QLatin1String("tools"))
+            m_toolPanelUserClosed = !requestedVisible;
+        action->setChecked(requestedVisible);
+        if (m_focusMode && requestedVisible) {
+            if (panel == QLatin1String("tools")) {
+                m_toolPanelSuppressSignal = true;
+                m_toolBoxDock->setVisible(false);
+                m_toolPanelSuppressSignal = false;
+            } else if (panel == QLatin1String("bottom")) {
+                m_focusSavedLogVisible = true;
+                m_logDock->setVisible(false);
+            }
+        } else if (m_focusMode && panel == QLatin1String("bottom")) {
+            m_focusSavedLogVisible = false;
+        }
+
+        const bool actionVisible = action->isChecked();
+        const bool effectivelyVisible = panelWidget->isVisible();
+        const bool suppressedByFocusMode = m_focusMode && actionVisible && !effectivelyVisible;
+        if (actionVisible != requestedVisible)
+            return {
+                {QStringLiteral("error"), QStringLiteral("Panel visibility action did not accept the requested state")},
+                {QStringLiteral("errorCode"), QStringLiteral("VISIBILITY_UPDATE_FAILED")},
+                {QStringLiteral("retryable"), false},
+                {QStringLiteral("panel"), panel},
+                {QStringLiteral("visible"), actionVisible},
+                {QStringLiteral("effectivelyVisible"), effectivelyVisible},
+                {QStringLiteral("suppressedByFocusMode"), suppressedByFocusMode}};
+        return {{QStringLiteral("status"), QStringLiteral("ok")},
+                {QStringLiteral("panel"), panel},
+                {QStringLiteral("visible"), actionVisible},
+                {QStringLiteral("effectivelyVisible"), effectivelyVisible},
+                {QStringLiteral("suppressedByFocusMode"), suppressedByFocusMode}};
+    }
+
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project)
+        return error(QStringLiteral("No project is open"), QStringLiteral("NO_PROJECT"));
+
+    if (toolName == QLatin1String("select_flow_module")) {
+        const QString instanceId = params.value(QStringLiteral("instanceId")).toString();
+        if (instanceId.trimmed().isEmpty())
+            return error(QStringLiteral("A non-empty module instance ID is required"), QStringLiteral("INVALID_PARAM"));
+        int matches = 0;
+        for (const ModuleInstance& instance : project->modules()) {
+            if (instance.id == instanceId)
+                ++matches;
+        }
+        if (matches == 0)
+            return error(QStringLiteral("Module instance was not found"), QStringLiteral("MODULE_NOT_FOUND"));
+        if (matches > 1)
+            return error(QStringLiteral("Module instance ID is ambiguous"), QStringLiteral("INSTANCE_ID_AMBIGUOUS"));
+        if (!m_inspectorPanel)
+            return error(QStringLiteral("Module selection requires an available inspector"),
+                         QStringLiteral("GUI_UNAVAILABLE"));
+        if (m_inspectorPanel->isPinned() && !m_selectedModuleId.isEmpty() && m_selectedModuleId != instanceId)
+            return error(QStringLiteral("Inspector is pinned to another module"), QStringLiteral("INSPECTOR_PINNED"));
+        selectModule(instanceId, true, false);
+        if (m_selectedModuleId != instanceId)
+            return error(QStringLiteral("Module selection did not complete"), QStringLiteral("SELECTION_FAILED"));
+        m_inspectorPanel->showParamsTab();
+        return {{QStringLiteral("status"), QStringLiteral("selected")},
+                {QStringLiteral("instanceId"), instanceId},
+                {QStringLiteral("inspectorVisible"), !m_inspectorClosed},
+                {QStringLiteral("paramsTabVisible"), true}};
+    }
+
+    if (toolName == QLatin1String("get_data_source_view_state")) {
+        QJsonArray states;
+        const QList<DataSource> sources = project->dataSources();
+        QSet<QString> ids;
+        for (const DataSource& source : sources) {
+            if (ids.contains(source.id))
+                return error(QStringLiteral("Project contains duplicate data source IDs"),
+                             QStringLiteral("DATA_SOURCE_ID_AMBIGUOUS"));
+            ids.insert(source.id);
+        }
+        for (const DataSource& source : sources) {
+            const QString viewportId = m_dataSourceViewportIds.value(source.id);
+            const bool dedicated = !viewportId.isEmpty() && m_displayManager && m_displayManager->viewport(viewportId);
+            states.append(QJsonObject{{QStringLiteral("id"), source.id},
+                                      {QStringLiteral("displayed"), m_dataSourceDisplayData.contains(source.id)},
+                                      {QStringLiteral("visible"), !m_hiddenDataSourceIds.contains(source.id)},
+                                      {QStringLiteral("inDedicatedViewport"), dedicated}});
+        }
+        return {{QStringLiteral("status"), QStringLiteral("ok")},
+                {QStringLiteral("dataSources"), states},
+                {QStringLiteral("total"), states.size()}};
+    }
+
+    const QString dataSourceId = params.value(QStringLiteral("dataSourceId")).toString();
+    QString errorCode;
+    if (toolName == QLatin1String("display_data_source_in_dedicated_viewport")) {
+        QString viewportId;
+        bool created = false;
+        if (!displayDataSourceInDedicatedViewportById(dataSourceId, &errorCode, &viewportId, &created))
+            return error(tr("Could not display data source %1 in its dedicated viewport").arg(dataSourceId), errorCode);
+        return {{QStringLiteral("status"), QStringLiteral("displayed")},
+                {QStringLiteral("dataSourceId"), dataSourceId},
+                {QStringLiteral("viewportId"), viewportId},
+                {QStringLiteral("created"), created}};
+    }
+    if (toolName == QLatin1String("display_data_source")) {
+        if (!displayDataSourceById(dataSourceId, &errorCode))
+            return error(tr("Could not display data source %1").arg(dataSourceId), errorCode);
+        ViewportWidget* viewport = primaryDataSourceViewport();
+        return {{QStringLiteral("status"), QStringLiteral("displayed")},
+                {QStringLiteral("dataSourceId"), dataSourceId},
+                {QStringLiteral("viewportId"), viewport ? viewport->viewportId() : QString()}};
+    }
+    if (toolName == QLatin1String("set_data_source_visibility")) {
+        const bool visible = params.value(QStringLiteral("visible")).toBool();
+        if (!setDataSourceVisibilityById(dataSourceId, visible, &errorCode))
+            return error(tr("Could not change visibility for data source %1").arg(dataSourceId), errorCode);
+        const bool displayed = m_dataSourceDisplayData.contains(dataSourceId);
+        return {{QStringLiteral("status"), visible ? QStringLiteral("visible") : QStringLiteral("hidden")},
+                {QStringLiteral("dataSourceId"), dataSourceId},
+                {QStringLiteral("displayed"), displayed}};
+    }
+    return error(QStringLiteral("Unsupported data source GUI action"), QStringLiteral("UNSUPPORTED_TOOL"));
 }
 
 void MainWindow::onDisplayDataSourceInNewViewport(const QString& dataSourceId) {
-    Project* project = ProjectManager::instance().currentProject();
-    if (!project || dataSourceId.isEmpty()) {
-        return;
-    }
+    QString errorCode;
+    if (!displayDataSourceInDedicatedViewportById(dataSourceId, &errorCode))
+        Logger::instance().warning(tr("专用视口显示数据源失败：%1 (%2)").arg(dataSourceId, errorCode), "Display");
+}
 
-    const auto ds = project->findDataSource(dataSourceId);
-    if (!ds || !ds->isValid()) {
-        return;
+bool MainWindow::displayDataSourceInDedicatedViewportById(const QString& dataSourceId, QString* errorCode,
+                                                          QString* viewportId, bool* created) {
+    auto fail = [errorCode](const QString& code) {
+        if (errorCode)
+            *errorCode = code;
+        return false;
+    };
+    if (dataSourceId.trimmed().isEmpty())
+        return fail(QStringLiteral("INVALID_PARAM"));
+    if (QThread::currentThread() != thread())
+        return fail(QStringLiteral("THREAD_AFFINITY"));
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project)
+        return fail(QStringLiteral("NO_PROJECT"));
+
+    std::optional<DataSource> source;
+    int matches = 0;
+    for (const DataSource& candidate : project->dataSources()) {
+        if (candidate.id == dataSourceId) {
+            ++matches;
+            if (matches == 1)
+                source = candidate;
+        }
     }
+    if (matches == 0)
+        return fail(QStringLiteral("DATA_SOURCE_NOT_FOUND"));
+    if (matches != 1)
+        return fail(QStringLiteral("DATA_SOURCE_ID_AMBIGUOUS"));
+    if (!source->isValid() || (!source->isImage() && !source->isPointCloud()))
+        return fail(QStringLiteral("DATA_SOURCE_LOAD_FAILED"));
+    if (m_hiddenDataSourceIds.contains(dataSourceId))
+        return fail(QStringLiteral("DATA_SOURCE_HIDDEN"));
 
     if (!m_dataSourceDisplayData.contains(dataSourceId)) {
-        if (ds->isPointCloud()) {
-            importPointCloudFile(ds->filePath, dataSourceId);
-        } else if (ds->isImage()) {
-            importImageFile(ds->filePath, dataSourceId);
+        bool loaded = false;
+        if (source->isPointCloud())
+            loaded = importPointCloudFile(source->filePath, dataSourceId, false);
+        else
+            loaded = importImageFile(source->filePath, dataSourceId, false);
+        if (!loaded || !m_dataSourceDisplayData.contains(dataSourceId))
+            return fail(QStringLiteral("DATA_SOURCE_LOAD_FAILED"));
+    }
+
+    const QString previousViewportId = m_dataSourceViewportIds.value(dataSourceId);
+    const bool didCreate =
+        previousViewportId.isEmpty() || !m_displayManager || !m_displayManager->viewport(previousViewportId);
+    const QString id = ensureDataSourceViewport(dataSourceId, source->name);
+    ViewportWidget* viewport = m_displayManager ? m_displayManager->viewport(id) : nullptr;
+    if (!viewport) {
+        if (didCreate && !id.isEmpty()) {
+            m_dataSourceViewportIds.remove(dataSourceId);
+            m_displayManager->destroyViewport(id);
         }
+        return fail(QStringLiteral("GUI_UNAVAILABLE"));
     }
 
     const auto data = m_dataSourceDisplayData.constFind(dataSourceId);
-    if (data == m_dataSourceDisplayData.cend()) {
-        return;
-    }
-
-    ViewportWidget* viewport =
-        m_displayManager ? m_displayManager->viewport(ensureDataSourceViewport(dataSourceId, ds->name)) : nullptr;
-    if (!viewport) {
-        return;
-    }
-
-    if (data->pointCloudData() && m_dataSourcePreviewImages.contains(dataSourceId)) {
+    if (data->pointCloudData() && m_dataSourcePreviewImages.contains(dataSourceId))
         viewport->setDualData(m_dataSourcePreviewImages.value(dataSourceId), *data);
-    } else if (data->imageData()) {
+    else
         viewport->displayData(*data);
-    } else {
-        viewport->displayData(*data);
-    }
-    viewport->setTitle(ds->name);
-    viewport->setVisible(!m_hiddenDataSourceIds.contains(dataSourceId));
+    viewport->setTitle(source->name);
+    viewport->setVisible(true);
+    if (viewportId)
+        *viewportId = id;
+    if (created)
+        *created = didCreate;
+    if (errorCode)
+        errorCode->clear();
+    return true;
 }
 
 void MainWindow::onRemoveDataSource(const QString& dataSourceId) {
@@ -3544,17 +5896,53 @@ void MainWindow::onShowDataSourceInFolder(const QString& dataSourceId) {
     auto ds = project->findDataSource(dataSourceId);
     if (!ds || ds->filePath.isEmpty())
         return;
-    QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(ds->filePath).absolutePath()));
+    openDesktopUrl(QUrl::fromLocalFile(QFileInfo(ds->filePath).absolutePath()));
+}
+
+bool MainWindow::openDesktopUrl(const QUrl& url) const {
+    return QDesktopServices::openUrl(url);
 }
 
 void MainWindow::onCopyDataSourcePath(const QString& dataSourceId) {
+    copyDataSourcePathById(dataSourceId);
+}
+
+QJsonObject MainWindow::copyDataSourcePathById(const QString& dataSourceId) {
+    auto error = [](const QString& message, const QString& code) {
+        return QJsonObject{{QStringLiteral("error"), message},
+                           {QStringLiteral("errorCode"), code},
+                           {QStringLiteral("retryable"), false}};
+    };
+    if (QThread::currentThread() != thread())
+        return error(QStringLiteral("Clipboard update must run on the main window thread"),
+                     QStringLiteral("THREAD_AFFINITY"));
     Project* project = ProjectManager::instance().currentProject();
     if (!project)
-        return;
-    auto ds = project->findDataSource(dataSourceId);
-    if (!ds || ds->filePath.isEmpty())
-        return;
-    QGuiApplication::clipboard()->setText(ds->filePath);
+        return error(QStringLiteral("No project is open"), QStringLiteral("NO_PROJECT"));
+    if (dataSourceId.trimmed().isEmpty())
+        return error(QStringLiteral("A non-empty data source ID is required"), QStringLiteral("INVALID_PARAM"));
+
+    const QList<DataSource> sources = project->dataSources();
+    const DataSource* match = nullptr;
+    for (const DataSource& source : sources) {
+        if (source.id != dataSourceId)
+            continue;
+        if (match)
+            return error(QStringLiteral("Data source ID is ambiguous"), QStringLiteral("DATA_SOURCE_ID_AMBIGUOUS"));
+        match = &source;
+    }
+    if (!match)
+        return error(QStringLiteral("Data source was not found"), QStringLiteral("DATA_SOURCE_NOT_FOUND"));
+    if (match->filePath.isEmpty())
+        return error(QStringLiteral("Data source has no file path"), QStringLiteral("DATA_SOURCE_PATH_UNAVAILABLE"));
+
+    QClipboard* clipboard = QGuiApplication::clipboard();
+    if (!clipboard)
+        return error(QStringLiteral("System clipboard is unavailable"), QStringLiteral("GUI_UNAVAILABLE"));
+    clipboard->setText(match->filePath);
+    return {{QStringLiteral("status"), QStringLiteral("copied")},
+            {QStringLiteral("dataSourceId"), dataSourceId},
+            {QStringLiteral("path"), match->filePath}};
 }
 
 void MainWindow::addMeasurementConfigAction(QVBoxLayout* layout, const QString& consumerModuleId,
@@ -3595,7 +5983,7 @@ void MainWindow::addMeasurementConfigAction(QVBoxLayout* layout, const QString& 
 }
 
 QString MainWindow::ensureMeasurementInputForMode(const QString& mode, const QString& consumerInstanceId) {
-    if (mode.isEmpty()) {
+    if (mode.isEmpty() || rejectBusyFlowEdit(tr("创建测量输入"))) {
         return QString();
     }
 
@@ -3886,6 +6274,8 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         if (keyEvent->key() == Qt::Key_Delete) {
             QList<QTreeWidgetItem*> selected = m_processTreeController->selectedItems();
             if (!selected.isEmpty()) {
+                if (rejectBusyFlowEdit(tr("删除模块")))
+                    return true;
                 QTreeWidgetItem* item = selected.first();
                 QString instanceName = item->data(0, Qt::UserRole + 1).toString();
                 m_processTreeController->removeFlowModule(instanceName);
@@ -3902,6 +6292,10 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
             (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove ||
              event->type() == QEvent::Drop)) {
             QDropEvent* dropEvent = static_cast<QDropEvent*>(event);
+            if (rejectBusyFlowEdit(tr("编辑流程"))) {
+                dropEvent->ignore();
+                return true;
+            }
 
             // 获取拖放的数据
             const QMimeData* mimeData = dropEvent->mimeData();
@@ -3921,9 +6315,20 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 return dropEvent->pos().y() < itemMiddle ? hoverRow : hoverRow + 1;
             };
 
+            const QString pluginName = PluginDragPayload::pluginName(mimeData);
+            const QString draggedFlowInstanceId = PluginDragPayload::flowInstanceId(mimeData);
+            const bool hasPluginPayload = !pluginName.isEmpty() && draggedFlowInstanceId.isEmpty();
             const bool isToolBoxDrop =
-                dropEvent->source() == m_toolBoxTree || dropEvent->source() == m_toolBoxTree->viewport();
-            const bool isProcessTreeDrop = dropEvent->source() == tree || dropEvent->source() == tree->viewport();
+                (dropEvent->source() == m_toolBoxTree || dropEvent->source() == m_toolBoxTree->viewport())
+                    ? hasPluginPayload
+                    : (!dropEvent->source() && hasPluginPayload);
+            QTreeWidgetItem* selectedFlowItem = m_processTreeController->currentItem();
+            const bool hasSelectedFlowPayload =
+                pluginName.isEmpty() && !draggedFlowInstanceId.isEmpty() && selectedFlowItem &&
+                selectedFlowItem->data(0, Qt::UserRole).toString() == "flow_item" &&
+                selectedFlowItem->data(0, Qt::UserRole + 1).toString() == draggedFlowInstanceId;
+            const bool isProcessTreeSource = dropEvent->source() == tree || dropEvent->source() == tree->viewport();
+            const bool isProcessTreeDrop = (isProcessTreeSource || !dropEvent->source()) && hasSelectedFlowPayload;
             if (!isToolBoxDrop && !isProcessTreeDrop) {
                 dropEvent->ignore();
                 return true;
@@ -4002,43 +6407,13 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                     newItem->setData(0, Qt::UserRole, "flow_item");
                     newItem->setData(0, Qt::UserRole + 1, instanceName);
                     newItem->setData(0, Qt::UserRole + 2, pluginName);
-                    m_processTreeController->insertInstanceItem(instanceName, newItem); // 防 Project 信号重复创建
+                    const QString placeholderToken = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                    newItem->setData(0, Qt::UserRole + 3, placeholderToken);
+                    m_processTreeController->insertPendingInsertion(instanceName, newItem, placeholderToken);
 
                     // 推迟模块创建到事件循环 — 避免在拖放嵌套循环中阻塞
-                    QTimer::singleShot(0, this, [this, pluginName, instanceName, newItem]() {
-                        DeepLux::PluginManager& pm = DeepLux::PluginManager::instance();
-                        IModule* module = pm.createModule(pluginName);
-                        if (!module) {
-                            Logger::instance().error(tr("无法创建插件：%1").arg(pluginName), "Flow");
-                            m_processTreeController->removeModule(instanceName);
-                            return;
-                        }
-                        if (!module->initialize()) {
-                            Logger::instance().error(tr("插件初始化失败：%1").arg(pluginName), "Flow");
-                            delete module;
-                            m_processTreeController->removeModule(instanceName);
-                            return;
-                        }
-                        // 通过 Project 模型添加 — moduleAdded 信号同步 processTree + FlowCanvas
-                        const QString displayName = toolDisplayName(pluginName, module->name());
-                        newItem->setText(0, displayName);
-                        newItem->setIcon(0, module->icon());
-                        m_flowModules.insert(instanceName, module);
-                        m_modulesNeedSync = true;
-                        ModuleInstance inst;
-                        inst.id = instanceName;
-                        inst.moduleId = pluginName;
-                        inst.name = displayName;
-                        Project* proj = ProjectManager::instance().currentProject();
-                        if (proj) {
-                            proj->addModule(inst);
-                            proj->moveModule(instanceName, m_processTreeController->indexOfTopLevelItem(newItem));
-                        }
-                        Logger::instance().info(tr("已添加插件到流程：%1 (%2)").arg(displayName).arg(instanceName),
-                                                "Flow");
-                        // P1-4: 模块创建后重新选择，更新检查器
-                        selectModule(instanceName, true);
-                    });
+                    schedulePendingToolboxDrop(pluginName, instanceName, newItem, placeholderToken,
+                                               ProjectManager::instance().currentProject());
 
                     dropEvent->setDropAction(Qt::CopyAction);
                     dropEvent->accept();
@@ -4053,6 +6428,68 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     }
 
     return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::schedulePendingToolboxDrop(const QString& pluginName, const QString& instanceName,
+                                            QTreeWidgetItem* item, const QString& token, Project* targetProject) {
+    QPointer<Project> guardedProject(targetProject);
+    QTimer::singleShot(0, this, [this, pluginName, instanceName, item, token, guardedProject]() {
+        commitPendingToolboxDrop(pluginName, instanceName, item, token, guardedProject.data());
+    });
+}
+
+void MainWindow::commitPendingToolboxDrop(const QString& pluginName, const QString& instanceName, QTreeWidgetItem* item,
+                                          const QString& token, Project* targetProject) {
+    auto discardPlaceholder = [this, &instanceName, item, &token]() {
+        if (m_processTreeController)
+            m_processTreeController->discardPendingInsertion(instanceName, item, token);
+    };
+    auto validPendingDrop = [this, instanceName, item, token, targetProject]() {
+        return !RunEngine::instance().isBusy() && targetProject &&
+               ProjectManager::instance().currentProject() == targetProject && m_processTreeController &&
+               m_processTreeController->isPendingInsertion(instanceName, item, token);
+    };
+
+    if (!validPendingDrop()) {
+        statusBar()->showMessage(tr("运行状态或工程已变化，未添加插件"), 5000);
+        discardPlaceholder();
+        return;
+    }
+
+    IModule* module = PluginManager::instance().createModule(pluginName);
+    if (!module) {
+        Logger::instance().error(tr("无法创建插件：%1").arg(pluginName), "Flow");
+        discardPlaceholder();
+        return;
+    }
+    if (!module->initialize()) {
+        Logger::instance().error(tr("插件初始化失败：%1").arg(pluginName), "Flow");
+        PluginManager::instance().destroyModule(module);
+        discardPlaceholder();
+        return;
+    }
+    if (!validPendingDrop()) {
+        module->shutdown();
+        PluginManager::instance().destroyModule(module);
+        statusBar()->showMessage(tr("运行状态或工程已变化，未添加插件"), 5000);
+        discardPlaceholder();
+        return;
+    }
+
+    m_processTreeController->completePendingInsertion(instanceName, token);
+    const QString displayName = toolDisplayName(pluginName, module->name());
+    item->setText(0, displayName);
+    item->setIcon(0, module->icon());
+    m_flowModules.insert(instanceName, module);
+    m_modulesNeedSync = true;
+    ModuleInstance inst;
+    inst.id = instanceName;
+    inst.moduleId = pluginName;
+    inst.name = displayName;
+    targetProject->addModule(inst);
+    targetProject->moveModule(instanceName, m_processTreeController->indexOfTopLevelItem(item));
+    Logger::instance().info(tr("已添加插件到流程：%1 (%2)").arg(displayName).arg(instanceName), "Flow");
+    selectModule(instanceName, true);
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
@@ -4102,13 +6539,16 @@ bool MainWindow::importFile(const QString& filePath) {
         return false;
     }
 
+    const QString ext = fileInfo.suffix().toLower();
+    if (ext != "ply" && ext != "tif" && ext != "tiff" && rejectBusyFlowEdit(tr("导入图像并配置流程")))
+        return false;
+
     if (!ProjectManager::instance().hasProject()) {
         ProjectManager::instance().newProject();
         Logger::instance().info(tr("自动创建项目"), "System");
     }
 
     m_lastImportedImagePath = filePath;
-    QString ext = fileInfo.suffix().toLower();
     Logger::instance().info(QString("[importFile] %1 ext=%2").arg(fileInfo.fileName()).arg(ext), "3D");
 
     if (ext == "ply" || ext == "tif" || ext == "tiff") {
@@ -4119,7 +6559,8 @@ bool MainWindow::importFile(const QString& filePath) {
     return importImageFile(filePath);
 }
 
-bool MainWindow::importPointCloudFile(const QString& filePath, const QString& existingDataSourceId) {
+bool MainWindow::importPointCloudFile(const QString& filePath, const QString& existingDataSourceId,
+                                      bool rebuildPrimaryDisplay) {
     QFileInfo fileInfo(filePath);
     QString ext = fileInfo.suffix().toLower();
     Logger::instance().info(
@@ -4176,7 +6617,7 @@ bool MainWindow::importPointCloudFile(const QString& filePath, const QString& ex
         }
     }
 
-    Logger::instance().info(QString("[imp3D] loaded %1 points, updating main viewport").arg(pc.size()), "3D");
+    Logger::instance().info(QString("[imp3D] loaded %1 points").arg(pc.size()), "3D");
 
     size_t pointCount = pc.size();
     DisplayData data;
@@ -4222,18 +6663,23 @@ bool MainWindow::importPointCloudFile(const QString& filePath, const QString& ex
     } else {
         m_dataSourcePreviewImages.insert(ds.id, previewImage);
     }
-    rebuildPrimaryDataSourceDisplay();
+    if (rebuildPrimaryDisplay)
+        rebuildPrimaryDataSourceDisplay();
     Logger::instance().info(tr("导入 3D 点云：%1 (%2 点)").arg(fileInfo.fileName()).arg(pointCount), "System");
 
-    if (m_processTabWidget && m_dataSourcePanel) {
+    if (rebuildPrimaryDisplay && m_processTabWidget && m_dataSourcePanel) {
         m_processTabWidget->setCurrentWidget(m_dataSourcePanel);
     }
 
     return true;
 }
 
-bool MainWindow::importImageFile(const QString& filePath, const QString& existingDataSourceId) {
+bool MainWindow::importImageFile(const QString& filePath, const QString& existingDataSourceId,
+                                 bool rebuildPrimaryDisplay) {
     Logger::instance().info(tr("导入图像：%1").arg(filePath), "System");
+
+    if (existingDataSourceId.isEmpty() && rejectBusyFlowEdit(tr("导入图像并配置流程")))
+        return false;
 
     QFileInfo fileInfo(filePath);
     Project* project = ProjectManager::instance().currentProject();
@@ -4276,10 +6722,11 @@ bool MainWindow::importImageFile(const QString& filePath, const QString& existin
         data.variant() = ImageData(image);
         data.setMetadata(QVariantMap{{"dataSourceId", ds.id}, {"dataSourceName", ds.name}});
         m_dataSourceDisplayData.insert(ds.id, std::move(data));
-        rebuildPrimaryDataSourceDisplay();
+        if (rebuildPrimaryDisplay)
+            rebuildPrimaryDataSourceDisplay();
     }
 
-    if (m_processTabWidget && m_dataSourcePanel) {
+    if (rebuildPrimaryDisplay && m_processTabWidget && m_dataSourcePanel) {
         m_processTabWidget->setCurrentWidget(m_dataSourcePanel);
     }
 
@@ -4337,10 +6784,10 @@ void MainWindow::autoConfigureGrabImage(const QString& filePath) {
         IModule* module = it.value();
         if (module && module->moduleId().contains("GrabImage", Qt::CaseInsensitive)) {
             module->setParam("filePath", filePath);
-            module->setParam("grabSource", "File");
+            module->setParam("grabSource", "Path");
             if (Project* project = ProjectManager::instance().currentProject()) {
                 project->setModuleParam(it.key(), QStringLiteral("filePath"), filePath);
-                project->setModuleParam(it.key(), QStringLiteral("grabSource"), QStringLiteral("File"));
+                project->setModuleParam(it.key(), QStringLiteral("grabSource"), QStringLiteral("Path"));
             } else {
                 markModuleDirty(it.key());
             }
@@ -4603,8 +7050,14 @@ void MainWindow::openAdvancedPluginConfig(const QString& instanceId) {
         return;
     }
 
-    // 阶段 1: 保存原始参数快照
-    const QJsonObject paramsBefore = module->currentParams();
+    // Keep the runtime-effective values for draft comparison and the sparse
+    // project values for exact Undo (missing keys must not become JSON null).
+    const QJsonObject effectiveParamsBefore = module->currentParams();
+    Project* projectAtOpen = ProjectManager::instance().currentProject();
+    const std::optional<ModuleInstance> instanceAtOpen =
+        projectAtOpen ? projectAtOpen->moduleById(instanceId) : std::nullopt;
+    const QJsonObject projectParamsBefore = instanceAtOpen ? instanceAtOpen->params : QJsonObject{};
+    QPointer<Project> projectPtrAtOpen(projectAtOpen);
 
     // 阶段 1: 创建草稿模块（clone），配置控件绑定草稿，不直接修改运行模块
     IModule* draft = module->clone();
@@ -4665,81 +7118,96 @@ void MainWindow::openAdvancedPluginConfig(const QString& instanceId) {
     btnLayout->addWidget(cancelBtn);
     layout->addLayout(btnLayout);
 
-    // 阶段 1: 确定时先校验，校验失败保持弹窗并显示错误
+    // 校验、忙态复验和实际提交均在 dialog 仍打开时完成；拒绝时保留草稿。
     QPointer<IModule> modulePtr(module);
     QPointer<IModule> draftPtr(draft);
-    connect(okBtn, &QPushButton::clicked, this, [modulePtr, draftPtr, errorLabel, dialog]() {
-        if (!modulePtr || !draftPtr)
-            return;
-        const QJsonObject draftParams = draftPtr->currentParams();
-        QString error;
-        if (!modulePtr->validateParams(draftParams, error)) {
-            errorLabel->setText(error);
-            errorLabel->show();
-            return;
-        }
-        dialog->accept();
-    });
+    connect(okBtn, &QPushButton::clicked, this,
+            [this, modulePtr, draftPtr, errorLabel, dialog, effectiveParamsBefore, projectParamsBefore,
+             projectPtrAtOpen, displayName, instanceId]() {
+                if (!modulePtr || !draftPtr)
+                    return;
+                if (rejectBusyFlowEdit(tr("提交模块配置"))) {
+                    errorLabel->setText(tr("运行或维护期间不能提交配置；草稿已保留"));
+                    errorLabel->show();
+                    return;
+                }
+                const QJsonObject draftParams = draftPtr->currentParams();
+                QString error;
+                if (!modulePtr->validateParams(draftParams, error)) {
+                    errorLabel->setText(error);
+                    errorLabel->show();
+                    return;
+                }
+
+                Project* project = ProjectManager::instance().currentProject();
+                const std::optional<ModuleInstance> current = project ? project->moduleById(instanceId) : std::nullopt;
+                if (!project || project != projectPtrAtOpen.data() || !current || !m_paramUndoStack) {
+                    errorLabel->setText(tr("工程或模块已关闭，配置未提交"));
+                    errorLabel->show();
+                    return;
+                }
+                QJsonObject projectParamsAfter = projectParamsBefore;
+                QSet<QString> candidateKeys;
+                for (auto it = effectiveParamsBefore.constBegin(); it != effectiveParamsBefore.constEnd(); ++it)
+                    candidateKeys.insert(it.key());
+                for (auto it = draftParams.constBegin(); it != draftParams.constEnd(); ++it)
+                    candidateKeys.insert(it.key());
+                for (const QString& key : candidateKeys) {
+                    if (key.startsWith('_'))
+                        continue;
+                    const bool beforePresent = effectiveParamsBefore.contains(key);
+                    const bool afterPresent = draftParams.contains(key);
+                    if (beforePresent == afterPresent &&
+                        (!beforePresent || effectiveParamsBefore.value(key) == draftParams.value(key)))
+                        continue;
+                    if (afterPresent)
+                        projectParamsAfter.insert(key, draftParams.value(key));
+                    else
+                        projectParamsAfter.remove(key);
+                }
+                if (projectParamsAfter != projectParamsBefore) {
+                    auto applied = std::make_shared<bool>(false);
+                    m_paramUndoStack->push(new SetModuleParamCommand(
+                        modulePtr, project, instanceId, projectParamsBefore, projectParamsAfter, m_inspectorPanel,
+                        [this, displayName, applied](bool succeeded) {
+                            *applied = succeeded;
+                            if (!succeeded)
+                                statusBar()->showMessage(tr("配置 %1 已过期，未应用任何更改").arg(displayName), 5000);
+                        }));
+                    if (!*applied) {
+                        errorLabel->setText(tr("配置期间参数已被其他入口修改；草稿仍保留，请重新确认"));
+                        errorLabel->show();
+                        return;
+                    }
+                }
+
+                if (draftParams.value("_clearPointsRequested").toBool())
+                    QMetaObject::invokeMethod(modulePtr, "clearPointsPublic", Qt::DirectConnection);
+
+                if (m_inspectorPanel && m_selectedModuleId == instanceId) {
+                    QPointer<ModuleInspectorPanel> inspector = m_inspectorPanel;
+                    QMetaObject::invokeMethod(
+                        this,
+                        [inspector]() {
+                            if (inspector)
+                                inspector->refreshFromModule();
+                        },
+                        Qt::QueuedConnection);
+                }
+                m_modulesNeedSync = true;
+                Logger::instance().info(tr("模块参数已更新：%1").arg(displayName), "Config");
+                dialog->accept();
+            });
     connect(cancelBtn, &QPushButton::clicked, dialog, &QDialog::reject);
 
     // exec() 返回后 delete dialog，级联销毁所有子对象（含 configWidget、scrollArea 等）。
     const int result = dialog->exec();
     delete dialog;
+    delete draft;
 
-    if (result == QDialog::Accepted) {
-        // 阶段 1: 用 undo macro 提交全部差异，一条可撤销记录
-        const QJsonObject paramsAfter = draft->currentParams();
-        Project* project = ProjectManager::instance().currentProject();
-
-        bool hasChanges = false;
-        for (auto it = paramsAfter.constBegin(); it != paramsAfter.constEnd(); ++it) {
-            if (!it.key().startsWith('_') && paramsBefore.value(it.key()) != it.value()) {
-                hasChanges = true;
-                break;
-            }
-        }
-
-        if (hasChanges && project && m_paramUndoStack) {
-            m_paramUndoStack->beginMacro(tr("配置 %1").arg(displayName));
-            for (auto it = paramsAfter.constBegin(); it != paramsAfter.constEnd(); ++it) {
-                const QString& key = it.key();
-                if (key.startsWith('_'))
-                    continue;
-                if (paramsBefore.value(key) != it.value()) {
-                    QVariant newVal = it.value().toVariant();
-                    QVariant oldVal = paramsBefore.value(key).toVariant();
-                    m_paramUndoStack->push(
-                        new SetModuleParamCommand(module, project, instanceId, key, newVal, oldVal, m_inspectorPanel));
-                }
-            }
-            m_paramUndoStack->endMacro();
-        }
-
-        // 阶段 1: 处理非参数副作用（如 NPointCalibration 的清除标定点）
-        if (paramsAfter.value("_clearPointsRequested").toBool()) {
-            QMetaObject::invokeMethod(module, "clearPointsPublic", Qt::DirectConnection);
-        }
-
-        if (m_inspectorPanel) {
-            if (m_selectedModuleId == instanceId) {
-                QPointer<ModuleInspectorPanel> inspector = m_inspectorPanel;
-                QMetaObject::invokeMethod(
-                    this,
-                    [inspector]() {
-                        if (inspector)
-                            inspector->refreshFromModule();
-                    },
-                    Qt::QueuedConnection);
-            }
-        }
-        m_modulesNeedSync = true;
-        Logger::instance().info(tr("模块参数已更新：%1").arg(displayName), "Config");
-    } else {
-        // 阶段 1: 取消时直接销毁草稿，无需回滚（运行模块未被修改）
+    if (result != QDialog::Accepted) {
         Logger::instance().info(tr("已取消配置修改：%1").arg(displayName), "Config");
     }
-
-    delete draft;
 }
 
 // ========== 阶段 8: 聚焦模式 ==========
@@ -4868,24 +7336,25 @@ void MainWindow::pushParamCommand(const QString& instanceId, const QString& key,
     Project* project = ProjectManager::instance().currentProject();
     IModule* module = m_flowModules.value(instanceId, nullptr);
 
-    // 获取旧值
-    QVariant oldValue;
-    if (module) {
-        QJsonObject params = module->currentParams();
-        QJsonValue oldVal = params.value(key);
-        if (oldVal.isBool()) {
-            oldValue = oldVal.toBool();
-        } else if (oldVal.isDouble()) {
-            oldValue = oldVal.toDouble();
-        } else if (oldVal.isString()) {
-            oldValue = oldVal.toString();
-        } else {
-            oldValue = oldVal.toVariant();
-        }
-    }
-
-    auto* cmd = new SetModuleParamCommand(module, project, instanceId, key, value, oldValue, m_inspectorPanel);
+    const std::optional<ModuleInstance> instance = project ? project->moduleById(instanceId) : std::nullopt;
+    if (!module || !instance)
+        return;
+    const QJsonObject before = instance->params;
+    QJsonObject after = before;
+    after.insert(key, QJsonValue::fromVariant(value));
+    auto* cmd = new SetModuleParamCommand(
+        module, project, instanceId, before, after, m_inspectorPanel, [this, key](bool succeeded) {
+            if (!succeeded)
+                statusBar()->showMessage(tr("参数 %1 的撤销已失效，工程未修改").arg(key), 5000);
+        });
     m_paramUndoStack->push(cmd);
+}
+
+bool MainWindow::rejectBusyFlowEdit(const QString& action) {
+    if (!RunEngine::instance().isBusy())
+        return false;
+    statusBar()->showMessage(tr("运行或维护期间不能%1").arg(action), 5000);
+    return true;
 }
 
 void MainWindow::markModuleDirty(const QString& instanceId) {
@@ -4933,7 +7402,46 @@ void MainWindow::markModuleDirty(const QString& instanceId) {
 }
 
 void MainWindow::registerFlowModule(const QString& instanceId, IModule* module) {
+    // Test/support integrations may register an already-created ModuleBase directly rather than through
+    // PluginManager::createModule. Preserve the project-declared type identity in that case.
+    if (ModuleBase* moduleBase = qobject_cast<ModuleBase*>(module)) {
+        if (!moduleBase->property("deeplux.pluginId").isValid()) {
+            const auto instance = ProjectManager::instance().currentProject()
+                                      ? ProjectManager::instance().currentProject()->moduleById(instanceId)
+                                      : std::nullopt;
+            if (instance)
+                moduleBase->setProperty("deeplux.pluginId", instance->moduleId);
+        }
+    }
     m_flowModules.insert(instanceId, module);
+}
+
+void MainWindow::setInspectorVisibility(bool visible) {
+    if (!m_inspectorPanel)
+        return;
+
+    if (!visible) {
+        if (m_inspectorClosed && !m_inspectorPanel->isVisible())
+            return;
+        m_inspectorClosed = true;
+        m_inspectorPanel->setVisible(false);
+        m_inspectorPanel->clear();
+        return;
+    }
+
+    const bool wasClosed = m_inspectorClosed;
+    m_inspectorClosed = false;
+    m_inspectorPanel->setVisible(true);
+    if (!wasClosed)
+        return;
+
+    Project* project = ProjectManager::instance().currentProject();
+    if (project && !m_selectedModuleId.isEmpty() && project->findModule(m_selectedModuleId))
+        selectModule(m_selectedModuleId, true);
+    else {
+        m_inspectorPanel->clear();
+        adaptInspectorLayout();
+    }
 }
 
 void MainWindow::resetInspectorClosed() {
@@ -5326,8 +7834,86 @@ void MainWindow::adaptInspectorLayout() {
     }
 }
 
+namespace {
+bool guiUserHasPermission(const QString& permission) {
+    const UserManager& users = UserManager::instance();
+    return users.isLoggedIn() && users.currentUser().type != UserType::Guest && users.hasPermission(permission);
+}
+
+void showGuiPermissionDenied(QWidget* parent, const QString& action) {
+    QMessageBox::warning(parent, QObject::tr("权限不足"),
+                         QObject::tr("您没有权限执行此操作：%1。", "Permission denied: %1").arg(action));
+}
+
+// 阶段1 §3（计划 §6.3）：GUI 侧未保存三态询问——保存后继续/放弃后继续/取消。
+// 无未保存修改时返回值无关紧要（共享判定必然放行）；实际保护判定由
+// ProjectManager::resolveUnsavedForSwitch 执行（GUI/CLI/Agent 同一逻辑源）。
+ProjectManager::UnsavedPolicy askUnsavedPolicy(QWidget* parent, const QString& title) {
+    Project* current = ProjectManager::instance().currentProject();
+    if (!current || !current->isModified())
+        return ProjectManager::UnsavedPolicy::Cancel;
+
+    QMessageBox box(parent);
+    box.setWindowTitle(title);
+    box.setIcon(QMessageBox::Warning);
+    box.setText(QObject::tr("工程「%1」有未保存的修改，是否先保存？").arg(current->name()));
+    QPushButton* saveBtn = nullptr;
+    if (guiUserHasPermission(QStringLiteral("Save"))) {
+        saveBtn = box.addButton(QObject::tr("保存后继续"), QMessageBox::AcceptRole);
+    } else {
+        box.setInformativeText(QObject::tr("当前用户没有保存权限，只能放弃修改或取消操作。"));
+    }
+    QPushButton* discardBtn = box.addButton(QObject::tr("放弃后继续"), QMessageBox::DestructiveRole);
+    box.addButton(QObject::tr("取消"), QMessageBox::RejectRole);
+    box.exec();
+    if (box.clickedButton() == saveBtn)
+        return ProjectManager::UnsavedPolicy::Save;
+    if (box.clickedButton() == discardBtn)
+        return ProjectManager::UnsavedPolicy::Discard;
+    return ProjectManager::UnsavedPolicy::Cancel; // 关闭对话框等同取消——默认保留当前工程
+}
+
+// 阶段1 复审2 R2：返回 false = 应中止整个操作（用户取消「另存为」或保存失败,零副作用）;
+// 返回 true 时 *policyOut 为交给 *Checked 入口执行的策略。
+// 「保存后继续」对无保存路径的新工程经另存为兑现语义;已有路径的保存由共享守卫完成。
+bool prepareUnsavedSwitch(QWidget* parent, const QString& title, ProjectManager::UnsavedPolicy* policyOut) {
+    const ProjectManager::UnsavedPolicy policy = askUnsavedPolicy(parent, title);
+    *policyOut = policy;
+    if (policy != ProjectManager::UnsavedPolicy::Save)
+        return true; // Cancel → *Checked 按策略中止(PROJECT_UNSAVED);Discard → 放行
+    if (!guiUserHasPermission(QStringLiteral("Save"))) {
+        showGuiPermissionDenied(parent, QObject::tr("保存工程"));
+        return false;
+    }
+    Project* current = ProjectManager::instance().currentProject();
+    if (!current || !current->isModified() || !current->filePath().isEmpty())
+        return true; // 无工程/无修改/已有路径：共享守卫可完成保存语义
+    // 无保存路径的新工程 → 「另存为」
+    const QString suggested = QDir(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation))
+                                  .filePath(current->name() + QStringLiteral(".dproj"));
+    const QString path = QFileDialog::getSaveFileName(parent, QObject::tr("保存工程（另存为）"), suggested,
+                                                      QObject::tr("工程文件 (*.dproj)"));
+    if (path.isEmpty())
+        return false; // 用户取消另存为 → 中止切换（等同取消,零副作用）
+    if (!guiUserHasPermission(QStringLiteral("Save"))) {
+        showGuiPermissionDenied(parent, QObject::tr("保存工程"));
+        return false;
+    }
+    if (!ProjectManager::instance().saveProject(path)) {
+        QMessageBox::critical(parent, title, QObject::tr("保存失败，操作已中止；当前工程保留。"));
+        return false; // 保存失败不继续
+    }
+    return true; // 已落盘（修改标记清零）,共享守卫将放行
+}
+} // namespace
+
 void MainWindow::closeEvent(QCloseEvent* event) {
     RunEngine& engine = RunEngine::instance();
+    if (m_isCycleMode && engine.isBusy()) {
+        statusBar()->showMessage(tr("循环运行期间不能关闭窗口，请先停止循环"), 5000);
+        event->ignore();
+        return;
+    }
     if (engine.isBusy()) {
         m_closeWhenRunFinishes = true;
         engine.requestCancellation();
@@ -5337,6 +7923,55 @@ void MainWindow::closeEvent(QCloseEvent* event) {
         }
         return;
     }
+    // 阶段1 §3：退出也是"关闭"路径——未保存修改须经用户三态决策；
+    // 保存失败、取消或另存为被取消都不退出（默认保留当前工程）
+    if (ProjectManager::instance().hasUnsavedChanges()) {
+        ProjectManager::UnsavedPolicy policy;
+        if (!prepareUnsavedSwitch(this, tr("退出"), &policy)) {
+            event->ignore();
+            return;
+        }
+        QString errorCode, errorMessage;
+        if (!ProjectManager::instance().resolveUnsavedForSwitch(policy, &errorCode, &errorMessage)) {
+            if (errorCode == QLatin1String("SAVE_FAILED"))
+                QMessageBox::critical(this, tr("退出"), errorMessage);
+            event->ignore(); // PROJECT_UNSAVED(取消)与保存失败都不退出
+            return;
+        }
+    }
+    if (!m_cameraShutdownReady) {
+        if (!m_cameraShutdownStarted) {
+            m_cameraShutdownStarted = true;
+            if (m_cameraShutdownConnection)
+                disconnect(m_cameraShutdownConnection);
+            if (m_cameraShutdownFailureConnection)
+                disconnect(m_cameraShutdownFailureConnection);
+            m_cameraShutdownConnection =
+                connect(&CameraManager::instance(), &CameraManager::shutdownCompleted, this, [this]() {
+                    m_cameraShutdownStarted = false;
+                    m_cameraShutdownReady = true;
+                    QTimer::singleShot(0, this, &QWidget::close);
+                });
+            m_cameraShutdownFailureConnection =
+                connect(&CameraManager::instance(), &CameraManager::cameraOperationSettled, this,
+                        [this](const QString& deviceId, quint64, const QString&, const QString& status,
+                               const QString& errorCode) {
+                            const bool cleanupFailed =
+                                status == QLatin1String("error") ||
+                                (status == QLatin1String("cancelled") &&
+                                 CameraManager::instance().cameraState(deviceId) == CameraState::Error);
+                            if (m_cameraShutdownStarted && cleanupFailed) {
+                                m_cameraShutdownStarted = false;
+                                Logger::instance().error(QString("Camera shutdown is still pending: %1").arg(errorCode),
+                                                         "Camera");
+                            }
+                        });
+            CameraManager::instance().shutdownAsync();
+        }
+        event->ignore();
+        return;
+    }
+    m_cameraShutdownReady = true;
     saveSettings();
     QMainWindow::closeEvent(event);
 }
@@ -5385,17 +8020,39 @@ void MainWindow::displayImage(const ImageData& image, const QString& label, cons
 }
 
 void MainWindow::onNewSolution() {
+    if (!guiUserHasPermission(QStringLiteral("NewSolution"))) {
+        showGuiPermissionDenied(this, tr("新建方案"));
+        return;
+    }
+    if (rejectBusyFlowEdit(tr("切换工程")))
+        return;
     qDebug() << "onNewSolution called";
     Logger::instance().info(tr("新建方案"), "System");
     TerminalBridge::instance().onGuiAction("create-project", "new_solution");
-    Project* proj = ProjectManager::instance().newProject();
+    // 阶段1 §3 + 复审2 R2：未保存工程切换保护（保存后继续含另存为兑现/放弃后继续/取消）
+    ProjectManager::UnsavedPolicy policy;
+    if (!prepareUnsavedSwitch(this, tr("新建方案"), &policy))
+        return; // 取消另存为或保存失败：中止,当前工程保留
+    QString errorCode, errorMessage;
+    Project* proj = ProjectManager::instance().newProjectChecked(policy, &errorCode, &errorMessage);
     if (proj) {
         TerminalBridge::instance().onGuiAction("create-project-done", proj->name());
         QMessageBox::information(this, tr("新建方案"), tr("方案「%1」已创建").arg(proj->name()));
+    } else if (errorCode == QLatin1String("SAVE_FAILED")) {
+        // 保存失败不继续，原工程保留
+        QMessageBox::critical(this, tr("新建方案"), errorMessage);
+        Logger::instance().error(errorMessage, "System");
     }
+    // PROJECT_UNSAVED = 用户取消，静默保留当前工程
 }
 
 void MainWindow::onSolutionList() {
+    if (!guiUserHasPermission(QStringLiteral("SolutionList")) || !guiUserHasPermission(QStringLiteral("Open"))) {
+        showGuiPermissionDenied(this, tr("方案列表"));
+        return;
+    }
+    if (rejectBusyFlowEdit(tr("切换工程")))
+        return;
     QStringList recent = ProjectManager::instance().recentProjects();
     if (recent.isEmpty()) {
         QMessageBox::information(this, tr("方案列表"), tr("没有最近的工程"));
@@ -5420,10 +8077,18 @@ void MainWindow::onSolutionList() {
 
     const QString path = recent.at(selectedIndex);
     TerminalBridge::instance().onGuiAction("open-project", path);
-    Project* project = ProjectManager::instance().openProject(path);
+    // 阶段1 §3 + 复审2 R2：未保存工程切换保护（保存后继续含另存为兑现）
+    ProjectManager::UnsavedPolicy policy;
+    if (!prepareUnsavedSwitch(this, tr("方案列表"), &policy))
+        return; // 取消另存为或保存失败：中止,当前工程保留
+    QString errorCode, errorMessage;
+    Project* project = ProjectManager::instance().openProjectChecked(path, policy, &errorCode, &errorMessage);
     if (!project) {
-        QMessageBox::warning(this, tr("方案列表"), tr("无法打开工程：%1").arg(path));
-        Logger::instance().error(tr("无法打开最近工程：%1").arg(path), "System");
+        if (errorCode == QLatin1String("SAVE_FAILED"))
+            QMessageBox::critical(this, tr("方案列表"), errorMessage);
+        else if (errorCode != QLatin1String("PROJECT_UNSAVED")) // 用户取消则静默
+            QMessageBox::warning(this, tr("方案列表"), tr("无法打开工程：%1").arg(path));
+        Logger::instance().error(tr("无法打开最近工程：%1（%2）").arg(path, errorMessage), "System");
         return;
     }
 
@@ -5432,14 +8097,32 @@ void MainWindow::onSolutionList() {
 }
 
 void MainWindow::onOpenProject() {
+    if (!guiUserHasPermission(QStringLiteral("Open"))) {
+        showGuiPermissionDenied(this, tr("打开工程"));
+        return;
+    }
+    if (rejectBusyFlowEdit(tr("切换工程")))
+        return;
     QString filePath = QFileDialog::getOpenFileName(this, tr("打开工程"), QString(), tr("工程文件 (*.dproj)"));
     if (!filePath.isEmpty()) {
         TerminalBridge::instance().onGuiAction("open-project", filePath);
-        ProjectManager::instance().openProject(filePath);
+        // 阶段1 §3 + 复审2 R2：未保存工程切换保护;打开失败时原工程保留（先验证后替换）
+        ProjectManager::UnsavedPolicy policy;
+        if (!prepareUnsavedSwitch(this, tr("打开工程"), &policy))
+            return; // 取消另存为或保存失败：中止,当前工程保留
+        QString errorCode, errorMessage;
+        if (!ProjectManager::instance().openProjectChecked(filePath, policy, &errorCode, &errorMessage) &&
+            errorCode == QLatin1String("SAVE_FAILED")) {
+            QMessageBox::critical(this, tr("打开工程"), errorMessage);
+        }
     }
 }
 
 void MainWindow::onSaveProject() {
+    if (!guiUserHasPermission(QStringLiteral("Save"))) {
+        showGuiPermissionDenied(this, tr("保存工程"));
+        return;
+    }
     if (!ProjectManager::instance().hasProject()) {
         QMessageBox::warning(this, tr("保存工程"), tr("没有打开的工程"));
         return;
@@ -5456,6 +8139,10 @@ void MainWindow::onSaveProject() {
         if (filePath.isEmpty()) {
             return;
         }
+        if (!guiUserHasPermission(QStringLiteral("Save"))) {
+            showGuiPermissionDenied(this, tr("保存工程"));
+            return;
+        }
         TerminalBridge::instance().onGuiAction("save-project", filePath);
         ProjectManager::instance().saveAsProject(filePath);
     } else {
@@ -5466,13 +8153,30 @@ void MainWindow::onSaveProject() {
 }
 
 void MainWindow::onQuickMode() {
+    if (!guiUserHasPermission(QStringLiteral("QuickMode"))) {
+        showGuiPermissionDenied(this, tr("快捷模式"));
+        return;
+    }
     // 快速模式：直接运行当前流程
     executeFlowOnce();
 }
 
 void MainWindow::onQuickMeasure() {
+    if (m_agentQuickMeasurement.status == QLatin1String("awaiting_user_input")) {
+        QString reason;
+        const QString terminalStatus =
+            agentQuickMeasurementTargetStillValid(&reason) ? QStringLiteral("cancelled") : QStringLiteral("expired");
+        cancelAgentQuickMeasurement(
+            terminalStatus, terminalStatus == QLatin1String("cancelled") ? QStringLiteral("CANCELLED_BY_GUI") : reason);
+        if (m_quickMeasureAction)
+            m_quickMeasureAction->setChecked(false);
+        return;
+    }
     if (m_quickMeasureActive) {
         m_quickMeasureActive = false;
+        for (const QMetaObject::Connection& connection : m_guiQuickMeasureRoiConnections)
+            QObject::disconnect(connection);
+        m_guiQuickMeasureRoiConnections.clear();
         m_quickMeasurePoints.clear();
         for (ViewportWidget* vp : m_displayManager->allViewports()) {
             if (vp) {
@@ -5512,6 +8216,9 @@ void MainWindow::onQuickMeasure() {
     m_quickMeasureType = type;
     m_quickMeasurePoints.clear();
     m_quickMeasurePoints3D.clear();
+    for (const QMetaObject::Connection& connection : m_guiQuickMeasureRoiConnections)
+        QObject::disconnect(connection);
+    m_guiQuickMeasureRoiConnections.clear();
     if (m_quickMeasureAction)
         m_quickMeasureAction->setChecked(true);
 
@@ -5526,9 +8233,8 @@ void MainWindow::onQuickMeasure() {
                 iw->clearRois();
                 iw->setRoiMode(RoiType::Rectangle1);
                 // 连接 roiCreated 信号（UniqueConnection 防重复）
-                connect(
-                    iw, &HImageWidget::roiCreated, this,
-                    [this](const RoiData& roi) {
+                m_guiQuickMeasureRoiConnections.append(
+                    connect(iw, &HImageWidget::roiCreated, this, [this](const RoiData& roi) {
                         if (!m_quickMeasureActive || m_quickMeasureType != 5)
                             return;
                         QPointF a(roi.x1, roi.y1);
@@ -5561,8 +8267,7 @@ void MainWindow::onQuickMeasure() {
                                 }
                             }
                         }
-                    },
-                    Qt::UniqueConnection);
+                    }));
             }
         } else {
             // 其他类型：点击拾取模式
@@ -5601,7 +8306,15 @@ void MainWindow::onQuickAnnotate() {
     if (!m_samAnnotatorDialog) {
         m_samAnnotatorDialog = new SamAnnotatorDialog(this);
         m_samAnnotatorDialog->setAttribute(Qt::WA_DeleteOnClose);
-        connect(m_samAnnotatorDialog, &QObject::destroyed, this, [this]() { m_samAnnotatorDialog.clear(); });
+        SamAnnotatorDialog* createdDialog = m_samAnnotatorDialog;
+        connect(createdDialog, &QDialog::finished, this, [this, createdDialog](int) {
+            if (m_samAnnotatorDialog == createdDialog)
+                m_samAnnotatorDialog.clear();
+        });
+        connect(createdDialog, &QObject::destroyed, this, [this, createdDialog]() {
+            if (m_samAnnotatorDialog == createdDialog)
+                m_samAnnotatorDialog.clear();
+        });
     }
 
     m_samAnnotatorDialog->applyTheme(m_isDarkTheme);
@@ -5633,37 +8346,61 @@ void MainWindow::updateBreakpointRunControls(bool paused) {
 }
 
 void MainWindow::onRunOnce() {
-    if (RunEngine::instance().isPausedAtBreakpoint()) {
+    RunEngine& engine = RunEngine::instance();
+    if (engine.isPausedAtBreakpoint()) {
+        const QString permission =
+            engine.runMode() == RunMode::RunCycle ? QStringLiteral("RunCycle") : QStringLiteral("RunOnce");
+        if (!guiUserHasPermission(permission)) {
+            showGuiPermissionDenied(this, tr("继续运行"));
+            return;
+        }
         updateBreakpointRunControls(false);
-        RunEngine::instance().resume();
+        engine.resume();
         return;
     }
-    if (!m_isRunning) {
-        if (m_processTree->topLevelItemCount() == 0) {
-            if (m_processTimeLabel) {
-                m_processTimeLabel->setText(tr("总耗时：0 ms"));
-            }
-            Logger::instance().warning(tr("流程为空，无法运行"), "System");
-            return;
-        }
-        setUiRunningState(true, false);
-        Logger::instance().info(tr("运行一次"), "System");
-        if (requestMeasurementInputForRun()) {
-            return;
-        }
-        executeFlowOnce();
-    } else {
+    // 活跃运行时该按钮仍承担停止操作；安全停止不受启动权限门限制。
+    if (m_isRunning) {
         onStop();
+        return;
     }
+    if (!guiUserHasPermission(QStringLiteral("RunOnce"))) {
+        showGuiPermissionDenied(this, tr("单次运行"));
+        return;
+    }
+    if (m_processTree->topLevelItemCount() == 0) {
+        if (m_processTimeLabel) {
+            m_processTimeLabel->setText(tr("总耗时：0 ms"));
+        }
+        Logger::instance().warning(tr("流程为空，无法运行"), "System");
+        return;
+    }
+    ++m_measurementPickContinuationGeneration;
+    setUiRunningState(true, false);
+    Logger::instance().info(tr("运行一次"), "System");
+    if (requestMeasurementInputForRun()) {
+        return;
+    }
+    executeFlowOnce();
 }
 
 void MainWindow::onRunCycle() {
-    if (RunEngine::instance().isPausedAtBreakpoint()) {
+    RunEngine& engine = RunEngine::instance();
+    if (engine.isPausedAtBreakpoint()) {
+        const QString permission =
+            engine.runMode() == RunMode::RunCycle ? QStringLiteral("RunCycle") : QStringLiteral("RunOnce");
+        if (!guiUserHasPermission(permission)) {
+            showGuiPermissionDenied(this, tr("继续运行"));
+            return;
+        }
         updateBreakpointRunControls(false);
-        RunEngine::instance().resume();
+        engine.resume();
         return;
     }
     if (!m_isRunning) {
+        if (!guiUserHasPermission(QStringLiteral("RunCycle"))) {
+            showGuiPermissionDenied(this, tr("循环运行"));
+            return;
+        }
         if (m_processTree->topLevelItemCount() == 0) {
             if (m_processTimeLabel) {
                 m_processTimeLabel->setText(tr("总耗时：0 ms"));
@@ -5671,18 +8408,40 @@ void MainWindow::onRunCycle() {
             Logger::instance().warning(tr("流程为空，无法循环运行"), "System");
             return;
         }
+        ++m_measurementPickContinuationGeneration;
         setUiRunningState(true, true);
         Logger::instance().info(tr("循环运行"), "System");
-        if (requestMeasurementInputForRun()) {
+        const bool waitingForMeasurementPick = requestMeasurementInputForRun();
+        if (!syncModulesToRunEngine()) {
+            m_pendingMeasurementInputId.clear();
+            setUiRunningState(false, false);
+            Logger::instance().warning(tr("流程同步失败，无法循环运行"), "System");
             return;
         }
-        executeFlowOnce();
+        QString sessionId;
+        if (waitingForMeasurementPick) {
+            if (!RunEngine::instance().startCycle(&sessionId, 1, false, true, true)) {
+                m_pendingMeasurementInputId.clear();
+                setUiRunningState(false, false);
+                return;
+            }
+            m_pendingMeasurementCycleSessionId = sessionId;
+            return;
+        }
+        if (!RunEngine::instance().startCycle(&sessionId, 1, true, true)) {
+            setUiRunningState(false, false);
+            return;
+        }
     }
     // 已经在运行时，不做操作，保持循环模式
 }
 
 void MainWindow::onStepRun() {
     if (m_isRunning) {
+        return;
+    }
+    if (!guiUserHasPermission(QStringLiteral("RunOnce"))) {
+        showGuiPermissionDenied(this, tr("单步执行"));
         return;
     }
     if (m_processTree->topLevelItemCount() == 0) {
@@ -5697,6 +8456,7 @@ void MainWindow::onStepRun() {
         return;
     }
 
+    ++m_measurementPickContinuationGeneration;
     setUiRunningState(true, false);
     m_isStepMode = true;
     Logger::instance().info(tr("单步执行"), "System");
@@ -5707,13 +8467,14 @@ void MainWindow::onStepRun() {
 }
 
 void MainWindow::onStop() {
-    if (!m_pendingMeasurementInputId.isEmpty()) {
-        if (QTreeWidgetItem* item = m_processTreeController->instanceItem(m_pendingMeasurementInputId)) {
-            clearExecutionHighlight(item);
-            item->setText(1, QString());
+    ++m_measurementPickContinuationGeneration;
+    if (m_displayManager) {
+        for (ViewportWidget* viewport : m_displayManager->allViewports()) {
+            if (viewport && viewport->imageWidget())
+                viewport->imageWidget()->cancelPendingPointerInput();
         }
-        m_pendingMeasurementInputId.clear();
     }
+    clearPendingMeasurementPick();
     setUiRunningState(false, false);
     m_isStepMode = false;
     RunEngine::instance().stop();
@@ -5721,6 +8482,25 @@ void MainWindow::onStop() {
 }
 
 void MainWindow::executeFlowOnce() {
+    resetFlowRunPresentation();
+
+    // 如果没有模块，直接返回
+    if (m_processTreeController->topLevelItemCount() == 0) {
+        if (m_processTimeLabel) {
+            m_processTimeLabel->setText(tr("总耗时：0 ms"));
+        }
+        return;
+    }
+
+    if (!syncModulesToRunEngine()) {
+        return;
+    }
+
+    // 委托给 RunEngine 执行
+    RunEngine::instance().runOnce();
+}
+
+void MainWindow::resetFlowRunPresentation() {
     // 清空之前的执行时间和所有高亮
     m_moduleExecutionTimes.clear();
     m_flowTotalTime = 0;
@@ -5741,21 +8521,6 @@ void MainWindow::executeFlowOnce() {
         }
     }
     m_currentExecutingItem = nullptr;
-
-    // 如果没有模块，直接返回
-    if (m_processTreeController->topLevelItemCount() == 0) {
-        if (m_processTimeLabel) {
-            m_processTimeLabel->setText(tr("总耗时：0 ms"));
-        }
-        return;
-    }
-
-    if (!syncModulesToRunEngine()) {
-        return;
-    }
-
-    // 委托给 RunEngine 执行
-    RunEngine::instance().runOnce();
 }
 
 void MainWindow::onUserLogin() {
@@ -5766,7 +8531,32 @@ void MainWindow::onUserLogin() {
     Logger::instance().info(tr("用户登录"), "System");
 }
 
+void MainWindow::applyAgentSettings(const AgentSettingsDialog& dialog) {
+    AgentController& ctrl = AgentController::instance();
+    ctrl.setPermissionLevel(dialog.permissionLevel());
+    OpenAILLMClient* client = qobject_cast<OpenAILLMClient*>(ctrl.llmClient());
+    if (!client) {
+        client = new OpenAILLMClient(&ctrl);
+        ctrl.setLLMClient(client);
+    }
+    client->setEndpoint(dialog.endpoint());
+    client->setApiKey(dialog.apiKey());
+    client->setModel(dialog.model());
+    client->setTemperature(dialog.temperature());
+    client->setMaxTokens(dialog.maxTokens());
+    client->setToolsEnabled(dialog.toolsEnabled());
+    client->setVisionEnabled(dialog.visionEnabled());
+    client->setThinkingEnabled(dialog.thinkingEnabled());
+    ctrl.setSystemPrompt(dialog.systemPrompt());
+}
+
 void MainWindow::onGlobalVar() {
+    const UserManager& users = UserManager::instance();
+    if (!users.isLoggedIn() || users.currentUser().type == UserType::Guest ||
+        !users.hasPermission(QStringLiteral("GlobalVar"))) {
+        QMessageBox::warning(this, tr("权限不足"), tr("您没有权限查看或管理全局变量。"));
+        return;
+    }
     // 使用已实现的 GlobalVarView
     GlobalVarView dialog(this);
     dialog.setWindowTitle(tr("全局变量"));
@@ -5775,6 +8565,12 @@ void MainWindow::onGlobalVar() {
 }
 
 void MainWindow::onCameraSettings() {
+    const UserManager& users = UserManager::instance();
+    if (!users.isLoggedIn() || users.currentUser().type == UserType::Guest ||
+        !users.hasPermission(QStringLiteral("Camera")) || !users.hasPermission(QStringLiteral("CameraSet"))) {
+        QMessageBox::warning(this, tr("权限不足"), tr("您没有权限管理相机设置。"));
+        return;
+    }
     // 使用已实现的 CameraSetView
     CameraSetView dialog(this);
     dialog.setWindowTitle(tr("相机设置"));
@@ -5783,6 +8579,15 @@ void MainWindow::onCameraSettings() {
 }
 
 void MainWindow::onCommSettings() {
+    const UserManager& users = UserManager::instance();
+    if (!users.isLoggedIn() || users.currentUser().type == UserType::Guest ||
+        !users.hasPermission(QStringLiteral("CommunicationSet"))) {
+        QMessageBox::warning(this, tr("权限不足"), tr("当前用户没有通信设置权限。"));
+        Logger::instance().warning(QStringLiteral("Communication settings denied: CommunicationSet required"),
+                                   QStringLiteral("Auth"));
+        return;
+    }
+
     // 使用已实现的 CommunicationSetView
     CommunicationSetView dialog(this);
     dialog.setWindowTitle(tr("通信设置"));
@@ -5791,7 +8596,16 @@ void MainWindow::onCommSettings() {
 }
 
 void MainWindow::onHardwareConfig() {
-    SystemParamView dialog(this);
+    const UserManager& users = UserManager::instance();
+    if (!users.isLoggedIn() || users.currentUser().type == UserType::Guest ||
+        !users.hasPermission(QStringLiteral("SystemParam"))) {
+        QMessageBox::warning(this, tr("权限不足"), tr("当前用户没有系统参数权限。"));
+        Logger::instance().warning(QStringLiteral("System settings denied: SystemParam required"),
+                                   QStringLiteral("Auth"));
+        return;
+    }
+
+    SystemParamView dialog(this, QStringLiteral("SystemParam"));
     dialog.setWindowTitle(tr("硬件配置"));
     const bool wasDark = m_isDarkTheme;
     dialog.exec();
@@ -5833,8 +8647,17 @@ void MainWindow::onToggleTheme() {
 }
 
 void MainWindow::onDeviceSettings() {
+    const UserManager& users = UserManager::instance();
+    if (!users.isLoggedIn() || users.currentUser().type == UserType::Guest ||
+        !users.hasPermission(QStringLiteral("SystemParam"))) {
+        QMessageBox::warning(this, tr("权限不足"), tr("当前用户没有系统参数权限。"));
+        Logger::instance().warning(QStringLiteral("System settings denied: SystemParam required"),
+                                   QStringLiteral("Auth"));
+        return;
+    }
+
     // 使用已实现的 SystemParamView
-    SystemParamView dialog(this);
+    SystemParamView dialog(this, QStringLiteral("SystemParam"));
     dialog.setWindowTitle(tr("设备设置"));
     dialog.exec();
     Logger::instance().info(tr("设备设置"), "System");
@@ -5842,7 +8665,16 @@ void MainWindow::onDeviceSettings() {
 
 void MainWindow::onSystemSettings() {
     // 使用已实现的 SystemParamView
-    SystemParamView dialog(this);
+    const UserManager& users = UserManager::instance();
+    if (!users.isLoggedIn() || users.currentUser().type == UserType::Guest ||
+        !users.hasPermission(QStringLiteral("SystemParam"))) {
+        QMessageBox::warning(this, tr("权限不足"), tr("当前用户没有系统参数权限。"));
+        Logger::instance().warning(QStringLiteral("System settings denied: SystemParam required"),
+                                   QStringLiteral("Auth"));
+        return;
+    }
+
+    SystemParamView dialog(this, QStringLiteral("SystemParam"));
     dialog.setWindowTitle(tr("系统设置"));
     dialog.exec();
     Logger::instance().info(tr("系统设置"), "System");
@@ -6037,8 +8869,13 @@ bool MainWindow::syncModulesToRunEngine() {
     }
 
     RunEngine& engine = RunEngine::instance();
-    m_processTreeController->clearInstanceItemMap();
-    engine.clearModules();
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project || engine.isBusy()) {
+        return false;
+    }
+
+    QList<ModuleBase*> modules;
+    QMap<QString, QTreeWidgetItem*> instanceItems;
 
     for (int i = 0; i < m_processTreeController->topLevelItemCount(); ++i) {
         QTreeWidgetItem* item = m_processTreeController->topLevelItem(i);
@@ -6058,25 +8895,23 @@ bool MainWindow::syncModulesToRunEngine() {
         }
 
         moduleBase->setInstanceName(instanceName);
-        engine.addModule(moduleBase);
-        m_processTreeController->setInstanceItem(instanceName, item);
-
-        // 阶段 B 复核: GUI 同步 enabled/breakpoint 到 RunEngine
-        if (Project* project = ProjectManager::instance().currentProject()) {
-            if (auto inst = project->moduleById(instanceName)) {
-                engine.setModuleDisabled(instanceName, !inst->enabled);
-                engine.setBreakpoint(instanceName, inst->breakpoint);
-            }
-        }
+        modules.append(moduleBase);
+        instanceItems.insert(instanceName, item);
     }
 
     QString orderError;
-    if (!engine.buildExecutionOrder(ProjectManager::instance().currentProject(), orderError)) {
+    if (!engine.synchronizeProjectModules(project, modules, orderError)) {
+        if (engine.isBusy()) {
+            return false;
+        }
         Logger::instance().error(orderError, "Run");
-        engine.clearModules();
         m_processTreeController->clearInstanceItemMap();
         return false;
     }
+
+    m_processTreeController->clearInstanceItemMap();
+    for (auto it = instanceItems.cbegin(); it != instanceItems.cend(); ++it)
+        m_processTreeController->setInstanceItem(it.key(), it.value());
 
     m_modulesNeedSync = false;
     return true;

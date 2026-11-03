@@ -28,6 +28,7 @@
 namespace DeepLux {
 
 AgentSettingsDialog::AgentSettingsDialog(QWidget* parent) : QDialog(parent) {
+    setObjectName(QStringLiteral("AgentSettingsDialog"));
     setupUi();
     loadSettings();
 }
@@ -40,31 +41,37 @@ void AgentSettingsDialog::setupUi() {
     auto* formLayout = new QFormLayout();
 
     m_endpointEdit = new QLineEdit(this);
+    m_endpointEdit->setObjectName(QStringLiteral("AgentSettingsEndpointEdit"));
     m_endpointEdit->setPlaceholderText("https://api.openai.com/v1/chat/completions");
     formLayout->addRow("Endpoint:", m_endpointEdit);
 
     m_apiKeyEdit = new QLineEdit(this);
+    m_apiKeyEdit->setObjectName(QStringLiteral("AgentSettingsApiKeyEdit"));
     m_apiKeyEdit->setEchoMode(QLineEdit::Password);
     m_apiKeyEdit->setPlaceholderText("sk-...");
     formLayout->addRow("API Key:", m_apiKeyEdit);
 
     m_modelEdit = new QLineEdit(this);
+    m_modelEdit->setObjectName(QStringLiteral("AgentSettingsModelEdit"));
     m_modelEdit->setPlaceholderText("e.g. gpt-4o, deepseek-chat, claude-3-5-sonnet");
     formLayout->addRow("Model:", m_modelEdit);
 
     m_tempSpin = new QDoubleSpinBox(this);
+    m_tempSpin->setObjectName(QStringLiteral("AgentSettingsTemperatureSpin"));
     m_tempSpin->setRange(0.0, 2.0);
     m_tempSpin->setSingleStep(0.1);
     m_tempSpin->setValue(0.3);
     formLayout->addRow("Temperature:", m_tempSpin);
 
     m_maxTokensSpin = new QSpinBox(this);
+    m_maxTokensSpin->setObjectName(QStringLiteral("AgentSettingsMaxTokensSpin"));
     m_maxTokensSpin->setRange(256, 16384);
     m_maxTokensSpin->setSingleStep(256);
     m_maxTokensSpin->setValue(4096);
     formLayout->addRow("Max Tokens:", m_maxTokensSpin);
 
     m_permissionCombo = new QComboBox(this);
+    m_permissionCombo->setObjectName(QStringLiteral("AgentSettingsPermissionCombo"));
     m_permissionCombo->addItem("Observer (read-only)", static_cast<int>(AgentController::PermissionLevel::Observer));
     m_permissionCombo->addItem("Advisor (confirm required)",
                                static_cast<int>(AgentController::PermissionLevel::Advisor));
@@ -74,22 +81,26 @@ void AgentSettingsDialog::setupUi() {
     formLayout->addRow("Permission Level:", m_permissionCombo);
 
     m_systemPromptEdit = new QTextEdit(this);
+    m_systemPromptEdit->setObjectName(QStringLiteral("AgentSettingsSystemPromptEdit"));
     m_systemPromptEdit->setMaximumHeight(120);
     m_systemPromptEdit->setPlaceholderText("You are an AI assistant for DeepLux Vision...");
     formLayout->addRow("System Prompt:", m_systemPromptEdit);
 
     m_toolsCheck = new QCheckBox("Enable Function Calling (tools)", this);
+    m_toolsCheck->setObjectName(QStringLiteral("AgentSettingsToolsEnabledCheck"));
     m_toolsCheck->setChecked(true);
     m_toolsCheck->setToolTip(
         "Disable if your API provider does not support function calling (e.g. some DeepSeek models)");
     formLayout->addRow(m_toolsCheck);
 
     m_visionCheck = new QCheckBox("Enable image input", this);
+    m_visionCheck->setObjectName(QStringLiteral("AgentSettingsVisionEnabledCheck"));
     m_visionCheck->setChecked(true);
     m_visionCheck->setToolTip("Disable when the configured model accepts text only");
     formLayout->addRow(m_visionCheck);
 
     m_thinkingCheck = new QCheckBox("Enable provider thinking extension", this);
+    m_thinkingCheck->setObjectName(QStringLiteral("AgentSettingsThinkingEnabledCheck"));
     m_thinkingCheck->setToolTip("Enable only for providers that support the DeepSeek-compatible thinking field");
     formLayout->addRow(m_thinkingCheck);
 
@@ -97,9 +108,13 @@ void AgentSettingsDialog::setupUi() {
 
     auto* btnLayout = new QHBoxLayout();
     QPushButton* okBtn = new QPushButton("OK", this);
+    okBtn->setObjectName(QStringLiteral("AgentSettingsOkButton"));
     QPushButton* cancelBtn = new QPushButton("Cancel", this);
+    cancelBtn->setObjectName(QStringLiteral("AgentSettingsCancelButton"));
     QPushButton* testBtn = new QPushButton("Test Connection", this);
+    testBtn->setObjectName(QStringLiteral("AgentSettingsTestConnectionButton"));
     QPushButton* knowledgeBtn = new QPushButton(tr("知识库..."), this);
+    knowledgeBtn->setObjectName(QStringLiteral("AgentSettingsKnowledgeButton"));
     okBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
     cancelBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Cancel, 16, QColor("#DC2626")));
     testBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::TestConnection, 16, QColor("#2563EB")));

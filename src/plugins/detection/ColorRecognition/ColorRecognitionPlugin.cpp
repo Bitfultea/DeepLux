@@ -123,6 +123,7 @@ bool ColorRecognitionPlugin::process(const ImageData& input, ImageData& output) 
 
             output.setData("color_center_x", centerX);
             output.setData("color_center_y", centerY);
+            output.setData("color_center", QPointF(centerX, centerY));
         }
     }
 

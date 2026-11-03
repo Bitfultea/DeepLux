@@ -86,12 +86,14 @@ void AgentChatPanel::setupUi() {
     auto* scrollbar = m_scrollArea->verticalScrollBar();
     connect(scrollbar, &QScrollBar::valueChanged, this, [this, scrollbar](int value) {
         m_followTail = value >= scrollbar->maximum() - 8;
-        m_latestButton->setVisible(!m_followTail);
+        if (m_latestButton)
+            m_latestButton->setVisible(!m_followTail);
     });
     connect(scrollbar, &QScrollBar::rangeChanged, this, [this, scrollbar](int, int maximum) {
         if (m_followTail)
             scrollbar->setValue(maximum);
-        m_latestButton->setVisible(!m_followTail);
+        if (m_latestButton)
+            m_latestButton->setVisible(!m_followTail);
     });
 
     // The attachment strip scrolls horizontally without increasing the composer height.
@@ -171,12 +173,14 @@ void AgentChatPanel::updateInputHeight() {
 }
 
 void AgentChatPanel::insertMessage(AgentMessageBubble* bubble) {
+    if (!m_emptyLabel || !m_messagesLayout)
+        return;
     m_emptyLabel->hide();
     m_messagesLayout->insertWidget(m_messagesLayout->count() - 1, bubble);
 }
 
 void AgentChatPanel::addMessage(AgentMessageBubble::Sender sender, const QString& text, const QList<QPixmap>& images) {
-    if (text.isEmpty() && images.isEmpty())
+    if ((text.isEmpty() && images.isEmpty()) || !m_messagesContainer || !m_messagesLayout || !m_emptyLabel)
         return;
     auto* bubble = new AgentMessageBubble(sender, text, m_isDark, m_messagesContainer);
     bubble->setImages(images);
@@ -256,19 +260,25 @@ void AgentChatPanel::clearImageAttachments() {
     rebuildAttachments();
 }
 
-void AgentChatPanel::showToolPreview(const QList<AgentToolPreviewCard::ToolItem>& tools) {
+void AgentChatPanel::showToolPreview(const QList<AgentToolPreviewCard::ToolItem>& tools,
+                                     const AgentToolPreviewCard::ConfirmationContext& context) {
+    if (!m_messagesContainer || !m_messagesLayout || !m_emptyLabel)
+        return;
     clearToolPreview();
     m_emptyLabel->hide();
     m_pendingToolCount = tools.size();
-    m_previewCard = new AgentToolPreviewCard(tools, m_isDark, m_messagesContainer);
+    m_previewCard = new AgentToolPreviewCard(tools, m_isDark, m_messagesContainer, context);
     m_messagesLayout->insertWidget(m_messagesLayout->count() - 1, m_previewCard);
-    connect(m_previewCard, &AgentToolPreviewCard::confirmed, this, [this]() {
+    // 阶段1 审核整改 R2：批准/拒绝携带展示时绑定的 confirmationId——
+    // 控制器校验其与当前批次一致,旧批次迟到事件被拒绝（零副作用）
+    const QString confirmationId = context.confirmationId;
+    connect(m_previewCard, &AgentToolPreviewCard::confirmed, this, [this, confirmationId]() {
         clearToolPreview();
-        emit toolPreviewConfirmed();
+        emit toolPreviewConfirmed(confirmationId);
     });
-    connect(m_previewCard, &AgentToolPreviewCard::cancelled, this, [this]() {
+    connect(m_previewCard, &AgentToolPreviewCard::cancelled, this, [this, confirmationId]() {
         clearToolPreview();
-        emit toolPreviewCancelled();
+        emit toolPreviewCancelled(confirmationId);
         m_inputEdit->setFocus();
     });
     updateStatusStrip();
@@ -276,7 +286,8 @@ void AgentChatPanel::showToolPreview(const QList<AgentToolPreviewCard::ToolItem>
 
 void AgentChatPanel::clearToolPreview() {
     if (m_previewCard) {
-        m_messagesLayout->removeWidget(m_previewCard);
+        if (m_messagesLayout)
+            m_messagesLayout->removeWidget(m_previewCard);
         m_previewCard->hide();
         m_previewCard->deleteLater();
         m_previewCard = nullptr;
@@ -309,16 +320,22 @@ void AgentChatPanel::onThinkingTimeout() {
 
 void AgentChatPanel::updateSendButton() {
     const bool busy = m_isThinking || m_pendingToolCount > 0;
-    m_sendButton->setEnabled(!busy &&
-                             (!m_inputEdit->toPlainText().trimmed().isEmpty() || !m_imageAttachments.isEmpty()));
-    m_sendButton->setToolTip(busy ? tr("等待当前操作完成") : tr("发送消息"));
+    const bool canCancel = m_isThinking && m_pendingToolCount == 0;
+    const bool hasDraft = !m_inputEdit->toPlainText().trimmed().isEmpty() || !m_imageAttachments.isEmpty();
+    m_sendButton->setEnabled(canCancel || (!busy && hasDraft));
+    const auto icon = canCancel ? AppIconProvider::Icon::Stop : AppIconProvider::Icon::Execute;
+    m_sendButton->setIcon(AppIconProvider::icon(icon, 18, m_isDark ? Qt::white : QColor("#475569")));
+    m_sendButton->setToolTip(canCancel ? tr("取消 Agent 请求") : (busy ? tr("等待当前操作完成") : tr("发送消息")));
+    m_sendButton->setAccessibleName(canCancel ? tr("取消 Agent 请求") : tr("发送消息"));
 }
 
 void AgentChatPanel::onSendClicked() {
-    // 批3 复核五轮（P1-1）：忙碌守卫——上一请求仍在进行（Thinking）时直接
-    // 返回、输入原样保留；不得先清空再依赖控制器全局状态反推"本次发送是否
-    // 成功"——忙碌拒绝会保留上一请求的 Thinking 状态，反推将误判为成功
-    if (m_isThinking || m_pendingToolCount > 0 || m_composing)
+    if (m_isThinking && m_pendingToolCount == 0) {
+        emit cancelRequested();
+        return;
+    }
+    // 待确认批次仍由确认卡管理；不可把发送键复用成绕过确认流程的取消操作。
+    if (m_pendingToolCount > 0 || m_composing)
         return;
     const QString text = m_inputEdit->toPlainText().trimmed();
     const QList<QPixmap> images = m_imageAttachments; // 清空前快照
@@ -339,9 +356,26 @@ void AgentChatPanel::onSendClicked() {
 }
 
 void AgentChatPanel::scrollToBottom() {
+    int value = 0;
+    int maximum = 0;
+    scrollToLatest(value, maximum);
+}
+
+bool AgentChatPanel::canScrollToLatest() const {
+    return m_scrollArea && m_scrollArea->verticalScrollBar() && m_latestButton;
+}
+
+bool AgentChatPanel::scrollToLatest(int& scrollValue, int& scrollMaximum) {
+    if (!canScrollToLatest())
+        return false;
+
     m_followTail = true;
-    m_scrollArea->verticalScrollBar()->setValue(m_scrollArea->verticalScrollBar()->maximum());
+    QScrollBar* scrollbar = m_scrollArea->verticalScrollBar();
+    scrollbar->setValue(scrollbar->maximum());
     m_latestButton->hide();
+    scrollValue = scrollbar->value();
+    scrollMaximum = scrollbar->maximum();
+    return scrollValue == scrollMaximum;
 }
 
 bool AgentChatPanel::eventFilter(QObject* obj, QEvent* event) {
@@ -361,6 +395,8 @@ bool AgentChatPanel::eventFilter(QObject* obj, QEvent* event) {
             }
             if ((key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) &&
                 !(key->modifiers() & Qt::ShiftModifier) && !m_composing) {
+                if (m_isThinking || m_pendingToolCount > 0)
+                    return true;
                 onSendClicked();
                 return true;
             }
@@ -404,13 +440,17 @@ void AgentChatPanel::applyTheme(bool isDark) {
                            theme.timestampColor.name(), theme.userFg.name(), theme.userName.name()));
     m_sendButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Execute, 18, Qt::white));
     m_attachButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::LoadImage, 18, theme.timestampColor));
-    m_latestButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::MoveDown, 16, theme.userName));
-    for (auto* message : m_messagesContainer->findChildren<AgentMessageBubble*>())
-        message->applyTheme(isDark);
+    if (m_latestButton)
+        m_latestButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::MoveDown, 16, theme.userName));
+    if (m_messagesContainer) {
+        for (auto* message : m_messagesContainer->findChildren<AgentMessageBubble*>())
+            message->applyTheme(isDark);
+    }
     if (m_previewCard)
         m_previewCard->applyTheme(isDark);
     rebuildAttachments();
     updateInputHeight();
+    updateSendButton();
 }
 
 void AgentChatPanel::updateStatusStrip() {

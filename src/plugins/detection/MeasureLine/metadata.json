@@ -44,6 +44,11 @@
                 "order": 50,
                 "label": "最大角度"
             }
+        },
+        "results": {
+            "line": {"label": "线段端点", "type": "Line2D", "unit": "px", "order": 1},
+            "line_length": {"label": "线长", "unit": "px", "precision": 3, "order": 2},
+            "line_angle": {"label": "角度", "unit": "deg", "precision": 3, "order": 3}
         }
     },
     "ports": {
@@ -61,6 +66,13 @@
                 "id": "image",
                 "displayName": "输出",
                 "type": "Image2D",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "line",
+                "displayName": "线段（强类型）",
+                "type": "Line2D",
                 "required": false,
                 "multiple": false
             },

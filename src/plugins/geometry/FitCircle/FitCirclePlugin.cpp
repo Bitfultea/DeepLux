@@ -1,6 +1,7 @@
 #include "FitCirclePlugin.h"
 
 #include "common/Logger.h"
+#include "core/deeplux/DataContract.h"
 
 #include <QDoubleSpinBox>
 #include <QLabel>
@@ -38,6 +39,10 @@ void FitCirclePlugin::shutdown() {
 
 bool FitCirclePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
+    const bool imageCoordinateFrame =
+        input.data(QStringLiteral("coordinate_frame")).toString() == QStringLiteral("ImageLocalPixel");
+    if (!imageCoordinateFrame)
+        output.removeData(QStringLiteral("circle"));
 
     // 阶段 3: 从 currentParams() 读取参数到局部变量
     QJsonObject params = currentParams();
@@ -94,6 +99,13 @@ bool FitCirclePlugin::process(const ImageData& input, ImageData& output) {
     output.setData("circle_center_y", m_resultCenterY);
     output.setData("circle_radius", m_resultRadius);
     output.setData("circle_error", m_resultError);
+    if (imageCoordinateFrame) {
+        Circle2D circle;
+        circle.centerX = m_resultCenterX;
+        circle.centerY = m_resultCenterY;
+        circle.radius = m_resultRadius;
+        output.setData(QStringLiteral("circle"), QVariant::fromValue(circle));
+    }
 
     QString result = QString("圆: 中心(%1, %2), 半径=%3, 误差=%4")
                          .arg(m_resultCenterX, 0, 'f', 2)

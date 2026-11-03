@@ -14,6 +14,7 @@ class GlobalVarView : public QDialog {
 public:
     explicit GlobalVarView(QWidget* parent = nullptr);
     ~GlobalVarView() override = default;
+    bool refreshVariablesIfAuthorized();
 
 private slots:
     void onAddClicked();
@@ -28,6 +29,8 @@ private slots:
 
 private:
     void setupUI();
+    bool hasGlobalVarPermission() const;
+    void updatePermissionState();
     void loadVariables();
     void updateButtons();
 
@@ -40,9 +43,12 @@ private:
     QPushButton* m_applyBtn = nullptr;
     QPushButton* m_closeBtn = nullptr;
 
+    QWidget* m_addGroup = nullptr;
     QComboBox* m_addTypeCombo = nullptr;
     QLineEdit* m_valueEdit = nullptr;
     QLineEdit* m_noteEdit = nullptr;
+    bool m_permissionGranted = false;
+    bool m_permissionInitialized = false;
 };
 
 } // namespace DeepLux

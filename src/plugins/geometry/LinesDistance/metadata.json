@@ -31,6 +31,13 @@
         ],
         "outputs": [
             {
+                "id": "nearest_segment",
+                "displayName": "最近点连线",
+                "type": "Line2D",
+                "required": false,
+                "multiple": false
+            },
+            {
                 "id": "image",
                 "displayName": "输出",
                 "type": "Any",

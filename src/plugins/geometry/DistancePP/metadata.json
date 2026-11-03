@@ -10,19 +10,16 @@
         "results": {
             "distance": {
                 "label": "距离",
-                "unit": "px",
                 "precision": 3,
                 "order": 10
             },
             "delta_x": {
                 "label": "ΔX",
-                "unit": "px",
                 "precision": 3,
                 "order": 20
             },
             "delta_y": {
                 "label": "ΔY",
-                "unit": "px",
                 "precision": 3,
                 "order": 30
             }
@@ -63,6 +60,20 @@
             {
                 "id": "distance",
                 "displayName": "距离",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "delta_x",
+                "displayName": "ΔX",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "delta_y",
+                "displayName": "ΔY",
                 "type": "Number",
                 "required": false,
                 "multiple": false

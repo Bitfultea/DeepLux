@@ -217,6 +217,8 @@ bool FitEllipsePlugin::fitEllipseRobust(const QVector<QPointF>& points, double t
 
 bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
+    output.removeData("ellipse");
+    const bool imageLocal = input.data("coordinate_frame").toString() == "ImageLocalPixel";
 
     // 阶7 批1 复核：执行前用与验证同一份严格解析快照，非法参数失败关闭。
     ParsedParams parsed;
@@ -319,6 +321,11 @@ bool FitEllipsePlugin::process(const ImageData& input, ImageData& output) {
     output.setData("ellipse_minor_r", result.minorR);
     output.setData("ellipse_ellipticity", ellipticity);
     output.setData("ellipse_error", result.error);
+    if (imageLocal) {
+        output.setData(
+            QStringLiteral("ellipse"),
+            QVariant::fromValue(Ellipse2D{result.centerX, result.centerY, result.majorR, result.minorR, result.phi}));
+    }
 
     Logger::instance().debug(QString("椭圆: 中心(%1,%2) phi=%3 a=%4 b=%5 e=%6")
                                  .arg(result.centerX, 0, 'f', 2)

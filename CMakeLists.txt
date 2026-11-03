@@ -192,6 +192,7 @@ add_dependencies(DeepLux stage-sam-server)
 # ========== 测试 ==========
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
+    target_compile_definitions(deeplux_core PRIVATE DEEPLUX_ENABLE_TEST_HOOKS)
     enable_testing()
     add_subdirectory(tests)
 endif()

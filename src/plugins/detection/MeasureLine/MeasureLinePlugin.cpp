@@ -112,6 +112,7 @@ bool MeasureLinePlugin::process(const ImageData& input, ImageData& output) {
     output.setData("line_col1", m_resultCol1);
     output.setData("line_row2", m_resultRow2);
     output.setData("line_col2", m_resultCol2);
+    output.setData("line", QVariantList{m_resultCol1, m_resultRow1, m_resultCol2, m_resultRow2});
     output.setData("line_length", m_resultLength);
     output.setData("line_angle", m_resultAngle);
     output.setData("line_count", m_resultLineCount);

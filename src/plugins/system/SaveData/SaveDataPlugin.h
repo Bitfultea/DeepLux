@@ -3,6 +3,7 @@
 #include "core/base/ModuleBase.h"
 
 #include <QFile>
+#include <QTextStream>
 
 namespace DeepLux {
 
@@ -14,6 +15,7 @@ class SaveDataPlugin : public ModuleBase {
 public:
     explicit SaveDataPlugin(QObject* parent = nullptr);
     ~SaveDataPlugin() override;
+    using ModuleBase::execute;
 
     QString moduleId() const override {
         return "com.deeplux.plugin.savedata";
@@ -36,6 +38,7 @@ public:
 
     bool initialize() override;
     void shutdown() override;
+    ExecutionResult execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) override;
     QWidget* createConfigWidget() override;
 
 protected:
@@ -46,8 +49,11 @@ protected:
 private:
     bool saveToJson(const QString& filePath, const QVariantMap& data);
     bool saveToCsv(const QString& filePath, const QVariantMap& data);
+    bool finishTextWrite(QFile& file, QTextStream& stream, const QString& format, const QVariantMap& data);
 
     bool m_saveResult = false;
+    bool m_writeUnconfirmed = false;
+    QString m_writeDiagnostics;
 };
 
 } // namespace DeepLux

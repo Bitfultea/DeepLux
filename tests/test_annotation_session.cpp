@@ -2,12 +2,79 @@
 
 #include <QDir>
 #include <QFile>
+#include <QIODevice>
 #include <QImage>
 #include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
+#include <algorithm>
+#include <cstring>
 
 using namespace DeepLux;
+
+namespace {
+class GrowingReadDevice final : public QIODevice {
+public:
+    GrowingReadDevice(qint64 initialBytes, qint64 grownBytes)
+        : m_initialBytes(initialBytes), m_generatedBytes(initialBytes), m_grownBytes(grownBytes) {
+        open(QIODevice::ReadOnly);
+    }
+
+    qint64 bytesReturned() const {
+        return m_bytesReturned;
+    }
+
+    bool isSequential() const override {
+        return false;
+    }
+
+    qint64 size() const override {
+        return m_started ? m_generatedBytes : m_initialBytes;
+    }
+
+    qint64 pos() const override {
+        return m_bytesReturned;
+    }
+
+    bool seek(qint64 position) override {
+        if (position < 0 || position > m_generatedBytes)
+            return false;
+        m_bytesReturned = position;
+        return QIODevice::seek(position);
+    }
+
+protected:
+    qint64 readData(char* data, qint64 maxSize) override {
+        if (!m_started) {
+            m_started = true;
+            m_generatedBytes = m_grownBytes;
+        }
+        if (m_bytesReturned >= m_generatedBytes)
+            return 0;
+        const qint64 count = std::min(maxSize, m_generatedBytes - m_bytesReturned);
+        std::memset(data, 'x', size_t(count));
+        m_bytesReturned += count;
+        return count;
+    }
+
+    qint64 writeData(const char* data, qint64 size) override {
+        Q_UNUSED(data)
+        Q_UNUSED(size)
+        return -1;
+    }
+
+    bool atEnd() const override {
+        return m_bytesReturned >= (m_started ? m_generatedBytes : m_initialBytes);
+    }
+
+private:
+    qint64 m_initialBytes = 0;
+    qint64 m_generatedBytes = 0;
+    qint64 m_grownBytes = 0;
+    qint64 m_bytesReturned = 0;
+    bool m_started = false;
+};
+} // namespace
 
 class TestAnnotationSession : public QObject {
     Q_OBJECT
@@ -19,12 +86,14 @@ private slots:
     void promptRoundTrip();
     void objectRoundTrip();
     void sessionRoundTrip();
+    void sourceCoordinateProvenanceRoundTripAndInvalidRecordsFailClosed();
     void sessionFileIO();
     void findByIdRemoveById();
     void emptyMaskRle();
     void largeCoordinates();
     // 批3 复核二轮（P1-5/P1-4）：严格加载、原子保存、图像摘要
     void loadRejectsMalformedFiles();
+    void loadFromDeviceBoundsGrowingInputAndSharesStrictValidation();
     void saveReportsFailureAndKeepsOriginal();
     void imageDigestDeterministicAndSerialized();
 };
@@ -119,6 +188,64 @@ void TestAnnotationSession::sessionRoundTrip() {
     QCOMPARE(restored.annotations[0].label, QStringLiteral("scratch"));
     QCOMPARE(restored.annotations[1].bbox.x(), 5000.0);
     QCOMPARE(restored.annotations[1].polygon.size(), 4);
+}
+
+void TestAnnotationSession::sourceCoordinateProvenanceRoundTripAndInvalidRecordsFailClosed() {
+    AnnotationSession session;
+    session.imageDigest = QString(64, QLatin1Char('a'));
+    session.sourceCoordinateProvenance.sourceImageId = QStringLiteral("parent-image");
+    session.sourceCoordinateProvenance.sourceSize = QSize(640, 480);
+    QVERIFY(session.sourceCoordinateProvenance.composeLocalToSource(
+        ImageCoordinateProvenance::Matrix3{{2.0, 0.0, 11.0, 0.0, 3.0, 7.0, 0.0, 0.0, 1.0}}));
+    AnnotationObject object;
+    object.id = QStringLiteral("persisted-object");
+    object.bbox = QRectF(2, 3, 4, 5);
+    session.annotations.append(object);
+
+    const QJsonObject json = session.toJson();
+    const AnnotationSession restored = AnnotationSession::fromJson(json);
+    QVERIFY(restored.sourceCoordinateProvenance.isValid());
+    QCOMPARE(restored.sourceCoordinateProvenance.sourceImageId, QStringLiteral("parent-image"));
+    QCOMPARE(restored.sourceCoordinateProvenance.sourceSize, QSize(640, 480));
+    QCOMPARE(restored.sourceCoordinateProvenance.mapLocalToSource(QPointF(2, 3)).value(), QPointF(15, 16));
+    QCOMPARE(restored.annotations.first().bbox, QRectF(2, 3, 4, 5));
+
+    QJsonObject source = json.value(QStringLiteral("sourceCoordinates")).toObject();
+    const auto assertDropped = [&](const QJsonObject& invalidSource) {
+        QJsonObject candidate = json;
+        candidate.insert(QStringLiteral("sourceCoordinates"), invalidSource);
+        AnnotationSession::LoadResult result;
+        QString error;
+        const AnnotationSession parsed =
+            AnnotationSession::loadFromBytes(QJsonDocument(candidate).toJson(QJsonDocument::Compact), &result, &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(result, AnnotationSession::LoadResult::Success);
+        QVERIFY(!parsed.sourceCoordinateProvenance.isValid());
+        QCOMPARE(parsed.annotations.size(), 1);
+        QCOMPARE(parsed.annotations.first().bbox, QRectF(2, 3, 4, 5));
+    };
+    QJsonObject invalid = source;
+    invalid.insert(QStringLiteral("version"), 2);
+    assertDropped(invalid);
+    invalid = source;
+    invalid.insert(QStringLiteral("version"), 1.5);
+    assertDropped(invalid);
+    invalid = source;
+    invalid.insert(QStringLiteral("localToSource"), QJsonArray{1, 0, 0, 0, 1, 0, 0, 0});
+    assertDropped(invalid);
+    invalid = source;
+    invalid.insert(QStringLiteral("localToSource"), QJsonArray{1, 0, 0, 0, 1, 0, 0, 0, QStringLiteral("x")});
+    assertDropped(invalid);
+    invalid = source;
+    invalid.insert(QStringLiteral("sourceImageId"), QString());
+    assertDropped(invalid);
+    invalid = source;
+    invalid.insert(QStringLiteral("sourceImageSize"),
+                   QJsonObject{{QStringLiteral("width"), 0}, {QStringLiteral("height"), 480}});
+    assertDropped(invalid);
+    invalid = source;
+    invalid.insert(QStringLiteral("localToSource"), QJsonArray{1, 2, 3, 2, 4, 6, 0, 0, 0});
+    assertDropped(invalid);
 }
 
 void TestAnnotationSession::sessionFileIO() {
@@ -381,6 +508,39 @@ void TestAnnotationSession::loadRejectsMalformedFiles() {
     QVERIFY2(err.isEmpty(), qPrintable(err));
     QCOMPARE(s.annotations.size(), 1);
     QCOMPARE(s.imageDigest, QStringLiteral("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+}
+
+void TestAnnotationSession::loadFromDeviceBoundsGrowingInputAndSharesStrictValidation() {
+    constexpr qint64 maxBytes = 128 * 1024;
+    GrowingReadDevice growing(32, 1024 * 1024);
+    AnnotationSession::LoadResult result = AnnotationSession::LoadResult::Success;
+    QString error;
+    AnnotationSession oversized =
+        AnnotationSession::loadFromDevice(growing, maxBytes, &result, &error, QStringLiteral("growing"));
+    QCOMPARE(result, AnnotationSession::LoadResult::SizeLimitExceeded);
+    QVERIFY(growing.bytesReturned() >= maxBytes + 1);
+    QVERIFY(growing.bytesReturned() <= maxBytes + 1 + 64 * 1024);
+    QVERIFY(oversized.annotations.isEmpty());
+    QVERIFY(error.contains(QStringLiteral("size limit")));
+
+    const QByteArray valid = R"({"imagePath":"img.png","imageWidth":32,"imageHeight":24,"annotations":[]})";
+    AnnotationSession parsed = AnnotationSession::loadFromBytes(valid, &result, &error);
+    QCOMPARE(result, AnnotationSession::LoadResult::Success);
+    QCOMPARE(parsed.imageWidth, 32);
+    QCOMPARE(parsed.imageHeight, 24);
+
+    const QByteArray invalid = R"({"imagePath":"img.png","annotations":[{"id":"same"},{"id":"same"}]})";
+    parsed = AnnotationSession::loadFromBytes(invalid, &result, &error);
+    QCOMPARE(result, AnnotationSession::LoadResult::InvalidSession);
+    QVERIFY(error.contains(QStringLiteral("duplicated")));
+
+    const QByteArray longId(70 * 1024, 'd');
+    const QByteArray duplicateLongId = QByteArray(R"({"annotations":[{"id":")") + longId + QByteArray(R"("},{"id":")") +
+                                       longId + QByteArray(R"("}]})");
+    parsed = AnnotationSession::loadFromBytes(duplicateLongId, &result, &error);
+    QCOMPARE(result, AnnotationSession::LoadResult::InvalidSession);
+    QVERIFY(error.contains(QStringLiteral("duplicated")));
+    QVERIFY(!error.contains(QString::fromLatin1(longId)));
 }
 
 // QSaveFile 原子写：失败路径显式报错；成功覆写不残留临时文件

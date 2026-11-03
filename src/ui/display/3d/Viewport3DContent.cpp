@@ -90,6 +90,7 @@ void Viewport3DContent::paintGL() {
 }
 
 void Viewport3DContent::displayData(const DisplayData& data) {
+    m_hasPendingLeftPress = false;
     const auto* pcData = data.pointCloudData();
     if (!pcData || pcData->isEmpty()) {
         clearDisplay();
@@ -108,7 +109,9 @@ void Viewport3DContent::displayData(const DisplayData& data) {
         auto& pts = pcData->points;
         Eigen::Vector3d mn = pts[0], mx = pts[0];
         m_lastPoints.clear();
+        m_lastWorldPoints.clear();
         m_lastPoints.reserve(pts.size());
+        m_lastWorldPoints.reserve(pts.size());
         for (size_t i = 0; i < pts.size(); ++i) {
             if (i > 0) {
                 mn = mn.cwiseMin(pts[i]);
@@ -116,6 +119,7 @@ void Viewport3DContent::displayData(const DisplayData& data) {
             }
             m_lastPoints.push_back(QVector3D(static_cast<float>(pts[i].x()), static_cast<float>(pts[i].y()),
                                              static_cast<float>(pts[i].z())));
+            m_lastWorldPoints.push_back(pts[i]);
         }
         m_bboxMin = QVector3D(static_cast<float>(mn.x()), static_cast<float>(mn.y()), static_cast<float>(mn.z()));
         m_bboxMax = QVector3D(static_cast<float>(mx.x()), static_cast<float>(mx.y()), static_cast<float>(mx.z()));
@@ -124,6 +128,7 @@ void Viewport3DContent::displayData(const DisplayData& data) {
     } else {
         m_hasBbox = false;
         m_lastPoints.clear();
+        m_lastWorldPoints.clear();
     }
 
     if (m_renderer) {
@@ -160,6 +165,10 @@ void Viewport3DContent::setPointSize(float size) {
 }
 
 void Viewport3DContent::clearDisplay() {
+    m_hasPendingLeftPress = false;
+    m_lastPoints.clear();
+    m_lastWorldPoints.clear();
+    m_hasBbox = false;
     m_gpuBuffer.clear();
     if (m_renderer) {
         m_renderer->clear();
@@ -240,13 +249,15 @@ void Viewport3DContent::updateMatrices() {
     m_viewMatrix = m_camera.viewMatrix();
 }
 
-bool Viewport3DContent::projectToScreen(const QVector3D& worldPos, QPointF* screenPos) const {
+bool Viewport3DContent::projectToScreen(const Eigen::Vector3d& worldPos, QPointF* screenPos) const {
     if (!screenPos || width() <= 0 || height() <= 0) {
         return false;
     }
 
     QRect viewport(0, 0, width(), height());
-    const QVector3D projected = worldPos.project(m_viewMatrix, m_projectionMatrix, viewport);
+    const QVector3D projected =
+        QVector3D(static_cast<float>(worldPos.x()), static_cast<float>(worldPos.y()), static_cast<float>(worldPos.z()))
+            .project(m_viewMatrix, m_projectionMatrix, viewport);
     if (!std::isfinite(projected.x()) || !std::isfinite(projected.y()) || !std::isfinite(projected.z()) ||
         projected.z() < 0.0f || projected.z() > 1.0f) {
         return false;
@@ -255,6 +266,10 @@ bool Viewport3DContent::projectToScreen(const QVector3D& worldPos, QPointF* scre
     // QVector3D::project 返回 OpenGL 视口坐标，Qt 鼠标/绘制坐标需要翻转 Y。
     *screenPos = QPointF(projected.x(), height() - projected.y());
     return true;
+}
+
+bool Viewport3DContent::projectToScreen(const QVector3D& worldPos, QPointF* screenPos) const {
+    return projectToScreen(Eigen::Vector3d(worldPos.x(), worldPos.y(), worldPos.z()), screenPos);
 }
 
 void Viewport3DContent::drawMeasurementOverlay() {
@@ -424,6 +439,7 @@ void Viewport3DContent::mousePressEvent(QMouseEvent* event) {
     m_lastMousePos = event->pos();
     if (event->button() == Qt::LeftButton) {
         m_pickPressPos = event->pos();
+        m_hasPendingLeftPress = true;
     }
     if (event->buttons() & (Qt::LeftButton | Qt::RightButton | Qt::MiddleButton)) {
         beginInteraction();
@@ -454,8 +470,10 @@ void Viewport3DContent::mouseReleaseEvent(QMouseEvent* event) {
 
     // 拾取模式：左键短点击（非拖拽）拾取最近的 3D 点
     // 非拾取模式：需要 Ctrl+左键
-    const bool isPickClick =
-        event->button() == Qt::LeftButton && (m_pickMode || event->modifiers() == Qt::ControlModifier);
+    const bool hadPendingLeftPress = event->button() == Qt::LeftButton && m_hasPendingLeftPress;
+    if (event->button() == Qt::LeftButton)
+        m_hasPendingLeftPress = false;
+    const bool isPickClick = hadPendingLeftPress && (m_pickMode || event->modifiers() == Qt::ControlModifier);
 
     if (isPickClick) {
         // 判断是否为点击（移动距离小于阈值）而非拖拽
@@ -494,7 +512,10 @@ void Viewport3DContent::mouseReleaseEvent(QMouseEvent* event) {
         }
 
         if (bestIdx >= 0) {
-            emit point3DClicked(m_lastPoints[bestIdx]);
+            const QVector3D displayPoint = m_lastPoints[bestIdx];
+            const Eigen::Vector3d world = m_lastWorldPoints[bestIdx];
+            emit point3DClicked(displayPoint);
+            emit point3DWorldClicked(world.x(), world.y(), world.z());
         }
     }
 }

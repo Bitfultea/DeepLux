@@ -15,16 +15,16 @@
                 "multiple": false
             },
             {
-                "id": "line1",
-                "displayName": "线1",
-                "type": "Line2D",
+                "id": "point1",
+                "displayName": "点1",
+                "type": "Any",
                 "required": true,
                 "multiple": false
             },
             {
-                "id": "line2",
-                "displayName": "线2",
-                "type": "Line2D",
+                "id": "point2",
+                "displayName": "点2",
+                "type": "Any",
                 "required": true,
                 "multiple": false
             }
@@ -41,6 +41,41 @@
                 "id": "gap",
                 "displayName": "间隙",
                 "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "gap_distance",
+                "displayName": "间隙距离",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "gap_delta_x",
+                "displayName": "X 差值",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "gap_delta_y",
+                "displayName": "Y 差值",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "gap_delta_z",
+                "displayName": "Z 差值",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "measurement_dimension",
+                "displayName": "测量维度",
+                "type": "String",
                 "required": false,
                 "multiple": false
             }

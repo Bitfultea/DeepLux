@@ -5,8 +5,10 @@
 #include <QTemporaryDir>
 #include <QWidget>
 #include <QtTest/QtTest>
+#include <core/deeplux/DataContract.h>
 #include <core/interface/IModule.h>
 #include <core/manager/PluginManager.h>
+#include <limits>
 
 using namespace DeepLux;
 
@@ -18,6 +20,7 @@ private slots:
     void cleanup();
 
     void testRepresentativePluginsHaveIndependentParamPreservingInstances();
+    void testEllipse2DDataContractIsStrict();
 
 private:
     struct PluginFixture {
@@ -30,6 +33,26 @@ private:
     bool installPlugin(const QString& pluginRoot, const PluginFixture& fixture) const;
     QVariant replacementValueFor(const QString& key, const QJsonValue& value) const;
 };
+
+void TestPluginContracts::testEllipse2DDataContractIsStrict() {
+    QVERIFY(isSupportedPortType(DataType::Ellipse2D));
+    QVERIFY(portValueMatchesType(QVariant::fromValue(Ellipse2D{25.0, 25.0, 12.0, 7.0, 0.0}), DataType::Ellipse2D));
+    for (const Ellipse2D invalid :
+         {Ellipse2D{0, 0, 0, 0, 0}, Ellipse2D{0, 0, -1, -2, 0}, Ellipse2D{0, 0, 7, 12, 0}, Ellipse2D{0, 0, 12, 7, 180},
+          Ellipse2D{std::numeric_limits<double>::quiet_NaN(), 0, 12, 7, 0},
+          Ellipse2D{0, std::numeric_limits<double>::infinity(), 12, 7, 0},
+          Ellipse2D{0, 0, std::numeric_limits<double>::quiet_NaN(), 7, 0},
+          Ellipse2D{0, 0, 12, std::numeric_limits<double>::infinity(), 0},
+          Ellipse2D{0, 0, 12, 7, std::numeric_limits<double>::quiet_NaN()},
+          Ellipse2D{0, 0, 12, 7, std::numeric_limits<double>::infinity()}}) {
+        QVERIFY(!portValueMatchesType(QVariant::fromValue(invalid), DataType::Ellipse2D));
+    }
+    QVERIFY(!portValueMatchesType(QVariant(QVariantList{25.0, 25.0, 12.0, 7.0, 0.0}), DataType::Ellipse2D));
+    QVERIFY(!portValueMatchesType(
+        QVariant(QVariantMap{
+            {"centerX", 25.0}, {"centerY", 25.0}, {"majorRadius", 12.0}, {"minorRadius", 7.0}, {"angleDegrees", 0.0}}),
+        DataType::Ellipse2D));
+}
 
 void TestPluginContracts::init() {
     PluginManager::instance().shutdown();
@@ -134,11 +157,12 @@ void TestPluginContracts::testRepresentativePluginsHaveIndependentParamPreservin
         QVERIFY2(PluginManager::instance().loadPlugin(fixture.moduleName),
                  qPrintable(QString("load %1").arg(fixture.moduleName)));
 
-        IModule* first = PluginManager::instance().createModule(fixture.moduleName);
-        IModule* second = PluginManager::instance().createModule(fixture.moduleName);
+        auto first = PluginManager::instance().createManagedModule(fixture.moduleName);
+        auto second = PluginManager::instance().createManagedModule(fixture.moduleName);
         QVERIFY2(first != nullptr, qPrintable(QString("create first %1").arg(fixture.moduleName)));
         QVERIFY2(second != nullptr, qPrintable(QString("create second %1").arg(fixture.moduleName)));
-        QVERIFY2(first != second, qPrintable(QString("%1 returned shared module instance").arg(fixture.moduleName)));
+        QVERIFY2(first.get() != second.get(),
+                 qPrintable(QString("%1 returned shared module instance").arg(fixture.moduleName)));
 
         QVERIFY2(!first->moduleId().isEmpty(), qPrintable(fixture.moduleName));
         QVERIFY2(!first->name().isEmpty(), qPrintable(fixture.moduleName));
@@ -166,14 +190,11 @@ void TestPluginContracts::testRepresentativePluginsHaveIndependentParamPreservin
 
             IModule* cloned = first->clone();
             QVERIFY2(cloned != nullptr, qPrintable(QString("%1 clone returned null").arg(fixture.moduleName)));
-            QVERIFY2(cloned != first, qPrintable(QString("%1 clone returned self").arg(fixture.moduleName)));
+            QVERIFY2(cloned != first.get(), qPrintable(QString("%1 clone returned self").arg(fixture.moduleName)));
             QCOMPARE(cloned->currentParams().value(key).toVariant(), replacement);
             QCOMPARE(second->currentParams().value(key).toVariant(), defaults.value(key).toVariant());
             delete cloned;
         }
-
-        delete first;
-        delete second;
     }
 }
 

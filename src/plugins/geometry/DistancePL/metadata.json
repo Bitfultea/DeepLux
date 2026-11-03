@@ -43,6 +43,13 @@
                 "type": "Number",
                 "required": false,
                 "multiple": false
+            },
+            {
+                "id": "foot_point",
+                "displayName": "垂足",
+                "type": "Point2D",
+                "required": false,
+                "multiple": false
             }
         ]
     }

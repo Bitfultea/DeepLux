@@ -104,6 +104,10 @@ public:
     State state() const {
         return m_state;
     }
+    QString serverMode() const {
+        return m_serverMode;
+    }
+    bool healthCheckInFlight() const;
     // 请求超时（默认 30s）。测试可调小以便在合理时长内断言超时路径。
     void setTimeoutMs(int ms) {
         if (ms > 0)
@@ -123,11 +127,15 @@ public:
     const QList<SamCandidate>& lastCandidates() const {
         return m_lastCandidates;
     }
+    qint64 pendingPredictionRequestId() const;
+    bool hasPendingSetImageRequest() const {
+        return !m_pendingSetImageReply.isNull();
+    }
 
     // API
     void healthCheck();
     void setImage(const QString& imagePath);
-    void predict(const QList<QPointF>& positive, const QList<QPointF>& negative, const QRectF& box);
+    qint64 predict(const QList<QPointF>& positive, const QList<QPointF>& negative, const QRectF& box);
     void unloadImage();
 
     // 启动/停止 Python 进程（可选，便于测试时跳过）
@@ -141,8 +149,13 @@ signals:
     void stateChanged(SamBackendClient::State newState);
     void predictionReady(const QList<QPointF>& polygon, const QRectF& bbox, double score, const QString& maskRle,
                          const QImage& maskImage);
+    void predictionReadyForRequest(qint64 requestId, const QList<QPointF>& polygon, const QRectF& bbox, double score,
+                                   const QString& maskRle, const QImage& maskImage);
+    void predictionRequestStarted(qint64 requestId);
+    void predictionErrorForRequest(qint64 requestId, const QString& message);
     void errorOccurred(const QString& message);
     void embeddingReady(const QString& embeddingId);
+    void requestBodyUploadStarted(const QString& endpoint);
     void environmentInitializationStarted();
     void environmentInitializationProgress(const QString& message);
     void environmentInitializationFinished(bool ok, const QString& message);
@@ -190,6 +203,7 @@ private:
     QString m_scriptPath;
     QString m_embeddingId;
     QString m_modelName;
+    QString m_serverMode = QStringLiteral("unknown");
     QString m_modelPath;
 
     // 记录最近一次预测参数，用于 invalid_embedding 重试
@@ -199,6 +213,7 @@ private:
     QString m_lastImagePath;
     QList<SamCandidate> m_lastCandidates; // SAM 批4：本次 predict 的候选（发起时清空）
     bool m_imageRetryPending = false;
+    qint64 m_imageRetryPredictionId = 0;
     int m_healthPollsRemaining = 0;
     int m_envInitStep = 0;
     QString m_envLastOutput;

@@ -60,6 +60,13 @@
         ],
         "outputs": [
             {
+                "id": "ellipse",
+                "displayName": "拟合椭圆",
+                "type": "Ellipse2D",
+                "required": false,
+                "multiple": false
+            },
+            {
                 "id": "image",
                 "displayName": "输出",
                 "type": "Any",

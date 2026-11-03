@@ -123,6 +123,17 @@ bool StrFormatPlugin::doValidateParams(const QJsonObject& params, QString& error
         error = QString("Input variables must be an array");
         return false;
     }
+    const QJsonArray variables = params["inputVariables"].toArray();
+    if (variables.size() > 256) {
+        error = QStringLiteral("Input variables exceed 256 items");
+        return false;
+    }
+    for (const QJsonValue& variable : variables) {
+        if (!variable.isString()) {
+            error = QStringLiteral("Input variables must contain only strings");
+            return false;
+        }
+    }
     return true;
 }
 

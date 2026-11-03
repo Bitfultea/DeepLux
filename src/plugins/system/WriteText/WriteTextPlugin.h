@@ -36,6 +36,8 @@ public:
 
     bool initialize() override;
     void shutdown() override;
+    using ModuleBase::execute;
+    ExecutionResult execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) override;
     QWidget* createConfigWidget() override;
 
 protected:
@@ -45,6 +47,8 @@ protected:
 
 private:
     bool m_writeResult = false;
+    bool m_writeUnconfirmed = false;
+    QString m_writeDiagnostics;
 };
 
 } // namespace DeepLux

@@ -7,6 +7,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QSaveFile>
 
 namespace DeepLux {
 
@@ -47,13 +48,18 @@ bool ConfigManager::save() {
     if (!PathUtils::ensureDirExists(configInfo.absolutePath()))
         return false;
 
-    QFile file(m_configPath);
+    const QString savePath = PathUtils::resolveFileTargetPath(m_configPath);
+    if (savePath.isEmpty())
+        return false;
+
+    QSaveFile file(savePath);
     if (!file.open(QIODevice::WriteOnly))
         return false;
 
     QJsonDocument doc(m_config);
-    file.write(doc.toJson(QJsonDocument::Indented));
-    file.close();
+    const QByteArray data = doc.toJson(QJsonDocument::Indented);
+    if (file.write(data) != data.size() || !file.commit())
+        return false;
 
     m_modified = false;
     emit configSaved();

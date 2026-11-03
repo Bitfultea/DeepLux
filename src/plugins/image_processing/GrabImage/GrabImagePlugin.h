@@ -68,6 +68,7 @@ signals:
 
 protected:
     bool process(const ImageData& input, ImageData& output) override;
+    virtual bool openFallbackCamera(int cameraIndex);
 
 private:
     bool grabFromCamera(ImageData& output);

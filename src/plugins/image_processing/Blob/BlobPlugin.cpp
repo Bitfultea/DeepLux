@@ -41,6 +41,7 @@ void BlobPlugin::shutdown() {
 
 bool BlobPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
+    output.removeData(QStringLiteral("largest_blob_center"));
 
 #ifdef DEEPLUX_HAS_OPENCV
     // 获取图像
@@ -89,9 +90,21 @@ bool BlobPlugin::process(const ImageData& input, ImageData& output) {
 
     output.setData("blob_center_x", maxBlob.centerX);
     output.setData("blob_center_y", maxBlob.centerY);
+    output.setData("largest_blob_center", QPointF(maxBlob.centerX, maxBlob.centerY));
     output.setData("blob_area", maxBlob.area);
     output.setData("blob_perimeter", maxBlob.perimeter);
     output.setData("blob_circularity", maxBlob.circularity);
+
+    Detection detection;
+    detection.x = maxBlob.bboxX;
+    detection.y = maxBlob.bboxY;
+    detection.width = maxBlob.bboxWidth;
+    detection.height = maxBlob.bboxHeight;
+    detection.score = maxBlob.circularity;
+    detection.label = QStringLiteral("largest_blob");
+    DetectionList largestBlob;
+    largestBlob.items.append(detection);
+    output.setData("largest_blob", QVariant::fromValue(largestBlob));
 
     QString result = QString("Blob: 数量=%1, 最大: 中心(%2,%3), 面积=%4, 圆度=%5")
                          .arg(m_blobCount)
@@ -152,6 +165,11 @@ std::vector<BlobPlugin::BlobResult> BlobPlugin::detectBlobs(const cv::Mat& gray,
         blob.area = area;
         blob.perimeter = perimeter;
         blob.circularity = circularity;
+        const cv::Rect bounds = cv::boundingRect(contour);
+        blob.bboxX = bounds.x;
+        blob.bboxY = bounds.y;
+        blob.bboxWidth = bounds.width;
+        blob.bboxHeight = bounds.height;
 
         results.push_back(blob);
     }

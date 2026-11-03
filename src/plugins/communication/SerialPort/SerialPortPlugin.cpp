@@ -7,11 +7,12 @@
 #include <QLineEdit>
 #include <QSerialPortInfo>
 #include <QSpinBox>
+#include <QThread>
 #include <QVBoxLayout>
 
 namespace DeepLux {
 
-SerialPortPlugin::SerialPortPlugin(QObject* parent) : ModuleBase(parent), m_serialPort(new QSerialPort(this)) {
+SerialPortPlugin::SerialPortPlugin(QObject* parent) : ModuleBase(parent) {
     m_defaultParams = QJsonObject{{"portName", ""},          {"baudRate", 9600},  {"dataBits", 8},
                                   {"parity", "None"},        {"stopBits", "One"}, {"flowControl", "None"},
                                   {"timeout", 100},          {"writeData", ""},   {"readVariable", "serial_data"},
@@ -19,9 +20,7 @@ SerialPortPlugin::SerialPortPlugin(QObject* parent) : ModuleBase(parent), m_seri
     m_params = m_defaultParams;
 }
 
-SerialPortPlugin::~SerialPortPlugin() {
-    closeSerialPort();
-}
+SerialPortPlugin::~SerialPortPlugin() = default;
 
 bool SerialPortPlugin::initialize() {
     if (!ModuleBase::initialize()) {
@@ -31,143 +30,147 @@ bool SerialPortPlugin::initialize() {
     return true;
 }
 
-bool SerialPortPlugin::openSerialPort() {
-    if (m_serialPort->isOpen()) {
-        m_serialPort->close();
-    }
+bool SerialPortPlugin::openSerialPort(QSerialPort& serial, const QString& portName, int baudRate,
+                                      QSerialPort::DataBits dataBits, QSerialPort::Parity parity,
+                                      QSerialPort::StopBits stopBits, QSerialPort::FlowControl flowControl) {
+    serial.setPortName(portName);
+    serial.setBaudRate(baudRate);
+    serial.setDataBits(dataBits);
+    serial.setParity(parity);
+    serial.setStopBits(stopBits);
+    serial.setFlowControl(flowControl);
 
-    m_serialPort->setPortName(m_portName);
-    m_serialPort->setBaudRate(m_baudRate);
-    m_serialPort->setDataBits(m_dataBits);
-    m_serialPort->setParity(m_parity);
-    m_serialPort->setStopBits(m_stopBits);
-    m_serialPort->setFlowControl(m_flowControl);
-
-    if (!m_serialPort->open(QIODevice::ReadWrite)) {
-        emit errorOccurred(tr("无法打开串口 %1: %2").arg(m_portName).arg(m_serialPort->errorString()));
+    if (!serial.open(QIODevice::ReadWrite)) {
+        emit errorOccurred(tr("无法打开串口 %1: %2").arg(portName, serial.errorString()));
         return false;
     }
 
-    Logger::instance().info(QString("SerialPort: Opened %1 at %2 baud").arg(m_portName).arg(m_baudRate),
-                            "Communication");
+    Logger::instance().info(QString("SerialPort: Opened %1 at %2 baud").arg(portName).arg(baudRate), "Communication");
     return true;
 }
 
-void SerialPortPlugin::closeSerialPort() {
-    if (m_serialPort->isOpen()) {
-        m_serialPort->close();
-        Logger::instance().info(QString("SerialPort: Closed %1").arg(m_portName), "Communication");
-    }
-}
-
-QString SerialPortPlugin::readFromPort() {
-    if (!m_serialPort->waitForReadyRead(m_timeout)) {
+QString SerialPortPlugin::readFromPort(QSerialPort& serial, int timeoutMs) {
+    if (!serial.waitForReadyRead(timeoutMs)) {
         return QString();
     }
 
-    QByteArray data = m_serialPort->readAll();
-    while (m_serialPort->waitForReadyRead(10)) {
-        data += m_serialPort->readAll();
+    QByteArray data = serial.readAll();
+    while (serial.waitForReadyRead(10)) {
+        data += serial.readAll();
     }
 
     return QString::fromUtf8(data);
 }
 
-bool SerialPortPlugin::writeToPort(const QString& data) {
-    if (!m_serialPort->isOpen()) {
+bool SerialPortPlugin::writeToPort(QSerialPort& serial, const QString& data) {
+    if (!serial.isOpen()) {
         emit errorOccurred(tr("串口未打开"));
         return false;
     }
 
     QByteArray bytes = data.toUtf8();
-    qint64 written = m_serialPort->write(bytes);
+    qint64 written = serial.write(bytes);
+    m_writeMayHaveOccurred = written > 0;
     if (written != bytes.size()) {
         emit errorOccurred(tr("写入串口失败"));
         return false;
     }
 
-    m_serialPort->flush();
+    if (!serial.flush()) {
+        emit errorOccurred(tr("刷新串口写入失败"));
+        return false;
+    }
     return true;
+}
+
+ExecutionResult SerialPortPlugin::execute(const PortValueMap& inputs, PortValueMap& outputs,
+                                          ExecutionContext& context) {
+    m_writeMayHaveOccurred = false;
+    const ExecutionResult result = ModuleBase::execute(inputs, outputs, context);
+    if (!result.success && m_writeMayHaveOccurred) {
+        return ExecutionResult::fail(ExecError::SideEffectUncertain,
+                                     tr("串口写入结果无法确认：写入已提交但未收到有效响应"), result.diagnostics);
+    }
+    return result;
 }
 
 bool SerialPortPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
-    QJsonObject params = currentParams();
-    m_portName = params["portName"].toString();
-    m_baudRate = params["baudRate"].toInt(9600);
-    m_timeout = params["timeout"].toInt(100);
-    m_writeData = params["writeData"].toString();
-    m_readVariable = params["readVariable"].toString("serial_data");
+    const QJsonObject params = currentParams();
+    const QString portName = params["portName"].toString();
+    const int baudRate = params["baudRate"].toInt(9600);
+    const int timeout = params["timeout"].toInt(100);
+    const QString writeData = params["writeData"].toString();
+    const QString readVariable = params["readVariable"].toString("serial_data");
+    const QString operation = params["operation"].toString("WriteRead");
+
+    QSerialPort serial;
+    Q_ASSERT_X(serial.thread() == QThread::currentThread(), "SerialPortPlugin::process",
+               "SerialPort socket must be created in its execution thread");
 
     // Data bits
-    int dataBits = params["dataBits"].toInt(8);
-    switch (dataBits) {
+    QSerialPort::DataBits dataBits = QSerialPort::Data8;
+    switch (params["dataBits"].toInt(8)) {
     case 5:
-        m_dataBits = QSerialPort::Data5;
+        dataBits = QSerialPort::Data5;
         break;
     case 6:
-        m_dataBits = QSerialPort::Data6;
+        dataBits = QSerialPort::Data6;
         break;
     case 7:
-        m_dataBits = QSerialPort::Data7;
+        dataBits = QSerialPort::Data7;
         break;
     default:
-        m_dataBits = QSerialPort::Data8;
         break;
     }
 
     // Parity
-    QString parity = params["parity"].toString("None");
-    if (parity == "Even")
-        m_parity = QSerialPort::EvenParity;
-    else if (parity == "Odd")
-        m_parity = QSerialPort::OddParity;
-    else if (parity == "Space")
-        m_parity = QSerialPort::SpaceParity;
-    else if (parity == "Mark")
-        m_parity = QSerialPort::MarkParity;
-    else
-        m_parity = QSerialPort::NoParity;
+    const QString parityValue = params["parity"].toString("None");
+    QSerialPort::Parity parity = QSerialPort::NoParity;
+    if (parityValue == "Even")
+        parity = QSerialPort::EvenParity;
+    else if (parityValue == "Odd")
+        parity = QSerialPort::OddParity;
+    else if (parityValue == "Space")
+        parity = QSerialPort::SpaceParity;
+    else if (parityValue == "Mark")
+        parity = QSerialPort::MarkParity;
 
     // Stop bits
-    QString stopBits = params["stopBits"].toString("One");
-    if (stopBits == "OneAndHalf")
-        m_stopBits = QSerialPort::OneAndHalfStop;
-    else if (stopBits == "Two")
-        m_stopBits = QSerialPort::TwoStop;
-    else
-        m_stopBits = QSerialPort::OneStop;
+    const QString stopBitsValue = params["stopBits"].toString("One");
+    QSerialPort::StopBits stopBits = QSerialPort::OneStop;
+    if (stopBitsValue == "OneAndHalf")
+        stopBits = QSerialPort::OneAndHalfStop;
+    else if (stopBitsValue == "Two")
+        stopBits = QSerialPort::TwoStop;
 
     // Flow control
-    QString flowControl = params["flowControl"].toString("None");
-    if (flowControl == "Hardware")
-        m_flowControl = QSerialPort::HardwareControl;
-    else if (flowControl == "Software")
-        m_flowControl = QSerialPort::SoftwareControl;
-    else
-        m_flowControl = QSerialPort::NoFlowControl;
+    const QString flowControlValue = params["flowControl"].toString("None");
+    QSerialPort::FlowControl flowControl = QSerialPort::NoFlowControl;
+    if (flowControlValue == "Hardware")
+        flowControl = QSerialPort::HardwareControl;
+    else if (flowControlValue == "Software")
+        flowControl = QSerialPort::SoftwareControl;
 
-    QString operation = params["operation"].toString("WriteRead");
-
-    if (m_portName.isEmpty()) {
+    if (portName.isEmpty()) {
         emit errorOccurred(tr("串口名称不能为空"));
         return false;
     }
 
-    if (!openSerialPort()) {
+    if (!openSerialPort(serial, portName, baudRate, dataBits, parity, stopBits, flowControl)) {
         return false;
     }
 
     bool success = true;
 
     if (operation == "Write" || operation == "WriteRead") {
-        QString dataToWrite = m_writeData;
+        QString dataToWrite = writeData;
         if (dataToWrite.isEmpty()) {
             dataToWrite = input.data("send_data").toString();
         }
         if (!dataToWrite.isEmpty()) {
-            success = writeToPort(dataToWrite);
+            success = writeToPort(serial, dataToWrite);
             if (success) {
                 Logger::instance().debug(QString("SerialPort: Wrote '%1'").arg(dataToWrite), "Communication");
             }
@@ -175,15 +178,18 @@ bool SerialPortPlugin::process(const ImageData& input, ImageData& output) {
     }
 
     if (success && (operation == "Read" || operation == "WriteRead")) {
-        QString readData = readFromPort();
+        QString readData = readFromPort(serial, timeout);
         if (!readData.isEmpty()) {
-            output.setData(m_readVariable, readData);
-            output.setData(m_readVariable + "_bytes", readData.toUtf8().size());
+            output.setData(readVariable, readData);
+            output.setData(readVariable + "_bytes", readData.toUtf8().size());
             Logger::instance().debug(QString("SerialPort: Read '%1'").arg(readData), "Communication");
+        } else {
+            emit errorOccurred(tr("串口读取超时，未收到响应"));
+            success = false;
         }
     }
 
-    closeSerialPort();
+    serial.close();
     return success;
 }
 

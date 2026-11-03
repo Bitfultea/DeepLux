@@ -3,10 +3,19 @@
 #include "core/manager/PluginManager.h"
 
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSaveFile>
+#include <atomic>
 
 namespace DeepLux {
+
+namespace {
+#ifdef DEEPLUX_ENABLE_TEST_HOOKS
+std::atomic<qint64> g_failNextProjectBackupAfterBytes{-1};
+#endif
+} // namespace
 
 QPair<QString, QString> ProjectMigrator::defaultPortLookup(const QString& moduleId) {
     const PluginInfo info = PluginManager::instance().pluginInfo(moduleId);
@@ -104,19 +113,47 @@ MigrationReport ProjectMigrator::migrate(Project& project, const PortLookup& loo
 }
 
 bool ProjectMigrator::saveWithBackup(Project& project, const QString& path) {
-    QFile existing(path);
-    if (existing.exists()) {
-        if (existing.open(QIODevice::ReadOnly)) {
-            QJsonDocument doc = QJsonDocument::fromJson(existing.readAll());
-            existing.close();
-            const QString oldVersion = doc.object()["version"].toString(QStringLiteral("2.0"));
-            if (oldVersion != QStringLiteral("3.0")) {
-                QFile::remove(path + QStringLiteral(".v2.bak"));
-                QFile::copy(path, path + QStringLiteral(".v2.bak"));
+    QFileInfo targetInfo(path);
+    if (targetInfo.exists() || targetInfo.isSymLink()) {
+        QFile existing(path);
+        if (!existing.open(QIODevice::ReadOnly))
+            return false;
+        const QByteArray originalBytes = existing.readAll();
+        const bool readSucceeded = existing.error() == QFileDevice::NoError;
+        existing.close();
+        if (!readSucceeded)
+            return false;
+
+        const QJsonDocument doc = QJsonDocument::fromJson(originalBytes);
+        const QString oldVersion = doc.object().value(QStringLiteral("version")).toString(QStringLiteral("2.0"));
+        if (oldVersion != QStringLiteral("3.0")) {
+            QSaveFile backup(path + QStringLiteral(".v2.bak"));
+            backup.setDirectWriteFallback(false);
+            if (!backup.open(QIODevice::WriteOnly))
+                return false;
+#ifdef DEEPLUX_ENABLE_TEST_HOOKS
+            const qint64 failAfterBytes = g_failNextProjectBackupAfterBytes.exchange(-1, std::memory_order_acq_rel);
+            if (failAfterBytes >= 0 && failAfterBytes < originalBytes.size()) {
+                backup.write(originalBytes.constData(), failAfterBytes);
+                backup.cancelWriting();
+                return false;
             }
+#endif
+            if (backup.write(originalBytes) != originalBytes.size()) {
+                backup.cancelWriting();
+                return false;
+            }
+            if (!backup.commit())
+                return false;
         }
     }
     return project.save(path);
 }
+
+#ifdef DEEPLUX_ENABLE_TEST_HOOKS
+void ProjectMigrator::failNextBackupAfterBytesForTesting(qint64 bytes) {
+    g_failNextProjectBackupAfterBytes.store(qMax<qint64>(0, bytes), std::memory_order_release);
+}
+#endif
 
 } // namespace DeepLux

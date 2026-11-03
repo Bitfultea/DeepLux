@@ -3,10 +3,14 @@
 
 #include "ILLMClient.h"
 
+#include <QDateTime>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QMutex>
 #include <QObject>
+#include <QPointer>
+#include <QSet>
+#include <functional>
 #include <memory>
 
 namespace DeepLux {
@@ -48,7 +52,26 @@ public:
     void onGuiEvent(const GuiEvent& event);
     QJsonObject handleToolCall(const QString& toolName, const QJsonObject& params);
 
+    /**
+     * @brief 阶段1 §2：统一入口权限判定——聊天路径、Bridge handleToolCall、
+     * 确认执行前复验三处共用，杜绝策略分叉（F08）。
+     */
+    enum class ToolGate { Allow, RequireConfirmation, Deny };
+    ToolGate evaluateToolGate(const QString& toolName, const QJsonObject& params = {}) const;
+
+    /**
+     * @brief 阶段1 §4：当前待确认批次的完整载荷（confirmationId + tools + context
+     * 摘要/工程/版本快照/副作用/可撤销性），供 UI 展示与审计；无待确认批次时返回空对象。
+     */
+    QJsonObject pendingConfirmationPayload() const;
+
     void setLLMClient(ILLMClient* client);
+    using DataSourceViewHandler = std::function<QJsonObject(const QString&, const QJsonObject&)>;
+    void registerDataSourceViewHandler(QObject* owner, DataSourceViewHandler handler);
+    void unregisterDataSourceViewHandler(QObject* owner);
+    QJsonObject executeDataSourceViewAction(const QString& toolName, const QJsonObject& params) const;
+    QJsonObject confirmedActiveAnnotationSessionSaveSnapshot(const QString& outputPath) const;
+    QJsonObject confirmedActiveAnnotationSessionOpenSnapshot(const QString& sessionPath) const;
     ILLMClient* llmClient() const {
         return m_llmClient;
     }
@@ -59,6 +82,7 @@ public:
 
     void sendUserMessage(const QString& message);
     void sendUserMessageWithImages(const QString& message, const QList<QPixmap>& images);
+    bool cancelCurrentRequest();
     void clearConversation();
     bool undoLastAgentAction();
 
@@ -73,16 +97,31 @@ public:
     QJsonArray pendingToolCalls() const {
         return m_pendingToolCalls;
     }
-    void confirmPendingTools();
-    void rejectPendingTools();
+    QString pendingConfirmationId() const {
+        return m_pendingConfirmationId;
+    }
+
+    /**
+     * @brief 批准/拒绝当前待确认批次（阶段1 审核整改 R2;复审2 R1 收口）。
+     *
+     * confirmationId 为必填且必须与当前待确认批次一致——批准必须绑定到用户
+     * 所看到的那一批操作。空 id 或错配（旧批次迟到事件）一律拒绝：返回 false,
+     * 零副作用,当前批次保持待确认。
+     */
+    bool confirmPendingTools(const QString& confirmationId);
+    bool rejectPendingTools(const QString& confirmationId);
 
     // 测试/调试支持：只读访问对话历史大小
     int conversationHistorySize() const {
         return m_conversationHistory.size();
     }
+    const QList<AgentMessage>& conversationHistory() const {
+        return m_conversationHistory;
+    }
 
 signals:
     void actionLogEntryAdded(const AgentActionLogEntry& entry);
+    void undoRejected(const QString& reason);
     void permissionLevelChanged(PermissionLevel level);
     void agentActionReceived(const QString& action, const QJsonObject& params);
     void agentActionCompleted(const QString& action, const QJsonObject& result);
@@ -94,15 +133,31 @@ signals:
 private slots:
     void onLLMResponse(const struct AgentResponse& resp);
     void onLLMError(const QString& error);
-    void doConfirmPendingTools(QJsonArray calls);
+    void onLLMRequestFailed(const QString& requestId, const QString& error);
+    QString finalizeTextReply(const QString& content) const;
+    void doConfirmPendingTools(QJsonArray calls, const QString& confirmationId);
 
 private:
     explicit AgentController(QObject* parent = nullptr);
     ~AgentController() override;
 
     QString buildContext();
-    void extendAgentLoop(const QJsonArray& toolCalls);
+    void extendAgentLoop(const QJsonArray& toolCalls, const QString& confirmationId = QString());
+    void pollPendingQueries(int generation);
+    void cancelPendingQueries(const QString& reason);
+    void continueAgentLoop();
+    void sendLLMRequest(AgentConversation ctx);
     void trimHistoryIfNeeded();
+
+    // 阶段1 §4/§5：确认批次绑定工程与配置版本快照；执行前重校验，陈旧确认零副作用拒绝
+    void beginPendingConfirmation(const QJsonArray& calls, const QString& content, bool continueAfter);
+    bool confirmationContextStillValid(const QJsonArray& calls, QString* reason) const;
+    QJsonObject unresolvedFileTargetPreflight(const QString& toolName) const;
+    QJsonObject cameraCyclePreflight(const QString& toolName, const QJsonObject& params) const;
+    QJsonObject cameraSessionPreflight(const QString& toolName) const;
+    QJsonObject cameraCycleBatchPreflight(const QJsonArray& calls) const;
+    // 未执行/被拒绝的确认批次：为每个 call 补一条 tool 结果，保持 OpenAI 对话合法性
+    void appendToolResultsForCalls(const QJsonArray& calls, const QJsonObject& result);
 
     bool m_initialized = false;
     PermissionLevel m_permissionLevel = PermissionLevel::Advisor;
@@ -116,7 +171,44 @@ private:
     QJsonArray m_pendingToolCalls;
     bool m_continueAfterPendingTools = true;
 
+    // 待确认批次上下文快照（阶段1 §4）
+    QString m_pendingConfirmationId;
+    bool m_pendingHasProject = false;
+    QString m_pendingProjectPath;
+    QString m_pendingProjectName;
+    QByteArray m_pendingProjectFingerprint; // 工程内容 sha1，检出任何来源的窗口期修改
+    bool m_pendingDataSourceEpochCaptured = false;
+    quint64 m_pendingDataSourceProjectIdentity = 0;
+    quint64 m_pendingDataSourceGeneration = 0;
+    bool m_pendingDataSourceViewOwnerCaptured = false;
+    QPointer<QObject> m_pendingDataSourceViewOwner;
+    quintptr m_pendingDataSourceViewOwnerIdentity = 0;
+    QJsonObject m_pendingFileTargetPaths; // module:<instance ID>/call:<tool call ID> -> resolved output target
+    bool m_pendingFileTargetsCaptured = false;
+    int m_pendingUndoIndex = -1;
+    int m_pendingUndoCount = -1;
+    bool m_pendingResumeSnapshotValid = false;
+    QString m_pendingResumeRunId;
+    QString m_pendingResumeSessionId;
+    int m_pendingResumeState = 0;
+    int m_pendingResumeLifecycleGeneration = 0;
+
+    QPointer<QObject> m_dataSourceViewOwner;
+    DataSourceViewHandler m_dataSourceViewHandler;
+    mutable QJsonObject m_lastQuickMeasurementStatus;
+
     int m_agentTurnCount = 0;
+    int m_parameterCorrectionRetries = 0;
+    QSet<QString> m_parameterFailureSignatures;
+    struct PendingQuery {
+        QString callId;
+        QString name;
+        QJsonObject params;
+    };
+    QList<PendingQuery> m_pendingQueries;
+    QDateTime m_pendingQueryDeadline;
+    int m_waitGeneration = 0;
+    QString m_activeLLMRequestId;
     AgentState m_state = AgentState::Idle;
     mutable QMutex m_stateMutex;
 

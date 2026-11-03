@@ -21,8 +21,14 @@ public:
     void setTemperature(double temp) override;
     void setMaxTokens(int tokens) override;
     void setToolsEnabled(bool enabled) override;
+    bool supportsToolCalling() const override {
+        return m_toolsEnabled;
+    }
     bool supportsImageInput() const override {
         return m_visionEnabled;
+    }
+    bool supportsRequestCorrelation() const override {
+        return true;
     }
     void setVisionEnabled(bool enabled);
     void setReasoningEffort(const QString& effort);
@@ -31,14 +37,13 @@ public:
     static QString normalizeEndpoint(const QString& endpoint);
 
     void sendRequest(const AgentConversation& ctx, const QList<ToolDefinition>& tools) override;
-
-private slots:
-    void onReplyFinished();
-    void onNetworkError(QNetworkReply::NetworkError error);
+    void cancelRequest() override;
 
 private:
+    void onReplyFinished(QNetworkReply* reply, const QString& requestId);
+    void onNetworkError(QNetworkReply* reply, const QString& requestId, QNetworkReply::NetworkError error);
     QJsonObject buildRequestBody(const AgentConversation& ctx, const QList<ToolDefinition>& tools) const;
-    void parseResponse(const QByteArray& data);
+    void parseResponse(const QByteArray& data, const QString& requestId);
 
     QString m_apiKey;
     QString m_endpoint = "https://api.openai.com/v1/chat/completions";
@@ -52,6 +57,7 @@ private:
 
     QNetworkAccessManager* m_networkManager = nullptr;
     QNetworkReply* m_currentReply = nullptr;
+    QString m_activeRequestId;
 };
 
 } // namespace DeepLux

@@ -34,6 +34,13 @@
                 "type": "Image2D",
                 "required": false,
                 "multiple": false
+            },
+            {
+                "id": "defect_region",
+                "displayName": "首个缺陷候选框",
+                "type": "Region2D",
+                "required": false,
+                "multiple": false
             }
         ]
     }

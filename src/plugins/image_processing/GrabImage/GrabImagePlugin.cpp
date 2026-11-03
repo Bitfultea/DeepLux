@@ -89,17 +89,25 @@ bool GrabImagePlugin::process(const ImageData& input, ImageData& output) {
         source = GrabSource::Camera;
     }
 
+    bool success = false;
     switch (source) {
     case GrabSource::File:
-        return grabFromFile(output);
+        success = grabFromFile(output);
+        break;
     case GrabSource::Folder:
-        return grabFromFolder(output);
+        success = grabFromFolder(output);
+        break;
     case GrabSource::Demo:
-        return grabDemo(output);
+        success = grabDemo(output);
+        break;
     case GrabSource::Camera:
     default:
-        return grabFromCamera(output);
+        success = grabFromCamera(output);
+        break;
     }
+    if (success)
+        output.establishCoordinateSource();
+    return success;
 }
 
 bool GrabImagePlugin::grabFromCamera(ImageData& output) {
@@ -110,31 +118,63 @@ bool GrabImagePlugin::grabFromCamera(ImageData& output) {
     // ========== 方案 A：通过 CameraManager / ICamera 取图 ==========
     CameraManager& cm = CameraManager::instance();
 
-    // 1. 查找目标相机（先找已连接的）
-    ICamera* targetCamera = nullptr;
-    QList<ICamera*> connectedCameras = cm.allCameras();
-
-    if (!cameraId.isEmpty()) {
-        for (ICamera* cam : connectedCameras) {
-            if (cam && cam->deviceId() == cameraId) {
-                targetCamera = cam;
+    QString asyncCameraId = cameraId;
+    if (asyncCameraId.isEmpty()) {
+        for (const CameraStatus& status : cm.knownCameras()) {
+            if ((status.state == CameraState::Connected || status.state == CameraState::Grabbing) &&
+                cm.hasAsyncCameraSession(status.deviceId)) {
+                asyncCameraId = status.deviceId;
                 break;
             }
         }
+    }
+    if (!asyncCameraId.isEmpty() && cm.hasAsyncCameraSession(asyncCameraId)) {
+        const double exposureTime = params["exposureTime"].toDouble(10000.0);
+        const double gain = params["gain"].toDouble(1.0);
+        const CameraCaptureResult result = cm.captureAsyncSessionImage(asyncCameraId, exposureTime, gain, grabTimeoutMs,
+                                                                       [this]() { return isCancellationRequested(); });
+        if (!result.success()) {
+            const QString message =
+                tr("异步相机采集失败 (%1): %2")
+                    .arg(asyncCameraId,
+                         result.errorCode.isEmpty() ? QStringLiteral("CAMERA_FRAME_EMPTY") : result.errorCode);
+            emit errorOccurred(message);
+            Logger::instance().warning(message, "GrabImage");
+            return false;
+        }
+        output.setQImage(result.image);
+        Logger::instance().info(QString("从 Agent 异步相机 %1 采集图像成功: %2x%3")
+                                    .arg(asyncCameraId)
+                                    .arg(result.image.width())
+                                    .arg(result.image.height()),
+                                "GrabImage");
+        return true;
+    }
+
+    // 1. 查找目标相机（先找已连接的）
+    CameraLease targetCamera;
+
+    if (!cameraId.isEmpty()) {
+        targetCamera = cm.acquireCamera(cameraId);
         // 未连接则尝试连接
         if (!targetCamera) {
             if (cm.connectCamera(cameraId)) {
-                targetCamera = cm.getCamera(cameraId);
+                targetCamera = cm.acquireCamera(cameraId);
             }
         }
     } else {
-        if (!connectedCameras.isEmpty()) {
-            targetCamera = connectedCameras.first();
-        } else {
+        for (const CameraStatus& status : cm.knownCameras()) {
+            if (status.state == CameraState::Connected || status.state == CameraState::Grabbing) {
+                targetCamera = cm.acquireCamera(status.deviceId);
+                if (targetCamera)
+                    break;
+            }
+        }
+        if (!targetCamera) {
             QList<CameraStatus> discovered = cm.discoverCameras();
             for (const CameraStatus& status : discovered) {
                 if (cm.connectCamera(status.deviceId)) {
-                    targetCamera = cm.getCamera(status.deviceId);
+                    targetCamera = cm.acquireCamera(status.deviceId);
                     if (targetCamera)
                         break;
                 }
@@ -143,16 +183,20 @@ bool GrabImagePlugin::grabFromCamera(ImageData& output) {
     }
 
     if (targetCamera) {
+        const QString connectedCameraId = targetCamera->deviceId();
         // 应用曝光和增益参数
         double exposureTime = params["exposureTime"].toDouble(10000.0);
         double gain = params["gain"].toDouble(1.0);
+        cm.noteCameraParameterChanged(connectedCameraId);
         targetCamera->setExposureTime(exposureTime);
+        cm.noteCameraParameterChanged(connectedCameraId);
         targetCamera->setGain(gain);
         Logger::instance().debug(
             QString("GrabImage set camera params: exposure=%1, gain=%2").arg(exposureTime).arg(gain), "GrabImage");
 
         // 确保开始采集
         if (!targetCamera->isAcquiring()) {
+            cm.noteCameraParameterChanged(connectedCameraId);
             targetCamera->setTriggerMode(TriggerMode::Software);
             if (!targetCamera->startAcquisition()) {
                 emit errorOccurred(tr("相机开始采集失败: %1").arg(targetCamera->deviceId()));
@@ -191,33 +235,30 @@ bool GrabImagePlugin::grabFromCamera(ImageData& output) {
         m_grabTimer->stop();
 
         if (m_grabTimedOut || frame.isNull()) {
-            emit errorOccurred(tr("相机 %1 采集图像超时 (%2ms)").arg(targetCamera->deviceId()).arg(grabTimeoutMs));
+            emit errorOccurred(tr("相机 %1 采集图像超时 (%2ms)").arg(connectedCameraId).arg(grabTimeoutMs));
             return false;
         }
 
         output.setQImage(frame);
-        Logger::instance().info(QString("从相机 %1 采集图像成功: %2x%3")
-                                    .arg(targetCamera->deviceId())
-                                    .arg(frame.width())
-                                    .arg(frame.height()),
-                                "GrabImage");
+        Logger::instance().info(
+            QString("从相机 %1 采集图像成功: %2x%3").arg(connectedCameraId).arg(frame.width()).arg(frame.height()),
+            "GrabImage");
         return true;
+    }
+
+    bool cameraIndexOk = cameraId.isEmpty();
+    const int requestedCameraIndex = cameraId.isEmpty() ? 0 : cameraId.toInt(&cameraIndexOk);
+    if (!cameraIndexOk) {
+        emit errorOccurred(tr("无法通过 CameraManager 连接相机: %1").arg(cameraId));
+        return false;
     }
 
     // ========== 方案 B：回退到 OpenCV VideoCapture ==========
 #ifdef DEEPLUX_HAS_OPENCV
-    // 尝试打开相机
-    int cameraIndex = 0;
-    if (!cameraId.isEmpty()) {
-        bool ok;
-        cameraIndex = cameraId.toInt(&ok);
-        if (!ok)
-            cameraIndex = 0;
-    }
+    const int cameraIndex = requestedCameraIndex;
 
     if (!m_capture.isOpened()) {
-        m_capture.open(cameraIndex);
-        if (!m_capture.isOpened()) {
+        if (!openFallbackCamera(cameraIndex) || !m_capture.isOpened()) {
             emit errorOccurred(tr("无法打开相机: %1").arg(cameraIndex));
             return false;
         }
@@ -273,8 +314,18 @@ bool GrabImagePlugin::grabFromCamera(ImageData& output) {
         "GrabImage");
     return true;
 #else
+    Q_UNUSED(requestedCameraIndex);
     Q_UNUSED(output);
     emit errorOccurred(tr("无可用相机且 OpenCV 未启用"));
+    return false;
+#endif
+}
+
+bool GrabImagePlugin::openFallbackCamera(int cameraIndex) {
+#ifdef DEEPLUX_HAS_OPENCV
+    return m_capture.open(cameraIndex);
+#else
+    Q_UNUSED(cameraIndex);
     return false;
 #endif
 }

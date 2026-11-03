@@ -1,0 +1,20 @@
+{
+  "version": "3.0",
+  "id": "accept-pointsurfacedistance-footpoint-0001",
+  "name": "验收-PointSurfaceDistance 三维垂足",
+  "modules": [
+    {"id": "grab", "moduleId": "GrabImage", "name": "图像采集", "params": {"grabSource": "File", "filePath": "@ACCEPTANCE_DATA@/measurementinput.png"}},
+    {"id": "crop", "moduleId": "CropImage", "name": "偏移裁剪", "params": {"rectangles": [[80, 60, 30, 20, 0]], "outputFirstAsImage": true}},
+    {"id": "input", "moduleId": "MeasurementInput", "name": "点面输入", "params": {"mode": "point_plane", "point": [1, 2, 10], "plane": [0, 0, 3, 1, 0, 3, 0, 1, 3]}},
+    {"id": "distance", "moduleId": "PointSurfaceDistance", "name": "点面距离"}
+  ],
+  "connections": [
+    {"fromModuleId": "grab", "toModuleId": "crop", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "crop", "toModuleId": "input", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "input", "toModuleId": "distance", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "input", "toModuleId": "distance", "fromPort": "point", "toPort": "point", "edgeType": "data"},
+    {"fromModuleId": "input", "toModuleId": "distance", "fromPort": "plane", "toPort": "plane", "edgeType": "data"}
+  ],
+  "flows": [{"id": "main", "name": "主流程", "nodes": ["grab", "crop", "input", "distance"]}],
+  "resources": {"cameras": [], "dataSources": []}
+}

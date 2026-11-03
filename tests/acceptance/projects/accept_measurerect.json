@@ -1,0 +1,16 @@
+{
+  "version": "3.0",
+  "id": "accept-measurerect-0001",
+  "name": "验收-MeasureRect 来源顶点流程",
+  "modules": [
+    {"id": "grab", "moduleId": "GrabImage", "name": "图像采集", "params": {"grabSource": "File", "filePath": "@ACCEPTANCE_DATA@/measurerect.png"}},
+    {"id": "crop", "moduleId": "CropImage", "name": "偏移裁剪", "params": {"rectangles": [[140, 100, 120, 80, 0]], "outputFirstAsImage": true}},
+    {"id": "measure", "moduleId": "MeasureRect", "name": "测量矩形"}
+  ],
+  "connections": [
+    {"fromModuleId": "grab", "toModuleId": "crop", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "crop", "toModuleId": "measure", "fromPort": "image", "toPort": "image", "edgeType": "data"}
+  ],
+  "flows": [{"id": "main", "name": "主流程", "nodes": ["grab", "crop", "measure"]}],
+  "resources": {"cameras": [], "dataSources": []}
+}

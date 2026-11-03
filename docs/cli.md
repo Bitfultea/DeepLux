@@ -390,11 +390,21 @@ MeasurementInput(point1=[10,20], point2=[40,60]) → DistancePP
 ```
 输出: `distance=50.000`
 
-**3D 间隙测量：**
+**二维间隙测量：**
+```
+MeasurementInput(point1=[10,20], point2=[40,60]) → MeasureGap
+```
+输出: `gap_distance=50.000`, `gap_delta_x=30.000`, `gap_delta_y=40.000`, `measurement_dimension=2d`
+
+`MeasurementInput.point_pair` 的两个点必须维数相同；二维值按图像局部像素坐标解释，三维值按 `World3D` 解释。
+
+**三维间隙测量：**
 ```
 MeasurementInput(point1=[10,20,1.2], point2=[40,60,4.2]) → MeasureGap
 ```
 输出: `gap_distance=50.090`, `gap_delta_z=3.000`, `measurement_dimension=3d`
+
+外部坐标基准和物理单位由工程提供。
 
 **点云粗糙度：**
 ```

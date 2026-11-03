@@ -1,0 +1,19 @@
+{
+  "version": "3.0",
+  "id": "accept-fitcircle-pointset-0001",
+  "name": "验收-FitCircle 图像坐标点集流程",
+  "modules": [
+    {"id": "grab", "moduleId": "GrabImage", "name": "图像采集", "params": {"grabSource": "File", "filePath": "@ACCEPTANCE_DATA@/fitcircle.png"}},
+    {"id": "crop", "moduleId": "CropImage", "name": "偏移裁剪", "params": {"rectangles": [[80, 60, 30, 20, 0]], "outputFirstAsImage": true}},
+    {"id": "input", "moduleId": "MeasurementInput", "name": "圆周点输入", "params": {"mode": "point_set", "points": [[37, 25], [33.4852813742, 33.4852813742], [25, 37], [16.5147186258, 33.4852813742], [13, 25], [16.5147186258, 16.5147186258], [25, 13], [33.4852813742, 16.5147186258]]}},
+    {"id": "fit", "moduleId": "FitCircle", "name": "拟合圆"}
+  ],
+  "connections": [
+    {"fromModuleId": "grab", "toModuleId": "crop", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "crop", "toModuleId": "input", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "input", "toModuleId": "fit", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "input", "toModuleId": "fit", "fromPort": "fit_points", "toPort": "fit_points", "edgeType": "data"}
+  ],
+  "flows": [{"id": "main", "name": "主流程", "nodes": ["grab", "crop", "input", "fit"]}],
+  "resources": {"cameras": [], "dataSources": []}
+}

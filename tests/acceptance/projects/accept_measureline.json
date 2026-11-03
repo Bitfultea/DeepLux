@@ -1,0 +1,16 @@
+{
+  "version": "3.0",
+  "id": "accept-measureline-0001",
+  "name": "验收-MeasureLine 来源坐标流程",
+  "modules": [
+    {"id": "grab", "moduleId": "GrabImage", "name": "图像采集", "params": {"grabSource": "File", "filePath": "@ACCEPTANCE_DATA@/measureline.png"}},
+    {"id": "crop", "moduleId": "CropImage", "name": "偏移裁剪", "params": {"rectangles": [[90, 70, 70, 50, 0]], "outputFirstAsImage": true}},
+    {"id": "measure", "moduleId": "MeasureLine", "name": "测量线", "params": {"minLength": 20, "maxLength": 200, "threshold": 30, "minAngle": 0, "maxAngle": 180}}
+  ],
+  "connections": [
+    {"fromModuleId": "grab", "toModuleId": "crop", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "crop", "toModuleId": "measure", "fromPort": "image", "toPort": "image", "edgeType": "data"}
+  ],
+  "flows": [{"id": "main", "name": "主流程", "nodes": ["grab", "crop", "measure"]}],
+  "resources": {"cameras": [], "dataSources": []}
+}

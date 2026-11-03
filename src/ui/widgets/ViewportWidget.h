@@ -6,11 +6,13 @@
 #include <QDoubleSpinBox>
 #include <QFrame>
 #include <QImage>
+#include <QJsonObject>
 #include <QLabel>
 #include <QPointer>
 #include <QString>
 #include <QToolBar>
 #include <QVector3D>
+#include <functional>
 
 namespace DeepLux {
 
@@ -45,6 +47,9 @@ public:
     QString title() const {
         return m_title;
     }
+    quint64 contentGeneration() const {
+        return m_contentGeneration;
+    }
     void setTitle(const QString& title);
 
     // Access the underlying widgets
@@ -55,6 +60,9 @@ public:
         return m_3dContent;
     }
     QImage currentImage() const;
+    ImageCoordinateProvenance imageCoordinateProvenance() const {
+        return m_imageCoordinateProvenance;
+    }
 
     // Display unified data (auto-routes to appropriate renderer)
     void displayData(const DisplayData& data);
@@ -73,6 +81,14 @@ public:
     DisplayMode displayMode() const {
         return m_displayMode;
     }
+    bool hasCachedImage() const {
+        return m_hasCachedImage && !m_cachedImage.isNull();
+    }
+    bool hasCachedPointCloud() const {
+        const PointCloudData* cloud = m_cachedCloudData.pointCloudData();
+        return m_hasCachedCloud && cloud && !cloud->isEmpty();
+    }
+    bool setDisplayMode(DisplayMode mode);
 
     // Zoom controls (2D only)
     void zoomIn();
@@ -93,12 +109,24 @@ public:
     // 设置 2D/3D 双数据（用于 TIFF 等 depth-map 数据）
     void setDualData(const QImage& image, const DisplayData& cloudData, DisplayMode initialMode = DisplayMode::Auto3D);
 
+    // Save the current 2D/3D view through the native file dialog. The optional
+    // framebuffer provider is a deterministic seam for offscreen tests.
+    QJsonObject saveSnapshotForUser(const std::function<QImage()>& framebufferCaptureOverride = {},
+                                    bool showFailureDialogs = false,
+                                    const std::function<QString()>& savePathProvider = {},
+                                    const std::function<bool(const QString&)>& overwriteConfirmationProvider = {},
+                                    bool fallbackToImageWhenFramebufferUnavailable = false);
+
 signals:
     void viewportClosed(const QString& viewportId);
     void titleChanged(const QString& viewportId, const QString& title);
     void imageDisplayed();
+    void contentGenerationChanged(quint64 generation);
     void point2DClicked(const QPointF& point);
+    void point2DSourceClicked(const QPointF& imageLocalPoint, const QPointF& sourceImagePoint,
+                              const QString& sourceImageId, bool sourceCoordinateAvailable);
     void point3DClicked(const QVector3D& point);
+    void point3DWorldClicked(double x, double y, double z);
     void contentWidgetCreated(QWidget* widget); // 高: 延迟创建的子控件通知
 
 private slots:
@@ -112,12 +140,15 @@ private slots:
     void updateZoomLabel(double factor);
 
 private:
+    void advanceContentGeneration();
     void setupUi();
     void createActions();
     void switchTo2D();
     void switchTo3D();
     void updateToggleAction();
     void updateToolbarState();
+    void setImageWidgetImage(const QImage& image);
+    void clearImageWidget();
 
     QString m_viewportId;
     QString m_title;
@@ -143,12 +174,16 @@ private:
 
     DisplayMode m_displayMode = DisplayMode::Auto2D;
     bool m_isDarkTheme = true;
+    int m_renderMode = 5;
+    quint64 m_contentGeneration = 0;
 
     // 2D/3D 双数据缓存（用于切换）
     QImage m_cachedImage;
     bool m_hasCachedImage = false;
     DisplayData m_cachedCloudData;
     bool m_hasCachedCloud = false;
+    ImageCoordinateProvenance m_imageCoordinateProvenance;
+    bool m_synchronizingImageWidget = false;
 };
 
 } // namespace DeepLux

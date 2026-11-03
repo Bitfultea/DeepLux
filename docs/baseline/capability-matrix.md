@@ -41,7 +41,7 @@
 | LoadPointCloud | com.deeplux.plugin.loadpointcloud | 加载点云/TIFF 深度图 | 可用 | 待补 | 保留 | P1 |
 | DisplayData | com.deeplux.plugin.displaydata | 显示数据/文本叠加 | 部分 | 待补 | 重构 | P2 |
 | ImageScript | com.deeplux.plugin.imagescript | 内置图像操作（反转/灰度/模糊/锐化），严格 0–3 校验，失败关闭 | 可用 | 待补 | 重构 | P2 |
-| JigsawPuzzle | com.deeplux.plugin.jigsawsolver | 拼图切分 | 部分 | 待补 | 业务包 | P3 |
+| JigsawPuzzle | com.deeplux.plugin.jigsawsolver | 单图固定网格切分后按行优先原位重组；不识别/重排独立乱序拼图片段 | 部分 | 待补 | 业务包 | P3 |
 | 3DPreProcessing | com.deeplux.plugin.3dpreprocessing | 高度图预处理、NoData 三态检测、ROI/高度筛选与 `height_invalid_value` 契约 | 部分 | 2 通道深度图预处理、ROI 与高度筛选 | 重构完成 | P1 |
 | CropImage | com.deeplux.plugin.cropimage | 旋转矩形半长参数的轴对齐包围盒批量裁剪与 Table 输出 | 部分 | 多旋转矩形裁剪、HRegion/HomMat2D 补正 | 重构完成 | P1 |
 
@@ -116,7 +116,7 @@
 | 停止循环 | com.deeplux.plugin.stopwhile | 提前终止循环 | 可用 | 待补 | 保留 | P1 |
 | 延时 | com.deeplux.plugin.delay | 可取消延时 | 可用 | 待补 | 保留 | P2 |
 | 队列输入 | com.deeplux.plugin.queuein | 变量入队 | 部分 | 待补 | 重构 | P2 |
-| 队列输出 | com.deeplux.plugin.queueout | 变量出队 | 部分 | 待补 | 重构 | P2 |
+| 队列输出 | com.deeplux.plugin.queueout | 变量出队及空队列状态 | 部分 | 待补 | 重构 | P2 |
 | 并行执行 | com.deeplux.plugin.parallel | 显式分支、受控线程池、all/any 汇合 | 可用 | 待补 | 重构完成 | P1 |
 
 ## 八、系统工具（8）
@@ -215,9 +215,9 @@
 | DisplayData | doValidateParams 为空；displayText 为空且载体无命名数据时不绘制任何内容仍返回成功（空操作成功）；fontSize/position 仅 min 0 无 max，与 UI（8–100/0–2000）不同步 | 遗留项：随"重构"决定修复（参数范围校验+空文本语义），不进阶段 7 |
 | Matching | 模板取自载体元数据键 template_qimage 而非正式端口；未提供模板时静默改用图像中心区域作模板（猜测行为）；metadata matchThreshold 仅 min 0 无 max，与校验 (0,1]、UI (0.1–1.0) 不同步 | 遗留项：随"重构"决定修复（模板端口化+metadata 同步），不进阶段 7 |
 | QRCode | 条码分支（Code_128/Code_39/EAN_13/EAN_8）在 decodeBarCode 恒失败；校验已拒绝非 QR 类型，该分支不可达但仍存在；metadata codeType 用 options 而非统一 _options | 遗留项：随专项修复（移除死分支或显式标注未实现），不进阶段 7 |
-| FreeformSurface | samplingInterval 生效、点云必需；边界覆盖薄弱（少于 3 点/空点云/退化输入） | 遗留项：随"重构"决定修复（补边界行为测试），不进阶段 7 |
+| FreeformSurface | `samplingInterval` 仅被读取和校验，未参与 SVD、RMS 或凸包计算；历史报告称其生效不准确。点云必需；边界覆盖薄弱（少于 3 点/空点云/退化输入） | 阶段 8 移除无效参数入口，旧工程字段忽略；Agent fixture 覆盖有效点云与缺失点云失败。未来若实现采样，另定义单位与确定性规则 |
 | QueueIn | dataVariable 为空回退固定键 item_data；任意类型一律 toString() 转换（结构化数据丢失） | 遗留项：随"重构"决定修复（类型化入队），不进阶段 7 |
-| QueueOut | 队列空时返回成功，下游无法区分"队列空"与"取到数据"；peekOnly/outputVariable 生效 | 遗留项：随"重构"决定修复（空队列语义），不进阶段 7 |
+| QueueOut | 队列空时成功并写 queue_empty=true；此前空队列分支忽略自定义 outputVariable 且缺少 size=0 输出，已修复并有 Agent fixture。并发顺序与非空路径现场行为未验收 | 空队列三项输出已修复；线程安全/现场验收仍待后续 |
 | SaveData | JSON"追加"实为合并覆盖（同名键被覆盖）；CSV 追加跳过表头且不校验列序一致（错列风险） | 遗留项：随"重构"决定修复（追加语义），不进阶段 7 |
 | DataCheck | Range/Length/Null 校验已实现且失败关闭；非法 checkType 未校验、静默输出 check_passed=false（与校验失败不可区分）；metadata minValue/maxValue 仅 min 0（无法表达负范围） | 遗留项：随"重构"决定修复（枚举校验+metadata 同步），不进阶段 7 |
 | ShowPoint | markerSize/colorRGB 生效、缺点失败关闭；metadata 仅 min 0 无 max，与 UI 范围（颜色 0–255）不同步 | 遗留项：随"重构"决定修复（metadata 同步），不进阶段 7 |
@@ -225,4 +225,4 @@
 | TimeSlice | mode 严格校验 Start/Stop/Reset；Stop 对上游 timeslice_start_time 缺失/非法均失败关闭；实现诚实 | 遗留项（P3 重构）：维持现状观察，随专项排期，不进阶段 7 |
 | DefectDetection | rcornerNormalDegree/rcornerCurvatureThreshold/minPoints 三个公开参数被 Q_UNUSED，不影响输出（假配置）；实际算法经 hymson3d detect_smooth_surface_dll | 业务包：随现场验收修复假参数，不进阶段 7 |
 
-> 另：JigsawPuzzle（业务包）源码注释自认"暂时忽略碎片数据"，切分能力不完整，随业务包现场验收。
+> 另：JigsawPuzzle（业务包）源码注释自认"暂时忽略碎片数据"；现有实现不是通用拼图求解器，独立碎片匹配/重排能力仍待业务包现场验收。

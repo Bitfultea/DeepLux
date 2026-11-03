@@ -12,42 +12,57 @@
                 "label": "IP地址"
             },
             "port": {
-                "min": 0,
+                "min": 1,
+                "max": 65535,
                 "step": 1,
-                "decimals": 1,
+                "decimals": 0,
                 "order": 20,
                 "label": "端口"
             },
             "slaveId": {
-                "min": 0,
+                "min": 1,
+                "max": 255,
                 "step": 1,
-                "decimals": 1,
+                "decimals": 0,
                 "order": 30,
                 "label": "从站ID"
             },
             "startAddress": {
                 "min": 0,
+                "max": 65535,
                 "step": 1,
-                "decimals": 1,
+                "decimals": 0,
                 "order": 40,
                 "label": "起始地址"
             },
             "values": {
                 "order": 50,
-                "label": "值"
+                "label": "值",
+                "minItems": 1,
+                "maxItems": 123,
+                "items": {"type": "integer", "minimum": 0, "maximum": 65535},
+                "acceptedTypes": ["array", "string"],
+                "crossFieldConstraint": "valueSource=immediate requires register array; valueSource=variable requires variable name string"
             },
             "valueSource": {
                 "order": 60,
-                "label": "数据来源"
+                "label": "数据来源",
+                "options": [{"value": "immediate", "label": "直接写入"},
+                            {"value": "variable", "label": "来自变量"}]
             },
             "timeout": {
-                "min": 0,
+                "min": 1,
+                "max": 120000,
                 "step": 100,
                 "decimals": 0,
                 "unit": "ms",
                 "order": 70,
                 "label": "超时"
             }
+        },
+        "results": {
+            "plc_write_success": {"label": "PLC 写入成功", "type": "boolean", "order": 10},
+            "plc_write_count": {"label": "写入寄存器数", "type": "integer", "order": 20}
         }
     },
     "ports": {
@@ -65,6 +80,13 @@
                 "id": "image",
                 "displayName": "输出",
                 "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "plc_write_count",
+                "displayName": "写入寄存器数",
+                "type": "Integer",
                 "required": false,
                 "multiple": false
             }

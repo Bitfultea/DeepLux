@@ -25,6 +25,80 @@ ProjectManager::ProjectManager() {
 
 ProjectManager::~ProjectManager() {}
 
+bool ProjectManager::resolveUnsavedForSwitch(UnsavedPolicy policy, QString* errorCode, QString* errorMessage,
+                                             const QString& savePathOverride) {
+    // 阶段1 §3（计划 §6.3）：新建/打开/关闭前的未保存检查——GUI/CLI/Agent 共用同一实现。
+    // 用户未明确选择放弃时默认保留当前工程；保存失败不继续。
+    Project* current = m_currentProject.get();
+    if (!current || !current->isModified())
+        return true;
+    switch (policy) {
+    case UnsavedPolicy::Save:
+        // 复审2 R2：savePathOverride 非空时按显式路径保存（GUI「另存为」选择）；
+        // 为空走既有路径——从未保存且无路径的工程如实失败,绝不静默丢弃
+        if (saveProject(savePathOverride))
+            return true;
+        if (errorCode)
+            *errorCode = QStringLiteral("SAVE_FAILED");
+        if (errorMessage)
+            *errorMessage = tr("当前工程有未保存修改且保存失败，操作中止");
+        return false;
+    case UnsavedPolicy::Discard:
+        return true; // 用户显式选择放弃
+    case UnsavedPolicy::Cancel:
+        break;
+    }
+    if (errorCode)
+        *errorCode = QStringLiteral("PROJECT_UNSAVED");
+    if (errorMessage)
+        *errorMessage = tr("当前工程「%1」有未保存修改").arg(current->name());
+    return false;
+}
+
+Project* ProjectManager::newProjectChecked(UnsavedPolicy policy, QString* errorCode, QString* errorMessage,
+                                           const QString& savePathOverride) {
+    if (RunEngine::instance().isBusy()) {
+        if (errorCode)
+            *errorCode = QStringLiteral("ENGINE_BUSY");
+        if (errorMessage)
+            *errorMessage = tr("流程运行中，无法新建工程");
+        return nullptr;
+    }
+    if (!resolveUnsavedForSwitch(policy, errorCode, errorMessage, savePathOverride))
+        return nullptr;
+    return newProject();
+}
+
+Project* ProjectManager::openProjectChecked(const QString& path, UnsavedPolicy policy, QString* errorCode,
+                                            QString* errorMessage, const QString& savePathOverride) {
+    if (RunEngine::instance().isBusy()) {
+        if (errorCode)
+            *errorCode = QStringLiteral("ENGINE_BUSY");
+        if (errorMessage)
+            *errorMessage = tr("流程运行中，无法打开工程");
+        return nullptr;
+    }
+    if (!resolveUnsavedForSwitch(policy, errorCode, errorMessage, savePathOverride))
+        return nullptr;
+    return openProject(path);
+}
+
+bool ProjectManager::closeProjectChecked(UnsavedPolicy policy, QString* errorCode, QString* errorMessage) {
+    if (RunEngine::instance().isBusy()) {
+        if (errorCode)
+            *errorCode = QStringLiteral("ENGINE_BUSY");
+        if (errorMessage)
+            *errorMessage = tr("流程运行中，无法关闭工程");
+        return false;
+    }
+    if (!resolveUnsavedForSwitch(policy, errorCode, errorMessage))
+        return false;
+    if (!m_currentProject)
+        return true; // 无工程可关闭：幂等成功
+    closeProject();
+    return !hasProject(); // 以实际状态为准,不无条件报成功
+}
+
 Project* ProjectManager::newProject() {
     if (RunEngine::instance().isBusy()) {
         emit errorOccurred(tr("流程运行中，无法新建工程"));
@@ -50,27 +124,30 @@ Project* ProjectManager::openProject(const QString& path) {
         return nullptr;
     }
 
-    closeProject();
-
-    m_currentProject = std::make_unique<Project>();
-    if (!m_currentProject->load(path)) {
-        m_currentProject.reset();
+    // 阶段1 §3（F07）：先完整读入并验证候选工程（load + 迁移），任一环节失败
+    // 都不触碰当前工程——其对象、修改标记与撤销历史原样保留；
+    // 成功后才关闭当前工程（projectClosed 联动清空 Agent 撤销栈）并替换指针。
+    auto candidate = std::make_unique<Project>();
+    if (!candidate->load(path)) {
         emit errorOccurred(tr("无法打开项目: %1").arg(path));
         return nullptr;
     }
 
-    if (m_currentProject->formatVersion() != QStringLiteral("3.0")) {
+    if (candidate->formatVersion() != QStringLiteral("3.0")) {
         PluginManager::instance().initialize();
-        const MigrationReport report = ProjectMigrator::migrate(*m_currentProject);
+        const MigrationReport report = ProjectMigrator::migrate(*candidate);
         Logger::instance().info(
             tr("工程已从 %1 迁移到 3.0：%2")
-                .arg(m_currentProject->migration().originalVersion, report.autoFixed.join(QStringLiteral("；"))),
+                .arg(candidate->migration().originalVersion, report.autoFixed.join(QStringLiteral("；"))),
             QStringLiteral("Project"));
         if (report.hasBlockers()) {
             Logger::instance().warning(tr("工程迁移存在待修复连接：%1").arg(report.blockers.join(QStringLiteral("；"))),
                                        QStringLiteral("Project"));
         }
     }
+
+    closeProject();
+    m_currentProject = std::move(candidate);
 
     addToRecentProjects(path);
 

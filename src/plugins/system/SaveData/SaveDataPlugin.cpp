@@ -1,5 +1,6 @@
 #include "SaveDataPlugin.h"
 
+#include "agent/AgentFileOutputAuthorization.h"
 #include "common/Logger.h"
 
 #include <QComboBox>
@@ -30,6 +31,22 @@ bool SaveDataPlugin::initialize() {
 
 void SaveDataPlugin::shutdown() {
     ModuleBase::shutdown();
+}
+
+ExecutionResult SaveDataPlugin::execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) {
+    m_writeUnconfirmed = false;
+    m_writeDiagnostics.clear();
+    m_saveResult = false;
+    const QString authorizationError = agentFileOutputAuthorizationError(
+        property(AgentFileOutputAuthorizationProperty).toJsonObject(), instanceName(), moduleId(), currentParams());
+    if (!authorizationError.isEmpty())
+        return ExecutionResult::fail(ExecError::ConfirmedTargetChanged, tr("已批准的数据输出配置或目标已变化"),
+                                     authorizationError);
+    const ExecutionResult result = ModuleBase::execute(inputs, outputs, context);
+    if (!result.success && m_writeUnconfirmed) {
+        return ExecutionResult::fail(ExecError::SideEffectUncertain, result.userMessage, m_writeDiagnostics);
+    }
+    return result;
 }
 
 bool SaveDataPlugin::process(const ImageData& input, ImageData& output) {
@@ -68,12 +85,12 @@ bool SaveDataPlugin::process(const ImageData& input, ImageData& output) {
         QFile file(filePath);
         QIODevice::OpenMode mode = appendMode ? QIODevice::Append : QIODevice::WriteOnly;
         if (file.open(mode | QIODevice::Text)) {
+            m_writeUnconfirmed = true;
             QTextStream out(&file);
             for (auto it = dataMap.constBegin(); it != dataMap.constEnd(); ++it) {
                 out << it.key() << ": " << it.value().toString() << "\n";
             }
-            file.close();
-            m_saveResult = true;
+            m_saveResult = finishTextWrite(file, out, QStringLiteral("text"), dataMap);
         }
     }
 
@@ -114,9 +131,21 @@ bool SaveDataPlugin::saveToJson(const QString& filePath, const QVariantMap& data
 
     // 写入文件
     if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        file.write(QJsonDocument(jsonObj).toJson(QJsonDocument::Indented));
+        const QByteArray payload = QJsonDocument(jsonObj).toJson(QJsonDocument::Indented);
+        m_writeUnconfirmed = true;
+        const qint64 bytesWritten = file.write(payload);
+        const bool flushOk = file.flush();
         file.close();
-        return true;
+        const QFileDevice::FileError fileError = file.error();
+        if (bytesWritten == payload.size() && flushOk && fileError == QFileDevice::NoError) {
+            m_writeUnconfirmed = false;
+            return true;
+        }
+        m_writeDiagnostics = QStringLiteral("fileFormat=json bytesWritten=%1 expectedBytes=%2 flushOk=%3 fileError=%4")
+                                 .arg(bytesWritten)
+                                 .arg(payload.size())
+                                 .arg(flushOk ? QStringLiteral("true") : QStringLiteral("false"))
+                                 .arg(static_cast<int>(fileError));
     }
 
     return false;
@@ -128,6 +157,7 @@ bool SaveDataPlugin::saveToCsv(const QString& filePath, const QVariantMap& data)
     QIODevice::OpenMode mode = params["appendMode"].toBool() ? QIODevice::Append : QIODevice::WriteOnly;
 
     if (file.open(mode | QIODevice::Text)) {
+        m_writeUnconfirmed = true;
         QTextStream out(&file);
 
         // 如果是追加模式，先检查文件是否存在内容
@@ -145,11 +175,34 @@ bool SaveDataPlugin::saveToCsv(const QString& filePath, const QVariantMap& data)
             values << data[key].toString().replace(",", ";");
         }
         out << values.join(",") << "\n";
+        return finishTextWrite(file, out, QStringLiteral("csv"), data);
+    }
 
-        file.close();
+    return false;
+}
+
+bool SaveDataPlugin::finishTextWrite(QFile& file, QTextStream& stream, const QString& format, const QVariantMap& data) {
+    stream.flush();
+    const QTextStream::Status streamStatus = stream.status();
+    const bool flushOk = file.flush();
+    const QFileDevice::FileError fileErrorBeforeClose = file.error();
+    file.close();
+    const QFileDevice::FileError fileErrorAfterClose = file.error();
+    if (streamStatus == QTextStream::Ok && flushOk && fileErrorBeforeClose == QFileDevice::NoError &&
+        fileErrorAfterClose == QFileDevice::NoError) {
+        m_writeUnconfirmed = false;
         return true;
     }
 
+    QStringList keys = data.keys();
+    keys.sort();
+    m_writeDiagnostics = QStringLiteral("fileFormat=%1 writeAttempted=true dataKeys=%2 streamStatus=%3 flushOk=%4 "
+                                        "fileErrorBeforeClose=%5 fileErrorAfterClose=%6")
+                             .arg(format, keys.join(QLatin1Char(',')))
+                             .arg(static_cast<int>(streamStatus))
+                             .arg(flushOk ? QStringLiteral("true") : QStringLiteral("false"))
+                             .arg(static_cast<int>(fileErrorBeforeClose))
+                             .arg(static_cast<int>(fileErrorAfterClose));
     return false;
 }
 

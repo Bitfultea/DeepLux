@@ -14,6 +14,7 @@ class FolderPlugin : public ModuleBase {
 public:
     explicit FolderPlugin(QObject* parent = nullptr);
     ~FolderPlugin() override;
+    using ModuleBase::execute;
 
     QString moduleId() const override {
         return "com.deeplux.plugin.folder";
@@ -36,6 +37,7 @@ public:
 
     bool initialize() override;
     void shutdown() override;
+    ExecutionResult execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) override;
     QWidget* createConfigWidget() override;
 
 protected:
@@ -45,6 +47,7 @@ protected:
 
 private:
     bool m_operationResult = false;
+    bool m_deleteAttempted = false;
 };
 
 } // namespace DeepLux

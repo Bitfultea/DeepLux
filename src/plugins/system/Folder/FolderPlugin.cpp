@@ -1,8 +1,10 @@
 #include "FolderPlugin.h"
 
 #include "common/Logger.h"
+#include "platform/PathUtils.h"
 
 #include <QComboBox>
+#include <QFileInfo>
 #include <QLabel>
 #include <QLineEdit>
 #include <QVBoxLayout>
@@ -28,6 +30,61 @@ void FolderPlugin::shutdown() {
     ModuleBase::shutdown();
 }
 
+ExecutionResult FolderPlugin::execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) {
+    m_deleteAttempted = false;
+    m_operationResult = false;
+    const QJsonObject params = currentParams();
+    const QJsonObject authorization = property(AgentFolderDeleteAuthorizationProperty).toJsonObject();
+    const QString operation = params.value(QStringLiteral("operation")).toString();
+    if (authorization.value(QStringLiteral("active")).toBool()) {
+        const bool authorized = authorization.value(QStringLiteral("authorized")).toBool() &&
+                                authorization.value(QStringLiteral("authorizedModuleId")).toString() == instanceName();
+        const QString approvedOperation = authorization.value(QStringLiteral("approvedOperation")).toString();
+        const QString folderPath = params.value(QStringLiteral("folderPath")).toString();
+        bool targetChanged = false;
+        if ((operation == QLatin1String("Create") || operation == QLatin1String("Delete")) &&
+            (!authorized || operation != approvedOperation))
+            targetChanged = true;
+        if (authorized && operation != approvedOperation)
+            targetChanged = true;
+        if (authorized && folderPath != authorization.value(QStringLiteral("approvedConfiguredPath")).toString())
+            targetChanged = true;
+
+        if (operation == QLatin1String("Delete") && authorized && approvedOperation == QLatin1String("Delete")) {
+            const QString approvedTarget = authorization.value(QStringLiteral("resolvedTarget")).toString();
+            const QFileInfo currentInfo(folderPath);
+            const bool targetExists = currentInfo.isDir();
+            const QString currentTarget = QDir::cleanPath(currentInfo.canonicalFilePath());
+            const bool approvedTargetExists = authorization.value(QStringLiteral("targetExistsAtApproval")).toBool();
+            targetChanged = targetChanged || targetExists != approvedTargetExists;
+            if (folderPath.trimmed().isEmpty())
+                targetChanged = true;
+            if (targetExists && (!approvedTargetExists || currentTarget != approvedTarget))
+                targetChanged = true;
+        }
+        if (operation == QLatin1String("Create") && authorized && approvedOperation == QLatin1String("Create")) {
+            const QString approvedTarget = authorization.value(QStringLiteral("resolvedTarget")).toString();
+            const QString currentTarget = PathUtils::resolveFileTargetPath(folderPath);
+            if (folderPath.trimmed().isEmpty() || approvedTarget.isEmpty() || currentTarget.isEmpty() ||
+                currentTarget != approvedTarget)
+                targetChanged = true;
+        }
+        if (targetChanged) {
+            return ExecutionResult::fail(
+                ExecError::ConfirmedTargetChanged, tr("已批准的文件夹操作或目标已变化，未执行操作"),
+                QStringLiteral("codeName=CONFIRMED_TARGET_CHANGED instanceId=%1 authorizationId=%2")
+                    .arg(instanceName(), authorization.value(QStringLiteral("executionAuthorizationId")).toString()));
+        }
+    }
+
+    const ExecutionResult result = ModuleBase::execute(inputs, outputs, context);
+    if (m_deleteAttempted && !m_operationResult) {
+        return ExecutionResult::fail(ExecError::SideEffectUncertain, tr("文件夹递归删除未能确认完成"),
+                                     QStringLiteral("operation=Delete result=unconfirmed"));
+    }
+    return result;
+}
+
 bool FolderPlugin::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(input);
     output = input;
@@ -46,6 +103,7 @@ bool FolderPlugin::process(const ImageData& input, ImageData& output) {
     }
 
     m_operationResult = false;
+    m_deleteAttempted = false;
 
     if (operation == "Create") {
         QDir dir;
@@ -54,7 +112,8 @@ bool FolderPlugin::process(const ImageData& input, ImageData& output) {
             QString("创建文件夹: %1, 结果: %2").arg(folderPath).arg(m_operationResult ? "成功" : "失败"), "Folder");
     } else if (operation == "Delete") {
         QDir dir(folderPath);
-        m_operationResult = dir.exists() && dir.removeRecursively();
+        m_deleteAttempted = dir.exists();
+        m_operationResult = m_deleteAttempted && dir.removeRecursively();
         Logger::instance().debug(
             QString("删除文件夹: %1, 结果: %2").arg(folderPath).arg(m_operationResult ? "成功" : "失败"), "Folder");
     } else if (operation == "Exists") {

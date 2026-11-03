@@ -1,9 +1,11 @@
 #include "FlowCanvas.h"
 
 #include "core/common/ModuleIconProvider.h"
+#include "core/engine/RunEngine.h"
 #include "core/manager/ProjectManager.h"
 #include "core/model/Project.h"
 
+#include <QApplication>
 #include <QDebug>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -15,6 +17,7 @@
 #include <QPolygonF>
 #include <QToolTip>
 #include <cmath>
+#include <limits>
 
 namespace DeepLux {
 namespace {
@@ -60,6 +63,23 @@ void drawConnectionArrow(QPainter* painter, const QPainterPath& path, const QCol
 }
 
 } // namespace
+
+bool FlowCanvas::quantizeNodePosition(const QPointF& position, QPoint* quantized) {
+    if (!quantized)
+        return false;
+    const double intMin = static_cast<double>(std::numeric_limits<qint32>::min());
+    const double intMax = static_cast<double>(std::numeric_limits<qint32>::max());
+    if (!std::isfinite(position.x()) || !std::isfinite(position.y()) || position.x() < intMin ||
+        position.x() > intMax || position.y() < intMin || position.y() > intMax)
+        return false;
+    const qint64 x = qRound64(position.x());
+    const qint64 y = qRound64(position.y());
+    if (x < std::numeric_limits<qint32>::min() || x > std::numeric_limits<qint32>::max() ||
+        y < std::numeric_limits<qint32>::min() || y > std::numeric_limits<qint32>::max())
+        return false;
+    *quantized = QPoint(static_cast<int>(x), static_cast<int>(y));
+    return true;
+}
 
 // ========== FlowCanvas ==========
 
@@ -262,12 +282,23 @@ void FlowCanvas::loadFromProject(Project* project) {
             // 优先使用字符串端口；回退到旧整数字段
             QString fromPort = conn.fromPort.isEmpty() ? QStringLiteral("image") : conn.fromPort;
             QString toPort = conn.toPort.isEmpty() ? QStringLiteral("image") : conn.toPort;
-            QString edgeType = conn.edgeType.isEmpty() ? QStringLiteral("data") : conn.edgeType;
+            QString edgeType = resolveConnectionEdgeType(conn);
             addConnection(conn.fromModuleId, fromPort, conn.toModuleId, toPort, edgeType);
         }
     }
 
     m_loadingProject = false;
+}
+
+QString FlowCanvas::resolveConnectionEdgeType(const ModuleConnection& connection) const {
+    if (!connection.edgeType.isEmpty())
+        return connection.edgeType;
+
+    const FlowNodeItem* source = nodeItem(connection.fromModuleId);
+    const FlowNodeItem* target = nodeItem(connection.toModuleId);
+    const QList<PortSpec> sourceOutputs = source ? source->outputPortSpecs() : QList<PortSpec>{};
+    const QList<PortSpec> targetInputs = target ? target->inputPortSpecs() : QList<PortSpec>{};
+    return RunEngine::inferEdgeType(connection, sourceOutputs, targetInputs);
 }
 
 void FlowCanvas::clearConnections() {
@@ -403,6 +434,11 @@ void FlowCanvas::dragMoveEvent(QDragMoveEvent* event) {
 }
 
 void FlowCanvas::dropEvent(QDropEvent* event) {
+    if (RunEngine::instance().isBusy()) {
+        emit editRejected(tr("运行或维护期间不能向画布添加节点"));
+        event->ignore();
+        return;
+    }
     QString moduleData = event->mimeData()->text();
     QStringList parts = moduleData.split("|");
     if (parts.size() >= 2) {
@@ -493,6 +529,13 @@ void FlowNodeItem::setPortSpecs(const QList<PortSpec>& inputs, const QList<PortS
 void FlowNodeItem::setName(const QString& name) {
     m_name = name;
     update();
+}
+
+void FlowNodeItem::alignToProjectPosition() {
+    Project* project = ProjectManager::instance().currentProject();
+    const std::optional<ModuleInstance> instance = project ? project->moduleById(m_nodeId) : std::nullopt;
+    if (instance)
+        setPos(instance->posX, instance->posY);
 }
 
 void FlowNodeItem::setExecutionState(const QString& status, const QString& timeText) {
@@ -784,6 +827,18 @@ void FlowNodeItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {
             return;
         }
     }
+    if (event->button() == Qt::LeftButton) {
+        m_moveGestureCandidate = true;
+        m_moveGestureCanceled = RunEngine::instance().isBusy();
+        m_moveGestureCrossedThreshold = false;
+        m_movePressScreenPos = event->screenPos();
+        m_movePressScenePos = event->scenePos();
+        m_movePressVisualPos = pos();
+        if (m_moveGestureCanceled)
+            alignToProjectPosition();
+    } else {
+        m_moveGestureCandidate = false;
+    }
     QGraphicsItem::mousePressEvent(event);
     scene()->clearSelection();
     setSelected(true);
@@ -792,6 +847,8 @@ void FlowNodeItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {
     FlowCanvas* canvas = currentScene ? qobject_cast<FlowCanvas*>(currentScene->parent()) : nullptr;
     if (canvas) {
         emit canvas->nodeSelected(m_nodeId);
+        if (m_moveGestureCandidate)
+            emit canvas->nodeMoveStarted(m_nodeId, m_movePressVisualPos);
     }
 }
 
@@ -836,6 +893,21 @@ void FlowNodeItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
         event->accept();
         return;
     }
+    if (m_moveGestureCandidate) {
+        if (RunEngine::instance().isBusy()) {
+            m_moveGestureCanceled = true;
+            alignToProjectPosition();
+            event->accept();
+            return;
+        }
+        const QPoint screenDelta = event->screenPos() - m_movePressScreenPos;
+        const double distance = std::hypot(static_cast<double>(screenDelta.x()), static_cast<double>(screenDelta.y()));
+        if (!m_moveGestureCrossedThreshold && distance < QApplication::startDragDistance()) {
+            event->accept();
+            return;
+        }
+        m_moveGestureCrossedThreshold = true;
+    }
     QGraphicsItem::mouseMoveEvent(event);
 }
 
@@ -879,6 +951,35 @@ void FlowNodeItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
         }
         m_dragFromPortId.clear();
         update();
+        event->accept();
+        return;
+    }
+    if (m_moveGestureCandidate) {
+        if (RunEngine::instance().isBusy())
+            m_moveGestureCanceled = true;
+        const QPoint screenDelta = event->screenPos() - m_movePressScreenPos;
+        const double releaseDistance =
+            std::hypot(static_cast<double>(screenDelta.x()), static_cast<double>(screenDelta.y()));
+        const bool releaseCrossedThreshold = releaseDistance >= QApplication::startDragDistance();
+        if (!m_moveGestureCrossedThreshold && releaseCrossedThreshold) {
+            m_moveGestureCrossedThreshold = true;
+            if (!m_moveGestureCanceled)
+                setPos(m_movePressVisualPos + event->scenePos() - m_movePressScenePos);
+        }
+        if (m_moveGestureCanceled)
+            alignToProjectPosition();
+        else if (!m_moveGestureCrossedThreshold)
+            setPos(m_movePressVisualPos);
+        QGraphicsItem::mouseReleaseEvent(event);
+        QGraphicsScene* currentScene = scene();
+        FlowCanvas* canvas = currentScene ? qobject_cast<FlowCanvas*>(currentScene->parent()) : nullptr;
+        if (canvas) {
+            emit canvas->nodeMoveFinished(m_nodeId, m_movePressVisualPos, pos(), m_moveGestureCrossedThreshold,
+                                          m_moveGestureCanceled);
+        }
+        m_moveGestureCandidate = false;
+        m_moveGestureCanceled = false;
+        m_moveGestureCrossedThreshold = false;
         event->accept();
         return;
     }

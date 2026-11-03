@@ -40,6 +40,7 @@ struct AgentMessage {
 struct AgentConversation {
     QList<AgentMessage> messages;
     QString systemPrompt;
+    QString requestId; // internal correlation only; never serialized to provider messages
 
     QJsonArray toOpenAIMessages() const;
 };
@@ -48,6 +49,7 @@ struct AgentConversation {
  * @brief LLM 响应
  */
 struct AgentResponse {
+    QString requestId;
     bool success = false;
     QString errorMessage;
     QString content;          // 文本回复
@@ -78,16 +80,24 @@ public:
     virtual void setTemperature(double temp) = 0;
     virtual void setMaxTokens(int tokens) = 0;
     virtual void setToolsEnabled(bool enabled) = 0;
+    virtual bool supportsToolCalling() const {
+        return true;
+    }
     virtual bool supportsImageInput() const {
+        return false;
+    }
+    virtual bool supportsRequestCorrelation() const {
         return false;
     }
 
     // 发送请求（异步）
     virtual void sendRequest(const AgentConversation& ctx, const QList<ToolDefinition>& tools) = 0;
+    virtual void cancelRequest() {}
 
 signals:
     void responseReceived(const AgentResponse& resp);
     void errorOccurred(const QString& error);
+    void requestFailed(const QString& requestId, const QString& error);
 };
 
 } // namespace DeepLux

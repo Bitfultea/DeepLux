@@ -73,6 +73,13 @@
                 "type": "Image2D",
                 "required": false,
                 "multiple": false
+            },
+            {
+                "id": "point_count",
+                "displayName": "点数",
+                "type": "Integer",
+                "required": false,
+                "multiple": false
             }
         ]
     }

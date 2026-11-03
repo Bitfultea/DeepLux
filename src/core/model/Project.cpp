@@ -2,11 +2,38 @@
 
 #include <QDebug>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QSaveFile>
+#include <QStringList>
 #include <QUuid>
+#include <atomic>
+#include <cmath>
+#include <initializer_list>
+#include <limits>
+#include <utility>
 
 namespace DeepLux {
+
+namespace {
+std::atomic<quint64> g_nextProjectRuntimeIdentity{1};
+constexpr auto kMeasurementInputPickCoordinateFrame = "pick_coordinate_frame";
+constexpr auto kUnspecifiedCoordinateFrame = "Unspecified";
+
+bool isMeasurementInput(const ModuleInstance& module) {
+    return module.moduleId == QLatin1String("MeasurementInput") ||
+           module.moduleId == QLatin1String("com.deeplux.plugin.measurementinput");
+}
+
+bool invalidatesMeasurementInputPickFrame(const QString& key) {
+    return key == QLatin1String("mode") || key == QLatin1String("point") || key == QLatin1String("line") ||
+           key == QLatin1String("line1") || key == QLatin1String("line2");
+}
+#ifdef DEEPLUX_ENABLE_TEST_HOOKS
+std::atomic<qint64> g_failNextProjectSaveAfterBytes{-1};
+#endif
+} // namespace
 
 // ========== ModuleConnection ==========
 
@@ -80,6 +107,41 @@ MigrationRecord MigrationRecord::fromJson(const QJsonObject& json) {
 
 // ========== ModuleInstance ==========
 
+namespace {
+bool migrateLegacyCalibrationParams(QJsonObject& params, const QString& moduleId) {
+    if ((moduleId != QStringLiteral("com.deeplux.plugin.npointcalibration") &&
+         moduleId != QStringLiteral("NPointCalibration") && moduleId != QStringLiteral("N点标定")) ||
+        params.contains(QStringLiteral("calibrationPoints")) || !params.contains(QStringLiteral("pointCount")))
+        return true;
+    const QJsonValue countValue = params.value(QStringLiteral("pointCount"));
+    const double countNumber = countValue.toDouble();
+    if (!countValue.isDouble() || !std::isfinite(countNumber) || std::floor(countNumber) != countNumber ||
+        countNumber < 0 || countNumber > 64)
+        return false;
+    QJsonArray points;
+    for (int i = 0; i < static_cast<int>(countNumber); ++i) {
+        const QString suffix = QString::number(i);
+        QJsonArray coordinates;
+        for (const char* prefix : {"imgX_", "imgY_", "worldX_", "worldY_"}) {
+            const QJsonValue value = params.value(QString::fromLatin1(prefix) + suffix);
+            if (!value.isDouble() || !std::isfinite(value.toDouble()) || std::abs(value.toDouble()) > 1e7)
+                return false;
+            coordinates.append(value);
+        }
+        points.append(QJsonObject{{"image", QJsonArray{coordinates[0], coordinates[1]}},
+                                  {"world", QJsonArray{coordinates[2], coordinates[3]}}});
+    }
+    for (int i = 0; i < static_cast<int>(countNumber); ++i) {
+        const QString suffix = QString::number(i);
+        for (const char* prefix : {"imgX_", "imgY_", "worldX_", "worldY_"})
+            params.remove(QString::fromLatin1(prefix) + suffix);
+    }
+    params.remove(QStringLiteral("pointCount"));
+    params.insert(QStringLiteral("calibrationPoints"), points);
+    return true;
+}
+} // namespace
+
 QJsonObject ModuleInstance::toJson() const {
     QJsonObject json;
     json["id"] = id;
@@ -102,6 +164,7 @@ ModuleInstance ModuleInstance::fromJson(const QJsonObject& json) {
     inst.posX = json["posX"].toInt(0);
     inst.posY = json["posY"].toInt(0);
     inst.params = json["params"].toObject();
+    migrateLegacyCalibrationParams(inst.params, inst.moduleId);
     inst.note = json["note"].toString();
     inst.enabled = json["enabled"].toBool(true); // 旧工程缺省为启用
     inst.breakpoint = json["breakpoint"].toBool(false);
@@ -131,7 +194,8 @@ CameraConfig CameraConfig::fromJson(const QJsonObject& json) {
 // ========== Project ==========
 
 Project::Project(QObject* parent)
-    : QObject(parent), m_id(QUuid::createUuid().toString(QUuid::WithoutBraces)), m_name(tr("未命名项目")),
+    : QObject(parent), m_id(QUuid::createUuid().toString(QUuid::WithoutBraces)),
+      m_runtimeIdentity(g_nextProjectRuntimeIdentity.fetch_add(1, std::memory_order_relaxed)), m_name(tr("未命名项目")),
       m_created(QDateTime::currentDateTime()), m_modifiedTime(QDateTime::currentDateTime()) {}
 
 Project::~Project() {}
@@ -148,18 +212,34 @@ void Project::setFilePath(const QString& path) {
     m_filePath = path;
 }
 
-void Project::addModule(const ModuleInstance& module) {
+void Project::addModule(const ModuleInstance& module, int index, ModuleOrderChangeSource source) {
     if (!module.id.isEmpty() && moduleById(module.id))
         return;
-    m_modules.append(module);
+    m_modules.insert(index < 0 ? m_modules.size() : qMin(index, m_modules.size()), module);
+    if (source == ModuleOrderChangeSource::External)
+        ++m_moduleOrderExternalGeneration;
+    if (!m_positionGenerations.contains(module.id))
+        m_positionGenerations.insert(module.id, PositionGenerations{});
+    ++m_parameterInstanceGenerations[module.id];
+    QSet<QString> parameterKeys;
+    for (auto it = module.params.constBegin(); it != module.params.constEnd(); ++it)
+        parameterKeys.insert(it.key());
+    recordParameterChanges(module.id, parameterKeys, ParameterChangeSource::Unknown);
     touch();
     emit moduleAdded(module);
 }
 
-void Project::removeModule(const QString& instanceId) {
+void Project::removeModule(const QString& instanceId, ModuleOrderChangeSource source) {
     for (int i = 0; i < m_modules.size(); i++) {
         if (m_modules[i].id == instanceId) {
+            QSet<QString> parameterKeys;
+            for (auto it = m_modules[i].params.constBegin(); it != m_modules[i].params.constEnd(); ++it)
+                parameterKeys.insert(it.key());
+            recordParameterChanges(instanceId, parameterKeys, ParameterChangeSource::Unknown);
+            ++m_parameterInstanceGenerations[instanceId];
             m_modules.removeAt(i);
+            if (source == ModuleOrderChangeSource::External)
+                ++m_moduleOrderExternalGeneration;
             touch();
             emit moduleRemoved(instanceId);
             return;
@@ -167,21 +247,127 @@ void Project::removeModule(const QString& instanceId) {
     }
 }
 
-void Project::updateModule(const QString& instanceId, const ModuleInstance& module) {
+void Project::updateModule(const QString& instanceId, const ModuleInstance& module, PositionChangeSource positionSource,
+                           ParameterChangeSource parameterSource, RuntimeFieldChangeSource runtimeFieldSource) {
     for (int i = 0; i < m_modules.size(); i++) {
         if (m_modules[i].id == instanceId) {
-            m_modules[i] = module;
+            ModuleInstance updated = module;
+            if (isMeasurementInput(m_modules[i]) && isMeasurementInput(updated) &&
+                m_modules[i].params.contains(kMeasurementInputPickCoordinateFrame)) {
+                bool coordinatesChanged = false;
+                for (const QString& key : {QStringLiteral("mode"), QStringLiteral("point"), QStringLiteral("line"),
+                                           QStringLiteral("line1"), QStringLiteral("line2")})
+                    coordinatesChanged =
+                        coordinatesChanged || m_modules[i].params.value(key) != updated.params.value(key);
+                if (coordinatesChanged)
+                    updated.params.insert(kMeasurementInputPickCoordinateFrame, kUnspecifiedCoordinateFrame);
+            }
+            const bool positionChanged = m_modules[i].posX != updated.posX || m_modules[i].posY != updated.posY;
+            const bool noteChanged = m_modules[i].note != updated.note;
+            const bool enabledChanged = m_modules[i].enabled != updated.enabled;
+            const bool breakpointChanged = m_modules[i].breakpoint != updated.breakpoint;
+            QSet<QString> changedParameterKeys;
+            for (auto it = m_modules[i].params.constBegin(); it != m_modules[i].params.constEnd(); ++it) {
+                if (!updated.params.contains(it.key()) || updated.params.value(it.key()) != it.value())
+                    changedParameterKeys.insert(it.key());
+            }
+            for (auto it = updated.params.constBegin(); it != updated.params.constEnd(); ++it) {
+                if (!m_modules[i].params.contains(it.key()))
+                    changedParameterKeys.insert(it.key());
+            }
+            if (positionChanged) {
+                PositionGenerations& generations = m_positionGenerations[instanceId];
+                switch (positionSource) {
+                case PositionChangeSource::Gui:
+                    ++generations.agent;
+                    break;
+                case PositionChangeSource::Agent:
+                    ++generations.gui;
+                    break;
+                case PositionChangeSource::Unspecified:
+                    ++generations.gui;
+                    ++generations.agent;
+                    break;
+                }
+            }
+            if (runtimeFieldSource == RuntimeFieldChangeSource::External) {
+                RuntimeFieldExternalGenerations& generations = m_runtimeFieldExternalGenerations[instanceId];
+                if (noteChanged)
+                    ++generations.note;
+                if (enabledChanged)
+                    ++generations.enabled;
+                if (breakpointChanged)
+                    ++generations.breakpoint;
+            }
+            recordParameterChanges(instanceId, changedParameterKeys, parameterSource);
+            m_modules[i] = updated;
             touch();
-            emit moduleUpdated(module);
+            emit moduleUpdated(updated);
+            if (positionChanged)
+                emit modulePositionChanged(instanceId, module.posX, module.posY);
             return;
         }
     }
 }
 
-bool Project::setModuleParam(const QString& instanceId, const QString& key, const QJsonValue& value) {
+Project::PositionGenerations Project::positionGenerations(const QString& instanceId) const {
+    return m_positionGenerations.value(instanceId);
+}
+
+Project::ParameterGenerations Project::parameterGenerations(const QString& instanceId, const QString& key) const {
+    return m_parameterGenerations.value(instanceId).value(key);
+}
+
+quint64 Project::parameterInstanceGeneration(const QString& instanceId) const {
+    return m_parameterInstanceGenerations.value(instanceId);
+}
+
+quint64 Project::runtimeFieldExternalGeneration(const QString& instanceId, RuntimeField field) const {
+    const RuntimeFieldExternalGenerations generations = m_runtimeFieldExternalGenerations.value(instanceId);
+    switch (field) {
+    case RuntimeField::Note:
+        return generations.note;
+    case RuntimeField::Enabled:
+        return generations.enabled;
+    case RuntimeField::Breakpoint:
+        return generations.breakpoint;
+    }
+    return 0;
+}
+
+void Project::recordParameterChanges(const QString& instanceId, const QSet<QString>& keys,
+                                     ParameterChangeSource source) {
+    for (const QString& key : keys) {
+        ParameterGenerations& generations = m_parameterGenerations[instanceId][key];
+        if (source == ParameterChangeSource::Gui || source == ParameterChangeSource::Unknown)
+            ++generations.gui;
+        if (source == ParameterChangeSource::Agent || source == ParameterChangeSource::Unknown)
+            ++generations.agent;
+    }
+}
+
+bool Project::setModuleParam(const QString& instanceId, const QString& key, const QJsonValue& value,
+                             ParameterChangeSource source) {
     for (int i = 0; i < m_modules.size(); i++) {
         if (m_modules[i].id == instanceId) {
-            m_modules[i].params[key] = value;
+            const bool wasPresent = m_modules[i].params.contains(key);
+            const QJsonValue oldValue = m_modules[i].params.value(key);
+            if (value.isUndefined()) {
+                if (!wasPresent)
+                    return true;
+                m_modules[i].params.remove(key);
+            } else {
+                if (wasPresent && oldValue == value)
+                    return true;
+                m_modules[i].params.insert(key, value);
+            }
+            QSet<QString> changedKeys{key};
+            if (isMeasurementInput(m_modules[i]) && invalidatesMeasurementInputPickFrame(key) &&
+                m_modules[i].params.contains(kMeasurementInputPickCoordinateFrame)) {
+                m_modules[i].params.insert(kMeasurementInputPickCoordinateFrame, kUnspecifiedCoordinateFrame);
+                changedKeys.insert(kMeasurementInputPickCoordinateFrame);
+            }
+            recordParameterChanges(instanceId, changedKeys, source);
             touch();
             emit moduleUpdated(m_modules[i]);
             return true;
@@ -190,10 +376,17 @@ bool Project::setModuleParam(const QString& instanceId, const QString& key, cons
     return false;
 }
 
-bool Project::removeModuleParam(const QString& instanceId, const QString& key) {
+bool Project::removeModuleParam(const QString& instanceId, const QString& key, ParameterChangeSource source) {
     for (int i = 0; i < m_modules.size(); ++i) {
         if (m_modules[i].id == instanceId && m_modules[i].params.contains(key)) {
             m_modules[i].params.remove(key);
+            QSet<QString> changedKeys{key};
+            if (isMeasurementInput(m_modules[i]) && invalidatesMeasurementInputPickFrame(key) &&
+                m_modules[i].params.contains(kMeasurementInputPickCoordinateFrame)) {
+                m_modules[i].params.insert(kMeasurementInputPickCoordinateFrame, kUnspecifiedCoordinateFrame);
+                changedKeys.insert(kMeasurementInputPickCoordinateFrame);
+            }
+            recordParameterChanges(instanceId, changedKeys, source);
             touch();
             emit moduleUpdated(m_modules[i]);
             return true;
@@ -202,7 +395,7 @@ bool Project::removeModuleParam(const QString& instanceId, const QString& key) {
     return false;
 }
 
-bool Project::moveModule(const QString& instanceId, int newIndex) {
+bool Project::moveModule(const QString& instanceId, int newIndex, ModuleOrderChangeSource source) {
     if (m_modules.isEmpty()) {
         return false;
     }
@@ -224,7 +417,10 @@ bool Project::moveModule(const QString& instanceId, int newIndex) {
     }
 
     m_modules.move(oldIndex, newIndex);
+    if (source == ModuleOrderChangeSource::External)
+        ++m_moduleOrderExternalGeneration;
     touch();
+    emit moduleMoved(instanceId, newIndex);
     return true;
 }
 
@@ -246,7 +442,7 @@ std::optional<ModuleInstance> Project::moduleById(const QString& instanceId) con
     return std::nullopt;
 }
 
-void Project::addConnection(const ModuleConnection& conn) {
+void Project::addConnection(const ModuleConnection& conn, int index) {
     // P1-fix: 四元组幂等去重——模型作为唯一事实源
     for (const ModuleConnection& existing : m_connections) {
         if (existing.fromModuleId == conn.fromModuleId && existing.toModuleId == conn.toModuleId &&
@@ -254,7 +450,7 @@ void Project::addConnection(const ModuleConnection& conn) {
             return; // 已存在，幂等
         }
     }
-    m_connections.append(conn);
+    m_connections.insert(index < 0 ? m_connections.size() : qMin(index, m_connections.size()), conn);
     touch();
     emit connectionAdded(conn);
 }
@@ -320,6 +516,7 @@ void Project::addDataSource(const DataSource& ds) {
         }
     }
     m_dataSources.append(ds);
+    ++m_dataSourceCollectionGeneration;
     touch();
     emit dataSourceAdded(ds);
 }
@@ -328,6 +525,7 @@ void Project::removeDataSource(const QString& id) {
     for (int i = 0; i < m_dataSources.size(); i++) {
         if (m_dataSources[i].id == id) {
             m_dataSources.removeAt(i);
+            ++m_dataSourceCollectionGeneration;
             touch();
             emit dataSourceRemoved(id);
             return;
@@ -435,6 +633,9 @@ QJsonObject Project::toJson() const {
 }
 
 bool Project::fromJson(const QJsonObject& json) {
+    QSet<QString> affectedModuleIds;
+    for (const ModuleInstance& module : m_modules)
+        affectedModuleIds.insert(module.id);
     m_formatVersion = json["version"].toString(QStringLiteral("2.0"));
     m_id = json["id"].toString();
     m_name = json["name"].toString();
@@ -442,10 +643,17 @@ bool Project::fromJson(const QJsonObject& json) {
     m_modifiedTime = QDateTime::fromString(json["modified"].toString(), Qt::ISODate);
 
     m_modules.clear();
+    m_positionGenerations.clear();
+    m_parameterGenerations.clear();
     QJsonArray modulesArray = json["modules"].toArray();
     for (const auto& val : modulesArray) {
-        m_modules.append(ModuleInstance::fromJson(val.toObject()));
+        const ModuleInstance module = ModuleInstance::fromJson(val.toObject());
+        m_modules.append(module);
+        affectedModuleIds.insert(module.id);
     }
+    for (const QString& instanceId : affectedModuleIds)
+        ++m_parameterInstanceGenerations[instanceId];
+    ++m_moduleOrderExternalGeneration;
 
     m_connections.clear();
     QJsonArray connectionsArray = json["connections"].toArray();
@@ -467,6 +675,7 @@ bool Project::fromJson(const QJsonObject& json) {
     for (const auto& val : dataSourcesArray) {
         m_dataSources.append(DataSource::fromJson(val.toObject()));
     }
+    ++m_dataSourceCollectionGeneration;
 
     // 3.0 流程/recipes/dashboard/migration
     m_flows.clear();
@@ -490,15 +699,42 @@ bool Project::save(const QString& path) {
         return false;
     }
 
-    QFile file(savePath);
+    QString writePath = savePath;
+    const QFileInfo targetInfo(savePath);
+    if (targetInfo.isSymLink()) {
+        writePath = targetInfo.canonicalFilePath();
+        if (writePath.isEmpty()) {
+            qWarning() << "Cannot resolve project save symlink target:" << savePath;
+            return false;
+        }
+    }
+
+    QSaveFile file(writePath);
+    file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly)) {
         qWarning() << "Cannot open file for writing:" << savePath;
         return false;
     }
 
-    QJsonDocument doc(toJson());
-    file.write(doc.toJson(QJsonDocument::Indented));
-    file.close();
+    const QByteArray contents = QJsonDocument(toJson()).toJson(QJsonDocument::Indented);
+#ifdef DEEPLUX_ENABLE_TEST_HOOKS
+    const qint64 failAfterBytes = g_failNextProjectSaveAfterBytes.exchange(-1, std::memory_order_acq_rel);
+    if (failAfterBytes >= 0 && failAfterBytes < contents.size()) {
+        file.write(contents.constData(), failAfterBytes);
+        file.cancelWriting();
+        return false;
+    }
+#endif
+    const qint64 bytesWritten = file.write(contents);
+    if (bytesWritten != contents.size()) {
+        file.cancelWriting();
+        qWarning() << "Cannot write complete project file:" << savePath;
+        return false;
+    }
+    if (!file.commit()) {
+        qWarning() << "Cannot commit project file:" << savePath << file.errorString();
+        return false;
+    }
 
     m_filePath = savePath;
     m_hasUnsavedChanges = false;
@@ -507,6 +743,12 @@ bool Project::save(const QString& path) {
     qDebug() << "Project saved to:" << savePath;
     return true;
 }
+
+#ifdef DEEPLUX_ENABLE_TEST_HOOKS
+void Project::failNextSaveAfterBytesForTesting(qint64 bytes) {
+    g_failNextProjectSaveAfterBytes.store(qMax<qint64>(0, bytes), std::memory_order_release);
+}
+#endif
 
 bool Project::load(const QString& path) {
     QFile file(path);
@@ -525,7 +767,190 @@ bool Project::load(const QString& path) {
         return false;
     }
 
-    if (!fromJson(doc.object())) {
+    // 解析成功不代表是工程文件。保留旧版缺省 version/id 的兼容性，但拒绝
+    // 空对象、错误类型及不支持的显式版本，避免候选替换时丢掉当前工程。
+    const QJsonObject json = doc.object();
+    const QJsonValue version = json.value(QStringLiteral("version"));
+    if (!doc.isObject() || !json.value(QStringLiteral("name")).isString() ||
+        json.value(QStringLiteral("name")).toString().trimmed().isEmpty() ||
+        !json.value(QStringLiteral("modules")).isArray() || !json.value(QStringLiteral("connections")).isArray() ||
+        (!version.isUndefined() && (!version.isString() || (version.toString() != QLatin1String("2.0") &&
+                                                            version.toString() != QLatin1String("3.0"))))) {
+        qWarning() << "Invalid project structure:" << path;
+        return false;
+    }
+
+    // fromJson 对类型不匹配的字段使用 Qt 的空值转换；文件入口必须先拒绝这些
+    // 损坏字段，否则候选工程会带着静默丢失的数据替换当前工程。
+    const auto validTypes = [](const QJsonObject& record,
+                               std::initializer_list<std::pair<const char*, QJsonValue::Type>> fields) {
+        for (const auto& field : fields) {
+            const QJsonValue value = record.value(QLatin1String(field.first));
+            if (!value.isUndefined() && value.type() != field.second)
+                return false;
+        }
+        return true;
+    };
+    const auto objectArray = [](const QJsonValue& value) {
+        if (value.isUndefined())
+            return true; // 旧版工程允许缺省新字段
+        if (!value.isArray())
+            return false;
+        for (const QJsonValue& item : value.toArray()) {
+            if (!item.isObject())
+                return false;
+        }
+        return true;
+    };
+    const auto validDate = [](const QJsonObject& record, const char* key) {
+        const QJsonValue value = record.value(QLatin1String(key));
+        if (value.isUndefined())
+            return true;
+        if (!value.isString())
+            return false;
+        const QString date = value.toString();
+        return date.isEmpty() || QDateTime::fromString(date, Qt::ISODate).isValid();
+    };
+    const auto validInt32 = [](const QJsonObject& record, const char* key) {
+        const QJsonValue value = record.value(QLatin1String(key));
+        if (value.isUndefined())
+            return true;
+        const double number = value.toDouble();
+        return value.isDouble() && std::isfinite(number) && std::trunc(number) == number &&
+               number >= std::numeric_limits<int>::min() && number <= std::numeric_limits<int>::max();
+    };
+    const QJsonObject resources = json.value(QStringLiteral("resources")).toObject();
+    if (!validTypes(json, {{"id", QJsonValue::String},
+                           {"created", QJsonValue::String},
+                           {"modified", QJsonValue::String},
+                           {"resources", QJsonValue::Object},
+                           {"recipes", QJsonValue::Object},
+                           {"dashboard", QJsonValue::Object},
+                           {"migration", QJsonValue::Object}}) ||
+        !objectArray(json.value(QStringLiteral("flows"))) || !objectArray(json.value(QStringLiteral("cameras"))) ||
+        !objectArray(json.value(QStringLiteral("dataSources"))) || !validDate(json, "created") ||
+        !validDate(json, "modified") || !objectArray(resources.value(QStringLiteral("cameras"))) ||
+        !objectArray(resources.value(QStringLiteral("dataSources")))) {
+        qWarning() << "Invalid project field type:" << path;
+        return false;
+    }
+
+    const auto validRecords = [](const QJsonArray& records, const QStringList& requiredKeys) {
+        for (const QJsonValue& value : records) {
+            if (!value.isObject())
+                return false;
+            const QJsonObject record = value.toObject();
+            for (const QString& key : requiredKeys) {
+                if (!record.value(key).isString() || record.value(key).toString().trimmed().isEmpty())
+                    return false;
+            }
+        }
+        return true;
+    };
+    if (!validRecords(json.value(QStringLiteral("modules")).toArray(),
+                      {QStringLiteral("id"), QStringLiteral("moduleId")}) ||
+        !validRecords(json.value(QStringLiteral("connections")).toArray(),
+                      {QStringLiteral("fromModuleId"), QStringLiteral("toModuleId")})) {
+        qWarning() << "Invalid project module or connection:" << path;
+        return false;
+    }
+    for (const QJsonValue& value : json.value(QStringLiteral("modules")).toArray()) {
+        if (!validTypes(value.toObject(), {{"name", QJsonValue::String},
+                                           {"posX", QJsonValue::Double},
+                                           {"posY", QJsonValue::Double},
+                                           {"params", QJsonValue::Object},
+                                           {"note", QJsonValue::String},
+                                           {"enabled", QJsonValue::Bool},
+                                           {"breakpoint", QJsonValue::Bool}}) ||
+            !validInt32(value.toObject(), "posX") || !validInt32(value.toObject(), "posY")) {
+            qWarning() << "Invalid project module field type:" << path;
+            return false;
+        }
+        QJsonObject legacyParams = value.toObject().value(QStringLiteral("params")).toObject();
+        if (!migrateLegacyCalibrationParams(legacyParams,
+                                            value.toObject().value(QStringLiteral("moduleId")).toString())) {
+            qWarning() << "Invalid legacy calibration parameters:" << path;
+            return false;
+        }
+    }
+    for (const QJsonValue& value : json.value(QStringLiteral("connections")).toArray()) {
+        if (!validTypes(value.toObject(), {{"fromOutput", QJsonValue::Double},
+                                           {"toInput", QJsonValue::Double},
+                                           {"fromPort", QJsonValue::String},
+                                           {"toPort", QJsonValue::String},
+                                           {"edgeType", QJsonValue::String}}) ||
+            !validInt32(value.toObject(), "fromOutput") || !validInt32(value.toObject(), "toInput")) {
+            qWarning() << "Invalid project connection field type:" << path;
+            return false;
+        }
+    }
+    for (const QJsonValue& value : json.value(QStringLiteral("flows")).toArray()) {
+        const QJsonObject flow = value.toObject();
+        if (!validTypes(flow,
+                        {{"id", QJsonValue::String}, {"name", QJsonValue::String}, {"nodes", QJsonValue::Array}})) {
+            qWarning() << "Invalid project flow field type:" << path;
+            return false;
+        }
+        for (const QJsonValue& node : flow.value(QStringLiteral("nodes")).toArray()) {
+            if (!node.isString()) {
+                qWarning() << "Invalid project flow node:" << path;
+                return false;
+            }
+        }
+    }
+    for (const QJsonValue& cameras :
+         {json.value(QStringLiteral("cameras")), resources.value(QStringLiteral("cameras"))}) {
+        for (const QJsonValue& value : cameras.toArray()) {
+            if (!validTypes(value.toObject(), {{"id", QJsonValue::String},
+                                               {"type", QJsonValue::String},
+                                               {"serialNumber", QJsonValue::String},
+                                               {"config", QJsonValue::Object}})) {
+                qWarning() << "Invalid project camera field type:" << path;
+                return false;
+            }
+        }
+    }
+    for (const QJsonValue& sources :
+         {json.value(QStringLiteral("dataSources")), resources.value(QStringLiteral("dataSources"))}) {
+        for (const QJsonValue& value : sources.toArray()) {
+            const QJsonObject source = value.toObject();
+            const QJsonValue importTime = source.value(QStringLiteral("importTime"));
+            bool validImportTime = importTime.isUndefined();
+            if (importTime.isString()) {
+                bool ok = false;
+                importTime.toString().toLongLong(&ok);
+                validImportTime = ok;
+            } else if (importTime.isDouble()) {
+                const double number = importTime.toDouble();
+                validImportTime = std::isfinite(number) && std::trunc(number) == number &&
+                                  number >= -std::ldexp(1.0, 63) && number < std::ldexp(1.0, 63);
+            }
+            if (!validTypes(source, {{"id", QJsonValue::String},
+                                     {"name", QJsonValue::String},
+                                     {"filePath", QJsonValue::String},
+                                     {"type", QJsonValue::String},
+                                     {"metadata", QJsonValue::Object}}) ||
+                !validImportTime) {
+                qWarning() << "Invalid project data source field type:" << path;
+                return false;
+            }
+        }
+    }
+    const QJsonObject migration = json.value(QStringLiteral("migration")).toObject();
+    const QJsonValue warnings = migration.value(QStringLiteral("warnings"));
+    if (!validTypes(migration, {{"originalVersion", QJsonValue::String}, {"migratedAt", QJsonValue::String}}) ||
+        !validDate(migration, "migratedAt") || (!warnings.isUndefined() && !warnings.isArray())) {
+        qWarning() << "Invalid project migration field type:" << path;
+        return false;
+    }
+    for (const QJsonValue& warning : warnings.toArray()) {
+        if (!warning.isString()) {
+            qWarning() << "Invalid project migration warning:" << path;
+            return false;
+        }
+    }
+
+    if (!fromJson(json)) {
         return false;
     }
 

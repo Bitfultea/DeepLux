@@ -3,9 +3,7 @@
 #include "common/Logger.h"
 #include "core/geometry/MeasurementData.h"
 
-#include <QDoubleSpinBox>
-#include <QLabel>
-#include <QVBoxLayout>
+#include <QWidget>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -13,10 +11,7 @@
 
 namespace DeepLux {
 
-FreeformSurfacePlugin::FreeformSurfacePlugin(QObject* parent) : ModuleBase(parent) {
-    m_defaultParams = QJsonObject{{"samplingInterval", 1.0}};
-    m_params = m_defaultParams;
-}
+FreeformSurfacePlugin::FreeformSurfacePlugin(QObject* parent) : ModuleBase(parent) {}
 
 FreeformSurfacePlugin::~FreeformSurfacePlugin() {}
 
@@ -44,9 +39,6 @@ bool FreeformSurfacePlugin::process(const ImageData& input, ImageData& output) {
     m_surfaceRoughness = 0;
 
 #ifdef DEEPLUX_HAS_OPENCV
-    QJsonObject params = currentParams();
-    m_samplingInterval = params["samplingInterval"].toDouble();
-
     // 获取点云数据 - 优先使用 MeasurementData (PointCloudData)
     std::vector<cv::Point3f> points;
 
@@ -170,7 +162,7 @@ bool FreeformSurfacePlugin::fitPlaneToPoints(const std::vector<cv::Point3f>& poi
 void FreeformSurfacePlugin::computeProjectedArea(const std::vector<cv::Point3f>& points, const cv::Vec4f& planeCoeffs) {
 #ifdef DEEPLUX_HAS_OPENCV
     // 将点投影到拟合平面，然后在平面局部坐标系中计算 2D 凸包面积
-    float a = planeCoeffs[0], b = planeCoeffs[1], c = planeCoeffs[2], d = planeCoeffs[3];
+    float a = planeCoeffs[0], b = planeCoeffs[1], c = planeCoeffs[2];
     float normLen = sqrt(a * a + b * b + c * c);
     if (normLen < 1e-10f) {
         m_surfaceArea = 0;
@@ -222,31 +214,16 @@ void FreeformSurfacePlugin::computeProjectedArea(const std::vector<cv::Point3f>&
 }
 
 bool FreeformSurfacePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
-    double interval = params["samplingInterval"].toDouble();
-    if (interval <= 0) {
-        error = tr("采样间隔必须大于0");
+    if (params.contains(QStringLiteral("samplingInterval"))) {
+        error = tr("samplingInterval 已停用；FreeformSurface 使用全部输入点");
         return false;
     }
+    error.clear();
     return true;
 }
 
 QWidget* FreeformSurfacePlugin::createConfigWidget() {
-    QWidget* widget = new QWidget();
-    QVBoxLayout* layout = new QVBoxLayout(widget);
-
-    layout->addWidget(new QLabel(tr("采样间隔:")));
-    QDoubleSpinBox* intervalSpin = new QDoubleSpinBox();
-    intervalSpin->setRange(0.1, 100.0);
-    intervalSpin->setValue(m_params["samplingInterval"].toDouble());
-    intervalSpin->setSingleStep(0.1);
-    layout->addWidget(intervalSpin);
-
-    layout->addStretch();
-
-    connect(intervalSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-            [this](double value) { m_params["samplingInterval"] = value; });
-
-    return widget;
+    return new QWidget();
 }
 
 IModule* FreeformSurfacePlugin::cloneImpl() const {

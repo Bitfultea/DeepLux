@@ -3,16 +3,21 @@
 #include "core/common/Logger.h"
 
 #include <QComboBox>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFormLayout>
 #include <QJsonArray>
 #include <QLineEdit>
 #include <QSpinBox>
+#include <QThread>
+#include <QTimer>
 #include <QVBoxLayout>
+#include <QtEndian>
+#include <cmath>
 
 namespace DeepLux {
 
-PLCWritePlugin::PLCWritePlugin(QObject* parent)
-    : ModuleBase(parent), m_socket(new QTcpSocket(this)), m_connectLoop(nullptr), m_readLoop(nullptr) {
+PLCWritePlugin::PLCWritePlugin(QObject* parent) : ModuleBase(parent) {
     m_defaultParams = QJsonObject{{"ipAddress", "192.168.1.100"},
                                   {"port", 502},
                                   {"slaveId", 1},
@@ -21,16 +26,9 @@ PLCWritePlugin::PLCWritePlugin(QObject* parent)
                                   {"valueSource", "immediate"},
                                   {"timeout", 3000}};
     m_params = m_defaultParams;
-
-    connect(m_socket, &QTcpSocket::connected, this, &PLCWritePlugin::onConnected);
-    connect(m_socket, &QTcpSocket::disconnected, this, &PLCWritePlugin::onDisconnected);
-    connect(m_socket, &QTcpSocket::errorOccurred, this, &PLCWritePlugin::onError);
-    connect(m_socket, &QTcpSocket::readyRead, this, &PLCWritePlugin::onReadyRead);
 }
 
-PLCWritePlugin::~PLCWritePlugin() {
-    disconnectFromHost();
-}
+PLCWritePlugin::~PLCWritePlugin() = default;
 
 bool PLCWritePlugin::initialize() {
     if (!ModuleBase::initialize()) {
@@ -40,84 +38,35 @@ bool PLCWritePlugin::initialize() {
     return true;
 }
 
-void PLCWritePlugin::onConnected() {
-    Logger::instance().debug("PLCWrite: Connected to PLC", "Communication");
-    if (m_connectLoop) {
-        m_connectLoop->quit();
+bool PLCWritePlugin::connectToHost(QTcpSocket& socket) {
+    Q_ASSERT(socket.thread() == QThread::currentThread());
+    QElapsedTimer connectTimer;
+    connectTimer.start();
+    socket.connectToHost(m_host, m_port);
+    if (socket.state() != QAbstractSocket::ConnectedState) {
+        QEventLoop loop;
+        QTimer timer;
+        timer.setSingleShot(true);
+        connect(&socket, &QTcpSocket::connected, &loop, &QEventLoop::quit);
+        connect(&socket, &QTcpSocket::errorOccurred, &loop, &QEventLoop::quit);
+        connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+        timer.start(m_timeout);
+        loop.exec();
     }
-}
-
-void PLCWritePlugin::onDisconnected() {
-    Logger::instance().debug("PLCWrite: Disconnected from PLC", "Communication");
-}
-
-void PLCWritePlugin::onError(QAbstractSocket::SocketError error) {
-    Q_UNUSED(error);
-    emit errorOccurred(tr("PLC通信错误: %1").arg(m_socket->errorString()));
-    if (m_connectLoop && m_connectLoop->isRunning()) {
-        m_connectLoop->quit();
-    }
-    if (m_readLoop && m_readLoop->isRunning()) {
-        m_readLoop->quit();
-    }
-}
-
-void PLCWritePlugin::onReadyRead() {
-    m_readBuffer += m_socket->readAll();
-    if (m_readLoop) {
-        m_readLoop->quit();
-    }
-}
-
-void PLCWritePlugin::onConnectTimeout() {
-    if (m_socket->state() != QAbstractSocket::ConnectedState) {
-        m_socket->abort();
-        emit errorOccurred(tr("连接PLC %1:%2 超时").arg(m_host).arg(m_port));
-    }
-    if (m_connectLoop) {
-        m_connectLoop->quit();
-    }
-}
-
-void PLCWritePlugin::onReadTimeout() {
-    m_readTimedOut = true;
-    m_socket->disconnectFromHost();
-    if (m_readLoop) {
-        m_readLoop->quit();
-    }
-}
-
-bool PLCWritePlugin::connectToHost() {
-    if (m_socket->state() == QAbstractSocket::ConnectedState) {
-        m_socket->disconnectFromHost();
-        m_socket->waitForDisconnected(100);
-    }
-
-    m_socket->connectToHost(m_host, m_port);
-
-    QEventLoop loop;
-    m_connectLoop = &loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    timer.start(m_timeout);
-    connect(&timer, &QTimer::timeout, this, &PLCWritePlugin::onConnectTimeout);
-
-    loop.exec();
-    m_connectLoop = nullptr;
-    m_lastWaitMs = m_timeout - timer.remainingTime();
-
-    if (m_socket->state() != QAbstractSocket::ConnectedState) {
+    m_lastWaitMs = static_cast<int>(connectTimer.elapsed());
+    if (socket.state() != QAbstractSocket::ConnectedState) {
+        emit errorOccurred(tr("连接PLC %1:%2 失败: %3").arg(m_host).arg(m_port).arg(socket.errorString()));
+        socket.abort();
         return false;
     }
-
     Logger::instance().info(QString("PLCWrite: Connected to %1:%2").arg(m_host).arg(m_port), "Communication");
     return true;
 }
 
-void PLCWritePlugin::disconnectFromHost() {
-    if (m_socket->state() == QAbstractSocket::ConnectedState || m_socket->state() == QAbstractSocket::ConnectingState) {
-        m_socket->abort();
-    }
+void PLCWritePlugin::disconnectFromHost(QTcpSocket& socket) {
+    Q_ASSERT(socket.thread() == QThread::currentThread());
+    if (socket.state() == QAbstractSocket::ConnectedState || socket.state() == QAbstractSocket::ConnectingState)
+        socket.abort();
 }
 
 QByteArray PLCWritePlugin::buildWriteRequest(quint16 transactionId, quint8 unitId, quint16 startAddress,
@@ -149,18 +98,35 @@ QByteArray PLCWritePlugin::buildWriteRequest(quint16 transactionId, quint8 unitI
     return request;
 }
 
+ExecutionResult PLCWritePlugin::execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) {
+    m_writeRequestAccepted = false;
+    const ExecutionResult result = ModuleBase::execute(inputs, outputs, context);
+    if (!result.success && m_writeRequestAccepted) {
+        return ExecutionResult::fail(ExecError::SideEffectUncertain,
+                                     tr("PLC 写入结果无法确认：请求已交给 socket，但未收到有效成功回显"),
+                                     result.diagnostics);
+    }
+    return result;
+}
+
 bool PLCWritePlugin::parseWriteResponse(const QByteArray& data) {
-    if (data.size() < 12) {
+    if (data.size() != 12) {
         return false;
     }
 
-    // Check function code response (should echo the request)
-    // MBAP (7) + Function Code (1) + Starting Address (2) + Quantity (2) = 12 bytes
-    if (static_cast<quint8>(data[7]) != 0x10) {
-        return false;
-    }
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    quint16 transactionId = 0;
+    quint16 protocolId = 0;
+    quint16 length = 0;
+    quint8 unitId = 0;
+    quint8 function = 0;
+    quint16 startAddress = 0;
+    quint16 quantity = 0;
+    stream >> transactionId >> protocolId >> length >> unitId >> function >> startAddress >> quantity;
 
-    return true;
+    return stream.status() == QDataStream::Ok && transactionId == m_transactionId && protocolId == 0 && length == 6 &&
+           unitId == m_slaveId && function == 0x10 && startAddress == m_startAddress && quantity == m_values.size();
 }
 
 bool PLCWritePlugin::process(const ImageData& input, ImageData& output) {
@@ -169,38 +135,60 @@ bool PLCWritePlugin::process(const ImageData& input, ImageData& output) {
     m_host = m_params["ipAddress"].toString();
     m_port = m_params["port"].toInt(502);
     m_slaveId = static_cast<quint8>(m_params["slaveId"].toInt(1));
-    m_startAddress = static_cast<quint16>(m_params["startAddress"].toInt(0));
+    const QJsonValue startAddress = m_params.value(QStringLiteral("startAddress"));
+    const double startAddressNumber = startAddress.toDouble();
+    if (!startAddress.isDouble() || !std::isfinite(startAddressNumber) ||
+        std::floor(startAddressNumber) != startAddressNumber || startAddressNumber < 0 || startAddressNumber > 65535) {
+        emit errorOccurred(tr("起始地址必须是 0 到 65535 的整数"));
+        return false;
+    }
+    m_startAddress = static_cast<quint16>(startAddressNumber);
     m_valueSource = m_params["valueSource"].toString("immediate");
     m_timeout = m_params["timeout"].toInt(3000);
 
     // Parse values
     m_values.clear();
-    QJsonArray valuesArray = m_params["values"].toArray();
-    if (valuesArray.isEmpty()) {
-        valuesArray = QJsonArray{0};
-    }
-
     if (m_valueSource == "variable") {
-        QString varName = m_params["values"].toString();
-        if (!varName.isEmpty() && varName != "values") {
-            QVariant varVal = input.data(varName);
-            if (varVal.isValid()) {
-                if (varVal.canConvert<QJsonArray>()) {
-                    QJsonArray arr = varVal.toJsonArray();
-                    for (const QJsonValue& v : arr) {
-                        m_values.append(static_cast<quint16>(v.toInt(0)));
-                    }
-                } else {
-                    m_values.append(static_cast<quint16>(varVal.toInt(0)));
+        const QString varName = m_params["values"].toString().trimmed();
+        const QVariant value = input.data(varName);
+        if (!value.isValid()) {
+            emit errorOccurred(tr("写入变量不存在: %1").arg(varName));
+            return false;
+        }
+
+        const auto appendRegister = [this](double number) {
+            if (!std::isfinite(number) || std::floor(number) != number || number < 0 || number > 65535)
+                return false;
+            m_values.append(static_cast<quint16>(number));
+            return true;
+        };
+        if (value.userType() == qMetaTypeId<QJsonArray>()) {
+            const QJsonArray values = value.toJsonArray();
+            if (values.isEmpty() || values.size() > 123) {
+                emit errorOccurred(tr("写入变量数组必须包含 1 到 123 个寄存器"));
+                return false;
+            }
+            for (const QJsonValue& item : values) {
+                if (!item.isDouble() || !appendRegister(item.toDouble())) {
+                    emit errorOccurred(tr("写入变量值必须是 0 到 65535 的有限整数"));
+                    return false;
                 }
             }
+        } else {
+            const int type = value.userType();
+            const bool numericType = type == QMetaType::Int || type == QMetaType::UInt || type == QMetaType::LongLong ||
+                                     type == QMetaType::ULongLong || type == QMetaType::Float ||
+                                     type == QMetaType::Double;
+            bool ok = false;
+            const double number = numericType ? value.toDouble(&ok) : 0;
+            if (!numericType || !ok || !appendRegister(number)) {
+                emit errorOccurred(tr("写入变量值必须是 0 到 65535 的有限整数"));
+                return false;
+            }
         }
-    }
-
-    if (m_values.isEmpty()) {
-        for (const QJsonValue& v : valuesArray) {
-            m_values.append(static_cast<quint16>(v.toInt(0)));
-        }
+    } else {
+        for (const QJsonValue& value : m_params["values"].toArray())
+            m_values.append(static_cast<quint16>(value.toInt()));
     }
 
     if (m_host.isEmpty()) {
@@ -208,44 +196,73 @@ bool PLCWritePlugin::process(const ImageData& input, ImageData& output) {
         return false;
     }
 
-    if (m_values.isEmpty()) {
-        emit errorOccurred(tr("写入值不能为空"));
+    if (m_values.isEmpty() || m_values.size() > 123 || static_cast<int>(m_startAddress) + m_values.size() > 65536) {
+        emit errorOccurred(tr("写入寄存器数量或地址范围无效"));
         return false;
     }
 
-    if (!connectToHost()) {
+    // The RunEngine may execute this module on a worker thread. Construct and keep the
+    // event-driven socket on this call's thread rather than using a module-owned socket.
+    QTcpSocket socket;
+    Q_ASSERT(socket.thread() == QThread::currentThread());
+    if (!connectToHost(socket)) {
         return false;
     }
 
     // Build and send Modbus request
     QByteArray request = buildWriteRequest(++m_transactionId, m_slaveId, m_startAddress, m_values);
-    qint64 written = m_socket->write(request);
-    m_socket->flush();
+    const qint64 written = socket.write(request);
+    socket.flush();
 
+    m_writeRequestAccepted = written == request.size();
     if (written != request.size()) {
         emit errorOccurred(tr("发送Modbus请求失败"));
-        disconnectFromHost();
+        disconnectFromHost(socket);
         return false;
     }
 
-    // Wait for response
+    // Wait for a complete MBAP frame using a loop on the same thread that owns this socket.
+    // This also keeps local fake peers responsive when a synchronous step runs on the GUI thread.
     m_readBuffer.clear();
-    m_readTimedOut = false;
+    QElapsedTimer responseTimer;
+    responseTimer.start();
+    bool responseTimedOut = false;
+    int expectedFrameSize = -1;
+    while (expectedFrameSize < 0 || m_readBuffer.size() < expectedFrameSize) {
+        if (socket.bytesAvailable() == 0) {
+            const int remainingMs = m_timeout - static_cast<int>(responseTimer.elapsed());
+            if (remainingMs <= 0) {
+                responseTimedOut = responseTimer.elapsed() >= m_timeout;
+                break;
+            }
+            QEventLoop loop;
+            QTimer timer;
+            timer.setSingleShot(true);
+            connect(&socket, &QTcpSocket::readyRead, &loop, &QEventLoop::quit);
+            connect(&socket, &QTcpSocket::disconnected, &loop, &QEventLoop::quit);
+            connect(&socket, &QTcpSocket::errorOccurred, &loop, &QEventLoop::quit);
+            connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+            timer.start(remainingMs);
+            loop.exec();
+            if (socket.bytesAvailable() == 0) {
+                responseTimedOut = responseTimer.elapsed() >= m_timeout;
+                break;
+            }
+        }
+        m_readBuffer += socket.readAll();
+        if (expectedFrameSize < 0 && m_readBuffer.size() >= 6) {
+            const auto* bytes = reinterpret_cast<const uchar*>(m_readBuffer.constData());
+            const quint16 mbapLength = qFromBigEndian<quint16>(bytes + 4);
+            if (mbapLength == 0 || mbapLength > 260)
+                break;
+            expectedFrameSize = 6 + mbapLength;
+        }
+    }
+    m_lastWaitMs = static_cast<int>(responseTimer.elapsed());
 
-    QEventLoop loop;
-    m_readLoop = &loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    timer.start(m_timeout);
-    connect(&timer, &QTimer::timeout, this, &PLCWritePlugin::onReadTimeout);
+    disconnectFromHost(socket);
 
-    loop.exec();
-    m_readLoop = nullptr;
-    m_lastWaitMs = m_timeout - timer.remainingTime();
-
-    disconnectFromHost();
-
-    if (m_readTimedOut) {
+    if (responseTimedOut) {
         emit errorOccurred(tr("写入PLC数据超时"));
         return false;
     }
@@ -271,21 +288,48 @@ bool PLCWritePlugin::process(const ImageData& input, ImageData& output) {
 }
 
 bool PLCWritePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
-    if (params["ipAddress"].toString().isEmpty()) {
+    if (!params["ipAddress"].isString() || params["ipAddress"].toString().trimmed().isEmpty()) {
         error = QString("IP地址不能为空");
         return false;
     }
-    if (params["port"].toInt() <= 0 || params["port"].toInt() > 65535) {
-        error = QString("端口必须在1-65535之间");
+    const auto integerInRange = [&params, &error](const QString& key, int low, int high) {
+        const QJsonValue value = params.value(key);
+        const double number = value.toDouble();
+        if (!value.isDouble() || !std::isfinite(number) || std::floor(number) != number || number < low ||
+            number > high) {
+            error = QString("%1 must be an integer in [%2,%3]").arg(key).arg(low).arg(high);
+            return false;
+        }
+        return true;
+    };
+    if (!integerInRange("port", 1, 65535) || !integerInRange("slaveId", 1, 255) ||
+        !integerInRange("startAddress", 0, 65535) || !integerInRange("timeout", 1, 120000))
+        return false;
+    const QString source = params.value("valueSource").toString();
+    if (source != QStringLiteral("immediate") && source != QStringLiteral("variable")) {
+        error = QStringLiteral("valueSource must be immediate or variable");
         return false;
     }
-    if (params["slaveId"].toInt() <= 0 || params["slaveId"].toInt() > 255) {
-        error = QString("从站ID必须在1-255之间");
-        return false;
-    }
-    if (params["startAddress"].toInt() < 0 || params["startAddress"].toInt() > 65535) {
-        error = QString("起始地址必须在0-65535之间");
-        return false;
+    const QJsonValue values = params.value("values");
+    if (source == QStringLiteral("variable")) {
+        if (!values.isString() || values.toString().trimmed().isEmpty()) {
+            error = QStringLiteral("values must name a variable in variable mode");
+            return false;
+        }
+    } else {
+        if (!values.isArray() || values.toArray().isEmpty() || values.toArray().size() > 123 ||
+            params.value("startAddress").toInt() + values.toArray().size() > 65536) {
+            error = QStringLiteral("values must contain 1..123 registers within address range");
+            return false;
+        }
+        for (const QJsonValue& value : values.toArray()) {
+            const double number = value.toDouble();
+            if (!value.isDouble() || !std::isfinite(number) || std::floor(number) != number || number < 0 ||
+                number > 65535) {
+                error = QStringLiteral("values must contain only 16-bit unsigned integers");
+                return false;
+            }
+        }
     }
     return true;
 }

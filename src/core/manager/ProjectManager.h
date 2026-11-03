@@ -30,12 +30,35 @@ public:
         return m_currentProject != nullptr;
     }
 
-    // 项目操作
+    // 项目操作（低层入口：不做未保存检查，供测试与内部复用；
+    // 生产入口一律使用下方 *Checked 保护版本——阶段1 §3）
     Project* newProject();
     Project* openProject(const QString& path);
     bool saveProject(const QString& path = QString());
     bool saveAsProject(const QString& path);
     void closeProject();
+
+    /**
+     * @brief 阶段1 §3（计划 §6.3）：工程切换前的未保存处理策略——GUI/CLI/Agent 共用
+     *
+     * Cancel：默认保留当前工程（零副作用中止）；
+     * Save：先保存当前工程，保存失败不继续；
+     * Discard：用户显式选择放弃后继续。
+     */
+    enum class UnsavedPolicy { Cancel, Save, Discard };
+
+    /// 共享判定：返回 true 可继续切换；false 已按策略中止（errorCode/errorMessage 给出结构化原因）。
+    /// savePathOverride 非空时 Save 策略以其落盘（GUI「另存为」兑现无路径新工程的保存语义,复审2 R2）
+    bool resolveUnsavedForSwitch(UnsavedPolicy policy, QString* errorCode = nullptr, QString* errorMessage = nullptr,
+                                 const QString& savePathOverride = QString());
+
+    /// 受保护入口：先执行未保存判定，再走低层实现
+    Project* newProjectChecked(UnsavedPolicy policy, QString* errorCode = nullptr, QString* errorMessage = nullptr,
+                               const QString& savePathOverride = QString());
+    Project* openProjectChecked(const QString& path, UnsavedPolicy policy, QString* errorCode = nullptr,
+                                QString* errorMessage = nullptr, const QString& savePathOverride = QString());
+    /// 返回值反映实际是否关闭（引擎忙等低层拒绝 → false + ENGINE_BUSY,复审2 R3）
+    bool closeProjectChecked(UnsavedPolicy policy, QString* errorCode = nullptr, QString* errorMessage = nullptr);
 
     // 最近项目
     QStringList recentProjects() const {

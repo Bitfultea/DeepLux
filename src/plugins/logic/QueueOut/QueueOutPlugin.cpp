@@ -39,7 +39,8 @@ bool QueueOutPlugin::process(const ImageData& input, ImageData& output) {
     int queueSize = GlobalVarManager::instance().queueSize(m_queueName);
     if (queueSize == 0) {
         output.setData("queue_empty", true);
-        output.setData("queue_item", QString());
+        output.setData(m_outputVariable, QString());
+        output.setData(QString("queue_%1_size").arg(m_queueName), 0);
         Logger::instance().warning(QString("QueueOut: Queue '%1' is empty").arg(m_queueName), "Logic");
         return true; // Not an error, just empty
     }

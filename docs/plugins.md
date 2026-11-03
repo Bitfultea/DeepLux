@@ -68,9 +68,9 @@ flowchart LR
 ### `GrabImage` - 图像采集
 
 - **用途**：从文件、已连接相机或演示输入创建流程中的图像起点。
-- **使用**：通常置于流程首节点；选择“文件”后设置路径，选择“相机”后从已发现的设备中选择相机 ID。
-- **关键配置**：相机、文件路径、曝光时间、增益、图像源、采集超时。元数据：[metadata.json](../src/plugins/image_processing/GrabImage/metadata.json)。
-- **检查**：先单步执行并确认主视图出现正确图像；文件路径、相机连接和超时失败会写入运行日志。
+- **使用**：通常置于流程首节点。文件源可选择单张图像；文件夹源按文件名排序逐张读取，`folderLoop` 默认开启，读到末尾后会从第一张重新开始，关闭后读完即报告文件夹图像已读取完毕。相机源需从已发现的设备中选择相机 ID。
+- **关键配置**：图像源、文件/文件夹路径、文件夹末尾循环、相机、曝光时间、增益、采集超时。元数据：[metadata.json](../src/plugins/image_processing/GrabImage/metadata.json)。
+- **检查**：先单步执行并确认主视图出现正确图像；文件或文件夹路径无效、文件夹没有支持的图像、相机未连接和采集超时都会导致采集失败并写入运行日志。
 
 ### `ImageScript` - 内置图像操作
 
@@ -81,10 +81,10 @@ flowchart LR
 
 ### `JigsawPuzzle` - 图像拼接
 
-- **用途**：按规则网格把碎片图像组织为完整图像，用于规则拼板或分区采集后的展示。
-- **使用**：接入碎片来源后，按实际采集布局设置行数和列数；先用少量样本检查拼接方向和尺寸。
+- **用途**：将单张输入图像按固定行列均分为网格块，再按行优先顺序原位重组；当前不识别或重排独立的乱序拼图碎片。
+- **使用**：连接单张图像并设置正整数行数、列数。每块尺寸使用整数除法，不能整除的右侧/底部余量会丢弃。
 - **关键配置**：行数、列数。元数据：[metadata.json](../src/plugins/image_processing/JigsawPuzzle/metadata.json)。
-- **检查**：在主视图查看拼接边界是否错位，必要时调整上游碎片顺序或网格参数。
+- **检查**：确认输出大小为 `(输入宽度/列数×列数, 输入高度/行数×行数)`；网格块尺寸为零时运行失败并报告图像尺寸不足。
 
 ### `LoadPointCloud` - 点云文件加载
 
@@ -213,7 +213,7 @@ flowchart LR
 
 - **用途**：把拾取或填写的点、线、面写入流程数据，是几何测量模块的标准上游。
 - **使用**：根据下游测量选择模式：`point_pair` 用于两点，`point_line` 用于点到线，`line_pair` 用于两线，`point_plane` 用于点到平面；在主视图拾取或在配置页录入坐标。
-- **关键配置**：模式、点 1/点 2、点、线、线 1/线 2、平面。2D 线段为 `x1,y1,x2,y2`；平面由三个 3D 点组成。元数据：[metadata.json](../src/plugins/geometry/MeasurementInput/metadata.json)。
+- **关键配置**：模式、点 1/点 2、点、线、线 1/线 2、平面。`point_pair` 接受两个同维度的二维图像像素点或三维 `World3D` 点；二维可保留图像来源映射，三维不映射到来源图像。2D 线段为 `x1,y1,x2,y2`；平面由三个 3D 点组成。元数据：[metadata.json](../src/plugins/geometry/MeasurementInput/metadata.json)。
 - **检查**：主视图应显示拾取的点/线/面；输出会携带相应键与 `measurement_input_mode`。点线与线线距离为 2D 概念，线端点不使用 Z 值。
 
 ### `DistancePP` - 两点距离
@@ -237,10 +237,10 @@ flowchart LR
 - **关键配置**：无额外参数。元数据：[metadata.json](../src/plugins/geometry/LinesDistance/metadata.json)。
 - **检查**：结果数据为 `distance`；非平行或线段定义错误时应先回到主视图检查端点。
 
-### `MeasureGap` - 3D 间隙测量
+### `MeasureGap` - 2D/3D 间隙测量
 
 - **用途**：计算两点之间的间隙距离，并输出 XYZ 三个方向的差值。
-- **使用**：将 `MeasurementInput` 设为 `point_pair`，在点云或图像视图提供两个点；2D 坐标也可用，但 Z 会按 0 处理。
+- **使用**：将 `MeasurementInput` 设为 `point_pair` 并连接两个同维度点。二维点按图像像素坐标处理，Z 按 0；三坐标点按 `World3D` 处理。`Any` 端口允许先建立连线，具体消费者会在运行时按自身输入类型校验；例如 FitCircle 的 `fit_points` 只接受二维点集。外部基准和物理单位由工程提供。
 - **关键配置**：无额外参数。元数据：[metadata.json](../src/plugins/geometry/MeasureGap/metadata.json)。
 - **检查**：结果包含 `gap_distance`、`gap_delta_x`、`gap_delta_y`、`gap_delta_z` 和维度标记。
 
@@ -268,9 +268,9 @@ flowchart LR
 ### `FreeformSurface` - 自由曲面点云分析
 
 - **用途**：对自由曲面点云进行处理和分析，适合非规则工件的采样与曲面特征准备。
-- **使用**：接在 `LoadPointCloud` 后；先以较稀的采样验证数据方向和范围，再提高精度进行正式分析。
-- **关键配置**：采样间隔。元数据：[metadata.json](../src/plugins/geometry/FreeformSurface/metadata.json)。
-- **检查**：在 3D 主视图查看采样后点云的完整性；采样过大可能遗漏局部细节。
+- **使用**：接在 `LoadPointCloud` 后；模块对输入中的全部点进行 SVD 平面拟合、点到平面的 RMS 粗糙度计算和投影凸包面积计算。
+- **关键配置**：无。旧工程中的 `samplingInterval` 字段会被忽略，不参与计算。元数据：[metadata.json](../src/plugins/geometry/FreeformSurface/metadata.json)。
+- **检查**：确认 `point_count`、`surface_area`、`surface_roughness` 与输入点云一致；粗糙度单位沿用输入坐标单位，面积单位为该坐标单位的平方。工程未声明坐标单位时不要假定为毫米。
 
 ### `RegionStats` - Region2D 区域统计
 
@@ -360,9 +360,9 @@ flowchart LR
 ### `TCP服务器` - TCP 被动通信
 
 - **用途**：监听端口并与 TCP 客户端收发数据。
-- **使用**：在网络允许监听的主机上设置端口和超时，选择读写模式；将读到的数据命名为下游变量。
-- **关键配置**：端口、超时、发送数据、读取变量名、操作模式。元数据：[metadata.json](../src/plugins/communication/TCPServer/metadata.json)。
-- **检查**：确认端口未被占用且防火墙放行；用独立客户端验证连接、读写时序和断开行为。
+- **使用**：先选择监听地址，再设置端口和超时并选择读写模式；将读到的数据命名为下游变量。`Any` 会监听所有网络接口，`LocalHost` 仅允许本机连接。应按部署需要选择最窄的监听范围，并确认网络隔离和防火墙规则。
+- **关键配置**：监听地址（默认 `Any`，即所有网络接口；可选 `LocalHost`，仅本机）、端口、超时、发送数据、读取变量名、操作模式。元数据：[metadata.json](../src/plugins/communication/TCPServer/metadata.json)。
+- **检查**：确认端口未被占用；在选择的接口范围内用独立客户端验证连接、读写时序和断开行为，并核对主机防火墙是否允许预期来源访问。
 
 ## 逻辑控制（9）
 
@@ -535,13 +535,15 @@ flowchart LR
 
 ### `DefectDetection` - 点云缺陷检测
 
-- **用途**：基于 HymsonVision3D 的点云特征检测缺陷，适合长边、圆角和高度相关的 3D 缺陷筛选。
-- **使用**：接在 `LoadPointCloud` 或稳定的 3D 数据源之后；先用代表性正常/缺陷样本确定各类阈值，再接结果输出或报警。
+- **状态**：算法目前未启用。`ENABLE_HYMSON3D=OFF` 时会构建不可用的框架插件；插件 CMake 中 `HymsonVision3D_FOUND AND FALSE` 也会禁用 SDK 算法代码。运行会失败并报告 `HymsonVision3D SDK 未启用，缺陷检测不可用`，不会生成缺陷结果。不要把该插件用于产品检测判定。
+- **用途（算法启用并通过验收后）**：基于 HymsonVision3D 的点云特征检测缺陷，适合长边、圆角和高度相关的 3D 缺陷筛选。
+- **输入**：连接 `LoadPointCloud` 或其他可提供点云的 3D 数据源；插件从 `ImageData` carrier 中读取 `point_cloud` 或 `pointCloud`，也接受 `display_data` 中的点云。
+- **成功输出契约（当前运行不可用）**：metadata 声明 `defect_point_cloud`（PointCloud3D）、`has_defects`（Boolean）和 `defect_count`（Integer）。只有 SDK 算法构建并执行成功后，这些值才可能由 Agent 查询；当前运行均在算法前失败。
 - **关键配置**：长边/圆角法线角度、长边/圆角曲率阈值、高度阈值、半径、最小点数、最小缺陷尺寸、调试模式。元数据：[metadata.json](../src/plugins/hymson3d/DefectDetection/metadata.json)。
-- **检查**：在 3D 主视图检查缺陷区域与点云位置，调试模式仅用于参数验证；正式运行前评估点云密度、算法耗时和误检率。
+- **验收要求**：SDK 集成恢复后，先核对正常/缺陷样本的输出点数和点云位置，再用现场标注集评估检出率、误检率和耗时；本仓库目前没有成功算法 fixture 或现场质量证据。
 
 ## 文档维护
 
-- 本文按当前 `metadata.json` 覆盖 67 个插件。新增插件时必须同步增加本手册条目，并描述其上游数据、关键参数、结果和失败条件。
+- 本文按当前 `metadata.json` 覆盖 69 个插件。新增插件时必须同步增加本手册条目，并描述其上游数据、关键参数、结果和失败条件。
 - 修改参数名称、范围、结果键或平台依赖时，应同时更新本手册与对应元数据，避免检查器与文档出现两套说法。
 - 用户级流程示例见 [快速上手](quick-start.md)，运行时边界见 [架构说明](architecture.md)。

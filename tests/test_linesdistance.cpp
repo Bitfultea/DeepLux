@@ -147,6 +147,7 @@ private slots:
         QCOMPARE(output.data("nearest_y1").toDouble(), 0.0);
         QCOMPARE(output.data("nearest_x2").toDouble(), 3.0);
         QCOMPARE(output.data("nearest_y2").toDouble(), 0.0);
+        QCOMPARE(output.data("nearest_segment").toList(), (QVariantList{1.0, 0.0, 3.0, 0.0}));
     }
 
     void testIntersectingNearestPointsCoincide() {
@@ -213,11 +214,13 @@ private slots:
 
         ImageData input;
         input.setData("line2", line2Variant);
+        input.setData(QStringLiteral("nearest_segment"), QVariantList{9.0, 9.0, 9.0, 9.0});
 
         ImageData output;
         bool result = plugin.execute(input, output);
 
         QVERIFY2(!result, "Should fail with missing line1");
+        QVERIFY(!output.hasData(QStringLiteral("nearest_segment")));
     }
 
     void testMissingLine2() {

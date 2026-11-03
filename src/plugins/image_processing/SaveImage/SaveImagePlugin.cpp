@@ -1,10 +1,13 @@
 #include "SaveImagePlugin.h"
 
+#include "agent/AgentFileOutputAuthorization.h"
 #include "common/Logger.h"
 #include "core/common/ConfigWidgetHelper.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QPointer>
 #include <QPushButton>
@@ -29,10 +32,21 @@ bool SaveImagePlugin::initialize() {
 }
 
 void SaveImagePlugin::shutdown() {
-#ifdef DEEPLUX_HAS_OPENCV
-    m_mat.release();
-#endif
     ModuleBase::shutdown();
+}
+
+ExecutionResult SaveImagePlugin::execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) {
+    m_writeUnconfirmed = false;
+    m_writeDiagnostics.clear();
+    const QString authorizationError = agentFileOutputAuthorizationError(
+        property(AgentFileOutputAuthorizationProperty).toJsonObject(), instanceName(), moduleId(), currentParams());
+    if (!authorizationError.isEmpty())
+        return ExecutionResult::fail(ExecError::ConfirmedTargetChanged, tr("已批准的图像输出配置或目标已变化"),
+                                     authorizationError);
+    const ExecutionResult result = ModuleBase::execute(inputs, outputs, context);
+    if (!result.success && m_writeUnconfirmed)
+        return ExecutionResult::fail(ExecError::SideEffectUncertain, result.userMessage, m_writeDiagnostics);
+    return result;
 }
 
 bool SaveImagePlugin::process(const ImageData& input, ImageData& output) {
@@ -46,6 +60,71 @@ bool SaveImagePlugin::process(const ImageData& input, ImageData& output) {
         return false;
     }
 
+#ifdef DEEPLUX_HAS_OPENCV
+    cv::Mat mat;
+    if (input.hasMat()) {
+        mat = input.toMat();
+    } else {
+        const QImage qimage = input.toQImage();
+        if (qimage.isNull()) {
+            emit errorOccurred(tr("输入图像无效"));
+            return false;
+        }
+        mat = qImageToMat(qimage);
+        if (mat.empty()) {
+            emit errorOccurred(tr("图像转换失败"));
+            return false;
+        }
+    }
+    if (mat.empty()) {
+        emit errorOccurred(tr("输入图像无效"));
+        return false;
+    }
+    QByteArray encodedImage;
+    QString encoderFormat = QFileInfo(filePath).suffix().toLower();
+    if (encoderFormat.isEmpty())
+        encoderFormat = format.toLower();
+    std::vector<int> encodeParams;
+    if (format == "jpg" || format == "jpeg") {
+        encodeParams.push_back(cv::IMWRITE_JPEG_QUALITY);
+        encodeParams.push_back(quality);
+    } else if (format == "png") {
+        encodeParams.push_back(cv::IMWRITE_PNG_COMPRESSION);
+        encodeParams.push_back((100 - quality) * 9 / 100);
+    }
+    try {
+        std::vector<uchar> bytes;
+        if (!cv::imencode("." + encoderFormat.toStdString(), mat, bytes, encodeParams)) {
+            emit errorOccurred(tr("图像编码失败"));
+            return false;
+        }
+        encodedImage = QByteArray(reinterpret_cast<const char*>(bytes.data()), static_cast<int>(bytes.size()));
+    } catch (const cv::Exception& e) {
+        emit errorOccurred(QString("图像编码失败: %1").arg(QString::fromUtf8(e.what())));
+        return false;
+    }
+#else
+    const QImage qimage = input.toQImage();
+    if (qimage.isNull()) {
+        emit errorOccurred(tr("输入图像无效"));
+        return false;
+    }
+    QFileInfo fileInfo(filePath);
+    QDir dir = fileInfo.absoluteDir();
+    if (!dir.exists() && !dir.mkpath(".")) {
+        emit errorOccurred(tr("无法创建目录: %1").arg(dir.path()));
+        return false;
+    }
+    if (!qimage.save(filePath)) {
+        emit errorOccurred(tr("保存图像失败"));
+        return false;
+    }
+    Logger::instance().debug(QString("图像已保存: %1").arg(filePath), "SaveImage");
+    output = input;
+    return true;
+#endif
+
+#ifdef DEEPLUX_HAS_OPENCV
     QFileInfo fileInfo(filePath);
     QDir dir = fileInfo.absoluteDir();
     if (!dir.exists()) {
@@ -55,97 +134,35 @@ bool SaveImagePlugin::process(const ImageData& input, ImageData& output) {
         }
     }
 
-#ifdef DEEPLUX_HAS_OPENCV
-    // Try to get cv::Mat first
-    if (input.hasMat()) {
-        return saveImage(filePath, format, quality);
-    }
-
-    // Fallback to QImage conversion
-    QImage qimage = input.toQImage();
-    if (!qimage.isNull()) {
-        cv::Mat mat = qImageToMat(qimage);
-        if (mat.empty()) {
-            emit errorOccurred(tr("图像转换失败"));
-            return false;
-        }
-
-        std::vector<int> params;
-        if (format == "jpg" || format == "jpeg") {
-            params.push_back(cv::IMWRITE_JPEG_QUALITY);
-            params.push_back(quality);
-        } else if (format == "png") {
-            params.push_back(cv::IMWRITE_PNG_COMPRESSION);
-            params.push_back((100 - quality) * 9 / 100); // PNG compression: 0-9
-        }
-
-        bool success = cv::imwrite(filePath.toUtf8().constData(), mat, params);
-        if (!success) {
-            emit errorOccurred(tr("保存图像失败"));
-            return false;
-        }
-
-        Logger::instance().debug(QString("图像已保存: %1").arg(filePath), "SaveImage");
-        output = input;
-        return true;
-    }
-#else
-    QImage image = input.toQImage();
-    if (image.isNull()) {
-        emit errorOccurred(tr("输入图像无效"));
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        emit errorOccurred(QString("无法打开图像输出文件: %1").arg(filePath));
         return false;
     }
-
-    if (!image.save(filePath)) {
-        emit errorOccurred(tr("保存图像失败"));
+    m_writeUnconfirmed = true;
+    const qint64 bytesWritten = file.write(encodedImage);
+    const bool flushOk = file.flush();
+    const QFileDevice::FileError fileErrorBeforeClose = file.error();
+    file.close();
+    const QFileDevice::FileError fileErrorAfterClose = file.error();
+    if (bytesWritten != encodedImage.size() || !flushOk || fileErrorBeforeClose != QFileDevice::NoError ||
+        fileErrorAfterClose != QFileDevice::NoError) {
+        m_writeDiagnostics = QStringLiteral("format=%1 bytesWritten=%2 expectedBytes=%3 flushOk=%4 "
+                                            "fileErrorBeforeClose=%5 fileErrorAfterClose=%6 writeAttempted=true")
+                                 .arg(encoderFormat)
+                                 .arg(bytesWritten)
+                                 .arg(encodedImage.size())
+                                 .arg(flushOk ? QStringLiteral("true") : QStringLiteral("false"))
+                                 .arg(static_cast<int>(fileErrorBeforeClose))
+                                 .arg(static_cast<int>(fileErrorAfterClose));
+        emit errorOccurred(QString("无法确认图像写入结果: %1").arg(filePath));
         return false;
     }
-#endif
+    m_writeUnconfirmed = false;
 
     Logger::instance().debug(QString("图像已保存: %1").arg(filePath), "SaveImage");
     output = input;
     return true;
-}
-
-bool SaveImagePlugin::saveImage(const QString& filePath, const QString& format, int quality) {
-#ifdef DEEPLUX_HAS_OPENCV
-    try {
-        cv::Mat image = m_mat;
-        if (image.empty()) {
-            emit errorOccurred(tr("图像数据无效"));
-            return false;
-        }
-
-        std::vector<int> params;
-        if (format == "jpg" || format == "jpeg") {
-            params.push_back(cv::IMWRITE_JPEG_QUALITY);
-            params.push_back(quality);
-        } else if (format == "png") {
-            params.push_back(cv::IMWRITE_PNG_COMPRESSION);
-            params.push_back((100 - quality) * 9 / 100);
-        } else if (format == "tif" || format == "tiff") {
-            params.push_back(cv::IMWRITE_TIFF_COMPRESSION);
-            params.push_back(quality);
-        }
-
-        bool success = cv::imwrite(filePath.toUtf8().constData(), image, params);
-        if (!success) {
-            emit errorOccurred(tr("保存图像失败"));
-            return false;
-        }
-
-        Logger::instance().debug(QString("OpenCV图像已保存: %1").arg(filePath), "SaveImage");
-        return true;
-
-    } catch (const cv::Exception& e) {
-        emit errorOccurred(QString("保存图像失败: %1").arg(QString::fromUtf8(e.what())));
-        return false;
-    }
-#else
-    Q_UNUSED(filePath);
-    Q_UNUSED(format);
-    Q_UNUSED(quality);
-    return false;
 #endif
 }
 

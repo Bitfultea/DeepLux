@@ -5,6 +5,7 @@
 #include <QDialog>
 #include <QHash>
 #include <QImage>
+#include <QJsonObject>
 #include <QList>
 #include <QPointF>
 #include <QPointer>
@@ -54,8 +55,11 @@ class SamAnnotatorDialog : public QDialog {
     Q_OBJECT
 
 public:
-    explicit SamAnnotatorDialog(QWidget* parent = nullptr);
+    explicit SamAnnotatorDialog(QWidget* parent = nullptr, bool environmentSetupOnly = false);
     ~SamAnnotatorDialog() override;
+    quint64 instanceId() const {
+        return m_instanceId;
+    }
 
     // 从文件打开图片
     void openImageFromFile(const QString& suggestedPath = QString());
@@ -65,16 +69,38 @@ public:
 
     // 将标注 overlay 挂到主界面的图像视图上，Dialog 仅作为配置窗口。
     void attachToImageWidget(HImageWidget* imageWidget, const QString& imagePath = QString());
+    void attachToImageWidgetForEnvironmentSetup(HImageWidget* imageWidget);
+    void showImagePickerEntryForUser();
+    QJsonObject environmentHandoffStatus() const;
 
     void applyTheme(bool isDark);
 
     // 当前标注会话
     AnnotationSession session() const;
+    QImage imageSnapshot() const {
+        return m_currentImage;
+    }
+    QString backendImagePathForTest() const {
+        return m_backendImagePath;
+    }
+    void refreshBackendImageForTest() {
+        prepareBackendImage();
+    }
+    QJsonObject listAgentAnnotationObjects(int offset, int limit) const;
+    QJsonObject applyAgentMaskEdit(const QJsonObject& params, bool dryRun = false);
+    QJsonObject listAgentAnnotationCategories(int offset, int limit) const;
+    QJsonObject applyAgentCategoryEdit(const QJsonObject& params, bool dryRun = false);
+    QJsonObject agentPromptStatus() const;
+    QJsonObject agentPromptStateSnapshot() const;
+    QJsonObject cancelAgentPrompt();
 
     // 从文件加载并替换标注会话（批2 复核二轮 P1-1：清撤销栈/旧掩膜缓存，
     // 批3 复核三轮 P1-1：先校验图像摘要后换态，不符拒绝且当前状态不动；
     // 失败关闭返回 false 并给出 error；onOpenAnnotation 与测试共用）
     bool openAnnotationFile(const QString& filePath, QString* error = nullptr);
+    bool openAgentAnnotationSessionSnapshot(const AnnotationSession& loaded, const QImage& imageCandidate,
+                                            bool imageBound, bool legacyImageBindingUnverified,
+                                            const QString& sourcePath, QString* error = nullptr);
 
     // 保存标注会话到文件（批3 复核三轮 P1-1：保存路径写入图像摘要，
     // 内存图像与会话绑定不一致时不覆盖会话字段；onSaveSession 与测试共用）
@@ -106,6 +132,8 @@ public:
     QToolButton* redoButton() const {
         return m_btnRedo;
     }
+    int undoStackIndex() const;
+    int undoStackCount() const;
 
     // SAM 批4：多掩膜候选——注入候选（生产路径由 onPredictionReady 从客户端
     // lastCandidates() 填充；测试直接注入），◀/▶ 循环切换预览，确认所用为所选
@@ -252,8 +280,11 @@ private slots:
     void onMergeSelected();
     void onSplitSelected();
     void onEraseStroke(const QList<QPointF>& imagePoints);
+    void onPredictionReadyForRequest(qint64 requestId, const QList<QPointF>& polygon, const QRectF& bbox, double score,
+                                     const QString& maskRle, const QImage& maskImage);
     void onPredictionReady(const QList<QPointF>& polygon, const QRectF& bbox, double score, const QString& maskRle,
                            const QImage& maskImage);
+    void onPredictionErrorForRequest(qint64 requestId, const QString& message);
     void onAddCategory();
     void onRemoveCategory();
 
@@ -268,8 +299,15 @@ private:
     void commitCurrentPromptAsObject();
     void updateSessionFromImage();
     void prepareBackendImage();
+    void attachToImageWidgetImpl(HImageWidget* imageWidget, const QString& imagePath, bool prepareBackend);
+    void refreshEnvironmentHandoffLabel();
+    bool stageBackendImageSnapshot(const QImage& image, std::unique_ptr<QTemporaryFile>* stagedFile,
+                                   QString* stagedPath, QString* error = nullptr);
+    bool replaceAnnotationSession(const AnnotationSession& loaded, const QImage& sessionImage, bool imageBound,
+                                  bool legacyUnverified, const QString& sourcePath, bool pinBackendSnapshot,
+                                  QString* error);
     void requestPrediction();
-    void loadSavedModelPath();
+    void loadSavedModelPath(bool setupOnly = false);
     void saveModelPath(const QString& path);
     bool samEnvironmentReadyForUse() const;
     bool samModelReadyForUse() const;
@@ -337,6 +375,7 @@ private:
     QLabel* m_candidateLabel = nullptr;
     QButtonGroup* m_modeButtonGroup = nullptr;
     QLabel* m_statusLabel = nullptr;
+    QLabel* m_environmentHandoffLabel = nullptr;
     QPushButton* m_confirmButton = nullptr;
     QPushButton* m_cancelButton = nullptr;
     QPushButton* m_openImageButton = nullptr;
@@ -345,6 +384,7 @@ private:
     QPushButton* m_importModelButton = nullptr;
     QPushButton* m_initEnvironmentButton = nullptr;
     QPushButton* m_restartServerButton = nullptr;
+    bool m_prepareBackendOnViewportChange = true;
     QPushButton* m_exportYoloButton = nullptr;
     QPushButton* m_exportCocoButton = nullptr; // SAM 批4
     QWidget* m_centerContainer = nullptr;
@@ -361,11 +401,14 @@ private:
     QHash<QString, QColor> m_categoryColors;
 
     // 状态
+    quint64 m_instanceId = 0;
     ToolMode m_toolMode = ToolMode::Select;
     QImage m_currentImage;
     QString m_imagePath;
     QString m_backendImagePath;
     std::unique_ptr<QTemporaryFile> m_tempImageFile;
+    bool m_agentBackendImageSnapshotPinned = false;
+    QImage m_agentBackendImageSnapshot;
 
     // 当前未确认 prompt（原图坐标）
     QList<QPointF> m_positivePoints;
@@ -378,6 +421,11 @@ private:
     QImage m_previewMask;
     double m_previewScore = 0.0;
     bool m_hasPrediction = false;
+    quint64 m_promptGeneration = 0;
+    quint64 m_promptCommandEpoch = 0;
+    quint64 m_activePredictionGeneration = 0;
+    qint64 m_activePredictionRequestId = 0;
+    bool m_handlingPredictionError = false;
     // SAM 批4：本次预测的多掩膜候选（score 降序）与当前选择
     QList<SamCandidate> m_previewCandidates;
     int m_previewCandidateIndex = 0;

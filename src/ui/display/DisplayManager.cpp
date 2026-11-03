@@ -90,12 +90,11 @@ void DisplayManager::displayData(const DisplayData& data, int delayMs) {
     qDebug() << "[DM::displayData] found viewport:" << target->viewportId();
 
     // Display the data (with optional delay)
-    if (const ImageData* img = data.imageData()) {
-        QImage image = img->toQImage();
+    if (data.imageData()) {
         if (delayMs > 0) {
-            QTimer::singleShot(delayMs, target, [target, image]() { target->displayImage(image); });
+            QTimer::singleShot(delayMs, target, [target, data]() { target->displayData(data); });
         } else {
-            target->displayImage(image);
+            target->displayData(data);
         }
         emit dataDisplayed(target->viewportId());
     } else if (data.pointCloudData()) {
@@ -137,12 +136,11 @@ void DisplayManager::displayToViewport(const DisplayData& data, const QString& v
         return;
     }
 
-    if (const ImageData* img = data.imageData()) {
-        QImage image = img->toQImage();
+    if (data.imageData()) {
         if (delayMs > 0) {
-            QTimer::singleShot(delayMs, target, [target, image]() { target->displayImage(image); });
+            QTimer::singleShot(delayMs, target, [target, data]() { target->displayData(data); });
         } else {
-            target->displayImage(image);
+            target->displayData(data);
         }
         emit dataDisplayed(viewportId);
     }

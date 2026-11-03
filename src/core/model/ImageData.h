@@ -3,14 +3,36 @@
 #include <QImage>
 #include <QMap>
 #include <QObject>
+#include <QPointF>
+#include <QRectF>
+#include <QSize>
 #include <QVariant>
+#include <array>
 #include <memory>
+#include <optional>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
 #endif
 
 namespace DeepLux {
+
+struct ImageCoordinateProvenance {
+    using Matrix3 = std::array<double, 9>;
+
+    QString sourceImageId;
+    QSize sourceSize;
+    QPointF localOriginInSource;
+    Matrix3 localToSource{{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};
+    bool hasLocalToSourceTransform = false;
+
+    bool isValid() const;
+    std::optional<QPointF> mapLocalToSource(const QPointF& point) const;
+    std::optional<QRectF> mapRectToSourceBounds(const QRectF& rect) const;
+    bool offsetLocalOrigin(const QPointF& offset);
+    bool composeLocalToSource(const Matrix3& localToPrevious);
+    Matrix3 localToSourceMatrix() const;
+};
 
 /**
  * @brief 图像数据类
@@ -67,6 +89,14 @@ public:
     QMap<QString, QVariant> allData() const;
     void clearData();
 
+    // Runtime-only pixel lineage, including composable affine/projective mappings.
+    void establishCoordinateSource(const QString& sourceImageId = QString());
+    void setCoordinateProvenance(const ImageCoordinateProvenance& provenance);
+    void offsetCoordinateOrigin(int x, int y);
+    void invalidateCoordinateProvenance();
+    bool hasCoordinateProvenance() const;
+    ImageCoordinateProvenance coordinateProvenance() const;
+
     // ========== 时间戳 ==========
 
     void setTimestamp(qint64 timestamp);
@@ -81,6 +111,7 @@ private:
     struct Impl {
         QImage qImage;
         QMap<QString, QVariant> metadata;
+        ImageCoordinateProvenance coordinateProvenance;
         qint64 timestamp = 0;
         bool valid = false;
 #ifdef DEEPLUX_HAS_OPENCV

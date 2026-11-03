@@ -33,6 +33,7 @@ void PointSurfaceDistancePlugin::shutdown() {
 
 bool PointSurfaceDistancePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
+    output.removeData(QStringLiteral("foot_point"));
 
     // 获取点和平面三点
     QVariant pointVar = input.data("point");
@@ -87,6 +88,10 @@ bool PointSurfaceDistancePlugin::process(const ImageData& input, ImageData& outp
         m_resultFootY = point->y + t * ny;
         m_resultFootZ = point->z + t * nz;
     }
+
+    if (input.data(QStringLiteral("coordinate_frame")).toString() == QStringLiteral("World3D") && norm > 1e-10 &&
+        std::isfinite(m_resultFootX) && std::isfinite(m_resultFootY) && std::isfinite(m_resultFootZ))
+        output.setData(QStringLiteral("foot_point"), QVariantList{m_resultFootX, m_resultFootY, m_resultFootZ});
 
     // 设置输出数据
     output.setData("distance", m_resultDistance);

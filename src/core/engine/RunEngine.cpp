@@ -4,15 +4,19 @@
 #include "common/CancellationToken.h"
 #include "common/Logger.h"
 #include "interface/IModule.h"
+#include "manager/GlobalVarManager.h"
 #include "manager/PluginManager.h"
 #include "model/Project.h"
 
+#include <QCryptographicHash>
 #include <QDebug>
 #include <QElapsedTimer>
+#include <QJsonDocument>
 #include <QMutexLocker>
 #include <QThread>
 #include <QWaitCondition>
 #include <algorithm>
+#include <functional>
 #include <limits>
 
 namespace DeepLux {
@@ -23,6 +27,25 @@ QString runtimeModuleName(ModuleBase* module) {
         return QString();
     }
     return module->instanceName().isEmpty() ? module->name() : module->instanceName();
+}
+
+QString runtimePluginId(ModuleBase* module) {
+    if (!module)
+        return QString();
+    const QVariant declaredPluginId = module->property("deeplux.pluginId");
+    return declaredPluginId.isValid() ? declaredPluginId.toString() : module->moduleId();
+}
+
+bool authorizationRequiresFreshResume(const QJsonObject& authorization) {
+    if (!authorization.value(QStringLiteral("fileOutputs")).toObject().isEmpty())
+        return true;
+    const QJsonObject folders = authorization.value(QStringLiteral("folders")).toObject();
+    for (auto it = folders.begin(); it != folders.end(); ++it) {
+        const QString operation = it.value().toObject().value(QStringLiteral("operation")).toString();
+        if (operation == QLatin1String("Create") || operation == QLatin1String("Delete"))
+            return true;
+    }
+    return false;
 }
 
 const PortSpec* findPort(const QList<PortSpec>& ports, const QString& id) {
@@ -41,6 +64,12 @@ QString connectionKey(const ModuleConnection& connection) {
     return connection.fromModuleId + QLatin1Char('\x1f') + connection.toModuleId + QLatin1Char('\x1f') +
            connection.fromPort + QLatin1Char('\x1f') + connection.toPort;
 }
+
+QByteArray projectDigest(const Project* project) {
+    return project ? QCryptographicHash::hash(QJsonDocument(project->toJson()).toJson(QJsonDocument::Compact),
+                                              QCryptographicHash::Sha1)
+                   : QByteArray();
+}
 } // namespace
 
 RunEngine& RunEngine::instance() {
@@ -48,12 +77,75 @@ RunEngine& RunEngine::instance() {
     return instance;
 }
 
-RunEngine::RunEngine()
-    : QObject(nullptr), m_cycleTimer(new QTimer(this)), m_cancellationToken(new CancellationToken(this)) {
+RunEngine::RunEngine() : QObject(nullptr), m_cancellationToken(new CancellationToken(this)) {
     qRegisterMetaType<RunResult>("RunResult");
     qRegisterMetaType<RunResult>("DeepLux::RunResult");
-    m_cycleTimer->setInterval(100);
-    connect(m_cycleTimer, &QTimer::timeout, this, &RunEngine::onTimerTick);
+    connect(
+        this, &RunEngine::moduleStarted, this,
+        [this](const QString& moduleId) {
+            QMutexLocker locker(&m_runObservationMutex);
+            if (!m_runObservation.finished)
+                m_runObservation.currentModule = moduleId;
+        },
+        Qt::DirectConnection);
+    connect(
+        this, &RunEngine::moduleSkipped, this,
+        [this](const QString& moduleId) {
+            {
+                QMutexLocker locker(&m_runObservationMutex);
+                m_runPortOutputs.remove(moduleId);
+            }
+            invalidateModuleOutput(moduleId);
+        },
+        Qt::DirectConnection);
+    connect(
+        this, &RunEngine::stateChanged, this,
+        [this](RunState runState) {
+            QMutexLocker locker(&m_runObservationMutex);
+            if (!m_runObservation.runId.isEmpty() && !m_runObservation.finished && runState != RunState::Idle)
+                m_runObservation.state = runState;
+            if (!m_cycleSessionObservation.runId.isEmpty() && !m_cycleSessionObservation.finished) {
+                m_cycleSessionObservation.state = runState;
+                if (runState == RunState::Stopped) {
+                    m_cycleSessionObservation.finished = true;
+                    m_cycleSessionObservation.result.success = false;
+                    m_cycleSessionObservation.result.errorCode = ExecError::Cancelled;
+                    m_cycleSessionObservation.result.finishedTime = QDateTime::currentDateTime();
+                }
+            }
+        },
+        Qt::DirectConnection);
+    connect(
+        this, &RunEngine::runFinished, this, [this](const RunResult&) { clearActiveAgentFolderDeleteAuthorization(); },
+        Qt::DirectConnection);
+    connect(
+        this, &RunEngine::runFinished, this,
+        [this](const RunResult& result) {
+            if (result.runId.isEmpty())
+                return;
+            QMutexLocker locker(&m_runObservationMutex);
+            RunObservation finished =
+                m_runObservation.runId == result.runId
+                    ? m_runObservation
+                    : (m_lastFinishedRun.runId == result.runId ? m_lastFinishedRun : RunObservation{});
+            if (finished.runId.isEmpty())
+                return;
+            finished.runId = result.runId;
+            finished.result = result;
+            if (!finished.finished)
+                finished.state = state();
+            finished.finished = true;
+            m_lastFinishedRun = finished;
+            if (m_runObservation.runId == result.runId)
+                m_runObservation = finished;
+            if (m_cycleSessionObservation.runId == finished.sessionId && !m_cycleSessionObservation.finished &&
+                state() != RunState::Running && state() != RunState::Paused) {
+                m_cycleSessionObservation.finished = true;
+                m_cycleSessionObservation.result = result;
+                m_cycleSessionObservation.state = state();
+            }
+        },
+        Qt::DirectConnection);
     m_runPool.setMaxThreadCount(1);
     setParallelThreadCount(0);
     Logger::instance().info("Run engine initialized", "Run");
@@ -63,6 +155,7 @@ RunEngine::~RunEngine() {
     stop();
     m_runPool.waitForDone();
     m_parallelPool.waitForDone();
+    releaseVariableExecutionLease();
     clearModuleTree();
     clearModules();
 }
@@ -71,11 +164,76 @@ void RunEngine::setCycleMode(bool enabled) {
     m_runMode.store(static_cast<int>(enabled ? RunMode::RunCycle : RunMode::None), std::memory_order_release);
 }
 
+void RunEngine::clearActiveAgentFolderDeleteAuthorization() {
+    QMutexLocker locker(&m_agentFolderDeleteAuthorizationMutex);
+    m_activeAgentFolderDeleteAuthorization = {};
+}
+
+void RunEngine::clearActiveAgentFolderDeleteAuthorizationForPause() {
+    QMutexLocker locker(&m_agentFolderDeleteAuthorizationMutex);
+    const QJsonObject authorization = !m_activeAgentFolderDeleteAuthorization.isEmpty()
+                                          ? m_activeAgentFolderDeleteAuthorization
+                                          : m_cycleAgentFolderDeleteAuthorization;
+    if (authorizationRequiresFreshResume(authorization)) {
+        m_pausedAgentFolderDeleteConfirmationRequired = true;
+        m_pausedAgentFolderDeleteAuthorizationId =
+            authorization.value(QStringLiteral("executionAuthorizationId")).toString();
+    }
+    m_activeAgentFolderDeleteAuthorization = {};
+}
+
+QJsonObject RunEngine::folderDeleteAuthorizationForModule(const QString& moduleId) const {
+    QMutexLocker locker(&m_agentFolderDeleteAuthorizationMutex);
+    if (m_activeAgentFolderDeleteAuthorization.isEmpty())
+        return {};
+
+    const QJsonObject folders = m_activeAgentFolderDeleteAuthorization.value(QStringLiteral("folders")).toObject();
+    const QJsonObject folder = folders.value(moduleId).toObject();
+    QJsonObject authorization = m_activeAgentFolderDeleteAuthorization;
+    authorization.remove(QStringLiteral("folders"));
+    authorization.insert(QStringLiteral("active"), true);
+    authorization.insert(QStringLiteral("authorized"), folders.contains(moduleId));
+    authorization.insert(QStringLiteral("authorizedModuleId"), moduleId);
+    authorization.insert(QStringLiteral("approvedOperation"), folder.value(QStringLiteral("operation")));
+    authorization.insert(QStringLiteral("approvedConfiguredPath"), folder.value(QStringLiteral("configuredPath")));
+    authorization.insert(QStringLiteral("targetExistsAtApproval"),
+                         folder.value(QStringLiteral("targetExistsAtApproval")));
+    authorization.insert(QStringLiteral("resolvedTarget"), folder.value(QStringLiteral("resolvedTarget")));
+    return authorization;
+}
+
+QJsonObject RunEngine::fileOutputAuthorizationForModule(const QString& moduleId) const {
+    QMutexLocker locker(&m_agentFolderDeleteAuthorizationMutex);
+    if (m_activeAgentFolderDeleteAuthorization.isEmpty())
+        return {};
+
+    const QJsonObject fileOutputs =
+        m_activeAgentFolderDeleteAuthorization.value(QStringLiteral("fileOutputs")).toObject();
+    const QJsonObject fileOutput = fileOutputs.value(moduleId).toObject();
+    QJsonObject authorization = m_activeAgentFolderDeleteAuthorization;
+    authorization.remove(QStringLiteral("fileOutputs"));
+    authorization.insert(QStringLiteral("active"), true);
+    authorization.insert(QStringLiteral("authorized"), fileOutputs.contains(moduleId));
+    authorization.insert(QStringLiteral("authorizedModuleId"), moduleId);
+    authorization.insert(QStringLiteral("approvedPluginId"), fileOutput.value(QStringLiteral("pluginId")));
+    authorization.insert(QStringLiteral("approvedParams"), fileOutput.value(QStringLiteral("params")));
+    authorization.insert(QStringLiteral("approvedConfiguredPath"), fileOutput.value(QStringLiteral("configuredPath")));
+    authorization.insert(QStringLiteral("resolvedTarget"), fileOutput.value(QStringLiteral("resolvedTarget")));
+    return authorization;
+}
+
 void RunEngine::stopCycleTimer() {
-    if (QThread::currentThread() == thread())
-        m_cycleTimer->stop();
+    QTimer* timer = nullptr;
+    {
+        QMutexLocker locker(&m_lifecycleMutex);
+        timer = m_cycleTimer;
+    }
+    if (!timer)
+        return;
+    if (QThread::currentThread() == timer->thread())
+        timer->stop();
     else
-        QMetaObject::invokeMethod(m_cycleTimer, "stop", Qt::QueuedConnection);
+        QMetaObject::invokeMethod(timer, "stop", Qt::QueuedConnection);
 }
 
 void RunEngine::setParallelThreadCount(int n) {
@@ -180,14 +338,20 @@ void RunEngine::runOnce() {
     executeRun(RunIntent::Single);
 }
 
-bool RunEngine::runOnceAsync() {
-    if (!executeRunAsync(RunIntent::Single))
+bool RunEngine::runOnceAsync(QString* acceptedRunId, const QJsonObject& agentFolderAuthorization) {
+    if (acceptedRunId)
+        acceptedRunId->clear();
+    if (!executeRunAsync(RunIntent::Single, acceptedRunId, agentFolderAuthorization))
         return false;
     Logger::instance().info(tr("Starting single run"), "Run");
     return true;
 }
 
 bool RunEngine::stepOnce() {
+    return stepOnce({});
+}
+
+bool RunEngine::stepOnce(const QJsonObject& agentFolderAuthorization) {
     if (isBusy()) {
         return false;
     }
@@ -219,14 +383,15 @@ bool RunEngine::stepOnce() {
     QString ignModule;
     ImageData ignData;
     RunMode ignMode = RunMode::RunOnce;
-    if (!tryBeginForRun(RunIntent::Step, ignResuming, ignModule, ignData, ignMode)) {
+    if (!tryBeginForRun(RunIntent::Step, ignResuming, ignModule, ignData, ignMode, QString(), QString(), 0,
+                        agentFolderAuthorization)) {
         return false;
     }
     emit stateChanged(state());
     emit runStarted();
 
     if (m_stepCurrentModuleName.isEmpty()) {
-        clearModuleOutputs();
+        clearOutputs();
         m_nodeOutputs.clear();
         buildModuleTree();
         if (!m_controlEdges.isEmpty()) {
@@ -281,6 +446,7 @@ bool RunEngine::stepOnce() {
     updateStatistics(success, elapsedMs);
 
     RunResult result;
+    result.runId = m_runId;
     result.success = success;
     result.errorCode = success ? 0 : -1;
     result.errorMessage =
@@ -288,6 +454,14 @@ bool RunEngine::stepOnce() {
                 : (m_lastModuleError.isEmpty() ? tr("Step execution failed: %1").arg(moduleToRun) : m_lastModuleError);
     result.elapsedMs = elapsedMs;
     result.finishedTime = QDateTime::currentDateTime();
+    if (!success) {
+        const RunObservation failedObservation = runObservation(m_runId);
+        result.failedModule = failedObservation.result.failedModule;
+        result.failedPort = failedObservation.result.failedPort;
+        result.diagnostics = failedObservation.result.diagnostics;
+        if (failedObservation.result.errorCode != 0)
+            result.errorCode = failedObservation.result.errorCode;
+    }
     // 阶6 复核（五轮 P1-3）：单步收尾在锁内判定 stop——若停止发生在单步期间，
     // 重置单步状态（下次从流程起点开始）并保持 Stopped；否则保留跨步位置并置 Idle。
     // 阶6 七轮（P1-5）：清理单步态与释放执行权在同一临界区（递归锁），
@@ -306,6 +480,7 @@ bool RunEngine::stepOnce() {
     }
     emit runFinished(result);
     emit stateChanged(state());
+    releaseVariableExecutionLease();
     return true;
 }
 
@@ -318,6 +493,23 @@ void RunEngine::resetStepState() {
 }
 
 void RunEngine::start() {
+    startCycle(nullptr);
+}
+
+bool RunEngine::startCycle(QString* acceptedSessionId, int intervalMs, bool runFirstIterationImmediately,
+                           bool scheduleNextAfterRunFinished, bool deferFirstIteration, int maxCycles,
+                           const QJsonObject& agentFolderAuthorization) {
+    if (acceptedSessionId)
+        acceptedSessionId->clear();
+    if (maxCycles < 0)
+        return false;
+    if (!agentFolderAuthorization.isEmpty() &&
+        (maxCycles <= 0 ||
+         agentFolderAuthorization.value(QStringLiteral("executionAuthorizationId")).toString().isEmpty() ||
+         agentFolderAuthorization.value(QStringLiteral("confirmationId")).toString().isEmpty() ||
+         agentFolderAuthorization.value(QStringLiteral("callId")).toString().isEmpty()))
+        return false;
+    QString startedSessionId;
     {
         QReadLocker locker(&m_moduleLock);
         if (m_modules.isEmpty()) {
@@ -329,7 +521,7 @@ void RunEngine::start() {
             result.finishedTime = QDateTime::currentDateTime();
             emit errorOccurred(result.errorMessage);
             emit runFinished(result);
-            return;
+            return false;
         }
     }
 
@@ -338,38 +530,103 @@ void RunEngine::start() {
     {
         QMutexLocker locker(&m_lifecycleMutex);
         if (m_executing.load(std::memory_order_acquire) || m_maintenance.load(std::memory_order_acquire) ||
-            m_stopPending || state() == RunState::Running || state() == RunState::Paused) {
-            return;
+            m_stopPending || m_cycleFailureNotificationPending || state() == RunState::Running ||
+            state() == RunState::Paused) {
+            return false;
         }
+        if (!GlobalVarManager::instance().beginExecutionLease())
+            return false;
+        m_variableExecutionLeaseHeld.store(true, std::memory_order_release);
         m_runMode.store(static_cast<int>(RunMode::RunCycle), std::memory_order_release);
         m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
+        m_cycleMaxIterations = maxCycles;
+        m_cycleAgentFolderDeleteAuthorization = agentFolderAuthorization;
+        m_cycleSessionId = QString::number(QDateTime::currentMSecsSinceEpoch()) + QLatin1Char('-') +
+                           QString::number(m_runSeq.fetch_add(1, std::memory_order_relaxed));
+        startedSessionId = m_cycleSessionId;
+        {
+            QMutexLocker observationLocker(&m_runObservationMutex);
+            m_cycleSessionObservation = RunObservation{};
+            m_cycleSessionObservation.runId = m_cycleSessionId;
+            m_cycleSessionObservation.sessionId = m_cycleSessionId;
+            m_cycleSessionObservation.state = RunState::Running;
+            m_cycleSessionObservation.maxCycles = maxCycles;
+            m_cycleSessionObservation.startedTime = QDateTime::currentDateTime();
+            m_cycleSessionObservation.project = m_loadedProject;
+            m_cycleSessionObservation.projectFingerprint = m_loadedProjectFingerprint;
+        }
         resetStepState();
     }
+    // Each session owns its timer callback identity, so an already-posted timeout from a
+    // stopped session cannot be mistaken for a tick in a newly-started session.
+    auto* timer = new QTimer(this);
+    timer->setObjectName(QStringLiteral("RunEngineCycleTimer"));
+    timer->setInterval(qMax(1, intervalMs));
+    timer->setSingleShot(scheduleNextAfterRunFinished);
+    connect(timer, &QTimer::timeout, this, [this, startedSessionId]() { executeCycleTick(startedSessionId); });
+
     // 阶6 九轮：定时器启动+cycleStarted+日志与状态提交同转换；stop 介入则不启动、
     // 不发出误导信号/日志。
     bool started = false;
     int gen = 0;
     {
         QMutexLocker locker(&m_lifecycleMutex);
-        if (state() == RunState::Running) {
-            m_cycleTimer->start();
+        if (state() == RunState::Running && m_cycleSessionId == startedSessionId && runMode() == RunMode::RunCycle) {
+            if (m_cycleTimer) {
+                m_cycleTimer->stop();
+                m_cycleTimer->deleteLater();
+            }
+            m_cycleTimer = timer;
+            m_scheduleCycleAfterRunFinished = scheduleNextAfterRunFinished;
+            m_cycleFirstIterationDeferred = deferFirstIteration;
+            m_cycleIntervalMs = qMax(1, intervalMs);
+            if (!deferFirstIteration && (!scheduleNextAfterRunFinished || !runFirstIterationImmediately))
+                timer->start();
             gen = m_lifecycleGeneration;
             started = true;
         }
     }
     if (!started) {
-        return;
+        QMutexLocker locker(&m_lifecycleMutex);
+        if (m_cycleSessionId == startedSessionId)
+            m_cycleAgentFolderDeleteAuthorization = {};
+        timer->deleteLater();
+        releaseVariableExecutionLease();
+        return false;
     }
     // 阶6 十一轮：发通知前重验证 generation+状态；stop 介入则不逆序发 cycleStarted/日志。
     {
         QMutexLocker locker(&m_lifecycleMutex);
         if (m_lifecycleGeneration != gen || state() != RunState::Running) {
-            return;
+            return false;
         }
     }
+    if (acceptedSessionId)
+        *acceptedSessionId = startedSessionId;
     emit stateChanged(state());
     emit cycleStarted();
     Logger::instance().info(tr("Starting continuous run"), "Run");
+    if (runFirstIterationImmediately)
+        executeCycleTick(startedSessionId);
+    return true;
+}
+
+bool RunEngine::continueDeferredCycle(const QString& sessionId) {
+    {
+        QMutexLocker locker(&m_lifecycleMutex);
+        if (sessionId.isEmpty() || sessionId != m_cycleSessionId || runMode() != RunMode::RunCycle ||
+            m_state.load(std::memory_order_acquire) == static_cast<int>(RunState::Stopped))
+            return false;
+        if (!m_cycleFirstIterationDeferred)
+            return false;
+        m_cycleFirstIterationDeferred = false;
+        if (state() == RunState::Paused)
+            return true;
+        if (state() != RunState::Running)
+            return false;
+    }
+    executeCycleTick(sessionId);
+    return true;
 }
 
 void RunEngine::pause() {
@@ -381,6 +638,7 @@ void RunEngine::pause() {
         }
         ++m_lifecycleGeneration; // 阶6 十一轮
         m_state.store(static_cast<int>(RunState::Paused), std::memory_order_release);
+        clearActiveAgentFolderDeleteAuthorizationForPause();
     }
     stopCycleTimer();
     emit stateChanged(state());
@@ -389,50 +647,94 @@ void RunEngine::pause() {
 }
 
 void RunEngine::resume() {
-    if (state() != RunState::Paused) {
-        return;
+    resumeExpected(resumeSnapshot());
+}
+
+RunResumeSnapshot RunEngine::resumeSnapshot() const {
+    QMutexLocker lifecycleLocker(&m_lifecycleMutex);
+    QMutexLocker observationLocker(&m_runObservationMutex);
+    RunResumeSnapshot snapshot;
+    snapshot.state = state();
+    snapshot.lifecycleGeneration = m_lifecycleGeneration;
+    const RunObservation& observation =
+        (!m_cycleSessionObservation.runId.isEmpty() && !m_cycleSessionObservation.finished) ? m_cycleSessionObservation
+                                                                                            : m_runObservation;
+    snapshot.runId = observation.runId;
+    snapshot.sessionId = observation.sessionId;
+    snapshot.project = observation.project;
+    snapshot.projectFingerprint = observation.projectFingerprint;
+    return snapshot;
+}
+
+bool RunEngine::resumeExpected(const RunResumeSnapshot& expected, const QJsonObject& agentFolderAuthorization) {
+    if (expected.state != RunState::Paused)
+        return false;
+
+    bool pausedAtBreakpoint = false;
+    bool deferred = false;
+    int generation = 0;
+    {
+        QMutexLocker locker(&m_lifecycleMutex);
+        if (state() != RunState::Paused || m_lifecycleGeneration != expected.lifecycleGeneration ||
+            m_executing.load(std::memory_order_acquire) || m_maintenance.load(std::memory_order_acquire))
+            return false;
+        if (!expected.sessionId.isEmpty()) {
+            if (runMode() != RunMode::RunCycle || m_cycleSessionId != expected.sessionId ||
+                expected.runId != expected.sessionId)
+                return false;
+        } else if (runMode() == RunMode::RunCycle || m_runId != expected.runId || expected.runId.isEmpty()) {
+            return false;
+        }
+        pausedAtBreakpoint = m_pausedAtBreakpoint && !m_pauseResumeModule.isEmpty();
+        if (m_pausedAgentFolderDeleteConfirmationRequired) {
+            const QString authorizationId =
+                agentFolderAuthorization.value(QStringLiteral("executionAuthorizationId")).toString();
+            if (authorizationId.isEmpty() || authorizationId == m_pausedAgentFolderDeleteAuthorizationId ||
+                agentFolderAuthorization.value(QStringLiteral("confirmationId")).toString().isEmpty() ||
+                agentFolderAuthorization.value(QStringLiteral("callId")).toString().isEmpty())
+                return false;
+        }
+        if (!pausedAtBreakpoint) {
+            if (m_pausedAgentFolderDeleteConfirmationRequired) {
+                if (runMode() == RunMode::RunCycle)
+                    m_cycleAgentFolderDeleteAuthorization = agentFolderAuthorization;
+                else {
+                    QMutexLocker authorizationLocker(&m_agentFolderDeleteAuthorizationMutex);
+                    m_activeAgentFolderDeleteAuthorization = agentFolderAuthorization;
+                }
+                m_pausedAgentFolderDeleteConfirmationRequired = false;
+                m_pausedAgentFolderDeleteAuthorizationId.clear();
+            }
+            // 状态/身份/epoch 与 Running 转换在同一生命周期锁内复验。
+            m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
+            deferred = m_cycleFirstIterationDeferred;
+            if (!deferred && m_cycleTimer)
+                m_cycleTimer->start();
+            generation = m_lifecycleGeneration;
+        }
     }
 
-    bool pausedAtBp;
-    {
-        QMutexLocker locker(&m_lifecycleMutex);
-        pausedAtBp = m_pausedAtBreakpoint;
-    }
-    if (pausedAtBp) {
-        // executeRun 内 tryBeginExecution(fresh=false) 原子取权+提交。
-        executeRun(RunIntent::Resume);
-        return;
+    if (pausedAtBreakpoint) {
+        // tryBeginForRun 再次在同一生命周期锁内验证 session/run/epoch 后才取得执行权。
+        return executeRun(RunIntent::Resume, expected.sessionId, expected.runId, expected.lifecycleGeneration,
+                          agentFolderAuthorization);
     }
 
-    // 阶6 九轮：状态提交+定时器启动+日志同转换；stop 介入则不启定时器、不日志。
-    bool resumed = false;
-    int gen = 0;
+    Q_UNUSED(deferred);
     {
         QMutexLocker locker(&m_lifecycleMutex);
-        if (state() != RunState::Paused) {
-            return;
-        }
-        m_state.store(static_cast<int>(RunState::Running), std::memory_order_release);
-        m_cycleTimer->start();
-        gen = m_lifecycleGeneration;
-        resumed = true;
-    }
-    if (!resumed) {
-        return;
-    }
-    // 阶6 十一轮：发通知前重验证 generation+状态；stop 介入则不逆序发日志/信号。
-    {
-        QMutexLocker locker(&m_lifecycleMutex);
-        if (m_lifecycleGeneration != gen || state() != RunState::Running) {
-            return;
-        }
+        if (m_lifecycleGeneration != generation || state() != RunState::Running)
+            return false;
     }
     emit stateChanged(state());
     Logger::instance().info(tr("Run resumed"), "Run");
+    return true;
 }
 
 bool RunEngine::tryBeginForRun(RunIntent intent, bool& resuming, QString& resumeModule, ImageData& resumeData,
-                               RunMode& outMode) {
+                               RunMode& outMode, const QString& expectedCycleSessionId,
+                               const QString& expectedResumeRunId, int expectedLifecycleGeneration,
+                               const QJsonObject& agentFolderAuthorization) {
     // 阶6 八轮（P1-1）：意图+预期状态校验、恢复判定、暂停数据转移、取执行权全部在
     // 同一临界区。stop() 后旧 resume/旧 tick 因预期状态不再满足而被拒绝，不会重启。
     QMutexLocker locker(&m_lifecycleMutex);
@@ -466,7 +768,10 @@ bool RunEngine::tryBeginForRun(RunIntent intent, bool& resuming, QString& resume
         fresh = m_stepCurrentModuleName.isEmpty();
         break;
     case RunIntent::CycleTick:
-        if (st != RunState::Running || runMode() != RunMode::RunCycle) {
+        if (st != RunState::Running || runMode() != RunMode::RunCycle ||
+            (!expectedCycleSessionId.isEmpty() && expectedCycleSessionId != m_cycleSessionId) ||
+            agentFolderAuthorization != m_cycleAgentFolderDeleteAuthorization ||
+            (m_cycleMaxIterations <= 0 && !agentFolderAuthorization.isEmpty())) {
             return false;
         }
         resuming = false;
@@ -474,9 +779,25 @@ bool RunEngine::tryBeginForRun(RunIntent intent, bool& resuming, QString& resume
         fresh = true;
         break;
     case RunIntent::Resume:
-        if (st != RunState::Paused || !paused) {
+        if (st != RunState::Paused || !paused ||
+            (expectedLifecycleGeneration != 0 && m_lifecycleGeneration != expectedLifecycleGeneration) ||
+            (!expectedCycleSessionId.isEmpty() &&
+             (runMode() != RunMode::RunCycle || m_cycleSessionId != expectedCycleSessionId)) ||
+            (expectedCycleSessionId.isEmpty() &&
+             (runMode() == RunMode::RunCycle || expectedResumeRunId.isEmpty() || m_runId != expectedResumeRunId))) {
             return false;
         }
+        if (intent == RunIntent::Resume && m_pausedAgentFolderDeleteConfirmationRequired) {
+            const QString authorizationId =
+                agentFolderAuthorization.value(QStringLiteral("executionAuthorizationId")).toString();
+            if (authorizationId.isEmpty() || authorizationId == m_pausedAgentFolderDeleteAuthorizationId ||
+                agentFolderAuthorization.value(QStringLiteral("confirmationId")).toString().isEmpty() ||
+                agentFolderAuthorization.value(QStringLiteral("callId")).toString().isEmpty())
+                return false;
+        }
+        if (!expectedCycleSessionId.isEmpty() && !m_cycleAgentFolderDeleteAuthorization.isEmpty() &&
+            !agentFolderAuthorization.isEmpty())
+            m_cycleAgentFolderDeleteAuthorization = agentFolderAuthorization;
         resuming = true;
         outMode = m_pauseRunMode; // 阶6 八轮（P1-2）：还原暂停前模式
         resumeModule = m_pauseResumeModule;
@@ -494,6 +815,13 @@ bool RunEngine::tryBeginForRun(RunIntent intent, bool& resuming, QString& resume
         m_skipBreakpointOnce = true;
         break;
     }
+    if (intent == RunIntent::Single || intent == RunIntent::Step) {
+        if (!GlobalVarManager::instance().beginExecutionLease())
+            return false;
+        m_variableExecutionLeaseHeld.store(true, std::memory_order_release);
+    } else if (!m_variableExecutionLeaseHeld.load(std::memory_order_acquire)) {
+        return false;
+    }
     ++m_lifecycleGeneration; // 阶6 十一轮：取权是一次生命周期转换
     m_executing.store(true, std::memory_order_release);
     m_runMode.store(static_cast<int>(outMode), std::memory_order_release);
@@ -509,11 +837,57 @@ bool RunEngine::tryBeginForRun(RunIntent intent, bool& resuming, QString& resume
                   QString::number(m_runSeq.fetch_add(1, std::memory_order_relaxed));
         m_frameId.store(0, std::memory_order_release);
         m_lastParallelMaxConcurrency.store(0, std::memory_order_release);
+        QMutexLocker observationLocker(&m_runObservationMutex);
+        m_runObservation = RunObservation{};
+        m_runObservation.runId = m_runId;
+        m_runObservation.sessionId = outMode == RunMode::RunCycle ? m_cycleSessionId : QString();
+        m_runObservation.state = RunState::Running;
+        m_runObservation.startedTime = m_runStartTime;
+        m_runObservation.project = m_loadedProject;
+        m_runObservation.projectFingerprint = m_loadedProjectFingerprint;
+        m_runPortOutputs.clear();
+        if (outMode == RunMode::RunCycle)
+            m_cycleSessionObservation.lastIterationRunId = m_runId;
+    } else {
+        QMutexLocker observationLocker(&m_runObservationMutex);
+        m_runObservation.state = RunState::Running;
+    }
+    {
+        QMutexLocker authorizationLocker(&m_agentFolderDeleteAuthorizationMutex);
+        m_activeAgentFolderDeleteAuthorization = agentFolderAuthorization;
+    }
+    if (intent == RunIntent::Resume && m_pausedAgentFolderDeleteConfirmationRequired) {
+        m_pausedAgentFolderDeleteConfirmationRequired = false;
+        m_pausedAgentFolderDeleteAuthorizationId.clear();
     }
     return true;
 }
 
-void RunEngine::finalizeRunTail() {
+void RunEngine::recordCompletedObservation(const RunResult& result, RunState finalState) {
+    QMutexLocker observationLocker(&m_runObservationMutex);
+    if (m_runObservation.runId != result.runId)
+        return;
+    m_runObservation.result = result;
+    m_runObservation.finished = true;
+    m_runObservation.state = finalState;
+    m_lastFinishedRun = m_runObservation;
+    {
+        QMutexLocker valueLocker(&m_outputMutex);
+        QMutexLocker imageLocker(&m_lastOutputMutex);
+        m_lastFinishedValues = m_outputMap;
+        m_lastFinishedImages = m_moduleOutputs;
+        m_lastFinishedPortOutputs = m_runPortOutputs;
+    }
+    if (m_cycleSessionObservation.runId == m_runObservation.sessionId) {
+        m_cycleSessionObservation.lastCompletedRunId = result.runId;
+        if (result.success) {
+            m_cycleSessionObservation.lastSuccessfulRunId = result.runId;
+            ++m_cycleSessionObservation.completedCycles;
+        }
+    }
+}
+
+void RunEngine::finalizeRunTail(const RunResult& result) {
     // 阶6 七轮（P0-1）：清理+最终状态提交+执行权释放同一临界区，避免"先释放执行权
     // 再设 Idle"窗口被新一轮运行插入后覆盖。
     QMutexLocker locker(&m_lifecycleMutex);
@@ -522,10 +896,11 @@ void RunEngine::finalizeRunTail() {
     clearBreakpointPauseState();
     m_stopPending = false;
     const bool setToIdle = (runMode() == RunMode::RunOnce) && (state() != RunState::Stopped);
-    m_executing.store(false, std::memory_order_release);
     if (setToIdle) {
         m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
     }
+    recordCompletedObservation(result, state());
+    m_executing.store(false, std::memory_order_release);
 }
 
 bool RunEngine::tryAcquireLease() {
@@ -540,6 +915,9 @@ bool RunEngine::tryAcquireLease() {
         m_stopPending = false;
         return false;
     }
+    if (!GlobalVarManager::instance().beginExecutionLease())
+        return false;
+    m_variableExecutionLeaseHeld.store(true, std::memory_order_release);
     m_executing.store(true, std::memory_order_release);
     if (m_cancellationToken) {
         m_cancellationToken->reset();
@@ -548,9 +926,12 @@ bool RunEngine::tryAcquireLease() {
 }
 
 void RunEngine::releaseLease() {
-    QMutexLocker locker(&m_lifecycleMutex);
-    m_stopPending = false;
-    m_executing.store(false, std::memory_order_release);
+    {
+        QMutexLocker locker(&m_lifecycleMutex);
+        m_stopPending = false;
+        m_executing.store(false, std::memory_order_release);
+    }
+    releaseVariableExecutionLease();
 }
 
 bool RunEngine::tryAcquireMaintenance() {
@@ -563,6 +944,20 @@ bool RunEngine::tryAcquireMaintenance() {
     }
     m_maintenance = true;
     return true;
+}
+
+RunEngine::ProjectMutationResult RunEngine::withProjectMutationLease(const std::function<bool()>& mutation) {
+    if (!mutation || !tryAcquireMaintenance())
+        return ProjectMutationResult::Busy;
+    bool applied = false;
+    try {
+        applied = mutation();
+    } catch (...) {
+        releaseMaintenance();
+        throw;
+    }
+    releaseMaintenance();
+    return applied ? ProjectMutationResult::Applied : ProjectMutationResult::Rejected;
 }
 
 void RunEngine::releaseMaintenance() {
@@ -587,7 +982,7 @@ void RunEngine::setInnerPauseLocked(const QString& mod, const ImageData& data) {
     m_pausedAtBreakpoint = true;
 }
 
-void RunEngine::finalizeAbortedRun(RunMode mode) {
+void RunEngine::finalizeAbortedRun(RunMode mode, const RunResult& result, bool retainCycleSession) {
     // 阶6 五轮：空模块/校验失败早退的原子收尾——在锁内判定是否已有 stop()，
     // 不覆盖 Stopped；仅无停止时复位 Idle，防状态卡死/停止丢失。
     QMutexLocker locker(&m_lifecycleMutex);
@@ -596,13 +991,20 @@ void RunEngine::finalizeAbortedRun(RunMode mode) {
     clearControlQueue();
     clearBreakpointPauseState();
     m_stopPending = false;
-    m_executing.store(false, std::memory_order_release);
-    if (mode == RunMode::RunCycle) {
+    if (mode == RunMode::RunCycle && !retainCycleSession) {
         stopCycleTimer();
         m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
     }
-    m_state.store(wasStopped ? static_cast<int>(RunState::Stopped) : static_cast<int>(RunState::Idle),
-                  std::memory_order_release);
+    const RunState resultState =
+        wasStopped ? RunState::Stopped : (retainCycleSession ? RunState::Running : RunState::Idle);
+    m_state.store(static_cast<int>(resultState), std::memory_order_release);
+    recordCompletedObservation(result, state());
+    m_executing.store(false, std::memory_order_release);
+}
+
+bool RunEngine::retainsCycleSessionAfterFailure() {
+    QMutexLocker locker(&m_lifecycleMutex);
+    return m_scheduleCycleAfterRunFinished;
 }
 
 bool RunEngine::lifecycleBusyLocked() {
@@ -613,15 +1015,25 @@ bool RunEngine::lifecycleBusyLocked() {
 
 void RunEngine::stop() {
     stopCycleTimer();
+    bool finishPausedRun = false;
+    bool stoppedCycle = false;
+    RunResult pausedCancellation{};
 
     // 阶6 复核（二轮）：不在取锁前按 Stopped 提前返回（否则会丢失对"已声明开始、
     // 尚未取执行权"运行的停止请求）。状态转换与清理决策全部在生命周期锁内：
     // 有执行权持有者时置 m_stopPending 令其自行退出/放弃；否则就地清理。
     {
         QMutexLocker locker(&m_lifecycleMutex);
+        if (m_cycleFailureNotificationPending)
+            return;
+        const bool stoppingCycle = runMode() == RunMode::RunCycle;
+        m_cycleAgentFolderDeleteAuthorization = {};
+        finishPausedRun = state() == RunState::Paused && !m_executing.load(std::memory_order_acquire);
         ++m_lifecycleGeneration; // 阶6 十一轮：停止是一次生命周期转换
         m_state.store(static_cast<int>(RunState::Stopped), std::memory_order_release);
         m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
+        m_pausedAgentFolderDeleteConfirmationRequired = false;
+        m_pausedAgentFolderDeleteAuthorizationId.clear();
         if (m_cancellationToken) {
             m_cancellationToken->cancel();
         }
@@ -636,10 +1048,48 @@ void RunEngine::stop() {
             clearBreakpointPauseState();
             resetStepState();
         }
+        if (finishPausedRun) {
+            {
+                QMutexLocker observationLocker(&m_runObservationMutex);
+                if (!m_runObservation.runId.isEmpty() && !m_runObservation.finished) {
+                    pausedCancellation.runId = m_runObservation.runId;
+                    pausedCancellation.success = false;
+                    pausedCancellation.errorCode = ExecError::Cancelled;
+                    pausedCancellation.errorMessage = tr("Run cancelled while paused");
+                    pausedCancellation.elapsedMs = m_runObservation.startedTime.msecsTo(QDateTime::currentDateTime());
+                    pausedCancellation.finishedTime = QDateTime::currentDateTime();
+                }
+            }
+            if (!pausedCancellation.runId.isEmpty())
+                recordCompletedObservation(pausedCancellation, RunState::Stopped);
+        }
+        if (stoppingCycle) {
+            {
+                QMutexLocker observationLocker(&m_runObservationMutex);
+                if (m_cycleSessionObservation.runId == m_cycleSessionId && !m_cycleSessionObservation.finished) {
+                    m_cycleSessionObservation.finished = true;
+                    m_cycleSessionObservation.state = RunState::Stopped;
+                    m_cycleSessionObservation.result.runId = m_cycleSessionObservation.runId;
+                    m_cycleSessionObservation.result.success = false;
+                    m_cycleSessionObservation.result.errorCode = ExecError::Cancelled;
+                    m_cycleSessionObservation.result.errorMessage = tr("Cycle session cancelled by user");
+                    m_cycleSessionObservation.result.finishedTime = QDateTime::currentDateTime();
+                }
+            }
+            m_cycleSessionId.clear();
+            m_cycleAgentFolderDeleteAuthorization = {};
+            stoppedCycle = true;
+        }
     }
 
+    if (stoppedCycle)
+        emit cycleStopped();
+    if (!pausedCancellation.runId.isEmpty())
+        emit runFinished(pausedCancellation);
     emit stateChanged(state());
-    emit cycleStopped();
+
+    if (!m_executing.load(std::memory_order_acquire))
+        releaseVariableExecutionLease();
 
     Logger::instance().info(tr("Run stopped"), "Run");
 }
@@ -647,6 +1097,32 @@ void RunEngine::stop() {
 bool RunEngine::isPausedAtBreakpoint() const {
     QMutexLocker locker(&m_lifecycleMutex);
     return m_pausedAtBreakpoint;
+}
+
+QString RunEngine::cycleSessionId() const {
+    QMutexLocker locker(&m_lifecycleMutex);
+    return m_cycleSessionId;
+}
+
+bool RunEngine::refreshCycleProjectSnapshot(const QString& sessionId, Project* project) {
+    if (!project)
+        return false;
+    QMutexLocker lifecycleLocker(&m_lifecycleMutex);
+    if (sessionId.isEmpty() || sessionId != m_cycleSessionId || runMode() != RunMode::RunCycle ||
+        (state() != RunState::Running && state() != RunState::Paused))
+        return false;
+    QMutexLocker observationLocker(&m_runObservationMutex);
+    if (!m_cycleSessionObservation.runId.isEmpty() && m_cycleSessionObservation.runId == sessionId) {
+        m_cycleSessionObservation.project = project;
+        m_cycleSessionObservation.projectFingerprint = projectDigest(project);
+    }
+    if (m_runObservation.sessionId == sessionId) {
+        m_runObservation.project = project;
+        m_runObservation.projectFingerprint = projectDigest(project);
+    }
+    m_loadedProject = project;
+    m_loadedProjectFingerprint = projectDigest(project);
+    return true;
 }
 
 void RunEngine::requestCancellation() {
@@ -702,7 +1178,7 @@ bool RunEngine::loadProject(Project* project, ModuleFactory factory) {
             IModule* module = pluginManager.createModule(inst.moduleId);
             ModuleBase* moduleBase = qobject_cast<ModuleBase*>(module);
             if (!moduleBase) {
-                delete module;
+                pluginManager.destroyModule(module);
                 return nullptr;
             }
             return moduleBase;
@@ -719,10 +1195,12 @@ bool RunEngine::loadProject(Project* project, ModuleFactory factory) {
             return false;
         }
 
+        module->setProperty("deeplux.pluginId", inst.moduleId);
         module->setInstanceName(inst.id);
         module->setParams(inst.params);
         if (!module->initialize()) {
-            delete module;
+            if (!PluginManager::instance().destroyModule(module))
+                delete module;
             clearModulesLocked();
             releaseMaintenance();
             emit errorOccurred(tr("Cannot initialize module: %1").arg(inst.moduleId));
@@ -745,6 +1223,12 @@ bool RunEngine::loadProject(Project* project, ModuleFactory factory) {
         releaseMaintenance();
         emit errorOccurred(orderError);
         return false;
+    }
+
+    {
+        QMutexLocker observationLocker(&m_runObservationMutex);
+        m_loadedProject = project;
+        m_loadedProjectFingerprint = projectDigest(project);
     }
 
     releaseMaintenance();
@@ -773,7 +1257,8 @@ void RunEngine::removeModule(const QString& moduleId) {
                 m_breakpoints.remove(removedName);
             }
             if (m_ownedModules.removeOne(module)) {
-                delete module;
+                if (!PluginManager::instance().destroyModule(module))
+                    delete module;
             }
             break;
         }
@@ -812,7 +1297,10 @@ void RunEngine::removeModule(const QString& moduleId) {
 
 void RunEngine::clearModulesLocked() {
     QWriteLocker locker(&m_moduleLock);
-    qDeleteAll(m_ownedModules);
+    for (ModuleBase* module : m_ownedModules) {
+        if (!PluginManager::instance().destroyModule(module))
+            delete module;
+    }
     m_ownedModules.clear();
     m_modules.clear();
     m_moduleMap.clear();
@@ -832,6 +1320,9 @@ void RunEngine::clearModulesLocked() {
     }
     clearOutputs();
     resetStepState();
+    QMutexLocker observationLocker(&m_runObservationMutex);
+    m_loadedProject.clear();
+    m_loadedProjectFingerprint.clear();
 }
 
 void RunEngine::clearModules() {
@@ -926,6 +1417,131 @@ ImageData RunEngine::moduleOutput(const QString& moduleName) const {
     return m_moduleOutputs.value(moduleName);
 }
 
+RunEngine::CurrentImageInputSnapshot
+RunEngine::currentExecutionModuleImageInput(const QString& moduleName, const QString& upstreamSourceModuleName,
+                                            ImageData& image) const {
+    image = ImageData();
+
+    ImageData pipelineData;
+    QMap<QString, PortValueMap> nodeOutputs;
+    QString stepCursor;
+    QString pausedModule;
+    QString runId;
+    RunState contextState = RunState::Idle;
+    int lifecycleGeneration = 0;
+    bool pausedContext = false;
+    {
+        QMutexLocker lifecycleLocker(&m_lifecycleMutex);
+        const bool stepContext = !m_stepCurrentModuleName.isEmpty() && !m_executing.load() && !m_maintenance.load();
+        pausedContext =
+            state() == RunState::Paused && m_pausedAtBreakpoint && !m_executing.load() && !m_maintenance.load();
+        if (!stepContext && !pausedContext)
+            return CurrentImageInputSnapshot::NoContext;
+        pipelineData = pausedContext ? m_pausePipelineData : m_stepPipelineData;
+        stepCursor = m_stepCurrentModuleName;
+        pausedModule = m_pauseResumeModule;
+        runId = m_runId;
+        contextState = state();
+        lifecycleGeneration = m_lifecycleGeneration.load();
+        // A step/paused context is quiescent here; lifecycle locking prevents a new
+        // execution or maintenance lease until this consistent output snapshot is copied.
+        nodeOutputs = m_nodeOutputs;
+    }
+    const bool upstreamExecuted = nodeOutputs.contains(upstreamSourceModuleName);
+
+    PortValueMap inputs;
+    bool targetFound = false;
+    {
+        QReadLocker moduleLocker(&m_moduleLock);
+        ModuleBase* module = m_moduleMap.value(moduleName, nullptr);
+        if (module) {
+            targetFound = true;
+            bool imageInputIsMultiple = false;
+            for (const PortSpec& input : module->inputPorts()) {
+                if (input.id == QLatin1String("image")) {
+                    imageInputIsMultiple = input.multiple;
+                    break;
+                }
+            }
+
+            QList<ModuleConnection> incoming;
+            for (const ModuleConnection& connection : m_connections) {
+                if (connection.toModuleId == moduleName && connection.edgeType != QLatin1String("control"))
+                    incoming.append(connection);
+            }
+            QHash<QString, int> executionRank;
+            for (int i = 0; i < m_executionOrder.size(); ++i)
+                executionRank.insert(m_executionOrder[i], i);
+            std::stable_sort(incoming.begin(), incoming.end(),
+                             [&executionRank](const ModuleConnection& a, const ModuleConnection& b) {
+                                 return executionRank.value(a.fromModuleId, std::numeric_limits<int>::max()) <
+                                        executionRank.value(b.fromModuleId, std::numeric_limits<int>::max());
+                             });
+            if (incoming.isEmpty()) {
+                inputs.insert(QStringLiteral("image"), QVariant::fromValue(pipelineData));
+            } else if (!imageInputIsMultiple) {
+                for (const ModuleConnection& connection : incoming) {
+                    if (connection.toPort != QLatin1String("image"))
+                        continue;
+                    const PortValueMap upstream = nodeOutputs.value(connection.fromModuleId);
+                    if (upstream.contains(connection.fromPort))
+                        inputs.insert(QStringLiteral("image"), upstream.value(connection.fromPort));
+                }
+            }
+        }
+    }
+
+    const QVariant imageInput = inputs.value(QStringLiteral("image"));
+    const bool inputAvailable = imageInput.canConvert<ImageData>() && !imageInput.value<ImageData>().isEmpty();
+    if (inputAvailable)
+        image = imageInput.value<ImageData>();
+
+    {
+        QMutexLocker lifecycleLocker(&m_lifecycleMutex);
+        const bool unchangedContext =
+            lifecycleGeneration == m_lifecycleGeneration.load() && !m_executing.load() && !m_maintenance.load() &&
+            state() == contextState &&
+            (pausedContext ? (m_pausedAtBreakpoint && m_pauseResumeModule == pausedModule && m_runId == runId)
+                           : (!m_stepCurrentModuleName.isEmpty() && m_stepCurrentModuleName == stepCursor));
+        if (!unchangedContext || !targetFound) {
+            image = ImageData();
+            return CurrentImageInputSnapshot::ContextChanged;
+        }
+    }
+    if (!upstreamExecuted)
+        return CurrentImageInputSnapshot::UpstreamNotExecuted;
+    if (!inputAvailable)
+        return CurrentImageInputSnapshot::NotMaterialized;
+    return CurrentImageInputSnapshot::Available;
+}
+
+bool RunEngine::runOutputSnapshot(const QString& runId, const QString& moduleName, ImageData& image,
+                                  QMap<QString, QVariant>& values, PortValueMap& ports) const {
+    QMutexLocker runLocker(&m_runObservationMutex);
+    const bool current =
+        m_runObservation.runId == runId && m_runObservation.finished && m_runObservation.result.success;
+    const bool recent =
+        m_lastFinishedRun.runId == runId && m_lastFinishedRun.finished && m_lastFinishedRun.result.success;
+    if (runId.isEmpty() || (!current && !recent))
+        return false;
+    if (current) {
+        QMutexLocker valueLocker(&m_outputMutex);
+        QMutexLocker imageLocker(&m_lastOutputMutex);
+        values = m_outputMap.value(moduleName);
+        image = m_moduleOutputs.value(moduleName);
+        ports = m_runPortOutputs.value(moduleName);
+    } else {
+        values = m_lastFinishedValues.value(moduleName);
+        image = m_lastFinishedImages.value(moduleName);
+        ports = m_lastFinishedPortOutputs.value(moduleName);
+    }
+    const QMap<QString, QVariant> imageData = image.allData();
+    for (auto it = imageData.cbegin(); it != imageData.cend(); ++it)
+        if (!values.contains(it.key()))
+            values.insert(it.key(), it.value());
+    return true;
+}
+
 void RunEngine::invalidateModuleOutput(const QString& moduleName) {
     {
         QMutexLocker locker(&m_outputMutex);
@@ -959,72 +1575,347 @@ int RunEngine::lastElapsedMs() const {
     return m_lastElapsedMs;
 }
 
+RunObservation RunEngine::runObservation(const QString& runId) const {
+    QMutexLocker locker(&m_runObservationMutex);
+    if (!m_cycleSessionObservation.runId.isEmpty() &&
+        (runId == m_cycleSessionObservation.runId || (runId.isEmpty() && !m_cycleSessionObservation.finished)))
+        return m_cycleSessionObservation;
+    if ((runId.isEmpty() || runId == m_runObservation.runId) && !m_runObservation.runId.isEmpty())
+        return m_runObservation;
+    if (runId == m_lastFinishedRun.runId)
+        return m_lastFinishedRun;
+    return {};
+}
+
+RunResult RunEngine::lastRunResult() const {
+    QMutexLocker locker(&m_runObservationMutex);
+    return m_lastFinishedRun.result;
+}
+
+QString RunEngine::currentModuleName() const {
+    QMutexLocker locker(&m_runObservationMutex);
+    return m_runObservation.finished ? QString() : m_runObservation.currentModule;
+}
+
+RunExecutionCandidates RunEngine::runExecutionCandidates() const {
+    RunExecutionCandidates result;
+    QMutexLocker lifecycleLocker(&m_lifecycleMutex);
+    {
+        QMutexLocker observationLocker(&m_runObservationMutex);
+        result.project = m_loadedProject.data();
+        result.projectFingerprint = m_loadedProjectFingerprint;
+    }
+    if (m_executing.load(std::memory_order_acquire) || m_maintenance.load(std::memory_order_acquire))
+        return result;
+
+    QReadLocker moduleLocker(&m_moduleLock);
+    QStringList order = m_executionOrder;
+    if (order.isEmpty()) {
+        for (ModuleBase* module : m_modules)
+            order.append(runtimeModuleName(module));
+    }
+    if (order.isEmpty()) {
+        result.complete = true;
+        return result;
+    }
+
+    for (const QString& moduleId : order) {
+        if (!m_disabledModules.contains(moduleId))
+            result.moduleIds.append(moduleId);
+    }
+    result.complete = true;
+    result.mayRepeat = !m_loopBackEdges.isEmpty();
+    for (const QString& moduleId : result.moduleIds) {
+        ModuleBase* module = m_moduleMap.value(moduleId, nullptr);
+        if (module && (module->flowControlType() == ControlFlowType::Loop ||
+                       module->flowControlType() == ControlFlowType::While || m_reentrantModules.contains(moduleId))) {
+            result.mayRepeat = true;
+            break;
+        }
+    }
+    return result;
+}
+
+RunExecutionCandidates RunEngine::stepExecutionCandidates() const {
+    RunExecutionCandidates result;
+    QMutexLocker lifecycleLocker(&m_lifecycleMutex);
+    {
+        QMutexLocker observationLocker(&m_runObservationMutex);
+        result.project = m_loadedProject.data();
+        result.projectFingerprint = m_loadedProjectFingerprint;
+    }
+    if (m_executing.load(std::memory_order_acquire) || m_maintenance.load(std::memory_order_acquire))
+        return result;
+
+    QReadLocker moduleLocker(&m_moduleLock);
+    QStringList order = m_executionOrder;
+    if (order.isEmpty()) {
+        for (ModuleBase* module : m_modules)
+            order.append(runtimeModuleName(module));
+    }
+    if (order.isEmpty()) {
+        result.complete = false;
+        return result;
+    }
+
+    QString target = m_stepCurrentModuleName;
+    if (target.isEmpty() && !m_controlEdges.isEmpty()) {
+        QSet<QString> hasIncoming;
+        for (const ModuleConnection& connection : m_connections) {
+            if (!m_loopBackEdges.contains(connectionKey(connection)))
+                hasIncoming.insert(connection.toModuleId);
+        }
+        for (const QString& moduleId : order) {
+            if (!hasIncoming.contains(moduleId)) {
+                target = moduleId;
+                break;
+            }
+        }
+    } else if (target.isEmpty()) {
+        target = order.first();
+    }
+
+    if (target.isEmpty() || !m_moduleMap.contains(target))
+        return result;
+    if (!m_disabledModules.contains(target))
+        result.moduleIds.append(target);
+    result.complete = true;
+    return result;
+}
+
+RunExecutionCandidates RunEngine::resumeExecutionCandidates() const {
+    RunExecutionCandidates result;
+    QMutexLocker lifecycleLocker(&m_lifecycleMutex);
+    {
+        QMutexLocker observationLocker(&m_runObservationMutex);
+        result.project = m_loadedProject.data();
+        result.projectFingerprint = m_loadedProjectFingerprint;
+    }
+    if (state() != RunState::Paused || !m_pausedAtBreakpoint || m_pauseResumeModule.isEmpty() ||
+        m_executing.load(std::memory_order_acquire) || m_maintenance.load(std::memory_order_acquire))
+        return result;
+
+    QReadLocker moduleLocker(&m_moduleLock);
+    const QString start = m_pauseResumeModule;
+    if (!m_moduleMap.contains(start))
+        return result;
+
+    if (!m_controlEdges.isEmpty()) {
+        QSet<QString> visited;
+        QSet<QString> active;
+        std::function<void(const QString&)> visit = [&](const QString& moduleId) {
+            if (active.contains(moduleId)) {
+                result.mayRepeat = true;
+                return;
+            }
+            if (visited.contains(moduleId))
+                return;
+            visited.insert(moduleId);
+            active.insert(moduleId);
+            if (!m_disabledModules.contains(moduleId))
+                result.moduleIds.append(moduleId);
+            for (const ModuleConnection& edge : m_controlEdges) {
+                if (edge.fromModuleId != moduleId)
+                    continue;
+                if (m_loopBackEdges.contains(connectionKey(edge)))
+                    result.mayRepeat = true;
+                visit(edge.toModuleId);
+            }
+            active.remove(moduleId);
+        };
+        visit(start);
+        result.complete = true;
+        return result;
+    }
+
+    QStringList order = m_executionOrder;
+    if (order.isEmpty()) {
+        for (ModuleBase* module : m_modules)
+            order.append(runtimeModuleName(module));
+    }
+    const int startIndex = order.indexOf(start);
+    if (startIndex < 0)
+        return result;
+    QSet<QString> candidates;
+    for (int i = startIndex; i < order.size(); ++i) {
+        candidates.insert(order.at(i));
+        if (!m_disabledModules.contains(order.at(i)))
+            result.moduleIds.append(order.at(i));
+    }
+    if (!m_loopBackEdges.isEmpty()) {
+        for (const ModuleConnection& edge : m_connections) {
+            if (!m_loopBackEdges.contains(connectionKey(edge)) || !candidates.contains(edge.fromModuleId))
+                continue;
+            result.mayRepeat = true;
+            if (!m_disabledModules.contains(edge.toModuleId) && !result.moduleIds.contains(edge.toModuleId))
+                result.moduleIds.append(edge.toModuleId);
+        }
+    }
+    for (const QString& moduleId : result.moduleIds) {
+        ModuleBase* module = m_moduleMap.value(moduleId, nullptr);
+        if (module &&
+            (module->flowControlType() == ControlFlowType::Loop ||
+             module->flowControlType() == ControlFlowType::While ||
+             module->flowControlType() == ControlFlowType::LoopEnd ||
+             module->flowControlType() == ControlFlowType::WhileEnd || m_reentrantModules.contains(moduleId))) {
+            result.mayRepeat = true;
+            break;
+        }
+    }
+    result.complete = true;
+    return result;
+}
+
+QString RunEngine::lastRunId() const {
+    QMutexLocker locker(&m_runObservationMutex);
+    if (!m_cycleSessionObservation.runId.isEmpty() && !m_cycleSessionObservation.finished)
+        return m_cycleSessionObservation.runId;
+    return m_runObservation.runId;
+}
+
 void RunEngine::onTimerTick() {
     // 周期模式保持既有定时器时序；Agent 单次运行单独使用 runOnceAsync()。
-    executeRun(RunIntent::CycleTick);
+    QString sessionId;
+    {
+        QMutexLocker locker(&m_lifecycleMutex);
+        sessionId = m_cycleSessionId;
+    }
+    executeCycleTick(sessionId);
 }
 
-void RunEngine::executeRun(RunIntent intent) {
-    bool resuming = false;
-    QString resumeModule;
-    ImageData resumeData;
-    RunMode mode = RunMode::RunOnce;
-    if (!tryBeginForRun(intent, resuming, resumeModule, resumeData, mode))
+void RunEngine::executeCycleTick(const QString& sessionId) {
+    if (sessionId.isEmpty())
         return;
-    executeAcquiredRun(resuming, resumeModule, resumeData, mode);
+    QJsonObject agentFolderAuthorization;
+    {
+        QMutexLocker locker(&m_lifecycleMutex);
+        if (sessionId != m_cycleSessionId)
+            return;
+        agentFolderAuthorization = m_cycleAgentFolderDeleteAuthorization;
+    }
+    executeRun(RunIntent::CycleTick, sessionId, QString(), 0, agentFolderAuthorization);
 }
 
-bool RunEngine::executeRunAsync(RunIntent intent) {
+bool RunEngine::executeRun(RunIntent intent, const QString& expectedCycleSessionId, const QString& expectedResumeRunId,
+                           int expectedLifecycleGeneration, const QJsonObject& agentFolderAuthorization) {
     bool resuming = false;
     QString resumeModule;
     ImageData resumeData;
     RunMode mode = RunMode::RunOnce;
-    if (!tryBeginForRun(intent, resuming, resumeModule, resumeData, mode))
+    if (!tryBeginForRun(intent, resuming, resumeModule, resumeData, mode, expectedCycleSessionId, expectedResumeRunId,
+                        expectedLifecycleGeneration, agentFolderAuthorization))
         return false;
+    executeAcquiredRun(resuming, resumeModule, resumeData, mode);
+    if (state() != RunState::Running && state() != RunState::Paused && !isExecuting())
+        releaseVariableExecutionLease();
+    return true;
+}
+
+bool RunEngine::executeRunAsync(RunIntent intent, QString* acceptedRunId, const QJsonObject& agentFolderAuthorization) {
+    bool resuming = false;
+    QString resumeModule;
+    ImageData resumeData;
+    RunMode mode = RunMode::RunOnce;
+    if (!tryBeginForRun(intent, resuming, resumeModule, resumeData, mode, QString(), QString(), 0,
+                        agentFolderAuthorization))
+        return false;
+    if (acceptedRunId)
+        *acceptedRunId = m_runId; // 执行租约已取得；下一次运行此时不能覆盖 ID
     m_runPool.start([this, resuming, resumeModule, resumeData, mode]() {
         executeAcquiredRun(resuming, resumeModule, resumeData, mode);
+        if (state() != RunState::Running && state() != RunState::Paused && !isExecuting())
+            releaseVariableExecutionLease();
     });
     return true;
 }
 
+void RunEngine::releaseVariableExecutionLease() {
+    if (!m_variableExecutionLeaseHeld.exchange(false, std::memory_order_acq_rel))
+        return;
+    GlobalVarManager::instance().endExecutionLease();
+}
+
 void RunEngine::executeAcquiredRun(bool resuming, const QString& resumeModule, const ImageData& resumeData,
                                    RunMode mode) {
+    const QString acceptedRunId = m_runId;
+    QString cycleSessionId;
+    if (mode == RunMode::RunCycle) {
+        QMutexLocker observationLocker(&m_runObservationMutex);
+        cycleSessionId = m_runObservation.sessionId;
+    }
     if (!resuming) {
         {
             QReadLocker locker(&m_moduleLock);
             if (m_modules.isEmpty()) {
                 RunResult result;
+                result.runId = acceptedRunId;
                 result.success = false;
                 result.errorCode = -1;
                 result.errorMessage = tr("No modules to run");
                 result.elapsedMs = 0;
                 result.finishedTime = QDateTime::currentDateTime();
                 // 阶6 五轮：原子收尾，不覆盖 stop() 的 Stopped。
-                finalizeAbortedRun(mode);
-                if (mode == RunMode::RunCycle) {
+                const bool boundedCycle = mode == RunMode::RunCycle && m_cycleMaxIterations > 0;
+                const bool retainCycle =
+                    mode == RunMode::RunCycle && retainsCycleSessionAfterFailure() && !boundedCycle;
+                finalizeAbortedRun(mode, result, retainCycle);
+                if (boundedCycle) {
+                    finishBoundedCycleAfterFailure(cycleSessionId, result);
+                    emit stateChanged(state());
+                    emit runFinished(result);
                     emit cycleStopped();
+                    QMutexLocker locker(&m_lifecycleMutex);
+                    m_cycleFailureNotificationPending = false;
+                } else if (mode == RunMode::RunCycle && !retainCycle) {
+                    emit cycleStopped();
+                    emit stateChanged(state());
+                    emit runFinished(result);
+                } else {
+                    emit stateChanged(state());
+                    emit runFinished(result);
                 }
-                emit stateChanged(state());
-                emit runFinished(result);
+                if (retainCycle)
+                    scheduleCycleTimerAfterRunFinished(cycleSessionId);
                 return;
             }
         }
 
-        const QStringList validationErrors = validateFlow();
+        QString failedModule;
+        QString failedPort;
+        const QStringList validationErrors = validateFlow(&failedModule, &failedPort);
         if (!validationErrors.isEmpty()) {
             RunResult result;
+            result.runId = acceptedRunId;
             result.success = false;
             result.errorCode = ExecError::TypeMismatch;
             result.errorMessage = validationErrors.join(QStringLiteral("\n"));
+            result.failedModule = failedModule;
+            result.failedPort = failedPort;
+            result.diagnostics = result.errorMessage;
+            result.elapsedMs = 0;
             result.finishedTime = QDateTime::currentDateTime();
             emit errorOccurred(result.errorMessage);
             // 阶6 七轮（P0-2）：仅一次原子终结（不再先 endExecutionCleanup 重复释放）。
-            finalizeAbortedRun(mode);
-            if (mode == RunMode::RunCycle) {
+            const bool boundedCycle = mode == RunMode::RunCycle && m_cycleMaxIterations > 0;
+            const bool retainCycle = mode == RunMode::RunCycle && retainsCycleSessionAfterFailure() && !boundedCycle;
+            finalizeAbortedRun(mode, result, retainCycle);
+            if (boundedCycle) {
+                finishBoundedCycleAfterFailure(cycleSessionId, result);
+                emit stateChanged(state());
+                emit runFinished(result);
                 emit cycleStopped();
+                QMutexLocker locker(&m_lifecycleMutex);
+                m_cycleFailureNotificationPending = false;
+            } else if (mode == RunMode::RunCycle && !retainCycle) {
+                emit cycleStopped();
+                emit stateChanged(state());
+                emit runFinished(result);
+            } else {
+                emit stateChanged(state());
+                emit runFinished(result);
             }
-            emit stateChanged(state());
-            emit runFinished(result);
+            if (retainCycle)
+                scheduleCycleTimerAfterRunFinished(cycleSessionId);
             return;
         }
 
@@ -1032,7 +1923,7 @@ void RunEngine::executeAcquiredRun(bool resuming, const QString& resumeModule, c
         emit runStarted();
 
         clearBreakpointPauseState();
-        clearModuleOutputs();
+        clearOutputs();
         m_nodeOutputs.clear();
         buildModuleTree();
     } else {
@@ -1060,14 +1951,18 @@ void RunEngine::executeAcquiredRun(bool resuming, const QString& resumeModule, c
     // 阶6 七轮：恢复目标模块若已不存在（残留暂停态），不得对其解引用；按中止收尾。
     if (resuming && !getModule(currentModule)) {
         RunResult result;
+        result.runId = acceptedRunId;
         result.success = false;
         result.errorCode = -1;
         result.errorMessage = tr("Resume target module no longer exists");
         result.elapsedMs = 0;
         result.finishedTime = QDateTime::currentDateTime();
-        finalizeAbortedRun(mode);
+        const bool retainCycle = mode == RunMode::RunCycle && retainsCycleSessionAfterFailure();
+        finalizeAbortedRun(mode, result, retainCycle);
         emit stateChanged(state());
         emit runFinished(result);
+        if (retainCycle)
+            scheduleCycleTimerAfterRunFinished(cycleSessionId);
         return;
     }
 
@@ -1092,6 +1987,7 @@ void RunEngine::executeAcquiredRun(bool resuming, const QString& resumeModule, c
                 m_pauseRunMode = runMode();     // 阶6 八轮（P1-2）：保存暂停前模式
                 m_state.store(static_cast<int>(RunState::Paused), std::memory_order_release);
                 m_executing.store(false, std::memory_order_release);
+                clearActiveAgentFolderDeleteAuthorizationForPause();
             } else {
                 m_stopPending = false;
                 m_pausedAtBreakpoint = false;
@@ -1101,6 +1997,12 @@ void RunEngine::executeAcquiredRun(bool resuming, const QString& resumeModule, c
             }
         }
         if (commitPause) {
+            // Breakpoints precede moduleStarted, so publish the paused target in run queries.
+            {
+                QMutexLocker observationLocker(&m_runObservationMutex);
+                if (m_runObservation.runId == acceptedRunId && !m_runObservation.finished)
+                    m_runObservation.currentModule = bpModule;
+            }
             // 先提交 Paused 再发 breakpointHit（用局部副本），保证回调观察到 Paused
             // 且不会在释放执行权后读可变成员。
             emit stateChanged(state());
@@ -1114,17 +2016,118 @@ void RunEngine::executeAcquiredRun(bool resuming, const QString& resumeModule, c
     updateStatistics(allSuccess, elapsedMs);
 
     RunResult result;
+    result.runId = acceptedRunId;
     result.success = allSuccess;
     result.errorCode = allSuccess ? 0 : -1;
     result.errorMessage =
         allSuccess ? QString() : (m_runFirstError.isEmpty() ? tr("Flow execution failed") : m_runFirstError);
+    if (!allSuccess) {
+        QMutexLocker locker(&m_runObservationMutex);
+        result.failedModule = m_runObservation.result.failedModule;
+        result.failedPort = m_runObservation.result.failedPort;
+        result.diagnostics = m_runObservation.result.diagnostics;
+        if (m_runObservation.result.errorCode != 0)
+            result.errorCode = m_runObservation.result.errorCode;
+    }
     result.elapsedMs = elapsedMs;
     result.finishedTime = QDateTime::currentDateTime();
 
     // 阶6 七轮（P0-1）：清理+最终状态+释放执行权同一临界区。
-    finalizeRunTail();
+    finalizeRunTail(result);
+    const bool stoppedCycleAfterFailure =
+        mode == RunMode::RunCycle && !result.success && stopCycleAfterRuntimeFailure(cycleSessionId);
     emit runFinished(result);
     emit stateChanged(state());
+    if (stoppedCycleAfterFailure) {
+        emit cycleStopped();
+        QMutexLocker locker(&m_lifecycleMutex);
+        m_cycleFailureNotificationPending = false;
+    } else if (mode == RunMode::RunCycle && result.success) {
+        if (finishBoundedCycleAtLimit(cycleSessionId, result)) {
+            emit cycleStopped();
+        } else {
+            scheduleCycleTimerAfterRunFinished(cycleSessionId);
+        }
+    }
+}
+
+bool RunEngine::stopCycleAfterRuntimeFailure(const QString& sessionId) {
+    {
+        QMutexLocker locker(&m_lifecycleMutex);
+        if (sessionId.isEmpty() || sessionId != m_cycleSessionId || runMode() != RunMode::RunCycle ||
+            state() != RunState::Running)
+            return false;
+        ++m_lifecycleGeneration;
+        m_scheduleCycleAfterRunFinished = false;
+        m_cycleFirstIterationDeferred = false;
+        m_cycleFailureNotificationPending = true;
+        m_cycleSessionId.clear();
+        m_cycleAgentFolderDeleteAuthorization = {};
+        m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
+        m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
+    }
+    stopCycleTimer();
+    return true;
+}
+
+bool RunEngine::finishBoundedCycleAfterFailure(const QString& sessionId, const RunResult& result) {
+    {
+        QMutexLocker locker(&m_lifecycleMutex);
+        if (m_cycleMaxIterations <= 0 || sessionId.isEmpty() || sessionId != m_cycleSessionId)
+            return false;
+        {
+            QMutexLocker observationLocker(&m_runObservationMutex);
+            if (m_cycleSessionObservation.runId != sessionId)
+                return false;
+            m_cycleSessionObservation.finished = true;
+            m_cycleSessionObservation.state = RunState::Idle;
+            m_cycleSessionObservation.result = result;
+        }
+        ++m_lifecycleGeneration;
+        m_scheduleCycleAfterRunFinished = false;
+        m_cycleFirstIterationDeferred = false;
+        m_cycleFailureNotificationPending = true;
+        m_cycleSessionId.clear();
+        m_cycleAgentFolderDeleteAuthorization = {};
+        m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
+        m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
+    }
+    stopCycleTimer();
+    return true;
+}
+
+void RunEngine::scheduleCycleTimerAfterRunFinished(const QString& sessionId) {
+    QMutexLocker locker(&m_lifecycleMutex);
+    if (!m_scheduleCycleAfterRunFinished || sessionId.isEmpty() || sessionId != m_cycleSessionId ||
+        state() != RunState::Running || !m_cycleTimer)
+        return;
+    m_cycleTimer->start(m_cycleIntervalMs);
+}
+
+bool RunEngine::finishBoundedCycleAtLimit(const QString& sessionId, const RunResult& result) {
+    {
+        QMutexLocker locker(&m_lifecycleMutex);
+        if (m_cycleMaxIterations <= 0 || sessionId.isEmpty() || sessionId != m_cycleSessionId ||
+            runMode() != RunMode::RunCycle || state() != RunState::Running)
+            return false;
+
+        QMutexLocker observationLocker(&m_runObservationMutex);
+        if (m_cycleSessionObservation.completedCycles < m_cycleMaxIterations)
+            return false;
+        m_cycleSessionObservation.finished = true;
+        m_cycleSessionObservation.state = RunState::Idle;
+        m_cycleSessionObservation.result = result;
+        ++m_lifecycleGeneration;
+        m_scheduleCycleAfterRunFinished = false;
+        m_cycleFirstIterationDeferred = false;
+        m_cycleSessionId.clear();
+        m_cycleAgentFolderDeleteAuthorization = {};
+        m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
+        m_state.store(static_cast<int>(RunState::Idle), std::memory_order_release);
+    }
+    stopCycleTimer();
+    emit stateChanged(RunState::Idle);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1243,6 +2246,8 @@ void RunEngine::executeBatchParallel(const QStringList& batch, ImageData& pipeli
     struct ParallelResult {
         bool success = false;
         QString error;
+        int errorCode = 0;
+        QString diagnostics;
         PortValueMap outputs;
         bool controlResult = false;
         int elapsedMs = 0;
@@ -1278,6 +2283,10 @@ void RunEngine::executeBatchParallel(const QStringList& batch, ImageData& pipeli
             ParallelResult result;
             QElapsedTimer timer;
             timer.start();
+            module->setProperty(AgentFolderDeleteAuthorizationProperty,
+                                folderDeleteAuthorizationForModule(module->instanceName()));
+            module->setProperty(AgentFileOutputAuthorizationProperty,
+                                fileOutputAuthorizationForModule(module->instanceName()));
             emit moduleStarted(mod);
 
             if (batchToken && batchToken->isCancelledFast()) {
@@ -1302,6 +2311,8 @@ void RunEngine::executeBatchParallel(const QStringList& batch, ImageData& pipeli
                 result.success = execution.success;
                 result.outputs = portOutputs;
                 result.error = execution.userMessage;
+                result.errorCode = execution.errorCode;
+                result.diagnostics = execution.diagnostics;
                 if (result.success && portOutputs.contains(QStringLiteral("image"))) {
                     const ImageData output = portOutputs.value(QStringLiteral("image")).value<ImageData>();
                     const QMap<QString, QVariant> values = output.allData();
@@ -1349,6 +2360,10 @@ void RunEngine::executeBatchParallel(const QStringList& batch, ImageData& pipeli
 
         if (pr.success) {
             m_nodeOutputs[mod] = pr.outputs;
+            {
+                QMutexLocker locker(&m_runObservationMutex);
+                m_runPortOutputs[mod] = pr.outputs;
+            }
             if (pr.outputs.contains(QStringLiteral("image"))) {
                 ImageData out = pr.outputs.value(QStringLiteral("image")).value<ImageData>();
                 pipelineData = out;
@@ -1364,6 +2379,17 @@ void RunEngine::executeBatchParallel(const QStringList& batch, ImageData& pipeli
             emit moduleFinished(mod, true, pr.elapsedMs);
             activateControlSuccessors(mod);
         } else {
+            {
+                QMutexLocker locker(&m_runObservationMutex);
+                m_runPortOutputs.remove(mod);
+                if (m_runObservation.result.failedModule.isEmpty()) {
+                    m_runObservation.result.failedModule = mod;
+                    m_runObservation.result.errorCode = pr.errorCode;
+                    m_runObservation.result.diagnostics = pr.diagnostics;
+                    if (pr.diagnostics.startsWith(QLatin1String("port=")))
+                        m_runObservation.result.failedPort = pr.diagnostics.section(QLatin1Char(' '), 0, 0).mid(5);
+                }
+            }
             m_lastExecuteResult = false;
             m_lastModuleError = pr.error.isEmpty() ? tr("Parallel module failed: %1").arg(mod) : pr.error;
             m_runAllSuccess = false;
@@ -1574,6 +2600,11 @@ void RunEngine::clearLoopIterationOutputs(const QString& loopModule) {
     for (const QString& moduleName : m_loopRegions.value(loopModule)) {
         m_nodeOutputs.remove(moduleName);
         m_triggeredControlEdges.remove(moduleName);
+        {
+            QMutexLocker locker(&m_runObservationMutex);
+            m_runPortOutputs.remove(moduleName);
+        }
+        invalidateModuleOutput(moduleName);
     }
 }
 
@@ -1663,6 +2694,9 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
         return;
     }
 
+    module->setProperty(AgentFolderDeleteAuthorizationProperty,
+                        folderDeleteAuthorizationForModule(module->instanceName()));
+    module->setProperty(AgentFileOutputAuthorizationProperty, fileOutputAuthorizationForModule(module->instanceName()));
     emit moduleStarted(moduleName);
     module->setCancellationToken(m_cancellationToken);
 
@@ -1705,6 +2739,11 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     bool success = execResult.success;
     if (success) {
         m_nodeOutputs[moduleName] = portOutputs; // 缓存每端口输出供下游/单步使用
+        QMutexLocker locker(&m_runObservationMutex);
+        m_runPortOutputs[moduleName] = portOutputs;
+    } else {
+        QMutexLocker locker(&m_runObservationMutex);
+        m_runPortOutputs.remove(moduleName);
     }
     if (success && portOutputs.contains(QStringLiteral("image"))) {
         output = portOutputs.value(QStringLiteral("image")).value<ImageData>();
@@ -1756,6 +2795,16 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
         output.setData(QStringLiteral("error"), m_lastModuleError);
         QMutexLocker locker(&m_lastOutputMutex);
         m_moduleOutputs[moduleName] = output;
+        locker.unlock();
+        QMutexLocker observationLocker(&m_runObservationMutex);
+        if (m_runObservation.result.failedModule.isEmpty()) {
+            m_runObservation.result.failedModule = moduleName;
+            m_runObservation.result.errorCode = execResult.errorCode;
+            m_runObservation.result.diagnostics =
+                execResult.diagnostics.isEmpty() ? m_lastModuleError : execResult.diagnostics;
+            if (execResult.diagnostics.startsWith(QLatin1String("port=")))
+                m_runObservation.result.failedPort = execResult.diagnostics.section(QLatin1Char(' '), 0, 0).mid(5);
+        }
     }
 
     m_lastExecuteResult = success;
@@ -1827,7 +2876,11 @@ void RunEngine::executeOrBypassModule(const QString& moduleName, ImageData& pipe
     executeModule(moduleName, pipelineData);
 }
 
-QStringList RunEngine::validateFlow() const {
+QStringList RunEngine::validateFlow(QString* failedModule, QString* failedPort) const {
+    if (failedModule)
+        failedModule->clear();
+    if (failedPort)
+        failedPort->clear();
     QStringList errors;
     QReadLocker locker(&m_moduleLock);
     for (ModuleBase* module : m_modules) {
@@ -1846,6 +2899,11 @@ QStringList RunEngine::validateFlow() const {
             }
             if (!supplied) {
                 errors << tr("节点 %1 的必需输入端口 %2 无上游连接").arg(id, in.id);
+                if (failedModule && failedModule->isEmpty()) {
+                    *failedModule = id;
+                    if (failedPort)
+                        *failedPort = in.id;
+                }
             }
         }
 
@@ -1857,11 +2915,120 @@ QStringList RunEngine::validateFlow() const {
                     continue;
                 if (!bypassable.contains(conn.fromPort)) {
                     errors << tr("禁用节点 %1 无法旁路输出端口 %2，但被下游依赖").arg(id, conn.fromPort);
+                    if (failedModule && failedModule->isEmpty()) {
+                        *failedModule = id;
+                        if (failedPort)
+                            *failedPort = conn.fromPort;
+                    }
                 }
             }
         }
     }
     return errors;
+}
+
+QStringList RunEngine::validateProjectFlow(const Project* project) {
+    if (!project)
+        return {tr("No project opened")};
+    if (!tryAcquireMaintenance())
+        return {tr("Flow is running; validation is unavailable")};
+
+    QStringList errors;
+    {
+        QList<ModuleBase*> runtimeModules;
+        {
+            QReadLocker locker(&m_moduleLock);
+            runtimeModules = m_modules;
+        }
+        const QList<ModuleInstance> projectModules = project->modules();
+        bool runtimeMatchesProject = runtimeModules.size() == projectModules.size();
+        for (int i = 0; runtimeMatchesProject && i < projectModules.size(); ++i) {
+            runtimeMatchesProject = runtimeModules[i] && runtimeModuleName(runtimeModules[i]) == projectModules[i].id &&
+                                    runtimePluginId(runtimeModules[i]) == projectModules[i].moduleId;
+        }
+        if (!runtimeMatchesProject) {
+            errors.append(
+                tr("Runtime modules are out of sync with the current project; synchronize before validation"));
+        } else if (runtimeModules.isEmpty()) {
+            errors.append(tr("Flow contains no modules"));
+        } else {
+            // buildExecutionOrder mutates several caches. Keep that mutation isolated in a scratch engine while
+            // reusing the already initialized runtime modules; it does not initialize plugins or execute modules.
+            RunEngine validator;
+            for (int i = 0; i < runtimeModules.size(); ++i) {
+                ModuleBase* module = runtimeModules[i];
+                validator.addModule(module);
+                if (!projectModules[i].enabled)
+                    validator.setModuleDisabled(projectModules[i].id, true);
+            }
+
+            QString graphError;
+            if (!validator.buildExecutionOrder(project, graphError) && !graphError.isEmpty())
+                errors.append(graphError);
+            errors.append(validator.validateFlow());
+        }
+    }
+    releaseMaintenance();
+    return errors;
+}
+
+bool RunEngine::synchronizeProjectModules(Project* project, const QList<ModuleBase*>& modules, QString& error) {
+    error.clear();
+    if (!project) {
+        error = tr("No project opened");
+        return false;
+    }
+    if (!tryAcquireMaintenance()) {
+        error = tr("Cannot synchronize modules while the flow is running");
+        return false;
+    }
+
+    const QList<ModuleInstance> projectModules = project->modules();
+    QSet<QString> instanceIds;
+    QSet<ModuleBase*> modulePointers;
+    bool validInput = modules.size() == projectModules.size();
+    for (int i = 0; validInput && i < modules.size(); ++i) {
+        ModuleBase* module = modules[i];
+        const ModuleInstance& instance = projectModules[i];
+        validInput = module && module->isInitialized() && module->instanceName() == instance.id &&
+                     runtimePluginId(module) == instance.moduleId && !instanceIds.contains(instance.id) &&
+                     !modulePointers.contains(module) && !m_ownedModules.contains(module);
+        if (validInput) {
+            instanceIds.insert(instance.id);
+            modulePointers.insert(module);
+        }
+    }
+    if (!validInput) {
+        error = tr("GUI modules do not match the current project");
+        releaseMaintenance();
+        return false;
+    }
+
+    clearModulesLocked();
+    for (int i = 0; i < modules.size(); ++i) {
+        ModuleBase* module = modules[i];
+        const ModuleInstance& instance = projectModules[i];
+        addModuleLocked(module);
+        if (!instance.enabled)
+            m_disabledModules.insert(instance.id);
+        if (instance.breakpoint) {
+            QMutexLocker breakpointLocker(&m_breakpointMutex);
+            m_breakpoints.insert(instance.id);
+        }
+    }
+
+    if (!buildExecutionOrder(project, error)) {
+        clearModulesLocked();
+        releaseMaintenance();
+        return false;
+    }
+    {
+        QMutexLocker observationLocker(&m_runObservationMutex);
+        m_loadedProject = project;
+        m_loadedProjectFingerprint = projectDigest(project);
+    }
+    releaseMaintenance();
+    return true;
 }
 
 QString RunEngine::getNextModule(const QString& currentModule, bool lastResult) {
@@ -1994,6 +3161,17 @@ QString RunEngine::getNextSequentialModule(const QString& currentModule) {
     return QString();
 }
 
+QString RunEngine::inferEdgeType(const ModuleConnection& connection, const QList<PortSpec>& sourceOutputs,
+                                 const QList<PortSpec>& targetInputs) {
+    const QString sourcePortId = connection.fromPort.isEmpty() ? QStringLiteral("image") : connection.fromPort;
+    const QString targetPortId = connection.toPort.isEmpty() ? QStringLiteral("image") : connection.toPort;
+    const PortSpec* output = findPort(sourceOutputs, sourcePortId);
+    const PortSpec* input = findPort(targetInputs, targetPortId);
+    const bool sourceIsControl = sourcePortId == QLatin1String("next") || (output && output->control);
+    const bool targetIsControl = targetPortId == QLatin1String("control") || (input && input->control);
+    return sourceIsControl || targetIsControl ? QStringLiteral("control") : QStringLiteral("data");
+}
+
 bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
     m_executionOrder.clear();
     m_controlEdges.clear();
@@ -2061,7 +3239,7 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
 
         // 推断边类型
         if (conn.edgeType.isEmpty()) {
-            conn.edgeType = (fromIsControl || toIsControl) ? QStringLiteral("control") : QStringLiteral("data");
+            conn.edgeType = inferEdgeType(conn, sourcePorts, targetPorts);
         }
 
         if (conn.edgeType == QLatin1String("data")) {

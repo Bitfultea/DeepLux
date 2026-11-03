@@ -1,0 +1,25 @@
+{
+  "version": "3.0",
+  "id": "accept-measuregap-pointpair-0001",
+  "name": "验收-MeasureGap 二维点对流程",
+  "modules": [
+    {
+      "id": "measurementinput",
+      "moduleId": "MeasurementInput",
+      "name": "测量输入",
+      "params": {"mode": "point_pair", "point1": [1.0, 2.0], "point2": [4.0, 6.0]}
+    },
+    {
+      "id": "measuregap",
+      "moduleId": "MeasureGap",
+      "name": "间隙测量",
+      "params": {}
+    }
+  ],
+  "connections": [
+    {"fromModuleId": "measurementinput", "toModuleId": "measuregap", "fromPort": "point1", "toPort": "point1", "edgeType": "data"},
+    {"fromModuleId": "measurementinput", "toModuleId": "measuregap", "fromPort": "point2", "toPort": "point2", "edgeType": "data"}
+  ],
+  "flows": [{"id": "main", "name": "主流程", "nodes": ["measurementinput", "measuregap"]}],
+  "resources": {"cameras": [], "dataSources": []}
+}
