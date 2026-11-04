@@ -275,12 +275,38 @@ void FlowCanvas::applyExecutionLayout(const FlowOrderPlan& plan, LayoutMode mode
     if (!plan.valid)
         return;
 
-    constexpr qreal kRankSpacing = 160.0;
+    // 行高必须跟随真实节点高度（端口越多节点越高），固定 rank 间距会让相邻 rank 重叠。
+    constexpr qreal kRowGap = 48.0;
     constexpr qreal kLaneSpacing = 280.0;
+    constexpr qreal kLaneGap = 44.0;
 
     Project* project = m_project.data();
     if (!project)
         project = ProjectManager::instance().currentProject();
+
+    // 先按 rank 收集节点并计算每行最大包围盒高度；QMap 保证 rank 升序。
+    QMap<int, QList<FlowNodeItem*>> rows;
+    qreal maxItemWidth = 0.0;
+    for (const FlowOrderNode& node : plan.nodes) {
+        FlowNodeItem* item = m_nodes.value(node.instanceId, nullptr);
+        if (!item)
+            continue;
+        rows[node.rank].append(item);
+        maxItemWidth = qMax(maxItemWidth, item->boundingRect().width());
+    }
+
+    QMap<int, qreal> rowTop;
+    qreal nextRowY = 0.0;
+    for (auto it = rows.cbegin(); it != rows.cend(); ++it) {
+        qreal rowHeight = 0.0;
+        for (FlowNodeItem* item : it.value())
+            rowHeight = qMax(rowHeight, item->boundingRect().height());
+        rowTop.insert(it.key(), nextRowY);
+        nextRowY += rowHeight + kRowGap;
+    }
+
+    // 同一 rank 的节点按 lane 排列；lane 间距至少覆盖最宽节点的包围盒并留出间隙。
+    const qreal laneSpacing = qMax(kLaneSpacing, maxItemWidth + kLaneGap);
 
     setUpdatesEnabled(false);
     m_applyingLayout = true;
@@ -290,13 +316,13 @@ void FlowCanvas::applyExecutionLayout(const FlowOrderPlan& plan, LayoutMode mode
         if (!item)
             continue;
 
-        qreal x = static_cast<qreal>(node.lane) * kLaneSpacing;
+        qreal x = static_cast<qreal>(node.lane) * laneSpacing;
         if (mode == LayoutMode::Normalize) {
             const qreal currentX = item->pos().x();
             if (std::isfinite(currentX))
                 x = currentX;
         }
-        const qreal y = static_cast<qreal>(node.rank) * kRankSpacing;
+        const qreal y = rowTop.value(node.rank, 0.0);
         item->setPos(x, y);
         updateConnectionsForNode(node.instanceId);
 

@@ -95,12 +95,14 @@ void TestFlowLayoutCoordinator::testLayoutMatchesDisplayOrder() {
     QCOMPARE(plan.displayOrder.size(), 3);
 
     qreal previousY = -1.0;
+    qreal previousBottom = -1.0e9;
     for (const QString& id : plan.displayOrder) {
         FlowNodeItem* item = canvas.nodeItem(id);
         QVERIFY(item != nullptr);
         QVERIFY2(item->pos().y() >= previousY, "displayOrder must be laid out top-to-bottom");
+        QVERIFY2(item->sceneBoundingRect().top() > previousBottom, "rank rows must not overlap");
         previousY = item->pos().y();
-        QCOMPARE(item->pos().y(), static_cast<qreal>(plan.rankOf(id) * 160));
+        previousBottom = item->sceneBoundingRect().bottom();
     }
     QCOMPARE(plan.displayOrder.first(), QStringLiteral("a"));
     QCOMPARE(plan.displayOrder.last(), QStringLiteral("c"));

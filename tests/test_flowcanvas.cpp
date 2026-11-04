@@ -50,6 +50,7 @@ private slots:
 
     // B2: 执行计划布局与坐标写回
     void testExecutionLayoutByRankAndLane();
+    void testExecutionLayoutSizesRowsByNodeHeight();
     void testNormalizeLayoutPreservesX();
     void testNodeDragWritesBackPosition();
     void testLayoutInitializedRestoresSavedPositions();
@@ -558,6 +559,18 @@ void appendPlanNode(FlowOrderPlan& plan, const QString& id, int rank, int lane) 
     plan.laneIndex.insert(id, lane);
 }
 
+QList<PortSpec> makeOutputPorts(int count) {
+    QList<PortSpec> outputs;
+    for (int i = 0; i < count; ++i) {
+        PortSpec port;
+        port.id = QStringLiteral("out_%1").arg(i);
+        port.displayName = port.id;
+        port.type = DataType::Any;
+        outputs.append(port);
+    }
+    return outputs;
+}
+
 FlowGraphCatalog catalogForProject(const Project& project) {
     FlowGraphCatalog catalog;
     for (const ModuleInstance& instance : project.modules()) {
@@ -609,6 +622,47 @@ void TestFlowCanvas::testExecutionLayoutByRankAndLane() {
             QVERIFY2(!first->sceneBoundingRect().intersects(second->sceneBoundingRect()),
                      qPrintable(QStringLiteral("nodes %1 and %2 overlap").arg(ids.at(i), ids.at(j))));
         }
+    }
+}
+
+void TestFlowCanvas::testExecutionLayoutSizesRowsByNodeHeight() {
+    FlowCanvas canvas;
+    const QString tall = canvas.addNode("module.tall", "Tall", QPointF(0, 0));
+    const QString shortNode = canvas.addNode("module.short", "Short", QPointF(0, 0));
+    const QString tallPeer = canvas.addNode("module.tall_peer", "Tall Peer", QPointF(0, 0));
+
+    // 6~11 个输出端口的真实插件会超过旧的固定 160px 行距。
+    canvas.nodeItem(tall)->setPortSpecs({}, makeOutputPorts(11));
+    canvas.nodeItem(tallPeer)->setPortSpecs({}, makeOutputPorts(11));
+    QVERIFY(canvas.nodeItem(tall)->boundingRect().height() > 160.0);
+
+    FlowOrderPlan plan;
+    plan.valid = true;
+    appendPlanNode(plan, tall, 0, 0);
+    appendPlanNode(plan, shortNode, 1, 0);
+    appendPlanNode(plan, tallPeer, 1, 1);
+
+    auto verifyNoOverlap = [&canvas]() {
+        const QStringList ids = canvas.nodeIds();
+        for (int i = 0; i < ids.size(); ++i) {
+            for (int j = i + 1; j < ids.size(); ++j) {
+                FlowNodeItem* first = canvas.nodeItem(ids.at(i));
+                FlowNodeItem* second = canvas.nodeItem(ids.at(j));
+                QVERIFY2(!first->sceneBoundingRect().intersects(second->sceneBoundingRect()),
+                         qPrintable(QStringLiteral("nodes %1 and %2 overlap").arg(ids.at(i), ids.at(j))));
+            }
+        }
+    };
+
+    for (FlowCanvas::LayoutMode mode : {FlowCanvas::LayoutMode::Full, FlowCanvas::LayoutMode::Normalize}) {
+        canvas.applyExecutionLayout(plan, mode);
+        FlowNodeItem* top = canvas.nodeItem(tall);
+        FlowNodeItem* below = canvas.nodeItem(shortNode);
+        FlowNodeItem* peer = canvas.nodeItem(tallPeer);
+
+        QCOMPARE(below->pos().y(), peer->pos().y());
+        QVERIFY(top->sceneBoundingRect().bottom() < below->sceneBoundingRect().top());
+        verifyNoOverlap();
     }
 }
 
