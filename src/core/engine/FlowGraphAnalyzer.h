@@ -45,12 +45,18 @@ struct FlowOrderPlan {
     QSet<QString> loopBackEdges;
     QSet<QString> reentrantModules;
     QMap<QString, QSet<QString>> loopRegions;
+    QHash<QString, int> rankIndex;
+    QHash<QString, int> laneIndex;
     int rankOf(const QString& id) const;
     int laneOf(const QString& id) const;
 };
 
 class FlowGraphAnalyzer {
 public:
+    // 统一的控制端口判定：源端支持隐式 next，目标端支持隐式 control，
+    // 其余端口以 PortSpec.control 为准。normalizeConnections 与 RunEngine 共用，
+    // 避免 next/control/PortSpec.control 规则分散实现。
+    static bool isControlPort(const QList<PortSpec>& ports, bool source, const QString& portId);
     static QList<ModuleConnection> normalizeConnections(const FlowGraphCatalog& catalog,
                                                         const QList<ModuleConnection>& connections, QString* error);
     static FlowOrderPlan analyze(const FlowGraphCatalog& catalog, const QList<ModuleConnection>& normalizedConnections,

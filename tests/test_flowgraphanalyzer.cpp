@@ -49,6 +49,13 @@ QString edgeKey(const ModuleConnection& connection) {
     return connection.fromModuleId + QLatin1Char('\x1f') + connection.toModuleId + QLatin1Char('\x1f') +
            connection.fromPort + QLatin1Char('\x1f') + connection.toPort;
 }
+const FlowOrderNode* nodeOf(const FlowOrderPlan& plan, const QString& id) {
+    for (const FlowOrderNode& node : plan.nodes) {
+        if (node.instanceId == id)
+            return &node;
+    }
+    return nullptr;
+}
 } // namespace
 
 class TestFlowGraphAnalyzer : public QObject {
@@ -236,6 +243,106 @@ private slots:
         // rank 沿 displayOrder 单调不减
         for (int i = 1; i < plan.displayOrder.size(); ++i) {
             QVERIFY(plan.rankOf(plan.displayOrder.at(i - 1)) <= plan.rankOf(plan.displayOrder.at(i)));
+        }
+    }
+
+    // B1 follow-up: displayOrder 控制分支优先级
+    void testConditionalTrueBeforeFalseAndParents() {
+        const QList<FlowGraphModule> modules{controlModule("if", ControlFlowType::Conditional, {"true", "false"}),
+                                             mod("then"), mod("otherwise")};
+        const QList<ModuleConnection> edges{edge("if", "then", "true", "control", "control"),
+                                            edge("if", "otherwise", "false", "control", "control")};
+        const FlowOrderPlan plan = planFor(modules, edges, {"if", "then", "otherwise"});
+        QVERIFY2(plan.valid, qPrintable(plan.error));
+        QVERIFY(plan.displayOrder.indexOf("then") < plan.displayOrder.indexOf("otherwise"));
+        const FlowOrderNode* thenNode = nodeOf(plan, "then");
+        const FlowOrderNode* elseNode = nodeOf(plan, "otherwise");
+        QVERIFY(thenNode && elseNode);
+        QCOMPARE(thenNode->branchLabel, QStringLiteral("true"));
+        QCOMPARE(thenNode->controlParent, QStringLiteral("if"));
+        QCOMPARE(elseNode->branchLabel, QStringLiteral("false"));
+        QCOMPARE(elseNode->controlParent, QStringLiteral("if"));
+    }
+    void testLoopBodyChainContinuity() {
+        const QList<FlowGraphModule> modules{controlModule("loop", ControlFlowType::Loop, {"body", "done"}),
+                                             mod("body"), mod("body2"), mod("after")};
+        const QList<ModuleConnection> edges{edge("loop", "body", "body", "control", "control"),
+                                            edge("body", "body2", "next", "control", "control"),
+                                            edge("loop", "after", "done", "control", "control")};
+        const FlowOrderPlan plan = planFor(modules, edges, {"loop", "body", "body2", "after"});
+        QVERIFY2(plan.valid, qPrintable(plan.error));
+        QCOMPARE(plan.displayOrder, (QStringList{"loop", "body", "body2", "after"}));
+        QCOMPARE(nodeOf(plan, "body")->branchLabel, QStringLiteral("body"));
+        QCOMPARE(nodeOf(plan, "body")->controlParent, QStringLiteral("loop"));
+        QCOMPARE(nodeOf(plan, "body2")->branchLabel, QString());
+        QCOMPARE(nodeOf(plan, "body2")->controlParent, QString());
+        QCOMPARE(nodeOf(plan, "after")->branchLabel, QStringLiteral("done"));
+        QCOMPARE(nodeOf(plan, "after")->controlParent, QStringLiteral("loop"));
+    }
+    void testParallelBranchDeclarationOrder() {
+        const QList<FlowGraphModule> modules{controlModule("par", ControlFlowType::Parallel, {"branch"}), mod("p1"),
+                                             mod("p2")};
+        const FlowOrderPlan first = planFor(
+            modules,
+            {edge("par", "p1", "branch", "control", "control"), edge("par", "p2", "branch", "control", "control")},
+            {"par", "p1", "p2"});
+        QVERIFY2(first.valid, qPrintable(first.error));
+        QVERIFY(first.displayOrder.indexOf("p1") < first.displayOrder.indexOf("p2"));
+        QCOMPARE(nodeOf(first, "p1")->branchLabel, QStringLiteral("branch"));
+        QCOMPARE(nodeOf(first, "p2")->controlParent, QStringLiteral("par"));
+
+        const FlowOrderPlan second = planFor(
+            modules,
+            {edge("par", "p2", "branch", "control", "control"), edge("par", "p1", "branch", "control", "control")},
+            {"par", "p1", "p2"});
+        QVERIFY2(second.valid, qPrintable(second.error));
+        QVERIFY(second.displayOrder.indexOf("p2") < second.displayOrder.indexOf("p1"));
+    }
+    void testNestedBranchOrderingAndPath() {
+        const QList<FlowGraphModule> modules{controlModule("outer", ControlFlowType::Conditional, {"true", "false"}),
+                                             mod("outerTrue"),
+                                             controlModule("inner", ControlFlowType::Conditional, {"true", "false"}),
+                                             mod("innerTrue"),
+                                             mod("innerFalse"),
+                                             mod("outerFalse")};
+        const QList<ModuleConnection> edges{edge("outer", "outerTrue", "true", "control", "control"),
+                                            edge("outer", "outerFalse", "false", "control", "control"),
+                                            edge("outerTrue", "inner", "next", "control", "control"),
+                                            edge("inner", "innerTrue", "true", "control", "control"),
+                                            edge("inner", "innerFalse", "false", "control", "control")};
+        const FlowOrderPlan plan =
+            planFor(modules, edges, {"outer", "outerTrue", "inner", "innerTrue", "innerFalse", "outerFalse"});
+        QVERIFY2(plan.valid, qPrintable(plan.error));
+        QCOMPARE(plan.displayOrder,
+                 (QStringList{"outer", "outerTrue", "inner", "innerTrue", "innerFalse", "outerFalse"}));
+        QCOMPARE(nodeOf(plan, "innerTrue")->branchLabel, QStringLiteral("true"));
+        QCOMPARE(nodeOf(plan, "innerTrue")->controlParent, QStringLiteral("inner"));
+        QCOMPARE(nodeOf(plan, "innerFalse")->branchLabel, QStringLiteral("false"));
+    }
+    void testOrdinaryNextEdgeHasNoBranchLabel() {
+        const QList<FlowGraphModule> modules{mod("A"), mod("B")};
+        const QList<ModuleConnection> edges{edge("A", "B", "next", "control", "control")};
+        const FlowOrderPlan plan = planFor(modules, edges, {"A", "B"});
+        QVERIFY2(plan.valid, qPrintable(plan.error));
+        QCOMPARE(nodeOf(plan, "B")->branchLabel, QString());
+        QCOMPARE(nodeOf(plan, "B")->controlParent, QString());
+        QCOMPARE(plan.displayOrder, (QStringList{"A", "B"}));
+    }
+    void testLaneAllocationMainChainAndUnique() {
+        const QList<FlowGraphModule> modules{controlModule("if", ControlFlowType::Conditional, {"true", "false"}),
+                                             mod("then"), mod("otherwise"), mod("root"), mod("main")};
+        const QList<ModuleConnection> edges{edge("if", "then", "true", "control", "control"),
+                                            edge("if", "otherwise", "false", "control", "control"),
+                                            edge("root", "main")};
+        const FlowOrderPlan plan = planFor(modules, edges, {"if", "then", "otherwise", "root", "main"});
+        QVERIFY2(plan.valid, qPrintable(plan.error));
+        QCOMPARE(nodeOf(plan, "main")->lane, 0);
+        QVERIFY(nodeOf(plan, "then")->lane != nodeOf(plan, "otherwise")->lane);
+
+        QMap<int, QSet<int>> lanesByRank;
+        for (const FlowOrderNode& node : plan.nodes) {
+            QVERIFY2(!lanesByRank[node.rank].contains(node.lane), "duplicate lane within rank");
+            lanesByRank[node.rank].insert(node.lane);
         }
     }
 

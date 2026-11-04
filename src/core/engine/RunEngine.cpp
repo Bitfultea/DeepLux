@@ -2727,8 +2727,8 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
         // 隐式控制端口：next（所有节点的隐式控制输出）和 control（隐式控制输入）
         const bool fromIsImplicitControl = (conn.fromPort == QLatin1String("next"));
         const bool toIsImplicitControl = (conn.toPort == QLatin1String("control"));
-        const bool fromIsControl = fromIsImplicitControl || (output && output->control);
-        const bool toIsControl = toIsImplicitControl || (input && input->control);
+        const bool fromIsControl = FlowGraphAnalyzer::isControlPort(sourcePorts, true, conn.fromPort);
+        const bool toIsControl = FlowGraphAnalyzer::isControlPort(targetPorts, false, conn.toPort);
 
         if (conn.edgeType == QLatin1String("data")) {
             // 数据边：两端必须是非控制端口

@@ -1,7 +1,11 @@
 #include "FlowGraphAnalyzer.h"
 
+#include <QQueue>
 #include <algorithm>
+#include <functional>
 #include <limits>
+#include <map>
+#include <utility>
 
 namespace DeepLux {
 
@@ -33,6 +37,46 @@ void setError(QString* error, const QString& message) {
         *error = message;
 }
 
+bool isOpenerType(ControlFlowType type) {
+    return type == ControlFlowType::Conditional || type == ControlFlowType::Loop || type == ControlFlowType::While ||
+           type == ControlFlowType::Parallel;
+}
+
+bool isBranchPort(ControlFlowType type, const QString& portId) {
+    switch (type) {
+    case ControlFlowType::Conditional:
+        return portId == QLatin1String("true") || portId == QLatin1String("false");
+    case ControlFlowType::Loop:
+    case ControlFlowType::While:
+        return portId == QLatin1String("body") || portId == QLatin1String("done");
+    case ControlFlowType::Parallel:
+        return portId == QLatin1String("branch");
+    default:
+        return false;
+    }
+}
+
+// If true<false；Loop/While body<done；Parallel 使用控制边声明序号。
+int staticBranchOrder(ControlFlowType type, const QString& portId) {
+    if (type == ControlFlowType::Conditional)
+        return portId == QLatin1String("true") ? 0 : 1;
+    if (type == ControlFlowType::Loop || type == ControlFlowType::While)
+        return portId == QLatin1String("body") ? 0 : 1;
+    return -1;
+}
+
+QString paddedIndex(int value) {
+    return QString::number(value).rightJustified(10, QLatin1Char('0'));
+}
+
+// 控制区域路径：父 opener 区域 + 当前 opener 的 displayIndex + 分支顺序。
+// 顶层 opener 的父路径为空时仍保留前导 '/'，保证主链空键排在最前，
+// 同时嵌套区域以父路径为前缀。
+QString childRegionKey(const QString& parentRegion, int openerDisplayIndex, int branchOrder) {
+    return parentRegion + QLatin1Char('/') + paddedIndex(openerDisplayIndex) + QLatin1Char(':') +
+           paddedIndex(branchOrder);
+}
+
 } // namespace
 
 const FlowGraphModule* FlowGraphCatalog::find(const QString& instanceId) const {
@@ -44,19 +88,20 @@ const FlowGraphModule* FlowGraphCatalog::find(const QString& instanceId) const {
 }
 
 int FlowOrderPlan::rankOf(const QString& id) const {
-    for (const FlowOrderNode& node : nodes) {
-        if (node.instanceId == id)
-            return node.rank;
-    }
-    return -1;
+    return rankIndex.value(id, -1);
 }
 
 int FlowOrderPlan::laneOf(const QString& id) const {
-    for (const FlowOrderNode& node : nodes) {
-        if (node.instanceId == id)
-            return node.lane;
-    }
-    return -1;
+    return laneIndex.value(id, -1);
+}
+
+bool FlowGraphAnalyzer::isControlPort(const QList<PortSpec>& ports, bool source, const QString& portId) {
+    if (source && portId == QLatin1String("next"))
+        return true;
+    if (!source && portId == QLatin1String("control"))
+        return true;
+    const PortSpec* port = findPort(ports, portId);
+    return port && port->control;
 }
 
 QList<ModuleConnection> FlowGraphAnalyzer::normalizeConnections(const FlowGraphCatalog& catalog,
@@ -66,14 +111,21 @@ QList<ModuleConnection> FlowGraphAnalyzer::normalizeConnections(const FlowGraphC
     QList<ModuleConnection> normalized;
     normalized.reserve(connections.size());
 
+    QHash<QString, const FlowGraphModule*> moduleIndex;
+    moduleIndex.reserve(catalog.modules.size());
+    for (const FlowGraphModule& module : catalog.modules) {
+        if (!moduleIndex.contains(module.instanceId))
+            moduleIndex.insert(module.instanceId, &module);
+    }
+
     for (ModuleConnection connection : connections) {
-        const FlowGraphModule* source = catalog.find(connection.fromModuleId);
+        const FlowGraphModule* source = moduleIndex.value(connection.fromModuleId, nullptr);
         if (!source) {
             setError(error,
                      QStringLiteral("Connection references missing source module: %1").arg(connection.fromModuleId));
             return {};
         }
-        const FlowGraphModule* target = catalog.find(connection.toModuleId);
+        const FlowGraphModule* target = moduleIndex.value(connection.toModuleId, nullptr);
         if (!target) {
             setError(error,
                      QStringLiteral("Connection references missing target module: %1").arg(connection.toModuleId));
@@ -89,11 +141,9 @@ QList<ModuleConnection> FlowGraphAnalyzer::normalizeConnections(const FlowGraphC
         if (connection.toPort.isEmpty())
             connection.toPort = QStringLiteral("image");
 
-        const PortSpec* output = findPort(source->outputPorts, connection.fromPort);
-        const PortSpec* input = findPort(target->inputPorts, connection.toPort);
         // 隐式控制端口：next（所有节点的隐式控制输出）和 control（隐式控制输入）
-        const bool fromIsControl = connection.fromPort == QLatin1String("next") || (output && output->control);
-        const bool toIsControl = connection.toPort == QLatin1String("control") || (input && input->control);
+        const bool fromIsControl = isControlPort(source->outputPorts, true, connection.fromPort);
+        const bool toIsControl = isControlPort(target->inputPorts, false, connection.toPort);
 
         if (connection.edgeType.isEmpty())
             connection.edgeType = (fromIsControl || toIsControl) ? QStringLiteral("control") : QStringLiteral("data");
@@ -145,19 +195,19 @@ FlowOrderPlan FlowGraphAnalyzer::analyze(const FlowGraphCatalog& catalog,
         ++dataIndegree[connection.toModuleId];
     }
 
-    QStringList ready;
+    QQueue<QString> ready;
     for (const QString& id : nodeIds) {
         if (dataIndegree.value(id) == 0)
-            ready.append(id);
+            ready.enqueue(id);
     }
     QSet<QString> emitted;
     while (!ready.isEmpty()) {
-        const QString current = ready.takeFirst();
+        const QString current = ready.dequeue();
         plan.dataOrder.append(current);
         emitted.insert(current);
         for (const QString& downstream : dataAdjacency.value(current)) {
             if (--dataIndegree[downstream] == 0)
-                ready.append(downstream);
+                ready.enqueue(downstream);
         }
     }
     if (plan.dataOrder.size() != nodeIds.size()) {
@@ -187,17 +237,20 @@ FlowOrderPlan FlowGraphAnalyzer::analyze(const FlowGraphCatalog& catalog,
             {connection.toModuleId, connection.edgeType == QLatin1String("control")});
     }
 
-    const auto reachable = [&combinedAdjacency](QStringList pending, const QString& excludedLoopTarget) {
+    const auto reachable = [&combinedAdjacency](const QStringList& starts, const QString& excludedLoopTarget) {
+        QQueue<QString> pending;
+        for (const QString& start : starts)
+            pending.enqueue(start);
         QSet<QString> reached;
         while (!pending.isEmpty()) {
-            const QString current = pending.takeFirst();
+            const QString current = pending.dequeue();
             if (reached.contains(current))
                 continue;
             reached.insert(current);
             for (const CombinedEdge& edge : combinedAdjacency.value(current)) {
                 if (edge.control && edge.target == excludedLoopTarget)
                     continue;
-                pending.append(edge.target);
+                pending.enqueue(edge.target);
             }
         }
         return reached;
@@ -241,15 +294,15 @@ FlowOrderPlan FlowGraphAnalyzer::analyze(const FlowGraphCatalog& catalog,
     ready.clear();
     for (const QString& id : nodeIds) {
         if (combinedIndegree.value(id) == 0)
-            ready.append(id);
+            ready.enqueue(id);
     }
     int visitedCount = 0;
     while (!ready.isEmpty()) {
-        const QString current = ready.takeFirst();
+        const QString current = ready.dequeue();
         ++visitedCount;
         for (const QString& downstream : reducedAdjacency.value(current)) {
             if (--combinedIndegree[downstream] == 0)
-                ready.append(downstream);
+                ready.enqueue(downstream);
         }
     }
     if (visitedCount != nodeIds.size()) {
@@ -258,14 +311,18 @@ FlowOrderPlan FlowGraphAnalyzer::analyze(const FlowGraphCatalog& catalog,
         return plan;
     }
 
-    const auto reachableIn = [](const QMap<QString, QStringList>& graph, QStringList pending) {
+    const auto reachableIn = [](const QMap<QString, QStringList>& graph, const QStringList& starts) {
+        QQueue<QString> pending;
+        for (const QString& start : starts)
+            pending.enqueue(start);
         QSet<QString> reached;
         while (!pending.isEmpty()) {
-            const QString current = pending.takeFirst();
+            const QString current = pending.dequeue();
             if (reached.contains(current))
                 continue;
             reached.insert(current);
-            pending.append(graph.value(current));
+            for (const QString& next : graph.value(current))
+                pending.enqueue(next);
         }
         return reached;
     };
@@ -303,14 +360,14 @@ FlowOrderPlan FlowGraphAnalyzer::analyze(const FlowGraphCatalog& catalog,
     ready.clear();
     for (const QString& id : nodeIds) {
         if (rankIndegree.value(id) == 0)
-            ready.append(id);
+            ready.enqueue(id);
     }
     while (!ready.isEmpty()) {
-        const QString current = ready.takeFirst();
+        const QString current = ready.dequeue();
         for (const QString& downstream : reducedAdjacency.value(current)) {
             rank[downstream] = std::max(rank.value(downstream), rank.value(current) + 1);
             if (--rankIndegree[downstream] == 0)
-                ready.append(downstream);
+                ready.enqueue(downstream);
         }
     }
 
@@ -326,33 +383,56 @@ FlowOrderPlan FlowGraphAnalyzer::analyze(const FlowGraphCatalog& catalog,
     for (int i = 0; i < plan.dataOrder.size(); ++i)
         dataOrderIndex.insert(plan.dataOrder.at(i), i);
 
-    QMap<QString, QString> controlParent;
-    QMap<QString, QString> branchLabel;
+    // ---------- 分支标签：只有 opener 的分支端口边参与 ----------
+    // 普通顺序控制边（next -> control）不设置 branchLabel/controlParent。
+    QHash<QString, QString> controlParent;
+    QHash<QString, QString> branchLabel;
+    QHash<QString, int> branchOrder;
+    QHash<QString, int> parallelBranchCounter;
     for (const ModuleConnection& connection : plan.controlEdges) {
-        if (!controlParent.contains(connection.toModuleId)) {
-            controlParent.insert(connection.toModuleId, connection.fromModuleId);
-            branchLabel.insert(connection.toModuleId, connection.fromPort);
-        }
+        const ControlFlowType sourceType = flowTypes.value(connection.fromModuleId, ControlFlowType::Sequential);
+        if (!isOpenerType(sourceType) || !isBranchPort(sourceType, connection.fromPort))
+            continue;
+        int order = staticBranchOrder(sourceType, connection.fromPort);
+        if (order < 0) // Parallel：按控制边声明顺序
+            order = parallelBranchCounter[connection.fromModuleId]++;
+        if (controlParent.contains(connection.toModuleId))
+            continue;
+        controlParent.insert(connection.toModuleId, connection.fromModuleId);
+        branchLabel.insert(connection.toModuleId, connection.fromPort);
+        branchOrder.insert(connection.toModuleId, order);
     }
 
-    // 统一 lane：同 rank 分组，主链 lane=0，其余分支稳定交替。
-    QMap<int, QStringList> byRank;
-    for (const QString& id : nodeIds)
-        byRank[rank.value(id)].append(id);
-    QMap<QString, int> lane;
-    for (auto it = byRank.begin(); it != byRank.end(); ++it) {
-        QStringList members = it.value();
-        std::stable_sort(members.begin(), members.end(), [&dataOrderIndex](const QString& a, const QString& b) {
-            return dataOrderIndex.value(a, std::numeric_limits<int>::max()) <
-                   dataOrderIndex.value(b, std::numeric_limits<int>::max());
-        });
-        for (int i = 0; i < members.size(); ++i)
-            lane.insert(members.at(i), laneForIndex(i));
-    }
+    QHash<QString, int> displayIndexById;
+    QHash<QString, QString> regionCache;
+    // 控制区域路径：分支目标取“父 opener 区域 + 自身分支键”；
+    // 普通节点继承前驱中字典序最小的非空区域，使嵌套 opener 的子分支仍位于父区域之下。
+    std::function<QString(const QString&)> regionOf = [&](const QString& id) -> QString {
+        const auto cached = regionCache.constFind(id);
+        if (cached != regionCache.constEnd())
+            return cached.value();
+        QString region;
+        if (branchLabel.contains(id)) {
+            const QString opener = controlParent.value(id);
+            region = childRegionKey(regionOf(opener), displayIndexById.value(opener, 0), branchOrder.value(id));
+        } else {
+            for (const QString& predecessor : reducedReverse.value(id)) {
+                const QString predecessorRegion = regionOf(predecessor);
+                if (!predecessorRegion.isEmpty() && (region.isEmpty() || predecessorRegion < region))
+                    region = predecessorRegion;
+            }
+        }
+        regionCache.insert(id, region);
+        return region;
+    };
 
     // ---------- displayOrder：有控制边时按前向图做稳定 Kahn ----------
+    // ready 优先级 = 控制分支分组键（主链/普通节点为空）> dataOrderIndex。
+    // rank 只用于布局，不参与展示优先级。
     if (plan.controlEdges.isEmpty()) {
         plan.displayOrder = plan.dataOrder;
+        for (int i = 0; i < plan.displayOrder.size(); ++i)
+            displayIndexById.insert(plan.displayOrder.at(i), i);
     } else {
         QMap<QString, int> displayIndegree;
         for (const QString& id : nodeIds)
@@ -362,46 +442,71 @@ FlowOrderPlan FlowGraphAnalyzer::analyze(const FlowGraphCatalog& catalog,
                 continue;
             ++displayIndegree[connection.toModuleId];
         }
-        QStringList displayReady;
+
+        std::map<std::pair<QString, int>, QString> displayReady;
+        const auto enqueueDisplay = [&](const QString& id) {
+            const QString groupKey = branchLabel.contains(id) ? regionOf(id) : QString();
+            displayReady.emplace(std::make_pair(groupKey, dataOrderIndex.value(id, std::numeric_limits<int>::max())),
+                                 id);
+        };
         for (const QString& id : nodeIds) {
             if (displayIndegree.value(id) == 0)
-                displayReady.append(id);
+                enqueueDisplay(id);
         }
 
-        const auto groupingKey = [&controlParent, &branchLabel](const QString& id) {
-            const QString parent = controlParent.value(id);
-            if (parent.isEmpty())
-                return QString();
-            return parent + QLatin1Char('\x1f') + branchLabel.value(id);
-        };
-        const auto higherPriority = [&](const QString& lhs, const QString& rhs) {
-            const int lhsRank = rank.value(lhs);
-            const int rhsRank = rank.value(rhs);
-            if (lhsRank != rhsRank)
-                return lhsRank < rhsRank;
-            const QString lhsGroup = groupingKey(lhs);
-            const QString rhsGroup = groupingKey(rhs);
-            if (lhsGroup != rhsGroup)
-                return lhsGroup < rhsGroup;
-            return dataOrderIndex.value(lhs, std::numeric_limits<int>::max()) <
-                   dataOrderIndex.value(rhs, std::numeric_limits<int>::max());
-        };
-
-        while (!displayReady.isEmpty()) {
-            int best = 0;
-            for (int i = 1; i < displayReady.size(); ++i) {
-                if (higherPriority(displayReady.at(i), displayReady.at(best)))
-                    best = i;
-            }
-            const QString current = displayReady.takeAt(best);
+        while (!displayReady.empty()) {
+            auto best = displayReady.begin();
+            const QString current = best->second;
+            displayReady.erase(best);
             plan.displayOrder.append(current);
+            displayIndexById.insert(current, plan.displayOrder.size() - 1);
             for (const QString& downstream : reducedAdjacency.value(current)) {
                 if (--displayIndegree[downstream] == 0)
-                    displayReady.append(downstream);
+                    enqueueDisplay(downstream);
             }
         }
     }
 
+    // ---------- 统一 lane：displayOrder 之后按 rank 分组 ----------
+    // 主链（空 branchLabel）先按 dataOrderIndex 取 lane 0，其余分支按
+    // (控制区域路径, 分支顺序, dataOrderIndex) 排序后居中分配 0, -1, +1...
+    QHash<QString, int> lane;
+    QMap<int, QStringList> byRank;
+    for (const QString& id : plan.displayOrder)
+        byRank[rank.value(id)].append(id);
+    for (auto it = byRank.begin(); it != byRank.end(); ++it) {
+        QStringList mainMembers;
+        QStringList branchMembers;
+        for (const QString& id : it.value()) {
+            if (branchLabel.value(id).isEmpty())
+                mainMembers.append(id);
+            else
+                branchMembers.append(id);
+        }
+        const auto byDataOrder = [&dataOrderIndex](const QString& a, const QString& b) {
+            return dataOrderIndex.value(a, std::numeric_limits<int>::max()) <
+                   dataOrderIndex.value(b, std::numeric_limits<int>::max());
+        };
+        std::stable_sort(mainMembers.begin(), mainMembers.end(), byDataOrder);
+        std::stable_sort(branchMembers.begin(), branchMembers.end(), [&](const QString& a, const QString& b) {
+            const QString regionA = regionOf(a);
+            const QString regionB = regionOf(b);
+            if (regionA != regionB)
+                return regionA < regionB;
+            const int orderA = branchOrder.value(a);
+            const int orderB = branchOrder.value(b);
+            if (orderA != orderB)
+                return orderA < orderB;
+            return dataOrderIndex.value(a, std::numeric_limits<int>::max()) <
+                   dataOrderIndex.value(b, std::numeric_limits<int>::max());
+        });
+        QStringList members = mainMembers;
+        members.append(branchMembers);
+        for (int i = 0; i < members.size(); ++i)
+            lane.insert(members.at(i), laneForIndex(i));
+    }
+
+    plan.nodes.reserve(plan.displayOrder.size());
     for (int i = 0; i < plan.displayOrder.size(); ++i) {
         const QString& id = plan.displayOrder.at(i);
         FlowOrderNode node;
@@ -412,6 +517,8 @@ FlowOrderPlan FlowGraphAnalyzer::analyze(const FlowGraphCatalog& catalog,
         node.branchLabel = branchLabel.value(id);
         node.controlParent = controlParent.value(id);
         plan.nodes.append(node);
+        plan.rankIndex.insert(id, node.rank);
+        plan.laneIndex.insert(id, node.lane);
     }
 
     plan.valid = true;
