@@ -20,6 +20,38 @@ flowchart LR
 - “单步”适合定位输入、参数或连接问题；“循环”适合已稳定的在线流程，不应把它作为逐步调参手段。
 - 需要文件、相机、网络或变量的插件，在保存工程前可能允许暂不填写，但运行时会明确报错。
 
+## 控制流层级、流程树拖动与结构编辑来源
+
+> 本节说明 B1–B5 引入的执行顺序布局规则，适用于「逻辑控制」分类下的 If / Loop / While / Parallel 等插件及其下游模块。
+
+### 控制流层级与画布视觉
+
+- `IModule::flowControlType()` 声明 `Sequential` / `Conditional` / `Loop` / `While` / `Parallel` 等层级；`FlowGraphAnalyzer` 用它与 `inputPorts()` / `outputPorts()` 构造 `FlowGraphCatalog`。所有调用方（RunEngine、UI 协调器、Agent、拖动候选校验）共用同一契约，不在调用方重复推断 `next`/`control` 隐式边或 `PortSpec.control`。
+- 计划中的 `rank` 是前向依赖层级，`lane` 是同层分支的分组：If 的 `true`/`false` 分支同 rank、不同 lane；Loop/While 的 `body` 分支 rank 大于循环节点；嵌套控制的子分支 rank 递增。
+- 画布上 `branchLabel`（`true` / `false` / `body` / `done` / `branch`）绘制为节点上方徽标；`FlowOrderPlan::loopBackEdges` 命中的连线使用虚线 + 箭头 + `LOOP` 标记。徽标只扩大绘制包围盒，节点 `shape()` 恒为原始矩形，**命中测试、选择与碰撞不受影响**。
+- 流程树按 `displayOrder` 展示、画布按 `rank`/`lane` 排列、引擎按 `dataOrder` 运行；三者来自同一份 `FlowOrderPlan` 但语义不同，控制流的展示顺序不等于动态执行轨迹。
+
+### 流程树拖动与重连规则
+
+| 工程形态 | 拖动结果 |
+| --- | --- |
+| 无连接顺序列表 | 允许任意重排，只调整模块顺序，不创建连接 |
+| 已连接简单线性链（全部为数据边、端口模式唯一、入/出度 ≤ 1、单连通分量、无环） | 按新顺序以同一端口模式重连 |
+| 控制分支 / 汇合 / 多端口模式 / 成环 | 拒绝并复位；工程数据、`isModified()`、结构信号与撤销栈均不变 |
+
+- 提交路径：`FlowGraphAnalyzer::validateCandidate` 只读校验 → `ReorderLinearChainCommand` 保存 before/after 指纹与位置 → `QUndoStack::push()` 触发的**首次 `redo()`** 是唯一一次 `applyStructureTransaction`；一次拖动只产生一条有效撤销记录。
+- 失败或指纹不匹配时命令只 `setObsolete(true)`，不修改工程；连续两次重排可两次 Undo/Redo。
+- 仅交换两条连接的**声明顺序**也会改变 `structureFingerprint`（SHA-1 含声明下标，不排序连接），因此能检出外部静默改动。
+
+### Agent 结构编辑的 origin 语义
+
+- `Project::structureChanged(origin)` 的 `origin` 取 `Gui` / `Agent` / `System`。Agent 通过 `add_module` / `connect_modules` / `disconnect_modules` 等工具编辑工程时以 `StructureEditOrigin::Agent` 发信号；GUI 拖动以 `Gui` 发信号。
+- Gui 与 Agent 的撤销栈对**非自身来源**的结构变更做对称失效：按 `sessionToken` + `structureFingerprint` 判定，失效命令 `setObsolete(true)`；交错 Undo/Redo 不覆盖对方后续编辑。
+- Agent 不计算坐标、不直接改画布或流程树；布局由 `FlowLayoutCoordinator` 通过 `Project` 结构信号合并后完成。`get_flow_state` 只读追加 `executionRank` / `lane` / `displayIndex`，既有字段与 `connections[from,to]` 保持不变。
+- 无法解析的 `moduleId` 记入结构化 `errors`/`warnings` 并跳过，不猜测控制类型、不伪造 rank。
+
+详见 [架构说明](architecture.md) 与 [执行顺序布局验收报告](reports/execution-order-layout-acceptance.md)。
+
 ## 执行亲和性（execution.affinity）与审计状态
 
 `metadata.json` 的 `execution` 字段声明执行属性，后台执行服务与 UI 都按它分流：

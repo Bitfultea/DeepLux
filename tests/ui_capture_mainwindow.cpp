@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QStringList>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
@@ -16,6 +17,7 @@
 #include <QTreeWidget>
 #include <QWidget>
 #include <QtTest/QTest>
+#include <core/engine/FlowGraphAnalyzer.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>
@@ -727,6 +729,41 @@ bool captureFitCirclePickAcceptance(const QString& repoRoot, const QString& plug
            captureWindow(window, QSize(1280, 800), outputDir.filePath("fitcircle_pick_result.png"));
 }
 
+// B5.1：截图门禁的控制流计划由真实 FlowGraphAnalyzer 生成（不是手写展示顺序），
+// 显式投射到画布后再做语义断言，避免依赖 30ms 合并布局计时器的异步时序。
+// catalog 的控制输出端口契约与 tests/test_flowgraphanalyzer.cpp 的 controlModule 一致。
+DeepLux::FlowOrderPlan controlFlowPlanForCapture(const DeepLux::Project& project) {
+    DeepLux::FlowGraphCatalog catalog;
+    for (const DeepLux::ModuleInstance& instance : project.modules()) {
+        DeepLux::FlowGraphModule module;
+        module.instanceId = instance.id;
+        module.flowType = instance.id == QStringLiteral("capture_condition") ? DeepLux::ControlFlowType::Conditional
+                                                                             : DeepLux::ControlFlowType::Sequential;
+        if (module.flowType == DeepLux::ControlFlowType::Conditional) {
+            for (const QString& portId : {QStringLiteral("true"), QStringLiteral("false")}) {
+                DeepLux::PortSpec port;
+                port.id = portId;
+                port.displayName = portId;
+                port.type = DeepLux::DataType::Boolean;
+                port.control = true;
+                module.outputPorts.append(port);
+            }
+        }
+        catalog.modules.append(module);
+    }
+    QStringList order;
+    for (const DeepLux::ModuleInstance& instance : project.modules())
+        order.append(instance.id);
+    QString error;
+    const QList<DeepLux::ModuleConnection> normalized =
+        DeepLux::FlowGraphAnalyzer::normalizeConnections(catalog, project.connections(), &error);
+    if (!error.isEmpty()) {
+        qWarning("control flow normalization failed for capture: %s", qPrintable(error));
+        return DeepLux::FlowOrderPlan();
+    }
+    return DeepLux::FlowGraphAnalyzer::analyze(catalog, normalized, order);
+}
+
 bool captureControlFlowAcceptance(const QString& repoRoot, const QString& pluginTempRoot, DeepLux::MainWindow& window,
                                   const QDir& outputDir) {
     if (!installPluginForCapture(repoRoot, pluginTempRoot, "If", "src/plugins/logic/If/metadata.json",
@@ -820,6 +857,28 @@ bool captureControlFlowAcceptance(const QString& repoRoot, const QString& plugin
         conditionNode->executionStatus() != QStringLiteral("success") ||
         trueNode->executionStatus() != QStringLiteral("success") ||
         falseNode->executionStatus() != QStringLiteral("skipped")) {
+        return false;
+    }
+
+    // B5.1：语义断言覆盖新增视觉——If true/false 分支标签、分支 lane 唯一、画布不重叠。
+    // 计划由真实 FlowGraphAnalyzer 生成；显式投射是确定性屏障，不使用 sleep 构造顺序。
+    const DeepLux::FlowOrderPlan controlPlan = controlFlowPlanForCapture(*project);
+    if (!controlPlan.valid) {
+        qWarning("B5.1 control flow plan invalid for capture: %s", qPrintable(controlPlan.error));
+        return false;
+    }
+    canvas->applyControlFlowVisuals(controlPlan);
+    if (trueNode->branchLabel() != QStringLiteral("true") || falseNode->branchLabel() != QStringLiteral("false") ||
+        !conditionNode->branchLabel().isEmpty()) {
+        qWarning("B5.1 branch labels were not projected onto canvas nodes");
+        return false;
+    }
+    if (controlPlan.laneOf(trueBranch.id) == controlPlan.laneOf(falseBranch.id)) {
+        qWarning("B5.1 if branches share the same lane");
+        return false;
+    }
+    if (trueNode->sceneBoundingRect().intersects(falseNode->sceneBoundingRect())) {
+        qWarning("B5.1 if branch nodes overlap on canvas");
         return false;
     }
 

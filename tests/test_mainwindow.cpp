@@ -333,6 +333,39 @@ bool syncEngine(MainWindow& window, ProcessTreeController* controller) {
         controller->markModulesNeedSync();
     return QMetaObject::invokeMethod(&window, "syncModulesToRunEngine", Qt::DirectConnection);
 }
+
+// ===== B5.1：控制流视觉语义断言的确定性辅助 =====
+
+/// 构造分析器 catalog 的模块描述符（控制输出端口契约与
+/// tests/test_flowgraphanalyzer.cpp 的 controlModule 一致，不加载插件）。
+FlowGraphModule b5GraphModule(const QString& id, ControlFlowType type = ControlFlowType::Sequential) {
+    FlowGraphModule module;
+    module.instanceId = id;
+    module.flowType = type;
+    return module;
+}
+
+FlowGraphModule b5ControlModule(const QString& id, ControlFlowType type, const QStringList& controlOutputs) {
+    FlowGraphModule module = b5GraphModule(id, type);
+    for (const QString& outputId : controlOutputs) {
+        PortSpec port;
+        port.id = outputId;
+        port.displayName = outputId;
+        port.type = DataType::Boolean;
+        port.control = true;
+        module.outputPorts.append(port);
+    }
+    return module;
+}
+
+/// 由真实 FlowGraphAnalyzer 生成计划（normalizeConnections + analyze），不手工伪造元数据。
+FlowOrderPlan b5Analyze(const FlowGraphCatalog& catalog, const QList<ModuleConnection>& edges, const QStringList& order,
+                        QString* error) {
+    if (error)
+        error->clear();
+    const QList<ModuleConnection> normalized = FlowGraphAnalyzer::normalizeConnections(catalog, edges, error);
+    return FlowGraphAnalyzer::analyze(catalog, normalized, order);
+}
 } // namespace
 
 class TestMainWindow : public QObject {
@@ -435,6 +468,9 @@ private slots:
     void testConnectionDeclarationOrderChangesFingerprint();
     void testInvalidatedReorderCommandLeavesNoResidue();
     void testAgentOriginInvalidatesGuiReorderUndo();
+    // B5.1：控制流视觉语义断言（分支标签 / 回边标记 / lane 不重叠 / 命中区域不变）
+    void testControlFlowBranchLabelsProjectedToCanvas();
+    void testControlFlowLoopBackEdgeMarkersUseCanonicalKey();
 
 private:
     QTemporaryDir m_appDataDir;
@@ -5547,6 +5583,125 @@ void TestMainWindow::testAgentOriginInvalidatesGuiReorderUndo() {
     QCOMPARE(fixture.project->structureFingerprint(), fingerprintAfterAgent);
 
     RunEngine::instance().clearModules();
+}
+
+// ========== B5.1：控制流视觉语义断言 ==========
+
+void TestMainWindow::testControlFlowBranchLabelsProjectedToCanvas() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(setupB3Fixture(window, QStringList({QStringLiteral("IF"), QStringLiteral("T"), QStringLiteral("F")}),
+                           &fixture));
+    auto* branchModule = new MainWindowBranchProbeModule(QStringLiteral("IF"));
+    branchModule->initialize();
+    window.registerFlowModule(QStringLiteral("IF"), branchModule);
+    fixture.runtimeModules.append(branchModule);
+    fixture.project->addConnection(
+        b3ControlEdge(QStringLiteral("IF"), QStringLiteral("true"), QStringLiteral("T"), QStringLiteral("control")));
+    fixture.project->addConnection(
+        b3ControlEdge(QStringLiteral("IF"), QStringLiteral("false"), QStringLiteral("F"), QStringLiteral("control")));
+    QCoreApplication::processEvents();
+
+    // 用真实协调器计划（FlowGraphAnalyzer）驱动，不手工伪造 branchLabel / lane。
+    const FlowOrderPlan plan = fixture.coordinator->planForProject(*fixture.project);
+    QVERIFY2(plan.valid, qPrintable(plan.error));
+    QVERIFY(plan.laneOf(QStringLiteral("T")) != plan.laneOf(QStringLiteral("F")));
+
+    FlowCanvas canvas;
+    canvas.loadFromProject(fixture.project);
+    FlowNodeItem* conditionNode = canvas.nodeItem(QStringLiteral("IF"));
+    FlowNodeItem* trueNode = canvas.nodeItem(QStringLiteral("T"));
+    FlowNodeItem* falseNode = canvas.nodeItem(QStringLiteral("F"));
+    QVERIFY(conditionNode != nullptr);
+    QVERIFY(trueNode != nullptr);
+    QVERIFY(falseNode != nullptr);
+
+    // 投射前记录无徽标节点的 shape()/boundingRect()，作为命中区域不变的基准。
+    const QRectF plainShape = conditionNode->shape().boundingRect();
+    const QRectF plainBounding = conditionNode->boundingRect();
+
+    canvas.applyControlFlowVisuals(plan);
+    QCOMPARE(trueNode->branchLabel(), QStringLiteral("true"));
+    QCOMPARE(falseNode->branchLabel(), QStringLiteral("false"));
+    QVERIFY(conditionNode->branchLabel().isEmpty());
+
+    // 徽标扩大绘制包围盒，但 shape() 恒为原始矩形：鼠标命中/选择/碰撞不受影响。
+    QVERIFY(trueNode->boundingRect().height() > plainBounding.height());
+    QVERIFY(trueNode->shape().boundingRect() == plainShape);
+    QVERIFY(falseNode->shape().boundingRect() == plainShape);
+
+    // Full 布局后同 rank 的 true/false 分支按 lane 分开，画布上不重叠。
+    canvas.applyExecutionLayout(plan, FlowCanvas::LayoutMode::Full);
+    QVERIFY(!trueNode->sceneBoundingRect().intersects(falseNode->sceneBoundingRect()));
+    QVERIFY(conditionNode->branchLabel().isEmpty());
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testControlFlowLoopBackEdgeMarkersUseCanonicalKey() {
+    FlowGraphCatalog catalog;
+    catalog.modules.append(b5ControlModule(QStringLiteral("loop"), ControlFlowType::Loop,
+                                           QStringList({QStringLiteral("body"), QStringLiteral("done")})));
+    catalog.modules.append(b5GraphModule(QStringLiteral("body")));
+    catalog.modules.append(b5GraphModule(QStringLiteral("after")));
+
+    const QList<ModuleConnection> edges{b3ControlEdge(QStringLiteral("loop"), QStringLiteral("body"),
+                                                      QStringLiteral("body"), QStringLiteral("control")),
+                                        b3ControlEdge(QStringLiteral("body"), QStringLiteral("next"),
+                                                      QStringLiteral("loop"), QStringLiteral("control")),
+                                        b3ControlEdge(QStringLiteral("loop"), QStringLiteral("done"),
+                                                      QStringLiteral("after"), QStringLiteral("control"))};
+    const QStringList order{QStringLiteral("loop"), QStringLiteral("body"), QStringLiteral("after")};
+    QString error;
+    const FlowOrderPlan plan = b5Analyze(catalog, edges, order, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY2(plan.valid, qPrintable(plan.error));
+    QCOMPARE(plan.loopBackEdges.size(), 1);
+
+    // B5.1：画布 public static 规范键必须与 core 的 loopBackEdges 逐字节一致，
+    // 且 4 参数重载委托给同一实现，禁止第二套拼接规则。
+    const ModuleConnection& backEdge = edges.at(1);
+    QVERIFY(plan.loopBackEdges.contains(FlowCanvas::connectionKey(backEdge)));
+    QCOMPARE(FlowCanvas::connectionKey(backEdge),
+             FlowCanvas::connectionKey(backEdge.fromModuleId, backEdge.fromPort, backEdge.toModuleId, backEdge.toPort));
+    QVERIFY(FlowCanvas::connectionKey(backEdge) != FlowCanvas::connectionKey(edges.at(0)));
+
+    Project project;
+    for (const QString& id : order) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("OutputProbe");
+        instance.name = id;
+        project.addModule(instance);
+    }
+    for (const ModuleConnection& edge : edges)
+        project.addConnection(edge);
+
+    FlowCanvas canvas;
+    canvas.loadFromProject(&project);
+    QCOMPARE(canvas.m_connections.size(), 3);
+    FlowConnectionItem* backItem = nullptr;
+    for (FlowConnectionItem* item : canvas.m_connections) {
+        if (item && item->fromNodeId() == QStringLiteral("body") && item->toNodeId() == QStringLiteral("loop"))
+            backItem = item;
+    }
+    QVERIFY(backItem != nullptr);
+    QVERIFY(!backItem->isLoopBackEdge());
+
+    canvas.applyControlFlowVisuals(plan);
+    QVERIFY(backItem->isLoopBackEdge());
+    QVERIFY(backItem->strokeStyle() == Qt::DashLine);
+    QCOMPARE(FlowConnectionItem::loopBackMarkerText(), QStringLiteral("LOOP"));
+    for (FlowConnectionItem* item : canvas.m_connections) {
+        if (item && item != backItem)
+            QVERIFY(!item->isLoopBackEdge());
+    }
+
+    // 无效计划必须清空所有视觉状态，绝不保留上一份计划的分支/回边标记。
+    FlowOrderPlan invalidPlan;
+    canvas.applyControlFlowVisuals(invalidPlan);
+    QVERIFY(!backItem->isLoopBackEdge());
+    QVERIFY(canvas.nodeItem(QStringLiteral("body"))->branchLabel().isEmpty());
 }
 
 QTEST_MAIN(TestMainWindow)
