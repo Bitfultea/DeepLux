@@ -52,7 +52,9 @@ private slots:
     void testExecutionLayoutByRankAndLane();
     void testExecutionLayoutSizesRowsByNodeHeight();
     void testNormalizeLayoutPreservesX();
+    void testNormalizeLayoutFallsBackForOverlappingX();
     void testNodeDragWritesBackPosition();
+    void testNodeDragWithoutAttachedProjectDoesNotWriteBack();
     void testLayoutInitializedRestoresSavedPositions();
 };
 
@@ -687,11 +689,37 @@ void TestFlowCanvas::testNormalizeLayoutPreservesX() {
     QVERIFY(canvas.nodeItem(b)->pos().y() < canvas.nodeItem(c)->pos().y());
 }
 
+void TestFlowCanvas::testNormalizeLayoutFallsBackForOverlappingX() {
+    FlowCanvas canvas;
+    const QString a = canvas.addNode("module.a", "A", QPointF(10, 500));
+    const QString b = canvas.addNode("module.b", "B", QPointF(60, 500));
+    const QString c = canvas.addNode("module.c", "C", QPointF(20, 700));
+
+    FlowOrderPlan plan;
+    plan.valid = true;
+    appendPlanNode(plan, a, 0, 0);
+    appendPlanNode(plan, b, 0, 1);
+    appendPlanNode(plan, c, 1, 0);
+
+    canvas.applyExecutionLayout(plan, FlowCanvas::LayoutMode::Normalize);
+
+    // 同一 rank 手工 X 重叠 → 该行回退到 lane 排列，不再重叠。
+    const QRectF firstBounds = canvas.nodeItem(a)->sceneBoundingRect();
+    const QRectF secondBounds = canvas.nodeItem(b)->sceneBoundingRect();
+    QVERIFY2(!firstBounds.intersects(secondBounds), "overlapping same-rank X must fall back to lane positions");
+    QVERIFY(qAbs(canvas.nodeItem(a)->pos().x() - canvas.nodeItem(b)->pos().x()) >= firstBounds.width());
+
+    // 无重叠的 rank 仍保留手工 X。
+    QCOMPARE(canvas.nodeItem(c)->pos().x(), 20.0);
+    QVERIFY(canvas.nodeItem(a)->pos().y() < canvas.nodeItem(c)->pos().y());
+}
+
 void TestFlowCanvas::testNodeDragWritesBackPosition() {
     FlowCanvas canvas;
     canvas.resize(400, 300);
     Project* project = ProjectManager::instance().currentProject();
     QVERIFY(project != nullptr);
+    canvas.setProject(project);
 
     ModuleInstance instance;
     instance.id = QStringLiteral("drag_node");
@@ -738,6 +766,56 @@ void TestFlowCanvas::testNodeDragWritesBackPosition() {
     QCOMPARE(args.at(0).toString(), QStringLiteral("drag_node"));
     QCOMPARE(args.at(1).toInt(), 50);
     QCOMPARE(args.at(2).toInt(), 70);
+}
+
+void TestFlowCanvas::testNodeDragWithoutAttachedProjectDoesNotWriteBack() {
+    FlowCanvas canvas;
+    canvas.resize(400, 300);
+    Project* project = ProjectManager::instance().currentProject();
+    QVERIFY(project != nullptr);
+
+    // 全局 currentProject 中存在同名节点，用于证明画布不会回退到全局工程。
+    ModuleInstance instance;
+    instance.id = QStringLiteral("detached_drag");
+    instance.moduleId = QStringLiteral("module.drag");
+    project->addModule(instance);
+
+    auto* node = new TestableFlowNodeItem("detached_drag", "Drag", "module.drag");
+    canvas.scene()->addItem(node);
+    node->setPos(20, 30);
+
+    QSignalSpy projectSpy(project, &Project::modulePositionChanged);
+    QSignalSpy canvasSpy(&canvas, &FlowCanvas::nodePositionChanged);
+    QVERIFY(projectSpy.isValid());
+    QVERIFY(canvasSpy.isValid());
+
+    const QPointF downPos = node->pos();
+    QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
+    press.setScenePos(downPos);
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+    press.setButtonDownScenePos(Qt::LeftButton, downPos);
+    node->mousePressEvent(&press);
+
+    QGraphicsSceneMouseEvent move(QEvent::GraphicsSceneMouseMove);
+    move.setScenePos(downPos + QPointF(30, 40));
+    move.setLastScenePos(downPos);
+    move.setButtonDownScenePos(Qt::LeftButton, downPos);
+    move.setButtons(Qt::LeftButton);
+    node->mouseMoveEvent(&move);
+    node->setPos(QPointF(50, 70));
+
+    QGraphicsSceneMouseEvent release(QEvent::GraphicsSceneMouseRelease);
+    release.setScenePos(QPointF(50, 70));
+    release.setButton(Qt::LeftButton);
+    release.setButtons(Qt::LeftButton);
+    node->mouseReleaseEvent(&release);
+
+    // 仅发信号；不得写回未绑定的全局工程。
+    QCOMPARE(canvasSpy.count(), 1);
+    QCOMPARE(projectSpy.count(), 0);
+    QCOMPARE(project->moduleById(QStringLiteral("detached_drag"))->posX, 0);
+    QCOMPARE(project->moduleById(QStringLiteral("detached_drag"))->posY, 0);
 }
 
 void TestFlowCanvas::testLayoutInitializedRestoresSavedPositions() {

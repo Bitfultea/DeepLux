@@ -43,6 +43,8 @@ public:
     void removeNode(const QString& nodeId);
     void clearNodes();
     void loadFromProject(Project* project);
+    // 绑定/解绑写回目标工程；不存在全局回退。
+    void setProject(Project* project);
     Project* attachedProject() const {
         return m_project.data();
     }

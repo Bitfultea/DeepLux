@@ -2209,6 +2209,8 @@ void MainWindow::onProjectOpened(Project* project) {
     }
     if (m_flowCanvas) {
         m_flowCanvas->loadFromProject(project);
+        // 显式绑定写回目标，避免多工程/脱离场景回退到全局 ProjectManager。
+        m_flowCanvas->setProject(project);
     }
 
     // 刷新数据源面板
@@ -2347,6 +2349,7 @@ void MainWindow::onProjectClosed() {
     m_processTreeController->clear();
     if (m_flowCanvas) {
         m_flowCanvas->loadFromProject(nullptr);
+        m_flowCanvas->setProject(nullptr);
     }
     if (m_dataSourcePanel) {
         m_dataSourcePanel->refreshFromProject(nullptr);

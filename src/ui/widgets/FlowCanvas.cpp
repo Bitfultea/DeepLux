@@ -13,6 +13,7 @@
 #include <QMimeData>
 #include <QPainter>
 #include <QPolygonF>
+#include <QSet>
 #include <QToolTip>
 #include <cmath>
 
@@ -41,6 +42,17 @@ QPainterPath connectionPath(const QPointF& start, const QPointF& end) {
                      end.y());
     }
     return path;
+}
+
+bool horizontallyOverlaps(const FlowNodeItem* first, const FlowNodeItem* second) {
+    if (!first || !second)
+        return false;
+    // 用已保存的手工 X 与节点真实宽度判断同 rank 是否水平重叠。
+    const qreal firstX = first->pos().x();
+    const qreal secondX = second->pos().x();
+    const qreal firstWidth = first->sceneBoundingRect().width();
+    const qreal secondWidth = second->sceneBoundingRect().width();
+    return firstX < secondX + secondWidth && secondX < firstX + firstWidth;
 }
 
 void drawConnectionArrow(QPainter* painter, const QPainterPath& path, const QColor& color) {
@@ -249,6 +261,10 @@ void FlowCanvas::removeConnection(const QString& fromNodeId, const QString& from
     }
 }
 
+void FlowCanvas::setProject(Project* project) {
+    m_project = project;
+}
+
 void FlowCanvas::loadFromProject(Project* project) {
     m_project = project;
     m_loadingProject = true;
@@ -280,9 +296,7 @@ void FlowCanvas::applyExecutionLayout(const FlowOrderPlan& plan, LayoutMode mode
     constexpr qreal kLaneSpacing = 280.0;
     constexpr qreal kLaneGap = 44.0;
 
-    Project* project = m_project.data();
-    if (!project)
-        project = ProjectManager::instance().currentProject();
+    Project* project = attachedProject();
 
     // 先按 rank 收集节点并计算每行最大包围盒高度；QMap 保证 rank 升序。
     QMap<int, QList<FlowNodeItem*>> rows;
@@ -308,6 +322,26 @@ void FlowCanvas::applyExecutionLayout(const FlowOrderPlan& plan, LayoutMode mode
     // 同一 rank 的节点按 lane 排列；lane 间距至少覆盖最宽节点的包围盒并留出间隙。
     const qreal laneSpacing = qMax(kLaneSpacing, maxItemWidth + kLaneGap);
 
+    // Normalize：只校正 Y。同一 rank 内若手工 X 水平重叠，则该行回退到 lane X，
+    // 否则保留手工 X（设计 §6.2）。
+    QSet<int> overlappingRanks;
+    if (mode == LayoutMode::Normalize) {
+        for (auto it = rows.cbegin(); it != rows.cend(); ++it) {
+            const QList<FlowNodeItem*>& items = it.value();
+            bool overlaps = false;
+            for (int i = 0; i < items.size() && !overlaps; ++i) {
+                for (int j = i + 1; j < items.size(); ++j) {
+                    if (horizontallyOverlaps(items.at(i), items.at(j))) {
+                        overlaps = true;
+                        break;
+                    }
+                }
+            }
+            if (overlaps)
+                overlappingRanks.insert(it.key());
+        }
+    }
+
     setUpdatesEnabled(false);
     m_applyingLayout = true;
 
@@ -317,7 +351,7 @@ void FlowCanvas::applyExecutionLayout(const FlowOrderPlan& plan, LayoutMode mode
             continue;
 
         qreal x = static_cast<qreal>(node.lane) * laneSpacing;
-        if (mode == LayoutMode::Normalize) {
+        if (mode == LayoutMode::Normalize && !overlappingRanks.contains(node.rank)) {
             const qreal currentX = item->pos().x();
             if (std::isfinite(currentX))
                 x = currentX;
@@ -343,12 +377,10 @@ void FlowCanvas::notifyNodePositionChanged(const QString& nodeId, const QPointF&
     if (m_loadingProject || m_syncingFromProject || m_applyingLayout)
         return;
 
-    Project* project = m_project.data();
-    if (!project)
-        project = ProjectManager::instance().currentProject();
-    if (project) {
-        project->setModulePosition(nodeId, qRound(pos.x()), qRound(pos.y()));
-    }
+    Project* project = attachedProject();
+    if (!project || !project->findModule(nodeId))
+        return;
+    project->setModulePosition(nodeId, qRound(pos.x()), qRound(pos.y()));
 }
 
 void FlowCanvas::clearConnections() {
