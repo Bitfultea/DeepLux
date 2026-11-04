@@ -7,6 +7,7 @@
 #include "base/ModuleBase.h"
 #include "common/Logger.h"
 #include "engine/FlowExecutionService.h"
+#include "engine/FlowGraphAnalyzer.h"
 #include "engine/RunEngine.h"
 #include "io/LabelMeImporter.h"
 #include "manager/PluginManager.h"
@@ -30,6 +31,7 @@
 #include <QTimer>
 #include <QUndoCommand>
 #include <QUuid>
+#include <map>
 #include <memory>
 
 static void ensureAgentResources() {
@@ -1167,6 +1169,110 @@ QJsonObject AgentActor::getFlowState(const QJsonObject& params) {
     if (!proj)
         return QJsonObject{{"error", "No project opened"}};
 
+    PluginManager& pm = PluginManager::instance();
+
+    // B4：按 Project 模块顺序构建 FlowGraphCatalog。缓存是本次调用内的局部对象：
+    // 同一 moduleId 只 createModule 一次，函数返回时所有 IModule 实例连同缓存一起销毁。
+    // 明确不复用 m_schemaCache——那是跨调用存活的成员缓存（schema 快照），语义不同，
+    // 且插件热更后会返回陈旧数据。
+    // Qt 5.15.3 的 QHash 要求 value 可拷贝（qhash.h:531/556/761/781），
+    // std::unique_ptr 是 move-only，故用 std::map 承载等价的独占所有权与按 moduleId 缓存语义。
+    std::map<QString, std::unique_ptr<IModule>> moduleCache;
+    QSet<QString> failedModuleIds;
+
+    const auto appendIssue = [](QJsonArray* target, const QString& code, const QString& instanceId,
+                                const QString& moduleId, const QString& message) {
+        QJsonObject issue;
+        issue.insert(QStringLiteral("code"), code);
+        issue.insert(QStringLiteral("instanceId"), instanceId);
+        issue.insert(QStringLiteral("moduleId"), moduleId);
+        issue.insert(QStringLiteral("message"), message);
+        target->append(issue);
+    };
+
+    FlowGraphCatalog catalog;
+    QStringList analyzableIds; // 保持 Project 规范顺序，只含可解析模块
+    QJsonArray errors;
+    QJsonArray warnings;
+
+    for (const ModuleInstance& instance : proj->modules()) {
+        IModule* module = nullptr;
+        auto cached = moduleCache.find(instance.moduleId);
+        if (cached != moduleCache.end()) {
+            module = cached->second.get();
+        } else if (!failedModuleIds.contains(instance.moduleId)) {
+            std::unique_ptr<IModule> created(pm.createModule(instance.moduleId));
+            if (created) {
+                cached = moduleCache.emplace(instance.moduleId, std::move(created)).first;
+                module = cached->second.get();
+            } else {
+                failedModuleIds.insert(instance.moduleId);
+            }
+        }
+
+        if (!module) {
+            // 降级路径：记结构化错误/告警并跳过该模块；不猜测控制类型、
+            // 不塞进 catalog、不伪造 rank。
+            const QString message = QStringLiteral("Cannot create module for plugin '%1'").arg(instance.moduleId);
+            appendIssue(&errors, QStringLiteral("module_unresolved"), instance.id, instance.moduleId, message);
+            appendIssue(&warnings, QStringLiteral("module_unresolved"), instance.id, instance.moduleId, message);
+            continue;
+        }
+
+        FlowGraphModule graphModule;
+        graphModule.instanceId = instance.id;
+        graphModule.flowType = module->flowControlType();
+        graphModule.inputPorts = module->inputPorts();
+        graphModule.outputPorts = module->outputPorts();
+        catalog.modules.append(graphModule);
+        analyzableIds.append(instance.id);
+    }
+
+    // 两端都可解析的连接才交给 normalizeConnections；涉及被跳过模块的边记 warning 后忽略，
+    // 避免整图归一化失败导致所有模块的顺序字段缺失。
+    QSet<QString> analyzableSet;
+    for (const QString& id : analyzableIds)
+        analyzableSet.insert(id);
+
+    QList<ModuleConnection> analyzableConnections;
+    for (const ModuleConnection& connection : proj->connections()) {
+        if (!analyzableSet.contains(connection.fromModuleId) || !analyzableSet.contains(connection.toModuleId)) {
+            const QString message = QStringLiteral("Connection %1 -> %2 references an unresolved module")
+                                        .arg(connection.fromModuleId, connection.toModuleId);
+            appendIssue(&warnings, QStringLiteral("connection_skipped"), connection.fromModuleId, QString(), message);
+            continue;
+        }
+        analyzableConnections.append(connection);
+    }
+
+    QString normalizeError;
+    const QList<ModuleConnection> normalized =
+        FlowGraphAnalyzer::normalizeConnections(catalog, analyzableConnections, &normalizeError);
+    FlowOrderPlan plan;
+    if (!normalizeError.isEmpty()) {
+        appendIssue(&errors, QStringLiteral("connection_normalization_failed"), QString(), QString(), normalizeError);
+    } else {
+        // moduleOrder 沿用 Project 规范顺序，仅剔除已跳过的不可解析模块：
+        // 否则 analyze 会为控制类型未知的模块凭空计算 rank。
+        plan = FlowGraphAnalyzer::analyze(catalog, normalized, analyzableIds);
+        if (!plan.valid) {
+            appendIssue(&errors, QStringLiteral("execution_plan_invalid"), QString(), QString(), plan.error);
+        }
+    }
+
+    QHash<QString, int> rankById;
+    QHash<QString, int> laneById;
+    QHash<QString, int> displayIndexById;
+    if (plan.valid) {
+        for (const FlowOrderNode& node : plan.nodes) {
+            rankById.insert(node.instanceId, node.rank);
+            laneById.insert(node.instanceId, node.lane);
+            displayIndexById.insert(node.instanceId, node.displayIndex);
+        }
+    }
+
+    // 字段只增不改：保留既有键与值，只追加 executionRank/lane/displayIndex。
+    // -1 是显式的「不可分析」哨兵，不是伪造的 rank。
     QJsonArray modules;
     for (const ModuleInstance& m : proj->modules()) {
         QJsonObject obj;
@@ -1174,6 +1280,9 @@ QJsonObject AgentActor::getFlowState(const QJsonObject& params) {
         obj["moduleId"] = m.moduleId;
         obj["name"] = m.name;
         obj["params"] = m.params;
+        obj["executionRank"] = rankById.value(m.id, -1);
+        obj["lane"] = laneById.value(m.id, -1);
+        obj["displayIndex"] = displayIndexById.value(m.id, -1);
         modules.append(obj);
     }
 
@@ -1185,7 +1294,12 @@ QJsonObject AgentActor::getFlowState(const QJsonObject& params) {
         connections.append(obj);
     }
 
-    return QJsonObject{{"modules", modules}, {"connections", connections}};
+    QJsonObject result{{"modules", modules}, {"connections", connections}};
+    if (!errors.isEmpty())
+        result.insert(QStringLiteral("errors"), errors);
+    if (!warnings.isEmpty())
+        result.insert(QStringLiteral("warnings"), warnings);
+    return result;
 }
 
 QJsonObject AgentActor::getAvailablePlugins(const QJsonObject& params) {

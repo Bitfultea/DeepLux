@@ -3,13 +3,19 @@
 #include "core/agent/GuiEvent.h"
 #include "core/agent/ILLMClient.h"
 #include "core/agent/ToolSchema.h"
+#include "core/engine/FlowGraphAnalyzer.h"
 #include "core/engine/RunEngine.h"
+#include "core/interface/IModule.h"
 #include "core/model/Project.h"
 #include "manager/PluginManager.h"
 #include "manager/ProjectManager.h"
+#include "ui/controllers/FlowLayoutCoordinator.h"
+#include "ui/controllers/ProcessTreeController.h"
 #include "ui/widgets/AgentChatPanel.h"
+#include "ui/widgets/FlowCanvas.h"
 
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
@@ -18,9 +24,15 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QSet>
+#include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QToolButton>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
+#include <QUndoStack>
 #include <QtTest/QtTest>
+#include <memory>
 
 using namespace DeepLux;
 
@@ -72,6 +84,101 @@ public:
     bool imageInputSupported = true;
     int requestCount = 0;
     AgentConversation lastCtx;
+};
+
+// B4：与产品 getFlowState 同源的 catalog——按 Project 模块顺序，用真实
+// PluginManager::createModule() 取 flowControlType()/inputPorts()/outputPorts()。
+FlowGraphCatalog b4CatalogForProject(const Project& project) {
+    FlowGraphCatalog catalog;
+    PluginManager& pm = PluginManager::instance();
+    for (const ModuleInstance& instance : project.modules()) {
+        std::unique_ptr<IModule> module(pm.createModule(instance.moduleId));
+        if (!module)
+            continue;
+        FlowGraphModule graphModule;
+        graphModule.instanceId = instance.id;
+        graphModule.flowType = module->flowControlType();
+        graphModule.inputPorts = module->inputPorts();
+        graphModule.outputPorts = module->outputPorts();
+        catalog.modules.append(graphModule);
+    }
+    return catalog;
+}
+
+struct B4PlanResult {
+    FlowOrderPlan plan;
+    QString error;
+};
+
+/// 期望计划完全由真实 FlowGraphAnalyzer 计算，测试不手工伪造 displayOrder/rank。
+B4PlanResult b4AnalyzeProject(const Project& project) {
+    B4PlanResult result;
+    const FlowGraphCatalog catalog = b4CatalogForProject(project);
+    for (const ModuleInstance& instance : project.modules()) {
+        if (!catalog.find(instance.id)) {
+            result.error = QStringLiteral("catalog is missing module %1").arg(instance.id);
+            return result;
+        }
+    }
+    QString normalizeError;
+    const QList<ModuleConnection> normalized =
+        FlowGraphAnalyzer::normalizeConnections(catalog, project.connections(), &normalizeError);
+    if (!normalizeError.isEmpty()) {
+        result.error = normalizeError;
+        return result;
+    }
+    QStringList moduleOrder;
+    for (const ModuleInstance& instance : project.modules())
+        moduleOrder.append(instance.id);
+    result.plan = FlowGraphAnalyzer::analyze(catalog, normalized, moduleOrder);
+    return result;
+}
+
+QStringList b4TreeInstanceIds(const QTreeWidget& tree) {
+    QStringList ids;
+    for (int i = 0; i < tree.topLevelItemCount(); ++i) {
+        QTreeWidgetItem* item = tree.topLevelItem(i);
+        ids.append(item ? item->data(0, Qt::UserRole + 1).toString() : QString());
+    }
+    return ids;
+}
+
+/// 确定性「事件队列空闲」屏障：把终止标记投递到队列尾部，执行到标记时
+/// 此前排队的结构信号与 30ms 合并布局回调都已处理完毕；不使用 sleep 构造顺序。
+void b4DrainEventQueue() {
+    QEventLoop loop;
+    QTimer::singleShot(0, &loop, [&loop]() { QTimer::singleShot(0, &loop, [&loop]() { loop.quit(); }); });
+    loop.exec();
+}
+
+void b4AssertCanvasFollowsDisplayOrder(const FlowCanvas& canvas, const QStringList& displayOrder) {
+    qreal previousY = -1.0e9;
+    for (const QString& id : displayOrder) {
+        FlowNodeItem* item = canvas.nodeItem(id);
+        QVERIFY(item != nullptr);
+        QVERIFY2(item->pos().y() >= previousY, "canvas rows must follow displayOrder top-to-bottom");
+        previousY = item->pos().y();
+    }
+}
+
+/// B4 测试夹具：真实 FlowCanvas + FlowLayoutCoordinator + ProcessTreeController，
+/// 由 Project 结构信号驱动布局（Agent 不直接改画布/流程树）。
+struct B4LayoutFixture {
+    QTreeWidget tree;
+    ProcessTreeController treeController{&tree};
+    FlowCanvas canvas;
+    FlowLayoutCoordinator coordinator{nullptr, &canvas, b4CatalogForProject};
+    QSignalSpy layoutSpy{&coordinator, &FlowLayoutCoordinator::layoutApplied};
+
+    void attach(Project* project) {
+        QVERIFY(QObject::connect(project, &Project::moduleAdded, &treeController,
+                                 &ProcessTreeController::onModuleAddedFromProject));
+        QVERIFY(QObject::connect(project, &Project::moduleRemoved, &treeController,
+                                 &ProcessTreeController::onModuleRemovedFromProject));
+        coordinator.setProcessTreeController(&treeController);
+        coordinator.setProject(project);
+        QVERIFY(layoutSpy.isValid());
+    }
 };
 
 } // namespace
@@ -770,6 +877,165 @@ private slots:
         panel.setStopped();
         QVERIFY2(status->text().contains(QStringLiteral("已停止")), qPrintable(status->text()));
         QVERIFY2(stop->isHidden(), "stop button must hide after stop");
+    }
+
+    // ---------- B4：Agent 集成与顺序字段 ----------
+
+    // 脚本化 Agent 构建线性链；最终画布/流程树顺序 == 真实 FlowGraphAnalyzer 的
+    // plan.displayOrder，且 get_flow_state 的字段与同一计划一致。
+    void testAgentFlowStateAndLayoutFollowExecutionPlan() {
+        AgentActor actor;
+        QJsonObject result = actor.executeTool("create_project", {{"name", "B4Layout"}});
+        QVERIFY2(!result.contains("error"), qPrintable(result["error"].toString()));
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+
+        B4LayoutFixture fixture;
+        fixture.attach(project);
+
+        result = actor.executeTool("add_module", {{"plugin", "GrabImage"}, {"instanceName", "grab"}});
+        QVERIFY2(!result.contains("error"), qPrintable(result["error"].toString()));
+        result = actor.executeTool("add_module", {{"plugin", "ShowImage"}, {"instanceName", "show1"}});
+        QVERIFY2(!result.contains("error"), qPrintable(result["error"].toString()));
+        result = actor.executeTool("add_module", {{"plugin", "ShowImage"}, {"instanceName", "show2"}});
+        QVERIFY2(!result.contains("error"), qPrintable(result["error"].toString()));
+        result = actor.executeTool("connect_modules", {{"fromId", "grab"}, {"toId", "show1"}});
+        QVERIFY2(!result.contains("error"), qPrintable(result["error"].toString()));
+        result = actor.executeTool("connect_modules", {{"fromId", "show1"}, {"toId", "show2"}});
+        QVERIFY2(!result.contains("error"), qPrintable(result["error"].toString()));
+
+        fixture.canvas.loadFromProject(project);
+        QTRY_VERIFY(fixture.coordinator.layoutRunCount() >= 1);
+        b4DrainEventQueue();
+
+        const B4PlanResult expected = b4AnalyzeProject(*project);
+        QVERIFY2(expected.error.isEmpty(), qPrintable(expected.error));
+        QVERIFY(expected.plan.valid);
+        QCOMPARE(expected.plan.displayOrder.size(), 3);
+        QCOMPARE(fixture.coordinator.currentPlan().displayOrder, expected.plan.displayOrder);
+        QCOMPARE(b4TreeInstanceIds(fixture.tree), expected.plan.displayOrder);
+        b4AssertCanvasFollowsDisplayOrder(fixture.canvas, expected.plan.displayOrder);
+
+        QHash<QString, FlowOrderNode> nodesById;
+        for (const FlowOrderNode& node : expected.plan.nodes)
+            nodesById.insert(node.instanceId, node);
+
+        const QJsonObject state = actor.executeTool("get_flow_state", QJsonObject());
+        QVERIFY2(!state.contains("error"), qPrintable(state.value("error").toString()));
+        const QJsonArray modules = state.value("modules").toArray();
+        QCOMPARE(modules.size(), 3);
+        for (const QJsonValue& value : modules) {
+            const QJsonObject obj = value.toObject();
+            const QString id = obj.value("id").toString();
+            QVERIFY(nodesById.contains(id));
+            const FlowOrderNode& node = nodesById.value(id);
+            QCOMPARE(obj.value("executionRank").toInt(), node.rank);
+            QCOMPARE(obj.value("lane").toInt(), node.lane);
+            QCOMPARE(obj.value("displayIndex").toInt(), node.displayIndex);
+        }
+    }
+
+    // 连续添加 5 个模块只触发一次合并布局（单计时器合并生效）。
+    // 用 QSignalSpy/QTRY + 事件队列空闲屏障构造确定顺序，不使用 sleep。
+    void testConsecutiveAgentAddsCoalesceIntoSingleLayout() {
+        AgentActor actor;
+        QJsonObject result = actor.executeTool("create_project", {{"name", "B4Coalesce"}});
+        QVERIFY2(!result.contains("error"), qPrintable(result["error"].toString()));
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+
+        B4LayoutFixture fixture;
+        fixture.attach(project);
+
+        // 5 次 add_module 全部在同一轮同步调用内完成，各自发出 moduleAdded +
+        // structureChanged(Agent)，必须合并为一次 30ms 布局。
+        for (int i = 0; i < 5; ++i) {
+            const QString name = QStringLiteral("node_%1").arg(i);
+            result = actor.executeTool("add_module", {{"plugin", "ShowImage"}, {"instanceName", name}});
+            QVERIFY2(!result.contains("error"), qPrintable(result["error"].toString()));
+        }
+        fixture.canvas.loadFromProject(project);
+
+        QTRY_COMPARE(fixture.layoutSpy.count(), 1);
+        QCOMPARE(fixture.coordinator.layoutRunCount(), 1);
+        b4DrainEventQueue();
+        QCOMPARE(fixture.coordinator.layoutRunCount(), 1);
+        QCOMPARE(fixture.layoutSpy.count(), 1);
+
+        const B4PlanResult expected = b4AnalyzeProject(*project);
+        QVERIFY2(expected.error.isEmpty(), qPrintable(expected.error));
+        QVERIFY(expected.plan.valid);
+        QCOMPARE(fixture.coordinator.currentPlan().displayOrder, expected.plan.displayOrder);
+        QCOMPARE(b4TreeInstanceIds(fixture.tree), expected.plan.displayOrder);
+        b4AssertCanvasFollowsDisplayOrder(fixture.canvas, expected.plan.displayOrder);
+    }
+
+    // Agent 暂停/撤销后布局仍与计划一致：暂停不改结构，撤销由结构信号重新合并布局。
+    void testAgentPauseAndUndoKeepLayoutConsistentWithPlan() {
+        AgentActor actor;
+        QJsonObject result = actor.executeTool("create_project", {{"name", "B4PauseUndo"}});
+        QVERIFY2(!result.contains("error"), qPrintable(result["error"].toString()));
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+
+        B4LayoutFixture fixture;
+        fixture.attach(project);
+
+        result = actor.executeTool("add_module", {{"plugin", "GrabImage"}, {"instanceName", "grab"}});
+        QVERIFY2(!result.contains("error"), qPrintable(result["error"].toString()));
+        result = actor.executeTool("add_module", {{"plugin", "ShowImage"}, {"instanceName", "show1"}});
+        QVERIFY2(!result.contains("error"), qPrintable(result["error"].toString()));
+        result = actor.executeTool("add_module", {{"plugin", "ShowImage"}, {"instanceName", "show2"}});
+        QVERIFY2(!result.contains("error"), qPrintable(result["error"].toString()));
+        result = actor.executeTool("connect_modules", {{"fromId", "grab"}, {"toId", "show1"}});
+        QVERIFY2(!result.contains("error"), qPrintable(result["error"].toString()));
+        result = actor.executeTool("connect_modules", {{"fromId", "show1"}, {"toId", "show2"}});
+        QVERIFY2(!result.contains("error"), qPrintable(result["error"].toString()));
+
+        fixture.canvas.loadFromProject(project);
+        QTRY_VERIFY(fixture.coordinator.layoutRunCount() >= 1);
+        b4DrainEventQueue();
+        const int baselineRuns = fixture.coordinator.layoutRunCount();
+
+        B4PlanResult expected = b4AnalyzeProject(*project);
+        QVERIFY2(expected.error.isEmpty(), qPrintable(expected.error));
+        QVERIFY(expected.plan.valid);
+        QCOMPARE(b4TreeInstanceIds(fixture.tree), expected.plan.displayOrder);
+
+        // 1) 暂停：只读/无结构变化，不触发新布局，计划保持一致。
+        const QJsonObject paused = actor.executeTool("pause_flow", QJsonObject());
+        QCOMPARE(paused.value("status").toString(), QStringLiteral("paused"));
+        b4DrainEventQueue();
+        QCOMPARE(fixture.coordinator.layoutRunCount(), baselineRuns);
+        QCOMPARE(fixture.coordinator.currentPlan().displayOrder, expected.plan.displayOrder);
+        QCOMPARE(b4TreeInstanceIds(fixture.tree), expected.plan.displayOrder);
+
+        // 2) 撤销最后一次连接：结构信号驱动一次新的合并布局。
+        QVERIFY(actor.undoStack()->canUndo());
+        actor.undoStack()->undo();
+        QCOMPARE(project->connections().size(), 1);
+        fixture.canvas.loadFromProject(project);
+        QTRY_VERIFY(fixture.coordinator.layoutRunCount() > baselineRuns);
+        b4DrainEventQueue();
+
+        expected = b4AnalyzeProject(*project);
+        QVERIFY2(expected.error.isEmpty(), qPrintable(expected.error));
+        QVERIFY(expected.plan.valid);
+        QCOMPARE(fixture.coordinator.currentPlan().displayOrder, expected.plan.displayOrder);
+        QCOMPARE(b4TreeInstanceIds(fixture.tree), expected.plan.displayOrder);
+        b4AssertCanvasFollowsDisplayOrder(fixture.canvas, expected.plan.displayOrder);
+
+        QHash<QString, FlowOrderNode> nodesById;
+        for (const FlowOrderNode& node : expected.plan.nodes)
+            nodesById.insert(node.instanceId, node);
+        const QJsonObject state = actor.executeTool("get_flow_state", QJsonObject());
+        QVERIFY2(!state.contains("error"), qPrintable(state.value("error").toString()));
+        for (const QJsonValue& value : state.value("modules").toArray()) {
+            const QJsonObject obj = value.toObject();
+            const QString id = obj.value("id").toString();
+            QVERIFY(nodesById.contains(id));
+            QCOMPARE(obj.value("displayIndex").toInt(), nodesById.value(id).displayIndex);
+        }
     }
 };
 
