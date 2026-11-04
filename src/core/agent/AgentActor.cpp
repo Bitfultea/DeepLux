@@ -321,6 +321,24 @@ QString logLevelName(LogLevel level) {
 }
 } // namespace
 
+// B3 / P0-2：Agent 结构编辑直接调用 Project::addModule/addConnection 等细粒度 API，
+// 这些 API 不会发出带来源的 structureChanged。用 RAII 作用域在命令应用结束时
+// 补发一次 structureChanged(Agent)，供 GUI 侧撤销命令做跨栈失效判定。
+// 作用域只发信号、零状态修改，不改变 Agent 命令既有的撤销语义。
+class StructureEditScope {
+public:
+    explicit StructureEditScope(StructureEditOrigin origin) : m_origin(origin) {}
+    ~StructureEditScope() {
+        if (Project* project = ProjectManager::instance().currentProject()) {
+            project->notifyStructureChange(m_origin);
+        }
+    }
+    Q_DISABLE_COPY(StructureEditScope)
+
+private:
+    StructureEditOrigin m_origin;
+};
+
 // --- Undo Commands ---
 
 class AgentAddModuleCmd : public QUndoCommand {
@@ -330,11 +348,13 @@ public:
         : QUndoCommand(parent), m_moduleId(moduleId), m_instanceId(instanceId), m_displayName(displayName) {}
 
     void undo() override {
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (proj)
             proj->removeModule(m_instanceId);
     }
     void redo() override {
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (!proj)
             return;
@@ -373,6 +393,7 @@ public:
         }
     }
     void undo() override {
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (proj && !m_backup.id.isEmpty()) {
             proj->addModule(m_backup);
@@ -381,6 +402,7 @@ public:
         }
     }
     void redo() override {
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (!proj)
             return;
@@ -434,12 +456,14 @@ public:
     }
 
     void undo() override {
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (!proj)
             return;
         proj->removeConnectionWithPorts(m_fromId, m_fromPort, m_toId, m_toPort);
     }
     void redo() override {
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (!proj)
             return;
@@ -465,6 +489,7 @@ public:
 
     void undo() override {
         // undo of disconnect = reconnect
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (!proj)
             return;
@@ -472,6 +497,7 @@ public:
     }
     void redo() override {
         // redo of disconnect = disconnect again
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (proj)
             proj->removeConnectionWithPorts(m_connection.fromModuleId, m_connection.fromPort, m_connection.toModuleId,
@@ -496,6 +522,31 @@ AgentActor::AgentActor(QObject* parent)
     connect(&ProjectManager::instance(), &ProjectManager::projectClosed, m_undoStack, &QUndoStack::clear);
     connect(&ProjectManager::instance(), &ProjectManager::projectClosed, this,
             [this]() { m_engineProjectDirty = true; });
+
+    // B3：与 GUI 撤销栈对称失效。外部（非 Agent）结构编辑后，Agent 栈中的结构
+    // 命令不再能安全覆盖后续编辑，通过 setObsolete 让 QUndoStack 跳过并删除。
+    const auto attachStructureInvalidation = [this](Project* project) {
+        if (!project)
+            return;
+        disconnect(project, &Project::structureChanged, this, nullptr);
+        connect(project, &Project::structureChanged, this, [this](StructureEditOrigin origin) {
+            if (origin == StructureEditOrigin::Agent || !m_undoStack)
+                return;
+            for (int i = 0; i < m_undoStack->count(); ++i) {
+                // QUndoStack::command() 返回 const 指针；setObsolete 是命令自身的非 const 操作，
+                // 与 QUndoStack 内部处理 obsolete 命令的方式一致。
+                const QUndoCommand* stored = m_undoStack->command(i);
+                if (QUndoCommand* command = const_cast<QUndoCommand*>(stored)) {
+                    command->setObsolete(true);
+                }
+            }
+        });
+    };
+    // newProject() 只发 projectCreated，openProject() 只发 projectOpened；两者都必须接线，
+    // 否则新建工程上 GUI 结构编辑无法让 Agent 撤销栈失效（P0-2 对称跨栈失效）。
+    connect(&ProjectManager::instance(), &ProjectManager::projectCreated, this, attachStructureInvalidation);
+    connect(&ProjectManager::instance(), &ProjectManager::projectOpened, this, attachStructureInvalidation);
+    attachStructureInvalidation(ProjectManager::instance().currentProject());
 }
 
 AgentActor::~AgentActor() = default;

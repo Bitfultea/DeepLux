@@ -42,6 +42,125 @@ bool isOpenerType(ControlFlowType type) {
            type == ControlFlowType::Parallel;
 }
 
+// 数据端口类型兼容规则与 RunEngine / FlowCanvas 保持一致：相同类型或任一端为 Any。
+bool dataTypesCompatible(DataType from, DataType to) {
+    return from == to || from == DataType::Any || to == DataType::Any;
+}
+
+// 结构前置校验：orderedIds 必须是给定模块 ID 集合的完整排列。
+bool isCompletePermutation(const QStringList& orderedIds, const QSet<QString>& existingIds, QString* error) {
+    if (orderedIds.size() != existingIds.size()) {
+        setError(error, QStringLiteral("Candidate module order must contain exactly %1 ids").arg(existingIds.size()));
+        return false;
+    }
+    QSet<QString> seen;
+    for (const QString& id : orderedIds) {
+        if (id.isEmpty()) {
+            setError(error, QStringLiteral("Candidate module order contains an empty id"));
+            return false;
+        }
+        if (seen.contains(id)) {
+            setError(error, QStringLiteral("Candidate module order contains duplicate id: %1").arg(id));
+            return false;
+        }
+        if (!existingIds.contains(id)) {
+            setError(error, QStringLiteral("Candidate module order references unknown module: %1").arg(id));
+            return false;
+        }
+        seen.insert(id);
+    }
+    if (seen.size() != existingIds.size()) {
+        setError(error, QStringLiteral("Candidate module order is not a complete permutation"));
+        return false;
+    }
+    return true;
+}
+
+QString normalizedPort(const QString& port) {
+    return port.isEmpty() ? QStringLiteral("image") : port;
+}
+
+QString portPatternKey(const ModuleConnection& connection) {
+    return normalizedPort(connection.fromPort) + QLatin1Char('|') + normalizedPort(connection.toPort);
+}
+
+QString duplicateEdgeKey(const ModuleConnection& connection) {
+    return connection.fromModuleId + QLatin1Char('\x1f') + connection.fromPort + QLatin1Char('\x1f') +
+           connection.toModuleId + QLatin1Char('\x1f') + connection.toPort;
+}
+
+// 设计 §7.3 B：简单线性数据链。返回该链唯一的 (fromPort, toPort) 模式。
+// 条件：所有边均为数据边、端口模式唯一、每个节点入/出度 ≤ 1、
+// 边数 == 节点数 - 1、单一连通分量、无环、无孤立节点。
+bool simpleLinearChainPattern(const Project& project, QString* fromPort, QString* toPort, QString* error) {
+    const QList<ModuleConnection> connections = project.connections();
+    const int nodeCount = project.modules().size();
+    if (nodeCount < 2 || connections.size() != nodeCount - 1) {
+        setError(error, QStringLiteral("Reordering requires an unconnected list or a simple linear chain"));
+        return false;
+    }
+
+    QString pattern;
+    QHash<QString, int> indegree;
+    QHash<QString, int> outdegree;
+    QSet<QString> edgeKeys;
+    QHash<QString, QStringList> adjacency;
+    for (const ModuleConnection& connection : connections) {
+        const QString declaredType = connection.edgeType.isEmpty() ? QStringLiteral("data") : connection.edgeType;
+        if (declaredType != QLatin1String("data")) {
+            setError(error, QStringLiteral("Only data edges can form a reorderable linear chain"));
+            return false;
+        }
+        const QString key = duplicateEdgeKey(connection);
+        if (edgeKeys.contains(key)) {
+            setError(error, QStringLiteral("Duplicate connection %1.%2 -> %3.%4")
+                                .arg(connection.fromModuleId, normalizedPort(connection.fromPort),
+                                     connection.toModuleId, normalizedPort(connection.toPort)));
+            return false;
+        }
+        edgeKeys.insert(key);
+        const QString currentPattern = portPatternKey(connection);
+        if (pattern.isEmpty())
+            pattern = currentPattern;
+        else if (pattern != currentPattern) {
+            setError(error, QStringLiteral("Linear chain has ambiguous port patterns"));
+            return false;
+        }
+        if (++outdegree[connection.fromModuleId] > 1 || ++indegree[connection.toModuleId] > 1) {
+            setError(error, QStringLiteral("Linear chain contains a branch or merge"));
+            return false;
+        }
+        adjacency[connection.fromModuleId].append(connection.toModuleId);
+    }
+
+    // 从入度为 0 的唯一节点出发，必须沿链访问全部节点且不重复。
+    QStringList starts;
+    for (const ModuleInstance& module : project.modules()) {
+        if (indegree.value(module.id, 0) == 0)
+            starts.append(module.id);
+    }
+    if (starts.size() != 1) {
+        setError(error, QStringLiteral("Linear chain must have exactly one entry node"));
+        return false;
+    }
+    QSet<QString> visited;
+    QString current = starts.first();
+    while (!current.isEmpty() && !visited.contains(current)) {
+        visited.insert(current);
+        const QStringList next = adjacency.value(current);
+        current = next.isEmpty() ? QString() : next.first();
+    }
+    if (visited.size() != nodeCount || !current.isEmpty()) {
+        setError(error, QStringLiteral("Linear chain is disconnected or contains a cycle"));
+        return false;
+    }
+
+    const QStringList parts = pattern.split(QLatin1Char('|'));
+    *fromPort = parts.value(0);
+    *toPort = parts.value(1);
+    return true;
+}
+
 bool isBranchPort(ControlFlowType type, const QString& portId) {
     switch (type) {
     case ControlFlowType::Conditional:
@@ -523,6 +642,160 @@ FlowOrderPlan FlowGraphAnalyzer::analyze(const FlowGraphCatalog& catalog,
 
     plan.valid = true;
     return plan;
+}
+
+bool FlowGraphAnalyzer::buildReorderedCandidate(const Project& project, const QStringList& orderedIds,
+                                                FlowGraphCandidate* candidate, QString* error) {
+    setError(error, QString());
+    if (!candidate) {
+        setError(error, QStringLiteral("Candidate output must not be null"));
+        return false;
+    }
+    *candidate = FlowGraphCandidate();
+
+    QSet<QString> existingIds;
+    for (const ModuleInstance& module : project.modules())
+        existingIds.insert(module.id);
+    if (!isCompletePermutation(orderedIds, existingIds, error))
+        return false;
+
+    const QList<ModuleConnection> connections = project.connections();
+
+    // 情形 A：无连接顺序列表，只调整模块顺序。
+    if (connections.isEmpty()) {
+        candidate->orderedIds = orderedIds;
+        return true;
+    }
+
+    // 情形 B：已连接简单线性链，按新顺序用同一端口模式重连。
+    QString fromPort;
+    QString toPort;
+    if (!simpleLinearChainPattern(project, &fromPort, &toPort, error))
+        return false;
+
+    candidate->orderedIds = orderedIds;
+    candidate->connections.reserve(orderedIds.size() - 1);
+    for (int i = 0; i + 1 < orderedIds.size(); ++i) {
+        ModuleConnection connection;
+        connection.fromModuleId = orderedIds.at(i);
+        connection.toModuleId = orderedIds.at(i + 1);
+        connection.fromPort = fromPort;
+        connection.toPort = toPort;
+        connection.edgeType = QStringLiteral("data");
+        candidate->connections.append(connection);
+    }
+    return true;
+}
+
+bool FlowGraphAnalyzer::validateCandidate(const FlowGraphCatalog& catalog, const FlowGraphCandidate& candidate,
+                                          FlowOrderPlan* plan, QString* error) {
+    setError(error, QString());
+    if (plan)
+        *plan = FlowOrderPlan();
+
+    const auto fail = [error](const QString& message) {
+        setError(error, message);
+        return false;
+    };
+
+    // 1) 模块存在 + 完整排列
+    QSet<QString> knownIds;
+    for (const FlowGraphModule& module : catalog.modules) {
+        if (module.instanceId.isEmpty())
+            return fail(QStringLiteral("Catalog contains an empty module id"));
+        if (knownIds.contains(module.instanceId))
+            return fail(QStringLiteral("Catalog contains duplicate module id: %1").arg(module.instanceId));
+        knownIds.insert(module.instanceId);
+    }
+    if (!isCompletePermutation(candidate.orderedIds, knownIds, error))
+        return false;
+
+    // 2) 边类型归一化（共享规则，调用方不得各自推断）
+    QString normalizeError;
+    const QList<ModuleConnection> normalized = normalizeConnections(catalog, candidate.connections, &normalizeError);
+    if (!normalizeError.isEmpty())
+        return fail(normalizeError);
+
+    // 3) 端口存在 / 类型兼容 + 4) 重复边
+    QSet<QString> edgeKeys;
+    for (const ModuleConnection& connection : normalized) {
+        const FlowGraphModule* source = catalog.find(connection.fromModuleId);
+        const FlowGraphModule* target = catalog.find(connection.toModuleId);
+        if (!source || !target)
+            return fail(QStringLiteral("Candidate connection references a missing module"));
+
+        const PortSpec* output = findPort(source->outputPorts, connection.fromPort);
+        const PortSpec* input = findPort(target->inputPorts, connection.toPort);
+        const bool fromImplicitControl = connection.fromPort == QLatin1String("next");
+        const bool toImplicitControl = connection.toPort == QLatin1String("control");
+        if (!fromImplicitControl && !source->outputPorts.isEmpty() && !output) {
+            return fail(
+                QStringLiteral("Module %1 has no output port %2").arg(connection.fromModuleId, connection.fromPort));
+        }
+        if (!toImplicitControl && !target->inputPorts.isEmpty() && !input) {
+            return fail(QStringLiteral("Module %1 has no input port %2").arg(connection.toModuleId, connection.toPort));
+        }
+
+        const bool fromIsControl = isControlPort(source->outputPorts, true, connection.fromPort);
+        const bool toIsControl = isControlPort(target->inputPorts, false, connection.toPort);
+        if (connection.edgeType == QLatin1String("data")) {
+            if (fromIsControl || toIsControl)
+                return fail(
+                    QStringLiteral("Data edge %1.%2 -> %3.%4 uses a control port")
+                        .arg(connection.fromModuleId, connection.fromPort, connection.toModuleId, connection.toPort));
+            if (output && input && !dataTypesCompatible(output->type, input->type)) {
+                return fail(
+                    QStringLiteral("Incompatible data types on %1.%2 -> %3.%4")
+                        .arg(connection.fromModuleId, connection.fromPort, connection.toModuleId, connection.toPort));
+            }
+        } else if (!fromIsControl || !toIsControl) {
+            return fail(
+                QStringLiteral("Control edge %1.%2 -> %3.%4 has a non-control endpoint")
+                    .arg(connection.fromModuleId, connection.fromPort, connection.toModuleId, connection.toPort));
+        }
+
+        const QString key = duplicateEdgeKey(connection);
+        if (edgeKeys.contains(key))
+            return fail(
+                QStringLiteral("Duplicate connection %1.%2 -> %3.%4")
+                    .arg(connection.fromModuleId, connection.fromPort, connection.toModuleId, connection.toPort));
+        edgeKeys.insert(key);
+    }
+
+    // 5) 前向图无环 + 6) 控制结构可解析
+    const FlowOrderPlan computed = analyze(catalog, normalized, candidate.orderedIds);
+    if (!computed.valid)
+        return fail(computed.error.isEmpty() ? QStringLiteral("Candidate graph is invalid") : computed.error);
+    if (computed.displayOrder.size() != candidate.orderedIds.size())
+        return fail(QStringLiteral("Candidate execution plan does not cover all modules"));
+
+    // 7) 线性链端口模式无歧义：重排候选只允许空连接或简单数据线性链。
+    //    分支/汇合、多端口模式、控制边、控制流节点均视为不可安全重连。
+    if (!normalized.isEmpty()) {
+        QString pattern;
+        QHash<QString, int> indegree;
+        QHash<QString, int> outdegree;
+        for (const ModuleConnection& connection : normalized) {
+            if (connection.edgeType != QLatin1String("data"))
+                return fail(QStringLiteral("Reorder candidate must not contain control edges"));
+            const QString currentPattern = portPatternKey(connection);
+            if (pattern.isEmpty())
+                pattern = currentPattern;
+            else if (pattern != currentPattern)
+                return fail(QStringLiteral("Reorder candidate has ambiguous port patterns"));
+            if (++outdegree[connection.fromModuleId] > 1 || ++indegree[connection.toModuleId] > 1)
+                return fail(QStringLiteral("Reorder candidate contains a branch or merge"));
+        }
+        for (const FlowGraphModule& module : catalog.modules) {
+            if (module.flowType != ControlFlowType::Sequential)
+                return fail(
+                    QStringLiteral("Reorder candidate contains a control-flow module: %1").arg(module.instanceId));
+        }
+    }
+
+    if (plan)
+        *plan = computed;
+    return true;
 }
 
 } // namespace DeepLux

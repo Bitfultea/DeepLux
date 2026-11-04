@@ -390,7 +390,252 @@ private slots:
         QCOMPARE(normalized.first().toPort, QStringLiteral("image"));
         QCOMPARE(normalized.first().edgeType, QStringLiteral("data"));
     }
+
+    // ===== B3.2：候选构造与只读校验 =====
+    void testBuildReorderedCandidateNoConnectionsAllowsAnyPermutation();
+    void testBuildReorderedCandidateReconnectsSimpleChain();
+    void testBuildReorderedCandidateRejectsMultiPortPattern();
+    void testBuildReorderedCandidateRejectsBranchAndMerge();
+    void testValidateCandidateAcceptsUnconnectedAndReconnectedChains();
+    void testValidateCandidateRejectsInvalidCandidateWithoutTouchingProject();
+    void testValidateCandidateRejectsBranchMergeAndMixedPortPatterns();
+    void testValidateCandidateDetectsMissingModulesAndDuplicateEdges();
 };
+
+namespace {
+
+void fillProject(Project& project, const QStringList& ids, const QList<ModuleConnection>& connections) {
+    for (const QString& id : ids) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("module.") + id;
+        instance.name = id;
+        project.addModule(instance);
+    }
+    project.setConnections(connections);
+}
+
+FlowGraphModule portedModule(const QString& id, const QStringList& inputs, const QStringList& outputs) {
+    FlowGraphModule module = mod(id);
+    for (const QString& portId : inputs) {
+        PortSpec port;
+        port.id = portId;
+        port.displayName = portId;
+        port.type = DataType::Image2D;
+        module.inputPorts.append(port);
+    }
+    for (const QString& portId : outputs) {
+        PortSpec port;
+        port.id = portId;
+        port.displayName = portId;
+        port.type = DataType::Image2D;
+        module.outputPorts.append(port);
+    }
+    return module;
+}
+
+bool candidateValid(const QList<FlowGraphModule>& modules, const FlowGraphCandidate& candidate, FlowOrderPlan* plan,
+                    QString* error) {
+    return FlowGraphAnalyzer::validateCandidate(catalog(modules), candidate, plan, error);
+}
+
+} // namespace
+
+void TestFlowGraphAnalyzer::testBuildReorderedCandidateNoConnectionsAllowsAnyPermutation() {
+    Project project;
+    fillProject(project, {"A", "B", "C"}, {});
+    QString error;
+    FlowGraphCandidate candidate;
+    QVERIFY2(FlowGraphAnalyzer::buildReorderedCandidate(project, {"C", "A", "B"}, &candidate, &error),
+             qPrintable(error));
+    QCOMPARE(error, QString());
+    QCOMPARE(candidate.orderedIds, (QStringList{"C", "A", "B"}));
+    QVERIFY(candidate.connections.isEmpty());
+
+    FlowOrderPlan plan;
+    QVERIFY2(candidateValid({mod("A"), mod("B"), mod("C")}, candidate, &plan, &error), qPrintable(error));
+    QVERIFY(plan.valid);
+    QCOMPARE(plan.dataOrder, (QStringList{"C", "A", "B"}));
+    QCOMPARE(plan.displayOrder, (QStringList{"C", "A", "B"}));
+}
+
+void TestFlowGraphAnalyzer::testBuildReorderedCandidateReconnectsSimpleChain() {
+    Project project;
+    fillProject(project, {"A", "B", "C"}, {edge("A", "B"), edge("B", "C")});
+    QString error;
+    FlowGraphCandidate candidate;
+    QVERIFY2(FlowGraphAnalyzer::buildReorderedCandidate(project, {"C", "A", "B"}, &candidate, &error),
+             qPrintable(error));
+    QCOMPARE(candidate.orderedIds, (QStringList{"C", "A", "B"}));
+    QCOMPARE(candidate.connections.size(), 2);
+    QCOMPARE(candidate.connections.at(0).fromModuleId, QStringLiteral("C"));
+    QCOMPARE(candidate.connections.at(0).toModuleId, QStringLiteral("A"));
+    QCOMPARE(candidate.connections.at(1).fromModuleId, QStringLiteral("A"));
+    QCOMPARE(candidate.connections.at(1).toModuleId, QStringLiteral("B"));
+    for (const ModuleConnection& connection : candidate.connections) {
+        QCOMPARE(connection.fromPort, QStringLiteral("image"));
+        QCOMPARE(connection.toPort, QStringLiteral("image"));
+        QCOMPARE(connection.edgeType, QStringLiteral("data"));
+    }
+
+    QList<FlowGraphModule> modules{portedModule("A", {"image"}, {"image"}), portedModule("B", {"image"}, {"image"}),
+                                   portedModule("C", {"image"}, {"image"})};
+    FlowOrderPlan plan;
+    QVERIFY2(candidateValid(modules, candidate, &plan, &error), qPrintable(error));
+    QVERIFY(plan.valid);
+    QCOMPARE(plan.dataOrder, (QStringList{"C", "A", "B"}));
+    QCOMPARE(plan.displayOrder, (QStringList{"C", "A", "B"}));
+    // 原工程未被修改（校验与构造只读）。
+    Project reference;
+    fillProject(reference, {"A", "B", "C"}, {edge("A", "B"), edge("B", "C")});
+    QCOMPARE(project.structureFingerprint(), reference.structureFingerprint());
+}
+
+void TestFlowGraphAnalyzer::testBuildReorderedCandidateRejectsMultiPortPattern() {
+    Project project;
+    fillProject(project, {"A", "B", "C"}, {edge("A", "B", "image", "image"), edge("B", "C", "result", "points")});
+    QString error;
+    FlowGraphCandidate candidate;
+    QVERIFY(!FlowGraphAnalyzer::buildReorderedCandidate(project, {"C", "A", "B"}, &candidate, &error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(candidate.orderedIds.isEmpty());
+}
+
+void TestFlowGraphAnalyzer::testBuildReorderedCandidateRejectsBranchAndMerge() {
+    Project branch;
+    fillProject(branch, {"A", "B", "C"}, {edge("A", "B"), edge("A", "C")});
+    QString error;
+    FlowGraphCandidate candidate;
+    QVERIFY(!FlowGraphAnalyzer::buildReorderedCandidate(branch, {"C", "A", "B"}, &candidate, &error));
+    QVERIFY(!error.isEmpty());
+
+    error.clear();
+    Project diamond;
+    fillProject(diamond, {"A", "B", "C", "D"}, {edge("A", "B"), edge("A", "C"), edge("B", "D"), edge("C", "D")});
+    QVERIFY(!FlowGraphAnalyzer::buildReorderedCandidate(diamond, {"D", "C", "B", "A"}, &candidate, &error));
+    QVERIFY(!error.isEmpty());
+}
+
+void TestFlowGraphAnalyzer::testValidateCandidateAcceptsUnconnectedAndReconnectedChains() {
+    // 无连接顺序列表：任意重排合法。
+    QString error;
+    FlowGraphCandidate unconnected;
+    unconnected.orderedIds = QStringList{"B", "C", "A"};
+    FlowOrderPlan plan;
+    QVERIFY2(candidateValid({mod("A"), mod("B"), mod("C")}, unconnected, &plan, &error), qPrintable(error));
+    QCOMPARE(plan.displayOrder, (QStringList{"B", "C", "A"}));
+
+    // 已连接简单链：同端口模式重连合法。
+    FlowGraphCandidate reconnected;
+    reconnected.orderedIds = QStringList{"B", "A", "C"};
+    reconnected.connections = {edge("B", "A"), edge("A", "C")};
+    QList<FlowGraphModule> modules{portedModule("A", {"image"}, {"image"}), portedModule("B", {"image"}, {"image"}),
+                                   portedModule("C", {"image"}, {"image"})};
+    QVERIFY2(candidateValid(modules, reconnected, &plan, &error), qPrintable(error));
+    QCOMPARE(plan.dataOrder, (QStringList{"B", "A", "C"}));
+}
+
+void TestFlowGraphAnalyzer::testValidateCandidateRejectsInvalidCandidateWithoutTouchingProject() {
+    Project project;
+    fillProject(project, {"A", "B", "C"}, {edge("A", "B"), edge("B", "C")});
+    const QString fingerprintBefore = project.structureFingerprint();
+    const QJsonObject jsonBefore = project.toJson();
+
+    QList<FlowGraphModule> modules{portedModule("A", {"image"}, {"image"}), portedModule("B", {"image"}, {"image"}),
+                                   portedModule("C", {"image"}, {"image"})};
+    QString error;
+    FlowOrderPlan plan;
+
+    // 缺模块（非完整排列）
+    FlowGraphCandidate incomplete;
+    incomplete.orderedIds = QStringList{"A", "B"};
+    QVERIFY(!candidateValid(modules, incomplete, &plan, &error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!plan.valid);
+
+    // 重复 id
+    error.clear();
+    FlowGraphCandidate duplicated;
+    duplicated.orderedIds = QStringList{"A", "A", "B"};
+    QVERIFY(!candidateValid(modules, duplicated, &plan, &error));
+    QVERIFY(!error.isEmpty());
+
+    // 未知模块
+    error.clear();
+    FlowGraphCandidate unknown;
+    unknown.orderedIds = QStringList{"A", "B", "ghost"};
+    QVERIFY(!candidateValid(modules, unknown, &plan, &error));
+    QVERIFY(!error.isEmpty());
+
+    // 端口不存在
+    error.clear();
+    FlowGraphCandidate missingPort;
+    missingPort.orderedIds = QStringList{"A", "B", "C"};
+    missingPort.connections = {edge("A", "B", "image", "unknown"), edge("B", "C")};
+    QVERIFY(!candidateValid(modules, missingPort, &plan, &error));
+    QVERIFY(!error.isEmpty());
+
+    QCOMPARE(project.structureFingerprint(), fingerprintBefore);
+    QCOMPARE(project.toJson(), jsonBefore);
+}
+
+void TestFlowGraphAnalyzer::testValidateCandidateRejectsBranchMergeAndMixedPortPatterns() {
+    QList<FlowGraphModule> modules{portedModule("A", {"image"}, {"image", "result"}),
+                                   portedModule("B", {"image", "points"}, {"image"}),
+                                   portedModule("C", {"image"}, {"image"}), portedModule("D", {"image"}, {"image"})};
+    QString error;
+    FlowOrderPlan plan;
+
+    // 分支/汇合
+    FlowGraphCandidate diamond;
+    diamond.orderedIds = QStringList{"A", "B", "C", "D"};
+    diamond.connections = {edge("A", "B"), edge("A", "C"), edge("B", "D"), edge("C", "D")};
+    QVERIFY(!candidateValid(modules, diamond, &plan, &error));
+    QVERIFY(!error.isEmpty());
+
+    // 多端口模式（同一链上出现两种端口组合）
+    error.clear();
+    QList<FlowGraphModule> three{portedModule("A", {"image"}, {"image", "result"}),
+                                 portedModule("B", {"image", "points"}, {"image", "result"}),
+                                 portedModule("C", {"image", "points"}, {"image"})};
+    FlowGraphCandidate mixed;
+    mixed.orderedIds = QStringList{"A", "B", "C"};
+    mixed.connections = {edge("A", "B", "image", "image"), edge("B", "C", "result", "points")};
+    QVERIFY(!candidateValid(three, mixed, &plan, &error));
+    QVERIFY(!error.isEmpty());
+}
+
+void TestFlowGraphAnalyzer::testValidateCandidateDetectsMissingModulesAndDuplicateEdges() {
+    QList<FlowGraphModule> modules{portedModule("A", {"image"}, {"image"}), portedModule("B", {"image"}, {"image"}),
+                                   portedModule("C", {"image"}, {"image"})};
+    QString error;
+    FlowOrderPlan plan;
+
+    FlowGraphCandidate duplicateEdges;
+    duplicateEdges.orderedIds = QStringList{"A", "B", "C"};
+    duplicateEdges.connections = {edge("A", "B"), edge("A", "B"), edge("B", "C")};
+    QVERIFY(!candidateValid(modules, duplicateEdges, &plan, &error));
+    QVERIFY(!error.isEmpty());
+
+    // 控制边混入重排候选：线性链端口模式有歧义，拒绝。
+    error.clear();
+    QList<FlowGraphModule> controlModules{controlModule("A", ControlFlowType::Conditional, {"true", "false"}), mod("B"),
+                                          mod("C")};
+    FlowGraphCandidate withControl;
+    withControl.orderedIds = QStringList{"A", "B", "C"};
+    withControl.connections = {edge("A", "B", "true", "control", "control")};
+    QVERIFY(!candidateValid(controlModules, withControl, &plan, &error));
+    QVERIFY(!error.isEmpty());
+
+    // 前向图成环
+    error.clear();
+    FlowGraphCandidate cycle;
+    cycle.orderedIds = QStringList{"A", "B", "C"};
+    cycle.connections = {edge("A", "B"), edge("B", "C"), edge("C", "A")};
+    QVERIFY(!candidateValid(modules, cycle, &plan, &error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!plan.valid);
+}
 
 QTEST_MAIN(TestFlowGraphAnalyzer)
 #include "test_flowgraphanalyzer.moc"

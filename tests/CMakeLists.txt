@@ -52,6 +52,7 @@ set(TEST_SOURCES
     test_imagerefreshcoalescer.cpp
     test_flowcanvas.cpp
     test_flowlayoutcoordinator.cpp
+    test_processtreeorder.cpp
     test_propertypanel.cpp
     test_toolschema.cpp
     test_agentobserver.cpp
@@ -467,6 +468,10 @@ foreach(TEST_FILE ${TEST_SOURCES})
     # 并行运行时与同进程组其他用例互相抢占会造成管道/全局状态隔离缺陷（历史 -j4 失败）。
     # 对两者设 RUN_SERIAL，使 ctest -j4 全量可稳定通过（串行于其他测试执行）。
     if(TEST_NAME STREQUAL "test_agentbridge" OR TEST_NAME STREQUAL "test_mainwindow")
+        set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
+    endif()
+    # B3：该用例会安装并校验全部插件参数契约，插件库/全局插件目录不能与其它用例并行抢占。
+    if(TEST_NAME STREQUAL "test_pluginparametercontracts")
         set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
     endif()
     if(TEST_NAME STREQUAL "test_acceptance_flows")

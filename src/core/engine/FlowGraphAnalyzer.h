@@ -61,6 +61,20 @@ public:
                                                         const QList<ModuleConnection>& connections, QString* error);
     static FlowOrderPlan analyze(const FlowGraphCatalog& catalog, const QList<ModuleConnection>& normalizedConnections,
                                  const QStringList& moduleOrder);
+
+    // B3.2：由当前工程与拖动后的展示顺序构造候选图（只读，不修改 Project）。
+    // 仅支持设计 §7.3 的两种互斥情形：
+    //   A. 工程无任何连接：只重排模块顺序，不创建连接；
+    //   B. 已连接的简单线性数据链：按新顺序用同一端口模式重连。
+    // 其他结构（多端口模式、分支、汇合、控制边、环、孤立节点）返回 false。
+    static bool buildReorderedCandidate(const Project& project, const QStringList& orderedIds,
+                                        FlowGraphCandidate* candidate, QString* error);
+
+    // B3.2：只读校验候选图。依次检查模块存在/完整排列、端口存在与类型兼容、
+    // 边类型归一化、重复边、前向图无环、控制结构可解析、线性链端口模式无歧义。
+    // 成功时把分析得到的执行计划写入 plan；失败时不修改任何外部状态。
+    static bool validateCandidate(const FlowGraphCatalog& catalog, const FlowGraphCandidate& candidate,
+                                  FlowOrderPlan* plan, QString* error);
 };
 
 } // namespace DeepLux

@@ -345,15 +345,23 @@ bool Project::applyStructureTransaction(const FlowGraphCandidate& candidate, Str
 }
 
 QString Project::structureFingerprint() const {
+    QStringList orderedIds;
+    orderedIds.reserve(m_modules.size());
+    for (const ModuleInstance& module : m_modules)
+        orderedIds.append(module.id);
+    return structureFingerprintFor(orderedIds, m_connections);
+}
+
+QString Project::structureFingerprintFor(const QStringList& orderedIds, const QList<ModuleConnection>& connections) {
     QByteArray payload;
     payload.append("modules\n");
-    for (const ModuleInstance& module : m_modules) {
-        payload.append(module.id.toUtf8());
+    for (const QString& id : orderedIds) {
+        payload.append(id.toUtf8());
         payload.append('\n');
     }
     payload.append("connections\n");
-    for (int i = 0; i < m_connections.size(); ++i) {
-        const ModuleConnection& connection = m_connections.at(i);
+    for (int i = 0; i < connections.size(); ++i) {
+        const ModuleConnection& connection = connections.at(i);
         payload.append(QByteArray::number(i));
         payload.append('|');
         payload.append(connection.fromModuleId.toUtf8());
@@ -368,6 +376,10 @@ QString Project::structureFingerprint() const {
         payload.append('\n');
     }
     return QString::fromLatin1(QCryptographicHash::hash(payload, QCryptographicHash::Sha1).toHex());
+}
+
+void Project::notifyStructureChange(StructureEditOrigin origin) {
+    emit structureChanged(origin);
 }
 
 QUuid Project::sessionToken() const {

@@ -156,6 +156,11 @@ public:
     bool applyStructureTransaction(const FlowGraphCandidate& candidate, StructureEditOrigin origin, QString* error);
     /// 模块顺序 + 连接声明顺序（含声明下标）的 SHA-1；绝不排序连接。
     QString structureFingerprint() const;
+    /// 由候选快照计算同一指纹（只读，允许在事务提交前预测提交后的指纹）。
+    static QString structureFingerprintFor(const QStringList& orderedIds, const QList<ModuleConnection>& connections);
+    /// 仅发出 structureChanged(origin)，不修改任何状态。
+    /// 供 Agent 结构 undo 命令等"直接调用 addModule/addConnection 的调用方"补齐来源信号。
+    void notifyStructureChange(StructureEditOrigin origin);
     /// 当前会话标识：新建/加载工程都会生成新值。
     QUuid sessionToken() const;
     bool layoutInitialized() const {

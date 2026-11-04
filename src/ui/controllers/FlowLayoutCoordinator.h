@@ -11,6 +11,7 @@
 namespace DeepLux {
 
 class FlowCanvas;
+class ProcessTreeController;
 
 /**
  * @brief 流程布局协调器
@@ -53,6 +54,15 @@ public:
         return m_currentPlan;
     }
 
+    /// B3.1：绑定流程树控制器；布局成功后按 plan.displayOrder 重排流程树。
+    void setProcessTreeController(ProcessTreeController* controller);
+    ProcessTreeController* processTreeController() const;
+
+    /// 只读计算执行计划（不触发画布布局，供拖动/工程切换排序/测试使用）。
+    FlowOrderPlan planForProject(const Project& project) const;
+    /// 返回与引擎/校验共享的 catalog（同一 catalogProvider 契约）。
+    FlowGraphCatalog catalogForProject(const Project& project) const;
+
     /// 实际执行布局的次数（用于测试断言合并行为）。
     int layoutRunCount() const {
         return m_layoutRunCount;
@@ -68,9 +78,12 @@ private slots:
 private:
     static bool positionsValid(const Project& project);
     void connectProjectSignals();
+    bool buildPlan(const Project& project, FlowOrderPlan* plan) const;
+    void applyTreeOrder(const FlowOrderPlan& plan);
 
     QPointer<Project> m_project;
     QPointer<FlowCanvas> m_canvas;
+    QPointer<ProcessTreeController> m_processTreeController;
     CatalogProvider m_catalogProvider;
     QTimer m_layoutTimer;
     FlowOrderPlan m_currentPlan;

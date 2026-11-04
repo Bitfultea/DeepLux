@@ -60,6 +60,7 @@
 #include <QComboBox>
 #include <QCursor>
 #include <QDateTime>
+#include <QDebug>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDir>
@@ -465,6 +466,131 @@ void applyPluginConfigTheme(QWidget* root, bool isDark) {
     }
 }
 } // namespace
+
+namespace {
+
+/**
+ * @brief 命令应用期间抑制协调器的自动布局。
+ *
+ * suppressAutoLayout(true) 会取消在途布局；解除后不自动补跑，因此命令内
+ * 显式恢复的坐标不会被后续 Full 布局覆盖。
+ */
+class AutoLayoutSuppressionGuard {
+public:
+    explicit AutoLayoutSuppressionGuard(FlowLayoutCoordinator* coordinator) : m_coordinator(coordinator) {
+        if (m_coordinator) {
+            m_wasSuppressed = m_coordinator->autoLayoutSuppressed();
+            if (!m_wasSuppressed) {
+                m_coordinator->suppressAutoLayout(true);
+            }
+        }
+    }
+
+    ~AutoLayoutSuppressionGuard() {
+        if (m_coordinator && !m_wasSuppressed) {
+            m_coordinator->suppressAutoLayout(false);
+        }
+    }
+
+    Q_DISABLE_COPY(AutoLayoutSuppressionGuard)
+
+private:
+    QPointer<FlowLayoutCoordinator> m_coordinator;
+    bool m_wasSuppressed = false;
+};
+
+} // namespace
+
+// ========== ReorderLinearChainCommand ==========
+
+ReorderLinearChainCommand::ReorderLinearChainCommand(
+    MainWindow* window, Project* project, const FlowGraphCandidate& before, const FlowGraphCandidate& after,
+    const QHash<QString, QPoint>& beforePositions, const QHash<QString, QPoint>& afterPositions,
+    const FlowOrderPlan& beforePlan, const FlowOrderPlan& afterPlan, const QUuid& sessionToken,
+    const QString& beforeFingerprint, const QString& afterFingerprint, bool* firstRedoCommitted, QUndoCommand* parent)
+    : QUndoCommand(parent), m_window(window), m_project(project), m_before(before), m_after(after),
+      m_beforePositions(beforePositions), m_afterPositions(afterPositions), m_beforePlan(beforePlan),
+      m_afterPlan(afterPlan), m_sessionToken(sessionToken), m_beforeFingerprint(beforeFingerprint),
+      m_afterFingerprint(afterFingerprint), m_firstRedoCommitted(firstRedoCommitted) {
+    setText(QCoreApplication::translate("MainWindow", "调整流程顺序"));
+}
+
+bool ReorderLinearChainCommand::applyCandidate(const FlowGraphCandidate& candidate,
+                                               const QHash<QString, QPoint>& positions, const FlowOrderPlan& plan,
+                                               const QString& expectedFingerprint, QString* error) {
+    if (!m_window || !m_project) {
+        if (error) {
+            *error = QStringLiteral("Structure command lost its window or project");
+        }
+        return false;
+    }
+    Project* project = m_project.data();
+
+    AutoLayoutSuppressionGuard suppression(m_window->m_flowLayoutCoordinator);
+
+    QString transactionError;
+    if (!project->applyStructureTransaction(candidate, StructureEditOrigin::Gui, &transactionError)) {
+        if (error) {
+            *error = transactionError;
+        }
+        return false;
+    }
+    if (project->structureFingerprint() != expectedFingerprint) {
+        if (error) {
+            *error = QStringLiteral("Structure fingerprint mismatch after transaction");
+        }
+        return false;
+    }
+
+    m_window->refreshAfterStructureTransaction(plan, positions);
+    return true;
+}
+
+void ReorderLinearChainCommand::redo() {
+    if (!m_window || !m_project) {
+        setObsolete(true);
+        return;
+    }
+    Project* project = m_project.data();
+    if (project->sessionToken() != m_sessionToken || project->structureFingerprint() != m_beforeFingerprint) {
+        // 外部结构编辑使候选失效：只标记 obsolete，绝不覆盖后续编辑。
+        setObsolete(true);
+        return;
+    }
+
+    QString error;
+    if (!applyCandidate(m_after, m_afterPositions, m_afterPlan, m_afterFingerprint, &error)) {
+        m_window->reportStructureEditError(error);
+        setObsolete(true);
+        return;
+    }
+
+    if (m_firstRedo) {
+        if (m_firstRedoCommitted) {
+            *m_firstRedoCommitted = true;
+        }
+        m_firstRedo = false;
+        m_firstRedoCommitted = nullptr; // 局部完成标记在 push 返回后失效，不得再写。
+    }
+}
+
+void ReorderLinearChainCommand::undo() {
+    if (!m_window || !m_project) {
+        setObsolete(true);
+        return;
+    }
+    Project* project = m_project.data();
+    if (project->sessionToken() != m_sessionToken || project->structureFingerprint() != m_afterFingerprint) {
+        setObsolete(true);
+        return;
+    }
+
+    QString error;
+    if (!applyCandidate(m_before, m_beforePositions, m_beforePlan, m_beforeFingerprint, &error)) {
+        m_window->reportStructureEditError(error);
+        setObsolete(true);
+    }
+}
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(new DisplayManager(this)) {
 
@@ -1498,6 +1624,8 @@ void MainWindow::setupMainLayout() {
     };
     m_flowLayoutCoordinator =
         new FlowLayoutCoordinator(ProjectManager::instance().currentProject(), m_flowCanvas, catalogProvider, this);
+    // B3.1：布局成功后由协调器按 displayOrder 重排流程树。
+    m_flowLayoutCoordinator->setProcessTreeController(m_processTreeController);
 
     // ---- Tab 3: 数据源 ----
     m_dataSourcePanel = new DataSourcePanel(this);
@@ -2299,6 +2427,11 @@ void MainWindow::onProjectOpened(Project* project) {
                 markModuleDirty(module.id);
             }
         });
+    // B3/P0-1：Project::applyStructureTransaction 只发 structureChanged(origin)，
+    // 这里统一处理跨栈撤销失效；画布连线重建与引擎同步由命令内的显式刷新完成。
+    connect(project, &Project::structureChanged, this,
+            [this, project](StructureEditOrigin origin) { invalidateReorderCommands(origin, project); });
+
     connect(project, &Project::dataSourceAdded, this, &MainWindow::onDataSourceAdded);
     connect(project, &Project::dataSourceRemoved, this, &MainWindow::onDataSourceRemoved);
 
@@ -4211,26 +4344,17 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 }
 
                 const int sourceRow = m_processTreeController->indexOfTopLevelItem(sourceItem);
-                int insertRow = insertRowForDrop();
+                const int insertRow = insertRowForDrop();
                 if (sourceRow < 0 || insertRow == sourceRow || insertRow == sourceRow + 1) {
                     dropEvent->setDropAction(Qt::MoveAction);
                     dropEvent->accept();
                     return true;
                 }
 
-                QTreeWidgetItem* movedItem = m_processTreeController->takeTopLevelItem(sourceRow);
-                if (insertRow > sourceRow) {
-                    --insertRow;
-                }
-                insertRow = qMax(0, qMin(insertRow, m_processTreeController->topLevelItemCount()));
-                m_processTreeController->insertTopLevelItem(insertRow, movedItem);
-                m_processTreeController->setCurrentItem(movedItem);
-
-                const QString instanceId = movedItem->data(0, Qt::UserRole + 1).toString();
-                if (Project* project = ProjectManager::instance().currentProject()) {
-                    project->moveModule(instanceId, insertRow);
-                }
-                m_modulesNeedSync = true;
+                // B3.4：事件在此被消费（返回 true），QTreeWidget 自身不会重排 item；
+                // 树/画布/引擎的刷新统一由 handleProcessTreeReorder 内的事务提交完成，
+                // 校验失败时按当前 displayOrder 复位。
+                handleProcessTreeReorder(sourceRow, insertRow);
 
                 dropEvent->setDropAction(Qt::MoveAction);
                 dropEvent->accept();
@@ -6408,6 +6532,330 @@ void MainWindow::onImportImage() {
     }
 }
 
+// ========== B3：流程树拖动、事务刷新与跨栈撤销失效 ==========
+
+QString MainWindow::lastStructureError() const {
+    return m_lastStructureError;
+}
+
+void MainWindow::setInvalidateNextReorderForTest(bool enabled) {
+    m_invalidateNextReorderForTest = enabled;
+}
+
+QString MainWindow::reorderProcessTreeForTest(int sourceRow, int insertRow) {
+    return handleProcessTreeReorder(sourceRow, insertRow);
+}
+
+void MainWindow::reportStructureEditError(const QString& error) {
+    m_lastStructureError = error;
+    if (error.isEmpty()) {
+        return;
+    }
+    Logger::instance().warning(error, "Flow");
+    if (statusBar()) {
+        statusBar()->showMessage(error, 5000);
+    }
+    emit structureEditFailed(error);
+}
+
+void MainWindow::invalidateReorderCommands(StructureEditOrigin origin, Project* project) {
+    if (origin == StructureEditOrigin::Gui || !project || !m_paramUndoStack) {
+        return;
+    }
+    const QString currentFingerprint = project->structureFingerprint();
+    for (int i = 0; i < m_paramUndoStack->count(); ++i) {
+        const QUndoCommand* stored = m_paramUndoStack->command(i);
+        QUndoCommand* command = const_cast<QUndoCommand*>(stored);
+        if (auto* reorder = dynamic_cast<ReorderLinearChainCommand*>(command)) {
+            if (currentFingerprint != reorder->beforeFingerprint() &&
+                currentFingerprint != reorder->afterFingerprint()) {
+                reorder->setObsolete(true);
+            }
+        }
+    }
+}
+
+FlowGraphCatalog MainWindow::currentStructureCatalog() const {
+    Project* project = ProjectManager::instance().currentProject();
+    FlowGraphCatalog catalog;
+    if (!project) {
+        return catalog;
+    }
+    if (m_flowLayoutCoordinator) {
+        return m_flowLayoutCoordinator->catalogForProject(*project);
+    }
+    // 回退：与 setupMainLayout 中注入的 catalogProvider 使用同一来源。
+    for (const ModuleInstance& instance : project->modules()) {
+        IModule* module = m_flowModules.value(instance.id, nullptr);
+        if (!module) {
+            continue;
+        }
+        FlowGraphModule graphModule;
+        graphModule.instanceId = instance.id;
+        graphModule.flowType = module->flowControlType();
+        graphModule.inputPorts = module->inputPorts();
+        graphModule.outputPorts = module->outputPorts();
+        catalog.modules.append(graphModule);
+    }
+    return catalog;
+}
+
+FlowOrderPlan MainWindow::currentStructurePlan() const {
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project) {
+        return FlowOrderPlan();
+    }
+    if (m_flowLayoutCoordinator) {
+        const FlowOrderPlan& cached = m_flowLayoutCoordinator->currentPlan();
+        if (cached.valid && cached.displayOrder.size() == project->modules().size()) {
+            return cached;
+        }
+        return m_flowLayoutCoordinator->planForProject(*project);
+    }
+
+    const FlowGraphCatalog catalog = currentStructureCatalog();
+    QString normalizeError;
+    const QList<ModuleConnection> normalized =
+        FlowGraphAnalyzer::normalizeConnections(catalog, project->connections(), &normalizeError);
+    if (!normalizeError.isEmpty()) {
+        return FlowOrderPlan();
+    }
+    QStringList moduleOrder;
+    moduleOrder.reserve(project->modules().size());
+    for (const ModuleInstance& instance : project->modules()) {
+        moduleOrder.append(instance.id);
+    }
+    return FlowGraphAnalyzer::analyze(catalog, normalized, moduleOrder);
+}
+
+QStringList MainWindow::currentDisplayOrder() const {
+    QStringList ids;
+    if (!m_processTreeController) {
+        return ids;
+    }
+    for (int i = 0; i < m_processTreeController->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* item = m_processTreeController->topLevelItem(i);
+        if (!item) {
+            continue;
+        }
+        const QString id = item->data(0, Qt::UserRole + 1).toString();
+        if (!id.isEmpty()) {
+            ids.append(id);
+        }
+    }
+    return ids;
+}
+
+QHash<QString, QPoint> MainWindow::captureModulePositions() const {
+    QHash<QString, QPoint> positions;
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project) {
+        return positions;
+    }
+    for (const ModuleInstance& instance : project->modules()) {
+        positions.insert(instance.id, QPoint(instance.posX, instance.posY));
+    }
+    return positions;
+}
+
+void MainWindow::refreshAfterStructureTransaction(const FlowOrderPlan& plan, const QHash<QString, QPoint>& positions) {
+    // 防重入：syncModulesToRunEngine 等间接路径不得递归触发刷新。
+    if (m_refreshingStructure) {
+        return;
+    }
+    m_refreshingStructure = true;
+    struct RefreshGuard {
+        bool* flag;
+        ~RefreshGuard() {
+            *flag = false;
+        }
+    } guard{&m_refreshingStructure};
+
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project) {
+        return;
+    }
+
+    // 1) 流程树按 displayOrder 排序
+    if (m_processTreeController && plan.valid) {
+        m_processTreeController->applyExecutionOrder(plan.displayOrder);
+    }
+
+    // 2) 画布连线按事务后的连接重建；3) 位置快照恢复
+    if (m_flowCanvas) {
+        const bool previousSyncing = m_flowCanvas->m_syncingFromProject;
+        m_flowCanvas->m_syncingFromProject = true;
+        m_flowCanvas->clearConnections();
+        for (const ModuleConnection& connection : project->connections()) {
+            const QString fromPort = connection.fromPort.isEmpty() ? QStringLiteral("image") : connection.fromPort;
+            const QString toPort = connection.toPort.isEmpty() ? QStringLiteral("image") : connection.toPort;
+            const QString edgeType = connection.edgeType.isEmpty() ? QStringLiteral("data") : connection.edgeType;
+            m_flowCanvas->addConnection(connection.fromModuleId, fromPort, connection.toModuleId, toPort, edgeType);
+        }
+        m_flowCanvas->m_syncingFromProject = previousSyncing;
+
+        for (auto it = positions.constBegin(); it != positions.constEnd(); ++it) {
+            if (FlowNodeItem* item = m_flowCanvas->nodeItem(it.key())) {
+                item->setPos(QPointF(it.value()));
+            }
+            project->setModulePosition(it.key(), it.value().x(), it.value().y());
+        }
+    }
+
+    // 结构变化后结果缓存失效（与 connectionAdded/Removed 处理保持一致）。
+    for (const ModuleInstance& instance : project->modules()) {
+        markModuleDirty(instance.id);
+    }
+
+    // 4) + 5) 引擎同步：顺序只由 Project 模块顺序与连接决定。
+    m_modulesNeedSync = true;
+    syncModulesToRunEngine();
+}
+
+QString MainWindow::handleProcessTreeReorder(int sourceRow, int insertRow) {
+    m_lastStructureError.clear();
+
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project || !m_processTreeController || !m_paramUndoStack) {
+        return tr("无法重排流程：工程或流程树未就绪");
+    }
+
+    const QStringList displayIds = currentDisplayOrder();
+    if (sourceRow < 0 || sourceRow >= displayIds.size()) {
+        return tr("无法重排流程：源节点无效");
+    }
+    const int targetRow = qBound(0, insertRow, displayIds.size());
+
+    const FlowOrderPlan plan = currentStructurePlan();
+    if (!plan.valid) {
+        return tr("无法重排流程：执行计划无效");
+    }
+
+    // 校验失败时按当前 displayOrder 复位流程树；校验阶段未改动画布连线。
+    const auto restoreView = [this, &plan]() {
+        if (m_processTreeController && plan.valid) {
+            m_processTreeController->applyExecutionOrder(plan.displayOrder);
+        }
+    };
+
+    const QString sourceId = displayIds.at(sourceRow);
+    const FlowOrderNode* sourceNode = nullptr;
+    QString beforeBranchLabel;
+    const auto labelOf = [&plan](const QString& id) {
+        for (const FlowOrderNode& node : plan.nodes) {
+            if (node.instanceId == id) {
+                return node.branchLabel;
+            }
+        }
+        return QString();
+    };
+    for (const FlowOrderNode& node : plan.nodes) {
+        if (node.instanceId == sourceId) {
+            sourceNode = &node;
+            break;
+        }
+    }
+    if (!sourceNode) {
+        return tr("无法重排流程：源节点不在执行计划中");
+    }
+    beforeBranchLabel = labelOf(sourceId);
+
+    // 规则 2：控制分支同层换序拒绝。
+    if (!beforeBranchLabel.isEmpty()) {
+        restoreView();
+        return tr("分支顺序由控制边决定，请调整连线");
+    }
+
+    QStringList withoutSource = displayIds;
+    withoutSource.removeAt(sourceRow);
+    int finalInsert = targetRow > sourceRow ? targetRow - 1 : targetRow;
+    finalInsert = qBound(0, finalInsert, withoutSource.size());
+
+    const QString beforeId = finalInsert > 0 ? withoutSource.at(finalInsert - 1) : QString();
+    const QString afterId = finalInsert < withoutSource.size() ? withoutSource.at(finalInsert) : QString();
+    const int beforeRank = beforeId.isEmpty() ? -1 : plan.rankOf(beforeId);
+    const int afterRank = afterId.isEmpty() ? -1 : plan.rankOf(afterId);
+    const bool sameLayer = beforeRank == sourceNode->rank || afterRank == sourceNode->rank;
+
+    if (!labelOf(beforeId).isEmpty() || !labelOf(afterId).isEmpty()) {
+        restoreView();
+        return tr("分支顺序由控制边决定，请调整连线");
+    }
+
+    QStringList newDisplayIds = withoutSource;
+    newDisplayIds.insert(finalInsert, sourceId);
+    if (newDisplayIds == displayIds) {
+        return QString(); // 顺序未变，无需事务
+    }
+
+    // before 快照：模块顺序、连接声明顺序、位置、指纹、会话与计划。
+    FlowGraphCandidate before;
+    before.orderedIds.reserve(project->modules().size());
+    for (const ModuleInstance& instance : project->modules()) {
+        before.orderedIds.append(instance.id);
+    }
+    before.connections = project->connections();
+    const QHash<QString, QPoint> beforePositions = captureModulePositions();
+    const QString beforeFingerprint = project->structureFingerprint();
+
+    // 构造候选（只读，不修改 Project）。
+    FlowGraphCandidate after;
+    QString candidateError;
+    if (sameLayer) {
+        // 规则 1：同层相互独立节点换序，只调整模块顺序，连接保持不变。
+        after.orderedIds = newDisplayIds;
+        after.connections = project->connections();
+    } else if (!FlowGraphAnalyzer::buildReorderedCandidate(*project, newDisplayIds, &after, &candidateError)) {
+        // 规则 5：其他跨层拖动拒绝，树/画布复位并提示，不入撤销栈。
+        restoreView();
+        const QString message = candidateError.isEmpty() ? tr("执行顺序由连接决定，请调整连线") : candidateError;
+        reportStructureEditError(message);
+        return message;
+    }
+
+    // 只读校验：端口/重复边/无环/控制结构/线性链端口模式。
+    const FlowGraphCatalog catalog = currentStructureCatalog();
+    FlowOrderPlan afterPlan;
+    QString validationError;
+    if (!FlowGraphAnalyzer::validateCandidate(catalog, after, &afterPlan, &validationError)) {
+        restoreView();
+        const QString message = validationError.isEmpty() ? tr("执行顺序由连接决定，请调整连线") : validationError;
+        reportStructureEditError(message);
+        return message;
+    }
+
+    // 位置快照：命令期间抑制自动布局，坐标原样保留并随 undo/redo 恢复。
+    const QHash<QString, QPoint> afterPositions = beforePositions;
+    const QString afterFingerprint = Project::structureFingerprintFor(after.orderedIds, after.connections);
+
+    bool firstRedoCommitted = false;
+    auto* command = new ReorderLinearChainCommand(this, project, before, after, beforePositions, afterPositions, plan,
+                                                  afterPlan, project->sessionToken(), beforeFingerprint,
+                                                  afterFingerprint, &firstRedoCommitted);
+
+    // 测试注入：模拟 push 之前发生的外部结构编辑（仅交换连接声明顺序即可改变指纹），
+    // 使 redo() 的 session + 指纹校验失败，命令 obsolete 且零残留。
+    if (m_invalidateNextReorderForTest) {
+        m_invalidateNextReorderForTest = false;
+        QList<ModuleConnection> rotated = project->connections();
+        if (rotated.size() >= 2) {
+            rotated.move(0, rotated.size() - 1);
+            project->setConnections(rotated);
+        }
+    }
+
+    m_paramUndoStack->push(command); // 首次 redo() 是唯一的事务提交
+    if (!firstRedoCommitted) {
+        // redo 失败时命令已 setObsolete 并被 QUndoStack 删除；工程与撤销栈均无残留。
+        restoreView();
+        const QString message =
+            m_lastStructureError.isEmpty() ? tr("结构校验失败，流程顺序未改变") : m_lastStructureError;
+        reportStructureEditError(message);
+        return message;
+    }
+    return QString();
+}
+
 bool MainWindow::syncModulesToRunEngine() {
     if (!m_processTreeController) {
         return false;
@@ -6417,14 +6865,40 @@ bool MainWindow::syncModulesToRunEngine() {
         return true;
     }
 
+    // B3.1b / P0-3：引擎模块的加入顺序必须只由 Project::modules()（分析器的
+    // 规范顺序）决定，不能跟随流程树的 displayOrder，否则 FIFO dataOrder 会漂移。
+    // 流程树在这里只提供 instanceId -> QTreeWidgetItem* 的实例映射。
+    Project* project = ProjectManager::instance().currentProject();
+    if (!project) {
+        return false;
+    }
+
+    QHash<QString, QTreeWidgetItem*> itemById;
+    itemById.reserve(m_processTreeController->topLevelItemCount());
+    for (int i = 0; i < m_processTreeController->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* item = m_processTreeController->topLevelItem(i);
+        if (!item) {
+            continue;
+        }
+        const QString instanceId = item->data(0, Qt::UserRole + 1).toString();
+        if (!instanceId.isEmpty() && !itemById.contains(instanceId)) {
+            itemById.insert(instanceId, item);
+        }
+    }
+
     RunEngine& engine = RunEngine::instance();
     m_processTreeController->clearInstanceItemMap();
     engine.clearModules();
 
-    for (int i = 0; i < m_processTreeController->topLevelItemCount(); ++i) {
-        QTreeWidgetItem* item = m_processTreeController->topLevelItem(i);
-        const QString instanceName = item->data(0, Qt::UserRole + 1).toString();
-        if (instanceName.isEmpty() || !m_flowModules.contains(instanceName)) {
+    for (const ModuleInstance& instance : project->modules()) {
+        const QString& instanceName = instance.id;
+        QTreeWidgetItem* item = itemById.value(instanceName, nullptr);
+        if (!item) {
+            qWarning() << "MainWindow::syncModulesToRunEngine: no process tree item for" << instanceName;
+            continue;
+        }
+        if (!m_flowModules.contains(instanceName)) {
+            qWarning() << "MainWindow::syncModulesToRunEngine: no runtime module for" << instanceName;
             continue;
         }
 
@@ -6443,16 +6917,12 @@ bool MainWindow::syncModulesToRunEngine() {
         m_processTreeController->setInstanceItem(instanceName, item);
 
         // 阶段 B 复核: GUI 同步 enabled/breakpoint 到 RunEngine
-        if (Project* project = ProjectManager::instance().currentProject()) {
-            if (auto inst = project->moduleById(instanceName)) {
-                engine.setModuleDisabled(instanceName, !inst->enabled);
-                engine.setBreakpoint(instanceName, inst->breakpoint);
-            }
-        }
+        engine.setModuleDisabled(instanceName, !instance.enabled);
+        engine.setBreakpoint(instanceName, instance.breakpoint);
     }
 
     QString orderError;
-    if (!engine.buildExecutionOrder(ProjectManager::instance().currentProject(), orderError)) {
+    if (!engine.buildExecutionOrder(project, orderError)) {
         Logger::instance().error(orderError, "Run");
         engine.clearModules();
         m_processTreeController->clearInstanceItemMap();

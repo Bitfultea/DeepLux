@@ -18,9 +18,11 @@
 #include <QImage>
 #include <QJsonDocument>
 #include <QRect>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
+#include <QUndoStack>
 #include <QtTest/QtTest>
 #include <atomic>
 
@@ -1340,6 +1342,112 @@ private slots:
         QCOMPARE(stopped.value("status").toString(), QStringLiteral("stopped"));
         QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 5000);
         QVERIFY(!RunEngine::instance().isBusy());
+    }
+
+    // B3/P0-2：Agent 结构编辑必须补发带来源的 structureChanged(Agent)；
+    // 每个结构命令的 redo/undo 各恰好一次，非结构工具零信号。
+    void testStructureEditsEmitAgentOriginSignals() {
+        AgentActor actor;
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+
+        QSignalSpy structureSpy(project, &Project::structureChanged);
+        QVERIFY(structureSpy.isValid());
+
+        const QJsonObject added =
+            actor.executeTool("add_module", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "grab"}});
+        QVERIFY2(!added.contains("error"), qPrintable(added.value("error").toString()));
+        QCOMPARE(structureSpy.count(), 1);
+        QCOMPARE(static_cast<int>(structureSpy.takeFirst().at(0).value<StructureEditOrigin>()),
+                 static_cast<int>(StructureEditOrigin::Agent));
+
+        const QJsonObject second =
+            actor.executeTool("add_module", QJsonObject{{"plugin", "MeasureCircle"}, {"instanceName", "measure"}});
+        QVERIFY2(!second.contains("error"), qPrintable(second.value("error").toString()));
+        QCOMPARE(structureSpy.count(), 1);
+        QCOMPARE(static_cast<int>(structureSpy.takeFirst().at(0).value<StructureEditOrigin>()),
+                 static_cast<int>(StructureEditOrigin::Agent));
+
+        const QJsonObject connected =
+            actor.executeTool("connect_modules", QJsonObject{{"fromId", "grab"}, {"toId", "measure"}});
+        QVERIFY2(!connected.contains("error"), qPrintable(connected.value("error").toString()));
+        QCOMPARE(project->connections().size(), 1);
+        QCOMPARE(structureSpy.count(), 1);
+        QCOMPARE(static_cast<int>(structureSpy.takeFirst().at(0).value<StructureEditOrigin>()),
+                 static_cast<int>(StructureEditOrigin::Agent));
+
+        // 只读工具不得产生结构信号。
+        const QJsonObject state = actor.executeTool("get_flow_state", QJsonObject());
+        Q_UNUSED(state)
+        QCOMPARE(structureSpy.count(), 0);
+
+        // 一次 Undo 恢复连接，各自恰好一次结构信号；一次 Redo 再恢复。
+        actor.undoStack()->undo();
+        QCOMPARE(structureSpy.count(), 1);
+        QCOMPARE(static_cast<int>(structureSpy.takeFirst().at(0).value<StructureEditOrigin>()),
+                 static_cast<int>(StructureEditOrigin::Agent));
+        QCOMPARE(project->connections().size(), 0);
+
+        actor.undoStack()->redo();
+        QCOMPARE(structureSpy.count(), 1);
+        QCOMPARE(static_cast<int>(structureSpy.takeFirst().at(0).value<StructureEditOrigin>()),
+                 static_cast<int>(StructureEditOrigin::Agent));
+        QCOMPARE(project->connections().size(), 1);
+    }
+
+    // B3：origin=Agent 的结构信号不得把 Agent 自己的撤销命令标记为 obsolete。
+    void testAgentOriginDoesNotInvalidateOwnUndoStack() {
+        AgentActor actor;
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        const QJsonObject added =
+            actor.executeTool("add_module", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "grab"}});
+        QVERIFY2(!added.contains("error"), qPrintable(added.value("error").toString()));
+        QVERIFY(project->moduleById(QStringLiteral("grab")).has_value());
+        QVERIFY(actor.undoStack()->canUndo());
+
+        actor.undoStack()->undo();
+        QVERIFY(!project->moduleById(QStringLiteral("grab")).has_value());
+        actor.undoStack()->redo();
+        QVERIFY(project->moduleById(QStringLiteral("grab")).has_value());
+    }
+
+    // B3：反向交错。外部（Gui）结构编辑后，Agent 撤销命令失效，
+    // undo/redo 都不得覆盖后续外部编辑。
+    void testExternalGuiOriginInvalidatesAgentUndo() {
+        AgentActor actor;
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        const QJsonObject added =
+            actor.executeTool("add_module", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "grab"}});
+        QVERIFY2(!added.contains("error"), qPrintable(added.value("error").toString()));
+        QVERIFY(project->moduleById(QStringLiteral("grab")).has_value());
+
+        ModuleInstance external;
+        external.id = QStringLiteral("external");
+        external.moduleId = QStringLiteral("GrabImage");
+        external.name = QStringLiteral("External");
+        project->addModule(external);
+        project->notifyStructureChange(StructureEditOrigin::Gui);
+
+        QCOMPARE(actor.undoStack()->count(), 1);
+        const QUndoCommand* pending = actor.undoStack()->command(0);
+        QVERIFY(pending != nullptr);
+        QVERIFY2(pending->isObsolete(), "GUI origin must obsolete the pending Agent command");
+
+        const QString fingerprintBefore = project->structureFingerprint();
+        const int moduleCountBefore = project->modules().size();
+
+        actor.undoStack()->undo();
+        QCOMPARE(project->modules().size(), moduleCountBefore);
+        QVERIFY(project->moduleById(QStringLiteral("grab")).has_value());
+        QVERIFY(project->moduleById(QStringLiteral("external")).has_value());
+        QCOMPARE(project->structureFingerprint(), fingerprintBefore);
+
+        actor.undoStack()->redo();
+        QCOMPARE(project->modules().size(), moduleCountBefore);
+        QVERIFY(project->moduleById(QStringLiteral("grab")).has_value());
+        QCOMPARE(project->structureFingerprint(), fingerprintBefore);
     }
 };
 

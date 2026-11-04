@@ -48,6 +48,7 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
+#include <QUndoStack>
 #include <QVector3D>
 #include <QtTest/QtTest>
 #include <atomic>
@@ -56,6 +57,7 @@
 #include <core/base/ModuleBase.h>
 #include <core/deeplux/PayloadTypes.h>
 #include <core/engine/FlowExecutionService.h>
+#include <core/engine/FlowGraphAnalyzer.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>
@@ -63,6 +65,8 @@
 #include <functional>
 #include <plugins/image_processing/CropImage/CropImagePlugin.h>
 #include <ui/ThemeManager.h>
+#include <ui/controllers/FlowLayoutCoordinator.h>
+#include <ui/controllers/ProcessTreeController.h>
 #include <ui/dialogs/SamAnnotatorDialog.h>
 #include <ui/display/3d/Viewport3DContent.h>
 #include <ui/display/ImageRefreshCoalescer.h>
@@ -112,6 +116,18 @@ protected:
 
     QWidget* createConfigWidget() override {
         return nullptr;
+    }
+};
+
+/// B3：控制分支节点探针。仅覆盖 flowControlType，用于构造带 branchLabel 的执行计划，
+/// 验证 §7.2「分支顺序由控制边决定」的拖动拒绝路径。端口保持默认空声明，
+/// 与 MainWindow 的 catalogProvider 契约一致。
+class MainWindowBranchProbeModule : public MainWindowOutputProbeModule {
+public:
+    explicit MainWindowBranchProbeModule(const QString& instanceId) : MainWindowOutputProbeModule(instanceId) {}
+
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::Conditional;
     }
 };
 
@@ -212,6 +228,111 @@ bool waitForServiceIdle(int timeoutMs = 5000) {
         QTest::qWait(2);
     }
 }
+
+// ===== B3：流程树重排集成测试的确定性夹具 =====
+
+/// Project 的模块声明顺序（分析器的规范 moduleOrder，与流程树展示顺序无关）。
+QStringList projectModuleIds(const Project& project) {
+    QStringList ids;
+    ids.reserve(project.modules().size());
+    for (const ModuleInstance& instance : project.modules())
+        ids.append(instance.id);
+    return ids;
+}
+
+/// 流程树当前展示顺序（Qt::UserRole+1 保存实例 ID）。
+QStringList treeInstanceIds(const QTreeWidget& tree) {
+    QStringList ids;
+    for (int row = 0; row < tree.topLevelItemCount(); ++row) {
+        const QTreeWidgetItem* item = tree.topLevelItem(row);
+        ids.append(item ? item->data(0, Qt::UserRole + 1).toString() : QString());
+    }
+    return ids;
+}
+
+/// 连接声明序列的可比较文本（含声明顺序、端口与边类型）。
+QStringList connectionKeys(const QList<ModuleConnection>& connections) {
+    QStringList keys;
+    keys.reserve(connections.size());
+    for (const ModuleConnection& connection : connections) {
+        keys.append(QStringLiteral("%1.%2>%3.%4:%5")
+                        .arg(connection.fromModuleId, connection.fromPort, connection.toModuleId, connection.toPort,
+                             connection.edgeType));
+    }
+    return keys;
+}
+
+ModuleConnection b3DataEdge(const QString& from, const QString& to) {
+    ModuleConnection connection;
+    connection.fromModuleId = from;
+    connection.toModuleId = to;
+    connection.fromPort = QStringLiteral("image");
+    connection.toPort = QStringLiteral("image");
+    connection.edgeType = QStringLiteral("data");
+    return connection;
+}
+
+ModuleConnection b3ControlEdge(const QString& from, const QString& fromPort, const QString& to, const QString& toPort) {
+    ModuleConnection connection;
+    connection.fromModuleId = from;
+    connection.toModuleId = to;
+    connection.fromPort = fromPort;
+    connection.toPort = toPort;
+    connection.edgeType = QStringLiteral("control");
+    return connection;
+}
+
+struct B3Fixture {
+    MainWindow* window = nullptr;
+    Project* project = nullptr;
+    FlowLayoutCoordinator* coordinator = nullptr;
+    ProcessTreeController* treeController = nullptr;
+    QUndoStack* undoStack = nullptr;
+    QTreeWidget* tree = nullptr;
+    QList<MainWindowOutputProbeModule*> runtimeModules;
+};
+
+/// 构造工程 + 运行时探针模块，并关闭自动布局，保证断言不受 30ms 合并布局异步改写。
+bool setupB3Fixture(MainWindow& window, const QStringList& ids, B3Fixture* fixture) {
+    if (!fixture)
+        return false;
+    *fixture = B3Fixture();
+    fixture->window = &window;
+    fixture->coordinator = window.findChild<FlowLayoutCoordinator*>();
+    if (!fixture->coordinator)
+        return false;
+    // 确定性屏障：抑制自动布局，currentStructurePlan() 因此始终按当前工程实时计算。
+    fixture->coordinator->suppressAutoLayout(true);
+    fixture->project = ProjectManager::instance().newProject();
+    if (!fixture->project)
+        return false;
+    fixture->tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    fixture->treeController = fixture->coordinator->processTreeController();
+    fixture->undoStack = window.findChild<QUndoStack*>();
+    if (!fixture->tree || !fixture->treeController || !fixture->undoStack)
+        return false;
+    for (const QString& id : ids) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("OutputProbe");
+        instance.name = id;
+        fixture->project->addModule(instance);
+        auto* module = new MainWindowOutputProbeModule(id);
+        module->initialize();
+        window.registerFlowModule(id, module);
+        fixture->runtimeModules.append(module);
+    }
+    QCoreApplication::processEvents();
+    return true;
+}
+
+/// 触发一次真实引擎同步：syncModulesToRunEngine 是 protected Q_INVOKABLE，
+/// 通过元对象调用；markModulesNeedSync 保证不命中早退分支。
+bool syncEngine(MainWindow& window, ProcessTreeController* controller) {
+    if (controller)
+        controller->markModulesNeedSync();
+    return QMetaObject::invokeMethod(&window, "syncModulesToRunEngine", Qt::DirectConnection);
+}
 } // namespace
 
 class TestMainWindow : public QObject {
@@ -299,6 +420,21 @@ private slots:
     void testDataSourceVisibilityCheckboxRebuildsMainViewport();
     void testMixedDataSourcesKeep2DVisibleAndClearStaleMode();
     void testRenderMenuOnlyShowsModesSupportedByVisibleClouds();
+
+    // B3.1b：引擎顺序与展示顺序解耦（P0-3）
+    void testDisplayOrderReorderKeepsEngineDataOrder();
+    // B3.3/B3.4：无连接顺序列表跨层拖动，一次事务/一条撤销记录 + Undo/Redo
+    void testUnconnectedListReorderCommitsOneTransaction();
+    void testConsecutiveReordersUndoRedoRestoreSnapshots();
+    // B3.4：已连接简单线性链跨层重连与引擎同步
+    void testConnectedLinearChainReorderReconnectsAndSyncsEngine();
+    void testSameLayerIndependentNodesReorder();
+    void testControlBranchReorderRejectedWithoutMutation();
+    void testBranchMergeCrossLayerReorderRejected();
+    // B3.3：结构指纹、跨栈失效与提交失败零残留
+    void testConnectionDeclarationOrderChangesFingerprint();
+    void testInvalidatedReorderCommandLeavesNoResidue();
+    void testAgentOriginInvalidatesGuiReorderUndo();
 
 private:
     QTemporaryDir m_appDataDir;
@@ -3866,7 +4002,8 @@ void TestMainWindow::testBackgroundExecutionKeepsUiResponsive() {
              "sustained tick growth must be observed while the job is still running");
     // GUI 槽可执行：投递到 GUI 线程的 queued 调用在 job 运行期间被处理。
     std::atomic_bool slotExecuted{false};
-    QMetaObject::invokeMethod(&window, [&slotExecuted]() { slotExecuted.store(true); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(
+        &window, [&slotExecuted]() { slotExecuted.store(true); }, Qt::QueuedConnection);
     QTRY_VERIFY_WITH_TIMEOUT(slotExecuted.load(), 2000);
 
     QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 30000);
@@ -4980,6 +5117,436 @@ void TestMainWindow::testInspectorRuntimeStateSyncsToRunEngine() {
     // 备注编辑由 noteChanged 信号写回（此处不模拟焦点事件，避免 offscreen 下不稳定）
     auto* noteEdit = inspector->findChild<QLineEdit*>(QStringLiteral("InspectorNoteEdit"));
     QVERIFY(noteEdit != nullptr);
+}
+
+// ========== B3：流程树排序、拖动与安全撤销 ==========
+
+void TestMainWindow::testDisplayOrderReorderKeepsEngineDataOrder() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+
+    // 合法控制反例：Project 顺序 [A,B,C]，数据边 A.image→B.image，控制边 C.next→A.control。
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("A"), QStringLiteral("B")));
+    fixture.project->addConnection(
+        b3ControlEdge(QStringLiteral("C"), QStringLiteral("next"), QStringLiteral("A"), QStringLiteral("control")));
+    QCoreApplication::processEvents();
+
+    // 用真实 FlowGraphAnalyzer 生成计划，不手工伪造展示顺序。
+    const FlowGraphCatalog catalog = fixture.coordinator->catalogForProject(*fixture.project);
+    QString normalizeError;
+    const QList<ModuleConnection> normalized =
+        FlowGraphAnalyzer::normalizeConnections(catalog, fixture.project->connections(), &normalizeError);
+    QVERIFY2(normalizeError.isEmpty(), qPrintable(normalizeError));
+    const FlowOrderPlan computed = FlowGraphAnalyzer::analyze(catalog, normalized, projectModuleIds(*fixture.project));
+    QVERIFY(computed.valid);
+    QCOMPARE(computed.dataOrder, QStringList({QStringLiteral("A"), QStringLiteral("C"), QStringLiteral("B")}));
+    QCOMPARE(computed.displayOrder, QStringList({QStringLiteral("C"), QStringLiteral("A"), QStringLiteral("B")}));
+
+    const FlowOrderPlan coordinatorPlan = fixture.coordinator->planForProject(*fixture.project);
+    QVERIFY(coordinatorPlan.valid);
+    QCOMPARE(coordinatorPlan.dataOrder, computed.dataOrder);
+    QCOMPARE(coordinatorPlan.displayOrder, computed.displayOrder);
+
+    // 流程树按 displayOrder 展示，引擎仍由 Project 模块顺序 + 连接得到 dataOrder。
+    fixture.treeController->applyExecutionOrder(computed.displayOrder);
+    QCOMPARE(treeInstanceIds(*fixture.tree), computed.displayOrder);
+    QVERIFY(syncEngine(window, fixture.treeController));
+    QCOMPARE(RunEngine::instance().executionOrderForTest(), computed.dataOrder);
+
+    // 再次改变树顺序并重新同步：引擎顺序不随展示顺序漂移（P0-3）。
+    fixture.treeController->applyExecutionOrder(
+        QStringList({QStringLiteral("B"), QStringLiteral("C"), QStringLiteral("A")}));
+    QCOMPARE(treeInstanceIds(*fixture.tree),
+             QStringList({QStringLiteral("B"), QStringLiteral("C"), QStringLiteral("A")}));
+    QVERIFY(syncEngine(window, fixture.treeController));
+    QCOMPARE(RunEngine::instance().executionOrderForTest(), computed.dataOrder);
+
+    // 真实 GUI 拖动分发在含控制边的图上被拒绝，同样不改变工程数据与引擎顺序。
+    const QString fingerprintBefore = fixture.project->structureFingerprint();
+    const QString rejection = window.reorderProcessTreeForTest(1, 0);
+    QVERIFY(!rejection.isEmpty());
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintBefore);
+    QVERIFY(syncEngine(window, fixture.treeController));
+    QCOMPARE(RunEngine::instance().executionOrderForTest(), computed.dataOrder);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testUnconnectedListReorderCommitsOneTransaction() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+
+    const QStringList initial({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")});
+    QCOMPARE(projectModuleIds(*fixture.project), initial);
+    QCOMPARE(treeInstanceIds(*fixture.tree), initial);
+    const QString fingerprintBefore = fixture.project->structureFingerprint();
+    const int undoCountBefore = fixture.undoStack->count();
+    QCOMPARE(undoCountBefore, 0);
+
+    QSignalSpy structureSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(structureSpy.isValid());
+    QSignalSpy failedSpy(&window, &MainWindow::structureEditFailed);
+    QVERIFY(failedSpy.isValid());
+
+    // 无连接顺序列表的跨层拖动：A 从第 0 行移动到第 2 行之前（B 之后、C 之前）。
+    const QString error = window.reorderProcessTreeForTest(0, 2);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(window.lastStructureError().isEmpty());
+    QCOMPARE(failedSpy.count(), 0);
+
+    // K4：一次拖动（仅 redo 提交路径）只产生一次 structureChanged、一条撤销记录。
+    QCOMPARE(structureSpy.count(), 1);
+    QCOMPARE(static_cast<int>(structureSpy.takeFirst().at(0).value<StructureEditOrigin>()),
+             static_cast<int>(StructureEditOrigin::Gui));
+    QCOMPARE(fixture.undoStack->count(), undoCountBefore + 1);
+
+    const QStringList reordered({QStringLiteral("B"), QStringLiteral("A"), QStringLiteral("C")});
+    QCOMPARE(projectModuleIds(*fixture.project), reordered);
+    QVERIFY(fixture.project->connections().isEmpty());
+    QCOMPARE(treeInstanceIds(*fixture.tree), reordered);
+    QVERIFY(fixture.project->structureFingerprint() != fingerprintBefore);
+
+    // 一次 Undo 恢复拖拽前快照；一次 Redo 回到拖拽后。undo/redo 各自发一次结构信号。
+    fixture.undoStack->undo();
+    QCOMPARE(projectModuleIds(*fixture.project), initial);
+    QCOMPARE(treeInstanceIds(*fixture.tree), initial);
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintBefore);
+    QCOMPARE(structureSpy.count(), 1);
+
+    fixture.undoStack->redo();
+    QCOMPARE(projectModuleIds(*fixture.project), reordered);
+    QCOMPARE(treeInstanceIds(*fixture.tree), reordered);
+    QCOMPARE(structureSpy.count(), 2);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testConsecutiveReordersUndoRedoRestoreSnapshots() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+
+    const QStringList initial({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")});
+    const QStringList c1({QStringLiteral("B"), QStringLiteral("A"), QStringLiteral("C")});
+    const QStringList c2({QStringLiteral("C"), QStringLiteral("B"), QStringLiteral("A")});
+
+    const QString firstError = window.reorderProcessTreeForTest(0, 2);
+    QVERIFY2(firstError.isEmpty(), qPrintable(firstError));
+    QCOMPARE(projectModuleIds(*fixture.project), c1);
+    const QString secondError = window.reorderProcessTreeForTest(2, 0);
+    QVERIFY2(secondError.isEmpty(), qPrintable(secondError));
+    QCOMPARE(projectModuleIds(*fixture.project), c2);
+    QCOMPARE(fixture.undoStack->count(), 2);
+
+    fixture.undoStack->undo();
+    QCOMPARE(projectModuleIds(*fixture.project), c1);
+    fixture.undoStack->undo();
+    QCOMPARE(projectModuleIds(*fixture.project), initial);
+    fixture.undoStack->redo();
+    QCOMPARE(projectModuleIds(*fixture.project), c1);
+    fixture.undoStack->redo();
+    QCOMPARE(projectModuleIds(*fixture.project), c2);
+    QCOMPARE(treeInstanceIds(*fixture.tree), c2);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testConnectedLinearChainReorderReconnectsAndSyncsEngine() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("A"), QStringLiteral("B")));
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("B"), QStringLiteral("C")));
+    QCoreApplication::processEvents();
+
+    const QStringList beforeConnections = connectionKeys(fixture.project->connections());
+    const QString fingerprintBefore = fixture.project->structureFingerprint();
+    QSignalSpy structureSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(structureSpy.isValid());
+
+    // C 从链尾拖到链首：同一端口模式按新顺序重连。
+    const QString error = window.reorderProcessTreeForTest(2, 0);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(structureSpy.count(), 1);
+    QCOMPARE(fixture.undoStack->count(), 1);
+    QVERIFY(fixture.project->structureFingerprint() != fingerprintBefore);
+
+    const QStringList reordered({QStringLiteral("C"), QStringLiteral("A"), QStringLiteral("B")});
+    QCOMPARE(projectModuleIds(*fixture.project), reordered);
+    QCOMPARE(connectionKeys(fixture.project->connections()),
+             QStringList({QStringLiteral("C.image>A.image:data"), QStringLiteral("A.image>B.image:data")}));
+    QCOMPARE(treeInstanceIds(*fixture.tree), reordered);
+    QCOMPARE(RunEngine::instance().executionOrderForTest(), reordered);
+
+    fixture.undoStack->undo();
+    QCOMPARE(projectModuleIds(*fixture.project),
+             QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}));
+    QCOMPARE(connectionKeys(fixture.project->connections()), beforeConnections);
+    QCOMPARE(treeInstanceIds(*fixture.tree),
+             QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}));
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintBefore);
+    QCOMPARE(RunEngine::instance().executionOrderForTest(),
+             QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}));
+
+    fixture.undoStack->redo();
+    QCOMPARE(projectModuleIds(*fixture.project), reordered);
+    QCOMPARE(RunEngine::instance().executionOrderForTest(), reordered);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testSameLayerIndependentNodesReorder() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+    // A→B 使 A(rank 0)、B(rank 1)，孤立节点 C 保持 rank 0：A/C 同层且相互独立。
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("A"), QStringLiteral("B")));
+    QCoreApplication::processEvents();
+
+    const FlowOrderPlan plan = fixture.coordinator->planForProject(*fixture.project);
+    QVERIFY(plan.valid);
+    QCOMPARE(plan.displayOrder, QStringList({QStringLiteral("A"), QStringLiteral("C"), QStringLiteral("B")}));
+    QCOMPARE(plan.rankOf(QStringLiteral("A")), 0);
+    QCOMPARE(plan.rankOf(QStringLiteral("C")), 0);
+    QCOMPARE(plan.rankOf(QStringLiteral("B")), 1);
+
+    fixture.treeController->applyExecutionOrder(plan.displayOrder);
+    QCOMPARE(treeInstanceIds(*fixture.tree), plan.displayOrder);
+
+    const QStringList beforeConnections = connectionKeys(fixture.project->connections());
+    const QString fingerprintBefore = fixture.project->structureFingerprint();
+    QSignalSpy structureSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(structureSpy.isValid());
+
+    // 同层换序：C 移到 A 之前，只调整模块顺序，连接声明保持不变。
+    const QString error = window.reorderProcessTreeForTest(1, 0);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(structureSpy.count(), 1);
+    QCOMPARE(fixture.undoStack->count(), 1);
+    QCOMPARE(projectModuleIds(*fixture.project),
+             QStringList({QStringLiteral("C"), QStringLiteral("A"), QStringLiteral("B")}));
+    QCOMPARE(connectionKeys(fixture.project->connections()), beforeConnections);
+    QCOMPARE(treeInstanceIds(*fixture.tree),
+             QStringList({QStringLiteral("C"), QStringLiteral("A"), QStringLiteral("B")}));
+    QVERIFY(fixture.project->structureFingerprint() != fingerprintBefore);
+
+    fixture.undoStack->undo();
+    QCOMPARE(projectModuleIds(*fixture.project),
+             QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}));
+    QCOMPARE(connectionKeys(fixture.project->connections()), beforeConnections);
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintBefore);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testControlBranchReorderRejectedWithoutMutation() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(setupB3Fixture(window, QStringList({QStringLiteral("IF"), QStringLiteral("T"), QStringLiteral("F")}),
+                           &fixture));
+    auto* branchModule = new MainWindowBranchProbeModule(QStringLiteral("IF"));
+    branchModule->initialize();
+    window.registerFlowModule(QStringLiteral("IF"), branchModule);
+    fixture.runtimeModules.append(branchModule);
+
+    fixture.project->addConnection(
+        b3ControlEdge(QStringLiteral("IF"), QStringLiteral("true"), QStringLiteral("T"), QStringLiteral("control")));
+    fixture.project->addConnection(
+        b3ControlEdge(QStringLiteral("IF"), QStringLiteral("false"), QStringLiteral("F"), QStringLiteral("control")));
+    QCoreApplication::processEvents();
+
+    const FlowOrderPlan plan = fixture.coordinator->planForProject(*fixture.project);
+    QVERIFY(plan.valid);
+    QCOMPARE(plan.displayOrder, QStringList({QStringLiteral("IF"), QStringLiteral("T"), QStringLiteral("F")}));
+    fixture.treeController->applyExecutionOrder(plan.displayOrder);
+    QCOMPARE(treeInstanceIds(*fixture.tree), plan.displayOrder);
+
+    const QString fingerprintBefore = fixture.project->structureFingerprint();
+    const QStringList beforeConnections = connectionKeys(fixture.project->connections());
+    const bool modifiedBefore = fixture.project->isModified();
+    const int undoCountBefore = fixture.undoStack->count();
+    QSignalSpy structureSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(structureSpy.isValid());
+
+    // 拖动分支目标节点：分支顺序由控制边决定，直接拒绝并复位。
+    const QString error = window.reorderProcessTreeForTest(1, 3);
+    QVERIFY(!error.isEmpty());
+    QCOMPARE(structureSpy.count(), 0);
+    QCOMPARE(fixture.undoStack->count(), undoCountBefore);
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintBefore);
+    QCOMPARE(connectionKeys(fixture.project->connections()), beforeConnections);
+    QCOMPARE(projectModuleIds(*fixture.project),
+             QStringList({QStringLiteral("IF"), QStringLiteral("T"), QStringLiteral("F")}));
+    QCOMPARE(fixture.project->isModified(), modifiedBefore);
+    QCOMPARE(treeInstanceIds(*fixture.tree), plan.displayOrder);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testBranchMergeCrossLayerReorderRejected() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+    // 汇合图：A/B 都连到 C，重连候选必须拒绝。
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("A"), QStringLiteral("C")));
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("B"), QStringLiteral("C")));
+    QCoreApplication::processEvents();
+
+    const FlowOrderPlan plan = fixture.coordinator->planForProject(*fixture.project);
+    QVERIFY(plan.valid);
+    QCOMPARE(plan.displayOrder, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}));
+    fixture.treeController->applyExecutionOrder(plan.displayOrder);
+
+    const QString fingerprintBefore = fixture.project->structureFingerprint();
+    const QStringList beforeConnections = connectionKeys(fixture.project->connections());
+    const bool modifiedBefore = fixture.project->isModified();
+    const int undoCountBefore = fixture.undoStack->count();
+    QSignalSpy structureSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(structureSpy.isValid());
+
+    const QString error = window.reorderProcessTreeForTest(2, 0);
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!window.lastStructureError().isEmpty());
+    QCOMPARE(structureSpy.count(), 0);
+    QCOMPARE(fixture.undoStack->count(), undoCountBefore);
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintBefore);
+    QCOMPARE(connectionKeys(fixture.project->connections()), beforeConnections);
+    QCOMPARE(projectModuleIds(*fixture.project),
+             QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}));
+    QCOMPARE(fixture.project->isModified(), modifiedBefore);
+    QCOMPARE(treeInstanceIds(*fixture.tree), plan.displayOrder);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testConnectionDeclarationOrderChangesFingerprint() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+
+    QList<ModuleConnection> connections;
+    connections.append(b3DataEdge(QStringLiteral("A"), QStringLiteral("B")));
+    connections.append(b3DataEdge(QStringLiteral("B"), QStringLiteral("C")));
+    const QString original = Project::structureFingerprintFor(projectModuleIds(*fixture.project), connections);
+
+    QList<ModuleConnection> rotated = connections;
+    rotated.move(0, rotated.size() - 1);
+    const QString rotatedFingerprint = Project::structureFingerprintFor(projectModuleIds(*fixture.project), rotated);
+    QVERIFY(original != rotatedFingerprint);
+    QVERIFY(original != Project::structureFingerprintFor(
+                            QStringList({QStringLiteral("C"), QStringLiteral("B"), QStringLiteral("A")}), connections));
+    QCOMPARE(original, Project::structureFingerprintFor(projectModuleIds(*fixture.project), connections));
+
+    // setConnections 是静默注入：只改变连接声明顺序，不发出任何结构信号。
+    QSignalSpy structureSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(structureSpy.isValid());
+    fixture.project->setConnections(rotated);
+    QCOMPARE(connectionKeys(fixture.project->connections()), connectionKeys(rotated));
+    QCOMPARE(fixture.project->structureFingerprint(), rotatedFingerprint);
+    QCOMPARE(structureSpy.count(), 0);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testInvalidatedReorderCommandLeavesNoResidue() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("A"), QStringLiteral("B")));
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("B"), QStringLiteral("C")));
+    QCoreApplication::processEvents();
+
+    const QStringList idsBefore = projectModuleIds(*fixture.project);
+    const QStringList connectionsBefore = connectionKeys(fixture.project->connections());
+    const int undoCountBefore = fixture.undoStack->count();
+    QSignalSpy structureSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(structureSpy.isValid());
+
+    // 注入：候选构造完成后、push 之前静默旋转连接声明顺序，使首次 redo 的指纹校验失败。
+    window.setInvalidateNextReorderForTest(true);
+    const QString error = window.reorderProcessTreeForTest(2, 0);
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!window.lastStructureError().isEmpty());
+    QCOMPARE(structureSpy.count(), 0);
+    QCOMPARE(projectModuleIds(*fixture.project), idsBefore);
+    QVERIFY(fixture.undoStack->count() <= undoCountBefore + 1);
+
+    QStringList rotatedExpected = connectionsBefore;
+    rotatedExpected.move(0, rotatedExpected.size() - 1);
+    QCOMPARE(connectionKeys(fixture.project->connections()), rotatedExpected);
+
+    // 失效命令不可执行：Undo/Redo 都是空操作，且不得留下可撤销记录。
+    const QString fingerprintAfterFailure = fixture.project->structureFingerprint();
+    fixture.undoStack->undo();
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintAfterFailure);
+    fixture.undoStack->redo();
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintAfterFailure);
+    QCOMPARE(fixture.undoStack->count(), undoCountBefore);
+    QCOMPARE(projectModuleIds(*fixture.project), idsBefore);
+
+    // 注入只作用一次；后续拖动仍可正常提交一次事务。
+    QSignalSpy secondSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(secondSpy.isValid());
+    const QString secondError = window.reorderProcessTreeForTest(2, 0);
+    QVERIFY2(secondError.isEmpty(), qPrintable(secondError));
+    QCOMPARE(secondSpy.count(), 1);
+    QCOMPARE(fixture.undoStack->count(), undoCountBefore + 1);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testAgentOriginInvalidatesGuiReorderUndo() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("A"), QStringLiteral("B")));
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("B"), QStringLiteral("C")));
+    QCoreApplication::processEvents();
+
+    const QString firstError = window.reorderProcessTreeForTest(2, 0);
+    QVERIFY2(firstError.isEmpty(), qPrintable(firstError));
+    QCOMPARE(fixture.undoStack->count(), 1);
+
+    // 模拟 Agent 结构编辑：新增节点并以 Agent 来源发出 structureChanged。
+    ModuleInstance agentNode;
+    agentNode.id = QStringLiteral("D");
+    agentNode.moduleId = QStringLiteral("OutputProbe");
+    agentNode.name = QStringLiteral("D");
+    fixture.project->addModule(agentNode);
+    auto* agentModule = new MainWindowOutputProbeModule(QStringLiteral("D"));
+    agentModule->initialize();
+    window.registerFlowModule(QStringLiteral("D"), agentModule);
+    fixture.runtimeModules.append(agentModule);
+    fixture.project->notifyStructureChange(StructureEditOrigin::Agent);
+    QCoreApplication::processEvents();
+
+    const QString fingerprintAfterAgent = fixture.project->structureFingerprint();
+    const QStringList idsAfterAgent = projectModuleIds(*fixture.project);
+    QVERIFY(idsAfterAgent.contains(QStringLiteral("D")));
+
+    // GUI Undo 必须跳过已失效的重排命令，不能覆盖 Agent 的新增节点。
+    fixture.undoStack->undo();
+    QCOMPARE(projectModuleIds(*fixture.project), idsAfterAgent);
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintAfterAgent);
+    QVERIFY(fixture.project->moduleById(QStringLiteral("D")).has_value());
+
+    // Redo 同样不得复活失效命令。
+    fixture.undoStack->redo();
+    QCOMPARE(projectModuleIds(*fixture.project), idsAfterAgent);
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintAfterAgent);
+
+    RunEngine::instance().clearModules();
 }
 
 QTEST_MAIN(TestMainWindow)

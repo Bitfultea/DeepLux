@@ -1,8 +1,11 @@
 #include <QSignalSpy>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QtTest/QtTest>
 #include <core/engine/FlowGraphAnalyzer.h>
 #include <core/model/Project.h>
 #include <ui/controllers/FlowLayoutCoordinator.h>
+#include <ui/controllers/ProcessTreeController.h>
 #include <ui/widgets/FlowCanvas.h>
 
 using namespace DeepLux;
@@ -40,6 +43,23 @@ FlowGraphCatalog sequentialCatalog(const Project& project) {
     return catalog;
 }
 
+void addTreeItem(QTreeWidget* tree, const QString& id) {
+    QTreeWidgetItem* item = new QTreeWidgetItem();
+    item->setData(0, Qt::UserRole, QStringLiteral("flow_item"));
+    item->setData(0, Qt::UserRole + 1, id);
+    item->setText(0, id);
+    tree->addTopLevelItem(item);
+}
+
+QStringList treeOrder(const QTreeWidget& tree) {
+    QStringList ids;
+    for (int i = 0; i < tree.topLevelItemCount(); ++i) {
+        QTreeWidgetItem* item = tree.topLevelItem(i);
+        ids.append(item ? item->data(0, Qt::UserRole + 1).toString() : QString());
+    }
+    return ids;
+}
+
 } // namespace
 
 class TestFlowLayoutCoordinator : public QObject {
@@ -52,6 +72,8 @@ private slots:
     void testSuppressionCancelsPendingLayout();
     void testProjectSwitchPreservesInitializedPositions();
     void testMissingCatalogModuleKeepsPositions();
+    void testLayoutAppliesDisplayOrderToProcessTree();
+    void testProjectSwitchSortsTreeWithoutCanvasLayout();
 };
 
 void TestFlowLayoutCoordinator::testCoalescesStructureSignalsIntoOneLayout() {
@@ -256,6 +278,81 @@ void TestFlowLayoutCoordinator::testMissingCatalogModuleKeepsPositions() {
     QCOMPARE(canvas.nodeItem(QStringLiteral("b"))->pos(), QPointF(400, 100));
     QCOMPARE(project.moduleById(QStringLiteral("a"))->posX, 100);
     QCOMPARE(project.moduleById(QStringLiteral("b"))->posX, 400);
+}
+
+void TestFlowLayoutCoordinator::testLayoutAppliesDisplayOrderToProcessTree() {
+    Project project;
+    project.addModule(makeInstance(QStringLiteral("a")));
+    project.addModule(makeInstance(QStringLiteral("b")));
+    project.addModule(makeInstance(QStringLiteral("c")));
+    project.addConnection(makeConnection(QStringLiteral("a"), QStringLiteral("b")));
+    project.addConnection(makeConnection(QStringLiteral("b"), QStringLiteral("c")));
+
+    FlowCanvas canvas;
+    canvas.loadFromProject(&project);
+
+    QTreeWidget tree;
+    tree.setColumnCount(1);
+    // 故意用逆序插入，证明布局后流程树被 displayOrder 重排，而不是保留插入顺序。
+    addTreeItem(&tree, QStringLiteral("c"));
+    addTreeItem(&tree, QStringLiteral("b"));
+    addTreeItem(&tree, QStringLiteral("a"));
+    ProcessTreeController treeController(&tree);
+
+    FlowLayoutCoordinator coordinator(&project, &canvas, [](const Project& p) { return sequentialCatalog(p); });
+    coordinator.setProcessTreeController(&treeController);
+    QTRY_COMPARE(coordinator.layoutRunCount(), 1);
+
+    QVERIFY(coordinator.currentPlan().valid);
+    QCOMPARE(coordinator.processTreeController(), &treeController);
+    QCOMPARE(treeOrder(tree), coordinator.currentPlan().displayOrder);
+    QCOMPARE(coordinator.currentPlan().displayOrder, (QStringList{"a", "b", "c"}));
+    for (int i = 0; i < tree.topLevelItemCount(); ++i) {
+        QCOMPARE(tree.topLevelItem(i)->data(0, Qt::UserRole + 6).toInt(), i);
+    }
+}
+
+void TestFlowLayoutCoordinator::testProjectSwitchSortsTreeWithoutCanvasLayout() {
+    Project first;
+    first.addModule(makeInstance(QStringLiteral("a"), 40, 60));
+    first.addModule(makeInstance(QStringLiteral("b"), 300, 60));
+    first.setLayoutInitialized(true);
+
+    Project second;
+    second.addModule(makeInstance(QStringLiteral("x"), 12, 34));
+    second.addModule(makeInstance(QStringLiteral("y"), 250, 34));
+    second.setLayoutInitialized(true);
+
+    FlowCanvas canvas;
+    QTreeWidget tree;
+    tree.setColumnCount(1);
+    ProcessTreeController treeController(&tree);
+    FlowLayoutCoordinator coordinator(nullptr, &canvas, [](const Project& p) { return sequentialCatalog(p); });
+    coordinator.setProcessTreeController(&treeController);
+
+    addTreeItem(&tree, QStringLiteral("b"));
+    addTreeItem(&tree, QStringLiteral("a"));
+    canvas.loadFromProject(&first);
+    coordinator.setProject(&first);
+    QTest::qWait(80);
+    QCOMPARE(coordinator.layoutRunCount(), 0);
+    QCOMPARE(canvas.nodeItem(QStringLiteral("a"))->pos(), QPointF(40, 60));
+    QCOMPARE(treeOrder(tree), (QStringList{"a", "b"}));
+
+    // 切换到另一个已初始化且坐标有效的工程：画布坐标原样保留，只排流程树。
+    tree.clear();
+    treeController.clearInstanceItemMap();
+    addTreeItem(&tree, QStringLiteral("y"));
+    addTreeItem(&tree, QStringLiteral("x"));
+    canvas.loadFromProject(&second);
+    coordinator.setProject(&second);
+    QTest::qWait(80);
+    QCOMPARE(coordinator.layoutRunCount(), 0);
+    QCOMPARE(canvas.nodeItem(QStringLiteral("x"))->pos(), QPointF(12, 34));
+    QCOMPARE(canvas.nodeItem(QStringLiteral("y"))->pos(), QPointF(250, 34));
+    QCOMPARE(treeOrder(tree), (QStringList{"x", "y"}));
+    QVERIFY(coordinator.currentPlan().valid);
+    QCOMPARE(coordinator.currentPlan().displayOrder, (QStringList{"x", "y"}));
 }
 
 QTEST_MAIN(TestFlowLayoutCoordinator)

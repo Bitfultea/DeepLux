@@ -30,6 +30,10 @@ public:
 
     // 主要操作
     void addModule(const ModuleInstance& inst);
+    /// 按执行计划展示顺序重排现有顶层项（takeTopLevelItem/insertTopLevelItem）。
+    /// 保留当前项、选中项、展开状态与滚动位置；不在计划中的节点追加在末尾。
+    /// Qt::UserRole+6 写入 displayIndex。
+    void applyExecutionOrder(const QStringList& displayOrder);
     void removeModule(const QString& instanceId);
     void removeFlowModule(const QString& instanceId);
     void clear();

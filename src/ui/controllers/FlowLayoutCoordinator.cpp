@@ -1,6 +1,7 @@
 #include "FlowLayoutCoordinator.h"
 
 #include "../widgets/FlowCanvas.h"
+#include "ProcessTreeController.h"
 
 #include <QDebug>
 #include <QSet>
@@ -70,7 +71,83 @@ void FlowLayoutCoordinator::setProject(Project* project) {
 
     if (!m_project->layoutInitialized() || !positionsValid(*m_project)) {
         scheduleLayout();
+    } else {
+        // K5：已初始化且坐标有效时画布坐标原样保留（不执行 Full/Normalize），
+        // 但流程树仍按 displayOrder 排序，保证画布 rank/Y 与流程树顺序一致。
+        const FlowOrderPlan plan = planForProject(*m_project);
+        if (plan.valid) {
+            m_currentPlan = plan;
+            applyTreeOrder(plan);
+        }
     }
+}
+
+void FlowLayoutCoordinator::setProcessTreeController(ProcessTreeController* controller) {
+    m_processTreeController = controller;
+}
+
+ProcessTreeController* FlowLayoutCoordinator::processTreeController() const {
+    return m_processTreeController.data();
+}
+
+void FlowLayoutCoordinator::applyTreeOrder(const FlowOrderPlan& plan) {
+    if (!plan.valid || !m_processTreeController)
+        return;
+    m_processTreeController->applyExecutionOrder(plan.displayOrder);
+}
+
+FlowGraphCatalog FlowLayoutCoordinator::catalogForProject(const Project& project) const {
+    if (!m_catalogProvider) {
+        return FlowGraphCatalog();
+    }
+    return m_catalogProvider(project);
+}
+
+FlowOrderPlan FlowLayoutCoordinator::planForProject(const Project& project) const {
+    FlowOrderPlan plan;
+    buildPlan(project, &plan);
+    return plan;
+}
+
+bool FlowLayoutCoordinator::buildPlan(const Project& project, FlowOrderPlan* plan) const {
+    if (!plan)
+        return false;
+    *plan = FlowOrderPlan();
+    if (!m_catalogProvider) {
+        qWarning() << "FlowLayoutCoordinator: no catalog provider available";
+        return false;
+    }
+
+    const FlowGraphCatalog catalog = m_catalogProvider(project);
+    // provider 必须覆盖工程中的所有模块；缺失时保持原布局并记录错误。
+    for (const ModuleInstance& module : project.modules()) {
+        if (!catalog.find(module.id)) {
+            qWarning() << "FlowLayoutCoordinator: catalog is missing module" << module.id
+                       << "- keeping existing positions";
+            return false;
+        }
+    }
+
+    QString normalizeError;
+    const QList<ModuleConnection> normalized =
+        FlowGraphAnalyzer::normalizeConnections(catalog, project.connections(), &normalizeError);
+    if (!normalizeError.isEmpty()) {
+        qWarning() << "FlowLayoutCoordinator: invalid connections:" << normalizeError;
+        return false;
+    }
+
+    QStringList moduleOrder;
+    moduleOrder.reserve(project.modules().size());
+    for (const ModuleInstance& module : project.modules())
+        moduleOrder.append(module.id);
+
+    const FlowOrderPlan computed = FlowGraphAnalyzer::analyze(catalog, normalized, moduleOrder);
+    if (!computed.valid) {
+        qWarning() << "FlowLayoutCoordinator: execution plan is invalid:" << computed.error;
+        return false;
+    }
+    *plan = computed;
+    return true;
 }
 
 void FlowLayoutCoordinator::suppressAutoLayout(bool suppress) {
@@ -129,40 +206,16 @@ void FlowLayoutCoordinator::runLayout() {
 
     const quint64 generation = m_generation;
 
-    FlowGraphCatalog catalog = m_catalogProvider(*project);
-
-    // provider 必须覆盖工程中的所有模块；缺失时保持原坐标并记录错误。
-    for (const ModuleInstance& module : project->modules()) {
-        if (!catalog.find(module.id)) {
-            qWarning() << "FlowLayoutCoordinator: catalog is missing module" << module.id
-                       << "- keeping existing positions";
-            return;
-        }
-    }
-
-    QString normalizeError;
-    const QList<ModuleConnection> normalized =
-        FlowGraphAnalyzer::normalizeConnections(catalog, project->connections(), &normalizeError);
-    if (!normalizeError.isEmpty()) {
-        qWarning() << "FlowLayoutCoordinator: invalid connections:" << normalizeError;
+    FlowOrderPlan plan;
+    if (!buildPlan(*project, &plan))
         return;
-    }
-
-    QStringList moduleOrder;
-    for (const ModuleInstance& module : project->modules())
-        moduleOrder.append(module.id);
-
-    const FlowOrderPlan plan = FlowGraphAnalyzer::analyze(catalog, normalized, moduleOrder);
-    if (!plan.valid) {
-        qWarning() << "FlowLayoutCoordinator: execution plan is invalid:" << plan.error;
-        return;
-    }
 
     // 分析期间可能发生工程切换或抑制，丢弃过期结果。
     if (generation != m_generation || m_suppressed || m_project.data() != project)
         return;
 
     m_currentPlan = plan;
+    applyTreeOrder(plan);
     canvas->applyExecutionLayout(plan, FlowCanvas::LayoutMode::Full);
 
     // 显式写回：即使画布未绑定该工程，也保证计划坐标持久化。
