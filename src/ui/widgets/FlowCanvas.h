@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/engine/FlowGraphAnalyzer.h"
 #include "core/manager/PluginManager.h"
 #include "deeplux/DataContract.h"
 
@@ -9,6 +10,7 @@
 #include <QMap>
 #include <QMutex>
 #include <QObject>
+#include <QPointer>
 #include <QWidget>
 
 namespace DeepLux {
@@ -27,6 +29,11 @@ class FlowCanvas : public QGraphicsView {
     Q_OBJECT
 
 public:
+    enum class LayoutMode {
+        Full,      // 重新计算 X（lane）与 Y（rank）
+        Normalize, // 仅按 rank 对齐 Y，保留有效 X
+    };
+
     explicit FlowCanvas(QWidget* parent = nullptr);
     ~FlowCanvas() override;
 
@@ -36,6 +43,14 @@ public:
     void removeNode(const QString& nodeId);
     void clearNodes();
     void loadFromProject(Project* project);
+    Project* attachedProject() const {
+        return m_project.data();
+    }
+
+    // 按执行计划布局（只移动现有节点，不重建、不改变选择）
+    void applyExecutionLayout(const FlowOrderPlan& plan, LayoutMode mode);
+    // 节点拖动结束后的写回入口（FlowNodeItem 调用）
+    void notifyNodePositionChanged(const QString& nodeId, const QPointF& pos);
 
     // 连接操作（字符串端口 ID）
     void addConnection(const QString& fromNodeId, const QString& fromPortId, const QString& toNodeId,
@@ -63,6 +78,7 @@ signals:
     void connectionCreated(const QString& fromId, const QString& toId);
     void connectionRemoved(const QString& fromId, const QString& toId);
     void connectionRequest(const QString& fromId, const QString& fromPort, const QString& toId, const QString& toPort);
+    void nodePositionChanged(const QString& nodeId, const QPointF& pos);
 
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
@@ -89,6 +105,8 @@ public:
     int m_nodeCounter = 0;
     bool m_loadingProject = false;
     bool m_syncingFromProject = false;
+    QPointer<Project> m_project;             // loadFromProject 绑定的工程（可为空）
+    bool m_applyingLayout = false;           // 程序化布局期间抑制拖动写回
     QGraphicsPathItem* m_dragLine = nullptr; // P1-fix: 场景级临时拖线
 };
 
@@ -197,6 +215,7 @@ private:
 
     // 拖线状态
     bool m_draggingConnection = false;
+    bool m_movedDuringDrag = false;
     QString m_dragFromPortId;
     QPointF m_dragCurrentPos;
     FlowNodeItem* m_highlightedTarget = nullptr; // P2-fix: 追踪当前高亮节点

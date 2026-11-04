@@ -1,9 +1,11 @@
 #include "Project.h"
 
+#include <QCryptographicHash>
 #include <QDebug>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QSet>
 #include <QUuid>
 
 namespace DeepLux {
@@ -132,7 +134,11 @@ CameraConfig CameraConfig::fromJson(const QJsonObject& json) {
 
 Project::Project(QObject* parent)
     : QObject(parent), m_id(QUuid::createUuid().toString(QUuid::WithoutBraces)), m_name(tr("未命名项目")),
-      m_created(QDateTime::currentDateTime()), m_modifiedTime(QDateTime::currentDateTime()) {}
+      m_created(QDateTime::currentDateTime()), m_modifiedTime(QDateTime::currentDateTime()),
+      m_sessionToken(QUuid::createUuid()) {
+    qRegisterMetaType<StructureEditOrigin>("StructureEditOrigin");
+    qRegisterMetaType<StructureEditOrigin>("DeepLux::StructureEditOrigin");
+}
 
 Project::~Project() {}
 
@@ -226,6 +232,153 @@ bool Project::moveModule(const QString& instanceId, int newIndex) {
     m_modules.move(oldIndex, newIndex);
     touch();
     return true;
+}
+
+void Project::setModulePosition(const QString& instanceId, int x, int y) {
+    for (ModuleInstance& module : m_modules) {
+        if (module.id != instanceId)
+            continue;
+        if (module.posX == x && module.posY == y)
+            return;
+        module.posX = x;
+        module.posY = y;
+        touch();
+        emit modulePositionChanged(instanceId, x, y);
+        return;
+    }
+}
+
+bool Project::reorderModules(const QStringList& orderedIds) {
+    if (orderedIds.size() != m_modules.size())
+        return false;
+
+    QSet<QString> seen;
+    QList<ModuleInstance> reordered;
+    reordered.reserve(m_modules.size());
+    for (const QString& id : orderedIds) {
+        if (id.isEmpty() || seen.contains(id))
+            return false;
+        auto module = moduleById(id);
+        if (!module)
+            return false;
+        seen.insert(id);
+        reordered.append(*module);
+    }
+
+    bool changed = false;
+    for (int i = 0; i < reordered.size(); ++i) {
+        if (reordered.at(i).id != m_modules.at(i).id) {
+            changed = true;
+            break;
+        }
+    }
+    if (!changed)
+        return true;
+
+    m_modules = reordered;
+    touch();
+    emit modulesReordered();
+    return true;
+}
+
+bool Project::applyStructureTransaction(const FlowGraphCandidate& candidate, StructureEditOrigin origin,
+                                        QString* error) {
+    const auto fail = [error](const QString& message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+
+    // 1) orderedIds 必须是当前模块集合的完整排列
+    QSet<QString> existingIds;
+    for (const ModuleInstance& module : m_modules)
+        existingIds.insert(module.id);
+
+    if (candidate.orderedIds.size() != m_modules.size()) {
+        return fail(QStringLiteral("Module order must contain exactly %1 ids").arg(m_modules.size()));
+    }
+    QSet<QString> seenIds;
+    for (const QString& id : candidate.orderedIds) {
+        if (id.isEmpty())
+            return fail(QStringLiteral("Module order contains an empty id"));
+        if (seenIds.contains(id))
+            return fail(QStringLiteral("Module order contains duplicate id: %1").arg(id));
+        if (!existingIds.contains(id))
+            return fail(QStringLiteral("Module order references unknown module: %1").arg(id));
+        seenIds.insert(id);
+    }
+    if (seenIds.size() != existingIds.size())
+        return fail(QStringLiteral("Module order is not a complete permutation"));
+
+    // 2) 连接端点必须存在，且四元组不得重复（声明顺序保留）
+    QSet<QString> edgeKeys;
+    for (const ModuleConnection& connection : candidate.connections) {
+        if (!existingIds.contains(connection.fromModuleId)) {
+            return fail(QStringLiteral("Connection references missing source module: %1").arg(connection.fromModuleId));
+        }
+        if (!existingIds.contains(connection.toModuleId)) {
+            return fail(QStringLiteral("Connection references missing target module: %1").arg(connection.toModuleId));
+        }
+        const QString key = connection.fromModuleId + QLatin1Char('\x1f') + connection.fromPort + QLatin1Char('\x1f') +
+                            connection.toModuleId + QLatin1Char('\x1f') + connection.toPort;
+        if (edgeKeys.contains(key)) {
+            return fail(
+                QStringLiteral("Duplicate connection %1.%2 -> %3.%4")
+                    .arg(connection.fromModuleId, connection.fromPort, connection.toModuleId, connection.toPort));
+        }
+        edgeKeys.insert(key);
+    }
+
+    // 3) 校验全部通过后再原子替换
+    QList<ModuleInstance> reordered;
+    reordered.reserve(candidate.orderedIds.size());
+    for (const QString& id : candidate.orderedIds)
+        reordered.append(*moduleById(id));
+
+    m_modules = reordered;
+    m_connections = candidate.connections;
+    if (error)
+        error->clear();
+    touch();
+    emit structureChanged(origin);
+    return true;
+}
+
+QString Project::structureFingerprint() const {
+    QByteArray payload;
+    payload.append("modules\n");
+    for (const ModuleInstance& module : m_modules) {
+        payload.append(module.id.toUtf8());
+        payload.append('\n');
+    }
+    payload.append("connections\n");
+    for (int i = 0; i < m_connections.size(); ++i) {
+        const ModuleConnection& connection = m_connections.at(i);
+        payload.append(QByteArray::number(i));
+        payload.append('|');
+        payload.append(connection.fromModuleId.toUtf8());
+        payload.append('|');
+        payload.append(connection.fromPort.toUtf8());
+        payload.append('|');
+        payload.append(connection.toModuleId.toUtf8());
+        payload.append('|');
+        payload.append(connection.toPort.toUtf8());
+        payload.append('|');
+        payload.append(connection.edgeType.toUtf8());
+        payload.append('\n');
+    }
+    return QString::fromLatin1(QCryptographicHash::hash(payload, QCryptographicHash::Sha1).toHex());
+}
+
+QUuid Project::sessionToken() const {
+    return m_sessionToken;
+}
+
+void Project::setLayoutInitialized(bool initialized) {
+    if (m_layoutInitialized == initialized)
+        return;
+    m_layoutInitialized = initialized;
+    touch();
 }
 
 ModuleInstance* Project::findModule(const QString& instanceId) {
@@ -431,6 +584,9 @@ QJsonObject Project::toJson() const {
         json["migration"] = m_migration.toJson();
     }
 
+    // B2：布局初始化标记（旧工程缺省 false）
+    json["layoutInitialized"] = m_layoutInitialized;
+
     return json;
 }
 
@@ -478,6 +634,10 @@ bool Project::fromJson(const QJsonObject& json) {
     if (json.contains("migration")) {
         m_migration = MigrationRecord::fromJson(json["migration"].toObject());
     }
+
+    // B2：旧工程无 layoutInitialized 时默认 false；每次加载生成新会话标识
+    m_layoutInitialized = json.value("layoutInitialized").toBool(false);
+    m_sessionToken = QUuid::createUuid();
 
     m_hasUnsavedChanges = false;
     return true;

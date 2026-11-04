@@ -2,6 +2,7 @@
 
 #include "../ThemeManager.h"
 #include "../bridge/TerminalBridge.h"
+#include "../controllers/FlowLayoutCoordinator.h"
 #include "../controllers/ProcessTreeController.h"
 #include "../dialogs/AgentSettingsDialog.h"
 #include "../dialogs/LoginDialog.h"
@@ -1478,6 +1479,26 @@ void MainWindow::setupMainLayout() {
     m_flowCanvas->setStyleSheet(QString());
     m_processTabWidget->addTab(m_flowCanvas, tr("画布"));
 
+    // 布局协调器：catalog 只从运行时模块（按 ModuleInstance.id）构建，
+    // 绝不依赖流程树顺序或显示名。
+    auto catalogProvider = [this](const Project& project) {
+        FlowGraphCatalog catalog;
+        for (const ModuleInstance& instance : project.modules()) {
+            IModule* module = m_flowModules.value(instance.id, nullptr);
+            if (!module)
+                continue;
+            FlowGraphModule graphModule;
+            graphModule.instanceId = instance.id;
+            graphModule.flowType = module->flowControlType();
+            graphModule.inputPorts = module->inputPorts();
+            graphModule.outputPorts = module->outputPorts();
+            catalog.modules.append(graphModule);
+        }
+        return catalog;
+    };
+    m_flowLayoutCoordinator =
+        new FlowLayoutCoordinator(ProjectManager::instance().currentProject(), m_flowCanvas, catalogProvider, this);
+
     // ---- Tab 3: 数据源 ----
     m_dataSourcePanel = new DataSourcePanel(this);
     m_dataSourcePanel->setObjectName("DataSourcePanel");
@@ -2278,9 +2299,18 @@ void MainWindow::onProjectOpened(Project* project) {
         });
     connect(project, &Project::dataSourceAdded, this, &MainWindow::onDataSourceAdded);
     connect(project, &Project::dataSourceRemoved, this, &MainWindow::onDataSourceRemoved);
+
+    // B2：切换布局协调器目标工程（画布已在上面加载完成）。
+    if (m_flowLayoutCoordinator) {
+        m_flowLayoutCoordinator->setProject(project);
+    }
 }
 
 void MainWindow::onProjectClosed() {
+    if (m_flowLayoutCoordinator) {
+        m_flowLayoutCoordinator->setProject(nullptr);
+    }
+
     // RunEngine borrows flow-module pointers; detach them before the controller deletes the modules.
     RunEngine::instance().stop();
     RunEngine::instance().clearModules();

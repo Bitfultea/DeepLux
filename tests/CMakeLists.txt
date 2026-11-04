@@ -51,6 +51,7 @@ set(TEST_SOURCES
     test_himagewidget.cpp
     test_imagerefreshcoalescer.cpp
     test_flowcanvas.cpp
+    test_flowlayoutcoordinator.cpp
     test_propertypanel.cpp
     test_toolschema.cpp
     test_agentobserver.cpp

@@ -250,6 +250,7 @@ void FlowCanvas::removeConnection(const QString& fromNodeId, const QString& from
 }
 
 void FlowCanvas::loadFromProject(Project* project) {
+    m_project = project;
     m_loadingProject = true;
     clearConnections();
     clearNodes();
@@ -268,6 +269,60 @@ void FlowCanvas::loadFromProject(Project* project) {
     }
 
     m_loadingProject = false;
+}
+
+void FlowCanvas::applyExecutionLayout(const FlowOrderPlan& plan, LayoutMode mode) {
+    if (!plan.valid)
+        return;
+
+    constexpr qreal kRankSpacing = 160.0;
+    constexpr qreal kLaneSpacing = 280.0;
+
+    Project* project = m_project.data();
+    if (!project)
+        project = ProjectManager::instance().currentProject();
+
+    setUpdatesEnabled(false);
+    m_applyingLayout = true;
+
+    for (const FlowOrderNode& node : plan.nodes) {
+        FlowNodeItem* item = m_nodes.value(node.instanceId, nullptr);
+        if (!item)
+            continue;
+
+        qreal x = static_cast<qreal>(node.lane) * kLaneSpacing;
+        if (mode == LayoutMode::Normalize) {
+            const qreal currentX = item->pos().x();
+            if (std::isfinite(currentX))
+                x = currentX;
+        }
+        const qreal y = static_cast<qreal>(node.rank) * kRankSpacing;
+        item->setPos(x, y);
+        updateConnectionsForNode(node.instanceId);
+
+        if (project) {
+            project->setModulePosition(node.instanceId, qRound(x), qRound(y));
+        }
+    }
+
+    m_applyingLayout = false;
+    setUpdatesEnabled(true);
+    if (viewport()) {
+        viewport()->update();
+    }
+}
+
+void FlowCanvas::notifyNodePositionChanged(const QString& nodeId, const QPointF& pos) {
+    emit nodePositionChanged(nodeId, pos);
+    if (m_loadingProject || m_syncingFromProject || m_applyingLayout)
+        return;
+
+    Project* project = m_project.data();
+    if (!project)
+        project = ProjectManager::instance().currentProject();
+    if (project) {
+        project->setModulePosition(nodeId, qRound(pos.x()), qRound(pos.y()));
+    }
 }
 
 void FlowCanvas::clearConnections() {
@@ -784,6 +839,7 @@ void FlowNodeItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {
             return;
         }
     }
+    m_movedDuringDrag = false;
     QGraphicsItem::mousePressEvent(event);
     scene()->clearSelection();
     setSelected(true);
@@ -836,6 +892,9 @@ void FlowNodeItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
         event->accept();
         return;
     }
+    if (event->buttons() & Qt::LeftButton) {
+        m_movedDuringDrag = true;
+    }
     QGraphicsItem::mouseMoveEvent(event);
 }
 
@@ -878,11 +937,21 @@ void FlowNodeItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
             }
         }
         m_dragFromPortId.clear();
+        m_movedDuringDrag = false;
         update();
         event->accept();
         return;
     }
+
     QGraphicsItem::mouseReleaseEvent(event);
+    if (m_movedDuringDrag) {
+        m_movedDuringDrag = false;
+        QGraphicsScene* currentScene = scene();
+        FlowCanvas* canvas = currentScene ? qobject_cast<FlowCanvas*>(currentScene->parent()) : nullptr;
+        if (canvas) {
+            canvas->notifyNodePositionChanged(m_nodeId, pos());
+        }
+    }
 }
 
 // ========== FlowConnectionItem ==========

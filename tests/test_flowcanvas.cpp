@@ -4,8 +4,10 @@
 #include <QSignalSpy>
 #include <QToolTip>
 #include <QtTest/QtTest>
+#include <core/engine/FlowGraphAnalyzer.h>
 #include <core/manager/ProjectManager.h>
 #include <core/model/Project.h>
+#include <ui/controllers/FlowLayoutCoordinator.h>
 #include <ui/widgets/FlowCanvas.h>
 
 using namespace DeepLux;
@@ -45,6 +47,12 @@ private slots:
     void testProjectRemoveConnectionWithPortsPrecise();
     void testPortTooltipUsesCompleteDataTypeName();
     void testConnectionDragMovesAndClearsCompatibleHighlight();
+
+    // B2: 执行计划布局与坐标写回
+    void testExecutionLayoutByRankAndLane();
+    void testNormalizeLayoutPreservesX();
+    void testNodeDragWritesBackPosition();
+    void testLayoutInitializedRestoresSavedPositions();
 };
 
 void TestFlowCanvas::init() {
@@ -530,6 +538,204 @@ void TestFlowCanvas::testConnectionDragMovesAndClearsCompatibleHighlight() {
     release.setButton(Qt::LeftButton);
     source->mouseReleaseEvent(&release);
     QVERIFY(!second->isCompatibleHighlighted());
+}
+
+// ---------------------------------------------------------------------------
+// B2: 执行计划布局与坐标写回
+// ---------------------------------------------------------------------------
+
+namespace {
+
+void appendPlanNode(FlowOrderPlan& plan, const QString& id, int rank, int lane) {
+    FlowOrderNode node;
+    node.instanceId = id;
+    node.rank = rank;
+    node.lane = lane;
+    node.displayIndex = plan.nodes.size();
+    plan.nodes.append(node);
+    plan.displayOrder.append(id);
+    plan.rankIndex.insert(id, rank);
+    plan.laneIndex.insert(id, lane);
+}
+
+FlowGraphCatalog catalogForProject(const Project& project) {
+    FlowGraphCatalog catalog;
+    for (const ModuleInstance& instance : project.modules()) {
+        FlowGraphModule module;
+        module.instanceId = instance.id;
+        module.flowType = ControlFlowType::Sequential;
+        catalog.modules.append(module);
+    }
+    return catalog;
+}
+
+} // namespace
+
+void TestFlowCanvas::testExecutionLayoutByRankAndLane() {
+    FlowCanvas canvas;
+    const QString a = canvas.addNode("module.a", "A", QPointF(500, 500));
+    const QString b = canvas.addNode("module.b", "B", QPointF(500, 500));
+    const QString c = canvas.addNode("module.c", "C", QPointF(500, 500));
+    const QString d = canvas.addNode("module.d", "D", QPointF(500, 500));
+    const QString e = canvas.addNode("module.e", "E", QPointF(500, 500));
+
+    FlowOrderPlan plan;
+    plan.valid = true;
+    appendPlanNode(plan, a, 0, 0);
+    appendPlanNode(plan, b, 1, 0);
+    appendPlanNode(plan, c, 2, 0);
+    appendPlanNode(plan, d, 1, 1);
+    appendPlanNode(plan, e, 1, -1);
+
+    canvas.applyExecutionLayout(plan, FlowCanvas::LayoutMode::Full);
+
+    const qreal ya = canvas.nodeItem(a)->pos().y();
+    const qreal yb = canvas.nodeItem(b)->pos().y();
+    const qreal yc = canvas.nodeItem(c)->pos().y();
+    QVERIFY(ya < yb);
+    QVERIFY(yb < yc);
+
+    // 同一 rank 同一 Y；不同 lane 的 X 不重叠
+    QCOMPARE(canvas.nodeItem(d)->pos().y(), yb);
+    QCOMPARE(canvas.nodeItem(e)->pos().y(), yb);
+    QVERIFY(qAbs(canvas.nodeItem(d)->pos().x() - canvas.nodeItem(b)->pos().x()) >= 220.0);
+    QVERIFY(qAbs(canvas.nodeItem(e)->pos().x() - canvas.nodeItem(b)->pos().x()) >= 220.0);
+
+    const QStringList ids = {a, b, c, d, e};
+    for (int i = 0; i < ids.size(); ++i) {
+        for (int j = i + 1; j < ids.size(); ++j) {
+            FlowNodeItem* first = canvas.nodeItem(ids.at(i));
+            FlowNodeItem* second = canvas.nodeItem(ids.at(j));
+            QVERIFY2(!first->sceneBoundingRect().intersects(second->sceneBoundingRect()),
+                     qPrintable(QStringLiteral("nodes %1 and %2 overlap").arg(ids.at(i), ids.at(j))));
+        }
+    }
+}
+
+void TestFlowCanvas::testNormalizeLayoutPreservesX() {
+    FlowCanvas canvas;
+    const QString a = canvas.addNode("module.a", "A", QPointF(37, 10));
+    const QString b = canvas.addNode("module.b", "B", QPointF(142, 20));
+    const QString c = canvas.addNode("module.c", "C", QPointF(-55, 30));
+
+    FlowOrderPlan plan;
+    plan.valid = true;
+    appendPlanNode(plan, a, 0, 0);
+    appendPlanNode(plan, b, 1, 0);
+    appendPlanNode(plan, c, 2, 0);
+
+    canvas.applyExecutionLayout(plan, FlowCanvas::LayoutMode::Normalize);
+
+    QCOMPARE(canvas.nodeItem(a)->pos().x(), 37.0);
+    QCOMPARE(canvas.nodeItem(b)->pos().x(), 142.0);
+    QCOMPARE(canvas.nodeItem(c)->pos().x(), -55.0);
+    QVERIFY(canvas.nodeItem(a)->pos().y() < canvas.nodeItem(b)->pos().y());
+    QVERIFY(canvas.nodeItem(b)->pos().y() < canvas.nodeItem(c)->pos().y());
+}
+
+void TestFlowCanvas::testNodeDragWritesBackPosition() {
+    FlowCanvas canvas;
+    canvas.resize(400, 300);
+    Project* project = ProjectManager::instance().currentProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance instance;
+    instance.id = QStringLiteral("drag_node");
+    instance.moduleId = QStringLiteral("module.drag");
+    project->addModule(instance);
+
+    auto* node = new TestableFlowNodeItem("drag_node", "Drag", "module.drag");
+    canvas.scene()->addItem(node);
+    node->setPos(20, 30);
+
+    QSignalSpy projectSpy(project, &Project::modulePositionChanged);
+    QSignalSpy canvasSpy(&canvas, &FlowCanvas::nodePositionChanged);
+    QVERIFY(projectSpy.isValid());
+    QVERIFY(canvasSpy.isValid());
+
+    const QPointF downPos = node->pos();
+    QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
+    press.setScenePos(downPos);
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+    press.setButtonDownScenePos(Qt::LeftButton, downPos);
+    node->mousePressEvent(&press);
+
+    QGraphicsSceneMouseEvent move(QEvent::GraphicsSceneMouseMove);
+    move.setScenePos(downPos + QPointF(30, 40));
+    move.setLastScenePos(downPos);
+    move.setButtonDownScenePos(Qt::LeftButton, downPos);
+    move.setButtons(Qt::LeftButton);
+    node->mouseMoveEvent(&move);
+    node->setPos(QPointF(50, 70));
+
+    QGraphicsSceneMouseEvent release(QEvent::GraphicsSceneMouseRelease);
+    release.setScenePos(QPointF(50, 70));
+    release.setButton(Qt::LeftButton);
+    release.setButtons(Qt::LeftButton);
+    node->mouseReleaseEvent(&release);
+
+    QCOMPARE(canvasSpy.count(), 1);
+    QCOMPARE(projectSpy.count(), 1);
+    QCOMPARE(project->moduleById(QStringLiteral("drag_node"))->posX, 50);
+    QCOMPARE(project->moduleById(QStringLiteral("drag_node"))->posY, 70);
+
+    const QList<QVariant> args = projectSpy.takeFirst();
+    QCOMPARE(args.at(0).toString(), QStringLiteral("drag_node"));
+    QCOMPARE(args.at(1).toInt(), 50);
+    QCOMPARE(args.at(2).toInt(), 70);
+}
+
+void TestFlowCanvas::testLayoutInitializedRestoresSavedPositions() {
+    // 已初始化布局：加载后保留保存坐标，不自动重排
+    Project initialized;
+    ModuleInstance first;
+    first.id = "init_a";
+    first.moduleId = "module.a";
+    first.name = "A";
+    first.posX = 40;
+    first.posY = 60;
+    initialized.addModule(first);
+    ModuleInstance second;
+    second.id = "init_b";
+    second.moduleId = "module.b";
+    second.name = "B";
+    second.posX = 260;
+    second.posY = 60;
+    initialized.addModule(second);
+    initialized.setLayoutInitialized(true);
+
+    FlowCanvas canvas;
+    canvas.loadFromProject(&initialized);
+
+    FlowLayoutCoordinator coordinator(&initialized, &canvas,
+                                      [](const Project& project) { return catalogForProject(project); });
+    coordinator.setProject(&initialized);
+    QTest::qWait(80);
+    QCOMPARE(coordinator.layoutRunCount(), 0);
+    QCOMPARE(canvas.nodeItem("init_a")->pos(), QPointF(40, 60));
+    QCOMPARE(canvas.nodeItem("init_b")->pos(), QPointF(260, 60));
+
+    // 未初始化（全部 0,0）：触发 Full 并标记 layoutInitialized
+    Project uninitialized;
+    ModuleInstance ua;
+    ua.id = "u_a";
+    ua.moduleId = "module.a";
+    uninitialized.addModule(ua);
+    ModuleInstance ub;
+    ub.id = "u_b";
+    ub.moduleId = "module.b";
+    uninitialized.addModule(ub);
+
+    FlowCanvas canvas2;
+    canvas2.loadFromProject(&uninitialized);
+    FlowLayoutCoordinator coordinator2(&uninitialized, &canvas2,
+                                       [](const Project& project) { return catalogForProject(project); });
+    coordinator2.setProject(&uninitialized);
+
+    QTRY_COMPARE(coordinator2.layoutRunCount(), 1);
+    QVERIFY(uninitialized.layoutInitialized());
+    QVERIFY(canvas2.nodeItem("u_a")->pos() != canvas2.nodeItem("u_b")->pos());
 }
 
 QTEST_MAIN(TestFlowCanvas)

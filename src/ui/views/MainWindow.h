@@ -40,6 +40,7 @@ class TerminalWidget;
 class AgentActionLogWidget;
 class AgentChatPanel;
 class ProcessTreeController;
+class FlowLayoutCoordinator;
 class ModuleInspectorPanel;
 class SamAnnotatorDialog;
 
@@ -269,6 +270,8 @@ protected:
 
     // 流程画布（图形化节点编辑器）
     FlowCanvas* m_flowCanvas = nullptr;
+    // 按执行计划维护画布布局（B2）
+    FlowLayoutCoordinator* m_flowLayoutCoordinator = nullptr;
 
     // 主 Splitter 成员（提升自局部变量）
     QSplitter* m_mainSplitter = nullptr;
