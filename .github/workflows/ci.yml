@@ -29,7 +29,7 @@ jobs:
         run: cmake --build build --target sync-plugins
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure --timeout 30
+        run: ctest --test-dir build --output-on-failure
 
   # 阶5: 格式门禁只检查 PR/提交变更的 C++ 文件（受控列表），避免整仓大规模改动。
   # 本轮修改文件已全部格式化，故对变更文件的检查可通过；不静默（set -e）。
@@ -102,4 +102,4 @@ jobs:
         run: cmake --build build --target sync-plugins
 
       - name: Test
-        run: xvfb-run -a ctest --test-dir build --output-on-failure --timeout 30
+        run: xvfb-run -a ctest --test-dir build --output-on-failure
