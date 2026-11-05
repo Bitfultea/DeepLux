@@ -301,6 +301,10 @@ public:
     DEEPLUX_TEST_VISIBILITY : bool isExternalJobActiveForTest() const;
     DEEPLUX_TEST_VISIBILITY : void setBeforeJobStartHookForTest(std::function<void()> hook);
     DEEPLUX_TEST_VISIBILITY : void clearBeforeJobStartHookForTest();
+    // T2.2：GUI 回投超时注入与迟到回调观测（生产不可达）。
+    DEEPLUX_TEST_VISIBILITY : void setGuiDispatchTimeoutForTest(int msecs);
+    DEEPLUX_TEST_VISIBILITY : QString lastGuiDispatchErrorCodeForTest() const;
+    DEEPLUX_TEST_VISIBILITY : int guiDispatchLateCallbackDropCountForTest() const;
 
 public:
     // 运行统计
@@ -440,6 +444,12 @@ private:
     // 后台执行（设计 §5.3）：暂停原因（None/Breakpoint/User），与暂停上下文同锁维护。
     PauseReason m_pauseReason = PauseReason::None;
     RunMode m_pauseRunMode = RunMode::RunOnce; // 暂停前模式，恢复时还原（P1-2 八轮）
+    // T2.2：GUI 回投超时、世代与迟到回调丢弃计数。世代变化使尚未开始的回调整体作废。
+    std::atomic<int> m_guiDispatchTimeoutMs{5000};
+    std::atomic<quint64> m_dispatchGeneration{0};
+    std::atomic<int> m_guiDispatchLateDrops{0};
+    mutable QMutex m_guiDispatchMutex;
+    QString m_lastGuiDispatchErrorCode;
     // 阶6 八轮：恢复判定+暂停数据转移+取执行权+意图校验在同一临界区原子完成。
     // 后台执行（设计 §4.2/§5.3）：jobToken 非空时，owner/job 级取消标志校验与状态提交
     // 在同一把 m_lifecycleMutex 临界区完成（窗口钩子亦在其中），使 stop() 与本次启动严格

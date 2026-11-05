@@ -13,6 +13,8 @@
 #include <QElapsedTimer>
 #include <QMutexLocker>
 #include <QRandomGenerator>
+#include <QSemaphore>
+#include <QSharedPointer>
 #include <QThread>
 #include <QWaitCondition>
 #include <algorithm>
@@ -22,6 +24,17 @@
 namespace DeepLux {
 
 namespace {
+
+/// T2.2：GUI 回投记录。状态机 Pending→Running→Finished，或 Pending→Cancelled。
+/// 回调自持有该记录（QSharedPointer），与发起方的栈帧解耦。
+struct GuiDispatchRecord {
+    enum Phase { Pending = 0, Running = 1, Finished = 2, Cancelled = 3 };
+    std::atomic<int> phase{Pending};
+    ExecutionResult result;
+    PortValueMap outputs;
+    QSemaphore done;
+};
+
 QString runtimeModuleName(ModuleBase* module) {
     if (!module) {
         return QString();
@@ -835,6 +848,8 @@ void RunEngine::stop() {
     {
         QMutexLocker locker(&m_lifecycleMutex);
         ++m_lifecycleGeneration; // 阶6 十一轮：停止是一次生命周期转换
+        // T2.2：停止使所有尚未开始的 GUI 回投作废（迟到回调只丢弃，不执行模块）。
+        m_dispatchGeneration.fetch_add(1, std::memory_order_acq_rel);
         m_state.store(static_cast<int>(RunState::Stopped), std::memory_order_release);
         m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
         if (m_cancellationToken) {
@@ -1016,6 +1031,19 @@ void RunEngine::setBeforeJobStartHookForTest(std::function<void()> hook) {
 
 void RunEngine::clearBeforeJobStartHookForTest() {
     m_testBeforeJobStartHook = nullptr;
+}
+
+void RunEngine::setGuiDispatchTimeoutForTest(int msecs) {
+    m_guiDispatchTimeoutMs.store(qMax(0, msecs), std::memory_order_release);
+}
+
+QString RunEngine::lastGuiDispatchErrorCodeForTest() const {
+    QMutexLocker locker(&m_guiDispatchMutex);
+    return m_lastGuiDispatchErrorCode;
+}
+
+int RunEngine::guiDispatchLateCallbackDropCountForTest() const {
+    return m_guiDispatchLateDrops.load(std::memory_order_acquire);
 }
 
 void RunEngine::addModuleLocked(ModuleBase* module) {
