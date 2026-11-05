@@ -8,6 +8,11 @@
 #include <QTextStream>
 #include <QtTest/QtTest>
 
+#ifdef Q_OS_UNIX
+#include <csignal>
+#include <sys/resource.h>
+#endif
+
 using namespace DeepLux;
 
 class TestYoloSegExporter : public QObject {
@@ -19,6 +24,7 @@ private slots:
     void emptySessionProducesEmptyFile();
     void unknownLabelFailsClosedAndDoesNotCreateFile();
     void unknownLabelFailsClosedKeepsExistingFile();
+    void atomicWriteFailureKeepsExistingFile();
     void normalExportMatchesToJsonString();
 };
 
@@ -154,8 +160,57 @@ void TestYoloSegExporter::normalExportMatchesToJsonString() {
     QVERIFY2(YoloSegExporter::exportToFile(session, path, labels, &err), qPrintable(err));
 
     QFile f(path);
-    QVERIFY(f.open(QIODevice::ReadOnly));
+    QVERIFY(f.open(QIODevice::ReadOnly | QIODevice::Text));
     QCOMPARE(QString::fromUtf8(f.readAll()), YoloSegExporter::toJsonString(session, labels));
+}
+
+void TestYoloSegExporter::atomicWriteFailureKeepsExistingFile() {
+#ifdef Q_OS_UNIX
+    // Valid label so validation passes and the file is actually opened/written;
+    // RLIMIT_FSIZE then makes the write fail. A non-atomic QFile would have
+    // truncated the old file before failing -> this test would fail.
+    AnnotationSession session;
+    session.imageWidth = 100;
+    session.imageHeight = 100;
+    QList<QPointF> poly;
+    for (int i = 0; i < 50; ++i)
+        poly.append(QPointF(i % 100, (i * 2) % 100));
+    session.annotations.append(makeObject(QStringLiteral("缺陷"), poly, QRectF(0, 0, 10, 10), 100, 100));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("out.txt"));
+    {
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QByteArrayLiteral("SENTINEL"));
+    }
+
+    struct rlimit oldLimit {};
+    QVERIFY(getrlimit(RLIMIT_FSIZE, &oldLimit) == 0);
+
+    struct rlimit limit = oldLimit;
+    limit.rlim_cur = 64; // bytes; export content is far larger
+    auto previousHandler = signal(SIGXFSZ, SIG_IGN);
+    QVERIFY(setrlimit(RLIMIT_FSIZE, &limit) == 0);
+
+    QString err;
+    const bool ok = YoloSegExporter::exportToFile(session, path, {QStringLiteral("缺陷")}, &err);
+
+    setrlimit(RLIMIT_FSIZE, &oldLimit);
+    signal(SIGXFSZ, previousHandler);
+
+    QVERIFY2(!ok, "export must fail when the write exceeds RLIMIT_FSIZE");
+
+    // Check the pre-existing file first: a non-atomic QFile truncates it on open,
+    // so this assertion is what distinguishes atomic from non-atomic writes.
+    QFile check(path);
+    QVERIFY(check.open(QIODevice::ReadOnly));
+    QCOMPARE(check.readAll(), QByteArrayLiteral("SENTINEL"));
+    QVERIFY(!err.isEmpty());
+#else
+    QSKIP("RLIMIT_FSIZE write-failure injection is POSIX-only");
+#endif
 }
 
 QTEST_MAIN(TestYoloSegExporter)
