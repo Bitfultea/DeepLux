@@ -2245,12 +2245,70 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     QCoreApplication* app = QCoreApplication::instance();
     if (affinity == ExecutionAffinity::Worker || !app || QThread::currentThread() == app->thread()) {
         executeInline();
-    } else if (!QMetaObject::invokeMethod(app, executeInline, Qt::BlockingQueuedConnection)) {
-        // 无事件循环/正在退出时不得静默跳过：模块按失败处理并记录（设计 §6.2）。
-        const QString dispatchError = tr("GUI-thread module dispatch failed: %1").arg(moduleName);
-        Logger::instance().warning(dispatchError, "Run");
-        execResult =
-            ExecutionResult::fail(ExecError::Processing, dispatchError, QStringLiteral("affinity_dispatch_failed"));
+    } else {
+        // T2.2：GUI 回投改为自持有上下文 + 显式状态机。超时只取消尚未开始的回调；
+        // 已进入 Running 的回调必须等其真正完成，期间模块与 job 租约保持有效。
+        auto record = QSharedPointer<GuiDispatchRecord>::create();
+        const int timeoutMs = m_guiDispatchTimeoutMs.load(std::memory_order_acquire);
+        const quint64 generation = m_dispatchGeneration.load(std::memory_order_acquire);
+        auto callback = [this, record, module, inputs = portInputs, ctx = execCtx, generation]() mutable {
+            if (m_dispatchGeneration.load(std::memory_order_acquire) != generation) {
+                record->phase.store(GuiDispatchRecord::Cancelled, std::memory_order_release);
+                m_guiDispatchLateDrops.fetch_add(1, std::memory_order_relaxed);
+                record->done.release();
+                return;
+            }
+            int expected = GuiDispatchRecord::Pending;
+            if (!record->phase.compare_exchange_strong(expected, GuiDispatchRecord::Running)) {
+                m_guiDispatchLateDrops.fetch_add(1, std::memory_order_relaxed);
+                record->done.release();
+                return;
+            }
+            record->result = module->execute(inputs, record->outputs, ctx);
+            record->phase.store(GuiDispatchRecord::Finished, std::memory_order_release);
+            record->done.release();
+        };
+        if (!QMetaObject::invokeMethod(app, callback, Qt::QueuedConnection)) {
+            // 无事件循环/正在退出时不得静默跳过：模块按失败处理并记录（设计 §6.2）。
+            const QString dispatchError = tr("GUI-thread module dispatch failed: %1").arg(moduleName);
+            Logger::instance().warning(dispatchError, "Run");
+            {
+                QMutexLocker locker(&m_guiDispatchMutex);
+                m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_failed");
+            }
+            execResult = ExecutionResult::fail(ExecError::Processing, dispatchError,
+                                               QStringLiteral("affinity_dispatch_failed"));
+        } else if (record->done.tryAcquire(1, timeoutMs)) {
+            if (record->phase.load(std::memory_order_acquire) == GuiDispatchRecord::Finished) {
+                execResult = record->result;
+                portOutputs = record->outputs;
+            } else {
+                // 世代已变化：回调被整体作废，不采用其输出。
+                {
+                    QMutexLocker locker(&m_guiDispatchMutex);
+                    m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_cancelled");
+                }
+                execResult = ExecutionResult::fail(ExecError::Processing,
+                                                   tr("GUI-thread module dispatch cancelled: %1").arg(moduleName),
+                                                   QStringLiteral("affinity_dispatch_cancelled"));
+            }
+        } else {
+            int expected = GuiDispatchRecord::Pending;
+            const bool cancelled = record->phase.compare_exchange_strong(expected, GuiDispatchRecord::Cancelled);
+            if (!cancelled && record->phase.load(std::memory_order_acquire) == GuiDispatchRecord::Running) {
+                // 回调已开始：不得销毁上下文或复用模块，等它真正结束。
+                record->done.acquire();
+            }
+            Logger::instance().warning(
+                QString("GUI-thread module dispatch timed out after %1 ms: %2").arg(timeoutMs).arg(moduleName), "Run");
+            {
+                QMutexLocker locker(&m_guiDispatchMutex);
+                m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_timeout");
+            }
+            execResult = ExecutionResult::fail(ExecError::Processing,
+                                               tr("GUI-thread module dispatch timed out: %1").arg(moduleName),
+                                               QStringLiteral("affinity_dispatch_timeout"));
+        }
     }
     bool success = execResult.success;
     if (success) {
