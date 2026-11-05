@@ -22,6 +22,7 @@
 | B3 | `ee7157d` | `feat(ui): reorder linear chains from the process tree`（完整值 `ee7157d2e4701351badc9908d34c49d44e359469`） |
 | B4 | `81dde8f` | `feat(agent): expose and maintain execution order`（完整值 `81dde8f03f0369cfa5e71235e9c00b58e0c2bf69`） |
 | B5（本批） | `bb46550` | `docs: document execution-order layout`（完整值 `bb46550b7b0023664bb553cdf57566507c8112c6`） |
+| B5 文档补记 | `83fb693` | `docs: record B5 commit hash in acceptance report`（完整值 `83fb693b739a2eaf73a06918869a31ff4b8d7be0`） |
 
 > **B5 哈希的自引用说明**：本报告与 B5 提交同批入库，文件内无法自洽地固化自身提交哈希
 > （写入任何值都会因提交内容变化而失效）。因此 B5 行只记录主题，完整哈希在提交后由
@@ -66,7 +67,7 @@ env -u DISPLAY QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-fail
 
 ```bash
 cmake --build build -j4
-TEST_HOME=$(mktemp -d /tmp/deeplux-layout.XXXXXX)     # 实测 /tmp/deeplux-layout.6JGGc7
+TEST_HOME=$(mktemp -d /tmp/deeplux-layout.XXXXXX)
 env HOME="$TEST_HOME" bash scripts/sync-plugins.sh build
 env -u DISPLAY -u DEEPLUX_APP_DATA_DIR HOME="$TEST_HOME" QT_QPA_PLATFORM=offscreen \
   ctest --test-dir build --output-on-failure -j4
@@ -74,21 +75,17 @@ git diff --check
 git status --short
 ```
 
-**如实记录：本项未全绿，失败均为环境依赖型，非本计划回归。**
+**最终复跑结果：全绿。**
 
-- `SYNC_EXIT=1`：`scripts/sync-plugins.sh: line 115: /dev/fd/63: No such file or directory`。
-  本 sandbox 环境没有 `/dev/fd`（仅存在 `/proc/self/fd`），脚本第 115 行
-  `done < <(find "$PROJECT_DIR/src/plugins" -path '*/metadata.json' -print0)` 依赖 bash process
-  substitution 的 `/dev/fd`，元数据准备阶段即中止，66 个插件 `.so` 未复制到临时 HOME。
-- 隔离 CTest：`91/96` 通过（95%），82.03s；失败 5 项：
-  `test_mainwindow`、`test_pluginmanager`、`test_pluginparametercontracts`、
-  `test_workerpluginconsistency`、`ui_capture_mainwindow`。
-- 日志证据：`Modules found: 0`、`Plugin not found: "GrabImage" / "FindCircle" / "LoadPointCloud" / "CropImage" / "MeasurementInput" / "条件分支"`、
-  `未构建/未安装的候选插件: SaveData`、`rejection must name the unsupported type, got: (空)`、
-  `'!modules.isEmpty()' returned FALSE`。全部指向插件库缺失，而非断言逻辑或产品行为。
-- `git diff --check`：OK；`git status --short`：仅本批 6 个已跟踪文件修改（报告当时尚未创建）。
+- 复跑环境具备标准 `/dev/fd`（`/dev/fd -> /proc/self/fd`），此前 sandbox 缺失该链接的阻塞已消失。
+- `sync-plugins.sh`：`prepared=66 copied=66 skipped=0 cleaned=0`，退出码 0。
+- 隔离 CTest：**96/96 通过**（67.06s，`env -u DISPLAY ...`，含 `test_mainwindow`、
+  `ui_capture_mainwindow`）。
+- `git diff --check`：通过；`git status --short`：仅本报告修改。
+- 早前一次隔离回归因 sandbox 无 `/dev/fd` 失败（91/96）；该结果已被本次完整复跑取代，
+  不再作为当前结论。当时的诊断过程保留在 §2.4，仅作环境记录。
 
-### 2.4 环境修复尝试与诊断性补跑（非计划验收命令，仅用于区分环境 vs 真实回归）
+### 2.4 环境修复尝试与诊断性补跑（历史记录，已被 §2.3 复跑取代）
 
 - 尝试 `ln -s /proc/self/fd /dev/fd` 恢复标准符号链接；sandbox 随即回滚（`/dev/fd` 仍不存在），
   第二次 sync 同样失败（目标 HOME 下 0 个 `.so`）。**未修改任何仓库文件**。
@@ -137,7 +134,7 @@ git diff --check
 | 9 | 兼容性基线来自冻结的旧算法与基准夹具，不是分析器自比较 | 通过 | B1.4 Step 1 在 `tests/test_runengine.cpp` 固化 `legacyExecutionOrder(...)` 与基准常量 |
 | 10 | 布局合并使用单一计时器；抑制 / 工程切换会取消 pending；测试等待事件空闲后断言计数与 Undo 后位置 | 通过 | B2 `test_flowlayoutcoordinator`、B4 `test_agentclosedloop::testConsecutiveAgentAddsCoalesceIntoSingleLayout`（`QSignalSpy` + 事件队列空闲屏障，不用 sleep 构造顺序） |
 | 11 | Agent 构建后自动布局；`get_flow_state` 提供 rank / displayIndex | 通过 | B4 `test_agentactor`（字段 / 不可解析 moduleId 降级）、`test_agentclosedloop`（3 个闭环布局用例）；本批全量通过 |
-| 12 | 现有控制流 / 循环 / 并行 / 断点 / 后台执行测试全绿；全量 CTest、截图门禁、`git diff --check` 通过 | 主口径通过；隔离回归未全绿（见 §2.3 / §2.4） | 最终全量 `96/96`（82.84s）；`ui_capture_mainwindow` PASS（8.53s）；`git diff --check` OK；两套隔离回归因 sandbox 无 `/dev/fd` 与临时 HOME 资源差异失败，单列不写成通过 |
+| 12 | 现有控制流 / 循环 / 并行 / 断点 / 后台执行测试全绿；全量 CTest、截图门禁、`git diff --check` 通过 | 通过 | 标准 HOME `96/96`（69.35s）；隔离 HOME 复跑 `96/96`（67.06s，插件 66/66）；`ui_capture_mainwindow` PASS；`git diff --check` OK |
 | 13 | Windows / 真实工程 / 超大图未验证项单独记录，不写成通过 | 已单列 | 见 §5 |
 
 ---
@@ -191,9 +188,8 @@ git diff --check
   `applyExecutionLayout` 与截图渲染的耗时，也未测量深层嵌套控制流的栈深度上限。
 - **GLX / Xvfb 环境课题**：`DISPLAY=:1` 下创建 GL context 崩溃未在本计划内修复（环境性），
   未验证其它 Xvfb / GLX 配置下的 GUI 行为。
-- **隔离回归在真实部署环境的通过性**：本 sandbox 无 `/dev/fd` 且临时 HOME 缺少
-  `installRuntimePlugin` 所需资源，隔离回归未全绿；在具备标准 `/dev/fd` 与完整 HOME 的
-  机器上是否全绿未在本批验证。
+- **隔离回归在真实部署环境的通过性**：已在具备标准 `/dev/fd` 的本机复跑通过
+  （插件 66/66，CTest 96/96，见 §2.3）；其它部署机器的路径与权限差异仍未验证。
 - **截图基线 PNG**：仓库内没有签入基线 PNG，`ui_capture_mainwindow` 以语义断言 +
   非空白/差异门禁覆盖；像素级基线比对未验证。
 
@@ -227,6 +223,7 @@ git diff --check HEAD~1..HEAD
 | 批次 | 主题 | 完整哈希 |
 | --- | --- | --- |
 | B5 | `docs: document execution-order layout` | `bb46550b7b0023664bb553cdf57566507c8112c6` |
+| B5 文档补记 | `docs: record B5 commit hash in acceptance report` | `83fb693b739a2eaf73a06918869a31ff4b8d7be0` |
 
 > 本报告只记录本批真实执行的命令与结果；历史批次数字已在 §2.6 明确标注为「非本批重跑」。
 > 未验证项一律在 §5 单列，未写成通过。
