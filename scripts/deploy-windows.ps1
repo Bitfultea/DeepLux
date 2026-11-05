@@ -254,17 +254,48 @@ if (-not $SkipSmokeTest) {
         $process = Start-Process -FilePath $exe -ArgumentList "--cli", "list-plugins" -Wait -PassThru `
             -NoNewWindow -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
         $output = Get-Content $stdoutFile -Encoding UTF8 -ErrorAction SilentlyContinue
+
+        # Precise expectation from installed plugin metadata (single source of truth):
+        # every non-camera plugin directory must appear as a loaded module.
+        $pluginRoot = Join-Path $Prefix "plugins"
+        $expectedModules = @()
+        foreach ($meta in Get-ChildItem -Path $pluginRoot -Filter "metadata.json" -Recurse -File -ErrorAction SilentlyContinue) {
+            try { $j = Get-Content $meta.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch { continue }
+            $ifaces = @($j.interfaces)
+            $isCamera = ($j.category -eq 'camera') -or ($ifaces -contains 'ICameraPlugin')
+            if (-not $isCamera -and $j.name) { $expectedModules += [string]$j.name }
+        }
+        $expectedModules = @($expectedModules | Sort-Object -Unique)
+        if ($expectedModules.Count -eq 0) {
+            throw "deployed CLI smoke test failed: no plugin metadata found under $pluginRoot"
+        }
+
         $loaded = 0
+        $okNames = @()
+        $failNames = @()
         $match = $output | Select-String -Pattern "Loaded Plugins \((\d+)\)" | Select-Object -First 1
         if ($match -and $match.Matches.Count -gt 0) {
             $loaded = [int]$match.Matches[0].Groups[1].Value
-        } else {
+        }
+        foreach ($line in $output) {
+            if ($line -match '^\[(OK|FAIL)\]\s+(.+?)\s+v[0-9]') {
+                if ($Matches[1] -eq 'OK') { $okNames += $Matches[2] } else { $failNames += $Matches[2] }
+            }
+        }
+        $missing = @($expectedModules | Where-Object { $okNames -notcontains $_ })
+
+        Write-Host "[SMOKE] exit=$($process.ExitCode) loaded=$loaded expected=$($expectedModules.Count) ok=$($okNames.Count) fail=$($failNames.Count)"
+        if ($failNames.Count -gt 0) {
+            throw ("deployed CLI smoke test failed: plugin(s) failed to load: " + ($failNames -join ', '))
+        }
+        if ($missing.Count -gt 0) {
             Write-Host ($output | Select-Object -Last 10 | Out-String)
             Write-Host (Get-Content $stderrFile -Encoding UTF8 -ErrorAction SilentlyContinue | Out-String)
+            throw ("deployed CLI smoke test failed: missing plugin(s): " + ($missing -join ', '))
         }
-        Write-Host "[SMOKE] exit=$($process.ExitCode) loaded=$loaded"
-        if ($process.ExitCode -ne 0 -or $loaded -lt 10) {
-            throw "deployed CLI smoke test failed"
+        if ($process.ExitCode -ne 0 -or $loaded -ne $expectedModules.Count) {
+            Write-Host ($output | Select-Object -Last 10 | Out-String)
+            throw "deployed CLI smoke test failed: expected $($expectedModules.Count) modules, got $loaded (exit=$($process.ExitCode))"
         }
     } finally {
         $env:PATH = $savedPath

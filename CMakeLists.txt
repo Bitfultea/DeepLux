@@ -342,6 +342,75 @@ file(WRITE "${CMAKE_BINARY_DIR}/plugins.manifest" "${packaged_plugin_manifest}\n
 install(FILES "${CMAKE_BINARY_DIR}/plugins.manifest"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/deeplux")
 
+# ========== 插件事实文件（plugin-facts.json）==========
+# 单一事实源：源码 metadata 数、打包插件数、分域计数、接口版本、构建开关。
+# 文档（README/plugins.md）只引用该文件，不再手写易漂移的数字。
+file(GLOB_RECURSE _deeplux_plugin_files "${CMAKE_SOURCE_DIR}/src/plugins/*")
+set(_deeplux_metadata_files "")
+foreach(_f IN LISTS _deeplux_plugin_files)
+    if(_f MATCHES "/metadata\\.json$")
+        list(APPEND _deeplux_metadata_files "${_f}")
+    endif()
+endforeach()
+list(LENGTH _deeplux_metadata_files _deeplux_source_metadata_count)
+list(LENGTH packaged_plugin_dirs _deeplux_packaged_count)
+
+# 接口版本：从 IModule.h 的 constexpr 提取，避免与 C++ 定义漂移。
+set(_deeplux_abi_interface_version "0")
+file(STRINGS "${CMAKE_SOURCE_DIR}/src/core/interface/IModule.h" _imod_ver_line
+    REGEX "DEEPLUX_MODULE_INTERFACE_VERSION[ \t]*=[ \t]*[0-9]+")
+if(_imod_ver_line)
+    string(REGEX MATCH "[0-9]+" _deeplux_abi_interface_version "${_imod_ver_line}")
+endif()
+
+# 分域计数
+set(_deeplux_domain_names "")
+foreach(_meta IN LISTS _deeplux_metadata_files)
+    string(REGEX REPLACE "^${CMAKE_SOURCE_DIR}/src/plugins/([^/]+)/.*$" "\\1" _domain "${_meta}")
+    list(APPEND _deeplux_domain_names "${_domain}")
+endforeach()
+list(SORT _deeplux_domain_names)
+list(REMOVE_DUPLICATES _deeplux_domain_names)
+set(_deeplux_domain_json "")
+foreach(_d IN LISTS _deeplux_domain_names)
+    set(_cnt 0)
+    foreach(_meta IN LISTS _deeplux_metadata_files)
+        string(REGEX REPLACE "^${CMAKE_SOURCE_DIR}/src/plugins/([^/]+)/.*$" "\\1" _dom "${_meta}")
+        if(_dom STREQUAL _d)
+            math(EXPR _cnt "${_cnt}+1")
+        endif()
+    endforeach()
+    if(NOT _deeplux_domain_json STREQUAL "")
+        string(APPEND _deeplux_domain_json ",\n")
+    endif()
+    string(APPEND _deeplux_domain_json "    \"${_d}\": ${_cnt}")
+endforeach()
+
+# 构建开关归一化为 ON/OFF
+foreach(_sw IN ITEMS DEEPLUX_NATIVE_SAM ENABLE_HYMSON3D BUILD_TESTS)
+    if(${_sw})
+        set(${_sw}_str "ON")
+    else()
+        set(${_sw}_str "OFF")
+    endif()
+endforeach()
+
+set(_deeplux_facts "{\n")
+string(APPEND _deeplux_facts "  \"generated_by\": \"cmake-plugin-facts\",\n")
+string(APPEND _deeplux_facts "  \"source_metadata_count\": ${_deeplux_source_metadata_count},\n")
+string(APPEND _deeplux_facts "  \"packaged_plugin_count\": ${_deeplux_packaged_count},\n")
+string(APPEND _deeplux_facts "  \"abi_interface_version\": ${_deeplux_abi_interface_version},\n")
+string(APPEND _deeplux_facts "  \"build_type\": \"${CMAKE_BUILD_TYPE}\",\n")
+string(APPEND _deeplux_facts "  \"switches\": {\n")
+string(APPEND _deeplux_facts "    \"native_sam\": \"${DEEPLUX_NATIVE_SAM_str}\",\n")
+string(APPEND _deeplux_facts "    \"hymson3d\": \"${ENABLE_HYMSON3D_str}\",\n")
+string(APPEND _deeplux_facts "    \"build_tests\": \"${BUILD_TESTS_str}\"\n")
+string(APPEND _deeplux_facts "  },\n")
+string(APPEND _deeplux_facts "  \"domains\": {\n${_deeplux_domain_json}\n  }\n}\n")
+file(WRITE "${CMAKE_BINARY_DIR}/plugin-facts.json" "${_deeplux_facts}")
+install(FILES "${CMAKE_BINARY_DIR}/plugin-facts.json"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/deeplux")
+
 # Windows 安装树自带 OpenCV 运行库；Qt 运行库由 scripts/deploy-windows.ps1
 # 调用 windeployqt 复制（或打包机自行安装 Qt）。
 if(WIN32)
