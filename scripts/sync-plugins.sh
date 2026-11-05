@@ -23,6 +23,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 FORCE=0
 BUILD_DIR=""
 PLUGINS_HOME_OVERRIDE=""
+PLUGINS_HOME_SET=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --force) FORCE=1; shift ;;
@@ -31,7 +32,12 @@ while [ $# -gt 0 ]; do
                 echo "[ERROR] --plugins-home requires a directory" >&2
                 exit 2
             fi
+            if [ -z "$2" ]; then
+                echo "[ERROR] --plugins-home requires a non-empty directory" >&2
+                exit 2
+            fi
             PLUGINS_HOME_OVERRIDE="$2"
+            PLUGINS_HOME_SET=1
             shift 2
             ;;
         -*) echo "[ERROR] Unknown option: $1" >&2; exit 2 ;;
@@ -42,7 +48,7 @@ BUILD_DIR="${BUILD_DIR:-$PROJECT_DIR/build}"
 
 # 目标插件目录解析：显式参数 > DEEPLUX_APP_DATA_DIR/plugins > $HOME/.deeplux/plugins。
 # 与应用 PathUtils::pluginPath() 同源，避免隔离环境写入真实用户目录。
-if [ -n "$PLUGINS_HOME_OVERRIDE" ]; then
+if [ "$PLUGINS_HOME_SET" -eq 1 ]; then
     PLUGINS_HOME="$PLUGINS_HOME_OVERRIDE"
 elif [ -n "${DEEPLUX_APP_DATA_DIR:-}" ]; then
     PLUGINS_HOME="${DEEPLUX_APP_DATA_DIR%/}/plugins"

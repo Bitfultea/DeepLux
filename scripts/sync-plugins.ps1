@@ -27,12 +27,16 @@ $ErrorActionPreference = "Stop"
 
 # Target resolution: explicit -PluginsHome > DEEPLUX_APP_DATA_DIR\plugins > %USERPROFILE%\.deeplux\plugins.
 # Must match PathUtils::pluginPath() so isolated runs never write the real user dir.
-if (-not $PluginsHome) {
-    if ($env:DEEPLUX_APP_DATA_DIR) {
-        $PluginsHome = Join-Path $env:DEEPLUX_APP_DATA_DIR "plugins"
-    } else {
-        $PluginsHome = Join-Path $env:USERPROFILE ".deeplux\plugins"
+# Distinguish "not provided" from "provided but empty": the latter is an error,
+# never a silent fallback to the default directory.
+if ($PSBoundParameters.ContainsKey('PluginsHome')) {
+    if ([string]::IsNullOrWhiteSpace($PluginsHome)) {
+        throw "sync-plugins.ps1: -PluginsHome was provided but is empty"
     }
+} elseif ($env:DEEPLUX_APP_DATA_DIR) {
+    $PluginsHome = Join-Path $env:DEEPLUX_APP_DATA_DIR "plugins"
+} else {
+    $PluginsHome = Join-Path $env:USERPROFILE ".deeplux\plugins"
 }
 
 $srcPlugins = Join-Path $SourceDir "src\plugins"

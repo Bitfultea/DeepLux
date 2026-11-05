@@ -575,3 +575,14 @@ if(DEEPLUX_NATIVE_SAM)
     add_test(NAME test_sam_native_pool_exit COMMAND test_sam_onnx_inference persistentPoolSessionSurvivesShutdown)
     set_tests_properties(test_sam_native_pool_exit PROPERTIES TIMEOUT 60)
 endif()
+
+# ========== 统一超时兜底 ==========
+# 未显式设置 TIMEOUT 的用例给宽松默认，避免 CI 去掉全局 --timeout 后，
+# 挂起回归只能等外部超时。显式 TIMEOUT（60/120/300 等）保持不变。
+get_property(_deeplux_all_tests DIRECTORY PROPERTY TESTS)
+foreach(_t IN LISTS _deeplux_all_tests)
+    get_test_property(${_t} TIMEOUT _deeplux_existing_timeout)
+    if(_deeplux_existing_timeout STREQUAL "NOTFOUND")
+        set_tests_properties(${_t} PROPERTIES TIMEOUT 600)
+    endif()
+endforeach()
