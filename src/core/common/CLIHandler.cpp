@@ -142,9 +142,10 @@ public:
 
         printf("=== Loaded Plugins (%d) ===\n", plugins.size());
         for (const auto& info : plugins) {
-            QString status = info.loaded ? "OK" : "FAIL";
-            printf("[%s] %s v%s (%s)\n", qPrintable(status), qPrintable(info.name), qPrintable(info.version),
-                   qPrintable(info.category));
+            const QByteArray line =
+                CLIHandler::formatPluginLine(info.loaded ? QStringLiteral("OK") : QStringLiteral("FAIL"), info.name,
+                                             info.version, info.category);
+            fwrite(line.constData(), 1, static_cast<size_t>(line.size()), stdout);
         }
         printf("=========================\n");
         return 0;
@@ -649,6 +650,11 @@ void CLIHandler::setupCommands() {
     m_commands.append(new ConnectModulesCommand());
     m_commands.append(new SaveProjectCommand());
     m_commands.append(new ListModulesCommand());
+}
+
+QByteArray CLIHandler::formatPluginLine(const QString& status, const QString& name, const QString& version,
+                                        const QString& category) {
+    return QStringLiteral("[%1] %2 v%3 (%4)\n").arg(status, name, version, category).toUtf8();
 }
 
 ICommand* CLIHandler::findCommand(const QString& name) {

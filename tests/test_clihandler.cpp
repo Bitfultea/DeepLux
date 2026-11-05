@@ -3,7 +3,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
+#include <QTextCodec>
 #include <QtTest/QtTest>
+#include <clocale>
 #include <core/common/CLIHandler.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/PluginManager.h>
@@ -23,6 +25,7 @@ private slots:
     void testRunCommandRejectsMissingProjectFile();
     void testRunCommandReportsEmptyProjectAsExecutionFailure();
     void testRunCommandExecutesProjectWithAvailablePlugin();
+    void testListPluginsLineEmitsUtf8();
 
 private:
     bool installSystemTimePlugin(const QString& pluginRoot) const;
@@ -143,6 +146,30 @@ void TestCLIHandler::testRunCommandExecutesProjectWithAvailablePlugin() {
     QCOMPARE(run->execute({projectPath}, ctx), 0);
     QVERIFY2(!ctx.hasError(), qPrintable(ctx.errorString()));
     QCOMPARE(RunEngine::instance().successRuns(), 1);
+}
+
+void TestCLIHandler::testListPluginsLineEmitsUtf8() {
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    // Simulate a CP936 (GBK) Windows locale so a toLocal8Bit()/qPrintable()
+    // regression actually changes the bytes here, not just on Windows.
+    QTextCodec* gbk = QTextCodec::codecForName("GBK");
+    if (!gbk)
+        QSKIP("GBK codec not available in this Qt build");
+
+    QTextCodec* previous = QTextCodec::codecForLocale();
+    QTextCodec::setCodecForLocale(gbk);
+    const QByteArray gbkBytes = QStringLiteral("变量赋值").toLocal8Bit();
+    const QByteArray line = CLIHandler::formatPluginLine(QStringLiteral("OK"), QStringLiteral("变量赋值"),
+                                                         QStringLiteral("1.0.0"), QStringLiteral("variable"));
+    QTextCodec::setCodecForLocale(previous);
+
+    // Must be UTF-8 bytes, and must not be the GBK local-encoding bytes.
+    QVERIFY2(line.contains(QStringLiteral("变量赋值").toUtf8()), "plugin line must contain UTF-8 bytes");
+    QVERIFY2(!line.contains(gbkBytes), "plugin line must not use the local (GBK) encoding");
+    QVERIFY(QString::fromUtf8(line).contains(QStringLiteral("变量赋值")));
+#else
+    QSKIP("Qt6 is UTF-8 everywhere; the toUtf8 contract is covered by code review");
+#endif
 }
 
 QTEST_MAIN(TestCLIHandler)

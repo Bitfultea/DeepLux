@@ -293,6 +293,7 @@ if (-not $SkipSmokeTest) {
         $missingDir = @()
         $missingMeta = @()
         $missingLib = @()
+        $invalidName = @()
         foreach ($dir in $manifestDirs) {
             $pdir = Join-Path $pluginRoot $dir
             if (-not (Test-Path $pdir)) { $missingDir += $dir; continue }
@@ -303,8 +304,18 @@ if (-not $SkipSmokeTest) {
             try { $j = Get-Content $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $missingMeta += $dir; continue }
             $ifaces = @($j.interfaces)
             $isCamera = ($j.category -eq 'camera') -or ($ifaces -contains 'ICameraPlugin')
-            if (-not $isCamera -and $j.name) { $expectedModules += [string]$j.name }
+            if ($isCamera) { continue }
+            $moduleName = ""
+            if ($null -ne $j.name) { $moduleName = ([string]$j.name).Trim() }
+            if ([string]::IsNullOrEmpty($moduleName)) { $invalidName += $dir; continue }
+            $expectedModules += $moduleName
         }
+
+        # Duplicate module identity is an error, not something to silently merge:
+        # two manifest entries claiming the same module would shrink the effective
+        # expectation and hide a missing/broken plugin.
+        $duplicateNames = @($expectedModules | Group-Object | Where-Object { $_.Count -gt 1 } |
+            ForEach-Object { $_.Name })
         $expectedModules = @($expectedModules | Sort-Object -Unique)
 
         $exe = Join-Path $binDir "DeepLux.exe"
@@ -329,14 +340,16 @@ if (-not $SkipSmokeTest) {
         }
         $missingModules = @($expectedModules | Where-Object { $okNames -notcontains $_ })
 
-        Write-Host ("[SMOKE] exit={0} loaded={1} expectedModules={2} manifest={3} ok={4} fail={5} missingDir={6} missingMeta={7} missingLib={8}" -f `
+        Write-Host ("[SMOKE] exit={0} loaded={1} expectedModules={2} manifest={3} ok={4} fail={5} missingDir={6} missingMeta={7} missingLib={8} invalidName={9} duplicateName={10}" -f `
             $process.ExitCode, $loaded, $expectedModules.Count, $manifestDirs.Count, $okNames.Count, $failNames.Count, `
-            $missingDir.Count, $missingMeta.Count, $missingLib.Count)
+            $missingDir.Count, $missingMeta.Count, $missingLib.Count, $invalidName.Count, $duplicateNames.Count)
 
         $problems = @()
         if ($missingDir.Count -gt 0) { $problems += "missing plugin dir(s): " + ($missingDir -join ', ') }
         if ($missingMeta.Count -gt 0) { $problems += "missing/invalid metadata: " + ($missingMeta -join ', ') }
         if ($missingLib.Count -gt 0) { $problems += "missing library (.dll): " + ($missingLib -join ', ') }
+        if ($invalidName.Count -gt 0) { $problems += "plugin(s) with missing/empty metadata name: " + ($invalidName -join ', ') }
+        if ($duplicateNames.Count -gt 0) { $problems += "duplicate module name(s): " + ($duplicateNames -join ', ') }
         if ($failNames.Count -gt 0) { $problems += "plugin(s) failed to load: " + ($failNames -join ', ') }
         if ($missingModules.Count -gt 0) { $problems += "module(s) not loaded: " + ($missingModules -join ', ') }
         if ($problems.Count -gt 0) {
