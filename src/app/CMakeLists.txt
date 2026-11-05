@@ -45,7 +45,7 @@ install(TARGETS DeepLux
 )
 
 # Install CLI wrapper (Linux only)
-if(LINUX)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/deeplux
             DESTINATION ${CMAKE_INSTALL_BINDIR}
             RENAME deeplux)
