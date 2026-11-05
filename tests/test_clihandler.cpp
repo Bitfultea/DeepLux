@@ -151,24 +151,32 @@ void TestCLIHandler::testRunCommandExecutesProjectWithAvailablePlugin() {
 }
 
 void TestCLIHandler::testListPluginsLineEmitsUtf8() {
-    const QByteArray line = CLIHandler::formatPluginLine(QStringLiteral("OK"), QStringLiteral("变量赋值"),
-                                                         QStringLiteral("1.0.0"), QStringLiteral("variable"));
-
-    // Always (Qt 5 and 6): the line must be UTF-8 bytes, not local encoding.
-    QVERIFY2(line.contains(QStringLiteral("变量赋值").toUtf8()), "plugin line must contain UTF-8 bytes");
-    QVERIFY(QString::fromUtf8(line).contains(QStringLiteral("变量赋值")));
+    const QString status = QStringLiteral("OK");
+    const QString name = QStringLiteral("变量赋值");
+    const QString version = QStringLiteral("1.0.0");
+    const QString category = QStringLiteral("variable");
 
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-    // Additionally simulate a CP936 (GBK) locale on Qt 5, where QTextCodec is
-    // available without the Core5Compat module.
+    // Simulate a CP936 (GBK) locale on Qt 5 and call the formatter WHILE it is
+    // active, so a toLocal8Bit()/qPrintable() regression actually changes bytes.
     if (QTextCodec* gbk = QTextCodec::codecForName("GBK")) {
         QTextCodec* previous = QTextCodec::codecForLocale();
         QTextCodec::setCodecForLocale(gbk);
-        const QByteArray gbkBytes = QStringLiteral("变量赋值").toLocal8Bit();
+        const QByteArray gbkBytes = name.toLocal8Bit();
+        const QByteArray line = CLIHandler::formatPluginLine(status, name, version, category);
         QTextCodec::setCodecForLocale(previous);
+
+        QVERIFY2(line.contains(name.toUtf8()), "plugin line must contain UTF-8 bytes");
         QVERIFY2(!line.contains(gbkBytes), "plugin line must not use the local (GBK) encoding");
+        QVERIFY(QString::fromUtf8(line).contains(name));
+        return;
     }
 #endif
+
+    // Qt6, or Qt5 built without the GBK codec: still assert the UTF-8 contract.
+    const QByteArray line = CLIHandler::formatPluginLine(status, name, version, category);
+    QVERIFY2(line.contains(name.toUtf8()), "plugin line must contain UTF-8 bytes");
+    QVERIFY(QString::fromUtf8(line).contains(name));
 }
 
 QTEST_MAIN(TestCLIHandler)
