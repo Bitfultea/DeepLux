@@ -6,10 +6,12 @@
 # 解决因插件库与主程序不同步导致的跨 DLL 虚表不匹配问题。
 #
 # 用法:
-#   ./scripts/sync-plugins.sh [--force] [BUILD_DIR]
+#   ./scripts/sync-plugins.sh [--force] [--plugins-home DIR] [BUILD_DIR]
 #
-#   BUILD_DIR  可选，CMake 构建目录（默认: <项目根>/build）
-#   --force    允许删除插件目录中不匹配的旧 .so（默认只保留并告警）
+#   BUILD_DIR       可选，CMake 构建目录（默认: <项目根>/build）
+#   --force         允许删除插件目录中不匹配的旧 .so（默认只保留并告警）
+#   --plugins-home  显式指定插件目录；缺省时优先 DEEPLUX_APP_DATA_DIR/plugins，
+#                   再回退 $HOME/.deeplux/plugins
 # =============================================================================
 
 set -euo pipefail
@@ -17,18 +19,36 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-# 参数解析：--force 允许删除不匹配的旧 .so；首个非选项参数为构建目录。
+# 参数解析：--force 允许删除不匹配的旧 .so；--plugins-home 显式指定目标目录。
 FORCE=0
 BUILD_DIR=""
-for arg in "$@"; do
-    case "$arg" in
-        --force) FORCE=1 ;;
-        -*) echo "[ERROR] Unknown option: $arg" >&2; exit 2 ;;
-        *) if [ -z "$BUILD_DIR" ]; then BUILD_DIR="$arg"; else echo "[ERROR] Unexpected argument: $arg" >&2; exit 2; fi ;;
+PLUGINS_HOME_OVERRIDE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --force) FORCE=1; shift ;;
+        --plugins-home)
+            if [ $# -lt 2 ]; then
+                echo "[ERROR] --plugins-home requires a directory" >&2
+                exit 2
+            fi
+            PLUGINS_HOME_OVERRIDE="$2"
+            shift 2
+            ;;
+        -*) echo "[ERROR] Unknown option: $1" >&2; exit 2 ;;
+        *) if [ -z "$BUILD_DIR" ]; then BUILD_DIR="$1"; shift; else echo "[ERROR] Unexpected argument: $1" >&2; exit 2; fi ;;
     esac
 done
 BUILD_DIR="${BUILD_DIR:-$PROJECT_DIR/build}"
-PLUGINS_HOME="${HOME}/.deeplux/plugins"
+
+# 目标插件目录解析：显式参数 > DEEPLUX_APP_DATA_DIR/plugins > $HOME/.deeplux/plugins。
+# 与应用 PathUtils::pluginPath() 同源，避免隔离环境写入真实用户目录。
+if [ -n "$PLUGINS_HOME_OVERRIDE" ]; then
+    PLUGINS_HOME="$PLUGINS_HOME_OVERRIDE"
+elif [ -n "${DEEPLUX_APP_DATA_DIR:-}" ]; then
+    PLUGINS_HOME="${DEEPLUX_APP_DATA_DIR%/}/plugins"
+else
+    PLUGINS_HOME="${HOME}/.deeplux/plugins"
+fi
 
 mkdir -p "$PLUGINS_HOME"
 
