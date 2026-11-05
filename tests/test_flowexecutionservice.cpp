@@ -364,6 +364,37 @@ private slots:
         QCOMPARE(probe.runs.load(), 2);
     }
 
+    // T2.1（NF）：worker 退出等待必须在诊断阈值处告警并继续 join（禁止 detach），
+    // 且不能挂死；注入 0ms 使诊断路径确定性触发。
+    void testShutdownReportsDeadlineAndJoinsWorkerWithoutDetach() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe(QStringLiteral("DeadlineProbe"));
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("DeadlineProbe"), ExecutionAffinity::Worker);
+
+        // 先跑一次，确保常驻 worker 已创建并回到空闲等待。
+        QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
+        QVERIFY(service.startSingle());
+        QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(service.state(), FlowExecutionService::State::Idle, 5000);
+
+        service.setShutdownDeadlineForTest(0);
+        QElapsedTimer timer;
+        timer.start();
+        QVERIFY2(service.shutdown(), "idle shutdown must join the worker and return true");
+        QVERIFY2(timer.elapsed() < 5000, "shutdown must not hang waiting for the worker");
+        QVERIFY2(service.shutdownDeadlineHitCountForTest() >= 1,
+                 "shutdown must record the diagnostic when the wait exceeds the threshold");
+
+        // Join（而非 detach）后可重建线程继续工作。
+        QSignalSpy nextSpy(&service, &FlowExecutionService::jobFinished);
+        QVERIFY(service.startSingle());
+        QTRY_COMPARE_WITH_TIMEOUT(nextSpy.count(), 1, 5000);
+        QCOMPARE(probe.runs.load(), 2);
+    }
+
     // B5.2：非 Idle 时启动/单步拒绝（不排队），continue/pause 状态校验。
     void testStartRejectedWhileBusy() {
         RunEngine& engine = RunEngine::instance();

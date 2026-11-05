@@ -126,6 +126,14 @@ void FlowExecutionService::clearStartHandshakeHookForTest() {
     m_testStartHook = nullptr;
 }
 
+void FlowExecutionService::setShutdownDeadlineForTest(int msecs) {
+    m_shutdownDeadlineMs.store(qMax(0, msecs), std::memory_order_release);
+}
+
+int FlowExecutionService::shutdownDeadlineHitCountForTest() const {
+    return m_shutdownDeadlineHits.load(std::memory_order_acquire);
+}
+
 void FlowExecutionService::settleStart(bool ok) {
     QMutexLocker locker(&m_mutex);
     m_startOk = ok;

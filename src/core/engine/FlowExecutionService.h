@@ -76,6 +76,11 @@ public:
     DEEPLUX_TEST_VISIBILITY : void setStartHandshakeHookForTest(std::function<void()> hook);
     DEEPLUX_TEST_VISIBILITY : void clearStartHandshakeHookForTest();
 
+    // T2.1：worker 退出等待的诊断阈值（默认 10s）。仅用于告警，不作为强杀或 detach 依据。
+    // 注入短值便于测试确定性地触发诊断路径。
+    DEEPLUX_TEST_VISIBILITY : void setShutdownDeadlineForTest(int msecs);
+    DEEPLUX_TEST_VISIBILITY : int shutdownDeadlineHitCountForTest() const;
+
 signals:
     void jobStateChanged(FlowExecutionService::State state, FlowExecutionService::JobType job);
     void jobFinished(FlowExecutionService::JobType job, bool stopped);
@@ -124,6 +129,9 @@ private:
     RunEngine::JobToken m_leaseToken;
     std::atomic<int> m_state{static_cast<int>(State::Idle)};
     std::atomic<int> m_job{static_cast<int>(JobType::None)};
+    // T2.1：worker 退出诊断阈值与命中计数（默认 10s；仅告警，不触发强杀/detach）。
+    std::atomic<int> m_shutdownDeadlineMs{10000};
+    std::atomic<int> m_shutdownDeadlineHits{0};
     std::atomic_bool m_lastJobStopped{false};
     std::atomic<quint64> m_jobSerialSeq{0};
     std::atomic<quint64> m_currentJobSerial{0};
