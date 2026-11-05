@@ -80,8 +80,21 @@ RunEngine::RunEngine()
 
 RunEngine::~RunEngine() {
     stop();
-    m_runPool.waitForDone();
-    m_parallelPool.waitForDone();
+    // T2.1：有界诊断 + 继续等待。禁止 terminate/detach：池线程可能仍在访问模块与引擎。
+    constexpr int kShutdownDiagnosticMs = 10000;
+    if (!m_runPool.waitForDone(kShutdownDiagnosticMs)) {
+        Logger::instance().warning(QString("Run pool did not finish within %1 ms during shutdown; continuing to wait")
+                                       .arg(kShutdownDiagnosticMs),
+                                   "Run");
+        m_runPool.waitForDone(-1);
+    }
+    if (!m_parallelPool.waitForDone(kShutdownDiagnosticMs)) {
+        Logger::instance().warning(
+            QString("Parallel pool did not finish within %1 ms during shutdown; continuing to wait")
+                .arg(kShutdownDiagnosticMs),
+            "Run");
+        m_parallelPool.waitForDone(-1);
+    }
     clearModuleTree();
     clearModules();
 }

@@ -113,6 +113,9 @@ private:
     // 启动握手：enqueue 等待工作者完成“取得 job 租约并提交 Running / 启动失败”，
     // 保证 startX() 返回 true 时 isBusy() 已为真（兼容 Agent/UI 的“started 即忙”语义）。
     void settleStart(bool ok);
+    // T2.1：有界诊断等待后继续 join；绝不 detach/terminate，保证 worker 访问的对象
+    // 一定 outlive 线程。
+    void joinWorkerThread(WorkerThread* thread);
 
     mutable QMutex m_mutex;
     QWaitCondition m_wake;

@@ -50,9 +50,28 @@ FlowExecutionService::~FlowExecutionService() {
         m_thread = nullptr;
     }
     if (thread) {
-        thread->wait();
-        delete thread;
+        joinWorkerThread(thread);
     }
+}
+
+void FlowExecutionService::joinWorkerThread(WorkerThread* thread) {
+    if (!thread) {
+        return;
+    }
+    const int deadline = m_shutdownDeadlineMs.load(std::memory_order_acquire);
+    if (!thread->wait(static_cast<unsigned long>(qMax(0, deadline)))) {
+        m_shutdownDeadlineHits.fetch_add(1, std::memory_order_relaxed);
+        Logger::instance().warning(QString("Flow execution worker did not exit within %1 ms during shutdown "
+                                           "(state=%2, job=%3); continuing to wait without detach")
+                                       .arg(deadline)
+                                       .arg(static_cast<int>(state()))
+                                       .arg(static_cast<int>(currentJob())),
+                                   "Service");
+        // No detach/terminate: the worker may still touch this service and its modules,
+        // so keep waiting until it really exits before the object is destroyed.
+        thread->wait();
+    }
+    delete thread;
 }
 
 bool FlowExecutionService::isActive() const {
@@ -229,8 +248,7 @@ bool FlowExecutionService::shutdown() {
         return false;
     }
     if (thread) {
-        thread->wait();
-        delete thread;
+        joinWorkerThread(thread);
     }
     return true;
 }
