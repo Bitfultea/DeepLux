@@ -21,7 +21,7 @@
 | B2 复核修复 | `3409658` / `fc35022` | `fix(ui): size execution layout rows by node height` / `fix(ui): normalize overlapping positions and bind canvas project` |
 | B3 | `ee7157d` | `feat(ui): reorder linear chains from the process tree`（完整值 `ee7157d2e4701351badc9908d34c49d44e359469`） |
 | B4 | `81dde8f` | `feat(agent): expose and maintain execution order`（完整值 `81dde8f03f0369cfa5e71235e9c00b58e0c2bf69`） |
-| B5（本批） | 见 §6 | `docs: document execution-order layout` |
+| B5（本批） | `bb46550` | `docs: document execution-order layout`（完整值 `bb46550b7b0023664bb553cdf57566507c8112c6`） |
 
 > **B5 哈希的自引用说明**：本报告与 B5 提交同批入库，文件内无法自洽地固化自身提交哈希
 > （写入任何值都会因提交内容变化而失效）。因此 B5 行只记录主题，完整哈希在提交后由
@@ -226,7 +226,7 @@ git diff --check HEAD~1..HEAD
 
 | 批次 | 主题 | 完整哈希 |
 | --- | --- | --- |
-| B5 | `docs: document execution-order layout` | 提交后 `git rev-parse HEAD` 输出，见本批交付消息 |
+| B5 | `docs: document execution-order layout` | `bb46550b7b0023664bb553cdf57566507c8112c6` |
 
 > 本报告只记录本批真实执行的命令与结果；历史批次数字已在 §2.6 明确标注为「非本批重跑」。
 > 未验证项一律在 §5 单列，未写成通过。
