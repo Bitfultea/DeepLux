@@ -2,8 +2,7 @@
 
 #include "model/Annotation.h"
 
-#include <QFile>
-#include <QFileInfo>
+#include <QSaveFile>
 #include <QTextStream>
 
 namespace DeepLux {
@@ -16,16 +15,38 @@ bool YoloSegExporter::exportToFile(const AnnotationSession& session, const QStri
         return false;
     }
 
-    QFile file(outputPath);
+    // Fail closed: every annotation label must be present in classLabels.
+    // Silently mapping an unknown label to class 0 corrupts training data.
+    for (const AnnotationObject& obj : session.annotations) {
+        if (!classLabels.contains(obj.label)) {
+            if (error)
+                *error = QStringLiteral("Unknown label '%1' is not in classLabels [%2]")
+                             .arg(obj.label, classLabels.join(QStringLiteral(", ")));
+            return false;
+        }
+    }
+
+    QSaveFile file(outputPath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         if (error)
-            *error = QStringLiteral("Cannot create file: %1").arg(outputPath);
+            *error = QStringLiteral("Cannot create file: %1 (%2)").arg(outputPath, file.errorString());
         return false;
     }
 
     QTextStream out(&file);
     out << toJsonString(session, classLabels);
-    file.close();
+    out.flush();
+    if (out.status() != QTextStream::Ok) {
+        if (error)
+            *error = QStringLiteral("Failed writing file: %1").arg(outputPath);
+        file.cancelWriting();
+        return false;
+    }
+    if (!file.commit()) {
+        if (error)
+            *error = QStringLiteral("Failed to commit file: %1 (%2)").arg(outputPath, file.errorString());
+        return false;
+    }
     return true;
 }
 

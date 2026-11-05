@@ -3,6 +3,7 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QTextStream>
 #include <QtTest/QtTest>
@@ -16,11 +17,13 @@ private slots:
     void exportSingleObject();
     void exportMultipleObjectsWithClassIdMapping();
     void emptySessionProducesEmptyFile();
-    void unknownLabelFallsBackToClassZero();
+    void unknownLabelFailsClosedAndDoesNotCreateFile();
+    void unknownLabelFailsClosedKeepsExistingFile();
+    void normalExportMatchesToJsonString();
 };
 
-AnnotationObject makeObject(const QString& label, const QList<QPointF>& polygon, const QRectF& bbox,
-                            int imageWidth, int imageHeight) {
+AnnotationObject makeObject(const QString& label, const QList<QPointF>& polygon, const QRectF& bbox, int imageWidth,
+                            int imageHeight) {
     AnnotationObject obj;
     obj.id = QStringLiteral("test-id");
     obj.label = label;
@@ -35,9 +38,9 @@ void TestYoloSegExporter::exportSingleObject() {
     session.imagePath = QStringLiteral("/tmp/test.png");
     session.imageWidth = 100;
     session.imageHeight = 100;
-    AnnotationObject obj = makeObject(QStringLiteral("缺陷"),
-                                      {QPointF(10, 10), QPointF(20, 10), QPointF(20, 20), QPointF(10, 20)},
-                                      QRectF(10, 10, 10, 10), 100, 100);
+    AnnotationObject obj =
+        makeObject(QStringLiteral("缺陷"), {QPointF(10, 10), QPointF(20, 10), QPointF(20, 20), QPointF(10, 20)},
+                   QRectF(10, 10, 10, 10), 100, 100);
     session.annotations.append(obj);
 
     const QStringList labels = {QStringLiteral("缺陷"), QStringLiteral("划痕")};
@@ -56,19 +59,19 @@ void TestYoloSegExporter::exportMultipleObjectsWithClassIdMapping() {
     AnnotationSession session;
     session.imageWidth = 200;
     session.imageHeight = 100;
-    session.annotations.append(
-        makeObject(QStringLiteral("划痕"), {QPointF(0, 0), QPointF(10, 0), QPointF(10, 10), QPointF(0, 10)},
-                   QRectF(0, 0, 10, 10), 200, 100));
-    session.annotations.append(
-        makeObject(QStringLiteral("缺陷"), {QPointF(20, 20), QPointF(30, 20), QPointF(30, 30), QPointF(20, 30)},
-                   QRectF(20, 20, 10, 10), 200, 100));
+    session.annotations.append(makeObject(QStringLiteral("划痕"),
+                                          {QPointF(0, 0), QPointF(10, 0), QPointF(10, 10), QPointF(0, 10)},
+                                          QRectF(0, 0, 10, 10), 200, 100));
+    session.annotations.append(makeObject(QStringLiteral("缺陷"),
+                                          {QPointF(20, 20), QPointF(30, 20), QPointF(30, 30), QPointF(20, 30)},
+                                          QRectF(20, 20, 10, 10), 200, 100));
 
     const QStringList labels = {QStringLiteral("缺陷"), QStringLiteral("划痕")};
     const QString content = YoloSegExporter::toJsonString(session, labels);
     const QStringList lines = content.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
     QCOMPARE(lines.size(), 2);
-    QCOMPARE(lines.at(0).split(QLatin1Char(' ')).at(0).toInt(), 1);  // 划痕 -> index 1
-    QCOMPARE(lines.at(1).split(QLatin1Char(' ')).at(0).toInt(), 0);  // 缺陷 -> index 0
+    QCOMPARE(lines.at(0).split(QLatin1Char(' ')).at(0).toInt(), 1); // 划痕 -> index 1
+    QCOMPARE(lines.at(1).split(QLatin1Char(' ')).at(0).toInt(), 0); // 缺陷 -> index 0
 }
 
 void TestYoloSegExporter::emptySessionProducesEmptyFile() {
@@ -88,18 +91,71 @@ void TestYoloSegExporter::emptySessionProducesEmptyFile() {
     QCOMPARE(f.size(), 0);
 }
 
-void TestYoloSegExporter::unknownLabelFallsBackToClassZero() {
+void TestYoloSegExporter::unknownLabelFailsClosedAndDoesNotCreateFile() {
     AnnotationSession session;
     session.imageWidth = 100;
     session.imageHeight = 100;
-    session.annotations.append(
-        makeObject(QStringLiteral("unknown"), {QPointF(10, 10), QPointF(20, 10), QPointF(20, 20), QPointF(10, 20)},
-                   QRectF(10, 10, 10, 10), 100, 100));
+    session.annotations.append(makeObject(QStringLiteral("unknown"),
+                                          {QPointF(10, 10), QPointF(20, 10), QPointF(20, 20), QPointF(10, 20)},
+                                          QRectF(10, 10, 10, 10), 100, 100));
 
-    const QString content = YoloSegExporter::toJsonString(session, {QStringLiteral("缺陷")});
-    const QStringList lines = content.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-    QCOMPARE(lines.size(), 1);
-    QCOMPARE(lines.at(0).split(QLatin1Char(' ')).at(0).toInt(), 0);
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("out.txt"));
+
+    QString err;
+    QVERIFY(!YoloSegExporter::exportToFile(session, path, {QStringLiteral("缺陷")}, &err));
+    QVERIFY(err.contains(QStringLiteral("unknown")));
+    QVERIFY(!QFile::exists(path));
+}
+
+void TestYoloSegExporter::unknownLabelFailsClosedKeepsExistingFile() {
+    AnnotationSession session;
+    session.imageWidth = 100;
+    session.imageHeight = 100;
+    session.annotations.append(makeObject(QStringLiteral("unknown"),
+                                          {QPointF(10, 10), QPointF(20, 10), QPointF(20, 20), QPointF(10, 20)},
+                                          QRectF(10, 10, 10, 10), 100, 100));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("out.txt"));
+
+    QFile existing(path);
+    QVERIFY(existing.open(QIODevice::WriteOnly));
+    existing.write(QByteArrayLiteral("SENTINEL"));
+    existing.close();
+
+    QString err;
+    QVERIFY(!YoloSegExporter::exportToFile(session, path, {QStringLiteral("缺陷")}, &err));
+
+    QFile check(path);
+    QVERIFY(check.open(QIODevice::ReadOnly));
+    QCOMPARE(check.readAll(), QByteArrayLiteral("SENTINEL"));
+}
+
+void TestYoloSegExporter::normalExportMatchesToJsonString() {
+    AnnotationSession session;
+    session.imageWidth = 200;
+    session.imageHeight = 100;
+    session.annotations.append(makeObject(QStringLiteral("划痕"),
+                                          {QPointF(0, 0), QPointF(10, 0), QPointF(10, 10), QPointF(0, 10)},
+                                          QRectF(0, 0, 10, 10), 200, 100));
+    session.annotations.append(makeObject(QStringLiteral("缺陷"),
+                                          {QPointF(20, 20), QPointF(30, 20), QPointF(30, 30), QPointF(20, 30)},
+                                          QRectF(20, 20, 10, 10), 200, 100));
+    const QStringList labels = {QStringLiteral("缺陷"), QStringLiteral("划痕")};
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("out.txt"));
+
+    QString err;
+    QVERIFY2(YoloSegExporter::exportToFile(session, path, labels, &err), qPrintable(err));
+
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::ReadOnly));
+    QCOMPARE(QString::fromUtf8(f.readAll()), YoloSegExporter::toJsonString(session, labels));
 }
 
 QTEST_MAIN(TestYoloSegExporter)
