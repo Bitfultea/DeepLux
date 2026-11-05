@@ -142,9 +142,8 @@ public:
 
         printf("=== Loaded Plugins (%d) ===\n", plugins.size());
         for (const auto& info : plugins) {
-            const QByteArray line =
-                CLIHandler::formatPluginLine(info.loaded ? QStringLiteral("OK") : QStringLiteral("FAIL"), info.name,
-                                             info.version, info.category);
+            const QByteArray line = CLIHandler::formatPluginLine(
+                info.loaded ? QStringLiteral("OK") : QStringLiteral("FAIL"), info.name, info.version, info.category);
             fwrite(line.constData(), 1, static_cast<size_t>(line.size()), stdout);
         }
         printf("=========================\n");
