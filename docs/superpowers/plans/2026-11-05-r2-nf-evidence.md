@@ -39,11 +39,11 @@
 
 | 项 | 值 |
 |---|---|
-| 测试提交 | `f22e37b`（首版）；用例强化随本记录提交 |
 | 修复提交 | `ac460c9` |
-| 基线条目 | `c262d73` |
+| 用例首版 | `f22e37b`（**历史证据，已被判定为假阳性并弃用**） |
+| 用例当前版 | `8cba2fe`（有界同步 + 收尾后再断言） |
 
-命令：
+命令（`QT_QPA_PLATFORM=offscreen`，清除 `DISPLAY`）：
 
 ```bash
 ./build/bin/test_executionaffinity \
@@ -51,17 +51,24 @@
   testGuiDispatchTimeoutWhileRunningWaitsForCompletion
 ```
 
-预期断言：
-1. `DropsLateCallback`：不泵 GUI 事件致超时后，`runOnce` 必须已返回、模块 `runs==0`、错误码 `affinity_dispatch_timeout`；随后泵事件时迟到回调被丢弃（drop 计数 ≥1）且不阻塞。
-2. `WhileRunningWaitsForCompletion`：独立控制线程在回调 Running 且超过超时后检查——`returnedBeforeRelease==false`（runOnce 未提前返回）、`runOnceAsync()` 被拒绝、放行后 `runs==1`、错误码 `affinity_dispatch_timeout`。
+### 历史证据（首版用例，不作为验收依据）
 
-| 阶段 | 结果 |
-|---|---|
-| 测试提交（旧 `BlockingQueuedConnection`） | **失败** — `runOnce must return after the dispatch timeout`，test_executionaffinity.cpp:190/193 |
-| 首版用例（评审发现假阳性） | 泵事件同步进入探针并阻塞至其 5s 超时，放行发生在回调结束之后；删除 `record->done.acquire()` 的缺陷变体仍通过 → 判为无效，已重写 |
-| 重写后 + 修复在位 | 通过；亲和性套件 9/9（656 ms） |
-| **缺陷变体**（临时注释 `record->done.acquire()`） | **失败** — `'!returnedBeforeRelease.load()' returned FALSE`，test_executionaffinity.cpp:264，254 ms |
-| 临时工作树 revert `ac460c9` | **复败** — `runOnce must return after the dispatch timeout`（同一用例） |
-| 修复后全量 CTest | 96/96 |
+`f22e37b` 版本在旧 `BlockingQueuedConnection` 下失败于 `runOnce must return after the dispatch timeout`（test_executionaffinity.cpp:190/193）。但复核发现：主线程 `processEvents()` 会同步进入阻塞探针并停留到探针自身 5s 超时，放行发生在回调结束之后；删除 `record->done.acquire()` 的缺陷变体仍通过。故该版判为假阳性，已由 `8cba2fe` 取代。
 
-说明：首版用例的失败原因与修正过程一并记录，避免后续把假阳性当作已验收证据。
+### 当前版证据（`8cba2fe`）
+
+当前判据：
+- Pending：以**不泵 GUI 事件**的 `QSemaphore` 等待任务返回；随后放行探针、投递迟到回调、回收线程，**再断言**。
+  - `returned == true`（超时后 runOnce 已返回）；
+  - `runs == 0`、错误码 `affinity_dispatch_timeout`、迟到回调 drop ≥1。
+- Running：以 `guiDispatchTimeoutHitCount`（有界 3s）为屏障，再用 `taskDone` 的**有界窗口（1s）**判定是否提前返回；断言 `guiDispatchRunningWaitEnteredCount >= 1`、`!returnedBeforeRelease`、重跑被拒；收尾时对意外接受的重跑执行 `stop()` 并等待引擎空闲。
+
+| 阶段 | 预期断言 | 实测结果 | 退出码 |
+|---|---|---|---|
+| 旧实现（临时工作树局部替换为 `BlockingQueuedConnection`，保留钩子） | DropsLate：`returned` | **失败** `'returned' returned FALSE`（3/3） | **1** |
+| 同上 | WhileRunning：`runningWaitHits >= 1` | **失败** `'runningWaitHits >= 1' returned FALSE`（3/3） | **1** |
+| 缺陷变体（仅注释 `record->done.acquire()`） | WhileRunning：`!returnedBeforeRelease` | **失败** `'!returnedBeforeRelease.load()' returned FALSE`（5/5） | **1** |
+| 修复在位 | 全部 | 通过；亲和性套件 9/9（约 1.4s） | 0 |
+| 修复在位 | 全量 CTest | 96/96 | 0 |
+
+说明：`ac460c9` 的 revert 与后续钩子提交在同文件重叠产生冲突，旧实现对照改为在临时工作树中**仅局部替换分发实现**（保留全部钩子），其余代码与当前版一致；临时工作树用完即删。
