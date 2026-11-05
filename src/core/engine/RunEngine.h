@@ -305,6 +305,8 @@ public:
     DEEPLUX_TEST_VISIBILITY : void setGuiDispatchTimeoutForTest(int msecs);
     DEEPLUX_TEST_VISIBILITY : QString lastGuiDispatchErrorCodeForTest() const;
     DEEPLUX_TEST_VISIBILITY : int guiDispatchLateCallbackDropCountForTest() const;
+    DEEPLUX_TEST_VISIBILITY : int guiDispatchTimeoutHitCountForTest() const;
+    DEEPLUX_TEST_VISIBILITY : int guiDispatchRunningWaitEnteredCountForTest() const;
 
 public:
     // 运行统计
@@ -448,6 +450,8 @@ private:
     std::atomic<int> m_guiDispatchTimeoutMs{5000};
     std::atomic<quint64> m_dispatchGeneration{0};
     std::atomic<int> m_guiDispatchLateDrops{0};
+    std::atomic<int> m_guiDispatchTimeoutHits{0};
+    std::atomic<int> m_guiDispatchRunningWaitHits{0};
     mutable QMutex m_guiDispatchMutex;
     QString m_lastGuiDispatchErrorCode;
     // 阶6 八轮：恢复判定+暂停数据转移+取执行权+意图校验在同一临界区原子完成。

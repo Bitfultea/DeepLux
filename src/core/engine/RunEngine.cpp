@@ -1046,6 +1046,14 @@ int RunEngine::guiDispatchLateCallbackDropCountForTest() const {
     return m_guiDispatchLateDrops.load(std::memory_order_acquire);
 }
 
+int RunEngine::guiDispatchTimeoutHitCountForTest() const {
+    return m_guiDispatchTimeoutHits.load(std::memory_order_acquire);
+}
+
+int RunEngine::guiDispatchRunningWaitEnteredCountForTest() const {
+    return m_guiDispatchRunningWaitHits.load(std::memory_order_acquire);
+}
+
 void RunEngine::addModuleLocked(ModuleBase* module) {
     QWriteLocker locker(&m_moduleLock);
     if (module && !m_modules.contains(module)) {
@@ -2293,10 +2301,12 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
                                                    QStringLiteral("affinity_dispatch_cancelled"));
             }
         } else {
+            m_guiDispatchTimeoutHits.fetch_add(1, std::memory_order_relaxed);
             int expected = GuiDispatchRecord::Pending;
             const bool cancelled = record->phase.compare_exchange_strong(expected, GuiDispatchRecord::Cancelled);
             if (!cancelled && record->phase.load(std::memory_order_acquire) == GuiDispatchRecord::Running) {
                 // 回调已开始：不得销毁上下文或复用模块，等它真正结束。
+                m_guiDispatchRunningWaitHits.fetch_add(1, std::memory_order_relaxed);
                 record->done.acquire();
             }
             Logger::instance().warning(
