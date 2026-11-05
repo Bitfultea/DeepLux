@@ -10,6 +10,8 @@
 #include <QSignalSpy>
 #include <QThread>
 #include <QtTest/QtTest>
+#include <atomic>
+#include <chrono>
 #include <thread>
 
 using namespace DeepLux;
@@ -54,11 +56,13 @@ public:
     }
     QSemaphore entered;
     QSemaphore release;
+    std::atomic<bool> started{false};
     std::atomic<int> runs{0};
 
 protected:
     bool process(const ImageData& input, ImageData& output) override {
         ++runs;
+        started.store(true);
         entered.release();
         if (!release.tryAcquire(1, 5000)) {
             return false; // 测试失败时防止永久挂死
@@ -173,11 +177,17 @@ private slots:
                                                                 ExecutionAffinity::Gui);
         RunEngine::instance().setGuiDispatchTimeoutForTest(100);
 
+        std::atomic<bool> runOnceReturned{false};
         QThread worker;
         QObject context;
         context.moveToThread(&worker);
         QMetaObject::invokeMethod(
-            &context, [&]() { RunEngine::instance().runOnce(); }, Qt::QueuedConnection);
+            &context,
+            [&]() {
+                RunEngine::instance().runOnce();
+                runOnceReturned.store(true);
+            },
+            Qt::QueuedConnection);
         worker.start();
 
         // 故意不处理 GUI 事件，让回投超时；忙等而非 qWait（qWait 会处理事件）。
@@ -186,21 +196,23 @@ private slots:
         while (starve.elapsed() < 300) {
             std::this_thread::yield();
         }
-        worker.quit();
-        if (!worker.wait(5000)) {
-            // 旧实现会阻塞在 BlockingQueuedConnection：先放行迟到回调再失败，避免悬挂指针。
-            QCoreApplication::processEvents();
-            QFAIL("runOnce must return after the dispatch timeout");
-        }
 
-        // 现在处理事件：迟到回调执行但必须 no-op。
+        // 关键判据：超时后 runOnce 必须已经返回，且模块从未执行。
+        QTRY_VERIFY_WITH_TIMEOUT(runOnceReturned.load(), 2000);
+        QCOMPARE(module.runs.load(), 0);
+        QCOMPARE(RunEngine::instance().lastGuiDispatchErrorCodeForTest(), QStringLiteral("affinity_dispatch_timeout"));
+
+        // 现在处理事件：迟到回调执行但必须 no-op（不得阻塞 5s）。
         QCoreApplication::processEvents();
         QTRY_VERIFY_WITH_TIMEOUT(RunEngine::instance().guiDispatchLateCallbackDropCountForTest() >= 1, 2000);
         QCOMPARE(module.runs.load(), 0);
-        QCOMPARE(RunEngine::instance().lastGuiDispatchErrorCodeForTest(), QStringLiteral("affinity_dispatch_timeout"));
+        worker.quit();
+        QVERIFY(worker.wait(2000));
     }
 
-    // T2.2（NF）：回调已 Running 时超时，必须等其真正完成，不得提前复用模块。
+    // T2.2（NF）：回调已 Running 时超时，runOnce 必须等其真正完成才返回。
+    // 由独立控制线程放行回调，并以“放行时 runOnce 是否已返回”作为判据：
+    // 若删除 Running 等待保护，runOnce 会在超时后立即返回，该断言必红。
     void testGuiDispatchTimeoutWhileRunningWaitsForCompletion() {
         BlockingGuiProbe module;
         QVERIFY(module.initialize());
@@ -209,28 +221,48 @@ private slots:
                                                                 ExecutionAffinity::Gui);
         RunEngine::instance().setGuiDispatchTimeoutForTest(100);
 
+        std::atomic<bool> runOnceReturned{false};
+        std::atomic<bool> returnedBeforeRelease{true};
+        std::atomic<bool> rerunRejected{false};
         QThread worker;
         QObject context;
         context.moveToThread(&worker);
         QMetaObject::invokeMethod(
-            &context, [&]() { RunEngine::instance().runOnce(); }, Qt::QueuedConnection);
+            &context,
+            [&]() {
+                RunEngine::instance().runOnce();
+                runOnceReturned.store(true);
+            },
+            Qt::QueuedConnection);
         worker.start();
 
-        // 处理事件直到回调开始执行（模块进入 process 并阻塞）。
-        QTRY_VERIFY_WITH_TIMEOUT(module.entered.available() > 0, 2000);
-        QVERIFY(module.entered.tryAcquire(1, 0));
+        // 独立控制线程：等回调真正开始，超过回投超时后检查状态再放行。
+        std::thread control([&]() {
+            QElapsedTimer waitStart;
+            waitStart.start();
+            while (!module.started.load() && waitStart.elapsed() < 3000) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            if (!module.started.load()) {
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            returnedBeforeRelease.store(runOnceReturned.load());
+            rerunRejected.store(!RunEngine::instance().runOnceAsync());
+            module.release.release();
+        });
 
-        // 停止处理事件，等回投超时（此时回调已 Running）。
-        QElapsedTimer starve;
-        starve.start();
-        while (starve.elapsed() < 300) {
+        // 主线程持续泵事件直到回调开始；回调阻塞期间本次 processEvents 不会返回。
+        while (!module.started.load()) {
+            QCoreApplication::processEvents();
             std::this_thread::yield();
         }
-        QVERIFY2(!worker.isFinished(), "worker must still be waiting for the running callback");
+        control.join();
 
-        module.release.release();
         worker.quit();
         QVERIFY2(worker.wait(5000), "worker must finish after the running callback returns");
+        QVERIFY2(!returnedBeforeRelease.load(), "runOnce must not return while the GUI callback is still running");
+        QVERIFY2(rerunRejected.load(), "a second run must be rejected while the callback is running");
         QCOMPARE(module.runs.load(), 1);
         QCOMPARE(RunEngine::instance().lastGuiDispatchErrorCodeForTest(), QStringLiteral("affinity_dispatch_timeout"));
     }

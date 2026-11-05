@@ -2276,8 +2276,8 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
                 QMutexLocker locker(&m_guiDispatchMutex);
                 m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_failed");
             }
-            execResult = ExecutionResult::fail(ExecError::Processing, dispatchError,
-                                               QStringLiteral("affinity_dispatch_failed"));
+            execResult =
+                ExecutionResult::fail(ExecError::Processing, dispatchError, QStringLiteral("affinity_dispatch_failed"));
         } else if (record->done.tryAcquire(1, timeoutMs)) {
             if (record->phase.load(std::memory_order_acquire) == GuiDispatchRecord::Finished) {
                 execResult = record->result;
