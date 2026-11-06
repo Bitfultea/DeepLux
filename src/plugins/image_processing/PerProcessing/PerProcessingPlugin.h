@@ -8,7 +8,7 @@
 
 namespace DeepLux {
 
-class PerProcessingPlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API PerProcessingPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)

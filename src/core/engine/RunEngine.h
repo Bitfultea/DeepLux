@@ -1,6 +1,8 @@
 #pragma once
 
 #include "../platform/Platform.h"
+#include "DisplayFrame.h"
+#include "ExecutionAffinity.h"
 #include "deeplux/ControlFlowType.h"
 #include "deeplux/DataContract.h"
 #include "model/ImageData.h"
@@ -8,6 +10,7 @@
 #include <QByteArray>
 #include <QDateTime>
 #include <QJsonObject>
+#include <QHash>
 #include <QList>
 #include <QMap>
 #include <QMutex>
@@ -50,6 +53,24 @@ enum class RunMode {
     RunOnce, // 单次运行
     RunCycle // 连续运行
 };
+
+/**
+ * @brief 单次执行段收尾结果（后台执行设计 §5.3）
+ *
+ * - Completed：正常完成；终态按 RunMode 决定（RunOnce→Idle，原生 RunCycle→保持 Running）。
+ * - Paused：模块边界暂停，只释放本段执行权并保留续跑上下文，不发 runFinished。
+ * - Stopped：stop 优先（并发 stop 不得被 Completed 覆盖）。
+ * - Failed：失败/异常，清理暂停上下文并发出失败结果。
+ */
+enum class ExecutionOutcome { Completed, Paused, Stopped, Failed };
+
+/**
+ * @brief 模块边界暂停原因（后台执行设计 §5.3）
+ *
+ * - None：未暂停；Breakpoint：内层断点命中；User：pauseForJob 的用户暂停请求。
+ *   isPausedAtBreakpoint() 仍只在 Breakpoint 时为真；UI/Service 用 pauseReason() 决定提示。
+ */
+enum class PauseReason { None, Breakpoint, User };
 
 /**
  * @brief 运行结果
@@ -130,6 +151,71 @@ public:
     enum class RunIntent { Single, CycleTick, Resume, Step };
     enum class CurrentImageInputSnapshot { NoContext, UpstreamNotExecuted, NotMaterialized, Available, ContextChanged };
 
+    /**
+     * @brief 外部 job 租约 token（后台执行设计 §4.2/§5.3）
+     *
+     * 单调 id + 进程内随机盐，不可伪造；FlowExecutionService 的 job 在工作线程内持有，
+     * 只有 token 匹配的 *ForJob 入口可绕过 external job 活跃的忙检查。
+     */
+    struct JobToken {
+        quint64 id = 0;
+        quint64 salt = 0;
+        bool isValid() const {
+            return id != 0;
+        }
+        bool operator==(const JobToken& other) const {
+            return id == other.id && salt == other.salt;
+        }
+        bool operator!=(const JobToken& other) const {
+            return !(*this == other);
+        }
+    };
+
+    // job 租约与所有者入口（后台执行设计 §4.2/§5.3）
+    bool beginExternalJob(JobToken* token, QString* reason = nullptr);
+    bool endExternalJob(const JobToken& token);
+    bool runOnceForJob(const JobToken& token, QString* reason = nullptr);
+    bool runOnceForJob(const JobToken& token, const QJsonObject& authorization, const QString& requestedRunId,
+                       const QString& sessionId, int maxCycles, QString* acceptedRunId, QString* reason = nullptr);
+    bool stepOnceForJob(const JobToken& token, QString* reason = nullptr);
+    bool stepOnceForJob(const JobToken& token, const QJsonObject& authorization, const QString& requestedRunId,
+                        const QString& sessionId, int maxCycles, QString* acceptedRunId, QString* reason = nullptr);
+    bool resumeForJob(const JobToken& token, QString* reason = nullptr);
+    bool resumeForJob(const JobToken& token, const QJsonObject& authorization, QString* acceptedRunId,
+                      QString* reason = nullptr);
+    bool pauseForJob(const JobToken& token);
+    bool runOnceChecked(QString* reason = nullptr);
+
+    /**
+     * @brief 执行段 RAII 收尾器（后台执行设计 §5.3）
+     *
+     * 正常返回、提前 return、异常都会收尾恰好一次；默认 outcome=Failed（异常安全）。
+     * Paused 必须显式 finish 提交，不能被析构默认结果覆盖；终态提交与 stop 判定在
+     * 同一 m_lifecycleMutex 临界区内完成，保证并发 stop 优先。
+     */
+    class ExecutionFinalizer {
+    public:
+        // clearControlGraph：完整运行收尾清理控制图/循环索引；单步收尾必须保留跨步状态。
+        // resetStepStateOnStop：单步收尾在 stop 获胜时重置单步态（与 stop 判定同一临界区）。
+        ExecutionFinalizer(RunEngine* engine, ExecutionOutcome outcome, bool clearControlGraph = true,
+                           bool resetStepStateOnStop = false);
+        ~ExecutionFinalizer();
+        ExecutionFinalizer(const ExecutionFinalizer&) = delete;
+        ExecutionFinalizer& operator=(const ExecutionFinalizer&) = delete;
+
+        void setOutcome(ExecutionOutcome outcome) {
+            m_outcome = outcome;
+        }
+        void finish(ExecutionOutcome outcome);
+
+    private:
+        RunEngine* m_engine = nullptr;
+        ExecutionOutcome m_outcome = ExecutionOutcome::Failed;
+        bool m_clearControlGraph = true;
+        bool m_resetStepStateOnStop = false;
+        bool m_done = false;
+    };
+
     // 运行状态
     RunState state() const {
         return static_cast<RunState>(m_state.load(std::memory_order_acquire));
@@ -148,7 +234,10 @@ public:
     }
     bool isBusy() const {
         // 阶6 五轮：维护租约期间也视为 busy，使外部能观察到维护占用。
-        return isExecuting() || m_maintenance.load(std::memory_order_acquire) || state() == RunState::Running ||
+        // 后台执行（设计 §4.2）：external job 租约从 job 启动到结束（含 Cycle 两轮之间）
+        // 始终为 busy，工程加载/清空/切换被拒绝。
+        return isExecuting() || m_maintenance.load(std::memory_order_acquire) ||
+               m_externalJobActive.load(std::memory_order_acquire) || state() == RunState::Running ||
                state() == RunState::Paused;
     }
 
@@ -180,6 +269,8 @@ public:
     Q_INVOKABLE void resume();
     Q_INVOKABLE void stop();
     bool isPausedAtBreakpoint() const;
+    // 后台执行（设计 §5.3）：暂停原因（None/Breakpoint/User），UI/Service 用其决定提示。
+    PauseReason pauseReason() const;
 
     // 模块管理
     void addModule(ModuleBase* module);
@@ -202,6 +293,15 @@ public:
     // 对候选工程做完整运行前校验；使用临时执行图，不改写当前引擎的执行/控制图状态。
     QStringList validateProjectFlow(const Project* project);
 
+    // 阶段 4.8：结构化运行前校验（validateFlow 的唯一实现来源，消息文案逐字保持）
+    struct FlowIssue {
+        QString code;    // "missing_required_input" | "disabled_output_bypass_conflict"
+        QString node;    // 运行名
+        QString port;    // 可为空
+        QString message; // 与 validateFlow() 完全一致的中文文案
+    };
+    QList<FlowIssue> validateFlowIssues() const;
+
     // 输出管理
     void setOutput(const QString& moduleName, const QString& varName, const QVariant& value);
     QVariant getOutput(const QString& moduleName, const QString& varName) const;
@@ -222,6 +322,56 @@ public:
                            QMap<QString, QVariant>& values, PortValueMap& ports) const;
     void invalidateModuleOutput(const QString& moduleName);
 
+    // 阶段 4.8：只读快照（前置条件：!isBusy()；GUI 线程调用）。
+    // isBusy() 为真时返回空/默认值并 qWarning，禁止与工作线程写 m_nodeOutputs 竞争。
+    struct ModuleRuntimeInfo {
+        bool valid = false;
+        bool success = false;
+        bool skipped = false;
+        int elapsedMs = 0;
+        QString errorMessage;
+        QDateTime finishedAt;
+    };
+    QMap<QString, ModuleRuntimeInfo> moduleRuntimeSnapshot() const;
+    PortValueMap nodePortOutputs(const QString& moduleName) const;
+    qint64 lastFrameId() const;
+
+    // 后台执行（设计 §7.1/§7.5）：显示帧捕获开关。由 UI 在窗口可见时开启、不可见/最小化时
+    // 关闭；关闭时工作线程不做快照与合并调度（零额外开销）。
+    void setDisplayCaptureEnabled(bool enabled);
+    bool isDisplayCaptureEnabled() const {
+        return m_displayCaptureEnabled.load(std::memory_order_acquire);
+    }
+    // Service 在 job 启动时注入 jobId、结束时清空（设计 §7.1）；注入同时清空旧帧槽位，
+    // 旧 job 的迟到帧不会再从槽位被取走。
+    void setDisplayJobId(quint64 jobId);
+    void clearDisplayJobId();
+    quint64 displayJobId() const {
+        return m_displayJobId.load(std::memory_order_acquire);
+    }
+    // 每视口最新帧槽位（只保留最新一帧；读出的帧是深拷贝后的不可变快照）。
+    DisplayFrame latestDisplayFrame(const QString& viewportId = QStringLiteral("main")) const;
+    void clearLatestDisplayFrames();
+
+    // L2 测试注入：向 m_nodeOutputs 写入自定义端口值（生产构建不可见）
+    DEEPLUX_TEST_VISIBILITY : void setNodePortOutputsForTest(const QString& moduleName, const PortValueMap& outputs);
+    // 后台执行（设计 §6.1/§6.3）测试注入：覆盖某运行名的执行亲和性与并行资格判定；
+    // 亲和性缓存本身由 addModule/removeModule/loadProject/clearModules 维护（生产构建不可见）。
+    DEEPLUX_TEST_VISIBILITY : void setModuleExecutionAffinityForTest(const QString& moduleName,
+                                                                     ExecutionAffinity affinity);
+    DEEPLUX_TEST_VISIBILITY : bool isParallelEligibleForTest(const QString& moduleName) const;
+    // 后台执行（设计 §5.3）测试注入：收尾窗口并发 stop 的确定性钩子（生产构建不可见）。
+    DEEPLUX_TEST_VISIBILITY : void setFinalizeHookForTest(std::function<void()> hook);
+    DEEPLUX_TEST_VISIBILITY : void clearFinalizeHookForTest();
+    // 后台执行（设计 §5.3）测试注入：执行段故障注入（验证异常路径 finalizer 释放租约）。
+    DEEPLUX_TEST_VISIBILITY : void setExecutionFaultInjectionForTest(std::function<void()> hook);
+    DEEPLUX_TEST_VISIBILITY : void clearExecutionFaultInjectionForTest();
+    // 后台执行（设计 §4.2/§5.3）测试注入：job 租约活跃查询与 *ForJob 窗口屏障钩子。
+    DEEPLUX_TEST_VISIBILITY : bool isExternalJobActiveForTest() const;
+    DEEPLUX_TEST_VISIBILITY : void setBeforeJobStartHookForTest(std::function<void()> hook);
+    DEEPLUX_TEST_VISIBILITY : void clearBeforeJobStartHookForTest();
+
+public:
     // 运行统计
     int totalRuns() const;
     int successRuns() const;
@@ -269,6 +419,11 @@ signals:
     void moduleFinished(const QString& moduleId, bool success, int elapsedMs);
     void moduleSkipped(const QString& moduleId); // 未激活分支，显示 Skipped 非失败
     void breakpointHit(const QString& moduleId); // 阶段 B 复核: 断点真实命中
+    // 后台执行（设计 §5.3）：模块边界暂停（断点/用户）提交后发出，附暂停原因。
+    void pauseHit(const QString& moduleId, PauseReason reason);
+    // 后台执行（设计 §7.1）：轻量显示帧通知——不把大图作为信号参数排队；
+    // 接收方按 (viewportId, jobId, runId) 取 latestDisplayFrame() 并丢弃身份不匹配的迟到帧。
+    void displayFrameReady(const QString& viewportId, quint64 jobId, const QString& runId);
     void errorOccurred(const QString& error);
     void outputChanged(const QString& moduleName, const QString& varName, const QVariant& value);
 
@@ -283,7 +438,15 @@ private:
                     const QString& expectedResumeRunId = QString(), int expectedLifecycleGeneration = 0,
                     const QJsonObject& agentFolderAuthorization = {});
     bool executeRunAsync(RunIntent intent, QString* acceptedRunId, const QJsonObject& agentFolderAuthorization = {});
+    bool stepOnceImpl(const JobToken* token, const QJsonObject& authorization = {}, QString* rejectReason = nullptr,
+                      QString* acceptedRunId = nullptr, const QString& sessionId = QString(),
+                      const QString& requestedRunId = QString(), int maxCycles = 0);
+    bool validateJobStartLocked(const JobToken& token, QString* reason);
     void executeAcquiredRun(bool resuming, const QString& resumeModule, const ImageData& resumeData, RunMode mode);
+    // 后台执行（设计 §5.3）：执行主体与异常兜底分离；finalizer 在所有路径上收尾恰好一次。
+    void executeAcquiredRunImpl(bool resuming, const QString& resumeModule, const ImageData& resumeData, RunMode mode,
+                                ExecutionFinalizer& finalizer);
+    void reportExecutionFault(ExecutionFinalizer& finalizer, const QString& message);
     // 阶段 D1: 显式控制图执行（激活队列）
     void executeRunWithControlGraph(ImageData& pipelineData);
     void executeBatchParallel(const QStringList& batch, ImageData& pipelineData);
@@ -303,7 +466,13 @@ private:
     PortValueMap collectBypass(const QString& moduleName);
     void clearModuleOutputs();
     void clearBreakpointPauseState();
+    // 后台执行（设计 §7.1）：在执行线程内发布显示帧（含 QImage 深拷贝与最终快照）。
+    void publishDisplayFrame(const QString& moduleId, const ImageData& image, quint64 frameId);
+    void publishFinalDisplayFrame();
+    QMap<QString, QVariantMap> displayModuleDataSnapshot() const;
     void updateStatistics(bool success, int elapsedMs);
+    // 阶段 4.8：记录/清理模块运行快照（写入点集中在模块执行结束与旁路分支）
+    void recordModuleRuntime(const QString& moduleName, const ModuleRuntimeInfo& info);
     void reset();
     void stopCycleTimer();
     void executeCycleTick(const QString& sessionId);
@@ -328,7 +497,7 @@ private:
     // 重置+每运行重置"，消除启动窗口；stop() 同锁发布停止。m_stopPending/m_maintenance
     // 仅在 m_lifecycleMutex 内读写。
     // 阶6 五轮：递归锁——clearBreakpointPauseState() 自身加锁，而 stop()/
-    // endExecutionCleanup()/finalizeAbortedRun() 等已在锁内调用它，需可重入。
+    // finalizeExecution() 等已在锁内调用它，需可重入。
     mutable QRecursiveMutex m_lifecycleMutex;
     bool m_stopPending = false;
     std::atomic_bool m_maintenance{false};
@@ -336,15 +505,38 @@ private:
     // start/resume 提交时记录 gen，发通知前重验证 gen+状态，stop 介入则跳过通知。
     std::atomic<int> m_lifecycleGeneration{0};
     std::atomic_bool m_variableExecutionLeaseHeld{false};
+    // 后台执行（设计 §5.3）：最近一次收尾的生命周期世代，防御重复收尾。
+    int m_finalizedGeneration = -1;
+    // 后台执行（设计 §5.3）测试注入：收尾窗口钩子/执行段故障注入（生产构建不可达）。
+    std::function<void()> m_testFinalizeHook;
+    std::function<void()> m_testFaultInjection;
+    // 后台执行（设计 §4.2/§5.3）测试注入：*ForJob 启动协议内的窗口屏障钩子（生产构建不可达）。
+    std::function<void()> m_testBeforeJobStartHook;
+    // 后台执行（设计 §4.2/§5.3）：external job 租约、owner token 与 job 级取消标志。
+    // m_externalJobActive 供 isBusy() 无锁快照；其余字段仅在 m_lifecycleMutex 内读写。
+    std::atomic_bool m_externalJobActive{false};
+    JobToken m_externalJobOwner;
+    quint64 m_externalJobSeq = 0;
+    quint64 m_jobSalt = 0;
+    bool m_externalJobCancelRequested = false;
+    // 后台执行（设计 §5.3）：用户暂停请求（模块边界生效）。
+    std::atomic_bool m_userPauseRequested{false};
+    // 后台执行（设计 §5.3）：暂停原因（None/Breakpoint/User），与暂停上下文同锁维护。
+    PauseReason m_pauseReason = PauseReason::None;
     RunMode m_pauseRunMode = RunMode::RunOnce; // 暂停前模式，恢复时还原（P1-2 八轮）
     // 阶6 八轮：恢复判定+暂停数据转移+取执行权+意图校验在同一临界区原子完成。
+    // 后台执行（设计 §4.2/§5.3）：jobToken 非空时，owner/job 级取消标志校验与状态提交
+    // 在同一把 m_lifecycleMutex 临界区完成（窗口钩子亦在其中），使 stop() 与本次启动严格
+    // 串行：stop 先到 → 取消标志拒绝；启动先提交 → stop 置 m_stopPending 取消本轮。
     bool tryBeginForRun(RunIntent intent, bool& resuming, QString& resumeModule, ImageData& resumeData,
                         RunMode& outMode, const QString& expectedCycleSessionId = QString(),
                         const QString& expectedResumeRunId = QString(), int expectedLifecycleGeneration = 0,
-                        const QJsonObject& agentFolderAuthorization = {});
-    // 阶6 七轮：正常结束在单一临界区内完成清理+最终状态提交+执行权释放。
+                        const QJsonObject& agentFolderAuthorization = {}, const JobToken* jobToken = nullptr,
+                        QString* rejectReason = nullptr, const QString& sessionId = QString(),
+                        const QString& requestedRunId = QString(), int maxCycles = 0);
     void finalizeRunTail(const RunResult& result);
     void recordCompletedObservation(const RunResult& result, RunState finalState);
+    void finalizeExecution(ExecutionOutcome outcome, bool clearControlGraph = true, bool resetStepStateOnStop = false);
     bool tryAcquireLease();
     void releaseLease();
     bool tryAcquireMaintenance();
@@ -359,8 +551,17 @@ private:
     bool finishBoundedCycleAtLimit(const QString& sessionId, const RunResult& result);
     void scheduleCycleTimerAfterRunFinished(const QString& sessionId);
     bool lifecycleBusyLocked();
+    // 后台执行（设计 §6.1）：运行名 -> 执行亲和性缓存；缓存项随模块增删/工程加载同步维护。
+    ExecutionAffinity executionAffinityFor(const QString& moduleName, ModuleBase* module) const;
+    void cacheExecutionAffinity(ModuleBase* module);
+    void forgetExecutionAffinity(const QString& moduleName);
+    // 后台执行（设计 §6.3）：worker 亲和 + 线程安全 + 非阻塞 + 无断点才允许进入并行池。
+    bool isParallelEligible(ModuleBase* module) const;
     // 阶6 五轮：内层断点命中在生命周期锁内写暂停态（stop() 同锁清理，无 UB）。
-    void setInnerPauseLocked(const QString& mod, const ImageData& data);
+    // 后台执行（设计 §5.3）：用户暂停复用同一暂停上下文，用 PauseReason 区分原因。
+    void setInnerPauseLocked(const QString& mod, const ImageData& data, PauseReason reason);
+    // 后台执行（设计 §5.3）：模块边界检查并消费用户暂停请求（锁内 check-then-act）。
+    bool takeUserPauseRequest(const QString& moduleName, const ImageData& data);
     QTimer* m_cycleTimer = nullptr;
     bool m_scheduleCycleAfterRunFinished = false;
     bool m_cycleFirstIterationDeferred = false;
@@ -382,8 +583,21 @@ private:
     QMap<QString, QSet<QString>> m_loopRegions;
     // 当前帧每节点端口输出缓存（flowId 现阶段为 main）；新帧清除
     QMap<QString, PortValueMap> m_nodeOutputs;
+    // 阶段 4.8：最近一次运行的模块状态快照（m_runtimeInfoMutex 保护）
+    QMap<QString, ModuleRuntimeInfo> m_moduleRuntimeInfo;
+    mutable QMutex m_runtimeInfoMutex;
     QSet<QString> m_disabledModules; // 阶段 B: 禁用节点（旁路/Skipped）
     mutable QReadWriteLock m_moduleLock;
+    // 后台执行（设计 §6.1）：execution.affinity 缓存（m_affinityMutex 保护）
+    mutable QMutex m_affinityMutex;
+    QHash<QString, ExecutionAffinity> m_executionAffinity;
+
+    // 后台执行（设计 §7.1）：显示帧捕获上下文与每视口最新帧槽位（只保留最新一帧）。
+    // m_displayCaptureEnabled/m_displayJobId 供跨线程无锁快照；槽位由 m_displayFrameMutex 保护。
+    std::atomic_bool m_displayCaptureEnabled{false};
+    std::atomic<quint64> m_displayJobId{0};
+    mutable QMutex m_displayFrameMutex;
+    QMap<QString, DisplayFrame> m_latestDisplayFrames;
 
     // 模块树结构
     QMap<QString, ModuleTreeNode*> m_moduleTreeNodes;
@@ -465,3 +679,4 @@ private:
 } // namespace DeepLux
 
 Q_DECLARE_METATYPE(DeepLux::RunResult)
+Q_DECLARE_METATYPE(DeepLux::PauseReason)

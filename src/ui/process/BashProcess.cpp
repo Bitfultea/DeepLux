@@ -6,6 +6,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
+#include <QStandardPaths>
 #include <iostream>
 
 // Linux/macOS 实现
@@ -114,8 +115,9 @@ QString BashProcess::detectShell() {
 #endif
 
     for (const QString& shell : candidates) {
-        if (QFileInfo(shell).exists() && QFileInfo(shell).isExecutable()) {
-            return shell;
+        QString resolved = QFileInfo(shell).isAbsolute() ? shell : QStandardPaths::findExecutable(shell);
+        if (!resolved.isEmpty() && QFileInfo(resolved).isExecutable()) {
+            return resolved;
         }
     }
     return QString();

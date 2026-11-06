@@ -1,0 +1,2881 @@
+{
+  "gates": {
+    "scoreTol": 0.01,
+    "iouMin": 0.99,
+    "bboxTol": 1.0,
+    "encoderMaxAbs": 0.01
+  },
+  "package": {
+    "dir": "/home/charles/Data/Models/sam1_vit_b_onnx",
+    "encoderSha256": "f6b1ae360681154c691c1947f6931ff6977c16ad92faf97e0ee5f2ad0867be62",
+    "decoderSha256": "b0d19895c9128ea20376a4bc73cedaf21163b6ba761f317b7cb52cf9c2adb797"
+  },
+  "checkpoint": {
+    "path": "/home/charles/Downloads/sam_vit_b_01ec64.pth",
+    "sha256": "ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912"
+  },
+  "environment": {
+    "torch": "2.13.0+cu130",
+    "python": "3.10.12",
+    "onnxruntime": "1.23.2"
+  },
+  "images": [
+    {
+      "image": "<builtin-small-defects-1280x720>",
+      "size": [
+        1280,
+        720
+      ],
+      "sha256": null,
+      "encoderCheck": {
+        "maxAbsDiff": 4.112720489501953e-06,
+        "meanAbsDiff": 1.461564451306352e-07,
+        "cosine": 1.0000001192092896,
+        "pass": true
+      },
+      "cases": [
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.9498631954193115,
+              "scoreOnnx": 0.9498625993728638,
+              "scoreDelta": 5.960464477539062e-07,
+              "iou": 0.9999820163291732,
+              "bboxPt": [
+                0.0,
+                0.0,
+                739.0,
+                299.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                0.0,
+                739.0,
+                299.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.7002805471420288,
+              "scoreOnnx": 0.700298547744751,
+              "scoreDelta": 1.800060272216797e-05,
+              "iou": 0.9999876518818532,
+              "bboxPt": [
+                0.0,
+                0.0,
+                1004.0,
+                299.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                0.0,
+                1004.0,
+                299.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.4808638095855713,
+              "scoreOnnx": 0.48086458444595337,
+              "scoreDelta": 7.748603820800781e-07,
+              "iou": 0.9999808665537794,
+              "bboxPt": [
+                0.0,
+                0.0,
+                1271.0,
+                608.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                0.0,
+                1271.0,
+                608.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "pos",
+          "prompt": {
+            "pos": [
+              [
+                100,
+                100
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.8365090489387512,
+              "scoreOnnx": 0.8365117311477661,
+              "scoreDelta": 2.682209014892578e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                0.0,
+                4.0,
+                1280.0,
+                614.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                4.0,
+                1280.0,
+                614.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.7337366342544556,
+              "scoreOnnx": 0.7337362766265869,
+              "scoreDelta": 3.5762786865234375e-07,
+              "iou": 0.9999772665272347,
+              "bboxPt": [
+                0.0,
+                5.0,
+                1280.0,
+                597.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                5.0,
+                1280.0,
+                597.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.7089881896972656,
+              "scoreOnnx": 0.7089910507202148,
+              "scoreDelta": 2.86102294921875e-06,
+              "iou": 0.9999953965701378,
+              "bboxPt": [
+                0.0,
+                0.0,
+                1280.0,
+                716.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                0.0,
+                1280.0,
+                716.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "pos",
+          "prompt": {
+            "pos": [
+              [
+                227,
+                411
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.8882687091827393,
+              "scoreOnnx": 0.8882701396942139,
+              "scoreDelta": 1.430511474609375e-06,
+              "iou": 0.9999908745802307,
+              "bboxPt": [
+                0.0,
+                2.0,
+                1252.0,
+                450.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                2.0,
+                1252.0,
+                450.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.8600849509239197,
+              "scoreOnnx": 0.8600816130638123,
+              "scoreDelta": 3.337860107421875e-06,
+              "iou": 0.9999892348682617,
+              "bboxPt": [
+                0.0,
+                0.0,
+                1261.0,
+                498.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                0.0,
+                1261.0,
+                498.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.7208048105239868,
+              "scoreOnnx": 0.7208031415939331,
+              "scoreDelta": 1.6689300537109375e-06,
+              "iou": 0.9999943187063695,
+              "bboxPt": [
+                0.0,
+                0.0,
+                1280.0,
+                716.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                0.0,
+                1280.0,
+                716.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "pos",
+          "prompt": {
+            "pos": [
+              [
+                354,
+                202
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.8672736287117004,
+              "scoreOnnx": 0.8672755360603333,
+              "scoreDelta": 1.9073486328125e-06,
+              "iou": 0.9999813648391785,
+              "bboxPt": [
+                0.0,
+                4.0,
+                1280.0,
+                713.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                4.0,
+                1280.0,
+                713.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.814331591129303,
+              "scoreOnnx": 0.8143314123153687,
+              "scoreDelta": 1.7881393432617188e-07,
+              "iou": 0.9999909626693693,
+              "bboxPt": [
+                0.0,
+                3.0,
+                1280.0,
+                714.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                3.0,
+                1280.0,
+                714.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.7432023286819458,
+              "scoreOnnx": 0.7432025671005249,
+              "scoreDelta": 2.384185791015625e-07,
+              "iou": 0.9999957647397645,
+              "bboxPt": [
+                0.0,
+                5.0,
+                1280.0,
+                712.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                5.0,
+                1280.0,
+                712.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "pos",
+          "prompt": {
+            "pos": [
+              [
+                481,
+                513
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.9040002226829529,
+              "scoreOnnx": 0.904000997543335,
+              "scoreDelta": 7.748603820800781e-07,
+              "iou": 0.9999885898152691,
+              "bboxPt": [
+                0.0,
+                4.0,
+                1280.0,
+                710.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                4.0,
+                1280.0,
+                710.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.8746674060821533,
+              "scoreOnnx": 0.8746713399887085,
+              "scoreDelta": 3.933906555175781e-06,
+              "iou": 0.9999928171368748,
+              "bboxPt": [
+                0.0,
+                4.0,
+                1280.0,
+                712.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                4.0,
+                1280.0,
+                712.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.7664996385574341,
+              "scoreOnnx": 0.7665013074874878,
+              "scoreDelta": 1.6689300537109375e-06,
+              "iou": 0.9999813708276476,
+              "bboxPt": [
+                0.0,
+                4.0,
+                1280.0,
+                636.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                4.0,
+                1280.0,
+                636.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "posneg",
+          "prompt": {
+            "pos": [
+              [
+                608,
+                304
+              ]
+            ],
+            "neg": [
+              [
+                729,
+                617
+              ]
+            ],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.9318855404853821,
+              "scoreOnnx": 0.9318846464157104,
+              "scoreDelta": 8.940696716308594e-07,
+              "iou": 0.9999742116501449,
+              "bboxPt": [
+                0.0,
+                6.0,
+                1280.0,
+                711.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                6.0,
+                1280.0,
+                711.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.9153909683227539,
+              "scoreOnnx": 0.9153925180435181,
+              "scoreDelta": 1.5497207641601562e-06,
+              "iou": 0.9999963368822838,
+              "bboxPt": [
+                0.0,
+                4.0,
+                1280.0,
+                714.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                4.0,
+                1280.0,
+                714.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.8215519189834595,
+              "scoreOnnx": 0.8215497732162476,
+              "scoreDelta": 2.1457672119140625e-06,
+              "iou": 0.9999605394260459,
+              "bboxPt": [
+                0.0,
+                322.0,
+                1280.0,
+                396.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                322.0,
+                1280.0,
+                396.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "posneg",
+          "prompt": {
+            "pos": [
+              [
+                735,
+                615
+              ]
+            ],
+            "neg": [
+              [
+                856,
+                408
+              ]
+            ],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.8225498199462891,
+              "scoreOnnx": 0.8225479125976562,
+              "scoreDelta": 1.9073486328125e-06,
+              "iou": 0.9999602836879432,
+              "bboxPt": [
+                0.0,
+                151.0,
+                1274.0,
+                566.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                151.0,
+                1274.0,
+                566.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.8120811581611633,
+              "scoreOnnx": 0.8120788931846619,
+              "scoreDelta": 2.2649765014648438e-06,
+              "iou": 0.9999907896239588,
+              "bboxPt": [
+                0.0,
+                4.0,
+                1280.0,
+                713.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                4.0,
+                1280.0,
+                713.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.5530872344970703,
+              "scoreOnnx": 0.5530844926834106,
+              "scoreDelta": 2.7418136596679688e-06,
+              "iou": 0.9999843721918782,
+              "bboxPt": [
+                0.0,
+                96.0,
+                1280.0,
+                621.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                96.0,
+                1280.0,
+                621.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "posneg",
+          "prompt": {
+            "pos": [
+              [
+                862,
+                406
+              ]
+            ],
+            "neg": [
+              [
+                983,
+                199
+              ]
+            ],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.8125946521759033,
+              "scoreOnnx": 0.8125883936882019,
+              "scoreDelta": 6.258487701416016e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                519.0,
+                202.0,
+                142.0,
+                91.0
+              ],
+              "bboxOnnx": [
+                519.0,
+                202.0,
+                142.0,
+                91.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.7665393948554993,
+              "scoreOnnx": 0.7665306329727173,
+              "scoreDelta": 8.761882781982422e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                547.0,
+                206.0,
+                114.0,
+                76.0
+              ],
+              "bboxOnnx": [
+                547.0,
+                206.0,
+                114.0,
+                76.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.4354429244995117,
+              "scoreOnnx": 0.4354286193847656,
+              "scoreDelta": 1.430511474609375e-05,
+              "iou": 1.0,
+              "bboxPt": [
+                546.0,
+                231.0,
+                94.0,
+                57.0
+              ],
+              "bboxOnnx": [
+                546.0,
+                231.0,
+                94.0,
+                57.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "box",
+          "prompt": {
+            "pos": [],
+            "neg": [],
+            "box": [
+              507,
+              199,
+              160,
+              90
+            ]
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.8357541561126709,
+              "scoreOnnx": 0.835737407207489,
+              "scoreDelta": 1.6748905181884766e-05,
+              "iou": 1.0,
+              "bboxPt": [
+                718.0,
+                289.0,
+                154.0,
+                90.0
+              ],
+              "bboxOnnx": [
+                718.0,
+                289.0,
+                154.0,
+                90.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.8152452707290649,
+              "scoreOnnx": 0.8152334690093994,
+              "scoreDelta": 1.1801719665527344e-05,
+              "iou": 1.0,
+              "bboxPt": [
+                738.0,
+                301.0,
+                130.0,
+                73.0
+              ],
+              "bboxOnnx": [
+                738.0,
+                301.0,
+                130.0,
+                73.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.5402336120605469,
+              "scoreOnnx": 0.5402392148971558,
+              "scoreDelta": 5.602836608886719e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                713.0,
+                297.0,
+                108.0,
+                80.0
+              ],
+              "bboxOnnx": [
+                713.0,
+                297.0,
+                108.0,
+                80.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "box",
+          "prompt": {
+            "pos": [],
+            "neg": [],
+            "box": [
+              718,
+              296,
+              160,
+              90
+            ]
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.8673436641693115,
+              "scoreOnnx": 0.8673478364944458,
+              "scoreDelta": 4.172325134277344e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                940.0,
+                398.0,
+                160.0,
+                92.0
+              ],
+              "bboxOnnx": [
+                940.0,
+                398.0,
+                160.0,
+                92.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.8294885754585266,
+              "scoreOnnx": 0.829492449760437,
+              "scoreDelta": 3.874301910400391e-06,
+              "iou": 0.9998069125313768,
+              "bboxPt": [
+                960.0,
+                400.0,
+                127.0,
+                81.0
+              ],
+              "bboxOnnx": [
+                960.0,
+                400.0,
+                127.0,
+                81.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.48919856548309326,
+              "scoreOnnx": 0.48921605944633484,
+              "scoreDelta": 1.749396324157715e-05,
+              "iou": 1.0,
+              "bboxPt": [
+                943.0,
+                416.0,
+                118.0,
+                72.0
+              ],
+              "bboxOnnx": [
+                943.0,
+                416.0,
+                118.0,
+                72.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "box",
+          "prompt": {
+            "pos": [],
+            "neg": [],
+            "box": [
+              929,
+              393,
+              160,
+              90
+            ]
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.834324061870575,
+              "scoreOnnx": 0.8343223929405212,
+              "scoreDelta": 1.6689300537109375e-06,
+              "iou": 0.9999940746885508,
+              "bboxPt": [
+                0.0,
+                3.0,
+                1280.0,
+                714.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                3.0,
+                1280.0,
+                714.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.8108203411102295,
+              "scoreOnnx": 0.8108136653900146,
+              "scoreDelta": 6.67572021484375e-06,
+              "iou": 0.99997187456054,
+              "bboxPt": [
+                99.0,
+                4.0,
+                1181.0,
+                714.0
+              ],
+              "bboxOnnx": [
+                99.0,
+                4.0,
+                1181.0,
+                714.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.7784769535064697,
+              "scoreOnnx": 0.7784796953201294,
+              "scoreDelta": 2.7418136596679688e-06,
+              "iou": 0.9999961398804392,
+              "bboxPt": [
+                0.0,
+                2.0,
+                1280.0,
+                715.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                2.0,
+                1280.0,
+                715.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "pos",
+          "prompt": {
+            "pos": [
+              [
+                290,
+                610
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.8509265184402466,
+              "scoreOnnx": 0.8509206771850586,
+              "scoreDelta": 5.841255187988281e-06,
+              "iou": 0.9999731132202296,
+              "bboxPt": [
+                0.0,
+                4.0,
+                1280.0,
+                710.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                4.0,
+                1280.0,
+                710.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.7598751187324524,
+              "scoreOnnx": 0.7598730325698853,
+              "scoreDelta": 2.086162567138672e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                0.0,
+                3.0,
+                1280.0,
+                714.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                3.0,
+                1280.0,
+                714.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.6639933586120605,
+              "scoreOnnx": 0.6639915704727173,
+              "scoreDelta": 1.7881393432617188e-06,
+              "iou": 0.9999959542834025,
+              "bboxPt": [
+                0.0,
+                5.0,
+                1280.0,
+                710.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                5.0,
+                1280.0,
+                710.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "pos",
+          "prompt": {
+            "pos": [
+              [
+                417,
+                401
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        }
+      ],
+      "pass": true,
+      "defectReview": [
+        {
+          "defect": 0,
+          "center": [
+            120,
+            110
+          ],
+          "radius": 3,
+          "prompt": {
+            "pos": [
+              [
+                120,
+                110
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "pass": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.904992938041687,
+              "scoreOnnx": 0.9049926996231079,
+              "scoreDelta": 2.384185791015625e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                117.0,
+                107.0,
+                7.0,
+                7.0
+              ],
+              "bboxOnnx": [
+                117.0,
+                107.0,
+                7.0,
+                7.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.9021009206771851,
+              "scoreOnnx": 0.9021007418632507,
+              "scoreDelta": 1.7881393432617188e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                117.0,
+                107.0,
+                7.0,
+                7.0
+              ],
+              "bboxOnnx": [
+                117.0,
+                107.0,
+                7.0,
+                7.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.49837571382522583,
+              "scoreOnnx": 0.4983779191970825,
+              "scoreDelta": 2.205371856689453e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                0.0,
+                3.0,
+                701.0,
+                295.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                3.0,
+                701.0,
+                295.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "countEqual": true,
+          "selectedEqual": true,
+          "tieAdjusted": false,
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "defect": 1,
+          "center": [
+            310,
+            247
+          ],
+          "radius": 10,
+          "prompt": {
+            "pos": [
+              [
+                310,
+                247
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "pass": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.968519926071167,
+              "scoreOnnx": 0.9685204029083252,
+              "scoreDelta": 4.76837158203125e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                301.0,
+                237.0,
+                20.0,
+                21.0
+              ],
+              "bboxOnnx": [
+                301.0,
+                237.0,
+                20.0,
+                21.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.9643115401268005,
+              "scoreOnnx": 0.9643092751502991,
+              "scoreDelta": 2.2649765014648438e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                300.0,
+                237.0,
+                21.0,
+                21.0
+              ],
+              "bboxOnnx": [
+                300.0,
+                237.0,
+                21.0,
+                21.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.45108407735824585,
+              "scoreOnnx": 0.4510778784751892,
+              "scoreDelta": 6.198883056640625e-06,
+              "iou": 0.9999743205374712,
+              "bboxPt": [
+                0.0,
+                0.0,
+                1280.0,
+                707.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                0.0,
+                1280.0,
+                707.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "countEqual": true,
+          "selectedEqual": true,
+          "tieAdjusted": false,
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "defect": 2,
+          "center": [
+            500,
+            384
+          ],
+          "radius": 9,
+          "prompt": {
+            "pos": [
+              [
+                500,
+                384
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "pass": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.974757194519043,
+              "scoreOnnx": 0.9747568368911743,
+              "scoreDelta": 3.5762786865234375e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                491.0,
+                375.0,
+                19.0,
+                18.0
+              ],
+              "bboxOnnx": [
+                491.0,
+                375.0,
+                19.0,
+                18.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.9727715849876404,
+              "scoreOnnx": 0.9727715849876404,
+              "scoreDelta": 0.0,
+              "iou": 1.0,
+              "bboxPt": [
+                491.0,
+                375.0,
+                19.0,
+                19.0
+              ],
+              "bboxOnnx": [
+                491.0,
+                375.0,
+                19.0,
+                19.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.5052419304847717,
+              "scoreOnnx": 0.5052382946014404,
+              "scoreDelta": 3.635883331298828e-06,
+              "iou": 0.9999900332060352,
+              "bboxPt": [
+                0.0,
+                0.0,
+                1280.0,
+                714.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                0.0,
+                1280.0,
+                714.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "countEqual": true,
+          "selectedEqual": true,
+          "tieAdjusted": false,
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "defect": 3,
+          "center": [
+            690,
+            521
+          ],
+          "radius": 8,
+          "prompt": {
+            "pos": [
+              [
+                690,
+                521
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "pass": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.9581441283226013,
+              "scoreOnnx": 0.9581519961357117,
+              "scoreDelta": 7.867813110351562e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                682.0,
+                512.0,
+                17.0,
+                18.0
+              ],
+              "bboxOnnx": [
+                682.0,
+                512.0,
+                17.0,
+                18.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.9548269510269165,
+              "scoreOnnx": 0.9548280239105225,
+              "scoreDelta": 1.0728836059570312e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                682.0,
+                513.0,
+                17.0,
+                17.0
+              ],
+              "bboxOnnx": [
+                682.0,
+                513.0,
+                17.0,
+                17.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.4566473364830017,
+              "scoreOnnx": 0.4567335844039917,
+              "scoreDelta": 8.624792098999023e-05,
+              "iou": 0.9998668330876893,
+              "bboxPt": [
+                5.0,
+                0.0,
+                1275.0,
+                718.0
+              ],
+              "bboxOnnx": [
+                5.0,
+                0.0,
+                1275.0,
+                718.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "countEqual": true,
+          "selectedEqual": true,
+          "tieAdjusted": false,
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "defect": 4,
+          "center": [
+            880,
+            158
+          ],
+          "radius": 7,
+          "prompt": {
+            "pos": [
+              [
+                880,
+                158
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "pass": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.9644930362701416,
+              "scoreOnnx": 0.9644925594329834,
+              "scoreDelta": 4.76837158203125e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                873.0,
+                151.0,
+                15.0,
+                15.0
+              ],
+              "bboxOnnx": [
+                873.0,
+                151.0,
+                15.0,
+                15.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.9608823657035828,
+              "scoreOnnx": 0.960882306098938,
+              "scoreDelta": 5.960464477539063e-08,
+              "iou": 1.0,
+              "bboxPt": [
+                873.0,
+                151.0,
+                15.0,
+                15.0
+              ],
+              "bboxOnnx": [
+                873.0,
+                151.0,
+                15.0,
+                15.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.47274279594421387,
+              "scoreOnnx": 0.4727410078048706,
+              "scoreDelta": 1.7881393432617188e-06,
+              "iou": 0.9999563785469694,
+              "bboxPt": [
+                0.0,
+                11.0,
+                1280.0,
+                587.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                11.0,
+                1280.0,
+                587.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "countEqual": true,
+          "selectedEqual": true,
+          "tieAdjusted": false,
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "defect": 5,
+          "center": [
+            1070,
+            295
+          ],
+          "radius": 6,
+          "prompt": {
+            "pos": [
+              [
+                1070,
+                295
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "pass": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.926493763923645,
+              "scoreOnnx": 0.926493763923645,
+              "scoreDelta": 0.0,
+              "iou": 1.0,
+              "bboxPt": [
+                1064.0,
+                289.0,
+                13.0,
+                13.0
+              ],
+              "bboxOnnx": [
+                1064.0,
+                289.0,
+                13.0,
+                13.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.9143105149269104,
+              "scoreOnnx": 0.9143102765083313,
+              "scoreDelta": 2.384185791015625e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                1064.0,
+                288.0,
+                13.0,
+                14.0
+              ],
+              "bboxOnnx": [
+                1064.0,
+                288.0,
+                13.0,
+                14.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.4309269189834595,
+              "scoreOnnx": 0.4309266209602356,
+              "scoreDelta": 2.980232238769531e-07,
+              "iou": 0.9999164505278147,
+              "bboxPt": [
+                0.0,
+                0.0,
+                1280.0,
+                717.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                0.0,
+                1280.0,
+                717.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "countEqual": true,
+          "selectedEqual": true,
+          "tieAdjusted": false,
+          "transformParityMaxAbsDiff": 0.0
+        }
+      ]
+    },
+    {
+      "image": "/tmp/sam_bench_run/synth_3000_v2.png",
+      "size": [
+        3000,
+        3000
+      ],
+      "sha256": "a6a01c528d83b67ddb66117fb28cd9c5513697cbe7f825506d59e29a2329e728",
+      "encoderCheck": {
+        "maxAbsDiff": 4.470348358154297e-06,
+        "meanAbsDiff": 1.251922923072024e-07,
+        "cosine": 1.0000001192092896,
+        "pass": true
+      },
+      "cases": [
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.9745508432388306,
+              "scoreOnnx": 0.9745504856109619,
+              "scoreDelta": 3.5762786865234375e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                90.0,
+                90.0,
+                67.0,
+                68.0
+              ],
+              "bboxOnnx": [
+                90.0,
+                90.0,
+                67.0,
+                68.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.8852484822273254,
+              "scoreOnnx": 0.8852487802505493,
+              "scoreDelta": 2.980232238769531e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                0.0,
+                0.0,
+                250.0,
+                250.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                0.0,
+                250.0,
+                250.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.5419225096702576,
+              "scoreOnnx": 0.5419213175773621,
+              "scoreDelta": 1.1920928955078125e-06,
+              "iou": 0.9999573340875041,
+              "bboxPt": [
+                0.0,
+                0.0,
+                2987.0,
+                2963.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                0.0,
+                2987.0,
+                2963.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "pos",
+          "prompt": {
+            "pos": [
+              [
+                100,
+                100
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.9937906265258789,
+              "scoreOnnx": 0.993788480758667,
+              "scoreDelta": 2.1457672119140625e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                0.0,
+                252.0,
+                250.0,
+                247.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                252.0,
+                250.0,
+                247.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.7284197211265564,
+              "scoreOnnx": 0.7284162044525146,
+              "scoreDelta": 3.516674041748047e-06,
+              "iou": 0.9999927652616805,
+              "bboxPt": [
+                0.0,
+                253.0,
+                745.0,
+                245.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                253.0,
+                745.0,
+                245.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.5770185589790344,
+              "scoreOnnx": 0.5770189762115479,
+              "scoreDelta": 4.172325134277344e-07,
+              "iou": 0.9999719362004598,
+              "bboxPt": [
+                0.0,
+                0.0,
+                3000.0,
+                2739.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                0.0,
+                3000.0,
+                2739.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "pos",
+          "prompt": {
+            "pos": [
+              [
+                227,
+                411
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.997317910194397,
+              "scoreOnnx": 0.9973176717758179,
+              "scoreDelta": 2.384185791015625e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                252.0,
+                501.0,
+                247.0,
+                247.0
+              ],
+              "bboxOnnx": [
+                252.0,
+                501.0,
+                247.0,
+                247.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.7181293964385986,
+              "scoreOnnx": 0.718123197555542,
+              "scoreDelta": 6.198883056640625e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                250.0,
+                501.0,
+                499.0,
+                248.0
+              ],
+              "bboxOnnx": [
+                250.0,
+                501.0,
+                499.0,
+                248.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.6034135222434998,
+              "scoreOnnx": 0.6034058928489685,
+              "scoreDelta": 7.62939453125e-06,
+              "iou": 0.9999729371216922,
+              "bboxPt": [
+                0.0,
+                0.0,
+                3000.0,
+                2492.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                0.0,
+                3000.0,
+                2492.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "pos",
+          "prompt": {
+            "pos": [
+              [
+                354,
+                722
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.9898873567581177,
+              "scoreOnnx": 0.9898849725723267,
+              "scoreDelta": 2.384185791015625e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                252.0,
+                1003.0,
+                246.0,
+                245.0
+              ],
+              "bboxOnnx": [
+                252.0,
+                1003.0,
+                246.0,
+                245.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.6776637434959412,
+              "scoreOnnx": 0.6776610612869263,
+              "scoreDelta": 2.682209014892578e-06,
+              "iou": 0.9999709103602752,
+              "bboxPt": [
+                0.0,
+                1003.0,
+                995.0,
+                245.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                1003.0,
+                995.0,
+                245.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.5241292119026184,
+              "scoreOnnx": 0.52412348985672,
+              "scoreDelta": 5.7220458984375e-06,
+              "iou": 0.9999282688165949,
+              "bboxPt": [
+                0.0,
+                259.0,
+                3000.0,
+                2481.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                259.0,
+                3000.0,
+                2481.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "pos",
+          "prompt": {
+            "pos": [
+              [
+                481,
+                1033
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.9999674558639526,
+              "scoreOnnx": 0.9999676942825317,
+              "scoreDelta": 2.384185791015625e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                592.0,
+                1342.0,
+                63.0,
+                63.0
+              ],
+              "bboxOnnx": [
+                592.0,
+                1342.0,
+                63.0,
+                63.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.8838072419166565,
+              "scoreOnnx": 0.8838185667991638,
+              "scoreDelta": 1.1324882507324219e-05,
+              "iou": 1.0,
+              "bboxPt": [
+                502.0,
+                1256.0,
+                493.0,
+                243.0
+              ],
+              "bboxOnnx": [
+                502.0,
+                1256.0,
+                493.0,
+                243.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.6607975959777832,
+              "scoreOnnx": 0.6608019471168518,
+              "scoreDelta": 4.351139068603516e-06,
+              "iou": 0.9999137010570774,
+              "bboxPt": [
+                72.0,
+                1011.0,
+                2421.0,
+                1726.0
+              ],
+              "bboxOnnx": [
+                72.0,
+                1011.0,
+                2421.0,
+                1726.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "posneg",
+          "prompt": {
+            "pos": [
+              [
+                608,
+                1344
+              ]
+            ],
+            "neg": [
+              [
+                2489,
+                2577
+              ]
+            ],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.9838049411773682,
+              "scoreOnnx": 0.9838039875030518,
+              "scoreDelta": 9.5367431640625e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                500.0,
+                1502.0,
+                250.0,
+                248.0
+              ],
+              "bboxOnnx": [
+                500.0,
+                1502.0,
+                250.0,
+                248.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.7251001596450806,
+              "scoreOnnx": 0.7251096963882446,
+              "scoreDelta": 9.5367431640625e-06,
+              "iou": 0.9999137834412477,
+              "bboxPt": [
+                500.0,
+                1500.0,
+                741.0,
+                1236.0
+              ],
+              "bboxOnnx": [
+                500.0,
+                1500.0,
+                741.0,
+                1236.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.5405613780021667,
+              "scoreOnnx": 0.5405676364898682,
+              "scoreDelta": 6.258487701416016e-06,
+              "iou": 0.9999400482318737,
+              "bboxPt": [
+                0.0,
+                506.0,
+                3000.0,
+                2494.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                506.0,
+                3000.0,
+                2494.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "posneg",
+          "prompt": {
+            "pos": [
+              [
+                735,
+                1655
+              ]
+            ],
+            "neg": [
+              [
+                2616,
+                2888
+              ]
+            ],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.9803224802017212,
+              "scoreOnnx": 0.9803222417831421,
+              "scoreDelta": 2.384185791015625e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                752.0,
+                1256.0,
+                247.0,
+                742.0
+              ],
+              "bboxOnnx": [
+                752.0,
+                1256.0,
+                247.0,
+                742.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.7601553797721863,
+              "scoreOnnx": 0.7601560950279236,
+              "scoreDelta": 7.152557373046875e-07,
+              "iou": 0.9999774958930004,
+              "bboxPt": [
+                504.0,
+                1037.0,
+                740.0,
+                1198.0
+              ],
+              "bboxOnnx": [
+                504.0,
+                1037.0,
+                740.0,
+                1198.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.6507312059402466,
+              "scoreOnnx": 0.6507375836372375,
+              "scoreDelta": 6.377696990966797e-06,
+              "iou": 0.9999682108049432,
+              "bboxPt": [
+                0.0,
+                513.0,
+                3000.0,
+                2390.0
+              ],
+              "bboxOnnx": [
+                0.0,
+                513.0,
+                3000.0,
+                2390.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "posneg",
+          "prompt": {
+            "pos": [
+              [
+                862,
+                1966
+              ]
+            ],
+            "neg": [
+              [
+                2743,
+                399
+              ]
+            ],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.9683761596679688,
+              "scoreOnnx": 0.9683746099472046,
+              "scoreDelta": 1.5497207641601562e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                1501.0,
+                752.0,
+                249.0,
+                247.0
+              ],
+              "bboxOnnx": [
+                1501.0,
+                752.0,
+                249.0,
+                247.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.9595074653625488,
+              "scoreOnnx": 0.9595082402229309,
+              "scoreDelta": 7.748603820800781e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                1501.0,
+                752.0,
+                496.0,
+                246.0
+              ],
+              "bboxOnnx": [
+                1501.0,
+                752.0,
+                496.0,
+                246.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.915734589099884,
+              "scoreOnnx": 0.9157335162162781,
+              "scoreDelta": 1.0728836059570312e-06,
+              "iou": 0.9997637109812212,
+              "bboxPt": [
+                1503.0,
+                753.0,
+                494.0,
+                245.0
+              ],
+              "bboxOnnx": [
+                1503.0,
+                753.0,
+                494.0,
+                245.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "box",
+          "prompt": {
+            "pos": [],
+            "neg": [],
+            "box": [
+              1527,
+              729,
+              375,
+              375
+            ]
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.9048616886138916,
+              "scoreOnnx": 0.904853343963623,
+              "scoreDelta": 8.344650268554688e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                1751.0,
+                762.0,
+                248.0,
+                236.0
+              ],
+              "bboxOnnx": [
+                1751.0,
+                762.0,
+                248.0,
+                236.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.8593296408653259,
+              "scoreOnnx": 0.8593239784240723,
+              "scoreDelta": 5.662441253662109e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                1751.0,
+                1001.0,
+                248.0,
+                248.0
+              ],
+              "bboxOnnx": [
+                1751.0,
+                1001.0,
+                248.0,
+                248.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.7836798429489136,
+              "scoreOnnx": 0.7836892604827881,
+              "scoreDelta": 9.417533874511719e-06,
+              "iou": 0.9999706979742533,
+              "bboxPt": [
+                1754.0,
+                794.0,
+                242.0,
+                453.0
+              ],
+              "bboxOnnx": [
+                1754.0,
+                794.0,
+                242.0,
+                453.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "box",
+          "prompt": {
+            "pos": [],
+            "neg": [],
+            "box": [
+              1738,
+              826,
+              375,
+              375
+            ]
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.9859236478805542,
+              "scoreOnnx": 0.9859241843223572,
+              "scoreDelta": 5.364418029785156e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                2001.0,
+                1003.0,
+                247.0,
+                245.0
+              ],
+              "bboxOnnx": [
+                2001.0,
+                1003.0,
+                247.0,
+                245.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.9832038879394531,
+              "scoreOnnx": 0.9832044839859009,
+              "scoreDelta": 5.960464477539062e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                2002.0,
+                1003.0,
+                245.0,
+                245.0
+              ],
+              "bboxOnnx": [
+                2002.0,
+                1003.0,
+                245.0,
+                245.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.9721257090568542,
+              "scoreOnnx": 0.9721261262893677,
+              "scoreDelta": 4.172325134277344e-07,
+              "iou": 1.0,
+              "bboxPt": [
+                2001.0,
+                1003.0,
+                249.0,
+                245.0
+              ],
+              "bboxOnnx": [
+                2001.0,
+                1003.0,
+                249.0,
+                245.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "box",
+          "prompt": {
+            "pos": [],
+            "neg": [],
+            "box": [
+              1949,
+              923,
+              375,
+              375
+            ]
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.9616159200668335,
+              "scoreOnnx": 0.9616184234619141,
+              "scoreDelta": 2.5033950805664062e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                1341.0,
+                342.0,
+                65.0,
+                65.0
+              ],
+              "bboxOnnx": [
+                1341.0,
+                342.0,
+                65.0,
+                65.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.8316511511802673,
+              "scoreOnnx": 0.8316541314125061,
+              "scoreDelta": 2.9802322387695312e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                1251.0,
+                251.0,
+                248.0,
+                248.0
+              ],
+              "bboxOnnx": [
+                1251.0,
+                251.0,
+                248.0,
+                248.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.49278080463409424,
+              "scoreOnnx": 0.4927792549133301,
+              "scoreDelta": 1.5497207641601562e-06,
+              "iou": 0.9998965474819098,
+              "bboxPt": [
+                757.0,
+                0.0,
+                1455.0,
+                1466.0
+              ],
+              "bboxOnnx": [
+                757.0,
+                0.0,
+                1455.0,
+                1466.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "pos",
+          "prompt": {
+            "pos": [
+              [
+                1370,
+                410
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        },
+        {
+          "countEqual": true,
+          "selectedEqual": true,
+          "ranks": [
+            {
+              "rank": 0,
+              "ptIndex": 2,
+              "onnxIndex": 2,
+              "scorePt": 0.9203020334243774,
+              "scoreOnnx": 0.9203020334243774,
+              "scoreDelta": 0.0,
+              "iou": 1.0,
+              "bboxPt": [
+                1252.0,
+                502.0,
+                247.0,
+                247.0
+              ],
+              "bboxOnnx": [
+                1252.0,
+                502.0,
+                247.0,
+                247.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 1,
+              "ptIndex": 1,
+              "onnxIndex": 1,
+              "scorePt": 0.7486780285835266,
+              "scoreOnnx": 0.7486801743507385,
+              "scoreDelta": 2.1457672119140625e-06,
+              "iou": 1.0,
+              "bboxPt": [
+                1253.0,
+                503.0,
+                498.0,
+                246.0
+              ],
+              "bboxOnnx": [
+                1253.0,
+                503.0,
+                498.0,
+                246.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            },
+            {
+              "rank": 2,
+              "ptIndex": 0,
+              "onnxIndex": 0,
+              "scorePt": 0.4082711338996887,
+              "scoreOnnx": 0.40826356410980225,
+              "scoreDelta": 7.569789886474609e-06,
+              "iou": 0.999928192629607,
+              "bboxPt": [
+                508.0,
+                258.0,
+                2232.0,
+                1144.0
+              ],
+              "bboxOnnx": [
+                508.0,
+                258.0,
+                2232.0,
+                1144.0
+              ],
+              "bboxMaxDelta": 0.0,
+              "scoreRawAbove1": false,
+              "pass": true
+            }
+          ],
+          "tieAdjusted": false,
+          "pass": true,
+          "kind": "pos",
+          "prompt": {
+            "pos": [
+              [
+                1497,
+                721
+              ]
+            ],
+            "neg": [],
+            "box": null
+          },
+          "transformParityMaxAbsDiff": 0.0
+        }
+      ],
+      "pass": true
+    }
+  ],
+  "overallPass": true
+}

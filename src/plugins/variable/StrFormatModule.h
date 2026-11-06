@@ -4,7 +4,7 @@
 
 namespace DeepLux {
 
-class StrFormatModule : public ModuleBase {
+class DEEPLUX_PLUGIN_API StrFormatModule : public ModuleBase {
     Q_OBJECT
 
 public:

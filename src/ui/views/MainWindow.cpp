@@ -9,6 +9,7 @@
 #include "../dialogs/SamAnnotatorDialog.h"
 #include "../display/3d/Viewport3DContent.h"
 #include "../display/DisplayManager.h"
+#include "../display/ImageRefreshCoalescer.h"
 #include "../panels/DataSourcePanel.h"
 #include "../widgets/AgentActionLogWidget.h"
 #include "../widgets/AgentChatPanel.h"
@@ -25,6 +26,7 @@
 #include "SplashScreen.h"
 #include "SystemParamView.h"
 #include "core/agent/AgentActor.h"
+#include "core/agent/AgentAuditLog.h"
 #include "core/agent/AgentController.h"
 #include "core/agent/AnnotationSessionExport.h"
 #include "core/agent/AnnotationSessionOpen.h"
@@ -39,6 +41,7 @@
 #include "core/device/CameraManager.h"
 #include "core/display/DisplayData.h"
 #include "core/display/IDisplayPort.h"
+#include "core/engine/FlowExecutionService.h"
 #include "core/engine/RunEngine.h"
 #include "core/geometry/MeasurementData.h"
 #include "core/interface/IModule.h"
@@ -51,6 +54,7 @@
 #include "core/model/DataSource.h"
 #include "core/model/ImageData.h"
 #include "core/model/Project.h"
+#include "core/platform/PathUtils.h"
 
 #include <Eigen/Geometry>
 #include <QAction>
@@ -73,8 +77,10 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGroupBox>
@@ -96,6 +102,7 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QResizeEvent>
@@ -664,11 +671,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
 
     connect(&RunEngine::instance(), &RunEngine::moduleFinished, this,
             [this](const QString& moduleName, bool success, int elapsedMs) {
+                // t28 F1：只按名称从当前 controller 查找；不得回退到 m_currentExecutingItem。
+                // 工程关闭/切换会 clear() 流程树并删除 item，迟到的 moduleFinished 若写原始
+                // 指针会触发 use-after-free。
                 QTreeWidgetItem* item =
                     m_processTreeController ? m_processTreeController->instanceItem(moduleName) : nullptr;
-                if (!item) {
-                    item = m_currentExecutingItem;
-                }
                 if (item) {
                     if (success) {
                         clearExecutionHighlight(item);
@@ -685,12 +692,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
                 if (m_inspectorPanel && m_selectedModuleId == moduleName) {
                     m_inspectorPanel->setDirty(false);
                 }
-                // Display this module's output if available.
+                // 后台执行（设计 §7.2/§7.3）：删除 moduleFinished → displayImage 的大图刷新路径；
+                // 2D 大图只经合并器刷新，这里只更新节点状态/耗时/检查器，并保留 3D 点云的既有路径。
                 const ImageData out = RunEngine::instance().moduleOutput(moduleName);
-                if (out.isValid()) {
-                    // 只在没有选中特定模块或当前模块就是执行模块时显示
-                    if (m_selectedModuleId.isEmpty() || m_selectedModuleId == moduleName) {
-                        // 传入模块身份，记录模块→视口归属供测量叠加绑定
+                if (out.isValid() && (m_selectedModuleId.isEmpty() || m_selectedModuleId == moduleName)) {
+                    const auto cloud = MeasurementData::pointCloud(out, nullptr);
+                    if (cloud && !cloud->isEmpty()) {
                         displayImage(out, QString(), moduleName);
                     }
                 }
@@ -726,6 +733,25 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
         if (m_isCycleMode && m_isRunning && RunEngine::instance().runMode() == RunMode::RunCycle)
             resetFlowRunPresentation();
     });
+    // 后台执行（设计 §8.1）：pauseHit 对 Breakpoint 与 User 都会发。断点已有 breakpointHit
+    // 专门处理（断点文案），这里只处理用户暂停（Agent pause_flow / Service::pauseRun），
+    // 做与断点同等的 UI 更新并区分原因，避免 Breakpoint 重复触发或状态被覆盖。
+    connect(&RunEngine::instance(), &RunEngine::pauseHit, this, [this](const QString& moduleName, PauseReason reason) {
+        if (reason != PauseReason::User) {
+            return;
+        }
+        QTreeWidgetItem* item = m_processTreeController ? m_processTreeController->instanceItem(moduleName) : nullptr;
+        if (item) {
+            m_currentExecutingItem = item;
+            setProcessItemStatus(item, QStringLiteral("paused"), tr("用户暂停"));
+        }
+        updateBreakpointRunControls(true);
+        if (m_runStatusLabel) {
+            m_runStatusLabel->setText(tr("用户暂停：%1").arg(moduleName));
+        }
+        Logger::instance().info(tr("用户暂停：%1，点击运行继续").arg(moduleName), "Run");
+    });
+
     connect(&RunEngine::instance(), &RunEngine::runFinished, this, [this](const RunResult& result) {
         if (m_processTimeLabel) {
             m_processTimeLabel->setText(tr("总耗时：%1 ms").arg(result.elapsedMs));
@@ -744,20 +770,27 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
             }
         }
 
-        // 延迟更新叠加层，确保 displayImage 完成后再设置 overlay
-        QTimer::singleShot(0, this, [this]() { updateMeasurementResultOnOverlay(); });
-
+        // 后台执行（设计 §7.2）：runFinished 不代表 job 结束，Cycle 每轮的发帧刷新继续由
+        // 50ms 合并器决定，不在此强制刷新；叠加统一在合并器渲染回调内消费帧内快照。
+        // 后台执行（设计 §5.3 #8 / §8.1）：runFinished 只表示“一轮执行结束”（Cycle 每轮都会发），
+        // 不得据此重启循环或做 job 级收尾；job 级收尾只走 FlowExecutionService::jobFinished。
+        if (FlowExecutionService::instance().isActive()) {
+            return;
+        }
+        // 无 Service job 的同步引擎路径（CLI/测试兼容）：强制 flush 一次（等价于 Single job 结束），
+        // 让最终快照帧与叠加立即生效，再沿用既有 UI 收尾与延迟关闭。
+        if (m_imageCoalescer) {
+            m_imageCoalescer->forceFlush();
+        }
         if (m_closeWhenRunFinishes) {
             m_closeWhenRunFinishes = false;
             setUiRunningState(false, false);
-            QTimer::singleShot(0, this, &QWidget::close);
-        } else if (m_isCycleMode && m_isRunning && RunEngine::instance().runMode() == RunMode::RunCycle &&
-                   RunEngine::instance().isBusy()) {
-            // RunEngine owns the shared cycle session and schedules the next tick.
-        } else {
-            setUiRunningState(false, false);
             m_isStepMode = false;
+            QTimer::singleShot(0, this, &QWidget::close);
+            return;
         }
+        setUiRunningState(false, false);
+        m_isStepMode = false;
     });
     connect(&RunEngine::instance(), &RunEngine::cycleStopped, this, [this]() {
         const bool stoppedWhileWaitingForPick = !m_pendingMeasurementCycleSessionId.isEmpty();
@@ -770,6 +803,81 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
         if (m_isCycleMode)
             setUiRunningState(false, false);
     });
+
+    // 后台执行（设计 §7.2/§7.3/§7.4）：所有大图刷新经 50ms latest-wins 合并器，
+    // 渲染时保留用户视图；模块完成信号不再直接刷新大图。
+    m_imageCoalescer = new ImageRefreshCoalescer(this);
+    m_imageCoalescer->setRenderCallback([this](const DisplayFrame& frame) { renderDisplayFrame(frame); });
+    connect(&RunEngine::instance(), &RunEngine::displayFrameReady, this,
+            [this](const QString& viewportId, quint64 jobId, const QString& runId) {
+                if (!m_imageCoalescer) {
+                    return;
+                }
+                // 帧身份必须匹配：迟到通知不能把旧 job/旧轮的画面渲染到当前视图（设计 §7.3）。
+                const DisplayFrame frame = RunEngine::instance().latestDisplayFrame(viewportId);
+                if (!frame.matchesIdentity(jobId, runId) || runId != RunEngine::instance().lastRunId()) {
+                    return;
+                }
+                m_imageCoalescer->setExpectedIdentity(jobId, runId);
+                m_imageCoalescer->schedule(frame);
+            });
+
+    // 后台执行（设计 §8.1）：Service 驱动的按钮状态与 job 级收尾。
+    // running/cycle/step 状态以 Service 的 job 类型为准；关闭请求只由 jobFinished 重试。
+    {
+        FlowExecutionService& service = FlowExecutionService::instance();
+        connect(&service, &FlowExecutionService::jobStateChanged, this,
+                [this](FlowExecutionService::State state, FlowExecutionService::JobType job) {
+                    switch (state) {
+                    case FlowExecutionService::State::Running:
+                        setUiRunningState(true, job == FlowExecutionService::JobType::Cycle);
+                        m_isStepMode = (job == FlowExecutionService::JobType::Step);
+                        // 新 job：锁定显示帧身份并清空旧 job 的待渲染帧/叠加（设计 §7.3）。
+                        if (m_imageCoalescer) {
+                            m_imageCoalescer->clearPending();
+                            m_imageCoalescer->setExpectedIdentity(RunEngine::instance().displayJobId(), QString());
+                        }
+                        clearMeasurementOverlays();
+                        break;
+                    case FlowExecutionService::State::Paused:
+                        // 暂停期间保持“运行中”语义：运行按钮变为“继续”，循环标志不变。
+                        m_isRunning = true;
+                        m_isStepMode = false;
+                        // 设计 §7.2：暂停是强制 flush 时点（中间帧无快照 → 清除叠加）。
+                        if (m_imageCoalescer) {
+                            m_imageCoalescer->forceFlush();
+                        }
+                        break;
+                    case FlowExecutionService::State::Stopping:
+                    case FlowExecutionService::State::Idle:
+                        break;
+                    }
+                });
+        connect(&service, &FlowExecutionService::jobFinished, this,
+                [this](FlowExecutionService::JobType job, bool stopped) {
+                    Q_UNUSED(job)
+                    if (stopped) {
+                        Logger::instance().info(tr("后台执行已停止"), "Run");
+                    }
+                    // 设计 §7.2：job 结束/停止是唯一强制 flush 时点（Cycle 每轮不 flush）。
+                    if (m_imageCoalescer) {
+                        m_imageCoalescer->forceFlush();
+                    }
+                    finishRunUi();
+                });
+        connect(&service, &FlowExecutionService::jobFailed, this,
+                [this](FlowExecutionService::JobType job, const QString& error) {
+                    Q_UNUSED(job)
+                    Logger::instance().error(tr("后台执行失败：%1").arg(error), "Run");
+                    if (m_runStatusLabel) {
+                        m_runStatusLabel->setText(tr("运行失败：%1").arg(error));
+                    }
+                    if (m_imageCoalescer) {
+                        m_imageCoalescer->forceFlush();
+                    }
+                    finishRunUi();
+                });
+    }
 
     // Initialize AgentController (Phase 1)
     AgentController::instance().initialize();
@@ -1231,6 +1339,13 @@ void MainWindow::setupStatusBar() {
     m_runStatusLabel->setMinimumWidth(140);
     status->addPermanentWidget(m_runStatusLabel);
 
+    // §3.7：Agent token 用量（llmUsageReported 写入；无用量时隐藏）
+    m_agentTokenLabel = new QLabel();
+    m_agentTokenLabel->setObjectName("AgentTokenStatusLabel");
+    m_agentTokenLabel->setMinimumWidth(120);
+    m_agentTokenLabel->hide();
+    status->addPermanentWidget(m_agentTokenLabel);
+
     m_userLabel = new QLabel(tr("用户：未登录"));
     m_userLabel->setObjectName("UserStatusLabel");
     m_userLabel->setMinimumWidth(150);
@@ -1499,7 +1614,7 @@ void MainWindow::setupMainLayout() {
     processControlBar->setObjectName("ProcessControlBar");
     auto* processControlLayout = new QHBoxLayout(processControlBar);
     processControlLayout->setContentsMargins(0, 0, 0, 0);
-    processControlLayout->setSpacing(2);
+    processControlLayout->setSpacing(0);
     auto addProcessControl = [this, processControlBar, processControlLayout](
                                  const QString& objectName, AppIconProvider::Icon icon, const QColor& color,
                                  const QString& text, const QString& toolTip, auto slot) {
@@ -1510,6 +1625,9 @@ void MainWindow::setupMainLayout() {
         button->setIconSize(QSize(16, 16));
         button->setText(text);
         button->setToolTip(toolTip);
+        // 固定水平尺寸，避免紧凑布局按像素压缩按钮导致文字被裁切
+        // （不同平台/字体下 sizeHint 与布局取整差异会放大该问题）。
+        button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
         connect(button, &QToolButton::clicked, this, slot);
         processControlLayout->addWidget(button);
     };
@@ -1930,11 +2048,11 @@ void MainWindow::setupMainLayout() {
     logActionsLayout->addWidget(collapseLogButton);
     m_logTerminalTabs->setCornerWidget(logActions, Qt::TopRightCorner);
 
-    // Tab "日志" 再次点击时打开日志文件（第一次点击切换，第二次点击打开）
-    connect(m_logTerminalTabs, &QTabWidget::tabBarClicked, this, [this, logTabIndex](int index) {
-        if (index == logTabIndex && m_logTerminalTabs->currentIndex() == logTabIndex) {
-            QString logPath = Logger::instance().logFilePath();
-            QDesktopServices::openUrl(QUrl::fromLocalFile(logPath));
+    // 双击日志标签打开落盘文件；单击只切换面板，避免抢焦点。
+    m_logTerminalTabs->setTabToolTip(logTabIndex, tr("运行日志；双击打开日志文件"));
+    connect(m_logTerminalTabs->tabBar(), &QTabBar::tabBarDoubleClicked, this, [this, logTabIndex](int index) {
+        if (index == logTabIndex) {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(Logger::instance().logFilePath()));
         }
     });
 
@@ -2032,13 +2150,22 @@ void MainWindow::setupMainLayout() {
                 setAgentTabStatus(tr("Agent"), false);
                 m_agentChatPanel->setThinking(false);
                 m_agentChatPanel->clearToolPreview();
-                m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Agent, content);
+                // 流式：用终态文本对齐已有气泡；非流式/回退：新建气泡（设计 §5.5）
+                if (m_agentChatPanel->isStreamActive()) {
+                    m_agentChatPanel->finalizeStreamedMessage(content);
+                } else {
+                    m_agentChatPanel->addMessage(AgentMessageBubble::Sender::Agent, content);
+                    // R1：非流式/回退响应也要展示 reasoning（折叠块，正文不含 reasoning）
+                    m_agentChatPanel->setLastAgentReasoning(AgentController::instance().lastResponseReasoning());
+                }
             });
     connect(&AgentController::instance(), &AgentController::llmErrorOccurred, this,
             [this, setAgentTabStatus](const QString& error) {
                 if (!m_agentChatPanel)
                     return;
                 setAgentTabStatus(tr("Agent 出错"), false);
+                if (m_agentChatPanel->isStreamActive())
+                    m_agentChatPanel->failStreamedMessage(tr("已中断"));
                 m_agentChatPanel->setError(error);
                 m_agentChatPanel->clearToolPreview();
                 m_agentChatPanel->addMessage(AgentMessageBubble::Sender::System, QString("Error: %1").arg(error));
@@ -2049,6 +2176,7 @@ void MainWindow::setupMainLayout() {
                 entry.params = error;
                 entry.result = "error";
                 entry.undoable = false;
+                entry.errorCategory = AgentController::instance().lastLLMErrorCategory();
                 m_agentActionLogWidget->addEntry(entry);
             });
     connect(&AgentController::instance(), &AgentController::toolsPendingConfirmation, this,
@@ -2133,12 +2261,54 @@ void MainWindow::setupMainLayout() {
                                          tr("该取消请求对应已失效的确认批次，已忽略"));
         }
     });
+    // 停止按钮 → 中止当前轮（设计 §5.6）
+    connect(m_agentChatPanel, &AgentChatPanel::stopRequested, &AgentController::instance(),
+            &AgentController::abortCurrentTurn);
+    connect(&AgentController::instance(), &AgentController::agentTurnAborted, this, [this, setAgentTabStatus]() {
+        setAgentTabStatus(tr("已停止"), false);
+        m_agentChatPanel->setStopped();
+    });
+    connect(&AgentController::instance(), &AgentController::agentStateChanged, this,
+            [this, setAgentTabStatus](AgentController::AgentState state) {
+                switch (state) {
+                case AgentController::AgentState::Thinking:
+                    setAgentTabStatus(tr("Agent 正在思考"), false);
+                    m_agentChatPanel->setThinking(true);
+                    break;
+                case AgentController::AgentState::Confirming:
+                    setAgentTabStatus(tr("等待确认"), true);
+                    break;
+                case AgentController::AgentState::Executing:
+                    setAgentTabStatus(tr("执行中（可停止）"), false);
+                    m_agentChatPanel->setExecuting(true);
+                    break;
+                case AgentController::AgentState::Idle:
+                    m_agentChatPanel->setExecuting(false);
+                    break;
+                }
+            });
+    // §3.7：token 用量显示
+    connect(&AgentController::instance(), &AgentController::llmUsageReported, this,
+            [this](int promptTokens, int completionTokens) {
+                if (!m_agentTokenLabel)
+                    return;
+                m_agentTokenLabel->setText(tr("tokens: %1+%2").arg(promptTokens).arg(completionTokens));
+                m_agentTokenLabel->show();
+            });
 
     // ===== Tab 4: Agent 操作日志 =====
     m_agentActionLogWidget = new AgentActionLogWidget(m_logTerminalTabs);
     m_agentActionLogWidget->setObjectName(QStringLiteral("AgentLogTab"));
     const int agentLogTabIndex = m_logTerminalTabs->addTab(m_agentActionLogWidget, tr("Agent 日志"));
-    m_logTerminalTabs->setTabToolTip(agentLogTabIndex, tr("Agent 操作日志"));
+    m_logTerminalTabs->setTabToolTip(agentLogTabIndex, tr("Agent 操作日志；双击打开审计日志文件"));
+    connect(m_logTerminalTabs->tabBar(), &QTabBar::tabBarDoubleClicked, this, [this, agentLogTabIndex](int index) {
+        if (index != agentLogTabIndex)
+            return;
+
+        const QString auditPath = AgentAuditLog::instance().currentFilePath();
+        const QString targetPath = QFileInfo::exists(auditPath) ? auditPath : PathUtils::logPath();
+        QDesktopServices::openUrl(QUrl::fromLocalFile(targetPath));
+    });
     connect(&AgentController::instance(), &AgentController::actionLogEntryAdded, m_agentActionLogWidget,
             &AgentActionLogWidget::addEntry);
     connect(m_agentActionLogWidget, &AgentActionLogWidget::undoRequested, this,
@@ -2151,6 +2321,25 @@ void MainWindow::setupMainLayout() {
         setAgentTabStatus(tr("Agent 正在思考"), false);
         m_agentChatPanel->setThinking(true);
     });
+
+    // ===== 流式接线（设计 §5/§4.4）=====
+    connect(&AgentController::instance(), &AgentController::agentStreamStarted, this,
+            [this]() { m_agentChatPanel->beginAgentStream(); });
+    connect(&AgentController::instance(), &AgentController::agentStreamContentDelta, this,
+            [this](const QString& text) { m_agentChatPanel->appendStreamContent(text); });
+    connect(&AgentController::instance(), &AgentController::agentStreamReasoningDelta, this,
+            [this](const QString& text) { m_agentChatPanel->appendStreamReasoning(text); });
+    connect(&AgentController::instance(), &AgentController::agentStreamAborted, this,
+            [this]() { m_agentChatPanel->abortStreamedMessage(tr("已停止")); });
+    connect(&AgentController::instance(), &AgentController::agentStreamFallback, this,
+            [this, setAgentTabStatus](const QString& reason) {
+                setAgentTabStatus(tr("流式不可用，已回退整包响应"), false);
+                m_agentChatPanel->abortStreamedMessage(tr("已回退"));
+                m_agentChatPanel->addMessage(AgentMessageBubble::Sender::System,
+                                             tr("流式不可用（%1），已回退为整包响应。").arg(reason));
+            });
+    connect(&AgentController::instance(), &AgentController::agentStreamTruncated, this,
+            [setAgentTabStatus]() { setAgentTabStatus(tr("输出达到 max_tokens 上限"), false); });
 
     m_logDock->setWidget(m_logTerminalTabs);
     m_logDock->setMinimumHeight(220);
@@ -2338,6 +2527,19 @@ void MainWindow::onProjectOpened(Project* project) {
     setUiRunningState(false, false);
     m_isStepMode = false;
 
+    // 后台执行（设计 §7.3）：工程切换清空合并器待处理帧、最近帧与叠加，避免旧工程残留。
+    // 同时清空 RunEngine 的最新帧槽位：迟到通知按 (jobId,runId) 取帧时必须取不到旧工程帧。
+    if (m_imageCoalescer) {
+        m_imageCoalescer->clearPending();
+        m_imageCoalescer->clearExpectedIdentity();
+    }
+    RunEngine::instance().clearLatestDisplayFrames();
+    m_hasDisplayFrame = false;
+    m_latestDisplayFrame = DisplayFrame();
+    if (m_displayManager) {
+        clearMeasurementOverlays();
+    }
+
     // 清空参数撤销栈和脏标记
     if (m_paramUndoStack) {
         m_paramUndoStack->clear();
@@ -2350,6 +2552,8 @@ void MainWindow::onProjectOpened(Project* project) {
     clearDataSourceViewports();
 
     // 清空现有流程树
+    // t28 F1：流程树 clear() 会删除 QTreeWidgetItem；先清空缓存指针，避免迟到信号使用悬空指针。
+    m_currentExecutingItem = nullptr;
     m_processTreeController->clear();
     if (m_flowCanvas) {
         m_flowCanvas->loadFromProject(nullptr);
@@ -2484,6 +2688,19 @@ void MainWindow::onProjectClosed() {
     setUiRunningState(false, false);
     m_isStepMode = false;
 
+    // 后台执行（设计 §7.3）：工程切换清空合并器待处理帧、最近帧与叠加，迟到帧不得污染新工程。
+    // 同时清空 RunEngine 的最新帧槽位（旧 (jobId,runId) 的迟到通知必须取不到可渲染帧）。
+    if (m_imageCoalescer) {
+        m_imageCoalescer->clearPending();
+        m_imageCoalescer->clearExpectedIdentity();
+    }
+    RunEngine::instance().clearLatestDisplayFrames();
+    m_hasDisplayFrame = false;
+    m_latestDisplayFrame = DisplayFrame();
+    if (m_displayManager) {
+        clearMeasurementOverlays();
+    }
+
     // P0: 先清空检查器，防止悬空模块指针
     m_selectedModuleId.clear();
     m_activeMeasurementInputId.clear();
@@ -2500,6 +2717,8 @@ void MainWindow::onProjectClosed() {
     m_dirtyModuleIds.clear();
     clearDataSourceViewports();
 
+    // t28 F1：clear() 删除流程树 item；先清空执行项缓存，避免迟到 moduleFinished 写悬空指针。
+    m_currentExecutingItem = nullptr;
     m_processTreeController->clear();
     if (m_flowCanvas) {
         m_flowCanvas->loadFromProject(nullptr);
@@ -2584,9 +2803,8 @@ void MainWindow::onViewportCreated(const QString& /*viewportId*/, ViewportWidget
             completeAgentQuickMeasurement();
     });
     // 关闭按钮：清空视口内容（单视口时不销毁）
-    connect(
-        viewport, &ViewportWidget::viewportClosed, this, [this](const QString& id) { closeViewportById(id); },
-        Qt::UniqueConnection);
+    disconnect(viewport, &ViewportWidget::viewportClosed, this, nullptr);
+    connect(viewport, &ViewportWidget::viewportClosed, this, [this](const QString& id) { closeViewportById(id); });
     // 高: 视口及其子控件也需要事件过滤器，双击进入焦点模式
     viewport->installEventFilter(this);
     if (viewport->imageWidget())
@@ -3947,6 +4165,14 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         return;
     }
 
+    // 后台执行（设计 §7.3）：测量叠加只消费当前 DisplayFrame.moduleDataSnapshot，
+    // 禁止回读 RunEngine::moduleOutput() 的实时输出（避免 A 帧图像搭配 B 轮结果）。
+    if (!m_hasDisplayFrame || !m_latestDisplayFrame.hasSnapshot()) {
+        clearMeasurementOverlays();
+        return;
+    }
+    const QMap<QString, QVariantMap>& snapshot = m_latestDisplayFrame.moduleDataSnapshot;
+
     // 以项目模型为实例身份权威来源，插件运行实例的名称字段可能为空。
     // 无法归属/无测量时统一清除叠加（含 3D 视口），避免旧支路叠加残留。
     Project* currentProject = ProjectManager::instance().currentProject();
@@ -4022,7 +4248,7 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         }
     }
     if (!chosen) {
-        const QString lastOutputModule = RunEngine::instance().lastOutputModuleName();
+        const QString lastOutputModule = m_latestDisplayFrame.moduleId;
         const QList<const ModuleInstance*> owners = owningInputs(lastOutputModule);
         if (owners.size() > 1) {
             clearMeasurementOverlays();
@@ -4044,10 +4270,10 @@ void MainWindow::updateMeasurementResultOnOverlay() {
     const QJsonObject inputParams = chosen->params;
 
     const QString mode = inputParams["mode"].toString("point_pair");
-    auto resultMatches = [&mode](const ImageData& candidate) {
-        const bool matchesPointSet = mode == QStringLiteral("point_set") && candidate.hasData("circle_radius");
-        const bool matchesDistance =
-            mode != QStringLiteral("point_set") && (candidate.hasData("distance") || candidate.hasData("gap_distance"));
+    auto resultMatches = [&mode](const QVariantMap& candidate) {
+        const bool matchesPointSet = mode == QStringLiteral("point_set") && candidate.contains("circle_radius");
+        const bool matchesDistance = mode != QStringLiteral("point_set") &&
+                                     (candidate.contains("distance") || candidate.contains("gap_distance"));
         return matchesPointSet || matchesDistance;
     };
 
@@ -4059,13 +4285,13 @@ void MainWindow::updateMeasurementResultOnOverlay() {
     //    （选中/最近执行节点）自身输出，其次沿所选支路整个下游链搜索；
     //    不回退全局 lastOutput()（避免混入另一支路结果）；
     //    共享下游（同时属于其它测量输入支路）的结果归属不唯一，跳过不采用。
-    ImageData resultOutput;
+    QVariantMap results;
     QString resultModuleId;
 
     auto tryAdoptOwnOutput = [&](const QString& moduleId) {
-        const ImageData own = RunEngine::instance().moduleOutput(moduleId);
+        const QVariantMap own = snapshot.value(moduleId);
         if (resultMatches(own)) {
-            resultOutput = own;
+            results = own;
             resultModuleId = moduleId;
             return true;
         }
@@ -4082,17 +4308,16 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         }
     } else if (preferredModuleId.isEmpty() || !tryAdoptOwnOutput(preferredModuleId)) {
         for (const QString& moduleId : downstreamOf(chosen->id)) {
-            const ImageData candidate = RunEngine::instance().moduleOutput(moduleId);
+            const QVariantMap candidate = snapshot.value(moduleId);
             if (!resultMatches(candidate))
                 continue;
             if (owningInputs(moduleId).size() > 1)
                 continue; // 结果节点同时属于其它测量支路，归属不唯一，跳过
-            resultOutput = candidate;
+            results = candidate;
             resultModuleId = moduleId;
             break;
         }
     }
-    const QMap<QString, QVariant> results = resultOutput.allData();
 
     auto resultValue = [&](const QStringList& keys) -> double {
         for (const QString& key : keys) {
@@ -4189,7 +4414,7 @@ void MainWindow::updateMeasurementResultOnOverlay() {
         if (l1.size() >= 4 && l2.size() >= 4) {
             double dist = resultValue({"distance"});
             if (dist >= 0) {
-                const QVariant nearestSegmentValue = resultOutput.data(QStringLiteral("nearest_segment"));
+                const QVariant nearestSegmentValue = results.value(QStringLiteral("nearest_segment"));
                 const QVariantList nearestSegment = nearestSegmentValue.toList();
                 if (nearestSegmentValue.isValid()) {
                     if (nearestSegment.size() == 4 &&
@@ -7908,19 +8133,19 @@ bool prepareUnsavedSwitch(QWidget* parent, const QString& title, ProjectManager:
 } // namespace
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-    RunEngine& engine = RunEngine::instance();
-    if (m_isCycleMode && engine.isBusy()) {
-        statusBar()->showMessage(tr("循环运行期间不能关闭窗口，请先停止循环"), 5000);
-        event->ignore();
-        return;
-    }
-    if (engine.isBusy()) {
+    FlowExecutionService& service = FlowExecutionService::instance();
+    // 后台执行（设计 §5.3 #7 / §8.1）：以 Service 状态判断是否有 job——Cycle 两轮之间
+    // 引擎可能已 Idle，但 Service 仍 Running。有 job 时只请求停止并忽略本次关闭，
+    // 由 jobFinished 再次触发 close；不得在 GUI 线程同步等待（gui 模块可能正阻塞回 GUI）。
+    if (service.isActive() || RunEngine::instance().isBusy()) {
         m_closeWhenRunFinishes = true;
-        engine.requestCancellation();
-        event->ignore();
-        if (!engine.isExecuting()) {
-            QTimer::singleShot(0, this, &QWidget::close);
+        if (service.isActive()) {
+            service.stop();
+        } else {
+            // 无 Service job 的同步引擎运行（CLI/测试兼容路径）：沿用取消请求。
+            RunEngine::instance().requestCancellation();
         }
+        event->ignore();
         return;
     }
     // 阶段1 §3：退出也是"关闭"路径——未保存修改须经用户三态决策；
@@ -7976,6 +8201,31 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     QMainWindow::closeEvent(event);
 }
 
+void MainWindow::showEvent(QShowEvent* event) {
+    QMainWindow::showEvent(event);
+    // 设计 §7.5：窗口由不可见变为可见时恢复帧捕获并强制 flush 最新帧。
+    updateDisplayCaptureForVisibility();
+    if (m_imageCoalescer && FlowExecutionService::instance().isActive()) {
+        m_imageCoalescer->forceFlush();
+    }
+}
+
+void MainWindow::hideEvent(QHideEvent* event) {
+    // 设计 §7.5：无显示消费者（不可见/最小化）时关闭帧捕获。
+    RunEngine::instance().setDisplayCaptureEnabled(false);
+    QMainWindow::hideEvent(event);
+}
+
+void MainWindow::changeEvent(QEvent* event) {
+    QMainWindow::changeEvent(event);
+    if (event && event->type() == QEvent::WindowStateChange) {
+        updateDisplayCaptureForVisibility();
+        if (isVisible() && !isMinimized() && m_imageCoalescer && FlowExecutionService::instance().isActive()) {
+            m_imageCoalescer->forceFlush();
+        }
+    }
+}
+
 void MainWindow::resizeEvent(QResizeEvent* event) {
     QMainWindow::resizeEvent(event);
     if (QToolBar* toolbar = findChild<QToolBar*>(QStringLiteral("MainToolBar"))) {
@@ -8006,7 +8256,8 @@ void MainWindow::displayImage(const ImageData& image, const QString& label, cons
         }
         return;
     }
-    if (image.toQImage().isNull()) {
+    // 设计 §7.4：移除额外的 toQImage() 空判断，避免与 DisplayManager 内部的转换重复。
+    if (!image.isValid()) {
         m_displayingModuleId.clear();
         m_displayingImage2D = false;
         return;
@@ -8347,7 +8598,8 @@ void MainWindow::updateBreakpointRunControls(bool paused) {
 
 void MainWindow::onRunOnce() {
     RunEngine& engine = RunEngine::instance();
-    if (engine.isPausedAtBreakpoint()) {
+    FlowExecutionService& service = FlowExecutionService::instance();
+    if (engine.isPausedAtBreakpoint() || service.state() == FlowExecutionService::State::Paused) {
         const QString permission =
             engine.runMode() == RunMode::RunCycle ? QStringLiteral("RunCycle") : QStringLiteral("RunOnce");
         if (!guiUserHasPermission(permission)) {
@@ -8355,7 +8607,10 @@ void MainWindow::onRunOnce() {
             return;
         }
         updateBreakpointRunControls(false);
-        engine.resume();
+        if (service.isActive())
+            service.continueRun();
+        else
+            engine.resume();
         return;
     }
     // 活跃运行时该按钮仍承担停止操作；安全停止不受启动权限门限制。
@@ -8385,7 +8640,8 @@ void MainWindow::onRunOnce() {
 
 void MainWindow::onRunCycle() {
     RunEngine& engine = RunEngine::instance();
-    if (engine.isPausedAtBreakpoint()) {
+    FlowExecutionService& service = FlowExecutionService::instance();
+    if (engine.isPausedAtBreakpoint() || service.state() == FlowExecutionService::State::Paused) {
         const QString permission =
             engine.runMode() == RunMode::RunCycle ? QStringLiteral("RunCycle") : QStringLiteral("RunOnce");
         if (!guiUserHasPermission(permission)) {
@@ -8393,10 +8649,13 @@ void MainWindow::onRunCycle() {
             return;
         }
         updateBreakpointRunControls(false);
-        engine.resume();
+        if (service.isActive())
+            service.continueRun();
+        else
+            engine.resume();
         return;
     }
-    if (!m_isRunning) {
+    if (!m_isRunning && !service.isActive()) {
         if (!guiUserHasPermission(QStringLiteral("RunCycle"))) {
             showGuiPermissionDenied(this, tr("循环运行"));
             return;
@@ -8428,16 +8687,18 @@ void MainWindow::onRunCycle() {
             m_pendingMeasurementCycleSessionId = sessionId;
             return;
         }
-        if (!RunEngine::instance().startCycle(&sessionId, 1, true, true)) {
+        if (!startRunThroughService(true)) {
             setUiRunningState(false, false);
             return;
         }
     }
-    // 已经在运行时，不做操作，保持循环模式
 }
 
 void MainWindow::onStepRun() {
-    if (m_isRunning) {
+    FlowExecutionService& service = FlowExecutionService::instance();
+    // 后台执行（设计 §8.1）：单步异步后由 Service 拒绝非 Idle 的重入；
+    // 快速连点只保持按钮状态，不排队第二次单步。
+    if (m_isRunning || service.isActive()) {
         return;
     }
     if (!guiUserHasPermission(QStringLiteral("RunOnce"))) {
@@ -8460,9 +8721,10 @@ void MainWindow::onStepRun() {
     setUiRunningState(true, false);
     m_isStepMode = true;
     Logger::instance().info(tr("单步执行"), "System");
-    if (!RunEngine::instance().stepOnce()) {
+    if (!service.stepOnce()) {
         setUiRunningState(false, false);
         m_isStepMode = false;
+        Logger::instance().warning(tr("单步请求被拒绝：后台已有 job"), "Run");
     }
 }
 
@@ -8477,11 +8739,83 @@ void MainWindow::onStop() {
     clearPendingMeasurementPick();
     setUiRunningState(false, false);
     m_isStepMode = false;
-    RunEngine::instance().stop();
+    // 后台执行（设计 §5.2/§8.1）：有 Service job 时走 job 级取消；否则回退引擎停止。
+    FlowExecutionService& service = FlowExecutionService::instance();
+    if (service.isActive()) {
+        service.stop();
+    } else {
+        RunEngine::instance().stop();
+    }
     Logger::instance().info(tr("停止"), "System");
 }
 
+bool MainWindow::startRunThroughService(bool cycleMode) {
+    if (!syncModulesToRunEngine()) {
+        Logger::instance().warning(tr("流程同步失败，无法运行"), "Run");
+        return false;
+    }
+    // 后台执行（设计 §7.1/§7.5）：UI 是显示消费者，窗口可见时开启帧捕获（最小化/不可见关闭）。
+    updateDisplayCaptureForVisibility();
+    if (m_imageCoalescer) {
+        m_imageCoalescer->clearPending();
+    }
+    FlowExecutionService& service = FlowExecutionService::instance();
+    const bool started = cycleMode ? service.startCycle() : service.startSingle();
+    if (!started) {
+        Logger::instance().warning(tr("启动请求被拒绝：后台已有 job 或引擎忙"), "Run");
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::finishRunUi() {
+    // 设计 §7.3：job 停止后不再接受迟到帧；待渲染帧在 jobFinished 前已 flush，这里清空残留。
+    if (m_imageCoalescer) {
+        m_imageCoalescer->clearPending();
+        m_imageCoalescer->clearExpectedIdentity();
+    }
+    setUiRunningState(false, false);
+    m_isStepMode = false;
+    updateBreakpointRunControls(false);
+    if (m_closeWhenRunFinishes) {
+        // jobFinished 到达时 Service 已提交 Idle：此时重试关闭不会再次被 ignore。
+        m_closeWhenRunFinishes = false;
+        QTimer::singleShot(0, this, &QWidget::close);
+    }
+}
+
+void MainWindow::renderDisplayFrame(const DisplayFrame& frame) {
+    // 设计 §7.2/§7.3：合并器是唯一的大图刷新入口；叠加只读帧内快照，禁止回读实时 moduleOutput。
+    if (frame.runId != RunEngine::instance().lastRunId())
+        return;
+    m_latestDisplayFrame = frame;
+    m_hasDisplayFrame = true;
+    if (frame.hasImage() && m_displayManager) {
+        m_displayingModuleId = frame.moduleId;
+        m_displayingImage2D = true;
+        // 后台/周期刷新保留用户缩放与 ROI（设计 §7.4）。
+        ImageData image(frame.image);
+        image.setCoordinateProvenance(frame.coordinateProvenance);
+        DisplayData display(image);
+        display.setViewportId(frame.viewportId);
+        m_displayManager->displayData(display, 0, /*preserveView=*/true);
+    }
+    if (frame.hasSnapshot()) {
+        updateMeasurementResultOnOverlay();
+    } else {
+        // 中间帧无同轮快照：清除叠加，避免 A 帧图像搭配 B 轮结果（设计 §7.3）。
+        clearMeasurementOverlays();
+    }
+}
+
+void MainWindow::updateDisplayCaptureForVisibility() {
+    // 设计 §7.5：窗口不可见/最小化或没有显示消费者时关闭帧捕获，工作线程不做快照与合并调度。
+    RunEngine::instance().setDisplayCaptureEnabled(isVisible() && !isMinimized());
+}
+
 void MainWindow::executeFlowOnce() {
+    if (FlowExecutionService::instance().isActive())
+        return;
     resetFlowRunPresentation();
 
     // 如果没有模块，直接返回
@@ -8492,12 +8826,9 @@ void MainWindow::executeFlowOnce() {
         return;
     }
 
-    if (!syncModulesToRunEngine()) {
-        return;
-    }
-
-    // 委托给 RunEngine 执行
-    RunEngine::instance().runOnce();
+    // 通过后台服务执行，统一在启动入口同步工程。
+    if (!startRunThroughService(false))
+        setUiRunningState(false, false);
 }
 
 void MainWindow::resetFlowRunPresentation() {
@@ -8547,6 +8878,9 @@ void MainWindow::applyAgentSettings(const AgentSettingsDialog& dialog) {
     client->setToolsEnabled(dialog.toolsEnabled());
     client->setVisionEnabled(dialog.visionEnabled());
     client->setThinkingEnabled(dialog.thinkingEnabled());
+    client->setStreamEnabled(dialog.streamEnabled());
+    client->setReasoningEffort(dialog.reasoningEffort());
+    client->setImageDetail(dialog.imageDetail());
     ctrl.setSystemPrompt(dialog.systemPrompt());
 }
 
@@ -8928,6 +9262,27 @@ QIcon MainWindow::createIcon(const QString& name) {
 
 void MainWindow::loadAgentSettings() {
     ConfigManager& cfg = ConfigManager::instance();
+    // 视口图像提供者（设计 §4.5）：优先主数据源视口当前图，回退上次流程输出。
+    // 回调在 capture_viewport_image 调用时才求值；即使配置未初始化也必须注入。
+    if (AgentActor* actor = AgentController::instance().actor()) {
+        // QPointer 守卫：AgentController 是进程级单例，MainWindow 可能先于它析构
+        QPointer<MainWindow> guard(this);
+        actor->setViewportImageProvider([guard](QString* error) -> QImage {
+            if (guard) {
+                if (ViewportWidget* viewport = guard->primaryDataSourceViewport()) {
+                    const QImage image = viewport->currentImage();
+                    if (!image.isNull())
+                        return image;
+                }
+            }
+            const ImageData lastOutput = RunEngine::instance().lastOutput();
+            if (lastOutput.isValid())
+                return lastOutput.toQImage();
+            if (error)
+                *error = QStringLiteral("No image available in the viewport");
+            return {};
+        });
+    }
     if (!cfg.isInitialized())
         return;
 
@@ -8944,13 +9299,34 @@ void MainWindow::loadAgentSettings() {
         OpenAILLMClient* client = new OpenAILLMClient(&ctrl);
         client->setEndpoint(cfg.groupString("agent", "endpoint", "https://api.openai.com/v1/chat/completions"));
         client->setApiKey(apiKey);
-        client->setModel(cfg.groupString("agent", "model", "gpt-4o"));
+        const QString configuredModel = cfg.groupString("agent", "model", "gpt-4o");
+        client->setModel(configuredModel);
         client->setTemperature(cfg.groupDouble("agent", "temperature", 0.3));
         client->setMaxTokens(cfg.groupInt("agent", "maxTokens", 4096));
         client->setToolsEnabled(cfg.groupBool("agent", "toolsEnabled", true));
-        client->setVisionEnabled(cfg.groupBool("agent", "visionEnabled", true));
-        client->setReasoningEffort(cfg.groupString("agent", "reasoningEffort", ""));
-        client->setThinkingEnabled(cfg.groupBool("agent", "thinkingEnabled", false));
+        // L3：visionEnabled 缺省时用模型名启发式（不写回配置，避免把猜测变成用户设置）
+        if (cfg.containsGroupKey("agent", "visionEnabled"))
+            client->setVisionEnabled(cfg.groupBool("agent", "visionEnabled", true));
+        else
+            client->setVisionEnabled(OpenAILLMClient::heuristicSupportsVision(configuredModel));
+        const bool deepSeekFlash = OpenAILLMClient::isDeepSeekFlashModel(configuredModel);
+        client->setReasoningEffort(
+            cfg.groupString("agent", "reasoningEffort", deepSeekFlash ? QStringLiteral("high") : QString()));
+        client->setThinkingEnabled(cfg.groupBool("agent", "thinkingEnabled", deepSeekFlash));
+        client->setImageDetail(cfg.groupString("agent", "imageDetail", QStringLiteral("original")));
+        // 第二迭代：流式开关与 reasoning 回传策略（设计 §4.1/§3.7）
+        client->setStreamEnabled(cfg.groupBool("agent", "streamEnabled", true));
+        // R3：三个流式配置键注入（client setter 内部按 §3.6 clamp）
+        client->setStreamIncludeUsage(cfg.groupBool("agent", "streamIncludeUsage", false));
+        client->setStreamIdleTimeoutMs(cfg.groupInt("agent", "streamIdleTimeoutMs", 60000));
+        client->setStreamMaxDurationMs(cfg.groupInt("agent", "streamMaxDurationMs", 600000));
+        const QString reasoningEcho = cfg.groupString("agent", "reasoningEcho", "none").trimmed().toLower();
+        if (reasoningEcho == QStringLiteral("full"))
+            client->setReasoningEcho(ReasoningEcho::Full);
+        else if (reasoningEcho == QStringLiteral("current-turn"))
+            client->setReasoningEcho(ReasoningEcho::CurrentTurn);
+        else
+            client->setReasoningEcho(ReasoningEcho::None);
         ctrl.setLLMClient(client);
     }
 

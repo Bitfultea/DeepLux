@@ -4,14 +4,20 @@
 #include "../platform/Platform.h"
 
 #include <QJsonArray>
+#include <QHash>
+#include <QImage>
 #include <QJsonObject>
 #include <QMap>
+#include <QPointer>
+#include <functional>
+#include <memory>
 #include <QObject>
 #include <QStringList>
 #include <QUndoStack>
 
 namespace DeepLux {
 
+class AgentRunWaiter;
 class Project;
 class AgentController;
 
@@ -54,12 +60,23 @@ public:
         QJsonObject annotationTransformSnapshot = {};     // per-call confirmed source and new-session snapshot
     };
 
+    using BatchGate = std::function<QString(int index, const QString& toolName, const QJsonObject& params)>;
+
     // 批量执行（支持 macro undo）；callId 贯穿结果，遇错停止后未执行项补
     // SKIPPED_DUE_TO_PREVIOUS_ERROR 结果，参数校验失败同样保留全部 callId
     QJsonObject executeTools(const QList<ToolInvocation>& tools, const QString& macroName);
 
     // 兼容入口：无 callId 的旧调用方（callId 自动生成 "auto_N"）
     QJsonObject executeTools(const QList<QPair<QString, QJsonObject>>& tools, const QString& macroName);
+    QJsonObject executeTools(const QList<QPair<QString, QJsonObject>>& tools, const QString& macroName,
+                             const BatchGate& gate);
+    static bool resultSucceeded(const QJsonObject& result);
+    static QString resultFailureCode(const QJsonObject& result);
+    QStringList supportedTools() const;
+    bool toolUndoable(const QString& toolName) const;
+    using ViewportImageProvider = std::function<QImage(QString* error)>;
+    void setViewportImageProvider(ViewportImageProvider provider);
+    void abortRunningTool();
 
     QUndoStack* undoStack() const {
         return m_undoStack;
@@ -96,6 +113,32 @@ signals:
 
 private:
     friend class AgentController;
+
+    struct ToolHandler {
+        std::function<QJsonObject(const QJsonObject&)> fn;
+        bool mutatesProject = false;
+        bool undoable = false;
+    };
+    struct RunWaitResult {
+        bool started = false;
+        bool finished = false;
+        bool timedOut = false;
+        bool aborted = false;
+        bool pausedAtBreakpoint = false;
+        bool pausedByUser = false;
+        bool startFailed = false;
+        QString startError;
+        bool reentrant = false;
+        bool rejectedStart = false;
+        bool ok = false;
+        int elapsedMs = 0;
+        int totalRuns = 0;
+        int successRuns = 0;
+        QString failedModule;
+        QString error;
+    };
+    void buildHandlers();
+    QJsonObject executeToolInternal(const QString& toolName, const QJsonObject& params);
 
     void bindConfirmedResumeSnapshot(const QString& runId, const QString& sessionId, int state,
                                      int lifecycleGeneration);
@@ -156,6 +199,15 @@ private:
     QJsonObject importDataSource(const QJsonObject& params, const QJsonObject& confirmedSnapshot,
                                  const QString& callId);
     QJsonObject getAnnotationSession(const QJsonObject& params);
+    QJsonObject validateWorkflow(const QJsonObject& params);
+    QJsonObject getNodeRuntimeOutputs(const QJsonObject& params);
+    QJsonObject getExecutionLogs(const QJsonObject& params);
+    QJsonObject tuneNodeAndVerify(const QJsonObject& params);
+    QJsonObject captureViewportImage(const QJsonObject& params);
+    QJsonObject exportNodeOutput(const QJsonObject& params);
+    bool ensureEngineLoaded(QString* error, bool forceReload = false);
+    bool engineMatchesProject(const Project* project) const;
+    RunWaitResult runAndWait(const QString& mode, int timeoutMs, bool forceReload);
     // SAM 批3：Agent 工具化 SAM（共享 SamPredictor 同步预测核心）
     QJsonObject samPredict(const QJsonObject& params);
     QJsonObject samAnnotate(const QJsonObject& params);
@@ -177,6 +229,10 @@ private:
     QMap<QString, QJsonObject> m_schemaCache; // 插件加载/卸载时失效（评审 P2-7）
     QString m_stepProjectId;
     QByteArray m_stepProjectFingerprint;
+    QHash<QString, ToolHandler> m_handlers;
+    std::unique_ptr<AgentRunWaiter> m_runWaiter;
+    ViewportImageProvider m_viewportImageProvider;
+    bool m_engineProjectDirty = true;
 };
 
 } // namespace DeepLux

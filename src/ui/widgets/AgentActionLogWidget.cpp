@@ -25,14 +25,16 @@ void AgentActionLogWidget::setupUi() {
 
     m_table = new QTableWidget(this);
     m_table->setObjectName("AgentActionLogTable");
-    m_table->setColumnCount(5);
-    m_table->setHorizontalHeaderLabels(QStringList()
-                                       << tr("时间") << tr("主体") << tr("动作") << tr("结果") << tr("参数"));
+    m_table->setColumnCount(7);
+    m_table->setHorizontalHeaderLabels(QStringList() << tr("时间") << tr("主体") << tr("动作") << tr("耗时")
+                                                     << tr("结果") << tr("错误类别") << tr("参数"));
     m_table->horizontalHeader()->setStretchLastSection(true);
     m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setAlternatingRowColors(true);
@@ -69,8 +71,11 @@ void AgentActionLogWidget::addEntry(const AgentActionLogEntry& entry) {
     m_table->setItem(row, 0, new QTableWidgetItem(entry.timestamp.toString("hh:mm:ss")));
     m_table->setItem(row, 1, new QTableWidgetItem(entry.actor));
     m_table->setItem(row, 2, new QTableWidgetItem(entry.action));
-    m_table->setItem(row, 3, new QTableWidgetItem(entry.result));
-    m_table->setItem(row, 4, new QTableWidgetItem(entry.params));
+    m_table->setItem(
+        row, 3, new QTableWidgetItem(entry.durationMs >= 0 ? tr("%1 ms").arg(entry.durationMs) : QStringLiteral("—")));
+    m_table->setItem(row, 4, new QTableWidgetItem(entry.result));
+    m_table->setItem(row, 5, new QTableWidgetItem(entry.errorCategory));
+    m_table->setItem(row, 6, new QTableWidgetItem(entry.params));
 
     m_table->scrollToBottom();
 }
@@ -78,7 +83,7 @@ void AgentActionLogWidget::addEntry(const AgentActionLogEntry& entry) {
 void AgentActionLogWidget::updateEntryResult(int row, const QString& result) {
     if (row < 0 || row >= m_table->rowCount())
         return;
-    m_table->setItem(row, 3, new QTableWidgetItem(result));
+    m_table->setItem(row, 4, new QTableWidgetItem(result));
     if (row < m_entries.size()) {
         m_entries[row].result = result;
     }

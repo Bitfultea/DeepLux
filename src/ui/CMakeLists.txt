@@ -25,6 +25,7 @@ set(UI_SOURCES
     bridge/TerminalBridge.cpp
     process/BashProcess.cpp
     display/DisplayManager.cpp
+    display/ImageRefreshCoalescer.cpp
     display/IViewportContent.cpp
     display/Viewport2DContent.cpp
     display/3d/Viewport3DContent.cpp
@@ -74,6 +75,7 @@ set(UI_HEADERS
     process/BashProcess.h
     process/PtyImpl.h
     display/DisplayManager.h
+    display/ImageRefreshCoalescer.h
     display/IViewportContent.h
     display/Viewport2DContent.h
     display/3d/Viewport3DContent.h
@@ -139,6 +141,9 @@ set_target_properties(deeplux_ui PROPERTIES
     SOVERSION ${PROJECT_VERSION_MAJOR}
     OUTPUT_NAME deeplux_ui
 )
+if(UNIX AND NOT APPLE)
+    set_target_properties(deeplux_ui PROPERTIES INSTALL_RPATH "$ORIGIN")
+endif()
 
 install(TARGETS deeplux_ui
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

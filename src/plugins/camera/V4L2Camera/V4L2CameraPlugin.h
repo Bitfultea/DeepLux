@@ -15,7 +15,7 @@ namespace DeepLux {
 /**
  * @brief V4L2 相机插件 - 使用 Video4Linux2 枚举和访问相机
  */
-class V4L2CameraPlugin : public ICameraPlugin, public ICameraDiscoveryAsync {
+class DEEPLUX_PLUGIN_API V4L2CameraPlugin : public ICameraPlugin, public ICameraDiscoveryAsync {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.ICameraPlugin" FILE "metadata.json")
     Q_INTERFACES(DeepLux::ICameraPlugin DeepLux::ICameraDiscoveryAsync)

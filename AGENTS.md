@@ -9,7 +9,8 @@ DeepLux is a C++17 Qt machine-vision application. Core application entry points 
 Configure a local build with Qt and tests enabled:
 
 ```bash
-cmake -S . -B build -DDEEPLUX_QT_PATH=/path/to/Qt/6.6.0/gcc_64 -DBUILD_TESTS=ON
+cmake -S . -B build -DDEEPLUX_QT_PATH=/path/to/Qt/6.6.0/gcc_64 -DBUILD_TESTS=ON \
+  -DONNXRUNTIME_DIR=/path/to/onnxruntime
 ```
 
 Build everything:
@@ -30,7 +31,10 @@ Sync rebuilt plugin libraries into `~/.deeplux/plugins` when testing plugin load
 cmake --build build --target sync-plugins
 ```
 
-Launch the app or CLI from the build output, for example `./build/bin/DeepLux --gui` or `./scripts/deeplux help`. OpenCV is required (CMake configure fails without it); Halcon Runtime and camera SDKs are optional.
+Windows（MSVC）的构建、插件同步、CTest 与 windeployqt 打包流程见
+[docs/windows-build.md](docs/windows-build.md)。
+
+Launch the app or CLI from the build output, for example `./build/bin/DeepLux --gui` or `./scripts/deeplux help`. OpenCV is required. Native SAM is enabled by default and requires the ONNX Runtime SDK; pass `-DDEEPLUX_NATIVE_SAM=OFF` to build without it. Halcon Runtime and camera SDKs are optional.
 
 ## Coding Style & Naming Conventions
 

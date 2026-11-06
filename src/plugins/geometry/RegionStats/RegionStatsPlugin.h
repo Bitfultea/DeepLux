@@ -11,7 +11,7 @@ namespace DeepLux {
  * shoelace，polygon 不足 3 点时回退 bbox 面积）、外接矩形、质心、点数、
  * 置信度与标签，验证 Region2D 契约在主流程中可被下游消费。
  */
-class RegionStatsPlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API RegionStatsPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)

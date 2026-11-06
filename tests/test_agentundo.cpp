@@ -2,6 +2,7 @@
 #include "core/agent/AgentController.h"
 #include "core/agent/ToolSchema.h"
 #include "core/common/UserManager.h"
+#include "core/model/Project.h"
 #include "manager/ProjectManager.h"
 #include "model/Project.h"
 
@@ -42,7 +43,7 @@ private slots:
         QVERIFY(ProjectManager::instance().currentProject() != nullptr);
     }
 
-    void testBatchExecutionMacro() {
+    void testBatchRenameAndNoteMacroUndo() {
         AgentActor actor;
         Project* project = ProjectManager::instance().newProject();
         QVERIFY(project);
@@ -53,12 +54,10 @@ private slots:
         instance.note = QStringLiteral("original note");
         project->addModule(instance);
 
-        QList<QPair<QString, QJsonObject>> tools;
-        tools.append(
-            qMakePair(QString("rename_module"), QJsonObject{{"instanceId", instance.id}, {"name", "Renamed"}}));
-        tools.append(
-            qMakePair(QString("set_module_note"), QJsonObject{{"instanceId", instance.id}, {"note", "updated note"}}));
-
+        const QList<QPair<QString, QJsonObject>> tools{
+            qMakePair(QString("rename_module"), QJsonObject{{"instanceId", instance.id}, {"name", "Renamed"}}),
+            qMakePair(QString("set_module_note"), QJsonObject{{"instanceId", instance.id}, {"note", "updated note"}}),
+        };
         const int initialCount = actor.undoStack()->count();
         const int initialIndex = actor.undoStack()->index();
         const QJsonObject result = actor.executeTools(tools, "Test macro");
@@ -75,6 +74,43 @@ private slots:
         QCOMPARE(actor.undoStack()->index(), initialIndex);
         QCOMPARE(project->moduleById(instance.id)->name, QStringLiteral("Before"));
         QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("original note"));
+    }
+
+    // B2：工程切换会终止旧批次，后续编辑不得落入旧撤销宏。
+    void testProjectSwitchStopsBatchBeforeMacroEdits() {
+        AgentActor actor;
+        const QList<QPair<QString, QJsonObject>> tools{
+            qMakePair(QString("create_project"), QJsonObject{{"name", "BatchSwitch"}}),
+            qMakePair(QString("add_module"), QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "stale"}}),
+        };
+        const QJsonObject result = actor.executeTools(tools, "Test switch");
+        QCOMPARE(result.value(QStringLiteral("failedCode")).toString(), QStringLiteral("project_switched"));
+        QCOMPARE(actor.undoStack()->count(), 0);
+        QVERIFY(ProjectManager::instance().currentProject() != nullptr);
+        QCOMPARE(ProjectManager::instance().currentProject()->modules().size(), 0);
+    }
+
+    void testBatchExecutionMacro() {
+        AgentActor actor;
+        QVERIFY(!actor.executeTool("create_project", QJsonObject{{"name", "BatchTest"}}).contains("error"));
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+        ModuleInstance first;
+        first.id = QStringLiteral("macro_a");
+        first.moduleId = QStringLiteral("GrabImage");
+        project->addModule(first);
+        ModuleInstance second;
+        second.id = QStringLiteral("macro_b");
+        second.moduleId = QStringLiteral("GrabImage");
+        project->addModule(second);
+
+        const QList<QPair<QString, QJsonObject>> tools{
+            qMakePair(QString("remove_module"), QJsonObject{{"instanceId", "macro_a"}}),
+            qMakePair(QString("remove_module"), QJsonObject{{"instanceId", "macro_b"}}),
+        };
+        const QJsonObject result = actor.executeTools(tools, "Test macro");
+        QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+        QVERIFY(actor.undoStack()->count() > 0);
     }
 
     void testControllerUndoLastAgentAction() {

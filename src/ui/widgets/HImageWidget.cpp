@@ -22,17 +22,17 @@ HImageWidget::HImageWidget(QWidget* parent) : QWidget(parent) {
 
 HImageWidget::~HImageWidget() {}
 
-void HImageWidget::setImage(const QImage& image) {
+void HImageWidget::setImage(const QImage& image, bool preserveView) {
     ImageCoordinateProvenance provenance;
     if (!image.isNull()) {
         provenance.sourceImageId = QUuid::createUuid().toString(QUuid::WithoutBraces);
         provenance.sourceSize = image.size();
     }
-    setImage(image, provenance);
+    setImage(image, provenance, preserveView);
 }
 
-void HImageWidget::setImage(const QImage& image, const ImageCoordinateProvenance& provenance) {
-    cancelPendingPointerInput();
+void HImageWidget::setImage(const QImage& image, const ImageCoordinateProvenance& provenance, bool preserveView) {
+    cancelPendingPointerInput(preserveView);
     const bool hadImage = m_hasImage;
     m_image = image;
     m_hasImage = !image.isNull();
@@ -41,7 +41,11 @@ void HImageWidget::setImage(const QImage& image, const ImageCoordinateProvenance
     if (m_hasImage) {
         m_imageWidth = image.width();
         m_imageHeight = image.height();
-        fitToWindow();
+        // 设计 §7.4：后台/周期刷新保留 zoom/offset（不重置 ROI/叠加）；
+        // 首次显示、resize、显式适配与模块选择仍走 fit（preserveView=false）。
+        if (!preserveView || !hadImage) {
+            fitToWindow();
+        }
         emit imageLoaded(image);
     } else {
         m_imageWidth = 0;
@@ -71,12 +75,13 @@ void HImageWidget::clearImage() {
         emit imageCleared();
 }
 
-void HImageWidget::cancelPendingPointerInput() {
+void HImageWidget::cancelPendingPointerInput(bool preservePan) {
     const bool wasPanning = m_isPanning;
     m_clickIsLeftButton = false;
     m_isDrawing = false;
-    m_isPanning = false;
-    if (wasPanning)
+    if (!preservePan)
+        m_isPanning = false;
+    if (wasPanning && !preservePan)
         unsetCursor();
     update();
 }

@@ -16,7 +16,7 @@ namespace DeepLux {
 // 下降/上升沿。未找到合格拐角时按契约输出 measureFailValue 且
 // gap_found=false（真实反映"未检出"，非伪成功）；is_pass = 检出且宽度 <=
 // specUpperLimit；roiLength 公开与执行下限统一为 5。
-class GapMeasure3DPlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API GapMeasure3DPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)

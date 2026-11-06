@@ -1,3 +1,4 @@
+#include "core/agent/SamNativeSettings.h"
 #include "core/common/CLIHandler.h"
 #include "core/manager/ConfigManager.h"
 #include "core/manager/PluginManager.h"
@@ -7,6 +8,7 @@
 #include "ui/views/MainWindow.h"
 
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDebug>
 #include <QFile>
 #include <QIcon>
@@ -167,6 +169,12 @@ int main(int argc, char* argv[]) {
 
     // 如果有 CLI 选项或子命令且不是强制 GUI 模式，使用 CLI
     if ((hasCLIOptions || hasCommand) && !args.contains("--gui") && !args.contains("-g")) {
+        QCoreApplication app(argc, argv);
+        app.setApplicationName("DeepLux");
+#ifdef Q_OS_WIN
+        // Windows 上让 CLI/GUI 共享同一 QSettings 位置；Linux 保持既有 CLI 行为。
+        app.setOrganizationName("DeepLux");
+#endif
         // 初始化必要的管理器
         initAppDirectories();
         ProjectManager::instance();
@@ -176,10 +184,12 @@ int main(int argc, char* argv[]) {
     }
 
     // 否则启动 GUI 模式
+#ifdef Q_OS_LINUX
     // NVIDIA GLX 驱动有 Bug (X_GLXCreateContext BadValue), 强制用 Mesa 软件渲染
     if (qEnvironmentVariableIsEmpty("__GLX_VENDOR_LIBRARY_NAME")) {
         qputenv("__GLX_VENDOR_LIBRARY_NAME", "mesa");
     }
+#endif
 
     QSurfaceFormat glFormat;
     glFormat.setVersion(2, 1);
@@ -202,6 +212,7 @@ int main(int argc, char* argv[]) {
 
     // 初始化管理器
     DeepLux::ConfigManager::instance().initialize();
+    DeepLux::SamNativeSettings::initialize();
     DeepLux::ProjectManager::instance();
 
     if (!checkOpenCV()) {

@@ -4,7 +4,7 @@
 
 namespace DeepLux {
 
-class ParallelPlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API ParallelPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
@@ -47,7 +47,7 @@ private:
     int m_parallelCount = 2;
 };
 
-class ParallelEndPlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API ParallelEndPlugin : public ModuleBase {
     Q_OBJECT
 
 public:

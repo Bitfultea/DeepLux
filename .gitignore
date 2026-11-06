@@ -2,6 +2,7 @@
 build/
 build_*/
 build-*/
+dist/
 claude/
 cmake-build-*/
 out/
@@ -116,3 +117,6 @@ docs/baseline/agent-phase-8-while-contract.md
 .claude/
 docs/baseline/agent-phase-*-slice-*-contract.md
 docs/baseline/agent-phase-*-operation-evidence-slice-*-contract.md
+
+# Agent team runtime state (local only)
+.agent-teams/

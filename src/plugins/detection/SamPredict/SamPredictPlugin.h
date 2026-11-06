@@ -13,7 +13,7 @@ namespace DeepLux {
  * SamPredictor（与 Agent sam_predict/sam_annotate 工具同一实现）；超时、
  * 后端错误或引擎取消（stop）失败关闭；mask 像素不入载荷（仅 RLE）。
  */
-class SamPredictPlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API SamPredictPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)

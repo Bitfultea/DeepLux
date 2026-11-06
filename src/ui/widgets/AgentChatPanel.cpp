@@ -147,6 +147,18 @@ void AgentChatPanel::setupUi() {
     m_sendButton->setAccessibleName(tr("发送消息"));
     connect(m_sendButton, &QToolButton::clicked, this, &AgentChatPanel::onSendClicked);
     inputLayout->addWidget(m_sendButton, 0, Qt::AlignBottom);
+    // 停止按钮（设计 §5.6）：仅在思考/执行中可见，点击请求控制器中止当前轮
+    m_stopButton = new QToolButton(composer);
+    m_stopButton->setObjectName("AgentStopMessage");
+    m_stopButton->setFixedSize(30, 30);
+    m_stopButton->setToolTip(tr("停止当前轮"));
+    m_stopButton->setAccessibleName(tr("停止当前轮"));
+    connect(m_stopButton, &QToolButton::clicked, this, [this]() {
+        m_stopButton->setEnabled(false); // 连点保护：等待控制器回 agentTurnAborted
+        emit stopRequested();
+    });
+    m_stopButton->hide();
+    inputLayout->addWidget(m_stopButton, 0, Qt::AlignBottom);
     main->addWidget(composer);
 
     m_thinkingTimer = new QTimer(this);
@@ -196,8 +208,134 @@ void AgentChatPanel::addMessage(AgentMessageBubble::Sender sender, const QString
 }
 
 void AgentChatPanel::appendToLastMessage(const QString& text) {
+    // 流式期间内部转向 appendStreamContent，避免两条追加路径打架（设计 §5.5）
+    if (m_streamActive) {
+        appendStreamContent(text);
+        return;
+    }
     if (m_lastAgentBubble)
         m_lastAgentBubble->appendText(text);
+}
+
+// ---------- 流式气泡（设计 §5.5） ----------
+
+void AgentChatPanel::beginAgentStream() {
+    if (m_streamActive && m_streamBubble)
+        return;
+    m_streamBubble =
+        new AgentMessageBubble(AgentMessageBubble::Sender::Agent, QString(), m_isDark, m_messagesContainer);
+    m_streamBubble->setReasoningStreaming(true);
+    insertMessage(m_streamBubble);
+    m_streamActive = true;
+    m_stopped = false;
+    updateStatusStrip();
+    if (m_followTail) {
+        QTimer::singleShot(0, this, [this]() { scrollToBottom(); });
+    }
+}
+
+void AgentChatPanel::appendStreamContent(const QString& text) {
+    if (!m_streamActive || !m_streamBubble)
+        beginAgentStream();
+    if (!m_streamBubble)
+        return;
+    m_streamBubble->appendText(text);
+    m_lastAgentBubble = m_streamBubble;
+    if (m_followTail) {
+        QTimer::singleShot(0, this, [this]() { scrollToBottom(); });
+    }
+}
+
+void AgentChatPanel::appendStreamReasoning(const QString& text) {
+    if (!m_streamActive || !m_streamBubble)
+        beginAgentStream();
+    if (!m_streamBubble)
+        return;
+    m_streamBubble->appendReasoning(text);
+    if (m_followTail) {
+        QTimer::singleShot(0, this, [this]() { scrollToBottom(); });
+    }
+}
+
+void AgentChatPanel::finalizeStreamedMessage(const QString& finalContent) {
+    if (!m_streamBubble) {
+        m_streamActive = false;
+        return;
+    }
+    m_streamBubble->setReasoningStreaming(false);
+    const bool hasReasoning = !m_streamBubble->reasoningText().isEmpty();
+    if (finalContent.trimmed().isEmpty() && !hasReasoning) {
+        // 仅 tool_calls / 无正文：移除空气泡，不增加消息计数（设计 §5.4/§9.1 #19）
+        m_messagesLayout->removeWidget(m_streamBubble);
+        if (m_lastAgentBubble == m_streamBubble)
+            m_lastAgentBubble = nullptr;
+        m_streamBubble->deleteLater();
+    } else {
+        if (!finalContent.isEmpty())
+            m_streamBubble->setText(finalContent); // 以终态文本为准（§5.5 U5）
+        ++m_messageCount;
+        m_lastAgentBubble = m_streamBubble;
+    }
+    m_streamBubble = nullptr;
+    m_streamActive = false;
+    if (m_followTail) {
+        QTimer::singleShot(0, this, [this]() { scrollToBottom(); });
+    }
+    updateStatusStrip();
+}
+
+void AgentChatPanel::failStreamedMessage(const QString& note) {
+    if (!m_streamBubble) {
+        m_streamActive = false;
+        return;
+    }
+    m_streamBubble->setReasoningStreaming(false);
+    const bool hasContent = !m_streamBubble->text().isEmpty() || !m_streamBubble->reasoningText().isEmpty();
+    if (!hasContent) {
+        m_messagesLayout->removeWidget(m_streamBubble);
+        if (m_lastAgentBubble == m_streamBubble)
+            m_lastAgentBubble = nullptr;
+        m_streamBubble->deleteLater();
+    } else {
+        m_streamBubble->appendText(QStringLiteral("\n\n_%1_").arg(note));
+        ++m_messageCount;
+        m_lastAgentBubble = m_streamBubble;
+    }
+    m_streamBubble = nullptr;
+    m_streamActive = false;
+    setThinking(false);
+    updateStatusStrip();
+}
+
+void AgentChatPanel::abortStreamedMessage(const QString& note) {
+    if (!m_streamBubble) {
+        m_streamActive = false;
+        return;
+    }
+    m_streamBubble->setReasoningStreaming(false);
+    const bool hasContent = !m_streamBubble->text().isEmpty() || !m_streamBubble->reasoningText().isEmpty();
+    if (hasContent) {
+        // 保留已收内容 + 追加"已停止"标记（设计 §5.4/§6.1）
+        m_streamBubble->appendText(QStringLiteral("\n\n_%1_").arg(note));
+        ++m_messageCount;
+        m_lastAgentBubble = m_streamBubble;
+    } else {
+        m_messagesLayout->removeWidget(m_streamBubble);
+        if (m_lastAgentBubble == m_streamBubble)
+            m_lastAgentBubble = nullptr;
+        m_streamBubble->deleteLater();
+    }
+    m_streamBubble = nullptr;
+    m_streamActive = false;
+    updateStatusStrip();
+}
+
+void AgentChatPanel::setLastAgentReasoning(const QString& reasoning) {
+    if (!m_lastAgentBubble || reasoning.isEmpty())
+        return;
+    // R1：非流式/回退响应的 reasoning 也进折叠块；正文保持不含 reasoning
+    m_lastAgentBubble->setReasoning(reasoning);
+    m_lastAgentBubble->setReasoningStreaming(false);
 }
 
 void AgentChatPanel::addImageAttachment(const QPixmap& pixmap) {
@@ -266,6 +404,7 @@ void AgentChatPanel::showToolPreview(const QList<AgentToolPreviewCard::ToolItem>
         return;
     clearToolPreview();
     m_emptyLabel->hide();
+    m_stopped = false;
     m_pendingToolCount = tools.size();
     m_previewCard = new AgentToolPreviewCard(tools, m_isDark, m_messagesContainer, context);
     m_messagesLayout->insertWidget(m_messagesLayout->count() - 1, m_previewCard);
@@ -300,11 +439,44 @@ void AgentChatPanel::setThinking(bool thinking) {
     m_isThinking = thinking;
     m_isThinkingTimeout = false;
     m_error.clear();
-    if (thinking)
+    if (thinking) {
+        m_stopped = false;
+        m_isExecuting = false;
         m_thinkingTimer->start(60000);
-    else
+    } else {
         m_thinkingTimer->stop();
+    }
     updateStatusStrip();
+}
+
+void AgentChatPanel::setExecuting(bool executing) {
+    m_isExecuting = executing;
+    if (executing) {
+        m_stopped = false;
+        m_isThinking = false;
+        m_error.clear();
+        m_thinkingTimer->stop();
+    }
+    updateStatusStrip();
+}
+
+void AgentChatPanel::setStopped() {
+    m_stopped = true;
+    m_isThinking = false;
+    m_isExecuting = false;
+    m_isThinkingTimeout = false;
+    m_error.clear();
+    m_thinkingTimer->stop();
+    updateStatusStrip();
+}
+
+void AgentChatPanel::updateStopButton() {
+    if (!m_stopButton)
+        return;
+    const bool stoppable = m_isThinking || m_isExecuting || m_pendingToolCount > 0;
+    m_stopButton->setVisible(stoppable);
+    m_stopButton->setEnabled(stoppable);
+    m_stopButton->setToolTip(tr("停止当前轮"));
 }
 
 void AgentChatPanel::setError(const QString& error) {
@@ -319,8 +491,8 @@ void AgentChatPanel::onThinkingTimeout() {
 }
 
 void AgentChatPanel::updateSendButton() {
-    const bool busy = m_isThinking || m_pendingToolCount > 0;
-    const bool canCancel = m_isThinking && m_pendingToolCount == 0;
+    const bool busy = m_isThinking || m_isExecuting || m_pendingToolCount > 0;
+    const bool canCancel = (m_isThinking || m_isExecuting) && m_pendingToolCount == 0;
     const bool hasDraft = !m_inputEdit->toPlainText().trimmed().isEmpty() || !m_imageAttachments.isEmpty();
     m_sendButton->setEnabled(canCancel || (!busy && hasDraft));
     const auto icon = canCancel ? AppIconProvider::Icon::Stop : AppIconProvider::Icon::Execute;
@@ -330,7 +502,7 @@ void AgentChatPanel::updateSendButton() {
 }
 
 void AgentChatPanel::onSendClicked() {
-    if (m_isThinking && m_pendingToolCount == 0) {
+    if ((m_isThinking || m_isExecuting) && m_pendingToolCount == 0) {
         emit cancelRequested();
         return;
     }
@@ -439,6 +611,8 @@ void AgentChatPanel::applyTheme(bool isDark) {
                       .arg(theme.windowBg.name(), theme.inputBorder.name(), theme.inlineCodeBg.name(),
                            theme.timestampColor.name(), theme.userFg.name(), theme.userName.name()));
     m_sendButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Execute, 18, Qt::white));
+    if (m_stopButton)
+        m_stopButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Stop, 16, theme.errorColor));
     m_attachButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::LoadImage, 18, theme.timestampColor));
     if (m_latestButton)
         m_latestButton->setIcon(AppIconProvider::icon(AppIconProvider::Icon::MoveDown, 16, theme.userName));
@@ -448,6 +622,8 @@ void AgentChatPanel::applyTheme(bool isDark) {
     }
     if (m_previewCard)
         m_previewCard->applyTheme(isDark);
+    if (m_streamBubble)
+        m_streamBubble->applyTheme(isDark);
     rebuildAttachments();
     updateInputHeight();
     updateSendButton();
@@ -460,11 +636,15 @@ void AgentChatPanel::updateStatusStrip() {
         QColor statusColor = error ? theme.errorColor : theme.statusColor;
         if (error) {
             m_statusLabel->setText(tr("请求失败"));
+        } else if (m_stopped) {
+            m_statusLabel->setText(tr("已停止"));
         } else if (m_pendingToolCount > 0) {
             m_statusLabel->setText(tr("等待确认"));
         } else if (m_isThinkingTimeout) {
             m_statusLabel->setText(tr("请求超时"));
             statusColor = theme.errorColor;
+        } else if (m_isExecuting) {
+            m_statusLabel->setText(tr("执行中（可停止）"));
         } else if (m_isThinking) {
             m_statusLabel->setText(tr("● Agent 正在思考"));
         } else if (!m_attachmentNotice.isEmpty()) {
@@ -495,6 +675,7 @@ void AgentChatPanel::updateStatusStrip() {
             m_attachmentCountLabel->setText(tr("附件 %1").arg(m_imageAttachments.size()));
         m_attachmentCountLabel->setVisible(!m_imageAttachments.isEmpty() || !m_attachmentNotice.isEmpty());
     }
+    updateStopButton();
     updateSendButton();
 }
 

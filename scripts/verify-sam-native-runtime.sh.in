@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+    echo "Usage: $0 MODEL_PACKAGE [cpu|cuda]" >&2
+    exit 2
+fi
+
+if ! model_package="$(realpath -e "$1")" || [[ ! -d "$model_package" ]]; then
+    echo "Model package directory does not exist: $1" >&2
+    exit 1
+fi
+device="${2:-cpu}"
+if [[ "$device" != cpu && "$device" != cuda ]]; then
+    echo "Unsupported SAM device: $device" >&2
+    exit 2
+fi
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+prefix="$(realpath -e "${script_dir}/..")"
+app="${prefix}/bin/DeepLux"
+project="${prefix}/@CMAKE_INSTALL_DATAROOTDIR@/deeplux/accept_sam_native_demo.json"
+if [[ ! -x "$app" || ! -f "$project" ]]; then
+    echo "Installed DeepLux or SAM smoke project is missing under: $prefix" >&2
+    exit 1
+fi
+
+scratch="$(mktemp -d)"
+trap 'rm -rf -- "$scratch"' EXIT
+mkdir -p "$scratch/home" "$scratch/appdata" "$scratch/invalid_model"
+negative_status=0
+env -u LD_LIBRARY_PATH HOME="$scratch/home" DEEPLUX_APP_DATA_DIR="$scratch/appdata" \
+    DEEPLUX_SAM_PACKAGE="$scratch/invalid_model" DEEPLUX_SAM_DEVICE="$device" QT_QPA_PLATFORM=offscreen \
+    timeout --kill-after=5s 120s "$app" run "$project" >"$scratch/negative.log" 2>&1 || negative_status=$?
+if [[ "$negative_status" -ne 1 ]]; then
+    cat "$scratch/negative.log" >&2
+    echo "Invalid model returned unexpected status: $negative_status (expected 1)" >&2
+    exit 1
+fi
+if ! grep -Fq '原生 SAM 模型包加载失败' "$scratch/negative.log" ||
+    ! grep -Fq '无法读取 manifest.json' "$scratch/negative.log"; then
+    cat "$scratch/negative.log" >&2
+    echo "Invalid model failed before reaching native SAM model validation" >&2
+    exit 1
+fi
+if ! env -u LD_LIBRARY_PATH HOME="$scratch/home" DEEPLUX_APP_DATA_DIR="$scratch/appdata" \
+        DEEPLUX_SAM_PACKAGE="$model_package" DEEPLUX_SAM_DEVICE="$device" QT_QPA_PLATFORM=offscreen \
+        timeout --kill-after=5s 120s "$app" run "$project" >"$scratch/run.log" 2>&1; then
+    cat "$scratch/run.log" >&2
+    echo "Installed native SAM workflow failed ($device)" >&2
+    exit 1
+fi
+if ! grep -Fq 'Run completed:' "$scratch/run.log"; then
+    cat "$scratch/run.log" >&2
+    echo "Installed native SAM workflow returned without completion" >&2
+    exit 1
+fi
+
+echo "PASS: installed GrabImage -> SamPredict(native/$device) -> RegionStats workflow"

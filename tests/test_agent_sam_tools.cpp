@@ -84,9 +84,9 @@ private:
             {"sessionPath", sessionPath},
             {"serverUrl", serverUrl},
             {"timeoutMs", timeoutMs},
-            {"items",
-             QJsonArray{QJsonObject{{"points", QJsonArray{QJsonArray{32, 24}}}, {"label", QStringLiteral("defect")}},
-                        QJsonObject{{"box", QJsonArray{5, 5, 20, 20}}, {"label", QStringLiteral("region")}}}}};
+            {"items", QJsonArray{QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{32, 24})}},
+                                             {"label", QStringLiteral("defect")}},
+                                 QJsonObject{{"box", QJsonArray{5, 5, 20, 20}}, {"label", QStringLiteral("region")}}}}};
     }
 
     static QString expectedImageEffect(const QString& imagePath) {
@@ -791,6 +791,16 @@ private slots:
         QVERIFY(!QFileInfo::exists(staleOutput));
     }
 
+#ifndef DEEPLUX_HAS_ONNXRUNTIME
+    void nativeModeUnavailableFailsClosed() {
+        SamPromptItem item;
+        item.positivePoints = {QPointF(32, 24)};
+        const SamPredictOutcome result = runSamPredictBatch("native", m_imagePath, {item}, 5000);
+        QVERIFY(!result.ok);
+        QVERIFY(result.error.contains("未启用原生"));
+        QVERIFY(result.regions.isEmpty());
+    }
+#endif
     // ---------- sam_predict ----------
 
     void samPredictSuccessAgainstTestServer() {
@@ -799,7 +809,7 @@ private slots:
         AgentActor actor;
         const QJsonObject params{{"imagePath", m_imagePath},
                                  {"serverUrl", server.url()},
-                                 {"points", QJsonArray{QJsonArray{32, 24}}},
+                                 {"points", QJsonArray{QJsonValue(QJsonArray{32, 24})}},
                                  {"label", QStringLiteral("widget")},
                                  {"timeoutMs", 5000}};
         const QJsonObject result = actor.executeTool(QStringLiteral("sam_predict"), params);
@@ -1135,30 +1145,31 @@ private slots:
     void samPredictValidationFailClosed() {
         AgentActor actor;
         // 缺 required imagePath（schema 校验层）
-        auto r =
-            actor.executeTool(QStringLiteral("sam_predict"), QJsonObject{{"points", QJsonArray{QJsonArray{1, 2}}}});
+        auto r = actor.executeTool(QStringLiteral("sam_predict"),
+                                   QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{1, 2})}}});
         QVERIFY(r.value("error").toString().contains(QStringLiteral("imagePath")));
         // 图像不存在
         r = actor.executeTool(QStringLiteral("sam_predict"),
                               QJsonObject{{"imagePath", QStringLiteral("/nonexistent_sam_tool.png")},
-                                          {"points", QJsonArray{QJsonArray{1, 2}}}});
+                                          {"points", QJsonArray{QJsonValue(QJsonArray{1, 2})}}});
         QVERIFY(r.value("error").toString().contains(QStringLiteral("不存在")));
         // 无 prompt
         r = actor.executeTool(QStringLiteral("sam_predict"), QJsonObject{{"imagePath", m_imagePath}});
         QVERIFY(r.value("error").toString().contains(QStringLiteral("prompt")));
         // points 非法形态（字符串坐标）
-        r = actor.executeTool(
-            QStringLiteral("sam_predict"),
-            QJsonObject{{"imagePath", m_imagePath}, {"points", QJsonArray{QJsonArray{QStringLiteral("a"), 2}}}});
+        r = actor.executeTool(QStringLiteral("sam_predict"),
+                              QJsonObject{{"imagePath", m_imagePath},
+                                          {"points", QJsonArray{QJsonValue(QJsonArray{QStringLiteral("a"), 2})}}});
         QVERIFY(r.value("error").toString().contains(QStringLiteral("points")));
         // box w<=0
         r = actor.executeTool(QStringLiteral("sam_predict"),
                               QJsonObject{{"imagePath", m_imagePath}, {"box", QJsonArray{1, 2, 0, 4}}});
         QVERIFY(r.value("error").toString().contains(QStringLiteral("box")));
         // timeoutMs 越界（runSamPredictBatch 先行校验）
-        r = actor.executeTool(
-            QStringLiteral("sam_predict"),
-            QJsonObject{{"imagePath", m_imagePath}, {"points", QJsonArray{QJsonArray{1, 2}}}, {"timeoutMs", 5}});
+        r = actor.executeTool(QStringLiteral("sam_predict"),
+                              QJsonObject{{"imagePath", m_imagePath},
+                                          {"points", QJsonArray{QJsonValue(QJsonArray{1, 2})}},
+                                          {"timeoutMs", 5}});
         QVERIFY(r.value("error").toString().contains(QStringLiteral("timeoutMs")));
     }
 
@@ -1170,7 +1181,7 @@ private slots:
         AgentActor actor;
         const QJsonObject params{{"imagePath", m_imagePath},
                                  {"serverUrl", deadUrl},
-                                 {"points", QJsonArray{QJsonArray{1, 2}}},
+                                 {"points", QJsonArray{QJsonValue(QJsonArray{1, 2})}},
                                  {"timeoutMs", 500}};
         const QJsonObject r = actor.executeTool(QStringLiteral("sam_predict"), params);
         QVERIFY(r.contains("error"));
@@ -1183,12 +1194,12 @@ private slots:
         SamTestServer server;
         QVERIFY(server.listen());
         AgentActor actor;
-        auto r =
-            actor.executeTool(QStringLiteral("sam_predict"), QJsonObject{{"imagePath", m_imagePath},
-                                                                         {"serverUrl", server.url()},
-                                                                         {"points", QJsonArray{QJsonArray{15, 15}}},
-                                                                         {"candidateIndex", 1},
-                                                                         {"timeoutMs", 5000}});
+        auto r = actor.executeTool(QStringLiteral("sam_predict"),
+                                   QJsonObject{{"imagePath", m_imagePath},
+                                               {"serverUrl", server.url()},
+                                               {"points", QJsonArray{QJsonValue(QJsonArray{15, 15})}},
+                                               {"candidateIndex", 1},
+                                               {"timeoutMs", 5000}});
         QVERIFY2(!r.contains("error"), qPrintable(r.value("error").toString()));
         QCOMPARE(r.value("status").toString(), QStringLiteral("predicted"));
         // 结果为所选候选（30,30 区域，score 0.9），而非 best
@@ -1209,21 +1220,23 @@ private slots:
         // 参数守卫：9 / -1 / 1.5 均拒绝且不发网络请求
         server.requestLog.clear();
         for (const QJsonValue bad : {QJsonValue(9), QJsonValue(-1), QJsonValue(1.5)}) {
-            r = actor.executeTool(QStringLiteral("sam_predict"), QJsonObject{{"imagePath", m_imagePath},
-                                                                             {"serverUrl", server.url()},
-                                                                             {"points", QJsonArray{QJsonArray{15, 15}}},
-                                                                             {"candidateIndex", bad}});
+            r = actor.executeTool(QStringLiteral("sam_predict"),
+                                  QJsonObject{{"imagePath", m_imagePath},
+                                              {"serverUrl", server.url()},
+                                              {"points", QJsonArray{QJsonValue(QJsonArray{15, 15})}},
+                                              {"candidateIndex", bad}});
             QVERIFY2(r.value("error").toString().contains(QStringLiteral("[0,7]")),
                      qPrintable(r.value("error").toString()));
         }
         QVERIFY2(server.requestLog.isEmpty(), "param guard must fail before any network request");
 
         // 5 在 [0,7] 内但超本次候选数 → 运行时越界失败关闭
-        r = actor.executeTool(QStringLiteral("sam_predict"), QJsonObject{{"imagePath", m_imagePath},
-                                                                         {"serverUrl", server.url()},
-                                                                         {"points", QJsonArray{QJsonArray{15, 15}}},
-                                                                         {"candidateIndex", 5},
-                                                                         {"timeoutMs", 5000}});
+        r = actor.executeTool(QStringLiteral("sam_predict"),
+                              QJsonObject{{"imagePath", m_imagePath},
+                                          {"serverUrl", server.url()},
+                                          {"points", QJsonArray{QJsonValue(QJsonArray{15, 15})}},
+                                          {"candidateIndex", 5},
+                                          {"timeoutMs", 5000}});
         QVERIFY(r.value("error").toString().contains(QStringLiteral("越界")));
     }
 
@@ -1674,7 +1687,7 @@ private slots:
         QVERIFY(r.value("error").toString().contains(QStringLiteral("[1,16]")));
         QJsonArray many;
         for (int i = 0; i < 17; ++i)
-            many.append(QJsonObject{{"points", QJsonArray{QJsonArray{1, 2}}}});
+            many.append(QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{1, 2})}}});
         r = actor.executeTool(QStringLiteral("sam_annotate"),
                               QJsonObject{{"imagePath", m_imagePath}, {"sessionPath", sessionPath}, {"items", many}});
         QVERIFY(r.value("error").toString().contains(QStringLiteral("[1,16]")));
@@ -1694,7 +1707,7 @@ private slots:
             QJsonObject{{"imagePath", QStringLiteral("/nonexistent_sam_tool.png")},
                         {"sessionPath", sessionPath},
                         {"serverUrl", server.url()},
-                        {"items", QJsonArray{QJsonObject{{"points", QJsonArray{QJsonArray{1, 2}}}}}}});
+                        {"items", QJsonArray{QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{1, 2})}}}}}});
         QVERIFY(r.value("error").toString().contains(QStringLiteral("无法读取图像")));
         QVERIFY2(!QFileInfo::exists(sessionPath), "guards must not write the session file");
     }
@@ -1902,15 +1915,15 @@ private slots:
         QVERIFY(server.listen());
         AgentActor actor;
         const QString sessionPath = QDir(m_dir.path()).filePath(QStringLiteral("cand.deeplux-anno.json"));
-        auto r =
-            actor.executeTool(QStringLiteral("sam_annotate"),
-                              QJsonObject{{"imagePath", m_imagePath},
-                                          {"sessionPath", sessionPath},
-                                          {"serverUrl", server.url()},
-                                          {"timeoutMs", 5000},
-                                          {"items", QJsonArray{QJsonObject{{"points", QJsonArray{QJsonArray{15, 15}}},
-                                                                           {"label", QStringLiteral("cand")},
-                                                                           {"candidateIndex", 1}}}}});
+        auto r = actor.executeTool(
+            QStringLiteral("sam_annotate"),
+            QJsonObject{{"imagePath", m_imagePath},
+                        {"sessionPath", sessionPath},
+                        {"serverUrl", server.url()},
+                        {"timeoutMs", 5000},
+                        {"items", QJsonArray{QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{15, 15})}},
+                                                         {"label", QStringLiteral("cand")},
+                                                         {"candidateIndex", 1}}}}});
         QVERIFY2(!r.contains("error"), qPrintable(r.value("error").toString()));
         QCOMPARE(r.value("added").toInt(), 1);
         QString loadError;
@@ -1927,25 +1940,27 @@ private slots:
         // 参数守卫：items[0].candidateIndex=9 → 拒绝且不发网络请求
         server.requestLog.clear();
         const QString session2 = QDir(m_dir.path()).filePath(QStringLiteral("cand2.deeplux-anno.json"));
-        r = actor.executeTool(QStringLiteral("sam_annotate"),
-                              QJsonObject{{"imagePath", m_imagePath},
-                                          {"sessionPath", session2},
-                                          {"serverUrl", server.url()},
-                                          {"items", QJsonArray{QJsonObject{{"points", QJsonArray{QJsonArray{15, 15}}},
-                                                                           {"candidateIndex", 9}}}}});
+        r = actor.executeTool(
+            QStringLiteral("sam_annotate"),
+            QJsonObject{{"imagePath", m_imagePath},
+                        {"sessionPath", session2},
+                        {"serverUrl", server.url()},
+                        {"items", QJsonArray{QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{15, 15})}},
+                                                         {"candidateIndex", 9}}}}});
         QVERIFY(r.value("error").toString().contains(QStringLiteral("items[0].candidateIndex")));
         QVERIFY2(server.requestLog.isEmpty(), "param guard must fail before any network request");
         QVERIFY(!QFileInfo::exists(session2));
 
         // 运行时越界：candidateIndex=5（合法参数、超本次候选数）→ 全有或全无
         const QString session3 = QDir(m_dir.path()).filePath(QStringLiteral("cand3.deeplux-anno.json"));
-        r = actor.executeTool(QStringLiteral("sam_annotate"),
-                              QJsonObject{{"imagePath", m_imagePath},
-                                          {"sessionPath", session3},
-                                          {"serverUrl", server.url()},
-                                          {"timeoutMs", 5000},
-                                          {"items", QJsonArray{QJsonObject{{"points", QJsonArray{QJsonArray{15, 15}}},
-                                                                           {"candidateIndex", 5}}}}});
+        r = actor.executeTool(
+            QStringLiteral("sam_annotate"),
+            QJsonObject{{"imagePath", m_imagePath},
+                        {"sessionPath", session3},
+                        {"serverUrl", server.url()},
+                        {"timeoutMs", 5000},
+                        {"items", QJsonArray{QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{15, 15})}},
+                                                         {"candidateIndex", 5}}}}});
         QVERIFY(r.value("error").toString().contains(QStringLiteral("越界")));
         QCOMPARE(r.value("failedItem").toInt(), 0);
         QVERIFY(!QFileInfo::exists(session3));

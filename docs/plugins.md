@@ -20,6 +20,41 @@ flowchart LR
 - “单步”适合定位输入、参数或连接问题；“循环”适合已稳定的在线流程，不应把它作为逐步调参手段。
 - 需要文件、相机、网络或变量的插件，在保存工程前可能允许暂不填写，但运行时会明确报错。
 
+## 执行亲和性（execution.affinity）与审计状态
+
+`metadata.json` 的 `execution` 字段声明执行属性，后台执行服务与 UI 都按它分流：
+
+- `affinity`：`gui`（默认）或 `worker`。`gui` 模块在 GUI 线程执行，后台工作者通过 `BlockingQueuedConnection` 回投；`worker` 模块直接在后台服务工作线程内联执行。未审计插件一律保持 `gui`。
+- `threadSafe` / `blocking`：保留的并行资格条件（`worker` 亲和 + `threadSafe` + 非 `blocking` 才可进入并行批次）。
+- 审计规则（design §6.3 + B9/t21 复盘）：① `process()` 及直接调用链不得创建/启动 QTimer、QEventLoop、QTcpSocket、QSerialPort、QProcess；② 不触碰 QWidget/QPixmap/QPainter/OpenGL/视口/相机 SDK；③ 不调用 `QCoreApplication::processEvents()`；④ 不依赖 CameraManager/相机线程亲和性；⑤ 无未加锁的全局可变状态；⑥ 两个实例在 worker 线程执行与 GUI 线程输出一致。补充：`process()` 不得创建 QObject（如 `VarModel`）或把它移交/删除到 GUI 线程；审计必须扫描 `GlobalVarManager/VarModel/PluginManager/RunEngine` 等单例/全局状态，不能只看文件级 static 变量（该规则目前以 `tests/test_workerpluginconsistency.cpp` 注释沉淀，不是自动检查）。
+
+**已审计并标记 `execution.affinity=worker` 的插件（30 个，2026-11-01）**
+
+| 分类 | 插件 |
+| --- | --- |
+| 图像处理（5） | Blob、CropImage、JigsawPuzzle、LoadPointCloud、PerProcessing |
+| 检测识别（6） | EdgeDefectDetection、FindCircle、JiErHanDefectsDet、Matching、MeasureLine、MeasureRect |
+| 几何测量（7） | DistancePL、DistancePP、FitCircle、FitEllipse、FitLine、LinesDistance、RegionStats |
+| 逻辑控制（4） | If/条件分支、Loop/循环、StopWhile/停止循环、While/条件循环 |
+| 系统工具（6） | DataCheck、Folder、SaveData、SystemTime、TimeSlice、WriteText |
+| 变量（2） | CreateString/创建字符串、MathPlugin/数学运算 |
+
+**保持 `gui` 的插件与限制**
+
+- plan B9 明确排除：GrabImage、DisplayData、ShowImage、ImageScript（事件循环/脚本状态）；Delay、Parallel、QueueIn、QueueOut、TableOutPut（共享状态/线程池/表格 UI）。
+- 按设计保持 `gui`：MeasurementInput、ShowPoint、SamPredict、全部相机/PLC/串口/TCP 插件（设备与通讯的 QObject/线程亲和性）。
+- 一致性冒烟未通过（需真实数据/工程参数）：SaveImage、3DPreProcessing、ColorRecognition、QRCode、MeasureCircle、MeasureGap、FitPlane、PointSurfaceDistance、N点标定、GapMeasure3D、FreeformSurface、SplitString、VarDefinePlugin、VarSetPlugin、Condition。
+- `DefectDetection`：本构建 `ENABLE_HYMSON3D=OFF`，插件未构建，无法执行一致性冒烟，保持 `gui`。
+- **StrFormatPlugin**（t21 复核移出 worker）：`process()` 在 worker 线程写全局 `GlobalVarManager` 并 `new VarModel`（QObject），GUI 侧 `GlobalVarView` 会读写并 `delete` 这些 QObject，且 `count()/isEmpty()` 为无锁读者——属 UI 绑定未拆分，保持 `gui`，与 QueueIn/QueueOut 按共享状态延后同类。
+- **Matching** 为 design §6.3（审计与标记，第二处 6.3 编号）的补审项（plan B9 候选清单未列），经一致性冒烟通过后标记 `worker`。
+
+复跑一致性冒烟：
+
+```bash
+cmake --build build --target test_workerpluginconsistency
+ctest --test-dir build -R test_workerpluginconsistency --output-on-failure
+```
+
 ## 分类索引
 
 | 分类 | 数量 | 模块 |

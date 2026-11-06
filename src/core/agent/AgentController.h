@@ -4,8 +4,10 @@
 #include "ILLMClient.h"
 
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QMetaObject>
 #include <QMutex>
 #include <QObject>
 #include <QPointer>
@@ -13,10 +15,13 @@
 #include <functional>
 #include <memory>
 
+class QTimer;
+
 namespace DeepLux {
 
 class AgentObserver;
 class AgentActor;
+class Project;
 struct GuiEvent;
 struct AgentActionLogEntry;
 
@@ -85,11 +90,22 @@ public:
     bool cancelCurrentRequest();
     void clearConversation();
     bool undoLastAgentAction();
+    void abortCurrentTurn();
+    quint64 turnGeneration() const { return m_turnGeneration; }
+    QString lastLLMErrorCategory() const { return m_lastErrorCategory; }
+    QString lastResponseReasoning() const { return m_lastResponseReasoning; }
 
     void logAction(const AgentActionLogEntry& entry);
     AgentActor* actor() const {
         return m_actor;
     }
+
+    using DataSourceViewHandler = std::function<QJsonObject(const QString&, const QJsonObject&)>;
+    void registerDataSourceViewHandler(QObject* owner, DataSourceViewHandler handler);
+    void unregisterDataSourceViewHandler(QObject* owner);
+    QJsonObject executeDataSourceViewAction(const QString& toolName, const QJsonObject& params) const;
+    QJsonObject confirmedActiveAnnotationSessionSaveSnapshot(const QString& outputPath) const;
+    QJsonObject confirmedActiveAnnotationSessionOpenSnapshot(const QString& sessionPath) const;
 
     bool hasPendingTools() const {
         return !m_pendingToolCalls.isEmpty();
@@ -129,13 +145,31 @@ signals:
     void llmErrorOccurred(const QString& error);
     void toolsPendingConfirmation(const QJsonArray& toolCalls);
     void agentLoopIterating();
+    void llmUsageReported(int promptTokens, int completionTokens);
+    void agentStateChanged(AgentState state);
+    void agentTurnAborted();
+    void agentStreamStarted();
+    void agentStreamContentDelta(const QString& text);
+    void agentStreamReasoningDelta(const QString& text);
+    void agentStreamFinished();
+    void agentStreamAborted();
+    void agentStreamFallback(const QString& reason);
+    void agentStreamTruncated();
 
 private slots:
     void onLLMResponse(const struct AgentResponse& resp);
     void onLLMError(const QString& error);
     void onLLMRequestFailed(const QString& requestId, const QString& error);
+    void onLLMErrorClassified(const struct LLMErrorInfo& info);
+    void onLLMErrorClassifiedForRequest(const QString& requestId, const struct LLMErrorInfo& info);
     QString finalizeTextReply(const QString& content) const;
     void doConfirmPendingTools(QJsonArray calls, const QString& confirmationId);
+    void onStreamStarted();
+    void onStreamContentDelta(const QString& text);
+    void onStreamReasoningDelta(const QString& text);
+    void onStreamFinished();
+    void onStreamFailed();
+    void onStreamFallback(const QString& reason);
 
 private:
     explicit AgentController(QObject* parent = nullptr);
@@ -148,6 +182,10 @@ private:
     void continueAgentLoop();
     void sendLLMRequest(AgentConversation ctx);
     void trimHistoryIfNeeded();
+    void attachToolImages(const QJsonArray& results);
+    bool stripImagesFromLastUserMessage();
+    void flushStreamPending();
+    void resetStreamBuffer();
 
     // 阶段1 §4/§5：确认批次绑定工程与配置版本快照；执行前重校验，陈旧确认零副作用拒绝
     void beginPendingConfirmation(const QJsonArray& calls, const QString& content, bool continueAfter);
@@ -158,6 +196,34 @@ private:
     QJsonObject cameraCycleBatchPreflight(const QJsonArray& calls) const;
     // 未执行/被拒绝的确认批次：为每个 call 补一条 tool 结果，保持 OpenAI 对话合法性
     void appendToolResultsForCalls(const QJsonArray& calls, const QJsonObject& result);
+
+    int turnDeadlineMs() const;
+    void setTurnDeadlineMsForTest(int ms);
+    void setTurnDeadlineConfigForTest(int ms);
+    bool turnDeadlineExceeded() const;
+    void endTurnWithReason(const QString& responseText, const QString& errorText, bool suppressClientError);
+    bool sendPreparedContext();
+    void failContextSend(const QString& code, const QString& detail);
+    void bindProjectSignals(Project* project);
+    void onProjectStructureChanged();
+    void snapshotConfirmation();
+    bool confirmationExpired() const;
+    void expirePendingConfirmation(const QString& reason);
+    QSet<int> protectedHistoryIndices() const;
+    bool historyPairsValid(QString* error) const;
+    bool dropOldestUserTurn();
+    bool dropOldestToolGroup();
+    qint64 estimateHistoryTokens();
+    qint64 estimateTokensFor(const QList<AgentMessage>& messages, const QString& systemPrompt,
+                             bool countReasoning) const;
+    bool echoesReasoning() const;
+    int contextBudgetTokens() const;
+    int toolResultMaxChars() const;
+    int flowSummaryThreshold() const;
+    int flowSummaryPreviewCount() const;
+    void setContextLimitsForTest(int budgetTokens, int toolResultMaxChars, int summaryThreshold,
+                                 int summaryPreviewCount);
+    static QString truncateToolResult(const QString& json, int maxChars);
 
     bool m_initialized = false;
     PermissionLevel m_permissionLevel = PermissionLevel::Advisor;
@@ -196,6 +262,31 @@ private:
     QPointer<QObject> m_dataSourceViewOwner;
     DataSourceViewHandler m_dataSourceViewHandler;
     mutable QJsonObject m_lastQuickMeasurementStatus;
+
+    quint64 m_turnGeneration = 0;
+    bool m_dispatchQueued = false;
+    bool m_queuedContinueAfterPending = true;
+    bool m_visionRetryDone = false;
+    bool m_visionDisabledForSession = false;
+    bool m_suppressNextLlmError = false;
+    QString m_lastErrorCategory;
+    QTimer* m_streamFlushTimer = nullptr;
+    QString m_pendingContent;
+    QString m_pendingReasoning;
+    bool m_streamActive = false;
+    QString m_lastResponseReasoning;
+    QElapsedTimer m_turnTimer;
+    int m_turnDeadlineOverride = -1;
+    int m_turnDeadlineConfigOverride = -1;
+    quint64 m_projectSessionId = 0;
+    quint64 m_projectRevision = 0;
+    quint64 m_confirmationSessionId = 0;
+    quint64 m_confirmationRevision = 0;
+    QList<QMetaObject::Connection> m_projectConnections;
+    int m_contextBudgetOverride = -1;
+    int m_toolResultMaxCharsOverride = -1;
+    int m_summaryThresholdOverride = -1;
+    int m_summaryPreviewOverride = -1;
 
     int m_agentTurnCount = 0;
     int m_parameterCorrectionRetries = 0;

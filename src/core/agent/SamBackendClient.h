@@ -13,6 +13,9 @@
 #include <QString>
 #include <QStringList>
 #include <QTimer>
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+#include <memory>
+#endif
 
 class QNetworkReply;
 
@@ -122,6 +125,9 @@ public:
     QString modelName() const {
         return m_modelName;
     }
+    QString nativeDevice() const {
+        return m_nativeDevice;
+    }
     // SAM 批4：最近一次成功 predict 的多掩膜候选（按 score 降序；无候选为空）。
     // 在 predictionReady 发出前就绪，回调内读取即为本次结果。
     const QList<SamCandidate>& lastCandidates() const {
@@ -197,6 +203,11 @@ private:
     QProcess* m_envProcess = nullptr;
     QTimer m_timeoutTimer;
     int m_timeoutMs = 30000;
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+    struct NativeRequest;
+    std::unique_ptr<NativeRequest> m_nativeRequest;
+    QTimer m_nativePollTimer;
+#endif
 
     State m_state = State::NotStarted;
     QString m_serverUrl = QStringLiteral("http://127.0.0.1:0"); // 0 = auto-assign
@@ -204,6 +215,7 @@ private:
     QString m_embeddingId;
     QString m_modelName;
     QString m_serverMode = QStringLiteral("unknown");
+    QString m_nativeDevice;
     QString m_modelPath;
 
     // 记录最近一次预测参数，用于 invalid_embedding 重试

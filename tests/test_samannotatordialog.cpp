@@ -1,9 +1,12 @@
 #include "core/io/LabelMeExporter.h"
+#include "core/agent/SamNativeSettings.h"
+#include "core/agent/SamPredictor.h"
 #include "core/io/YoloSegExporter.h"
 #include "core/manager/ConfigManager.h"
 #include "core/model/Annotation.h"
 #include "core/model/AnnotationMaskOps.h"
 #include "helpers/SamTestServer.h"
+#include "ui/ThemeManager.h"
 #include "ui/dialogs/SamAnnotatorDialog.h"
 #include "ui/widgets/AnnotationOverlayWidget.h"
 #include "ui/widgets/HImageWidget.h"
@@ -11,6 +14,11 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDir>
+#include <QAbstractItemView>
+#include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -22,7 +30,11 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
+#include <QPainter>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QSemaphore>
 #include <QShortcut>
 #include <QSignalSpy>
 #include <QSpinBox>
@@ -31,9 +43,15 @@
 #include <QTemporaryFile>
 #include <QTimer>
 #include <QTest>
+#include <QThreadPool>
+#include <QTimer>
 #include <QToolButton>
 #include <QtTest/QtTest>
 #include <limits>
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <thread>
 
 using namespace DeepLux;
 using DeepLuxTest::SamTestServer;
@@ -43,6 +61,7 @@ class TestSamAnnotatorDialog : public QObject {
 
 private slots:
     void initTestCase();
+    void cleanupTestCase();
     void cleanup();
 
     void environmentSetupOnlyStatusIsSanitizedAndCapturesGuiStates();
@@ -65,16 +84,20 @@ private slots:
     void guiPromptPredictionSessionRoundTripAndLabelMeExportPreserveLineage();
     void concaveAnnotationPersistsCropLocalCoordinatesAndSourceBbox();
     void mainViewModeUsesReadableConfigLayout();
+    void compactCommitButtonsDoNotOverlapModeRow();
+    void categoryAndBackendRowsShareCompactSizing();
+    void categoryDropdownUsesOneCompactRow();
     void modelImportButtonExists();
     void environmentControlButtonsExist();
     void predictionMaskIsForwardedToOverlay();
     void undoRedoButtonsExist();
     void redoShortcutBound();
-    void categoryListPrepopulated();
+    void categoryDropdownPrepopulated();
     void categoryCanBeAdded();
     void categoryCanBeRemoved();
     void testUserAddsAndRemovesSamCategoryThroughGui();
     void currentCategoryLabelPrefersListSelection();
+    void currentCategoryLabelPrefersDropdownSelection();
     void openAnnotationButtonExists();
     void exportYoloButtonExists();
     void exportCocoButtonExists(); // SAM 批4
@@ -83,6 +106,7 @@ private slots:
 
     // SAM 批2：掩膜编辑（膨胀/腐蚀/橡皮擦/合并/拆分 + undo/redo）
     void maskEditControlsExist();
+    void maskEditMenuIsContextual();
     void maskEditButtonsFollowSelection();
     void dilateGrowsMaskAndUndoRestores();
     void erodeToEmptyRejected();
@@ -129,8 +153,23 @@ private slots:
     void agentPromptCancelStopsInvalidEmbeddingRetry();
     void agentOpenSessionCancelsOldPredictionAndPinsNewImage();
     void agentOpenSessionReplacesCancelledEmbeddingRetry();
+    void standaloneImageViewportRemainsVisible();
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+    void nativeModelSettingsDialogSavesSelection();
+    void nativeSettingsHonorsEnvironmentOverride();
+    void nativeBackendPredictsAndConfirmsSelectedCandidate();
+    void nativeBackendAcceptsNegativePointOnly();
+    void closingWithNativeRequestQueuedDoesNotBlockUi();
+#endif
 
 private:
+    QTemporaryDir m_testConfigDir;
+    QByteArray m_previousAppDataDir;
+    QByteArray m_previousNativePackage;
+    QByteArray m_previousNativeDevice;
+    bool m_hadAppDataDir = false;
+    bool m_hadNativePackage = false;
+    bool m_hadNativeDevice = false;
     QImage makeTestImage();
     // 整图大小 RGBA 显示掩膜（sam_server 配色），绘制像素矩形（QRect 闭区间语义）
     static QImage makeDisplayMask(int w, int h, const QList<QRect>& rects);
@@ -140,7 +179,31 @@ private:
     static QList<QPointF> squarePolygon(double x, double y, double size);
 };
 
-void TestSamAnnotatorDialog::initTestCase() {}
+void TestSamAnnotatorDialog::initTestCase() {
+    QVERIFY(m_testConfigDir.isValid());
+    m_hadAppDataDir = qEnvironmentVariableIsSet("DEEPLUX_APP_DATA_DIR");
+    m_hadNativePackage = qEnvironmentVariableIsSet("DEEPLUX_SAM_PACKAGE");
+    m_hadNativeDevice = qEnvironmentVariableIsSet("DEEPLUX_SAM_DEVICE");
+    m_previousAppDataDir = qgetenv("DEEPLUX_APP_DATA_DIR");
+    m_previousNativePackage = qgetenv("DEEPLUX_SAM_PACKAGE");
+    m_previousNativeDevice = qgetenv("DEEPLUX_SAM_DEVICE");
+    qputenv("DEEPLUX_APP_DATA_DIR", QFile::encodeName(m_testConfigDir.path()));
+    qunsetenv("DEEPLUX_SAM_PACKAGE");
+    qunsetenv("DEEPLUX_SAM_DEVICE");
+    SamNativeSettings::initialize();
+}
+
+void TestSamAnnotatorDialog::cleanupTestCase() {
+    auto restore = [](const char* name, bool wasSet, const QByteArray& value) {
+        if (wasSet)
+            qputenv(name, value);
+        else
+            qunsetenv(name);
+    };
+    restore("DEEPLUX_APP_DATA_DIR", m_hadAppDataDir, m_previousAppDataDir);
+    restore("DEEPLUX_SAM_PACKAGE", m_hadNativePackage, m_previousNativePackage);
+    restore("DEEPLUX_SAM_DEVICE", m_hadNativeDevice, m_previousNativeDevice);
+}
 void TestSamAnnotatorDialog::cleanup() {}
 
 QImage TestSamAnnotatorDialog::makeTestImage() {
@@ -151,6 +214,12 @@ QImage TestSamAnnotatorDialog::makeTestImage() {
 
 void TestSamAnnotatorDialog::modeButtonsExist() {
     SamAnnotatorDialog dlg;
+    auto* backendMode = dlg.findChild<QComboBox*>(QStringLiteral("SamBackendMode"));
+    QVERIFY(backendMode);
+    QCOMPARE(backendMode->currentData().toString(), QStringLiteral("http"));
+#ifndef DEEPLUX_HAS_ONNXRUNTIME
+    QCOMPARE(backendMode->count(), 1);
+#endif
     QVERIFY(dlg.positivePointButton());
     QVERIFY(dlg.negativePointButton());
     QVERIFY(dlg.boxButton());
@@ -302,9 +371,10 @@ void TestSamAnnotatorDialog::selectModeClickSelectsConfirmedObject() {
 
 void TestSamAnnotatorDialog::categoryEditWorks() {
     SamAnnotatorDialog dlg;
-    QVERIFY(dlg.categoryEdit() != nullptr);
-    dlg.categoryEdit()->setText("defect");
-    QCOMPARE(dlg.categoryEdit()->text(), QStringLiteral("defect"));
+    QVERIFY(dlg.categoryCombo() != nullptr);
+    QVERIFY(dlg.categoryCombo()->isEditable());
+    dlg.categoryCombo()->setEditText(QStringLiteral("defect"));
+    QCOMPARE(dlg.categoryCombo()->currentText(), QStringLiteral("defect"));
 }
 
 void TestSamAnnotatorDialog::objectListStartsEmpty() {
@@ -355,7 +425,7 @@ void TestSamAnnotatorDialog::predictionResultCanBeConfirmed() {
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onPredictionReady", Qt::DirectConnection, Q_ARG(QList<QPointF>, polygon),
                                       Q_ARG(QRectF, QRectF(1, 2, 9, 10)), Q_ARG(double, 0.91),
                                       Q_ARG(QString, QStringLiteral("fake_rle")), Q_ARG(QImage, QImage())));
-    dlg.categoryEdit()->setText(QStringLiteral("defect"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("defect"));
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
 
     QCOMPARE(dlg.objectList()->count(), 1);
@@ -792,9 +862,9 @@ void TestSamAnnotatorDialog::mainViewModeUsesReadableConfigLayout() {
     QVERIFY(objectListLabel != nullptr);
     QVERIFY2(categoryLabel->maximumHeight() <= 20, "Category label should be a compact single line");
     QVERIFY2(objectListLabel->maximumHeight() <= 20, "Object list label should be a compact single line");
-    QVERIFY2(dlg.categoryEdit()->maximumHeight() <= 26, "Category input should be compact single-line height");
-    QVERIFY2(dlg.categoryEdit()->geometry().top() - categoryLabel->geometry().bottom() <= 4,
-             "Category label and input should be vertically tight");
+    QVERIFY2(dlg.categoryCombo()->maximumHeight() <= 26, "Category dropdown should be compact single-line height");
+    QVERIFY2(qAbs(dlg.categoryCombo()->geometry().center().y() - categoryLabel->geometry().center().y()) <= 2,
+             "Category label and dropdown should share one row");
     QVERIFY2(dlg.initializeEnvironmentButton()->maximumHeight() <= 26, "SAM action buttons should be compact");
     QVERIFY2(dlg.restartServerButton()->maximumHeight() <= 26, "SAM action buttons should be compact");
     QVERIFY(qAbs(dlg.importModelButton()->width() - dlg.initializeEnvironmentButton()->width()) <= 2);
@@ -815,6 +885,185 @@ void TestSamAnnotatorDialog::mainViewModeUsesReadableConfigLayout() {
              "Shortcut hint should inherit the compact config-panel theme");
     QVERIFY2(dlg.styleSheet().contains(QStringLiteral("font-size: 12px")),
              "Shortcut hint should use a readable font size");
+}
+
+void TestSamAnnotatorDialog::compactCommitButtonsDoNotOverlapModeRow() {
+    struct AppStyleRestore {
+        QString oldStyle = qApp->styleSheet();
+        ~AppStyleRestore() {
+            qApp->setStyleSheet(oldStyle);
+        }
+    } restore;
+    qApp->setStyleSheet(ThemeManager::styleSheet(false));
+
+    HImageWidget mainView;
+    mainView.resize(320, 240);
+    mainView.setImage(makeTestImage());
+    SamAnnotatorDialog dlg;
+    dlg.attachToImageWidget(&mainView, QString());
+    dlg.resize(320, 530);
+    dlg.show();
+    QCoreApplication::processEvents();
+
+    auto* confirm = dlg.findChild<QPushButton*>(QStringLiteral("SamConfirmButton"));
+    auto* cancel = dlg.findChild<QPushButton*>(QStringLiteral("SamCancelButton"));
+    QVERIFY(confirm);
+    QVERIFY(cancel);
+    auto verifyRows = [&]() {
+        const int modeTop = dlg.positivePointButton()->mapTo(&dlg, QPoint(0, 0)).y();
+        for (QPushButton* button : {confirm, cancel}) {
+            if (button->height() != 26 || button->mapTo(&dlg, QPoint(0, button->height())).y() + 2 > modeTop)
+                return false;
+        }
+        return true;
+    };
+    QVERIFY2(verifyRows(), "Commit buttons must fit above the mode-button row under the app stylesheet");
+    const QString capturePath = qEnvironmentVariable("DEEPLUX_TEST_SAM_COMMIT_CAPTURE");
+    if (!capturePath.isEmpty())
+        QVERIFY(dlg.grab().save(capturePath));
+
+    qApp->setStyleSheet(ThemeManager::styleSheet(true));
+    dlg.applyTheme(true);
+    QCoreApplication::processEvents();
+    QVERIFY2(verifyRows(), "Commit buttons must also fit in the dark theme");
+    if (!capturePath.isEmpty())
+        QVERIFY(dlg.grab().save(capturePath + QStringLiteral(".dark.png")));
+}
+
+void TestSamAnnotatorDialog::categoryAndBackendRowsShareCompactSizing() {
+    struct AppStyleRestore {
+        QString oldStyle = qApp->styleSheet();
+        ~AppStyleRestore() {
+            qApp->setStyleSheet(oldStyle);
+        }
+    } restore;
+    qApp->setStyleSheet(ThemeManager::styleSheet(false));
+    QVERIFY2(!qApp->styleSheet().contains(QStringLiteral("QComboBox::down-arrow")) &&
+                 !qApp->styleSheet().contains(QStringLiteral("QComboBox::drop-down")),
+             "Leave combo arrow painting to the Qt style; stylesheet border triangles render as blocks");
+
+    HImageWidget mainView;
+    mainView.resize(320, 240);
+    mainView.setImage(makeTestImage());
+    SamAnnotatorDialog dlg;
+    dlg.attachToImageWidget(&mainView, QString());
+    dlg.resize(320, 530);
+    dlg.show();
+    QCoreApplication::processEvents();
+
+    auto* categoryLabel = dlg.findChild<QLabel*>(QStringLiteral("SamCategoryLabel"));
+    auto* objectLabel = dlg.findChild<QLabel*>(QStringLiteral("SamObjectListLabel"));
+    auto* backendLabel = dlg.findChild<QLabel*>(QStringLiteral("SamBackendLabel"));
+    auto* backend = dlg.findChild<QComboBox*>(QStringLiteral("SamBackendMode"));
+    QVERIFY(categoryLabel);
+    QVERIFY(objectLabel);
+    QVERIFY(backendLabel);
+    QVERIFY(backend);
+
+    auto verifyRows = [&]() {
+        const auto centerY = [&dlg](QWidget* widget) {
+            return widget->mapTo(&dlg, QPoint(0, widget->height() / 2)).y();
+        };
+        return dlg.categoryCombo()->height() == 26 && backend->height() == 26 &&
+               dlg.addCategoryButton()->height() == 26 && dlg.removeCategoryButton()->height() == 26 &&
+               qAbs(centerY(categoryLabel) - centerY(dlg.categoryCombo())) <= 2 &&
+               qAbs(centerY(objectLabel) - centerY(backend)) <= 2 &&
+               qAbs(centerY(backendLabel) - centerY(backend)) <= 2 && categoryLabel->font().pointSize() == 9 &&
+               objectLabel->font().pointSize() == 9 && backendLabel->font().pointSize() == 9 &&
+               dlg.categoryCombo()->font().pointSize() == 9 &&
+               dlg.categoryCombo()->lineEdit()->font().pointSize() == 9 && backend->font().pointSize() == 9;
+    };
+    QVERIFY2(verifyRows(), "SAM config rows must share compact height, centerline and font under app theme");
+    const QString capturePath = qEnvironmentVariable("DEEPLUX_TEST_SAM_HEADER_CAPTURE");
+    if (!capturePath.isEmpty())
+        QVERIFY(dlg.grab().save(capturePath));
+    backend->showPopup();
+    QCoreApplication::processEvents();
+    QCOMPARE(backend->view()->font().pointSize(), 9);
+    const QRect lastOption = backend->view()->visualRect(backend->model()->index(backend->count() - 1, 0));
+    QVERIFY2(lastOption.bottom() < backend->view()->viewport()->height(),
+             "The backend popup must show every option without clipping");
+    if (!capturePath.isEmpty())
+        QVERIFY(backend->view()->grab().save(capturePath + QStringLiteral(".backend-menu.png")));
+    if (!capturePath.isEmpty())
+        QVERIFY(backend->view()->window()->grab().save(capturePath + QStringLiteral(".backend-popup.png")));
+    backend->hidePopup();
+    QCoreApplication::processEvents();
+    dlg.categoryCombo()->showPopup();
+    QCoreApplication::processEvents();
+    QCOMPARE(dlg.categoryCombo()->view()->font().pointSize(), 9);
+    const QRect lastCategory = dlg.categoryCombo()->view()->visualRect(
+        dlg.categoryCombo()->model()->index(dlg.categoryCombo()->count() - 1, 0));
+    QVERIFY2(lastCategory.bottom() < dlg.categoryCombo()->view()->viewport()->height(),
+             "The category popup must show every preset without clipping");
+    if (!capturePath.isEmpty())
+        QVERIFY(
+            dlg.categoryCombo()->view()->window()->grab().save(capturePath + QStringLiteral(".category-popup.png")));
+    dlg.categoryCombo()->hidePopup();
+    QCoreApplication::processEvents();
+
+    dlg.resize(220, 530);
+    QCoreApplication::processEvents();
+    auto* scroll = dlg.findChild<QScrollArea*>(QStringLiteral("SamControlScroll"));
+    auto* content = dlg.findChild<QWidget*>(QStringLiteral("SamControlScrollContent"));
+    QVERIFY2(content->width() <= scroll->viewport()->width(),
+             "Compact SAM controls must fit the viewport without horizontal clipping");
+    QVERIFY(!backendLabel->isVisibleTo(&dlg));
+    QVERIFY(dlg.categoryCombo()->height() == 26 && backend->height() == 26);
+    const auto leftX = [&dlg](QWidget* widget) { return widget->mapTo(&dlg, QPoint(0, 0)).x(); };
+    const auto rightX = [&dlg](QWidget* widget) { return widget->mapTo(&dlg, QPoint(widget->width(), 0)).x(); };
+    QVERIFY(rightX(categoryLabel) + 2 <= leftX(dlg.categoryCombo()));
+    QVERIFY(rightX(dlg.categoryCombo()) + 2 <= leftX(dlg.addCategoryButton()));
+    QVERIFY(rightX(objectLabel) + 2 <= leftX(backend));
+    QVERIFY2(rightX(backend) <= rightX(content), "Backend selector must remain inside the narrow viewport");
+    QVERIFY2(rightX(dlg.removeCategoryButton()) <= rightX(content),
+             "Category actions must remain inside the narrow viewport");
+    QVERIFY(backend->fontMetrics().horizontalAdvance(backend->currentText()) <= backend->width() - 24);
+    if (!capturePath.isEmpty())
+        QVERIFY(dlg.grab().save(capturePath + QStringLiteral(".narrow.png")));
+
+    qApp->setStyleSheet(ThemeManager::styleSheet(true));
+    dlg.applyTheme(true);
+    QCoreApplication::processEvents();
+    QVERIFY(!backendLabel->isVisibleTo(&dlg));
+    QVERIFY(dlg.categoryCombo()->height() == 26 && backend->height() == 26);
+    if (!capturePath.isEmpty())
+        QVERIFY(dlg.grab().save(capturePath + QStringLiteral(".narrow.dark.png")));
+    dlg.resize(300, 530);
+    QCoreApplication::processEvents();
+    QVERIFY(backendLabel->isVisibleTo(&dlg));
+    QVERIFY2(verifyRows(), "SAM config rows must remain aligned in the dark theme");
+    if (!capturePath.isEmpty())
+        QVERIFY(dlg.grab().save(capturePath + QStringLiteral(".dark.png")));
+}
+
+void TestSamAnnotatorDialog::categoryDropdownUsesOneCompactRow() {
+    HImageWidget mainView;
+    mainView.resize(320, 240);
+    mainView.setImage(makeTestImage());
+
+    SamAnnotatorDialog dlg;
+    dlg.attachToImageWidget(&mainView, QString());
+    dlg.show();
+    QCoreApplication::processEvents();
+
+    auto* combo = dlg.findChild<QComboBox*>(QStringLiteral("SamCategoryCombo"));
+    auto* label = dlg.findChild<QLabel*>(QStringLiteral("SamCategoryLabel"));
+    QVERIFY(combo);
+    QVERIFY(label);
+    QVERIFY(combo->isEditable());
+    QVERIFY(combo->count() >= 4);
+    QVERIFY(qAbs(combo->geometry().center().y() - label->geometry().center().y()) <= 2);
+    QVERIFY(qAbs(combo->geometry().center().y() - dlg.addCategoryButton()->geometry().center().y()) <= 2);
+    QVERIFY(qAbs(combo->geometry().center().y() - dlg.removeCategoryButton()->geometry().center().y()) <= 2);
+    QVERIFY(!dlg.findChild<QListWidget*>(QStringLiteral("SamCategoryList")));
+    const QString capturePath = qEnvironmentVariable("DEEPLUX_TEST_SAM_CAPTURE");
+    if (!capturePath.isEmpty()) {
+        QVERIFY(dlg.grab().save(capturePath));
+        dlg.applyTheme(true);
+        QCoreApplication::processEvents();
+        QVERIFY(dlg.grab().save(capturePath + QStringLiteral(".dark.png")));
+    }
 }
 
 void TestSamAnnotatorDialog::modelImportButtonExists() {
@@ -1082,10 +1331,11 @@ void TestSamAnnotatorDialog::redoShortcutBound() {
     QCOMPARE(dlg.redoShortcut()->context(), Qt::ApplicationShortcut);
 }
 
-void TestSamAnnotatorDialog::categoryListPrepopulated() {
+void TestSamAnnotatorDialog::categoryDropdownPrepopulated() {
     SamAnnotatorDialog dlg;
-    QVERIFY(dlg.categoryList() != nullptr);
-    QVERIFY(dlg.categoryList()->count() >= 4);
+    QVERIFY(dlg.categoryCombo() != nullptr);
+    QVERIFY(dlg.categoryCombo()->count() >= 4);
+    QVERIFY(dlg.categoryCombo()->itemData(0, Qt::DecorationRole).canConvert<QColor>());
     QVERIFY(dlg.categories().contains(QStringLiteral("缺陷")));
     QVERIFY(dlg.categories().contains(QStringLiteral("划痕")));
     QVERIFY(dlg.categories().contains(QStringLiteral("凹坑")));
@@ -1095,9 +1345,11 @@ void TestSamAnnotatorDialog::categoryListPrepopulated() {
 void TestSamAnnotatorDialog::categoryCanBeAdded() {
     SamAnnotatorDialog dlg;
     const int initial = dlg.categories().size();
-    dlg.addCategory(QStringLiteral("裂纹"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("裂纹"));
+    QTest::keyClick(dlg.categoryCombo()->lineEdit(), Qt::Key_Return);
     QVERIFY(dlg.categories().contains(QStringLiteral("裂纹")));
     QCOMPARE(dlg.categories().size(), initial + 1);
+    QCOMPARE(dlg.categoryCombo()->currentText(), QStringLiteral("裂纹"));
     QVERIFY(dlg.categoryColor(QStringLiteral("裂纹")).isValid());
 }
 
@@ -1105,8 +1357,9 @@ void TestSamAnnotatorDialog::categoryCanBeRemoved() {
     SamAnnotatorDialog dlg;
     dlg.addCategory(QStringLiteral("临时"));
     QVERIFY(dlg.categories().contains(QStringLiteral("临时")));
-    dlg.removeCategory(QStringLiteral("临时"));
+    dlg.removeCategoryButton()->click();
     QVERIFY(!dlg.categories().contains(QStringLiteral("临时")));
+    QCOMPARE(dlg.categoryCombo()->findText(QStringLiteral("临时")), -1);
 }
 
 void TestSamAnnotatorDialog::testUserAddsAndRemovesSamCategoryThroughGui() {
@@ -1136,6 +1389,13 @@ void TestSamAnnotatorDialog::currentCategoryLabelPrefersListSelection() {
         dlg.categoryList()->setCurrentRow(0);
         QVERIFY(!dlg.currentCategoryLabel().isEmpty());
     }
+}
+
+void TestSamAnnotatorDialog::currentCategoryLabelPrefersDropdownSelection() {
+    SamAnnotatorDialog dlg;
+    QVERIFY(dlg.categoryCombo()->count() > 1);
+    dlg.categoryCombo()->setCurrentIndex(1);
+    QCOMPARE(dlg.currentCategoryLabel(), dlg.categoryCombo()->itemText(1));
 }
 
 void TestSamAnnotatorDialog::openAnnotationButtonExists() {
@@ -1194,16 +1454,16 @@ void TestSamAnnotatorDialog::openAnnotationReloadsSession() {
     QVERIFY(QMetaObject::invokeMethod(&srcDlg, "onConfirm", Qt::DirectConnection));
     QCOMPARE(srcDlg.objectList()->count(), 1);
 
-    QTemporaryFile tmp("anno_XXXXXX.deeplux-anno.json");
-    QVERIFY(tmp.open());
-    tmp.close();
+    QTemporaryDir sessionDir;
+    QVERIFY(sessionDir.isValid());
+    const QString sessionPath = sessionDir.filePath(QStringLiteral("anno.deeplux-anno.json"));
     QString err;
-    QVERIFY(srcDlg.session().save(tmp.fileName(), &err));
+    QVERIFY2(srcDlg.session().save(sessionPath, &err), qPrintable(err));
 
     // Now open the saved session in a fresh dialog via onOpenAnnotation (we invoke directly with a path)
     SamAnnotatorDialog dlg;
     QString loadErr;
-    AnnotationSession loaded = AnnotationSession::load(tmp.fileName(), &loadErr);
+    AnnotationSession loaded = AnnotationSession::load(sessionPath, &loadErr);
     QVERIFY2(loadErr.isEmpty(), qPrintable(loadErr));
     QCOMPARE(loaded.annotations.size(), 1);
 }
@@ -1241,6 +1501,9 @@ QList<QPointF> TestSamAnnotatorDialog::squarePolygon(double x, double y, double 
 
 void TestSamAnnotatorDialog::maskEditControlsExist() {
     SamAnnotatorDialog dlg;
+    auto* menuButton = dlg.findChild<QToolButton*>(QStringLiteral("SamMaskEditMenuButton"));
+    QVERIFY(menuButton);
+    QVERIFY(menuButton->menu());
     QVERIFY(dlg.eraserButton() != nullptr);
     QVERIFY(dlg.dilateButton() != nullptr);
     QVERIFY(dlg.erodeButton() != nullptr);
@@ -1261,6 +1524,78 @@ void TestSamAnnotatorDialog::maskEditControlsExist() {
     dlg.eraserButton()->setChecked(true);
     QCOMPARE(dlg.currentToolMode(), SamAnnotatorDialog::ToolMode::Eraser);
     QCOMPARE(dlg.overlayWidget()->mode(), AnnotationOverlayWidget::Mode::Eraser);
+}
+
+void TestSamAnnotatorDialog::maskEditMenuIsContextual() {
+    struct AppStyleRestore {
+        QString oldStyle = qApp->styleSheet();
+        ~AppStyleRestore() {
+            qApp->setStyleSheet(oldStyle);
+        }
+    } restore;
+    qApp->setStyleSheet(QStringLiteral("QWidget { background-color: #2b2b2b; color: #ffffff; }"));
+    HImageWidget mainView;
+    mainView.resize(320, 240);
+    mainView.setImage(makeTestImage());
+    SamAnnotatorDialog dlg;
+    dlg.attachToImageWidget(&mainView, QString());
+    dlg.show();
+    QCoreApplication::processEvents();
+    QVERIFY(!confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20),
+                           makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)}))
+                 .isEmpty());
+    QVERIFY(!confirmObject(dlg, squarePolygon(100, 80, 20), QRectF(100, 80, 20, 20),
+                           makeDisplayMask(200, 150, {QRect(100, 80, 20, 20)}))
+                 .isEmpty());
+
+    auto* menuButton = dlg.findChild<QToolButton*>(QStringLiteral("SamMaskEditMenuButton"));
+    QVERIFY(menuButton);
+    dlg.objectList()->setCurrentRow(0);
+    QVERIFY(menuButton->isEnabled());
+    QVERIFY(!dlg.eraserButton()->parentWidget()->isHidden());
+    QVERIFY(dlg.mergeButton()->isHidden());
+    auto* menu = menuButton->menu();
+    menu->popup(menuButton->mapToGlobal(QPoint(0, menuButton->height())));
+    QCoreApplication::processEvents();
+    QVERIFY(menu->isVisible());
+    auto* menuContent = menu->findChild<QWidget*>(QStringLiteral("SamMaskEditMenuContent"));
+    QVERIFY(menuContent);
+    const QColor lightBg = menuContent->grab().toImage().pixelColor(1, 1);
+    QVERIFY2(lightBg.lightness() > 200, qPrintable(QStringLiteral("Light menu background: %1").arg(lightBg.name())));
+    const QColor singleBg =
+        dlg.eraserButton()->parentWidget()->grab().toImage().pixelColor(5, dlg.eraserButton()->height() + 2);
+    QVERIFY2(singleBg.lightness() > 200, qPrintable(QStringLiteral("Light mask controls: %1").arg(singleBg.name())));
+    const int singleMenuHeight = menu->height();
+    const QString capturePath = qEnvironmentVariable("DEEPLUX_TEST_SAM_MENU_CAPTURE");
+    if (!capturePath.isEmpty()) {
+        QVERIFY(dlg.grab().save(capturePath));
+        QVERIFY(menu->grab().save(capturePath + QStringLiteral(".menu.png")));
+    }
+    menu->hide();
+    dlg.eraserButton()->click();
+    QCOMPARE(dlg.currentToolMode(), SamAnnotatorDialog::ToolMode::Eraser);
+
+    dlg.objectList()->selectionModel()->select(dlg.objectList()->model()->index(1, 0), QItemSelectionModel::Select);
+    QVERIFY(menuButton->isEnabled());
+    QVERIFY(dlg.eraserButton()->parentWidget()->isHidden());
+    QVERIFY(!dlg.mergeButton()->isHidden());
+    QCOMPARE(dlg.currentToolMode(), SamAnnotatorDialog::ToolMode::Select);
+    menu->popup(menuButton->mapToGlobal(QPoint(0, menuButton->height())));
+    QCoreApplication::processEvents();
+    QVERIFY2(menu->height() < singleMenuHeight, "Two-object menu should shrink to the merge action");
+    if (!capturePath.isEmpty())
+        QVERIFY(menu->grab().save(capturePath + QStringLiteral(".pair.png")));
+    menu->hide();
+
+    dlg.objectList()->setCurrentRow(0);
+    dlg.applyTheme(true);
+    menu->popup(menuButton->mapToGlobal(QPoint(0, menuButton->height())));
+    QCoreApplication::processEvents();
+    const QColor darkBg = menuContent->grab().toImage().pixelColor(1, 1);
+    QVERIFY2(darkBg.lightness() < 100, qPrintable(QStringLiteral("Dark menu background: %1").arg(darkBg.name())));
+    if (!capturePath.isEmpty())
+        QVERIFY(menu->grab().save(capturePath + QStringLiteral(".dark.png")));
+    menu->hide();
 }
 
 void TestSamAnnotatorDialog::maskEditButtonsFollowSelection() {
@@ -1432,10 +1767,10 @@ void TestSamAnnotatorDialog::eraseMissStrokeIsNoOp() {
 void TestSamAnnotatorDialog::mergeTouchingObjectsAndUndoRestores() {
     SamAnnotatorDialog dlg;
     dlg.setImageSnapshot(makeTestImage(), QString());
-    dlg.categoryEdit()->setText(QStringLiteral("A"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("A"));
     const QString idA = confirmObject(dlg, squarePolygon(50, 40, 20), QRectF(50, 40, 20, 20),
                                       makeDisplayMask(200, 150, {QRect(50, 40, 20, 20)}));
-    dlg.categoryEdit()->setText(QStringLiteral("B"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("B"));
     const QString idB = confirmObject(dlg, squarePolygon(60, 40, 20), QRectF(60, 40, 20, 20),
                                       makeDisplayMask(200, 150, {QRect(60, 40, 20, 20)}));
     QVERIFY(!idA.isEmpty() && !idB.isEmpty());
@@ -2498,12 +2833,13 @@ void TestSamAnnotatorDialog::undoAfterOpenAnnotationDoesNotCorruptSession() {
     srcDlg.setImageSnapshot(makeTestImage(), srcImagePath);
     QVERIFY(!confirmObject(srcDlg, squarePolygon(10, 10, 10), QRectF(10, 10, 10, 10), QImage()).isEmpty());
     QVERIFY(!confirmObject(srcDlg, squarePolygon(100, 100, 10), QRectF(100, 100, 10, 10), QImage()).isEmpty());
-    QTemporaryFile tmp("undo_open_XXXXXX.deeplux-anno.json");
-    QVERIFY(tmp.open());
-    const QString sessionPath = tmp.fileName();
-    tmp.close();
+    // Windows: QSaveFile 无法原子替换一个仍由 QTemporaryFile 管理/占用的
+    // 路径（commit 报 Access denied），使用 QTemporaryDir 下的新路径。
+    QTemporaryDir sessionDir;
+    QVERIFY(sessionDir.isValid());
+    const QString sessionPath = sessionDir.filePath(QStringLiteral("undo_open.deeplux-anno.json"));
     QString saveErr;
-    QVERIFY(srcDlg.session().save(sessionPath, &saveErr));
+    QVERIFY2(srcDlg.session().save(sessionPath, &saveErr), qPrintable(saveErr));
 
     // 换载会话 B
     QVERIFY(dlg.openAnnotationFile(sessionPath));
@@ -2858,6 +3194,26 @@ void TestSamAnnotatorDialog::openRejectsLegacySessionWithoutValidDims() {
 
 // ===== SAM 批4（C）：多掩膜候选循环 =====
 
+void TestSamAnnotatorDialog::standaloneImageViewportRemainsVisible() {
+    SamAnnotatorDialog dlg;
+    dlg.resize(1280, 1050);
+    dlg.show();
+    dlg.setImageSnapshot(makeTestImage());
+    QCoreApplication::processEvents();
+
+    QVERIFY(dlg.imageWidget()->height() >= 200);
+    QCOMPARE(dlg.overlayWidget()->size(), dlg.imageWidget()->size());
+
+    dlg.resize(900, 600);
+    QCoreApplication::processEvents();
+    QVERIFY(dlg.imageWidget()->height() >= 180);
+    QCOMPARE(dlg.overlayWidget()->size(), dlg.imageWidget()->size());
+    auto* cancel = dlg.findChild<QPushButton*>(QStringLiteral("SamCancelButton"));
+    QVERIFY(cancel);
+    QVERIFY(cancel->isVisible());
+    QVERIFY(cancel->mapTo(&dlg, cancel->rect().bottomRight()).y() < dlg.height());
+}
+
 void TestSamAnnotatorDialog::candidateCyclingSelectsAlternateRegion() {
     SamAnnotatorDialog dlg;
     dlg.setImageSnapshot(makeTestImage(), QString());
@@ -2904,7 +3260,7 @@ void TestSamAnnotatorDialog::candidateCyclingSelectsAlternateRegion() {
     QCOMPARE(dlg.previewCandidateIndex(), 1);
 
     // 确认：写入会话的是所选候选（30,30 区域 + rle1），而非顶层 best
-    dlg.categoryEdit()->setText(QStringLiteral("defect"));
+    dlg.categoryCombo()->setEditText(QStringLiteral("defect"));
     QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
     const AnnotationSession session = dlg.session();
     QCOMPARE(session.annotations.size(), 1);
@@ -3388,6 +3744,225 @@ void TestSamAnnotatorDialog::agentOpenSessionReplacesCancelledEmbeddingRetry() {
     QCOMPARE(server.requestLog.count(QStringLiteral("POST /predict")), 1);
     QVERIFY(!dialog.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
 }
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+void TestSamAnnotatorDialog::nativeModelSettingsDialogSavesSelection() {
+    const QString packagePath = QStringLiteral(TEST_SAM_PACKAGE_DIR);
+    QVERIFY2(QFile::exists(packagePath + QStringLiteral("/manifest.json")), qPrintable(packagePath));
+
+    SamAnnotatorDialog dlg;
+    auto* backend = dlg.findChild<QComboBox*>(QStringLiteral("SamBackendMode"));
+    auto* settingsButton = dlg.importModelButton();
+    QVERIFY(backend);
+    QVERIFY(settingsButton);
+    backend->setCurrentIndex(backend->findData(QStringLiteral("native")));
+    QVERIFY(!settingsButton->isHidden());
+    QCOMPARE(settingsButton->text(), QStringLiteral("模型设置…"));
+
+    bool dialogCompleted = false;
+    QTimer::singleShot(0, &dlg, [&]() {
+        auto* settingsDialog = dlg.findChild<QDialog*>(QStringLiteral("SamNativeModelSettingsDialog"));
+        if (!settingsDialog)
+            return;
+        auto* path = settingsDialog->findChild<QLineEdit*>(QStringLiteral("SamNativePackagePath"));
+        auto* device = settingsDialog->findChild<QComboBox*>(QStringLiteral("SamNativeDevice"));
+        auto* apply = settingsDialog->findChild<QPushButton*>(QStringLiteral("SamNativeApplySettings"));
+        if (!path || !device || !apply)
+            return;
+        path->setText(packagePath);
+        device->setCurrentIndex(device->findData(QStringLiteral("cpu")));
+        const QString capture = qEnvironmentVariable("DEEPLUX_TEST_SAM_NATIVE_SETTINGS_CAPTURE");
+        if (!capture.isEmpty())
+            settingsDialog->grab().save(capture);
+        apply->click();
+        dialogCompleted = settingsDialog->result() == QDialog::Accepted;
+    });
+    settingsButton->click();
+    QVERIFY(dialogCompleted);
+    const SamNativeConfig saved = SamNativeSettings::snapshot();
+    QCOMPARE(saved.packageDir, QFileInfo(packagePath).canonicalFilePath());
+    QCOMPARE(saved.device, QStringLiteral("cpu"));
+    QVERIFY(saved.error.isEmpty());
+
+    dlg.applyTheme(true);
+    bool darkDialogCancelled = false;
+    QTimer::singleShot(0, &dlg, [&]() {
+        auto* settingsDialog = dlg.findChild<QDialog*>(QStringLiteral("SamNativeModelSettingsDialog"));
+        if (!settingsDialog)
+            return;
+        const QString capture = qEnvironmentVariable("DEEPLUX_TEST_SAM_NATIVE_SETTINGS_CAPTURE");
+        if (!capture.isEmpty())
+            settingsDialog->grab().save(capture + QStringLiteral(".dark.png"));
+        auto* cancel = settingsDialog->findChild<QPushButton*>(QStringLiteral("SamNativeCancelSettings"));
+        if (!cancel)
+            return;
+        cancel->click();
+        darkDialogCancelled = settingsDialog->result() == QDialog::Rejected;
+    });
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "showNativeModelSettings", Qt::DirectConnection));
+    QVERIFY(darkDialogCancelled);
+}
+
+void TestSamAnnotatorDialog::nativeSettingsHonorsEnvironmentOverride() {
+    QTemporaryDir invalidOverride;
+    QVERIFY(invalidOverride.isValid());
+    qputenv("DEEPLUX_SAM_PACKAGE", QFile::encodeName(invalidOverride.filePath(QStringLiteral("missing"))));
+    const SamNativeConfig overridden = SamNativeSettings::snapshot();
+    QVERIFY(overridden.packageFromEnvironment);
+    QVERIFY(!overridden.error.isEmpty());
+    QVERIFY(overridden.error.contains(QStringLiteral("目录不存在")));
+    qunsetenv("DEEPLUX_SAM_PACKAGE");
+    const SamNativeConfig restored = SamNativeSettings::snapshot();
+    QVERIFY(restored.error.isEmpty());
+    QVERIFY(!restored.packageFromEnvironment);
+}
+
+void TestSamAnnotatorDialog::nativeBackendPredictsAndConfirmsSelectedCandidate() {
+    const QString packageDir = QStringLiteral(TEST_SAM_PACKAGE_DIR);
+    QVERIFY2(QFile::exists(packageDir + QStringLiteral("/manifest.json")), qPrintable(packageDir));
+    qputenv("DEEPLUX_SAM_PACKAGE", QFile::encodeName(packageDir));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QImage image(640, 480, QImage::Format_RGB888);
+    image.fill(QColor(96, 110, 100));
+    QPainter painter(&image);
+    painter.fillRect(QRect(200, 150, 80, 60), Qt::white);
+    painter.end();
+    const QString imagePath = dir.filePath(QStringLiteral("native.png"));
+    QVERIFY(image.save(imagePath));
+
+    SamAnnotatorDialog dlg;
+    auto* mode = dlg.findChild<QComboBox*>(QStringLiteral("SamBackendMode"));
+    QVERIFY(mode);
+    QCOMPARE(mode->currentData().toString(), QStringLiteral("http"));
+    const int nativeIndex = mode->findData(QStringLiteral("native"));
+    QVERIFY(nativeIndex >= 0);
+    mode->setCurrentIndex(nativeIndex);
+    QCOMPARE(dlg.backendClient()->serverUrl(), QStringLiteral("native"));
+    dlg.show();
+    QCoreApplication::processEvents();
+    const QString capturePath = qEnvironmentVariable("DEEPLUX_SAM_UI_CAPTURE");
+    if (!capturePath.isEmpty())
+        QVERIFY(dlg.grab().save(capturePath));
+    dlg.setImageSnapshot(image, imagePath);
+    QCOMPARE(dlg.backendClient()->currentEmbeddingId(), imagePath);
+    const QPoint clickPoint = dlg.imageWidget()->imageToWidget(QPointF(240, 180)).toPoint();
+    QVERIFY(dlg.overlayWidget()->rect().contains(clickPoint));
+    QTest::mouseClick(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, clickPoint);
+    QTRY_COMPARE_WITH_TIMEOUT(dlg.previewCandidateCount(), 3, 30000);
+    const QList<SamCandidate> candidates = dlg.backendClient()->lastCandidates();
+    QCOMPARE(candidates.size(), 3);
+    QVERIFY(!candidates[1].maskRle.isEmpty());
+    QVERIFY(candidates[0].maskRle != candidates[1].maskRle);
+    dlg.nextCandidateButton()->click();
+    QCOMPARE(dlg.previewCandidateIndex(), 1);
+    dlg.categoryCombo()->setEditText(QStringLiteral("defect"));
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onConfirm", Qt::DirectConnection));
+    const AnnotationSession session = dlg.session();
+    QCOMPARE(session.annotations.size(), 1);
+    QCOMPARE(session.annotations.first().maskRle, candidates[1].maskRle);
+    QCOMPARE(session.annotations.first().bbox, candidates[1].bbox);
+
+    QSignalSpy predictions(dlg.backendClient(), &SamBackendClient::predictionReady);
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(240, 180)),
+                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    QImage nextImage = image;
+    nextImage.fill(QColor(96, 110, 100));
+    QPainter nextPainter(&nextImage);
+    nextPainter.fillRect(QRect(300, 150, 80, 60), Qt::white);
+    nextPainter.end();
+    const QString nextPath = dir.filePath(QStringLiteral("next.png"));
+    QVERIFY(nextImage.save(nextPath));
+    dlg.setImageSnapshot(nextImage, nextPath);
+    QCOMPARE(dlg.backendClient()->currentEmbeddingId(), nextPath);
+    QCOMPARE(dlg.previewCandidateCount(), 0);
+    QVERIFY(dlg.backendClient()->lastCandidates().isEmpty());
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(340, 180)),
+                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    QTRY_COMPARE_WITH_TIMEOUT(dlg.previewCandidateCount(), 3, 30000);
+    QCOMPARE(predictions.size(), 1); // 旧图在途结果不得覆盖新图
+
+    mode->setCurrentIndex(0);
+    QCOMPARE(dlg.backendClient()->serverUrl(), QStringLiteral("http://127.0.0.1:0"));
+    QCOMPARE(dlg.previewCandidateCount(), 0);
+}
+
+void TestSamAnnotatorDialog::nativeBackendAcceptsNegativePointOnly() {
+    qputenv("DEEPLUX_SAM_PACKAGE", QFile::encodeName(QStringLiteral(TEST_SAM_PACKAGE_DIR)));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QImage image(640, 480, QImage::Format_RGB888);
+    image.fill(Qt::white);
+    const QString imagePath = dir.filePath(QStringLiteral("negative-only.png"));
+    QVERIFY(image.save(imagePath));
+
+    SamAnnotatorDialog dlg;
+    auto* mode = dlg.findChild<QComboBox*>(QStringLiteral("SamBackendMode"));
+    QVERIFY(mode);
+    mode->setCurrentIndex(mode->findData(QStringLiteral("native")));
+    dlg.setImageSnapshot(image, imagePath);
+    dlg.negativePointButton()->click();
+    QSignalSpy predictions(dlg.backendClient(), &SamBackendClient::predictionReady);
+    QSignalSpy errors(dlg.backendClient(), &SamBackendClient::errorOccurred);
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, QPointF(240, 180)),
+                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    QTRY_VERIFY_WITH_TIMEOUT(!predictions.isEmpty() || !errors.isEmpty(), 30000);
+    QVERIFY2(!predictions.isEmpty(),
+             errors.isEmpty() ? "原生 SAM 未返回负点预测" : qPrintable(errors.first().first().toString()));
+    for (const QList<QVariant>& error : errors)
+        QVERIFY2(!error.first().toString().contains(QStringLiteral("至少提供一个")),
+                 qPrintable(error.first().toString()));
+}
+
+void TestSamAnnotatorDialog::closingWithNativeRequestQueuedDoesNotBlockUi() {
+    qputenv("DEEPLUX_SAM_PACKAGE", QFile::encodeName(QStringLiteral(TEST_SAM_PACKAGE_DIR)));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QImage image(640, 480, QImage::Format_RGB888);
+    image.fill(Qt::white);
+    const QString imagePath = dir.filePath(QStringLiteral("close.png"));
+    QVERIFY(image.save(imagePath));
+    auto dlg = std::make_unique<SamAnnotatorDialog>();
+    auto* mode = dlg->findChild<QComboBox*>(QStringLiteral("SamBackendMode"));
+    QVERIFY(mode);
+    mode->setCurrentIndex(mode->findData(QStringLiteral("native")));
+    dlg->setImageSnapshot(image, imagePath);
+    QThreadPool* pool = samNativeThreadPool();
+    QVERIFY(pool);
+    QTRY_COMPARE_WITH_TIMEOUT(pool->activeThreadCount(), 0, 30000);
+    auto gate = std::make_shared<QSemaphore>();
+    auto entered = std::make_shared<QSemaphore>();
+    pool->start([gate, entered] {
+        entered->release();
+        gate->acquire();
+    });
+    if (!entered->tryAcquire(1, 2000)) {
+        gate->release();
+        QFAIL("共享原生线程池的阻塞任务未在 2 秒内启动");
+    }
+    const bool invoked =
+        QMetaObject::invokeMethod(dlg.get(), "onOverlayClicked", Qt::DirectConnection,
+                                  Q_ARG(QPointF, QPointF(240, 180)), Q_ARG(Qt::MouseButton, Qt::LeftButton));
+    const bool requestBusy = invoked && dlg->backendClient()->state() == SamBackendClient::State::Busy;
+    std::atomic<bool> gateReleased{false};
+    std::thread watchdog([gate, &gateReleased] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        gateReleased.store(true, std::memory_order_release);
+        gate->release();
+    });
+    QElapsedTimer timer;
+    timer.start();
+    dlg.reset();
+    const qint64 closeMs = timer.elapsed();
+    const bool releasedBeforeClose = gateReleased.load(std::memory_order_acquire);
+    const bool poolStillActive = pool->activeThreadCount() > 0;
+    watchdog.join();
+    QVERIFY(invoked);
+    QVERIFY(requestBusy);
+    QVERIFY(!releasedBeforeClose);
+    QVERIFY(poolStillActive);
+    QVERIFY2(closeMs < 1000, qPrintable(QStringLiteral("关闭耗时 %1 ms").arg(closeMs)));
+}
+#endif
 
 QTEST_MAIN(TestSamAnnotatorDialog)
 #include "test_samannotatordialog.moc"

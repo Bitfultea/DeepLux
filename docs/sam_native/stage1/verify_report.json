@@ -1,0 +1,47 @@
+{
+  "package": "/home/charles/Data/Models/sam1_vit_b_onnx",
+  "checks": [
+    {
+      "name": "manifest+sha256",
+      "pass": true,
+      "detail": "formatVersion=1 family=sam1 variant=vit_b"
+    },
+    {
+      "name": "manifest-semantic-fields",
+      "pass": true,
+      "detail": "完整 SAM1 ViT-B v1 运行语义已匹配: preprocessing, coordinateTransform, semantics；模型文件为包内普通文件（拒绝路径穿越与符号链接）"
+    },
+    {
+      "name": "onnx.checker",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "io-vs-manifest",
+      "pass": true,
+      "detail": "encoder/decoder IO 与 manifest 一致"
+    },
+    {
+      "name": "encoder-smoke",
+      "pass": true,
+      "detail": "embedding shape=(1, 256, 64, 64) finite=True"
+    },
+    {
+      "name": "decoder-smoke[points-only]",
+      "pass": true,
+      "detail": "masks=(3, 480, 640) ious=[0.5873, 0.942, 0.9419] fg=[60984, 43, 37]"
+    },
+    {
+      "name": "decoder-smoke[box-only]",
+      "pass": true,
+      "detail": "masks=(3, 480, 640) ious=[0.9008, 0.8561, 0.6094] fg=[16943, 13953, 5384]"
+    },
+    {
+      "name": "decoder-smoke[mixed]",
+      "pass": true,
+      "detail": "masks=(3, 480, 640) ious=[0.9327, 0.9057, 0.6542] fg=[34901, 35705, 4314]"
+    }
+  ],
+  "errors": [],
+  "overallPass": true
+}

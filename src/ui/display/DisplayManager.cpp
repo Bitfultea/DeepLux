@@ -78,7 +78,7 @@ QVector<ViewportWidget*> DisplayManager::allViewports() const {
     return m_viewports.values().toVector();
 }
 
-void DisplayManager::displayData(const DisplayData& data, int delayMs) {
+void DisplayManager::displayData(const DisplayData& data, int delayMs, bool preserveView) {
     QString targetId = data.viewportId();
     qDebug() << "[DM::displayData] targetId=" << targetId << "viewports=" << m_viewports.size();
 
@@ -92,9 +92,9 @@ void DisplayManager::displayData(const DisplayData& data, int delayMs) {
     // Display the data (with optional delay)
     if (data.imageData()) {
         if (delayMs > 0) {
-            QTimer::singleShot(delayMs, target, [target, data]() { target->displayData(data); });
+            QTimer::singleShot(delayMs, target, [target, data, preserveView]() { target->displayData(data, preserveView); });
         } else {
-            target->displayData(data);
+            target->displayData(data, preserveView);
         }
         emit dataDisplayed(target->viewportId());
     } else if (data.pointCloudData()) {
@@ -105,6 +105,16 @@ void DisplayManager::displayData(const DisplayData& data, int delayMs) {
     } else {
         qWarning() << "[DisplayManager] Unknown data type, ignored";
     }
+}
+
+void DisplayManager::displayImage(const QImage& image, const QString& viewportId, bool preserveView) {
+    ViewportWidget* target = findAvailableViewport(viewportId);
+    if (!target) {
+        qWarning() << "DisplayManager: No available viewport for image";
+        return;
+    }
+    target->displayImage(image, preserveView);
+    emit dataDisplayed(target->viewportId());
 }
 
 void DisplayManager::displayData(IDisplayPort* source, int delayMs) {
@@ -129,7 +139,8 @@ void DisplayManager::displayData(IDisplayPort* source, int delayMs) {
     }
 }
 
-void DisplayManager::displayToViewport(const DisplayData& data, const QString& viewportId, int delayMs) {
+void DisplayManager::displayToViewport(const DisplayData& data, const QString& viewportId, int delayMs,
+                                       bool preserveView) {
     ViewportWidget* target = m_viewports.value(viewportId, nullptr);
     if (!target) {
         qWarning() << "DisplayManager: Viewport not found:" << viewportId;
@@ -138,9 +149,9 @@ void DisplayManager::displayToViewport(const DisplayData& data, const QString& v
 
     if (data.imageData()) {
         if (delayMs > 0) {
-            QTimer::singleShot(delayMs, target, [target, data]() { target->displayData(data); });
+            QTimer::singleShot(delayMs, target, [target, data, preserveView]() { target->displayData(data, preserveView); });
         } else {
-            target->displayData(data);
+            target->displayData(data, preserveView);
         }
         emit dataDisplayed(viewportId);
     }

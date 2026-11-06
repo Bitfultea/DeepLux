@@ -80,6 +80,9 @@ struct AgentActionLogEntry {
     QString params; // JSON string of params
     QString result; // success / error / pending
     bool undoable = false;
+    int durationMs = -1;   // 工具执行耗时；-1 = 未采集
+    QString errorCategory; // LLM 错误类别名（Auth/RateLimit/...）；空 = 无
+    QString toolCallId;    // 与 LLM tool_call 对齐，便于排障
 };
 
 } // namespace DeepLux

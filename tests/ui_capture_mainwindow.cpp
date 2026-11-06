@@ -860,8 +860,9 @@ int main(int argc, char** argv) {
     parser.addPositionalArgument("output-dir", "Directory where screenshots will be written.");
     parser.process(app);
 
-    const QString outputDir = parser.positionalArguments().isEmpty() ? QStringLiteral("/tmp/deeplux-ui-review")
-                                                                     : parser.positionalArguments().first();
+    const QString outputDir = parser.positionalArguments().isEmpty()
+                                  ? QDir::tempPath() + QStringLiteral("/deeplux-ui-review")
+                                  : parser.positionalArguments().first();
     QDir dir(outputDir);
     if (!dir.exists() && !dir.mkpath(".")) {
         qWarning("Failed to create screenshot output directory");
@@ -872,7 +873,11 @@ int main(int argc, char** argv) {
     bool ok = true;
 
     // 收尾2: 加载并运行找圆验收工程，使截图带真实结果（结果叠加/节点状态/检查器）
+#ifdef DEEPLUX_TEST_SOURCE_DIR
+    const QString repoRoot = QString::fromUtf8(DEEPLUX_TEST_SOURCE_DIR);
+#else
     const QString repoRoot = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../..");
+#endif
     QTemporaryDir pluginTempRoot;
     const bool ranAcceptance = pluginTempRoot.isValid() &&
                                loadAndRunFindCircleAcceptance(repoRoot, pluginTempRoot.filePath("plugins"), window);

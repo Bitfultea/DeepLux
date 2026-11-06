@@ -4,7 +4,7 @@
 
 namespace DeepLux {
 
-class StopLoopModule : public ModuleBase {
+class DEEPLUX_PLUGIN_API StopLoopModule : public ModuleBase {
     Q_OBJECT
 
 public:

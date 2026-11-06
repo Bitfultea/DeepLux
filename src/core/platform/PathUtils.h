@@ -13,8 +13,8 @@ class PathUtils {
 public:
     /**
      * @brief 获取应用数据目录
-     * Windows: C:/Users/<user>/AppData/Local/DeepLux
-     * Linux: ~/.deeplux
+     * Windows/Linux/macOS: <用户主目录>/.deeplux
+     * 可通过环境变量 DEEPLUX_APP_DATA_DIR 覆盖（测试/便携部署使用）。
      */
     static QString appDataPath();
 

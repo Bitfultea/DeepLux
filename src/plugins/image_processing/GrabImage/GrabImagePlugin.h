@@ -11,7 +11,7 @@
 
 namespace DeepLux {
 
-class GrabImagePlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API GrabImagePlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)

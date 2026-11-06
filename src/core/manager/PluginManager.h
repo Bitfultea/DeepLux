@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../engine/ExecutionAffinity.h"
 #include "../platform/Platform.h"
 #include "core/deeplux/DataContract.h"
 
@@ -49,6 +50,8 @@ struct PluginInfo {
     bool blocking = false;       // metadata.json execution.blocking，是否有阻塞式 I/O
     QJsonObject requirements;    // metadata.json requirements snapshot captured during scan
     QStringList requirementMetadataErrors;
+    // metadata.json execution.affinity（gui 默认 / worker）；非法值按 gui 处理
+    ExecutionAffinity executionAffinity = ExecutionAffinity::Gui;
 };
 
 /**
@@ -125,7 +128,7 @@ private:
     PluginManager();
     ~PluginManager();
 
-    bool validateLoadedPlugin(const QString& name, QPluginLoader* loader, QString* error) const;
+    bool validateLoadedPlugin(const PluginInfo& candidate, QPluginLoader* loader, QString* error) const;
     void markPluginLoaded(const QString& name, QPluginLoader* loader);
     void loadNextPluginAsync();
 
@@ -156,6 +159,7 @@ private:
     QStringList m_pluginPaths;
     QMap<QString, PluginInfo> m_modules;
     QMap<QString, PluginInfo> m_cameras;
+    QMap<QString, PluginInfo> m_bundledPlugins;
     QMap<QString, QObject*> m_loadedPlugins;
     QMap<QString, QPluginLoader*> m_pluginLoaders;
     QMap<QString, int> m_liveModuleInstances;

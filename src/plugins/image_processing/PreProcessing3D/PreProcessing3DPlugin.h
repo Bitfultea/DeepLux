@@ -15,7 +15,7 @@ namespace DeepLux {
 // fillValue；填充值与存活合法高度碰撞时失败关闭（契约无法区分二者）；输出
 // CV_32F 高度图、筛选统计，且实际填充过像素时写出 float 量化的
 // height_invalid_value 契约键供下游优先采用。
-class PreProcessing3DPlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API PreProcessing3DPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)

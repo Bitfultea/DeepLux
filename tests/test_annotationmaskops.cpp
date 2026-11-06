@@ -69,6 +69,38 @@ private slots:
         QCOMPARE(encodeRle(QImage()), QString());
     }
 
+    void rleColumnTilesKeepExactOrder() {
+        QImage mask(130, 7, QImage::Format_Grayscale8); // 跨 64 列块，且每行有对齐填充
+        for (int y = 0; y < mask.height(); ++y) {
+            uchar* row = mask.scanLine(y);
+            for (int x = 0; x < mask.width(); ++x)
+                row[x] = ((x * 7 + y * 11) % 13 < 5) ? 255 : 0;
+        }
+        QJsonArray expected;
+        int previous = 0;
+        int run = 0;
+        for (int x = 0; x < mask.width(); ++x) {
+            for (int y = 0; y < mask.height(); ++y) {
+                const int value = mask.constScanLine(y)[x] ? 1 : 0;
+                if (value == previous) {
+                    ++run;
+                } else {
+                    expected.append(run);
+                    run = 1;
+                    previous = value;
+                }
+            }
+        }
+        expected.append(run);
+        const QString encoded = encodeRle(mask);
+        const QJsonObject json = QJsonDocument::fromJson(encoded.toUtf8()).object();
+        QCOMPARE(json.value(QStringLiteral("size")).toArray(), QJsonArray({7, 130}));
+        QCOMPARE(json.value(QStringLiteral("counts")).toArray(), expected);
+        bool ok = false;
+        QCOMPARE(decodeRle(encoded, &ok), mask);
+        QVERIFY(ok);
+    }
+
     // 批2 复核二轮（P3）：期望尺寸不匹配在展开像素前快速失败
     void rleDecodeHonorsExpectedSize() {
         const QImage mask = makeBinary(2, 2, {QRect(0, 0, 1, 1)});
@@ -248,6 +280,17 @@ private slots:
         const QList<QPointF> first = traceContour(two);
         for (const QPointF& p : first)
             QVERIFY(p.x() <= 4 && p.y() <= 4);
+    }
+
+    void traceLargestContourSelectsMainComponent() {
+        const QImage mask = makeBinary(80, 80, {QRect(2, 2, 3, 3), QRect(30, 25, 30, 20)});
+        const QList<QPointF> polygon = traceLargestContour(mask);
+        QVERIFY(polygon.size() >= 4);
+        for (const QPointF& point : polygon) {
+            QVERIFY(point.x() >= 30 && point.x() <= 59);
+            QVERIFY(point.y() >= 25 && point.y() <= 44);
+        }
+        QVERIFY(traceLargestContour(makeBinary(8, 8, {})).isEmpty());
     }
 
     void foregroundBoundingBoxContract() {

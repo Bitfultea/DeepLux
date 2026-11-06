@@ -5,7 +5,7 @@
 
 namespace DeepLux {
 
-class VarDefineModule : public ModuleBase {
+class DEEPLUX_PLUGIN_API VarDefineModule : public ModuleBase {
     Q_OBJECT
 
 public:

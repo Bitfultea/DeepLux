@@ -24,6 +24,9 @@
             "crop_images": {"label": "裁剪图组", "type": "array", "order": 20}
         }
     },
+    "execution": {
+        "affinity": "worker"
+    },
     "ports": {
         "inputs": [
             {

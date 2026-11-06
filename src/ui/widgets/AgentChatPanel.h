@@ -58,11 +58,27 @@ public:
     }
 
     void setThinking(bool thinking);
+    /// 工具执行中：状态条显示"执行中（可停止）"，发送/停止按钮联动
+    void setExecuting(bool executing);
+    /// 本轮被用户停止：状态条显示"已停止"（下一次活动自动复位）
+    void setStopped();
     void setError(const QString& error);
 
     // Shared by the latest-message button and GUI-only Agent navigation tool.
     bool canScrollToLatest() const;
     bool scrollToLatest(int& scrollValue, int& scrollMaximum);
+    // ---- 流式气泡（设计 §5.5；t13 可在此基础上继续，方法签名冻结）----
+    void beginAgentStream(); // 创建空 Agent 气泡，标记 streaming
+    bool isStreamActive() const {
+        return m_streamActive;
+    }
+    void appendStreamContent(const QString& text);             // 每 50ms 一批追加正文
+    void appendStreamReasoning(const QString& text);           // 追加 reasoning
+    void finalizeStreamedMessage(const QString& finalContent); // 终态对齐（以最终文本为准）
+    void failStreamedMessage(const QString& note);             // 失败：保留已收 + 标记
+    void abortStreamedMessage(const QString& note);            // 中止：保留已收 + 标记
+    /// R1：给最后一条 Agent 气泡设置 reasoning（非流式/回退响应展示，折叠块）
+    void setLastAgentReasoning(const QString& reasoning);
 
     void applyTheme(bool isDark);
 
@@ -74,6 +90,7 @@ signals:
     // 控制器校验其与当前待确认批次一致,旧批次迟到事件被拒绝（零副作用）
     void toolPreviewConfirmed(const QString& confirmationId);
     void toolPreviewCancelled(const QString& confirmationId);
+    void stopRequested();
 
 private slots:
     void onSendClicked();
@@ -85,6 +102,7 @@ private:
     void setupUi();
     void updateInputHeight();
     void updateStatusStrip();
+    void updateStopButton();
     void insertMessage(AgentMessageBubble* bubble);
     void rebuildAttachments();
     void updateSendButton();
@@ -106,6 +124,7 @@ private:
     QLabel* m_attachmentCountLabel = nullptr;
     QTimer* m_thinkingTimer = nullptr;
     QToolButton* m_sendButton = nullptr;
+    QToolButton* m_stopButton = nullptr;
     QToolButton* m_attachButton = nullptr;
     QPointer<QToolButton> m_latestButton;
     QPointer<QLabel> m_emptyLabel;
@@ -114,9 +133,13 @@ private:
     QString m_error;
 
     QPointer<AgentMessageBubble> m_lastAgentBubble;
+    QPointer<AgentMessageBubble> m_streamBubble;
+    bool m_streamActive = false;
     bool m_isDark = false;
     bool m_isThinkingTimeout = false;
     bool m_isThinking = false;
+    bool m_isExecuting = false;
+    bool m_stopped = false;
     int m_messageCount = 0;
     int m_pendingToolCount = 0;
 

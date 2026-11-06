@@ -8,11 +8,7 @@ set(PLUGIN_HEADERS
     RegionStatsPlugin.h
 )
 
-if(Qt6_FOUND)
-    qt6_add_plugin(RegionStatsPlugin SHARED SOURCES ${PLUGIN_SOURCES} ${PLUGIN_HEADERS})
-else()
-    add_library(RegionStatsPlugin SHARED ${PLUGIN_SOURCES} ${PLUGIN_HEADERS})
-endif()
+add_library(RegionStatsPlugin SHARED ${PLUGIN_SOURCES} ${PLUGIN_HEADERS})
 
 target_link_libraries(RegionStatsPlugin PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui Qt${QT_VERSION_MAJOR}::Widgets)
 

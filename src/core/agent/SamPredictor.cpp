@@ -3,16 +3,119 @@
 #include "SamBackendClient.h"
 #include "core/common/CancellationToken.h"
 #include "core/deeplux/DataContract.h"
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+#include "core/inference/SamOnnxInference.h"
+#include "core/model/AnnotationMaskOps.h"
 
+#include <opencv2/core.hpp>
+#endif
+
+#include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QImage>
 #include <QJsonArray>
+#include <QPointer>
+#include <QThread>
+#include <QThreadPool>
 #include <QTimer>
 #include <QVariant>
+#include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <future>
+#include <memory>
 
 namespace DeepLux {
+
+#ifdef DEEPLUX_HAS_ONNXRUNTIME
+QThreadPool* samNativeThreadPool() {
+    QCoreApplication* app = QCoreApplication::instance();
+    if (!app || QThread::currentThread() != app->thread())
+        return nullptr;
+    static QPointer<QThreadPool> pool;
+    if (!pool) {
+        pool = new QThreadPool(app);
+        pool->setMaxThreadCount(1);
+        pool->setExpiryTimeout(-1);
+    }
+    return pool;
+}
+
+namespace SamPredictorDetail {
+SamPredictOutcome convertNativeCandidates(const SamNativeResult& prediction, const SamPromptItem& item,
+                                          const QSize& imageSize, bool includeCandidates) {
+    SamPredictOutcome result;
+    auto fail = [&result](const QString& message) {
+        result.error = message;
+        result.candidateScores.clear();
+        result.previewCandidates.clear();
+        return result;
+    };
+    if (!prediction.ok || prediction.candidates.isEmpty())
+        return fail(prediction.cancelled ? QStringLiteral("SAM 预测已取消")
+                                         : QStringLiteral("原生 SAM 预测失败：%1").arg(prediction.error));
+    if (item.candidateIndex < 0 || item.candidateIndex >= prediction.candidates.size())
+        return fail(QStringLiteral("candidateIndex %1 越界（本次共 %2 个候选）")
+                        .arg(item.candidateIndex)
+                        .arg(prediction.candidates.size()));
+
+    QList<SamCandidate> previews;
+    Region2D selectedRegion;
+    result.candidateScores.append(QList<double>{});
+    for (int index = 0; index < prediction.candidates.size(); ++index) {
+        const SamNativeCandidate& candidate = prediction.candidates[index];
+        if (!std::isfinite(candidate.score))
+            return fail(QStringLiteral("原生 SAM 返回非有限候选分数"));
+        result.candidateScores[0].append(candidate.score);
+        if (!includeCandidates && index != item.candidateIndex)
+            continue;
+        if (candidate.mask.empty() || candidate.mask.type() != CV_8UC1 || candidate.mask.cols != imageSize.width() ||
+            candidate.mask.rows != imageSize.height()) {
+            if (index == item.candidateIndex)
+                return fail(QStringLiteral("原生 SAM 返回无效掩膜"));
+            continue;
+        }
+        const QImage mask(candidate.mask.data, candidate.mask.cols, candidate.mask.rows, int(candidate.mask.step),
+                          QImage::Format_Grayscale8);
+        Region2D region;
+        region.label = item.label;
+        region.polygon = MaskOps::traceLargestContour(mask);
+        region.bbox = MaskOps::foregroundBoundingBox(mask);
+        region.maskRle = MaskOps::encodeRle(mask);
+        region.score = std::clamp(candidate.score, 0.0, 1.0);
+        if (!portValueMatchesType(QVariant::fromValue(region), DataType::Region2D)) {
+            if (index == item.candidateIndex)
+                return fail(QStringLiteral("原生 SAM 返回空掩膜或区域契约无效"));
+            continue;
+        }
+        if (index == item.candidateIndex)
+            selectedRegion = region;
+        if (includeCandidates) {
+            SamCandidate preview;
+            preview.polygon = region.polygon;
+            preview.bbox = region.bbox;
+            preview.score = region.score;
+            preview.maskRle = region.maskRle;
+            preview.maskImage = MaskOps::toDisplayMask(mask);
+            if (preview.maskImage.isNull()) {
+                if (index == item.candidateIndex)
+                    return fail(QStringLiteral("原生 SAM 预览掩膜分配失败"));
+                continue;
+            }
+            previews.append(preview);
+        }
+    }
+    result.regions.append(selectedRegion);
+    if (includeCandidates)
+        result.previewCandidates.append(previews);
+    result.modelName = prediction.modelName;
+    result.ok = true;
+    return result;
+}
+} // namespace SamPredictorDetail
+#endif
 
 bool parseSamPointsJson(const QJsonValue& value, QList<QPointF>& out, bool allowEmpty, QString& error) {
     error.clear();
@@ -85,13 +188,16 @@ bool parseSamBoxJson(const QJsonValue& value, QRectF& out, QString& error) {
 }
 
 SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& imagePath,
-                                     const QList<SamPromptItem>& items, int timeoutMs,
-                                     const CancellationToken* cancel) {
+                                     const QList<SamPromptItem>& items, int timeoutMs, const CancellationToken* cancel,
+                                     bool includeCandidates, const SamNativeConfig& nativeConfig) {
     SamPredictOutcome outcome;
     auto fail = [&outcome](const QString& error, int index) {
         outcome.ok = false;
         outcome.error = error;
         outcome.failedIndex = index;
+        outcome.regions.clear();
+        outcome.candidateScores.clear();
+        outcome.previewCandidates.clear();
         return outcome;
     };
 
@@ -106,8 +212,8 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
         return fail(QStringLiteral("未提供任何 prompt"), -1);
     for (int i = 0; i < items.size(); ++i) {
         const SamPromptItem& item = items[i];
-        if (item.positivePoints.isEmpty() && !item.box.isValid())
-            return fail(QStringLiteral("prompt[%1]：points 与 box 至少提供一个").arg(i), i);
+        if (item.positivePoints.isEmpty() && item.negativePoints.isEmpty() && !item.box.isValid())
+            return fail(QStringLiteral("prompt[%1]：正点、负点与 box 至少提供一个").arg(i), i);
         // 解析层已保证有限性；直调结构体路径（插件/内部复用）再防一道
         const auto finitePoints = [](const QList<QPointF>& points) {
             for (const QPointF& p : points) {
@@ -123,6 +229,102 @@ SamPredictOutcome runSamPredictBatch(const QString& serverUrl, const QString& im
             return fail(QStringLiteral("prompt[%1] box 含非有限值").arg(i), i);
         if (item.candidateIndex < 0) // 批4（C）：越界上界在收到候选后校验
             return fail(QStringLiteral("prompt[%1] candidateIndex 必须 >= 0").arg(i), i);
+    }
+
+    if (serverUrl == QLatin1String("native")) {
+#ifndef DEEPLUX_HAS_ONNXRUNTIME
+        Q_UNUSED(includeCandidates);
+        return fail(QStringLiteral("此构建未启用原生 SAM 推理"), -1);
+#else
+        const SamNativeConfig effectiveConfig = nativeConfig.packageDir.isEmpty() && nativeConfig.error.isEmpty()
+                                                    ? SamNativeSettings::snapshot()
+                                                    : nativeConfig;
+        if (QCoreApplication::instance() && QThread::currentThread() == QCoreApplication::instance()->thread()) {
+            QThreadPool* pool = samNativeThreadPool();
+            auto work = std::make_shared<std::packaged_task<SamPredictOutcome()>>(
+                [serverUrl, imagePath, items, timeoutMs, cancel, includeCandidates, effectiveConfig] {
+                    return runSamPredictBatch(serverUrl, imagePath, items, timeoutMs, cancel, includeCandidates,
+                                              effectiveConfig);
+                });
+            auto future = work->get_future();
+            pool->start([work] { (*work)(); });
+
+            QEventLoop loop;
+            QTimer poll;
+            poll.setInterval(10);
+            QObject::connect(&poll, &QTimer::timeout, &loop, [&] {
+                if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready)
+                    loop.quit();
+            });
+            poll.start();
+            loop.exec();
+            future.wait(); // 应用退出使嵌套事件循环提前结束时，也不能留下悬空的取消令牌
+            try {
+                return future.get();
+            } catch (const std::exception& e) {
+                return fail(QStringLiteral("原生 SAM 工作线程失败：%1").arg(e.what()), -1);
+            }
+        }
+
+        if (!effectiveConfig.error.isEmpty())
+            return fail(effectiveConfig.error, -1);
+        const QString packageDir = effectiveConfig.packageDir;
+        const QString device = effectiveConfig.device;
+        if (cancel && cancel->isCancelledFast())
+            return fail(QStringLiteral("SAM 预测已取消"), -1);
+
+        // shortcut: each worker thread owns one model session; consolidate only if session memory becomes a bottleneck.
+        thread_local SamOnnxInference inference;
+        QElapsedTimer timer;
+        timer.start();
+        if ((!inference.isLoaded() || inference.packageDir() != packageDir || inference.requestedDevice() != device) &&
+            !inference.loadPackage(packageDir, device))
+            return fail(QStringLiteral("原生 SAM 模型包加载失败：%1").arg(inference.lastError()), -1);
+        if (timer.elapsed() > timeoutMs)
+            return fail(QStringLiteral("原生 SAM 模型包加载超时"), -1);
+
+        const QImage source(imagePath);
+        if (source.isNull())
+            return fail(QStringLiteral("无法解码输入图像：%1").arg(imagePath), -1);
+        const QImage rgb = source.convertToFormat(QImage::Format_RGB888);
+        if (timer.elapsed() > timeoutMs)
+            return fail(QStringLiteral("原生 SAM 图像读取超时"), -1);
+        const cv::Mat image(rgb.height(), rgb.width(), CV_8UC3, const_cast<uchar*>(rgb.constBits()),
+                            rgb.bytesPerLine());
+        for (int i = 0; i < items.size(); ++i) {
+            if (cancel && cancel->isCancelledFast())
+                return fail(QStringLiteral("SAM 预测已取消"), i);
+            timer.restart();
+            const SamPromptItem& item = items[i];
+            const SamNativeResult prediction =
+                inference.predict(image, item.positivePoints, item.negativePoints, item.box);
+            if (cancel && cancel->isCancelledFast())
+                return fail(QStringLiteral("SAM 预测已取消"), i);
+            if (timer.elapsed() > timeoutMs)
+                return fail(QStringLiteral("原生 SAM 预测超时"), i);
+            SamPredictOutcome converted;
+            try {
+                converted =
+                    SamPredictorDetail::convertNativeCandidates(prediction, item, rgb.size(), includeCandidates);
+            } catch (const std::exception& e) {
+                return fail(QStringLiteral("原生 SAM 候选转换失败：%1").arg(e.what()), i);
+            }
+            if (!converted.ok)
+                return fail(converted.error, i);
+            if (cancel && cancel->isCancelledFast())
+                return fail(QStringLiteral("SAM 预测已取消"), i);
+            if (timer.elapsed() > timeoutMs)
+                return fail(QStringLiteral("原生 SAM 结果转换超时"), i);
+            outcome.regions.append(converted.regions.first());
+            outcome.candidateScores.append(converted.candidateScores.first());
+            if (includeCandidates)
+                outcome.previewCandidates.append(converted.previewCandidates.first());
+            outcome.modelName = converted.modelName;
+            outcome.nativeDevice = inference.device();
+        }
+        outcome.ok = true;
+        return outcome;
+#endif
     }
 
     // 客户端栈上创建：NAM 线程亲和 = 调用线程，本地事件循环同步收口。

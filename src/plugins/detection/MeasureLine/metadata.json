@@ -51,6 +51,9 @@
             "line_angle": {"label": "角度", "unit": "deg", "precision": 3, "order": 3}
         }
     },
+    "execution": {
+        "affinity": "worker"
+    },
     "ports": {
         "inputs": [
             {

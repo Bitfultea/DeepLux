@@ -43,6 +43,9 @@
             "rect_angle": {"label": "角度", "unit": "deg", "precision": 3, "order": 40}
         }
     },
+    "execution": {
+        "affinity": "worker"
+    },
     "ports": {
         "inputs": [
             {

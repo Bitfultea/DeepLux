@@ -2,6 +2,15 @@
 
 set(DEEPLUX_TEST_QPA_PLATFORM "offscreen" CACHE STRING "Qt platform plugin used by GUI tests")
 
+# 原生 SAM 模型包默认位置：Linux/macOS 用 $HOME，Windows 用 %USERPROFILE%。
+if(DEFINED ENV{HOME})
+    set(DEEPLUX_TEST_HOME "$ENV{HOME}")
+elseif(DEFINED ENV{USERPROFILE})
+    file(TO_CMAKE_PATH "$ENV{USERPROFILE}" DEEPLUX_TEST_HOME)
+else()
+    set(DEEPLUX_TEST_HOME "")
+endif()
+
 set(TEST_SOURCES
     test_pathtutils.cpp
     test_modulebase.cpp
@@ -26,6 +35,11 @@ set(TEST_SOURCES
     test_logger.cpp
     test_imagedata.cpp
     test_runengine.cpp
+    test_executionaffinity.cpp
+    test_runenginefinalizer.cpp
+    test_runenginejoblease.cpp
+    test_runengineuserpause.cpp
+    test_flowexecutionservice.cpp
     test_fitline.cpp
     test_findcircle.cpp
     test_measureline.cpp
@@ -48,12 +62,15 @@ set(TEST_SOURCES
     test_plyloader.cpp
     test_tiffloader.cpp
     test_himagewidget.cpp
+    test_imagerefreshcoalescer.cpp
     test_flowcanvas.cpp
     test_propertypanel.cpp
     test_toolschema.cpp
     test_agentobserver.cpp
     test_agentactor.cpp
     test_agentpermissions.cpp
+    test_agenttoolcontract.cpp
+    test_agentretry.cpp
     test_agentundo.cpp
     test_agentcontroller.cpp
     test_openai_llm_client.cpp
@@ -75,6 +92,11 @@ set(TEST_SOURCES
     test_agentbridge.cpp
     test_agente2e.cpp
     test_agent_draft_restore.cpp
+    test_agentclosedloop.cpp
+    test_agentstream.cpp
+    test_agentstreamui.cpp
+    test_agentaudit.cpp
+    test_mcpbridge.cpp
     test_variable_system_plugins.cpp
     test_measurementdata.cpp
     test_measuregap.cpp
@@ -102,6 +124,7 @@ set(TEST_SOURCES
     test_agentphase0_repro.cpp
     test_moduleinspectorpanel.cpp
     test_pluginparametercontracts.cpp
+    test_workerpluginconsistency.cpp
     test_acceptance_flows.cpp
     test_projectmigration.cpp
     test_timeslice.cpp
@@ -310,10 +333,42 @@ set_tests_properties(test_agent_core_plugins_g8 PROPERTIES
     TIMEOUT 30
 )
 
+# ========== 插件路径清单 ==========
+# 顶层 CMake 在测试之前收集了所有插件 target 及其 metadata.json。
+# 这里展开为一条编译期清单：<target>|<dll-or-so>|<metadata>@@...
+# 测试通过 tests/TestPluginRegistry.h 解析，避免在测试代码里硬编码
+# lib*.so/*.dll 名称，并天然支持 MSVC 多配置输出目录（bin/Release 等）。
+get_property(DEEPLUX_PLUGIN_TARGET_ENTRIES GLOBAL PROPERTY DEEPLUX_PLUGIN_TARGET_ENTRIES)
+set(DEEPLUX_TEST_PLUGIN_MANIFEST "")
+foreach(_plugin_entry IN LISTS DEEPLUX_PLUGIN_TARGET_ENTRIES)
+    string(REPLACE "|" ";" _plugin_parts "${_plugin_entry}")
+    list(LENGTH _plugin_parts _plugin_part_count)
+    if(_plugin_part_count LESS 2)
+        continue()
+    endif()
+    list(GET _plugin_parts 0 _plugin_target)
+    list(GET _plugin_parts 1 _plugin_metadata)
+    if(TARGET ${_plugin_target})
+        string(APPEND DEEPLUX_TEST_PLUGIN_MANIFEST
+            "${_plugin_target}|$<TARGET_FILE:${_plugin_target}>|${_plugin_metadata}@@")
+    endif()
+endforeach()
+
+function(deeplux_add_test_plugin_defs test_target)
+    if(NOT DEEPLUX_TEST_PLUGIN_MANIFEST)
+        return()
+    endif()
+    target_compile_definitions(${test_target} PRIVATE
+        DEEPLUX_TEST_PLUGIN_MANIFEST="${DEEPLUX_TEST_PLUGIN_MANIFEST}")
+endfunction()
+
 foreach(TEST_FILE ${TEST_SOURCES})
     get_filename_component(TEST_NAME ${TEST_FILE} NAME_WE)
 
     add_executable(${TEST_NAME} ${TEST_FILE})
+
+    target_compile_definitions(${TEST_NAME} PRIVATE
+        DEEPLUX_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
     target_link_libraries(${TEST_NAME}
         PRIVATE
@@ -332,6 +387,20 @@ foreach(TEST_FILE ${TEST_SOURCES})
         target_include_directories(${TEST_NAME} PRIVATE ${OpenCV_INCLUDE_DIRS})
     endif()
 
+    if(TEST_NAME MATCHES "^(test_acceptance_flows|test_mainwindow|test_plugincontracts|test_pluginparametercontracts|test_workerpluginconsistency)$")
+        deeplux_add_test_plugin_defs(${TEST_NAME})
+        if(TEST_NAME STREQUAL "test_pluginparametercontracts" OR TEST_NAME STREQUAL "test_workerpluginconsistency")
+            # 这些测试会安装并校验全部/候选插件，必须确保插件库先于测试构建完成。
+            foreach(_plugin_entry IN LISTS DEEPLUX_PLUGIN_TARGET_ENTRIES)
+                string(REPLACE "|" ";" _plugin_parts "${_plugin_entry}")
+                list(GET _plugin_parts 0 _plugin_target)
+                if(TARGET ${_plugin_target})
+                    add_dependencies(${TEST_NAME} ${_plugin_target})
+                endif()
+            endforeach()
+        endif()
+    endif()
+
     if(TEST_NAME STREQUAL "test_fitline" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE FitLinePlugin)
     endif()
@@ -342,6 +411,18 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
     if(TEST_NAME STREQUAL "test_acceptance_flows")
         target_link_libraries(${TEST_NAME} PRIVATE BlobPlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_pluginmanager")
+        add_dependencies(${TEST_NAME} MeasurementInputPlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_PLUGINMANAGER_LIB="$<TARGET_FILE:MeasurementInputPlugin>"
+            TEST_PLUGINMANAGER_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json")
+        if(UNIX AND NOT APPLE)
+            add_dependencies(${TEST_NAME} V4L2CameraPlugin)
+            target_compile_definitions(${TEST_NAME} PRIVATE
+                TEST_PLUGINMANAGER_CAMERA_LIB="$<TARGET_FILE:V4L2CameraPlugin>"
+                TEST_PLUGINMANAGER_CAMERA_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/camera/V4L2Camera/metadata.json")
+        endif()
     endif()
     if(TEST_NAME STREQUAL "test_findcircle" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE FindCirclePlugin)
@@ -583,6 +664,15 @@ foreach(TEST_FILE ${TEST_SOURCES})
             TEST_AGENTACTOR_LIB_SamPredict="$<TARGET_FILE:SamPredictPlugin>"
             TEST_AGENTACTOR_META_SamPredict="${CMAKE_SOURCE_DIR}/src/plugins/detection/SamPredict/metadata.json")
     endif()
+    # 第一迭代闭环测试：安装真实 GrabImage 插件（Path 源）后跑 建流程→校验→运行→读输出→调参→截图
+    if(TEST_NAME STREQUAL "test_agentclosedloop")
+        target_link_libraries(${TEST_NAME} PRIVATE GrabImagePlugin ShowImagePlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_CLOSEDLOOP_LIB_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+            TEST_CLOSEDLOOP_META_GrabImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+            TEST_CLOSEDLOOP_LIB_ShowImage="$<TARGET_FILE:ShowImagePlugin>"
+            TEST_CLOSEDLOOP_META_ShowImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/ShowImage/metadata.json")
+    endif()
     if(TEST_NAME STREQUAL "test_loadpointcloud" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE LoadPointCloudPlugin)
     endif()
@@ -636,6 +726,12 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
     if(TEST_NAME STREQUAL "test_clihandler" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE SystemTimePlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_clihandler")
+        add_dependencies(${TEST_NAME} SystemTimePlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_CLIHANDLER_PLUGIN_SystemTime="$<TARGET_FILE:SystemTimePlugin>"
+            TEST_CLIHANDLER_META_SystemTime="${CMAKE_SOURCE_DIR}/src/plugins/system/SystemTime/metadata.json")
     endif()
     if(TEST_NAME STREQUAL "test_logicplugins")
         target_link_libraries(${TEST_NAME}
@@ -728,15 +824,32 @@ foreach(TEST_FILE ${TEST_SOURCES})
             AGENTE2E_PLUGIN_FindCircle="$<TARGET_FILE:FindCirclePlugin>")
     endif()
 
+    # 第二迭代下半：MCP 桥直接复用 src/app 的静态库 deeplux_mcp（协议/权限在同一实现上测试）
+    # 集成收口 B4：黑盒测试启动真实 deeplux-mcp-bridge 子进程
+    if(TEST_NAME STREQUAL "test_mcpbridge")
+        target_link_libraries(${TEST_NAME} PRIVATE deeplux_mcp)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            DEEPLUX_MCP_BRIDGE_PATH="$<TARGET_FILE:deeplux-mcp-bridge>")
+    endif()
+
     if((TEST_NAME STREQUAL "test_mainwindow" OR TEST_NAME STREQUAL "test_agent_viewport_snapshot_handoff") AND
        CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test(NAME ${TEST_NAME}
             COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/run-mainwindow-test-isolated.sh
                 ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR} $<TARGET_FILE:${TEST_NAME}>)
     else()
-        add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+        add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME} -maxwarnings 100000)
     endif()
     set_tests_properties(${TEST_NAME} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}")
+    if(TEST_NAME STREQUAL "test_pluginmanager")
+        set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
+    endif()
+    # B10 Step3：test_agentbridge 与 test_mainwindow 会探测全局插件目录/窗口状态，
+    # 并行运行时与同进程组其他用例互相抢占会造成管道/全局状态隔离缺陷（历史 -j4 失败）。
+    # 对两者设 RUN_SERIAL，使 ctest -j4 全量可稳定通过（串行于其他测试执行）。
+    if(TEST_NAME STREQUAL "test_agentbridge" OR TEST_NAME STREQUAL "test_mainwindow")
+        set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
+    endif()
     if(TEST_NAME STREQUAL "test_acceptance_flows")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 10)
     endif()
@@ -787,6 +900,14 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_agent_camera_lifecycle_g5")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 30)
     endif()
+    # 第一迭代：LLM 重试测试包含真实指数退避等待（最长 4s）与本地假端点，设 TIMEOUT 防挂死
+    if(TEST_NAME STREQUAL "test_agentretry")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
+    endif()
+    # 第二迭代下半：MCP 桥测试启动线程化假桥（QLocalServer），设 TIMEOUT 防挂死 CI
+    if(TEST_NAME STREQUAL "test_mcpbridge")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
+    endif()
 endforeach()
 
 add_executable(ui_capture_mainwindow ui_capture_mainwindow.cpp)
@@ -816,6 +937,7 @@ if(OpenCV_FOUND)
 endif()
 # 阶段 5 复核：插件库路径以 $<TARGET_FILE:...> 注入，测试不再拼接 .so 库名（跨平台）
 target_compile_definitions(ui_capture_mainwindow PRIVATE
+    DEEPLUX_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     UICAP_PLUGIN_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
     UICAP_PLUGIN_FindCircle="$<TARGET_FILE:FindCirclePlugin>"
     UICAP_PLUGIN_LoadPointCloud="$<TARGET_FILE:LoadPointCloudPlugin>"
@@ -831,3 +953,25 @@ add_test(NAME ui_capture_mainwindow COMMAND ui_capture_mainwindow "${CMAKE_CURRE
 set_tests_properties(ui_capture_mainwindow PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}"
     TIMEOUT 300)
+
+# ========== 阶段2：原生 SAM ONNX 推理测试（条件编译）==========
+if(DEEPLUX_NATIVE_SAM)
+    target_compile_definitions(test_samannotatordialog PRIVATE
+        TEST_SAM_PACKAGE_DIR="${DEEPLUX_TEST_HOME}/Data/Models/sam1_vit_b_onnx")
+    set_tests_properties(test_samannotatordialog PROPERTIES TIMEOUT 120)
+    add_executable(test_sam_onnx_inference test_sam_onnx_inference.cpp)
+    target_link_libraries(test_sam_onnx_inference PRIVATE deeplux_core SamPredictPlugin)
+    if(Qt6_FOUND)
+        target_link_libraries(test_sam_onnx_inference PRIVATE Qt6::Core Qt6::Test)
+    else()
+        target_link_libraries(test_sam_onnx_inference PRIVATE Qt5::Core Qt5::Test)
+    endif()
+    target_compile_definitions(test_sam_onnx_inference PRIVATE
+        TEST_SAM_PACKAGE_DIR="${DEEPLUX_TEST_HOME}/Data/Models/sam1_vit_b_onnx"
+        TEST_SAM_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/acceptance/data/sam_native_golden"
+        TEST_SAM_REAL_REPORT="${CMAKE_SOURCE_DIR}/docs/sam_native/stage1/compare_real_report.json")
+    add_test(NAME test_sam_onnx_inference COMMAND test_sam_onnx_inference)
+    set_tests_properties(test_sam_onnx_inference PROPERTIES TIMEOUT 120)
+    add_test(NAME test_sam_native_pool_exit COMMAND test_sam_onnx_inference persistentPoolSessionSurvivesShutdown)
+    set_tests_properties(test_sam_native_pool_exit PROPERTIES TIMEOUT 60)
+endif()

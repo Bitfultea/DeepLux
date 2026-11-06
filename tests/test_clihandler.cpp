@@ -1,15 +1,14 @@
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QTemporaryDir>
 #include <QtTest/QtTest>
 #include <core/common/CLIHandler.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>
 #include <core/model/Project.h>
-
-#include <QCoreApplication>
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
-#include <QTemporaryDir>
 
 using namespace DeepLux;
 
@@ -52,20 +51,27 @@ bool TestCLIHandler::installSystemTimePlugin(const QString& pluginRoot) const {
     }
 
     QDir pluginDir(root.filePath("SystemTime"));
+    // The plugin library/metadata paths are injected by CMake via
+    // $<TARGET_FILE:...>: never hardcode lib*.so, which does not exist on Windows.
+#ifdef TEST_CLIHANDLER_PLUGIN_SystemTime
+    const QString libSrc = QString::fromUtf8(TEST_CLIHANDLER_PLUGIN_SystemTime);
+    const QString metadataSrc = QString::fromUtf8(TEST_CLIHANDLER_META_SystemTime);
+#else
     const QString metadataSrc =
         QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../src/plugins/system/SystemTime/metadata.json");
-    const QString libSrc =
-        QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../lib/libSystemTimePlugin.so");
+    const QString libSrc = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../lib/libSystemTimePlugin.so");
+#endif
+    const QString libName = QFileInfo(libSrc).fileName();
 
     if (!QFileInfo::exists(metadataSrc) || !QFileInfo::exists(libSrc)) {
         return false;
     }
 
     QFile::remove(pluginDir.filePath("metadata.json"));
-    QFile::remove(pluginDir.filePath("libSystemTimePlugin.so"));
+    QFile::remove(pluginDir.filePath(libName));
 
     return QFile::copy(metadataSrc, pluginDir.filePath("metadata.json")) &&
-           QFile::copy(libSrc, pluginDir.filePath("libSystemTimePlugin.so"));
+           QFile::copy(libSrc, pluginDir.filePath(libName));
 }
 
 void TestCLIHandler::testRunCommandRequiresProjectPath() {

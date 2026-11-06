@@ -4,6 +4,9 @@
 #include <QFile>
 #include <QSemaphore>
 #include <QSignalSpy>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QtTest/QtTest>
@@ -68,6 +71,11 @@ private slots:
     void testBlockingMetadataParsedAndInjected();
     void testAvailabilityItemUsesMetadataSnapshotAndLoadedPriority();
     void testCameraAvailabilityPlatformCompatibility();
+    void testExecutionAffinityDefaultsToGui();
+    void testExecutionAffinityParsesWorker();
+    void testExecutionAffinityUnknownFallsBackToGui();
+    void testBrokenUserPluginFallsBackToBundle();
+    void testNonCameraUserPluginFallsBackToBundledCamera();
 
 private:
 };
@@ -594,6 +602,157 @@ void TestPluginManager::testCameraAvailabilityPlatformCompatibility() {
     QVERIFY(!item.value(QStringLiteral("unavailableReason"))
                  .toArray()
                  .contains(QStringLiteral("PLUGIN_PLATFORM_UNSUPPORTED")));
+}
+
+void TestPluginManager::testExecutionAffinityDefaultsToGui() {
+    PluginInfo info;
+    QCOMPARE(info.executionAffinity, ExecutionAffinity::Gui);
+}
+
+void TestPluginManager::testExecutionAffinityParsesWorker() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pluginDir = dir.filePath(QStringLiteral("AffinityProbe"));
+    QVERIFY(QDir().mkpath(pluginDir));
+    QFile meta(QDir(pluginDir).filePath(QStringLiteral("metadata.json")));
+    QVERIFY(meta.open(QIODevice::WriteOnly));
+    meta.write(R"({
+        "id":"com.deeplux.test.affinity","name":"AffinityProbe","version":"1.0.0",
+        "category":"test","description":"affinity probe","author":"tests",
+        "execution":{"threadSafe":false,"blocking":false,"affinity":"worker"},
+        "ports":{"inputs":[],"outputs":[]}
+    })");
+    meta.close();
+
+    PluginInfo info;
+    QVERIFY(
+        PluginManager::instance().loadPluginMetadata(QDir(pluginDir).filePath(QStringLiteral("metadata.json")), info));
+    QCOMPARE(info.executionAffinity, ExecutionAffinity::Worker);
+}
+
+void TestPluginManager::testExecutionAffinityUnknownFallsBackToGui() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pluginDir = dir.filePath(QStringLiteral("AffinityUnknown"));
+    QVERIFY(QDir().mkpath(pluginDir));
+    QFile meta(QDir(pluginDir).filePath(QStringLiteral("metadata.json")));
+    QVERIFY(meta.open(QIODevice::WriteOnly));
+    meta.write(R"({
+        "id":"com.deeplux.test.affinityunknown","name":"AffinityUnknown","version":"1.0.0",
+        "category":"test","description":"unknown affinity probe","author":"tests",
+        "execution":{"threadSafe":false,"blocking":false,"affinity":"future-mode"},
+        "ports":{"inputs":[],"outputs":[]}
+    })");
+    meta.close();
+
+    PluginInfo info;
+    QVERIFY(
+        PluginManager::instance().loadPluginMetadata(QDir(pluginDir).filePath(QStringLiteral("metadata.json")), info));
+    QCOMPARE(info.executionAffinity, ExecutionAffinity::Gui);
+}
+
+void TestPluginManager::testBrokenUserPluginFallsBackToBundle() {
+    const QString bundleRoot = QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("../plugins");
+    QVERIFY(QDir().mkpath(bundleRoot));
+    QTemporaryDir bundleDir(QDir(bundleRoot).filePath("PackagingFallbackXXXXXX"));
+    QTemporaryDir userRoot;
+    QVERIFY(bundleDir.isValid());
+    QVERIFY(userRoot.isValid());
+
+    const QString userDir = userRoot.filePath("PackagingFallback");
+    QVERIFY(QDir().mkpath(userDir));
+    QFile sourceMetadata(QStringLiteral(TEST_PLUGINMANAGER_METADATA));
+    QVERIFY(sourceMetadata.open(QIODevice::ReadOnly));
+    QJsonObject metadata = QJsonDocument::fromJson(sourceMetadata.readAll()).object();
+    metadata["name"] = QStringLiteral("PackagingFallback");
+    metadata["id"] = QStringLiteral("com.deeplux.test.packagingfallback");
+    const QByteArray metadataBytes = QJsonDocument(metadata).toJson();
+    for (const QString& directory : {bundleDir.path(), userDir}) {
+        QFile output(QDir(directory).filePath("metadata.json"));
+        QVERIFY(output.open(QIODevice::WriteOnly));
+        QCOMPARE(output.write(metadataBytes), metadataBytes.size());
+    }
+    const QString moduleFileName = QFileInfo(QStringLiteral(TEST_PLUGINMANAGER_LIB)).fileName();
+    QVERIFY(QFile::copy(QStringLiteral(TEST_PLUGINMANAGER_LIB), QDir(bundleDir.path()).filePath(moduleFileName)));
+
+    PluginManager& manager = PluginManager::instance();
+    manager.addPluginPath(userRoot.path());
+    manager.scanPlugins();
+    QCOMPARE(manager.pluginInfo("PackagingFallback").path, QDir(userDir).filePath("metadata.json"));
+    QVERIFY(manager.loadPlugin("PackagingFallback"));
+    QCOMPARE(manager.pluginInfo("PackagingFallback").path, QDir(bundleDir.path()).filePath("metadata.json"));
+    manager.unloadPlugin("PackagingFallback");
+
+    const QString invalidFileName = QStringLiteral("InvalidPlugin.") + QFileInfo(moduleFileName).suffix();
+    QFile invalidLibrary(QDir(userDir).filePath(invalidFileName));
+    QVERIFY(invalidLibrary.open(QIODevice::WriteOnly));
+    QVERIFY(invalidLibrary.write("not an ELF plugin") > 0);
+    invalidLibrary.close();
+    manager.scanPlugins();
+    QVERIFY(manager.loadPlugin("PackagingFallback"));
+    QCOMPARE(manager.pluginInfo("PackagingFallback").path, QDir(bundleDir.path()).filePath("metadata.json"));
+    manager.unloadPlugin("PackagingFallback");
+}
+
+void TestPluginManager::testNonCameraUserPluginFallsBackToBundledCamera() {
+#ifndef TEST_PLUGINMANAGER_CAMERA_LIB
+    QSKIP("V4L2 camera plugin is available only on Linux");
+#else
+    const QString bundleRoot = QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("../plugins");
+    QVERIFY(QDir().mkpath(bundleRoot));
+    QTemporaryDir bundleDir(QDir(bundleRoot).filePath("PackagingCameraFallbackXXXXXX"));
+    QTemporaryDir userRoot;
+    QVERIFY(bundleDir.isValid());
+    QVERIFY(userRoot.isValid());
+
+    const QString userDir = userRoot.filePath("PackagingCameraFallback");
+    QVERIFY(QDir().mkpath(userDir));
+    QFile sourceMetadata(QStringLiteral(TEST_PLUGINMANAGER_CAMERA_METADATA));
+    QVERIFY(sourceMetadata.open(QIODevice::ReadOnly));
+    QJsonObject metadata = QJsonDocument::fromJson(sourceMetadata.readAll()).object();
+    metadata["name"] = QStringLiteral("PackagingCameraFallback");
+    metadata["id"] = QStringLiteral("com.deeplux.test.packagingcamerafallback");
+    const QByteArray metadataBytes = QJsonDocument(metadata).toJson();
+    for (const QString& directory : {bundleDir.path(), userDir}) {
+        QFile output(QDir(directory).filePath("metadata.json"));
+        QVERIFY(output.open(QIODevice::WriteOnly));
+        QCOMPARE(output.write(metadataBytes), metadataBytes.size());
+    }
+    QVERIFY(QFile::copy(
+        QStringLiteral(TEST_PLUGINMANAGER_CAMERA_LIB),
+        QDir(bundleDir.path()).filePath(QFileInfo(QStringLiteral(TEST_PLUGINMANAGER_CAMERA_LIB)).fileName())));
+    QVERIFY(QFile::copy(QStringLiteral(TEST_PLUGINMANAGER_LIB),
+                        QDir(userDir).filePath(QFileInfo(QStringLiteral(TEST_PLUGINMANAGER_LIB)).fileName())));
+
+    PluginManager& manager = PluginManager::instance();
+    manager.addPluginPath(userRoot.path());
+    manager.scanPlugins();
+    QCOMPARE(manager.pluginInfo("PackagingCameraFallback").path, QDir(userDir).filePath("metadata.json"));
+    QVERIFY(manager.loadPlugin("PackagingCameraFallback"));
+    QCOMPARE(manager.pluginInfo("PackagingCameraFallback").path, QDir(bundleDir.path()).filePath("metadata.json"));
+    manager.unloadPlugin("PackagingCameraFallback");
+
+    QFile moduleMetadataSource(QStringLiteral(TEST_PLUGINMANAGER_METADATA));
+    QVERIFY(moduleMetadataSource.open(QIODevice::ReadOnly));
+    QJsonObject moduleMetadata = QJsonDocument::fromJson(moduleMetadataSource.readAll()).object();
+    moduleMetadata["name"] = QStringLiteral("PackagingCameraFallback");
+    moduleMetadata["id"] = QStringLiteral("com.deeplux.test.packagingcamerafallback.module");
+    QFile userMetadata(QDir(userDir).filePath("metadata.json"));
+    QVERIFY(userMetadata.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    const QByteArray moduleMetadataBytes = QJsonDocument(moduleMetadata).toJson();
+    QCOMPARE(userMetadata.write(moduleMetadataBytes), moduleMetadataBytes.size());
+    userMetadata.close();
+    QVERIFY(QFile::remove(QDir(userDir).filePath(QFileInfo(QStringLiteral(TEST_PLUGINMANAGER_LIB)).fileName())));
+
+    manager.scanPlugins();
+    QVERIFY(manager.availableModules().contains("PackagingCameraFallback"));
+    QVERIFY(!manager.availableCameras().contains("PackagingCameraFallback"));
+    QVERIFY(manager.loadPlugin("PackagingCameraFallback"));
+    QCOMPARE(manager.pluginInfo("PackagingCameraFallback").path, QDir(bundleDir.path()).filePath("metadata.json"));
+    QVERIFY(!manager.availableModules().contains("PackagingCameraFallback"));
+    QVERIFY(manager.availableCameras().contains("PackagingCameraFallback"));
+    manager.unloadPlugin("PackagingCameraFallback");
+#endif
 }
 
 QTEST_MAIN(TestPluginManager)

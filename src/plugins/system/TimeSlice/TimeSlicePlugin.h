@@ -6,7 +6,7 @@
 
 namespace DeepLux {
 
-class TimeSlicePlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API TimeSlicePlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)

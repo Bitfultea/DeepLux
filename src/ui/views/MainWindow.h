@@ -2,6 +2,7 @@
 
 #include "core/common/Logger.h"
 #include "core/display/DisplayData.h"
+#include "core/engine/DisplayFrame.h"
 #include "core/model/ImageData.h"
 #include "core/model/Project.h"
 
@@ -38,6 +39,7 @@ class QVBoxLayout;
 namespace DeepLux {
 class FlowCanvas;
 class DisplayManager;
+class ImageRefreshCoalescer;
 class ViewportWidget;
 class TerminalWidget;
 class AgentActionLogWidget;
@@ -173,6 +175,9 @@ protected:
     void dropEvent(QDropEvent* event) override;
     void closeEvent(QCloseEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void showEvent(QShowEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
+    void changeEvent(QEvent* event) override;
 
     // 左侧面板
     QDockWidget* m_toolBoxDock = nullptr;
@@ -221,6 +226,7 @@ protected:
     QLabel* m_projectLabel = nullptr;
     QWidget* m_processTabContent = nullptr;
     QLabel* m_runStatusLabel = nullptr;
+    QLabel* m_agentTokenLabel = nullptr; // §3.7 Agent token 用量
     QLabel* m_timeLabel = nullptr;
     // 最后导入的图像路径
     QString m_lastImportedImagePath;
@@ -239,6 +245,13 @@ protected:
     void setUiRunningState(bool running, bool cycleMode);
     void updateBreakpointRunControls(bool paused);
     bool syncModulesToRunEngine();
+    // 后台执行（设计 §8.1）：运行控制统一走 FlowExecutionService，
+    // MainWindow 只负责同步模块、更新按钮状态与 job 级收尾。
+    bool startRunThroughService(bool cycleMode);
+    void finishRunUi();
+    // 后台执行（设计 §7.2/§7.3/§7.4/§7.5）：显示帧合并器、帧内快照叠加与降级开关。
+    void renderDisplayFrame(const DisplayFrame& frame);
+    void updateDisplayCaptureForVisibility();
     void clearExecutionHighlight(QTreeWidgetItem* item);
     void showProcessModuleOutput(QTreeWidgetItem* item, bool userInitiated = false);
     void displayImage(const ImageData& image, const QString& label = QString(), const QString& moduleId = QString());
@@ -373,6 +386,11 @@ protected:
 
     // 显示管理
     DisplayManager* m_displayManager = nullptr;
+    // 后台执行（设计 §7.2）：唯一的大图刷新入口（50ms latest-wins 合并器）。
+    ImageRefreshCoalescer* m_imageCoalescer = nullptr;
+    // 最近一次经合并器渲染的帧（含 run 级 moduleDataSnapshot，供测量叠加只读消费）。
+    DisplayFrame m_latestDisplayFrame;
+    bool m_hasDisplayFrame = false;
     QPointer<SamAnnotatorDialog> m_samAnnotatorDialog;
     QPointer<SystemParamView> m_agentSystemSettingsDialog;
     QPointer<LoginDialog> m_agentLoginDialog;

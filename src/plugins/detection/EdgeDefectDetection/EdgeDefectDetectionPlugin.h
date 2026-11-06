@@ -11,7 +11,7 @@ namespace DeepLux {
 // 合并为缺陷区域（极性翻转必切分）。输出选定极性区域数（defect_count/has_defect
 // 恒一致）、凸/凹区域数、结构化区域表（defect_regions,Table：极性/原始索引/
 // 角度/wraps_zero/射线数/偏差）与逐采样偏差统计。
-class EdgeDefectDetectionPlugin : public ModuleBase {
+class DEEPLUX_PLUGIN_API EdgeDefectDetectionPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)

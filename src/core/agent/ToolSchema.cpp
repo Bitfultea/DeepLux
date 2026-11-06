@@ -1,6 +1,40 @@
 #include "ToolSchema.h"
 
+#include <QtGlobal>
+
 namespace DeepLux {
+
+namespace {
+// 工厂共用的唯一构造路径：三个访问级工厂只决定 readOnly/dangerous 两个布尔量，
+// 这里集中断言 §3.1 的不变式（dangerous ⇒ !readOnly）。
+ToolDefinition makeTool(const QString& name, const QString& description, const QList<ToolParam>& params, int timeoutMs,
+                        bool readOnly, bool dangerous) {
+    ToolDefinition tool;
+    tool.name = name;
+    tool.description = description;
+    tool.params = params;
+    tool.dangerous = dangerous;
+    tool.readOnly = readOnly;
+    tool.timeoutMs = timeoutMs;
+    Q_ASSERT(!(tool.readOnly && tool.dangerous));
+    return tool;
+}
+} // namespace
+
+ToolDefinition makeReadOnlyTool(const QString& name, const QString& description, const QList<ToolParam>& params,
+                                int timeoutMs) {
+    return makeTool(name, description, params, timeoutMs, /*readOnly=*/true, /*dangerous=*/false);
+}
+
+ToolDefinition makeWriteTool(const QString& name, const QString& description, const QList<ToolParam>& params,
+                             int timeoutMs) {
+    return makeTool(name, description, params, timeoutMs, /*readOnly=*/false, /*dangerous=*/false);
+}
+
+ToolDefinition makeDangerousTool(const QString& name, const QString& description, const QList<ToolParam>& params,
+                                 int timeoutMs) {
+    return makeTool(name, description, params, timeoutMs, /*readOnly=*/false, /*dangerous=*/true);
+}
 
 QJsonObject ToolParam::toJson() const {
     QJsonObject obj;
@@ -84,6 +118,8 @@ QJsonObject ToolDefinition::toJsonSchema() const {
     schema["name"] = name;
     schema["description"] = description;
     schema["dangerous"] = dangerous;
+    schema["readOnly"] = readOnly;
+    schema["timeoutMs"] = timeoutMs;
 
     QJsonArray paramArray;
     for (const ToolParam& p : params) {
@@ -94,6 +130,10 @@ QJsonObject ToolDefinition::toJsonSchema() const {
     }
     schema["params"] = paramArray;
     return schema;
+}
+
+int ToolSchema::effectiveTimeoutMs(const ToolDefinition& tool) {
+    return tool.timeoutMs > 0 ? tool.timeoutMs : kDefaultToolTimeoutMs;
 }
 
 ToolSchema& ToolSchema::instance() {
@@ -995,9 +1035,71 @@ void ToolSchema::registerDefaultTools() {
                     "(1-16 usable rectangles; non-rectangles skipped and reported; "
                     "mutually exclusive with items)",
                     false},
-                   {"serverUrl", "string", "SAM server base URL", false, QJsonValue("http://127.0.0.1:8990")},
+                   {"serverUrl", "string", "SAM server URL, or 'native' using saved native model settings", false,
+                    QJsonValue("http://127.0.0.1:8990")},
                    {"timeoutMs", "integer", "Per-request timeout in ms, [100,120000]", false, QJsonValue(30000)}},
                   true}); // dangerous（写文件）
+
+    // ---- 第一迭代新增 6 个工具（设计 §4.9；顺序固定以保证 toOpenAIFunctions 输出稳定）----
+    // 全部经工厂注册：契约单源化后禁止裸聚合初始化。
+
+    // validate_workflow（readOnly：只读工程 + 结构化校验结论）
+    registerTool(makeReadOnlyTool(
+        "validate_workflow",
+        "Validate the current flow without running it: missing required input ports, connection/type conflicts "
+        "for disabled nodes, and empty projects. Returns structured issues with code/node/message.",
+        {}, 30000));
+
+    // get_node_runtime_outputs（readOnly）
+    registerTool(makeReadOnlyTool(
+        "get_node_runtime_outputs",
+        "Read the last runtime port outputs and status of one module node: named output ports, elapsed time, "
+        "success/failure and frame id. Requires a finished run; returns engine_busy while the flow is running.",
+        {{"nodeName", "string", "Module instance name (preferred) or instance id", true}}));
+
+    // get_execution_logs（readOnly：只读 Logger 内存副本）
+    registerTool(makeReadOnlyTool(
+        "get_execution_logs",
+        "Read recent in-memory application/run logs with filters. Use category 'Run' for run-engine events, "
+        "'Agent' for agent actions. Returns the newest matching entries, truncated flag when older entries exist.",
+        {{"category", "string", "Exact log category, e.g. 'Run', 'Agent', 'Camera'", false},
+         {"level",
+          "enum",
+          "Minimum level filter",
+          false,
+          QJsonValue("debug"),
+          {"debug", "info", "warning", "error", "success"}},
+         {"keyword", "string", "Case-insensitive substring match on message", false},
+         {"limit", "integer", "Max entries to return, clamped to [1,200]", false, QJsonValue(50)}}));
+
+    // tune_node_and_verify（写，非 dangerous：改工程参数可撤销；验证运行不写外部资源）
+    registerTool(makeWriteTool(
+        "tune_node_and_verify",
+        "Apply a parameter patch to one node atomically and verify the effect. runMode=flow (default) writes the "
+        "parameters, runs the whole flow once waiting for completion, and returns before/after plus this node's "
+        "runtime outputs. runMode=node only applies the patch and reports the previous frame's outputs without "
+        "running anything (no side effects).",
+        {{"nodeName", "string", "Module instance name (preferred) or instance id", true},
+         {"parameters", "object", "Parameter patch: key -> value (string/number/bool), 1..32 keys", true},
+         {"runMode", "enum", "Verification mode", false, QJsonValue("flow"), {"flow", "node"}},
+         {"timeoutMs", "integer", "Wait timeout for runMode=flow, clamped to [1000,300000]", false, QJsonValue(60000)}},
+        300000));
+
+    // capture_viewport_image（readOnly：只写工具自命名的 temp 产物）
+    registerTool(makeReadOnlyTool(
+        "capture_viewport_image",
+        "Capture the image currently shown in the main data-source viewport (falls back to the last flow output) "
+        "into a temporary PNG. The returned imagePath is attached to the next model turn automatically when the "
+        "model supports images.",
+        {}));
+
+    // export_node_output（readOnly：只写工具自命名的 temp 产物）
+    registerTool(makeReadOnlyTool(
+        "export_node_output",
+        "Export one node's last runtime image output (named output port 'image', or the module's recorded output) "
+        "to a temporary PNG/JPG. The returned imagePath is attached to the next model turn automatically.",
+        {{"nodeName", "string", "Module instance name (preferred) or instance id", true},
+         {"format", "enum", "Image format", false, QJsonValue("png"), {"png", "jpg"}}}));
 }
 
 } // namespace DeepLux

@@ -231,7 +231,7 @@ void ViewportWidget::advanceContentGeneration() {
     emit contentGenerationChanged(m_contentGeneration);
 }
 
-void ViewportWidget::displayData(const DisplayData& data) {
+void ViewportWidget::displayData(const DisplayData& data, bool preserveView) {
     if (data.pointCloudData() && !data.pointCloudData()->isEmpty()) {
         advanceContentGeneration();
         m_cachedImage = QImage();
@@ -256,7 +256,7 @@ void ViewportWidget::displayData(const DisplayData& data) {
         m_hasCachedImage = true;
         m_imageCoordinateProvenance = data.imageData()->coordinateProvenance();
         switchTo2D();
-        setImageWidgetImage(m_cachedImage);
+        setImageWidgetImage(m_cachedImage, preserveView);
         m_contentInfoLabel->setText(tr("%1 × %2").arg(m_cachedImage.width()).arg(m_cachedImage.height()));
         emit imageDisplayed();
         QString dsName = data.metadata().value("dataSourceName").toString();
@@ -273,7 +273,7 @@ QImage ViewportWidget::currentImage() const {
     return m_imageWidget ? m_imageWidget->currentImage() : QImage();
 }
 
-void ViewportWidget::displayImage(const QImage& image) {
+void ViewportWidget::displayImage(const QImage& image, bool preserveView) {
     advanceContentGeneration();
     m_cachedCloudData = DisplayData();
     m_hasCachedCloud = false;
@@ -281,13 +281,14 @@ void ViewportWidget::displayImage(const QImage& image) {
     m_hasCachedImage = true;
     m_imageCoordinateProvenance = newImageCoordinateSource(image.size());
     switchTo2D();
-    setImageWidgetImage(image);
+    setImageWidgetImage(image, preserveView);
     m_contentInfoLabel->setText(tr("%1 × %2").arg(image.width()).arg(image.height()));
     emit imageDisplayed();
     updateToggleAction();
 }
 
-void ViewportWidget::setDualData(const QImage& image, const DisplayData& cloudData, DisplayMode initialMode) {
+void ViewportWidget::setDualData(const QImage& image, const DisplayData& cloudData, DisplayMode initialMode,
+                                 bool preserveView) {
     advanceContentGeneration();
     m_cachedImage = image;
     m_hasCachedImage = true;
@@ -296,7 +297,7 @@ void ViewportWidget::setDualData(const QImage& image, const DisplayData& cloudDa
     m_hasCachedCloud = true;
     if (initialMode == DisplayMode::Auto2D) {
         switchTo2D();
-        setImageWidgetImage(image);
+        setImageWidgetImage(image, preserveView);
         m_contentInfoLabel->setText(tr("%1 × %2").arg(image.width()).arg(image.height()));
         emit imageDisplayed();
     } else {
@@ -370,9 +371,9 @@ void ViewportWidget::clearDisplay() {
     updateToggleAction();
 }
 
-void ViewportWidget::setImageWidgetImage(const QImage& image) {
+void ViewportWidget::setImageWidgetImage(const QImage& image, bool preserveView) {
     const QScopedValueRollback<bool> guard(m_synchronizingImageWidget, true);
-    m_imageWidget->setImage(image, m_imageCoordinateProvenance);
+    m_imageWidget->setImage(image, m_imageCoordinateProvenance, preserveView);
 }
 
 void ViewportWidget::clearImageWidget() {

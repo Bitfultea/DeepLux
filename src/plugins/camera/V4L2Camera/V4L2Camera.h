@@ -16,7 +16,7 @@ namespace DeepLux {
 /**
  * @brief V4L2 相机设备
  */
-class V4L2Camera : public ICamera {
+class DEEPLUX_PLUGIN_API V4L2Camera : public ICamera {
     Q_OBJECT
     Q_INTERFACES(DeepLux::ICamera)
 

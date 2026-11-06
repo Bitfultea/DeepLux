@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-10-15",
+  "source": "docs/sam_native/stage1/compare_real_report.json",
+  "imageDimensions": "800x565",
+  "images": [
+    "new_pinhole_162.png",
+    "new_pinhole_163.png",
+    "new_pinhole_165.png",
+    "new_pinhole_166.png",
+    "new_pinhole_167.png",
+    "new_pinhole_168.png"
+  ],
+  "caseCount": 18,
+  "exitCode": 0,
+  "limits": {
+    "scoreDelta": 0.01,
+    "bboxDeltaPx": 1,
+    "cpuMaskIoU": 0.99
+  },
+  "observed": {
+    "maxScoreDelta": 0.0018,
+    "maxBboxDeltaPx": 1,
+    "minCpuMaskIoU": 0.996429
+  },
+  "cases": [
+    {
+      "image": "new_pinhole_162.png",
+      "promptKind": "pos",
+      "scoreDelta": 0.000174,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.999974
+    },
+    {
+      "image": "new_pinhole_162.png",
+      "promptKind": "posneg",
+      "scoreDelta": 0.001797,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.998342
+    },
+    {
+      "image": "new_pinhole_162.png",
+      "promptKind": "box",
+      "scoreDelta": 0.000294,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.999467
+    },
+    {
+      "image": "new_pinhole_163.png",
+      "promptKind": "pos",
+      "scoreDelta": 0.000103,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.999806
+    },
+    {
+      "image": "new_pinhole_163.png",
+      "promptKind": "posneg",
+      "scoreDelta": 0.000237,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.998877
+    },
+    {
+      "image": "new_pinhole_163.png",
+      "promptKind": "box",
+      "scoreDelta": 0.000733,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.998524
+    },
+    {
+      "image": "new_pinhole_165.png",
+      "promptKind": "pos",
+      "scoreDelta": 0.000006,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.999608
+    },
+    {
+      "image": "new_pinhole_165.png",
+      "promptKind": "posneg",
+      "scoreDelta": 0.001454,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.999635
+    },
+    {
+      "image": "new_pinhole_165.png",
+      "promptKind": "box",
+      "scoreDelta": 0.000142,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.999366
+    },
+    {
+      "image": "new_pinhole_166.png",
+      "promptKind": "pos",
+      "scoreDelta": 0.000021,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.99983
+    },
+    {
+      "image": "new_pinhole_166.png",
+      "promptKind": "posneg",
+      "scoreDelta": 0.000087,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.999865
+    },
+    {
+      "image": "new_pinhole_166.png",
+      "promptKind": "box",
+      "scoreDelta": 0.001306,
+      "bboxDeltaPx": 1,
+      "cpuMaskIoU": 0.996767
+    },
+    {
+      "image": "new_pinhole_167.png",
+      "promptKind": "pos",
+      "scoreDelta": 0.000015,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.999822
+    },
+    {
+      "image": "new_pinhole_167.png",
+      "promptKind": "posneg",
+      "scoreDelta": 0.0018,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.996689
+    },
+    {
+      "image": "new_pinhole_167.png",
+      "promptKind": "box",
+      "scoreDelta": 0.000197,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.999098
+    },
+    {
+      "image": "new_pinhole_168.png",
+      "promptKind": "pos",
+      "scoreDelta": 0.000012,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.999802
+    },
+    {
+      "image": "new_pinhole_168.png",
+      "promptKind": "posneg",
+      "scoreDelta": 0.00019,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.996429
+    },
+    {
+      "image": "new_pinhole_168.png",
+      "promptKind": "box",
+      "scoreDelta": 0.000289,
+      "bboxDeltaPx": 0,
+      "cpuMaskIoU": 0.997845
+    }
+  ]
+}
