@@ -4,7 +4,9 @@
 #include "core/engine/RunEngine.h"
 #include "core/model/Project.h"
 
+#include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QSemaphore>
 #include <QSignalSpy>
 #include <QThread>
@@ -220,6 +222,35 @@ struct ShutdownBarrierGuard {
         // 3) 清除钩子并恢复默认阈值；必须在捕获的栈变量销毁前执行。
         service->clearWorkerExitBarrierForTest();
         service->setShutdownDeadlineForTest(originalDeadlineMs);
+    }
+};
+
+/// T2.3 行为契约用例的失败路径收尾（非 NF、无生产修复提交）：
+/// DirectConnection 槽捕获了本用例栈上的原子变量，且 engine 持有 probe 栈对象指针。
+/// 任何 QVERIFY/QCOMPARE 提前返回时，必须先断连、请求停止、并有界等待 worker 回到
+/// Idle，保证槽不再被调用、worker 不再引用已销毁的栈变量。
+/// 声明顺序要求：本 guard 必须在被捕获变量之后声明（析构逆序 => 最先析构）。
+struct T23ContractCleanupGuard {
+    FlowExecutionService* service = nullptr;
+    QMetaObject::Connection connection;
+    bool armed = false;
+
+    ~T23ContractCleanupGuard() {
+        if (!service || !armed) {
+            return;
+        }
+        // 1) 先断连：后续 jobStateChanged(Running/Stopping/Idle) 不得再进入槽。
+        QObject::disconnect(connection);
+        // 2) 停止任务（幂等；job 已结束时直接返回）。
+        service->stop();
+        // 3) 有界等待 worker 真正空闲：emit 已返回、槽已不再执行、
+        //    worker 不再持有本用例 probe / 原子变量的引用。
+        QElapsedTimer timer;
+        timer.start();
+        while (service->state() != FlowExecutionService::State::Idle && timer.elapsed() < 5000) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            QThread::msleep(5);
+        }
     }
 };
 
@@ -737,6 +768,86 @@ private slots:
         QVERIFY(service.startSingle());
         QTRY_COMPARE_WITH_TIMEOUT(nextSpy.count(), 1, 5000);
         QCOMPARE(probe.runs.load(), 1);
+    }
+
+    // ==== T2.3 行为契约／回归保护（2026-11-06 评审裁定）====
+    // 性质：基线已绿、非 NF、无生产修复提交。原计划「commitState 持锁 emit 导致
+    // DirectConnection 回调死锁」的前提不成立：commitState 一直是 atomic store +
+    // 锁外 emit，continueRun 的恢复请求由锁内谓词保存，不存在丢恢复的提交窗口。
+    // 本用例固化该契约，防止未来重构（如 T2.7 等待者拆分）重新引入持锁通知。
+    void testContinueImmediatelyAfterPauseIsNotLost() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe;
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+
+        std::atomic<int> pausedSignals{0};
+        std::atomic<int> continueResult{-1};
+        // Paused 的 DirectConnection 回调恰落在「Paused 已提交、worker 尚未进入
+        // m_wake.wait」的窗口：若通知在 m_mutex 内发出，槽内 continueRun() 会因
+        // 非递归互斥量自死锁；若窗口丢失恢复，continueResult 会是 0。
+        const QMetaObject::Connection conn = connect(
+            &service, &FlowExecutionService::jobStateChanged, this,
+            [&service, &pausedSignals, &continueResult](FlowExecutionService::State s, FlowExecutionService::JobType) {
+                if (s == FlowExecutionService::State::Paused) {
+                    ++pausedSignals;
+                    continueResult.store(service.continueRun() ? 1 : 0, std::memory_order_release);
+                }
+            },
+            Qt::DirectConnection);
+        QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
+        // 失败路径收尾：必须最后声明，保证最先析构（此时上面所有栈变量仍有效）。
+        T23ContractCleanupGuard guard{&service, conn, true};
+
+        QVERIFY(service.startCycle());
+        QTRY_VERIFY_WITH_TIMEOUT(probe.runs.load() >= 2, 5000);
+        QVERIFY(service.pauseRun());
+        QTRY_VERIFY_WITH_TIMEOUT(pausedSignals.load() >= 1, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(continueResult.load(), 1, 5000);
+        QVERIFY2(continueResult.load() == 1,
+                 "continueRun in the pause-commit window must be accepted (no deadlock, no lost resume)");
+        const int runsAtResume = probe.runs.load();
+        QTRY_VERIFY_WITH_TIMEOUT(probe.runs.load() > runsAtResume, 5000);
+        service.stop();
+        QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+        QCOMPARE(finishedSpy.first().at(1).toBool(), true);
+        QCOMPARE(service.state(), FlowExecutionService::State::Idle);
+        QObject::disconnect(conn);
+        guard.armed = false;
+    }
+
+    void testPauseResumeDoesNotDeadlockUnderDirectSignal() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe;
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+
+        std::atomic<int> pausedSignals{0};
+        const QMetaObject::Connection conn = connect(
+            &service, &FlowExecutionService::jobStateChanged, this,
+            [&service, &pausedSignals](FlowExecutionService::State s, FlowExecutionService::JobType) {
+                if (s == FlowExecutionService::State::Paused) {
+                    ++pausedSignals;
+                    service.stop();
+                }
+            },
+            Qt::DirectConnection);
+        QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
+        T23ContractCleanupGuard guard{&service, conn, true};
+
+        QVERIFY(service.startCycle());
+        QTRY_VERIFY_WITH_TIMEOUT(probe.runs.load() >= 2, 5000);
+        QVERIFY(service.pauseRun());
+        QTRY_VERIFY_WITH_TIMEOUT(pausedSignals.load() >= 1, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+        QCOMPARE(finishedSpy.first().at(1).toBool(), true);
+        QCOMPARE(service.state(), FlowExecutionService::State::Idle);
+        QObject::disconnect(conn);
+        guard.armed = false;
     }
 };
 
