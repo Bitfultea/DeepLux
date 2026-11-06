@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -17,6 +18,7 @@
 #include <QVariant>
 #include <QVector>
 #include <QtTest/QtTest>
+#include <atomic>
 #include <cmath>
 #include <core/base/ModuleBase.h>
 #include <core/deeplux/DataContract.h>
@@ -262,6 +264,87 @@ QByteArray imageSignature(const ImageData& image) {
     return hash.result();
 }
 
+/// 失败时捕获双方图像与像素级差异；仅供诊断，不改变 imageSignature 的严格判等。
+/// 输出目录可用 DEEPLUX_IMAGE_DIFF_DIR 覆盖，缺省 /var/tmp/deeplux-image-diff。
+QString dumpImageDifference(const ImageData& reference, const ImageData& actual) {
+    const QImage a = reference.toQImage().convertToFormat(QImage::Format_RGBA8888);
+    const QImage b = actual.toQImage().convertToFormat(QImage::Format_RGBA8888);
+    if (a.isNull() || b.isNull()) {
+        return QStringLiteral("null image (reference=%1 actual=%2)").arg(a.isNull() ? 1 : 0).arg(b.isNull() ? 1 : 0);
+    }
+    if (a.size() != b.size()) {
+        return QStringLiteral("size %1x%2 vs %3x%4").arg(a.width()).arg(a.height()).arg(b.width()).arg(b.height());
+    }
+
+    const int w = a.width();
+    const int h = a.height();
+    static std::atomic<int> sequence{0};
+    const int seq = ++sequence;
+    const QByteArray configured = qgetenv("DEEPLUX_IMAGE_DIFF_DIR");
+    const QString dir =
+        QString::fromLocal8Bit(configured.isEmpty() ? QByteArrayLiteral("/var/tmp/deeplux-image-diff") : configured);
+    QDir().mkpath(dir);
+    const QString base = QStringLiteral("%1/diff-%2").arg(dir).arg(seq, 4, 10, QLatin1Char('0'));
+    const QString pathA = base + QStringLiteral("-reference.png");
+    const QString pathB = base + QStringLiteral("-actual.png");
+    const bool savedA = a.save(pathA, "PNG");
+    const bool savedB = b.save(pathB, "PNG");
+
+    int firstX = -1;
+    int firstY = -1;
+    QByteArray firstA(4, '\0');
+    QByteArray firstB(4, '\0');
+    qlonglong differentPixels = 0;
+    int minX = w;
+    int minY = h;
+    int maxX = -1;
+    int maxY = -1;
+    for (int y = 0; y < h; ++y) {
+        const uchar* rowA = a.constScanLine(y);
+        const uchar* rowB = b.constScanLine(y);
+        for (int x = 0; x < w; ++x) {
+            const uchar* pa = rowA + x * 4;
+            const uchar* pb = rowB + x * 4;
+            if (pa[0] != pb[0] || pa[1] != pb[1] || pa[2] != pb[2] || pa[3] != pb[3]) {
+                ++differentPixels;
+                if (firstX < 0) {
+                    firstX = x;
+                    firstY = y;
+                    firstA = QByteArray(reinterpret_cast<const char*>(pa), 4);
+                    firstB = QByteArray(reinterpret_cast<const char*>(pb), 4);
+                }
+                minX = qMin(minX, x);
+                minY = qMin(minY, y);
+                maxX = qMax(maxX, x);
+                maxY = qMax(maxY, y);
+            }
+        }
+    }
+
+    const QString detail = QStringLiteral("dump#%1 %2x%3 reference=%4(save=%5) actual=%6(save=%7); "
+                                          "firstDiffPixel=(%8,%9) refRGBA=%10 actRGBA=%11; "
+                                          "differentPixels=%12/%13; diffBBox=(%14,%15)-(%16,%17)")
+                               .arg(seq)
+                               .arg(w)
+                               .arg(h)
+                               .arg(pathA)
+                               .arg(savedA ? 1 : 0)
+                               .arg(pathB)
+                               .arg(savedB ? 1 : 0)
+                               .arg(firstX)
+                               .arg(firstY)
+                               .arg(QString::fromLatin1(firstA.toHex()))
+                               .arg(QString::fromLatin1(firstB.toHex()))
+                               .arg(differentPixels)
+                               .arg(static_cast<qlonglong>(w) * h)
+                               .arg(minX)
+                               .arg(minY)
+                               .arg(maxX)
+                               .arg(maxY);
+    qWarning().noquote() << QStringLiteral("[image-diff]") << detail;
+    return detail;
+}
+
 bool fuzzyEqual(double a, double b) {
     return qFuzzyCompare(a + 1.0, b + 1.0) || qAbs(a - b) <= 1e-9 * qMax(1.0, qMax(qAbs(a), qAbs(b)));
 }
@@ -299,7 +382,8 @@ bool mapsEqual(const QVariantMap& a, const QVariantMap& b, QString& reason) {
 bool valuesEqual(const QVariant& a, const QVariant& b, QString& reason) {
     if (a.canConvert<ImageData>() && b.canConvert<ImageData>()) {
         if (imageSignature(a.value<ImageData>()) != imageSignature(b.value<ImageData>())) {
-            reason = QStringLiteral("image payload differs");
+            reason = QStringLiteral("image payload differs; %1")
+                         .arg(dumpImageDifference(a.value<ImageData>(), b.value<ImageData>()));
             return false;
         }
         return true;
