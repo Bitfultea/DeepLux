@@ -10,6 +10,7 @@
 #include <QThread>
 #include <QtTest/QtTest>
 #include <atomic>
+#include <chrono>
 #include <stdexcept>
 #include <thread>
 
@@ -193,6 +194,35 @@ bool loadServiceFlow(ServiceFlow& flow, bool blockFirst, bool firstBreakpoint) {
     return loaded;
 }
 
+/// T2.1 NF 失败路径收尾：放行退出屏障、回收独立控制线程、清除钩子、恢复诊断阈值。
+/// 所有等待都有界，保证任何 QVERIFY 提前返回时 worker 与控制线程都能安全退出，
+/// 且钩子（捕获测试栈变量）在栈销毁前一定被清空。
+struct ShutdownBarrierGuard {
+    FlowExecutionService* service = nullptr;
+    QSemaphore* release = nullptr;
+    std::atomic<bool>* released = nullptr;
+    std::thread* control = nullptr;
+    bool controlStarted = false;
+    int originalDeadlineMs = 10000;
+
+    ~ShutdownBarrierGuard() {
+        if (!service) {
+            return;
+        }
+        // 1) 无论如何先放行，避免 worker 卡在退出屏障上导致 shutdown 无法返回。
+        if (released && !released->exchange(true) && release) {
+            release->release();
+        }
+        // 2) 回收独立控制线程（其内部 entered / 诊断轮询等待均有界，最长约 6s）。
+        if (controlStarted && control && control->joinable()) {
+            control->join();
+        }
+        // 3) 清除钩子并恢复默认阈值；必须在捕获的栈变量销毁前执行。
+        service->clearWorkerExitBarrierForTest();
+        service->setShutdownDeadlineForTest(originalDeadlineMs);
+    }
+};
+
 } // namespace
 
 class TestFlowExecutionService : public QObject {
@@ -364,8 +394,10 @@ private slots:
         QCOMPARE(probe.runs.load(), 2);
     }
 
-    // T2.1（NF）：worker 退出等待必须在诊断阈值处告警并继续 join（禁止 detach），
-    // 且不能挂死；注入 0ms 使诊断路径确定性触发。
+    // T2.1（NF，确定性整改）：worker 退出等待必须在诊断阈值处告警并继续 join（禁止 detach），
+    // 且不能挂死。旧用例注入 0ms 后 wait(0) 可能成功（worker 正常退出），导致诊断不命中、
+    // 用例 17/30 失败，不具确定性。本版以「退出屏障」保证 worker 在诊断发生前不能退出，
+    // 再由独立控制线程放行；屏障等待不持有服务互斥锁。
     void testShutdownReportsDeadlineAndJoinsWorkerWithoutDetach() {
         RunEngine& engine = RunEngine::instance();
         FlowExecutionService& service = FlowExecutionService::instance();
@@ -380,13 +412,81 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
         QTRY_COMPARE_WITH_TIMEOUT(service.state(), FlowExecutionService::State::Idle, 5000);
 
+        const int baselineHits = service.shutdownDeadlineHitCountForTest();
+        const int originalDeadlineMs = 10000;
         service.setShutdownDeadlineForTest(0);
+
+        QSemaphore entered; // worker 已到达退出屏障
+        QSemaphore release; // 独立控制线程放行
+        std::atomic<bool> released{false};
+        std::atomic<int> workerRunFinished{0};     // 屏障返回、worker 即将真正退出
+        std::atomic<bool> shutdownReturned{false}; // 主线程在 shutdown() 返回后置位
+        std::atomic<int> returnedBeforeRelease{-1};
+        std::atomic<int> workerFinishedBeforeRelease{-1};
+        std::atomic<int> workerAtBarrier{-1};
+
+        service.setWorkerExitBarrierForTest([&]() {
+            // 该钩子在 WorkerThread::run() 内、workerLoop() 返回之后执行，且不持有 m_mutex。
+            entered.release();
+            // 有界等待：任何失败路径下 worker 都能自行退出，绝不 hang。
+            release.tryAcquire(1, 5000);
+            workerRunFinished.store(1, std::memory_order_release);
+        });
+
+        std::thread control;
+        ShutdownBarrierGuard guard{&service, &release, &released, &control, false, originalDeadlineMs};
+
+        control = std::thread([&]() {
+            // 1) 有界等待 worker 到达退出屏障（证明屏障确实生效）。
+            const bool atBarrier = entered.tryAcquire(1, 3000);
+            // 2) 有界等待本轮诊断计数增量；缺失诊断变体下不会命中，但仍有界放行。
+            QElapsedTimer poll;
+            poll.start();
+            while (service.shutdownDeadlineHitCountForTest() <= baselineHits && poll.elapsed() < 2000) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            // 3) 放行前的「提前返回」观测窗口（与 T2.2 已批准的有界窗口同构）：
+            //    正确实现下主线程仍阻塞在 shutdown() 的 join 中，shutdownReturned 必须
+            //    保持 false；提前返回变体会在此 500ms 有界窗口内置位。窗口与放行都在
+            //    本独立控制线程内完成，不依赖任何无界等待。
+            QElapsedTimer earlyWindow;
+            earlyWindow.start();
+            while (!shutdownReturned.load(std::memory_order_acquire) && earlyWindow.elapsed() < 500) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            // 4) 放行前记录状态，再由本独立控制线程放行退出屏障。
+            returnedBeforeRelease.store(shutdownReturned.load(std::memory_order_acquire) ? 1 : 0,
+                                        std::memory_order_release);
+            workerFinishedBeforeRelease.store(workerRunFinished.load(std::memory_order_acquire),
+                                              std::memory_order_release);
+            workerAtBarrier.store(atBarrier ? 1 : 0, std::memory_order_release);
+            if (!released.exchange(true)) {
+                release.release();
+            }
+        });
+        guard.controlStarted = true;
+
         QElapsedTimer timer;
         timer.start();
-        QVERIFY2(service.shutdown(), "idle shutdown must join the worker and return true");
-        QVERIFY2(timer.elapsed() < 5000, "shutdown must not hang waiting for the worker");
-        QVERIFY2(service.shutdownDeadlineHitCountForTest() >= 1,
-                 "shutdown must record the diagnostic when the wait exceeds the threshold");
+        const bool shutdownResult = service.shutdown();
+        shutdownReturned.store(true, std::memory_order_release);
+        const qint64 elapsedMs = timer.elapsed();
+
+        // 收尾：控制线程内部等待均有界，join 不会挂死；随后清钩子、恢复阈值。
+        control.join();
+        guard.controlStarted = false;
+        service.clearWorkerExitBarrierForTest();
+        service.setShutdownDeadlineForTest(originalDeadlineMs);
+
+        // —— 断言（顺序即 NF 判据顺序）——
+        QVERIFY2(shutdownResult, "idle shutdown must join the worker and return true");
+        QVERIFY2(elapsedMs < 5000, "shutdown must not hang waiting for the worker");
+        QCOMPARE(workerAtBarrier.load(std::memory_order_acquire), 1);
+        QVERIFY2(service.shutdownDeadlineHitCountForTest() >= baselineHits + 1,
+                 "本轮 shutdown 必须记录有界诊断（计数增量 >= 1）");
+        QCOMPARE(returnedBeforeRelease.load(std::memory_order_acquire), 0);
+        QCOMPARE(workerFinishedBeforeRelease.load(std::memory_order_acquire), 0);
+        QVERIFY2(workerRunFinished.load(std::memory_order_acquire) == 1, "worker 必须真正退出后 shutdown 才返回");
 
         // Join（而非 detach）后可重建线程继续工作。
         QSignalSpy nextSpy(&service, &FlowExecutionService::jobFinished);

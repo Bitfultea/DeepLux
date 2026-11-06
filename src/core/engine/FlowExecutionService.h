@@ -81,6 +81,12 @@ public:
     DEEPLUX_TEST_VISIBILITY : void setShutdownDeadlineForTest(int msecs);
     DEEPLUX_TEST_VISIBILITY : int shutdownDeadlineHitCountForTest() const;
 
+    // T2.1 整改：worker 退出屏障。workerLoop() 返回后、QThread::run() 结束前由工作线程
+    // 调用；钩子在**不持有 m_mutex** 时执行，使 NF 能确定性保证「诊断先于 worker 退出、
+    // shutdown 等 worker 真正退出后才返回」。生产构建该钩子恒为空。
+    DEEPLUX_TEST_VISIBILITY : void setWorkerExitBarrierForTest(std::function<void()> hook);
+    DEEPLUX_TEST_VISIBILITY : void clearWorkerExitBarrierForTest();
+
 signals:
     void jobStateChanged(FlowExecutionService::State state, FlowExecutionService::JobType job);
     void jobFinished(FlowExecutionService::JobType job, bool stopped);
@@ -109,6 +115,8 @@ private:
     bool stopRequested() const;
     bool pauseRequested() const;
     bool quitRequested() const;
+    // T2.1 整改：锁内快照退出屏障钩子、锁外调用；由 WorkerThread::run() 在退出前调用。
+    void runWorkerExitBarrierForTest();
     void commitState(State state, JobType job);
     // 启动握手：enqueue 等待工作者完成“取得 job 租约并提交 Running / 启动失败”，
     // 保证 startX() 返回 true 时 isBusy() 已为真（兼容 Agent/UI 的“started 即忙”语义）。
@@ -128,6 +136,8 @@ private:
     bool m_startOk = false;
     // B7：启动握手超时诊断/测试钩子（钩子仅在持有本地副本时于工作线程执行）。
     std::function<void()> m_testStartHook;
+    // T2.1 整改：worker 退出屏障（仅测试注入）；为空时生产行为不变。
+    std::function<void()> m_testWorkerExitBarrier;
     JobType m_pendingJob = JobType::None;
     RunEngine::JobToken m_leaseToken;
     std::atomic<int> m_state{static_cast<int>(State::Idle)};

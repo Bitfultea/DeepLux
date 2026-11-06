@@ -17,6 +17,9 @@ public:
 protected:
     void run() override {
         m_service->workerLoop();
+        // T2.1 整改：workerLoop() 已返回、其 QMutexLocker 已释放；在线程真正结束前
+        // 执行退出屏障。屏障等待不持有 m_mutex，不会阻塞 shutdown() 取锁。
+        m_service->runWorkerExitBarrierForTest();
     }
 
 private:
@@ -151,6 +154,28 @@ void FlowExecutionService::setShutdownDeadlineForTest(int msecs) {
 
 int FlowExecutionService::shutdownDeadlineHitCountForTest() const {
     return m_shutdownDeadlineHits.load(std::memory_order_acquire);
+}
+
+void FlowExecutionService::setWorkerExitBarrierForTest(std::function<void()> hook) {
+    QMutexLocker locker(&m_mutex);
+    m_testWorkerExitBarrier = std::move(hook);
+}
+
+void FlowExecutionService::clearWorkerExitBarrierForTest() {
+    QMutexLocker locker(&m_mutex);
+    m_testWorkerExitBarrier = nullptr;
+}
+
+void FlowExecutionService::runWorkerExitBarrierForTest() {
+    std::function<void()> hook;
+    {
+        QMutexLocker locker(&m_mutex);
+        hook = m_testWorkerExitBarrier;
+    }
+    // 关键：调用时不持有服务互斥锁；屏障可以长时间等待而不阻塞任何服务入口。
+    if (hook) {
+        hook();
+    }
 }
 
 void FlowExecutionService::settleStart(bool ok) {
