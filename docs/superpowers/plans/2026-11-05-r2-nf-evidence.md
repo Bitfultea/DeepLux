@@ -103,7 +103,7 @@ unset DISPLAY; export QT_QPA_PLATFORM=offscreen
 - `git revert --no-commit c262d73` 在 `e92fcd4` 上**干净应用、无冲突**（与后续退出屏障 hook 提交不重叠）。
 - 「缺失诊断」与「提前返回」两个变体分别命中**不同**预期断言（`:485` / `:487`），证明用例能区分两类缺陷，而非单一红灯。
 - 缺陷变体均干净退出（rc=1，无 SIGSEGV、无 hang、无残留线程）；「提前返回」变体保留 `m_thread` 使进程退出时析构仍能 join 回收线程对象。
-- 全量 CTest 与 `-j4` 稳定性结果见第 4 节。
+- 本专项结果（1.4 节）与全量 CTest 连续 10 次门禁（4.2 节，**未达成**）**分开记录**；专项结论不替代门禁，门禁也不否定专项证据。
 
 ---
 
@@ -207,19 +207,23 @@ ctest --test-dir build --output-on-failure -j4
 
 日志：`/var/tmp/t21-ctest-fixed-{1..10}.log`。**合计 8/10 全通过、2/10 各 1 项失败；「连续 10 次全通过」门禁未达成。**
 
-### 4.3 失败归因：既有 flaky 测试，非本轮回归
+### 4.3 失败归因（**未完成**，2026-11-06 评审裁定降级）
 
-- 失败集中在同一测试 `test_workerpluginconsistency::testCandidateConsistency`，断言 `failures.isEmpty()`（:689），错误恒为 `port 'image': image payload differs`；但**插件与场景各不相同**（`DataCheck/same-instance`、`MeasureLine/two-instances` 等），呈非确定性。
-- 该测试对 `ImageData::toQImage()` 逐像素 SHA256（`imageSignature`，:255），把 GUI 执行 / 同实例 worker 执行 / 另一实例 worker 执行三者严格比对（:660–670）。
-- **与本轮改动无关的证据**：
-  - `git diff 96e02fa HEAD -- tests/test_workerpluginconsistency.cpp` 为**空**；
-  - 该文件不引用 `FlowExecutionService`、退出屏障 hook 或任何本轮新增符号；
-  - 本轮生产改动仅为新增 test-only 空钩子（`FlowExecutionService.{h,cpp}`），既有函数体未变；
-  - 该文件最后一次改动来自 execution-order 线（`96a5036` 等），早于 R2。
-- **独立量化（排除 `-j4` 并行干扰）**：单独执行 `./build/bin/test_workerpluginconsistency` 20 次（同一环境），**16 通过 / 4 失败（20% flake）**，失败插件为 `MeasureRect`、`If`、`DistancePL`、`MeasureLine`，错误同为 `image payload differs`（日志 `/var/tmp/t21-wpc-single-{1..20}.log`）。与 10× 全量中 2 次失败吻合。
-- 结论：`test_workerpluginconsistency` 是**既有非确定性测试**，不是 T2.1 引入的回归；T2.1 自身的确定性证据（1.4 节：修复在位 20/20、两个变体各 10/10 复败、服务套件 18/18、全量构建 exit 0）不受影响。但 **R2 批次「全量 CTest 连续 10 次通过」门禁因该 flake 未达成**，须作为独立已证实问题单列，待评审裁定是先行修复还是纳入门禁豁免；本轮**不擅自放宽或修改该测试**。
+**归因状态：未完成。** 上一版「既有非确定性测试、不是 T2.1 引入的回归」的确定性结论**撤回**，不得作为验收依据。
 
-### 4.4 其他门禁
+- 已观测事实：失败集中在 `test_workerpluginconsistency::testCandidateConsistency`，断言 `failures.isEmpty()`（:689），错误恒为 `port 'image': image payload differs`；插件与场景各不相同（`DataCheck/same-instance`、`MeasureLine/two-instances` 等）。该测试对 `ImageData::toQImage()` 逐像素 SHA256（`imageSignature`，:255），把 GUI 执行 / 同实例 worker 执行 / 另一实例 worker 执行三者严格比对（:660–670）。
+- **现有证据不足以归因**：`git diff 96e02fa HEAD -- tests/test_workerpluginconsistency.cpp` 为空、该文件不引用新增 hook，只能排除**直接修改**；**不能排除共享库（`libdeeplux_core.so` 重链）、内存布局（`FlowExecutionService.h` 新增成员改变类布局）或运行环境（`TMPDIR`、`-j4` 并发、系统负载）变化**带来的影响。
+- **复现条件尚未锁定**：评审方隔离单跑 30 次未复现；本沙箱单跑 20 次 4 次失败、全量 10 次 2 次失败。失败证据有效，但差异说明触发条件依赖环境/构建产物，须固定后继续定位。
+- **裁定**：不给门禁豁免；不放宽严格比较；不排除测试；不靠重试到绿收口。定位与修复按第 5 节推进（捕获失败双方图像 / 首个不同像素 / 差异范围 → `96e02fa` 与当前提交干净构建对照 → 最小修复 → 重跑 10× 门禁）。
+
+### 4.4 T2.1 专项结果与全量门禁分开记录
+
+| 项 | 结论 |
+|---|---|
+| T2.1 专项 NF（1.4 节） | 整改用例证据完整：修复在位 20/20、两个变体各 10/10 复败、服务套件 18/18、全量构建/格式 exit 0。**保留 `e92fcd4` 整改提交，专项结论不受门禁结论牵连。** |
+| 全量 CTest 连续 10 次（4.2 节） | **未达成**（8/10 全通过、2/10 各 1 项失败）。与专项结果分开记录，**不得以专项通过替代门禁**。 |
+
+### 4.5 其他门禁
 
 | 项 | 命令 | 结果 |
 |---|---|---|
@@ -227,3 +231,17 @@ ctest --test-dir build --output-on-failure -j4
 | 全量构建 | `cmake --build build -j4` | **exit 0** |
 | T2.1 单测 | `./build/bin/test_flowexecutionservice testShutdownReportsDeadlineAndJoinsWorkerWithoutDetach` | 20/20 通过，exit 0 |
 | T2.1 套件 | `./build/bin/test_flowexecutionservice` | 18/18 通过 |
+
+---
+
+## 5. #5 图像一致性差异：定位与修复（进行中）
+
+| 项 | 状态 |
+|---|---|
+| 门禁豁免 | **不授予**（评审裁定） |
+| 归因 | **未完成**（见 4.3） |
+| T2.3/T2.4 | 暂缓 |
+| T2.7 WIP | 继续独立保留，`be90921` 不合入 |
+| 下一步 | ① 失败诊断增强；② 固定环境复现并捕获图像；③ 基线干净构建对照；④ 最小修复；⑤ 重跑 10× 门禁 |
+
+（本节随定位进展逐次追加证据。）
