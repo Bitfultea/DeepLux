@@ -256,11 +256,17 @@ Snapshot snapshotOf(IModule* module, const PortValueMap& inputs, qint64 frameId)
 
 QByteArray imageSignature(const ImageData& image) {
     const QImage converted = image.toQImage().convertToFormat(QImage::Format_RGBA8888);
-    QCryptographicHash hash(QCryptographicHash::Sha256);
-    hash.addData(QByteArray::number(converted.width()) + "x" + QByteArray::number(converted.height()));
+    // 单次 addData：把尺寸前缀与全部像素字节聚合成一个连续缓冲后一次性喂给 SHA256。
+    // Qt 5.15.3 上「convertToFormat 输出 + 逐行分块 addData」组合会产生非确定性签名
+    // （图像字节恒定却偶发不同的 SHA256，见 NF 证据文档 5.3）。聚合后喂入的字节序列
+    // 与原先逐行版本完全一致，因此严格比较强度不变。
+    QByteArray payload = QByteArray::number(converted.width()) + "x" + QByteArray::number(converted.height());
+    payload.reserve(payload.size() + converted.width() * 4 * converted.height());
     for (int y = 0; y < converted.height(); ++y) {
-        hash.addData(reinterpret_cast<const char*>(converted.constScanLine(y)), converted.width() * 4);
+        payload.append(reinterpret_cast<const char*>(converted.constScanLine(y)), converted.width() * 4);
     }
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(payload);
     return hash.result();
 }
 
@@ -664,6 +670,34 @@ private:
     }
 
 private slots:
+    /// #5 回归：签名必须稳定，且修复不得降低严格比较强度。
+    void testImageSignatureStabilityAndSensitivity() {
+        // 1) 稳定性：同一 ImageData 连续 200 次签名必须完全一致。
+        const ImageData ref = syntheticImage();
+        const QByteArray baseline = imageSignature(ref);
+        for (int i = 0; i < 200; ++i) {
+            QCOMPARE(imageSignature(ref), baseline);
+        }
+
+        // 2) 敏感性：真实 1 像素差异必须仍被 valuesEqual 拒绝。
+        QImage modified = ref.toQImage().copy();
+        const QRgb original = modified.pixel(5, 5);
+        const QRgb changed = (original == qRgb(255, 0, 0)) ? qRgb(0, 255, 0) : qRgb(255, 0, 0);
+        modified.setPixel(5, 5, changed);
+        const ImageData other(modified);
+        QString reason;
+        QVERIFY2(!valuesEqual(QVariant::fromValue(ref), QVariant::fromValue(other), reason),
+                 "imageSignature must still reject a real one-pixel difference");
+        QVERIFY2(
+            reason.contains(QStringLiteral("image payload differs")),
+            qPrintable(QStringLiteral("difference must be reported as image payload differs, got: %1").arg(reason)));
+
+        // 3) 相同内容（不同 ImageData 实例）必须判等，避免修复引入假阳性。
+        QString noReason;
+        QVERIFY2(valuesEqual(QVariant::fromValue(ref), QVariant::fromValue(ImageData(ref)), noReason),
+                 qPrintable(QStringLiteral("identical images must compare equal: %1").arg(noReason)));
+    }
+
     void initTestCase() {
         QVERIFY2(m_tempDir.isValid(), "temporary plugin directory must be valid");
         qputenv("DEEPLUX_APP_DATA_DIR", m_tempDir.filePath(QStringLiteral("appdata")).toLocal8Bit());
