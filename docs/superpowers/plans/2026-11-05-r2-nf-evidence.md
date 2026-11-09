@@ -341,7 +341,7 @@ ctest --test-dir build --output-on-failure -j4
 | #5 最小修复 + 负验证 | 已完成（5.4 / 5.5），严格比较强度不变 |
 | 修复后全量连续 10 次门禁 | **已达成 10/10**（5.6） |
 | T2.3 | **方案一已收口**（第 6 节）：原计划缺陷前提不成立，改为行为契约／回归保护；基线已绿、非 NF、无生产修复提交 |
-| T2.4 | **待核实**：按 6.5 先做启动握手超时三项前提实证，再决定是否需要修复 |
+| T2.4 | **方案二已收口**（第 7 节）：三项预期行为已满足，尚未证实计划中的缺陷；固化为 Service 层行为契约，不做生产修复、不制造 NF 红灯 |
 | T2.7 WIP | 继续独立保留于 `be90921`，**未合入**（裁定重申） |
 | R2 整批 | **未完成** —— 本次仅 #5 收口，不代表 R2 整批已完成 |
 | 门禁豁免 | 未授予 |
@@ -387,6 +387,7 @@ ctest --test-dir build --output-on-failure -j4
   - `testContinueImmediatelyAfterPauseIsNotLost()`：在 `Paused` 的 DirectConnection 回调里立即 `continueRun()`，断言恢复被接受（`continueResult == 1`）、模块继续执行（`probe.runs` 增长）、`jobFinished(stopped=true)` 到达、`state()==Idle`。
   - `testPauseResumeDoesNotDeadlockUnderDirectSignal()`：在 `Paused` 的 DirectConnection 回调里立即 `stop()`，断言 `jobFinished(stopped=true)` 与 `state()==Idle`。
 - 用例注释明确性质：**基线已绿、非 NF、无生产修复提交**；作用为防止未来重构（如 T2.7 等待者拆分）重新引入持锁通知。
+- **后续更正（见 7.2）**：评审指出该初版 guard 只等 `state()==Idle`，在「job 已出队、state 仍 Idle」的启动窗口会误判收尾完成（P1）。`1a76293` 已改为以 `!isActive()` + `shutdown()` 成功 join 为依据；T2.4 提交进一步泛化重命名为 `ServiceContractCleanupGuard` 并复用。本节保留初版描述作为历史记录，不作为当前实现依据。
 
 ### 6.4 验证记录（2026-11-06，固化后重跑）
 
@@ -413,6 +414,122 @@ ctest --test-dir build --output-on-failure -j4
 | 任务性质 | **基线已绿、非 NF、无生产修复提交**；未做生产重构、未制造 NF 红灯 |
 | 交付改动 | 仅 `tests/test_flowexecutionservice.cpp`（+111 行，含 RAII guard 与两个行为契约用例）与本文件第 6 节处置记录；**测试提交 `1798f08`**（`test: add T2.3 pause/resume behavior-contract regression cases`，1 文件 / +111），处置记录随本文件独立提交（hash 见送审汇报与工作日志） |
 | 隔离纪律 | 前提核实探针仅在 `/var/tmp/t23-probe-wt` + `/var/tmp/t23-probe-build` 执行，patch 存档不进交付链；交付工作树全程只保留受审的测试增量，未切换任何缺陷态 |
-| T2.4 | **待核实**：按裁定先验证「超时后无残留任务／下一次启动正常／旧任务不会迟到执行」，再决定是否修复；缺少 `m_startSettled=true; m_startOk=false` 赋值本身不构成缺陷证据 |
+| T2.4 | **方案二已收口**（第 7 节）：三项预期行为已满足，尚未证实计划中的缺陷；固化为 Service 层行为契约，未做生产修复 |
 | T2.7 WIP | 继续独立保留于 `be90921`，**未合入**，不作为硬前置 |
-| R2 整批 | **未完成** —— 本次仅 T2.3 行为契约收口 |
+| R2 整批 | **未完成** —— 本次仅 T2.3 guard P1 修正与 T2.4 行为契约收口 |
+
+---
+
+## 7. T2.3 guard 收尾 P1 修正与 T2.4 启动握手超时（2026-11-06 评审裁定）
+
+### 7.1 裁定与执行顺序
+
+评审裁定：T2.4 采用**方案二**，固化为 Service 层行为契约，不做生产修复、不制造 NF 红灯；但先补齐 T2.3 收尾 P1。评审用现有启动钩子构造握手超时，独立复现 `stateAfterGuard=Idle` 而 `activeAfterGuard=true` —— guard 已析构，worker 仍有在途任务，被捕获的栈变量不安全。要求：
+
+1. **收尾依据**：以「实际任务结束 `!isActive()`」及必要时 `shutdown()` 成功 join 为准，不能在仍活跃时只等 `state()==Idle` 直接返回；只修测试收尾，不改生产行为。
+2. **T2.4 记录口径**：写「**三项预期行为已满足，尚未证实计划中的缺陷**」，不得写成「缺陷前提成立」。
+3. **补分支**：当前探针只覆盖「任务已出队后的 stop requested」，须补上「尚未出队的 pending withdrawn」分支。
+4. **屏障**：用进入／放行／完成屏障替代固定 600ms 延迟，验证撤回、恢复启动及旧任务不执行。
+5. **复用**：复用修正后的安全收尾方式；仅提交测试与处置记录。
+6. **顺序**：修正 T2.3 guard 并验证失败路径 → 固化 T2.4 契约 → 重跑相关套件与全量回归。
+
+据此产生 3 个交付提交：`1a76293`（T2.3 guard 修正，测试）、`1769ad6`（T2.4 契约测试，测试）、本文档处置记录提交（hash 见送审汇报与工作日志）。**全程无生产代码改动、无 NF 红灯**。
+
+### 7.2 T2.3 guard 收尾 P1：修正与负验证
+
+**问题**：`1798f08` 的 `T23ContractCleanupGuard` 析构只等 `state()==Idle`。`workerLoop()` 已把 `m_pendingJob` 取走并置 `m_job`（`FlowExecutionService.cpp:292`–`:312`）但尚未 `commitState(Running)`（`:342`）的启动窗口里，`state()` 仍为 Idle 而 `isActive()` 为 true；guard 因此立即结束收尾，栈上 probe／原子变量／DirectConnection 槽可能在 worker 在途时被销毁。
+
+**修正（测试提交 `1a76293`，1 文件 / +48 −13）**：把 guard 改为统一 `finish()`，返回 true 当且仅当「实际任务已结束且 `shutdown()` 已成功 join worker」：
+
+1. `QObject::disconnect(connection)`；
+2. `service->stop()`；
+3. 有界（10000ms）等待 `!isActive()`，覆盖「已出队但 state 仍 Idle」窗口；
+4. 有界（15000ms）循环 `shutdown()` 直到返回 true（`shutdown()` 在任务仍活跃时只请求停止并返回 false；`joinWorkerThread()` 采用 `wait(deadline)` + 必要时无限 `wait()`，不强杀、不 detach，返回 true 即线程已退出并 delete）；
+5. 返回 `joined && !service->isActive()`，仍活跃或未能 join **不得静默返回**。
+
+正常路径以 `QVERIFY2(guard.finish(), ...)` 显式断言；析构作为失败路径兜底，失败时 `QTest::qFail`。**提交前核验**：`clang-format --dry-run --Werror` `FMT_rc=0`、`cmake --build build -j4 --target test_flowexecutionservice` `BUILD_rc=0`、`./build/bin/test_flowexecutionservice` `SUITE_rc=0`（`Totals: 20 passed, 0 failed, 0 skipped, 0 blacklisted`）。
+
+**负验证（独立临时工作树，不进交付链）**：
+
+| 项 | 值 |
+|---|---|
+| 独立工作树 | `/var/tmp/t23-guard-verify-wt`（`git worktree add --detach b3927af`） |
+| 独立构建目录 | `/var/tmp/t23-guard-verify-build`（`ldd` 指向该目录 `libdeeplux_core.so.1`） |
+| 探针 patch | `/var/tmp/t23-guard-verify-probe.patch`（163 行，不进交付链） |
+| 脚本 / 后台任务 | `/var/tmp/t23-guard-verify.sh` / `DYaTRN` |
+| 注入内容 | `OldGuardProbe`（只等 Idle 的 P1 缺陷态）、`NewGuardProbe`（等价修正逻辑）、三个探针用例 |
+| **A 旧 guard** | **20/20** `GUARD-PROBE variant=old stateAfterGuard=0 activeAfterGuard=1 joined=0` → `OLD_P1_REPRODUCED=20/20`，P1 精确复现 |
+| **B 修正后逻辑** | **20/20** `stateAfterGuard=0 activeAfterGuard=0 joined=1` → `NEW_SAFE=20/20` |
+| **C 强制断言提前返回** | **20/20** `rc=1`、`FAIL=1`，且 guard 仍输出 `activeAfterGuard=0 joined=1` → `FORCED_FAILURE_SAFE=20/20` |
+| 汇总 | `OLD_P1_REPRODUCED=20/20`、`NEW_SAFE=20/20`、`FORCED_FAILURE_SAFE=20/20`、`VERIFY_DONE`；`CONFIGURE_rc=0`、`BUILD_rc=0` |
+
+### 7.3 T2.4 任务性质与静态事实（方案二）
+
+**定性口径（按裁定）**：**三项预期行为已满足，尚未证实计划中的缺陷**。`enqueue()` 超时分支（`FlowExecutionService.cpp:118`–`:132`）`return false` 时未显式置 `m_startSettled=true; m_startOk=false`，二者残留 false/false；但下一次 `enqueue()` 的 `:106`–`:107` 会重置二者，残留值不污染下一次握手。旧 job 迟到的 `settleStart(true)`（`:343`）发生在 `runJob()` 内，此时 `m_job` 已置（`:312`），任何并发 `enqueue()` 会被 `:100` 的 `currentJob()!=None` 拒绝；等旧 job 收尾清零 `m_job` + `commitState(Idle)`（`:397`）后新 `enqueue()` 才可能成功，且它自己会重置握手标志 —— **不存在「迟到 settle 污染下一次握手」的可达窗口**。缺少赋值本身不足以证明缺陷。
+
+超时分支按 `withdrawn = (m_pendingJob == job)` 分两路：`withdrawn=true`（pending 尚未出队）→ `m_pendingJob = None` 直接撤回；`withdrawn=false`（job 已出队）→ `m_stopRequested = true`，旧 job 醒来后 `runSingleJob()` 在 `:413` 首个模块边界前检查 `stopRequested()` 并 `stopped=true` 返回，模块一次都不执行。
+
+**结论**：不做生产修复、不制造 NF 红灯、无生产修复提交；固化为 Service 层行为契约，仅提交测试与本节处置记录。
+
+### 7.4 分支覆盖探针：进入／放行／完成屏障（独立临时工作树）
+
+**难点**：交付链现有的 `setStartHandshakeHookForTest` 在 `runJob()` 内执行（`:314`–`:322`），即 `workerLoop()` 已于 `:292`–`:293` 把 `m_pendingJob` 取走之后；无法在取 job 之前注入屏障，因此**不能确定性构造 `withdrawn=true`**。按「不做生产修复、仅提交测试与处置记录」，交付链不新增生产注入点；该分支改由独立工作树的 **test-only 注入**确定性覆盖。
+
+| 项 | 值 |
+|---|---|
+| 独立工作树 | `/var/tmp/t24-branch-probe-wt`（`git worktree add --detach 1a76293`） |
+| 独立构建目录 | `/var/tmp/t24-branch-probe-build`；`ldd` → `/var/tmp/t24-branch-probe-build/lib/libdeeplux_core.so.1`（非交付 `build/`） |
+| 交付链测试补丁 | `/var/tmp/t24-delivery-tests.patch`（276 行，先应用到独立工作树，保证探针复用同一 guard） |
+| test-only 注入 patch | `/var/tmp/t24-branch-probe.patch`（538 行，sha256 `d2fd9b878877dfd2…`，**不进交付链**）；注入脚本 `/var/tmp/t24-branch-inject.py` / `-inject2.py` / `-inject3.py` |
+| 注入内容 | `FlowExecutionService.{h,cpp}` 新增 `setPreDequeueBarrierForTest` / `clearPreDequeueBarrierForTest` / `runPreDequeueBarrierForTest`，在 `workerLoop()` 循环顶端、取 job 之前、**不持有 `m_mutex`** 时执行；仅独立工作树存在 |
+| 运行脚本 / 后台任务 | `/var/tmp/t24-branch-probe.sh` / `vxIEEn`；日志 `/var/tmp/t24-branch-probe-out/` |
+| 屏障 | `entered`（进入）/ `release`（放行）/ `completed`（完成）/ `startReturned` 四个 `QSemaphore`，**无 `QThread::msleep(600)` 等固定延迟**；启动放由独立 `std::thread` 执行，guard 统一 join |
+| 分支判据 | 用 `Logger::logs("Service")` 中 `pending withdrawn` / `stop requested` 日志计数**增量**做 `QVERIFY2` 断言，机器可核验地证明命中了对应分支，而非仅靠行为推断 |
+| 全套（含探针） | `FULL_rc=0`，`Totals: 24 passed, 0 failed, 0 skipped, 0 blacklisted, 2777ms` |
+
+**两个分支各 20 次，合计 40/40 `rc=0`**，`NONZERO_RUNS=0`，外部 `timeout -k 5 60` 未触发；40 份日志独立扫描 `FAIL!` / `failed>0` / `skipped>0` / `Not Run` 均为 0，每份 `Totals: 3 passed, 0 failed`：
+
+- `testT24ProbePendingWithdrawn`（**`withdrawn=true`，pending 尚未出队**）20/20 恒为 `T24-PROBE-A branch=pending_withdrawn startResult=0 hookRuns=1 oldRuns=0 restartRuns=1 state=0 active=0`。进入屏障处断言 `currentJob()==None`、`state()==Idle`（证明 worker 未出队）；`startSingle()` 返回 false 后断言 `!isActive()`（证明 pending 已撤回、无在途 job）与 `pending withdrawn` 日志计数增量；放行后 `oldRuns=0`（旧任务不执行），随后 `startSingle()` 成功、`restartRuns=1`（恢复启动）。
+- `testT24ProbeStopRequested`（**`withdrawn=false`，job 已出队**）20/20 恒为 `T24-PROBE-B branch=stop_requested startResult=0 hookRuns=1 oldRuns=0 restartRuns=1 state=0 active=0`。进入屏障处断言 `currentJob()==Single`、`isActive()`（证明已出队）；超时后断言 `stop requested` 日志计数增量；放行后 `jobFinished(stopped=true)`、`oldRuns=0`；清钩子后恢复启动成功。
+
+### 7.5 交付链固化内容（仅 `tests/test_flowexecutionservice.cpp`）
+
+- guard 泛化重命名为 **`ServiceContractCleanupGuard`**，新增 `barrierRelease`（停止前无条件放行进入／放行屏障）、`clearHooks`（清除捕获栈变量的测试钩子，`runJob` 已把钩子复制到局部副本，clear 不影响在途调用）、`starter`（统一 join 启动线程，避免失败路径 `std::thread` 析构触发 `std::terminate`）。`finish()` 的 `!isActive()` + `shutdown()` 成功 join 依据不变。**T2.3 与 T2.4 四个契约用例复用同一收尾**。
+- `testStartHandshakeTimeoutStopsDequeuedJobBeforeModulesRun()`：进入屏障断言 `currentJob()==Single` / `state()==Idle` / `isActive()`；放行前 `startReturned` 断言 `startSingle()` 在握手上限返回 false 且不阻塞调用方（`startTimer.elapsed() < 2000`）；完成屏障后断言 `jobFinished(stopped=true)`、`probe.runs==0`（旧任务不执行）、`state()==Idle` / `!isActive()`；清钩子后 `startSingle()` 成功且 `probe.runs==1`（恢复启动）。
+- `testHandshakeTimeoutDoesNotLeaveResidualPendingState()`：超时返回 false 后断言第二次 `startSingle()` 被拒（**不留排队 pending**）；旧任务结束后 `currentJob()==None` / `!isActive()`；清钩子后**连续两次**启动均成功、各自完成、`probe.runs` 依次为 1 / 2（超时遗留的 `m_startSettled` / `m_startOk` 不污染后续握手）。
+- **覆盖边界（如实记录）**：交付链仅能确定性覆盖 `withdrawn=false`；`withdrawn=true` 需出队前注入点，按裁定未在交付链新增生产注入，由 7.4 独立工作树探针覆盖并存档。
+- 首次落地核验：`FMT_rc=0`、`BUILD_rc=0`、`./build/bin/test_flowexecutionservice` → `Totals: 22 passed, 0 failed, 0 skipped, 0 blacklisted`（服务套件由 20 增至 22）。
+
+### 7.6 隔离事实
+
+探针执行期间与执行后独立核对：交付 `HEAD` 恒为 `1a76293`；`git status --short` 仅 `M tests/test_flowexecutionservice.cpp`；`git diff --check` `rc=0`；`git diff --name-only | grep '^src/'` 为**空**（交付链零生产改动）；`git merge-base --is-ancestor be90921 HEAD` 为 **NO**（T2.7 WIP 未合入）。独立工作树 `HEAD=1a76293`，其 `src/` 改动仅为 `FlowExecutionService.{cpp,h}` 的 test-only 注入，**仅存在于该工作树**。
+
+### 7.7 验证记录（最终门禁，2026-11-06）
+
+**执行方式如实记录**：初版脚本 `/var/tmp/t24-final-gate.sh` 以后台任务 `BkMXrt` 启动，日志 `/var/tmp/t24-final-gate-run.log` 显示完成 `FMT_rc=0` / `DIFFCHECK_rc=0` / `BUILD_rc=0` 及 CTest `run-1` 后被会话切换中断（`suite.tsv` 未生成），后台 shell 被回收。**该次中断结果不采信、不计入验收**。改用 `/var/tmp/t24-final-gate2.sh` 分两个**前台批次**重跑完整门禁：`a` 批次 = 格式/差异/全量构建复核 + CTest `run-1`–`run-5`；`b` 批次 = CTest `run-6`–`run-10` + 服务套件 ×10 + 四个契约用例各 ×20。两批次共用同一交付构建树 `build/` 与同一固定环境（`unset DISPLAY` + `QT_QPA_PLATFORM=offscreen` + `TMPDIR=/var/tmp/deeplux-ctest-tmp`），10 轮连续执行，不重试、不排除测试、不降低比较强度。日志目录 `/var/tmp/t24-final-gate-out/`。
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| 格式门禁 | `clang-format --dry-run --Werror tests/test_flowexecutionservice.cpp` | `FMT_rc=0` |
+| 差异检查 | `git diff --check` | `DIFFCHECK_rc=0` |
+| 全量构建 | `cmake --build build -j4` | `BUILD_rc=0`；`[100%] Built target DeepLux` |
+| **全量连续 10 次 CTest** | `ctest --test-dir build -j4 --output-on-failure` × 10 | **10/10 `rc=0`**；每轮 `100% tests passed, 0 tests failed out of 96`，耗时 70.31–80.27s；`GATE10_NONZERO=0` |
+| 服务套件重复 | `./build/bin/test_flowexecutionservice` × 10（外部 `timeout -k 5 180`） | **10/10 `rc=0`**；每轮 `Totals: 22 passed, 0 failed, 0 skipped, 0 blacklisted`；`SUITE_NONZERO=0` |
+| 四个契约用例专项 | 各 × 20（外部 `timeout -k 5 60` 单用例调用） | **80/80 `rc=0`**；`testContinueImmediatelyAfterPauseIsNotLost` / `testPauseResumeDoesNotDeadlockUnderDirectSignal` / `testStartHandshakeTimeoutStopsDequeuedJobBeforeModulesRun` / `testHandshakeTimeoutDoesNotLeaveResidualPendingState` 各 20/20；`CASES_NONZERO=0` |
+| 汇总 | `gate10.tsv` / `suite.tsv` / `cases.tsv` | 10 / 10 / 80 行，非零退出码均为 0 |
+
+**独立核验（不依赖脚本汇总）**：10 份 `ctest-run-*.log` 逐份原文均为 `100% tests passed, 0 tests failed out of 96`；对 `/var/tmp/t24-final-gate-out/*.log` 全文扫描 `FAIL!` / `Not Run` / `Disabled` / `***Failed` / `Errors while` / `skipped>0` / `failed>0` **无匹配**；10 份 `suite-*.log` 每份 `22 passed, 0 failed`；80 份 `case-*.log` 每份 `3 passed, 0 failed`（3 = 隐式 `initTestCase` / `cleanupTestCase` + 该用例）；日志份数 `CTEST_LOGS=10`、`SUITE_LOGS=10`、`CASE_LOGS=80`、`CASE_3PASS=80`。
+
+### 7.8 状态
+
+| 项 | 状态 |
+|---|---|
+| T2.3 guard P1 | **已修正并负验证**（7.2）：测试提交 `1a76293`；旧 guard 20/20 复现 P1，修正后 20/20 安全，强制断言提前返回 20/20 安全 |
+| T2.4 任务性质 | **三项预期行为已满足，尚未证实计划中的缺陷**；方案二固化为 Service 层行为契约，**基线已绿、非 NF、不做生产修复、不制造 NF 红灯** |
+| T2.4 分支覆盖 | `pending withdrawn`（尚未出队）与 `stop requested`（已出队）**两分支均由独立工作树探针各 20/20 确定性覆盖**，以进入／放行／完成屏障 + `Logger` 日志计数增量判据；patch 存档不进交付链 |
+| 交付链覆盖边界 | 交付链仅覆盖 `stop requested`；`pending withdrawn` 需出队前注入点，按裁定未新增生产注入，由 7.4 探针覆盖并如实记录（7.5） |
+| 交付改动 | 仅 `tests/test_flowexecutionservice.cpp`（`1a76293` +48 −13；`1769ad6` +186 −13，guard 泛化 + 两个 T2.4 契约用例）与本文件第 7 节处置记录；**零生产代码改动**；测试与处置记录分提交 |
+| 隔离纪律 | 所有 test-only 生产注入与探针仅在 `/var/tmp/t23-guard-verify-wt`、`/var/tmp/t24-branch-probe-wt` + 各自独立构建目录执行；交付工作树全程只保留受审的测试增量与处置记录，未切换任何缺陷态 |
+| 最终门禁 | **全绿**（7.7）：全量连续 10 次 CTest 10/10、服务套件 10/10、四个契约用例 80/80；格式与 `git diff --check` 通过 |
+| T2.7 WIP | 继续独立保留于 `be90921`，**未合入**（`merge-base --is-ancestor` = NO），不作为硬前置 |
+| R2 整批 | **未完成** —— 本次仅 T2.3 guard P1 修正与 T2.4 行为契约收口，不代表整批完成 |
