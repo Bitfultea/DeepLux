@@ -10,9 +10,11 @@
 #include <QSemaphore>
 #include <QSignalSpy>
 #include <QThread>
+#include <QtGlobal>
 #include <QtTest/QtTest>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <functional>
 #include <stdexcept>
 #include <thread>
@@ -249,13 +251,27 @@ struct ServiceContractCleanupGuard {
     std::thread* starter = nullptr;
     bool armed = false;
 
-    /// 统一收尾：正常路径显式调用并断言结果；析构作为失败路径兜底。
-    /// 返回 true 仅当「实际任务已结束 且 shutdown() 已成功 join worker」。
+    /// 统一收尾：正常路径显式调用；析构作为失败路径兜底。
+    ///
+    /// **核心契约（2026-11-09 评审 P1 二次修正）：本函数在「实际任务已结束且
+    /// shutdown() 已成功 join worker」之前绝不返回。** 返回即代表被捕获的栈对象
+    /// （probe / 信号量 / 原子变量 / DirectConnection 槽）已不再被 worker 引用，
+    /// 可以安全销毁。旧实现在诊断超时后返回 false，析构兜底也只 qFail() 后返回，
+    /// 两者都会让栈继续展开而 worker 仍在途 —— 这正是本次 P1。
+    ///
+    /// 诊断阶段有界，仅用于产生告警；超时后继续等待实际退出（由外层 watchdog：
+    /// CTest TIMEOUT / `timeout -k` 限时），并在硬上限到达时 qFatal() 直接
+    /// 终止测试进程 —— 绝不带着活跃 worker 返回并继续栈展开。
     bool finish() {
         if (!service || !armed) {
             return true;
         }
-        armed = false; // 防止析构重复执行
+        // 注意：armed 只在成功 join 之后清除。在此之前任何 QVERIFY/QCOMPARE
+        // 提前 return 都会让析构兜底再次进入本函数，而不是跳过收尾。
+        const auto pump = [] {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            QThread::msleep(5);
+        };
         // 1) 先断连：后续 jobStateChanged(Running/Stopping/Idle) 不得再进入槽。
         QObject::disconnect(connection);
         // 2) 无条件放行「进入/放行」屏障并清除捕获栈变量的测试钩子：失败路径下 worker
@@ -272,38 +288,62 @@ struct ServiceContractCleanupGuard {
         }
         // 4) 请求停止（幂等；job 已结束时直接返回）。
         service->stop();
-        // 5) 有界等待「实际任务结束」：isActive() 覆盖「job 已出队但 state 仍 Idle」
-        //    的启动窗口，不能只以 state()==Idle 为依据。
+
         QElapsedTimer timer;
         timer.start();
+        // 5) 有界诊断等待「实际任务结束」：isActive() 覆盖「job 已出队但 state 仍 Idle」
+        //    的启动窗口，不能只以 state()==Idle 为依据。
         while (service->isActive() && timer.elapsed() < 10000) {
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
-            QThread::msleep(5);
+            pump();
         }
-        // 6) shutdown() 成功 join 是 worker 真正退出的依据：它在任务仍活跃时只请求停止
-        //    并返回 false，故需重试直到真正 join（此时 worker 已不再持有任何栈引用）。
+        // 6) 有界诊断 join：shutdown() 成功 join（返回 true）是 worker 真正退出的依据，
+        //    它在任务仍活跃时只请求停止并返回 false，故需重试。
         bool joined = false;
         while (timer.elapsed() < 15000) {
             if (service->shutdown()) {
                 joined = true;
                 break;
             }
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
-            QThread::msleep(5);
+            service->stop();
+            pump();
         }
-        // 7) 仍活跃或未能 join：不得静默返回。
-        return joined && !service->isActive();
+        // 7) 诊断超时仍未 join：**不得返回**。继续等待实际退出，由外层 watchdog 限时。
+        //    这是 P1 的关键修正点：旧实现在此 return false，析构只 qFail 后返回，
+        //    两条路径都继续栈展开，worker 仍活跃时栈对象即被销毁。
+        if (!joined || service->isActive()) {
+            qWarning("ServiceContractCleanupGuard: bounded diagnostics expired after %lld ms "
+                     "(joined=%d, isActive=%d); continuing to wait for the real worker exit. "
+                     "The outer watchdog bounds this wait.",
+                     static_cast<long long>(timer.elapsed()), joined ? 1 : 0, service->isActive() ? 1 : 0);
+            for (;;) {
+                service->stop();
+                if (service->shutdown() && !service->isActive()) {
+                    joined = true;
+                    break;
+                }
+                pump();
+                if (timer.elapsed() >= 60000) {
+                    // 进程级终止：不返回、不栈展开，绝不销毁仍被引用的栈对象。
+                    qCritical("ServiceContractCleanupGuard: worker did not exit within %lld ms; "
+                              "terminating the test process instead of unwinding the stack while "
+                              "the worker still references captured locals",
+                              static_cast<long long>(timer.elapsed()));
+                    std::abort(); // 不依赖 qFatal 是否被 Qt Test 消息处理器拦截
+                }
+            }
+        }
+        // 8) 仅在「实际任务结束 + shutdown() 成功 join」之后清除 armed。
+        armed = false;
+        return true;
     }
 
     ~ServiceContractCleanupGuard() {
         if (!armed) {
             return;
         }
-        if (!finish()) {
-            QTest::qFail("Service contract cleanup guard: worker still active or shutdown() did not join "
-                         "before the captured stack variables were destroyed",
-                         __FILE__, __LINE__);
-        }
+        // finish() 在成功 join 之前不会返回；若触发硬上限则直接终止进程。
+        // 因此这里不存在「带着活跃 worker 从析构返回」的路径。
+        (void) finish();
     }
 };
 
@@ -869,7 +909,9 @@ private slots:
         QCOMPARE(service.state(), FlowExecutionService::State::Idle);
         // 正常路径也以统一的安全收尾为准：确认实际任务结束且 worker 已被 join，
         // 再允许本用例栈上的 probe / 原子变量 / spy / 连接销毁。
-        QVERIFY2(guard.finish(), "cleanup guard must join the worker before captured stack variables are destroyed");
+        // finish() 返回即代表「实际任务结束 + shutdown() 成功 join」；
+        // 未 join 时它不会返回（继续等待或终止进程），故无需恒真断言。
+        guard.finish();
     }
 
     void testPauseResumeDoesNotDeadlockUnderDirectSignal() {
@@ -902,7 +944,9 @@ private slots:
         QCOMPARE(service.state(), FlowExecutionService::State::Idle);
         // 正常路径也以统一的安全收尾为准：确认实际任务结束且 worker 已被 join，
         // 再允许本用例栈上的 probe / 原子变量 / spy / 连接销毁。
-        QVERIFY2(guard.finish(), "cleanup guard must join the worker before captured stack variables are destroyed");
+        // finish() 返回即代表「实际任务结束 + shutdown() 成功 join」；
+        // 未 join 时它不会返回（继续等待或终止进程），故无需恒真断言。
+        guard.finish();
     }
 
     // ==== T2.4 启动握手超时（Service 层行为契约，2026-11-06 评审裁定方案二）====
@@ -985,7 +1029,9 @@ private slots:
         QCOMPARE(service.state(), FlowExecutionService::State::Idle);
         QVERIFY(!service.isActive());
 
-        QVERIFY2(guard.finish(), "cleanup guard must join the worker before captured stack variables are destroyed");
+        // finish() 返回即代表「实际任务结束 + shutdown() 成功 join」；
+        // 未 join 时它不会返回（继续等待或终止进程），故无需恒真断言。
+        guard.finish();
     }
 
     void testHandshakeTimeoutDoesNotLeaveResidualPendingState() {
@@ -1055,7 +1101,9 @@ private slots:
             QVERIFY(!service.isActive());
         }
 
-        QVERIFY2(guard.finish(), "cleanup guard must join the worker before captured stack variables are destroyed");
+        // finish() 返回即代表「实际任务结束 + shutdown() 成功 join」；
+        // 未 join 时它不会返回（继续等待或终止进程），故无需恒真断言。
+        guard.finish();
     }
 };
 
