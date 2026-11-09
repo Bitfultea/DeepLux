@@ -506,13 +506,15 @@ ctest --test-dir build --output-on-failure -j4
 
 ### 7.7 验证记录（最终门禁，2026-11-06）
 
-**执行方式如实记录**：初版脚本 `/var/tmp/t24-final-gate.sh` 以后台任务 `BkMXrt` 启动，日志 `/var/tmp/t24-final-gate-run.log` 显示完成 `FMT_rc=0` / `DIFFCHECK_rc=0` / `BUILD_rc=0` 及 CTest `run-1` 后被会话切换中断（`suite.tsv` 未生成），后台 shell 被回收。**该次中断结果不采信、不计入验收**。改用 `/var/tmp/t24-final-gate2.sh` 分两个**前台批次**重跑完整门禁：`a` 批次 = 格式/差异/全量构建复核 + CTest `run-1`–`run-5`；`b` 批次 = CTest `run-6`–`run-10` + 服务套件 ×10 + 四个契约用例各 ×20。两批次共用同一交付构建树 `build/` 与同一固定环境（`unset DISPLAY` + `QT_QPA_PLATFORM=offscreen` + `TMPDIR=/var/tmp/deeplux-ctest-tmp`），10 轮连续执行，不重试、不排除测试、不降低比较强度。日志目录 `/var/tmp/t24-final-gate-out/`。
+**执行方式如实记录**：初版脚本 `/var/tmp/t24-final-gate.sh` 以后台任务 `BkMXrt` 启动，日志 `/var/tmp/t24-final-gate-run.log` 显示完成 `FMT_rc=0` / `DIFFCHECK_rc=0` / `BUILD_rc=0` 及 CTest `run-1` 后被会话切换中断（`suite.tsv` 未生成），后台 shell 被回收。**该次中断结果不采信、不计入验收**。改用 `/var/tmp/t24-final-gate2.sh` 分两个**前台批次**重跑完整门禁：`a` 批次 = CTest `run-1`–`run-5`；`b` 批次 = CTest `run-6`–`run-10` + 服务套件 ×10 + 四个契约用例各 ×20。两批次共用同一交付构建树 `build/` 与同一固定环境（`unset DISPLAY` + `QT_QPA_PLATFORM=offscreen` + `TMPDIR=/var/tmp/deeplux-ctest-tmp`），10 轮连续执行，不重试、不排除测试、不降低比较强度。日志目录 `/var/tmp/t24-final-gate-out/`。
+
+**执行来源更正（2026-11-09 评审 P2）**：`gate2.sh` **不含** `clang-format` / `git diff --check` / `cmake --build` 命令（`grep -n` 验证无匹配），本版此前把「格式/差异/全量构建复核」归入 `a` 批次**表述不符**。这三项的实际来源分两处：① 初版 `/var/tmp/t24-final-gate.sh:19,21,25` 含三项命令，输出在 `/var/tmp/t24-final-gate-run.log`（`FMT_rc=0` / `DIFFCHECK_rc=0` / `BUILD_rc=0`），但该次整体已中断、结果不采信；② 重跑时在调用 `gate2.sh a` **之前**，由外层 Bash 命令单独执行 `clang-format --dry-run --Werror tests/test_flowexecutionservice.cpp`、`git diff --check`、`cmake --build build -j4`（其 stdout 输出 `FMT_rc=0` / `DIFFCHECK_rc=0` / `BUILD_rc=0`，构建日志 `/var/tmp/t24-final-gate-out/build2.log`），这项结果作为本轮格式/构建验收依据。下表「格式门禁 / 差异检查 / 全量构建」三行的来源据此更正；**十轮 CTest 结论不变**（由 `gate2.sh` a/b 两批次产生，日志 `ctest-run-1..10.log`）。
 
 | 项 | 命令 | 结果 |
 |---|---|---|
-| 格式门禁 | `clang-format --dry-run --Werror tests/test_flowexecutionservice.cpp` | `FMT_rc=0` |
-| 差异检查 | `git diff --check` | `DIFFCHECK_rc=0` |
-| 全量构建 | `cmake --build build -j4` | `BUILD_rc=0`；`[100%] Built target DeepLux` |
+| 格式门禁 | `clang-format --dry-run --Werror tests/test_flowexecutionservice.cpp`（**外层独立命令**，非 `gate2.sh`；见上文来源更正） | `FMT_rc=0` |
+| 差异检查 | `git diff --check`（**外层独立命令**，非 `gate2.sh`） | `DIFFCHECK_rc=0` |
+| 全量构建 | `cmake --build build -j4`（**外层独立命令**，非 `gate2.sh`；日志 `build2.log`） | `BUILD_rc=0`；`[100%] Built target DeepLux` |
 | **全量连续 10 次 CTest** | `ctest --test-dir build -j4 --output-on-failure` × 10 | **10/10 `rc=0`**；每轮 `100% tests passed, 0 tests failed out of 96`，耗时 70.31–80.27s；`GATE10_NONZERO=0` |
 | 服务套件重复 | `./build/bin/test_flowexecutionservice` × 10（外部 `timeout -k 5 180`） | **10/10 `rc=0`**；每轮 `Totals: 22 passed, 0 failed, 0 skipped, 0 blacklisted`；`SUITE_NONZERO=0` |
 | 四个契约用例专项 | 各 × 20（外部 `timeout -k 5 60` 单用例调用） | **80/80 `rc=0`**；`testContinueImmediatelyAfterPauseIsNotLost` / `testPauseResumeDoesNotDeadlockUnderDirectSignal` / `testStartHandshakeTimeoutStopsDequeuedJobBeforeModulesRun` / `testHandshakeTimeoutDoesNotLeaveResidualPendingState` 各 20/20；`CASES_NONZERO=0` |
@@ -533,3 +535,88 @@ ctest --test-dir build --output-on-failure -j4
 | 最终门禁 | **全绿**（7.7）：全量连续 10 次 CTest 10/10、服务套件 10/10、四个契约用例 80/80；格式与 `git diff --check` 通过 |
 | T2.7 WIP | 继续独立保留于 `be90921`，**未合入**（`merge-base --is-ancestor` = NO），不作为硬前置 |
 | R2 整批 | **未完成** —— 本次仅 T2.3 guard P1 修正与 T2.4 行为契约收口，不代表整批完成 |
+
+---
+
+## 8. 按 `57f8438` 复核的二次整改（2026-11-09）
+
+### 8.1 复核裁定（如实记录）
+
+评审按 `57f8438` 复核，**仍有 1 项 P1，暂不批准本轮整体收口**。5.7 / 6.5 / 7.8 三处「T2.4 方案二已收口」为整改前的历史记录，**原样保留不改写，其状态以本节 8.6 为准**：T2.4 行为契约的技术实现已复核通过，但整体收口需在本节 P1 / P2 整改后重新送审。
+
+评审同时确认：助手上一轮提出的两点复核说明（交付链未覆盖 `pending withdrawn`；门禁 10 轮为重跑而非 `BkMXrt` 首次 `run-1`）**均可接受**，并给出两点裁定：
+
+1. **接受独立工作树探针对 `pending withdrawn` 的本次核验**：已核对补丁哈希、隔离库路径、两分支各 20 次日志，并独立重跑两探针通过。**但它不是交付链的持续 CI 覆盖**，后续修改相关路径时需重新验证。
+2. **接受完整重跑的十轮门禁**：已逐份核对当前全部 96 项、无缺项；不是沿用 `BkMXrt` 的首次 `run-1`；服务套件 10 轮、契约用例 80 次也与原始日志一致。
+
+### 8.2 P1：guard 诊断超时后仍放行栈展开
+
+**问题（评审独立复现）**：`tests/test_flowexecutionservice.cpp:258` 在 `finish()` 开头即 `armed = false`；有界诊断（10s 等 `!isActive()` + 15s 重试 `shutdown()`）超时后 `return joined && !isActive()` 返回 false；析构兜底只 `QTest::qFail()` 后返回。**正常路径的 `QVERIFY2(guard.finish(), ...)` 与失败路径的析构都会让栈继续展开**，而 worker 仍在途、仍引用栈上 probe / 信号量 / 原子变量。评审输出：
+
+```text
+ACTUAL-GUARD-DEADLINE finished=0 active=1 armed=0
+ACTUAL-GUARD-DESTRUCTOR returned=1 active=1
+```
+
+**最小修正（仅 `tests/test_flowexecutionservice.cpp`）**：把不变量从「返回 false 表示失败」改为「**未 join 时绝不返回**」。
+
+- `armed` 仅在「实际任务结束 + `shutdown()` 成功 join」之后清除；此前任何 `QVERIFY`/`QCOMPARE` 提前 return 都会让析构兜底重新进入 `finish()`。
+- 有界诊断（10000ms / 15000ms）保留，但**只用于产生 `qWarning` 告警**；超时后进入无界等待循环，持续 `stop()` + `shutdown()` 直到真正 join，由外层 watchdog（CTest `TIMEOUT` / `timeout -k`）限时。
+- 硬上限 60000ms 到达仍未 join 时，`qCritical` 输出诊断后 `std::abort()` **直接终止测试进程**，不返回、不栈展开（不依赖 `qFatal` 是否被 Qt Test 消息处理器拦截）。
+- 析构改为无条件 `(void)finish();`，不再 `qFail()` 后返回。
+- 四个正常路径的 `QVERIFY2(guard.finish(), ...)` 改为显式 `guard.finish();`，因为 `finish()` 现在恒返回 true（否则不返回），恒真断言会掩盖语义。
+
+### 8.3 P1 负验证（独立工作树，不进交付链）
+
+| 项 | 值 |
+|---|---|
+| 独立工作树 | `/var/tmp/t25-guard-p1-wt`（`git worktree add --detach 57f8438`） |
+| 独立构建目录 | `/var/tmp/t25-guard-p1-build`；`ldd` → `/var/tmp/t25-guard-p1-build/lib/libdeeplux_core.so.1` |
+| 注入脚本 / patch | `/var/tmp/t25-guard-p1-inject.py`；`/var/tmp/t25-guard-p1-probe.patch`（440 行，sha256 `1e720d12c332be53…`，**不进交付链**） |
+| 运行脚本 / 日志 | `/var/tmp/t25-guard-p1.sh`；`/var/tmp/t25-guard-p1-out/`、`summary.tsv` |
+| guard 来源 | `OldGuardProbe` / `NewGuardProbe` 均**逐字提取**自 `57f8438` 与整改后的交付源码；仅把三个 deadline 字面量换成运行期可配置 getter（`p1ActiveMs()` / `p1JoinMs()` / `p1HardMs()`），**控制流逐字不变**；另设一组直接实例化 `57f8438` 中**原封不动**的 `ServiceContractCleanupGuard`，用真实 10s/15s 阈值精确复现 |
+
+结果（`CONFIGURE_rc=0`、`BUILD_rc=0`）：
+
+| 组 | 用例 | 次数 | 结果 |
+|---|---|---|---|
+| A | `testGuardP1OldDeadlineExact`（交付中实际 guard，10s/15s） | 1 | `ACTUAL-GUARD-DEADLINE finished=0 active=1 armed=0 kind=actual_guard_exact_10s_15s` —— **与评审复现逐字一致** |
+| B | `testGuardP1OldDeadlineFast`（逐字副本，200/400ms） | 20/20 | 恒为 `finished=0 active=1 armed=0 kind=copy_fast` |
+| C | `testGuardP1OldDestructor`（旧 guard 只走析构） | 20/20 | 恒为 `ACTUAL-GUARD-DESTRUCTOR returned=1 active=1`，`rc=1` —— **与评审复现逐字一致** |
+| D | `testGuardP1NewFinishWaitsForRealExit` | 20/20 | 恒为 `finished=1 active=0 armed=0 joined=1 diagHit=1 earlyReturn=0`：`diagHit=1` 证明确实进入「诊断超时后继续等待」分支，`earlyReturn=0` 证明**未提前返回**，`joined=1` 证明最终真实 join |
+| E | `testGuardP1NewDestructorWaitsForRealExit` | 20/20 | 恒为 `finished=1 active=0 joined=1 diagHit=1 earlyReturn=0`：析构路径同样不提前返回（`armed=-1` 表示该路径不检查已销毁对象的 `armed`） |
+| F | `testGuardP1NewAbortsIfWorkerNeverExits` | 20/20 | `rc=134`（`SIGABRT`），日志均含 `bounded diagnostics expired` 与 `terminating the test process`；`P1-ABORT-UNREACHABLE` 出现 **0** 次 —— worker 永不退出时进程被终止，**未发生栈展开** |
+
+汇总：`A_EXACT_PASS=1`、`B_OLD_PASS=20`、`C_OLD_DESTRUCTOR_FAIL=20`、`D_NEW_FINISH_PASS=20`、`E_NEW_DESTRUCTOR_PASS=20`、`F_ABORT_TERMINATED=20`、`F_NO_UNREACHABLE=20`。
+
+### 8.4 P2：门禁执行来源更正
+
+评审指出 7.7 原文把「格式/差异/全量构建复核」归入 `gate2.sh a`，但 `/var/tmp/t24-final-gate2.sh` 不含 `clang-format` / `git diff --check` / `cmake --build`（`grep -n` 无匹配）。已在 7.7 增补「执行来源更正」并在表格三行标注：三项实际来自 ① 初版 `/var/tmp/t24-final-gate.sh:19,21,25`（日志 `/var/tmp/t24-final-gate-run.log`，该次整体中断、不采信）与 ② 重跑时调用 `gate2.sh a` **之前的外层独立 Bash 命令**（`FMT_rc=0` / `DIFFCHECK_rc=0` / `BUILD_rc=0`，构建日志 `build2.log`）。**十轮 CTest 结论不变**，且评审已逐份核对 96 项无缺项。
+
+### 8.5 整改后全量回归（不沿用上一轮结果）
+
+因 `guard` 已改动，重新完整重跑。脚本 `/var/tmp/t26-final-gate.sh`（**格式/差异/构建/CTest/套件/用例全部在本脚本内**，执行来源无歧义，吸取 8.4 教训），分 a / b 两个前台批次，共用同一交付 `build/` 与固定环境（`unset DISPLAY` + `QT_QPA_PLATFORM=offscreen` + `TMPDIR=/var/tmp/deeplux-ctest-tmp`）。日志 `/var/tmp/t26-final-gate-out/`。
+
+| 项 | 结果 |
+|---|---|
+| `clang-format --dry-run --Werror` | `FMT_rc=0` |
+| `git diff --check` | `DIFFCHECK_rc=0` |
+| `cmake --build build -j4` | `BUILD_rc=0`；`[100%] Built target DeepLux` |
+| 全量连续 10 次 CTest | **10/10 `rc=0`**；每轮 `100% tests passed, 0 tests failed out of 96`；`GATE10_NONZERO=0` |
+| 服务套件 ×10 | **10/10 `rc=0`**；每轮 `Totals: 22 passed, 0 failed, 0 skipped, 0 blacklisted` |
+| 四个契约用例各 ×20 | **80/80 `rc=0`**；`CASES_NONZERO=0` |
+
+**独立核验**：10 份 `ctest-run-*.log` 逐份原文均为 `100% tests passed, 0 tests failed out of 96`；对 `/var/tmp/t26-final-gate-out/*.log` 全文扫描 `FAIL!` / `Not Run` / `Disabled` / `***Failed` / `Errors while` / `skipped>0` / `failed>0` **0 个文件命中**；`CTEST=10`、`SUITE=10`（10 份 `22 passed`）、`CASE=80`（80 份 `3 passed, 0 failed`）；`gate10.tsv` / `suite.tsv` / `cases.tsv` 为 10 / 10 / 80 行，非零退出码均为 0。
+
+### 8.6 状态
+
+| 项 | 状态 |
+|---|---|
+| P1 | **已修正并负验证**（8.2 / 8.3）：交付中实际 guard 精确复现 `finished=0 active=1 armed=0`、析构复现 `returned=1 active=1`；修正后 `finish()` / 析构各 20/20 不提前返回并最终 join，worker 永不退出时 20/20 进程终止、无栈展开 |
+| P2 | **已更正来源**（8.4），不否定十轮 CTest |
+| 两点裁定 | 均按评审原文记录（8.1）：`pending withdrawn` 探针核验为**本次**接受、**不是持续 CI 覆盖**，后续改动相关路径须重新验证；十轮门禁为完整重跑、非 `BkMXrt` 首次 `run-1` |
+| 交付改动 | 仅 `tests/test_flowexecutionservice.cpp` 与本文件第 8 节；**零生产代码改动**；测试与处置记录分提交 |
+| 隔离纪律 | 旧/新 guard 探针仅在 `/var/tmp/t25-guard-p1-wt` + 独立构建目录执行；patch 存档不进交付链；交付工作树全程只保留受审的修复态 |
+| 门禁 | **整改后全绿**（8.5）：全量连续 10 次 CTest 10/10、服务套件 10/10、契约用例 80/80 |
+| **本轮整体收口** | **待评审复核** —— 按裁定原为「暂不批准」，本节整改后重新送审，**不改写为已批准/已收口** |
+| T2.7 WIP / R2 整批 | `be90921` 继续独立保留、未合入、不作硬前置；**R2 整批未完成** |
