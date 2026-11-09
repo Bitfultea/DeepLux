@@ -13,6 +13,7 @@
 #include <QtTest/QtTest>
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <stdexcept>
 #include <thread>
 
@@ -225,10 +226,10 @@ struct ShutdownBarrierGuard {
     }
 };
 
-/// T2.3 行为契约用例的安全收尾（非 NF、无生产修复提交）：
-/// DirectConnection 槽捕获了本用例栈上的原子变量，且 engine 持有 probe 栈对象指针。
-/// 任何 QVERIFY/QCOMPARE 提前返回时，必须保证 worker 已真正退出、不再引用这些栈变量。
-/// 声明顺序要求：本 guard 必须在被捕获变量之后声明（析构逆序 => 最先析构）。
+/// Service 行为契约用例的统一安全收尾（T2.3 / T2.4 共用；非 NF、无生产修复提交）：
+/// DirectConnection 槽与启动握手钩子捕获了本用例栈上的信号量/原子变量，engine 也持有
+/// probe 栈对象指针。任何 QVERIFY/QCOMPARE 提前返回时，必须保证 worker 已真正退出、
+/// 不再引用这些栈变量。声明顺序要求：本 guard 必须在被捕获变量之后声明（析构逆序 => 最先析构）。
 ///
 /// P1 整改（2026-11-06 评审复现）：旧实现只等 state()==Idle，但「启动窗口」内 job 已出队、
 /// state 仍为 Idle 而 isActive() 为 true（worker 在途），guard 会立即结束收尾，导致被捕获的
@@ -236,9 +237,16 @@ struct ShutdownBarrierGuard {
 /// shutdown() 成功 join（返回 true）作为 worker 真正退出的依据；仍活跃或未能 join 时
 /// 不得静默返回。shutdown() 的 joinWorkerThread() 采用 wait + 必要时无限 wait，
 /// 不强杀、不 detach，返回 true 即代表线程已退出并 delete。
-struct T23ContractCleanupGuard {
+///
+/// T2.4 复用：barrierRelease 在停止前无条件放行「进入/放行」屏障，clearHooks 清除捕获栈
+/// 变量的测试钩子（runJob 已把钩子复制到局部副本，clear 不影响在途调用），starter 由 guard
+/// 统一 join，保证失败路径不会因 std::thread 析构而 std::terminate。
+struct ServiceContractCleanupGuard {
     FlowExecutionService* service = nullptr;
     QMetaObject::Connection connection;
+    std::function<void()> barrierRelease;
+    std::function<void()> clearHooks;
+    std::thread* starter = nullptr;
     bool armed = false;
 
     /// 统一收尾：正常路径显式调用并断言结果；析构作为失败路径兜底。
@@ -250,9 +258,21 @@ struct T23ContractCleanupGuard {
         armed = false; // 防止析构重复执行
         // 1) 先断连：后续 jobStateChanged(Running/Stopping/Idle) 不得再进入槽。
         QObject::disconnect(connection);
-        // 2) 请求停止（幂等；job 已结束时直接返回）。
+        // 2) 无条件放行「进入/放行」屏障并清除捕获栈变量的测试钩子：失败路径下 worker
+        //    可能仍卡在钩子里，不清钩子会让下一次 job 引用已销毁的栈变量。
+        if (barrierRelease) {
+            barrierRelease();
+        }
+        if (clearHooks) {
+            clearHooks();
+        }
+        // 3) 回收启动线程：其内部等待均有界，且屏障已放行，不会悬挂。
+        if (starter && starter->joinable()) {
+            starter->join();
+        }
+        // 4) 请求停止（幂等；job 已结束时直接返回）。
         service->stop();
-        // 3) 有界等待「实际任务结束」：isActive() 覆盖「job 已出队但 state 仍 Idle」
+        // 5) 有界等待「实际任务结束」：isActive() 覆盖「job 已出队但 state 仍 Idle」
         //    的启动窗口，不能只以 state()==Idle 为依据。
         QElapsedTimer timer;
         timer.start();
@@ -260,7 +280,7 @@ struct T23ContractCleanupGuard {
             QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
             QThread::msleep(5);
         }
-        // 4) shutdown() 成功 join 是 worker 真正退出的依据：它在任务仍活跃时只请求停止
+        // 6) shutdown() 成功 join 是 worker 真正退出的依据：它在任务仍活跃时只请求停止
         //    并返回 false，故需重试直到真正 join（此时 worker 已不再持有任何栈引用）。
         bool joined = false;
         while (timer.elapsed() < 15000) {
@@ -271,16 +291,16 @@ struct T23ContractCleanupGuard {
             QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
             QThread::msleep(5);
         }
-        // 5) 仍活跃或未能 join：不得静默返回。
+        // 7) 仍活跃或未能 join：不得静默返回。
         return joined && !service->isActive();
     }
 
-    ~T23ContractCleanupGuard() {
+    ~ServiceContractCleanupGuard() {
         if (!armed) {
             return;
         }
         if (!finish()) {
-            QTest::qFail("T2.3 cleanup guard: worker still active or shutdown() did not join "
+            QTest::qFail("Service contract cleanup guard: worker still active or shutdown() did not join "
                          "before the captured stack variables were destroyed",
                          __FILE__, __LINE__);
         }
@@ -832,7 +852,7 @@ private slots:
             Qt::DirectConnection);
         QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
         // 失败路径收尾：必须最后声明，保证最先析构（此时上面所有栈变量仍有效）。
-        T23ContractCleanupGuard guard{&service, conn, true};
+        ServiceContractCleanupGuard guard{&service, conn, nullptr, nullptr, nullptr, true};
 
         QVERIFY(service.startCycle());
         QTRY_VERIFY_WITH_TIMEOUT(probe.runs.load() >= 2, 5000);
@@ -871,7 +891,7 @@ private slots:
             },
             Qt::DirectConnection);
         QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
-        T23ContractCleanupGuard guard{&service, conn, true};
+        ServiceContractCleanupGuard guard{&service, conn, nullptr, nullptr, nullptr, true};
 
         QVERIFY(service.startCycle());
         QTRY_VERIFY_WITH_TIMEOUT(probe.runs.load() >= 2, 5000);
@@ -882,6 +902,159 @@ private slots:
         QCOMPARE(service.state(), FlowExecutionService::State::Idle);
         // 正常路径也以统一的安全收尾为准：确认实际任务结束且 worker 已被 join，
         // 再允许本用例栈上的 probe / 原子变量 / spy / 连接销毁。
+        QVERIFY2(guard.finish(), "cleanup guard must join the worker before captured stack variables are destroyed");
+    }
+
+    // ==== T2.4 启动握手超时（Service 层行为契约，2026-11-06 评审裁定方案二）====
+    // 性质：三项预期行为已满足，尚未证实计划中的缺陷；基线已绿、非 NF、不做生产修复。
+    // 用「进入 / 放行 / 完成」屏障替代固定 600ms 延迟，不靠 sleep 去撞 100ms 握手上限。
+    // 交付链覆盖 enqueue():119 withdrawn=false（job 已出队 → stop requested）路径；
+    // pending withdrawn（尚未出队）分支由独立工作树探针以 test-only 注入确定性覆盖，
+    // 交付链不新增生产注入点（见证据文档第 7 节）。
+    void testStartHandshakeTimeoutStopsDequeuedJobBeforeModulesRun() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe;
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+
+        QSemaphore entered;
+        QSemaphore release;
+        QSemaphore completed;
+        QSemaphore startReturned;
+        std::atomic<int> startResult{-1};
+        std::atomic<int> hookRuns{0};
+        std::thread starter;
+        QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
+
+        service.setStartHandshakeHookForTest([&] {
+            ++hookRuns;
+            entered.release();   // 进入：worker 已出队、处于启动协议内
+            release.acquire();   // 放行：由测试线程在握手超时返回后释放
+            completed.release(); // 完成：钩子已离开
+        });
+
+        // 失败路径收尾：先放行屏障、清钩子、join starter，再 stop/join worker。必须最后声明。
+        ServiceContractCleanupGuard guard{&service,
+                                          {},
+                                          [&] {
+                                              release.release();
+                                              startReturned.release();
+                                          },
+                                          [&] { service.clearStartHandshakeHookForTest(); },
+                                          &starter,
+                                          true};
+
+        QElapsedTimer startTimer;
+        startTimer.start();
+        starter = std::thread([&] {
+            startResult.store(service.startSingle() ? 1 : 0, std::memory_order_release);
+            startReturned.release();
+        });
+
+        // 进入屏障：job 已出队（currentJob 可见），但尚未 commitState(Running)。
+        QVERIFY2(entered.tryAcquire(1, 5000), "job must be dequeued into the start handshake hook");
+        QCOMPARE(service.currentJob(), FlowExecutionService::JobType::Single);
+        QCOMPARE(service.state(), FlowExecutionService::State::Idle);
+        QVERIFY(service.isActive());
+        QCOMPARE(hookRuns.load(), 1);
+
+        // 放行前不释放钩子：握手到达 100ms 上限后必须返回 false，不阻塞调用线程。
+        QVERIFY2(startReturned.tryAcquire(1, 5000), "startSingle must return at the handshake bound");
+        QCOMPARE(startResult.load(), 0);
+        QVERIFY2(startTimer.elapsed() < 2000,
+                 qPrintable(QString("handshake must not block the caller, took %1 ms").arg(startTimer.elapsed())));
+        QCOMPARE(probe.runs.load(), 0);
+
+        // 完成屏障：放行后 job 必须在首个模块边界前协作停止，旧任务不执行任何模块。
+        release.release();
+        QVERIFY2(completed.tryAcquire(1, 5000), "start hook must be released");
+        QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+        QCOMPARE(finishedSpy.first().at(1).toBool(), true);
+        QCOMPARE(probe.runs.load(), 0);
+        QCOMPARE(service.state(), FlowExecutionService::State::Idle);
+        QVERIFY(!service.isActive());
+
+        // 恢复启动：清除钩子后下一次启动必须正常执行并完成。
+        service.clearStartHandshakeHookForTest();
+        QSignalSpy restartSpy(&service, &FlowExecutionService::jobFinished);
+        QVERIFY(service.startSingle());
+        QTRY_COMPARE_WITH_TIMEOUT(restartSpy.count(), 1, 5000);
+        QCOMPARE(probe.runs.load(), 1);
+        QCOMPARE(service.state(), FlowExecutionService::State::Idle);
+        QVERIFY(!service.isActive());
+
+        QVERIFY2(guard.finish(), "cleanup guard must join the worker before captured stack variables are destroyed");
+    }
+
+    void testHandshakeTimeoutDoesNotLeaveResidualPendingState() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe;
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+
+        QSemaphore entered;
+        QSemaphore release;
+        QSemaphore completed;
+        QSemaphore startReturned;
+        std::atomic<int> startResult{-1};
+        std::thread starter;
+        QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
+
+        service.setStartHandshakeHookForTest([&] {
+            entered.release();
+            release.acquire();
+            completed.release();
+        });
+
+        ServiceContractCleanupGuard guard{&service,
+                                          {},
+                                          [&] {
+                                              release.release();
+                                              startReturned.release();
+                                          },
+                                          [&] { service.clearStartHandshakeHookForTest(); },
+                                          &starter,
+                                          true};
+
+        starter = std::thread([&] {
+            startResult.store(service.startSingle() ? 1 : 0, std::memory_order_release);
+            startReturned.release();
+        });
+
+        QVERIFY2(entered.tryAcquire(1, 5000), "job must be dequeued into the start handshake hook");
+        QVERIFY2(startReturned.tryAcquire(1, 5000), "startSingle must return at the handshake bound");
+        QCOMPARE(startResult.load(), 0);
+
+        // 撤回：超时后不得留下「稍后执行」的 pending。旧 job 仍在途（已出队），
+        // 第二次启动必须被拒绝，而不是被排队等待旧任务迟到执行。
+        QVERIFY2(!service.startSingle(), "a timed-out start must not leave a queued pending job");
+        QCOMPARE(probe.runs.load(), 0);
+
+        release.release();
+        QVERIFY2(completed.tryAcquire(1, 5000), "start hook must be released");
+        QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+        QCOMPARE(finishedSpy.first().at(1).toBool(), true);
+        QCOMPARE(probe.runs.load(), 0); // 旧任务不迟到执行
+        QCOMPARE(service.currentJob(), FlowExecutionService::JobType::None);
+        QCOMPARE(service.state(), FlowExecutionService::State::Idle);
+        QVERIFY(!service.isActive());
+
+        // 恢复启动：超时遗留的 m_startSettled / m_startOk 不得污染后续握手，
+        // 连续两次正常启动都必须成功并各自完成。
+        service.clearStartHandshakeHookForTest();
+        for (int i = 1; i <= 2; ++i) {
+            QSignalSpy restartSpy(&service, &FlowExecutionService::jobFinished);
+            QVERIFY2(service.startSingle(), qPrintable(QString("restart #%1 must succeed").arg(i)));
+            QTRY_COMPARE_WITH_TIMEOUT(restartSpy.count(), 1, 5000);
+            QCOMPARE(probe.runs.load(), i);
+            QCOMPARE(service.currentJob(), FlowExecutionService::JobType::None);
+            QVERIFY(!service.isActive());
+        }
+
         QVERIFY2(guard.finish(), "cleanup guard must join the worker before captured stack variables are destroyed");
     }
 };
