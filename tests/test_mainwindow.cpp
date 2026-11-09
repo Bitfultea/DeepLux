@@ -62,6 +62,7 @@
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>
 #include <core/model/Project.h>
+#include <cstdlib>
 #include <functional>
 #include <plugins/image_processing/CropImage/CropImagePlugin.h>
 #include <ui/ThemeManager.h>
@@ -366,6 +367,66 @@ FlowOrderPlan b5Analyze(const FlowGraphCatalog& catalog, const QList<ModuleConne
     const QList<ModuleConnection> normalized = FlowGraphAnalyzer::normalizeConnections(catalog, edges, error);
     return FlowGraphAnalyzer::analyze(catalog, normalized, order);
 }
+
+// T2.6 真实 MainWindow 连接回归的失败路径收尾：不变量同
+// ServiceContractCleanupGuard —— 未 join 时 finish() 绝不返回。
+// 栈对象（MainWindow / module / ctx / imageWidget 指针）声明在 guard 之前，
+// guard 最后声明、最先析构，保证 worker 退出前这些对象仍存活。
+struct T26RealConnectionGuard {
+    FlowExecutionService* service = nullptr;
+    QMetaObject::Connection extra;
+    bool armed = true;
+
+    void finish() {
+        if (!service || !armed) {
+            return;
+        }
+        QObject::disconnect(extra);
+        service->stop();
+        const auto pump = [] {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            QThread::msleep(5);
+        };
+        QElapsedTimer timer;
+        timer.start();
+        while (service->isActive() && timer.elapsed() < 10000) {
+            pump();
+        }
+        bool joined = false;
+        while (timer.elapsed() < 15000) {
+            if (service->shutdown()) {
+                joined = true;
+                break;
+            }
+            service->stop();
+            pump();
+        }
+        if (!joined || service->isActive()) {
+            qWarning("T26RealConnectionGuard: bounded diagnostics expired; continuing to wait "
+                     "for the real worker exit (outer watchdog bounds this wait)");
+            for (;;) {
+                service->stop();
+                if (service->shutdown() && !service->isActive()) {
+                    joined = true;
+                    break;
+                }
+                pump();
+                if (timer.elapsed() >= 60000) {
+                    qCritical("T26RealConnectionGuard: worker did not exit; terminating the test "
+                              "process instead of unwinding the stack while locals are still alive");
+                    std::abort();
+                }
+            }
+        }
+        armed = false;
+    }
+
+    ~T26RealConnectionGuard() {
+        if (armed) {
+            finish();
+        }
+    }
+};
 } // namespace
 
 class TestMainWindow : public QObject {
@@ -438,6 +499,9 @@ private slots:
     void testServiceUserPauseUpdatesRunControls();
     // t17/F2：工程切换后旧 (jobId,runId) 迟到帧不得改写画面/叠加（设计 §7.3）
     void testProjectSwitchDropsLateDisplayFrames();
+    // T2.6 行为契约：连续 5 短 job + GUI 队列延迟，经真实 MainWindow 连接后
+    // 最终只渲染最后一个 job 的帧，旧通知不得改写画面（不复刻槽逻辑）。
+    void testDelayedQueueThroughRealMainWindowConnections();
     // t17/O1：窗口可见性驱动帧捕获开关（设计 §7.5）
     void testDisplayCaptureFollowsVisibility();
     // B8.3：测量叠加只读帧内快照（设计 §7.3）
@@ -4663,6 +4727,106 @@ void TestMainWindow::testProjectSwitchDropsLateDisplayFrames() {
     QCOMPARE(imageWidget->measurementPoints().size(), pointsAfterSwitch);
     QCOMPARE(imageWidget->measurementLines().size(), linesAfterSwitch);
     QVERIFY(imageWidget->measurementLines().isEmpty());
+}
+
+void TestMainWindow::testDelayedQueueThroughRealMainWindowConnections() {
+    // T2.6 行为契约（裁定②，仅测试）：连续 5 个短 job、GUI 队列延迟，全部经过
+    // MainWindow 真实的 jobStateChanged / displayFrameReady / jobFinished 连接
+    //（MainWindow.cpp:772 / :755 / :799，Auto→Queued）后，最终只渲染最后一个 job
+    // 的帧；旧 (jobId,runId) 迟到通知不得改写画面。
+    // 本用例刻意走真实 MainWindow 连接，与 test_flowidentitycontract.cpp 中
+    // 复刻槽逻辑的 A/B 契约用例互补，避免「仅复制槽逻辑后自证」。
+    FlowExecutionService& service = FlowExecutionService::instance();
+    RunEngine& engine = RunEngine::instance();
+
+    MainWindow window;
+    window.resize(900, 640);
+    window.show();
+    QCoreApplication::processEvents();
+    QVERIFY2(engine.isDisplayCaptureEnabled(), "a visible MainWindow must enable display capture");
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    engine.clearModules();
+    engine.clearOutputs();
+    engine.clearDisplayJobId();
+    engine.clearLatestDisplayFrames();
+    MainWindowOutputProbeModule module(QStringLiteral("t26_real_probe"));
+    QVERIFY(module.initialize());
+    engine.addModule(&module);
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("t26_real_probe"), ExecutionAffinity::Worker);
+    engine.setDisplayCaptureEnabled(true);
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    // 额外 Queued 计数：MainWindow 的 jobFinished 槽先连接，故本槽在其之后执行；
+    // 计数 == 5 意味着 5 个 jobFinished 槽（含 forceFlush / finishRunUi）均已完成。
+    QObject ctx;
+    int finishedNotifies = 0;
+    const QMetaObject::Connection extra = connect(
+        &service, &FlowExecutionService::jobFinished, &ctx,
+        [&](FlowExecutionService::JobType, bool) { ++finishedNotifies; }, Qt::QueuedConnection);
+
+    T26RealConnectionGuard guard;
+    guard.service = &service;
+    guard.extra = extra;
+
+    const quint64 base = service.currentJobSerial();
+    // 连续 5 个短 job：此阶段刻意不泵 GUI 事件，让所有 queued 通知堆积。
+    // 顺序由「启动前等真实 Idle + 启动后等 lastFinishedJobSerial」构造，无固定 sleep。
+    for (int i = 1; i <= 5; ++i) {
+        QElapsedTimer idleWait;
+        idleWait.start();
+        while ((service.isActive() || service.state() != FlowExecutionService::State::Idle) &&
+               idleWait.elapsed() < 30000) {
+            QThread::yieldCurrentThread();
+        }
+        QVERIFY2(!service.isActive() && service.state() == FlowExecutionService::State::Idle,
+                 "each short job must start from a real Idle");
+        QVERIFY(service.startSingle());
+        const quint64 expect = base + static_cast<quint64>(i);
+        QElapsedTimer doneWait;
+        doneWait.start();
+        while (service.lastFinishedJobSerial() < expect && doneWait.elapsed() < 30000) {
+            QThread::yieldCurrentThread();
+        }
+        QCOMPARE(service.lastFinishedJobSerial(), expect);
+    }
+
+    // 一次性消费全部堆积的最终通知（确定性：等计数到 5 且画面已渲染）。
+    QElapsedTimer drain;
+    drain.start();
+    while ((finishedNotifies < 5 || !imageWidget->hasImage()) && drain.elapsed() < 30000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        QTest::qWait(1);
+    }
+    QCOMPARE(finishedNotifies, 5);
+    QVERIFY2(imageWidget->hasImage(), "the last job's frame must reach the real MainWindow renderer");
+
+    const quint64 lastSerial = service.lastFinishedJobSerial();
+    const DisplayFrame slot = engine.latestDisplayFrame(QStringLiteral("main"));
+    QCOMPARE(slot.jobId, lastSerial); // 帧身份 == 最后任务
+    QVERIFY(!slot.runId.isEmpty());
+    QVERIFY(!slot.image.isNull());
+    QCOMPARE(imageWidget->currentImage().pixel(0, 0), slot.image.pixel(0, 0));
+
+    // 旧 job 的迟到通知：身份不匹配 → 不得改写画面（真实 MainWindow 连接路径）。
+    const QImage rendered = imageWidget->currentImage();
+    const quint64 staleJobId = base + 1; // 第 1 个 job
+    const QString staleRunId = QStringLiteral("t26-stale-run");
+    engine.displayFrameReady(QStringLiteral("main"), staleJobId, staleRunId);
+    for (int pass = 0; pass < 10; ++pass) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    }
+    QTest::qWait(ImageRefreshCoalescer::ThrottleMs * 2);
+    QCOMPARE(imageWidget->currentImage(), rendered);
+    QCOMPARE(imageWidget->currentImage().pixel(0, 0), slot.image.pixel(0, 0));
+
+    guard.finish();
 }
 
 void TestMainWindow::testDisplayCaptureFollowsVisibility() {

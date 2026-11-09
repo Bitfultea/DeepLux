@@ -50,6 +50,7 @@ set(TEST_SOURCES
     test_tiffloader.cpp
     test_himagewidget.cpp
     test_imagerefreshcoalescer.cpp
+    test_flowidentitycontract.cpp
     test_flowcanvas.cpp
     test_flowlayoutcoordinator.cpp
     test_processtreeorder.cpp
