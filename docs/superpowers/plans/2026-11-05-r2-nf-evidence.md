@@ -634,3 +634,109 @@ ACTUAL-GUARD-DESTRUCTOR returned=1 active=1
 **裁定**：**批准 T2.3 guard 整改及 T2.4 方案二本轮收口**，可以继续 R2 剩余任务。**T2.7 仍保持隔离**（`be90921` 未合入、不作硬前置），**R2 整批尚未完成** —— 本轮批准仅为 T2.3 / T2.4 局部收口，不代表 R2 批次验收门禁（主仓计划文档 `2026-11-05-review-hardening.md:156` 定义的 `git revert` 抽查、整批连续 10 次门禁等）已完成。
 
 R2 剩余任务（依计划文档 `:121`–`:156`，T2.1 / T2.2 已于第 1 / 2 节收口，T2.3 / T2.4 本轮收口）：**T2.5** worker 异常兜底（P2）、**T2.6** 帧身份随信号携带（P1）、**T2.8** `CancellationToken` 语义（P2）、**T2.9** runId 跨线程快照（P2）；**T2.7** 保持隔离不推进。另有 R2 批次级验收门禁（阻塞）待整批完成后执行。起点与顺序待评审指定。
+
+---
+
+## 9. T2.6 帧身份随信号携带（行为契约／回归保护，2026-11-09 评审裁定②）
+
+### 9.1 裁定与任务性质
+
+评审裁定原文：**「裁定：采用②，允许进入『仅测试＋处置记录』的实施，不新增信号参数、不做生产修复，不制造 NF 红灯。当前尚不算 T2.6 收口。」** 起点与顺序按评审指定 `T2.6 → T2.5 → T2.8 → T2.9`；`T2.7`（`be90921`）继续隔离、不作硬前置；涉及共享执行路径，暂不并行修改生产代码。
+
+基线 `e548c10`。任务性质同第 6 / 7 节：**基线已绿、非 NF、无生产修复提交**；只提交测试与本节处置记录，**分两个提交**。原计划 `2026-11-05-review-hardening.md:147` 的「`jobStateChanged` 增加 `jobSerial` 负载」本轮**不实施**；按裁定，「新增信号参数导致基线编译失败」**不算 NF 红灯**。
+
+### 9.2 前提核实：静态事实与隔离探针
+
+**静态枚举**（回传材料 `/var/tmp/t26-probe-out/T26-STATIC-ENUM.md`，不进交付链）：
+
+- 三类 ID 严格区分：`jobSerial`（Service 层单调递增，`currentJobSerial()` / `lastFinishedJobSerial()` / `lastFailedJobSerial()`）、显示 `jobId`（`RunEngine::m_displayJobId`，`FlowExecutionService.cpp:337` 注入、`:376` 清零，帧在 publish 时刻快照进 `DisplayFrame::jobId`）、`runId`（`RunEngine::m_runId`，每轮唯一，帧在 publish 时刻快照进 `DisplayFrame::runId`）。
+- `FlowExecutionService.h:91` 的 `jobStateChanged(State, JobType)` **不携带序号**；`MainWindow.cpp:781` 在排队槽执行时回读 `RunEngine::instance().displayJobId()`，**不是 emit 时刻快照**，故与「通知所属序号」存在偏差。
+- 帧身份两道校验：`displayFrameReady(viewportId, jobId, runId)` 参数 + `MainWindow.cpp:762` 用 `DisplayFrame::matchesIdentity()` 比对当前槽位帧；`ImageRefreshCoalescer::accepts()` 另有高水位 / runId 过滤，但 `MainWindow.cpp:781` 传空 runId，**合并器的 runId 锁定从未启用**。
+- `AgentRunWaiter.cpp` 以 `lastFinishedJobSerial() != expectedSerial` **比较**过滤迟到 `jobFinished/jobFailed`，与 MainWindow 的「回读值直接采用」形成对比。
+
+**隔离探针**（前提核实，**不进交付链**）：独立工作树 `/var/tmp/t26-probe-wt`（`git worktree add --detach e548c10`）+ 独立构建目录 `/var/tmp/t26-probe-build`，`ldd` 指向该目录 `libdeeplux_core.so.1`；脚本 `/var/tmp/t26-probe-build.sh`、`/var/tmp/t26-probe-build-v3.sh`；日志 `/var/tmp/t26-probe-out/`、`/var/tmp/t26-probe-out-v3/`。补丁存档：v1 / v2 依次写入 `/var/tmp/t26-probe.patch`（v1 哈希 `656212b6…` / 613 行，已被覆盖；当前留存 v2 sha256 `fd5c5d81…` / 620 行，差异仅日志字段）；v3 `/var/tmp/t26-probe-v3.patch` sha256 `fd8f5ffb…` / 686 行；首次编译失败现场 `/var/tmp/t26-probe-v3-attempt1.patch`、`console-attempt1.log`、`build-attempt1.log` 原样保留。探针文件 `tests/test_t26_identity_probe.cpp` 及其 `tests/CMakeLists.txt` 注册**仅存在于独立工作树**。
+
+v3 结果：`FULL_rc=0`、`Totals: 5 passed, 0 failed, 0 skipped, 0 blacklisted`、三个用例各 **20/20 `rc=0`**、`NONZERO_RUNS=0`、`PIPESTATUS=0 0`。
+
+**三处评审指出的证据边界（如实记录，已全部修正）**：
+
+1. **A 变体有效帧路径未验证**：初版放行后只泵有限轮事件、guard 随即断连，日志仍为 `finishedNotifies=4 renders=0`，`validDropped=0` **不能证明第 5 个任务的有效帧未被丢弃**。→ v3 补测：把「确定性等待 `barrier.completed == 5` + 消费最终通知直到 `finishedNotifyCount == 5 && renderedFrames` 非空」作为放行后前置条件，并把最后任务渲染身份 / 图像首像素 / run-level 快照 / `lateAccepted=0` / `validDropped=0` **变成断言**。判别日志 `T26-SUMMARY variant=A_at_next_job batch=2 … finishedNotifies=5 renders=1 lateAccepted=0 validDropped=0 completed=5 lastRenderedJob=5`、`T26-RENDER … jobId=5 … pixel0=ff64283c snapshotK=5`；`T26-REPORT.md` §4.4 记为「批评 1 闭合」。
+2. **「结构上互斥、必然覆盖后果」过强**：已撤回（`T26-REPORT.md` §4.3、`T26-STATIC-ENUM.md:51`）。`RunEngine.cpp:2574-2578` 的 `m_displayJobId.store()` 与随后加锁的 `clearLatestDisplayFrames()` 是**两步、非原子转换**，中间存在「新 displayJobId 已生效、槽位仍是旧帧」的窗口；A/B **只覆盖两种特定交错，不能推广为所有交错均安全**；该窗口**存在不等于已证实造成显示缺陷**，也不得反向断言它一定安全。
+3. **`T26-STATIC-ENUM.md:57` 事实错误「传 0 保留高水位」**：已更正为 `ImageRefreshCoalescer::setExpectedIdentity()` 中 `m_jobId = jobId;`（`:22`）**无条件执行**，传 0 会把高水位清零；`jobChanged` 只控制 `clearPending()`；真正保留高水位的是 `clearExpectedIdentity()`（`:26-30`）。主报告 §4.3 与判别用例描述原本正确，两份材料口径已统一。
+
+**前提核实结论（裁定②的事实基础）**：在已覆盖的两种交错（A：GUI 处理旧通知时回读到「下一任务」的序号；B：回读到 0、高水位归零）下，内部「通知所属序号 ≠ 处理时回读值 / 合并器高水位」的偏差**可复现并记录**（`mismatch` / `hwWrong`），但**未观察到显示错配**：无迟到帧被误接收、无有效帧被误丢弃、最后任务真实渲染且图像与快照对应。**尚未证实计划中的缺陷**。
+
+### 9.3 交付链固化内容（仅 `tests/`，零生产改动）
+
+| 文件 | 改动 | 内容 |
+|---|---|---|
+| `tests/test_flowidentitycontract.cpp` | 新增 621 行 | 3 个行为契约用例（A / B / 帧身份参数判别） |
+| `tests/test_mainwindow.cpp` | +164 行 | 真实 `MainWindow` 连接回归 + `T26RealConnectionGuard` |
+| `tests/CMakeLists.txt` | +1 行 | 在 `TEST_SOURCES` 注册 `test_flowidentitycontract` |
+
+预验证补丁 `/var/tmp/t26-contract-tests.patch` sha256 `01e78ca6…` / 828 行；交付实际补丁 `/var/tmp/t26-delivery-tests.patch` sha256 `6bdec72a…` / 835 行。两者差异**仅为 clang-format 排版**：新文件全文件格式化；`test_mainwindow.cpp` 只格式化本次新增行范围（`--lines=65:65 / 370:429 / 502:504 / 4732:4831`），**历史行零改动**（`DELETED_HISTORICAL_LINES=0`）。该文件在 HEAD 的全文件 `clang-format --dry-run --Werror` 本就失败（19747 行历史违规，见 `/var/tmp/t26-mw-baseline-fmt.log`），故按既有门禁口径只检查新增行范围，**未降低既有检查强度**。逻辑与预验证版本一致，交付树门禁为格式化后版本的完整重跑。
+
+**冻结为断言的契约**：
+
+- 连续 5 个短 job + GUI 事件队列延迟（进入／放行／完成屏障 `QSemaphore`，**无固定 sleep**）后，确定性等待 `completed == 5` 并消费全部最终通知，断言 `runNotifyCount == 5`、`finishedNotifyCount == 5`、渲染记录非空；
+- 每条渲染记录 `jobId == lastFinishedJobSerial()`、首像素等于第 5 任务期望色、`runId` 非空、至少一条 `snapshotK == 5`；`lateAccepted == 0`、`validDropped == 0`；
+- `displayFrameReady` 参数 + `DisplayFrame::matchesIdentity()` 为帧身份事实源：迟到旧通知不调度、不改写已渲染帧（含图像像素与 `moduleDataSnapshot` 断言）。
+
+**明确不固化为永久契约**：当前错配次数 / 高水位错误次数（`mismatch` / `hwWrong` / `identityDrops` 只写日志、不断言固定值）、当前 `jobStateChanged` 信号签名（文件头注释明确 "the current signal signature is never frozen as a contract"）。不新增信号参数、不新增生产注入点。
+
+**真实 MainWindow 连接回归**（`tests/test_mainwindow.cpp::testDelayedQueueThroughRealMainWindowConnections`）：刻意走 `MainWindow.cpp` 自身的 `jobStateChanged` / `displayFrameReady` / `jobFinished` 连接，**不复制槽逻辑**，避免「仅复制槽逻辑后自证」；5 个短 job 期间不泵 GUI 队列，之后等待 `finishedNotifies == 5 && imageWidget->hasImage()`，断言槽位帧 `jobId == lastSerial`、图像首像素与渲染画面一致、旧 `(jobId, runId)` 迟到通知不改写画面。
+
+**收尾 guard 不变量**（沿用第 8 节）：`ContractCleanupGuard` / `T26RealConnectionGuard` 均为「**未 join 时 `finish()` 绝不返回**」——先断连、无条件放行屏障、join 驱动线程、循环 `stop()` + `shutdown()` 直到成功 join；有界诊断超时只 `qWarning` 并继续等待（外层 CTest `TIMEOUT` / `timeout -k` 限时），60s 硬上限 `qCritical` + `std::abort()` 终止进程、不栈展开；析构无条件 `finish()`。
+
+### 9.4 隔离事实
+
+| 项 | 值 |
+|---|---|
+| 前提核实探针 | `/var/tmp/t26-probe-wt`（detached `e548c10`）+ `/var/tmp/t26-probe-build`；`ldd` 指向独立 `libdeeplux_core.so.1` |
+| 探针文件 | `tests/test_t26_identity_probe.cpp` 及其 CMake 注册**仅在独立工作树**，未进交付链 |
+| 交付链契约测试预验证 | `/var/tmp/t26-contract-verify.sh`，日志 `/var/tmp/t26-contract-out/`；`CONTRACT_FULL_rc=0`（5 passed）、4 用例各 ×20 = **80/80**、相关套件 `test_imagerefreshcoalescer` 19 passed / `test_flowexecutionservice` 22 passed；脚本初版缺陷（未构建相关套件 target、`grep '1 passed'` 模式不匹配实际 `3 passed`）如实保留于 `console-attempt1.log`，修正后干净重跑 |
+| 交付工作树 | 全程只保留受审的测试态，**从未切换缺陷态**；`PROD_DIFF=[]`，零生产代码改动 |
+| 门禁 | `/var/tmp/t26-delivery-gate.sh`，**全部检查命令自含**（吸取 8.4 P2 教训）；环境 `unset DISPLAY` + `QT_QPA_PLATFORM=offscreen` + `TMPDIR=/var/tmp/deeplux-ctest-tmp` |
+
+### 9.5 验证记录（交付树，2026-11-09）
+
+三次执行全部保留原始日志，**均为全绿，不存在「重试到绿」**：
+
+| 批次 | 定位 | HEAD | 日志目录 |
+|---|---|---|---|
+| 1 | 落地预验证 | `e548c10` + 未提交的 3 个测试改动 | `/var/tmp/t26-delivery-gate-out/` |
+| 2 | 脚本计数口径修正后完整重跑 | 同上 | `/var/tmp/t26-delivery-gate-out-v2/` |
+| 3 | **提交态正式送审门禁** | **`42ed898`**（`STATUS=` 干净） | `/var/tmp/t26-delivery-gate-out-final/` |
+
+正式门禁（批次 3）结果：
+
+| 检查 | 结果 |
+|---|---|
+| `clang-format --dry-run --Werror tests/test_flowidentitycontract.cpp` | `FMT_CONTRACT_rc=0` |
+| 新增行范围格式检查（`test_mainwindow.cpp`） | `FMT_MW_ADDED_rc=0`；`DELETED_HISTORICAL_LINES=0` |
+| `git diff --check` | `DIFFCHECK_rc=0` |
+| `cmake -S . -B build` / `cmake --build build -j4` | `CONFIGURE_rc=0` / `BUILD_rc=0`；`[100%] Built target DeepLux` |
+| 相关套件（各一次全量） | `test_flowidentitycontract` **5 passed**、`test_mainwindow` **86 passed / 1 skipped**、`test_imagerefreshcoalescer` **19 passed**、`test_flowexecutionservice` **22 passed**；`SUITES_NONZERO=0` |
+| **一次全量 CTest** | **`100% tests passed, 0 tests failed out of 97`**，`CTEST_rc=0`，81.74s |
+| 新增用例各 ×20（附加稳定性证据） | 4 × 20 = **80/80 `rc=0`**；`CASE_TOTALS_ALLPASS=80`、`CASES_NONZERO=0` |
+| 严格失败关键字扫描 | `FAIL_KEYWORD_STRICT_FILES=0` |
+
+**数字口径说明（如实记录）**：
+
+- 全量 CTest 由基线 96 项变为 **97 项**：`tests/CMakeLists.txt:463` 对 `TEST_SOURCES` 中每个文件自动 `add_test`，新增 `test_flowidentitycontract` 即 +1。三份 `ctest-N.log` / `ctest-full.log` 均为 `Total Tests: 97`。**不得沿用「96/96」表述。**
+- 批次 1 的 `CTEST_REGISTERED=88` 是**脚本计数口径缺陷**：CTest 对 `#1`–`#9` 输出 `  Test  #1:`（双空格）、`#10` 起输出 `  Test #10:`（单空格），`grep -c '^  Test #'` 漏计 9 项，实际 `Total Tests: 97`。已修正为读取 `Total Tests:` 行 + 空白容忍模式 `Test *#`，批次 2 / 3 均为 `CTEST_LISTED=97`。该项仅为 FACTS 计数，**不影响任何检查结论**；首次日志原样保留、并完整重跑。
+- `FAIL_KEYWORD_FILES=2` 为字面误报，逐行核对：`configure.log:10` 的 `-- HymsonVision3D plugins: Disabled (set ENABLE_HYMSON3D=ON to enable)`，以及 `suite-test_imagerefreshcoalescer.log:14-15` 测试函数名 `testCaptureDisabledPublishesNothing` 含 `Disabled`（`DISABLED_LITERAL_HITS=3`）；**严格扫描 0 命中**。
+- `test_mainwindow` 的 `1 skipped` 为 HEAD 基线既有的 `QSKIP`（`testQuickAnnotateNativeRealImageShowsMask` 需 `DEEPLUX_TEST_REAL_SAM_IMAGE` 真实图 GUI 验收），本次新增用例**不含 QSKIP**；CTest 层面 `0 failed`。
+- 十轮连续全量门禁**仍留作 R2 整批验收**，本轮按裁定**未执行**；80 次单用例为附加稳定性证据，**不替代、不冒充**十轮门禁。
+
+### 9.6 状态与送审
+
+| 项 | 状态 |
+|---|---|
+| 交付提交 | ① `42ed898`（`test: add T2.6 frame-identity behavior-contract regressions`，3 文件 / +786，纯测试）② 本节处置记录提交（纯文档，按 `a0ad393` / `e548c10` 先例不重跑门禁） |
+| 生产改动 | **零**；无新增信号参数、无 NF 红灯、无独立探针文件进入交付链 |
+| 结论措辞 | **「已覆盖时序中未观察到显示错配，尚未证实计划中的缺陷；内部回读偏差已记录。」** |
+| **T2.6 收口** | **当前尚不算收口**，待评审收口复审；通过后再进入 `T2.5` |
+| T2.7 / R2 整批 | `be90921` 继续隔离、未合入、不作硬前置；**R2 整批未完成** |
+
+**送审复核要点**：① A 放行后确定性等待与最后任务渲染 / 图像 / 快照断言是否充分；② A/B 正确性已全部成为断言、且未固化错配次数或信号签名；③ 真实 `MainWindow` 连接用例确实走生产连接而非复刻槽逻辑；④ 三次门禁日志与提交链一致；⑤ 十轮门禁按裁定留待整批验收、本轮未做是否接受。
