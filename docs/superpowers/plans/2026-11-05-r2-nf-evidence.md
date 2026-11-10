@@ -822,3 +822,94 @@ v3 结果：`FULL_rc=0`、`Totals: 5 passed, 0 failed, 0 skipped, 0 blacklisted`
 | **T2.6** | **已按行为契约／回归保护口径收口**（局部收口，不等于 R2 整批完成） |
 | 下一步 | 进入 **T2.5 前提核实**；后续顺序 `T2.5 → T2.8 → T2.9`，**T2.7 继续隔离**、`be90921` 未合入、不作硬前置 |
 | 整批 | **R2 整批尚未完成**；十轮连续门禁与批次验收门禁待整批完成后执行 |
+
+---
+
+## 10. T2.5 worker 异常兜底（真实缺陷 NF，进行中）
+
+### 10.1 证据口径更正（2026-11-10 评审裁定，优先于一切推理）
+
+- **A/B/D 直连槽探针不作正式红灯，仅作诊断记录。** Qt 5.15 明确规定：经信号槽机制调用的槽，若让异常逸出槽边界属**未定义行为**；`Qt::DirectConnection` 不等于普通 C++ 函数调用。
+- **「生产可达性」推论撤回。** `MainWindow` 等 worker→GUI 为**排队连接**，GUI 槽在 GUI 线程执行，其异常（本属 UB）不会返回 worker 线程；据此推断「任何直连槽抛异常即整进程终止」不成立。
+- **正式红灯口径**：仅限 **Service 自有代码的普通 C++ 异常**；启动段复用既有测试钩子 `setStartHandshakeHookForTest()`（`std::function<void()>`，由 `runJob()` 直接调用，不经过任何 Qt 槽边界）。
+- **修复承诺边界**：统一恢复启动、主体、收尾的资源与状态；**不承诺**从任意 Qt 槽异常中恢复。
+
+被撤回的原始推断与探针数据保留在 `/var/tmp/t25-probe-out/T25-REPORT.md`、`T25-STATIC-ENUM.md`（含「撤回」标注），不因后续改写而删除。
+
+### 10.2 静态事实（基线 `1a2a02a`）
+
+| 段落 | 行号 | 是否在 try 内 | 说明 |
+|---|---|---|---|
+| 启动段 | `:306-343` | **否** | `startHook()`、`beginExternalJob()`、`setDisplayJobId()`、`commitState(Running)` |
+| 主体 | `:348-371` | 是 | 仅此段有 catch |
+| 收尾段 | `:373-408` | **否** | `endExternalJob()`、`clearDisplayJobId()`、状态复位、`emit jobFinished/jobFailed` |
+| 线程入口 | `:18-23` | **无 catch** | `WorkerThread::run()` 直接调用 `workerLoop()` |
+| 命令循环 | `:281-304` | **无 catch** | `workerLoop()` 内 `runJob(job)` |
+
+全文件 `catch` 仅 `:365`、`:368` 两处（均在主体 try 内）。主体异常另有 `RunEngine::executeAcquiredRun()`（`RunEngine.cpp:1455-1467`）兜底，故主体有双保险、启动/收尾零保险。
+
+### 10.3 正式红灯（提交 `39b8c37` 单独检出）
+
+注入：`setStartHandshakeHookForTest([]{ throw std::runtime_error("injected startup callback fault"); })`。
+
+隔离事实：工作树 `/var/tmp/t25-probe-wt`（detached `1a2a02a`），以 `git checkout 39b8c37 -- tests/test_flowexecutionservice.cpp src/core/engine/FlowExecutionService.{h,cpp}` 取用**提交内字节**；哈希核对 `tests/test_flowexecutionservice.cpp = d353639b…`、`src/core/engine/FlowExecutionService.cpp = f2c66808…`（与 `git show 1a2a02a:…` 一致）。构建目录 `/var/tmp/t25-probe-build`。
+
+```
+run-1 rc=134 terminate=1 pass=0
+run-2 rc=134 terminate=1 pass=0
+run-3 rc=134 terminate=1 pass=0
+run-4 rc=134 terminate=1 pass=0
+run-5 rc=134 terminate=1 pass=0
+```
+
+原始日志 `/var/tmp/t25-probe-out/commit1_red-run-{1..5}.log`：
+
+```
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  injected startup callback fault
+```
+
+另有独立探针（不依赖 QtTest）`/var/tmp/t25-startup-red-out/startup_probe` 在基线库上同样 **5/5 `rc=134`**，见 `T25-STARTUP-RED.md`。
+
+### 10.4 修复内容（提交 `324a282`）
+
+- 启动段纳入 `try`：异常时立即 `settleStart(false)`，不让 `startX()` 等到握手超时后按「已出队」请求停止。
+- 主体保持既有错误文本；启动/收尾分别使用可判别的 `service_startup_exception` / `service_teardown_exception` 前缀，拒绝分支保留原拒绝原因并追加故障。
+- 收尾段纳入 `try`；对租约释放与显示 jobId 清理做尽力二次尝试；**资源与状态复位无条件执行**（atomic store + 锁，不调用可抛接口）。
+- `WorkerThread::run()` 外层 `catch(...)` → `handleWorkerLoopFault()`：复位 `Idle`、放行启动握手、上报 `jobFailed`，绝不让异常逃出线程入口；退出屏障钩子亦包一层。
+- 非承诺：`beginExternalJob()` 自身抛出时无 token 可释放，引擎半初始化状态不承诺完全复位；槽异常不在承诺范围。
+
+### 10.5 绿灯证据（提交 `324a282`）
+
+| 套件 | 结果 |
+|---|---|
+| `test_flowexecutionservice`（含新增用例） | **23 passed, 0 failed** |
+| 新增用例单独 ×5 | **5/5 `rc=0`，PASS** |
+| `test_runengine` | **118 passed, 0 failed** |
+| `test_runenginejoblease` | **8 passed, 0 failed** |
+| `test_runengineuserpause` | **6 passed, 0 failed** |
+| `test_runenginefinalizer` | **6 passed, 0 failed** |
+
+日志：`/var/tmp/t25-probe-out/tip_*.log`、`commit2_green-run-{1..5}.log`。
+
+### 10.6 构建环境如实记录
+
+- `cmake -G "Unix Makefiles"` 与 `-G Ninja` 在**全新构建目录**的 Generate 阶段均出现停滞（`Configuring done` 后长时间无 `Generating done`，实测约 1 文件/秒），本机 load average ≈ 9。为避免把环境问题混入测试结论，本轮绿灯改用**基线已生成的构建目录** `/var/tmp/t25-probe-build` 的增量目标（`make <target>/fast`，只做编译/链接，不重跑 Generate）。
+- 该偏离**不满足**正式门禁「工作区外全新构建目录」的要求，故**不作为 T2.5 收口门禁**；收口时须在能完成 Generate 的环境中重跑全新目录的 97 项 CTest。
+- `make` 首次报 `No space left on device`（`/tmp` 为 10M tmpfs）与插件目标缺失，均为环境/目标选择问题，设置 `TMPDIR=/var/tmp/deeplux-ctest-tmp` 后重跑通过；**不是测试失败、不是重试到绿**。
+
+### 10.7 收尾段注入点方案（待核准，未实施）
+
+收尾段无任何既有合法注入位置（启动钩子只在启动段调用；`setExecutionFaultInjectionForTest` 属引擎主体；`setWorkerExitBarrierForTest` 属线程退出段；`Logger` 无 sink）。方案 A：新增与既有钩子同型的 `setJobTeardownHookForTest()` / `clearJobTeardownHookForTest()`（`DEEPLUX_TEST_VISIBILITY`，生产构建为 `private`、恒为空），调用点置于收尾 `try` 入口、`endExternalJob()` 之前。详见 `/var/tmp/t25-probe-out/T25-TEARDOWN-HOOK-PROPOSAL.md`。
+
+### 10.8 状态
+
+| 项 | 状态 |
+|---|---|
+| 提交链 | `… → 1a2a02a → 39b8c37（test）→ 324a282（fix）` |
+| 启动段 NF | **红灯 5/5（提交内字节）、绿灯 5/5 已闭合** |
+| 收尾段 NF | **未实施**，待方案 A 核准 |
+| 全量 CTest（97） | **未执行**（Generate 环境受限）；收口时必须重跑 |
+| T2.5 | **进行中，未收口** |
+| T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
+| R2 整批 | **尚未完成** |
