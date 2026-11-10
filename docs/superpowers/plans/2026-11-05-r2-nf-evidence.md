@@ -1322,3 +1322,191 @@ service 全套件：`Totals: 27 passed, 0 failed`、`SUITE_rc=0`（52846ms）。
 | T2.5 | **待评审收口裁定**（本轮不自行宣告收口） |
 | T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
 | R2 整批 | **尚未完成** |
+
+---
+
+## 13. T2.8 CancellationToken 借用语义 / T2.9 runId 跨线程快照（2026-11-10 裁定）
+
+### 13.1 裁定与口径
+
+两项均为 P2，经裁定按以下口径处置，**均不制造 NF 红灯**：
+
+| 任务 | 裁定方案 | 记录口径（固定措辞） |
+|---|---|---|
+| T2.8 | 按契约整改 + 行为契约测试 | 「**行为契约／预防性重构**」——承认借用表语义缺陷并按契约整改 |
+| T2.9 | 作为「预防性加固」收口 | 「**预防性加固，未发现真实竞态**」——不修复任何已知缺陷 |
+
+按本文件全局约定第 11 条：预防性重构／行为契约类任务**不得制造 NF 红灯**，须注明契约性质。
+两项任务的判别性证明因此采用**撤销态失败**（T2.8）与**故意脱节反证**（T2.9）两种手法，
+而不是制造缺陷变体——因为 T2.8 的缺陷态就是「整改前的真实代码」，T2.9 则本就无缺陷态可造。
+
+### 13.2 T2.8 缺陷机理（静态事实）
+
+| 事实 | 位置 | 结论 |
+|---|---|---|
+| 借用表写入 | `ModuleBase::execute()` 入口 `setCancellationToken(context.cancellationToken)` | 每次执行都写入全局表 `g_cancellationTokens`（`QHash<const ModuleBase*, CancellationToken*>`） |
+| 写入后是否清理 | 同函数 7 个 `return` 出口**均无**摘除动作 | **只设不清**：本次执行结束后表内条目永久留存 |
+| `CancellationToken` 析构 | 整改前**无析构函数** | token 销毁时不会通知借用表 |
+| `ModuleBase::~ModuleBase()` | 只删自己那一条记录 | 反过来（模块先死）能清；token 先死则清不掉 |
+| 全仓 `setCancellationToken(nullptr)` | 整改前 `src/` 生产路径**从不**主动摘除 | 仅测试 `test_sam_region_flow.cpp` 有一处 |
+| 读取方 | `DelayPlugin`、`FitPlanePlugin`、`FitEllipsePlugin`、`SamPredictPlugin` 的 `isCancellationRequested()` | 表内有悬垂指针即解引用野指针 |
+| 可达路径 | `RunEngine` 析构后模块仍被插件管理器持有；或调用方传入栈上 token | token 先于模块消失 → 悬垂 |
+
+即：**借用表里存的是裸指针，而「借用」却没有与任何一方的生命周期绑定**。任一方先消失，
+留下的条目就变成悬垂指针；而 `isCancellationRequested()` 是插件在自己的执行循环里反复调用的，
+不保证发生在任何一方的析构之前。
+
+### 13.3 T2.8 整改（双重防线，`463d6b7`）
+
+1. **执行期限定**：`ModuleBase::execute()` 内用 RAII 作用域守卫，退出时还原借用。
+   - 用 RAII 而非逐出口手工清表：该函数有 **7 个提前 `return`**，手工清必漏路径。
+   - 只在本次**确实安装了** token 时还原（`tokenInstalledHere`），避免抹掉别人装的 token。
+2. **析构兜底**：`CancellationToken::~CancellationToken()` 调用新增的
+   `ModuleBase::detachCancellationToken(this)`，遍历整表用 `it = g_cancellationTokens.erase(it)`
+   摘除**所有**指向该 token 的条目——同一 token 可能被多个模块借用过（并行批次、多次执行）。
+
+两道防线互补，覆盖两个方向：守卫负责「执行结束」，析构负责「token 提前消失」。
+不变式：**借用表在任意时刻只允许出现「活的、当前正在执行的」token。**
+
+ABI：`ModuleBase` 只新增静态成员函数（非虚、无数据成员），对象布局不变；
+`CancellationToken` 新增虚析构（基类 `QObject` 本就有虚析构，vtable 布局不变）。
+
+### 13.4 T2.8 必须记录的语义变更（诚实边界）
+
+守卫会在 `execute()` 返回时把 token 摘掉，因此**执行结束后模块不再持有 token**——这正是整改目标，
+但它同时改变了既有调用方可见的行为，须明确记录：
+
+| 调用方 | 既有写法 | 整改后实际行为 | 影响判定 |
+|---|---|---|---|
+| `RunEngine::executeModule()` | `:2210` 执行前 `setCancellationToken(m_cancellationToken)`，随后 `execCtx.cancellationToken = m_cancellationToken`（`:2247`）再设置一次 | 守卫在 `execute()` 返回时把这**同一** token 摘除；`:2210` 那次设置的残留被一并清掉 | **无功能影响**：`execCtx` 每次都传入同一 token，执行期可见性不变；插件读取只发生在执行期 |
+| `RunEngine::executeBatchParallel()` 池任务 | `:1815` `setCancellationToken(batchToken)`，随后 `context.cancellationToken = batchToken` | 同上 | **无功能影响**，理由同上 |
+| `tests/test_sam_region_flow.cpp:416` | 显式 `setCancellationToken(nullptr)` | 语义不变（`nullptr` → `remove`） | 无影响 |
+
+结论：`RunEngine` 的两处冗余前置设置成为**冗余但无害**；由于 `execCtx` 已携带 token，
+执行期可见性（插件 `isCancellationRequested()` 的唯一使用场景）完全保持。这**不是**回归，
+而是把原先「泄漏到执行结束后」的借用收敛到执行期内的预期结果。
+**本轮不改动 `RunEngine` 的这两处前置设置**，以避免把 T2.8 与 T2.9 的改动面混在一起；
+它们作为后续可选清理项记录在此。
+
+### 13.5 T2.8 回归与判别性（撤销态失败）
+
+用例（`8706b41`，`tests/test_modulebase.cpp`）：
+
+| 用例 | 断言要点 |
+|---|---|
+| `testCancellationTokenDetachedAfterExecute` | 先证「**装得上**」（`process()` 执行期 `cancellationToken() != nullptr`），再证「**退得掉**」（返回后为 `nullptr`） |
+| `testCancellationTokenDtorLeavesNoDanglingBorrow` | 手工建立借用后销毁 token，模拟「token 先于模块消失」，断言借用已被兜底清空 |
+
+「装得上」这一半是**防恒真**用的：只断言「返回后为空」时，一个从不写表的实现也能通过。
+
+`isCancellationRequested()` 是 `protected`（只给插件自己在执行期用），测试侧加公开转发
+`cancellationRequestedForTest()`，**不改生产访问权限**。
+
+撤销态验证（隔离工作树 `/var/tmp/t28-revert-wt` = `f641a51` + 仅测试补丁，
+独立构建目录 `/var/tmp/t28-revert-build`，`BUILD_rc=0`）：
+
+| 样本 | 退出码 | 失败位置 | 失败断言 |
+|---|---|---|---|
+| red-1..2 / **2 项用例** | **2** | `test_modulebase.cpp:298`、`:322` | `module.cancellationToken() == nullptr`（执行后与析构后均残留借用） |
+
+失败语义正确：撤销态下两条用例都因**表内残留条目**失败，正是缺陷本体。
+修复态：`test_modulebase` **14/14**（原 12，+2）、`rc=0`。
+
+### 13.6 T2.9 静态排查结论：未发现真实竞态
+
+| 事实 | 位置 | 结论 |
+|---|---|---|
+| `m_runId` 唯一写入点 | `RunEngine::tryBeginForRun()`（`RunEngine.cpp:654`） | 单一写者，且在执行开始前写定 |
+| 读取点 1 | `executeModule()` 的 `execCtx.runId` | 串行执行路径 |
+| 读取点 2 | `publishDisplayFrame()` 的 `frame.runId` | 串行路径的调用者 |
+| 池线程路径 | `executeBatchParallel()` 早在 `:1787` 就 `const QString batchRunId = m_runId;`，池 lambda 内**只用 `batchRunId`**、不读 `m_runId`（`:1800`） | 池线程**从未**读 `m_runId` |
+
+**结论：未发现真实竞态。** 本任务因此不制造缺陷变体、不制造红灯，按「预防性加固」收口。
+
+### 13.7 T2.9 加固内容（`b50b653`）
+
+把「池线程不得读可能并发变化的成员」这条**已有边界**从一条路径推广到全部路径：
+
+1. `executeModule()` 开头一次快照 `const QString execRunId = m_runId;`，`execCtx.runId` 用快照；
+2. `publishDisplayFrame()` 签名增加 `const QString& runId`，`frame.runId = runId`，不再读成员；
+3. 效果：读 `m_runId` 的地方从两处收敛为**调用线程上的一处**，后续重构无法在不改签名的前提下
+   把跨线程读取带回来。
+
+**有意不动 `publishFinalDisplayFrame()`**（`:2646`，仍 `frame.runId = m_runId;`）：它的两个调用点
+（`:410`、`:1642`）都在执行入口收尾处，此时 runId 早已写定且无并发写者；为保持改动最小可审，
+本轮不动并在此记录判定依据。
+
+行为不变：帧 runId 取值与改动前完全一致（同一份 `m_runId` 快照）。
+ABI：`publishDisplayFrame` 是 private 成员函数，仅一处调用点，非公开 ABI 面。
+
+### 13.8 T2.9 判别性反证（两次尝试，如实保留）
+
+契约测试断言「执行期看到的 runId 与最终发布帧的 runId 同源且非空」。判别性用**故意脱节**验证：
+
+| 轮次 | 注入 | 结果 | 结论 |
+|---|---|---|---|
+| v1 | 仅把 `publishDisplayFrame` 的 `frame.runId` 改为 `m_runId + "-PROBE"` | **`PROBE_rc=0` 仍绿** | **该轮反证无效**：用例可能恒真 |
+| v2 | 再对 `publishFinalDisplayFrame` 注入 `"-PROBE2"` | **`PROBE2_rc=1` 失败**：`Actual "1794308809179-0-PROBE2"` vs `Expected "1794308809179-0"` | 确认断言真的读实值 |
+
+v1 无效的原因已查明：`publishFinalDisplayFrame()` 随后**覆盖**了槽位帧，而
+`latestDisplayFrame()` 返回的是最终帧。因此单点脱节能被最终帧掩盖。
+
+**教训（写入纪律）**：单点反证通过 ≠ 用例有判别力。涉及「最终可见状态」的断言，必须确认
+被测量的是**对外可见的最终值**而不是内部中间值；必要时叠加多处注入才能击穿覆盖链。
+
+反证随后**完全清除**：`grep -c PROBE` = 0，`RunEngine.cpp` 自 `/var/tmp/RunEngine.fixed.bak` 回滚，
+与交付树 diff 逐字节一致。修复态：`test_runengine` **119/119**（原 118，+1）、`rc=0`。
+
+另记录一处测试前提：`DisplayFrame` 默认**不采集**（`m_displayCaptureEnabled` 默认 `false`），
+用例内须显式 `setDisplayCaptureEnabled(true)` 并在结束前复位——首跑正是因此失败于
+`!frame.runId.isEmpty()`（`rc=1`），补上采集开关后转绿。
+
+### 13.9 格式与差异检查
+
+| 检查 | 结果 |
+|---|---|
+| `clang-format -i` + `--dry-run --Werror`（8 个文件） | 全部 `rc=0` |
+| `git diff --check` | `DIFFCHECK_rc=0` |
+
+### 13.10 提交链
+
+```
+… → f641a51(docs) → 8706b41(test T2.8+T2.9) → 463d6b7(fix T2.8) → b50b653(refactor T2.9) → <本章>(docs)
+```
+
+| 提交 | 类型 | 改动面 |
+|---|---|---|
+| `8706b41` | test | `tests/test_modulebase.cpp`、`tests/test_runengine.cpp`（`177 insertions(+), 67 deletions(-)`），不含任何修复 |
+| `463d6b7` | fix T2.8 | `ModuleBase.{h,cpp}`、`CancellationToken.{h,cpp}`（`62 insertions(+)`），无数据成员、无布局变化 |
+| `b50b653` | refactor T2.9 | `RunEngine.{h,cpp}`（`14 insertions(+), 5 deletions(-)`），private 函数签名变更 |
+
+### 13.11 全量 CTest 门禁
+
+| 项 | 值 |
+|---|---|
+| 源提交 | `b50b653` |
+| 构建目录 | `/var/tmp/t28-gate-build`（**工作区外全新目录**） |
+| 配置 | `CONFIGURE_rc=0`（耗时 8m26s）；选项 `-DUSE_QT6=ON -DQt5_DIR=… -DONNXRUNTIME_DIR=… -DOpenCV_DIR=… -DDEEPLUX_NATIVE_SAM=ON -DENABLE_CAMERA_CAPTURE=OFF -DENABLE_CAMERA_SERVICE=OFF -DENABLE_HYMSON3D=OFF` |
+| 构建 | `BUILD_rc=0`、`[100%] Built target test_finalplugins`（耗时 16m11s） |
+| 格式 / 差异 | `FMT_rc=0`（8 个文件 `--dry-run --Werror`）、`DIFFCHECK_rc=0` |
+| CTest 列举 | `Total Tests: 97`、`LISTED=97`（口径 `grep -c "Test *#"`，避开 `^  Test #` 双空格漏计） |
+| **CTest 全量** | **`100% tests passed, 0 tests failed out of 97`**、`CTEST_rc=0`（`Total Test time (real) = 259.82 sec`） |
+| 相关套件（同一交付态，独立运行） | `test_modulebase` **14/14**（1ms）、`test_runengine` **119/119**（8393ms）、`test_flowexecutionservice` **27/27**（52918ms）、`test_runenginejoblease` 8/8、`test_runengineuserpause` 6/6、`test_runenginefinalizer` 6/6（全部 `rc=0`） |
+
+日志：`/var/tmp/t28-gate-{configure,build,list,ctest}.log`、`/var/tmp/t28-suite-test_*.log`。
+门禁时点：交付工作树 `/home/charles/Data/Repo/DeepLux-hardening`，`HEAD=b50b653`，`git status --porcelain` 为空
+（第 13 章文档改动在门禁之后提交，不影响被测源码）。
+
+**关于仍为 97 项的口径说明**：本轮新增的 3 条用例（T2.8 两条 + T2.9 一条）落在**已有**的测试可执行
+文件内（`test_modulebase`、`test_runengine`），未新增 CTest 测试目标，故总数与上一轮的 97 一致。
+**不得**据此认为「未加入新测试」——增量体现在套件内用例数（modulebase 12→14、runengine 118→119）。
+
+### 13.12 状态
+
+| 项 | 状态 |
+|---|---|
+| T2.8 | **已按契约整改**（`463d6b7`）：撤销态 2/2 失败、修复态 modulebase 14/14；性质为「行为契约／预防性重构」 |
+| T2.9 | **已预防性加固**（`b50b653`）：未发现真实竞态，判别性反证 `PROBE2_rc=1` 后清除；runengine 119/119 |
+| T2.5 | **待评审收口裁定**（本轮不自行宣告收口） |
+| T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
+| R2 整批 | **尚未完成**（十轮连续门禁、`git revert` 抽查待整批完成后执行） |
