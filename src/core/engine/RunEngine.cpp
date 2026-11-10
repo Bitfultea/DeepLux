@@ -2239,7 +2239,14 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     const PortValueMap portInputs = collectModuleInputs(moduleName, pipelineData);
     PortValueMap portOutputs;
     ExecutionContext execCtx;
-    execCtx.runId = m_runId;
+    // T2.9（2026-11-10 评审裁定，预防性加固）：与 executeBatchParallel 同口径——成员
+    // 字符串在**当前调用线程**快照成局部值后再使用，不在执行体内反复读 m_runId。
+    // 静态排查结论是当前无真实竞态（m_runId 唯一写入点 tryBeginForRun，本函数只在串行
+    // 执行路径上跑，池线程路径用 batchRunId 快照），此处不改行为，只把「池线程不得读
+    // 可能并发变化的成员字符串」这条边界从一条路径推广到全部路径，避免后续重构把
+    // 读取重新带回池线程。
+    const QString execRunId = m_runId;
+    execCtx.runId = execRunId;
     execCtx.frameId = m_frameId.fetch_add(1, std::memory_order_relaxed);
     execCtx.timestampMs = QDateTime::currentMSecsSinceEpoch();
     execCtx.runMode = module->flowControlType();
@@ -2371,7 +2378,7 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
             m_moduleOutputs[moduleName] = output;
         }
         // 后台执行（设计 §7.1）：模块成功且输出含 image 端口时，在执行线程内发布深拷贝帧。
-        publishDisplayFrame(moduleName, output, static_cast<quint64>(execCtx.frameId));
+        publishDisplayFrame(moduleName, output, static_cast<quint64>(execCtx.frameId), execRunId);
     } else {
         {
             QMutexLocker locker(&moduleErrorMutex);
@@ -2604,7 +2611,8 @@ QMap<QString, QVariantMap> RunEngine::displayModuleDataSnapshot() const {
     return snapshot;
 }
 
-void RunEngine::publishDisplayFrame(const QString& moduleId, const ImageData& image, quint64 frameId) {
+void RunEngine::publishDisplayFrame(const QString& moduleId, const ImageData& image, quint64 frameId,
+                                    const QString& runId) {
     if (!m_displayCaptureEnabled.load(std::memory_order_acquire)) {
         return;
     }
@@ -2617,7 +2625,7 @@ void RunEngine::publishDisplayFrame(const QString& moduleId, const ImageData& im
 
     DisplayFrame frame;
     frame.jobId = m_displayJobId.load(std::memory_order_acquire);
-    frame.runId = m_runId;
+    frame.runId = runId; // T2.9：用调用线程快照，不再读 m_runId
     frame.frameId = frameId;
     frame.moduleId = moduleId;
     frame.viewportId = QStringLiteral("main"); // 本轮仅覆盖主视口（viewportId 作为键保留）

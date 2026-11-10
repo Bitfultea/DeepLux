@@ -395,7 +395,8 @@ private:
     void clearModuleOutputs();
     void clearBreakpointPauseState();
     // 后台执行（设计 §7.1）：在执行线程内发布显示帧（含 QImage 深拷贝与最终快照）。
-    void publishDisplayFrame(const QString& moduleId, const ImageData& image, quint64 frameId);
+    // T2.9：runId 由调用线程快照后传入，本函数不再读 m_runId（池线程安全边界）。
+    void publishDisplayFrame(const QString& moduleId, const ImageData& image, quint64 frameId, const QString& runId);
     void publishFinalDisplayFrame();
     QMap<QString, QVariantMap> displayModuleDataSnapshot() const;
     void updateStatistics(bool success, int elapsedMs);
