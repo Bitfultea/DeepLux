@@ -1057,23 +1057,27 @@ private slots:
     // ==== T2.5 P1 第二轮回（2026-11-10 复核裁定）：故障通知后立即重试的窗口 ====
     //
     // 缺陷前提：jobFailed 是在 worker 线程的 run() 内部（handleWorkerLoopFault）发出的，
-    // 那一刻 run() 尚未返回、QThread::isFinished() 仍为 false。上一轮修复只用一次
-    // isFinished() 快照判断是否回收线程，因此「收到失败通知后立即重试」可能跳过回收，
+    // 那一刻 run() 尚未返回、QThread::isFinished() 仍为 false。上一轮修复（9bd3aad）只用
+    // 一次 isFinished() 快照判断是否回收线程，因此「收到失败通知后立即重试」可能跳过回收，
     // 把命令写进一个再也不会消费队列的旧线程，最终只能等到启动握手超时后撤回失败。
     // 评审独立复现：标准异常 19/200、非标准 3/200、标准异常加诊断复跑 28/200。
     //
-    // 与上一条用例的分工：上一条用 QTRY_COMPARE 等待通知（走事件循环，可能错过短窗口），
-    // 只能守住「故障后总体可恢复」；本条用**直连槽在同一调用栈内同步重试**，专门压住
-    // 「通知已发出、旧线程尚未退出」这个窗口。
+    // 窗口如何确定性撑开（不靠碰运气）：WorkerThread::run() 在 handleWorkerLoopFault()
+    // 发出 jobFailed **之后**、run() 返回**之前**调用退出屏障钩子。本用例用该屏障把
+    // worker 停在窗口正中——jobFailed 已发出而 isFinished() 仍为 false——主线程此时重试，
+    // 100% 落在评审描述的窗口内。
     //
-    // 纪律：直连槽在本用例中只作**触发时序**使用，槽内绝不抛异常（槽内抛异常属 Qt
-    // 未定义行为，不得作为缺陷证据）。全部判据都落在 startSingle() 返回值与
-    // probe.runs() 上，与异常语义无关。
+    // 为什么不由 jobFailed 的直连槽发起重试：直连槽执行在正在退出的 worker 线程自己身上，
+    // 槽内同步重试会让 enqueue() 去 join 自己（QThread::wait 报 "Thread tried to wait on
+    // itself"），最终 "Destroyed while thread is still running" 直接 abort。这是试跑来
+    // 的真实结论，已记录在案；故槽内只做状态观测，重试由主线程发起。
     //
-    // 判据：每轮注入一次 workerLoop 故障；收到 jobFailed 后**立即**（不 sleep、不
-    // processEvents、不 clearHook、不 stop/shutdown）重试 startSingle()，必须成功且
-    // 真正执行任务。多轮统计，任何一次立即重试失败即判红。
-    void testImmediateRetryInsideFailureNotificationMustSucceed() {
+    // 纪律：直连槽在本用例中只作**状态观测**，绝不抛异常（槽内抛异常属 Qt 未定义行为，
+    // 不得作为缺陷证据）。全部判据落在主线程 startSingle() 的返回值与 probe.runs() 上。
+    //
+    // 判据：每轮注入一次 workerLoop 故障，待 worker 停在窗口后重试 startSingle()，必须
+    // 成功且真正执行任务。任何一次窗口内重试被拒绝即判红。
+    void testImmediateRetryDuringWorkerRetirementMustSucceed() {
         RunEngine& engine = RunEngine::instance();
         FlowExecutionService& service = FlowExecutionService::instance();
         ServiceProbeModule probe;
@@ -1081,46 +1085,67 @@ private slots:
         engine.addModule(&probe);
         engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
 
-        // 轮数：修复前实测窗口命中率约 98%（40 轮中 39–40 次立即重试失败，评审侧
-        // 「直接收到通知即重试」的命中率约 10%）。20 轮足以在修复前稳定判红、修复后
-        // 稳定判绿；单轮失败开销是一条启动握手（~100ms），整体耗时可接受。
-        constexpr int kRounds = 20;
+        constexpr int kRounds = 10;
 
-        std::atomic_int armed{0};       // 本轮是否已注入待触发的故障
-        std::atomic_int slotEntries{0}; // jobFailed 直连槽进入次数
-        std::atomic_int retryOk{0};     // 槽内立即重试成功次数
-        std::atomic_int retryFailed{0}; // 槽内立即重试失败次数（窗口命中的直接证据）
-        std::atomic_int firstStartFail{0};
+        std::atomic_int armed{0};             // 本轮是否已注入待触发的故障
+        std::atomic_int notified{0};          // worker 已发出 jobFailed 的次数
+        std::atomic_int barrierEntries{0};    // 退出屏障进入次数（证明窗口已被撑开）
+        std::atomic_int windowRetries{0};     // 在窗口内发起重试的次数
+        std::atomic_int windowRetryOk{0};     // 窗口内重试被接受次数
+        std::atomic_int windowRetryFailed{0}; // 窗口内重试被拒绝次数（缺陷的直接证据）
+        std::atomic_int retryNotExecuted{0};  // 被接受却未真正执行任务的次数
 
-        // 钩子只在本轮「已布防」时抛出一次，抛出后自动解除布防：保证槽内的立即重试
-        // 能真正跑完，而不是被同一次注入再次打断。
+        QSemaphore releaseBarrier; // 主线程放行退出屏障
+        QSemaphore barrierReached; // worker 已停在退出屏障上
+        std::atomic_bool holdBarrier{false};
+        std::atomic_bool failureNotified{false};
+
+        // 故障注入：每轮只在「已布防」时抛出一次，抛出后自动解除布防。
         service.setWorkerLoopFaultHookForTest([&] {
             if (armed.load(std::memory_order_acquire) != 0 && armed.fetch_sub(1, std::memory_order_acq_rel) == 1) {
                 throw std::runtime_error("injected worker-loop fault");
             }
         });
 
-        // 直连槽：emit jobFailed 发生在 worker 线程；用 DirectConnection 让槽也在该线程
-        // 上同步执行，使「收到通知 → 立即重试」发生在同一调用栈内，不经过事件循环。
-        // 这正是评审的复现场景。槽内只调用线程安全的 startSingle() 并记录结果。
-        QMetaObject::Connection conn = QObject::connect(
+        // 退出屏障：位于 handleWorkerLoopFault() 发出 jobFailed **之后**、run() 返回
+        // **之前**——正是本轮缺陷的窗口本体。主线程在这里稳定地拿到「通知已发出、
+        // 旧线程尚未结束」的状态，不必靠碰运气去撞短窗口。
+        service.setWorkerExitBarrierForTest([&] {
+            if (!holdBarrier.load(std::memory_order_acquire)) {
+                return;
+            }
+            ++barrierEntries;
+            barrierReached.release();
+            // 有界等待：任何失败路径下 worker 都能自行退出，绝不 hang。
+            releaseBarrier.tryAcquire(1, 5000);
+        });
+
+        // 通知监听：只作**状态观测**，不在槽内做任何阻塞动作（槽内 join 自己属未定义
+        // 行为，见下）。判据全部落在主线程的 startSingle() 返回值与 probe.runs() 上。
+        QMetaObject::Connection failConn = QObject::connect(
             &service, &FlowExecutionService::jobFailed, &service,
             [&](FlowExecutionService::JobType, const QString&) {
-                ++slotEntries;
-                if (service.startSingle()) {
-                    ++retryOk;
-                } else {
-                    ++retryFailed;
-                }
+                ++notified;
+                failureNotified.store(true, std::memory_order_release);
             },
             Qt::DirectConnection);
 
-        // 失败路径收尾：清除捕获栈变量的钩子并 join worker。必须最后声明。
-        ServiceContractCleanupGuard guard{&service, {},  nullptr, [&] { service.clearWorkerLoopFaultHookForTest(); },
-                                          nullptr,  true};
+        // 失败路径收尾：放行屏障、清钩子并 join worker。必须最后声明。
+        // 参数顺序：service, connection, barrierRelease, clearHooks, starter, armed。
+        ServiceContractCleanupGuard guard{&service,
+                                          failConn,
+                                          [&] {
+                                              holdBarrier.store(false, std::memory_order_release);
+                                              releaseBarrier.release();
+                                          },
+                                          [&] {
+                                              service.clearWorkerLoopFaultHookForTest();
+                                              service.clearWorkerExitBarrierForTest();
+                                          },
+                                          nullptr,
+                                          true};
 
         for (int round = 0; round < kRounds; ++round) {
-            // 等上一轮的重试任务真正跑完，服务回到 Idle 再布防下一轮。
             QElapsedTimer idle;
             idle.start();
             while (service.isActive() && idle.elapsed() < 1500) {
@@ -1128,49 +1153,88 @@ private slots:
                 QThread::msleep(1);
             }
             if (service.isActive()) {
-                break; // 收尾由 guard 负责；此处不再硬等
+                break; // 收尾由 guard 负责
             }
 
             const int runsBefore = probe.runs.load();
-            armed.store(1, std::memory_order_release);
-            if (!service.startSingle()) {
-                ++firstStartFail;
-            }
-            // 首次启动被注入打断是预期路径；若首启成功说明本轮注入未生效，继续下一轮。
-            Q_UNUSED(runsBefore);
+            const int okBefore = windowRetryOk.load();
 
-            // 给「首启失败 → jobFailed → 槽内重试 → 重试任务执行完」留出完成时间。
+            failureNotified.store(false, std::memory_order_release);
+            holdBarrier.store(true, std::memory_order_release);
+            armed.store(1, std::memory_order_release);
+
+            // 首启必然被注入打断：启动握手被放行并返回 false。
+            const bool firstStart = service.startSingle();
+            // worker 停在退出屏障上（jobFailed 已发出、run() 尚未返回）。
+            const bool atWindow = barrierReached.tryAcquire(1, 3000);
+
+            // —— 窗口内重试：此刻旧线程**尚未结束**，isFinished() 仍为 false ——
+            if (atWindow && failureNotified.load(std::memory_order_acquire)) {
+                ++windowRetries;
+                if (service.startSingle()) {
+                    ++windowRetryOk;
+                } else {
+                    ++windowRetryFailed;
+                }
+            }
+
+            // 放行屏障，让旧线程真正退出，重试的 job 才能在新线程上执行。
+            holdBarrier.store(false, std::memory_order_release);
+            releaseBarrier.release();
+
+            // 等本次重试的任务真正跑完。
             QElapsedTimer settle;
             settle.start();
-            while (settle.elapsed() < 1500) {
-                if (!service.isActive() && retryOk.load() + retryFailed.load() >= round + 1) {
+            while (settle.elapsed() < 3000) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                if (!service.isActive() && windowRetryOk.load() > okBefore) {
                     break;
                 }
-                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
                 QThread::msleep(1);
+            }
+            releaseBarrier.tryAcquire(1, 2000); // 排水：防止多放的令牌串轮
+
+            if (!atWindow) {
+                break; // 屏障未命中，停止本轮循环（由下面的断言判定）
+            }
+            if (windowRetryOk.load() > okBefore && probe.runs.load() <= runsBefore) {
+                ++retryNotExecuted;
+            }
+            if (firstStart) {
+                // 首启成功说明本轮注入未生效，不计入判别样本。
+                continue;
             }
         }
 
-        QObject::disconnect(conn);
+        QObject::disconnect(failConn);
         service.clearWorkerLoopFaultHookForTest();
+        service.clearWorkerExitBarrierForTest();
 
-        qInfo("[P1-IMMEDIATE] rounds=%d slotEntries=%d firstStartFail=%d retryOk=%d retryFailed=%d", kRounds,
-              slotEntries.load(), firstStartFail.load(), retryOk.load(), retryFailed.load());
+        qInfo("[P1-WINDOW] rounds=%d barrierEntries=%d windowRetries=%d retryOk=%d retryFailed=%d retryNotExecuted=%d",
+              kRounds, barrierEntries.load(), windowRetries.load(), windowRetryOk.load(), windowRetryFailed.load(),
+              retryNotExecuted.load());
 
-        // 判别性前提：必须真的走完若干次「故障 → 通知 → 立即重试」，否则本用例无判别力。
-        QVERIFY2(
-            slotEntries.load() >= 10,
-            qPrintable(
-                QStringLiteral("the immediate-retry path must be exercised (slotEntries=%1)").arg(slotEntries.load())));
+        // 判别性前提：窗口必须真的被撑开并被重试覆盖若干次。
+        QVERIFY2(windowRetries.load() >= 5,
+                 qPrintable(QStringLiteral("the retirement window must be exercised (windowRetries=%1, "
+                                           "barrierEntries=%2)")
+                                .arg(windowRetries.load())
+                                .arg(barrierEntries.load())));
 
-        // 核心判据：窗口内的立即重试一次都不许失败。失败即意味着命令被交给了正在退出的旧线程。
-        QVERIFY2(retryFailed.load() == 0,
-                 qPrintable(QStringLiteral("immediate retry after jobFailed must never fail "
-                                           "(retryFailed=%1, retryOk=%2, slotEntries=%3): a failure means the "
-                                           "command was handed to the exiting worker")
-                                .arg(retryFailed.load())
-                                .arg(retryOk.load())
-                                .arg(slotEntries.load())));
+        // 核心判据①：窗口内的重试一次都不许被拒绝。被拒绝即意味着命令被交给了正在退出的旧线程。
+        QVERIFY2(windowRetryFailed.load() == 0,
+                 qPrintable(QStringLiteral("a retry issued while the faulty worker is retiring must never be "
+                                           "rejected (retryFailed=%1, retryOk=%2, windowRetries=%3): a rejection "
+                                           "means the command was handed to the exiting worker")
+                                .arg(windowRetryFailed.load())
+                                .arg(windowRetryOk.load())
+                                .arg(windowRetries.load())));
+
+        // 核心判据②：被接受的重试必须真的执行过任务——接受但空转等于命令进了黑洞。
+        QVERIFY2(retryNotExecuted.load() == 0,
+                 qPrintable(QStringLiteral("an accepted in-window retry must really execute the job "
+                                           "(retryNotExecuted=%1)")
+                                .arg(retryNotExecuted.load())));
 
         guard.finish();
     }
