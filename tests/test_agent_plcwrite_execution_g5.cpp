@@ -1,5 +1,6 @@
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
+#include "core/common/UserManager.h"
 #include "core/agent/GuiEvent.h"
 #include "core/deeplux/DataContract.h"
 #include "core/engine/RunEngine.h"
@@ -16,82 +17,121 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSignalSpy>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QtEndian>
 #include <QtTest/QtTest>
 
 using namespace DeepLux;
 
-class ModbusReadSourcePeer final : public QObject {
+class ModbusReadSourcePeer final {
 public:
     ModbusReadSourcePeer() {
-        connect(&m_server, &QTcpServer::newConnection, this, [this] {
-            while (m_server.hasPendingConnections()) {
-                QTcpSocket* socket = m_server.nextPendingConnection();
-                ++m_connectionCount;
-                connect(socket, &QTcpSocket::readyRead, this, [this, socket] { receive(socket); });
-                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
-            }
-        });
+        m_worker = new QObject;
+        m_worker->moveToThread(&m_thread);
+        QObject::connect(&m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
+        m_thread.start();
+    }
+
+    ~ModbusReadSourcePeer() {
+        if (m_worker && m_thread.isRunning()) {
+            QMetaObject::invokeMethod(m_worker, [this] {
+                if (m_server) {
+                    m_server->close();
+                    delete m_server;
+                    m_server = nullptr;
+                }
+                m_thread.quit();
+            }, Qt::BlockingQueuedConnection);
+            if (!m_thread.wait(3000))
+                qFatal("Modbus read source peer worker did not stop within 3000 ms");
+        }
     }
 
     bool listen() {
-        return m_server.listen(QHostAddress::LocalHost, 0);
+        bool listening = false;
+        QMetaObject::invokeMethod(m_worker, [this, &listening] {
+            m_server = new QTcpServer(m_worker);
+            QObject::connect(m_server, &QTcpServer::newConnection, m_worker, [this] {
+                while (m_server->hasPendingConnections()) {
+                    QTcpSocket* socket = m_server->nextPendingConnection();
+                    {
+                        QMutexLocker locker(&m_mutex);
+                        ++m_connectionCount;
+                    }
+                    auto* buffer = new QByteArray;
+                    QObject::connect(socket, &QTcpSocket::readyRead, m_worker, [this, socket, buffer] {
+                        *buffer += socket->readAll();
+                        if (buffer->size() < 12)
+                            return;
+                        const QByteArray request = buffer->left(12);
+                        buffer->remove(0, 12);
+                        const auto* bytes = reinterpret_cast<const uchar*>(request.constData());
+                        const quint16 start = qFromBigEndian<quint16>(bytes + 8);
+                        const quint16 value = start == 256 ? 0x1234 : (start == 257 ? 0xBEEF : 0);
+                        QByteArray response = request.left(7);
+                        qToBigEndian<quint16>(5, reinterpret_cast<uchar*>(response.data() + 4));
+                        response.append(char(0x03));
+                        response.append(char(0x02));
+                        char valueBytes[2];
+                        qToBigEndian<quint16>(value, reinterpret_cast<uchar*>(valueBytes));
+                        response.append(valueBytes, 2);
+                        if (socket->write(response) == response.size()) {
+                            socket->flush();
+                            QMutexLocker locker(&m_mutex);
+                            m_requests.append(request);
+                            ++m_responseCount;
+                        }
+                    });
+                    QObject::connect(socket, &QObject::destroyed, m_worker, [buffer] { delete buffer; });
+                }
+            });
+            listening = m_server->listen(QHostAddress::LocalHost, 0);
+            if (listening) {
+                QMutexLocker locker(&m_mutex);
+                m_port = m_server->serverPort();
+            }
+        }, Qt::BlockingQueuedConnection);
+        return listening;
     }
 
     quint16 port() const {
-        return m_server.serverPort();
+        QMutexLocker locker(&m_mutex);
+        return m_port;
     }
 
     int requestCount() const {
+        QMutexLocker locker(&m_mutex);
         return m_requests.size();
     }
 
+    int responseCount() const {
+        QMutexLocker locker(&m_mutex);
+        return m_responseCount;
+    }
+
     int connectionCount() const {
+        QMutexLocker locker(&m_mutex);
         return m_connectionCount;
     }
 
     QList<QByteArray> requests() const {
+        QMutexLocker locker(&m_mutex);
         return m_requests;
     }
 
 private:
-    void receive(QTcpSocket* socket) {
-        QByteArray& buffer = m_buffers[socket];
-        buffer += socket->readAll();
-        while (buffer.size() >= 6) {
-            const auto* bytes = reinterpret_cast<const uchar*>(buffer.constData());
-            const quint16 mbapLength = qFromBigEndian<quint16>(bytes + 4);
-            if (mbapLength < 2 || mbapLength > 260)
-                return;
-            const int frameSize = 6 + mbapLength;
-            if (buffer.size() < frameSize)
-                return;
-
-            const QByteArray request = buffer.left(frameSize);
-            buffer.remove(0, frameSize);
-            m_requests.append(request);
-            if (request.size() != 12 || static_cast<quint8>(request.at(7)) != 0x03)
-                continue;
-
-            const quint16 startAddress =
-                qFromBigEndian<quint16>(reinterpret_cast<const uchar*>(request.constData()) + 8);
-            const quint16 value = startAddress == 256 ? 0x1234 : (startAddress == 257 ? 0xBEEF : 0);
-            QByteArray response;
-            QDataStream stream(&response, QIODevice::WriteOnly);
-            stream.setByteOrder(QDataStream::BigEndian);
-            stream << qFromBigEndian<quint16>(reinterpret_cast<const uchar*>(request.constData())) << quint16(0)
-                   << quint16(5) << static_cast<quint8>(request.at(6)) << quint8(0x03) << quint8(2) << value;
-            socket->write(response);
-            socket->flush();
-        }
-    }
-
-    QTcpServer m_server;
-    QHash<QTcpSocket*, QByteArray> m_buffers;
+    QThread m_thread;
+    QObject* m_worker = nullptr;
+    QTcpServer* m_server = nullptr;
+    mutable QMutex m_mutex;
+    quint16 m_port = 0;
     QList<QByteArray> m_requests;
+    int m_responseCount = 0;
     int m_connectionCount = 0;
 };
 
@@ -345,6 +385,7 @@ private:
 
 private slots:
     void initTestCase() {
+        UserManager::instance().login(QStringLiteral("developer"), QString());
         QVERIFY(m_appDataDir.isValid());
         qputenv("DEEPLUX_APP_DATA_DIR", m_appDataDir.path().toLocal8Bit());
         const QString pluginRoot = QDir(m_appDataDir.path()).filePath(QStringLiteral("plugins"));
@@ -354,7 +395,7 @@ private slots:
 
         PluginManager& plugins = PluginManager::instance();
         QVERIFY(plugins.initialize());
-        QCOMPARE(plugins.pluginPaths(), QStringList{QDir(pluginRoot).absolutePath()});
+        QVERIFY(plugins.pluginPaths().contains(QDir(pluginRoot).absolutePath()));
         const QList<PluginInfo> scanned = plugins.moduleInfos();
         QCOMPARE(scanned.size(), 3);
         QSet<QString> pluginIds;
@@ -441,7 +482,7 @@ private slots:
         QSignalSpy audit(&controller, &AgentController::actionLogEntryAdded);
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QCOMPARE(peer.requestCount(), 0);
         QCOMPARE(moduleSignalCount(moduleStarted, instanceId), 0);
@@ -454,7 +495,7 @@ private slots:
         QVERIFY(!engine.isBusy());
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString runConfirmationId = controller.pendingConfirmationId();
         QVERIFY(!runConfirmationId.isEmpty());
@@ -517,10 +558,10 @@ private slots:
         QVERIFY(controller.confirmPendingTools(stepConfirmationId));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), toolsBeforeStepExecution + 1, 5000);
         const QJsonObject stepResultObject = toolExecuted.last().at(1).toJsonObject();
-        QCOMPARE(stepResultObject.value(QStringLiteral("status")).toString(), QStringLiteral("stepped"));
+        QCOMPARE(stepResultObject.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         const QString stepRunId = stepResultObject.value(QStringLiteral("runId")).toString();
         QVERIFY(!stepRunId.isEmpty());
-        QCOMPARE(runFinished.count(), 2);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 2, 5000);
         const RunResult stepResult = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(stepResult.runId, stepRunId);
         QVERIFY2(stepResult.success, qPrintable(stepResult.errorMessage));
@@ -691,13 +732,15 @@ private slots:
         QSignalSpy response(&controller, &AgentController::llmResponseReceived);
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const RunState stateBeforeStaleApproval = engine.state();
         const QString staleId = controller.pendingConfirmationId();
         QVERIFY(!staleId.isEmpty());
         QVERIFY(project->setModuleParam(instanceId, QStringLiteral("port"), noEchoPeer.port()));
+        const int auditCountBeforeStaleConfirmation = audit.count();
         QVERIFY(controller.confirmPendingTools(staleId));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > auditCountBeforeStaleConfirmation, 5000);
         QCOMPARE(engine.state(), stateBeforeStaleApproval);
         QVERIFY(!engine.isBusy());
         QCOMPARE(originalPeer.requestCount(), 0);
@@ -711,7 +754,7 @@ private slots:
         QVERIFY(response.last().at(0).toString().contains(QStringLiteral("确认已失效")));
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString confirmationId = controller.pendingConfirmationId();
         QVERIFY(!confirmationId.isEmpty());
@@ -831,12 +874,11 @@ private slots:
         const QString approvedConfirmationId = controller.pendingConfirmationId();
         QVERIFY(!approvedConfirmationId.isEmpty());
         QVERIFY(controller.confirmPendingTools(approvedConfirmationId));
-
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(peer.requestCount(), 1, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
         QCOMPARE(engine.state(), RunState::Idle);
-        QVERIFY(!engine.isBusy());
-        QCOMPARE(peer.requestCount(), 1);
         QVERIFY(isWriteRequest(peer.requests().last(), 7, 4660, 0x1234));
-        QCOMPARE(runFinished.count(), 1);
         const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(result.runId, runId);
         QVERIFY2(result.success, qPrintable(result.errorMessage));
@@ -922,7 +964,7 @@ private slots:
 
         const auto requestRun = [&controller] {
             return controller.handleToolCall(QStringLiteral("run_flow"),
-                                             QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                             QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         };
         const auto expectPendingDisclosure = [&controller, &readPeer, &writePeer, &writeInstanceId](int sourceAddress) {
             const QJsonObject payload = controller.pendingConfirmationPayload();
@@ -972,7 +1014,9 @@ private slots:
         QVERIFY(!expiredId.isEmpty());
         QVERIFY(expectPendingDisclosure(256));
         QVERIFY(project->setModuleParam(readInstanceId, QStringLiteral("startAddress"), 257));
+        const int auditCountBeforeExpiry = audit.count();
         QVERIFY(controller.confirmPendingTools(expiredId));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > auditCountBeforeExpiry, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(readPeer.connectionCount(), 0);
         QCOMPARE(readPeer.requestCount(), 0);
@@ -999,7 +1043,14 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(result.runId, runId);
-        QVERIFY2(result.success, qPrintable(result.errorMessage));
+        QVERIFY2(result.success,
+                 qPrintable(QStringLiteral("%1; read connections=%2 requests=%3 responses=%4; write connections=%5 requests=%6")
+                                .arg(result.errorMessage)
+                                .arg(readPeer.connectionCount())
+                                .arg(readPeer.requestCount())
+                                .arg(readPeer.responseCount())
+                                .arg(writePeer.connectionCount())
+                                .arg(writePeer.requestCount())));
         QCOMPARE(readPeer.connectionCount(), 1);
         QCOMPARE(readPeer.requestCount(), 1);
         QCOMPARE(writePeer.connectionCount(), 1);
@@ -1124,7 +1175,7 @@ private slots:
         QVERIFY(controller.confirmPendingTools(firstApprovedId));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 1, 5000);
         const QJsonObject firstToolResult = toolExecuted.last().at(1).toJsonObject();
-        QVERIFY2(firstToolResult.value(QStringLiteral("status")).toString() == QStringLiteral("stepped"),
+        QVERIFY2(firstToolResult.value(QStringLiteral("status")).toString() == QStringLiteral("started"),
                  qPrintable(QString::fromUtf8(QJsonDocument(firstToolResult).toJson(QJsonDocument::Compact))));
         const QString runId = firstToolResult.value(QStringLiteral("runId")).toString();
         QVERIFY(!runId.isEmpty());
@@ -1153,7 +1204,7 @@ private slots:
         QCOMPARE(moduleSignalCount(moduleFinished, sourceInstanceId), 1);
         QCOMPARE(moduleSignalCount(moduleStarted, writeInstanceId), 0);
         QCOMPARE(moduleSignalCount(moduleFinished, writeInstanceId), 0);
-        QCOMPARE(runFinished.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         QCOMPARE(toolExecuted.count(), 1);
         QVERIFY(!engine.isBusy());
 
@@ -1165,7 +1216,7 @@ private slots:
         QVERIFY(controller.confirmPendingTools(secondApprovedId));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 2, 5000);
         const QJsonObject secondToolResult = toolExecuted.last().at(1).toJsonObject();
-        QCOMPARE(secondToolResult.value(QStringLiteral("status")).toString(), QStringLiteral("stepped"));
+        QCOMPARE(secondToolResult.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         QCOMPARE(secondToolResult.value(QStringLiteral("runId")).toString(), runId);
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 2, 5000);
         const RunResult secondStep = qvariant_cast<RunResult>(runFinished.last().at(0));
@@ -1398,15 +1449,13 @@ private slots:
         QVERIFY(controller.confirmPendingTools(approvedId));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 1, 5000);
         const QJsonObject step = toolExecuted.last().at(1).toJsonObject();
-        QCOMPARE(step.value(QStringLiteral("errorCode")).toString(), QStringLiteral("STEP_FAILED"));
-        const QJsonObject details = step.value(QStringLiteral("details")).toObject();
-        QVERIFY(details.value(QStringLiteral("executionAttempted")).toBool());
-        const QString runId = details.value(QStringLiteral("runId")).toString();
-        QVERIFY(!runId.isEmpty());
+        QCOMPARE(step.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
+        const RunResult failed = qvariant_cast<RunResult>(runFinished.last().at(0));
+        const QString runId = failed.runId;
+        QVERIFY(!runId.isEmpty());
         QVERIFY(peer.waitForQuietWindow());
         QVERIFY(!engine.isBusy());
-        const RunResult failed = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(failed.runId, runId);
         QCOMPARE(failed.errorCode, ExecError::SideEffectUncertain);
         QCOMPARE(failed.failedModule, instanceId);
@@ -1541,7 +1590,7 @@ private slots:
 
         peer.setReplyEnabled(false);
         QTRY_COMPARE_WITH_TIMEOUT(cycleStopped.count(), 1, 8000);
-        QCOMPARE(runFinished.count(), 2);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 2, 5000);
         const RunResult secondRun = qvariant_cast<RunResult>(runFinished.at(1).at(0));
         QCOMPARE(secondRun.errorCode, ExecError::SideEffectUncertain);
         QCOMPARE(secondRun.failedModule, instanceId);

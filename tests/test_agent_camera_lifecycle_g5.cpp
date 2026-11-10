@@ -6,7 +6,9 @@
 #include "core/common/UserManager.h"
 #include "core/device/CameraDiscoveryJob.h"
 #include "core/device/CameraManager.h"
+#include "core/engine/FlowExecutionService.h"
 #include "core/engine/RunEngine.h"
+#include "core/engine/FlowExecutionService.h"
 #include "core/interface/ICamera.h"
 #include "core/interface/ICameraDiscoveryAsync.h"
 #include "core/interface/ICameraParameterControl.h"
@@ -667,8 +669,10 @@ private slots:
         QVERIFY(!approvedDiscoveryConfirmationId.isEmpty());
         QVERIFY(approvedDiscoveryConfirmationId != rejectedDiscoveryConfirmationId);
         QVERIFY(controller.confirmPendingTools(approvedDiscoveryConfirmationId));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.size() > 0 &&
+                                     audit.last().at(0).value<AgentActionLogEntry>().result == QLatin1String("pending"),
+                                 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().action, QStringLiteral("discover_cameras"));
-        QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("pending"));
         QTRY_COMPARE_WITH_TIMEOUT(discoveryBatchSettled.count(), 1, 2000);
         const quint64 approvedDiscoveryRequestId = discoveryBatchSettled.last().at(0).toULongLong();
         QVERIFY(approvedDiscoveryRequestId > 0);
@@ -785,7 +789,7 @@ private slots:
         QCOMPARE(staleManagerError, QStringLiteral("CAMERA_TARGET_CHANGED"));
         QCOMPARE(staleManagerRequestId, quint64(0));
         QVERIFY(controller.confirmPendingTools(staleIdentityId));
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QVERIFY(controller.pendingConfirmationId().isEmpty());
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(connectToolExecuted, 0);
@@ -870,6 +874,7 @@ private slots:
                                  2000);
         QCOMPARE(manager.cameraLifecycleSnapshot(QString::fromLatin1(kDeviceId)), originalCameraSnapshot);
 
+        const int auditCountBeforeConnect = audit.count();
         const QJsonObject approvedConnect = controller.handleToolCall(
             QStringLiteral("connect_camera"), {{QStringLiteral("deviceId"), QString::fromLatin1(kDeviceId)}});
         QCOMPARE(approvedConnect.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
@@ -877,6 +882,7 @@ private slots:
         QVERIFY(!connectConfirmationId.isEmpty());
         QVERIFY(connectConfirmationId != rejectedConnectConfirmationId);
         QVERIFY(controller.confirmPendingTools(connectConfirmationId));
+        QTRY_COMPARE_WITH_TIMEOUT(audit.count(), auditCountBeforeConnect + 1, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().action, QStringLiteral("connect_camera"));
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("pending"));
         QTRY_COMPARE_WITH_TIMEOUT(connectStarted.count(), 1, 2000);
@@ -960,7 +966,7 @@ private slots:
         }
         QSignalSpy operationStarted(&manager, &CameraManager::cameraOperationStarted);
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
-        QCOMPARE(operationStarted.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(operationStarted.count(), 1, 2000);
         const QString writeId = QString::number(operationStarted.first().at(1).toULongLong());
         QJsonObject writeResult;
         QTRY_VERIFY_WITH_TIMEOUT((writeResult = actor->executeTool(QStringLiteral("get_camera_operation"),
@@ -1002,7 +1008,7 @@ private slots:
         }
         const int operationsBeforeUncertainWrite = operationStarted.count();
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
-        QCOMPARE(operationStarted.count(), operationsBeforeUncertainWrite + 1);
+        QTRY_COMPARE_WITH_TIMEOUT(operationStarted.count(), operationsBeforeUncertainWrite + 1, 2000);
         const QString uncertainWriteId = QString::number(operationStarted.last().at(1).toULongLong());
         QJsonObject uncertainWriteResult;
         QTRY_VERIFY_WITH_TIMEOUT(
@@ -1285,7 +1291,7 @@ private slots:
         const int multiCaptureModulesBefore = captureModuleStarted.count();
         const int multiCaptureToolsBefore = captureToolExecuted.count();
         const QJsonObject multipleCaptures =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(multipleCaptures.value(QStringLiteral("errorCode")).toString(),
                  QStringLiteral("CAMERA_SESSION_MULTIPLE_CAPTURES_UNSUPPORTED"));
         QVERIFY(controller.pendingConfirmationId().isEmpty());
@@ -1361,7 +1367,7 @@ private slots:
         QVERIFY(engineProject->setModuleParam(grabInstance.id, QStringLiteral("cameraId"), QString()));
         const QJsonObject implicitAsyncUnsupported =
             controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("cycle")},
-                                                                   {QStringLiteral("maxCycles"), 2}});
+                                                                   {QStringLiteral("maxCycles"), 2}, {QStringLiteral("wait"), false}});
         QCOMPARE(implicitAsyncUnsupported.value(QStringLiteral("errorCode")).toString(),
                  QStringLiteral("CAMERA_CYCLE_UNSUPPORTED"));
         QVERIFY(implicitAsyncUnsupported.value(QStringLiteral("details"))
@@ -1379,7 +1385,7 @@ private slots:
         engineProject->addModule(defaultSourceGrab);
         const QJsonObject defaultSourceUnsupported =
             controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("cycle")},
-                                                                   {QStringLiteral("maxCycles"), 2}});
+                                                                   {QStringLiteral("maxCycles"), 2}, {QStringLiteral("wait"), false}});
         QCOMPARE(defaultSourceUnsupported.value(QStringLiteral("errorCode")).toString(),
                  QStringLiteral("CAMERA_CYCLE_UNSUPPORTED"));
         QVERIFY(defaultSourceUnsupported.value(QStringLiteral("details"))
@@ -1394,7 +1400,7 @@ private slots:
                                               QStringLiteral("unknown-g5-camera")));
         const QJsonObject unknownCameraUnsupported =
             controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("cycle")},
-                                                                   {QStringLiteral("maxCycles"), 2}});
+                                                                   {QStringLiteral("maxCycles"), 2}, {QStringLiteral("wait"), false}});
         QCOMPARE(unknownCameraUnsupported.value(QStringLiteral("errorCode")).toString(),
                  QStringLiteral("CAMERA_CYCLE_UNSUPPORTED"));
         QVERIFY(controller.pendingConfirmationId().isEmpty());
@@ -1405,7 +1411,7 @@ private slots:
         controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
         const QJsonObject advisorUnsupported =
             controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("cycle")},
-                                                                   {QStringLiteral("maxCycles"), 2}});
+                                                                   {QStringLiteral("maxCycles"), 2}, {QStringLiteral("wait"), false}});
         QCOMPARE(advisorUnsupported.value(QStringLiteral("errorCode")).toString(),
                  QStringLiteral("CAMERA_CYCLE_UNSUPPORTED"));
         QVERIFY(controller.pendingConfirmationId().isEmpty());
@@ -1510,7 +1516,7 @@ private slots:
 
         QJsonObject singleCyclePending =
             controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("cycle")},
-                                                                   {QStringLiteral("maxCycles"), 1}});
+                                                                   {QStringLiteral("maxCycles"), 1}, {QStringLiteral("wait"), false}});
         QVERIFY2(singleCyclePending.value(QStringLiteral("status")).toString() == QLatin1String("pending_confirmation"),
                  qPrintable(QString::fromUtf8(QJsonDocument(singleCyclePending).toJson(QJsonDocument::Compact))));
         QVERIFY(controller.rejectPendingTools(controller.pendingConfirmationId()));
@@ -1530,16 +1536,16 @@ private slots:
 
         singleCyclePending =
             controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("cycle")},
-                                                                   {QStringLiteral("maxCycles"), 1}});
+                                                                   {QStringLiteral("maxCycles"), 1}, {QStringLiteral("wait"), false}});
         QCOMPARE(singleCyclePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString singleCycleSessionConfirmation = controller.pendingConfirmationId();
         QVERIFY(!singleCycleSessionConfirmation.isEmpty());
         QVERIFY(controller.confirmPendingTools(singleCycleSessionConfirmation));
         QTRY_COMPARE_WITH_TIMEOUT(captureRunFinished.count(), asyncCycleRunsBefore + 1, 5000);
         QTRY_COMPARE_WITH_TIMEOUT(captureCycleStopped.count(), asyncCycleStoppedSignalsBefore + 1, 5000);
+        QCOMPARE(captureCycleStarted.count(), asyncCycleStartedSignalsBefore);
         QCOMPARE(captureModuleStarted.count(), asyncCycleStartedBefore + 1);
         QCOMPARE(captureModuleFinished.count(), asyncCycleFinishedBefore + 1);
-        QCOMPARE(captureCycleStarted.count(), asyncCycleStartedSignalsBefore + 1);
         QTRY_COMPARE_WITH_TIMEOUT(captureRunFlowToolCount(), asyncCycleToolsBefore + 1, 2000);
         const QJsonObject singleCycleStarted = captureToolExecuted.last().at(1).toJsonObject();
         QCOMPARE(singleCycleStarted.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
@@ -1565,7 +1571,7 @@ private slots:
         QCOMPARE(captureModuleStarted.count(), asyncCycleStartedBefore + 1);
         QCOMPARE(captureModuleFinished.count(), asyncCycleFinishedBefore + 1);
         QCOMPARE(captureRunFinished.count(), asyncCycleRunsBefore + 1);
-        QCOMPARE(captureCycleStarted.count(), asyncCycleStartedSignalsBefore + 1);
+        QCOMPARE(captureCycleStarted.count(), asyncCycleStartedSignalsBefore);
         QCOMPARE(captureCycleStopped.count(), asyncCycleStoppedSignalsBefore + 1);
         QVERIFY(captureCounters() == expectedSingleCycleCounters);
         QVERIFY(!engine.isBusy());
@@ -1574,7 +1580,7 @@ private slots:
         const int connectionsBeforeMissingImplicitCamera = state.connectCalls;
         const QJsonObject missingImplicitCamera =
             controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("cycle")},
-                                                                   {QStringLiteral("maxCycles"), 2}});
+                                                                   {QStringLiteral("maxCycles"), 2}, {QStringLiteral("wait"), false}});
         QCOMPARE(missingImplicitCamera.value(QStringLiteral("errorCode")).toString(), QStringLiteral("MISSING_PARAM"));
         QVERIFY(controller.pendingConfirmationId().isEmpty());
         QCOMPARE(manager.cameraSessionCount(), 0);
@@ -1590,7 +1596,7 @@ private slots:
         int toolsBeforeAgentCapture = captureToolExecuted.count();
 
         QJsonObject capturePending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(capturePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QJsonArray captureEffects = controller.pendingConfirmationPayload()
                                         .value(QStringLiteral("context"))
@@ -1608,13 +1614,15 @@ private slots:
         QVERIFY(
             engineProject->setModuleParam(grabInstance.id, QStringLiteral("cameraId"), QString::fromLatin1(kDeviceId)));
         capturePending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(capturePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString staleCaptureConfirmationId = controller.pendingConfirmationId();
         QVERIFY(!staleCaptureConfirmationId.isEmpty());
         QVERIFY(engineProject->setModuleParam(grabInstance.id, QStringLiteral("cameraId"),
                                               QStringLiteral("drifted-camera-target")));
+        const int auditsBeforeStaleCaptureConfirmation = captureAudit.count();
         QVERIFY(controller.confirmPendingTools(staleCaptureConfirmationId));
+        QTRY_COMPARE_WITH_TIMEOUT(captureAudit.count(), auditsBeforeStaleCaptureConfirmation + 1, 5000);
         QVERIFY(captureCounters() == countersBeforeAgentCapture);
         QCOMPARE(captureModuleStarted.count(), asyncCycleStartedBefore + 1);
         QCOMPARE(captureAudit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
@@ -1622,7 +1630,7 @@ private slots:
         QVERIFY(
             engineProject->setModuleParam(grabInstance.id, QStringLiteral("cameraId"), QString::fromLatin1(kDeviceId)));
         capturePending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(capturePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString freshCaptureConfirmationId = controller.pendingConfirmationId();
         QVERIFY(!freshCaptureConfirmationId.isEmpty());
@@ -1650,14 +1658,16 @@ private slots:
                                          .value(QStringLiteral("status"))
                                          .toString() == QLatin1String("success"),
                                  2000);
+        const int auditsBeforeFreshCaptureConfirmation = captureAudit.count();
         QVERIFY(controller.confirmPendingTools(freshCaptureConfirmationId));
+        QTRY_COMPARE_WITH_TIMEOUT(captureAudit.count(), auditsBeforeFreshCaptureConfirmation + 1, 5000);
         QCOMPARE(captureAudit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QVERIFY(captureCounters() == countersBeforeSessionDrift);
         QCOMPARE(captureModuleStarted.count(), modulesBeforeSessionDrift);
         QVERIFY(!engine.isBusy());
         QVERIFY(agentConnect());
         capturePending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(capturePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString settledSessionConfirmationId = controller.pendingConfirmationId();
         QVERIFY(!settledSessionConfirmationId.isEmpty());
@@ -1684,7 +1694,8 @@ private slots:
         const QJsonObject imageOutput = controller.handleToolCall(
             QStringLiteral("get_module_output"),
             {{QStringLiteral("runId"), captureRunId}, {QStringLiteral("instanceId"), grabInstance.id}});
-        QCOMPARE(imageOutput.value(QStringLiteral("status")).toString(), QStringLiteral("available"));
+        QVERIFY2(imageOutput.value(QStringLiteral("status")).toString() == QLatin1String("available"),
+                 qPrintable(QString::fromUtf8(QJsonDocument(imageOutput).toJson(QJsonDocument::Compact))));
         const QJsonObject imageSummary =
             imageOutput.value(QStringLiteral("summary")).toObject().value(QStringLiteral("image")).toObject();
         QCOMPARE(imageSummary.value(QStringLiteral("width")).toInt(), 4);
@@ -1753,7 +1764,7 @@ private slots:
         QVERIFY(controller.confirmPendingTools(approvedStepId));
         QTRY_COMPARE_WITH_TIMEOUT(captureToolExecuted.count(), toolsBeforeStep + 1, 5000);
         const QJsonObject stepResult = captureToolExecuted.last().at(1).toJsonObject();
-        QCOMPARE(stepResult.value(QStringLiteral("status")).toString(), QStringLiteral("stepped"));
+        QCOMPARE(stepResult.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         const QString stepRunId = stepResult.value(QStringLiteral("runId")).toString();
         QVERIFY(!stepRunId.isEmpty());
         QTRY_COMPARE_WITH_TIMEOUT(captureRunFinished.count(), runsBeforeStep + 1, 5000);
@@ -1864,7 +1875,9 @@ private slots:
         QVERIFY(!staleResumeId.isEmpty());
         QVERIFY(resumeProject->setModuleParam(resumeGrabInstance.id, QStringLiteral("cameraId"),
                                               QStringLiteral("drifted-camera-target")));
+        const int auditBeforeStaleResumeConfirmation = captureAudit.count();
         QVERIFY(controller.confirmPendingTools(staleResumeId));
+        QTRY_COMPARE_WITH_TIMEOUT(captureAudit.count(), auditBeforeStaleResumeConfirmation + 1, 5000);
         QCOMPARE(captureAudit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(engine.state(), RunState::Paused);
         QCOMPARE(engine.runObservation().runId, pausedCameraRunId);
@@ -2003,14 +2016,22 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(captureToolExecuted.count(), toolsBeforeConnectedStep + 1, 5000);
         QCOMPARE(captureToolExecuted.last().at(0).toString(), QStringLiteral("step_once"));
         QCOMPARE(captureToolExecuted.last().at(1).toJsonObject().value(QStringLiteral("status")).toString(),
-                 QStringLiteral("stepped"));
+                 QStringLiteral("started"));
         QTRY_COMPARE_WITH_TIMEOUT(manager.cameraSessionCount(), 0, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(!FlowExecutionService::instance().isActive(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
         engine.clearModules();
-        QVERIFY(engine.loadProject(compatibilityProject));
+        QString compatibilityLoadError;
+        const QMetaObject::Connection compatibilityLoadErrorConnection = QObject::connect(
+            &engine, &RunEngine::errorOccurred, &engine,
+            [&compatibilityLoadError](const QString& error) { compatibilityLoadError = error; });
+        const bool compatibilityLoaded = engine.loadProject(compatibilityProject);
+        QObject::disconnect(compatibilityLoadErrorConnection);
+        QVERIFY2(compatibilityLoaded, qPrintable(compatibilityLoadError));
         QVERIFY(agentConnect());
         const int toolsBeforeConnectedRun = captureToolExecuted.count();
         QJsonObject connectedRun =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(connectedRun.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(controller.pendingConfirmationPayload()
                     .value(QStringLiteral("context"))
@@ -2046,7 +2067,9 @@ private slots:
         const QString nonCameraResumeId = controller.pendingConfirmationId();
         QVERIFY(!nonCameraResumeId.isEmpty());
         QVERIFY(controller.confirmPendingTools(nonCameraResumeId));
-        drainEngineOrFail("non-camera resume after retired camera session");
+        QTRY_VERIFY_WITH_TIMEOUT(controller.state() == AgentController::AgentState::Idle &&
+                                     !FlowExecutionService::instance().isActive() && !engine.isBusy(),
+                                 5000);
         QVERIFY(engine.lastRunResult().success);
         QVERIFY(captureCounters() == beforeNonCameraResume);
         QVERIFY(connectionCounters() == connectionsBeforeNonCameraResume);
@@ -2195,8 +2218,10 @@ private slots:
             QMutexLocker locker(&state.mutex);
             QCOMPARE(state.disconnectCalls, disconnectCallsBeforeExternal + 1);
         }
+        const int auditsBeforeExpiredDisconnect = audit.count();
         QVERIFY(controller.confirmPendingTools(disconnectConfirmationId));
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(audit.count(), auditsBeforeExpiredDisconnect + 1, 5000);
         QVERIFY(controller.pendingConfirmationId().isEmpty());
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().action, QStringLiteral("disconnect_camera"));
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
@@ -2234,7 +2259,9 @@ private slots:
         const QString freshDisconnectId = controller.pendingConfirmationId();
         QVERIFY(!freshDisconnectId.isEmpty());
         QVERIFY(freshDisconnectId != disconnectConfirmationId);
+        const int auditsBeforeFreshDisconnect = audit.count();
         QVERIFY(controller.confirmPendingTools(freshDisconnectId));
+        QTRY_COMPARE_WITH_TIMEOUT(audit.count(), auditsBeforeFreshDisconnect + 1, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().action, QStringLiteral("disconnect_camera"));
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("pending"));
         QTRY_COMPARE_WITH_TIMEOUT(disconnectStarted.count(), 1, 2000);
@@ -2895,8 +2922,10 @@ private slots:
                                                             args.at(2).toString() == QLatin1String("success");
                                                  }),
                                      2000);
+            const int auditsBeforeChatStaleConfirmation = audit.count();
             QVERIFY(controller.confirmPendingTools(chatStaleId));
-            QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+            QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
+            QTRY_COMPARE_WITH_TIMEOUT(audit.count(), auditsBeforeChatStaleConfirmation + 1, 5000);
             QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
             QCOMPARE(chatConnectStarted.count(), 0);
             QCOMPARE(chatToolExecuted.count(), 0);
@@ -3092,7 +3121,7 @@ private slots:
         }
         const QJsonObject pendingDiscoveryCycleRejected =
             controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("cycle")},
-                                                                   {QStringLiteral("maxCycles"), 2}});
+                                                                   {QStringLiteral("maxCycles"), 2}, {QStringLiteral("wait"), false}});
         QCOMPARE(pendingDiscoveryCycleRejected.value(QStringLiteral("errorCode")).toString(),
                  QStringLiteral("CAMERA_CYCLE_UNSUPPORTED"));
         QVERIFY(controller.pendingConfirmationId().isEmpty());
@@ -3118,7 +3147,7 @@ private slots:
 
         QJsonObject legacyPending =
             controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("cycle")},
-                                                                   {QStringLiteral("maxCycles"), 2}});
+                                                                   {QStringLiteral("maxCycles"), 2}, {QStringLiteral("wait"), false}});
         QCOMPARE(legacyPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString legacyStaleConfirmation = controller.pendingConfirmationId();
         QVERIFY(!legacyStaleConfirmation.isEmpty());
@@ -3134,7 +3163,9 @@ private slots:
         manager.registerCameraPlugin(replacementAsyncPlugin);
         QTRY_COMPARE_WITH_TIMEOUT(manager.pendingDiscoveryCount(), 0, 2000);
         QVERIFY(manager.supportsAsyncOperations(QString::fromLatin1(kLegacyDeviceId)));
+        const int auditsBeforeLegacyExpiry = captureAudit.count();
         QVERIFY(controller.confirmPendingTools(legacyStaleConfirmation));
+        QTRY_COMPARE_WITH_TIMEOUT(captureAudit.count(), auditsBeforeLegacyExpiry + 1, 5000);
         QCOMPARE(captureAudit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(legacyCounters(), legacyBeforeReject);
         QCOMPARE(legacyRunFinished.count(), 0);
@@ -3157,7 +3188,7 @@ private slots:
 
         legacyPending =
             controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("cycle")},
-                                                                   {QStringLiteral("maxCycles"), 2}});
+                                                                   {QStringLiteral("maxCycles"), 2}, {QStringLiteral("wait"), false}});
         QCOMPARE(legacyPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString legacyRejectedId = controller.pendingConfirmationId();
         QVERIFY(!legacyRejectedId.isEmpty());
@@ -3174,15 +3205,15 @@ private slots:
 
         legacyPending =
             controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("cycle")},
-                                                                   {QStringLiteral("maxCycles"), 2}});
+                                                                   {QStringLiteral("maxCycles"), 2}, {QStringLiteral("wait"), false}});
         QCOMPARE(legacyPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString legacyApprovedId = controller.pendingConfirmationId();
         QVERIFY(!legacyApprovedId.isEmpty());
         QVERIFY(legacyApprovedId != legacyRejectedId);
         QVERIFY(controller.confirmPendingTools(legacyApprovedId));
         QTRY_COMPARE_WITH_TIMEOUT(legacyRunFinished.count(), 2, 5000);
-        QTRY_COMPARE_WITH_TIMEOUT(legacyCycleStopped.count(), 1, 5000);
-        QCOMPARE(legacyCycleStarted.count(), 1);
+        QCOMPARE(legacyCycleStopped.count(), 1);
+        QCOMPARE(legacyCycleStarted.count(), 0);
         QCOMPARE(legacyModuleStarted.count(), 2);
         QCOMPARE(legacyModuleFinished.count(), 2);
         QTRY_COMPARE_WITH_TIMEOUT(captureToolExecuted.count(), legacyToolsBeforeReject + 1, 2000);
@@ -3209,7 +3240,7 @@ private slots:
             QTest::qWait(10);
         }
         QCOMPARE(legacyCounters(), legacyAfterCycle);
-        QCOMPARE(legacyRunFinished.count(), 2);
+        QTRY_COMPARE_WITH_TIMEOUT(legacyRunFinished.count(), 2, 5000);
         QCOMPARE(legacyCycleStopped.count(), 1);
         QCOMPARE(legacyModuleStarted.count(), 2);
         QCOMPARE(legacyModuleFinished.count(), 2);

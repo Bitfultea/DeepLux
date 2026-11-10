@@ -120,7 +120,7 @@ private slots:
         QVERIFY(!confirmation.contains("PRIVATE_KB_PATH"));
 
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
-        QVERIFY(QFileInfo(knowledgeDir).isDir());
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo(knowledgeDir).isDir(), 5000);
         QCOMPARE(window.openCallCount(), 1);
         QCOMPARE(window.lastOpenedUrl(), QUrl::fromLocalFile(knowledgeDir));
         QVERIFY(!toolSpy.isEmpty());
@@ -166,6 +166,7 @@ private slots:
         const QString projectConfirmationId = controller.pendingConfirmationId();
         QVERIFY(ProjectManager::instance().newProject());
         QVERIFY(controller.confirmPendingTools(projectConfirmationId));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(original.openCallCount(), 0);
         QVERIFY(!QFileInfo::exists(knowledgeDir));
         ProjectManager::instance().closeProject();
@@ -178,6 +179,7 @@ private slots:
         replacement.show();
         QCoreApplication::processEvents();
         QVERIFY(controller.confirmPendingTools(ownerConfirmationId));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(original.openCallCount(), 0);
         QCOMPARE(replacement.openCallCount(), 0);
         QVERIFY(!QFileInfo::exists(knowledgeDir));
@@ -188,6 +190,7 @@ private slots:
             controller.handleToolCall(QStringLiteral("open_user_knowledge_folder_for_user"), {});
         QCOMPARE(failedPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QTRY_VERIFY_WITH_TIMEOUT(!toolSpy.isEmpty(), 5000);
         QCOMPARE(replacement.openCallCount(), 1);
         QVERIFY(!toolSpy.isEmpty());
         QCOMPARE(toolSpy.takeLast().at(1).toJsonObject().value(QStringLiteral("errorCode")).toString(),
@@ -315,6 +318,7 @@ private slots:
         QVERIFY(!confirmationId.isEmpty());
         QVERIFY(UserManager::instance().login(QStringLiteral("operator"), QString()));
         QVERIFY(controller.confirmPendingTools(confirmationId));
+        QTRY_COMPARE_WITH_TIMEOUT(responseSpy.size(), 1, 5000);
         QVERIFY(!QFileInfo::exists(m_appDataDir->filePath(QStringLiteral("knowledge/pending.md"))));
         QVERIFY(responseSpy.size() == 1);
         QVERIFY(responseSpy.last().at(0).toString().contains(QStringLiteral("未执行任何操作")));
@@ -332,6 +336,7 @@ private slots:
         const QString removeConfirmationId = controller.pendingConfirmationId();
         QVERIFY(UserManager::instance().login(QStringLiteral("operator"), QString()));
         QVERIFY(controller.confirmPendingTools(removeConfirmationId));
+        QTRY_COMPARE_WITH_TIMEOUT(responseSpy.size(), 2, 5000);
         QVERIFY(QFileInfo::exists(libraryPath));
         QCOMPARE(QFile(libraryPath).size(), sourceBytes.size());
         QCOMPARE(responseSpy.size(), 2);
@@ -348,6 +353,7 @@ private slots:
         const QString logoutConfirmationId = controller.pendingConfirmationId();
         UserManager::instance().logout();
         QVERIFY(controller.confirmPendingTools(logoutConfirmationId));
+        QTRY_COMPARE_WITH_TIMEOUT(responseSpy.size(), 3, 5000);
         QVERIFY(QFileInfo::exists(libraryPath));
         QFile libraryAfterLogout(libraryPath);
         QVERIFY(libraryAfterLogout.open(QIODevice::ReadOnly));

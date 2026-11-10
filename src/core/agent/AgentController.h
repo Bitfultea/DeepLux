@@ -63,6 +63,7 @@ public:
      */
     enum class ToolGate { Allow, RequireConfirmation, Deny };
     ToolGate evaluateToolGate(const QString& toolName, const QJsonObject& params = {}) const;
+    static bool toolRequiresConfirmation(PermissionLevel level, const QString& toolName);
 
     /**
      * @brief 阶段1 §4：当前待确认批次的完整载荷（confirmationId + tools + context
@@ -99,13 +100,6 @@ public:
     AgentActor* actor() const {
         return m_actor;
     }
-
-    using DataSourceViewHandler = std::function<QJsonObject(const QString&, const QJsonObject&)>;
-    void registerDataSourceViewHandler(QObject* owner, DataSourceViewHandler handler);
-    void unregisterDataSourceViewHandler(QObject* owner);
-    QJsonObject executeDataSourceViewAction(const QString& toolName, const QJsonObject& params) const;
-    QJsonObject confirmedActiveAnnotationSessionSaveSnapshot(const QString& outputPath) const;
-    QJsonObject confirmedActiveAnnotationSessionOpenSnapshot(const QString& sessionPath) const;
 
     bool hasPendingTools() const {
         return !m_pendingToolCalls.isEmpty();
@@ -211,6 +205,7 @@ private:
     void expirePendingConfirmation(const QString& reason);
     QSet<int> protectedHistoryIndices() const;
     bool historyPairsValid(QString* error) const;
+    void repairOrphanToolGroups();
     bool dropOldestUserTurn();
     bool dropOldestToolGroup();
     qint64 estimateHistoryTokens();
@@ -230,7 +225,7 @@ private:
 
     AgentObserver* m_observer = nullptr;
     AgentActor* m_actor = nullptr;
-    ILLMClient* m_llmClient = nullptr;
+    QPointer<ILLMClient> m_llmClient;
 
     QString m_systemPrompt;
     QList<AgentMessage> m_conversationHistory;

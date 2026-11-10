@@ -9,8 +9,8 @@
 
 #include <QByteArray>
 #include <QDateTime>
-#include <QJsonObject>
 #include <QHash>
+#include <QJsonObject>
 #include <QList>
 #include <QMap>
 #include <QMutex>
@@ -23,6 +23,7 @@
 #include <QTimer>
 #include <atomic>
 #include <functional>
+#include <thread>
 
 namespace DeepLux {
 class CancellationToken;
@@ -174,6 +175,11 @@ public:
     // job 租约与所有者入口（后台执行设计 §4.2/§5.3）
     bool beginExternalJob(JobToken* token, QString* reason = nullptr);
     bool endExternalJob(const JobToken& token);
+    bool prepareExternalJobObservation(const JobToken& token, const QString& runId, const QString& sessionId,
+                                       int maxCycles);
+    void notifyExternalCycleStopped();
+    void finishPendingExternalJobObservation(const JobToken& token, const QString& runId, const QString& sessionId,
+                                             bool stopped, const QString& error = QString());
     bool runOnceForJob(const JobToken& token, QString* reason = nullptr);
     bool runOnceForJob(const JobToken& token, const QJsonObject& authorization, const QString& requestedRunId,
                        const QString& sessionId, int maxCycles, QString* acceptedRunId, QString* reason = nullptr);
@@ -237,9 +243,11 @@ public:
         // 后台执行（设计 §4.2）：external job 租约从 job 启动到结束（含 Cycle 两轮之间）
         // 始终为 busy，工程加载/清空/切换被拒绝。
         return isExecuting() || m_maintenance.load(std::memory_order_acquire) ||
-               m_externalJobActive.load(std::memory_order_acquire) || state() == RunState::Running ||
+               m_externalJobActive.load(std::memory_order_acquire) ||
+               m_projectSwitchInProgress.load(std::memory_order_acquire) || state() == RunState::Running ||
                state() == RunState::Paused;
     }
+    bool loadedProjectMatches(const Project* project) const;
 
     // 运行模式
     RunMode runMode() const {
@@ -287,6 +295,9 @@ public:
     bool synchronizeProjectModules(Project* project, const QList<ModuleBase*>& modules, QString& error);
     // Run a synchronous Project mutation while excluding execution start with the lifecycle maintenance lease.
     ProjectMutationResult withProjectMutationLease(const std::function<bool()>& mutation);
+    // Exclude execution starts for an entire project switch, including post-commit
+    // projectClosed/projectOpened handlers that rebuild the runtime module graph.
+    ProjectMutationResult withProjectSwitch(const std::function<bool()>& switchOperation);
 
     // 阶段 3.1：运行前校验（必需输入/连接类型），返回错误列表（含节点+端口定位）
     QStringList validateFlow(QString* failedModule = nullptr, QString* failedPort = nullptr) const;
@@ -383,6 +394,7 @@ public:
     RunResult lastRunResult() const;
     QString currentModuleName() const;
     QString lastRunId() const;
+    QString stepRunId() const;
     RunExecutionCandidates runExecutionCandidates() const;
     RunExecutionCandidates stepExecutionCandidates() const;
     RunExecutionCandidates resumeExecutionCandidates() const;
@@ -515,6 +527,8 @@ private:
     // 后台执行（设计 §4.2/§5.3）：external job 租约、owner token 与 job 级取消标志。
     // m_externalJobActive 供 isBusy() 无锁快照；其余字段仅在 m_lifecycleMutex 内读写。
     std::atomic_bool m_externalJobActive{false};
+    std::atomic_bool m_projectSwitchInProgress{false};
+    std::thread::id m_projectSwitchOwnerThread; // guarded by m_lifecycleMutex
     JobToken m_externalJobOwner;
     quint64 m_externalJobSeq = 0;
     quint64 m_jobSalt = 0;

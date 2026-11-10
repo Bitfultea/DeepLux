@@ -383,6 +383,7 @@ private slots:
         QVERIFY(UserManager::instance().login(QStringLiteral("guest-session"), QString()));
         QVERIFY(!UserManager::instance().hasPermission(QStringLiteral("OpenFile")));
         QVERIFY(controller.confirmPendingTools(confirmationId));
+        QTRY_COMPARE_WITH_TIMEOUT(responseSpy.size(), 1, 5000);
         QCOMPARE(dialog->session().toJson(), activeBefore);
         QCOMPARE(dialog->agentPromptStateSnapshot(), promptBefore);
         QCOMPARE(dialog->undoStackIndex(), undoIndexBefore);
@@ -402,6 +403,7 @@ private slots:
                                                                       {{QStringLiteral("sessionPath"), sessionPath}});
         QCOMPARE(operatorPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QTRY_COMPARE_WITH_TIMEOUT(toolSpy.count(), 1, 5000);
         const QJsonArray openedAnnotations = dialog->session().toJson().value(QStringLiteral("annotations")).toArray();
         QCOMPARE(openedAnnotations.size(), 1);
         QCOMPARE(openedAnnotations.first().toObject().value(QStringLiteral("label")).toString(),
@@ -422,6 +424,7 @@ private slots:
         const QString editConfirmationId = controller.pendingConfirmationId();
         QVERIFY(UserManager::instance().login(QStringLiteral("operator"), QString()));
         QVERIFY(controller.confirmPendingTools(editConfirmationId));
+        QTRY_COMPARE_WITH_TIMEOUT(responseSpy.count(), responsesBeforeEdit + 1, 5000);
         QCOMPARE(dialog->session().toJson(), editSessionBefore);
         QCOMPARE(dialog->categories(), categoriesBefore);
         QCOMPARE(dialog->undoStackIndex(), editUndoIndexBefore);
@@ -454,7 +457,7 @@ private slots:
         QCOMPARE(cancelPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString cancelConfirmationId = controller.pendingConfirmationId();
         QVERIFY(controller.confirmPendingTools(cancelConfirmationId));
-        QVERIFY(!dialog->agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool(), 5000);
         QCOMPARE(dialog->session().toJson(), sessionBeforeCancel);
         QCOMPARE(dialog->undoStackIndex(), cancelUndoIndex);
         QCOMPARE(dialog->undoStackCount(), cancelUndoCount);
@@ -469,9 +472,11 @@ private slots:
                                                                   {{QStringLiteral("outputPath"), savePath}});
         QCOMPARE(savePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString saveConfirmationId = controller.pendingConfirmationId();
+        const int responsesBeforeDeniedSave = responseSpy.count();
         const QJsonObject openSessionBeforeDeniedSave = dialog->session().toJson();
         QVERIFY(UserManager::instance().login(QStringLiteral("operator"), QString()));
         QVERIFY(controller.confirmPendingTools(saveConfirmationId));
+        QTRY_COMPARE_WITH_TIMEOUT(responseSpy.count(), responsesBeforeDeniedSave + 1, 5000);
         QVERIFY(!QFileInfo::exists(savePath));
         QCOMPARE(dialog->session().toJson(), openSessionBeforeDeniedSave);
     }

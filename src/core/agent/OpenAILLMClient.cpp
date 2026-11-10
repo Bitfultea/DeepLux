@@ -600,11 +600,14 @@ void OpenAILLMClient::handleFailure(const LLMErrorInfo& info) {
         releaseCurrentReply();
     }
     recordFailedRequestIfNeeded(failure);
+    const QString failedRequestId = m_activeRequestId;
+    const quint64 failedGeneration = m_requestGeneration;
     emit errorOccurredClassified(failure);
-    emit errorOccurredClassifiedForRequest(m_activeRequestId, failure);
+    emit errorOccurredClassifiedForRequest(failedRequestId, failure);
     emit errorOccurred(failure.message);
-    emit requestFailed(m_activeRequestId, failure.message);
-    m_activeRequestId.clear();
+    emit requestFailed(failedRequestId, failure.message);
+    if (m_requestGeneration == failedGeneration && m_activeRequestId == failedRequestId)
+        m_activeRequestId.clear();
 }
 
 void OpenAILLMClient::recordFailedRequestIfNeeded(const LLMErrorInfo& info) {

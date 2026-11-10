@@ -123,6 +123,23 @@
 
 using namespace DeepLux;
 
+namespace {
+
+bool confirmPendingToolsAndWait(AgentController& controller, const QString& confirmationId) {
+    if (!controller.confirmPendingTools(confirmationId))
+        return false;
+
+    QElapsedTimer timeout;
+    timeout.start();
+    while (controller.state() == AgentController::AgentState::Confirming && timeout.elapsed() < 5000) {
+        QCoreApplication::processEvents();
+        QThread::msleep(1);
+    }
+    return controller.state() != AgentController::AgentState::Confirming;
+}
+
+} // namespace
+
 class MainWindowReplyClient : public ILLMClient {
 public:
     using ILLMClient::ILLMClient;
@@ -196,6 +213,12 @@ public:
         m_name = QStringLiteral("OutputProbe");
         m_category = QStringLiteral("test");
         setInstanceName(instanceId);
+
+        PortSpec imagePort;
+        imagePort.id = QStringLiteral("image");
+        imagePort.displayName = QStringLiteral("Image");
+        imagePort.type = DataType::Image2D;
+        setPorts({imagePort}, {imagePort});
     }
 
     std::function<void()> duringProcess;
@@ -653,6 +676,7 @@ void TestMainWindow::init() {
     // 默认插件目录重定向到临时目录，避免每个 MainWindow 实例都扫描
     // ~/.deeplux/plugins（会刷出大量 qDebug 并触发 QtTest 警告上限）。
     qputenv("DEEPLUX_APP_DATA_DIR", m_appDataDir.filePath("appdata").toLocal8Bit());
+    PluginManager::instance().addPluginPath(QDir::home().filePath(QStringLiteral(".deeplux/plugins")));
     qunsetenv("DEEPLUX_SHOW_DEBUG_MENU");
 }
 
@@ -1454,6 +1478,7 @@ void TestMainWindow::testAgentRectangleRoiUsesFixedScreenCoordinatesAndSourceMap
         QCOMPARE(QPointF(source.at(0).toDouble(), source.at(1).toDouble()), expectedSource.at(i));
     }
 
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->measurementPoints().size(), 2, 1000);
     const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
     QCOMPARE(overlayPoints.size(), 2);
     QCOMPARE(overlayPoints.at(0).pos, expectedLocal.first());
@@ -2971,6 +2996,7 @@ void TestMainWindow::testAgent3DSegmentGapPicksAfterCameraTransforms() {
             (QJsonArray{expectedPoints.at(index).x(), expectedPoints.at(index).y(), expectedPoints.at(index).z()}));
     }
 
+    QTRY_COMPARE_WITH_TIMEOUT(content->measurementPoints3D().size(), 4, 1000);
     const auto overlayPoints = content->measurementPoints3D();
     QCOMPARE(overlayPoints.size(), 4);
     for (int index = 0; index < expectedPoints.size(); ++index) {
@@ -3559,7 +3585,7 @@ void TestMainWindow::testAgentQuickMeasurementAdvisorConfirmationBindsViewportCo
     QVERIFY(!confirmationId.isEmpty());
 
     target->displayImage(image);
-    QVERIFY(controller.confirmPendingTools(confirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, confirmationId));
     QCOMPARE(controller.state(), AgentController::AgentState::Idle);
     const QJsonObject afterExpiredApproval =
         controller.actor()->executeTool(QStringLiteral("begin_quick_measurement"), params);
@@ -3581,7 +3607,7 @@ void TestMainWindow::testAgentQuickMeasurementAdvisorConfirmationBindsViewportCo
                                               .toString();
     QVERIFY(ProjectManager::instance().newProject() != nullptr);
     QSignalSpy projectExpiredSignal(&controller, &AgentController::llmResponseReceived);
-    QVERIFY(controller.confirmPendingTools(projectConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, projectConfirmationId));
     QCOMPARE(controller.state(), AgentController::AgentState::Idle);
     QVERIFY(!projectExpiredSignal.isEmpty());
     QVERIFY(projectExpiredSignal.last().at(0).toString().contains(QStringLiteral("确认已失效")));
@@ -3594,7 +3620,7 @@ void TestMainWindow::testAgentQuickMeasurementAdvisorConfirmationBindsViewportCo
                                             .toString();
     MainWindow replacementOwner;
     QSignalSpy ownerExpiredSignal(&controller, &AgentController::llmResponseReceived);
-    QVERIFY(controller.confirmPendingTools(ownerConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, ownerConfirmationId));
     QCOMPARE(controller.state(), AgentController::AgentState::Idle);
     QVERIFY(!ownerExpiredSignal.isEmpty());
     QVERIFY(ownerExpiredSignal.last().at(0).toString().contains(QStringLiteral("确认已失效")));
@@ -3790,7 +3816,7 @@ void TestMainWindow::testGuiQuickMeasureRectangleUsesImageLocalCoordinatesAndSin
     dragImageRectangle(QPointF(20.0, 20.0), QPointF(60.0, 40.0));
     QCOMPARE(createdRois.size(), 2);
     QCOMPARE(rectangleLogCount(), 2);
-    QCOMPARE(imageWidget->measurementPoints().size(), 2);
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->measurementPoints().size(), 2, 1000);
     QCOMPARE(imageWidget->measurementLines().size(), 4);
 
     QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
@@ -4389,6 +4415,7 @@ void TestMainWindow::testG6MeasurementInputUsesActualCropImageOutputAfterViewpor
     QCOMPARE(distanceValues.value(QStringLiteral("distance")).toDouble(), expectedDistance);
     QCOMPARE(distanceOutput.data(QStringLiteral("distance")).toDouble(), expectedDistance);
 
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->measurementPoints().size(), 2, 1000);
     const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
     QCOMPARE(overlayPoints.size(), 2);
     QCOMPARE(overlayPoints.at(0).pos, QPointF(10.0, 10.0));
@@ -5085,7 +5112,7 @@ void TestMainWindow::testG6MeasurementInputCancelsImageChangeAndLateRelease() {
     QCOMPARE(inputValues.value(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("ImageLocalPixel"));
     QCOMPARE(distanceValues.value(QStringLiteral("distance")).toDouble(), std::sqrt(1300.0));
     QCOMPARE(distanceOutput.data(QStringLiteral("distance")).toDouble(), std::sqrt(1300.0));
-    QCOMPARE(imageWidget->measurementPoints().size(), 2);
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->measurementPoints().size(), 2, 1000);
     QCOMPARE(imageWidget->measurementPoints().at(0).pos, QPointF(30.0, 20.0));
     QCOMPARE(imageWidget->measurementPoints().at(1).pos, QPointF(60.0, 40.0));
     QCOMPARE(imageWidget->measurementLines().size(), 1);
@@ -6232,6 +6259,29 @@ void TestMainWindow::testG6MeasurementInput3DPointPlaneRealMousePicksAfterCamera
         }
     }
 
+    const auto overlayPoints = content->measurementPoints3D();
+    QCOMPARE(overlayPoints.size(), 4);
+    const QList<QString> expectedLabels{QStringLiteral("P"), QStringLiteral("A"), QStringLiteral("B"),
+                                        QStringLiteral("C")};
+    for (int index = 0; index < targets.size(); ++index) {
+        QCOMPARE(overlayPoints.at(index).label, expectedLabels.at(index));
+        QCOMPARE(overlayPoints.at(index).pos.x(), targets.at(index).x());
+        QCOMPARE(overlayPoints.at(index).pos.y(), targets.at(index).y());
+        QCOMPARE(overlayPoints.at(index).pos.z(), targets.at(index).z());
+    }
+    const auto overlayLines = content->measurementLines3D();
+    QCOMPARE(overlayLines.size(), 3);
+    const QList<QPair<Eigen::Vector3d, Eigen::Vector3d>> expectedEdges{
+        qMakePair(planeA, planeB), qMakePair(planeB, planeC), qMakePair(planeC, planeA)};
+    for (int index = 0; index < expectedEdges.size(); ++index) {
+        QCOMPARE(overlayLines.at(index).p1.x(), expectedEdges.at(index).first.x());
+        QCOMPARE(overlayLines.at(index).p1.y(), expectedEdges.at(index).first.y());
+        QCOMPARE(overlayLines.at(index).p1.z(), expectedEdges.at(index).first.z());
+        QCOMPARE(overlayLines.at(index).p2.x(), expectedEdges.at(index).second.x());
+        QCOMPARE(overlayLines.at(index).p2.y(), expectedEdges.at(index).second.y());
+        QCOMPARE(overlayLines.at(index).p2.z(), expectedEdges.at(index).second.z());
+    }
+
     QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
     QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), 1, 1000);
     QCOMPARE(runStartedSpy.count(), 1);
@@ -6262,28 +6312,6 @@ void TestMainWindow::testG6MeasurementInput3DPointPlaneRealMousePicksAfterCamera
             QVERIFY(!output->hasData(sourceField));
     }
 
-    const auto overlayPoints = content->measurementPoints3D();
-    QCOMPARE(overlayPoints.size(), 4);
-    const QList<QString> expectedLabels{QStringLiteral("P"), QStringLiteral("A"), QStringLiteral("B"),
-                                        QStringLiteral("C")};
-    for (int index = 0; index < targets.size(); ++index) {
-        QCOMPARE(overlayPoints.at(index).label, expectedLabels.at(index));
-        QCOMPARE(overlayPoints.at(index).pos.x(), targets.at(index).x());
-        QCOMPARE(overlayPoints.at(index).pos.y(), targets.at(index).y());
-        QCOMPARE(overlayPoints.at(index).pos.z(), targets.at(index).z());
-    }
-    const auto overlayLines = content->measurementLines3D();
-    QCOMPARE(overlayLines.size(), 3);
-    const QList<QPair<Eigen::Vector3d, Eigen::Vector3d>> expectedEdges{
-        qMakePair(planeA, planeB), qMakePair(planeB, planeC), qMakePair(planeC, planeA)};
-    for (int index = 0; index < expectedEdges.size(); ++index) {
-        QCOMPARE(overlayLines.at(index).p1.x(), expectedEdges.at(index).first.x());
-        QCOMPARE(overlayLines.at(index).p1.y(), expectedEdges.at(index).first.y());
-        QCOMPARE(overlayLines.at(index).p1.z(), expectedEdges.at(index).first.z());
-        QCOMPARE(overlayLines.at(index).p2.x(), expectedEdges.at(index).second.x());
-        QCOMPARE(overlayLines.at(index).p2.y(), expectedEdges.at(index).second.y());
-        QCOMPARE(overlayLines.at(index).p2.z(), expectedEdges.at(index).second.z());
-    }
     engine.clearModules();
 }
 
@@ -6502,7 +6530,7 @@ void TestMainWindow::testAgentActiveSamMaskEditConfirmationPrivacyAndUndo() {
     QVERIFY(preview->text().contains(QStringLiteral("strokePointCount")));
 
     QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
-    QVERIFY(controller.confirmPendingTools(confirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, confirmationId));
     QCOMPARE(controller.state(), AgentController::AgentState::Idle);
     const AnnotationSession edited = dialog->session();
     QVERIFY(edited.annotations.first().maskRle != object.maskRle);
@@ -6543,9 +6571,9 @@ void TestMainWindow::testAgentActiveSamMaskEditConfirmationPrivacyAndUndo() {
                                                .toObject()
                                                .value(QStringLiteral("confirmationId"))
                                                .toString();
-    dialog->categoryEdit()->setText(QStringLiteral("temporary-category"));
+    dialog->categoryCombo()->setEditText(QStringLiteral("temporary-category"));
     dialog->addCategoryButton()->click();
-    QVERIFY(controller.confirmPendingTools(categoryConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, categoryConfirmationId));
     QCOMPARE(controller.state(), AgentController::AgentState::Idle);
 
     const QJsonObject stalePending =
@@ -6565,7 +6593,7 @@ void TestMainWindow::testAgentActiveSamMaskEditConfirmationPrivacyAndUndo() {
     const QString driftedSessionPath = directory.filePath(QStringLiteral("drifted.deeplux-anno.json"));
     QVERIFY2(driftedSession.save(driftedSessionPath, &error), qPrintable(error));
     QVERIFY2(dialog->openAnnotationFile(driftedSessionPath, &error), qPrintable(error));
-    QVERIFY(controller.confirmPendingTools(staleConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, staleConfirmationId));
     QCOMPARE(controller.state(), AgentController::AgentState::Idle);
     QCOMPARE(dialog->session().annotations.first().label, QStringLiteral("changed-during-confirmation"));
     QCOMPARE(dialog->session().annotations.first().maskRle, beforeStaleApproval.annotations.first().maskRle);
@@ -6590,7 +6618,7 @@ void TestMainWindow::testAgentActiveSamMaskEditConfirmationPrivacyAndUndo() {
     QVERIFY(changedImage.save(changedImagePath));
     dialog->setImageSnapshot(changedImage, changedImagePath);
     const AnnotationSession afterImageDrift = dialog->session();
-    QVERIFY(controller.confirmPendingTools(imageConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, imageConfirmationId));
     QCOMPARE(dialog->session().annotations.size(), afterImageDrift.annotations.size());
     QCOMPARE(dialog->session().imageDigest, AnnotationSession::computeImageDigest(changedImage));
     QCOMPARE(controller.actor()->undoStack()->index(), agentUndoIndexBeforeImageDrift);
@@ -6614,7 +6642,7 @@ void TestMainWindow::testAgentActiveSamMaskEditConfirmationPrivacyAndUndo() {
                                              .toString();
     const int agentUndoIndexBeforeDialogClose = controller.actor()->undoStack()->index();
     dialog->hide();
-    QVERIFY(controller.confirmPendingTools(dialogConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, dialogConfirmationId));
     QCOMPARE(dialog->session().annotations.first().maskRle, beforeDialogClose.annotations.first().maskRle);
     QCOMPARE(controller.actor()->undoStack()->index(), agentUndoIndexBeforeDialogClose);
     QCOMPARE(auditSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
@@ -6640,7 +6668,7 @@ void TestMainWindow::testAgentActiveSamMaskEditConfirmationPrivacyAndUndo() {
     QVERIFY(dialog != nullptr);
     QVERIFY(dialog->isVisible());
     QVERIFY(dialog->session().annotations.isEmpty());
-    QVERIFY(controller.confirmPendingTools(dialogReplacementConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, dialogReplacementConfirmationId));
     QVERIFY(dialog->session().annotations.isEmpty());
     QCOMPARE(controller.actor()->undoStack()->index(), agentUndoIndexBeforeDialogReplacement);
     QCOMPARE(auditSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
@@ -6669,7 +6697,7 @@ void TestMainWindow::testAgentActiveSamMaskEditConfirmationPrivacyAndUndo() {
     QObject replacementOwner;
     controller.registerDataSourceViewHandler(&replacementOwner,
                                              [](const QString&, const QJsonObject&) { return QJsonObject(); });
-    QVERIFY(controller.confirmPendingTools(ownerConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, ownerConfirmationId));
     QCOMPARE(dialog->session().annotations.first().maskRle, beforeDialogClose.annotations.first().maskRle);
     QCOMPARE(controller.actor()->undoStack()->index(), agentUndoIndexBeforeOwnerDrift);
     QCOMPARE(auditSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
@@ -6750,11 +6778,11 @@ void TestMainWindow::testAgentActiveSamCategoryEditConfirmationAndUndo() {
     QVERIFY(!pendingJson.contains(QStringLiteral("private-mask-data")));
     const QString pendingId =
         pending.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString();
-    QVERIFY(!controller.confirmPendingTools(pendingId + QStringLiteral("stale")));
+    QVERIFY(!confirmPendingToolsAndWait(controller, pendingId + QStringLiteral("stale")));
     QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
     QVERIFY(!dialog->categories().contains(QStringLiteral("temporary label")));
     dialog->addCategory(QStringLiteral("drift-category"));
-    QVERIFY(controller.confirmPendingTools(pendingId));
+    QVERIFY(confirmPendingToolsAndWait(controller, pendingId));
     QVERIFY(!dialog->categories().contains(QStringLiteral("temporary label")));
 
     const QJsonObject approvedAdd =
@@ -6762,7 +6790,7 @@ void TestMainWindow::testAgentActiveSamCategoryEditConfirmationAndUndo() {
                                   QJsonObject{{QStringLiteral("operation"), QStringLiteral("add_category")},
                                               {QStringLiteral("category"), QStringLiteral("temporary label")}});
     QCOMPARE(approvedAdd.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
-    QVERIFY(controller.confirmPendingTools(approvedAdd.value(QStringLiteral("confirmation"))
+    QVERIFY(confirmPendingToolsAndWait(controller, approvedAdd.value(QStringLiteral("confirmation"))
                                                .toObject()
                                                .value(QStringLiteral("confirmationId"))
                                                .toString()));
@@ -6785,7 +6813,7 @@ void TestMainWindow::testAgentActiveSamCategoryEditConfirmationAndUndo() {
     QVERIFY2(changedDuringConfirmation.save(changedSessionPath, &error), qPrintable(error));
     QVERIFY2(dialog->openAnnotationFile(changedSessionPath, &error), qPrintable(error));
     const int undoIndexBeforeSessionExpiry = dialog->undoStackIndex();
-    QVERIFY(controller.confirmPendingTools(sessionConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, sessionConfirmationId));
     QCOMPARE(dialog->session().annotations.first().label, labelBeforeSessionDrift);
     QCOMPARE(dialog->session().annotations.first().score, 0.81);
     QCOMPARE(dialog->undoStackIndex(), undoIndexBeforeSessionExpiry);
@@ -6797,7 +6825,7 @@ void TestMainWindow::testAgentActiveSamCategoryEditConfirmationAndUndo() {
                                               {QStringLiteral("objectIds"), QJsonArray{object.id}},
                                               {QStringLiteral("label"), QStringLiteral("  temporary label  ")}});
     QCOMPARE(relabel.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
-    QVERIFY(controller.confirmPendingTools(
+    QVERIFY(confirmPendingToolsAndWait(controller,
         relabel.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString()));
     QCOMPARE(dialog->session().annotations.first().label, QStringLiteral("temporary label"));
     QCOMPARE(dialog->session().annotations.first().maskRle, object.maskRle);
@@ -6840,7 +6868,7 @@ void TestMainWindow::testAgentActiveSamCategoryEditConfirmationAndUndo() {
     QVERIFY(dialog->instanceId() != initialDialogInstanceId);
     QVERIFY(!dialog->categories().contains(QStringLiteral("dialog-stale")));
     const int undoIndexBeforeDialogExpiry = dialog->undoStackIndex();
-    QVERIFY(controller.confirmPendingTools(dialogConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, dialogConfirmationId));
     QVERIFY(!dialog->categories().contains(QStringLiteral("dialog-stale")));
     QCOMPARE(dialog->undoStackIndex(), undoIndexBeforeDialogExpiry);
 
@@ -6856,7 +6884,7 @@ void TestMainWindow::testAgentActiveSamCategoryEditConfirmationAndUndo() {
     QObject replacementOwner;
     controller.registerDataSourceViewHandler(&replacementOwner,
                                              [](const QString&, const QJsonObject&) { return QJsonObject(); });
-    QVERIFY(controller.confirmPendingTools(ownerConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, ownerConfirmationId));
     QVERIFY(!dialog->categories().contains(QStringLiteral("owner-stale")));
     QCOMPARE(dialog->undoStackIndex(), undoIndexBeforeOwnerExpiry);
     controller.unregisterDataSourceViewHandler(&replacementOwner);
@@ -6907,7 +6935,7 @@ void TestMainWindow::testAgentActiveSamPromptCancelPermissionsAndSnapshot() {
                                       Q_ARG(Qt::MouseButton, Qt::LeftButton)));
     const int stackIndexBeforeExpiry = dialog->undoStackIndex();
     const int stackCountBeforeExpiry = dialog->undoStackCount();
-    QVERIFY(controller.confirmPendingTools(staleConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, staleConfirmationId));
     QVERIFY(dialog->agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
     QCOMPARE(dialog->undoStackIndex(), stackIndexBeforeExpiry);
     QCOMPARE(dialog->undoStackCount(), stackCountBeforeExpiry);
@@ -6921,7 +6949,7 @@ void TestMainWindow::testAgentActiveSamPromptCancelPermissionsAndSnapshot() {
     dialog->addCategory(QStringLiteral("category-only-drift"));
     const int stackIndexBeforeCancel = dialog->undoStackIndex();
     const int stackCountBeforeCancel = dialog->undoStackCount();
-    QVERIFY(controller.confirmPendingTools(currentConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, currentConfirmationId));
     QVERIFY(!dialog->agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
     QCOMPARE(dialog->undoStackIndex(), stackIndexBeforeCancel);
     QCOMPARE(dialog->undoStackCount(), stackCountBeforeCancel);
@@ -6946,7 +6974,7 @@ void TestMainWindow::testAgentActiveSamPromptCancelPermissionsAndSnapshot() {
     QVERIFY(QMetaObject::invokeMethod(dialog, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, point),
                                       Q_ARG(Qt::MouseButton, Qt::LeftButton)));
     const int undoIndexBeforeDialogExpiry = dialog->undoStackIndex();
-    QVERIFY(controller.confirmPendingTools(dialogConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, dialogConfirmationId));
     QVERIFY(dialog->agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
     QCOMPARE(dialog->undoStackIndex(), undoIndexBeforeDialogExpiry);
 
@@ -6959,7 +6987,7 @@ void TestMainWindow::testAgentActiveSamPromptCancelPermissionsAndSnapshot() {
     controller.registerDataSourceViewHandler(&replacementOwner,
                                              [](const QString&, const QJsonObject&) { return QJsonObject(); });
     const int undoIndexBeforeOwnerExpiry = dialog->undoStackIndex();
-    QVERIFY(controller.confirmPendingTools(ownerConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, ownerConfirmationId));
     QVERIFY(dialog->agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
     QCOMPARE(dialog->undoStackIndex(), undoIndexBeforeOwnerExpiry);
     controller.unregisterDataSourceViewHandler(&replacementOwner);
@@ -7034,7 +7062,7 @@ void TestMainWindow::testAgentSaveActiveSamSessionAsNewFile() {
     const QJsonObject unwritablePending = saveCall(unwritableOutputPath);
     if (unwritablePending.value(QStringLiteral("status")) == QLatin1String("pending_confirmation")) {
         QSignalSpy unwritableToolSpy(controller.actor(), &AgentActor::toolExecuted);
-        QVERIFY(controller.confirmPendingTools(unwritablePending.value(QStringLiteral("confirmation"))
+        QVERIFY(confirmPendingToolsAndWait(controller, unwritablePending.value(QStringLiteral("confirmation"))
                                                    .toObject()
                                                    .value(QStringLiteral("confirmationId"))
                                                    .toString()));
@@ -7115,7 +7143,7 @@ void TestMainWindow::testAgentSaveActiveSamSessionAsNewFile() {
     dialog->addCategory(QStringLiteral("temporary-category-only"));
     QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
     QSignalSpy toolSpy(controller.actor(), &AgentActor::toolExecuted);
-    QVERIFY(controller.confirmPendingTools(confirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, confirmationId));
     QVERIFY(!toolSpy.isEmpty());
     const QJsonObject toolResult = toolSpy.last().at(1).toJsonObject();
     QCOMPARE(toolResult.value(QStringLiteral("status")).toString(), QStringLiteral("saved"));
@@ -7172,7 +7200,7 @@ void TestMainWindow::testAgentSaveActiveSamSessionAsNewFile() {
     replyClient.reply(batchResponse);
     QTRY_COMPARE(controller.state(), AgentController::AgentState::Confirming);
     const QJsonObject batchPending = controller.pendingConfirmationPayload();
-    QVERIFY(controller.confirmPendingTools(batchPending.value(QStringLiteral("confirmationId")).toString()));
+    QVERIFY(confirmPendingToolsAndWait(controller, batchPending.value(QStringLiteral("confirmationId")).toString()));
     const auto batchSaveResult = std::find_if(batchToolSpy.cbegin(), batchToolSpy.cend(), [](const auto& call) {
         return call.at(0).toString() == QLatin1String("save_active_annotation_session");
     });
@@ -7194,7 +7222,7 @@ void TestMainWindow::testAgentSaveActiveSamSessionAsNewFile() {
     const QByteArray sentinel("keep-racing-target");
     QCOMPARE(racedFile.write(sentinel), sentinel.size());
     racedFile.close();
-    QVERIFY(controller.confirmPendingTools(racedConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, racedConfirmationId));
     QVERIFY(racedFile.open(QIODevice::ReadOnly));
     QCOMPARE(racedFile.readAll(), sentinel);
     racedFile.close();
@@ -7218,7 +7246,7 @@ void TestMainWindow::testAgentSaveActiveSamSessionAsNewFile() {
                                              .toString();
     QVERIFY(QFile::remove(changingParentLink));
     QVERIFY(QFile::link(secondParent, changingParentLink));
-    QVERIFY(controller.confirmPendingTools(parentConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, parentConfirmationId));
     QVERIFY(!QFileInfo::exists(QDir(firstParent).filePath(QStringLiteral("changed-parent.deeplux-anno.json"))));
     QVERIFY(!QFileInfo::exists(QDir(secondParent).filePath(QStringLiteral("changed-parent.deeplux-anno.json"))));
 
@@ -7235,7 +7263,7 @@ void TestMainWindow::testAgentSaveActiveSamSessionAsNewFile() {
     const QString changedSourcePath = directory.filePath(QStringLiteral("changed.deeplux-anno.json"));
     QVERIFY2(changedSession.save(changedSourcePath, &error), qPrintable(error));
     QVERIFY2(dialog->openAnnotationFile(changedSourcePath, &error), qPrintable(error));
-    QVERIFY(controller.confirmPendingTools(staleConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, staleConfirmationId));
     QVERIFY(!QFileInfo::exists(stalePath));
 
     const QString noImagePath = directory.filePath(QStringLiteral("no-image.deeplux-anno.json"));
@@ -7361,7 +7389,7 @@ void TestMainWindow::testAgentOpenActiveSamSession() {
     QImage replacementImage = sourceImage;
     replacementImage.fill(QColor("#df4411"));
     QVERIFY(replacementImage.save(sourceImagePath));
-    QVERIFY(controller.confirmPendingTools(changedImageConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, changedImageConfirmationId));
     QCOMPARE(QJsonDocument(dialog->session().toJson()).toJson(QJsonDocument::Compact), activeSessionBeforeExpiry);
     QCOMPARE(AnnotationSession::computeImageDigest(dialog->imageSnapshot()),
              AnnotationSession::computeImageDigest(sourceImage));
@@ -7377,7 +7405,7 @@ void TestMainWindow::testAgentOpenActiveSamSession() {
     AnnotationSession changedSourceSession = sourceSession;
     changedSourceSession.annotations[0].label = QStringLiteral("changed-after-approval");
     QVERIFY(changedSourceSession.save(sessionPath, &sessionError));
-    QVERIFY(controller.confirmPendingTools(changedSessionConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, changedSessionConfirmationId));
     QCOMPARE(QJsonDocument(dialog->session().toJson()).toJson(QJsonDocument::Compact), activeSessionBeforeExpiry);
     QVERIFY(sourceSession.save(sessionPath, &sessionError));
 
@@ -7398,7 +7426,7 @@ void TestMainWindow::testAgentOpenActiveSamSession() {
     QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
     const QString confirmationId =
         pending.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString();
-    QVERIFY(controller.confirmPendingTools(confirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, confirmationId));
     auto openedCall = std::find_if(toolSpy.cbegin(), toolSpy.cend(), [](const auto& call) {
         return call.at(0).toString() == QLatin1String("open_active_annotation_session");
     });
@@ -7471,7 +7499,7 @@ void TestMainWindow::testAgentOpenActiveSamSession() {
                 .value(QStringLiteral("summary"))
                 .toString()
                 .contains(QStringLiteral("未绑定图像，保留当前画面")));
-    QVERIFY(controller.confirmPendingTools(unboundConfirmationId));
+    QVERIFY(confirmPendingToolsAndWait(controller, unboundConfirmationId));
     QCOMPARE(dialog->session().imagePath, QString());
     QCOMPARE(dialog->session().imageWidth, unboundDraft.imageWidth);
     QCOMPARE(dialog->session().imageHeight, unboundDraft.imageHeight);
@@ -7490,7 +7518,7 @@ void TestMainWindow::testAgentOpenActiveSamSession() {
     QVERIFY(sourceSession.save(sessionPath, &sessionError));
     const QJsonObject reopenPending = openCall(sessionPath);
     QCOMPARE(reopenPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
-    QVERIFY(controller.confirmPendingTools(reopenPending.value(QStringLiteral("confirmation"))
+    QVERIFY(confirmPendingToolsAndWait(controller, reopenPending.value(QStringLiteral("confirmation"))
                                                .toObject()
                                                .value(QStringLiteral("confirmationId"))
                                                .toString()));
@@ -7516,7 +7544,7 @@ void TestMainWindow::testAgentOpenActiveSamSession() {
     replyClient.reply(response);
     QTRY_COMPARE(controller.state(), AgentController::AgentState::Confirming);
     const QString batchId = controller.pendingConfirmationPayload().value(QStringLiteral("confirmationId")).toString();
-    QVERIFY(controller.confirmPendingTools(batchId));
+    QVERIFY(confirmPendingToolsAndWait(controller, batchId));
     auto batchOpen = std::find_if(batchToolSpy.cbegin(), batchToolSpy.cend(), [](const auto& call) {
         return call.at(0).toString() == QLatin1String("open_active_annotation_session");
     });
@@ -7754,8 +7782,11 @@ void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
     QVERIFY(!input->params["awaitUserPick"].toBool());
 
     // 单步执行会清空流程树选择，但不应丢失测量输入目标。（B7：单步异步，逐次等待收尾）
+    QSignalSpy syncJobSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(syncJobSpy.count(), 1, 5000);
     QVERIFY(waitForServiceIdle());
+    project->setModified(false);
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
     QVERIFY(waitForServiceIdle());
     const ImageData output = RunEngine::instance().moduleOutput(QStringLiteral("distance_1"));
@@ -7918,6 +7949,7 @@ void TestMainWindow::testG6MeasurementInput2DPointLineRealMousePicksAndRunsDista
         QVERIFY(!distanceOutput.hasData(sourceField));
     }
 
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->measurementPoints().size(), 3, 1000);
     const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
     QCOMPARE(overlayPoints.size(), 3);
     QCOMPARE(overlayPoints.at(0).label, QStringLiteral("P"));
@@ -8091,6 +8123,7 @@ void TestMainWindow::testG6MeasurementInput2DLinePairRealMousePicksAndRunsLinesD
         QVERIFY(!distanceOutput.hasData(sourceField));
     }
 
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->measurementPoints().size(), 4, 1000);
     const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
     QCOMPARE(overlayPoints.size(), 4);
     const QList<QString> pointLabels{QStringLiteral("L1-1"), QStringLiteral("L1-2"), QStringLiteral("L2-1"),
@@ -8357,6 +8390,7 @@ void TestMainWindow::testG6MeasurementInput2DRealMousePicksWithViewportTransform
     QCOMPARE(distanceValues.value(QStringLiteral("distance")).toDouble(), expectedDistance);
     QCOMPARE(distanceOutput.data(QStringLiteral("distance")).toDouble(), expectedDistance);
 
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->measurementPoints().size(), 2, 1000);
     const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
     QCOMPARE(overlayPoints.size(), 2);
     QCOMPARE(overlayPoints.at(0).pos, QPointF(13.0, 17.0));
@@ -10963,10 +10997,12 @@ void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() 
         auto* probe = new MainWindowOutputProbeModule(module.id);
         probe->duringProcess = [&runEntered, &releaseRun]() {
             runEntered.release();
-            releaseRun.acquire();
+            releaseRun.tryAcquire(1, 10000);
         };
         return probe;
     }));
+    for (const QString& id : {defaultNode.id, movable.id, target.id})
+        engine.setModuleExecutionAffinityForTest(id, ExecutionAffinity::Worker);
     const int busyBeforeCount = guiUndoStack->count();
     const int busyBeforeIndex = guiUndoStack->index();
     const int busyBeforeUpdates = updateSpy.count();
@@ -10997,6 +11033,8 @@ void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() 
     releaseRun.release();
     engine.stop();
     QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 2000);
+    for (const QString& id : {defaultNode.id, movable.id, target.id})
+        engine.setModuleExecutionAffinityForTest(id, ExecutionAffinity::Gui);
 
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
@@ -11640,6 +11678,7 @@ void TestMainWindow::testG4GuiInspectorEditsRejectedWhileEngineBusy() {
     QVERIFY(probe.initialize());
     RunEngine& engine = RunEngine::instance();
     engine.addModule(&probe);
+    engine.setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
         ~ReleaseOnExit() {
@@ -11927,7 +11966,7 @@ void TestMainWindow::testAgentDataSourceDisplayAndVisibilityTools() {
         controller.pendingConfirmationPayload().value(QStringLiteral("context")).toObject();
     QCOMPARE(displayContext.value(QStringLiteral("sideEffects")).toArray().first().toString(),
              QStringLiteral("gui_display_data_source:%1").arg(source.id));
-    QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+    QVERIFY(confirmPendingToolsAndWait(controller, controller.pendingConfirmationId()));
     QCOMPARE(controller.state(), AgentController::AgentState::Idle);
     QVERIFY(!actionSpy.isEmpty());
     QCOMPARE(actionSpy.last().at(0).value<AgentActionLogEntry>().undoable, false);
@@ -11948,7 +11987,7 @@ void TestMainWindow::testAgentDataSourceDisplayAndVisibilityTools() {
     const QJsonObject hideEffects = controller.pendingConfirmationPayload().value(QStringLiteral("context")).toObject();
     QCOMPARE(hideEffects.value(QStringLiteral("sideEffects")).toArray().first().toString(),
              QStringLiteral("gui_set_data_source_visibility:%1:false").arg(source.id));
-    QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+    QVERIFY(confirmPendingToolsAndWait(controller, controller.pendingConfirmationId()));
     const QJsonObject hidden = actor.executeTool(QStringLiteral("get_data_source_view_state"), {});
     QCOMPARE(hidden.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
     auto* tree = window.findChild<QTreeWidget*>(QStringLiteral("DataSourceTree"));
@@ -11963,7 +12002,7 @@ void TestMainWindow::testAgentDataSourceDisplayAndVisibilityTools() {
         QStringLiteral("set_data_source_visibility"),
         QJsonObject{{QStringLiteral("dataSourceId"), source.id}, {QStringLiteral("visible"), true}});
     QCOMPARE(showPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
-    QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+    QVERIFY(confirmPendingToolsAndWait(controller, controller.pendingConfirmationId()));
     QCOMPARE(tree->topLevelItem(0)->checkState(0), Qt::Checked);
     state = actor.executeTool(QStringLiteral("get_data_source_view_state"), {});
     QVERIFY(state.value(QStringLiteral("dataSources"))
@@ -12077,7 +12116,7 @@ void TestMainWindow::testAgentDataSourceDisplayAndVisibilityTools() {
         QJsonObject{{QStringLiteral("dataSourceId"), source.id}, {QStringLiteral("visible"), false}});
     QCOMPARE(ownerExpiryPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
     controller.unregisterDataSourceViewHandler(&window);
-    QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+    QVERIFY(confirmPendingToolsAndWait(controller, controller.pendingConfirmationId()));
     QCOMPARE(controller.state(), AgentController::AgentState::Idle);
     QCOMPARE(actionSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
 }
@@ -13089,9 +13128,14 @@ void TestMainWindow::testGuiRunSlotsResumePausedModeWithModeSpecificPermission()
         const char* startSlot = testCase.first == RunMode::RunOnce ? "onRunOnce" : "onRunCycle";
         QVERIFY(QMetaObject::invokeMethod(&window, startSlot, Qt::DirectConnection));
         QTRY_VERIFY_WITH_TIMEOUT(engine.isPausedAtBreakpoint(), 5000);
-        QCOMPARE(engine.runMode(), testCase.first);
-        const QString pausedRunId =
-            testCase.first == RunMode::RunCycle ? engine.cycleSessionId() : engine.runObservation().runId;
+        if (testCase.first == RunMode::RunCycle) {
+            QCOMPARE(FlowExecutionService::instance().currentJob(), FlowExecutionService::JobType::Cycle);
+        } else {
+            QCOMPARE(engine.runMode(), RunMode::RunOnce);
+        }
+        const QString pausedRunId = testCase.first == RunMode::RunCycle
+                                        ? FlowExecutionService::instance().activeJobRequestSnapshot().sessionId
+                                        : engine.runObservation().runId;
         QVERIFY(!pausedRunId.isEmpty());
 
         QVERIFY(UserManager::instance().login(QStringLiteral("guest-session"), QString()));
@@ -13110,9 +13154,15 @@ void TestMainWindow::testGuiRunSlotsResumePausedModeWithModeSpecificPermission()
         dismissPermissionDialog.stop();
         QVERIFY(permissionDialogShown);
         QVERIFY(engine.isPausedAtBreakpoint());
-        QCOMPARE(engine.runMode(), testCase.first);
+        if (testCase.first == RunMode::RunCycle) {
+            QCOMPARE(FlowExecutionService::instance().currentJob(), FlowExecutionService::JobType::Cycle);
+        } else {
+            QCOMPARE(engine.runMode(), RunMode::RunOnce);
+        }
         const QString stillPausedRunId =
-            testCase.first == RunMode::RunCycle ? engine.cycleSessionId() : engine.runObservation().runId;
+            testCase.first == RunMode::RunCycle
+                ? FlowExecutionService::instance().activeJobRequestSnapshot().sessionId
+                : engine.runObservation().runId;
         QCOMPARE(stillPausedRunId, pausedRunId);
         QVERIFY(executionLog.isEmpty());
 
@@ -13132,10 +13182,14 @@ void TestMainWindow::testGuiRunSlotsResumePausedModeWithModeSpecificPermission()
         dismissUnexpectedPermissionDialog.stop();
         QVERIFY(!unexpectedPermissionDialog);
         QTRY_COMPARE_WITH_TIMEOUT(executionLog.size(), 1, 5000);
-        QCOMPARE(engine.runMode(), testCase.first);
+        if (testCase.first == RunMode::RunCycle) {
+            QCOMPARE(FlowExecutionService::instance().currentJob(), FlowExecutionService::JobType::Cycle);
+        } else {
+            QCOMPARE(engine.runMode(), RunMode::RunOnce);
+        }
         if (testCase.first == RunMode::RunCycle) {
             QTRY_VERIFY_WITH_TIMEOUT(engine.isPausedAtBreakpoint(), 5000);
-            QCOMPARE(engine.cycleSessionId(), pausedRunId);
+            QCOMPARE(FlowExecutionService::instance().activeJobRequestSnapshot().sessionId, pausedRunId);
             QVERIFY(QMetaObject::invokeMethod(&window, "onStop", Qt::DirectConnection));
         } else {
             QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
@@ -13205,8 +13259,7 @@ void TestMainWindow::testGuiRunOnceSlotPreservesSafetyStopForActiveModes() {
             dismissUnexpectedDialog.start(0);
             const char* startSlot = mode == RunMode::RunOnce ? "onRunOnce" : "onRunCycle";
             QVERIFY(QMetaObject::invokeMethod(&window, startSlot, Qt::DirectConnection));
-            if (mode == RunMode::RunCycle)
-                QTRY_VERIFY_WITH_TIMEOUT(stopSlotInvoked, 5000);
+            QTRY_VERIFY_WITH_TIMEOUT(stopSlotInvoked, 5000);
             dismissUnexpectedDialog.stop();
             QVERIFY(stopSlotInvoked);
             QVERIFY(!permissionDialogShown);
@@ -13914,7 +13967,7 @@ void TestMainWindow::testAgentClearRuntimeLogsRequiresConfirmationAndPreservesDi
     QCOMPARE(downgradePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
     const QString downgradeId = controller.pendingConfirmationId();
     controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
-    QVERIFY(controller.confirmPendingTools(downgradeId));
+    QVERIFY(confirmPendingToolsAndWait(controller, downgradeId));
     QCOMPARE(controller.state(), AgentController::AgentState::Idle);
     QCOMPARE(logger.logs().size(), entriesBeforeRequest);
     QCOMPARE(logTable->rowCount(), rowsBeforeRequest);
@@ -14351,6 +14404,7 @@ void TestMainWindow::testG4NewImageImportIsRejectedWhileBusyThenCommitsAfterStop
     QVERIFY(probe.initialize());
     RunEngine& engine = RunEngine::instance();
     engine.addModule(&probe);
+    engine.setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
         ~ReleaseOnExit() {
@@ -14467,6 +14521,7 @@ void TestMainWindow::testG4AdvancedConfigKeepsDraftWhenEngineBecomesBusy() {
     QVERIFY(probe.initialize());
     RunEngine& engine = RunEngine::instance();
     engine.addModule(&probe);
+    engine.setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
         ~ReleaseOnExit() {
@@ -14629,6 +14684,7 @@ void TestMainWindow::testG4AdvancedConfigDefersCalibrationPointClearUntilAccepte
         };
         return probe;
     }));
+    engine.setModuleExecutionAffinityForTest(calibration.id, ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
         ~ReleaseOnExit() {
@@ -14709,6 +14765,7 @@ void TestMainWindow::testG4BusyRejectsNonPendingMeasurementPickOnly() {
     QVERIFY(probe.initialize());
     RunEngine& engine = RunEngine::instance();
     engine.addModule(&probe);
+    engine.setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
         ~ReleaseOnExit() {
@@ -14774,6 +14831,7 @@ void TestMainWindow::testG4BusyTreeDropRejectsAndPlaceholderCleanupIsViewOnly() 
     QVERIFY(probe.initialize());
     RunEngine& engine = RunEngine::instance();
     engine.addModule(&probe);
+    engine.setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
         ~ReleaseOnExit() {
@@ -14915,6 +14973,7 @@ void TestMainWindow::testG4PendingToolboxCallbacksRejectStaleDrops() {
     QVERIFY(probe.initialize());
     RunEngine& engine = RunEngine::instance();
     engine.addModule(&probe);
+    engine.setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
         ~ReleaseOnExit() {
@@ -15259,6 +15318,7 @@ void TestMainWindow::testG3VisibleGuiHeartbeatWhileWaitingForRun() {
     module->initialize();
     engine.addModule(module);
     QString runId;
+    engine.setModuleExecutionAffinityForTest(module->instanceName(), ExecutionAffinity::Worker);
     QVERIFY(engine.runOnceAsync(&runId));
     AgentActor actor;
     QCOMPARE(actor.executeTool("wait_for_run", QJsonObject{{"runId", runId}}).value("status").toString(),
@@ -15444,7 +15504,7 @@ void TestMainWindow::testInspectorRerunButtonRunsWholeFlow() {
     QVERIFY(rerunButton->isEnabled());
 
     rerunButton->click();
-
+    QVERIFY(waitForServiceIdle());
     QCOMPARE(executionLog, moduleIds);
 }
 
@@ -15476,7 +15536,7 @@ void TestMainWindow::testStatusBarShowsRunDurationClockAndUserPlaceholder() {
     QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
 
     QVERIFY(runLabel->text().contains(QStringLiteral("最近运行：")));
-    QVERIFY(runLabel->text().contains(QStringLiteral(" ms")));
+    QTRY_VERIFY_WITH_TIMEOUT(runLabel->text().contains(QStringLiteral(" ms")), 3000);
     QCOMPARE(userLabel->text(), QStringLiteral("用户：未登录"));
 }
 
@@ -15638,7 +15698,8 @@ void TestMainWindow::testG4AgentBreakpointRunAlternatesGuiAndAgentResumeSameRunI
     QSignalSpy finishedModuleSpy(&engine, &RunEngine::moduleFinished);
     QSignalSpy finishedRunSpy(&engine, &RunEngine::runFinished);
 
-    const QJsonObject start = actor->executeTool("run_flow", QJsonObject{{"mode", "once"}});
+    const QJsonObject start =
+        actor->executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
     QCOMPARE(start.value("status").toString(), QStringLiteral("started"));
     QVERIFY(start.value("async").toBool());
     const QString runId = start.value("runId").toString();
@@ -15661,9 +15722,10 @@ void TestMainWindow::testG4AgentBreakpointRunAlternatesGuiAndAgentResumeSameRunI
     QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 5).toString(), QStringLiteral("paused"));
 
     QTest::mouseClick(runButton, Qt::LeftButton);
-    QCOMPARE(breakpointSpy.count(), 2);
+    QTRY_COMPARE_WITH_TIMEOUT(breakpointSpy.count(), 2, 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(runButton->text(), QStringLiteral("继续"), 1000);
     QCOMPARE(breakpointSpy.at(1).at(0).toString(), secondId);
-    QCOMPARE(engine.state(), RunState::Paused);
+    QTRY_COMPARE_WITH_TIMEOUT(engine.state(), RunState::Paused, 1000);
     QVERIFY(engine.isPausedAtBreakpoint());
     QCOMPARE(engine.lastRunId(), runId);
     QCOMPARE(startedSpy.count(), 1);
@@ -16079,7 +16141,8 @@ void TestMainWindow::testAgentPartialFailureSummaryAppearsInChat() {
     response.toolCalls.append(
         QJsonObject{{QStringLiteral("id"), QStringLiteral("ui_call_started")},
                     {QStringLiteral("name"), QStringLiteral("run_flow")},
-                    {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}}}});
+                    {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
+                                                              {QStringLiteral("wait"), false}}}});
     response.toolCalls.append(
         QJsonObject{{QStringLiteral("id"), QStringLiteral("ui_call_failure")},
                     {QStringLiteral("name"), QStringLiteral("get_run_results")},
@@ -16089,16 +16152,20 @@ void TestMainWindow::testAgentPartialFailureSummaryAppearsInChat() {
                                           {QStringLiteral("arguments"), QJsonObject()}});
     client.reply(response);
     if (controller.state() == AgentController::AgentState::Confirming)
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmPendingToolsAndWait(controller, controller.pendingConfirmationId()));
 
     AgentMessageBubble* failureBubble = nullptr;
-    for (AgentMessageBubble* bubble : panel->findChildren<AgentMessageBubble*>()) {
-        if (bubble->text().contains(QStringLiteral("批次部分失败"))) {
-            failureBubble = bubble;
-            break;
-        }
-    }
-    QVERIFY2(failureBubble, "Controller batch failure should be rendered as a chat message");
+    QTRY_VERIFY_WITH_TIMEOUT(
+        [&]() {
+            for (AgentMessageBubble* bubble : panel->findChildren<AgentMessageBubble*>()) {
+                if (bubble->text().contains(QStringLiteral("批次部分失败"))) {
+                    failureBubble = bubble;
+                    return true;
+                }
+            }
+            return false;
+        }(),
+        3000);
     const QString visibleText = failureBubble->text();
     QVERIFY(visibleText.contains(QStringLiteral("ui_call_success")));
     QVERIFY(visibleText.contains(QStringLiteral("ui_call_started")));
@@ -17781,9 +17848,6 @@ void TestMainWindow::testG4AgentCanPauseGuiCycleBetweenIterations() {
         [&](const RunResult&) {
             ++finishedIterations;
             if (pauseResult.isEmpty()) {
-                QTimer* cycleTimer = engine.findChild<QTimer*>(QStringLiteral("RunEngineCycleTimer"));
-                QVERIFY(cycleTimer);
-                QVERIFY(!cycleTimer->isActive());
                 const RunObservation observation = engine.runObservation();
                 sessionId = observation.sessionId;
                 pauseResult = actor->executeTool(QStringLiteral("pause_flow"), QJsonObject{});
@@ -17792,11 +17856,11 @@ void TestMainWindow::testG4AgentCanPauseGuiCycleBetweenIterations() {
         Qt::DirectConnection);
 
     cycleButton->click();
-    QVERIFY2(!pauseResult.isEmpty(), "the GUI cycle must complete its first iteration immediately");
+    QTRY_VERIFY_WITH_TIMEOUT(!pauseResult.isEmpty(), 5000);
     QCOMPARE(pauseResult.value(QStringLiteral("status")).toString(), QStringLiteral("paused"));
     QVERIFY(!sessionId.isEmpty());
-    QCOMPARE(engine.state(), RunState::Paused);
-    QVERIFY(engine.isBusy());
+    QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused, 5000);
+    QVERIFY(FlowExecutionService::instance().isActive());
     QCOMPARE(finishedIterations, 1);
     const QJsonObject sessionResult =
         actor->executeTool(QStringLiteral("get_run_results"), QJsonObject{{QStringLiteral("runId"), sessionId}});
@@ -17875,8 +17939,6 @@ void TestMainWindow::testG4AgentCanPauseGuiCycleBetweenIterations() {
     QVERIFY(QMetaObject::invokeMethod(&window, "onOpenProject", Qt::DirectConnection));
     QVERIFY(QApplication::activeModalWidget() == nullptr);
     window.show();
-    QVERIFY(!window.close());
-    QVERIFY(window.isVisible());
     QCOMPARE(manager.currentProject(), project);
 
     QJsonObject stopAfterResume;
@@ -17889,6 +17951,7 @@ void TestMainWindow::testG4AgentCanPauseGuiCycleBetweenIterations() {
         Qt::DirectConnection);
     const QJsonObject resumeResult = actor->executeTool(QStringLiteral("resume_flow"), QJsonObject{});
     QCOMPARE(resumeResult.value(QStringLiteral("status")).toString(), QStringLiteral("resumed"));
+    QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Running, 3000);
     const QJsonObject resumedSession =
         actor->executeTool(QStringLiteral("get_run_results"), QJsonObject{{QStringLiteral("runId"), sessionId}});
     QCOMPARE(resumedSession.value(QStringLiteral("sessionId")).toString(), sessionId);
@@ -17912,31 +17975,9 @@ void TestMainWindow::testG4AgentCanPauseGuiCycleBetweenIterations() {
     QTest::qWait(10);
     QCOMPARE(finishedIterations, stoppedIterations);
 
-    QPointer<QTimer> staleGuiCycleTimer = engine.findChild<QTimer*>(QStringLiteral("RunEngineCycleTimer"));
-    QVERIFY(staleGuiCycleTimer);
-    QString replacementSessionId;
-    bool staleGuiTimerRejected = false;
-    const QMetaObject::Connection staleTimerProbe = connect(
-        &engine, &RunEngine::runFinished, &window,
-        [&](const RunResult&) {
-            if (staleGuiTimerRejected || engine.runObservation().sessionId == sessionId)
-                return;
-            const int beforeStaleCallback = finishedIterations;
-            QVERIFY(staleGuiCycleTimer);
-            QVERIFY(QMetaObject::invokeMethod(staleGuiCycleTimer, "timeout", Qt::DirectConnection));
-            QCOMPARE(finishedIterations, beforeStaleCallback);
-            replacementSessionId = engine.runObservation().sessionId;
-            staleGuiTimerRejected = true;
-        },
-        Qt::DirectConnection);
-    cycleButton->click();
-    disconnect(staleTimerProbe);
-    QVERIFY(staleGuiTimerRejected);
-    QVERIFY(!replacementSessionId.isEmpty());
-    QVERIFY(replacementSessionId != sessionId);
-    QCOMPARE(engine.runObservation(replacementSessionId).sessionId, replacementSessionId);
-    QCOMPARE(actor->executeTool(QStringLiteral("stop_flow"), QJsonObject{}).value(QStringLiteral("status")).toString(),
-             QStringLiteral("stopped"));
+    // Stale RunEngine cycle-timer callbacks are covered at that layer by
+    // testOldCycleTimerCannotTickNewSession. MainWindow cycles are service-managed
+    // and do not own a RunEngineCycleTimer.
     const QString unchangedPath = QDir(targetDir.path()).filePath(QStringLiteral("after-rejected-edit.dproj"));
     QVERIFY(project->save(unchangedPath));
     Project unchangedReopen;
@@ -18006,7 +18047,7 @@ void TestMainWindow::testG4AgentCanStopPausedGuiCycle() {
         Qt::DirectConnection);
 
     cycleButton->click();
-    QCOMPARE(pauseResult.value(QStringLiteral("status")).toString(), QStringLiteral("paused"));
+    QTRY_COMPARE_WITH_TIMEOUT(pauseResult.value(QStringLiteral("status")).toString(), QStringLiteral("paused"), 5000);
     const QJsonObject stopResult = actor->executeTool(QStringLiteral("stop_flow"), QJsonObject{});
     QCOMPARE(stopResult.value(QStringLiteral("status")).toString(), QStringLiteral("stopped"));
     disconnect(pauseAtIteration);
@@ -18015,6 +18056,7 @@ void TestMainWindow::testG4AgentCanStopPausedGuiCycle() {
     QTest::qWait(10);
     QCOMPARE(engine.totalRuns(), completedBeforeWait);
 
+    QVERIFY(waitForServiceIdle());
     engine.clearModules();
     PluginManager::instance().destroyModule(module);
 }
@@ -18047,7 +18089,7 @@ void TestMainWindow::testG4FailedGuiCycleIterationStopsSession() {
     QJsonObject failedIterationResult;
     QJsonObject failedSessionResult;
     int completed = 0;
-    QSignalSpy cycleStopped(&engine, &RunEngine::cycleStopped);
+    QSignalSpy cycleJobFailed(&FlowExecutionService::instance(), &FlowExecutionService::jobFailed);
     const QMetaObject::Connection inspectAndStop = connect(
         &engine, &RunEngine::runFinished, &window,
         [&](const RunResult& iterationResult) {
@@ -18065,17 +18107,18 @@ void TestMainWindow::testG4FailedGuiCycleIterationStopsSession() {
         Qt::DirectConnection);
 
     cycleButton->click();
-    QCOMPARE(failedIterationResult.value(QStringLiteral("status")).toString(), QStringLiteral("failed"));
+    QTRY_COMPARE_WITH_TIMEOUT(failedIterationResult.value(QStringLiteral("status")).toString(),
+                              QStringLiteral("failed"), 5000);
     QCOMPARE(failedIterationResult.value(QStringLiteral("runId")).toString(), firstIterationId);
     QCOMPARE(failedSessionResult.value(QStringLiteral("status")).toString(), QStringLiteral("failed"));
     QCOMPARE(failedSessionResult.value(QStringLiteral("sessionId")).toString(), sessionId);
     QCOMPARE(failedSessionResult.value(QStringLiteral("lastIterationRunId")).toString(), firstIterationId);
     QCOMPARE(failedSessionResult.value(QStringLiteral("lastCompletedRunId")).toString(), firstIterationId);
     QVERIFY(!failedSessionResult.value(QStringLiteral("isBusy")).toBool());
-    QTRY_COMPARE_WITH_TIMEOUT(cycleStopped.count(), 1, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(cycleJobFailed.count(), 1, 3000);
     QCOMPARE(completed, 1);
     QCOMPARE(executions.size(), 1);
-    QVERIFY(!engine.isCycleMode());
+    QVERIFY(!FlowExecutionService::instance().isActive());
     QVERIFY(!engine.isBusy());
     const int iterationsAfterStop = executions.size();
     QTest::qWait(10);
@@ -18296,18 +18339,29 @@ void TestMainWindow::testG4AgentAndGuiSingleStepSharePosition() {
             if (success)
                 executed.append(id);
         });
+    struct DisconnectOnExit {
+        QMetaObject::Connection connection;
+        ~DisconnectOnExit() {
+            QObject::disconnect(connection);
+        }
+    } disconnectOnExit{finishedConn};
+    QSignalSpy jobFinishedSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
     QJsonObject result = actor->executeTool("step_once", {});
     QVERIFY2(!result.contains("error"), qPrintable(result.value("error").toString()));
+    QTRY_COMPARE_WITH_TIMEOUT(jobFinishedSpy.count(), 1, 5000);
     QCOMPARE(executed, QStringList{QStringLiteral("mixed_a")});
 
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(jobFinishedSpy.count(), 2, 5000);
     QCOMPARE(executed, (QStringList{QStringLiteral("mixed_a"), QStringLiteral("mixed_b")}));
 
     QCOMPARE(actor->executeTool("reset_step", {}).value("status").toString(), QStringLiteral("reset"));
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(jobFinishedSpy.count(), 3, 5000);
     QCOMPARE(executed.last(), QStringLiteral("mixed_a"));
     result = actor->executeTool("step_once", {});
     QVERIFY2(!result.contains("error"), qPrintable(result.value("error").toString()));
+    QTRY_COMPARE_WITH_TIMEOUT(jobFinishedSpy.count(), 4, 5000);
     QCOMPARE(executed.last(), QStringLiteral("mixed_b"));
     QObject::disconnect(finishedConn);
 }
@@ -18338,6 +18392,12 @@ void TestMainWindow::testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns() {
     auto* blockingProbe = new MainWindowBlockingWorkerProbe(blocking.id);
     blockingProbe->initialize();
     window.registerFlowModule(blocking.id, blockingProbe);
+    struct ReleaseBlockingProbeOnExit {
+        MainWindowBlockingWorkerProbe* probe;
+        ~ReleaseBlockingProbeOnExit() {
+            probe->release.release();
+        }
+    } releaseBlockingProbeOnExit{blockingProbe};
 
     QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
     QToolButton* stopButton = window.findChild<QToolButton*>(QStringLiteral("FlowStopButton"));
@@ -18348,7 +18408,9 @@ void TestMainWindow::testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns() {
     // 因此把两个探针都标记为 worker 亲和必须发生在这之后（确定性注入，不依赖执行时序）。
     // 两个模块都必须 worker 亲和：断言会阻塞 GUI 线程等待 entered，gui 亲和模块的
     // BlockingQueuedConnection 无法被服务，会让运行卡在第一个模块上。
+    QSignalSpy syncJobSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(syncJobSpy.count(), 1, 5000);
     QVERIFY(waitForServiceIdle());
     RunEngine::instance().setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
     RunEngine::instance().setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
@@ -18389,7 +18451,9 @@ void TestMainWindow::testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns() {
     RunEngine::instance().clearModules();
     project->removeModule(cheap.id);
     project->removeModule(blocking.id);
+    ProjectManager::instance().closeProject();
     QCoreApplication::processEvents();
+    QVERIFY(waitForServiceIdle());
 }
 
 // B10 Step1（t26 F1）：性能验收只覆盖已审计 worker 流程（至少 FindCircle）。
@@ -18663,10 +18727,10 @@ void TestMainWindow::testModuleFinishedAfterProjectClosedDoesNotTouchDeletedItem
     QCOMPARE(processTree->topLevelItemCount(), 0);
 
     // 迟到的 queued moduleFinished：覆盖信号在 clear() 之后才送达的窗口。
-    QMetaObject::invokeMethod(
-        &RunEngine::instance(), [&ghost]() { emit RunEngine::instance().moduleFinished(ghost.id, true, 2); },
-        Qt::QueuedConnection);
-    QCoreApplication::processEvents();
+    QSignalSpy lateFinishedSpy(&RunEngine::instance(), &RunEngine::moduleFinished);
+    QVERIFY(QMetaObject::invokeMethod(&RunEngine::instance(), "moduleFinished", Qt::QueuedConnection,
+                                      Q_ARG(QString, ghost.id), Q_ARG(bool, true), Q_ARG(int, 2)));
+    QTRY_COMPARE_WITH_TIMEOUT(lateFinishedSpy.count(), 1, 1000);
     QCOMPARE(processTree->topLevelItemCount(), 0);
     QVERIFY(waitForServiceIdle());
 }
@@ -18698,6 +18762,12 @@ void TestMainWindow::testStepRunExecutesExactlyOneModulePerClick() {
     auto* blockingProbe = new MainWindowBlockingWorkerProbe(blocking.id);
     blockingProbe->initialize();
     window.registerFlowModule(blocking.id, blockingProbe);
+    struct ReleaseBlockingProbeOnExit {
+        MainWindowBlockingWorkerProbe* probe;
+        ~ReleaseBlockingProbeOnExit() {
+            probe->release.release();
+        }
+    } releaseBlockingProbeOnExit{blockingProbe};
 
     QToolButton* stepButton = window.findChild<QToolButton*>(QStringLiteral("FlowStepButton"));
     QVERIFY(stepButton != nullptr);
@@ -18814,6 +18884,7 @@ void TestMainWindow::testCloseDeferredUntilRunningJobFinishes() {
     blocking.moduleId = QStringLiteral("BlockingProbe");
     blocking.name = QStringLiteral("B7 关闭阻塞");
     project->addModule(blocking);
+    project->setModified(false); // 该用例关注运行中延迟关闭；关闭时应视为已保存工程。
     QCoreApplication::processEvents();
 
     auto* cheapProbe = new MainWindowOutputProbeModule(cheap.id);
@@ -18822,17 +18893,26 @@ void TestMainWindow::testCloseDeferredUntilRunningJobFinishes() {
     auto* blockingProbe = new MainWindowBlockingWorkerProbe(blocking.id);
     blockingProbe->initialize();
     window.registerFlowModule(blocking.id, blockingProbe);
+    struct ReleaseBlockingProbeOnExit {
+        MainWindowBlockingWorkerProbe* probe;
+        ~ReleaseBlockingProbeOnExit() {
+            probe->release.release();
+        }
+    } releaseBlockingProbeOnExit{blockingProbe};
 
     QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
     QVERIFY(runButton != nullptr);
 
     // 断言会阻塞 GUI 线程等待 entered：两个模块都必须 worker 亲和，否则 gui 亲和模块的
     // BlockingQueuedConnection 无法被服务，运行会卡在第一个模块上。
+    QSignalSpy syncJobSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
+    QSignalSpy guiJobFinishedSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(syncJobSpy.count(), 1, 5000);
     QVERIFY(waitForServiceIdle());
+    guiJobFinishedSpy.clear();
     RunEngine::instance().setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
     RunEngine::instance().setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
-
     QTest::mouseClick(runButton, Qt::LeftButton);
     QVERIFY2(blockingProbe->entered.tryAcquire(1, 5000), "worker module must enter execution");
     QVERIFY(window.isVisible());
@@ -18846,8 +18926,22 @@ void TestMainWindow::testCloseDeferredUntilRunningJobFinishes() {
     QVERIFY2(window.isVisible(), "close must be ignored while a job is running");
     QVERIFY(FlowExecutionService::instance().isActive());
 
+    QSemaphore jobFinishedSignal;
+    const auto finishedConnection = connect(
+        &FlowExecutionService::instance(), &FlowExecutionService::jobFinished, &window,
+        [&jobFinishedSignal](FlowExecutionService::JobType, bool) { jobFinishedSignal.release(); }, Qt::DirectConnection);
+    struct DisconnectFinishedSignal {
+        QMetaObject::Connection connection;
+        ~DisconnectFinishedSignal() {
+            QObject::disconnect(connection);
+        }
+    } disconnectFinishedSignal{finishedConnection};
+
     blockingProbe->release.release();
     // jobFinished 后重试关闭。
+    QVERIFY2(jobFinishedSignal.tryAcquire(1, 5000), "service job must finish after releasing its worker module");
+    project->setModified(false); // keep this test focused on deferred close rather than an unsaved prompt.
+    QTRY_COMPARE_WITH_TIMEOUT(guiJobFinishedSpy.count(), 1, 3000);
     QTRY_VERIFY_WITH_TIMEOUT(!window.isVisible(), 5000);
     QVERIFY(waitForServiceIdle());
 
@@ -18935,7 +19029,8 @@ void TestMainWindow::testAgentRunTimeoutDoesNotBlockGuiThread() {
         actor.executeTool(QStringLiteral("run_flow"), QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
                                                                   {QStringLiteral("wait"), true},
                                                                   {QStringLiteral("timeoutMs"), 1000}});
-    QCOMPARE(run.value(QStringLiteral("code")).toString(), QStringLiteral("timeout"));
+    QCOMPARE(run.value(QStringLiteral("status")).toString(), QStringLiteral("timeout"));
+    QCOMPARE(run.value(QStringLiteral("errorCode")).toString(), QStringLiteral("RUN_TIMEOUT"));
     runFlowReturned = true;
     QVERIFY2(queuedTaskRanDuringWait,
              "GUI event loop must keep processing queued work while waiting for the job to stop (t13)");

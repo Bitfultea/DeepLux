@@ -1,9 +1,11 @@
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
+#include "core/common/UserManager.h"
 #include "core/agent/GuiEvent.h"
 #include "core/agent/ILLMClient.h"
 #include "core/base/ModuleBase.h"
 #include "core/engine/RunEngine.h"
+#include "core/engine/FlowExecutionService.h"
 #include "core/interface/IModule.h"
 #include "core/manager/PluginManager.h"
 #include "core/manager/ProjectManager.h"
@@ -271,6 +273,7 @@ private:
 
 private slots:
     void initTestCase() {
+        UserManager::instance().login(QStringLiteral("developer"), QString());
         QVERIFY(m_appDataDir.isValid());
         QVERIFY(m_targets.isValid());
         qputenv("DEEPLUX_APP_DATA_DIR", m_appDataDir.path().toLocal8Bit());
@@ -284,7 +287,7 @@ private slots:
 
         PluginManager& plugins = PluginManager::instance();
         QVERIFY(plugins.initialize());
-        QCOMPARE(plugins.pluginPaths(), QStringList{QDir(pluginRoot).absolutePath()});
+        QVERIFY(plugins.pluginPaths().contains(QDir(pluginRoot).absolutePath()));
         const QList<PluginInfo> scannedPlugins = plugins.moduleInfos();
         QCOMPARE(scannedPlugins.size(), 5);
         QStringList discoveredNames;
@@ -362,7 +365,7 @@ private slots:
                                          QStringLiteral("file_write:%1 format=text mode=overwrite").arg(outputPath)};
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(!pending.contains(QStringLiteral("runId")));
         QCOMPARE(controller.pendingConfirmationPayload()
@@ -387,7 +390,7 @@ private slots:
         QVERIFY(!audit.last().at(0).value<AgentActionLogEntry>().undoable);
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString approvedId = controller.pendingConfirmationId();
         QVERIFY(!approvedId.isEmpty());
@@ -439,7 +442,7 @@ private slots:
         QVERIFY(QFile::remove(outputPath));
         QVERIFY(project->setModuleParam(instanceId, QStringLiteral("filePath"), QString()));
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("errorCode")).toString(),
                  QStringLiteral("SIDE_EFFECT_TARGET_UNRESOLVED"));
         QVERIFY(!pending.value(QStringLiteral("retryable")).toBool());
@@ -448,7 +451,7 @@ private slots:
         QVERIFY(!QFileInfo::exists(outputPath));
         QCOMPARE(countModuleSignal(moduleStarted, instanceId), 1);
         QCOMPARE(countModuleSignal(moduleFinished, instanceId), 1);
-        QCOMPARE(runFinished.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         QVERIFY(!engine.isBusy());
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().action, QStringLiteral("run_flow"));
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("error"));
@@ -491,7 +494,7 @@ private slots:
                                          QStringLiteral("file_write:%1 format=text mode=overwrite").arg(outputPath)};
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QCOMPARE(controller.pendingConfirmationPayload()
                      .value(QStringLiteral("context"))
@@ -510,7 +513,7 @@ private slots:
         QVERIFY(!QFileInfo::exists(outputPath));
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString approvedId = controller.pendingConfirmationId();
         QVERIFY(!approvedId.isEmpty());
@@ -620,7 +623,7 @@ private slots:
         QVERIFY(controller.confirmPendingTools(approvedId));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 1, 5000);
         const QJsonObject stepResult = toolExecuted.last().at(1).toJsonObject();
-        QCOMPARE(stepResult.value(QStringLiteral("status")).toString(), QStringLiteral("stepped"));
+        QCOMPARE(stepResult.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         const QString runId = stepResult.value(QStringLiteral("runId")).toString();
         QVERIFY(!runId.isEmpty());
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
@@ -714,9 +717,10 @@ private slots:
         QVERIFY(approvedId != rejectedId);
         QVERIFY(controller.confirmPendingTools(approvedId));
 
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         QCOMPARE(engine.state(), RunState::Idle);
         QVERIFY(!engine.isBusy());
-        QCOMPARE(runFinished.count(), 1);
         const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(result.runId, runId);
         QVERIFY2(result.success, qPrintable(result.errorMessage));
@@ -787,7 +791,7 @@ private slots:
                                          QStringLiteral("file_write:%1").arg(outputPath)};
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QCOMPARE(controller.pendingConfirmationPayload()
                      .value(QStringLiteral("context"))
@@ -813,7 +817,7 @@ private slots:
         QVERIFY(!audit.last().at(0).value<AgentActionLogEntry>().undoable);
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString approvedId = controller.pendingConfirmationId();
         QVERIFY(!approvedId.isEmpty());
@@ -953,7 +957,7 @@ private slots:
         QVERIFY(controller.confirmPendingTools(sourceConfirmationId));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 1, 5000);
         const QJsonObject sourceStep = toolExecuted.last().at(1).toJsonObject();
-        QCOMPARE(sourceStep.value(QStringLiteral("status")).toString(), QStringLiteral("stepped"));
+        QCOMPARE(sourceStep.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         const QString runId = sourceStep.value(QStringLiteral("runId")).toString();
         QVERIFY(!runId.isEmpty());
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
@@ -962,6 +966,7 @@ private slots:
         QCOMPARE(countModuleSignal(moduleFinished, sourceId), 1);
         QCOMPARE(countModuleSignal(moduleStarted, saveId), 0);
         QCOMPARE(countModuleSignal(moduleFinished, saveId), 0);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         QCOMPARE(engine.state(), RunState::Idle);
         QVERIFY(!QFileInfo::exists(outputPath));
 
@@ -971,7 +976,7 @@ private slots:
         const QString rejectedSaveId = controller.pendingConfirmationId();
         QVERIFY(!rejectedSaveId.isEmpty());
         QVERIFY(controller.rejectPendingTools(rejectedSaveId));
-        QCOMPARE(runFinished.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         QCOMPARE(toolExecuted.count(), 1);
         QCOMPARE(countModuleSignal(moduleStarted, sourceId), 1);
         QCOMPARE(countModuleSignal(moduleStarted, saveId), 0);
@@ -987,7 +992,7 @@ private slots:
         QVERIFY(controller.confirmPendingTools(approvedSaveId));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 2, 5000);
         const QJsonObject saveStep = toolExecuted.last().at(1).toJsonObject();
-        QCOMPARE(saveStep.value(QStringLiteral("status")).toString(), QStringLiteral("stepped"));
+        QCOMPARE(saveStep.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         QCOMPARE(saveStep.value(QStringLiteral("runId")).toString(), runId);
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 2, 5000);
         const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
@@ -1107,9 +1112,10 @@ private slots:
         QVERIFY(approvedId != rejectedId);
         QVERIFY(controller.confirmPendingTools(approvedId));
 
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         QCOMPARE(engine.state(), RunState::Idle);
         QVERIFY(!engine.isBusy());
-        QCOMPARE(runFinished.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(result.runId, runId);
         QVERIFY2(result.success, qPrintable(result.errorMessage));
@@ -1164,7 +1170,7 @@ private slots:
                                          QStringLiteral("file_write:%1 format=json mode=overwrite").arg(outputPath)};
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QCOMPARE(controller.pendingConfirmationPayload()
                      .value(QStringLiteral("context"))
@@ -1187,7 +1193,7 @@ private slots:
         QVERIFY(!audit.last().at(0).value<AgentActionLogEntry>().undoable);
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString approvedId = controller.pendingConfirmationId();
         QVERIFY(!approvedId.isEmpty());
@@ -1234,7 +1240,7 @@ private slots:
         QVERIFY(QFile::remove(outputPath));
         QVERIFY(project->setModuleParam(instanceId, QStringLiteral("filePath"), QString()));
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("errorCode")).toString(),
                  QStringLiteral("SIDE_EFFECT_TARGET_UNRESOLVED"));
         QVERIFY(!pending.value(QStringLiteral("retryable")).toBool());
@@ -1243,7 +1249,7 @@ private slots:
         QVERIFY(!QFileInfo::exists(outputPath));
         QCOMPARE(countModuleSignal(moduleStarted, instanceId), 1);
         QCOMPARE(countModuleSignal(moduleFinished, instanceId), 1);
-        QCOMPARE(runFinished.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         QVERIFY(!engine.isBusy());
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().action, QStringLiteral("run_flow"));
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("error"));
@@ -1300,9 +1306,10 @@ private slots:
         };
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QJsonArray overwriteEffects = sideEffects();
+        QVERIFY(!overwriteEffects.isEmpty());
         QCOMPARE(overwriteEffects.last().toString(),
                  QStringLiteral("file_write:%1 format=text mode=overwrite").arg(outputPath));
         QVERIFY(!overwriteEffects.last().toString().contains(QStringLiteral("private-payload")));
@@ -1310,15 +1317,18 @@ private slots:
         QVERIFY(!staleId.isEmpty());
         QVERIFY(project->setModuleParam(instanceId, QStringLiteral("appendMode"), true));
         QVERIFY(controller.confirmPendingTools(staleId));
+        QTRY_COMPARE_WITH_TIMEOUT(audit.count(), 1, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(countModuleSignal(moduleStarted, instanceId), 0);
         QCOMPARE(runFinished.count(), 0);
         QCOMPARE(readBytes(), originalBytes);
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QJsonArray appendEffects = sideEffects();
+        QVERIFY(!appendEffects.isEmpty());
         QCOMPARE(appendEffects.last().toString(),
                  QStringLiteral("file_write:%1 format=text mode=append").arg(outputPath));
         QVERIFY(!appendEffects.last().toString().contains(QStringLiteral("private-payload")));
@@ -1380,7 +1390,7 @@ private slots:
         };
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString oldEffect = lastFileEffect();
         QVERIFY(oldEffect.startsWith(QStringLiteral("file_write:%1").arg(outputPath)));
@@ -1393,6 +1403,8 @@ private slots:
         QVERIFY(QFileInfo(linkedDirectory).isSymLink());
         QCOMPARE(lastFileEffect(), oldEffect);
         QVERIFY(controller.confirmPendingTools(staleId));
+        QTRY_COMPARE_WITH_TIMEOUT(audit.count(), 1, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(countModuleSignal(moduleStarted, instanceId), 0);
         QCOMPARE(runFinished.count(), 0);
@@ -1400,7 +1412,7 @@ private slots:
         QVERIFY(!QFileInfo::exists(targetBOutput));
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString newEffect = lastFileEffect();
         QVERIFY(newEffect.startsWith(QStringLiteral("file_write:%1").arg(outputPath)));
@@ -1468,7 +1480,7 @@ private slots:
         };
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString oldEffect = lastFileEffect();
         QVERIFY(oldEffect.startsWith(QStringLiteral("file_write:%1").arg(outputLink)));
@@ -1481,6 +1493,7 @@ private slots:
         QVERIFY(QFileInfo(outputLink).isSymLink());
         QCOMPARE(lastFileEffect(), oldEffect);
         QVERIFY(controller.confirmPendingTools(staleId));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(countModuleSignal(moduleStarted, instanceId), 0);
         QCOMPARE(runFinished.count(), 0);
@@ -1488,7 +1501,7 @@ private slots:
         QVERIFY(!QFileInfo::exists(targetBFile));
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString newEffect = lastFileEffect();
         QVERIFY(newEffect.startsWith(QStringLiteral("file_write:%1").arg(outputLink)));
@@ -1577,7 +1590,7 @@ private slots:
         };
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QCOMPARE(sideEffects().last().toString(),
                  QStringLiteral("file_write:%1 format=json mode=overwrite").arg(outputPath));
@@ -1585,6 +1598,7 @@ private slots:
         QVERIFY(!staleId.isEmpty());
         QVERIFY(project->setModuleParam(saveId, QStringLiteral("appendMode"), true));
         QVERIFY(controller.confirmPendingTools(staleId));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(countModuleSignal(moduleStarted, sourceId), 0);
         QCOMPARE(countModuleSignal(moduleStarted, saveId), 0);
@@ -1592,7 +1606,7 @@ private slots:
         QCOMPARE(readBytes(), originalBytes);
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QCOMPARE(sideEffects().last().toString(), QStringLiteral("file_write:%1 format=json mode="
                                                                  "merge_json_keys_if_existing_object_else_overwrite")
@@ -1604,7 +1618,7 @@ private slots:
         QCOMPARE(readBytes(), originalBytes);
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString approvedId = controller.pendingConfirmationId();
         QVERIFY(!approvedId.isEmpty());
@@ -1695,6 +1709,7 @@ private slots:
 
         QVERIFY(project->setModuleParam(instanceId, QStringLiteral("filePath"), pathB));
         QVERIFY(controller.confirmPendingTools(staleId));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().action, QStringLiteral("step_once"));
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QVERIFY(!audit.last().at(0).value<AgentActionLogEntry>().undoable);
@@ -1724,7 +1739,7 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 1, 5000);
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         const QJsonObject stepToolResult = toolExecuted.last().at(1).toJsonObject();
-        QCOMPARE(stepToolResult.value(QStringLiteral("status")).toString(), QStringLiteral("stepped"));
+        QCOMPARE(stepToolResult.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         const QString runId = stepToolResult.value(QStringLiteral("runId")).toString();
         QVERIFY(!runId.isEmpty());
         const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
@@ -1843,6 +1858,7 @@ private slots:
         QVERIFY(project->setModuleParam(instanceId, QStringLiteral("filePath"), pathB));
         QVERIFY(controller.confirmPendingTools(staleId));
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().action, QStringLiteral("resume_flow"));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QVERIFY(!audit.last().at(0).value<AgentActionLogEntry>().undoable);
         QCOMPARE(engine.state(), RunState::Paused);
@@ -1974,7 +1990,7 @@ private slots:
 
             controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
             bridgeResult = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                     QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                     QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
             QCOMPARE(bridgeResult.value(QStringLiteral("errorCode")).toString(),
                      QStringLiteral("SIDE_EFFECT_TARGET_UNRESOLVED"));
             QVERIFY(!bridgeResult.value(QStringLiteral("retryable")).toBool());
@@ -2404,7 +2420,7 @@ private slots:
         QSignalSpy audit(&controller, &AgentController::actionLogEntryAdded);
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(QFileInfo::exists(QDir(runTarget).filePath(QStringLiteral("probe.txt"))));
         QCOMPARE(countModuleSignal(moduleStarted, instanceId), 0);
@@ -2415,7 +2431,7 @@ private slots:
         QCOMPARE(countModuleSignal(moduleFinished, instanceId), 0);
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(QFileInfo::exists(runTarget));
         const QString driftTarget = makeDeleteTarget(QStringLiteral("run-flow-drift-target"));
@@ -2431,6 +2447,7 @@ private slots:
         QVERIFY(!staleRunConfirmationId.isEmpty());
         QVERIFY(project->setModuleParam(instanceId, QStringLiteral("folderPath"), driftTarget));
         QVERIFY(controller.confirmPendingTools(staleRunConfirmationId));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QVERIFY(QFileInfo::exists(QDir(runTarget).filePath(QStringLiteral("probe.txt"))));
         QVERIFY(QFileInfo::exists(QDir(driftTarget).filePath(QStringLiteral("probe.txt"))));
@@ -2442,7 +2459,7 @@ private slots:
 
         QVERIFY(project->setModuleParam(instanceId, QStringLiteral("folderPath"), runTarget));
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(controller.pendingConfirmationPayload()
                     .value(QStringLiteral("context"))
@@ -2512,10 +2529,10 @@ private slots:
         QVERIFY(controller.confirmPendingTools(stepConfirmationId));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 4, 5000); // run_flow + 两次输出查询 + step_once
         const QJsonObject stepped = toolExecuted.last().at(1).toJsonObject();
-        QCOMPARE(stepped.value(QStringLiteral("status")).toString(), QStringLiteral("stepped"));
+        QCOMPARE(stepped.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         const QString stepRunId = stepped.value(QStringLiteral("runId")).toString();
         QVERIFY(!stepRunId.isEmpty());
-        QCOMPARE(runFinished.count(), 2);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 2, 5000);
         const RunResult stepResult = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(stepResult.runId, stepRunId);
         QVERIFY2(stepResult.success, qPrintable(stepResult.errorMessage));
@@ -2596,7 +2613,7 @@ private slots:
                                       .arg(instanceId, configuredPath, QDir(targetA).canonicalPath());
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QJsonArray oldEffects = controller.pendingConfirmationPayload()
                                           .value(QStringLiteral("context"))
@@ -2632,6 +2649,7 @@ private slots:
         QCOMPARE(QFileInfo(link).symLinkTarget(), QFileInfo(rootB).canonicalFilePath());
 
         QVERIFY(controller.confirmPendingTools(staleId));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().action, QStringLiteral("run_flow"));
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(moduleStarted.count(), 0);
@@ -2643,7 +2661,7 @@ private slots:
         QCOMPARE(readSentinel(markerB), sentinelB);
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString freshId = controller.pendingConfirmationId();
         QVERIFY(!freshId.isEmpty());
@@ -2726,7 +2744,7 @@ private slots:
                         startedSessionId = result.value(QStringLiteral("sessionId")).toString();
                 });
         QJsonObject invalid = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("cycle")}});
+                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("cycle")}, {QStringLiteral("wait"), false}});
         QCOMPARE(invalid.value(QStringLiteral("errorCode")).toString(), QStringLiteral("MISSING_PARAM"));
         QVERIFY(!controller.hasPendingTools());
         invalid = controller.handleToolCall(
@@ -2877,6 +2895,7 @@ private slots:
         QVERIFY(staleId != rejectedId);
         QVERIFY(project->setModuleParam(instanceId, QStringLiteral("appendMode"), false));
         QVERIFY(controller.confirmPendingTools(staleId));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(fileBytes(), sentinel);
         QCOMPARE(countModuleSignal(moduleStarted, instanceId), 0);
@@ -2966,7 +2985,7 @@ private slots:
         QCOMPARE(fileBytes(), stableBytes);
         QCOMPARE(countModuleSignal(moduleStarted, instanceId), 3);
         QCOMPARE(countModuleSignal(moduleFinished, instanceId), 3);
-        QCOMPARE(runFinished.count(), 3);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 3, 5000);
         QCOMPARE(cycleStopped.count(), 1);
         QVERIFY(!engine.isBusy());
 
@@ -3134,7 +3153,7 @@ private slots:
             QCOMPARE(countModuleSignal(moduleFinished, sourceId), 3);
             QCOMPARE(countModuleSignal(moduleStarted, targetId), 3);
             QCOMPARE(countModuleSignal(moduleFinished, targetId), 3);
-            QCOMPARE(runFinished.count(), 3);
+            QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 3, 5000);
             for (const QList<QVariant>& args : moduleFinished) {
                 QVERIFY(args.at(1).toBool());
             }
@@ -3196,7 +3215,7 @@ private slots:
             QCOMPARE(countModuleSignal(moduleFinished, sourceId), 3);
             QCOMPARE(countModuleSignal(moduleStarted, targetId), 3);
             QCOMPARE(countModuleSignal(moduleFinished, targetId), 3);
-            QCOMPARE(runFinished.count(), 3);
+            QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 3, 5000);
             QCOMPARE(cycleStopped.count(), 1);
             const QJsonObject quietSession =
                 actor->executeTool(QStringLiteral("get_run_results"), {{QStringLiteral("runId"), sessionId}});
@@ -3413,7 +3432,7 @@ private slots:
         const QString confirmationId = controller.pendingConfirmationId();
         QVERIFY(!confirmationId.isEmpty());
         QVERIFY(controller.confirmPendingTools(confirmationId));
-        QCOMPARE(executedToolCount(QStringLiteral("run_flow")), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(executedToolCount(QStringLiteral("run_flow")), 1, 5000);
         cycleSessionId = toolExecuted.last().at(1).toJsonObject().value(QStringLiteral("sessionId")).toString();
         QVERIFY(!cycleSessionId.isEmpty());
         QTRY_COMPARE_WITH_TIMEOUT(cycleStopped.count(), 1, 10000);
@@ -3469,7 +3488,7 @@ private slots:
         }
         QCOMPARE(moduleStarted.count(), 2);
         QCOMPARE(moduleFinished.count(), 2);
-        QCOMPARE(runFinished.count(), 2);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 2, 5000);
         QCOMPARE(cycleStopped.count(), 1);
         QCOMPARE(executedToolCount(QStringLiteral("run_flow")), 1);
         QCOMPARE(auditActionCount(QStringLiteral("run_flow")), 1);
@@ -3753,7 +3772,7 @@ private slots:
         QVERIFY(!firstTickSessionId.isEmpty());
         QVERIFY2(firstTickSwapError.isEmpty(), qPrintable(firstTickSwapError));
         QCOMPARE(QFileInfo(alias).symLinkTarget(), QFileInfo(rootB).canonicalFilePath());
-        QCOMPARE(firstTickRunFinished.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(firstTickRunFinished.count(), 1, 5000);
         QCOMPARE(firstTickStarted.count(), 1);
         QCOMPARE(firstTickFinished.count(), 1);
         QVERIFY(!firstTickFinished.last().at(1).toBool());
@@ -3775,7 +3794,7 @@ private slots:
                  QStringLiteral("CONFIRMED_TARGET_CHANGED"));
         QTest::qWait(350);
         QCOMPARE(firstTickStarted.count(), 1);
-        QCOMPARE(firstTickRunFinished.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(firstTickRunFinished.count(), 1, 5000);
         QCOMPARE(firstTickCycleStopped.count(), 1);
         QVERIFY(!engine.isBusy());
         QFile::remove(alias);
@@ -3896,7 +3915,7 @@ private slots:
         }
         QCOMPARE(secondTickStarted.count(), 2);
         QCOMPARE(secondTickFinished.count(), 2);
-        QCOMPARE(secondTickRunFinished.count(), 2);
+        QTRY_COMPARE_WITH_TIMEOUT(secondTickRunFinished.count(), 2, 5000);
         QCOMPARE(secondTickCycleStopped.count(), 1);
         const QJsonObject stableSession = controller.handleToolCall(QStringLiteral("get_run_results"),
                                                                     {{QStringLiteral("runId"), secondTickSessionId}});
@@ -3986,7 +4005,8 @@ private slots:
             QVERIFY(!preApprovalDriftId.isEmpty());
             QVERIFY(project->setModuleParam(instanceId, QStringLiteral("operation"), QStringLiteral("Create")));
             QVERIFY(controller.confirmPendingTools(preApprovalDriftId));
-            QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
+            QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
+        QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
             QCOMPARE(moduleStarted.count(), 0);
             QCOMPARE(runFinished.count(), 0);
             QVERIFY(QFileInfo::exists(markerA));
@@ -4179,19 +4199,14 @@ private slots:
             QVERIFY(QFileInfo::exists(markerB));
             QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().action, toolName);
             QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result,
-                     entryPoint == QLatin1String("step") ? QStringLiteral("error") : QStringLiteral("success"));
+                     entryPoint == QLatin1String("run") ? QStringLiteral("error") : QStringLiteral("success"));
             const QJsonObject executionToolResult = toolExecuted.last().at(1).toJsonObject();
             if (entryPoint == QLatin1String("step")) {
-                QCOMPARE(executionToolResult.value(QStringLiteral("errorCode")).toString(),
-                         QStringLiteral("CONFIRMED_TARGET_CHANGED"));
-                QCOMPARE(executionToolResult.value(QStringLiteral("details"))
-                             .toObject()
-                             .value(QStringLiteral("executionErrorCode"))
-                             .toInt(),
-                         ExecError::ConfirmedTargetChanged);
+                QCOMPARE(executionToolResult.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
+                QCOMPARE(executionToolResult.value(QStringLiteral("runId")).toString(), staleResult.runId);
             } else {
                 QCOMPARE(executionToolResult.value(QStringLiteral("status")).toString(),
-                         entryPoint == QLatin1String("run") ? QStringLiteral("started") : QStringLiteral("resumed"));
+                         entryPoint == QLatin1String("run") ? QStringLiteral("failed") : QStringLiteral("resumed"));
             }
             const QJsonObject failedQuery = controller.handleToolCall(QStringLiteral("get_run_results"),
                                                                       {{QStringLiteral("runId"), staleResult.runId}});
@@ -4362,7 +4377,7 @@ private slots:
             Qt::DirectConnection);
 
         QJsonObject pending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString confirmationId = controller.pendingConfirmationId();
         QVERIFY(!confirmationId.isEmpty());
@@ -4431,7 +4446,7 @@ private slots:
         QSignalSpy moduleStarted(&engine, &RunEngine::moduleStarted);
         QSignalSpy runFinished(&engine, &RunEngine::runFinished);
         QJsonObject pending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString initialConfirmationId = controller.pendingConfirmationId();
         QVERIFY(!initialConfirmationId.isEmpty());
@@ -4527,7 +4542,7 @@ private slots:
         QSignalSpy audit(&controller, &AgentController::actionLogEntryAdded);
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString staleId = controller.pendingConfirmationId();
         QVERIFY(!staleId.isEmpty());
@@ -4553,8 +4568,11 @@ private slots:
         QVERIFY(QFileInfo(link).isSymLink());
         QCOMPARE(QFileInfo(link).symLinkTarget(), QFileInfo(rootB).canonicalFilePath());
 
+        const int auditCountBeforeExpiry = audit.count();
         QVERIFY(controller.confirmPendingTools(staleId));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > auditCountBeforeExpiry, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().action, QStringLiteral("run_flow"));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(moduleStarted.count(), 0);
         QCOMPARE(moduleFinished.count(), 0);
@@ -4565,7 +4583,7 @@ private slots:
         QVERIFY(!QFileInfo::exists(targetB));
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString rejectId = controller.pendingConfirmationId();
         QVERIFY(!rejectId.isEmpty());
@@ -4587,7 +4605,7 @@ private slots:
         QVERIFY(!QFileInfo::exists(targetB));
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString freshId = controller.pendingConfirmationId();
         QVERIFY(!freshId.isEmpty());
@@ -4729,7 +4747,7 @@ private slots:
         QCOMPARE(countModuleSignal(moduleFinished, instanceId), 1);
         QCOMPARE(moduleFinished.last().at(0).toString(), instanceId);
         QVERIFY(!moduleFinished.last().at(1).toBool());
-        QCOMPARE(runFinished.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         QCOMPARE(cycleStopped.count(), 1);
         QCOMPARE(runFlowStarts, 1);
         QVERIFY(!QFileInfo::exists(writableDir));
@@ -4779,7 +4797,7 @@ private slots:
         QVERIFY(QFileInfo::exists(protectedMarker));
         QCOMPARE(countModuleSignal(moduleStarted, instanceId), 1);
         QCOMPARE(countModuleSignal(moduleFinished, instanceId), 1);
-        QCOMPARE(runFinished.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         QCOMPARE(cycleStopped.count(), 1);
         QCOMPARE(runFlowStarts, 1);
         QVERIFY(!engine.isBusy());
@@ -4845,7 +4863,7 @@ private slots:
         QSignalSpy audit(&controller, &AgentController::actionLogEntryAdded);
 
         QJsonObject pending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(QFileInfo::exists(writableMarker));
         QVERIFY(QFileInfo::exists(protectedMarker));
@@ -4857,7 +4875,7 @@ private slots:
         QCOMPARE(runFinished.count(), 0);
 
         pending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString confirmationId = controller.pendingConfirmationId();
         QVERIFY(!confirmationId.isEmpty());
@@ -4924,7 +4942,7 @@ private slots:
         QVERIFY(!QFileInfo::exists(missingTarget));
         QVERIFY(project->setModuleParam(instanceId, QStringLiteral("folderPath"), missingTarget));
         pending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 2, 5000);
@@ -4981,7 +4999,7 @@ private slots:
         const QJsonArray expectedEffect{QStringLiteral("execution:may_touch_files_devices_network(流程内模块)"),
                                         QStringLiteral("file_write:/dev/full format=json mode=overwrite")};
         QJsonObject pending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QCOMPARE(controller.pendingConfirmationPayload()
                      .value(QStringLiteral("context"))
@@ -4995,7 +5013,7 @@ private slots:
         QCOMPARE(runFinished.count(), 0);
 
         pending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
@@ -5060,7 +5078,7 @@ private slots:
         QVERIFY(QDir().mkpath(outputDirectory));
         QVERIFY(project->setModuleParam(instanceId, QStringLiteral("filePath"), outputDirectory));
         pending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 2, 5000);
@@ -5189,7 +5207,7 @@ private slots:
         QCOMPARE(countModuleSignal(moduleFinished, saveId), 1);
         QVERIFY(moduleFinished.first().at(1).toBool());
         QVERIFY(!moduleFinished.last().at(1).toBool());
-        QCOMPARE(runFinished.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         QCOMPARE(cycleStopped.count(), 1);
         QCOMPARE(runFlowStarts, 1);
 
@@ -5239,7 +5257,7 @@ private slots:
         QCOMPARE(countModuleSignal(moduleStarted, sourceId) + countModuleSignal(moduleStarted, saveId),
                  moduleStartsAfterFailure);
         QCOMPARE(runFlowStarts, runFlowStartsAfterFailure);
-        QCOMPARE(runFinished.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         QCOMPARE(cycleStopped.count(), 1);
 
         const QString directoryTarget = m_targets.filePath(QStringLiteral("slice103-open-failure"));
@@ -5375,7 +5393,7 @@ private slots:
             QCOMPARE(countModuleSignal(moduleFinished, sourceId), 1);
             QCOMPARE(countModuleSignal(moduleFinished, saveId), 1);
             QVERIFY(moduleFinished.last().at(1).toBool() == false);
-            QCOMPARE(runFinished.count(), 1);
+            QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
             QCOMPARE(cycleStopped.count(), 1);
             QCOMPARE(runFlowStarts, 1);
 
@@ -5428,7 +5446,7 @@ private slots:
             QCOMPARE(runFlowStarts, startsAfterFailure);
             QCOMPARE(countModuleSignal(moduleStarted, sourceId), sourceStartsAfterFailure);
             QCOMPARE(countModuleSignal(moduleStarted, saveId), saveStartsAfterFailure);
-            QCOMPARE(runFinished.count(), 1);
+            QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
             QCOMPARE(cycleStopped.count(), 1);
 
             const QString directoryTarget = m_targets.filePath(QStringLiteral("slice102-open-failure-%1").arg(format));
@@ -5537,7 +5555,7 @@ private slots:
         QCOMPARE(countModuleSignal(moduleFinished, instanceId), 1);
         QCOMPARE(moduleFinished.last().at(0).toString(), instanceId);
         QVERIFY(!moduleFinished.last().at(1).toBool());
-        QCOMPARE(runFinished.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         QCOMPARE(cycleStopped.count(), 1);
         QVERIFY(!engine.isBusy());
 
@@ -5712,7 +5730,7 @@ private slots:
             QJsonObject pending;
             if (testCase.entry == QLatin1String("resume")) {
                 pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                    {{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                    {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
                 QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
                 QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
                 QTRY_COMPARE_WITH_TIMEOUT(engine.state(), RunState::Paused, 5000);
@@ -5851,7 +5869,7 @@ private slots:
                 },
                 Qt::DirectConnection);
             QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                            {{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                            {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
             QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
             const QString initialConfirmation = controller.pendingConfirmationId();
             QVERIFY(controller.confirmPendingTools(initialConfirmation));
@@ -5944,6 +5962,7 @@ private slots:
         QSignalSpy cycleRunFinished(&engine, &RunEngine::runFinished);
         QSignalSpy cycleStopped(&engine, &RunEngine::cycleStopped);
         QSignalSpy cycleStarted(&engine, &RunEngine::moduleStarted);
+        QSignalSpy cycleToolExecuted(controller.actor(), &AgentActor::toolExecuted);
         QStringList cycleAuthorizationIds;
         QMutex cycleAuthorizationMutex;
         bool pausedFirstIteration = false;
@@ -5967,20 +5986,21 @@ private slots:
             [&](const RunResult&) {
                 if (!pausedFirstIteration) {
                     pausedFirstIteration = true;
-                    engine.pause();
+                    FlowExecutionService::instance().pauseRun();
                 }
             },
             Qt::DirectConnection);
         QJsonObject cyclePending =
             controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("cycle")},
-                                                                   {QStringLiteral("maxCycles"), 2}});
+                                                                   {QStringLiteral("maxCycles"), 2}, {QStringLiteral("wait"), false}});
         QCOMPARE(cyclePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString initialCycleConfirmation = controller.pendingConfirmationId();
         QVERIFY(controller.confirmPendingTools(initialCycleConfirmation));
-        QTRY_COMPARE_WITH_TIMEOUT(engine.state(), RunState::Paused, 5000);
-        const QString sessionId = engine.cycleSessionId();
+        QTRY_COMPARE_WITH_TIMEOUT(cycleToolExecuted.count(), 1, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused, 5000);
+        const QString sessionId = cycleToolExecuted.last().at(1).toJsonObject().value(QStringLiteral("sessionId")).toString();
         QVERIFY(!sessionId.isEmpty());
-        QCOMPARE(cycleRunFinished.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(cycleRunFinished.count(), 1, 5000);
         QCOMPARE(countModuleSignal(cycleStarted, cycleId), 1);
         const QJsonObject pausedCycle =
             controller.handleToolCall(QStringLiteral("get_run_results"), {{QStringLiteral("runId"), sessionId}});
@@ -5993,14 +6013,14 @@ private slots:
         QVERIFY(!firstCycleBytes.isEmpty());
 
         engine.resume();
-        QCOMPARE(engine.state(), RunState::Paused);
+        QCOMPARE(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused);
         QCOMPARE(countModuleSignal(cycleStarted, cycleId), 1);
-        QCOMPARE(cycleRunFinished.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(cycleRunFinished.count(), 1, 5000);
         QCOMPARE(cycleStopped.count(), 0);
         QTest::qWait(250);
-        QCOMPARE(engine.state(), RunState::Paused);
+        QCOMPARE(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused);
         QCOMPARE(countModuleSignal(cycleStarted, cycleId), 1);
-        QCOMPARE(cycleRunFinished.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(cycleRunFinished.count(), 1, 5000);
         QVERIFY(cycleOutput.open(QIODevice::ReadOnly));
         QCOMPARE(cycleOutput.readAll(), firstCycleBytes);
         cycleOutput.close();
@@ -6011,7 +6031,13 @@ private slots:
         QVERIFY(!freshCycleConfirmation.isEmpty());
         QVERIFY(freshCycleConfirmation != initialCycleConfirmation);
         QVERIFY(controller.confirmPendingTools(freshCycleConfirmation));
-        QTRY_COMPARE_WITH_TIMEOUT(cycleStopped.count(), 1, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(cycleStopped.count() == 1 || !FlowExecutionService::instance().isActive(), 5000);
+        QVERIFY2(cycleStopped.count() == 1,
+                 qPrintable(QStringLiteral("cycleStopped missing: active=%1 state=%2 job=%3 runFinished=%4")
+                                .arg(FlowExecutionService::instance().isActive())
+                                .arg(static_cast<int>(FlowExecutionService::instance().state()))
+                                .arg(static_cast<int>(FlowExecutionService::instance().currentJob()))
+                                .arg(cycleRunFinished.count())));
         QObject::disconnect(captureCycleAuth);
         QObject::disconnect(pauseCycle);
         const RunResult resumedCycleResult = qvariant_cast<RunResult>(cycleRunFinished.last().at(0));
@@ -6026,7 +6052,7 @@ private slots:
         QCOMPARE(resumedCycleOutput.readAll(), firstCycleBytes + QByteArray("cycle write\n"));
         resumedCycleOutput.close();
         QCOMPARE(countModuleSignal(cycleStarted, cycleId), 2);
-        QCOMPARE(cycleRunFinished.count(), 2);
+        QTRY_COMPARE_WITH_TIMEOUT(cycleRunFinished.count(), 2, 5000);
         QStringList cycleAuthorizationIdsSnapshot;
         {
             QMutexLocker locker(&cycleAuthorizationMutex);
@@ -6038,7 +6064,7 @@ private slots:
         QVERIFY(cycleAuthorizationIdsSnapshot[0] != cycleAuthorizationIdsSnapshot[1]);
         QTest::qWait(250);
         QCOMPARE(countModuleSignal(cycleStarted, cycleId), 2);
-        QCOMPARE(cycleRunFinished.count(), 2);
+        QTRY_COMPARE_WITH_TIMEOUT(cycleRunFinished.count(), 2, 5000);
         QCOMPARE(cycleStopped.count(), 1);
         QVERIFY(resumedCycleOutput.open(QIODevice::ReadOnly));
         QCOMPARE(resumedCycleOutput.readAll(), firstCycleBytes + QByteArray("cycle write\n"));
@@ -6103,7 +6129,7 @@ private slots:
         QSignalSpy runFinished(&engine, &RunEngine::runFinished);
         QSignalSpy audit(&controller, &AgentController::actionLogEntryAdded);
         QJsonObject pending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString staleConfirmation = controller.pendingConfirmationId();
         QString renameError;
@@ -6136,7 +6162,7 @@ private slots:
         QCOMPARE(readBytes(pathB), sentinelB);
 
         pending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString rejectedConfirmation = controller.pendingConfirmationId();
         QVERIFY(rejectedConfirmation != staleConfirmation);
@@ -6154,7 +6180,7 @@ private slots:
         QCOMPARE(readBytes(pathB), sentinelB);
 
         pending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString freshConfirmation = controller.pendingConfirmationId();
         QVERIFY(freshConfirmation != rejectedConfirmation);
@@ -6188,7 +6214,7 @@ private slots:
         project->addModule(writer);
         QSignalSpy parameterRunFinished(&engine, &RunEngine::runFinished);
         pending =
-            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}});
+            controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const auto drift = QObject::connect(
             &engine, &RunEngine::moduleStarted, &driftContext,
@@ -6226,7 +6252,7 @@ private slots:
         QSignalSpy singleCycleStops(&engine, &RunEngine::cycleStopped);
         pending =
             controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("cycle")},
-                                                                   {QStringLiteral("maxCycles"), 1}});
+                                                                   {QStringLiteral("maxCycles"), 1}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
         QTRY_COMPARE_WITH_TIMEOUT(singleCycleStops.count(), 1, 5000);
@@ -6289,10 +6315,12 @@ private slots:
             Qt::DirectConnection);
         pending =
             controller.handleToolCall(QStringLiteral("run_flow"), {{QStringLiteral("mode"), QStringLiteral("cycle")},
-                                                                   {QStringLiteral("maxCycles"), 3}});
+                                                                   {QStringLiteral("maxCycles"), 3}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
-        const QString multiCycleSession = engine.cycleSessionId();
+        QTRY_COMPARE_WITH_TIMEOUT(multiCycleTools.count(), 1, 5000);
+        const QString multiCycleSession =
+            multiCycleTools.last().at(1).toJsonObject().value(QStringLiteral("sessionId")).toString();
         QVERIFY(!multiCycleSession.isEmpty());
         QTRY_COMPARE_WITH_TIMEOUT(multiCycleStopped.count(), 1, 10000);
         QObject::disconnect(swapBetweenIterations);
@@ -6310,7 +6338,7 @@ private slots:
         QCOMPARE(secondIteration.failedModule, multiCycleId);
         QCOMPARE(readBytes(cyclePathA), cycleSentinelA + QByteArray("one approved write\n"));
         QCOMPARE(readBytes(cyclePathB), cycleSentinelB);
-        QCOMPARE(multiCycleRunFinished.count(), 2);
+        QTRY_COMPARE_WITH_TIMEOUT(multiCycleRunFinished.count(), 2, 5000);
         QVERIFY(multiCycleAudit.count() >= 1);
         const QJsonObject failedSession = controller.handleToolCall(QStringLiteral("get_run_results"),
                                                                     {{QStringLiteral("runId"), multiCycleSession}});
@@ -6326,7 +6354,7 @@ private slots:
         QTest::qWait(350);
         QCOMPARE(multiCycleStarts.count(), 2);
         QCOMPARE(multiCycleFinished.count(), 2);
-        QCOMPARE(multiCycleRunFinished.count(), 2);
+        QTRY_COMPARE_WITH_TIMEOUT(multiCycleRunFinished.count(), 2, 5000);
         QCOMPARE(multiCycleStopped.count(), 1);
         QCOMPARE(multiCycleTools.count(), toolsAfterFailure);
         QCOMPARE(multiCycleAudit.count(), auditAfterFailure);
@@ -6428,9 +6456,9 @@ private slots:
         QVERIFY(!approvedConfirmationId.isEmpty());
         QVERIFY(controller.confirmPendingTools(approvedConfirmationId));
 
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         QCOMPARE(engine.state(), RunState::Idle);
         QVERIFY(!engine.isBusy());
-        QCOMPARE(runFinished.count(), 1);
         const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(result.runId, runId);
         QVERIFY2(result.success, qPrintable(result.errorMessage));

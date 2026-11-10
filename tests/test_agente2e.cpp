@@ -284,8 +284,8 @@ void TestAgentEndToEnd::testFakeLlmBuildsConnectsRunsAndReadsResult() {
     QVERIFY2(std::abs(out.data("circle_center_x").toDouble() - 320.0) < 3.0, "circle_center_x off");
     QVERIFY2(std::abs(out.data("circle_center_y").toDouble() - 240.0) < 3.0, "circle_center_y off");
 
-    // 4) 工具调用及 pending/终态两次 wait_for_run 审计均保留。
-    QCOMPARE(logSpy.count(), 9);
+    // run_flow 默认等待单次运行结束，因此后续 wait_for_run 只有一次终态审计。
+    QCOMPARE(logSpy.count(), 8);
     QVERIFY(logSpy.first().first().canConvert<AgentActionLogEntry>());
     QCOMPARE(logSpy.first().first().value<AgentActionLogEntry>().action, QStringLiteral("add_module"));
     QStringList waitAuditResults;
@@ -294,9 +294,8 @@ void TestAgentEndToEnd::testFakeLlmBuildsConnectsRunsAndReadsResult() {
         if (entry.action == QLatin1String("wait_for_run"))
             waitAuditResults.append(entry.result);
     }
-    QCOMPARE(waitAuditResults.size(), 2);
-    QVERIFY(waitAuditResults.first().contains(QStringLiteral("pending")));
-    QCOMPARE(waitAuditResults.last(), QStringLiteral("success"));
+    QCOMPARE(waitAuditResults.size(), 1);
+    QCOMPARE(waitAuditResults.first(), QStringLiteral("success"));
 
     // 5) wait_for_run 由生产控制器等待，并将最终运行统计作为 tool 消息回传模型
     const AgentConversation& lastCtx = fake.received.last();

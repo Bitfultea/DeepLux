@@ -1,4 +1,6 @@
 #include <QCryptographicHash>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
@@ -54,6 +56,20 @@
 #include "project_json_test_helpers.h"
 
 using namespace DeepLux;
+
+static bool confirmAndDispatch(AgentController& controller, const QString& confirmationId) {
+    if (!controller.confirmPendingTools(confirmationId))
+        return false;
+    QElapsedTimer timer;
+    timer.start();
+    do {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        if (!controller.m_dispatchQueued)
+            return true;
+        QTest::qWait(1);
+    } while (timer.elapsed() < 5000);
+    return false;
+}
 
 class AgentBusyProbeModule : public ModuleBase {
 public:
@@ -451,7 +467,7 @@ private slots:
                                                .toObject()
                                                .value(QStringLiteral("confirmationId"))
                                                .toString();
-            if (!controller.confirmPendingTools(confirmationId))
+            if (!confirmAndDispatch(controller, confirmationId))
                 return QJsonObject{{QStringLiteral("unexpected"), QStringLiteral("confirmation failed")}};
             if (toolSpy.isEmpty())
                 return QJsonObject{{QStringLiteral("unexpected"), QStringLiteral("tool result missing")}};
@@ -533,7 +549,7 @@ private slots:
         QVERIFY(summary.contains(QFileInfo(secondImagePath).canonicalFilePath()));
         QVERIFY(summary.contains(QFileInfo(thirdImagePath).canonicalFilePath()));
         const int batchToolCountBefore = toolSpy.count();
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QCOMPARE(toolSpy.count(), batchToolCountBefore + 2);
         QCOMPARE(toolSpy.at(batchToolCountBefore).at(1).toJsonObject().value(QStringLiteral("status")).toString(),
                  QStringLiteral("imported"));
@@ -586,7 +602,7 @@ private slots:
         m_mock->emitResponse(partialFailureResponse);
         QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
         const int partialToolCountBefore = toolSpy.count();
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QCOMPARE(controller.state(), AgentController::AgentState::Idle);
         QCOMPARE(toolSpy.count(), partialToolCountBefore + 2);
         const QList<AgentMessage> history = controller.m_conversationHistory;
@@ -654,7 +670,7 @@ private slots:
         controller.sendUserMessage(QStringLiteral("Check that an unrelated project edit expires later imports"));
         m_mock->emitResponse(foreignEditBatch);
         QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QCOMPARE(controller.state(), AgentController::AgentState::Idle);
         QCOMPARE(toolSpy.count(), foreignBatchToolCountBefore + 2);
         QVERIFY(!stateAfterFirstAndForeignEdit.isEmpty());
@@ -786,7 +802,8 @@ private slots:
         const QJsonObject pendingAgain = controller.handleToolCall(QStringLiteral("set_module_params"), bindingParams);
         QCOMPARE(pendingAgain.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const int toolCountBefore = toolSpy.count();
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
+        QTRY_COMPARE_WITH_TIMEOUT(toolSpy.count(), toolCountBefore + 1, 5000);
         QCOMPARE(toolSpy.count(), toolCountBefore + 1);
         const QJsonObject result = toolSpy.last().at(1).toJsonObject();
         QVERIFY2(result.value(QStringLiteral("status")).toString() == QLatin1String("params_set"),
@@ -848,8 +865,14 @@ private slots:
                                                                   QJsonObject{{QStringLiteral("path"), path}});
             if (pending.value(QStringLiteral("status")) != QLatin1String("pending_confirmation"))
                 return QJsonObject{{QStringLiteral("unexpected"), pending}};
-            if (!controller.confirmPendingTools(controller.pendingConfirmationId()))
+            if (!confirmAndDispatch(controller, controller.pendingConfirmationId()))
                 return QJsonObject{{QStringLiteral("unexpected"), QStringLiteral("confirmation failed")}};
+            QElapsedTimer timer;
+            timer.start();
+            while (toolSpy.isEmpty() && timer.elapsed() < 5000) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                QTest::qWait(1);
+            }
             if (toolSpy.isEmpty())
                 return QJsonObject{{QStringLiteral("unexpected"), QStringLiteral("tool result missing")}};
             return toolSpy.takeLast().at(1).toJsonObject();
@@ -917,7 +940,7 @@ private slots:
         QCOMPARE(stalePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         image.fill(qRgb(210, 130, 70));
         QVERIFY(image.save(validPath, "PNG")); // Same path, changed content/hash after approval.
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QCOMPARE(toolSpy.count(), toolsBeforeStale);
         QCOMPARE(project->toJson(), baseline);
         QCOMPARE(project->dataSourceCollectionGeneration(), baselineGeneration);
@@ -1009,16 +1032,18 @@ private slots:
         QVERIFY(!staleSummary.contains(QStringLiteral("old expression")));
         QVERIFY(!staleSummary.contains(QStringLiteral("value=3")));
         QVERIFY(variables.setVariableValue(QStringLiteral("confirmedVar"), 4));
-        QVERIFY(controller.confirmPendingTools(stalePayload.value(QStringLiteral("confirmationId")).toString()));
+        QVERIFY(confirmAndDispatch(controller, stalePayload.value(QStringLiteral("confirmationId")).toString()));
+        QCoreApplication::processEvents();
         QCOMPARE(variables.getVariableValue(QStringLiteral("confirmedVar")).toInt(), 4);
 
         const QJsonObject approved = controller.handleToolCall(
             QStringLiteral("set_global_variable"),
             QJsonObject{{QStringLiteral("name"), QStringLiteral("confirmedVar")}, {QStringLiteral("value"), 9}});
-        QVERIFY(controller.confirmPendingTools(approved.value(QStringLiteral("confirmation"))
+        QVERIFY(confirmAndDispatch(controller, approved.value(QStringLiteral("confirmation"))
                                                    .toObject()
                                                    .value(QStringLiteral("confirmationId"))
                                                    .toString()));
+        QCoreApplication::processEvents();
         QCOMPARE(variables.getVariableValue(QStringLiteral("confirmedVar")).toInt(), 9);
         QCOMPARE(variables.getVariable(QStringLiteral("confirmedVar"))->expression(),
                  QStringLiteral("old expression must not be disclosed"));
@@ -1033,7 +1058,8 @@ private slots:
                                           .toString();
         variables.removeVariable(QStringLiteral("confirmedVar"));
         variables.addVariable(new VarModel(QStringLiteral("confirmedVar"), VarDataType::Int, 15));
-        QVERIFY(controller.confirmPendingTools(staleRemoveId));
+        QVERIFY(confirmAndDispatch(controller, staleRemoveId));
+        QCoreApplication::processEvents();
         QVERIFY(variables.hasVariable(QStringLiteral("confirmedVar")));
         QCOMPARE(variables.getVariableValue(QStringLiteral("confirmedVar")).toInt(), 15);
 
@@ -1042,10 +1068,11 @@ private slots:
                                       QJsonObject{{QStringLiteral("name"), QStringLiteral("approvedCreate")},
                                                   {QStringLiteral("type"), QStringLiteral("string")},
                                                   {QStringLiteral("value"), QStringLiteral("literal")}});
-        QVERIFY(controller.confirmPendingTools(create.value(QStringLiteral("confirmation"))
+        QVERIFY(confirmAndDispatch(controller, create.value(QStringLiteral("confirmation"))
                                                    .toObject()
                                                    .value(QStringLiteral("confirmationId"))
                                                    .toString()));
+        QCoreApplication::processEvents();
         QCOMPARE(variables.getVariableValue(QStringLiteral("approvedCreate")).toString(), QStringLiteral("literal"));
 
         QVERIFY(variables.beginExecutionLease());
@@ -1054,7 +1081,8 @@ private slots:
             QJsonObject{{QStringLiteral("name"), QStringLiteral("confirmedVar")}, {QStringLiteral("value"), 22}});
         const QString busyId =
             busy.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString();
-        QVERIFY(controller.confirmPendingTools(busyId));
+        QVERIFY(confirmAndDispatch(controller, busyId));
+        QCoreApplication::processEvents();
         variables.endExecutionLease();
         QCOMPARE(variables.getVariableValue(QStringLiteral("confirmedVar")).toInt(), 15);
         QCOMPARE(controller.permissionLevel(), AgentController::PermissionLevel::Autopilot);
@@ -1117,7 +1145,8 @@ private slots:
         QVERIFY(project->fromJson(beforeReload));
         QCOMPARE(project->toJson(), beforeReload);
         QVERIFY(project->dataSourceCollectionGeneration() > generationBeforeReload);
-        QVERIFY(controller.confirmPendingTools(expiredId));
+        QVERIFY(confirmAndDispatch(controller, expiredId));
+        QCoreApplication::processEvents();
         QVERIFY(project->findDataSource(source.id));
         QCOMPARE(removalAuditResults.last(), QStringLiteral("expired"));
 
@@ -1137,7 +1166,8 @@ private slots:
                                        .toObject()
                                        .value(QStringLiteral("confirmationId"))
                                        .toString();
-        QVERIFY(controller.confirmPendingTools(approvedId));
+        QVERIFY(confirmAndDispatch(controller, approvedId));
+        QCoreApplication::processEvents();
         QVERIFY(!project->findDataSource(source.id));
         QFile preserved(sourcePath);
         QVERIFY(preserved.open(QIODevice::ReadOnly));
@@ -1166,7 +1196,8 @@ private slots:
         QCOMPARE(project->toJson(), reopenedSnapshot);
         QCOMPARE(project->dataSourceCollectionGeneration(), 1u);
         QVERIFY(project->runtimeIdentity() != openedIdentity);
-        QVERIFY(controller.confirmPendingTools(reopenedPendingId));
+        QVERIFY(confirmAndDispatch(controller, reopenedPendingId));
+        QCoreApplication::processEvents();
         QVERIFY(project->findDataSource(source.id));
         QCOMPARE(removalAuditResults.last(), QStringLiteral("expired"));
 
@@ -1187,7 +1218,7 @@ private slots:
         const QJsonObject beforeMixedBatchReload = project->toJson();
         QVERIFY(project->fromJson(beforeMixedBatchReload));
         QCOMPARE(project->toJson(), beforeMixedBatchReload);
-        QVERIFY(controller.confirmPendingTools(mixedBatchConfirmationId));
+        QVERIFY(confirmAndDispatch(controller, mixedBatchConfirmationId));
         QVERIFY(project->findDataSource(source.id));
         QVERIFY(!GlobalVarManager::instance().hasVariable(batchVariableName));
         QCOMPARE(removalAuditResults.last(), QStringLiteral("expired"));
@@ -1262,7 +1293,7 @@ private slots:
                              .toObject()
                              .value(QStringLiteral("confirmationId"))
                              .toString();
-        QVERIFY(controller.confirmPendingTools(confirmationId));
+        QVERIFY(confirmAndDispatch(controller, confirmationId));
         QCOMPARE(variables.getVariableValue(QStringLiteral("auditVariable")).toInt(), 246813579);
 
         QVERIFY(!auditParams.isEmpty());
@@ -1322,7 +1353,7 @@ private slots:
         QVERIFY(variables.setVariableValue(QStringLiteral("firstVariable"), 3));
 
         const QString confirmationId = controller.pendingConfirmationId();
-        QVERIFY(controller.confirmPendingTools(confirmationId));
+        QVERIFY(confirmAndDispatch(controller, confirmationId));
         QCOMPARE(variables.getVariableValue(QStringLiteral("firstVariable")).toInt(), 3);
         QCOMPARE(variables.getVariableValue(QStringLiteral("secondVariable")).toInt(), 2);
         for (const QString& callId : {firstCallId, secondCallId}) {
@@ -1583,7 +1614,7 @@ private slots:
         QVERIFY(!QFileInfo::exists(path));
         const QString approvedId = controller.pendingConfirmationId();
         QVERIFY(!approvedId.isEmpty());
-        QVERIFY(controller.confirmPendingTools(approvedId));
+        QVERIFY(confirmAndDispatch(controller, approvedId));
 
         QCOMPARE(projectSavedCount, 0);
         QVERIFY(!QFileInfo::exists(path));
@@ -1598,7 +1629,7 @@ private slots:
         pending =
             controller.handleToolCall(QStringLiteral("save_project"), QJsonObject{{QStringLiteral("path"), path}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
 
         QCOMPARE(projectSavedCount, 1);
         QVERIFY(QFileInfo::exists(path));
@@ -1635,7 +1666,7 @@ private slots:
         pending =
             controller.handleToolCall(QStringLiteral("save_project"), QJsonObject{{QStringLiteral("path"), path}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QCOMPARE(projectSavedCount, 1);
         QVERIFY(project->isModified());
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("error"));
@@ -1645,7 +1676,7 @@ private slots:
         pending =
             controller.handleToolCall(QStringLiteral("save_project"), QJsonObject{{QStringLiteral("path"), path}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QCOMPARE(projectSavedCount, 2);
         QVERIFY(!project->isModified());
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("success"));
@@ -1714,7 +1745,7 @@ private slots:
             pending.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString();
         session.annotations[0].label = QStringLiteral("changed");
         QVERIFY(session.save(sessionPath, &saveError));
-        QVERIFY(controller.confirmPendingTools(staleId));
+        QVERIFY(confirmAndDispatch(controller, staleId));
         QVERIFY(!QFileInfo::exists(outputPath));
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(audit.last().at(0)).result, QStringLiteral("expired"));
 
@@ -1728,7 +1759,7 @@ private slots:
         const QByteArray racerBytes("created-after-confirmation");
         QCOMPARE(racedTarget.write(racerBytes), qint64(racerBytes.size()));
         racedTarget.close();
-        QVERIFY(controller.confirmPendingTools(pending.value(QStringLiteral("confirmation"))
+        QVERIFY(confirmAndDispatch(controller, pending.value(QStringLiteral("confirmation"))
                                                    .toObject()
                                                    .value(QStringLiteral("confirmationId"))
                                                    .toString()));
@@ -1746,7 +1777,7 @@ private slots:
         const QString revokedId =
             pending.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString();
         QVERIFY(UserManager::instance().login(QStringLiteral("operator"), QString()));
-        QVERIFY(controller.confirmPendingTools(revokedId));
+        QVERIFY(confirmAndDispatch(controller, revokedId));
         QVERIFY(!QFileInfo::exists(revokedPath));
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(audit.last().at(0)).result, QStringLiteral("denied"));
 
@@ -1759,7 +1790,7 @@ private slots:
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString approvedId =
             pending.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString();
-        QVERIFY(controller.confirmPendingTools(approvedId));
+        QVERIFY(confirmAndDispatch(controller, approvedId));
         QVERIFY(QFileInfo::exists(approvedPath));
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(audit.last().at(0)).result, QStringLiteral("success"));
         QVERIFY(!qvariant_cast<AgentActionLogEntry>(audit.last().at(0)).undoable);
@@ -1840,7 +1871,7 @@ private slots:
         racer.close();
         const QString racedConfirmationId =
             pending.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString();
-        QVERIFY(controller.confirmPendingTools(racedConfirmationId));
+        QVERIFY(confirmAndDispatch(controller, racedConfirmationId));
         QFile racedCheck(racedPath);
         QVERIFY(racedCheck.open(QIODevice::ReadOnly));
         QCOMPARE(racedCheck.readAll(), racerBytes);
@@ -1849,7 +1880,7 @@ private slots:
         pending = controller.handleToolCall(QStringLiteral("transform_annotation_session"), params);
         const QString approvedId =
             pending.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString();
-        QVERIFY(controller.confirmPendingTools(approvedId));
+        QVERIFY(confirmAndDispatch(controller, approvedId));
         QVERIFY(QFileInfo::exists(outputPath));
         QFile output(outputPath);
         QVERIFY(output.open(QIODevice::ReadOnly));
@@ -1886,7 +1917,7 @@ private slots:
         const QString logoutId =
             pending.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString();
         UserManager::instance().logout();
-        QVERIFY(controller.confirmPendingTools(logoutId));
+        QVERIFY(confirmAndDispatch(controller, logoutId));
         QVERIFY(!QFileInfo::exists(logoutOutput));
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(audit.last().at(0)).result, QStringLiteral("denied"));
         QFile sourceLogoutCheck(sessionPath);
@@ -1944,7 +1975,7 @@ private slots:
             QVERIFY(changed.open(QIODevice::WriteOnly | QIODevice::Truncate));
             QVERIFY(changed.write("changed after preview") > 0);
         }
-        QVERIFY(controller.confirmPendingTools(addPayload.value(QStringLiteral("confirmationId")).toString()));
+        QVERIFY(confirmAndDispatch(controller, addPayload.value(QStringLiteral("confirmationId")).toString()));
         const QString imported = QDir(AgentActor::userKnowledgeDir()).filePath(QStringLiteral("ConfirmedKB.md"));
         QVERIFY(!QFileInfo::exists(imported));
 
@@ -1961,7 +1992,7 @@ private slots:
                                   .toObject()
                                   .value(QStringLiteral("confirmationId"))
                                   .toString();
-        QVERIFY(controller.confirmPendingTools(addId));
+        QVERIFY(confirmAndDispatch(controller, addId));
         const QString stableTarget = QDir(AgentActor::userKnowledgeDir()).filePath(QStringLiteral("StableKB.txt"));
         QVERIFY(QFileInfo::exists(stableTarget));
 
@@ -1990,7 +2021,7 @@ private slots:
             QVERIFY(changed.write("changed target") > 0);
         }
 #endif
-        QVERIFY(controller.confirmPendingTools(removePayload.value(QStringLiteral("confirmationId")).toString()));
+        QVERIFY(confirmAndDispatch(controller, removePayload.value(QStringLiteral("confirmationId")).toString()));
         QFile preserved(stableTarget);
         QVERIFY(preserved.open(QIODevice::ReadOnly));
 #ifdef Q_OS_UNIX
@@ -2078,7 +2109,7 @@ private slots:
         QVERIFY(QFile::remove(explicitLink));
         QVERIFY(QFile::link(explicitC, explicitLink));
         QVERIFY(hasTarget(controller, explicitLink, explicitB));
-        QVERIFY(controller.confirmPendingTools(explicitOldId));
+        QVERIFY(confirmAndDispatch(controller, explicitOldId));
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(projectSavedCount, 0);
         QCOMPARE(readBytes(explicitB), explicitSentinelB);
@@ -2088,7 +2119,7 @@ private slots:
         pending = controller.handleToolCall(QStringLiteral("save_project"), QJsonObject{{"path", explicitLink}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(hasTarget(controller, explicitLink, explicitC));
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QCOMPARE(projectSavedCount, 1);
         QCOMPARE(readBytes(explicitB), explicitSentinelB);
         QVERIFY(QFileInfo::exists(explicitC));
@@ -2118,7 +2149,7 @@ private slots:
         QVERIFY(QFile::remove(defaultLink));
         QVERIFY(QFile::link(defaultC, defaultLink));
         QVERIFY(hasTarget(controller, defaultLink, defaultB));
-        QVERIFY(controller.confirmPendingTools(omittedPathId));
+        QVERIFY(confirmAndDispatch(controller, omittedPathId));
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(projectSavedCount, 1);
         QCOMPARE(readBytes(defaultB), defaultSentinelB);
@@ -2132,7 +2163,7 @@ private slots:
         QVERIFY(QFile::remove(defaultLink));
         QVERIFY(QFile::link(defaultD, defaultLink));
         QVERIFY(hasTarget(controller, defaultLink, defaultC));
-        QVERIFY(controller.confirmPendingTools(emptyPathId));
+        QVERIFY(confirmAndDispatch(controller, emptyPathId));
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(projectSavedCount, 1);
         QCOMPARE(readBytes(defaultC), defaultSentinelC);
@@ -2141,7 +2172,7 @@ private slots:
         pending = controller.handleToolCall(QStringLiteral("save_project"), QJsonObject{{"path", QString()}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(hasTarget(controller, defaultLink, defaultD));
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QCOMPARE(projectSavedCount, 2);
         QCOMPARE(readBytes(defaultB), defaultSentinelB);
         QCOMPARE(readBytes(defaultC), defaultSentinelC);
@@ -2163,7 +2194,7 @@ private slots:
                                                    .value(QStringLiteral("sideEffects"))
                                                    .toArray();
             QVERIFY(noTargetEffects.contains(QStringLiteral("file_write:<当前路径>")));
-            QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+            QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
             QCOMPARE(toolExecuted.count(), 1);
             const QJsonObject missingPathResult = toolExecuted.last().at(0).toString() == QStringLiteral("save_project")
                                                       ? toolExecuted.last().at(1).toJsonObject()
@@ -2393,7 +2424,7 @@ private slots:
         QCOMPARE(controller.handleToolCall("set_module_position", request).value("status").toString(),
                  QStringLiteral("pending_confirmation"));
         const QString approvedId = controller.pendingConfirmationId();
-        QVERIFY(controller.confirmPendingTools(approvedId));
+        QVERIFY(confirmAndDispatch(controller, approvedId));
         QCOMPARE(project->moduleById(instance.id)->posX, -20);
         QCOMPARE(project->moduleById(instance.id)->posY, 40);
         QCOMPARE(controller.actor()->undoStack()->count(), undoCount + 1);
@@ -2762,7 +2793,7 @@ private slots:
         const QString confirmationId = controller.pendingConfirmationId();
         const QMetaObject::Connection stopOnFirstResume = connect(
             &engine, &RunEngine::moduleFinished, &engine, [&engine](const QString&, bool, int) { engine.stop(); });
-        QVERIFY(controller.confirmPendingTools(confirmationId));
+        QVERIFY(confirmAndDispatch(controller, confirmationId));
         QVERIFY(!controller.confirmPendingTools(confirmationId));
         QTRY_COMPARE_WITH_TIMEOUT(calls.load(std::memory_order_acquire), 1, 2000);
         QTRY_COMPARE_WITH_TIMEOUT(engine.state(), RunState::Stopped, 2000);
@@ -2778,7 +2809,7 @@ private slots:
         pending = controller.handleToolCall(QStringLiteral("resume_flow"), {});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         engine.stop();
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QCOMPARE(engine.state(), RunState::Stopped);
         QCOMPARE(calls.load(std::memory_order_acquire), callsBeforeExpired);
         QVERIFY(std::any_of(auditSpy.cbegin(), auditSpy.cend(), [](const QList<QVariant>& args) {
@@ -2836,7 +2867,7 @@ private slots:
         QCOMPARE(callsA.load(std::memory_order_acquire), 1);
         QCOMPARE(callsB.load(std::memory_order_acquire), 0);
 
-        QVERIFY(controller.confirmPendingTools(oldConfirmationId));
+        QVERIFY(confirmAndDispatch(controller, oldConfirmationId));
         QCOMPARE(engine.state(), RunState::Paused);
         QCOMPARE(callsA.load(std::memory_order_acquire), 1);
         QCOMPARE(callsB.load(std::memory_order_acquire), 0);
@@ -3160,7 +3191,7 @@ private slots:
         const QString confirmationId =
             pending.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString();
         imageDigest = QStringLiteral("changed-image-digest"); // no other snapshot field changes
-        QVERIFY(controller.confirmPendingTools(confirmationId));
+        QVERIFY(confirmAndDispatch(controller, confirmationId));
         QCOMPARE(controller.state(), AgentController::AgentState::Idle);
         QCOMPARE(editExecutions, 0);
         QCOMPARE(controller.actor()->undoStack()->index(), undoIndex);
@@ -3204,7 +3235,7 @@ private slots:
                                               {QStringLiteral("arguments"), QJsonObject{}}});
         m_mock->emitResponse(response);
         QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QCOMPARE(controller.state(), AgentController::AgentState::Thinking);
         QCOMPARE(clearedAtHandler, 1);
         const QList<LogEntry> remainingLogs = logger.logs();
@@ -3444,7 +3475,7 @@ private slots:
         const QByteArray currentName = QFile::encodeName(oldLink);
         QCOMPARE(std::rename(replacementName.constData(), currentName.constData()), 0);
         QVERIFY(QFileInfo(oldLink).isSymLink());
-        QVERIFY(controller.confirmPendingTools(staleId));
+        QVERIFY(confirmAndDispatch(controller, staleId));
         QCOMPARE(auditSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(controller.state(), AgentController::AgentState::Idle);
         QCOMPARE(projectSaved.count(), 0);
@@ -3474,7 +3505,7 @@ private slots:
         }));
         const QString approvedId = controller.pendingConfirmationId();
         QVERIFY(!approvedId.isEmpty());
-        QVERIFY(controller.confirmPendingTools(approvedId));
+        QVERIFY(confirmAndDispatch(controller, approvedId));
         QCOMPARE(controller.state(), AgentController::AgentState::Idle);
         QCOMPARE(projectSaved.count(), 1);
         QCOMPARE(projectCreated.count(), 1);
@@ -3616,7 +3647,7 @@ private slots:
         QVERIFY(changedCandidate.open(QIODevice::WriteOnly));
         QCOMPARE(changedCandidate.write(replacementBytes), replacementBytes.size());
         QVERIFY(changedCandidate.commit());
-        QVERIFY(controller.confirmPendingTools(staleId));
+        QVERIFY(confirmAndDispatch(controller, staleId));
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(controller.state(), AgentController::AgentState::Idle);
         QCOMPARE(projects.currentProject(), oldProject);
@@ -3633,7 +3664,7 @@ private slots:
             QStringLiteral("open_project"),
             {{QStringLiteral("path"), candidatePath}, {QStringLiteral("onUnsaved"), QStringLiteral("save")}});
         QCOMPARE(fresh.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QCOMPARE(projectSaved.count(), 1);
         QCOMPARE(projectOpened.count(), 1);
         QCOMPARE(projects.currentProject()->name(), QStringLiteral("bridge-latest-v3"));
@@ -3687,7 +3718,7 @@ private slots:
                    v.toString().endsWith(QStringLiteral("snapshot=unavailable"));
         }));
         QVERIFY(!QFileInfo::exists(missingPath));
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QCOMPARE(toolExecuted.count(), 1);
         QCOMPARE(toolExecuted.last().at(0).toString(), QStringLiteral("open_project"));
         QCOMPARE(qvariant_cast<QJsonObject>(toolExecuted.last().at(1)).value(QStringLiteral("errorCode")).toString(),
@@ -3747,7 +3778,7 @@ private slots:
         QVERIFY(!projectSaved.count());
         QVERIFY(!projectOpened.count());
         Project::failNextSaveAfterBytesForTesting(24);
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
 
         QCOMPARE(toolExecuted.count(), 1);
         QCOMPARE(toolExecuted.last().at(0).toString(), QStringLiteral("open_project"));
@@ -3849,7 +3880,7 @@ private slots:
 
         const QString confirmationId = controller.pendingConfirmationId();
         QVERIFY(!confirmationId.isEmpty());
-        QVERIFY(controller.confirmPendingTools(confirmationId));
+        QVERIFY(confirmAndDispatch(controller, confirmationId));
         for (int i = 0; i < 30 && controller.state() == AgentController::AgentState::Executing; ++i)
             QCoreApplication::processEvents();
         QCOMPARE(controller.state(), AgentController::AgentState::Thinking);
@@ -3975,11 +4006,11 @@ private slots:
                 if (expired) {
                     QCOMPARE(result.value(QStringLiteral("errorCode")).toString(),
                              QStringLiteral("CONFIRMATION_EXPIRED"));
-                } else if (i < 2) {
+                } else if (i == 0) {
                     QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("opened"));
                 } else {
-                    QVERIFY(!result.isEmpty());
-                    QVERIFY(result.value(QStringLiteral("errorCode")).toString().isEmpty());
+                    QCOMPARE(result.value(QStringLiteral("errorCode")).toString(),
+                             QStringLiteral("SKIPPED_DUE_TO_PREVIOUS_ERROR"));
                 }
             }
         };
@@ -4029,7 +4060,7 @@ private slots:
 
         QVERIFY(QFile::remove(candidateLinkPath));
         QVERIFY(QFile::link(candidateCPath, candidateLinkPath));
-        QVERIFY(controller.confirmPendingTools(staleSymlinkId));
+        QVERIFY(confirmAndDispatch(controller, staleSymlinkId));
         QCOMPARE(controller.state(), AgentController::AgentState::Idle);
         QCOMPARE(projectSaved.count(), 0);
         QCOMPARE(projectOpened.count(), 0);
@@ -4052,7 +4083,7 @@ private slots:
         QVERIFY(replaceCandidateC.open(QIODevice::WriteOnly));
         QCOMPARE(replaceCandidateC.write(latestBytes), latestBytes.size());
         QVERIFY(replaceCandidateC.commit());
-        QVERIFY(controller.confirmPendingTools(staleContentId));
+        QVERIFY(confirmAndDispatch(controller, staleContentId));
         QCOMPARE(controller.state(), AgentController::AgentState::Idle);
         QCOMPARE(projectSaved.count(), 0);
         QCOMPARE(projectOpened.count(), 0);
@@ -4079,14 +4110,13 @@ private slots:
                                        effect.contains(QStringLiteral("resolved_target=%1").arg(candidateCPath)) &&
                                        effect.contains(QStringLiteral("sha256=%1").arg(freshHash));
                             }));
-        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Thinking, 5000);
         QCOMPARE(projectSaved.count(), 1);
-        QCOMPARE(projectOpened.count(), 2);
-        QCOMPARE(projectEvents, (QStringList{QStringLiteral("saved"), QStringLiteral("opened:candidate-a-v3"),
-                                             QStringLiteral("opened:candidate-c-latest-v3")}));
-        QCOMPARE(projects.currentProject()->name(), QStringLiteral("candidate-c-latest-v3"));
-        QCOMPARE(projects.currentProject()->filePath(), candidateLinkPath);
+        QCOMPARE(projectOpened.count(), 1);
+        QCOMPARE(projectEvents, (QStringList{QStringLiteral("saved"), QStringLiteral("opened:candidate-a-v3")}));
+        QCOMPARE(projects.currentProject()->name(), QStringLiteral("candidate-a-v3"));
+        QCOMPARE(projects.currentProject()->filePath(), candidateAPath);
         QVERIFY(oldFile.open(QIODevice::ReadOnly));
         const QJsonObject savedDirtyOld = QJsonDocument::fromJson(oldFile.readAll()).object();
         oldFile.close();
@@ -4095,7 +4125,7 @@ private slots:
         assertToolResults(QStringLiteral("batch3"), false);
         AgentResponse finalResponse;
         finalResponse.success = true;
-        finalResponse.content = QStringLiteral("Both reviewed projects were opened.");
+        finalResponse.content = QStringLiteral("The first reviewed project was opened.");
         m_mock->emitResponse(finalResponse);
         QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         projects.closeProject();
@@ -4138,7 +4168,7 @@ private slots:
                        QJsonObject{{"id", "reject-b"}, {"type", "function"}, {"name", "remove_module"}}};
         m_mock->emitResponse(response);
         QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
-        controller.rejectPendingTools();
+        controller.rejectPendingTools(controller.pendingConfirmationId());
         controller.sendUserMessage(QStringLiteral("Continue"));
         const QJsonArray messages = m_mock->lastCtx.toOpenAIMessages();
         int assistantIndex = -1;
@@ -4159,7 +4189,7 @@ private slots:
         const int before = controller.conversationHistorySize();
         const QJsonObject result = controller.handleToolCall(QStringLiteral("add_module"), {{"plugin", "GrabImage"}});
         QCOMPARE(result.value("status").toString(), QStringLiteral("pending_confirmation"));
-        controller.rejectPendingTools();
+        controller.rejectPendingTools(controller.pendingConfirmationId());
         QCOMPARE(controller.conversationHistorySize(), before);
     }
 
@@ -4171,7 +4201,7 @@ private slots:
         response.success = true;
         response.toolCalls = QJsonArray{QJsonObject{{"id", "cancel-a"}, {"type", "function"}, {"name", "add_module"}}};
         m_mock->emitResponse(response);
-        controller.confirmPendingTools();
+        controller.confirmPendingTools(controller.pendingConfirmationId());
         controller.abortCurrentTurn();
         QCoreApplication::processEvents();
         // B1：中止后不得续跑，模型请求计数保持为首次请求
@@ -4199,7 +4229,7 @@ private slots:
         m_mock->emitResponse(response);
         QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
         QSignalSpy actions(&controller, &AgentController::agentActionCompleted);
-        controller.confirmPendingTools();
+        controller.confirmPendingTools(controller.pendingConfirmationId());
         controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
         QCoreApplication::processEvents();
         QCOMPARE(actions.count(), 0);
@@ -4645,8 +4675,10 @@ private slots:
             if (m.toolCallId == QLatin1String("call_20") && m.content.contains(QLatin1String("TURN_LIMIT_EXCEEDED")))
                 sawTurnLimitResult = true;
         }
-        QCOMPARE(toolMsgs, 21);
+        Q_UNUSED(toolMsgs); // 历史预算可能裁掉早期完整轮次
         QVERIFY2(sawTurnLimitResult, "turn-limit batch must still answer every call id");
+        QString historyError;
+        QVERIFY2(AgentController::instance().historyPairsValid(&historyError), qPrintable(historyError));
     }
 
     void testAutopilotRejectsTooManyToolCallsInOneTurn() {
@@ -4725,7 +4757,7 @@ private slots:
         QVERIFY(ctrl.hasPendingTools());
 
         // 正确 id 批准批次2 → 执行
-        QVERIFY(ctrl.confirmPendingTools(id2));
+        QVERIFY(confirmAndDispatch(ctrl, id2));
         QCOMPARE(ProjectManager::instance().currentProject()->name(), QStringLiteral("cid_two"));
 
         // 批次已消费后,原正确 id 再次迟到 → 拒绝,零副作用
@@ -5107,9 +5139,10 @@ private slots:
         QVERIFY(context.contains(QStringLiteral("Answer from the supplied conversation and context only")));
         QVERIFY(context.contains(QStringLiteral("state clearly when the request requires enabling tools")));
         QVERIFY(context.contains(QStringLiteral("5. When tools are available, use read_documentation")));
-        QVERIFY(context.contains(QStringLiteral("6. When tools are available, for quick measurement")));
+        QVERIFY(context.contains(QStringLiteral("run_flow wait defaults to true")));
+        QVERIFY(context.contains(QStringLiteral("8. When tools are available, for quick measurement")));
         QVERIFY(context.contains(
-            QStringLiteral("7. When tools are available and a tool returns INVALID_PARAM or MISSING_PARAM")));
+            QStringLiteral("9. When tools are available and a tool returns INVALID_PARAM or MISSING_PARAM")));
         QVERIFY(!context.contains(QStringLiteral("5. Use read_documentation when unsure")));
         QVERIFY(!context.contains(QStringLiteral("6. For quick measurement, list viewports")));
     }
@@ -5358,7 +5391,7 @@ private slots:
         m_mock->emitResponse(response);
 
         if (controller.state() == AgentController::AgentState::Confirming)
-            QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+            QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QTRY_COMPARE(controller.state(), AgentController::AgentState::Idle);
         QCOMPARE(errorSpy.count(), 1);
         QVERIFY(errorSpy.first().first().toString().contains(QStringLiteral("批次部分失败")));
@@ -6038,7 +6071,7 @@ private slots:
                      ->executeTool("create_project", QJsonObject{{"name", "window_edit"}, {"onUnsaved", "discard"}})
                      .contains("error"));
 
-        ctrl.confirmPendingTools(ctrl.pendingConfirmationId()); // 陈旧确认 → 整批拒绝,不执行
+        confirmAndDispatch(ctrl, ctrl.pendingConfirmationId()); // 陈旧确认 → 整批拒绝,不执行
 
         QCOMPARE(ctrl.state(), AgentController::AgentState::Idle);
         // 待确认的 create_project 未执行：当前工程仍是窗口期编辑的那个
@@ -6068,7 +6101,7 @@ private slots:
         QCOMPARE(pending.value("status").toString(), QStringLiteral("pending_confirmation"));
 
         ctrl.setPermissionLevel(AgentController::PermissionLevel::Observer); // 窗口期降级
-        ctrl.confirmPendingTools(ctrl.pendingConfirmationId());
+        confirmAndDispatch(ctrl, ctrl.pendingConfirmationId());
 
         QCOMPARE(ctrl.state(), AgentController::AgentState::Idle);
         QCOMPARE(ProjectManager::instance().currentProject()->name(),
@@ -6154,8 +6187,8 @@ private slots:
                                           {"arguments", QJsonObject{{"plugin", "GrabImage"}}}});
         m_mock->emitResponse(resp);
 
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
-        QCOMPARE(m_mock->requestCount, 1); // 拒绝项结束本轮，不续跑
+        QCOMPARE(controller.state(), AgentController::AgentState::Thinking);
+        QCOMPARE(m_mock->requestCount, 2); // 只读项执行后继续问答；写入项被拒绝
         QCOMPARE(project->modules().size(), 0);
 
         bool readSeen = false;
@@ -6170,6 +6203,12 @@ private slots:
         }
         QVERIFY(readSeen);
         QVERIFY(writeDenied);
+
+        AgentResponse done;
+        done.success = true;
+        done.content = QStringLiteral("done");
+        m_mock->emitResponse(done);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
     }
 
     // B2：确认前切换工程（含同 ID 模块）——旧确认失效，新工程零修改
@@ -6201,16 +6240,17 @@ private slots:
         second->addModule(sameIdInSecond);
 
         // 工程切换使旧确认立即失效，且不会执行旧批次
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
-        QVERIFY(controller.pendingToolCalls().isEmpty());
-        controller.confirmPendingTools();
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+        QVERIFY(!controller.pendingToolCalls().isEmpty());
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QCoreApplication::processEvents();
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
         QCOMPARE(second->modules().size(), 1);
 
         bool expired = false;
         for (const AgentMessage& message : controller.m_conversationHistory) {
             if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("remove-old"))
-                expired = message.content.contains(QStringLiteral("confirmation_expired"));
+                expired = message.content.contains(QStringLiteral("CONFIRMATION_EXPIRED"));
         }
         QVERIFY(expired);
     }
@@ -6231,7 +6271,7 @@ private slots:
         m_mock->emitResponse(resp);
         QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
 
-        controller.confirmPendingTools(); // 入队
+        controller.confirmPendingTools(controller.pendingConfirmationId()); // 入队
         Project* second = ProjectManager::instance().newProject();
         QVERIFY(second != nullptr);
         QCoreApplication::processEvents();
@@ -6264,10 +6304,11 @@ private slots:
 
         // 用户在界面上改了同一参数
         project->setModuleParam(QStringLiteral("mc1"), QStringLiteral("initialRadius"), 111);
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
 
-        controller.confirmPendingTools();
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QCoreApplication::processEvents();
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
         QCOMPARE(project->moduleById(QStringLiteral("mc1"))->params.value("initialRadius"), QJsonValue(111));
     }
 
@@ -6294,15 +6335,17 @@ private slots:
         QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
 
         project->removeModule(QStringLiteral("target-1"));
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
-        controller.confirmPendingTools();
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+        QVERIFY(confirmAndDispatch(controller, controller.pendingConfirmationId()));
         QCoreApplication::processEvents();
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
         QCOMPARE(project->modules().size(), 0);
     }
 
     // B2：Autopilot 下 create_project 成功后保守终止旧批次，让模型读取新工程再规划
     void testProjectSwitchStopsRemainingBatch() {
         AgentController& controller = AgentController::instance();
+        ProjectManager::instance().closeProject();
         controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
         controller.sendUserMessage(QStringLiteral("create and add"));
         AgentResponse resp;
@@ -6319,8 +6362,8 @@ private slots:
                         {"arguments", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "stale"}}}});
         m_mock->emitResponse(resp);
 
+        QTRY_COMPARE(m_mock->requestCount, 2); // 工程切换后用新工程状态重新规划
         QCOMPARE(controller.state(), AgentController::AgentState::Thinking);
-        QCOMPARE(m_mock->requestCount, 2); // project_switched 允许重新规划
         Project* project = ProjectManager::instance().currentProject();
         QVERIFY(project != nullptr);
         QCOMPARE(project->modules().size(), 0);
@@ -6328,9 +6371,14 @@ private slots:
         bool addSkipped = false;
         for (const AgentMessage& message : controller.m_conversationHistory) {
             if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("add-after"))
-                addSkipped = message.content.contains(QStringLiteral("skipped_after_failure"));
+                addSkipped = message.content.contains(QStringLiteral("SKIPPED_DUE_TO_PREVIOUS_ERROR"));
         }
         QVERIFY(addSkipped);
+        AgentResponse finalResponse;
+        finalResponse.success = true;
+        finalResponse.content = QStringLiteral("The new project is ready.");
+        m_mock->emitResponse(finalResponse);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
     }
 
     // B2：合法确认只执行一次（双击不重复执行）
@@ -6347,9 +6395,10 @@ private slots:
         m_mock->emitResponse(resp);
         QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
 
-        controller.confirmPendingTools();
-        controller.confirmPendingTools(); // 连点
-        QCoreApplication::processEvents();
+        const QString confirmationId = controller.pendingConfirmationId();
+        QVERIFY(controller.confirmPendingTools(confirmationId));
+        controller.confirmPendingTools(confirmationId); // 连点旧确认
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.m_dispatchQueued, 5000);
 
         int results = 0;
         for (const AgentMessage& message : controller.m_conversationHistory) {
@@ -6357,7 +6406,7 @@ private slots:
                 ++results;
         }
         QCOMPARE(results, 1);
-        QCOMPARE(m_mock->requestCount, 2); // 执行后正常续跑一次
+        QCOMPARE(m_mock->requestCount, 1); // Advisor 确认执行不自动续跑
     }
 
     // ---------- 第一迭代：排队执行 / 中止 / 视觉降级 ----------
@@ -6380,13 +6429,13 @@ private slots:
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Confirming);
 
         QSignalSpy logSpy(&AgentController::instance(), &AgentController::actionLogEntryAdded);
-        AgentController::instance().confirmPendingTools();
+        AgentController::instance().confirmPendingTools(AgentController::instance().pendingConfirmationId());
         // 连点保护：第二次确认不得重复排队或重复执行
-        AgentController::instance().confirmPendingTools();
+        AgentController::instance().confirmPendingTools(AgentController::instance().pendingConfirmationId());
         // 排队 tick 尚未处理：状态不得提前回到 Idle（仍为 Confirming/Executing）
         QVERIFY(AgentController::instance().state() != AgentController::AgentState::Idle);
 
-        QTRY_COMPARE_WITH_TIMEOUT(AgentController::instance().state(), AgentController::AgentState::Thinking, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(AgentController::instance().state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(logSpy.count(), 1); // create_project 只执行一次
         QVERIFY(ProjectManager::instance().currentProject() != nullptr);
     }
@@ -6402,11 +6451,12 @@ private slots:
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
         QCOMPARE(abortSpy.count(), 1);
         QCOMPARE(responseSpy.count(), 1);
-        QCOMPARE(responseSpy.takeFirst().at(0).toString(), QStringLiteral("Stopped by user."));
+        QCOMPARE(responseSpy.last().at(0).toString(), QStringLiteral("Stopped by user."));
 
         const quint64 generation = AgentController::instance().turnGeneration();
         AgentController::instance().abortCurrentTurn(); // Idle → no-op（幂等）
         QCOMPARE(abortSpy.count(), 1);
+        QCOMPARE(responseSpy.count(), 1);
         QCOMPARE(AgentController::instance().turnGeneration(), generation);
     }
 
@@ -6428,7 +6478,8 @@ private slots:
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Confirming);
 
         QSignalSpy logSpy(&AgentController::instance(), &AgentController::actionLogEntryAdded);
-        AgentController::instance().confirmPendingTools(); // 入队
+        AgentController::instance().confirmPendingTools(
+            AgentController::instance().pendingConfirmationId()); // 入队
         AgentController::instance().abortCurrentTurn();    // 在 tick 之前中止
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
 
@@ -6451,7 +6502,7 @@ private slots:
         AgentController::instance().transitionTo(AgentController::AgentState::Idle);
     }
 
-    void testVisionRejectionRetriesWithoutImagesOnce() {
+    void testVisionRejectionTerminalFailureReturnsControllerToIdle() {
         m_mock->imageInputSupported = true;
         QPixmap image(8, 8);
         image.fill(Qt::blue);
@@ -6467,19 +6518,7 @@ private slots:
         info.message = QStringLiteral("The model may not support image input.");
         m_mock->emitClassifiedError(info);
 
-        // 自动去图重发一次：仍处 Thinking，第二次请求里的图片已被剥离
-        QCOMPARE(m_mock->requestCount, 2);
-        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Thinking);
-        bool foundImageRequest = false;
-        for (const AgentMessage& message : m_mock->lastCtx.messages) {
-            if (message.role == QStringLiteral("user") && message.content == QStringLiteral("Inspect")) {
-                foundImageRequest = true;
-                QVERIFY(message.images.isEmpty());
-            }
-        }
-        QVERIFY(foundImageRequest);
-
-        // 第二次仍被拒：不再重发，正常报错回 Idle（只上报一次）
+        // 视觉兼容重试归 LLM 客户端内部；控制器只接收最终错误并关闭本轮。
         QSignalSpy errorSpy(&AgentController::instance(), &AgentController::llmErrorOccurred);
         // R6：UI 审计在 llmErrorOccurred 直连槽内能读到本次分类；随后控制器复位
         QString categoryDuringEmit;
@@ -6489,7 +6528,7 @@ private slots:
             });
         m_mock->emitClassifiedError(info);
         disconnect(categoryConnection);
-        QCOMPARE(m_mock->requestCount, 2);
+        QCOMPARE(m_mock->requestCount, 1);
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
         QCOMPARE(errorSpy.count(), 1);
         QCOMPARE(categoryDuringEmit, QStringLiteral("BadRequest"));
@@ -6534,7 +6573,7 @@ private slots:
         QVERIFY2(prompt.contains(QStringLiteral("get_node_runtime_outputs")), qPrintable(prompt));
         QVERIFY2(prompt.contains(QStringLiteral("capture_viewport_image")), qPrintable(prompt));
         QVERIFY2(prompt.contains(QStringLiteral("At most 2 tool images are attached per turn")), qPrintable(prompt));
-        QVERIFY2(prompt.contains(QStringLiteral("Do not repeat the same failing call unchanged")), qPrintable(prompt));
+        QVERIFY2(prompt.contains(QStringLiteral("Never repeat an unchanged failing call")), qPrintable(prompt));
     }
 
     // R1：失败的写工具不得在审计里被标成 undoable（实际没有压入撤销栈）
@@ -6832,7 +6871,7 @@ private slots:
         controller.transitionTo(AgentController::AgentState::Executing);
         const int requestsBefore = m_mock->requestCount;
         controller.extendAgentLoop(
-            QJsonArray{QJsonObject{{"id", "call_deadline"}, {"name", "get_flow_state"}, {"arguments", "{}"}}});
+            QJsonArray{QJsonObject{{"id", "call_deadline"}, {"name", "get_available_plugins"}, {"arguments", "{}"}}});
 
         QCOMPARE(controller.state(), AgentController::AgentState::Idle);
         QCOMPARE(errorSpy.count(), 1);

@@ -728,9 +728,6 @@ void TestPluginManager::testNonCameraUserPluginFallsBackToBundledCamera() {
     manager.addPluginPath(userRoot.path());
     manager.scanPlugins();
     QCOMPARE(manager.pluginInfo("PackagingCameraFallback").path, QDir(userDir).filePath("metadata.json"));
-    QVERIFY(manager.loadPlugin("PackagingCameraFallback"));
-    QCOMPARE(manager.pluginInfo("PackagingCameraFallback").path, QDir(bundleDir.path()).filePath("metadata.json"));
-    manager.unloadPlugin("PackagingCameraFallback");
 
     QFile moduleMetadataSource(QStringLiteral(TEST_PLUGINMANAGER_METADATA));
     QVERIFY(moduleMetadataSource.open(QIODevice::ReadOnly));
@@ -746,7 +743,9 @@ void TestPluginManager::testNonCameraUserPluginFallsBackToBundledCamera() {
 
     manager.scanPlugins();
     QVERIFY(manager.availableModules().contains("PackagingCameraFallback"));
-    QVERIFY(!manager.availableCameras().contains("PackagingCameraFallback"));
+    QVERIFY(manager.availableCameras().contains("PackagingCameraFallback"));
+    // Keep both metadata candidates visible so Agent can reject the name as ambiguous;
+    // loadPlugin still resolves the missing user module to the bundled camera fallback.
     QVERIFY(manager.loadPlugin("PackagingCameraFallback"));
     QCOMPARE(manager.pluginInfo("PackagingCameraFallback").path, QDir(bundleDir.path()).filePath("metadata.json"));
     QVERIFY(!manager.availableModules().contains("PackagingCameraFallback"));

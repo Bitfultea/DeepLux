@@ -10,6 +10,7 @@
 #include <core/agent/AgentController.h>
 #include <core/agent/GuiEvent.h>
 #include <core/agent/ToolSchema.h>
+#include <core/common/UserManager.h>
 #include <core/manager/ProjectManager.h>
 #include <core/model/DataSource.h>
 #include <core/model/Project.h>
@@ -25,6 +26,7 @@ class TestAgentDataSourceDedicatedViewport : public QObject {
 
 private slots:
     void initTestCase() {
+        UserManager::instance().login(QStringLiteral("developer"), QString());
         m_appDataDir = std::make_unique<QTemporaryDir>();
         QVERIFY(m_appDataDir->isValid());
         qputenv("DEEPLUX_APP_DATA_DIR", QFile::encodeName(m_appDataDir->path()));
@@ -155,6 +157,7 @@ private slots:
         addSource(QStringLiteral("generation_bump"), QStringLiteral("Generation bump"), generationPath,
                   QStringLiteral("image"));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(window.findChildren<ViewportWidget*>().size(), initialViewportCount);
         projectBefore = project->toJson();
         const QJsonObject afterStale = actor.executeTool(QStringLiteral("get_data_source_view_state"), {});
@@ -184,7 +187,7 @@ private slots:
                                       QJsonObject{{QStringLiteral("dataSourceId"), imageSource.id}});
         QCOMPARE(approvedPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
-        QVERIFY(!actionSpy.isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(actionSpy.count(), 1, 5000);
         const AgentActionLogEntry approvedEntry = actionSpy.last().at(0).value<AgentActionLogEntry>();
         QCOMPARE(approvedEntry.action, QStringLiteral("display_data_source_in_dedicated_viewport"));
         QCOMPARE(approvedEntry.result, QStringLiteral("success"));
@@ -348,6 +351,7 @@ private slots:
                   QStringLiteral("image"));
         QVERIFY(project->dataSourceCollectionGeneration() > generationBeforeClipboardDrift);
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(clipboard->text(), clipboardSentinel);
 
         const QJsonObject approvedCopy =
@@ -356,6 +360,7 @@ private slots:
         QCOMPARE(approvedCopy.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QJsonObject projectBeforeCopy = project->toJson();
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(clipboard->text(), cloudSource.filePath);
         QCOMPARE(project->toJson(), projectBeforeCopy);
 
@@ -385,7 +390,7 @@ private slots:
         QCOMPARE(ownerPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         controller.unregisterDataSourceViewHandler(&window);
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(window.findChildren<ViewportWidget*>().size(), viewportCountBeforeOwnerExpiry);
     }
 

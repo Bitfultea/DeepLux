@@ -142,6 +142,7 @@ void TestFlowCanvas::testTextDropRejectsBusyAndAddsNodeAfterStop() {
         }
     } releaseOnExit{release};
     QString runId;
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("flowcanvas_busy_probe"), ExecutionAffinity::Worker);
     QVERIFY(engine.runOnceAsync(&runId));
     QVERIFY(entered.tryAcquire(1, 2000));
     QVERIFY(engine.isBusy());

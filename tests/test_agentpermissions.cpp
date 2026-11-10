@@ -289,9 +289,9 @@ private slots:
         QVERIFY(!controller.pendingConfirmationId().isEmpty());
         QVERIFY(UserManager::instance().login(QStringLiteral("operator"), QString()));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
-        QCOMPARE(confirmationResponseSpy.size(), 1);
+        QTRY_COMPARE(confirmationResponseSpy.size(), 1);
         QVERIFY(confirmationResponseSpy.last().at(0).toString().contains(QStringLiteral("未执行任何操作")));
-        QCOMPARE(confirmationAuditSpy.size(), 1);
+        QTRY_COMPARE(confirmationAuditSpy.size(), 1);
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(confirmationAuditSpy.last().at(0)).result,
                  QStringLiteral("denied"));
         QVERIFY(!variables.userVariableSnapshot(QStringLiteral("role_change_secret")).exists);
@@ -305,9 +305,9 @@ private slots:
         QVERIFY(!controller.pendingConfirmationId().isEmpty());
         UserManager::instance().logout();
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
-        QCOMPARE(confirmationResponseSpy.size(), 2);
+        QTRY_COMPARE(confirmationResponseSpy.size(), 2);
         QVERIFY(confirmationResponseSpy.last().at(0).toString().contains(QStringLiteral("未执行任何操作")));
-        QCOMPARE(confirmationAuditSpy.size(), 2);
+        QTRY_COMPARE(confirmationAuditSpy.size(), 2);
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(confirmationAuditSpy.last().at(0)).result,
                  QStringLiteral("denied"));
         QVERIFY(!variables.userVariableSnapshot(QStringLiteral("logout_secret")).exists);
@@ -407,9 +407,9 @@ private slots:
         for (const CameraStatus& camera : CameraManager::instance().knownCameras())
             cameraIdsAfter.append(camera.deviceId);
         QCOMPARE(cameraIdsAfter, cameraIdsBefore);
-        QCOMPARE(confirmationResponseSpy.size(), 1);
+        QTRY_COMPARE(confirmationResponseSpy.size(), 1);
         QVERIFY(confirmationResponseSpy.last().at(0).toString().contains(QStringLiteral("未执行任何操作")));
-        QCOMPARE(confirmationAuditSpy.size(), 1);
+        QTRY_COMPARE(confirmationAuditSpy.size(), 1);
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(confirmationAuditSpy.last().at(0)).result,
                  QStringLiteral("denied"));
         QCOMPARE(controller.conversationHistorySize(), 0);
@@ -557,7 +557,7 @@ private slots:
                  QStringLiteral("Edit"));
         QVERIFY(controller.confirmPendingTools(roleDowngradeConfirmation));
         QCOMPARE(project->moduleById(QStringLiteral("module"))->note, QString());
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QTRY_COMPARE(controller.state(), AgentController::AgentState::Idle);
 
         UserManager::instance().login(QStringLiteral("developer"), QString());
         const QJsonObject logoutPending = requestNote(QStringLiteral("logout"));
@@ -567,7 +567,7 @@ private slots:
         UserManager::instance().logout();
         QVERIFY(controller.confirmPendingTools(logoutConfirmation));
         QCOMPARE(project->moduleById(QStringLiteral("module"))->note, QString());
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QTRY_COMPARE(controller.state(), AgentController::AgentState::Idle);
     }
 
     void testAutopilotExecutesSafeWriteButConfirmsDangerousTools() {
@@ -720,9 +720,9 @@ private slots:
         QVERIFY(!QFileInfo::exists(sessionPath));
         QVERIFY(imageFile.open(QIODevice::ReadOnly));
         QCOMPARE(imageFile.readAll(), imageBytes);
-        QCOMPARE(responseSpy.size(), 1);
+        QTRY_COMPARE(responseSpy.size(), 1);
         QVERIFY(responseSpy.last().at(0).toString().contains(QStringLiteral("未执行任何操作")));
-        QCOMPARE(auditSpy.size(), 1);
+        QTRY_COMPARE(auditSpy.size(), 1);
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(auditSpy.last().at(0)).result, QStringLiteral("denied"));
         QCOMPARE(controller.conversationHistorySize(), 0);
     }
@@ -760,9 +760,9 @@ private slots:
         QCOMPARE(toolSpy.count(), 0);
         QVERIFY(imageFile.open(QIODevice::ReadOnly));
         QCOMPARE(imageFile.readAll(), imageBytes);
-        QCOMPARE(responseSpy.size(), 1);
+        QTRY_COMPARE(responseSpy.size(), 1);
         QVERIFY(responseSpy.last().at(0).toString().contains(QStringLiteral("未执行任何操作")));
-        QCOMPARE(auditSpy.size(), 1);
+        QTRY_COMPARE(auditSpy.size(), 1);
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(auditSpy.last().at(0)).result, QStringLiteral("denied"));
         QCOMPARE(controller.conversationHistorySize(), 0);
     }
@@ -1090,8 +1090,8 @@ private slots:
             controller.handleToolCall(QStringLiteral("set_module_params"), developerEdit);
         QCOMPARE(developerPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
-        QCOMPARE(project->moduleById(serial.id)->params.value(QStringLiteral("portName")).toString(),
-                 QStringLiteral("/dev/developer"));
+        QTRY_COMPARE(project->moduleById(serial.id)->params.value(QStringLiteral("portName")).toString(),
+                     QStringLiteral("/dev/developer"));
 
         QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
         const QJsonObject pending = controller.handleToolCall(QStringLiteral("set_module_params"), serialEdit);
@@ -1106,8 +1106,8 @@ private slots:
         QCOMPARE(project->toJson(), projectBeforeApproval);
         QCOMPARE(controller.actor()->undoStack()->count(), undoCountBeforeApproval);
         QCOMPARE(controller.actor()->undoStack()->index(), undoIndexBeforeApproval);
-        QVERIFY(controller.state() != AgentController::AgentState::Confirming);
-        QVERIFY(!auditSpy.isEmpty());
+        QTRY_VERIFY(controller.state() != AgentController::AgentState::Confirming);
+        QTRY_VERIFY(!auditSpy.isEmpty());
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(auditSpy.last().at(0)).result, QStringLiteral("denied"));
     }
 
@@ -1132,22 +1132,22 @@ private slots:
         }
     }
 
-    // 第一迭代：tune_node_and_verify 是写工具但非 dangerous —— Advisor 待确认、Autopilot 直接执行
-    void testTuneToolRequiresAdvisorConfirmationButAutopilotExecutes() {
+    // tune_node_and_verify 可执行整个工程流程，Autopilot 也必须显式确认
+    void testTuneToolRequiresConfirmationAtEveryWritePermissionLevel() {
         const QJsonObject params{{"nodeName", "missing_node"}, {"parameters", QJsonObject{{"threshold", 10}}}};
 
         AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Advisor);
         const QJsonObject pending = AgentController::instance().handleToolCall("tune_node_and_verify", params);
         QCOMPARE(pending["status"].toString(), QString("pending_confirmation"));
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Confirming);
-        AgentController::instance().rejectPendingTools();
+        AgentController::instance().rejectPendingTools(AgentController::instance().pendingConfirmationId());
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
 
         AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Autopilot);
-        const QJsonObject executed = AgentController::instance().handleToolCall("tune_node_and_verify", params);
-        QVERIFY(executed["status"].toString() != QString("pending_confirmation"));
-        // 无工程/节点不存在 → 业务错误，但绝不是"待确认"
-        QVERIFY(executed.contains("error"));
+        const QJsonObject autopilotPending = AgentController::instance().handleToolCall("tune_node_and_verify", params);
+        QCOMPARE(autopilotPending["status"].toString(), QString("pending_confirmation"));
+        QVERIFY(AgentController::instance().rejectPendingTools(AgentController::instance().pendingConfirmationId()));
+        QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
     }
 };
 

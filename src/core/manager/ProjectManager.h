@@ -88,6 +88,12 @@ private:
     void addToRecentProjects(const QString& path);
     void loadRecentProjects();
     void saveRecentProjects();
+    Project* replaceProject(std::unique_ptr<Project> candidate, bool opened, bool checkUnsaved, UnsavedPolicy policy,
+                            QString* errorCode, QString* errorMessage, const QString& savePathOverride,
+                            const QString& recentPath = QString());
+    Project* openProjectTransaction(const QString& path, bool checkUnsaved, UnsavedPolicy policy, QString* errorCode,
+                                    QString* errorMessage, const QString& savePathOverride);
+    bool closeProjectTransaction(bool checkUnsaved, UnsavedPolicy policy, QString* errorCode, QString* errorMessage);
 
     std::unique_ptr<Project> m_currentProject;
     QStringList m_recentProjects;

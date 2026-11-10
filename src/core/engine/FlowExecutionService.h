@@ -79,6 +79,10 @@ public:
     quint64 lastFailedJobSerial() const {
         return m_failedJobSerial.load(std::memory_order_acquire);
     }
+    QString lastSessionId() const {
+        QMutexLocker locker(&m_mutex);
+        return m_lastSessionId;
+    }
     RunObservation currentRunObservation() const;
     RunObservation currentSessionObservation() const;
     JobRequest activeJobRequestSnapshot() const;
@@ -91,6 +95,8 @@ public:
     // 用于确定性验证启动握手的等待上限与超时语义（生产构建该钩子恒为空）。
     DEEPLUX_TEST_VISIBILITY : void setStartHandshakeHookForTest(std::function<void()> hook);
     DEEPLUX_TEST_VISIBILITY : void clearStartHandshakeHookForTest();
+    DEEPLUX_TEST_VISIBILITY : void setAfterStartSettledHookForTest(std::function<void()> hook);
+    DEEPLUX_TEST_VISIBILITY : void clearAfterStartSettledHookForTest();
 
 signals:
     void jobStateChanged(FlowExecutionService::State state, FlowExecutionService::JobType job);
@@ -139,6 +145,7 @@ private:
     bool m_startOk = false;
     // B7：启动握手超时诊断/测试钩子（钩子仅在持有本地副本时于工作线程执行）。
     std::function<void()> m_testStartHook;
+    std::function<void()> m_testAfterStartSettledHook;
     JobType m_pendingJob = JobType::None;
     JobRequest m_pendingRequest;
     JobRequest m_activeRequest;

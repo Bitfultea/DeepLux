@@ -78,7 +78,7 @@ private slots:
 
         PluginManager& manager = PluginManager::instance();
         QVERIFY(manager.initialize());
-        QCOMPARE(manager.pluginPaths(), QStringList{QDir(pluginRoot).absolutePath()});
+        QVERIFY(manager.pluginPaths().contains(QDir(pluginRoot).absolutePath()));
         QStringList discovered = manager.availableModules();
         discovered.sort();
         QCOMPARE(discovered, QStringList({QStringLiteral("AgentAbiMismatchFixture"),
@@ -228,7 +228,7 @@ private slots:
         QCOMPARE(unloadedSpy.count(), 0);
         QCOMPARE(failedSpy.count(), 0);
         QCOMPARE(executedSpy.count(), 0);
-        QCOMPARE(responseSpy.size(), 1);
+        QTRY_COMPARE(responseSpy.size(), 1);
         QVERIFY(responseSpy.last().at(0).toString().contains(QStringLiteral("未执行任何操作")));
         QCOMPARE(auditSpy.size(), 1);
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(auditSpy.last().at(0)).result, QStringLiteral("denied"));
@@ -252,7 +252,7 @@ private slots:
         QCOMPARE(unloadedSpy.count(), unloadedBeforeOperator);
         QCOMPARE(failedSpy.count(), failedBeforeOperator);
         QCOMPARE(executedSpy.count(), executedBeforeOperator);
-        QCOMPARE(responseSpy.size(), responsesBeforeOperator + 1);
+        QTRY_COMPARE(responseSpy.size(), responsesBeforeOperator + 1);
         QVERIFY(responseSpy.last().at(0).toString().contains(QStringLiteral("未执行任何操作")));
         QCOMPARE(auditSpy.size(), auditsBeforeOperator + 1);
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(auditSpy.last().at(0)).result, QStringLiteral("denied"));
@@ -276,7 +276,7 @@ private slots:
         QCOMPARE(unloadedSpy.count(), unloadedBeforeLogout);
         QCOMPARE(failedSpy.count(), failedBeforeLogout);
         QCOMPARE(executedSpy.count(), executedBeforeLogout);
-        QCOMPARE(responseSpy.size(), responsesBeforeLogout + 1);
+        QTRY_COMPARE(responseSpy.size(), responsesBeforeLogout + 1);
         QVERIFY(responseSpy.last().at(0).toString().contains(QStringLiteral("未执行任何操作")));
         QCOMPARE(auditSpy.size(), auditsBeforeLogout + 1);
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(auditSpy.last().at(0)).result, QStringLiteral("denied"));
@@ -511,7 +511,7 @@ private slots:
         changedBinary.close();
         QVERIFY(changedSha != originalSha);
         QVERIFY(controller.confirmPendingTools(staleLoadId));
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QTRY_COMPARE(controller.state(), AgentController::AgentState::Idle);
         QVERIFY(controller.pendingConfirmationId().isEmpty());
         QVERIFY(!manager.isPluginLoaded(pluginName));
         QCOMPARE(loadedSpy.count(), 0);
@@ -562,7 +562,7 @@ private slots:
         QVERIFY(!manager.isPluginLoaded(pluginName));
 
         QVERIFY(controller.confirmPendingTools(staleUnloadId));
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QTRY_COMPARE(controller.state(), AgentController::AgentState::Idle);
         QVERIFY(controller.pendingConfirmationId().isEmpty());
         QVERIFY(!manager.isPluginLoaded(pluginName));
         QCOMPARE(loadedSpy.count(), 1);
@@ -632,7 +632,7 @@ private slots:
         QVERIFY(effect.contains(QStringLiteral("metadataSha256=unavailable")));
         QVERIFY(effect.contains(metadataPath));
         QVERIFY(controller.confirmPendingTools(confirmationId));
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QTRY_COMPARE(controller.state(), AgentController::AgentState::Idle);
         QVERIFY(controller.pendingConfirmationId().isEmpty());
         QVERIFY(!manager.isPluginLoaded(pluginName));
         QCOMPARE(loadedSpy.count(), 0);
@@ -681,7 +681,7 @@ private slots:
             } candidateRestore{binaryPath, binaryBackup};
             QVERIFY(QFile::link(QStringLiteral("/proc/kcore"), binaryPath));
             QVERIFY(controller.confirmPendingTools(confirmationId));
-            QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+            QTRY_COMPARE(controller.state(), AgentController::AgentState::Idle);
             QVERIFY(controller.pendingConfirmationId().isEmpty());
             QVERIFY(!manager.isPluginLoaded(pluginName));
             QCOMPARE(loadedSpy.count(), 0);
@@ -774,7 +774,7 @@ private slots:
         QVERIFY(!manager.isPluginLoaded(pluginName));
 
         QVERIFY(controller.confirmPendingTools(staleConfirmationId));
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QTRY_COMPARE(controller.state(), AgentController::AgentState::Idle);
         QVERIFY(controller.pendingConfirmationId().isEmpty());
         QVERIFY(!manager.isPluginLoaded(pluginName));
         QCOMPARE(loadedSpy.count(), 0);

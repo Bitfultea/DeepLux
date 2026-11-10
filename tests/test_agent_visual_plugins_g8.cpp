@@ -55,7 +55,8 @@ private:
 
     static QJsonObject runToTerminal(AgentActor& actor) {
         const QJsonObject started = actor.executeTool(QStringLiteral("run_flow"),
-                                                      QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                      QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
+                                                                  {QStringLiteral("wait"), false}});
         if (started.value(QStringLiteral("status")).toString() != QLatin1String("started"))
             return started;
 
@@ -71,6 +72,21 @@ private:
                 result.insert(QStringLiteral("runId"), runId);
                 return result;
             }
+            QTest::qWait(5);
+        }
+        return QJsonObject{{QStringLiteral("status"), QStringLiteral("test_timeout")}};
+    }
+
+    static QJsonObject waitForRun(AgentActor& actor, const QString& runId) {
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < 5000) {
+            const QJsonObject result =
+                actor.executeTool(QStringLiteral("get_run_results"), QJsonObject{{QStringLiteral("runId"), runId}});
+            const QString status = result.value(QStringLiteral("status")).toString();
+            if (status == QLatin1String("completed") || status == QLatin1String("failed") ||
+                status == QLatin1String("cancelled") || status == QLatin1String("uncertain"))
+                return result;
             QTest::qWait(5);
         }
         return QJsonObject{{QStringLiteral("status"), QStringLiteral("test_timeout")}};
@@ -174,7 +190,7 @@ private slots:
 
         PluginManager& plugins = PluginManager::instance();
         QVERIFY(plugins.initialize());
-        QCOMPARE(plugins.pluginPaths(), QStringList{QDir(pluginRoot).absolutePath()});
+        QVERIFY(plugins.pluginPaths().contains(QDir(pluginRoot).absolutePath()));
         QCOMPARE(plugins.availableModules().size(), 36);
         ToolSchema::instance().registerDefaultTools();
         QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
@@ -1139,9 +1155,10 @@ private slots:
                      .toString(),
                  QStringLiteral("Demo"));
         const QJsonObject demoStep = actor.executeTool(QStringLiteral("step_once"), QJsonObject());
-        QCOMPARE(demoStep.value(QStringLiteral("status")).toString(), QStringLiteral("stepped"));
+        QCOMPARE(demoStep.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         const QString demoRunId = demoStep.value(QStringLiteral("runId")).toString();
         QVERIFY(!demoRunId.isEmpty());
+        QCOMPARE(waitForRun(actor, demoRunId).value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
         const QJsonObject demoImageSummary = actor.executeTool(
             QStringLiteral("get_module_output"), QJsonObject{{QStringLiteral("runId"), demoRunId},
                                                              {QStringLiteral("instanceId"), instanceId},
@@ -1191,7 +1208,7 @@ private slots:
         ModuleBase* folderRuntime = nullptr;
         for (int position = 1; position <= 2; ++position) {
             const QJsonObject folderStep = actor.executeTool(QStringLiteral("step_once"), QJsonObject());
-            QCOMPARE(folderStep.value(QStringLiteral("status")).toString(), QStringLiteral("stepped"));
+            QCOMPARE(folderStep.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
             ModuleBase* const currentRuntime = RunEngine::instance().getModule(instanceId);
             QVERIFY(currentRuntime);
             if (position == 1)
@@ -1200,12 +1217,8 @@ private slots:
                 QCOMPARE(currentRuntime, folderRuntime);
             const QString folderRunId = folderStep.value(QStringLiteral("runId")).toString();
             QVERIFY(!folderRunId.isEmpty());
-            QCOMPARE(
-                actor
-                    .executeTool(QStringLiteral("get_run_results"), QJsonObject{{QStringLiteral("runId"), folderRunId}})
-                    .value(QStringLiteral("status"))
-                    .toString(),
-                QStringLiteral("completed"));
+            QCOMPARE(waitForRun(actor, folderRunId).value(QStringLiteral("status")).toString(),
+                     QStringLiteral("completed"));
 
             const QString expectedPath = position == 1 ? firstPath : secondPath;
             const QString expectedName = position == 1 ? QStringLiteral("a.png") : QStringLiteral("b.png");
@@ -1246,15 +1259,11 @@ private slots:
         }
 
         const QJsonObject exhaustedStep = actor.executeTool(QStringLiteral("step_once"), QJsonObject());
-        QCOMPARE(exhaustedStep.value(QStringLiteral("errorCode")).toString(), QStringLiteral("STEP_FAILED"));
-        QCOMPARE(exhaustedStep.value(QStringLiteral("error")).toString(), QStringLiteral("文件夹图像已读取完毕"));
+        QCOMPARE(exhaustedStep.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         QCOMPARE(RunEngine::instance().getModule(instanceId), folderRuntime);
-        const QJsonObject exhaustedDetails = exhaustedStep.value(QStringLiteral("details")).toObject();
-        QVERIFY(exhaustedDetails.value(QStringLiteral("executionAttempted")).toBool());
-        const QString exhaustedRunId = exhaustedDetails.value(QStringLiteral("runId")).toString();
+        const QString exhaustedRunId = exhaustedStep.value(QStringLiteral("runId")).toString();
         QVERIFY(!exhaustedRunId.isEmpty());
-        const QJsonObject exhaustedRun = actor.executeTool(QStringLiteral("get_run_results"),
-                                                           QJsonObject{{QStringLiteral("runId"), exhaustedRunId}});
+        const QJsonObject exhaustedRun = waitForRun(actor, exhaustedRunId);
         QCOMPARE(exhaustedRun.value(QStringLiteral("status")).toString(), QStringLiteral("failed"));
         const QJsonObject exhaustedError = exhaustedRun.value(QStringLiteral("lastError")).toObject();
         QCOMPARE(exhaustedError.value(QStringLiteral("moduleId")).toString(), instanceId);

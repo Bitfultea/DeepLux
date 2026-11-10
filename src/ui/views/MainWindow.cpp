@@ -774,7 +774,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
         // 50ms 合并器决定，不在此强制刷新；叠加统一在合并器渲染回调内消费帧内快照。
         // 后台执行（设计 §5.3 #8 / §8.1）：runFinished 只表示“一轮执行结束”（Cycle 每轮都会发），
         // 不得据此重启循环或做 job 级收尾；job 级收尾只走 FlowExecutionService::jobFinished。
-        if (FlowExecutionService::instance().isActive()) {
+        const FlowExecutionService& service = FlowExecutionService::instance();
+        const RunObservation observation = RunEngine::instance().runObservation(result.runId);
+        const bool belongsToFinishedServiceJob = !observation.sessionId.isEmpty() &&
+                                                 observation.sessionId == service.lastSessionId();
+        if (m_closeAwaitingServiceJob || service.isActive() || belongsToFinishedServiceJob) {
             return;
         }
         // 无 Service job 的同步引擎路径（CLI/测试兼容）：强制 flush 一次（等价于 Single job 结束），
@@ -8140,6 +8144,18 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     if (service.isActive() || RunEngine::instance().isBusy()) {
         m_closeWhenRunFinishes = true;
         if (service.isActive()) {
+            m_closeAwaitingServiceJob = true;
+            const auto retryDeferredClose = [this]() {
+                if (!m_closeAwaitingServiceJob)
+                    return;
+                m_closeAwaitingServiceJob = false;
+                m_closeWhenRunFinishes = false;
+                close();
+            };
+            connect(&service, &FlowExecutionService::jobFinished, this,
+                    [retryDeferredClose](FlowExecutionService::JobType, bool) { retryDeferredClose(); });
+            connect(&service, &FlowExecutionService::jobFailed, this,
+                    [retryDeferredClose](FlowExecutionService::JobType, const QString&) { retryDeferredClose(); });
             service.stop();
         } else {
             // 无 Service job 的同步引擎运行（CLI/测试兼容路径）：沿用取消请求。
@@ -8164,6 +8180,9 @@ void MainWindow::closeEvent(QCloseEvent* event) {
             return;
         }
     }
+    CameraManager& cameraManager = CameraManager::instance();
+    if (!m_cameraShutdownReady && cameraManager.isShutdownComplete())
+        m_cameraShutdownReady = true;
     if (!m_cameraShutdownReady) {
         if (!m_cameraShutdownStarted) {
             m_cameraShutdownStarted = true;
@@ -8191,8 +8210,11 @@ void MainWindow::closeEvent(QCloseEvent* event) {
                                                          "Camera");
                             }
                         });
-            CameraManager::instance().shutdownAsync();
+            cameraManager.shutdownAsync();
         }
+        // shutdownAsync() may finish synchronously when there are no active
+        // cameras. Keep the first close request deferred in either case; the
+        // completion callback schedules a second close with readiness latched.
         event->ignore();
         return;
     }
@@ -8600,8 +8622,9 @@ void MainWindow::onRunOnce() {
     RunEngine& engine = RunEngine::instance();
     FlowExecutionService& service = FlowExecutionService::instance();
     if (engine.isPausedAtBreakpoint() || service.state() == FlowExecutionService::State::Paused) {
-        const QString permission =
-            engine.runMode() == RunMode::RunCycle ? QStringLiteral("RunCycle") : QStringLiteral("RunOnce");
+        const bool cycleMode = m_isCycleMode || service.currentJob() == FlowExecutionService::JobType::Cycle ||
+                               engine.runMode() == RunMode::RunCycle;
+        const QString permission = cycleMode ? QStringLiteral("RunCycle") : QStringLiteral("RunOnce");
         if (!guiUserHasPermission(permission)) {
             showGuiPermissionDenied(this, tr("继续运行"));
             return;
@@ -8642,8 +8665,9 @@ void MainWindow::onRunCycle() {
     RunEngine& engine = RunEngine::instance();
     FlowExecutionService& service = FlowExecutionService::instance();
     if (engine.isPausedAtBreakpoint() || service.state() == FlowExecutionService::State::Paused) {
-        const QString permission =
-            engine.runMode() == RunMode::RunCycle ? QStringLiteral("RunCycle") : QStringLiteral("RunOnce");
+        const bool cycleMode = m_isCycleMode || service.currentJob() == FlowExecutionService::JobType::Cycle ||
+                               engine.runMode() == RunMode::RunCycle;
+        const QString permission = cycleMode ? QStringLiteral("RunCycle") : QStringLiteral("RunOnce");
         if (!guiUserHasPermission(permission)) {
             showGuiPermissionDenied(this, tr("继续运行"));
             return;
@@ -8780,7 +8804,8 @@ void MainWindow::finishRunUi() {
     if (m_closeWhenRunFinishes) {
         // jobFinished 到达时 Service 已提交 Idle：此时重试关闭不会再次被 ignore。
         m_closeWhenRunFinishes = false;
-        QTimer::singleShot(0, this, &QWidget::close);
+        m_closeAwaitingServiceJob = false;
+        close();
     }
 }
 

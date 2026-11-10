@@ -96,7 +96,7 @@ private slots:
     void categoryCanBeAdded();
     void categoryCanBeRemoved();
     void testUserAddsAndRemovesSamCategoryThroughGui();
-    void currentCategoryLabelPrefersListSelection();
+    void currentCategoryLabelUsesComboSelection();
     void currentCategoryLabelPrefersDropdownSelection();
     void openAnnotationButtonExists();
     void exportYoloButtonExists();
@@ -190,7 +190,6 @@ void TestSamAnnotatorDialog::initTestCase() {
     qputenv("DEEPLUX_APP_DATA_DIR", QFile::encodeName(m_testConfigDir.path()));
     qunsetenv("DEEPLUX_SAM_PACKAGE");
     qunsetenv("DEEPLUX_SAM_DEVICE");
-    SamNativeSettings::initialize();
 }
 
 void TestSamAnnotatorDialog::cleanupTestCase() {
@@ -598,7 +597,7 @@ void TestSamAnnotatorDialog::guiPromptPredictionSessionRoundTripAndLabelMeExport
     QVERIFY(server.lastSetImageReadable);
 
     dialog.addCategory(QStringLiteral("slice195-defect"));
-    dialog.categoryList()->setCurrentRow(dialog.categoryList()->count() - 1);
+    dialog.categoryCombo()->setCurrentIndex(dialog.categoryCombo()->count() - 1);
     QCOMPARE(dialog.currentCategoryLabel(), QStringLiteral("slice195-defect"));
     dialog.positivePointButton()->click();
     QCOMPARE(dialog.overlayWidget()->parentWidget(), &mainView);
@@ -762,8 +761,8 @@ void TestSamAnnotatorDialog::concaveAnnotationPersistsCropLocalCoordinatesAndSou
                                       Q_ARG(QRectF, QRectF(20, 20, 40, 35)), Q_ARG(double, 0.97),
                                       Q_ARG(QString, QStringLiteral("fixture-rle")), Q_ARG(QImage, QImage())));
     QCOMPARE(dlg.overlayWidget()->previewPolygon(), polygon);
-    if (dlg.categoryList()->count() > 0)
-        dlg.categoryList()->setCurrentRow(0);
+    if (dlg.categoryCombo()->count() > 0)
+        dlg.categoryCombo()->setCurrentIndex(0);
     const QString label = dlg.currentCategoryLabel();
     QPushButton* confirm = nullptr;
     for (QPushButton* button : dlg.findChildren<QPushButton*>()) {
@@ -1365,28 +1364,28 @@ void TestSamAnnotatorDialog::categoryCanBeRemoved() {
 void TestSamAnnotatorDialog::testUserAddsAndRemovesSamCategoryThroughGui() {
     SamAnnotatorDialog dlg;
     const QString category = QStringLiteral("slice22-临时类别");
-    const int initialCount = dlg.categoryList()->count();
+    const int initialCount = dlg.categoryCombo()->count();
 
-    dlg.categoryEdit()->setText(category);
+    dlg.categoryCombo()->setEditText(category);
     dlg.addCategoryButton()->click();
 
-    QCOMPARE(dlg.categoryList()->count(), initialCount + 1);
+    QCOMPARE(dlg.categoryCombo()->count(), initialCount + 1);
     QVERIFY(dlg.categories().contains(category));
-    QCOMPARE(dlg.categoryList()->item(initialCount)->text(), category);
+    QCOMPARE(dlg.categoryCombo()->itemText(initialCount), category);
 
-    dlg.categoryList()->setCurrentRow(initialCount);
+    dlg.categoryCombo()->setCurrentIndex(initialCount);
     dlg.removeCategoryButton()->click();
 
-    QCOMPARE(dlg.categoryList()->count(), initialCount);
+    QCOMPARE(dlg.categoryCombo()->count(), initialCount);
     QVERIFY(!dlg.categories().contains(category));
-    for (int row = 0; row < dlg.categoryList()->count(); ++row)
-        QVERIFY(dlg.categoryList()->item(row)->text() != category);
+    for (int row = 0; row < dlg.categoryCombo()->count(); ++row)
+        QVERIFY(dlg.categoryCombo()->itemText(row) != category);
 }
 
-void TestSamAnnotatorDialog::currentCategoryLabelPrefersListSelection() {
+void TestSamAnnotatorDialog::currentCategoryLabelUsesComboSelection() {
     SamAnnotatorDialog dlg;
-    if (dlg.categoryList()->count() > 0) {
-        dlg.categoryList()->setCurrentRow(0);
+    if (dlg.categoryCombo()->count() > 0) {
+        dlg.categoryCombo()->setCurrentIndex(0);
         QVERIFY(!dlg.currentCategoryLabel().isEmpty());
     }
 }
@@ -2173,12 +2172,12 @@ void TestSamAnnotatorDialog::agentMaskOperationsValidateAndUndo() {
     QCOMPARE(dlg.session().annotations.last().maskRle, originalPolygonOnlyRle);
     dlg.redoButton()->click();
 
-    dlg.categoryList()->setCurrentRow(-1);
-    dlg.categoryEdit()->setText(QString(32760, QLatin1Char('a')));
+    dlg.categoryCombo()->setCurrentIndex(-1);
+    dlg.categoryCombo()->setEditText(QString(32760, QLatin1Char('a')));
     QVERIFY(!confirmObject(dlg, squarePolygon(150, 20, 5), QRectF(150, 20, 5, 5),
                            makeDisplayMask(200, 150, {QRect(150, 20, 5, 5)}))
                  .isEmpty());
-    dlg.categoryEdit()->setText(QString(32760, QLatin1Char('b')));
+    dlg.categoryCombo()->setEditText(QString(32760, QLatin1Char('b')));
     QVERIFY(!confirmObject(dlg, squarePolygon(160, 20, 5), QRectF(160, 20, 5, 5),
                            makeDisplayMask(200, 150, {QRect(160, 20, 5, 5)}))
                  .isEmpty());

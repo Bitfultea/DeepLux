@@ -18,6 +18,7 @@ private slots:
     void testClicksOutsideImageAreIgnoredAndRoiIsClipped();
     void testClickCoordinatesRoundTripAcrossDisplayTransforms();
     void testCancelPendingPanStopsLateMoves();
+    void testBackgroundRefreshPreservesPan();
 };
 
 void TestHImageWidget::testEmptyStatePaintsReadableCenteredHint() {
@@ -197,6 +198,26 @@ void TestHImageWidget::testCancelPendingPanStopsLateMoves() {
 
     QTest::mouseRelease(&widget, Qt::MiddleButton, Qt::NoModifier, lateMove);
     QCOMPARE(widget.imageToWidget(imagePoint), mappingAfterCancel);
+}
+
+void TestHImageWidget::testBackgroundRefreshPreservesPan() {
+    HImageWidget widget;
+    widget.resize(320, 240);
+    QImage image(160, 100, QImage::Format_RGB32);
+    image.fill(Qt::black);
+    widget.setImage(image);
+    widget.show();
+    QCoreApplication::processEvents();
+    const QPoint start(160, 120);
+    QTest::mousePress(&widget, Qt::MiddleButton, Qt::NoModifier, start);
+    const QPointF before = widget.imageToWidget(QPointF(40, 30));
+    image.fill(Qt::white);
+    widget.setImage(image, true);
+    const QPoint delta(24, 16);
+    QMouseEvent move(QEvent::MouseMove, QPointF(start + delta), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(&widget, &move);
+    QCOMPARE(widget.imageToWidget(QPointF(40, 30)), before + QPointF(delta));
+    QTest::mouseRelease(&widget, Qt::MiddleButton, Qt::NoModifier, start + delta);
 }
 
 QTEST_MAIN(TestHImageWidget)

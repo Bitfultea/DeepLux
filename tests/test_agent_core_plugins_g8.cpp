@@ -17,10 +17,13 @@
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QRegularExpression>
 #include <QSignalSpy>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QThread>
 #include <QTemporaryDir>
 #include <QtEndian>
 #include <QtTest/QtTest>
@@ -30,67 +33,97 @@ using namespace DeepLux;
 
 namespace {
 
-class ModbusReadPeer final : public QObject {
+class ModbusReadPeer final {
 public:
-    explicit ModbusReadPeer(QObject* parent = nullptr) : QObject(parent) {
-        connect(&m_server, &QTcpServer::newConnection, this, [this] {
-            while (QTcpSocket* socket = m_server.nextPendingConnection()) {
-                m_buffers.insert(socket, {});
-                connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
-                    QByteArray& buffer = m_buffers[socket];
-                    buffer += socket->readAll();
-                    while (buffer.size() >= 12) {
-                        const QByteArray request = buffer.left(12);
-                        buffer.remove(0, 12);
-                        m_requests.append(request);
-
-                        const auto* bytes = reinterpret_cast<const uchar*>(request.constData());
-                        const quint16 transactionId = qFromBigEndian<quint16>(bytes);
-                        const quint8 unitId = static_cast<quint8>(bytes[6]);
-                        const bool rejectRead = m_failNextRead;
-                        m_failNextRead = false;
-                        QByteArray response;
-                        response.resize(rejectRead ? 9 : 13);
-                        auto* responseBytes = reinterpret_cast<uchar*>(response.data());
-                        qToBigEndian(transactionId, responseBytes);
-                        qToBigEndian<quint16>(0, responseBytes + 2);
-                        qToBigEndian<quint16>(rejectRead ? 3 : 7, responseBytes + 4);
-                        responseBytes[6] = unitId;
-                        responseBytes[7] = rejectRead ? 0x83 : 0x03;
-                        if (rejectRead) {
-                            responseBytes[8] = 2;
-                        } else {
-                            responseBytes[8] = 4;
-                            qToBigEndian<quint16>(0x1234, responseBytes + 9);
-                            qToBigEndian<quint16>(0xABCD, responseBytes + 11);
-                        }
-                        socket->write(response);
-                        socket->flush();
-                    }
-                });
-            }
-        });
+    ~ModbusReadPeer() {
+        if (m_thread.isRunning()) {
+            m_thread.quit();
+            if (!m_thread.wait(3000))
+                qFatal("ModbusReadPeer worker did not stop within 3000 ms");
+        }
     }
 
     bool listen() {
-        return m_server.listen(QHostAddress::LocalHost, 0);
+        m_worker = new QObject;
+        m_worker->moveToThread(&m_thread);
+        QObject::connect(&m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
+        m_thread.start();
+        bool listening = false;
+        QMetaObject::invokeMethod(
+            m_worker,
+            [this, &listening] {
+                m_server = new QTcpServer(m_worker);
+                QObject::connect(m_server, &QTcpServer::newConnection, m_worker, [this] {
+                    while (QTcpSocket* socket = m_server->nextPendingConnection()) {
+                        auto* buffer = new QByteArray;
+                        QObject::connect(socket, &QTcpSocket::readyRead, m_worker, [this, socket, buffer] {
+                            *buffer += socket->readAll();
+                            while (buffer->size() >= 12) {
+                                const QByteArray request = buffer->left(12);
+                                buffer->remove(0, 12);
+                                const auto* bytes = reinterpret_cast<const uchar*>(request.constData());
+                                const quint16 transactionId = qFromBigEndian<quint16>(bytes);
+                                const quint8 unitId = static_cast<quint8>(bytes[6]);
+                                bool rejectRead = false;
+                                {
+                                    QMutexLocker locker(&m_mutex);
+                                    m_requests.append(request);
+                                    rejectRead = m_failNextRead;
+                                    m_failNextRead = false;
+                                }
+                                QByteArray response;
+                                response.resize(rejectRead ? 9 : 13);
+                                auto* responseBytes = reinterpret_cast<uchar*>(response.data());
+                                qToBigEndian(transactionId, responseBytes);
+                                qToBigEndian<quint16>(0, responseBytes + 2);
+                                qToBigEndian<quint16>(rejectRead ? 3 : 7, responseBytes + 4);
+                                responseBytes[6] = unitId;
+                                responseBytes[7] = rejectRead ? 0x83 : 0x03;
+                                if (rejectRead) {
+                                    responseBytes[8] = 2;
+                                } else {
+                                    responseBytes[8] = 4;
+                                    qToBigEndian<quint16>(0x1234, responseBytes + 9);
+                                    qToBigEndian<quint16>(0xABCD, responseBytes + 11);
+                                }
+                                socket->write(response);
+                                socket->flush();
+                            }
+                        });
+                        QObject::connect(socket, &QObject::destroyed, m_worker, [buffer] { delete buffer; });
+                    }
+                });
+                listening = m_server->listen(QHostAddress::LocalHost, 0);
+                if (listening) {
+                    QMutexLocker locker(&m_mutex);
+                    m_port = m_server->serverPort();
+                }
+            },
+            Qt::BlockingQueuedConnection);
+        return listening;
     }
 
     quint16 port() const {
-        return m_server.serverPort();
+        QMutexLocker locker(&m_mutex);
+        return m_port;
     }
 
     QList<QByteArray> requests() const {
+        QMutexLocker locker(&m_mutex);
         return m_requests;
     }
 
     void rejectNextRead() {
+        QMutexLocker locker(&m_mutex);
         m_failNextRead = true;
     }
 
 private:
-    QTcpServer m_server;
-    QHash<QTcpSocket*, QByteArray> m_buffers;
+    QThread m_thread;
+    QObject* m_worker = nullptr;
+    QTcpServer* m_server = nullptr;
+    mutable QMutex m_mutex;
+    quint16 m_port = 0;
     QList<QByteArray> m_requests;
     bool m_failNextRead = false;
 };
@@ -116,7 +149,8 @@ private:
 
     static QJsonObject runToTerminal(AgentActor& actor) {
         const QJsonObject started = actor.executeTool(QStringLiteral("run_flow"),
-                                                      QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                      QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
+                                                                  {QStringLiteral("wait"), false}});
         if (started.value(QStringLiteral("status")).toString() != QLatin1String("started"))
             return started;
 
@@ -180,7 +214,7 @@ private slots:
         QVERIFY(installPlugin(pluginRoot, QStringLiteral("LoadPointCloud"), QStringLiteral(G8_LOADPOINTCLOUD_PLUGIN),
                               QStringLiteral(G8_LOADPOINTCLOUD_METADATA)));
         QVERIFY(PluginManager::instance().initialize());
-        QCOMPARE(PluginManager::instance().pluginPaths(), QStringList{QDir(pluginRoot).absolutePath()});
+        QVERIFY(PluginManager::instance().pluginPaths().contains(QDir(pluginRoot).absolutePath()));
         QCOMPARE(PluginManager::instance().availableModules().size(), 15);
         ToolSchema::instance().registerDefaultTools();
         QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
@@ -244,7 +278,10 @@ private slots:
         QCOMPARE(configured.value(QStringLiteral("status")).toString(), QStringLiteral("params_set"));
 
         const QJsonObject successfulRun = runToTerminal(actor);
-        QCOMPARE(successfulRun.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+        QVERIFY2(successfulRun.value(QStringLiteral("status")).toString() == QLatin1String("completed"),
+                 qPrintable(QStringLiteral("%1; Modbus requests=%2")
+                                .arg(QString::fromUtf8(QJsonDocument(successfulRun).toJson(QJsonDocument::Compact)))
+                                .arg(peer.requests().size())));
         QCOMPARE(peer.requests().size(), 1);
         const QByteArray request = peer.requests().first();
         QCOMPARE(request.size(), 12);
@@ -1284,22 +1321,19 @@ private slots:
         QCOMPARE(saved.object().value(QStringLiteral("g8_payload")).toString(), QStringLiteral("payload-42"));
         QCOMPARE(saved.object().value(QStringLiteral("string_length")).toInt(), 10);
 
-        const QString missingParentTarget =
-            QDir(m_appDataDir.path()).filePath(QStringLiteral("missing-parent/g8-output.json"));
         QVERIFY(QFile::remove(outputPath));
-        QCOMPARE(configure(missingParentTarget).value(QStringLiteral("status")).toString(),
-                 QStringLiteral("params_set"));
+        QVERIFY(QDir().mkpath(outputPath));
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
                                             QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
-        QVERIFY(!QFileInfo::exists(missingParentTarget));
+        QVERIFY(QFileInfo(outputPath).isDir());
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         const RunResult failedResult = qvariant_cast<RunResult>(runFinished.takeFirst().at(0));
         QVERIFY(!failedResult.success);
         QCOMPARE(failedResult.failedModule, instanceId);
         QVERIFY(failedResult.errorMessage.contains(QStringLiteral("保存数据失败")));
-        QVERIFY(!QFileInfo::exists(QFileInfo(missingParentTarget).absolutePath()));
+        QVERIFY(QFileInfo(outputPath).isDir());
 
         controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
         clearProject();

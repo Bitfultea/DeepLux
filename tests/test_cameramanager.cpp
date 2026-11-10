@@ -1188,6 +1188,7 @@ void TestCameraManager::testAgentCameraLifecycleConfirmationAndLeaseDelay() {
     const QJsonObject approved = controller.handleToolCall("connect_camera", {{"deviceId", "lifecycle-camera"}});
     QCOMPARE(approved.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
     QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+    QTRY_VERIFY_WITH_TIMEOUT(controller.pendingConfirmationPayload().isEmpty(), 5000);
     QCOMPARE(plugin.discoverCalls(), initialDiscoverCalls);
     QCOMPARE(plugin.createCalls(), 0);
     QCOMPARE(counters.connectCalls, 0);
@@ -1214,6 +1215,7 @@ void TestCameraManager::testAgentCameraLifecycleConfirmationAndLeaseDelay() {
     QVERIFY(disconnectEffects.first().toString().startsWith(QStringLiteral("camera_disconnect:lifecycle-camera")));
     QCOMPARE(counters.disconnectCalls, 0);
     QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+    QTRY_VERIFY_WITH_TIMEOUT(controller.pendingConfirmationPayload().isEmpty(), 5000);
     QVERIFY(manager.isConnected(QStringLiteral("lifecycle-camera")));
     QCOMPARE(counters.disconnectCalls, 0);
 
@@ -1221,6 +1223,7 @@ void TestCameraManager::testAgentCameraLifecycleConfirmationAndLeaseDelay() {
         controller.handleToolCall("disconnect_camera", {{"deviceId", "lifecycle-camera"}});
     QCOMPARE(duplicatePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
     QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+    QTRY_VERIFY_WITH_TIMEOUT(controller.pendingConfirmationPayload().isEmpty(), 5000);
     QCOMPARE(counters.disconnectCalls, 0);
     const QJsonObject cachedWhilePending = actor.executeTool("list_cameras", {});
     bool stillReportedConnected = false;
@@ -2032,6 +2035,7 @@ void TestCameraManager::testCameraSetViewDeleteAndApplyRemainGuiOnly() {
     QVERIFY(ipEdit);
     QVERIFY(portSpin);
     QTRY_COMPARE_WITH_TIMEOUT(cameraTable->rowCount(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(manager.pendingDiscoveryCount(), 0, 1000);
     QCOMPARE(manager.knownCameras().size(), 1);
     QCOMPARE(manager.knownCameras().first().deviceId, QStringLiteral("camera-set-view-gui-only-device"));
     const CameraStatus expectedStatus = manager.knownCameras().first();
@@ -2075,6 +2079,11 @@ void TestCameraManager::testCameraSetViewDeleteAndApplyRemainGuiOnly() {
     QCOMPARE(plugin.cameraCounters().startCalls, 0);
     QCOMPARE(plugin.cameraCounters().stopCalls, 0);
     QCOMPARE(plugin.cameraCounters().triggerCalls, 0);
+    plugin.setReportsCamera(false);
+    manager.refreshCameras();
+    QTRY_COMPARE_WITH_TIMEOUT(manager.pendingDiscoveryCount(), 0, 1000);
+    QVERIFY(manager.tryUnregisterCameraPlugin(plugin.pluginId()));
+    m_registeredIds.removeAll(plugin.pluginId());
 }
 
 void TestCameraManager::testCameraSetViewRestoresAgentPendingCameraOperations() {
@@ -2088,6 +2097,7 @@ void TestCameraManager::testCameraSetViewRestoresAgentPendingCameraOperations() 
     m_registeredIds.append(plugin.pluginId());
     QSignalSpy discoverySpy(&manager, &CameraManager::cameraDiscoverySettled);
     QTRY_COMPARE_WITH_TIMEOUT(discoverySpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(manager.pendingDiscoveryCount(), 0, 1000);
 
     CameraCounters& counters = plugin.cameraCounters();
     QSemaphore connectGate;
@@ -2131,6 +2141,11 @@ void TestCameraManager::testCameraSetViewRestoresAgentPendingCameraOperations() 
     disconnectGate.release();
     counters.disconnectGate = nullptr;
     QTRY_COMPARE_WITH_TIMEOUT(table->item(0, 3)->text(), QStringLiteral("Disconnected"), 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(!manager.hasPendingCameraOperation(QStringLiteral("camera-view-agent-device")), 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(manager.cameraSessionCount(), 0, 1000);
+    plugin.setReportsCamera(false);
+    manager.refreshCameras();
+    QTRY_COMPARE_WITH_TIMEOUT(manager.pendingDiscoveryCount(), 0, 1000);
     QVERIFY(manager.tryUnregisterCameraPlugin(plugin.pluginId()));
     m_registeredIds.removeAll(plugin.pluginId());
 }
@@ -2223,9 +2238,14 @@ void TestCameraManager::testCameraSetViewStartsAsyncOperationsAndRecoversErrors(
     plugin.cameraCounters().disconnectGate = nullptr;
     QTRY_COMPARE_WITH_TIMEOUT(reopenedTable->item(0, 3)->text(), QStringLiteral("Disconnected"), 1000);
     QCOMPARE(reopenedTable->item(0, 3)->toolTip(), QString());
+    QTRY_VERIFY_WITH_TIMEOUT(!manager.hasPendingCameraOperation(QStringLiteral("camera-view-click-device")), 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(manager.pendingDiscoveryCount(), 0, 1000);
     QCOMPARE(manager.cameraSessionCount(), 0);
     QCOMPARE(plugin.cameraCounters().callsOnManagerThread.load(), 0);
     QCOMPARE(plugin.cameraCounters().wrongWorkerThreadCalls.load(), 0);
+    plugin.setReportsCamera(false);
+    manager.refreshCameras();
+    QTRY_COMPARE_WITH_TIMEOUT(manager.pendingDiscoveryCount(), 0, 1000);
     QVERIFY(manager.tryUnregisterCameraPlugin(plugin.pluginId()));
     m_registeredIds.removeAll(plugin.pluginId());
 }
@@ -3194,6 +3214,7 @@ void TestCameraManager::testAgentDiscoveryRequestIdsCannotAliasCameraOperations(
 }
 
 void TestCameraManager::testAgentDiscoveryConfirmationBindsExactRegistrySnapshot() {
+    ToolSchema::instance().registerDefaultTools();
     CameraManager& manager = CameraManager::instance();
     FakeAsyncCameraPlugin first(QStringLiteral("test-agent-confirm-discovery-a"));
     manager.registerCameraPlugin(&first);
@@ -3241,6 +3262,7 @@ void TestCameraManager::testAgentDiscoveryConfirmationBindsExactRegistrySnapshot
     m_registeredIds.append(third.pluginId());
     QTRY_COMPARE_WITH_TIMEOUT(manager.pendingDiscoveryCount(), 0, 1000);
     QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+    QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
     QCOMPARE(controller.state(), AgentController::AgentState::Idle);
     QCOMPARE(first.asyncStarts(), firstStarts);
     QCOMPARE(second.asyncStarts(), secondStarts);
@@ -3262,9 +3284,10 @@ void TestCameraManager::testAgentDiscoveryConfirmationBindsExactRegistrySnapshot
     QJsonObject approvedResult;
     QVERIFY(manager.getCameraDiscoveryOperationResult(approvedRequestId, &approvedResult));
     QCOMPARE(approvedResult.value(QStringLiteral("status")).toString(), QStringLiteral("success"));
-    const QJsonObject queriedThroughAgent =
+    QJsonObject queriedThroughAgent =
         actor.executeTool(QStringLiteral("get_camera_discovery_operation"),
                           {{QStringLiteral("requestId"), QString::number(approvedRequestId)}});
+    queriedThroughAgent.remove(QStringLiteral("_elapsedMs"));
     QCOMPARE(queriedThroughAgent, approvedResult);
 }
 

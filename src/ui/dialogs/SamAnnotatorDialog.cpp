@@ -3092,6 +3092,8 @@ void SamAnnotatorDialog::addCategory(const QString& label) {
         const int index = m_categoryCombo->count() - 1;
         m_categoryCombo->setItemData(index, m_categoryColors.value(trimmed), Qt::DecorationRole);
         m_categoryCombo->setCurrentIndex(index);
+        if (m_removeCategoryButton)
+            m_removeCategoryButton->setEnabled(true);
     }
 }
 
@@ -3101,8 +3103,13 @@ void SamAnnotatorDialog::removeCategory(const QString& label) {
         return;
     m_categories.removeAt(idx);
     m_categoryColors.remove(label);
-    if (m_categoryCombo)
-        m_categoryCombo->removeItem(m_categoryCombo->findData(label));
+    if (m_categoryCombo) {
+        int comboIndex = m_categoryCombo->findData(label);
+        if (comboIndex < 0)
+            comboIndex = m_categoryCombo->findText(label, Qt::MatchFixedString);
+        if (comboIndex >= 0)
+            m_categoryCombo->removeItem(comboIndex);
+    }
 }
 
 void SamAnnotatorDialog::onAddCategory() {

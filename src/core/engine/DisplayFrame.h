@@ -1,6 +1,7 @@
 #pragma once
 
 #include "platform/Platform.h"
+#include "model/ImageData.h"
 
 #include <QImage>
 #include <QMap>
@@ -28,6 +29,7 @@ struct DEEPLUX_API DisplayFrame {
     QString moduleId;
     QString viewportId;
     QImage image;
+    ImageCoordinateProvenance coordinateProvenance;
     QMap<QString, QVariantMap> moduleDataSnapshot;
 
     bool hasImage() const {

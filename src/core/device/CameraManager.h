@@ -158,6 +158,9 @@ public:
     bool hasPendingCameraOperation(const QString& deviceId) const;
     bool pendingCameraOperation(const QString& deviceId, CameraOperationSnapshot* snapshot) const;
     int cameraSessionCount() const;
+    bool isShutdownComplete() const {
+        return m_shuttingDown && m_shutdownSignalSent;
+    }
     void shutdownAsync();
 
     // ========== 连接管理 ==========

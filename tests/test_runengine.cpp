@@ -1737,6 +1737,7 @@ void TestRunEngine::testProjectMutationLeaseLinearizesWithRunStart() {
     QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& item) -> ModuleBase* {
         return new GateModule(item.id, &moduleEntered, &releaseModule, nullptr);
     }));
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("project_mutation_gate"), ExecutionAffinity::Worker);
 
     QSemaphore mutationLeaseEntered;
     QSemaphore releaseMutation;
@@ -1844,6 +1845,7 @@ void TestRunEngine::testGlobalVariableExecutionLeaseLinearizesRunsAndWrites() {
     QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& instance) -> ModuleBase* {
         return new GateModule(instance.id, &moduleEntered, &releaseModule, &log);
     }));
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("global_variable_gate"), ExecutionAffinity::Worker);
 
     // If a user mutation owns the gate first, run admission waits and no module can
     // observe an intermediate variable state. Releasing the mutation admits the run.

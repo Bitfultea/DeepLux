@@ -444,16 +444,23 @@ void ToolSchema::registerDefaultTools() {
                    {"toPort", "string", "Target input port name", false}}});
 
     // run_flow
-    registerTool({"run_flow",
-                  "Run the current project flow once, or for cycle mode provide maxCycles (1..10); each cycle is "
-                  "confirmed as a bounded session. An explicit flowId selector is not supported and returns "
-                  "FLOW_UNAVAILABLE.",
-                  {{"mode", "enum", "Run mode: once or cycle", false, QJsonValue("once"), {"once", "cycle"}},
-                   {"flowId", "string",
-                    "Optional flow selector; explicit selection is currently unavailable and "
-                    "returns FLOW_UNAVAILABLE",
-                    false},
-                   {"maxCycles", "integer", "Required for cycle mode; maximum complete iterations, 1..10", false}}});
+    registerTool(ToolDefinition{
+        "run_flow",
+        "Run the current project flow once, or for cycle mode provide maxCycles (1..10); each cycle is "
+        "confirmed as a bounded session. wait=true (default) waits for a single run to finish; wait=false "
+        "returns immediately with a runId. Cycle mode always returns immediately. An explicit flowId selector "
+        "is not supported and returns FLOW_UNAVAILABLE.",
+        {{"mode", "enum", "Run mode: once or cycle", false, QJsonValue("once"), {"once", "cycle"}},
+         {"flowId", "string",
+          "Optional flow selector; explicit selection is currently unavailable and returns FLOW_UNAVAILABLE",
+          false},
+         {"maxCycles", "integer", "Required for cycle mode; maximum complete iterations, 1..10", false},
+         {"wait", "boolean", "Wait for single-run completion; ignored in cycle mode", false, QJsonValue(true)},
+         {"timeoutMs", "integer", "Wait timeout in ms (wait=true), clamped to [1000,300000]", false,
+          QJsonValue(60000)}},
+        false,
+        false,
+        60000});
 
     registerTool({"step_once",
                   "Execute exactly one module in the current flow using the GUI single-step engine",
@@ -487,29 +494,30 @@ void ToolSchema::registerDefaultTools() {
          {{"flowId", "string",
            "Optional flow selector; explicit selection is currently unavailable and "
            "returns FLOW_UNAVAILABLE",
-           false}}});
+           false}},
+         false,
+         true});
 
     // get_available_plugins
-    registerTool({"get_available_plugins",
-                  "List discovered module plugins and a separate camera-driver catalog with metadata, binary "
-                  "presence, loaded state, platformCompatibility, currently executable lifecycle actions, and "
-                  "machine-readable blocked action reasons. This is read-only: listed load/unload actions can still "
-                  "fail during actual plugin validation or initialization. Platform compatibility does not prove "
-                  "that a device, SDK, or model is ready.",
-                  {}});
+    registerTool(makeReadOnlyTool(
+        "get_available_plugins",
+        "List discovered module plugins and a separate camera-driver catalog with metadata, binary presence, loaded "
+        "state, platformCompatibility, currently executable lifecycle actions, and machine-readable blocked action "
+        "reasons. This is read-only: listed load/unload actions can still fail during actual plugin validation or "
+        "initialization. Platform compatibility does not prove that a device, SDK, or model is ready."));
 
     // list_cameras
-    registerTool({"list_cameras",
-                  "Requires a logged-in user with Camera permission. List camera devices already present in "
-                  "CameraManager's cached snapshot without probing drivers or "
-                  "changing device state. An empty list does not mean a fresh discovery found no devices.",
-                  {}});
+    registerTool(makeReadOnlyTool(
+        "list_cameras",
+        "Requires a logged-in user with Camera permission. List camera devices already present in CameraManager's "
+        "cached snapshot without probing drivers or changing device state. An empty list does not mean a fresh "
+        "discovery found no devices."));
 
-    registerTool({"get_camera_discovery_targets",
-                  "Requires a logged-in user with Camera permission. Read registered camera plugins that support "
-                  "asynchronous discovery and the legacy plugins that "
-                  "will not be scanned. This only reads the registry and never probes a driver.",
-                  {}});
+    registerTool(makeReadOnlyTool(
+        "get_camera_discovery_targets",
+        "Requires a logged-in user with Camera permission. Read registered camera plugins that support asynchronous "
+        "discovery and the legacy plugins that will not be scanned. This only reads the registry and never probes a "
+        "driver."));
     registerTool(
         {"discover_cameras",
          "Requires a logged-in user with Camera permission. Start one asynchronous discovery for each exact plugin "
@@ -601,23 +609,25 @@ void ToolSchema::registerDefaultTools() {
                   true}); // dangerous
 
     // get_module_params_schema
-    registerTool({"get_module_params_schema",
-                  "Describe a plugin before creation or an existing module instance. Use nested parameter descriptions "
-                  "to interpret coordinate fields; for NPointCalibration, image points use current-image local "
-                  "pixels, while world points and reprojection_error retain the caller-defined target-plane scale. "
-                  "Do not infer millimeters, a fixed world reference, or image-source provenance from these fields.",
-                  {{"instanceId", "string", "Existing module instance ID", false},
-                   {"plugin", "string", "Plugin type name or stable ID (before instance creation)", false}}});
+    registerTool(makeReadOnlyTool(
+        "get_module_params_schema",
+        "Describe a plugin before creation or an existing module instance. Use nested parameter descriptions to "
+        "interpret coordinate fields; for NPointCalibration, image points use current-image local pixels, while "
+        "world points and reprojection_error retain the caller-defined target-plane scale. Do not infer millimeters, "
+        "a fixed world reference, or image-source provenance from these fields.",
+        {{"instanceId", "string", "Existing module instance ID", false},
+         {"plugin", "string", "Plugin type name or stable ID (before instance creation)", false}}));
 
     // get_run_results
-    registerTool({"get_run_results",
-                  "Get a run's status by runId (or the latest run when omitted), with cumulative statistics. "
-                  "For a cycle session, lastCompletedRunId identifies the latest finished tick whose output can "
-                  "be queried; bounded Agent cycle sessions also report maxCycles, completedCycles, and "
-                  "lastSuccessfulRunId. Unknown runId returns RUN_NOT_FOUND; a finished run reports completed, failed "
-                  "or cancelled. A PLC write whose request was accepted by the local socket but has no valid "
-                  "success echo reports uncertain with retryable=false; do not repeat it automatically.",
-                  {{"runId", "string", "Run ID returned by run_flow (defaults to latest)", false}}});
+    registerTool(makeReadOnlyTool(
+        "get_run_results",
+        "Get a run's status by runId (or the latest run when omitted), with cumulative statistics. For a cycle "
+        "session, lastCompletedRunId identifies the latest finished tick whose output can be queried; bounded Agent "
+        "cycle sessions also report maxCycles, completedCycles, and lastSuccessfulRunId. Unknown runId returns "
+        "RUN_NOT_FOUND; a finished run reports completed, failed or cancelled. A PLC write whose request was accepted "
+        "by the local socket but has no valid success echo reports uncertain with retryable=false; do not repeat it "
+        "automatically.",
+        {{"runId", "string", "Run ID returned by run_flow (defaults to latest)", false}}));
 
     // get_module_output（阶段 3）
     registerTool(
@@ -744,24 +754,25 @@ void ToolSchema::registerDefaultTools() {
                   {}});
 
     // read_documentation
-    registerTool({"read_documentation",
-                  "Read DeepLux module/usage documentation, including the built-in knowledge base and "
-                  "user-added documents (managed via Agent Settings -> Knowledge Base). Results are paged by "
-                  "matching sections; requires the signed-in user's OpenFile permission. Use offset/limit to "
-                  "continue. Use this to learn about module parameters, "
-                  "workflows, and best practices when you're unsure.",
-                  {{"topic", "string", "Topic to look up (e.g. 'FindCircle', 'workflow', 'GrabImage params')", true},
-                   {"offset", "integer", "Zero-based matching-section offset", false, QJsonValue(0)},
-                   {"limit", "integer", "Page size from 1 to 50", false, QJsonValue(10)}}});
+    registerTool(makeReadOnlyTool(
+        "read_documentation",
+        "Read DeepLux module/usage documentation, including the built-in knowledge base and user-added documents "
+        "(managed via Agent Settings -> Knowledge Base). Results are paged by matching sections; requires the signed-in "
+        "user's OpenFile permission. Use offset/limit to continue. Use this to learn about module parameters, "
+        "workflows, and best practices when you're unsure.",
+        {{"topic", "string", "Topic to look up (e.g. 'FindCircle', 'workflow', 'GrabImage params')", true},
+         {"offset", "integer", "Zero-based matching-section offset", false, QJsonValue(0)},
+         {"limit", "integer", "Page size from 1 to 50", false, QJsonValue(10)}}));
 
-    registerTool({"list_knowledge_documents",
-                  "List built-in read-only and user knowledge documents. Returns stable document IDs and metadata, "
-                  "not document contents. Requires the signed-in user's OpenFile permission.",
-                  {}});
-    registerTool({"preview_knowledge_document",
-                  "Preview up to 512 KiB of one knowledge document by its ID from list_knowledge_documents. "
-                  "Requires the signed-in user's OpenFile permission.",
-                  {{"documentId", "string", "Exact knowledge document ID", true}}});
+    registerTool(makeReadOnlyTool(
+        "list_knowledge_documents",
+        "List built-in read-only and user knowledge documents. Returns stable document IDs and metadata, not document "
+        "contents. Requires the signed-in user's OpenFile permission."));
+    registerTool(makeReadOnlyTool(
+        "preview_knowledge_document",
+        "Preview up to 512 KiB of one knowledge document by its ID from list_knowledge_documents. Requires the "
+        "signed-in user's OpenFile permission.",
+        {{"documentId", "string", "Exact knowledge document ID", true}}));
     registerTool({"add_knowledge_document",
                   "Copy a readable Markdown or text file into the user knowledge base. Existing names are never "
                   "overwritten. Requires the signed-in user's SaveFile permission and confirmation; leaves the "
@@ -1072,13 +1083,14 @@ void ToolSchema::registerDefaultTools() {
          {"keyword", "string", "Case-insensitive substring match on message", false},
          {"limit", "integer", "Max entries to return, clamped to [1,200]", false, QJsonValue(50)}}));
 
-    // tune_node_and_verify（写，非 dangerous：改工程参数可撤销；验证运行不写外部资源）
-    registerTool(makeWriteTool(
+    // tune_node_and_verify：默认 flow 模式会运行整条流程，可能触达设备/网络/文件输出；
+    // 目前 schema 使用保守的 dangerous 标记，node 模式也要求确认，避免静态 schema 漏掉执行副作用。
+    registerTool(makeDangerousTool(
         "tune_node_and_verify",
-        "Apply a parameter patch to one node atomically and verify the effect. runMode=flow (default) writes the "
-        "parameters, runs the whole flow once waiting for completion, and returns before/after plus this node's "
-        "runtime outputs. runMode=node only applies the patch and reports the previous frame's outputs without "
-        "running anything (no side effects).",
+        "Apply a parameter patch to one node atomically and verify the effect. This operation requires confirmation. "
+        "runMode=flow (default) writes the parameters, runs the whole flow once waiting for completion, and returns "
+        "before/after plus this node's runtime outputs; the flow may reach devices, network endpoints, or file outputs. "
+        "runMode=node only applies the patch and reports the previous frame's outputs without running the flow.",
         {{"nodeName", "string", "Module instance name (preferred) or instance id", true},
          {"parameters", "object", "Parameter patch: key -> value (string/number/bool), 1..32 keys", true},
          {"runMode", "enum", "Verification mode", false, QJsonValue("flow"), {"flow", "node"}},

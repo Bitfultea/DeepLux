@@ -1,5 +1,6 @@
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
+#include "core/common/UserManager.h"
 #include "core/agent/GuiEvent.h"
 #include "core/engine/RunEngine.h"
 #include "core/manager/PluginManager.h"
@@ -385,6 +386,7 @@ private:
 
 private slots:
     void initTestCase() {
+        UserManager::instance().login(QStringLiteral("developer"), QString());
         QVERIFY(m_appDataDir.isValid());
         qputenv("DEEPLUX_APP_DATA_DIR", m_appDataDir.path().toLocal8Bit());
         const QString pluginRoot = QDir(m_appDataDir.path()).filePath(QStringLiteral("plugins"));
@@ -392,7 +394,7 @@ private slots:
 
         PluginManager& plugins = PluginManager::instance();
         QVERIFY(plugins.initialize());
-        QCOMPARE(plugins.pluginPaths(), QStringList{QDir(pluginRoot).absolutePath()});
+        QVERIFY(plugins.pluginPaths().contains(QDir(pluginRoot).absolutePath()));
         const QList<PluginInfo> scanned = plugins.moduleInfos();
         QCOMPARE(scanned.size(), 1);
         QCOMPARE(scanned.first().id, QStringLiteral("com.deeplux.plugin.tcpclient"));
@@ -435,8 +437,8 @@ private slots:
 
         const QByteArray request = QByteArrayLiteral("slice48-request");
         const QByteArray responseBytes = QByteArrayLiteral("slice48-response");
-        TcpPeer stalePeer(request, responseBytes);
-        TcpPeer approvedPeer(request, responseBytes);
+        ThreadedTcpPeer stalePeer(request, responseBytes);
+        ThreadedTcpPeer approvedPeer(request, responseBytes);
         QVERIFY(stalePeer.listen());
         QVERIFY(approvedPeer.listen());
 
@@ -492,7 +494,9 @@ private slots:
         const QString staleId = controller.pendingConfirmationId();
         QVERIFY(!staleId.isEmpty());
         QVERIFY(project->setModuleParam(instanceId, QStringLiteral("port"), approvedPeer.port()));
+        const int auditCountBeforeStaleConfirmation = audit.count();
         QVERIFY(controller.confirmPendingTools(staleId));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > auditCountBeforeStaleConfirmation, 5000);
         QCOMPARE(stalePeer.connectionCount(), 0);
         QCOMPARE(approvedPeer.connectionCount(), 0);
         QCOMPARE(stalePeer.received(), QByteArray());
@@ -504,7 +508,8 @@ private slots:
         QVERIFY(response.last().at(0).toString().contains(QStringLiteral("确认已失效")));
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
+                                                        {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QJsonArray approvedEffects{QStringLiteral("execution:may_touch_files_devices_network(流程内模块)"),
                                          QStringLiteral("tcp_client:%1@127.0.0.1:%2 operation=WriteRead timeout=1000ms")
@@ -531,7 +536,13 @@ private slots:
 
         const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(result.runId, runId);
-        QVERIFY2(result.success, qPrintable(result.errorMessage));
+        QVERIFY2(result.success,
+                 qPrintable(QStringLiteral("%1; stale connections=%2 bytes=%3; approved connections=%4 bytes=%5")
+                                .arg(result.errorMessage)
+                                .arg(stalePeer.connectionCount())
+                                .arg(stalePeer.received().size())
+                                .arg(approvedPeer.connectionCount())
+                                .arg(approvedPeer.received().size())));
         QCOMPARE(moduleSignalCount(moduleStarted, instanceId), 1);
         QCOMPARE(moduleSignalCount(moduleFinished, instanceId), 1);
         QCOMPARE(moduleFinished.last().at(0).toString(), instanceId);
@@ -899,15 +910,13 @@ private slots:
         QVERIFY(controller.confirmPendingTools(approvedId));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 1, 5000);
         const QJsonObject step = toolExecuted.last().at(1).toJsonObject();
-        QCOMPARE(step.value(QStringLiteral("errorCode")).toString(), QStringLiteral("STEP_FAILED"));
-        const QJsonObject stepDetails = step.value(QStringLiteral("details")).toObject();
-        QVERIFY(stepDetails.value(QStringLiteral("executionAttempted")).toBool());
-        const QString runId = stepDetails.value(QStringLiteral("runId")).toString();
-        QVERIFY(!runId.isEmpty());
+        QCOMPARE(step.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
+        const RunResult failed = qvariant_cast<RunResult>(runFinished.last().at(0));
+        const QString runId = failed.runId;
+        QVERIFY(!runId.isEmpty());
         QVERIFY(peer.waitForRequestAndNoResponse(3000));
         QVERIFY(!engine.isBusy());
-        const RunResult failed = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(failed.runId, runId);
         QCOMPARE(failed.errorCode, ExecError::SideEffectUncertain);
         QCOMPARE(failed.failedModule, instanceId);
@@ -1021,10 +1030,10 @@ private slots:
         QVERIFY(controller.confirmPendingTools(approvedId));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 1, 5000);
         const QJsonObject stepResult = toolExecuted.last().at(1).toJsonObject();
-        QCOMPARE(stepResult.value(QStringLiteral("status")).toString(), QStringLiteral("stepped"));
-        const QString runId = stepResult.value(QStringLiteral("runId")).toString();
-        QVERIFY(!runId.isEmpty());
+        QCOMPARE(stepResult.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
+        const QString runId = qvariant_cast<RunResult>(runFinished.last().at(0)).runId;
+        QVERIFY(!runId.isEmpty());
         QTRY_COMPARE_WITH_TIMEOUT(peer.connectionCount(), 1, 5000);
         QTRY_COMPARE_WITH_TIMEOUT(peer.received(), request, 5000);
         const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
@@ -1247,11 +1256,11 @@ private slots:
         QVERIFY(!approvedId.isEmpty());
         QVERIFY(approvedId != rejectedId);
         QVERIFY(controller.confirmPendingTools(approvedId));
-        QCOMPARE(engine.state(), RunState::Idle);
-        QVERIFY(!engine.isBusy());
-        QCOMPARE(runFinished.count(), 1);
         QTRY_COMPARE_WITH_TIMEOUT(peer.connectionCount(), 1, 5000);
         QTRY_COMPARE_WITH_TIMEOUT(peer.received(), request, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
+        QCOMPARE(engine.state(), RunState::Idle);
         const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(result.runId, runId);
         QVERIFY2(result.success, qPrintable(result.errorMessage));
@@ -1333,7 +1342,9 @@ private slots:
         QCOMPARE(approvedPeer.connectionCount(), 0);
 
         QVERIFY(project->setModuleParam(instanceId, QStringLiteral("port"), approvedPeer.port()));
+        const int auditCountBeforeStaleConfirmation = audit.count();
         QVERIFY(controller.confirmPendingTools(staleId));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > auditCountBeforeStaleConfirmation, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(stalePeer.connectionCount(), 0);
         QVERIFY(stalePeer.requests().isEmpty());

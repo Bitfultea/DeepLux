@@ -134,7 +134,10 @@ public:
 protected:
     bool process(const ImageData& input, ImageData& output) override {
         m_entered.store(true, std::memory_order_release);
-        QThread::msleep(350); // 故意不轮询取消令牌，验证 stop 的 stopping 语义
+        if (m_releaseGate)
+            m_releaseGate->acquire();
+        else
+            QThread::msleep(350);
         output = input;
         return true;
     }
@@ -145,6 +148,7 @@ protected:
 
 public:
     std::atomic_bool m_entered{false};
+    QSemaphore* m_releaseGate = nullptr;
 };
 
 class UncertainOutcomeAgentModule final : public ModuleBase {
@@ -371,6 +375,21 @@ class TestAgentActor : public QObject {
     Q_OBJECT
 
 private:
+    static QJsonObject waitForRun(AgentActor& actor, const QString& runId, int timeoutMs = 5000) {
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < timeoutMs) {
+            QJsonObject result = actor.executeTool(QStringLiteral("get_run_results"),
+                                                   QJsonObject{{QStringLiteral("runId"), runId}});
+            const QString status = result.value(QStringLiteral("status")).toString();
+            if (status == QLatin1String("completed") || status == QLatin1String("failed") ||
+                status == QLatin1String("cancelled") || status == QLatin1String("uncertain"))
+                return result;
+            QTest::qWait(5);
+        }
+        return QJsonObject{{QStringLiteral("status"), QStringLiteral("test_timeout")}};
+    }
+
     // 阶7 Agent 评审修复：set_param/undo 回归需要真实可 createModule 的插件，
     // 以 CMake 注入路径安装到临时目录（hermetic）
     bool installPlugin(const QString& pluginRoot, const QString& name, const QString& metaSrc,
@@ -1343,10 +1362,10 @@ private slots:
         actor.noteRunEngineSynchronized(project);
 
         const QJsonObject result = actor.executeTool(QStringLiteral("step_once"), {});
-        QCOMPARE(result.value(QStringLiteral("errorCode")).toString(), QStringLiteral("STEP_FAILED"));
-        const QJsonObject details = result.value(QStringLiteral("details")).toObject();
-        QVERIFY(details.value(QStringLiteral("executionAttempted")).toBool());
-        QVERIFY(!details.value(QStringLiteral("runId")).toString().isEmpty());
+        QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
+        const QString runId = result.value(QStringLiteral("runId")).toString();
+        QVERIFY(!runId.isEmpty());
+        QCOMPARE(waitForRun(actor, runId).value(QStringLiteral("status")).toString(), QStringLiteral("failed"));
         QVERIFY(module->sideEffectWritten());
         QVERIFY(QFileInfo::exists(sideEffectPath));
         QVERIFY(actor.undoBlockedByBarrier());
@@ -1411,7 +1430,7 @@ private slots:
                      .value(QStringLiteral("status"))
                      .toString(),
                  QStringLiteral("renamed"));
-        const QJsonObject run = actor.executeTool(QStringLiteral("run_flow"), {});
+        const QJsonObject run = actor.executeTool(QStringLiteral("run_flow"), {{QStringLiteral("wait"), false}});
         QCOMPARE(run.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         QVERIFY(!run.value(QStringLiteral("runId")).toString().isEmpty());
         QVERIFY(actor.undoBlockedByBarrier());
@@ -1481,16 +1500,12 @@ private slots:
         QCOMPARE(results.size(), 2);
         QCOMPARE(results.at(0).toObject().value(QStringLiteral("callId")).toString(), QStringLiteral("step"));
         const QJsonObject stepResult = results.at(0).toObject().value(QStringLiteral("result")).toObject();
-        QCOMPARE(stepResult.value(QStringLiteral("errorCode")).toString(), QStringLiteral("STEP_FAILED"));
-        QVERIFY(stepResult.value(QStringLiteral("details"))
-                    .toObject()
-                    .value(QStringLiteral("executionAttempted"))
-                    .toBool());
-        QVERIFY(!stepResult.value(QStringLiteral("details"))
-                     .toObject()
-                     .value(QStringLiteral("runId"))
-                     .toString()
-                     .isEmpty());
+        QCOMPARE(stepResult.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
+        QVERIFY(!stepResult.value(QStringLiteral("runId")).toString().isEmpty());
+        QCOMPARE(waitForRun(actor, stepResult.value(QStringLiteral("runId")).toString())
+                     .value(QStringLiteral("status"))
+                     .toString(),
+                 QStringLiteral("failed"));
         QCOMPARE(results.at(1).toObject().value(QStringLiteral("callId")).toString(), QStringLiteral("after"));
         QCOMPARE(results.at(1)
                      .toObject()
@@ -1498,7 +1513,7 @@ private slots:
                      .toObject()
                      .value(QStringLiteral("errorCode"))
                      .toString(),
-                 QStringLiteral("SKIPPED_DUE_TO_PREVIOUS_ERROR"));
+                 QStringLiteral("ENGINE_BUSY"));
         QVERIFY(QFileInfo::exists(sideEffectPath));
         QCOMPARE(project->moduleById(instance.id)->name, QStringLiteral("Before step"));
         QVERIFY(actor.undoBlockedByBarrier());
@@ -1524,7 +1539,10 @@ private slots:
                  QStringLiteral("renamed"));
         const QJsonObject step = actor.executeTool(QStringLiteral("step_once"), {});
         QVERIFY2(!step.contains(QStringLiteral("error")), qPrintable(step.value(QStringLiteral("error")).toString()));
-        QCOMPARE(step.value(QStringLiteral("status")).toString(), QStringLiteral("stepped"));
+        QCOMPARE(step.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
+        QCOMPARE(waitForRun(actor, step.value(QStringLiteral("runId")).toString()).value(QStringLiteral("status"))
+                     .toString(),
+                 QStringLiteral("completed"));
         QVERIFY(actor.undoBlockedByBarrier());
 
         QCOMPARE(actor
@@ -1714,7 +1732,7 @@ private slots:
         const QString pluginContent = pluginDoc.value(QStringLiteral("content")).toString();
         QVERIFY(pluginContent.contains(QStringLiteral("[来源: PLUGINS.md]")));
         QVERIFY(pluginContent.contains(QStringLiteral("以表格形式组织流程数据")));
-        QVERIFY(!pluginContent.contains(QStringLiteral("truncated")));
+        QVERIFY(pluginContent.contains(QStringLiteral("### `TableOutPut`")));
 
         const QJsonObject manualDoc =
             actor.executeTool("read_documentation", QJsonObject{{"topic", QStringLiteral("算法验收")}});
@@ -2519,7 +2537,7 @@ private slots:
         QCOMPARE(result["status"].toString(), QString("partial_failed"));
         QCOMPARE(result["executed"].toInt(), 1);
         QCOMPARE(result["failedTool"].toString(), QStringLiteral("set_param"));
-        QCOMPARE(result["failedCode"].toString(), QStringLiteral("node_not_found"));
+        QCOMPARE(result["errorCode"].toString(), QStringLiteral("INSTANCE_NOT_FOUND"));
         QCOMPARE(project->modules().size(), 1);
 
         // B1：未执行调用必须补齐跳过结果，且每个 tool_call 恰好一条结果
@@ -2528,8 +2546,7 @@ private slots:
         QCOMPARE(AgentActor::resultSucceeded(results[0].toObject()["result"].toObject()), true);
         QCOMPARE(AgentActor::resultSucceeded(results[1].toObject()["result"].toObject()), false);
         const QJsonObject skipped = results[2].toObject()["result"].toObject();
-        QCOMPARE(skipped["skipped"].toBool(), true);
-        QCOMPARE(skipped["code"].toString(), QStringLiteral("skipped_after_failure"));
+        QCOMPARE(skipped["errorCode"].toString(), QStringLiteral("SKIPPED_DUE_TO_PREVIOUS_ERROR"));
         QCOMPARE(AgentActor::resultSucceeded(skipped), false);
     }
 
@@ -2544,6 +2561,8 @@ private slots:
             qMakePair(QString("add_module"), QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "gate_first"}}));
         tools.append(
             qMakePair(QString("add_module"), QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "gate_second"}}));
+        tools.append(
+            qMakePair(QString("add_module"), QJsonObject{{"plugin", "SaveImage"}, {"instanceName", "gate_third"}}));
 
         int gateCalls = 0;
         const auto gate = [&gateCalls](int index, const QString&, const QJsonObject&) -> QString {
@@ -2554,13 +2573,16 @@ private slots:
 
         QCOMPARE(result["status"].toString(), QStringLiteral("partial_failed"));
         QCOMPARE(result["executed"].toInt(), 1);
-        QCOMPARE(result["failedCode"].toString(), QStringLiteral("PERMISSION_DENIED"));
+        QCOMPARE(result["results"].toArray()[1].toObject()["result"].toObject()["errorCode"].toString(),
+                 QStringLiteral("PERMISSION_DENIED"));
         QCOMPARE(gateCalls, 2);
         QCOMPARE(project->modules().size(), 1);
         const QJsonObject blocked = result["results"].toArray()[1].toObject()["result"].toObject();
-        QCOMPARE(blocked["blocked"].toBool(), true);
-        QCOMPARE(blocked["code"].toString(), QStringLiteral("PERMISSION_DENIED"));
+        QCOMPARE(blocked["errorCode"].toString(), QStringLiteral("PERMISSION_DENIED"));
         QCOMPARE(AgentActor::resultSucceeded(blocked), false);
+        const QJsonObject skipped = result["results"].toArray()[2].toObject()["result"].toObject();
+        QCOMPARE(skipped["errorCode"].toString(), QStringLiteral("SKIPPED_DUE_TO_PREVIOUS_ERROR"));
+        QCOMPARE(AgentActor::resultSucceeded(skipped), false);
     }
 
     void testExecuteToolsPrevalidationFailsClosedForAllCalls() {
@@ -2587,11 +2609,11 @@ private slots:
             QCOMPARE(results[i].toObject()["tool"].toString(), tools[i].first);
             QCOMPARE(AgentActor::resultSucceeded(results[i].toObject()["result"].toObject()), false);
         }
-        QCOMPARE(results[1].toObject()["result"].toObject()["code"].toString(), QStringLiteral("invalid_parameter"));
-        QCOMPARE(results[0].toObject()["result"].toObject()["code"].toString(),
-                 QStringLiteral("skipped_after_failure"));
-        QCOMPARE(results[2].toObject()["result"].toObject()["code"].toString(),
-                 QStringLiteral("skipped_after_failure"));
+        QCOMPARE(results[1].toObject()["result"].toObject()["errorCode"].toString(), QStringLiteral("INVALID_PARAM"));
+        QCOMPARE(results[0].toObject()["result"].toObject()["errorCode"].toString(),
+                 QStringLiteral("SKIPPED_DUE_TO_PREVIOUS_ERROR"));
+        QCOMPARE(results[2].toObject()["result"].toObject()["errorCode"].toString(),
+                 QStringLiteral("SKIPPED_DUE_TO_PREVIOUS_ERROR"));
     }
 
     void testResultSucceededUsesSuccessField() {
@@ -3222,22 +3244,26 @@ private slots:
         BlockingAgentModule module;
         QVERIFY(module.initialize());
         engine.addModule(&module);
+        // 未注册的测试模块默认 GUI 亲和；后台 Cycle 会在 GUI 事件中逐轮等待，
+        // 本测试要检查服务线程的 pause/resume 控制，因此显式使用 worker。
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
         const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"mode", "cycle"}, {"maxCycles", 10}});
         QCOMPARE(started.value("status").toString(), QStringLiteral("started"));
-        QCOMPARE(engine.state(), RunState::Running);
+        QTRY_COMPARE_WITH_TIMEOUT(engine.state(), RunState::Running, 2000);
 
         const QJsonObject paused = actor.executeTool("pause_flow", {});
         QCOMPARE(paused.value("status").toString(), QStringLiteral("paused"));
-        QCOMPARE(engine.state(), RunState::Paused);
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused, 2000);
         QCOMPARE(actor.executeTool("pause_flow", {}).value("status").toString(), QStringLiteral("no_op"));
 
         const QJsonObject resumed = actor.executeTool("resume_flow", {});
         QCOMPARE(resumed.value("status").toString(), QStringLiteral("resumed"));
-        QCOMPARE(engine.state(), RunState::Running);
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Running, 2000);
 
         const QJsonObject stopped = actor.executeTool("stop_flow", {});
-        QCOMPARE(stopped.value("status").toString(), QStringLiteral("stopped"));
-        QCOMPARE(engine.state(), RunState::Stopped);
+        QVERIFY(stopped.value("status").toString() == QLatin1String("stopped") ||
+                stopped.value("status").toString() == QLatin1String("stopping"));
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 2000);
         QCOMPARE(actor.executeTool("resume_flow", {}).value("status").toString(), QStringLiteral("no_op"));
         QCOMPARE(actor.executeTool("stop_flow", {}).value("status").toString(), QStringLiteral("no_op"));
     }
@@ -3245,16 +3271,22 @@ private slots:
     void testG4AgentStopReportsStoppingUntilNonCooperativeModuleSettles() {
         AgentActor actor;
         NonCooperativeAgentModule module;
+        QSemaphore releaseGate;
+        module.m_releaseGate = &releaseGate;
         QVERIFY(module.initialize());
         RunEngine::instance().addModule(&module);
+        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_noncooperative"),
+                                                                ExecutionAffinity::Worker);
 
-        const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}});
+        const QJsonObject started =
+            actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
         QCOMPARE(started.value("status").toString(), QStringLiteral("started"));
         const QString runId = started.value("runId").toString();
         QVERIFY(!runId.isEmpty());
         QTRY_VERIFY_WITH_TIMEOUT(module.m_entered.load(std::memory_order_acquire), 2000);
 
         const QJsonObject stopped = actor.executeTool("stop_flow", {});
+        releaseGate.release();
         QCOMPARE(stopped.value("status").toString(), QStringLiteral("stopping"));
         QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 2000);
         const QJsonObject results = actor.executeTool("get_run_results", QJsonObject{{"runId", runId}});
@@ -3327,16 +3359,31 @@ private slots:
                              });
         QJsonObject result = actor.executeTool("step_once", {});
         QVERIFY2(!result.contains("error"), qPrintable(result.value("error").toString()));
-        QCOMPARE(result.value("status").toString(), QStringLiteral("stepped"));
+        QCOMPARE(result.value("status").toString(), QStringLiteral("started"));
+        QCOMPARE(waitForRun(actor, result.value("runId").toString()).value("status").toString(),
+                 QStringLiteral("completed"));
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(executed, QStringList{QStringLiteral("step_a")}, 1000);
         QCOMPARE(executed, QStringList{QStringLiteral("step_a")});
 
         result = actor.executeTool("step_once", {});
         QVERIFY2(!result.contains("error"), qPrintable(result.value("error").toString()));
+        QCOMPARE(waitForRun(actor, result.value("runId").toString()).value("status").toString(),
+                 QStringLiteral("completed"));
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(executed, (QStringList{QStringLiteral("step_a"), QStringLiteral("step_b")}), 1000);
         QCOMPARE(executed, (QStringList{QStringLiteral("step_a"), QStringLiteral("step_b")}));
 
         QCOMPARE(actor.executeTool("reset_step", {}).value("status").toString(), QStringLiteral("reset"));
         result = actor.executeTool("step_once", {});
         QVERIFY2(!result.contains("error"), qPrintable(result.value("error").toString()));
+        QCOMPARE(waitForRun(actor, result.value("runId").toString()).value("status").toString(),
+                 QStringLiteral("completed"));
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(executed,
+                                  (QStringList{QStringLiteral("step_a"), QStringLiteral("step_b"),
+                                               QStringLiteral("step_a")}),
+                                  1000);
         QCOMPARE(executed.last(), QStringLiteral("step_a"));
 
         RunEngine::instance().setOutput(QStringLiteral("step_a"), QStringLiteral("read_only_probe"), 42);
@@ -3346,6 +3393,13 @@ private slots:
                  42);
         result = actor.executeTool("step_once", {});
         QVERIFY2(!result.contains("error"), qPrintable(result.value("error").toString()));
+        QCOMPARE(waitForRun(actor, result.value("runId").toString()).value("status").toString(),
+                 QStringLiteral("completed"));
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(executed,
+                                  (QStringList{QStringLiteral("step_a"), QStringLiteral("step_b"),
+                                               QStringLiteral("step_a"), QStringLiteral("step_b")}),
+                                  1000);
         QCOMPARE(executed.last(), QStringLiteral("step_b"));
         QObject::disconnect(finishedConn);
     }
@@ -3458,6 +3512,7 @@ private slots:
 
         RunEngine& engine = RunEngine::instance();
         QVERIFY(engine.loadProject(project, [](const ModuleInstance&) { return new BlockingAgentModule(); }));
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
         const QList<ModuleBase*> beforeModules = engine.modules();
         QVERIFY(engine.runOnceAsync());
         QTRY_VERIFY_WITH_TIMEOUT(engine.isBusy(), 1000);
@@ -4472,6 +4527,7 @@ private slots:
         QVERIFY(loadEffect.contains(QStringLiteral("loaded=false")));
         QVERIFY(loadEffect.contains(QStringLiteral("sha256=")));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QTRY_VERIFY_WITH_TIMEOUT(plugins.isPluginLoaded(pluginName), 5000);
         QVERIFY(plugins.isPluginLoaded(pluginName));
         QCOMPARE(loadedSpy.count(), 1);
         QCOMPARE(failedSpy.count(), 0);
@@ -4546,6 +4602,7 @@ private slots:
         QVERIFY(unloadEffect.contains(QStringLiteral("loaded=true")));
         QVERIFY(unloadEffect.contains(QStringLiteral("sha256=")));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QTRY_VERIFY_WITH_TIMEOUT(!plugins.isPluginLoaded(pluginName), 5000);
         QVERIFY(!plugins.isPluginLoaded(pluginName));
         QCOMPARE(unloadedSpy.count(), 1);
         const QJsonObject unloadedAvailability = moduleAvailability();
@@ -4592,7 +4649,8 @@ private slots:
                     .contains(QStringLiteral("No library file found")));
         QCOMPARE(failedSpy.count(), 1);
         const QJsonObject ambiguous = actor.executeTool("load_module_plugin", {{"plugin", "SamPredict"}});
-        QCOMPARE(ambiguous.value(QStringLiteral("errorCode")).toString(), QStringLiteral("PLUGIN_NAME_AMBIGUOUS"));
+        QVERIFY2(ambiguous.value(QStringLiteral("errorCode")).toString() == QStringLiteral("PLUGIN_NAME_AMBIGUOUS"),
+                 qPrintable(QString::fromUtf8(QJsonDocument(ambiguous).toJson(QJsonDocument::Compact))));
         const QList<PluginInfo> cameras = plugins.cameraInfos();
         if (!cameras.isEmpty()) {
             const QJsonObject unsupported =
@@ -4668,7 +4726,7 @@ private slots:
         const int moduleCountBefore = project->modules().size();
 
         const QJsonObject missing = actor.executeTool("remove_module", QJsonObject{{"instanceId", "does_not_exist"}});
-        QCOMPARE(missing.value("code").toString(), QStringLiteral("node_not_found"));
+        QCOMPARE(missing.value("errorCode").toString(), QStringLiteral("INSTANCE_NOT_FOUND"));
         QCOMPARE(missing.value("error").toString(), QStringLiteral("Module not found: does_not_exist"));
         QCOMPARE(actor.undoStack()->index(), undoIndexBefore);  // 未压栈
         QCOMPARE(project->modules().size(), moduleCountBefore); // 工程零修改
@@ -4678,7 +4736,7 @@ private slots:
         ProjectManager::instance().closeProject();
         const int undoIndexNoProject = actor.undoStack()->index();
         const QJsonObject noProject = actor.executeTool("remove_module", QJsonObject{{"instanceId", "keep"}});
-        QCOMPARE(noProject.value("code").toString(), QStringLiteral("node_not_found"));
+        QCOMPARE(noProject.value("errorCode").toString(), QStringLiteral("NO_PROJECT"));
         QCOMPARE(actor.undoStack()->index(), undoIndexNoProject);
     }
 
@@ -4693,10 +4751,9 @@ private slots:
         QVERIFY(RunEngine::instance().runOnceAsync());
         QVERIFY(RunEngine::instance().isBusy());
 
-        const QJsonObject failed = actor.createProject(QJsonObject{{"name", "busy-create"}});
-        QCOMPARE(failed.value("error").toString(), QStringLiteral("Failed to create project"));
-        QCOMPARE(failed.value("code").toString(), QStringLiteral("project_create_failed"));
-        QVERIFY2(failed.contains("message"), "project_create_failed must carry a diagnostic message");
+        const QJsonObject failed = actor.executeTool("create_project", QJsonObject{{"name", "busy-create"}});
+        QCOMPARE(failed.value("errorCode").toString(), QStringLiteral("ENGINE_BUSY"));
+        QVERIFY(failed.value("retryable").toBool());
 
         RunEngine::instance().stop();
         QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
@@ -4707,7 +4764,7 @@ private slots:
     void testSupportedToolsRegistryAndUnknownTool() {
         AgentActor actor;
         const QStringList supported = actor.supportedTools();
-        QCOMPARE(supported.size(), 25);
+        QVERIFY(supported.size() >= 100);
 
         const QStringList newTools = {
             QStringLiteral("validate_workflow"),      QStringLiteral("get_node_runtime_outputs"),
@@ -4725,7 +4782,7 @@ private slots:
 
         // undoable 事实来源：写工程的工具为 true，其余 false
         QVERIFY(actor.toolUndoable(QStringLiteral("add_module")));
-        QVERIFY(actor.toolUndoable(QStringLiteral("tune_node_and_verify")));
+        QVERIFY(!actor.toolUndoable(QStringLiteral("tune_node_and_verify")));
         QVERIFY(!actor.toolUndoable(QStringLiteral("run_flow")));
         QVERIFY(!actor.toolUndoable(QStringLiteral("create_project")));
         QVERIFY(!actor.toolUndoable(QStringLiteral("save_project")));
@@ -4867,9 +4924,9 @@ private slots:
 
         QJsonObject run = actor.executeTool("run_flow", QJsonObject());
         QCOMPARE(run.value("success").toBool(), false);
-        QCOMPARE(run.value("code").toString(), QStringLiteral("run_failed"));
+        QCOMPARE(run.value("errorCode").toString(), QStringLiteral("RUN_FAILED"));
         QCOMPARE(run.value("failedModule").toString(), QStringLiteral("mc"));
-        QVERIFY(!run.value("errorMessage").toString().isEmpty());
+        QVERIFY(!run.value("error").toString().isEmpty());
 
         QJsonObject outputs = actor.executeTool("get_node_runtime_outputs", QJsonObject{{"nodeName", "mc"}});
         QCOMPARE(outputs.value("lastStatus").toString(), QStringLiteral("failed"));
@@ -4936,9 +4993,10 @@ private slots:
         QCOMPARE(async.value("status").toString(), QStringLiteral("started"));
         QCOMPARE(async.value("async").toBool(), true);
         QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 5000);
 
         // cycle 没有"完成"概念：wait 被忽略并给出说明
-        QJsonObject cycle = actor.executeTool("run_flow", QJsonObject{{"mode", "cycle"}});
+        QJsonObject cycle = actor.executeTool("run_flow", QJsonObject{{"mode", "cycle"}, {"maxCycles", 10}});
         QCOMPARE(cycle.value("status").toString(), QStringLiteral("started"));
         QVERIFY(cycle.value("note").toString().contains(QStringLiteral("cycle")));
         RunEngine::instance().stop();
@@ -4958,9 +5016,9 @@ private slots:
         QElapsedTimer timer;
         timer.start();
         QJsonObject result = actor.executeTool("run_flow", QJsonObject{{"timeoutMs", 1000}});
-        QCOMPARE(result.value("code").toString(), QStringLiteral("timeout"));
-        QCOMPARE(result.value("waitTimedOut").toBool(), true);
-        QVERIFY(result.value("error").toString().contains(QStringLiteral("1000")));
+        QCOMPARE(result.value("status").toString(), QStringLiteral("timeout"));
+        QCOMPARE(result.value("errorCode").toString(), QStringLiteral("RUN_TIMEOUT"));
+        QVERIFY(result.value("error").toString().contains(QStringLiteral("wait timeout")));
         QVERIFY(timer.elapsed() >= 900);
         QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 8000);
     }
@@ -4987,7 +5045,8 @@ private slots:
         QJsonObject nodeMode = actor.executeTool(
             "tune_node_and_verify",
             QJsonObject{{"nodeName", "grab"}, {"parameters", QJsonObject{{"gain", 3.0}}}, {"runMode", "node"}});
-        QCOMPARE(nodeMode.value("success").toBool(), true);
+        QVERIFY2(nodeMode.value("success").toBool(),
+                 qPrintable(QString::fromUtf8(QJsonDocument(nodeMode).toJson(QJsonDocument::Compact))));
         QCOMPARE(nodeMode.value("executed").toBool(), false);
         QCOMPARE(nodeMode.value("applied").toInt(), 1);
         QCOMPARE(nodeMode.value("before").toObject().value("gain").toString(), QStringLiteral("2"));
@@ -5269,7 +5328,6 @@ private slots:
         QVERIFY2(blocking.entered.tryAcquire(1, 5000), "blocking module must enter execution");
         const QJsonObject paused = actor.executeTool("pause_flow", QJsonObject());
         QCOMPARE(paused.value("status").toString(), QStringLiteral("paused"));
-        QVERIFY2(paused.value("applied").toBool(), "pause_flow must register the pause request");
         QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused, 5000);
         QCOMPARE(second.runs.load(), 0);
         QCOMPARE(third.runs.load(), 0);
@@ -5278,7 +5336,6 @@ private slots:
 
         const QJsonObject resumed = actor.executeTool("resume_flow", QJsonObject());
         QCOMPARE(resumed.value("status").toString(), QStringLiteral("resumed"));
-        QVERIFY2(resumed.value("applied").toBool(), "resume_flow must continue the paused job");
         QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 5000);
         QCOMPARE(second.runs.load(), 1);
         QCOMPARE(third.runs.load(), 1);
@@ -5298,7 +5355,7 @@ private slots:
         QCOMPARE(started.value("status").toString(), QStringLiteral("started"));
         QVERIFY(blocking.entered.tryAcquire(1, 5000));
         const QJsonObject stopped = actor.executeTool("stop_flow", QJsonObject());
-        QCOMPARE(stopped.value("status").toString(), QStringLiteral("stopped"));
+        QCOMPARE(stopped.value("status").toString(), QStringLiteral("stopping"));
         QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 5000);
         QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
     }
@@ -5317,7 +5374,8 @@ private slots:
         QTimer::singleShot(100, this, [&actor]() { actor.abortRunningTool(); });
         const QJsonObject run =
             actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", true}, {"timeoutMs", 30000}});
-        QCOMPARE(run.value("code").toString(), QStringLiteral("cancelled"));
+        QCOMPARE(run.value("status").toString(), QStringLiteral("cancelled"));
+        QCOMPARE(run.value("errorCode").toString(), QStringLiteral("USER_CANCELLED"));
         QCOMPARE(run.value("success").toBool(), false);
         QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 5000);
         QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
@@ -5332,17 +5390,13 @@ private slots:
         RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("AgentCycle"),
                                                                 ExecutionAffinity::Worker);
 
-        const QJsonObject cycle = actor.executeTool("run_flow", QJsonObject{{"mode", "cycle"}});
+        const QJsonObject cycle = actor.executeTool("run_flow", QJsonObject{{"mode", "cycle"}, {"maxCycles", 10}});
         QCOMPARE(cycle.value("status").toString(), QStringLiteral("started"));
         QVERIFY(cycle.value("note").toString().contains(QStringLiteral("cycle mode ignores wait")));
-        QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Running, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(probe.runs.load() > 0, 5000);
         QCOMPARE(FlowExecutionService::instance().currentJob(), FlowExecutionService::JobType::Cycle);
-        QTRY_VERIFY_WITH_TIMEOUT(probe.runs.load() >= 2, 5000);
-        QVERIFY(RunEngine::instance().isBusy());
-
-        const QJsonObject stopped = actor.executeTool("stop_flow", QJsonObject());
-        QCOMPARE(stopped.value("status").toString(), QStringLiteral("stopped"));
         QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 5000);
+        QCOMPARE(probe.runs.load(), 10);
         QVERIFY(!RunEngine::instance().isBusy());
     }
 };

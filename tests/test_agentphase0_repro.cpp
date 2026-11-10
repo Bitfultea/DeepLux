@@ -29,6 +29,7 @@
 #include <QTableWidget>
 #include <QTcpServer>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTimer>
 #include <QtTest/QtTest>
 #include <algorithm>
@@ -297,12 +298,14 @@ private slots:
 
     void init() {
         RunEngine::instance().stop();
+        QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
         RunEngine::instance().clearModules();
         ProjectManager::instance().closeProject();
     }
 
     void cleanup() {
         RunEngine::instance().stop();
+        QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
         RunEngine::instance().clearModules();
         ProjectManager::instance().closeProject();
     }
@@ -341,7 +344,7 @@ private slots:
                  .contains("error"));
 
         QSignalSpy finishedSpy(&RunEngine::instance(), &RunEngine::runFinished);
-        const QJsonObject run = actor.executeTool("run_flow", QJsonObject());
+        const QJsonObject run = actor.executeTool("run_flow", QJsonObject{{"wait", false}});
         QVERIFY2(!run.contains("error"), qPrintable(run.value("error").toString()));
         QCOMPARE(run.value("status").toString(), QStringLiteral("started"));
         QVERIFY(run.value("async").toBool());
@@ -373,7 +376,7 @@ private slots:
                      .toString(),
                  QStringLiteral("STALE_OUTPUT"));
 
-        const QJsonObject secondRun = actor.executeTool("run_flow", QJsonObject());
+        const QJsonObject secondRun = actor.executeTool("run_flow", QJsonObject{{"wait", false}});
         QVERIFY(!secondRun.contains("error"));
         const QString secondId = secondRun.value("runId").toString();
         QVERIFY(!secondId.isEmpty());
@@ -406,7 +409,7 @@ private slots:
             {"mode", "point_pair"}, {"point1", QJsonArray{1.0, 2.0}}, {"point2", QJsonArray{4.0, 6.0}}};
         QVERIFY(!actor.executeTool("set_module_params", QJsonObject{{"instanceId", "measure"}, {"values", values}})
                      .contains("error"));
-        const QJsonObject started = actor.executeTool("run_flow", {});
+        const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"wait", false}});
         QVERIFY2(!started.contains("error"), qPrintable(started.value("error").toString()));
         const QString runId = started.value("runId").toString();
         QVERIFY(!runId.isEmpty());
@@ -521,7 +524,7 @@ private slots:
             QJsonObject{{"fromId", "grab"}, {"toId", "cal"}, {"fromPort", "image"}, {"toPort", "image"}});
         QVERIFY2(!connected.contains("error"), qPrintable(connected.value("error").toString()));
 
-        const QJsonObject started = actor.executeTool("run_flow", {});
+        const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"wait", false}});
         QVERIFY2(!started.contains("error"), qPrintable(started.value("error").toString()));
         const QString runId = started.value("runId").toString();
         QVERIFY(!runId.isEmpty());
@@ -601,7 +604,7 @@ private slots:
             QJsonObject{{"instanceId", "cal"},
                         {"values", QJsonObject{{"calibrationPoints", QJsonArray{}}, {"clearPointsOnRun", true}}}});
         QVERIFY2(!cleared.contains("error"), qPrintable(cleared.value("error").toString()));
-        const QJsonObject failedStart = actor.executeTool("run_flow", {});
+        const QJsonObject failedStart = actor.executeTool("run_flow", QJsonObject{{"wait", false}});
         QVERIFY2(!failedStart.contains("error"), qPrintable(failedStart.value("error").toString()));
         const QString failedRunId = failedStart.value("runId").toString();
         QVERIFY(!failedRunId.isEmpty());
@@ -635,7 +638,7 @@ private slots:
         QCOMPARE(started.value("status").toString(), QStringLiteral("started"));
         const QString sessionId = started.value("sessionId").toString();
         QVERIFY(!sessionId.isEmpty());
-        QCOMPARE(started.value("runId").toString(), sessionId);
+        QVERIFY(started.value("runId").toString() != sessionId);
         QTRY_VERIFY(!actor.executeTool("get_run_results", QJsonObject{{"runId", sessionId}})
                          .value("lastIterationRunId")
                          .toString()
@@ -663,12 +666,8 @@ private slots:
         QVERIFY(!actor.executeTool("add_module", QJsonObject{{"plugin", m_nameDelay}, {"instanceName", "delay"}})
                      .contains("error"));
         QVERIFY(
-            !actor.executeTool("set_param", QJsonObject{{"instanceId", "delay"}, {"key", "delayMs"}, {"value", "400"}})
+            !actor.executeTool("set_param", QJsonObject{{"instanceId", "delay"}, {"key", "delayMs"}, {"value", "5000"}})
                  .contains("error"));
-        const QJsonObject started = actor.executeTool("run_flow", {});
-        const QString runId = started.value("runId").toString();
-        QVERIFY2(!runId.isEmpty(), qPrintable(started.value("error").toString()));
-
         auto& controller = AgentController::instance();
         controller.clearConversation();
         auto* mock = new MockLLMClient(&controller);
@@ -678,6 +677,9 @@ private slots:
         QSignalSpy logSpy(&controller, &AgentController::actionLogEntryAdded);
         controller.sendUserMessage(QStringLiteral("读取刚才运行的图像输出"));
         QCOMPARE(mock->requestCount, 1);
+        const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"wait", false}});
+        const QString runId = started.value("runId").toString();
+        QVERIFY2(!runId.isEmpty(), qPrintable(started.value("error").toString()));
         AgentResponse query;
         query.success = true;
         query.toolCalls.append(
@@ -699,7 +701,7 @@ private slots:
         mock->emitResponse(query);
         QCOMPARE(mock->requestCount, 1);
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(logSpy.last().first()).result, QStringLiteral("pending"));
-        QTRY_COMPARE_WITH_TIMEOUT(mock->requestCount, 2, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(mock->requestCount, 2, 10000);
         heartbeat.stop();
         QCOMPARE(loopSpy.count(), 1);
         QVERIFY(heartbeatCount >= 3);
@@ -724,10 +726,8 @@ private slots:
         QVERIFY(!actor.executeTool("add_module", QJsonObject{{"plugin", m_nameDelay}, {"instanceName", "delay"}})
                      .contains("error"));
         QVERIFY(
-            !actor.executeTool("set_param", QJsonObject{{"instanceId", "delay"}, {"key", "delayMs"}, {"value", "400"}})
+            !actor.executeTool("set_param", QJsonObject{{"instanceId", "delay"}, {"key", "delayMs"}, {"value", "5000"}})
                  .contains("error"));
-        const QString runId = actor.executeTool("run_flow", {}).value("runId").toString();
-        QVERIFY(!runId.isEmpty());
         auto& controller = AgentController::instance();
         controller.clearConversation();
         auto* mock = new MockLLMClient(&controller);
@@ -736,6 +736,8 @@ private slots:
         QSignalSpy logSpy(&controller, &AgentController::actionLogEntryAdded);
         controller.sendUserMessage(QStringLiteral("读取运行结果"));
         QCOMPARE(mock->requestCount, 1);
+        const QString runId = actor.executeTool("run_flow", QJsonObject{{"wait", false}}).value("runId").toString();
+        QVERIFY(!runId.isEmpty());
         AgentResponse query;
         query.success = true;
         query.toolCalls.append(
@@ -743,7 +745,7 @@ private slots:
         mock->emitResponse(query);
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(logSpy.last().first()).result, QStringLiteral("pending"));
         ProjectManager::instance().currentProject()->setName(QStringLiteral("changed_during_wait"));
-        QTRY_COMPARE_WITH_TIMEOUT(mock->requestCount, 2, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(mock->requestCount, 2, 10000);
         QCOMPARE(qvariant_cast<AgentActionLogEntry>(logSpy.last().first()).result, QStringLiteral("error"));
         QJsonObject finalResult;
         for (const AgentMessage& message : mock->lastCtx.messages)
@@ -761,10 +763,8 @@ private slots:
         QVERIFY(!actor.executeTool("add_module", QJsonObject{{"plugin", m_nameDelay}, {"instanceName", "delay"}})
                      .contains("error"));
         QVERIFY(
-            !actor.executeTool("set_param", QJsonObject{{"instanceId", "delay"}, {"key", "delayMs"}, {"value", "400"}})
+            !actor.executeTool("set_param", QJsonObject{{"instanceId", "delay"}, {"key", "delayMs"}, {"value", "5000"}})
                  .contains("error"));
-        const QString runId = actor.executeTool("run_flow", {}).value("runId").toString();
-        QVERIFY(!runId.isEmpty());
         auto& controller = AgentController::instance();
         controller.clearConversation();
         auto* mock = new MockLLMClient(&controller);
@@ -773,6 +773,8 @@ private slots:
         QSignalSpy logSpy(&controller, &AgentController::actionLogEntryAdded);
         QSignalSpy errorSpy(&controller, &AgentController::llmErrorOccurred);
         controller.sendUserMessage(QStringLiteral("读取运行结果"));
+        const QString runId = actor.executeTool("run_flow", QJsonObject{{"wait", false}}).value("runId").toString();
+        QVERIFY(!runId.isEmpty());
         AgentResponse query;
         query.success = true;
         query.toolCalls.append(
@@ -811,10 +813,8 @@ private slots:
         QVERIFY(!actor.executeTool("add_module", QJsonObject{{"plugin", m_nameDelay}, {"instanceName", "delay"}})
                      .contains("error"));
         QVERIFY(
-            !actor.executeTool("set_param", QJsonObject{{"instanceId", "delay"}, {"key", "delayMs"}, {"value", "400"}})
+            !actor.executeTool("set_param", QJsonObject{{"instanceId", "delay"}, {"key", "delayMs"}, {"value", "5000"}})
                  .contains("error"));
-        const QString runId = actor.executeTool("run_flow", {}).value("runId").toString();
-        QVERIFY(!runId.isEmpty());
         auto& controller = AgentController::instance();
         controller.clearConversation();
         auto* mock = new MockLLMClient(&controller);
@@ -822,6 +822,8 @@ private slots:
         controller.setLLMClient(mock);
         QSignalSpy logSpy(&controller, &AgentController::actionLogEntryAdded);
         controller.sendUserMessage(QStringLiteral("读取运行结果"));
+        const QString runId = actor.executeTool("run_flow", QJsonObject{{"wait", false}}).value("runId").toString();
+        QVERIFY(!runId.isEmpty());
         AgentResponse query;
         query.success = true;
         query.toolCalls.append(
@@ -1013,13 +1015,14 @@ private slots:
         const QJsonObject firstStatus = actor.executeTool("get_run_results", QJsonObject{{"runId", firstId}});
         const QJsonObject value = actor.executeTool(
             "get_module_output", QJsonObject{{"runId", firstId}, {"instanceId", instance.id}, {"key", "table"}});
-        nextTick.join();
         QVERIFY(nextStarted);
         QCOMPARE(session.value("lastCompletedRunId").toString(), firstId);
         QCOMPARE(firstStatus.value("status").toString(), QStringLiteral("completed"));
         QCOMPARE(value.value("status").toString(), QStringLiteral("available"));
         QCOMPARE(value.value("totalRows").toInt(), 205);
         engine.stop();
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 1000);
+        nextTick.join();
         QTRY_VERIFY(!engine.isExecuting());
     }
 
@@ -1674,9 +1677,8 @@ private slots:
         QVERIFY(payload.value("context").toObject().contains("summary"));
         QVERIFY(payload.value("context").toObject().contains("projectVersion"));
 
-        ctrl.confirmPendingTools(ctrl.pendingConfirmationId()); // 模拟用户确认；同步执行
-
-        QCOMPARE(logSpy.count(), 1);
+        QVERIFY(ctrl.confirmPendingTools(ctrl.pendingConfirmationId())); // 确认执行排入 GUI 事件队列
+        QTRY_COMPARE_WITH_TIMEOUT(logSpy.count(), 1, 5000);
         const AgentActionLogEntry entry = logSpy.at(0).at(0).value<AgentActionLogEntry>();
         QCOMPARE(entry.action, QStringLiteral("save_project"));
         // 修复后：失败被如实记录为 error（不再是假 success）
@@ -1912,6 +1914,7 @@ private slots:
         QVERIFY(payload.value("context").toObject().value("sideEffects").toArray().size() >= 1);
         ctrl.confirmPendingTools(ctrl.pendingConfirmationId());
 
+        QTRY_VERIFY_WITH_TIMEOUT(!QFileInfo::exists(victim), 5000);
         QVERIFY2(waitForRunIdle(actor).isEmpty(), "flow should finish");
         QVERIFY2(!QFileInfo::exists(victim), "approved run must execute the deletion");
 

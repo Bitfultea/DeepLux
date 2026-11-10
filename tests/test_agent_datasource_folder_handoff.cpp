@@ -151,6 +151,7 @@ private slots:
         QVERIFY(!confirmation.contains(files.path().toUtf8()));
 
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QTRY_COMPARE_WITH_TIMEOUT(window.openCallCount(), 1, 5000);
         QCOMPARE(window.openCallCount(), 1);
         QCOMPARE(window.lastOpenedUrl(), QUrl::fromLocalFile(files.path()));
         QVERIFY(!toolSpy.isEmpty());
@@ -220,6 +221,7 @@ private slots:
         replacementWindow.show();
         QCoreApplication::processEvents();
         QVERIFY(controller.confirmPendingTools(ownerConfirmationId));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(controller.state(), AgentController::AgentState::Idle);
         QCOMPARE(originalWindow.openCallCount(), 0);
         QCOMPARE(replacementWindow.openCallCount(), 0);
@@ -231,6 +233,7 @@ private slots:
         const QString generationConfirmationId = controller.pendingConfirmationId();
         addSource(QStringLiteral("another-source"), QStringLiteral("other.png"));
         QVERIFY(controller.confirmPendingTools(generationConfirmationId));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(controller.state(), AgentController::AgentState::Idle);
         QCOMPARE(replacementWindow.openCallCount(), 0);
     }
@@ -268,21 +271,25 @@ private slots:
         };
 
         QVERIFY(confirm(QStringLiteral("duplicate")));
+        QTRY_COMPARE_WITH_TIMEOUT(toolSpy.count(), 1, 5000);
         QCOMPARE(toolSpy.takeLast().at(1).toJsonObject().value(QStringLiteral("errorCode")).toString(),
                  QStringLiteral("DATA_SOURCE_ID_AMBIGUOUS"));
         QCOMPARE(window.openCallCount(), 0);
         QVERIFY(confirm(QStringLiteral("empty-path")));
+        QTRY_COMPARE_WITH_TIMEOUT(toolSpy.count(), 1, 5000);
         QCOMPARE(toolSpy.takeLast().at(1).toJsonObject().value(QStringLiteral("errorCode")).toString(),
                  QStringLiteral("DATA_SOURCE_PATH_UNAVAILABLE"));
         QCOMPARE(window.openCallCount(), 0);
 
         QVERIFY(confirm(QStringLiteral("unknown-source")));
+        QTRY_COMPARE_WITH_TIMEOUT(toolSpy.count(), 1, 5000);
         QCOMPARE(toolSpy.takeLast().at(1).toJsonObject().value(QStringLiteral("errorCode")).toString(),
                  QStringLiteral("DATA_SOURCE_NOT_FOUND"));
         QCOMPARE(window.openCallCount(), 0);
 
         window.setOpenAccepted(false);
         QVERIFY(confirm(QStringLiteral("unique")));
+        QTRY_COMPARE_WITH_TIMEOUT(toolSpy.count(), 1, 5000);
         QCOMPARE(window.openCallCount(), 1);
         QCOMPARE(toolSpy.takeLast().at(1).toJsonObject().value(QStringLiteral("errorCode")).toString(),
                  QStringLiteral("DESKTOP_OPEN_FAILED"));

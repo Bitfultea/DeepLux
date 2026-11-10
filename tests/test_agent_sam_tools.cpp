@@ -1372,7 +1372,9 @@ private slots:
         replacement.fill(Qt::blue);
         QVERIFY(replacement.save(imagePath, "PNG"));
         QVERIFY(!frozenEffects.contains(expectedImageEffect(imagePath)));
+        const int auditCountBeforeStaleConfirmation = audit.count();
         QVERIFY(controller.confirmPendingTools(staleId));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > auditCountBeforeStaleConfirmation, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QVERIFY(server.requestLog.isEmpty());
         QCOMPARE(server.setImageCount, 0);
@@ -1439,7 +1441,9 @@ private slots:
         replacement.fill(Qt::yellow);
         QVERIFY(replacement.save(imagePath, "PNG"));
         QVERIFY(!frozenEffects.contains(expectedImageEffect(imagePath)));
+        const int auditCountBeforeStaleConfirmation = audit.count();
         QVERIFY(controller.confirmPendingTools(staleId));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > auditCountBeforeStaleConfirmation, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QVERIFY(server.requestLog.isEmpty());
         QCOMPARE(server.setImageCount, 0);
@@ -1516,7 +1520,9 @@ private slots:
         QVERIFY(QFile::remove(linkPath));
         QVERIFY(QFile::link(targetC, linkPath));
         QVERIFY(hasTarget(linkPath, targetB));
+        const int auditCountBeforeStaleConfirmation = audit.count();
         QVERIFY(controller.confirmPendingTools(staleId));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > auditCountBeforeStaleConfirmation, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(server.requestLog.size(), 0);
         QVERIFY(!QFileInfo::exists(targetB));
@@ -1601,6 +1607,8 @@ private slots:
         QVERIFY(!approvedId.isEmpty());
         QVERIFY(approvedId != rejectedId);
         QVERIFY(controller.confirmPendingTools(approvedId));
+        QTRY_COMPARE_WITH_TIMEOUT(annotateResult.value(QStringLiteral("status")).toString(),
+                                  QStringLiteral("annotated"), 10000);
         QVERIFY(QFileInfo::exists(sessionPath));
         QCOMPARE(annotateResult.value(QStringLiteral("status")).toString(), QStringLiteral("annotated"));
         QCOMPARE(annotateResult.value(QStringLiteral("added")).toInt(), 2);
@@ -2137,7 +2145,8 @@ private slots:
 
         const auto requestFlow = [&controller]() {
             return controller.handleToolCall(QStringLiteral("run_flow"),
-                                             {{QStringLiteral("mode"), QStringLiteral("once")}});
+                                             {{QStringLiteral("mode"), QStringLiteral("once")},
+                                              {QStringLiteral("wait"), false}});
         };
         const QString origin = QStringLiteral("http://127.0.0.1:%1").arg(QUrl(server.url()).port());
         QUrl decoratedUrl(server.url());
@@ -2238,7 +2247,9 @@ private slots:
         const QString replacementHash =
             QString::fromLatin1(QCryptographicHash::hash(replacementBytes, QCryptographicHash::Sha256).toHex());
         QVERIFY(replacementHash != oldHash);
+        const int auditCountBeforeStaleConfirmation = audit.count();
         QVERIFY(controller.confirmPendingTools(staleId));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > auditCountBeforeStaleConfirmation, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QVERIFY(server.requestLog.isEmpty());
         QCOMPARE(moduleStarted.count(), 0);
@@ -2390,7 +2401,8 @@ private slots:
 
         const auto requestFlow = [&controller]() {
             return controller.handleToolCall(QStringLiteral("run_flow"),
-                                             {{QStringLiteral("mode"), QStringLiteral("once")}});
+                                             {{QStringLiteral("mode"), QStringLiteral("once")},
+                                              {QStringLiteral("wait"), false}});
         };
         const auto assertSafeConfirmation = [this, &controller, &predictId](const QString& expectedOrigin) {
             const QJsonObject context =
@@ -2438,7 +2450,9 @@ private slots:
         const QString staleConfirmationId = controller.pendingConfirmationId();
         QVERIFY(!staleConfirmationId.isEmpty());
         QVERIFY(project->setModuleParam(predictId, QStringLiteral("serverUrl"), peerB.url()));
+        const int staleAuditBaseline = audit.count();
         QVERIFY(controller.confirmPendingTools(staleConfirmationId));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > staleAuditBaseline, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(peerA.requestLog.size(), 0);
         QCOMPARE(peerB.requestLog.size(), 0);
@@ -2823,7 +2837,9 @@ private slots:
         QVERIFY(!staleFirstStepConfirmation.isEmpty());
         const RunState engineStateBeforeStaleStep = engine.state();
         QVERIFY(saveSolidImage(Qt::red));
+        const int staleFirstStepAuditBaseline = audit.count();
         QVERIFY(controller.confirmPendingTools(staleFirstStepConfirmation));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > staleFirstStepAuditBaseline, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(engine.state(), engineStateBeforeStaleStep);
         QVERIFY(!engine.isBusy());
@@ -2842,7 +2858,7 @@ private slots:
         QVERIFY(controller.confirmPendingTools(firstStepConfirmation));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 1, 5000);
         const QJsonObject firstStep = toolExecuted.last().at(1).toJsonObject();
-        QCOMPARE(firstStep.value(QStringLiteral("status")).toString(), QStringLiteral("stepped"));
+        QCOMPARE(firstStep.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         const QString stepRunId = firstStep.value(QStringLiteral("runId")).toString();
         QVERIFY(!stepRunId.isEmpty());
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
@@ -2893,7 +2909,7 @@ private slots:
         QVERIFY(controller.confirmPendingTools(stepApprovedId));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 2, 5000);
         const QJsonObject stepResult = toolExecuted.last().at(1).toJsonObject();
-        QCOMPARE(stepResult.value(QStringLiteral("status")).toString(), QStringLiteral("stepped"));
+        QCOMPARE(stepResult.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         QCOMPARE(stepResult.value(QStringLiteral("runId")).toString(), stepRunId);
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 2, 10000);
         QCOMPARE(qvariant_cast<RunResult>(runFinished.last().at(0)).runId, stepRunId);
@@ -2968,7 +2984,9 @@ private slots:
         const QString staleResumeId = controller.pendingConfirmationId();
         QVERIFY(!staleResumeId.isEmpty());
         QVERIFY(project->setModuleParam(predictId, QStringLiteral("serverUrl"), peerB.url()));
+        const int staleResumeAuditBaseline = audit.count();
         QVERIFY(controller.confirmPendingTools(staleResumeId));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > staleResumeAuditBaseline, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(engine.state(), RunState::Paused);
         QCOMPARE(engine.runObservation().runId, pausedRunId);
@@ -2986,7 +3004,9 @@ private slots:
         const QString staleResumeImageId = controller.pendingConfirmationId();
         QVERIFY(!staleResumeImageId.isEmpty());
         QVERIFY(saveSolidImage(Qt::green));
+        const int staleResumeImageAuditBaseline = audit.count();
         QVERIFY(controller.confirmPendingTools(staleResumeImageId));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > staleResumeImageAuditBaseline, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().action, QStringLiteral("resume_flow"));
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QCOMPARE(engine.state(), RunState::Paused);
@@ -3375,7 +3395,9 @@ private slots:
         const QString staleCycleConfirmation = controller.pendingConfirmationId();
         QVERIFY(!staleCycleConfirmation.isEmpty());
         QVERIFY(saveSolidImage(Qt::red));
+        const int staleCycleAuditBaseline = audit.count();
         QVERIFY(controller.confirmPendingTools(staleCycleConfirmation));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > staleCycleAuditBaseline, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
         QVERIFY(!engine.isBusy());
         QVERIFY(engine.cycleSessionId().isEmpty());
@@ -3523,7 +3545,7 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), futureStepTools + 1, 5000);
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), futureStepRuns + 1, 5000);
         QCOMPARE(toolExecuted.last().at(1).toJsonObject().value(QStringLiteral("status")).toString(),
-                 QStringLiteral("stepped"));
+                 QStringLiteral("started"));
         QVERIFY(qvariant_cast<RunResult>(runFinished.last().at(0)).success);
         QCOMPARE(moduleSignalCount(moduleStarted, delay.id), 1);
         QCOMPARE(peerA.requestLog.size(), 0);

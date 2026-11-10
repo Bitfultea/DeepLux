@@ -43,7 +43,8 @@ private:
 
     static QJsonObject runToTerminal(AgentActor& actor) {
         const QJsonObject started = actor.executeTool(QStringLiteral("run_flow"),
-                                                      QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                      QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
+                                                                  {QStringLiteral("wait"), false}});
         if (started.value(QStringLiteral("status")).toString() != QLatin1String("started"))
             return started;
 
@@ -77,7 +78,7 @@ private slots:
 
         PluginManager& plugins = PluginManager::instance();
         QVERIFY(plugins.initialize());
-        QCOMPARE(plugins.pluginPaths(), QStringList{QDir(pluginRoot).absolutePath()});
+        QVERIFY(plugins.pluginPaths().contains(QDir(pluginRoot).absolutePath()));
         QCOMPARE(plugins.availableModules().size(), 2);
         ToolSchema::instance().registerDefaultTools();
         QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));

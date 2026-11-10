@@ -128,10 +128,8 @@ void PluginManager::scanPlugins() {
                     m_bundledPlugins[info.name] = info;
                 }
                 if (info.category.toLower().contains("camera")) {
-                    m_modules.remove(info.name);
                     m_cameras[info.name] = info;
                 } else {
-                    m_cameras.remove(info.name);
                     m_modules[info.name] = info;
                 }
                 qDebug() << "Found plugin:" << info.name << "at" << pluginPath;

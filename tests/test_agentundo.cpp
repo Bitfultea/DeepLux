@@ -2,7 +2,6 @@
 #include "core/agent/AgentController.h"
 #include "core/agent/ToolSchema.h"
 #include "core/common/UserManager.h"
-#include "core/model/Project.h"
 #include "manager/ProjectManager.h"
 #include "model/Project.h"
 
@@ -84,7 +83,14 @@ private slots:
             qMakePair(QString("add_module"), QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "stale"}}),
         };
         const QJsonObject result = actor.executeTools(tools, "Test switch");
-        QCOMPARE(result.value(QStringLiteral("failedCode")).toString(), QStringLiteral("project_switched"));
+        QCOMPARE(result.value(QStringLiteral("errorCode")).toString(), QStringLiteral("PROJECT_SWITCHED"));
+        QCOMPARE(result.value(QStringLiteral("failedTool")).toString(), QStringLiteral("create_project"));
+        QCOMPARE(result.value(QStringLiteral("executed")).toInt(), 1);
+        const QJsonArray results = result.value(QStringLiteral("results")).toArray();
+        QCOMPARE(results.size(), 2);
+        QCOMPARE(results.at(1).toObject().value(QStringLiteral("result")).toObject()
+                     .value(QStringLiteral("errorCode")).toString(),
+                 QStringLiteral("SKIPPED_DUE_TO_PREVIOUS_ERROR"));
         QCOMPARE(actor.undoStack()->count(), 0);
         QVERIFY(ProjectManager::instance().currentProject() != nullptr);
         QCOMPARE(ProjectManager::instance().currentProject()->modules().size(), 0);

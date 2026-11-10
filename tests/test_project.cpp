@@ -7,9 +7,13 @@
 #include <QTemporaryFile>
 #include <QtTest/QtTest>
 #include <algorithm>
+#include <atomic>
+#include <core/engine/FlowExecutionService.h>
+#include <core/engine/RunEngine.h>
 #include <core/manager/ProjectManager.h>
 #include <core/model/Project.h>
 #include <limits>
+#include <thread>
 
 using namespace DeepLux;
 
@@ -40,6 +44,7 @@ private slots:
     void testUnsavedSwitchPoliciesAtManagerLevel();
     void testUnsavedSaveFailureKeepsProjectForOpenNewAndClose();
     void testOpenStructurallyInvalidProjectKeepsCurrent();
+    void testProjectSwitchSignalsExcludeConcurrentRunStart();
 
 private:
     QString m_tempPath;
@@ -778,6 +783,36 @@ void TestProject::testOpenStructurallyInvalidProjectKeepsCurrent() {
         QVERIFY(current->isModified());
         QCOMPARE(closedSpy.count(), 0);
     }
+    manager.closeProject();
+}
+
+void TestProject::testProjectSwitchSignalsExcludeConcurrentRunStart() {
+    ProjectManager& manager = ProjectManager::instance();
+    RunEngine& engine = RunEngine::instance();
+    FlowExecutionService& service = FlowExecutionService::instance();
+    service.stop();
+    QTRY_COMPARE_WITH_TIMEOUT(service.state(), FlowExecutionService::State::Idle, 5000);
+    engine.stop();
+    manager.closeProject();
+    QVERIFY(manager.newProject());
+
+    std::atomic_bool startAccepted{true};
+    const QMetaObject::Connection closedConnection = connect(
+        &manager, &ProjectManager::projectClosed, &manager,
+        [&]() {
+            // ProjectManager emits this after releasing the maintenance lease so GUI handlers can
+            // clear/rebuild engine modules. The outer switch barrier must still reject a concurrent job.
+            std::thread starter([&]() { startAccepted.store(service.startSingle(), std::memory_order_release); });
+            starter.join();
+        },
+        Qt::DirectConnection);
+
+    Project* replacement = manager.newProject();
+    disconnect(closedConnection);
+    QVERIFY(replacement);
+    QVERIFY(!startAccepted.load(std::memory_order_acquire));
+    QVERIFY(!engine.isBusy());
+    QCOMPARE(service.state(), FlowExecutionService::State::Idle);
     manager.closeProject();
 }
 

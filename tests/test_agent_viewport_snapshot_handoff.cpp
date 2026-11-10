@@ -8,6 +8,8 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QtTest/QtTest>
+#include <functional>
+#include <memory>
 #include <core/agent/AgentActor.h>
 #include <core/agent/AgentController.h>
 #include <core/agent/GuiEvent.h>
@@ -22,6 +24,39 @@
 #include <ui/widgets/ViewportWidget.h>
 
 using namespace DeepLux;
+
+namespace {
+
+void respondWhenFileDialogOpens(QObject* context, const std::function<void(QFileDialog*)>& respond) {
+    auto* poller = new QTimer(context);
+    poller->setInterval(10);
+    auto attempts = std::make_shared<int>(0);
+    QObject::connect(poller, &QTimer::timeout, context, [poller, attempts, respond]() {
+        for (QWidget* widget : QApplication::topLevelWidgets()) {
+            auto* dialog = qobject_cast<QFileDialog*>(widget);
+            if (dialog && dialog->isVisible()) {
+                poller->stop();
+                poller->deleteLater();
+                respond(dialog);
+                return;
+            }
+        }
+
+        if (++(*attempts) < 500)
+            return;
+
+        poller->stop();
+        poller->deleteLater();
+        QTest::qFail("Timed out waiting for the native snapshot file dialog", __FILE__, __LINE__);
+        for (QWidget* widget : QApplication::topLevelWidgets()) {
+            if (auto* dialog = qobject_cast<QFileDialog*>(widget))
+                dialog->reject();
+        }
+    });
+    poller->start();
+}
+
+} // namespace
 
 class SnapshotHandoffLlmClient : public ILLMClient {
     Q_OBJECT
@@ -151,6 +186,7 @@ private slots:
         QCOMPARE(replacementViewport->viewportId(), originalViewport->viewportId());
 
         QVERIFY(controller.confirmPendingTools(confirmationId));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
         QCOMPARE(controller.state(), AgentController::AgentState::Idle);
         QVERIFY(controller.pendingConfirmationPayload().isEmpty());
         QVERIFY(toolSpy.isEmpty());
@@ -230,17 +266,12 @@ private slots:
         QVERIFY(!confirmation.contains("SLICE46_PRIVATE_OUTPUT.png"));
         QVERIFY(!QFileInfo::exists(targetPath));
 
-        QTimer::singleShot(0, this, [targetPath]() {
-            auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
-            if (!dialog) {
-                QTest::qFail("Native snapshot file dialog was not opened", __FILE__, __LINE__);
-                return;
-            }
+        respondWhenFileDialogOpens(this, [targetPath](QFileDialog* dialog) {
             dialog->selectFile(targetPath);
-            QTest::keyClick(dialog, Qt::Key_Return);
+            static_cast<QDialog*>(dialog)->done(QDialog::Accepted);
         });
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
-        QVERIFY(QFileInfo::exists(targetPath));
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(targetPath), 5000);
         QVERIFY(!toolSpy.isEmpty());
         const QJsonObject result = toolSpy.takeLast().at(1).toJsonObject();
         QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("saved"));
@@ -284,16 +315,14 @@ private slots:
             controller.handleToolCall(QStringLiteral("save_viewport_snapshot_for_user"),
                                       QJsonObject{{QStringLiteral("viewportId"), viewport->viewportId()}});
         QCOMPARE(cancelPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
-        QTimer::singleShot(0, this, []() {
-            auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
-            if (!dialog) {
-                QTest::qFail("Native snapshot file dialog was not opened", __FILE__, __LINE__);
-                return;
-            }
+        respondWhenFileDialogOpens(this, [](QFileDialog* dialog) {
             dialog->reject();
         });
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
-        QCOMPARE(toolSpy.takeLast().at(1).toJsonObject().value(QStringLiteral("status")).toString(),
+        QTRY_COMPARE_WITH_TIMEOUT(toolSpy.count(), 1, 5000);
+        const QList<QVariant> cancelledToolCall = toolSpy.takeLast();
+        QCOMPARE(cancelledToolCall.size(), 2);
+        QCOMPARE(cancelledToolCall.at(1).toJsonObject().value(QStringLiteral("status")).toString(),
                  QStringLiteral("cancelled"));
         QVERIFY(!QFileInfo::exists(cancelPath));
         bool cancellationAuditedAccurately = false;
@@ -346,16 +375,8 @@ private slots:
         const QString targetPath = outputDir.filePath(QStringLiteral("synthetic-frame.png"));
         QImage frame(27, 19, QImage::Format_ARGB32);
         frame.fill(QColor(0x80, 0x20, 0x40, 0xFF));
-        QTimer::singleShot(0, this, [targetPath]() {
-            auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
-            if (!dialog) {
-                QTest::qFail("Native snapshot file dialog was not opened", __FILE__, __LINE__);
-                return;
-            }
-            dialog->selectFile(targetPath);
-            QTest::keyClick(dialog, Qt::Key_Return);
-        });
-        const QJsonObject savedResult = viewport.saveSnapshotForUser([frame]() { return frame; });
+        const QJsonObject savedResult = viewport.saveSnapshotForUser(
+            [frame]() { return frame; }, false, [targetPath]() { return targetPath; });
         QCOMPARE(savedResult.value(QStringLiteral("status")).toString(), QStringLiteral("saved"));
         QImage savedFrame(targetPath);
         QVERIFY(!savedFrame.isNull());

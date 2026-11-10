@@ -128,6 +128,7 @@ private:
         bool pausedByUser = false;
         bool startFailed = false;
         QString startError;
+        QString runId;
         bool reentrant = false;
         bool rejectedStart = false;
         bool ok = false;
@@ -148,6 +149,11 @@ private:
         const QJsonObject& folderDeleteTargetAuthorization = {}, const QJsonObject& variableSnapshot = {},
         const QJsonObject& dataSourceImportSnapshot = {}, const QString& callId = {},
         const QJsonObject& annotationExportSnapshot = {}, const QJsonObject& annotationTransformSnapshot = {});
+    QJsonObject executeToolWithCameraTargetInternal(
+        const QString& toolName, const QJsonObject& params, const QJsonObject& cameraTargetSnapshot,
+        const QJsonObject& folderDeleteTargetAuthorization, const QJsonObject& variableSnapshot,
+        const QJsonObject& dataSourceImportSnapshot, const QString& callId,
+        const QJsonObject& annotationExportSnapshot, const QJsonObject& annotationTransformSnapshot);
     QJsonObject resumeFlowForSnapshot(const QString& runId, const QString& sessionId, int state,
                                       int lifecycleGeneration, const QJsonObject& folderDeleteTargetAuthorization = {});
 
@@ -207,7 +213,8 @@ private:
     QJsonObject exportNodeOutput(const QJsonObject& params);
     bool ensureEngineLoaded(QString* error, bool forceReload = false);
     bool engineMatchesProject(const Project* project) const;
-    RunWaitResult runAndWait(const QString& mode, int timeoutMs, bool forceReload);
+    RunWaitResult runAndWait(const QString& mode, int timeoutMs, bool forceReload,
+                             const QJsonObject& authorization = {});
     // SAM 批3：Agent 工具化 SAM（共享 SamPredictor 同步预测核心）
     QJsonObject samPredict(const QJsonObject& params);
     QJsonObject samAnnotate(const QJsonObject& params);

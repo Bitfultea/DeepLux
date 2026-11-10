@@ -149,7 +149,7 @@ private:
     void switchTo3D();
     void updateToggleAction();
     void updateToolbarState();
-    void setImageWidgetImage(const QImage& image);
+    void setImageWidgetImage(const QImage& image, bool preserveView = false);
     void clearImageWidget();
 
     QString m_viewportId;

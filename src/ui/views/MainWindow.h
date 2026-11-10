@@ -194,6 +194,7 @@ protected:
     bool m_isCycleMode = false;
     bool m_isStepMode = false;
     bool m_closeWhenRunFinishes = false;
+    bool m_closeAwaitingServiceJob = false;
     bool m_cameraShutdownStarted = false;
     bool m_cameraShutdownReady = false;
     QMetaObject::Connection m_cameraShutdownConnection;

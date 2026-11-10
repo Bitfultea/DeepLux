@@ -176,6 +176,7 @@ private slots:
         client.setToolsEnabled(true);
         client.setVisionEnabled(true);
         client.setReasoningEffort(QStringLiteral("high"));
+        client.setReasoningEcho(ReasoningEcho::Full);
 
         connect(&client, &ILLMClient::responseReceived, &loop, [&](const AgentResponse& result) {
             response = result;

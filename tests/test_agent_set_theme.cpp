@@ -103,7 +103,7 @@ private slots:
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(window.styleSheet().contains(QStringLiteral("#1e1e1e")));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
-        QVERIFY(window.styleSheet().contains(QStringLiteral("#f5f5f5")));
+        QTRY_VERIFY_WITH_TIMEOUT(window.styleSheet().contains(QStringLiteral("#f5f5f5")), 5000);
 
         controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
         QVERIFY(config.initialize());

@@ -175,6 +175,16 @@ void FlowExecutionService::clearStartHandshakeHookForTest() {
     m_testStartHook = nullptr;
 }
 
+void FlowExecutionService::setAfterStartSettledHookForTest(std::function<void()> hook) {
+    QMutexLocker locker(&m_mutex);
+    m_testAfterStartSettledHook = std::move(hook);
+}
+
+void FlowExecutionService::clearAfterStartSettledHookForTest() {
+    QMutexLocker locker(&m_mutex);
+    m_testAfterStartSettledHook = nullptr;
+}
+
 void FlowExecutionService::settleStart(bool ok) {
     QMutexLocker locker(&m_mutex);
     m_startOk = ok;
@@ -332,6 +342,10 @@ void FlowExecutionService::runJob(JobType job, const JobRequest& request) {
     if (!engine.beginExternalJob(&token, &reason)) {
         m_job.store(static_cast<int>(JobType::None), std::memory_order_release);
         m_failedJobSerial.store(jobSerial, std::memory_order_release);
+        {
+            QMutexLocker locker(&m_mutex);
+            m_activeRequest = JobRequest{};
+        }
         const QString error = reason.isEmpty() ? QStringLiteral("engine_busy") : reason;
         Logger::instance().warning(QString("Flow job rejected: %1").arg(error), "Service");
         settleStart(false); // 启动握手：让 startX() 立即返回 false
@@ -345,8 +359,31 @@ void FlowExecutionService::runJob(JobType job, const JobRequest& request) {
         QMutexLocker locker(&m_mutex);
         m_leaseToken = token;
     }
+    if (!engine.prepareExternalJobObservation(token, request.runId, request.sessionId, request.maxCycles)) {
+        engine.endExternalJob(token);
+        engine.clearDisplayJobId();
+        {
+            QMutexLocker locker(&m_mutex);
+            m_leaseToken = RunEngine::JobToken{};
+            m_activeRequest = JobRequest{};
+        }
+        m_job.store(static_cast<int>(JobType::None), std::memory_order_release);
+        m_failedJobSerial.store(jobSerial, std::memory_order_release);
+        settleStart(false);
+        emit jobFailed(job, QStringLiteral("run_observation_initialization_failed"));
+        return;
+    }
     commitState(State::Running, job);
     settleStart(true); // job 租约已建立、引擎 busy，startX() 可安全返回 true
+
+    // 测试 seam：稳定地暂停在 started 已返回但首轮尚未开始的窗口，验证 observation 与取消终态。
+    std::function<void()> afterStartHook;
+    {
+        QMutexLocker locker(&m_mutex);
+        afterStartHook = m_testAfterStartSettledHook;
+    }
+    if (afterStartHook)
+        afterStartHook();
 
     bool stopped = false;
     bool failed = false;
@@ -374,6 +411,12 @@ void FlowExecutionService::runJob(JobType job, const JobRequest& request) {
     } catch (...) {
         failed = true;
         error = QStringLiteral("unknown_service_exception");
+    }
+
+    // 若取消/拒绝发生在引擎首次取得执行权前，RunEngine 尚无 finalizer 可发布终态；
+    // 同样收口未完成的 job/run/session observation，确保 started 后返回的身份可查询到底。
+    if (stopped || failed) {
+        engine.finishPendingExternalJobObservation(token, request.runId, request.sessionId, stopped, error);
     }
 
     // 收尾：释放 job 租约（同时清理 job 级取消标志与暂停上下文），再提交 Idle。
@@ -404,6 +447,8 @@ void FlowExecutionService::runJob(JobType job, const JobRequest& request) {
         commitState(State::Stopping, job);
     }
     commitState(State::Idle, JobType::None);
+    if (job == JobType::Cycle)
+        engine.notifyExternalCycleStopped();
     {
         // 唤醒仍在等待命令/暂停/继续的工作线程或锁内等待者（job 已收尾）。
         QMutexLocker locker(&m_mutex);
@@ -418,7 +463,7 @@ void FlowExecutionService::runJob(JobType job, const JobRequest& request) {
 }
 
 void FlowExecutionService::runSingleJob(const RunEngine::JobToken& token, const JobRequest& request, bool& stopped,
-                                       bool& failed, QString& error) {
+                                        bool& failed, QString& error) {
     RunEngine& engine = RunEngine::instance();
     if (stopRequested()) {
         stopped = true;

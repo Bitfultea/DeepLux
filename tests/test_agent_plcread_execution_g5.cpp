@@ -1,5 +1,6 @@
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
+#include "core/common/UserManager.h"
 #include "core/agent/GuiEvent.h"
 #include "core/engine/RunEngine.h"
 #include "core/manager/PluginManager.h"
@@ -63,7 +64,8 @@ QByteArray buildReadResponse(const ParsedReadRequest& request, const QVector<qui
 
 class ThreadedModbusReadPeer final {
 public:
-    explicit ThreadedModbusReadPeer(QVector<quint16> values) : m_values(std::move(values)) {}
+    explicit ThreadedModbusReadPeer(QVector<quint16> values, int responseLimit = 0)
+        : m_values(std::move(values)), m_responseLimit(responseLimit) {}
 
     ~ThreadedModbusReadPeer() {
         if (!m_worker || !m_thread.isRunning())
@@ -104,12 +106,14 @@ public:
                                 buffer->remove(0, frameSize);
                                 ParsedReadRequest parsed;
                                 const bool valid = parseReadRequest(frame, parsed);
+                                int requestNumber = 0;
                                 {
                                     QMutexLocker locker(&m_mutex);
                                     m_requests.append(frame);
                                     m_validRequests.append(valid);
+                                    requestNumber = m_requests.size();
                                 }
-                                if (valid) {
+                                if (valid && (m_responseLimit <= 0 || requestNumber <= m_responseLimit)) {
                                     const QByteArray response = buildReadResponse(parsed, m_values);
                                     if (socket->write(response) == response.size()) {
                                         socket->flush();
@@ -164,6 +168,7 @@ public:
 
 private:
     QVector<quint16> m_values;
+    int m_responseLimit = 0;
     QThread m_thread;
     QObject* m_worker = nullptr;
     QTcpServer* m_server = nullptr;
@@ -309,6 +314,7 @@ private:
 
 private slots:
     void initTestCase() {
+        UserManager::instance().login(QStringLiteral("developer"), QString());
         QVERIFY(m_appDataDir.isValid());
         qputenv("DEEPLUX_APP_DATA_DIR", m_appDataDir.path().toLocal8Bit());
         const QString pluginRoot = QDir(m_appDataDir.path()).filePath(QStringLiteral("plugins"));
@@ -316,7 +322,7 @@ private slots:
 
         PluginManager& plugins = PluginManager::instance();
         QVERIFY(plugins.initialize());
-        QCOMPARE(plugins.pluginPaths(), QStringList{QDir(pluginRoot).absolutePath()});
+        QVERIFY(plugins.pluginPaths().contains(QDir(pluginRoot).absolutePath()));
         const QList<PluginInfo> scanned = plugins.moduleInfos();
         QCOMPARE(scanned.size(), 1);
         QCOMPARE(scanned.first().id, QStringLiteral("com.deeplux.plugin.plcread"));
@@ -411,7 +417,7 @@ private slots:
         QVERIFY(controller.confirmPendingTools(approvedId));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 1, 5000);
         const QJsonObject stepResult = toolExecuted.last().at(1).toJsonObject();
-        QCOMPARE(stepResult.value(QStringLiteral("status")).toString(), QStringLiteral("stepped"));
+        QCOMPARE(stepResult.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         const QString runId = stepResult.value(QStringLiteral("runId")).toString();
         QVERIFY(!runId.isEmpty());
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
@@ -536,13 +542,13 @@ private slots:
         QVERIFY(!approvedId.isEmpty());
         QVERIFY(approvedId != rejectedId);
         QVERIFY(controller.confirmPendingTools(approvedId));
-        QCOMPARE(engine.state(), RunState::Idle);
-        QVERIFY(!engine.isBusy());
-        QCOMPARE(engine.runObservation().runId, runId);
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         QTRY_COMPARE_WITH_TIMEOUT(peer.connectionCount(), 1, 5000);
         QTRY_COMPARE_WITH_TIMEOUT(peer.requestCount(), 1, 5000);
         QTRY_COMPARE_WITH_TIMEOUT(peer.responseCount(), 1, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
+        QCOMPARE(engine.state(), RunState::Idle);
+        QCOMPARE(engine.runObservation().runId, runId);
         QCOMPARE(peer.requestCount(), 1);
         QCOMPARE(peer.responseCount(), 1);
         QVERIFY(peer.requestValidAt(0));
@@ -601,7 +607,7 @@ private slots:
 
         auto startPending = [&controller] {
             return controller.handleToolCall(QStringLiteral("run_flow"),
-                                             QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                             QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         };
         const auto expectedEffects = [instanceId](quint16 port, int slave) {
             return QJsonArray{QStringLiteral("execution:may_touch_files_devices_network(流程内模块)"),
@@ -621,7 +627,9 @@ private slots:
                  expectedEffects(oldPeer.port(), 7));
         const QString oldPortConfirmation = controller.pendingConfirmationId();
         QVERIFY(project->setModuleParam(instanceId, QStringLiteral("port"), newPeer.port()));
+        const int auditCountBeforePortExpiry = audit.count();
         QVERIFY(controller.confirmPendingTools(oldPortConfirmation));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > auditCountBeforePortExpiry, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
 
         pending = startPending();
@@ -634,7 +642,9 @@ private slots:
                  expectedEffects(newPeer.port(), 7));
         const QString oldSlaveConfirmation = controller.pendingConfirmationId();
         QVERIFY(project->setModuleParam(instanceId, QStringLiteral("slaveId"), 8));
+        const int auditCountBeforeSlaveExpiry = audit.count();
         QVERIFY(controller.confirmPendingTools(oldSlaveConfirmation));
+        QTRY_VERIFY_WITH_TIMEOUT(audit.count() > auditCountBeforeSlaveExpiry, 5000);
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
 
         pending = startPending();
@@ -662,17 +672,9 @@ private slots:
         resetAgentFlow();
         AgentController& controller = AgentController::instance();
         RunEngine& engine = RunEngine::instance();
-        ModbusReadPeer peer;
+        ThreadedModbusReadPeer peer({0x1234, 0xABCD, 42}, 1);
         QVERIFY(peer.listen());
         const QVector<quint16> registerValues{0x1234, 0xABCD, 42};
-        peer.setReplyHandler([registerValues](const QByteArray& raw, int requestNumber) {
-            if (requestNumber != 1)
-                return QByteArray();
-            ParsedReadRequest request;
-            if (!parseReadRequest(raw, request))
-                return QByteArray();
-            return buildReadResponse(request, registerValues);
-        });
 
         Project* project = ProjectManager::instance().newProject();
         QVERIFY(project);
@@ -694,7 +696,7 @@ private slots:
         const quintptr mainThreadId = reinterpret_cast<quintptr>(QThread::currentThreadId());
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QJsonArray expectedEffects{
             QStringLiteral("execution:may_touch_files_devices_network(流程内模块)"),
@@ -722,6 +724,7 @@ private slots:
         QCOMPARE(executionThreadId.load(std::memory_order_relaxed) == mainThreadId, false);
         QCOMPARE(peer.connectionCount(), 1);
         QCOMPARE(peer.requestCount(), 1);
+        QCOMPARE(peer.responseCount(), 1);
         ParsedReadRequest request;
         QVERIFY(parseReadRequest(peer.requestAt(0), request));
         QCOMPARE(request.unitId, static_cast<quint8>(9));
@@ -767,7 +770,7 @@ private slots:
         controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
 
         pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}});
+                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString timeoutConfirmationId = controller.pendingConfirmationId();
         QVERIFY(!timeoutConfirmationId.isEmpty());
@@ -927,7 +930,7 @@ private slots:
         QCOMPARE(peer.responseCount(), 3);
         QCOMPARE(moduleSignalCount(moduleStarted, instanceId), 3);
         QCOMPARE(moduleSignalCount(moduleFinished, instanceId), 3);
-        QCOMPARE(runFinished.count(), 3);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 3, 5000);
         QCOMPARE(cycleStopped.count(), 1);
         for (int i = 0; i < peer.requestCount(); ++i) {
             QVERIFY(peer.requestValidAt(i));
@@ -978,7 +981,7 @@ private slots:
         QCOMPARE(peer.responseCount(), 3);
         QCOMPARE(moduleSignalCount(moduleStarted, instanceId), 3);
         QCOMPARE(moduleSignalCount(moduleFinished, instanceId), 3);
-        QCOMPARE(runFinished.count(), 3);
+        QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 3, 5000);
         QCOMPARE(cycleStopped.count(), 1);
         QCOMPARE(audit.count(), 2);
         QCOMPARE(engine.isBusy(), false);

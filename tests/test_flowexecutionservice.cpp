@@ -205,6 +205,7 @@ private slots:
         engine.clearFinalizeHookForTest();
         engine.clearExecutionFaultInjectionForTest();
         service.stop();
+        service.clearAfterStartSettledHookForTest();
         QTRY_COMPARE_WITH_TIMEOUT(service.state(), FlowExecutionService::State::Idle, 5000);
         engine.stop();
         engine.clearModules();
@@ -308,6 +309,65 @@ private slots:
         QCOMPARE(session.maxCycles, 3);
         QCOMPARE(session.completedCycles, 3);
         QCOMPARE(session.lastSuccessfulRunId, service.currentRunObservation().runId);
+    }
+
+    // The accepted identity is queryable before the first engine run starts; a stop in this
+    // deterministic window must close both the run and cycle-session observations.
+    void testAcceptedCycleIsObservableAndCancelableBeforeFirstRun() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe;
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+
+        QSemaphore hookEntered;
+        QSemaphore releaseHook;
+        service.setAfterStartSettledHookForTest([&]() {
+            hookEntered.release();
+            releaseHook.acquire();
+        });
+
+        FlowExecutionService::JobRequest request;
+        request.maxCycles = 2;
+        QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
+        QVERIFY(service.startCycle(&request));
+        QVERIFY(!request.runId.isEmpty());
+        QVERIFY(!request.sessionId.isEmpty());
+        QVERIFY(hookEntered.tryAcquire(1, 5000));
+
+        const RunObservation pendingRun = engine.runObservation(request.runId);
+        QCOMPARE(pendingRun.runId, request.runId);
+        QCOMPARE(pendingRun.sessionId, request.sessionId);
+        QCOMPARE(pendingRun.state, RunState::Running);
+        QVERIFY(!pendingRun.finished);
+        QCOMPARE(service.currentRunObservation().runId, request.runId);
+        const RunObservation pendingSession = engine.runObservation(request.sessionId);
+        QCOMPARE(pendingSession.runId, request.sessionId);
+        QCOMPARE(pendingSession.state, RunState::Running);
+        QVERIFY(!pendingSession.finished);
+        QCOMPARE(probe.runs.load(), 0);
+
+        service.stop();
+        releaseHook.release();
+        QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+        QCOMPARE(finishedSpy.first().at(0).toInt(), static_cast<int>(FlowExecutionService::JobType::Cycle));
+        QCOMPARE(finishedSpy.first().at(1).toBool(), true);
+
+        const RunObservation cancelledRun = engine.runObservation(request.runId);
+        QCOMPARE(cancelledRun.runId, request.runId);
+        QVERIFY(cancelledRun.finished);
+        QVERIFY(!cancelledRun.result.success);
+        QCOMPARE(cancelledRun.result.errorCode, ExecError::Cancelled);
+        QCOMPARE(cancelledRun.state, RunState::Stopped);
+        const RunObservation cancelledSession = engine.runObservation(request.sessionId);
+        QCOMPARE(cancelledSession.runId, request.sessionId);
+        QVERIFY(cancelledSession.finished);
+        QVERIFY(!cancelledSession.result.success);
+        QCOMPARE(cancelledSession.result.errorCode, ExecError::Cancelled);
+        QCOMPARE(cancelledSession.state, RunState::Stopped);
+        QCOMPARE(probe.runs.load(), 0);
+        service.clearAfterStartSettledHookForTest();
     }
 
     // B5.2：Cycle 至少两轮；轮间 job 租约保持 isBusy，维护被拒绝。
