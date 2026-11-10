@@ -787,6 +787,8 @@ private slots:
     void testParallelSignalsDeliveredOnReceiverThread();
     void testParallelTasksSeeStableRunId();
     void testExecuteParallelPrimitiveStableRunId();
+    // T2.9（2026-11-10 评审裁定）：串行路径的 runId 与发布帧同源（预防性加固守门）。
+    void testSerialRunIdMatchesPublishedFrameRunId();
     void testParallelStressFiftyRunsNoPollution();
     // 阶段 6 复核（三轮）并发生命周期回归
     void testConcurrentStopDuringRunKeepsStoppedState();
@@ -5998,6 +6000,61 @@ void TestRunEngine::testLegacyFixturesFreezeEngineBehavior() {
 
         engine.clearModules();
     }
+}
+
+// ==== T2.9（2026-11-10 评审裁定）：runId 跨线程快照，预防性加固 ====
+//
+// 静态排查结论（先说清性质，避免被误读成缺陷复现）：**未发现真实竞态**。
+//   - m_runId 唯一写入点是 tryBeginForRun()（RunEngine.cpp:654）；
+//   - 两处读取（executeModule 的 execCtx.runId、publishDisplayFrame 的 frame.runId）
+//     都在串行执行路径上；
+//   - 真正的池线程路径 executeBatchParallel 早已按值快照 batchRunId，池任务内不读 m_runId。
+//
+// 本次加固只是把「成员字符串须在调用线程快照后使用」这条已有边界从池路径推广到
+// 全部路径（publishDisplayFrame 改为接收 runId 参数，不再自行读 m_runId），
+// 防止后续重构把读取带回池线程。
+//
+// 本用例守的是加固后的不变式：**模块执行期看到的 runId 必须与最终发布帧的 runId 同源**。
+// 若将来有人在 executeModule 内改用别处的值、或让发布帧重新读成员而与执行期脱节，
+// 本条即失败。
+void TestRunEngine::testSerialRunIdMatchesPublishedFrameRunId() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(1);      // 强制走串行路径
+    engine.setDisplayCaptureEnabled(true); // 发布帧默认不采集，需显式开启才能验证 runId
+
+    QMutex mutex;
+    QStringList sink;
+    Project project;
+    buildParallelBatchProject(project, 1); // 单模块工程：entry → runid0 串行链
+    QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) -> ModuleBase* {
+        auto* mod = new RunIdRecordingModule(inst.id, &mutex, &sink);
+        mod->setThreadSafe(inst.id != QLatin1String("entry"));
+        return mod;
+    }));
+    markWorkerAffinity(1);
+
+    engine.runOnce();
+    QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
+
+    QStringList observed;
+    {
+        QMutexLocker locker(&mutex);
+        observed = sink;
+    }
+    QVERIFY2(!observed.isEmpty(), "the serial run must actually execute at least one module");
+    for (const QString& id : observed) {
+        QVERIFY2(!id.isEmpty(), "a serial execution must carry a non-empty runId");
+        QCOMPARE(id, observed.first());
+    }
+
+    // 执行期 runId 与发布帧 runId 必须一致：两者同源于同一次快照。
+    const DisplayFrame frame = engine.latestDisplayFrame();
+    QVERIFY2(!frame.runId.isEmpty(), "the published display frame must carry the runId");
+    QCOMPARE(frame.runId, observed.first());
+
+    engine.setDisplayCaptureEnabled(false);
+    engine.clearModules();
 }
 
 QTEST_MAIN(TestRunEngine)
