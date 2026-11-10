@@ -94,6 +94,13 @@ public:
     DEEPLUX_TEST_VISIBILITY : void setJobTeardownHookForTest(std::function<void()> hook);
     DEEPLUX_TEST_VISIBILITY : void clearJobTeardownHookForTest();
 
+    // T2.5 P1：workerLoop() 骨架故障注入。普通 C++ 回调，锁内快照、锁外调用；每轮
+    // 循环入口最多调用一次。钩子同样存放于 .cpp 的私有测试状态，**不新增类数据成员**，
+    // 类布局/ABI 保持不变。抛出即等价于 workerLoop() 自身（取队列/加锁）抛出 C++ 异常，
+    // 用于验证线程入口兜底后的命令清理与线程安全重建。生产构建不会设置，恒为空。
+    DEEPLUX_TEST_VISIBILITY : void setWorkerLoopFaultHookForTest(std::function<void()> hook);
+    DEEPLUX_TEST_VISIBILITY : void clearWorkerLoopFaultHookForTest();
+
 signals:
     void jobStateChanged(FlowExecutionService::State state, FlowExecutionService::JobType job);
     void jobFinished(FlowExecutionService::JobType job, bool stopped);

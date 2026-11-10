@@ -986,6 +986,74 @@ private slots:
         verifyJobTeardownFaultRecovery(true);
     }
 
+    // ==== T2.5 P1（2026-11-10 评审裁定）：线程入口兜底后必须能再次执行任务 ====
+    //
+    // 缺陷前提：WorkerThread::run() 捕获 workerLoop() 自身异常后调用
+    // handleWorkerLoopFault()，但该函数只把 state 复位为 Idle，既未清理残留的
+    // m_pendingJob（enqueue() 的拒绝条件之一是 m_pendingJob != None），也未回收
+    // 已经退出的线程；而 ensureThreadLocked() 仅判断 m_thread 是否非空，不会重建。
+    // 结果是故障后调用者必须手动 shutdown() 才能恢复——生产代码里没有任何
+    // FlowExecutionService::shutdown() 调用点，等于该次故障后服务永久瘫痪。
+    //
+    // 注入手法（普通 C++ 回调，不经过任何 Qt 信号槽边界）：setWorkerLoopFaultHookForTest()
+    // 在 workerLoop() 每轮循环入口、命令已出队而 runJob() 尚未进入处执行并抛出，
+    // 等价于 workerLoop() 自身（取队列/加锁）抛出 C++ 异常。
+    //
+    // 判据：故障后无需任何手动 shutdown()，直接再次 startSingle() 必须成功并完成任务；
+    // 只复位 state 不算恢复——必须同时满足引擎不忙、服务非活跃。
+    void testServiceRestartsWithoutManualShutdownAfterWorkerFault() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe;
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+
+        QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
+        QSignalSpy failedSpy(&service, &FlowExecutionService::jobFailed);
+        QVERIFY2(failedSpy.isValid(), "jobFailed must be observable");
+
+        std::atomic_int hookRuns{0};
+        service.setWorkerLoopFaultHookForTest([&] {
+            if (hookRuns.fetch_add(1) == 0) {
+                // 只在首轮注入：故障后的重试必须能真正执行任务。
+                throw std::runtime_error("injected worker-loop callback fault");
+            }
+        });
+
+        // 失败路径收尾：清除捕获栈变量的钩子并 join worker。必须最后声明。
+        ServiceContractCleanupGuard guard{&service, {},  nullptr, [&] { service.clearWorkerLoopFaultHookForTest(); },
+                                          nullptr,  true};
+
+        // 故障当次：startSingle() 的握手必须被放行并返回 false（启动未成立）。
+        QVERIFY2(!service.startSingle(), "a worker-loop fault must not report a successful start");
+        QTRY_COMPARE_WITH_TIMEOUT(failedSpy.count(), 1, 5000);
+        QCOMPARE(finishedSpy.count(), 0); // 一次 job 只允许一个终态信号
+        QCOMPARE(hookRuns.load(), 1);
+
+        const QString error = failedSpy.first().at(1).toString();
+        QVERIFY2(error.contains(QStringLiteral("service_worker_exception")), qPrintable(error));
+
+        // 真实恢复：state 复位不能替代资源释放与命令清理。
+        QCOMPARE(service.state(), FlowExecutionService::State::Idle);
+        QCOMPARE(service.currentJob(), FlowExecutionService::JobType::None);
+        QVERIFY2(!service.isActive(), "a worker-loop fault must not leave a pending command or an active job behind");
+        QVERIFY2(!engine.isBusy(), "a worker-loop fault must not leave the engine leased");
+        QCOMPARE(engine.displayJobId(), quint64(0));
+
+        // 核心判据：**不调用 shutdown()**，直接再次执行任务。
+        QSignalSpy nextFinished(&service, &FlowExecutionService::jobFinished);
+        QVERIFY2(service.startSingle(),
+                 "the service must restart without a manual shutdown() after a worker-loop fault");
+        QTRY_COMPARE_WITH_TIMEOUT(nextFinished.count(), 1, 5000);
+        QCOMPARE(probe.runs.load(), 1);
+        QCOMPARE(service.state(), FlowExecutionService::State::Idle);
+        QVERIFY2(!service.isActive(), "the service must return to idle after the retried job");
+        QVERIFY2(!engine.isBusy(), "the retried job must release the engine lease");
+
+        guard.finish();
+    }
+
     // ==== T2.3 行为契约／回归保护（2026-11-06 评审裁定）====
     // 性质：基线已绿、非 NF、无生产修复提交。原计划「commitState 持锁 emit 导致
     // DirectConnection 回调死锁」的前提不成立：commitState 一直是 atomic store +

@@ -16,6 +16,13 @@ namespace {
 // m_mutex 保护（服务为单例）。生产构建不会设置，恒为空。
 std::function<void()> g_jobTeardownHookForTest;
 
+// T2.5 P1：workerLoop() 骨架故障注入钩子。与收尾钩子同样存放于 .cpp 私有测试
+// 状态（不新增数据成员，类布局/ABI 不变），由 m_mutex 保护。该钩子在
+// workerLoop() 的每轮循环入口（持锁快照、锁外调用）执行；抛出即等价于
+// workerLoop() 自身（取队列/加锁）抛出 C++ 异常，用于验证线程入口兜底后的
+// 线程重建与命令清理路径。生产构建不会设置，恒为空。
+std::function<void()> g_workerLoopFaultHookForTest;
+
 } // namespace
 
 /// 常驻工作线程：run() 内阻塞在 QWaitCondition 的命令循环，不使用事件循环。
@@ -197,6 +204,16 @@ void FlowExecutionService::clearJobTeardownHookForTest() {
     g_jobTeardownHookForTest = nullptr;
 }
 
+void FlowExecutionService::setWorkerLoopFaultHookForTest(std::function<void()> hook) {
+    QMutexLocker locker(&m_mutex);
+    g_workerLoopFaultHookForTest = std::move(hook);
+}
+
+void FlowExecutionService::clearWorkerLoopFaultHookForTest() {
+    QMutexLocker locker(&m_mutex);
+    g_workerLoopFaultHookForTest = nullptr;
+}
+
 void FlowExecutionService::runWorkerExitBarrierForTest() {
     std::function<void()> hook;
     {
@@ -329,6 +346,20 @@ void FlowExecutionService::workerLoop() {
         }
         if (job == JobType::None) {
             continue;
+        }
+        // T2.5 P1 测试注入：workerLoop() 骨架故障。位于「命令已出队、runJob() 尚未
+        // 进入」的骨架位置，抛出后必须由 WorkerThread::run() 的入口兜底收敛，而
+        // 不是穿出 QThread::run()。锁内只做快照，钩子在**不持有 m_mutex** 时执行；
+        // 该钩子每轮最多调用一次，生产构建恒为空。
+        {
+            std::function<void()> loopFaultHook;
+            {
+                QMutexLocker locker(&m_mutex);
+                loopFaultHook = g_workerLoopFaultHookForTest;
+            }
+            if (loopFaultHook) {
+                loopFaultHook();
+            }
         }
         runJob(job);
     }
