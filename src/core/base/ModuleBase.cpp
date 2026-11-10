@@ -197,6 +197,29 @@ ExecutionResult ModuleBase::execute(const PortValueMap& inputs, PortValueMap& ou
         setCancellationToken(context.cancellationToken);
     }
 
+    // T2.8（2026-11-10 评审裁定）：token 与「本次执行」同生命周期，退出时必须就地摘除。
+    //
+    // 此前只设不清：全局表在第一次执行后永久留存调用方传入的裸指针，而
+    // CancellationToken 自身没有析构清理（ModuleBase 析构只删自己那条记录）。一旦 token
+    // 先于模块销毁——例如 RunEngine 析构后模块仍存活——表里就是悬垂指针，而
+    // DelayPlugin/FitPlanePlugin/FitEllipsePlugin 等仍会在 isCancellationRequested()
+    // 中解引用它。本次整改把「执行期借用」明确限定在本次 execute() 内：
+    // 本函数有 7 个提前 return，故用作用域守卫而不是逐出口手工清表，避免漏路径。
+    //
+    // 只在本次确实安装了 token 时还原：nullptr 表示「本模块此前没有 token」，此时
+    // 不应把别人装的 token 顺手抹掉。
+    const bool tokenInstalledHere = (context.cancellationToken != nullptr);
+    const struct CancellationTokenScopeGuard {
+        ModuleBase* self;
+        bool armed;
+        ~CancellationTokenScopeGuard() {
+            if (armed) {
+                self->setCancellationToken(nullptr);
+            }
+        }
+    } cancellationScope{this, tokenInstalledHere};
+    Q_UNUSED(cancellationScope);
+
     ImageData output;
     const bool success = execute(input, output);
     if (!success) {
@@ -234,6 +257,22 @@ void ModuleBase::setCancellationToken(CancellationToken* token) {
 CancellationToken* ModuleBase::cancellationToken() const {
     QMutexLocker locker(&g_cancellationTokensMutex);
     return g_cancellationTokens.value(this, nullptr);
+}
+
+void ModuleBase::detachCancellationToken(CancellationToken* token) {
+    if (!token) {
+        return;
+    }
+    // T2.8：token 即将销毁，把表中所有指向它的条目摘掉。遍历全部条目而不是只按
+    // 当前模块查找——同一 token 可能被多个模块借用过（并行批次、多次执行）。
+    QMutexLocker locker(&g_cancellationTokensMutex);
+    for (auto it = g_cancellationTokens.begin(); it != g_cancellationTokens.end();) {
+        if (it.value() == token) {
+            it = g_cancellationTokens.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 bool ModuleBase::isCancellationRequested() const {
