@@ -740,3 +740,64 @@ v3 结果：`FULL_rc=0`、`Totals: 5 passed, 0 failed, 0 skipped, 0 blacklisted`
 | T2.7 / R2 整批 | `be90921` 继续隔离、未合入、不作硬前置；**R2 整批未完成** |
 
 **送审复核要点**：① A 放行后确定性等待与最后任务渲染 / 图像 / 快照断言是否充分；② A/B 正确性已全部成为断言、且未固化错配次数或信号签名；③ 真实 `MainWindow` 连接用例确实走生产连接而非复刻槽逻辑；④ 三次门禁日志与提交链一致；⑤ 十轮门禁按裁定留待整批验收、本轮未做是否接受。
+
+### 9.7 P2 整改：真实窗口用例的判别性（2026-11-09 评审 P2，仅改测试）
+
+**评审裁定原文**：真实窗口用例「无法识别身份校验失效」——`test_mainwindow.cpp:4815` 及迟到通知后的断言只比较图像内容；五次任务输出完全相同，即使错误接受迟到通知也只是重新显示最新槽位中的同一张图。评审用临时故障库强制实际 `matchesIdentity()` 始终返回 `true`，该用例仍通过（`actualJob=5 expectedJob=1 runMatches=0 return=true`、`Totals: 3 passed, 0 failed`），复现日志 `/tmp/deeplux-4fe4ede-review.doqBRX/mainwindow-bypass.log`（评审侧提供，本沙箱不可访问）。**这是测试缺口，不是基线产品缺陷的 NF 证据**；最小修正、仅改测试、不新增信号参数、不做生产修复、不制造 NF 红灯。其余审核项（A/B 最终任务/像素/快照断言、三批 97/97 与专项 80/80、真实图 SAM 既有跳过项、十轮门禁留整批）评审已确认通过。
+
+#### 9.7.1 判别性设计（补齐两处，均只在测试内）
+
+1. **五次输出必须不同**：`MainWindowOutputProbeModule` 增加 `distinctImages` 开关与 `runs` 计数；开启时第 k 次 `process()` 输出 `QColor(min(255, 20k), 40, 60)` 并把 `k` 写入 run 级快照 `t26_k`。断言 `runs >= 5`、`lastK > 1`、`expectedPixel != firstPixel`、槽位帧与可见画面首像素均等于 `expectedPixel`、且不等于第 1 个 job 的像素——「画面来自最后任务」成为可判别断言而非日志观察。
+2. **迟到通知不得产生渲染事件**：用 `QSignalSpy` 观察真实 `DisplayManager::dataDisplayed`（`renderDisplayFrame()` → `displayImage()` → `emit dataDisplayed`）。记录迟到通知派发前的 `displayedBeforeLate`，派发并泵事件 + `qWait(ThrottleMs*2)` 后断言 `displayedSpy.count() == displayedBeforeLate`。身份校验一旦失效，迟到通知会经 `schedule → renderDisplayFrame → displayImage` 再次 emit，计数变 6 而失败。
+
+**不改变既有行为**：`distinctImages` 默认 `false`；探针的**历史填色行 `image.fill(QColor("#22C55E"))` 原样保留**（该行由 `a902a0d` 引入、早于 T2.6），开启时仅在**其后**覆盖颜色，`T2.6` 之前的历史行**零删除**。
+
+#### 9.7.2 补丁版本与「历史行零改动」的更正（如实记录）
+
+- **v1 补丁**（`/var/tmp/t26-p2-tests.patch`，sha256 `5c7f174e…` / 107 行）在独立工作树三段式已证明判别性（A 5/5 通过、B 0/5、C 5/5，日志 `/var/tmp/t26-p2-out/`）。但落地交付树时暴露两个必须修正的问题：① 它把 `4fe4ede:112` 的历史填色行改成 `if/else`，即**删除了 1 行早于 T2.6 的历史代码**（`PRE_T26_HISTORICAL_DELETIONS=1`），与 9.3 的「历史行零改动」口径冲突；② 新增的链式 `value().value().toInt()` 断行**未通过 clang-format**（`FMT_ADDED_rc=1`）。v1 因此**未提交**，其判别性结论仅作过程记录。
+- **v2 补丁**（`/var/tmp/t26-p2-tests-v2.patch`，sha256 `1450f5b6…` / 102 行，`1 file changed, 41 insertions(+), 3 deletions(-)`）：历史填色行保持原样、仅在开启时覆盖；新增行改为一行的 `QVariantMap lastSnapshot` 取快照。`PRE_T26_HISTORICAL_DELETIONS=0`（deleted 的 3 行经核对均为 `42ed898` 自身引入的 T2.6 行，非历史行）；`FMT_ADDED_rc=0`、`git clang-format --diff 4fe4ede` 输出 `clang-format did not modify any files`、`DIFFCHECK_rc=0`。**交付树实际 diff 与该补丁逐字节一致**（`cmp` 返回 0）。
+
+#### 9.7.3 三段式负验证（v2 交付态代码，独立工作树）
+
+隔离事实：工作树 `/var/tmp/t26-p2-v2-wt`（`git worktree add --detach 4fe4ede`）+ 独立构建目录 `/var/tmp/t26-p2-v2-build`；脚本 `/var/tmp/t26-p2-v2-verify.sh`（sha256 `173db427…`）；生产侧旁路补丁 `/var/tmp/t26-p2-inject.patch`（sha256 `8eb8a849…` / 21 行，**仅存在于独立工作树，未进交付链**）；日志 `/var/tmp/t26-p2-v2-out/`。`ldd` 三次构建均指向 `/var/tmp/t26-p2-v2-build/lib/libdeeplux_{core,ui}.so.1`。
+
+| 阶段 | 内容 | 结果 |
+|---|---|---|
+| A | 旧测试（`4fe4ede`）+ 旁路注入 | **5/5 `rc=0`**（`Totals: 3 passed`）——独立复现评审指出的测试缺口 |
+| B | v2 测试 + 旁路注入 | **0/5**（5/5 `rc=1`、`Totals: 2 passed, 1 failed`）——`displayedSpy.count(): 6` vs `displayedBeforeLate: 5`，`Loc: /var/tmp/t26-p2-v2-wt/tests/test_mainwindow.cpp(4861)` |
+| C | v2 测试 + 恢复生产 | **5/5 `rc=0`**（`Totals: 3 passed`），`bypass=0` |
+
+汇总：`A_OLD_BYPASS_RC0=5`、`B_V2_BYPASS_NONZERO=5`、`C_V2_RESTORED_RC0=5`、`A_BYPASS_LOG_LINES=55`、`B_BYPASS_LOG_LINES=55`、`B_FAIL_ASSERT_LINES=5`、`C_BYPASS_LOG_LINES=0`；`WT_STATUS_AFTER=[ M tests/test_mainwindow.cpp]`（旁路已 `git checkout` 恢复，工作树只剩测试改动），`DELIVERY_STATUS_AFTER=[ M tests/test_mainwindow.cpp]`——**交付工作树全程未切换缺陷态，生产侧零改动**。
+
+#### 9.7.4 交付门禁（提交态，2026-11-10）
+
+**提交**：`37903c9`（`test: make T2.6 real-MainWindow regression discriminate an identity bypass`，1 文件 / +41 −3，纯测试）；`STATUS=[]`、`PROD_DIFF=[]`、`HEAD_FILES=[tests/test_mainwindow.cpp]`。
+
+**门禁脚本与执行来源（自含全部命令）**：`/var/tmp/t26-p2-delivery-gate-v2.sh`（sha256 `9c4e1486…`），日志 `/var/tmp/t26-p2-gate-out/`，环境 `unset DISPLAY` + `QT_QPA_PLATFORM=offscreen` + `TMPDIR=/var/tmp/deeplux-ctest-tmp`。
+
+| 检查 | 结果 |
+|---|---|
+| `clang-format --dry-run --Werror tests/test_flowidentitycontract.cpp` | `FMT_CONTRACT_rc=0` |
+| 新增行范围格式检查（`test_mainwindow.cpp`） | `FMT_MW_ADDED_rc=0`；`GIT_CLANG_FORMAT_DIFF=[clang-format did not modify any files]` |
+| `git diff --check` | `DIFFCHECK_rc=0` |
+| 配置（全新工作区外构建目录 `/var/tmp/t26-p2-gate-build`） | `CONFIGURE_rc=0` |
+| 全量构建 | `BUILD_rc=0`；`[100%] Built target DeepLux` |
+| 相关套件（各一次全量） | `test_flowidentitycontract` **5 passed**、`test_mainwindow` **86 passed / 1 skipped**、`test_imagerefreshcoalescer` **19 passed**、`test_flowexecutionservice` **22 passed**；`SUITES_NONZERO=0` |
+| **一次全量 CTest** | **`100% tests passed, 0 tests failed out of 97`**，`CTEST_rc=0`；`CTEST_TOTAL=Total Tests: 97`、`CTEST_LISTED=97` |
+| 四个用例各 ×20 | **80/80 `rc=0`**；`CASE_TOTALS_ALLPASS=80`、`CASES_NONZERO=0` |
+| 严格失败关键字扫描 | `FAIL_KEYWORD_STRICT_FILES=0` |
+| `test_mainwindow` 既有跳过 | `MW_SKIP_LINES=1`（`testQuickAnnotateNativeRealImageShowsMask` 需真实图环境，基线既有；新增用例不含 QSKIP） |
+
+**门禁 attempt 1 的失败与处置（如实记录，不作为验收依据）**：首次门禁在交付树内 `build/` 增量目录上运行，CMake **Generate** 阶段报 `Cannot open file for write: …/build/tests/CMakeFiles/test_flowexecutionservice_autogen_timestamp_deps.dir/progress.make.tmpa8769`、`: System Error: Inappropriate ioctl for device`，`CONFIGURE_rc=1`（而 `BUILD_rc=0`、97/97 仍通过）。该次日志保全于 `/var/tmp/t26-p2-gate-attempt1/`。为**不携带未解释的非零退出码送审**，正式门禁改为工作区外**全新构建目录**（`/var/tmp/t26-p2-gate-build`）完整重跑，Generate 阶段无陈旧状态，`CONFIGURE_rc=0`。另：清理 attempt 1 的 `build/` 时，一个 `mv` 操作被沙箱安全策略中断，该目录（git 忽略的构建产物）处于部分迁移状态；**仓库工作树状态不受影响（`STATUS=[]`）**，正式门禁不使用该目录。
+
+#### 9.7.5 状态
+
+| 项 | 状态 |
+|---|---|
+| 改动性质 | **纯测试**（1 文件 / +41 −3）；零生产改动、无新增信号参数、无 NF 红灯、不新增生产注入点 |
+| 结论措辞 | **「已覆盖时序中未观察到显示错配，尚未证实计划中的缺陷；内部回读偏差已记录。」**（本轮 P2 只补测试判别性，不改变该结论） |
+| **T2.6 收口** | **仍不算收口**，待评审对本 P2 整改的收口复审；通过后再进入 `T2.5` |
+| 十轮门禁 | 按裁定**仍留作 R2 整批验收**，本轮未执行；80 次单用例为附加稳定性证据，不冒充十轮门禁 |
+| T2.7 / R2 整批 | `be90921` 继续隔离、未合入、不作硬前置；**R2 整批未完成** |
+
+**本轮送审要点**：① 五次不同像素 + `t26_k` 快照是否足以判别「画面来自最后任务」；② `QSignalSpy(DisplayManager::dataDisplayed)` 的「无额外渲染」断言是否使身份校验失效必然失败（三段式 A/B/C 已给出 5/5、0/5、5/5）；③ 历史填色行保持原样、`PRE_T26_HISTORICAL_DELETIONS=0` 是否满足「历史行零改动」；④ 正式门禁在全新构建目录重跑、attempt 1 的 `CONFIGURE_rc=1` 仅作现场保留是否可接受。
