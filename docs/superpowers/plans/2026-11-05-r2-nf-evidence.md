@@ -962,7 +962,7 @@ FAIL!  : TestFlowExecutionService::testNonStandardExceptionInJobTeardownEmitsJob
 
 | 项 | 值 |
 |---|---|
-| 交付树 | `HEAD=70c6490`、`STATUS=[]` |
+| 交付树 | `HEAD=70c6490`、`STATUS=[]`（门禁时点；其后仅 `572ea80` 文档提交，不改变任何二进制） |
 | 构建目录 | `/var/tmp/t25-close-build`（**工作区外全新目录**） |
 | 配置 | `CONFIGURE_rc=0`（选项集与既有隔离构建一致；耗时 8m11s，Generate 较慢） |
 | 构建 | `BUILD_rc=0`、`[100%] Built target DeepLux` |
