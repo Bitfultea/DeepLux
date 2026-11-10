@@ -1054,6 +1054,127 @@ private slots:
         guard.finish();
     }
 
+    // ==== T2.5 P1 第二轮回（2026-11-10 复核裁定）：故障通知后立即重试的窗口 ====
+    //
+    // 缺陷前提：jobFailed 是在 worker 线程的 run() 内部（handleWorkerLoopFault）发出的，
+    // 那一刻 run() 尚未返回、QThread::isFinished() 仍为 false。上一轮修复只用一次
+    // isFinished() 快照判断是否回收线程，因此「收到失败通知后立即重试」可能跳过回收，
+    // 把命令写进一个再也不会消费队列的旧线程，最终只能等到启动握手超时后撤回失败。
+    // 评审独立复现：标准异常 19/200、非标准 3/200、标准异常加诊断复跑 28/200。
+    //
+    // 与上一条用例的分工：上一条用 QTRY_COMPARE 等待通知（走事件循环，可能错过短窗口），
+    // 只能守住「故障后总体可恢复」；本条用**直连槽在同一调用栈内同步重试**，专门压住
+    // 「通知已发出、旧线程尚未退出」这个窗口。
+    //
+    // 纪律：直连槽在本用例中只作**触发时序**使用，槽内绝不抛异常（槽内抛异常属 Qt
+    // 未定义行为，不得作为缺陷证据）。全部判据都落在 startSingle() 返回值与
+    // probe.runs() 上，与异常语义无关。
+    //
+    // 判据：每轮注入一次 workerLoop 故障；收到 jobFailed 后**立即**（不 sleep、不
+    // processEvents、不 clearHook、不 stop/shutdown）重试 startSingle()，必须成功且
+    // 真正执行任务。多轮统计，任何一次立即重试失败即判红。
+    void testImmediateRetryInsideFailureNotificationMustSucceed() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe;
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+
+        // 轮数：修复前实测窗口命中率约 98%（40 轮中 39–40 次立即重试失败，评审侧
+        // 「直接收到通知即重试」的命中率约 10%）。20 轮足以在修复前稳定判红、修复后
+        // 稳定判绿；单轮失败开销是一条启动握手（~100ms），整体耗时可接受。
+        constexpr int kRounds = 20;
+
+        std::atomic_int armed{0};       // 本轮是否已注入待触发的故障
+        std::atomic_int slotEntries{0}; // jobFailed 直连槽进入次数
+        std::atomic_int retryOk{0};     // 槽内立即重试成功次数
+        std::atomic_int retryFailed{0}; // 槽内立即重试失败次数（窗口命中的直接证据）
+        std::atomic_int firstStartFail{0};
+
+        // 钩子只在本轮「已布防」时抛出一次，抛出后自动解除布防：保证槽内的立即重试
+        // 能真正跑完，而不是被同一次注入再次打断。
+        service.setWorkerLoopFaultHookForTest([&] {
+            if (armed.load(std::memory_order_acquire) != 0 && armed.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                throw std::runtime_error("injected worker-loop fault");
+            }
+        });
+
+        // 直连槽：emit jobFailed 发生在 worker 线程；用 DirectConnection 让槽也在该线程
+        // 上同步执行，使「收到通知 → 立即重试」发生在同一调用栈内，不经过事件循环。
+        // 这正是评审的复现场景。槽内只调用线程安全的 startSingle() 并记录结果。
+        QMetaObject::Connection conn = QObject::connect(
+            &service, &FlowExecutionService::jobFailed, &service,
+            [&](FlowExecutionService::JobType, const QString&) {
+                ++slotEntries;
+                if (service.startSingle()) {
+                    ++retryOk;
+                } else {
+                    ++retryFailed;
+                }
+            },
+            Qt::DirectConnection);
+
+        // 失败路径收尾：清除捕获栈变量的钩子并 join worker。必须最后声明。
+        ServiceContractCleanupGuard guard{&service, {},  nullptr, [&] { service.clearWorkerLoopFaultHookForTest(); },
+                                          nullptr,  true};
+
+        for (int round = 0; round < kRounds; ++round) {
+            // 等上一轮的重试任务真正跑完，服务回到 Idle 再布防下一轮。
+            QElapsedTimer idle;
+            idle.start();
+            while (service.isActive() && idle.elapsed() < 1500) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                QThread::msleep(1);
+            }
+            if (service.isActive()) {
+                break; // 收尾由 guard 负责；此处不再硬等
+            }
+
+            const int runsBefore = probe.runs.load();
+            armed.store(1, std::memory_order_release);
+            if (!service.startSingle()) {
+                ++firstStartFail;
+            }
+            // 首次启动被注入打断是预期路径；若首启成功说明本轮注入未生效，继续下一轮。
+            Q_UNUSED(runsBefore);
+
+            // 给「首启失败 → jobFailed → 槽内重试 → 重试任务执行完」留出完成时间。
+            QElapsedTimer settle;
+            settle.start();
+            while (settle.elapsed() < 1500) {
+                if (!service.isActive() && retryOk.load() + retryFailed.load() >= round + 1) {
+                    break;
+                }
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                QThread::msleep(1);
+            }
+        }
+
+        QObject::disconnect(conn);
+        service.clearWorkerLoopFaultHookForTest();
+
+        qInfo("[P1-IMMEDIATE] rounds=%d slotEntries=%d firstStartFail=%d retryOk=%d retryFailed=%d", kRounds,
+              slotEntries.load(), firstStartFail.load(), retryOk.load(), retryFailed.load());
+
+        // 判别性前提：必须真的走完若干次「故障 → 通知 → 立即重试」，否则本用例无判别力。
+        QVERIFY2(
+            slotEntries.load() >= 10,
+            qPrintable(
+                QStringLiteral("the immediate-retry path must be exercised (slotEntries=%1)").arg(slotEntries.load())));
+
+        // 核心判据：窗口内的立即重试一次都不许失败。失败即意味着命令被交给了正在退出的旧线程。
+        QVERIFY2(retryFailed.load() == 0,
+                 qPrintable(QStringLiteral("immediate retry after jobFailed must never fail "
+                                           "(retryFailed=%1, retryOk=%2, slotEntries=%3): a failure means the "
+                                           "command was handed to the exiting worker")
+                                .arg(retryFailed.load())
+                                .arg(retryOk.load())
+                                .arg(slotEntries.load())));
+
+        guard.finish();
+    }
+
     // ==== T2.3 行为契约／回归保护（2026-11-06 评审裁定）====
     // 性质：基线已绿、非 NF、无生产修复提交。原计划「commitState 持锁 emit 导致
     // DirectConnection 回调死锁」的前提不成立：commitState 一直是 atomic store +
