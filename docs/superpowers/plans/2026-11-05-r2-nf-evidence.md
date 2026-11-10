@@ -984,3 +984,176 @@ FAIL!  : TestFlowExecutionService::testNonStandardExceptionInJobTeardownEmitsJob
 | T2.5 | **待评审收口裁定**（本轮只提交证据，不自行宣告收口） |
 | T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
 | R2 整批 | **尚未完成** |
+
+## 11. T2.5 P1 整改：线程入口兜底后必须能再次执行任务（2026-11-10 评审裁定）
+
+### 11.1 裁定的问题
+
+按 `b52bcc9` 复核，评审给出 1 项 P1，暂不批准 T2.5 整体收口：
+
+> 线程入口兜底后，Service 无法再次执行任务。线程入口捕获异常后退出 worker；
+> 故障收尾将状态置为 Idle，却未处理残留 pending 命令和退出线程的生命周期。
+> `ensureThreadLocked()` 又仅检查 `m_thread` 是否非空，不会重建已退出的线程。
+
+评审侧用普通 C++ 故障注入 + 现有退出屏障 3/3 复现：故障后 `Idle, active=1,
+engineBusy=0, 重试失败`；仅 `stop` 后仍失败（握手 100ms）；显式 `stop+shutdown`
+后重新启动成功。并明确两条禁止的偷懒路径：**只清 pending**、**提前清空线程指针绕过 join**。
+
+### 11.2 静态事实（基线 `b52bcc9`）
+
+| 事实 | 位置 | 结论 |
+|---|---|---|
+| `handleWorkerLoopFault()` 中 `m_pendingJob` 出现次数 | `FlowExecutionService.cpp` | **0 次**——完全没有清理残留命令 |
+| `ensureThreadLocked()` 判定 | `FlowExecutionService.cpp` | 仅 `if (m_thread) { return; }`，不判断线程是否已结束 |
+| `enqueue()` 拒绝条件 | `FlowExecutionService.cpp` | `state()!=Idle \|\| m_pendingJob!=None \|\| currentJob()!=None` |
+| 生产代码调用 `FlowExecutionService::shutdown()` 的点 | `src/` 全量 grep | **0 处**（只有测试调用） |
+
+最后一条决定了「无需调用者手动 shutdown 即可重新执行」是**生产语义要求**，不是测试便利。
+
+### 11.3 注入点方案核准（方案 A）
+
+`workerLoop()` 骨架自身（取队列/加锁）抛出，在生产代码中没有合法注入位置：
+既有 `setStartHandshakeHookForTest()` 在 `runJob()` 内（只覆盖 job 级异常），
+`setWorkerExitBarrierForTest()` 在 `workerLoop()` 返回之后（且其异常被 `run()` 显式吞掉）。
+按纪律先提方案、经裁定后实施：
+
+- **方案 A（核准）**：新增 `setWorkerLoopFaultHookForTest()`，钩子存储在 `.cpp` 匿名命名空间
+  （`g_workerLoopFaultHookForTest`），由既有 `m_mutex` 保护，**不新增类数据成员**，
+  类布局/ABI 不变；在 `workerLoop()` 每轮循环入口、命令已出队而 `runJob()` 尚未进入处执行。
+- 方案 B（复用退出屏障）与方案 C（只做行为契约、不造 NF 红灯）经评估未采纳。
+
+### 11.4 正式红灯（提交 `fc28456` 单独检出）
+
+隔离工作树 `/var/tmp/t25-p1-probe-wt`（detached `fc28456`）+ 独立构建目录
+`/var/tmp/t25-p1-build`（`CONFIGURE_rc=0`，`BUILD_rc=0`）。
+
+原始 5 次运行（未加诊断代码）：
+
+| 运行 | 退出码 | 结果 |
+|---|---|---|
+| red-1..5 | **`rc=1`（5/5）** | `Totals: 2 passed, 1 failed`，`Total 15114–15138ms` |
+
+失败断言（`tests/test_flowexecutionservice.cpp:1030`）：
+
+```text
+FAIL!  : testServiceRestartsWithoutManualShutdownAfterWorkerFault()
+   Actual   ((failedSpy.count())): 0
+   Expected (1)                  : 1
+```
+
+这是**可编译的测试失败**，不是编译失败，也不是崩溃。
+
+### 11.5 红灯现场诊断（隔离工作树临时插桩，用完即恢复）
+
+在隔离工作树临时插入 `qInfo` 诊断块（`diag-2.log`），恢复后 `grep -c "P1-DIAG"` = 0：
+
+```text
+[P1-DIAG]         failed=0 finished=0 state=0(Idle) currentJob=0(None)
+                  isActive=0 engineBusy=0 displayJobId=0 hookRuns=1
+[P1-DIAG-200ms]   state=0 isActive=0 engineBusy=0
+[P1-DIAG-RESTART] startSingle=0  state=0 isActive=0 engineBusy=0
+[P1-DIAG-LATER]   probeRuns=0 finished=0 failed=0
+```
+
+诊断确认了**两个独立缺陷**：
+
+1. **主缺陷**：`startSingle=0` 且 `probeRuns=0`——重启被拒绝、任务从未执行；
+   单次耗时 ~15s 与握手超时后按「已出队」撤回一致。
+2. **次缺陷**：`failed=0 finished=0`——`jobFailed` 根本没有发出。原因是 `m_job` 在
+   `runJob()` 内才置位，而钩子位于「已出队、`runJob()` 未进入」窗口，`handler` 读到的
+   `m_job` 仍是 `None`，于是按「没有 job」处理、不上报终态。调用方拿到
+   `startX()==false` 却得不到任何终态信号。
+
+**口径说明**：本节诊断输出中 `isActive=0`，与评审现场 `active=1` 不同。差异来自注入点位置
+（本钩子在 `m_pendingJob` 已清空、`m_job` 尚未置位的窗口内），但重启失败与任务未执行这两项
+**主症状完全一致**。该差异不改变缺陷性质，据实记录。
+
+### 11.6 修复内容（提交 `9bd3aad`）
+
+| # | 根因 | 修复 |
+|---|---|---|
+| 1 | `ensureThreadLocked()` 只判 `m_thread` 非空，已结束的线程被复用，新命令进入死线程队列后只能等握手超时 | `enqueue()` 先「摘指针 → **锁外** join 回收 → 锁内重建」。判定用 `isFinished()` 而非 `!isRunning()`（Qt 保证 `run()` 返回后 `isFinished()` 才为 true，此后绝不再消费命令）。回收在锁外：`join` 会阻塞到线程真正退出，持锁 join 会卡死所有服务入口。**不提前清空指针绕过 join**：旧线程仍由 `joinWorkerThread()` 等待真正退出后 `delete`，不 detach、不 terminate |
+| 2 | `handleWorkerLoopFault()` 不清理 `m_pendingJob` | handler 内 `m_pendingJob = JobType::None`，就地丢弃出错命令 |
+| 3 | `m_job` 在 `runJob()` 内才置位，出队→`runJob` 窗口的故障漏报终态 | `workerLoop(JobType* faultyJob)` 在出队时记录当前命令，`handleWorkerLoopFault(faultyJob, what)` 以此为准（`faultyJob` 为空时回落到 `m_job`）。参数带默认值，不改变既有调用点 |
+
+类布局核对：`git diff fc28456 -- src/core/engine/FlowExecutionService.h` 只显示两个方法签名
+（`workerLoop(JobType* = nullptr)`、`handleWorkerLoopFault(JobType, const QString&)`），
+**零数据成员新增**。
+
+清零边界（逐轮重置，避免误报）：
+
+```cpp
+for (;;) {
+    JobType job = JobType::None;
+    if (faultyJob) { *faultyJob = JobType::None; }   // 每轮重置
+    ... 等待 / 出队 ...
+    if (faultyJob) { *faultyJob = job; }             // 出队成功后才置位
+```
+
+- 阻塞在 `m_wake.wait()` 时抛出 → `faultyJob == None`，不误报；
+- 出队后 `runJob()` 前抛出 → `faultyJob == job`，正确上报；
+- `runJob()` 内部抛出 → 由其自身 try 收敛，不会到达 handler。
+
+### 11.7 绿灯证据（提交 `9bd3aad`）
+
+隔离工作树同步修复后 `BUILD_rc=0`：
+
+| 运行 | 退出码 | 结果 |
+|---|---|---|
+| green-1..5 | **`rc=0`（5/5）** | `Totals: 3 passed, 0 failed`，`53–54ms` |
+| 全套件 | **`SUITE_rc=0`** | `Totals: 26 passed, 0 failed`（用例数由 25 → **26**） |
+
+耗时从 15114–15138ms 降到 53–54ms，说明「握手超时撤回」分支已不再被触及。
+
+### 11.8 撤销修复复败（独立工作树，保留钩子与用例）
+
+独立工作树 `/var/tmp/t25-p1-revert-wt`（detached `9bd3aad`）执行
+`git revert --no-commit 9bd3aad`，只回退两个生产文件：
+
+- 钩子保留：`grep -c "setWorkerLoopFaultHookForTest\|clearWorkerLoopFaultHookForTest\|g_workerLoopFaultHookForTest"` → `.cpp` **6**、`.h` **2**；
+- 用例保留：`grep -c "testServiceRestartsWithoutManualShutdownAfterWorkerFault"` → **1**；
+- 修复确已撤销：`enqueue()` 恢复为原实现。
+
+独立构建目录 `/var/tmp/t25-p1-revert-build`：`CONFIGURE_rc=0`、**`BUILD_rc=0`（编译通过，
+不属编译失败）**。
+
+| 运行 | 退出码 | 结果 |
+|---|---|---|
+| revert-1..3 | **`rc=1`（3/3）** | `Totals: 2 passed, 1 failed`，`15114–15124ms` |
+
+失败位置与红灯一致（`test_flowexecutionservice.cpp:1030`，`failedSpy.count()` 实际 0 / 期望 1）。
+
+### 11.9 提交顺序声明（不得追溯改写）
+
+```text
+… → 732640c → 70c6490 → 572ea80 → b52bcc9
+  → fc28456（test：钩子 + 回归用例，红灯）
+  → 9bd3aad（fix：线程回收重建 + 命令清理 + 出队记录 job）
+```
+
+- `fc28456` 是**先于**修复提交的独立红灯提交，不得与 `9bd3aad` 合并追溯。
+- 第 11.7 节的绿灯证据对应 `9bd3aad`，第 11.8 节的复败证据对应 `revert 9bd3aad`。
+- 本次整改**不代表** T2.5 整体已通过审核，仍需评审收口裁定。
+
+### 11.10 正式门禁（全新工作区外构建目录，2026-11-10）
+
+| 项 | 值 |
+|---|---|
+| 交付树 | `HEAD=9bd3aad`、`STATUS=[]`（门禁时点；其后仅文档提交，不改变任何二进制） |
+| 构建目录 | `/var/tmp/t25-p1-close-build`（**工作区外全新目录**） |
+| 配置 | `CONFIGURE_rc=0` |
+| 构建 | `BUILD_rc=0` |
+| 格式 / 差异 | `FMT_rc=0`、`DIFFCHECK_rc=0` |
+| **CTest 全量** | **待填写** |
+| 相关套件 | **待填写** |
+
+### 11.11 状态
+
+| 项 | 状态 |
+|---|---|
+| P1 主缺陷（线程不重建） | **红灯 5/5、绿灯 5/5、撤销复败 3/3 已闭合**（`fc28456 → 9bd3aad`） |
+| P1 次缺陷（出队窗口漏报终态） | **同上链条一并闭合**（诊断 `failed=0` 佐证，修复后 `failedSpy.count()==1`） |
+| 全量 CTest（97） | **待填写** |
+| T2.5 | **待评审收口裁定**（本轮不自行宣告收口） |
+| T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
+| R2 整批 | **尚未完成** |
