@@ -1139,13 +1139,16 @@ for (;;) {
 
 | 项 | 值 |
 |---|---|
-| 交付树 | `HEAD=9bd3aad`、`STATUS=[]`（门禁时点；其后仅文档提交，不改变任何二进制） |
+| 交付树 | `HEAD=a5514a7`、`STATUS=[]`（门禁时点；`a5514a7` 仅含文档，二进制等价于 `9bd3aad`） |
 | 构建目录 | `/var/tmp/t25-p1-close-build`（**工作区外全新目录**） |
-| 配置 | `CONFIGURE_rc=0` |
-| 构建 | `BUILD_rc=0` |
-| 格式 / 差异 | `FMT_rc=0`、`DIFFCHECK_rc=0` |
-| **CTest 全量** | **待填写** |
-| 相关套件 | **待填写** |
+| 配置 | `CONFIGURE_rc=0`（`Generating done (392.7s)`） |
+| 构建 | `BUILD_rc=0`、`[100%] Built target test_mainwindow`（耗时 15m24s） |
+| 格式 / 差异 | `FMT_CPP_rc=0`、`FMT_H_rc=0`、`FMT_TEST_rc=0`、`DIFFCHECK_rc=0` |
+| CTest 列举 | `Total Tests: 97`、`LISTED=97`（口径 `grep -c "Test *#"`，避开 `^  Test #` 双空格漏计） |
+| **CTest 全量** | **`100% tests passed, 0 tests failed out of 97`**、`CTEST_rc=0`（`Total Test time = 137.89 sec`） |
+| 相关套件（同一交付态，独立运行） | service **26/26**、runengine **118/118**、joblease 8/8、userpause 6/6、finalizer 6/6（全部 `rc=0`） |
+
+日志：`/var/tmp/t25-p1-close-out/{configure,build,ctest,ctest-list,tip_*}.log`。
 
 ### 11.11 状态
 
@@ -1153,7 +1156,7 @@ for (;;) {
 |---|---|
 | P1 主缺陷（线程不重建） | **红灯 5/5、绿灯 5/5、撤销复败 3/3 已闭合**（`fc28456 → 9bd3aad`） |
 | P1 次缺陷（出队窗口漏报终态） | **同上链条一并闭合**（诊断 `failed=0` 佐证，修复后 `failedSpy.count()==1`） |
-| 全量 CTest（97） | **待填写** |
+| 全量 CTest（97） | **已执行：97/97 通过**（全新工作区外目录） |
 | T2.5 | **待评审收口裁定**（本轮不自行宣告收口） |
 | T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
 | R2 整批 | **尚未完成** |
