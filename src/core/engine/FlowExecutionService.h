@@ -87,6 +87,13 @@ public:
     DEEPLUX_TEST_VISIBILITY : void setWorkerExitBarrierForTest(std::function<void()> hook);
     DEEPLUX_TEST_VISIBILITY : void clearWorkerExitBarrierForTest();
 
+    // T2.5：收尾段故障注入。普通 C++ 回调，锁内快照、锁外调用；每个 job 只在收尾入口
+    // 调用一次，恢复/重试路径不得再次触发。钩子存储在 .cpp 的私有测试状态中，**不新增
+    // 类数据成员**，FlowExecutionService 的类布局/ABI 保持不变；DEEPLUX_TEST_VISIBILITY
+    // 只控制访问权限。生产构建不会设置该钩子，恒为空。
+    DEEPLUX_TEST_VISIBILITY : void setJobTeardownHookForTest(std::function<void()> hook);
+    DEEPLUX_TEST_VISIBILITY : void clearJobTeardownHookForTest();
+
 signals:
     void jobStateChanged(FlowExecutionService::State state, FlowExecutionService::JobType job);
     void jobFinished(FlowExecutionService::JobType job, bool stopped);

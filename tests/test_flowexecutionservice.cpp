@@ -347,6 +347,70 @@ struct ServiceContractCleanupGuard {
     }
 };
 
+/// T2.5：收尾段故障注入的公共验证（普通 C++ 回调，不经过任何 Qt 信号槽边界）。
+/// 钩子在收尾入口、endExternalJob() 之前执行：进入时必须仍持有引擎租约、Service 仍为
+/// Running、显示 jobId 尚未清零；抛出后必须只上报一次 jobFailed，且租约/显示 jobId/
+/// 活跃状态全部复位，清除钩子后同一 Service 能再次完成任务。
+void verifyJobTeardownFaultRecovery(bool nonStandardException) {
+    RunEngine& engine = RunEngine::instance();
+    FlowExecutionService& service = FlowExecutionService::instance();
+    ServiceProbeModule probe;
+    QVERIFY(probe.initialize());
+    engine.addModule(&probe);
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+
+    QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
+    QSignalSpy failedSpy(&service, &FlowExecutionService::jobFailed);
+    QVERIFY2(failedSpy.isValid(), "jobFailed must be observable");
+
+    std::atomic_int hookRuns{0};
+    std::atomic_bool leaseHeldAtHook{false};
+    std::atomic_bool runningAtHook{false};
+    std::atomic_bool displayIdSetAtHook{false};
+
+    service.setJobTeardownHookForTest([&] {
+        ++hookRuns;
+        leaseHeldAtHook.store(engine.isBusy(), std::memory_order_release);
+        runningAtHook.store(service.state() == FlowExecutionService::State::Running, std::memory_order_release);
+        displayIdSetAtHook.store(engine.displayJobId() != 0, std::memory_order_release);
+        if (nonStandardException) {
+            throw 42; // 非 std::exception：覆盖 catch(...) 分支
+        }
+        throw std::runtime_error("injected teardown callback fault");
+    });
+
+    const auto clearTeardownHook = [&] { service.clearJobTeardownHookForTest(); };
+    ServiceContractCleanupGuard guard{&service, {}, nullptr, clearTeardownHook, nullptr, true};
+
+    QVERIFY2(service.startSingle(), "the job must start so the teardown hook runs with a lease");
+    QTRY_COMPARE_WITH_TIMEOUT(failedSpy.count(), 1, 5000);
+
+    // 终态只允许一个；资源必须真正释放（state==Idle 不能替代）。
+    QCOMPARE(finishedSpy.count(), 0);
+    QCOMPARE(hookRuns.load(), 1); // 每个 job 只调用一次，恢复路径不得二次触发
+    QVERIFY2(leaseHeldAtHook.load(), "the teardown hook must run while the engine lease is held");
+    QVERIFY2(runningAtHook.load(), "the teardown hook must run before the state is reset");
+    QVERIFY2(displayIdSetAtHook.load(), "the teardown hook must run before the display jobId is cleared");
+    QCOMPARE(service.state(), FlowExecutionService::State::Idle);
+    QCOMPARE(service.currentJob(), FlowExecutionService::JobType::None);
+    QVERIFY2(!service.isActive(), "the service must not stay active after teardown recovery");
+    QVERIFY2(!engine.isBusy(), "the engine lease must be released after teardown recovery");
+    QCOMPARE(engine.displayJobId(), quint64(0));
+    const QString error = failedSpy.first().at(1).toString();
+    QVERIFY2(error.contains(QStringLiteral("service_teardown_exception")), qPrintable(error));
+
+    // 清除钩子后同一 Service 必须能再次完成一个任务。
+    service.clearJobTeardownHookForTest();
+    const int runsAfterFault = probe.runs.load();
+    QSignalSpy nextFinished(&service, &FlowExecutionService::jobFinished);
+    QVERIFY2(service.startSingle(), "the service must remain usable after a teardown fault");
+    QTRY_COMPARE_WITH_TIMEOUT(nextFinished.count(), 1, 5000);
+    QCOMPARE(probe.runs.load(), runsAfterFault + 1);
+    QCOMPARE(service.state(), FlowExecutionService::State::Idle);
+
+    guard.finish();
+}
+
 } // namespace
 
 class TestFlowExecutionService : public QObject {
@@ -907,6 +971,19 @@ private slots:
         QCOMPARE(service.state(), FlowExecutionService::State::Idle);
 
         guard.finish();
+    }
+
+    // ==== T2.5 收尾段：std::exception / 非 std::exception 都必须完成资源释放 ====
+    // 注入手法：普通 C++ 回调 setJobTeardownHookForTest()，锁内快照、锁外调用，
+    // 每个 job 只在收尾入口执行一次；不经过任何 Qt 信号槽边界。
+    void testExceptionInJobTeardownEmitsJobFailedNotTerminate() {
+        verifyJobTeardownFaultRecovery(false);
+    }
+
+    // catch(...) 分支（非 std::exception）此前不重试释放租约：state 回落 Idle 但引擎
+    // 仍 busy，下一任务被永久拒绝。本用例把「真实恢复」而不是「状态为 Idle」作为判据。
+    void testNonStandardExceptionInJobTeardownEmitsJobFailedNotTerminate() {
+        verifyJobTeardownFaultRecovery(true);
     }
 
     // ==== T2.3 行为契约／回归保护（2026-11-06 评审裁定）====

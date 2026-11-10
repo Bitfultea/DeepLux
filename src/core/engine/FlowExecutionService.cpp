@@ -9,6 +9,15 @@
 
 namespace DeepLux {
 
+namespace {
+
+// T2.5：收尾段故障注入钩子。存放于 .cpp 私有测试状态，避免向
+// FlowExecutionService 新增数据成员（类布局/ABI 不变）；读写统一由该实例的
+// m_mutex 保护（服务为单例）。生产构建不会设置，恒为空。
+std::function<void()> g_jobTeardownHookForTest;
+
+} // namespace
+
 /// 常驻工作线程：run() 内阻塞在 QWaitCondition 的命令循环，不使用事件循环。
 class FlowExecutionService::WorkerThread : public QThread {
 public:
@@ -176,6 +185,16 @@ void FlowExecutionService::setWorkerExitBarrierForTest(std::function<void()> hoo
 void FlowExecutionService::clearWorkerExitBarrierForTest() {
     QMutexLocker locker(&m_mutex);
     m_testWorkerExitBarrier = nullptr;
+}
+
+void FlowExecutionService::setJobTeardownHookForTest(std::function<void()> hook) {
+    QMutexLocker locker(&m_mutex);
+    g_jobTeardownHookForTest = std::move(hook);
+}
+
+void FlowExecutionService::clearJobTeardownHookForTest() {
+    QMutexLocker locker(&m_mutex);
+    g_jobTeardownHookForTest = nullptr;
 }
 
 void FlowExecutionService::runWorkerExitBarrierForTest() {
@@ -436,16 +455,10 @@ void FlowExecutionService::runJob(JobType job) {
 
     // T2.5：释放租约、清显示 jobId 同样纳入保护。此前这两步在 try 之外，一旦抛出
     // （如容器分配失败），Service 会停在 Running、租约不释放，后续 startX() 被永久拒绝。
-    try {
-        engine.endExternalJob(token);
-        // 后台执行（设计 §7.1）：job 结束/停止时清空显示帧上下文（帧槽位保留最后一帧供叠加使用）。
-        engine.clearDisplayJobId();
-    } catch (const std::exception& e) {
-        const QString what = QString::fromUtf8(e.what());
-        mergeError(what.isEmpty() ? QStringLiteral("service_teardown_exception")
-                                  : QStringLiteral("service_teardown_exception: %1").arg(what));
-        failed = true;
-        // 尽力二次释放：endExternalJob() 对重复/过期 token 返回 false，不会二次生效。
+    // 收尾异常后的尽力释放：std::exception 与其它异常（catch(...)）都必须走同一条恢复路径，
+    // 否则 state 虽回落 Idle，引擎仍 busy，下一任务被永久拒绝。
+    const auto bestEffortTeardownRelease = [&engine, &token, leaseAcquired]() {
+        // endExternalJob() 对重复/过期 token 返回 false，不会二次生效。
         try {
             if (leaseAcquired) {
                 engine.endExternalJob(token);
@@ -456,6 +469,28 @@ void FlowExecutionService::runJob(JobType job) {
             engine.clearDisplayJobId();
         } catch (...) {
         }
+    };
+    try {
+        // T2.5 测试注入：收尾段故障注入。每个 job 只在收尾入口执行一次；下方的
+        // catch/恢复分支不再调用，重试路径不得二次触发该钩子。钩子在**不持有 m_mutex**
+        // 时执行（锁内只做快照）。
+        std::function<void()> teardownHook;
+        {
+            QMutexLocker locker(&m_mutex);
+            teardownHook = g_jobTeardownHookForTest;
+        }
+        if (teardownHook) {
+            teardownHook();
+        }
+        engine.endExternalJob(token);
+        // 后台执行（设计 §7.1）：job 结束/停止时清空显示帧上下文（帧槽位保留最后一帧供叠加使用）。
+        engine.clearDisplayJobId();
+    } catch (const std::exception& e) {
+        const QString what = QString::fromUtf8(e.what());
+        mergeError(what.isEmpty() ? QStringLiteral("service_teardown_exception")
+                                  : QStringLiteral("service_teardown_exception: %1").arg(what));
+        failed = true;
+        bestEffortTeardownRelease();
     } catch (...) {
         mergeError(QStringLiteral("service_teardown_exception"));
         failed = true;
