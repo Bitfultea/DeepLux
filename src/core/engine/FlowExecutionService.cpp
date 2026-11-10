@@ -30,8 +30,29 @@ class FlowExecutionService::WorkerThread : public QThread {
 public:
     explicit WorkerThread(FlowExecutionService* service) : m_service(service) {}
 
+    /// T2.5 P1（第二轮回）：线程是否已进入不可再消费命令的退出阶段。
+    ///
+    /// 这个标记与 isFinished() 的区别就是本轮 P1 的核心：jobFailed 是在 run() 内部
+    /// （handleWorkerLoopFault）发出的，那一刻 run() 还没返回、isFinished() 仍为 false，
+    /// 调用方收到通知后立即重试就会复用这个再也不会消费队列的线程。标记在 workerLoop()
+    /// 返回之后、任何可能通知调用方的时机之前成立，因此覆盖整个「通知已发出、线程尚未
+    /// 结束」的窗口。放在 WorkerThread 自身（.cpp 内定义的 private 嵌套类），
+    /// FlowExecutionService 的类布局与 ABI 不变。
+    bool isRetiring() const {
+        return m_retiring.load(std::memory_order_acquire);
+    }
+
 protected:
     void run() override {
+        // T2.5 P1（第二轮回）：一旦 workerLoop() 交出控制权（无论正常返回还是抛出），
+        // 本线程就再也不会消费命令队列。**必须在任何可能通知调用方的动作之前**置位：
+        // jobFailed 正是在下面的 catch 分支（handleWorkerLoopFault）里发出的，那一刻
+        // run() 尚未返回、isFinished() 仍为 false。调用方收到通知后立即重试时，单靠
+        // isFinished() 会跳过回收、把命令交给一个再也不会消费队列的线程，最终只能等
+        // 握手超时（独立复现：标准异常 19/200、非标准 3/200、诊断复跑 28/200）。
+        // isRetiring() 使 enqueue() 在这个窗口内就能识别「线程不可再用」，并等到本线程
+        // 真正退出（join）后再重建。
+        //
         // T2.5 P1：workerLoop() 除返回外，还可能把「出错时正在处理的命令」通过 out 参数
         // 交回给入口兜底。出队后、runJob() 尚未置 m_job 的窗口里发生异常时，m_job 仍是
         // None，仅凭它判断会漏报终态信号（jobFailed 不发出）。
@@ -39,12 +60,18 @@ protected:
         try {
             m_service->workerLoop(&faultyJob);
         } catch (const std::exception& e) {
+            // 置位后再通知：保证「收到 jobFailed 立即重试」一定看到 retiring。
+            m_retiring.store(true, std::memory_order_release);
             // T2.5 最后一道保险：runJob() 负责 job 级 C++ 异常；此处只兜住 workerLoop()
             // 自身（取队列/加锁）的异常，绝不允许其逃出 QThread::run() 触发 std::terminate()。
             m_service->handleWorkerLoopFault(faultyJob, QString::fromUtf8(e.what()));
         } catch (...) {
+            m_retiring.store(true, std::memory_order_release);
             m_service->handleWorkerLoopFault(faultyJob, QStringLiteral("unknown_worker_exception"));
         }
+        // 正常返回路径（shutdown()/析构已请求退出）同样置位；此时线程指针已被摘走，
+        // 不会影响任何入队判定。
+        m_retiring.store(true, std::memory_order_release);
         // T2.1 整改：workerLoop() 已返回、其 QMutexLocker 已释放；在线程真正结束前
         // 执行退出屏障。屏障等待不持有 m_mutex，不会阻塞 shutdown() 取锁。
         try {
@@ -56,6 +83,7 @@ protected:
 
 private:
     FlowExecutionService* m_service = nullptr;
+    std::atomic_bool m_retiring{false};
 };
 
 FlowExecutionService& FlowExecutionService::instance() {
@@ -127,26 +155,37 @@ bool FlowExecutionService::stepOnce() {
 }
 
 bool FlowExecutionService::enqueue(JobType job) {
-    // T2.5 P1：先把「已自行退出但尚未回收」的 worker 线程摘下来，在**锁外** join 并
-    // delete，再回到锁内重建。worker 线程在 workerLoop() 自身抛出后由 run() 返回而结束，
-    // 此时 m_thread 仍非空；若无条件复用，新命令会被写进一个已死线程的等待队列，
-    // 启动握手只能超时撤回，服务从此无法再执行任务。回收必须在锁外：join 会阻塞到线程
-    // 真正退出，持锁 join 会卡死所有服务入口。
+    // T2.5 P1：把「故障线程退出/回收」与「下一任务入队」协调起来。
+    //
+    // 背景（第二轮回，2026-11-10 复核）：jobFailed 是在 worker 线程的 run() 内部发出的，
+    // 收到通知后立即重试时旧线程往往还没结束（isFinished() 仍为 false）。此前只用一次
+    // isFinished() 快照判断是否回收，会跳过回收、把命令写进一个再也不会消费队列的线程，
+    // 最终只能等到握手超时失败（独立复现：标准异常 19/200、非标准 3/200、复跑 28/200）。
+    //
+    // 现在的做法：循环「摘指针 → 锁外 join 回收 → 锁内重建」，直到拿到一个真正可用
+    // （既未 retiring、也未结束）的线程或确实完成了重建。判定不再是一次快照，而是
+    // 与线程自标记的 retiring 状态配合，覆盖「通知已发出、线程尚未退出」的整个窗口。
+    // 回收始终在锁外：join 会阻塞到线程真正退出，持锁 join 会卡死所有服务入口。
     // 这里只摘指针、不提前放弃 join 语义——旧线程一定由 joinWorkerThread() 等它真正
     // 退出后 delete，绝不 detach/terminate。
-    WorkerThread* retired = nullptr;
-    {
-        QMutexLocker locker(&m_mutex);
-        // 判定用 isFinished() 而非 !isRunning()：Qt 保证 run() 返回之后 isFinished() 才为
-        // true，此后该线程绝不会再消费命令队列，可以安全回收；isRunning() 为 false 只说明
-        // 「尚未开始或已结束」，不足以排除线程仍会启动并抢走命令。
-        if (m_thread && m_thread->isFinished()) {
-            retired = m_thread;
-            m_thread = nullptr;
+    for (;;) {
+        WorkerThread* retired = nullptr;
+        {
+            QMutexLocker locker(&m_mutex);
+            // 线程不可再用：要么已自标记 retiring（run() 即将返回，绝不再消费队列），
+            // 要么已经真正结束（isFinished()）。两者都要求先回收再重建。
+            if (m_thread && (m_thread->isRetiring() || m_thread->isFinished())) {
+                retired = m_thread;
+                m_thread = nullptr;
+            }
         }
-    }
-    if (retired) {
+        if (!retired) {
+            break; // 没有待回收线程：走正常入队
+        }
+        // 锁外 join：joinWorkerThread() 会等到 run() 真正返回后 delete 该线程。
+        // 这正是「等待旧线程退出」的界，而不是依赖某一次 isFinished() 快照。
         joinWorkerThread(retired);
+        // 回收完成后再回到循环顶部重新判定：期间若又发生自退出，仍会被识别。
     }
 
     QMutexLocker locker(&m_mutex);
