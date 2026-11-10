@@ -103,6 +103,9 @@ private:
     void ensureThreadLocked();
     void workerLoop();
     void runJob(JobType job);
+    // T2.5：workerLoop() 自身 C++ 异常的最后一道保险（job 级异常已由 runJob() 收敛）。
+    // 由 WorkerThread::run() 调用；负责把 Service 复位到可再次启动的 Idle 并上报 jobFailed。
+    void handleWorkerLoopFault(const QString& what);
 
     enum class ResumeOutcome { Resumed, Stopped, Failed };
     // 模块边界暂停后等待 continueRun()/stop()；Resumed 时已恢复被暂停段。

@@ -16,10 +16,22 @@ public:
 
 protected:
     void run() override {
-        m_service->workerLoop();
+        try {
+            m_service->workerLoop();
+        } catch (const std::exception& e) {
+            // T2.5 最后一道保险：runJob() 负责 job 级 C++ 异常；此处只兜住 workerLoop()
+            // 自身（取队列/加锁）的异常，绝不允许其逃出 QThread::run() 触发 std::terminate()。
+            m_service->handleWorkerLoopFault(QString::fromUtf8(e.what()));
+        } catch (...) {
+            m_service->handleWorkerLoopFault(QStringLiteral("unknown_worker_exception"));
+        }
         // T2.1 整改：workerLoop() 已返回、其 QMutexLocker 已释放；在线程真正结束前
         // 执行退出屏障。屏障等待不持有 m_mutex，不会阻塞 shutdown() 取锁。
-        m_service->runWorkerExitBarrierForTest();
+        try {
+            m_service->runWorkerExitBarrierForTest();
+        } catch (...) {
+            // 退出屏障是测试钩子：其异常同样不得逃出 QThread::run()。
+        }
     }
 
 private:
@@ -311,69 +323,145 @@ void FlowExecutionService::runJob(JobType job) {
     m_currentJobSerial.store(jobSerial, std::memory_order_release);
     m_job.store(static_cast<int>(job), std::memory_order_release);
 
-    // B7 测试注入：在启动协议最前面执行（生产构建恒为空），用于确定性验证 GUI 侧握手超时。
-    std::function<void()> startHook;
-    {
-        QMutexLocker locker(&m_mutex);
-        startHook = m_testStartHook;
-    }
-    if (startHook) {
-        startHook();
-    }
-
-    RunEngine::JobToken token;
-    QString reason;
-    if (!engine.beginExternalJob(&token, &reason)) {
-        m_job.store(static_cast<int>(JobType::None), std::memory_order_release);
-        m_failedJobSerial.store(jobSerial, std::memory_order_release);
-        const QString error = reason.isEmpty() ? QStringLiteral("engine_busy") : reason;
-        Logger::instance().warning(QString("Flow job rejected: %1").arg(error), "Service");
-        settleStart(false); // 启动握手：让 startX() 立即返回 false
-        emit jobFailed(job, error);
-        return;
-    }
-    // 后台执行（设计 §7.1）：job 启动时把 jobId 注入 RunEngine 的显示帧上下文，
-    // 帧身份不依赖每轮会重置的全局 frameId；job 结束时清空。
-    engine.setDisplayJobId(jobSerial);
-    {
-        QMutexLocker locker(&m_mutex);
-        m_leaseToken = token;
-    }
-    commitState(State::Running, job);
-    settleStart(true); // job 租约已建立、引擎 busy，startX() 可安全返回 true
-
     bool stopped = false;
     bool failed = false;
+    bool rejected = false;
+    bool leaseAcquired = false;
+    bool startSettled = false;
+    bool terminalEmitted = false;
     QString error;
+    RunEngine::JobToken token;
+    const auto mergeError = [&error](const QString& extra) {
+        error = error.isEmpty() ? extra : QStringLiteral("%1; %2").arg(error, extra);
+    };
+
+    // T2.5：启动段纳入保护。此前 startHook()/beginExternalJob()/setDisplayJobId()/
+    // commitState() 均在 try 之外，其抛出的 C++ 异常会经 workerLoop() 逃出
+    // QThread::run() 触发 std::terminate()（进程 abort，且 startX() 等不到启动握手）。
+    // 承诺范围仅限 Service 自有代码的 C++ 异常；槽函数抛异常属 Qt 未定义行为，不在其内。
     try {
-        switch (job) {
-        case JobType::Single:
-            runSingleJob(token, stopped, failed, error);
-            break;
-        case JobType::Cycle:
-            runCycleJob(token, stopped, failed, error);
-            break;
-        case JobType::Step:
-            runStepJob(token, stopped, failed, error);
-            break;
-        case JobType::Resume:
-        case JobType::None:
-            failed = true;
-            error = QStringLiteral("invalid_job_type");
-            break;
+        // B7 测试注入：在启动协议最前面执行（生产构建恒为空），用于确定性验证 GUI 侧握手超时。
+        std::function<void()> startHook;
+        {
+            QMutexLocker locker(&m_mutex);
+            startHook = m_testStartHook;
         }
+        if (startHook) {
+            startHook();
+        }
+
+        QString reason;
+        if (!engine.beginExternalJob(&token, &reason)) {
+            rejected = true;
+            m_job.store(static_cast<int>(JobType::None), std::memory_order_release);
+            m_failedJobSerial.store(jobSerial, std::memory_order_release);
+            error = reason.isEmpty() ? QStringLiteral("engine_busy") : reason;
+            Logger::instance().warning(QString("Flow job rejected: %1").arg(error), "Service");
+            settleStart(false); // 启动握手：让 startX() 立即返回 false
+            startSettled = true;
+            emit jobFailed(job, error);
+            terminalEmitted = true;
+            return;
+        }
+        leaseAcquired = true;
+        // 后台执行（设计 §7.1）：job 启动时把 jobId 注入 RunEngine 的显示帧上下文，
+        // 帧身份不依赖每轮会重置的全局 frameId；job 结束时清空。
+        engine.setDisplayJobId(jobSerial);
+        {
+            QMutexLocker locker(&m_mutex);
+            m_leaseToken = token;
+        }
+        commitState(State::Running, job);
+        settleStart(true); // job 租约已建立、引擎 busy，startX() 可安全返回 true
+        startSettled = true;
     } catch (const std::exception& e) {
-        failed = true;
-        error = QString::fromUtf8(e.what());
+        const QString what = QString::fromUtf8(e.what());
+        const QString fault = what.isEmpty() ? QStringLiteral("service_startup_exception")
+                                             : QStringLiteral("service_startup_exception: %1").arg(what);
+        if (rejected) {
+            mergeError(fault); // 拒绝已成立：保留拒绝原因，不把该 job 改判为“启动异常”
+        } else {
+            failed = true;
+            error = fault;
+        }
     } catch (...) {
-        failed = true;
-        error = QStringLiteral("unknown_service_exception");
+        if (rejected) {
+            mergeError(QStringLiteral("service_startup_exception"));
+        } else {
+            failed = true;
+            error = QStringLiteral("service_startup_exception");
+        }
     }
 
-    // 收尾：释放 job 租约（同时清理 job 级取消标志与暂停上下文），再提交 Idle。
-    engine.endExternalJob(token);
-    // 后台执行（设计 §7.1）：job 结束/停止时清空显示帧上下文（帧槽位保留最后一帧供叠加使用）。
-    engine.clearDisplayJobId();
+    if (!startSettled) {
+        // 启动未落定：立即让 startX() 返回 false，不让其等到握手超时后按“已出队”请求停止。
+        settleStart(false);
+        startSettled = true;
+    }
+    if (rejected) {
+        // 拒绝分支在 Logger/上报处抛异常：该 job 仍按“拒绝”收尾，不进入主体与收尾段。
+        if (!terminalEmitted) {
+            emit jobFailed(job, error);
+        }
+        return;
+    }
+
+    // 主体：与既有语义一致，异常转 failed，不改变既有错误文本（引擎层已先兜一层）。
+    if (!failed) {
+        try {
+            switch (job) {
+            case JobType::Single:
+                runSingleJob(token, stopped, failed, error);
+                break;
+            case JobType::Cycle:
+                runCycleJob(token, stopped, failed, error);
+                break;
+            case JobType::Step:
+                runStepJob(token, stopped, failed, error);
+                break;
+            case JobType::Resume:
+            case JobType::None:
+                failed = true;
+                error = QStringLiteral("invalid_job_type");
+                break;
+            }
+        } catch (const std::exception& e) {
+            failed = true;
+            error = QString::fromUtf8(e.what());
+        } catch (...) {
+            failed = true;
+            error = QStringLiteral("unknown_service_exception");
+        }
+    }
+
+    // T2.5：释放租约、清显示 jobId 同样纳入保护。此前这两步在 try 之外，一旦抛出
+    // （如容器分配失败），Service 会停在 Running、租约不释放，后续 startX() 被永久拒绝。
+    try {
+        engine.endExternalJob(token);
+        // 后台执行（设计 §7.1）：job 结束/停止时清空显示帧上下文（帧槽位保留最后一帧供叠加使用）。
+        engine.clearDisplayJobId();
+    } catch (const std::exception& e) {
+        const QString what = QString::fromUtf8(e.what());
+        mergeError(what.isEmpty() ? QStringLiteral("service_teardown_exception")
+                                  : QStringLiteral("service_teardown_exception: %1").arg(what));
+        failed = true;
+        // 尽力二次释放：endExternalJob() 对重复/过期 token 返回 false，不会二次生效。
+        try {
+            if (leaseAcquired) {
+                engine.endExternalJob(token);
+            }
+        } catch (...) {
+        }
+        try {
+            engine.clearDisplayJobId();
+        } catch (...) {
+        }
+    } catch (...) {
+        mergeError(QStringLiteral("service_teardown_exception"));
+        failed = true;
+    }
+
+    // 资源与状态复位：无论启动/主体/收尾是否异常都无条件执行，且不调用可能抛异常的外部代码。
     {
         QMutexLocker locker(&m_mutex);
         m_leaseToken = RunEngine::JobToken{};
@@ -401,10 +489,49 @@ void FlowExecutionService::runJob(JobType job) {
         m_wake.wakeAll();
     }
     if (failed) {
-        Logger::instance().warning(QString("Flow job failed: %1").arg(error), "Service");
+        try {
+            Logger::instance().warning(QString("Flow job failed: %1").arg(error), "Service");
+        } catch (...) {
+            // 日志失败不得阻断终态上报（此处若再抛，异常会逃出 worker 线程）。
+        }
         emit jobFailed(job, error);
     } else {
         emit jobFinished(job, stopped);
+    }
+}
+
+void FlowExecutionService::handleWorkerLoopFault(const QString& what) {
+    // runJob() 已收敛 job 级异常；走到这里说明 workerLoop() 自身（取队列/加锁）出错。
+    // 目标：不允许异常逃出 QThread::run()，并把 Service 复位到可再次启动的 Idle。
+    const quint64 serial = m_currentJobSerial.load(std::memory_order_acquire);
+    const JobType job = static_cast<JobType>(m_job.load(std::memory_order_acquire));
+    const QString message = what.isEmpty() ? QStringLiteral("service_worker_exception")
+                                           : QStringLiteral("service_worker_exception: %1").arg(what);
+    m_job.store(static_cast<int>(JobType::None), std::memory_order_release);
+    m_finishedJobSerial.store(serial, std::memory_order_release);
+    if (job != JobType::None) {
+        m_failedJobSerial.store(serial, std::memory_order_release);
+    }
+    {
+        QMutexLocker locker(&m_mutex);
+        m_leaseToken = RunEngine::JobToken{};
+        m_stopRequested = false;
+        m_pauseRequested = false;
+        m_resumeRequested = false;
+        if (!m_startSettled) {
+            // 启动握手尚未落定：立即放行 startX()，避免其等到握手超时。
+            m_startOk = false;
+            m_startSettled = true;
+        }
+        m_wake.wakeAll();
+    }
+    commitState(State::Idle, JobType::None);
+    try {
+        Logger::instance().error(QString("Flow worker fault: %1").arg(message), "Service");
+    } catch (...) {
+    }
+    if (job != JobType::None) {
+        emit jobFailed(job, message);
     }
 }
 
