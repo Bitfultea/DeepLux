@@ -897,19 +897,90 @@ terminate called after throwing an instance of 'std::runtime_error'
 - `cmake -G "Unix Makefiles"` 与 `-G Ninja` 在**全新构建目录**的 Generate 阶段均出现停滞（`Configuring done` 后长时间无 `Generating done`，实测约 1 文件/秒），本机 load average ≈ 9。为避免把环境问题混入测试结论，本轮绿灯改用**基线已生成的构建目录** `/var/tmp/t25-probe-build` 的增量目标（`make <target>/fast`，只做编译/链接，不重跑 Generate）。
 - 该偏离**不满足**正式门禁「工作区外全新构建目录」的要求，故**不作为 T2.5 收口门禁**；收口时须在能完成 Generate 的环境中重跑全新目录的 97 项 CTest。
 - `make` 首次报 `No space left on device`（`/tmp` 为 10M tmpfs）与插件目标缺失，均为环境/目标选择问题，设置 `TMPDIR=/var/tmp/deeplux-ctest-tmp` 后重跑通过；**不是测试失败、不是重试到绿**。
+- **后续**：本轮收尾时已在全新目录 `/var/tmp/t25-close-build` 完成 `CONFIGURE_rc=0` / `BUILD_rc=0` / 97 项 CTest 全通过（见 10.12）；上面的增量构建仅用于快速迭代，正式门禁以上述全新目录结果为准。
 
 ### 10.7 收尾段注入点方案（待核准，未实施）
 
 收尾段无任何既有合法注入位置（启动钩子只在启动段调用；`setExecutionFaultInjectionForTest` 属引擎主体；`setWorkerExitBarrierForTest` 属线程退出段；`Logger` 无 sink）。方案 A：新增与既有钩子同型的 `setJobTeardownHookForTest()` / `clearJobTeardownHookForTest()`（`DEEPLUX_TEST_VISIBILITY`，生产构建为 `private`、恒为空），调用点置于收尾 `try` 入口、`endExternalJob()` 之前。详见 `/var/tmp/t25-probe-out/T25-TEARDOWN-HOOK-PROPOSAL.md`。
 
-### 10.8 状态
+### 10.7.1 方案 A 核准与落实约束（2026-11-10）
+
+评审核准方案 A，附五条约束，逐条落实如下：
+
+| 约束 | 落实 |
+|---|---|
+| 普通 C++ 回调；锁内快照、锁外调用；收尾 `try` 内、`endExternalJob()` 前；每 job 只调一次，恢复/重试路径不得再触发 | 钩子为 `std::function<void()>`；`{ QMutexLocker locker(&m_mutex); teardownHook = g_jobTeardownHookForTest; }` 快照后锁外调用；调用点是收尾 `try` 第一句；两个 `catch` 分支只调用 `bestEffortTeardownRelease()`，不再触碰钩子 |
+| 保持类布局不变；钩子存储放 `.cpp` 私有测试状态，沿用现有互斥锁；`DEEPLUX_TEST_VISIBILITY` 只控访问权限 | 存储为 `.cpp` 匿名命名空间中的 `g_jobTeardownHookForTest`，由 `m_mutex` 保护；**未新增任何类数据成员**；头文件只加两个成员函数声明（非虚，vtable/布局不变） |
+| 覆盖标准与非标准异常；`catch(...)` 分支同样要释放租约 | 新增两个用例（`std::runtime_error` 与 `throw 42`）；`catch(...)` 补齐 `bestEffortTeardownRelease()`（提交 `70c6490`） |
+| 断言真实恢复，不以 `state==Idle` 替代资源释放 | 钩子内记录「租约仍持有 / Service 仍 Running / 显示 jobId 未清零」；异常后断言 `jobFailed` 恰好一次、`jobFinished` 零次、`!isActive()`、`!engine.isBusy()`、`displayJobId()==0`，清钩子后下一任务完成 |
+| 保留可编译的 NF 证据链；钩子与测试单独提交；撤销修复时保留钩子与用例 | 钩子+用例为 `732640c`，修复为 `70c6490`；撤销复败在独立工作树 `git revert --no-edit 70c6490`，钩子与用例保留、编译通过 |
+
+### 10.8 收尾段红灯（提交 `732640c` 单独检出，可编译）
+
+工作树 `/var/tmp/t25-probe-wt` 取 `732640c` 的三份文件；构建目录 `/var/tmp/t25-probe-build`；每个用例独立进程运行 5 次。
+
+| 用例 | 结果 |
+|---|---|
+| `testExceptionInJobTeardownEmitsJobFailedNotTerminate`（`std::runtime_error`） | **5/5 `rc=0` PASS**（既有 `catch` 分支已重试释放） |
+| `testNonStandardExceptionInJobTeardownEmitsJobFailedNotTerminate`（`throw 42`） | **5/5 `rc=1` FAIL**，`'!engine.isBusy()' returned FALSE`，`Loc: tests/test_flowexecutionservice.cpp(397)` |
+
+失败断言原文：
+
+```
+FAIL!  : TestFlowExecutionService::testNonStandardExceptionInJobTeardownEmitsJobFailedNotTerminate()
+         '!engine.isBusy()' returned FALSE. (the engine lease must be released after teardown recovery)
+   Loc: [/var/tmp/t25-probe-wt/tests/test_flowexecutionservice.cpp(397)]
+```
+
+**是可编译的测试失败，不是编译失败**：同一提交上标准异常用例正常通过。
+
+### 10.9 修复与绿灯（提交 `70c6490`）
+
+`catch(...)` 与 `catch (const std::exception&)` 走同一条尽力释放路径（`endExternalJob` + `clearDisplayJobId`，各自独立 `try` 包裹）。
+
+| 套件/用例 | 结果 |
+|---|---|
+| 两个收尾用例各 ×5 | **10/10 `rc=0` PASS** |
+| `test_flowexecutionservice`（全套） | **25 passed, 0 failed** |
+| `test_runengine` | **118 passed, 0 failed** |
+| `test_runenginejoblease` / `userpause` / `finalizer` | **8 / 6 / 6，全过** |
+
+### 10.10 撤销修复复败（独立工作树，保留钩子与用例）
+
+- 工作树 `/var/tmp/t25-revert-wt`（`git worktree add --detach 70c6490`），执行 `git revert --no-commit 70c6490`，**仅撤销修复、钩子与两个用例保留**；`git status` 显示 `M src/core/engine/FlowExecutionService.cpp`（单文件），编译 `MAKE_rc=0`。
+- 结果：`std::runtime_error` 用例 **3/3 `rc=0`**；非 `std::exception` 用例 **3/3 `rc=1`**，均失败于 `!engine.isBusy()`。
+- 复败是**可编译的测试失败**，不是编译失败。
+
+### 10.11 提交顺序声明（不得追溯改写）
+
+- `324a282` 的验证发生在收尾钩子存在之前：当时只有启动段用例（`39b8c37` 红灯 5/5、`324a282` 绿灯 5/5 + 相关套件）。**不得表述为「用收尾钩子验证过 `324a282`」。**
+- 收尾段证据链只对应 `732640c`（红灯）→ `70c6490`（绿灯）→ `revert 70c6490`（复败）。
+- 本次核准**不代表** `324a282` 的整体实现已通过审核；其启动段/主体/收尾结构仍待本轮收口复审一并裁定。
+
+
+### 10.12 正式门禁（全新工作区外构建目录，2026-11-10）
+
+| 项 | 值 |
+|---|---|
+| 交付树 | `HEAD=70c6490`、`STATUS=[]` |
+| 构建目录 | `/var/tmp/t25-close-build`（**工作区外全新目录**） |
+| 配置 | `CONFIGURE_rc=0`（选项集与既有隔离构建一致；耗时 8m11s，Generate 较慢） |
+| 构建 | `BUILD_rc=0`、`[100%] Built target DeepLux` |
+| 格式 | `FMT_CPP_rc=0`、`FMT_H_rc=0`、`FMT_TEST_rc=0`、`GIT_CLANG_FORMAT_DIFF=[clang-format did not modify any files]`、`DIFFCHECK_rc=0` |
+| CTest 列举 | `Total Tests: 97`、`CTEST_LISTED=97` |
+| **CTest 全量** | **`100% tests passed, 0 tests failed out of 97`**、`CTEST_rc=0`（`Total Test time = 201.48 sec`） |
+| 相关套件（同一交付态，独立运行） | service **25/25**、runengine **118/118**、joblease 8/8、userpause 6/6、finalizer 6/6 |
+
+日志：`/var/tmp/t25-close-out/{configure,build,ctest,ctest-N}.log`、`tip_*.log`。
+
+### 10.13 状态
 
 | 项 | 状态 |
 |---|---|
-| 提交链 | `… → 1a2a02a → 39b8c37（test）→ 324a282（fix）` |
-| 启动段 NF | **红灯 5/5（提交内字节）、绿灯 5/5 已闭合** |
-| 收尾段 NF | **未实施**，待方案 A 核准 |
-| 全量 CTest（97） | **未执行**（Generate 环境受限）；收口时必须重跑 |
-| T2.5 | **进行中，未收口** |
+| 提交链 | `… → 1a2a02a → 39b8c37 → 324a282 → f556dfb → 732640c → 70c6490` |
+| 启动段 NF | **红灯 5/5、绿灯 5/5 已闭合**（对应 `39b8c37 → 324a282`） |
+| 收尾段 NF | **红灯 5/5（std 通过 / 非 std 失败）、绿灯 5/5、撤销复败 3/3 已闭合**（对应 `732640c → 70c6490`） |
+| 全量 CTest（97） | **已执行：97/97 通过**（全新目录） |
+| T2.5 | **待评审收口裁定**（本轮只提交证据，不自行宣告收口） |
 | T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
 | R2 整批 | **尚未完成** |
