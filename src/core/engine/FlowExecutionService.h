@@ -115,11 +115,14 @@ private:
     // 命令槽（设计 §4.1：不排队，深度 1）：锁内校验 + 入队 + 唤醒工作线程。
     bool enqueue(JobType job);
     void ensureThreadLocked();
-    void workerLoop();
+    // faultyJob（可空）在每轮出队后写入当前命令，供 run() 的入口兜底判断出错的 job。
+    void workerLoop(JobType* faultyJob = nullptr);
     void runJob(JobType job);
     // T2.5：workerLoop() 自身 C++ 异常的最后一道保险（job 级异常已由 runJob() 收敛）。
     // 由 WorkerThread::run() 调用；负责把 Service 复位到可再次启动的 Idle 并上报 jobFailed。
-    void handleWorkerLoopFault(const QString& what);
+    // faultyJob 由 workerLoop() 在出队时记录（出错时正在处理的命令）；仅在 m_job 尚未置位
+    // 的窗口里依赖它，避免漏报终态信号。
+    void handleWorkerLoopFault(JobType faultyJob, const QString& what);
 
     enum class ResumeOutcome { Resumed, Stopped, Failed };
     // 模块边界暂停后等待 continueRun()/stop()；Resumed 时已恢复被暂停段。

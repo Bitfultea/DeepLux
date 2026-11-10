@@ -32,14 +32,18 @@ public:
 
 protected:
     void run() override {
+        // T2.5 P1：workerLoop() 除返回外，还可能把「出错时正在处理的命令」通过 out 参数
+        // 交回给入口兜底。出队后、runJob() 尚未置 m_job 的窗口里发生异常时，m_job 仍是
+        // None，仅凭它判断会漏报终态信号（jobFailed 不发出）。
+        JobType faultyJob = JobType::None;
         try {
-            m_service->workerLoop();
+            m_service->workerLoop(&faultyJob);
         } catch (const std::exception& e) {
             // T2.5 最后一道保险：runJob() 负责 job 级 C++ 异常；此处只兜住 workerLoop()
             // 自身（取队列/加锁）的异常，绝不允许其逃出 QThread::run() 触发 std::terminate()。
-            m_service->handleWorkerLoopFault(QString::fromUtf8(e.what()));
+            m_service->handleWorkerLoopFault(faultyJob, QString::fromUtf8(e.what()));
         } catch (...) {
-            m_service->handleWorkerLoopFault(QStringLiteral("unknown_worker_exception"));
+            m_service->handleWorkerLoopFault(faultyJob, QStringLiteral("unknown_worker_exception"));
         }
         // T2.1 整改：workerLoop() 已返回、其 QMutexLocker 已释放；在线程真正结束前
         // 执行退出屏障。屏障等待不持有 m_mutex，不会阻塞 shutdown() 取锁。
@@ -123,6 +127,28 @@ bool FlowExecutionService::stepOnce() {
 }
 
 bool FlowExecutionService::enqueue(JobType job) {
+    // T2.5 P1：先把「已自行退出但尚未回收」的 worker 线程摘下来，在**锁外** join 并
+    // delete，再回到锁内重建。worker 线程在 workerLoop() 自身抛出后由 run() 返回而结束，
+    // 此时 m_thread 仍非空；若无条件复用，新命令会被写进一个已死线程的等待队列，
+    // 启动握手只能超时撤回，服务从此无法再执行任务。回收必须在锁外：join 会阻塞到线程
+    // 真正退出，持锁 join 会卡死所有服务入口。
+    // 这里只摘指针、不提前放弃 join 语义——旧线程一定由 joinWorkerThread() 等它真正
+    // 退出后 delete，绝不 detach/terminate。
+    WorkerThread* retired = nullptr;
+    {
+        QMutexLocker locker(&m_mutex);
+        // 判定用 isFinished() 而非 !isRunning()：Qt 保证 run() 返回之后 isFinished() 才为
+        // true，此后该线程绝不会再消费命令队列，可以安全回收；isRunning() 为 false 只说明
+        // 「尚未开始或已结束」，不足以排除线程仍会启动并抢走命令。
+        if (m_thread && m_thread->isFinished()) {
+            retired = m_thread;
+            m_thread = nullptr;
+        }
+    }
+    if (retired) {
+        joinWorkerThread(retired);
+    }
+
     QMutexLocker locker(&m_mutex);
     // 设计 §4.1：非 Idle 时启动/单步直接拒绝，不排队；Paused 只接受 continueRun()/stop()。
     if (state() != State::Idle || m_pendingJob != JobType::None || currentJob() != JobType::None) {
@@ -326,9 +352,12 @@ bool FlowExecutionService::shutdown() {
     return true;
 }
 
-void FlowExecutionService::workerLoop() {
+void FlowExecutionService::workerLoop(JobType* faultyJob) {
     for (;;) {
         JobType job = JobType::None;
+        if (faultyJob) {
+            *faultyJob = JobType::None;
+        }
         {
             QMutexLocker locker(&m_mutex);
             while (!m_quitRequested && m_pendingJob == JobType::None) {
@@ -346,6 +375,11 @@ void FlowExecutionService::workerLoop() {
         }
         if (job == JobType::None) {
             continue;
+        }
+        // T2.5 P1：出队即记录本次命令，供入口兜底在「runJob() 尚未置 m_job」的窗口里
+        // 正确判断出错的 job 并上报终态信号（否则会漏报 jobFailed）。
+        if (faultyJob) {
+            *faultyJob = job;
         }
         // T2.5 P1 测试注入：workerLoop() 骨架故障。位于「命令已出队、runJob() 尚未
         // 进入」的骨架位置，抛出后必须由 WorkerThread::run() 的入口兜底收敛，而
@@ -569,11 +603,17 @@ void FlowExecutionService::runJob(JobType job) {
     }
 }
 
-void FlowExecutionService::handleWorkerLoopFault(const QString& what) {
+void FlowExecutionService::handleWorkerLoopFault(JobType faultyJob, const QString& what) {
     // runJob() 已收敛 job 级异常；走到这里说明 workerLoop() 自身（取队列/加锁）出错。
-    // 目标：不允许异常逃出 QThread::run()，并把 Service 复位到可再次启动的 Idle。
+    // 目标：不允许异常逃出 QThread::run()，把 Service 复位到可再次启动的 Idle，并让
+    // 后续启动能够重新拉起线程继续执行。
+    //
+    // T2.5 P1：出错的 job 必须由 workerLoop() 通过 faultyJob 交回，而不是读 m_job——
+    // m_job 在 runJob() 内才置位，「命令已出队、runJob() 尚未进入」的窗口里它仍是 None，
+    // 只按 m_job 判断会漏报 jobFailed，调用方拿到 startX()==false 却没有任何终态信号。
     const quint64 serial = m_currentJobSerial.load(std::memory_order_acquire);
-    const JobType job = static_cast<JobType>(m_job.load(std::memory_order_acquire));
+    const JobType job =
+        (faultyJob != JobType::None) ? faultyJob : static_cast<JobType>(m_job.load(std::memory_order_acquire));
     const QString message = what.isEmpty() ? QStringLiteral("service_worker_exception")
                                            : QStringLiteral("service_worker_exception: %1").arg(what);
     m_job.store(static_cast<int>(JobType::None), std::memory_order_release);
@@ -587,6 +627,10 @@ void FlowExecutionService::handleWorkerLoopFault(const QString& what) {
         m_stopRequested = false;
         m_pauseRequested = false;
         m_resumeRequested = false;
+        // T2.5 P1：清除残留命令。handler 也可能在「命令已入队但尚未出队」的窗口被调用，
+        // 残留的 m_pendingJob 会让 enqueue() 以 pending != None 永久拒绝后续启动——只复位
+        // state 不足以恢复。出错的那条命令不能继续执行，必须就地丢弃。
+        m_pendingJob = JobType::None;
         if (!m_startSettled) {
             // 启动握手尚未落定：立即放行 startX()，避免其等到握手超时。
             m_startOk = false;
