@@ -1160,3 +1160,165 @@ for (;;) {
 | T2.5 | **待评审收口裁定**（本轮不自行宣告收口） |
 | T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
 | R2 整批 | **尚未完成** |
+
+## 12. T2.5 P1 第二轮回：故障通知后立即重试的窗口（2026-11-10 复核裁定）
+
+### 12.1 裁定的问题
+
+按 `901b222` 复核，评审仍给出 1 项 P1，暂不批准 T2.5 收口：
+
+> 故障通知后立即重试，仍可能把命令交给正在退出的线程。`FlowExecutionService.cpp:647`
+> 发出 `jobFailed` 时旧 worker 尚未真正退出；`FlowExecutionService.cpp:143` 只回收已经
+> `isFinished()` 的线程。立即重试可能跳过回收，继续向不会再消费命令的旧线程入队，
+> 最终握手超时、启动失败。
+
+评审独立复现：标准异常 **19/200**、非标准异常 **3/200**、标准异常加诊断复跑 **28/200**。
+诊断确认失败时旧线程尚未结束，等待约 100ms 后返回 `false`，模块执行增量为 0。并指出
+现有 `tests/test_flowexecutionservice.cpp:1030` 用 `QTRY_COMPARE` 等通知，容易错过这个短窗口。
+
+### 12.2 缺陷机理（静态事实）
+
+| 事实 | 位置 | 结论 |
+|---|---|---|
+| `jobFailed` 发出点 | `handleWorkerLoopFault()`（`FlowExecutionService.cpp`） | 在 **worker 线程的 `run()` 内部**发出 |
+| 此刻 `run()` 状态 | `WorkerThread::run()` → `catch` → `handleWorkerLoopFault()` | `run()` **尚未返回**，`QThread::isFinished()` 仍为 `false` |
+| `9bd3aad` 的 `enqueue()` 回收判据 | 单次 `m_thread->isFinished()` 快照 | 在窗口期内必然**漏判** |
+| 漏判后果 | `ensureThreadLocked()` 只判 `m_thread` 非空 | 复用不会再消费队列的旧线程 → 握手 100ms 超时撤回 |
+
+即：**用一次 `isFinished()` 快照去判定「线程是否还能接收命令」，在语义上就不成立**——
+`isFinished()` 描述的是「线程已经结束」，而窗口期需要的是「线程是否已不可能再消费命令」。
+
+### 12.3 回归手法的三轮试跑（过程如实保留）
+
+第一版（`ef1adae`）用 `jobFailed` 的 `DirectConnection` 槽在 worker 线程栈内同步重试。
+试跑即否定了这个手法，两条失败都必须记录：
+
+| 轮次 | 手法 | 结果 | 结论 |
+|---|---|---|---|
+| v1 | `DirectConnection` 槽内同步 `startSingle()` | **5/5 `rc=134`** | 槽在正在退出的 worker 线程上执行，`enqueue()` 去 join 自己 → `QThread::wait: Thread tried to wait on itself` → `QThread: Destroyed while thread is still running` → abort |
+| v2 | 槽内 `invokeMethod(..., Qt::QueuedConnection)` 投递到主线程 | **撤销态 3/3 全绿** | 主线程须等 worker 的 `emit` 返回、`run()` 走完才处理事件，窗口被完全绕过 → **该用例没有判别力** |
+| v3 | 用退出屏障把 worker 停在窗口正中，主线程重试 | 撤销态 5/5 红灯、修复态 5/5 绿灯 | 确定性复现，采用 |
+
+v2 的教训写入纪律：**「撤销态仍全绿」必须当作「用例无效」处理，不得因为修复后被绿就收货。**
+
+### 12.4 采用的回归手法
+
+`WorkerThread::run()` 在 `handleWorkerLoopFault()` 发出 `jobFailed` **之后**、`run()` 返回
+**之前**调用既有退出屏障钩子 `runWorkerExitBarrierForTest()`。该点正是缺陷窗口本体：
+`jobFailed` 已发出，`isFinished()` 仍为 false。
+
+用例 `testImmediateRetryDuringWorkerRetirementMustSucceed`：
+
+1. 置 `holdBarrier`，注入一次 `workerLoop` 故障，`startSingle()`（首启必被放行并返回 false）；
+2. 用 `barrierReached.tryAcquire(1, 3000)` 等到 worker 停在屏障上；
+3. 确认 `failureNotified` 为真后，**在主线程**调用 `startSingle()`——此刻旧线程尚未结束；
+4. 放行屏障、等重试任务跑完，统计。
+
+判据（全部落在 `startSingle()` 返回值与 `probe.runs()`，与异常语义无关）：
+
+| 判据 | 含义 | 失败即说明 |
+|---|---|---|
+| `windowRetryFailed == 0` | 窗口内重试一次都不许被拒绝 | 命令被交给了正在退出的旧线程 |
+| `retryNotExecuted == 0` | 被接受的重试必须真的执行过任务 | 命令进了黑洞，接受但空转 |
+| `windowRetries >= 5` | 判别性前提：窗口必须真的被覆盖 | 用例空转，无判别力 |
+
+`DirectConnection` 槽在本用例中**只做状态观测**（计数 + 置标志），不含任何阻塞动作、
+不抛异常——槽内抛异常属 Qt 未定义行为，不得作为缺陷证据。
+
+### 12.5 红灯（撤销态）
+
+执行位置：隔离工作树 `/var/tmp/t25-p1-revert-wt`（`9bd3aad` + `9f4afba` 的用例，
+`git apply` 净 diff，**不含任何修复**），独立构建目录 `/var/tmp/t25-p1-revert-build`。
+
+```
+BUILD_rc=0
+for i in 1..5: ./bin/test_flowexecutionservice testImmediateRetryDuringWorkerRetirementMustSucceed
+```
+
+| 样本 | 退出码 | `barrierEntries` | `windowRetries` | `retryOk` | `retryFailed` | 失败断言 |
+|---|---|---:|---:|---:|---:|---|
+| red-1 | **1** | 10 | 10 | **0** | **10** | `windowRetryFailed.load() == 0` |
+| red-2 | **1** | 10 | 10 | **0** | **10** | 同上 |
+| red-3 | **1** | 10 | 10 | **0** | **10** | 同上 |
+| red-4 | **1** | 10 | 10 | **0** | **10** | 同上 |
+| red-5 | **1** | 10 | 10 | **0** | **10** | 同上 |
+
+窗口命中率 **10/10 = 100%**（评审现场约 10%，因靠事件循环碰运气）。日志：
+`/var/tmp/t25-p1b-red-v3/red-{1..5}.log`。
+
+### 12.6 修复内容（分提交）
+
+1. **线程自标记 retiring**（`WorkerThread`，`.cpp` 内定义的 private 嵌套类）。
+   新增 `std::atomic_bool m_retiring` 与 `isRetiring()`；置位点选在 `run()` 两个 `catch`
+   分支的**第一句**，早于 `handleWorkerLoopFault()`（即早于 `emit jobFailed`）；正常返回
+   路径也补一次。`WorkerThread` 是 `.cpp` 内的私有嵌套类，`FlowExecutionService` 的类
+   布局与 ABI 不变，头文件未改动。
+2. **`enqueue()` 回收循环**。由单次快照改为 `for (;;)`：锁内判
+   `isRetiring() || isFinished()` 并摘指针 → `if (!retired) break;` → **锁外**
+   `joinWorkerThread(retired)` → 回到顶部重判。回收始终在锁外（持锁 join 会卡死所有
+   服务入口）；只摘指针、不放弃 join 语义，旧线程一定等它真正退出后 `delete`，
+   绝不 detach/terminate。
+
+### 12.7 绿灯（修复态）
+
+执行位置：隔离工作树 `/var/tmp/t25-p1-probe-wt`（`ef1adae` + 修复 + v3 用例），
+独立构建目录 `/var/tmp/t25-p1-build`。
+
+| 样本 | 退出码 | `barrierEntries` | `windowRetries` | `retryOk` | `retryFailed` | `retryNotExecuted` |
+|---|---|---:|---:|---:|---:|---:|
+| green-1 | **0** | 10 | 10 | **10** | **0** | **0** |
+| green-2 | **0** | 10 | 10 | **10** | **0** | **0** |
+| green-3 | **0** | 10 | 10 | **10** | **0** | **0** |
+| green-4 | **0** | 10 | 10 | **10** | **0** | **0** |
+| green-5 | **0** | 10 | 10 | **10** | **0** | **0** |
+
+service 全套件：`Totals: 27 passed, 0 failed`、`SUITE_rc=0`（52846ms）。
+日志：`/var/tmp/t25-p1b-green-v3/{green-1..5,suite}.log`。
+
+### 12.8 提交顺序与纪律
+
+```
+… → 901b222(docs) → ef1adae(test v1) → 9f4afba(test v2/v3 手法更正) → 06c1ff8(fix) → <本提交>(docs)
+```
+
+- `ef1adae` 保留在链上，其手法缺陷在本章 12.3 如实记录，**不改写历史**。
+- `9f4afba` 只改测试（不新增生产注入点，复用既有 `setWorkerExitBarrierForTest`），
+  `128 insertions(+), 64 deletions(-)`。
+- `06c1ff8` 只改 `src/core/engine/FlowExecutionService.cpp`（`55 insertions(+), 16 deletions(-)`），
+  头文件、类布局、ABI 均无变化。
+- 缺陷态只在隔离工作树 + 独立构建目录执行，交付工作树全程只保留受审的修复态。
+
+### 12.9 格式与差异检查
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 格式（生产） | `clang-format --dry-run --Werror src/core/engine/FlowExecutionService.cpp` | `FMT_CPP_rc=0` |
+| 格式（测试） | `clang-format --dry-run --Werror tests/test_flowexecutionservice.cpp` | `FMT_TEST_rc=0` |
+| 差异 | `git diff --check` | `DIFFCHECK_rc=0` |
+
+### 12.10 全量 CTest 门禁
+
+| 项 | 值 |
+|---|---|
+| 源提交 | `06c1ff8` |
+| 构建目录 | `/var/tmp/t25-p1b-gate-build`（**工作区外全新目录**） |
+| 配置 | `CONFIGURE_rc=0`（耗时 7m36s）；选项 `-DUSE_QT6=ON -DQt5_DIR=… -DONNXRUNTIME_DIR=… -DOpenCV_DIR=… -DDEEPLUX_NATIVE_SAM=ON -DENABLE_CAMERA_CAPTURE=OFF -DENABLE_CAMERA_SERVICE=OFF -DENABLE_HYMSON3D=OFF` |
+| 构建 | `BUILD_rc=0`、`[100%] Built target test_mainwindow`（耗时 18m56s） |
+| 格式 / 差异 | `FMT_CPP_rc=0`、`FMT_TEST_rc=0`、`DIFFCHECK_rc=0` |
+| CTest 列举 | `Total Tests: 97`、`LISTED=97`（口径 `grep -c "Test *#"`，避开 `^  Test #` 双空格漏计） |
+| **CTest 全量** | **`100% tests passed, 0 tests failed out of 97`**、`CTEST_rc=0`（`Total Test time (real) = 260.63 sec`） |
+| 相关套件（同一交付态，独立运行） | service **27/27**（52795ms）、runengine **118/118**（8363ms）、joblease 8/8、userpause 6/6、finalizer 6/6（全部 `rc=0`） |
+
+日志：`/var/tmp/t25-p1b-gate-{configure,build,ctest}.log`、`/var/tmp/t25-p1b-suite-test_*.log`。
+
+### 12.11 状态
+
+| 项 | 状态 |
+|---|---|
+| P1（故障通知后立即重试） | **红灯 5/5、绿灯 5/5 已闭合**（`9f4afba → 06c1ff8`），撤销态命中率 100% |
+| 首版手法（`ef1adae`） | **已作废并留档**：直连槽内 join 自己（abort）、Queued 投递绕过窗口（无判别力） |
+| service 套件 | **27/27**（较 `901b222` 的 26/26 多出本用例，属新增而非修复既有失格） |
+| 全量 CTest（97） | **已执行：97/97 通过**（全新工作区外目录，`06c1ff8`） |
+| T2.5 | **待评审收口裁定**（本轮不自行宣告收口） |
+| T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
+| R2 整批 | **尚未完成** |
