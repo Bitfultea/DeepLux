@@ -70,6 +70,7 @@
 #include <ui/controllers/ProcessTreeController.h>
 #include <ui/dialogs/SamAnnotatorDialog.h>
 #include <ui/display/3d/Viewport3DContent.h>
+#include <ui/display/DisplayManager.h>
 #include <ui/display/ImageRefreshCoalescer.h>
 #include <ui/views/MainWindow.h>
 #include <ui/widgets/AgentChatPanel.h>
@@ -98,6 +99,11 @@ public:
 
     std::function<void()> duringProcess;
     QStringList* executionLog = nullptr;
+    // T2.6 P2：置 true 时每次 process 产出不同像素，并把序号写进 run 级快照，
+    // 供真实 MainWindow 连接回归验证「实际画面来自最后任务」。默认 false，
+    // 不改变其他既有用例的行为；历史填色行保持原样，仅在开启时覆盖颜色。
+    bool distinctImages = false;
+    std::atomic_int runs{0};
 
 protected:
     bool process(const ImageData& input, ImageData& output) override {
@@ -110,8 +116,15 @@ protected:
         }
         QImage image(16, 12, QImage::Format_RGB32);
         image.fill(QColor("#22C55E"));
+        const int k = ++runs;
+        if (distinctImages) {
+            image.fill(QColor(qMin(255, 20 * k), 40, 60));
+        }
         output = ImageData(image);
         output.setData(QStringLiteral("tag"), QStringLiteral("probe"));
+        if (distinctImages) {
+            output.setData(QStringLiteral("t26_k"), k);
+        }
         return true;
     }
 
@@ -4753,6 +4766,7 @@ void TestMainWindow::testDelayedQueueThroughRealMainWindowConnections() {
     engine.clearDisplayJobId();
     engine.clearLatestDisplayFrames();
     MainWindowOutputProbeModule module(QStringLiteral("t26_real_probe"));
+    module.distinctImages = true; // 五次任务输出不同像素，才能识别「画面来自最后任务」
     QVERIFY(module.initialize());
     engine.addModule(&module);
     engine.setModuleExecutionAffinityForTest(QStringLiteral("t26_real_probe"), ExecutionAffinity::Worker);
@@ -4762,6 +4776,12 @@ void TestMainWindow::testDelayedQueueThroughRealMainWindowConnections() {
     QVERIFY(viewport != nullptr);
     HImageWidget* imageWidget = viewport->imageWidget();
     QVERIFY(imageWidget != nullptr);
+    // 用 QSignalSpy 观测真实渲染事件：身份校验一旦失效，迟到通知会经
+    // schedule → renderDisplayFrame → DisplayManager::displayImage 再次 emit。
+    DisplayManager* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    QSignalSpy displayedSpy(displayManager, &DisplayManager::dataDisplayed);
+    QVERIFY2(displayedSpy.isValid(), "DisplayManager::dataDisplayed must be observable");
 
     // 额外 Queued 计数：MainWindow 的 jobFinished 槽先连接，故本槽在其之后执行；
     // 计数 == 5 意味着 5 个 jobFinished 槽（含 forceFlush / finishRunUi）均已完成。
@@ -4812,10 +4832,24 @@ void TestMainWindow::testDelayedQueueThroughRealMainWindowConnections() {
     QCOMPARE(slot.jobId, lastSerial); // 帧身份 == 最后任务
     QVERIFY(!slot.runId.isEmpty());
     QVERIFY(!slot.image.isNull());
-    QCOMPARE(imageWidget->currentImage().pixel(0, 0), slot.image.pixel(0, 0));
 
-    // 旧 job 的迟到通知：身份不匹配 → 不得改写画面（真实 MainWindow 连接路径）。
+    // 五次输出必须各不相同，且实际画面 / 槽位帧来自最后一个 job（P2 判别性）。
+    QVERIFY2(module.runs.load(std::memory_order_acquire) >= 5,
+             "five short jobs must each produce a distinct pixel marker");
+    const QVariantMap lastSnapshot = slot.moduleDataSnapshot.value(module.instanceName());
+    const int lastK = lastSnapshot.value(QStringLiteral("t26_k")).toInt();
+    QVERIFY2(lastK > 1, "the displayed frame must carry the LAST job's distinct marker");
+    const QRgb firstPixel = QColor(20, 40, 60).rgb();
+    const QRgb expectedPixel = QColor(qMin(255, 20 * lastK), 40, 60).rgb();
+    QVERIFY2(expectedPixel != firstPixel, "the last job's pixel must differ from the first job's");
+    QCOMPARE(slot.image.pixel(0, 0), expectedPixel);
+    QCOMPARE(imageWidget->currentImage().pixel(0, 0), expectedPixel);
+    QVERIFY2(imageWidget->currentImage().pixel(0, 0) != firstPixel,
+             "the visible image must come from the LAST job, not job #1");
+
+    // 旧 job 的迟到通知：身份不匹配 → 既不得改写画面，也不得产生额外渲染事件。
     const QImage rendered = imageWidget->currentImage();
+    const int displayedBeforeLate = displayedSpy.count();
     const quint64 staleJobId = base + 1; // 第 1 个 job
     const QString staleRunId = QStringLiteral("t26-stale-run");
     engine.displayFrameReady(QStringLiteral("main"), staleJobId, staleRunId);
@@ -4823,8 +4857,12 @@ void TestMainWindow::testDelayedQueueThroughRealMainWindowConnections() {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
     }
     QTest::qWait(ImageRefreshCoalescer::ThrottleMs * 2);
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    QCOMPARE(displayedSpy.count(), displayedBeforeLate); // 迟到通知不得触发任何额外渲染
     QCOMPARE(imageWidget->currentImage(), rendered);
-    QCOMPARE(imageWidget->currentImage().pixel(0, 0), slot.image.pixel(0, 0));
+    QCOMPARE(imageWidget->currentImage().pixel(0, 0), expectedPixel);
+    QVERIFY2(imageWidget->currentImage().pixel(0, 0) != firstPixel,
+             "a late old-job notice must not roll the visible image back to job #1");
 
     guard.finish();
 }
