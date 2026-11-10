@@ -494,6 +494,9 @@ void FlowExecutionService::runJob(JobType job) {
     } catch (...) {
         mergeError(QStringLiteral("service_teardown_exception"));
         failed = true;
+        // 非 std::exception 异常：同样必须释放租约并清显示 jobId。只把 state 置回 Idle
+        // 不算恢复完成——引擎仍 busy 时后续 startX() 会被永久拒绝。
+        bestEffortTeardownRelease();
     }
 
     // 资源与状态复位：无论启动/主体/收尾是否异常都无条件执行，且不调用可能抛异常的外部代码。
