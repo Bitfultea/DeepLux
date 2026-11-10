@@ -863,6 +863,52 @@ private slots:
         QCOMPARE(probe.runs.load(), 1);
     }
 
+    // ==== T2.5 正式红灯：启动段自身 C++ 异常必须收敛为 jobFailed（2026-11-10 评审裁定）====
+    // 注入手法：复用既有 setStartHandshakeHookForTest()（std::function<void()>，由 runJob()
+    // 在启动协议内直接调用），**不经过任何 Qt 信号槽边界**——槽内抛异常属 Qt 未定义行为，
+    // 不得用作缺陷证据。基线（修复前）：异常逃出 workerLoop()/QThread::run() → std::terminate()，
+    // 进程以 rc=134 abort，startSingle() 不返回。
+    void testExceptionInJobStartupEmitsJobFailedNotTerminate() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe;
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+
+        QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
+        QSignalSpy failedSpy(&service, &FlowExecutionService::jobFailed);
+        QVERIFY2(failedSpy.isValid(), "jobFailed must be observable");
+
+        service.setStartHandshakeHookForTest([] { throw std::runtime_error("injected startup callback fault"); });
+
+        // 失败路径收尾：清除捕获栈变量的钩子并 join worker。必须最后声明。
+        ServiceContractCleanupGuard guard{&service, {},  nullptr, [&] { service.clearStartHandshakeHookForTest(); },
+                                          nullptr,  true};
+
+        // 崩溃基线即在此处 abort；修复后必须返回 false（启动未成立）。
+        QVERIFY2(!service.startSingle(), "a startup fault must not report a successful start");
+
+        QTRY_COMPARE_WITH_TIMEOUT(failedSpy.count(), 1, 5000);
+        QCOMPARE(finishedSpy.count(), 0); // 一次 job 只允许一个终态信号
+        QCOMPARE(service.state(), FlowExecutionService::State::Idle);
+        QCOMPARE(service.currentJob(), FlowExecutionService::JobType::None);
+        QVERIFY2(!engine.isBusy(), "a startup fault must not leave the engine leased");
+        QCOMPARE(probe.runs.load(), 0); // 启动段失败：模块不得执行
+        const QString error = failedSpy.first().at(1).toString();
+        QVERIFY2(error.contains(QStringLiteral("service_startup_exception")), qPrintable(error));
+
+        // 恢复：同一个 Service 清除钩子后必须能再次启动并完成。
+        service.clearStartHandshakeHookForTest();
+        QSignalSpy nextFinished(&service, &FlowExecutionService::jobFinished);
+        QVERIFY2(service.startSingle(), "the service must remain usable after a startup fault");
+        QTRY_COMPARE_WITH_TIMEOUT(nextFinished.count(), 1, 5000);
+        QCOMPARE(probe.runs.load(), 1);
+        QCOMPARE(service.state(), FlowExecutionService::State::Idle);
+
+        guard.finish();
+    }
+
     // ==== T2.3 行为契约／回归保护（2026-11-06 评审裁定）====
     // 性质：基线已绿、非 NF、无生产修复提交。原计划「commitState 持锁 emit 导致
     // DirectConnection 回调死锁」的前提不成立：commitState 一直是 atomic store +
