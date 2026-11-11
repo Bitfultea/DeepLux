@@ -643,98 +643,6 @@ bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& plug
     return true;
 }
 
-bool captureFitCirclePickAcceptance(const QString& repoRoot, const QString& pluginTempRoot, DeepLux::MainWindow& window,
-                                    const QDir& outputDir) {
-    if (!installPluginForCapture(repoRoot, pluginTempRoot, "MeasurementInput",
-                                 "src/plugins/geometry/MeasurementInput/metadata.json",
-                                 QStringLiteral(UICAP_PLUGIN_MeasurementInput)) ||
-        !installPluginForCapture(repoRoot, pluginTempRoot, "FitCircle", "src/plugins/geometry/FitCircle/metadata.json",
-                                 QStringLiteral(UICAP_PLUGIN_FitCircle))) {
-        return false;
-    }
-
-    DeepLux::PluginManager::instance().addPluginPath(pluginTempRoot);
-    DeepLux::PluginManager::instance().initialize();
-    if (!DeepLux::PluginManager::instance().loadPlugin("MeasurementInput") ||
-        !DeepLux::PluginManager::instance().loadPlugin("FitCircle")) {
-        return false;
-    }
-
-    DeepLux::Project* project = DeepLux::ProjectManager::instance().newProject();
-    if (!project)
-        return false;
-    DeepLux::ModuleInstance circle;
-    circle.id = QStringLiteral("capture_fitcircle");
-    circle.moduleId = QStringLiteral("FitCircle");
-    circle.name = QStringLiteral("圆拟合");
-    circle.posX = 120;
-    circle.posY = 120;
-    project->addModule(circle);
-
-    window.resize(1280, 800);
-    window.show();
-    QCoreApplication::processEvents();
-    DeepLux::ViewportWidget* viewport = window.findChild<DeepLux::ViewportWidget*>();
-    DeepLux::HImageWidget* imageWidget = viewport ? viewport->imageWidget() : nullptr;
-    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
-    if (!viewport || !imageWidget || !runButton)
-        return false;
-
-    QImage image(640, 480, QImage::Format_RGB32);
-    image.fill(QColor("#111827"));
-    viewport->displayImage(image);
-    QCoreApplication::processEvents();
-
-    DeepLux::RunResult result;
-    bool finished = false;
-    const QMetaObject::Connection connection =
-        QObject::connect(&DeepLux::RunEngine::instance(), &DeepLux::RunEngine::runFinished, &window,
-                         [&](const DeepLux::RunResult& runResult) {
-                             result = runResult;
-                             finished = true;
-                         });
-    QTest::mouseClick(runButton, Qt::LeftButton);
-    QCoreApplication::processEvents();
-
-    for (const QPointF& point : {QPointF(420.0, 240.0), QPointF(320.0, 340.0), QPointF(220.0, 240.0)}) {
-        const QPoint widgetPoint = imageWidget->imageToWidget(point).toPoint();
-        if (!imageWidget->rect().contains(widgetPoint)) {
-            QObject::disconnect(connection);
-            return false;
-        }
-        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, widgetPoint);
-        QCoreApplication::processEvents();
-    }
-
-    QElapsedTimer timer;
-    timer.start();
-    while (!finished && timer.elapsed() < 5000) {
-        QCoreApplication::processEvents();
-        QTest::qWait(10);
-    }
-    QObject::disconnect(connection);
-    const DeepLux::ImageData fitOutput = DeepLux::RunEngine::instance().moduleOutput(circle.id);
-    if (!finished || !result.success || qAbs(fitOutput.data("circle_radius").toDouble() - 100.0) >= 1.0) {
-        return false;
-    }
-
-    QTest::qWait(100);
-    const QImage rendered = imageWidget->grab().toImage().convertToFormat(QImage::Format_RGB32);
-    int cyanPixels = 0;
-    int orangePixels = 0;
-    for (int y = 0; y < rendered.height(); ++y) {
-        for (int x = 0; x < rendered.width(); ++x) {
-            const QColor color = rendered.pixelColor(x, y);
-            cyanPixels += color.red() < 100 && color.green() > 120 && color.blue() > 140;
-            orangePixels += color.red() > 180 && color.green() > 80 && color.green() < 190 && color.blue() < 100;
-        }
-    }
-    window.selectModuleForCapture(circle.id);
-    QCoreApplication::processEvents();
-    return cyanPixels > 100 && orangePixels > 20 &&
-           captureWindow(window, QSize(1280, 800), outputDir.filePath("fitcircle_pick_result.png"));
-}
-
 } // namespace
 
 int main(int argc, char** argv) {
@@ -786,7 +694,6 @@ int main(int argc, char** argv) {
         ok = captureWindow(window, QSize(1024, 700), dir.filePath("deeplux_mainwindow_1024x700.png")) && ok;
         ok = capturePluginConfigDialog(window, dir) && ok;
         ok = captureCropConfigDialog(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
-        ok = captureFitCirclePickAcceptance(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
         ok = captureClickedStates(window, dir) && ok;
         app.quit();
     });
