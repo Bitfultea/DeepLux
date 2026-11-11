@@ -3,6 +3,7 @@
 #include "../platform/Platform.h"
 #include "RunEngine.h"
 
+#include <QList>
 #include <QMutex>
 #include <QObject>
 #include <QThread>
@@ -147,14 +148,24 @@ private:
     // T2.5 P1 二次整改（2026-11-11 复核 P1）：启动路径专用的**有界**回收。
     //
     // 与 joinWorkerThread() 的区别：本函数在 budgetMs 用尽时放弃等待并返回 false，
-    // 由调用方明确拒绝本次启动；线程指针仍被摘下并由本函数持有的调用方在后台继续
-    // 等待（见实现），既不 detach 也不泄漏，更不阻塞 GUI。
+    // 由调用方明确拒绝本次启动；线程指针**仍由本服务持有**（见 m_retiringThreads），
+    // 等它真正退出后再 delete，既不 detach 也不泄漏，更不阻塞 GUI。
     // 返回 true 表示旧线程已真正退出并被 delete。
     bool retireWorkerThreadBounded(WorkerThread* thread, int budgetMs);
+
+    /// T2.5 P1 第三轮（2026-11-11 二次复核 P1）：把当前仍未退出的 worker 全部摘到
+    /// `retiring` 中交回调用方，供 shutdown()/析构在**锁外**逐个 joinWorkerThread()。
+    /// 覆盖 m_thread 与所有由有界回收移交的旧 worker —— 后者此前被交给 detached
+    /// 回收线程，脱离了 Service 的所有权，导致 shutdown() 漏等、提前报告成功。
+    void detachLiveWorkerThreadsLocked(QList<WorkerThread*>& retiring);
 
     mutable QMutex m_mutex;
     QWaitCondition m_wake;
     WorkerThread* m_thread = nullptr;
+    /// 启动路径有界回收**移交**给本服务的旧 worker：已不再消费命令、尚未真正退出。
+    /// 由 m_mutex 保护；shutdown()/析构必须覆盖它们，否则「shutdown 成功后可以销毁
+    /// worker 所访问对象」的保证不成立。
+    QList<WorkerThread*> m_retiringThreads;
     bool m_quitRequested = false;
     bool m_stopRequested = false;
     bool m_pauseRequested = false;

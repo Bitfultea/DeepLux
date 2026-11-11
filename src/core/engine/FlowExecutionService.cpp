@@ -108,14 +108,16 @@ FlowExecutionService::~FlowExecutionService() {
         m_quitRequested = true;
         m_wake.wakeAll();
     }
-    WorkerThread* thread = nullptr;
+    // T2.5 P1 第三轮（2026-11-11 二次复核 P1）：必须覆盖**所有**未退出的 worker——
+    // 常驻的 m_thread 与启动路径有界回收移交的 m_retiringThreads。只取 m_thread 会漏掉
+    // 后者，析构可能在仍在 run() 的 worker 之下销毁它访问的成员与模块。
+    QList<WorkerThread*> retiring;
     {
         QMutexLocker locker(&m_mutex);
-        thread = m_thread;
-        m_thread = nullptr;
+        detachLiveWorkerThreadsLocked(retiring);
     }
-    if (thread) {
-        joinWorkerThread(thread);
+    for (WorkerThread* thread : retiring) {
+        joinWorkerThread(thread); // 锁外 join：持锁等待会卡死所有入口
     }
 }
 
@@ -127,26 +129,45 @@ bool FlowExecutionService::retireWorkerThreadBounded(WorkerThread* thread, int b
         delete thread;
         return true;
     }
-    // 预算内未退出：**不阻塞调用线程**。线程已由 enqueue() 从 m_thread 摘下，这里把它
-    // 交给一个自持有指针的收尾线程等待其真正退出后 delete。
+    // 预算内未退出：**不阻塞调用线程**，但也**不交出所有权**。
     //
     // 为什么不是 joinWorkerThread()：那条路径在诊断阈值之后会无条件 thread->wait()，
     // 无限期阻塞——挂在 GUI 线程的 startSingle() 上就会绕过 StartHandshakeTimeoutMs
     // 的 100ms 上限，把「启动失败可预期、可拒绝」变成「GUI 卡住」。
     //
     // 为什么不能 detach 或直接 delete：worker 仍在 run() 内并可能访问本服务与模块。
-    // 因此保留 join 语义（等它真正退出再 delete），只是把**等待者**从 GUI 线程
-    // 挪到一个非 GUI 的收尾线程，GUI 立即返回明确的拒绝。
+    //
+    // **2026-11-11 二次复核 P1**：此前这里用 `std::thread([thread]{ wait(); delete; }).detach()`
+    // 把等待者挪到后台线程，结果是这个 worker **既不在 m_thread、也不在任何 Service 侧
+    // 结构中**——所有权随 detach 一起丢失。shutdown()/析构只检查 m_thread，于是漏等这个
+    // 仍在 run() 的 worker 并立即返回 true（评审独立复现：retry=0 retryMs=100、
+    // shutdownOk=1 shutdownMs=0、oldWorkerStillRunning=1）。这直接破坏「shutdown() 返回
+    // true 即可以销毁 worker 所访问对象」的语义，也会让既有测试清理 guard 提前释放被
+    // 捕获的栈对象。后台线程最终 wait() 不能替代 Service 销毁前的同步。
+    //
+    // 现在：把指针登记到本服务自持的 m_retiringThreads（m_mutex 保护）。等待依然发生在
+    // 调用方之外（GUI 立即拿到明确的拒绝），但所有权仍在 Service 手上，shutdown()/析构
+    // 会把它们连同 m_thread 一并 joinWorkerThread()——一律不 detach、不 terminate。
     m_shutdownDeadlineHits.fetch_add(1, std::memory_order_relaxed);
     Logger::instance().warning(QString("Flow start rejected: previous worker still exiting after %1 ms; "
-                                       "reclaim deferred to a background reaper (no detach, job not enqueued)")
+                                       "ownership retained by the service (retiring list), job not enqueued")
                                    .arg(budgetMs),
                                "Service");
-    std::thread([thread]() {
-        thread->wait();
-        delete thread;
-    }).detach();
+    QMutexLocker locker(&m_mutex);
+    m_retiringThreads.append(thread);
     return false;
+}
+
+void FlowExecutionService::detachLiveWorkerThreadsLocked(QList<WorkerThread*>& retiring) {
+    // 调用方必须已持有 m_mutex。
+    if (!m_retiringThreads.isEmpty()) {
+        retiring.append(m_retiringThreads);
+        m_retiringThreads.clear();
+    }
+    if (m_thread) {
+        retiring.append(m_thread);
+        m_thread = nullptr;
+    }
 }
 
 void FlowExecutionService::joinWorkerThread(WorkerThread* thread) {
@@ -205,11 +226,41 @@ bool FlowExecutionService::enqueue(JobType job) {
     // 100ms 预算）。现在改为有界回收，预算用尽即**明确拒绝**本次启动：
     //   - 不返回 true：调用方不会以为已启动；
     //   - 不入队：m_pendingJob 从不置位，绝不会「迟到执行」；
-    //   - 不阻塞：旧线程交给后台收尾线程等它真正退出后 delete（仍不 detach、
-    //     不 terminate，join 语义保留）；
+    //   - 不阻塞：旧线程留在本服务持有的 retiring 列表里（不 detach、不 terminate，
+    //     join 语义保留），由 shutdown()/析构或下一次启动回收；
     //   - 旧线程退出后再次调用即可成功——无需手动 shutdown()。
     QElapsedTimer startTimer;
     startTimer.start();
+
+    // T2.5 P1 第三轮（2026-11-11 二次复核 P1）：上一轮被拒绝时留下的旧 worker 仍由本服务
+    // 持有（m_retiringThreads），它们已不再消费命令（retiring/isFinished）。
+    //
+    // **它们不参与本次启动的预算判定**。理由：能消费命令的是即将（重建的）新线程，这些旧
+    // 线程只是在退出途中，它们退出与否**不决定本次启动能否成功**。把它们纳入启动预算会
+    // 产生链式拒绝——前一次尝试预算耗尽留下一个 retiring 线程，下一次启动又要在它身上
+    // 耗掉整份预算（上一轮窗口用例实测 restartOk 从 >=5 掉到 2/10、3/10）。这与「旧线程
+    // 退出后再次调用即可成功、无需手动 shutdown()」的验收口径直接冲突。
+    //
+    // 因此这里只做**零等待的顺手清理**（已结束的直接 delete），其余原样保留所有权，
+    // 由 shutdown()/析构无条件 join —— 这正是本轮 P1 要求的「生命周期管理不丢」。
+    {
+        QList<WorkerThread*> finished;
+        {
+            QMutexLocker locker(&m_mutex);
+            for (int i = m_retiringThreads.size() - 1; i >= 0; --i) {
+                WorkerThread* thread = m_retiringThreads.at(i);
+                if (!thread || thread->isFinished()) {
+                    if (thread) {
+                        finished.append(thread);
+                    }
+                    m_retiringThreads.removeAt(i);
+                }
+            }
+        }
+        for (WorkerThread* thread : finished) {
+            delete thread; // 已真正结束，无需等待
+        }
+    }
 
     for (;;) {
         WorkerThread* retired = nullptr;
@@ -225,9 +276,20 @@ bool FlowExecutionService::enqueue(JobType job) {
         if (!retired) {
             break; // 没有待回收线程：走正常入队
         }
-        // 锁外有界回收：剩余预算内等它真正退出则 delete；否则交给后台收尾线程并拒绝本次启动。
+        // 锁外有界回收：剩余预算内等它真正退出则 delete；否则登记到 retiring 并拒绝本次启动。
+        //
+        // 预算已耗尽的特例：此时若把线程交给 retireWorkerThreadBounded()，它会以 0ms 等待
+        // 失败并**登记进 retiring**——但这次尝试反正要拒绝，线程也大概率马上退出。留下
+        // 「无预算却登记」的尾巴会让下一次启动先替它耗预算，形成链式拒绝。故此时把线程
+        // **放回 m_retiringThreads**（仍然由本服务持有，绝不丢所有权）：它已 retiring/
+        // isFinished，下一次启动会在清理阶段处理它，shutdown()/析构也一定覆盖它。
         const int reclaimBudget = StartHandshakeTimeoutMs - static_cast<int>(startTimer.elapsed());
-        if (!retireWorkerThreadBounded(retired, qMax(0, reclaimBudget))) {
+        if (reclaimBudget <= 0) {
+            QMutexLocker locker(&m_mutex);
+            m_retiringThreads.append(retired);
+            return false; // 明确拒绝，不入队；所有权仍在服务侧
+        }
+        if (!retireWorkerThreadBounded(retired, reclaimBudget)) {
             return false;
         }
         // 回收完成后再回到循环顶部重新判定：期间若又发生自退出，仍会被识别。
@@ -407,7 +469,7 @@ void FlowExecutionService::stop() {
 }
 
 bool FlowExecutionService::shutdown() {
-    WorkerThread* thread = nullptr;
+    QList<WorkerThread*> retiring;
     bool nonIdle = false;
     {
         QMutexLocker locker(&m_mutex);
@@ -420,18 +482,21 @@ bool FlowExecutionService::shutdown() {
             m_pendingJob = JobType::None;
             m_wake.wakeAll();
         } else {
-            thread = m_thread;
-            m_thread = nullptr;
+            // T2.5 P1 第三轮（2026-11-11 二次复核 P1）：Idle 分支同样必须覆盖启动路径
+            // 有界回收移交的旧 worker。只取 m_thread 会在「拒绝启动后立即 shutdown」时
+            // 漏等仍在 run() 的旧 worker，令 shutdown() 在 shutdownMs=0 的情况下返回 true，
+            // 破坏「返回 true 即可安全销毁 worker 所访问对象」的保证。
             m_quitRequested = true;
             m_wake.wakeAll();
+            detachLiveWorkerThreadsLocked(retiring);
         }
     }
     if (nonIdle) {
         RunEngine::instance().stop();
         return false;
     }
-    if (thread) {
-        joinWorkerThread(thread);
+    for (WorkerThread* thread : retiring) {
+        joinWorkerThread(thread); // 锁外 join：持锁等待会卡死所有入口
     }
     return true;
 }
