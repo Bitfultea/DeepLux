@@ -452,8 +452,7 @@ void ToolSchema::registerDefaultTools() {
         "is not supported and returns FLOW_UNAVAILABLE.",
         {{"mode", "enum", "Run mode: once or cycle", false, QJsonValue("once"), {"once", "cycle"}},
          {"flowId", "string",
-          "Optional flow selector; explicit selection is currently unavailable and returns FLOW_UNAVAILABLE",
-          false},
+          "Optional flow selector; explicit selection is currently unavailable and returns FLOW_UNAVAILABLE", false},
          {"maxCycles", "integer", "Required for cycle mode; maximum complete iterations, 1..10", false},
          {"wait", "boolean", "Wait for single-run completion; ignored in cycle mode", false, QJsonValue(true)},
          {"timeoutMs", "integer", "Wait timeout in ms (wait=true), clamped to [1000,300000]", false,
@@ -757,7 +756,8 @@ void ToolSchema::registerDefaultTools() {
     registerTool(makeReadOnlyTool(
         "read_documentation",
         "Read DeepLux module/usage documentation, including the built-in knowledge base and user-added documents "
-        "(managed via Agent Settings -> Knowledge Base). Results are paged by matching sections; requires the signed-in "
+        "(managed via Agent Settings -> Knowledge Base). Results are paged by matching sections; requires the "
+        "signed-in "
         "user's OpenFile permission. Use offset/limit to continue. Use this to learn about module parameters, "
         "workflows, and best practices when you're unsure.",
         {{"topic", "string", "Topic to look up (e.g. 'FindCircle', 'workflow', 'GrabImage params')", true},
@@ -1089,7 +1089,8 @@ void ToolSchema::registerDefaultTools() {
         "tune_node_and_verify",
         "Apply a parameter patch to one node atomically and verify the effect. This operation requires confirmation. "
         "runMode=flow (default) writes the parameters, runs the whole flow once waiting for completion, and returns "
-        "before/after plus this node's runtime outputs; the flow may reach devices, network endpoints, or file outputs. "
+        "before/after plus this node's runtime outputs; the flow may reach devices, network endpoints, or file "
+        "outputs. "
         "runMode=node only applies the patch and reports the previous frame's outputs without running the flow.",
         {{"nodeName", "string", "Module instance name (preferred) or instance id", true},
          {"parameters", "object", "Parameter patch: key -> value (string/number/bool), 1..32 keys", true},

@@ -22,7 +22,6 @@
 #include <algorithm>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
-#include <opencv2/objdetect.hpp>
 
 using namespace DeepLux;
 
@@ -54,9 +53,9 @@ private:
     }
 
     static QJsonObject runToTerminal(AgentActor& actor) {
-        const QJsonObject started = actor.executeTool(QStringLiteral("run_flow"),
-                                                      QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
-                                                                  {QStringLiteral("wait"), false}});
+        const QJsonObject started =
+            actor.executeTool(QStringLiteral("run_flow"), QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
+                                                                      {QStringLiteral("wait"), false}});
         if (started.value(QStringLiteral("status")).toString() != QLatin1String("started"))
             return started;
 
@@ -94,15 +93,7 @@ private:
 
     static QString createQrFixture(const QString& path) {
         const QString expected = QStringLiteral("DEEPLUX-G8-QR-2026");
-        cv::QRCodeEncoder::Params params;
-        const cv::Ptr<cv::QRCodeEncoder> encoder = cv::QRCodeEncoder::create(params);
-        cv::Mat encoded;
-        encoder->encode(expected.toStdString(), encoded);
-        cv::Mat enlarged;
-        cv::resize(encoded, enlarged, cv::Size(), 8.0, 8.0, cv::INTER_NEAREST);
-        cv::Mat withBorder;
-        cv::copyMakeBorder(enlarged, withBorder, 48, 48, 48, 48, cv::BORDER_CONSTANT, cv::Scalar(255));
-        if (!cv::imwrite(path.toStdString(), withBorder))
+        if (!QFile::copy(QStringLiteral(G8_QRCODE_FIXTURE), path))
             return {};
         return expected;
     }

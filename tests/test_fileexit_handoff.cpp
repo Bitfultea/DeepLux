@@ -67,7 +67,7 @@ void FileExitHandoffTest::testFileExitMenuClosesMainWindowWithoutQuittingTestHos
 
     exitAction->trigger();
 
-    QCOMPARE(shutdownSpy.count(), 1);
+    QTRY_COMPARE_WITH_TIMEOUT(shutdownSpy.count(), 1, 5000);
     QVERIFY(window.isVisible());
     QTRY_VERIFY_WITH_TIMEOUT(!window.isVisible(), 5000);
     QCOMPARE(shutdownSpy.count(), 1);

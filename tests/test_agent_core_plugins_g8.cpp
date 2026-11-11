@@ -23,8 +23,8 @@
 #include <QSignalSpy>
 #include <QTcpServer>
 #include <QTcpSocket>
-#include <QThread>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QtEndian>
 #include <QtTest/QtTest>
 #include <algorithm>
@@ -148,9 +148,9 @@ private:
     }
 
     static QJsonObject runToTerminal(AgentActor& actor) {
-        const QJsonObject started = actor.executeTool(QStringLiteral("run_flow"),
-                                                      QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
-                                                                  {QStringLiteral("wait"), false}});
+        const QJsonObject started =
+            actor.executeTool(QStringLiteral("run_flow"), QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
+                                                                      {QStringLiteral("wait"), false}});
         if (started.value(QStringLiteral("status")).toString() != QLatin1String("started"))
             return started;
 
@@ -1146,17 +1146,25 @@ private slots:
                      .toString(),
                  QStringLiteral("connected"));
 
-        const auto readCheckOutput = [&actor, &checkerId](const QString& runId, const QString& key) {
+        const auto readModuleOutput = [&actor](const QString& runId, const QString& instanceId, const QString& key) {
             return actor.executeTool(QStringLiteral("get_module_output"),
                                      QJsonObject{{QStringLiteral("runId"), runId},
-                                                 {QStringLiteral("instanceId"), checkerId},
+                                                 {QStringLiteral("instanceId"), instanceId},
                                                  {QStringLiteral("key"), key}});
         };
         const QJsonObject passingRun = runToTerminal(actor);
         QCOMPARE(passingRun.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
         const QString passingRunId = passingRun.value(QStringLiteral("runId")).toString();
-        QCOMPARE(readCheckOutput(passingRunId, QStringLiteral("check_passed")).value(QStringLiteral("value")).toBool(),
-                 true);
+        const QJsonObject sourceValue = readModuleOutput(passingRunId, producerId, QStringLiteral("check_data"));
+        const QJsonObject checkedValue = readModuleOutput(passingRunId, checkerId, QStringLiteral("check_passed"));
+        QVERIFY2(checkedValue.value(QStringLiteral("value")).toBool(),
+                 qPrintable(QStringLiteral("source=%1; passed=%2; error=%3")
+                                .arg(QString::fromUtf8(QJsonDocument(sourceValue).toJson(QJsonDocument::Compact)),
+                                     QString::fromUtf8(QJsonDocument(checkedValue).toJson(QJsonDocument::Compact)),
+                                     QString::fromUtf8(QJsonDocument(readModuleOutput(passingRunId, checkerId,
+                                                                                      QStringLiteral("check_error")))
+                                                           .toJson(QJsonDocument::Compact)))));
+        QCOMPARE(sourceValue.value(QStringLiteral("value")).toString(), QStringLiteral("42"));
 
         QCOMPARE(setParams(producerId, QJsonObject{{QStringLiteral("fixedString"), QStringLiteral("99")}})
                      .value(QStringLiteral("status"))
@@ -1165,10 +1173,11 @@ private slots:
         const QJsonObject rejectedValueRun = runToTerminal(actor);
         QCOMPARE(rejectedValueRun.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
         const QString rejectedValueRunId = rejectedValueRun.value(QStringLiteral("runId")).toString();
-        QCOMPARE(
-            readCheckOutput(rejectedValueRunId, QStringLiteral("check_passed")).value(QStringLiteral("value")).toBool(),
-            false);
-        QCOMPARE(readCheckOutput(rejectedValueRunId, QStringLiteral("check_error"))
+        QCOMPARE(readModuleOutput(rejectedValueRunId, checkerId, QStringLiteral("check_passed"))
+                     .value(QStringLiteral("value"))
+                     .toBool(),
+                 false);
+        QCOMPARE(readModuleOutput(rejectedValueRunId, checkerId, QStringLiteral("check_error"))
                      .value(QStringLiteral("value"))
                      .toString(),
                  QStringLiteral("值 99 超出范围 [40, 45]"));

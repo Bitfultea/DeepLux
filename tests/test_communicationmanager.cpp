@@ -7,9 +7,9 @@
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QSpinBox>
+#include <QTableWidget>
 #include <QTcpServer>
 #include <QTcpSocket>
-#include <QTableWidget>
 #include <QtTest/QtTest>
 #include <algorithm>
 #include <core/agent/AgentActor.h>

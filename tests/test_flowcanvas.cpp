@@ -646,7 +646,7 @@ void TestFlowCanvas::testNodePositionQuantizationIsFiniteAndInt32Safe() {
     QVERIFY(FlowCanvas::quantizeNodePosition(QPointF(1.49, -1.49), &quantized));
     QCOMPARE(quantized, QPoint(1, -1));
     QVERIFY(FlowCanvas::quantizeNodePosition(QPointF(1.5, -1.5), &quantized));
-    // Qt 5.15 qRound64 uses floor(value + 0.5), so a negative half tie rounds toward +infinity.
+    // Keep half-way rounding stable across Qt versions: ties round toward positive infinity.
     QCOMPARE(quantized, QPoint(2, -1));
     QVERIFY(FlowCanvas::quantizeNodePosition(
         QPointF(std::numeric_limits<qint32>::min(), std::numeric_limits<qint32>::max()), &quantized));

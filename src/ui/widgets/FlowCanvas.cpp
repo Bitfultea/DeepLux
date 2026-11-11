@@ -72,8 +72,8 @@ bool FlowCanvas::quantizeNodePosition(const QPointF& position, QPoint* quantized
     if (!std::isfinite(position.x()) || !std::isfinite(position.y()) || position.x() < intMin ||
         position.x() > intMax || position.y() < intMin || position.y() > intMax)
         return false;
-    const qint64 x = qRound64(position.x());
-    const qint64 y = qRound64(position.y());
+    const qint64 x = static_cast<qint64>(std::floor(position.x() + 0.5));
+    const qint64 y = static_cast<qint64>(std::floor(position.y() + 0.5));
     if (x < std::numeric_limits<qint32>::min() || x > std::numeric_limits<qint32>::max() ||
         y < std::numeric_limits<qint32>::min() || y > std::numeric_limits<qint32>::max())
         return false;

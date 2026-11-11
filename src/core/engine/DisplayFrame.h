@@ -1,7 +1,7 @@
 #pragma once
 
-#include "platform/Platform.h"
 #include "model/ImageData.h"
+#include "platform/Platform.h"
 
 #include <QImage>
 #include <QMap>

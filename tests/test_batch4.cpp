@@ -731,7 +731,7 @@ private slots:
         QString error;
         QVERIFY(plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, 10, 10, 0))}), error));
         QVERIFY(!plugin.validateParams(QJsonObject{{"rectangles", 42}, {"outputFirstAsImage", true}}, error)); // 非数组
-        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{}), error));                                      // 空数组
+        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{}), error)); // 空数组
         QJsonArray tooMany;
         for (int i = 0; i < 65; ++i) {
             tooMany.append(rect(0, 0, 10, 10, 0));
@@ -741,9 +741,9 @@ private slots:
             !plugin.validateParams(cropParams(QJsonArray{QJsonValue(QJsonArray{1.0, 2.0, 3.0, 4.0})}), error)); // 4 元
         QVERIFY(!plugin.validateParams(
             cropParams(QJsonArray{QJsonValue(QJsonArray{1.0, 2.0, 3.0, 4.0, QStringLiteral("0")})}),
-            error));                                                                                       // 字符串元素
-        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, 0, 10, 0))}), error));  // l1=0
-        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, -5, 10, 0))}), error)); // l1<0
+            error)); // 字符串元素
+        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, 0, 10, 0))}), error));    // l1=0
+        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, -5, 10, 0))}), error));   // l1<0
         QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, 10, 10, 400))}), error)); // deg 超界
         QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(1000000.5, 0, 10, 10, 0))}),
                                        error)); // cx 超界

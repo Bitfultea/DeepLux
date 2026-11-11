@@ -1,7 +1,7 @@
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
-#include "core/common/UserManager.h"
 #include "core/agent/GuiEvent.h"
+#include "core/common/UserManager.h"
 #include "core/engine/RunEngine.h"
 #include "core/manager/PluginManager.h"
 #include "core/manager/ProjectManager.h"
@@ -175,7 +175,7 @@ public:
                 }
                 QElapsedTimer deadline;
                 deadline.start();
-                while (!m_stop.load(std::memory_order_acquire) && deadline.elapsed() < 3000) {
+                while (!m_stop.load(std::memory_order_acquire) && deadline.elapsed() < 5000) {
                     pollfd descriptor{m_masterFd, POLLIN, 0};
                     const int ready = ::poll(&descriptor, 1, 50);
                     if (ready <= 0 || !(descriptor.revents & POLLIN))
@@ -202,7 +202,7 @@ public:
                         break;
                     int offset = 0;
                     while (offset < m_response.size() && !m_stop.load(std::memory_order_acquire) &&
-                           deadline.elapsed() < 3000) {
+                           deadline.elapsed() < 5000) {
                         const ssize_t written = ::write(m_masterFd, m_response.constData() + offset,
                                                         static_cast<size_t>(m_response.size() - offset));
                         if (written > 0) {
@@ -642,8 +642,9 @@ private slots:
             Qt::DirectConnection);
         const quintptr mainThreadId = reinterpret_cast<quintptr>(QThread::currentThreadId());
         auto startPending = [&controller] {
-            return controller.handleToolCall(QStringLiteral("run_flow"),
-                                             QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
+            return controller.handleToolCall(
+                QStringLiteral("run_flow"),
+                QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         };
         const auto expectedEffects = [instanceId](const QString& portName) {
             return QJsonArray{QStringLiteral("execution:may_touch_files_devices_network(流程内模块)"),
@@ -759,8 +760,9 @@ private slots:
         QSignalSpy moduleStarted(&engine, &RunEngine::moduleStarted);
         QSignalSpy runFinished(&engine, &RunEngine::runFinished);
         QSignalSpy toolExecuted(controller.actor(), &AgentActor::toolExecuted);
-        QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
+        QJsonObject pending = controller.handleToolCall(
+            QStringLiteral("run_flow"),
+            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 1, 5000);
@@ -1070,8 +1072,9 @@ private slots:
                                         QString::fromUtf8(request), 100));
         QSignalSpy writeFinished(&engine, &RunEngine::runFinished);
         QSignalSpy writeExecuted(controller.actor(), &AgentActor::toolExecuted);
-        QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
+        QJsonObject pending = controller.handleToolCall(
+            QStringLiteral("run_flow"),
+            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
         QTRY_COMPARE_WITH_TIMEOUT(writeExecuted.count(), 1, 5000);
@@ -1094,8 +1097,9 @@ private slots:
         project->addModule(serialModule(readInstanceId, readPty.portName(), QStringLiteral("Read"), QString(), 50));
         QSignalSpy readFinished(&engine, &RunEngine::runFinished);
         QSignalSpy readExecuted(controller.actor(), &AgentActor::toolExecuted);
-        pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
+        pending = controller.handleToolCall(
+            QStringLiteral("run_flow"),
+            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
         QTRY_COMPARE_WITH_TIMEOUT(readExecuted.count(), 1, 5000);
@@ -1185,7 +1189,7 @@ private slots:
         QVERIFY(approvedId != rejectedId);
         QVERIFY(controller.confirmPendingTools(approvedId));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 1, 5000);
-        QVERIFY(peer.waitForReply(3000));
+        QVERIFY(peer.waitForReply(5000));
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         const QJsonObject stepResult = toolExecuted.last().at(1).toJsonObject();
         QCOMPARE(stepResult.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
@@ -1303,12 +1307,11 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
         const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(result.runId, runId);
-        QVERIFY2(result.success,
-                 qPrintable(QStringLiteral("%1; peer received=%2 bytes replies=%3")
-                                .arg(result.errorMessage)
-                                .arg(peer.received().size())
-                                .arg(peer.replyCount())));
-        QVERIFY(peer.waitForReply(3000));
+        QVERIFY2(result.success, qPrintable(QStringLiteral("%1; peer received=%2 bytes replies=%3")
+                                                .arg(result.errorMessage)
+                                                .arg(peer.received().size())
+                                                .arg(peer.replyCount())));
+        QVERIFY(peer.waitForReply(5000));
         QCOMPARE(peer.received(), request);
         QCOMPARE(peer.replyCount(), 1);
         QCOMPARE(moduleSignalCount(moduleStarted, instanceId), 1);

@@ -8,8 +8,6 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QtTest/QtTest>
-#include <functional>
-#include <memory>
 #include <core/agent/AgentActor.h>
 #include <core/agent/AgentController.h>
 #include <core/agent/GuiEvent.h>
@@ -17,6 +15,8 @@
 #include <core/agent/ToolSchema.h>
 #include <core/display/DisplayData.h>
 #include <core/model/ImageData.h>
+#include <functional>
+#include <memory>
 #include <ui/display/3d/Viewport3DContent.h>
 #include <ui/display/DisplayManager.h>
 #include <ui/views/MainWindow.h>
@@ -315,9 +315,7 @@ private slots:
             controller.handleToolCall(QStringLiteral("save_viewport_snapshot_for_user"),
                                       QJsonObject{{QStringLiteral("viewportId"), viewport->viewportId()}});
         QCOMPARE(cancelPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
-        respondWhenFileDialogOpens(this, [](QFileDialog* dialog) {
-            dialog->reject();
-        });
+        respondWhenFileDialogOpens(this, [](QFileDialog* dialog) { dialog->reject(); });
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
         QTRY_COMPARE_WITH_TIMEOUT(toolSpy.count(), 1, 5000);
         const QList<QVariant> cancelledToolCall = toolSpy.takeLast();
@@ -375,8 +373,8 @@ private slots:
         const QString targetPath = outputDir.filePath(QStringLiteral("synthetic-frame.png"));
         QImage frame(27, 19, QImage::Format_ARGB32);
         frame.fill(QColor(0x80, 0x20, 0x40, 0xFF));
-        const QJsonObject savedResult = viewport.saveSnapshotForUser(
-            [frame]() { return frame; }, false, [targetPath]() { return targetPath; });
+        const QJsonObject savedResult =
+            viewport.saveSnapshotForUser([frame]() { return frame; }, false, [targetPath]() { return targetPath; });
         QCOMPARE(savedResult.value(QStringLiteral("status")).toString(), QStringLiteral("saved"));
         QImage savedFrame(targetPath);
         QVERIFY(!savedFrame.isNull());

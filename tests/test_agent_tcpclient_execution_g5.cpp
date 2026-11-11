@@ -1,7 +1,7 @@
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
-#include "core/common/UserManager.h"
 #include "core/agent/GuiEvent.h"
+#include "core/common/UserManager.h"
 #include "core/engine/RunEngine.h"
 #include "core/manager/PluginManager.h"
 #include "core/manager/ProjectManager.h"
@@ -507,9 +507,9 @@ private slots:
         QVERIFY(!response.isEmpty());
         QVERIFY(response.last().at(0).toString().contains(QStringLiteral("确认已失效")));
 
-        pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
-                                                        {QStringLiteral("wait"), false}});
+        pending = controller.handleToolCall(
+            QStringLiteral("run_flow"),
+            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QJsonArray approvedEffects{QStringLiteral("execution:may_touch_files_devices_network(流程内模块)"),
                                          QStringLiteral("tcp_client:%1@127.0.0.1:%2 operation=WriteRead timeout=1000ms")

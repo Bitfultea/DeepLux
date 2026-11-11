@@ -33,12 +33,11 @@ CommunicationSetView::CommunicationSetView(QWidget* parent) : QDialog(parent) {
                     if (!nameItem || nameItem->data(Qt::UserRole).toString() != configId)
                         continue;
 
-                    const QString status = state == CommunicationState::Connected   ? tr("Connected")
-                                           : state == CommunicationState::Listening ? tr("Listening")
-                                           : state == CommunicationState::Connecting
-                                               ? tr("Connecting")
-                                           : state == CommunicationState::Error ? tr("Error")
-                                                                                : tr("Disconnected");
+                    const QString status = state == CommunicationState::Connected    ? tr("Connected")
+                                           : state == CommunicationState::Listening  ? tr("Listening")
+                                           : state == CommunicationState::Connecting ? tr("Connecting")
+                                           : state == CommunicationState::Error      ? tr("Error")
+                                                                                     : tr("Disconnected");
                     m_commTable->item(row, 4)->setText(status);
                     updateButtons();
                     break;
@@ -284,11 +283,11 @@ void CommunicationSetView::loadCommunications() {
         m_commTable->setItem(row, 3, new QTableWidgetItem(QString::number(config.port)));
 
         CommunicationState state = CommunicationManager::instance().state(config.id);
-        QString stateStr = state == CommunicationState::Connected   ? tr("Connected")
-                           : state == CommunicationState::Listening ? tr("Listening")
+        QString stateStr = state == CommunicationState::Connected    ? tr("Connected")
+                           : state == CommunicationState::Listening  ? tr("Listening")
                            : state == CommunicationState::Connecting ? tr("Connecting")
                            : state == CommunicationState::Error      ? tr("Error")
-                                                                    : tr("Disconnected");
+                                                                     : tr("Disconnected");
         m_commTable->setItem(row, 4, new QTableWidgetItem(stateStr));
     }
 

@@ -92,7 +92,8 @@ void DisplayManager::displayData(const DisplayData& data, int delayMs, bool pres
     // Display the data (with optional delay)
     if (data.imageData()) {
         if (delayMs > 0) {
-            QTimer::singleShot(delayMs, target, [target, data, preserveView]() { target->displayData(data, preserveView); });
+            QTimer::singleShot(delayMs, target,
+                               [target, data, preserveView]() { target->displayData(data, preserveView); });
         } else {
             target->displayData(data, preserveView);
         }
@@ -149,7 +150,8 @@ void DisplayManager::displayToViewport(const DisplayData& data, const QString& v
 
     if (data.imageData()) {
         if (delayMs > 0) {
-            QTimer::singleShot(delayMs, target, [target, data, preserveView]() { target->displayData(data, preserveView); });
+            QTimer::singleShot(delayMs, target,
+                               [target, data, preserveView]() { target->displayData(data, preserveView); });
         } else {
             target->displayData(data, preserveView);
         }

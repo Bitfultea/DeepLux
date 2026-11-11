@@ -289,8 +289,8 @@ private slots:
             if (message.toolCallId == QLatin1String("call-run")) {
                 sawRunFailure = payload.value("errorCode").toString() == QLatin1String("RUN_FAILED");
             } else if (message.toolCallId == QLatin1String("call-tune")) {
-                sawSkippedTune = payload.value("errorCode").toString() ==
-                                 QLatin1String("SKIPPED_DUE_TO_PREVIOUS_ERROR");
+                sawSkippedTune =
+                    payload.value("errorCode").toString() == QLatin1String("SKIPPED_DUE_TO_PREVIOUS_ERROR");
             }
         }
         QVERIFY2(sawRunFailure, "run failure must be fed back to the model");
@@ -402,8 +402,8 @@ private slots:
             if (message.toolCallId == QLatin1String("run-1"))
                 runFailed = payload.value("errorCode").toString() == QLatin1String("RUN_FAILED");
             if (message.toolCallId == QLatin1String("diag-1"))
-                diagnoseSkipped = payload.value("errorCode").toString() ==
-                                  QLatin1String("SKIPPED_DUE_TO_PREVIOUS_ERROR");
+                diagnoseSkipped =
+                    payload.value("errorCode").toString() == QLatin1String("SKIPPED_DUE_TO_PREVIOUS_ERROR");
         }
         QVERIFY(runFailed);
         QVERIFY(diagnoseSkipped);
@@ -466,12 +466,11 @@ private slots:
             if (message.toolCallId == QLatin1String("call-bad"))
                 sawInvalidParameter = payload.value("errorCode").toString() == QLatin1String("INVALID_PARAM");
             if (message.toolCallId == QLatin1String("call-add"))
-                sawSkippedWrite = payload.value("errorCode").toString() ==
-                                  QLatin1String("SKIPPED_DUE_TO_PREVIOUS_ERROR");
+                sawSkippedWrite =
+                    payload.value("errorCode").toString() == QLatin1String("SKIPPED_DUE_TO_PREVIOUS_ERROR");
         }
         QVERIFY(sawInvalidParameter);
         QVERIFY(sawSkippedWrite);
-
     }
 
     void testGenericToolErrorStopsBatchWithoutExecutingRemainingCalls() {
@@ -519,8 +518,8 @@ private slots:
             if (message.toolCallId == QLatin1String("connect-conflict"))
                 sawOccupiedInputError = payload.value("error").toString().contains("Input port already connected");
             if (message.toolCallId == QLatin1String("must-be-skipped"))
-                sawSkippedCall = payload.value("errorCode").toString() ==
-                                 QLatin1String("SKIPPED_DUE_TO_PREVIOUS_ERROR");
+                sawSkippedCall =
+                    payload.value("errorCode").toString() == QLatin1String("SKIPPED_DUE_TO_PREVIOUS_ERROR");
         }
         QVERIFY(sawOccupiedInputError);
         QVERIFY(sawSkippedCall);

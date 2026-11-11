@@ -385,10 +385,10 @@ void OpenAILLMClient::postRequestBody(bool streaming) {
     });
     connect(reply, &QNetworkReply::errorOccurred, this,
             [this, reply, requestId, generation](QNetworkReply::NetworkError error) {
-        if (m_currentReply != reply || m_activeRequestId != requestId || m_requestGeneration != generation)
-            return;
-        onNetworkError(error);
-    });
+                if (m_currentReply != reply || m_activeRequestId != requestId || m_requestGeneration != generation)
+                    return;
+                onNetworkError(error);
+            });
     if (streaming) {
         connect(reply, &QNetworkReply::readyRead, this, [this, reply, requestId, generation]() {
             if (m_currentReply != reply || m_activeRequestId != requestId || m_requestGeneration != generation)

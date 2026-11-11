@@ -3,17 +3,17 @@
 
 #include "../platform/Platform.h"
 
-#include <QJsonArray>
 #include <QHash>
 #include <QImage>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QMap>
-#include <QPointer>
-#include <functional>
-#include <memory>
 #include <QObject>
+#include <QPointer>
 #include <QStringList>
 #include <QUndoStack>
+#include <functional>
+#include <memory>
 
 namespace DeepLux {
 
@@ -149,11 +149,13 @@ private:
         const QJsonObject& folderDeleteTargetAuthorization = {}, const QJsonObject& variableSnapshot = {},
         const QJsonObject& dataSourceImportSnapshot = {}, const QString& callId = {},
         const QJsonObject& annotationExportSnapshot = {}, const QJsonObject& annotationTransformSnapshot = {});
-    QJsonObject executeToolWithCameraTargetInternal(
-        const QString& toolName, const QJsonObject& params, const QJsonObject& cameraTargetSnapshot,
-        const QJsonObject& folderDeleteTargetAuthorization, const QJsonObject& variableSnapshot,
-        const QJsonObject& dataSourceImportSnapshot, const QString& callId,
-        const QJsonObject& annotationExportSnapshot, const QJsonObject& annotationTransformSnapshot);
+    QJsonObject executeToolWithCameraTargetInternal(const QString& toolName, const QJsonObject& params,
+                                                    const QJsonObject& cameraTargetSnapshot,
+                                                    const QJsonObject& folderDeleteTargetAuthorization,
+                                                    const QJsonObject& variableSnapshot,
+                                                    const QJsonObject& dataSourceImportSnapshot, const QString& callId,
+                                                    const QJsonObject& annotationExportSnapshot,
+                                                    const QJsonObject& annotationTransformSnapshot);
     QJsonObject resumeFlowForSnapshot(const QString& runId, const QString& sessionId, int state,
                                       int lifecycleGeneration, const QJsonObject& folderDeleteTargetAuthorization = {});
 

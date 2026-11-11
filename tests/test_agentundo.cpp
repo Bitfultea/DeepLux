@@ -88,8 +88,12 @@ private slots:
         QCOMPARE(result.value(QStringLiteral("executed")).toInt(), 1);
         const QJsonArray results = result.value(QStringLiteral("results")).toArray();
         QCOMPARE(results.size(), 2);
-        QCOMPARE(results.at(1).toObject().value(QStringLiteral("result")).toObject()
-                     .value(QStringLiteral("errorCode")).toString(),
+        QCOMPARE(results.at(1)
+                     .toObject()
+                     .value(QStringLiteral("result"))
+                     .toObject()
+                     .value(QStringLiteral("errorCode"))
+                     .toString(),
                  QStringLiteral("SKIPPED_DUE_TO_PREVIOUS_ERROR"));
         QCOMPARE(actor.undoStack()->count(), 0);
         QVERIFY(ProjectManager::instance().currentProject() != nullptr);

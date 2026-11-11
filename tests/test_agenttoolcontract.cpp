@@ -62,8 +62,8 @@ private slots:
     }
 
     void testParamTypesValid() {
-        const QSet<QString> validTypes = {"string", "integer", "number", "boolean", "array", "object", "enum",
-                                          "json", "string_array"};
+        const QSet<QString> validTypes = {"string", "integer", "number", "boolean",     "array",
+                                          "object", "enum",    "json",   "string_array"};
         for (const ToolDefinition& tool : ToolSchema::instance().allTools()) {
             for (const ToolParam& param : tool.params) {
                 QVERIFY2(!param.name.isEmpty(), qPrintable(QString("unnamed param in %1").arg(tool.name)));
@@ -334,9 +334,8 @@ private slots:
         // 注：undoable ⇒ mutatesProject 的另一半由 AgentActor 内部断言/引擎忙用例覆盖，
         // mutatesProject 未作为公开 API 暴露，本测试只锁定可观察的 undoable 集合。
         const QSet<QString> undoableTools = {
-            QStringLiteral("add_module"),         QStringLiteral("remove_module"),
-            QStringLiteral("set_param"),          QStringLiteral("connect_modules"),
-            QStringLiteral("disconnect_modules"),
+            QStringLiteral("add_module"),      QStringLiteral("remove_module"),      QStringLiteral("set_param"),
+            QStringLiteral("connect_modules"), QStringLiteral("disconnect_modules"),
         };
         AgentActor actor;
         for (const ToolDefinition& tool : ToolSchema::instance().allTools()) {

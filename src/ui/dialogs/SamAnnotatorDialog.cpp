@@ -18,8 +18,8 @@
 #include <QBoxLayout>
 #include <QButtonGroup>
 #include <QColor>
-#include <QCryptographicHash>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -41,9 +41,9 @@
 #include <QMessageBox>
 #include <QPainterPath>
 #include <QPushButton>
-#include <QSet>
 #include <QResizeEvent>
 #include <QScrollArea>
+#include <QSet>
 #include <QShortcut>
 #include <QSizePolicy>
 #include <QSpinBox>
@@ -57,9 +57,9 @@
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QWidgetAction>
 #include <atomic>
 #include <cmath>
-#include <QWidgetAction>
 #include <functional>
 
 namespace DeepLux {
@@ -212,8 +212,7 @@ SamAnnotatorDialog::SamAnnotatorDialog(QWidget* parent, bool environmentSetupOnl
         } else {
             setStatusText(tr("SAM 已就绪"));
         }
-        if (!predictionPending &&
-            (!m_positivePoints.isEmpty() || !m_negativePoints.isEmpty() || m_dragBox.isValid())) {
+        if (!predictionPending && (!m_positivePoints.isEmpty() || !m_negativePoints.isEmpty() || m_dragBox.isValid())) {
             requestPrediction();
         }
     });
@@ -472,13 +471,13 @@ QJsonObject SamAnnotatorDialog::environmentHandoffStatus() const {
     if (!native && modelPath.isEmpty())
         modelPath = QString::fromLocal8Bit(qgetenv("DEEPLUX_SAM_MODEL"));
     const bool modelConfigured = !modelPath.isEmpty();
-    const bool modelFileAvailable = modelConfigured &&
-                                    (native ? QFileInfo(modelPath).isDir() : QFileInfo(modelPath).isFile());
+    const bool modelFileAvailable =
+        modelConfigured && (native ? QFileInfo(modelPath).isDir() : QFileInfo(modelPath).isFile());
     QString modelSupported = QStringLiteral("unknown");
     if (native) {
         QString summary;
-        modelSupported = inspectSamModelPackage(modelPath, &summary) ? QStringLiteral("supported")
-                                                                    : QStringLiteral("unsupported");
+        modelSupported =
+            inspectSamModelPackage(modelPath, &summary) ? QStringLiteral("supported") : QStringLiteral("unsupported");
     } else if (modelConfigured) {
         modelSupported =
             isUnsupportedSamModelPath(modelPath) ? QStringLiteral("unsupported") : QStringLiteral("supported");
@@ -508,8 +507,8 @@ QJsonObject SamAnnotatorDialog::environmentHandoffStatus() const {
 
     // Native inference loads ONNX lazily on the first prediction; Ready here only means the package
     // and backend are configured, not that model weights are already resident in memory.
-    const bool modelLoaded = !native && serverState == QLatin1String("ready") &&
-                             m_samClient->serverMode() == QLatin1String("sam");
+    const bool modelLoaded =
+        !native && serverState == QLatin1String("ready") && m_samClient->serverMode() == QLatin1String("sam");
     QString nextAction = QStringLiteral("none");
     if (m_samClient->isEnvironmentInitializationRunning())
         nextAction = QStringLiteral("wait_for_initialization");

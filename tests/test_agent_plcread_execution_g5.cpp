@@ -1,7 +1,7 @@
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
-#include "core/common/UserManager.h"
 #include "core/agent/GuiEvent.h"
+#include "core/common/UserManager.h"
 #include "core/engine/RunEngine.h"
 #include "core/manager/PluginManager.h"
 #include "core/manager/ProjectManager.h"
@@ -606,8 +606,9 @@ private slots:
         QSignalSpy audit(&controller, &AgentController::actionLogEntryAdded);
 
         auto startPending = [&controller] {
-            return controller.handleToolCall(QStringLiteral("run_flow"),
-                                             QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
+            return controller.handleToolCall(
+                QStringLiteral("run_flow"),
+                QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         };
         const auto expectedEffects = [instanceId](quint16 port, int slave) {
             return QJsonArray{QStringLiteral("execution:may_touch_files_devices_network(流程内模块)"),
@@ -695,8 +696,9 @@ private slots:
             Qt::DirectConnection);
         const quintptr mainThreadId = reinterpret_cast<quintptr>(QThread::currentThreadId());
 
-        QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
+        QJsonObject pending = controller.handleToolCall(
+            QStringLiteral("run_flow"),
+            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QJsonArray expectedEffects{
             QStringLiteral("execution:may_touch_files_devices_network(流程内模块)"),
@@ -769,8 +771,9 @@ private slots:
         QCOMPARE(count.value(QStringLiteral("value")).toInt(), 3);
         controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
 
-        pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
+        pending = controller.handleToolCall(
+            QStringLiteral("run_flow"),
+            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString timeoutConfirmationId = controller.pendingConfirmationId();
         QVERIFY(!timeoutConfirmationId.isEmpty());

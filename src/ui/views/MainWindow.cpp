@@ -776,8 +776,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
         // 不得据此重启循环或做 job 级收尾；job 级收尾只走 FlowExecutionService::jobFinished。
         const FlowExecutionService& service = FlowExecutionService::instance();
         const RunObservation observation = RunEngine::instance().runObservation(result.runId);
-        const bool belongsToFinishedServiceJob = !observation.sessionId.isEmpty() &&
-                                                 observation.sessionId == service.lastSessionId();
+        const bool belongsToFinishedServiceJob =
+            !observation.sessionId.isEmpty() && observation.sessionId == service.lastSessionId();
         if (m_closeAwaitingServiceJob || service.isActive() || belongsToFinishedServiceJob) {
             return;
         }

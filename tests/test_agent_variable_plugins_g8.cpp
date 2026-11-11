@@ -42,9 +42,9 @@ private:
     }
 
     static QJsonObject runToTerminal(AgentActor& actor) {
-        const QJsonObject started = actor.executeTool(QStringLiteral("run_flow"),
-                                                      QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
-                                                                  {QStringLiteral("wait"), false}});
+        const QJsonObject started =
+            actor.executeTool(QStringLiteral("run_flow"), QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
+                                                                      {QStringLiteral("wait"), false}});
         if (started.value(QStringLiteral("status")).toString() != QLatin1String("started"))
             return started;
 

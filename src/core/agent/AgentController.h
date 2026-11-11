@@ -92,9 +92,15 @@ public:
     void clearConversation();
     bool undoLastAgentAction();
     void abortCurrentTurn();
-    quint64 turnGeneration() const { return m_turnGeneration; }
-    QString lastLLMErrorCategory() const { return m_lastErrorCategory; }
-    QString lastResponseReasoning() const { return m_lastResponseReasoning; }
+    quint64 turnGeneration() const {
+        return m_turnGeneration;
+    }
+    QString lastLLMErrorCategory() const {
+        return m_lastErrorCategory;
+    }
+    QString lastResponseReasoning() const {
+        return m_lastResponseReasoning;
+    }
 
     void logAction(const AgentActionLogEntry& entry);
     AgentActor* actor() const {

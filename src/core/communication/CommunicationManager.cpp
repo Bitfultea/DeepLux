@@ -119,14 +119,13 @@ bool CommunicationManager::connect(const QString& configId) {
         QObject::connect(socket, &QTcpSocket::connected, this, [this, configId, connectionConfig]() {
             m_states[configId] = CommunicationState::Connected;
             emit connectionStateChanged(configId, CommunicationState::Connected);
-            const QString transport = (connectionConfig.type == CommunicationType::PLC) ? "PLC Modbus TCP"
-                                                                                          : "TCP server";
-            Logger::instance().success(
-                QString("Connected to %1: %2:%3")
-                    .arg(transport)
-                    .arg(connectionConfig.ipAddress)
-                    .arg(connectionConfig.port),
-                "Comm");
+            const QString transport =
+                (connectionConfig.type == CommunicationType::PLC) ? "PLC Modbus TCP" : "TCP server";
+            Logger::instance().success(QString("Connected to %1: %2:%3")
+                                           .arg(transport)
+                                           .arg(connectionConfig.ipAddress)
+                                           .arg(connectionConfig.port),
+                                       "Comm");
         });
 
         QObject::connect(socket, &QTcpSocket::readyRead, this, &CommunicationManager::onReadyRead);

@@ -7,14 +7,10 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMap>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
 #include <QSettings>
-#include <QSignalSpy>
-#include <QTemporaryDir>
-#include <QJsonDocument>
-#include <QImage>
-#include <QRegularExpression>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QThread>
@@ -6478,9 +6474,8 @@ private slots:
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Confirming);
 
         QSignalSpy logSpy(&AgentController::instance(), &AgentController::actionLogEntryAdded);
-        AgentController::instance().confirmPendingTools(
-            AgentController::instance().pendingConfirmationId()); // 入队
-        AgentController::instance().abortCurrentTurn();    // 在 tick 之前中止
+        AgentController::instance().confirmPendingTools(AgentController::instance().pendingConfirmationId()); // 入队
+        AgentController::instance().abortCurrentTurn(); // 在 tick 之前中止
         QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
 
         for (int i = 0; i < 10; ++i)

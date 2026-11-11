@@ -2144,9 +2144,9 @@ private slots:
         engine.clearModules();
 
         const auto requestFlow = [&controller]() {
-            return controller.handleToolCall(QStringLiteral("run_flow"),
-                                             {{QStringLiteral("mode"), QStringLiteral("once")},
-                                              {QStringLiteral("wait"), false}});
+            return controller.handleToolCall(
+                QStringLiteral("run_flow"),
+                {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         };
         const QString origin = QStringLiteral("http://127.0.0.1:%1").arg(QUrl(server.url()).port());
         QUrl decoratedUrl(server.url());
@@ -2400,9 +2400,9 @@ private slots:
         RunEngine::instance().clearModules();
 
         const auto requestFlow = [&controller]() {
-            return controller.handleToolCall(QStringLiteral("run_flow"),
-                                             {{QStringLiteral("mode"), QStringLiteral("once")},
-                                              {QStringLiteral("wait"), false}});
+            return controller.handleToolCall(
+                QStringLiteral("run_flow"),
+                {{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         };
         const auto assertSafeConfirmation = [this, &controller, &predictId](const QString& expectedOrigin) {
             const QJsonObject context =

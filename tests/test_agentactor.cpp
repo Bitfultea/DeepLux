@@ -1,14 +1,14 @@
 #define DEEPLUX_BUILD_TESTS 1
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
+#include "core/agent/AgentRunWaiter.h"
+#include "core/agent/AgentToolImage.h"
 #include "core/agent/ToolSchema.h"
 #include "core/base/ModuleBase.h"
 #include "core/common/Logger.h"
 #include "core/common/UserManager.h"
 #include "core/device/CameraManager.h"
 #include "core/display/DisplayData.h"
-#include "core/agent/AgentRunWaiter.h"
-#include "core/agent/AgentToolImage.h"
 #include "core/engine/FlowExecutionService.h"
 #include "core/engine/RunEngine.h"
 #include "core/model/Project.h"
@@ -21,11 +21,11 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QImage>
 #include <QJsonDocument>
+#include <QRect>
 #include <QSemaphore>
 #include <QSignalSpy>
-#include <QImage>
-#include <QRect>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
@@ -379,8 +379,8 @@ private:
         QElapsedTimer timer;
         timer.start();
         while (timer.elapsed() < timeoutMs) {
-            QJsonObject result = actor.executeTool(QStringLiteral("get_run_results"),
-                                                   QJsonObject{{QStringLiteral("runId"), runId}});
+            QJsonObject result =
+                actor.executeTool(QStringLiteral("get_run_results"), QJsonObject{{QStringLiteral("runId"), runId}});
             const QString status = result.value(QStringLiteral("status")).toString();
             if (status == QLatin1String("completed") || status == QLatin1String("failed") ||
                 status == QLatin1String("cancelled") || status == QLatin1String("uncertain"))
@@ -1540,7 +1540,8 @@ private slots:
         const QJsonObject step = actor.executeTool(QStringLiteral("step_once"), {});
         QVERIFY2(!step.contains(QStringLiteral("error")), qPrintable(step.value(QStringLiteral("error")).toString()));
         QCOMPARE(step.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
-        QCOMPARE(waitForRun(actor, step.value(QStringLiteral("runId")).toString()).value(QStringLiteral("status"))
+        QCOMPARE(waitForRun(actor, step.value(QStringLiteral("runId")).toString())
+                     .value(QStringLiteral("status"))
                      .toString(),
                  QStringLiteral("completed"));
         QVERIFY(actor.undoBlockedByBarrier());
@@ -3278,8 +3279,7 @@ private slots:
         RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_noncooperative"),
                                                                 ExecutionAffinity::Worker);
 
-        const QJsonObject started =
-            actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
+        const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
         QCOMPARE(started.value("status").toString(), QStringLiteral("started"));
         const QString runId = started.value("runId").toString();
         QVERIFY(!runId.isEmpty());
@@ -3380,10 +3380,9 @@ private slots:
         QCOMPARE(waitForRun(actor, result.value("runId").toString()).value("status").toString(),
                  QStringLiteral("completed"));
         QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 2000);
-        QTRY_COMPARE_WITH_TIMEOUT(executed,
-                                  (QStringList{QStringLiteral("step_a"), QStringLiteral("step_b"),
-                                               QStringLiteral("step_a")}),
-                                  1000);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            executed, (QStringList{QStringLiteral("step_a"), QStringLiteral("step_b"), QStringLiteral("step_a")}),
+            1000);
         QCOMPARE(executed.last(), QStringLiteral("step_a"));
 
         RunEngine::instance().setOutput(QStringLiteral("step_a"), QStringLiteral("read_only_probe"), 42);

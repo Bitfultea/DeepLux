@@ -1,7 +1,7 @@
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
-#include "core/common/UserManager.h"
 #include "core/agent/GuiEvent.h"
+#include "core/common/UserManager.h"
 #include "core/deeplux/DataContract.h"
 #include "core/engine/RunEngine.h"
 #include "core/manager/PluginManager.h"
@@ -16,9 +16,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QSignalSpy>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QSignalSpy>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
@@ -39,14 +39,17 @@ public:
 
     ~ModbusReadSourcePeer() {
         if (m_worker && m_thread.isRunning()) {
-            QMetaObject::invokeMethod(m_worker, [this] {
-                if (m_server) {
-                    m_server->close();
-                    delete m_server;
-                    m_server = nullptr;
-                }
-                m_thread.quit();
-            }, Qt::BlockingQueuedConnection);
+            QMetaObject::invokeMethod(
+                m_worker,
+                [this] {
+                    if (m_server) {
+                        m_server->close();
+                        delete m_server;
+                        m_server = nullptr;
+                    }
+                    m_thread.quit();
+                },
+                Qt::BlockingQueuedConnection);
             if (!m_thread.wait(3000))
                 qFatal("Modbus read source peer worker did not stop within 3000 ms");
         }
@@ -54,48 +57,51 @@ public:
 
     bool listen() {
         bool listening = false;
-        QMetaObject::invokeMethod(m_worker, [this, &listening] {
-            m_server = new QTcpServer(m_worker);
-            QObject::connect(m_server, &QTcpServer::newConnection, m_worker, [this] {
-                while (m_server->hasPendingConnections()) {
-                    QTcpSocket* socket = m_server->nextPendingConnection();
-                    {
-                        QMutexLocker locker(&m_mutex);
-                        ++m_connectionCount;
-                    }
-                    auto* buffer = new QByteArray;
-                    QObject::connect(socket, &QTcpSocket::readyRead, m_worker, [this, socket, buffer] {
-                        *buffer += socket->readAll();
-                        if (buffer->size() < 12)
-                            return;
-                        const QByteArray request = buffer->left(12);
-                        buffer->remove(0, 12);
-                        const auto* bytes = reinterpret_cast<const uchar*>(request.constData());
-                        const quint16 start = qFromBigEndian<quint16>(bytes + 8);
-                        const quint16 value = start == 256 ? 0x1234 : (start == 257 ? 0xBEEF : 0);
-                        QByteArray response = request.left(7);
-                        qToBigEndian<quint16>(5, reinterpret_cast<uchar*>(response.data() + 4));
-                        response.append(char(0x03));
-                        response.append(char(0x02));
-                        char valueBytes[2];
-                        qToBigEndian<quint16>(value, reinterpret_cast<uchar*>(valueBytes));
-                        response.append(valueBytes, 2);
-                        if (socket->write(response) == response.size()) {
-                            socket->flush();
+        QMetaObject::invokeMethod(
+            m_worker,
+            [this, &listening] {
+                m_server = new QTcpServer(m_worker);
+                QObject::connect(m_server, &QTcpServer::newConnection, m_worker, [this] {
+                    while (m_server->hasPendingConnections()) {
+                        QTcpSocket* socket = m_server->nextPendingConnection();
+                        {
                             QMutexLocker locker(&m_mutex);
-                            m_requests.append(request);
-                            ++m_responseCount;
+                            ++m_connectionCount;
                         }
-                    });
-                    QObject::connect(socket, &QObject::destroyed, m_worker, [buffer] { delete buffer; });
+                        auto* buffer = new QByteArray;
+                        QObject::connect(socket, &QTcpSocket::readyRead, m_worker, [this, socket, buffer] {
+                            *buffer += socket->readAll();
+                            if (buffer->size() < 12)
+                                return;
+                            const QByteArray request = buffer->left(12);
+                            buffer->remove(0, 12);
+                            const auto* bytes = reinterpret_cast<const uchar*>(request.constData());
+                            const quint16 start = qFromBigEndian<quint16>(bytes + 8);
+                            const quint16 value = start == 256 ? 0x1234 : (start == 257 ? 0xBEEF : 0);
+                            QByteArray response = request.left(7);
+                            qToBigEndian<quint16>(5, reinterpret_cast<uchar*>(response.data() + 4));
+                            response.append(char(0x03));
+                            response.append(char(0x02));
+                            char valueBytes[2];
+                            qToBigEndian<quint16>(value, reinterpret_cast<uchar*>(valueBytes));
+                            response.append(valueBytes, 2);
+                            if (socket->write(response) == response.size()) {
+                                socket->flush();
+                                QMutexLocker locker(&m_mutex);
+                                m_requests.append(request);
+                                ++m_responseCount;
+                            }
+                        });
+                        QObject::connect(socket, &QObject::destroyed, m_worker, [buffer] { delete buffer; });
+                    }
+                });
+                listening = m_server->listen(QHostAddress::LocalHost, 0);
+                if (listening) {
+                    QMutexLocker locker(&m_mutex);
+                    m_port = m_server->serverPort();
                 }
-            });
-            listening = m_server->listen(QHostAddress::LocalHost, 0);
-            if (listening) {
-                QMutexLocker locker(&m_mutex);
-                m_port = m_server->serverPort();
-            }
-        }, Qt::BlockingQueuedConnection);
+            },
+            Qt::BlockingQueuedConnection);
         return listening;
     }
 
@@ -481,8 +487,9 @@ private slots:
         QSignalSpy toolExecuted(controller.actor(), &AgentActor::toolExecuted);
         QSignalSpy audit(&controller, &AgentController::actionLogEntryAdded);
 
-        QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
+        QJsonObject pending = controller.handleToolCall(
+            QStringLiteral("run_flow"),
+            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QCOMPARE(peer.requestCount(), 0);
         QCOMPARE(moduleSignalCount(moduleStarted, instanceId), 0);
@@ -494,8 +501,9 @@ private slots:
         QCOMPARE(moduleSignalCount(moduleFinished, instanceId), 0);
         QVERIFY(!engine.isBusy());
 
-        pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
+        pending = controller.handleToolCall(
+            QStringLiteral("run_flow"),
+            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString runConfirmationId = controller.pendingConfirmationId();
         QVERIFY(!runConfirmationId.isEmpty());
@@ -731,8 +739,9 @@ private slots:
         QSignalSpy audit(&controller, &AgentController::actionLogEntryAdded);
         QSignalSpy response(&controller, &AgentController::llmResponseReceived);
 
-        QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
+        QJsonObject pending = controller.handleToolCall(
+            QStringLiteral("run_flow"),
+            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const RunState stateBeforeStaleApproval = engine.state();
         const QString staleId = controller.pendingConfirmationId();
@@ -753,8 +762,9 @@ private slots:
         QVERIFY(!response.isEmpty());
         QVERIFY(response.last().at(0).toString().contains(QStringLiteral("确认已失效")));
 
-        pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
+        pending = controller.handleToolCall(
+            QStringLiteral("run_flow"),
+            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString confirmationId = controller.pendingConfirmationId();
         QVERIFY(!confirmationId.isEmpty());
@@ -963,8 +973,9 @@ private slots:
         QSignalSpy audit(&controller, &AgentController::actionLogEntryAdded);
 
         const auto requestRun = [&controller] {
-            return controller.handleToolCall(QStringLiteral("run_flow"),
-                                             QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
+            return controller.handleToolCall(
+                QStringLiteral("run_flow"),
+                QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         };
         const auto expectPendingDisclosure = [&controller, &readPeer, &writePeer, &writeInstanceId](int sourceAddress) {
             const QJsonObject payload = controller.pendingConfirmationPayload();
@@ -1044,7 +1055,8 @@ private slots:
         const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(result.runId, runId);
         QVERIFY2(result.success,
-                 qPrintable(QStringLiteral("%1; read connections=%2 requests=%3 responses=%4; write connections=%5 requests=%6")
+                 qPrintable(QStringLiteral(
+                                "%1; read connections=%2 requests=%3 responses=%4; write connections=%5 requests=%6")
                                 .arg(result.errorMessage)
                                 .arg(readPeer.connectionCount())
                                 .arg(readPeer.requestCount())

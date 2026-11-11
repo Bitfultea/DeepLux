@@ -1,8 +1,8 @@
 #include "AgentActor.h"
-#include "AgentRunWaiter.h"
-#include "AgentToolImage.h"
 
 #include "AgentController.h"
+#include "AgentRunWaiter.h"
+#include "AgentToolImage.h"
 #include "AnnotationSessionExport.h"
 #include "AnnotationSessionTransform.h"
 #include "SamPredictor.h"
@@ -341,7 +341,6 @@ QJsonValue outputValueToJson(const QVariant& value, bool* supported,
         return QJsonValue();
     }
 }
-
 
 // 后台执行（t13 观察）：在 GUI 线程用事件循环等待 Service job 真正收尾。
 // 不得用 QWaitCondition/waitForIdle 同步阻塞 GUI——worker 可能正在通过
@@ -704,7 +703,6 @@ QJsonObject variableDto(const GlobalVariableSnapshot& snapshot, bool includeValu
         dto.insert(QStringLiteral("value"), variableValueToJson(snapshot.value));
     return dto;
 }
-
 
 QJsonObject errorObject(const QString& error, const QString& code) {
     QJsonObject result{{"error", error}};
@@ -1586,7 +1584,6 @@ bool AgentActor::undoLastAction() {
     return !m_positionUndoExpired && !m_moduleOrderUndoExpired && !m_parameterUndoExpired && !m_runtimeFieldUndoExpired;
 }
 
-
 void AgentActor::buildHandlers() {
     m_handlers.clear();
     for (const ToolDefinition& definition : ToolSchema::instance().allTools()) {
@@ -1672,8 +1669,8 @@ QJsonObject AgentActor::executeToolWithCameraTarget(const QString& toolName, con
 QJsonObject AgentActor::executeToolWithCameraTargetInternal(
     const QString& toolName, const QJsonObject& params, const QJsonObject& cameraTargetSnapshot,
     const QJsonObject& folderDeleteTargetAuthorization, const QJsonObject& variableSnapshot,
-    const QJsonObject& dataSourceImportSnapshot, const QString& callId,
-    const QJsonObject& annotationExportSnapshot, const QJsonObject& annotationTransformSnapshot) {
+    const QJsonObject& dataSourceImportSnapshot, const QString& callId, const QJsonObject& annotationExportSnapshot,
+    const QJsonObject& annotationTransformSnapshot) {
     ToolSchema& schema = ToolSchema::instance();
     if (!schema.hasTool(toolName)) {
         QString err = QString("Unknown tool: %1").arg(toolName);
@@ -2345,7 +2342,7 @@ QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& t
 }
 
 QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& tools, const QString& macroName,
-                                      const BatchGate& gate) {
+                                     const BatchGate& gate) {
     if (!gate)
         return executeTools(tools, macroName);
     QList<QPair<QString, QJsonObject>> allowed;
@@ -2364,7 +2361,8 @@ QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& t
     if (!allowed.isEmpty())
         allowedBatch = executeTools(allowed, macroName);
     QJsonArray results = allowedBatch.value(QStringLiteral("results")).toArray();
-    const bool prefixFailed = allowedBatch.value(QStringLiteral("status")).toString() == QLatin1String("partial_failed");
+    const bool prefixFailed =
+        allowedBatch.value(QStringLiteral("status")).toString() == QLatin1String("partial_failed");
     int executed = allowedBatch.value(QStringLiteral("executed")).toInt();
     QString failedTool = allowedBatch.value(QStringLiteral("failedTool")).toString();
     QString failedCallId = allowedBatch.value(QStringLiteral("failedCallId")).toString();
@@ -2383,21 +2381,26 @@ QJsonObject AgentActor::executeTools(const QList<QPair<QString, QJsonObject>>& t
     }
     for (int i = firstSkipped; i < tools.size(); ++i) {
         const QString callId = QStringLiteral("auto_%1").arg(i);
-        results.append(QJsonObject{{QStringLiteral("callId"), callId},
-                                   {QStringLiteral("tool"), tools[i].first},
-                                   {QStringLiteral("executed"), false},
-                                   {QStringLiteral("result"), makeSkippedToolError(
-                                        tools[i].first, QStringLiteral("Batch stopped after previous error"),
-                                        failedCallId)}});
+        results.append(
+            QJsonObject{{QStringLiteral("callId"), callId},
+                        {QStringLiteral("tool"), tools[i].first},
+                        {QStringLiteral("executed"), false},
+                        {QStringLiteral("result"),
+                         makeSkippedToolError(tools[i].first, QStringLiteral("Batch stopped after previous error"),
+                                              failedCallId)}});
     }
     const bool failed = prefixFailed || blockedAt >= 0;
     if (!failed)
         return QJsonObject{{QStringLiteral("status"), QStringLiteral("completed")},
-                           {QStringLiteral("executed"), executed}, {QStringLiteral("results"), results}};
+                           {QStringLiteral("executed"), executed},
+                           {QStringLiteral("results"), results}};
     return QJsonObject{{QStringLiteral("status"), QStringLiteral("partial_failed")},
-                       {QStringLiteral("executed"), executed}, {QStringLiteral("results"), results},
-                       {QStringLiteral("failedTool"), failedTool}, {QStringLiteral("failedCallId"), failedCallId},
-                       {QStringLiteral("error"), error}, {QStringLiteral("errorCode"), errorCode},
+                       {QStringLiteral("executed"), executed},
+                       {QStringLiteral("results"), results},
+                       {QStringLiteral("failedTool"), failedTool},
+                       {QStringLiteral("failedCallId"), failedCallId},
+                       {QStringLiteral("error"), error},
+                       {QStringLiteral("errorCode"), errorCode},
                        {QStringLiteral("retryable"), false}};
 }
 
@@ -3220,8 +3223,8 @@ QJsonObject AgentActor::runFlow(const QJsonObject& params, const QJsonObject& fo
         if (run.pausedAtBreakpoint || run.pausedByUser)
             return QJsonObject{{QStringLiteral("status"), QStringLiteral("paused")},
                                {QStringLiteral("runId"), run.runId},
-                               {QStringLiteral("pauseReason"), run.pausedAtBreakpoint ? QStringLiteral("breakpoint")
-                                                                                      : QStringLiteral("user")},
+                               {QStringLiteral("pauseReason"),
+                                run.pausedAtBreakpoint ? QStringLiteral("breakpoint") : QStringLiteral("user")},
                                {QStringLiteral("elapsedMs"), run.elapsedMs}};
 
         QJsonObject result{{QStringLiteral("status"), run.ok ? QStringLiteral("completed") : QStringLiteral("failed")},
@@ -3404,10 +3407,10 @@ QJsonObject AgentActor::stopFlow(const QJsonObject& params) {
         service.stop();
     else
         engine.stop();
-    return QJsonObject{{QStringLiteral("status"),
-                        (engine.isExecuting() || service.state() == FlowExecutionService::State::Stopping)
-                            ? QStringLiteral("stopping")
-                            : QStringLiteral("stopped")}};
+    return QJsonObject{
+        {QStringLiteral("status"), (engine.isExecuting() || service.state() == FlowExecutionService::State::Stopping)
+                                       ? QStringLiteral("stopping")
+                                       : QStringLiteral("stopped")}};
 }
 
 QJsonObject AgentActor::getFlowState(const QJsonObject& params) {
@@ -4353,7 +4356,7 @@ QJsonObject AgentActor::getRunResults(const QJsonObject& params) {
             result["sideEffectStatus"] = QStringLiteral("uncertain");
             result["retryable"] = false;
         } else if (service.lastFailedJobSerial() != 0 &&
-            service.lastFailedJobSerial() == service.lastFinishedJobSerial()) {
+                   service.lastFailedJobSerial() == service.lastFinishedJobSerial()) {
             status = QStringLiteral("failed");
         } else if (service.lastJobStopped()) {
             status = QStringLiteral("cancelled");
@@ -5563,15 +5566,15 @@ QJsonObject AgentActor::getModuleOutput(const QJsonObject& params) {
                         const QImage mask =
                             MaskOps::decodeRle(region.maskRle, QSize(output.width(), output.height()), &ok);
                         if (ok) {
-                            const QImage small = mask.scaled(64, 64, Qt::KeepAspectRatio, Qt::FastTransformation);
+                            const QImage thumbnail = mask.scaled(64, 64, Qt::KeepAspectRatio, Qt::FastTransformation);
                             QByteArray encoded;
                             QBuffer buffer(&encoded);
-                            if (buffer.open(QIODevice::WriteOnly) && small.save(&buffer, "PNG")) {
+                            if (buffer.open(QIODevice::WriteOnly) && thumbnail.save(&buffer, "PNG")) {
                                 preview["mask"] =
                                     QJsonObject{{"mimeType", "image/png"},
                                                 {"base64", QString::fromLatin1(encoded.toBase64())},
-                                                {"width", small.width()},
-                                                {"height", small.height()},
+                                                {"width", thumbnail.width()},
+                                                {"height", thumbnail.height()},
                                                 {"sourceRect", QJsonArray{0, 0, output.width(), output.height()}}};
                             }
                         }
@@ -6448,7 +6451,6 @@ QJsonObject AgentActor::getAnnotationSession(const QJsonObject& params) {
                              QStringLiteral("OUTPUT_LIMIT"));
     return result;
 }
-
 
 // --- 第一迭代：闭环 / 观测工具 ---
 

@@ -1,7 +1,7 @@
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
-#include "core/common/UserManager.h"
 #include "core/agent/GuiEvent.h"
+#include "core/common/UserManager.h"
 #include "core/engine/RunEngine.h"
 #include "core/manager/PluginManager.h"
 #include "core/manager/ProjectManager.h"
@@ -672,8 +672,9 @@ private slots:
         const quintptr mainThreadId = reinterpret_cast<quintptr>(QThread::currentThreadId());
 
         auto startPending = [&controller] {
-            return controller.handleToolCall(QStringLiteral("run_flow"),
-                                             QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
+            return controller.handleToolCall(
+                QStringLiteral("run_flow"),
+                QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         };
         auto expectedEffects = [instanceId](quint16 port) {
             return QJsonArray{QStringLiteral("execution:may_touch_files_devices_network(流程内模块)"),
@@ -734,13 +735,12 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(newPeer.responseCount(), 1, 5000);
         const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(result.runId, runId);
-        QVERIFY2(result.success,
-                 qPrintable(QStringLiteral("%1 (old=%2/%3, new=%4/%5)")
-                                .arg(result.errorMessage)
-                                .arg(oldPeer.requestCount())
-                                .arg(oldPeer.responseCount())
-                                .arg(newPeer.requestCount())
-                                .arg(newPeer.responseCount())));
+        QVERIFY2(result.success, qPrintable(QStringLiteral("%1 (old=%2/%3, new=%4/%5)")
+                                                .arg(result.errorMessage)
+                                                .arg(oldPeer.requestCount())
+                                                .arg(oldPeer.responseCount())
+                                                .arg(newPeer.requestCount())
+                                                .arg(newPeer.responseCount())));
         QCOMPARE(moduleStarted.count(), 1);
         QCOMPARE(moduleFinished.count(), 1);
         QVERIFY(moduleFinished.last().at(1).toBool());

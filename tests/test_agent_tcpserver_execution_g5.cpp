@@ -1,9 +1,9 @@
 #include "TCPServerPlugin.h"
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
-#include "core/common/UserManager.h"
 #include "core/agent/GuiEvent.h"
 #include "core/common/Logger.h"
+#include "core/common/UserManager.h"
 #include "core/engine/RunEngine.h"
 #include "core/interface/IModule.h"
 #include "core/manager/PluginManager.h"
@@ -599,9 +599,9 @@ private slots:
             Qt::DirectConnection);
         const quintptr mainThreadId = reinterpret_cast<quintptr>(QThread::currentThreadId());
 
-        QJsonObject pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                                        QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
-                                                                    {QStringLiteral("wait"), false}});
+        QJsonObject pending = controller.handleToolCall(
+            QStringLiteral("run_flow"),
+            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString requestText = QString::fromUtf8(request);
         const QJsonArray oldEffects{
@@ -629,9 +629,9 @@ private slots:
         QVERIFY(!canConnectLocal(oldPort));
         QVERIFY(!canConnectLocal(approvedPort));
 
-        pending = controller.handleToolCall(QStringLiteral("run_flow"),
-                                            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
-                                                        {QStringLiteral("wait"), false}});
+        pending = controller.handleToolCall(
+            QStringLiteral("run_flow"),
+            QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QJsonArray approvedEffects{
             QStringLiteral("execution:may_touch_files_devices_network(流程内模块)"),
@@ -658,12 +658,7 @@ private slots:
         const QString runId = started.value(QStringLiteral("runId")).toString();
         QVERIFY(!runId.isEmpty());
 
-        QVERIFY2(client.waitForFinished(5000), qPrintable(client.error()));
-        QCOMPARE(client.connectionCount(), 1);
-        QCOMPARE(client.sent(), request);
-        QCOMPARE(client.received(), response);
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
-
         const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(result.runId, runId);
         QVERIFY2(result.success,
@@ -673,6 +668,15 @@ private slots:
                                 .arg(client.sent().size())
                                 .arg(client.received().size())
                                 .arg(client.error())));
+        QVERIFY2(client.waitForFinished(5000), qPrintable(client.error()));
+        QVERIFY2(client.connectionCount() == 1,
+                 qPrintable(QStringLiteral("client connections=%1 sent=%2 received=%3 error=%4")
+                                .arg(client.connectionCount())
+                                .arg(client.sent().size())
+                                .arg(client.received().size())
+                                .arg(client.error())));
+        QCOMPARE(client.sent(), request);
+        QCOMPARE(client.received(), response);
         QCOMPARE(moduleSignalCount(moduleStarted, instanceId), 1);
         QCOMPARE(moduleSignalCount(moduleFinished, instanceId), 1);
         QVERIFY(moduleFinished.last().at(1).toBool());

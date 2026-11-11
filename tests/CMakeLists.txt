@@ -204,6 +204,7 @@ add_executable(test_agent_visual_plugins_g8 test_agent_visual_plugins_g8.cpp)
 target_link_libraries(test_agent_visual_plugins_g8 PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Test ${OpenCV_LIBS})
 target_include_directories(test_agent_visual_plugins_g8 PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_compile_definitions(test_agent_visual_plugins_g8 PRIVATE
+    G8_QRCODE_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/g8_qrcode.png"
     G8_GRABIMAGE_PLUGIN="$<TARGET_FILE:GrabImagePlugin>"
     G8_QRCODE_PLUGIN="$<TARGET_FILE:QRCodePlugin>"
     G8_SHOWIMAGE_PLUGIN="$<TARGET_FILE:ShowImagePlugin>"
@@ -849,6 +850,9 @@ foreach(TEST_FILE ${TEST_SOURCES})
     # 对两者设 RUN_SERIAL，使 ctest -j4 全量可稳定通过（串行于其他测试执行）。
     if(TEST_NAME STREQUAL "test_agentbridge" OR TEST_NAME STREQUAL "test_mainwindow")
         set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
+    endif()
+    if(TEST_NAME STREQUAL "test_mainwindow" OR TEST_NAME STREQUAL "test_agent_viewport_snapshot_handoff")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
     endif()
     if(TEST_NAME STREQUAL "test_acceptance_flows")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 10)

@@ -96,31 +96,32 @@ private slots:
         QByteArray request;
         bool requestComplete = false;
         bool buttonWasDisabledDuringRequest = false;
-        connect(&m_server, &QTcpServer::newConnection, &dialog, [this, &dialog, testButton, &request,
-                                                                 &requestComplete, &buttonWasDisabledDuringRequest]() {
-            while (QTcpSocket* socket = m_server.nextPendingConnection()) {
-                connect(socket, &QTcpSocket::readyRead, socket,
-                        [socket, &request, &requestComplete, &buttonWasDisabledDuringRequest, testButton]() {
-                            request.append(socket->readAll());
-                            const int headerEnd = request.indexOf("\r\n\r\n");
-                            if (headerEnd < 0)
-                                return;
-                            int contentLength = 0;
-                            for (const QByteArray& header : request.left(headerEnd).split('\n')) {
-                                if (header.toLower().startsWith("content-length:"))
-                                    contentLength = header.mid(header.indexOf(':') + 1).trimmed().toInt();
-                            }
-                            if (request.size() < headerEnd + 4 + contentLength)
-                                return;
-                            requestComplete = true;
-                            buttonWasDisabledDuringRequest = !testButton->isEnabled();
-                            const QByteArray body = R"({"model":"synthetic-fixture-model"})";
-                            socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-                                          QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n" + body);
-                            socket->disconnectFromHost();
-                        });
-            }
-        });
+        connect(&m_server, &QTcpServer::newConnection, &dialog,
+                [this, &dialog, testButton, &request, &requestComplete, &buttonWasDisabledDuringRequest]() {
+                    while (QTcpSocket* socket = m_server.nextPendingConnection()) {
+                        connect(socket, &QTcpSocket::readyRead, socket,
+                                [socket, &request, &requestComplete, &buttonWasDisabledDuringRequest, testButton]() {
+                                    request.append(socket->readAll());
+                                    const int headerEnd = request.indexOf("\r\n\r\n");
+                                    if (headerEnd < 0)
+                                        return;
+                                    int contentLength = 0;
+                                    for (const QByteArray& header : request.left(headerEnd).split('\n')) {
+                                        if (header.toLower().startsWith("content-length:"))
+                                            contentLength = header.mid(header.indexOf(':') + 1).trimmed().toInt();
+                                    }
+                                    if (request.size() < headerEnd + 4 + contentLength)
+                                        return;
+                                    requestComplete = true;
+                                    buttonWasDisabledDuringRequest = !testButton->isEnabled();
+                                    const QByteArray body = R"({"model":"synthetic-fixture-model"})";
+                                    socket->write(
+                                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+                                        QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n" + body);
+                                    socket->disconnectFromHost();
+                                });
+                    }
+                });
 
         QString feedbackTitle;
         QString feedbackText;

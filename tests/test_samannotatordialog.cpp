@@ -1,6 +1,6 @@
-#include "core/io/LabelMeExporter.h"
 #include "core/agent/SamNativeSettings.h"
 #include "core/agent/SamPredictor.h"
+#include "core/io/LabelMeExporter.h"
 #include "core/io/YoloSegExporter.h"
 #include "core/manager/ConfigManager.h"
 #include "core/model/Annotation.h"
@@ -11,13 +11,13 @@
 #include "ui/widgets/AnnotationOverlayWidget.h"
 #include "ui/widgets/HImageWidget.h"
 
-#include <QApplication>
-#include <QCoreApplication>
-#include <QDir>
 #include <QAbstractItemView>
+#include <QApplication>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
@@ -41,15 +41,14 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
-#include <QTimer>
 #include <QTest>
 #include <QThreadPool>
 #include <QTimer>
 #include <QToolButton>
 #include <QtTest/QtTest>
-#include <limits>
 #include <atomic>
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <thread>
 

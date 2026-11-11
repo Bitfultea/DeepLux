@@ -1,6 +1,7 @@
-#include "project_json_test_helpers.h"
-#include <Eigen/Geometry>
 #include "TestPluginRegistry.h"
+#include "project_json_test_helpers.h"
+
+#include <Eigen/Geometry>
 #include <QAbstractItemModel>
 #include <QAction>
 #include <QApplication>
@@ -78,8 +79,8 @@
 #include <core/common/UserManager.h>
 #include <core/common/VarModel.h>
 #include <core/config/SystemConfig.h>
-#include <core/display/DisplayData.h>
 #include <core/deeplux/PayloadTypes.h>
+#include <core/display/DisplayData.h>
 #include <core/engine/FlowExecutionService.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/ConfigManager.h>
@@ -102,11 +103,11 @@
 #include <ui/display/3d/CameraController.h>
 #include <ui/display/3d/Viewport3DContent.h>
 #include <ui/display/DisplayManager.h>
+#include <ui/display/ImageRefreshCoalescer.h>
 #include <ui/panels/DataSourcePanel.h>
 #include <ui/views/CameraSetView.h>
 #include <ui/views/CommunicationSetView.h>
 #include <ui/views/GlobalVarView.h>
-#include <ui/display/ImageRefreshCoalescer.h>
 #include <ui/views/MainWindow.h>
 #include <ui/views/SystemParamView.h>
 #include <ui/widgets/AgentActionLogWidget.h>
@@ -6791,9 +6792,9 @@ void TestMainWindow::testAgentActiveSamCategoryEditConfirmationAndUndo() {
                                               {QStringLiteral("category"), QStringLiteral("temporary label")}});
     QCOMPARE(approvedAdd.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
     QVERIFY(confirmPendingToolsAndWait(controller, approvedAdd.value(QStringLiteral("confirmation"))
-                                               .toObject()
-                                               .value(QStringLiteral("confirmationId"))
-                                               .toString()));
+                                                       .toObject()
+                                                       .value(QStringLiteral("confirmationId"))
+                                                       .toString()));
     QVERIFY(dialog->categories().contains(QStringLiteral("temporary label")));
 
     const QJsonObject sessionPending =
@@ -6825,7 +6826,8 @@ void TestMainWindow::testAgentActiveSamCategoryEditConfirmationAndUndo() {
                                               {QStringLiteral("objectIds"), QJsonArray{object.id}},
                                               {QStringLiteral("label"), QStringLiteral("  temporary label  ")}});
     QCOMPARE(relabel.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
-    QVERIFY(confirmPendingToolsAndWait(controller,
+    QVERIFY(confirmPendingToolsAndWait(
+        controller,
         relabel.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString()));
     QCOMPARE(dialog->session().annotations.first().label, QStringLiteral("temporary label"));
     QCOMPARE(dialog->session().annotations.first().maskRle, object.maskRle);
@@ -7063,9 +7065,9 @@ void TestMainWindow::testAgentSaveActiveSamSessionAsNewFile() {
     if (unwritablePending.value(QStringLiteral("status")) == QLatin1String("pending_confirmation")) {
         QSignalSpy unwritableToolSpy(controller.actor(), &AgentActor::toolExecuted);
         QVERIFY(confirmPendingToolsAndWait(controller, unwritablePending.value(QStringLiteral("confirmation"))
-                                                   .toObject()
-                                                   .value(QStringLiteral("confirmationId"))
-                                                   .toString()));
+                                                           .toObject()
+                                                           .value(QStringLiteral("confirmationId"))
+                                                           .toString()));
         QVERIFY(!unwritableToolSpy.isEmpty());
         QCOMPARE(unwritableToolSpy.last().at(1).toJsonObject().value(QStringLiteral("errorCode")).toString(),
                  QStringLiteral("FILE_WRITE_FAILED"));
@@ -7519,9 +7521,9 @@ void TestMainWindow::testAgentOpenActiveSamSession() {
     const QJsonObject reopenPending = openCall(sessionPath);
     QCOMPARE(reopenPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
     QVERIFY(confirmPendingToolsAndWait(controller, reopenPending.value(QStringLiteral("confirmation"))
-                                               .toObject()
-                                               .value(QStringLiteral("confirmationId"))
-                                               .toString()));
+                                                       .toObject()
+                                                       .value(QStringLiteral("confirmationId"))
+                                                       .toString()));
     QCOMPARE(dialog->session().toJson(), sourceSession.toJson());
     const QString existingCategory =
         dialog->categories().isEmpty() ? QStringLiteral("object") : dialog->categories().first();
@@ -13159,10 +13161,9 @@ void TestMainWindow::testGuiRunSlotsResumePausedModeWithModeSpecificPermission()
         } else {
             QCOMPARE(engine.runMode(), RunMode::RunOnce);
         }
-        const QString stillPausedRunId =
-            testCase.first == RunMode::RunCycle
-                ? FlowExecutionService::instance().activeJobRequestSnapshot().sessionId
-                : engine.runObservation().runId;
+        const QString stillPausedRunId = testCase.first == RunMode::RunCycle
+                                             ? FlowExecutionService::instance().activeJobRequestSnapshot().sessionId
+                                             : engine.runObservation().runId;
         QCOMPARE(stillPausedRunId, pausedRunId);
         QVERIFY(executionLog.isEmpty());
 
@@ -15698,8 +15699,7 @@ void TestMainWindow::testG4AgentBreakpointRunAlternatesGuiAndAgentResumeSameRunI
     QSignalSpy finishedModuleSpy(&engine, &RunEngine::moduleFinished);
     QSignalSpy finishedRunSpy(&engine, &RunEngine::runFinished);
 
-    const QJsonObject start =
-        actor->executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
+    const QJsonObject start = actor->executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
     QCOMPARE(start.value("status").toString(), QStringLiteral("started"));
     QVERIFY(start.value("async").toBool());
     const QString runId = start.value("runId").toString();
@@ -16141,8 +16141,8 @@ void TestMainWindow::testAgentPartialFailureSummaryAppearsInChat() {
     response.toolCalls.append(
         QJsonObject{{QStringLiteral("id"), QStringLiteral("ui_call_started")},
                     {QStringLiteral("name"), QStringLiteral("run_flow")},
-                    {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
-                                                              {QStringLiteral("wait"), false}}}});
+                    {QStringLiteral("arguments"),
+                     QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}}}});
     response.toolCalls.append(
         QJsonObject{{QStringLiteral("id"), QStringLiteral("ui_call_failure")},
                     {QStringLiteral("name"), QStringLiteral("get_run_results")},
@@ -18596,7 +18596,8 @@ void TestMainWindow::testBackgroundExecutionKeepsUiResponsive() {
              "sustained tick growth must be observed while the job is still running");
     // GUI 槽可执行：投递到 GUI 线程的 queued 调用在 job 运行期间被处理。
     std::atomic_bool slotExecuted{false};
-    QMetaObject::invokeMethod(&window, [&slotExecuted]() { slotExecuted.store(true); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(
+        &window, [&slotExecuted]() { slotExecuted.store(true); }, Qt::QueuedConnection);
     QTRY_VERIFY_WITH_TIMEOUT(slotExecuted.load(), 2000);
 
     QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 30000);
@@ -18929,7 +18930,8 @@ void TestMainWindow::testCloseDeferredUntilRunningJobFinishes() {
     QSemaphore jobFinishedSignal;
     const auto finishedConnection = connect(
         &FlowExecutionService::instance(), &FlowExecutionService::jobFinished, &window,
-        [&jobFinishedSignal](FlowExecutionService::JobType, bool) { jobFinishedSignal.release(); }, Qt::DirectConnection);
+        [&jobFinishedSignal](FlowExecutionService::JobType, bool) { jobFinishedSignal.release(); },
+        Qt::DirectConnection);
     struct DisconnectFinishedSignal {
         QMetaObject::Connection connection;
         ~DisconnectFinishedSignal() {

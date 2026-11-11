@@ -2,11 +2,11 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
-#include <QSemaphore>
-#include <QSignalSpy>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSemaphore>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QtTest/QtTest>

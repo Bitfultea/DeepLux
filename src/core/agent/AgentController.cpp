@@ -4,9 +4,9 @@
 #include "AgentAuditLog.h"
 #include "AgentBridge.h"
 #include "AgentObserver.h"
+#include "AgentToolImage.h"
 #include "AnnotationSessionExport.h"
 #include "AnnotationSessionTransform.h"
-#include "AgentToolImage.h"
 #include "GuiEvent.h"
 #include "ILLMClient.h"
 #include "ToolSchema.h"
@@ -2105,28 +2105,64 @@ void AgentController::setLLMClient(ILLMClient* client) {
                     Qt::QueuedConnection);
             connect(m_llmClient, &ILLMClient::errorOccurredClassifiedForRequest, this,
                     &AgentController::onLLMErrorClassifiedForRequest, Qt::QueuedConnection);
-            connect(m_llmClient, &ILLMClient::streamStartedForRequest, this,
-                    [this](const QString& id) { if (id == m_activeLLMRequestId) onStreamStarted(); }, Qt::QueuedConnection);
-            connect(m_llmClient, &ILLMClient::streamContentDeltaForRequest, this,
-                    [this](const QString& id, const QString& value) { if (id == m_activeLLMRequestId) onStreamContentDelta(value); }, Qt::QueuedConnection);
-            connect(m_llmClient, &ILLMClient::streamReasoningDeltaForRequest, this,
-                    [this](const QString& id, const QString& value) { if (id == m_activeLLMRequestId) onStreamReasoningDelta(value); }, Qt::QueuedConnection);
-            connect(m_llmClient, &ILLMClient::streamFinishedForRequest, this,
-                    [this](const QString& id) { if (id == m_activeLLMRequestId) onStreamFinished(); }, Qt::QueuedConnection);
-            connect(m_llmClient, &ILLMClient::streamFailedForRequest, this,
-                    [this](const QString& id) { if (id == m_activeLLMRequestId) onStreamFailed(); }, Qt::QueuedConnection);
-            connect(m_llmClient, &ILLMClient::streamFallbackForRequest, this,
-                    [this](const QString& id, const QString& why) { if (id == m_activeLLMRequestId) onStreamFallback(why); }, Qt::QueuedConnection);
+            connect(
+                m_llmClient, &ILLMClient::streamStartedForRequest, this,
+                [this](const QString& id) {
+                    if (id == m_activeLLMRequestId)
+                        onStreamStarted();
+                },
+                Qt::QueuedConnection);
+            connect(
+                m_llmClient, &ILLMClient::streamContentDeltaForRequest, this,
+                [this](const QString& id, const QString& value) {
+                    if (id == m_activeLLMRequestId)
+                        onStreamContentDelta(value);
+                },
+                Qt::QueuedConnection);
+            connect(
+                m_llmClient, &ILLMClient::streamReasoningDeltaForRequest, this,
+                [this](const QString& id, const QString& value) {
+                    if (id == m_activeLLMRequestId)
+                        onStreamReasoningDelta(value);
+                },
+                Qt::QueuedConnection);
+            connect(
+                m_llmClient, &ILLMClient::streamFinishedForRequest, this,
+                [this](const QString& id) {
+                    if (id == m_activeLLMRequestId)
+                        onStreamFinished();
+                },
+                Qt::QueuedConnection);
+            connect(
+                m_llmClient, &ILLMClient::streamFailedForRequest, this,
+                [this](const QString& id) {
+                    if (id == m_activeLLMRequestId)
+                        onStreamFailed();
+                },
+                Qt::QueuedConnection);
+            connect(
+                m_llmClient, &ILLMClient::streamFallbackForRequest, this,
+                [this](const QString& id, const QString& why) {
+                    if (id == m_activeLLMRequestId)
+                        onStreamFallback(why);
+                },
+                Qt::QueuedConnection);
         } else {
             connect(m_llmClient, &ILLMClient::errorOccurred, this, &AgentController::onLLMError, Qt::QueuedConnection);
             connect(m_llmClient, &ILLMClient::errorOccurredClassified, this, &AgentController::onLLMErrorClassified,
                     Qt::QueuedConnection);
-            connect(m_llmClient, &ILLMClient::streamStarted, this, &AgentController::onStreamStarted, Qt::QueuedConnection);
-            connect(m_llmClient, &ILLMClient::streamContentDelta, this, &AgentController::onStreamContentDelta, Qt::QueuedConnection);
-            connect(m_llmClient, &ILLMClient::streamReasoningDelta, this, &AgentController::onStreamReasoningDelta, Qt::QueuedConnection);
-            connect(m_llmClient, &ILLMClient::streamFinished, this, &AgentController::onStreamFinished, Qt::QueuedConnection);
-            connect(m_llmClient, &ILLMClient::streamFailed, this, &AgentController::onStreamFailed, Qt::QueuedConnection);
-            connect(m_llmClient, &ILLMClient::streamFallback, this, &AgentController::onStreamFallback, Qt::QueuedConnection);
+            connect(m_llmClient, &ILLMClient::streamStarted, this, &AgentController::onStreamStarted,
+                    Qt::QueuedConnection);
+            connect(m_llmClient, &ILLMClient::streamContentDelta, this, &AgentController::onStreamContentDelta,
+                    Qt::QueuedConnection);
+            connect(m_llmClient, &ILLMClient::streamReasoningDelta, this, &AgentController::onStreamReasoningDelta,
+                    Qt::QueuedConnection);
+            connect(m_llmClient, &ILLMClient::streamFinished, this, &AgentController::onStreamFinished,
+                    Qt::QueuedConnection);
+            connect(m_llmClient, &ILLMClient::streamFailed, this, &AgentController::onStreamFailed,
+                    Qt::QueuedConnection);
+            connect(m_llmClient, &ILLMClient::streamFallback, this, &AgentController::onStreamFallback,
+                    Qt::QueuedConnection);
         }
     }
 }
@@ -2253,9 +2289,8 @@ QString AgentController::buildContext() {
                    .arg(proj->modules().size());
         const QList<ModuleInstance> modules = proj->modules();
         QStringList modNames;
-        const int previewCount = modules.size() >= flowSummaryThreshold()
-                                     ? qMin(flowSummaryPreviewCount(), modules.size())
-                                     : modules.size();
+        const int previewCount =
+            modules.size() >= flowSummaryThreshold() ? qMin(flowSummaryPreviewCount(), modules.size()) : modules.size();
         for (int i = 0; i < previewCount; ++i) {
             const ModuleInstance& m = modules.at(i);
             modNames.append(QString("%1(id=%2)").arg(m.moduleId).arg(m.id));
@@ -2429,15 +2464,15 @@ void AgentController::endTurnWithReason(const QString& responseText, const QStri
     if (state() == AgentState::Idle)
         return;
     const bool chatConfirmation = state() == AgentState::Confirming &&
-                                 (m_dispatchQueued ? m_queuedContinueAfterPending : m_continueAfterPendingTools);
+                                  (m_dispatchQueued ? m_queuedContinueAfterPending : m_continueAfterPendingTools);
     if (chatConfirmation) {
         QJsonArray calls = m_pendingToolCalls;
         if (calls.isEmpty() && !m_conversationHistory.isEmpty() &&
             m_conversationHistory.constLast().role == QLatin1String("assistant"))
             calls = m_conversationHistory.constLast().toolCalls;
         appendToolResultsForCalls(calls, QJsonObject{{QStringLiteral("error"), QStringLiteral("User cancelled")},
-                                                    {QStringLiteral("errorCode"), QStringLiteral("USER_CANCELLED")},
-                                                    {QStringLiteral("retryable"), false}});
+                                                     {QStringLiteral("errorCode"), QStringLiteral("USER_CANCELLED")},
+                                                     {QStringLiteral("retryable"), false}});
     }
     ++m_turnGeneration;
     ++m_waitGeneration;
@@ -2532,10 +2567,10 @@ void AgentController::onLLMResponse(const AgentResponse& resp) {
         emit agentStreamTruncated();
         if (!toolCalls.isEmpty()) {
             appendToolResultsForCalls(
-                toolCalls,
-                QJsonObject{{QStringLiteral("error"), QStringLiteral("LLM response was truncated; tool call was not executed")},
-                            {QStringLiteral("errorCode"), QStringLiteral("RESPONSE_TRUNCATED")},
-                            {QStringLiteral("retryable"), false}});
+                toolCalls, QJsonObject{{QStringLiteral("error"),
+                                        QStringLiteral("LLM response was truncated; tool call was not executed")},
+                                       {QStringLiteral("errorCode"), QStringLiteral("RESPONSE_TRUNCATED")},
+                                       {QStringLiteral("retryable"), false}});
         }
         transitionTo(AgentState::Idle);
         emit llmResponseReceived(resp.content, {});
@@ -2888,8 +2923,7 @@ bool AgentController::confirmPendingTools(const QString& confirmationId) {
     QMetaObject::invokeMethod(
         this,
         [this, confirmationId]() {
-            if (!m_dispatchQueued || state() != AgentState::Confirming ||
-                confirmationId != m_pendingConfirmationId)
+            if (!m_dispatchQueued || state() != AgentState::Confirming || confirmationId != m_pendingConfirmationId)
                 return;
 
             const QJsonArray calls = m_pendingToolCalls;
@@ -3270,10 +3304,9 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls, const QString
     QList<ToolOutcome> outcomes;
     outcomes.reserve(parsed.size());
     for (int i = 0; i < parsed.size(); ++i) {
-        QJsonObject result =
-            parsed[i].denied
-                ? deniedToolResult(parsed[i].name, permissionLevelName(m_permissionLevel), m_actor, parsed[i].params)
-                : resultByPosition.value(i);
+        QJsonObject result = parsed[i].denied ? deniedToolResult(parsed[i].name, permissionLevelName(m_permissionLevel),
+                                                                 m_actor, parsed[i].params)
+                                              : resultByPosition.value(i);
         const int durationMs = takeElapsedMs(result);
         outcomes.append({parsed[i].id, parsed[i].name, result, executedByPosition.value(i, false), parsed[i].denied});
         AgentActionLogEntry e;
@@ -3613,7 +3646,6 @@ void AgentController::attachToolImages(const QJsonArray& results) {
                               LogLevel::Info, "Agent");
 }
 
-
 bool AgentController::stripImagesFromLastUserMessage() {
     for (int i = m_conversationHistory.size() - 1; i >= 0; --i) {
         AgentMessage& message = m_conversationHistory[i];
@@ -3625,7 +3657,6 @@ bool AgentController::stripImagesFromLastUserMessage() {
     return false;
 }
 
-
 int AgentController::contextBudgetTokens() const {
     if (m_contextBudgetOverride >= 0)
         return m_contextBudgetOverride;
@@ -3634,7 +3665,6 @@ int AgentController::contextBudgetTokens() const {
                                : 128000;
     return qBound(16000, configured, 1048576);
 }
-
 
 int AgentController::toolResultMaxChars() const {
     if (m_toolResultMaxCharsOverride >= 0)
@@ -3645,7 +3675,6 @@ int AgentController::toolResultMaxChars() const {
     return qBound(1000, configured, 64000);
 }
 
-
 int AgentController::flowSummaryThreshold() const {
     if (m_summaryThresholdOverride >= 0)
         return m_summaryThresholdOverride;
@@ -3655,7 +3684,6 @@ int AgentController::flowSummaryThreshold() const {
     return qBound(1, configured, 1000);
 }
 
-
 int AgentController::flowSummaryPreviewCount() const {
     if (m_summaryPreviewOverride >= 0)
         return m_summaryPreviewOverride;
@@ -3664,7 +3692,6 @@ int AgentController::flowSummaryPreviewCount() const {
                                : 24;
     return qBound(1, configured, 200);
 }
-
 
 void AgentController::setContextLimitsForTest(int budgetTokens, int toolResultMaxChars, int summaryThreshold,
                                               int summaryPreviewCount) {
@@ -3678,7 +3705,6 @@ void AgentController::setContextLimitsForTest(int budgetTokens, int toolResultMa
         m_summaryPreviewOverride = qBound(1, summaryPreviewCount, 200);
 }
 
-
 QString AgentController::truncateToolResult(const QString& json, int maxChars) {
     maxChars = qBound(1000, maxChars, 64000);
     if (json.size() <= maxChars)
@@ -3689,14 +3715,12 @@ QString AgentController::truncateToolResult(const QString& json, int maxChars) {
            json.right(tail);
 }
 
-
 bool AgentController::echoesReasoning() const {
     if (!ConfigManager::instance().isInitialized())
         return false;
     return ConfigManager::instance().groupString("agent", "reasoningEcho", "none").trimmed().toLower() !=
            QStringLiteral("none");
 }
-
 
 qint64 AgentController::estimateTokensFor(const QList<AgentMessage>& messages, const QString& systemPrompt,
                                           bool countReasoning) const {
@@ -3717,12 +3741,10 @@ qint64 AgentController::estimateTokensFor(const QList<AgentMessage>& messages, c
     return estimated;
 }
 
-
 qint64 AgentController::estimateHistoryTokens() {
     // 真实发送的系统提示是 buildContext()（包含 m_systemPrompt 与当前工程摘要）
     return estimateTokensFor(m_conversationHistory, buildContext(), echoesReasoning());
 }
-
 
 void AgentController::repairOrphanToolGroups() {
     QList<AgentMessage> repaired;
@@ -3785,7 +3807,6 @@ void AgentController::repairOrphanToolGroups() {
     m_conversationHistory = repaired;
 }
 
-
 QSet<int> AgentController::protectedHistoryIndices() const {
     QSet<int> protectedIndices;
     int lastRealUser = -1;
@@ -3835,7 +3856,6 @@ QSet<int> AgentController::protectedHistoryIndices() const {
     return protectedIndices;
 }
 
-
 bool AgentController::dropOldestUserTurn() {
     int firstRealUser = -1;
     int secondRealUser = -1;
@@ -3864,7 +3884,6 @@ bool AgentController::dropOldestUserTurn() {
         m_conversationHistory.removeFirst();
     return true;
 }
-
 
 bool AgentController::dropOldestToolGroup() {
     // 从 index=1 起，只删保护集合之外的完整工具组（含其后的自动回灌消息）
@@ -3906,7 +3925,6 @@ bool AgentController::dropOldestToolGroup() {
     return false;
 }
 
-
 void AgentController::trimHistoryIfNeeded() {
     constexpr int kMaxHistoryMessages = 64; // 既有硬上限（设计 §7.6）
     if (m_conversationHistory.isEmpty())
@@ -3934,7 +3952,6 @@ void AgentController::trimHistoryIfNeeded() {
                                                 m_conversationHistory.constFirst().internalAutoInjected))
         m_conversationHistory.removeFirst();
 }
-
 
 bool AgentController::historyPairsValid(QString* error) const {
     QSet<QString> pending;
@@ -3990,7 +4007,6 @@ bool AgentController::historyPairsValid(QString* error) const {
     return true;
 }
 
-
 void AgentController::failContextSend(const QString& code, const QString& detail) {
     const QString message = QStringLiteral("Context send refused (%1); no request was sent: %2").arg(code, detail);
     Logger::instance().addLog(QStringLiteral("[Context] %1").arg(message), LogLevel::Warning, "Agent");
@@ -4004,7 +4020,6 @@ void AgentController::failContextSend(const QString& code, const QString& detail
     transitionTo(AgentState::Idle);
     emit llmErrorOccurred(message);
 }
-
 
 bool AgentController::sendPreparedContext() {
     trimHistoryIfNeeded();
@@ -4041,7 +4056,6 @@ bool AgentController::sendPreparedContext() {
     sendLLMRequest(ctx);
     return true;
 }
-
 
 void AgentController::onGuiEvent(const GuiEvent& event) {
     // AgentObserver DEBUG 镜像日志过于冗余，降级为不输出
@@ -5045,7 +5059,8 @@ QJsonObject AgentController::pendingConfirmationPayload() const {
 
 void AgentController::abortCurrentTurn() {
     const AgentState previous = state();
-    if (previous == AgentState::Idle) return;
+    if (previous == AgentState::Idle)
+        return;
     ++m_turnGeneration;
     ++m_waitGeneration;
     cancelPendingQueries(QStringLiteral("user_cancelled"));
@@ -5065,7 +5080,8 @@ void AgentController::abortCurrentTurn() {
             rejectPendingTools(m_pendingConfirmationId);
     } else {
         if (previous == AgentState::Executing && !m_pendingToolCalls.isEmpty() && m_continueAfterPendingTools)
-            appendToolResultsForCalls(m_pendingToolCalls,
+            appendToolResultsForCalls(
+                m_pendingToolCalls,
                 QJsonObject{{QStringLiteral("errorCode"), QStringLiteral("USER_CANCELLED")},
                             {QStringLiteral("error"), QStringLiteral("Tool execution cancelled by user")},
                             {QStringLiteral("retryable"), false}});
