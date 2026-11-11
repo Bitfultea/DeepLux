@@ -97,6 +97,9 @@ private slots:
     // T2.8（2026-11-10 评审裁定）：token 借用的生命周期契约。
     void testCancellationTokenDetachedAfterExecute();
     void testCancellationTokenDtorLeavesNoDanglingBorrow();
+    // T2.8（2026-11-11 复核 P2 整改）：输入校验早退路径也必须摘除借用。
+    void testCancellationTokenDetachedOnMissingRequiredInput();
+    void testCancellationTokenDetachedOnTypeMismatch();
 
 private:
     TestModule* m_module;
@@ -301,6 +304,86 @@ void TestModuleBase::testCancellationTokenDtorLeavesNoDanglingBorrow() {
              "keeps a dangling pointer");
     QVERIFY2(!module.cancellationRequestedForTest(),
              "querying cancellation after the token died must be safe and report false");
+}
+
+// T2.8（2026-11-11 复核 P2 整改）：输入校验**早退**路径的借用清理。
+//
+// 复核指出的缺口：上一版守卫建立在输入校验之后，而 token 由 RunEngine 在调用
+// execute() 之前就已安装——于是「缺少必需输入（1001）」与「类型不匹配（1002）」
+// 这两条早退路径执行完后借用仍然存在，只有合法执行才会清除。
+//
+// 这两条用例按**真实调用顺序**构造：先 setCancellationToken()（模拟 RunEngine 的
+// 提前安装），再让 execute() 在校验处早退，最后断言借用已被摘除。
+// 这样即使某个未来实现把守卫又挪回校验之后，本用例也会立即失败。
+
+namespace {
+
+// 给模块配置一个必需的类型化输入端口，用于制造两类校验失败。
+void configureRequiredIntPort(ModuleBase& module) {
+    PortSpec in;
+    in.id = QStringLiteral("count");
+    in.displayName = QStringLiteral("Count");
+    in.type = DataType::Integer;
+    in.required = true;
+    module.setPorts({in}, {});
+}
+
+} // namespace
+
+void TestModuleBase::testCancellationTokenDetachedOnMissingRequiredInput() {
+    TestModule module;
+    QVERIFY(module.initialize());
+    configureRequiredIntPort(module);
+
+    CancellationToken token;
+
+    // 真实调用顺序：RunEngine 在进入 execute() 之前就装好了 token。
+    module.setCancellationToken(&token);
+    QVERIFY2(module.cancellationToken() == &token, "the pre-installed borrow must be observable first");
+
+    PortValueMap inputs; // 故意不提供必需端口 "count"
+    PortValueMap outputs;
+    ExecutionContext ctx;
+    ctx.cancellationToken = &token;
+
+    const ExecutionResult result = module.execute(inputs, outputs, ctx);
+
+    // 先确认确实走的是「缺少必需输入」早退路径，否则本用例测不到目标分支。
+    QVERIFY2(!result.success, "a missing required input must fail");
+    QCOMPARE(result.errorCode, static_cast<int>(ExecError::MissingRequiredInput));
+    QVERIFY2(!module.m_processCalled, "the early return must happen before process() runs");
+
+    // 核心：早退路径也必须摘除借用。
+    QVERIFY2(module.cancellationToken() == nullptr,
+             "the borrow must be detached on the missing-required-input early return; "
+             "otherwise every invalid call leaks an entry into the global table");
+}
+
+void TestModuleBase::testCancellationTokenDetachedOnTypeMismatch() {
+    TestModule module;
+    QVERIFY(module.initialize());
+    configureRequiredIntPort(module);
+
+    CancellationToken token;
+    module.setCancellationToken(&token);
+    QVERIFY2(module.cancellationToken() == &token, "the pre-installed borrow must be observable first");
+
+    PortValueMap inputs;
+    // "count" 声明为 Int，这里给 QString —— 触发类型不匹配早退。
+    inputs.insert(QStringLiteral("count"), QVariant(QStringLiteral("not-an-int")));
+    PortValueMap outputs;
+    ExecutionContext ctx;
+    ctx.cancellationToken = &token;
+
+    const ExecutionResult result = module.execute(inputs, outputs, ctx);
+
+    QVERIFY2(!result.success, "a type mismatch must fail");
+    QCOMPARE(result.errorCode, static_cast<int>(ExecError::TypeMismatch));
+    QVERIFY2(!module.m_processCalled, "the early return must happen before process() runs");
+
+    QVERIFY2(module.cancellationToken() == nullptr,
+             "the borrow must be detached on the type-mismatch early return; "
+             "otherwise every invalid call leaks an entry into the global table");
 }
 
 QTEST_MAIN(TestModuleBase)
