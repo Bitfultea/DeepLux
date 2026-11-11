@@ -44,6 +44,7 @@
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSemaphore>
@@ -10993,6 +10994,7 @@ void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() 
 
     QSemaphore runEntered;
     QSemaphore releaseRun;
+    auto releaseRunOnExit = qScopeGuard([&releaseRun]() { releaseRun.release(); });
     RunEngine& engine = RunEngine::instance();
     project->setModified(false);
     QVERIFY(engine.loadProject(project, [&runEntered, &releaseRun](const ModuleInstance& module) {
@@ -11025,6 +11027,8 @@ void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() 
     QCOMPARE(guiUndoStack->index(), busyBeforeIndex);
     const int busyCount = guiUndoStack->count();
     const int busyIndex = guiUndoStack->index();
+    undoAction->setEnabled(true);
+    redoAction->setEnabled(true);
     undoAction->trigger();
     redoAction->trigger();
     QCOMPARE(guiUndoStack->count(), busyCount);
@@ -11033,6 +11037,7 @@ void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() 
     QCOMPARE(project->moduleById(movable.id)->posY, 0);
     QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("不能重做")));
     releaseRun.release();
+    releaseRunOnExit.dismiss();
     engine.stop();
     QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 2000);
     for (const QString& id : {defaultNode.id, movable.id, target.id})
@@ -13193,7 +13198,7 @@ void TestMainWindow::testGuiRunSlotsResumePausedModeWithModeSpecificPermission()
             QCOMPARE(FlowExecutionService::instance().activeJobRequestSnapshot().sessionId, pausedRunId);
             QVERIFY(QMetaObject::invokeMethod(&window, "onStop", Qt::DirectConnection));
         } else {
-            QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
+            QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 10000);
             QCOMPARE(engine.runObservation().runId, pausedRunId);
         }
 

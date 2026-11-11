@@ -16,6 +16,7 @@
 #include <QTreeWidget>
 #include <QWidget>
 #include <QtTest/QTest>
+#include <core/common/UserManager.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>
@@ -877,6 +878,7 @@ int main(int argc, char** argv) {
     }
 
     DeepLux::MainWindow window;
+    DeepLux::UserManager::instance().login(QStringLiteral("developer"), QString());
     bool ok = true;
 
     // 收尾2: 加载并运行找圆验收工程，使截图带真实结果（结果叠加/节点状态/检查器）

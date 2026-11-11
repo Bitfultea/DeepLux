@@ -1,6 +1,7 @@
 #if defined(_WIN32)
-#ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0600
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0602
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x0602
 #endif
 #ifndef NOMINMAX
 #define NOMINMAX

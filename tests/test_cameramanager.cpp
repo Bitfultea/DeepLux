@@ -702,8 +702,15 @@ void TestCameraManager::init() {
 void TestCameraManager::cleanup() {
     CameraManager& manager = CameraManager::instance();
     manager.disconnectAll();
-    for (const QString& id : m_registeredIds)
-        manager.tryUnregisterCameraPlugin(id);
+    QElapsedTimer deadline;
+    deadline.start();
+    while (manager.pendingDiscoveryCount() > 0 && deadline.elapsed() < 5000)
+        QTest::qWait(10);
+    for (const QString& id : m_registeredIds) {
+        QString error;
+        if (!manager.tryUnregisterCameraPlugin(id, &error) && error != QLatin1String("CAMERA_PLUGIN_NOT_FOUND"))
+            qFatal("CameraManager test cleanup could not unregister %s: %s", qPrintable(id), qPrintable(error));
+    }
 }
 
 void TestCameraManager::testRefreshCamerasReturnsWithoutPlugins() {
@@ -2706,6 +2713,7 @@ void TestCameraManager::testAsyncAgentCameraParameterWriteContract() {
     parameterView.close();
     manager.disconnectAll();
     QTRY_COMPARE_WITH_TIMEOUT(manager.cameraSessionCount(), 0, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(manager.pendingDiscoveryCount(), 0, 5000);
     QString error;
     QVERIFY(manager.tryUnregisterCameraPlugin(plugin.pluginId(), &error));
     m_registeredIds.removeAll(plugin.pluginId());

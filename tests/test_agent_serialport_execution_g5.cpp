@@ -1189,15 +1189,15 @@ private slots:
         QVERIFY(approvedId != rejectedId);
         QVERIFY(controller.confirmPendingTools(approvedId));
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 1, 5000);
-        QVERIFY(peer.waitForReply(5000));
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
+        const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
+        QVERIFY2(result.success, qPrintable(result.errorMessage));
+        QVERIFY(peer.waitForReply(5000));
         const QJsonObject stepResult = toolExecuted.last().at(1).toJsonObject();
         QCOMPARE(stepResult.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
         const QString runId = stepResult.value(QStringLiteral("runId")).toString();
         QVERIFY(!runId.isEmpty());
-        const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(result.runId, runId);
-        QVERIFY2(result.success, qPrintable(result.errorMessage));
         QCOMPARE(peer.received(), request);
         QCOMPARE(peer.replyCount(), 1);
         QCOMPARE(moduleSignalCount(moduleStarted, instanceId), 1);
