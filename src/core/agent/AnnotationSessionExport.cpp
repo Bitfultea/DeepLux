@@ -27,6 +27,7 @@
 #include <QTemporaryFile>
 #include <algorithm>
 #include <cerrno>
+#include <cstddef>
 #include <cstring>
 #include <new>
 
@@ -366,30 +367,57 @@ bool publishNoReplace(const QString& temporaryPath, const QString& outputPath, c
     }
 
     const QString fileName = QFileInfo(outputPath).fileName();
-    const USHORT fileNameBytes = static_cast<USHORT>(fileName.size() * sizeof(wchar_t));
-    const size_t linkInfoSize = sizeof(FILE_LINK_INFO) + fileNameBytes;
-    auto* linkInfo = static_cast<FILE_LINK_INFO*>(::operator new(linkInfoSize, std::nothrow));
+    struct FileLinkInformationBuffer {
+        BOOLEAN replaceIfExists;
+        HANDLE rootDirectory;
+        ULONG fileNameLength;
+        WCHAR fileName[1];
+    };
+    struct NativeIoStatusBlock {
+        union {
+            LONG status;
+            void* pointer;
+        };
+        ULONG_PTR information;
+    };
+    using NtSetInformationFileFunction = LONG(NTAPI*)(HANDLE, NativeIoStatusBlock*, void*, ULONG, ULONG);
+
+    const ULONG fileNameBytes = static_cast<ULONG>(fileName.size() * sizeof(wchar_t));
+    const size_t linkInfoSize = offsetof(FileLinkInformationBuffer, fileName) + fileNameBytes;
+    auto* linkInfo = static_cast<FileLinkInformationBuffer*>(::operator new(linkInfoSize, std::nothrow));
     if (!linkInfo) {
         CloseHandle(sourceHandle);
         CloseHandle(parentHandle);
         *errorCode = QStringLiteral("FILE_WRITE_FAILED");
         return false;
     }
-    linkInfo->ReplaceIfExists = FALSE;
-    linkInfo->RootDirectory = parentHandle;
-    linkInfo->FileNameLength = fileNameBytes;
-    std::memcpy(linkInfo->FileName, fileName.utf16(), fileNameBytes);
-    const bool linked =
-        SetFileInformationByHandle(sourceHandle, FileLinkInfo, linkInfo, static_cast<DWORD>(linkInfoSize)) != 0;
-    const DWORD linkError = linked ? ERROR_SUCCESS : GetLastError();
+    linkInfo->replaceIfExists = FALSE;
+    linkInfo->rootDirectory = parentHandle;
+    linkInfo->fileNameLength = fileNameBytes;
+    std::memcpy(linkInfo->fileName, fileName.utf16(), fileNameBytes);
+
+    // shortcut: NtSetInformationFile is undocumented for apps; retain the directory handle until Win32 exposes rooted
+    // hard-link creation.
+    const auto setInformationFile = reinterpret_cast<NtSetInformationFileFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSetInformationFile"));
+    if (!setInformationFile) {
+        ::operator delete(linkInfo);
+        CloseHandle(sourceHandle);
+        CloseHandle(parentHandle);
+        *errorCode = QStringLiteral("FILE_WRITE_FAILED");
+        return false;
+    }
+    NativeIoStatusBlock ioStatus{};
+    constexpr ULONG fileLinkInformationClass = 11;
+    const LONG linkStatus = setInformationFile(sourceHandle, &ioStatus, linkInfo, static_cast<ULONG>(linkInfoSize),
+                                               fileLinkInformationClass);
     ::operator delete(linkInfo);
     CloseHandle(sourceHandle);
     CloseHandle(parentHandle);
-    if (linked)
+    if (linkStatus >= 0)
         return true;
-    *errorCode = (linkError == ERROR_ALREADY_EXISTS || linkError == ERROR_FILE_EXISTS)
-                     ? QStringLiteral("OUTPUT_EXISTS")
-                     : QStringLiteral("FILE_WRITE_FAILED");
+    *errorCode = (static_cast<ULONG>(linkStatus) == 0xC0000035u) ? QStringLiteral("OUTPUT_EXISTS")
+                                                                 : QStringLiteral("FILE_WRITE_FAILED");
     return false;
 #else
     Q_UNUSED(temporaryPath)
