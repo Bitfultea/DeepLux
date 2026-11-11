@@ -151,21 +151,44 @@ private:
     // 由调用方明确拒绝本次启动；线程指针**仍由本服务持有**（见 m_retiringThreads），
     // 等它真正退出后再 delete，既不 detach 也不泄漏，更不阻塞 GUI。
     // 返回 true 表示旧线程已真正退出并被 delete。
+    //
+    // **调用前置条件（第四次整改）**：线程必须已经在**锁内**登记进 m_inflightReclaim，
+    // 否则「摘下 m_thread → 锁外等待」之间会出现所有权不可见的窗口（见 .cpp 注释）。
     bool retireWorkerThreadBounded(WorkerThread* thread, int budgetMs);
 
     /// T2.5 P1 第三轮（2026-11-11 二次复核 P1）：把当前仍未退出的 worker 全部摘到
     /// `retiring` 中交回调用方，供 shutdown()/析构在**锁外**逐个 joinWorkerThread()。
     /// 覆盖 m_thread 与所有由有界回收移交的旧 worker —— 后者此前被交给 detached
     /// 回收线程，脱离了 Service 的所有权，导致 shutdown() 漏等、提前报告成功。
-    void detachLiveWorkerThreadsLocked(QList<WorkerThread*>& retiring);
+    /// 返回值：摘出的线程数（**不含**仍在途回收中的线程）。
+    int detachLiveWorkerThreadsLocked(QList<WorkerThread*>& retiring);
+
+    /// T2.5 P1 第四次整改（2026-11-11 复核 P1）：把某条线程**在锁内**标记为「在途回收」。
+    ///
+    /// 这是本轮缺陷的核心修正点：旧实现先在锁内 `m_thread = nullptr`，再到锁外
+    /// `thread->wait(budget)`，最后才登记进 m_retiringThreads。这三步之间线程只存在于
+    /// 调用线程的栈上，Service 可见结构里没有它——并发 shutdown() 会认为「没有未退出
+    /// worker」而立即返回 true，破坏「返回 true 即可安全销毁 worker 所访问对象」。
+    /// 现在把「摘除 + 标记在途」放进同一次加锁，窗口消失。
+    void beginInflightReclaimLocked(WorkerThread* thread);
 
     mutable QMutex m_mutex;
     QWaitCondition m_wake;
+    /// 在途回收的等待条件（与 m_wake 分开，避免把 job 通知误唤醒/误判）。
+    QWaitCondition m_reclaimWake;
     WorkerThread* m_thread = nullptr;
     /// 启动路径有界回收**移交**给本服务的旧 worker：已不再消费命令、尚未真正退出。
     /// 由 m_mutex 保护；shutdown()/析构必须覆盖它们，否则「shutdown 成功后可以销毁
     /// worker 所访问对象」的保证不成立。
     QList<WorkerThread*> m_retiringThreads;
+    /// 正在被某个线程做**有界回收**（已摘出 m_thread、正在锁外 wait）的 worker。
+    ///
+    /// 与 m_retiringThreads 的区别：retiring 是「回收已放弃、所有权完全交给 Service」，
+    /// inflight 是「某线程正在等它，但它同样**必须**被 shutdown() 看见」。两者都计入
+    /// detachLiveWorkerThreadsLocked()，只是 inflight 需要先中止等待再收归。
+    QList<WorkerThread*> m_inflightReclaim;
+    /// 有线程正在 shutdown()/析构中收归 worker（用于回收线程让出所有权）。
+    bool m_reclaimAborted = false;
     bool m_quitRequested = false;
     bool m_stopRequested = false;
     bool m_pauseRequested = false;
