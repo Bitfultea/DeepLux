@@ -5,7 +5,9 @@
 #include <QElapsedTimer>
 #include <QMutexLocker>
 #include <QThread>
+#include <atomic>
 #include <exception>
+#include <thread>
 
 namespace DeepLux {
 
@@ -117,6 +119,36 @@ FlowExecutionService::~FlowExecutionService() {
     }
 }
 
+bool FlowExecutionService::retireWorkerThreadBounded(WorkerThread* thread, int budgetMs) {
+    if (!thread) {
+        return true;
+    }
+    if (thread->wait(static_cast<unsigned long>(qMax(0, budgetMs)))) {
+        delete thread;
+        return true;
+    }
+    // 预算内未退出：**不阻塞调用线程**。线程已由 enqueue() 从 m_thread 摘下，这里把它
+    // 交给一个自持有指针的收尾线程等待其真正退出后 delete。
+    //
+    // 为什么不是 joinWorkerThread()：那条路径在诊断阈值之后会无条件 thread->wait()，
+    // 无限期阻塞——挂在 GUI 线程的 startSingle() 上就会绕过 StartHandshakeTimeoutMs
+    // 的 100ms 上限，把「启动失败可预期、可拒绝」变成「GUI 卡住」。
+    //
+    // 为什么不能 detach 或直接 delete：worker 仍在 run() 内并可能访问本服务与模块。
+    // 因此保留 join 语义（等它真正退出再 delete），只是把**等待者**从 GUI 线程
+    // 挪到一个非 GUI 的收尾线程，GUI 立即返回明确的拒绝。
+    m_shutdownDeadlineHits.fetch_add(1, std::memory_order_relaxed);
+    Logger::instance().warning(QString("Flow start rejected: previous worker still exiting after %1 ms; "
+                                       "reclaim deferred to a background reaper (no detach, job not enqueued)")
+                                   .arg(budgetMs),
+                               "Service");
+    std::thread([thread]() {
+        thread->wait();
+        delete thread;
+    }).detach();
+    return false;
+}
+
 void FlowExecutionService::joinWorkerThread(WorkerThread* thread) {
     if (!thread) {
         return;
@@ -162,12 +194,23 @@ bool FlowExecutionService::enqueue(JobType job) {
     // isFinished() 快照判断是否回收，会跳过回收、把命令写进一个再也不会消费队列的线程，
     // 最终只能等到握手超时失败（独立复现：标准异常 19/200、非标准 3/200、复跑 28/200）。
     //
-    // 现在的做法：循环「摘指针 → 锁外 join 回收 → 锁内重建」，直到拿到一个真正可用
+    // 现在的做法：循环「摘指针 → 锁外有界回收 → 回顶部重判」，直到拿到一个真正可用
     // （既未 retiring、也未结束）的线程或确实完成了重建。判定不再是一次快照，而是
     // 与线程自标记的 retiring 状态配合，覆盖「通知已发出、线程尚未退出」的整个窗口。
-    // 回收始终在锁外：join 会阻塞到线程真正退出，持锁 join 会卡死所有服务入口。
-    // 这里只摘指针、不提前放弃 join 语义——旧线程一定由 joinWorkerThread() 等它真正
-    // 退出后 delete，绝不 detach/terminate。
+    //
+    // **2026-11-11 复核 P1 整改**：本循环的等待必须与启动预算是同一个界。此前调用
+    // joinWorkerThread()，它在诊断阈值之后会无条件 thread->wait()，可无限延长——
+    // 且发生在下面的 StartHandshakeTimeoutMs 计时**之前**，等于绕过启动上限把
+    // GUI 线程卡死（评审独立观测：退出延迟 500ms → startSingle() 阻塞 500ms，超过
+    // 100ms 预算）。现在改为有界回收，预算用尽即**明确拒绝**本次启动：
+    //   - 不返回 true：调用方不会以为已启动；
+    //   - 不入队：m_pendingJob 从不置位，绝不会「迟到执行」；
+    //   - 不阻塞：旧线程交给后台收尾线程等它真正退出后 delete（仍不 detach、
+    //     不 terminate，join 语义保留）；
+    //   - 旧线程退出后再次调用即可成功——无需手动 shutdown()。
+    QElapsedTimer startTimer;
+    startTimer.start();
+
     for (;;) {
         WorkerThread* retired = nullptr;
         {
@@ -182,9 +225,11 @@ bool FlowExecutionService::enqueue(JobType job) {
         if (!retired) {
             break; // 没有待回收线程：走正常入队
         }
-        // 锁外 join：joinWorkerThread() 会等到 run() 真正返回后 delete 该线程。
-        // 这正是「等待旧线程退出」的界，而不是依赖某一次 isFinished() 快照。
-        joinWorkerThread(retired);
+        // 锁外有界回收：剩余预算内等它真正退出则 delete；否则交给后台收尾线程并拒绝本次启动。
+        const int reclaimBudget = StartHandshakeTimeoutMs - static_cast<int>(startTimer.elapsed());
+        if (!retireWorkerThreadBounded(retired, qMax(0, reclaimBudget))) {
+            return false;
+        }
         // 回收完成后再回到循环顶部重新判定：期间若又发生自退出，仍会被识别。
     }
 
@@ -204,10 +249,10 @@ bool FlowExecutionService::enqueue(JobType job) {
     // startX() 返回 true 时引擎 isBusy() 已为真（兼容 Agent/UI 的“started 即忙”语义）。
     // B7：GUI 线程等待上限固定为 StartHandshakeTimeoutMs——启动路径（含 closeEvent 期间
     // 的重试）不得被 5s 阻塞；超时后必须撤回/停止该次启动，不能留下稍后执行的 pending。
-    QElapsedTimer handshakeTimer;
-    handshakeTimer.start();
+    // 2026-11-11 P1：计时器与上面的回收共用一个（startTimer），回收已花掉的预算从
+    // 握手中扣除——总等待仍不超过 StartHandshakeTimeoutMs，而不是两段各自 100ms。
     while (!m_startSettled) {
-        const int remaining = StartHandshakeTimeoutMs - static_cast<int>(handshakeTimer.elapsed());
+        const int remaining = StartHandshakeTimeoutMs - static_cast<int>(startTimer.elapsed());
         if (remaining <= 0) {
             const bool withdrawn = (m_pendingJob == job);
             if (withdrawn) {

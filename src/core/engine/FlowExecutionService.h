@@ -142,8 +142,15 @@ private:
     // 保证 startX() 返回 true 时 isBusy() 已为真（兼容 Agent/UI 的“started 即忙”语义）。
     void settleStart(bool ok);
     // T2.1：有界诊断等待后继续 join；绝不 detach/terminate，保证 worker 访问的对象
-    // 一定 outlive 线程。
+    // 一定 outlive 线程。**仅用于析构/shutdown 等允许长期等待的收尾路径。**
     void joinWorkerThread(WorkerThread* thread);
+    // T2.5 P1 二次整改（2026-11-11 复核 P1）：启动路径专用的**有界**回收。
+    //
+    // 与 joinWorkerThread() 的区别：本函数在 budgetMs 用尽时放弃等待并返回 false，
+    // 由调用方明确拒绝本次启动；线程指针仍被摘下并由本函数持有的调用方在后台继续
+    // 等待（见实现），既不 detach 也不泄漏，更不阻塞 GUI。
+    // 返回 true 表示旧线程已真正退出并被 delete。
+    bool retireWorkerThreadBounded(WorkerThread* thread, int budgetMs);
 
     mutable QMutex m_mutex;
     QWaitCondition m_wake;
