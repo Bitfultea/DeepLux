@@ -191,7 +191,6 @@ void seedAgentChatDemo(DeepLux::MainWindow& window) {
 // currentIndex、控件可见性、关闭后状态与前后截图差异。
 bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
     bool ok = true;
-    qInfo("[ui_capture] clicked states starting");
 
     // 01: 紧凑窗口初始态（1024）
     window.resize(QSize(1024, 700));
@@ -199,7 +198,6 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
     QCoreApplication::processEvents();
     QTest::qWait(300);
     ok = saveShot(window, dir, QStringLiteral("01-initial-1024.png")) && ok;
-    qInfo("[ui_capture] clicked states initial screenshot done");
 
     // 固定初始状态：加宽窗口使自适应布局不再隐藏工具面板（阈值 1100）
     window.resize(QSize(1280, 800));
@@ -248,7 +246,6 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
         return false;
     QTest::qWait(150);
     ok = saveShot(window, dir, QStringLiteral("03-process-datasource-tab.png")) && ok;
-    qInfo("[ui_capture] clicked states process tabs done");
 
     // 09: 展开工具分类图标——断言树可见、确有分类被展开、且截图相对展开前变化。
     // 置于页签截图之后：此时工具树尚未展开，09 与 02/03 的内容必然不同。
@@ -281,7 +278,6 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
         qWarning("tool tree expansion did not change appearance (mean diff %.2f)", expandDiff);
         return false;
     }
-    qInfo("[ui_capture] clicked states tool expansion done");
 
     // 04/05/06: 底部页签（终端 / Agent 对话 / Agent 日志）
     QTabWidget* bottomTabs = tabsByName(window, "LogTerminalTabs");
@@ -293,15 +289,12 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
         return false;
     QTest::qWait(150);
     ok = saveShot(window, dir, QStringLiteral("04-bottom-terminal-tab.png")) && ok;
-    qInfo("[ui_capture] clicked states terminal tab done");
 
     seedAgentChatDemo(window);
-    qInfo("[ui_capture] clicked states agent chat seeded");
     if (!clickTabChecked(bottomTabs, QStringLiteral("Agent 对话"), "05-bottom-agent-chat-tab"))
         return false;
     QTest::qWait(150);
     ok = saveShot(window, dir, QStringLiteral("05-bottom-agent-chat-tab.png")) && ok;
-    qInfo("[ui_capture] clicked states agent chat tab done");
 
     auto* agentPanel = window.findChild<DeepLux::AgentChatPanel*>();
     auto* expandChat = window.findChild<QToolButton*>(QStringLiteral("ExpandAgentChatButton"));
@@ -318,7 +311,6 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
         return false;
     }
     ok = saveShot(window, dir, QStringLiteral("05b-bottom-agent-chat-expanded.png")) && ok;
-    qInfo("[ui_capture] clicked states agent chat expanded");
 
     if (!clickTabChecked(bottomTabs, QStringLiteral("Agent 日志"), "06-bottom-agent-log-tab"))
         return false;
@@ -328,7 +320,6 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
     }
     QTest::qWait(150);
     ok = saveShot(window, dir, QStringLiteral("06-bottom-agent-log-tab.png")) && ok;
-    qInfo("[ui_capture] clicked states agent log tab done");
 
     // 07: "切换主题"动作位于"视图"菜单而非主工具栏：按文本查找 QAction 并 trigger，
     // 且断言外观真实变化，避免"动作未生效但截图非空白"的假阳性。
@@ -353,7 +344,6 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
         return false;
     }
     ok = saveShot(window, dir, QStringLiteral("07-theme-toggle.png")) && ok;
-    qInfo("[ui_capture] clicked states theme toggle done");
 
     // 08: 关闭工具面板——前置断言面板在打开态，点击关闭按钮后断言
     // dock 隐藏、"视图→工具"动作取消勾选、且截图相对关闭前真实变化。
@@ -380,15 +370,12 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
     const QImage afterClose = window.grab().toImage();
     if (!afterClose.save(closedCapture) || !verifyCapture(closedCapture, afterClose.size()))
         return false;
-    qInfo("[ui_capture] clicked states tool close done");
     const double closeDiff = meanAbsDiff(beforeClose, afterClose);
-    qInfo("[ui_capture] clicked states close diff calculated=%g", closeDiff);
     if (closeDiff < 1.0) {
         qWarning("closing tool panel did not change appearance (mean diff %.2f)", closeDiff);
         return false;
     }
 
-    qInfo("[ui_capture] clicked states returning success=%d", ok);
     return ok;
 }
 
@@ -510,7 +497,6 @@ bool captureCropConfigDialog(const QString& repoRoot, const QString& pluginTempR
     cropInst.name = QStringLiteral("图像裁剪");
     project->addModule(cropInst);
     QCoreApplication::processEvents();
-    qInfo("[ui_capture] CropImage module added");
 
     window.selectModuleForCapture(cropInst.id);
 
@@ -523,20 +509,14 @@ bool captureCropConfigDialog(const QString& repoRoot, const QString& pluginTempR
                 modal->reject();
             return;
         }
-        qInfo("[ui_capture] CropImage config dialog opened");
         dialog->resize(560, 480);
         QCoreApplication::processEvents();
-        qInfo("[ui_capture] CropImage config screenshot grabbing");
         saved = dialog->grab().save(dir.filePath(QStringLiteral("11-cropimage-config-dialog.png")));
-        qInfo("[ui_capture] CropImage config screenshot saved=%d", saved);
         dialog->reject();
-        qInfo("[ui_capture] CropImage config dialog rejected");
     });
 
-    qInfo("[ui_capture] CropImage config invoke starting");
     const bool invoked = QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig", Qt::DirectConnection,
                                                    Q_ARG(QString, cropInst.id));
-    qInfo("[ui_capture] CropImage config invoke returned=%d", invoked);
     QTest::qWait(180);
     return invoked && saved;
 }
@@ -710,24 +690,17 @@ int main(int argc, char** argv) {
         ok = false;
     }
 
-    QTimer::singleShot(800, [&]() {
-        ok = captureFormalSizes(window, dir) && ok;
-        // 带真实结果的桌面/紧凑截图（验收运行成功后）
-        if (ranAcceptance) {
-            ok = captureWindow(window, QSize(1920, 1080), dir.filePath("findcircle_desktop_result.png")) && ok;
-            ok = captureWindow(window, QSize(1280, 800), dir.filePath("findcircle_compact_result.png")) && ok;
-        }
-        ok = captureWindow(window, QSize(1440, 900), dir.filePath("deeplux_mainwindow_1440x900.png")) && ok;
-        ok = captureWindow(window, QSize(1024, 700), dir.filePath("deeplux_mainwindow_1024x700.png")) && ok;
-        ok = capturePluginConfigDialog(window, dir) && ok;
-        ok = captureCropConfigDialog(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
-        ok = captureClickedStates(window, dir) && ok;
-        qInfo("[ui_capture] all captures returned success=%d", ok);
-        app.quit();
-        qInfo("[ui_capture] quit requested");
-    });
-
-    app.exec();
-    qInfo("[ui_capture] event loop returned");
+    QTest::qWait(800);
+    ok = captureFormalSizes(window, dir) && ok;
+    // 带真实结果的桌面/紧凑截图（验收运行成功后）
+    if (ranAcceptance) {
+        ok = captureWindow(window, QSize(1920, 1080), dir.filePath("findcircle_desktop_result.png")) && ok;
+        ok = captureWindow(window, QSize(1280, 800), dir.filePath("findcircle_compact_result.png")) && ok;
+    }
+    ok = captureWindow(window, QSize(1440, 900), dir.filePath("deeplux_mainwindow_1440x900.png")) && ok;
+    ok = captureWindow(window, QSize(1024, 700), dir.filePath("deeplux_mainwindow_1024x700.png")) && ok;
+    ok = capturePluginConfigDialog(window, dir) && ok;
+    ok = captureCropConfigDialog(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
+    ok = captureClickedStates(window, dir) && ok;
     return ok ? 0 : 1;
 }
