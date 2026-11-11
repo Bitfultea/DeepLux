@@ -117,6 +117,31 @@ void ModuleBase::setPorts(const QList<PortSpec>& inputs, const QList<PortSpec>& 
 }
 
 ExecutionResult ModuleBase::execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) {
+    // T2.8（2026-11-10 裁定；2026-11-11 复核 P2 整改）：token 与「本次执行」同生命周期，
+    // 必须在**函数入口**就建立守卫，退出时无条件摘除。
+    //
+    // 复核指出的缺陷：上一版把守卫放在输入校验**之后**，而 token 的安装并没有提前——
+    // 于是「缺少必需输入（1001）」「类型不匹配（1002）」这两类早退路径绕过了守卫：
+    // 条目已写入借用表却永不摘除，执行结束后仍留存。更严重的是 RunEngine 会在调用
+    // execute() **之前**先 setCancellationToken()，那些早退路径连"安装"都发生在守卫之外。
+    //
+    // 现在的做法：安装与守卫都放在最前面，覆盖函数**全部**出口（含所有校验早退）。
+    // 守卫只在本次确实安装了 token 时还原，避免抹掉别人装的 token。
+    if (context.cancellationToken) {
+        setCancellationToken(context.cancellationToken);
+    }
+    const bool tokenInstalledHere = (context.cancellationToken != nullptr);
+    const struct CancellationTokenScopeGuard {
+        ModuleBase* self;
+        bool armed;
+        ~CancellationTokenScopeGuard() {
+            if (armed) {
+                self->setCancellationToken(nullptr);
+            }
+        }
+    } cancellationScope{this, tokenInstalledHere};
+    Q_UNUSED(cancellationScope);
+
     // 提取 Image2D 载体：优先 "image" 端口，其次任一可转换值
     ImageData input;
     if (inputs.contains(QStringLiteral("image")) && inputs.value(QStringLiteral("image")).canConvert<ImageData>()) {
@@ -192,33 +217,6 @@ ExecutionResult ModuleBase::execute(const PortValueMap& inputs, PortValueMap& ou
         if (it.key() != QLatin1String("image"))
             input.setData(it.key(), it.value());
     }
-
-    if (context.cancellationToken) {
-        setCancellationToken(context.cancellationToken);
-    }
-
-    // T2.8（2026-11-10 评审裁定）：token 与「本次执行」同生命周期，退出时必须就地摘除。
-    //
-    // 此前只设不清：全局表在第一次执行后永久留存调用方传入的裸指针，而
-    // CancellationToken 自身没有析构清理（ModuleBase 析构只删自己那条记录）。一旦 token
-    // 先于模块销毁——例如 RunEngine 析构后模块仍存活——表里就是悬垂指针，而
-    // DelayPlugin/FitPlanePlugin/FitEllipsePlugin 等仍会在 isCancellationRequested()
-    // 中解引用它。本次整改把「执行期借用」明确限定在本次 execute() 内：
-    // 本函数有 7 个提前 return，故用作用域守卫而不是逐出口手工清表，避免漏路径。
-    //
-    // 只在本次确实安装了 token 时还原：nullptr 表示「本模块此前没有 token」，此时
-    // 不应把别人装的 token 顺手抹掉。
-    const bool tokenInstalledHere = (context.cancellationToken != nullptr);
-    const struct CancellationTokenScopeGuard {
-        ModuleBase* self;
-        bool armed;
-        ~CancellationTokenScopeGuard() {
-            if (armed) {
-                self->setCancellationToken(nullptr);
-            }
-        }
-    } cancellationScope{this, tokenInstalledHere};
-    Q_UNUSED(cancellationScope);
 
     ImageData output;
     const bool success = execute(input, output);
