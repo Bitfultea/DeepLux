@@ -382,11 +382,13 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
         return false;
     qInfo("[ui_capture] clicked states tool close done");
     const double closeDiff = meanAbsDiff(beforeClose, afterClose);
+    qInfo("[ui_capture] clicked states close diff calculated=%g", closeDiff);
     if (closeDiff < 1.0) {
         qWarning("closing tool panel did not change appearance (mean diff %.2f)", closeDiff);
         return false;
     }
 
+    qInfo("[ui_capture] clicked states returning success=%d", ok);
     return ok;
 }
 
@@ -720,9 +722,12 @@ int main(int argc, char** argv) {
         ok = capturePluginConfigDialog(window, dir) && ok;
         ok = captureCropConfigDialog(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
         ok = captureClickedStates(window, dir) && ok;
+        qInfo("[ui_capture] all captures returned success=%d", ok);
         app.quit();
+        qInfo("[ui_capture] quit requested");
     });
 
     app.exec();
+    qInfo("[ui_capture] event loop returned");
     return ok ? 0 : 1;
 }
