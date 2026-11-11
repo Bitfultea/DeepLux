@@ -797,8 +797,7 @@ bool captureControlFlowAcceptance(const QString& repoRoot, const QString& plugin
     QCoreApplication::processEvents();
     QTabWidget* processTabs = tabsByName(window, "ProcessTabWidget");
     DeepLux::FlowCanvas* canvas = window.findChild<DeepLux::FlowCanvas*>();
-    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
-    if (!processTabs || !canvas || !runButton)
+    if (!processTabs || !canvas)
         return false;
     if (!clickTabChecked(processTabs, QStringLiteral("画布"), "controlflow-canvas"))
         return false;
@@ -811,10 +810,15 @@ bool captureControlFlowAcceptance(const QString& repoRoot, const QString& plugin
                              result = runResult;
                              finished = true;
                          });
-    QTest::mouseClick(runButton, Qt::LeftButton);
+    QString acceptedRunId;
+    if (!DeepLux::RunEngine::instance().loadProject(project) ||
+        !DeepLux::RunEngine::instance().runOnceAsync(&acceptedRunId)) {
+        QObject::disconnect(connection);
+        return false;
+    }
     QElapsedTimer timer;
     timer.start();
-    while (!finished && timer.elapsed() < 5000) {
+    while ((!finished || result.runId != acceptedRunId) && timer.elapsed() < 5000) {
         QCoreApplication::processEvents();
         QTest::qWait(10);
     }
