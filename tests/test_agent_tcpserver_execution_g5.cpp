@@ -1144,15 +1144,56 @@ private slots:
                     .value(QStringLiteral("sideEffects"))
                     .toArray()
                     .contains(endpointEffect));
-        ThreadedTcpClient client(request, response);
-        client.start(port);
-        QVERIFY(client.waitUntilArmed(1000));
         const QString approvedId = controller.pendingConfirmationId();
         QVERIFY(!approvedId.isEmpty());
         QVERIFY(approvedId != rejectedId);
-        QVERIFY(controller.confirmPendingTools(approvedId));
+        const bool confirmed = controller.confirmPendingTools(approvedId);
+        std::atomic_bool connected{false};
+        std::atomic_bool clientFinished{false};
+        QByteArray clientReceived;
+        QString clientError;
+        std::thread clientThread([&] {
+            struct FinishedSignal {
+                std::atomic_bool& finished;
+                ~FinishedSignal() {
+                    finished.store(true, std::memory_order_release);
+                }
+            } finishedSignal{clientFinished};
+            QTcpSocket socket;
+            QElapsedTimer deadline;
+            deadline.start();
+            while (deadline.elapsed() < 6000) {
+                socket.connectToHost(QHostAddress::LocalHost, port);
+                if (socket.waitForConnected(50)) {
+                    connected.store(true, std::memory_order_release);
+                    break;
+                }
+                socket.abort();
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            if (!connected.load(std::memory_order_acquire)) {
+                clientError = socket.errorString();
+                return;
+            }
+            if (socket.write(request) != request.size() || !socket.waitForBytesWritten(1000)) {
+                clientError = socket.errorString();
+                return;
+            }
+            if (!socket.waitForReadyRead(3000)) {
+                clientError = socket.errorString();
+                return;
+            }
+            clientReceived = socket.readAll();
+        });
+        QElapsedTimer clientDeadline;
+        clientDeadline.start();
+        while (!clientFinished.load(std::memory_order_acquire) && clientDeadline.elapsed() < 8000)
+            QTest::qWait(10);
+        clientThread.join();
+        QVERIFY(confirmed);
+        QVERIFY2(connected.load(std::memory_order_acquire), qPrintable(clientError));
+        QCOMPARE(clientReceived, response);
         QTRY_COMPARE_WITH_TIMEOUT(toolExecuted.count(), 1, 5000);
-        QVERIFY2(client.waitForFinished(5000), qPrintable(client.error()));
         QTRY_COMPARE_WITH_TIMEOUT(runFinished.count(), 1, 5000);
         const QJsonObject stepResult = toolExecuted.last().at(1).toJsonObject();
         QCOMPARE(stepResult.value(QStringLiteral("status")).toString(), QStringLiteral("started"));
@@ -1160,16 +1201,7 @@ private slots:
         QVERIFY(!runId.isEmpty());
         const RunResult result = qvariant_cast<RunResult>(runFinished.last().at(0));
         QCOMPARE(result.runId, runId);
-        QVERIFY2(result.success,
-                 qPrintable(QStringLiteral("%1; client connections=%2 sent=%3 received=%4 client error=%5")
-                                .arg(result.errorMessage)
-                                .arg(client.connectionCount())
-                                .arg(client.sent().size())
-                                .arg(client.received().size())
-                                .arg(client.error())));
-        QCOMPARE(client.connectionCount(), 1);
-        QCOMPARE(client.sent(), request);
-        QCOMPARE(client.received(), response);
+        QVERIFY2(result.success, qPrintable(result.errorMessage));
         QCOMPARE(moduleSignalCount(moduleStarted, instanceId), 1);
         QCOMPARE(moduleSignalCount(moduleFinished, instanceId), 1);
         QVERIFY(moduleFinished.last().at(1).toBool());

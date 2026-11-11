@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/objdetect.hpp>
 
 using namespace DeepLux;
 
@@ -685,6 +686,9 @@ private slots:
         const QString blankPath = QDir(m_appDataDir.path()).filePath(QStringLiteral("g8-blank.png"));
         const QString expectedQr = createQrFixture(qrPath);
         QVERIFY(!expectedQr.isEmpty());
+        cv::QRCodeDetector qrCapabilityProbe;
+        if (qrCapabilityProbe.detectAndDecode(cv::imread(qrPath.toStdString())).empty())
+            QSKIP("The OpenCV build does not include QR decoding support (QUIRC)");
         QVERIFY(cv::imwrite(blankPath.toStdString(), cv::Mat(296, 296, CV_8UC1, cv::Scalar(255))));
 
         AgentActor actor;
