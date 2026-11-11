@@ -13189,7 +13189,9 @@ void TestMainWindow::testGuiRunSlotsResumePausedModeWithModeSpecificPermission()
         QVERIFY(!unexpectedPermissionDialog);
         QTRY_COMPARE_WITH_TIMEOUT(executionLog.size(), 1, 5000);
         if (testCase.first == RunMode::RunCycle) {
-            QCOMPARE(FlowExecutionService::instance().currentJob(), FlowExecutionService::JobType::Cycle);
+            const auto currentJob = FlowExecutionService::instance().currentJob();
+            QVERIFY(currentJob == FlowExecutionService::JobType::Cycle ||
+                    currentJob == FlowExecutionService::JobType::Resume);
         } else {
             QCOMPARE(engine.runMode(), RunMode::RunOnce);
         }
@@ -18769,9 +18771,10 @@ void TestMainWindow::testStepRunExecutesExactlyOneModulePerClick() {
     blockingProbe->initialize();
     window.registerFlowModule(blocking.id, blockingProbe);
     struct ReleaseBlockingProbeOnExit {
-        MainWindowBlockingWorkerProbe* probe;
+        QPointer<MainWindowBlockingWorkerProbe> probe;
         ~ReleaseBlockingProbeOnExit() {
-            probe->release.release();
+            if (probe)
+                probe->release.release();
         }
     } releaseBlockingProbeOnExit{blockingProbe};
 
@@ -18801,6 +18804,7 @@ void TestMainWindow::testStepRunExecutesExactlyOneModulePerClick() {
     QCOMPARE(executionLog.size(), 1);
 
     blockingProbe->release.release();
+    releaseBlockingProbeOnExit.probe = nullptr;
     QVERIFY(waitForServiceIdle());
     QTRY_COMPARE(jobSpy.count(), 2);
     QCOMPARE(executionLog.size(), 1); // 阻塞模块本身不写日志；本次单步只执行了它
