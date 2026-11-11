@@ -376,9 +376,12 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
         qWarning("tool panel still visible after clicking close");
         return false;
     }
-    ok = saveShot(window, dir, QStringLiteral("08-tool-panel-closed.png")) && ok;
+    const QString closedCapture = dir.filePath(QStringLiteral("08-tool-panel-closed.png"));
+    const QImage afterClose = window.grab().toImage();
+    if (!afterClose.save(closedCapture) || !verifyCapture(closedCapture, afterClose.size()))
+        return false;
     qInfo("[ui_capture] clicked states tool close done");
-    const double closeDiff = meanAbsDiff(beforeClose, window.grab().toImage());
+    const double closeDiff = meanAbsDiff(beforeClose, afterClose);
     if (closeDiff < 1.0) {
         qWarning("closing tool panel did not change appearance (mean diff %.2f)", closeDiff);
         return false;
