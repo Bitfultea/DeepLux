@@ -1897,6 +1897,195 @@ FAIL!  : ... 'restartOk.load() >= 5' returned FALSE. (restartOk=2, rounds=10)
 | 项 | 状态 |
 |---|---|
 | P1（后台回收失去生命周期管理） | **已复现（`shutdownMs=0` + `oldWorkerStillRunning`）、已修复、撤销态 5/5 红灯**，性质为真实缺陷 |
+| 第 15 章修复的复核结论 | **通过**（2026-11-11 第三段复核：「拒绝启动后立即 shutdown」已被覆盖并验证） |
+| 但第 15 章修复遗留更早的窗口 | 见**第 16 章**（在途回收的所有权不可见窗口），本轮 P1 |
+| T2.5 / T2.8 / T2.9 | **暂不收口**（按复核要求，不自行宣告） |
+| T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
+| R2 整批 | **尚未完成**（十轮连续门禁、`git revert` 抽查留待整批） |
+
+## 16. 有界回收期间旧 worker 的所有权不可见窗口（2026-11-11 第四段复核 P1）
+
+### 16.1 裁定的问题
+
+复核至 `a688718` 认定第 15 章的修复**通过**——「拒绝启动后立即 shutdown」已被覆盖并验证。
+但**新发现一个更早的窗口**，因此仍不能收口：
+
+> `FlowExecutionService.cpp:273` 先清空 `m_thread`，随后锁外等待；直到等待超时，`:157` 才
+> 登记进 retiring 列表。这段等待期间，并发 `shutdown()` 仍会漏掉旧 worker。
+> 独立同步探针 3/3 复现：`shutdownOk=1` / `returnedBeforeWaitReleased=1` /
+> `oldWorkerRunningAtReturn=1`。
+> 现有回归只覆盖「启动拒绝返回后再 shutdown」，没有覆盖「回收等待中并发 shutdown」。
+
+**要求**：进入锁外等待前，就建立 Service 可见的在途回收状态；与 `shutdown()` 协调唯一回收者，
+保证不漏等、不重复删除，同时保持启动预算。补对应屏障回归。
+
+### 16.2 缺陷机理（静态事实，`a688718`）
+
+第 15 章把「预算内未退出」的线程登记进 `m_retiringThreads`，但登记发生在**锁外等待之后**：
+
+| 时序 | 位置（`a688718`） | 此刻该 worker 存在于 |
+|---|---|---|
+| ① 锁内摘除 | `enqueue()` `:271-274` `retired = m_thread; m_thread = nullptr;` | 仅调用线程的栈局部 `retired` |
+| ② 释放锁，锁外等待 | `retireWorkerThreadBounded()` `:128` `thread->wait(budgetMs)` | 仍只有栈局部（**`m_thread` 与 `m_retiringThreads` 都为空**） |
+| ③ 等待结束、未退出，登记 | `retireWorkerThreadBounded()` `:157` `m_retiringThreads.append(thread)` | 此时才回到 Service 可见结构 |
+
+在 ②③ 之间的整段等待里，Service 的任何结构都不持有该 worker。并发 `shutdown()` 走到
+`:491` 的 `detachLiveWorkerThreadsLocked()`，锁内看到 `m_thread == nullptr`、
+`m_retiringThreads` 为空，于是**立刻** `return true`——而那条 worker 仍在 `run()` 内。
+
+这与第 15 章修的是**两段不同的时间窗**：第 15 章覆盖的是「回收已失败返回、线程已在 retiring」，
+本章覆盖的是「回收正在进行、尚未有结论」。后者更早，也更狭窄，因此需要把可见性前移到
+**摘除的同一次加锁内**。
+
+### 16.3 缺陷复现（判别性证据来自本轮新增用例）
+
+评审的独立同步探针目录 `/tmp/deeplux-t25-owner-recheck.Z62LiJ/` **已不存在**
+（`/tmp` 为 10M tmpfs，见 15.7）。因此本轮复现**不依赖该目录**，改用可复跑的判据：
+新增用例 `testShutdownDuringInflightReclaimMustNotReportSuccess()` 在撤销态下稳定红灯，
+其输出与评审探针数值一一对应。
+
+| 评审探针字段 | 本轮用例对应字段 | 撤销态实测 |
+|---|---|---|
+| `shutdownOk=1` | `shutdownOk` | 3/3 返回 `true` |
+| `returnedBeforeWaitReleased=1` | `shutdownMs=0`（返回那一刻回收等待仍未结束） | `shutdown returned true after 0 ms` |
+| `oldWorkerRunningAtReturn=1` | `stillRunning \|\| retryStillRunning` → `earlyReturns` | `earlyReturns=3/3` |
+| — | `inflightRounds`（正向前提：确实进入过回收等待） | `3` |
+
+执行位置：隔离工作树 `/var/tmp/t25r4-wt`（`--detach` 于 `a688718`）+ 构建目录 `/var/tmp/t25r4-b1`。
+**交付工作树全程未切换缺陷态**（缺陷态切换只在 `t25r4-wt` 内以 `git checkout` 回滚 `src/` 两个文件实现）。
+
+撤销态现场（`defect-run-1.log`，与 `defect-run-2/3` 逐字一致）：
+
+```
+[P1-INFLIGHT] round 0: shutdown returned true after 0 ms while the retired worker was still running
+[P1-INFLIGHT] round 1: shutdown returned true after 0 ms while the retired worker was still running
+[P1-INFLIGHT] round 2: shutdown returned true after 0 ms while the retired worker was still running
+[P1-INFLIGHT] rounds=3 inflightRounds=3 earlyReturns=3 notified=3
+FAIL!  : ... 'earlyReturns.load() == 0' returned FALSE.
+```
+
+### 16.4 回归手法（为什么必须换一种写法）
+
+第 15 章的 `testShutdownCoversWorkerHandedOffByRejectedStart` **无法**覆盖本窗口：它在
+`startSingle()` **已经返回**（即回收已超时并登记完毕）之后才调用 `shutdown()`，此时线程
+早已在 `m_retiringThreads` 里，构造不出 ②③ 之间的窗口。
+
+本轮用例的三点关键设计：
+
+| 设计 | 原因 |
+|---|---|
+| `startSingle()` 放在独立 `std::thread starter` 上发起 | 回收（含锁外 `wait()`）发生在 starter 线程内，主线程才能**并发**调用 `shutdown()` |
+| 正向前提 `barrierEntered && !retryReturned` 轮询 + 短促停留 | 证明「此刻确实处于回收等待中」；不靠固定 sleep 撞窗口，判据缺失即视为无判别力 |
+| 判据 = `shutdownOk && (stillRunning \|\| retryStillRunning)` | 在 `shutdown()` 返回**那一刻**采样 worker 是否仍在跑，与「返回过快」直接对应 |
+
+`starter` 通过 `ServiceContractCleanupGuard` 的新增第 5 参数（`std::thread*`）纳入兜底 join，
+避免用例失败时线程泄漏影响后续用例。
+
+### 16.5 修复方案
+
+**核心原则**：摘除与「在途回收」标记必须在**同一次加锁**内完成；所有权判定必须在锁内按
+「是否仍在 inflight 列表」进行，而不是按等待前的 `m_reclaimAborted` 快照。
+
+| 改动 | 位置 | 作用 |
+|---|---|---|
+| 新增 `QList<WorkerThread*> m_inflightReclaim` | `.h` | 正在被有界回收（已摘出 `m_thread`、正锁外等待）的 worker，Service 可见 |
+| 新增 `QWaitCondition m_reclaimWake` | `.h` | 与 `m_wake` 分开，避免 job 通知误唤醒/误判 |
+| 新增 `bool m_reclaimAborted` | `.h` | 有线程正在 `shutdown()`/析构中收归 worker，回收线程须让出所有权 |
+| 新增 `beginInflightReclaimLocked()` | `.cpp:181` | 在摘除的同一次加锁内登记，**窗口消除** |
+| `enqueue()` 回收循环改为「锁内摘除 + 标记（`:320-331`）→ 锁外有界等待」 | `.cpp:297-352` | 见下 |
+| `retireWorkerThreadBounded()` 改为锁内 `removeOne` 判所有权 | `.cpp:139` | 唯一回收者判定，避免 use-after-free |
+| `detachLiveWorkerThreadsLocked()` 改为 `int`，锁内搬运 `m_inflightReclaim` | `.cpp:195-203` | shutdown 立即接管在途线程 |
+| `shutdown()` 收尾后复位 `m_reclaimAborted` | `.cpp:567-568` | shutdown 后 Service 恢复可用 |
+| `enqueue()` 入口 `m_reclaimAborted` 即拒绝 | `.cpp:320` | 不与 shutdown 同时 join/delete |
+| retiring 零等待清理加 `!m_reclaimAborted` 保护 | `.cpp:297` | 避免与 shutdown 各删一次 |
+
+**唯一回收者判定（本轮最容易写错的地方）**：
+
+```cpp
+const bool finished = thread->wait(static_cast<unsigned long>(qMax(0, budgetMs)));
+bool owned = false;
+{
+    QMutexLocker locker(&m_mutex);
+    owned = m_inflightReclaim.removeOne(thread);   // 锁内判定，不能用品等待前的快照
+    if (owned && !finished) { m_retiringThreads.append(thread); }
+    m_reclaimWake.wakeAll();
+}
+if (!owned) { return false; }   // shutdown 已接管：不 delete、不登记、不再触碰指针
+if (finished) { delete thread; return true; }
+```
+
+若改用「等待前采样 `m_reclaimAborted`」做判定：等待期间 `shutdown()` 可能已经把这条线程
+join 完并 `delete`，回收线程再碰它就是 **use-after-free**。`removeOne` 的结果天然携带
+「谁删」的信息，因此不需要额外的引用计数。
+
+**预算耗尽的特例**：`reclaimBudget <= 0` 时必须先在锁内 `m_inflightReclaim.removeOne(retired)`
+再 `m_retiringThreads.append(retired)`，否则同一条线程同时挂在两个列表里，会被 join 两次、
+delete 两次。
+
+### 16.6 过程中修正的自身设计问题（保留现场）
+
+首版方案设计了 `waitForNoInflightReclaimLocked()`——置中止位后**等待**回收线程让出所有权。
+这是错的：回收线程此刻正阻塞在 `thread->wait()` 内，不会立即让出，该等待会被拖到 5s 上限，
+**等于把启动预算换个地方又花掉**（与第 14 章修的 P1 同类）。
+
+改为：`detachLiveWorkerThreadsLocked()` 在**锁内直接把 `m_inflightReclaim` 搬进
+`m_retiringThreads`**（所有权立即转交），回收线程醒来后 `removeOne` 失败即放弃。同时删除
+`waitForNoInflightReclaimLocked()` 与 `endInflightReclaimLocked()`，保持实现最小。
+**教训**：凡是「为了拿所有权而等待」的设计，都要先问清楚对方此刻是否正阻塞在别处。
+
+### 16.7 反向验证（判别性）
+
+| 验证 | 结果 |
+|---|---|
+| 撤销态（只回滚生产修复，保留用例） | **3/3 `rc=1`**，失败于 `earlyReturns.load() == 0`（`inflightRounds=3` / `earlyReturns=3`） |
+| 修复态 | **5/5 `rc=0`**，`inflightRounds=3`、`earlyReturns=0`（路径确实执行） |
+| 服务套件（修复态） | **29/29、`rc=0`**（40553ms） |
+| 既有 `P1-WINDOW`（`testRetryDuringWorkerRetirementIsBoundedAndNotDeferred`） | `barrierEntries=10 windowRetries=10 retryFailed=10 restartOk=10`，无回归 |
+| 既有 `P1-OWNER`（`testShutdownCoversWorkerHandedOffByRejectedStart`） | `barrierEntries=3 shutdownRounds=3 earlyReturns=0`，无回归 |
+
+**判别性说明**：撤销态未出现「仍全绿」，故不适用第 12/13 章的「无判别力」判定；且
+`inflightRounds=3` 作为正向前提，证明被测路径（锁外回收等待）确实执行过，不是「测了未执行的代码」。
+
+### 16.8 格式与差异检查
+
+| 项 | 结果 |
+|---|---|
+| `clang-format --dry-run --Werror`（3 个文件） | `FMT_rc=0` |
+| 补丁与隔离工作树逐字节一致 | `git diff` sha256 `cff95d07…` 两侧相同 |
+| 交付树源码改动指纹 | `src/` `1a918f97…`、`tests/` `d56b999d…` |
+
+**现场保留**：应用补丁后首次 `clang-format --dry-run --Werror` 曾报 `FMT_rc=1`
+（`tests/test_flowexecutionservice.cpp:1820`、`:1821`、`:1942`）。执行 `clang-format -i`
+后 `FMT_rc=0`、`DIFFCHECK_rc=0`。**格式化改变了源码字节，因此格式化之后重新跑了一遍全量门禁**，
+不复用格式化前的构建结果。
+
+### 16.9 全量门禁
+
+| 项 | 值 |
+|---|---|
+| 构建目录 | `/var/tmp/t25r4-gate`（**工作区外全新目录**） |
+| 配置 | `CONFIGURE_rc=0`（`Configuring done (15.4s)`，Generate 阶段完整通过） |
+| 构建 | `BUILD_rc=0`（36m47s；前置 `TMPDIR=/var/tmp/gcc-tmp`，见 15.7 陷阱 1） |
+| 格式 / 差异 | `FMT_rc=0`（clang-format 14.0.0，3 个文件 `--dry-run --Werror`）、`DIFFCHECK_rc=0`（`git diff --check`） |
+| CTest 列举 | `Total Tests: 97`、`LISTED=97` |
+| **CTest 全量** | **`100% tests passed, 0 tests failed out of 97`**、`CTEST_rc=0`（`Total Test time (real) = 177.48 sec`） |
+| 相关套件 | `test_flowexecutionservice` **29/29**（44754ms）、`test_runengine` **119/119**（8231ms）、`test_modulebase` **16/16**、`test_runenginejoblease` 8/8、`test_runengineuserpause` 6/6、`test_runenginefinalizer` 6/6（全部 `rc=0`） |
+
+日志：`/var/tmp/t25r4-gate-{configure,build,list,ctest}.log`、`/var/tmp/t25r4-suite-*.log`、
+用例判别性日志 `/var/tmp/t25r4-ev/{defect,fix}-run-*.log`。
+门禁时点：交付工作树 `HEAD=a688718` + 3 个未提交文件（`src/` 两文件与 `tests/`），
+即**第 16 章文档改动在门禁之后单独提交**，门禁所构建的源码与送审源码逐字节一致（`cff95d07…`）。
+
+**仍为 97 项**：本轮新增用例落在**已有**可执行文件 `test_flowexecutionservice` 内
+（28 → 29），未新增 CTest 目标。「97 项」不等于没有新测试，汇报须同时给套件内用例数。
+
+### 16.10 状态
+
+| 项 | 状态 |
+|---|---|
+| P1（在途回收的所有权不可见窗口） | **已复现（撤销态 3/3 红灯，与评审探针三字段一一对应）、已修复、修复态 5/5 绿 + 套件 29/29**，性质为真实缺陷 |
+| 第 15 章 P1 | 复核已通过（本轮不改动其结论） |
+| 验收口径 | ①–⑦ 全部满足，其中 ⑦「回收的锁外等待期间并发 `shutdown()` 也不得提前返回」为本轮新增 |
 | T2.5 / T2.8 / T2.9 | **暂不收口**（按复核要求，不自行宣告） |
 | T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
 | R2 整批 | **尚未完成**（十轮连续门禁、`git revert` 抽查留待整批） |
