@@ -1075,9 +1075,18 @@ private slots:
     // 纪律：直连槽在本用例中只作**状态观测**，绝不抛异常（槽内抛异常属 Qt 未定义行为，
     // 不得作为缺陷证据）。全部判据落在主线程 startSingle() 的返回值与 probe.runs() 上。
     //
-    // 判据：每轮注入一次 workerLoop 故障，待 worker 停在窗口后重试 startSingle()，必须
-    // 成功且真正执行任务。任何一次窗口内重试被拒绝即判红。
-    void testImmediateRetryDuringWorkerRetirementMustSucceed() {
+    // **2026-11-11 复核 P1：验收口径修正（本条判据整体重写）**
+    //
+    // 上一版判据是「窗口内重试必须成功（retryFailed == 0）」，而它是靠 enqueue() 里
+    // 无时限的 joinWorkerThread() 达成的：那段等待发生在启动计时之前，旧线程的退出
+    // 耗时被直接转嫁给 GUI 线程。评审独立观测：退出阶段延迟 500ms → startSingle()
+    // 阻塞 500ms，超出既有 100ms 预算。因此「窗口内重试必成功」是错误的验收口径。
+    //
+    // 现判据（①~⑤ 见上方注释；此处逐条落实）：
+    //   ① 单次 startSingle() 阻塞 ≤ StartHandshakeTimeoutMs（回收+握手共用一份预算）；
+    //   ②③④ 窗口内允许明确拒绝，但拒绝后必须 Idle、无 pending、且事后绝不执行；
+    //   ⑤ 旧线程真正退出后再次 startSingle() 必须成功，无需手动 shutdown()。
+    void testRetryDuringWorkerRetirementIsBoundedAndNotDeferred() {
         RunEngine& engine = RunEngine::instance();
         FlowExecutionService& service = FlowExecutionService::instance();
         ServiceProbeModule probe;
@@ -1086,14 +1095,22 @@ private slots:
         engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
 
         constexpr int kRounds = 10;
+        // 判据①的调度误差许可：计时精度、线程调度与 processEvents 抖动，不能把预算当硬实时。
+        // 60ms 远小于「退出延迟 500ms」的量级，仍能可靠区分「有界」与「跟着退出延迟走」。
+        constexpr int kSchedulingSlackMs = 60;
 
         std::atomic_int armed{0};             // 本轮是否已注入待触发的故障
         std::atomic_int notified{0};          // worker 已发出 jobFailed 的次数
         std::atomic_int barrierEntries{0};    // 退出屏障进入次数（证明窗口已被撑开）
         std::atomic_int windowRetries{0};     // 在窗口内发起重试的次数
         std::atomic_int windowRetryOk{0};     // 窗口内重试被接受次数
-        std::atomic_int windowRetryFailed{0}; // 窗口内重试被拒绝次数（缺陷的直接证据）
+        std::atomic_int windowRetryFailed{0}; // 窗口内重试被**明确拒绝**次数（修正后属允许行为）
         std::atomic_int retryNotExecuted{0};  // 被接受却未真正执行任务的次数
+        std::atomic_int rejectedLeftResidue{0}; // 被拒绝却留下 pending/非 Idle 的次数（缺陷）
+        std::atomic_int rejectedButExecuted{0}; // 被拒绝却事后执行的次数（迟到执行，缺陷）
+        std::atomic_int restartOk{0};           // 旧线程退出后再次启动成功次数
+        std::atomic_int restartNotExecuted{0};  // 再次启动被接受却未执行次数（缺陷）
+        int maxRetryBlockMs = 0;                // 窗口内单次 startSingle() 的最大阻塞时长
 
         QSemaphore releaseBarrier; // 主线程放行退出屏障
         QSemaphore barrierReached; // worker 已停在退出屏障上
@@ -1157,7 +1174,6 @@ private slots:
             }
 
             const int runsBefore = probe.runs.load();
-            const int okBefore = windowRetryOk.load();
 
             failureNotified.store(false, std::memory_order_release);
             holdBarrier.store(true, std::memory_order_release);
@@ -1167,42 +1183,81 @@ private slots:
             const bool firstStart = service.startSingle();
             // worker 停在退出屏障上（jobFailed 已发出、run() 尚未返回）。
             const bool atWindow = barrierReached.tryAcquire(1, 3000);
+            if (firstStart || !atWindow) {
+                holdBarrier.store(false, std::memory_order_release);
+                releaseBarrier.release();
+                continue; // 本轮不计入判别样本
+            }
 
-            // —— 窗口内重试：此刻旧线程**尚未结束**，isFinished() 仍为 false ——
-            if (atWindow && failureNotified.load(std::memory_order_acquire)) {
+            // —— 判据①②：窗口内重试。此刻旧线程尚未结束，必须**有界**返回 ——
+            // 无论接受或拒绝，阻塞都不得超过启动预算（回收与握手共用一份）。
+            bool inWindowOk = false;
+            int inWindowElapsed = -1;
+            if (failureNotified.load(std::memory_order_acquire)) {
+                QElapsedTimer retryTimer;
+                retryTimer.start();
+                inWindowOk = service.startSingle();
+                inWindowElapsed = static_cast<int>(retryTimer.elapsed());
                 ++windowRetries;
-                if (service.startSingle()) {
+                if (inWindowOk) {
                     ++windowRetryOk;
                 } else {
                     ++windowRetryFailed;
                 }
+                maxRetryBlockMs = qMax(maxRetryBlockMs, inWindowElapsed);
             }
 
-            // 放行屏障，让旧线程真正退出，重试的 job 才能在新线程上执行。
+            // —— 判据③④：被拒绝时不得入队、不得迟到执行 ——
+            const bool rejected = (inWindowElapsed >= 0 && !inWindowOk);
+            if (rejected) {
+                // 拒绝必须留下干净的 Idle：没有 pending、没有 current job。
+                const bool leftPending = (service.state() != FlowExecutionService::State::Idle) || service.isActive();
+                if (leftPending) {
+                    ++rejectedLeftResidue;
+                }
+            }
+
+            // 放行屏障，让旧线程真正退出。
             holdBarrier.store(false, std::memory_order_release);
             releaseBarrier.release();
 
-            // 等本次重试的任务真正跑完。
+            // 等稳定：被接受的重试应跑完；被拒绝的必须**什么都不发生**。
             QElapsedTimer settle;
             settle.start();
             while (settle.elapsed() < 3000) {
                 QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
-                if (!service.isActive() && windowRetryOk.load() > okBefore) {
+                if (!service.isActive()) {
                     break;
                 }
                 QThread::msleep(1);
             }
             releaseBarrier.tryAcquire(1, 2000); // 排水：防止多放的令牌串轮
 
-            if (!atWindow) {
-                break; // 屏障未命中，停止本轮循环（由下面的断言判定）
+            if (inWindowOk) {
+                if (probe.runs.load() <= runsBefore) {
+                    ++retryNotExecuted; // 接受却空转 = 命令进黑洞
+                }
+            } else if (probe.runs.load() > runsBefore) {
+                ++rejectedButExecuted; // 拒绝却执行 = 迟到执行，最严重
             }
-            if (windowRetryOk.load() > okBefore && probe.runs.load() <= runsBefore) {
-                ++retryNotExecuted;
+
+            // —— 判据⑤：旧线程已退出，再次启动必须成功且无需手动 shutdown() ——
+            const int runsBeforeRestart = probe.runs.load();
+            const bool restarted = service.startSingle();
+            if (restarted) {
+                ++restartOk;
             }
-            if (firstStart) {
-                // 首启成功说明本轮注入未生效，不计入判别样本。
-                continue;
+            QElapsedTimer restartSettle;
+            restartSettle.start();
+            while (restartSettle.elapsed() < 3000) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                if (!service.isActive()) {
+                    break;
+                }
+                QThread::msleep(1);
+            }
+            if (restarted && probe.runs.load() <= runsBeforeRestart) {
+                ++restartNotExecuted;
             }
         }
 
@@ -1210,9 +1265,12 @@ private slots:
         service.clearWorkerLoopFaultHookForTest();
         service.clearWorkerExitBarrierForTest();
 
-        qInfo("[P1-WINDOW] rounds=%d barrierEntries=%d windowRetries=%d retryOk=%d retryFailed=%d retryNotExecuted=%d",
+        qInfo("[P1-WINDOW] rounds=%d barrierEntries=%d windowRetries=%d retryOk=%d retryFailed=%d "
+              "retryNotExecuted=%d maxRetryBlockMs=%d rejectedResidue=%d rejectedExecuted=%d restartOk=%d "
+              "restartNotExecuted=%d",
               kRounds, barrierEntries.load(), windowRetries.load(), windowRetryOk.load(), windowRetryFailed.load(),
-              retryNotExecuted.load());
+              retryNotExecuted.load(), maxRetryBlockMs, rejectedLeftResidue.load(), rejectedButExecuted.load(),
+              restartOk.load(), restartNotExecuted.load());
 
         // 判别性前提：窗口必须真的被撑开并被重试覆盖若干次。
         QVERIFY2(windowRetries.load() >= 5,
@@ -1221,20 +1279,47 @@ private slots:
                                 .arg(windowRetries.load())
                                 .arg(barrierEntries.load())));
 
-        // 核心判据①：窗口内的重试一次都不许被拒绝。被拒绝即意味着命令被交给了正在退出的旧线程。
-        QVERIFY2(windowRetryFailed.load() == 0,
-                 qPrintable(QStringLiteral("a retry issued while the faulty worker is retiring must never be "
-                                           "rejected (retryFailed=%1, retryOk=%2, windowRetries=%3): a rejection "
-                                           "means the command was handed to the exiting worker")
-                                .arg(windowRetryFailed.load())
-                                .arg(windowRetryOk.load())
-                                .arg(windowRetries.load())));
+        // 判据①：窗口内 startSingle() 的阻塞必须落在启动预算内。
+        // 这是本轮 P1 的核心——此前该调用会一直等到旧线程退出（评审实测 500ms），
+        // 而预算只有 100ms。允许少量调度误差，但绝不允许随退出延迟线性增长。
+        const int budget = FlowExecutionService::StartHandshakeTimeoutMs;
+        QVERIFY2(maxRetryBlockMs <= budget + kSchedulingSlackMs,
+                 qPrintable(QStringLiteral("an in-window startSingle() must stay within the start budget "
+                                           "(maxBlock=%1ms, budget=%2ms, slack=%3ms): an unbounded reclaim "
+                                           "wait transfers the retiring thread's exit latency to the GUI thread")
+                                .arg(maxRetryBlockMs)
+                                .arg(budget)
+                                .arg(kSchedulingSlackMs)));
 
-        // 核心判据②：被接受的重试必须真的执行过任务——接受但空转等于命令进了黑洞。
+        // 判据②③：允许明确拒绝，但拒绝不得留下 pending / 非 Idle 残留。
+        QVERIFY2(rejectedLeftResidue.load() == 0,
+                 qPrintable(QStringLiteral("a rejected start must leave the service idle with no pending job "
+                                           "(rejectedResidue=%1, retryFailed=%2)")
+                                .arg(rejectedLeftResidue.load())
+                                .arg(windowRetryFailed.load())));
+
+        // 判据④：被拒绝的那次绝不能事后执行（迟到执行是最严重的错误收口）。
+        QVERIFY2(rejectedButExecuted.load() == 0,
+                 qPrintable(QStringLiteral("a rejected start must never execute later (rejectedExecuted=%1): "
+                                           "deferring the job would mean the rejection was a lie")
+                                .arg(rejectedButExecuted.load())));
+
+        // 判据④补：被接受的重试必须真的执行过任务——接受但空转等于命令进了黑洞。
         QVERIFY2(retryNotExecuted.load() == 0,
                  qPrintable(QStringLiteral("an accepted in-window retry must really execute the job "
                                            "(retryNotExecuted=%1)")
                                 .arg(retryNotExecuted.load())));
+
+        // 判据⑤：旧线程退出后再次启动必须成功，且无需手动 shutdown()。
+        QVERIFY2(restartOk.load() >= 5,
+                 qPrintable(QStringLiteral("the service must restart after the retiring thread is gone without "
+                                           "a manual shutdown() (restartOk=%1, rounds=%2)")
+                                .arg(restartOk.load())
+                                .arg(kRounds)));
+        QVERIFY2(restartNotExecuted.load() == 0,
+                 qPrintable(QStringLiteral("an accepted restart must really execute the job "
+                                           "(restartNotExecuted=%1)")
+                                .arg(restartNotExecuted.load())));
 
         guard.finish();
     }
