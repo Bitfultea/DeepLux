@@ -1566,6 +1566,223 @@ private slots:
         // 未 join 时它不会返回（继续等待或终止进程），故无需恒真断言。
         guard.finish();
     }
+
+    // ==== T2.5 P1 第三轮（2026-11-11 二次复核 P1）：shutdown 必须覆盖所有未退出 worker ====
+    //
+    // 缺陷前提：启动路径的有界回收（retireWorkerThreadBounded）在预算用尽时把旧 worker
+    // 交给一个 detached std::thread 等待并 delete，而 m_thread 早已被 enqueue() 清空。
+    // 于是该 worker **不在任何 Service 侧结构中**：shutdown() 的 Idle 分支只取 m_thread，
+    // 直接返回 true（评审独立复现：retry=0 retryMs=100、shutdownOk=1 shutdownMs=0、
+    // oldWorkerStillRunning=1），而在跑的 worker 仍会访问本服务与模块，清理 guard 也可能
+    // 在它仍活跃时释放被捕获的栈对象。后台线程最终 wait() 不能替代 Service 销毁前的同步。
+    //
+    // 本用例固定该契约：**shutdown() 返回 true 时，所有 worker 必须已真正退出。**
+    //
+    // 时序（与上一用例同一个窗口，不靠碰运气）：workerLoop 故障 → jobFailed → 退出屏障
+    // 撑开窗口 → 主线程在窗口内重试 → 预算用尽被明确拒绝 → 立刻 shutdown()。此时旧 worker
+    // 仍停在屏障上（run() 未返回），正确实现必须阻塞在 join 上，直到控制线程放行。
+    void testShutdownCoversWorkerHandedOffByRejectedStart() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe;
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+
+        constexpr int kRounds = 3;
+        // 「提前返回」观测窗口：缺陷实现下 shutdown() 立即返回（shutdownMs≈0）而旧 worker
+        // 仍在 run()；本用例以「shutdown() 返回那一刻是否仍有 worker 在跑」作为直接判据，
+        // 不依赖固定等待窗口，避免给服务套件叠加延迟。
+
+        std::atomic_int armed{0};
+        std::atomic_int notified{0};
+        std::atomic_int barrierEntries{0}; // 屏障进入次数（证明窗口真的被撑开）
+        std::atomic_int shutdownRounds{0}; // 实际完成 shutdown 观测的轮数
+        std::atomic_int earlyReturns{0};   // shutdown() 在旧 worker 退出前返回 true 的轮数（缺陷）
+        std::atomic_bool oldWorkerRunning{false};
+
+        QSemaphore releaseBarrier;
+        QSemaphore barrierReached;
+        std::atomic_bool holdBarrier{false};
+
+        service.setWorkerLoopFaultHookForTest([&] {
+            if (armed.load(std::memory_order_acquire) != 0 && armed.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                throw std::runtime_error("injected worker-loop fault");
+            }
+        });
+
+        // 退出屏障：位于 handleWorkerLoopFault() 发出 jobFailed 之后、run() 返回之前。
+        service.setWorkerExitBarrierForTest([&] {
+            if (!holdBarrier.load(std::memory_order_acquire)) {
+                return;
+            }
+            oldWorkerRunning.store(true, std::memory_order_release);
+            ++barrierEntries;
+            barrierReached.release();
+            releaseBarrier.tryAcquire(1, 5000); // 有界：任何失败路径下 worker 都能自行退出
+            oldWorkerRunning.store(false, std::memory_order_release);
+        });
+
+        // 槽内只做状态观测，不发起重试、不阻塞（见上一用例的说明）。
+        QMetaObject::Connection failConn = QObject::connect(
+            &service, &FlowExecutionService::jobFailed, &service,
+            [&](FlowExecutionService::JobType, const QString&) { ++notified; }, Qt::DirectConnection);
+
+        // 失败路径收尾：放行屏障、清钩子、join worker。必须最后声明。
+        ServiceContractCleanupGuard guard{&service,
+                                          failConn,
+                                          [&] {
+                                              holdBarrier.store(false, std::memory_order_release);
+                                              releaseBarrier.release();
+                                          },
+                                          [&] {
+                                              service.clearWorkerLoopFaultHookForTest();
+                                              service.clearWorkerExitBarrierForTest();
+                                          },
+                                          nullptr,
+                                          true};
+
+        for (int round = 0; round < kRounds; ++round) {
+            // 每轮从干净 Idle 开始（上一轮 shutdown 已销毁线程）。
+            QElapsedTimer idle;
+            idle.start();
+            while (service.isActive() && idle.elapsed() < 1500) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                QThread::msleep(1);
+            }
+            if (service.isActive()) {
+                break; // 收尾由 guard 负责
+            }
+
+            holdBarrier.store(true, std::memory_order_release);
+            armed.store(1, std::memory_order_release);
+
+            const bool firstStart = service.startSingle();
+            const bool atWindow = barrierReached.tryAcquire(1, 3000);
+            if (firstStart || !atWindow) {
+                holdBarrier.store(false, std::memory_order_release);
+                releaseBarrier.release();
+                continue; // 本轮不计入判别样本
+            }
+
+            // 窗口内重试：预算内等不到旧 worker 退出 → 必须明确拒绝（不阻塞、不入队）。
+            QElapsedTimer retryTimer;
+            retryTimer.start();
+            const bool retryOk = service.startSingle();
+            const qint64 retryMs = retryTimer.elapsed();
+            const bool rejected = !retryOk;
+
+            // 拒绝后应立即是干净 Idle：没有 pending、没有 current job。
+            const bool cleanIdle = !service.isActive() && service.state() == FlowExecutionService::State::Idle;
+
+            // 时序设计（关键，勿改成「主线程自己放行」）：
+            //   缺陷态：shutdown() 立即返回 true（旧 worker 仍在 run()）→ 采样到 stillRunning=1；
+            //   修复态：shutdown() 阻塞在 join 上，直到控制线程放行旧 worker 才返回。
+            // 因此放行**必须由控制线程在「确认 shutdown 正在阻塞或已返回」之后**执行：
+            //   - 若主线程在放行前就已返回（只有缺陷实现会这样），控制线程的稍后放行只是
+            //     解除屏障，不影响已采样的判据；
+            //   - 修复态下控制线程在固定短延时后放行，shutdown() 随即完成 join。
+            // 放行延时 kReleaseDelayMs 必须**小于**启动预算的观测意义下限、又足以让缺陷态
+            // 完成一次「立即返回」——缺陷态实测 shutdownMs≈0，故 50ms 足够。
+            constexpr int kReleaseDelayMs = 50;
+            std::atomic_bool shutdownReturned{false};
+            std::atomic_bool released{false};
+            std::thread control([&] {
+                // 等到 shutdown() 返回（缺陷态：几乎立刻）或短延时到期，然后放行屏障。
+                QElapsedTimer waitTimer;
+                waitTimer.start();
+                while (!shutdownReturned.load(std::memory_order_acquire) && waitTimer.elapsed() < kReleaseDelayMs) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                // 若 shutdown() 仍阻塞（修复态），再等一个短延时后放行，让它完成 join。
+                if (!shutdownReturned.load(std::memory_order_acquire)) {
+                    QElapsedTimer grace;
+                    grace.start();
+                    while (grace.elapsed() < kReleaseDelayMs) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    }
+                }
+                if (!released.exchange(true)) {
+                    holdBarrier.store(false, std::memory_order_release);
+                    releaseBarrier.release();
+                }
+            });
+
+            QElapsedTimer shutdownTimer;
+            shutdownTimer.start();
+            const bool shutdownOk = service.shutdown();
+            const qint64 shutdownMs = shutdownTimer.elapsed();
+            shutdownReturned.store(true, std::memory_order_release);
+            // 采样：shutdown() 返回的**那一刻**旧 worker 是否仍在 run() 内。
+            const bool stillRunning = oldWorkerRunning.load(std::memory_order_acquire);
+
+            // 回收控制线程（其内部等待均有界）；再兜底放行一次，避免任何残留令牌。
+            control.join();
+            if (!released.exchange(true)) {
+                holdBarrier.store(false, std::memory_order_release);
+                releaseBarrier.release();
+            }
+            releaseBarrier.tryAcquire(1, 2000); // 排水：防止多放的令牌串轮
+
+            if (shutdownOk && stillRunning) {
+                qInfo("[P1-OWNER] round %d: shutdown returned true after %lld ms while the retired worker "
+                      "was still running",
+                      round, static_cast<long long>(shutdownMs));
+            }
+
+            if (retryMs > FlowExecutionService::StartHandshakeTimeoutMs + 60) {
+                // 重试本身超出预算属上一轮 P1 的问题，此处不计入判别样本，但记录以便诊断。
+                qWarning("[P1-OWNER] round %d: in-window retry blocked %lld ms", round,
+                         static_cast<long long>(retryMs));
+            }
+            if (!rejected || !cleanIdle) {
+                continue; // 前提不成立（未走到「拒绝」分支），不计入判别样本
+            }
+
+            ++shutdownRounds;
+            if (shutdownOk && stillRunning) {
+                ++earlyReturns;
+            }
+
+            // 为下一轮准备：重新布防一个可退出的 Idle 状态。
+            QElapsedTimer settle;
+            settle.start();
+            while (service.isActive() && settle.elapsed() < 3000) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                QThread::msleep(1);
+            }
+        }
+
+        QObject::disconnect(failConn);
+        service.clearWorkerLoopFaultHookForTest();
+        service.clearWorkerExitBarrierForTest();
+
+        qInfo("[P1-OWNER] rounds=%d barrierEntries=%d shutdownRounds=%d earlyReturns=%d notified=%d", kRounds,
+              barrierEntries.load(), shutdownRounds.load(), earlyReturns.load(), notified.load());
+
+        // 判别性前提：必须真的走到「拒绝启动后立即 shutdown」若干轮，且窗口确实被撑开。
+        QVERIFY2(barrierEntries.load() >= 1,
+                 qPrintable(QStringLiteral("the worker-exit barrier must be entered at least once "
+                                           "(barrierEntries=%1)")
+                                .arg(barrierEntries.load())));
+        QVERIFY2(shutdownRounds.load() >= 1,
+                 qPrintable(QStringLiteral("the case must exercise 'rejected start then immediate shutdown' "
+                                           "(shutdownRounds=%1, barrierEntries=%2)")
+                                .arg(shutdownRounds.load())
+                                .arg(barrierEntries.load())));
+
+        // 核心判据：shutdown() 返回 true 时绝不能还有 worker 在跑。
+        // 缺陷态实测 shutdownMs≈0 且仍返回 true —— 这里必然命中。
+        QVERIFY2(earlyReturns.load() == 0,
+                 qPrintable(QStringLiteral("shutdown() must not report success while a worker handed off by a "
+                                           "rejected start is still running (earlyReturns=%1/%2): the retired "
+                                           "worker must stay owned by the service until shutdown() joins it")
+                                .arg(earlyReturns.load())
+                                .arg(shutdownRounds.load())));
+
+        // 二次判据：失败路径收尾无法清 armed 时 finish() 不会返回，故显式调用。
+        guard.finish();
+    }
 };
 
 QTEST_MAIN(TestFlowExecutionService)
