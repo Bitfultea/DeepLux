@@ -1,6 +1,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QDialog>
 #include <QDir>
 #include <QDockWidget>
 #include <QElapsedTimer>
@@ -493,23 +494,33 @@ bool captureCropConfigDialog(const QString& repoRoot, const QString& pluginTempR
     cropInst.name = QStringLiteral("图像裁剪");
     project->addModule(cropInst);
     QCoreApplication::processEvents();
+    qInfo("[ui_capture] CropImage module added");
 
     window.selectModuleForCapture(cropInst.id);
 
     bool saved = false;
-    QTimer::singleShot(80, [&]() {
-        QWidget* dialog = window.findChild<QWidget*>(QStringLiteral("PluginConfigDialog"));
+    QTimer::singleShot(80, &window, [&]() {
+        QDialog* dialog = window.findChild<QDialog*>(QStringLiteral("PluginConfigDialog"));
         if (!dialog) {
+            qWarning("[ui_capture] CropImage config dialog not found");
+            if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+                modal->reject();
             return;
         }
+        qInfo("[ui_capture] CropImage config dialog opened");
         dialog->resize(560, 480);
         QCoreApplication::processEvents();
+        qInfo("[ui_capture] CropImage config screenshot grabbing");
         saved = dialog->grab().save(dir.filePath(QStringLiteral("11-cropimage-config-dialog.png")));
-        dialog->close();
+        qInfo("[ui_capture] CropImage config screenshot saved=%d", saved);
+        dialog->reject();
+        qInfo("[ui_capture] CropImage config dialog rejected");
     });
 
+    qInfo("[ui_capture] CropImage config invoke starting");
     const bool invoked = QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig", Qt::DirectConnection,
                                                    Q_ARG(QString, cropInst.id));
+    qInfo("[ui_capture] CropImage config invoke returned=%d", invoked);
     QTest::qWait(180);
     return invoked && saved;
 }
