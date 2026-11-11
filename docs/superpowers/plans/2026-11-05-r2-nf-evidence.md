@@ -1730,6 +1730,173 @@ ABI：`publishDisplayFrame` 是 private 成员函数，仅一处调用点，非�
 | P1（启动等待上限） | **已复现（500ms）、已修复（100ms）、撤销态 2/2 红灯（5000ms）**，性质为真实缺陷 |
 | P2-1（早退守卫） | **已整改**：撤销态 2/2 失败、修复态 modulebase 16/16 |
 | P2-2（图像帧路径） | **已整改**：只破坏本轮改动处即 `rc=1`，runengine 119/119 |
+| P1（第三轮，见第 15 章） | **已复现、已修复、撤销态 5/5 红灯**，性质为真实缺陷；**待评审收口裁定** |
 | T2.5 / T2.8 / T2.9 | **暂不收口**（按复核要求） |
 | T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
 | R2 整批 | **尚未完成** |
+
+---
+
+## 15. 后台回收失去 Service 生命周期管理（2026-11-11 二次复核 P1）
+
+### 15.1 裁定的问题
+
+复核至 `152a4a7` 认定第 14 章的修复本身通过（启动预算已解决、两项 P2 已关闭），
+但**该修复引入了新的 P1**：
+
+> `FlowExecutionService.cpp:145` 将旧 worker 交给 detached 回收线程，而 `m_thread` 已清空。
+> `shutdown():423` 和析构只检查 `m_thread`，因此漏等这个仍在运行的 worker。
+> 独立探针连续 3/3 复现：`retry=0 retryMs=100` / `shutdownOk=1 shutdownMs=0` /
+> `oldWorkerStillRunning=1`。这会破坏「shutdown 成功后可以销毁 worker 所访问对象」的保证，
+> 也使既有测试清理 guard 可能提前释放捕获对象。后台线程最终执行 `wait()`，不能替代
+> Service 销毁前的同步。
+
+**要求**：恢复期间仍保留旧 worker 的受控所有权，启动有界拒绝且不入队；shutdown/析构必须
+覆盖所有未退出 worker；补充「拒绝启动后立即 shutdown」的回归。
+
+### 15.2 缺陷机理（静态事实）
+
+| 事实 | 位置（`152a4a7`） | 结论 |
+|---|---|---|
+| 预算内未退出时的处置 | `retireWorkerThreadBounded()` `:145` `std::thread([thread]{ wait(); delete; }).detach()` | 等待者被挪到后台，**指针不再被任何 Service 侧结构持有** |
+| `m_thread` 状态 | `enqueue()` `:209` 已在锁内置空 | 该 worker 在 Service 视角「已不存在」 |
+| `shutdown()` Idle 分支 | `:423` 只取 `thread = m_thread` | 漏等 retiring worker，立即返回 `true` |
+| `~FlowExecutionService()` | `:114` 同样只取 `m_thread` | 析构可能在仍在 `run()` 的 worker 之下销毁其访问的成员与模块 |
+
+「detach + 后台 wait」只解决了**内存回收**，没有解决**生命周期同步**。`shutdown()` 返回
+`true` 的语义是「可以安全销毁 worker 所访问的对象」，而后台线程的 `wait()` 发生在这个
+时点之后，无法履行该语义。
+
+### 15.3 缺陷复现（独立探针，先于修复）
+
+**这是本轮最重要的证据纪律**：探针通过**现有测试可执行文件**运行新用例，被测代码路径由
+`barrierEntries` 显式证明「真的被执行」，而不是只比较某个中间值。
+
+执行位置：隔离工作树 `/var/tmp/t25p1-owner-wt`（`--detach` 于 `152a4a7`）+ 构建目录
+`/var/tmp/t25p1-owner-b3`。**交付工作树全程未切换缺陷态。**
+
+- `CONFIGURE_rc=0`（11m21s，`t25p1-owner-b2` 目录，源码同工作树）
+- `BUILD_rc=0`（全量）
+- 缺陷态切换方式：`git stash push -- src/core/engine/FlowExecutionService.{cpp,h}`（仅隔离工作树）
+- 缺陷态确认：`grep -c "detach();" → 1`（`:148`）、`grep -c "m_retiringThreads" → 0`
+
+探针时序（全部有界，不靠 sleep 撞窗口）：
+
+1. `setWorkerLoopFaultHookForTest()` 注入一次 `workerLoop` 故障 → `jobFailed` 发出；
+2. `setWorkerExitBarrierForTest()` 把旧 worker 停在「通知已发出、`run()` 未返回」的窗口正中，
+   并在屏障内把 `oldWorkerRunning` 置 `true`；
+3. 主线程在该窗口内 `startSingle()` 重试 → 100ms 预算内等不到旧 worker → **明确拒绝**；
+4. 断言「拒绝后立即 `shutdown()`」在当前 worker 退出前不得返回 `true`：
+   在 `shutdown()` 返回**那一刻**采样 `oldWorkerRunning`。
+
+| 状态 | 运行次数 | `rc` | `barrierEntries` | `shutdownRounds` | `earlyReturns` |
+|---|---|---|---|---|---|
+| 撤销态（`152a4a7`） | 5 | **1 ×5** | 3/3 | 3/3 | **3/3** |
+| 修复态 | 5 | **0 ×5** | 3/3 | 3/3 | **0** |
+
+缺陷态现场（`defectv4-run-1.log`），与评审探针**数值一致**：
+
+```
+[P1-OWNER] round 0: shutdown returned true after 0 ms while the retired worker was still running
+[P1-OWNER] round 1: shutdown returned true after 0 ms while the retired worker was still running
+[P1-OWNER] round 2: shutdown returned true after 0 ms while the retired worker was still running
+[P1-OWNER] rounds=3 barrierEntries=3 shutdownRounds=3 earlyReturns=3 notified=3
+FAIL!  : ... 'earlyReturns.load() == 0' returned FALSE.
+```
+
+`shutdownMs=0` 对应评审的 `shutdownMs=0`，`earlyReturns=3/3` 对应 `oldWorkerStillRunning=1`。
+
+### 15.4 修复方案
+
+**受控所有权**：`retireWorkerThreadBounded()` 不再 detach，把指针登记到服务自持容器。
+
+| 改动 | 位置 | 作用 |
+|---|---|---|
+| 新增 `QList<WorkerThread*> m_retiringThreads`（`m_mutex` 保护） | `FlowExecutionService.h` | 旧 worker 的所有权留在 Service 手上 |
+| `retireWorkerThreadBounded()` 改为 `m_retiringThreads.append(thread)`，仍返回 `false` | `.cpp:157` | 启动侧行为不变：有界、明确拒绝、不入队 |
+| 新增 `detachLiveWorkerThreadsLocked()` | `.cpp:161` | 锁内把 `m_thread` + 全部 retiring 摘出，锁外 join |
+| `~FlowExecutionService()` 改为遍历 retiring 列表 | `.cpp:105-122` | 析构覆盖所有未退出 worker |
+| `shutdown()` Idle 分支改为遍历 retiring 列表 | `.cpp:491` | **本轮 P1 的直接修复点** |
+| `enqueue()` 只对**已结束**的 retiring 做零等待 `delete` | `.cpp:236-262` | 见 15.5 |
+
+`joinWorkerThread()` 保持原样：仍只在 `shutdown()`/析构使用，允许长期等待、绝不 detach。
+
+### 15.5 过程中发现并修正的两个自身问题（保留现场）
+
+修复第一版（`enqueue()` 在启动预算内等待 retiring 线程）导致上一轮窗口用例回归：
+
+```
+[P1-WINDOW] barrierEntries=6 windowRetries=6 retryOk=0 retryFailed=6 restartOk=2
+FAIL!  : ... 'restartOk.load() >= 5' returned FALSE. (restartOk=2, rounds=10)
+```
+
+两个原因都必须记录，否则会被误读成「新修复引入回归」：
+
+1. **重复登记**：清理阶段用 `retireWorkerThreadBounded()` 回收「已在 retiring 里」的线程，
+   预算用尽时又把它 `append` 一次，同一指针出现两次 → 后续可能二次 `delete`。
+   改为「已结束直接 delete，其余原样保留所有权、不重复登记」。
+2. **把 retiring 线程计入下一次启动的预算**：这是更要紧的语义错误。retiring 线程已不再
+   消费命令，**退出与否不决定本次启动能否成功**；把它算进预算会形成链式拒绝——前一次
+   预算耗尽留下一个 retiring 线程，下一次启动又在它身上耗掉整份预算。这与验收口径⑤
+   「旧线程退出后再次启动必须成功、无需手动 shutdown()」直接冲突。
+
+修正后的口径：`enqueue()` 对 retiring 列表只做**零等待**清理，等待一律留给
+`shutdown()`/析构。修正后同一用例恢复为 `barrierEntries=10 windowRetries=10 restartOk=10`，
+服务套件 **28/28、`rc=0`**。
+
+### 15.6 反向验证（判别性）
+
+| 验证 | 结果 |
+|---|---|
+| 撤销态（只回滚生产修复，保留用例） | **5/5 `rc=1`**，失败于 `earlyReturns.load() == 0`（`earlyReturns=3/3`） |
+| 修复态 | **5/5 `rc=0`**，`earlyReturns=0`，`barrierEntries=3`（路径确实执行） |
+| 服务套件（修复态） | **28/28、`rc=0`**（23400ms） |
+| 上一轮窗口用例 | `barrierEntries=10 / windowRetries=10 / restartOk=10`，判据①②③④⑤ 全绿 |
+
+**判别性说明**：不变量「撤销态仍全绿」在此未出现——撤销态稳定 5/5 红灯。且判据以
+`barrierEntries` 正向前提保证被测路径确实执行（第 13.8 节 T2.9 教训），不是「测了未执行的代码」。
+
+**用例耗时**：`testShutdownCoversWorkerHandedOffByRejectedStart` 修复态约 6.6s（3 轮）。
+首版因控制线程用固定等待窗口，曾达 15s；现改为「控制线程仅在 `shutdown()` 返回后放行，
+兜底 10s」，正常路径无固定延迟。
+
+### 15.7 全量门禁
+
+| 项 | 值 |
+|---|---|
+| 源提交 | `f2a162b`（test）/ `17bd15b`（fix） |
+| 构建目录 | `/var/tmp/t25p1-gate`（**工作区外全新目录**） |
+| 配置 | `CONFIGURE_rc=0`（Generate 阶段 559.2s） |
+| 构建 | `BUILD_rc=0`（→ `[100%] Built target test_mainwindow`） |
+| 格式 / 差异 | `FMT_rc=0`（3 个文件 `--dry-run --Werror`）、`DIFFCHECK_rc=0` |
+| CTest 列举 | `Total Tests: 97`、`LISTED=97` |
+| **CTest 全量** | **`100% tests passed, 0 tests failed out of 97`**、`CTEST_rc=0`（`Total Test time (real) = 249.84 sec`） |
+| 相关套件 | `test_flowexecutionservice` **28/28**、`test_runengine` **119/119**、`test_modulebase` **16/16**、`test_runenginejoblease` 8/8、`test_runengineuserpause` 6/6、`test_runenginefinalizer` 6/6（全部 `rc=0`） |
+
+日志：`/var/tmp/t25p1-gate-{configure,build2,list,ctest}.log`、`/var/tmp/t25p1-suite-test_*.log`。
+门禁时点：交付工作树 `HEAD=17bd15b`，源码文件 `git status` 为空（第 15 章文档改动在门禁之后提交）。
+
+**仍为 97 项**：本轮新增 1 条用例落在**已有**可执行文件 `test_flowexecutionservice` 内
+（27 → 28），未新增 CTest 目标。「97 项」不等于没有新测试，汇报须同时给套件内用例数。
+
+**两个环境陷阱（本轮实测，均非代码问题）**：
+
+1. **`/tmp` 只有 10M tmpfs**：全量构建中途出现
+   `fatal error: error writing to /tmp/ccXXXXXX.s: No space left on device`，连带
+   `test_runengine`/`test_fitellipse`/`test_flowexecutionservice` 编译失败（`BUILD_rc=2`），
+   但**不是**任何源码错误。解决：`TMPDIR=/var/tmp/gcc-tmp` 重新构建 → `BUILD2_rc=0`，零空间错误。
+   **后续任何全量构建都应先设 `TMPDIR` 到大容量目录。**
+2. **CMake Generate 阶段的沙箱 I/O 干扰**：另一独立探针目录首次配置以 `CONFIGURE_rc=1` 失败于
+   `CMake Error: Cannot open file for write: …/NPointCalibration/Makefile.tmp7082b`
+   + `System Error: Inappropriate ioctl for device`；同一批残缺 Makefile 还会导致
+   `No rule to make target … progress.make`（`BUILD_rc=2`）。均以换全新目录名重跑解决，
+   **不携带非零退出码送审**。
+
+### 15.8 状态
+
+| 项 | 状态 |
+|---|---|
+| P1（后台回收失去生命周期管理） | **已复现（`shutdownMs=0` + `oldWorkerStillRunning`）、已修复、撤销态 5/5 红灯**，性质为真实缺陷 |
+| T2.5 / T2.8 / T2.9 | **暂不收口**（按复核要求，不自行宣告） |
+| T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
+| R2 整批 | **尚未完成**（十轮连续门禁、`git revert` 抽查留待整批） |
