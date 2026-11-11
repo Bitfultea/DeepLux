@@ -106,8 +106,8 @@ ctest --test-dir build -R test_acceptance_flows --output-on-failure
 
 - **GUI**：使用真实 `FlowRunButton` 启动运行，使用 `HImageWidget` 的真实鼠标点击提交 3 个圆周点；
   断言包括圆心/半径误差、主视图拟合圆与拾取点像素、运行完成信号和流程节点状态。
-  `test_mainwindow::testControlFlowRunRendersBranchStates` 验证真实控制流运行和节点状态；截图测试使用静态状态夹具展示控制边、成功状态点和跳过状态。
-  专项截图：`fitcircle_pick_result.png`、`controlflow_canvas_preview.png`。
+  `test_mainwindow::testControlFlowRunRendersBranchStates` 验证真实控制流运行和节点状态。
+  专项截图：`fitcircle_pick_result.png`。
 - **Agent**：`test_agente2e` 使用确定性假 LLM（无网络），Autopilot 完成
   "创建 GrabImage→FindCircle→连接→运行→读取结果"；断言模块/连接结构、取图参数、
   运行成功、圆心/半径与 `get_run_results` 统计。

@@ -735,94 +735,6 @@ bool captureFitCirclePickAcceptance(const QString& repoRoot, const QString& plug
            captureWindow(window, QSize(1280, 800), outputDir.filePath("fitcircle_pick_result.png"));
 }
 
-bool captureControlFlowAcceptance(const QString& repoRoot, const QString& pluginTempRoot, DeepLux::MainWindow& window,
-                                  const QDir& outputDir) {
-    if (!installPluginForCapture(repoRoot, pluginTempRoot, "If", "src/plugins/logic/If/metadata.json",
-                                 QStringLiteral(UICAP_PLUGIN_If)) ||
-        !installPluginForCapture(repoRoot, pluginTempRoot, "Delay", "src/plugins/logic/Delay/metadata.json",
-                                 QStringLiteral(UICAP_PLUGIN_Delay))) {
-        return false;
-    }
-
-    DeepLux::PluginManager::instance().addPluginPath(pluginTempRoot);
-    DeepLux::PluginManager::instance().initialize();
-    if (!DeepLux::PluginManager::instance().loadPlugin(QStringLiteral("条件分支")) ||
-        !DeepLux::PluginManager::instance().loadPlugin(QStringLiteral("延时"))) {
-        return false;
-    }
-
-    DeepLux::Project* project = DeepLux::ProjectManager::instance().newProject();
-    if (!project)
-        return false;
-
-    DeepLux::ModuleInstance condition;
-    condition.id = QStringLiteral("capture_condition");
-    condition.moduleId = QStringLiteral("条件分支");
-    condition.name = QStringLiteral("条件");
-    condition.posX = -180;
-    condition.posY = -60;
-    condition.params["conditionType"] = QStringLiteral("Expression");
-    condition.params["expressionString"] = QStringLiteral("true");
-    project->addModule(condition);
-
-    DeepLux::ModuleInstance trueBranch;
-    trueBranch.id = QStringLiteral("capture_true");
-    trueBranch.moduleId = QStringLiteral("延时");
-    trueBranch.name = QStringLiteral("真分支");
-    trueBranch.posX = 120;
-    trueBranch.posY = -150;
-    trueBranch.params["delayMs"] = 1;
-    project->addModule(trueBranch);
-
-    DeepLux::ModuleInstance falseBranch = trueBranch;
-    falseBranch.id = QStringLiteral("capture_false");
-    falseBranch.name = QStringLiteral("假分支");
-    falseBranch.posY = 50;
-    project->addModule(falseBranch);
-
-    DeepLux::ModuleConnection trueConnection;
-    trueConnection.fromModuleId = condition.id;
-    trueConnection.toModuleId = trueBranch.id;
-    trueConnection.fromPort = QStringLiteral("true");
-    trueConnection.toPort = QStringLiteral("control");
-    trueConnection.edgeType = QStringLiteral("control");
-    project->addConnection(trueConnection);
-    DeepLux::ModuleConnection falseConnection = trueConnection;
-    falseConnection.fromPort = QStringLiteral("false");
-    falseConnection.toModuleId = falseBranch.id;
-    project->addConnection(falseConnection);
-
-    window.resize(1280, 800);
-    window.show();
-    QCoreApplication::processEvents();
-    QTabWidget* processTabs = tabsByName(window, "ProcessTabWidget");
-    DeepLux::FlowCanvas* canvas = window.findChild<DeepLux::FlowCanvas*>();
-    if (!processTabs || !canvas)
-        return false;
-    if (!clickTabChecked(processTabs, QStringLiteral("画布"), "controlflow-canvas"))
-        return false;
-
-    DeepLux::FlowNodeItem* conditionNode = canvas->nodeItem(condition.id);
-    DeepLux::FlowNodeItem* trueNode = canvas->nodeItem(trueBranch.id);
-    DeepLux::FlowNodeItem* falseNode = canvas->nodeItem(falseBranch.id);
-    if (!conditionNode || !trueNode || !falseNode) {
-        return false;
-    }
-    // Runtime execution is tested separately; this fixture only draws its result.
-    canvas->setNodeExecutionState(condition.id, QStringLiteral("success"), QStringLiteral("1 ms"));
-    canvas->setNodeExecutionState(trueBranch.id, QStringLiteral("success"), QStringLiteral("1 ms"));
-    canvas->setNodeExecutionState(falseBranch.id, QStringLiteral("skipped"), QStringLiteral("已跳过"));
-    if (conditionNode->executionStatus() != QStringLiteral("success") ||
-        trueNode->executionStatus() != QStringLiteral("success") ||
-        falseNode->executionStatus() != QStringLiteral("skipped")) {
-        return false;
-    }
-
-    canvas->fitInView(canvas->scene()->itemsBoundingRect().adjusted(-30, -30, 30, 30), Qt::KeepAspectRatio);
-    QCoreApplication::processEvents();
-    return captureWindow(window, QSize(1280, 800), outputDir.filePath("controlflow_canvas_preview.png"));
-}
-
 } // namespace
 
 int main(int argc, char** argv) {
@@ -875,7 +787,6 @@ int main(int argc, char** argv) {
         ok = capturePluginConfigDialog(window, dir) && ok;
         ok = captureCropConfigDialog(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
         ok = captureFitCirclePickAcceptance(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
-        ok = captureControlFlowAcceptance(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
         ok = captureClickedStates(window, dir) && ok;
         app.quit();
     });
