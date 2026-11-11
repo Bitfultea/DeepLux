@@ -229,8 +229,14 @@ if ($sdkBin) {
 }
 
 # --- Deploy OpenCV runtime ----------------------------------------------------
-foreach ($dll in $opencvDlls) {
-    Copy-Item $dll.FullName (Join-Path $binDir $dll.Name) -Force
+$opencvRuntimeDlls = @{}
+foreach ($opencvDll in $opencvDlls) {
+    Get-ChildItem -Path $opencvDll.DirectoryName -Filter "*.dll" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notmatch 'd\.dll$' } |
+        ForEach-Object { $opencvRuntimeDlls[$_.Name] = $_.FullName }
+}
+foreach ($dll in $opencvRuntimeDlls.Values) {
+    Copy-Item $dll (Join-Path $binDir ([System.IO.Path]::GetFileName($dll))) -Force
 }
 
 # --- Report -------------------------------------------------------------------
