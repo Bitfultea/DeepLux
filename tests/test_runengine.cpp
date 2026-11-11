@@ -350,9 +350,27 @@ public:
         return ModuleBase::execute(inputs, outputs, context);
     }
 
+    // 是否让 process() 产出真实图像。
+    //
+    // T2.9（2026-11-11 复核 P2 整改）：上一版用例里 process 只是 output = input，
+    // 而入口的输入没有任何图像，于是 ImageData::toQImage() 为空——
+    // RunEngine::publishDisplayFrame() 在 frameImage.isNull() 处直接返回，
+    // **本轮修改的赋值根本没有执行**。用例照样通过，也就没有保护到任何东西。
+    // 打开此开关后 process 会生成一张真实小图，图像帧发布路径才能真正被覆盖。
+    void enableSyntheticImage(bool enable) {
+        m_emitSyntheticImage = enable;
+    }
+
 protected:
     bool process(const ImageData& input, ImageData& output) override {
-        output = input;
+        if (m_emitSyntheticImage) {
+            // 真实的小尺寸图像：不依赖输入，保证 publishDisplayFrame 能取到非空图像。
+            QImage img(8, 8, QImage::Format_RGB32);
+            img.fill(QColor(20, 40, 60));
+            output = ImageData(img);
+        } else {
+            output = input;
+        }
         output.setData(QStringLiteral("runmark"), m_mark);
         return true;
     }
@@ -365,6 +383,7 @@ private:
     QStringList* m_sink;
     QList<qint64>* m_frameSink = nullptr;
     QString m_mark;
+    bool m_emitSyntheticImage = false;
 };
 
 // 阶6 五轮：确定性同步门模块——进入 process 时释放 entered 信号量，随后阻塞在
@@ -6017,6 +6036,21 @@ void TestRunEngine::testLegacyFixturesFreezeEngineBehavior() {
 // 本用例守的是加固后的不变式：**模块执行期看到的 runId 必须与最终发布帧的 runId 同源**。
 // 若将来有人在 executeModule 内改用别处的值、或让发布帧重新读成员而与执行期脱节，
 // 本条即失败。
+//
+// **T2.9（2026-11-11 复核 P2 整改）：必须真正覆盖图像帧发布路径**
+//
+// 复核指出的缺口：上一版用例的模块只传递空图像和元数据，于是
+// publishDisplayFrame() 在 `frameImage.isNull()` 处直接返回——**本轮修改的图像帧赋值
+// 根本没有执行**。独立观测为「图像帧 0 个、最终快照帧 1 个」，现有断言却仍通过；
+// 因此第 13.8 节把首轮反证无效归因于「最终帧覆盖」并不准确：真实原因是一处都没跑到。
+// 只改 publishFinalDisplayFrame() 能变红，并不证明新增的快照传参受到保护。
+//
+// 现在的做法：
+//   ① 模块产出**真实小图**，使 publishDisplayFrame 真的走到 frame.runId = runId；
+//   ② 用 displayFrameReady 信号在**每帧发布时**捕获该帧的 runId 与图像，
+//      不依赖 latestDisplayFrame()（它会被最终快照帧覆盖，无法区分中间帧）；
+//   ③ 分别断言：模块图像帧的 runId == 执行期 runId；最终快照帧的 runId 也同源。
+// 这样**只破坏本轮改动的赋值就必须失败**——最终快照帧的断言兜不住它。
 void TestRunEngine::testSerialRunIdMatchesPublishedFrameRunId() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
@@ -6025,11 +6059,23 @@ void TestRunEngine::testSerialRunIdMatchesPublishedFrameRunId() {
 
     QMutex mutex;
     QStringList sink;
+    QList<QPair<QString, bool>> published; // (runId, 是否有图像)，按发布顺序记录
+    QMetaObject::Connection frameConn = QObject::connect(
+        &engine, &RunEngine::displayFrameReady, &engine,
+        [&](const QString& viewportId, quint64, const QString& runId) {
+            const DisplayFrame f = engine.latestDisplayFrame(viewportId);
+            QMutexLocker locker(&mutex);
+            published.append(qMakePair(runId, f.hasImage()));
+        },
+        Qt::DirectConnection);
+
     Project project;
     buildParallelBatchProject(project, 1); // 单模块工程：entry → runid0 串行链
     QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) -> ModuleBase* {
         auto* mod = new RunIdRecordingModule(inst.id, &mutex, &sink);
         mod->setThreadSafe(inst.id != QLatin1String("entry"));
+        // 让模块产出真实图像：这是覆盖 publishDisplayFrame 的前提。
+        mod->enableSyntheticImage(true);
         return mod;
     }));
     markWorkerAffinity(1);
@@ -6037,10 +6083,14 @@ void TestRunEngine::testSerialRunIdMatchesPublishedFrameRunId() {
     engine.runOnce();
     QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
 
+    QObject::disconnect(frameConn);
+
     QStringList observed;
+    QList<QPair<QString, bool>> frames;
     {
         QMutexLocker locker(&mutex);
         observed = sink;
+        frames = published;
     }
     QVERIFY2(!observed.isEmpty(), "the serial run must actually execute at least one module");
     for (const QString& id : observed) {
@@ -6048,7 +6098,35 @@ void TestRunEngine::testSerialRunIdMatchesPublishedFrameRunId() {
         QCOMPARE(id, observed.first());
     }
 
-    // 执行期 runId 与发布帧 runId 必须一致：两者同源于同一次快照。
+    // ① 必须真的产生了**带图像的模块帧**——否则本用例又退回到"一处都没跑到"。
+    int imageFrames = 0;
+    for (const auto& f : frames) {
+        if (f.second) {
+            ++imageFrames;
+        }
+    }
+    QVERIFY2(imageFrames >= 1,
+             qPrintable(QStringLiteral("the run must publish at least one image frame so that "
+                                       "publishDisplayFrame() actually runs (imageFrames=%1, totalFrames=%2): "
+                                       "without it the runId assignment under test never executes")
+                            .arg(imageFrames)
+                            .arg(frames.size())));
+
+    // ② 每个**带图像**的模块帧，其 runId 必须等于执行期 runId。
+    //    这一条直接守住本轮改动（publishDisplayFrame 收到的 runId 参数）。
+    int labelledImageFrames = 0;
+    for (const auto& f : frames) {
+        if (!f.second) {
+            continue;
+        }
+        ++labelledImageFrames;
+        QVERIFY2(!f.first.isEmpty(), "an image frame must carry a non-empty runId");
+        QCOMPARE(f.first, observed.first());
+    }
+    QCOMPARE(labelledImageFrames, imageFrames);
+
+    // ③ 最终快照帧另行断言：它可能不带图像（本轮无图像时也要发布身份），
+    //    但 runId 必须同样同源。此处与 ② 分开，避免再次出现"用最终帧掩盖中间帧"。
     const DisplayFrame frame = engine.latestDisplayFrame();
     QVERIFY2(!frame.runId.isEmpty(), "the published display frame must carry the runId");
     QCOMPARE(frame.runId, observed.first());
