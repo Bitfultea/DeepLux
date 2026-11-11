@@ -1412,6 +1412,44 @@ ABI：`ModuleBase` 只新增静态成员函数（非虚、无数据成员），�
 失败语义正确：撤销态下两条用例都因**表内残留条目**失败，正是缺陷本体。
 修复态：`test_modulebase` **14/14**（原 12，+2）、`rc=0`。
 
+#### 13.5.1 守卫覆盖范围更正（2026-11-11 复核 P2-1）
+
+本轮整改的守卫**当时建在输入校验之后**，覆盖面不足。按真实调用顺序：
+`RunEngine::executeModule()` 在调用 `execute()` **之前**就 `setCancellationToken()`
+（`RunEngine.cpp:2210`），而 `execute()` 里的输入校验（`ModuleBase.cpp` 原 `:196` 之前）
+有 4 个早退出口，全部**先于**守卫返回：
+
+| 早退出口 | 错误码 | 原覆盖情况 |
+|---|---|---|
+| 缺少必需输入 | `MissingRequiredInput` **1001** | **未覆盖**：借用残留 |
+| 输入类型不匹配（`multiple` 元素） | `TypeMismatch` **1002** | **未覆盖**：借用残留 |
+| 输入类型不匹配（整值） | `TypeMismatch` **1002** | **未覆盖**：借用残留 |
+| 多输入元素类型不匹配 | `TypeMismatch` **1002** | **未覆盖**：借用残留 |
+
+因此「合法执行才清除、两条早退路径执行结束后借用仍存在」成立，只有合法路径被保护。
+
+**整改（`96829f9`）**：把 token 安装与 RAII 守卫一起前置到 `execute()` 的**函数入口**，
+使全部 7 个 `return` 出口（含上述 4 个校验早退）都在守卫作用域内。语义不变：仍只在
+本次确实安装了 token 时还原。
+
+**新增回归**（`1411b8c`，两条）：
+
+| 用例 | 构造（按真实调用顺序） | 断言 |
+|---|---|---|
+| `testCancellationTokenDetachedOnMissingRequiredInput` | 先 `setCancellationToken()`，再省略必需端口 `count` | `errorCode == 1001`、`process()` 未调用、`cancellationToken() == nullptr` |
+| `testCancellationTokenDetachedOnTypeMismatch` | 先 `setCancellationToken()`，再给 `count`（声明 `Integer`）传 `QString` | `errorCode == 1002`、`process()` 未调用、`cancellationToken() == nullptr` |
+
+两条都**先确认打中的是目标早退分支**（错误码 + `process()` 未执行），避免用例空转。
+
+撤销态验证（隔离工作树 `/var/tmp/t28p1-probe-wt` + 独立构建 `/var/tmp/t28p1-probe-build`，
+撤销态 = `0bf7516` 原 `ModuleBase.cpp`，仅叠加测试）：
+
+| 样本 | 退出码 | 失败位置 | 失败断言 |
+|---|---|---|---|
+| red-1..2 / **2 项用例** | **2** | `test_modulebase.cpp:357`、`:384` | `module.cancellationToken() == nullptr`（两条早退路径借用均残留） |
+
+修复态：`test_modulebase` **16/16**（原 14，+2）、`rc=0`。
+
 ### 13.6 T2.9 静态排查结论：未发现真实竞态
 
 | 事实 | 位置 | 结论 |
@@ -1445,14 +1483,47 @@ ABI：`publishDisplayFrame` 是 private 成员函数，仅一处调用点，非�
 
 | 轮次 | 注入 | 结果 | 结论 |
 |---|---|---|---|
-| v1 | 仅把 `publishDisplayFrame` 的 `frame.runId` 改为 `m_runId + "-PROBE"` | **`PROBE_rc=0` 仍绿** | **该轮反证无效**：用例可能恒真 |
-| v2 | 再对 `publishFinalDisplayFrame` 注入 `"-PROBE2"` | **`PROBE2_rc=1` 失败**：`Actual "1794308809179-0-PROBE2"` vs `Expected "1794308809179-0"` | 确认断言真的读实值 |
+| v1 | 仅把 `publishDisplayFrame` 的 `frame.runId` 改为 `m_runId + "-PROBE"` | **`PROBE_rc=0` 仍绿** | **该轮反证无效** |
+| v2 | 再对 `publishFinalDisplayFrame` 注入 `"-PROBE2"` | **`PROBE2_rc=1` 失败**：`Actual "1794308809179-0-PROBE2"` vs `Expected "1794308809179-0"` | 断言确实读实值，但只证明了最终快照那条路 |
 
-v1 无效的原因已查明：`publishFinalDisplayFrame()` 随后**覆盖**了槽位帧，而
-`latestDisplayFrame()` 返回的是最终帧。因此单点脱节能被最终帧掩盖。
+#### 13.8.1 v1 归因更正（2026-11-11 复核 P2）
 
-**教训（写入纪律）**：单点反证通过 ≠ 用例有判别力。涉及「最终可见状态」的断言，必须确认
-被测量的是**对外可见的最终值**而不是内部中间值；必要时叠加多处注入才能击穿覆盖链。
+本节此前把 v1 失效归因于「`publishFinalDisplayFrame()` 随后**覆盖**槽位帧，因此单点脱节被
+最终帧掩盖」。**该归因不准确，现予更正。**
+
+真实原因：用例的模块只传递**空图像和元数据**，`publishDisplayFrame()` 在
+`frameImage.isNull()` 处**直接返回**——本轮修改的图像帧赋值 `frame.runId = runId`
+**一处都没有执行**。评审独立观测为「图像帧 0 个、最终快照帧 1 个」，可是原断言仍通过。
+换言之 v1 的「仍绿」不是因为覆盖链，而是因为**那段代码根本没跑**。
+
+同理，v2 让用例变红只证明 `publishFinalDisplayFrame()` 受到了断言保护，
+**不能**证明「新增的快照传参（`publishDisplayFrame(..., runId)`）受到保护」——
+它改的是本轮**未改动**的函数。
+
+#### 13.8.2 修正与新的判别性证明
+
+用例已按复核要求重做（`3424252`，仅测试）：
+
+- 模块产出**真实 8×8 小图**（`enableSyntheticImage(true)`），使 `publishDisplayFrame`
+  真的走到帧 runId 赋值；
+- 用 `displayFrameReady` 信号在**每帧发布时**捕获 `(runId, 是否带图像)`，不依赖
+  `latestDisplayFrame()`——后者会被最终快照帧覆盖，无法区分中间帧；
+- 三条判据分开断言：① 至少 1 个**带图像**的模块帧；② 每个带图像帧的 runId == 执行期 runId；
+  ③ 最终快照帧的 runId 另行同源断言。
+
+**只破坏本轮改动的那一处**即可判红（`RunEngine.cpp:2628` 加 `"-PROBE-MODULEFRAME"`
+后缀，`publishFinalDisplayFrame()` 完全不动）：
+
+| 注入范围 | 结果 |
+|---|---|
+| 仅 `publishDisplayFrame`（本轮改动处） | **`rc=1`**，`Actual "1794361136936-0-PROBE-MODULEFRAME"` vs `Expected "1794361136936-0"`，失败位在带图像帧的 runId 断言 |
+| 反证清除后（`grep -c PROBE` = 0，`RunEngine.cpp` 无差异） | 通过，`test_runengine` **119/119** |
+
+**教训（写入纪律，已按复核意见修订）**：单点反证通过 ≠ 用例有判别力；但更根本的是——
+**反证之前必须先确认被测代码路径真的被执行**。旧用例的问题不是「测了中间值」，
+而是「被测赋值零次执行」还照样绿。凡涉及发布/回调的断言，必须先有一条
+「该路径确实发生过」的正向前提（上文的判据①），再谈值比较；且反证必须落在
+**本轮真正改动的那一处**，打在未改动处变红不构成保护证据。
 
 反证随后**完全清除**：`grep -c PROBE` = 0，`RunEngine.cpp` 自 `/var/tmp/RunEngine.fixed.bak` 回滚，
 与交付树 diff 逐字节一致。修复态：`test_runengine` **119/119**（原 118，+1）、`rc=0`。
@@ -1510,3 +1581,155 @@ v1 无效的原因已查明：`publishFinalDisplayFrame()` 随后**覆盖**了�
 | T2.5 | **待评审收口裁定**（本轮不自行宣告收口） |
 | T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
 | R2 整批 | **尚未完成**（十轮连续门禁、`git revert` 抽查待整批完成后执行） |
+
+---
+
+## 14. T2.5 修复绕过启动等待上限（2026-11-11 复核 P1）
+
+### 14.1 裁定的问题
+
+复核至 `0bf7516` 给出 1 项 P1：
+
+> `FlowExecutionService.cpp:187` 在启动计时前调用 `joinWorkerThread()`，其等待可以无限
+> 延长。独立探针将退出阶段延迟 500ms，`startSingle()` 就阻塞了 500ms，超过既有 100ms
+> 预算。当前回归每轮依赖退出屏障的 5 秒超时，十轮约 50 秒，并未验证 GUI 响应性。
+
+**验收口径需明确调整**：恢复未完成时允许明确拒绝，但不得入队或迟到执行；旧线程退出后，
+应无需手动 shutdown 即可再次启动。**不能为了「窗口内重试必成功」阻塞 GUI。**
+
+### 14.2 缺陷机理（静态事实）
+
+| 事实 | 位置 | 结论 |
+|---|---|---|
+| 回收循环位置 | `enqueue()` 开头 `for(;;)`，在 `StartHandshakeTimeoutMs` 计时**之前** | 回收等待完全不计入启动预算 |
+| 回收调用 | `joinWorkerThread(retired)`（原 `:187`） | 该函数在诊断阈值后**无条件** `thread->wait()`（原 `:135`） |
+| `m_shutdownDeadlineMs` | 默认 **10000ms**，且超时后继续 `wait()` | 实际上界是「无限」，与 100ms 启动预算无关 |
+| `StartHandshakeTimeoutMs` | **100ms** | 只约束握手，不约束回收 |
+
+即：**启动路径的等待被拆成两段，只有后一段有界**。第一段（回收）用的是关机预算、
+且超时后仍继续等，于是旧线程的退出耗时被完整转嫁给调用 `startSingle()` 的 GUI 线程。
+
+### 14.3 缺陷复现（独立探针，先于修复）
+
+执行位置：隔离工作树 `/var/tmp/t28p1-probe-wt`（`0bf7516`）+ 独立构建
+`/var/tmp/t28p1-probe-build`，`PROBE_CONFIGURE_rc=0`、`PROBE_BUILD_rc=0`。
+
+探针手法：退出屏障内 `QThread::msleep(500)` 模拟「退出阶段延迟 500ms」，随后在窗口内
+计时一次 `startSingle()`。
+
+| 状态 | `startSingleElapsedMs` | `retryOk` |
+|---|---|---|
+| 撤销态（`0bf7516`） | **500** | 1 |
+| 修复态 | **100** | 0（明确拒绝） |
+
+**与评审观测一致**：500ms 阻塞、超过 100ms 预算。
+
+### 14.4 整改内容（`1471620`，仅 `FlowExecutionService`）
+
+1. 新增私有 `retireWorkerThreadBounded(thread, budgetMs)`：预算内退出则 `delete` 并返回
+   `true`；否则**不阻塞调用线程**——把线程交给一个自持有指针的后台收尾线程
+   `thread->wait()` 后 `delete`，返回 `false`。**不 detach、不 terminate**，join 语义保留，
+   只是把**等待者**从 GUI 线程挪到非 GUI 线程。
+2. `enqueue()` 回收循环改用上述有界回收，预算 = `StartHandshakeTimeoutMs` 减去已耗时；
+   预算耗尽即 `return false`（明确拒绝）。
+3. 握手等待与回收**共用同一个** `QElapsedTimer`，总等待仍不超过 `StartHandshakeTimeoutMs`，
+   不再是「回收 100ms + 握手 100ms」两段叠加。
+4. `joinWorkerThread()` **保持原样**，仅用于析构（`:118`）与 `shutdown()`（`:434`）——
+   那两处必须等 worker 真正退出才能 `delete` 服务对象，不能改为有界。
+
+无数据成员变化、无公开接口变化。
+
+### 14.5 验收口径重写（`dbcfb77`，仅测试）
+
+旧判据「窗口内重试必须成功（`retryFailed == 0`）」是**错误**的口径——它只能靠无限期
+阻塞 GUI 达成。现改为五条：
+
+| 判据 | 内容 | 观测字段 |
+|---|---|---|
+| ① | 单次 `startSingle()` 阻塞 ≤ `StartHandshakeTimeoutMs`（回收+握手共用） | `maxRetryBlockMs` |
+| ② | 窗口内允许**明确拒绝**（返回 false） | `windowRetryFailed` |
+| ③ | 拒绝后必须 Idle 且无 pending | `rejectedLeftResidue` |
+| ④ | 被拒绝的那次**绝不能事后执行** | `rejectedButExecuted` |
+| ⑤ | 旧线程退出后再次启动必须成功，无需手动 shutdown() | `restartOk` |
+
+判据①的调度误差许可 `kSchedulingSlackMs = 60ms`：远小于 500ms 量级，仍能可靠区分
+「有界」与「跟着退出延迟走」，同时不至于把预算当硬实时。
+
+用例更名 `testImmediateRetryDuringWorkerRetirementMustSucceed` →
+`testRetryDuringWorkerRetirementIsBoundedAndNotDeferred`。
+
+### 14.6 撤销态复败
+
+撤销态 = `0bf7516`（生产代码原样），仅叠加 `dbcfb77` 的测试，同一独立构建目录。
+
+| 样本 | 退出码 | `maxRetryBlockMs` | 失败断言 |
+|---|---|---|---|
+| red-1 | **1** | **5000** | `maxRetryBlockMs <= budget + kSchedulingSlackMs` |
+| red-2 | **1** | **5000** | 同上 |
+
+`maxBlock=5000ms vs budget=100ms`——**5000 正是退出屏障的 5 秒超时**，精确印证评审
+「每轮依赖退出屏障的 5 秒超时，十轮约 50 秒」的说法：撤销态下该调用会一直等到屏障
+自己超时。red-3 因 `timeout` 命令自身发出 SIGTERM 而中断，不影响前两次的结论。
+
+### 14.7 修复态绿灯
+
+| 指标 | 值 |
+|---|---|
+| `windowRetries` | 10 |
+| `windowRetryOk` / `windowRetryFailed` | 0 / **10**（全部明确拒绝） |
+| `maxRetryBlockMs` | **100** |
+| `rejectedResidue` | 0 |
+| `rejectedExecuted` | 0 |
+| `restartOk` / `restartNotExecuted` | **10** / 0 |
+| 用例耗时 | 约 **9s**（原约 50s） |
+| 退出码 | **0** |
+
+### 14.8 提交链与门禁
+
+```
+… → 0bf7516(docs) → 3424252(test T2.9) → 1411b8c(test T2.8) → 96829f9(fix T2.8)
+   → dbcfb77(test P1) → 1471620(fix P1) → <本章>(docs)
+```
+
+测试与修复分提交：`3424252`/`1411b8c`/`dbcfb77` 只含测试，`96829f9`/`1471620` 只含生产代码。
+
+全量 CTest 门禁见 14.9。
+
+### 14.9 全量 CTest 门禁
+
+| 项 | 值 |
+|---|---|
+| 源提交 | `1471620` |
+| 构建目录 | `/var/tmp/t28p1-gate2-build`（**工作区外全新目录**） |
+| 配置 | `CONFIGURE2_rc=0`（耗时 9m18s）；选项同前（`-DUSE_QT6=ON -DQt5_DIR=… -DONNXRUNTIME_DIR=… -DOpenCV_DIR=… -DDEEPLUX_NATIVE_SAM=ON -DENABLE_CAMERA_CAPTURE=OFF -DENABLE_CAMERA_SERVICE=OFF -DENABLE_HYMSON3D=OFF`） |
+| 构建 | `BUILD_rc=0`、`[100%] Built target test_mainwindow`（耗时 16m00s） |
+| 格式 / 差异 | `FMT_rc=0`（6 个文件 `--dry-run --Werror`）、`DIFFCHECK_rc=0` |
+| CTest 列举 | `Total Tests: 97`、`LISTED=97` |
+| **CTest 全量** | **`100% tests passed, 0 tests failed out of 97`**、`CTEST_rc=0`（`Total Test time (real) = 221.55 sec`） |
+| 相关套件（同一交付态，独立运行） | `test_modulebase` **16/16**（1ms）、`test_runengine` **119/119**（8386ms）、`test_flowexecutionservice` **27/27**（**9795ms**）、`test_runenginejoblease` 8/8、`test_runengineuserpause` 6/6、`test_runenginefinalizer` 6/6（全部 `rc=0`） |
+
+日志：`/var/tmp/t28p1-gate2-{configure,build,list,ctest}.log`、`/var/tmp/t28p1-suite-test_*.log`。
+门禁时点：交付工作树 `HEAD=1471620`，源码文件 `git status` 为空（第 14 章文档改动在门禁之后提交）。
+
+**收益可量化**：`test_flowexecutionservice` 套件耗时由上一轮的 **52918ms 降到 9795ms**——
+少的正是「每轮等 5 秒屏障超时 × 10 轮」。这从套件耗时一侧独立印证了 P1 的修复效果。
+
+**仍为 97 项的口径**：本轮新增 2 条用例（`test_modulebase` 14→16）并重写 2 条（服务层窗口用例
+更名、T2.9 用例加强），均落在**已有**测试可执行文件内，未新增 CTest 目标。
+
+**说明**：首次配置曾以 `CONFIGURE_rc=1` 失败于
+`CMake Error: Cannot open file for write: …/tests/CMakeFiles/test_fitline.dir/compiler_depend.ts.tmp3b774`
++ `System Error: Inappropriate ioctl for device`——这是本项目已知的沙箱 I/O 干扰（见工作记忆的
+「门禁环境教训」），与代码无关。该目录已删除，改在全新目录 `t28p1-gate2-build` 重跑，
+**不携带非零退出码送审**。
+
+### 14.10 状态
+
+| 项 | 状态 |
+|---|---|
+| P1（启动等待上限） | **已复现（500ms）、已修复（100ms）、撤销态 2/2 红灯（5000ms）**，性质为真实缺陷 |
+| P2-1（早退守卫） | **已整改**：撤销态 2/2 失败、修复态 modulebase 16/16 |
+| P2-2（图像帧路径） | **已整改**：只破坏本轮改动处即 `rc=1`，runengine 119/119 |
+| T2.5 / T2.8 / T2.9 | **暂不收口**（按复核要求） |
+| T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
+| R2 整批 | **尚未完成** |
