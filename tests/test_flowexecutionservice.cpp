@@ -1783,6 +1783,213 @@ private slots:
         // 二次判据：失败路径收尾无法清 armed 时 finish() 不会返回，故显式调用。
         guard.finish();
     }
+
+    // ==== T2.5 P1 第四次整改（2026-11-11 复核 P1）：回收等待中的并发 shutdown ====
+    //
+    // 缺陷前提：enqueue() 先在锁内把旧 worker 从 m_thread 摘下（`:273`），再到**锁外**
+    // 执行 `thread->wait(budget)`，直到等待超时才在 `:157` 把它登记进 retiring 列表。
+    // 这段锁外等待期间，该 worker **只存在于回收线程的栈上**：并发 shutdown() 的
+    // detachLiveWorkerThreadsLocked() 拿到的是空的 m_thread + 空的 retiring，于是
+    // 立即返回 true，而旧 worker 仍在 run() 内。评审独立复现：
+    //   shutdownOk=1 / returnedBeforeWaitReleased=1 / oldWorkerRunningAtReturn=1
+    //
+    // 与上一用例（`testShutdownCoversWorkerHandedOffByRejectedStart`）的区别：那条是
+    // 「启动被拒绝**返回之后**再 shutdown」，此时线程已经在 retiring 里；本用例是
+    // 「回收**等待尚未结束**时并发 shutdown」——正是本轮新增的窗口。
+    //
+    // 窗口如何确定性撑开（不靠碰运气）：退出屏障把旧 worker 停在「jobFailed 已发出、
+    // run() 未返回」处，回收线程必然进入锁外 wait 且等满预算；本用例在**另一线程**
+    // 上发起 startSingle()（回收发生在那条线程里），主线程此时调 shutdown()，并断言
+    // shutdown() 返回那一刻旧 worker 仍在 run() 且回收线程尚未结束。
+    void testShutdownDuringInflightReclaimMustNotReportSuccess() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe;
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+
+        // 用例轮数少而稳：每轮都要等满一次启动预算，3 轮足以判别且不拖长套件。
+        constexpr int kRounds = 3;
+        // 回收线程在屏障放行前至少会阻塞 StartHandshakeTimeoutMs（100ms）。为可靠地
+        // 让主线程在「锁外等待中」发起 shutdown()，屏障额外保持一小段时间。
+        constexpr int kInflightHoldMs = 30;
+
+        std::atomic_int armed{0};
+        std::atomic_int notified{0};
+        std::atomic_int inflightRounds{0}; // 成功构造出「回收等待中」窗口的轮数
+        std::atomic_int earlyReturns{0};   // shutdown 在旧 worker 退出前返回 true（缺陷）
+        std::atomic_bool oldWorkerRunning{false};
+        std::atomic_bool barrierEntered{false};
+
+        QSemaphore releaseBarrier;
+        QSemaphore barrierReached;
+        std::atomic_bool holdBarrier{false};
+
+        service.setWorkerLoopFaultHookForTest([&] {
+            if (armed.load(std::memory_order_acquire) != 0 && armed.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                throw std::runtime_error("injected worker-loop fault");
+            }
+        });
+
+        // 退出屏障：旧 worker 在此停住（run() 未返回）。
+        service.setWorkerExitBarrierForTest([&] {
+            if (!holdBarrier.load(std::memory_order_acquire)) {
+                return;
+            }
+            oldWorkerRunning.store(true, std::memory_order_release);
+            barrierEntered.store(true, std::memory_order_release);
+            barrierReached.release();
+            releaseBarrier.tryAcquire(1, 5000); // 有界：任何失败路径下 worker 都能自行退出
+            oldWorkerRunning.store(false, std::memory_order_release);
+        });
+
+        QMetaObject::Connection failConn = QObject::connect(
+            &service, &FlowExecutionService::jobFailed, &service,
+            [&](FlowExecutionService::JobType, const QString&) { ++notified; }, Qt::DirectConnection);
+
+        // 失败路径收尾：放行屏障、清钩子、join starter 与 worker。必须最后声明。
+        std::thread starter;
+        ServiceContractCleanupGuard guard{&service,
+                                          failConn,
+                                          [&] {
+                                              holdBarrier.store(false, std::memory_order_release);
+                                              releaseBarrier.release();
+                                          },
+                                          [&] {
+                                              service.clearWorkerLoopFaultHookForTest();
+                                              service.clearWorkerExitBarrierForTest();
+                                          },
+                                          &starter,
+                                          true};
+
+        for (int round = 0; round < kRounds; ++round) {
+            QElapsedTimer idle;
+            idle.start();
+            while (service.isActive() && idle.elapsed() < 1500) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                QThread::msleep(1);
+            }
+            if (service.isActive()) {
+                break; // 收尾由 guard 负责
+            }
+
+            holdBarrier.store(true, std::memory_order_release);
+            barrierEntered.store(false, std::memory_order_release);
+            armed.store(1, std::memory_order_release);
+
+            // 首启：注入故障，等启动握手被放行后 worker 停在退出屏障上。
+            const bool firstStart = service.startSingle();
+            const bool atBarrier = barrierReached.tryAcquire(1, 3000);
+            if (firstStart || !atBarrier) {
+                holdBarrier.store(false, std::memory_order_release);
+                releaseBarrier.release();
+                continue; // 本轮不计入判别样本
+            }
+
+            // 在**另一线程**上发起重试：回收（含锁外 wait）发生在该线程内，
+            // 主线程得以在回收进行中并发调用 shutdown()。
+            std::atomic_bool retryReturned{false};
+            std::atomic_bool retryOk{false};
+            std::atomic_bool released{false};
+            starter = std::thread([&] {
+                retryOk.store(service.startSingle(), std::memory_order_release);
+                retryReturned.store(true, std::memory_order_release);
+                // 缺陷态下 shutdown() 会先返回并把线程收归自己/或漏掉；修复态下 shutdown()
+                // 需要本线程放弃所有权后才能 join 完成。这里在有界延迟内放行屏障，
+                // 保证任何实现都能收敛，不构成自锁。
+                QElapsedTimer t;
+                t.start();
+                while (t.elapsed() < 3000 && !released.load(std::memory_order_acquire)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                if (!released.exchange(true)) {
+                    holdBarrier.store(false, std::memory_order_release);
+                    releaseBarrier.release();
+                }
+            });
+
+            // 等 retry 线程真正进入「锁外等待」：屏障已进入 + retry 尚未返回即证明它正在
+            // 回收预算内等待（这是可判别的前置条件，不是睡眠撞窗口）。
+            QElapsedTimer spin;
+            spin.start();
+            bool inflightObserved = false;
+            while (spin.elapsed() < 50) {
+                if (barrierEntered.load(std::memory_order_acquire) && !retryReturned.load(std::memory_order_acquire)) {
+                    inflightObserved = true;
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            if (inflightObserved) {
+                // 屏障额外保持，确保 shutdown() 落在回收的锁外等待期间。
+                QThread::msleep(kInflightHoldMs);
+            }
+
+            // —— 核心：回收等待中并发 shutdown() ——
+            QElapsedTimer shutdownTimer;
+            shutdownTimer.start();
+            const bool shutdownOk = service.shutdown();
+            const qint64 shutdownMs = shutdownTimer.elapsed();
+            const bool stillRunning = oldWorkerRunning.load(std::memory_order_acquire);
+            const bool retryStillRunning = !retryReturned.load(std::memory_order_acquire);
+
+            if (inflightObserved) {
+                ++inflightRounds;
+                if (shutdownOk && (stillRunning || retryStillRunning)) {
+                    ++earlyReturns;
+                    qInfo("[P1-INFLIGHT] round %d: shutdown returned true after %lld ms while the retired "
+                          "worker was still running",
+                          round, static_cast<long long>(shutdownMs));
+                }
+            }
+
+            // 放行并回收 worker/starter，为下一轮准备。
+            if (!released.exchange(true)) {
+                holdBarrier.store(false, std::memory_order_release);
+                releaseBarrier.release();
+            }
+            if (starter.joinable()) {
+                starter.join();
+            }
+            releaseBarrier.tryAcquire(1, 2000); // 排水
+
+            QElapsedTimer settle;
+            settle.start();
+            while (service.isActive() && settle.elapsed() < 3000) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                QThread::msleep(1);
+            }
+        }
+
+        if (starter.joinable()) {
+            starter.join();
+        }
+        QObject::disconnect(failConn);
+        service.clearWorkerLoopFaultHookForTest();
+        service.clearWorkerExitBarrierForTest();
+
+        qInfo("[P1-INFLIGHT] rounds=%d inflightRounds=%d earlyReturns=%d notified=%d", kRounds, inflightRounds.load(),
+              earlyReturns.load(), notified.load());
+
+        // 正向前提：必须真的构造出「回收等待中」的窗口，否则本用例没有判别力。
+        QVERIFY2(inflightRounds.load() >= 1,
+                 qPrintable(QStringLiteral("the case must observe an in-flight reclaim window before calling "
+                                           "shutdown() (inflightRounds=%1, rounds=%2)")
+                                .arg(inflightRounds.load())
+                                .arg(kRounds)));
+
+        // 核心判据：shutdown() 返回 true 时不得还有 worker 在跑，也不得还有回收线程
+        // 持着尚未交出的 worker。
+        QVERIFY2(earlyReturns.load() == 0,
+                 qPrintable(QStringLiteral("shutdown() must not report success while a bounded reclaim is still "
+                                           "waiting for the retired worker (earlyReturns=%1/%2): the thread must "
+                                           "be visible to the service *before* the off-lock wait")
+                                .arg(earlyReturns.load())
+                                .arg(inflightRounds.load())));
+
+        guard.finish();
+    }
 };
 
 QTEST_MAIN(TestFlowExecutionService)
