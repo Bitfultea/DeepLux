@@ -3,13 +3,16 @@
 
 #include "ILLMClient.h"
 
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QMetaObject>
 #include <QMutex>
 #include <QObject>
 #include <QPointer>
 #include <QSet>
+#include <functional>
 #include <memory>
 
 class QTimer;
@@ -54,7 +57,27 @@ public:
     void onGuiEvent(const GuiEvent& event);
     QJsonObject handleToolCall(const QString& toolName, const QJsonObject& params);
 
+    /**
+     * @brief 阶段1 §2：统一入口权限判定——聊天路径、Bridge handleToolCall、
+     * 确认执行前复验三处共用，杜绝策略分叉（F08）。
+     */
+    enum class ToolGate { Allow, RequireConfirmation, Deny };
+    ToolGate evaluateToolGate(const QString& toolName, const QJsonObject& params = {}) const;
+    static bool toolRequiresConfirmation(PermissionLevel level, const QString& toolName);
+
+    /**
+     * @brief 阶段1 §4：当前待确认批次的完整载荷（confirmationId + tools + context
+     * 摘要/工程/版本快照/副作用/可撤销性），供 UI 展示与审计；无待确认批次时返回空对象。
+     */
+    QJsonObject pendingConfirmationPayload() const;
+
     void setLLMClient(ILLMClient* client);
+    using DataSourceViewHandler = std::function<QJsonObject(const QString&, const QJsonObject&)>;
+    void registerDataSourceViewHandler(QObject* owner, DataSourceViewHandler handler);
+    void unregisterDataSourceViewHandler(QObject* owner);
+    QJsonObject executeDataSourceViewAction(const QString& toolName, const QJsonObject& params) const;
+    QJsonObject confirmedActiveAnnotationSessionSaveSnapshot(const QString& outputPath) const;
+    QJsonObject confirmedActiveAnnotationSessionOpenSnapshot(const QString& sessionPath) const;
     ILLMClient* llmClient() const {
         return m_llmClient;
     }
@@ -65,23 +88,18 @@ public:
 
     void sendUserMessage(const QString& message);
     void sendUserMessageWithImages(const QString& message, const QList<QPixmap>& images);
+    bool cancelCurrentRequest();
     void clearConversation();
     bool undoLastAgentAction();
-
-    /**
-     * @brief 中止当前轮（UI 停止按钮 / 外部 IPC）
-     *
-     * 幂等：Idle 下只记 warning；非 Idle 时作废排队任务与后续续跑、
-     * 中止 LLM 请求与运行等待，回到 Idle 并发出 agentTurnAborted()。
-     */
     void abortCurrentTurn();
-    /// 中止代号（每次用户消息/中止 +1；测试断言用）
     quint64 turnGeneration() const {
         return m_turnGeneration;
     }
-    /// 最近一次 LLM 分类错误的类别名（"Auth"/"RateLimit"/...；空 = 无）；UI 审计用
     QString lastLLMErrorCategory() const {
         return m_lastErrorCategory;
+    }
+    QString lastResponseReasoning() const {
+        return m_lastResponseReasoning;
     }
 
     void logAction(const AgentActionLogEntry& entry);
@@ -95,43 +113,57 @@ public:
     QJsonArray pendingToolCalls() const {
         return m_pendingToolCalls;
     }
-    void confirmPendingTools();
-    void rejectPendingTools();
+    QString pendingConfirmationId() const {
+        return m_pendingConfirmationId;
+    }
+
+    /**
+     * @brief 批准/拒绝当前待确认批次（阶段1 审核整改 R2;复审2 R1 收口）。
+     *
+     * confirmationId 为必填且必须与当前待确认批次一致——批准必须绑定到用户
+     * 所看到的那一批操作。空 id 或错配（旧批次迟到事件）一律拒绝：返回 false,
+     * 零副作用,当前批次保持待确认。
+     */
+    bool confirmPendingTools(const QString& confirmationId);
+    bool rejectPendingTools(const QString& confirmationId);
 
     // 测试/调试支持：只读访问对话历史大小
     int conversationHistorySize() const {
         return m_conversationHistory.size();
     }
+    const QList<AgentMessage>& conversationHistory() const {
+        return m_conversationHistory;
+    }
 
 signals:
     void actionLogEntryAdded(const AgentActionLogEntry& entry);
+    void undoRejected(const QString& reason);
     void permissionLevelChanged(PermissionLevel level);
     void agentActionReceived(const QString& action, const QJsonObject& params);
     void agentActionCompleted(const QString& action, const QJsonObject& result);
     void llmResponseReceived(const QString& content, const QJsonArray& toolCalls);
     void llmErrorOccurred(const QString& error);
-    void llmUsageReported(int promptTokens, int completionTokens);
     void toolsPendingConfirmation(const QJsonArray& toolCalls);
     void agentLoopIterating();
-    /// 状态机迁移（UI：状态条文案 / 停止按钮可见性 / 面板执行态）
+    void llmUsageReported(int promptTokens, int completionTokens);
     void agentStateChanged(AgentState state);
-    /// 本轮被用户中止（UI 复位状态条与思考态）
     void agentTurnAborted();
-
-    // ---- 流式（设计 §5.1；只增不改）----
     void agentStreamStarted();
-    void agentStreamContentDelta(const QString& text);   // 已按 50ms 合批
-    void agentStreamReasoningDelta(const QString& text); // 已按 50ms 合批
+    void agentStreamContentDelta(const QString& text);
+    void agentStreamReasoningDelta(const QString& text);
     void agentStreamFinished();
     void agentStreamAborted();
     void agentStreamFallback(const QString& reason);
-    void agentStreamTruncated(); // finish_reason=length（UI 状态条提示）
+    void agentStreamTruncated();
 
-DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& resp);
+private slots:
+    void onLLMResponse(const struct AgentResponse& resp);
     void onLLMError(const QString& error);
-    // 分类错误（最终失败）：只落审计日志，状态机仍由 onLLMError 收口
+    void onLLMRequestFailed(const QString& requestId, const QString& error);
     void onLLMErrorClassified(const struct LLMErrorInfo& info);
-    void doConfirmPendingTools(QJsonArray calls);
+    void onLLMErrorClassifiedForRequest(const QString& requestId, const struct LLMErrorInfo& info);
+    QString finalizeTextReply(const QString& content) const;
+    void doConfirmPendingTools(QJsonArray calls, const QString& confirmationId);
     void onStreamStarted();
     void onStreamContentDelta(const QString& text);
     void onStreamReasoningDelta(const QString& text);
@@ -139,46 +171,60 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
     void onStreamFailed();
     void onStreamFallback(const QString& reason);
 
-    DEEPLUX_TEST_VISIBILITY : explicit AgentController(QObject* parent = nullptr);
+private:
+    explicit AgentController(QObject* parent = nullptr);
     ~AgentController() override;
 
     QString buildContext();
-    void extendAgentLoop(const QJsonArray& toolCalls);
+    void extendAgentLoop(const QJsonArray& toolCalls, const QString& confirmationId = QString());
+    void pollPendingQueries(int generation);
+    void cancelPendingQueries(const QString& reason);
+    void continueAgentLoop();
+    void sendLLMRequest(AgentConversation ctx);
     void trimHistoryIfNeeded();
-
-    /// 把本批工具结果里的 imagePath 转成下一轮多模态输入或文本降级说明（设计 §6.4）
     void attachToolImages(const QJsonArray& results);
-    /// 视觉降级重发：去掉最近一条带图 user 消息的 images（无带图消息返回 false）
     bool stripImagesFromLastUserMessage();
-
-    // ---- 流式合批（设计 §5.2；唯一合批点）----
     void flushStreamPending();
     void resetStreamBuffer();
 
-    // 权限矩阵的测试入口：转调唯一的 requiresConfirmation 实现（设计 §3.5 第 10 条）
-    static bool toolRequiresConfirmation(PermissionLevel level, const QString& toolName);
+    // 阶段1 §4/§5：确认批次绑定工程与配置版本快照；执行前重校验，陈旧确认零副作用拒绝
+    void beginPendingConfirmation(const QJsonArray& calls, const QString& content, bool continueAfter);
+    bool confirmationContextStillValid(const QJsonArray& calls, QString* reason) const;
+    QJsonObject unresolvedFileTargetPreflight(const QString& toolName) const;
+    QJsonObject cameraCyclePreflight(const QString& toolName, const QJsonObject& params) const;
+    QJsonObject cameraSessionPreflight(const QString& toolName) const;
+    QJsonObject cameraCycleBatchPreflight(const QJsonArray& calls) const;
+    // 未执行/被拒绝的确认批次：为每个 call 补一条 tool 结果，保持 OpenAI 对话合法性
+    void appendToolResultsForCalls(const QJsonArray& calls, const QJsonObject& result);
 
-    // ---- 上下文治理（设计 §7/§8）：唯一配置读取点 + 预算/阈值访问器 ----
-    int contextBudgetTokens() const;     // agent/contextBudgetTokens 默认 128000，clamp [16000,1048576]
-    int toolResultMaxChars() const;      // agent/toolResultMaxChars 默认 6000，clamp [1000,64000]
-    int flowSummaryThreshold() const;    // agent/flowSummaryThreshold 默认 24，clamp [1,1000]
-    int flowSummaryPreviewCount() const; // agent/flowSummaryPreviewCount 默认 24，clamp [1,200]
-    /// 测试用固定上限（-1 = 沿用配置；避免依赖 ConfigManager 初始化时序）
-    DEEPLUX_TEST_VISIBILITY : void setContextLimitsForTest(int budgetTokens, int toolResultMaxChars,
-                                                           int summaryThreshold, int summaryPreviewCount);
-
-    /// 保首尾的 tool 结果截断（设计 §7.4；maxChars 会 clamp 到 [1000,64000]）
-    static QString truncateToolResult(const QString& json, int maxChars);
-
-    // ---- R1/L9：非流式 reasoning 只读访问器 + 单轮全局 deadline ----
-    QString lastResponseReasoning() const {
-        return m_lastResponseReasoning;
-    }
-    int turnDeadlineMs() const; // agent/turnDeadlineMs 默认 600000，clamp [10000,3600000]
-    DEEPLUX_TEST_VISIBILITY : void setTurnDeadlineMsForTest(int ms); // 绕过 clamp，仅用于触发超时
-    void setTurnDeadlineConfigForTest(int ms);                       // 模拟配置值（走 clamp）
+    int turnDeadlineMs() const;
+    void setTurnDeadlineMsForTest(int ms);
+    void setTurnDeadlineConfigForTest(int ms);
     bool turnDeadlineExceeded() const;
     void endTurnWithReason(const QString& responseText, const QString& errorText, bool suppressClientError);
+    bool sendPreparedContext();
+    void failContextSend(const QString& code, const QString& detail);
+    void bindProjectSignals(Project* project);
+    void onProjectStructureChanged();
+    void snapshotConfirmation();
+    bool confirmationExpired() const;
+    void expirePendingConfirmation(const QString& reason);
+    QSet<int> protectedHistoryIndices() const;
+    bool historyPairsValid(QString* error) const;
+    void repairOrphanToolGroups();
+    bool dropOldestUserTurn();
+    bool dropOldestToolGroup();
+    qint64 estimateHistoryTokens();
+    qint64 estimateTokensFor(const QList<AgentMessage>& messages, const QString& systemPrompt,
+                             bool countReasoning) const;
+    bool echoesReasoning() const;
+    int contextBudgetTokens() const;
+    int toolResultMaxChars() const;
+    int flowSummaryThreshold() const;
+    int flowSummaryPreviewCount() const;
+    void setContextLimitsForTest(int budgetTokens, int toolResultMaxChars, int summaryThreshold,
+                                 int summaryPreviewCount);
+    static QString truncateToolResult(const QString& json, int maxChars);
 
     bool m_initialized = false;
     PermissionLevel m_permissionLevel = PermissionLevel::Advisor;
@@ -192,11 +238,32 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
     QJsonArray m_pendingToolCalls;
     bool m_continueAfterPendingTools = true;
 
-    int m_agentTurnCount = 0;
-    AgentState m_state = AgentState::Idle;
-    mutable QMutex m_stateMutex;
+    // 待确认批次上下文快照（阶段1 §4）
+    QString m_pendingConfirmationId;
+    bool m_pendingHasProject = false;
+    QString m_pendingProjectPath;
+    QString m_pendingProjectName;
+    QByteArray m_pendingProjectFingerprint; // 工程内容 sha1，检出任何来源的窗口期修改
+    bool m_pendingDataSourceEpochCaptured = false;
+    quint64 m_pendingDataSourceProjectIdentity = 0;
+    quint64 m_pendingDataSourceGeneration = 0;
+    bool m_pendingDataSourceViewOwnerCaptured = false;
+    QPointer<QObject> m_pendingDataSourceViewOwner;
+    quintptr m_pendingDataSourceViewOwnerIdentity = 0;
+    QJsonObject m_pendingFileTargetPaths; // module:<instance ID>/call:<tool call ID> -> resolved output target
+    bool m_pendingFileTargetsCaptured = false;
+    int m_pendingUndoIndex = -1;
+    int m_pendingUndoCount = -1;
+    bool m_pendingResumeSnapshotValid = false;
+    QString m_pendingResumeRunId;
+    QString m_pendingResumeSessionId;
+    int m_pendingResumeState = 0;
+    int m_pendingResumeLifecycleGeneration = 0;
 
-    // 异步执行与取消（设计 §5）：中止代号 + 排队连点保护 + 视觉降级状态
+    QPointer<QObject> m_dataSourceViewOwner;
+    DataSourceViewHandler m_dataSourceViewHandler;
+    mutable QJsonObject m_lastQuickMeasurementStatus;
+
     quint64 m_turnGeneration = 0;
     bool m_dispatchQueued = false;
     bool m_queuedContinueAfterPending = true;
@@ -204,58 +271,38 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
     bool m_visionDisabledForSession = false;
     bool m_suppressNextLlmError = false;
     QString m_lastErrorCategory;
-
-    // ---- 流式合批状态（设计 §5.2/§5.6）：唯一合批点在控制器
     QTimer* m_streamFlushTimer = nullptr;
     QString m_pendingContent;
     QString m_pendingReasoning;
     bool m_streamActive = false;
-
-    // ---- R1/L9：最近一次响应 reasoning + 单轮 deadline 状态 ----
     QString m_lastResponseReasoning;
     QElapsedTimer m_turnTimer;
-    int m_turnDeadlineOverride = -1;       // 测试触发值（绕过 clamp）
-    int m_turnDeadlineConfigOverride = -1; // 模拟配置值（走 clamp）
-
-    // ---- 工程会话身份/版本（B2：确认有效期；内部递增，不以指针/路径为唯一身份）----
+    int m_turnDeadlineOverride = -1;
+    int m_turnDeadlineConfigOverride = -1;
     quint64 m_projectSessionId = 0;
     quint64 m_projectRevision = 0;
     quint64 m_confirmationSessionId = 0;
     quint64 m_confirmationRevision = 0;
     QList<QMetaObject::Connection> m_projectConnections;
-
-    // ---- 上下文治理（设计 §7）：测试覆盖值（-1 = 沿用配置）----
     int m_contextBudgetOverride = -1;
     int m_toolResultMaxCharsOverride = -1;
     int m_summaryThresholdOverride = -1;
     int m_summaryPreviewOverride = -1;
 
-    // ---- 权限/确认有效期（集成收口 B2）----
-    void bindProjectSignals(Project* project);
-    void onProjectStructureChanged();
-    void snapshotConfirmation();
-    bool confirmationExpired() const;
-    void expirePendingConfirmation(const QString& reason);
-    /// Observer 混合批次：只读逐项执行、写入拒绝；返回 true 表示存在拒绝项
-    bool executeObserverCalls(const QJsonArray& calls, bool continueAfter);
-
-    // ---- 上下文保护与发送前校验（集成收口 B3）----
-    /// 保护集合：当前真实用户请求、在途调用组、最近完整工具组（含其后的自动回灌消息）
-    QSet<int> protectedHistoryIndices() const;
-    /// 发送前配对校验：每个 assistant(tool_calls) 与 tool 结果恰好一一配对
-    bool historyPairsValid(QString* error) const;
-    /// 唯一的发送入口：裁剪→配对校验→预算校验→sendRequest
-    bool sendPreparedContext();
-    void failContextSend(const QString& code, const QString& detail);
-    qint64 estimateTokensFor(const QList<AgentMessage>& messages, const QString& systemPrompt,
-                             bool countReasoning) const;
-
-    // 工具组原子裁剪辅助（设计 §7.3；全部只在 trimHistoryIfNeeded 内使用）
-    void repairOrphanToolGroups();
-    bool dropOldestUserTurn();
-    bool dropOldestToolGroup();
-    qint64 estimateHistoryTokens();
-    bool echoesReasoning() const; // reasoning 仅在回传时计入 token 预算（§7.1）
+    int m_agentTurnCount = 0;
+    int m_parameterCorrectionRetries = 0;
+    QSet<QString> m_parameterFailureSignatures;
+    struct PendingQuery {
+        QString callId;
+        QString name;
+        QJsonObject params;
+    };
+    QList<PendingQuery> m_pendingQueries;
+    QDateTime m_pendingQueryDeadline;
+    int m_waitGeneration = 0;
+    QString m_activeLLMRequestId;
+    AgentState m_state = AgentState::Idle;
+    mutable QMutex m_stateMutex;
 
     void transitionTo(AgentState newState);
     bool tryTransitionTo(AgentState expected, AgentState newState);

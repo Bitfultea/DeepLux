@@ -9,19 +9,22 @@
         "parameters": {
             "calibrationType": {
                 "order": 10,
-                "label": "标定类型"
+                "label": "标定类型",
+                "options": [{"value": "Perspective", "label": "透视变换"}, {"value": "Affine", "label": "仿射变换"}]
             },
             "outputWidth": {
                 "min": 0,
+                "max": 16384,
                 "step": 1,
-                "decimals": 1,
+                "decimals": 0,
                 "order": 20,
                 "label": "输出宽度"
             },
             "outputHeight": {
                 "min": 0,
+                "max": 16384,
                 "step": 1,
-                "decimals": 1,
+                "decimals": 0,
                 "order": 30,
                 "label": "输出高度"
             },
@@ -32,7 +35,40 @@
             "clearPointsOnRun": {
                 "order": 50,
                 "label": "运行时清除点"
+            },
+            "calibrationPoints": {
+                "order": 60,
+                "label": "标定点对",
+                "maxItems": 64,
+                "crossFieldConstraint": "Empty while configuring; a run requires 4..64 non-collinear point pairs",
+                "items": {"type": "object", "properties": {
+                    "image": {
+                        "type": "array",
+                        "description": "图像点为当前输入图像局部像素坐标 (x,y)，不是屏幕坐标，也不自动表示原始相机图像像素。",
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "items": {"type": "number"}
+                    },
+                    "world": {
+                        "type": "array",
+                        "description": "调用者提供的目标平面 (x,y) 数值；目标单位、原点和参考框架由调用者定义，插件不转换为毫米或固定外部世界坐标。",
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "items": {"type": "number"}
+                    }
+                }}
             }
+        },
+        "results": {
+            "calibration_valid": {"label": "标定有效", "type": "boolean", "order": 10},
+            "reprojection_error": {
+                "label": "重投影误差",
+                "type": "number",
+                "unit": "calibrationPoints.world 的调用者定义单位",
+                "description": "目标坐标域中的 RMS 误差，数值尺度沿用 calibrationPoints.world；不表示固定物理单位。",
+                "order": 20
+            },
+            "point_count": {"label": "标定点数", "type": "integer", "order": 30}
         }
     },
     "ports": {
@@ -50,6 +86,20 @@
                 "id": "image",
                 "displayName": "输出",
                 "type": "Image2D",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "reprojection_error",
+                "displayName": "重投影误差",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "point_count",
+                "displayName": "标定点数",
+                "type": "Integer",
                 "required": false,
                 "multiple": false
             }

@@ -1,10 +1,12 @@
 #include "HImageWidget.h"
 
 #include <QDebug>
+#include <QLineF>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QStyle>
 #include <QStyleOption>
+#include <QUuid>
 #include <QWheelEvent>
 #include <cmath>
 
@@ -21,9 +23,20 @@ HImageWidget::HImageWidget(QWidget* parent) : QWidget(parent) {
 HImageWidget::~HImageWidget() {}
 
 void HImageWidget::setImage(const QImage& image, bool preserveView) {
+    ImageCoordinateProvenance provenance;
+    if (!image.isNull()) {
+        provenance.sourceImageId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        provenance.sourceSize = image.size();
+    }
+    setImage(image, provenance, preserveView);
+}
+
+void HImageWidget::setImage(const QImage& image, const ImageCoordinateProvenance& provenance, bool preserveView) {
+    cancelPendingPointerInput(preserveView);
     const bool hadImage = m_hasImage;
     m_image = image;
     m_hasImage = !image.isNull();
+    m_coordinateProvenance = m_hasImage && provenance.isValid() ? provenance : ImageCoordinateProvenance();
 
     if (m_hasImage) {
         m_imageWidth = image.width();
@@ -37,13 +50,18 @@ void HImageWidget::setImage(const QImage& image, bool preserveView) {
     } else {
         m_imageWidth = 0;
         m_imageHeight = 0;
+        if (hadImage)
+            emit imageCleared();
     }
 
     update();
 }
 
 void HImageWidget::clearImage() {
+    cancelPendingPointerInput();
+    const bool hadImage = m_hasImage;
     m_image = QImage();
+    m_coordinateProvenance = ImageCoordinateProvenance();
     m_hasImage = false;
     m_imageWidth = 0;
     m_imageHeight = 0;
@@ -52,6 +70,19 @@ void HImageWidget::clearImage() {
     m_measurementPoints.clear();
     m_measurementLines.clear();
     updateTransform();
+    update();
+    if (hadImage)
+        emit imageCleared();
+}
+
+void HImageWidget::cancelPendingPointerInput(bool preservePan) {
+    const bool wasPanning = m_isPanning;
+    m_clickIsLeftButton = false;
+    m_isDrawing = false;
+    if (!preservePan)
+        m_isPanning = false;
+    if (wasPanning && !preservePan)
+        unsetCursor();
     update();
 }
 
@@ -92,8 +123,8 @@ void HImageWidget::actualSize() {
 }
 
 void HImageWidget::setRoiMode(RoiType type) {
+    cancelPendingPointerInput();
     m_roiMode = type;
-    m_isDrawing = false;
 }
 
 void HImageWidget::clearRois() {
@@ -127,6 +158,10 @@ QPointF HImageWidget::widgetToImage(const QPointF& widgetPoint) const {
 
 QPointF HImageWidget::imageToWidget(const QPointF& imagePoint) const {
     return m_transform.map(imagePoint);
+}
+
+QRectF HImageWidget::imageRectInWidget() const {
+    return QRectF(m_offset, QSizeF(m_imageWidth * m_zoom, m_imageHeight * m_zoom));
 }
 
 void HImageWidget::paintEvent(QPaintEvent* event) {
@@ -261,10 +296,12 @@ void HImageWidget::resizeEvent(QResizeEvent* event) {
 void HImageWidget::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
         m_clickPressPos = event->pos();
-        m_clickIsLeftButton = true;
+        m_clickIsLeftButton = m_hasImage && imageRectInWidget().contains(event->pos());
     }
 
     if (event->button() == Qt::LeftButton && m_roiMode != RoiType::None && m_hasImage) {
+        if (!imageRectInWidget().contains(event->pos()))
+            return;
         m_isDrawing = true;
         m_drawStart = widgetToImage(event->pos());
         m_drawEnd = m_drawStart;
@@ -298,7 +335,7 @@ void HImageWidget::mouseReleaseEvent(QMouseEvent* event) {
         if (m_clickIsLeftButton) {
             QPointF delta = event->pos() - m_clickPressPos;
             double dist = std::sqrt(delta.x() * delta.x() + delta.y() * delta.y());
-            if (dist < 5.0 && m_hasImage && m_roiMode == RoiType::None) {
+            if (dist < 5.0 && m_hasImage && m_roiMode == RoiType::None && imageRectInWidget().contains(event->pos())) {
                 QPointF imgPos = widgetToImage(event->pos());
                 emit imageClicked(imgPos);
             }
@@ -308,6 +345,16 @@ void HImageWidget::mouseReleaseEvent(QMouseEvent* event) {
 
     if (event->button() == Qt::LeftButton && m_isDrawing) {
         m_isDrawing = false;
+        const QPointF end = widgetToImage(event->pos());
+        m_drawEnd = QPointF(qBound(0.0, end.x(), static_cast<double>(m_imageWidth - 1)),
+                            qBound(0.0, end.y(), static_cast<double>(m_imageHeight - 1)));
+        const bool degenerateRectangle =
+            (m_roiMode == RoiType::Rectangle1 || m_roiMode == RoiType::Rectangle2) &&
+            (qFuzzyIsNull(m_drawEnd.x() - m_drawStart.x()) || qFuzzyIsNull(m_drawEnd.y() - m_drawStart.y()));
+        if (QLineF(m_drawStart, m_drawEnd).length() <= 0.0 || degenerateRectangle) {
+            update();
+            return;
+        }
 
         RoiData roi;
         roi.type = m_roiMode;
@@ -321,7 +368,7 @@ void HImageWidget::mouseReleaseEvent(QMouseEvent* event) {
         update();
     } else if (event->button() == Qt::MiddleButton) {
         m_isPanning = false;
-        setCursor(Qt::ArrowCursor);
+        unsetCursor();
     }
 }
 

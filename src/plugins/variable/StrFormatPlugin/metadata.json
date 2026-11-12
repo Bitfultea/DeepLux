@@ -13,11 +13,21 @@
             },
             "inputVariables": {
                 "order": 20,
-                "label": "输入变量"
+                "label": "输入变量",
+                "maxItems": 256,
+                "items": {"type": "string"}
             },
             "outputVariable": {
                 "order": 30,
                 "label": "输出变量"
+            }
+        },
+        "results": {
+            "$outputVariable": {
+                "label": "格式化字符串",
+                "type": "string",
+                "keyFromParameter": "outputVariable",
+                "order": 10
             }
         }
     },

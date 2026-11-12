@@ -2,30 +2,26 @@
 
 #include "core/common/Logger.h"
 
+#include <QElapsedTimer>
 #include <QFormLayout>
 #include <QJsonArray>
 #include <QLineEdit>
 #include <QSpinBox>
+#include <QTcpSocket>
+#include <QThread>
 #include <QVBoxLayout>
+#include <QtEndian>
 
 namespace DeepLux {
 
-PLCReadPlugin::PLCReadPlugin(QObject* parent)
-    : ModuleBase(parent), m_socket(new QTcpSocket(this)), m_connectLoop(nullptr), m_readLoop(nullptr) {
+PLCReadPlugin::PLCReadPlugin(QObject* parent) : ModuleBase(parent) {
     m_defaultParams = QJsonObject{
         {"ipAddress", "192.168.1.100"}, {"port", 502},    {"slaveId", 1}, {"startAddress", 0}, {"readCount", 10},
         {"outputVariable", "plc_data"}, {"timeout", 3000}};
     m_params = m_defaultParams;
-
-    connect(m_socket, &QTcpSocket::connected, this, &PLCReadPlugin::onConnected);
-    connect(m_socket, &QTcpSocket::disconnected, this, &PLCReadPlugin::onDisconnected);
-    connect(m_socket, &QTcpSocket::errorOccurred, this, &PLCReadPlugin::onError);
-    connect(m_socket, &QTcpSocket::readyRead, this, &PLCReadPlugin::onReadyRead);
 }
 
-PLCReadPlugin::~PLCReadPlugin() {
-    disconnectFromHost();
-}
+PLCReadPlugin::~PLCReadPlugin() = default;
 
 bool PLCReadPlugin::initialize() {
     if (!ModuleBase::initialize()) {
@@ -33,86 +29,6 @@ bool PLCReadPlugin::initialize() {
     }
     qDebug() << "PLCReadPlugin initialized";
     return true;
-}
-
-void PLCReadPlugin::onConnected() {
-    Logger::instance().debug("PLCRead: Connected to PLC", "Communication");
-    if (m_connectLoop) {
-        m_connectLoop->quit();
-    }
-}
-
-void PLCReadPlugin::onDisconnected() {
-    Logger::instance().debug("PLCRead: Disconnected from PLC", "Communication");
-}
-
-void PLCReadPlugin::onError(QAbstractSocket::SocketError error) {
-    Q_UNUSED(error);
-    emit errorOccurred(tr("PLC通信错误: %1").arg(m_socket->errorString()));
-    if (m_connectLoop && m_connectLoop->isRunning()) {
-        m_connectLoop->quit();
-    }
-    if (m_readLoop && m_readLoop->isRunning()) {
-        m_readLoop->quit();
-    }
-}
-
-void PLCReadPlugin::onReadyRead() {
-    m_readBuffer += m_socket->readAll();
-    if (m_readLoop) {
-        m_readLoop->quit();
-    }
-}
-
-void PLCReadPlugin::onConnectTimeout() {
-    if (m_socket->state() != QAbstractSocket::ConnectedState) {
-        m_socket->abort();
-        emit errorOccurred(tr("连接PLC %1:%2 超时").arg(m_host).arg(m_port));
-    }
-    if (m_connectLoop) {
-        m_connectLoop->quit();
-    }
-}
-
-void PLCReadPlugin::onReadTimeout() {
-    m_readTimedOut = true;
-    m_socket->disconnectFromHost();
-    if (m_readLoop) {
-        m_readLoop->quit();
-    }
-}
-
-bool PLCReadPlugin::connectToHost() {
-    if (m_socket->state() == QAbstractSocket::ConnectedState) {
-        m_socket->disconnectFromHost();
-        m_socket->waitForDisconnected(100);
-    }
-
-    m_socket->connectToHost(m_host, m_port);
-
-    QEventLoop loop;
-    m_connectLoop = &loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    timer.start(m_timeout);
-    connect(&timer, &QTimer::timeout, this, &PLCReadPlugin::onConnectTimeout);
-
-    loop.exec();
-    m_connectLoop = nullptr;
-    m_lastWaitMs = m_timeout - timer.remainingTime();
-
-    if (m_socket->state() != QAbstractSocket::ConnectedState) {
-        return false;
-    }
-
-    Logger::instance().info(QString("PLCRead: Connected to %1:%2").arg(m_host).arg(m_port), "Communication");
-    return true;
-}
-
-void PLCReadPlugin::disconnectFromHost() {
-    if (m_socket->state() == QAbstractSocket::ConnectedState || m_socket->state() == QAbstractSocket::ConnectingState) {
-        m_socket->abort();
-    }
 }
 
 QByteArray PLCReadPlugin::buildReadRequest(quint16 transactionId, quint8 unitId, quint16 startAddress,
@@ -142,16 +58,27 @@ QVector<quint16> PLCReadPlugin::parseReadResponse(const QByteArray& data) {
         return registers;
     }
 
-    // Skip MBAP header (7 bytes) + Function Code (1 byte)
-    quint8 byteCount = static_cast<quint8>(data[8]);
+    QDataStream stream(data);
+    stream.setByteOrder(QDataStream::BigEndian);
+    quint16 transactionId = 0;
+    quint16 protocolId = 0;
+    quint16 length = 0;
+    quint8 unitId = 0;
+    quint8 function = 0;
+    quint8 byteCount = 0;
+    stream >> transactionId >> protocolId >> length >> unitId >> function >> byteCount;
 
-    if (data.size() < 9 + byteCount) {
+    if (stream.status() != QDataStream::Ok || transactionId != m_transactionId || protocolId != 0 ||
+        unitId != m_slaveId || function != 0x03 || data.size() != 6 + length || length != 3 + byteCount ||
+        byteCount != m_readCount * 2) {
         return registers;
     }
 
-    // Read register values
-    for (int i = 0; i < byteCount; i += 2) {
-        quint16 value = (static_cast<quint8>(data[9 + i]) << 8) | (static_cast<quint8>(data[10 + i]));
+    for (int i = 0; i < byteCount / 2; ++i) {
+        quint16 value = 0;
+        stream >> value;
+        if (stream.status() != QDataStream::Ok)
+            return {};
         registers.append(value);
     }
 
@@ -161,63 +88,69 @@ QVector<quint16> PLCReadPlugin::parseReadResponse(const QByteArray& data) {
 bool PLCReadPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
-    m_host = m_params["ipAddress"].toString();
-    m_port = m_params["port"].toInt(502);
+    const QString host = m_params["ipAddress"].toString();
+    const quint16 port = static_cast<quint16>(m_params["port"].toInt(502));
     m_slaveId = static_cast<quint8>(m_params["slaveId"].toInt(1));
-    m_startAddress = static_cast<quint16>(m_params["startAddress"].toInt(0));
+    const quint16 startAddress = static_cast<quint16>(m_params["startAddress"].toInt(0));
     m_readCount = static_cast<quint16>(m_params["readCount"].toInt(10));
-    m_outputVariable = m_params["outputVariable"].toString("plc_data");
-    m_timeout = m_params["timeout"].toInt(3000);
+    const QString outputVariable = m_params["outputVariable"].toString("plc_data");
+    const int timeout = m_params["timeout"].toInt(3000);
 
-    if (m_host.isEmpty()) {
+    if (host.isEmpty()) {
         emit errorOccurred(tr("IP地址不能为空"));
         return false;
     }
 
-    if (!connectToHost()) {
+    QTcpSocket socket;
+    Q_ASSERT_X(socket.thread() == QThread::currentThread(), "PLCReadPlugin::process",
+               "PLCRead socket must be created in its execution thread");
+    QElapsedTimer connectTimer;
+    connectTimer.start();
+    socket.connectToHost(host, port);
+    if (!socket.waitForConnected(timeout)) {
+        m_lastWaitMs = static_cast<int>(connectTimer.elapsed());
+        if (socket.error() == QAbstractSocket::SocketTimeoutError)
+            emit errorOccurred(tr("连接PLC %1:%2 超时").arg(host).arg(port));
+        else
+            emit errorOccurred(tr("PLC通信错误: %1").arg(socket.errorString()));
         return false;
     }
+    m_lastWaitMs = static_cast<int>(connectTimer.elapsed());
+    Logger::instance().info(QString("PLCRead: Connected to %1:%2").arg(host).arg(port), "Communication");
 
     // Build and send Modbus request
-    QByteArray request = buildReadRequest(++m_transactionId, m_slaveId, m_startAddress, m_readCount);
-    qint64 written = m_socket->write(request);
-    m_socket->flush();
-
-    if (written != request.size()) {
+    const QByteArray request = buildReadRequest(++m_transactionId, m_slaveId, startAddress, m_readCount);
+    if (socket.write(request) != request.size()) {
         emit errorOccurred(tr("发送Modbus请求失败"));
-        disconnectFromHost();
         return false;
     }
+    socket.flush();
 
     // Wait for response
-    m_readBuffer.clear();
-    m_readTimedOut = false;
+    QElapsedTimer readTimer;
+    readTimer.start();
+    QByteArray readBuffer;
+    bool completeFrame = false;
+    while (!completeFrame && readTimer.elapsed() < timeout) {
+        const int remaining = qMax(1, timeout - static_cast<int>(readTimer.elapsed()));
+        if (!socket.waitForReadyRead(remaining))
+            break;
+        readBuffer += socket.readAll();
+        if (readBuffer.size() >= 6) {
+            const auto* bytes = reinterpret_cast<const uchar*>(readBuffer.constData());
+            const int frameSize = 6 + qFromBigEndian<quint16>(bytes + 4);
+            completeFrame = frameSize <= 6 || readBuffer.size() >= frameSize;
+        }
+    }
+    m_lastWaitMs = static_cast<int>(readTimer.elapsed());
 
-    QEventLoop loop;
-    m_readLoop = &loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    timer.start(m_timeout);
-    connect(&timer, &QTimer::timeout, this, &PLCReadPlugin::onReadTimeout);
-
-    loop.exec();
-    m_readLoop = nullptr;
-    m_lastWaitMs = m_timeout - timer.remainingTime();
-
-    disconnectFromHost();
-
-    if (m_readTimedOut) {
+    if (!completeFrame && readBuffer.isEmpty()) {
         emit errorOccurred(tr("读取PLC数据超时"));
         return false;
     }
 
-    if (m_readBuffer.isEmpty()) {
-        emit errorOccurred(tr("PLC无响应数据"));
-        return false;
-    }
-
     // Parse response
-    QVector<quint16> registers = parseReadResponse(m_readBuffer);
+    QVector<quint16> registers = parseReadResponse(readBuffer);
     if (registers.isEmpty()) {
         emit errorOccurred(tr("解析PLC响应失败"));
         return false;
@@ -229,12 +162,11 @@ bool PLCReadPlugin::process(const ImageData& input, ImageData& output) {
         registerArray.append(static_cast<int>(reg));
     }
 
-    output.setData(m_outputVariable, registerArray);
-    output.setData(m_outputVariable + "_count", registers.size());
+    output.setData(outputVariable, registerArray);
+    output.setData(outputVariable + "_count", registers.size());
 
     Logger::instance().debug(
-        QString("PLCRead: Read %1 registers from address %2").arg(registers.size()).arg(m_startAddress),
-        "Communication");
+        QString("PLCRead: Read %1 registers from address %2").arg(registers.size()).arg(startAddress), "Communication");
 
     return true;
 }

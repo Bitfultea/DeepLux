@@ -9,6 +9,8 @@
 #include <QMap>
 #include <QMutex>
 #include <QObject>
+#include <QPoint>
+#include <QPointF>
 #include <QWidget>
 
 namespace DeepLux {
@@ -16,6 +18,7 @@ namespace DeepLux {
 class FlowNodeItem;
 class FlowConnectionItem;
 class Project;
+struct ModuleConnection;
 
 /**
  * @brief 流程画布
@@ -43,6 +46,7 @@ public:
     void removeConnection(const QString& fromNodeId, const QString& fromPortId, const QString& toNodeId,
                           const QString& toPortId);
     void clearConnections();
+    QString resolveConnectionEdgeType(const ModuleConnection& connection) const;
 
     // 查询
     QStringList nodeIds() const;
@@ -55,6 +59,7 @@ public:
 
     // 端口兼容性检查
     static bool portsCompatible(const PortSpec& fromPort, const PortSpec& toPort);
+    static bool quantizeNodePosition(const QPointF& position, QPoint* quantized);
 
 signals:
     void nodeAdded(const QString& nodeId);
@@ -63,6 +68,10 @@ signals:
     void connectionCreated(const QString& fromId, const QString& toId);
     void connectionRemoved(const QString& fromId, const QString& toId);
     void connectionRequest(const QString& fromId, const QString& fromPort, const QString& toId, const QString& toPort);
+    void nodeMoveStarted(const QString& nodeId, const QPointF& visualPosition);
+    void nodeMoveFinished(const QString& nodeId, const QPointF& startVisualPosition, const QPointF& finalVisualPosition,
+                          bool crossedDragThreshold, bool canceled);
+    void editRejected(const QString& reason);
 
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
@@ -179,6 +188,7 @@ protected:
 
 private:
     friend class FlowCanvas;
+    void alignToProjectPosition();
 
     QString m_nodeId;
     QString m_moduleId;
@@ -197,6 +207,12 @@ private:
 
     // 拖线状态
     bool m_draggingConnection = false;
+    bool m_moveGestureCandidate = false;
+    bool m_moveGestureCanceled = false;
+    bool m_moveGestureCrossedThreshold = false;
+    QPoint m_movePressScreenPos;
+    QPointF m_movePressScenePos;
+    QPointF m_movePressVisualPos;
     QString m_dragFromPortId;
     QPointF m_dragCurrentPos;
     FlowNodeItem* m_highlightedTarget = nullptr; // P2-fix: 追踪当前高亮节点

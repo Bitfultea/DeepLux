@@ -1,0 +1,19 @@
+{
+  "version": "3.0",
+  "id": "accept-fitellipse-pointset-0001",
+  "name": "验收-FitEllipse 图像坐标点集流程",
+  "modules": [
+    {"id": "grab", "moduleId": "GrabImage", "name": "图像采集", "params": {"grabSource": "File", "filePath": "@ACCEPTANCE_DATA@/fitellipse.png"}},
+    {"id": "crop", "moduleId": "CropImage", "name": "偏移裁剪", "params": {"rectangles": [[80, 60, 30, 20, 0]], "outputFirstAsImage": true}},
+    {"id": "input", "moduleId": "MeasurementInput", "name": "椭圆点输入", "params": {"mode": "point_set", "points": [[37, 25], [33.4852813742, 29.9497474683], [25, 32], [16.5147186258, 29.9497474683], [13, 25], [16.5147186258, 20.0502525317], [25, 18], [33.4852813742, 20.0502525317]]}},
+    {"id": "fit", "moduleId": "FitEllipse", "name": "拟合椭圆"}
+  ],
+  "connections": [
+    {"fromModuleId": "grab", "toModuleId": "crop", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "crop", "toModuleId": "input", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "input", "toModuleId": "fit", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "input", "toModuleId": "fit", "fromPort": "fit_points", "toPort": "fit_points", "edgeType": "data"}
+  ],
+  "flows": [{"id": "main", "name": "主流程", "nodes": ["grab", "crop", "input", "fit"]}],
+  "resources": {"cameras": [], "dataSources": []}
+}

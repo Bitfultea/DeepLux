@@ -2,6 +2,7 @@
 
 #include <QComboBox>
 #include <QDialog>
+#include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSpinBox>
@@ -28,9 +29,14 @@ private slots:
 
 private:
     void setupUI();
+    bool hasCommunicationPermission() const;
+    bool ensureCommunicationPermission();
+    void updatePermissionState();
+    void clearConfigurationFields();
     void loadCommunications();
     void updateButtons();
 
+    QLabel* m_permissionMessage = nullptr;
     QTableWidget* m_commTable = nullptr;
     QPushButton* m_addBtn = nullptr;
     QPushButton* m_deleteBtn = nullptr;
@@ -51,6 +57,7 @@ private:
     // Settings widget
     QWidget* m_tcpSettingsWidget = nullptr;
     QWidget* m_serialSettingsWidget = nullptr;
+    bool m_permissionGranted = false;
 };
 
 } // namespace DeepLux

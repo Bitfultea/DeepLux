@@ -4,6 +4,7 @@
 #include "core/geometry/MeasurementData.h"
 
 #include <QLabel>
+#include <QPointF>
 #include <QVBoxLayout>
 #include <cmath>
 
@@ -30,6 +31,7 @@ void DistancePLPlugin::shutdown() {
 
 bool DistancePLPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
+    output.removeData(QStringLiteral("foot_point"));
 
     // 获取输入数据
     QVariant pointVar = input.data("point");
@@ -79,6 +81,10 @@ bool DistancePLPlugin::process(const ImageData& input, ImageData& output) {
     output.setData("distance", m_resultDistance);
     output.setData("foot_x", m_resultFootX);
     output.setData("foot_y", m_resultFootY);
+    if (input.data(QStringLiteral("coordinate_frame")).toString() == QStringLiteral("ImageLocalPixel") ||
+        input.coordinateProvenance().isValid()) {
+        output.setData(QStringLiteral("foot_point"), QPointF(m_resultFootX, m_resultFootY));
+    }
 
     QString result = QString("点线距离: %1, 垂足: (%2, %3)")
                          .arg(m_resultDistance, 0, 'f', 2)

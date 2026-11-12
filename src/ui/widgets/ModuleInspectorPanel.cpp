@@ -213,6 +213,7 @@ void ModuleInspectorPanel::setupBottomBar() {
         if (m_runtimeStateUpdating)
             return;
         emit noteChanged(m_instanceId, m_noteEdit->text());
+        m_noteEdit->setModified(false);
     });
     bottomLayout->addWidget(m_noteEdit, 1);
 
@@ -432,6 +433,30 @@ void ModuleInspectorPanel::setRuntimeState(bool enabled, bool breakpoint, const 
     m_runtimeStateUpdating = false;
 }
 
+void ModuleInspectorPanel::setEnabledState(bool enabled) {
+    if (!m_enabledCheck)
+        return;
+    m_runtimeStateUpdating = true;
+    m_enabledCheck->setChecked(enabled);
+    m_runtimeStateUpdating = false;
+}
+
+void ModuleInspectorPanel::setBreakpointState(bool breakpoint) {
+    if (!m_breakpointBtn)
+        return;
+    m_runtimeStateUpdating = true;
+    m_breakpointBtn->setChecked(breakpoint);
+    m_runtimeStateUpdating = false;
+}
+
+void ModuleInspectorPanel::setNoteState(const QString& note) {
+    if (!m_noteEdit || m_noteEdit->isModified())
+        return;
+    m_runtimeStateUpdating = true;
+    m_noteEdit->setText(note);
+    m_runtimeStateUpdating = false;
+}
+
 void ModuleInspectorPanel::refreshFromModule() {
     if (!m_currentModule) {
         return;
@@ -566,6 +591,12 @@ void ModuleInspectorPanel::onPinToggled(bool checked) {
 }
 
 void ModuleInspectorPanel::onCollapseToggled(bool collapsed) {
+    setCollapsed(collapsed);
+}
+
+void ModuleInspectorPanel::setCollapsed(bool collapsed) {
+    if (m_collapsed == collapsed)
+        return;
     m_collapsed = collapsed;
     m_collapseBtn->setIcon(AppIconProvider::icon(
         collapsed ? AppIconProvider::Icon::ChevronLeft : AppIconProvider::Icon::ChevronRight, 16));

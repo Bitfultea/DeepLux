@@ -1,0 +1,22 @@
+{
+    "id": "com.deeplux.test.agent_variable_array_source",
+    "name": "VariableArraySourceFixture",
+    "category": "test",
+    "version": "1.0.0",
+    "author": "DeepLux Test",
+    "description": "Deterministic ImageData array source for Agent step tests",
+    "ui": {
+        "parameters": {
+            "outputVariable": {"label": "Output variable"},
+            "values": {"label": "Values", "acceptedTypes": ["array"]}
+        }
+    },
+    "ports": {
+        "inputs": [
+            {"id": "image", "displayName": "Input", "type": "Any", "required": false, "multiple": false}
+        ],
+        "outputs": [
+            {"id": "image", "displayName": "Output", "type": "Any", "required": false, "multiple": false}
+        ]
+    }
+}

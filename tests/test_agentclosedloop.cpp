@@ -3,6 +3,7 @@
 #include "core/agent/GuiEvent.h"
 #include "core/agent/ILLMClient.h"
 #include "core/agent/ToolSchema.h"
+#include "core/common/UserManager.h"
 #include "core/engine/RunEngine.h"
 #include "core/model/Project.h"
 #include "manager/PluginManager.h"
@@ -107,6 +108,7 @@ private:
 
 private slots:
     void initTestCase() {
+        UserManager::instance().login(QStringLiteral("developer"), QString());
         ToolSchema::instance().registerDefaultTools();
         QVERIFY(m_appDataDir.isValid());
         qputenv("DEEPLUX_APP_DATA_DIR", m_appDataDir.path().toLocal8Bit());
@@ -123,6 +125,7 @@ private slots:
     }
 
     void init() {
+        UserManager::instance().login(QStringLiteral("developer"), QString());
         AgentController::instance().clearConversation();
         ProjectManager::instance().closeProject();
         RunEngine::instance().stop();
@@ -270,22 +273,24 @@ private slots:
             makeToolCallJson(QStringLiteral("call-tune"), QStringLiteral("set_param"),
                              QJsonObject{{"instanceId", "grab_fail"}, {"key", "grabTimeout"}, {"value", 12345}}));
         client.reply(resp);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
 
-        // run_failed 允许续跑：模型收到一条新的请求（不是直接归零到 Idle）
-        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 2, 10000);
-        QCOMPARE(controller.state(), AgentController::AgentState::Thinking);
+        // 有副作用的批次执行后失败时停止自动重试，失败和跳过结果仍配对保存在对话中。
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 10000);
+        QCOMPARE(client.requestCount, 1);
 
         bool sawRunFailure = false;
         bool sawSkippedTune = false;
-        for (const AgentMessage& message : client.lastCtx.messages) {
+        for (const AgentMessage& message : controller.conversationHistory()) {
             if (message.role != QStringLiteral("tool"))
                 continue;
             const QJsonObject payload = QJsonDocument::fromJson(message.content.toUtf8()).object();
             if (message.toolCallId == QLatin1String("call-run")) {
-                sawRunFailure = payload.value("code").toString() == QLatin1String("run_failed");
+                sawRunFailure = payload.value("errorCode").toString() == QLatin1String("RUN_FAILED");
             } else if (message.toolCallId == QLatin1String("call-tune")) {
-                sawSkippedTune = payload.value("skipped").toBool() &&
-                                 payload.value("code").toString() == QLatin1String("skipped_after_failure");
+                sawSkippedTune =
+                    payload.value("errorCode").toString() == QLatin1String("SKIPPED_DUE_TO_PREVIOUS_ERROR");
             }
         }
         QVERIFY2(sawRunFailure, "run failure must be fed back to the model");
@@ -301,7 +306,7 @@ private slots:
                 auditResults << entry.result;
         }
         QVERIFY2(auditResults.contains(QStringLiteral("error")), qPrintable(auditResults.join(",")));
-        QVERIFY2(auditResults.contains(QStringLiteral("skipped")), qPrintable(auditResults.join(",")));
+        QCOMPARE(auditResults.size(), 2);
 
         AgentResponse done;
         done.success = true;
@@ -310,7 +315,7 @@ private slots:
         QCOMPARE(controller.state(), AgentController::AgentState::Idle);
     }
 
-    // 连续 run_failed 允许重规划，但不得突破既有轮数上限。
+    // run_flow 失败后停止自动重试，不能让模型连续重放有副作用的执行请求。
     void testRepeatedRunFailuresStopAtTurnLimit() {
         AgentController& controller = AgentController::instance();
         QVERIFY(controller.initialize());
@@ -336,21 +341,20 @@ private slots:
         QSignalSpy errorSpy(&controller, &AgentController::llmErrorOccurred);
 
         controller.sendUserMessage(QStringLiteral("keep retrying"));
-        for (int i = 0; i < 25 && controller.state() != AgentController::AgentState::Idle; ++i) {
-            AgentResponse resp;
-            resp.success = true;
-            resp.content = QStringLiteral("retry");
-            resp.toolCalls.append(makeToolCallJson(QStringLiteral("retry_%1").arg(i), QStringLiteral("run_flow"), {}));
-            client.reply(resp);
-        }
+        AgentResponse response;
+        response.success = true;
+        response.toolCalls.append(makeToolCallJson(QStringLiteral("retry_0"), QStringLiteral("run_flow"), {}));
+        client.reply(response);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 10000);
 
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
-        QVERIFY2(client.requestCount <= 21, qPrintable(QString::number(client.requestCount)));
+        QCOMPARE(client.requestCount, 1);
         QVERIFY(!errorSpy.isEmpty());
-        QVERIFY(errorSpy.last().at(0).toString().contains(QStringLiteral("轮数")));
+        QVERIFY(errorSpy.last().at(0).toString().contains(QStringLiteral("失败")));
     }
 
-    // B6 确定性闭环：运行失败 → 诊断被跳过 → 改参 → 再运行成功 → 模型总结；参数可撤销
+    // 运行失败会跳过同批次诊断工具，等待用户发起新的修复轮次。
     void testDiagnoseTuneRerunClosedLoop() {
         AgentController& controller = AgentController::instance();
         QVERIFY(controller.initialize());
@@ -384,51 +388,25 @@ private slots:
         runFail.toolCalls.append(makeToolCallJson(QStringLiteral("diag-1"), QStringLiteral("get_node_runtime_outputs"),
                                                   QJsonObject{{"nodeName", "grab_fix"}}));
         client.reply(runFail);
+        QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+        QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
 
-        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 2, 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 10000);
+        QCOMPARE(client.requestCount, 1);
         bool runFailed = false;
         bool diagnoseSkipped = false;
-        for (const AgentMessage& message : client.lastCtx.messages) {
+        for (const AgentMessage& message : controller.conversationHistory()) {
             if (message.role != QLatin1String("tool"))
                 continue;
             const QJsonObject payload = QJsonDocument::fromJson(message.content.toUtf8()).object();
             if (message.toolCallId == QLatin1String("run-1"))
-                runFailed = payload.value("code").toString() == QLatin1String("run_failed");
+                runFailed = payload.value("errorCode").toString() == QLatin1String("RUN_FAILED");
             if (message.toolCallId == QLatin1String("diag-1"))
-                diagnoseSkipped = payload.value("skipped").toBool();
+                diagnoseSkipped =
+                    payload.value("errorCode").toString() == QLatin1String("SKIPPED_DUE_TO_PREVIOUS_ERROR");
         }
         QVERIFY(runFailed);
         QVERIFY(diagnoseSkipped);
-
-        AgentResponse tune;
-        tune.success = true;
-        tune.toolCalls.append(
-            makeToolCallJson(QStringLiteral("tune-1"), QStringLiteral("set_param"),
-                             QJsonObject{{"instanceId", "grab_fix"}, {"key", "filePath"}, {"value", dataImagePath()}}));
-        client.reply(tune);
-        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 3, 10000);
-        QCOMPARE(project->moduleById(QStringLiteral("grab_fix"))->params.value("filePath").toString(), dataImagePath());
-
-        AgentResponse rerun;
-        rerun.success = true;
-        rerun.toolCalls.append(makeToolCallJson(QStringLiteral("run-2"), QStringLiteral("run_flow"), {}));
-        client.reply(rerun);
-        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 4, 10000);
-
-        bool rerunSucceeded = false;
-        for (const AgentMessage& message : client.lastCtx.messages) {
-            if (message.role != QLatin1String("tool") || message.toolCallId != QLatin1String("run-2"))
-                continue;
-            const QJsonObject payload = QJsonDocument::fromJson(message.content.toUtf8()).object();
-            rerunSucceeded = payload.value("success").toBool();
-        }
-        QVERIFY2(rerunSucceeded, "the corrected flow must report success to the model");
-
-        AgentResponse done;
-        done.success = true;
-        done.content = QStringLiteral("fixed and verified");
-        client.reply(done);
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
 
         QStringList outcomes;
         for (const QList<QVariant>& args : auditSpy) {
@@ -438,16 +416,14 @@ private slots:
                 outcomes << entry.result;
         }
         QVERIFY2(outcomes.contains(QStringLiteral("error")), qPrintable(outcomes.join(QStringLiteral(","))));
-        QVERIFY2(outcomes.contains(QStringLiteral("skipped")), qPrintable(outcomes.join(QStringLiteral(","))));
-        QVERIFY2(outcomes.contains(QStringLiteral("success")), qPrintable(outcomes.join(QStringLiteral(","))));
+        QCOMPARE(outcomes.size(), 2);
 
-        // 撤销只覆盖工程编辑：改参可回滚，运行副作用不在撤销承诺内
-        QVERIFY(controller.undoLastAgentAction());
+        // 失败批次没有改动工程参数。
         QCOMPARE(project->moduleById(QStringLiteral("grab_fix"))->params.value("filePath").toString(), missingPath);
     }
 
-    // 参数错误反馈给模型后允许重新规划；原批次剩余写操作仍必须跳过。
-    void testInvalidPluginParameterReplansWithoutRunningRemainingBatch() {
+    // 不可重试的参数校验失败会停止批次；后续写调用不执行且每个 callId 都有结果。
+    void testInvalidPluginParameterStopsBatchWithoutRunningRemainingWrites() {
         AgentController& controller = AgentController::instance();
         QVERIFY(controller.initialize());
         AgentActor* actor = controller.actor();
@@ -476,44 +452,28 @@ private slots:
                              QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "must_not_exist"}}));
         client.reply(resp);
 
-        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 2, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
+        QCOMPARE(client.requestCount, 1);
         QCOMPARE(project->modules().size(), beforeModules);
 
         // 模型收到明确参数错误和批次跳过结果，且两条 tool_call 均配对。
         bool sawInvalidParameter = false;
         bool sawSkippedWrite = false;
-        for (const AgentMessage& message : client.lastCtx.messages) {
+        for (const AgentMessage& message : controller.conversationHistory()) {
             if (message.role != QLatin1String("tool"))
                 continue;
             const QJsonObject payload = QJsonDocument::fromJson(message.content.toUtf8()).object();
             if (message.toolCallId == QLatin1String("call-bad"))
-                sawInvalidParameter = payload.value("code").toString() == QLatin1String("invalid_parameter");
+                sawInvalidParameter = payload.value("errorCode").toString() == QLatin1String("INVALID_PARAM");
             if (message.toolCallId == QLatin1String("call-add"))
-                sawSkippedWrite = payload.value("code").toString() == QLatin1String("skipped_after_failure") &&
-                                  payload.value("skipped").toBool();
+                sawSkippedWrite =
+                    payload.value("errorCode").toString() == QLatin1String("SKIPPED_DUE_TO_PREVIOUS_ERROR");
         }
         QVERIFY(sawInvalidParameter);
         QVERIFY(sawSkippedWrite);
-
-        // 修正调用是新一轮独立授权的写操作，并且预算/轮次仍沿用同一 Agent turn。
-        AgentResponse correction;
-        correction.success = true;
-        correction.toolCalls.append(
-            makeToolCallJson(QStringLiteral("call-fixed"), QStringLiteral("set_param"),
-                             QJsonObject{{"instanceId", "grab_param"}, {"key", "grabSource"}, {"value", "Path"}}));
-        client.reply(correction);
-        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 3, 5000);
-        QCOMPARE(project->moduleById(QStringLiteral("grab_param"))->params.value("grabSource").toString(),
-                 QStringLiteral("Path"));
-
-        AgentResponse done;
-        done.success = true;
-        done.content = QStringLiteral("corrected");
-        client.reply(done);
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
     }
 
-    void testGenericToolErrorReplansAndRepairsOccupiedInput() {
+    void testGenericToolErrorStopsBatchWithoutExecutingRemainingCalls() {
         AgentController& controller = AgentController::instance();
         QVERIFY(controller.initialize());
         AgentActor* actor = controller.actor();
@@ -546,41 +506,26 @@ private slots:
                              QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "must_not_be_added"}}));
         client.reply(failedPlan);
 
-        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 2, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.state(), AgentController::AgentState::Idle, 5000);
+        QCOMPARE(client.requestCount, 1);
         QVERIFY(!project->moduleById(QStringLiteral("must_not_be_added")));
         bool sawOccupiedInputError = false;
         bool sawSkippedCall = false;
-        for (const AgentMessage& message : client.lastCtx.messages) {
+        for (const AgentMessage& message : controller.conversationHistory()) {
             if (message.role != QLatin1String("tool"))
                 continue;
             const QJsonObject payload = QJsonDocument::fromJson(message.content.toUtf8()).object();
             if (message.toolCallId == QLatin1String("connect-conflict"))
                 sawOccupiedInputError = payload.value("error").toString().contains("Input port already connected");
             if (message.toolCallId == QLatin1String("must-be-skipped"))
-                sawSkippedCall = payload.value("skipped").toBool();
+                sawSkippedCall =
+                    payload.value("errorCode").toString() == QLatin1String("SKIPPED_DUE_TO_PREVIOUS_ERROR");
         }
         QVERIFY(sawOccupiedInputError);
         QVERIFY(sawSkippedCall);
 
-        AgentResponse repairPlan;
-        repairPlan.success = true;
-        repairPlan.toolCalls.append(makeToolCallJson(QStringLiteral("disconnect-old"),
-                                                     QStringLiteral("disconnect_modules"),
-                                                     QJsonObject{{"fromId", "grab_old"}, {"toId", "show"}}));
-        repairPlan.toolCalls.append(makeToolCallJson(QStringLiteral("connect-new"), QStringLiteral("connect_modules"),
-                                                     QJsonObject{{"fromId", "grab_new"}, {"toId", "show"}}));
-        client.reply(repairPlan);
-
-        QTRY_COMPARE_WITH_TIMEOUT(client.requestCount, 3, 5000);
         QCOMPARE(project->connections().size(), 1);
-        QCOMPARE(project->connections().first().fromModuleId, QStringLiteral("grab_new"));
-        QCOMPARE(project->connections().first().toModuleId, QStringLiteral("show"));
-
-        AgentResponse done;
-        done.success = true;
-        done.content = QStringLiteral("Connection repaired");
-        client.reply(done);
-        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        QCOMPARE(project->connections().first().fromModuleId, QStringLiteral("grab_old"));
     }
 
     // ---------- 控制器级图像回灌 ----------

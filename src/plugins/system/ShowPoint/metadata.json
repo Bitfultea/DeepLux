@@ -6,6 +6,25 @@
     "author": "DeepLux Team",
     "description": "在图像上显示点坐标",
     "ui": {
+        "results": {
+            "point_x": {
+                "label": "点 X 坐标",
+                "type": "Number",
+                "unit": "px",
+                "order": 10
+            },
+            "point_y": {
+                "label": "点 Y 坐标",
+                "type": "Number",
+                "unit": "px",
+                "order": 20
+            },
+            "point_displayed": {
+                "label": "是否显示点",
+                "type": "Boolean",
+                "order": 30
+            }
+        },
         "parameters": {
             "markerSize": {
                 "min": 0,

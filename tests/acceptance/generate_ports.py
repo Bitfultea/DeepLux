@@ -51,7 +51,7 @@ NAMED_PORTS = {
     },
     "MeasurementInput": {
         "in": [],
-        "out": [("point1", "Point2D", "点1"), ("point2", "Point2D", "点2"),
+        "out": [("point1", "Any", "点1"), ("point2", "Any", "点2"),
                 ("point", "Any", "点"), ("line", "Line2D", "线"),
                 ("line1", "Line2D", "线1"), ("line2", "Line2D", "线2"),
                 ("plane", "Plane3D", "平面"), ("fit_points", "PointSet2D", "拟合点集")],
@@ -69,8 +69,10 @@ NAMED_PORTS = {
         "out": [("distance", "Number", "距离")],
     },
     "MeasureGap": {
-        "in": [("line1", "Line2D", "线1", True), ("line2", "Line2D", "线2", True)],
-        "out": [("gap", "Number", "间隙")],
+        "in": [("point1", "Any", "点1", True), ("point2", "Any", "点2", True)],
+        "out": [("gap", "Number", "间隙"), ("gap_distance", "Number", "间隙距离"),
+                ("gap_delta_x", "Number", "X 差值"), ("gap_delta_y", "Number", "Y 差值"),
+                ("gap_delta_z", "Number", "Z 差值"), ("measurement_dimension", "String", "测量维度")],
     },
     "PointSurfaceDistance": {
         "in": [("point", "Point3D", "点", True), ("plane", "Plane3D", "面", True)],

@@ -1,3 +1,5 @@
+#include "core/agent/AgentActor.h"
+#include "core/agent/ToolSchema.h"
 #include "core/deeplux/DataContract.h"
 #include "core/engine/RunEngine.h"
 #include "core/geometry/MeasurementData.h"
@@ -1292,6 +1294,41 @@ private slots:
         QVERIFY2(std::abs(fpOut.data("plane_ny").toDouble() - (0.1 / norm)) < 0.01, "flow ny");
         QVERIFY2(fpOut.data("flatness").toDouble() < 0.05, "outlier block removed → flatness small");
         QVERIFY(portValueMatchesType(fpOut.data("plane"), DataType::Plane3D));
+
+        ToolSchema::instance().registerDefaultTools();
+        AgentActor actor;
+        const QString runId = engine.runObservation().runId;
+        QVERIFY(!runId.isEmpty());
+        QCOMPARE(engine.runObservation().result.success, true);
+        for (const QString& key : {QStringLiteral("min_height"), QStringLiteral("max_height")}) {
+            for (const QString& selector : {QStringLiteral("key"), QStringLiteral("port")}) {
+                const QJsonObject agentHeight = actor.executeTool(
+                    "get_module_output", QJsonObject{{"runId", runId}, {"instanceId", "pre"}, {selector, key}});
+                QCOMPARE(agentHeight.value("status").toString(), QStringLiteral("available"));
+                QCOMPARE(agentHeight.value("value").toDouble(), preOut.data(key).toDouble());
+                QVERIFY(!agentHeight.contains(QStringLiteral("unit")));
+                QVERIFY(!agentHeight.contains(QStringLiteral("coordinateSystem")));
+                QVERIFY(!agentHeight.contains(QStringLiteral("coordinateFrame")));
+                QVERIFY(!agentHeight.contains(QStringLiteral("sourceImageCoordinates")));
+            }
+        }
+        const QJsonObject agentResult = actor.executeTool(
+            "get_module_output", QJsonObject{{"runId", runId}, {"instanceId", "fp"}, {"key", "plane_nx"}});
+        QCOMPARE(agentResult.value("status").toString(), QStringLiteral("available"));
+        QVERIFY(std::abs(agentResult.value("value").toDouble() - (-0.05 / norm)) < 0.01);
+        QCOMPARE(agentResult.value("value").toDouble(), fpOut.data("plane_nx").toDouble());
+
+        fp.params = planeParams(320, 240, 200, 1, 0.0, 1.0, 1.0, 1.0, -99999.0);
+        project->updateModule(fp.id, fp);
+        QVERIFY(engine.loadProject(project));
+        QString failedRunId;
+        QVERIFY(engine.runOnceAsync(&failedRunId));
+        QTRY_VERIFY(engine.runObservation(failedRunId).finished);
+        const QJsonObject failed = actor.executeTool("get_run_results", QJsonObject{{"runId", failedRunId}});
+        QCOMPARE(failed.value("status").toString(), QStringLiteral("failed"));
+        const QJsonObject error = failed.value("lastError").toObject();
+        QCOMPARE(error.value("moduleId").toString(), fp.id);
+        QVERIFY(error.value("diagnostics").toString().contains(QStringLiteral("共线")));
     }
 
     // 流程验收：GrabImage(32F TIFF V 槽高度图) → GapMeasure3D，间隙宽度 ~40
@@ -1322,6 +1359,8 @@ private slots:
         gap.params["roiLength"] = 200;
         gap.params["roiHeight"] = 5;
         gap.params["specUpperLimit"] = 50.0;
+        gap.params["pixelSizeX"] = 0.5;
+        gap.params["offsetMm"] = 0.25;
         project->addModule(gap);
 
         ModuleConnection conn;
@@ -1333,13 +1372,107 @@ private slots:
         project->addConnection(conn);
 
         QVERIFY(engine.loadProject(project));
-        engine.runOnce();
+        ToolSchema::instance().registerDefaultTools();
+        QString runId;
+        QVERIFY(engine.runOnceAsync(&runId));
+        QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 10000);
+        QVERIFY2(engine.runObservation(runId).result.success,
+                 qPrintable(engine.runObservation(runId).result.errorMessage));
         const ImageData out = engine.moduleOutput(QStringLiteral("gap"));
         QVERIFY2(out.hasData("gap_width"), "flow must produce gap_width");
         QVERIFY2(out.data("gap_found").toBool(), "flow must find the groove");
         const double width = out.data("gap_width").toDouble();
-        QVERIFY2(std::abs(width - 40.0) < 1.5, qPrintable(QString("flow gap width ~40, got %1").arg(width)));
+        QVERIFY2(std::abs(width - 20.0) < 0.75, qPrintable(QString("flow gap width ~20 mm, got %1").arg(width)));
+        QVERIFY2(std::abs(out.data("gap_offset_width").toDouble() - 20.5) < 0.75,
+                 "offset width should be about 20.5 mm");
+        QCOMPARE(out.data("corner_dx_mm").toDouble(), width);
         QVERIFY2(out.data("is_pass").toBool(), "flow gap must pass spec 50");
+
+        AgentActor actor;
+        for (const QString& key :
+             {QStringLiteral("gap_width"), QStringLiteral("gap_offset_width"), QStringLiteral("corner_dx_mm")}) {
+            for (bool byPort : {true, false}) {
+                QJsonObject args{{"runId", runId}, {"instanceId", "gap"}};
+                args.insert(byPort ? QStringLiteral("port") : QStringLiteral("key"), key);
+                const QJsonObject response = actor.executeTool(QStringLiteral("get_module_output"), args);
+                QCOMPARE(response.value(QStringLiteral("unit")).toString(), QStringLiteral("mm"));
+                QCOMPARE(response.value(QStringLiteral("value")).toDouble(), out.data(key).toDouble());
+                QVERIFY(!response.contains(QStringLiteral("coordinateSystem")));
+                QVERIFY(!response.contains(QStringLiteral("coordinateFrame")));
+                QVERIFY(!response.contains(QStringLiteral("sourceImageCoordinates")));
+            }
+        }
+        for (const QString& key : {QStringLiteral("corner_dz_mm"), QStringLiteral("corner_dist_mm")}) {
+            const QJsonObject response =
+                actor.executeTool(QStringLiteral("get_module_output"),
+                                  QJsonObject{{"runId", runId}, {"instanceId", "gap"}, {"key", key}});
+            QVERIFY(!response.contains(QStringLiteral("unit")));
+            QCOMPARE(response.value(QStringLiteral("value")).toDouble(), out.data(key).toDouble());
+        }
+    }
+
+    void testFlowGapMeasure3DNotFoundKeepsFailureSentinelAndUnitMetadata() {
+        ToolSchema::instance().registerDefaultTools();
+        RunEngine& engine = RunEngine::instance();
+        ProjectManager::instance().closeProject();
+
+        QTemporaryDir dataDir;
+        QVERIFY(dataDir.isValid());
+        const QString tiffPath = dataDir.filePath("flat_height.tiff");
+        cv::Mat flat(480, 640, CV_32F, cv::Scalar(100.0f));
+        QVERIFY(cv::imwrite(tiffPath.toStdString(), flat));
+
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        ModuleInstance grab;
+        grab.id = QStringLiteral("grab");
+        grab.moduleId = QStringLiteral("GrabImage");
+        grab.params["grabSource"] = QStringLiteral("Path");
+        grab.params["filePath"] = tiffPath;
+        project->addModule(grab);
+        ModuleInstance gap;
+        gap.id = QStringLiteral("gap");
+        gap.moduleId = QStringLiteral("GapMeasure3D");
+        gap.params["roiCenterX"] = 320;
+        gap.params["roiCenterY"] = 240;
+        gap.params["roiLength"] = 200;
+        gap.params["roiHeight"] = 5;
+        gap.params["pixelSizeX"] = 0.5;
+        gap.params["offsetMm"] = 0.25;
+        gap.params["measureFailValue"] = -3.5;
+        project->addModule(gap);
+        ModuleConnection connection;
+        connection.fromModuleId = grab.id;
+        connection.toModuleId = gap.id;
+        connection.fromPort = QStringLiteral("image");
+        connection.toPort = QStringLiteral("image");
+        connection.edgeType = QStringLiteral("data");
+        project->addConnection(connection);
+
+        QVERIFY(engine.loadProject(project));
+        QString runId;
+        QVERIFY(engine.runOnceAsync(&runId));
+        QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 10000);
+        QVERIFY2(engine.runObservation(runId).result.success,
+                 qPrintable(engine.runObservation(runId).result.errorMessage));
+        const ImageData output = engine.moduleOutput(QStringLiteral("gap"));
+        QVERIFY(!output.data(QStringLiteral("gap_found")).toBool());
+        AgentActor actor;
+        const QJsonObject gapFound =
+            actor.executeTool(QStringLiteral("get_module_output"),
+                              QJsonObject{{"runId", runId}, {"instanceId", "gap"}, {"key", "gap_found"}});
+        QCOMPARE(gapFound.value(QStringLiteral("value")).toBool(), false);
+        for (const QString& key :
+             {QStringLiteral("gap_width"), QStringLiteral("gap_offset_width"), QStringLiteral("corner_dx_mm")}) {
+            for (bool byPort : {true, false}) {
+                QJsonObject args{{"runId", runId}, {"instanceId", "gap"}};
+                args.insert(byPort ? QStringLiteral("port") : QStringLiteral("key"), key);
+                const QJsonObject response = actor.executeTool(QStringLiteral("get_module_output"), args);
+                QCOMPARE(response.value(QStringLiteral("unit")).toString(), QStringLiteral("mm"));
+                QCOMPARE(response.value(QStringLiteral("value")).toDouble(), -3.5);
+                QCOMPARE(response.value(QStringLiteral("value")).toDouble(), output.data(key).toDouble());
+            }
+        }
     }
 
     // 流程验收（阶7 批3复核 P1-1 真实回归）：400×300 CV_32F TIFF，69% 像素为

@@ -31,6 +31,7 @@ public:
 
     int value = 1;
     QImage lastImage;
+    ImageCoordinateProvenance provenance;
     std::function<void()> duringProcess;
     std::atomic_int runs{0};
 
@@ -45,6 +46,8 @@ protected:
         image.fill(QColor(qMin(255, 10 * value), 40, 60));
         lastImage = image;
         output = ImageData(image);
+        if (provenance.isValid())
+            output.setCoordinateProvenance(provenance);
         output.setData(QStringLiteral("value"), value);
         output.setData(QStringLiteral("tag"), QStringLiteral("frame"));
         return true;
@@ -148,6 +151,9 @@ void TestImageRefreshCoalescer::testFrameCarriesIdentityAndSnapshot() {
     FrameProbeModule second(QStringLiteral("frame_b"));
     first.value = 1;
     second.value = 2;
+    second.provenance.sourceImageId = QStringLiteral("original-source");
+    second.provenance.sourceSize = QSize(100, 100);
+    second.provenance.localOriginInSource = QPointF(10, 20);
     QVERIFY(first.initialize());
     QVERIFY(second.initialize());
     engine.addModule(&first);
@@ -165,6 +171,10 @@ void TestImageRefreshCoalescer::testFrameCarriesIdentityAndSnapshot() {
     QCOMPARE(frame.jobId, quint64(42));
     QVERIFY(!frame.runId.isEmpty());
     QCOMPARE(frame.moduleId, second.instanceName());
+    QCOMPARE(frame.coordinateProvenance.sourceImageId, second.provenance.sourceImageId);
+    const auto sourcePoint = frame.coordinateProvenance.mapLocalToSource(QPointF(1, 2));
+    QVERIFY(sourcePoint.has_value());
+    QCOMPARE(*sourcePoint, QPointF(11, 22));
     QCOMPARE(frame.frameId, quint64(1)); // 该 run 内第二个模块的帧序号
     QCOMPARE(frame.moduleDataSnapshot.value(first.instanceName()).value(QStringLiteral("value")).toInt(), 1);
     QCOMPARE(frame.moduleDataSnapshot.value(second.instanceName()).value(QStringLiteral("value")).toInt(), 2);
@@ -389,6 +399,11 @@ void TestImageRefreshCoalescer::testDropsMismatchedIdentity() {
 
     QCOMPARE(renders, 1);
     QCOMPARE(lastRenderedFrameId, quint64(1));
+
+    coalescer.schedule(frameWith(4, 7, QStringLiteral("run-7-a")));
+    coalescer.setExpectedIdentity(7, QStringLiteral("run-7-b"));
+    coalescer.forceFlush();
+    QCOMPARE(renders, 1); // changing runs discards already queued old-run pixels
 }
 
 void TestImageRefreshCoalescer::testNewJobClearsPending() {

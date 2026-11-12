@@ -7,12 +7,15 @@
 #include "deeplux/DataContract.h"
 #include "model/ImageData.h"
 
+#include <QByteArray>
 #include <QDateTime>
 #include <QHash>
+#include <QJsonObject>
 #include <QList>
 #include <QMap>
 #include <QMutex>
 #include <QObject>
+#include <QPointer>
 #include <QReadWriteLock>
 #include <QSet>
 #include <QStack>
@@ -20,6 +23,7 @@
 #include <QTimer>
 #include <atomic>
 #include <functional>
+#include <thread>
 
 namespace DeepLux {
 class CancellationToken;
@@ -78,6 +82,44 @@ struct RunResult {
     QString errorMessage;
     int elapsedMs;
     QDateTime finishedTime;
+    QString runId;
+    QString failedModule;
+    QString failedPort;
+    QString diagnostics;
+};
+
+struct RunObservation {
+    QString runId;
+    QString sessionId;
+    QString lastIterationRunId;
+    QString lastCompletedRunId;
+    QString lastSuccessfulRunId;
+    int maxCycles = 0;
+    int completedCycles = 0;
+    RunState state = RunState::Idle;
+    bool finished = false;
+    RunResult result{};
+    QString currentModule;
+    QDateTime startedTime;
+    QPointer<Project> project;
+    QByteArray projectFingerprint;
+};
+
+struct RunResumeSnapshot {
+    QString runId;
+    QString sessionId;
+    RunState state = RunState::Idle;
+    int lifecycleGeneration = 0;
+    QPointer<Project> project;
+    QByteArray projectFingerprint;
+};
+
+struct RunExecutionCandidates {
+    QStringList moduleIds;
+    const Project* project = nullptr;
+    QByteArray projectFingerprint;
+    bool complete = false;
+    bool mayRepeat = false;
 };
 
 /**
@@ -102,11 +144,13 @@ public:
     static RunEngine& instance();
 
     using ModuleFactory = std::function<ModuleBase*(const ModuleInstance&)>;
+    enum class ProjectMutationResult { Busy, Applied, Rejected };
 
     // 阶6 九轮：取执行权的明确意图；tryBeginForRun 在锁内按意图校验预期状态。
     // Step：单步，fresh 由 m_stepCurrentModuleName 是否为空在锁内判定，连续单步
     // 共享同一 runId/累计状态（不每步重置）。
     enum class RunIntent { Single, CycleTick, Resume, Step };
+    enum class CurrentImageInputSnapshot { NoContext, UpstreamNotExecuted, NotMaterialized, Available, ContextChanged };
 
     /**
      * @brief 外部 job 租约 token（后台执行设计 §4.2/§5.3）
@@ -131,9 +175,20 @@ public:
     // job 租约与所有者入口（后台执行设计 §4.2/§5.3）
     bool beginExternalJob(JobToken* token, QString* reason = nullptr);
     bool endExternalJob(const JobToken& token);
+    bool prepareExternalJobObservation(const JobToken& token, const QString& runId, const QString& sessionId,
+                                       int maxCycles);
+    void notifyExternalCycleStopped();
+    void finishPendingExternalJobObservation(const JobToken& token, const QString& runId, const QString& sessionId,
+                                             bool stopped, const QString& error = QString());
     bool runOnceForJob(const JobToken& token, QString* reason = nullptr);
+    bool runOnceForJob(const JobToken& token, const QJsonObject& authorization, const QString& requestedRunId,
+                       const QString& sessionId, int maxCycles, QString* acceptedRunId, QString* reason = nullptr);
     bool stepOnceForJob(const JobToken& token, QString* reason = nullptr);
+    bool stepOnceForJob(const JobToken& token, const QJsonObject& authorization, const QString& requestedRunId,
+                        const QString& sessionId, int maxCycles, QString* acceptedRunId, QString* reason = nullptr);
     bool resumeForJob(const JobToken& token, QString* reason = nullptr);
+    bool resumeForJob(const JobToken& token, const QJsonObject& authorization, QString* acceptedRunId,
+                      QString* reason = nullptr);
     bool pauseForJob(const JobToken& token);
     bool runOnceChecked(QString* reason = nullptr);
 
@@ -188,9 +243,11 @@ public:
         // 后台执行（设计 §4.2）：external job 租约从 job 启动到结束（含 Cycle 两轮之间）
         // 始终为 busy，工程加载/清空/切换被拒绝。
         return isExecuting() || m_maintenance.load(std::memory_order_acquire) ||
-               m_externalJobActive.load(std::memory_order_acquire) || state() == RunState::Running ||
+               m_externalJobActive.load(std::memory_order_acquire) ||
+               m_projectSwitchInProgress.load(std::memory_order_acquire) || state() == RunState::Running ||
                state() == RunState::Paused;
     }
+    bool loadedProjectMatches(const Project* project) const;
 
     // 运行模式
     RunMode runMode() const {
@@ -199,14 +256,23 @@ public:
     bool isCycleMode() const {
         return runMode() == RunMode::RunCycle;
     }
+    QString cycleSessionId() const;
+    RunResumeSnapshot resumeSnapshot() const;
+    bool resumeExpected(const RunResumeSnapshot& expected, const QJsonObject& agentFolderAuthorization = {});
+    bool refreshCycleProjectSnapshot(const QString& sessionId, Project* project);
     void setCycleMode(bool enabled);
 
     // 运行控制
     Q_INVOKABLE void runOnce();
-    bool runOnceAsync();
+    bool runOnceAsync(QString* acceptedRunId = nullptr, const QJsonObject& agentFolderAuthorization = {});
     Q_INVOKABLE bool stepOnce();
+    bool stepOnce(const QJsonObject& agentFolderAuthorization);
     Q_INVOKABLE void resetStepState();
     Q_INVOKABLE void start();
+    bool startCycle(QString* acceptedSessionId, int intervalMs = 100, bool runFirstIterationImmediately = false,
+                    bool scheduleNextAfterRunFinished = false, bool deferFirstIteration = false, int maxCycles = 0,
+                    const QJsonObject& agentFolderAuthorization = {});
+    bool continueDeferredCycle(const QString& sessionId);
     Q_INVOKABLE void pause();
     Q_INVOKABLE void resume();
     Q_INVOKABLE void stop();
@@ -223,9 +289,20 @@ public:
     ModuleBase* getModule(const QString& moduleName) const;
     int getModuleIndex(const QString& moduleName) const;
     bool buildExecutionOrder(const Project* project, QString& error);
+    static QString inferEdgeType(const ModuleConnection& connection, const QList<PortSpec>& sourceOutputs,
+                                 const QList<PortSpec>& targetInputs);
+    // Atomically replace GUI-owned runtime modules and rebuild the project graph under one maintenance lease.
+    bool synchronizeProjectModules(Project* project, const QList<ModuleBase*>& modules, QString& error);
+    // Run a synchronous Project mutation while excluding execution start with the lifecycle maintenance lease.
+    ProjectMutationResult withProjectMutationLease(const std::function<bool()>& mutation);
+    // Exclude execution starts for an entire project switch, including post-commit
+    // projectClosed/projectOpened handlers that rebuild the runtime module graph.
+    ProjectMutationResult withProjectSwitch(const std::function<bool()>& switchOperation);
 
     // 阶段 3.1：运行前校验（必需输入/连接类型），返回错误列表（含节点+端口定位）
-    QStringList validateFlow() const;
+    QStringList validateFlow(QString* failedModule = nullptr, QString* failedPort = nullptr) const;
+    // 对候选工程做完整运行前校验；使用临时执行图，不改写当前引擎的执行/控制图状态。
+    QStringList validateProjectFlow(const Project* project);
 
     // 阶段 4.8：结构化运行前校验（validateFlow 的唯一实现来源，消息文案逐字保持）
     struct FlowIssue {
@@ -247,6 +324,13 @@ public:
     // 最近一次产生输出的模块名（供 UI 追溯结果归属，避免多支路错配）
     QString lastOutputModuleName() const;
     ImageData moduleOutput(const QString& moduleName) const;
+    // Read image input only from the current step sequence or paused run; ContextChanged is
+    // fail-closed and must never be interpreted as a file-backed input.
+    CurrentImageInputSnapshot currentExecutionModuleImageInput(const QString& moduleName,
+                                                               const QString& upstreamSourceModuleName,
+                                                               ImageData& image) const;
+    bool runOutputSnapshot(const QString& runId, const QString& moduleName, ImageData& image,
+                           QMap<QString, QVariant>& values, PortValueMap& ports) const;
     void invalidateModuleOutput(const QString& moduleName);
 
     // 阶段 4.8：只读快照（前置条件：!isBusy()；GUI 线程调用）。
@@ -305,6 +389,16 @@ public:
     int failedRuns() const;
     int lastElapsedMs() const;
 
+    // 阶段 3：运行身份与状态查询（G3）
+    RunObservation runObservation(const QString& runId = QString()) const;
+    RunResult lastRunResult() const;
+    QString currentModuleName() const;
+    QString lastRunId() const;
+    QString stepRunId() const;
+    RunExecutionCandidates runExecutionCandidates() const;
+    RunExecutionCandidates stepExecutionCandidates() const;
+    RunExecutionCandidates resumeExecutionCandidates() const;
+
     // 并行执行（阶段 3.3）
     void setParallelThreadCount(int n);
     int parallelThreadCount() const;
@@ -352,13 +446,13 @@ private:
     RunEngine();
     ~RunEngine();
 
-    void executeRun(RunIntent intent);
-    bool executeRunAsync(RunIntent intent);
-    // 后台执行（设计 §4.2）：公开 stepOnce() 是无 token 包装；stepOnceForJob 走 owner 校验后
-    // 复用同一推进实现（token=null 表示公开入口，需拒绝 external job 活跃时的调用）。
-    bool stepOnceImpl(const JobToken* token, QString* rejectReason = nullptr);
-    // 后台执行（设计 §4.2/§5.3）：校验 job 所有权与 job 级取消标志。调用方必须持有
-    // m_lifecycleMutex（tryBeginForRun 在状态提交的同一临界区内调用，与 stop() 严格串行）。
+    bool executeRun(RunIntent intent, const QString& expectedCycleSessionId = QString(),
+                    const QString& expectedResumeRunId = QString(), int expectedLifecycleGeneration = 0,
+                    const QJsonObject& agentFolderAuthorization = {});
+    bool executeRunAsync(RunIntent intent, QString* acceptedRunId, const QJsonObject& agentFolderAuthorization = {});
+    bool stepOnceImpl(const JobToken* token, const QJsonObject& authorization = {}, QString* rejectReason = nullptr,
+                      QString* acceptedRunId = nullptr, const QString& sessionId = QString(),
+                      const QString& requestedRunId = QString(), int maxCycles = 0);
     bool validateJobStartLocked(const JobToken& token, QString* reason);
     void executeAcquiredRun(bool resuming, const QString& resumeModule, const ImageData& resumeData, RunMode mode);
     // 后台执行（设计 §5.3）：执行主体与异常兜底分离；finalizer 在所有路径上收尾恰好一次。
@@ -393,6 +487,11 @@ private:
     void recordModuleRuntime(const QString& moduleName, const ModuleRuntimeInfo& info);
     void reset();
     void stopCycleTimer();
+    void executeCycleTick(const QString& sessionId);
+    void clearActiveAgentFolderDeleteAuthorization();
+    void clearActiveAgentFolderDeleteAuthorizationForPause();
+    QJsonObject folderDeleteAuthorizationForModule(const QString& moduleId) const;
+    QJsonObject fileOutputAuthorizationForModule(const QString& moduleId) const;
 
     void buildModuleTree();
     void clearModuleTree();
@@ -417,6 +516,7 @@ private:
     // 阶6 十一轮：生命周期序号，每次状态转换（stop/pause/取权/收尾）自增；
     // start/resume 提交时记录 gen，发通知前重验证 gen+状态，stop 介入则跳过通知。
     std::atomic<int> m_lifecycleGeneration{0};
+    std::atomic_bool m_variableExecutionLeaseHeld{false};
     // 后台执行（设计 §5.3）：最近一次收尾的生命周期世代，防御重复收尾。
     int m_finalizedGeneration = -1;
     // 后台执行（设计 §5.3）测试注入：收尾窗口钩子/执行段故障注入（生产构建不可达）。
@@ -427,6 +527,8 @@ private:
     // 后台执行（设计 §4.2/§5.3）：external job 租约、owner token 与 job 级取消标志。
     // m_externalJobActive 供 isBusy() 无锁快照；其余字段仅在 m_lifecycleMutex 内读写。
     std::atomic_bool m_externalJobActive{false};
+    std::atomic_bool m_projectSwitchInProgress{false};
+    std::thread::id m_projectSwitchOwnerThread; // guarded by m_lifecycleMutex
     JobToken m_externalJobOwner;
     quint64 m_externalJobSeq = 0;
     quint64 m_jobSalt = 0;
@@ -441,16 +543,27 @@ private:
     // 在同一把 m_lifecycleMutex 临界区完成（窗口钩子亦在其中），使 stop() 与本次启动严格
     // 串行：stop 先到 → 取消标志拒绝；启动先提交 → stop 置 m_stopPending 取消本轮。
     bool tryBeginForRun(RunIntent intent, bool& resuming, QString& resumeModule, ImageData& resumeData,
-                        RunMode& outMode, const JobToken* jobToken = nullptr, QString* rejectReason = nullptr);
-    // 阶6 七轮：正常结束在单一临界区内完成清理+最终状态提交+执行权释放。
-    // 后台执行（设计 §5.3）：唯一收尾提交点；Completed 终态按 RunMode 决定，stop 优先。
+                        RunMode& outMode, const QString& expectedCycleSessionId = QString(),
+                        const QString& expectedResumeRunId = QString(), int expectedLifecycleGeneration = 0,
+                        const QJsonObject& agentFolderAuthorization = {}, const JobToken* jobToken = nullptr,
+                        QString* rejectReason = nullptr, const QString& sessionId = QString(),
+                        const QString& requestedRunId = QString(), int maxCycles = 0);
+    void finalizeRunTail(const RunResult& result);
+    void recordCompletedObservation(const RunResult& result, RunState finalState);
     void finalizeExecution(ExecutionOutcome outcome, bool clearControlGraph = true, bool resetStepStateOnStop = false);
     bool tryAcquireLease();
     void releaseLease();
     bool tryAcquireMaintenance();
     void releaseMaintenance();
+    void releaseVariableExecutionLease();
     void clearModulesLocked();
     void addModuleLocked(ModuleBase* module);
+    void finalizeAbortedRun(RunMode mode, const RunResult& result, bool retainCycleSession = false);
+    bool retainsCycleSessionAfterFailure();
+    bool stopCycleAfterRuntimeFailure(const QString& sessionId);
+    bool finishBoundedCycleAfterFailure(const QString& sessionId, const RunResult& result);
+    bool finishBoundedCycleAtLimit(const QString& sessionId, const RunResult& result);
+    void scheduleCycleTimerAfterRunFinished(const QString& sessionId);
     bool lifecycleBusyLocked();
     // 后台执行（设计 §6.1）：运行名 -> 执行亲和性缓存；缓存项随模块增删/工程加载同步维护。
     ExecutionAffinity executionAffinityFor(const QString& moduleName, ModuleBase* module) const;
@@ -464,6 +577,11 @@ private:
     // 后台执行（设计 §5.3）：模块边界检查并消费用户暂停请求（锁内 check-then-act）。
     bool takeUserPauseRequest(const QString& moduleName, const ImageData& data);
     QTimer* m_cycleTimer = nullptr;
+    bool m_scheduleCycleAfterRunFinished = false;
+    bool m_cycleFirstIterationDeferred = false;
+    bool m_cycleFailureNotificationPending = false;
+    int m_cycleIntervalMs = 100;
+    int m_cycleMaxIterations = 0;
     QList<ModuleBase*> m_modules;
     QList<ModuleBase*> m_ownedModules;
     QMap<QString, ModuleBase*> m_moduleMap;
@@ -530,6 +648,17 @@ private:
     QDateTime m_runStartTime;
 
     QString m_currentModuleName;
+    RunObservation m_runObservation;
+    RunObservation m_lastFinishedRun;
+    RunObservation m_cycleSessionObservation;
+    QMap<QString, PortValueMap> m_runPortOutputs;
+    QMap<QString, PortValueMap> m_lastFinishedPortOutputs;
+    QMap<QString, QMap<QString, QVariant>> m_lastFinishedValues;
+    QMap<QString, ImageData> m_lastFinishedImages;
+    mutable QMutex m_runObservationMutex;
+    QPointer<Project> m_loadedProject;
+    QByteArray m_loadedProjectFingerprint;
+    QString m_cycleSessionId;
     QString m_stepCurrentModuleName;
     ImageData m_stepPipelineData;
     bool m_lastExecuteResult = true;
@@ -553,6 +682,12 @@ private:
     int m_parallelThreads = 1;
     std::atomic<int> m_lastParallelMaxConcurrency{0};
     mutable QMutex m_parallelMutex;
+
+    mutable QMutex m_agentFolderDeleteAuthorizationMutex;
+    QJsonObject m_activeAgentFolderDeleteAuthorization;
+    bool m_pausedAgentFolderDeleteConfirmationRequired = false; // protected by lifecycle mutex
+    QString m_pausedAgentFolderDeleteAuthorizationId;           // protected by lifecycle mutex
+    QJsonObject m_cycleAgentFolderDeleteAuthorization;          // protected by lifecycle mutex; session scoped
 };
 
 } // namespace DeepLux

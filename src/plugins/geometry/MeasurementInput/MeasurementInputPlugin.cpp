@@ -12,6 +12,8 @@
 #include <QPointer>
 #include <QRegularExpression>
 #include <QVBoxLayout>
+#include <algorithm>
+#include <cmath>
 
 namespace DeepLux {
 
@@ -59,7 +61,8 @@ MeasurementInputPlugin::MeasurementInputPlugin(QObject* parent) : ModuleBase(par
                                   {"line1", makeJsonArray({0.0, 0.0, 100.0, 0.0})},
                                   {"line2", makeJsonArray({0.0, 100.0, 100.0, 100.0})},
                                   {"plane", makeJsonArray({0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0})},
-                                  {"points", QJsonArray()}};
+                                  {"points", QJsonArray()},
+                                  {"pick_coordinate_frame", QStringLiteral("Unspecified")}};
     m_params = m_defaultParams;
 }
 
@@ -96,6 +99,21 @@ bool MeasurementInputPlugin::process(const ImageData& input, ImageData& output) 
     if (mode == "point_pair") {
         QJsonArray point1Arr = params["point1"].toArray();
         QJsonArray point2Arr = params["point2"].toArray();
+        const auto isFinitePoint = [](const QJsonArray& point) {
+            if (point.size() != 2 && point.size() != 3)
+                return false;
+            return std::all_of(point.cbegin(), point.cend(), [](const QJsonValue& coordinate) {
+                return coordinate.isDouble() && std::isfinite(coordinate.toDouble());
+            });
+        };
+        if (!isFinitePoint(point1Arr) || !isFinitePoint(point2Arr)) {
+            emit errorOccurred(tr("两点必须分别包含两个或三个有限数值"));
+            return false;
+        }
+        if (point1Arr.size() != point2Arr.size()) {
+            emit errorOccurred(tr("两点坐标维数必须一致"));
+            return false;
+        }
         QVariantList point1List = jsonArrayToVariantList(point1Arr);
         QVariantList point2List = jsonArrayToVariantList(point2Arr);
 
@@ -289,6 +307,69 @@ bool MeasurementInputPlugin::process(const ImageData& input, ImageData& output) 
         return false;
     }
 
+    const bool pointPair2D = mode == QStringLiteral("point_pair") && params["point1"].toArray().size() == 2;
+    const bool pointPair3D = mode == QStringLiteral("point_pair") && params["point1"].toArray().size() == 3;
+    const QJsonValue pickCoordinateFrame = params.value(QStringLiteral("pick_coordinate_frame"));
+    const bool pointLineImageCoordinates = mode == QStringLiteral("point_line") && pickCoordinateFrame.isString() &&
+                                           pickCoordinateFrame.toString() == QStringLiteral("ImageLocalPixel");
+    const bool linePairImageCoordinates = mode == QStringLiteral("line_pair") && pickCoordinateFrame.isString() &&
+                                          pickCoordinateFrame.toString() == QStringLiteral("ImageLocalPixel");
+    const bool imageCoordinateMode =
+        pointPair2D || pointLineImageCoordinates || linePairImageCoordinates || mode == QStringLiteral("point_set");
+    output.setData(QStringLiteral("coordinate_frame"), imageCoordinateMode ? QStringLiteral("ImageLocalPixel")
+                                                       : (pointPair3D || mode == QStringLiteral("point_plane"))
+                                                           ? QStringLiteral("World3D")
+                                                           : QStringLiteral("Unspecified"));
+    const bool sourceAvailable = imageCoordinateMode && input.hasCoordinateProvenance();
+    output.setData(QStringLiteral("source_coordinate_available"), sourceAvailable);
+    if (sourceAvailable) {
+        const ImageCoordinateProvenance provenance = input.coordinateProvenance();
+        output.setData(QStringLiteral("source_image_id"), provenance.sourceImageId);
+        output.setData(QStringLiteral("source_image_size"),
+                       QVariantList{provenance.sourceSize.width(), provenance.sourceSize.height()});
+        if (const auto origin = provenance.mapLocalToSource(QPointF()))
+            output.setData(QStringLiteral("source_coordinate_origin"), QVariantList{origin->x(), origin->y()});
+        const QStringList pointKeys{QStringLiteral("point1"), QStringLiteral("point2"), QStringLiteral("point")};
+        for (const QString& key : pointKeys) {
+            const QJsonArray point = params.value(key).toArray();
+            if (point.size() >= 2) {
+                if (const auto mapped =
+                        provenance.mapLocalToSource(QPointF(point[0].toDouble(), point[1].toDouble()))) {
+                    QVariantList sourcePoint{mapped->x(), mapped->y()};
+                    for (qsizetype i = 2; i < point.size(); ++i)
+                        sourcePoint.append(point[i].toVariant());
+                    output.setData(key + QStringLiteral("_source"), sourcePoint);
+                }
+            }
+        }
+        const QStringList lineKeys{QStringLiteral("line"), QStringLiteral("line1"), QStringLiteral("line2")};
+        for (const QString& key : lineKeys) {
+            const QJsonArray line = params.value(key).toArray();
+            if (line.size() == 4) {
+                const auto first = provenance.mapLocalToSource(QPointF(line[0].toDouble(), line[1].toDouble()));
+                const auto second = provenance.mapLocalToSource(QPointF(line[2].toDouble(), line[3].toDouble()));
+                if (first && second) {
+                    output.setData(key + QStringLiteral("_source"),
+                                   QVariantList{first->x(), first->y(), second->x(), second->y()});
+                }
+            }
+        }
+        const QJsonArray pointSet = params.value(QStringLiteral("points")).toArray();
+        if (!pointSet.isEmpty()) {
+            QVariantList sourcePoints;
+            for (const QJsonValue& pointValue : pointSet) {
+                const QJsonArray point = pointValue.toArray();
+                if (point.size() != 2) {
+                    sourcePoints.append(QVariant());
+                    continue;
+                }
+                const auto mapped = provenance.mapLocalToSource(QPointF(point[0].toDouble(), point[1].toDouble()));
+                sourcePoints.append(mapped ? QVariant(QVariantList{mapped->x(), mapped->y()}) : QVariant());
+            }
+            output.setData(QStringLiteral("fit_points_source"), sourcePoints);
+        }
+    }
+
     return true;
 }
 
@@ -303,6 +384,45 @@ bool MeasurementInputPlugin::doValidateParams(const QJsonObject& params, QString
         mode != "custom" && mode != "point_set") {
         error = tr("未知的测量输入模式: %1").arg(mode);
         return false;
+    }
+
+    const auto numericArray = [&params, &error](const QString& key, int minSize, int maxSize) {
+        const QJsonValue value = params.value(key);
+        if (!value.isArray() || value.toArray().size() < minSize || value.toArray().size() > maxSize) {
+            error = QString("%1 must contain %2..%3 numeric coordinates").arg(key).arg(minSize).arg(maxSize);
+            return false;
+        }
+        for (const QJsonValue& coordinate : value.toArray()) {
+            if (!coordinate.isDouble() || !std::isfinite(coordinate.toDouble())) {
+                error = QString("%1 coordinates must be finite numbers").arg(key);
+                return false;
+            }
+        }
+        return true;
+    };
+    if (!numericArray("point1", 2, 3) || !numericArray("point2", 2, 3) || !numericArray("point", 2, 3) ||
+        !numericArray("line", 4, 4) || !numericArray("line1", 4, 4) || !numericArray("line2", 4, 4) ||
+        !numericArray("plane", 9, 9))
+        return false;
+    const QJsonValue pointsValue = params.value(QStringLiteral("points"));
+    if (!pointsValue.isArray() || pointsValue.toArray().size() > 1024) {
+        error = QStringLiteral("points must be an array of at most 1024 items");
+        return false;
+    }
+    for (const QJsonValue& pointValue : pointsValue.toArray()) {
+        const QJsonArray point = pointValue.toArray();
+        if (!pointValue.isArray() || point.size() != 2 || !point[0].isDouble() || !point[1].isDouble() ||
+            !std::isfinite(point[0].toDouble()) || !std::isfinite(point[1].toDouble())) {
+            error = QStringLiteral("points items must be finite [x,y] pairs");
+            return false;
+        }
+    }
+    if (mode == QStringLiteral("point_plane")) {
+        QString planeError;
+        if (!MeasurementData::parsePlane3D(jsonArrayToVariantList(params.value("plane").toArray()), &planeError)) {
+            error = planeError;
+            return false;
+        }
     }
 
     return true;

@@ -1,0 +1,16 @@
+{
+  "version": "3.0",
+  "id": "accept-measurementinput-pointset-0001",
+  "name": "验收-MeasurementInput 点集来源坐标流程",
+  "modules": [
+    {"id": "grab", "moduleId": "GrabImage", "name": "图像采集", "params": {"grabSource": "File", "filePath": "@ACCEPTANCE_DATA@/measurementinput.png"}},
+    {"id": "crop", "moduleId": "CropImage", "name": "偏移裁剪", "params": {"rectangles": [[80, 60, 30, 20, 0]], "outputFirstAsImage": true}},
+    {"id": "input", "moduleId": "MeasurementInput", "name": "点集输入", "params": {"mode": "point_set", "points": [[1.25, 2.5], [7, 8], [11.5, 13.75]]}}
+  ],
+  "connections": [
+    {"fromModuleId": "grab", "toModuleId": "crop", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "crop", "toModuleId": "input", "fromPort": "image", "toPort": "image", "edgeType": "data"}
+  ],
+  "flows": [{"id": "main", "name": "主流程", "nodes": ["grab", "crop", "input"]}],
+  "resources": {"cameras": [], "dataSources": []}
+}

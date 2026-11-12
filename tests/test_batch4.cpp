@@ -1,3 +1,5 @@
+#include "core/agent/AgentActor.h"
+#include "core/agent/ToolSchema.h"
 #include "core/deeplux/DataContract.h"
 #include "core/engine/RunEngine.h"
 #include "core/manager/PluginManager.h"
@@ -5,7 +7,10 @@
 #include "core/model/ImageData.h"
 #include "core/model/Project.h"
 #include "plugins/calibration/CalculateOffset/CalculateOffsetPlugin.h"
+#include "plugins/calibration/NPointCalibration/NPointCalibrationPlugin.h"
+#include "plugins/geometry/MeasurementInput/MeasurementInputPlugin.h"
 #include "plugins/image_processing/CropImage/CropImagePlugin.h"
+#include "plugins/image_processing/JigsawPuzzle/JigsawPuzzlePlugin.h"
 
 #include <QCheckBox>
 #include <QDir>
@@ -14,6 +19,7 @@
 #include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLineF>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QWidget>
@@ -119,6 +125,90 @@ private slots:
 
     // ---------- CropImage ----------
 
+    void testCalibrationCompositionOverflowInvalidatesOutputProvenance() {
+        ImageData input(makePatternImage(128, 128));
+        ImageCoordinateProvenance source;
+        source.sourceImageId = QStringLiteral("slice197-overflow-source");
+        source.sourceSize = QSize(256, 256);
+        source.localToSource = {1e308, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+        source.hasLocalToSourceTransform = true;
+        QVERIFY(source.isValid());
+        QVERIFY(std::isfinite(source.localToSource[0]));
+        QCOMPARE(source.localToSource[0], 1e308);
+        QCOMPARE(source.sourceSize, QSize(256, 256));
+        input.setCoordinateProvenance(source);
+        QVERIFY(input.hasCoordinateProvenance());
+        const cv::Mat originalPixels = input.toMat().clone();
+        const ImageCoordinateProvenance originalSource = input.coordinateProvenance();
+
+        const QJsonArray calibrationPoints{QJsonObject{{QStringLiteral("image"), QJsonArray{0.0, 0.0}},
+                                                       {QStringLiteral("world"), QJsonArray{0.0, 0.0}}},
+                                           QJsonObject{{QStringLiteral("image"), QJsonArray{100.0, 0.0}},
+                                                       {QStringLiteral("world"), QJsonArray{50.0, 0.0}}},
+                                           QJsonObject{{QStringLiteral("image"), QJsonArray{0.0, 100.0}},
+                                                       {QStringLiteral("world"), QJsonArray{0.0, 100.0}}},
+                                           QJsonObject{{QStringLiteral("image"), QJsonArray{100.0, 100.0}},
+                                                       {QStringLiteral("world"), QJsonArray{50.0, 100.0}}}};
+        const QJsonObject calibrationParams{{QStringLiteral("calibrationType"), QStringLiteral("Affine")},
+                                            {QStringLiteral("outputWidth"), 128},
+                                            {QStringLiteral("outputHeight"), 128},
+                                            {QStringLiteral("inverseTransform"), true},
+                                            {QStringLiteral("calibrationPoints"), calibrationPoints}};
+
+        ImageData controlInput(makePatternImage(128, 128));
+        ImageCoordinateProvenance controlSource;
+        controlSource.sourceImageId = QStringLiteral("slice197-control-source");
+        controlSource.sourceSize = QSize(256, 256);
+        controlSource.localToSource = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+        controlSource.hasLocalToSourceTransform = true;
+        QVERIFY(controlSource.isValid());
+        controlInput.setCoordinateProvenance(controlSource);
+        NPointCalibrationPlugin controlCalibration;
+        QVERIFY(controlCalibration.initialize());
+        controlCalibration.setParams(calibrationParams);
+        ImageData controlOutput;
+        QVERIFY(controlCalibration.execute(controlInput, controlOutput));
+        QVERIFY(controlOutput.data(QStringLiteral("calibration_valid")).toBool());
+        QVERIFY(controlOutput.hasCoordinateProvenance());
+        const auto controlMapped = controlOutput.coordinateProvenance().mapLocalToSource(QPointF(20.0, 40.0));
+        QVERIFY(controlMapped.has_value());
+        QVERIFY(QLineF(*controlMapped, QPointF(40.0, 40.0)).length() < 1e-3);
+
+        NPointCalibrationPlugin calibration;
+        QVERIFY(calibration.initialize());
+        calibration.setParams(calibrationParams);
+
+        // The four fixed pairs define x_world = x_image / 2, y_world = y_image.
+        // Therefore output-to-input is finite, invertible diag(2, 1, 1); only
+        // composing that matrix with the valid source scale 1e308 overflows.
+        const ImageCoordinateProvenance::Matrix3 outputToInput{{2.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};
+        for (double coefficient : outputToInput)
+            QVERIFY(std::isfinite(coefficient));
+        QCOMPARE(outputToInput[0], 2.0);
+        QCOMPARE(outputToInput[4], 1.0);
+        QCOMPARE(outputToInput[8], 1.0);
+        QCOMPARE(outputToInput[0] * outputToInput[4] * outputToInput[8], 2.0);
+        QVERIFY(!std::isfinite(source.localToSource[0] * outputToInput[0]));
+
+        ImageData calibrated;
+        QVERIFY(calibration.execute(input, calibrated));
+        QVERIFY(calibrated.data(QStringLiteral("calibration_valid")).toBool());
+        QVERIFY(calibrated.isValid());
+        QVERIFY(!calibrated.isEmpty());
+        QCOMPARE(calibrated.width(), 128);
+        QCOMPARE(calibrated.height(), 128);
+        QCOMPARE(calibrated.toMat().at<uchar>(40, 20), originalPixels.at<uchar>(40, 40));
+        QVERIFY(!calibrated.hasCoordinateProvenance());
+
+        QCOMPARE(cv::countNonZero(input.toMat() != originalPixels), 0);
+        const ImageCoordinateProvenance unchanged = input.coordinateProvenance();
+        QCOMPARE(unchanged.sourceImageId, originalSource.sourceImageId);
+        QCOMPARE(unchanged.sourceSize, originalSource.sourceSize);
+        QVERIFY(unchanged.hasLocalToSourceTransform);
+        for (size_t index = 0; index < originalSource.localToSource.size(); ++index)
+            QCOMPARE(unchanged.localToSource[index], originalSource.localToSource[index]);
+    }
+
     void testCropAxisAligned() {
         CropImagePlugin plugin;
         QVERIFY(plugin.initialize()); // 默认参数：中心 100×100 矩形
@@ -147,6 +237,77 @@ private slots:
         QCOMPARE(row.value(QStringLiteral("crop_height")).toInt(), 100);
         QVERIFY(row.value(QStringLiteral("image")).canConvert<ImageData>());
         QCOMPARE(row.value(QStringLiteral("image")).value<ImageData>().toMat().cols, 200);
+    }
+
+    void testCropCoordinateProvenanceComposesAndSerializesOnlyPixels() {
+        CropImagePlugin crop;
+        QVERIFY(crop.initialize());
+        ImageData source(makePatternImage(80, 60));
+        QVERIFY(source.hasCoordinateProvenance());
+        const ImageCoordinateProvenance sourceProvenance = source.coordinateProvenance();
+
+        crop.setParams(cropParams(QJsonArray{rect(20, 30, 10, 10, 0)}));
+        ImageData firstOutput;
+        QVERIFY(crop.execute(source, firstOutput));
+        QCOMPARE(firstOutput.coordinateProvenance().sourceImageId, sourceProvenance.sourceImageId);
+        QCOMPARE(firstOutput.coordinateProvenance().sourceSize, QSize(80, 60));
+        QCOMPARE(firstOutput.coordinateProvenance().localOriginInSource, QPointF(10, 20));
+        const QVariantMap firstRow = firstOutput.data("crop_images").toList().first().toMap();
+        const ImageData firstCrop = firstRow.value("image").value<ImageData>();
+        QCOMPARE(firstCrop.coordinateProvenance().sourceImageId, sourceProvenance.sourceImageId);
+        QCOMPARE(firstCrop.coordinateProvenance().localOriginInSource, QPointF(10, 20));
+        const auto firstMapped = firstCrop.coordinateProvenance().mapLocalToSource(QPointF(19, 19));
+        QVERIFY(firstMapped);
+        QCOMPARE(*firstMapped, QPointF(29, 39));
+
+        crop.setParams(cropParams(QJsonArray{rect(5, 6, 2, 3, 0)}));
+        ImageData secondOutput;
+        QVERIFY(crop.execute(firstCrop, secondOutput));
+        QCOMPARE(secondOutput.coordinateProvenance().localOriginInSource, QPointF(13, 23));
+        const ImageData secondCrop =
+            secondOutput.data("crop_images").toList().first().toMap().value("image").value<ImageData>();
+        QCOMPARE(secondCrop.coordinateProvenance().localOriginInSource, QPointF(13, 23));
+        const auto secondMapped = secondCrop.coordinateProvenance().mapLocalToSource(QPointF(0, 0));
+        QVERIFY(secondMapped);
+        QCOMPARE(*secondMapped, QPointF(13, 23));
+
+        const ImageData roundTrip = ImageData::fromByteArray(secondCrop.toByteArray());
+        QVERIFY(!roundTrip.hasCoordinateProvenance());
+        QCOMPARE(source.toMat().at<uchar>(20, 10), static_cast<uchar>((7 * 10 + 13 * 20) % 256));
+    }
+
+    void testMeasurementInputReportsLocalAndSourceCoordinates() {
+        MeasurementInputPlugin plugin;
+        QVERIFY(plugin.initialize());
+        ImageData input(makePatternImage(80, 60));
+        input.offsetCoordinateOrigin(10, 20);
+        plugin.setParams(QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_line")},
+                                     {QStringLiteral("pick_coordinate_frame"), QStringLiteral("ImageLocalPixel")},
+                                     {QStringLiteral("point"), QJsonArray{3.0, 4.0, 0.0}},
+                                     {QStringLiteral("line"), QJsonArray{1.0, 2.0, 5.0, 6.0}}});
+        ImageData output;
+        QVERIFY(plugin.execute(input, output));
+        QCOMPARE(output.data(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("ImageLocalPixel"));
+        QCOMPARE(output.data(QStringLiteral("source_coordinate_available")).toBool(), true);
+        QCOMPARE(output.data(QStringLiteral("point_source")).toList(), QVariantList({13.0, 24.0, 0.0}));
+        QCOMPARE(output.data(QStringLiteral("line_source")).toList(), QVariantList({11.0, 22.0, 15.0, 26.0}));
+
+        input.invalidateCoordinateProvenance();
+        QVERIFY(plugin.execute(input, output));
+        QCOMPARE(output.data(QStringLiteral("source_coordinate_available")).toBool(), false);
+        QVERIFY(!output.hasData(QStringLiteral("point_source")));
+
+        input.establishCoordinateSource();
+        input.offsetCoordinateOrigin(10, 20);
+        plugin.setParams(
+            QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_plane")},
+                        {QStringLiteral("point"), QJsonArray{1.0, 2.0, 3.0}},
+                        {QStringLiteral("plane"), QJsonArray{0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0}}});
+        QVERIFY(plugin.execute(input, output));
+        QCOMPARE(output.data(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("World3D"));
+        QCOMPARE(output.data(QStringLiteral("source_coordinate_available")).toBool(), false);
+        QCOMPARE(output.data(QStringLiteral("point")).toList(), QVariantList({1.0, 2.0, 3.0}));
+        QVERIFY(!output.hasData(QStringLiteral("point_source")));
     }
 
     void testCropRotated45() {
@@ -181,7 +342,243 @@ private slots:
             const ImageData crop = row.value(QStringLiteral("image")).value<ImageData>();
             QCOMPARE(crop.toMat().cols, row.value(QStringLiteral("crop_width")).toInt());
             QCOMPARE(crop.toMat().rows, row.value(QStringLiteral("crop_height")).toInt());
+            QVERIFY(crop.hasCoordinateProvenance());
+            QCOMPARE(crop.coordinateProvenance().localOriginInSource,
+                     QPointF(row.value(QStringLiteral("crop_x")).toInt(), row.value(QStringLiteral("crop_y")).toInt()));
         }
+    }
+
+    void testJigsawPuzzlePreservesKnownPixelLineage() {
+        ImageData input(makePatternImage(19, 17));
+        ImageCoordinateProvenance provenance;
+        provenance.sourceImageId = QStringLiteral("jigsaw-parent");
+        provenance.sourceSize = QSize(100, 90);
+        QVERIFY(provenance.composeLocalToSource(
+            ImageCoordinateProvenance::Matrix3{{2.0, 0.0, 10.0, 0.0, 3.0, 5.0, 0.0, 0.0, 1.0}}));
+        input.setCoordinateProvenance(provenance);
+
+        JigsawPuzzlePlugin puzzle;
+        puzzle.setParams(QJsonObject{{QStringLiteral("rows"), 3}, {QStringLiteral("cols"), 4}});
+        QVERIFY(puzzle.initialize());
+        ImageData output;
+        QVERIFY(puzzle.execute(input, output));
+        QCOMPARE(output.width(), 16);
+        QCOMPARE(output.height(), 15);
+        QVERIFY(output.hasCoordinateProvenance());
+        QCOMPARE(output.coordinateProvenance().sourceImageId, QStringLiteral("jigsaw-parent"));
+        QCOMPARE(output.coordinateProvenance().sourceSize, QSize(100, 90));
+        for (int y = 0; y < output.height(); ++y) {
+            for (int x = 0; x < output.width(); ++x)
+                QCOMPARE(output.toMat().at<uchar>(y, x), input.toMat().at<uchar>(y, x));
+        }
+        QCOMPARE(output.coordinateProvenance().mapLocalToSource(QPointF(3, 4)).value(), QPointF(16, 17));
+        QCOMPARE(output.coordinateProvenance().mapLocalToSource(QPointF(14, 10)).value(), QPointF(38, 35));
+    }
+
+    void testJigsawPuzzleDoesNotInventLineageForUntrackedOrEmptyOutput() {
+        ImageData untracked(makePatternImage(19, 17));
+        untracked.invalidateCoordinateProvenance();
+        JigsawPuzzlePlugin puzzle;
+        QVERIFY(puzzle.initialize());
+        ImageData output;
+        QVERIFY(puzzle.execute(untracked, output));
+        QVERIFY(!output.hasCoordinateProvenance());
+
+        ImageData smallImage(makePatternImage(19, 17));
+        smallImage.establishCoordinateSource(QStringLiteral("small-image"));
+        smallImage.setData(QStringLiteral("sentinel"), QStringLiteral("unchanged"));
+        const ImageData inputBefore = smallImage;
+        ImageData previousOutput(makePatternImage(4, 4));
+        previousOutput.setData(QStringLiteral("previous"), true);
+        output = previousOutput;
+        QSignalSpy errorSpy(&puzzle, &ModuleBase::errorOccurred);
+
+        puzzle.setParams(QJsonObject{{QStringLiteral("rows"), 18}, {QStringLiteral("cols"), 3}});
+        QVERIFY(!puzzle.execute(smallImage, output));
+        QVERIFY(output.isEmpty());
+        QVERIFY(!output.hasCoordinateProvenance());
+        QVERIFY(output.allData().isEmpty());
+        QCOMPARE(errorSpy.count(), 1);
+        QVERIFY(!errorSpy.takeFirst().first().toString().isEmpty());
+        QCOMPARE(smallImage.data(QStringLiteral("sentinel")).toString(), QStringLiteral("unchanged"));
+        QCOMPARE(smallImage.coordinateProvenance().localToSourceMatrix(),
+                 inputBefore.coordinateProvenance().localToSourceMatrix());
+        QCOMPARE(smallImage.toMat().at<uchar>(4, 7), inputBefore.toMat().at<uchar>(4, 7));
+
+        previousOutput = ImageData(makePatternImage(4, 4));
+        previousOutput.setData(QStringLiteral("previous"), true);
+        output = previousOutput;
+        errorSpy.clear();
+        puzzle.setParams(QJsonObject{{QStringLiteral("rows"), 3}, {QStringLiteral("cols"), 20}});
+        QVERIFY(!puzzle.execute(smallImage, output));
+        QVERIFY(output.isEmpty());
+        QVERIFY(!output.hasCoordinateProvenance());
+        QVERIFY(output.allData().isEmpty());
+        QCOMPARE(errorSpy.count(), 1);
+        QVERIFY(!errorSpy.takeFirst().first().toString().isEmpty());
+        QCOMPARE(smallImage.data(QStringLiteral("sentinel")).toString(), QStringLiteral("unchanged"));
+        QCOMPARE(smallImage.coordinateProvenance().localToSourceMatrix(),
+                 inputBefore.coordinateProvenance().localToSourceMatrix());
+        QCOMPARE(smallImage.toMat().at<uchar>(4, 7), inputBefore.toMat().at<uchar>(4, 7));
+    }
+
+    void testCalibrationProvidesImageCoordinateProvenance() {
+        ImageData input(makePatternImage(16, 16));
+
+        NPointCalibrationPlugin calibration;
+        QVERIFY(calibration.initialize());
+        const QJsonArray calibrationPoints{QJsonObject{{QStringLiteral("image"), QJsonArray{0.0, 0.0}},
+                                                       {QStringLiteral("world"), QJsonArray{0.0, 0.0}}},
+                                           QJsonObject{{QStringLiteral("image"), QJsonArray{15.0, 0.0}},
+                                                       {QStringLiteral("world"), QJsonArray{30.0, 0.0}}},
+                                           QJsonObject{{QStringLiteral("image"), QJsonArray{15.0, 15.0}},
+                                                       {QStringLiteral("world"), QJsonArray{30.0, 30.0}}},
+                                           QJsonObject{{QStringLiteral("image"), QJsonArray{0.0, 15.0}},
+                                                       {QStringLiteral("world"), QJsonArray{0.0, 30.0}}}};
+        calibration.setParams(QJsonObject{{QStringLiteral("calibrationType"), QStringLiteral("Perspective")},
+                                          {QStringLiteral("outputWidth"), 16},
+                                          {QStringLiteral("outputHeight"), 16},
+                                          {QStringLiteral("inverseTransform"), true},
+                                          {QStringLiteral("clearPointsOnRun"), true},
+                                          {QStringLiteral("calibrationPoints"), calibrationPoints}});
+        ImageData calibrated;
+        QVERIFY(calibration.execute(input, calibrated));
+        QVERIFY(calibrated.data(QStringLiteral("calibration_valid")).toBool());
+        QVERIFY(calibrated.hasCoordinateProvenance());
+        const auto sourcePoint = calibrated.coordinateProvenance().mapLocalToSource(QPointF(10.0, 10.0));
+        QVERIFY(sourcePoint);
+        QVERIFY(std::abs(sourcePoint->x() - 5.0) < 1e-3);
+        QVERIFY(std::abs(sourcePoint->y() - 5.0) < 1e-3);
+    }
+
+    void testCalibrationCoordinateProvenanceComposesAffineAndPerspectiveMappings() {
+        const auto makeCalibrationPoints = [](const std::vector<cv::Point2f>& imagePoints,
+                                              const std::vector<cv::Point2f>& worldPoints) {
+            QJsonArray points;
+            for (size_t i = 0; i < imagePoints.size(); ++i) {
+                points.append(QJsonObject{{QStringLiteral("image"), QJsonArray{imagePoints[i].x, imagePoints[i].y}},
+                                          {QStringLiteral("world"), QJsonArray{worldPoints[i].x, worldPoints[i].y}}});
+            }
+            return points;
+        };
+        const auto verifyMapped = [](const ImageData& image, const QPointF& outputPoint,
+                                     const QPointF& expectedSource) {
+            const auto mapped = image.coordinateProvenance().mapLocalToSource(outputPoint);
+            QVERIFY(mapped);
+            QVERIFY2(QLineF(*mapped, expectedSource).length() < 1e-3, "calibrated point must map to source pixels");
+        };
+
+        CropImagePlugin crop;
+        QVERIFY(crop.initialize());
+        crop.setParams(cropParams(QJsonArray{rect(74, 84, 64, 64, 0)}));
+        ImageData cropOutput;
+        QVERIFY(crop.execute(ImageData(makePatternImage(256, 256)), cropOutput));
+        const ImageData input = cropOutput.data(QStringLiteral("crop_images"))
+                                    .toList()
+                                    .first()
+                                    .toMap()
+                                    .value(QStringLiteral("image"))
+                                    .value<ImageData>();
+        const std::vector<cv::Point2f> affineImage{{0, 0}, {100, 0}, {100, 100}, {0, 100}};
+        const std::vector<cv::Point2f> affineWorld{{10, 20}, {210, 20}, {210, 320}, {10, 320}};
+        NPointCalibrationPlugin affine;
+        QVERIFY(affine.initialize());
+        affine.setParams(
+            QJsonObject{{QStringLiteral("calibrationType"), QStringLiteral("Affine")},
+                        {QStringLiteral("outputWidth"), 128},
+                        {QStringLiteral("outputHeight"), 128},
+                        {QStringLiteral("inverseTransform"), true},
+                        {QStringLiteral("calibrationPoints"), makeCalibrationPoints(affineImage, affineWorld)}});
+        ImageData affineOutput;
+        QVERIFY(affine.execute(input, affineOutput));
+        verifyMapped(affineOutput, QPointF(50.0, 80.0), QPointF(30.0, 40.0));
+        verifyMapped(affineOutput, QPointF(90.0, 110.0), QPointF(50.0, 50.0));
+
+        crop.setParams(cropParams(QJsonArray{rect(64, 64, 20, 10, 0)}));
+        ImageData postCalibrationCropOutput;
+        QVERIFY(crop.execute(affineOutput, postCalibrationCropOutput));
+        const ImageData postCalibrationCrop = postCalibrationCropOutput.data(QStringLiteral("crop_images"))
+                                                  .toList()
+                                                  .first()
+                                                  .toMap()
+                                                  .value(QStringLiteral("image"))
+                                                  .value<ImageData>();
+        verifyMapped(postCalibrationCrop, QPointF(5.0, 5.0), QPointF(29.5, 33.0));
+
+        MeasurementInputPlugin measurement;
+        QVERIFY(measurement.initialize());
+        measurement.setParams(QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                                          {QStringLiteral("point1"), QJsonArray{50.0, 80.0}},
+                                          {QStringLiteral("point2"), QJsonArray{90.0, 110.0}}});
+        ImageData measured;
+        QVERIFY(measurement.execute(affineOutput, measured));
+        QCOMPARE(measured.data(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("ImageLocalPixel"));
+        QCOMPARE(measured.data(QStringLiteral("source_coordinate_available")).toBool(), true);
+        QCOMPARE(measured.data(QStringLiteral("point1")).toList(), QVariantList({50.0, 80.0}));
+        QCOMPARE(measured.data(QStringLiteral("point1_source")).toList(), QVariantList({30.0, 40.0}));
+        QCOMPARE(measured.data(QStringLiteral("point2_source")).toList(), QVariantList({50.0, 50.0}));
+        QCOMPARE(measured.data(QStringLiteral("source_image_id")).toString(),
+                 input.coordinateProvenance().sourceImageId);
+        QCOMPARE(measured.data(QStringLiteral("source_image_size")).toList(), QVariantList({256, 256}));
+
+        const ImageData noSource = ImageData::fromByteArray(input.toByteArray());
+        QVERIFY(!noSource.hasCoordinateProvenance());
+        ImageData untrackedCalibration;
+        QVERIFY(affine.execute(noSource, untrackedCalibration));
+        QVERIFY(!untrackedCalibration.hasCoordinateProvenance());
+        QVERIFY(measurement.execute(untrackedCalibration, measured));
+        QCOMPARE(measured.data(QStringLiteral("source_coordinate_available")).toBool(), false);
+        QVERIFY(!measured.hasData(QStringLiteral("point1_source")));
+
+        const std::vector<cv::Point2f> perspectiveImage{{0, 0}, {100, 0}, {100, 100}, {0, 100}};
+        const std::vector<cv::Point2f> perspectiveWorld{{10, 20}, {110, 25}, {95, 120}, {5, 90}};
+        NPointCalibrationPlugin perspective;
+        QVERIFY(perspective.initialize());
+        perspective.setParams(QJsonObject{
+            {QStringLiteral("calibrationType"), QStringLiteral("Perspective")},
+            {QStringLiteral("outputWidth"), 128},
+            {QStringLiteral("outputHeight"), 128},
+            {QStringLiteral("inverseTransform"), true},
+            {QStringLiteral("calibrationPoints"), makeCalibrationPoints(perspectiveImage, perspectiveWorld)}});
+        ImageData perspectiveOutput;
+        QVERIFY(perspective.execute(input, perspectiveOutput));
+        cv::Mat forward = cv::getPerspectiveTransform(perspectiveImage, perspectiveWorld);
+        const std::vector<cv::Point2f> sourceInputs{{20, 30}, {70, 40}, {45, 80}};
+        std::vector<cv::Point2f> outputPoints;
+        cv::perspectiveTransform(sourceInputs, outputPoints, forward);
+        for (size_t i = 0; i < sourceInputs.size(); ++i) {
+            verifyMapped(perspectiveOutput, QPointF(outputPoints[i].x, outputPoints[i].y),
+                         QPointF(sourceInputs[i].x + 10.0, sourceInputs[i].y + 20.0));
+        }
+        QVERIFY(!ImageData::fromByteArray(perspectiveOutput.toByteArray()).hasCoordinateProvenance());
+    }
+
+    void testProjectiveCoordinateMappingRejectsHorizonAndKeepsPointSetAlignment() {
+        ImageCoordinateProvenance provenance;
+        provenance.sourceImageId = QStringLiteral("projective-source");
+        provenance.sourceSize = QSize(100, 100);
+        QVERIFY(provenance.composeLocalToSource({{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -10.0}}));
+        QVERIFY(provenance.mapLocalToSource(QPointF(2.0, 3.0)));
+        QVERIFY(!provenance.mapLocalToSource(QPointF(10.0, 3.0)));
+        QVERIFY(!provenance.mapRectToSourceBounds(QRectF(0.0, 0.0, 20.0, 10.0)));
+        QVERIFY(!provenance.composeLocalToSource({{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0}}));
+
+        MeasurementInputPlugin measurement;
+        QVERIFY(measurement.initialize());
+        ImageData input(makePatternImage(32, 32));
+        provenance.sourceImageId = input.coordinateProvenance().sourceImageId;
+        provenance.sourceSize = input.coordinateProvenance().sourceSize;
+        input.setCoordinateProvenance(provenance);
+        measurement.setParams(QJsonObject{
+            {QStringLiteral("mode"), QStringLiteral("point_set")},
+            {QStringLiteral("points"), QJsonArray{QJsonArray{2.0, 3.0}, QJsonArray{10.0, 3.0}, QJsonArray{4.0, 5.0}}}});
+        ImageData output;
+        QVERIFY(measurement.execute(input, output));
+        const QVariantList mappedPoints = output.data(QStringLiteral("fit_points_source")).toList();
+        QCOMPARE(mappedPoints.size(), 3);
+        QCOMPARE(mappedPoints[0].toList().size(), 2);
+        QVERIFY(!mappedPoints[1].isValid() || mappedPoints[1].isNull());
+        QCOMPARE(mappedPoints[2].toList().size(), 2);
     }
 
     void testCropOutsideImageInvalidRow() {
@@ -334,7 +731,7 @@ private slots:
         QString error;
         QVERIFY(plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, 10, 10, 0))}), error));
         QVERIFY(!plugin.validateParams(QJsonObject{{"rectangles", 42}, {"outputFirstAsImage", true}}, error)); // 非数组
-        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{}), error));                                      // 空数组
+        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{}), error)); // 空数组
         QJsonArray tooMany;
         for (int i = 0; i < 65; ++i) {
             tooMany.append(rect(0, 0, 10, 10, 0));
@@ -344,9 +741,9 @@ private slots:
             !plugin.validateParams(cropParams(QJsonArray{QJsonValue(QJsonArray{1.0, 2.0, 3.0, 4.0})}), error)); // 4 元
         QVERIFY(!plugin.validateParams(
             cropParams(QJsonArray{QJsonValue(QJsonArray{1.0, 2.0, 3.0, 4.0, QStringLiteral("0")})}),
-            error));                                                                                       // 字符串元素
-        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, 0, 10, 0))}), error));  // l1=0
-        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, -5, 10, 0))}), error)); // l1<0
+            error)); // 字符串元素
+        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, 0, 10, 0))}), error));    // l1=0
+        QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, -5, 10, 0))}), error));   // l1<0
         QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(0, 0, 10, 10, 400))}), error)); // deg 超界
         QVERIFY(!plugin.validateParams(cropParams(QJsonArray{QJsonValue(rect(1000000.5, 0, 10, 10, 0))}),
                                        error)); // cx 超界
@@ -599,6 +996,7 @@ private slots:
     // 流程验收：MeasurementInput(point_line) → CalculateOffset(current_point)——
     // 跨名端口送达 Point3D 载荷并覆盖参数坐标（offset = target − 端口点）
     void testFlowMeasurementInputToCalculateOffset() {
+        ToolSchema::instance().registerDefaultTools();
         RunEngine& engine = RunEngine::instance();
         ProjectManager::instance().closeProject();
         Project* project = ProjectManager::instance().newProject();
@@ -632,13 +1030,40 @@ private slots:
         project->addConnection(conn);
 
         QVERIFY(engine.loadProject(project));
-        engine.runOnce();
+        QString runId;
+        QVERIFY(engine.runOnceAsync(&runId));
+        QVERIFY(!runId.isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 10000);
+        QVERIFY2(engine.runObservation(runId).result.success,
+                 qPrintable(engine.runObservation(runId).result.errorMessage));
 
         const ImageData out = engine.moduleOutput(QStringLiteral("co"));
         QVERIFY2(out.hasData("offset_x"), "flow must produce offset_x");
         QCOMPARE(out.data("offset_x").toDouble(), -25.0); // 10-35（端口值生效，实测−参考）
         QCOMPARE(out.data("offset_y").toDouble(), -35.0); // 20-55
         QCOMPARE(out.data("offset_a").toDouble(), -10.0); // 30-40
+
+        AgentActor actor;
+        const QMap<QString, double> expected{{QStringLiteral("offset_x"), out.data("offset_x").toDouble()},
+                                             {QStringLiteral("offset_y"), out.data("offset_y").toDouble()},
+                                             {QStringLiteral("offset_a"), out.data("offset_a").toDouble()}};
+        for (auto it = expected.cbegin(); it != expected.cend(); ++it) {
+            for (bool byPort : {true, false}) {
+                QJsonObject args{{QStringLiteral("runId"), runId},
+                                 {QStringLiteral("instanceId"), QStringLiteral("co")}};
+                args.insert(byPort ? QStringLiteral("port") : QStringLiteral("key"), it.key());
+                const QJsonObject response = actor.executeTool(QStringLiteral("get_module_output"), args);
+                QCOMPARE(response.value(QStringLiteral("status")).toString(), QStringLiteral("available"));
+                QCOMPARE(response.value(QStringLiteral("value")).toDouble(), it.value());
+                if (it.key() == QLatin1String("offset_a")) {
+                    QCOMPARE(response.value(QStringLiteral("unit")).toString(), QStringLiteral("deg"));
+                } else {
+                    QVERIFY(!response.contains(QStringLiteral("unit")));
+                    QVERIFY(!response.contains(QStringLiteral("coordinateSystem")));
+                    QVERIFY(!response.contains(QStringLiteral("coordinateFrame")));
+                }
+            }
+        }
     }
 };
 

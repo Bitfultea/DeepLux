@@ -80,11 +80,8 @@ void DataSourcePanel::refreshFromProject(Project* project) {
 }
 
 void DataSourcePanel::addDataSource(const DataSource& ds) {
-    if (QTreeWidgetItem* existing = findItem(ds.id)) {
-        QSignalBlocker blocker(m_treeWidget);
-        existing->setCheckState(0, Qt::Checked);
+    if (findItem(ds.id))
         return;
-    }
 
     QSignalBlocker blocker(m_treeWidget);
     QStringList columns;
@@ -121,6 +118,14 @@ void DataSourcePanel::addDataSource(const DataSource& ds) {
 
     if (m_emptyLabel)
         m_emptyLabel->setVisible(false);
+}
+
+void DataSourcePanel::setDataSourceVisibility(const QString& id, bool visible) {
+    QTreeWidgetItem* item = findItem(id);
+    if (!item || item->checkState(0) == (visible ? Qt::Checked : Qt::Unchecked))
+        return;
+    const QSignalBlocker blocker(m_treeWidget);
+    item->setCheckState(0, visible ? Qt::Checked : Qt::Unchecked);
 }
 
 void DataSourcePanel::removeDataSource(const QString& id) {

@@ -3,6 +3,7 @@
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
 #include <core/platform/PathUtils.h>
+#include <cstdio>
 
 using namespace DeepLux;
 
@@ -20,6 +21,7 @@ private slots:
     void testLogPath();
     void testProjectPath();
     void testNormalize();
+    void testResolveFileTargetPathFollowsSymlinksAndMissingSuffixes();
     void testJoin();
     void testEnsureDirExists();
     void testApplicationDirPath();
@@ -121,6 +123,38 @@ void TestPathUtils::testNormalize() {
     QCOMPARE(PathUtils::normalize("/home/user/../user/./docs"), QString("/home/user/docs"));
     QCOMPARE(PathUtils::normalize("/home/user/"), QString("/home/user"));
     QCOMPARE(PathUtils::normalize("./test"), QString("test"));
+}
+
+void TestPathUtils::testResolveFileTargetPathFollowsSymlinksAndMissingSuffixes() {
+#ifndef Q_OS_UNIX
+    QSKIP("The test requires POSIX symlink and rename semantics");
+#else
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString rootA = dir.filePath(QStringLiteral("root-a"));
+    const QString rootB = dir.filePath(QStringLiteral("root-b"));
+    QVERIFY(QDir().mkpath(rootA));
+    QVERIFY(QDir().mkpath(rootB));
+    const QString alias = dir.filePath(QStringLiteral("current"));
+    const QString replacement = dir.filePath(QStringLiteral("next"));
+    QVERIFY(QFile::link(rootA, alias));
+
+    const QString unresolvedTarget = QDir(alias).filePath(QStringLiteral("created/child"));
+    QCOMPARE(PathUtils::resolveFileTargetPath(unresolvedTarget), QDir(rootA).filePath(QStringLiteral("created/child")));
+    QVERIFY(!QFileInfo::exists(unresolvedTarget));
+
+    QVERIFY(QFile::link(rootB, replacement));
+    const QByteArray replacementName = QFile::encodeName(replacement);
+    const QByteArray aliasName = QFile::encodeName(alias);
+    QCOMPARE(std::rename(replacementName.constData(), aliasName.constData()), 0);
+    QCOMPARE(PathUtils::resolveFileTargetPath(unresolvedTarget), QDir(rootB).filePath(QStringLiteral("created/child")));
+
+    const QString loopA = dir.filePath(QStringLiteral("loop-a"));
+    const QString loopB = dir.filePath(QStringLiteral("loop-b"));
+    QVERIFY(QFile::link(loopB, loopA));
+    QVERIFY(QFile::link(loopA, loopB));
+    QVERIFY(PathUtils::resolveFileTargetPath(loopA).isEmpty());
+#endif
 }
 
 void TestPathUtils::testJoin() {

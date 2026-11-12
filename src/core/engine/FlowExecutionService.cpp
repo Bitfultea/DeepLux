@@ -5,6 +5,7 @@
 #include <QElapsedTimer>
 #include <QMutexLocker>
 #include <QThread>
+#include <QUuid>
 #include <exception>
 
 namespace DeepLux {
@@ -64,15 +65,59 @@ bool FlowExecutionService::startSingle() {
     return enqueue(JobType::Single);
 }
 
+bool FlowExecutionService::startSingle(JobRequest* request) {
+    return enqueue(JobType::Single, request);
+}
+
 bool FlowExecutionService::startCycle() {
     return enqueue(JobType::Cycle);
+}
+
+bool FlowExecutionService::startCycle(JobRequest* request) {
+    return enqueue(JobType::Cycle, request);
 }
 
 bool FlowExecutionService::stepOnce() {
     return enqueue(JobType::Step);
 }
 
-bool FlowExecutionService::enqueue(JobType job) {
+bool FlowExecutionService::stepOnce(JobRequest* request) {
+    return enqueue(JobType::Step, request);
+}
+
+RunObservation FlowExecutionService::currentRunObservation() const {
+    QString runId;
+    {
+        QMutexLocker locker(&m_mutex);
+        runId = m_activeRequest.runId.isEmpty() ? m_lastRunId : m_activeRequest.runId;
+    }
+    return RunEngine::instance().runObservation(runId);
+}
+
+RunObservation FlowExecutionService::currentSessionObservation() const {
+    QString sessionId;
+    {
+        QMutexLocker locker(&m_mutex);
+        sessionId = m_activeRequest.sessionId.isEmpty() ? m_lastSessionId : m_activeRequest.sessionId;
+    }
+    return sessionId.isEmpty() ? RunEngine::instance().runObservation()
+                               : RunEngine::instance().runObservation(sessionId);
+}
+
+FlowExecutionService::JobRequest FlowExecutionService::activeJobRequestSnapshot() const {
+    QMutexLocker locker(&m_mutex);
+    return m_activeRequest;
+}
+
+bool FlowExecutionService::enqueue(JobType job, JobRequest* request) {
+    JobRequest accepted = request ? *request : JobRequest{};
+    if (accepted.maxCycles < 0 ||
+        (job == JobType::Cycle && !accepted.authorization.isEmpty() && accepted.maxCycles <= 0))
+        return false;
+    if (accepted.runId.isEmpty())
+        accepted.runId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    if (job == JobType::Cycle && accepted.sessionId.isEmpty())
+        accepted.sessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QMutexLocker locker(&m_mutex);
     // 设计 §4.1：非 Idle 时启动/单步直接拒绝，不排队；Paused 只接受 continueRun()/stop()。
     if (state() != State::Idle || m_pendingJob != JobType::None || currentJob() != JobType::None) {
@@ -81,6 +126,7 @@ bool FlowExecutionService::enqueue(JobType job) {
     // shutdown() 销毁线程后会置 quit 标志；此处按需重建线程并复位该标志。
     ensureThreadLocked();
     m_pendingJob = job;
+    m_pendingRequest = accepted;
     m_startSettled = false;
     m_startOk = false;
     m_wake.wakeOne();
@@ -113,7 +159,10 @@ bool FlowExecutionService::enqueue(JobType job) {
             // wait 超时后回到循环顶部重新判定；剩余时间耗尽时走上面的撤回/停止分支。
         }
     }
-    return m_startSettled && m_startOk;
+    const bool ok = m_startSettled && m_startOk;
+    if (ok && request)
+        *request = accepted;
+    return ok;
 }
 
 void FlowExecutionService::setStartHandshakeHookForTest(std::function<void()> hook) {
@@ -124,6 +173,16 @@ void FlowExecutionService::setStartHandshakeHookForTest(std::function<void()> ho
 void FlowExecutionService::clearStartHandshakeHookForTest() {
     QMutexLocker locker(&m_mutex);
     m_testStartHook = nullptr;
+}
+
+void FlowExecutionService::setAfterStartSettledHookForTest(std::function<void()> hook) {
+    QMutexLocker locker(&m_mutex);
+    m_testAfterStartSettledHook = std::move(hook);
+}
+
+void FlowExecutionService::clearAfterStartSettledHookForTest() {
+    QMutexLocker locker(&m_mutex);
+    m_testAfterStartSettledHook = nullptr;
 }
 
 void FlowExecutionService::settleStart(bool ok) {
@@ -144,11 +203,13 @@ void FlowExecutionService::ensureThreadLocked() {
     m_thread->start();
 }
 
-bool FlowExecutionService::continueRun() {
+bool FlowExecutionService::continueRun(const QJsonObject& authorization) {
     QMutexLocker locker(&m_mutex);
     if (state() != State::Paused || m_pendingJob != JobType::None) {
         return false;
     }
+    if (!authorization.isEmpty())
+        m_activeRequest.authorization = authorization;
     m_resumeRequested = true;
     // 防御（t11 F1）：恢复路径不得保留残留暂停请求，否则 Cycle 恢复后会立即再次进入 Paused。
     m_pauseRequested = false;
@@ -230,6 +291,7 @@ bool FlowExecutionService::shutdown() {
 void FlowExecutionService::workerLoop() {
     for (;;) {
         JobType job = JobType::None;
+        JobRequest request;
         {
             QMutexLocker locker(&m_mutex);
             while (!m_quitRequested && m_pendingJob == JobType::None) {
@@ -239,6 +301,7 @@ void FlowExecutionService::workerLoop() {
                 return;
             }
             job = m_pendingJob;
+            request = m_pendingRequest;
             m_pendingJob = JobType::None;
             // 新 job 的清零：停止/暂停/继续标志属于上一次 job 的窗口语义。
             m_stopRequested = false;
@@ -248,17 +311,21 @@ void FlowExecutionService::workerLoop() {
         if (job == JobType::None) {
             continue;
         }
-        runJob(job);
+        runJob(job, request);
     }
 }
 
-void FlowExecutionService::runJob(JobType job) {
+void FlowExecutionService::runJob(JobType job, const JobRequest& request) {
     RunEngine& engine = RunEngine::instance();
     // 从出队起即对外可见当前 job（isActive()/stop() 覆盖“已出队、租约未建立”的启动窗口）。
     // 每个 job 分配单调序号：等待方用它区分“本次 job 的完成信号”与上一次 job 的排队信号。
     const quint64 jobSerial = m_jobSerialSeq.fetch_add(1, std::memory_order_relaxed) + 1;
     m_currentJobSerial.store(jobSerial, std::memory_order_release);
     m_job.store(static_cast<int>(job), std::memory_order_release);
+    {
+        QMutexLocker locker(&m_mutex);
+        m_activeRequest = request;
+    }
 
     // B7 测试注入：在启动协议最前面执行（生产构建恒为空），用于确定性验证 GUI 侧握手超时。
     std::function<void()> startHook;
@@ -275,6 +342,10 @@ void FlowExecutionService::runJob(JobType job) {
     if (!engine.beginExternalJob(&token, &reason)) {
         m_job.store(static_cast<int>(JobType::None), std::memory_order_release);
         m_failedJobSerial.store(jobSerial, std::memory_order_release);
+        {
+            QMutexLocker locker(&m_mutex);
+            m_activeRequest = JobRequest{};
+        }
         const QString error = reason.isEmpty() ? QStringLiteral("engine_busy") : reason;
         Logger::instance().warning(QString("Flow job rejected: %1").arg(error), "Service");
         settleStart(false); // 启动握手：让 startX() 立即返回 false
@@ -288,8 +359,31 @@ void FlowExecutionService::runJob(JobType job) {
         QMutexLocker locker(&m_mutex);
         m_leaseToken = token;
     }
+    if (!engine.prepareExternalJobObservation(token, request.runId, request.sessionId, request.maxCycles)) {
+        engine.endExternalJob(token);
+        engine.clearDisplayJobId();
+        {
+            QMutexLocker locker(&m_mutex);
+            m_leaseToken = RunEngine::JobToken{};
+            m_activeRequest = JobRequest{};
+        }
+        m_job.store(static_cast<int>(JobType::None), std::memory_order_release);
+        m_failedJobSerial.store(jobSerial, std::memory_order_release);
+        settleStart(false);
+        emit jobFailed(job, QStringLiteral("run_observation_initialization_failed"));
+        return;
+    }
     commitState(State::Running, job);
     settleStart(true); // job 租约已建立、引擎 busy，startX() 可安全返回 true
+
+    // 测试 seam：稳定地暂停在 started 已返回但首轮尚未开始的窗口，验证 observation 与取消终态。
+    std::function<void()> afterStartHook;
+    {
+        QMutexLocker locker(&m_mutex);
+        afterStartHook = m_testAfterStartSettledHook;
+    }
+    if (afterStartHook)
+        afterStartHook();
 
     bool stopped = false;
     bool failed = false;
@@ -297,13 +391,13 @@ void FlowExecutionService::runJob(JobType job) {
     try {
         switch (job) {
         case JobType::Single:
-            runSingleJob(token, stopped, failed, error);
+            runSingleJob(token, request, stopped, failed, error);
             break;
         case JobType::Cycle:
-            runCycleJob(token, stopped, failed, error);
+            runCycleJob(token, request, stopped, failed, error);
             break;
         case JobType::Step:
-            runStepJob(token, stopped, failed, error);
+            runStepJob(token, request, stopped, failed, error);
             break;
         case JobType::Resume:
         case JobType::None:
@@ -319,6 +413,12 @@ void FlowExecutionService::runJob(JobType job) {
         error = QStringLiteral("unknown_service_exception");
     }
 
+    // 若取消/拒绝发生在引擎首次取得执行权前，RunEngine 尚无 finalizer 可发布终态；
+    // 同样收口未完成的 job/run/session observation，确保 started 后返回的身份可查询到底。
+    if (stopped || failed) {
+        engine.finishPendingExternalJobObservation(token, request.runId, request.sessionId, stopped, error);
+    }
+
     // 收尾：释放 job 租约（同时清理 job 级取消标志与暂停上下文），再提交 Idle。
     engine.endExternalJob(token);
     // 后台执行（设计 §7.1）：job 结束/停止时清空显示帧上下文（帧槽位保留最后一帧供叠加使用）。
@@ -326,6 +426,9 @@ void FlowExecutionService::runJob(JobType job) {
     {
         QMutexLocker locker(&m_mutex);
         m_leaseToken = RunEngine::JobToken{};
+        m_lastRunId = m_activeRequest.runId;
+        m_lastSessionId = m_activeRequest.sessionId;
+        m_activeRequest = JobRequest{};
         if ((m_stopRequested || m_quitRequested) && !stopped && !failed) {
             stopped = true; // 停止请求落在收尾窗口：按停止处理，不得上报成功
         }
@@ -344,6 +447,8 @@ void FlowExecutionService::runJob(JobType job) {
         commitState(State::Stopping, job);
     }
     commitState(State::Idle, JobType::None);
+    if (job == JobType::Cycle)
+        engine.notifyExternalCycleStopped();
     {
         // 唤醒仍在等待命令/暂停/继续的工作线程或锁内等待者（job 已收尾）。
         QMutexLocker locker(&m_mutex);
@@ -357,7 +462,8 @@ void FlowExecutionService::runJob(JobType job) {
     }
 }
 
-void FlowExecutionService::runSingleJob(const RunEngine::JobToken& token, bool& stopped, bool& failed, QString& error) {
+void FlowExecutionService::runSingleJob(const RunEngine::JobToken& token, const JobRequest& request, bool& stopped,
+                                        bool& failed, QString& error) {
     RunEngine& engine = RunEngine::instance();
     if (stopRequested()) {
         stopped = true;
@@ -377,7 +483,9 @@ void FlowExecutionService::runSingleJob(const RunEngine::JobToken& token, bool& 
     }
 
     QString reason;
-    if (!engine.runOnceForJob(token, &reason)) {
+    QString acceptedRunId;
+    if (!engine.runOnceForJob(token, request.authorization, request.runId, request.sessionId, request.maxCycles,
+                              &acceptedRunId, &reason)) {
         if (reason == QStringLiteral("external_job_cancelled")) {
             stopped = true;
         } else {
@@ -385,6 +493,10 @@ void FlowExecutionService::runSingleJob(const RunEngine::JobToken& token, bool& 
             error = reason.isEmpty() ? QStringLiteral("start_rejected") : reason;
         }
         return;
+    }
+    {
+        QMutexLocker locker(&m_mutex);
+        m_activeRequest.runId = acceptedRunId;
     }
     // 模块边界暂停（断点/用户）：保持同一 job，等待 continueRun()/stop() 后恢复。
     while (engine.isPaused()) {
@@ -401,8 +513,10 @@ void FlowExecutionService::runSingleJob(const RunEngine::JobToken& token, bool& 
     stopped = (engine.state() == RunState::Stopped);
 }
 
-void FlowExecutionService::runCycleJob(const RunEngine::JobToken& token, bool& stopped, bool& failed, QString& error) {
+void FlowExecutionService::runCycleJob(const RunEngine::JobToken& token, const JobRequest& request, bool& stopped,
+                                       bool& failed, QString& error) {
     RunEngine& engine = RunEngine::instance();
+    int completedCycles = 0;
     for (;;) {
         if (quitRequested() || stopRequested()) {
             stopped = true;
@@ -423,7 +537,11 @@ void FlowExecutionService::runCycleJob(const RunEngine::JobToken& token, bool& s
         }
 
         QString reason;
-        if (!engine.runOnceForJob(token, &reason)) {
+        QString acceptedRunId;
+        const QString requestedRunId = completedCycles == 0 ? request.runId : QString();
+        const JobRequest currentRequest = activeJobRequestSnapshot();
+        if (!engine.runOnceForJob(token, currentRequest.authorization, requestedRunId, currentRequest.sessionId,
+                                  request.maxCycles, &acceptedRunId, &reason)) {
             if (reason == QStringLiteral("external_job_cancelled")) {
                 stopped = true;
                 return;
@@ -431,6 +549,10 @@ void FlowExecutionService::runCycleJob(const RunEngine::JobToken& token, bool& s
             failed = true;
             error = reason.isEmpty() ? QStringLiteral("start_rejected") : reason;
             return;
+        }
+        {
+            QMutexLocker locker(&m_mutex);
+            m_activeRequest.runId = acceptedRunId;
         }
         // 单轮内命中断点/用户暂停：等待继续后恢复被暂停段（Resume 段同属当前 job）。
         while (engine.isPaused()) {
@@ -448,19 +570,35 @@ void FlowExecutionService::runCycleJob(const RunEngine::JobToken& token, bool& s
             stopped = true;
             return;
         }
+        const RunObservation observation = engine.runObservation(acceptedRunId);
+        if (observation.finished && !observation.result.success) {
+            failed = true;
+            error = observation.result.errorMessage.isEmpty() ? QStringLiteral("cycle_iteration_failed")
+                                                              : observation.result.errorMessage;
+            return;
+        }
+        ++completedCycles;
+        if (request.maxCycles > 0 && completedCycles >= request.maxCycles)
+            return;
         // 循环节拍：上一轮结束立即下一轮，仅让出 CPU（设计 §5.3 #1）。
-        QThread::yieldCurrentThread();
+        if (request.intervalMs > 0)
+            QThread::msleep(static_cast<unsigned long>(request.intervalMs));
+        else
+            QThread::yieldCurrentThread();
     }
 }
 
-void FlowExecutionService::runStepJob(const RunEngine::JobToken& token, bool& stopped, bool& failed, QString& error) {
+void FlowExecutionService::runStepJob(const RunEngine::JobToken& token, const JobRequest& request, bool& stopped,
+                                      bool& failed, QString& error) {
     RunEngine& engine = RunEngine::instance();
     if (stopRequested()) {
         stopped = true;
         return;
     }
     QString reason;
-    if (!engine.stepOnceForJob(token, &reason)) {
+    QString acceptedRunId;
+    if (!engine.stepOnceForJob(token, request.authorization, request.runId, request.sessionId, request.maxCycles,
+                               &acceptedRunId, &reason)) {
         if (reason == QStringLiteral("external_job_cancelled")) {
             stopped = true;
         } else {
@@ -468,6 +606,10 @@ void FlowExecutionService::runStepJob(const RunEngine::JobToken& token, bool& st
             error = reason.isEmpty() ? QStringLiteral("start_rejected") : reason;
         }
         return;
+    }
+    {
+        QMutexLocker locker(&m_mutex);
+        m_activeRequest.runId = acceptedRunId;
     }
     stopped = (engine.state() == RunState::Stopped);
 }
@@ -499,7 +641,12 @@ FlowExecutionService::ResumeOutcome FlowExecutionService::waitForResumeOrStop(co
     commitState(State::Running, JobType::Resume);
     if (RunEngine::instance().isPaused()) {
         QString resumeReason;
-        if (!RunEngine::instance().resumeForJob(token, &resumeReason)) {
+        QJsonObject authorization;
+        {
+            QMutexLocker locker(&m_mutex);
+            authorization = m_activeRequest.authorization;
+        }
+        if (!RunEngine::instance().resumeForJob(token, authorization, nullptr, &resumeReason)) {
             m_job.store(static_cast<int>(pausedJob), std::memory_order_release);
             error = resumeReason.isEmpty() ? QStringLiteral("resume_rejected") : resumeReason;
             return ResumeOutcome::Failed;

@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPoint>
 #include <QPointer>
 #include <QVBoxLayout>
 #include <QVariant>
@@ -119,6 +120,7 @@ bool CropImagePlugin::process(const ImageData& input, ImageData& output) {
     // 逐旋转矩形：解析包围盒（|ux|+|vx| 半宽）→ 四舍五入半开区间 → 与图像求交
     QVariantList cropRows;
     cv::Mat firstCrop;
+    QPoint firstCropOrigin;
     int cropCount = 0;
     for (int i = 0; i < rects.size(); ++i) {
         const QJsonArray r = rects[i].toArray();
@@ -161,8 +163,19 @@ bool CropImagePlugin::process(const ImageData& input, ImageData& output) {
             const cv::Mat crop = src(cv::Rect(x0, y0, w, h)).clone();
             if (firstCrop.empty()) {
                 firstCrop = crop;
+                firstCropOrigin = QPoint(x0, y0);
             }
-            row.insert(QStringLiteral("image"), QVariant::fromValue(ImageData(crop)));
+            ImageData cropData(crop);
+            if (input.hasCoordinateProvenance()) {
+                ImageCoordinateProvenance provenance = input.coordinateProvenance();
+                if (provenance.offsetLocalOrigin(QPointF(x0, y0)))
+                    cropData.setCoordinateProvenance(provenance);
+                else
+                    cropData.invalidateCoordinateProvenance();
+            } else {
+                cropData.invalidateCoordinateProvenance();
+            }
+            row.insert(QStringLiteral("image"), QVariant::fromValue(cropData));
             ++cropCount;
         }
         cropRows.append(row);
@@ -176,6 +189,7 @@ bool CropImagePlugin::process(const ImageData& input, ImageData& output) {
     // 供下游测量模块直接消费；否则原样透传输入
     if (outputFirst) {
         output.setMat(firstCrop);
+        output.offsetCoordinateOrigin(firstCropOrigin.x(), firstCropOrigin.y());
     }
     output.setData("crop_count", static_cast<double>(cropCount));
     output.setData("crop_images", cropRows);
@@ -207,10 +221,12 @@ QWidget* CropImagePlugin::createConfigWidget() {
     auto* layout = new QVBoxLayout(widget);
     layout->setContentsMargins(12, 12, 12, 12);
     layout->setSpacing(8);
-    layout->addWidget(new QLabel(tr("旋转矩形批量裁剪——矩形数组 [[cx,cy,半长1,半长2,deg],...]（1..%1 个）\n"
-                                    "半长1/半长2 为 HALCON Length1/Length2 口径：整边长 = 2×半长")
-                                     .arg(kMaxRects),
-                                 widget));
+    layout->addWidget(
+        new QLabel(tr("旋转矩形批量裁剪——矩形数组 [[cx,cy,半长1,半长2,deg],...]（cx/cy 为当前输入图像局部像素中心；"
+                      "半长1/2 为像素；deg 为度；1..%1 个）\n"
+                      "半长1/半长2 为 HALCON Length1/Length2 口径：整边长 = 2×半长")
+                       .arg(kMaxRects),
+                   widget));
 
     auto* form = new QFormLayout();
     auto* rectsEdit = new QLineEdit(widget);
@@ -218,7 +234,7 @@ QWidget* CropImagePlugin::createConfigWidget() {
     rectsEdit->setText(
         QString::fromUtf8(QJsonDocument(m_params["rectangles"].toArray()).toJson(QJsonDocument::Compact)));
     rectsEdit->setPlaceholderText(QStringLiteral("[[cx,cy,半长1,半长2,deg],...] 如 [[320,240,100,50,0]]"));
-    form->addRow(tr("矩形数组（半长）"), rectsEdit);
+    form->addRow(tr("矩形数组（输入图像局部像素，半长为像素）"), rectsEdit);
 
     auto* firstCheck = new QCheckBox(tr("image 端口输出首个裁剪图"), widget);
     firstCheck->setObjectName(QStringLiteral("CropImageOutputFirstCheck"));

@@ -6,9 +6,7 @@
 
 #include <QDesktopServices>
 #include <QDir>
-#include <QFile>
 #include <QFileDialog>
-#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -22,11 +20,8 @@
 
 namespace DeepLux {
 
-namespace {
-constexpr qint64 kPreviewLimit = 512 * 1024; // 预览截断上限，避免超大文档卡住界面
-}
-
 KnowledgeBaseDialog::KnowledgeBaseDialog(QWidget* parent) : QDialog(parent) {
+    setObjectName(QStringLiteral("KnowledgeBaseDialog"));
     setWindowTitle(tr("软件知识库"));
     setMinimumSize(760, 520);
     setupUi();
@@ -107,19 +102,21 @@ void KnowledgeBaseDialog::reloadList() {
     m_dirLabel->setText(tr("用户文档目录：%1").arg(QDir::toNativeSeparators(userDir)));
 
     const QString filter = m_filterEdit->text().trimmed();
-    const QStringList paths = AgentActor::knowledgeDocumentPaths();
-    for (const QString& path : paths) {
-        const QString name = QFileInfo(path).fileName();
+    const QJsonArray documents = AgentActor::listKnowledgeDocuments();
+    for (const QJsonValue& value : documents) {
+        const QJsonObject document = value.toObject();
+        const QString name = document.value(QStringLiteral("name")).toString();
+        const QString documentId = document.value(QStringLiteral("documentId")).toString();
         if (!filter.isEmpty() && !name.contains(filter, Qt::CaseInsensitive)) {
             continue;
         }
-        const bool isUser = path.startsWith(userDir);
+        const bool isUser = document.value(QStringLiteral("source")).toString() == QStringLiteral("user");
         auto* item = new QListWidgetItem(m_list);
         item->setText(QStringLiteral("%1    [%2]").arg(name, isUser ? tr("用户") : tr("内置")));
-        item->setData(Qt::UserRole, path);
-        item->setData(Qt::UserRole + 1, isUser);
-        item->setToolTip(QDir::toNativeSeparators(path));
-        if (path == selected) {
+        item->setData(Qt::UserRole, documentId);
+        item->setData(Qt::UserRole + 1, document.value(QStringLiteral("removable")).toBool());
+        item->setToolTip(QDir::toNativeSeparators(isUser ? QDir(userDir).filePath(name) : documentId));
+        if (documentId == selected) {
             item->setSelected(true);
         }
     }
@@ -141,19 +138,15 @@ void KnowledgeBaseDialog::showPreview(QListWidgetItem* item) {
 
     m_removeBtn->setEnabled(item->data(Qt::UserRole + 1).toBool());
 
-    QFile file(item->data(Qt::UserRole).toString());
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        m_preview->setPlainText(tr("无法读取文档：%1").arg(file.errorString()));
+    const QJsonObject result = AgentActor::previewKnowledgeDocument(item->data(Qt::UserRole).toString());
+    if (result.contains(QStringLiteral("error"))) {
+        m_preview->setPlainText(tr("无法读取文档：%1").arg(result.value(QStringLiteral("error")).toString()));
         return;
     }
-    QByteArray data = file.read(kPreviewLimit + 1);
-    file.close();
-    if (data.size() > kPreviewLimit) {
-        data.resize(kPreviewLimit);
-        m_preview->setPlainText(QString::fromUtf8(data) + tr("\n\n... (文档过大，仅预览前 512 KB)"));
-    } else {
-        m_preview->setPlainText(QString::fromUtf8(data));
-    }
+    QString content = result.value(QStringLiteral("content")).toString();
+    if (result.value(QStringLiteral("truncated")).toBool())
+        content += tr("\n\n... (文档过大，仅预览前 512 KB)");
+    m_preview->setPlainText(content);
 }
 
 void KnowledgeBaseDialog::onSelectionChanged() {
@@ -175,21 +168,13 @@ void KnowledgeBaseDialog::onAddClicked() {
     const QString userDir = AgentActor::userKnowledgeDir();
     QString lastAdded;
     for (const QString& src : files) {
-        const QString name = QFileInfo(src).fileName();
-        const QString dest = QDir(userDir).filePath(name);
-        if (QFileInfo::exists(dest)) {
-            const auto answer =
-                QMessageBox::question(this, tr("添加知识库文档"), tr("“%1”已存在于知识库，是否覆盖？").arg(name));
-            if (answer != QMessageBox::Yes) {
-                continue;
-            }
-            QFile::remove(dest);
-        }
-        if (QFile::copy(src, dest)) {
-            lastAdded = dest;
-            Logger::instance().info(tr("知识库添加文档: %1").arg(name), QStringLiteral("Agent"));
+        const QJsonObject result = AgentActor::addKnowledgeDocument(src);
+        if (!result.contains(QStringLiteral("error"))) {
+            lastAdded = result.value(QStringLiteral("documentId")).toString();
+            Logger::instance().info(tr("知识库添加文档: %1").arg(result.value(QStringLiteral("name")).toString()),
+                                    QStringLiteral("Agent"));
         } else {
-            QMessageBox::warning(this, tr("添加知识库文档"), tr("复制“%1”失败。").arg(name));
+            QMessageBox::warning(this, tr("添加知识库文档"), result.value(QStringLiteral("error")).toString());
         }
     }
 
@@ -214,17 +199,19 @@ void KnowledgeBaseDialog::onRemoveClicked() {
         return;
     }
 
-    const QString path = item->data(Qt::UserRole).toString();
-    const auto answer = QMessageBox::question(
-        this, tr("移除"),
-        tr("确定从知识库移除“%1”？\n（添加时是复制入库，原始文件不受影响）").arg(QFileInfo(path).fileName()));
+    const QString documentId = item->data(Qt::UserRole).toString();
+    const auto answer = QMessageBox::question(this, tr("移除"),
+                                              tr("确定从知识库移除“%1”？\n（添加时是复制入库，原始文件不受影响）")
+                                                  .arg(documentId.mid(QStringLiteral("user:").size())));
     if (answer != QMessageBox::Yes) {
         return;
     }
-    if (QFile::remove(path)) {
-        Logger::instance().info(tr("知识库移除文档: %1").arg(QFileInfo(path).fileName()), QStringLiteral("Agent"));
+    const QJsonObject result = AgentActor::removeKnowledgeDocument(documentId);
+    if (!result.contains(QStringLiteral("error"))) {
+        Logger::instance().info(tr("知识库移除文档: %1").arg(result.value(QStringLiteral("name")).toString()),
+                                QStringLiteral("Agent"));
     } else {
-        QMessageBox::warning(this, tr("移除"), tr("移除失败：%1").arg(path));
+        QMessageBox::warning(this, tr("移除"), result.value(QStringLiteral("error")).toString());
     }
     reloadList();
 }

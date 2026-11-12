@@ -9,6 +9,8 @@
 #include <QLineEdit>
 #include <QSpinBox>
 #include <QVBoxLayout>
+#include <cmath>
+#include <limits>
 
 namespace DeepLux {
 
@@ -32,8 +34,20 @@ bool WhilePlugin::initialize() {
 
 bool WhilePlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     // 阶段 2: conditionVariable 等外部资源允许暂时为空，由 process() 在运行时报告"未配置"
-    if (params["maxIterations"].toInt() <= 0) {
-        error = QString("Max iterations must be greater than 0");
+    static const QStringList comparisons = {QStringLiteral("NotEmpty"),    QStringLiteral("Empty"),
+                                            QStringLiteral("Equal"),       QStringLiteral("NotEqual"),
+                                            QStringLiteral("GreaterThan"), QStringLiteral("LessThan")};
+    const QString comparison = params.value(QStringLiteral("comparison")).toString();
+    if (!comparisons.contains(comparison)) {
+        error = QStringLiteral("comparison 不支持: %1").arg(comparison);
+        return false;
+    }
+
+    const QJsonValue iterationsValue = params.value(QStringLiteral("maxIterations"));
+    const double iterations = iterationsValue.toDouble(std::numeric_limits<double>::quiet_NaN());
+    if (!iterationsValue.isDouble() || !std::isfinite(iterations) || std::floor(iterations) != iterations ||
+        iterations < 1 || iterations > 100000) {
+        error = QStringLiteral("maxIterations 必须为 1–100000 的整数");
         return false;
     }
     return true;

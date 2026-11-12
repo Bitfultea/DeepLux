@@ -25,6 +25,7 @@ private slots:
     void testMigrateLinearImageFlow();
     void testMigrationIdempotent();
     void testSaveCreatesV2Backup();
+    void testBackupAndProjectSaveFailuresPreserveOriginalFiles();
     void testLoadDoesNotModifyOriginal();
     void testProjectManagerMigratesOnOpenAndBacksUpOnSave();
     // 阶4: 只读一致性——JSON 结论分布与 legacy-comparison.md 陈述一致，防漂移
@@ -314,6 +315,89 @@ void TestProjectMigration::testSaveCreatesV2Backup() {
     QFile bak(path + ".v2.bak");
     QVERIFY(bak.open(QIODevice::ReadOnly));
     QCOMPARE(QJsonDocument::fromJson(bak.readAll()).object()["version"].toString(), QStringLiteral("2.0"));
+}
+
+void TestProjectMigration::testBackupAndProjectSaveFailuresPreserveOriginalFiles() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("legacy.dproj"));
+    const QString backupPath = path + QStringLiteral(".v2.bak");
+
+    Project legacy;
+    fillV2Project(legacy);
+    QVERIFY(legacy.save(path));
+    QFile source(path);
+    QVERIFY(source.open(QIODevice::ReadOnly));
+    const QByteArray originalSource = source.readAll();
+    source.close();
+    const QByteArray originalBackup("previous backup sentinel");
+    QFile backup(backupPath);
+    QVERIFY(backup.open(QIODevice::WriteOnly));
+    QCOMPARE(backup.write(originalBackup), qint64(originalBackup.size()));
+    backup.close();
+
+    Project migrated;
+    QVERIFY(migrated.load(path));
+    QVERIFY(ProjectMigrator::migrate(migrated).blockers.isEmpty());
+    ProjectMigrator::failNextBackupAfterBytesForTesting(12);
+    QVERIFY(!ProjectMigrator::saveWithBackup(migrated, path));
+    QVERIFY(migrated.isModified());
+    QFile sourceAfterBackupFailure(path);
+    QVERIFY(sourceAfterBackupFailure.open(QIODevice::ReadOnly));
+    QCOMPARE(sourceAfterBackupFailure.readAll(), originalSource);
+    QFile backupAfterFailure(backupPath);
+    QVERIFY(backupAfterFailure.open(QIODevice::ReadOnly));
+    QCOMPARE(backupAfterFailure.readAll(), originalBackup);
+
+    QVERIFY(ProjectMigrator::saveWithBackup(migrated, path));
+    QFile committedBackup(backupPath);
+    QVERIFY(committedBackup.open(QIODevice::ReadOnly));
+    QCOMPARE(committedBackup.readAll(), originalSource);
+    committedBackup.close();
+    QFile currentSource(path);
+    QVERIFY(currentSource.open(QIODevice::ReadOnly));
+    const QByteArray migratedSource = currentSource.readAll();
+    currentSource.close();
+    QCOMPARE(QJsonDocument::fromJson(migratedSource).object().value(QStringLiteral("version")).toString(),
+             QStringLiteral("3.0"));
+
+    // A failed primary replacement must leave both the legacy source and committed backup intact.
+    Project secondMigration;
+    QVERIFY(secondMigration.load(path));
+    QVERIFY(ProjectMigrator::migrate(secondMigration).blockers.isEmpty());
+    secondMigration.setName(QStringLiteral("dirty migration"));
+    const QByteArray existingV3 = migratedSource;
+    Project::failNextSaveAfterBytesForTesting(20);
+    QVERIFY(!ProjectMigrator::saveWithBackup(secondMigration, path));
+    QVERIFY(secondMigration.isModified());
+    QFile sourceAfterSaveFailure(path);
+    QVERIFY(sourceAfterSaveFailure.open(QIODevice::ReadOnly));
+    QCOMPARE(sourceAfterSaveFailure.readAll(), existingV3);
+    QFile backupAfterSaveFailure(backupPath);
+    QVERIFY(backupAfterSaveFailure.open(QIODevice::ReadOnly));
+    QCOMPARE(backupAfterSaveFailure.readAll(), originalSource);
+
+    const QString primaryFailurePath = dir.filePath(QStringLiteral("legacy-primary-failure.dproj"));
+    const QString primaryFailureBackup = primaryFailurePath + QStringLiteral(".v2.bak");
+    Project legacyForPrimaryFailure;
+    fillV2Project(legacyForPrimaryFailure);
+    QVERIFY(legacyForPrimaryFailure.save(primaryFailurePath));
+    QFile legacyForPrimaryFile(primaryFailurePath);
+    QVERIFY(legacyForPrimaryFile.open(QIODevice::ReadOnly));
+    const QByteArray legacyForPrimaryBytes = legacyForPrimaryFile.readAll();
+    legacyForPrimaryFile.close();
+    Project legacyPrimary;
+    QVERIFY(legacyPrimary.load(primaryFailurePath));
+    QVERIFY(ProjectMigrator::migrate(legacyPrimary).blockers.isEmpty());
+    Project::failNextSaveAfterBytesForTesting(20);
+    QVERIFY(!ProjectMigrator::saveWithBackup(legacyPrimary, primaryFailurePath));
+    QVERIFY(legacyPrimary.isModified());
+    QFile unchangedLegacy(primaryFailurePath);
+    QVERIFY(unchangedLegacy.open(QIODevice::ReadOnly));
+    QCOMPARE(unchangedLegacy.readAll(), legacyForPrimaryBytes);
+    QFile committedLegacyBackup(primaryFailureBackup);
+    QVERIFY(committedLegacyBackup.open(QIODevice::ReadOnly));
+    QCOMPARE(committedLegacyBackup.readAll(), legacyForPrimaryBytes);
 }
 
 void TestProjectMigration::testLoadDoesNotModifyOriginal() {

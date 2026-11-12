@@ -34,6 +34,7 @@ public:
     /// 同步追加一行（GUI 线程；重入保护）
     void append(const AgentActionLogEntry& entry);
     void flush();
+    QString currentFilePath() const;
 
     // ---- 测试/诊断可见 ----
     DEEPLUX_TEST_VISIBILITY : void setEnabledForTest(bool enabled);
@@ -43,7 +44,6 @@ public:
     void setMaxFileBytesForTest(int bytes);
     void setRetentionDaysForTest(int days);
     void resetForTest();
-    QString currentFilePath() const;
     int droppedRecords() const {
         return m_droppedRecords;
     }

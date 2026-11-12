@@ -4,25 +4,25 @@
 option(ENABLE_HYMSON3D "Enable HymsonVision3D algorithm plugins" OFF)
 
 if(NOT ENABLE_HYMSON3D)
-    message(STATUS "HymsonVision3D plugins: Disabled (set ENABLE_HYMSON3D=ON to enable)")
-    return()
-endif()
-
-# Find HymsonVision3D package
-find_package(HymsonVision3D QUIET)
-if(NOT HymsonVision3D_FOUND)
-    # Try to find HymsonVision3D in common locations
-    find_path(HYMSON3D_INCLUDE_DIRS
-        NAMES geometry/3D/PointCloud.h
-        PATHS /home/charles/Data/Repo/HymsonVision3D
-              /usr/local/include/hymson3d
-    )
-    find_library(HYMSON3D_GEOMETRY_LIB NAMES geometry_3d_lib PATHS /home/charles/Data/Repo/HymsonVision3D/build/geometry/3D)
-    find_library(HYMSON3D_PIPELINE_LIB NAMES pipeline PATHS /home/charles/Data/Repo/HymsonVision3D/build/pipeline)
-    if(HYMSON3D_INCLUDE_DIRS AND HYMSON3D_GEOMETRY_LIB AND HYMSON3D_PIPELINE_LIB)
-        set(HymsonVision3D_FOUND TRUE)
-        set(HYMSON3D_LIBRARIES ${HYMSON3D_GEOMETRY_LIB} ${HYMSON3D_PIPELINE_LIB})
-        message(STATUS "HymsonVision3D: Found at ${HYMSON3D_INCLUDE_DIRS}")
+    message(STATUS "HymsonVision3D support disabled; building DefectDetection in unavailable demo mode")
+else()
+    # Find HymsonVision3D package when explicitly requested.
+    find_package(HymsonVision3D QUIET)
+    if(NOT HymsonVision3D_FOUND)
+        find_path(HYMSON3D_INCLUDE_DIRS
+            NAMES geometry/3D/PointCloud.h
+            PATHS /home/charles/Data/Repo/HymsonVision3D
+                  /usr/local/include/hymson3d
+        )
+        find_library(HYMSON3D_GEOMETRY_LIB NAMES geometry_3d_lib
+            PATHS /home/charles/Data/Repo/HymsonVision3D/build/geometry/3D)
+        find_library(HYMSON3D_PIPELINE_LIB NAMES pipeline
+            PATHS /home/charles/Data/Repo/HymsonVision3D/build/pipeline)
+        if(HYMSON3D_INCLUDE_DIRS AND HYMSON3D_GEOMETRY_LIB AND HYMSON3D_PIPELINE_LIB)
+            set(HymsonVision3D_FOUND TRUE)
+            set(HYMSON3D_LIBRARIES ${HYMSON3D_GEOMETRY_LIB} ${HYMSON3D_PIPELINE_LIB})
+            message(STATUS "HymsonVision3D: Found at ${HYMSON3D_INCLUDE_DIRS}")
+        endif()
     endif()
 endif()
 

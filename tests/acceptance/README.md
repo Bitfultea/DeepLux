@@ -99,15 +99,13 @@ ctest --test-dir build -R test_acceptance_flows --output-on-failure
   汇合点不执行。
 - **Parallel blocking 不并行**：两个 blocking（SaveData）分支均成功输出且并发度≤1。
 - **拾取→圆拟合**：空点集运行必须失败；提交 3 个圆周点后，拟合圆心/半径与已知圆一致。
-  `test_mainwindow` 另行覆盖 FitCircle 自动创建 `point_set` 输入、3 次主窗口拾取处理写参与继续运行；
-真实鼠标/视口端到端由阶段 5 的 `ui_capture_mainwindow` 覆盖。
+  `test_mainwindow` 另行覆盖 FitCircle 自动创建 `point_set` 输入、主窗口视口拾取处理写参与继续运行。
 
 ## 阶段 5 端到端验收（Agent / SAM / GUI）
 
 - **GUI**：使用真实 `FlowRunButton` 启动运行，使用 `HImageWidget` 的真实鼠标点击提交 3 个圆周点；
   断言包括圆心/半径误差、主视图拟合圆与拾取点像素、运行完成信号和流程节点状态。
-  条件分支使用真实运行按钮和画布 Tab，截图保留控制边、成功状态点和跳过状态。
-  专项截图：`fitcircle_pick_result.png`、`controlflow_canvas_result.png`；截图期间临时调整流程栏宽度，结束后恢复。
+  真实交互与状态由 `test_mainwindow` 用例验证；`ui_capture_mainwindow` 负责主窗口布局截图。
 - **Agent**：`test_agente2e` 使用确定性假 LLM（无网络），Autopilot 完成
   "创建 GrabImage→FindCircle→连接→运行→读取结果"；断言模块/连接结构、取图参数、
   运行成功、圆心/半径与 `get_run_results` 统计。

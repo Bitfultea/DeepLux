@@ -5,6 +5,7 @@
 #include "IPointCloudRenderer.h"
 #include "PointCloudRendererOpenGL.h"
 
+#include <Eigen/Core>
 #include <QList>
 #include <QMatrix4x4>
 #include <QOpenGLWidget>
@@ -16,13 +17,13 @@
 namespace DeepLux {
 
 struct MeasurementOverlayPoint3D {
-    QVector3D pos;
+    Eigen::Vector3d pos;
     QString label;
 };
 
 struct MeasurementOverlayLine3D {
-    QVector3D p1;
-    QVector3D p2;
+    Eigen::Vector3d p1;
+    Eigen::Vector3d p2;
     QString label;
 };
 
@@ -72,6 +73,8 @@ public:
     void clearMeasurementInfoPanel();
     void setPickMode(bool enabled) {
         m_pickMode = enabled;
+        if (!enabled)
+            m_hasPendingLeftPress = false;
     }
 
 public slots:
@@ -85,6 +88,7 @@ public slots:
 signals:
     void pointClicked(int index, const QVector3D& point);
     void point3DClicked(const QVector3D& worldPos);
+    void point3DWorldClicked(double x, double y, double z);
 
 protected:
     // QOpenGLWidget
@@ -103,6 +107,7 @@ private:
     void beginInteraction();
     void endInteraction();
     void flushPendingInteraction();
+    bool projectToScreen(const Eigen::Vector3d& worldPos, QPointF* screenPos) const;
     bool projectToScreen(const QVector3D& worldPos, QPointF* screenPos) const;
     void drawMeasurementOverlay();
 
@@ -130,10 +135,12 @@ private:
 
     // 最近显示的3D点（用于 Ctrl+Click 坐标拾取）
     std::vector<QVector3D> m_lastPoints;
+    std::vector<Eigen::Vector3d> m_lastWorldPoints;
     QList<MeasurementOverlayPoint3D> m_measurementPoints;
     QList<MeasurementOverlayLine3D> m_measurementLines;
     QStringList m_infoPanelLines;
     bool m_pickMode = false;
+    bool m_hasPendingLeftPress = false;
     QPoint m_pickPressPos;
 };
 

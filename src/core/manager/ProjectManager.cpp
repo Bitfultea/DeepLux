@@ -25,46 +25,162 @@ ProjectManager::ProjectManager() {
 
 ProjectManager::~ProjectManager() {}
 
-Project* ProjectManager::newProject() {
-    if (RunEngine::instance().isBusy()) {
-        emit errorOccurred(tr("流程运行中，无法新建工程"));
-        return nullptr;
+bool ProjectManager::resolveUnsavedForSwitch(UnsavedPolicy policy, QString* errorCode, QString* errorMessage,
+                                             const QString& savePathOverride) {
+    // 阶段1 §3（计划 §6.3）：新建/打开/关闭前的未保存检查——GUI/CLI/Agent 共用同一实现。
+    // 用户未明确选择放弃时默认保留当前工程；保存失败不继续。
+    Project* current = m_currentProject.get();
+    if (!current || !current->isModified())
+        return true;
+    switch (policy) {
+    case UnsavedPolicy::Save:
+        // 复审2 R2：savePathOverride 非空时按显式路径保存（GUI「另存为」选择）；
+        // 为空走既有路径——从未保存且无路径的工程如实失败,绝不静默丢弃
+        if (saveProject(savePathOverride))
+            return true;
+        if (errorCode)
+            *errorCode = QStringLiteral("SAVE_FAILED");
+        if (errorMessage)
+            *errorMessage = tr("当前工程有未保存修改且保存失败，操作中止");
+        return false;
+    case UnsavedPolicy::Discard:
+        return true; // 用户显式选择放弃
+    case UnsavedPolicy::Cancel:
+        break;
     }
-    closeProject();
+    if (errorCode)
+        *errorCode = QStringLiteral("PROJECT_UNSAVED");
+    if (errorMessage)
+        *errorMessage = tr("当前工程「%1」有未保存修改").arg(current->name());
+    return false;
+}
 
-    m_currentProject = std::make_unique<Project>();
+Project* ProjectManager::newProjectChecked(UnsavedPolicy policy, QString* errorCode, QString* errorMessage,
+                                           const QString& savePathOverride) {
+    return replaceProject(std::make_unique<Project>(), false, true, policy, errorCode, errorMessage, savePathOverride);
+}
 
-    qDebug() << "New project created:" << m_currentProject->name();
-    emit projectCreated(m_currentProject.get());
+Project* ProjectManager::openProjectChecked(const QString& path, UnsavedPolicy policy, QString* errorCode,
+                                            QString* errorMessage, const QString& savePathOverride) {
+    return openProjectTransaction(path, true, policy, errorCode, errorMessage, savePathOverride);
+}
 
-    return m_currentProject.get();
+bool ProjectManager::closeProjectChecked(UnsavedPolicy policy, QString* errorCode, QString* errorMessage) {
+    return closeProjectTransaction(true, policy, errorCode, errorMessage);
+}
+
+Project* ProjectManager::newProject() {
+    return replaceProject(std::make_unique<Project>(), false, false, UnsavedPolicy::Discard, nullptr, nullptr,
+                          QString());
 }
 
 Project* ProjectManager::openProject(const QString& path) {
-    if (RunEngine::instance().isBusy()) {
-        emit errorOccurred(tr("流程运行中，无法打开工程"));
+    return openProjectTransaction(path, false, UnsavedPolicy::Discard, nullptr, nullptr, QString());
+}
+
+Project* ProjectManager::replaceProject(std::unique_ptr<Project> candidate, bool opened, bool checkUnsaved,
+                                        UnsavedPolicy policy, QString* errorCode, QString* errorMessage,
+                                        const QString& savePathOverride, const QString& recentPath) {
+    if (!candidate)
+        return nullptr;
+
+    RunEngine& engine = RunEngine::instance();
+    std::unique_ptr<Project> previous;
+    Project* resultProject = nullptr;
+    bool hadPrevious = false;
+    QString switchErrorCode;
+    QString switchErrorMessage;
+    const auto result = engine.withProjectSwitch([&]() {
+        const auto closeMutation = engine.withProjectMutationLease([&]() {
+            if (checkUnsaved &&
+                !resolveUnsavedForSwitch(policy, &switchErrorCode, &switchErrorMessage, savePathOverride))
+                return false;
+            hadPrevious = static_cast<bool>(m_currentProject);
+            previous = std::move(m_currentProject);
+            return true;
+        });
+        if (closeMutation != RunEngine::ProjectMutationResult::Applied)
+            return false;
+
+        // Destroy the old Project after releasing the maintenance lease. Event handlers clear/rebuild
+        // RunEngine modules and must be allowed to take their own short maintenance leases. The outer
+        // project-switch barrier remains active until every direct signal handler has returned.
+        previous.reset();
+        if (hadPrevious)
+            emit projectClosed();
+
+        // Preserve the established signal contract: projectClosed observers see no current project;
+        // install the candidate only after their cleanup has completed, then notify projectCreated/opened.
+        const auto openMutation = engine.withProjectMutationLease([&]() {
+            if (m_currentProject)
+                return false;
+            m_currentProject = std::move(candidate);
+            resultProject = m_currentProject.get();
+            return true;
+        });
+        if (openMutation != RunEngine::ProjectMutationResult::Applied)
+            return false;
+        if (opened) {
+            if (!recentPath.isEmpty())
+                addToRecentProjects(recentPath);
+            qDebug() << "Project opened:" << resultProject->name();
+            emit projectOpened(resultProject);
+        } else {
+            qDebug() << "New project created:" << resultProject->name();
+            emit projectCreated(resultProject);
+        }
+        return true;
+    });
+
+    if (result == RunEngine::ProjectMutationResult::Busy) {
+        switchErrorCode = QStringLiteral("ENGINE_BUSY");
+        switchErrorMessage = opened ? tr("流程运行中，无法打开工程") : tr("流程运行中，无法新建工程");
+    }
+    if (result != RunEngine::ProjectMutationResult::Applied) {
+        if (errorCode)
+            *errorCode = switchErrorCode;
+        if (errorMessage)
+            *errorMessage = switchErrorMessage;
+        if (!switchErrorMessage.isEmpty())
+            emit errorOccurred(switchErrorMessage);
         return nullptr;
     }
+    return resultProject;
+}
+
+Project* ProjectManager::openProjectTransaction(const QString& path, bool checkUnsaved, UnsavedPolicy policy,
+                                                QString* errorCode, QString* errorMessage,
+                                                const QString& savePathOverride) {
+    if (errorCode)
+        errorCode->clear();
+    if (errorMessage)
+        errorMessage->clear();
+
+    // Cancel is a user decision to keep the current unsaved project. Resolve it before
+    // touching the candidate path so callers receive the switch guard result consistently.
+    if (checkUnsaved && policy == UnsavedPolicy::Cancel && !resolveUnsavedForSwitch(policy, errorCode, errorMessage))
+        return nullptr;
+
     if (!QFile::exists(path)) {
         emit errorOccurred(tr("文件不存在: %1").arg(path));
         return nullptr;
     }
 
-    closeProject();
-
-    m_currentProject = std::make_unique<Project>();
-    if (!m_currentProject->load(path)) {
-        m_currentProject.reset();
+    // 阶段1 §3（F07）：先完整读入并验证候选工程（load + 迁移），任一环节失败
+    // 都不触碰当前工程——其对象、修改标记与撤销历史原样保留；
+    // 成功后才关闭当前工程（projectClosed 联动清空 Agent 撤销栈）并替换指针。
+    auto candidate = std::make_unique<Project>();
+    if (!candidate->load(path)) {
         emit errorOccurred(tr("无法打开项目: %1").arg(path));
         return nullptr;
     }
 
-    if (m_currentProject->formatVersion() != QStringLiteral("3.0")) {
+    if (candidate->formatVersion() != QStringLiteral("3.0")) {
         PluginManager::instance().initialize();
-        const MigrationReport report = ProjectMigrator::migrate(*m_currentProject);
+        const MigrationReport report = ProjectMigrator::migrate(*candidate);
         Logger::instance().info(
             tr("工程已从 %1 迁移到 3.0：%2")
-                .arg(m_currentProject->migration().originalVersion, report.autoFixed.join(QStringLiteral("；"))),
+                .arg(candidate->migration().originalVersion, report.autoFixed.join(QStringLiteral("；"))),
             QStringLiteral("Project"));
         if (report.hasBlockers()) {
             Logger::instance().warning(tr("工程迁移存在待修复连接：%1").arg(report.blockers.join(QStringLiteral("；"))),
@@ -72,12 +188,8 @@ Project* ProjectManager::openProject(const QString& path) {
         }
     }
 
-    addToRecentProjects(path);
-
-    qDebug() << "Project opened:" << m_currentProject->name();
-    emit projectOpened(m_currentProject.get());
-
-    return m_currentProject.get();
+    return replaceProject(std::move(candidate), true, checkUnsaved, policy, errorCode, errorMessage, savePathOverride,
+                          path);
 }
 
 bool ProjectManager::saveProject(const QString& path) {
@@ -125,15 +237,45 @@ bool ProjectManager::saveAsProject(const QString& path) {
 }
 
 void ProjectManager::closeProject() {
-    if (RunEngine::instance().isBusy()) {
-        emit errorOccurred(tr("流程运行中，无法关闭工程"));
-        return;
+    (void) closeProjectTransaction(false, UnsavedPolicy::Discard, nullptr, nullptr);
+}
+
+bool ProjectManager::closeProjectTransaction(bool checkUnsaved, UnsavedPolicy policy, QString* errorCode,
+                                             QString* errorMessage) {
+    RunEngine& engine = RunEngine::instance();
+    std::unique_ptr<Project> previous;
+    QString switchErrorCode;
+    QString switchErrorMessage;
+    const auto result = engine.withProjectSwitch([&]() {
+        const auto mutation = engine.withProjectMutationLease([&]() {
+            if (checkUnsaved && !resolveUnsavedForSwitch(policy, &switchErrorCode, &switchErrorMessage))
+                return false;
+            previous = std::move(m_currentProject);
+            return true;
+        });
+        if (mutation != RunEngine::ProjectMutationResult::Applied)
+            return false;
+        if (previous) {
+            qDebug() << "Project closed:" << previous->name();
+            previous.reset();
+            emit projectClosed();
+        }
+        return true;
+    });
+    if (result == RunEngine::ProjectMutationResult::Busy) {
+        switchErrorCode = QStringLiteral("ENGINE_BUSY");
+        switchErrorMessage = tr("流程运行中，无法关闭工程");
     }
-    if (m_currentProject) {
-        qDebug() << "Project closed:" << m_currentProject->name();
-        m_currentProject.reset();
-        emit projectClosed();
+    if (result != RunEngine::ProjectMutationResult::Applied) {
+        if (errorCode)
+            *errorCode = switchErrorCode;
+        if (errorMessage)
+            *errorMessage = switchErrorMessage;
+        if (!switchErrorMessage.isEmpty())
+            emit errorOccurred(switchErrorMessage);
+        return false;
     }
+    return true;
 }
 
 void ProjectManager::setMaxRecentProjects(int max) {

@@ -47,11 +47,11 @@ private slots:
         QStringList names;
         bool sawBuiltin = false, sawUser = false;
         for (int i = 0; i < list->count(); ++i) {
-            const QString path = list->item(i)->data(Qt::UserRole).toString();
-            names << QFileInfo(path).fileName();
-            if (path == QStringLiteral(":/agent/knowledge/DEEPLUX.md"))
+            const QString documentId = list->item(i)->data(Qt::UserRole).toString();
+            names << documentId.mid(documentId.indexOf(QLatin1Char(':')) + 1);
+            if (documentId == QStringLiteral("builtin:DEEPLUX.md"))
                 sawBuiltin = true;
-            if (path == docPath) {
+            if (documentId == QStringLiteral("user:UserDoc.md")) {
                 sawUser = true;
                 QVERIFY(list->item(i)->data(Qt::UserRole + 1).toBool()); // 用户文档可移除
             }
@@ -85,7 +85,7 @@ private slots:
         const int all = list->count();
         filter->setText(QStringLiteral("FilterTarget"));
         QCOMPARE(list->count(), 1);
-        QCOMPARE(list->item(0)->data(Qt::UserRole).toString(), docPath);
+        QCOMPARE(list->item(0)->data(Qt::UserRole).toString(), QStringLiteral("user:FilterTarget.txt"));
 
         // 选中后预览显示文档内容
         list->setCurrentRow(0);

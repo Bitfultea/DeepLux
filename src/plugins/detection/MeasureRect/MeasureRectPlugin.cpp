@@ -1,10 +1,12 @@
 #include "MeasureRectPlugin.h"
 
 #include "common/Logger.h"
+#include "core/deeplux/DataContract.h"
 
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QVBoxLayout>
+#include <algorithm>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -113,6 +115,24 @@ bool MeasureRectPlugin::process(const ImageData& input, ImageData& output) {
     }
 
     // 获取矩形的四个角点
+    cv::Point2f polygonCorners[4];
+    bestRect.points(polygonCorners);
+    Region2D rectangle;
+    rectangle.label = QStringLiteral("rectangle");
+    double minX = polygonCorners[0].x;
+    double minY = polygonCorners[0].y;
+    double maxX = polygonCorners[0].x;
+    double maxY = polygonCorners[0].y;
+    for (const cv::Point2f& point : polygonCorners) {
+        rectangle.polygon.append(QPointF(point.x, point.y));
+        minX = std::min(minX, static_cast<double>(point.x));
+        minY = std::min(minY, static_cast<double>(point.y));
+        maxX = std::max(maxX, static_cast<double>(point.x));
+        maxY = std::max(maxY, static_cast<double>(point.y));
+    }
+    rectangle.bbox = QRectF(minX, minY, maxX - minX, maxY - minY);
+    output.setData(QStringLiteral("rectangle"), QVariant::fromValue(rectangle));
+
     cv::Point2f corners[4];
     bestRect.points(corners);
 
@@ -120,9 +140,9 @@ bool MeasureRectPlugin::process(const ImageData& input, ImageData& output) {
     std::sort(corners, corners + 4,
               [](const cv::Point2f& a, const cv::Point2f& b) { return (a.x + a.y * 10) < (b.x + b.y * 10); });
 
-    // 计算宽高
-    double width = cv::norm(corners[1] - corners[0]);
-    double height = cv::norm(corners[3] - corners[0]);
+    // RotatedRect::size carries the side lengths; opposite-corner distance is the diagonal.
+    const double width = std::max(bestRect.size.width, bestRect.size.height);
+    const double height = std::min(bestRect.size.width, bestRect.size.height);
 
     m_resultRow1 = corners[0].y;
     m_resultCol1 = corners[0].x;

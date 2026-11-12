@@ -126,11 +126,18 @@ QList<LogEntry> Logger::logs(const QString& category) const {
 }
 
 void Logger::clearLogs() {
+    clearLogsAndGetCount();
+}
+
+int Logger::clearLogsAndGetCount() {
+    int clearedCount = 0;
     {
         QMutexLocker locker(&m_mutex);
+        clearedCount = m_logs.size();
         m_logs.clear();
     }
     emit logsCleared();
+    return clearedCount;
 }
 
 void Logger::setLogToFile(bool enabled) {

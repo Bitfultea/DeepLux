@@ -29,6 +29,7 @@ public:
     // 添加/移除单个条目（用于增量更新）
     void addDataSource(const DataSource& ds);
     void removeDataSource(const QString& id);
+    void setDataSourceVisibility(const QString& id, bool visible);
 
 signals:
     // 请求显示某个数据源到视口

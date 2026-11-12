@@ -12,8 +12,9 @@
 
 namespace DeepLux {
 
-AgentToolPreviewCard::AgentToolPreviewCard(const QList<ToolItem>& tools, bool isDark, QWidget* parent)
-    : QWidget(parent), m_tools(tools), m_isDark(isDark) {
+AgentToolPreviewCard::AgentToolPreviewCard(const QList<ToolItem>& tools, bool isDark, QWidget* parent,
+                                           const ConfirmationContext& context)
+    : QWidget(parent), m_tools(tools), m_isDark(isDark), m_context(context) {
     setupUi();
 }
 
@@ -27,11 +28,32 @@ void AgentToolPreviewCard::setupUi() {
     QStringList lines;
     lines.append(tr("待确认操作 · %1 项").arg(m_tools.size()));
 
+    // 阶段1 §4（审核整改 R2）：展示工程、目标与副作用摘要（来自确认载荷 context）
+    if (!m_context.isEmpty()) {
+        if (!m_context.projectName.isEmpty()) {
+            QString projectLine = tr("工程：%1").arg(m_context.projectName);
+            if (!m_context.projectPath.isEmpty())
+                projectLine += QStringLiteral("（%1）").arg(m_context.projectPath);
+            lines.append(projectLine);
+        }
+        if (!m_context.sideEffects.isEmpty())
+            lines.append(tr("副作用：%1").arg(m_context.sideEffects.join(QStringLiteral("；"))));
+        if (!m_context.summary.isEmpty())
+            lines.append(tr("摘要：%1").arg(m_context.summary));
+        if (!m_context.reversibilityLabel.isEmpty())
+            lines.append(m_context.reversibilityLabel);
+    }
+
     for (int i = 0; i < m_tools.size(); ++i) {
         const ToolItem& t = m_tools[i];
         const bool dangerous = ToolSchema::instance().findTool(t.name).dangerous;
         const QString riskLabel = dangerous ? tr(" [高风险]") : QString();
-        QString line = QString("%1. %2%3").arg(i + 1).arg(t.name, riskLabel);
+        const bool clearsRuntimeLogs = t.name == QLatin1String("clear_runtime_logs");
+        const QString toolLabel = clearsRuntimeLogs ? tr("清空运行日志内存") : t.name;
+        QString line = QString("%1. %2%3").arg(i + 1).arg(toolLabel, riskLabel);
+
+        if (clearsRuntimeLogs)
+            line += tr("\n保留磁盘日志文件和 Agent 操作历史。");
 
         if (!t.params.isEmpty()) {
             line += "\n" + QString::fromUtf8(QJsonDocument(t.params).toJson(QJsonDocument::Indented)).trimmed();

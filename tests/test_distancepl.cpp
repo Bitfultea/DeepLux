@@ -1,12 +1,12 @@
-#include <QtTest>
-#include <QCoreApplication>
-#include "plugins/geometry/DistancePL/DistancePLPlugin.h"
 #include "core/model/ImageData.h"
+#include "plugins/geometry/DistancePL/DistancePLPlugin.h"
+
+#include <QCoreApplication>
+#include <QtTest>
 
 using namespace DeepLux;
 
-class TestDistancePL : public QObject
-{
+class TestDistancePL : public QObject {
     Q_OBJECT
 
 private slots:
@@ -142,6 +142,33 @@ private slots:
 
         QVERIFY2(!result, "Should fail instead of silently converting invalid line coordinate to zero");
         QVERIFY(!output.data("distance").isValid());
+    }
+
+    void testFootPointIsImageLocalAndInheritedValueIsCleared() {
+        DistancePLPlugin plugin;
+        QVERIFY(plugin.initialize());
+        ImageData input;
+        input.setData(QStringLiteral("coordinate_frame"), QStringLiteral("ImageLocalPixel"));
+        input.setData(QStringLiteral("point"), QPointF(20.0, 10.0));
+        input.setData(QStringLiteral("line"), QVariantList{5.0, 30.0, 45.0, 30.0});
+        input.setData(QStringLiteral("foot_point"), QPointF(999.0, 999.0));
+        ImageData output;
+        QVERIFY(plugin.execute(input, output));
+        QCOMPARE(output.data(QStringLiteral("foot_point")).toPointF(), QPointF(20.0, 30.0));
+        QCOMPARE(output.data(QStringLiteral("foot_x")).toDouble(), 20.0);
+        QCOMPARE(output.data(QStringLiteral("foot_y")).toDouble(), 30.0);
+        QCOMPARE(output.data(QStringLiteral("distance")).toDouble(), 20.0);
+
+        input.setData(QStringLiteral("coordinate_frame"), QStringLiteral("Unspecified"));
+        input.setData(QStringLiteral("foot_point"), QPointF(999.0, 999.0));
+        QVERIFY(plugin.execute(input, output));
+        QVERIFY(!output.hasData(QStringLiteral("foot_point")));
+        QCOMPARE(output.data(QStringLiteral("distance")).toDouble(), 20.0);
+
+        input.removeData(QStringLiteral("point"));
+        input.setData(QStringLiteral("foot_point"), QPointF(999.0, 999.0));
+        QVERIFY(!plugin.execute(input, output));
+        QVERIFY(!output.hasData(QStringLiteral("foot_point")));
     }
 
     void cleanupTestCase() {

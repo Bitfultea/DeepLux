@@ -12,21 +12,21 @@
                 "step": 1,
                 "decimals": 2,
                 "order": 10,
-                "label": "初始圆心X"
+                "label": "初始圆心X（当前输入图像局部像素）"
             },
             "initialCenterY": {
                 "min": 0,
                 "step": 1,
                 "decimals": 2,
                 "order": 20,
-                "label": "初始圆心Y"
+                "label": "初始圆心Y（当前输入图像局部像素）"
             },
             "initialRadius": {
                 "min": 1,
                 "step": 1,
                 "decimals": 2,
                 "order": 30,
-                "label": "初始半径"
+                "label": "初始半径（当前输入图像局部像素）"
             },
             "threshold": {
                 "min": 0,
@@ -50,7 +50,7 @@
                 "step": 1,
                 "decimals": 1,
                 "order": 60,
-                "label": "搜索半长"
+                "label": "搜索半长（当前输入图像局部像素）"
             },
             "exclusionRadius": {
                 "min": 0,
@@ -58,7 +58,33 @@
                 "step": 0.5,
                 "decimals": 2,
                 "order": 70,
-                "label": "剔除半径"
+                "label": "残差剔除半径（当前输入图像局部像素）"
+            }
+        },
+        "results": {
+            "circle_center_x": {
+                "label": "圆心X",
+                "unit": "px",
+                "precision": 3,
+                "order": 10
+            },
+            "circle_center_y": {
+                "label": "圆心Y",
+                "unit": "px",
+                "precision": 3,
+                "order": 20
+            },
+            "circle_radius": {
+                "label": "半径",
+                "unit": "px",
+                "precision": 3,
+                "order": 30
+            },
+            "circle_diameter": {
+                "label": "直径",
+                "unit": "px",
+                "precision": 3,
+                "order": 40
             }
         }
     },
@@ -112,6 +138,13 @@
                 "id": "circle_roundness",
                 "displayName": "圆度",
                 "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "circle",
+                "displayName": "圆（强类型）",
+                "type": "Circle2D",
                 "required": false,
                 "multiple": false
             },

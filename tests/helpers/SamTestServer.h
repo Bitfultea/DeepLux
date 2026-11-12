@@ -51,10 +51,14 @@ public:
     }
 
     // 行为开关
-    bool hangAll = false;        // 接受连接但不响应（模拟卡死 → 客户端超时）
-    QSet<QString> hangPaths;     // 指定路径接受连接但不响应（模拟单个请求挂起）
-    QHash<QString, int> delayMs; // 指定路径延迟 N 毫秒再响应（模拟慢请求）
+    bool hangAll = false;                // 接受连接但不响应（模拟卡死 → 客户端超时）
+    QSet<QString> hangPaths;             // 指定路径接受连接但不响应（模拟单个请求挂起）
+    QSet<QString> withholdResponsePaths; // 完整读取、记录请求体后不回复
+    QHash<QString, int> withholdResponseAtRequestCount; // 指定路径第 N 个完整请求不回复
+    QHash<QString, int> delayMs;                        // 指定路径延迟 N 毫秒再响应（模拟慢请求）
+    QSet<int> failSetImageRequests;                     // 指定 set_image 请求返回明确失败
     QString healthStatus = QStringLiteral("ok");
+    QString healthMode = QStringLiteral("stub");
     QString predictStatus = QStringLiteral("ok");
     QHash<QString, qint64> responseContentLengths;
     // 批3 复核二轮（P1-3）：/predict 响应整体覆盖——构造畸形/缺字段响应，
@@ -70,8 +74,13 @@ public:
 
     // 请求记录（断言四个端点都被真实调用）
     QStringList requestLog;
+    QStringList responseLog;
+    QStringList delayedResponseLog; // 延迟响应定时器已触发，包括客户端先行断开的情形
     QJsonObject lastPredictBody;
     QString lastSetImagePath;
+    QImage lastSetImage;
+    QList<QImage> setImages;
+    bool lastSetImageReadable = false;
     int setImageCount = 0; // set_image 计数，用于生成递增的 embedding_id
 
 private:
@@ -112,15 +121,22 @@ private:
         const QString method = QString::fromLatin1(requestLine.value(0));
         const QString path = QString::fromLatin1(requestLine.value(1));
         requestLog.append(method + " " + path);
+        const int pathRequestCount = requestLog.count(method + QLatin1Char(' ') + path);
 
         QJsonObject response;
         if (path == "/health") {
-            response = QJsonObject{{"status", healthStatus}, {"model_name", "sam_test_vit_b"}};
+            response = QJsonObject{{"status", healthStatus}, {"model_name", "sam_test_vit_b"}, {"mode", healthMode}};
         } else if (path == "/set_image") {
             lastSetImagePath = QJsonDocument::fromJson(body).object().value("image_path").toString();
+            lastSetImageReadable = lastSetImage.load(lastSetImagePath);
+            setImages.append(lastSetImage);
             ++setImageCount;
-            response = QJsonObject{{"embedding_id", QStringLiteral("emb-%1").arg(setImageCount)},
-                                   {"model_name", "sam_test_vit_b"}};
+            if (failSetImageRequests.contains(setImageCount)) {
+                response = QJsonObject{{"status", "error"}, {"error", "configured set_image failure"}};
+            } else {
+                response = QJsonObject{{"embedding_id", QStringLiteral("emb-%1").arg(setImageCount)},
+                                       {"model_name", "sam_test_vit_b"}};
+            }
         } else if (path == "/predict") {
             lastPredictBody = QJsonDocument::fromJson(body).object();
             if (predictInvalidEmbeddingOnce > 0) {
@@ -135,6 +151,9 @@ private:
             response = QJsonObject{{"status", "error"}, {"error", "unknown endpoint"}};
         }
 
+        if (withholdResponsePaths.contains(path) || withholdResponseAtRequestCount.value(path) == pathRequestCount)
+            return; // body 已完整记录，可作为无固定 sleep 的服务端 request barrier
+
         const QByteArray payload = QJsonDocument(response).toJson(QJsonDocument::Compact);
         QByteArray http;
         http += "HTTP/1.1 200 OK\r\n";
@@ -146,15 +165,18 @@ private:
         const int delay = delayMs.value(path, 0);
         if (delay > 0) {
             QPointer<QTcpSocket> guarded(socket);
-            QTimer::singleShot(delay, this, [guarded, http]() {
+            QTimer::singleShot(delay, this, [this, guarded, http, method, path]() {
+                delayedResponseLog.append(method + QLatin1Char(' ') + path);
                 if (!guarded)
                     return;
                 guarded->write(http);
                 guarded->disconnectFromHost();
+                responseLog.append(method + QLatin1Char(' ') + path);
             });
         } else {
             socket->write(http);
             socket->disconnectFromHost();
+            responseLog.append(method + QLatin1Char(' ') + path);
         }
     }
 

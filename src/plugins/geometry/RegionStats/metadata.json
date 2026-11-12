@@ -14,6 +14,13 @@
     "ports": {
         "inputs": [
             {
+                "id": "image",
+                "displayName": "图像载体",
+                "type": "Image2D",
+                "required": false,
+                "multiple": false
+            },
+            {
                 "id": "region",
                 "displayName": "区域",
                 "type": "Region2D",
@@ -82,6 +89,13 @@
                 "id": "centroid_y",
                 "displayName": "质心Y",
                 "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "centroid",
+                "displayName": "质心",
+                "type": "Point2D",
                 "required": false,
                 "multiple": false
             },

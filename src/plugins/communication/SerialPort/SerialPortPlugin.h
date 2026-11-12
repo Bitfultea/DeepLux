@@ -37,6 +37,8 @@ public:
 
     bool initialize() override;
     QWidget* createConfigWidget() override;
+    using ModuleBase::execute;
+    ExecutionResult execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) override;
 
 protected:
     bool process(const ImageData& input, ImageData& output) override;
@@ -44,21 +46,13 @@ protected:
     IModule* cloneImpl() const override;
 
 private:
-    bool openSerialPort();
-    void closeSerialPort();
-    QString readFromPort();
-    bool writeToPort(const QString& data);
+    bool openSerialPort(QSerialPort& serial, const QString& portName, int baudRate, QSerialPort::DataBits dataBits,
+                        QSerialPort::Parity parity, QSerialPort::StopBits stopBits,
+                        QSerialPort::FlowControl flowControl);
+    QString readFromPort(QSerialPort& serial, int timeoutMs);
+    bool writeToPort(QSerialPort& serial, const QString& data);
 
-    QSerialPort* m_serialPort;
-    QString m_portName;
-    int m_baudRate;
-    QSerialPort::DataBits m_dataBits;
-    QSerialPort::Parity m_parity;
-    QSerialPort::StopBits m_stopBits;
-    QSerialPort::FlowControl m_flowControl;
-    int m_timeout;
-    QString m_writeData;
-    QString m_readVariable;
+    bool m_writeMayHaveOccurred = false;
 };
 
 } // namespace DeepLux

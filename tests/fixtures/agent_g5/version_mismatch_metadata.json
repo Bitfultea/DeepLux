@@ -1,0 +1,12 @@
+{
+    "id": "com.deeplux.test.agent_interface_version_mismatch",
+    "name": "AgentInterfaceVersionMismatchFixture",
+    "version": "1.0.0",
+    "author": "DeepLux Test",
+    "description": "IModule castable fixture reporting an older interface version",
+    "category": "test",
+    "ports": {
+        "inputs": [],
+        "outputs": []
+    }
+}

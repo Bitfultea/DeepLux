@@ -35,6 +35,7 @@ void LinesDistancePlugin::shutdown() {
 
 bool LinesDistancePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
+    output.removeData(QStringLiteral("nearest_segment"));
 
     // 获取输入数据
     QVariant line1Var = input.data("line1");
@@ -76,6 +77,7 @@ bool LinesDistancePlugin::process(const ImageData& input, ImageData& output) {
     output.setData("nearest_y1", m_nearAy);
     output.setData("nearest_x2", m_nearBx);
     output.setData("nearest_y2", m_nearBy);
+    output.setData(QStringLiteral("nearest_segment"), QVariantList{m_nearAx, m_nearAy, m_nearBx, m_nearBy});
 
     QString result = QString("线段距离: %1").arg(m_resultDistance, 0, 'f', 2);
     Logger::instance().debug(result, "LinesDistance");

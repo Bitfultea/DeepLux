@@ -45,7 +45,7 @@
                 "step": 1,
                 "decimals": 0,
                 "order": 50,
-                "label": "ROI 中心X"
+                "label": "ROI 中心X（当前输入深度/高度图局部像素）"
             },
             "roiCenterY": {
                 "min": 0,
@@ -53,7 +53,7 @@
                 "step": 1,
                 "decimals": 0,
                 "order": 60,
-                "label": "ROI 中心Y"
+                "label": "ROI 中心Y（当前输入深度/高度图局部像素）"
             },
             "roiWidth": {
                 "min": 0,
@@ -61,7 +61,7 @@
                 "step": 1,
                 "decimals": 0,
                 "order": 70,
-                "label": "ROI 宽度（0=全图）"
+                "label": "ROI 宽度（像素；0=全图）"
             },
             "roiHeight": {
                 "min": 0,
@@ -69,7 +69,7 @@
                 "step": 1,
                 "decimals": 0,
                 "order": 80,
-                "label": "ROI 高度（0=全图）"
+                "label": "ROI 高度（像素；0=全图）"
             }
         }
     },

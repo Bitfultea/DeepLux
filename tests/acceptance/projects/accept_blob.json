@@ -1,0 +1,14 @@
+{
+  "version": "3.0",
+  "id": "accept-blob-0001",
+  "name": "验收-Blob 流程",
+  "modules": [
+    {"id": "grab", "moduleId": "GrabImage", "name": "图像采集", "params": {"grabSource": "File", "filePath": "@ACCEPTANCE_DATA@/circle_640x480.png"}},
+    {"id": "blob", "moduleId": "Blob", "name": "Blob", "params": {"minArea": 100, "maxArea": 50000, "minCircularity": 0.5, "thresholdType": "Fixed", "fixedThreshold": 127}}
+  ],
+  "connections": [
+    {"fromModuleId": "grab", "toModuleId": "blob", "fromPort": "image", "toPort": "image", "edgeType": "data"}
+  ],
+  "flows": [{"id": "main", "name": "主流程", "nodes": ["grab", "blob"]}],
+  "resources": {"cameras": [], "dataSources": []}
+}

@@ -128,10 +128,8 @@ void PluginManager::scanPlugins() {
                     m_bundledPlugins[info.name] = info;
                 }
                 if (info.category.toLower().contains("camera")) {
-                    m_modules.remove(info.name);
                     m_cameras[info.name] = info;
                 } else {
-                    m_cameras.remove(info.name);
                     m_modules[info.name] = info;
                 }
                 qDebug() << "Found plugin:" << info.name << "at" << pluginPath;
@@ -234,10 +232,41 @@ bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info) {
     info.path = path;
     info.loaded = false;
     info.ui = json["ui"].toObject();
+    info.requirements = QJsonObject();
+    info.requirementMetadataErrors.clear();
+    for (const QString& key :
+         {QStringLiteral("abi"), QStringLiteral("sdk"), QStringLiteral("model"), QStringLiteral("dependencies")}) {
+        if (json.contains(key))
+            info.requirements.insert(key, json.value(key));
+    }
+    if (json.contains(QStringLiteral("platforms"))) {
+        const QJsonValue platforms = json.value(QStringLiteral("platforms"));
+        bool valid = platforms.isArray();
+        if (valid) {
+            for (const QJsonValue& platform : platforms.toArray()) {
+                if (!platform.isString()) {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+        if (valid) {
+            info.requirements.insert(QStringLiteral("platforms"), platforms);
+        } else {
+            info.requirementMetadataErrors.append(QStringLiteral("platforms"));
+        }
+    } else if (json.contains(QStringLiteral("platform"))) {
+        const QJsonValue platform = json.value(QStringLiteral("platform"));
+        if (platform.isString())
+            info.requirements.insert(QStringLiteral("platforms"), QJsonArray{platform});
+        else
+            info.requirementMetadataErrors.append(QStringLiteral("platforms"));
+    }
 
     // ABI v2 模块必须有完整 ports 声明；错误元数据不可进入可加载列表。
     info.inputPorts.clear();
     info.outputPorts.clear();
+    info.portsDeclared = false;
     QJsonObject ports = json["ports"].toObject();
     QString portError;
     if (!info.category.toLower().contains(QStringLiteral("camera"))) {
@@ -267,6 +296,7 @@ bool PluginManager::loadPluginMetadata(const QString& path, PluginInfo& info) {
             qWarning() << "Invalid ports:" << portError;
             return false;
         }
+        info.portsDeclared = true;
     }
 
     // 阶段 E: 并行安全标记
@@ -476,21 +506,70 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
 }
 
 void PluginManager::unloadPlugin(const QString& name) {
+    tryUnloadPlugin(name);
+}
+
+QString PluginManager::unloadBlockReason(bool cameraPlugin, int liveModuleInstances, bool lifecycleTracked) {
+    if (cameraPlugin)
+        return QStringLiteral("CAMERA_PLUGIN_LIFECYCLE_UNSUPPORTED");
+    if (!lifecycleTracked)
+        return QStringLiteral("PLUGIN_LIFECYCLE_UNTRACKED");
+    if (liveModuleInstances > 0)
+        return QStringLiteral("PLUGIN_IN_USE");
+    return {};
+}
+
+bool PluginManager::tryUnloadPlugin(const QString& name, QString* error) {
     QMutexLocker locker(&m_mutex);
 
     if (!m_loadedPlugins.contains(name)) {
-        return;
+        if (error) {
+            *error = m_modules.contains(name) || m_cameras.contains(name) ? QStringLiteral("PLUGIN_NOT_LOADED")
+                                                                          : QStringLiteral("PLUGIN_NOT_FOUND");
+        }
+        return false;
     }
 
-    m_loadedPlugins.remove(name);
+    const QString blockReason = unloadBlockReason(m_cameras.contains(name), m_liveModuleInstances.value(name, 0),
+                                                  !m_untrackedModulePlugins.contains(name));
+    if (!blockReason.isEmpty()) {
+        if (error)
+            *error = blockReason;
+        qWarning() << "Plugin unload rejected:" << name << blockReason;
+        return false;
+    }
 
+    QPluginLoader* loader = nullptr;
     if (m_pluginLoaders.contains(name)) {
-        QPluginLoader* loader = m_pluginLoaders.take(name);
-        loader->unload();
+        loader = m_pluginLoaders.value(name);
+        if (!loader->unload()) {
+            if (error)
+                *error = QStringLiteral("PLUGIN_UNLOAD_FAILED");
+            qWarning() << "Plugin unload failed:" << name << loader->errorString();
+            return false;
+        }
+        m_pluginLoaders.remove(name);
+        m_loadedPlugins.remove(name);
+        m_liveModuleInstances.remove(name);
         delete loader;
+    } else {
+        m_loadedPlugins.remove(name);
     }
 
+    if (m_modules.contains(name)) {
+        PluginInfo info = m_modules.value(name);
+        info.loaded = false;
+        m_modules[name] = info;
+    } else if (m_cameras.contains(name)) {
+        PluginInfo info = m_cameras.value(name);
+        info.loaded = false;
+        m_cameras[name] = info;
+    }
+
+    if (error)
+        error->clear();
     emit pluginUnloaded(name);
+    return true;
 }
 
 void PluginManager::loadAllPlugins() {
@@ -687,6 +766,89 @@ PluginInfo PluginManager::pluginInfo(const QString& name) const {
     return PluginInfo();
 }
 
+QJsonObject PluginManager::availabilityItem(const PluginInfo& info, bool loaded) {
+    const QDir pluginDir = QFileInfo(info.path).absoluteDir();
+    QStringList libraryFilters;
+#ifdef Q_OS_WIN
+    libraryFilters << QStringLiteral("*.dll");
+#else
+    libraryFilters << QStringLiteral("*.so");
+#endif
+    const bool installed = !pluginDir.entryList(libraryFilters, QDir::Files).isEmpty();
+
+    const auto requirementValue = [&info](const QString& key) {
+        if (info.requirementMetadataErrors.contains(key))
+            return QJsonValue(QStringLiteral("invalid_declaration"));
+        return info.requirements.contains(key) ? info.requirements.value(key)
+                                               : QJsonValue(QStringLiteral("not_declared"));
+    };
+    QJsonObject requirements{{QStringLiteral("abi"), requirementValue(QStringLiteral("abi"))},
+                             {QStringLiteral("platforms"), requirementValue(QStringLiteral("platforms"))},
+                             {QStringLiteral("sdk"), requirementValue(QStringLiteral("sdk"))},
+                             {QStringLiteral("model"), requirementValue(QStringLiteral("model"))},
+                             {QStringLiteral("dependencies"), requirementValue(QStringLiteral("dependencies"))}};
+    QJsonArray reasons;
+    if (!installed)
+        reasons.append(QStringLiteral("PLUGIN_BINARY_MISSING"));
+    if (!info.requirementMetadataErrors.isEmpty())
+        reasons.append(QStringLiteral("PLUGIN_REQUIREMENT_METADATA_INVALID"));
+
+    const QString availability =
+        loaded ? QStringLiteral("loaded") : (installed ? QStringLiteral("loadable") : QStringLiteral("unavailable"));
+    QJsonArray suggestedActions;
+    if (!loaded)
+        suggestedActions.append(installed ? QStringLiteral("load") : QStringLiteral("install_or_repair"));
+
+    return QJsonObject{{QStringLiteral("id"), info.id.isEmpty() ? info.name : info.id},
+                       {QStringLiteral("name"), info.name},
+                       {QStringLiteral("category"), info.category},
+                       {QStringLiteral("version"), info.version},
+                       {QStringLiteral("installed"), installed},
+                       {QStringLiteral("loaded"), loaded},
+                       {QStringLiteral("availability"), availability},
+                       {QStringLiteral("unavailableReason"), reasons},
+                       {QStringLiteral("requirements"), requirements},
+                       {QStringLiteral("executableActions"), QJsonArray{}},
+                       {QStringLiteral("suggestedActions"), suggestedActions}};
+}
+
+QString PluginManager::currentPlatformName() {
+#ifdef Q_OS_WIN
+    return QStringLiteral("windows");
+#elif defined(Q_OS_MACOS)
+    return QStringLiteral("macos");
+#else
+    return QStringLiteral("linux");
+#endif
+}
+
+QJsonObject PluginManager::cameraAvailabilityItem(const PluginInfo& info, bool loaded, const QString& currentPlatform) {
+    QJsonObject item = availabilityItem(info, loaded);
+    const QJsonValue declaredPlatforms = info.requirements.value(QStringLiteral("platforms"));
+    QString compatibility = QStringLiteral("not_declared");
+    if (!info.requirementMetadataErrors.contains(QStringLiteral("platforms")) && declaredPlatforms.isArray()) {
+        const QJsonArray platforms = declaredPlatforms.toArray();
+        if (!platforms.isEmpty()) {
+            compatibility = QStringLiteral("unsupported");
+            for (const QJsonValue& platform : platforms) {
+                if (platform.toString().compare(currentPlatform, Qt::CaseInsensitive) == 0) {
+                    compatibility = QStringLiteral("supported");
+                    break;
+                }
+            }
+        }
+    }
+    item.insert(QStringLiteral("platformCompatibility"), compatibility);
+
+    if (!loaded && compatibility == QStringLiteral("unsupported")) {
+        item.insert(QStringLiteral("availability"), QStringLiteral("unavailable"));
+        QJsonArray reasons = item.value(QStringLiteral("unavailableReason")).toArray();
+        reasons.append(QStringLiteral("PLUGIN_PLATFORM_UNSUPPORTED"));
+        item.insert(QStringLiteral("unavailableReason"), reasons);
+    }
+    return item;
+}
+
 QString PluginManager::moduleDisplayName(const QString& name) const {
     QMutexLocker locker(&m_mutex);
 
@@ -709,9 +871,28 @@ bool PluginManager::isPluginLoaded(const QString& name) const {
     return m_loadedPlugins.contains(name);
 }
 
+QString PluginManager::unloadBlockReasonForPlugin(const QString& name) const {
+    if (QThread::currentThread() != thread())
+        return QStringLiteral("PLUGIN_THREAD_AFFINITY");
+
+    QMutexLocker locker(&m_mutex);
+    const bool isModule = m_modules.contains(name);
+    const bool isCamera = m_cameras.contains(name);
+    if (isModule && isCamera)
+        return QStringLiteral("PLUGIN_NAME_AMBIGUOUS");
+    if (!isModule && !isCamera)
+        return QStringLiteral("PLUGIN_NOT_FOUND");
+    if (isCamera)
+        return QStringLiteral("PLUGIN_LIFECYCLE_UNSUPPORTED");
+    if (!m_loadedPlugins.contains(name))
+        return QStringLiteral("PLUGIN_NOT_LOADED");
+
+    return unloadBlockReason(false, m_liveModuleInstances.value(name, 0), !m_untrackedModulePlugins.contains(name));
+}
+
 IModule* PluginManager::createModule(const QString& name) {
     QMutexLocker locker(&m_mutex);
-    if (!m_loadedPlugins.contains(name))
+    if (!m_loadedPlugins.contains(name) || !m_modules.contains(name))
         return nullptr;
 
     QObject* plugin = m_loadedPlugins.value(name);
@@ -740,10 +921,28 @@ IModule* PluginManager::createModule(const QString& name) {
 
     IModule* clone = mod->clone();
     if (clone) {
+        ModuleBase* moduleBase = qobject_cast<ModuleBase*>(clone);
+        const quint64 instanceId = m_nextModuleInstanceId++;
+        m_moduleInstances.insert(clone, ModuleInstanceRecord{name, instanceId, false});
+        ++m_liveModuleInstances[name];
+        connect(
+            clone, &QObject::destroyed, this,
+            [this, clone, instanceId]() {
+                QMutexLocker instanceLocker(&m_mutex);
+                const auto it = m_moduleInstances.find(clone);
+                if (it == m_moduleInstances.end() || it->instanceId != instanceId)
+                    return;
+                if (!it->destroying)
+                    m_untrackedModulePlugins.insert(it->pluginName);
+                m_moduleInstances.erase(it);
+            },
+            Qt::DirectConnection);
+
         clone->setIcon(mod->icon());
         // ABI v2：注入 metadata 声明的端口
-        if (ModuleBase* mb = qobject_cast<ModuleBase*>(clone)) {
+        if (ModuleBase* mb = moduleBase) {
             const PluginInfo info = m_modules.value(name);
+            mb->setProperty("deeplux.pluginId", name);
             mb->setPorts(info.inputPorts, info.outputPorts);
             mb->setThreadSafe(info.threadSafe);
             mb->setBlocking(info.blocking);
@@ -753,6 +952,42 @@ IModule* PluginManager::createModule(const QString& name) {
 
     qWarning() << "Plugin does not provide a cloneable module instance:" << name;
     return nullptr;
+}
+
+PluginManager::ModulePtr PluginManager::createManagedModule(const QString& name) {
+    return ModulePtr(createModule(name), [](IModule* module) {
+        if (module)
+            PluginManager::instance().destroyModule(module);
+    });
+}
+
+bool PluginManager::destroyModule(IModule* module) {
+    if (!module)
+        return false;
+
+    ModuleInstanceRecord record;
+    {
+        QMutexLocker locker(&m_mutex);
+        auto it = m_moduleInstances.find(module);
+        if (it == m_moduleInstances.end() || it->destroying)
+            return false;
+        it->destroying = true;
+        record = it.value();
+    }
+
+    delete module;
+
+    {
+        QMutexLocker locker(&m_mutex);
+        auto it = m_liveModuleInstances.find(record.pluginName);
+        if (it != m_liveModuleInstances.end()) {
+            if (it.value() <= 1)
+                m_liveModuleInstances.erase(it);
+            else
+                --it.value();
+        }
+    }
+    return true;
 }
 
 IModule* PluginManager::createFreshModule(const QString& name) {

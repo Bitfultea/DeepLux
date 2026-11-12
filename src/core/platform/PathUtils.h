@@ -44,6 +44,12 @@ public:
     static QString normalize(const QString& path);
 
     /**
+     * @brief Resolve a filesystem target through existing symlinks, including missing path suffixes.
+     * @return Clean absolute target path, or empty when symlink resolution is cyclic/unavailable.
+     */
+    static QString resolveFileTargetPath(const QString& path);
+
+    /**
      * @brief 拼接路径
      */
     static QString join(const QString& base, const QString& sub);

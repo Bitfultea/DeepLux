@@ -5,6 +5,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QLabel>
+#include <QMetaType>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
@@ -51,7 +52,7 @@ bool DataCheckPlugin::process(const ImageData& input, ImageData& output) {
         double minVal = params["minValue"].toDouble();
         double maxVal = params["maxValue"].toDouble();
 
-        if (dataVar.canConvert<QVariantList>()) {
+        if (dataVar.userType() == QMetaType::QVariantList) {
             // 检查列表中的所有值
             QVariantList list = dataVar.toList();
             for (const QVariant& v : list) {

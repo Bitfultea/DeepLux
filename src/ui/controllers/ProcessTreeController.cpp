@@ -60,9 +60,8 @@ void ProcessTreeController::addModule(const ModuleInstance& inst) {
     hideHintLabel();
 
     QString displayName = inst.name;
-    if (m_toolDisplayNameCallback) {
+    if (displayName.trimmed().isEmpty() && m_toolDisplayNameCallback)
         displayName = m_toolDisplayNameCallback(inst.moduleId, inst.name);
-    }
 
     QTreeWidgetItem* newItem = new QTreeWidgetItem();
     newItem->setFlags((newItem->flags() | Qt::ItemIsDragEnabled) & ~Qt::ItemIsDropEnabled);
@@ -85,7 +84,8 @@ void ProcessTreeController::addModule(const ModuleInstance& inst) {
                     newItem->setIcon(0, module->icon());
                 }
             } else {
-                delete module;
+                if (!pm.destroyModule(module))
+                    delete module;
                 module = nullptr;
                 Logger::instance().warning(QObject::tr("模块初始化失败：%1").arg(inst.moduleId), "Flow");
             }
@@ -124,11 +124,13 @@ void ProcessTreeController::removeModule(const QString& instanceId) {
         if (module) {
             removedMeasurementInput = module->moduleId() == QStringLiteral("com.deeplux.plugin.measurementinput");
             module->shutdown();
-            delete module;
+            if (!PluginManager::instance().destroyModule(module))
+                delete module;
         }
     }
 
     m_usedNames.remove(instanceId);
+    m_pendingInsertionTokens.remove(instanceId);
     if (m_measurementPickCursor) {
         m_measurementPickCursor->remove(instanceId);
     }
@@ -143,6 +145,45 @@ void ProcessTreeController::removeModule(const QString& instanceId) {
     if (m_tree->topLevelItemCount() == 0 && !m_hintLabel) {
         showHintLabel();
     }
+}
+
+void ProcessTreeController::insertPendingInsertion(const QString& instanceId, QTreeWidgetItem* item,
+                                                   const QString& token) {
+    insertInstanceItem(instanceId, item);
+    m_pendingInsertionTokens.insert(instanceId, token);
+}
+
+bool ProcessTreeController::isPendingInsertion(const QString& instanceId, QTreeWidgetItem* item,
+                                               const QString& token) const {
+    if (!m_tree || !item || m_instanceItemMap.value(instanceId) != item ||
+        m_pendingInsertionTokens.value(instanceId) != token || token.isEmpty()) {
+        return false;
+    }
+    const int row = m_tree->indexOfTopLevelItem(item);
+    return row >= 0 && item->data(0, Qt::UserRole + 3).toString() == token;
+}
+
+void ProcessTreeController::completePendingInsertion(const QString& instanceId, const QString& token) {
+    if (m_pendingInsertionTokens.value(instanceId) == token)
+        m_pendingInsertionTokens.remove(instanceId);
+}
+
+void ProcessTreeController::discardPendingInsertion(const QString& instanceId, QTreeWidgetItem* item,
+                                                    const QString& token) {
+    if (!item || token.isEmpty() || m_pendingInsertionTokens.value(instanceId) != token ||
+        m_instanceItemMap.value(instanceId) != item) {
+        return;
+    }
+    m_instanceItemMap.remove(instanceId);
+    m_pendingInsertionTokens.remove(instanceId);
+    m_usedNames.remove(instanceId);
+    if (m_tree) {
+        const int row = m_tree->indexOfTopLevelItem(item);
+        if (row >= 0 && item->data(0, Qt::UserRole + 3).toString() == token)
+            delete m_tree->takeTopLevelItem(row);
+    }
+    if (m_tree && m_tree->topLevelItemCount() == 0 && !m_hintLabel)
+        showHintLabel();
 }
 
 void ProcessTreeController::removeFlowModule(const QString& instanceId) {
@@ -171,13 +212,15 @@ void ProcessTreeController::clear() {
         for (IModule* module : *m_flowModules) {
             if (module) {
                 module->shutdown();
-                delete module;
+                if (!PluginManager::instance().destroyModule(module))
+                    delete module;
             }
         }
         m_flowModules->clear();
     }
     m_usedNames.clear();
     m_instanceItemMap.clear();
+    m_pendingInsertionTokens.clear();
     if (m_measurementPickCursor) {
         m_measurementPickCursor->clear();
     }
@@ -257,7 +300,15 @@ void ProcessTreeController::setInstanceItem(const QString& instanceId, QTreeWidg
 }
 
 void ProcessTreeController::clearInstanceItemMap() {
-    m_instanceItemMap.clear();
+    QMap<QString, QTreeWidgetItem*> pendingItems;
+    for (auto it = m_pendingInsertionTokens.cbegin(); it != m_pendingInsertionTokens.cend(); ++it) {
+        QTreeWidgetItem* item = m_instanceItemMap.value(it.key(), nullptr);
+        if (item && m_tree && m_tree->indexOfTopLevelItem(item) >= 0 &&
+            item->data(0, Qt::UserRole + 3).toString() == it.value()) {
+            pendingItems.insert(it.key(), item);
+        }
+    }
+    m_instanceItemMap = std::move(pendingItems);
 }
 
 void ProcessTreeController::rebuildInstanceItemMap() {
@@ -351,13 +402,40 @@ void ProcessTreeController::onContextMenu(const QPoint& pos) {
 }
 
 void ProcessTreeController::onModuleAddedFromProject(const ModuleInstance& module) {
+    const bool preInserted = m_instanceItemMap.contains(module.id);
     addModule(module);
+    if (!preInserted) {
+        if (Project* project = ProjectManager::instance().currentProject()) {
+            const QList<ModuleInstance> modules = project->modules();
+            QTreeWidgetItem* item = m_instanceItemMap.value(module.id);
+            for (int i = 0; item && i < modules.size(); ++i) {
+                if (modules[i].id == module.id) {
+                    const int row = m_tree->indexOfTopLevelItem(item);
+                    if (row >= 0 && row != i) {
+                        m_tree->takeTopLevelItem(row);
+                        m_tree->insertTopLevelItem(i, item);
+                    }
+                    break;
+                }
+            }
+        }
+    }
     emit moduleAdded(module);
 }
 
 void ProcessTreeController::onModuleRemovedFromProject(const QString& instanceId) {
     removeModule(instanceId);
     emit moduleRemoved(instanceId);
+}
+
+void ProcessTreeController::onModuleMovedFromProject(const QString& instanceId, int newIndex) {
+    QTreeWidgetItem* item = m_instanceItemMap.value(instanceId, nullptr);
+    const int oldIndex = item ? m_tree->indexOfTopLevelItem(item) : -1;
+    if (oldIndex < 0 || oldIndex == newIndex)
+        return;
+    m_tree->takeTopLevelItem(oldIndex);
+    m_tree->insertTopLevelItem(newIndex, item);
+    markModulesNeedSync();
 }
 
 } // namespace DeepLux

@@ -93,6 +93,12 @@ bool JiErHanDefectsDetPlugin::process(const ImageData& input, ImageData& output)
         output.setData("defect_width", defects[0].boundingBox.width);
         output.setData("defect_height", defects[0].boundingBox.height);
         output.setData("defect_confidence", defects[0].confidence);
+        Region2D region;
+        region.label = defects[0].type;
+        region.bbox = QRectF(defects[0].boundingBox.x, defects[0].boundingBox.y, defects[0].boundingBox.width,
+                             defects[0].boundingBox.height);
+        region.score = defects[0].confidence;
+        output.setData("defect_region", QVariant::fromValue(region));
     }
 
     Logger::instance().debug(QString("剑二韩缺陷检测: 发现%1个缺陷").arg(m_defectCount), "JiErHanDefectsDet");

@@ -7,6 +7,7 @@
 #include "core/agent/AgentConnection.h"
 #include "core/agent/AgentController.h"
 #include "core/agent/ToolSchema.h"
+#include "core/common/UserManager.h"
 #include "manager/ConfigManager.h"
 #include "manager/ProjectManager.h"
 
@@ -173,6 +174,7 @@ private slots:
     }
 
     void testToolCallCanUseControllerPermissions() {
+        UserManager::instance().login(QStringLiteral("developer"), QString());
         AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Advisor);
         AgentBridge::instance().setToolCallCallback([](const QString& tool, const QJsonObject& params) {
             return AgentController::instance().handleToolCall(tool, params);

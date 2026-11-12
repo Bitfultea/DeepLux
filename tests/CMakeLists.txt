@@ -15,10 +15,21 @@ set(TEST_SOURCES
     test_pathtutils.cpp
     test_modulebase.cpp
     test_mainviewmodel.cpp
+    test_globalvarview.cpp
     test_mainwindow.cpp
+    test_fileexit_handoff.cpp
+    test_agent_settings_handoff.cpp
+    test_agent_about_handoff.cpp
+    test_agent_knowledgebase_handoff.cpp
+    test_agent_sam_annotator_handoff.cpp
+    test_agent_viewport_snapshot_handoff.cpp
+    test_agent_datasource_folder_handoff.cpp
+    test_agent_knowledge_folder_handoff.cpp
+    test_agent_globalvars_handoff.cpp
     test_project.cpp
     test_configmanager.cpp
     test_communicationmanager.cpp
+    test_communicationplugins.cpp
     test_pluginmanager.cpp
     test_plugincontracts.cpp
     test_logger.cpp
@@ -45,6 +56,9 @@ set(TEST_SOURCES
     test_ansiparser.cpp
     test_clihandler.cpp
     test_cameramanager.cpp
+    test_agent_camera_lifecycle_g5.cpp
+    test_camera_shutdown.cpp
+    test_camera_discovery_shutdown.cpp
     test_plyloader.cpp
     test_tiffloader.cpp
     test_himagewidget.cpp
@@ -59,6 +73,22 @@ set(TEST_SOURCES
     test_agentretry.cpp
     test_agentundo.cpp
     test_agentcontroller.cpp
+    test_openai_llm_client.cpp
+    test_agent_recent_projects.cpp
+    test_agent_set_theme.cpp
+    test_agent_inspector_pin.cpp
+    test_agent_viewport_zoom.cpp
+    test_agent_viewport_point_size.cpp
+    test_agent_viewport_display_mode.cpp
+    test_agent_viewport_render_mode.cpp
+    test_agent_datasource_dedicated_viewport.cpp
+    test_agent_folder_execution_g5.cpp
+    test_agent_plcwrite_execution_g5.cpp
+    test_agent_tcpclient_execution_g5.cpp
+    test_agent_tcpserver_execution_g5.cpp
+    test_agent_plcread_execution_g5.cpp
+    test_agent_serialport_execution_g5.cpp
+    test_agent_plccommunicate_execution_g5.cpp
     test_agentbridge.cpp
     test_agente2e.cpp
     test_agent_draft_restore.cpp
@@ -91,6 +121,7 @@ set(TEST_SOURCES
     test_sam_region_flow.cpp
     test_agent_sam_tools.cpp
     test_knowledgebasedialog.cpp
+    test_agentphase0_repro.cpp
     test_moduleinspectorpanel.cpp
     test_pluginparametercontracts.cpp
     test_workerpluginconsistency.cpp
@@ -102,6 +133,205 @@ set(TEST_SOURCES
     test_imageplugins.cpp
     test_remainingplugins.cpp
     test_finalplugins.cpp
+)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND TEST_SOURCES test_v4l2discovery.cpp)
+endif()
+
+# G5 Slices 27-28 keep plugin lifecycle/cache fixtures in a process-isolated test.
+add_library(AgentAbiMismatchFixture MODULE
+    fixtures/agent_g5/AgentAbiMismatchFixture.cpp
+    fixtures/agent_g5/AgentAbiMismatchFixture.h
+    fixtures/agent_g5/abi_metadata.json
+)
+add_library(AgentSchemaCacheFixture MODULE
+    fixtures/agent_g5/AgentSchemaCacheFixture.cpp
+    fixtures/agent_g5/AgentSchemaCacheFixture.h
+    fixtures/agent_g5/schema_metadata.json
+)
+add_library(AgentInterfaceVersionMismatchFixture MODULE
+    fixtures/agent_g5/AgentInterfaceVersionMismatchFixture.cpp
+    fixtures/agent_g5/AgentInterfaceVersionMismatchFixture.h
+    fixtures/agent_g5/version_mismatch_metadata.json
+)
+add_library(AgentVariableArraySourceFixture MODULE
+    fixtures/agent_g5/VariableArraySourceFixture.cpp
+    fixtures/agent_g5/VariableArraySourceFixture.h
+    fixtures/agent_g5/variable_array_source_metadata.json
+)
+target_link_libraries(AgentAbiMismatchFixture PRIVATE Qt${QT_VERSION_MAJOR}::Core)
+target_link_libraries(AgentSchemaCacheFixture PRIVATE deeplux_core)
+target_link_libraries(AgentInterfaceVersionMismatchFixture PRIVATE deeplux_core)
+target_link_libraries(AgentVariableArraySourceFixture PRIVATE deeplux_core)
+set_target_properties(AgentAbiMismatchFixture AgentSchemaCacheFixture AgentInterfaceVersionMismatchFixture
+    AgentVariableArraySourceFixture PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test-fixtures"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test-fixtures"
+)
+
+add_executable(test_agent_plugin_g5 test_agent_plugin_g5.cpp)
+target_link_libraries(test_agent_plugin_g5 PRIVATE deeplux_core deeplux_ui Qt${QT_VERSION_MAJOR}::Test)
+target_compile_definitions(test_agent_plugin_g5 PRIVATE
+    AGENT_G5_ABI_FIXTURE="$<TARGET_FILE:AgentAbiMismatchFixture>"
+    AGENT_G5_SCHEMA_FIXTURE="$<TARGET_FILE:AgentSchemaCacheFixture>"
+    AGENT_G5_VERSION_FIXTURE="$<TARGET_FILE:AgentInterfaceVersionMismatchFixture>"
+    AGENT_G5_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/agent_g5"
+)
+add_dependencies(test_agent_plugin_g5 AgentAbiMismatchFixture AgentSchemaCacheFixture AgentInterfaceVersionMismatchFixture)
+add_test(NAME test_agent_plugin_g5 COMMAND test_agent_plugin_g5)
+set_tests_properties(test_agent_plugin_g5 PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}"
+    TIMEOUT 30
+)
+
+add_executable(test_agent_variable_plugins_g8 test_agent_variable_plugins_g8.cpp)
+target_link_libraries(test_agent_variable_plugins_g8 PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Test)
+target_compile_definitions(test_agent_variable_plugins_g8 PRIVATE
+    G8_VARDEFINE_PLUGIN="$<TARGET_FILE:VarDefinePlugin>"
+    G8_VARSET_PLUGIN="$<TARGET_FILE:VarSetPlugin>"
+    G8_VARDEFINE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/variable/VarDefinePlugin/metadata.json"
+    G8_VARSET_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/variable/VarSetPlugin/metadata.json"
+)
+add_dependencies(test_agent_variable_plugins_g8 VarDefinePlugin VarSetPlugin)
+add_test(NAME test_agent_variable_plugins_g8 COMMAND test_agent_variable_plugins_g8)
+set_tests_properties(test_agent_variable_plugins_g8 PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}"
+    TIMEOUT 30
+)
+
+add_executable(test_agent_visual_plugins_g8 test_agent_visual_plugins_g8.cpp)
+target_link_libraries(test_agent_visual_plugins_g8 PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Test ${OpenCV_LIBS})
+target_include_directories(test_agent_visual_plugins_g8 PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_compile_definitions(test_agent_visual_plugins_g8 PRIVATE
+    G8_QRCODE_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/g8_qrcode.png"
+    G8_GRABIMAGE_PLUGIN="$<TARGET_FILE:GrabImagePlugin>"
+    G8_QRCODE_PLUGIN="$<TARGET_FILE:QRCodePlugin>"
+    G8_SHOWIMAGE_PLUGIN="$<TARGET_FILE:ShowImagePlugin>"
+    G8_SAVEIMAGE_PLUGIN="$<TARGET_FILE:SaveImagePlugin>"
+    G8_DISPLAYDATA_PLUGIN="$<TARGET_FILE:DisplayDataPlugin>"
+    G8_COLORRECOGNITION_PLUGIN="$<TARGET_FILE:ColorRecognitionPlugin>"
+    G8_BLOB_PLUGIN="$<TARGET_FILE:BlobPlugin>"
+    G8_FINDCIRCLE_PLUGIN="$<TARGET_FILE:FindCirclePlugin>"
+    G8_CROPIMAGE_PLUGIN="$<TARGET_FILE:CropImagePlugin>"
+    G8_MEASURECIRCLE_PLUGIN="$<TARGET_FILE:MeasureCirclePlugin>"
+    G8_MEASUREMENTINPUT_PLUGIN="$<TARGET_FILE:MeasurementInputPlugin>"
+    G8_DISTANCEPP_PLUGIN="$<TARGET_FILE:DistancePPPlugin>"
+    G8_DISTANCEPL_PLUGIN="$<TARGET_FILE:DistancePLPlugin>"
+    G8_FITCIRCLE_PLUGIN="$<TARGET_FILE:FitCirclePlugin>"
+    G8_FITLINE_PLUGIN="$<TARGET_FILE:FitLinePlugin>"
+    G8_FITELLIPSE_PLUGIN="$<TARGET_FILE:FitEllipsePlugin>"
+    G8_CALCULATEOFFSET_PLUGIN="$<TARGET_FILE:CalculateOffsetPlugin>"
+    G8_FITPLANE_PLUGIN="$<TARGET_FILE:FitPlanePlugin>"
+    G8_MEASURELINE_PLUGIN="$<TARGET_FILE:MeasureLinePlugin>"
+    G8_MEASURERECT_PLUGIN="$<TARGET_FILE:MeasureRectPlugin>"
+    G8_LINESDISTANCE_PLUGIN="$<TARGET_FILE:LinesDistancePlugin>"
+    G8_MEASUREGAP_PLUGIN="$<TARGET_FILE:MeasureGapPlugin>"
+    G8_POINTSURFACEDISTANCE_PLUGIN="$<TARGET_FILE:PointSurfaceDistancePlugin>"
+    G8_IMAGESCRIPT_PLUGIN="$<TARGET_FILE:ImageScriptPlugin>"
+    G8_LOADPOINTCLOUD_PLUGIN="$<TARGET_FILE:LoadPointCloudPlugin>"
+    G8_FREEFORMSURFACE_PLUGIN="$<TARGET_FILE:FreeformSurfacePlugin>"
+    G8_JIGSAWPUZZLE_PLUGIN="$<TARGET_FILE:JigsawPuzzlePlugin>"
+    G8_QUEUEOUT_PLUGIN="$<TARGET_FILE:QueueOutPlugin>"
+    G8_QUEUEIN_PLUGIN="$<TARGET_FILE:QueueInPlugin>"
+    G8_CREATESTRING_PLUGIN="$<TARGET_FILE:CreateStringPlugin>"
+    G8_GAPMEASURE3D_PLUGIN="$<TARGET_FILE:GapMeasure3DPlugin>"
+    G8_PERPROCESSING_PLUGIN="$<TARGET_FILE:PerProcessingPlugin>"
+    G8_PREPROCESSING3D_PLUGIN="$<TARGET_FILE:PreProcessing3DPlugin>"
+    G8_WHILE_PLUGIN="$<TARGET_FILE:WhilePlugin>"
+    G8_STOPWHILE_PLUGIN="$<TARGET_FILE:StopWhilePlugin>"
+    G8_DELAY_PLUGIN="$<TARGET_FILE:DelayPlugin>"
+    G8_GRABIMAGE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+    G8_QRCODE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/detection/QRCode/metadata.json"
+    G8_SHOWIMAGE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/ShowImage/metadata.json"
+    G8_SAVEIMAGE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/SaveImage/metadata.json"
+    G8_DISPLAYDATA_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/DisplayData/metadata.json"
+    G8_COLORRECOGNITION_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/detection/ColorRecognition/metadata.json"
+    G8_BLOB_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/Blob/metadata.json"
+    G8_FINDCIRCLE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/detection/FindCircle/metadata.json"
+    G8_CROPIMAGE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/CropImage/metadata.json"
+    G8_MEASURECIRCLE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/detection/MeasureCircle/metadata.json"
+    G8_MEASUREMENTINPUT_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json"
+    G8_DISTANCEPP_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/DistancePP/metadata.json"
+    G8_DISTANCEPL_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/DistancePL/metadata.json"
+    G8_FITCIRCLE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/FitCircle/metadata.json"
+    G8_FITLINE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/FitLine/metadata.json"
+    G8_FITELLIPSE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/FitEllipse/metadata.json"
+    G8_CALCULATEOFFSET_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/calibration/CalculateOffset/metadata.json"
+    G8_FITPLANE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/FitPlane/metadata.json"
+    G8_MEASURELINE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/detection/MeasureLine/metadata.json"
+    G8_MEASURERECT_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/detection/MeasureRect/metadata.json"
+    G8_LINESDISTANCE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/LinesDistance/metadata.json"
+    G8_MEASUREGAP_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasureGap/metadata.json"
+    G8_POINTSURFACEDISTANCE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/PointSurfaceDistance/metadata.json"
+    G8_IMAGESCRIPT_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/ImageScript/metadata.json"
+    G8_LOADPOINTCLOUD_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/LoadPointCloud/metadata.json"
+    G8_FREEFORMSURFACE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/FreeformSurface/metadata.json"
+    G8_JIGSAWPUZZLE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/JigsawPuzzle/metadata.json"
+    G8_QUEUEOUT_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/logic/QueueOut/metadata.json"
+    G8_QUEUEIN_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/logic/QueueIn/metadata.json"
+    G8_CREATESTRING_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/variable/CreateString/metadata.json"
+    G8_GAPMEASURE3D_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/GapMeasure3D/metadata.json"
+    G8_PERPROCESSING_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/PerProcessing/metadata.json"
+    G8_PREPROCESSING3D_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/PreProcessing3D/metadata.json"
+    G8_WHILE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/logic/While/metadata.json"
+    G8_STOPWHILE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/logic/StopWhile/metadata.json"
+    G8_DELAY_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/logic/Delay/metadata.json"
+)
+add_dependencies(test_agent_visual_plugins_g8 GrabImagePlugin QRCodePlugin ShowImagePlugin SaveImagePlugin
+                 DisplayDataPlugin ColorRecognitionPlugin BlobPlugin FindCirclePlugin CropImagePlugin
+                 MeasureCirclePlugin MeasurementInputPlugin DistancePPPlugin DistancePLPlugin FitCirclePlugin
+                 FitLinePlugin FitEllipsePlugin CalculateOffsetPlugin FitPlanePlugin MeasureLinePlugin MeasureRectPlugin
+                 LinesDistancePlugin MeasureGapPlugin PointSurfaceDistancePlugin ImageScriptPlugin LoadPointCloudPlugin
+                 FreeformSurfacePlugin JigsawPuzzlePlugin QueueOutPlugin QueueInPlugin CreateStringPlugin
+                 GapMeasure3DPlugin PerProcessingPlugin PreProcessing3DPlugin WhilePlugin StopWhilePlugin DelayPlugin)
+add_test(NAME test_agent_visual_plugins_g8 COMMAND test_agent_visual_plugins_g8)
+set_tests_properties(test_agent_visual_plugins_g8 PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}"
+    TIMEOUT 30
+)
+
+add_executable(test_agent_core_plugins_g8 test_agent_core_plugins_g8.cpp)
+target_link_libraries(test_agent_core_plugins_g8 PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Test)
+target_compile_definitions(test_agent_core_plugins_g8 PRIVATE
+    G8_PLCREAD_PLUGIN="$<TARGET_FILE:PLCReadPlugin>"
+    G8_PLCREAD_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/communication/PLCReadPlugin/metadata.json"
+    G8_MATH_PLUGIN="$<TARGET_FILE:MathPlugin>"
+    G8_MATH_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/variable/MathPlugin/metadata.json"
+    G8_CREATESTRING_PLUGIN="$<TARGET_FILE:CreateStringPlugin>"
+    G8_CREATESTRING_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/variable/CreateString/metadata.json"
+    G8_SPLITSTRING_PLUGIN="$<TARGET_FILE:SplitStringPlugin>"
+    G8_SPLITSTRING_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/variable/SplitString/metadata.json"
+    G8_STRFORMAT_PLUGIN="$<TARGET_FILE:StrFormatPlugin>"
+    G8_STRFORMAT_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/variable/StrFormatPlugin/metadata.json"
+    G8_SYSTEMTIME_PLUGIN="$<TARGET_FILE:SystemTimePlugin>"
+    G8_SYSTEMTIME_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/system/SystemTime/metadata.json"
+    G8_WRITETEXT_PLUGIN="$<TARGET_FILE:WriteTextPlugin>"
+    G8_WRITETEXT_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/system/WriteText/metadata.json"
+    G8_TIMESLICE_PLUGIN="$<TARGET_FILE:TimeSlicePlugin>"
+    G8_TIMESLICE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/system/TimeSlice/metadata.json"
+    G8_CONDITION_PLUGIN="$<TARGET_FILE:ConditionPlugin>"
+    G8_CONDITION_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/logic/Condition/metadata.json"
+    G8_DELAY_PLUGIN="$<TARGET_FILE:DelayPlugin>"
+    G8_DELAY_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/logic/Delay/metadata.json"
+    G8_DATACHECK_PLUGIN="$<TARGET_FILE:DataCheckPlugin>"
+    G8_DATACHECK_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/system/DataCheck/metadata.json"
+    G8_TABLEOUTPUT_PLUGIN="$<TARGET_FILE:TableOutPutPlugin>"
+    G8_TABLEOUTPUT_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/system/TableOutPut/metadata.json"
+    G8_SAVEDATA_PLUGIN="$<TARGET_FILE:SaveDataPlugin>"
+    G8_SAVEDATA_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/system/SaveData/metadata.json"
+    G8_DEFECTDETECTION_PLUGIN="$<TARGET_FILE:DefectDetectionPlugin>"
+    G8_DEFECTDETECTION_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/hymson3d/DefectDetection/metadata.json"
+    G8_LOADPOINTCLOUD_PLUGIN="$<TARGET_FILE:LoadPointCloudPlugin>"
+    G8_LOADPOINTCLOUD_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/LoadPointCloud/metadata.json"
+)
+add_dependencies(test_agent_core_plugins_g8 PLCReadPlugin MathPlugin CreateStringPlugin SplitStringPlugin StrFormatPlugin
+                 SystemTimePlugin WriteTextPlugin TimeSlicePlugin ConditionPlugin DelayPlugin DataCheckPlugin
+                 TableOutPutPlugin SaveDataPlugin DefectDetectionPlugin LoadPointCloudPlugin)
+add_test(NAME test_agent_core_plugins_g8 COMMAND test_agent_core_plugins_g8)
+set_tests_properties(test_agent_core_plugins_g8 PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}"
+    TIMEOUT 30
 )
 
 # ========== 插件路径清单 ==========
@@ -174,6 +404,14 @@ foreach(TEST_FILE ${TEST_SOURCES})
 
     if(TEST_NAME STREQUAL "test_fitline" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE FitLinePlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_v4l2discovery")
+        target_link_libraries(${TEST_NAME} PRIVATE V4L2CameraPlugin)
+        target_include_directories(${TEST_NAME} PRIVATE
+            ${CMAKE_SOURCE_DIR}/src/plugins/camera/V4L2Camera)
+    endif()
+    if(TEST_NAME STREQUAL "test_acceptance_flows")
+        target_link_libraries(${TEST_NAME} PRIVATE BlobPlugin)
     endif()
     if(TEST_NAME STREQUAL "test_pluginmanager")
         add_dependencies(${TEST_NAME} MeasurementInputPlugin)
@@ -253,6 +491,8 @@ foreach(TEST_FILE ${TEST_SOURCES})
                 CropImagePlugin
                 CalculateOffsetPlugin
                 GrabImagePlugin
+                JigsawPuzzlePlugin
+                NPointCalibrationPlugin
                 MeasurementInputPlugin
                 MeasureCirclePlugin
         )
@@ -296,6 +536,96 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_grabimage")
         target_link_libraries(${TEST_NAME} PRIVATE GrabImagePlugin)
     endif()
+    if(TEST_NAME STREQUAL "test_agent_sam_tools")
+        add_dependencies(${TEST_NAME} GrabImagePlugin CropImagePlugin SamPredictPlugin DelayPlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            AGENT_SAM_G5_GRABIMAGE_LIBRARY="$<TARGET_FILE:GrabImagePlugin>"
+            AGENT_SAM_G5_GRABIMAGE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+            AGENT_SAM_G5_CROPIMAGE_LIBRARY="$<TARGET_FILE:CropImagePlugin>"
+            AGENT_SAM_G5_CROPIMAGE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/CropImage/metadata.json"
+            AGENT_SAM_G5_DELAY_LIBRARY="$<TARGET_FILE:DelayPlugin>"
+            AGENT_SAM_G5_DELAY_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/logic/Delay/metadata.json"
+            AGENT_SAM_G5_SAMPREDICT_LIBRARY="$<TARGET_FILE:SamPredictPlugin>"
+            AGENT_SAM_G5_SAMPREDICT_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/detection/SamPredict/metadata.json")
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_camera_lifecycle_g5")
+        target_link_libraries(${TEST_NAME} PRIVATE GrabImagePlugin)
+        add_dependencies(${TEST_NAME} GrabImagePlugin DelayPlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE DEEPLUX_ENABLE_TEST_HOOKS)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            AGENT_CAMERA_G5_GRABIMAGE_LIBRARY="$<TARGET_FILE:GrabImagePlugin>"
+            AGENT_CAMERA_G5_GRABIMAGE_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+            AGENT_CAMERA_G5_DELAY_LIBRARY="$<TARGET_FILE:DelayPlugin>"
+            AGENT_CAMERA_G5_DELAY_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/logic/Delay/metadata.json")
+    endif()
+    if(TEST_NAME STREQUAL "test_cameramanager")
+        target_compile_definitions(${TEST_NAME} PRIVATE DEEPLUX_ENABLE_TEST_HOOKS)
+    endif()
+    if(TEST_NAME STREQUAL "test_project" OR TEST_NAME STREQUAL "test_projectmigration" OR
+       TEST_NAME STREQUAL "test_agentcontroller")
+        target_compile_definitions(${TEST_NAME} PRIVATE DEEPLUX_ENABLE_TEST_HOOKS)
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_folder_execution_g5")
+        add_dependencies(${TEST_NAME} FolderPlugin GrabImagePlugin SaveDataPlugin SaveImagePlugin WriteTextPlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            AGENT_FOLDER_G5_LIBRARY="$<TARGET_FILE:FolderPlugin>"
+            AGENT_FOLDER_G5_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/system/Folder/metadata.json"
+            AGENT_GRABIMAGE_G5_LIBRARY="$<TARGET_FILE:GrabImagePlugin>"
+            AGENT_GRABIMAGE_G5_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+            AGENT_SAVEDATA_G5_LIBRARY="$<TARGET_FILE:SaveDataPlugin>"
+            AGENT_SAVEDATA_G5_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/system/SaveData/metadata.json"
+            AGENT_SAVEIMAGE_G5_LIBRARY="$<TARGET_FILE:SaveImagePlugin>"
+            AGENT_SAVEIMAGE_G5_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/SaveImage/metadata.json"
+            AGENT_WRITETEXT_G5_LIBRARY="$<TARGET_FILE:WriteTextPlugin>"
+            AGENT_WRITETEXT_G5_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/system/WriteText/metadata.json")
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_plcwrite_execution_g5")
+        add_dependencies(${TEST_NAME} PLCWritePlugin PLCReadPlugin AgentVariableArraySourceFixture)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            AGENT_PLCWRITE_G5_LIBRARY="$<TARGET_FILE:PLCWritePlugin>"
+            AGENT_PLCWRITE_G5_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/communication/PLCWritePlugin/metadata.json"
+            AGENT_PLCREAD_G5_LIBRARY="$<TARGET_FILE:PLCReadPlugin>"
+            AGENT_PLCREAD_G5_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/communication/PLCReadPlugin/metadata.json"
+            AGENT_VARIABLE_ARRAY_SOURCE_G5_LIBRARY="$<TARGET_FILE:AgentVariableArraySourceFixture>"
+            AGENT_VARIABLE_ARRAY_SOURCE_G5_METADATA="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/agent_g5/variable_array_source_metadata.json")
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_tcpclient_execution_g5")
+        add_dependencies(${TEST_NAME} TCPClientPlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            AGENT_TCPCLIENT_G5_LIBRARY="$<TARGET_FILE:TCPClientPlugin>"
+            AGENT_TCPCLIENT_G5_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/communication/TCPClient/metadata.json")
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_tcpserver_execution_g5")
+        target_link_libraries(${TEST_NAME} PRIVATE TCPServerPlugin)
+        add_dependencies(${TEST_NAME} TCPServerPlugin)
+        target_include_directories(${TEST_NAME} PRIVATE "${CMAKE_SOURCE_DIR}/src/plugins/communication/TCPServer")
+        target_compile_definitions(${TEST_NAME} PRIVATE DEEPLUX_ENABLE_TEST_HOOKS)
+        target_compile_definitions(TCPServerPlugin PRIVATE DEEPLUX_ENABLE_TEST_HOOKS)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            AGENT_TCPSERVER_G5_LIBRARY="$<TARGET_FILE:TCPServerPlugin>"
+            AGENT_TCPSERVER_G5_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/communication/TCPServer/metadata.json")
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_plcread_execution_g5")
+        add_dependencies(${TEST_NAME} PLCReadPlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            AGENT_PLCREAD_G5_LIBRARY="$<TARGET_FILE:PLCReadPlugin>"
+            AGENT_PLCREAD_G5_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/communication/PLCReadPlugin/metadata.json")
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_serialport_execution_g5")
+        add_dependencies(${TEST_NAME} SerialPortPlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            AGENT_SERIALPORT_G5_LIBRARY="$<TARGET_FILE:SerialPortPlugin>"
+            AGENT_SERIALPORT_G5_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/communication/SerialPort/metadata.json")
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_plccommunicate_execution_g5")
+        add_dependencies(${TEST_NAME} PLCCommunicatePlugin)
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            AGENT_PLCCOMMUNICATE_G5_LIBRARY="$<TARGET_FILE:PLCCommunicatePlugin>"
+            AGENT_PLCCOMMUNICATE_G5_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/communication/PLCCommunicatePlugin/metadata.json")
+    endif()
+    if(TEST_NAME STREQUAL "test_communicationplugins")
+        target_link_libraries(${TEST_NAME} PRIVATE PLCReadPlugin PLCWritePlugin)
+    endif()
     # SAM 批1：Region2D 契约 + SamPredict 生产者 + RegionStats 消费者行为+流程验收
     if(TEST_NAME STREQUAL "test_sam_region_flow")
         target_link_libraries(${TEST_NAME}
@@ -303,19 +633,22 @@ foreach(TEST_FILE ${TEST_SOURCES})
                 SamPredictPlugin
                 RegionStatsPlugin
                 GrabImagePlugin
+                CropImagePlugin
         )
         target_compile_definitions(${TEST_NAME} PRIVATE
             TEST_SAMREGION_LIB_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+            TEST_SAMREGION_LIB_CropImage="$<TARGET_FILE:CropImagePlugin>"
             TEST_SAMREGION_LIB_SamPredict="$<TARGET_FILE:SamPredictPlugin>"
             TEST_SAMREGION_LIB_RegionStats="$<TARGET_FILE:RegionStatsPlugin>"
             TEST_SAMREGION_META_GrabImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+            TEST_SAMREGION_META_CropImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/CropImage/metadata.json"
             TEST_SAMREGION_META_SamPredict="${CMAKE_SOURCE_DIR}/src/plugins/detection/SamPredict/metadata.json"
             TEST_SAMREGION_META_RegionStats="${CMAKE_SOURCE_DIR}/src/plugins/geometry/RegionStats/metadata.json"
             TEST_SAMREGION_DATA_Circle="${CMAKE_SOURCE_DIR}/tests/acceptance/data/circle_640x480.png")
     endif()
     # 阶7 Agent 评审修复：set_param 转换/undo 保真回归需要真实可 createModule 的插件
     if(TEST_NAME STREQUAL "test_agentactor")
-        target_link_libraries(${TEST_NAME} PRIVATE GrabImagePlugin MeasureCirclePlugin MeasurementInputPlugin FitCirclePlugin)
+        target_link_libraries(${TEST_NAME} PRIVATE GrabImagePlugin MeasureCirclePlugin MeasurementInputPlugin FitCirclePlugin IfPlugin ParallelPlugin SamPredictPlugin)
         target_compile_definitions(${TEST_NAME} PRIVATE
             TEST_AGENTACTOR_LIB_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
             TEST_AGENTACTOR_META_GrabImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
@@ -324,7 +657,13 @@ foreach(TEST_FILE ${TEST_SOURCES})
             TEST_AGENTACTOR_LIB_MeasurementInput="$<TARGET_FILE:MeasurementInputPlugin>"
             TEST_AGENTACTOR_META_MeasurementInput="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json"
             TEST_AGENTACTOR_LIB_FitCircle="$<TARGET_FILE:FitCirclePlugin>"
-            TEST_AGENTACTOR_META_FitCircle="${CMAKE_SOURCE_DIR}/src/plugins/geometry/FitCircle/metadata.json")
+            TEST_AGENTACTOR_META_FitCircle="${CMAKE_SOURCE_DIR}/src/plugins/geometry/FitCircle/metadata.json"
+            TEST_AGENTACTOR_LIB_If="$<TARGET_FILE:IfPlugin>"
+            TEST_AGENTACTOR_META_If="${CMAKE_SOURCE_DIR}/src/plugins/logic/If/metadata.json"
+            TEST_AGENTACTOR_LIB_Parallel="$<TARGET_FILE:ParallelPlugin>"
+            TEST_AGENTACTOR_META_Parallel="${CMAKE_SOURCE_DIR}/src/plugins/logic/Parallel/metadata.json"
+            TEST_AGENTACTOR_LIB_SamPredict="$<TARGET_FILE:SamPredictPlugin>"
+            TEST_AGENTACTOR_META_SamPredict="${CMAKE_SOURCE_DIR}/src/plugins/detection/SamPredict/metadata.json")
     endif()
     # 第一迭代闭环测试：安装真实 GrabImage 插件（Path 源）后跑 建流程→校验→运行→读输出→调参→截图
     if(TEST_NAME STREQUAL "test_agentclosedloop")
@@ -338,6 +677,35 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_loadpointcloud" OR TEST_NAME STREQUAL "test_plugincontracts")
         target_link_libraries(${TEST_NAME} PRIVATE LoadPointCloudPlugin)
     endif()
+    # 阶段 0：F01–F13 基线特征化复现（docs/agent-capability-improvement-plan.md §5.5）
+    # 阶段 1：追加 PLCWrite（G1 副作用流程确认前零执行证据,仅构建流程不连接设备）
+    if(TEST_NAME STREQUAL "test_agentphase0_repro")
+        target_link_libraries(${TEST_NAME}
+            PRIVATE
+                GrabImagePlugin
+                DelayPlugin
+                MeasurementInputPlugin
+                FitCirclePlugin
+                NPointCalibrationPlugin
+                FolderPlugin
+                PLCWritePlugin
+        )
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            TEST_REPRO_LIB_GrabImage="$<TARGET_FILE:GrabImagePlugin>"
+            TEST_REPRO_META_GrabImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/GrabImage/metadata.json"
+            TEST_REPRO_LIB_Delay="$<TARGET_FILE:DelayPlugin>"
+            TEST_REPRO_META_Delay="${CMAKE_SOURCE_DIR}/src/plugins/logic/Delay/metadata.json"
+            TEST_REPRO_LIB_MeasurementInput="$<TARGET_FILE:MeasurementInputPlugin>"
+            TEST_REPRO_META_MeasurementInput="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json"
+            TEST_REPRO_LIB_FitCircle="$<TARGET_FILE:FitCirclePlugin>"
+            TEST_REPRO_META_FitCircle="${CMAKE_SOURCE_DIR}/src/plugins/geometry/FitCircle/metadata.json"
+            TEST_REPRO_LIB_NPointCalibration="$<TARGET_FILE:NPointCalibrationPlugin>"
+            TEST_REPRO_META_NPointCalibration="${CMAKE_SOURCE_DIR}/src/plugins/calibration/NPointCalibration/metadata.json"
+            TEST_REPRO_LIB_Folder="$<TARGET_FILE:FolderPlugin>"
+            TEST_REPRO_META_Folder="${CMAKE_SOURCE_DIR}/src/plugins/system/Folder/metadata.json"
+            TEST_REPRO_LIB_PLCWrite="$<TARGET_FILE:PLCWritePlugin>"
+            TEST_REPRO_META_PLCWrite="${CMAKE_SOURCE_DIR}/src/plugins/communication/PLCWritePlugin/metadata.json")
+    endif()
     if(TEST_NAME STREQUAL "test_timeslice")
         target_link_libraries(${TEST_NAME} PRIVATE TimeSlicePlugin)
     endif()
@@ -348,7 +716,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
         target_link_libraries(${TEST_NAME} PRIVATE DataCheckPlugin SaveDataPlugin)
     endif()
     if(TEST_NAME STREQUAL "test_imageplugins")
-        target_link_libraries(${TEST_NAME} PRIVATE PerProcessingPlugin MatchingPlugin)
+        target_link_libraries(${TEST_NAME} PRIVATE BlobPlugin PerProcessingPlugin MatchingPlugin)
     endif()
     if(TEST_NAME STREQUAL "test_remainingplugins")
         target_link_libraries(${TEST_NAME} PRIVATE TableOutPutPlugin ColorRecognitionPlugin DisplayDataPlugin
@@ -403,11 +771,21 @@ foreach(TEST_FILE ${TEST_SOURCES})
     # 验收工程测试：插件经 PluginManager 动态加载，仅需保证插件目标先于测试构建
     if(TEST_NAME STREQUAL "test_acceptance_flows")
         add_dependencies(${TEST_NAME}
+            ShowPointPlugin
             GrabImagePlugin
+            EdgeDefectDetectionPlugin
+            MatchingPlugin
             FindCirclePlugin
             MeasurementInputPlugin
+            ColorRecognitionPlugin
+            JiErHanDefectsDetPlugin
+            CropImagePlugin
+            MeasureRectPlugin
             DistancePPPlugin
+            MeasureGapPlugin
+            DistancePLPlugin
             LoadPointCloudPlugin
+            FreeformSurfacePlugin
             PointSurfaceDistancePlugin
             FitLinePlugin
             FitCirclePlugin
@@ -429,11 +807,12 @@ foreach(TEST_FILE ${TEST_SOURCES})
             GrabImagePlugin
             LoadPointCloudPlugin
             MeasurementInputPlugin
+            NPointCalibrationPlugin
             IfPlugin
             DelayPlugin
         )
         # 阶7 批4 复核四轮（P2）：CropImage 高级配置弹窗完整回归需直接实例化插件
-        target_link_libraries(${TEST_NAME} PRIVATE CropImagePlugin)
+        target_link_libraries(${TEST_NAME} PRIVATE CropImagePlugin NPointCalibrationPlugin)
     endif()
     if(TEST_NAME STREQUAL "test_agente2e")
         add_dependencies(${TEST_NAME}
@@ -454,9 +833,14 @@ foreach(TEST_FILE ${TEST_SOURCES})
             DEEPLUX_MCP_BRIDGE_PATH="$<TARGET_FILE:deeplux-mcp-bridge>")
     endif()
 
-    # GUI 测试在扫描插件/换肤时会输出大量 qDebug，Qt 6 的默认 -maxwarnings
-    # 上限会把它当成失败；显式放宽，行为断言仍由 QVERIFY/QCOMPARE 负责。
-    add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME} -maxwarnings 100000)
+    if((TEST_NAME STREQUAL "test_mainwindow" OR TEST_NAME STREQUAL "test_agent_viewport_snapshot_handoff") AND
+       CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME ${TEST_NAME}
+            COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/run-mainwindow-test-isolated.sh
+                ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR} $<TARGET_FILE:${TEST_NAME}>)
+    else()
+        add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME} -maxwarnings 100000)
+    endif()
     set_tests_properties(${TEST_NAME} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}")
     if(TEST_NAME STREQUAL "test_pluginmanager")
         set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
@@ -467,11 +851,35 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_agentbridge" OR TEST_NAME STREQUAL "test_mainwindow")
         set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
     endif()
+    if(TEST_NAME STREQUAL "test_mainwindow" OR TEST_NAME STREQUAL "test_agent_viewport_snapshot_handoff")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
+    endif()
     if(TEST_NAME STREQUAL "test_acceptance_flows")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 10)
     endif()
     if(TEST_NAME STREQUAL "test_cameramanager")
-        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 2)
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_folder_execution_g5")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_plcwrite_execution_g5")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_tcpclient_execution_g5")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_tcpserver_execution_g5")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_plcread_execution_g5")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_serialport_execution_g5")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_plccommunicate_execution_g5")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
     endif()
     # 阶7 批1 复核四轮：拟合含 RANSAC 循环，设 TIMEOUT 防无限循环回归挂死 CI
     if(TEST_NAME STREQUAL "test_fitellipse")
@@ -485,9 +893,16 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_sam_region_flow")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
     endif()
+    # 阶段 0 基线复现：含异步运行等待轮询，设 TIMEOUT 防挂死 CI
+    if(TEST_NAME STREQUAL "test_agentphase0_repro")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
+    endif()
     # SAM 批3：Agent SAM 工具 × 测试内 HTTP 服务，同设 TIMEOUT
     if(TEST_NAME STREQUAL "test_agent_sam_tools")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
+    endif()
+    if(TEST_NAME STREQUAL "test_agent_camera_lifecycle_g5")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 30)
     endif()
     # 第一迭代：LLM 重试测试包含真实指数退避等待（最长 4s）与本地假端点，设 TIMEOUT 防挂死
     if(TEST_NAME STREQUAL "test_agentretry")

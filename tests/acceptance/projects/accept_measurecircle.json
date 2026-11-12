@@ -1,0 +1,16 @@
+{
+  "version": "3.0",
+  "id": "accept-measurecircle-0001",
+  "name": "验收-MeasureCircle 来源坐标流程",
+  "modules": [
+    {"id": "grab", "moduleId": "GrabImage", "name": "图像采集", "params": {"grabSource": "File", "filePath": "@ACCEPTANCE_DATA@/measurecircle.png"}},
+    {"id": "crop", "moduleId": "CropImage", "name": "偏移裁剪", "params": {"rectangles": [[80, 70, 60, 60, 0]], "outputFirstAsImage": true}},
+    {"id": "measure", "moduleId": "MeasureCircle", "name": "测量圆", "params": {"initialCenterX": 60, "initialCenterY": 60, "initialRadius": 30, "threshold": 20, "measureCount": 36, "searchLength": 5, "exclusionRadius": 0}}
+  ],
+  "connections": [
+    {"fromModuleId": "grab", "toModuleId": "crop", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "crop", "toModuleId": "measure", "fromPort": "image", "toPort": "image", "edgeType": "data"}
+  ],
+  "flows": [{"id": "main", "name": "主流程", "nodes": ["grab", "crop", "measure"]}],
+  "resources": {"cameras": [], "dataSources": []}
+}

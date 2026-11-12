@@ -31,6 +31,10 @@ public:
     // 主要操作
     void addModule(const ModuleInstance& inst);
     void removeModule(const QString& instanceId);
+    void insertPendingInsertion(const QString& instanceId, QTreeWidgetItem* item, const QString& token);
+    bool isPendingInsertion(const QString& instanceId, QTreeWidgetItem* item, const QString& token) const;
+    void completePendingInsertion(const QString& instanceId, const QString& token);
+    void discardPendingInsertion(const QString& instanceId, QTreeWidgetItem* item, const QString& token);
     void removeFlowModule(const QString& instanceId);
     void clear();
 
@@ -77,6 +81,7 @@ signals:
 public slots:
     void onModuleAddedFromProject(const ModuleInstance& module);
     void onModuleRemovedFromProject(const QString& instanceId);
+    void onModuleMovedFromProject(const QString& instanceId, int newIndex);
 
 private slots:
     void onContextMenu(const QPoint& pos);
@@ -84,6 +89,7 @@ private slots:
 private:
     QTreeWidget* m_tree;
     QMap<QString, QTreeWidgetItem*> m_instanceItemMap;
+    QMap<QString, QString> m_pendingInsertionTokens;
     QSet<QString> m_usedNames;
     QLabel* m_hintLabel = nullptr;
 

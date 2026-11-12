@@ -1,0 +1,12 @@
+{
+    "id": "com.deeplux.test.agent_abi_mismatch",
+    "name": "AgentAbiMismatchFixture",
+    "version": "1.0.0",
+    "author": "DeepLux Test",
+    "description": "Qt plugin fixture that does not implement IModule",
+    "category": "test",
+    "ports": {
+        "inputs": [],
+        "outputs": []
+    }
+}

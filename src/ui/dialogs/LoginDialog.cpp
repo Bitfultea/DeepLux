@@ -12,6 +12,7 @@
 namespace DeepLux {
 
 LoginDialog::LoginDialog(QWidget* parent) : QDialog(parent) {
+    setObjectName(QStringLiteral("UserLoginDialog"));
     setWindowTitle(tr("Login"));
     setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
     setFixedSize(360, 220);

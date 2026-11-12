@@ -236,6 +236,7 @@ add_subdirectory(tools/sam_bench)
 
 # ========== 测试 ==========
 if(BUILD_TESTS)
+    target_compile_definitions(deeplux_core PRIVATE DEEPLUX_ENABLE_TEST_HOOKS)
     enable_testing()
     add_subdirectory(tests)
 endif()

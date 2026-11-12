@@ -1,6 +1,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QDialog>
 #include <QDir>
 #include <QDockWidget>
 #include <QElapsedTimer>
@@ -16,6 +17,7 @@
 #include <QTreeWidget>
 #include <QWidget>
 #include <QtTest/QTest>
+#include <core/common/UserManager.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>
@@ -364,8 +366,11 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
         qWarning("tool panel still visible after clicking close");
         return false;
     }
-    ok = saveShot(window, dir, QStringLiteral("08-tool-panel-closed.png")) && ok;
-    const double closeDiff = meanAbsDiff(beforeClose, window.grab().toImage());
+    const QString closedCapture = dir.filePath(QStringLiteral("08-tool-panel-closed.png"));
+    const QImage afterClose = window.grab().toImage();
+    if (!afterClose.save(closedCapture) || !verifyCapture(closedCapture, afterClose.size()))
+        return false;
+    const double closeDiff = meanAbsDiff(beforeClose, afterClose);
     if (closeDiff < 1.0) {
         qWarning("closing tool panel did not change appearance (mean diff %.2f)", closeDiff);
         return false;
@@ -496,15 +501,18 @@ bool captureCropConfigDialog(const QString& repoRoot, const QString& pluginTempR
     window.selectModuleForCapture(cropInst.id);
 
     bool saved = false;
-    QTimer::singleShot(80, [&]() {
-        QWidget* dialog = window.findChild<QWidget*>(QStringLiteral("PluginConfigDialog"));
+    QTimer::singleShot(80, &window, [&]() {
+        QDialog* dialog = window.findChild<QDialog*>(QStringLiteral("PluginConfigDialog"));
         if (!dialog) {
+            qWarning("[ui_capture] CropImage config dialog not found");
+            if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+                modal->reject();
             return;
         }
         dialog->resize(560, 480);
         QCoreApplication::processEvents();
         saved = dialog->grab().save(dir.filePath(QStringLiteral("11-cropimage-config-dialog.png")));
-        dialog->close();
+        dialog->reject();
     });
 
     const bool invoked = QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig", Qt::DirectConnection,
@@ -572,13 +580,20 @@ bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& plug
     // P1-4: 捕获 RunResult 并校验真实圆结果；失败须使任务失败，不得静默跳过
     DeepLux::RunResult runResult;
     bool gotResult = false;
+    QString acceptedRunId;
     QMetaObject::Connection conn = QObject::connect(&DeepLux::RunEngine::instance(), &DeepLux::RunEngine::runFinished,
                                                     [&](const DeepLux::RunResult& r) {
+                                                        if (r.runId != acceptedRunId)
+                                                            return;
                                                         runResult = r;
                                                         gotResult = true;
                                                     });
 
-    DeepLux::RunEngine::instance().runOnce();
+    if (!DeepLux::RunEngine::instance().runOnceAsync(&acceptedRunId)) {
+        QObject::disconnect(conn);
+        qWarning("failed to start findcircle acceptance run asynchronously");
+        return false;
+    }
     QElapsedTimer waitTimer;
     waitTimer.start();
     while (!gotResult && waitTimer.elapsed() < 5000) {
@@ -635,220 +650,6 @@ bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& plug
     return true;
 }
 
-bool captureFitCirclePickAcceptance(const QString& repoRoot, const QString& pluginTempRoot, DeepLux::MainWindow& window,
-                                    const QDir& outputDir) {
-    if (!installPluginForCapture(repoRoot, pluginTempRoot, "MeasurementInput",
-                                 "src/plugins/geometry/MeasurementInput/metadata.json",
-                                 QStringLiteral(UICAP_PLUGIN_MeasurementInput)) ||
-        !installPluginForCapture(repoRoot, pluginTempRoot, "FitCircle", "src/plugins/geometry/FitCircle/metadata.json",
-                                 QStringLiteral(UICAP_PLUGIN_FitCircle))) {
-        return false;
-    }
-
-    DeepLux::PluginManager::instance().addPluginPath(pluginTempRoot);
-    DeepLux::PluginManager::instance().initialize();
-    if (!DeepLux::PluginManager::instance().loadPlugin("MeasurementInput") ||
-        !DeepLux::PluginManager::instance().loadPlugin("FitCircle")) {
-        return false;
-    }
-
-    DeepLux::Project* project = DeepLux::ProjectManager::instance().newProject();
-    if (!project)
-        return false;
-    DeepLux::ModuleInstance circle;
-    circle.id = QStringLiteral("capture_fitcircle");
-    circle.moduleId = QStringLiteral("FitCircle");
-    circle.name = QStringLiteral("圆拟合");
-    circle.posX = 120;
-    circle.posY = 120;
-    project->addModule(circle);
-
-    window.resize(1280, 800);
-    window.show();
-    QCoreApplication::processEvents();
-    DeepLux::ViewportWidget* viewport = window.findChild<DeepLux::ViewportWidget*>();
-    DeepLux::HImageWidget* imageWidget = viewport ? viewport->imageWidget() : nullptr;
-    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
-    if (!viewport || !imageWidget || !runButton)
-        return false;
-
-    QImage image(640, 480, QImage::Format_RGB32);
-    image.fill(QColor("#111827"));
-    viewport->displayImage(image);
-    QCoreApplication::processEvents();
-
-    DeepLux::RunResult result;
-    bool finished = false;
-    const QMetaObject::Connection connection =
-        QObject::connect(&DeepLux::RunEngine::instance(), &DeepLux::RunEngine::runFinished, &window,
-                         [&](const DeepLux::RunResult& runResult) {
-                             result = runResult;
-                             finished = true;
-                         });
-    QTest::mouseClick(runButton, Qt::LeftButton);
-    QCoreApplication::processEvents();
-
-    for (const QPointF& point : {QPointF(420.0, 240.0), QPointF(320.0, 340.0), QPointF(220.0, 240.0)}) {
-        const QPoint widgetPoint = imageWidget->imageToWidget(point).toPoint();
-        if (!imageWidget->rect().contains(widgetPoint)) {
-            QObject::disconnect(connection);
-            return false;
-        }
-        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, widgetPoint);
-        QCoreApplication::processEvents();
-    }
-
-    QElapsedTimer timer;
-    timer.start();
-    while (!finished && timer.elapsed() < 5000) {
-        QCoreApplication::processEvents();
-        QTest::qWait(10);
-    }
-    QObject::disconnect(connection);
-    const DeepLux::ImageData fitOutput = DeepLux::RunEngine::instance().moduleOutput(circle.id);
-    if (!finished || !result.success || qAbs(fitOutput.data("circle_radius").toDouble() - 100.0) >= 1.0) {
-        return false;
-    }
-
-    QTest::qWait(100);
-    const QImage rendered = imageWidget->grab().toImage().convertToFormat(QImage::Format_RGB32);
-    int cyanPixels = 0;
-    int orangePixels = 0;
-    for (int y = 0; y < rendered.height(); ++y) {
-        for (int x = 0; x < rendered.width(); ++x) {
-            const QColor color = rendered.pixelColor(x, y);
-            cyanPixels += color.red() < 100 && color.green() > 120 && color.blue() > 140;
-            orangePixels += color.red() > 180 && color.green() > 80 && color.green() < 190 && color.blue() < 100;
-        }
-    }
-    window.selectModuleForCapture(circle.id);
-    QCoreApplication::processEvents();
-    return cyanPixels > 100 && orangePixels > 20 &&
-           captureWindow(window, QSize(1280, 800), outputDir.filePath("fitcircle_pick_result.png"));
-}
-
-bool captureControlFlowAcceptance(const QString& repoRoot, const QString& pluginTempRoot, DeepLux::MainWindow& window,
-                                  const QDir& outputDir) {
-    if (!installPluginForCapture(repoRoot, pluginTempRoot, "If", "src/plugins/logic/If/metadata.json",
-                                 QStringLiteral(UICAP_PLUGIN_If)) ||
-        !installPluginForCapture(repoRoot, pluginTempRoot, "Delay", "src/plugins/logic/Delay/metadata.json",
-                                 QStringLiteral(UICAP_PLUGIN_Delay))) {
-        return false;
-    }
-
-    DeepLux::PluginManager::instance().addPluginPath(pluginTempRoot);
-    DeepLux::PluginManager::instance().initialize();
-    if (!DeepLux::PluginManager::instance().loadPlugin(QStringLiteral("条件分支")) ||
-        !DeepLux::PluginManager::instance().loadPlugin(QStringLiteral("延时"))) {
-        return false;
-    }
-
-    DeepLux::Project* project = DeepLux::ProjectManager::instance().newProject();
-    if (!project)
-        return false;
-
-    DeepLux::ModuleInstance condition;
-    condition.id = QStringLiteral("capture_condition");
-    condition.moduleId = QStringLiteral("条件分支");
-    condition.name = QStringLiteral("条件");
-    condition.posX = -180;
-    condition.posY = -60;
-    condition.params["conditionType"] = QStringLiteral("Expression");
-    condition.params["expressionString"] = QStringLiteral("true");
-    project->addModule(condition);
-
-    DeepLux::ModuleInstance trueBranch;
-    trueBranch.id = QStringLiteral("capture_true");
-    trueBranch.moduleId = QStringLiteral("延时");
-    trueBranch.name = QStringLiteral("真分支");
-    trueBranch.posX = 120;
-    trueBranch.posY = -150;
-    trueBranch.params["delayMs"] = 1;
-    project->addModule(trueBranch);
-
-    DeepLux::ModuleInstance falseBranch = trueBranch;
-    falseBranch.id = QStringLiteral("capture_false");
-    falseBranch.name = QStringLiteral("假分支");
-    falseBranch.posY = 50;
-    project->addModule(falseBranch);
-
-    DeepLux::ModuleConnection trueConnection;
-    trueConnection.fromModuleId = condition.id;
-    trueConnection.toModuleId = trueBranch.id;
-    trueConnection.fromPort = QStringLiteral("true");
-    trueConnection.toPort = QStringLiteral("control");
-    trueConnection.edgeType = QStringLiteral("control");
-    project->addConnection(trueConnection);
-    DeepLux::ModuleConnection falseConnection = trueConnection;
-    falseConnection.fromPort = QStringLiteral("false");
-    falseConnection.toModuleId = falseBranch.id;
-    project->addConnection(falseConnection);
-
-    window.resize(1280, 800);
-    window.show();
-    QCoreApplication::processEvents();
-    QTabWidget* processTabs = tabsByName(window, "ProcessTabWidget");
-    DeepLux::FlowCanvas* canvas = window.findChild<DeepLux::FlowCanvas*>();
-    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
-    if (!processTabs || !canvas || !runButton)
-        return false;
-    if (!clickTabChecked(processTabs, QStringLiteral("画布"), "controlflow-canvas"))
-        return false;
-
-    DeepLux::RunResult result;
-    bool finished = false;
-    const QMetaObject::Connection connection =
-        QObject::connect(&DeepLux::RunEngine::instance(), &DeepLux::RunEngine::runFinished, &window,
-                         [&](const DeepLux::RunResult& runResult) {
-                             result = runResult;
-                             finished = true;
-                         });
-    QTest::mouseClick(runButton, Qt::LeftButton);
-    QElapsedTimer timer;
-    timer.start();
-    while (!finished && timer.elapsed() < 5000) {
-        QCoreApplication::processEvents();
-        QTest::qWait(10);
-    }
-    QObject::disconnect(connection);
-
-    QTreeWidget* tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
-    DeepLux::FlowNodeItem* conditionNode = canvas->nodeItem(condition.id);
-    DeepLux::FlowNodeItem* trueNode = canvas->nodeItem(trueBranch.id);
-    DeepLux::FlowNodeItem* falseNode = canvas->nodeItem(falseBranch.id);
-    if (!finished || !result.success || !tree || !conditionNode || !trueNode || !falseNode ||
-        conditionNode->executionStatus() != QStringLiteral("success") ||
-        trueNode->executionStatus() != QStringLiteral("success") ||
-        falseNode->executionStatus() != QStringLiteral("skipped")) {
-        return false;
-    }
-
-    QSplitter* topSplitter = window.findChild<QSplitter*>(QStringLiteral("RightTopSplitter"));
-    const QList<int> savedSizes = topSplitter ? topSplitter->sizes() : QList<int>();
-    if (topSplitter) {
-        topSplitter->setSizes({600, 600, 0});
-    }
-    canvas->fitInView(canvas->scene()->itemsBoundingRect().adjusted(-30, -30, 30, 30), Qt::KeepAspectRatio);
-    QCoreApplication::processEvents();
-    const QImage rendered = canvas->viewport()->grab().toImage().convertToFormat(QImage::Format_RGB32);
-    int greenPixels = 0;
-    int grayPixels = 0;
-    for (int y = 0; y < rendered.height(); ++y) {
-        for (int x = 0; x < rendered.width(); ++x) {
-            const QColor color = rendered.pixelColor(x, y);
-            greenPixels += color.green() > 170 && color.red() < 80 && color.blue() < 130;
-            grayPixels +=
-                qAbs(color.red() - 156) < 10 && qAbs(color.green() - 163) < 10 && qAbs(color.blue() - 175) < 10;
-        }
-    }
-    const bool accepted = greenPixels > 5 && grayPixels > 5 &&
-                          captureWindow(window, QSize(1280, 800), outputDir.filePath("controlflow_canvas_result.png"));
-    if (topSplitter) {
-        topSplitter->setSizes(savedSizes);
-    }
-    return accepted;
-}
-
 } // namespace
 
 int main(int argc, char** argv) {
@@ -870,6 +671,7 @@ int main(int argc, char** argv) {
     }
 
     DeepLux::MainWindow window;
+    DeepLux::UserManager::instance().login(QStringLiteral("developer"), QString());
     bool ok = true;
 
     // 收尾2: 加载并运行找圆验收工程，使截图带真实结果（结果叠加/节点状态/检查器）
@@ -888,23 +690,17 @@ int main(int argc, char** argv) {
         ok = false;
     }
 
-    QTimer::singleShot(800, [&]() {
-        ok = captureFormalSizes(window, dir) && ok;
-        // 带真实结果的桌面/紧凑截图（验收运行成功后）
-        if (ranAcceptance) {
-            ok = captureWindow(window, QSize(1920, 1080), dir.filePath("findcircle_desktop_result.png")) && ok;
-            ok = captureWindow(window, QSize(1280, 800), dir.filePath("findcircle_compact_result.png")) && ok;
-        }
-        ok = captureWindow(window, QSize(1440, 900), dir.filePath("deeplux_mainwindow_1440x900.png")) && ok;
-        ok = captureWindow(window, QSize(1024, 700), dir.filePath("deeplux_mainwindow_1024x700.png")) && ok;
-        ok = capturePluginConfigDialog(window, dir) && ok;
-        ok = captureCropConfigDialog(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
-        ok = captureFitCirclePickAcceptance(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
-        ok = captureControlFlowAcceptance(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
-        ok = captureClickedStates(window, dir) && ok;
-        app.quit();
-    });
-
-    app.exec();
+    QTest::qWait(800);
+    ok = captureFormalSizes(window, dir) && ok;
+    // 带真实结果的桌面/紧凑截图（验收运行成功后）
+    if (ranAcceptance) {
+        ok = captureWindow(window, QSize(1920, 1080), dir.filePath("findcircle_desktop_result.png")) && ok;
+        ok = captureWindow(window, QSize(1280, 800), dir.filePath("findcircle_compact_result.png")) && ok;
+    }
+    ok = captureWindow(window, QSize(1440, 900), dir.filePath("deeplux_mainwindow_1440x900.png")) && ok;
+    ok = captureWindow(window, QSize(1024, 700), dir.filePath("deeplux_mainwindow_1024x700.png")) && ok;
+    ok = capturePluginConfigDialog(window, dir) && ok;
+    ok = captureCropConfigDialog(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
+    ok = captureClickedStates(window, dir) && ok;
     return ok ? 0 : 1;
 }

@@ -125,13 +125,15 @@ scripts/          # 构建、插件同步、部署和 CLI 辅助脚本
 
 | 文档 | 内容 |
 | --- | --- |
+| [软件操作手册](docs/user-manual.md) | 主界面、流程搭建、算法参数、2D/3D 配方、Agent/SAM、排错与上线验收。 |
 | [快速上手](docs/quick-start.md) | 创建找圆流程、单步检查、常见排查。 |
 | [Windows 构建与部署](docs/windows-build.md) | MSVC 依赖、Ninja/VS 配置、插件同步、CTest、windeployqt 打包与常见问题。 |
 | [架构说明](docs/architecture.md) | UI、工程、执行引擎、插件、Agent 与 SAM 的职责边界。 |
-| [插件手册](docs/plugins.md) | 运行时插件的用途、接入方式、配置与失败条件。 |
+| [插件手册](docs/plugins.md) | 69 个运行时插件的用途、接入方式、关键配置、失败条件和结果说明。 |
 | [CLI 文档](docs/cli.md) | GUI 之外的项目、模块与连接管理命令。 |
-| [终端与 Agent 设计](docs/Terminal_Agent_Design.md) | 受控工具调用、审计与权限模型。 |
-| [工程技能图谱](docs/skills/README.md) | UI、插件、测量、流程、Agent、SAM 与质量验证的方法集。 |
+| [终端与 Agent 设计](docs/Terminal_Agent_Design.md) | 受控 Agent 工具调用、审计与权限模型。 |
+| [Agent 能力完善与验收计划](docs/agent-capability-improvement-plan.md) | 分阶段实施范围、插件/操作覆盖矩阵、验收标准与外部 Agent 交接要求。 |
+| [工程技能图谱](docs/skills/README.md) | UI、插件、测量、流程、Agent、SAM 与质量验证的可复用方法。 |
 | [3D 设计文档](docs/design/) | 点云渲染、LOD 和相关设计记录。 |
 
 ## 开发与验证

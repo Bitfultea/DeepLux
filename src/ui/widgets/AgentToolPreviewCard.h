@@ -24,7 +24,29 @@ public:
         QJsonObject params;
     };
 
-    explicit AgentToolPreviewCard(const QList<ToolItem>& tools, bool isDark, QWidget* parent = nullptr);
+    /**
+     * @brief 阶段1 §4（审核整改 R2）：确认卡上下文——工程、目标与副作用摘要,
+     * 来自 AgentController::pendingConfirmationPayload() 的 context 字段
+     */
+    struct ConfirmationContext {
+        QString confirmationId;
+        QString summary;
+        QString reversibilityLabel;
+        QString projectName;
+        QString projectPath;
+        QStringList sideEffects;
+        bool isEmpty() const {
+            return confirmationId.isEmpty() && summary.isEmpty() && reversibilityLabel.isEmpty() &&
+                   projectName.isEmpty() && sideEffects.isEmpty();
+        }
+    };
+
+    explicit AgentToolPreviewCard(const QList<ToolItem>& tools, bool isDark, QWidget* parent = nullptr,
+                                  const ConfirmationContext& context = {});
+
+    QString confirmationId() const {
+        return m_context.confirmationId;
+    }
 
     void applyTheme(bool isDark);
 
@@ -38,6 +60,7 @@ private:
 
     QList<ToolItem> m_tools;
     bool m_isDark = false;
+    ConfirmationContext m_context;
     QLabel* m_contentLabel = nullptr;
     QPushButton* m_cancelBtn = nullptr;
     QPushButton* m_confirmBtn = nullptr;

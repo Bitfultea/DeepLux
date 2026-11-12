@@ -8,9 +8,16 @@ DeepLux is an industrial machine vision software. You create inspection **projec
 
 - **Project (.dproj)**: Contains modules, connections, and camera configs. Create with `create_project`, open with `open_project`.
 - **Module**: A processing step (e.g. GrabImage captures, FindCircle detects). Add with `add_module(plugin, instanceName)`.
+- **Module instance ID**: The stable reference returned by `add_module` and `get_flow_state`; `rename_module(instanceId, name)` changes only the display name, and `move_module(instanceId, index)` changes its zero-based order.
+- **Legacy connection types**: `get_flow_state` preserves the stored `edgeType`; when an older project omitted it, `effectiveEdgeType` reports the same metadata-based inference used by the run engine and `edgeTypeResolution` says `inferred`. If endpoint plugin metadata is unavailable, resolution is `unavailable` rather than guessed.
+- **Enabled state**: `set_module_enabled(instanceId, enabled)` accepts a JSON boolean and changes whether the existing engine bypasses a module. Stop a running flow before editing it; Agent Undo/Redo can restore this project edit.
+- **Breakpoint**: `set_breakpoint(instanceId, enabled)` accepts a JSON boolean and updates the project and existing run-engine breakpoint for that stable instance ID. Stop the flow before changing it; Agent Undo/Redo restores the edit.
+- **Module note**: `set_module_note(instanceId, note)` updates the module note; pass an empty string to clear it. The project change can be undone by the Agent Undo stack.
 - **Flow**: Modules connected in order. Data flows from one module to the next (ImageData pipeline).
 - **Connection**: Links two modules. Use `connect_modules(fromId, toId)`.
 - **Run**: Execute the flow. Use `run_flow(mode="once"|"cycle")`. Results and images are displayed.
+- **Single-step**: Use `step_once` to execute one module with the same RunEngine single-step behavior as the GUI; each call is synchronous and may have file/device/network side effects, so confirmation is required. Use `reset_step` to restart the next single-step call at the flow entry.
+- **Preflight validation**: Use `validate_flow` before running to check required input connections, port/edge compatibility, and execution/control graph constraints. It reports `valid`, all missing-required-input findings, and at most the first structural graph/port error per call, with locations when available; it does not execute modules, request GUI synchronization, clear outputs, or reset step position. If the engine runtime is stale or busy, it fails closed instead of replacing the active runtime.
 
 ### Workflow Order (Critical)
 1. `create_project` or `open_project` — must be first
@@ -29,141 +36,50 @@ DeepLux is an industrial machine vision software. You create inspection **projec
 
 ### Important Rules
 - Always check `get_flow_state()` before modifying to understand current state
-- Never add duplicate module instances with the same name
-- `save_project` is a dangerous operation (triggers undo point)
+- Use instance IDs, not display names, to identify modules; display names are not guaranteed unique
+- `save_project` writes to disk and is not undone by Agent Undo
 - `remove_module` and `disconnect_modules` are dangerous
 - `sam_annotate` is dangerous (writes annotation files); `sam_predict` only runs inference (no file writes)
 - `run_flow` returns immediately (async), use `get_run_results` to check completion
 
 ---
-## Module Reference
+## Module and Workflow Documentation
 
-### Image Acquisition
-| Module | Plugin ID | Purpose | Key Parameters |
-|--------|-----------|---------|----------------|
-| GrabImage | `GrabImage` | Capture image from camera, file, or image folder | `filePath` (auto-detects file or folder), `folderLoop`, `grabSource` (Path/Camera/Demo), `cameraId`; legacy `File`, `Folder`, and `folderPath` remain readable |
-| SaveImage | `SaveImage` | Save processed image to disk | `filePath` (string), `format` (enum: PNG/JPG/BMP) |
-| ShowImage | `ShowImage` | Display image in viewport | `title` (string), `delay` (int ms) |
+Do not infer module parameters from a duplicated summary in this file. Use the source-backed documents bundled in
+the knowledge base:
 
-### Image Processing
-| Module | Plugin ID | Purpose | Key Parameters |
-|--------|-----------|---------|----------------|
-| PerProcessing | `PerProcessing` | Image preprocessing (filter, threshold) | `filterType` (enum), `threshold` (int), `kernelSize` (int) |
-| ColorRecognition | `ColorRecognition` | Detect colors in image | `targetColor` (string hex), `tolerance` (int) |
-| Blob | `Blob` | Blob analysis (connected components) | `minArea` (int), `maxArea` (int), `threshold` (int) |
+- `USER_MANUAL.md`: GUI operation, parameter tuning, 2D/3D workflows, Agent/SAM, troubleshooting, and acceptance.
+- `PLUGINS.md`: all 69 runtime plugins, their upstream data, key configuration, outputs, and failure conditions.
+- `get_module_params_schema(instanceId)`: the exact current parameters and values for a module instance.
 
-### Detection
-| Module | Plugin ID | Purpose | Key Parameters |
-|--------|-----------|---------|----------------|
-| Matching | `Matching` | Template matching | `templatePath` (string), `score` (float 0-1), `angle` (float) |
-| QRCode | `QRCode` | QR/Barcode reading | `codeType` (enum), `timeout` (int ms) |
+For an unfamiliar module, first call `read_documentation` with the exact module name, then call
+`get_module_params_schema` before changing any parameter. Runtime schema and validation take precedence over prose.
 
-### Geometry Measurement
-| Module | Plugin ID | Purpose | Key Parameters |
-|--------|-----------|---------|----------------|
-| FindCircle | `FindCircle` | Detect circles in image | `minRadius` (int), `maxRadius` (int), `edgeThreshold` (int), `centerX/Y` (int) |
-| FitCircle | `FitCircle` | Fit circle to points | `points` (string), `method` (enum) |
-| FitLine | `FitLine` | Fit line to points | `points` (string), `method` (enum) |
-| DistancePP | `DistancePP` | Point-to-point distance | `point1X/Y` (int), `point2X/Y` (int) |
-| DistancePL | `DistancePL` | Point-to-line distance | `pointX/Y` (int), `lineA/B/C` (float) |
-| LinesDistance | `LinesDistance` | Distance between two lines | `line1/2 A/B/C` (float) |
-| MeasureRect | `MeasureRect` | Rectangle measurement | `x/y/width/height` (int) |
-| MeasureLine | `MeasureLine` | Line measurement | `startX/Y` (int), `endX/Y` (int) |
-| MeasureGap | `MeasureGap` | 2D/3D gap measurement between two points | takes `point1` [x,y] or [x,y,z] and `point2` [x,y] or [x,y,z] via pipeline metadata |
-| PointSurfaceDistance | `PointSurfaceDistance` | Point-to-plane distance | takes `point` [x,y,z] and `plane` [x1,y1,z1,x2,y2,z2,x3,y3,z3] via pipeline metadata |
-| FreeformSurface | `FreeformSurface` | Surface roughness from point cloud | accepts `PointCloudData` via `point_cloud` key |
-| MeasurementInput | `MeasurementInput` | Adapter: writes measurement coordinates into pipeline | `mode` (point_pair/point_line/point_plane/custom), `point1`, `point2`, `point`, `line`, `plane` as coordinate arrays |
+### Minimal Inspection Workflow
 
-### Calibration
-| Module | Plugin ID | Purpose | Key Parameters |
-|--------|-----------|---------|----------------|
-| NPointCalibration | `NPointCalibration` | N-point calibration (pixel→world) | `points` (string array), `method` (enum) |
+```text
+GrabImage.image → PerProcessing.image (optional) → FindCircle.image → SaveImage.image (optional)
+```
 
-### Logic/Control Flow
-| Module | Plugin ID | Purpose | Key Parameters |
-|--------|-----------|---------|----------------|
-| If | `com.deeplux.plugin.if` | Conditional branch | `condition` (string expression) |
-| Loop | `com.deeplux.plugin.loop` | Fixed-count loop | `loopCount` (int) |
-| While | `com.deeplux.plugin.while` | Conditional loop | `condition` (string), `maxIterations` (int) |
-| Delay | `Delay` | Wait/delay | `delayMs` (int) |
-| StopWhile | `com.deeplux.plugin.stopwhile` | Break from while loop | — |
+Create or open a project, add modules, inspect each instance schema, set parameters, connect compatible typed ports,
+save when requested, run once, wait for completion, and then call `get_run_results`.
 
-### 3D / Point Cloud
-| Module | Plugin ID | Purpose | Key Parameters |
-|--------|-----------|---------|----------------|
-| LoadPointCloud | `LoadPointCloud` | Load PLY/TIFF file as point cloud data | `filePath` (string), `tiffStep` (int), `scaleX/Y/Z` (float) |
+### Hymson 3D plugin availability
 
-### System
-| Module | Plugin ID | Purpose | Key Parameters |
-|--------|-----------|---------|----------------|
-| SystemTime | `SystemTime` | Get system timestamp | `format` (string) |
-| Folder | `Folder` | File/folder operations | `operation` (enum), `path` (string) |
-| SaveData | `SaveData` | Save data to file | `filePath` (string), `format` (enum) |
-| WriteText | `WriteText` | Write text output | `filePath` (string), `content` (string) |
-| TableOutPut | `TableOutPut` | Export table data | `filePath` (string), `format` (enum) |
-
-### Variables
-| Module | Plugin ID | Purpose | Key Parameters |
-|--------|-----------|---------|----------------|
-| VarDefine | `VarDefine` | Define a variable | `name` (string), `type` (enum), `value` (string) |
-| VarSet | `VarSet` | Set variable value | `name` (string), `value` (string) |
-| Math | `Math` | Math expression evaluation | `expression` (string) |
-| DataCheck | `DataCheck` | Validate data against rules | `rule` (string), `value` (string) |
-
-### Communication
-| Module | Plugin ID | Purpose | Key Parameters |
-|--------|-----------|---------|----------------|
-| PLCCommunicate | `PLCCommunicate` | PLC communication | `ip` (string), `port` (int), `protocol` (enum) |
-| PLCRead | `PLCRead` | Read PLC register | `address` (string), `type` (enum) |
-| PLCWrite | `PLCWrite` | Write PLC register | `address` (string), `value` (string) |
-| TCPClient | `TCPClient` | TCP client connection | `ip` (string), `port` (int) |
-| TCPServer | `TCPServer` | TCP server | `port` (int) |
-| SerialPort | `SerialPort` | Serial port communication | `port` (string), `baudRate` (int) |
+`DefectDetection` is currently an unavailable framework plugin. With `ENABLE_HYMSON3D=OFF`, it builds in demo mode;
+the plugin CMake also currently disables the SDK algorithm branch with `HymsonVision3D_FOUND AND FALSE`. Running it
+fails with `HymsonVision3D SDK 未启用，缺陷检测不可用` and produces no detection result. Its declared output ports
+(`defect_point_cloud`, `has_defects`, `defect_count`) remain visible in the module schema, but the current build cannot
+produce queryable values for them because the algorithm run fails. Do not present this plugin as a working inspection
+algorithm or use its result for a product decision until the SDK path is enabled and a valid business fixture passes.
 
 ---
-## Common Workflows
+## Direct SAM Tools
 
-### Basic Inspection Flow
-```
-GrabImage → PerProcessing → FindCircle → SaveImage
-```
-1. GrabImage captures from camera/file
-2. PerProcessing filters/enhances
-3. FindCircle detects circles
-4. SaveImage saves result
+### User-driven image selection
+`open_sam_image_picker_for_user()` opens or reuses the SAM annotation window and makes its existing **Open Image** button available. The user selects the file in the GUI. This handoff does not accept a path, read an image, replace the current session, or run a prediction. Use `sam_predict(imagePath, ...)` only when the user requested a direct SAM prediction from a known image path; it is not the GUI image-open action.
 
-### Measurement Flow
-```
-GrabImage → FitLine → FitCircle → DistancePP → ShowImage
-```
-
-### QC with PLC
-```
-GrabImage → Matching → DistancePP → DataCheck → PLCWrite
-```
-
-### 2D Point Distance Measurement
-```
-MeasurementInput(point1=[10,20], point2=[40,60]) → DistancePP
-```
-
-### 2.5D / 3D Gap Measurement
-```
-MeasurementInput(point1=[10,20,1.2], point2=[40,60,4.2]) → MeasureGap
-```
-MeasureGap auto-detects 2D vs 3D: if any point has z≠0, it runs in 3D mode.
-
-### Point Cloud Surface Roughness
-```
-LoadPointCloud(filePath=/path/to/cloud.ply) → FreeformSurface
-```
-
-### Point-to-Plane Distance
-```
-MeasurementInput(point=[0,0,5], plane=[0,0,0, 1,0,0, 0,1,0]) → PointSurfaceDistance
-```
-
-### SAM Segmentation (Direct Tools)
+### SAM Segmentation
 `sam_predict` / `sam_annotate` call the local SAM server directly — no project or flow needed:
 ```
 sam_predict(imagePath, points=[[x,y],...], negativePoints?, box=[x,y,w,h]?, label?) → {score, bbox, polygon}
@@ -172,6 +88,7 @@ sam_annotate(imagePath, sessionPath, items=[{points?, negativePoints?, box?, lab
 - Both require a RUNNING SAM server (default `http://127.0.0.1:8990`; the user starts it from the annotation panel: initialize environment + import weights). If the server is unreachable they fail closed with an error — report it to the user, do not retry in a tight loop.
 - `imagePath` must be an existing image file on disk; every prompt needs `points` or `box` (at least one), finite numbers only.
 - `sam_annotate` is dangerous (writes a `.deeplux-anno.json` annotation session file). All-or-nothing: nothing is written if any prompt fails. A session is bound to one image — appending with a different `imagePath` is rejected.
+- `get_annotation_session(sessionPath, offset?, limit?, includePolygon?)` is a read-only query of one explicitly named existing session. It returns stable object IDs, labels, original-image bounding boxes, prompt counts, and optionally full original-image polygons. It never returns mask RLE, starts SAM, decodes the source image, or opens the GUI session. Results are paged and limited to 64 KiB.
 - For in-flow segmentation use the `SamPredict` module instead (+ `RegionStats` for area/centroid statistics of the Region2D output).
 
 ---
@@ -188,9 +105,10 @@ sam_annotate(imagePath, sessionPath, items=[{points?, negativePoints?, box?, lab
 ---
 ## Knowledge Base
 
-`read_documentation(topic)` searches two sources, both split into `## ` sections and matched by keyword:
+`read_documentation(topic)` searches two sources, split into `##` / `###` sections and matched by keyword:
 
-1. **Built-in docs** — bundled with the application (read-only), including this document.
+1. **Built-in docs** — bundled with the application (read-only), including this document, the software operation
+   manual, and the complete plugin manual.
 2. **User docs** — Markdown/text files the user added via **Agent Settings → Knowledge Base**
    (工具 → Agent 设置 → 知识库). They are copied into the user knowledge directory
    (`~/.deeplux/knowledge` on Linux) and searched together with built-in docs.

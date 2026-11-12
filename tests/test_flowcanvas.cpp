@@ -1,14 +1,45 @@
 #include <QGraphicsSceneEvent>
 #include <QImage>
 #include <QPainter>
+#include <QSemaphore>
 #include <QSignalSpy>
+#include <QThread>
 #include <QToolTip>
 #include <QtTest/QtTest>
+#include <core/base/ModuleBase.h>
+#include <core/engine/RunEngine.h>
 #include <core/manager/ProjectManager.h>
 #include <core/model/Project.h>
+#include <limits>
 #include <ui/widgets/FlowCanvas.h>
 
 using namespace DeepLux;
+
+class FlowCanvasBusyProbe : public ModuleBase {
+public:
+    FlowCanvasBusyProbe(QSemaphore* entered, QSemaphore* release) : m_entered(entered), m_release(release) {
+        m_moduleId = QStringLiteral("com.deeplux.test.flowcanvasbusyprobe");
+        m_name = QStringLiteral("FlowCanvasBusyProbe");
+        setInstanceName(QStringLiteral("flowcanvas_busy_probe"));
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        Q_UNUSED(input)
+        m_entered->release();
+        m_release->acquire();
+        output = ImageData();
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    QSemaphore* m_entered;
+    QSemaphore* m_release;
+};
 
 class TestableFlowNodeItem : public FlowNodeItem {
 public:
@@ -16,6 +47,11 @@ public:
     using FlowNodeItem::mouseMoveEvent;
     using FlowNodeItem::mousePressEvent;
     using FlowNodeItem::mouseReleaseEvent;
+};
+
+class TestableFlowCanvas : public FlowCanvas {
+public:
+    using FlowCanvas::dropEvent;
 };
 
 class TestFlowCanvas : public QObject {
@@ -31,6 +67,7 @@ private slots:
     void testImplicitSequentialRelationIsPainted();
     void testThemeUpdatesSceneBackground();
     void testLoadFromProjectRebuildsStableNodesAndConnections();
+    void testLoadFromProjectInfersLegacyControlEdgeWithoutProjectMutation();
     void testNodeClickEmitsNodeSelected();
     void testProgrammaticSelectNodeDoesNotEmitSignal();
     // 阶段 F 新增
@@ -45,6 +82,8 @@ private slots:
     void testProjectRemoveConnectionWithPortsPrecise();
     void testPortTooltipUsesCompleteDataTypeName();
     void testConnectionDragMovesAndClearsCompatibleHighlight();
+    void testNodePositionQuantizationIsFiniteAndInt32Safe();
+    void testTextDropRejectsBusyAndAddsNodeAfterStop();
 };
 
 void TestFlowCanvas::init() {
@@ -81,6 +120,52 @@ void TestFlowCanvas::testAddNodeAndConnectionSyncsToCurrentProject() {
     // 按完整 4 元组删除
     canvas.removeConnection(firstId, "image", secondId, "image");
     QCOMPARE(project->connections().size(), 0);
+}
+
+void TestFlowCanvas::testTextDropRejectsBusyAndAddsNodeAfterStop() {
+    TestableFlowCanvas canvas;
+    canvas.show();
+    Project* project = ProjectManager::instance().currentProject();
+    QVERIFY(project);
+    QSignalSpy rejectedSpy(&canvas, &FlowCanvas::editRejected);
+
+    QSemaphore entered;
+    QSemaphore release;
+    FlowCanvasBusyProbe module(&entered, &release);
+    QVERIFY(module.initialize());
+    RunEngine& engine = RunEngine::instance();
+    engine.addModule(&module);
+    struct ReleaseOnExit {
+        QSemaphore& semaphore;
+        ~ReleaseOnExit() {
+            semaphore.release();
+        }
+    } releaseOnExit{release};
+    QString runId;
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("flowcanvas_busy_probe"), ExecutionAffinity::Worker);
+    QVERIFY(engine.runOnceAsync(&runId));
+    QVERIFY(entered.tryAcquire(1, 2000));
+    QVERIFY(engine.isBusy());
+
+    QMimeData mime;
+    mime.setText(QStringLiteral("test.module|Test Module"));
+    QDropEvent busyDrop(QPointF(80, 80), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier);
+    canvas.dropEvent(&busyDrop);
+    QVERIFY(!busyDrop.isAccepted());
+    QCOMPARE(rejectedSpy.count(), 1);
+    QVERIFY(canvas.nodeIds().isEmpty());
+    QVERIFY(project->modules().isEmpty());
+
+    release.release();
+    QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 3000);
+    engine.clearModules();
+    module.shutdown();
+
+    QDropEvent idleDrop(QPointF(80, 80), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier);
+    canvas.dropEvent(&idleDrop);
+    QVERIFY(idleDrop.isAccepted());
+    QCOMPARE(canvas.nodeIds().size(), 1);
+    QCOMPARE(project->modules().size(), 1);
 }
 
 void TestFlowCanvas::testConnectionHasPaintableBoundsAfterAdd() {
@@ -187,6 +272,75 @@ void TestFlowCanvas::testLoadFromProjectRebuildsStableNodesAndConnections() {
     QVERIFY(canvas.nodeIds().contains("inst_b"));
     QCOMPARE(canvas.nodeItem("inst_a")->pos(), QPointF(10, 20));
     QCOMPARE(canvas.m_connections.size(), 1);
+}
+
+void TestFlowCanvas::testLoadFromProjectInfersLegacyControlEdgeWithoutProjectMutation() {
+    Project project;
+
+    ModuleInstance source;
+    source.id = QStringLiteral("legacy_source");
+    source.moduleId = QStringLiteral("unknown.source");
+    source.name = QStringLiteral("Legacy source");
+    project.addModule(source);
+
+    ModuleInstance target;
+    target.id = QStringLiteral("legacy_target");
+    target.moduleId = QStringLiteral("unknown.target");
+    target.name = QStringLiteral("Legacy target");
+    project.addModule(target);
+
+    ModuleConnection control;
+    control.fromModuleId = source.id;
+    control.toModuleId = target.id;
+    control.fromPort = QStringLiteral("next");
+    control.toPort = QStringLiteral("control");
+    project.addConnection(control);
+
+    ModuleConnection data;
+    data.fromModuleId = source.id;
+    data.toModuleId = target.id;
+    data.fromPort = QStringLiteral("image");
+    data.toPort = QStringLiteral("image");
+    project.addConnection(data);
+
+    ModuleConnection explicitData = control;
+    explicitData.toPort = QStringLiteral("image");
+    explicitData.edgeType = QStringLiteral("data");
+    project.addConnection(explicitData);
+
+    const QJsonObject projectSnapshot = project.toJson();
+    const QList<ModuleConnection> connections = project.connections();
+    const bool modified = project.isModified();
+
+    FlowCanvas canvas;
+    canvas.loadFromProject(&project);
+
+    QCOMPARE(canvas.m_connections.size(), 3);
+    auto connectionFor = [&canvas](const QString& fromPort, const QString& toPort) {
+        for (FlowConnectionItem* connection : canvas.m_connections) {
+            if (connection->fromPortId() == fromPort && connection->toPortId() == toPort)
+                return connection;
+        }
+        return static_cast<FlowConnectionItem*>(nullptr);
+    };
+    FlowConnectionItem* renderedControl = connectionFor(QStringLiteral("next"), QStringLiteral("control"));
+    QVERIFY(renderedControl != nullptr);
+    QVERIFY(renderedControl->isControlEdge());
+    QCOMPARE(renderedControl->edgeType(), QStringLiteral("control"));
+    QVERIFY(renderedControl->toolTip().endsWith(QStringLiteral("(control)")));
+
+    FlowConnectionItem* renderedData = connectionFor(QStringLiteral("image"), QStringLiteral("image"));
+    QVERIFY(renderedData != nullptr);
+    QVERIFY(!renderedData->isControlEdge());
+    QCOMPARE(renderedData->edgeType(), QStringLiteral("data"));
+
+    FlowConnectionItem* explicitDataEdge = connectionFor(QStringLiteral("next"), QStringLiteral("image"));
+    QVERIFY(explicitDataEdge != nullptr);
+    QCOMPARE(explicitDataEdge->edgeType(), QStringLiteral("data"));
+    QCOMPARE(project.toJson(), projectSnapshot);
+    QCOMPARE(project.connections().size(), connections.size());
+    QCOMPARE(project.connections().first().edgeType, QString());
+    QCOMPARE(project.isModified(), modified);
 }
 
 void TestFlowCanvas::testNodeClickEmitsNodeSelected() {
@@ -485,6 +639,26 @@ void TestFlowCanvas::testPortTooltipUsesCompleteDataTypeName() {
 
     QTest::mouseMove(canvas.viewport(), canvas.mapFromScene(QPointF(10, 10)));
     QTRY_VERIFY(QToolTip::text().isEmpty());
+}
+
+void TestFlowCanvas::testNodePositionQuantizationIsFiniteAndInt32Safe() {
+    QPoint quantized;
+    QVERIFY(FlowCanvas::quantizeNodePosition(QPointF(1.49, -1.49), &quantized));
+    QCOMPARE(quantized, QPoint(1, -1));
+    QVERIFY(FlowCanvas::quantizeNodePosition(QPointF(1.5, -1.5), &quantized));
+    // Keep half-way rounding stable across Qt versions: ties round toward positive infinity.
+    QCOMPARE(quantized, QPoint(2, -1));
+    QVERIFY(FlowCanvas::quantizeNodePosition(
+        QPointF(std::numeric_limits<qint32>::min(), std::numeric_limits<qint32>::max()), &quantized));
+    QCOMPARE(quantized.x(), std::numeric_limits<qint32>::min());
+    QCOMPARE(quantized.y(), std::numeric_limits<qint32>::max());
+    QVERIFY(!FlowCanvas::quantizeNodePosition(
+        QPointF(static_cast<double>(std::numeric_limits<qint32>::min()) - 0.25, 0), &quantized));
+    QVERIFY(!FlowCanvas::quantizeNodePosition(
+        QPointF(static_cast<double>(std::numeric_limits<qint32>::max()) + 0.25, 0), &quantized));
+    QVERIFY(!FlowCanvas::quantizeNodePosition(QPointF(std::numeric_limits<double>::infinity(), 0), &quantized));
+    QVERIFY(!FlowCanvas::quantizeNodePosition(QPointF(0, std::numeric_limits<double>::quiet_NaN()), &quantized));
+    QVERIFY(!FlowCanvas::quantizeNodePosition(QPointF(1, 2), nullptr));
 }
 
 void TestFlowCanvas::testConnectionDragMovesAndClearsCompatibleHighlight() {

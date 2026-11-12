@@ -21,6 +21,7 @@ class DEEPLUX_PLUGIN_API SamPredictPlugin : public ModuleBase {
 public:
     explicit SamPredictPlugin(QObject* parent = nullptr);
     ~SamPredictPlugin() override;
+    using ModuleBase::execute;
 
     QString moduleId() const override {
         return "com.deeplux.plugin.sampredict";
@@ -43,6 +44,7 @@ public:
 
     bool initialize() override;
     void shutdown() override;
+    ExecutionResult execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) override;
     QWidget* createConfigWidget() override {
         return nullptr; // 统一走 metadata/PropertyPanel
     }
@@ -51,6 +53,9 @@ protected:
     bool process(const ImageData& input, ImageData& output) override;
     bool doValidateParams(const QJsonObject& params, QString& error) const override;
     IModule* cloneImpl() const override;
+
+private:
+    QString m_uncertainStage;
 };
 
 } // namespace DeepLux

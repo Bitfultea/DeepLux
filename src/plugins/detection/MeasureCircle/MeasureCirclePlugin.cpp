@@ -286,6 +286,12 @@ bool MeasureCirclePlugin::process(const ImageData& input, ImageData& output) {
     output.setData("circle_diameter", radius * 2.0);
     output.setData("circle_roundness", roundness);
     output.setData("edge_point_count", static_cast<double>(edgePoints.size()));
+    Circle2D circle;
+    circle.centerX = cx;
+    circle.centerY = cy;
+    circle.radius = radius;
+    circle.score = roundness;
+    output.setData("circle", QVariant::fromValue(circle));
     Logger::instance().debug(QString("圆测量: 中心(%1,%2) r=%3 圆度=%4 边缘点=%5")
                                  .arg(cx, 0, 'f', 2)
                                  .arg(cy, 0, 'f', 2)

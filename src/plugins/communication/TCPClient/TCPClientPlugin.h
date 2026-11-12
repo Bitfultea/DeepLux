@@ -2,10 +2,6 @@
 
 #include "core/base/ModuleBase.h"
 
-#include <QEventLoop>
-#include <QTcpSocket>
-#include <QTimer>
-
 namespace DeepLux {
 
 class DEEPLUX_PLUGIN_API TCPClientPlugin : public ModuleBase {
@@ -15,7 +11,6 @@ class DEEPLUX_PLUGIN_API TCPClientPlugin : public ModuleBase {
 
 public:
     explicit TCPClientPlugin(QObject* parent = nullptr);
-    ~TCPClientPlugin() override;
 
     QString moduleId() const override {
         return "com.deeplux.plugin.tcpclient";
@@ -37,6 +32,7 @@ public:
     }
 
     bool initialize() override;
+    ExecutionResult execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) override;
     QWidget* createConfigWidget() override;
 
     /// Number of milliseconds waited during last connect/read
@@ -49,34 +45,10 @@ protected:
     bool doValidateParams(const QJsonObject& params, QString& error) const override;
     IModule* cloneImpl() const override;
 
-private slots:
-    void onConnected();
-    void onDisconnected();
-    void onError(QAbstractSocket::SocketError error);
-    void onReadyRead();
-    void onConnectTimeout();
-    void onReadTimeout();
-
 private:
-    bool connectToServerAsync();
-    void disconnectFromServer();
-    QString readFromServerAsync();
-    bool writeToServer(const QString& data);
-
-    QTcpSocket* m_socket;
-    QTimer* m_timeoutTimer;
-    QEventLoop* m_connectLoop;
-    QEventLoop* m_readLoop;
-    QString m_host;
-    quint16 m_port;
-    int m_timeout;
-    QString m_writeData;
-    QString m_readVariable;
     int m_lastWaitMs = 0;
-
-    // Async read state
-    QByteArray m_readBuffer;
-    bool m_readTimedOut = false;
+    bool m_writeMayHaveOccurred = false;
+    QString m_lastFailureMessage;
 };
 
 } // namespace DeepLux

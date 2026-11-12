@@ -44,6 +44,9 @@ public:
 
     /// 保存 3.0 工程；若目标文件已存在且为旧版本，先生成 .v2.bak 备份。
     static bool saveWithBackup(Project& project, const QString& path);
+#ifdef DEEPLUX_ENABLE_TEST_HOOKS
+    static void failNextBackupAfterBytesForTesting(qint64 bytes);
+#endif
 };
 
 } // namespace DeepLux

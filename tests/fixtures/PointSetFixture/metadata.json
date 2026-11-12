@@ -1,0 +1,15 @@
+{
+  "id": "com.deeplux.test.pointsetfixture",
+  "name": "PointSetFixture",
+  "category": "test",
+  "version": "1.0.0",
+  "author": "DeepLux Tests",
+  "description": "Synthetic PointSet2D output fixture",
+  "ports": {
+    "inputs": [],
+    "outputs": [
+      {"id": "image", "displayName": "Output", "type": "Any", "required": false, "multiple": false},
+      {"id": "fit_points", "displayName": "Points", "type": "PointSet2D", "required": false, "multiple": false}
+    ]
+  }
+}

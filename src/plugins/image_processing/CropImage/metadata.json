@@ -9,12 +9,19 @@
         "parameters": {
             "rectangles": {
                 "order": 10,
-                "label": "矩形数组 [[cx,cy,l1,l2,deg],...]（l1/l2 半长）"
+                "label": "矩形数组 [[cx,cy,l1,l2,deg],...]（当前输入图像局部像素中心；l1/l2 为像素半长；deg 为度）",
+                "minItems": 1,
+                "maxItems": 64,
+                "items": {"type": "array", "minItems": 5, "maxItems": 5, "items": {"type": "number"}}
             },
             "outputFirstAsImage": {
                 "order": 20,
                 "label": "输出首裁剪图"
             }
+        },
+        "results": {
+            "crop_count": {"label": "有效裁剪数", "type": "number", "order": 10},
+            "crop_images": {"label": "裁剪图组", "type": "array", "order": 20}
         }
     },
     "execution": {

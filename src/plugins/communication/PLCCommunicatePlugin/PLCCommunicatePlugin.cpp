@@ -2,27 +2,21 @@
 
 #include "core/common/Logger.h"
 
+#include <QElapsedTimer>
 #include <QFormLayout>
 #include <QLineEdit>
 #include <QSpinBox>
+#include <QThread>
 #include <QVBoxLayout>
 
 namespace DeepLux {
 
-PLCCommunicatePlugin::PLCCommunicatePlugin(QObject* parent)
-    : ModuleBase(parent), m_socket(new QTcpSocket(this)), m_connectLoop(nullptr), m_readLoop(nullptr) {
+PLCCommunicatePlugin::PLCCommunicatePlugin(QObject* parent) : ModuleBase(parent) {
     m_defaultParams = QJsonObject{{"ipAddress", "192.168.1.100"}, {"port", 502}, {"timeout", 3000}};
     m_params = m_defaultParams;
-
-    connect(m_socket, &QTcpSocket::connected, this, &PLCCommunicatePlugin::onConnected);
-    connect(m_socket, &QTcpSocket::disconnected, this, &PLCCommunicatePlugin::onDisconnected);
-    connect(m_socket, &QTcpSocket::errorOccurred, this, &PLCCommunicatePlugin::onError);
-    connect(m_socket, &QTcpSocket::readyRead, this, &PLCCommunicatePlugin::onReadyRead);
 }
 
-PLCCommunicatePlugin::~PLCCommunicatePlugin() {
-    disconnectFromHost();
-}
+PLCCommunicatePlugin::~PLCCommunicatePlugin() = default;
 
 bool PLCCommunicatePlugin::initialize() {
     if (!ModuleBase::initialize()) {
@@ -32,83 +26,26 @@ bool PLCCommunicatePlugin::initialize() {
     return true;
 }
 
-void PLCCommunicatePlugin::onConnected() {
-    Logger::instance().debug("PLCCommunicate: Connected to PLC", "Communication");
-    if (m_connectLoop) {
-        m_connectLoop->quit();
-    }
-}
-
-void PLCCommunicatePlugin::onDisconnected() {
-    Logger::instance().debug("PLCCommunicate: Disconnected from PLC", "Communication");
-}
-
-void PLCCommunicatePlugin::onError(QAbstractSocket::SocketError error) {
-    Q_UNUSED(error);
-    emit errorOccurred(tr("PLC通信错误: %1").arg(m_socket->errorString()));
-    if (m_connectLoop && m_connectLoop->isRunning()) {
-        m_connectLoop->quit();
-    }
-    if (m_readLoop && m_readLoop->isRunning()) {
-        m_readLoop->quit();
-    }
-}
-
-void PLCCommunicatePlugin::onReadyRead() {
-    m_readBuffer += m_socket->readAll();
-    if (m_readLoop) {
-        m_readLoop->quit();
-    }
-}
-
-void PLCCommunicatePlugin::onConnectTimeout() {
-    if (m_socket->state() != QAbstractSocket::ConnectedState) {
-        m_socket->abort();
-        emit errorOccurred(tr("连接PLC %1:%2 超时").arg(m_host).arg(m_port));
-    }
-    if (m_connectLoop) {
-        m_connectLoop->quit();
-    }
-}
-
-void PLCCommunicatePlugin::onReadTimeout() {
-    m_readTimedOut = true;
-    m_socket->disconnectFromHost();
-    if (m_readLoop) {
-        m_readLoop->quit();
-    }
-}
-
-bool PLCCommunicatePlugin::connectToHost() {
-    if (m_socket->state() == QAbstractSocket::ConnectedState) {
-        m_socket->disconnectFromHost();
-        m_socket->waitForDisconnected(100);
-    }
-
-    m_socket->connectToHost(m_host, m_port);
-
-    QEventLoop loop;
-    m_connectLoop = &loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    timer.start(m_timeout);
-    connect(&timer, &QTimer::timeout, this, &PLCCommunicatePlugin::onConnectTimeout);
-
-    loop.exec();
-    m_connectLoop = nullptr;
-    m_lastWaitMs = m_timeout - timer.remainingTime();
-
-    if (m_socket->state() != QAbstractSocket::ConnectedState) {
+bool PLCCommunicatePlugin::connectToHost(QTcpSocket& socket, const QString& host, quint16 port, int timeoutMs) {
+    Q_ASSERT(socket.thread() == QThread::currentThread());
+    QElapsedTimer timer;
+    timer.start();
+    socket.connectToHost(host, port);
+    if (socket.state() != QAbstractSocket::ConnectedState && !socket.waitForConnected(timeoutMs)) {
+        m_lastWaitMs = static_cast<int>(timer.elapsed());
+        emit errorOccurred(tr("连接PLC %1:%2 失败: %3").arg(host).arg(port).arg(socket.errorString()));
+        socket.abort();
         return false;
     }
-
+    m_lastWaitMs = static_cast<int>(timer.elapsed());
+    Logger::instance().debug("PLCCommunicate: Connected to PLC", "Communication");
     return true;
 }
 
-void PLCCommunicatePlugin::disconnectFromHost() {
-    if (m_socket->state() == QAbstractSocket::ConnectedState || m_socket->state() == QAbstractSocket::ConnectingState) {
-        m_socket->abort();
-    }
+void PLCCommunicatePlugin::disconnectFromHost(QTcpSocket& socket) {
+    Q_ASSERT(socket.thread() == QThread::currentThread());
+    if (socket.state() == QAbstractSocket::ConnectedState || socket.state() == QAbstractSocket::ConnectingState)
+        socket.abort();
 }
 
 QByteArray PLCCommunicatePlugin::buildReadRequest(quint16 transactionId, quint8 unitId, quint16 startAddress,
@@ -143,7 +80,7 @@ bool PLCCommunicatePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
     m_host = m_params["ipAddress"].toString();
-    m_port = m_params["port"].toInt(502);
+    m_port = static_cast<quint16>(m_params["port"].toInt(502));
     m_timeout = m_params["timeout"].toInt(3000);
 
     if (m_host.isEmpty()) {
@@ -151,37 +88,37 @@ bool PLCCommunicatePlugin::process(const ImageData& input, ImageData& output) {
         return false;
     }
 
-    if (!connectToHost()) {
+    QTcpSocket socket;
+    Q_ASSERT_X(socket.thread() == QThread::currentThread(), "PLCCommunicatePlugin::process",
+               "PLC communication socket must be created in its execution thread");
+    if (!connectToHost(socket, m_host, m_port, m_timeout)) {
         output.setData("plc_connected", false);
         return false;
     }
 
     // Send a minimal read request to verify Modbus communication
     QByteArray request = buildReadRequest(++m_transactionId, 1, 0, 1);
-    qint64 written = m_socket->write(request);
-    m_socket->flush();
+    qint64 written = socket.write(request);
+    const bool flushed = socket.flush();
 
     bool commOk = false;
-    if (written == request.size()) {
-        m_readBuffer.clear();
-        m_readTimedOut = false;
-
-        QEventLoop loop;
-        m_readLoop = &loop;
-        QTimer timer;
-        timer.setSingleShot(true);
-        timer.start(m_timeout);
-        connect(&timer, &QTimer::timeout, this, &PLCCommunicatePlugin::onReadTimeout);
-
-        loop.exec();
-        m_readLoop = nullptr;
-
-        if (!m_readTimedOut && parseReadResponse(m_readBuffer)) {
-            commOk = true;
+    if (written == request.size() && flushed) {
+        QByteArray readBuffer;
+        QElapsedTimer readTimer;
+        readTimer.start();
+        while (readTimer.elapsed() < m_timeout) {
+            readBuffer += socket.readAll();
+            if (parseReadResponse(readBuffer)) {
+                commOk = true;
+                break;
+            }
+            const int remaining = qMax(1, m_timeout - static_cast<int>(readTimer.elapsed()));
+            if (!socket.waitForReadyRead(remaining))
+                break;
         }
     }
 
-    disconnectFromHost();
+    disconnectFromHost(socket);
 
     output.setData("plc_connected", commOk);
     output.setData("plc_response_time_ms", m_lastWaitMs);
