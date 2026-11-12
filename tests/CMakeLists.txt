@@ -108,6 +108,49 @@ set(TEST_SOURCES
     test_finalplugins.cpp
 )
 
+set(DEEPLUX_ABI_FIXTURE_DIR "${CMAKE_CURRENT_BINARY_DIR}/abi-fixtures")
+add_library(AbiDependency SHARED plugins/abi/AbiDependencyExports.cpp)
+add_library(AbiWrongVersionPlugin SHARED
+    plugins/abi/AbiFixturePlugin.cpp
+    plugins/abi/AbiFixturePlugin.h
+    plugins/abi/AbiWrongVersionExports.cpp
+    plugins/abi/metadata.json)
+add_library(AbiWrongFingerprintPlugin SHARED
+    plugins/abi/AbiFixturePlugin.cpp
+    plugins/abi/AbiFixturePlugin.h
+    plugins/abi/AbiWrongFingerprintExports.cpp
+    plugins/abi/metadata.json)
+add_library(AbiLegacyPlugin SHARED
+    plugins/abi/AbiFixturePlugin.cpp
+    plugins/abi/AbiFixturePlugin.h
+    plugins/abi/metadata.json)
+add_library(AbiDependencyPlugin SHARED
+    plugins/abi/AbiFixturePlugin.cpp
+    plugins/abi/AbiDependencyAnchor.cpp
+    plugins/abi/AbiFixturePlugin.h
+    plugins/abi/metadata.json)
+
+foreach(_target AbiDependency AbiWrongVersionPlugin AbiWrongFingerprintPlugin AbiLegacyPlugin AbiDependencyPlugin)
+    target_include_directories(${_target} PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/src/core")
+    set_target_properties(${_target} PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${DEEPLUX_ABI_FIXTURE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${DEEPLUX_ABI_FIXTURE_DIR}")
+endforeach()
+target_compile_definitions(AbiWrongVersionPlugin PRIVATE DEEPLUX_PLUGIN_EXPORTS)
+target_compile_definitions(AbiWrongFingerprintPlugin PRIVATE DEEPLUX_PLUGIN_EXPORTS)
+target_compile_definitions(AbiLegacyPlugin PRIVATE DEEPLUX_PLUGIN_EXPORTS)
+target_compile_definitions(AbiDependencyPlugin PRIVATE DEEPLUX_PLUGIN_EXPORTS)
+target_link_libraries(AbiDependency PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Core)
+target_link_libraries(AbiWrongVersionPlugin PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets)
+target_link_libraries(AbiWrongFingerprintPlugin PRIVATE
+    deeplux_core Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets)
+target_link_libraries(AbiLegacyPlugin PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets)
+target_link_libraries(AbiDependencyPlugin PRIVATE
+    AbiDependency deeplux_core Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets)
+if(WIN32)
+    target_sources(AbiDependencyPlugin PRIVATE plugins/abi/AbiDependencyForwarders.def)
+endif()
+
 # ========== 插件路径清单 ==========
 # 顶层 CMake 在测试之前收集了所有插件 target 及其 metadata.json。
 # 这里展开为一条编译期清单：<target>|<dll-or-so>|<metadata>@@...
@@ -182,9 +225,16 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
     if(TEST_NAME STREQUAL "test_pluginmanager")
         add_dependencies(${TEST_NAME} MeasurementInputPlugin)
+        add_dependencies(${TEST_NAME} AbiWrongVersionPlugin AbiWrongFingerprintPlugin AbiLegacyPlugin
+            AbiDependencyPlugin)
         target_compile_definitions(${TEST_NAME} PRIVATE
             TEST_PLUGINMANAGER_LIB="$<TARGET_FILE:MeasurementInputPlugin>"
-            TEST_PLUGINMANAGER_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json")
+            TEST_PLUGINMANAGER_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json"
+            TEST_ABI_WRONG_VERSION_PLUGIN="$<TARGET_FILE:AbiWrongVersionPlugin>"
+            TEST_ABI_WRONG_FINGERPRINT_PLUGIN="$<TARGET_FILE:AbiWrongFingerprintPlugin>"
+            TEST_ABI_LEGACY_PLUGIN="$<TARGET_FILE:AbiLegacyPlugin>"
+            TEST_ABI_DEPENDENCY_PLUGIN="$<TARGET_FILE:AbiDependencyPlugin>"
+            TEST_ABI_DEPENDENCY_LIB="$<TARGET_FILE:AbiDependency>")
         if(UNIX AND NOT APPLE)
             add_dependencies(${TEST_NAME} V4L2CameraPlugin)
             target_compile_definitions(${TEST_NAME} PRIVATE

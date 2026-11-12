@@ -360,10 +360,10 @@ list(LENGTH packaged_plugin_dirs _deeplux_packaged_count)
 
 # 接口版本：从 IModule.h 的 constexpr 提取，避免与 C++ 定义漂移。
 set(_deeplux_abi_interface_version "0")
-file(STRINGS "${CMAKE_SOURCE_DIR}/src/core/interface/IModule.h" _imod_ver_line
-    REGEX "DEEPLUX_MODULE_INTERFACE_VERSION[ \t]*=[ \t]*[0-9]+")
+file(STRINGS "${CMAKE_SOURCE_DIR}/src/core/interface/PluginAbi.h" _imod_ver_line
+    REGEX "^#define DEEPLUX_MODULE_INTERFACE_VERSION [0-9]+$")
 if(_imod_ver_line)
-    string(REGEX MATCH "[0-9]+" _deeplux_abi_interface_version "${_imod_ver_line}")
+    string(REGEX MATCH "[0-9]+$" _deeplux_abi_interface_version "${_imod_ver_line}")
 endif()
 
 # 分域计数

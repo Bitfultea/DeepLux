@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../platform/Platform.h"
+#include "PluginAbi.h"
 #include "core/deeplux/ControlFlowType.h"
 #include "core/deeplux/DataContract.h"
 
@@ -21,8 +22,6 @@ class ImageData;
  * 当 IModule 接口发生变化（新增/修改/删除虚函数）时，必须递增此版本号，
  * 并重新编译所有插件，否则旧插件的虚表将与主程序不匹配，导致调用错位。
  */
-constexpr int DEEPLUX_MODULE_INTERFACE_VERSION = 2;
-
 /**
  * @brief 模块状态枚举
  */
@@ -105,4 +104,4 @@ signals:
 
 } // namespace DeepLux
 
-Q_DECLARE_INTERFACE(DeepLux::IModule, "com.deeplux.IModule/2.0")
+Q_DECLARE_INTERFACE(DeepLux::IModule, DEEPLUX_MODULE_INTERFACE_IID)

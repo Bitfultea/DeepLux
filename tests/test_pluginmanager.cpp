@@ -3,6 +3,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLibrary>
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
 #include <core/base/ModuleBase.h>
@@ -31,9 +32,80 @@ private slots:
     void testExecutionAffinityUnknownFallsBackToGui();
     void testBrokenUserPluginFallsBackToBundle();
     void testNonCameraUserPluginFallsBackToBundledCamera();
+    void testRejectsPluginWithWrongAbiExportBeforeInstance();
+    void testRejectsPluginWithWrongAbiFingerprintBeforeInstance();
+    void testRejectsLegacyPluginWithoutAbiExport();
+    void testRejectsAbiExportsOwnedByDependency();
 
 private:
 };
+
+namespace {
+
+class ScopedEnvironmentVariable {
+public:
+    ScopedEnvironmentVariable(const QByteArray& name, const QByteArray& value)
+        : m_name(name), m_previous(qgetenv(name.constData())), m_wasSet(qEnvironmentVariableIsSet(name.constData())) {
+        qputenv(m_name.constData(), value);
+    }
+
+    ~ScopedEnvironmentVariable() {
+        if (m_wasSet) {
+            qputenv(m_name.constData(), m_previous);
+        } else {
+            qunsetenv(m_name.constData());
+        }
+    }
+
+private:
+    QByteArray m_name;
+    QByteArray m_previous;
+    bool m_wasSet;
+};
+
+QString installAbiFixture(QTemporaryDir& root, const QString& name, const QString& sourceLibrary) {
+    const QString pluginDir = root.filePath(name);
+    if (!QDir().mkpath(pluginDir)) {
+        return {};
+    }
+
+    QFile metadata(QDir(pluginDir).filePath(QStringLiteral("metadata.json")));
+    if (!metadata.open(QIODevice::WriteOnly)) {
+        return {};
+    }
+    QJsonObject json;
+    json.insert(QStringLiteral("id"), QStringLiteral("com.deeplux.test.") + name.toLower());
+    json.insert(QStringLiteral("name"), name);
+    json.insert(QStringLiteral("version"), QStringLiteral("1.0.0"));
+    json.insert(QStringLiteral("category"), QStringLiteral("test"));
+    json.insert(QStringLiteral("ports"),
+                QJsonObject{{QStringLiteral("inputs"), QJsonArray{}}, {QStringLiteral("outputs"), QJsonArray{}}});
+    const QByteArray metadataBytes = QJsonDocument(json).toJson(QJsonDocument::Compact);
+    if (metadata.write(metadataBytes) != metadataBytes.size()) {
+        return {};
+    }
+    metadata.close();
+
+    const QString installedLibrary = QDir(pluginDir).filePath(QFileInfo(sourceLibrary).fileName());
+    if (!QFile::copy(sourceLibrary, installedLibrary)) {
+        return {};
+    }
+    return installedLibrary;
+}
+
+QString loadFailure(PluginManager& manager, const QString& name) {
+    QSignalSpy failed(&manager, &PluginManager::pluginLoadFailed);
+    if (manager.loadPlugin(name)) {
+        manager.unloadPlugin(name);
+        return QStringLiteral("unexpectedly loaded");
+    }
+    if (failed.size() != 1) {
+        return QStringLiteral("pluginLoadFailed signal count: %1").arg(failed.size());
+    }
+    return failed.first().at(1).toString();
+}
+
+} // namespace
 
 void TestPluginManager::initTestCase() {
     qDebug() << "=== TestPluginManager Start ===";
@@ -361,6 +433,89 @@ void TestPluginManager::testNonCameraUserPluginFallsBackToBundledCamera() {
     QVERIFY(manager.availableCameras().contains("PackagingCameraFallback"));
     manager.unloadPlugin("PackagingCameraFallback");
 #endif
+}
+
+void TestPluginManager::testRejectsPluginWithWrongAbiExportBeforeInstance() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString installed =
+        installAbiFixture(root, QStringLiteral("AbiWrongVersion"), QStringLiteral(TEST_ABI_WRONG_VERSION_PLUGIN));
+    QVERIFY(!installed.isEmpty());
+    const QString marker = root.filePath(QStringLiteral("instance-marker"));
+    ScopedEnvironmentVariable markerEnv("DEEPLUX_ABI_FIXTURE_INSTANCE_MARKER", marker.toLocal8Bit());
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+    const QString error = loadFailure(manager, QStringLiteral("AbiWrongVersion"));
+    QVERIFY2(error.contains(QStringLiteral("abi_version_mismatch")), qPrintable(error));
+    QVERIFY2(error.contains(installed), qPrintable(error));
+    QVERIFY2(!QFile::exists(marker), "ABI rejection must precede plugin instance construction");
+}
+
+void TestPluginManager::testRejectsLegacyPluginWithoutAbiExport() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString installed =
+        installAbiFixture(root, QStringLiteral("AbiLegacy"), QStringLiteral(TEST_ABI_LEGACY_PLUGIN));
+    QVERIFY(!installed.isEmpty());
+    const QString marker = root.filePath(QStringLiteral("instance-marker"));
+    ScopedEnvironmentVariable markerEnv("DEEPLUX_ABI_FIXTURE_INSTANCE_MARKER", marker.toLocal8Bit());
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+    const QString error = loadFailure(manager, QStringLiteral("AbiLegacy"));
+    QVERIFY2(error.contains(QStringLiteral("missing_abi_export")), qPrintable(error));
+    QVERIFY2(error.contains(installed), qPrintable(error));
+    QVERIFY2(!QFile::exists(marker), "ABI rejection must precede plugin instance construction");
+}
+
+void TestPluginManager::testRejectsPluginWithWrongAbiFingerprintBeforeInstance() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString installed = installAbiFixture(root, QStringLiteral("AbiWrongFingerprint"),
+                                                QStringLiteral(TEST_ABI_WRONG_FINGERPRINT_PLUGIN));
+    QVERIFY(!installed.isEmpty());
+    const QString marker = root.filePath(QStringLiteral("instance-marker"));
+    ScopedEnvironmentVariable markerEnv("DEEPLUX_ABI_FIXTURE_INSTANCE_MARKER", marker.toLocal8Bit());
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+    const QString error = loadFailure(manager, QStringLiteral("AbiWrongFingerprint"));
+    QVERIFY2(error.contains(QStringLiteral("abi_fingerprint_mismatch")), qPrintable(error));
+    QVERIFY2(error.contains(installed), qPrintable(error));
+    QVERIFY2(!QFile::exists(marker), "ABI rejection must precede plugin instance construction");
+}
+
+void TestPluginManager::testRejectsAbiExportsOwnedByDependency() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QLibrary dependency(QStringLiteral(TEST_ABI_DEPENDENCY_LIB));
+    QVERIFY2(dependency.load(), qPrintable(dependency.errorString()));
+    const QString installed =
+        installAbiFixture(root, QStringLiteral("AbiDependency"), QStringLiteral(TEST_ABI_DEPENDENCY_PLUGIN));
+    QVERIFY(!installed.isEmpty());
+    QLibrary plugin(installed);
+    QVERIFY2(plugin.load(), qPrintable(plugin.errorString()));
+    QVERIFY(plugin.resolve("deeplux_plugin_abi_version"));
+    QVERIFY(plugin.resolve("deeplux_plugin_abi_fingerprint"));
+    QVERIFY(plugin.unload());
+    const QString marker = root.filePath(QStringLiteral("instance-marker"));
+    ScopedEnvironmentVariable markerEnv("DEEPLUX_ABI_FIXTURE_INSTANCE_MARKER", marker.toLocal8Bit());
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+    const QString error = loadFailure(manager, QStringLiteral("AbiDependency"));
+    QVERIFY2(error.contains(QStringLiteral("abi_symbol_not_owned")), qPrintable(error));
+    QVERIFY2(error.contains(installed), qPrintable(error));
+    QVERIFY2(!QFile::exists(marker), "ABI rejection must precede plugin instance construction");
 }
 
 QTEST_MAIN(TestPluginManager)

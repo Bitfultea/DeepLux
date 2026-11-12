@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../platform/Platform.h"
+#include "PluginAbi.h"
 
 #include <QList>
 #include <QObject>
@@ -62,4 +63,4 @@ signals:
 
 } // namespace DeepLux
 
-Q_DECLARE_INTERFACE(DeepLux::ICameraPlugin, "com.deeplux.ICameraPlugin/1.0")
+Q_DECLARE_INTERFACE(DeepLux::ICameraPlugin, DEEPLUX_CAMERA_PLUGIN_INTERFACE_IID)
