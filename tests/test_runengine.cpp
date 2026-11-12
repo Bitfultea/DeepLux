@@ -77,6 +77,31 @@ protected:
     }
 };
 
+class ParallelDispatchCounterModule : public ModuleBase {
+    Q_OBJECT
+
+public:
+    ParallelDispatchCounterModule(const QString& name, std::atomic<int>& calls) : m_calls(calls) {
+        m_moduleId = QStringLiteral("com.deeplux.test.parallel-counter.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        m_calls.fetch_add(1, std::memory_order_relaxed);
+        output = input;
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    std::atomic<int>& m_calls;
+};
+
 class StopAwareModule : public ModuleBase {
     Q_OBJECT
 
@@ -801,6 +826,7 @@ private slots:
     void initTestCase();
     void cleanupTestCase();
     void testParallelExecutesConcurrently();
+    void testExecuteParallelRejectsDuplicateModuleInBatch();
     void testParallelFailureCancelsGroup();
     // 阶段 6 并发收口定向测试
     void testParallelSignalsDeliveredOnReceiverThread();
@@ -1729,6 +1755,33 @@ void TestRunEngine::testParallelExecutesConcurrently() {
              qPrintable(QString("max concurrency=%1, expected >1").arg(engine.lastParallelMaxConcurrency())));
 
     engine.clearModules();
+}
+
+void TestRunEngine::testExecuteParallelRejectsDuplicateModuleInBatch() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    const int previousThreadCount = engine.parallelThreadCount();
+    std::atomic<int> processCalls{0};
+    auto module = std::make_unique<ParallelDispatchCounterModule>(QStringLiteral("duplicate"), processCalls);
+    struct ClearModulesOnExit {
+        RunEngine& engine;
+        int previousThreadCount;
+        ~ClearModulesOnExit() {
+            engine.clearModules();
+            engine.setParallelThreadCount(previousThreadCount);
+        }
+    } clearOnExit{engine, previousThreadCount};
+    engine.setParallelThreadCount(1);
+
+    QVERIFY(module->initialize());
+    engine.addModule(module.get());
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("duplicate"), ExecutionAffinity::Worker);
+
+    const ExecutionResult result =
+        engine.executeParallel(QStringList{QStringLiteral("duplicate"), QStringLiteral("duplicate")}, {});
+    QVERIFY2(!result.success, "the same module instance must not be dispatched twice in one parallel batch");
+    QVERIFY2(result.diagnostics.contains(QStringLiteral("duplicate_module_in_batch")), qPrintable(result.diagnostics));
+    QCOMPARE(processCalls.load(std::memory_order_relaxed), 0);
 }
 
 void TestRunEngine::testParallelFailureCancelsGroup() {
