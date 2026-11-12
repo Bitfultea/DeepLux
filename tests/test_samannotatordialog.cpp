@@ -3583,7 +3583,7 @@ void TestSamAnnotatorDialog::agentOpenSessionCancelsOldPredictionAndPinsNewImage
                 qunsetenv("DEEPLUX_SAM_MODEL");
         }
     } environmentRestore{previousServerPython, hadServerPython, previousSamModel, hadSamModel};
-    qputenv("SAM_SERVER_PYTHON", QByteArray("/bin/true"));
+    qputenv("SAM_SERVER_PYTHON", QCoreApplication::applicationFilePath().toLocal8Bit());
     qputenv("DEEPLUX_SAM_MODEL", modelPath.toLocal8Bit());
 
     AnnotationSession openedSession;
@@ -3719,7 +3719,7 @@ void TestSamAnnotatorDialog::agentOpenSessionReplacesCancelledEmbeddingRetry() {
                 qunsetenv("DEEPLUX_SAM_MODEL");
         }
     } environmentRestore{oldServerPython, hadServerPython, oldSamModel, hadSamModel};
-    qputenv("SAM_SERVER_PYTHON", QByteArray("/bin/true"));
+    qputenv("SAM_SERVER_PYTHON", QCoreApplication::applicationFilePath().toLocal8Bit());
     qputenv("DEEPLUX_SAM_MODEL", modelPath.toLocal8Bit());
 
     server.delayMs.remove(QStringLiteral("/set_image"));
