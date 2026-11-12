@@ -2784,14 +2784,13 @@ private slots:
             }
         }
         const bool restartAfterRelease = service.startSingle();
-        QVERIFY2(restartAfterRelease,
-                 "the service must be usable again after the first shutdown completes "
-                 "(the exclusive shutdown guard must be released by its owner)");
+        QVERIFY2(restartAfterRelease, "the service must be usable again after the first shutdown completes "
+                                      "(the exclusive shutdown guard must be released by its owner)");
 
         qInfo("[P1-SHUTDOWN-OWNER] rounds=%d windowsEntered=%d secondShutdownOk=%d restartAccepted=%d "
               "runsDuringGuard=%d firstShutdownOkRounds=%d",
-              kRounds, windowsEntered.load(), secondShutdownOk.load(), restartAccepted.load(),
-              runsDuringGuard.load(), firstShutdownOkRounds.load());
+              kRounds, windowsEntered.load(), secondShutdownOk.load(), restartAccepted.load(), runsDuringGuard.load(),
+              firstShutdownOkRounds.load());
 
         QVERIFY2(windowsEntered.load() >= 1,
                  qPrintable(QStringLiteral("the case must catch the first shutdown inside its close section "
@@ -2820,7 +2819,6 @@ private slots:
 
         guard.finish();
     }
-
 };
 
 QTEST_MAIN(TestFlowExecutionService)
