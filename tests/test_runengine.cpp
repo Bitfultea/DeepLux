@@ -386,6 +386,27 @@ private:
     bool m_emitSyntheticImage = false;
 };
 
+class SecondRunGateModule : public RunIdRecordingModule {
+public:
+    SecondRunGateModule(const QString& name, QMutex* mutex, QStringList* sink, QSemaphore* secondRunEntered,
+                        QSemaphore* releaseSecondRun)
+        : RunIdRecordingModule(name, mutex, sink), m_secondRunEntered(secondRunEntered),
+          m_releaseSecondRun(releaseSecondRun) {}
+
+    ExecutionResult execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) override {
+        if (m_calls.fetch_add(1, std::memory_order_relaxed) == 1) {
+            m_secondRunEntered->release();
+            m_releaseSecondRun->acquire();
+        }
+        return RunIdRecordingModule::execute(inputs, outputs, context);
+    }
+
+private:
+    QSemaphore* m_secondRunEntered;
+    QSemaphore* m_releaseSecondRun;
+    std::atomic<int> m_calls{0};
+};
+
 // 阶6 五轮：确定性同步门模块——进入 process 时释放 entered 信号量，随后阻塞在
 // release 信号量上（可被取消令牌打断），用于把"模块已进入执行"变成真实同步点。
 class GateModule : public ModuleBase {
@@ -808,6 +829,7 @@ private slots:
     void testExecuteParallelPrimitiveStableRunId();
     // T2.9（2026-11-10 评审裁定）：串行路径的 runId 与发布帧同源（预防性加固守门）。
     void testSerialRunIdMatchesPublishedFrameRunId();
+    void testFinalDisplayFrameKeepsCompletedRunIdWhenNextRunStarts();
     void testParallelStressFiftyRunsNoPollution();
     // 阶段 6 复核（三轮）并发生命周期回归
     void testConcurrentStopDuringRunKeepsStoppedState();
@@ -6023,15 +6045,9 @@ void TestRunEngine::testLegacyFixturesFreezeEngineBehavior() {
 
 // ==== T2.9（2026-11-10 评审裁定）：runId 跨线程快照，预防性加固 ====
 //
-// 静态排查结论（先说清性质，避免被误读成缺陷复现）：**未发现真实竞态**。
-//   - m_runId 唯一写入点是 tryBeginForRun()（RunEngine.cpp:654）；
-//   - 两处读取（executeModule 的 execCtx.runId、publishDisplayFrame 的 frame.runId）
-//     都在串行执行路径上；
-//   - 真正的池线程路径 executeBatchParallel 早已按值快照 batchRunId，池任务内不读 m_runId。
-//
-// 本次加固只是把「成员字符串须在调用线程快照后使用」这条已有边界从池路径推广到
-// 全部路径（publishDisplayFrame 改为接收 runId 参数，不再自行读 m_runId），
-// 防止后续重构把读取带回池线程。
+// T2.9 的早期静态排查没有发现串行入口的真实竞态；后续时序探针证明，执行租约释放后、
+// 最终帧发布前启动下一轮时，旧发布路径会与新一轮写 m_runId 并发。修复应在释放租约前
+// 快照身份，并让最终帧发布只使用该快照；并行池任务仍使用既有 batchRunId 值拷贝。
 //
 // 本用例守的是加固后的不变式：**模块执行期看到的 runId 必须与最终发布帧的 runId 同源**。
 // 若将来有人在 executeModule 内改用别处的值、或让发布帧重新读成员而与执行期脱节，
@@ -6133,6 +6149,129 @@ void TestRunEngine::testSerialRunIdMatchesPublishedFrameRunId() {
 
     engine.setDisplayCaptureEnabled(false);
     engine.clearModules();
+}
+
+void TestRunEngine::testFinalDisplayFrameKeepsCompletedRunIdWhenNextRunStarts() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(1);
+    engine.setDisplayCaptureEnabled(true);
+
+    QSemaphore firstFinalPublishEntered;
+    QSemaphore releaseFirstFinalPublish;
+    QSemaphore secondRunModuleEntered;
+    QSemaphore releaseSecondRunModule;
+    std::atomic<int> finalPublishCalls{0};
+    engine.setBeforeFinalDisplayFrameHookForTest([&] {
+        if (finalPublishCalls.fetch_add(1, std::memory_order_relaxed) == 0) {
+            firstFinalPublishEntered.release();
+            releaseFirstFinalPublish.acquire();
+        }
+    });
+
+    QMutex recordsMutex;
+    QStringList moduleRunIds;
+    QMutex publishedMutex;
+    QStringList publishedRunIds;
+    std::atomic<bool> firstRunFinished{false};
+    const QMetaObject::Connection frameConnection = connect(
+        &engine, &RunEngine::displayFrameReady, &engine,
+        [&](const QString&, quint64, const QString& runId) {
+            QMutexLocker locker(&publishedMutex);
+            publishedRunIds.append(runId);
+        },
+        Qt::DirectConnection);
+
+    std::thread firstRun;
+    struct Cleanup {
+        RunEngine& engine;
+        QSemaphore& releaseFirstFinalPublish;
+        QSemaphore& releaseSecondRunModule;
+        std::thread& firstRun;
+        std::atomic<bool>& firstRunFinished;
+        QMetaObject::Connection frameConnection;
+
+        ~Cleanup() {
+            engine.clearBeforeFinalDisplayFrameHookForTest();
+            releaseFirstFinalPublish.release();
+            releaseSecondRunModule.release();
+            engine.stop();
+            QElapsedTimer cleanupTimer;
+            cleanupTimer.start();
+            while ((firstRun.joinable() && !firstRunFinished.load(std::memory_order_acquire)) || engine.isBusy()) {
+                engine.stop();
+                if (cleanupTimer.elapsed() >= 60000) {
+                    qCritical("T2.9 regression cleanup: execution did not quiesce within 60s; "
+                              "terminating rather than unwinding captured test state");
+                    std::abort();
+                }
+                QThread::msleep(5);
+            }
+            if (firstRun.joinable()) {
+                firstRun.join();
+            }
+            QObject::disconnect(frameConnection);
+            engine.setDisplayCaptureEnabled(false);
+            engine.clearModules();
+        }
+    } cleanup{engine, releaseFirstFinalPublish, releaseSecondRunModule, firstRun, firstRunFinished, frameConnection};
+
+    Project project;
+    buildParallelBatchProject(project, 1);
+    QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& instance) -> ModuleBase* {
+        if (instance.id == QLatin1String("par0")) {
+            auto* module = new SecondRunGateModule(instance.id, &recordsMutex, &moduleRunIds, &secondRunModuleEntered,
+                                                   &releaseSecondRunModule);
+            module->enableSyntheticImage(true);
+            return module;
+        }
+        auto* module = new RunIdRecordingModule(instance.id, &recordsMutex, &moduleRunIds);
+        module->enableSyntheticImage(true);
+        return module;
+    }));
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("entry"), ExecutionAffinity::Worker);
+    markWorkerAffinity(1);
+
+    firstRun = std::thread([&] {
+        engine.runOnce();
+        firstRunFinished.store(true, std::memory_order_release);
+    });
+    QVERIFY(firstFinalPublishEntered.tryAcquire(1, 5000));
+    QVERIFY(!engine.isBusy());
+
+    QString expectedFirstRunId;
+    {
+        QMutexLocker locker(&recordsMutex);
+        QVERIFY(!moduleRunIds.isEmpty());
+        expectedFirstRunId = moduleRunIds.first();
+    }
+
+    QVERIFY(engine.runOnceAsync());
+    QVERIFY(secondRunModuleEntered.tryAcquire(1, 5000));
+
+    int frameCountBeforeFirstPublish;
+    {
+        QMutexLocker locker(&publishedMutex);
+        frameCountBeforeFirstPublish = publishedRunIds.size();
+    }
+    releaseFirstFinalPublish.release();
+
+    auto publishedFrameCount = [&] {
+        QMutexLocker locker(&publishedMutex);
+        return publishedRunIds.size();
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(publishedFrameCount() > frameCountBeforeFirstPublish, 5000);
+
+    QString actualFirstFinalRunId;
+    {
+        QMutexLocker locker(&publishedMutex);
+        actualFirstFinalRunId = publishedRunIds.at(frameCountBeforeFirstPublish);
+    }
+    QCOMPARE(actualFirstFinalRunId, expectedFirstRunId);
+
+    releaseSecondRunModule.release();
+    QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
+    firstRun.join();
 }
 
 QTEST_MAIN(TestRunEngine)
