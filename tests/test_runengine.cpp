@@ -1780,7 +1780,9 @@ void TestRunEngine::testExecuteParallelRejectsDuplicateModuleInBatch() {
     const ExecutionResult result =
         engine.executeParallel(QStringList{QStringLiteral("duplicate"), QStringLiteral("duplicate")}, {});
     QVERIFY2(!result.success, "the same module instance must not be dispatched twice in one parallel batch");
+    QCOMPARE(result.errorCode, ExecError::DuplicateModuleInBatch);
     QVERIFY2(result.diagnostics.contains(QStringLiteral("duplicate_module_in_batch")), qPrintable(result.diagnostics));
+    QVERIFY2(result.diagnostics.contains(QStringLiteral("module=duplicate")), qPrintable(result.diagnostics));
     QCOMPARE(processCalls.load(std::memory_order_relaxed), 0);
 }
 

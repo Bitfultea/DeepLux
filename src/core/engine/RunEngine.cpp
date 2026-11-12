@@ -14,6 +14,7 @@
 #include <QMutexLocker>
 #include <QRandomGenerator>
 #include <QSemaphore>
+#include <QSet>
 #include <QSharedPointer>
 #include <QThread>
 #include <QWaitCondition>
@@ -177,9 +178,20 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
     int finished = 0;
 
     QStringList validNames;
-    for (const QString& name : names)
-        if (getModule(name))
-            validNames.append(name);
+    QSet<ModuleBase*> selectedModules;
+    for (const QString& name : names) {
+        ModuleBase* module = getModule(name);
+        if (!module)
+            continue;
+        if (selectedModules.contains(module)) {
+            releaseLease();
+            const QString diagnostic = QStringLiteral("duplicate_module_in_batch module=%1").arg(name);
+            return ExecutionResult::fail(ExecError::DuplicateModuleInBatch,
+                                         tr("并行批次包含重复模块实例：%1").arg(name), diagnostic);
+        }
+        selectedModules.insert(module);
+        validNames.append(name);
+    }
 
     // 后台执行（设计 §6.3）：并行池只允许 worker 亲和模块。GUI 线程可能正同步等待线程池，
     // 池线程统一 BlockingQueuedConnection 回 GUI 会互等死锁；因此进入池前过滤，存在 gui

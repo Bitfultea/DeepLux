@@ -110,11 +110,12 @@ struct ExecutionResult {
 /// 结构化错误码（跨插件稳定）
 namespace ExecError {
 inline constexpr int None = 0;
-inline constexpr int MissingRequiredInput = 1001; // 必需输入缺失
-inline constexpr int TypeMismatch = 1002;         // 输入类型与端口声明不符
-inline constexpr int UndeclaredOutput = 1003;     // 写出未声明端口
-inline constexpr int Processing = 1004;           // 算法/运行期错误
-inline constexpr int Cancelled = 1005;            // 被取消
+inline constexpr int MissingRequiredInput = 1001;   // 必需输入缺失
+inline constexpr int TypeMismatch = 1002;           // 输入类型与端口声明不符
+inline constexpr int UndeclaredOutput = 1003;       // 写出未声明端口
+inline constexpr int Processing = 1004;             // 算法/运行期错误
+inline constexpr int Cancelled = 1005;              // 被取消
+inline constexpr int DuplicateModuleInBatch = 1006; // 并行批次包含重复模块实例
 } // namespace ExecError
 
 /**
