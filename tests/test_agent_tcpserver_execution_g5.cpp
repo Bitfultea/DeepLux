@@ -853,7 +853,8 @@ private slots:
             QCOMPARE(outputSnapshotsAvailable, (QList<bool>{true, true, true}));
             QCOMPARE(observedRequests, requests);
             QCOMPARE(observedRequestBytes,
-                     (QList<int>{requests.at(0).size(), requests.at(1).size(), requests.at(2).size()}));
+                     (QList<int>{static_cast<int>(requests.at(0).size()), static_cast<int>(requests.at(1).size()),
+                                 static_cast<int>(requests.at(2).size())}));
         }
         QCOMPARE(moduleSignalCount(moduleStarted, instanceId), 3);
         QCOMPARE(moduleSignalCount(moduleFinished, instanceId), 3);

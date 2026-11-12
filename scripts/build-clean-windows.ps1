@@ -57,7 +57,7 @@ foreach ($p in @($VcVars, $CMakeExe, $buildPath)) {
 
 Push-Location $repo
 try {
-    $objs = @(Get-ChildItem -Path (Join-Path $buildPath "*") -Recurse -Include *.obj -File -ErrorAction SilentlyContinue)
+    $objs = @(Get-ChildItem -Path (Join-Path $buildPath "*") -Recurse -Filter *.obj -File -ErrorAction SilentlyContinue)
     Write-Host "清理 $($objs.Count) 个对象文件：$BuildDir"
     if ($objs.Count -gt 0) {
         $objs | Remove-Item -Force
