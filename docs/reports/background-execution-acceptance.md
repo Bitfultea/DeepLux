@@ -95,9 +95,9 @@ B10 回归期间 `test_mainwindow` 曾在 `-j4` 全量中出现一次失败（`t
 
 ## 6. 偏差、限制与取舍
 
-1. **Stopping 时机与 design §5.1 措辞差异（本轮不改实现）**：design §5.1 的状态列表含 `Stopping`；实现只在停止请求实际胜出时短暂提交 `Stopping` 后立即 `Idle`，正常/失败收尾不经过 `Stopping`。取舍：保持 `Stopping` 仅表示“停止正在收尾”，避免正常完成也对外呈现停止中；调用方以 `jobFinished(stopped)` 判定结果。该差异记录于此，若后续 UI 需要区分“收尾中”可再统一。
+1. **Stopping 状态时序**：`FlowExecutionService::stop()` 只提交取消请求、唤醒 worker 并立即返回；在途模块仍需协作退出。worker 收尾时若本 job 被停止，才依次提交 `Stopping` 和 `Idle`，两次状态提交相邻；正常完成和失败收尾直接进入 `Idle`。因此 `Stopping` 表示停止结果的收尾提交，不代表调用 `stop()` 后会保持可观测的中间状态。
 2. **`-j4` 隔离缺陷处置**：`tests/CMakeLists.txt` 对 `test_agentbridge` 与 `test_mainwindow` 设置 `RUN_SERIAL TRUE`（此前两者并行会因全局插件目录/窗口状态互相抢占出现管道隔离失败）。本轮 `ctest -j 4` 全量 91/91 通过，未降级为 `-j1`。计划 Step3 的 `mktemp HOME` + `scripts/sync-plugins.sh` 隔离脚本为 Unix 口径；Windows 下等价做法是测试内使用 `QTemporaryDir` 安装插件并配合 `RUN_SERIAL`，已在本轮采用。
-3. **Matching 为 design §6.3（审计与标记，第二处 6.3 编号）补审项**：plan B9B 候选清单未列 `Matching`，但 design §6.3 的“耗时模块迁移闸门”点名；本轮补做静态审计 + 一致性冒烟并标记 `worker`，结论与证据并入 §4。
+3. **Matching 为 design §6.4（审计与标记）补审项**：plan B9B 候选清单未列 `Matching`，但 design §6.4 的“耗时模块迁移闸门”点名；本轮补做静态审计 + 一致性冒烟并标记 `worker`，结论与证据并入 §4。
 4. **审计规则以注释沉淀（非自动检查）**：t21 复核新增的“process() 不得创建/移交 QObject”“审计须扫描单例/全局状态”两条规则写在 `tests/test_workerpluginconsistency.cpp` 注释中，未实现自动静态检查；后续可考虑独立 lint/CI 规则。
 5. **StrFormatPlugin 限制（不进入 worker）**：`process()` 在 worker 写 `GlobalVarManager` 并 `new VarModel(QObject)`，GUI 侧 `GlobalVarView` 读写/删除这些 QObject 且 `count()/isEmpty()` 无锁。保持 `gui`，与 QueueIn/QueueOut 按共享状态延后同类；若需迁 worker，应按“process 只做格式化 + queued 写入 GUI”或“GlobalVarManager/VarModel 线程安全化（另立专项）”处理。
 6. **B10 回归发现并修复的测试竞态**：`test_mainwindow::testBreakpointPauseAndContinueFromRunButton` 原先在引擎断点命中后立即断言 Service 为 `Paused`；引擎先暂停、Service 工作线程随后才提交 `Paused`，存在短暂窗口（`-j4` 全量中偶发一次失败，实际读到 `Running`）。已改为等待 Service 状态到达 `Paused`（`QTRY_COMPARE_WITH_TIMEOUT`），随后 `ctest -j 4` 压力复跑 10/10 通过。该修复属测试等待方式的确定性修正，未改变产品行为。

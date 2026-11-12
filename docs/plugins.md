@@ -1,6 +1,6 @@
 # DeepLux 插件手册
 
-本手册覆盖 `src/plugins` 中全部 69 个带 `metadata.json` 的运行时插件。参数名称和可编辑范围以各插件的元数据为准；本文补充其在流程中的接入位置、实际使用步骤和结果检查方式。
+本手册覆盖 `src/plugins` 中全部 69 份插件 `metadata.json`，包括平台替代项和可选插件；默认单个平台构建为 66 个插件，构建开关会改变产物数量。参数名称和可编辑范围以各插件的元数据为准；本文补充其在流程中的接入位置、实际使用步骤和结果检查方式。
 
 > 运行前先执行 `cmake --build build --target sync-plugins`。相机、PLC、串口和 3D 模块还受操作系统、硬件、SDK、网络和现场权限影响，配置前应确认相应资源可用。
 
@@ -58,7 +58,7 @@ flowchart LR
 
 - `affinity`：`gui`（默认）或 `worker`。`gui` 模块在 GUI 线程执行，后台工作者通过 `BlockingQueuedConnection` 回投；`worker` 模块直接在后台服务工作线程内联执行。未审计插件一律保持 `gui`。
 - `threadSafe` / `blocking`：保留的并行资格条件（`worker` 亲和 + `threadSafe` + 非 `blocking` + 无断点才可进入并行池；其他模块按序串行执行，GUI 亲和模块仍在 GUI 线程运行）。
-- 审计规则（design §6.3 + B9/t21 复盘）：① `process()` 及直接调用链不得创建/启动 QTimer、QEventLoop、QTcpSocket、QSerialPort、QProcess；② 不触碰 QWidget/QPixmap/QPainter/OpenGL/视口/相机 SDK；③ 不调用 `QCoreApplication::processEvents()`；④ 不依赖 CameraManager/相机线程亲和性；⑤ 无未加锁的全局可变状态；⑥ 两个实例在 worker 线程执行与 GUI 线程输出一致。补充：`process()` 不得创建 QObject（如 `VarModel`）或把它移交/删除到 GUI 线程；审计必须扫描 `GlobalVarManager/VarModel/PluginManager/RunEngine` 等单例/全局状态，不能只看文件级 static 变量（该规则目前以 `tests/test_workerpluginconsistency.cpp` 注释沉淀，不是自动检查）。
+- 审计规则（design §6.4 + B9/t21 复盘）：① `process()` 及直接调用链不得创建/启动 QTimer、QEventLoop、QTcpSocket、QSerialPort、QProcess；② 不触碰 QWidget/QPixmap/QPainter/OpenGL/视口/相机 SDK；③ 不调用 `QCoreApplication::processEvents()`；④ 不依赖 CameraManager/相机线程亲和性；⑤ 无未加锁的全局可变状态；⑥ 两个实例在 worker 线程执行与 GUI 线程输出一致。补充：`process()` 不得创建 QObject（如 `VarModel`）或把它移交/删除到 GUI 线程；审计必须扫描 `GlobalVarManager/VarModel/PluginManager/RunEngine` 等单例/全局状态，不能只看文件级 static 变量（该规则目前以 `tests/test_workerpluginconsistency.cpp` 注释沉淀，不是自动检查）。
 
 **已审计并标记 `execution.affinity=worker` 的插件（30 个，2026-11-01）**
 
@@ -78,7 +78,7 @@ flowchart LR
 - 一致性冒烟未通过（需真实数据/工程参数）：SaveImage、3DPreProcessing、ColorRecognition、QRCode、MeasureCircle、MeasureGap、FitPlane、PointSurfaceDistance、N点标定、GapMeasure3D、FreeformSurface、SplitString、VarDefinePlugin、VarSetPlugin、Condition。
 - `DefectDetection`：本构建 `ENABLE_HYMSON3D=OFF`，插件未构建，无法执行一致性冒烟，保持 `gui`。
 - **StrFormatPlugin**（t21 复核移出 worker）：`process()` 在 worker 线程写全局 `GlobalVarManager` 并 `new VarModel`（QObject），GUI 侧 `GlobalVarView` 会读写并 `delete` 这些 QObject，且 `count()/isEmpty()` 为无锁读者——属 UI 绑定未拆分，保持 `gui`，与 QueueIn/QueueOut 按共享状态延后同类。
-- **Matching** 为 design §6.3（审计与标记，第二处 6.3 编号）的补审项（plan B9 候选清单未列），经一致性冒烟通过后标记 `worker`。
+- **Matching** 为 design §6.4 的补审项（plan B9 候选清单未列），经一致性冒烟通过后标记 `worker`。
 
 复跑一致性冒烟：
 
@@ -609,6 +609,6 @@ ctest --test-dir build -R test_workerpluginconsistency --output-on-failure
 
 ## 文档维护
 
-- 本文按当前 `metadata.json` 覆盖 67 个插件。新增插件时必须同步增加本手册条目，并描述其上游数据、关键参数、结果和失败条件。
+- 本文按当前 `metadata.json` 覆盖 69 个插件定义；其中平台替代项或未启用的可选项不会全部出现在单次构建中。新增插件时必须同步增加本手册条目，并描述其上游数据、关键参数、结果和失败条件。
 - 修改参数名称、范围、结果键或平台依赖时，应同时更新本手册与对应元数据，避免检查器与文档出现两套说法。
 - 用户级流程示例见 [快速上手](quick-start.md)，运行时边界见 [架构说明](architecture.md)。

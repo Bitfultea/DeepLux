@@ -1,7 +1,7 @@
 # 后台执行线程与 UI 刷新收口设计
 
 - 日期：2026-10-30
-- 状态：设计已确认，待编写实施计划
+- 状态：已实施（B0–B10）；实现现状与验收边界见 [架构说明](../../architecture.md) 和 [验收报告](../../reports/background-execution-acceptance.md)。本设计保留原始目标与历史修订，未覆盖的验收项不得据此视为通过。
 - 关联代码：`src/core/engine/RunEngine.*`、`src/ui/views/MainWindow.cpp`、`src/core/agent/AgentActor.cpp`、`src/ui/display/DisplayManager.*`、`src/ui/widgets/ViewportWidget.*`、`src/ui/widgets/HImageWidget.*`
 - 参考实现：`/home/charles/Data/Repo/DeepLux_original`（C# / WPF）
 
@@ -182,11 +182,13 @@ signals:
 Idle ──startSingle/startCycle/stepOnce/continueRun──> Running
 Running ──模块边界命中 breakpoint──> Paused(breakpoint)
 Running ──用户 pauseRun──> Paused(user)
-Running ──stop──> Stopping ──当前模块返回/循环退出──> Idle
+Running ──stop 请求/设置取消标志──> Running（worker 协作退出中）
+Running（job 已停止）──worker 收尾──> Stopping ──紧接着──> Idle
 Paused ──continueRun──> Running（Resume job）
-Paused ──stop──> Stopping ──> Idle
+Paused ──stop 请求/唤醒 worker──> Paused（worker 收尾中）──> Stopping ──紧接着──> Idle
 ```
 
+- `Stopping` 在实现中是 worker 收尾期间相邻提交的短暂服务状态，不在调用线程的 `stop()` 中同步提交；停止仍依赖当前模块协作退出。正常完成和失败收尾直接进入 `Idle`。该时序以实现和验收报告为准。
 - 断点事实来源仍是 `RunEngine::isPausedAtBreakpoint()`；服务不复制断点判定。
 - 服务状态与 `RunEngine` 状态最终一致；服务不绕过引擎租约/状态机。
 
@@ -284,7 +286,7 @@ else:
   - `executeBatchParallel` 不会把 `gui` 模块放进池；
   - worker 模块可正常并行，结果与串行一致。
 
-### 6.3 审计与标记
+### 6.4 审计与标记
 
 只有满足以下条件才标记 `worker`：
 
@@ -304,7 +306,7 @@ else:
 - 对确实必须 GUI 亲和的长任务：
   1. 优先拆分“计算”和“UI 绑定部分”，把计算迁到 worker；
   2. 若无法拆分（相机/通讯的 QObject 亲和性是典型），本轮明确列为限制，不纳入响应性通过范围；
-  3. 运行期记录 module 耗时；`affinity=gui` 且耗时超过阈值（建议 100ms）时写 warning 日志（模块名、耗时、建议审计），让现场可定位。
+  3. 运行期记录 module 耗时；`affinity=gui` 且耗时严格超过 **100ms** 时写 warning 日志（模块名、耗时、建议审计），让现场可定位。实现使用 `elapsedMs > 100`；该告警不阻断执行。响应性验收中约 153ms 的样本证明 GUI 事件仍可处理，但未达到 §13 的 >500ms 验收窗口，该项仍未通过。
 - 后续如需把相机/通讯迁出 GUI，应单独立项引入 `io` 亲和性与 `moveToThread` 的对象迁移协议，不在本轮伪装成已解决。
 
 ## 7. 大图刷新合并
