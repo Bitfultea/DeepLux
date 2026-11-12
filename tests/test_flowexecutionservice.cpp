@@ -1990,6 +1990,837 @@ private slots:
 
         guard.finish();
     }
+
+    // T2.5 P1 第六次整改（2026-11-11 第五段复核 P1）：**删除权唯一 ≠ 对象已无人使用**。
+    //
+    // 第四次整改让 shutdown() 能「接管」在途回收的线程并成为唯一删除者，但接管时那条
+    // 线程可能正被回收调用借用在 `thread->wait()` 内。shutdown() 移走指针、join 完、
+    // delete 掉之后，回收线程仍会经由已释放对象完成等待收尾 —— use-after-free。
+    // 评审独立探针（此时线程尚在 wait 内即被删除）：
+    //   shutdownOk=1 / shutdownBeforeReclaimReturned=1 / workerDeletedWhileWaitActive=1
+    //
+    // 本用例把这三项翻译成可在套件里复跑的判据：**在 shutdown() 返回的那一刻**采样
+    // 「回收调用是否尚未返回」。若为真，说明 worker 在仍被使用时就进入了删除流程。
+    void testShutdownMustWaitForActiveReclaimBorrowBeforeDeleting() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe;
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+
+        constexpr int kRounds = 3;
+        // worker 停在退出屏障里；屏障由用例在放行点显式释放，固定上限只作兜底。
+        // 这样「回收调用正在 wait」的时段可以被稳定命中，而不是靠 sleep 撞窗口。
+        constexpr int kBarrierHoldMs = 20000;
+
+        std::atomic_int armed{0};
+        std::atomic_int windowHits{0};          // shutdown 返回时回收调用仍在 wait（判别性采样）
+        std::atomic_int earlyDeletes{0};        // 其中 shutdown 还报告成功（缺陷）
+        std::atomic_int invariantViolations{0}; // 「在 inflight 但借用为 0」被抓到的次数
+        std::atomic_int shutdownOkRounds{0};
+        std::atomic_int completedRounds{0};
+        std::atomic_bool oldWorkerRunning{false};
+        std::atomic_bool barrierEntered{false};
+
+        std::atomic_bool holdBarrier{false};
+        QSemaphore releaseBarrier;
+        QSemaphore barrierReached;
+        // 回收等待钩子：把回收调用停在「借用已登记、thread->wait() 尚未开始」处。
+        QSemaphore reclaimHookEntered;
+        QSemaphore releaseReclaimHook;
+        std::atomic_bool reclaimHookEnabled{false};
+        // 临界区内钩子：此刻持锁且借用已登记，用于确认「登记与移交同临界区」。
+        std::atomic_int inCriticalSectionSeen{0};
+
+        service.setReclaimWaitHookForTest([&] {
+            if (!reclaimHookEnabled.load(std::memory_order_acquire)) {
+                return;
+            }
+            reclaimHookEnabled.store(false, std::memory_order_release);
+            reclaimHookEntered.release();
+            releaseReclaimHook.tryAcquire(1, 5000);
+        });
+
+        service.setInCriticalSectionHookForTest([&] {
+            // 持锁调用：不得再取锁、不得阻塞。
+            // **这是本用例最关键的判据点**：此刻仍在 enqueue() 搬移线程的那个临界区内。
+            // 不变量要求：「凡已进入 m_inflightReclaim 的线程，必须已有活跃借用」。
+            // 若借用登记被推迟到锁外（缺陷态），这个窗口内就能被直接看到违规。
+            if (!reclaimHookEnabled.load(std::memory_order_acquire)) {
+                return;
+            }
+            ++inCriticalSectionSeen;
+            // inflightWithoutBorrowCountForTest() 自己会取锁 —— 这里已持锁，不能调用。
+            // 因此改由外部在**同一临界区结束后立刻**采样（见下面的探针）。
+        });
+
+        service.setWorkerLoopFaultHookForTest([&] {
+            if (armed.load(std::memory_order_acquire) != 0 && armed.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                throw std::runtime_error("injected worker-loop fault");
+            }
+        });
+
+        service.setWorkerExitBarrierForTest([&] {
+            if (!holdBarrier.load(std::memory_order_acquire)) {
+                return;
+            }
+            oldWorkerRunning.store(true, std::memory_order_release);
+            barrierEntered.store(true, std::memory_order_release);
+            barrierReached.release();
+            // 有界：任何失败路径下 worker 都能自行退出，不会让用例挂死。
+            releaseBarrier.tryAcquire(1, kBarrierHoldMs);
+            oldWorkerRunning.store(false, std::memory_order_release);
+        });
+
+        QMetaObject::Connection failConn = QObject::connect(
+            &service, &FlowExecutionService::jobFailed, &service, [](FlowExecutionService::JobType, const QString&) {},
+            Qt::DirectConnection);
+
+        // 异步启动线程：只负责发起 startSingle() 并记录结果，**不承担任何放行职责**。
+        std::thread starter;
+        ServiceContractCleanupGuard guard{&service,
+                                          failConn,
+                                          [&] {
+                                              holdBarrier.store(false, std::memory_order_release);
+                                              releaseBarrier.release();
+                                              releaseReclaimHook.release();
+                                          },
+                                          [&] {
+                                              service.clearWorkerLoopFaultHookForTest();
+                                              service.clearWorkerExitBarrierForTest();
+                                              service.clearReclaimWaitHookForTest();
+                                              service.clearInCriticalSectionHookForTest();
+                                          },
+                                          &starter,
+                                          true};
+
+        for (int round = 0; round < kRounds; ++round) {
+            // 每轮从 Idle 开始，否则上一轮收尾未清干净会让本轮前置条件失真。
+            QElapsedTimer idle;
+            idle.start();
+            while (service.isActive() && idle.elapsed() < 1500) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                QThread::msleep(1);
+            }
+            if (service.isActive()) {
+                break; // 收尾由 guard 负责
+            }
+
+            armed.store(0, std::memory_order_release);
+            barrierEntered.store(false, std::memory_order_release);
+            oldWorkerRunning.store(false, std::memory_order_release);
+            reclaimHookEnabled.store(false, std::memory_order_release); // 预热阶段不得触发回收钩子
+
+            // **P2 整改（2026-11-12 第六段复核）：worker 退出与借用归还必须独立受控。**
+            //
+            // 缺陷态必须落在「旧 worker 仍在退出屏障内、回收调用仍持有借用」这个窗口里，
+            // 才谈得上「shutdown 不等待借用就删除」。因此：
+            //   控制点 A = releaseReclaimHook  → 回收调用是否归还借用；
+            //   控制点 B = releaseBarrier      → 旧 worker 是否退出。
+            // 两者都不由 startSingle() 的返回驱动。
+            //
+            // 上一版把「放行 B」写在 starter 线程里 `startSingle()` 之后，隐含了
+            // 「startSingle() 已返回 ⇒ worker 已退出」这一**测试自己制造的**顺序，
+            // 于是即便把生产代码里等待借用的助手换成空操作，用例仍然全绿（复核实测 3/3），
+            // 完全没有判别力。
+            //
+            // 现在只构造一次「借用仍活跃、worker 尚未退出」的窗口，并在窗口正中对**一次**
+            // shutdown() 取证 —— 同一进程只允许一次真正的销毁，重复 shutdown 无法复现缺陷。
+            //
+            // **顺序要点**：先把屏障**关掉**建好常驻 worker（否则首启的启动握手会撞上
+            // 回收调用等 worker 退出、而 worker 正卡在屏障里 → 「wait on itself」），
+            // 再武装屏障、让 worker 在下一次退出时停住。
+            holdBarrier.store(false, std::memory_order_release);
+            // 预热阶段必须**关掉**故障注入：armed=1 会让 worker 第一轮就抛错退役，
+            // 于是在屏障未启用时那次启动仍会走回收路径，预热本身就会失败。
+            armed.store(0, std::memory_order_release);
+            if (starter.joinable()) {
+                starter.join();
+            }
+            {
+                QSignalSpy warmupSpy(&service, &FlowExecutionService::jobFinished);
+                // 预热可能需要重试：上一轮留下的旧 worker 刚被放行，仍在退出途中，
+                // 首次启动会被「旧线程尚未退出」的预算拒绝。重试只在预热阶段发生，
+                // **不参与任何判据**（判据只看关闭期间那一次启动）。
+                bool warmed = false;
+                QElapsedTimer warmup;
+                warmup.start();
+                while (!warmed && warmup.elapsed() < 5000) {
+                    if (service.startSingle()) {
+                        warmed = true;
+                        break;
+                    }
+                    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                    QThread::msleep(5);
+                }
+                QVERIFY2(warmed, "warm-up start must eventually succeed so the case has a resident worker");
+                QTRY_COMPARE_WITH_TIMEOUT(warmupSpy.count(), 1, 5000);
+                QTRY_COMPARE_WITH_TIMEOUT(service.state(), FlowExecutionService::State::Idle, 5000);
+            }
+            // 预热后**再**武装：此刻 worker 处于空闲等待。
+            holdBarrier.store(true, std::memory_order_release);
+
+            // **第一步：让旧 worker 退役并卡在退出屏障上。**
+            // armed=1 使下一次出队的 job 在 workerLoop() 入口抛错 → 线程置 retiring →
+            // workerLoop() 返回 → 进入退出屏障（holdBarrier=true）→ 就此停住。
+            // 这一步必须发生在**回收调用之前**，否则回收调用根本没有「要等它退出」的对象。
+            armed.store(1, std::memory_order_release);
+            barrierEntered.store(false, std::memory_order_release);
+            {
+                // 注意：**不能用 startSingle() 的返回值判断这一步是否成功**。
+                // armed=1 的故障注入让本 job 必失败，启动握手拿不到 Running，
+                // startSingle() 因此返回 false —— 但 worker 确实出队、抛错、退役、
+                // 并停在退出屏障上，正是我们要的状态。判据只看 barrierReached。
+                (void) service.startSingle();
+                if (!barrierReached.tryAcquire(1, 3000)) {
+                    armed.store(0, std::memory_order_release);
+                    holdBarrier.store(false, std::memory_order_release);
+                    releaseBarrier.release();
+                    continue;
+                }
+            }
+            // 到此：旧 worker 停在退出屏障内（oldWorkerRunning=true），下一次启动必然走回收。
+            reclaimHookEnabled.store(true, std::memory_order_release);
+
+            // P3 更正：本变量**只**用于下方 join 的有界兜底，绝不参与任何判据。
+            // 此前它初始化为 false 后从不被写入，导致三轮各空等 5s、诊断恒真。
+            std::atomic_bool reclaimReturned{false};
+            starter = std::thread([&] {
+                // **回收调用所在的线程**：它进入 retireWorkerThreadBounded() 后停在
+                // 回收钩子上，借用由它持有。放行 worker 退出、放行回收调用这两件事
+                // 都由主线程控制，本线程不做任何放行——这正是 P2 要求的「独立受控」。
+                (void) service.startSingle();
+                reclaimReturned.store(true, std::memory_order_release);
+            });
+
+            // **确定性前置**：回收调用已进入钩子，即「借用已生效、thread->wait() 尚未开始」。
+            // 等不到就放弃本轮，不计入判别样本——不制造假阴性。
+            if (!reclaimHookEntered.tryAcquire(1, 3000)) {
+                reclaimHookEnabled.store(false, std::memory_order_release);
+                releaseReclaimHook.release();
+                if (starter.joinable()) {
+                    starter.join();
+                }
+                continue;
+            }
+
+            // —— 核心判据之一：不变量探针（在回收调用整个生命周期内高频采样）——
+            // 缺陷态下，enqueue() 解锁之后到 retireWorkerThreadBounded() 登记借用之前，
+            // 该线程已在 m_inflightReclaim、借用却为 0。探针在锁内读，必能抓到这一瞬间。
+            // 这不需要构造时序窗口，是**直接**判据。
+            {
+                QElapsedTimer probe;
+                probe.start();
+                while (probe.elapsed() < 20) {
+                    if (service.inflightWithoutBorrowCountForTest() > 0) {
+                        ++invariantViolations;
+                        break;
+                    }
+                    std::this_thread::yield();
+                }
+            }
+
+            // **判据是借用何时归还，而不是 startSingle() 何时返回**：
+            // 正确实现完全可以在归还借用之后继续走握手、稍后才让 startSingle() 返回，
+            // 把「startSingle() 是否已返回」当判据会把正确实现误判为缺陷。
+            //
+            // 采样点放在 shutdown() 返回的那一刻：>0 表示 shutdown 在仍有人使用该对象
+            // 时就完成了（缺陷）；==0 表示它确实等到了借用归还（正确）。
+            //
+            // **控制点 B：先放行旧 worker 退出，再发起 shutdown。这一步是判别力的关键。**
+            //
+            // 上一版让 worker 一直卡在退出屏障上，结果 shutdown() 里的
+            // joinWorkerThread() -> thread->wait() 恰好被这条 worker 挡住，于是即便
+            // 「等待借用归还」被换成空操作，shutdown() 也一样晚返回、判据读到 0
+            // （实测 borrows=1 guards=1，但 at return: liveGuards=0，缺陷态仍全绿）。
+            // 换句话说：等 worker 退出与等借用归还，在「worker 还没退出」时**恰好同效**，
+            // 掩盖了差异。
+            //
+            // 因此顺序改为：放行 worker 退出并**确认它已真正结束** -> 此时
+            // joinWorkerThread() 的 thread->wait() 会立即返回，shutdown() 唯一的
+            // 阻挡就只剩「等待借用归还」。回收调用仍停在钩子上（控制点 A 未放行），
+            // 借用因此确定处于持有状态。
+            holdBarrier.store(false, std::memory_order_release);
+            releaseBarrier.release();
+            {
+                QElapsedTimer exitWait;
+                exitWait.start();
+                while (oldWorkerRunning.load(std::memory_order_acquire) && exitWait.elapsed() < 5000) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
+            // 此刻状态（全部由本用例显式控制，与 startSingle() 无关）：
+            //   - 旧 worker **已退出**（oldWorkerRunning=false）→ thread->wait() 不再挡路；
+            //   - 回收调用仍停在钩子上 → 借用已登记且未归还；
+            //   - 服务处于 Idle（未入队任何 job）→ shutdown() 会走**成功关闭路径**。
+            std::atomic_bool shutdownDone{false};
+            std::atomic_bool shutdownOkFlag{false};
+            std::atomic_int liveGuardsAtReturn{-1};
+            std::atomic_bool workerRunningAtReturn{false};
+            std::thread shutdownThread([&] {
+                const bool ok = service.shutdown();
+                // **判据采样点必须紧贴 shutdown() 返回的那一行，且读「守卫存活数」而非「计数表」。**
+                //
+                // 为什么不能读计数表（activeReclaimBorrowCountForTest）：
+                // 计数表就是 shutdown() 的等待条件。正确的 shutdown() 在
+                // waitForReclaimBorrowsReturned() 之后才继续，因此它返回时计数表**必然**为 0；
+                // 而缺陷态的 shutdown() 不等借用就返回，此时计数表同样可能为 0
+                // （回收守卫已被放行并归还）。于是「计数表 > 0」在两种实现下都读不到，
+                // 上一版判据因此毫无判别力（缺陷态 3/3 全绿，第 17 章记录）。
+                //
+                // 守卫存活数（liveReclaimGuardCountForTest）数的是「回收调用是否仍在作用域内」，
+                // 不是 shutdown() 的等待条件。缺陷态下 shutdown() 不等就返回时，回收守卫仍
+                // 停在钩子上（作用域内）→ 必然 > 0；正确实现下 shutdown() 先等它归还 → 必为 0。
+                liveGuardsAtReturn.store(service.liveReclaimGuardCountForTest(), std::memory_order_release);
+                workerRunningAtReturn.store(oldWorkerRunning.load(std::memory_order_acquire),
+                                            std::memory_order_release);
+                shutdownOkFlag.store(ok, std::memory_order_release);
+                shutdownDone.store(true, std::memory_order_release);
+            });
+
+            // 给 shutdown 线程足够时间真正进入（取锁、搬列表、开始等借用）。
+            //
+            // **这一步是判别力的关键，不是「让步」。** 缺陷态与修复态的区别就在于：
+            //   - 修复态：shutdown() 阻塞在 waitForReclaimBorrowsReturned() 上，不会返回
+            //     → 循环在 300ms 后自然退出，arrivedWhileBorrowActive=true，随后放行；
+            //   - 缺陷态：shutdown() 不等借用就返回 → shutdownDone 立刻为真，此时采样点
+            //     已经读到守卫仍在作用域内。
+            // 因此 300ms 只是「确认它没有提前返回」的上限，不参与判据本身。
+            {
+                QElapsedTimer spin;
+                spin.start();
+                while (!shutdownDone.load(std::memory_order_acquire) && spin.elapsed() < 300) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
+            // 关键正向断言：放行前 shutdown **必须尚未返回**，否则本轮没有构造出窗口。
+            const bool arrivedWhileBorrowActive = !shutdownDone.load(std::memory_order_acquire);
+            releaseReclaimHook.release();
+
+            // **收尾 join 的有界兜底**：等回收调用线程的完成通知（P3 更正：此前该
+            // 变量从不被写入，三轮各空等 5s，后面的「仍在回收」诊断也恒真）。它**只**
+            // 用于避免主线程在 join 上永久阻塞，绝不参与判据——判据始终只挂在
+            // liveGuardsAtShutdownReturn / workerRunningAtShutdownReturn 上。
+            {
+                QElapsedTimer joinWait;
+                joinWait.start();
+                while (!reclaimReturned.load(std::memory_order_acquire) && joinWait.elapsed() < 5000) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
+            shutdownThread.join();
+
+            const bool shutdownOk = shutdownOkFlag.load(std::memory_order_acquire);
+            const int liveGuardsAtShutdownReturn = liveGuardsAtReturn.load(std::memory_order_acquire);
+            const bool workerRunningAtShutdownReturn = workerRunningAtReturn.load(std::memory_order_acquire);
+
+            ++completedRounds;
+            // 正向前提：进入过「移交指针 + 登记借用」的临界区（证明被测路径确实执行），
+            // **并且** shutdown 到达时回收调用确定尚未返回（否则本轮没测到那个窗口）。
+            if (inCriticalSectionSeen.load() > 0 && arrivedWhileBorrowActive) {
+                ++windowHits;
+            }
+            // **本用例只对「成功关闭路径」取证**（第六段复核 P2，第 17.4 节更正）。
+            //
+            // 既定契约里 shutdown() 返回 false 只表示「非 Idle：已请求停止，未销毁任何对象」，
+            // 这种情形下**允许**仍有回收借用和仍在跑的 worker——它们本来就该留着。
+            // 因此「shutdown() 返回 false 时仍有借用」根本不是缺陷，把它算作缺陷等于把
+            // false 的语义扩大成「也已安全关闭」。上一版判据正是这样写的，已更正。
+            //
+            // 现在只在 shutdownOk 为真时判定，并把前提前移：本用例必须构造出
+            // 「成功关闭 + 回收仍活跃」这一组合，否则说明前置条件没搭好（或服务非 Idle），
+            // 与产品行为无关。用例里首启不入队任何 job、服务处于 Idle，所以正常实现
+            // 必然走成功关闭路径。
+            if (shutdownOk) {
+                ++shutdownOkRounds;
+                if (liveGuardsAtShutdownReturn > 0 || workerRunningAtShutdownReturn) {
+                    ++earlyDeletes;
+                    qInfo("[P1-BORROW] round %d: shutdown() reported success (ok=1) while %d reclaim guard(s) were "
+                          "still in scope and workerRunning=%d",
+                          round, liveGuardsAtShutdownReturn, workerRunningAtShutdownReturn ? 1 : 0);
+                }
+            } else {
+                qInfo("[P1-BORROW] round %d: shutdown() returned false (not the success path this case asserts on, "
+                      "borrows are permitted to be live here): liveGuards=%d workerRunning=%d",
+                      round, liveGuardsAtShutdownReturn, workerRunningAtShutdownReturn ? 1 : 0);
+            }
+
+            // 收尾：放行屏障并 join starter，为下一轮准备。
+            holdBarrier.store(false, std::memory_order_release);
+            releaseBarrier.release();
+            if (starter.joinable()) {
+                starter.join();
+            }
+            releaseBarrier.tryAcquire(1, 2000);
+
+            // 借用最终必须全部归还（不含 shutdown 期间的短暂持有）。
+            QElapsedTimer drain;
+            drain.start();
+            while (service.activeReclaimBorrowCountForTest() > 0 && drain.elapsed() < 3000) {
+                QThread::msleep(1);
+            }
+
+            QElapsedTimer settle;
+            settle.start();
+            while (service.isActive() && settle.elapsed() < 3000) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                QThread::msleep(1);
+            }
+        }
+
+        if (starter.joinable()) {
+            starter.join();
+        }
+        QObject::disconnect(failConn);
+        service.clearWorkerLoopFaultHookForTest();
+        service.clearWorkerExitBarrierForTest();
+
+        qInfo("[P1-BORROW] rounds=%d completed=%d windowHits=%d earlyDeletes=%d shutdownOkRounds=%d", kRounds,
+              completedRounds.load(), windowHits.load(), earlyDeletes.load(), shutdownOkRounds.load());
+
+        // 正向前提：确实进入了「借用已登记、仍在同一临界区」的位置。
+        // 缺这一条，earlyDeletes==0 可能只是「没测到」而不是「没缺陷」。
+        QVERIFY2(windowHits.load() >= 1,
+                 qPrintable(QStringLiteral("the case must observe the worker being moved into m_inflightReclaim "
+                                           "with its reclaim borrow registered in the same critical section "
+                                           "(windowHits=%1, rounds=%2)")
+                                .arg(windowHits.load())
+                                .arg(kRounds)));
+
+        // 正向前提②（第六段复核 P2）：本用例只对**成功关闭路径**取证。
+        //
+        // shutdown() 返回 false 是「非 Idle：只请求停止」的既定语义，此时不销毁任何对象，
+        // 借用与 worker 本来就该留着。所以只有在真正进入销毁路径的那一轮，
+        // 「返回时仍有借用」才构成缺陷。缺这一条，earlyDeletes==0 也可能只是
+        // 「一次都没走过成功关闭路径」。
+        QVERIFY2(shutdownOkRounds.load() >= 1,
+                 qPrintable(QStringLiteral("the case must exercise the successful shutdown path (shutdown() == true) "
+                                           "at least once before its wait-for-borrow assertion means anything "
+                                           "(shutdownOkRounds=%1, rounds=%2, completed=%3)")
+                                .arg(shutdownOkRounds.load())
+                                .arg(kRounds)
+                                .arg(completedRounds.load())));
+
+        // 核心判据①：不得存在「线程已在 m_inflightReclaim、借用却为 0」的瞬间。
+        // 这是「借用登记与指针移交同临界区」的直接判据，不依赖任何时序窗口。
+        QVERIFY2(invariantViolations.load() == 0,
+                 qPrintable(QStringLiteral("no worker may sit in m_inflightReclaim without a registered reclaim "
+                                           "borrow (violations=%1): the borrow must be registered in the same "
+                                           "critical section that moves the worker out of m_thread")
+                                .arg(invariantViolations.load())));
+
+        // 核心判据②：shutdown() **返回 true** 的那一刻，活跃回收借用必须已经归零，
+        // 且被借用的 worker 不得仍在运行。
+        //
+        // 判据只挂在成功关闭路径上（见上一条正向前提）：false 分支按契约允许两者都还在。
+        QVERIFY2(earlyDeletes.load() == 0,
+                 qPrintable(QStringLiteral("a successful shutdown() must wait for active reclaim borrows to be "
+                                           "returned before returning (earlyDeletes=%1/%2, shutdownOkRounds=%3): a "
+                                           "unique deleter is not the same as no remaining users")
+                                .arg(earlyDeletes.load())
+                                .arg(windowHits.load())
+                                .arg(shutdownOkRounds.load())));
+
+        guard.finish();
+    }
+
+    // T2.5 P1 第八次整改（2026-11-12 第六段复核 P1）：**关闭期间不得启动新任务**。
+    //
+    // 缺陷机理（复核实测 3/3）：
+    //   shutdown() 的 Idle 路径置 m_quitRequested = true，但 enqueue() 的最终入队
+    //   会调 ensureThreadLocked()，那里把 m_quitRequested **复位成 false**（那是为
+    //   「shutdown 后可重新启动」准备的）。于是关闭期间到达的启动请求照样重建 worker
+    //   并执行任务：shutdown=true 但新任务在跑、引擎仍忙。
+    //   另一道 m_reclaimAborted 只在 detachLiveWorkerThreadsLocked() 发现**存在在途
+    //   回收**时才置位，普通 Idle 关闭根本不置位，入口检查形同虚设。
+    //
+    // 本用例不依赖任何时序窗口：用回收等待钩子把 shutdown() 停在
+    // 「关闭标记已置位、worker 尚未 join」的中间段，此时从主线程发起一次启动，
+    // 断言它被**明确拒绝**且模块一次都没执行。
+    //
+    // 与第 17 章的「非 Idle 早退」区分：本用例的服务在 shutdown 期间处于 Idle
+    // （没有在途 job），所以走的是**真正的关闭路径**，判据不与 false 语义混淆。
+    void testStartDuringShutdownMustBeRejected() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe(QStringLiteral("ShutdownWindowProbe"));
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("ShutdownWindowProbe"), ExecutionAffinity::Worker);
+
+        constexpr int kRounds = 3;
+
+        std::atomic_int rejectedRounds{0};     // 关闭期间启动被拒绝的次数（正向前提）
+        std::atomic_int windowsEntered{0};     // 成功把 shutdown 停在关闭段中间的次数
+        std::atomic_int startedDuringClose{0}; // 关闭期间启动被接受（缺陷）
+        std::atomic_int runsDuringClose{0};    // 关闭期间模块真的执行了（缺陷，更直接）
+        std::atomic_int shutdownOkRounds{0};
+
+        // 停靠点用 **worker 退出屏障**，不用回收等待钩子。
+        //
+        // 理由（第一版实测 windowsEntered=0）：Idle 关闭路径下 m_thread 直接进 retiring，
+        // 根本不经过 retireWorkerThreadBounded()，回收钩子不会触发，用例就永远等不到
+        // 「关闭段中间」这个状态。退出屏障则位于 WorkerThread::run() 末尾
+        // （workerLoop() 已返回、线程尚未结束），Idle 关闭必须经 joinWorkerThread()
+        // 等它——因此它一定能停住 shutdown()，且屏障等待不持 m_mutex。
+        QSemaphore workerHeldAtExit;
+        QSemaphore releaseWorkerExit;
+        std::atomic_bool holdWorkerExit{false};
+        std::atomic_int barrierEnters{0};
+
+        service.setWorkerExitBarrierForTest([&] {
+            if (!holdWorkerExit.load(std::memory_order_acquire)) {
+                return;
+            }
+            ++barrierEnters;
+            workerHeldAtExit.release();
+            // 有界：任何失败路径下 worker 都能自行退出，不会让用例挂死。
+            releaseWorkerExit.tryAcquire(1, 10000);
+        });
+
+        std::thread shutdownThread;
+        std::atomic_bool shutdownDone{false};
+        std::atomic_bool shutdownOkFlag{false};
+
+        ServiceContractCleanupGuard guard{&service,
+                                          QMetaObject::Connection(),
+                                          [&] {
+                                              holdWorkerExit.store(false, std::memory_order_release);
+                                              releaseWorkerExit.release();
+                                          },
+                                          [&] { service.clearWorkerExitBarrierForTest(); },
+                                          &shutdownThread,
+                                          true};
+
+        for (int round = 0; round < kRounds; ++round) {
+            QElapsedTimer idle;
+            idle.start();
+            while (service.isActive() && idle.elapsed() < 1500) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                QThread::msleep(1);
+            }
+            if (service.isActive()) {
+                break;
+            }
+
+            // 先建立一个常驻 worker：跑一次正常 job 并等它回到 Idle。
+            // 这样 shutdown() 的 Idle 路径才有 worker 要 join（也就有退出屏障可停）。
+            const int runsBefore = probe.runs.load();
+            {
+                QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
+                QVERIFY(service.startSingle());
+                QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+                QTRY_COMPARE_WITH_TIMEOUT(service.state(), FlowExecutionService::State::Idle, 5000);
+            }
+            QCOMPARE(probe.runs.load(), runsBefore + 1);
+
+            shutdownDone.store(false, std::memory_order_release);
+            shutdownOkFlag.store(false, std::memory_order_release);
+            holdWorkerExit.store(true, std::memory_order_release);
+            if (shutdownThread.joinable()) {
+                shutdownThread.join();
+            }
+            shutdownThread = std::thread([&] {
+                const bool ok = service.shutdown();
+                shutdownOkFlag.store(ok, std::memory_order_release);
+                shutdownDone.store(true, std::memory_order_release);
+            });
+
+            // 等待「关闭已开始且 worker 被停在退出屏障上」这一确定性状态。
+            // 等不到说明本轮没有关闭段，不计入判别样本（不制造假阴性）。
+            const bool heldInClose = workerHeldAtExit.tryAcquire(1, 3000);
+            if (heldInClose) {
+                ++windowsEntered;
+            }
+
+            // **核心动作**：此刻 shutdown() 正在执行（标记已置位、worker 尚未销毁），
+            // 从主线程发起一次启动。约定行为：明确拒绝，绝不执行。
+            if (heldInClose) {
+                const int runsAtProbe = probe.runs.load();
+                const bool accepted = service.startSingle();
+                const bool engineBusy = service.isActive();
+                // 给可能的执行留一点时间：若被错误接受，模块一定有执行机会。
+                // 这不是「撞窗口」——拒绝路径下这里什么都不会发生。
+                QElapsedTimer grace;
+                grace.start();
+                while (grace.elapsed() < 150 && engineBusy) {
+                    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                    QThread::msleep(1);
+                }
+                if (accepted) {
+                    ++startedDuringClose;
+                } else {
+                    ++rejectedRounds;
+                }
+                if (probe.runs.load() != runsAtProbe) {
+                    ++runsDuringClose;
+                }
+                qInfo("[P1-SHUTDOWN-START] round %d: accepted=%d engineBusy=%d runsDelta=%d", round, accepted ? 1 : 0,
+                      service.isActive() ? 1 : 0, probe.runs.load() - runsAtProbe);
+            }
+
+            // 无论上面结果如何，都要放行 worker 并收敛 shutdown。
+            holdWorkerExit.store(false, std::memory_order_release);
+            releaseWorkerExit.release();
+            {
+                QElapsedTimer waitDone;
+                waitDone.start();
+                while (!shutdownDone.load(std::memory_order_acquire) && waitDone.elapsed() < 15000) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
+            if (shutdownThread.joinable()) {
+                shutdownThread.join();
+            }
+            if (shutdownOkFlag.load(std::memory_order_acquire)) {
+                ++shutdownOkRounds;
+            }
+
+            QElapsedTimer settle;
+            settle.start();
+            while (service.isActive() && settle.elapsed() < 3000) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                QThread::msleep(1);
+            }
+        }
+
+        if (shutdownThread.joinable()) {
+            shutdownThread.join();
+        }
+        service.clearWorkerExitBarrierForTest();
+
+        qInfo("[P1-SHUTDOWN-START] rounds=%d windowsEntered=%d rejected=%d accepted=%d runsDuringClose=%d "
+              "shutdownOkRounds=%d",
+              kRounds, windowsEntered.load(), rejectedRounds.load(), startedDuringClose.load(), runsDuringClose.load(),
+              shutdownOkRounds.load());
+
+        // 正向前提：确实把 shutdown() 停在了关闭段中间，且启动请求确实是在那时发出的。
+        QVERIFY2(windowsEntered.load() >= 1,
+                 qPrintable(QStringLiteral("the case must catch shutdown() inside its close section before it "
+                                           "returns (windowsEntered=%1, rounds=%2)")
+                                .arg(windowsEntered.load())
+                                .arg(kRounds)));
+
+        // 核心判据①：关闭期间不得接受任何新启动。
+        QVERIFY2(startedDuringClose.load() == 0,
+                 qPrintable(QStringLiteral("startSingle() must be rejected while shutdown() is in progress "
+                                           "(accepted=%1/%2): clearing m_quitRequested in ensureThreadLocked() "
+                                           "lets a closing service run a brand-new job")
+                                .arg(startedDuringClose.load())
+                                .arg(windowsEntered.load())));
+
+        // 核心判据②（更直接）：关闭期间模块一次都不能执行。
+        QVERIFY2(runsDuringClose.load() == 0,
+                 qPrintable(QStringLiteral("no module may run while shutdown() is in progress (runs=%1/%2)")
+                                .arg(runsDuringClose.load())
+                                .arg(windowsEntered.load())));
+
+        guard.finish();
+    }
+    // T2.5 P1 第九次整改（2026-11-12 第八段复核 P1）：**第二次 shutdown() 不得提前
+    // 解除第一次关闭的保护**。
+    //
+    // 缺陷机理（复核独立探针 3/3）：shutdown() 入口只置 m_shutdownInProgress=true，
+    // 没有检查是否已有一次关闭持有者。第一次关闭者正持有旧 worker 等在
+    // joinWorkerThread() 的 thread->wait() 里时，第二次调用看到 m_thread 已被摘走、
+    // retiring/inflight 均为空，便一路走到成功结尾：返回 true、清掉标记、报告
+    // 「清理已完成」。随后新启动被接受并真正执行，而第一次关闭者仍持旧 worker。
+    //
+    // 契约：**关闭权是排他的**。重入调用既不得清除原关闭者的标记，也不得报告完成；
+    // 只有取得关闭权的那次调用可以在收尾后清除标记并恢复服务。
+    //
+    // 本用例用 worker 退出屏障把第一次 shutdown() 确定性停在关闭段中间，再叠加第二次
+    // shutdown() + 一次启动请求，断言：第二次不得返回 true、启动必须被拒绝、模块不得
+    // 执行。判据只依赖屏障这一确定性停靠点，不靠 sleep 撞时序窗口。
+    void testSecondShutdownMustNotReleaseFirstShutdownGuard() {
+        RunEngine& engine = RunEngine::instance();
+        FlowExecutionService& service = FlowExecutionService::instance();
+        ServiceProbeModule probe(QStringLiteral("ShutdownOwnerProbe"));
+        QVERIFY(probe.initialize());
+        engine.addModule(&probe);
+        engine.setModuleExecutionAffinityForTest(QStringLiteral("ShutdownOwnerProbe"), ExecutionAffinity::Worker);
+
+        constexpr int kRounds = 3;
+        std::atomic_int windowsEntered{0};   // 第一次 shutdown 被停在关闭段中间的次数
+        std::atomic_int secondShutdownOk{0}; // 第二次 shutdown 谎报完成（缺陷）
+        std::atomic_int restartAccepted{0};  // 保护被提前解除后启动被接受（缺陷）
+        std::atomic_int runsDuringGuard{0};  // 关闭期间模块真的执行（缺陷，更直接）
+        std::atomic_int firstShutdownOkRounds{0};
+
+        QSemaphore workerHeldAtExit;
+        QSemaphore releaseWorkerExit;
+        std::atomic_bool holdWorkerExit{false};
+
+        service.setWorkerExitBarrierForTest([&] {
+            if (!holdWorkerExit.load(std::memory_order_acquire)) {
+                return;
+            }
+            workerHeldAtExit.release();
+            // 有界：任何失败路径下 worker 都能自行退出，不会让用例挂死。
+            releaseWorkerExit.tryAcquire(1, 10000);
+        });
+
+        std::thread shutdownThread;
+        std::atomic_bool shutdownDone{false};
+        std::atomic_bool shutdownOkFlag{false};
+
+        ServiceContractCleanupGuard guard{&service,
+                                          QMetaObject::Connection(),
+                                          [&] {
+                                              holdWorkerExit.store(false, std::memory_order_release);
+                                              releaseWorkerExit.release();
+                                          },
+                                          [&] { service.clearWorkerExitBarrierForTest(); },
+                                          &shutdownThread,
+                                          true};
+
+        for (int round = 0; round < kRounds; ++round) {
+            // 每轮从 Idle 起，并先建立一个常驻 worker，使第一次 shutdown() 的 Idle
+            // 路径确实有 worker 要 join（也就有退出屏障可停）。
+            QElapsedTimer idle;
+            idle.start();
+            while (service.isActive() && idle.elapsed() < 1500) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                QThread::msleep(1);
+            }
+            if (service.isActive()) {
+                break;
+            }
+            const int runsBefore = probe.runs.load();
+            {
+                QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
+                QVERIFY(service.startSingle());
+                QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+                QTRY_COMPARE_WITH_TIMEOUT(service.state(), FlowExecutionService::State::Idle, 5000);
+            }
+            QCOMPARE(probe.runs.load(), runsBefore + 1);
+
+            shutdownDone.store(false, std::memory_order_release);
+            shutdownOkFlag.store(false, std::memory_order_release);
+            holdWorkerExit.store(true, std::memory_order_release);
+            if (shutdownThread.joinable()) {
+                shutdownThread.join();
+            }
+            shutdownThread = std::thread([&] {
+                const bool ok = service.shutdown();
+                shutdownOkFlag.store(ok, std::memory_order_release);
+                shutdownDone.store(true, std::memory_order_release);
+            });
+
+            // 第一次 shutdown 已进入关闭段中间：worker 停在退出屏障、等待 join。
+            const bool heldInClose = workerHeldAtExit.tryAcquire(1, 3000);
+            if (heldInClose) {
+                ++windowsEntered;
+
+                // **核心动作 1**：第一次关闭者仍持有旧 worker 时，叠加第二次 shutdown()。
+                // 契约：它不是关闭权持有者，既不得清除保护，也不得报告清理完成。
+                const bool secondOk = service.shutdown();
+                if (secondOk) {
+                    ++secondShutdownOk;
+                }
+
+                // **核心动作 2**：紧接着发起一次启动。若第二次 shutdown 提前清掉了
+                // 保护，这次启动会被接受并真的执行模块。
+                const int runsAtProbe = probe.runs.load();
+                const bool accepted = service.startSingle();
+                if (accepted) {
+                    ++restartAccepted;
+                }
+                const bool engineBusy = service.isActive();
+                QElapsedTimer grace;
+                grace.start();
+                while (grace.elapsed() < 150 && engineBusy) {
+                    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                    QThread::msleep(1);
+                }
+                if (probe.runs.load() != runsAtProbe) {
+                    ++runsDuringGuard;
+                }
+                qInfo("[P1-SHUTDOWN-OWNER] round %d: secondShutdownOk=%d restartAccepted=%d runsDelta=%d", round,
+                      secondOk ? 1 : 0, accepted ? 1 : 0, probe.runs.load() - runsAtProbe);
+            }
+
+            // 放行旧 worker，让第一次 shutdown 收敛；确认它最终真正完成。
+            holdWorkerExit.store(false, std::memory_order_release);
+            releaseWorkerExit.release();
+            {
+                QElapsedTimer waitDone;
+                waitDone.start();
+                while (!shutdownDone.load(std::memory_order_acquire) && waitDone.elapsed() < 15000) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
+            if (shutdownThread.joinable()) {
+                shutdownThread.join();
+            }
+            if (shutdownOkFlag.load(std::memory_order_acquire)) {
+                ++firstShutdownOkRounds;
+            }
+
+            // 收尾：把缺陷态下可能已被接受并执行的 job 收敛掉，保证下一轮前置干净。
+            service.stop();
+            QElapsedTimer settle;
+            settle.start();
+            while (service.isActive() && settle.elapsed() < 3000) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                QThread::msleep(1);
+            }
+        }
+
+        if (shutdownThread.joinable()) {
+            shutdownThread.join();
+        }
+        service.clearWorkerExitBarrierForTest();
+
+        // 正向前提：服务在关闭完成后恢复可用（防止修复把排他保护标记永久置位）。
+        service.stop();
+        {
+            QElapsedTimer settle;
+            settle.start();
+            while (service.isActive() && settle.elapsed() < 3000) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+                QThread::msleep(1);
+            }
+        }
+        const bool restartAfterRelease = service.startSingle();
+        QVERIFY2(restartAfterRelease,
+                 "the service must be usable again after the first shutdown completes "
+                 "(the exclusive shutdown guard must be released by its owner)");
+
+        qInfo("[P1-SHUTDOWN-OWNER] rounds=%d windowsEntered=%d secondShutdownOk=%d restartAccepted=%d "
+              "runsDuringGuard=%d firstShutdownOkRounds=%d",
+              kRounds, windowsEntered.load(), secondShutdownOk.load(), restartAccepted.load(),
+              runsDuringGuard.load(), firstShutdownOkRounds.load());
+
+        QVERIFY2(windowsEntered.load() >= 1,
+                 qPrintable(QStringLiteral("the case must catch the first shutdown inside its close section "
+                                           "before it returns (windowsEntered=%1, rounds=%2)")
+                                .arg(windowsEntered.load())
+                                .arg(kRounds)));
+        QVERIFY2(firstShutdownOkRounds.load() >= 1,
+                 qPrintable(QStringLiteral("the first shutdown must eventually complete successfully "
+                                           "(firstShutdownOkRounds=%1)")
+                                .arg(firstShutdownOkRounds.load())));
+        QVERIFY2(secondShutdownOk.load() == 0,
+                 qPrintable(QStringLiteral("a reentrant shutdown() must not report completed cleanup while the "
+                                           "first shutdown still owns the close (secondShutdownOk=%1/%2)")
+                                .arg(secondShutdownOk.load())
+                                .arg(windowsEntered.load())));
+        QVERIFY2(restartAccepted.load() == 0,
+                 qPrintable(QStringLiteral("a second shutdown must not release the first shutdown's guard "
+                                           "(restartAccepted=%1/%2)")
+                                .arg(restartAccepted.load())
+                                .arg(windowsEntered.load())));
+        QVERIFY2(runsDuringGuard.load() == 0,
+                 qPrintable(QStringLiteral("no module may run while the first shutdown is still in progress "
+                                           "(runs=%1/%2)")
+                                .arg(runsDuringGuard.load())
+                                .arg(windowsEntered.load())));
+
+        guard.finish();
+    }
+
 };
 
 QTEST_MAIN(TestFlowExecutionService)
