@@ -43,8 +43,10 @@ public:
     void setMaxFileBytesForTest(int bytes);
     void setRetentionDaysForTest(int days);
     void resetForTest();
+
+public:
     QString currentFilePath() const;
-    int droppedRecords() const {
+    DEEPLUX_TEST_VISIBILITY : int droppedRecords() const {
         return m_droppedRecords;
     }
 

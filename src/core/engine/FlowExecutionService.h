@@ -11,6 +11,7 @@
 #include <QWaitCondition>
 #include <atomic>
 #include <functional>
+#include <type_traits>
 
 namespace DeepLux {
 
@@ -73,61 +74,64 @@ public:
     // 保证 closeEvent/启动路径不被拖住，且不会留下“稍后执行”的 pending job。
     static constexpr int StartHandshakeTimeoutMs = 100;
 
+#ifdef DEEPLUX_BUILD_TESTS
+private:
+    friend class FlowExecutionServiceTestAccess;
     // 后台执行（B7）测试注入：worker 在 beginExternalJob 之前的启动协议内执行该钩子，
     // 用于确定性验证启动握手的等待上限与超时语义（生产构建该钩子恒为空）。
-    DEEPLUX_TEST_VISIBILITY : void setStartHandshakeHookForTest(std::function<void()> hook);
-    DEEPLUX_TEST_VISIBILITY : void clearStartHandshakeHookForTest();
+    void setStartHandshakeHookForTest(std::function<void()> hook);
+    void clearStartHandshakeHookForTest();
 
     // T2.1：worker 退出等待的诊断阈值（默认 10s）。仅用于告警，不作为强杀或 detach 依据。
     // 注入短值便于测试确定性地触发诊断路径。
-    DEEPLUX_TEST_VISIBILITY : void setShutdownDeadlineForTest(int msecs);
-    DEEPLUX_TEST_VISIBILITY : int shutdownDeadlineHitCountForTest() const;
+    void setShutdownDeadlineForTest(int msecs);
+    int shutdownDeadlineHitCountForTest() const;
 
     // T2.1 整改：worker 退出屏障。workerLoop() 返回后、QThread::run() 结束前由工作线程
     // 调用；钩子在**不持有 m_mutex** 时执行，使 NF 能确定性保证「诊断先于 worker 退出、
     // shutdown 等 worker 真正退出后才返回」。生产构建该钩子恒为空。
-    DEEPLUX_TEST_VISIBILITY : void setWorkerExitBarrierForTest(std::function<void()> hook);
-    DEEPLUX_TEST_VISIBILITY : void clearWorkerExitBarrierForTest();
+    void setWorkerExitBarrierForTest(std::function<void()> hook);
+    void clearWorkerExitBarrierForTest();
 
     // T2.5：收尾段故障注入。普通 C++ 回调，锁内快照、锁外调用；每个 job 只在收尾入口
     // 调用一次，恢复/重试路径不得再次触发。钩子存储在 .cpp 的私有测试状态中，**不新增
-    // 类数据成员**，FlowExecutionService 的类布局/ABI 保持不变；DEEPLUX_TEST_VISIBILITY
-    // 只控制访问权限。生产构建不会设置该钩子，恒为空。
-    DEEPLUX_TEST_VISIBILITY : void setJobTeardownHookForTest(std::function<void()> hook);
-    DEEPLUX_TEST_VISIBILITY : void clearJobTeardownHookForTest();
+    // 类数据成员**，FlowExecutionService 的类布局/ABI 保持不变；BUILD_TESTS=OFF 时该 API
+    // 与注入路径均不编译。
+    void setJobTeardownHookForTest(std::function<void()> hook);
+    void clearJobTeardownHookForTest();
 
     // T2.5 P1：workerLoop() 骨架故障注入。普通 C++ 回调，锁内快照、锁外调用；每轮
     // 循环入口最多调用一次。钩子同样存放于 .cpp 的私有测试状态，**不新增类数据成员**，
     // 类布局/ABI 保持不变。抛出即等价于 workerLoop() 自身（取队列/加锁）抛出 C++ 异常，
     // 用于验证线程入口兜底后的命令清理与线程安全重建。生产构建不会设置，恒为空。
-    DEEPLUX_TEST_VISIBILITY : void setWorkerLoopFaultHookForTest(std::function<void()> hook);
-    DEEPLUX_TEST_VISIBILITY : void clearWorkerLoopFaultHookForTest();
+    void setWorkerLoopFaultHookForTest(std::function<void()> hook);
+    void clearWorkerLoopFaultHookForTest();
 
     // T2.5 P1 第六次整改：有界回收进入 `thread->wait()` **之前**的注入点。普通 C++ 回调，
     // 在回收调用线程上、**不持锁**执行；每次回收最多调用一次。用于把回收调用稳定地停在
     // 「借用已生效、等待尚未开始」的位置，使并发 shutdown() 的窗口可确定性构造，
     // 而不是靠 sleep 撞时序。钩子存放于 .cpp 私有测试状态，**不新增类数据成员**。
-    DEEPLUX_TEST_VISIBILITY : void setReclaimWaitHookForTest(std::function<void()> hook);
-    DEEPLUX_TEST_VISIBILITY : void clearReclaimWaitHookForTest();
+    void setReclaimWaitHookForTest(std::function<void()> hook);
+    void clearReclaimWaitHookForTest();
 
     /// 测试观测：当前活跃的回收借用总数。
     ///
     /// 判据必须看「借用何时归还」，而不是「startSingle() 何时返回」——后者可以被
     /// 正确实现合法地推迟（例如借用在归还后又走了握手），把它当判据会误判。
-    DEEPLUX_TEST_VISIBILITY : int activeReclaimBorrowCountForTest() const;
+    int activeReclaimBorrowCountForTest() const;
 
     /// 测试注入点：在「移交指针 + 登记借用」的**同一临界区之内**触发，用于验证
     /// 「shutdown() 看不到借用数为零的中间态」。回调在**持锁**状态下调用，
     /// 因此实现里不得再取 m_mutex，也不得阻塞等待其他需要 m_mutex 的线程。
-    DEEPLUX_TEST_VISIBILITY : void setInCriticalSectionHookForTest(std::function<void()> hook);
-    DEEPLUX_TEST_VISIBILITY : void clearInCriticalSectionHookForTest();
+    void setInCriticalSectionHookForTest(std::function<void()> hook);
+    void clearInCriticalSectionHookForTest();
 
     /// 测试观测：**不变量探针** —— 若此刻 m_inflightReclaim 非空，则其中每条线程
     /// 都必须已有 ≥1 笔活跃借用。返回违规条数（0 表示不变量成立）。
     ///
     /// 这是「借用登记与指针移交同临界区」的**直接**判据，不依赖任何时序窗口：
     /// 只要存在「已移入 inflight 但借用量为 0」的瞬间，本探针就能在锁内抓到。
-    DEEPLUX_TEST_VISIBILITY : int inflightWithoutBorrowCountForTest() const;
+    int inflightWithoutBorrowCountForTest() const;
 
     /// 测试观测：此刻仍**在使用** worker 的回收调用个数（借用的作用域计数）。
     ///
@@ -137,7 +141,10 @@ public:
     ///   用它判「shutdown 有没有等」，缺陷态也会全绿（第 17 章记录的无效判据）。
     /// - 本探针数的是「借用守卫是否还在作用域内」，它与 shutdown() 的等待**没有**先后
     ///   耦合假设：缺陷态下 shutdown() 不等就删，回收守卫仍在作用域内，这里必然 >0。
-    DEEPLUX_TEST_VISIBILITY : int liveReclaimGuardCountForTest() const;
+    int liveReclaimGuardCountForTest() const;
+
+public:
+#endif
 
 signals:
     void jobStateChanged(FlowExecutionService::State state, FlowExecutionService::JobType job);
@@ -173,11 +180,10 @@ private:
     bool stopRequested() const;
     bool pauseRequested() const;
     bool quitRequested() const;
-    // T2.1 整改：锁内快照退出屏障钩子、锁外调用；由 WorkerThread::run() 在退出前调用。
+#ifdef DEEPLUX_BUILD_TESTS
     void runWorkerExitBarrierForTest();
-
-    /// 锁内快照、锁外调用回收等待钩子（见 setReclaimWaitHookForTest）。
     void runReclaimWaitHookForTest();
+#endif
 
     void commitState(State state, JobType job);
     // 启动握手：enqueue 等待工作者完成“取得 job 租约并提交 Running / 启动失败”，
@@ -321,17 +327,24 @@ private:
     bool m_resumeRequested = false;
     bool m_startSettled = true;
     bool m_startOk = false;
-    // B7：启动握手超时诊断/测试钩子（钩子仅在持有本地副本时于工作线程执行）。
+#ifdef DEEPLUX_BUILD_TESTS
     std::function<void()> m_testStartHook;
     // T2.1 整改：worker 退出屏障（仅测试注入）；为空时生产行为不变。
     std::function<void()> m_testWorkerExitBarrier;
+#else
+    std::aligned_storage_t<sizeof(std::function<void()>), alignof(std::function<void()>)> m_reservedTestHookSlots[2];
+#endif
     JobType m_pendingJob = JobType::None;
     RunEngine::JobToken m_leaseToken;
     std::atomic<int> m_state{static_cast<int>(State::Idle)};
     std::atomic<int> m_job{static_cast<int>(JobType::None)};
     // T2.1：worker 退出诊断阈值与命中计数（默认 10s；仅告警，不触发强杀/detach）。
+#ifdef DEEPLUX_BUILD_TESTS
     std::atomic<int> m_shutdownDeadlineMs{10000};
     std::atomic<int> m_shutdownDeadlineHits{0};
+#else
+    std::aligned_storage_t<sizeof(std::atomic<int>), alignof(std::atomic<int>)> m_reservedDeadlineSlots[2];
+#endif
     std::atomic_bool m_lastJobStopped{false};
     std::atomic<quint64> m_jobSerialSeq{0};
     std::atomic<quint64> m_currentJobSerial{0};

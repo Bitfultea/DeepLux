@@ -1,3 +1,4 @@
+#include <core/engine/EngineTestSupport.h>
 #define DEEPLUX_BUILD_TESTS 1
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentRunWaiter.h"
@@ -645,8 +646,8 @@ private slots:
         RunEngine::instance().addModule(&module);
         // 后台执行（设计 §6.2）：未注册探针默认 gui，会经 BlockingQueuedConnection 回到 GUI
         // 线程并阻塞事件循环；本用例验证 Agent 非阻塞返回语义，故显式标记 worker 亲和。
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
 
         QElapsedTimer elapsed;
         elapsed.start();
@@ -996,8 +997,8 @@ private slots:
         RunEngine::instance().addModule(&blocking);
         // 后台执行（设计 §8.2）：服务工作者线程执行探针须 worker 亲和内联，
         // 否则探针会阻塞 GUI 事件循环，等待超时无法按时触发。
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
 
         QElapsedTimer timer;
         timer.start();
@@ -1262,7 +1263,8 @@ private slots:
 
         UnsupportedPortModule module;
         QVERIFY(module.initialize());
-        RunEngine::instance().setNodePortOutputsForTest(QStringLiteral("grab"), module.customOutputs());
+        RunEngineTestAccess(RunEngine::instance())
+            .setNodePortOutputsForTest(QStringLiteral("grab"), module.customOutputs());
         const QJsonObject result = actor.executeTool("get_node_runtime_outputs", QJsonObject{{"nodeName", "grab"}});
         QVERIFY2(!result.contains("error"), qPrintable(result.value("error").toString()));
         QVERIFY(result.contains("unsupportedPorts"));
@@ -1277,8 +1279,8 @@ private slots:
         CountingAgentModule probe(QStringLiteral("AgentWorker"));
         QVERIFY(probe.initialize());
         RunEngine::instance().addModule(&probe);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("AgentWorker"),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("AgentWorker"), ExecutionAffinity::Worker);
 
         const QJsonObject run = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", true}});
         QVERIFY2(run.value("success").toBool(),
@@ -1304,9 +1306,12 @@ private slots:
         engine.addModule(&second);
         engine.addModule(&third);
         // 后台服务工作者线程执行探针须 worker 亲和内联（探针默认 gui）。
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("AgentB"), ExecutionAffinity::Worker);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("AgentC"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
+                                                                      ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("AgentB"),
+                                                                      ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("AgentC"),
+                                                                      ExecutionAffinity::Worker);
 
         const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
         QCOMPARE(started.value("status").toString(), QStringLiteral("started"));
@@ -1335,8 +1340,8 @@ private slots:
         BlockingAgentModule blocking(3000);
         QVERIFY(blocking.initialize());
         RunEngine::instance().addModule(&blocking);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
 
         const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
         QCOMPARE(started.value("status").toString(), QStringLiteral("started"));
@@ -1354,8 +1359,8 @@ private slots:
         BlockingAgentModule blocking(3000);
         QVERIFY(blocking.initialize());
         RunEngine::instance().addModule(&blocking);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
 
         // 验收建议的定时器触发路径；等待本身由 AgentRunWaiter 的事件循环与信号屏障驱动。
         QTimer::singleShot(100, this, [&actor]() { actor.abortRunningTool(); });
@@ -1373,8 +1378,8 @@ private slots:
         CountingAgentModule probe(QStringLiteral("AgentCycle"));
         QVERIFY(probe.initialize());
         RunEngine::instance().addModule(&probe);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("AgentCycle"),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("AgentCycle"), ExecutionAffinity::Worker);
 
         const QJsonObject cycle = actor.executeTool("run_flow", QJsonObject{{"mode", "cycle"}});
         QCOMPARE(cycle.value("status").toString(), QStringLiteral("started"));

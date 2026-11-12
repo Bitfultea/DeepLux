@@ -56,6 +56,7 @@
 #include <core/agent/AgentController.h>
 #include <core/base/ModuleBase.h>
 #include <core/deeplux/PayloadTypes.h>
+#include <core/engine/EngineTestSupport.h>
 #include <core/engine/FlowExecutionService.h>
 #include <core/engine/FlowGraphAnalyzer.h>
 #include <core/engine/RunEngine.h>
@@ -587,7 +588,7 @@ void TestMainWindow::init() {
     RunEngine::instance().clearModules();
     RunEngine::instance().clearOutputs();
     // B7：上一个用例可能留下后台 job；先停再等收尾，保证每个用例从 Service Idle 开始。
-    FlowExecutionService::instance().clearStartHandshakeHookForTest();
+    FlowExecutionServiceTestAccess(FlowExecutionService::instance()).clearStartHandshakeHookForTest();
     FlowExecutionService::instance().stop();
     QVERIFY(waitForServiceIdle());
     // 默认插件目录重定向到临时目录，避免每个 MainWindow 实例都扫描
@@ -599,7 +600,7 @@ void TestMainWindow::init() {
 void TestMainWindow::cleanup() {
     ProjectManager::instance().closeProject();
     PluginManager::instance().shutdown();
-    FlowExecutionService::instance().clearStartHandshakeHookForTest();
+    FlowExecutionServiceTestAccess(FlowExecutionService::instance()).clearStartHandshakeHookForTest();
     FlowExecutionService::instance().stop();
     QVERIFY(waitForServiceIdle());
     RunEngine::instance().stop();
@@ -3933,8 +3934,9 @@ void TestMainWindow::testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns() {
     // BlockingQueuedConnection 无法被服务，会让运行卡在第一个模块上。
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
     QVERIFY(waitForServiceIdle());
-    RunEngine::instance().setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
-    RunEngine::instance().setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance()).setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance())
+        .setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
 
     QSignalSpy jobSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
     QTest::mouseClick(runButton, Qt::LeftButton);
@@ -4293,7 +4295,8 @@ void TestMainWindow::testStepRunExecutesExactlyOneModulePerClick() {
     QVERIFY(waitForServiceIdle());
     QCOMPARE(executionLog.size(), 1);
 
-    RunEngine::instance().setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance())
+        .setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
     QTest::mouseClick(stepButton, Qt::LeftButton);
     QVERIFY2(blockingProbe->entered.tryAcquire(1, 5000), "second step must run the blocking module");
     QCOMPARE(FlowExecutionService::instance().state(), FlowExecutionService::State::Running);
@@ -4414,8 +4417,9 @@ void TestMainWindow::testCloseDeferredUntilRunningJobFinishes() {
     // BlockingQueuedConnection 无法被服务，运行会卡在第一个模块上。
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
     QVERIFY(waitForServiceIdle());
-    RunEngine::instance().setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
-    RunEngine::instance().setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance()).setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance())
+        .setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
 
     QTest::mouseClick(runButton, Qt::LeftButton);
     QVERIFY2(blockingProbe->entered.tryAcquire(1, 5000), "worker module must enter execution");
@@ -4465,8 +4469,9 @@ void TestMainWindow::testStartHandshakeTimeoutLeavesNoPendingJob() {
 
     // 确定性延迟 worker 的启动协议：握手等待上限被压到 100ms，不能被 5s 阻塞。
     QSemaphore neverReleased;
-    FlowExecutionService::instance().setStartHandshakeHookForTest(
-        [&neverReleased]() { neverReleased.tryAcquire(1, 400); });
+    FlowExecutionServiceTestAccess(FlowExecutionService::instance()).setStartHandshakeHookForTest([&neverReleased]() {
+        neverReleased.tryAcquire(1, 400);
+    });
 
     QElapsedTimer startTimer;
     startTimer.start();
@@ -4479,7 +4484,7 @@ void TestMainWindow::testStartHandshakeTimeoutLeavesNoPendingJob() {
              "timed-out handshake must not leave a running job");
     QTRY_COMPARE(runButton->text(), QStringLiteral("运行"));
 
-    FlowExecutionService::instance().clearStartHandshakeHookForTest();
+    FlowExecutionServiceTestAccess(FlowExecutionService::instance()).clearStartHandshakeHookForTest();
     QVERIFY(waitForServiceIdle());
     // 握手超时不得留下“将执行的 pending”：启动即被停止，模块一次都没执行。
     QVERIFY2(executionLog.isEmpty(), "timed-out start must not execute modules");
@@ -4505,7 +4510,8 @@ void TestMainWindow::testAgentRunTimeoutDoesNotBlockGuiThread() {
     MainWindowSlowCancelProbe probe(250);
     QVERIFY(probe.initialize());
     RunEngine::instance().addModule(&probe);
-    RunEngine::instance().setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance())
+        .setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
 
     bool runFlowReturned = false;
     bool queuedTaskRanDuringWait = false;
@@ -4583,8 +4589,9 @@ void TestMainWindow::testServiceUserPauseUpdatesRunControls() {
     // （断言会阻塞 GUI 线程等待 entered，gui 亲和模块的 BlockingQueuedConnection 无法被服务）。
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
     QVERIFY(waitForServiceIdle());
-    RunEngine::instance().setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
-    RunEngine::instance().setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance()).setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance())
+        .setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
 
     QSignalSpy jobSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
     QTest::mouseClick(runButton, Qt::LeftButton);
@@ -4769,7 +4776,8 @@ void TestMainWindow::testDelayedQueueThroughRealMainWindowConnections() {
     module.distinctImages = true; // 五次任务输出不同像素，才能识别「画面来自最后任务」
     QVERIFY(module.initialize());
     engine.addModule(&module);
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("t26_real_probe"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("t26_real_probe"),
+                                                                  ExecutionAffinity::Worker);
     engine.setDisplayCaptureEnabled(true);
 
     ViewportWidget* viewport = window.findChild<ViewportWidget*>();
@@ -5391,7 +5399,7 @@ void TestMainWindow::testDisplayOrderReorderKeepsEngineDataOrder() {
     fixture.treeController->applyExecutionOrder(computed.displayOrder);
     QCOMPARE(treeInstanceIds(*fixture.tree), computed.displayOrder);
     QVERIFY(syncEngine(window, fixture.treeController));
-    QCOMPARE(RunEngine::instance().executionOrderForTest(), computed.dataOrder);
+    QCOMPARE(RunEngineTestAccess(RunEngine::instance()).executionOrderForTest(), computed.dataOrder);
 
     // 再次改变树顺序并重新同步：引擎顺序不随展示顺序漂移（P0-3）。
     fixture.treeController->applyExecutionOrder(
@@ -5399,7 +5407,7 @@ void TestMainWindow::testDisplayOrderReorderKeepsEngineDataOrder() {
     QCOMPARE(treeInstanceIds(*fixture.tree),
              QStringList({QStringLiteral("B"), QStringLiteral("C"), QStringLiteral("A")}));
     QVERIFY(syncEngine(window, fixture.treeController));
-    QCOMPARE(RunEngine::instance().executionOrderForTest(), computed.dataOrder);
+    QCOMPARE(RunEngineTestAccess(RunEngine::instance()).executionOrderForTest(), computed.dataOrder);
 
     // 真实 GUI 拖动分发在含控制边的图上被拒绝，同样不改变工程数据与引擎顺序。
     const QString fingerprintBefore = fixture.project->structureFingerprint();
@@ -5407,7 +5415,7 @@ void TestMainWindow::testDisplayOrderReorderKeepsEngineDataOrder() {
     QVERIFY(!rejection.isEmpty());
     QCOMPARE(fixture.project->structureFingerprint(), fingerprintBefore);
     QVERIFY(syncEngine(window, fixture.treeController));
-    QCOMPARE(RunEngine::instance().executionOrderForTest(), computed.dataOrder);
+    QCOMPARE(RunEngineTestAccess(RunEngine::instance()).executionOrderForTest(), computed.dataOrder);
 
     RunEngine::instance().clearModules();
 }
@@ -5520,7 +5528,7 @@ void TestMainWindow::testConnectedLinearChainReorderReconnectsAndSyncsEngine() {
     QCOMPARE(connectionKeys(fixture.project->connections()),
              QStringList({QStringLiteral("C.image>A.image:data"), QStringLiteral("A.image>B.image:data")}));
     QCOMPARE(treeInstanceIds(*fixture.tree), reordered);
-    QCOMPARE(RunEngine::instance().executionOrderForTest(), reordered);
+    QCOMPARE(RunEngineTestAccess(RunEngine::instance()).executionOrderForTest(), reordered);
 
     fixture.undoStack->undo();
     QCOMPARE(projectModuleIds(*fixture.project),
@@ -5529,12 +5537,12 @@ void TestMainWindow::testConnectedLinearChainReorderReconnectsAndSyncsEngine() {
     QCOMPARE(treeInstanceIds(*fixture.tree),
              QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}));
     QCOMPARE(fixture.project->structureFingerprint(), fingerprintBefore);
-    QCOMPARE(RunEngine::instance().executionOrderForTest(),
+    QCOMPARE(RunEngineTestAccess(RunEngine::instance()).executionOrderForTest(),
              QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}));
 
     fixture.undoStack->redo();
     QCOMPARE(projectModuleIds(*fixture.project), reordered);
-    QCOMPARE(RunEngine::instance().executionOrderForTest(), reordered);
+    QCOMPARE(RunEngineTestAccess(RunEngine::instance()).executionOrderForTest(), reordered);
 
     RunEngine::instance().clearModules();
 }

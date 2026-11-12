@@ -605,9 +605,11 @@ bool RunEngine::tryBeginForRun(RunIntent intent, bool& resuming, QString& resume
         }
         // 设计 §5.3 窗口屏障：钩子在"完成停止/owner/取消标志校验之后、状态提交之前"执行。
         // 钩子内 stop() 经递归锁重入并置 job 级取消标志；随后的同锁复核拒绝本次启动。
+#ifdef DEEPLUX_BUILD_TESTS
         if (m_testBeforeJobStartHook) {
             m_testBeforeJobStartHook();
         }
+#endif
         if (!validateJobStartLocked(*jobToken, rejectReason)) {
             return false;
         }
@@ -724,9 +726,11 @@ void RunEngine::ExecutionFinalizer::finish(ExecutionOutcome outcome) {
 void RunEngine::finalizeExecution(ExecutionOutcome outcome, bool clearControlGraph, bool resetStepStateOnStop) {
     // 后台执行（设计 §5.3）：收尾前先跑测试钩子（用于把 stop 落在收尾窗口内的确定性用例），
     // 钩子在锁外执行，stop() 可正常获取生命周期锁。
+#ifdef DEEPLUX_BUILD_TESTS
     if (m_testFinalizeHook) {
         m_testFinalizeHook();
     }
+#endif
     // 阶6 七轮（P0-1）：清理+最终状态提交+执行权释放同一临界区，避免"先释放执行权
     // 再设 Idle"窗口被新一轮运行插入后覆盖；stop 判定与终态提交同锁，保证 stop 优先。
     QMutexLocker locker(&m_lifecycleMutex);
@@ -781,6 +785,7 @@ void RunEngine::finalizeExecution(ExecutionOutcome outcome, bool clearControlGra
     }
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 void RunEngine::setFinalizeHookForTest(std::function<void()> hook) {
     m_testFinalizeHook = std::move(hook);
 }
@@ -808,6 +813,7 @@ void RunEngine::setExecutionFaultInjectionForTest(std::function<void()> hook) {
 void RunEngine::clearExecutionFaultInjectionForTest() {
     m_testFaultInjection = nullptr;
 }
+#endif
 
 bool RunEngine::tryAcquireLease() {
     // 公开并行原语 executeParallel 的排他租约：与执行/维护互斥，且**循环运行/
@@ -1074,6 +1080,7 @@ bool RunEngine::pauseForJob(const JobToken& token) {
     return true;
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 bool RunEngine::isExternalJobActiveForTest() const {
     return m_externalJobActive.load(std::memory_order_acquire);
 }
@@ -1106,6 +1113,7 @@ int RunEngine::guiDispatchTimeoutHitCountForTest() const {
 int RunEngine::guiDispatchRunningWaitEnteredCountForTest() const {
     return m_guiDispatchRunningWaitHits.load(std::memory_order_acquire);
 }
+#endif
 
 void RunEngine::addModuleLocked(ModuleBase* module) {
     QWriteLocker locker(&m_moduleLock);
@@ -1343,6 +1351,7 @@ void RunEngine::forgetExecutionAffinity(const QString& moduleName) {
     m_executionAffinity.remove(moduleName);
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 void RunEngine::setModuleExecutionAffinityForTest(const QString& moduleName, ExecutionAffinity affinity) {
     QMutexLocker locker(&m_affinityMutex);
     m_executionAffinity.insert(moduleName, affinity);
@@ -1352,6 +1361,7 @@ bool RunEngine::isParallelEligibleForTest(const QString& moduleName) const {
     ModuleBase* module = getModule(moduleName);
     return module && isParallelEligible(module);
 }
+#endif
 
 bool RunEngine::isParallelEligible(ModuleBase* module) const {
     if (!module) {
@@ -1539,9 +1549,11 @@ void RunEngine::executeAcquiredRunImpl(bool resuming, const QString& resumeModul
                                        RunMode mode, ExecutionFinalizer& finalizer) {
     // 后台执行（设计 §5.3）：测试构建可注入执行段故障（容器/回调/内存级异常由外层捕获，
     // 插件自身异常仍由 ModuleBase::execute 捕获）；生产构建该钩子恒为空。
+#ifdef DEEPLUX_BUILD_TESTS
     if (m_testFaultInjection) {
         m_testFaultInjection();
     }
+#endif
     if (!resuming) {
         {
             QReadLocker locker(&m_moduleLock);
@@ -2323,18 +2335,26 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
         // T2.2：GUI 回投改为自持有上下文 + 显式状态机。超时只取消尚未开始的回调；
         // 已进入 Running 的回调必须等其真正完成，期间模块与 job 租约保持有效。
         auto record = QSharedPointer<GuiDispatchRecord>::create();
+#ifdef DEEPLUX_BUILD_TESTS
         const int timeoutMs = m_guiDispatchTimeoutMs.load(std::memory_order_acquire);
+#else
+        constexpr int timeoutMs = 5000;
+#endif
         const quint64 generation = m_dispatchGeneration.load(std::memory_order_acquire);
         auto callback = [this, record, module, inputs = portInputs, ctx = execCtx, generation]() mutable {
             if (m_dispatchGeneration.load(std::memory_order_acquire) != generation) {
                 record->phase.store(GuiDispatchRecord::Cancelled, std::memory_order_release);
+#ifdef DEEPLUX_BUILD_TESTS
                 m_guiDispatchLateDrops.fetch_add(1, std::memory_order_relaxed);
+#endif
                 record->done.release();
                 return;
             }
             int expected = GuiDispatchRecord::Pending;
             if (!record->phase.compare_exchange_strong(expected, GuiDispatchRecord::Running)) {
+#ifdef DEEPLUX_BUILD_TESTS
                 m_guiDispatchLateDrops.fetch_add(1, std::memory_order_relaxed);
+#endif
                 record->done.release();
                 return;
             }
@@ -2346,10 +2366,12 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
             // 无事件循环/正在退出时不得静默跳过：模块按失败处理并记录（设计 §6.2）。
             const QString dispatchError = tr("GUI-thread module dispatch failed: %1").arg(moduleName);
             Logger::instance().warning(dispatchError, "Run");
+#ifdef DEEPLUX_BUILD_TESTS
             {
                 QMutexLocker locker(&m_guiDispatchMutex);
                 m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_failed");
             }
+#endif
             execResult =
                 ExecutionResult::fail(ExecError::Processing, dispatchError, QStringLiteral("affinity_dispatch_failed"));
         } else if (record->done.tryAcquire(1, timeoutMs)) {
@@ -2358,29 +2380,37 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
                 portOutputs = record->outputs;
             } else {
                 // 世代已变化：回调被整体作废，不采用其输出。
+#ifdef DEEPLUX_BUILD_TESTS
                 {
                     QMutexLocker locker(&m_guiDispatchMutex);
                     m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_cancelled");
                 }
+#endif
                 execResult = ExecutionResult::fail(ExecError::Processing,
                                                    tr("GUI-thread module dispatch cancelled: %1").arg(moduleName),
                                                    QStringLiteral("affinity_dispatch_cancelled"));
             }
         } else {
+#ifdef DEEPLUX_BUILD_TESTS
             m_guiDispatchTimeoutHits.fetch_add(1, std::memory_order_relaxed);
+#endif
             int expected = GuiDispatchRecord::Pending;
             const bool cancelled = record->phase.compare_exchange_strong(expected, GuiDispatchRecord::Cancelled);
             if (!cancelled && record->phase.load(std::memory_order_acquire) == GuiDispatchRecord::Running) {
                 // 回调已开始：不得销毁上下文或复用模块，等它真正结束。
+#ifdef DEEPLUX_BUILD_TESTS
                 m_guiDispatchRunningWaitHits.fetch_add(1, std::memory_order_relaxed);
+#endif
                 record->done.acquire();
             }
             Logger::instance().warning(
                 QString("GUI-thread module dispatch timed out after %1 ms: %2").arg(timeoutMs).arg(moduleName), "Run");
+#ifdef DEEPLUX_BUILD_TESTS
             {
                 QMutexLocker locker(&m_guiDispatchMutex);
                 m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_timeout");
             }
+#endif
             execResult = ExecutionResult::fail(ExecError::Processing,
                                                tr("GUI-thread module dispatch timed out: %1").arg(moduleName),
                                                QStringLiteral("affinity_dispatch_timeout"));
@@ -2606,10 +2636,12 @@ QMap<QString, RunEngine::ModuleRuntimeInfo> RunEngine::moduleRuntimeSnapshot() c
     return m_moduleRuntimeInfo;
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 void RunEngine::setNodePortOutputsForTest(const QString& moduleName, const PortValueMap& outputs) {
     QMutexLocker locker(&m_lifecycleMutex);
     m_nodeOutputs[moduleName] = outputs;
 }
+#endif
 
 PortValueMap RunEngine::nodePortOutputs(const QString& moduleName) const {
     if (isBusy()) {
@@ -2998,6 +3030,7 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
     return true;
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 QStringList RunEngine::executionOrderForTest() const {
     return m_executionOrder;
 }
@@ -3023,6 +3056,7 @@ QVariantMap RunEngine::loopMetadataForTest() const {
     metadata.insert(QStringLiteral("loopRegions"), regions);
     return metadata;
 }
+#endif
 
 QString RunEngine::findSiblingByFlowType(const QString& currentModule, ControlFlowType targetType) {
     QStringList order = m_executionOrder;

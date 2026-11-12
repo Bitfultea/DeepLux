@@ -1,3 +1,4 @@
+#include <core/engine/EngineTestSupport.h>
 #define DEEPLUX_BUILD_TESTS 1
 #include "core/base/ModuleBase.h"
 #include "core/engine/FlowExecutionService.h"
@@ -193,7 +194,8 @@ bool loadServiceFlow(ServiceFlow& flow, bool blockFirst, bool firstBreakpoint) {
     if (loaded) {
         // 探针未注册插件（默认 gui）：Service 工作线程执行必须以 worker 亲和内联执行。
         for (const QString& name : {QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}) {
-            RunEngine::instance().setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
+            RunEngineTestAccess(RunEngine::instance())
+                .setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
         }
     }
     return loaded;
@@ -223,8 +225,8 @@ struct ShutdownBarrierGuard {
             control->join();
         }
         // 3) 清除钩子并恢复默认阈值；必须在捕获的栈变量销毁前执行。
-        service->clearWorkerExitBarrierForTest();
-        service->setShutdownDeadlineForTest(originalDeadlineMs);
+        FlowExecutionServiceTestAccess(*service).clearWorkerExitBarrierForTest();
+        FlowExecutionServiceTestAccess(*service).setShutdownDeadlineForTest(originalDeadlineMs);
     }
 };
 
@@ -357,7 +359,8 @@ void verifyJobTeardownFaultRecovery(bool nonStandardException) {
     ServiceProbeModule probe;
     QVERIFY(probe.initialize());
     engine.addModule(&probe);
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                  ExecutionAffinity::Worker);
 
     QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
     QSignalSpy failedSpy(&service, &FlowExecutionService::jobFailed);
@@ -368,7 +371,7 @@ void verifyJobTeardownFaultRecovery(bool nonStandardException) {
     std::atomic_bool runningAtHook{false};
     std::atomic_bool displayIdSetAtHook{false};
 
-    service.setJobTeardownHookForTest([&] {
+    FlowExecutionServiceTestAccess(service).setJobTeardownHookForTest([&] {
         ++hookRuns;
         leaseHeldAtHook.store(engine.isBusy(), std::memory_order_release);
         runningAtHook.store(service.state() == FlowExecutionService::State::Running, std::memory_order_release);
@@ -379,7 +382,7 @@ void verifyJobTeardownFaultRecovery(bool nonStandardException) {
         throw std::runtime_error("injected teardown callback fault");
     });
 
-    const auto clearTeardownHook = [&] { service.clearJobTeardownHookForTest(); };
+    const auto clearTeardownHook = [&] { FlowExecutionServiceTestAccess(service).clearJobTeardownHookForTest(); };
     ServiceContractCleanupGuard guard{&service, {}, nullptr, clearTeardownHook, nullptr, true};
 
     QVERIFY2(service.startSingle(), "the job must start so the teardown hook runs with a lease");
@@ -400,7 +403,7 @@ void verifyJobTeardownFaultRecovery(bool nonStandardException) {
     QVERIFY2(error.contains(QStringLiteral("service_teardown_exception")), qPrintable(error));
 
     // 清除钩子后同一 Service 必须能再次完成一个任务。
-    service.clearJobTeardownHookForTest();
+    FlowExecutionServiceTestAccess(service).clearJobTeardownHookForTest();
     const int runsAfterFault = probe.runs.load();
     QSignalSpy nextFinished(&service, &FlowExecutionService::jobFinished);
     QVERIFY2(service.startSingle(), "the service must remain usable after a teardown fault");
@@ -420,8 +423,8 @@ private slots:
         RunEngine& engine = RunEngine::instance();
         FlowExecutionService& service = FlowExecutionService::instance();
         engine.stop();
-        engine.clearFinalizeHookForTest();
-        engine.clearExecutionFaultInjectionForTest();
+        RunEngineTestAccess(engine).clearFinalizeHookForTest();
+        RunEngineTestAccess(engine).clearExecutionFaultInjectionForTest();
         service.stop();
         QTRY_COMPARE_WITH_TIMEOUT(service.state(), FlowExecutionService::State::Idle, 5000);
         engine.stop();
@@ -435,7 +438,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
         QVERIFY(service.startSingle());
@@ -454,7 +458,8 @@ private slots:
         BlockingServiceProbe probe(QStringLiteral("BlockingProbe"));
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("BlockingProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("BlockingProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
         QVERIFY(service.startSingle());
@@ -479,8 +484,10 @@ private slots:
         QVERIFY(second.initialize());
         engine.addModule(&first);
         engine.addModule(&second);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("First"), ExecutionAffinity::Worker);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("Second"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("First"),
+                                                                      ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("Second"),
+                                                                      ExecutionAffinity::Worker);
 
         QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
         QVERIFY(service.stepOnce());
@@ -500,7 +507,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         // 停止时不产生下一轮：在 jobFinished 发出瞬间记录运行次数（DirectConnection 在工作者线程）。
         std::atomic<int> runsAtFinish{-1};
@@ -537,7 +545,8 @@ private slots:
         BlockingServiceProbe probe(QStringLiteral("BlockingProbe"));
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("BlockingProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("BlockingProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
         QVERIFY(service.startSingle());
@@ -561,7 +570,8 @@ private slots:
         BlockingServiceProbe probe(QStringLiteral("BlockingProbe"));
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("BlockingProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("BlockingProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
         QVERIFY(service.startSingle());
@@ -592,7 +602,8 @@ private slots:
         ServiceProbeModule probe(QStringLiteral("DeadlineProbe"));
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("DeadlineProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("DeadlineProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         // 先跑一次，确保常驻 worker 已创建并回到空闲等待。
         QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
@@ -600,9 +611,9 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
         QTRY_COMPARE_WITH_TIMEOUT(service.state(), FlowExecutionService::State::Idle, 5000);
 
-        const int baselineHits = service.shutdownDeadlineHitCountForTest();
+        const int baselineHits = FlowExecutionServiceTestAccess(service).shutdownDeadlineHitCountForTest();
         const int originalDeadlineMs = 10000;
-        service.setShutdownDeadlineForTest(0);
+        FlowExecutionServiceTestAccess(service).setShutdownDeadlineForTest(0);
 
         QSemaphore entered; // worker 已到达退出屏障
         QSemaphore release; // 独立控制线程放行
@@ -613,7 +624,7 @@ private slots:
         std::atomic<int> workerFinishedBeforeRelease{-1};
         std::atomic<int> workerAtBarrier{-1};
 
-        service.setWorkerExitBarrierForTest([&]() {
+        FlowExecutionServiceTestAccess(service).setWorkerExitBarrierForTest([&]() {
             // 该钩子在 WorkerThread::run() 内、workerLoop() 返回之后执行，且不持有 m_mutex。
             entered.release();
             // 有界等待：任何失败路径下 worker 都能自行退出，绝不 hang。
@@ -630,7 +641,8 @@ private slots:
             // 2) 有界等待本轮诊断计数增量；缺失诊断变体下不会命中，但仍有界放行。
             QElapsedTimer poll;
             poll.start();
-            while (service.shutdownDeadlineHitCountForTest() <= baselineHits && poll.elapsed() < 2000) {
+            while (FlowExecutionServiceTestAccess(service).shutdownDeadlineHitCountForTest() <= baselineHits &&
+                   poll.elapsed() < 2000) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
             // 3) 放行前的「提前返回」观测窗口（与 T2.2 已批准的有界窗口同构）：
@@ -663,14 +675,14 @@ private slots:
         // 收尾：控制线程内部等待均有界，join 不会挂死；随后清钩子、恢复阈值。
         control.join();
         guard.controlStarted = false;
-        service.clearWorkerExitBarrierForTest();
-        service.setShutdownDeadlineForTest(originalDeadlineMs);
+        FlowExecutionServiceTestAccess(service).clearWorkerExitBarrierForTest();
+        FlowExecutionServiceTestAccess(service).setShutdownDeadlineForTest(originalDeadlineMs);
 
         // —— 断言（顺序即 NF 判据顺序）——
         QVERIFY2(shutdownResult, "idle shutdown must join the worker and return true");
         QVERIFY2(elapsedMs < 5000, "shutdown must not hang waiting for the worker");
         QCOMPARE(workerAtBarrier.load(std::memory_order_acquire), 1);
-        QVERIFY2(service.shutdownDeadlineHitCountForTest() >= baselineHits + 1,
+        QVERIFY2(FlowExecutionServiceTestAccess(service).shutdownDeadlineHitCountForTest() >= baselineHits + 1,
                  "本轮 shutdown 必须记录有界诊断（计数增量 >= 1）");
         QCOMPARE(returnedBeforeRelease.load(std::memory_order_acquire), 0);
         QCOMPARE(workerFinishedBeforeRelease.load(std::memory_order_acquire), 0);
@@ -690,7 +702,8 @@ private slots:
         BlockingServiceProbe probe(QStringLiteral("BlockingProbe"));
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("BlockingProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("BlockingProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         QVERIFY(!service.pauseRun());
         QVERIFY(!service.continueRun());
@@ -766,7 +779,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         std::atomic<int> runsAtPause{-1};
         const QMetaObject::Connection conn = connect(
@@ -803,7 +817,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
         QVERIFY(service.startCycle());
@@ -826,7 +841,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         std::atomic<int> runsAtPause{-1};
         std::atomic<int> pausedCount{0};
@@ -889,7 +905,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         RunEngine::JobToken token;
         QVERIFY(engine.beginExternalJob(&token, nullptr));
@@ -907,9 +924,11 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
-        engine.setExecutionFaultInjectionForTest([]() { throw std::runtime_error("injected service job fault"); });
+        RunEngineTestAccess(engine).setExecutionFaultInjectionForTest(
+            []() { throw std::runtime_error("injected service job fault"); });
         QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
         QSignalSpy failedSpy(&service, &FlowExecutionService::jobFailed);
         QVERIFY(service.startSingle());
@@ -920,7 +939,7 @@ private slots:
         QVERIFY(!engine.isBusy());
         QCOMPARE(probe.runs.load(), 0); // 注入点在模块执行前
 
-        engine.clearExecutionFaultInjectionForTest();
+        RunEngineTestAccess(engine).clearExecutionFaultInjectionForTest();
         QSignalSpy nextSpy(&service, &FlowExecutionService::jobFinished);
         QVERIFY(service.startSingle());
         QTRY_COMPARE_WITH_TIMEOUT(nextSpy.count(), 1, 5000);
@@ -938,17 +957,20 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
         QSignalSpy failedSpy(&service, &FlowExecutionService::jobFailed);
         QVERIFY2(failedSpy.isValid(), "jobFailed must be observable");
 
-        service.setStartHandshakeHookForTest([] { throw std::runtime_error("injected startup callback fault"); });
+        FlowExecutionServiceTestAccess(service).setStartHandshakeHookForTest(
+            [] { throw std::runtime_error("injected startup callback fault"); });
 
         // 失败路径收尾：清除捕获栈变量的钩子并 join worker。必须最后声明。
-        ServiceContractCleanupGuard guard{&service, {},  nullptr, [&] { service.clearStartHandshakeHookForTest(); },
-                                          nullptr,  true};
+        ServiceContractCleanupGuard guard{
+            &service, {},  nullptr, [&] { FlowExecutionServiceTestAccess(service).clearStartHandshakeHookForTest(); },
+            nullptr,  true};
 
         // 崩溃基线即在此处 abort；修复后必须返回 false（启动未成立）。
         QVERIFY2(!service.startSingle(), "a startup fault must not report a successful start");
@@ -963,7 +985,7 @@ private slots:
         QVERIFY2(error.contains(QStringLiteral("service_startup_exception")), qPrintable(error));
 
         // 恢复：同一个 Service 清除钩子后必须能再次启动并完成。
-        service.clearStartHandshakeHookForTest();
+        FlowExecutionServiceTestAccess(service).clearStartHandshakeHookForTest();
         QSignalSpy nextFinished(&service, &FlowExecutionService::jobFinished);
         QVERIFY2(service.startSingle(), "the service must remain usable after a startup fault");
         QTRY_COMPARE_WITH_TIMEOUT(nextFinished.count(), 1, 5000);
@@ -1007,14 +1029,15 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
         QSignalSpy failedSpy(&service, &FlowExecutionService::jobFailed);
         QVERIFY2(failedSpy.isValid(), "jobFailed must be observable");
 
         std::atomic_int hookRuns{0};
-        service.setWorkerLoopFaultHookForTest([&] {
+        FlowExecutionServiceTestAccess(service).setWorkerLoopFaultHookForTest([&] {
             if (hookRuns.fetch_add(1) == 0) {
                 // 只在首轮注入：故障后的重试必须能真正执行任务。
                 throw std::runtime_error("injected worker-loop callback fault");
@@ -1022,8 +1045,9 @@ private slots:
         });
 
         // 失败路径收尾：清除捕获栈变量的钩子并 join worker。必须最后声明。
-        ServiceContractCleanupGuard guard{&service, {},  nullptr, [&] { service.clearWorkerLoopFaultHookForTest(); },
-                                          nullptr,  true};
+        ServiceContractCleanupGuard guard{
+            &service, {},  nullptr, [&] { FlowExecutionServiceTestAccess(service).clearWorkerLoopFaultHookForTest(); },
+            nullptr,  true};
 
         // 故障当次：startSingle() 的握手必须被放行并返回 false（启动未成立）。
         QVERIFY2(!service.startSingle(), "a worker-loop fault must not report a successful start");
@@ -1092,7 +1116,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         constexpr int kRounds = 10;
         // 判据①的调度误差许可：计时精度、线程调度与 processEvents 抖动，不能把预算当硬实时。
@@ -1118,7 +1143,7 @@ private slots:
         std::atomic_bool failureNotified{false};
 
         // 故障注入：每轮只在「已布防」时抛出一次，抛出后自动解除布防。
-        service.setWorkerLoopFaultHookForTest([&] {
+        FlowExecutionServiceTestAccess(service).setWorkerLoopFaultHookForTest([&] {
             if (armed.load(std::memory_order_acquire) != 0 && armed.fetch_sub(1, std::memory_order_acq_rel) == 1) {
                 throw std::runtime_error("injected worker-loop fault");
             }
@@ -1127,7 +1152,7 @@ private slots:
         // 退出屏障：位于 handleWorkerLoopFault() 发出 jobFailed **之后**、run() 返回
         // **之前**——正是本轮缺陷的窗口本体。主线程在这里稳定地拿到「通知已发出、
         // 旧线程尚未结束」的状态，不必靠碰运气去撞短窗口。
-        service.setWorkerExitBarrierForTest([&] {
+        FlowExecutionServiceTestAccess(service).setWorkerExitBarrierForTest([&] {
             if (!holdBarrier.load(std::memory_order_acquire)) {
                 return;
             }
@@ -1156,8 +1181,8 @@ private slots:
                                               releaseBarrier.release();
                                           },
                                           [&] {
-                                              service.clearWorkerLoopFaultHookForTest();
-                                              service.clearWorkerExitBarrierForTest();
+                                              FlowExecutionServiceTestAccess(service).clearWorkerLoopFaultHookForTest();
+                                              FlowExecutionServiceTestAccess(service).clearWorkerExitBarrierForTest();
                                           },
                                           nullptr,
                                           true};
@@ -1262,8 +1287,8 @@ private slots:
         }
 
         QObject::disconnect(failConn);
-        service.clearWorkerLoopFaultHookForTest();
-        service.clearWorkerExitBarrierForTest();
+        FlowExecutionServiceTestAccess(service).clearWorkerLoopFaultHookForTest();
+        FlowExecutionServiceTestAccess(service).clearWorkerExitBarrierForTest();
 
         qInfo("[P1-WINDOW] rounds=%d barrierEntries=%d windowRetries=%d retryOk=%d retryFailed=%d "
               "retryNotExecuted=%d maxRetryBlockMs=%d rejectedResidue=%d rejectedExecuted=%d restartOk=%d "
@@ -1335,7 +1360,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         std::atomic<int> pausedSignals{0};
         std::atomic<int> continueResult{-1};
@@ -1381,7 +1407,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         std::atomic<int> pausedSignals{0};
         const QMetaObject::Connection conn = connect(
@@ -1422,7 +1449,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         QSemaphore entered;
         QSemaphore release;
@@ -1433,7 +1461,7 @@ private slots:
         std::thread starter;
         QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
 
-        service.setStartHandshakeHookForTest([&] {
+        FlowExecutionServiceTestAccess(service).setStartHandshakeHookForTest([&] {
             ++hookRuns;
             entered.release();   // 进入：worker 已出队、处于启动协议内
             release.acquire();   // 放行：由测试线程在握手超时返回后释放
@@ -1441,15 +1469,16 @@ private slots:
         });
 
         // 失败路径收尾：先放行屏障、清钩子、join starter，再 stop/join worker。必须最后声明。
-        ServiceContractCleanupGuard guard{&service,
-                                          {},
-                                          [&] {
-                                              release.release();
-                                              startReturned.release();
-                                          },
-                                          [&] { service.clearStartHandshakeHookForTest(); },
-                                          &starter,
-                                          true};
+        ServiceContractCleanupGuard guard{
+            &service,
+            {},
+            [&] {
+                release.release();
+                startReturned.release();
+            },
+            [&] { FlowExecutionServiceTestAccess(service).clearStartHandshakeHookForTest(); },
+            &starter,
+            true};
 
         QElapsedTimer startTimer;
         startTimer.start();
@@ -1482,7 +1511,7 @@ private slots:
         QVERIFY(!service.isActive());
 
         // 恢复启动：清除钩子后下一次启动必须正常执行并完成。
-        service.clearStartHandshakeHookForTest();
+        FlowExecutionServiceTestAccess(service).clearStartHandshakeHookForTest();
         QSignalSpy restartSpy(&service, &FlowExecutionService::jobFinished);
         QVERIFY(service.startSingle());
         QTRY_COMPARE_WITH_TIMEOUT(restartSpy.count(), 1, 5000);
@@ -1501,7 +1530,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         QSemaphore entered;
         QSemaphore release;
@@ -1511,21 +1541,22 @@ private slots:
         std::thread starter;
         QSignalSpy finishedSpy(&service, &FlowExecutionService::jobFinished);
 
-        service.setStartHandshakeHookForTest([&] {
+        FlowExecutionServiceTestAccess(service).setStartHandshakeHookForTest([&] {
             entered.release();
             release.acquire();
             completed.release();
         });
 
-        ServiceContractCleanupGuard guard{&service,
-                                          {},
-                                          [&] {
-                                              release.release();
-                                              startReturned.release();
-                                          },
-                                          [&] { service.clearStartHandshakeHookForTest(); },
-                                          &starter,
-                                          true};
+        ServiceContractCleanupGuard guard{
+            &service,
+            {},
+            [&] {
+                release.release();
+                startReturned.release();
+            },
+            [&] { FlowExecutionServiceTestAccess(service).clearStartHandshakeHookForTest(); },
+            &starter,
+            true};
 
         starter = std::thread([&] {
             startResult.store(service.startSingle() ? 1 : 0, std::memory_order_release);
@@ -1552,7 +1583,7 @@ private slots:
 
         // 恢复启动：超时遗留的 m_startSettled / m_startOk 不得污染后续握手，
         // 连续两次正常启动都必须成功并各自完成。
-        service.clearStartHandshakeHookForTest();
+        FlowExecutionServiceTestAccess(service).clearStartHandshakeHookForTest();
         for (int i = 1; i <= 2; ++i) {
             QSignalSpy restartSpy(&service, &FlowExecutionService::jobFinished);
             QVERIFY2(service.startSingle(), qPrintable(QString("restart #%1 must succeed").arg(i)));
@@ -1587,7 +1618,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         constexpr int kRounds = 3;
         // 「提前返回」观测窗口：缺陷实现下 shutdown() 立即返回（shutdownMs≈0）而旧 worker
@@ -1605,14 +1637,14 @@ private slots:
         QSemaphore barrierReached;
         std::atomic_bool holdBarrier{false};
 
-        service.setWorkerLoopFaultHookForTest([&] {
+        FlowExecutionServiceTestAccess(service).setWorkerLoopFaultHookForTest([&] {
             if (armed.load(std::memory_order_acquire) != 0 && armed.fetch_sub(1, std::memory_order_acq_rel) == 1) {
                 throw std::runtime_error("injected worker-loop fault");
             }
         });
 
         // 退出屏障：位于 handleWorkerLoopFault() 发出 jobFailed 之后、run() 返回之前。
-        service.setWorkerExitBarrierForTest([&] {
+        FlowExecutionServiceTestAccess(service).setWorkerExitBarrierForTest([&] {
             if (!holdBarrier.load(std::memory_order_acquire)) {
                 return;
             }
@@ -1636,8 +1668,8 @@ private slots:
                                               releaseBarrier.release();
                                           },
                                           [&] {
-                                              service.clearWorkerLoopFaultHookForTest();
-                                              service.clearWorkerExitBarrierForTest();
+                                              FlowExecutionServiceTestAccess(service).clearWorkerLoopFaultHookForTest();
+                                              FlowExecutionServiceTestAccess(service).clearWorkerExitBarrierForTest();
                                           },
                                           nullptr,
                                           true};
@@ -1754,8 +1786,8 @@ private slots:
         }
 
         QObject::disconnect(failConn);
-        service.clearWorkerLoopFaultHookForTest();
-        service.clearWorkerExitBarrierForTest();
+        FlowExecutionServiceTestAccess(service).clearWorkerLoopFaultHookForTest();
+        FlowExecutionServiceTestAccess(service).clearWorkerExitBarrierForTest();
 
         qInfo("[P1-OWNER] rounds=%d barrierEntries=%d shutdownRounds=%d earlyReturns=%d notified=%d", kRounds,
               barrierEntries.load(), shutdownRounds.load(), earlyReturns.load(), notified.load());
@@ -1807,7 +1839,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         // 用例轮数少而稳：每轮都要等满一次启动预算，3 轮足以判别且不拖长套件。
         constexpr int kRounds = 3;
@@ -1826,14 +1859,14 @@ private slots:
         QSemaphore barrierReached;
         std::atomic_bool holdBarrier{false};
 
-        service.setWorkerLoopFaultHookForTest([&] {
+        FlowExecutionServiceTestAccess(service).setWorkerLoopFaultHookForTest([&] {
             if (armed.load(std::memory_order_acquire) != 0 && armed.fetch_sub(1, std::memory_order_acq_rel) == 1) {
                 throw std::runtime_error("injected worker-loop fault");
             }
         });
 
         // 退出屏障：旧 worker 在此停住（run() 未返回）。
-        service.setWorkerExitBarrierForTest([&] {
+        FlowExecutionServiceTestAccess(service).setWorkerExitBarrierForTest([&] {
             if (!holdBarrier.load(std::memory_order_acquire)) {
                 return;
             }
@@ -1857,8 +1890,8 @@ private slots:
                                               releaseBarrier.release();
                                           },
                                           [&] {
-                                              service.clearWorkerLoopFaultHookForTest();
-                                              service.clearWorkerExitBarrierForTest();
+                                              FlowExecutionServiceTestAccess(service).clearWorkerLoopFaultHookForTest();
+                                              FlowExecutionServiceTestAccess(service).clearWorkerExitBarrierForTest();
                                           },
                                           &starter,
                                           true};
@@ -1966,8 +1999,8 @@ private slots:
             starter.join();
         }
         QObject::disconnect(failConn);
-        service.clearWorkerLoopFaultHookForTest();
-        service.clearWorkerExitBarrierForTest();
+        FlowExecutionServiceTestAccess(service).clearWorkerLoopFaultHookForTest();
+        FlowExecutionServiceTestAccess(service).clearWorkerExitBarrierForTest();
 
         qInfo("[P1-INFLIGHT] rounds=%d inflightRounds=%d earlyReturns=%d notified=%d", kRounds, inflightRounds.load(),
               earlyReturns.load(), notified.load());
@@ -2007,7 +2040,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         constexpr int kRounds = 3;
         // worker 停在退出屏障里；屏障由用例在放行点显式释放，固定上限只作兜底。
@@ -2033,7 +2067,7 @@ private slots:
         // 临界区内钩子：此刻持锁且借用已登记，用于确认「登记与移交同临界区」。
         std::atomic_int inCriticalSectionSeen{0};
 
-        service.setReclaimWaitHookForTest([&] {
+        FlowExecutionServiceTestAccess(service).setReclaimWaitHookForTest([&] {
             if (!reclaimHookEnabled.load(std::memory_order_acquire)) {
                 return;
             }
@@ -2042,7 +2076,7 @@ private slots:
             releaseReclaimHook.tryAcquire(1, 5000);
         });
 
-        service.setInCriticalSectionHookForTest([&] {
+        FlowExecutionServiceTestAccess(service).setInCriticalSectionHookForTest([&] {
             // 持锁调用：不得再取锁、不得阻塞。
             // **这是本用例最关键的判据点**：此刻仍在 enqueue() 搬移线程的那个临界区内。
             // 不变量要求：「凡已进入 m_inflightReclaim 的线程，必须已有活跃借用」。
@@ -2055,13 +2089,13 @@ private slots:
             // 因此改由外部在**同一临界区结束后立刻**采样（见下面的探针）。
         });
 
-        service.setWorkerLoopFaultHookForTest([&] {
+        FlowExecutionServiceTestAccess(service).setWorkerLoopFaultHookForTest([&] {
             if (armed.load(std::memory_order_acquire) != 0 && armed.fetch_sub(1, std::memory_order_acq_rel) == 1) {
                 throw std::runtime_error("injected worker-loop fault");
             }
         });
 
-        service.setWorkerExitBarrierForTest([&] {
+        FlowExecutionServiceTestAccess(service).setWorkerExitBarrierForTest([&] {
             if (!holdBarrier.load(std::memory_order_acquire)) {
                 return;
             }
@@ -2079,21 +2113,22 @@ private slots:
 
         // 异步启动线程：只负责发起 startSingle() 并记录结果，**不承担任何放行职责**。
         std::thread starter;
-        ServiceContractCleanupGuard guard{&service,
-                                          failConn,
-                                          [&] {
-                                              holdBarrier.store(false, std::memory_order_release);
-                                              releaseBarrier.release();
-                                              releaseReclaimHook.release();
-                                          },
-                                          [&] {
-                                              service.clearWorkerLoopFaultHookForTest();
-                                              service.clearWorkerExitBarrierForTest();
-                                              service.clearReclaimWaitHookForTest();
-                                              service.clearInCriticalSectionHookForTest();
-                                          },
-                                          &starter,
-                                          true};
+        ServiceContractCleanupGuard guard{
+            &service,
+            failConn,
+            [&] {
+                holdBarrier.store(false, std::memory_order_release);
+                releaseBarrier.release();
+                releaseReclaimHook.release();
+            },
+            [&] {
+                FlowExecutionServiceTestAccess(service).clearWorkerLoopFaultHookForTest();
+                FlowExecutionServiceTestAccess(service).clearWorkerExitBarrierForTest();
+                FlowExecutionServiceTestAccess(service).clearReclaimWaitHookForTest();
+                FlowExecutionServiceTestAccess(service).clearInCriticalSectionHookForTest();
+            },
+            &starter,
+            true};
 
         for (int round = 0; round < kRounds; ++round) {
             // 每轮从 Idle 开始，否则上一轮收尾未清干净会让本轮前置条件失真。
@@ -2213,7 +2248,7 @@ private slots:
                 QElapsedTimer probe;
                 probe.start();
                 while (probe.elapsed() < 20) {
-                    if (service.inflightWithoutBorrowCountForTest() > 0) {
+                    if (FlowExecutionServiceTestAccess(service).inflightWithoutBorrowCountForTest() > 0) {
                         ++invariantViolations;
                         break;
                     }
@@ -2272,7 +2307,8 @@ private slots:
                 // 守卫存活数（liveReclaimGuardCountForTest）数的是「回收调用是否仍在作用域内」，
                 // 不是 shutdown() 的等待条件。缺陷态下 shutdown() 不等就返回时，回收守卫仍
                 // 停在钩子上（作用域内）→ 必然 > 0；正确实现下 shutdown() 先等它归还 → 必为 0。
-                liveGuardsAtReturn.store(service.liveReclaimGuardCountForTest(), std::memory_order_release);
+                liveGuardsAtReturn.store(FlowExecutionServiceTestAccess(service).liveReclaimGuardCountForTest(),
+                                         std::memory_order_release);
                 workerRunningAtReturn.store(oldWorkerRunning.load(std::memory_order_acquire),
                                             std::memory_order_release);
                 shutdownOkFlag.store(ok, std::memory_order_release);
@@ -2357,7 +2393,8 @@ private slots:
             // 借用最终必须全部归还（不含 shutdown 期间的短暂持有）。
             QElapsedTimer drain;
             drain.start();
-            while (service.activeReclaimBorrowCountForTest() > 0 && drain.elapsed() < 3000) {
+            while (FlowExecutionServiceTestAccess(service).activeReclaimBorrowCountForTest() > 0 &&
+                   drain.elapsed() < 3000) {
                 QThread::msleep(1);
             }
 
@@ -2373,8 +2410,8 @@ private slots:
             starter.join();
         }
         QObject::disconnect(failConn);
-        service.clearWorkerLoopFaultHookForTest();
-        service.clearWorkerExitBarrierForTest();
+        FlowExecutionServiceTestAccess(service).clearWorkerLoopFaultHookForTest();
+        FlowExecutionServiceTestAccess(service).clearWorkerExitBarrierForTest();
 
         qInfo("[P1-BORROW] rounds=%d completed=%d windowHits=%d earlyDeletes=%d shutdownOkRounds=%d", kRounds,
               completedRounds.load(), windowHits.load(), earlyDeletes.load(), shutdownOkRounds.load());
@@ -2447,7 +2484,8 @@ private slots:
         ServiceProbeModule probe(QStringLiteral("ShutdownWindowProbe"));
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ShutdownWindowProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ShutdownWindowProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         constexpr int kRounds = 3;
 
@@ -2469,7 +2507,7 @@ private slots:
         std::atomic_bool holdWorkerExit{false};
         std::atomic_int barrierEnters{0};
 
-        service.setWorkerExitBarrierForTest([&] {
+        FlowExecutionServiceTestAccess(service).setWorkerExitBarrierForTest([&] {
             if (!holdWorkerExit.load(std::memory_order_acquire)) {
                 return;
             }
@@ -2483,15 +2521,16 @@ private slots:
         std::atomic_bool shutdownDone{false};
         std::atomic_bool shutdownOkFlag{false};
 
-        ServiceContractCleanupGuard guard{&service,
-                                          QMetaObject::Connection(),
-                                          [&] {
-                                              holdWorkerExit.store(false, std::memory_order_release);
-                                              releaseWorkerExit.release();
-                                          },
-                                          [&] { service.clearWorkerExitBarrierForTest(); },
-                                          &shutdownThread,
-                                          true};
+        ServiceContractCleanupGuard guard{
+            &service,
+            QMetaObject::Connection(),
+            [&] {
+                holdWorkerExit.store(false, std::memory_order_release);
+                releaseWorkerExit.release();
+            },
+            [&] { FlowExecutionServiceTestAccess(service).clearWorkerExitBarrierForTest(); },
+            &shutdownThread,
+            true};
 
         for (int round = 0; round < kRounds; ++round) {
             QElapsedTimer idle;
@@ -2588,7 +2627,7 @@ private slots:
         if (shutdownThread.joinable()) {
             shutdownThread.join();
         }
-        service.clearWorkerExitBarrierForTest();
+        FlowExecutionServiceTestAccess(service).clearWorkerExitBarrierForTest();
 
         qInfo("[P1-SHUTDOWN-START] rounds=%d windowsEntered=%d rejected=%d accepted=%d runsDuringClose=%d "
               "shutdownOkRounds=%d",
@@ -2639,7 +2678,8 @@ private slots:
         ServiceProbeModule probe(QStringLiteral("ShutdownOwnerProbe"));
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("ShutdownOwnerProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ShutdownOwnerProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         constexpr int kRounds = 3;
         std::atomic_int windowsEntered{0};   // 第一次 shutdown 被停在关闭段中间的次数
@@ -2652,7 +2692,7 @@ private slots:
         QSemaphore releaseWorkerExit;
         std::atomic_bool holdWorkerExit{false};
 
-        service.setWorkerExitBarrierForTest([&] {
+        FlowExecutionServiceTestAccess(service).setWorkerExitBarrierForTest([&] {
             if (!holdWorkerExit.load(std::memory_order_acquire)) {
                 return;
             }
@@ -2665,15 +2705,16 @@ private slots:
         std::atomic_bool shutdownDone{false};
         std::atomic_bool shutdownOkFlag{false};
 
-        ServiceContractCleanupGuard guard{&service,
-                                          QMetaObject::Connection(),
-                                          [&] {
-                                              holdWorkerExit.store(false, std::memory_order_release);
-                                              releaseWorkerExit.release();
-                                          },
-                                          [&] { service.clearWorkerExitBarrierForTest(); },
-                                          &shutdownThread,
-                                          true};
+        ServiceContractCleanupGuard guard{
+            &service,
+            QMetaObject::Connection(),
+            [&] {
+                holdWorkerExit.store(false, std::memory_order_release);
+                releaseWorkerExit.release();
+            },
+            [&] { FlowExecutionServiceTestAccess(service).clearWorkerExitBarrierForTest(); },
+            &shutdownThread,
+            true};
 
         for (int round = 0; round < kRounds; ++round) {
             // 每轮从 Idle 起，并先建立一个常驻 worker，使第一次 shutdown() 的 Idle
@@ -2771,7 +2812,7 @@ private slots:
         if (shutdownThread.joinable()) {
             shutdownThread.join();
         }
-        service.clearWorkerExitBarrierForTest();
+        FlowExecutionServiceTestAccess(service).clearWorkerExitBarrierForTest();
 
         // 正向前提：服务在关闭完成后恢复可用（防止修复把排他保护标记永久置位）。
         service.stop();

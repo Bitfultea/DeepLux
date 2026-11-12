@@ -13,6 +13,7 @@ namespace DeepLux {
 
 namespace {
 
+#ifdef DEEPLUX_BUILD_TESTS
 // T2.5：收尾段故障注入钩子。存放于 .cpp 私有测试状态，避免向
 // FlowExecutionService 新增数据成员（类布局/ABI 不变）；读写统一由该实例的
 // m_mutex 保护（服务为单例）。生产构建不会设置，恒为空。
@@ -40,6 +41,7 @@ std::atomic_int g_liveReclaimGuards{0};
 // 用于验证 shutdown() 不可能观察到「线程可见但借用数为零」的中间态。
 // 实现中不得再取 m_mutex、不得阻塞等待需要本锁的线程。生产恒为空。
 std::function<void()> g_inCriticalSectionHookForTest;
+#endif
 
 } // namespace
 
@@ -93,7 +95,9 @@ protected:
         // T2.1 整改：workerLoop() 已返回、其 QMutexLocker 已释放；在线程真正结束前
         // 执行退出屏障。屏障等待不持有 m_mutex，不会阻塞 shutdown() 取锁。
         try {
+#ifdef DEEPLUX_BUILD_TESTS
             m_service->runWorkerExitBarrierForTest();
+#endif
         } catch (...) {
             // 退出屏障是测试钩子：其异常同样不得逃出 QThread::run()。
         }
@@ -160,7 +164,9 @@ FlowExecutionService::ReclaimBorrow::ReclaimBorrow(FlowExecutionService* service
     // 观测标志必须在「借用已生效」之后置位：它代表「本守卫确实在守护一个 worker」，
     // 早于借用生效置位会把「还没登记」误报成「正在使用」。
     m_alive.store(true, std::memory_order_release);
+#ifdef DEEPLUX_BUILD_TESTS
     g_liveReclaimGuards.fetch_add(1, std::memory_order_acq_rel);
+#endif
 }
 
 FlowExecutionService::ReclaimBorrow::~ReclaimBorrow() {
@@ -173,7 +179,9 @@ FlowExecutionService::ReclaimBorrow::~ReclaimBorrow() {
     // 观测标志先于计数表撤销：本守卫即将不再使用 worker，此刻起后续观测不应再把它
     // 算作「正在使用」。撤销顺序不影响生产语义（两者都不解引用 m_thread）。
     m_alive.store(false, std::memory_order_release);
+#ifdef DEEPLUX_BUILD_TESTS
     g_liveReclaimGuards.fetch_sub(1, std::memory_order_acq_rel);
+#endif
     // 归还只操作本服务的内部计数表，**不触碰 m_thread 指向的对象**：
     // 此刻该 worker 可能已被 delete，任何解引用都是未定义行为。
     QMutexLocker locker(&m_service->m_mutex);
@@ -231,7 +239,9 @@ bool FlowExecutionService::retireWorkerThreadBounded(WorkerThread* thread, int b
                              borrowRegistered ? ReclaimBorrow::Registration::AdoptAlreadyRegistered
                                               : ReclaimBorrow::Registration::RegisterNow);
         // 测试注入点（生产恒为空）：把回收调用停在「借用已生效、等待尚未开始」处。
+#ifdef DEEPLUX_BUILD_TESTS
         runReclaimWaitHookForTest();
+#endif
         finished = thread->wait(static_cast<unsigned long>(qMax(0, budgetMs)));
 
         // 关键：**唯一回收者判定必须在锁内、按「是否仍在 inflight 列表」进行**。
@@ -279,7 +289,9 @@ bool FlowExecutionService::retireWorkerThreadBounded(WorkerThread* thread, int b
     // oldWorkerRunningAtReturn=1）。因此现在**把在途标记提前到等待之前**：调用方
     // （enqueue()）已在锁内调 beginInflightReclaimLocked()，本函数的等待一开始就处于
     // 「shutdown() 可见」的状态。
+#ifdef DEEPLUX_BUILD_TESTS
     m_shutdownDeadlineHits.fetch_add(1, std::memory_order_relaxed);
+#endif
     Logger::instance().warning(QString("Flow start rejected: previous worker still exiting after %1 ms; "
                                        "ownership retained by the service (inflight/retiring), job not enqueued")
                                    .arg(budgetMs),
@@ -339,9 +351,15 @@ void FlowExecutionService::joinWorkerThread(WorkerThread* thread) {
     // wait 并发——删除者唯一，不等于对象已无人使用。这里等的只是**回收调用返回**
     // （不是 worker 退出），所以不会与启动路径的 100ms 预算混为一谈。
     waitForReclaimBorrowsReturned();
+#ifdef DEEPLUX_BUILD_TESTS
     const int deadline = m_shutdownDeadlineMs.load(std::memory_order_acquire);
+#else
+    constexpr int deadline = 10000;
+#endif
     if (!thread->wait(static_cast<unsigned long>(qMax(0, deadline)))) {
+#ifdef DEEPLUX_BUILD_TESTS
         m_shutdownDeadlineHits.fetch_add(1, std::memory_order_relaxed);
+#endif
         Logger::instance().warning(QString("Flow execution worker did not exit within %1 ms during shutdown "
                                            "(state=%2, job=%3); continuing to wait without detach")
                                        .arg(deadline)
@@ -473,9 +491,11 @@ bool FlowExecutionService::enqueue(JobType job) {
                 // 测试注入点（生产恒为空）：此刻仍**持有 m_mutex**，借用已登记。
                 // 任何并发 shutdown() 都必须等本临界区结束才能继续——这正是要证明的
                 // 不变量：不存在「线程已可见、借用数为零」的可观察状态。
+#ifdef DEEPLUX_BUILD_TESTS
                 if (g_inCriticalSectionHookForTest) {
                     g_inCriticalSectionHookForTest();
                 }
+#endif
             }
         }
         if (!retired) {
@@ -564,6 +584,7 @@ bool FlowExecutionService::enqueue(JobType job) {
     return m_startSettled && m_startOk;
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 void FlowExecutionService::setStartHandshakeHookForTest(std::function<void()> hook) {
     QMutexLocker locker(&m_mutex);
     m_testStartHook = std::move(hook);
@@ -686,6 +707,7 @@ void FlowExecutionService::runWorkerExitBarrierForTest() {
         hook();
     }
 }
+#endif
 
 void FlowExecutionService::settleStart(bool ok) {
     QMutexLocker locker(&m_mutex);
@@ -869,6 +891,7 @@ void FlowExecutionService::workerLoop(JobType* faultyJob) {
         // 进入」的骨架位置，抛出后必须由 WorkerThread::run() 的入口兜底收敛，而
         // 不是穿出 QThread::run()。锁内只做快照，钩子在**不持有 m_mutex** 时执行；
         // 该钩子每轮最多调用一次，生产构建恒为空。
+#ifdef DEEPLUX_BUILD_TESTS
         {
             std::function<void()> loopFaultHook;
             {
@@ -879,6 +902,7 @@ void FlowExecutionService::workerLoop(JobType* faultyJob) {
                 loopFaultHook();
             }
         }
+#endif
         runJob(job);
     }
 }
@@ -909,6 +933,7 @@ void FlowExecutionService::runJob(JobType job) {
     // 承诺范围仅限 Service 自有代码的 C++ 异常；槽函数抛异常属 Qt 未定义行为，不在其内。
     try {
         // B7 测试注入：在启动协议最前面执行（生产构建恒为空），用于确定性验证 GUI 侧握手超时。
+#ifdef DEEPLUX_BUILD_TESTS
         std::function<void()> startHook;
         {
             QMutexLocker locker(&m_mutex);
@@ -917,6 +942,7 @@ void FlowExecutionService::runJob(JobType job) {
         if (startHook) {
             startHook();
         }
+#endif
 
         QString reason;
         if (!engine.beginExternalJob(&token, &reason)) {
@@ -1023,6 +1049,7 @@ void FlowExecutionService::runJob(JobType job) {
         // T2.5 测试注入：收尾段故障注入。每个 job 只在收尾入口执行一次；下方的
         // catch/恢复分支不再调用，重试路径不得二次触发该钩子。钩子在**不持有 m_mutex**
         // 时执行（锁内只做快照）。
+#ifdef DEEPLUX_BUILD_TESTS
         std::function<void()> teardownHook;
         {
             QMutexLocker locker(&m_mutex);
@@ -1031,6 +1058,7 @@ void FlowExecutionService::runJob(JobType job) {
         if (teardownHook) {
             teardownHook();
         }
+#endif
         engine.endExternalJob(token);
         // 后台执行（设计 §7.1）：job 结束/停止时清空显示帧上下文（帧槽位保留最后一帧供叠加使用）。
         engine.clearDisplayJobId();

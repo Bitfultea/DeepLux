@@ -1,3 +1,4 @@
+#include <core/engine/EngineTestSupport.h>
 #define DEEPLUX_BUILD_TESTS 1
 #include <QMutex>
 #include <QSemaphore>
@@ -1777,7 +1778,7 @@ void TestRunEngine::testParallelExecutesConcurrently() {
         engine.addModule(mod);
         // 后台执行（设计 §6.3）：并行池只接受 worker 亲和模块；探针模块未注册插件，
         // 默认 gui，因此测试侧显式标记 worker（不放宽产品代码）。
-        engine.setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
         names << name;
     }
 
@@ -1809,7 +1810,8 @@ void TestRunEngine::testExecuteParallelRejectsDuplicateModuleInBatch() {
 
     QVERIFY(module->initialize());
     engine.addModule(module.get());
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("duplicate"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("duplicate"),
+                                                                  ExecutionAffinity::Worker);
 
     const ExecutionResult result =
         engine.executeParallel(QStringList{QStringLiteral("duplicate"), QStringLiteral("duplicate")}, {});
@@ -1855,7 +1857,8 @@ void TestRunEngine::testExecuteParallelRejectsSameInstanceAcrossRequests() {
     engine.setParallelThreadCount(1);
     QVERIFY(module->initialize());
     engine.addModule(module.get());
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("parallel-blocking"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("parallel-blocking"),
+                                                                  ExecutionAffinity::Worker);
     firstRequest =
         std::thread([&] { firstResult = engine.executeParallel({QStringLiteral("parallel-blocking")}, {}); });
 
@@ -1895,7 +1898,8 @@ void TestRunEngine::testWorkerExecutionLogIncludesThreadId() {
 
     QVERIFY(module->initialize());
     engine.addModule(module.get());
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("thread-log"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("thread-log"),
+                                                                  ExecutionAffinity::Worker);
     const int previousLogCount = Logger::instance().logs(QStringLiteral("Run")).size();
 
     const ExecutionResult result = engine.executeParallel({QStringLiteral("thread-log")}, {});
@@ -1930,8 +1934,8 @@ void TestRunEngine::testParallelFailureCancelsGroup() {
     slow->initialize();
     engine.addModule(slow);
     // 后台执行（设计 §6.3）：并行池只接受 worker 亲和模块，探针默认 gui → 测试显式标记。
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("fail"), ExecutionAffinity::Worker);
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("slow"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("fail"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("slow"), ExecutionAffinity::Worker);
 
     PortValueMap input;
     const ExecutionResult result = engine.executeParallel(QStringList{"fail", "slow"}, input);
@@ -1946,8 +1950,8 @@ namespace {
 // 故测试侧显式标记 worker 亲和，不改动产品判定。
 void markWorkerAffinity(int fanout, const QString& prefix = QStringLiteral("par")) {
     for (int i = 0; i < fanout; ++i)
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("%1%2").arg(prefix).arg(i),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("%1%2").arg(prefix).arg(i), ExecutionAffinity::Worker);
 }
 
 // 阶段 6 辅助：entry(非线程安全,单独执行) 经隐式控制边 next→control 扇出到
@@ -2075,7 +2079,7 @@ void TestRunEngine::testExecuteParallelPrimitiveStableRunId() {
         auto* mod = new RunIdRecordingModule(name, &mutex, &sink);
         mod->initialize();
         engine.addModule(mod);
-        engine.setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
         names << name;
     }
 
@@ -2105,7 +2109,7 @@ void TestRunEngine::testExecuteParallelPrimitiveStableRunId() {
         auto* mod = new RunIdRecordingModule(name, &mutex2, &sink2);
         mod->initialize();
         engine.addModule(mod);
-        engine.setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
         names2 << name;
     }
     QVERIFY(engine.executeParallel(names2, input).success);
@@ -2210,8 +2214,8 @@ void TestRunEngine::testConcurrentStopDuringRunKeepsStoppedState() {
     }));
     // 后台执行（设计 §6.2）：探针默认 gui，但基线语义要求模块在后台执行线程内联执行
     // （主线程此时阻塞在信号量上，无法服务 BlockingQueuedConnection），故标记 worker。
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("gate"), ExecutionAffinity::Worker);
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("after"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("gate"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("after"), ExecutionAffinity::Worker);
 
     std::thread runner([&engine]() { engine.runOnce(); });
     QVERIFY2(entered.tryAcquire(1, 5000), "gate module must enter execution");
@@ -2332,7 +2336,7 @@ void TestRunEngine::testClearAndLoadRejectedWhileRunning() {
     }));
     // 后台执行（设计 §6.2）：后台线程运行探针时必须 worker 亲和，才能内联执行而不依赖
     // 主线程事件循环（主线程随后用 msleep 等待，不处理事件）。
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("s"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("s"), ExecutionAffinity::Worker);
 
     std::thread runner([&engine]() { engine.runOnce(); });
     QThread::msleep(20);
@@ -5083,8 +5087,8 @@ void TestRunEngine::testParallelBatchExecutesConcurrently() {
         return new ThreadSafeSleepModule(inst.id, 100);
     }));
     // 后台执行（设计 §6.3）：并行分支 A/B 必须 worker 亲和才可进入并行批次。
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("A"), ExecutionAffinity::Worker);
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("B"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("A"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("B"), ExecutionAffinity::Worker);
 
     RunResult result;
     QMetaObject::Connection conn =
@@ -5221,8 +5225,8 @@ void TestRunEngine::testParallelFailureCancelsRemaining() {
         return new ThreadSafeSleepModule("C", 10);
     }));
     // 后台执行（设计 §6.3）：A/B 需要进入并行批次才能验证失败取消同组。
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("A"), ExecutionAffinity::Worker);
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("B"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("A"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("B"), ExecutionAffinity::Worker);
 
     RunResult result;
     QMetaObject::Connection conn =
@@ -5966,8 +5970,8 @@ void TestRunEngine::testStopDuringLoopRun() {
     }));
     // 后台执行（设计 §6.2）：后台线程运行期间主线程只做 msleep/stop，不服务
     // BlockingQueuedConnection，故探针模块标记 worker 以保持内联执行语义。
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("loop"), ExecutionAffinity::Worker);
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("body"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("loop"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("body"), ExecutionAffinity::Worker);
 
     // runOnce 同步阻塞事件循环，故在后台线程运行，主线程延迟 stop
     std::thread runner([&engine]() { engine.runOnce(); });
@@ -6008,7 +6012,7 @@ void TestRunEngine::testCancelDuringParallelBatch() {
     }));
     // 后台执行（设计 §6.2/§6.3）：后台线程运行 + 并行分支，全部需要 worker 亲和。
     for (const QString& name : {QStringLiteral("Fork"), QStringLiteral("A"), QStringLiteral("B")})
-        engine.setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
 
     // runOnce 同步阻塞事件循环，QTimer 不会按时触发。
     // 故在后台线程运行，主线程 30ms 后 stop()（取消令牌），验证协作取消真实中止。
@@ -6068,7 +6072,7 @@ void TestRunEngine::testStopStability50Repeats() {
         }));
         // 后台执行（设计 §6.2）：后台线程运行，主线程仅 msleep/stop，故标记 worker。
         for (const QString& name : {QStringLiteral("loop"), QStringLiteral("body"), QStringLiteral("after")})
-            engine.setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
+            RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
 
         std::thread runner([&engine]() { engine.runOnce(); });
         QThread::msleep(5);
@@ -6098,8 +6102,10 @@ void TestRunEngine::testSnapshotConcurrentWithRun() {
     QVERIFY(slow->initialize());
     engine.addModule(slow);
     // 后台执行（设计 §6.2）：runOnceAsync 在运行池线程执行，探针标记 worker 保持内联语义。
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("SnapSource"), ExecutionAffinity::Worker);
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("SnapSlow"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("SnapSource"),
+                                                                  ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("SnapSlow"),
+                                                                  ExecutionAffinity::Worker);
 
     std::atomic<int> reads{0};
     std::thread reader([&engine, &reads]() {
@@ -6149,7 +6155,7 @@ void TestRunEngine::testExecutionOrderFifoMatchesLegacy() {
     }
     project.addConnection(legacyEdge("A", "B"));
     QVERIFY2(engine.loadProject(&project, createLegacyFixtureModule), "load should succeed");
-    QCOMPARE(engine.executionOrderForTest(), (QStringList{"A", "C", "B"}));
+    QCOMPARE(RunEngineTestAccess(engine).executionOrderForTest(), (QStringList{"A", "C", "B"}));
     engine.clearModules();
 }
 
@@ -6185,13 +6191,13 @@ void TestRunEngine::testLegacyFixturesFreezeEngineBehavior() {
 
         QVERIFY2(engine.loadProject(&project, createLegacyFixtureModule), qPrintable(context + ": load failed"));
 
-        QCOMPARE(engine.executionOrderForTest(), fixture.expectedExecutionOrder);
+        QCOMPARE(RunEngineTestAccess(engine).executionOrderForTest(), fixture.expectedExecutionOrder);
         QStringList engineControlKeys;
-        for (const ModuleConnection& connection : engine.controlEdgesForTest())
+        for (const ModuleConnection& connection : RunEngineTestAccess(engine).controlEdgesForTest())
             engineControlKeys.append(legacyConnectionKey(connection));
         QCOMPARE(engineControlKeys, fixture.expectedControlEdges);
 
-        const QVariantMap metadata = engine.loopMetadataForTest();
+        const QVariantMap metadata = RunEngineTestAccess(engine).loopMetadataForTest();
         QCOMPARE(metadata.value(QStringLiteral("loopBackEdges")).toStringList(), fixture.expectedLoopBackEdges);
         QCOMPARE(metadata.value(QStringLiteral("reentrantModules")).toStringList(), fixture.expectedReentrantModules);
         const QVariantMap regions = metadata.value(QStringLiteral("loopRegions")).toMap();
@@ -6324,7 +6330,7 @@ void TestRunEngine::testFinalDisplayFrameKeepsCompletedRunIdWhenNextRunStarts() 
     QSemaphore releaseSecondFinalPublish;
     QSemaphore secondFinalPublished;
     std::atomic<int> finalPublishCalls{0};
-    engine.setBeforeFinalDisplayFrameHookForTest([&] {
+    RunEngineTestAccess(engine).setBeforeFinalDisplayFrameHookForTest([&] {
         const int call = finalPublishCalls.fetch_add(1, std::memory_order_relaxed);
         if (call == 0) {
             firstFinalPublishEntered.release();
@@ -6372,7 +6378,7 @@ void TestRunEngine::testFinalDisplayFrameKeepsCompletedRunIdWhenNextRunStarts() 
         QMetaObject::Connection frameConnection;
 
         ~Cleanup() {
-            engine.clearBeforeFinalDisplayFrameHookForTest();
+            RunEngineTestAccess(engine).clearBeforeFinalDisplayFrameHookForTest();
             releaseFirstFinalPublish.release();
             releaseSecondFinalPublish.release();
             engine.stop();
@@ -6408,7 +6414,7 @@ void TestRunEngine::testFinalDisplayFrameKeepsCompletedRunIdWhenNextRunStarts() 
         module->enableSyntheticImage(true);
         return module;
     }));
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("entry"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("entry"), ExecutionAffinity::Worker);
     markWorkerAffinity(1);
 
     firstRun = std::thread([&] {

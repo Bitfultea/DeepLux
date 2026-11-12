@@ -1,3 +1,4 @@
+#include <core/engine/EngineTestSupport.h>
 #define DEEPLUX_BUILD_TESTS 1
 #include "core/base/ModuleBase.h"
 #include "core/engine/RunEngine.h"
@@ -81,15 +82,15 @@ private slots:
     void init() {
         RunEngine::instance().stop();
         RunEngine::instance().clearModules();
-        RunEngine::instance().setGuiDispatchTimeoutForTest(5000);
+        RunEngineTestAccess(RunEngine::instance()).setGuiDispatchTimeoutForTest(5000);
     }
 
     void testGuiAffinityRunsOnGuiThread() {
         AffinityProbeModule module;
         QVERIFY(module.initialize());
         RunEngine::instance().addModule(&module);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("AffinityProbe"),
-                                                                ExecutionAffinity::Gui);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("AffinityProbe"), ExecutionAffinity::Gui);
 
         QThread worker;
         QObject context;
@@ -112,8 +113,8 @@ private slots:
         AffinityProbeModule module;
         QVERIFY(module.initialize());
         RunEngine::instance().addModule(&module);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("AffinityProbe"),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("AffinityProbe"), ExecutionAffinity::Worker);
 
         QThread worker;
         QObject context;
@@ -134,8 +135,8 @@ private slots:
         AffinityProbeModule module;
         QVERIFY(module.initialize());
         RunEngine::instance().addModule(&module);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("AffinityProbe"),
-                                                                ExecutionAffinity::Gui);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("AffinityProbe"), ExecutionAffinity::Gui);
 
         ExecutionResult result;
         QSemaphore done;
@@ -154,18 +155,18 @@ private slots:
         AffinityProbeModule module;
         QVERIFY(module.initialize());
         RunEngine::instance().addModule(&module);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("AffinityProbe"),
-                                                                ExecutionAffinity::Worker);
-        QVERIFY(RunEngine::instance().isParallelEligibleForTest(QStringLiteral("AffinityProbe")));
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("AffinityProbe"), ExecutionAffinity::Worker);
+        QVERIFY(RunEngineTestAccess(RunEngine::instance()).isParallelEligibleForTest(QStringLiteral("AffinityProbe")));
     }
 
     void testGuiAffinityIsNotParallelEligible() {
         AffinityProbeModule module;
         QVERIFY(module.initialize());
         RunEngine::instance().addModule(&module);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("AffinityProbe"),
-                                                                ExecutionAffinity::Gui);
-        QVERIFY(!RunEngine::instance().isParallelEligibleForTest(QStringLiteral("AffinityProbe")));
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("AffinityProbe"), ExecutionAffinity::Gui);
+        QVERIFY(!RunEngineTestAccess(RunEngine::instance()).isParallelEligibleForTest(QStringLiteral("AffinityProbe")));
     }
 
     // T2.2（NF）：GUI 回投超时后，尚未开始的迟到回调必须丢弃，模块不得执行。
@@ -174,9 +175,9 @@ private slots:
         BlockingGuiProbe module;
         QVERIFY(module.initialize());
         RunEngine::instance().addModule(&module);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("BlockingGuiProbe"),
-                                                                ExecutionAffinity::Gui);
-        RunEngine::instance().setGuiDispatchTimeoutForTest(100);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("BlockingGuiProbe"), ExecutionAffinity::Gui);
+        RunEngineTestAccess(RunEngine::instance()).setGuiDispatchTimeoutForTest(100);
 
         std::atomic<bool> runOnceReturned{false};
         QSemaphore taskDone;
@@ -210,8 +211,8 @@ private slots:
         const bool joined = worker.wait(5000);
 
         const int runs = module.runs.load();
-        const QString code = RunEngine::instance().lastGuiDispatchErrorCodeForTest();
-        const int drops = RunEngine::instance().guiDispatchLateCallbackDropCountForTest();
+        const QString code = RunEngineTestAccess(RunEngine::instance()).lastGuiDispatchErrorCodeForTest();
+        const int drops = RunEngineTestAccess(RunEngine::instance()).guiDispatchLateCallbackDropCountForTest();
 
         QVERIFY2(returned, "runOnce must return after the dispatch timeout");
         QVERIFY2(joined, "worker thread must be reclaimed");
@@ -226,9 +227,9 @@ private slots:
         BlockingGuiProbe module;
         QVERIFY(module.initialize());
         RunEngine::instance().addModule(&module);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("BlockingGuiProbe"),
-                                                                ExecutionAffinity::Gui);
-        RunEngine::instance().setGuiDispatchTimeoutForTest(100);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("BlockingGuiProbe"), ExecutionAffinity::Gui);
+        RunEngineTestAccess(RunEngine::instance()).setGuiDispatchTimeoutForTest(100);
 
         std::atomic<bool> runOnceReturned{false};
         std::atomic<bool> returnedBeforeRelease{true};
@@ -253,7 +254,8 @@ private slots:
         std::thread control([&]() {
             QElapsedTimer waitStart;
             waitStart.start();
-            while (RunEngine::instance().guiDispatchTimeoutHitCountForTest() < 1 && waitStart.elapsed() < 3000) {
+            while (RunEngineTestAccess(RunEngine::instance()).guiDispatchTimeoutHitCountForTest() < 1 &&
+                   waitStart.elapsed() < 3000) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
             returnedBeforeRelease.store(taskDone.tryAcquire(1, 1000));
@@ -284,8 +286,9 @@ private slots:
 
         const bool started = module.started.load();
         const int runs = module.runs.load();
-        const QString code = RunEngine::instance().lastGuiDispatchErrorCodeForTest();
-        const int runningWaitHits = RunEngine::instance().guiDispatchRunningWaitEnteredCountForTest();
+        const QString code = RunEngineTestAccess(RunEngine::instance()).lastGuiDispatchErrorCodeForTest();
+        const int runningWaitHits =
+            RunEngineTestAccess(RunEngine::instance()).guiDispatchRunningWaitEnteredCountForTest();
 
         QVERIFY2(started, "GUI callback must start");
         QVERIFY2(joined, "worker must finish after the running callback returns");

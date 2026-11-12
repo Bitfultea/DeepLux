@@ -1,3 +1,4 @@
+#include <core/engine/EngineTestSupport.h>
 // T2.6 frame-identity behavior contract -- DELIVERY CHAIN regression tests.
 //
 // Nature (review ruling 2026-11-09, option 2): BASELINE ALREADY GREEN, NOT an
@@ -253,7 +254,8 @@ void TestFlowIdentityContract::runContract(bool hold, const QString& variant) {
     ContractProbeModule module(QStringLiteral("contract_probe"), &barrier, hold);
     QVERIFY(module.initialize());
     engine.addModule(&module);
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("contract_probe"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("contract_probe"),
+                                                                  ExecutionAffinity::Worker);
     engine.setDisplayCaptureEnabled(true);
 
     ImageRefreshCoalescer coalescer;

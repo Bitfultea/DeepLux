@@ -143,8 +143,11 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 # Platform and OpenCV defines are set on deeplux_core target (see src/core/CMakeLists.txt)
 
 # ========== 测试开关 ==========
-# 必须在 src/core 之前声明：core 在测试构建中需要导出测试可见性宏。
+# Must be consistent across all translation units that include exported class headers.
 option(BUILD_TESTS "Build unit tests" ON)
+if(BUILD_TESTS)
+    add_compile_definitions(DEEPLUX_BUILD_TESTS)
+endif()
 
 # ========== 子目录 ==========
 add_subdirectory(src/core)

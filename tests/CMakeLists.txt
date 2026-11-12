@@ -148,6 +148,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
     target_link_libraries(${TEST_NAME}
         PRIVATE
             deeplux_core
+            deeplux_core_test_support
             deeplux_ui
     )
 

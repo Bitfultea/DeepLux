@@ -21,6 +21,7 @@
 #include <atomic>
 #include <functional>
 #include <optional>
+#include <type_traits>
 
 namespace DeepLux {
 class CancellationToken;
@@ -281,37 +282,32 @@ public:
     DisplayFrame latestDisplayFrame(const QString& viewportId = QStringLiteral("main")) const;
     void clearLatestDisplayFrames();
 
-    // L2 测试注入：向 m_nodeOutputs 写入自定义端口值（生产构建不可见）
-    DEEPLUX_TEST_VISIBILITY : void setNodePortOutputsForTest(const QString& moduleName, const PortValueMap& outputs);
-    // B1 测试观察：排序分析与控制图元数据（生产构建不可见）。
-    DEEPLUX_TEST_VISIBILITY : QStringList executionOrderForTest() const;
-    DEEPLUX_TEST_VISIBILITY : QList<ModuleConnection> controlEdgesForTest() const;
-    DEEPLUX_TEST_VISIBILITY : QVariantMap loopMetadataForTest() const; // back/reentrant/regions
-    // 后台执行（设计 §6.1/§6.3）测试注入：覆盖某运行名的执行亲和性与并行资格判定；
-    // 亲和性缓存本身由 addModule/removeModule/loadProject/clearModules 维护（生产构建不可见）。
-    DEEPLUX_TEST_VISIBILITY : void setModuleExecutionAffinityForTest(const QString& moduleName,
-                                                                     ExecutionAffinity affinity);
-    DEEPLUX_TEST_VISIBILITY : bool isParallelEligibleForTest(const QString& moduleName) const;
-    // 后台执行（设计 §5.3）测试注入：收尾窗口并发 stop 的确定性钩子（生产构建不可见）。
-    DEEPLUX_TEST_VISIBILITY : void setFinalizeHookForTest(std::function<void()> hook);
-    DEEPLUX_TEST_VISIBILITY : void clearFinalizeHookForTest();
 #ifdef DEEPLUX_BUILD_TESTS
-    DEEPLUX_TEST_VISIBILITY : void setBeforeFinalDisplayFrameHookForTest(std::function<void()> hook);
-    DEEPLUX_TEST_VISIBILITY : void clearBeforeFinalDisplayFrameHookForTest();
+private:
+    friend class RunEngineTestAccess;
+    void setNodePortOutputsForTest(const QString& moduleName, const PortValueMap& outputs);
+    QStringList executionOrderForTest() const;
+    QList<ModuleConnection> controlEdgesForTest() const;
+    QVariantMap loopMetadataForTest() const;
+    void setModuleExecutionAffinityForTest(const QString& moduleName, ExecutionAffinity affinity);
+    bool isParallelEligibleForTest(const QString& moduleName) const;
+    void setFinalizeHookForTest(std::function<void()> hook);
+    void clearFinalizeHookForTest();
+    void setBeforeFinalDisplayFrameHookForTest(std::function<void()> hook);
+    void clearBeforeFinalDisplayFrameHookForTest();
+    void setExecutionFaultInjectionForTest(std::function<void()> hook);
+    void clearExecutionFaultInjectionForTest();
+    bool isExternalJobActiveForTest() const;
+    void setBeforeJobStartHookForTest(std::function<void()> hook);
+    void clearBeforeJobStartHookForTest();
+    void setGuiDispatchTimeoutForTest(int msecs);
+    QString lastGuiDispatchErrorCodeForTest() const;
+    int guiDispatchLateCallbackDropCountForTest() const;
+    int guiDispatchTimeoutHitCountForTest() const;
+    int guiDispatchRunningWaitEnteredCountForTest() const;
+
+public:
 #endif
-    // 后台执行（设计 §5.3）测试注入：执行段故障注入（验证异常路径 finalizer 释放租约）。
-    DEEPLUX_TEST_VISIBILITY : void setExecutionFaultInjectionForTest(std::function<void()> hook);
-    DEEPLUX_TEST_VISIBILITY : void clearExecutionFaultInjectionForTest();
-    // 后台执行（设计 §4.2/§5.3）测试注入：job 租约活跃查询与 *ForJob 窗口屏障钩子。
-    DEEPLUX_TEST_VISIBILITY : bool isExternalJobActiveForTest() const;
-    DEEPLUX_TEST_VISIBILITY : void setBeforeJobStartHookForTest(std::function<void()> hook);
-    DEEPLUX_TEST_VISIBILITY : void clearBeforeJobStartHookForTest();
-    // T2.2：GUI 回投超时注入与迟到回调观测（生产不可达）。
-    DEEPLUX_TEST_VISIBILITY : void setGuiDispatchTimeoutForTest(int msecs);
-    DEEPLUX_TEST_VISIBILITY : QString lastGuiDispatchErrorCodeForTest() const;
-    DEEPLUX_TEST_VISIBILITY : int guiDispatchLateCallbackDropCountForTest() const;
-    DEEPLUX_TEST_VISIBILITY : int guiDispatchTimeoutHitCountForTest() const;
-    DEEPLUX_TEST_VISIBILITY : int guiDispatchRunningWaitEnteredCountForTest() const;
 
 public:
     // 运行统计
@@ -436,11 +432,15 @@ private:
     std::atomic<int> m_lifecycleGeneration{0};
     // 后台执行（设计 §5.3）：最近一次收尾的生命周期世代，防御重复收尾。
     int m_finalizedGeneration = -1;
-    // 后台执行（设计 §5.3）测试注入：收尾窗口钩子/执行段故障注入（生产构建不可达）。
+#ifdef DEEPLUX_BUILD_TESTS
+    // Test builds replace these slots with hooks; release builds keep their ABI footprint.
     std::function<void()> m_testFinalizeHook;
     std::function<void()> m_testFaultInjection;
     // 后台执行（设计 §4.2/§5.3）测试注入：*ForJob 启动协议内的窗口屏障钩子（生产构建不可达）。
     std::function<void()> m_testBeforeJobStartHook;
+#else
+    std::aligned_storage_t<sizeof(std::function<void()>), alignof(std::function<void()>)> m_reservedTestHookSlots[3];
+#endif
     // 后台执行（设计 §4.2/§5.3）：external job 租约、owner token 与 job 级取消标志。
     // m_externalJobActive 供 isBusy() 无锁快照；其余字段仅在 m_lifecycleMutex 内读写。
     std::atomic_bool m_externalJobActive{false};
@@ -453,14 +453,24 @@ private:
     // 后台执行（设计 §5.3）：暂停原因（None/Breakpoint/User），与暂停上下文同锁维护。
     PauseReason m_pauseReason = PauseReason::None;
     RunMode m_pauseRunMode = RunMode::RunOnce; // 暂停前模式，恢复时还原（P1-2 八轮）
-    // T2.2：GUI 回投超时、世代与迟到回调丢弃计数。世代变化使尚未开始的回调整体作废。
+    // T2.2：GUI 回投世代使尚未开始的回调整体作废。
+#ifdef DEEPLUX_BUILD_TESTS
     std::atomic<int> m_guiDispatchTimeoutMs{5000};
+#else
+    std::aligned_storage_t<sizeof(std::atomic<int>), alignof(std::atomic<int>)> m_reservedDispatchTimeout;
+#endif
     std::atomic<quint64> m_dispatchGeneration{0};
+#ifdef DEEPLUX_BUILD_TESTS
     std::atomic<int> m_guiDispatchLateDrops{0};
     std::atomic<int> m_guiDispatchTimeoutHits{0};
     std::atomic<int> m_guiDispatchRunningWaitHits{0};
     mutable QMutex m_guiDispatchMutex;
     QString m_lastGuiDispatchErrorCode;
+#else
+    std::aligned_storage_t<sizeof(std::atomic<int>), alignof(std::atomic<int>)> m_reservedDispatchCounters[3];
+    std::aligned_storage_t<sizeof(QMutex), alignof(QMutex)> m_reservedDispatchMutex;
+    std::aligned_storage_t<sizeof(QString), alignof(QString)> m_reservedDispatchError;
+#endif
     // 阶6 八轮：恢复判定+暂停数据转移+取执行权+意图校验在同一临界区原子完成。
     // 后台执行（设计 §4.2/§5.3）：jobToken 非空时，owner/job 级取消标志校验与状态提交
     // 在同一把 m_lifecycleMutex 临界区完成（窗口钩子亦在其中），使 stop() 与本次启动严格

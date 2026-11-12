@@ -167,6 +167,7 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
     DEEPLUX_TEST_VISIBILITY : void setContextLimitsForTest(int budgetTokens, int toolResultMaxChars,
                                                            int summaryThreshold, int summaryPreviewCount);
 
+public:
     /// 保首尾的 tool 结果截断（设计 §7.4；maxChars 会 clamp 到 [1000,64000]）
     static QString truncateToolResult(const QString& json, int maxChars);
 
@@ -175,12 +176,14 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
         return m_lastResponseReasoning;
     }
     int turnDeadlineMs() const; // agent/turnDeadlineMs 默认 600000，clamp [10000,3600000]
-    DEEPLUX_TEST_VISIBILITY : void setTurnDeadlineMsForTest(int ms); // 绕过 clamp，仅用于触发超时
-    void setTurnDeadlineConfigForTest(int ms);                       // 模拟配置值（走 clamp）
-    bool turnDeadlineExceeded() const;
-    void endTurnWithReason(const QString& responseText, const QString& errorText, bool suppressClientError);
+    // 绕过 clamp，仅用于触发超时。
+    DEEPLUX_TEST_VISIBILITY : void setTurnDeadlineMsForTest(int ms);
+    DEEPLUX_TEST_VISIBILITY : void setTurnDeadlineConfigForTest(int ms); // 模拟配置值（走 clamp）
+    DEEPLUX_TEST_VISIBILITY : bool turnDeadlineExceeded() const;
+    DEEPLUX_TEST_VISIBILITY : void endTurnWithReason(const QString& responseText, const QString& errorText,
+                                                     bool suppressClientError);
 
-    bool m_initialized = false;
+    DEEPLUX_TEST_VISIBILITY : bool m_initialized = false;
     PermissionLevel m_permissionLevel = PermissionLevel::Advisor;
 
     AgentObserver* m_observer = nullptr;
