@@ -3,6 +3,7 @@
 #include "../platform/Platform.h"
 #include "RunEngine.h"
 
+#include <QHash>
 #include <QList>
 #include <QMutex>
 #include <QObject>
@@ -102,6 +103,42 @@ public:
     DEEPLUX_TEST_VISIBILITY : void setWorkerLoopFaultHookForTest(std::function<void()> hook);
     DEEPLUX_TEST_VISIBILITY : void clearWorkerLoopFaultHookForTest();
 
+    // T2.5 P1 第六次整改：有界回收进入 `thread->wait()` **之前**的注入点。普通 C++ 回调，
+    // 在回收调用线程上、**不持锁**执行；每次回收最多调用一次。用于把回收调用稳定地停在
+    // 「借用已生效、等待尚未开始」的位置，使并发 shutdown() 的窗口可确定性构造，
+    // 而不是靠 sleep 撞时序。钩子存放于 .cpp 私有测试状态，**不新增类数据成员**。
+    DEEPLUX_TEST_VISIBILITY : void setReclaimWaitHookForTest(std::function<void()> hook);
+    DEEPLUX_TEST_VISIBILITY : void clearReclaimWaitHookForTest();
+
+    /// 测试观测：当前活跃的回收借用总数。
+    ///
+    /// 判据必须看「借用何时归还」，而不是「startSingle() 何时返回」——后者可以被
+    /// 正确实现合法地推迟（例如借用在归还后又走了握手），把它当判据会误判。
+    DEEPLUX_TEST_VISIBILITY : int activeReclaimBorrowCountForTest() const;
+
+    /// 测试注入点：在「移交指针 + 登记借用」的**同一临界区之内**触发，用于验证
+    /// 「shutdown() 看不到借用数为零的中间态」。回调在**持锁**状态下调用，
+    /// 因此实现里不得再取 m_mutex，也不得阻塞等待其他需要 m_mutex 的线程。
+    DEEPLUX_TEST_VISIBILITY : void setInCriticalSectionHookForTest(std::function<void()> hook);
+    DEEPLUX_TEST_VISIBILITY : void clearInCriticalSectionHookForTest();
+
+    /// 测试观测：**不变量探针** —— 若此刻 m_inflightReclaim 非空，则其中每条线程
+    /// 都必须已有 ≥1 笔活跃借用。返回违规条数（0 表示不变量成立）。
+    ///
+    /// 这是「借用登记与指针移交同临界区」的**直接**判据，不依赖任何时序窗口：
+    /// 只要存在「已移入 inflight 但借用量为 0」的瞬间，本探针就能在锁内抓到。
+    DEEPLUX_TEST_VISIBILITY : int inflightWithoutBorrowCountForTest() const;
+
+    /// 测试观测：此刻仍**在使用** worker 的回收调用个数（借用的作用域计数）。
+    ///
+    /// 与 activeReclaimBorrowCountForTest() 的区别是本轮 P1 的核心：
+    /// - 计数表（activeReclaimBorrowCount）是 shutdown() 的**等待条件**。shutdown() 只有在
+    ///   计数表归零后才会继续删除，因此在 shutdown() 返回的那一刻读它**永远**是 0——
+    ///   用它判「shutdown 有没有等」，缺陷态也会全绿（第 17 章记录的无效判据）。
+    /// - 本探针数的是「借用守卫是否还在作用域内」，它与 shutdown() 的等待**没有**先后
+    ///   耦合假设：缺陷态下 shutdown() 不等就删，回收守卫仍在作用域内，这里必然 >0。
+    DEEPLUX_TEST_VISIBILITY : int liveReclaimGuardCountForTest() const;
+
 signals:
     void jobStateChanged(FlowExecutionService::State state, FlowExecutionService::JobType job);
     void jobFinished(FlowExecutionService::JobType job, bool stopped);
@@ -138,6 +175,10 @@ private:
     bool quitRequested() const;
     // T2.1 整改：锁内快照退出屏障钩子、锁外调用；由 WorkerThread::run() 在退出前调用。
     void runWorkerExitBarrierForTest();
+
+    /// 锁内快照、锁外调用回收等待钩子（见 setReclaimWaitHookForTest）。
+    void runReclaimWaitHookForTest();
+
     void commitState(State state, JobType job);
     // 启动握手：enqueue 等待工作者完成“取得 job 租约并提交 Running / 启动失败”，
     // 保证 startX() 返回 true 时 isBusy() 已为真（兼容 Agent/UI 的“started 即忙”语义）。
@@ -152,9 +193,11 @@ private:
     // 等它真正退出后再 delete，既不 detach 也不泄漏，更不阻塞 GUI。
     // 返回 true 表示旧线程已真正退出并被 delete。
     //
-    // **调用前置条件（第四次整改）**：线程必须已经在**锁内**登记进 m_inflightReclaim，
-    // 否则「摘下 m_thread → 锁外等待」之间会出现所有权不可见的窗口（见 .cpp 注释）。
-    bool retireWorkerThreadBounded(WorkerThread* thread, int budgetMs);
+    // **调用前置条件（第七次整改）**：线程必须在**锁内**登记进 m_inflightReclaim，
+    // 并且**在同一临界区内**通过 registerReclaimBorrowLocked() 登记一笔回收借用；
+    // 否则会出现「借用登记晚于指针移交」的空档（见 .cpp 注释）。
+    // `borrowRegistered` 是该前提的显式声明，便于复核与断言。
+    bool retireWorkerThreadBounded(WorkerThread* thread, int budgetMs, bool borrowRegistered);
 
     /// T2.5 P1 第三轮（2026-11-11 二次复核 P1）：把当前仍未退出的 worker 全部摘到
     /// `retiring` 中交回调用方，供 shutdown()/析构在**锁外**逐个 joinWorkerThread()。
@@ -172,10 +215,65 @@ private:
     /// 现在把「摘除 + 标记在途」放进同一次加锁，窗口消失。
     void beginInflightReclaimLocked(WorkerThread* thread);
 
+    /// T2.5 P1 第六次整改（2026-11-11 第五段复核 P1）：等待**所有活跃回收调用**归还借用。
+    ///
+    /// 第四次整改只保证了「删除者唯一」，没有保证「对象已无人使用」：回收线程可能正阻塞
+    /// 在 `thread->wait()` 内部，shutdown() 却已把该指针移出 m_inflightReclaim 并 join+delete，
+    /// 于是回收线程在 wait 返回后仍会经由已释放对象完成等待收尾（use-after-free）。
+    ///
+    /// 调用前置条件：调用方**已在锁内**调过 detachLiveWorkerThreadsLocked()（保证不会再
+    /// 有新的回收借用产生），且调用方**不持有 m_mutex**。
+    ///
+    /// 只等待**回收调用**，不等待 worker 退出——因此不会把 shutdown 的生命周期等待与
+    /// 启动路径的 100ms 预算混为一谈（详见第 17 章与第 16.6 节更正）。
+    void waitForReclaimBorrowsReturned();
+
+    /// 单个回收借用的生命周期守卫。
+    ///
+    /// **借用必须在 m_mutex 下、与「把线程从 m_thread 摘入 m_inflightReclaim」同一个
+    /// 临界区登记**，否则两步之间 shutdown() 会看到借用数为零、接管并删除对象，
+    /// 而启动线程随后才去登记借用并 `thread->wait()`——仍访问已释放对象。
+    ///
+    /// 因此该守卫有两种构造方式：
+    ///   - `AdoptAlreadyRegistered`：借用已由持有锁的调用方登记，本守卫只负责归还；
+    ///   - `RegisterNow`：在构造时自行加锁登记（仅用于调用方未持有锁的路径）。
+    class ReclaimBorrow {
+    public:
+        enum class Registration { AdoptAlreadyRegistered, RegisterNow };
+
+        /// 接管一笔**已经登记**的借用（调用方必须已在同一临界区内完成登记）。
+        ReclaimBorrow(FlowExecutionService* service, WorkerThread* thread, Registration mode);
+        ~ReclaimBorrow();
+        ReclaimBorrow(const ReclaimBorrow&) = delete;
+        ReclaimBorrow& operator=(const ReclaimBorrow&) = delete;
+
+    private:
+        FlowExecutionService* m_service = nullptr;
+        WorkerThread* m_thread = nullptr;
+        bool m_ownsBorrow = false;
+        /// 本借用是否仍**在作用域内**（构造后为 true，析构时置 false）。
+        ///
+        /// 只作**测试观测**用途：它回答「此刻是否还有回收调用在使用这个 worker」，
+        /// 而 m_activeReclaimBorrows（计数表）回答「登记的借用有几笔」。两者在
+        /// shutdown() 的等待条件里是同一个事实——shutdown() 之所以能在
+        /// waitForReclaimBorrowsReturned() 之后继续，恰恰是因为计数表已空；
+        /// 因此用计数表判「shutdown 有没有等」必然读到 0，无法暴露缺陷。
+        std::atomic_bool m_alive{false};
+    };
+
+    /// 在 m_mutex 下登记一笔回收借用（调用方必须已持有 m_mutex）。
+    ///
+    /// 与 beginInflightReclaimLocked() 一起，构成「移交指针 + 登记借用」的单一
+    /// 临界区——这两件事分开做就会留下空档。
+    void registerReclaimBorrowLocked(WorkerThread* thread);
+
     mutable QMutex m_mutex;
     QWaitCondition m_wake;
     /// 在途回收的等待条件（与 m_wake 分开，避免把 job 通知误唤醒/误判）。
     QWaitCondition m_reclaimWake;
+    /// 等待「活跃回收调用归还借用」的收尾条件（与 m_reclaimWake 语义不同：
+    /// 前者等的是**回收函数返回**，不是 worker 退出）。
+    QWaitCondition m_borrowWake;
     WorkerThread* m_thread = nullptr;
     /// 启动路径有界回收**移交**给本服务的旧 worker：已不再消费命令、尚未真正退出。
     /// 由 m_mutex 保护；shutdown()/析构必须覆盖它们，否则「shutdown 成功后可以销毁
@@ -186,7 +284,15 @@ private:
     /// 与 m_retiringThreads 的区别：retiring 是「回收已放弃、所有权完全交给 Service」，
     /// inflight 是「某线程正在等它，但它同样**必须**被 shutdown() 看见」。两者都计入
     /// detachLiveWorkerThreadsLocked()，只是 inflight 需要先中止等待再收归。
+    ///
+    /// **注意**：本列表记录的是「所有权归属」，不等于「引用计数」。移出本列表后，
+    /// 回收线程可能仍在 wait 内持有借用——借用由 m_activeReclaimBorrows 单独计数。
     QList<WorkerThread*> m_inflightReclaim;
+    /// **当前仍被某个回收调用借用**的 worker → 借用计数。
+    ///
+    /// 谁把 worker 从 m_inflightReclaim 移出、进入删除流程，就必须先等这里的计数归零，
+    /// 否则会在对方 `thread->wait()` 尚未返回时 delete 掉对象。
+    QHash<WorkerThread*, int> m_activeReclaimBorrows;
     /// 有线程正在 shutdown()/析构中收归 worker（用于回收线程让出所有权）。
     bool m_reclaimAborted = false;
     bool m_quitRequested = false;

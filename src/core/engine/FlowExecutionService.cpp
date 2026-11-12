@@ -25,6 +25,22 @@ std::function<void()> g_jobTeardownHookForTest;
 // 线程重建与命令清理路径。生产构建不会设置，恒为空。
 std::function<void()> g_workerLoopFaultHookForTest;
 
+// T2.5 P1 第六次整改：有界回收进入 `thread->wait()` 之前的注入钩子。同样存放于
+// .cpp 私有测试状态（不新增数据成员），由 m_mutex 保护、锁外调用。仅用于把回收
+// 调用稳定停在「借用已生效、等待尚未开始」的位置，以确定性构造并发 shutdown()
+// 的窗口。生产构建不会设置，恒为空。
+std::function<void()> g_reclaimWaitHookForTest;
+
+/// 测试观测状态（与其余测试钩子一样放 .cpp 匿名空间，**不新增类数据成员**）：
+/// 仍在作用域内的 ReclaimBorrow 个数。用全局原子是因为守卫在多个线程上并存；
+/// 只在测试观测接口里读取，生产路径只做一次 ++/--。
+std::atomic_int g_liveReclaimGuards{0};
+
+// 测试注入点：在「移交指针 + 登记借用」的同一临界区**之内**触发（**持 m_mutex**）。
+// 用于验证 shutdown() 不可能观察到「线程可见但借用数为零」的中间态。
+// 实现中不得再取 m_mutex、不得阻塞等待需要本锁的线程。生产恒为空。
+std::function<void()> g_inCriticalSectionHookForTest;
+
 } // namespace
 
 /// 常驻工作线程：run() 内阻塞在 QWaitCondition 的命令循环，不使用事件循环。
@@ -121,34 +137,127 @@ FlowExecutionService::~FlowExecutionService() {
     }
 }
 
-bool FlowExecutionService::retireWorkerThreadBounded(WorkerThread* thread, int budgetMs) {
+void FlowExecutionService::registerReclaimBorrowLocked(WorkerThread* thread) {
+    // 调用方必须已持有 m_mutex。本函数与 beginInflightReclaimLocked() 必须在
+    // **同一个临界区**内一并调用——见 ReclaimBorrow 的注释。
+    if (thread) {
+        ++m_activeReclaimBorrows[thread];
+    }
+}
+
+FlowExecutionService::ReclaimBorrow::ReclaimBorrow(FlowExecutionService* service, WorkerThread* thread,
+                                                   Registration mode)
+    : m_service(service), m_thread(thread) {
+    if (!m_service || !m_thread) {
+        return;
+    }
+    if (mode == Registration::RegisterNow) {
+        QMutexLocker locker(&m_service->m_mutex);
+        m_service->registerReclaimBorrowLocked(m_thread);
+    }
+    // AdoptAlreadyRegistered：借用已由持有锁的调用方登记，这里只接管归还责任。
+    m_ownsBorrow = true;
+    // 观测标志必须在「借用已生效」之后置位：它代表「本守卫确实在守护一个 worker」，
+    // 早于借用生效置位会把「还没登记」误报成「正在使用」。
+    m_alive.store(true, std::memory_order_release);
+    g_liveReclaimGuards.fetch_add(1, std::memory_order_acq_rel);
+}
+
+FlowExecutionService::ReclaimBorrow::~ReclaimBorrow() {
+    if (!m_service || !m_thread || !m_ownsBorrow) {
+        return;
+    }
+    // 析构点覆盖本函数的一切出口（正常 return、早退、异常），因此借用的归还时刻
+    // 严格晚于 `thread->wait()` 的返回时刻——这正是 shutdown() 需要的前提。
+    //
+    // 观测标志先于计数表撤销：本守卫即将不再使用 worker，此刻起后续观测不应再把它
+    // 算作「正在使用」。撤销顺序不影响生产语义（两者都不解引用 m_thread）。
+    m_alive.store(false, std::memory_order_release);
+    g_liveReclaimGuards.fetch_sub(1, std::memory_order_acq_rel);
+    // 归还只操作本服务的内部计数表，**不触碰 m_thread 指向的对象**：
+    // 此刻该 worker 可能已被 delete，任何解引用都是未定义行为。
+    QMutexLocker locker(&m_service->m_mutex);
+    auto it = m_service->m_activeReclaimBorrows.find(m_thread);
+    if (it != m_service->m_activeReclaimBorrows.end()) {
+        if (--it.value() <= 0) {
+            m_service->m_activeReclaimBorrows.erase(it);
+        }
+    }
+    m_service->m_borrowWake.wakeAll();
+}
+
+void FlowExecutionService::waitForReclaimBorrowsReturned() {
+    // 调用方不持锁，且必须已在锁内停止接受新的回收借用
+    // （enqueue() 看到 m_reclaimAborted 即拒绝启动，不再产生新借用）。
+    //
+    // **这里的等待与启动路径的 StartHandshakeTimeoutMs 不是一回事**：启动预算是
+    // 「GUI 允许多久拿到明确的失败答复」，所以必须有界；这里是析构/shutdown 的
+    // 生命周期同步，语义上必须等到「无人再使用该对象」为止，因此和
+    // joinWorkerThread() 一样允许长期等待。二者共用同一个数字会造成「为了不超预算
+    // 而放行悬空引用」的错误取舍。
+    QMutexLocker locker(&m_mutex);
+    while (!m_activeReclaimBorrows.isEmpty()) {
+        m_borrowWake.wait(&m_mutex);
+    }
+}
+
+bool FlowExecutionService::retireWorkerThreadBounded(WorkerThread* thread, int budgetMs, bool borrowRegistered) {
     if (!thread) {
         return true;
     }
-    const bool finished = thread->wait(static_cast<unsigned long>(qMax(0, budgetMs)));
 
-    // 关键：**唯一回收者判定必须在锁内、按「是否仍在 inflight 列表」进行**。
-    // 不能依赖等待之前采样的 m_reclaimAborted 快照——等待期间 shutdown() 可能已经把
-    // 这条线程收归自己、join 完并 delete 掉，此时本线程再碰 thread 就是 use-after-free。
-    // inflight 列表是「本线程是否仍被授权处置它」的唯一权威事实：
-    //   - 仍在列表里 → 所有权仍在本线程；
-    //   - 已被移出   → 所有权已转交 shutdown()/析构，本线程立刻返回、绝不触碰指针。
+    // T2.5 P1 第七次整改（2026-11-11 第六段复核 P1）：借用必须「与移交同一临界区登记」。
+    //
+    // 第六次整改在本函数内部才 New 出 ReclaimBorrow 去登记借用，而指针早已在
+    // enqueue() 的锁内被移入 m_inflightReclaim 并解锁——两步之间 shutdown() 会看到
+    // 借用数为零，接管并 delete；本函数随后才登记借用并 `thread->wait()`，
+    // 仍然访问已释放对象（评审：FlowExecutionService.cpp:413 与 :191）。
+    //
+    // 因此现在由调用方（enqueue()）**在摘入 m_inflightReclaim 的同一临界区内**
+    // 调 registerReclaimBorrowLocked() 登记；本函数只**接管**这笔已登记的借用，
+    // 不再自行登记。borrowRegistered==false 仅用于直接调用本函数且确实没有
+    // 先登记借用的路径（当前不存在，保留作为显式断言）。
+    //
+    // 所有对 `thread` 的使用都限制在下面的 borrow 块内；离开该块即归还借用，
+    // 之后本函数**绝不**再解引用 `thread`。
+    Q_ASSERT_X(borrowRegistered, "retireWorkerThreadBounded",
+               "the reclaim borrow must be registered inside the same critical section that "
+               "moved the worker into m_inflightReclaim");
+
+    bool finished = false;
     bool owned = false;
     {
+        ReclaimBorrow borrow(this, thread,
+                             borrowRegistered ? ReclaimBorrow::Registration::AdoptAlreadyRegistered
+                                              : ReclaimBorrow::Registration::RegisterNow);
+        // 测试注入点（生产恒为空）：把回收调用停在「借用已生效、等待尚未开始」处。
+        runReclaimWaitHookForTest();
+        finished = thread->wait(static_cast<unsigned long>(qMax(0, budgetMs)));
+
+        // 关键：**唯一回收者判定必须在锁内、按「是否仍在 inflight 列表」进行**。
+        // 不能依赖等待之前采样的 m_reclaimAborted 快照——等待期间 shutdown() 可能已经把
+        // 这条线程收归自己、join 完并 delete 掉，此时本线程再碰 thread 就是 use-after-free。
+        // inflight 列表是「本线程是否仍被授权处置它」的唯一权威事实：
+        //   - 仍在列表里 → 所有权仍在本线程；
+        //   - 已被移出   → 所有权已转交 shutdown()/析构，本线程立刻返回、绝不触碰指针。
         QMutexLocker locker(&m_mutex);
         owned = m_inflightReclaim.removeOne(thread);
-        if (owned && finished) {
-            // 已退出且仍归本线程：交给下面的 delete（唯一删除者）。
-        } else if (owned) {
+        if (owned && !finished) {
             // 未退出且仍归本线程：所有权移交 Service 的 retiring 列表。
             m_retiringThreads.append(thread);
         }
         m_reclaimWake.wakeAll(); // 唤醒可能在 m_reclaimWake 上等待的收尾者
     }
+    // —— 借用已在此处归还。此后 thread 指针一律按「可能已被 delete」对待。——
+
     if (!owned) {
-        return false; // shutdown()/析构已接管；不 delete、不登记、不再触碰该指针
+        // shutdown()/析构已接管；不 delete、不登记、不再触碰该指针。
+        // 归还借用会让 shutdown() 的 waitForReclaimBorrowsReturned() 得以继续，
+        // 于是它在真正 delete 之前就已经等到本线程离开 wait()。
+        return false;
     }
     if (finished) {
+        // 已退出、所有权仍在本线程：唯一删除者。
         delete thread;
         return true;
     }
@@ -188,10 +297,14 @@ void FlowExecutionService::beginInflightReclaimLocked(WorkerThread* thread) {
 
 int FlowExecutionService::detachLiveWorkerThreadsLocked(QList<WorkerThread*>& retiring) {
     // 调用方必须已持有 m_mutex。
+    //
+    // T2.5 P1 第六次整改（2026-11-11 第五段复核 P1）：这里只做**所有权收归**，
+    // 不再假设「移出 inflight 即可删除」。在途线程可能正被某个回收调用借用在
+    // `thread->wait()` 内——删除权与使用权是两件事。真正的删除由调用方在锁外先
+    // waitForReclaimBorrowsReturned()、再 joinWorkerThread() 完成。
     int count = 0;
-    // 1) 在途回收中的线程：**直接收归本函数**（把它们从 inflight 移到 retiring），
-    //    并置中止信号。回收线程醒来后会发现自己在 inflight 里已不存在，从而放弃所有权，
-    //    不会再 delete、也不会重复登记 —— 唯一删除者始终只有一方。
+    // 1) 在途回收中的线程：全部交回调用方，并置中止信号，使后续启动被拒绝
+    //    （enqueue() 入口检查 m_reclaimAborted），保证不再产生新的回收借用。
     if (!m_inflightReclaim.isEmpty()) {
         m_reclaimAborted = true;
         for (WorkerThread* thread : m_inflightReclaim) {
@@ -219,6 +332,13 @@ void FlowExecutionService::joinWorkerThread(WorkerThread* thread) {
     if (!thread) {
         return;
     }
+    // T2.5 P1 第六次整改（2026-11-11 第五段复核 P1）：**删除前必须先等借用归还**。
+    //
+    // 走到这里的线程可能正被某个回收调用在 retireWorkerThreadBounded() 内借用在
+    // `thread->wait()` 上。仅凭「本函数是唯一删除者」就 delete 会与那次活跃的同对象
+    // wait 并发——删除者唯一，不等于对象已无人使用。这里等的只是**回收调用返回**
+    // （不是 worker 退出），所以不会与启动路径的 100ms 预算混为一谈。
+    waitForReclaimBorrowsReturned();
     const int deadline = m_shutdownDeadlineMs.load(std::memory_order_acquire);
     if (!thread->wait(static_cast<unsigned long>(qMax(0, deadline)))) {
         m_shutdownDeadlineHits.fetch_add(1, std::memory_order_relaxed);
@@ -297,6 +417,12 @@ bool FlowExecutionService::enqueue(JobType job) {
             if (!m_reclaimAborted) {
                 for (int i = m_retiringThreads.size() - 1; i >= 0; --i) {
                     WorkerThread* thread = m_retiringThreads.at(i);
+                    // 第六次整改：仍被回收调用借用的线程**不得**在这里删除。
+                    // 解锁后执行 delete 时，对方可能仍在其 `thread->wait()` 内；
+                    // 交给 shutdown()/析构在 waitForReclaimBorrowsReturned() 之后处理。
+                    if (thread && m_activeReclaimBorrows.contains(thread)) {
+                        continue;
+                    }
                     if (!thread || thread->isFinished()) {
                         if (thread) {
                             finished.append(thread);
@@ -306,13 +432,16 @@ bool FlowExecutionService::enqueue(JobType job) {
                 }
             }
         }
-        for (WorkerThread* thread : finished) {
-            delete thread; // 已真正结束，无需等待
+        if (!finished.isEmpty()) {
+            for (WorkerThread* thread : finished) {
+                delete thread; // 已真正结束，无需等待
+            }
         }
     }
 
     for (;;) {
         WorkerThread* retired = nullptr;
+        bool borrowRegistered = false;
         {
             QMutexLocker locker(&m_mutex);
             // 第四次整改：shutdown()/析构正在收归 worker 时，启动必须明确拒绝。
@@ -325,10 +454,23 @@ bool FlowExecutionService::enqueue(JobType job) {
             if (m_thread && (m_thread->isRetiring() || m_thread->isFinished())) {
                 retired = m_thread;
                 m_thread = nullptr;
-                // **关键（第四次整改）**：摘除与「在途回收」标记必须在**同一次加锁**内
-                // 完成。否则从摘除到锁外 wait 结束、再到登记进 retiring 之间，这条线程
-                // 只存在于本线程的栈上，并发 shutdown() 看不到它，会立即返回 true。
+                // **关键（第四/第七次整改）**：以下三件事必须在**同一次加锁**内完成，
+                // 顺序是「移交指针 → 标记在途 → 登记借用」：
+                //   1. m_thread 置空（指针移交出常驻槽）；
+                //   2. beginInflightReclaimLocked()（shutdown 可见）；
+                //   3. registerReclaimBorrowLocked()（shutdown 知道有人正在用它）。
+                // 只要 2、3 之间或 1、3 之间留出解锁空档，shutdown() 就能看到
+                // 「可见但借用数为零」的状态，接管并删除；本线程随后才登记借用并
+                // thread->wait()，仍会访问已释放对象（第六段复核 P1）。
                 beginInflightReclaimLocked(retired);
+                registerReclaimBorrowLocked(retired);
+                borrowRegistered = true;
+                // 测试注入点（生产恒为空）：此刻仍**持有 m_mutex**，借用已登记。
+                // 任何并发 shutdown() 都必须等本临界区结束才能继续——这正是要证明的
+                // 不变量：不存在「线程已可见、借用数为零」的可观察状态。
+                if (g_inCriticalSectionHookForTest) {
+                    g_inCriticalSectionHookForTest();
+                }
             }
         }
         if (!retired) {
@@ -341,18 +483,22 @@ bool FlowExecutionService::enqueue(JobType job) {
         // 「无预算却登记」的尾巴会让下一次启动先替它耗预算，形成链式拒绝。故此时把线程
         // 直接留在 retiring（仍由本服务持有，绝不丢所有权）。
         //
-        // 注意：此时它在 inflight 列表里，必须先摘下再转入 retiring，否则同一条线程会
-        // 同时出现在两个列表中（shutdown 会 join 两次、delete 两次）。
+        // 注意：此时它已在 inflight 列表里、且已登记借用，必须先摘下再转入 retiring，
+        // 否则同一条线程会同时出现在两个列表中（shutdown 会 join 两次、delete 两次）。
         const int reclaimBudget = StartHandshakeTimeoutMs - static_cast<int>(startTimer.elapsed());
         if (reclaimBudget <= 0) {
+            // 借用已在上面的临界区内登记；这里用 AdoptAlreadyRegistered 接管它，
+            // 使 shutdown() 的 waitForReclaimBorrowsReturned() 能覆盖本路径。
+            ReclaimBorrow borrow(this, retired, ReclaimBorrow::Registration::AdoptAlreadyRegistered);
             QMutexLocker locker(&m_mutex);
-            if (m_inflightReclaim.removeOne(retired)) {
+            const bool moved = m_inflightReclaim.removeOne(retired);
+            if (moved) {
                 m_retiringThreads.append(retired);
             }
             m_reclaimWake.wakeAll();
             return false; // 明确拒绝，不入队；所有权仍在服务侧
         }
-        if (!retireWorkerThreadBounded(retired, reclaimBudget)) {
+        if (!retireWorkerThreadBounded(retired, reclaimBudget, borrowRegistered)) {
             return false;
         }
         // 回收完成后再回到循环顶部重新判定：期间若又发生自退出，仍会被识别。
@@ -447,6 +593,69 @@ void FlowExecutionService::setWorkerLoopFaultHookForTest(std::function<void()> h
 void FlowExecutionService::clearWorkerLoopFaultHookForTest() {
     QMutexLocker locker(&m_mutex);
     g_workerLoopFaultHookForTest = nullptr;
+}
+
+void FlowExecutionService::setReclaimWaitHookForTest(std::function<void()> hook) {
+    QMutexLocker locker(&m_mutex);
+    g_reclaimWaitHookForTest = std::move(hook);
+}
+
+void FlowExecutionService::clearReclaimWaitHookForTest() {
+    QMutexLocker locker(&m_mutex);
+    g_reclaimWaitHookForTest = nullptr;
+}
+
+void FlowExecutionService::runReclaimWaitHookForTest() {
+    std::function<void()> hook;
+    {
+        QMutexLocker locker(&m_mutex);
+        hook = g_reclaimWaitHookForTest;
+    }
+    // 锁外调用：钩子会阻塞等待外部放行，持锁调用会卡死所有服务入口。
+    if (hook) {
+        hook();
+    }
+}
+
+int FlowExecutionService::activeReclaimBorrowCountForTest() const {
+    QMutexLocker locker(&m_mutex);
+    int total = 0;
+    for (auto it = m_activeReclaimBorrows.constBegin(); it != m_activeReclaimBorrows.constEnd(); ++it) {
+        total += it.value();
+    }
+    return total;
+}
+
+int FlowExecutionService::liveReclaimGuardCountForTest() const {
+    // 不取 m_mutex：这是守卫作用域的原子计数，与计数表无关。
+    // 正因为它**不**是 shutdown() 的等待条件，才能区分「shutdown 等了」与「shutdown 没等」。
+    return g_liveReclaimGuards.load(std::memory_order_acquire);
+}
+
+int FlowExecutionService::inflightWithoutBorrowCountForTest() const {
+    // 直接判据：inflight 里每条线程都必须已有活跃借用。
+    // 若借用登记被推迟到锁外（缺陷态），锁内就能抓到「在 inflight、借用为 0」的瞬间。
+    QMutexLocker locker(&m_mutex);
+    int violations = 0;
+    for (WorkerThread* thread : m_inflightReclaim) {
+        if (!thread) {
+            continue;
+        }
+        if (!m_activeReclaimBorrows.contains(thread) || m_activeReclaimBorrows.value(thread) <= 0) {
+            ++violations;
+        }
+    }
+    return violations;
+}
+
+void FlowExecutionService::setInCriticalSectionHookForTest(std::function<void()> hook) {
+    QMutexLocker locker(&m_mutex);
+    g_inCriticalSectionHookForTest = std::move(hook);
+}
+
+void FlowExecutionService::clearInCriticalSectionHookForTest() {
+    QMutexLocker locker(&m_mutex);
+    g_inCriticalSectionHookForTest = nullptr;
 }
 
 void FlowExecutionService::runWorkerExitBarrierForTest() {
@@ -558,6 +767,17 @@ bool FlowExecutionService::shutdown() {
         RunEngine::instance().stop();
         return false;
     }
+    // T2.5 P1 第六次整改（2026-11-11 第五段复核 P1）：在删除任何 worker 之前，
+    // 先等**活跃回收调用**把借用归还。
+    //
+    // 此时 m_reclaimAborted 已置为 true（见上面的 detachLiveWorkerThreadsLocked），
+    // 新的启动会被 enqueue() 入口直接拒绝，因此不会再有新的借用产生——「禁止新启动」
+    // 与「等借用归还」的先后关系正是本函数能安全终止的前提。
+    //
+    // 这是**生命周期等待**，与启动路径的 StartHandshakeTimeoutMs 预算无关：后者是
+    // 「GUI 允许多久拿到明确失败答复」，前者是「对象何时真的可以销毁」。共用一个数字
+    // 会导致「为不超预算而放行悬空引用」。因此这里无界等待，和 joinWorkerThread() 一致。
+    waitForReclaimBorrowsReturned();
     for (WorkerThread* thread : retiring) {
         joinWorkerThread(thread); // 锁外 join：持锁等待会卡死所有入口
     }
