@@ -3070,3 +3070,71 @@ revert `revert_result.log`、`revert_apply.log`、`revert_checkout_base.log`、`
 | 交付树 | 提交后 `git status --short` 为 0 行 |
 | 非阻塞遗留 | QWARN 根因按「观察事实 + 可能解释」记录，线程 ID 复用解释**待后续独立探针验证**；不影响 T2.5 收口 |
 | 临时工作树 | `/var/tmp/t25r9-wt` 仍保留为干净 `d799ff1` 状态供复核，清理待授权 |
+
+## 22. T2.8 多借用者析构回归补充（2026-11-12）
+
+### 22.1 新增覆盖
+
+在 §13.5 的单模块 token 先析构用例之外，新增
+`testCancellationTokenDtorDetachesAllBorrowers`：两个已初始化模块同时借用同一个栈上
+`CancellationToken`；先确认两条借用均指向该 token，再销毁 token，最后分别确认两个模块的
+借用均已清空，且调用取消查询安全并返回 `false`。这直接覆盖析构清理必须遍历并摘除所有借用者的语义。
+
+该用例只验证顺序生命周期，不证明并发析构安全。独立只读复核结论为 **Ship**；复核明确了
+这一证据边界。
+
+### 22.2 交付与验证
+
+| 项 | 结果 |
+|---|---|
+| 测试提交 | `ba30cbf`（仅 `tests/test_modulebase.cpp`，`+21`） |
+| 工作树 | `feature/review-hardening`，`HEAD=ba30cbf`，提交后干净 |
+| 格式与差异 | `clang-format --dry-run --Werror tests/test_modulebase.cpp`、`git diff --check` 通过 |
+| 专项测试 | 全新构建目标 `test_modulebase` **17/17** |
+| 全量构建 | 工作区外新目录 `/tmp/deeplux-r2-final-build`，`cmake --build ... -j4` 成功；`DEEPLUX_NATIVE_SAM=ON` |
+| 全量 CTest | 沙箱外 `ctest --test-dir /tmp/deeplux-r2-final-build --output-on-failure -j4`，**97/97**，60.34s |
+| 日志 | `/tmp/deeplux-r2-after-ba30cbf-build.log`、`/tmp/deeplux-r2-after-ba30cbf-ctest.log` |
+
+第一次在沙箱内运行时，Qt 临时目录指向不可写的 `/var/tmp/gcc-tmp`，并且本地 socket 测试被沙箱拒绝；
+该次结果不作为验收。改用可写 `TMPDIR=/tmp/deeplux-ctest-tmp` 并在沙箱外重跑后，完整 97 项通过。
+
+### 22.3 状态边界
+
+本节只补充 T2.8 多借用者行为证据，不代替 T2.8 独立收口裁定，也不改变 §21.5 的结论：
+**R2 整批仍未收口**。本次 CTest 是新增回归后的单次全量验证，不替代 §20 的十轮批次门禁或 `git revert` 抽查。
+
+## 23. T2.8 / T2.9 独立复核与最终态门禁（2026-11-12）
+
+### 23.1 T2.8 独立复核
+
+独立只读复核对 `463d6b7` 的 token 借用清理及 `ba30cbf` 的多借用者测试给出 **Ship**：析构遍历并清除所有指向该 token 的模块借用，顺序析构用例覆盖两个模块。复核确认 `96829f9` 已修正早期作用域守卫晚于输入校验的问题。
+
+证据边界：测试不证明并发析构安全。映射锁释放后，模块仍通过裸指针读取 token；调用方必须保证 token 活到所有借用执行完成。测试也不证明同一模块重叠执行安全；批内重复实例由 T3.2 的引擎侧拒绝任务处理。该边界不扩大为“任意并发 token 生命周期均安全”的承诺。
+
+### 23.2 T2.9 独立复核及 NF 复败
+
+独立只读复核对 `2286519` / `571657b` / `42661b0` / `cd7cdd7` / `373d9dd` 提交链给出 **Ship**。复核检查两个正常完成入口均在 `finalizer.finish()` 释放执行租约前快照完整 `DisplayFrame`；发布时在生命周期锁下验证 `runId` 与 `jobId`，过期帧丢弃；生命周期锁→帧锁顺序一致，信号在锁外发射。回归用屏障先确认第二轮最终帧已发布，再放行第一轮迟到发布，并比较帧身份、图像与模块数据快照。
+
+撤销复败在隔离工作树 `/tmp/deeplux-t29-revert-wt` 执行：基线 `373d9dd`，仅撤销生产修复 `cd7cdd7`；运行 `testFinalDisplayFrameKeepsCompletedRunIdWhenNextRunStarts` 返回 `rc=1`，同一断言失败：`publishedRunIds.size() == 6`，预期 `frameCountBeforeFirstPublish == 5`（测试文件约第 6276 行）。原始输出：`/tmp/deeplux-t29-revert-nf.log`。该失败与旧实现迟到最终帧额外发出通知相符；交付工作树未切换缺陷态。独立复核未能从旧 `build/bin/test_runengine` 找到该用例，因此测试执行证据采用本轮隔离撤销构建与下述最终态全量 CTest，而非该复核者的本机单测。
+
+### 23.3 最终交付态连续门禁
+
+| 项 | 结果 |
+|---|---|
+| 交付 HEAD | `373d9dd`；除本证据文档外，交付工作树无未提交源码改动 |
+| CTest 注册数 | `ctest -N`：**97**（`DEEPLUX_NATIVE_SAM=ON`） |
+| 连续全量门禁 | 正确启用本机 Unix socket 的环境中，`ctest --output-on-failure -j4` 连续 **10/10** 轮，每轮 **97/97**；日志：`/tmp/deeplux-r2-final-10x-socket-enabled/run-{1..10}.log` |
+| 超时/跳过 | 10 轮日志中无失败、超时或跳过项；各轮耗时约 59.70–61.52 秒 |
+| 关键套件 / watchdog | 每轮 `test_executionaffinity`、`test_flowexecutionservice`、`test_mainwindow` 均 Passed；10 轮无 watchdog 触发标记 |
+| 初始沙箱尝试 | 受限环境拒绝 Agent/MCP 本地 socket，出现 9 个 socket 相关用例失败；该轮单独保留，不计入连续 10 轮 |
+| 最终帧 NF | 仅撤销 `cd7cdd7` 后按同一回归断言复败，见 §23.2 |
+| 格式/差异 | `clang-format --dry-run --Werror`（此前提交态验证）与本轮 `git diff --check` 通过 |
+
+CTest 所用构建目录 `/tmp/deeplux-r2-final-build` 的 `RunEngine.cpp/.h` 与交付 HEAD 字节一致；测试源码与 `373d9dd` 的差异仅为该提交中的 clang-format 换行/对齐，不改变测试逻辑。10 轮门禁在生产代码和测试逻辑与当前提交一致的已构建二进制上执行。
+
+### 23.4 复核结论与范围
+
+- T2.8：独立复核 **Ship**，按顺序生命周期契约收口；并发 token 析构不在测试证明范围内。
+- T2.9：独立复核 **Ship**；撤销生产修复后同一回归断言复败，最终态 10×97/97 通过。
+- R2 批次门禁：最终态连续 CTest 与撤销复败抽查均满足；T2.5 的撤销证据仍见 §20.5。T2.7 是经裁定的预防性重构，继续隔离且非 R2 收口前置。
+- 本节记录 R2 各任务与批次客观门禁的复核结果；不代表 R3、R4、D 线或整体计划完成。
