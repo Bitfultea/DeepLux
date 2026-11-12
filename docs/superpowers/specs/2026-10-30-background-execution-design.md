@@ -272,15 +272,15 @@ else:
 
 除串行 `executeModule` 外，以下入口也会直接执行模块，必须使用同一亲和性规则：
 
-- `RunEngine::executeParallel()`：池任务直接调用 `mod->execute()`。
-  - 进入池前过滤/校验：只有 `affinity=worker` 的模块允许进入并行池；存在 `gui` 亲和模块时返回结构化错误 `gui_affinity_not_parallelizable`，由调用方（如 Parallel 插件）回退串行。
+- `RunEngine::executeParallel()`：先按完整并行资格拆分批次；只有 `affinity=worker`、`threadSafe=true`、非阻塞且无断点的模块进入池，其余模块按原顺序串行回退。
+  - GUI 亲和回退模块在调用线程已是 GUI 线程时内联执行；否则使用带超时和自持有上下文的 GUI 回投。回投失败/取消/超时按结构化执行失败返回。
   - **禁止**在池线程用 `BlockingQueuedConnection` 统一回 GUI；GUI 线程若正在同步调用 `executeParallel` 并等待线程池，会形成互等死锁。
 - `RunEngine::executeBatchParallel()`（内部并行批次）：
   - 并行批次资格增加 `affinity=worker`；`threadSafe/blocking` 条件仍保留。
   - 不满足条件的模块留在串行路径，由 `executeModule` 的亲和性分流处理。
 - 任何新增模块执行入口必须复用同一个 `executionAffinity` 判定；代码审查以“所有 `mod->execute(` 调用点”为检查清单。
 - 必测：
-  - GUI 线程调用 `executeParallel` 含 `gui` 模块 → 返回错误且不阻塞；
+  - GUI 线程调用 `executeParallel` 含 `gui` 模块 → 串行回退并在 GUI 线程执行，不阻塞；
   - `executeBatchParallel` 不会把 `gui` 模块放进池；
   - worker 模块可正常并行，结果与串行一致。
 
@@ -406,7 +406,7 @@ struct DisplayFrame {
 | Job 取消 | “Service 检查停止后、启动下一轮前”窗口内调用 `engine.stop()`：同 token 的 `runOnceForJob` 必须失败，Service 不发起下一轮；仅 endExternalJob 后新 job 可复位 |
 | 原生循环 | `RunEngine::start()` 正常完成一轮后仍为 Running，至少执行两轮；收尾窗口并发 stop 获胜，终态 Stopped |
 | 线程 | worker 模块在执行线程；gui 模块在 GUI 线程；无 worker→QWidget 调用 |
-| 并行入口 | `executeParallel` 含 gui 模块返回 `gui_affinity_not_parallelizable` 且不阻塞；`executeBatchParallel` 不把 gui 模块入池；worker 并行结果与串行一致 |
+| 并行入口 | `executeParallel` 只并发执行合格 worker 模块，其余模块按序串行回退且遵守 GUI 亲和；两个线程安全模块经屏障证明真实并发；`executeBatchParallel` 不把 gui 模块入池 |
 | 故障注入 | 引擎层注入异常（非插件 process）后租约释放、状态回落、后续 run 可启动；Paused 收尾保留上下文且不发 runFinished |
 | 帧一致性 | 延迟消费 A 帧时 worker 已开始 B 轮：A 图像只用 A 的 moduleDataSnapshot；旧 job 迟到通知不污染新工程；`(jobId,runId)` 不匹配的帧被丢弃 |
 | 控制 | 断点暂停/继续；**用户暂停：A→B→C 在 A 后暂停，恢复后 B/C 各执行一次且 runFinished 不误发**；循环中停止；单步只执行一个模块；快速连点不重入 |

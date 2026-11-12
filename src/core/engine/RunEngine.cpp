@@ -204,18 +204,14 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
         validNames.append(name);
     }
 
-    // 后台执行（设计 §6.3）：并行池只允许 worker 亲和模块。GUI 线程可能正同步等待线程池，
-    // 池线程统一 BlockingQueuedConnection 回 GUI 会互等死锁；因此进入池前过滤，存在 gui
-    // 亲和时直接返回结构化错误，由调用方（如 Parallel 插件）回退串行。
+    QStringList parallelNames;
+    QStringList serialNames;
     for (const QString& name : validNames) {
-        if (executionAffinityFor(name, getModule(name)) != ExecutionAffinity::Worker) {
-            releaseLease();
-            return ExecutionResult::fail(ExecError::Processing, tr("gui_affinity_not_parallelizable: %1").arg(name),
-                                         QStringLiteral("gui_affinity_not_parallelizable"));
-        }
+        (isParallelEligible(getModule(name)) ? parallelNames : serialNames).append(name);
     }
 
-    for (const QString& name : validNames) {
+    // 不合资格模块留在线性回退路径，避免 GUI 亲和/阻塞/非线程安全模块进入池。
+    for (const QString& name : parallelNames) {
         ModuleBase* mod = getModule(name);
         // 同一实例同刻仅一次：每个任务持有独立输入/输出副本
         // 每任务独立输入/输出副本（in/out 均为局部值）；sharedInput 只读。
@@ -254,15 +250,126 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
 
     {
         QMutexLocker locker(&doneMutex);
-        while (finished < validNames.size())
+        while (finished < parallelNames.size())
             doneCond.wait(&doneMutex);
     }
 
     m_lastParallelMaxConcurrency.store(maxConcurrent.load(), std::memory_order_release);
-    releaseLease();
 
-    if (haveError)
+    if (haveError) {
+        releaseLease();
         return firstError;
+    }
+
+    QCoreApplication* app = QCoreApplication::instance();
+    auto executeSerial = [&](ModuleBase* module, const QString& name) {
+        PortValueMap inputs = sharedInput;
+        PortValueMap outputs;
+        ExecutionContext context;
+        context.runId = parallelRunId;
+        context.frameId = m_frameId.fetch_add(1, std::memory_order_relaxed);
+        context.timestampMs = QDateTime::currentMSecsSinceEpoch();
+        context.cancellationToken = parallelToken;
+        const ExecutionAffinity affinity = executionAffinityFor(name, module);
+        auto executeInline = [&]() {
+            if (affinity == ExecutionAffinity::Worker && app && QThread::currentThread() != app->thread())
+                logWorkerExecutionThread(name);
+            return module->execute(inputs, outputs, context);
+        };
+        if (affinity == ExecutionAffinity::Worker || !app || QThread::currentThread() == app->thread())
+            return executeInline();
+
+        auto record = QSharedPointer<GuiDispatchRecord>::create();
+#ifdef DEEPLUX_BUILD_TESTS
+        const int timeoutMs = m_guiDispatchTimeoutMs.load(std::memory_order_acquire);
+#else
+        constexpr int timeoutMs = 5000;
+#endif
+        const quint64 generation = m_dispatchGeneration.load(std::memory_order_acquire);
+        auto callback = [this, record, module, inputs, ctx = context, generation]() mutable {
+            if (m_dispatchGeneration.load(std::memory_order_acquire) != generation) {
+                record->phase.store(GuiDispatchRecord::Cancelled, std::memory_order_release);
+#ifdef DEEPLUX_BUILD_TESTS
+                m_guiDispatchLateDrops.fetch_add(1, std::memory_order_relaxed);
+#endif
+                record->done.release();
+                return;
+            }
+            int expected = GuiDispatchRecord::Pending;
+            if (!record->phase.compare_exchange_strong(expected, GuiDispatchRecord::Running)) {
+#ifdef DEEPLUX_BUILD_TESTS
+                m_guiDispatchLateDrops.fetch_add(1, std::memory_order_relaxed);
+#endif
+                record->done.release();
+                return;
+            }
+            record->result = module->execute(inputs, record->outputs, ctx);
+            record->phase.store(GuiDispatchRecord::Finished, std::memory_order_release);
+            record->done.release();
+        };
+        if (!QMetaObject::invokeMethod(app, callback, Qt::QueuedConnection)) {
+            const QString message = tr("GUI-thread module dispatch failed: %1").arg(name);
+            Logger::instance().warning(message, "Run");
+#ifdef DEEPLUX_BUILD_TESTS
+            QMutexLocker locker(&m_guiDispatchMutex);
+            m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_failed");
+#endif
+            return ExecutionResult::fail(ExecError::Processing, message, QStringLiteral("affinity_dispatch_failed"));
+        }
+        if (record->done.tryAcquire(1, timeoutMs)) {
+            if (record->phase.load(std::memory_order_acquire) == GuiDispatchRecord::Finished)
+                return record->result;
+#ifdef DEEPLUX_BUILD_TESTS
+            QMutexLocker locker(&m_guiDispatchMutex);
+            m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_cancelled");
+#endif
+            return ExecutionResult::fail(ExecError::Processing,
+                                         tr("GUI-thread module dispatch cancelled: %1").arg(name),
+                                         QStringLiteral("affinity_dispatch_cancelled"));
+        }
+
+#ifdef DEEPLUX_BUILD_TESTS
+        m_guiDispatchTimeoutHits.fetch_add(1, std::memory_order_relaxed);
+#endif
+        int expected = GuiDispatchRecord::Pending;
+        const bool cancelled = record->phase.compare_exchange_strong(expected, GuiDispatchRecord::Cancelled);
+        if (!cancelled && record->phase.load(std::memory_order_acquire) == GuiDispatchRecord::Running) {
+#ifdef DEEPLUX_BUILD_TESTS
+            m_guiDispatchRunningWaitHits.fetch_add(1, std::memory_order_relaxed);
+#endif
+            record->done.acquire();
+        }
+        const QString message = tr("GUI-thread module dispatch timed out: %1").arg(name);
+        Logger::instance().warning(
+            QString("GUI-thread module dispatch timed out after %1 ms: %2").arg(timeoutMs).arg(name), "Run");
+#ifdef DEEPLUX_BUILD_TESTS
+        QMutexLocker locker(&m_guiDispatchMutex);
+        m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_timeout");
+#endif
+        return ExecutionResult::fail(ExecError::Processing, message, QStringLiteral("affinity_dispatch_timeout"));
+    };
+
+    for (const QString& name : serialNames) {
+        if (parallelToken && parallelToken->isCancelledFast()) {
+            releaseLease();
+            return ExecutionResult::fail(ExecError::Cancelled, tr("Parallel batch cancelled before serial fallback"),
+                                         QStringLiteral("parallel_fallback_cancelled"));
+        }
+        ModuleBase* module = getModule(name);
+        if (!module) {
+            releaseLease();
+            return ExecutionResult::fail(ExecError::Processing, tr("Parallel module is unavailable: %1").arg(name));
+        }
+        const ExecutionResult result = executeSerial(module, name);
+        if (!result.success) {
+            if (parallelToken)
+                parallelToken->cancel();
+            releaseLease();
+            return result;
+        }
+    }
+
+    releaseLease();
     return ExecutionResult::ok();
 }
 

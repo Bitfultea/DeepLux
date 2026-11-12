@@ -7,6 +7,7 @@
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QSemaphore>
 #include <QSignalSpy>
 #include <QThread>
@@ -47,6 +48,40 @@ protected:
     }
 };
 
+class ParallelBarrierProbeModule : public ModuleBase {
+public:
+    ParallelBarrierProbeModule(const QString& name, QSemaphore& bothEntered, QSemaphore& release,
+                               std::atomic<int>& active, std::atomic<int>& maxActive)
+        : m_bothEntered(bothEntered), m_release(release), m_active(active), m_maxActive(maxActive) {
+        m_moduleId = name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+        setThreadSafe(true);
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        const int active = ++m_active;
+        int maximum = m_maxActive.load();
+        while (active > maximum && !m_maxActive.compare_exchange_weak(maximum, active)) {
+        }
+        m_bothEntered.release();
+        const bool released = m_release.tryAcquire(1, 5000);
+        --m_active;
+        output = input;
+        return released;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    QSemaphore& m_bothEntered;
+    QSemaphore& m_release;
+    std::atomic<int>& m_active;
+    std::atomic<int>& m_maxActive;
+};
+
 /// T2.2：GUI 线程阻塞探针，用于验证回投超时的生命周期语义。
 class BlockingGuiProbe : public ModuleBase {
 public:
@@ -74,6 +109,31 @@ protected:
     QWidget* createConfigWidget() override {
         return nullptr;
     }
+};
+
+class GuiDispatchJoinGuard {
+public:
+    GuiDispatchJoinGuard(std::thread& thread, QSemaphore& finished, QSemaphore* unblock = nullptr)
+        : m_thread(thread), m_finished(finished), m_unblock(unblock) {}
+    ~GuiDispatchJoinGuard() {
+        if (!m_thread.joinable())
+            return;
+        if (m_unblock)
+            m_unblock->release();
+        QElapsedTimer elapsed;
+        elapsed.start();
+        while (m_finished.available() == 0 && elapsed.elapsed() < 6000) {
+            if (QCoreApplication::instance())
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+            QThread::msleep(1);
+        }
+        m_thread.join();
+    }
+
+private:
+    std::thread& m_thread;
+    QSemaphore& m_finished;
+    QSemaphore* m_unblock;
 };
 
 class TestExecutionAffinity : public QObject {
@@ -131,7 +191,19 @@ private slots:
         QVERIFY(worker.wait(2000));
     }
 
-    void testParallelRejectsGuiAffinityWithoutDeadlock() {
+    void testParallelFallsBackToSerialForGuiAffinity() {
+        AffinityProbeModule module;
+        QVERIFY(module.initialize());
+        RunEngine::instance().addModule(&module);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("AffinityProbe"), ExecutionAffinity::Gui);
+
+        const ExecutionResult result = RunEngine::instance().executeParallel({QStringLiteral("AffinityProbe")}, {});
+        QVERIFY(result.success);
+        QCOMPARE(module.executedOn.load(), QThread::currentThreadId());
+    }
+
+    void testParallelGuiFallbackDispatchesToGuiThread() {
         AffinityProbeModule module;
         QVERIFY(module.initialize());
         RunEngine::instance().addModule(&module);
@@ -139,16 +211,95 @@ private slots:
             .setModuleExecutionAffinityForTest(QStringLiteral("AffinityProbe"), ExecutionAffinity::Gui);
 
         ExecutionResult result;
-        QSemaphore done;
-        std::thread caller([&]() {
+        QSemaphore finished;
+        std::thread caller([&] {
             result = RunEngine::instance().executeParallel({QStringLiteral("AffinityProbe")}, {});
-            done.release();
+            finished.release();
         });
-        QVERIFY(done.tryAcquire(1, 2000));
+        GuiDispatchJoinGuard joinOnExit(caller, finished);
+
+        QTRY_VERIFY_WITH_TIMEOUT(module.entered.available() > 0, 2000);
+        QVERIFY(module.entered.tryAcquire(1, 0));
+        QTRY_VERIFY_WITH_TIMEOUT(finished.available() > 0, 2000);
+        QVERIFY(finished.tryAcquire(1, 0));
         caller.join();
-        QCOMPARE(result.success, false);
-        QVERIFY(result.errorCode == ExecError::Processing);
-        QVERIFY(result.userMessage.contains(QStringLiteral("gui_affinity_not_parallelizable")));
+        QVERIFY(result.success);
+        QCOMPARE(module.executedOn.load(), QThread::currentThreadId());
+    }
+
+    void testParallelGuiDispatchTimeoutDropsLateCallback() {
+        BlockingGuiProbe module;
+        QVERIFY(module.initialize());
+        RunEngine::instance().addModule(&module);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("BlockingGuiProbe"), ExecutionAffinity::Gui);
+        RunEngineTestAccess(RunEngine::instance()).setGuiDispatchTimeoutForTest(100);
+        const int previousDrops = RunEngineTestAccess(RunEngine::instance()).guiDispatchLateCallbackDropCountForTest();
+
+        ExecutionResult result;
+        QSemaphore finished;
+        std::thread caller([&] {
+            result = RunEngine::instance().executeParallel({QStringLiteral("BlockingGuiProbe")}, {});
+            finished.release();
+        });
+        GuiDispatchJoinGuard joinOnExit(caller, finished, &module.release);
+
+        const bool returnedBeforeGuiCallback = finished.tryAcquire(1, 2000);
+        if (returnedBeforeGuiCallback)
+            caller.join();
+        QVERIFY2(returnedBeforeGuiCallback, "executeParallel must time out without pumping the queued GUI callback");
+        QVERIFY(!result.success);
+        QCOMPARE(result.errorCode, ExecError::Processing);
+        QVERIFY(result.diagnostics.contains(QStringLiteral("affinity_dispatch_timeout")));
+        QCOMPARE(module.runs.load(), 0);
+
+        QTRY_VERIFY_WITH_TIMEOUT(
+            RunEngineTestAccess(RunEngine::instance()).guiDispatchLateCallbackDropCountForTest() > previousDrops, 1000);
+        QCOMPARE(module.runs.load(), 0);
+    }
+
+    void testParallelRunsThreadSafeModulesConcurrentlyWithBarrier() {
+        RunEngine& engine = RunEngine::instance();
+        const int previousThreadCount = engine.parallelThreadCount();
+        engine.clearModules();
+        engine.setParallelThreadCount(2);
+
+        QSemaphore bothEntered;
+        QSemaphore release;
+        std::atomic<int> active{0};
+        std::atomic<int> maxActive{0};
+        ParallelBarrierProbeModule first(QStringLiteral("parallel-first"), bothEntered, release, active, maxActive);
+        ParallelBarrierProbeModule second(QStringLiteral("parallel-second"), bothEntered, release, active, maxActive);
+        struct RestoreEngine {
+            RunEngine& engine;
+            int previousThreadCount;
+            ~RestoreEngine() {
+                engine.clearModules();
+                engine.setParallelThreadCount(previousThreadCount);
+            }
+        } restore{engine, previousThreadCount};
+        QVERIFY(first.initialize());
+        QVERIFY(second.initialize());
+        engine.addModule(&first);
+        engine.addModule(&second);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(first.name(), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(second.name(), ExecutionAffinity::Worker);
+
+        ExecutionResult result;
+        QSemaphore finished;
+        std::thread caller([&] {
+            result = engine.executeParallel({first.name(), second.name()}, {});
+            finished.release();
+        });
+        const bool bothRanAtOnce = bothEntered.tryAcquire(2, 1000);
+        release.release(2);
+        const bool completed = finished.tryAcquire(1, 6000);
+        caller.join();
+
+        QVERIFY2(bothRanAtOnce, "both thread-safe modules must reach the barrier before either is released");
+        QVERIFY(completed);
+        QVERIFY(result.success);
+        QVERIFY(maxActive.load() >= 2);
     }
 
     void testWorkerAffinityIsParallelEligible() {

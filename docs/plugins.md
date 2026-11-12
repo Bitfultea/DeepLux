@@ -57,7 +57,7 @@ flowchart LR
 `metadata.json` 的 `execution` 字段声明执行属性，后台执行服务与 UI 都按它分流：
 
 - `affinity`：`gui`（默认）或 `worker`。`gui` 模块在 GUI 线程执行，后台工作者通过 `BlockingQueuedConnection` 回投；`worker` 模块直接在后台服务工作线程内联执行。未审计插件一律保持 `gui`。
-- `threadSafe` / `blocking`：保留的并行资格条件（`worker` 亲和 + `threadSafe` + 非 `blocking` 才可进入并行批次）。
+- `threadSafe` / `blocking`：保留的并行资格条件（`worker` 亲和 + `threadSafe` + 非 `blocking` + 无断点才可进入并行池；其他模块按序串行执行，GUI 亲和模块仍在 GUI 线程运行）。
 - 审计规则（design §6.3 + B9/t21 复盘）：① `process()` 及直接调用链不得创建/启动 QTimer、QEventLoop、QTcpSocket、QSerialPort、QProcess；② 不触碰 QWidget/QPixmap/QPainter/OpenGL/视口/相机 SDK；③ 不调用 `QCoreApplication::processEvents()`；④ 不依赖 CameraManager/相机线程亲和性；⑤ 无未加锁的全局可变状态；⑥ 两个实例在 worker 线程执行与 GUI 线程输出一致。补充：`process()` 不得创建 QObject（如 `VarModel`）或把它移交/删除到 GUI 线程；审计必须扫描 `GlobalVarManager/VarModel/PluginManager/RunEngine` 等单例/全局状态，不能只看文件级 static 变量（该规则目前以 `tests/test_workerpluginconsistency.cpp` 注释沉淀，不是自动检查）。
 
 **已审计并标记 `execution.affinity=worker` 的插件（30 个，2026-11-01）**
@@ -464,7 +464,7 @@ ctest --test-dir build -R test_workerpluginconsistency --output-on-failure
 ### `并行执行` - 多分支并行控制
 
 - **用途**：从 `branch` 控制端口启动多个独立分支；多个分支连接回下一个并行节点的 `control` 端口时按 `all` 策略汇合。
-- **使用**：设置最大并发数并连接至少两个分支。只有元数据声明 `execution.threadSafe=true` 的模块会并发执行，其余模块自动串行。
+- **使用**：设置最大并发数并连接至少两个分支。只有 `worker` 亲和、声明 `execution.threadSafe=true`、非阻塞且无断点的模块会并发执行，其余模块由引擎按序串行执行。
 - **关键配置**：最大并发数。元数据：[metadata.json](../src/plugins/logic/Parallel/metadata.json)。
 - **检查**：分别验证并行分支耗时、汇合后执行顺序，以及禁用节点、断点和失败取消行为。
 

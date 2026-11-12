@@ -1,5 +1,6 @@
 #include <core/engine/EngineTestSupport.h>
 #define DEEPLUX_BUILD_TESTS 1
+#include <QElapsedTimer>
 #include <QMutex>
 #include <QSemaphore>
 #include <QSet>
@@ -86,6 +87,7 @@ public:
         m_moduleId = QStringLiteral("com.deeplux.test.parallel-counter.") + name;
         m_name = name;
         m_category = QStringLiteral("test");
+        setThreadSafe(true);
     }
 
 protected:
@@ -131,6 +133,68 @@ private:
     std::atomic<int>& m_calls;
     QSemaphore& m_entered;
     QSemaphore& m_release;
+};
+
+class ParallelFailureGateModule : public ModuleBase {
+public:
+    explicit ParallelFailureGateModule(QSemaphore& peerEntered, std::atomic<bool>& waitedForPeer)
+        : m_peerEntered(peerEntered), m_waitedForPeer(waitedForPeer) {
+        m_moduleId = QStringLiteral("com.deeplux.test.parallel-failure-gate");
+        m_name = QStringLiteral("fail");
+        m_category = QStringLiteral("test");
+        setThreadSafe(true);
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        m_waitedForPeer.store(m_peerEntered.tryAcquire(1, 2000), std::memory_order_release);
+        output = input;
+        return false;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    QSemaphore& m_peerEntered;
+    std::atomic<bool>& m_waitedForPeer;
+};
+
+class CancellationAwareParallelModule : public ModuleBase {
+public:
+    explicit CancellationAwareParallelModule(QSemaphore& entered, std::atomic<bool>& started,
+                                             std::atomic<bool>& cancelled)
+        : m_entered(entered), m_started(started), m_cancelled(cancelled) {
+        m_moduleId = QStringLiteral("com.deeplux.test.parallel-cancellation-probe");
+        m_name = QStringLiteral("slow");
+        m_category = QStringLiteral("test");
+        setThreadSafe(true);
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        m_started.store(true, std::memory_order_release);
+        m_entered.release();
+        QElapsedTimer elapsed;
+        elapsed.start();
+        while (!elapsed.hasExpired(2000)) {
+            if (isCancellationRequested()) {
+                m_cancelled.store(true, std::memory_order_release);
+                return false;
+            }
+            QThread::msleep(1);
+        }
+        output = input;
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    QSemaphore& m_entered;
+    std::atomic<bool>& m_started;
+    std::atomic<bool>& m_cancelled;
 };
 
 class StopAwareModule : public ModuleBase {
@@ -358,6 +422,7 @@ public:
         m_moduleId = "com.deeplux.test.parallel." + name;
         m_name = name;
         m_category = "test";
+        setThreadSafe(true);
     }
 
 protected:
@@ -1920,29 +1985,41 @@ void TestRunEngine::testWorkerExecutionLogIncludesThreadId() {
 void TestRunEngine::testParallelFailureCancelsGroup() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
+    const int previousThreadCount = engine.parallelThreadCount();
     engine.setParallelThreadCount(2);
 
-    std::atomic<int> running{0};
-    std::atomic<int> maxConc{0};
-    // 一个失败模块 + 一个睡眠模块
-    auto* failing = new TestExecutionModule("fail");
-    failing->executeResult = false;
-    failing->errorText = "parallel failure";
-    failing->initialize();
-    engine.addModule(failing);
-    auto* slow = new ParallelSleepModule("slow", &running, &maxConc, 200);
-    slow->initialize();
-    engine.addModule(slow);
-    // 后台执行（设计 §6.3）：并行池只接受 worker 亲和模块，探针默认 gui → 测试显式标记。
+    QSemaphore slowEntered;
+    std::atomic<bool> failureWaitedForPeer{false};
+    std::atomic<bool> slowStarted{false};
+    std::atomic<bool> slowCancelled{false};
+    ParallelFailureGateModule failing(slowEntered, failureWaitedForPeer);
+    CancellationAwareParallelModule slow(slowEntered, slowStarted, slowCancelled);
+    struct Cleanup {
+        RunEngine& engine;
+        int previousThreadCount;
+        ~Cleanup() {
+            engine.clearModules();
+            engine.setParallelThreadCount(previousThreadCount);
+        }
+    } cleanup{engine, previousThreadCount};
+    QVERIFY(failing.initialize());
+    QVERIFY(slow.initialize());
+    engine.addModule(&failing);
+    engine.addModule(&slow);
     RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("fail"), ExecutionAffinity::Worker);
     RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("slow"), ExecutionAffinity::Worker);
 
     PortValueMap input;
+    QElapsedTimer elapsed;
+    elapsed.start();
     const ExecutionResult result = engine.executeParallel(QStringList{"fail", "slow"}, input);
     QVERIFY(!result.success);
     QVERIFY(!result.userMessage.isEmpty());
-
-    engine.clearModules();
+    QVERIFY(failureWaitedForPeer.load(std::memory_order_acquire));
+    QVERIFY(slowStarted.load(std::memory_order_acquire));
+    QVERIFY(slowCancelled.load(std::memory_order_acquire));
+    QVERIFY2(elapsed.elapsed() < 1000,
+             qPrintable(QString("parallel sibling was not cancelled promptly: %1ms").arg(elapsed.elapsed())));
 }
 
 namespace {
