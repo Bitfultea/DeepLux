@@ -59,6 +59,17 @@ QString runtimeModuleName(ModuleBase* module) {
     return module->instanceName().isEmpty() ? module->name() : module->instanceName();
 }
 
+void logWorkerExecutionThread(const QString& moduleName) {
+#ifndef NDEBUG
+    const quintptr threadId = reinterpret_cast<quintptr>(QThread::currentThreadId());
+    Logger::instance().debug(
+        QStringLiteral("worker_execution module=%1 thread_id=0x%2").arg(moduleName, QString::number(threadId, 16)),
+        QStringLiteral("Run"));
+#else
+    Q_UNUSED(moduleName);
+#endif
+}
+
 const PortSpec* findPort(const QList<PortSpec>& ports, const QString& id) {
     for (const PortSpec& port : ports) {
         if (port.id == id)
@@ -221,6 +232,7 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
             ctx.runId = parallelRunId;
             ctx.frameId = m_frameId.load(std::memory_order_relaxed);
             ctx.cancellationToken = parallelToken;
+            logWorkerExecutionThread(name);
             const ExecutionResult r = mod->execute(in, out, ctx);
             --running;
 
@@ -1863,6 +1875,7 @@ void RunEngine::executeBatchParallel(const QStringList& batch, ImageData& pipeli
                 context.timestampMs = QDateTime::currentMSecsSinceEpoch();
                 context.runMode = module->flowControlType();
                 context.cancellationToken = batchToken;
+                logWorkerExecutionThread(mod);
                 const ExecutionResult execution = module->execute(portInputs, portOutputs, context);
 
                 result.success = execution.success;
@@ -2298,8 +2311,12 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     // 已在 GUI 线程时直接执行可避免自等待死锁（CLI/测试同步路径）。
     ExecutionResult execResult;
     const ExecutionAffinity affinity = executionAffinityFor(moduleName, module);
-    auto executeInline = [&]() { execResult = module->execute(portInputs, portOutputs, execCtx); };
     QCoreApplication* app = QCoreApplication::instance();
+    auto executeInline = [&]() {
+        if (affinity == ExecutionAffinity::Worker && app && QThread::currentThread() != app->thread())
+            logWorkerExecutionThread(moduleName);
+        execResult = module->execute(portInputs, portOutputs, execCtx);
+    };
     if (affinity == ExecutionAffinity::Worker || !app || QThread::currentThread() == app->thread()) {
         executeInline();
     } else {

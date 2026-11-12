@@ -102,6 +102,36 @@ private:
     std::atomic<int>& m_calls;
 };
 
+class BlockingParallelModule : public ModuleBase {
+    Q_OBJECT
+public:
+    BlockingParallelModule(std::atomic<int>& calls, QSemaphore& entered, QSemaphore& release)
+        : m_calls(calls), m_entered(entered), m_release(release) {
+        m_moduleId = QStringLiteral("com.deeplux.test.parallel-blocking");
+        m_name = QStringLiteral("parallel-blocking");
+        m_category = QStringLiteral("test");
+        setThreadSafe(true);
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        m_calls.fetch_add(1, std::memory_order_relaxed);
+        m_entered.release();
+        m_release.acquire();
+        output = input;
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    std::atomic<int>& m_calls;
+    QSemaphore& m_entered;
+    QSemaphore& m_release;
+};
+
 class StopAwareModule : public ModuleBase {
     Q_OBJECT
 
@@ -827,6 +857,10 @@ private slots:
     void cleanupTestCase();
     void testParallelExecutesConcurrently();
     void testExecuteParallelRejectsDuplicateModuleInBatch();
+    void testExecuteParallelRejectsSameInstanceAcrossRequests();
+#ifndef NDEBUG
+    void testWorkerExecutionLogIncludesThreadId();
+#endif
     void testParallelFailureCancelsGroup();
     // 阶段 6 并发收口定向测试
     void testParallelSignalsDeliveredOnReceiverThread();
@@ -1785,6 +1819,99 @@ void TestRunEngine::testExecuteParallelRejectsDuplicateModuleInBatch() {
     QVERIFY2(result.diagnostics.contains(QStringLiteral("module=duplicate")), qPrintable(result.diagnostics));
     QCOMPARE(processCalls.load(std::memory_order_relaxed), 0);
 }
+
+void TestRunEngine::testExecuteParallelRejectsSameInstanceAcrossRequests() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    const int previousThreadCount = engine.parallelThreadCount();
+
+    std::atomic<int> processCalls{0};
+    QSemaphore entered;
+    QSemaphore release;
+    std::unique_ptr<BlockingParallelModule> module =
+        std::make_unique<BlockingParallelModule>(processCalls, entered, release);
+    QSemaphore secondReturned;
+    ExecutionResult firstResult;
+    ExecutionResult secondResult;
+    std::thread firstRequest;
+    std::thread secondRequest;
+    struct Cleanup {
+        RunEngine& engine;
+        int previousThreadCount;
+        QSemaphore& release;
+        std::thread& firstRequest;
+        std::thread& secondRequest;
+        ~Cleanup() {
+            release.release(2);
+            if (firstRequest.joinable())
+                firstRequest.join();
+            if (secondRequest.joinable())
+                secondRequest.join();
+            engine.clearModules();
+            engine.setParallelThreadCount(previousThreadCount);
+        }
+    } cleanup{engine, previousThreadCount, release, firstRequest, secondRequest};
+
+    engine.setParallelThreadCount(1);
+    QVERIFY(module->initialize());
+    engine.addModule(module.get());
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("parallel-blocking"), ExecutionAffinity::Worker);
+    firstRequest =
+        std::thread([&] { firstResult = engine.executeParallel({QStringLiteral("parallel-blocking")}, {}); });
+
+    QVERIFY2(entered.tryAcquire(1, 5000), "first request must enter the module before the second request");
+    secondRequest = std::thread([&] {
+        secondResult = engine.executeParallel({QStringLiteral("parallel-blocking")}, {});
+        secondReturned.release();
+    });
+    const bool rejectedBeforeFirstCompleted = secondReturned.tryAcquire(1, 2000);
+    release.release(2); // A broken lease may queue the second task behind the first on the single-thread pool.
+    firstRequest.join();
+    secondRequest.join();
+
+    QVERIFY2(rejectedBeforeFirstCompleted, "the engine must reject the second request while the first holds its lease");
+    QVERIFY(firstResult.success);
+    QVERIFY(!secondResult.success);
+    QCOMPARE(secondResult.diagnostics, QStringLiteral("lease"));
+    QCOMPARE(processCalls.load(std::memory_order_relaxed), 1);
+}
+
+#ifndef NDEBUG
+void TestRunEngine::testWorkerExecutionLogIncludesThreadId() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    const int previousThreadCount = engine.parallelThreadCount();
+    std::atomic<int> processCalls{0};
+    auto module = std::make_unique<ParallelDispatchCounterModule>(QStringLiteral("thread-log"), processCalls);
+    struct ClearModulesOnExit {
+        RunEngine& engine;
+        int previousThreadCount;
+        ~ClearModulesOnExit() {
+            engine.clearModules();
+            engine.setParallelThreadCount(previousThreadCount);
+        }
+    } cleanup{engine, previousThreadCount};
+    engine.setParallelThreadCount(1);
+
+    QVERIFY(module->initialize());
+    engine.addModule(module.get());
+    engine.setModuleExecutionAffinityForTest(QStringLiteral("thread-log"), ExecutionAffinity::Worker);
+    const int previousLogCount = Logger::instance().logs(QStringLiteral("Run")).size();
+
+    const ExecutionResult result = engine.executeParallel({QStringLiteral("thread-log")}, {});
+    QVERIFY(result.success);
+    const QList<LogEntry> logs = Logger::instance().logs(QStringLiteral("Run"));
+    bool foundThreadRecord = false;
+    for (int i = previousLogCount; i < logs.size(); ++i) {
+        const QString& message = logs.at(i).message;
+        if (message.contains(QStringLiteral("worker_execution module=thread-log thread_id=0x"))) {
+            foundThreadRecord = true;
+            break;
+        }
+    }
+    QVERIFY2(foundThreadRecord, "Debug worker execution must log its module name and thread ID");
+}
+#endif
 
 void TestRunEngine::testParallelFailureCancelsGroup() {
     RunEngine& engine = RunEngine::instance();

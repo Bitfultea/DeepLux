@@ -12,12 +12,14 @@
 #include <QPainter>
 #include <QPointF>
 #include <QRectF>
+#include <QSemaphore>
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QVariant>
 #include <QVector>
 #include <QtTest/QtTest>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <core/base/ModuleBase.h>
@@ -29,6 +31,7 @@
 #include <core/model/ImageData.h>
 #include <memory>
 #include <thread>
+#include <vector>
 
 using namespace DeepLux;
 using DeepLuxTest::PluginEntry;
@@ -387,7 +390,9 @@ bool mapsEqual(const QVariantMap& a, const QVariantMap& b, QString& reason) {
 
 bool valuesEqual(const QVariant& a, const QVariant& b, QString& reason) {
     if (a.canConvert<ImageData>() && b.canConvert<ImageData>()) {
-        if (imageSignature(a.value<ImageData>()) != imageSignature(b.value<ImageData>())) {
+        const QImage imageA = a.value<ImageData>().toQImage().convertToFormat(QImage::Format_RGBA8888);
+        const QImage imageB = b.value<ImageData>().toQImage().convertToFormat(QImage::Format_RGBA8888);
+        if (imageA != imageB) {
             reason = QStringLiteral("image payload differs; %1")
                          .arg(dumpImageDifference(a.value<ImageData>(), b.value<ImageData>()));
             return false;
@@ -770,22 +775,10 @@ private slots:
         decorateInputs(pluginName, inputs);
         const Snapshot guiSnapshot = snapshotOf(first.get(), inputs, 1);
 
-        Snapshot sameInstanceWorker;
-        std::thread sameInstanceThread([&]() { sameInstanceWorker = snapshotOf(first.get(), inputs, 1); });
-        sameInstanceThread.join();
-
-        Snapshot secondInstanceWorker;
-        std::thread secondInstanceThread([&]() { secondInstanceWorker = snapshotOf(second.get(), inputs, 1); });
-        secondInstanceThread.join();
-
         QStringList failures;
-        const SnapshotComparisonResult threadResult =
-            compareSnapshots(guiSnapshot, sameInstanceWorker, *candidate, "same-instance");
-        if (!threadResult.equal) {
-            failures.append(QStringLiteral("%1: %2").arg(threadResult.label, threadResult.reason));
-        }
+        const Snapshot secondGuiSnapshot = snapshotOf(second.get(), inputs, 1);
         const SnapshotComparisonResult instanceResult =
-            compareSnapshots(sameInstanceWorker, secondInstanceWorker, *candidate, "two-instances");
+            compareSnapshots(guiSnapshot, secondGuiSnapshot, *candidate, "two-GUI-instances");
         if (!instanceResult.equal) {
             failures.append(QStringLiteral("%1: %2").arg(instanceResult.label, instanceResult.reason));
         }
@@ -796,6 +789,65 @@ private slots:
                                                          .arg(pluginName, guiSnapshot.userMessage)));
             QVERIFY2(!guiSnapshot.outputs.isEmpty(),
                      qPrintable(QStringLiteral("%1 audited as worker but produced no output port").arg(pluginName)));
+
+            constexpr int kWorkerCount = 4;
+            constexpr int kIterations = 100;
+            std::array<std::unique_ptr<IModule>, kWorkerCount> workerModules;
+            for (int i = 0; i < kWorkerCount; ++i) {
+                workerModules[static_cast<size_t>(i)].reset(PluginManager::instance().createModule(pluginName));
+                QVERIFY2(workerModules[static_cast<size_t>(i)] != nullptr,
+                         qPrintable(QStringLiteral("createModule(worker %1) failed: %2").arg(i).arg(pluginName)));
+                applyTestParams(workerModules[static_cast<size_t>(i)].get(), pluginName,
+                                QStringLiteral("parallel_%1").arg(i));
+                QVERIFY2(workerModules[static_cast<size_t>(i)]->initialize(),
+                         qPrintable(QStringLiteral("initialize(worker %1) failed: %2").arg(i).arg(pluginName)));
+            }
+
+            QSemaphore ready;
+            QSemaphore start;
+            std::array<std::thread, kWorkerCount> workers;
+            std::array<int, kWorkerCount> completed{};
+            std::array<QString, kWorkerCount> mismatches;
+            std::atomic<int> activeExecutions{0};
+            std::atomic<int> maxConcurrentExecutions{0};
+            for (int i = 0; i < kWorkerCount; ++i) {
+                workers[static_cast<size_t>(i)] = std::thread([&, i] {
+                    ready.release();
+                    start.acquire();
+                    IModule* worker = workerModules[static_cast<size_t>(i)].get();
+                    for (int iteration = 0; iteration < kIterations; ++iteration) {
+                        const int active = activeExecutions.fetch_add(1, std::memory_order_relaxed) + 1;
+                        int maximum = maxConcurrentExecutions.load(std::memory_order_relaxed);
+                        while (active > maximum && !maxConcurrentExecutions.compare_exchange_weak(
+                                                       maximum, active, std::memory_order_relaxed)) {
+                        }
+                        const Snapshot actual = snapshotOf(worker, inputs, 1);
+                        activeExecutions.fetch_sub(1, std::memory_order_relaxed);
+                        const SnapshotComparisonResult comparison =
+                            compareSnapshots(guiSnapshot, actual, *candidate, "parallel-worker");
+                        if (!comparison.equal && mismatches[static_cast<size_t>(i)].isEmpty())
+                            mismatches[static_cast<size_t>(i)] = comparison.reason;
+                        ++completed[static_cast<size_t>(i)];
+                    }
+                });
+            }
+            const bool allReady = ready.tryAcquire(kWorkerCount, 10000);
+            start.release(kWorkerCount);
+            for (std::thread& worker : workers) {
+                worker.join();
+            }
+            QVERIFY2(allReady,
+                     qPrintable(QStringLiteral("%1 workers did not reach the start barrier").arg(pluginName)));
+            QVERIFY2(maxConcurrentExecutions.load(std::memory_order_relaxed) > 1,
+                     qPrintable(QStringLiteral("%1 worker calls did not overlap").arg(pluginName)));
+            for (int i = 0; i < kWorkerCount; ++i) {
+                QCOMPARE(completed[static_cast<size_t>(i)], kIterations);
+                QVERIFY2(mismatches[static_cast<size_t>(i)].isEmpty(),
+                         qPrintable(QStringLiteral("%1 worker %2: %3")
+                                        .arg(pluginName)
+                                        .arg(i)
+                                        .arg(mismatches[static_cast<size_t>(i)])));
+            }
         }
 
         qInfo().noquote() << QStringLiteral("[audit] %1 (%2): success=%3 errorCode=%4 outputs=%5 message=%6")
