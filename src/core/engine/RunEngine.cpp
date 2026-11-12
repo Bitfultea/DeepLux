@@ -421,9 +421,10 @@ bool RunEngine::stepOnceImpl(const JobToken* token, QString* rejectReason) {
     // （下次从流程起点开始）；否则保留跨步位置并置 Idle。
     // 后台执行（设计 §5.3）：stop 判定与单步态重置统一在 finalizeExecution 同一临界区完成
     // （t3 审查 O6，resetStepStateOnStop），不再在调用侧预先判定，消除检查后 stop 的窗口。
+    std::optional<DisplayFrame> finalFrame = snapshotFinalDisplayFrame(m_runId);
     finalizer.finish(ExecutionOutcome::Completed);
     // 后台执行（设计 §7.1）：单步收尾同样在 runFinished 前发布带快照的最终帧。
-    publishFinalDisplayFrame();
+    publishFinalDisplayFrame(std::move(finalFrame));
     emit runFinished(result);
     emit stateChanged(state());
     return true;
@@ -1665,9 +1666,10 @@ void RunEngine::executeAcquiredRunImpl(bool resuming, const QString& resumeModul
 
     // 阶6 七轮（P0-1）：清理+最终状态+释放执行权同一临界区。
     // 后台执行（设计 §5.3）：Completed 终态按 RunMode 决定，收尾窗口内并发 stop 优先。
+    std::optional<DisplayFrame> finalFrame = snapshotFinalDisplayFrame(m_runId);
     finalizer.finish(ExecutionOutcome::Completed);
     // 后台执行（设计 §7.1）：runFinished 前发布带 moduleDataSnapshot 的最终帧。
-    publishFinalDisplayFrame();
+    publishFinalDisplayFrame(std::move(finalFrame));
     emit runFinished(result);
     emit stateChanged(state());
 }
@@ -2665,16 +2667,14 @@ void RunEngine::publishDisplayFrame(const QString& moduleId, const ImageData& im
     emit displayFrameReady(frame.viewportId, frame.jobId, frame.runId);
 }
 
-void RunEngine::publishFinalDisplayFrame() {
-#ifdef DEEPLUX_BUILD_TESTS
-    invokeBeforeFinalDisplayFrameHookForTest();
-#endif
+std::optional<DisplayFrame> RunEngine::snapshotFinalDisplayFrame(const QString& runId) const {
     if (!m_displayCaptureEnabled.load(std::memory_order_acquire)) {
-        return;
+        return std::nullopt;
     }
+
     DisplayFrame frame;
     frame.jobId = m_displayJobId.load(std::memory_order_acquire);
-    frame.runId = m_runId;
+    frame.runId = runId;
     frame.viewportId = QStringLiteral("main");
     frame.moduleDataSnapshot = displayModuleDataSnapshot();
     {
@@ -2687,10 +2687,27 @@ void RunEngine::publishFinalDisplayFrame() {
             frame.moduleId = it.value().moduleId;
             frame.image = it.value().image;
         }
-        m_latestDisplayFrames.insert(frame.viewportId, frame);
+    }
+    return frame;
+}
+
+void RunEngine::publishFinalDisplayFrame(std::optional<DisplayFrame> frame) {
+#ifdef DEEPLUX_BUILD_TESTS
+    invokeBeforeFinalDisplayFrameHookForTest();
+#endif
+    if (!frame || !m_displayCaptureEnabled.load(std::memory_order_acquire)) {
+        return;
+    }
+    {
+        QMutexLocker lifecycleLocker(&m_lifecycleMutex);
+        if (m_runId != frame->runId || m_displayJobId.load(std::memory_order_acquire) != frame->jobId) {
+            return;
+        }
+        QMutexLocker frameLocker(&m_displayFrameMutex);
+        m_latestDisplayFrames.insert(frame->viewportId, *frame);
     }
     // 即使本轮没有 2D 图像，也发布带身份的快照帧：UI 据此只更新/清除叠加，不改变画面。
-    emit displayFrameReady(frame.viewportId, frame.jobId, frame.runId);
+    emit displayFrameReady(frame->viewportId, frame->jobId, frame->runId);
 }
 
 QString RunEngine::getNextModule(const QString& currentModule, bool lastResult) {

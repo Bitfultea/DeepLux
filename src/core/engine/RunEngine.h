@@ -20,6 +20,7 @@
 #include <QTimer>
 #include <atomic>
 #include <functional>
+#include <optional>
 
 namespace DeepLux {
 class CancellationToken;
@@ -401,7 +402,8 @@ private:
     // 后台执行（设计 §7.1）：在执行线程内发布显示帧（含 QImage 深拷贝与最终快照）。
     // T2.9：runId 由调用线程快照后传入，本函数不再读 m_runId（池线程安全边界）。
     void publishDisplayFrame(const QString& moduleId, const ImageData& image, quint64 frameId, const QString& runId);
-    void publishFinalDisplayFrame();
+    std::optional<DisplayFrame> snapshotFinalDisplayFrame(const QString& runId) const;
+    void publishFinalDisplayFrame(std::optional<DisplayFrame> frame);
     QMap<QString, QVariantMap> displayModuleDataSnapshot() const;
     void updateStatistics(bool success, int elapsedMs);
     // 阶段 4.8：记录/清理模块运行快照（写入点集中在模块执行结束与旁路分支）
