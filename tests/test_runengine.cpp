@@ -6196,8 +6196,8 @@ void TestRunEngine::testFinalDisplayFrameKeepsCompletedRunIdWhenNextRunStarts() 
             engine.stop();
             QElapsedTimer cleanupTimer;
             cleanupTimer.start();
-            const int expectedFinished = (firstRun.joinable() ? 1 : 0) +
-                                         (secondRunStarted.load(std::memory_order_acquire) ? 1 : 0);
+            const int expectedFinished =
+                (firstRun.joinable() ? 1 : 0) + (secondRunStarted.load(std::memory_order_acquire) ? 1 : 0);
             while ((firstRun.joinable() && !firstRunFinished.load(std::memory_order_acquire)) || engine.isBusy() ||
                    runFinishedCount.load(std::memory_order_acquire) < expectedFinished) {
                 engine.stop();
@@ -6216,8 +6216,8 @@ void TestRunEngine::testFinalDisplayFrameKeepsCompletedRunIdWhenNextRunStarts() 
             engine.setDisplayCaptureEnabled(false);
             engine.clearModules();
         }
-    } cleanup{engine, releaseFirstFinalPublish, releaseSecondFinalPublish, firstRun, firstRunFinished,
-              secondRunStarted, runFinishedCount, finishConnection, frameConnection};
+    } cleanup{engine,           releaseFirstFinalPublish, releaseSecondFinalPublish, firstRun,       firstRunFinished,
+              secondRunStarted, runFinishedCount,         finishConnection,          frameConnection};
 
     Project project;
     buildParallelBatchProject(project, 1);
