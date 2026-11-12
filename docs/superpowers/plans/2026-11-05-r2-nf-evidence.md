@@ -2862,7 +2862,7 @@ ADDED ['test_flowidentitycontract']
 REMOVED []
 ```
 
-- 对比方法：Python 正则 `Test\s+#?(\d+):\s+(\S+)` 分别提取 `/var/tmp/t21-gate10/run-1.log`（§5.6 历史十轮，96 项）与本次 `ctest -N -N` 全量枚举（97 项）的测试名集合，取差集。
+- 对比方法：Python 正则 `Test\s+#?(\d+):\s+(\S+)` 分别提取 `/var/tmp/t21-gate10/run-1.log`（§5.6 历史十轮，96 项）与本次 `ctest --test-dir /var/tmp/t25r9-gate -N` 全量枚举（97 项）的测试名集合，取差集。
 - 差异来源：`git log --oneline -S 'test_flowidentitycontract' -- tests/CMakeLists.txt` → `42ed898 test: add T2.6 frame-identity behavior-contract regressions`（T2.6 帧身份契约，见第 9 节），**无移除项**。
 - `ctest -N` 枚举数 97 = 十轮每轮实跑通过数 97，符合 R0 `:90` 口径。另按既有口径说明：T2.5 第九次整改新增的 `testSecondShutdownMustNotReleaseFirstShutdownGuard` 落在**既有** `test_flowexecutionservice` 可执行文件内，服务套件用例数由 31 → 32，但**不增加 CTest 项数**；「97 项 CTest」不等于「无新测试」。
 
@@ -2961,7 +2961,7 @@ FAIL!  : TestFlowExecutionService::testSecondShutdownMustNotReleaseFirstShutdown
 | T2.8 / T2.9 | 按既定契约口径可收口；本轮未改动，收口记录另案 |
 | T2.7 | 继续隔离（`be90921` 非 HEAD 祖先、不作硬前置） |
 | 本轮交付改动 | **仅本章文档**，零生产代码改动、零测试改动 |
-| 交付工作树 | 提交后 `git status --short` 为 0 行；提交哈希与最终状态见汇报 |
+| 交付工作树 | 本章随 `938fb22` 落地（+164 行，零生产/测试改动）；提交后 `git status --short` 为 0 行 |
 
 ### 20.10 证据文件清单（`/var/tmp/r2-batch-gate/`）
 
