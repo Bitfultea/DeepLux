@@ -279,7 +279,7 @@ private slots:
                                       {ToolSchema::instance().findTool(QStringLiteral("get_run_results"))},
                                       &initialRequestBytes),
                  "OpenAI client failed to send the local fixture request after Cancel");
-        QVERIFY(initialRequestBytes.contains("Authorization: Bearer synthetic-seed-key"));
+        QVERIFY(initialRequestBytes.toLower().contains("authorization: bearer synthetic-seed-key"));
         const QJsonObject initialRequestBody = requestBody(initialRequestBytes);
         QCOMPARE(initialRequestBody.value(QStringLiteral("model")).toString(), QStringLiteral("synthetic-seed-model"));
         QCOMPARE(initialRequestBody.value(QStringLiteral("temperature")).toDouble(), 0.25);
@@ -354,7 +354,7 @@ private slots:
                                       {ToolSchema::instance().findTool(QStringLiteral("get_run_results"))},
                                       &updatedRequestBytes),
                  "Updated OpenAI client failed to send to the local HTTP fixture");
-        QVERIFY(updatedRequestBytes.contains("Authorization: Bearer synthetic-handoff-api-key"));
+        QVERIFY(updatedRequestBytes.toLower().contains("authorization: bearer synthetic-handoff-api-key"));
         const QJsonObject updatedRequestBody = requestBody(updatedRequestBytes);
         QCOMPARE(updatedRequestBody.value(QStringLiteral("model")).toString(),
                  QStringLiteral("synthetic-handoff-model"));

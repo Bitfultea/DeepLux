@@ -224,7 +224,7 @@ private slots:
         QVERIFY(fixtureResponded);
         QVERIFY(requestBytes.startsWith("POST /v1/chat/completions HTTP/1.1\r\n"));
         QVERIFY(requestBytes.toLower().contains("content-type: application/json"));
-        QVERIFY(requestBytes.contains("Authorization: Bearer fixture-key"));
+        QVERIFY(requestBytes.toLower().contains("authorization: bearer fixture-key"));
 
         const int bodyStart = requestBytes.indexOf("\r\n\r\n");
         QVERIFY(bodyStart >= 0);
