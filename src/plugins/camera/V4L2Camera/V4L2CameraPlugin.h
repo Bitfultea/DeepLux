@@ -12,7 +12,7 @@ namespace DeepLux {
  */
 class DEEPLUX_PLUGIN_API V4L2CameraPlugin : public ICameraPlugin {
     Q_OBJECT
-    Q_PLUGIN_METADATA(IID "com.deeplux.ICameraPlugin" FILE "metadata.json")
+    Q_PLUGIN_METADATA(IID DEEPLUX_CAMERA_PLUGIN_INTERFACE_IID FILE "metadata.json")
     Q_INTERFACES(DeepLux::ICameraPlugin)
 
 public:

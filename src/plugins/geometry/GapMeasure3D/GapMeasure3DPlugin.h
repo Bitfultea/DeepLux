@@ -18,7 +18,7 @@ namespace DeepLux {
 // specUpperLimit；roiLength 公开与执行下限统一为 5。
 class DEEPLUX_PLUGIN_API GapMeasure3DPlugin : public ModuleBase {
     Q_OBJECT
-    Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
+    Q_PLUGIN_METADATA(IID DEEPLUX_MODULE_INTERFACE_IID FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
 
 public:

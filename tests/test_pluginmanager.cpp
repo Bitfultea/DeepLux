@@ -36,6 +36,7 @@ private slots:
     void testRejectsPluginWithWrongAbiFingerprintBeforeInstance();
     void testRejectsLegacyPluginWithoutAbiExport();
     void testRejectsAbiExportsOwnedByDependency();
+    void testValidAbiPreflightLoadsNativeInitializerOnce();
 
 private:
 };
@@ -516,6 +517,27 @@ void TestPluginManager::testRejectsAbiExportsOwnedByDependency() {
     QVERIFY2(error.contains(QStringLiteral("abi_symbol_not_owned")), qPrintable(error));
     QVERIFY2(error.contains(installed), qPrintable(error));
     QVERIFY2(!QFile::exists(marker), "ABI rejection must precede plugin instance construction");
+}
+
+void TestPluginManager::testValidAbiPreflightLoadsNativeInitializerOnce() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString installed =
+        installAbiFixture(root, QStringLiteral("AbiValid"), QStringLiteral(TEST_ABI_VALID_PLUGIN));
+    QVERIFY(!installed.isEmpty());
+    const QString marker = root.filePath(QStringLiteral("native-load-marker"));
+    ScopedEnvironmentVariable markerEnv("DEEPLUX_ABI_FIXTURE_NATIVE_LOAD_MARKER", marker.toLocal8Bit());
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+    QVERIFY2(manager.loadPlugin(QStringLiteral("AbiValid")), "valid ABI fixture should load");
+
+    QFile markerFile(marker);
+    QVERIFY(markerFile.open(QIODevice::ReadOnly));
+    QCOMPARE(markerFile.readAll(), QByteArray("load\n"));
+    manager.unloadPlugin(QStringLiteral("AbiValid"));
 }
 
 QTEST_MAIN(TestPluginManager)

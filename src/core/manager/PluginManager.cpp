@@ -16,16 +16,104 @@
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLibrary>
 #include <QPixmap>
 #include <QPluginLoader>
 #include <QThread>
 #include <QTimer>
+
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(Q_OS_UNIX)
+#include <dlfcn.h>
+#endif
 
 namespace DeepLux {
 
 namespace {
 bool hasGuiApplication() {
     return qobject_cast<QGuiApplication*>(QCoreApplication::instance()) != nullptr;
+}
+
+template <typename Function> bool abiSymbolOwnedByPlugin(Function function, const QString& pluginPath) {
+#ifdef Q_OS_WIN
+    const std::wstring path = QFileInfo(pluginPath).canonicalFilePath().toStdWString();
+    if (path.empty()) {
+        return false;
+    }
+    const HMODULE pluginModule = GetModuleHandleW(path.c_str());
+    HMODULE symbolModule = nullptr;
+    const auto address = reinterpret_cast<LPCWSTR>(function);
+    return pluginModule &&
+           GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              address, &symbolModule) &&
+           symbolModule == pluginModule;
+#elif defined(Q_OS_UNIX)
+    Dl_info info{};
+    if (!dladdr(reinterpret_cast<const void*>(function), &info) || !info.dli_fname) {
+        return false;
+    }
+    const QString expectedPath = QFileInfo(pluginPath).canonicalFilePath();
+    const QString actualPath = QFileInfo(QString::fromLocal8Bit(info.dli_fname)).canonicalFilePath();
+    return !expectedPath.isEmpty() && !actualPath.isEmpty() && expectedPath == actualPath;
+#else
+    Q_UNUSED(function);
+    Q_UNUSED(pluginPath);
+    return false;
+#endif
+}
+
+bool validatePluginAbi(QLibrary& library, const QString& pluginPath, QString* error) {
+    const QString absolutePath = QFileInfo(pluginPath).absoluteFilePath();
+    auto reject = [error, &absolutePath](const QString& code, const QString& detail = QString()) {
+        if (error) {
+            *error = QStringLiteral("%1: plugin=%2%3")
+                         .arg(code, absolutePath, detail.isEmpty() ? QString() : QStringLiteral("; ") + detail);
+        }
+        return false;
+    };
+
+    if (!library.load()) {
+        return reject(QStringLiteral("abi_library_load_failed"), library.errorString());
+    }
+
+    auto versionFunction = reinterpret_cast<PluginAbiVersionFunction>(library.resolve("deeplux_plugin_abi_version"));
+    auto fingerprintFunction =
+        reinterpret_cast<PluginAbiFingerprintFunction>(library.resolve("deeplux_plugin_abi_fingerprint"));
+    if (!versionFunction || !fingerprintFunction) {
+        const QString missing = QStringLiteral("version=%1 fingerprint=%2")
+                                    .arg(versionFunction ? QStringLiteral("present") : QStringLiteral("missing"),
+                                         fingerprintFunction ? QStringLiteral("present") : QStringLiteral("missing"));
+        return reject(QStringLiteral("missing_abi_export"), missing);
+    }
+    if (!abiSymbolOwnedByPlugin(versionFunction, pluginPath) ||
+        !abiSymbolOwnedByPlugin(fingerprintFunction, pluginPath)) {
+        return reject(QStringLiteral("abi_symbol_not_owned"));
+    }
+
+    const quint32 actualVersion = versionFunction();
+    const quint32 expectedVersion = pluginAbiVersion();
+    if (actualVersion != expectedVersion) {
+        return reject(QStringLiteral("abi_version_mismatch"), QStringLiteral("expected=0x%1 actual=0x%2")
+                                                                  .arg(expectedVersion, 8, 16, QLatin1Char('0'))
+                                                                  .arg(actualVersion, 8, 16, QLatin1Char('0')));
+    }
+
+    const char* actualFingerprintData = fingerprintFunction();
+    if (!actualFingerprintData) {
+        return reject(QStringLiteral("abi_fingerprint_missing"));
+    }
+    const QByteArray expectedFingerprint(pluginAbiFingerprint());
+    const QByteArray actualFingerprint(actualFingerprintData);
+    if (actualFingerprint != expectedFingerprint) {
+        return reject(QStringLiteral("abi_fingerprint_mismatch"),
+                      QStringLiteral("expected=%1 actual=%2")
+                          .arg(QString::fromUtf8(expectedFingerprint), QString::fromUtf8(actualFingerprint)));
+    }
+    return true;
 }
 } // namespace
 
@@ -412,7 +500,9 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
             return nullptr;
         }
         auto* loader = new QPluginLoader(candidateDir.filePath(libs.first()));
-        if (!loader->load() || !validateLoadedPlugin(candidate, loader, &error)) {
+        QLibrary abiLibrary(loader->fileName());
+        if (!validatePluginAbi(abiLibrary, loader->fileName(), &error) || !loader->load() ||
+            !validateLoadedPlugin(candidate, loader, &error)) {
             if (error.isEmpty()) {
                 error = loader->errorString();
             }
@@ -561,8 +651,15 @@ PluginManager::PluginLoadRunnable::PluginLoadRunnable(const QString& name, const
 
 void PluginManager::PluginLoadRunnable::run() {
     QPluginLoader* loader = new QPluginLoader(m_path);
-    bool success = loader->load();
-    QString error = success ? QString() : loader->errorString();
+    QLibrary abiLibrary(m_path);
+    QString error;
+    bool success = validatePluginAbi(abiLibrary, m_path, &error);
+    if (success) {
+        success = loader->load();
+        if (!success) {
+            error = loader->errorString();
+        }
+    }
 
     // 通过事件通知主线程
     QCoreApplication::postEvent(&PluginManager::instance(), new PluginLoadEvent(m_name, success, error, loader));

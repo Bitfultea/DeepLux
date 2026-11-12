@@ -193,6 +193,8 @@ remove_definitions(-DDEEPLUX_PLUGIN_EXPORTS)
 # ========== 插件 target 清单（供测试注入跨平台路径）==========
 # tests/CMakeLists.txt 需要每个插件 target 的 $<TARGET_FILE:...> 与 metadata.json，
 # 用于在 Windows/Linux/macOS 以及多配置生成器下安装真实插件到临时目录。
+set(DEEPLUX_PLUGIN_ABI_EXPORTS_SOURCE "${CMAKE_SOURCE_DIR}/src/core/interface/PluginAbiExports.cpp")
+
 function(deeplux_collect_plugin_targets directory)
     get_property(plugin_targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
     foreach(plugin_target IN LISTS plugin_targets)
@@ -204,8 +206,10 @@ function(deeplux_collect_plugin_targets directory)
             continue()
         endif()
         if(EXISTS "${directory}/metadata.json")
+            target_sources(${plugin_target} PRIVATE "${DEEPLUX_PLUGIN_ABI_EXPORTS_SOURCE}")
             set_property(GLOBAL APPEND PROPERTY DEEPLUX_PLUGIN_TARGET_ENTRIES
                 "${plugin_target}|${directory}/metadata.json")
+            set_property(GLOBAL APPEND PROPERTY DEEPLUX_PLUGIN_ABI_TARGETS "${plugin_target}")
         endif()
     endforeach()
     get_property(plugin_subdirs DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
@@ -218,6 +222,15 @@ get_property(plugin_domains DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY SUBDIRECTOR
 foreach(plugin_domain IN LISTS plugin_domains)
     if(plugin_domain MATCHES "^${CMAKE_SOURCE_DIR}/src/plugins/")
         deeplux_collect_plugin_targets("${plugin_domain}")
+    endif()
+endforeach()
+
+get_property(_deeplux_plugin_abi_targets GLOBAL PROPERTY DEEPLUX_PLUGIN_ABI_TARGETS)
+foreach(_plugin_target IN LISTS _deeplux_plugin_abi_targets)
+    get_target_property(_plugin_sources ${_plugin_target} SOURCES)
+    list(FIND _plugin_sources "${DEEPLUX_PLUGIN_ABI_EXPORTS_SOURCE}" _abi_source_index)
+    if(_abi_source_index EQUAL -1)
+        message(FATAL_ERROR "Plugin ${_plugin_target} has metadata but no plugin-owned ABI export source")
     endif()
 endforeach()
 

@@ -213,6 +213,9 @@ else()
     target_link_libraries(deeplux_core PUBLIC Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Network Qt5::SerialPort Qt5::Concurrent)
 endif()
 target_link_libraries(deeplux_core PRIVATE deeplux_agent_resources)
+if(CMAKE_DL_LIBS)
+    target_link_libraries(deeplux_core PRIVATE ${CMAKE_DL_LIBS})
+endif()
 
 # 阶段 3：OpenCV 为必需依赖（根 CMakeLists 中 find_package 失败即中止），此处恒成立。
 target_compile_definitions(deeplux_core PUBLIC DEEPLUX_HAS_OPENCV)

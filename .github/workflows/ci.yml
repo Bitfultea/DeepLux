@@ -34,6 +34,9 @@ jobs:
       - name: Build
         run: cmake --build build -j$(nproc)
 
+      - name: Verify plugin ABI exports
+        run: python3 scripts/check_plugin_abi_exports.py --build-dir build
+
       - name: Isolate plugin data directory
         run: |
           APP_DATA_DIR="$RUNNER_TEMP/deeplux-appdata-qt5"
@@ -93,6 +96,8 @@ jobs:
         run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DBUILD_TESTS=OFF -DDEEPLUX_NATIVE_SAM=OFF
       - name: Build
         run: cmake --build build --config Release -j
+      - name: Verify plugin ABI exports
+        run: python scripts/check_plugin_abi_exports.py --build-dir build
       - name: Isolate plugin data directory
         shell: pwsh
         run: |
@@ -133,6 +138,9 @@ jobs:
 
       - name: Build
         run: cmake --build build -j$(nproc)
+
+      - name: Verify plugin ABI exports
+        run: python3 scripts/check_plugin_abi_exports.py --build-dir build
 
       - name: Isolate plugin data directory
         run: |

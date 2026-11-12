@@ -18,7 +18,7 @@ namespace DeepLux {
 // RMS/有效点数，以及 Plane3D 契约（9 数值 = 平面上 3 个非共线点）供下游组合。
 class DEEPLUX_PLUGIN_API FitPlanePlugin : public ModuleBase {
     Q_OBJECT
-    Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
+    Q_PLUGIN_METADATA(IID DEEPLUX_MODULE_INTERFACE_IID FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
 
 public:
