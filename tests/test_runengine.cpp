@@ -386,27 +386,6 @@ private:
     bool m_emitSyntheticImage = false;
 };
 
-class SecondRunGateModule : public RunIdRecordingModule {
-public:
-    SecondRunGateModule(const QString& name, QMutex* mutex, QStringList* sink, QSemaphore* secondRunEntered,
-                        QSemaphore* releaseSecondRun)
-        : RunIdRecordingModule(name, mutex, sink), m_secondRunEntered(secondRunEntered),
-          m_releaseSecondRun(releaseSecondRun) {}
-
-    ExecutionResult execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) override {
-        if (m_calls.fetch_add(1, std::memory_order_relaxed) == 1) {
-            m_secondRunEntered->release();
-            m_releaseSecondRun->acquire();
-        }
-        return RunIdRecordingModule::execute(inputs, outputs, context);
-    }
-
-private:
-    QSemaphore* m_secondRunEntered;
-    QSemaphore* m_releaseSecondRun;
-    std::atomic<int> m_calls{0};
-};
-
 // 阶6 五轮：确定性同步门模块——进入 process 时释放 entered 信号量，随后阻塞在
 // release 信号量上（可被取消令牌打断），用于把"模块已进入执行"变成真实同步点。
 class GateModule : public ModuleBase {
@@ -6159,13 +6138,18 @@ void TestRunEngine::testFinalDisplayFrameKeepsCompletedRunIdWhenNextRunStarts() 
 
     QSemaphore firstFinalPublishEntered;
     QSemaphore releaseFirstFinalPublish;
-    QSemaphore secondRunModuleEntered;
-    QSemaphore releaseSecondRunModule;
+    QSemaphore secondFinalPublishEntered;
+    QSemaphore releaseSecondFinalPublish;
+    QSemaphore secondFinalPublished;
     std::atomic<int> finalPublishCalls{0};
     engine.setBeforeFinalDisplayFrameHookForTest([&] {
-        if (finalPublishCalls.fetch_add(1, std::memory_order_relaxed) == 0) {
+        const int call = finalPublishCalls.fetch_add(1, std::memory_order_relaxed);
+        if (call == 0) {
             firstFinalPublishEntered.release();
             releaseFirstFinalPublish.acquire();
+        } else if (call == 1) {
+            secondFinalPublishEntered.release();
+            releaseSecondFinalPublish.acquire();
         }
     });
 
@@ -6174,11 +6158,22 @@ void TestRunEngine::testFinalDisplayFrameKeepsCompletedRunIdWhenNextRunStarts() 
     QMutex publishedMutex;
     QStringList publishedRunIds;
     std::atomic<bool> firstRunFinished{false};
+    std::atomic<bool> secondRunStarted{false};
+    std::atomic<int> runFinishedCount{0};
+    const QMetaObject::Connection finishConnection = connect(
+        &engine, &RunEngine::runFinished, &engine, [&] { runFinishedCount.fetch_add(1, std::memory_order_release); },
+        Qt::DirectConnection);
     const QMetaObject::Connection frameConnection = connect(
         &engine, &RunEngine::displayFrameReady, &engine,
-        [&](const QString&, quint64, const QString& runId) {
-            QMutexLocker locker(&publishedMutex);
-            publishedRunIds.append(runId);
+        [&](const QString& viewportId, quint64, const QString& runId) {
+            {
+                QMutexLocker locker(&publishedMutex);
+                publishedRunIds.append(runId);
+            }
+            const DisplayFrame frame = engine.latestDisplayFrame(viewportId);
+            if (frame.runId == runId && frame.hasSnapshot()) {
+                secondFinalPublished.release();
+            }
         },
         Qt::DirectConnection);
 
@@ -6186,19 +6181,25 @@ void TestRunEngine::testFinalDisplayFrameKeepsCompletedRunIdWhenNextRunStarts() 
     struct Cleanup {
         RunEngine& engine;
         QSemaphore& releaseFirstFinalPublish;
-        QSemaphore& releaseSecondRunModule;
+        QSemaphore& releaseSecondFinalPublish;
         std::thread& firstRun;
         std::atomic<bool>& firstRunFinished;
+        std::atomic<bool>& secondRunStarted;
+        std::atomic<int>& runFinishedCount;
+        QMetaObject::Connection finishConnection;
         QMetaObject::Connection frameConnection;
 
         ~Cleanup() {
             engine.clearBeforeFinalDisplayFrameHookForTest();
             releaseFirstFinalPublish.release();
-            releaseSecondRunModule.release();
+            releaseSecondFinalPublish.release();
             engine.stop();
             QElapsedTimer cleanupTimer;
             cleanupTimer.start();
-            while ((firstRun.joinable() && !firstRunFinished.load(std::memory_order_acquire)) || engine.isBusy()) {
+            const int expectedFinished = (firstRun.joinable() ? 1 : 0) +
+                                         (secondRunStarted.load(std::memory_order_acquire) ? 1 : 0);
+            while ((firstRun.joinable() && !firstRunFinished.load(std::memory_order_acquire)) || engine.isBusy() ||
+                   runFinishedCount.load(std::memory_order_acquire) < expectedFinished) {
                 engine.stop();
                 if (cleanupTimer.elapsed() >= 60000) {
                     qCritical("T2.9 regression cleanup: execution did not quiesce within 60s; "
@@ -6210,21 +6211,17 @@ void TestRunEngine::testFinalDisplayFrameKeepsCompletedRunIdWhenNextRunStarts() 
             if (firstRun.joinable()) {
                 firstRun.join();
             }
+            QObject::disconnect(finishConnection);
             QObject::disconnect(frameConnection);
             engine.setDisplayCaptureEnabled(false);
             engine.clearModules();
         }
-    } cleanup{engine, releaseFirstFinalPublish, releaseSecondRunModule, firstRun, firstRunFinished, frameConnection};
+    } cleanup{engine, releaseFirstFinalPublish, releaseSecondFinalPublish, firstRun, firstRunFinished,
+              secondRunStarted, runFinishedCount, finishConnection, frameConnection};
 
     Project project;
     buildParallelBatchProject(project, 1);
     QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& instance) -> ModuleBase* {
-        if (instance.id == QLatin1String("par0")) {
-            auto* module = new SecondRunGateModule(instance.id, &recordsMutex, &moduleRunIds, &secondRunModuleEntered,
-                                                   &releaseSecondRunModule);
-            module->enableSyntheticImage(true);
-            return module;
-        }
         auto* module = new RunIdRecordingModule(instance.id, &recordsMutex, &moduleRunIds);
         module->enableSyntheticImage(true);
         return module;
@@ -6247,30 +6244,45 @@ void TestRunEngine::testFinalDisplayFrameKeepsCompletedRunIdWhenNextRunStarts() 
     }
 
     QVERIFY(engine.runOnceAsync());
-    QVERIFY(secondRunModuleEntered.tryAcquire(1, 5000));
+    secondRunStarted.store(true, std::memory_order_release);
+    QVERIFY(secondFinalPublishEntered.tryAcquire(1, 5000));
+
+    QString expectedSecondRunId;
+    {
+        QMutexLocker locker(&recordsMutex);
+        QVERIFY(moduleRunIds.size() >= 2);
+        expectedSecondRunId = moduleRunIds.last();
+    }
+    QVERIFY(expectedSecondRunId != expectedFirstRunId);
+    releaseSecondFinalPublish.release();
+    QVERIFY2(secondFinalPublished.tryAcquire(1, 5000),
+             "second run final frame must publish before releasing the first");
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedCount.load(std::memory_order_acquire), 1, 5000);
 
     int frameCountBeforeFirstPublish;
     {
         QMutexLocker locker(&publishedMutex);
         frameCountBeforeFirstPublish = publishedRunIds.size();
     }
+    const DisplayFrame expectedSecondFrame = engine.latestDisplayFrame();
+    QCOMPARE(expectedSecondFrame.runId, expectedSecondRunId);
+    QVERIFY(expectedSecondFrame.hasSnapshot());
     releaseFirstFinalPublish.release();
 
-    auto publishedFrameCount = [&] {
-        QMutexLocker locker(&publishedMutex);
-        return publishedRunIds.size();
-    };
-    QTRY_VERIFY_WITH_TIMEOUT(publishedFrameCount() > frameCountBeforeFirstPublish, 5000);
-
-    QString actualFirstFinalRunId;
+    QTRY_VERIFY_WITH_TIMEOUT(firstRunFinished.load(std::memory_order_acquire), 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedCount.load(std::memory_order_acquire), 2, 5000);
     {
         QMutexLocker locker(&publishedMutex);
-        actualFirstFinalRunId = publishedRunIds.at(frameCountBeforeFirstPublish);
+        QCOMPARE(publishedRunIds.size(), frameCountBeforeFirstPublish);
     }
-    QCOMPARE(actualFirstFinalRunId, expectedFirstRunId);
-
-    releaseSecondRunModule.release();
-    QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
+    const DisplayFrame latestFrame = engine.latestDisplayFrame();
+    QCOMPARE(latestFrame.jobId, expectedSecondFrame.jobId);
+    QCOMPARE(latestFrame.runId, expectedSecondFrame.runId);
+    QCOMPARE(latestFrame.frameId, expectedSecondFrame.frameId);
+    QCOMPARE(latestFrame.moduleId, expectedSecondFrame.moduleId);
+    QCOMPARE(latestFrame.viewportId, expectedSecondFrame.viewportId);
+    QCOMPARE(latestFrame.image, expectedSecondFrame.image);
+    QCOMPARE(latestFrame.moduleDataSnapshot, expectedSecondFrame.moduleDataSnapshot);
     firstRun.join();
 }
 
