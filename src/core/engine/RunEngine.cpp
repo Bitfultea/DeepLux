@@ -35,6 +35,22 @@ struct GuiDispatchRecord {
     QSemaphore done;
 };
 
+#ifdef DEEPLUX_BUILD_TESTS
+QMutex g_beforeFinalDisplayFrameHookMutex;
+std::function<void()> g_beforeFinalDisplayFrameHook;
+
+void invokeBeforeFinalDisplayFrameHookForTest() {
+    std::function<void()> hook;
+    {
+        QMutexLocker locker(&g_beforeFinalDisplayFrameHookMutex);
+        hook = g_beforeFinalDisplayFrameHook;
+    }
+    if (hook) {
+        hook();
+    }
+}
+#endif
+
 QString runtimeModuleName(ModuleBase* module) {
     if (!module) {
         return QString();
@@ -743,6 +759,18 @@ void RunEngine::finalizeExecution(ExecutionOutcome outcome, bool clearControlGra
 void RunEngine::setFinalizeHookForTest(std::function<void()> hook) {
     m_testFinalizeHook = std::move(hook);
 }
+
+#ifdef DEEPLUX_BUILD_TESTS
+void RunEngine::setBeforeFinalDisplayFrameHookForTest(std::function<void()> hook) {
+    QMutexLocker locker(&g_beforeFinalDisplayFrameHookMutex);
+    g_beforeFinalDisplayFrameHook = std::move(hook);
+}
+
+void RunEngine::clearBeforeFinalDisplayFrameHookForTest() {
+    QMutexLocker locker(&g_beforeFinalDisplayFrameHookMutex);
+    g_beforeFinalDisplayFrameHook = nullptr;
+}
+#endif
 
 void RunEngine::clearFinalizeHookForTest() {
     m_testFinalizeHook = nullptr;
@@ -2638,6 +2666,9 @@ void RunEngine::publishDisplayFrame(const QString& moduleId, const ImageData& im
 }
 
 void RunEngine::publishFinalDisplayFrame() {
+#ifdef DEEPLUX_BUILD_TESTS
+    invokeBeforeFinalDisplayFrameHookForTest();
+#endif
     if (!m_displayCaptureEnabled.load(std::memory_order_acquire)) {
         return;
     }

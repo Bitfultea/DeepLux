@@ -294,6 +294,10 @@ public:
     // 后台执行（设计 §5.3）测试注入：收尾窗口并发 stop 的确定性钩子（生产构建不可见）。
     DEEPLUX_TEST_VISIBILITY : void setFinalizeHookForTest(std::function<void()> hook);
     DEEPLUX_TEST_VISIBILITY : void clearFinalizeHookForTest();
+#ifdef DEEPLUX_BUILD_TESTS
+    DEEPLUX_TEST_VISIBILITY : void setBeforeFinalDisplayFrameHookForTest(std::function<void()> hook);
+    DEEPLUX_TEST_VISIBILITY : void clearBeforeFinalDisplayFrameHookForTest();
+#endif
     // 后台执行（设计 §5.3）测试注入：执行段故障注入（验证异常路径 finalizer 释放租约）。
     DEEPLUX_TEST_VISIBILITY : void setExecutionFaultInjectionForTest(std::function<void()> hook);
     DEEPLUX_TEST_VISIBILITY : void clearExecutionFaultInjectionForTest();
