@@ -1636,6 +1636,7 @@ private slots:
         const QJsonObject savedProject = QJsonDocument::fromJson(saved.readAll()).object();
         QCOMPARE(savedProject.value(QStringLiteral("id")).toString(), project->id());
         QCOMPARE(savedProject.value(QStringLiteral("name")).toString(), QStringLiteral("Slice 36 confirmed save"));
+        saved.close();
         QCOMPARE(projects.recentProjects().first(), path);
         settings.sync();
         settings.beginGroup(QStringLiteral("ProjectManager"));
