@@ -446,7 +446,12 @@ bool FlowExecutionService::enqueue(JobType job) {
             QMutexLocker locker(&m_mutex);
             // 第四次整改：shutdown()/析构正在收归 worker 时，启动必须明确拒绝。
             // 否则两个入口会同时对同一批线程做 join/delete。
-            if (m_reclaimAborted) {
+            //
+            // 第八次整改：再加 m_shutdownInProgress 这一道。它覆盖**所有**关闭路径
+            // （含普通 Idle 关闭），而 m_reclaimAborted 只在存在在途回收时才置位。
+            // 最终入队临界区还有一次同样的检查——两处都要，因为本检查之后仍可能
+            // 有 shutdown 插进来。
+            if (m_reclaimAborted || m_shutdownInProgress) {
                 return false;
             }
             // 线程不可再用：要么已自标记 retiring（run() 即将返回，绝不再消费队列），
@@ -507,6 +512,18 @@ bool FlowExecutionService::enqueue(JobType job) {
     QMutexLocker locker(&m_mutex);
     // 设计 §4.1：非 Idle 时启动/单步直接拒绝，不排队；Paused 只接受 continueRun()/stop()。
     if (state() != State::Idle || m_pendingJob != JobType::None || currentJob() != JobType::None) {
+        return false;
+    }
+    // T2.5 P1 第八次整改（2026-11-12 第六段复核 P1）：**最终入队临界区必须再查一次关闭标记**。
+    //
+    // 这里才是「命令即将交给 worker」的最后一刻，是唯一可靠的判定点：
+    //   - enqueue() 入口的 m_reclaimAborted 检查发生在回收之前，之后 shutdown() 可能已完成
+    //     收尾并返回，入口检查对它一无所知；
+    //   - ensureThreadLocked() 会把 m_quitRequested 复位（那是为「shutdown 后可重新启动」
+    //     准备的），因此 quit 标志本身无法表达「正在关闭」。
+    // 不在此处拒绝，就会出现复核实测的现象：shutdown() 已返回 true（或已请求停止），
+    // 新任务却仍被入队并执行 —— 关闭期间仍能启动新任务。
+    if (m_shutdownInProgress) {
         return false;
     }
     // shutdown() 销毁线程后会置 quit 标志；此处按需重建线程并复位该标志。
@@ -745,6 +762,28 @@ bool FlowExecutionService::shutdown() {
     bool nonIdle = false;
     {
         QMutexLocker locker(&m_mutex);
+        // T2.5 P1 第八次整改（2026-11-12 第六段复核 P1）：**关闭一开始就统一禁止启动**。
+        //
+        // 此前只有 m_reclaimAborted 起作用，而它仅在「存在在途回收」时由
+        // detachLiveWorkerThreadsLocked() 置位；普通 Idle 关闭路径不置位，于是
+        // enqueue() 的入口检查形同虚设。更糟的是 ensureThreadLocked() 会把
+        // m_quitRequested 复位，使关闭期间的新启动照样重建 worker 并执行任务
+        // （复核实测 3/3：shutdown=true 但新任务仍在跑、引擎仍忙）。
+        //
+        // 本标记与 m_reclaimAborted 语义不同，因此单独设立：它覆盖**所有**关闭路径，
+        // 并且在 enqueue() 的最终入队临界区（命令真正交给 worker 前的最后一刻）再查一次。
+        //
+        // T2.5 P1 第九次整改（2026-11-12 第八段复核 P1）：**关闭权是排他的**。
+        // 旧实现无条件置位，第二次 shutdown() 会看到空的 retiring/inflight 列表，一路
+        // 走到成功结尾：返回 true、清掉第一次关闭者的标记、报告「清理已完成」，而
+        // 第一次关闭者仍持有旧 worker 在 joinWorkerThread() 的 thread->wait() 里，
+        // 随后新启动被接受并执行（复核独立探针 3/3）。因此在**同一临界区**内先取得
+        // 排他关闭权：已有关闭在途时本次调用不是 owner，立即返回 false —— 不清除
+        // 原关闭者的标记、不改动任何收尾状态、也不得报告清理完成。
+        if (m_shutdownInProgress) {
+            return false;
+        }
+        m_shutdownInProgress = true;
         nonIdle = state() != State::Idle || m_pendingJob != JobType::None || currentJob() != JobType::None;
         if (nonIdle) {
             // 非 Idle：只请求停止，不销毁仍可能访问 RunEngine 的工作线程（设计 §5.3 #7）。
@@ -765,14 +804,20 @@ bool FlowExecutionService::shutdown() {
     }
     if (nonIdle) {
         RunEngine::instance().stop();
+        // **非 Idle 分支必须撤销关闭标记**：该分支按既定契约「只请求停止并返回 false」，
+        // 不销毁任何对象、也不关闭服务。若把标记留在置位状态，后续的正常启动会被
+        // 永久拒绝——那是把 false 的语义扩大成了「服务已关闭」，复核明确禁止这么做。
+        QMutexLocker locker(&m_mutex);
+        m_shutdownInProgress = false;
         return false;
     }
     // T2.5 P1 第六次整改（2026-11-11 第五段复核 P1）：在删除任何 worker 之前，
     // 先等**活跃回收调用**把借用归还。
     //
-    // 此时 m_reclaimAborted 已置为 true（见上面的 detachLiveWorkerThreadsLocked），
-    // 新的启动会被 enqueue() 入口直接拒绝，因此不会再有新的借用产生——「禁止新启动」
-    // 与「等借用归还」的先后关系正是本函数能安全终止的前提。
+    // 此时 m_shutdownInProgress 已在入口置位，新的启动会被 enqueue() 入口与最终
+    // 入队临界区拒绝，因此不会再有新的回收借用产生——「禁止新启动」与「等借用归还」
+    // 的先后关系正是本函数能安全终止的前提。（m_reclaimAborted 只在存在在途回收时
+    // 由 detachLiveWorkerThreadsLocked() 置位，普通 Idle 关闭不能依赖它。）
     //
     // 这是**生命周期等待**，与启动路径的 StartHandshakeTimeoutMs 预算无关：后者是
     // 「GUI 允许多久拿到明确失败答复」，前者是「对象何时真的可以销毁」。共用一个数字
@@ -785,6 +830,7 @@ bool FlowExecutionService::shutdown() {
     {
         QMutexLocker locker(&m_mutex);
         m_reclaimAborted = false;
+        m_shutdownInProgress = false; // 关闭完成，服务恢复可用
         m_reclaimWake.wakeAll();
     }
     return true;

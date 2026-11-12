@@ -295,6 +295,26 @@ private:
     QHash<WorkerThread*, int> m_activeReclaimBorrows;
     /// 有线程正在 shutdown()/析构中收归 worker（用于回收线程让出所有权）。
     bool m_reclaimAborted = false;
+    /// **关闭进行中 / 排他关闭权**（T2.5 P1 第八次整改；第九次整改补上排他语义）。
+    ///
+    /// 与 m_reclaimAborted 的区别是本轮 P1 的核心：
+    /// - `m_reclaimAborted` 只在 `detachLiveWorkerThreadsLocked()` 发现**存在在途回收**
+    ///   时才置位（它的用途是让回收线程让出所有权），普通 Idle 关闭路径不会置位。
+    /// - 本标记在 `shutdown()` **一开始**就置位，覆盖所有关闭路径，并在
+    ///   `enqueue()` 的**最终入队临界区**检查——那里才是「命令即将交给 worker」的最后
+    ///   一刻。只靠入口检查不够：入口检查之后、最终入队之前，shutdown 可能已经完成
+    ///   回收并置位标记。
+    ///
+    /// **排他性（第九次整改）**：本标记同时是「关闭权」的凭证。shutdown() 入口在
+    /// 同一临界区内先检查它，已置位即说明另有一次关闭正持有旧 worker；本次调用不是
+    /// owner，必须立即返回 false —— 不清除原关闭者的标记、不改动收尾状态、也不得
+    /// 报告清理完成。只有 owner 才在成功结尾清除标记并恢复服务。否则第二次调用会
+    /// 看到空的 retiring 列表而提前返回 true 并清标记，令新启动被接受。
+    ///
+    /// 否则会出现「shutdown 期间仍能启动新任务」：`ensureThreadLocked()` 会顺手把
+    /// `m_quitRequested` 复位（它本来是给「shutdown 之后重新可用」准备的），
+    /// 于是关闭期间的新启动既重建了 worker、又执行了任务，而 shutdown 已经返回。
+    bool m_shutdownInProgress = false;
     bool m_quitRequested = false;
     bool m_stopRequested = false;
     bool m_pauseRequested = false;
