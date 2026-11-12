@@ -847,7 +847,7 @@ private slots:
         QSignalSpy audit(&controller, &AgentController::actionLogEntryAdded);
 
         const QJsonObject params{
-            {"imagePath", m_imagePath}, {"points", QJsonArray{QJsonArray{32, 24}}}, {"timeoutMs", 200}};
+            {"imagePath", m_imagePath}, {"points", QJsonArray{QJsonValue(QJsonArray{32, 24})}}, {"timeoutMs", 200}};
 
         SamTestServer setImageServer;
         QVERIFY(setImageServer.listen());
@@ -976,7 +976,7 @@ private slots:
 
         QJsonObject params{{"imagePath", m_imagePath},
                            {"sessionPath", sessionPath},
-                           {"items", QJsonArray{QJsonObject{{"points", QJsonArray{QJsonArray{32, 24}}},
+                           {"items", QJsonArray{QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{32, 24})}},
                                                             {"label", QStringLiteral("timeout-object")}}}},
                            {"timeoutMs", 200}};
 
@@ -1254,7 +1254,7 @@ private slots:
 
         QJsonObject params{{"imagePath", m_imagePath},
                            {"serverUrl", server.url()},
-                           {"points", QJsonArray{QJsonArray{32, 24}}},
+                           {"points", QJsonArray{QJsonValue(QJsonArray{32, 24})}},
                            {"label", QStringLiteral("widget")},
                            {"timeoutMs", 5000}};
         QUrl decorated(server.url());
@@ -1354,7 +1354,7 @@ private slots:
         QSignalSpy toolExecuted(controller.actor(), &AgentActor::toolExecuted);
         const QJsonObject params{{"imagePath", imagePath},
                                  {"serverUrl", server.url()},
-                                 {"points", QJsonArray{QJsonArray{8, 8}}},
+                                 {"points", QJsonArray{QJsonValue(QJsonArray{8, 8})}},
                                  {"timeoutMs", 5000}};
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("sam_predict"), params);
@@ -1422,7 +1422,7 @@ private slots:
         QSignalSpy audit(&controller, &AgentController::actionLogEntryAdded);
         QSignalSpy toolExecuted(controller.actor(), &AgentActor::toolExecuted);
         QJsonObject params = annotateParams(server.url(), sessionPath, imagePath);
-        params.insert(QStringLiteral("items"), QJsonArray{QJsonObject{{"points", QJsonArray{QJsonArray{8, 8}}},
+        params.insert(QStringLiteral("items"), QJsonArray{QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{8, 8})}},
                                                                       {"label", QStringLiteral("slice95")}}});
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("sam_annotate"), params);
@@ -1499,7 +1499,7 @@ private slots:
         SamTestServer server;
         QVERIFY(server.listen());
         QJsonObject params = annotateParams(server.url(), linkPath, m_imagePath);
-        params.insert(QStringLiteral("items"), QJsonArray{QJsonObject{{"points", QJsonArray{QJsonArray{32, 24}}},
+        params.insert(QStringLiteral("items"), QJsonArray{QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{32, 24})}},
                                                                       {"label", QStringLiteral("symlink-target")}}});
         QJsonObject pending = controller.handleToolCall(QStringLiteral("sam_annotate"), params);
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
@@ -2102,7 +2102,7 @@ private slots:
         predict.name = QStringLiteral("Slice 99 file-backed prediction");
         predict.params = QJsonObject{{QStringLiteral("serverUrl"), server.url()},
                                      {QStringLiteral("label"), QStringLiteral("slice99")},
-                                     {QStringLiteral("points"), QJsonArray{QJsonArray{32, 24}}},
+                                     {QStringLiteral("points"), QJsonArray{QJsonValue(QJsonArray{32, 24})}},
                                      {QStringLiteral("timeoutMs"), 5000}};
         project->addModule(predict);
         ModuleConnection imageEdge;
@@ -2351,7 +2351,7 @@ private slots:
         predict.name = QStringLiteral("SAM flow prediction");
         predict.params = QJsonObject{{QStringLiteral("serverUrl"), QStringLiteral("http://127.0.0.1:8990")},
                                      {QStringLiteral("label"), QStringLiteral("fixture")},
-                                     {QStringLiteral("points"), QJsonArray{QJsonArray{32, 24}}},
+                                     {QStringLiteral("points"), QJsonArray{QJsonValue(QJsonArray{32, 24})}},
                                      {QStringLiteral("timeoutMs"), 5000}};
         project->addModule(predict);
         ModuleConnection imageEdge;
@@ -2782,7 +2782,7 @@ private slots:
         predict.name = QStringLiteral("Slice 78 SAM prediction");
         predict.params = QJsonObject{{QStringLiteral("serverUrl"), peerA.url()},
                                      {QStringLiteral("label"), QStringLiteral("slice78-fixture")},
-                                     {QStringLiteral("points"), QJsonArray{QJsonArray{32, 24}}},
+                                     {QStringLiteral("points"), QJsonArray{QJsonValue(QJsonArray{32, 24})}},
                                      {QStringLiteral("timeoutMs"), 5000}};
         project->addModule(predict);
         ModuleConnection imageEdge;
@@ -3154,7 +3154,7 @@ private slots:
         crop.id = QStringLiteral("slice109_sam_crop");
         crop.moduleId = QStringLiteral("CropImage");
         crop.name = QStringLiteral("Slice 109 crop");
-        crop.params = QJsonObject{{QStringLiteral("rectangles"), QJsonArray{QJsonArray{32, 24, 10, 10, 0}}},
+        crop.params = QJsonObject{{QStringLiteral("rectangles"), QJsonArray{QJsonValue(QJsonArray{32, 24, 10, 10, 0})}},
                                   {QStringLiteral("outputFirstAsImage"), true}};
         project->addModule(grab);
         project->addModule(crop);

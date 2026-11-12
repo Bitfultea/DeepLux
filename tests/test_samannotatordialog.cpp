@@ -2090,7 +2090,7 @@ void TestSamAnnotatorDialog::agentMaskOperationsValidateAndUndo() {
     QCOMPARE(wrongRadiusType.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
     const QJsonObject badStroke =
         edit(QStringLiteral("erase_stroke"), firstObject,
-             {{QStringLiteral("radiusPx"), 2}, {QStringLiteral("strokePoints"), QJsonArray{QJsonArray{-1, 25}}}});
+             {{QStringLiteral("radiusPx"), 2}, {QStringLiteral("strokePoints"), QJsonArray{QJsonValue(QJsonArray{-1, 25})}}});
     QCOMPARE(badStroke.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
     QCOMPARE(edit(QStringLiteral("merge"), QJsonArray{firstId, firstId}).value(QStringLiteral("errorCode")).toString(),
              QStringLiteral("INVALID_PARAM"));
@@ -2106,7 +2106,7 @@ void TestSamAnnotatorDialog::agentMaskOperationsValidateAndUndo() {
     QCOMPARE(nonIntegerRadius.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
     const QJsonObject malformedPoint =
         edit(QStringLiteral("erase_stroke"), firstObject,
-             {{QStringLiteral("radiusPx"), 2}, {QStringLiteral("strokePoints"), QJsonArray{QJsonArray{25}}}});
+             {{QStringLiteral("radiusPx"), 2}, {QStringLiteral("strokePoints"), QJsonArray{QJsonValue(QJsonArray{25})}}});
     QCOMPARE(malformedPoint.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
     const QJsonObject emptyStroke =
         edit(QStringLiteral("erase_stroke"), firstObject,
@@ -2135,7 +2135,7 @@ void TestSamAnnotatorDialog::agentMaskOperationsValidateAndUndo() {
                     {QStringLiteral("objectIds"), firstObject},
                     {QStringLiteral("radiusPx"), 2},
                     {QStringLiteral("strokePoints"),
-                     QJsonArray{QJsonArray{QJsonValue(std::numeric_limits<double>::quiet_NaN()), 25}}}},
+                     QJsonArray{QJsonValue(QJsonArray{QJsonValue(std::numeric_limits<double>::quiet_NaN()), 25})}}},
         true);
     QCOMPARE(nonFiniteStroke.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
     const QJsonObject infiniteStroke = dlg.applyAgentMaskEdit(
@@ -2143,7 +2143,7 @@ void TestSamAnnotatorDialog::agentMaskOperationsValidateAndUndo() {
                     {QStringLiteral("objectIds"), firstObject},
                     {QStringLiteral("radiusPx"), 2},
                     {QStringLiteral("strokePoints"),
-                     QJsonArray{QJsonArray{QJsonValue(std::numeric_limits<double>::infinity()), 25}}}},
+                     QJsonArray{QJsonValue(QJsonArray{QJsonValue(std::numeric_limits<double>::infinity()), 25})}}},
         true);
     QCOMPARE(infiniteStroke.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
     QCOMPARE(dlg.session().annotations.size(), beforeRejected.annotations.size());

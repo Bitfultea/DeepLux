@@ -2733,7 +2733,7 @@ private slots:
         project->addModule(inst);
         const int undoBefore = actor.undoStack()->count();
 
-        const QJsonObject badPoint{{"mode", "point_set"}, {"points", QJsonArray{QJsonArray{1, "bad"}}}};
+        const QJsonObject badPoint{{"mode", "point_set"}, {"points", QJsonArray{QJsonValue(QJsonArray{1, "bad"})}}};
         const QJsonObject rejected =
             actor.executeTool("set_module_params", QJsonObject{{"instanceId", "measure"}, {"values", badPoint}});
         QCOMPARE(rejected.value("errorCode").toString(), QStringLiteral("VALIDATION_FAILED"));
@@ -2755,7 +2755,7 @@ private slots:
         QVERIFY(nonFinite.contains("error"));
         QCOMPARE(actor.undoStack()->count(), undoBefore);
 
-        const QJsonObject valid{{"mode", "point_set"}, {"points", QJsonArray{QJsonArray{1.0, 2.0}}}};
+        const QJsonObject valid{{"mode", "point_set"}, {"points", QJsonArray{QJsonValue(QJsonArray{1.0, 2.0})}}};
         const QJsonObject accepted =
             actor.executeTool("set_module_params", QJsonObject{{"instanceId", "measure"}, {"values", valid}});
         QCOMPARE(accepted.value("status").toString(), QStringLiteral("params_set"));
