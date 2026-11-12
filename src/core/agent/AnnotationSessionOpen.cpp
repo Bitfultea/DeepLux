@@ -13,6 +13,7 @@
 #elif defined(Q_OS_WIN)
 #include <io.h>
 #include <sys/stat.h>
+#include <windows.h>
 #endif
 
 namespace DeepLux {
@@ -35,21 +36,25 @@ struct FileIdentity {
     }
 };
 
-QString identityFromDescriptor(int fd) {
+QString identityFromDescriptor(qintptr descriptor) {
 #ifdef Q_OS_UNIX
     struct stat info {};
-    if (fd >= 0 && ::fstat(fd, &info) == 0)
+    if (descriptor >= 0 && ::fstat(static_cast<int>(descriptor), &info) == 0)
         return QStringLiteral("%1:%2")
             .arg(static_cast<qulonglong>(info.st_dev))
             .arg(static_cast<qulonglong>(info.st_ino));
 #elif defined(Q_OS_WIN)
-    struct _stat64 info {};
-    if (fd >= 0 && ::_fstat64(fd, &info) == 0)
+    // QFile::handle() 在 Windows 上是 HANDLE，不是 C 运行时 fd；直接用 Win32 文件信息取得卷序列号 + 文件索引。
+    const int fd = static_cast<int>(descriptor);
+    const intptr_t nativeHandle = (fd >= 0) ? ::_get_osfhandle(fd) : -1;
+    const HANDLE handle = (nativeHandle == -1) ? INVALID_HANDLE_VALUE : reinterpret_cast<HANDLE>(nativeHandle);
+    BY_HANDLE_FILE_INFORMATION info {};
+    if (handle != INVALID_HANDLE_VALUE && ::GetFileInformationByHandle(handle, &info) != 0)
         return QStringLiteral("%1:%2")
-            .arg(static_cast<qlonglong>(info.st_dev))
-            .arg(static_cast<qlonglong>(info.st_ino));
+            .arg(static_cast<qulonglong>(info.dwVolumeSerialNumber))
+            .arg((static_cast<qulonglong>(info.nFileIndexHigh) << 32) | info.nFileIndexLow);
 #else
-    Q_UNUSED(fd)
+    Q_UNUSED(descriptor)
 #endif
     return {};
 }
@@ -64,12 +69,22 @@ QString identityAtPath(const QString& path) {
             .arg(static_cast<qulonglong>(info.st_ino))
             .arg(S_ISLNK(info.st_mode) ? QStringLiteral("symlink") : QStringLiteral("file"));
 #elif defined(Q_OS_WIN)
-    struct _stat64 info {};
-    const QByteArray encoded = QFile::encodeName(path);
-    if (::_stat64(encoded.constData(), &info) == 0)
-        return QStringLiteral("%1:%2:file")
-            .arg(static_cast<qlonglong>(info.st_dev))
-            .arg(static_cast<qlonglong>(info.st_ino));
+    const HANDLE handle = ::CreateFileW(reinterpret_cast<LPCWSTR>(path.utf16()), 0,
+                                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                        FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle != INVALID_HANDLE_VALUE) {
+        BY_HANDLE_FILE_INFORMATION info {};
+        const bool ok = ::GetFileInformationByHandle(handle, &info) != 0;
+        const DWORD attributes = info.dwFileAttributes;
+        ::CloseHandle(handle);
+        if (ok) {
+            return QStringLiteral("%1:%2:%3")
+                .arg(static_cast<qulonglong>(info.dwVolumeSerialNumber))
+                .arg((static_cast<qulonglong>(info.nFileIndexHigh) << 32) | info.nFileIndexLow)
+                .arg((attributes & FILE_ATTRIBUTE_REPARSE_POINT) ? QStringLiteral("symlink")
+                                                                 : QStringLiteral("file"));
+        }
+    }
 #else
     Q_UNUSED(path)
 #endif
