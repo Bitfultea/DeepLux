@@ -84,7 +84,7 @@ bool SaveDataPlugin::process(const ImageData& input, ImageData& output) {
         // 文本格式
         QFile file(filePath);
         QIODevice::OpenMode mode = appendMode ? QIODevice::Append : QIODevice::WriteOnly;
-        if (file.open(mode | QIODevice::Text)) {
+        if (file.open(mode)) {
             m_writeUnconfirmed = true;
             QTextStream out(&file);
             for (auto it = dataMap.constBegin(); it != dataMap.constEnd(); ++it) {
@@ -130,7 +130,7 @@ bool SaveDataPlugin::saveToJson(const QString& filePath, const QVariantMap& data
     }
 
     // 写入文件
-    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    if (file.open(QIODevice::WriteOnly)) {
         const QByteArray payload = QJsonDocument(jsonObj).toJson(QJsonDocument::Indented);
         m_writeUnconfirmed = true;
         const qint64 bytesWritten = file.write(payload);
@@ -156,7 +156,7 @@ bool SaveDataPlugin::saveToCsv(const QString& filePath, const QVariantMap& data)
     QJsonObject params = currentParams();
     QIODevice::OpenMode mode = params["appendMode"].toBool() ? QIODevice::Append : QIODevice::WriteOnly;
 
-    if (file.open(mode | QIODevice::Text)) {
+    if (file.open(mode)) {
         m_writeUnconfirmed = true;
         QTextStream out(&file);
 

@@ -1330,6 +1330,7 @@ private slots:
         QCOMPARE(saved.object().value(QStringLiteral("g8_payload")).toString(), QStringLiteral("payload-42"));
         QCOMPARE(saved.object().value(QStringLiteral("string_length")).toInt(), 10);
 
+        output.close();
         QVERIFY(QFile::remove(outputPath));
         QVERIFY(QDir().mkpath(outputPath));
         pending = controller.handleToolCall(QStringLiteral("run_flow"),

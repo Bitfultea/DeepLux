@@ -70,7 +70,7 @@ bool WriteTextPlugin::process(const ImageData& input, ImageData& output) {
     QFile file(filePath);
     QIODevice::OpenMode mode = appendMode ? QIODevice::Append : QIODevice::WriteOnly;
 
-    if (file.open(mode | QIODevice::Text)) {
+    if (file.open(mode)) {
         m_writeUnconfirmed = true;
         QTextStream out(&file);
         out << textContent;
