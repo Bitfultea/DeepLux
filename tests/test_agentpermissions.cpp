@@ -1,10 +1,20 @@
+#include "TestPluginRegistry.h"
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
+#include "core/agent/AgentToolImage.h"
 #include "core/agent/ToolSchema.h"
+#include "core/common/Logger.h"
+#include "core/engine/RunEngine.h"
+#include "core/manager/PluginManager.h"
+#include "core/model/Project.h"
 #include "manager/ProjectManager.h"
 
+#include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QImage>
 #include <QJsonArray>
+#include <QTemporaryDir>
 #include <QtTest/QtTest>
 
 using namespace DeepLux;
@@ -12,19 +22,49 @@ using namespace DeepLux;
 class TestAgentPermissions : public QObject {
     Q_OBJECT
 
+private:
+    QTemporaryDir m_appDataDir;
+    QStringList m_generatedImagePaths;
+
 private slots:
     void initTestCase() {
         ToolSchema::instance().registerDefaultTools();
+        QVERIFY(m_appDataDir.isValid());
+        qputenv("DEEPLUX_APP_DATA_DIR", m_appDataDir.path().toLocal8Bit());
+        const auto grabImage = DeepLuxTest::pluginEntry(QStringLiteral("GrabImage"));
+        QVERIFY(!grabImage.libraryPath.isEmpty());
+        QVERIFY(!grabImage.metadataPath.isEmpty());
+        const QString pluginDir = QDir(m_appDataDir.path()).filePath(QStringLiteral("plugins/GrabImage"));
+        QVERIFY(QDir().mkpath(pluginDir));
+        QVERIFY(QFile::copy(grabImage.metadataPath, QDir(pluginDir).filePath(QStringLiteral("metadata.json"))));
+        QVERIFY(
+            QFile::copy(grabImage.libraryPath, QDir(pluginDir).filePath(QFileInfo(grabImage.libraryPath).fileName())));
+        PluginManager::instance().addPluginPath(QDir(m_appDataDir.path()).filePath(QStringLiteral("plugins")));
+        QVERIFY(PluginManager::instance().initialize());
+        QVERIFY(PluginManager::instance().loadPlugin(QStringLiteral("GrabImage")));
     }
 
     void init() {
         AgentController::instance().clearConversation();
+        RunEngine::instance().clearModules();
         ProjectManager::instance().closeProject();
     }
 
     void cleanup() {
         AgentController::instance().clearConversation();
+        AgentController::instance().actor()->setViewportImageProvider(AgentActor::ViewportImageProvider());
+        RunEngine::instance().clearModules();
         ProjectManager::instance().closeProject();
+        for (const QString& path : m_generatedImagePaths)
+            QFile::remove(path);
+        m_generatedImagePaths.clear();
+    }
+
+    void cleanupTestCase() {
+        RunEngine::instance().clearModules();
+        ProjectManager::instance().closeProject();
+        PluginManager::instance().shutdown();
+        qunsetenv("DEEPLUX_APP_DATA_DIR");
     }
 
     void testObserverAllowsReadOnlyAndBlocksWriteTools() {
@@ -99,35 +139,87 @@ private slots:
         QVERIFY(executed["error"].toString().contains("不存在"));
 
         // dangerous → Autopilot 也必须待确认，且确认前不写任何文件
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString sessionPath = tempDir.filePath(QStringLiteral("never-written-sam-gate.json"));
         QJsonObject annotatePending = AgentController::instance().handleToolCall(
             "sam_annotate",
             QJsonObject{{"imagePath", "/nonexistent_sam_gate.png"},
-                        {"sessionPath", "/tmp/deeplux_never_written_sam_gate.json"},
+                        {"sessionPath", sessionPath},
                         {"items", QJsonArray{QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{1, 2})}}}}}});
         QCOMPARE(annotatePending["status"].toString(), QString("pending_confirmation"));
-        QVERIFY(!QFileInfo::exists(QStringLiteral("/tmp/deeplux_never_written_sam_gate.json")));
+        QVERIFY(!QFileInfo::exists(sessionPath));
         AgentController::instance().rejectPendingTools();
     }
 
-    // 第一迭代：新增只读工具在 Observer 下直接执行（不进入待确认、不被拒绝）
+    // Read-only tools must execute successfully in Observer mode, not just avoid permission denial.
     void testNewReadOnlyToolsExecuteInObserverMode() {
-        AgentController::instance().setPermissionLevel(AgentController::PermissionLevel::Observer);
-        const QJsonObject withNode{{"nodeName", "missing_node"}};
-        const QList<QPair<QString, QJsonObject>> calls = {
-            {QStringLiteral("validate_workflow"), QJsonObject()},
-            {QStringLiteral("get_node_runtime_outputs"), withNode},
-            {QStringLiteral("get_execution_logs"), QJsonObject()},
-            {QStringLiteral("capture_viewport_image"), QJsonObject()},
-            {QStringLiteral("export_node_output"), withNode},
-        };
-        for (const auto& call : calls) {
-            const QJsonObject result = AgentController::instance().handleToolCall(call.first, call.second);
-            QVERIFY2(result["status"].toString() != QStringLiteral("pending_confirmation"),
-                     qPrintable(QStringLiteral("%1 must not require confirmation in Observer mode").arg(call.first)));
-            QVERIFY2(!result["error"].toString().contains(QStringLiteral("Observer")),
-                     qPrintable(QStringLiteral("%1 must be allowed in Observer mode").arg(call.first)));
-            QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
-        }
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        ModuleInstance grab;
+        grab.id = QStringLiteral("grab");
+        grab.moduleId = QStringLiteral("GrabImage");
+        grab.params.insert(QStringLiteral("grabSource"), QStringLiteral("Demo"));
+        project->addModule(grab);
+
+        const QJsonObject validation = controller.handleToolCall(QStringLiteral("validate_workflow"), QJsonObject());
+        QVERIFY2(!validation.contains(QStringLiteral("error")), qPrintable(validation.value("error").toString()));
+        QCOMPARE(validation.value("ok").toBool(), true);
+        QCOMPARE(validation.value("moduleCount").toInt(), 1);
+
+        RunEngine::instance().runOnce();
+        QVERIFY(!RunEngine::instance().isBusy());
+        const QJsonObject outputs =
+            controller.handleToolCall(QStringLiteral("get_node_runtime_outputs"),
+                                      QJsonObject{{QStringLiteral("nodeName"), QStringLiteral("grab")}});
+        QVERIFY2(!outputs.contains(QStringLiteral("error")), qPrintable(outputs.value("error").toString()));
+        QCOMPARE(outputs.value("node").toString(), QStringLiteral("grab"));
+        QCOMPARE(outputs.value("lastStatus").toString(), QStringLiteral("success"));
+        QVERIFY(outputs.value("frameId").toDouble() > 0);
+        QCOMPARE(outputs.value("outputs")
+                     .toObject()
+                     .value(QStringLiteral("image"))
+                     .toObject()
+                     .value(QStringLiteral("present"))
+                     .toBool(),
+                 true);
+
+        Logger::instance().info(QStringLiteral("observer-readonly-contract"), QStringLiteral("Run"));
+        const QJsonObject logs = controller.handleToolCall(
+            QStringLiteral("get_execution_logs"),
+            QJsonObject{{QStringLiteral("category"), QStringLiteral("Run")},
+                        {QStringLiteral("keyword"), QStringLiteral("observer-readonly-contract")}});
+        QVERIFY2(!logs.contains(QStringLiteral("error")), qPrintable(logs.value("error").toString()));
+        QCOMPARE(logs.value("source").toString(), QStringLiteral("Logger::memory"));
+        QCOMPARE(logs.value("total").toInt(), 1);
+        QCOMPARE(logs.value("entries").toArray().first().toObject().value("message").toString(),
+                 QStringLiteral("observer-readonly-contract"));
+
+        controller.actor()->setViewportImageProvider([](QString*) {
+            QImage image(32, 24, QImage::Format_RGB32);
+            image.fill(Qt::green);
+            return image;
+        });
+        const QJsonObject captured = controller.handleToolCall(QStringLiteral("capture_viewport_image"), QJsonObject());
+        const QString capturedPath = captured.value("imagePath").toString();
+        if (!capturedPath.isEmpty())
+            m_generatedImagePaths.append(capturedPath);
+        QVERIFY2(!captured.contains(QStringLiteral("error")), qPrintable(captured.value("error").toString()));
+        QCOMPARE(captured.value("width").toInt(), 32);
+        QCOMPARE(captured.value("height").toInt(), 24);
+        QVERIFY(QFileInfo::exists(capturedPath));
+
+        const QJsonObject exported = controller.handleToolCall(
+            QStringLiteral("export_node_output"), QJsonObject{{QStringLiteral("nodeName"), QStringLiteral("grab")}});
+        const QString exportedPath = exported.value("imagePath").toString();
+        if (!exportedPath.isEmpty())
+            m_generatedImagePaths.append(exportedPath);
+        QVERIFY2(!exported.contains(QStringLiteral("error")), qPrintable(exported.value("error").toString()));
+        QCOMPARE(exported.value("source").toString(), QStringLiteral("module_output"));
+        QVERIFY(QFileInfo::exists(exportedPath));
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
     }
 
     // 第一迭代：tune_node_and_verify 是写工具但非 dangerous —— Advisor 待确认、Autopilot 直接执行

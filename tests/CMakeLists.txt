@@ -109,6 +109,19 @@ set(TEST_SOURCES
     test_finalplugins.cpp
 )
 
+set(_deeplux_registered_test_sources ${TEST_SOURCES})
+if(DEEPLUX_NATIVE_SAM)
+    list(APPEND _deeplux_registered_test_sources test_sam_onnx_inference.cpp)
+endif()
+file(GLOB _deeplux_top_level_test_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cpp")
+foreach(_source_path IN LISTS _deeplux_top_level_test_sources)
+    get_filename_component(_source_name "${_source_path}" NAME)
+    list(FIND _deeplux_registered_test_sources "${_source_name}" _registered_index)
+    if(_registered_index EQUAL -1)
+        message(FATAL_ERROR "Top-level test source is not registered with CMake: ${_source_name}")
+    endif()
+endforeach()
+
 set(DEEPLUX_ABI_FIXTURE_DIR "${CMAKE_CURRENT_BINARY_DIR}/abi-fixtures")
 add_library(AbiDependency SHARED plugins/abi/AbiDependencyExports.cpp)
 add_library(AbiValidPlugin SHARED
@@ -216,8 +229,11 @@ foreach(TEST_FILE ${TEST_SOURCES})
         target_include_directories(${TEST_NAME} PRIVATE ${OpenCV_INCLUDE_DIRS})
     endif()
 
-    if(TEST_NAME MATCHES "^(test_acceptance_flows|test_mainwindow|test_plugincontracts|test_pluginparametercontracts|test_workerpluginconsistency)$")
+    if(TEST_NAME MATCHES "^(test_acceptance_flows|test_mainwindow|test_plugincontracts|test_pluginparametercontracts|test_workerpluginconsistency|test_agentpermissions)$")
         deeplux_add_test_plugin_defs(${TEST_NAME})
+        if(TEST_NAME STREQUAL "test_agentpermissions")
+            add_dependencies(${TEST_NAME} GrabImagePlugin)
+        endif()
         if(TEST_NAME STREQUAL "test_pluginparametercontracts" OR TEST_NAME STREQUAL "test_workerpluginconsistency")
             # 这些测试会安装并校验全部/候选插件，必须确保插件库先于测试构建完成。
             foreach(_plugin_entry IN LISTS DEEPLUX_PLUGIN_TARGET_ENTRIES)
