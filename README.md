@@ -107,6 +107,8 @@ flowchart LR
 - **Agent**：底部“Agent 对话”页。只能调用已声明的内部工具，写操作经过权限、确认与撤销，全部落审计日志；不具备任意 shell 执行权限。详见[终端与 Agent 设计](docs/Terminal_Agent_Design.md)。
 - **SAM 标注**：顶部“快速标注”打开面板，用正点、负点或框选生成预览，切换候选后确认；支持掩膜编辑、会话保存及 LabelMe/YOLO/COCO 导出。默认使用 Python 服务；切换到“本机 ONNX”后可在“模型设置…”中选择模型包和 CPU/CUDA 设备，设置会保存到本机。详见[原生 SAM 安装说明](docs/sam_native/stage5_packaging.md)。
 
+CI 不下载或存储 SAM 权重/模型包；原生 SAM 的真实模型 CPU 推理与 CUDA 验收目前不在 CI 范围内。CI 只覆盖无模型依赖的构建与契约测试，模型运行需按安装说明在目标环境单独验证。
+
 ## 项目结构
 
 ```text

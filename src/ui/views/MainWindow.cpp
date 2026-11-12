@@ -861,6 +861,8 @@ MainWindow::~MainWindow() {
     if (m_splashScreen) {
         m_splashScreen->deleteLater();
     }
+    QObject::disconnect(m_toolBoxDock, nullptr, this, nullptr);
+    QObject::disconnect(m_logDock, nullptr, this, nullptr);
 }
 
 void MainWindow::showSplashScreen() {

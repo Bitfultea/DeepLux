@@ -15,6 +15,10 @@ jobs:
         run: python3 scripts/test_plugin_abi_exports.py
       - name: Test affinity scanner
         run: python3 scripts/test_plugin_affinity.py
+      - name: Test CI report gates
+        run: |
+          python3 scripts/test_check_ctest_skips.py
+          python3 scripts/test_classify_tsan.py
       - name: Check worker plugin execution paths
         run: python3 scripts/check_plugin_affinity.py
 
@@ -41,18 +45,22 @@ jobs:
 
       - name: Isolate plugin data directory
         run: |
-          APP_DATA_DIR="$RUNNER_TEMP/deeplux-appdata-qt5"
-          rm -rf "$APP_DATA_DIR/plugins"
-          echo "DEEPLUX_APP_DATA_DIR=$APP_DATA_DIR" >> "$GITHUB_ENV"
+          HOME_DIR="$RUNNER_TEMP/deeplux-home-qt5"
+          mkdir -p "$HOME_DIR"
+          echo "HOME=$HOME_DIR" >> "$GITHUB_ENV"
 
       - name: Sync plugins
         run: cmake --build build --target sync-plugins
 
       - name: Verify isolated plugin sync
-        run: cmp build/lib/libFitCirclePlugin.so "$DEEPLUX_APP_DATA_DIR/plugins/FitCircle/libFitCirclePlugin.so"
+        run: cmp build/lib/libFitCirclePlugin.so "$HOME/.deeplux/plugins/FitCircle/libFitCirclePlugin.so"
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      - name: Check skipped tests
+        if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
+        run: python3 scripts/check_ctest_skips.py build/Testing/Temporary/LastTest.log
 
   # 阶5: 格式门禁只检查 PR/提交变更的 C++ 文件（受控列表），避免整仓大规模改动。
   # 本轮修改文件已全部格式化，故对变更文件的检查可通过；不静默（set -e）。
@@ -75,6 +83,7 @@ jobs:
               BASE="$(git rev-list --max-parents=0 HEAD)"
             fi
           fi
+          git diff --check "$BASE" HEAD
           FILES=$(git diff --name-only "$BASE" HEAD -- 'src/*.cpp' 'src/*.h' 'tests/*.cpp' 'tests/*.h' \
                     'src/**/*.cpp' 'src/**/*.h' 'tests/**/*.cpp' 'tests/**/*.h')
           if [ -z "$FILES" ]; then echo "No C++ files changed; format gate passes."; exit 0; fi
@@ -123,6 +132,146 @@ jobs:
       - name: Deploy runtime and run CLI smoke test
         run: cmake --build build --config Release --target deploy-windows
 
+  windows-msvc-ctest:
+    # Collect hosted Windows results first; promote to blocking after a stable green run.
+    continue-on-error: true
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt6 (+SerialPort)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.8.3
+          arch: win64_msvc2022_64
+          modules: qtserialport
+      - name: Install vcpkg deps
+        run: vcpkg install eigen3 opencv4 --triplet x64-windows
+      - name: Add vcpkg runtime DLLs to PATH
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_PATH -Value 'C:\vcpkg\installed\x64-windows\bin'
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DBUILD_TESTS=ON -DDEEPLUX_NATIVE_SAM=OFF -DDEEPLUX_TEST_QPA_PLATFORM=offscreen
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Sync plugins to ephemeral runner profile
+        run: cmake --build build --config Release --target sync-plugins
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Check skipped tests
+        if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
+        run: python scripts/check_ctest_skips.py build/Testing/Temporary/LastTest.log
+
+  linux-asan-ubsan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt6 and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-base-dev qt6-tools-dev libqt6serialport6-dev \
+            libeigen3-dev libopencv-dev libssl-dev pkg-config cmake build-essential xvfb
+      - name: Configure with ASan and UBSan
+        run: >-
+          cmake -S . -B build -DBUILD_TESTS=ON -DDEEPLUX_NATIVE_SAM=OFF
+          -DDEEPLUX_TEST_QPA_PLATFORM=xcb
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build build -j2
+      - name: Isolate plugin data directory
+        run: |
+          HOME_DIR="$RUNNER_TEMP/deeplux-home-asan"
+          mkdir -p "$HOME_DIR"
+          echo "HOME=$HOME_DIR" >> "$GITHUB_ENV"
+      - name: Sync plugins
+        run: cmake --build build --target sync-plugins
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: xcb
+          # Level 1 still flags ODR globals with mismatched sizes. Level 2 also flags
+          # identical Qt staticMetaObject globals from test-linked and copied plugin DSOs.
+          ASAN_OPTIONS: detect_leaks=1:detect_odr_violation=1
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/lsan-system-cache.supp:print_suppressions=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ctest --test-dir build --output-on-failure -j2
+      - name: Check skipped tests
+        if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
+        run: python3 scripts/check_ctest_skips.py build/Testing/Temporary/LastTest.log
+
+  linux-tsan:
+    continue-on-error: true
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt5 and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qtbase5-dev qt5-qmake qttools5-dev libqt5serialport5-dev \
+            libeigen3-dev libopencv-dev libssl-dev pkg-config cmake build-essential
+      - name: Configure with TSan
+        id: configure-tsan
+        run: >-
+          cmake -S . -B build -DBUILD_TESTS=ON -DDEEPLUX_NATIVE_SAM=OFF
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+          -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
+      - name: Build
+        id: build-tsan
+        run: cmake --build build -j2
+      - name: Isolate plugin data directory
+        run: |
+          HOME_DIR="$RUNNER_TEMP/deeplux-home-tsan"
+          mkdir -p "$HOME_DIR"
+          echo "HOME=$HOME_DIR" >> "$GITHUB_ENV"
+      - name: Sync plugins
+        id: sync-tsan
+        run: cmake --build build --target sync-plugins
+      - name: Run concurrency suites and preserve raw output
+        id: run-tsan
+        run: |
+          set -o pipefail
+          setarch "$(uname -m)" -R ctest --test-dir build --output-on-failure -j2 \
+            -R '^(test_runengine|test_executionaffinity|test_flowexecutionservice|test_workerpluginconsistency)$' \
+            2>&1 | tee build/tsan-ctest.log
+      - name: Group direct QtCore shared-library summaries for manual review
+        if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
+        run: python3 scripts/classify_tsan.py build/Testing/Temporary/LastTest.log
+      - name: Upload TSan evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tsan-report
+          path: |
+            build/tsan-ctest.log
+            build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+      - name: Summarize non-blocking TSan result
+        if: always()
+        env:
+          CONFIGURE_OUTCOME: ${{ steps.configure-tsan.outcome }}
+          BUILD_OUTCOME: ${{ steps.build-tsan.outcome }}
+          SYNC_OUTCOME: ${{ steps.sync-tsan.outcome }}
+          TEST_OUTCOME: ${{ steps.run-tsan.outcome }}
+        run: |
+          {
+            echo '### TSan diagnostic job (non-blocking)'
+            echo
+            echo 'This job is diagnostic only; a successful workflow result is not a TSan pass claim.'
+            echo
+            echo '| Stage | Outcome |'
+            echo '| --- | --- |'
+            echo "| Configure | ${CONFIGURE_OUTCOME:-not run} |"
+            echo "| Build | ${BUILD_OUTCOME:-not run} |"
+            echo "| Plugin sync | ${SYNC_OUTCOME:-not run} |"
+            echo "| CTest | ${TEST_OUTCOME:-not run} |"
+            echo
+            echo 'Inspect the uploaded raw report; uninstrumented-library classification is informational only.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   ubuntu-qt6:
     runs-on: ubuntu-24.04
     steps:
@@ -146,15 +295,19 @@ jobs:
 
       - name: Isolate plugin data directory
         run: |
-          APP_DATA_DIR="$RUNNER_TEMP/deeplux-appdata-qt6"
-          rm -rf "$APP_DATA_DIR/plugins"
-          echo "DEEPLUX_APP_DATA_DIR=$APP_DATA_DIR" >> "$GITHUB_ENV"
+          HOME_DIR="$RUNNER_TEMP/deeplux-home-qt6"
+          mkdir -p "$HOME_DIR"
+          echo "HOME=$HOME_DIR" >> "$GITHUB_ENV"
 
       - name: Sync plugins
         run: cmake --build build --target sync-plugins
 
       - name: Verify isolated plugin sync
-        run: cmp build/lib/libFitCirclePlugin.so "$DEEPLUX_APP_DATA_DIR/plugins/FitCircle/libFitCirclePlugin.so"
+        run: cmp build/lib/libFitCirclePlugin.so "$HOME/.deeplux/plugins/FitCircle/libFitCirclePlugin.so"
 
       - name: Test
         run: xvfb-run -a ctest --test-dir build --output-on-failure
+
+      - name: Check skipped tests
+        if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
+        run: python3 scripts/check_ctest_skips.py build/Testing/Temporary/LastTest.log

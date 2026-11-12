@@ -9,8 +9,16 @@
 
 namespace DeepLux {
 namespace {
-QHash<const ModuleBase*, CancellationToken*> g_cancellationTokens;
-QMutex g_cancellationTokensMutex;
+struct CancellationTokenRegistry {
+    QHash<const ModuleBase*, CancellationToken*> tokens;
+    QMutex mutex;
+};
+
+CancellationTokenRegistry& cancellationTokenRegistry() {
+    // Dynamically loaded plugins may destroy modules after core static teardown.
+    static auto* registry = new CancellationTokenRegistry;
+    return *registry;
+}
 } // namespace
 
 // ========== ModuleParam ==========
@@ -37,8 +45,9 @@ bool ModuleParam::fromJson(const QJsonObject& json) {
 ModuleBase::ModuleBase(QObject* parent) : IModule(parent) {}
 
 ModuleBase::~ModuleBase() {
-    QMutexLocker locker(&g_cancellationTokensMutex);
-    g_cancellationTokens.remove(this);
+    auto& registry = cancellationTokenRegistry();
+    QMutexLocker locker(&registry.mutex);
+    registry.tokens.remove(this);
 }
 
 bool ModuleBase::initialize() {
@@ -244,17 +253,19 @@ ExecutionResult ModuleBase::execute(const PortValueMap& inputs, PortValueMap& ou
 }
 
 void ModuleBase::setCancellationToken(CancellationToken* token) {
-    QMutexLocker locker(&g_cancellationTokensMutex);
+    auto& registry = cancellationTokenRegistry();
+    QMutexLocker locker(&registry.mutex);
     if (token) {
-        g_cancellationTokens.insert(this, token);
+        registry.tokens.insert(this, token);
     } else {
-        g_cancellationTokens.remove(this);
+        registry.tokens.remove(this);
     }
 }
 
 CancellationToken* ModuleBase::cancellationToken() const {
-    QMutexLocker locker(&g_cancellationTokensMutex);
-    return g_cancellationTokens.value(this, nullptr);
+    auto& registry = cancellationTokenRegistry();
+    QMutexLocker locker(&registry.mutex);
+    return registry.tokens.value(this, nullptr);
 }
 
 void ModuleBase::detachCancellationToken(CancellationToken* token) {
@@ -263,10 +274,11 @@ void ModuleBase::detachCancellationToken(CancellationToken* token) {
     }
     // T2.8：token 即将销毁，把表中所有指向它的条目摘掉。遍历全部条目而不是只按
     // 当前模块查找——同一 token 可能被多个模块借用过（并行批次、多次执行）。
-    QMutexLocker locker(&g_cancellationTokensMutex);
-    for (auto it = g_cancellationTokens.begin(); it != g_cancellationTokens.end();) {
+    auto& registry = cancellationTokenRegistry();
+    QMutexLocker locker(&registry.mutex);
+    for (auto it = registry.tokens.begin(); it != registry.tokens.end();) {
         if (it.value() == token) {
-            it = g_cancellationTokens.erase(it);
+            it = registry.tokens.erase(it);
         } else {
             ++it;
         }

@@ -1,18 +1,9 @@
 #include "core/deeplux/DataContract.h"
-#include "core/engine/RunEngine.h"
-#include "core/manager/PluginManager.h"
-#include "core/manager/ProjectManager.h"
 #include "core/model/ImageData.h"
-#include "core/model/Project.h"
 #include "plugins/geometry/FitEllipse/FitEllipsePlugin.h"
 
-#include <QCoreApplication>
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
 #include <QJsonArray>
 #include <QSignalSpy>
-#include <QTemporaryDir>
 #include <QtTest>
 #include <cmath>
 #include <limits>
@@ -23,22 +14,6 @@ class TestFitEllipse : public QObject {
     Q_OBJECT
 
 private:
-    // 阶7 批1 复核：插件库路径由 CMake $<TARGET_FILE:...> 注入（跨平台），不硬编码 .so 名。
-    // 阶7 批1 复核三轮（P2-5）：metadata 与库路径均由 CMake 注入（跨平台/多配置）。
-    bool installPlugin(const QString& pluginRoot, const QString& name, const QString& metaSrc,
-                       const QString& libSrc) const {
-        QDir root(pluginRoot);
-        if (!root.mkpath(name))
-            return false;
-        QDir dir(root.filePath(name));
-        if (!QFileInfo::exists(metaSrc) || !QFileInfo::exists(libSrc))
-            return false;
-        const QString destLib = dir.filePath(QFileInfo(libSrc).fileName());
-        QFile::remove(dir.filePath("metadata.json"));
-        QFile::remove(destLib);
-        return QFile::copy(metaSrc, dir.filePath("metadata.json")) && QFile::copy(libSrc, destLib);
-    }
-
 private slots:
     void initTestCase() {
         qDebug() << "=== TestFitEllipse Start ===";
@@ -114,66 +89,6 @@ private slots:
             QJsonObject{{"threshold", 9.0}, {"iterations", 2}, {"minAxis", 1.0}, {"maxAxis", 100.0}});
         QCOMPARE(plugin.currentParams()["threshold"].toDouble(), 5.0);
         delete clone;
-    }
-
-    // 流程验收：MeasurementInput(point_set) → FitEllipse，经 PluginManager 真实加载 +
-    // RunEngine 调度，断言椭圆输出（镜像 test_mainwindow 双支路已验证的端口送达路径）
-    void testFlowMeasurementInputToFitEllipse() {
-        RunEngine& engine = RunEngine::instance();
-        engine.clearModules();
-        ProjectManager::instance().closeProject();
-
-        QTemporaryDir appDir;
-        QVERIFY(appDir.isValid());
-        qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
-        const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
-        QVERIFY(installPlugin(pluginRoot, QStringLiteral("MeasurementInput"),
-                              QStringLiteral(TEST_FITELLIPSE_META_MeasurementInput),
-                              QStringLiteral(TEST_FITELLIPSE_LIB_MeasurementInput)));
-        QVERIFY(installPlugin(pluginRoot, QStringLiteral("FitEllipse"), QStringLiteral(TEST_FITELLIPSE_META_FitEllipse),
-                              QStringLiteral(TEST_FITELLIPSE_LIB_FitEllipse)));
-        DeepLux::PluginManager::instance().addPluginPath(pluginRoot);
-        QVERIFY(DeepLux::PluginManager::instance().initialize());
-        QVERIFY(DeepLux::PluginManager::instance().loadPlugin(QStringLiteral("MeasurementInput")));
-        QVERIFY(DeepLux::PluginManager::instance().loadPlugin(QStringLiteral("FitEllipse")));
-
-        Project* project = ProjectManager::instance().newProject();
-        QVERIFY(project != nullptr);
-
-        QJsonArray points;
-        for (int i = 0; i < 24; ++i) {
-            const double t = i * M_PI / 12.0;
-            points.append(QJsonArray{100 + 50 * std::cos(t), 100 + 25 * std::sin(t)});
-        }
-        ModuleInstance input;
-        input.id = QStringLiteral("mi");
-        input.moduleId = QStringLiteral("MeasurementInput");
-        input.params["mode"] = QStringLiteral("point_set");
-        input.params["points"] = points;
-        project->addModule(input);
-
-        ModuleInstance ell;
-        ell.id = QStringLiteral("ell");
-        ell.moduleId = QStringLiteral("FitEllipse");
-        project->addModule(ell);
-
-        ModuleConnection conn;
-        conn.fromModuleId = QStringLiteral("mi");
-        conn.toModuleId = QStringLiteral("ell");
-        conn.fromPort = QStringLiteral("fit_points");
-        conn.toPort = QStringLiteral("fit_points");
-        conn.edgeType = QStringLiteral("data");
-        project->addConnection(conn);
-
-        QVERIFY(engine.loadProject(project));
-
-        engine.runOnce();
-        const ImageData out = engine.moduleOutput(QStringLiteral("ell"));
-        QVERIFY2(out.hasData("ellipse_major_r"), "flow must produce ellipse_major_r");
-        QVERIFY2(std::abs(out.data("ellipse_major_r").toDouble() - 50) < 3.0, "major axis ~50");
-        QVERIFY2(std::abs(out.data("ellipse_minor_r").toDouble() - 25) < 3.0, "minor axis ~25");
-        engine.clearModules();
-        qunsetenv("DEEPLUX_APP_DATA_DIR");
     }
 
     // 阶7 批1 复核（P1-1）：强离群点不得拉偏结果（RANSAC 稳健估计）

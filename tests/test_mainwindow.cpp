@@ -484,6 +484,7 @@ private slots:
     void testNoOutputSelectedModuleClearsOverlays();
     void testClearSelectionAndCloseInspectorClearOverlays();
     void testDarkThemeCloseAndDestroyWindowDirectly();
+    void testVisibleMainWindowDisconnectsDockCallbacksBeforeDestruction();
     void testPluginConfigDialogRestylesLegacyDarkPlugin();
     void testGrabImageEditorSurvivesCommitSignal();
     void testQuickAnnotateOpensSamDialogOnMainViewportImage();
@@ -1826,6 +1827,22 @@ void TestMainWindow::testDarkThemeCloseAndDestroyWindowDirectly() {
     // 深色主题下直接关闭（closeEvent 路径）；窗口在作用域结束时仍以深色析构。
     window.close();
     QCoreApplication::processEvents();
+}
+
+void TestMainWindow::testVisibleMainWindowDisconnectsDockCallbacksBeforeDestruction() {
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+
+    auto* logDock = window.findChild<QDockWidget*>(QStringLiteral("LogDock"));
+    auto* toolDock = window.findChild<QDockWidget*>(QStringLiteral("ToolPanelDock"));
+    QVERIFY(logDock != nullptr);
+    QVERIFY(toolDock != nullptr);
+    logDock->setVisible(true);
+    toolDock->setVisible(true);
+    QCoreApplication::processEvents();
+    QVERIFY(logDock->isVisible());
+    QVERIFY(toolDock->isVisible());
 }
 
 void TestMainWindow::testPluginConfigDialogRestylesLegacyDarkPlugin() {

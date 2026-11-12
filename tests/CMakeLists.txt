@@ -35,6 +35,7 @@ set(TEST_SOURCES
     test_measureline.cpp
     test_fitcircle.cpp
     test_fitellipse.cpp
+    test_fitellipse_flow.cpp
     test_detection_batch2.cpp
     test_3d_batch3.cpp
     test_batch4.cpp
@@ -228,8 +229,17 @@ foreach(TEST_FILE ${TEST_SOURCES})
             endforeach()
         endif()
     endif()
+    if(TEST_NAME STREQUAL "test_plugincontracts")
+        foreach(_plugin_entry IN LISTS DEEPLUX_PLUGIN_TARGET_ENTRIES)
+            string(REPLACE "|" ";" _plugin_parts "${_plugin_entry}")
+            list(GET _plugin_parts 0 _plugin_target)
+            if(TARGET ${_plugin_target})
+                add_dependencies(${TEST_NAME} ${_plugin_target})
+            endif()
+        endforeach()
+    endif()
 
-    if(TEST_NAME STREQUAL "test_fitline" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_fitline")
         target_link_libraries(${TEST_NAME} PRIVATE FitLinePlugin)
     endif()
     if(TEST_NAME STREQUAL "test_pluginmanager")
@@ -252,18 +262,21 @@ foreach(TEST_FILE ${TEST_SOURCES})
                 TEST_PLUGINMANAGER_CAMERA_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/camera/V4L2Camera/metadata.json")
         endif()
     endif()
-    if(TEST_NAME STREQUAL "test_findcircle" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_findcircle")
         target_link_libraries(${TEST_NAME} PRIVATE FindCirclePlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_measureline" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_measureline")
         target_link_libraries(${TEST_NAME} PRIVATE MeasureLinePlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_fitcircle" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_fitcircle")
         target_link_libraries(${TEST_NAME} PRIVATE FitCirclePlugin)
     endif()
     # 阶7 批1：FitEllipse 行为+流程验收
     if(TEST_NAME STREQUAL "test_fitellipse")
         target_link_libraries(${TEST_NAME} PRIVATE FitEllipsePlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_fitellipse_flow")
+        add_dependencies(${TEST_NAME} FitEllipsePlugin MeasurementInputPlugin)
         target_compile_definitions(${TEST_NAME} PRIVATE
             TEST_FITELLIPSE_LIB_FitEllipse="$<TARGET_FILE:FitEllipsePlugin>"
             TEST_FITELLIPSE_LIB_MeasurementInput="$<TARGET_FILE:MeasurementInputPlugin>"
@@ -334,28 +347,28 @@ foreach(TEST_FILE ${TEST_SOURCES})
             TEST_BATCH4_META_CalculateOffset="${CMAKE_SOURCE_DIR}/src/plugins/calibration/CalculateOffset/metadata.json"
             TEST_BATCH4_DATA_Circle="${CMAKE_SOURCE_DIR}/tests/acceptance/data/circle_640x480.png")
     endif()
-    if(TEST_NAME STREQUAL "test_measurerect" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_measurerect")
         target_link_libraries(${TEST_NAME} PRIVATE MeasureRectPlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_distancepl" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_distancepl")
         target_link_libraries(${TEST_NAME} PRIVATE DistancePLPlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_distancepp" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_distancepp")
         target_link_libraries(${TEST_NAME} PRIVATE DistancePPPlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_linesdistance" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_linesdistance")
         target_link_libraries(${TEST_NAME} PRIVATE LinesDistancePlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_measuregap" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_measuregap")
         target_link_libraries(${TEST_NAME} PRIVATE MeasureGapPlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_pointsurfacedistance" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_pointsurfacedistance")
         target_link_libraries(${TEST_NAME} PRIVATE PointSurfaceDistancePlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_freeformsurface" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_freeformsurface")
         target_link_libraries(${TEST_NAME} PRIVATE FreeformSurfacePlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_measurementinput" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_measurementinput")
         target_link_libraries(${TEST_NAME} PRIVATE MeasurementInputPlugin)
     endif()
     if(TEST_NAME STREQUAL "test_grabimage")
@@ -400,7 +413,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
             TEST_CLOSEDLOOP_LIB_ShowImage="$<TARGET_FILE:ShowImagePlugin>"
             TEST_CLOSEDLOOP_META_ShowImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/ShowImage/metadata.json")
     endif()
-    if(TEST_NAME STREQUAL "test_loadpointcloud" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_loadpointcloud")
         target_link_libraries(${TEST_NAME} PRIVATE LoadPointCloudPlugin)
     endif()
     if(TEST_NAME STREQUAL "test_timeslice")
@@ -422,7 +435,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_finalplugins")
         target_link_libraries(${TEST_NAME} PRIVATE ImageScriptPlugin ShowPointPlugin FreeformSurfacePlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_clihandler" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_clihandler")
         target_link_libraries(${TEST_NAME} PRIVATE SystemTimePlugin)
     endif()
     if(TEST_NAME STREQUAL "test_clihandler")
@@ -438,20 +451,6 @@ foreach(TEST_FILE ${TEST_SOURCES})
                 LoopPlugin
                 WhilePlugin
                 DelayPlugin
-        )
-    endif()
-    if(TEST_NAME STREQUAL "test_plugincontracts")
-        target_link_libraries(${TEST_NAME}
-            PRIVATE
-                BlobPlugin
-                PerProcessingPlugin
-                MatchingPlugin
-                LoopPlugin
-                FolderPlugin
-                SaveDataPlugin
-                CreateStringPlugin
-                SplitStringPlugin
-                MathPlugin
         )
     endif()
     if(TEST_NAME STREQUAL "test_variable_system_plugins")
@@ -519,9 +518,23 @@ foreach(TEST_FILE ${TEST_SOURCES})
             DEEPLUX_MCP_BRIDGE_PATH="$<TARGET_FILE:deeplux-mcp-bridge>")
     endif()
 
-    # GUI 测试在扫描插件/换肤时会输出大量 qDebug，Qt 6 的默认 -maxwarnings
-    # 上限会把它当成失败；显式放宽，行为断言仍由 QVERIFY/QCOMPARE 负责。
-    add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME} -maxwarnings 100000)
+    # GUI integration suites can emit many Qt warnings during plugin scans and theme changes.
+    set(GUI_TESTS
+        test_3d_interaction
+        test_annotationoverlaywidget
+        test_flowcanvas
+        test_himagewidget
+        test_knowledgebasedialog
+        test_mainwindow
+        test_moduleinspectorpanel
+        test_propertypanel
+        test_samannotatordialog
+    )
+    if(TEST_NAME IN_LIST GUI_TESTS)
+        add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME} -maxwarnings 100000)
+    else()
+        add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+    endif()
     set_tests_properties(${TEST_NAME} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}")
     if(TEST_NAME STREQUAL "test_pluginmanager")
         set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
