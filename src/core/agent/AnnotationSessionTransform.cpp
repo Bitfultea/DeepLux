@@ -230,8 +230,10 @@ QJsonObject AnnotationSessionTransform::execute(const QJsonObject& params, const
     if (!stagingDirectory.isValid())
         return errorResult(QStringLiteral("Could not create a private staging directory"),
                            QStringLiteral("FILE_WRITE_FAILED"));
-    QFile temporary(QDir(stagingDirectory.path()).filePath(QStringLiteral("payload-") + QUuid::createUuid().toString(QUuid::WithoutBraces)));
-    if (!temporary.open(QIODevice::ReadWrite) || temporary.write(outputBytes) != outputBytes.size() || !temporary.flush())
+    QFile temporary(QDir(stagingDirectory.path())
+                        .filePath(QStringLiteral("payload-") + QUuid::createUuid().toString(QUuid::WithoutBraces)));
+    if (!temporary.open(QIODevice::ReadWrite) || temporary.write(outputBytes) != outputBytes.size() ||
+        !temporary.flush())
         return errorResult(QStringLiteral("Could not write complete transformed session"),
                            QStringLiteral("FILE_WRITE_FAILED"));
     // 同 Export：Windows 硬链接发布需要先释放 Qt 临时文件句柄，避免共享冲突。

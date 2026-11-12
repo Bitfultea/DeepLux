@@ -702,12 +702,13 @@ private slots:
         QSignalSpy responseSpy(&controller, &AgentController::llmResponseReceived);
         QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
         const QString sessionPath = dir.filePath(QStringLiteral("must-not-be-created.deeplux-anno.json"));
-        const QJsonObject params{{QStringLiteral("imagePath"), imagePath},
-                                 {QStringLiteral("sessionPath"), sessionPath},
-                                 {QStringLiteral("serverUrl"), QStringLiteral("http://127.0.0.1:8990")},
-                                 {QStringLiteral("timeoutMs"), 1000},
-                                 {QStringLiteral("items"),
-                                  QJsonArray{QJsonObject{{QStringLiteral("points"), QJsonArray{QJsonValue(QJsonArray{2, 3})}}}}}};
+        const QJsonObject params{
+            {QStringLiteral("imagePath"), imagePath},
+            {QStringLiteral("sessionPath"), sessionPath},
+            {QStringLiteral("serverUrl"), QStringLiteral("http://127.0.0.1:8990")},
+            {QStringLiteral("timeoutMs"), 1000},
+            {QStringLiteral("items"),
+             QJsonArray{QJsonObject{{QStringLiteral("points"), QJsonArray{QJsonValue(QJsonArray{2, 3})}}}}}};
         const QJsonObject pending = controller.handleToolCall(QStringLiteral("sam_annotate"), params);
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString confirmationId = controller.pendingConfirmationId();

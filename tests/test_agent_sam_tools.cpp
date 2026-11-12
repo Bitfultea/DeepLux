@@ -539,7 +539,7 @@ private slots:
         QFile checkSession(sessionPath);
         QVERIFY(checkSession.open(QIODevice::ReadOnly));
         QCOMPARE(checkSession.readAll(), originalSession);
-  checkSession.close();
+        checkSession.close();
 
         const QString occupiedPath = QDir(m_dir.path()).filePath(QStringLiteral("already-exists.json"));
         QFile occupied(occupiedPath);
@@ -579,7 +579,8 @@ private slots:
         if (QFile::link(sessionPath, symlinkPreparedPath)) {
             if (!QFileInfo(symlinkPreparedPath).isSymLink()) {
                 // Windows 上 QFile::link 创建硬链接（非重解析点），发布器的符号链接拒绝不可观测。
-                QWARN("Link creation yields a hard link on this platform; publisher symlink rejection is not observable");
+                QWARN(
+                    "Link creation yields a hard link on this platform; publisher symlink rejection is not observable");
                 QFile::remove(symlinkPreparedPath);
             } else {
                 const QString symlinkTargetPath = QDir(m_dir.path()).filePath(QStringLiteral("symlink-export.json"));
@@ -601,7 +602,8 @@ private slots:
                 QWARN("Link creation yields a hard link on this platform; source symlink rejection is not observable");
                 QFile::remove(symlinkSourcePath);
             } else {
-                const QString symlinkSourceOutput = QDir(m_dir.path()).filePath(QStringLiteral("source-link-output.json"));
+                const QString symlinkSourceOutput =
+                    QDir(m_dir.path()).filePath(QStringLiteral("source-link-output.json"));
                 const QJsonObject symlinkSourceParams{{QStringLiteral("sessionPath"), symlinkSourcePath},
                                                       {QStringLiteral("format"), QStringLiteral("labelme")},
                                                       {QStringLiteral("outputPath"), symlinkSourceOutput}};
@@ -1435,8 +1437,9 @@ private slots:
         QSignalSpy audit(&controller, &AgentController::actionLogEntryAdded);
         QSignalSpy toolExecuted(controller.actor(), &AgentActor::toolExecuted);
         QJsonObject params = annotateParams(server.url(), sessionPath, imagePath);
-        params.insert(QStringLiteral("items"), QJsonArray{QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{8, 8})}},
-                                                                      {"label", QStringLiteral("slice95")}}});
+        params.insert(QStringLiteral("items"),
+                      QJsonArray{QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{8, 8})}},
+                                             {"label", QStringLiteral("slice95")}}});
 
         QJsonObject pending = controller.handleToolCall(QStringLiteral("sam_annotate"), params);
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
@@ -1512,8 +1515,9 @@ private slots:
         SamTestServer server;
         QVERIFY(server.listen());
         QJsonObject params = annotateParams(server.url(), linkPath, m_imagePath);
-        params.insert(QStringLiteral("items"), QJsonArray{QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{32, 24})}},
-                                                                      {"label", QStringLiteral("symlink-target")}}});
+        params.insert(QStringLiteral("items"),
+                      QJsonArray{QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{32, 24})}},
+                                             {"label", QStringLiteral("symlink-target")}}});
         QJsonObject pending = controller.handleToolCall(QStringLiteral("sam_annotate"), params);
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         QCOMPARE(server.requestLog.size(), 0);

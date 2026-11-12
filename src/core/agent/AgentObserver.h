@@ -46,9 +46,10 @@ public:
 signals:
     void guiEventOccurred(const GuiEvent& event);
 
-DEEPLUX_TEST_VISIBILITY slots:
+DEEPLUX_TEST_VISIBILITY slots :
     // ProjectManager
-    void onProjectCreated(Project* project);
+    void
+    onProjectCreated(Project* project);
     void onProjectOpened(Project* project);
     void onProjectSaved(Project* project);
     void onProjectClosed();

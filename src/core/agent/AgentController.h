@@ -156,8 +156,7 @@ signals:
     void agentStreamFallback(const QString& reason);
     void agentStreamTruncated();
 
-DEEPLUX_TEST_VISIBILITY slots:
-    void onLLMResponse(const struct AgentResponse& resp);
+DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& resp);
     void onLLMError(const QString& error);
     void onLLMRequestFailed(const QString& requestId, const QString& error);
     void onLLMErrorClassified(const struct LLMErrorInfo& info);
@@ -171,8 +170,7 @@ DEEPLUX_TEST_VISIBILITY slots:
     void onStreamFailed();
     void onStreamFallback(const QString& reason);
 
-DEEPLUX_TEST_VISIBILITY:
-    explicit AgentController(QObject* parent = nullptr);
+    DEEPLUX_TEST_VISIBILITY : explicit AgentController(QObject* parent = nullptr);
     ~AgentController() override;
 
     QString buildContext();

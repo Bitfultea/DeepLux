@@ -30,7 +30,7 @@ private slots:
 
     void testSetThemePermissionPersistenceAndFailures() {
 #ifdef Q_OS_WIN
-    QSKIP("依赖 POSIX 符号链接与权限位语义");
+        QSKIP("依赖 POSIX 符号链接与权限位语义");
 #endif
         ConfigManager& config = ConfigManager::instance();
         QVERIFY(!config.isInitialized());

@@ -1051,7 +1051,8 @@ private slots:
         QCOMPARE(secondPolygon.value(QStringLiteral("offset")).toInt(), 2);
         QCOMPARE(secondPolygon.value(QStringLiteral("limit")).toInt(), 2);
         QVERIFY(!secondPolygon.value(QStringLiteral("truncated")).toBool());
-        QCOMPARE(secondPolygon.value(QStringLiteral("points")).toArray(), QJsonArray({QJsonValue(QJsonArray({3.0, 5.0}))}));
+        QCOMPARE(secondPolygon.value(QStringLiteral("points")).toArray(),
+                 QJsonArray({QJsonValue(QJsonArray({3.0, 5.0}))}));
         const QJsonObject emptyPolygonPage =
             queryPolygonPage(runId, QStringLiteral("region"), 3, 2).value(QStringLiteral("polygonPage")).toObject();
         QVERIFY(emptyPolygonPage.value(QStringLiteral("points")).toArray().isEmpty());

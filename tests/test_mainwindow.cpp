@@ -4289,8 +4289,9 @@ void TestMainWindow::testG6MeasurementInputUsesActualCropImageOutputAfterViewpor
     sourceProvenance.localToSource = ImageCoordinateProvenance::Matrix3{2.0, 0.0, 10.0, 0.0, 3.0, 5.0, 0.0, 0.0, 1.0};
     sourceProvenance.hasLocalToSourceTransform = true;
     source.setCoordinateProvenance(sourceProvenance);
-    crop.setParams(QJsonObject{{QStringLiteral("rectangles"), QJsonArray{QJsonValue(QJsonArray{80.0, 60.0, 50.0, 40.0, 0.0})}},
-                               {QStringLiteral("outputFirstAsImage"), true}});
+    crop.setParams(
+        QJsonObject{{QStringLiteral("rectangles"), QJsonArray{QJsonValue(QJsonArray{80.0, 60.0, 50.0, 40.0, 0.0})}},
+                    {QStringLiteral("outputFirstAsImage"), true}});
     ImageData cropped;
     QVERIFY(crop.execute(source, cropped));
     QCOMPARE(cropped.toQImage().size(), QSize(100, 80));

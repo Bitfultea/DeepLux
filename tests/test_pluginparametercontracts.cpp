@@ -1041,7 +1041,8 @@ void TestPluginParameterContracts::testG2ComplexConfigRoundTrip() {
 
     const QList<QPair<QString, QJsonObject>> invalidCases{
         {QStringLiteral("MeasurementInput"), QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{1.0, "bad"})}}}},
-        {QStringLiteral("CropImage"), QJsonObject{{"rectangles", QJsonArray{QJsonValue(QJsonArray{10, 20, -1, 4, 0})}}}},
+        {QStringLiteral("CropImage"),
+         QJsonObject{{"rectangles", QJsonArray{QJsonValue(QJsonArray{10, 20, -1, 4, 0})}}}},
         {QStringLiteral("StrFormatPlugin"), QJsonObject{{"inputVariables", QJsonArray{1, "valid"}}}},
         {QStringLiteral("PLCWritePlugin"), QJsonObject{{"values", QJsonArray{-1, 2}}}},
         {QStringLiteral("PLCWritePlugin"), QJsonObject{{"port", 0}}},

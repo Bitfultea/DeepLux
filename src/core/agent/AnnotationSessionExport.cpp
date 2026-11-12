@@ -547,8 +547,8 @@ bool AnnotationSessionExport::publishSessionBytesNoReplace(const QString& output
             *errorCode = QStringLiteral("FILE_WRITE_FAILED");
         return false;
     }
-    QFile temporary(QDir(stagingDirectory.path()).filePath(QStringLiteral("session-") +
-                                                          QUuid::createUuid().toString(QUuid::WithoutBraces)));
+    QFile temporary(QDir(stagingDirectory.path())
+                        .filePath(QStringLiteral("session-") + QUuid::createUuid().toString(QUuid::WithoutBraces)));
     if (!temporary.open(QIODevice::ReadWrite) || temporary.write(bytes) != bytes.size() || !temporary.flush()) {
         if (errorCode)
             *errorCode = QStringLiteral("FILE_WRITE_FAILED");
@@ -711,8 +711,10 @@ QJsonObject AnnotationSessionExport::execute(const QJsonObject& params, const QJ
     if (!stagingDirectory.isValid())
         return toolError(QStringLiteral("Could not create a private staging directory"),
                          QStringLiteral("FILE_WRITE_FAILED"));
-    QFile temporary(QDir(stagingDirectory.path()).filePath(QStringLiteral("payload-") + QUuid::createUuid().toString(QUuid::WithoutBraces)));
-    if (!temporary.open(QIODevice::ReadWrite) || temporary.write(outputBytes) != outputBytes.size() || !temporary.flush())
+    QFile temporary(QDir(stagingDirectory.path())
+                        .filePath(QStringLiteral("payload-") + QUuid::createUuid().toString(QUuid::WithoutBraces)));
+    if (!temporary.open(QIODevice::ReadWrite) || temporary.write(outputBytes) != outputBytes.size() ||
+        !temporary.flush())
         return toolError(QStringLiteral("Could not write complete annotation export"),
                          QStringLiteral("FILE_WRITE_FAILED"));
     // Windows 上硬链接发布需要对源文件持有 DELETE 权限的句柄；先关闭 Qt 临时文件句柄，

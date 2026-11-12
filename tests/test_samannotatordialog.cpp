@@ -2093,9 +2093,9 @@ void TestSamAnnotatorDialog::agentMaskOperationsValidateAndUndo() {
     const QJsonObject wrongRadiusType =
         edit(QStringLiteral("dilate"), firstObject, {{QStringLiteral("radiusPx"), QStringLiteral("2")}});
     QCOMPARE(wrongRadiusType.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
-    const QJsonObject badStroke =
-        edit(QStringLiteral("erase_stroke"), firstObject,
-             {{QStringLiteral("radiusPx"), 2}, {QStringLiteral("strokePoints"), QJsonArray{QJsonValue(QJsonArray{-1, 25})}}});
+    const QJsonObject badStroke = edit(QStringLiteral("erase_stroke"), firstObject,
+                                       {{QStringLiteral("radiusPx"), 2},
+                                        {QStringLiteral("strokePoints"), QJsonArray{QJsonValue(QJsonArray{-1, 25})}}});
     QCOMPARE(badStroke.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
     QCOMPARE(edit(QStringLiteral("merge"), QJsonArray{firstId, firstId}).value(QStringLiteral("errorCode")).toString(),
              QStringLiteral("INVALID_PARAM"));
@@ -2109,9 +2109,9 @@ void TestSamAnnotatorDialog::agentMaskOperationsValidateAndUndo() {
     const QJsonObject nonIntegerRadius =
         edit(QStringLiteral("dilate"), firstObject, {{QStringLiteral("radiusPx"), 1.5}});
     QCOMPARE(nonIntegerRadius.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
-    const QJsonObject malformedPoint =
-        edit(QStringLiteral("erase_stroke"), firstObject,
-             {{QStringLiteral("radiusPx"), 2}, {QStringLiteral("strokePoints"), QJsonArray{QJsonValue(QJsonArray{25})}}});
+    const QJsonObject malformedPoint = edit(
+        QStringLiteral("erase_stroke"), firstObject,
+        {{QStringLiteral("radiusPx"), 2}, {QStringLiteral("strokePoints"), QJsonArray{QJsonValue(QJsonArray{25})}}});
     QCOMPARE(malformedPoint.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
     const QJsonObject emptyStroke =
         edit(QStringLiteral("erase_stroke"), firstObject,

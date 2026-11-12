@@ -48,7 +48,7 @@ QString identityFromDescriptor(qintptr descriptor) {
     const int fd = static_cast<int>(descriptor);
     const intptr_t nativeHandle = (fd >= 0) ? ::_get_osfhandle(fd) : -1;
     const HANDLE handle = (nativeHandle == -1) ? INVALID_HANDLE_VALUE : reinterpret_cast<HANDLE>(nativeHandle);
-    BY_HANDLE_FILE_INFORMATION info {};
+    BY_HANDLE_FILE_INFORMATION info{};
     if (handle != INVALID_HANDLE_VALUE && ::GetFileInformationByHandle(handle, &info) != 0)
         return QStringLiteral("%1:%2")
             .arg(static_cast<qulonglong>(info.dwVolumeSerialNumber))
@@ -73,7 +73,7 @@ QString identityAtPath(const QString& path) {
                                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
                                         FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (handle != INVALID_HANDLE_VALUE) {
-        BY_HANDLE_FILE_INFORMATION info {};
+        BY_HANDLE_FILE_INFORMATION info{};
         const bool ok = ::GetFileInformationByHandle(handle, &info) != 0;
         const DWORD attributes = info.dwFileAttributes;
         ::CloseHandle(handle);
@@ -81,8 +81,7 @@ QString identityAtPath(const QString& path) {
             return QStringLiteral("%1:%2:%3")
                 .arg(static_cast<qulonglong>(info.dwVolumeSerialNumber))
                 .arg((static_cast<qulonglong>(info.nFileIndexHigh) << 32) | info.nFileIndexLow)
-                .arg((attributes & FILE_ATTRIBUTE_REPARSE_POINT) ? QStringLiteral("symlink")
-                                                                 : QStringLiteral("file"));
+                .arg((attributes & FILE_ATTRIBUTE_REPARSE_POINT) ? QStringLiteral("symlink") : QStringLiteral("file"));
         }
     }
 #else

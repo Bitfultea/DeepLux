@@ -412,7 +412,7 @@ private slots:
 
     void testPluginLifecycleConfirmationExpiresOnBinaryAndLoadedStateDrift() {
 #ifdef Q_OS_WIN
-    QSKIP("Windows 无法覆盖已加载的 DLL，二进制漂移场景不可构造");
+        QSKIP("Windows 无法覆盖已加载的 DLL，二进制漂移场景不可构造");
 #endif
         ToolSchema::instance().registerDefaultTools();
         PluginManager& manager = PluginManager::instance();
@@ -581,7 +581,7 @@ private slots:
 
     void testPluginLifecycleConfirmationRejectsUnreadableMetadataHash() {
 #ifdef Q_OS_WIN
-    QSKIP("Windows 不支持仅属主可读的权限位模拟");
+        QSKIP("Windows 不支持仅属主可读的权限位模拟");
 #endif
         ToolSchema::instance().registerDefaultTools();
         PluginManager& manager = PluginManager::instance();
